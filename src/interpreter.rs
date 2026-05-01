@@ -9,6 +9,18 @@ pub enum Value {
     Str(String),
     Bool(bool),
     None,
+    List(Vec<Value>),
+}
+
+/// Returned by exec() to signal normal completion or control flow.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum ExecResult {
+    Normal,
+    Break,
+    Continue,
+    Return(Value),
+    BlockReturn(Value),
 }
 
 struct Var {
@@ -17,51 +29,91 @@ struct Var {
 }
 
 pub struct Interpreter {
-    env: HashMap<String, Var>,
+    // Innermost scope is last; lookup searches from back to front.
+    scopes: Vec<HashMap<String, Var>>,
 }
 
 impl Interpreter {
     pub fn new() -> Self {
-        Self { env: HashMap::new() }
+        Self { scopes: vec![HashMap::new()] }
     }
 
-    pub fn exec(&mut self, stmt: &Stmt) -> Result<(), String> {
+    // --- Scope helpers ---
+
+    fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        if self.scopes.len() > 1 {
+            self.scopes.pop();
+        }
+    }
+
+    fn get_var(&self, name: &str) -> Option<&Var> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(v) = scope.get(name) {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    fn declare_var(&mut self, name: String, var: Var) {
+        self.scopes.last_mut().unwrap().insert(name, var);
+    }
+
+    // Walks the scope chain and updates the first binding found.
+    fn assign_var(&mut self, name: &str, value: Value) -> Result<(), String> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(v) = scope.get_mut(name) {
+                if !v.mutable {
+                    return Err(format!(
+                        "TypeError: cannot assign to immutable variable '{name}'"
+                    ));
+                }
+                v.value = value;
+                return Ok(());
+            }
+        }
+        Err(format!("NameError: '{name}' is not defined"))
+    }
+
+    // --- Statement execution ---
+
+    pub fn exec(&mut self, stmt: &Stmt) -> Result<ExecResult, String> {
         match stmt {
             Stmt::Expr(expr) => {
                 self.eval(expr)?;
-                Ok(())
+                Ok(ExecResult::Normal)
             }
             Stmt::Let(name, expr) => {
                 let value = self.eval(expr)?;
-                self.env.insert(name.clone(), Var { value, mutable: false });
-                Ok(())
+                self.declare_var(name.clone(), Var { value, mutable: false });
+                Ok(ExecResult::Normal)
             }
             Stmt::Const(name, expr) => {
                 let value = self.eval(expr)?;
-                self.env.insert(name.clone(), Var { value, mutable: false });
-                Ok(())
+                self.declare_var(name.clone(), Var { value, mutable: false });
+                Ok(ExecResult::Normal)
             }
             Stmt::Mut(name, expr) => {
                 let value = self.eval(expr)?;
-                self.env.insert(name.clone(), Var { value, mutable: true });
-                Ok(())
+                self.declare_var(name.clone(), Var { value, mutable: true });
+                Ok(ExecResult::Normal)
             }
             Stmt::Assign(name, expr) => {
                 let value = self.eval(expr)?;
-                match self.env.get(name) {
-                    Some(v) if !v.mutable => {
-                        Err(format!("TypeError: cannot assign to immutable variable '{name}'"))
-                    }
-                    None => Err(format!("NameError: '{name}' is not defined")),
-                    _ => {
-                        self.env.insert(name.clone(), Var { value, mutable: true });
-                        Ok(())
-                    }
-                }
+                self.assign_var(name, value)?;
+                Ok(ExecResult::Normal)
+            }
+            Stmt::AttrAssign { .. } => {
+                // TODO: attribute assignment (needs object system)
+                Ok(ExecResult::Normal)
             }
             Stmt::CompoundAssign(name, op, expr) => {
                 let rhs = self.eval(expr)?;
-                let lhs = match self.env.get(name) {
+                let lhs = match self.get_var(name) {
                     Some(v) if !v.mutable => {
                         return Err(format!(
                             "TypeError: cannot assign to immutable variable '{name}'"
@@ -71,11 +123,111 @@ impl Interpreter {
                     None => return Err(format!("NameError: '{name}' is not defined")),
                 };
                 let value = self.apply_binop(op, lhs, rhs)?;
-                self.env.insert(name.clone(), Var { value, mutable: true });
-                Ok(())
+                self.assign_var(name, value)?;
+                Ok(ExecResult::Normal)
+            }
+            Stmt::Pass => Ok(ExecResult::Normal),
+            Stmt::Break => Ok(ExecResult::Break),
+            Stmt::Continue => Ok(ExecResult::Continue),
+            Stmt::Return(expr) => {
+                let val = match expr {
+                    Some(e) => self.eval(e)?,
+                    None => Value::None,
+                };
+                Ok(ExecResult::Return(val))
+            }
+            Stmt::BlockReturn(expr) => {
+                let val = self.eval(expr)?;
+                Ok(ExecResult::BlockReturn(val))
+            }
+            Stmt::BlockYield(expr) => {
+                let val = self.eval(expr)?;
+                Ok(ExecResult::BlockReturn(val))
+            }
+            Stmt::If { branches, else_body } => {
+                for (cond, body) in branches {
+                    let val = self.eval(cond)?;
+                    if self.is_truthy(&val) {
+                        return self.exec_scoped_block(body);
+                    }
+                }
+                if let Some(body) = else_body {
+                    return self.exec_scoped_block(body);
+                }
+                Ok(ExecResult::Normal)
+            }
+            Stmt::While { cond, body } => {
+                loop {
+                    let val = self.eval(cond)?;
+                    if !self.is_truthy(&val) {
+                        break;
+                    }
+                    match self.exec_scoped_block(body)? {
+                        ExecResult::Break => break,
+                        ExecResult::Continue | ExecResult::Normal => {}
+                        r => return Ok(r),
+                    }
+                }
+                Ok(ExecResult::Normal)
+            }
+            Stmt::For { target, iter, body } => {
+                let iter_val = self.eval(iter)?;
+                let items = match iter_val {
+                    Value::List(items) => items,
+                    Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+                    _ => return Err("TypeError: object is not iterable".to_string()),
+                };
+                for item in items {
+                    // Each iteration gets its own scope containing the loop variable.
+                    self.push_scope();
+                    self.declare_var(target.clone(), Var { value: item, mutable: true });
+                    let result = self.exec_block(body);
+                    self.pop_scope();
+                    match result? {
+                        ExecResult::Break => break,
+                        ExecResult::Continue | ExecResult::Normal => {}
+                        r => return Ok(r),
+                    }
+                }
+                Ok(ExecResult::Normal)
+            }
+            Stmt::Block(body) => {
+                match self.exec_scoped_block(body)? {
+                    ExecResult::BlockReturn(_) | ExecResult::Normal => Ok(ExecResult::Normal),
+                    r => Ok(r),
+                }
+            }
+            Stmt::FnDef { .. } => {
+                // TODO: function objects
+                Ok(ExecResult::Normal)
+            }
+            Stmt::ClassDef { .. } => {
+                // TODO: class objects
+                Ok(ExecResult::Normal)
             }
         }
     }
+
+    // Executes a list of statements without creating a new scope.
+    fn exec_block(&mut self, stmts: &[Stmt]) -> Result<ExecResult, String> {
+        for stmt in stmts {
+            match self.exec(stmt)? {
+                ExecResult::Normal => {}
+                signal => return Ok(signal),
+            }
+        }
+        Ok(ExecResult::Normal)
+    }
+
+    // Executes a list of statements in a fresh scope.
+    fn exec_scoped_block(&mut self, stmts: &[Stmt]) -> Result<ExecResult, String> {
+        self.push_scope();
+        let result = self.exec_block(stmts);
+        self.pop_scope(); // always runs, even on Err
+        result
+    }
+
+    // --- Expression evaluation ---
 
     pub fn eval(&mut self, expr: &Expr) -> Result<Value, String> {
         match expr {
@@ -85,16 +237,25 @@ impl Interpreter {
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::None => Ok(Value::None),
             Expr::Ident(name) => self
-                .env
-                .get(name)
+                .get_var(name)
                 .map(|v| v.value.clone())
                 .ok_or_else(|| format!("NameError: '{name}' is not defined")),
+            Expr::Attr { .. } => {
+                // TODO: attribute access (needs object system)
+                Err("AttributeError: attribute access not yet implemented".to_string())
+            }
+            Expr::List(items) => {
+                let mut vals = Vec::new();
+                for item in items {
+                    vals.push(self.eval(item)?);
+                }
+                Ok(Value::List(vals))
+            }
             Expr::UnaryOp { op, operand } => {
                 let val = self.eval(operand)?;
                 self.apply_unary(op, val)
             }
             Expr::BinOp { op, left, right } => {
-                // Short-circuit evaluation for `and` / `or`
                 match op {
                     BinOp::And => {
                         let lv = self.eval(left)?;
@@ -121,6 +282,40 @@ impl Interpreter {
                         println!("{}", parts?.join(" "));
                         Ok(Value::None)
                     }
+                    "range" => {
+                        let evaled: Result<Vec<_>, _> = args.iter().map(|a| self.eval(a)).collect();
+                        let evaled = evaled?;
+                        match evaled.as_slice() {
+                            [Value::Int(stop)] => {
+                                Ok(Value::List((0..*stop).map(Value::Int).collect()))
+                            }
+                            [Value::Int(start), Value::Int(stop)] => {
+                                Ok(Value::List((*start..*stop).map(Value::Int).collect()))
+                            }
+                            [Value::Int(start), Value::Int(stop), Value::Int(step)] => {
+                                let mut items = Vec::new();
+                                let mut i = *start;
+                                if *step > 0 {
+                                    while i < *stop { items.push(Value::Int(i)); i += step; }
+                                } else if *step < 0 {
+                                    while i > *stop { items.push(Value::Int(i)); i += step; }
+                                }
+                                Ok(Value::List(items))
+                            }
+                            _ => Err("TypeError: range() takes 1–3 integer arguments".to_string()),
+                        }
+                    }
+                    "len" => {
+                        if args.len() != 1 {
+                            return Err("TypeError: len() takes exactly one argument".to_string());
+                        }
+                        let val = self.eval(&args[0])?;
+                        match val {
+                            Value::List(items) => Ok(Value::Int(items.len() as i64)),
+                            Value::Str(s) => Ok(Value::Int(s.len() as i64)),
+                            _ => Err(format!("TypeError: object of type '{:?}' has no len()", val)),
+                        }
+                    }
                     _ => Err(format!("NameError: '{name}' is not defined")),
                 }
             }
@@ -140,6 +335,21 @@ impl Interpreter {
             Value::Str(s) => s.clone(),
             Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
             Value::None => "None".to_string(),
+            Value::List(items) => {
+                let parts: Vec<String> = items.iter().map(|v| self.display_repr(v)).collect();
+                format!("[{}]", parts.join(", "))
+            }
+        }
+    }
+
+    fn display_repr(&self, val: &Value) -> String {
+        match val {
+            Value::Str(s) => format!("'{s}'"),
+            Value::List(items) => {
+                let parts: Vec<String> = items.iter().map(|v| self.display_repr(v)).collect();
+                format!("[{}]", parts.join(", "))
+            }
+            _ => self.display(val),
         }
     }
 
@@ -150,6 +360,7 @@ impl Interpreter {
             Value::Float(f) => *f != 0.0,
             Value::Str(s) => !s.is_empty(),
             Value::None => false,
+            Value::List(items) => !items.is_empty(),
         }
     }
 
@@ -265,23 +476,33 @@ mod tests {
     use crate::parser::Parser;
 
     fn run(src: &str) -> Result<(), String> {
-        let tokens = Lexer::new(src).tokenize();
+        let tokens = Lexer::new(src, "").tokenize().into_iter().map(|s| s.token).collect();
         let stmts = Parser::new(tokens).parse_program()?;
         let mut interp = Interpreter::new();
         for stmt in &stmts {
-            interp.exec(stmt)?;
+            let _ = interp.exec(stmt)?;
         }
         Ok(())
     }
 
     fn eval(src: &str) -> Value {
-        let tokens = Lexer::new(src).tokenize();
+        let tokens = Lexer::new(src, "").tokenize().into_iter().map(|s| s.token).collect();
         let stmts = Parser::new(tokens).parse_program().unwrap();
         let mut interp = Interpreter::new();
         interp.eval(match &stmts[0] {
             Stmt::Expr(e) => e,
             _ => panic!("not an expr"),
         }).unwrap()
+    }
+
+    fn run_get(src: &str, var: &str) -> Value {
+        let tokens = Lexer::new(src, "").tokenize().into_iter().map(|s| s.token).collect();
+        let stmts = Parser::new(tokens).parse_program().unwrap();
+        let mut interp = Interpreter::new();
+        for stmt in &stmts {
+            let _ = interp.exec(stmt).unwrap();
+        }
+        interp.get_var(var).unwrap().value.clone()
     }
 
     #[test]
@@ -339,13 +560,11 @@ mod tests {
 
     #[test]
     fn test_compound_assign() {
-        let tokens = Lexer::new("mut x = 10\nx += 5").tokenize();
-        let stmts = Parser::new(tokens).parse_program().unwrap();
-        let mut interp = Interpreter::new();
-        for stmt in &stmts {
-            interp.exec(stmt).unwrap();
+        if let Value::Int(n) = run_get("mut x = 10\nx += 5", "x") {
+            assert_eq!(n, 15);
+        } else {
+            panic!();
         }
-        assert!(matches!(interp.env["x"].value, Value::Int(15)));
     }
 
     #[test]
@@ -356,5 +575,135 @@ mod tests {
     #[test]
     fn test_zero_division() {
         assert!(run("1 // 0").is_err());
+    }
+
+    // --- if ---
+
+    #[test]
+    fn test_if_true_branch() {
+        // x is declared in outer scope, assigned inside if → outer x updated
+        if let Value::Int(n) = run_get("mut x = 0\nif True:\n    x = 1\n", "x") {
+            assert_eq!(n, 1);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_if_false_else_branch() {
+        if let Value::Int(n) = run_get("mut x = 0\nif False:\n    x = 1\nelse:\n    x = 2\n", "x") {
+            assert_eq!(n, 2);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_if_scope_isolation() {
+        // Variable declared INSIDE if is not visible outside
+        assert!(run("if True:\n    let x = 1\nprint(x)\n").is_err());
+    }
+
+    // --- while ---
+
+    #[test]
+    fn test_while_loop() {
+        // i is outer; incremented inside while
+        if let Value::Int(n) = run_get("mut i = 0\nwhile i < 5:\n    i += 1\n", "i") {
+            assert_eq!(n, 5);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_while_break() {
+        if let Value::Int(n) = run_get(
+            "mut i = 0\nwhile True:\n    i += 1\n    if i == 3:\n        break\n",
+            "i",
+        ) {
+            assert_eq!(n, 3);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_while_scope_isolation() {
+        // Variable declared inside while body is not visible outside
+        assert!(run("mut cond = True\nwhile cond:\n    let x = 1\n    cond = False\nprint(x)\n").is_err());
+    }
+
+    // --- for ---
+
+    #[test]
+    fn test_for_range() {
+        // s is outer; accumulated inside for
+        if let Value::Int(n) = run_get("mut s = 0\nfor i in range(5):\n    s += i\n", "s") {
+            assert_eq!(n, 10);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_for_list() {
+        if let Value::Int(n) = run_get("mut s = 0\nfor x in [1, 2, 3]:\n    s += x\n", "s") {
+            assert_eq!(n, 6);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_for_loop_var_scope_isolation() {
+        // Loop variable is scoped to the loop; not visible outside
+        assert!(run("for i in range(3):\n    pass\nprint(i)\n").is_err());
+    }
+
+    #[test]
+    fn test_for_body_scope_isolation() {
+        // Variable declared inside for body is not visible outside
+        assert!(run("for i in range(1):\n    let x = 99\nprint(x)\n").is_err());
+    }
+
+    // --- block ---
+
+    #[test]
+    fn test_block_scope_isolation() {
+        // Variable declared inside block is not visible outside
+        assert!(run("block:\n    let x = 1\nprint(x)\n").is_err());
+    }
+
+    #[test]
+    fn test_block_reads_outer() {
+        // Block can read outer variables
+        assert!(run("let x = 1\nblock:\n    print(x)\n").is_ok());
+    }
+
+    #[test]
+    fn test_block_modifies_outer() {
+        // Assigning to an existing outer mut variable works from inside a block
+        if let Value::Int(n) = run_get("mut x = 0\nblock:\n    x = 42\n", "x") {
+            assert_eq!(n, 42);
+        } else {
+            panic!();
+        }
+    }
+
+    // --- builtins ---
+
+    #[test]
+    fn test_range_builtin() {
+        if let Value::List(items) = eval("range(3)") {
+            assert_eq!(items.len(), 3);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_len_builtin() {
+        assert!(matches!(eval("len([1, 2, 3])"), Value::Int(3)));
     }
 }

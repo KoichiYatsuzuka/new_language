@@ -1,3 +1,38 @@
+use std::sync::Arc;
+
+/// ソースコード上の位置情報。Arc<str> でファイル名を共有してクローンを軽量化。
+#[derive(Debug, Clone)]
+pub struct Span {
+    pub file: Arc<str>,
+    pub line: usize, // 1 始まり
+    pub col: usize,  // 1 始まり（文字単位）
+}
+
+impl Span {
+    pub fn unknown() -> Self {
+        Self { file: "".into(), line: 0, col: 0 }
+    }
+}
+
+impl std::fmt::Display for Span {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.line == 0 {
+            write!(f, "<unknown>")
+        } else if self.file.is_empty() {
+            write!(f, "line {}, col {}", self.line, self.col)
+        } else {
+            write!(f, "{}:{}:{}", self.file, self.line, self.col)
+        }
+    }
+}
+
+/// トークンと位置情報のペア。
+#[derive(Debug, Clone)]
+pub struct Spanned {
+    pub token: Token,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     // Variable declaration
@@ -34,6 +69,9 @@ pub enum Token {
     Return,
     Yield,
     YieldFrom,
+    BlockReturn,
+    BlockYield,
+    Block,
 
     // Exception handling
     Try,
@@ -174,6 +212,9 @@ impl std::fmt::Display for Token {
             Token::Return => write!(f, "return"),
             Token::Yield => write!(f, "yield"),
             Token::YieldFrom => write!(f, "yield from"),
+            Token::BlockReturn => write!(f, "block_return"),
+            Token::BlockYield => write!(f, "block_yield"),
+            Token::Block => write!(f, "block"),
             Token::Try => write!(f, "try"),
             Token::Except => write!(f, "except"),
             Token::Finally => write!(f, "finally"),

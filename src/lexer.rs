@@ -1,22 +1,45 @@
-use crate::token::Token;
+use std::sync::Arc;
+
+use crate::token::{Span, Spanned, Token};
+
+/// 各文字インデックスに対応する (line, col) を事前計算する。
+fn compute_positions(chars: &[char]) -> Vec<(usize, usize)> {
+    let mut positions = Vec::with_capacity(chars.len() + 1);
+    let mut line = 1usize;
+    let mut col = 1usize;
+    for &c in chars {
+        positions.push((line, col));
+        if c == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    positions.push((line, col)); // EOF 位置
+    positions
+}
 
 pub struct Lexer {
     chars: Vec<char>,
     pos: usize,
-    // Stack of indentation levels (in spaces; tab = 8 spaces)
+    positions: Vec<(usize, usize)>,
+    filename: Arc<str>,
     indent_stack: Vec<usize>,
-    // Tokens buffered for emission (e.g. multiple DEDENTs)
-    pending: Vec<Token>,
+    pending: Vec<Spanned>, // INDENT/DEDENT などのバッファ
     at_line_start: bool,
-    // Inside (), [], {} newlines are insignificant
-    bracket_depth: usize,
+    bracket_depth: usize, // (), [], {} の深さ
 }
 
 impl Lexer {
-    pub fn new(source: &str) -> Self {
+    pub fn new(source: &str, filename: impl Into<Arc<str>>) -> Self {
+        let chars: Vec<char> = source.chars().collect();
+        let positions = compute_positions(&chars);
         Self {
-            chars: source.chars().collect(),
+            chars,
+            positions,
             pos: 0,
+            filename: filename.into(),
             indent_stack: vec![0],
             pending: Vec::new(),
             at_line_start: true,
@@ -24,11 +47,11 @@ impl Lexer {
         }
     }
 
-    pub fn tokenize(&mut self) -> Vec<Token> {
+    pub fn tokenize(&mut self) -> Vec<Spanned> {
         let mut tokens = Vec::new();
         loop {
             let tok = self.next_token();
-            let done = tok == Token::Eof;
+            let done = tok.token == Token::Eof;
             tokens.push(tok);
             if done {
                 break;
@@ -37,7 +60,7 @@ impl Lexer {
         tokens
     }
 
-    pub fn next_token(&mut self) -> Token {
+    pub fn next_token(&mut self) -> Spanned {
         if !self.pending.is_empty() {
             return self.pending.remove(0);
         }
@@ -47,68 +70,105 @@ impl Lexer {
         }
 
         self.skip_spaces();
+        let start = self.pos;
 
         match self.ch() {
             None => self.emit_eof(),
-            Some('\n') | Some('\r') => self.lex_newline(),
+            Some('\n') | Some('\r') => {
+                self.consume_newline();
+                if self.bracket_depth > 0 {
+                    return self.next_token(); // 括弧内の改行は無視
+                }
+                self.at_line_start = true;
+                self.spanned(Token::Newline, start)
+            }
             Some('#') => {
                 self.skip_comment();
                 self.next_token()
             }
-            Some('"') | Some('\'') => self.lex_string(),
-            Some(c) if c.is_ascii_digit() => self.lex_number(),
-            Some(c) if c.is_alphabetic() || c == '_' => self.lex_word(),
-            Some(_) => self.lex_symbol(),
+            Some('"') | Some('\'') => {
+                let tok = self.lex_string();
+                self.spanned(tok, start)
+            }
+            Some(c) if c.is_ascii_digit() => {
+                let tok = self.lex_number();
+                self.spanned(tok, start)
+            }
+            Some(c) if c.is_alphabetic() || c == '_' => {
+                let tok = self.lex_word();
+                self.spanned(tok, start)
+            }
+            Some(_) => {
+                let tok = self.lex_symbol();
+                self.spanned(tok, start)
+            }
         }
     }
 
-    fn emit_eof(&mut self) -> Token {
+    // --- 位置情報ヘルパー ---
+
+    fn span_at(&self, pos: usize) -> Span {
+        let (line, col) = self.positions.get(pos).copied().unwrap_or((1, 1));
+        Span { file: self.filename.clone(), line, col }
+    }
+
+    fn spanned(&self, token: Token, start: usize) -> Spanned {
+        Spanned { token, span: self.span_at(start) }
+    }
+
+    // --- EOF 処理 ---
+
+    fn emit_eof(&mut self) -> Spanned {
+        let span = self.span_at(self.pos);
         while self.indent_stack.len() > 1 {
             self.indent_stack.pop();
-            self.pending.push(Token::Dedent);
+            self.pending.push(Spanned { token: Token::Dedent, span: span.clone() });
         }
         if !self.pending.is_empty() {
             return self.pending.remove(0);
         }
-        Token::Eof
+        Spanned { token: Token::Eof, span }
     }
 
-    fn handle_indent(&mut self) -> Token {
+    // --- インデント処理 ---
+
+    fn handle_indent(&mut self) -> Spanned {
         self.at_line_start = false;
         loop {
             let (level, char_count) = self.measure_indent();
             let after = self.pos + char_count;
 
             match self.chars.get(after).copied() {
-                // Blank line — skip silently
+                // 空行はスキップ
                 Some('\n') | Some('\r') => {
                     self.pos = after;
                     self.consume_newline();
                     continue;
                 }
-                // Comment-only line — skip silently
+                // コメント行はスキップ
                 Some('#') => {
                     self.pos = after;
                     self.skip_comment();
                     self.consume_newline();
                     continue;
                 }
-                // EOF while handling indentation
+                // EOF
                 None => {
                     self.pos = after;
                     return self.emit_eof();
                 }
-                // Real content
+                // 実コンテンツ
                 _ => {
                     let current = *self.indent_stack.last().unwrap();
                     self.pos = after;
+                    let span = self.span_at(after);
                     if level > current {
                         self.indent_stack.push(level);
-                        return Token::Indent;
+                        return Spanned { token: Token::Indent, span };
                     } else if level < current {
                         while *self.indent_stack.last().unwrap() > level {
                             self.indent_stack.pop();
-                            self.pending.push(Token::Dedent);
+                            self.pending.push(Spanned { token: Token::Dedent, span: span.clone() });
                         }
                         return self.pending.remove(0);
                     } else {
@@ -119,7 +179,7 @@ impl Lexer {
         }
     }
 
-    // Returns (logical indent level, number of chars consumed).
+    /// インデントを測定し (レベル, 消費文字数) を返す。
     fn measure_indent(&self) -> (usize, usize) {
         let mut level = 0usize;
         let mut count = 0usize;
@@ -162,14 +222,7 @@ impl Lexer {
         }
     }
 
-    fn lex_newline(&mut self) -> Token {
-        self.consume_newline();
-        if self.bracket_depth > 0 {
-            return self.next_token();
-        }
-        self.at_line_start = true;
-        Token::Newline
-    }
+    // --- 文字列リテラル ---
 
     fn lex_string(&mut self) -> Token {
         let quote = self.bump().unwrap();
@@ -221,10 +274,11 @@ impl Lexer {
         Token::Str(s)
     }
 
+    // --- 数値リテラル ---
+
     fn lex_number(&mut self) -> Token {
         let start = self.pos;
 
-        // Hex / octal / binary prefix
         if self.ch() == Some('0') {
             match self.ch1() {
                 Some('x') | Some('X') => {
@@ -258,14 +312,12 @@ impl Lexer {
             }
         }
 
-        // Decimal integer part
         while matches!(self.ch(), Some(c) if c.is_ascii_digit() || c == '_') {
             self.pos += 1;
         }
 
         let mut is_float = false;
 
-        // Fractional part
         if self.ch() == Some('.') && matches!(self.ch1(), Some(c) if c.is_ascii_digit()) {
             is_float = true;
             self.pos += 1;
@@ -274,7 +326,6 @@ impl Lexer {
             }
         }
 
-        // Exponent part
         if matches!(self.ch(), Some('e') | Some('E')) {
             is_float = true;
             self.pos += 1;
@@ -295,6 +346,8 @@ impl Lexer {
             Token::Int(clean.parse().unwrap_or(0))
         }
     }
+
+    // --- 識別子・キーワード ---
 
     fn lex_word(&mut self) -> Token {
         let start = self.pos;
@@ -326,6 +379,9 @@ impl Lexer {
             "pass" => Token::Pass,
             "return" => Token::Return,
             "yield" => self.maybe_two_word("from", Token::YieldFrom, Token::Yield),
+            "block_return" => Token::BlockReturn,
+            "block_yield" => Token::BlockYield,
+            "block" => Token::Block,
             "try" => Token::Try,
             "except" => Token::Except,
             "finally" => Token::Finally,
@@ -348,8 +404,7 @@ impl Lexer {
         }
     }
 
-    // Peeks ahead past spaces to see if the next identifier matches `second`.
-    // Consumes the second word on match; otherwise leaves pos unchanged.
+    /// 次の単語が `second` と一致すれば複合トークンを返す。
     fn maybe_two_word(&mut self, second: &str, combined: Token, single: Token) -> Token {
         let saved = self.pos;
         while matches!(self.ch(), Some(' ') | Some('\t')) {
@@ -367,6 +422,8 @@ impl Lexer {
             single
         }
     }
+
+    // --- 記号 ---
 
     fn lex_symbol(&mut self) -> Token {
         let c = self.bump().unwrap();
@@ -563,6 +620,8 @@ impl Lexer {
         }
     }
 
+    // --- 文字アクセス ---
+
     fn ch(&self) -> Option<char> {
         self.chars.get(self.pos).copied()
     }
@@ -590,7 +649,7 @@ mod tests {
     use crate::token::Token;
 
     fn lex(s: &str) -> Vec<Token> {
-        Lexer::new(s).tokenize()
+        Lexer::new(s, "").tokenize().into_iter().map(|s| s.token).collect()
     }
 
     #[test]
@@ -740,10 +799,8 @@ mod tests {
     fn test_newline_inside_brackets_ignored() {
         let src = "(\n    1,\n    2\n)\n";
         let t = lex(src);
-        // Newlines inside brackets are insignificant; no INDENT/DEDENT should appear.
         assert!(!t.contains(&Token::Indent));
         assert!(!t.contains(&Token::Dedent));
-        // Only the trailing newline after ')' (outside brackets) generates NEWLINE.
         let newline_count = t.iter().filter(|tok| **tok == Token::Newline).count();
         assert_eq!(newline_count, 1);
     }
@@ -763,5 +820,24 @@ mod tests {
             Token::LBrace, Token::RBrace,
             Token::Eof,
         ]);
+    }
+
+    #[test]
+    fn test_span_line_col() {
+        let src = "let x = 1\nmut y = 2\n";
+        let spanned = Lexer::new(src, "test.tl").tokenize();
+        // `let` は行1・列1
+        assert_eq!(spanned[0].span.line, 1);
+        assert_eq!(spanned[0].span.col, 1);
+        // `mut` は行2・列1
+        let mut_tok = spanned.iter().find(|s| s.token == Token::Mut).unwrap();
+        assert_eq!(mut_tok.span.line, 2);
+        assert_eq!(mut_tok.span.col, 1);
+    }
+
+    #[test]
+    fn test_span_filename() {
+        let spanned = Lexer::new("x\n", "foo.tl").tokenize();
+        assert_eq!(&*spanned[0].span.file, "foo.tl");
     }
 }
