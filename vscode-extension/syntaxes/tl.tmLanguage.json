@@ -1,0 +1,69 @@
+{
+  "name": "test_lang",
+  "scopeName": "source.tl",
+  "fileTypes": ["tl"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#keyword" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.tl"
+    },
+    "string": {
+      "patterns": [
+        {
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "name": "string.quoted.triple.tl"
+        },
+        {
+          "begin": "'''",
+          "end": "'''",
+          "name": "string.quoted.triple.tl"
+        },
+        {
+          "match": "\"([^\"\\\\]|\\\\.)*\"",
+          "name": "string.quoted.double.tl"
+        },
+        {
+          "match": "'([^'\\\\]|\\\\.)*'",
+          "name": "string.quoted.single.tl"
+        }
+      ]
+    },
+    "number": {
+      "patterns": [
+        { "match": "\\b0[xX][0-9a-fA-F_]+\\b", "name": "constant.numeric.hex.tl" },
+        { "match": "\\b0[oO][0-7_]+\\b", "name": "constant.numeric.octal.tl" },
+        { "match": "\\b0[bB][01_]+\\b", "name": "constant.numeric.binary.tl" },
+        { "match": "\\b[0-9][0-9_]*\\.[0-9_]*([eE][+-]?[0-9]+)?\\b", "name": "constant.numeric.float.tl" },
+        { "match": "\\b[0-9][0-9_]*\\b", "name": "constant.numeric.integer.tl" }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "match": "\\b(let|mut|const|fn|class|template|lambda|if|elif|else|match|for|while|break|continue|pass|return|yield|try|except|finally|raise|import|from|as|del|global|nonlocal|with|async|await|assert)\\b",
+          "name": "keyword.control.tl"
+        },
+        {
+          "match": "\\b(True|False|None)\\b",
+          "name": "constant.language.tl"
+        },
+        {
+          "match": "\\b(and|or|not|in|is)\\b",
+          "name": "keyword.operator.logical.tl"
+        }
+      ]
+    },
+    "operator": {
+      "match": "\\*\\*=|//=|<<=|>>=|[+\\-*/%@&|^]=|->|:=|\\*\\*|//|<<|>>|[=!<>]=|[+\\-*/%@&|^~<>]=?",
+      "name": "keyword.operator.tl"
+    }
+  }
+}
