@@ -90,9 +90,15 @@ test_lang/
 |---|---|
 | `AssignToImmutable` | `let` / `const` 変数への代入・複合代入 |
 | `IncompatibleComparison` | `<` `>` `<=` `>=` で互換性のない型の比較（例: `str < int`） |
+| `CallArgCountMismatch` | 関数呼び出し時の引数個数不一致 |
+| `CallArgTypeMismatch` | 引数型の不一致 |
+| `MissingParamTypeAnn` | パラメータの型アノテーション欠如（`self` は除外） |
+| `MissingReturnTypeAnn` | 戻り値型アノテーション欠如 |
+| `UnknownKeywordArg` | 存在しないキーワード引数名 |
 
 - `==` / `!=` は異なる型間でも許容（実行時に `False` を返す想定）
 - 型が静的に不明（fn パラメータ等）な場合は実行時に委ねる
+- キーワード引数（`f(a=1, b=2)`）の名前・型・個数を検査（`collect_fn_sigs` 前処理で前方参照も対応）
 
 **拡張方法**: `TypeErrorKind` に variant を追加 → `check_stmt` / `check_binop` に arm を追加。
 
@@ -108,7 +114,10 @@ test_lang/
 - `block:` スコープ（`block_return` / `block_yield` 対応）
 - リストリテラル評価
 - 組み込み関数: `print()`、`range(stop)` / `range(start, stop)` / `range(start, stop, step)`、`len()`
-- `fn` / `class` 定義はパース・AST 構築まで完了（**実行は未実装**）
+- **関数の実行**: `fn` 定義・呼び出し（位置引数・キーワード引数）・`return`・再帰
+- **クラスの実行**: インスタンス化・フィールド（`mut`/`let`/`const` デフォルト値）・メソッド呼び出し・`self`・継承（`lookup_method_in_class`）
+- `self.x = v` / `self.x += v`（`AttrAssign` / `AttrCompoundAssign`）
+- 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Function(Rc<FnValue>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`
 
 ### VS Code 拡張（`vscode-extension/`）
 - `.tl` ファイルのシンタックスハイライト
@@ -117,10 +126,8 @@ test_lang/
 
 ## 未実装の主な機能
 
-- **関数の実行**: `fn` 定義・呼び出し・`return`（パースは完了）
-- **クラスの実行**: インスタンス生成・メソッド呼び出し・`self`（パースは完了）
-- **型アノテーションの保存**: パース時にスキップしており AST に格納されていない
-- **静的型検査の拡張**: 戻り値型・引数型・加算型不一致など
+- **型アノテーションの完全保存**: パース時に型名は取得済みだが、インタープリタ実行時には使われていない（静的型検査で使用）
+- **戻り値型の実行時チェック**: 宣言型と実際の `return` 値の型検証
 - **辞書・セット型**: `{k: v}`、`{a, b}`
 - **例外処理**: `try` / `except` / `finally` / `raise`
 - **インポート**: `import` / `from ... import`
@@ -141,10 +148,9 @@ test_lang/
 
 ## 次に実装すべき機能（優先順）
 
-1. **関数の実行**（`fn` 定義・呼び出し・クロージャ・再帰）
-2. **クラスの実行**（インスタンス化・フィールド・メソッド・継承）
-3. **型アノテーションの AST 保存**（静的型検査の精度向上に必要）
-4. **静的型検査の拡張**（引数型・戻り値型・加算型不一致など）
-5. **辞書・セット型**
-6. **例外処理**（`try` / `except` / `finally`）
-7. **インポートシステム**
+1. **辞書・セット型**（`{k: v}`、`{a, b}`）
+2. **例外処理**（`try` / `except` / `finally` / `raise`）
+3. **インポートシステム**（`import` / `from ... import`）
+4. **`match` 文**
+5. **クロージャ**（外側スコープのキャプチャ）
+6. **LLVM IR コード生成**

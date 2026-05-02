@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{BinOp, Expr, Stmt, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, Stmt, UnaryOp};
 use crate::token::Span;
 
 // ---------------------------------------------------------------------------
@@ -18,6 +18,32 @@ pub enum InferredType {
     None,
     List,
     Unknown, // cannot be determined statically
+}
+
+impl InferredType {
+    /// Convert a type annotation string (e.g. "int", "list") to InferredType.
+    fn from_ann(ann: &str) -> Option<Self> {
+        match ann {
+            "int" => Some(Self::Int),
+            "float" => Some(Self::Float),
+            "str" => Some(Self::Str),
+            "bool" => Some(Self::Bool),
+            "None" => Some(Self::None),
+            "list" => Some(Self::List),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Function signature (param types + return type)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct FnSig {
+    /// (parameter name, declared type); type is None when no annotation.
+    params: Vec<(String, Option<InferredType>)>,
+    return_type: Option<InferredType>,
 }
 
 impl std::fmt::Display for InferredType {
@@ -48,7 +74,21 @@ pub enum TypeErrorKind {
     },
     /// Assignment (plain or compound) to an immutable variable
     AssignToImmutable { name: String },
-    // Future: TypeMismatch, UndefinedVariable, ReturnTypeMismatch, …
+    /// Function called with wrong number of arguments
+    CallArgCountMismatch { func_name: String, expected: usize, got: usize },
+    /// Function called with an argument whose type conflicts with the declared parameter type
+    CallArgTypeMismatch {
+        func_name: String,
+        param_index: usize,
+        expected: InferredType,
+        got: InferredType,
+    },
+    /// A function parameter is missing a type annotation
+    MissingParamTypeAnn { func_name: String, param_name: String },
+    /// A function definition is missing a return type annotation
+    MissingReturnTypeAnn { func_name: String },
+    /// A keyword argument name does not match any parameter of the function
+    UnknownKeywordArg { func_name: String, arg_name: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +128,26 @@ impl std::fmt::Display for StaticTypeError {
                 f,
                 "StaticTypeError: cannot assign to immutable variable '{name}'"
             ),
+            TypeErrorKind::CallArgCountMismatch { func_name, expected, got } => write!(
+                f,
+                "StaticTypeError: '{func_name}' takes {expected} argument(s) but {got} were given"
+            ),
+            TypeErrorKind::CallArgTypeMismatch { func_name, param_index, expected, got } => write!(
+                f,
+                "StaticTypeError: argument {param_index} of '{func_name}' expects '{expected}' but got '{got}'"
+            ),
+            TypeErrorKind::MissingParamTypeAnn { func_name, param_name } => write!(
+                f,
+                "StaticTypeError: parameter '{param_name}' of function '{func_name}' is missing a type annotation"
+            ),
+            TypeErrorKind::MissingReturnTypeAnn { func_name } => write!(
+                f,
+                "StaticTypeError: function '{func_name}' is missing a return type annotation"
+            ),
+            TypeErrorKind::UnknownKeywordArg { func_name, arg_name } => write!(
+                f,
+                "StaticTypeError: '{func_name}' has no parameter named '{arg_name}'"
+            ),
         }
     }
 }
@@ -108,19 +168,42 @@ struct VarInfo {
 pub struct TypeChecker {
     // Innermost scope is last; lookup searches back-to-front.
     scopes: Vec<HashMap<String, VarInfo>>,
+    /// Function signatures collected in a pre-pass so forward calls can be checked.
+    fn_sigs: HashMap<String, FnSig>,
     pub errors: Vec<StaticTypeError>,
 }
 
 impl TypeChecker {
     pub fn new() -> Self {
-        Self { scopes: vec![HashMap::new()], errors: Vec::new() }
+        Self { scopes: vec![HashMap::new()], fn_sigs: HashMap::new(), errors: Vec::new() }
     }
 
     /// Run static type checking over a full program; returns collected errors.
     pub fn check(stmts: &[Stmt]) -> Vec<StaticTypeError> {
         let mut tc = Self::new();
+        tc.collect_fn_sigs(stmts);
         tc.check_stmts(stmts);
         tc.errors
+    }
+
+    /// Pre-pass: register all FnDef signatures so calls can be validated regardless of order.
+    fn collect_fn_sigs(&mut self, stmts: &[Stmt]) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::FnDef { name, params, return_type, body } => {
+                    let sig = FnSig {
+                        params: params.iter()
+                            .map(|p| (p.name.clone(), p.type_ann.as_deref().and_then(InferredType::from_ann)))
+                            .collect(),
+                        return_type: return_type.as_deref().and_then(InferredType::from_ann),
+                    };
+                    self.fn_sigs.insert(name.clone(), sig);
+                    self.collect_fn_sigs(body);
+                }
+                Stmt::ClassDef { body, .. } => self.collect_fn_sigs(body),
+                _ => {}
+            }
+        }
     }
 
     // --- Scope helpers ---
@@ -189,6 +272,10 @@ impl TypeChecker {
                 self.infer(target);
                 self.infer(value);
             }
+            Stmt::AttrCompoundAssign { target, op: _, value } => {
+                self.infer(target);
+                self.infer(value);
+            }
             Stmt::Expr(expr) => {
                 self.infer(expr);
             }
@@ -224,11 +311,34 @@ impl TypeChecker {
                 self.check_stmts(body);
                 self.pop_scope();
             }
-            Stmt::FnDef { name, params, body } => {
+            Stmt::FnDef { name, params, return_type, body } => {
+                // Check for missing type annotations on parameters (skip `self`).
+                for param in params.iter() {
+                    if param.name == "self" { continue; }
+                    if param.type_ann.is_none() {
+                        self.emit(StaticTypeError {
+                            kind: TypeErrorKind::MissingParamTypeAnn {
+                                func_name: name.clone(),
+                                param_name: param.name.clone(),
+                            },
+                            span: None,
+                        });
+                    }
+                }
+                // Check for missing return type annotation.
+                if return_type.is_none() {
+                    self.emit(StaticTypeError {
+                        kind: TypeErrorKind::MissingReturnTypeAnn { func_name: name.clone() },
+                        span: None,
+                    });
+                }
                 self.declare(name.clone(), InferredType::Unknown, false);
                 self.push_scope();
                 for param in params {
-                    self.declare(param.name.clone(), InferredType::Unknown, param.mutable);
+                    let ty = param.type_ann.as_deref()
+                        .and_then(InferredType::from_ann)
+                        .unwrap_or(InferredType::Unknown);
+                    self.declare(param.name.clone(), ty, param.mutable);
                 }
                 self.check_stmts(body);
                 self.pop_scope();
@@ -266,11 +376,98 @@ impl TypeChecker {
                 InferredType::Unknown
             }
             Expr::Call { func, args } => {
+                // Capture function name before mutably borrowing self for infer calls.
+                let func_name = if let Expr::Ident(name) = func.as_ref() {
+                    Some(name.clone())
+                } else {
+                    None
+                };
                 self.infer(func);
-                for arg in args {
-                    self.infer(arg);
+
+                // Collect (keyword_name, inferred_type) for each argument.
+                let mut arg_data: Vec<(Option<String>, InferredType)> = Vec::new();
+                for arg in args.iter() {
+                    match arg {
+                        CallArg::Positional(e) => arg_data.push((None, self.infer(e))),
+                        CallArg::Keyword { name, value } => {
+                            arg_data.push((Some(name.clone()), self.infer(value)))
+                        }
+                    }
                 }
-                InferredType::Unknown
+
+                if let Some(ref fname) = func_name {
+                    if let Some(sig) = self.fn_sigs.get(fname).cloned() {
+                        if arg_data.len() != sig.params.len() {
+                            self.emit(StaticTypeError {
+                                kind: TypeErrorKind::CallArgCountMismatch {
+                                    func_name: fname.clone(),
+                                    expected: sig.params.len(),
+                                    got: arg_data.len(),
+                                },
+                                span: None,
+                            });
+                        } else {
+                            let mut positional_idx = 0usize;
+                            for (key, arg_ty) in &arg_data {
+                                match key {
+                                    // ── keyword argument ──────────────────────
+                                    Some(kwarg_name) => {
+                                        match sig.params.iter().position(|(n, _)| n == kwarg_name) {
+                                            None => self.emit(StaticTypeError {
+                                                kind: TypeErrorKind::UnknownKeywordArg {
+                                                    func_name: fname.clone(),
+                                                    arg_name: kwarg_name.clone(),
+                                                },
+                                                span: None,
+                                            }),
+                                            Some(param_pos) => {
+                                                if let Some(expected) = &sig.params[param_pos].1 {
+                                                    if *arg_ty != InferredType::Unknown && arg_ty != expected {
+                                                        self.emit(StaticTypeError {
+                                                            kind: TypeErrorKind::CallArgTypeMismatch {
+                                                                func_name: fname.clone(),
+                                                                param_index: param_pos,
+                                                                expected: expected.clone(),
+                                                                got: arg_ty.clone(),
+                                                            },
+                                                            span: None,
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // ── positional argument ───────────────────
+                                    None => {
+                                        if let Some((_, param_ty)) = sig.params.get(positional_idx) {
+                                            if let Some(expected) = param_ty {
+                                                if *arg_ty != InferredType::Unknown && arg_ty != expected {
+                                                    self.emit(StaticTypeError {
+                                                        kind: TypeErrorKind::CallArgTypeMismatch {
+                                                            func_name: fname.clone(),
+                                                            param_index: positional_idx,
+                                                            expected: expected.clone(),
+                                                            got: arg_ty.clone(),
+                                                        },
+                                                        span: None,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        positional_idx += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Return type from signature if known, else Unknown.
+                func_name
+                    .as_deref()
+                    .and_then(|n| self.fn_sigs.get(n))
+                    .and_then(|sig| sig.return_type.clone())
+                    .unwrap_or(InferredType::Unknown)
             }
             Expr::Ident(name) => {
                 self.lookup(name).map(|v| v.ty.clone()).unwrap_or(InferredType::Unknown)
@@ -480,12 +677,15 @@ mod tests {
         assert!(ok(r#"True != "x""#));
     }
 
-    // Unknown on either side → deferred to runtime, no error
+    // Unknown on either side → deferred to runtime, no IncompatibleComparison error
     #[test]
     fn unknown_param_comparison_ok() {
-        // fn params are inferred as Unknown; comparing with any type is allowed.
-        assert!(ok("fn f(x):\n    x < 1\n"));
-        assert!(ok("fn f(x):\n    x < \"hello\"\n"));
+        // Unannotated params produce MissingParamTypeAnn / MissingReturnTypeAnn errors,
+        // but NOT IncompatibleComparison errors — comparison is deferred to runtime.
+        let errors = check("fn f(x):\n    x < 1\n");
+        assert!(!errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::IncompatibleComparison { .. })));
+        let errors = check("fn f(x):\n    x < \"hello\"\n");
+        assert!(!errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::IncompatibleComparison { .. })));
     }
 
     #[test]
@@ -516,5 +716,166 @@ mod tests {
         assert!(errors[0].to_string().contains("StaticTypeError"));
         assert!(errors[0].to_string().contains("str"));
         assert!(errors[0].to_string().contains("int"));
+    }
+
+    // --- Function call argument checking ---
+
+    #[test]
+    fn call_correct_types_ok() {
+        assert!(ok("fn add(a: int, b: int) -> int:\n    pass\nadd(1, 2)\n"));
+    }
+
+    #[test]
+    fn call_arg_type_mismatch_err() {
+        assert!(err("fn add(a: int, b: int) -> int:\n    pass\nadd(1, \"hello\")\n"));
+    }
+
+    #[test]
+    fn call_arg_count_too_few_err() {
+        assert!(err("fn add(a: int, b: int) -> int:\n    pass\nadd(1)\n"));
+    }
+
+    #[test]
+    fn call_arg_count_too_many_err() {
+        assert!(err("fn add(a: int, b: int) -> int:\n    pass\nadd(1, 2, 3)\n"));
+    }
+
+    #[test]
+    fn call_no_annotation_no_type_mismatch() {
+        // Unannotated params still do NOT produce CallArgTypeMismatch — type check is deferred.
+        // (MissingParamTypeAnn / MissingReturnTypeAnn errors ARE produced.)
+        let errors = check("fn f(x, y):\n    pass\nf(1, \"hello\")\n");
+        assert!(!errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+    }
+
+    #[test]
+    fn call_unknown_arg_skipped_ok() {
+        // If the argument type is Unknown (e.g. a variable without annotation),
+        // the check is deferred to runtime.
+        assert!(ok("fn add(a: int, b: int) -> int:\n    pass\nmut x = 1\nadd(x, x)\n"));
+    }
+
+    #[test]
+    fn call_forward_definition_checked() {
+        // Call appears before fn definition — pre-pass must still catch the error.
+        assert!(err("add(1, \"oops\")\nfn add(a: int, b: int) -> int:\n    pass\n"));
+    }
+
+    #[test]
+    fn call_return_type_inferred() {
+        // Return type from annotation flows into inferred type of the call expression.
+        // Assigning it to a variable and using in an ordering comparison should be fine.
+        assert!(ok("fn get_int() -> int:\n    pass\nlet v = get_int()\nv < 10\n"));
+    }
+
+    #[test]
+    fn error_display_call_count() {
+        // Return type annotated to avoid MissingReturnTypeAnn noise.
+        let errors = check("fn f(a: int, b: int) -> None:\n    pass\nf(1)\n");
+        let msg = errors[0].to_string();
+        assert!(msg.contains("StaticTypeError"));
+        assert!(msg.contains("'f'"));
+        assert!(msg.contains("2"));
+        assert!(msg.contains("1"));
+    }
+
+    #[test]
+    fn error_display_call_type() {
+        let errors = check("fn f(a: int) -> None:\n    pass\nf(\"hello\")\n");
+        let msg = errors[0].to_string();
+        assert!(msg.contains("StaticTypeError"));
+        assert!(msg.contains("'f'"));
+        assert!(msg.contains("int"));
+        assert!(msg.contains("str"));
+    }
+
+    // --- Missing type annotation ---
+
+    #[test]
+    fn fn_fully_annotated_ok() {
+        assert!(ok("fn add(a: int, b: int) -> int:\n    pass\n"));
+    }
+
+    #[test]
+    fn fn_missing_param_ann_err() {
+        assert!(err("fn f(x) -> int:\n    pass\n"));
+    }
+
+    #[test]
+    fn fn_missing_return_ann_err() {
+        assert!(err("fn f(x: int):\n    pass\n"));
+    }
+
+    #[test]
+    fn fn_missing_both_ann_err() {
+        let errors = check("fn f(x):\n    pass\n");
+        // Expects MissingParamTypeAnn for x AND MissingReturnTypeAnn for f.
+        assert_eq!(errors.len(), 2);
+    }
+
+    #[test]
+    fn fn_multiple_missing_params_err() {
+        let errors = check("fn f(a, b, c) -> int:\n    pass\n");
+        // One MissingParamTypeAnn per unannotated parameter.
+        assert_eq!(errors.len(), 3);
+    }
+
+    #[test]
+    fn fn_no_params_missing_return_err() {
+        assert!(err("fn greet():\n    pass\n"));
+    }
+
+    #[test]
+    fn error_display_missing_param_ann() {
+        let errors = check("fn f(x) -> int:\n    pass\n");
+        let msg = errors[0].to_string();
+        assert!(msg.contains("StaticTypeError"));
+        assert!(msg.contains("'x'"));
+        assert!(msg.contains("'f'"));
+    }
+
+    #[test]
+    fn error_display_missing_return_ann() {
+        let errors = check("fn f(x: int):\n    pass\n");
+        let msg = errors[0].to_string();
+        assert!(msg.contains("StaticTypeError"));
+        assert!(msg.contains("'f'"));
+    }
+
+    // --- Keyword arguments ---
+
+    #[test]
+    fn kwarg_correct_ok() {
+        assert!(ok("fn f(a: int, b: str) -> None:\n    pass\nf(a=1, b=\"hi\")\n"));
+    }
+
+    #[test]
+    fn kwarg_reversed_order_ok() {
+        // Keyword args may appear in any order.
+        assert!(ok("fn f(a: int, b: str) -> None:\n    pass\nf(b=\"hi\", a=1)\n"));
+    }
+
+    #[test]
+    fn kwarg_unknown_name_err() {
+        assert!(err("fn f(a: int, b: int) -> None:\n    pass\nf(a=1, z=2)\n"));
+    }
+
+    #[test]
+    fn kwarg_type_mismatch_err() {
+        assert!(err("fn f(a: int) -> None:\n    pass\nf(a=\"hello\")\n"));
+    }
+
+    #[test]
+    fn kwarg_mixed_positional_keyword_ok() {
+        assert!(ok("fn f(a: int, b: str) -> None:\n    pass\nf(1, b=\"hi\")\n"));
+    }
+
+    #[test]
+    fn error_display_unknown_kwarg() {
+        let errors = check("fn f(a: int) -> None:\n    pass\nf(z=1)\n");
+        let msg = errors[0].to_string();
+        assert!(msg.contains("StaticTypeError"));
+        assert!(msg.contains("'f'"));
+        assert!(msg.contains("'z'"));
     }
 }

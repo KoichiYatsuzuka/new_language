@@ -172,15 +172,15 @@ class Animal:
 
 class Dog(Animal):
     mut name = ""
-    fn __init__(mut self, name: str):
+    fn __init__(mut self, name: str) -> None:
         self.name = name
     fn speak(self) -> str:
         return "Woof!"
-    fn fetch(mut self, item: str):
+    fn fetch(mut self, item: str) -> None:
         pass
 
 class Stack:
-    fn push(mut self, item: int):
+    fn push(mut self, item: int) -> None:
         pass
     fn pop(mut self) -> int:
         pass

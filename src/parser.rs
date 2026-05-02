@@ -1,4 +1,4 @@
-use crate::ast::{BinOp, Expr, Param, Stmt, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, Param, Stmt, UnaryOp};
 use crate::token::{Span, Spanned, Token};
 
 pub struct Parser {
@@ -196,13 +196,26 @@ impl Parser {
                 Token::LtLtEq => self.parse_compound(BinOp::LShift),
                 Token::GtGtEq => self.parse_compound(BinOp::RShift),
                 _ => {
-                    // May be: expression statement or attribute assignment (self.x = v)
+                    // May be: expr stmt, attr assign (self.x = v), or attr compound (self.x += v)
                     let expr = self.parse_expr()?;
-                    if *self.current() == Token::Eq {
-                        self.advance();
-                        Ok(Stmt::AttrAssign { target: expr, value: self.parse_expr()? })
-                    } else {
-                        Ok(Stmt::Expr(expr))
+                    match self.current().clone() {
+                        Token::Eq => {
+                            self.advance();
+                            Ok(Stmt::AttrAssign { target: expr, value: self.parse_expr()? })
+                        }
+                        Token::PlusEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::Add,      value: self.parse_expr()? }) }
+                        Token::MinusEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::Sub,      value: self.parse_expr()? }) }
+                        Token::StarEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::Mul,      value: self.parse_expr()? }) }
+                        Token::SlashEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::Div,     value: self.parse_expr()? }) }
+                        Token::SlashSlashEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::FloorDiv, value: self.parse_expr()? }) }
+                        Token::PercentEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::Mod,   value: self.parse_expr()? }) }
+                        Token::StarStarEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::Pow,  value: self.parse_expr()? }) }
+                        Token::AmpEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::BitAnd,   value: self.parse_expr()? }) }
+                        Token::PipeEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::BitOr,   value: self.parse_expr()? }) }
+                        Token::CaretEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::BitXor, value: self.parse_expr()? }) }
+                        Token::LtLtEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::LShift,  value: self.parse_expr()? }) }
+                        Token::GtGtEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::RShift,  value: self.parse_expr()? }) }
+                        _ => Ok(Stmt::Expr(expr)),
                     }
                 }
             },
@@ -232,13 +245,15 @@ impl Parser {
         }
         self.eat(&Token::RParen)?;
         // Optional return type: -> Type
-        if *self.current() == Token::Arrow {
+        let return_type = if *self.current() == Token::Arrow {
             self.advance();
-            self.skip_type_expr()?;
-        }
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
         self.eat(&Token::Colon)?;
         let body = self.parse_block()?;
-        Ok(Stmt::FnDef { name, params, body })
+        Ok(Stmt::FnDef { name, params, return_type, body })
     }
 
     fn parse_class_def(&mut self) -> Result<Stmt, String> {
@@ -271,18 +286,25 @@ impl Parser {
             false
         };
         let name = self.expect_ident()?;
-        // Skip optional type annotation: : Type
-        if *self.current() == Token::Colon {
+        // Capture optional type annotation: : Type
+        let type_ann = if *self.current() == Token::Colon {
             self.advance();
-            self.skip_type_expr()?;
-        }
-        Ok(Param { name, mutable })
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
+        Ok(Param { name, mutable, type_ann })
     }
 
-    // Skips a type expression of the form: Ident [ '[' ... ']' ]
-    fn skip_type_expr(&mut self) -> Result<(), String> {
-        self.expect_ident()?;
-        // Optional generic parameters: list[int], dict[str, int], etc.
+    // Parses a type expression and returns the base type name (generic args are skipped).
+    // Accepts identifiers and keyword-tokens that are valid type names (e.g. `None`).
+    fn parse_type_expr(&mut self) -> Result<String, String> {
+        let base = match self.current().clone() {
+            Token::Ident(name) => { self.advance(); name }
+            Token::None => { self.advance(); "None".to_string() }
+            tok => return Err(format!("expected type name, got `{tok}`")),
+        };
+        // Skip optional generic parameters: list[int], dict[str, int], etc.
         if *self.current() == Token::LBracket {
             self.advance();
             let mut depth = 1usize;
@@ -295,7 +317,7 @@ impl Parser {
                 self.advance();
             }
         }
-        Ok(())
+        Ok(base)
     }
 
     fn expect_ident(&mut self) -> Result<String, String> {
@@ -497,7 +519,20 @@ impl Parser {
                     self.advance(); // consume `(`
                     let mut args = Vec::new();
                     while *self.current() != Token::RParen && *self.current() != Token::Eof {
-                        args.push(self.parse_expr()?);
+                        // Keyword argument: Ident `=` expr  (not `==`)
+                        let arg = if let Token::Ident(name) = self.current().clone() {
+                            if *self.peek1() == Token::Eq {
+                                let name = name.clone();
+                                self.advance(); // consume Ident
+                                self.advance(); // consume `=`
+                                CallArg::Keyword { name, value: self.parse_expr()? }
+                            } else {
+                                CallArg::Positional(self.parse_expr()?)
+                            }
+                        } else {
+                            CallArg::Positional(self.parse_expr()?)
+                        };
+                        args.push(arg);
                         if *self.current() == Token::Comma {
                             self.advance();
                         } else {
@@ -817,6 +852,44 @@ mod tests {
             assert_eq!(branches[0].1.len(), 2);
         } else {
             panic!("expected If");
+        }
+    }
+
+    // --- keyword arguments ---
+
+    #[test]
+    fn test_call_positional_args() {
+        let stmts = parse("f(1, 2)");
+        if let Stmt::Expr(Expr::Call { args, .. }) = &stmts[0] {
+            assert_eq!(args.len(), 2);
+            assert!(matches!(&args[0], CallArg::Positional(_)));
+            assert!(matches!(&args[1], CallArg::Positional(_)));
+        } else {
+            panic!("expected Call");
+        }
+    }
+
+    #[test]
+    fn test_call_keyword_arg() {
+        let stmts = parse("f(x=1, y=2)");
+        if let Stmt::Expr(Expr::Call { args, .. }) = &stmts[0] {
+            assert_eq!(args.len(), 2);
+            assert!(matches!(&args[0], CallArg::Keyword { name, .. } if name == "x"));
+            assert!(matches!(&args[1], CallArg::Keyword { name, .. } if name == "y"));
+        } else {
+            panic!("expected Call");
+        }
+    }
+
+    #[test]
+    fn test_call_mixed_args() {
+        let stmts = parse("f(1, y=2)");
+        if let Stmt::Expr(Expr::Call { args, .. }) = &stmts[0] {
+            assert_eq!(args.len(), 2);
+            assert!(matches!(&args[0], CallArg::Positional(_)));
+            assert!(matches!(&args[1], CallArg::Keyword { name, .. } if name == "y"));
+        } else {
+            panic!("expected Call");
         }
     }
 }

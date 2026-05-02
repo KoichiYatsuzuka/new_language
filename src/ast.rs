@@ -2,10 +2,26 @@
 
 use crate::token::Span;
 
+/// A single argument in a function call: positional or keyword (`name=value`).
+#[derive(Debug, Clone)]
+pub enum CallArg {
+    Positional(Expr),
+    Keyword { name: String, value: Expr },
+}
+
+impl CallArg {
+    pub fn expr(&self) -> &Expr {
+        match self {
+            Self::Positional(e) | Self::Keyword { value: e, .. } => e,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
     pub mutable: bool,
+    pub type_ann: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,7 +51,7 @@ pub enum Expr {
     Attr { object: Box<Expr>, attr: String }, // obj.attr
     BinOp { op: BinOp, left: Box<Expr>, right: Box<Expr>, span: Span },
     UnaryOp { op: UnaryOp, operand: Box<Expr> },
-    Call { func: Box<Expr>, args: Vec<Expr> },
+    Call { func: Box<Expr>, args: Vec<CallArg> },
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +62,7 @@ pub enum Stmt {
     Mut(String, Expr),                    // mut x = expr    (mutable)
     Assign { name: String, value: Expr, span: Span },                       // x = expr
     AttrAssign { target: Expr, value: Expr },                                // obj.attr = expr
+    AttrCompoundAssign { target: Expr, op: BinOp, value: Expr },            // obj.attr += expr
     CompoundAssign { name: String, op: BinOp, value: Expr, span: Span },    // x += expr
     If {
         branches: Vec<(Expr, Vec<Stmt>)>, // (condition, body) — if + elif arms
@@ -70,6 +87,7 @@ pub enum Stmt {
     FnDef {
         name: String,
         params: Vec<Param>,
+        return_type: Option<String>,
         body: Vec<Stmt>,
     },
     ClassDef {
