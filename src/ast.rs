@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use crate::token::Span;
+
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
@@ -31,7 +33,7 @@ pub enum Expr {
     Ident(String),
     List(Vec<Expr>),
     Attr { object: Box<Expr>, attr: String }, // obj.attr
-    BinOp { op: BinOp, left: Box<Expr>, right: Box<Expr> },
+    BinOp { op: BinOp, left: Box<Expr>, right: Box<Expr>, span: Span },
     UnaryOp { op: UnaryOp, operand: Box<Expr> },
     Call { func: Box<Expr>, args: Vec<Expr> },
 }
@@ -42,9 +44,9 @@ pub enum Stmt {
     Let(String, Expr),                    // let x = expr   (immutable)
     Const(String, Expr),                  // const X = expr  (immutable)
     Mut(String, Expr),                    // mut x = expr    (mutable)
-    Assign(String, Expr),                 // x = expr
-    AttrAssign { target: Expr, value: Expr }, // obj.attr = expr
-    CompoundAssign(String, BinOp, Expr),  // x += expr
+    Assign { name: String, value: Expr, span: Span },                       // x = expr
+    AttrAssign { target: Expr, value: Expr },                                // obj.attr = expr
+    CompoundAssign { name: String, op: BinOp, value: Expr, span: Span },    // x += expr
     If {
         branches: Vec<(Expr, Vec<Stmt>)>, // (condition, body) — if + elif arms
         else_body: Option<Vec<Stmt>>,

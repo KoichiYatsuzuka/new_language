@@ -102,8 +102,8 @@ impl Interpreter {
                 self.declare_var(name.clone(), Var { value, mutable: true });
                 Ok(ExecResult::Normal)
             }
-            Stmt::Assign(name, expr) => {
-                let value = self.eval(expr)?;
+            Stmt::Assign { name, value, .. } => {
+                let value = self.eval(value)?;
                 self.assign_var(name, value)?;
                 Ok(ExecResult::Normal)
             }
@@ -111,8 +111,8 @@ impl Interpreter {
                 // TODO: attribute assignment (needs object system)
                 Ok(ExecResult::Normal)
             }
-            Stmt::CompoundAssign(name, op, expr) => {
-                let rhs = self.eval(expr)?;
+            Stmt::CompoundAssign { name, op, value, .. } => {
+                let rhs = self.eval(value)?;
                 let lhs = match self.get_var(name) {
                     Some(v) if !v.mutable => {
                         return Err(format!(
@@ -255,7 +255,7 @@ impl Interpreter {
                 let val = self.eval(operand)?;
                 self.apply_unary(op, val)
             }
-            Expr::BinOp { op, left, right } => {
+            Expr::BinOp { op, left, right, .. } => {
                 match op {
                     BinOp::And => {
                         let lv = self.eval(left)?;
@@ -476,7 +476,7 @@ mod tests {
     use crate::parser::Parser;
 
     fn run(src: &str) -> Result<(), String> {
-        let tokens = Lexer::new(src, "").tokenize().into_iter().map(|s| s.token).collect();
+        let tokens = Lexer::new(src, "").tokenize();
         let stmts = Parser::new(tokens).parse_program()?;
         let mut interp = Interpreter::new();
         for stmt in &stmts {
@@ -486,7 +486,7 @@ mod tests {
     }
 
     fn eval(src: &str) -> Value {
-        let tokens = Lexer::new(src, "").tokenize().into_iter().map(|s| s.token).collect();
+        let tokens = Lexer::new(src, "").tokenize();
         let stmts = Parser::new(tokens).parse_program().unwrap();
         let mut interp = Interpreter::new();
         interp.eval(match &stmts[0] {
@@ -496,7 +496,7 @@ mod tests {
     }
 
     fn run_get(src: &str, var: &str) -> Value {
-        let tokens = Lexer::new(src, "").tokenize().into_iter().map(|s| s.token).collect();
+        let tokens = Lexer::new(src, "").tokenize();
         let stmts = Parser::new(tokens).parse_program().unwrap();
         let mut interp = Interpreter::new();
         for stmt in &stmts {

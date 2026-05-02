@@ -1,22 +1,26 @@
 use crate::ast::{BinOp, Expr, Param, Stmt, UnaryOp};
-use crate::token::Token;
+use crate::token::{Span, Spanned, Token};
 
 pub struct Parser {
-    tokens: Vec<Token>,
+    tokens: Vec<Spanned>,
     pos: usize,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
+    pub fn new(tokens: Vec<Spanned>) -> Self {
         Self { tokens, pos: 0 }
     }
 
     fn current(&self) -> &Token {
-        self.tokens.get(self.pos).unwrap_or(&Token::Eof)
+        self.tokens.get(self.pos).map(|s| &s.token).unwrap_or(&Token::Eof)
     }
 
     fn peek1(&self) -> &Token {
-        self.tokens.get(self.pos + 1).unwrap_or(&Token::Eof)
+        self.tokens.get(self.pos + 1).map(|s| &s.token).unwrap_or(&Token::Eof)
+    }
+
+    fn current_span(&self) -> Span {
+        self.tokens.get(self.pos).map(|s| s.span.clone()).unwrap_or_else(Span::unknown)
     }
 
     fn advance(&mut self) {
@@ -174,9 +178,10 @@ impl Parser {
             Token::Class => self.parse_class_def(),
             Token::Ident(_) => match self.peek1().clone() {
                 Token::Eq => {
+                    let span = self.current_span();
                     let name = self.expect_ident()?;
                     self.advance(); // consume `=`
-                    Ok(Stmt::Assign(name, self.parse_expr()?))
+                    Ok(Stmt::Assign { name, value: self.parse_expr()?, span })
                 }
                 Token::PlusEq => self.parse_compound(BinOp::Add),
                 Token::MinusEq => self.parse_compound(BinOp::Sub),
@@ -206,9 +211,10 @@ impl Parser {
     }
 
     fn parse_compound(&mut self, op: BinOp) -> Result<Stmt, String> {
+        let span = self.current_span(); // span of the variable identifier
         let name = self.expect_ident()?;
         self.advance(); // consume the compound-assignment operator
-        Ok(Stmt::CompoundAssign(name, op, self.parse_expr()?))
+        Ok(Stmt::CompoundAssign { name, op, value: self.parse_expr()?, span })
     }
 
     fn parse_fn_def(&mut self) -> Result<Stmt, String> {
@@ -310,9 +316,10 @@ impl Parser {
     fn parse_or(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_and()?;
         while *self.current() == Token::Or {
+            let span = self.current_span();
             self.advance();
             let right = self.parse_and()?;
-            left = Expr::BinOp { op: BinOp::Or, left: Box::new(left), right: Box::new(right) };
+            left = Expr::BinOp { op: BinOp::Or, left: Box::new(left), right: Box::new(right), span };
         }
         Ok(left)
     }
@@ -320,9 +327,10 @@ impl Parser {
     fn parse_and(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_not()?;
         while *self.current() == Token::And {
+            let span = self.current_span();
             self.advance();
             let right = self.parse_not()?;
-            left = Expr::BinOp { op: BinOp::And, left: Box::new(left), right: Box::new(right) };
+            left = Expr::BinOp { op: BinOp::And, left: Box::new(left), right: Box::new(right), span };
         }
         Ok(left)
     }
@@ -338,6 +346,7 @@ impl Parser {
 
     fn parse_comparison(&mut self) -> Result<Expr, String> {
         let left = self.parse_bitor()?;
+        let span = self.current_span();
         let op = match self.current() {
             Token::EqEq => Some(BinOp::Eq),
             Token::NotEq => Some(BinOp::NotEq),
@@ -350,7 +359,7 @@ impl Parser {
         if let Some(op) = op {
             self.advance();
             let right = self.parse_bitor()?;
-            return Ok(Expr::BinOp { op, left: Box::new(left), right: Box::new(right) });
+            return Ok(Expr::BinOp { op, left: Box::new(left), right: Box::new(right), span });
         }
         Ok(left)
     }
@@ -358,9 +367,10 @@ impl Parser {
     fn parse_bitor(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_bitxor()?;
         while *self.current() == Token::Pipe {
+            let span = self.current_span();
             self.advance();
             let right = self.parse_bitxor()?;
-            left = Expr::BinOp { op: BinOp::BitOr, left: Box::new(left), right: Box::new(right) };
+            left = Expr::BinOp { op: BinOp::BitOr, left: Box::new(left), right: Box::new(right), span };
         }
         Ok(left)
     }
@@ -368,9 +378,10 @@ impl Parser {
     fn parse_bitxor(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_bitand()?;
         while *self.current() == Token::Caret {
+            let span = self.current_span();
             self.advance();
             let right = self.parse_bitand()?;
-            left = Expr::BinOp { op: BinOp::BitXor, left: Box::new(left), right: Box::new(right) };
+            left = Expr::BinOp { op: BinOp::BitXor, left: Box::new(left), right: Box::new(right), span };
         }
         Ok(left)
     }
@@ -378,9 +389,10 @@ impl Parser {
     fn parse_bitand(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_shift()?;
         while *self.current() == Token::Amp {
+            let span = self.current_span();
             self.advance();
             let right = self.parse_shift()?;
-            left = Expr::BinOp { op: BinOp::BitAnd, left: Box::new(left), right: Box::new(right) };
+            left = Expr::BinOp { op: BinOp::BitAnd, left: Box::new(left), right: Box::new(right), span };
         }
         Ok(left)
     }
@@ -388,6 +400,7 @@ impl Parser {
     fn parse_shift(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_additive()?;
         loop {
+            let span = self.current_span();
             let op = match self.current() {
                 Token::LtLt => Some(BinOp::LShift),
                 Token::GtGt => Some(BinOp::RShift),
@@ -396,7 +409,7 @@ impl Parser {
             if let Some(op) = op {
                 self.advance();
                 let right = self.parse_additive()?;
-                left = Expr::BinOp { op, left: Box::new(left), right: Box::new(right) };
+                left = Expr::BinOp { op, left: Box::new(left), right: Box::new(right), span };
             } else {
                 break;
             }
@@ -407,6 +420,7 @@ impl Parser {
     fn parse_additive(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_multiplicative()?;
         loop {
+            let span = self.current_span();
             let op = match self.current() {
                 Token::Plus => Some(BinOp::Add),
                 Token::Minus => Some(BinOp::Sub),
@@ -415,7 +429,7 @@ impl Parser {
             if let Some(op) = op {
                 self.advance();
                 let right = self.parse_multiplicative()?;
-                left = Expr::BinOp { op, left: Box::new(left), right: Box::new(right) };
+                left = Expr::BinOp { op, left: Box::new(left), right: Box::new(right), span };
             } else {
                 break;
             }
@@ -426,6 +440,7 @@ impl Parser {
     fn parse_multiplicative(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_unary()?;
         loop {
+            let span = self.current_span();
             let op = match self.current() {
                 Token::Star => Some(BinOp::Mul),
                 Token::Slash => Some(BinOp::Div),
@@ -436,7 +451,7 @@ impl Parser {
             if let Some(op) = op {
                 self.advance();
                 let right = self.parse_unary()?;
-                left = Expr::BinOp { op, left: Box::new(left), right: Box::new(right) };
+                left = Expr::BinOp { op, left: Box::new(left), right: Box::new(right), span };
             } else {
                 break;
             }
@@ -465,9 +480,10 @@ impl Parser {
     fn parse_power(&mut self) -> Result<Expr, String> {
         let base = self.parse_call()?;
         if *self.current() == Token::StarStar {
+            let span = self.current_span();
             self.advance();
             let exp = self.parse_unary()?; // right-associative
-            Ok(Expr::BinOp { op: BinOp::Pow, left: Box::new(base), right: Box::new(exp) })
+            Ok(Expr::BinOp { op: BinOp::Pow, left: Box::new(base), right: Box::new(exp), span })
         } else {
             Ok(base)
         }
@@ -542,7 +558,7 @@ mod tests {
     use crate::lexer::Lexer;
 
     fn parse(src: &str) -> Vec<Stmt> {
-        let tokens = Lexer::new(src, "").tokenize().into_iter().map(|s| s.token).collect();
+        let tokens = Lexer::new(src, "").tokenize();
         Parser::new(tokens).parse_program().expect("parse error")
     }
 
@@ -567,7 +583,7 @@ mod tests {
     #[test]
     fn test_assign() {
         let stmts = parse("mut x = 0\nx = 5");
-        assert!(matches!(&stmts[1], Stmt::Assign(name, Expr::Int(5)) if name == "x"));
+        assert!(matches!(&stmts[1], Stmt::Assign { name, value: Expr::Int(5), .. } if name == "x"));
     }
 
     #[test]
@@ -575,7 +591,7 @@ mod tests {
         let stmts = parse("mut x = 0\nx += 1");
         assert!(matches!(
             &stmts[1],
-            Stmt::CompoundAssign(name, BinOp::Add, Expr::Int(1)) if name == "x"
+            Stmt::CompoundAssign { name, op: BinOp::Add, value: Expr::Int(1), .. } if name == "x"
         ));
     }
 
