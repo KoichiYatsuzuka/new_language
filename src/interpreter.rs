@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::{BinOp, CallArg, Expr, Param, Stmt, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, UnaryOp};
 
 // ---------------------------------------------------------------------------
 // Function / Class / Instance value types
@@ -18,9 +18,15 @@ pub struct FnValue {
 pub struct ClassValue {
     name: String,
     bases: Vec<String>,
-    methods: HashMap<String, Rc<FnValue>>,
-    /// Field defaults initialized from `mut`/`let`/`const` statements in class body.
-    field_defaults: Vec<(String, Value, bool)>, // (name, default, mutable)
+    /// Each method name maps to one or more overloads.
+    methods: HashMap<String, Vec<Rc<FnValue>>>,
+    /// Default values for `mut`/`let` instance fields: (name, default, mutable).
+    field_defaults: Vec<(String, Value, bool)>,
+    /// `const` class variables shared by all instances (always immutable).
+    class_vars: HashMap<String, Value>,
+    /// Declared mutability for every instance field (used when first assigning
+    /// fields that have no default value, i.e., not yet in `inst.fields`).
+    field_mutability: HashMap<String, bool>,
 }
 
 #[derive(Debug)]
@@ -43,6 +49,8 @@ pub enum Value {
     None,
     List(Vec<Value>),
     Function(Rc<FnValue>),
+    /// Two or more overloads of the same function name in the same scope.
+    OverloadedFn(Vec<Rc<FnValue>>),
     Class(Rc<ClassValue>),
     Instance(Rc<RefCell<InstanceData>>),
 }
@@ -179,6 +187,7 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::Pass => Ok(ExecResult::Normal),
+            Stmt::Field { .. } => Ok(ExecResult::Normal), // only valid in class bodies
             Stmt::Break => Ok(ExecResult::Break),
             Stmt::Continue => Ok(ExecResult::Continue),
             Stmt::Return(expr) => {
@@ -249,31 +258,48 @@ impl Interpreter {
                 }
             }
             Stmt::FnDef { name, params, body, .. } => {
-                let fn_val = Rc::new(FnValue {
-                    params: params.clone(),
-                    body: body.clone(),
-                });
-                self.declare_var(name.clone(), Var { value: Value::Function(fn_val), mutable: false });
+                let fn_val = Rc::new(FnValue { params: params.clone(), body: body.clone() });
+
+                // Accumulate overloads within the same scope level.
+                let existing = self.scopes.last()
+                    .and_then(|s| s.get(name.as_str()))
+                    .map(|v| v.value.clone());
+                let new_value = match existing {
+                    Some(Value::Function(prev)) => Value::OverloadedFn(vec![prev, fn_val]),
+                    Some(Value::OverloadedFn(mut fns)) => {
+                        fns.push(fn_val);
+                        Value::OverloadedFn(fns)
+                    }
+                    _ => Value::Function(fn_val),
+                };
+                self.scopes.last_mut().unwrap()
+                    .insert(name.clone(), Var { value: new_value, mutable: false });
                 Ok(ExecResult::Normal)
             }
             Stmt::ClassDef { name, bases, body } => {
-                let mut methods = HashMap::new();
+                let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
                 let mut field_defaults = Vec::new();
+                let mut class_vars: HashMap<String, Value> = HashMap::new();
+                let mut field_mutability: HashMap<String, bool> = HashMap::new();
                 for stmt in body {
                     match stmt {
                         Stmt::FnDef { name: mname, params, body: mbody, .. } => {
-                            methods.insert(mname.clone(), Rc::new(FnValue {
+                            methods.entry(mname.clone()).or_default().push(Rc::new(FnValue {
                                 params: params.clone(),
                                 body: mbody.clone(),
                             }));
                         }
-                        Stmt::Mut(fname, init) => {
+                        Stmt::Field { name: fname, kind: FieldKind::Const, default: Some(init), .. } => {
                             let val = self.eval(init)?;
-                            field_defaults.push((fname.clone(), val, true));
+                            class_vars.insert(fname.clone(), val);
                         }
-                        Stmt::Let(fname, init) | Stmt::Const(fname, init) => {
-                            let val = self.eval(init)?;
-                            field_defaults.push((fname.clone(), val, false));
+                        Stmt::Field { name: fname, kind, default, .. } => {
+                            let mutable = *kind == FieldKind::Mut;
+                            field_mutability.insert(fname.clone(), mutable);
+                            if let Some(init) = default {
+                                let val = self.eval(init)?;
+                                field_defaults.push((fname.clone(), val, mutable));
+                            }
                         }
                         _ => {}
                     }
@@ -283,6 +309,8 @@ impl Interpreter {
                     bases: bases.clone(),
                     methods,
                     field_defaults,
+                    class_vars,
+                    field_mutability,
                 });
                 self.declare_var(name.clone(), Var { value: Value::Class(cls), mutable: false });
                 Ok(ExecResult::Normal)
@@ -314,6 +342,13 @@ impl Interpreter {
             let obj_val = self.eval(object)?;
             match obj_val {
                 Value::Instance(inst_rc) => {
+                    let inst_class = inst_rc.borrow().class.clone();
+                    // Reject writes to const class variables
+                    if Self::lookup_class_var(&inst_class, attr).is_some() {
+                        return Err(format!(
+                            "TypeError: cannot assign to class variable '{attr}' (declared const)"
+                        ));
+                    }
                     let mut inst = inst_rc.borrow_mut();
                     if let Some((_, mutable)) = inst.fields.get(attr.as_str()) {
                         if !mutable {
@@ -321,8 +356,13 @@ impl Interpreter {
                                 "TypeError: cannot assign to immutable field '{attr}'"
                             ));
                         }
+                        inst.fields.insert(attr.clone(), (rhs, true));
+                    } else {
+                        // First assignment: honour the declared mutability of the field.
+                        let is_mutable = inst.class.field_mutability
+                            .get(attr.as_str()).copied().unwrap_or(true);
+                        inst.fields.insert(attr.clone(), (rhs, is_mutable));
                     }
-                    inst.fields.insert(attr.clone(), (rhs, true));
                     Ok(())
                 }
                 _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
@@ -334,16 +374,15 @@ impl Interpreter {
 
     // --- Function execution ---
 
-    fn exec_fn(
+    /// Execute a function with pre-evaluated argument list.
+    fn exec_fn_evaled(
         &mut self,
         fn_val: Rc<FnValue>,
-        call_args: &[CallArg],
+        evaled: &[(Option<String>, Value)],
         self_val: Option<Value>,
     ) -> Result<Value, String> {
-        let evaled = self.eval_call_args(call_args)?;
-        let bindings = Self::bind_args(&fn_val.params, &evaled, self_val)?;
+        let bindings = Self::bind_args(&fn_val.params, evaled, self_val)?;
 
-        // Replace all non-global scopes with a fresh function scope.
         let outer_scopes: Vec<_> = self.scopes.drain(1..).collect();
         self.push_scope();
         for (name, val, mutable) in bindings {
@@ -361,6 +400,16 @@ impl Interpreter {
             ExecResult::Break => Err("SyntaxError: 'break' outside loop".to_string()),
             ExecResult::Continue => Err("SyntaxError: 'continue' outside loop".to_string()),
         }
+    }
+
+    fn exec_fn(
+        &mut self,
+        fn_val: Rc<FnValue>,
+        call_args: &[CallArg],
+        self_val: Option<Value>,
+    ) -> Result<Value, String> {
+        let evaled = self.eval_call_args(call_args)?;
+        self.exec_fn_evaled(fn_val, &evaled, self_val)
     }
 
     fn eval_call_args(&mut self, call_args: &[CallArg]) -> Result<Vec<(Option<String>, Value)>, String> {
@@ -430,6 +479,119 @@ impl Interpreter {
         Ok(result)
     }
 
+    // --- Overload dispatch ---
+
+    fn dispatch_overload(
+        &mut self,
+        candidates: Vec<Rc<FnValue>>,
+        args: &[CallArg],
+        self_val: Option<Value>,
+    ) -> Result<Value, String> {
+        let evaled = self.eval_call_args(args)?;
+        self.dispatch_overload_evaled(candidates, evaled, self_val)
+    }
+
+    fn dispatch_overload_evaled(
+        &mut self,
+        candidates: Vec<Rc<FnValue>>,
+        evaled: Vec<(Option<String>, Value)>,
+        self_val: Option<Value>,
+    ) -> Result<Value, String> {
+        let call_count = evaled.len();
+        let has_self = self_val.is_some();
+
+        // Count effective params excluding `self`.
+        let effective_param_count = |f: &FnValue| -> usize {
+            let self_offset = if has_self && f.params.first().map(|p| p.name == "self").unwrap_or(false) { 1 } else { 0 };
+            f.params.len() - self_offset
+        };
+
+        // Filter by argument count.
+        let count_matching: Vec<Rc<FnValue>> = candidates.iter()
+            .filter(|f| effective_param_count(f) == call_count)
+            .cloned()
+            .collect();
+
+        if count_matching.is_empty() {
+            let available: Vec<String> = candidates.iter()
+                .map(|f| effective_param_count(f).to_string())
+                .collect();
+            return Err(format!(
+                "TypeError: no overload takes {} argument(s) (overloads take: {})",
+                call_count, available.join(", ")
+            ));
+        }
+
+        if count_matching.len() == 1 {
+            return self.exec_fn_evaled(count_matching[0].clone(), &evaled, self_val);
+        }
+
+        // Multiple count-matching candidates: try type matching.
+        for candidate in &count_matching {
+            if Self::overload_types_match(candidate, &evaled, &self_val) {
+                return self.exec_fn_evaled(candidate.clone(), &evaled, self_val.clone());
+            }
+        }
+
+        // No exact type match; fall back to the first count-matching candidate.
+        self.exec_fn_evaled(count_matching[0].clone(), &evaled, self_val)
+    }
+
+    /// Returns true when every annotated parameter of `fn_val` matches the corresponding argument value.
+    fn overload_types_match(
+        fn_val: &FnValue,
+        evaled: &[(Option<String>, Value)],
+        self_val: &Option<Value>,
+    ) -> bool {
+        let params = if self_val.is_some() && fn_val.params.first().map(|p| p.name == "self").unwrap_or(false) {
+            &fn_val.params[1..]
+        } else {
+            &fn_val.params[..]
+        };
+
+        // Map each argument to its target parameter slot.
+        let mut slots: Vec<Option<&Value>> = vec![None; params.len()];
+        let mut positional_idx = 0usize;
+
+        for (key, val) in evaled {
+            match key {
+                None => {
+                    if positional_idx >= params.len() { return false; }
+                    slots[positional_idx] = Some(val);
+                    positional_idx += 1;
+                }
+                Some(name) => {
+                    if let Some(pos) = params.iter().position(|p| p.name == *name) {
+                        slots[pos] = Some(val);
+                    } else {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        for (i, slot) in slots.iter().enumerate() {
+            if let (Some(val), Some(ann)) = (slot, &params[i].type_ann) {
+                if !Self::value_matches_ann(val, ann) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn value_matches_ann(val: &Value, ann: &str) -> bool {
+        matches!(
+            (ann, val),
+            ("int",   Value::Int(_))
+            | ("float", Value::Float(_))
+            | ("str",   Value::Str(_))
+            | ("bool",  Value::Bool(_))
+            | ("None",  Value::None)
+            | ("list",  Value::List(_))
+        )
+    }
+
     // --- Class instantiation ---
 
     fn instantiate(&mut self, class: Rc<ClassValue>, call_args: &[CallArg]) -> Result<Value, String> {
@@ -440,8 +602,12 @@ impl Interpreter {
         let inst_rc = Rc::new(RefCell::new(InstanceData { class: class.clone(), fields }));
         let inst_val = Value::Instance(inst_rc);
 
-        if let Some(init_fn) = self.lookup_method_in_class(&class, "__init__") {
-            self.exec_fn(init_fn, call_args, Some(inst_val.clone()))?;
+        if let Some(init_overloads) = self.lookup_method_in_class(&class, "__init__") {
+            if init_overloads.len() == 1 {
+                self.exec_fn(init_overloads[0].clone(), call_args, Some(inst_val.clone()))?;
+            } else {
+                self.dispatch_overload(init_overloads, call_args, Some(inst_val.clone()))?;
+            }
         }
 
         Ok(inst_val)
@@ -456,9 +622,13 @@ impl Interpreter {
         match &obj {
             Value::Instance(inst_rc) => {
                 let class = inst_rc.borrow().class.clone();
-                let method = self.lookup_method_in_class(&class, method_name)
+                let overloads = self.lookup_method_in_class(&class, method_name)
                     .ok_or_else(|| format!("AttributeError: '{}' has no method '{method_name}'", class.name))?;
-                self.exec_fn(method, args, Some(obj.clone()))
+                if overloads.len() == 1 {
+                    self.exec_fn(overloads[0].clone(), args, Some(obj.clone()))
+                } else {
+                    self.dispatch_overload(overloads, args, Some(obj.clone()))
+                }
             }
             _ => Err(format!(
                 "AttributeError: '{}' object has no method '{method_name}'",
@@ -467,18 +637,25 @@ impl Interpreter {
         }
     }
 
-    fn lookup_method_in_class(&self, class: &Rc<ClassValue>, method_name: &str) -> Option<Rc<FnValue>> {
-        if let Some(m) = class.methods.get(method_name) {
-            return Some(m.clone());
+    fn lookup_method_in_class(&self, class: &Rc<ClassValue>, method_name: &str) -> Option<Vec<Rc<FnValue>>> {
+        if let Some(overloads) = class.methods.get(method_name) {
+            return Some(overloads.clone());
         }
         for base_name in &class.bases {
             if let Some(Value::Class(base_cls)) = self.get_val(base_name) {
-                if let Some(m) = self.lookup_method_in_class(&base_cls, method_name) {
-                    return Some(m);
+                if let Some(overloads) = self.lookup_method_in_class(&base_cls, method_name) {
+                    return Some(overloads);
                 }
             }
         }
         None
+    }
+
+    /// Look up a `const` class variable by walking up the inheritance chain.
+    fn lookup_class_var(class: &Rc<ClassValue>, name: &str) -> Option<Value> {
+        class.class_vars.get(name).cloned()
+        // Note: base-class lookup would require access to the interpreter's scope for name
+        // resolution; class-var inheritance can be added later if needed.
     }
 
     // --- Expression evaluation ---
@@ -499,11 +676,21 @@ impl Interpreter {
                 match &obj_val {
                     Value::Instance(inst_rc) => {
                         let inst = inst_rc.borrow();
+                        // 1. Instance field
                         if let Some((v, _)) = inst.fields.get(attr.as_str()) {
                             return Ok(v.clone());
                         }
-                        if let Some(m) = inst.class.methods.get(attr.as_str()) {
-                            return Ok(Value::Function(m.clone()));
+                        // 2. Class variable (const)
+                        if let Some(v) = Self::lookup_class_var(&inst.class, attr) {
+                            return Ok(v);
+                        }
+                        // 3. Method
+                        if let Some(overloads) = inst.class.methods.get(attr.as_str()) {
+                            return Ok(if overloads.len() == 1 {
+                                Value::Function(overloads[0].clone())
+                            } else {
+                                Value::OverloadedFn(overloads.clone())
+                            });
                         }
                         Err(format!(
                             "AttributeError: '{}' object has no attribute '{attr}'",
@@ -511,8 +698,16 @@ impl Interpreter {
                         ))
                     }
                     Value::Class(cls) => {
-                        if let Some(m) = cls.methods.get(attr.as_str()) {
-                            return Ok(Value::Function(m.clone()));
+                        // Class variable
+                        if let Some(v) = Self::lookup_class_var(cls, attr) {
+                            return Ok(v);
+                        }
+                        if let Some(overloads) = cls.methods.get(attr.as_str()) {
+                            return Ok(if overloads.len() == 1 {
+                                Value::Function(overloads[0].clone())
+                            } else {
+                                Value::OverloadedFn(overloads.clone())
+                            });
                         }
                         Err(format!("AttributeError: class '{}' has no attribute '{attr}'", cls.name))
                     }
@@ -605,10 +800,11 @@ impl Interpreter {
                     }
                 }
 
-                // User-defined function or class constructor
+                // User-defined function / overloaded function / class constructor
                 let callee = self.eval(func)?;
                 match callee {
                     Value::Function(fn_val) => self.exec_fn(fn_val, args, None),
+                    Value::OverloadedFn(candidates) => self.dispatch_overload(candidates, args, None),
                     Value::Class(cls) => self.instantiate(cls, args),
                     _ => Err(format!("TypeError: '{}' object is not callable", self.type_name(&callee))),
                 }
@@ -626,7 +822,7 @@ impl Interpreter {
             Value::Bool(_) => "bool",
             Value::None => "NoneType",
             Value::List(_) => "list",
-            Value::Function(_) => "function",
+            Value::Function(_) | Value::OverloadedFn(_) => "function",
             Value::Class(_) => "type",
             Value::Instance(_) => "object",
         }
@@ -650,6 +846,7 @@ impl Interpreter {
                 format!("[{}]", parts.join(", "))
             }
             Value::Function(_) => "<function>".to_string(),
+            Value::OverloadedFn(fns) => format!("<function ({} overloads)>", fns.len()),
             Value::Class(c) => format!("<class '{}'>", c.name),
             Value::Instance(i) => format!("<{} object>", i.borrow().class.name),
         }
@@ -674,7 +871,7 @@ impl Interpreter {
             Value::Str(s) => !s.is_empty(),
             Value::None => false,
             Value::List(items) => !items.is_empty(),
-            Value::Function(_) | Value::Class(_) | Value::Instance(_) => true,
+            Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) => true,
         }
     }
 
@@ -1049,28 +1246,144 @@ mod tests {
 
     #[test]
     fn test_fn_scope_isolation() {
-        // Variable declared inside function is not visible outside.
         let src = "fn f() -> None:\n    let x = 99\nf()\n";
         assert!(run(&format!("{src}print(x)\n")).is_err());
+    }
+
+    // --- overloading ---
+
+    #[test]
+    fn test_overload_by_count() {
+        // Two overloads differing only in argument count.
+        let src = concat!(
+            "fn describe(x: int) -> str:\n",
+            "    return \"one\"\n",
+            "fn describe(x: int, y: int) -> str:\n",
+            "    return \"two\"\n",
+            "let a = describe(1)\n",
+            "let b = describe(1, 2)\n",
+        );
+        if let (Value::Str(a), Value::Str(b)) = (run_get(src, "a"), run_get(src, "b")) {
+            assert_eq!(a, "one");
+            assert_eq!(b, "two");
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_overload_by_type() {
+        // Two overloads with the same argument count but different types.
+        let src = concat!(
+            "fn process(x: int) -> str:\n",
+            "    return \"int\"\n",
+            "fn process(x: str) -> str:\n",
+            "    return \"str\"\n",
+            "let a = process(42)\n",
+            "let b = process(\"hello\")\n",
+        );
+        if let (Value::Str(a), Value::Str(b)) = (run_get(src, "a"), run_get(src, "b")) {
+            assert_eq!(a, "int");
+            assert_eq!(b, "str");
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_overload_three_variants() {
+        let src = concat!(
+            "fn show(x: int) -> str:\n",
+            "    return \"int\"\n",
+            "fn show(x: str) -> str:\n",
+            "    return \"str\"\n",
+            "fn show(x: bool) -> str:\n",
+            "    return \"bool\"\n",
+            "let a = show(1)\n",
+            "let b = show(\"hi\")\n",
+            "let c = show(True)\n",
+        );
+        if let (Value::Str(a), Value::Str(b), Value::Str(c)) =
+            (run_get(src, "a"), run_get(src, "b"), run_get(src, "c"))
+        {
+            assert_eq!(a, "int");
+            assert_eq!(b, "str");
+            assert_eq!(c, "bool");
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_overload_wrong_count_err() {
+        let src = concat!(
+            "fn f(x: int) -> None:\n    pass\n",
+            "fn f(x: int, y: int) -> None:\n    pass\n",
+            "f(1, 2, 3)\n",
+        );
+        assert!(run(src).is_err());
+    }
+
+    #[test]
+    fn test_overload_method_by_type() {
+        // Method overloading inside a class.
+        let src = concat!(
+            "class Printer:\n",
+            "    fn print_val(self, x: int) -> str:\n",
+            "        return \"int\"\n",
+            "    fn print_val(self, x: str) -> str:\n",
+            "        return \"str\"\n",
+            "let p = Printer()\n",
+            "let a = p.print_val(42)\n",
+            "let b = p.print_val(\"hi\")\n",
+        );
+        if let (Value::Str(a), Value::Str(b)) = (run_get(src, "a"), run_get(src, "b")) {
+            assert_eq!(a, "int");
+            assert_eq!(b, "str");
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_overload_method_by_count() {
+        let src = concat!(
+            "class Calc:\n",
+            "    fn add(self, x: int) -> int:\n",
+            "        return x\n",
+            "    fn add(self, x: int, y: int) -> int:\n",
+            "        return x + y\n",
+            "let c = Calc()\n",
+            "let a = c.add(5)\n",
+            "let b = c.add(3, 4)\n",
+        );
+        if let (Value::Int(a), Value::Int(b)) = (run_get(src, "a"), run_get(src, "b")) {
+            assert_eq!(a, 5);
+            assert_eq!(b, 7);
+        } else {
+            panic!();
+        }
     }
 
     // --- classes ---
 
     #[test]
     fn test_class_instantiate() {
-        let src = "class Point:\n    mut x = 0\n    mut y = 0\nlet p = Point()\n";
+        // Fields have defaults → no required args → Point() is the right call.
+        let src = "class Point:\n    mut x: int = 0\n    mut y: int = 0\nlet p = Point()\n";
         assert!(run(src).is_ok());
     }
 
     #[test]
-    fn test_class_field_default() {
-        let src = "class Counter:\n    mut count = 0\nlet c = Counter()\n";
+    fn test_class_instantiate_required_fields() {
+        // Fields without defaults → auto-init requires args.
+        let src = "class Point:\n    mut x: int\n    mut y: int\nlet p = Point(3, 4)\n";
         assert!(run(src).is_ok());
     }
 
     #[test]
     fn test_class_init_sets_field() {
-        let src = "class Dog:\n    mut name = \"\"\n    fn __init__(mut self, name: str) -> None:\n        self.name = name\nlet d = Dog(\"Rex\")\n";
+        let src = "class Dog:\n    mut name: str = \"\"\n    fn __init__(mut self, name: str) -> None:\n        self.name = name\nlet d = Dog(\"Rex\")\n";
         assert!(run(src).is_ok());
     }
 
@@ -1086,7 +1399,19 @@ mod tests {
 
     #[test]
     fn test_class_field_access() {
-        let src = "class Pair:\n    mut x = 10\n    mut y = 20\nlet p = Pair()\nlet r = p.x\n";
+        // Fields have defaults; use defaults when instantiating.
+        let src = "class Pair:\n    mut x: int = 10\n    mut y: int = 20\nlet p = Pair()\nlet r = p.x\n";
+        if let Value::Int(n) = run_get(src, "r") {
+            assert_eq!(n, 10);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn test_class_field_access_required() {
+        // Fields without defaults require constructor args.
+        let src = "class Pair:\n    mut x: int\n    mut y: int\nlet p = Pair(10, 20)\nlet r = p.x\n";
         if let Value::Int(n) = run_get(src, "r") {
             assert_eq!(n, 10);
         } else {
@@ -1098,7 +1423,7 @@ mod tests {
     fn test_class_self_field_in_method() {
         let src = concat!(
             "class Box:\n",
-            "    mut value = 0\n",
+            "    mut value: int = 0\n",
             "    fn set(mut self, v: int) -> None:\n",
             "        self.value = v\n",
             "    fn get(self) -> int:\n",

@@ -1,4 +1,4 @@
-use crate::ast::{BinOp, CallArg, Expr, Param, Stmt, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, UnaryOp};
 use crate::token::{Span, Spanned, Token};
 
 pub struct Parser {
@@ -274,8 +274,133 @@ impl Parser {
             self.eat(&Token::RParen)?;
         }
         self.eat(&Token::Colon)?;
-        let body = self.parse_block()?;
+        let mut body = self.parse_class_body()?;
+
+        // Auto-generate a default __init__ if there are `let`/`mut` fields without a default
+        // value (required fields).  Generation is skipped only when an existing `__init__`
+        // overload has exactly the same non-self parameter count AND types in order
+        // (override semantics).  Any other explicit `__init__` coexists as an overload.
+        let required_fields: Vec<(String, String)> = body.iter()
+            .filter_map(|s| {
+                if let Stmt::Field { name: fname, kind: FieldKind::Mut | FieldKind::Let, type_ann, default: None } = s {
+                    Some((fname.clone(), type_ann.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !required_fields.is_empty() {
+            let has_exact_match = body.iter().any(|s| {
+                if let Stmt::FnDef { name: n, params, .. } = s {
+                    n == "__init__" && Self::init_sig_matches(&required_fields, params)
+                } else {
+                    false
+                }
+            });
+
+            if !has_exact_match {
+                let mut params = vec![Param { name: "self".to_string(), mutable: true, type_ann: None }];
+                for (fname, ftype) in &required_fields {
+                    params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()) });
+                }
+                let init_body: Vec<Stmt> = required_fields.iter().map(|(fname, _)| {
+                    Stmt::AttrAssign {
+                        target: Expr::Attr {
+                            object: Box::new(Expr::Ident("self".to_string())),
+                            attr: fname.clone(),
+                        },
+                        value: Expr::Ident(fname.clone()),
+                    }
+                }).collect();
+                body.push(Stmt::FnDef {
+                    name: "__init__".to_string(),
+                    params,
+                    return_type: Some("None".to_string()),
+                    body: init_body,
+                });
+            }
+        }
+
         Ok(Stmt::ClassDef { name, bases, body })
+    }
+
+    /// Parses the indented body of a class definition.
+    /// Field declarations (`mut`/`let`/`const`) require a type annotation.
+    fn parse_class_body(&mut self) -> Result<Vec<Stmt>, String> {
+        self.eat(&Token::Newline)?;
+        self.eat(&Token::Indent)?;
+        let mut stmts = Vec::new();
+        loop {
+            while matches!(self.current(), Token::Newline | Token::Semicolon) {
+                self.advance();
+            }
+            if matches!(self.current(), Token::Dedent | Token::Eof) {
+                break;
+            }
+            stmts.push(self.parse_class_stmt()?);
+        }
+        if *self.current() == Token::Dedent {
+            self.advance();
+        }
+        Ok(stmts)
+    }
+
+    /// Parses a single statement inside a class body.
+    /// Field declarations require `: Type` annotations.
+    /// `const` fields are class variables and must include `= default`.
+    fn parse_class_stmt(&mut self) -> Result<Stmt, String> {
+        match self.current().clone() {
+            Token::Mut | Token::Let | Token::Const => {
+                let kind = match self.current() {
+                    Token::Mut   => FieldKind::Mut,
+                    Token::Let   => FieldKind::Let,
+                    _            => FieldKind::Const,
+                };
+                let keyword = match &kind {
+                    FieldKind::Mut   => "mut",
+                    FieldKind::Let   => "let",
+                    FieldKind::Const => "const",
+                };
+                self.advance();
+                let fname = self.expect_ident()?;
+                if *self.current() != Token::Colon {
+                    return Err(format!(
+                        "class field `{fname}` must have a type annotation (e.g., `{keyword} {fname}: int = 0`)"
+                    ));
+                }
+                self.advance(); // consume `:`
+                let type_ann = self.parse_type_expr()?;
+                let default = if *self.current() == Token::Eq {
+                    self.advance();
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                if kind == FieldKind::Const && default.is_none() {
+                    return Err(format!(
+                        "class variable `{fname}` declared with `const` must have an initial value (e.g., `const {fname}: int = 0`)"
+                    ));
+                }
+                Ok(Stmt::Field { name: fname, kind, type_ann, default })
+            }
+            Token::Fn => self.parse_fn_def(),
+            Token::Pass => {
+                self.advance();
+                Ok(Stmt::Pass)
+            }
+            tok => Err(format!("unexpected statement in class body: `{tok}`")),
+        }
+    }
+
+    /// Returns `true` when the given `params` list is an exact signature match for the
+    /// default constructor built from `required_fields` (same non-self count and types).
+    fn init_sig_matches(required_fields: &[(String, String)], params: &[Param]) -> bool {
+        let non_self: Vec<_> = params.iter().filter(|p| p.name != "self").collect();
+        non_self.len() == required_fields.len()
+            && non_self.iter().zip(required_fields.iter()).all(|(p, (_, ftype))| {
+                p.type_ann.as_deref() == Some(ftype.as_str())
+            })
     }
 
     fn parse_param(&mut self) -> Result<Param, String> {
@@ -835,13 +960,132 @@ mod tests {
 
     #[test]
     fn test_class_with_field_and_method() {
-        let src = "class Point:\n    mut x = 0\n    mut y = 0\n    fn move(mut self, dx, dy):\n        pass\n";
+        // Fields WITH defaults don't produce an auto-init; no auto-init here.
+        let src = "class Point:\n    mut x: int = 0\n    mut y: int = 0\n    fn move(mut self, dx: int, dy: int) -> None:\n        pass\n";
         let stmts = parse(src);
         if let Stmt::ClassDef { body, .. } = &stmts[0] {
-            assert_eq!(body.len(), 3); // 2 fields + 1 method
+            // 2 fields + 1 method (no auto-init: both fields have defaults)
+            assert_eq!(body.len(), 3);
         } else {
             panic!("expected ClassDef");
         }
+    }
+
+    #[test]
+    fn test_class_field_parsed_as_field_stmt() {
+        // Field declarations produce Stmt::Field nodes with type annotation.
+        let src = "class Foo:\n    mut x: int = 0\n    let y: str = \"\"\n";
+        let stmts = parse(src);
+        if let Stmt::ClassDef { body, .. } = &stmts[0] {
+            assert!(matches!(&body[0], Stmt::Field { name, kind: FieldKind::Mut, type_ann, .. }
+                if name == "x" && type_ann == "int"));
+            assert!(matches!(&body[1], Stmt::Field { name, kind: FieldKind::Let, type_ann, .. }
+                if name == "y" && type_ann == "str"));
+        } else {
+            panic!("expected ClassDef");
+        }
+    }
+
+    #[test]
+    fn test_class_auto_init_generated() {
+        // Auto __init__ is generated for mut/let fields WITHOUT a default value.
+        let src = "class Point:\n    mut x: int\n    mut y: int\n";
+        let stmts = parse(src);
+        if let Stmt::ClassDef { body, .. } = &stmts[0] {
+            let init = body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "__init__"));
+            assert!(init.is_some(), "auto __init__ should be present for required fields");
+            if let Some(Stmt::FnDef { params, return_type, .. }) = init {
+                assert_eq!(params.len(), 3); // self + x + y
+                assert_eq!(params[0].name, "self");
+                assert_eq!(params[1].name, "x");
+                assert_eq!(params[2].name, "y");
+                assert_eq!(params[1].type_ann.as_deref(), Some("int"));
+                assert_eq!(return_type.as_deref(), Some("None"));
+            }
+        } else {
+            panic!("expected ClassDef");
+        }
+    }
+
+    #[test]
+    fn test_class_auto_init_not_generated_all_fields_have_defaults() {
+        // No auto-init when all fields have default values.
+        let src = "class Point:\n    mut x: int = 0\n    mut y: int = 0\n";
+        let stmts = parse(src);
+        if let Stmt::ClassDef { body, .. } = &stmts[0] {
+            let init = body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "__init__"));
+            assert!(init.is_none(), "no auto __init__ when all fields have defaults");
+        } else {
+            panic!("expected ClassDef");
+        }
+    }
+
+    #[test]
+    fn test_class_auto_init_generated_with_list_field() {
+        // Fields without defaults always trigger auto-init regardless of type.
+        let src = "class Foo:\n    mut items: list[int]\n";
+        let stmts = parse(src);
+        if let Stmt::ClassDef { body, .. } = &stmts[0] {
+            let init = body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "__init__"));
+            assert!(init.is_some(), "auto __init__ should be present for required fields");
+            if let Some(Stmt::FnDef { params, .. }) = init {
+                assert_eq!(params[1].type_ann.as_deref(), Some("list"));
+            }
+        } else {
+            panic!("expected ClassDef");
+        }
+    }
+
+    #[test]
+    fn test_class_auto_init_override_exact_match() {
+        // Explicit __init__ with same types/count suppresses auto-init (override).
+        let src = "class Foo:\n    mut x: int\n    fn __init__(mut self, x: int) -> None:\n        self.x = x\n";
+        let stmts = parse(src);
+        if let Stmt::ClassDef { body, .. } = &stmts[0] {
+            let inits: Vec<_> = body.iter()
+                .filter(|s| matches!(s, Stmt::FnDef { name, .. } if name == "__init__"))
+                .collect();
+            assert_eq!(inits.len(), 1, "exact-match explicit __init__ overrides auto-init");
+        } else {
+            panic!("expected ClassDef");
+        }
+    }
+
+    #[test]
+    fn test_class_auto_init_overload_different_sig() {
+        // Explicit __init__ with different count coexists as overload.
+        let src = "class Foo:\n    mut x: int\n    fn __init__(mut self, x: int, y: int) -> None:\n        self.x = x\n";
+        let stmts = parse(src);
+        if let Stmt::ClassDef { body, .. } = &stmts[0] {
+            let inits: Vec<_> = body.iter()
+                .filter(|s| matches!(s, Stmt::FnDef { name, .. } if name == "__init__"))
+                .collect();
+            assert_eq!(inits.len(), 2, "different-sig explicit __init__ + auto-init both present");
+        } else {
+            panic!("expected ClassDef");
+        }
+    }
+
+    #[test]
+    fn test_class_auto_init_not_generated_without_required_fields() {
+        // No auto __init__ when class has no fields.
+        let src = "class Foo:\n    fn greet(self) -> str:\n        pass\n";
+        let stmts = parse(src);
+        if let Stmt::ClassDef { body, .. } = &stmts[0] {
+            let init = body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "__init__"));
+            assert!(init.is_none(), "no auto __init__ when there are no required fields");
+        } else {
+            panic!("expected ClassDef");
+        }
+    }
+
+    #[test]
+    fn test_class_field_requires_type_annotation() {
+        // Field declarations without `: Type` must produce a parse error.
+        let result = std::panic::catch_unwind(|| {
+            parse("class Foo:\n    mut x = 0\n")
+        });
+        assert!(result.is_err(), "missing type annotation should cause a parse error");
     }
 
     #[test]

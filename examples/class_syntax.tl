@@ -10,8 +10,8 @@ class Dog(Animal):
 
 # 型アノテーション付きメソッド
 class Point:
-    mut x = 0
-    mut y = 0
+    mut x: int = 0
+    mut y: int = 0
 
     fn __init__(mut self, x: int, y: int):
         self.x = x

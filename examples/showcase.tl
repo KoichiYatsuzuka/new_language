@@ -171,7 +171,7 @@ class Animal:
         pass
 
 class Dog(Animal):
-    mut name = ""
+    mut name: str = ""
     fn __init__(mut self, name: str) -> None:
         self.name = name
     fn speak(self) -> str:

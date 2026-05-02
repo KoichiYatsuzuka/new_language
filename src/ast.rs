@@ -95,4 +95,24 @@ pub enum Stmt {
         bases: Vec<String>,  // 基底クラス名
         body: Vec<Stmt>,
     },
+    /// Typed field declaration inside a class body.
+    /// Syntax: `[mut|let|const] name: Type [= default]`
+    /// `const` fields are class variables and must have a default value.
+    Field {
+        name: String,
+        kind: FieldKind,
+        type_ann: String,
+        default: Option<Expr>,
+    },
+}
+
+/// Mutability/ownership kind for a class field declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldKind {
+    /// Mutable instance variable (`mut name: Type [= default]`)
+    Mut,
+    /// Immutable instance variable (`let name: Type [= default]`)
+    Let,
+    /// Class variable — immutable, shared across all instances (`const name: Type = default`)
+    Const,
 }

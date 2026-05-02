@@ -77,8 +77,11 @@ test_lang/
 - リストリテラル: `[a, b, c]`
 - 制御構文: `if` / `elif` / `else`、`while`、`for ... in ...`、`block`
 - ジャンプ文: `break`、`continue`、`pass`、`return`、`block_return`
-- 関数定義: `fn name(params) -> RetType:`（型アノテーションはスキップ）
+- 関数定義: `fn name(params) -> RetType:`
 - クラス定義: `class Name(Base):` （基底クラス複数可）
+- **クラスメンバ変数**: クラス本体では必ず型アノテーション付きで宣言する（`[mut|let|const] name: Type [= default]`）。型アノテーションのない宣言はパースエラー
+- **デフォルトコンストラクタ自動生成**: 初期値なしの `mut`/`let` フィールドが 1 つ以上あるとき、パーサーが `__init__(mut self, field1: Type1, ...)` を AST に挿入する。既存の `__init__` と引数の型・個数が完全一致する場合は生成しない（override）。型・個数が異なる場合は共存する（overload）
+- **関数オーバーロード**: 同名関数を引数の型・個数で区別して複数定義可能
 
 ### 静的型検査（`src/type_check.rs`）
 パース後・実行前に AST を走査し、`StaticTypeError` を収集してまとめて報告する。
@@ -95,10 +98,12 @@ test_lang/
 | `MissingParamTypeAnn` | パラメータの型アノテーション欠如（`self` は除外） |
 | `MissingReturnTypeAnn` | 戻り値型アノテーション欠如 |
 | `UnknownKeywordArg` | 存在しないキーワード引数名 |
+| `NoMatchingOverload` | オーバーロード候補のどれにも引数の個数が合わない |
 
 - `==` / `!=` は異なる型間でも許容（実行時に `False` を返す想定）
 - 型が静的に不明（fn パラメータ等）な場合は実行時に委ねる
 - キーワード引数（`f(a=1, b=2)`）の名前・型・個数を検査（`collect_fn_sigs` 前処理で前方参照も対応）
+- オーバーロード: 同名関数が複数ある場合、引数個数が一致する候補のみ型検査。複数候補が個数一致する場合は型検査をスキップ
 
 **拡張方法**: `TypeErrorKind` に variant を追加 → `check_stmt` / `check_binop` に arm を追加。
 
@@ -115,9 +120,15 @@ test_lang/
 - リストリテラル評価
 - 組み込み関数: `print()`、`range(stop)` / `range(start, stop)` / `range(start, stop, step)`、`len()`
 - **関数の実行**: `fn` 定義・呼び出し（位置引数・キーワード引数）・`return`・再帰
-- **クラスの実行**: インスタンス化・フィールド（`mut`/`let`/`const` デフォルト値）・メソッド呼び出し・`self`・継承（`lookup_method_in_class`）
+- **クラスの実行**: インスタンス化・フィールド・メソッド呼び出し・`self`・継承（`lookup_method_in_class`）
 - `self.x = v` / `self.x += v`（`AttrAssign` / `AttrCompoundAssign`）
-- 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Function(Rc<FnValue>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`
+- **クラスメンバの種別**:
+  - `mut name: Type [= default]` — ミュータブルなインスタンス変数。初期値なしの場合はコンストラクタで必ず設定する
+  - `let name: Type [= default]` — イミュータブルなインスタンス変数。コンストラクタ（`__init__`）での初回代入のみ許可
+  - `const name: Type = default` — クラス変数（全インスタンスで共有）。必ず初期値が必要。`instance.name` および `ClassName.name` でアクセス可能。代入は不可
+- **フィールド可変性の実行時チェック**: `let` フィールドへの再代入は `TypeError`、`const` クラス変数への代入も `TypeError`
+- **関数オーバーロード**: 同名関数が複数あるとき `Value::OverloadedFn(Vec<Rc<FnValue>>)` として蓄積。呼び出し時に引数の個数→型で候補を絞り込む
+- 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Function(Rc<FnValue>)`, `OverloadedFn(Vec<Rc<FnValue>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`
 
 ### VS Code 拡張（`vscode-extension/`）
 - `.tl` ファイルのシンタックスハイライト
@@ -145,6 +156,55 @@ test_lang/
 - 空のコレクションは型を明示しなければならない（`list[int]` など）
 - `dataclass` / `enum` などを標準でサポート（未実装）
 - 値オブジェクト（型キャスト）による誤演算防止（未実装）
+
+### クラスメンバ変数の宣言規則
+
+クラス本体で宣言できるメンバ変数は以下の 3 種類のみ。いずれも **型アノテーションが必須**。
+
+```
+mut  name: Type [= default]   # ミュータブルなインスタンス変数
+let  name: Type [= default]   # イミュータブルなインスタンス変数
+const name: Type = default    # クラス変数（必ず初期値が必要）
+```
+
+- `const` フィールドのみ初期値が必須。`mut`/`let` は初期値を省略できる
+- `const` はクラスと紐づいた変数（クラス変数）。インスタンス経由・クラス名経由どちらでもアクセス可能。代入は不可
+- `let` フィールドは `__init__` 内での初回代入のみ許可。それ以降の代入は `TypeError`
+
+### デフォルトコンストラクタ（auto-init）
+
+初期値なしの `mut`/`let` フィールドが存在するとき、パーサーが自動的に `__init__` を生成する。
+
+```
+fn __init__(mut self, field1: Type1, field2: Type2, ...) -> None:
+    self.field1 = field1
+    self.field2 = field2
+    ...
+```
+
+生成の可否は既存の `__init__` 定義と比較して決まる:
+
+| 既存の `__init__` | 自動生成 | 備考 |
+|---|---|---|
+| なし | される | |
+| 引数の型・個数が異なる | される | 既存定義とオーバーロードとして共存 |
+| 引数の型・個数が完全一致 | されない | 既存定義が優先（override） |
+
+- 初期値ありのフィールドは auto-init のパラメータに含まれない（`field_defaults` 経由で初期化）
+- `const` フィールドは auto-init に含まれない
+
+### 関数オーバーロード
+
+同名の関数・メソッドを異なる引数の型・個数で複数定義できる。
+
+```tl
+fn add(a: int, b: int) -> int:   return a + b
+fn add(a: str, b: str) -> str:   return a + b
+```
+
+- 呼び出し時は引数の個数 → 型の順で候補を絞り込み、最初にマッチしたものを実行
+- どの候補にも一致しない場合は実行時エラー
+- 静的型検査: 個数が合う候補がなければ `NoMatchingOverload` エラー
 
 ## 次に実装すべき機能（優先順）
 

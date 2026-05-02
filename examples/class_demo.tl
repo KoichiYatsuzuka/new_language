@@ -3,7 +3,7 @@
 
 # ── 1. 基本クラス ────────────────────────────────────────────────
 class Animal:
-    mut name = ""
+    mut name: str = ""
     fn __init__(mut self, name: str) -> None:
         self.name = name
     fn speak(self) -> str:
@@ -32,7 +32,7 @@ print("dog name:", d.name)
 
 # ── 4. カウンタークラス（複合代入） ──────────────────────────────
 class Counter:
-    mut count = 0
+    mut count: int = 0
     fn increment(mut self) -> None:
         self.count += 1
     fn reset(mut self) -> None:
@@ -51,8 +51,8 @@ print("after reset:", counter.value())
 
 # ── 5. スタッククラス ─────────────────────────────────────────────
 class Stack:
-    mut items = 0
-    mut top = 0
+    mut items: int = 0
+    mut top: int = 0
     fn push(mut self, v: int) -> None:
         self.items = v
         self.top += 1

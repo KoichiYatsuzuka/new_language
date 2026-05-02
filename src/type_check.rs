@@ -89,6 +89,8 @@ pub enum TypeErrorKind {
     MissingReturnTypeAnn { func_name: String },
     /// A keyword argument name does not match any parameter of the function
     UnknownKeywordArg { func_name: String, arg_name: String },
+    /// Overloaded function: no overload accepts the given number of arguments
+    NoMatchingOverload { func_name: String, got: usize, available: Vec<usize> },
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +150,13 @@ impl std::fmt::Display for StaticTypeError {
                 f,
                 "StaticTypeError: '{func_name}' has no parameter named '{arg_name}'"
             ),
+            TypeErrorKind::NoMatchingOverload { func_name, got, available } => {
+                let avail = available.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ");
+                write!(
+                    f,
+                    "StaticTypeError: no overload of '{func_name}' takes {got} argument(s) (overloads take: {avail})"
+                )
+            }
         }
     }
 }
@@ -168,8 +177,8 @@ struct VarInfo {
 pub struct TypeChecker {
     // Innermost scope is last; lookup searches back-to-front.
     scopes: Vec<HashMap<String, VarInfo>>,
-    /// Function signatures collected in a pre-pass so forward calls can be checked.
-    fn_sigs: HashMap<String, FnSig>,
+    /// All overloads per function name, collected in a pre-pass for forward-call checking.
+    fn_sigs: HashMap<String, Vec<FnSig>>,
     pub errors: Vec<StaticTypeError>,
 }
 
@@ -197,7 +206,7 @@ impl TypeChecker {
                             .collect(),
                         return_type: return_type.as_deref().and_then(InferredType::from_ann),
                     };
-                    self.fn_sigs.insert(name.clone(), sig);
+                    self.fn_sigs.entry(name.clone()).or_default().push(sig);
                     self.collect_fn_sigs(body);
                 }
                 Stmt::ClassDef { body, .. } => self.collect_fn_sigs(body),
@@ -357,6 +366,14 @@ impl TypeChecker {
             Stmt::BlockReturn(expr) | Stmt::BlockYield(expr) => {
                 self.infer(expr);
             }
+            Stmt::Field { name, kind, type_ann, default } => {
+                let ty = InferredType::from_ann(type_ann).unwrap_or(InferredType::Unknown);
+                if let Some(expr) = default {
+                    self.infer(expr);
+                }
+                let mutable = matches!(kind, crate::ast::FieldKind::Mut);
+                self.declare(name.clone(), ty, mutable);
+            }
             Stmt::Pass | Stmt::Break | Stmt::Continue => {}
         }
     }
@@ -396,21 +413,43 @@ impl TypeChecker {
                 }
 
                 if let Some(ref fname) = func_name {
-                    if let Some(sig) = self.fn_sigs.get(fname).cloned() {
-                        if arg_data.len() != sig.params.len() {
-                            self.emit(StaticTypeError {
-                                kind: TypeErrorKind::CallArgCountMismatch {
-                                    func_name: fname.clone(),
-                                    expected: sig.params.len(),
-                                    got: arg_data.len(),
-                                },
-                                span: None,
-                            });
-                        } else {
+                    if let Some(sigs) = self.fn_sigs.get(fname).cloned() {
+                        let call_count = arg_data.len();
+
+                        // Signatures whose parameter count matches the call.
+                        let count_matching: Vec<FnSig> = sigs.iter()
+                            .filter(|s| s.params.len() == call_count)
+                            .cloned()
+                            .collect();
+
+                        if count_matching.is_empty() {
+                            // No overload accepts this many arguments.
+                            if sigs.len() == 1 {
+                                self.emit(StaticTypeError {
+                                    kind: TypeErrorKind::CallArgCountMismatch {
+                                        func_name: fname.clone(),
+                                        expected: sigs[0].params.len(),
+                                        got: call_count,
+                                    },
+                                    span: None,
+                                });
+                            } else {
+                                let available = sigs.iter().map(|s| s.params.len()).collect();
+                                self.emit(StaticTypeError {
+                                    kind: TypeErrorKind::NoMatchingOverload {
+                                        func_name: fname.clone(),
+                                        got: call_count,
+                                        available,
+                                    },
+                                    span: None,
+                                });
+                            }
+                        } else if count_matching.len() == 1 {
+                            // Exactly one overload matches the count → check arg types.
+                            let sig = &count_matching[0];
                             let mut positional_idx = 0usize;
                             for (key, arg_ty) in &arg_data {
                                 match key {
-                                    // ── keyword argument ──────────────────────
                                     Some(kwarg_name) => {
                                         match sig.params.iter().position(|(n, _)| n == kwarg_name) {
                                             None => self.emit(StaticTypeError {
@@ -437,7 +476,6 @@ impl TypeChecker {
                                             }
                                         }
                                     }
-                                    // ── positional argument ───────────────────
                                     None => {
                                         if let Some((_, param_ty)) = sig.params.get(positional_idx) {
                                             if let Some(expected) = param_ty {
@@ -459,14 +497,20 @@ impl TypeChecker {
                                 }
                             }
                         }
+                        // Multiple count-matching overloads: runtime dispatch decides, skip type check.
                     }
                 }
 
-                // Return type from signature if known, else Unknown.
+                // Return type: use the unique count-matching overload's return type if there is one.
                 func_name
                     .as_deref()
                     .and_then(|n| self.fn_sigs.get(n))
-                    .and_then(|sig| sig.return_type.clone())
+                    .and_then(|sigs| {
+                        let matching: Vec<_> = sigs.iter()
+                            .filter(|s| s.params.len() == arg_data.len())
+                            .collect();
+                        if matching.len() == 1 { matching[0].return_type.clone() } else { None }
+                    })
                     .unwrap_or(InferredType::Unknown)
             }
             Expr::Ident(name) => {
@@ -877,5 +921,77 @@ mod tests {
         assert!(msg.contains("StaticTypeError"));
         assert!(msg.contains("'f'"));
         assert!(msg.contains("'z'"));
+    }
+
+    // --- Overloading ---
+
+    #[test]
+    fn overload_by_count_ok() {
+        assert!(ok(concat!(
+            "fn f(a: int) -> None:\n    pass\n",
+            "fn f(a: int, b: int) -> None:\n    pass\n",
+            "f(1)\n",
+            "f(1, 2)\n",
+        )));
+    }
+
+    #[test]
+    fn overload_by_type_ok() {
+        // Different type per overload — both calls are valid
+        assert!(ok(concat!(
+            "fn show(x: int) -> None:\n    pass\n",
+            "fn show(x: str) -> None:\n    pass\n",
+            "show(1)\n",
+            "show(\"hi\")\n",
+        )));
+    }
+
+    #[test]
+    fn overload_wrong_count_err() {
+        // Neither overload takes 3 args → NoMatchingOverload
+        let errors = check(concat!(
+            "fn f(a: int) -> None:\n    pass\n",
+            "fn f(a: int, b: int) -> None:\n    pass\n",
+            "f(1, 2, 3)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(
+            &e.kind, TypeErrorKind::NoMatchingOverload { got: 3, .. }
+        )));
+    }
+
+    #[test]
+    fn overload_single_def_count_err_uses_count_mismatch() {
+        // With one definition, count error should be CallArgCountMismatch (not NoMatchingOverload)
+        let errors = check("fn f(a: int) -> None:\n    pass\nf(1, 2)\n");
+        assert!(errors.iter().any(|e| matches!(
+            &e.kind, TypeErrorKind::CallArgCountMismatch { .. }
+        )));
+    }
+
+    #[test]
+    fn overload_multiple_count_match_skips_type_check() {
+        // Two overloads both take 1 arg — type errors are NOT emitted (runtime decides)
+        let errors = check(concat!(
+            "fn f(x: int) -> None:\n    pass\n",
+            "fn f(x: str) -> None:\n    pass\n",
+            "f(True)\n",  // True is bool, doesn't match int or str, but we skip type checking
+        ));
+        assert!(!errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+    }
+
+    #[test]
+    fn overload_display_no_matching() {
+        let errors = check(concat!(
+            "fn f(a: int) -> None:\n    pass\n",
+            "fn f(a: int, b: int) -> None:\n    pass\n",
+            "f(1, 2, 3)\n",
+        ));
+        let msg = errors.iter()
+            .find(|e| matches!(&e.kind, TypeErrorKind::NoMatchingOverload { .. }))
+            .unwrap()
+            .to_string();
+        assert!(msg.contains("StaticTypeError"));
+        assert!(msg.contains("'f'"));
+        assert!(msg.contains('3'));
     }
 }
