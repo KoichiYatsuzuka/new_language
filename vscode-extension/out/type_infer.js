@@ -11,7 +11,6 @@ function tokenize(src) {
             i++;
             continue;
         }
-        // String literals
         if (src[i] === '"' || src[i] === "'") {
             const q = src[i];
             const triple = src.startsWith(q + q + q, i);
@@ -31,7 +30,6 @@ function tokenize(src) {
             i = j;
             continue;
         }
-        // Numbers
         if (/\d/.test(src[i])) {
             let j = i;
             if (src[j] === '0' && j + 1 < src.length && 'xXoObB'.includes(src[j + 1])) {
@@ -63,7 +61,6 @@ function tokenize(src) {
             i = j;
             continue;
         }
-        // Identifiers and keywords
         if (/[A-Za-z_]/.test(src[i])) {
             let j = i;
             while (j < src.length && /\w/.test(src[j]))
@@ -77,7 +74,6 @@ function tokenize(src) {
             i = j;
             continue;
         }
-        // Multi-char operators (longest match first)
         const s3 = src.slice(i, i + 3);
         if (['//=', '**=', '<<=', '>>='].includes(s3)) {
             tokens.push({ kind: 'OTHER', value: s3 });
@@ -110,7 +106,20 @@ function tokenize(src) {
     tokens.push({ kind: 'EOF', value: '' });
     return tokens;
 }
-// ---------- Expression type inferrer (recursive descent) ----------
+// ===== Expression type inferrer =====
+// Known return types for built-in functions
+const BUILTIN_RETURN_TYPES = {
+    print: 'None', exec: 'None',
+    len: 'int', id: 'int', hash: 'int', ord: 'int', round: 'int',
+    chr: 'str', hex: 'str', oct: 'str', bin: 'str', repr: 'str', input: 'str', format: 'str',
+    int: 'int', float: 'float', str: 'str', bool: 'bool',
+    isinstance: 'bool', issubclass: 'bool', callable: 'bool', hasattr: 'bool',
+    abs: 'unknown', max: 'unknown', min: 'unknown', sum: 'unknown',
+    range: 'unknown', enumerate: 'unknown', zip: 'unknown', map: 'unknown', filter: 'unknown',
+    sorted: 'unknown', reversed: 'unknown', getattr: 'unknown', next: 'unknown',
+    iter: 'unknown', open: 'unknown', eval: 'unknown', globals: 'unknown',
+    locals: 'unknown', vars: 'unknown', dir: 'unknown', super: 'unknown', type: 'unknown',
+};
 function mergeNumeric(a, b) {
     if (a === 'float' || b === 'float')
         return 'float';
@@ -119,9 +128,10 @@ function mergeNumeric(a, b) {
     return 'unknown';
 }
 class ExprInferrer {
-    constructor(tokens, env) {
+    constructor(tokens, env, funcEnv) {
         this.tokens = tokens;
         this.env = env;
+        this.funcEnv = funcEnv;
         this.pos = 0;
     }
     cur() { return this.tokens[this.pos] ?? { kind: 'EOF', value: '' }; }
@@ -256,7 +266,6 @@ class ExprInferrer {
             case 'IDENT': {
                 const name = tok.value;
                 this.eat();
-                // function call
                 if (this.cur().kind === 'LPAREN') {
                     this.eat();
                     while (this.cur().kind !== 'RPAREN' && this.cur().kind !== 'EOF') {
@@ -268,9 +277,9 @@ class ExprInferrer {
                     }
                     if (this.cur().kind === 'RPAREN')
                         this.eat();
-                    if (name === 'print')
-                        return 'None';
-                    return 'unknown';
+                    if (name in BUILTIN_RETURN_TYPES)
+                        return BUILTIN_RETURN_TYPES[name];
+                    return this.funcEnv.get(name) ?? 'unknown';
                 }
                 return this.env.get(name) ?? 'unknown';
             }
@@ -287,10 +296,10 @@ class ExprInferrer {
         }
     }
 }
-function inferExprType(src, env) {
-    return new ExprInferrer(tokenize(src), env).infer();
+function inferExprType(src, env, funcEnv = new Map()) {
+    return new ExprInferrer(tokenize(src), env, funcEnv).infer();
 }
-// ---------- Strip comment (respecting strings) ----------
+// ===== Strip comment (respecting strings) =====
 function stripComment(line) {
     let inStr = false;
     let strChar = '';
@@ -329,11 +338,90 @@ function stripComment(line) {
     }
     return line;
 }
-// ---------- Inlay hints provider ----------
-// Matches `let/mut/const name = ...` (not `==`)
+// ===== Function definition scanning =====
+// Matches: fn name(params) -> RetType:
+// Groups:  1=indent  2=name  3=params  4=return annotation (optional)
+const FUNC_DEF_RE = /^(\s*)fn\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*(?:->\s*([A-Za-z_][\w\[\], ]*))?:/;
 const DECL_RE = /^(\s*)(let|mut|const)\s+([A-Za-z_]\w*)\s*=(?!=)/;
+const RETURN_RE = /^return(?:\s+(.+))?$/;
+function parseTypeAnnotation(s) {
+    if (!s)
+        return undefined;
+    const t = s.trim();
+    const known = ['int', 'float', 'str', 'bool', 'None'];
+    return known.includes(t) ? t : 'unknown';
+}
+function collectFuncDefs(document) {
+    const defs = [];
+    for (let i = 0; i < document.lineCount; i++) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const m = stripped.match(FUNC_DEF_RE);
+        if (!m)
+            continue;
+        const [, indentStr, name, , retAnnotation] = m;
+        defs.push({
+            name,
+            defLine: i,
+            defIndent: indentStr.length,
+            annotation: parseTypeAnnotation(retAnnotation),
+        });
+    }
+    return defs;
+}
+// Scan function body to infer the return type from `return` statements.
+// Uses funcEnv so calls to already-known functions resolve correctly.
+function inferBodyReturnType(document, defLine, defIndent, funcEnv) {
+    const localEnv = new Map();
+    const returnTypes = [];
+    for (let i = defLine + 1; i < document.lineCount; i++) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const trimmed = stripped.trim();
+        if (!trimmed)
+            continue;
+        const lineIndent = (stripped.match(/^(\s*)/)?.[1] ?? '').length;
+        if (lineIndent <= defIndent)
+            break; // exited function body
+        // Build local variable env to resolve identifiers in return expressions
+        const declM = stripped.match(DECL_RE);
+        if (declM) {
+            const rhs = stripped.slice(declM[0].length).trim();
+            localEnv.set(declM[3], inferExprType(rhs, localEnv, funcEnv));
+        }
+        const retM = trimmed.match(RETURN_RE);
+        if (retM) {
+            const retExpr = retM[1]?.trim();
+            returnTypes.push(retExpr ? inferExprType(retExpr, localEnv, funcEnv) : 'None');
+        }
+    }
+    if (returnTypes.length === 0)
+        return 'None';
+    const unique = [...new Set(returnTypes)];
+    return unique.length === 1 ? unique[0] : 'unknown';
+}
+// ===== Inlay hints provider =====
 function provideInlayHints(document, _range) {
     const hints = [];
+    // Phase 1: collect all function definitions
+    const funcDefs = collectFuncDefs(document);
+    // Phase 2: build funcEnv — annotation takes priority, otherwise infer from body
+    const funcEnv = new Map();
+    for (const def of funcDefs) {
+        funcEnv.set(def.name, def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv));
+    }
+    // Phase 3: inlay hints on function definition lines (only when no annotation)
+    for (const def of funcDefs) {
+        if (def.annotation !== undefined)
+            continue;
+        const returnType = funcEnv.get(def.name);
+        const rawLine = document.lineAt(def.defLine).text;
+        const rparenPos = rawLine.lastIndexOf(')');
+        if (rparenPos < 0)
+            continue;
+        const pos = new vscode.Position(def.defLine, rparenPos + 1);
+        const hint = new vscode.InlayHint(pos, ` -> ${returnType}`, vscode.InlayHintKind.Type);
+        hints.push(hint);
+    }
+    // Phase 4: inlay hints on variable declarations, using funcEnv for call resolution
     const env = new Map();
     for (let lineIdx = 0; lineIdx < document.lineCount; lineIdx++) {
         const rawLine = document.lineAt(lineIdx).text;
@@ -342,14 +430,13 @@ function provideInlayHints(document, _range) {
         if (!m)
             continue;
         const [full, indent, keyword, name] = m;
-        // Find the column of `name` in the raw line
         const nameStart = rawLine.indexOf(name, indent.length + keyword.length);
         if (nameStart < 0)
             continue;
         const rhs = line.slice(full.length).trim();
         if (!rhs)
             continue;
-        const type = inferExprType(rhs, env);
+        const type = inferExprType(rhs, env, funcEnv);
         env.set(name, type);
         const pos = new vscode.Position(lineIdx, nameStart + name.length);
         const hint = new vscode.InlayHint(pos, `: ${type}`, vscode.InlayHintKind.Type);

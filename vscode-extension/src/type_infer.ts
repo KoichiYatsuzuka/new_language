@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 
 export type LangType = 'int' | 'float' | 'str' | 'bool' | 'None' | 'unknown';
 
-// ---------- Tokenizer ----------
+// ===== Tokenizer =====
 
 type TK =
     | 'INT' | 'FLOAT' | 'STR'
@@ -24,7 +24,6 @@ function tokenize(src: string): Token[] {
     while (i < src.length) {
         if (' \t\r\n'.includes(src[i])) { i++; continue; }
 
-        // String literals
         if (src[i] === '"' || src[i] === "'") {
             const q = src[i];
             const triple = src.startsWith(q + q + q, i);
@@ -39,7 +38,6 @@ function tokenize(src: string): Token[] {
             continue;
         }
 
-        // Numbers
         if (/\d/.test(src[i])) {
             let j = i;
             if (src[j] === '0' && j + 1 < src.length && 'xXoObB'.includes(src[j + 1])) {
@@ -64,7 +62,6 @@ function tokenize(src: string): Token[] {
             continue;
         }
 
-        // Identifiers and keywords
         if (/[A-Za-z_]/.test(src[i])) {
             let j = i;
             while (j < src.length && /\w/.test(src[j])) j++;
@@ -78,7 +75,6 @@ function tokenize(src: string): Token[] {
             continue;
         }
 
-        // Multi-char operators (longest match first)
         const s3 = src.slice(i, i + 3);
         if (['//=', '**=', '<<=', '>>='].includes(s3)) { tokens.push({ kind: 'OTHER', value: s3 }); i += 3; continue; }
         const s2 = src.slice(i, i + 2);
@@ -104,7 +100,21 @@ function tokenize(src: string): Token[] {
     return tokens;
 }
 
-// ---------- Expression type inferrer (recursive descent) ----------
+// ===== Expression type inferrer =====
+
+// Known return types for built-in functions
+const BUILTIN_RETURN_TYPES: Record<string, LangType> = {
+    print: 'None', exec: 'None',
+    len: 'int', id: 'int', hash: 'int', ord: 'int', round: 'int',
+    chr: 'str', hex: 'str', oct: 'str', bin: 'str', repr: 'str', input: 'str', format: 'str',
+    int: 'int', float: 'float', str: 'str', bool: 'bool',
+    isinstance: 'bool', issubclass: 'bool', callable: 'bool', hasattr: 'bool',
+    abs: 'unknown', max: 'unknown', min: 'unknown', sum: 'unknown',
+    range: 'unknown', enumerate: 'unknown', zip: 'unknown', map: 'unknown', filter: 'unknown',
+    sorted: 'unknown', reversed: 'unknown', getattr: 'unknown', next: 'unknown',
+    iter: 'unknown', open: 'unknown', eval: 'unknown', globals: 'unknown',
+    locals: 'unknown', vars: 'unknown', dir: 'unknown', super: 'unknown', type: 'unknown',
+};
 
 function mergeNumeric(a: LangType, b: LangType): LangType {
     if (a === 'float' || b === 'float') return 'float';
@@ -114,7 +124,11 @@ function mergeNumeric(a: LangType, b: LangType): LangType {
 
 class ExprInferrer {
     private pos = 0;
-    constructor(private readonly tokens: Token[], private readonly env: Map<string, LangType>) {}
+    constructor(
+        private readonly tokens: Token[],
+        private readonly env: Map<string, LangType>,
+        private readonly funcEnv: ReadonlyMap<string, LangType>
+    ) {}
 
     private cur(): Token { return this.tokens[this.pos] ?? { kind: 'EOF', value: '' }; }
     private eat(): Token { return this.tokens[this.pos++] ?? { kind: 'EOF', value: '' }; }
@@ -216,7 +230,6 @@ class ExprInferrer {
             case 'IDENT': {
                 const name = tok.value;
                 this.eat();
-                // function call
                 if (this.cur().kind === 'LPAREN') {
                     this.eat();
                     while (this.cur().kind !== 'RPAREN' && this.cur().kind !== 'EOF') {
@@ -224,8 +237,8 @@ class ExprInferrer {
                         if (this.cur().kind === 'COMMA') this.eat(); else break;
                     }
                     if (this.cur().kind === 'RPAREN') this.eat();
-                    if (name === 'print') return 'None';
-                    return 'unknown';
+                    if (name in BUILTIN_RETURN_TYPES) return BUILTIN_RETURN_TYPES[name];
+                    return this.funcEnv.get(name) ?? 'unknown';
                 }
                 return this.env.get(name) ?? 'unknown';
             }
@@ -242,11 +255,15 @@ class ExprInferrer {
     }
 }
 
-export function inferExprType(src: string, env: Map<string, LangType>): LangType {
-    return new ExprInferrer(tokenize(src), env).infer();
+export function inferExprType(
+    src: string,
+    env: Map<string, LangType>,
+    funcEnv: ReadonlyMap<string, LangType> = new Map()
+): LangType {
+    return new ExprInferrer(tokenize(src), env, funcEnv).infer();
 }
 
-// ---------- Strip comment (respecting strings) ----------
+// ===== Strip comment (respecting strings) =====
 
 function stripComment(line: string): string {
     let inStr = false;
@@ -271,18 +288,116 @@ function stripComment(line: string): string {
     return line;
 }
 
-// ---------- Inlay hints provider ----------
+// ===== Function definition scanning =====
 
-// Matches `let/mut/const name = ...` (not `==`)
+// Matches: fn name(params) -> RetType:
+// Groups:  1=indent  2=name  3=params  4=return annotation (optional)
+const FUNC_DEF_RE = /^(\s*)fn\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*(?:->\s*([A-Za-z_][\w\[\], ]*))?:/;
 const DECL_RE = /^(\s*)(let|mut|const)\s+([A-Za-z_]\w*)\s*=(?!=)/;
+const RETURN_RE = /^return(?:\s+(.+))?$/;
+
+interface FuncDef {
+    name: string;
+    defLine: number;
+    defIndent: number;
+    annotation: LangType | undefined;
+}
+
+function parseTypeAnnotation(s: string | undefined): LangType | undefined {
+    if (!s) return undefined;
+    const t = s.trim();
+    const known: LangType[] = ['int', 'float', 'str', 'bool', 'None'];
+    return known.includes(t as LangType) ? (t as LangType) : 'unknown';
+}
+
+function collectFuncDefs(document: vscode.TextDocument): FuncDef[] {
+    const defs: FuncDef[] = [];
+    for (let i = 0; i < document.lineCount; i++) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const m = stripped.match(FUNC_DEF_RE);
+        if (!m) continue;
+        const [, indentStr, name, , retAnnotation] = m;
+        defs.push({
+            name,
+            defLine: i,
+            defIndent: indentStr.length,
+            annotation: parseTypeAnnotation(retAnnotation),
+        });
+    }
+    return defs;
+}
+
+// Scan function body to infer the return type from `return` statements.
+// Uses funcEnv so calls to already-known functions resolve correctly.
+function inferBodyReturnType(
+    document: vscode.TextDocument,
+    defLine: number,
+    defIndent: number,
+    funcEnv: ReadonlyMap<string, LangType>
+): LangType {
+    const localEnv = new Map<string, LangType>();
+    const returnTypes: LangType[] = [];
+
+    for (let i = defLine + 1; i < document.lineCount; i++) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const trimmed = stripped.trim();
+        if (!trimmed) continue;
+
+        const lineIndent = (stripped.match(/^(\s*)/)?.[1] ?? '').length;
+        if (lineIndent <= defIndent) break;  // exited function body
+
+        // Build local variable env to resolve identifiers in return expressions
+        const declM = stripped.match(DECL_RE);
+        if (declM) {
+            const rhs = stripped.slice(declM[0].length).trim();
+            localEnv.set(declM[3], inferExprType(rhs, localEnv, funcEnv));
+        }
+
+        const retM = trimmed.match(RETURN_RE);
+        if (retM) {
+            const retExpr = retM[1]?.trim();
+            returnTypes.push(retExpr ? inferExprType(retExpr, localEnv, funcEnv) : 'None');
+        }
+    }
+
+    if (returnTypes.length === 0) return 'None';
+    const unique = [...new Set(returnTypes)];
+    return unique.length === 1 ? unique[0] : 'unknown';
+}
+
+// ===== Inlay hints provider =====
 
 export function provideInlayHints(
     document: vscode.TextDocument,
     _range: vscode.Range
 ): vscode.InlayHint[] {
     const hints: vscode.InlayHint[] = [];
-    const env = new Map<string, LangType>();
 
+    // Phase 1: collect all function definitions
+    const funcDefs = collectFuncDefs(document);
+
+    // Phase 2: build funcEnv — annotation takes priority, otherwise infer from body
+    const funcEnv = new Map<string, LangType>();
+    for (const def of funcDefs) {
+        funcEnv.set(def.name,
+            def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv)
+        );
+    }
+
+    // Phase 3: inlay hints on function definition lines (only when no annotation)
+    for (const def of funcDefs) {
+        if (def.annotation !== undefined) continue;
+        const returnType = funcEnv.get(def.name)!;
+        const rawLine = document.lineAt(def.defLine).text;
+        const rparenPos = rawLine.lastIndexOf(')');
+        if (rparenPos < 0) continue;
+        const pos = new vscode.Position(def.defLine, rparenPos + 1);
+        const hint = new vscode.InlayHint(pos, ` -> ${returnType}`, vscode.InlayHintKind.Type);
+        hints.push(hint);
+    }
+
+    // Phase 4: inlay hints on variable declarations, using funcEnv for call resolution
+    const env = new Map<string, LangType>();
     for (let lineIdx = 0; lineIdx < document.lineCount; lineIdx++) {
         const rawLine = document.lineAt(lineIdx).text;
         const line = stripComment(rawLine);
@@ -291,14 +406,13 @@ export function provideInlayHints(
         if (!m) continue;
 
         const [full, indent, keyword, name] = m;
-        // Find the column of `name` in the raw line
         const nameStart = rawLine.indexOf(name, indent.length + keyword.length);
         if (nameStart < 0) continue;
 
         const rhs = line.slice(full.length).trim();
         if (!rhs) continue;
 
-        const type = inferExprType(rhs, env);
+        const type = inferExprType(rhs, env, funcEnv);
         env.set(name, type);
 
         const pos = new vscode.Position(lineIdx, nameStart + name.length);
