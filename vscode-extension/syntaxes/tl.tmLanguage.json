@@ -6,8 +6,15 @@
     { "include": "#comment" },
     { "include": "#string" },
     { "include": "#number" },
+    { "include": "#function-def" },
+    { "include": "#class-def" },
     { "include": "#keyword" },
-    { "include": "#operator" }
+    { "include": "#constant" },
+    { "include": "#builtin-type" },
+    { "include": "#builtin-func" },
+    { "include": "#function-call" },
+    { "include": "#operator" },
+    { "include": "#variable" }
   ],
   "repository": {
     "comment": {
@@ -17,53 +24,146 @@
     "string": {
       "patterns": [
         {
+          "name": "string.quoted.triple.double.tl",
           "begin": "\"\"\"",
           "end": "\"\"\"",
-          "name": "string.quoted.triple.tl"
+          "patterns": [{ "include": "#string-escape" }]
         },
         {
+          "name": "string.quoted.triple.single.tl",
           "begin": "'''",
           "end": "'''",
-          "name": "string.quoted.triple.tl"
+          "patterns": [{ "include": "#string-escape" }]
         },
         {
-          "match": "\"([^\"\\\\]|\\\\.)*\"",
-          "name": "string.quoted.double.tl"
+          "name": "string.quoted.double.tl",
+          "begin": "\"(?!\"\")",
+          "end": "\"",
+          "patterns": [{ "include": "#string-escape" }]
         },
         {
-          "match": "'([^'\\\\]|\\\\.)*'",
-          "name": "string.quoted.single.tl"
+          "name": "string.quoted.single.tl",
+          "begin": "'(?!'')",
+          "end": "'",
+          "patterns": [{ "include": "#string-escape" }]
         }
       ]
+    },
+    "string-escape": {
+      "name": "constant.character.escape.tl",
+      "match": "\\\\(\\\\|[nrtbfv'\"0]|x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\\{[^}]+\\}|[0-7]{1,3})"
     },
     "number": {
       "patterns": [
         { "match": "\\b0[xX][0-9a-fA-F_]+\\b", "name": "constant.numeric.hex.tl" },
         { "match": "\\b0[oO][0-7_]+\\b", "name": "constant.numeric.octal.tl" },
         { "match": "\\b0[bB][01_]+\\b", "name": "constant.numeric.binary.tl" },
-        { "match": "\\b[0-9][0-9_]*\\.[0-9_]*([eE][+-]?[0-9]+)?\\b", "name": "constant.numeric.float.tl" },
+        {
+          "match": "\\b[0-9][0-9_]*\\.([0-9_]+([eE][+-]?[0-9_]+)?|[eE][+-]?[0-9_]+)\\b",
+          "name": "constant.numeric.float.tl"
+        },
         { "match": "\\b[0-9][0-9_]*\\b", "name": "constant.numeric.integer.tl" }
       ]
+    },
+    "function-def": {
+      "match": "\\b(fn)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "storage.type.function.tl" },
+        "2": { "name": "entity.name.function.tl" }
+      }
+    },
+    "class-def": {
+      "match": "\\b(class|template|dataclass|enum)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "storage.type.class.tl" },
+        "2": { "name": "entity.name.type.class.tl" }
+      }
     },
     "keyword": {
       "patterns": [
         {
-          "match": "\\b(let|mut|const|fn|class|template|lambda|if|elif|else|match|for|while|break|continue|pass|return|yield|try|except|finally|raise|import|from|as|del|global|nonlocal|with|async|await|assert)\\b",
+          "match": "\\b(let|mut|const)\\b",
+          "name": "storage.modifier.tl"
+        },
+        {
+          "match": "\\b(yield from|yield|return|block_return|block_yield|pass|break|continue)\\b",
+          "name": "keyword.control.flow.tl"
+        },
+        {
+          "match": "\\b(if|elif|else|match|for|while|block)\\b",
           "name": "keyword.control.tl"
         },
         {
-          "match": "\\b(True|False|None)\\b",
-          "name": "constant.language.tl"
+          "match": "\\b(try|except|finally|raise)\\b",
+          "name": "keyword.control.exception.tl"
         },
         {
-          "match": "\\b(and|or|not|in|is)\\b",
+          "match": "\\b(import|from|as)\\b",
+          "name": "keyword.control.import.tl"
+        },
+        {
+          "match": "\\b(async|await)\\b",
+          "name": "keyword.control.async.tl"
+        },
+        {
+          "match": "\\b(del|global|nonlocal|with|assert|lambda)\\b",
+          "name": "keyword.other.tl"
+        },
+        {
+          "match": "\\b(not in|is not|and|or|not|in|is)\\b",
           "name": "keyword.operator.logical.tl"
         }
       ]
     },
+    "constant": {
+      "match": "\\b(True|False|None)\\b",
+      "name": "constant.language.tl"
+    },
+    "builtin-type": {
+      "match": "\\b(int|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type)\\b",
+      "name": "support.type.builtin.tl"
+    },
+    "builtin-func": {
+      "match": "\\b(print|len|range|enumerate|zip|map|filter|abs|round|pow|divmod|max|min|sum|all|any|sorted|reversed|isinstance|issubclass|callable|getattr|setattr|hasattr|delattr|repr|input|open|chr|ord|hex|oct|bin|id|hash|dir|vars|globals|locals|iter|next|eval|exec|help|format|super|staticmethod|classmethod|property|slice)\\b",
+      "name": "support.function.builtin.tl"
+    },
+    "function-call": {
+      "match": "\\b([A-Za-z_]\\w*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.tl" }
+      }
+    },
+    "variable": {
+      "match": "\\b([A-Za-z_]\\w*)\\b",
+      "name": "variable.other.readwrite.tl"
+    },
     "operator": {
-      "match": "\\*\\*=|//=|<<=|>>=|[+\\-*/%@&|^]=|->|:=|\\*\\*|//|<<|>>|[=!<>]=|[+\\-*/%@&|^~<>]=?",
-      "name": "keyword.operator.tl"
+      "patterns": [
+        {
+          "match": "\\*\\*=|//=|<<=|>>=|[+\\-*/%@&|^]=|:=",
+          "name": "keyword.operator.assignment.augmented.tl"
+        },
+        {
+          "match": "->",
+          "name": "keyword.operator.arrow.tl"
+        },
+        {
+          "match": "=(?!=)",
+          "name": "keyword.operator.assignment.tl"
+        },
+        {
+          "match": "==|!=|<=|>=|<|>",
+          "name": "keyword.operator.comparison.tl"
+        },
+        {
+          "match": "\\*\\*|//|<<|>>",
+          "name": "keyword.operator.arithmetic.tl"
+        },
+        {
+          "match": "[+\\-*/%@&|^~]",
+          "name": "keyword.operator.arithmetic.tl"
+        }
+      ]
     }
   }
 }
