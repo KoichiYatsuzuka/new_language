@@ -363,7 +363,7 @@ impl TypeChecker {
                 self.check_stmts(body);
                 self.pop_scope();
             }
-            Stmt::ClassDef { name, bases: _, body } => {
+            Stmt::ClassDef { name, body, .. } => {
                 self.declare(name.clone(), InferredType::Unknown, false);
                 self.push_scope();
                 self.check_stmts(body);
@@ -554,6 +554,11 @@ impl TypeChecker {
                 let rt = self.infer(right);
                 self.check_binop(op, &lt, &rt, span.clone());
                 Self::infer_binop_result(op, &lt, &rt)
+            }
+            Expr::TemplateInstantiate { base, .. } => {
+                // Template instantiation: defer all type checking to the runtime constraint check.
+                self.infer(base);
+                InferredType::Unknown
             }
         }
     }

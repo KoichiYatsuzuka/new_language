@@ -2,11 +2,28 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, TemplateParam, UnaryOp};
 
 // ---------------------------------------------------------------------------
 // Function / Class / Instance value types
 // ---------------------------------------------------------------------------
+
+/// A template function definition (not yet instantiated with concrete types).
+#[derive(Debug)]
+pub struct TemplateFnValue {
+    pub template_params: Vec<TemplateParam>,
+    pub params: Vec<Param>,
+    pub body: Vec<Stmt>,
+}
+
+/// A template class definition (not yet instantiated with concrete types).
+#[derive(Debug)]
+pub struct TemplateClassValue {
+    pub name: String,
+    pub template_params: Vec<TemplateParam>,
+    pub bases: Vec<String>,
+    pub body: Vec<Stmt>,
+}
 
 #[derive(Debug)]
 pub struct FnValue {
@@ -56,6 +73,10 @@ pub enum Value {
     /// A type value — holds a built-in type name (`int`, `str`, `float`, `bool`).
     /// User-defined class types are represented by `Value::Class`.
     Type(String),
+    /// An uninstantiated template function (parameterized over type variables).
+    TemplateFn(Rc<TemplateFnValue>),
+    /// An uninstantiated template class (parameterized over type variables).
+    TemplateClass(Rc<TemplateClassValue>),
 }
 
 // ---------------------------------------------------------------------------
@@ -266,30 +287,52 @@ impl Interpreter {
                     r => Ok(r),
                 }
             }
-            Stmt::FnDef { name, params, body, .. } => {
-                let fn_val = Rc::new(FnValue { params: params.clone(), body: body.clone() });
+            Stmt::FnDef { name, template_params, params, body, .. } => {
+                if !template_params.is_empty() {
+                    // Template function: store as TemplateFn (no overloading for now).
+                    let tmpl = Rc::new(TemplateFnValue {
+                        template_params: template_params.clone(),
+                        params: params.clone(),
+                        body: body.clone(),
+                    });
+                    self.scopes.last_mut().unwrap()
+                        .insert(name.clone(), Var { value: Value::TemplateFn(tmpl), mutable: false });
+                } else {
+                    let fn_val = Rc::new(FnValue { params: params.clone(), body: body.clone() });
 
-                // Accumulate overloads within the same scope level.
-                let existing = self.scopes.last()
-                    .and_then(|s| s.get(name.as_str()))
-                    .map(|v| v.value.clone());
-                let new_value = match existing {
-                    Some(Value::Function(prev)) => Value::OverloadedFn(vec![prev, fn_val]),
-                    Some(Value::OverloadedFn(mut fns)) => {
-                        fns.push(fn_val);
-                        Value::OverloadedFn(fns)
-                    }
-                    _ => Value::Function(fn_val),
-                };
-                self.scopes.last_mut().unwrap()
-                    .insert(name.clone(), Var { value: new_value, mutable: false });
+                    // Accumulate overloads within the same scope level.
+                    let existing = self.scopes.last()
+                        .and_then(|s| s.get(name.as_str()))
+                        .map(|v| v.value.clone());
+                    let new_value = match existing {
+                        Some(Value::Function(prev)) => Value::OverloadedFn(vec![prev, fn_val]),
+                        Some(Value::OverloadedFn(mut fns)) => {
+                            fns.push(fn_val);
+                            Value::OverloadedFn(fns)
+                        }
+                        _ => Value::Function(fn_val),
+                    };
+                    self.scopes.last_mut().unwrap()
+                        .insert(name.clone(), Var { value: new_value, mutable: false });
+                }
                 Ok(ExecResult::Normal)
             }
             Stmt::TraitDef { .. } => {
                 // Traits are type-check-time constructs; no runtime representation yet.
                 Ok(ExecResult::Normal)
             }
-            Stmt::ClassDef { name, bases, body } => {
+            Stmt::ClassDef { name, template_params, bases, body } => {
+                if !template_params.is_empty() {
+                    // Template class: store as TemplateClass without building ClassValue yet.
+                    let tmpl = Rc::new(TemplateClassValue {
+                        name: name.clone(),
+                        template_params: template_params.clone(),
+                        bases: bases.clone(),
+                        body: body.clone(),
+                    });
+                    self.declare_var(name.clone(), Var { value: Value::TemplateClass(tmpl), mutable: false });
+                    return Ok(ExecResult::Normal);
+                }
                 let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
                 let mut field_defaults = Vec::new();
                 let mut class_vars: HashMap<String, Value> = HashMap::new();
@@ -789,7 +832,16 @@ impl Interpreter {
                 let rv = self.eval(right)?;
                 self.apply_binop(op, lv, rv)
             }
+            Expr::TemplateInstantiate { .. } => {
+                Err("TemplateError: template expression must be immediately called (e.g. `Func[T](args)`)".to_string())
+            }
             Expr::Call { func, args } => {
+                // Template call: expr[T1, T2](args)
+                if let Expr::TemplateInstantiate { base, type_args } = func.as_ref() {
+                    let tmpl_val = self.eval(base)?;
+                    return self.instantiate_template(tmpl_val, type_args, args);
+                }
+
                 // Method call: obj.method(args)
                 if let Expr::Attr { object, attr } = func.as_ref() {
                     let obj_val = self.eval(object)?;
@@ -851,6 +903,9 @@ impl Interpreter {
                     Value::Function(fn_val) => self.exec_fn(fn_val, args, None),
                     Value::OverloadedFn(candidates) => self.dispatch_overload(candidates, args, None),
                     Value::Class(cls) => self.instantiate(cls, args),
+                    Value::TemplateFn(_) | Value::TemplateClass(_) => Err(
+                        "TemplateError: template must be called with explicit type arguments (e.g. `Func[T](args)`)".to_string()
+                    ),
                     _ => Err(format!("TypeError: '{}' object is not callable", self.type_name(&callee))),
                 }
             }
@@ -870,6 +925,7 @@ impl Interpreter {
             Value::Function(_) | Value::OverloadedFn(_) => "function",
             Value::Class(_) | Value::Type(_) => "type",
             Value::Instance(_) => "object",
+            Value::TemplateFn(_) | Value::TemplateClass(_) => "template",
         }
     }
 
@@ -895,7 +951,124 @@ impl Interpreter {
             Value::Class(c) => format!("<class '{}'>", c.name),
             Value::Instance(i) => format!("<{} object>", i.borrow().class.name),
             Value::Type(name) => format!("<type '{name}'>"),
+            Value::TemplateFn(t) => format!("<template fn ({} type params)>", t.template_params.len()),
+            Value::TemplateClass(t) => format!("<template class '{}'>", t.name),
         }
+    }
+
+    // --- Template instantiation ---
+
+    /// Verify that each concrete type arg satisfies the template parameter's trait constraints.
+    fn check_template_constraints(
+        &self,
+        template_params: &[TemplateParam],
+        type_args: &[String],
+    ) -> Result<(), String> {
+        if template_params.len() != type_args.len() {
+            return Err(format!(
+                "TemplateError: expected {} type argument(s), got {}",
+                template_params.len(),
+                type_args.len()
+            ));
+        }
+        for (param, type_name) in template_params.iter().zip(type_args.iter()) {
+            for constraint in &param.constraints {
+                if !self.type_satisfies_trait(type_name, constraint)? {
+                    return Err(format!(
+                        "TemplateError: type `{type_name}` does not satisfy trait `{constraint}` \
+                         (required for template parameter `{}`)",
+                        param.name
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns true if the named type implements the given trait (i.e. has it in its bases).
+    fn type_satisfies_trait(&self, type_name: &str, trait_name: &str) -> Result<bool, String> {
+        match self.get_val(type_name) {
+            Some(Value::Class(cls)) => Ok(cls.bases.contains(&trait_name.to_string())),
+            Some(_) => Ok(false), // built-in types and non-class values have no trait implementations
+            None => Err(format!("NameError: type `{type_name}` is not defined")),
+        }
+    }
+
+    /// Instantiate a template function or class with the given concrete type arguments.
+    fn instantiate_template(
+        &mut self,
+        tmpl_val: Value,
+        type_args: &[String],
+        call_args: &[CallArg],
+    ) -> Result<Value, String> {
+        match tmpl_val {
+            Value::TemplateFn(tmpl) => {
+                self.check_template_constraints(&tmpl.template_params, type_args)?;
+                let type_map: HashMap<String, String> = tmpl.template_params.iter()
+                    .zip(type_args.iter())
+                    .map(|(p, t)| (p.name.clone(), t.clone()))
+                    .collect();
+                let concrete_params = subst_params(&tmpl.params, &type_map);
+                let concrete_body = subst_stmts(&tmpl.body, &type_map);
+                let fn_val = Rc::new(FnValue { params: concrete_params, body: concrete_body });
+                self.exec_fn(fn_val, call_args, None)
+            }
+            Value::TemplateClass(tmpl) => {
+                self.check_template_constraints(&tmpl.template_params, type_args)?;
+                let type_map: HashMap<String, String> = tmpl.template_params.iter()
+                    .zip(type_args.iter())
+                    .map(|(p, t)| (p.name.clone(), t.clone()))
+                    .collect();
+                let concrete_body = subst_stmts(&tmpl.body, &type_map);
+                self.instantiate_template_class(&tmpl, concrete_body, call_args)
+            }
+            _ => Err("TemplateError: expression is not a template".to_string()),
+        }
+    }
+
+    /// Build a concrete ClassValue from a substituted template class body, then instantiate it.
+    fn instantiate_template_class(
+        &mut self,
+        tmpl: &TemplateClassValue,
+        concrete_body: Vec<Stmt>,
+        call_args: &[CallArg],
+    ) -> Result<Value, String> {
+        let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
+        let mut field_defaults = Vec::new();
+        let mut class_vars: HashMap<String, Value> = HashMap::new();
+        let mut field_mutability: HashMap<String, bool> = HashMap::new();
+        for stmt in &concrete_body {
+            match stmt {
+                Stmt::FnDef { name: mname, params, body: mbody, .. } => {
+                    methods.entry(mname.clone()).or_default().push(Rc::new(FnValue {
+                        params: params.clone(),
+                        body: mbody.clone(),
+                    }));
+                }
+                Stmt::Field { name: fname, kind: FieldKind::Const, default: Some(init), .. } => {
+                    let val = self.eval(init)?;
+                    class_vars.insert(fname.clone(), val);
+                }
+                Stmt::Field { name: fname, kind, default, .. } => {
+                    let mutable = *kind == FieldKind::Mut;
+                    field_mutability.insert(fname.clone(), mutable);
+                    if let Some(init) = default {
+                        let val = self.eval(init)?;
+                        field_defaults.push((fname.clone(), val, mutable));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let cls = Rc::new(ClassValue {
+            name: tmpl.name.clone(),
+            bases: tmpl.bases.clone(),
+            methods,
+            field_defaults,
+            class_vars,
+            field_mutability,
+        });
+        self.instantiate(cls, call_args)
     }
 
     fn display_repr(&self, val: &Value) -> String {
@@ -917,7 +1090,8 @@ impl Interpreter {
             Value::Str(s) => !s.is_empty(),
             Value::None => false,
             Value::List(items) => !items.is_empty(),
-            Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) | Value::Type(_) => true,
+            Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) | Value::Type(_)
+            | Value::TemplateFn(_) | Value::TemplateClass(_) => true,
         }
     }
 
@@ -1019,6 +1193,146 @@ impl Interpreter {
             (Value::Class(a), Value::Class(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AST substitution helpers (for template instantiation)
+// ---------------------------------------------------------------------------
+
+fn subst_type(type_name: &str, type_map: &HashMap<String, String>) -> String {
+    type_map.get(type_name).cloned().unwrap_or_else(|| type_name.to_string())
+}
+
+fn subst_params(params: &[Param], type_map: &HashMap<String, String>) -> Vec<Param> {
+    params.iter().map(|p| Param {
+        name: p.name.clone(),
+        mutable: p.mutable,
+        type_ann: p.type_ann.as_ref().map(|t| subst_type(t, type_map)),
+    }).collect()
+}
+
+fn subst_call_arg(arg: &CallArg, type_map: &HashMap<String, String>) -> CallArg {
+    match arg {
+        CallArg::Positional(e) => CallArg::Positional(subst_expr(e, type_map)),
+        CallArg::Keyword { name, value } => CallArg::Keyword {
+            name: name.clone(),
+            value: subst_expr(value, type_map),
+        },
+    }
+}
+
+fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
+    match expr {
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::None => expr.clone(),
+        Expr::Ident(name) => Expr::Ident(name.clone()),
+        Expr::List(items) => Expr::List(items.iter().map(|e| subst_expr(e, type_map)).collect()),
+        Expr::Attr { object, attr } => Expr::Attr {
+            object: Box::new(subst_expr(object, type_map)),
+            attr: attr.clone(),
+        },
+        Expr::TraitAccess { object, trait_name, attr } => Expr::TraitAccess {
+            object: Box::new(subst_expr(object, type_map)),
+            trait_name: trait_name.clone(),
+            attr: attr.clone(),
+        },
+        Expr::BinOp { op, left, right, span } => Expr::BinOp {
+            op: op.clone(),
+            left: Box::new(subst_expr(left, type_map)),
+            right: Box::new(subst_expr(right, type_map)),
+            span: span.clone(),
+        },
+        Expr::UnaryOp { op, operand } => Expr::UnaryOp {
+            op: op.clone(),
+            operand: Box::new(subst_expr(operand, type_map)),
+        },
+        Expr::Call { func, args } => Expr::Call {
+            func: Box::new(subst_expr(func, type_map)),
+            args: args.iter().map(|a| subst_call_arg(a, type_map)).collect(),
+        },
+        Expr::TemplateInstantiate { base, type_args } => Expr::TemplateInstantiate {
+            base: Box::new(subst_expr(base, type_map)),
+            type_args: type_args.iter().map(|t| subst_type(t, type_map)).collect(),
+        },
+    }
+}
+
+fn subst_stmts(stmts: &[Stmt], type_map: &HashMap<String, String>) -> Vec<Stmt> {
+    stmts.iter().map(|s| subst_stmt(s, type_map)).collect()
+}
+
+fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
+    match stmt {
+        Stmt::Expr(e) => Stmt::Expr(subst_expr(e, type_map)),
+        Stmt::Let(name, e) => Stmt::Let(name.clone(), subst_expr(e, type_map)),
+        Stmt::Const(name, e) => Stmt::Const(name.clone(), subst_expr(e, type_map)),
+        Stmt::Mut(name, e) => Stmt::Mut(name.clone(), subst_expr(e, type_map)),
+        Stmt::Assign { name, value, span } => Stmt::Assign {
+            name: name.clone(),
+            value: subst_expr(value, type_map),
+            span: span.clone(),
+        },
+        Stmt::AttrAssign { target, value } => Stmt::AttrAssign {
+            target: subst_expr(target, type_map),
+            value: subst_expr(value, type_map),
+        },
+        Stmt::AttrCompoundAssign { target, op, value } => Stmt::AttrCompoundAssign {
+            target: subst_expr(target, type_map),
+            op: op.clone(),
+            value: subst_expr(value, type_map),
+        },
+        Stmt::CompoundAssign { name, op, value, span } => Stmt::CompoundAssign {
+            name: name.clone(),
+            op: op.clone(),
+            value: subst_expr(value, type_map),
+            span: span.clone(),
+        },
+        Stmt::If { branches, else_body } => Stmt::If {
+            branches: branches.iter()
+                .map(|(cond, body)| (subst_expr(cond, type_map), subst_stmts(body, type_map)))
+                .collect(),
+            else_body: else_body.as_ref().map(|b| subst_stmts(b, type_map)),
+        },
+        Stmt::While { cond, body } => Stmt::While {
+            cond: subst_expr(cond, type_map),
+            body: subst_stmts(body, type_map),
+        },
+        Stmt::For { target, iter, body } => Stmt::For {
+            target: target.clone(),
+            iter: subst_expr(iter, type_map),
+            body: subst_stmts(body, type_map),
+        },
+        Stmt::Block(body) => Stmt::Block(subst_stmts(body, type_map)),
+        Stmt::Return(e) => Stmt::Return(e.as_ref().map(|e| subst_expr(e, type_map))),
+        Stmt::Break => Stmt::Break,
+        Stmt::Continue => Stmt::Continue,
+        Stmt::Pass => Stmt::Pass,
+        Stmt::BlockReturn(e) => Stmt::BlockReturn(subst_expr(e, type_map)),
+        Stmt::BlockYield(e) => Stmt::BlockYield(subst_expr(e, type_map)),
+        Stmt::FnDef { name, template_params, params, return_type, body, is_virtual } => Stmt::FnDef {
+            name: name.clone(),
+            template_params: template_params.clone(),
+            params: subst_params(params, type_map),
+            return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
+            body: subst_stmts(body, type_map),
+            is_virtual: *is_virtual,
+        },
+        Stmt::ClassDef { name, template_params, bases, body } => Stmt::ClassDef {
+            name: name.clone(),
+            template_params: template_params.clone(),
+            bases: bases.clone(),
+            body: subst_stmts(body, type_map),
+        },
+        Stmt::TraitDef { name, body } => Stmt::TraitDef {
+            name: name.clone(),
+            body: subst_stmts(body, type_map),
+        },
+        Stmt::Field { name, kind, type_ann, default } => Stmt::Field {
+            name: name.clone(),
+            kind: kind.clone(),
+            type_ann: subst_type(type_ann, type_map),
+            default: default.as_ref().map(|e| subst_expr(e, type_map)),
+        },
     }
 }
 

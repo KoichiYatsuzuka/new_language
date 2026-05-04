@@ -2,6 +2,16 @@
 
 use crate::token::Span;
 
+/// A template type parameter with its trait constraints.
+/// Syntax: `T: Trait1 and Trait2`
+#[derive(Debug, Clone)]
+pub struct TemplateParam {
+    /// Name of the type variable (e.g. `T`, `T1`).
+    pub name: String,
+    /// Trait names the concrete type must implement (`and`-combined).
+    pub constraints: Vec<String>,
+}
+
 /// A single argument in a function call: positional or keyword (`name=value`).
 #[derive(Debug, Clone)]
 pub enum CallArg {
@@ -53,6 +63,9 @@ pub enum Expr {
     BinOp { op: BinOp, left: Box<Expr>, right: Box<Expr>, span: Span },
     UnaryOp { op: UnaryOp, operand: Box<Expr> },
     Call { func: Box<Expr>, args: Vec<CallArg> },
+    /// Template instantiation: `expr[T1, T2]` — type arguments applied to a template value.
+    /// Must appear as the `func` of a `Call` expression; not valid as a standalone value.
+    TemplateInstantiate { base: Box<Expr>, type_args: Vec<String> },
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +100,8 @@ pub enum Stmt {
     BlockYield(Expr),        // block_yield expr
     FnDef {
         name: String,
+        /// Template type parameters (empty for non-template functions).
+        template_params: Vec<TemplateParam>,
         params: Vec<Param>,
         return_type: Option<String>,
         body: Vec<Stmt>,
@@ -94,6 +109,8 @@ pub enum Stmt {
     },
     ClassDef {
         name: String,
+        /// Template type parameters (empty for non-template classes).
+        template_params: Vec<TemplateParam>,
         bases: Vec<String>,
         body: Vec<Stmt>,
     },

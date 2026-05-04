@@ -82,6 +82,7 @@ test_lang/
 - **クラスメンバ変数**: クラス本体では必ず型アノテーション付きで宣言する（`[mut|let|const] name: Type [= default]`）。型アノテーションのない宣言はパースエラー
 - **デフォルトコンストラクタ自動生成**: 初期値なしの `mut`/`let` フィールドが 1 つ以上あるとき、パーサーが `__init__(mut self, field1: Type1, ...)` を AST に挿入する。既存の `__init__` と引数の型・個数が完全一致する場合は生成しない（override）。型・個数が異なる場合は共存する（overload）
 - **関数オーバーロード**: 同名関数を引数の型・個数で区別して複数定義可能
+- **テンプレート**: 関数・クラスの定義時に型変数を宣言し、呼び出し時に具体的な型を指定する。構文: `fn f[T: Trait]()` / `class C[T: Trait]:`。テンプレート呼び出し構文: `f[Type](args)` / `C[Type](args)`
 
 ### 静的型検査（`src/type_check.rs`）
 パース後・実行前に AST を走査し、`StaticTypeError` を収集してまとめて報告する。
@@ -128,7 +129,8 @@ test_lang/
   - `const name: Type = default` — クラス変数（全インスタンスで共有）。必ず初期値が必要。`instance.name` および `ClassName.name` でアクセス可能。代入は不可
 - **フィールド可変性の実行時チェック**: `let` フィールドへの再代入は `TypeError`、`const` クラス変数への代入も `TypeError`
 - **関数オーバーロード**: 同名関数が複数あるとき `Value::OverloadedFn(Vec<Rc<FnValue>>)` として蓄積。呼び出し時に引数の個数→型で候補を絞り込む
-- 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Function(Rc<FnValue>)`, `OverloadedFn(Vec<Rc<FnValue>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`
+- **テンプレート関数・クラス**: `Value::TemplateFn` / `Value::TemplateClass` として格納。呼び出し時に型引数の trait 制約を検証し、AST 内の型変数を具体型に置換して実行
+- 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Function(Rc<FnValue>)`, `OverloadedFn(Vec<Rc<FnValue>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `TemplateFn(Rc<TemplateFnValue>)`, `TemplateClass(Rc<TemplateClassValue>)`
 
 ### VS Code 拡張（`vscode-extension/`）
 - `.tl` ファイルのシンタックスハイライト
@@ -151,7 +153,7 @@ test_lang/
 - 変数宣言に `let` / `mut` / `const` が必要
 - 関数定義は `def` ではなく `fn`
 - パース後・実行前に静的型検査を行い `StaticTypeError` を出す
-- `template` キーワードによるテンプレートをサポート（構文未実装）
+- テンプレートをサポート: `fn f[T: Trait]()` / `class C[T: Trait]:` で型変数を宣言し、`f[Type](args)` で呼び出す
 - 変更しうる引数には `mut` を明示する必要がある
 - 空のコレクションは型を明示しなければならない（`list[int]` など）
 - `dataclass` / `enum` などを標準でサポート（未実装）
@@ -205,6 +207,55 @@ fn add(a: str, b: str) -> str:   return a + b
 - 呼び出し時は引数の個数 → 型の順で候補を絞り込み、最初にマッチしたものを実行
 - どの候補にも一致しない場合は実行時エラー
 - 静的型検査: 個数が合う候補がなければ `NoMatchingOverload` エラー
+
+### テンプレート
+
+関数・クラスの定義時に型変数と trait 制約を宣言できる。
+
+```tl
+fn func[T1: Trait1, T2: Trait2](a: T1, b: T2) -> T1:
+    ...
+
+class MyClass[T: Trait1 and Trait2]:
+    mut item: T
+    fn get(self) -> T:
+        return self.item
+```
+
+**呼び出し構文**: `func[ConcreteType](args)` / `MyClass[ConcreteType](args)`
+
+```tl
+trait Printable:
+    fn to_str(self) -> str:
+        ...
+
+class MyInt(Printable):
+    mut value: int
+    fn to_str(self) -> str: return "MyInt"
+
+fn describe[T: Printable](item: T) -> str:
+    return item.to_str()
+
+let a = MyInt(42)
+let s = describe[MyInt](a)   # → "MyInt"
+```
+
+**制約の仕様**:
+- 型変数ごとに `: Trait` で trait 制約を指定する
+- `and` で複数 trait を結合できる: `[T: TraitA and TraitB]`
+- 呼び出し時に型変数に渡された具体型が制約を満たさない場合、`TemplateError` を送出して停止
+- 具体型が trait を実装しているかは、クラス定義の `bases`（継承 trait リスト）で判定する
+- 組み込み型（`int`, `str` 等）は trait を実装していないため、trait 制約を持つテンプレートには渡せない
+
+**実装の仕組み**:
+1. パース時: テンプレートパラメータ付きの `FnDef` / `ClassDef` を AST に生成し、インタープリタが `Value::TemplateFn` / `Value::TemplateClass` として格納
+2. 呼び出し時: 型引数ごとに `type_satisfies_trait()` で制約を検証し、違反があれば即エラー
+3. 制約通過後: `subst_*` 関数群で AST 内の型変数名を具体型名に置換した新しい AST を生成して実行
+
+**現在の制限**:
+- テンプレート関数のオーバーロードは未対応（同名テンプレート関数を複数定義すると後の定義で上書き）
+- `list[T]` のような複合型に含まれる型変数は置換されない（`parse_type_expr` が基底型名のみ返すため）
+- テンプレート呼び出しの静的型検査は未対応（制約チェックは実行時のみ）
 
 ## 次に実装すべき機能（優先順）
 

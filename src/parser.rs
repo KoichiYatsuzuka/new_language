@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, TemplateParam, UnaryOp};
 use crate::token::{Span, Spanned, Token};
 
 pub struct Parser {
@@ -241,6 +241,7 @@ impl Parser {
     fn parse_fn_def(&mut self) -> Result<Stmt, String> {
         self.advance(); // consume `fn`
         let name = self.expect_ident()?;
+        let template_params = self.parse_template_params()?;
         self.eat(&Token::LParen)?;
         let mut params = Vec::new();
         while *self.current() != Token::RParen && *self.current() != Token::Eof {
@@ -274,7 +275,7 @@ impl Parser {
         } else {
             (self.parse_block()?, false)
         };
-        Ok(Stmt::FnDef { name, params, return_type, body, is_virtual })
+        Ok(Stmt::FnDef { name, template_params, params, return_type, body, is_virtual })
     }
 
     /// Returns true when the upcoming token sequence is NEWLINE INDENT ELLIPSIS,
@@ -357,6 +358,7 @@ impl Parser {
     fn parse_class_def(&mut self) -> Result<Stmt, String> {
         self.advance(); // consume `class`
         let name = self.expect_ident()?;
+        let template_params = self.parse_template_params()?;
         let mut bases = Vec::new();
         if *self.current() == Token::LParen {
             self.advance();
@@ -461,6 +463,7 @@ impl Parser {
                 }
                 body.push(Stmt::FnDef {
                     name: "__init__".to_string(),
+                    template_params: vec![],
                     params,
                     return_type: Some("None".to_string()),
                     body: init_body,
@@ -469,7 +472,7 @@ impl Parser {
             }
         }
 
-        Ok(Stmt::ClassDef { name, bases, body })
+        Ok(Stmt::ClassDef { name, template_params, bases, body })
     }
 
     /// Parses the indented body of a class definition.
@@ -548,6 +551,34 @@ impl Parser {
             && non_self.iter().zip(required_fields.iter()).all(|(p, (_, ftype))| {
                 p.type_ann.as_deref() == Some(ftype.as_str())
             })
+    }
+
+    /// Parses optional template parameters: `[T1: Trait1 and Trait2, T2: Trait3]`.
+    /// Returns an empty vec if the current token is not `[`.
+    fn parse_template_params(&mut self) -> Result<Vec<TemplateParam>, String> {
+        if *self.current() != Token::LBracket {
+            return Ok(vec![]);
+        }
+        self.advance(); // consume `[`
+        let mut params = Vec::new();
+        while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+            let name = self.expect_ident()?;
+            self.eat(&Token::Colon)?;
+            let mut constraints = vec![self.expect_ident()?];
+            // `and`-combined constraints: `T: TraitA and TraitB`
+            while *self.current() == Token::And {
+                self.advance();
+                constraints.push(self.expect_ident()?);
+            }
+            params.push(TemplateParam { name, constraints });
+            if *self.current() == Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.eat(&Token::RBracket)?;
+        Ok(params)
     }
 
     fn parse_param(&mut self) -> Result<Param, String> {
@@ -825,6 +856,21 @@ impl Parser {
                     self.eat(&Token::Dot)?;
                     let attr = self.expect_ident()?;
                     expr = Expr::TraitAccess { object: Box::new(expr), trait_name, attr };
+                }
+                Token::LBracket => {
+                    // Template instantiation: `expr[T1, T2]`
+                    self.advance(); // consume `[`
+                    let mut type_args = Vec::new();
+                    while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+                        type_args.push(self.parse_type_expr()?);
+                        if *self.current() == Token::Comma {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    self.eat(&Token::RBracket)?;
+                    expr = Expr::TemplateInstantiate { base: Box::new(expr), type_args };
                 }
                 _ => break,
             }
