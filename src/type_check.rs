@@ -369,7 +369,7 @@ impl TypeChecker {
                 self.check_stmts(body);
                 self.pop_scope();
             }
-            Stmt::TraitDef { name, body } => {
+            Stmt::TraitDef { name, body, .. } => {
                 self.declare(name.clone(), InferredType::Unknown, false);
                 self.push_scope();
                 self.check_stmts(body);

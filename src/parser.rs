@@ -6,8 +6,8 @@ use crate::token::{Span, Spanned, Token};
 pub struct Parser {
     tokens: Vec<Spanned>,
     pos: usize,
-    /// trait name → (fields: [(name, kind, type_ann, has_default)], virtual_methods: [name])
-    known_traits: HashMap<String, (Vec<(String, FieldKind, String, bool)>, Vec<String>)>,
+    /// trait name → (template_params, fields: [(name, kind, type_ann, has_default)], virtual_methods: [name])
+    known_traits: HashMap<String, (Vec<TemplateParam>, Vec<(String, FieldKind, String, bool)>, Vec<String>)>,
 }
 
 impl Parser {
@@ -290,6 +290,7 @@ impl Parser {
     fn parse_trait_def(&mut self) -> Result<Stmt, String> {
         self.advance(); // consume `trait`
         let name = self.expect_ident()?;
+        let template_params = self.parse_template_params()?;
         if *self.current() == Token::LParen {
             return Err(format!("StaticTypeError: trait `{name}` cannot inherit from another type"));
         }
@@ -350,20 +351,25 @@ impl Parser {
                 }
             })
             .collect();
-        self.known_traits.insert(name.clone(), (fields, virtual_methods));
+        self.known_traits.insert(name.clone(), (template_params.clone(), fields, virtual_methods));
 
-        Ok(Stmt::TraitDef { name, body })
+        Ok(Stmt::TraitDef { name, template_params, body })
     }
 
     fn parse_class_def(&mut self) -> Result<Stmt, String> {
         self.advance(); // consume `class`
         let name = self.expect_ident()?;
         let template_params = self.parse_template_params()?;
+        // bases_with_args: (trait_name, concrete_type_args)
+        let mut bases_with_args: Vec<(String, Vec<String>)> = Vec::new();
         let mut bases = Vec::new();
         if *self.current() == Token::LParen {
             self.advance();
             while *self.current() != Token::RParen && *self.current() != Token::Eof {
-                bases.push(self.expect_ident()?);
+                let base_name = self.expect_ident()?;
+                let type_args = self.parse_type_args()?;
+                bases_with_args.push((base_name.clone(), type_args));
+                bases.push(base_name);
                 if *self.current() == Token::Comma {
                     self.advance();
                 } else {
@@ -386,8 +392,13 @@ impl Parser {
         // Collect trait required fields and check virtual method overrides.
         // trait_required: (trait_name, field_name, type_ann)
         let mut trait_required: Vec<(String, String, String)> = Vec::new();
-        for base in &bases {
-            if let Some((trait_fields, virtual_methods)) = self.known_traits.get(base).cloned() {
+        for (base, concrete_args) in &bases_with_args {
+            if let Some((trait_tparams, trait_fields, virtual_methods)) = self.known_traits.get(base).cloned() {
+                // Build substitution map from trait template params to concrete type args
+                let type_map: HashMap<String, String> = trait_tparams.iter()
+                    .zip(concrete_args.iter())
+                    .map(|(tp, arg)| (tp.name.clone(), arg.clone()))
+                    .collect();
                 for virt in &virtual_methods {
                     let overridden = body.iter().any(|s| {
                         matches!(s, Stmt::FnDef { name: n, is_virtual: false, .. } if n == virt)
@@ -400,7 +411,9 @@ impl Parser {
                 }
                 for (fname, _kind, ftype, has_default) in &trait_fields {
                     if !has_default {
-                        trait_required.push((base.clone(), fname.clone(), ftype.clone()));
+                        // Substitute type variables in field type annotation
+                        let resolved_type = type_map.get(ftype).cloned().unwrap_or_else(|| ftype.clone());
+                        trait_required.push((base.clone(), fname.clone(), resolved_type));
                     }
                 }
             }
@@ -551,6 +564,26 @@ impl Parser {
             && non_self.iter().zip(required_fields.iter()).all(|(p, (_, ftype))| {
                 p.type_ann.as_deref() == Some(ftype.as_str())
             })
+    }
+
+    /// Parses optional concrete type arguments at a call/inheritance site: `[Type1, Type2]`.
+    /// Returns an empty vec if the current token is not `[`.
+    fn parse_type_args(&mut self) -> Result<Vec<String>, String> {
+        if *self.current() != Token::LBracket {
+            return Ok(vec![]);
+        }
+        self.advance(); // consume `[`
+        let mut args = Vec::new();
+        while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+            args.push(self.parse_type_expr()?);
+            if *self.current() == Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.eat(&Token::RBracket)?;
+        Ok(args)
     }
 
     /// Parses optional template parameters: `[T1: Trait1 and Trait2, T2: Trait3]`.

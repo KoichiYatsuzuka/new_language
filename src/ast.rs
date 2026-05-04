@@ -116,6 +116,7 @@ pub enum Stmt {
     },
     TraitDef {
         name: String,
+        template_params: Vec<TemplateParam>,
         body: Vec<Stmt>,
     },
     /// Typed field declaration inside a class body.

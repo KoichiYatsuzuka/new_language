@@ -1323,8 +1323,9 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             bases: bases.clone(),
             body: subst_stmts(body, type_map),
         },
-        Stmt::TraitDef { name, body } => Stmt::TraitDef {
+        Stmt::TraitDef { name, template_params, body } => Stmt::TraitDef {
             name: name.clone(),
+            template_params: template_params.clone(),
             body: subst_stmts(body, type_map),
         },
         Stmt::Field { name, kind, type_ann, default } => Stmt::Field {

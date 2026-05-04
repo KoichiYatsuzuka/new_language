@@ -210,7 +210,7 @@ fn add(a: str, b: str) -> str:   return a + b
 
 ### テンプレート
 
-関数・クラスの定義時に型変数と trait 制約を宣言できる。
+関数・クラス・**trait** の定義時に型変数と trait 制約を宣言できる。
 
 ```tl
 fn func[T1: Trait1, T2: Trait2](a: T1, b: T2) -> T1:
@@ -220,9 +220,14 @@ class MyClass[T: Trait1 and Trait2]:
     mut item: T
     fn get(self) -> T:
         return self.item
+
+trait Container[T: Printable]:
+    mut item: T
 ```
 
 **呼び出し構文**: `func[ConcreteType](args)` / `MyClass[ConcreteType](args)`
+
+**trait テンプレートの継承**: クラスは `class Foo(MyTrait[ConcreteType]):` の形式で template trait を具体化して継承できる。型変数はフィールドの型アノテーションに置換されて auto-init が生成される。
 
 ```tl
 trait Printable:
