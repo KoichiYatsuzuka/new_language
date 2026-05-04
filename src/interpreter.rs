@@ -4,9 +4,38 @@ use std::rc::Rc;
 
 use crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, TemplateParam, UnaryOp};
 
+thread_local! {
+    /// Yield collector active while a generator body is being eagerly evaluated.
+    /// `None` means we are not inside a generator execution context.
+    static GENERATOR_YIELDS: RefCell<Option<Vec<Value>>> = RefCell::new(None);
+}
+
 // ---------------------------------------------------------------------------
 // Function / Class / Instance value types
 // ---------------------------------------------------------------------------
+
+/// A generator function definition (callable; returns a Generator when invoked).
+#[derive(Debug)]
+pub struct GeneratorFnValue {
+    pub params: Vec<Param>,
+    pub body: Vec<Stmt>,
+}
+
+/// A template generator function (not yet instantiated with concrete types).
+#[derive(Debug)]
+pub struct TemplateGenFnValue {
+    pub template_params: Vec<TemplateParam>,
+    pub params: Vec<Param>,
+    pub body: Vec<Stmt>,
+}
+
+/// Runtime state of an instantiated generator object.
+/// Holds all eagerly-collected yielded values and the current consumption index.
+#[derive(Debug)]
+pub struct GeneratorState {
+    pub values: Vec<Value>,
+    pub index: usize,
+}
 
 /// A template function definition (not yet instantiated with concrete types).
 #[derive(Debug)]
@@ -77,6 +106,12 @@ pub enum Value {
     TemplateFn(Rc<TemplateFnValue>),
     /// An uninstantiated template class (parameterized over type variables).
     TemplateClass(Rc<TemplateClassValue>),
+    /// A generator function (callable; returns a Generator when invoked).
+    GeneratorFn(Rc<GeneratorFnValue>),
+    /// A template generator function (parameterized over type variables).
+    TemplateGenFn(Rc<TemplateGenFnValue>),
+    /// An instantiated generator: holds all eagerly-collected yielded values.
+    Generator(Rc<RefCell<GeneratorState>>),
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +352,31 @@ impl Interpreter {
                 }
                 Ok(ExecResult::Normal)
             }
+            Stmt::Yield(expr) => {
+                let val = self.eval(expr)?;
+                GENERATOR_YIELDS.with(|y| {
+                    if let Some(yields) = y.borrow_mut().as_mut() {
+                        yields.push(val.clone());
+                    }
+                });
+                Ok(ExecResult::Normal)
+            }
+            Stmt::GenDef { name, template_params, params, body, .. } => {
+                if !template_params.is_empty() {
+                    let tmpl = Rc::new(TemplateGenFnValue {
+                        template_params: template_params.clone(),
+                        params: params.clone(),
+                        body: body.clone(),
+                    });
+                    self.scopes.last_mut().unwrap()
+                        .insert(name.clone(), Var { value: Value::TemplateGenFn(tmpl), mutable: false });
+                } else {
+                    let gen_fn = Rc::new(GeneratorFnValue { params: params.clone(), body: body.clone() });
+                    self.scopes.last_mut().unwrap()
+                        .insert(name.clone(), Var { value: Value::GeneratorFn(gen_fn), mutable: false });
+                }
+                Ok(ExecResult::Normal)
+            }
             Stmt::TraitDef { .. } => {
                 // Traits are type-check-time constructs; no runtime representation yet.
                 Ok(ExecResult::Normal)
@@ -476,6 +536,40 @@ impl Interpreter {
     ) -> Result<Value, String> {
         let evaled = self.eval_call_args(call_args)?;
         self.exec_fn_evaled(fn_val, &evaled, self_val)
+    }
+
+    /// Execute a generator function body, collecting all yielded values eagerly,
+    /// and return a Generator object.
+    fn exec_generator(&mut self, gen_fn: Rc<GeneratorFnValue>, call_args: &[CallArg]) -> Result<Value, String> {
+        let evaled = self.eval_call_args(call_args)?;
+        let bindings = Self::bind_args(&gen_fn.params, &evaled, None)?;
+
+        // Activate yield collection for this generator run.
+        GENERATOR_YIELDS.with(|y| {
+            *y.borrow_mut() = Some(Vec::new());
+        });
+
+        // Execute in a fresh scope (same isolation as exec_fn_evaled).
+        let outer_scopes: Vec<_> = self.scopes.drain(1..).collect();
+        self.push_scope();
+        for (name, val, mutable) in bindings {
+            self.declare_var(name, Var { value: val, mutable });
+        }
+        let exec_result = self.exec_block(&gen_fn.body);
+        self.scopes.truncate(1);
+        self.scopes.extend(outer_scopes);
+
+        // Always collect (and clean up) the thread-local even on error.
+        let yields = GENERATOR_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
+
+        match exec_result? {
+            ExecResult::Normal | ExecResult::BlockReturn(_) => {}
+            ExecResult::Break    => return Err("SyntaxError: 'break' outside loop".to_string()),
+            ExecResult::Continue => return Err("SyntaxError: 'continue' outside loop".to_string()),
+            ExecResult::Return(_) => {} // silently ignored (parser already forbids return in gen)
+        }
+
+        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: yields, index: 0 }))))
     }
 
     fn eval_call_args(&mut self, call_args: &[CallArg]) -> Result<Vec<(Option<String>, Value)>, String> {
@@ -698,6 +792,24 @@ impl Interpreter {
                     self.dispatch_overload(overloads, args, Some(obj.clone()))
                 }
             }
+            Value::Generator(state) => {
+                if method_name != "next" {
+                    return Err(format!(
+                        "AttributeError: Generator object has no method '{method_name}'"
+                    ));
+                }
+                if !args.is_empty() {
+                    return Err("TypeError: Generator.next() takes no arguments".to_string());
+                }
+                let mut s = state.borrow_mut();
+                if s.index < s.values.len() {
+                    let val = s.values[s.index].clone();
+                    s.index += 1;
+                    Ok(val)
+                } else {
+                    Err("StopIteration: generator is exhausted".to_string())
+                }
+            }
             _ => Err(format!(
                 "AttributeError: '{}' object has no method '{method_name}'",
                 self.type_name(&obj)
@@ -897,13 +1009,14 @@ impl Interpreter {
                     }
                 }
 
-                // User-defined function / overloaded function / class constructor
+                // User-defined function / overloaded function / class constructor / generator
                 let callee = self.eval(func)?;
                 match callee {
                     Value::Function(fn_val) => self.exec_fn(fn_val, args, None),
                     Value::OverloadedFn(candidates) => self.dispatch_overload(candidates, args, None),
                     Value::Class(cls) => self.instantiate(cls, args),
-                    Value::TemplateFn(_) | Value::TemplateClass(_) => Err(
+                    Value::GeneratorFn(gen_fn) => self.exec_generator(gen_fn, args),
+                    Value::TemplateFn(_) | Value::TemplateClass(_) | Value::TemplateGenFn(_) => Err(
                         "TemplateError: template must be called with explicit type arguments (e.g. `Func[T](args)`)".to_string()
                     ),
                     _ => Err(format!("TypeError: '{}' object is not callable", self.type_name(&callee))),
@@ -926,6 +1039,8 @@ impl Interpreter {
             Value::Class(_) | Value::Type(_) => "type",
             Value::Instance(_) => "object",
             Value::TemplateFn(_) | Value::TemplateClass(_) => "template",
+            Value::GeneratorFn(_) | Value::TemplateGenFn(_) => "gen_function",
+            Value::Generator(_) => "generator",
         }
     }
 
@@ -953,6 +1068,12 @@ impl Interpreter {
             Value::Type(name) => format!("<type '{name}'>"),
             Value::TemplateFn(t) => format!("<template fn ({} type params)>", t.template_params.len()),
             Value::TemplateClass(t) => format!("<template class '{}'>", t.name),
+            Value::GeneratorFn(_) => "<generator function>".to_string(),
+            Value::TemplateGenFn(t) => format!("<template gen ({} type params)>", t.template_params.len()),
+            Value::Generator(s) => {
+                let s = s.borrow();
+                format!("<generator {}/{}>", s.index, s.values.len())
+            }
         }
     }
 
@@ -1021,6 +1142,17 @@ impl Interpreter {
                     .collect();
                 let concrete_body = subst_stmts(&tmpl.body, &type_map);
                 self.instantiate_template_class(&tmpl, concrete_body, call_args)
+            }
+            Value::TemplateGenFn(tmpl) => {
+                self.check_template_constraints(&tmpl.template_params, type_args)?;
+                let type_map: HashMap<String, String> = tmpl.template_params.iter()
+                    .zip(type_args.iter())
+                    .map(|(p, t)| (p.name.clone(), t.clone()))
+                    .collect();
+                let concrete_params = subst_params(&tmpl.params, &type_map);
+                let concrete_body = subst_stmts(&tmpl.body, &type_map);
+                let gen_fn = Rc::new(GeneratorFnValue { params: concrete_params, body: concrete_body });
+                self.exec_generator(gen_fn, call_args)
             }
             _ => Err("TemplateError: expression is not a template".to_string()),
         }
@@ -1091,7 +1223,8 @@ impl Interpreter {
             Value::None => false,
             Value::List(items) => !items.is_empty(),
             Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) | Value::Type(_)
-            | Value::TemplateFn(_) | Value::TemplateClass(_) => true,
+            | Value::TemplateFn(_) | Value::TemplateClass(_)
+            | Value::GeneratorFn(_) | Value::TemplateGenFn(_) | Value::Generator(_) => true,
         }
     }
 
@@ -1309,6 +1442,14 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         Stmt::Pass => Stmt::Pass,
         Stmt::BlockReturn(e) => Stmt::BlockReturn(subst_expr(e, type_map)),
         Stmt::BlockYield(e) => Stmt::BlockYield(subst_expr(e, type_map)),
+        Stmt::Yield(e) => Stmt::Yield(subst_expr(e, type_map)),
+        Stmt::GenDef { name, template_params, params, yield_type, body } => Stmt::GenDef {
+            name: name.clone(),
+            template_params: template_params.clone(),
+            params: params.clone(),
+            yield_type: yield_type.clone(),
+            body: subst_stmts(body, type_map),
+        },
         Stmt::FnDef { name, template_params, params, return_type, body, is_virtual } => Stmt::FnDef {
             name: name.clone(),
             template_params: template_params.clone(),

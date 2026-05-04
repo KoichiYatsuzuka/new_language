@@ -181,7 +181,12 @@ impl Parser {
                 let body = self.parse_block()?;
                 Ok(Stmt::Block(body))
             }
+            Token::Yield => {
+                self.advance();
+                Ok(Stmt::Yield(self.parse_expr()?))
+            }
             Token::Fn => self.parse_fn_def(),
+            Token::Gen => self.parse_gen_def(),
             Token::Class => self.parse_class_def(),
             Token::Trait => self.parse_trait_def(),
             Token::Ident(_) => match self.peek1().clone() {
@@ -276,6 +281,71 @@ impl Parser {
             (self.parse_block()?, false)
         };
         Ok(Stmt::FnDef { name, template_params, params, return_type, body, is_virtual })
+    }
+
+    fn parse_gen_def(&mut self) -> Result<Stmt, String> {
+        self.advance(); // consume `gen`
+        let name = self.expect_ident()?;
+        let template_params = self.parse_template_params()?;
+        self.eat(&Token::LParen)?;
+        let mut params = Vec::new();
+        while *self.current() != Token::RParen && *self.current() != Token::Eof {
+            let param = self.parse_param()?;
+            if param.mutable && param.name != "self" {
+                return Err(format!(
+                    "ParseError: generator function `{name}`: parameter `{}` cannot be `mut`; \
+                     generator parameters must be `let` or `const`",
+                    param.name
+                ));
+            }
+            params.push(param);
+            if *self.current() == Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.eat(&Token::RParen)?;
+        let yield_type = if *self.current() == Token::Arrow {
+            self.advance();
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
+        self.eat(&Token::Colon)?;
+        let body = self.parse_block()?;
+        if Self::body_has_return(&body) {
+            return Err(format!(
+                "ParseError: generator function `{name}` must not contain a `return` statement"
+            ));
+        }
+        Ok(Stmt::GenDef { name, template_params, params, yield_type, body })
+    }
+
+    /// Returns `true` if `stmts` contains a `return` statement at any depth,
+    /// without descending into nested `fn`/`gen` definitions.
+    fn body_has_return(stmts: &[Stmt]) -> bool {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Return(_) => return true,
+                Stmt::If { branches, else_body } => {
+                    if branches.iter().any(|(_, b)| Self::body_has_return(b)) {
+                        return true;
+                    }
+                    if else_body.as_deref().map_or(false, Self::body_has_return) {
+                        return true;
+                    }
+                }
+                Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::Block(body) => {
+                    if Self::body_has_return(body) {
+                        return true;
+                    }
+                }
+                // Do not descend into nested fn/gen — they have their own return scope.
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Returns true when the upcoming token sequence is NEWLINE INDENT ELLIPSIS,
@@ -548,6 +618,7 @@ impl Parser {
                 Ok(Stmt::Field { name: fname, kind, type_ann, default })
             }
             Token::Fn => self.parse_fn_def(),
+            Token::Gen => self.parse_gen_def(),
             Token::Pass => {
                 self.advance();
                 Ok(Stmt::Pass)

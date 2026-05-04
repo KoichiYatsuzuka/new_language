@@ -81,6 +81,7 @@ pub enum Token {
 
     // Definitions
     Fn,
+    Gen,
     Class,
     Trait,
     Lambda,
@@ -222,6 +223,7 @@ impl std::fmt::Display for Token {
             Token::Finally => write!(f, "finally"),
             Token::Raise => write!(f, "raise"),
             Token::Fn => write!(f, "fn"),
+            Token::Gen => write!(f, "gen"),
             Token::Class => write!(f, "class"),
             Token::Trait => write!(f, "trait"),
             Token::Lambda => write!(f, "lambda"),

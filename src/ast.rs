@@ -98,6 +98,8 @@ pub enum Stmt {
     Pass,
     BlockReturn(Expr),       // block_return expr
     BlockYield(Expr),        // block_yield expr
+    /// `yield expr` inside a generator function body.
+    Yield(Expr),
     FnDef {
         name: String,
         /// Template type parameters (empty for non-template functions).
@@ -106,6 +108,17 @@ pub enum Stmt {
         return_type: Option<String>,
         body: Vec<Stmt>,
         is_virtual: bool,
+    },
+    /// Generator function definition (`gen name[T: Trait](params) -> YieldType:`).
+    /// `yield_type` is T in `Generator[T]` — the type produced by each `yield`.
+    /// The actual call-site return type is `Generator[yield_type]`.
+    GenDef {
+        name: String,
+        template_params: Vec<TemplateParam>,
+        params: Vec<Param>,
+        /// Type of each yielded value (the `T` in `Generator[T]`).
+        yield_type: Option<String>,
+        body: Vec<Stmt>,
     },
     ClassDef {
         name: String,

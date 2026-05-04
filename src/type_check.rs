@@ -380,7 +380,7 @@ impl TypeChecker {
                     self.infer(e);
                 }
             }
-            Stmt::BlockReturn(expr) | Stmt::BlockYield(expr) => {
+            Stmt::BlockReturn(expr) | Stmt::BlockYield(expr) | Stmt::Yield(expr) => {
                 self.infer(expr);
             }
             Stmt::Field { name, kind, type_ann, default } => {
@@ -390,6 +390,36 @@ impl TypeChecker {
                 }
                 let mutable = matches!(kind, crate::ast::FieldKind::Mut);
                 self.declare(name.clone(), ty, mutable);
+            }
+            Stmt::GenDef { name, params, yield_type, body, .. } => {
+                for param in params.iter() {
+                    if param.name == "self" { continue; }
+                    if param.type_ann.is_none() {
+                        self.emit(StaticTypeError {
+                            kind: TypeErrorKind::MissingParamTypeAnn {
+                                func_name: name.clone(),
+                                param_name: param.name.clone(),
+                            },
+                            span: None,
+                        });
+                    }
+                }
+                if yield_type.is_none() {
+                    self.emit(StaticTypeError {
+                        kind: TypeErrorKind::MissingReturnTypeAnn { func_name: name.clone() },
+                        span: None,
+                    });
+                }
+                self.declare(name.clone(), InferredType::Unknown, false);
+                self.push_scope();
+                for param in params {
+                    let ty = param.type_ann.as_deref()
+                        .and_then(InferredType::from_ann)
+                        .unwrap_or(InferredType::Unknown);
+                    self.declare(param.name.clone(), ty, param.mutable);
+                }
+                self.check_stmts(body);
+                self.pop_scope();
             }
             Stmt::Pass | Stmt::Break | Stmt::Continue => {}
         }

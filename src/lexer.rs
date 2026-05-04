@@ -387,6 +387,7 @@ impl Lexer {
             "finally" => Token::Finally,
             "raise" => Token::Raise,
             "fn" => Token::Fn,
+            "gen" => Token::Gen,
             "class" => Token::Class,
             "trait" => Token::Trait,
             "lambda" => Token::Lambda,
