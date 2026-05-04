@@ -49,6 +49,7 @@ pub enum Expr {
     Ident(String),
     List(Vec<Expr>),
     Attr { object: Box<Expr>, attr: String }, // obj.attr
+    TraitAccess { object: Box<Expr>, trait_name: String, attr: String }, // obj::Trait.attr
     BinOp { op: BinOp, left: Box<Expr>, right: Box<Expr>, span: Span },
     UnaryOp { op: UnaryOp, operand: Box<Expr> },
     Call { func: Box<Expr>, args: Vec<CallArg> },
@@ -89,10 +90,15 @@ pub enum Stmt {
         params: Vec<Param>,
         return_type: Option<String>,
         body: Vec<Stmt>,
+        is_virtual: bool,
     },
     ClassDef {
         name: String,
-        bases: Vec<String>,  // 基底クラス名
+        bases: Vec<String>,
+        body: Vec<Stmt>,
+    },
+    TraitDef {
+        name: String,
         body: Vec<Stmt>,
     },
     /// Typed field declaration inside a class body.

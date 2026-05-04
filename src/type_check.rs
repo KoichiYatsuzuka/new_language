@@ -17,6 +17,8 @@ pub enum InferredType {
     Bool,
     None,
     List,
+    /// A value whose runtime type is `type` — it holds a type itself (e.g. `int`, a class).
+    TypeVal,
     Unknown, // cannot be determined statically
 }
 
@@ -30,6 +32,7 @@ impl InferredType {
             "bool" => Some(Self::Bool),
             "None" => Some(Self::None),
             "list" => Some(Self::List),
+            "type" => Some(Self::TypeVal),
             _ => None,
         }
     }
@@ -55,6 +58,7 @@ impl std::fmt::Display for InferredType {
             Self::Bool => write!(f, "bool"),
             Self::None => write!(f, "None"),
             Self::List => write!(f, "list"),
+            Self::TypeVal => write!(f, "type"),
             Self::Unknown => write!(f, "unknown"),
         }
     }
@@ -184,7 +188,13 @@ pub struct TypeChecker {
 
 impl TypeChecker {
     pub fn new() -> Self {
-        Self { scopes: vec![HashMap::new()], fn_sigs: HashMap::new(), errors: Vec::new() }
+        let mut global: HashMap<String, VarInfo> = HashMap::new();
+        // Pre-define built-in type values so that `int`, `str`, `float`, `bool`
+        // are recognised as `InferredType::TypeVal` in expression context.
+        for name in ["int", "str", "float", "bool"] {
+            global.insert(name.to_string(), VarInfo { ty: InferredType::TypeVal, mutable: false });
+        }
+        Self { scopes: vec![global], fn_sigs: HashMap::new(), errors: Vec::new() }
     }
 
     /// Run static type checking over a full program; returns collected errors.
@@ -199,7 +209,7 @@ impl TypeChecker {
     fn collect_fn_sigs(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             match stmt {
-                Stmt::FnDef { name, params, return_type, body } => {
+                Stmt::FnDef { name, params, return_type, body, .. } => {
                     let sig = FnSig {
                         params: params.iter()
                             .map(|p| (p.name.clone(), p.type_ann.as_deref().and_then(InferredType::from_ann)))
@@ -210,6 +220,7 @@ impl TypeChecker {
                     self.collect_fn_sigs(body);
                 }
                 Stmt::ClassDef { body, .. } => self.collect_fn_sigs(body),
+                Stmt::TraitDef { body, .. } => self.collect_fn_sigs(body),
                 _ => {}
             }
         }
@@ -320,7 +331,7 @@ impl TypeChecker {
                 self.check_stmts(body);
                 self.pop_scope();
             }
-            Stmt::FnDef { name, params, return_type, body } => {
+            Stmt::FnDef { name, params, return_type, body, .. } => {
                 // Check for missing type annotations on parameters (skip `self`).
                 for param in params.iter() {
                     if param.name == "self" { continue; }
@@ -358,6 +369,12 @@ impl TypeChecker {
                 self.check_stmts(body);
                 self.pop_scope();
             }
+            Stmt::TraitDef { name, body } => {
+                self.declare(name.clone(), InferredType::Unknown, false);
+                self.push_scope();
+                self.check_stmts(body);
+                self.pop_scope();
+            }
             Stmt::Return(expr) => {
                 if let Some(e) = expr {
                     self.infer(e);
@@ -389,6 +406,10 @@ impl TypeChecker {
             Expr::None => InferredType::None,
             Expr::List(_) => InferredType::List,
             Expr::Attr { object, .. } => {
+                self.infer(object);
+                InferredType::Unknown
+            }
+            Expr::TraitAccess { object, .. } => {
                 self.infer(object);
                 InferredType::Unknown
             }
@@ -993,5 +1014,66 @@ mod tests {
         assert!(msg.contains("StaticTypeError"));
         assert!(msg.contains("'f'"));
         assert!(msg.contains('3'));
+    }
+
+    // --- trait ---
+
+    #[test]
+    fn trait_with_virtual_method_no_type_errors() {
+        // A well-formed trait with a virtual method should produce no type errors.
+        assert!(ok(concat!(
+            "trait Animal:\n",
+            "    fn speak(self) -> str:\n",
+            "        ...\n",
+        )));
+    }
+
+    #[test]
+    fn trait_with_non_virtual_method_no_type_errors() {
+        assert!(ok(concat!(
+            "trait Logger:\n",
+            "    fn log(self, msg: str) -> None:\n",
+            "        pass\n",
+        )));
+    }
+
+    #[test]
+    fn trait_with_fields_no_type_errors() {
+        assert!(ok(concat!(
+            "trait HasValue:\n",
+            "    mut value: int\n",
+            "    const MAX: int = 100\n",
+        )));
+    }
+
+    #[test]
+    fn trait_class_inheriting_no_type_errors() {
+        assert!(ok(concat!(
+            "trait Shape:\n",
+            "    fn area(self) -> float:\n",
+            "        ...\n",
+            "class Square(Shape):\n",
+            "    mut side: float\n",
+            "    fn area(self) -> float:\n",
+            "        pass\n",
+        )));
+    }
+
+    #[test]
+    fn trait_class_call_type_mismatch_detected() {
+        // Type checker still catches arg-type mismatches on classes that inherit traits.
+        let errors = check(concat!(
+            "trait T:\n",
+            "    fn f(self) -> None:\n",
+            "        ...\n",
+            "class C(T):\n",
+            "    mut x: int\n",
+            "    fn f(self) -> None:\n",
+            "        pass\n",
+            "fn use_x(v: int) -> None:\n",
+            "    pass\n",
+            "use_x(\"wrong\")\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 }

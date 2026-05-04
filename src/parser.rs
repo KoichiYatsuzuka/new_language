@@ -1,14 +1,18 @@
+use std::collections::HashMap;
+
 use crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, UnaryOp};
 use crate::token::{Span, Spanned, Token};
 
 pub struct Parser {
     tokens: Vec<Spanned>,
     pos: usize,
+    /// trait name → (fields: [(name, kind, type_ann, has_default)], virtual_methods: [name])
+    known_traits: HashMap<String, (Vec<(String, FieldKind, String, bool)>, Vec<String>)>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Spanned>) -> Self {
-        Self { tokens, pos: 0 }
+        Self { tokens, pos: 0, known_traits: HashMap::new() }
     }
 
     fn current(&self) -> &Token {
@@ -82,18 +86,21 @@ impl Parser {
             Token::Let => {
                 self.advance();
                 let name = self.expect_ident()?;
+                if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
                 self.eat(&Token::Eq)?;
                 Ok(Stmt::Let(name, self.parse_expr()?))
             }
             Token::Const => {
                 self.advance();
                 let name = self.expect_ident()?;
+                if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
                 self.eat(&Token::Eq)?;
                 Ok(Stmt::Const(name, self.parse_expr()?))
             }
             Token::Mut => {
                 self.advance();
                 let name = self.expect_ident()?;
+                if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
                 self.eat(&Token::Eq)?;
                 Ok(Stmt::Mut(name, self.parse_expr()?))
             }
@@ -176,6 +183,7 @@ impl Parser {
             }
             Token::Fn => self.parse_fn_def(),
             Token::Class => self.parse_class_def(),
+            Token::Trait => self.parse_trait_def(),
             Token::Ident(_) => match self.peek1().clone() {
                 Token::Eq => {
                     let span = self.current_span();
@@ -244,7 +252,6 @@ impl Parser {
             }
         }
         self.eat(&Token::RParen)?;
-        // Optional return type: -> Type
         let return_type = if *self.current() == Token::Arrow {
             self.advance();
             Some(self.parse_type_expr()?)
@@ -252,14 +259,104 @@ impl Parser {
             None
         };
         self.eat(&Token::Colon)?;
-        let body = self.parse_block()?;
-        Ok(Stmt::FnDef { name, params, return_type, body })
+        // Detect virtual body: NEWLINE INDENT ELLIPSIS [NEWLINE] DEDENT
+        let (body, is_virtual) = if self.is_virtual_body() {
+            self.advance(); // Newline
+            self.advance(); // Indent
+            self.advance(); // Ellipsis
+            while matches!(self.current(), Token::Newline | Token::Semicolon) {
+                self.advance();
+            }
+            if *self.current() == Token::Dedent {
+                self.advance();
+            }
+            (vec![], true)
+        } else {
+            (self.parse_block()?, false)
+        };
+        Ok(Stmt::FnDef { name, params, return_type, body, is_virtual })
+    }
+
+    /// Returns true when the upcoming token sequence is NEWLINE INDENT ELLIPSIS,
+    /// indicating a virtual method body (`...`).
+    fn is_virtual_body(&self) -> bool {
+        let t0 = self.tokens.get(self.pos).map(|s| &s.token).unwrap_or(&Token::Eof);
+        let t1 = self.tokens.get(self.pos + 1).map(|s| &s.token).unwrap_or(&Token::Eof);
+        let t2 = self.tokens.get(self.pos + 2).map(|s| &s.token).unwrap_or(&Token::Eof);
+        matches!(t0, Token::Newline) && matches!(t1, Token::Indent) && matches!(t2, Token::Ellipsis)
+    }
+
+    fn parse_trait_def(&mut self) -> Result<Stmt, String> {
+        self.advance(); // consume `trait`
+        let name = self.expect_ident()?;
+        if *self.current() == Token::LParen {
+            return Err(format!("StaticTypeError: trait `{name}` cannot inherit from another type"));
+        }
+        self.eat(&Token::Colon)?;
+        let body = self.parse_class_body()?;
+
+        // Check that non-virtual methods have required type annotations (same rules as classes)
+        for stmt in &body {
+            if let Stmt::FnDef { name: mname, params, return_type, is_virtual, .. } = stmt {
+                if !is_virtual {
+                    if return_type.is_none() {
+                        return Err(format!(
+                            "StaticTypeError: trait method `{mname}` is missing a return type annotation"
+                        ));
+                    }
+                    for p in params {
+                        if p.name != "self" && p.type_ann.is_none() {
+                            return Err(format!(
+                                "StaticTypeError: parameter `{}` of trait method `{mname}` is missing a type annotation",
+                                p.name
+                            ));
+                        }
+                    }
+                } else {
+                    // Virtual methods also need full annotations
+                    if return_type.is_none() {
+                        return Err(format!(
+                            "StaticTypeError: virtual method `{mname}` is missing a return type annotation"
+                        ));
+                    }
+                    for p in params {
+                        if p.name != "self" && p.type_ann.is_none() {
+                            return Err(format!(
+                                "StaticTypeError: parameter `{}` of virtual method `{mname}` is missing a type annotation",
+                                p.name
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        let fields: Vec<(String, FieldKind, String, bool)> = body.iter()
+            .filter_map(|s| {
+                if let Stmt::Field { name: fname, kind, type_ann, default } = s {
+                    Some((fname.clone(), kind.clone(), type_ann.clone(), default.is_some()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let virtual_methods: Vec<String> = body.iter()
+            .filter_map(|s| {
+                if let Stmt::FnDef { name: mname, is_virtual: true, .. } = s {
+                    Some(mname.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.known_traits.insert(name.clone(), (fields, virtual_methods));
+
+        Ok(Stmt::TraitDef { name, body })
     }
 
     fn parse_class_def(&mut self) -> Result<Stmt, String> {
         self.advance(); // consume `class`
         let name = self.expect_ident()?;
-        // Optional base classes: (Base1, Base2, ...)
         let mut bases = Vec::new();
         if *self.current() == Token::LParen {
             self.advance();
@@ -273,14 +370,42 @@ impl Parser {
             }
             self.eat(&Token::RParen)?;
         }
+        // Only traits are allowed as bases; class-to-class inheritance is not supported.
+        for base in &bases {
+            if !self.known_traits.contains_key(base.as_str()) {
+                return Err(format!(
+                    "ParseError: class `{name}` cannot inherit from `{base}` (only traits are allowed as bases)"
+                ));
+            }
+        }
         self.eat(&Token::Colon)?;
         let mut body = self.parse_class_body()?;
 
-        // Auto-generate a default __init__ if there are `let`/`mut` fields without a default
-        // value (required fields).  Generation is skipped only when an existing `__init__`
-        // overload has exactly the same non-self parameter count AND types in order
-        // (override semantics).  Any other explicit `__init__` coexists as an overload.
-        let required_fields: Vec<(String, String)> = body.iter()
+        // Collect trait required fields and check virtual method overrides.
+        // trait_required: (trait_name, field_name, type_ann)
+        let mut trait_required: Vec<(String, String, String)> = Vec::new();
+        for base in &bases {
+            if let Some((trait_fields, virtual_methods)) = self.known_traits.get(base).cloned() {
+                for virt in &virtual_methods {
+                    let overridden = body.iter().any(|s| {
+                        matches!(s, Stmt::FnDef { name: n, is_virtual: false, .. } if n == virt)
+                    });
+                    if !overridden {
+                        return Err(format!(
+                            "StaticTypeError: class `{name}` must override virtual method `{virt}` from trait `{base}`"
+                        ));
+                    }
+                }
+                for (fname, _kind, ftype, has_default) in &trait_fields {
+                    if !has_default {
+                        trait_required.push((base.clone(), fname.clone(), ftype.clone()));
+                    }
+                }
+            }
+        }
+
+        // Class's own required fields (mut/let without default).
+        let class_required: Vec<(String, String)> = body.iter()
             .filter_map(|s| {
                 if let Stmt::Field { name: fname, kind: FieldKind::Mut | FieldKind::Let, type_ann, default: None } = s {
                     Some((fname.clone(), type_ann.clone()))
@@ -290,10 +415,17 @@ impl Parser {
             })
             .collect();
 
-        if !required_fields.is_empty() {
+        // Auto-generate __init__ when there are any required fields (trait + class).
+        // Skip generation only when an existing __init__ has exactly the same signature.
+        if !trait_required.is_empty() || !class_required.is_empty() {
+            let all_required: Vec<(String, String)> = trait_required.iter()
+                .map(|(_, fname, ftype)| (fname.clone(), ftype.clone()))
+                .chain(class_required.iter().cloned())
+                .collect();
+
             let has_exact_match = body.iter().any(|s| {
                 if let Stmt::FnDef { name: n, params, .. } = s {
-                    n == "__init__" && Self::init_sig_matches(&required_fields, params)
+                    n == "__init__" && Self::init_sig_matches(&all_required, params)
                 } else {
                     false
                 }
@@ -301,23 +433,38 @@ impl Parser {
 
             if !has_exact_match {
                 let mut params = vec![Param { name: "self".to_string(), mutable: true, type_ann: None }];
-                for (fname, ftype) in &required_fields {
+                for (_, fname, ftype) in &trait_required {
                     params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()) });
                 }
-                let init_body: Vec<Stmt> = required_fields.iter().map(|(fname, _)| {
-                    Stmt::AttrAssign {
+                for (fname, ftype) in &class_required {
+                    params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()) });
+                }
+                let mut init_body: Vec<Stmt> = Vec::new();
+                for (tname, fname, _) in &trait_required {
+                    init_body.push(Stmt::AttrAssign {
+                        target: Expr::TraitAccess {
+                            object: Box::new(Expr::Ident("self".to_string())),
+                            trait_name: tname.clone(),
+                            attr: fname.clone(),
+                        },
+                        value: Expr::Ident(fname.clone()),
+                    });
+                }
+                for (fname, _) in &class_required {
+                    init_body.push(Stmt::AttrAssign {
                         target: Expr::Attr {
                             object: Box::new(Expr::Ident("self".to_string())),
                             attr: fname.clone(),
                         },
                         value: Expr::Ident(fname.clone()),
-                    }
-                }).collect();
+                    });
+                }
                 body.push(Stmt::FnDef {
                     name: "__init__".to_string(),
                     params,
                     return_type: Some("None".to_string()),
                     body: init_body,
+                    is_virtual: false,
                 });
             }
         }
@@ -672,6 +819,13 @@ impl Parser {
                     let attr = self.expect_ident()?;
                     expr = Expr::Attr { object: Box::new(expr), attr };
                 }
+                Token::ColonColon => {
+                    self.advance(); // consume `::`
+                    let trait_name = self.expect_ident()?;
+                    self.eat(&Token::Dot)?;
+                    let attr = self.expect_ident()?;
+                    expr = Expr::TraitAccess { object: Box::new(expr), trait_name, attr };
+                }
                 _ => break,
             }
         }
@@ -720,6 +874,11 @@ mod tests {
     fn parse(src: &str) -> Vec<Stmt> {
         let tokens = Lexer::new(src, "").tokenize();
         Parser::new(tokens).parse_program().expect("parse error")
+    }
+
+    fn parse_fails(src: &str) -> String {
+        let tokens = Lexer::new(src, "").tokenize();
+        Parser::new(tokens).parse_program().expect_err("expected parse error")
     }
 
     #[test]
@@ -902,24 +1061,16 @@ mod tests {
     }
 
     #[test]
-    fn test_class_with_base() {
-        let stmts = parse("class Bar(Foo):\n    pass\n");
-        if let Stmt::ClassDef { name, bases, .. } = &stmts[0] {
-            assert_eq!(name, "Bar");
-            assert_eq!(bases, &["Foo"]);
-        } else {
-            panic!("expected ClassDef");
-        }
+    fn test_class_with_non_trait_base_errors() {
+        // Class-to-class inheritance is not allowed; only traits may be listed as bases.
+        let err = parse_fails("class Bar(Foo):\n    pass\n");
+        assert!(err.contains("cannot inherit from `Foo`"), "got: {err}");
     }
 
     #[test]
-    fn test_class_multiple_bases() {
-        let stmts = parse("class C(A, B):\n    pass\n");
-        if let Stmt::ClassDef { bases, .. } = &stmts[0] {
-            assert_eq!(bases.len(), 2);
-        } else {
-            panic!("expected ClassDef");
-        }
+    fn test_class_multiple_non_trait_bases_errors() {
+        let err = parse_fails("class C(A, B):\n    pass\n");
+        assert!(err.contains("cannot inherit from"), "got: {err}");
     }
 
     #[test]
@@ -1134,6 +1285,241 @@ mod tests {
             assert!(matches!(&args[1], CallArg::Keyword { name, .. } if name == "y"));
         } else {
             panic!("expected Call");
+        }
+    }
+
+    // --- trait ---
+
+    #[test]
+    fn test_trait_empty() {
+        let stmts = parse("trait Foo:\n    pass\n");
+        assert!(matches!(&stmts[0], Stmt::TraitDef { name, .. } if name == "Foo"));
+    }
+
+    #[test]
+    fn test_trait_with_fields() {
+        let stmts = parse("trait HasName:\n    mut name: str\n    let id: int\n");
+        if let Stmt::TraitDef { body, .. } = &stmts[0] {
+            assert!(matches!(&body[0], Stmt::Field { name, kind: FieldKind::Mut, type_ann, .. }
+                if name == "name" && type_ann == "str"));
+            assert!(matches!(&body[1], Stmt::Field { name, kind: FieldKind::Let, type_ann, .. }
+                if name == "id" && type_ann == "int"));
+        } else {
+            panic!("expected TraitDef");
+        }
+    }
+
+    #[test]
+    fn test_trait_virtual_method_is_virtual() {
+        let stmts = parse("trait Animal:\n    fn speak(self) -> str:\n        ...\n");
+        if let Stmt::TraitDef { body, .. } = &stmts[0] {
+            assert!(matches!(&body[0], Stmt::FnDef { name, is_virtual: true, .. } if name == "speak"),
+                "method with `...` body should have is_virtual: true");
+        } else {
+            panic!("expected TraitDef");
+        }
+    }
+
+    #[test]
+    fn test_trait_non_virtual_method_is_not_virtual() {
+        let stmts = parse("trait Logger:\n    fn log(self, msg: str) -> None:\n        pass\n");
+        if let Stmt::TraitDef { body, .. } = &stmts[0] {
+            assert!(matches!(&body[0], Stmt::FnDef { name, is_virtual: false, .. } if name == "log"),
+                "method with real body should have is_virtual: false");
+        } else {
+            panic!("expected TraitDef");
+        }
+    }
+
+    #[test]
+    fn test_trait_virtual_body_is_empty() {
+        let stmts = parse("trait T:\n    fn f(self) -> int:\n        ...\n");
+        if let Stmt::TraitDef { body, .. } = &stmts[0] {
+            if let Stmt::FnDef { body: fn_body, is_virtual, .. } = &body[0] {
+                assert!(*is_virtual);
+                assert!(fn_body.is_empty(), "virtual method body should be empty");
+            } else {
+                panic!("expected FnDef");
+            }
+        } else {
+            panic!("expected TraitDef");
+        }
+    }
+
+    #[test]
+    fn test_trait_cannot_inherit() {
+        let result = std::panic::catch_unwind(|| parse("trait Foo(Bar):\n    pass\n"));
+        assert!(result.is_err(), "trait with base class should cause a parse error");
+    }
+
+    #[test]
+    fn test_class_inherits_trait_ok() {
+        let stmts = parse(concat!(
+            "trait Animal:\n",
+            "    fn speak(self) -> str:\n",
+            "        ...\n",
+            "class Dog(Animal):\n",
+            "    fn speak(self) -> str:\n",
+            "        pass\n",
+        ));
+        assert_eq!(stmts.len(), 2);
+        assert!(matches!(&stmts[0], Stmt::TraitDef { name, .. } if name == "Animal"));
+        assert!(matches!(&stmts[1], Stmt::ClassDef { name, .. } if name == "Dog"));
+    }
+
+    #[test]
+    fn test_class_missing_virtual_override_error() {
+        let result = std::panic::catch_unwind(|| parse(concat!(
+            "trait Animal:\n",
+            "    fn speak(self) -> str:\n",
+            "        ...\n",
+            "class Cat(Animal):\n",
+            "    pass\n",
+        )));
+        assert!(result.is_err(), "missing virtual method override should cause a parse error");
+    }
+
+    #[test]
+    fn test_class_inherits_trait_combined_init_generated() {
+        // TraitDef then ClassDef — combined __init__ takes trait fields first, class fields second.
+        let stmts = parse(concat!(
+            "trait HasX:\n",
+            "    mut x: int\n",
+            "class Point(HasX):\n",
+            "    mut y: int\n",
+        ));
+        if let Stmt::ClassDef { body, .. } = &stmts[1] {
+            let init = body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "__init__"));
+            assert!(init.is_some(), "combined __init__ should be generated");
+            if let Some(Stmt::FnDef { params, return_type, .. }) = init {
+                // self + x (from trait HasX) + y (from class Point)
+                assert_eq!(params.len(), 3);
+                assert_eq!(params[0].name, "self");
+                assert_eq!(params[1].name, "x");
+                assert_eq!(params[2].name, "y");
+                assert_eq!(params[1].type_ann.as_deref(), Some("int"));
+                assert_eq!(params[2].type_ann.as_deref(), Some("int"));
+                assert_eq!(return_type.as_deref(), Some("None"));
+            }
+        } else {
+            panic!("expected ClassDef at stmts[1]");
+        }
+    }
+
+    #[test]
+    fn test_class_inherits_trait_combined_init_body_uses_trait_access() {
+        let stmts = parse(concat!(
+            "trait HasX:\n",
+            "    mut x: int\n",
+            "class Point(HasX):\n",
+            "    mut y: int\n",
+        ));
+        if let Stmt::ClassDef { body, .. } = &stmts[1] {
+            if let Some(Stmt::FnDef { body: init_body, .. }) =
+                body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "__init__"))
+            {
+                // First assignment must be TraitAccess (trait field x)
+                assert!(matches!(&init_body[0],
+                    Stmt::AttrAssign { target: Expr::TraitAccess { trait_name, attr, .. }, .. }
+                    if trait_name == "HasX" && attr == "x"
+                ), "trait field assignment should use TraitAccess");
+                // Second assignment must be regular Attr (class field y)
+                assert!(matches!(&init_body[1],
+                    Stmt::AttrAssign { target: Expr::Attr { attr, .. }, .. }
+                    if attr == "y"
+                ), "class field assignment should use Attr");
+            } else {
+                panic!("__init__ not found");
+            }
+        } else {
+            panic!("expected ClassDef");
+        }
+    }
+
+    #[test]
+    fn test_trait_access_expr_parsed() {
+        // self::MyTrait.field — 括弧なし形式のみ有効
+        let stmts = parse("self::MyTrait.field\n");
+        if let Stmt::Expr(Expr::TraitAccess { trait_name, attr, .. }) = &stmts[0] {
+            assert_eq!(trait_name, "MyTrait");
+            assert_eq!(attr, "field");
+        } else {
+            panic!("expected Stmt::Expr(Expr::TraitAccess)");
+        }
+    }
+
+    #[test]
+    fn test_fn_is_not_virtual_by_default() {
+        let stmts = parse("fn hello() -> None:\n    pass\n");
+        assert!(matches!(&stmts[0], Stmt::FnDef { is_virtual: false, .. }));
+    }
+
+    #[test]
+    fn test_class_method_is_not_virtual() {
+        let stmts = parse("class Foo:\n    fn greet(self) -> str:\n        pass\n");
+        if let Stmt::ClassDef { body, .. } = &stmts[0] {
+            assert!(matches!(&body[0], Stmt::FnDef { name, is_virtual: false, .. } if name == "greet"));
+        } else {
+            panic!("expected ClassDef");
+        }
+    }
+
+    #[test]
+    fn test_trait_combined_init_override_by_exact_match() {
+        // Explicit __init__ with same sig as combined auto-init suppresses generation.
+        let stmts = parse(concat!(
+            "trait HasX:\n",
+            "    mut x: int\n",
+            "class Foo(HasX):\n",
+            "    mut y: int\n",
+            "    fn __init__(mut self, x: int, y: int) -> None:\n",
+            "        pass\n",
+        ));
+        if let Stmt::ClassDef { body, .. } = &stmts[1] {
+            let inits: Vec<_> = body.iter()
+                .filter(|s| matches!(s, Stmt::FnDef { name, .. } if name == "__init__"))
+                .collect();
+            assert_eq!(inits.len(), 1, "exact-match explicit __init__ should override auto-init");
+        } else {
+            panic!("expected ClassDef");
+        }
+    }
+
+    #[test]
+    fn test_trait_with_multiple_virtual_methods_all_must_be_overridden() {
+        // All virtual methods must be overridden.
+        let result = std::panic::catch_unwind(|| parse(concat!(
+            "trait Ops:\n",
+            "    fn add(self, x: int) -> int:\n",
+            "        ...\n",
+            "    fn sub(self, x: int) -> int:\n",
+            "        ...\n",
+            "class MyOps(Ops):\n",
+            "    fn add(self, x: int) -> int:\n",    // overrides add
+            "        pass\n",
+            // sub NOT overridden → error
+        )));
+        assert!(result.is_err(), "not overriding all virtual methods should be a parse error");
+    }
+
+    #[test]
+    fn test_trait_class_only_trait_required_fields_no_class_fields() {
+        // Class has no own required fields; combined init takes only trait fields.
+        let stmts = parse(concat!(
+            "trait Named:\n",
+            "    mut name: str\n",
+            "class Widget(Named):\n",
+            "    pass\n",
+        ));
+        if let Stmt::ClassDef { body, .. } = &stmts[1] {
+            let init = body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "__init__"));
+            assert!(init.is_some());
+            if let Some(Stmt::FnDef { params, .. }) = init {
+                assert_eq!(params.len(), 2); // self + name
+                assert_eq!(params[1].name, "name");
+            }
+        } else {
+            panic!("expected ClassDef");
         }
     }
 }

@@ -71,4 +71,15 @@ print("=== 5. キーワード引数コンストラクタ ===")
 let dog2 = Dog(name="Buddy")
 print("dog2 name:", dog2.name)
 
+trait TestTrait:
+    mut a: int
+
+class TestClass(TestTrait):
+    fn print_(self) -> None:
+        print("a =", self::TestTrait.a)
+
+let b = TestClass(3)
+b.print_()
+
 print("=== All class tests passed! ===")
+

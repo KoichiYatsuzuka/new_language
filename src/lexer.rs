@@ -388,6 +388,7 @@ impl Lexer {
             "raise" => Token::Raise,
             "fn" => Token::Fn,
             "class" => Token::Class,
+            "trait" => Token::Trait,
             "lambda" => Token::Lambda,
             "template" => Token::Template,
             "import" => Token::Import,
@@ -599,7 +600,10 @@ impl Lexer {
             }
             '~' => Token::Tilde,
             ':' => {
-                if self.ch() == Some('=') {
+                if self.ch() == Some(':') {
+                    self.pos += 1;
+                    Token::ColonColon
+                } else if self.ch() == Some('=') {
                     self.pos += 1;
                     Token::ColonEq
                 } else {
@@ -839,5 +843,35 @@ mod tests {
     fn test_span_filename() {
         let spanned = Lexer::new("x\n", "foo.tl").tokenize();
         assert_eq!(&*spanned[0].span.file, "foo.tl");
+    }
+
+    // --- trait / :: ---
+
+    #[test]
+    fn test_trait_keyword() {
+        assert_eq!(lex("trait"), vec![Token::Trait, Token::Eof]);
+    }
+
+    #[test]
+    fn test_colon_colon_token() {
+        assert_eq!(lex("::"), vec![Token::ColonColon, Token::Eof]);
+    }
+
+    #[test]
+    fn test_colon_vs_colon_colon_vs_colon_eq() {
+        assert_eq!(lex(": :: :="), vec![
+            Token::Colon, Token::ColonColon, Token::ColonEq, Token::Eof,
+        ]);
+    }
+
+    #[test]
+    fn test_trait_access_syntax_tokens() {
+        // self::MyTrait.field — 括弧なし形式
+        let tokens = lex("self::MyTrait.field");
+        assert_eq!(tokens[0], Token::Ident("self".to_string()));
+        assert_eq!(tokens[1], Token::ColonColon);
+        assert_eq!(tokens[2], Token::Ident("MyTrait".to_string()));
+        assert_eq!(tokens[3], Token::Dot);
+        assert_eq!(tokens[4], Token::Ident("field".to_string()));
     }
 }

@@ -82,6 +82,7 @@ pub enum Token {
     // Definitions
     Fn,
     Class,
+    Trait,
     Lambda,
     Template,
 
@@ -147,6 +148,7 @@ pub enum Token {
     GtGtEq,       // >>=
     AtEq,         // @=
     ColonEq,      // :=
+    ColonColon,   // ::
 
     // Other punctuation
     Arrow,        // ->
@@ -221,6 +223,7 @@ impl std::fmt::Display for Token {
             Token::Raise => write!(f, "raise"),
             Token::Fn => write!(f, "fn"),
             Token::Class => write!(f, "class"),
+            Token::Trait => write!(f, "trait"),
             Token::Lambda => write!(f, "lambda"),
             Token::Template => write!(f, "template"),
             Token::Import => write!(f, "import"),
@@ -268,6 +271,7 @@ impl std::fmt::Display for Token {
             Token::GtGtEq => write!(f, ">>="),
             Token::AtEq => write!(f, "@="),
             Token::ColonEq => write!(f, ":="),
+            Token::ColonColon => write!(f, "::"),
             Token::Arrow => write!(f, "->"),
             Token::Colon => write!(f, ":"),
             Token::Comma => write!(f, ","),

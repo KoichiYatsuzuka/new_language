@@ -53,6 +53,9 @@ pub enum Value {
     OverloadedFn(Vec<Rc<FnValue>>),
     Class(Rc<ClassValue>),
     Instance(Rc<RefCell<InstanceData>>),
+    /// A type value — holds a built-in type name (`int`, `str`, `float`, `bool`).
+    /// User-defined class types are represented by `Value::Class`.
+    Type(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -84,7 +87,13 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new() -> Self {
-        Self { scopes: vec![HashMap::new()] }
+        let mut global: HashMap<String, Var> = HashMap::new();
+        // Pre-define built-in type values so `int`, `str`, `float`, `bool`
+        // can be used as expressions of type `type`.
+        for name in ["int", "str", "float", "bool"] {
+            global.insert(name.to_string(), Var { value: Value::Type(name.to_string()), mutable: false });
+        }
+        Self { scopes: vec![global] }
     }
 
     // --- Scope helpers ---
@@ -276,6 +285,10 @@ impl Interpreter {
                     .insert(name.clone(), Var { value: new_value, mutable: false });
                 Ok(ExecResult::Normal)
             }
+            Stmt::TraitDef { .. } => {
+                // Traits are type-check-time constructs; no runtime representation yet.
+                Ok(ExecResult::Normal)
+            }
             Stmt::ClassDef { name, bases, body } => {
                 let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
                 let mut field_defaults = Vec::new();
@@ -343,7 +356,6 @@ impl Interpreter {
             match obj_val {
                 Value::Instance(inst_rc) => {
                     let inst_class = inst_rc.borrow().class.clone();
-                    // Reject writes to const class variables
                     if Self::lookup_class_var(&inst_class, attr).is_some() {
                         return Err(format!(
                             "TypeError: cannot assign to class variable '{attr}' (declared const)"
@@ -358,7 +370,6 @@ impl Interpreter {
                         }
                         inst.fields.insert(attr.clone(), (rhs, true));
                     } else {
-                        // First assignment: honour the declared mutability of the field.
                         let is_mutable = inst.class.field_mutability
                             .get(attr.as_str()).copied().unwrap_or(true);
                         inst.fields.insert(attr.clone(), (rhs, is_mutable));
@@ -366,6 +377,18 @@ impl Interpreter {
                     Ok(())
                 }
                 _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
+            }
+        } else if let Expr::TraitAccess { object, trait_name, attr } = target {
+            let obj_val = self.eval(object)?;
+            match obj_val {
+                Value::Instance(inst_rc) => {
+                    // Trait fields are stored with a namespaced key "TraitName::field"
+                    let key = format!("{}::{}", trait_name, attr);
+                    let mut inst = inst_rc.borrow_mut();
+                    inst.fields.insert(key, (rhs, true));
+                    Ok(())
+                }
+                _ => Err("AttributeError: cannot set trait field on non-instance".to_string()),
             }
         } else {
             Err("SyntaxError: invalid assignment target".to_string())
@@ -589,6 +612,8 @@ impl Interpreter {
             | ("bool",  Value::Bool(_))
             | ("None",  Value::None)
             | ("list",  Value::List(_))
+            | ("type",  Value::Type(_))
+            | ("type",  Value::Class(_))
         )
     }
 
@@ -641,13 +666,14 @@ impl Interpreter {
         if let Some(overloads) = class.methods.get(method_name) {
             return Some(overloads.clone());
         }
-        for base_name in &class.bases {
-            if let Some(Value::Class(base_cls)) = self.get_val(base_name) {
-                if let Some(overloads) = self.lookup_method_in_class(&base_cls, method_name) {
-                    return Some(overloads);
-                }
-            }
-        }
+        // Class-to-class inheritance is disabled; only trait-based inheritance is supported at parse time.
+        // for base_name in &class.bases {
+        //     if let Some(Value::Class(base_cls)) = self.get_val(base_name) {
+        //         if let Some(overloads) = self.lookup_method_in_class(&base_cls, method_name) {
+        //             return Some(overloads);
+        //         }
+        //     }
+        // }
         None
     }
 
@@ -671,6 +697,25 @@ impl Interpreter {
                 .get_var(name)
                 .map(|v| v.value.clone())
                 .ok_or_else(|| format!("NameError: '{name}' is not defined")),
+            Expr::TraitAccess { object, trait_name, attr } => {
+                let obj_val = self.eval(object)?;
+                match obj_val {
+                    Value::Instance(inst_rc) => {
+                        let inst = inst_rc.borrow();
+                        let key = format!("{}::{}", trait_name, attr);
+                        if let Some((v, _)) = inst.fields.get(&key) {
+                            return Ok(v.clone());
+                        }
+                        Err(format!(
+                            "AttributeError: trait field '{trait_name}::{attr}' not found on '{}'",
+                            inst.class.name
+                        ))
+                    }
+                    _ => Err(format!(
+                        "AttributeError: cannot access trait field on non-instance"
+                    )),
+                }
+            }
             Expr::Attr { object, attr } => {
                 let obj_val = self.eval(object)?;
                 match &obj_val {
@@ -823,7 +868,7 @@ impl Interpreter {
             Value::None => "NoneType",
             Value::List(_) => "list",
             Value::Function(_) | Value::OverloadedFn(_) => "function",
-            Value::Class(_) => "type",
+            Value::Class(_) | Value::Type(_) => "type",
             Value::Instance(_) => "object",
         }
     }
@@ -849,6 +894,7 @@ impl Interpreter {
             Value::OverloadedFn(fns) => format!("<function ({} overloads)>", fns.len()),
             Value::Class(c) => format!("<class '{}'>", c.name),
             Value::Instance(i) => format!("<{} object>", i.borrow().class.name),
+            Value::Type(name) => format!("<type '{name}'>"),
         }
     }
 
@@ -871,7 +917,7 @@ impl Interpreter {
             Value::Str(s) => !s.is_empty(),
             Value::None => false,
             Value::List(items) => !items.is_empty(),
-            Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) => true,
+            Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) | Value::Type(_) => true,
         }
     }
 
@@ -969,6 +1015,8 @@ impl Interpreter {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::None, Value::None) => true,
             (Value::Instance(a), Value::Instance(b)) => Rc::ptr_eq(a, b),
+            (Value::Type(a), Value::Type(b)) => a == b,
+            (Value::Class(a), Value::Class(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -1440,7 +1488,8 @@ mod tests {
     }
 
     #[test]
-    fn test_class_inheritance() {
+    fn test_class_inheritance_non_trait_parse_error() {
+        // Class-to-class inheritance is not supported; must use traits instead.
         let src = concat!(
             "class Animal:\n",
             "    fn speak(self) -> str:\n",
@@ -1448,31 +1497,132 @@ mod tests {
             "class Dog(Animal):\n",
             "    fn speak(self) -> str:\n",
             "        return \"Woof\"\n",
-            "let d = Dog()\n",
-            "let r = d.speak()\n",
         );
-        if let Value::Str(s) = run_get(src, "r") {
-            assert_eq!(s, "Woof");
-        } else {
-            panic!();
-        }
+        let tokens = crate::lexer::Lexer::new(src, "").tokenize();
+        let result = crate::parser::Parser::new(tokens).parse_program();
+        assert!(result.is_err(), "expected parse error for class-to-class inheritance");
+        assert!(result.unwrap_err().contains("cannot inherit from `Animal`"));
     }
 
     #[test]
-    fn test_class_inherit_base_method() {
+    fn test_class_inherit_non_trait_base_parse_error() {
+        // Class-to-class inheritance is no longer supported; the parser must reject it.
         let src = concat!(
             "class Base:\n",
             "    fn hello(self) -> str:\n",
             "        return \"hi\"\n",
             "class Child(Base):\n",
             "    pass\n",
-            "let c = Child()\n",
-            "let r = c.hello()\n",
         );
-        if let Value::Str(s) = run_get(src, "r") {
+        let tokens = crate::lexer::Lexer::new(src, "").tokenize();
+        let result = crate::parser::Parser::new(tokens).parse_program();
+        assert!(result.is_err(), "expected parse error for class-to-class inheritance");
+        assert!(result.unwrap_err().contains("cannot inherit from `Base`"));
+    }
+
+    // --- trait ---
+
+    #[test]
+    fn test_trait_class_instantiate_combined_constructor() {
+        // Class inheriting a trait; combined __init__ takes trait fields then class fields.
+        let src = concat!(
+            "trait HasValue:\n",
+            "    mut value: int\n",
+            "class Container(HasValue):\n",
+            "    mut tag: str\n",
+            "let c = Container(42, \"hello\")\n",
+        );
+        assert!(run(src).is_ok());
+    }
+
+    #[test]
+    fn test_trait_field_read_via_class_method() {
+        // A method defined in the CLASS body reads a trait field via TraitAccess.
+        let src = concat!(
+            "trait HasValue:\n",
+            "    mut value: int\n",
+            "class Container(HasValue):\n",
+            "    mut tag: str\n",
+            "    fn get_value(self) -> int:\n",
+            "        return self::HasValue.value\n",
+            "    fn get_tag(self) -> str:\n",
+            "        return self.tag\n",
+            "let c = Container(99, \"hi\")\n",
+            "let v = c.get_value()\n",
+            "let t = c.get_tag()\n",
+        );
+        if let Value::Int(n) = run_get(src, "v") {
+            assert_eq!(n, 99);
+        } else {
+            panic!("expected int for v");
+        }
+        if let Value::Str(s) = run_get(src, "t") {
             assert_eq!(s, "hi");
         } else {
-            panic!();
+            panic!("expected str for t");
+        }
+    }
+
+    #[test]
+    fn test_trait_virtual_override_executes() {
+        // Virtual method overridden in class; override body actually runs.
+        let src = concat!(
+            "trait Shape:\n",
+            "    fn area(self) -> float:\n",
+            "        ...\n",
+            "class Square(Shape):\n",
+            "    mut side: float\n",
+            "    fn area(self) -> float:\n",
+            "        return self.side * self.side\n",
+            "let s = Square(3.0)\n",
+            "let a = s.area()\n",
+        );
+        if let Value::Float(f) = run_get(src, "a") {
+            assert!((f - 9.0).abs() < 1e-9, "expected 9.0, got {f}");
+        } else {
+            panic!("expected float for a");
+        }
+    }
+
+    #[test]
+    fn test_trait_only_required_fields_no_class_fields() {
+        // Class body has no required fields; only the trait's required field.
+        let src = concat!(
+            "trait Named:\n",
+            "    mut name: str\n",
+            "class Widget(Named):\n",
+            "    fn get_name(self) -> str:\n",
+            "        return self::Named.name\n",
+            "let w = Widget(\"button\")\n",
+            "let n = w.get_name()\n",
+        );
+        if let Value::Str(s) = run_get(src, "n") {
+            assert_eq!(s, "button");
+        } else {
+            panic!("expected str for n");
+        }
+    }
+
+    #[test]
+    fn test_trait_field_write_via_method() {
+        // A class method writes to a trait field using TraitAccess assignment.
+        let src = concat!(
+            "trait HasCount:\n",
+            "    mut count: int\n",
+            "class Counter(HasCount):\n",
+            "    fn increment(mut self) -> None:\n",
+            "        self::HasCount.count = self::HasCount.count + 1\n",
+            "    fn get(self) -> int:\n",
+            "        return self::HasCount.count\n",
+            "let c = Counter(0)\n",
+            "c.increment()\n",
+            "c.increment()\n",
+            "let r = c.get()\n",
+        );
+        if let Value::Int(n) = run_get(src, "r") {
+            assert_eq!(n, 2);
+        } else {
+            panic!("expected int 2");
         }
     }
 }
