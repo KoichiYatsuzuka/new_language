@@ -408,6 +408,63 @@ impl Interpreter {
                 // Traits are type-check-time constructs; no runtime representation yet.
                 Ok(ExecResult::Normal)
             }
+            Stmt::NewTypeDef { name, original } => {
+                let orig_val = self.get_val(original)
+                    .ok_or_else(|| format!("NameError: type '{original}' is not defined"))?;
+                match orig_val {
+                    Value::Class(orig_cls) => {
+                        // Structural copy of the class with a new name.
+                        // Instances of the new type will have class.name = new name,
+                        // so `Self` inside methods correctly refers to the new type.
+                        let new_cls = Rc::new(ClassValue {
+                            name: name.clone(),
+                            bases: orig_cls.bases.clone(),
+                            methods: orig_cls.methods.clone(),
+                            field_defaults: orig_cls.field_defaults.clone(),
+                            class_vars: orig_cls.class_vars.clone(),
+                            field_mutability: orig_cls.field_mutability.clone(),
+                        });
+                        self.declare_var(name.clone(), Var { value: Value::Class(new_cls), mutable: false });
+                    }
+                    Value::Type(type_name) => {
+                        // Primitive type: create a single-field wrapper class.
+                        // new_type Meters: int  →  class Meters: mut value: int
+                        let init_body = vec![
+                            Stmt::AttrAssign {
+                                target: Expr::Attr {
+                                    object: Box::new(Expr::Ident("self".to_string())),
+                                    attr: "value".to_string(),
+                                },
+                                value: Expr::Ident("value".to_string()),
+                            },
+                        ];
+                        let init_fn = Rc::new(FnValue {
+                            params: vec![
+                                Param { name: "self".to_string(), mutable: true, type_ann: None },
+                                Param { name: "value".to_string(), mutable: false, type_ann: Some(type_name.clone()) },
+                            ],
+                            body: init_body,
+                        });
+                        let mut methods = HashMap::new();
+                        methods.insert("__init__".to_string(), vec![init_fn]);
+                        let new_cls = Rc::new(ClassValue {
+                            name: name.clone(),
+                            bases: vec![],
+                            methods,
+                            field_defaults: vec![],
+                            class_vars: HashMap::new(),
+                            field_mutability: HashMap::from([("value".to_string(), true)]),
+                        });
+                        self.declare_var(name.clone(), Var { value: Value::Class(new_cls), mutable: false });
+                    }
+                    _ => {
+                        return Err(format!(
+                            "TypeError: cannot create new_type from '{original}' — only classes and primitive types are supported"
+                        ));
+                    }
+                }
+                Ok(ExecResult::Normal)
+            }
             Stmt::ClassDef { name, template_params, bases, body } => {
                 if !template_params.is_empty() {
                     // Template class: store as TemplateClass without building ClassValue yet.
@@ -575,12 +632,17 @@ impl Interpreter {
         evaled: &[(Option<String>, Value)],
         self_val: Option<Value>,
     ) -> Result<Value, String> {
-        let bindings = Self::bind_args(&fn_val.params, evaled, self_val)?;
+        let bindings = Self::bind_args(&fn_val.params, evaled, self_val.clone())?;
 
         let outer_scopes: Vec<_> = self.scopes.drain(1..).collect();
         self.push_scope();
         for (name, val, mutable) in bindings {
             self.declare_var(name, Var { value: val, mutable });
+        }
+        // Bind `Self` to the class when executing a method on an instance.
+        if let Some(Value::Instance(inst_rc)) = &self_val {
+            let class = inst_rc.borrow().class.clone();
+            self.declare_var("Self".to_string(), Var { value: Value::Class(class), mutable: false });
         }
 
         let result = self.exec_block(&fn_val.body);
@@ -819,6 +881,7 @@ impl Interpreter {
             | ("list",  Value::List(_))
             | ("type",  Value::Type(_))
             | ("type",  Value::Class(_))
+            | ("Self",  Value::Instance(_))
         )
     }
 
@@ -1562,6 +1625,10 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             default: default.as_ref().map(|e| subst_expr(e, type_map)),
         },
         Stmt::Freeze(name, span) => Stmt::Freeze(name.clone(), span.clone()),
+        Stmt::NewTypeDef { name, original } => Stmt::NewTypeDef {
+            name: name.clone(),
+            original: subst_type(original, type_map),
+        },
     }
 }
 
@@ -2328,6 +2395,83 @@ mod tests {
         assert!(run("freeze x\n").is_err(), "freeze on undefined variable must fail");
     }
 
+    // --- Self type ---
+
+    #[test]
+    fn test_self_type_as_constructor_in_method() {
+        // Self(...) inside a method creates a new instance of the same class.
+        let src = concat!(
+            "class Point:\n",
+            "    mut x: int\n",
+            "    mut y: int\n",
+            "    fn zero(self) -> Self:\n",
+            "        return Self(0, 0)\n",
+            "mut p = Point(3, 4)\n",
+            "mut z = p.zero()\n",
+            "let r = z.x\n",
+        );
+        if let Value::Int(n) = run_get(src, "r") {
+            assert_eq!(n, 0, "Self() should construct a new instance");
+        } else {
+            panic!("expected int 0");
+        }
+    }
+
+    #[test]
+    fn test_self_type_in_return_annotation() {
+        // `-> Self` is a valid return type annotation inside a class method.
+        let src = concat!(
+            "class Box:\n",
+            "    mut value: int\n",
+            "    fn copy(self) -> Self:\n",
+            "        return Self(self.value)\n",
+            "let b = Box(42)\n",
+            "let c = b.copy()\n",
+            "let r = c.value\n",
+        );
+        if let Value::Int(n) = run_get(src, "r") {
+            assert_eq!(n, 42, "Self() copy should preserve value");
+        } else {
+            panic!("expected int 42");
+        }
+    }
+
+    #[test]
+    fn test_self_type_in_param_annotation() {
+        // `other: Self` is a valid parameter type annotation inside a class method.
+        let src = concat!(
+            "class Pair:\n",
+            "    mut value: int\n",
+            "    fn add(self, other: Self) -> int:\n",
+            "        return self.value + other.value\n",
+            "let a = Pair(10)\n",
+            "let b = Pair(20)\n",
+            "let r = a.add(b)\n",
+        );
+        if let Value::Int(n) = run_get(src, "r") {
+            assert_eq!(n, 30);
+        } else {
+            panic!("expected int 30");
+        }
+    }
+
+    #[test]
+    fn test_self_type_outside_class_is_parse_error() {
+        // `Self` used outside a class or trait must produce a parse error.
+        let tokens = crate::lexer::Lexer::new("fn foo() -> Self:\n    pass\n", "").tokenize();
+        let result = crate::parser::Parser::new(tokens).parse_program();
+        assert!(result.is_err(), "Self outside class/trait must be a parse error");
+        assert!(result.unwrap_err().contains("'Self'"), "error should mention 'Self'");
+    }
+
+    #[test]
+    fn test_self_type_in_expression_outside_class_is_parse_error() {
+        // `Self` as an expression outside a class must produce a parse error.
+        let tokens = crate::lexer::Lexer::new("Self(42)\n", "").tokenize();
+        let result = crate::parser::Parser::new(tokens).parse_program();
+        assert!(result.is_err(), "Self expression outside class/trait must be a parse error");
+    }
+
     #[test]
     fn test_trait_field_write_via_method() {
         // A class method writes to a trait field using TraitAccess assignment.
@@ -2349,5 +2493,96 @@ mod tests {
         } else {
             panic!("expected int 2");
         }
+    }
+
+    // --- new_type ---
+
+    #[test]
+    fn test_new_type_class_copy_same_behavior() {
+        // new_type creates a structurally identical class — field access and methods work.
+        let src = concat!(
+            "class Meters:\n",
+            "    mut value: int\n",
+            "    fn get(self) -> int:\n",
+            "        return self.value\n",
+            "new_type Kilometers: Meters\n",
+            "let km = Kilometers(42)\n",
+            "let r = km.get()\n",
+        );
+        if let Value::Int(n) = run_get(src, "r") {
+            assert_eq!(n, 42);
+        } else {
+            panic!("expected 42");
+        }
+    }
+
+    #[test]
+    fn test_new_type_instances_are_distinct() {
+        // new_type gives a different class name — class name of instance is distinct.
+        let src = concat!(
+            "class Meters:\n",
+            "    mut value: int\n",
+            "new_type Kilometers: Meters\n",
+            "let m = Meters(1)\n",
+            "let km = Kilometers(2)\n",
+            "let mv = m.value\n",
+            "let kmv = km.value\n",
+        );
+        if let (Value::Int(mv), Value::Int(kmv)) = (run_get(src, "mv"), run_get(src, "kmv")) {
+            assert_eq!(mv, 1);
+            assert_eq!(kmv, 2);
+        } else {
+            panic!("expected ints");
+        }
+    }
+
+    #[test]
+    fn test_new_type_primitive_wrapper() {
+        // new_type from a primitive type creates a wrapper class with .value field.
+        let src = concat!(
+            "new_type Meters: int\n",
+            "let m = Meters(100)\n",
+            "let v = m.value\n",
+        );
+        if let Value::Int(n) = run_get(src, "v") {
+            assert_eq!(n, 100);
+        } else {
+            panic!("expected 100");
+        }
+    }
+
+    #[test]
+    fn test_new_type_self_resolves_to_new_type() {
+        // When a method inherited via new_type calls Self(...), it creates an instance
+        // of the new_type's class, not the original.
+        let src = concat!(
+            "class Meters:\n",
+            "    mut value: int\n",
+            "    fn double(self) -> Self:\n",
+            "        return Self(self.value * 2)\n",
+            "new_type Kilometers: Meters\n",
+            "let km = Kilometers(5)\n",
+            "let km2 = km.double()\n",
+            "let r = km2.value\n",
+        );
+        if let Value::Int(n) = run_get(src, "r") {
+            assert_eq!(n, 10);
+        } else {
+            panic!("expected 10");
+        }
+    }
+
+    #[test]
+    fn test_new_type_const_is_parse_error() {
+        // Reassigning a new_type binding is a parse error.
+        let src = concat!(
+            "class Foo:\n",
+            "    mut x: int\n",
+            "new_type Bar: Foo\n",
+            "Bar = Foo\n",
+        );
+        let tokens = crate::lexer::Lexer::new(src, "").tokenize();
+        let result = crate::parser::Parser::new(tokens).parse_program();
+        assert!(result.is_err(), "expected parse error when reassigning a new_type binding");
     }
 }

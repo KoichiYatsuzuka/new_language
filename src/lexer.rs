@@ -403,6 +403,8 @@ impl Lexer {
             "async" => Token::Async,
             "await" => Token::Await,
             "assert" => Token::Assert,
+            "Self" => Token::SelfType,
+            "new_type" => Token::NewType,
             _ => Token::Ident(word),
         }
     }

@@ -144,6 +144,14 @@ pub enum Stmt {
         type_ann: String,
         default: Option<Expr>,
     },
+    /// `new_type NewName: OriginalType`
+    /// Creates a structurally identical subclass of OriginalType with a new name.
+    /// The binding is always const; reassignment is a parse error.
+    NewTypeDef {
+        name: String,
+        /// The original type name (class, primitive type, or new_type).
+        original: String,
+    },
 }
 
 /// Mutability/ownership kind for a class field declaration.

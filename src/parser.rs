@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, TemplateParam, UnaryOp};
 use crate::token::{Span, Spanned, Token};
@@ -8,11 +8,21 @@ pub struct Parser {
     pos: usize,
     /// trait name → (template_params, fields: [(name, kind, type_ann, has_default)], virtual_methods: [name])
     known_traits: HashMap<String, (Vec<TemplateParam>, Vec<(String, FieldKind, String, bool)>, Vec<String>)>,
+    /// Incremented when entering a class/trait body; `Self` is only valid when this is > 0.
+    class_or_trait_depth: usize,
+    /// Names declared with `new_type` — any reassignment to these is a parse error.
+    known_new_types: HashSet<String>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Spanned>) -> Self {
-        Self { tokens, pos: 0, known_traits: HashMap::new() }
+        Self {
+            tokens,
+            pos: 0,
+            known_traits: HashMap::new(),
+            class_or_trait_depth: 0,
+            known_new_types: HashSet::new(),
+        }
     }
 
     fn current(&self) -> &Token {
@@ -195,10 +205,16 @@ impl Parser {
             Token::Gen => self.parse_gen_def(),
             Token::Class => self.parse_class_def(),
             Token::Trait => self.parse_trait_def(),
+            Token::NewType => self.parse_new_type_def(),
             Token::Ident(_) => match self.peek1().clone() {
                 Token::Eq => {
                     let span = self.current_span();
                     let name = self.expect_ident()?;
+                    if self.known_new_types.contains(&name) {
+                        return Err(format!(
+                            "ParseError: cannot reassign new_type `{name}` — new_type bindings are const"
+                        ));
+                    }
                     self.advance(); // consume `=`
                     Ok(Stmt::Assign { name, value: self.parse_expr()?, span })
                 }
@@ -245,6 +261,11 @@ impl Parser {
     fn parse_compound(&mut self, op: BinOp) -> Result<Stmt, String> {
         let span = self.current_span(); // span of the variable identifier
         let name = self.expect_ident()?;
+        if self.known_new_types.contains(&name) {
+            return Err(format!(
+                "ParseError: cannot reassign new_type `{name}` — new_type bindings are const"
+            ));
+        }
         self.advance(); // consume the compound-assignment operator
         Ok(Stmt::CompoundAssign { name, op, value: self.parse_expr()?, span })
     }
@@ -363,6 +384,15 @@ impl Parser {
         matches!(t0, Token::Newline) && matches!(t1, Token::Indent) && matches!(t2, Token::Ellipsis)
     }
 
+    fn parse_new_type_def(&mut self) -> Result<Stmt, String> {
+        self.advance(); // consume `new_type`
+        let name = self.expect_ident()?;
+        self.eat(&Token::Colon)?;
+        let original = self.parse_type_expr()?;
+        self.known_new_types.insert(name.clone());
+        Ok(Stmt::NewTypeDef { name, original })
+    }
+
     fn parse_trait_def(&mut self) -> Result<Stmt, String> {
         self.advance(); // consume `trait`
         let name = self.expect_ident()?;
@@ -371,7 +401,9 @@ impl Parser {
             return Err(format!("StaticTypeError: trait `{name}` cannot inherit from another type"));
         }
         self.eat(&Token::Colon)?;
+        self.class_or_trait_depth += 1;
         let body = self.parse_class_body()?;
+        self.class_or_trait_depth -= 1;
 
         // Check that non-virtual methods have required type annotations (same rules as classes)
         for stmt in &body {
@@ -463,7 +495,9 @@ impl Parser {
             }
         }
         self.eat(&Token::Colon)?;
+        self.class_or_trait_depth += 1;
         let mut body = self.parse_class_body()?;
+        self.class_or_trait_depth -= 1;
 
         // Collect trait required fields and check virtual method overrides.
         // trait_required: (trait_name, field_name, type_ann)
@@ -710,11 +744,18 @@ impl Parser {
     }
 
     // Parses a type expression and returns the base type name (generic args are skipped).
-    // Accepts identifiers and keyword-tokens that are valid type names (e.g. `None`).
+    // Accepts identifiers and keyword-tokens that are valid type names (e.g. `None`, `Self`).
     fn parse_type_expr(&mut self) -> Result<String, String> {
         let base = match self.current().clone() {
             Token::Ident(name) => { self.advance(); name }
             Token::None => { self.advance(); "None".to_string() }
+            Token::SelfType => {
+                if self.class_or_trait_depth == 0 {
+                    return Err("ParseError: 'Self' can only be used inside class or trait definitions".to_string());
+                }
+                self.advance();
+                "Self".to_string()
+            }
             tok => return Err(format!("expected type name, got `{tok}`")),
         };
         // Skip optional generic parameters: list[int], dict[str, int], etc.
@@ -997,6 +1038,13 @@ impl Parser {
             Token::False => { self.advance(); Ok(Expr::Bool(false)) }
             Token::None => { self.advance(); Ok(Expr::None) }
             Token::Ident(name) => { self.advance(); Ok(Expr::Ident(name)) }
+            Token::SelfType => {
+                if self.class_or_trait_depth == 0 {
+                    return Err("ParseError: 'Self' can only be used inside class or trait definitions".to_string());
+                }
+                self.advance();
+                Ok(Expr::Ident("Self".to_string()))
+            }
             Token::LParen => {
                 self.advance();
                 let expr = self.parse_expr()?;

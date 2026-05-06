@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::{BinOp, CallArg, Expr, Stmt, UnaryOp};
 use crate::token::Span;
@@ -19,6 +19,11 @@ pub enum InferredType {
     List,
     /// A value whose runtime type is `type` — it holds a type itself (e.g. `int`, a class).
     TypeVal,
+    /// The `Self` type annotation used inside class/trait methods.
+    /// Resolved to the enclosing class at the call site.
+    SelfType,
+    /// An instance of a named class or new_type.
+    NamedInstance(String),
     Unknown, // cannot be determined statically
 }
 
@@ -33,6 +38,7 @@ impl InferredType {
             "None" => Some(Self::None),
             "list" => Some(Self::List),
             "type" => Some(Self::TypeVal),
+            "Self" => Some(Self::SelfType),
             _ => None,
         }
     }
@@ -59,6 +65,8 @@ impl std::fmt::Display for InferredType {
             Self::None => write!(f, "None"),
             Self::List => write!(f, "list"),
             Self::TypeVal => write!(f, "type"),
+            Self::SelfType => write!(f, "Self"),
+            Self::NamedInstance(name) => write!(f, "{name}"),
             Self::Unknown => write!(f, "unknown"),
         }
     }
@@ -95,6 +103,13 @@ pub enum TypeErrorKind {
     UnknownKeywordArg { func_name: String, arg_name: String },
     /// Overloaded function: no overload accepts the given number of arguments
     NoMatchingOverload { func_name: String, got: usize, available: Vec<usize> },
+    /// A `Self`-typed parameter received an instance of a different class/new_type
+    SelfTypeMismatch {
+        method: String,
+        param_name: String,
+        expected_class: String,
+        got_class: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +176,10 @@ impl std::fmt::Display for StaticTypeError {
                     "StaticTypeError: no overload of '{func_name}' takes {got} argument(s) (overloads take: {avail})"
                 )
             }
+            TypeErrorKind::SelfTypeMismatch { method, param_name, expected_class, got_class } => write!(
+                f,
+                "StaticTypeError: parameter '{param_name}' of '{method}' expects 'Self' = '{expected_class}' but got '{got_class}'"
+            ),
         }
     }
 }
@@ -183,6 +202,11 @@ pub struct TypeChecker {
     scopes: Vec<HashMap<String, VarInfo>>,
     /// All overloads per function name, collected in a pre-pass for forward-call checking.
     fn_sigs: HashMap<String, Vec<FnSig>>,
+    /// Per-class method signatures: class_name → method_name → [overloads].
+    /// Used to check Self-type parameters in method calls.
+    class_method_sigs: HashMap<String, HashMap<String, Vec<FnSig>>>,
+    /// Names of classes and new_types known at type-check time.
+    known_class_names: HashSet<String>,
     pub errors: Vec<StaticTypeError>,
 }
 
@@ -194,7 +218,13 @@ impl TypeChecker {
         for name in ["int", "str", "float", "bool"] {
             global.insert(name.to_string(), VarInfo { ty: InferredType::TypeVal, mutable: false });
         }
-        Self { scopes: vec![global], fn_sigs: HashMap::new(), errors: Vec::new() }
+        Self {
+            scopes: vec![global],
+            fn_sigs: HashMap::new(),
+            class_method_sigs: HashMap::new(),
+            known_class_names: HashSet::new(),
+            errors: Vec::new(),
+        }
     }
 
     /// Run static type checking over a full program; returns collected errors.
@@ -206,7 +236,9 @@ impl TypeChecker {
     }
 
     /// Pre-pass: register all FnDef signatures so calls can be validated regardless of order.
+    /// Two passes: first collect ClassDef/FnDef sigs, then resolve NewTypeDef inheritance.
     fn collect_fn_sigs(&mut self, stmts: &[Stmt]) {
+        // Pass 1: functions and classes.
         for stmt in stmts {
             match stmt {
                 Stmt::FnDef { name, params, return_type, body, .. } => {
@@ -219,9 +251,35 @@ impl TypeChecker {
                     self.fn_sigs.entry(name.clone()).or_default().push(sig);
                     self.collect_fn_sigs(body);
                 }
-                Stmt::ClassDef { body, .. } => self.collect_fn_sigs(body),
+                Stmt::ClassDef { name, body, .. } => {
+                    self.known_class_names.insert(name.clone());
+                    // Collect per-class method signatures for Self-type checking.
+                    let mut cls_methods: HashMap<String, Vec<FnSig>> = HashMap::new();
+                    for s in body.iter() {
+                        if let Stmt::FnDef { name: mname, params, return_type, .. } = s {
+                            let sig = FnSig {
+                                params: params.iter()
+                                    .map(|p| (p.name.clone(), p.type_ann.as_deref().and_then(InferredType::from_ann)))
+                                    .collect(),
+                                return_type: return_type.as_deref().and_then(InferredType::from_ann),
+                            };
+                            cls_methods.entry(mname.clone()).or_default().push(sig);
+                        }
+                    }
+                    self.class_method_sigs.insert(name.clone(), cls_methods);
+                    self.collect_fn_sigs(body);
+                }
                 Stmt::TraitDef { body, .. } => self.collect_fn_sigs(body),
                 _ => {}
+            }
+        }
+        // Pass 2: new_type aliases inherit method sigs from the original class.
+        for stmt in stmts {
+            if let Stmt::NewTypeDef { name, original } = stmt {
+                self.known_class_names.insert(name.clone());
+                if let Some(orig_sigs) = self.class_method_sigs.get(original).cloned() {
+                    self.class_method_sigs.insert(name.clone(), orig_sigs);
+                }
             }
         }
     }
@@ -421,6 +479,10 @@ impl TypeChecker {
                 self.check_stmts(body);
                 self.pop_scope();
             }
+            Stmt::NewTypeDef { name, .. } => {
+                // new_type bindings are always const (parser enforces no reassignment).
+                self.declare(name.clone(), InferredType::Unknown, false);
+            }
             Stmt::Pass | Stmt::Break | Stmt::Continue | Stmt::Freeze(..) => {}
         }
     }
@@ -444,6 +506,25 @@ impl TypeChecker {
                 InferredType::Unknown
             }
             Expr::Call { func, args } => {
+                // Detect method calls on named-instance receivers (for Self-type checking).
+                // Only handle simple `ident.method(...)` — complex receiver exprs yield Unknown.
+                let method_call_info: Option<(String, String)> =
+                    if let Expr::Attr { object, attr } = func.as_ref() {
+                        let obj_ty = match object.as_ref() {
+                            Expr::Ident(n) => {
+                                self.lookup(n).map(|v| v.ty.clone()).unwrap_or(InferredType::Unknown)
+                            }
+                            _ => InferredType::Unknown,
+                        };
+                        if let InferredType::NamedInstance(cls_name) = obj_ty {
+                            Some((cls_name, attr.clone()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                 // Capture function name before mutably borrowing self for infer calls.
                 let func_name = if let Expr::Ident(name) = func.as_ref() {
                     Some(name.clone())
@@ -459,6 +540,44 @@ impl TypeChecker {
                         CallArg::Positional(e) => arg_data.push((None, self.infer(e))),
                         CallArg::Keyword { name, value } => {
                             arg_data.push((Some(name.clone()), self.infer(value)))
+                        }
+                    }
+                }
+
+                // Check Self-type parameters for method calls.
+                if let Some((ref cls_name, ref method_name)) = method_call_info {
+                    if let Some(sigs) = self.class_method_sigs
+                        .get(cls_name)
+                        .and_then(|m| m.get(method_name))
+                        .cloned()
+                    {
+                        // Method params include `self`; args do not. Match on arg_count + 1.
+                        let count_matching: Vec<FnSig> = sigs.iter()
+                            .filter(|s| s.params.len() == arg_data.len() + 1)
+                            .cloned()
+                            .collect();
+                        if count_matching.len() == 1 {
+                            let sig = &count_matching[0];
+                            for (arg_idx, (_, arg_ty)) in arg_data.iter().enumerate() {
+                                let param_idx = arg_idx + 1; // skip `self`
+                                if let Some((param_name, Some(InferredType::SelfType))) =
+                                    sig.params.get(param_idx)
+                                {
+                                    if let InferredType::NamedInstance(got_cls) = arg_ty {
+                                        if got_cls != cls_name {
+                                            self.emit(StaticTypeError {
+                                                kind: TypeErrorKind::SelfTypeMismatch {
+                                                    method: method_name.clone(),
+                                                    param_name: param_name.clone(),
+                                                    expected_class: cls_name.clone(),
+                                                    got_class: got_cls.clone(),
+                                                },
+                                                span: None,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -549,6 +668,13 @@ impl TypeChecker {
                             }
                         }
                         // Multiple count-matching overloads: runtime dispatch decides, skip type check.
+                    }
+                }
+
+                // Constructor call → return a typed NamedInstance so callers can track class identity.
+                if let Some(ref fname) = func_name {
+                    if self.known_class_names.contains(fname.as_str()) {
+                        return InferredType::NamedInstance(fname.clone());
                     }
                 }
 
@@ -1049,6 +1175,113 @@ mod tests {
         assert!(msg.contains("StaticTypeError"));
         assert!(msg.contains("'f'"));
         assert!(msg.contains('3'));
+    }
+
+    // --- new_type ---
+
+    #[test]
+    fn new_type_class_copy_no_type_errors() {
+        assert!(ok(concat!(
+            "class Foo:\n",
+            "    mut value: int\n",
+            "new_type FooAlias: Foo\n",
+            "let a = Foo(1)\n",
+            "let b = FooAlias(2)\n",
+        )));
+    }
+
+    #[test]
+    fn new_type_constructor_returns_named_instance() {
+        // let a = Foo(1) → a's type is NamedInstance("Foo") → can be used in comparison context
+        let errors = check(concat!(
+            "class Foo:\n",
+            "    mut value: int\n",
+            "new_type FooAlias: Foo\n",
+            "let a = Foo(1)\n",
+            "let b = FooAlias(2)\n",
+        ));
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn self_type_same_class_ok() {
+        assert!(ok(concat!(
+            "class Foo:\n",
+            "    mut value: int\n",
+            "    fn bar(self, other: Self) -> None:\n",
+            "        pass\n",
+            "let a = Foo(1)\n",
+            "let b = Foo(2)\n",
+            "a.bar(b)\n",
+        )));
+    }
+
+    #[test]
+    fn self_type_mismatch_new_type_err() {
+        // FooAlias is a distinct new_type — passing it where Self=Foo is expected → error
+        let errors = check(concat!(
+            "class Foo:\n",
+            "    mut value: int\n",
+            "    fn bar(self, other: Self) -> None:\n",
+            "        pass\n",
+            "new_type FooAlias: Foo\n",
+            "let a = Foo(1)\n",
+            "let b = FooAlias(2)\n",
+            "a.bar(b)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(
+            &e.kind,
+            TypeErrorKind::SelfTypeMismatch {
+                expected_class,
+                got_class,
+                ..
+            } if expected_class == "Foo" && got_class == "FooAlias"
+        )));
+    }
+
+    #[test]
+    fn self_type_mismatch_reverse_err() {
+        // Call on FooAlias instance — Self=FooAlias, but arg is Foo → error
+        let errors = check(concat!(
+            "class Foo:\n",
+            "    mut value: int\n",
+            "    fn bar(self, other: Self) -> None:\n",
+            "        pass\n",
+            "new_type FooAlias: Foo\n",
+            "let a = Foo(1)\n",
+            "let b = FooAlias(2)\n",
+            "b.bar(a)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(
+            &e.kind,
+            TypeErrorKind::SelfTypeMismatch {
+                expected_class,
+                got_class,
+                ..
+            } if expected_class == "FooAlias" && got_class == "Foo"
+        )));
+    }
+
+    #[test]
+    fn self_type_mismatch_display() {
+        let errors = check(concat!(
+            "class Foo:\n",
+            "    mut value: int\n",
+            "    fn bar(self, other: Self) -> None:\n",
+            "        pass\n",
+            "new_type FooAlias: Foo\n",
+            "let a = Foo(1)\n",
+            "let b = FooAlias(2)\n",
+            "a.bar(b)\n",
+        ));
+        let msg = errors.iter()
+            .find(|e| matches!(&e.kind, TypeErrorKind::SelfTypeMismatch { .. }))
+            .unwrap()
+            .to_string();
+        assert!(msg.contains("StaticTypeError"));
+        assert!(msg.contains("bar"));
+        assert!(msg.contains("Foo"));
+        assert!(msg.contains("FooAlias"));
     }
 
     // --- trait ---

@@ -108,6 +108,12 @@ pub enum Token {
     // Assertion
     Assert,
 
+    // Self type keyword (valid only inside class/trait bodies)
+    SelfType,
+
+    // new_type declaration keyword
+    NewType,
+
     // Arithmetic operators
     Plus,         // +
     Minus,        // -
@@ -240,6 +246,8 @@ impl std::fmt::Display for Token {
             Token::Async => write!(f, "async"),
             Token::Await => write!(f, "await"),
             Token::Assert => write!(f, "assert"),
+            Token::SelfType => write!(f, "Self"),
+            Token::NewType => write!(f, "new_type"),
             Token::Plus => write!(f, "+"),
             Token::Minus => write!(f, "-"),
             Token::Star => write!(f, "*"),
