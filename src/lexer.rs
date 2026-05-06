@@ -360,6 +360,7 @@ impl Lexer {
             "let" => Token::Let,
             "const" => Token::Const,
             "mut" => Token::Mut,
+            "freeze" => Token::Freeze,
             "True" => Token::True,
             "False" => Token::False,
             "None" => Token::None,
@@ -659,8 +660,8 @@ mod tests {
 
     #[test]
     fn test_variable_keywords() {
-        assert_eq!(lex("let const mut"), vec![
-            Token::Let, Token::Const, Token::Mut, Token::Eof,
+        assert_eq!(lex("let const mut freeze"), vec![
+            Token::Let, Token::Const, Token::Mut, Token::Freeze, Token::Eof,
         ]);
     }
 

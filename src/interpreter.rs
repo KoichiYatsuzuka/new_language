@@ -80,6 +80,9 @@ pub struct InstanceData {
     pub class: Rc<ClassValue>,
     /// name → (value, mutable)
     pub fields: HashMap<String, (Value, bool)>,
+    /// Set to `true` when the instance was bound with `let`.
+    /// All fields become immutable and methods requiring `mut self` are forbidden.
+    pub immutable: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +155,17 @@ impl Interpreter {
         Self { scopes: vec![global] }
     }
 
+    // --- Instance freeze ---
+
+    /// Mark an instance as immutable: set `immutable = true` and flip all `mut` fields to immutable.
+    fn freeze_instance(inst_rc: &Rc<RefCell<InstanceData>>) {
+        let mut inst = inst_rc.borrow_mut();
+        inst.immutable = true;
+        for (_, mutable) in inst.fields.values_mut() {
+            *mutable = false;
+        }
+    }
+
     // --- Scope helpers ---
 
     fn push_scope(&mut self) {
@@ -196,6 +210,16 @@ impl Interpreter {
         Err(format!("NameError: '{name}' is not defined"))
     }
 
+    /// Demote a variable from `mut` to immutable in-place (used by `freeze`).
+    fn make_var_immutable(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(v) = scope.get_mut(name) {
+                v.mutable = false;
+                return;
+            }
+        }
+    }
+
     // --- Statement execution ---
 
     pub fn exec(&mut self, stmt: &Stmt) -> Result<ExecResult, String> {
@@ -206,6 +230,9 @@ impl Interpreter {
             }
             Stmt::Let(name, expr) => {
                 let value = self.eval(expr)?;
+                if let Value::Instance(ref inst_rc) = value {
+                    Self::freeze_instance(inst_rc);
+                }
                 self.declare_var(name.clone(), Var { value, mutable: false });
                 Ok(ExecResult::Normal)
             }
@@ -431,6 +458,32 @@ impl Interpreter {
                 self.declare_var(name.clone(), Var { value: Value::Class(cls), mutable: false });
                 Ok(ExecResult::Normal)
             }
+            Stmt::Freeze(name, span) => {
+                let var = self.get_var(name)
+                    .ok_or_else(|| format!("{span}: NameError: '{name}' is not defined"))?;
+                if !var.mutable {
+                    return Err(format!(
+                        "{span}: TypeError: cannot freeze immutable variable '{name}'"
+                    ));
+                }
+                let val = var.value.clone();
+
+                if let Value::Instance(ref inst_rc) = val {
+                    let class = inst_rc.borrow().class.clone();
+                    // Call __freeze__ before freezing if the class defines it
+                    if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
+                        if overloads.len() == 1 {
+                            self.exec_fn(overloads[0].clone(), &[], Some(val.clone()))?;
+                        } else {
+                            self.dispatch_overload(overloads, &[], Some(val.clone()))?;
+                        }
+                    }
+                    Self::freeze_instance(inst_rc);
+                }
+
+                self.make_var_immutable(name);
+                Ok(ExecResult::Normal)
+            }
         }
     }
 
@@ -473,6 +526,11 @@ impl Interpreter {
                         }
                         inst.fields.insert(attr.clone(), (rhs, true));
                     } else {
+                        if inst.immutable {
+                            return Err(format!(
+                                "TypeError: cannot assign field '{attr}' on immutable instance"
+                            ));
+                        }
                         let is_mutable = inst.class.field_mutability
                             .get(attr.as_str()).copied().unwrap_or(true);
                         inst.fields.insert(attr.clone(), (rhs, is_mutable));
@@ -488,6 +546,16 @@ impl Interpreter {
                     // Trait fields are stored with a namespaced key "TraitName::field"
                     let key = format!("{}::{}", trait_name, attr);
                     let mut inst = inst_rc.borrow_mut();
+                    if let Some((_, false)) = inst.fields.get(&key) {
+                        return Err(format!(
+                            "TypeError: cannot assign to immutable trait field '{attr}'"
+                        ));
+                    }
+                    if inst.immutable {
+                        return Err(format!(
+                            "TypeError: cannot assign field '{attr}' on immutable instance"
+                        ));
+                    }
                     inst.fields.insert(key, (rhs, true));
                     Ok(())
                 }
@@ -761,7 +829,7 @@ impl Interpreter {
         for (name, default_val, mutable) in &class.field_defaults {
             fields.insert(name.clone(), (default_val.clone(), *mutable));
         }
-        let inst_rc = Rc::new(RefCell::new(InstanceData { class: class.clone(), fields }));
+        let inst_rc = Rc::new(RefCell::new(InstanceData { class: class.clone(), fields, immutable: false }));
         let inst_val = Value::Instance(inst_rc);
 
         if let Some(init_overloads) = self.lookup_method_in_class(&class, "__init__") {
@@ -784,12 +852,30 @@ impl Interpreter {
         match &obj {
             Value::Instance(inst_rc) => {
                 let class = inst_rc.borrow().class.clone();
+                let inst_immutable = inst_rc.borrow().immutable;
                 let overloads = self.lookup_method_in_class(&class, method_name)
                     .ok_or_else(|| format!("AttributeError: '{}' has no method '{method_name}'", class.name))?;
-                if overloads.len() == 1 {
-                    self.exec_fn(overloads[0].clone(), args, Some(obj.clone()))
+
+                let callable: Vec<Rc<FnValue>> = if inst_immutable {
+                    // Exclude overloads that require `mut self`
+                    overloads.iter().filter(|f| {
+                        f.params.first().map(|p| p.name != "self" || !p.mutable).unwrap_or(true)
+                    }).cloned().collect()
                 } else {
-                    self.dispatch_overload(overloads, args, Some(obj.clone()))
+                    overloads
+                };
+
+                if callable.is_empty() {
+                    return Err(format!(
+                        "TypeError: cannot call mutable method '{method_name}' on immutable instance of '{}'",
+                        class.name
+                    ));
+                }
+
+                if callable.len() == 1 {
+                    self.exec_fn(callable[0].clone(), args, Some(obj.clone()))
+                } else {
+                    self.dispatch_overload(callable, args, Some(obj.clone()))
                 }
             }
             Value::Generator(state) => {
@@ -1475,6 +1561,7 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             type_ann: subst_type(type_ann, type_map),
             default: default.as_ref().map(|e| subst_expr(e, type_map)),
         },
+        Stmt::Freeze(name, span) => Stmt::Freeze(name.clone(), span.clone()),
     }
 }
 
@@ -1932,7 +2019,7 @@ mod tests {
             "        self.value = v\n",
             "    fn get(self) -> int:\n",
             "        return self.value\n",
-            "let b = Box()\n",
+            "mut b = Box()\n",    // mut: instance will be mutated via set()
             "b.set(42)\n",
             "let r = b.get()\n",
         );
@@ -2059,6 +2146,188 @@ mod tests {
         }
     }
 
+    // --- let-binding immutability for instances ---
+
+    #[test]
+    fn test_let_instance_field_is_frozen() {
+        // let binding freezes all mut fields — direct field write must fail
+        let src = concat!(
+            "class Counter:\n",
+            "    mut value: int = 0\n",
+            "let c = Counter()\n",
+            "c.value = 1\n",
+        );
+        assert!(run(src).is_err(), "assigning to a frozen field must fail");
+    }
+
+    #[test]
+    fn test_let_instance_mut_method_forbidden() {
+        // let binding forbids calling methods with mut self
+        let src = concat!(
+            "class Counter:\n",
+            "    mut value: int = 0\n",
+            "    fn inc(mut self) -> None:\n",
+            "        self.value = self.value + 1\n",
+            "let c = Counter()\n",
+            "c.inc()\n",
+        );
+        assert!(run(src).is_err(), "calling mut self method on let instance must fail");
+    }
+
+    #[test]
+    fn test_let_instance_immutable_method_allowed() {
+        // let binding still allows calling methods with (non-mut) self
+        let src = concat!(
+            "class Counter:\n",
+            "    mut value: int = 5\n",
+            "    fn get(self) -> int:\n",
+            "        return self.value\n",
+            "let c = Counter()\n",
+            "let r = c.get()\n",
+        );
+        if let Value::Int(n) = run_get(src, "r") {
+            assert_eq!(n, 5);
+        } else {
+            panic!("expected int 5");
+        }
+    }
+
+    #[test]
+    fn test_mut_instance_mut_method_allowed() {
+        // mut binding allows calling mut self methods normally
+        let src = concat!(
+            "class Counter:\n",
+            "    mut value: int = 0\n",
+            "    fn inc(mut self) -> None:\n",
+            "        self.value = self.value + 1\n",
+            "    fn get(self) -> int:\n",
+            "        return self.value\n",
+            "mut c = Counter()\n",
+            "c.inc()\n",
+            "c.inc()\n",
+            "let r = c.get()\n",
+        );
+        if let Value::Int(n) = run_get(src, "r") {
+            assert_eq!(n, 2);
+        } else {
+            panic!("expected int 2");
+        }
+    }
+
+    #[test]
+    fn test_let_instance_error_message_names_method() {
+        let src = concat!(
+            "class Foo:\n",
+            "    fn bar(mut self) -> None:\n",
+            "        pass\n",
+            "let f = Foo()\n",
+            "f.bar()\n",
+        );
+        let err = run(src).expect_err("should fail");
+        assert!(err.contains("bar"), "error should mention method name, got: {err}");
+        assert!(err.contains("immutable"), "error should mention immutable, got: {err}");
+    }
+
+    // --- freeze statement ---
+
+    #[test]
+    fn test_freeze_makes_variable_immutable() {
+        // After freeze, reassigning the variable itself must fail
+        let src = concat!(
+            "class Foo:\n",
+            "    mut x: int = 0\n",
+            "mut f = Foo()\n",
+            "freeze f\n",
+            "f = Foo()\n",   // reassign the variable
+        );
+        assert!(run(src).is_err(), "reassigning a frozen variable must fail");
+    }
+
+    #[test]
+    fn test_freeze_freezes_instance_fields() {
+        // After freeze, writing to a mut field must fail
+        let src = concat!(
+            "class Foo:\n",
+            "    mut x: int = 0\n",
+            "mut f = Foo()\n",
+            "freeze f\n",
+            "f.x = 1\n",
+        );
+        assert!(run(src).is_err(), "writing to a frozen field must fail");
+    }
+
+    #[test]
+    fn test_freeze_forbids_mut_self_methods() {
+        // After freeze, calling a mut self method must fail
+        let src = concat!(
+            "class Counter:\n",
+            "    mut value: int = 0\n",
+            "    fn inc(mut self) -> None:\n",
+            "        self.value = self.value + 1\n",
+            "mut c = Counter()\n",
+            "freeze c\n",
+            "c.inc()\n",
+        );
+        assert!(run(src).is_err(), "calling mut self method on frozen instance must fail");
+    }
+
+    #[test]
+    fn test_freeze_allows_immutable_methods() {
+        // After freeze, calling a (non-mut) self method must still work
+        let src = concat!(
+            "class Counter:\n",
+            "    mut value: int = 5\n",
+            "    fn get(self) -> int:\n",
+            "        return self.value\n",
+            "mut c = Counter()\n",
+            "freeze c\n",
+            "let r = c.get()\n",
+        );
+        if let Value::Int(n) = run_get(src, "r") {
+            assert_eq!(n, 5);
+        } else {
+            panic!("expected int 5");
+        }
+    }
+
+    #[test]
+    fn test_freeze_calls_dunder_freeze() {
+        // freeze must call __freeze__ on the instance before freezing
+        let src = concat!(
+            "class Tracked:\n",
+            "    mut value: int = 0\n",
+            "    mut frozen_at: int = 0\n",
+            "    fn __freeze__(mut self) -> None:\n",
+            "        self.frozen_at = self.value + 10\n",
+            "mut t = Tracked()\n",
+            "t.value = 3\n",
+            "freeze t\n",
+            "let r = t.frozen_at\n",
+        );
+        if let Value::Int(n) = run_get(src, "r") {
+            assert_eq!(n, 13, "expected frozen_at == value + 10 == 13");
+        } else {
+            panic!("expected int 13");
+        }
+    }
+
+    #[test]
+    fn test_freeze_on_let_variable_errors() {
+        // freeze on an already-immutable variable must fail
+        let src = concat!(
+            "class Foo:\n",
+            "    mut x: int = 0\n",
+            "let f = Foo()\n",
+            "freeze f\n",
+        );
+        assert!(run(src).is_err(), "freeze on a let variable must fail");
+    }
+
+    #[test]
+    fn test_freeze_on_undefined_variable_errors() {
+        assert!(run("freeze x\n").is_err(), "freeze on undefined variable must fail");
+    }
+
     #[test]
     fn test_trait_field_write_via_method() {
         // A class method writes to a trait field using TraitAccess assignment.
@@ -2070,7 +2339,7 @@ mod tests {
             "        self::HasCount.count = self::HasCount.count + 1\n",
             "    fn get(self) -> int:\n",
             "        return self::HasCount.count\n",
-            "let c = Counter(0)\n",
+            "mut c = Counter(0)\n",   // mut: instance will be mutated via increment()
             "c.increment()\n",
             "c.increment()\n",
             "let r = c.get()\n",

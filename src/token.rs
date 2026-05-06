@@ -39,6 +39,7 @@ pub enum Token {
     Let,
     Const,
     Mut,
+    Freeze,
 
     // Value literals (keyword form)
     True,
@@ -193,6 +194,7 @@ impl std::fmt::Display for Token {
             Token::Let => write!(f, "let"),
             Token::Const => write!(f, "const"),
             Token::Mut => write!(f, "mut"),
+            Token::Freeze => write!(f, "freeze"),
             Token::True => write!(f, "True"),
             Token::False => write!(f, "False"),
             Token::None => write!(f, "None"),

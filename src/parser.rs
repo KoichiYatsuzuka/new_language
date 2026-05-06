@@ -104,6 +104,12 @@ impl Parser {
                 self.eat(&Token::Eq)?;
                 Ok(Stmt::Mut(name, self.parse_expr()?))
             }
+            Token::Freeze => {
+                let span = self.current_span();
+                self.advance();
+                let name = self.expect_ident()?;
+                Ok(Stmt::Freeze(name, span))
+            }
             Token::Pass => {
                 self.advance();
                 Ok(Stmt::Pass)
@@ -1035,6 +1041,20 @@ mod tests {
     fn test_literal_expr() {
         let stmts = parse("42");
         assert!(matches!(stmts[0], Stmt::Expr(Expr::Int(42))));
+    }
+
+    #[test]
+    fn test_freeze_stmt() {
+        let stmts = parse("mut x = 5\nfreeze x\n");
+        assert!(matches!(&stmts[0], Stmt::Mut(name, ..) if name == "x"));
+        assert!(matches!(&stmts[1], Stmt::Freeze(name, ..) if name == "x"));
+    }
+
+    #[test]
+    fn test_freeze_requires_ident() {
+        let tokens = crate::lexer::Lexer::new("freeze 42\n", "").tokenize();
+        let err = Parser::new(tokens).parse_program().expect_err("expected parse error");
+        assert!(err.contains("expected identifier"), "got: {err}");
     }
 
     #[test]

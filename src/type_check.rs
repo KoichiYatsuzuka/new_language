@@ -421,7 +421,7 @@ impl TypeChecker {
                 self.check_stmts(body);
                 self.pop_scope();
             }
-            Stmt::Pass | Stmt::Break | Stmt::Continue => {}
+            Stmt::Pass | Stmt::Break | Stmt::Continue | Stmt::Freeze(..) => {}
         }
     }
 

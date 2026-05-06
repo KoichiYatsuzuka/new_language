@@ -100,6 +100,9 @@ pub enum Stmt {
     BlockYield(Expr),        // block_yield expr
     /// `yield expr` inside a generator function body.
     Yield(Expr),
+    /// `freeze x` — demotes a `mut` variable to `let` (immutable) at runtime.
+    /// If the value has a `__freeze__` method, it is called before the demotion.
+    Freeze(String, Span),
     FnDef {
         name: String,
         /// Template type parameters (empty for non-template functions).
