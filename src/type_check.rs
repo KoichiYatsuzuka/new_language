@@ -24,6 +24,8 @@ pub enum InferredType {
     SelfType,
     /// An instance of a named class or new_type.
     NamedInstance(String),
+    /// The `Any` type: holds any value but requires explicit downcast before use.
+    Any,
     Unknown, // cannot be determined statically
 }
 
@@ -39,6 +41,7 @@ impl InferredType {
             "list" => Some(Self::List),
             "type" => Some(Self::TypeVal),
             "Self" => Some(Self::SelfType),
+            "Any" => Some(Self::Any),
             _ => None,
         }
     }
@@ -67,6 +70,7 @@ impl std::fmt::Display for InferredType {
             Self::TypeVal => write!(f, "type"),
             Self::SelfType => write!(f, "Self"),
             Self::NamedInstance(name) => write!(f, "{name}"),
+            Self::Any => write!(f, "Any"),
             Self::Unknown => write!(f, "unknown"),
         }
     }
@@ -110,6 +114,8 @@ pub enum TypeErrorKind {
         expected_class: String,
         got_class: String,
     },
+    /// An operator was applied to an `Any`-typed value without an explicit downcast
+    OperationOnAny { op: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +186,10 @@ impl std::fmt::Display for StaticTypeError {
                 f,
                 "StaticTypeError: parameter '{param_name}' of '{method}' expects 'Self' = '{expected_class}' but got '{got_class}'"
             ),
+            TypeErrorKind::OperationOnAny { op } => write!(
+                f,
+                "StaticTypeError: cannot apply '{op}' to 'Any' — explicit downcast required"
+            ),
         }
     }
 }
@@ -213,9 +223,9 @@ pub struct TypeChecker {
 impl TypeChecker {
     pub fn new() -> Self {
         let mut global: HashMap<String, VarInfo> = HashMap::new();
-        // Pre-define built-in type values so that `int`, `str`, `float`, `bool`
+        // Pre-define built-in type values so that `int`, `str`, `float`, `bool`, `Any`
         // are recognised as `InferredType::TypeVal` in expression context.
-        for name in ["int", "str", "float", "bool"] {
+        for name in ["int", "str", "float", "bool", "Any"] {
             global.insert(name.to_string(), VarInfo { ty: InferredType::TypeVal, mutable: false });
         }
         Self {
@@ -498,7 +508,13 @@ impl TypeChecker {
             Expr::None => InferredType::None,
             Expr::List(_) => InferredType::List,
             Expr::Attr { object, .. } => {
-                self.infer(object);
+                let obj_ty = self.infer(object);
+                if obj_ty == InferredType::Any {
+                    self.emit(StaticTypeError {
+                        kind: TypeErrorKind::OperationOnAny { op: "attribute access".to_string() },
+                        span: None,
+                    });
+                }
                 InferredType::Unknown
             }
             Expr::TraitAccess { object, .. } => {
@@ -631,7 +647,11 @@ impl TypeChecker {
                                             }),
                                             Some(param_pos) => {
                                                 if let Some(expected) = &sig.params[param_pos].1 {
-                                                    if *arg_ty != InferredType::Unknown && arg_ty != expected {
+                                                    // Any param accepts everything; skip type check.
+                                                    if *expected != InferredType::Any
+                                                        && *arg_ty != InferredType::Unknown
+                                                        && arg_ty != expected
+                                                    {
                                                         self.emit(StaticTypeError {
                                                             kind: TypeErrorKind::CallArgTypeMismatch {
                                                                 func_name: fname.clone(),
@@ -649,7 +669,11 @@ impl TypeChecker {
                                     None => {
                                         if let Some((_, param_ty)) = sig.params.get(positional_idx) {
                                             if let Some(expected) = param_ty {
-                                                if *arg_ty != InferredType::Unknown && arg_ty != expected {
+                                                // Any param accepts everything; skip type check.
+                                                if *expected != InferredType::Any
+                                                    && *arg_ty != InferredType::Unknown
+                                                    && arg_ty != expected
+                                                {
                                                     self.emit(StaticTypeError {
                                                         kind: TypeErrorKind::CallArgTypeMismatch {
                                                             func_name: fname.clone(),
@@ -695,6 +719,18 @@ impl TypeChecker {
             }
             Expr::UnaryOp { op, operand } => {
                 let ty = self.infer(operand);
+                if ty == InferredType::Any {
+                    let op_str = match op {
+                        UnaryOp::Neg => "-",
+                        UnaryOp::Not => "not",
+                        UnaryOp::BitNot => "~",
+                    };
+                    self.emit(StaticTypeError {
+                        kind: TypeErrorKind::OperationOnAny { op: op_str.to_string() },
+                        span: None,
+                    });
+                    return InferredType::Unknown;
+                }
                 match op {
                     UnaryOp::Not => InferredType::Bool,
                     UnaryOp::Neg => match ty {
@@ -722,12 +758,29 @@ impl TypeChecker {
     // --- Binary operator checks ---
 
     fn check_binop(&mut self, op: &BinOp, lt: &InferredType, rt: &InferredType, span: Span) {
+        // Any operand on either side is always an error — explicit downcast required.
+        if *lt == InferredType::Any || *rt == InferredType::Any {
+            let op_str = match op {
+                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                BinOp::Div => "/", BinOp::FloorDiv => "//", BinOp::Mod => "%",
+                BinOp::Pow => "**",
+                BinOp::Eq => "==", BinOp::NotEq => "!=",
+                BinOp::Lt => "<", BinOp::Gt => ">", BinOp::LtEq => "<=", BinOp::GtEq => ">=",
+                BinOp::And => "and", BinOp::Or => "or",
+                BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^",
+                BinOp::LShift => "<<", BinOp::RShift => ">>",
+            };
+            self.emit(StaticTypeError {
+                kind: TypeErrorKind::OperationOnAny { op: op_str.to_string() },
+                span: Some(span),
+            });
+            return;
+        }
         match op {
             BinOp::Lt => self.check_ordered_cmp(lt, rt, "<", span),
             BinOp::Gt => self.check_ordered_cmp(lt, rt, ">", span),
             BinOp::LtEq => self.check_ordered_cmp(lt, rt, "<=", span),
             BinOp::GtEq => self.check_ordered_cmp(lt, rt, ">=", span),
-            // Extend: BinOp::Add => check_add_types(lt, rt, span), etc.
             _ => {}
         }
     }
@@ -756,6 +809,8 @@ impl TypeChecker {
 
     fn infer_binop_result(op: &BinOp, lt: &InferredType, rt: &InferredType) -> InferredType {
         use InferredType::*;
+        // Any operand makes the result unknown (operation is already an error).
+        if *lt == Any || *rt == Any { return Unknown; }
         match op {
             BinOp::Eq
             | BinOp::NotEq
@@ -1175,6 +1230,117 @@ mod tests {
         assert!(msg.contains("StaticTypeError"));
         assert!(msg.contains("'f'"));
         assert!(msg.contains('3'));
+    }
+
+    // --- Any type ---
+
+    #[test]
+    fn any_param_accepts_all_arg_types_ok() {
+        // A function that takes Any should accept int, str, bool, etc.
+        assert!(ok(concat!(
+            "fn wrap(x: Any) -> None:\n",
+            "    pass\n",
+            "wrap(1)\n",
+            "wrap(\"hello\")\n",
+            "wrap(True)\n",
+        )));
+    }
+
+    #[test]
+    fn any_typed_var_binary_op_err() {
+        // Using an Any-typed parameter in arithmetic is a static error.
+        let errors = check(concat!(
+            "fn f(x: Any) -> None:\n",
+            "    let y = x + 1\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::OperationOnAny { op } if op == "+")));
+    }
+
+    #[test]
+    fn any_typed_var_comparison_err() {
+        let errors = check(concat!(
+            "fn f(x: Any) -> None:\n",
+            "    let y = x < 10\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::OperationOnAny { op } if op == "<")));
+    }
+
+    #[test]
+    fn any_typed_var_eq_err() {
+        let errors = check(concat!(
+            "fn f(x: Any) -> None:\n",
+            "    let y = x == 1\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::OperationOnAny { op } if op == "==")));
+    }
+
+    #[test]
+    fn any_typed_var_logical_op_err() {
+        let errors = check(concat!(
+            "fn f(x: Any) -> None:\n",
+            "    let y = x and True\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::OperationOnAny { .. })));
+    }
+
+    #[test]
+    fn any_typed_var_unary_neg_err() {
+        let errors = check(concat!(
+            "fn f(x: Any) -> None:\n",
+            "    let y = -x\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::OperationOnAny { op } if op == "-")));
+    }
+
+    #[test]
+    fn any_typed_var_attr_access_err() {
+        let errors = check(concat!(
+            "fn f(x: Any) -> None:\n",
+            "    let y = x.value\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::OperationOnAny { op } if op == "attribute access")));
+    }
+
+    #[test]
+    fn passing_any_to_typed_param_err() {
+        // Passing an Any-typed value to a function that expects int is an error.
+        let errors = check(concat!(
+            "fn needs_int(n: int) -> None:\n",
+            "    pass\n",
+            "fn caller(x: Any) -> None:\n",
+            "    needs_int(x)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(
+            &e.kind,
+            TypeErrorKind::CallArgTypeMismatch { expected, got, .. }
+            if *expected == InferredType::Int && *got == InferredType::Any
+        )));
+    }
+
+    #[test]
+    fn any_to_any_param_ok() {
+        // Passing Any to an Any param is explicitly allowed.
+        assert!(ok(concat!(
+            "fn accept_any(x: Any) -> None:\n",
+            "    pass\n",
+            "fn forward(x: Any) -> None:\n",
+            "    accept_any(x)\n",
+        )));
+    }
+
+    #[test]
+    fn operation_on_any_display() {
+        let errors = check(concat!(
+            "fn f(x: Any) -> None:\n",
+            "    let y = x + 1\n",
+        ));
+        let msg = errors.iter()
+            .find(|e| matches!(&e.kind, TypeErrorKind::OperationOnAny { .. }))
+            .unwrap()
+            .to_string();
+        assert!(msg.contains("StaticTypeError"));
+        assert!(msg.contains("Any"));
+        assert!(msg.contains("downcast"));
     }
 
     // --- new_type ---

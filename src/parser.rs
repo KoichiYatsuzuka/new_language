@@ -749,6 +749,7 @@ impl Parser {
         let base = match self.current().clone() {
             Token::Ident(name) => { self.advance(); name }
             Token::None => { self.advance(); "None".to_string() }
+            Token::Any => { self.advance(); "Any".to_string() }
             Token::SelfType => {
                 if self.class_or_trait_depth == 0 {
                     return Err("ParseError: 'Self' can only be used inside class or trait definitions".to_string());
@@ -1037,6 +1038,7 @@ impl Parser {
             Token::True => { self.advance(); Ok(Expr::Bool(true)) }
             Token::False => { self.advance(); Ok(Expr::Bool(false)) }
             Token::None => { self.advance(); Ok(Expr::None) }
+            Token::Any => { self.advance(); Ok(Expr::Ident("Any".to_string())) }
             Token::Ident(name) => { self.advance(); Ok(Expr::Ident(name)) }
             Token::SelfType => {
                 if self.class_or_trait_depth == 0 {

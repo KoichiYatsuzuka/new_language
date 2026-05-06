@@ -114,6 +114,9 @@ pub enum Token {
     // new_type declaration keyword
     NewType,
 
+    // Any type keyword (dynamic escape hatch; requires explicit downcast to use)
+    Any,
+
     // Arithmetic operators
     Plus,         // +
     Minus,        // -
@@ -248,6 +251,7 @@ impl std::fmt::Display for Token {
             Token::Assert => write!(f, "assert"),
             Token::SelfType => write!(f, "Self"),
             Token::NewType => write!(f, "new_type"),
+            Token::Any => write!(f, "Any"),
             Token::Plus => write!(f, "+"),
             Token::Minus => write!(f, "-"),
             Token::Star => write!(f, "*"),

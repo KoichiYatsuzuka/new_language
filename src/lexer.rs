@@ -405,6 +405,7 @@ impl Lexer {
             "assert" => Token::Assert,
             "Self" => Token::SelfType,
             "new_type" => Token::NewType,
+            "Any" => Token::Any,
             _ => Token::Ident(word),
         }
     }

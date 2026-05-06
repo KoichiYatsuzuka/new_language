@@ -40,8 +40,12 @@ test_lang/
 │   ├── keywords.md      # キーワード一覧
 │   └── operator.md      # 演算子一覧・優先順位
 ├── examples/
-│   ├── showcase.tl      # 実装済み全機能の動作確認
-│   └── type_errors.tl   # StaticTypeError の発生例
+│   ├── showcase.tl           # 実装済み全機能の動作確認
+│   ├── type_errors.tl        # StaticTypeError の発生例
+│   ├── self_type.tl          # Self 型の動作確認
+│   ├── self_type__errors.tl  # Self 型のパースエラー例
+│   ├── new_type.tl           # new_type の動作確認
+│   └── new_type__errors.tl   # new_type の Self 型不一致エラー例
 └── vscode-extension/    # VS Code 拡張（型推論インレイヒント）
     └── src/
         ├── extension.ts
@@ -77,6 +81,7 @@ test_lang/
 - 数値リテラル: 10進・16進・8進・2進・アンダースコア区切り
 - 文字列: シングル・ダブル・トリプルクォート・エスケープ
 - 各トークンに `Span`（ファイル名・行番号・列番号）を付与
+- `Token::SelfType`（`Self`）、`Token::NewType`（`new_type`）
 
 ### 構文解析（`src/parser.rs`）
 - 変数宣言: `let`（不変）、`mut`（可変）、`const`（不変）
@@ -92,6 +97,8 @@ test_lang/
 - **デフォルトコンストラクタ自動生成**: 初期値なしの `mut`/`let` フィールドが 1 つ以上あるとき、パーサーが `__init__(mut self, field1: Type1, ...)` を AST に挿入する。既存の `__init__` と引数の型・個数が完全一致する場合は生成しない（override）。型・個数が異なる場合は共存する（overload）
 - **関数オーバーロード**: 同名関数を引数の型・個数で区別して複数定義可能
 - **テンプレート**: 関数・クラスの定義時に型変数を宣言し、呼び出し時に具体的な型を指定する。構文: `fn f[T: Trait]()` / `class C[T: Trait]:`。テンプレート呼び出し構文: `f[Type](args)` / `C[Type](args)`
+- **`Self` 型**: クラス・trait 本体でのみ使用可能な型キーワード。型アノテーション・戻り値型・`Self(...)` コンストラクタとして利用可能。クラス外での使用はパースエラー
+- **`new_type`**: `new_type NewName: OriginalType` 構文。元のクラス／プリミティブ型と構造的に同一の新しい型を定義する。バインドは常に const（再代入はパースエラー）
 
 ### 静的型検査（`src/type_check.rs`）
 パース後・実行前に AST を走査し、`StaticTypeError` を収集してまとめて報告する。
@@ -109,11 +116,14 @@ test_lang/
 | `MissingReturnTypeAnn` | 戻り値型アノテーション欠如 |
 | `UnknownKeywordArg` | 存在しないキーワード引数名 |
 | `NoMatchingOverload` | オーバーロード候補のどれにも引数の個数が合わない |
+| `SelfTypeMismatch` | `Self` 型パラメータに異なるクラス／new_type のインスタンスを渡した |
 
 - `==` / `!=` は異なる型間でも許容（実行時に `False` を返す想定）
 - 型が静的に不明（fn パラメータ等）な場合は実行時に委ねる
 - キーワード引数（`f(a=1, b=2)`）の名前・型・個数を検査（`collect_fn_sigs` 前処理で前方参照も対応）
 - オーバーロード: 同名関数が複数ある場合、引数個数が一致する候補のみ型検査。複数候補が個数一致する場合は型検査をスキップ
+- `Self` 型パラメータ検査: メソッド呼び出し時にレシーバのクラス名（`NamedInstance`）と引数の型を照合し、不一致なら `SelfTypeMismatch` を発行
+- コンストラクタ呼び出し（`ClassName(args)`）は `InferredType::NamedInstance(ClassName)` を返す。これにより `new_type` で作成した型を静的に区別できる
 
 **拡張方法**: `TypeErrorKind` に variant を追加 → `check_stmt` / `check_binop` に arm を追加。
 
@@ -139,6 +149,8 @@ test_lang/
 - **フィールド可変性の実行時チェック**: `let` フィールドへの再代入は `TypeError`、`const` クラス変数への代入も `TypeError`
 - **関数オーバーロード**: 同名関数が複数あるとき `Value::OverloadedFn(Vec<Rc<FnValue>>)` として蓄積。呼び出し時に引数の個数→型で候補を絞り込む
 - **テンプレート関数・クラス**: `Value::TemplateFn` / `Value::TemplateClass` として格納。呼び出し時に型引数の trait 制約を検証し、AST 内の型変数を具体型に置換して実行
+- **`Self` 型**: メソッド実行時に `exec_fn_evaled()` がレシーバインスタンスのクラスを `"Self"` としてスコープに束縛。`Self(...)` は現在のクラスのコンストラクタとして機能し、`new_type` のインスタンスで呼び出すと正しく new_type 側のインスタンスを生成する
+- **`new_type`**: `Stmt::NewTypeDef { name, original }` を実行。元の値が `Value::Class` の場合は `ClassValue` を `name` でコピーして `const` バインド、プリミティブ型の場合は `value` フィールドを持つラッパークラスを自動生成して束縛
 - 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Function(Rc<FnValue>)`, `OverloadedFn(Vec<Rc<FnValue>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `TemplateFn(Rc<TemplateFnValue>)`, `TemplateClass(Rc<TemplateClassValue>)`
 
 ### VS Code 拡張（`vscode-extension/`）
@@ -270,6 +282,61 @@ let s = describe[MyInt](a)   # → "MyInt"
 - テンプレート関数のオーバーロードは未対応（同名テンプレート関数を複数定義すると後の定義で上書き）
 - `list[T]` のような複合型に含まれる型変数は置換されない（`parse_type_expr` が基底型名のみ返すため）
 - テンプレート呼び出しの静的型検査は未対応（制約チェックは実行時のみ）
+
+### `Self` 型
+
+クラス・trait 本体でのみ使用できる特殊な型キーワード。
+
+```tl
+class Vec2:
+    mut x: int
+    mut y: int
+    fn clone(self) -> Self:          # 戻り値型として使用
+        return Self(self.x, self.y)  # Self(...) でコンストラクタ呼び出し
+    fn add(self, other: Self) -> Self:  # パラメータ型として使用
+        return Self(self.x + other.x, self.y + other.y)
+```
+
+**仕様**:
+- クラス・trait の外で `Self` を型アノテーションや式に使うとパースエラー
+- 実行時: `exec_fn_evaled()` がレシーバインスタンスのクラスを `"Self"` としてスコープに束縛する
+- `Self(...)` コンストラクタはレシーバの実際のクラスを使うため、`new_type` で派生した型でも正しく動作する
+- 静的型検査: `other: Self` 型パラメータに異なるクラスのインスタンスを渡すと `SelfTypeMismatch` エラー
+
+### `new_type`
+
+既存のクラス／プリミティブ型と構造的に同一だが **名前が異なる** 新しい型を定義する。Python の `NewType` に近い。
+
+```tl
+class Meters:
+    mut value: int
+    fn add(self, other: Self) -> Self:
+        return Self(self.value + other.value)
+
+new_type Kilometers: Meters   # Meters と同じ構造だが別の型
+new_type Celsius: int         # プリミティブのラッパー（.value フィールドを持つクラスが生成される）
+```
+
+**仕様**:
+- 構文: `new_type NewName: OriginalType`
+- バインドは常に `const`。再代入は**パースエラー**（型エラーではない）
+- 元の型が `class` の場合: `ClassValue` を `name` だけ変えてコピー。メソッドは共有される
+- 元の型がプリミティブ（`int`, `str` 等）の場合: `value` フィールドを持つラッパークラスを自動生成
+- `Self` との相互作用: `new_type` 由来のインスタンスでメソッドを呼ぶと、`Self` はその new_type のクラスに解決される。同じ元クラスから派生した 2 つの new_type は互いに `Self` 型引数として渡せない
+- 静的型検査: `a.method(b)` で `method` の引数が `Self` 型であり、`a` と `b` が異なるクラス／new_type のとき `SelfTypeMismatch` を発行
+
+**エラー例**:
+```tl
+class Meters:
+    mut value: int
+    fn add(self, other: Self) -> Self: ...
+
+new_type Kilometers: Meters
+
+let m = Meters(100)
+let km = Kilometers(5)
+m.add(km)   # StaticTypeError: parameter 'other' of 'add' expects 'Self' = 'Meters' but got 'Kilometers'
+```
 
 ## 次に実装すべき機能（優先順）
 
