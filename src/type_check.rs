@@ -26,12 +26,46 @@ pub enum InferredType {
     NamedInstance(String),
     /// The `Any` type: holds any value but requires explicit downcast before use.
     Any,
+    /// `Union[T1, T2, ...]` / `Option[T]` (desugared to `Union[T, None]`).
+    /// Requires explicit downcast before use in typed operations.
+    Union(Vec<InferredType>),
     Unknown, // cannot be determined statically
 }
 
+/// Splits `s` by commas at bracket depth 0 (handles nested `Union[...]`, `Option[...]`).
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => { if depth > 0 { depth -= 1; } }
+            ',' if depth == 0 => {
+                result.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    result.push(&s[start..]);
+    result
+}
+
 impl InferredType {
-    /// Convert a type annotation string (e.g. "int", "list") to InferredType.
+    /// Convert a type annotation string (e.g. "int", "Union[int,str]") to InferredType.
     fn from_ann(ann: &str) -> Option<Self> {
+        if let Some(inner) = ann.strip_prefix("Union[").and_then(|s| s.strip_suffix(']')) {
+            let parts = split_top_level_commas(inner);
+            let types: Vec<InferredType> = parts.iter()
+                .filter_map(|t| InferredType::from_ann(t.trim()))
+                .collect();
+            return if types.len() >= 2 { Some(Self::Union(types)) } else { None };
+        }
+        if let Some(inner) = ann.strip_prefix("Option[").and_then(|s| s.strip_suffix(']')) {
+            return InferredType::from_ann(inner.trim())
+                .map(|t| Self::Union(vec![t, Self::None]));
+        }
         match ann {
             "int" => Some(Self::Int),
             "float" => Some(Self::Float),
@@ -71,6 +105,15 @@ impl std::fmt::Display for InferredType {
             Self::SelfType => write!(f, "Self"),
             Self::NamedInstance(name) => write!(f, "{name}"),
             Self::Any => write!(f, "Any"),
+            Self::Union(types) => {
+                // Display as Option[T] when it's Union[T, None] (Option desugaring)
+                if types.len() == 2 && types[1] == Self::None {
+                    write!(f, "Option[{}]", types[0])
+                } else {
+                    let parts: Vec<String> = types.iter().map(|t| t.to_string()).collect();
+                    write!(f, "Union[{}]", parts.join(", "))
+                }
+            }
             Self::Unknown => write!(f, "unknown"),
         }
     }
@@ -116,6 +159,8 @@ pub enum TypeErrorKind {
     },
     /// An operator was applied to an `Any`-typed value without an explicit downcast
     OperationOnAny { op: String },
+    /// An operator was applied to a `Union`/`Option`-typed value without an explicit downcast
+    OperationOnUnion { union_type: String, op: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +234,10 @@ impl std::fmt::Display for StaticTypeError {
             TypeErrorKind::OperationOnAny { op } => write!(
                 f,
                 "StaticTypeError: cannot apply '{op}' to 'Any' — explicit downcast required"
+            ),
+            TypeErrorKind::OperationOnUnion { union_type, op } => write!(
+                f,
+                "StaticTypeError: cannot apply '{op}' to '{union_type}' — explicit downcast required"
             ),
         }
     }
@@ -509,11 +558,19 @@ impl TypeChecker {
             Expr::List(_) => InferredType::List,
             Expr::Attr { object, .. } => {
                 let obj_ty = self.infer(object);
-                if obj_ty == InferredType::Any {
-                    self.emit(StaticTypeError {
+                match &obj_ty {
+                    InferredType::Any => self.emit(StaticTypeError {
                         kind: TypeErrorKind::OperationOnAny { op: "attribute access".to_string() },
                         span: None,
-                    });
+                    }),
+                    InferredType::Union(_) => self.emit(StaticTypeError {
+                        kind: TypeErrorKind::OperationOnUnion {
+                            union_type: obj_ty.to_string(),
+                            op: "attribute access".to_string(),
+                        },
+                        span: None,
+                    }),
+                    _ => {}
                 }
                 InferredType::Unknown
             }
@@ -647,11 +704,7 @@ impl TypeChecker {
                                             }),
                                             Some(param_pos) => {
                                                 if let Some(expected) = &sig.params[param_pos].1 {
-                                                    // Any param accepts everything; skip type check.
-                                                    if *expected != InferredType::Any
-                                                        && *arg_ty != InferredType::Unknown
-                                                        && arg_ty != expected
-                                                    {
+                                                    if !Self::type_matches(arg_ty, expected) {
                                                         self.emit(StaticTypeError {
                                                             kind: TypeErrorKind::CallArgTypeMismatch {
                                                                 func_name: fname.clone(),
@@ -669,11 +722,7 @@ impl TypeChecker {
                                     None => {
                                         if let Some((_, param_ty)) = sig.params.get(positional_idx) {
                                             if let Some(expected) = param_ty {
-                                                // Any param accepts everything; skip type check.
-                                                if *expected != InferredType::Any
-                                                    && *arg_ty != InferredType::Unknown
-                                                    && arg_ty != expected
-                                                {
+                                                if !Self::type_matches(arg_ty, expected) {
                                                     self.emit(StaticTypeError {
                                                         kind: TypeErrorKind::CallArgTypeMismatch {
                                                             func_name: fname.clone(),
@@ -719,17 +768,30 @@ impl TypeChecker {
             }
             Expr::UnaryOp { op, operand } => {
                 let ty = self.infer(operand);
-                if ty == InferredType::Any {
-                    let op_str = match op {
-                        UnaryOp::Neg => "-",
-                        UnaryOp::Not => "not",
-                        UnaryOp::BitNot => "~",
-                    };
-                    self.emit(StaticTypeError {
-                        kind: TypeErrorKind::OperationOnAny { op: op_str.to_string() },
-                        span: None,
-                    });
-                    return InferredType::Unknown;
+                let op_str = match op {
+                    UnaryOp::Neg => "-",
+                    UnaryOp::Not => "not",
+                    UnaryOp::BitNot => "~",
+                };
+                match &ty {
+                    InferredType::Any => {
+                        self.emit(StaticTypeError {
+                            kind: TypeErrorKind::OperationOnAny { op: op_str.to_string() },
+                            span: None,
+                        });
+                        return InferredType::Unknown;
+                    }
+                    InferredType::Union(_) => {
+                        self.emit(StaticTypeError {
+                            kind: TypeErrorKind::OperationOnUnion {
+                                union_type: ty.to_string(),
+                                op: op_str.to_string(),
+                            },
+                            span: None,
+                        });
+                        return InferredType::Unknown;
+                    }
+                    _ => {}
                 }
                 match op {
                     UnaryOp::Not => InferredType::Bool,
@@ -755,6 +817,26 @@ impl TypeChecker {
         }
     }
 
+    /// Returns true when `arg_ty` is acceptable where `expected` is required.
+    ///
+    /// Rules:
+    /// - `Unknown` arg always defers to runtime (ok).
+    /// - `Any` param accepts every arg type.
+    /// - Exact match is always ok.
+    /// - `Union[T1, T2, ...]` param accepts any member type as arg (including nested unions that
+    ///   appear as a direct member of the union).
+    /// - `Union` / `Any` arg may only go to `Union` (same or containing it) / `Any` params.
+    fn type_matches(arg_ty: &InferredType, expected: &InferredType) -> bool {
+        if *arg_ty == InferredType::Unknown { return true; }
+        if *expected == InferredType::Any { return true; }
+        if arg_ty == expected { return true; }
+        // Union param: check if arg is a direct member of the union (including nested unions).
+        if let InferredType::Union(union_types) = expected {
+            return union_types.contains(arg_ty);
+        }
+        false
+    }
+
     // --- Binary operator checks ---
 
     fn check_binop(&mut self, op: &BinOp, lt: &InferredType, rt: &InferredType, span: Span) {
@@ -772,6 +854,30 @@ impl TypeChecker {
             };
             self.emit(StaticTypeError {
                 kind: TypeErrorKind::OperationOnAny { op: op_str.to_string() },
+                span: Some(span),
+            });
+            return;
+        }
+        // Union/Option operand on either side is also always an error.
+        let union_side = if matches!(lt, InferredType::Union(_)) { Some(lt) }
+                         else if matches!(rt, InferredType::Union(_)) { Some(rt) }
+                         else { None };
+        if let Some(union_ty) = union_side {
+            let op_str = match op {
+                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                BinOp::Div => "/", BinOp::FloorDiv => "//", BinOp::Mod => "%",
+                BinOp::Pow => "**",
+                BinOp::Eq => "==", BinOp::NotEq => "!=",
+                BinOp::Lt => "<", BinOp::Gt => ">", BinOp::LtEq => "<=", BinOp::GtEq => ">=",
+                BinOp::And => "and", BinOp::Or => "or",
+                BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^",
+                BinOp::LShift => "<<", BinOp::RShift => ">>",
+            };
+            self.emit(StaticTypeError {
+                kind: TypeErrorKind::OperationOnUnion {
+                    union_type: union_ty.to_string(),
+                    op: op_str.to_string(),
+                },
                 span: Some(span),
             });
             return;
@@ -809,8 +915,9 @@ impl TypeChecker {
 
     fn infer_binop_result(op: &BinOp, lt: &InferredType, rt: &InferredType) -> InferredType {
         use InferredType::*;
-        // Any operand makes the result unknown (operation is already an error).
+        // Any / Union operand makes the result unknown (operation is already an error).
         if *lt == Any || *rt == Any { return Unknown; }
+        if matches!(lt, Union(_)) || matches!(rt, Union(_)) { return Unknown; }
         match op {
             BinOp::Eq
             | BinOp::NotEq
@@ -1230,6 +1337,135 @@ mod tests {
         assert!(msg.contains("StaticTypeError"));
         assert!(msg.contains("'f'"));
         assert!(msg.contains('3'));
+    }
+
+    // --- Union / Option type ---
+
+    #[test]
+    fn union_param_accepts_member_types_ok() {
+        assert!(ok(concat!(
+            "fn f(x: Union[int, str]) -> None:\n    pass\n",
+            "f(1)\n",
+            "f(\"hi\")\n",
+        )));
+    }
+
+    #[test]
+    fn union_param_rejects_non_member_err() {
+        let errors = check(concat!(
+            "fn f(x: Union[int, str]) -> None:\n    pass\n",
+            "f(True)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+    }
+
+    #[test]
+    fn union_param_accepts_same_union_ok() {
+        assert!(ok(concat!(
+            "fn f(x: Union[int, str]) -> None:\n    pass\n",
+            "fn g(x: Union[int, str]) -> None:\n    f(x)\n",
+        )));
+    }
+
+    #[test]
+    fn union_value_binary_op_err() {
+        let errors = check(concat!(
+            "fn f(x: Union[int, str]) -> None:\n",
+            "    let y = x + 1\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::OperationOnUnion { op, .. } if op == "+")));
+    }
+
+    #[test]
+    fn union_value_comparison_err() {
+        let errors = check(concat!(
+            "fn f(x: Union[int, str]) -> None:\n",
+            "    let y = x < 10\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::OperationOnUnion { .. })));
+    }
+
+    #[test]
+    fn union_value_to_typed_param_err() {
+        let errors = check(concat!(
+            "fn needs_int(n: int) -> None:\n    pass\n",
+            "fn caller(x: Union[int, str]) -> None:\n    needs_int(x)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+    }
+
+    #[test]
+    fn union_value_attr_access_err() {
+        let errors = check(concat!(
+            "fn f(x: Union[int, str]) -> None:\n",
+            "    let y = x.upper\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::OperationOnUnion { .. })));
+    }
+
+    #[test]
+    fn union_display_format() {
+        let errors = check(concat!(
+            "fn f(x: Union[int, str]) -> None:\n",
+            "    let y = x + 1\n",
+        ));
+        let msg = errors.iter()
+            .find(|e| matches!(&e.kind, TypeErrorKind::OperationOnUnion { .. }))
+            .unwrap().to_string();
+        assert!(msg.contains("Union[int, str]"));
+        assert!(msg.contains("downcast"));
+    }
+
+    #[test]
+    fn option_param_accepts_inner_type_and_none_ok() {
+        assert!(ok(concat!(
+            "fn f(x: Option[int]) -> None:\n    pass\n",
+            "f(1)\n",
+            "f(None)\n",
+        )));
+    }
+
+    #[test]
+    fn option_param_rejects_wrong_type_err() {
+        let errors = check(concat!(
+            "fn f(x: Option[int]) -> None:\n    pass\n",
+            "f(\"oops\")\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+    }
+
+    #[test]
+    fn option_value_binary_op_err() {
+        let errors = check(concat!(
+            "fn f(x: Option[int]) -> None:\n",
+            "    let y = x + 1\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::OperationOnUnion { .. })));
+    }
+
+    #[test]
+    fn option_display_shows_option_format() {
+        // Option[int] desugars to Union[int, None] internally but should display as Option[int]
+        let errors = check(concat!(
+            "fn f(x: Option[int]) -> None:\n",
+            "    let y = x + 1\n",
+        ));
+        let msg = errors.iter()
+            .find(|e| matches!(&e.kind, TypeErrorKind::OperationOnUnion { .. }))
+            .unwrap().to_string();
+        assert!(msg.contains("Option[int]"));
+    }
+
+    #[test]
+    fn nested_union_option_in_union_ok() {
+        // Union[Option[int], str] should parse and accept its direct member types.
+        // Direct members: Option[int] (= Union[int, None]) and str.
+        assert!(ok(concat!(
+            "fn f(x: Union[Option[int], str]) -> None:\n    pass\n",
+            "fn g(a: Option[int], b: str) -> None:\n",
+            "    f(a)\n",
+            "    f(b)\n",
+        )));
     }
 
     // --- Any type ---

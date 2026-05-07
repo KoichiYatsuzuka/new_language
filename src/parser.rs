@@ -746,6 +746,38 @@ impl Parser {
     // Parses a type expression and returns the base type name (generic args are skipped).
     // Accepts identifiers and keyword-tokens that are valid type names (e.g. `None`, `Self`).
     fn parse_type_expr(&mut self) -> Result<String, String> {
+        match self.current().clone() {
+            Token::Union => {
+                self.advance();
+                if *self.current() != Token::LBracket {
+                    return Err("Union requires type arguments: Union[Type1, Type2, ...]".to_string());
+                }
+                self.advance(); // consume '['
+                let mut args = Vec::new();
+                while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+                    args.push(self.parse_type_expr()?);
+                    if *self.current() == Token::Comma { self.advance(); }
+                }
+                self.eat(&Token::RBracket)?;
+                if args.len() < 2 {
+                    return Err(format!("Union requires at least 2 type arguments, got {}", args.len()));
+                }
+                return Ok(format!("Union[{}]", args.join(",")));
+            }
+            Token::Option => {
+                self.advance();
+                if *self.current() != Token::LBracket {
+                    return Err("Option requires a type argument: Option[Type]".to_string());
+                }
+                self.advance(); // consume '['
+                let inner = self.parse_type_expr()?;
+                if *self.current() == Token::Comma { self.advance(); }
+                self.eat(&Token::RBracket)?;
+                return Ok(format!("Option[{inner}]"));
+            }
+            _ => {}
+        }
+
         let base = match self.current().clone() {
             Token::Ident(name) => { self.advance(); name }
             Token::None => { self.advance(); "None".to_string() }
@@ -1039,6 +1071,8 @@ impl Parser {
             Token::False => { self.advance(); Ok(Expr::Bool(false)) }
             Token::None => { self.advance(); Ok(Expr::None) }
             Token::Any => { self.advance(); Ok(Expr::Ident("Any".to_string())) }
+            Token::Union => { self.advance(); Ok(Expr::Ident("Union".to_string())) }
+            Token::Option => { self.advance(); Ok(Expr::Ident("Option".to_string())) }
             Token::Ident(name) => { self.advance(); Ok(Expr::Ident(name)) }
             Token::SelfType => {
                 if self.class_or_trait_depth == 0 {

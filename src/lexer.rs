@@ -406,6 +406,8 @@ impl Lexer {
             "Self" => Token::SelfType,
             "new_type" => Token::NewType,
             "Any" => Token::Any,
+            "Union" => Token::Union,
+            "Option" => Token::Option,
             _ => Token::Ident(word),
         }
     }

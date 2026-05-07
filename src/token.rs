@@ -117,6 +117,10 @@ pub enum Token {
     // Any type keyword (dynamic escape hatch; requires explicit downcast to use)
     Any,
 
+    // Union[T1, T2, ...] and Option[T] type keywords
+    Union,
+    Option,
+
     // Arithmetic operators
     Plus,         // +
     Minus,        // -
@@ -252,6 +256,8 @@ impl std::fmt::Display for Token {
             Token::SelfType => write!(f, "Self"),
             Token::NewType => write!(f, "new_type"),
             Token::Any => write!(f, "Any"),
+            Token::Union => write!(f, "Union"),
+            Token::Option => write!(f, "Option"),
             Token::Plus => write!(f, "+"),
             Token::Minus => write!(f, "-"),
             Token::Star => write!(f, "*"),
