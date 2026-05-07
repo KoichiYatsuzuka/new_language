@@ -1,125 +1,166 @@
 # test_lang
 
-LLVM IR をターゲットとする独自スクリプト言語の実装プロジェクト。
+`test_lang` は、Python 風のインデント構文を土台に、明示的な変数宣言、静的型検査、trait、template、`Self` 型、`new_type` などを試している独自スクリプト言語です。
 
-Python の構文を基盤としつつ、静的型チェックや独自拡張を加えた言語を目指している。
-
-## 特徴
-
-- **Python ベースの構文** — インデントによるブロック構造
-- **静的型チェック** — 構文解析時に TypeError を検出
-- **明示的な変数宣言** — `let`（不変）/ `mut`（可変）/ `const`（定数）
-- **`fn` による関数定義**（`def` ではない）
-- **`template` サポート** — 独自のテンプレート機能
-- **安全な引数変更** — 変更しうる引数には `mut` を明示
+将来的なターゲットは LLVM IR ですが、現在の実装は Rust 製の tree-walk interpreter です。実行時は `.tl` ソースを字句解析、構文解析、静的型検査したあとにインタープリタで評価します。
 
 ## クイックスタート
 
 ```bash
-# Rust をインストール済みであること
-
-cargo run -- -src examples/hello.tl
+cargo build
+cargo run -- -src examples/showcase.tl
+cargo run -- examples/hello.tl
+cargo test
 ```
 
-### サンプル
+`-src <file.tl>` と位置引数のどちらでも実行できます。引数がない場合は標準入力からソースを読みます。
 
-```python
+## サンプル
+
+```tl
 let name = "world"
 mut x = 10
 x += 5
-print("Hello,", name)   # Hello, world
-print("x =", x)         # x = 15
-print("2 ** 8 =", 2 ** 8)  # 2 ** 8 = 256
+
+fn greet(who: str) -> None:
+    print("Hello,", who)
+
+greet(name)
+print("x =", x)
 ```
 
-## 言語仕様
+```tl
+trait Printable:
+    fn to_str(self) -> str:
+        ...
 
-| 分類 | 詳細 |
-|---|---|
-| ファイル拡張子 | `.tl` |
-| インデント | Python スタイル（スペース4つ推奨） |
-| コメント | `#` 行コメント |
-| 変数宣言 | `let x = 1`（不変）/ `mut x = 1`（可変）/ `const X = 1`（定数） |
-| 関数定義 | `fn name(args):` |
-| クラス定義 | `class Name:` |
-| コード生成 | LLVM IR（実装予定）|
+class Point(Printable):
+    mut x: int
+    mut y: int
 
-### 変数宣言
+    fn to_str(self) -> str:
+        return "Point"
 
-```python
-let x = 42          # 不変（再代入不可）
-mut y = 3.14        # 可変（再代入可）
-const MAX = 100     # 定数
-y = y + 1.0         # OK
-x = 0               # TypeError: immutable
+fn describe[T: Printable](item: T) -> str:
+    return item.to_str()
+
+let p = Point(1, 2)
+print(describe[Point](p))
 ```
 
-### 演算子
+## プロジェクト構成
 
-Python と同じ演算子セット。主な演算子:
-
-```python
-# 算術
-x + y   x - y   x * y   x / y   x // y   x % y   x ** y
-
-# 比較
-x == y   x != y   x < y   x > y   x <= y   x >= y
-
-# 論理
-x and y   x or y   not x
-
-# ビット
-x & y   x | y   x ^ y   ~x   x << n   x >> n
-
-# 代入
-x += 1   x -= 1   x *= 2   # など
+```text
+test_lang/
+├── src/
+│   ├── main.rs          # CLI と実行フロー
+│   ├── token.rs         # Token / Span / Spanned
+│   ├── lexer.rs         # 字句解析器
+│   ├── ast.rs           # AST 定義
+│   ├── parser.rs        # 再帰下降パーサー
+│   ├── type_check.rs    # 静的型検査
+│   └── interpreter.rs   # tree-walk interpreter
+├── spec/                # 言語仕様メモ
+├── examples/            # 正常系・エラー系サンプル
+├── stdlib/              # 標準 trait の実験置き場
+└── vscode-extension/    # .tl 用 VS Code 拡張
 ```
 
-## 実装状況
+## 実行フロー
 
-### 完了
+```text
+source.tl
+  -> Lexer        Vec<Spanned> を生成
+  -> Parser       Vec<Stmt> の AST を生成
+  -> TypeChecker  StaticTypeError をまとめて報告
+  -> Interpreter  AST を実行
+```
 
-- [x] 字句解析器（全キーワード・演算子・リテラル）
-- [x] 再帰下降パーサー（式・変数宣言・代入）
-- [x] ツリーウォークインタープリタ
-- [x] 組み込み関数 `print()`
-- [x] VS Code 拡張（シンタックスハイライト・型推論インレイヒント）
+静的型検査でエラーが 1 件でも見つかった場合は、全件を表示して実行せずに終了します。
 
-### 未実装
+## 実装済みの主な機能
 
-- [ ] ブロック構文（`if` / `for` / `while` / `match`）
-- [ ] 関数定義（`fn`）
-- [ ] クラス定義（`class`）
-- [ ] 型アノテーション・静的型チェック
-- [ ] コレクション型（リスト・辞書・セット）
-- [ ] 例外処理（`try` / `except`）
-- [ ] インポート（`import` / `from`）
-- [ ] LLVM IR コード生成
-- [ ] Python 実装
+- Python 風のインデントブロック、コメント、複数行文字列
+- `let` / `mut` / `const` による変数宣言と可変性チェック
+- 算術、比較、論理、ビット演算、複合代入
+- `if` / `elif` / `else`、`while`、`for ... in ...`、`block`
+- `break` / `continue` / `pass` / `return` / `block_return` / `block_yield`
+- リストリテラルと組み込み関数 `print`、`range`、`len`
+- 関数定義、再帰、位置引数、キーワード引数
+- 関数・メソッドのオーバーロード
+- クラス、インスタンスフィールド、クラス変数、メソッド、`self`
+- trait 定義、trait フィールド、virtual method、trait 実装チェック
+- template 関数、template class、template generator、trait 制約
+- `Self` 型と `Self(...)` コンストラクタ
+- `new_type NewName: OriginalType`
+- `freeze` による `mut` 変数・インスタンスの凍結
+- `gen` / `yield` による eager generator と `next()`
+- 型注釈としての `Union[...]` / `Option[...]`
+- VS Code 拡張によるシンタックスハイライトと簡易 inlay hint
 
-## 開発
+## 型検査
+
+`src/type_check.rs` は、AST を実行前に走査して `StaticTypeError` を収集します。現在は主に以下を検査します。
+
+- `let` / `const` への再代入
+- 互換性のない大小比較
+- 関数呼び出しの引数個数・型不一致
+- パラメータや戻り値の型アノテーション欠如
+- 不明なキーワード引数
+- オーバーロード候補不一致
+- `Self` 型引数の不一致
+- `Union` / `Option` まわりの型不一致
+
+型が静的に分からない箇所は、原則として実行時に委ねます。
+
+## examples
+
+代表的な動作確認ファイルです。
+
+- `examples/showcase.tl`: 主要機能のまとめ
+- `examples/type_errors.tl`: 静的型エラー例
+- `examples/fn_kwargs_success.tl` / `examples/fn_kwargs_errors.tl`: キーワード引数
+- `examples/overload_success.tl` / `examples/overload_errors.tl`: オーバーロード
+- `examples/trait_sample.tl` / `examples/trait_template.tl`: trait
+- `examples/template_sample.tl` / `examples/template_constraint_error.tl`: template
+- `examples/self_type.tl` / `examples/self_type__errors.tl`: `Self`
+- `examples/new_type.tl` / `examples/new_type__errors.tl`: `new_type`
+- `examples/freeze.tl`: `freeze`
+- `examples/generator.tl`: generator
+- `examples/union_option.tl` / `examples/union_option__errors.tl`: `Union` / `Option`
+
+エラー確認用のサンプルは、ファイル名に `__errors` または `_errors` を含めています。
+
+## 開発コマンド
 
 ```bash
-cargo build          # コンパイル
-cargo test           # テスト実行
-cargo clippy         # lint
-cargo fmt            # フォーマット
+cargo build
+cargo run -- -src examples/showcase.tl
+cargo test
+cargo test <name>
+cargo clippy
+cargo fmt
 ```
 
-### VS Code 拡張のインストール
+仕様を追加した場合は、実装のユニットテストに加えて、正常系の example を追加してください。エラー動作が仕様に含まれる場合は、期待したエラーで終了する `__errors` example も追加します。
+
+## 現在の主な制限
+
+- LLVM IR 生成は未実装です。
+- Python 実装は未着手です。
+- `import` / `from ... import` は未実装です。
+- `try` / `except` / `finally` / `raise` は未実装です。
+- `match` は未実装です。
+- 辞書・セットリテラルは未実装です。
+- template の静的型検査は限定的で、制約チェックの多くは実行時に行われます。
+- trait は現在、主に parse/type-check/interpreter のための構造で、完全な runtime object ではありません。
+
+## VS Code 拡張
 
 ```bash
 cd vscode-extension
 npm install
 npm run compile
-
-# 開発モード: VS Code で F5
-# インストール: vsce package → .vsix から「VSIXからインストール」
 ```
 
-## 実装言語
-
-| 言語 | 目的 | 状態 |
-|---|---|---|
-| Rust | メイン実装（保守性・速度） | 開発中 |
-| Python | 頒布性のための追加実装 | 未着手 |
+開発モードでは VS Code で拡張プロジェクトを開き、F5 で Extension Development Host を起動します。
