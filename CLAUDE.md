@@ -151,7 +151,8 @@ test_lang/
 - **テンプレート関数・クラス**: `Value::TemplateFn` / `Value::TemplateClass` として格納。呼び出し時に型引数の trait 制約を検証し、AST 内の型変数を具体型に置換して実行
 - **`Self` 型**: メソッド実行時に `exec_fn_evaled()` がレシーバインスタンスのクラスを `"Self"` としてスコープに束縛。`Self(...)` は現在のクラスのコンストラクタとして機能し、`new_type` のインスタンスで呼び出すと正しく new_type 側のインスタンスを生成する
 - **`new_type`**: `Stmt::NewTypeDef { name, original }` を実行。元の値が `Value::Class` の場合は `ClassValue` を `name` でコピーして `const` バインド、プリミティブ型の場合は `value` フィールドを持つラッパークラスを自動生成して束縛
-- 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Function(Rc<FnValue>)`, `OverloadedFn(Vec<Rc<FnValue>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `TemplateFn(Rc<TemplateFnValue>)`, `TemplateClass(Rc<TemplateClassValue>)`
+- 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Function(Rc<FnValue>)`, `OverloadedFn(Vec<Rc<FnValue>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `TemplateFn(Rc<TemplateFnValue>)`, `TemplateClass(Rc<TemplateClassValue>)`, `Trait(String)`
+- **トレイトの実行時表現**: `Stmt::TraitDef` 実行時に `Value::Trait(name)` をスコープに束縛。`Error` トレイトは起動時に自動登録されるため常にスコープに存在する
 
 ### VS Code 拡張（`vscode-extension/`）
 - `.tl` ファイルのシンタックスハイライト

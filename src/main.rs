@@ -5,7 +5,7 @@ mod parser;
 mod token;
 mod type_check;
 
-use interpreter::Interpreter;
+use interpreter::{ExecResult, Interpreter};
 use lexer::Lexer;
 use parser::Parser;
 use type_check::TypeChecker;
@@ -56,10 +56,28 @@ fn main() {
     }
 
     let mut interp = Interpreter::new();
+    interp.add_source_text(&filename, &source);
+
     for stmt in &stmts {
-        if let Err(e) = interp.exec(stmt) {
-            eprintln!("{e}");
-            std::process::exit(1);
+        match interp.exec(stmt) {
+            Ok(ExecResult::Normal) => {}
+            Ok(ExecResult::Raise(raised)) => {
+                eprintln!("{}", Interpreter::format_error_report(&raised));
+                std::process::exit(1);
+            }
+            Ok(_) => {}
+            Err(e) if e == "\x00__raise__" => {
+                if let Some(raised) = interp.take_current_exception() {
+                    eprintln!("{}", Interpreter::format_error_report(&raised));
+                } else {
+                    eprintln!("UnhandledException: (no details available)");
+                }
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
         }
     }
 }

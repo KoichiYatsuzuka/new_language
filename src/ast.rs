@@ -152,6 +152,27 @@ pub enum Stmt {
         /// The original type name (class, primitive type, or new_type).
         original: String,
     },
+    /// `try: ... except Type as name: ... finally: ...`
+    Try {
+        body: Vec<Stmt>,
+        handlers: Vec<ExceptHandler>,
+        finally_body: Option<Vec<Stmt>>,
+    },
+    /// `raise expr` or bare `raise` (re-raise current exception).
+    Raise {
+        exc: Option<Expr>,
+        span: Span,
+    },
+}
+
+/// A single `except` clause inside a `try` statement.
+#[derive(Debug, Clone)]
+pub struct ExceptHandler {
+    /// Exception type to match, e.g. `ValueError`. `None` = bare `except:` (catch-all).
+    pub exc_type: Option<String>,
+    /// Name to bind the caught exception to (`as e`). `None` if omitted.
+    pub name: Option<String>,
+    pub body: Vec<Stmt>,
 }
 
 /// Mutability/ownership kind for a class field declaration.

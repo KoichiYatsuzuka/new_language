@@ -2,7 +2,37 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, TemplateParam, UnaryOp};
+use crate::ast::{BinOp, CallArg, ExceptHandler, Expr, FieldKind, Param, Stmt, TemplateParam, UnaryOp};
+
+/// Sentinel string returned as `Err(...)` when an exception is being raised/propagated.
+/// Callers check for this value to distinguish language-level raises from interpreter bugs.
+const RAISE_SENTINEL: &str = "\x00__raise__";
+
+// ---------------------------------------------------------------------------
+// Exception / traceback types
+// ---------------------------------------------------------------------------
+
+/// One frame in the error traceback (one level of the call stack).
+#[derive(Debug, Clone)]
+pub struct StackFrame {
+    pub file: String,
+    pub line: usize,
+    pub col: usize,
+    /// Name of the function / method / `<module>` where the raise (or propagation) happened.
+    pub fn_name: String,
+    /// Up-to-5 lines of source context centred on `line`, or empty when unavailable.
+    pub context: String,
+}
+
+/// A language-level exception that is propagating up the call stack.
+#[derive(Debug, Clone)]
+pub struct RaisedError {
+    /// The exception instance (always `Value::Instance` for user-raised errors).
+    pub exception: Value,
+    /// Frames collected as the exception propagates: index 0 = raise site (innermost),
+    /// last index = outermost frame before reaching `<module>`.
+    pub frames: Vec<StackFrame>,
+}
 
 thread_local! {
     /// Yield collector active while a generator body is being eagerly evaluated.
@@ -105,6 +135,8 @@ pub enum Value {
     /// A type value — holds a built-in type name (`int`, `str`, `float`, `bool`).
     /// User-defined class types are represented by `Value::Class`.
     Type(String),
+    /// A trait value — the runtime representation of a declared trait.
+    Trait(String),
     /// An uninstantiated template function (parameterized over type variables).
     TemplateFn(Rc<TemplateFnValue>),
     /// An uninstantiated template class (parameterized over type variables).
@@ -129,6 +161,8 @@ pub enum ExecResult {
     Continue,
     Return(Value),
     BlockReturn(Value),
+    /// A language-level exception propagating up the call stack.
+    Raise(RaisedError),
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +176,12 @@ struct Var {
 
 pub struct Interpreter {
     scopes: Vec<HashMap<String, Var>>,
+    /// filename → list of source lines (for traceback context extraction).
+    source_map: HashMap<String, Vec<String>>,
+    /// Call stack: (function_name) entries pushed/popped around function execution.
+    call_stack: Vec<String>,
+    /// The exception currently being handled inside an `except` block (for bare `raise`).
+    current_exception: Option<RaisedError>,
 }
 
 impl Interpreter {
@@ -152,7 +192,151 @@ impl Interpreter {
         for name in ["int", "str", "float", "bool"] {
             global.insert(name.to_string(), Var { value: Value::Type(name.to_string()), mutable: false });
         }
-        Self { scopes: vec![global] }
+
+        // Pre-register the built-in Error trait so it is accessible as a value.
+        global.insert("Error".to_string(), Var { value: Value::Trait("Error".to_string()), mutable: false });
+
+        // Register all standard exception classes.
+        // Each class has: __init__(mut self, message: str), plus default fields
+        // code_context/file/line/col (populated at raise time by the interpreter).
+        let exception_names = [
+            "Exception", "ValueError", "TypeError", "NameError", "AttributeError",
+            "IndexError", "KeyError", "ZeroDivisionError", "RuntimeError",
+            "StopIteration", "NotImplementedError", "OverflowError", "IOError",
+            "OSError", "AssertionError", "ArithmeticError",
+        ];
+        for class_name in exception_names {
+            let cls = Self::make_error_class(class_name);
+            global.insert(class_name.to_string(), Var { value: Value::Class(cls), mutable: false });
+        }
+
+        Self {
+            scopes: vec![global],
+            source_map: HashMap::new(),
+            call_stack: Vec::new(),
+            current_exception: None,
+        }
+    }
+
+    /// Register source text for a file so that tracebacks can show context lines.
+    pub fn add_source_text(&mut self, filename: &str, content: &str) {
+        let lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+        self.source_map.insert(filename.to_string(), lines);
+    }
+
+    /// Take the current propagating exception out of the interpreter (for top-level handling).
+    pub fn take_current_exception(&mut self) -> Option<RaisedError> {
+        self.current_exception.take()
+    }
+
+    /// Format a `RaisedError` into a human-readable traceback report.
+    pub fn format_error_report(raised: &RaisedError) -> String {
+        let mut out = String::from("Traceback (most recent call last):\n");
+
+        // frames[0] is innermost (raise site); display outermost first.
+        for frame in raised.frames.iter().rev() {
+            if frame.line == 0 {
+                out.push_str(&format!("  File \"{}\", in {}\n", frame.file, frame.fn_name));
+            } else {
+                out.push_str(&format!(
+                    "  File \"{}\", line {}, col {}, in {}\n",
+                    frame.file, frame.line, frame.col, frame.fn_name
+                ));
+            }
+            if !frame.context.is_empty() {
+                for line in frame.context.lines() {
+                    out.push_str(&format!("    {}\n", line));
+                }
+            }
+        }
+
+        // Exception class name and message.
+        if let Value::Instance(inst_rc) = &raised.exception {
+            let inst = inst_rc.borrow();
+            let class_name = &inst.class.name;
+            let message = inst.fields.get("message")
+                .map(|(v, _)| match v {
+                    Value::Str(s) => s.clone(),
+                    Value::Int(n) => n.to_string(),
+                    Value::Float(f) => f.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    _ => "<value>".to_string(),
+                })
+                .unwrap_or_default();
+            out.push_str(&format!("{}: {}", class_name, message));
+        } else {
+            out.push_str("<exception>");
+        }
+
+        out
+    }
+
+    /// Build a `ClassValue` for a standard exception class.
+    /// Fields: `message` (immutable instance field), `code_context`, `file` (str), `line`, `col` (int).
+    fn make_error_class(class_name: &str) -> Rc<ClassValue> {
+        use crate::ast::Expr as E;
+        // __init__ body: self.message = message
+        let init_body = vec![
+            Stmt::AttrAssign {
+                target: E::Attr {
+                    object: Box::new(E::Ident("self".to_string())),
+                    attr: "message".to_string(),
+                },
+                value: E::Ident("message".to_string()),
+            },
+        ];
+        let init_fn = Rc::new(FnValue {
+            params: vec![
+                Param { name: "self".to_string(),    mutable: true,  type_ann: None },
+                Param { name: "message".to_string(), mutable: false, type_ann: Some("str".to_string()) },
+            ],
+            body: init_body,
+        });
+        let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
+        methods.insert("__init__".to_string(), vec![init_fn]);
+
+        // Default values for auto-populated fields (interpreter overwrites them at raise time).
+        let field_defaults = vec![
+            ("code_context".to_string(), Value::Str("".to_string()), true),
+            ("file".to_string(),         Value::Str("".to_string()), true),
+            ("line".to_string(),         Value::Int(0),              true),
+            ("col".to_string(),          Value::Int(0),              true),
+        ];
+        let mut field_mutability: HashMap<String, bool> = HashMap::new();
+        field_mutability.insert("message".to_string(),      false); // let — immutable after __init__
+        field_mutability.insert("code_context".to_string(), true);
+        field_mutability.insert("file".to_string(),         true);
+        field_mutability.insert("line".to_string(),         true);
+        field_mutability.insert("col".to_string(),          true);
+
+        Rc::new(ClassValue {
+            name: class_name.to_string(),
+            bases: vec!["Error".to_string()],
+            methods,
+            field_defaults,
+            class_vars: HashMap::new(),
+            field_mutability,
+        })
+    }
+
+    /// Extract up to `n` lines of source around `line` (1-based) from the source map.
+    fn get_context_lines(&self, file: &str, line: usize, n: usize) -> String {
+        let lines = match self.source_map.get(file) {
+            Some(l) => l,
+            None => return String::new(),
+        };
+        if line == 0 || lines.is_empty() { return String::new(); }
+        let half = n / 2;
+        let start = line.saturating_sub(half + 1); // convert to 0-based with padding
+        let end = (line + half).min(lines.len());
+        lines[start..end].join("\n")
+    }
+
+    /// Check whether an exception instance matches an except clause's type name.
+    /// Matches if the instance's class name equals `type_name`, OR if `type_name`
+    /// appears in the class's `bases` list (i.e. is a parent trait/class).
+    fn exc_matches(inst_class: &Rc<ClassValue>, type_name: &str) -> bool {
+        inst_class.name == type_name || inst_class.bases.contains(&type_name.to_string())
     }
 
     // --- Instance freeze ---
@@ -404,8 +588,8 @@ impl Interpreter {
                 }
                 Ok(ExecResult::Normal)
             }
-            Stmt::TraitDef { .. } => {
-                // Traits are type-check-time constructs; no runtime representation yet.
+            Stmt::TraitDef { name, .. } => {
+                self.declare_var(name.clone(), Var { value: Value::Trait(name.clone()), mutable: false });
                 Ok(ExecResult::Normal)
             }
             Stmt::NewTypeDef { name, original } => {
@@ -530,7 +714,7 @@ impl Interpreter {
                     // Call __freeze__ before freezing if the class defines it
                     if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
                         if overloads.len() == 1 {
-                            self.exec_fn(overloads[0].clone(), &[], Some(val.clone()))?;
+                            self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__")?;
                         } else {
                             self.dispatch_overload(overloads, &[], Some(val.clone()))?;
                         }
@@ -540,6 +724,111 @@ impl Interpreter {
 
                 self.make_var_immutable(name);
                 Ok(ExecResult::Normal)
+            }
+
+            Stmt::Raise { exc, span } => {
+                // Bare `raise` — re-raise the active exception.
+                if exc.is_none() {
+                    match &self.current_exception {
+                        Some(err) => {
+                            let err = err.clone();
+                            return Ok(ExecResult::Raise(err));
+                        }
+                        None => return Err("RuntimeError: no active exception to re-raise".to_string()),
+                    }
+                }
+
+                let exc_val = self.eval(exc.as_ref().unwrap())?;
+
+                // Populate context fields on the instance.
+                if let Value::Instance(ref inst_rc) = exc_val {
+                    let context = self.get_context_lines(&span.file, span.line, 5);
+                    let mut inst = inst_rc.borrow_mut();
+                    // Set fields directly so `e.message`, `e.file` etc. work via normal attr access.
+                    inst.fields.insert("file".to_string(),         (Value::Str(span.file.to_string()), true));
+                    inst.fields.insert("line".to_string(),         (Value::Int(span.line as i64),       true));
+                    inst.fields.insert("col".to_string(),          (Value::Int(span.col as i64),        true));
+                    inst.fields.insert("code_context".to_string(), (Value::Str(context.clone()),        true));
+                    // Also store under the "Error::" namespace for trait-field access.
+                    inst.fields.insert("Error::file".to_string(),         (Value::Str(span.file.to_string()), true));
+                    inst.fields.insert("Error::line".to_string(),         (Value::Int(span.line as i64),       true));
+                    inst.fields.insert("Error::col".to_string(),          (Value::Int(span.col as i64),        true));
+                    inst.fields.insert("Error::code_context".to_string(), (Value::Str(context),                true));
+                }
+
+                let fn_name = self.call_stack.last().cloned().unwrap_or_else(|| "<module>".to_string());
+                let frame = StackFrame {
+                    file: span.file.to_string(),
+                    line: span.line,
+                    col: span.col,
+                    fn_name,
+                    context: self.get_context_lines(&span.file, span.line, 5),
+                };
+                Ok(ExecResult::Raise(RaisedError { exception: exc_val, frames: vec![frame] }))
+            }
+
+            Stmt::Try { body, handlers, finally_body } => {
+                let body_result = self.exec_scoped_block(body);
+
+                // Determine if the body produced a Raise signal.
+                let raise_opt: Option<RaisedError> = match &body_result {
+                    Ok(ExecResult::Raise(r)) => Some(r.clone()),
+                    Err(e) if e.as_str() == RAISE_SENTINEL => self.current_exception.clone(),
+                    _ => None,
+                };
+
+                let mut final_result: Result<ExecResult, String> = body_result;
+
+                if let Some(raised) = raise_opt {
+                    let mut handled = false;
+                    for handler in handlers {
+                        let matches = match &handler.exc_type {
+                            None => true, // bare `except:` catches everything
+                            Some(type_name) => {
+                                if let Value::Instance(ref inst_rc) = raised.exception {
+                                    Self::exc_matches(&inst_rc.borrow().class, type_name)
+                                } else {
+                                    false
+                                }
+                            }
+                        };
+                        if matches {
+                            let prev_exc = self.current_exception.clone();
+                            self.current_exception = Some(raised.clone());
+
+                            self.push_scope();
+                            if let Some(alias) = &handler.name {
+                                let exc_val = raised.exception.clone();
+                                self.declare_var(alias.clone(), Var { value: exc_val, mutable: false });
+                            }
+                            let handler_result = self.exec_block(&handler.body);
+                            self.pop_scope();
+
+                            self.current_exception = prev_exc;
+                            final_result = handler_result;
+                            handled = true;
+                            break;
+                        }
+                    }
+                    if !handled {
+                        // No handler matched — `final_result` is already `body_result`,
+                        // which preserves the original propagation path unchanged
+                        // (Ok(ExecResult::Raise) for direct raises, Err(sentinel) for function raises).
+                    }
+                }
+
+                // Execute `finally` block regardless of outcome.
+                if let Some(finally) = finally_body {
+                    let finally_result = self.exec_scoped_block(finally);
+                    // If finally itself raises or returns, it takes precedence.
+                    match finally_result {
+                        Ok(ExecResult::Normal) => {}
+                        Ok(signal) => return Ok(signal),
+                        Err(e) => return Err(e),
+                    }
+                }
+
+                final_result
             }
         }
     }
@@ -626,11 +915,13 @@ impl Interpreter {
     // --- Function execution ---
 
     /// Execute a function with pre-evaluated argument list.
+    /// `fn_name` is used only for traceback frames when an exception propagates through.
     fn exec_fn_evaled(
         &mut self,
         fn_val: Rc<FnValue>,
         evaled: &[(Option<String>, Value)],
         self_val: Option<Value>,
+        fn_name: &str,
     ) -> Result<Value, String> {
         let bindings = Self::bind_args(&fn_val.params, evaled, self_val.clone())?;
 
@@ -645,16 +936,49 @@ impl Interpreter {
             self.declare_var("Self".to_string(), Var { value: Value::Class(class), mutable: false });
         }
 
+        self.call_stack.push(fn_name.to_string());
         let result = self.exec_block(&fn_val.body);
+        self.call_stack.pop();
 
         self.scopes.truncate(1);
         self.scopes.extend(outer_scopes);
+
+        // If an exception is propagating through this function (via ExecResult::Raise),
+        // add a traceback frame, store in current_exception, and return the sentinel.
+        if let Ok(ExecResult::Raise(mut raised)) = result {
+            raised.frames.push(StackFrame {
+                file: String::new(),
+                line: 0,
+                col: 0,
+                fn_name: fn_name.to_string(),
+                context: String::new(),
+            });
+            self.current_exception = Some(raised);
+            return Err(RAISE_SENTINEL.to_string());
+        }
+
+        // If sentinel already propagated as Err (raise from a nested function), add frame.
+        if let Err(ref e) = result {
+            if e.as_str() == RAISE_SENTINEL {
+                if let Some(ref mut raised) = self.current_exception {
+                    raised.frames.push(StackFrame {
+                        file: String::new(),
+                        line: 0,
+                        col: 0,
+                        fn_name: fn_name.to_string(),
+                        context: String::new(),
+                    });
+                }
+                return Err(RAISE_SENTINEL.to_string());
+            }
+        }
 
         match result? {
             ExecResult::Return(v) => Ok(v),
             ExecResult::Normal | ExecResult::BlockReturn(_) => Ok(Value::None),
             ExecResult::Break => Err("SyntaxError: 'break' outside loop".to_string()),
             ExecResult::Continue => Err("SyntaxError: 'continue' outside loop".to_string()),
+            ExecResult::Raise(_) => unreachable!("Raise already handled above"),
         }
     }
 
@@ -663,9 +987,10 @@ impl Interpreter {
         fn_val: Rc<FnValue>,
         call_args: &[CallArg],
         self_val: Option<Value>,
+        fn_name: &str,
     ) -> Result<Value, String> {
         let evaled = self.eval_call_args(call_args)?;
-        self.exec_fn_evaled(fn_val, &evaled, self_val)
+        self.exec_fn_evaled(fn_val, &evaled, self_val, fn_name)
     }
 
     /// Execute a generator function body, collecting all yielded values eagerly,
@@ -697,6 +1022,10 @@ impl Interpreter {
             ExecResult::Break    => return Err("SyntaxError: 'break' outside loop".to_string()),
             ExecResult::Continue => return Err("SyntaxError: 'continue' outside loop".to_string()),
             ExecResult::Return(_) => {} // silently ignored (parser already forbids return in gen)
+            ExecResult::Raise(raised) => {
+                self.current_exception = Some(raised);
+                return Err(RAISE_SENTINEL.to_string());
+            }
         }
 
         Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: yields, index: 0 }))))
@@ -778,7 +1107,7 @@ impl Interpreter {
         self_val: Option<Value>,
     ) -> Result<Value, String> {
         let evaled = self.eval_call_args(args)?;
-        self.dispatch_overload_evaled(candidates, evaled, self_val)
+        self.dispatch_overload_evaled(candidates, evaled, self_val, "<overloaded>")
     }
 
     fn dispatch_overload_evaled(
@@ -786,6 +1115,7 @@ impl Interpreter {
         candidates: Vec<Rc<FnValue>>,
         evaled: Vec<(Option<String>, Value)>,
         self_val: Option<Value>,
+        fn_name: &str,
     ) -> Result<Value, String> {
         let call_count = evaled.len();
         let has_self = self_val.is_some();
@@ -813,18 +1143,18 @@ impl Interpreter {
         }
 
         if count_matching.len() == 1 {
-            return self.exec_fn_evaled(count_matching[0].clone(), &evaled, self_val);
+            return self.exec_fn_evaled(count_matching[0].clone(), &evaled, self_val, fn_name);
         }
 
         // Multiple count-matching candidates: try type matching.
         for candidate in &count_matching {
             if Self::overload_types_match(candidate, &evaled, &self_val) {
-                return self.exec_fn_evaled(candidate.clone(), &evaled, self_val.clone());
+                return self.exec_fn_evaled(candidate.clone(), &evaled, self_val.clone(), fn_name);
             }
         }
 
         // No exact type match; fall back to the first count-matching candidate.
-        self.exec_fn_evaled(count_matching[0].clone(), &evaled, self_val)
+        self.exec_fn_evaled(count_matching[0].clone(), &evaled, self_val, fn_name)
     }
 
     /// Returns true when every annotated parameter of `fn_val` matches the corresponding argument value.
@@ -897,7 +1227,7 @@ impl Interpreter {
 
         if let Some(init_overloads) = self.lookup_method_in_class(&class, "__init__") {
             if init_overloads.len() == 1 {
-                self.exec_fn(init_overloads[0].clone(), call_args, Some(inst_val.clone()))?;
+                self.exec_fn(init_overloads[0].clone(), call_args, Some(inst_val.clone()), "__init__")?;
             } else {
                 self.dispatch_overload(init_overloads, call_args, Some(inst_val.clone()))?;
             }
@@ -936,7 +1266,7 @@ impl Interpreter {
                 }
 
                 if callable.len() == 1 {
-                    self.exec_fn(callable[0].clone(), args, Some(obj.clone()))
+                    self.exec_fn(callable[0].clone(), args, Some(obj.clone()), method_name)
                 } else {
                     self.dispatch_overload(callable, args, Some(obj.clone()))
                 }
@@ -1025,8 +1355,15 @@ impl Interpreter {
                 match &obj_val {
                     Value::Instance(inst_rc) => {
                         let inst = inst_rc.borrow();
-                        // 1. Instance field
+                        // 1. Instance field (direct key)
                         if let Some((v, _)) = inst.fields.get(attr.as_str()) {
+                            return Ok(v.clone());
+                        }
+                        // 1b. Trait-prefixed field fallback: find any "Trait::attr" key.
+                        let suffix = format!("::{attr}");
+                        if let Some((v, _)) = inst.fields.iter().find_map(|(k, v)| {
+                            if k.ends_with(suffix.as_str()) { Some(v) } else { None }
+                        }) {
                             return Ok(v.clone());
                         }
                         // 2. Class variable (const)
@@ -1159,10 +1496,18 @@ impl Interpreter {
                 }
 
                 // User-defined function / overloaded function / class constructor / generator
+                // Derive a name for traceback frames (best-effort from the func expression).
+                let call_name = match func.as_ref() {
+                    Expr::Ident(n) => n.clone(),
+                    _ => "<anonymous>".to_string(),
+                };
                 let callee = self.eval(func)?;
                 match callee {
-                    Value::Function(fn_val) => self.exec_fn(fn_val, args, None),
-                    Value::OverloadedFn(candidates) => self.dispatch_overload(candidates, args, None),
+                    Value::Function(fn_val) => self.exec_fn(fn_val, args, None, &call_name),
+                    Value::OverloadedFn(candidates) => {
+                        let evaled_args = self.eval_call_args(args)?;
+                        self.dispatch_overload_evaled(candidates, evaled_args, None, &call_name)
+                    }
                     Value::Class(cls) => self.instantiate(cls, args),
                     Value::GeneratorFn(gen_fn) => self.exec_generator(gen_fn, args),
                     Value::TemplateFn(_) | Value::TemplateClass(_) | Value::TemplateGenFn(_) => Err(
@@ -1186,6 +1531,7 @@ impl Interpreter {
             Value::List(_) => "list",
             Value::Function(_) | Value::OverloadedFn(_) => "function",
             Value::Class(_) | Value::Type(_) => "type",
+            Value::Trait(_) => "trait",
             Value::Instance(_) => "object",
             Value::TemplateFn(_) | Value::TemplateClass(_) => "template",
             Value::GeneratorFn(_) | Value::TemplateGenFn(_) => "gen_function",
@@ -1215,6 +1561,7 @@ impl Interpreter {
             Value::Class(c) => format!("<class '{}'>", c.name),
             Value::Instance(i) => format!("<{} object>", i.borrow().class.name),
             Value::Type(name) => format!("<type '{name}'>"),
+            Value::Trait(name) => format!("<trait '{name}'>"),
             Value::TemplateFn(t) => format!("<template fn ({} type params)>", t.template_params.len()),
             Value::TemplateClass(t) => format!("<template class '{}'>", t.name),
             Value::GeneratorFn(_) => "<generator function>".to_string(),
@@ -1281,7 +1628,7 @@ impl Interpreter {
                 let concrete_params = subst_params(&tmpl.params, &type_map);
                 let concrete_body = subst_stmts(&tmpl.body, &type_map);
                 let fn_val = Rc::new(FnValue { params: concrete_params, body: concrete_body });
-                self.exec_fn(fn_val, call_args, None)
+                self.exec_fn(fn_val, call_args, None, "<template_fn>")
             }
             Value::TemplateClass(tmpl) => {
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
@@ -1372,6 +1719,7 @@ impl Interpreter {
             Value::None => false,
             Value::List(items) => !items.is_empty(),
             Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) | Value::Type(_)
+            | Value::Trait(_)
             | Value::TemplateFn(_) | Value::TemplateClass(_)
             | Value::GeneratorFn(_) | Value::TemplateGenFn(_) | Value::Generator(_) => true,
         }
@@ -1628,6 +1976,19 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         Stmt::NewTypeDef { name, original } => Stmt::NewTypeDef {
             name: name.clone(),
             original: subst_type(original, type_map),
+        },
+        Stmt::Try { body, handlers, finally_body } => Stmt::Try {
+            body: subst_stmts(body, type_map),
+            handlers: handlers.iter().map(|h| ExceptHandler {
+                exc_type: h.exc_type.clone(),
+                name: h.name.clone(),
+                body: subst_stmts(&h.body, type_map),
+            }).collect(),
+            finally_body: finally_body.as_ref().map(|b| subst_stmts(b, type_map)),
+        },
+        Stmt::Raise { exc, span } => Stmt::Raise {
+            exc: exc.as_ref().map(|e| subst_expr(e, type_map)),
+            span: span.clone(),
         },
     }
 }
@@ -2584,5 +2945,173 @@ mod tests {
         let tokens = crate::lexer::Lexer::new(src, "").tokenize();
         let result = crate::parser::Parser::new(tokens).parse_program();
         assert!(result.is_err(), "expected parse error when reassigning a new_type binding");
+    }
+
+    // --- Exception handling tests ---
+
+    fn run_exc(src: &str) -> Result<Option<RaisedError>, String> {
+        let tokens = Lexer::new(src, "").tokenize();
+        let stmts = Parser::new(tokens).parse_program()?;
+        let mut interp = Interpreter::new();
+        for stmt in &stmts {
+            match interp.exec(stmt) {
+                Ok(ExecResult::Raise(raised)) => return Ok(Some(raised)),
+                Ok(_) => {}
+                Err(e) if e == RAISE_SENTINEL => return Ok(interp.take_current_exception()),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(None)
+    }
+
+    #[test]
+    fn test_raise_uncaught_reaches_caller() {
+        let raised = run_exc("raise ValueError(\"oops\")\n").unwrap();
+        let raised = raised.expect("expected a raised exception");
+        if let Value::Instance(inst) = &raised.exception {
+            assert_eq!(inst.borrow().class.name, "ValueError");
+            let msg = match inst.borrow().fields.get("message") {
+                Some((Value::Str(s), _)) => s.clone(),
+                _ => panic!("message field missing or wrong type"),
+            };
+            assert_eq!(msg, "oops");
+        } else {
+            panic!("expected Instance");
+        }
+    }
+
+    #[test]
+    fn test_try_except_catches_matching_type() {
+        let src = concat!(
+            "mut x = 0\n",
+            "try:\n",
+            "    raise ValueError(\"bad\")\n",
+            "except ValueError as e:\n",
+            "    x = 1\n",
+        );
+        assert!(run(src).is_ok());
+        let x = run_get(src, "x");
+        assert!(matches!(x, Value::Int(1)));
+    }
+
+    #[test]
+    fn test_try_except_does_not_catch_different_type() {
+        let src = concat!(
+            "try:\n",
+            "    raise TypeError(\"t\")\n",
+            "except ValueError as e:\n",
+            "    pass\n",
+        );
+        let raised = run_exc(src).unwrap();
+        assert!(raised.is_some(), "TypeError should not be caught by ValueError handler");
+        if let Some(r) = raised {
+            if let Value::Instance(inst) = &r.exception {
+                assert_eq!(inst.borrow().class.name, "TypeError");
+            }
+        }
+    }
+
+    #[test]
+    fn test_try_finally_runs_always() {
+        let src = concat!(
+            "mut x = 0\n",
+            "try:\n",
+            "    raise RuntimeError(\"r\")\n",
+            "except RuntimeError:\n",
+            "    x = 1\n",
+            "finally:\n",
+            "    x = 2\n",
+        );
+        let x = run_get(src, "x");
+        assert!(matches!(x, Value::Int(2)));
+    }
+
+    #[test]
+    fn test_try_no_raise_skips_except() {
+        let src = concat!(
+            "mut x = 0\n",
+            "try:\n",
+            "    x = 5\n",
+            "except ValueError:\n",
+            "    x = 99\n",
+        );
+        let x = run_get(src, "x");
+        assert!(matches!(x, Value::Int(5)));
+    }
+
+    #[test]
+    fn test_try_bare_except_catches_all() {
+        let src = concat!(
+            "mut caught = 0\n",
+            "try:\n",
+            "    raise KeyError(\"k\")\n",
+            "except:\n",
+            "    caught = 1\n",
+        );
+        let v = run_get(src, "caught");
+        assert!(matches!(v, Value::Int(1)));
+    }
+
+    #[test]
+    fn test_user_defined_error_class() {
+        let src = concat!(
+            "class MyError(Error):\n",
+            "    pass\n",
+            "mut caught = 0\n",
+            "try:\n",
+            "    raise MyError(\"custom\")\n",
+            "except MyError as e:\n",
+            "    caught = 1\n",
+        );
+        let v = run_get(src, "caught");
+        assert!(matches!(v, Value::Int(1)));
+    }
+
+    #[test]
+    fn test_exception_message_accessible() {
+        let src = concat!(
+            "mut msg = \"\"\n",
+            "try:\n",
+            "    raise ValueError(\"hello world\")\n",
+            "except ValueError as e:\n",
+            "    msg = e.message\n",
+        );
+        let v = run_get(src, "msg");
+        match v {
+            Value::Str(s) => assert_eq!(s, "hello world"),
+            _ => panic!("expected Str"),
+        }
+    }
+
+    #[test]
+    fn test_bare_raise_reraises() {
+        let src = concat!(
+            "mut x = 0\n",
+            "try:\n",
+            "    try:\n",
+            "        raise ValueError(\"v\")\n",
+            "    except ValueError as e:\n",
+            "        x = 1\n",
+            "        raise\n",
+            "except ValueError:\n",
+            "    x = 2\n",
+        );
+        let v = run_get(src, "x");
+        assert!(matches!(v, Value::Int(2)));
+    }
+
+    #[test]
+    fn test_exception_propagates_through_function() {
+        let src = concat!(
+            "fn thrower() -> None:\n",
+            "    raise RuntimeError(\"from fn\")\n",
+            "mut caught = 0\n",
+            "try:\n",
+            "    thrower()\n",
+            "except RuntimeError:\n",
+            "    caught = 1\n",
+        );
+        let v = run_get(src, "caught");
+        assert!(matches!(v, Value::Int(1)));
     }
 }

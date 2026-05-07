@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, TemplateParam, UnaryOp};
+use crate::ast::{BinOp, CallArg, ExceptHandler, Expr, FieldKind, Param, Stmt, TemplateParam, UnaryOp};
 use crate::token::{Span, Spanned, Token};
 
 pub struct Parser {
@@ -16,10 +16,25 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<Spanned>) -> Self {
+        // Pre-register the built-in `Error` trait so that user-defined classes can
+        // inherit from it without declaring the trait themselves.
+        // Fields: message (let, required), code_context/file (mut, default), line/col (mut, default)
+        let mut known_traits: HashMap<String, (Vec<TemplateParam>, Vec<(String, FieldKind, String, bool)>, Vec<String>)> = HashMap::new();
+        known_traits.insert("Error".to_string(), (
+            vec![],
+            vec![
+                ("message".to_string(),      FieldKind::Let, "str".to_string(), false),
+                ("code_context".to_string(), FieldKind::Mut, "str".to_string(), true),
+                ("file".to_string(),         FieldKind::Mut, "str".to_string(), true),
+                ("line".to_string(),         FieldKind::Mut, "int".to_string(), true),
+                ("col".to_string(),          FieldKind::Mut, "int".to_string(), true),
+            ],
+            vec![],
+        ));
         Self {
             tokens,
             pos: 0,
-            known_traits: HashMap::new(),
+            known_traits,
             class_or_trait_depth: 0,
             known_new_types: HashSet::new(),
         }
@@ -200,6 +215,17 @@ impl Parser {
             Token::Yield => {
                 self.advance();
                 Ok(Stmt::Yield(self.parse_expr()?))
+            }
+            Token::Try => self.parse_try_stmt(),
+            Token::Raise => {
+                let span = self.current_span();
+                self.advance();
+                let exc = if matches!(self.current(), Token::Newline | Token::Eof | Token::Semicolon | Token::Dedent) {
+                    None
+                } else {
+                    Some(self.parse_expr()?)
+                };
+                Ok(Stmt::Raise { exc, span })
             }
             Token::Fn => self.parse_fn_def(),
             Token::Gen => self.parse_gen_def(),
@@ -382,6 +408,50 @@ impl Parser {
         let t1 = self.tokens.get(self.pos + 1).map(|s| &s.token).unwrap_or(&Token::Eof);
         let t2 = self.tokens.get(self.pos + 2).map(|s| &s.token).unwrap_or(&Token::Eof);
         matches!(t0, Token::Newline) && matches!(t1, Token::Indent) && matches!(t2, Token::Ellipsis)
+    }
+
+    fn parse_try_stmt(&mut self) -> Result<Stmt, String> {
+        self.advance(); // consume `try`
+        self.eat(&Token::Colon)?;
+        let body = self.parse_block()?;
+
+        let mut handlers: Vec<ExceptHandler> = Vec::new();
+        let mut finally_body: Option<Vec<Stmt>> = None;
+
+        // Parse zero or more `except` clauses
+        while *self.current() == Token::Except {
+            self.advance(); // consume `except`
+            // Determine exception type and optional name binding
+            let (exc_type, name) = if matches!(self.current(), Token::Colon) {
+                // bare `except:`
+                (None, None)
+            } else {
+                let type_name = self.expect_ident()?;
+                let alias = if *self.current() == Token::As {
+                    self.advance();
+                    Some(self.expect_ident()?)
+                } else {
+                    None
+                };
+                (Some(type_name), alias)
+            };
+            self.eat(&Token::Colon)?;
+            let handler_body = self.parse_block()?;
+            handlers.push(ExceptHandler { exc_type, name, body: handler_body });
+        }
+
+        // Optional `finally` clause
+        if *self.current() == Token::Finally {
+            self.advance();
+            self.eat(&Token::Colon)?;
+            finally_body = Some(self.parse_block()?);
+        }
+
+        if handlers.is_empty() && finally_body.is_none() {
+            return Err("try statement requires at least one `except` or `finally` clause".to_string());
+        }
+
+        Ok(Stmt::Try { body, handlers, finally_body })
     }
 
     fn parse_new_type_def(&mut self) -> Result<Stmt, String> {

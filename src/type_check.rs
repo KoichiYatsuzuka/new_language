@@ -543,6 +543,29 @@ impl TypeChecker {
                 self.declare(name.clone(), InferredType::Unknown, false);
             }
             Stmt::Pass | Stmt::Break | Stmt::Continue | Stmt::Freeze(..) => {}
+            Stmt::Try { body, handlers, finally_body } => {
+                self.push_scope();
+                self.check_stmts(body);
+                self.pop_scope();
+                for handler in handlers {
+                    self.push_scope();
+                    if let Some(name) = &handler.name {
+                        self.declare(name.clone(), InferredType::Unknown, true);
+                    }
+                    self.check_stmts(&handler.body);
+                    self.pop_scope();
+                }
+                if let Some(fb) = finally_body {
+                    self.push_scope();
+                    self.check_stmts(fb);
+                    self.pop_scope();
+                }
+            }
+            Stmt::Raise { exc, .. } => {
+                if let Some(e) = exc {
+                    self.infer(e);
+                }
+            }
         }
     }
 
