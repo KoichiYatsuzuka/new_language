@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
-import { provideInlayHints } from './type_infer';
+import { provideHover, provideInlayHints } from './type_infer';
 
 export function activate(context: vscode.ExtensionContext) {
-    const provider = vscode.languages.registerInlayHintsProvider(
+    const inlayProvider = vscode.languages.registerInlayHintsProvider(
         { language: 'test_lang' },
         {
             provideInlayHints(
@@ -13,7 +13,18 @@ export function activate(context: vscode.ExtensionContext) {
             },
         }
     );
-    context.subscriptions.push(provider);
+    const hoverProvider = vscode.languages.registerHoverProvider(
+        { language: 'test_lang' },
+        {
+            provideHover(
+                document: vscode.TextDocument,
+                position: vscode.Position
+            ): vscode.Hover | undefined {
+                return provideHover(document, position);
+            },
+        }
+    );
+    context.subscriptions.push(inlayProvider, hoverProvider);
 }
 
 export function deactivate() {}

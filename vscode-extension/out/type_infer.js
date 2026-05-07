@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.inferExprType = inferExprType;
+exports.provideHover = provideHover;
 exports.provideInlayHints = provideInlayHints;
 const vscode = require("vscode");
 function tokenize(src) {
@@ -339,17 +340,34 @@ function stripComment(line) {
     return line;
 }
 // ===== Function definition scanning =====
-// Matches: fn name(params) -> RetType:
-// Groups:  1=indent  2=name  3=params  4=return annotation (optional)
-const FUNC_DEF_RE = /^(\s*)fn\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*(?:->\s*([A-Za-z_][\w\[\], ]*))?:/;
+// Matches: fn/gen name(params) -> RetType:
+// Groups:  1=indent  2=kind  3=name  4=params  5=return annotation (optional)
+const FUNC_DEF_RE = /^(\s*)(fn|gen)\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*(?:->\s*([A-Za-z_][\w\[\], ]*))?:/;
 const DECL_RE = /^(\s*)(let|mut|const)\s+([A-Za-z_]\w*)\s*=(?!=)/;
 const RETURN_RE = /^return(?:\s+(.+))?$/;
+const CLASS_NAME_RE = /^\s*(?:class|trait)\s+([A-Za-z_]\w*)/;
+const NEW_TYPE_NAME_RE = /^\s*new_type\s+([A-Za-z_]\w*)\s*:/;
 function parseTypeAnnotation(s) {
     if (!s)
         return undefined;
     const t = s.trim();
-    const known = ['int', 'float', 'str', 'bool', 'None'];
-    return known.includes(t) ? t : 'unknown';
+    return t || undefined;
+}
+function collectConstructorTypes(document) {
+    const constructors = new Map();
+    for (let i = 0; i < document.lineCount; i++) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const classMatch = stripped.match(CLASS_NAME_RE);
+        if (classMatch) {
+            constructors.set(classMatch[1], classMatch[1]);
+            continue;
+        }
+        const newTypeMatch = stripped.match(NEW_TYPE_NAME_RE);
+        if (newTypeMatch) {
+            constructors.set(newTypeMatch[1], newTypeMatch[1]);
+        }
+    }
+    return constructors;
 }
 function collectFuncDefs(document) {
     const defs = [];
@@ -358,7 +376,7 @@ function collectFuncDefs(document) {
         const m = stripped.match(FUNC_DEF_RE);
         if (!m)
             continue;
-        const [, indentStr, name, , retAnnotation] = m;
+        const [, indentStr, , name, , retAnnotation] = m;
         defs.push({
             name,
             defLine: i,
@@ -398,13 +416,171 @@ function inferBodyReturnType(document, defLine, defIndent, funcEnv) {
     const unique = [...new Set(returnTypes)];
     return unique.length === 1 ? unique[0] : 'unknown';
 }
+const HOVER_DECL_RE = /^(\s*)(let|mut|const)\s+([A-Za-z_]\w*)\s*(?::\s*([^=#]+?))?\s*(?:=(?!=)\s*(.*))?$/;
+const CLASS_DEF_RE = /^(\s*)(class|trait)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*(?:\(([^)]*)\))?\s*:/;
+const NEW_TYPE_RE = /^(\s*)new_type\s+([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\], ]*)/;
+function cleanTypeAnnotation(value) {
+    const cleaned = value?.trim();
+    return cleaned ? cleaned : undefined;
+}
+function cleanBaseName(value) {
+    return value.trim().replace(/\[[^\]]*\]/g, '');
+}
+function getDocstringAfter(document, line, indent) {
+    for (let i = line + 1; i < document.lineCount; i++) {
+        const raw = document.lineAt(i).text;
+        const trimmed = raw.trim();
+        if (!trimmed)
+            continue;
+        const lineIndent = (raw.match(/^(\s*)/)?.[1] ?? '').length;
+        if (lineIndent <= indent)
+            return undefined;
+        if (!trimmed.startsWith('"""') && !trimmed.startsWith("'''"))
+            return undefined;
+        const quote = trimmed.startsWith('"""') ? '"""' : "'''";
+        let text = trimmed.slice(3);
+        if (text.endsWith(quote) && text.length >= 3) {
+            text = text.slice(0, -3);
+            return text.trim() || undefined;
+        }
+        const lines = [];
+        if (text)
+            lines.push(text);
+        for (let j = i + 1; j < document.lineCount; j++) {
+            const docLine = document.lineAt(j).text.trim();
+            const end = docLine.indexOf(quote);
+            if (end >= 0) {
+                lines.push(docLine.slice(0, end));
+                return lines.join('\n').trim() || undefined;
+            }
+            lines.push(docLine);
+        }
+        return lines.join('\n').trim() || undefined;
+    }
+    return undefined;
+}
+function collectHoverSymbols(document) {
+    const symbols = [];
+    const env = new Map();
+    const funcDefs = collectFuncDefs(document);
+    const funcEnv = collectConstructorTypes(document);
+    for (const def of funcDefs) {
+        funcEnv.set(def.name, def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv));
+    }
+    for (let i = 0; i < document.lineCount; i++) {
+        const raw = document.lineAt(i).text;
+        const stripped = stripComment(raw);
+        const funcMatch = stripped.match(FUNC_DEF_RE);
+        if (funcMatch) {
+            const [, indentStr, kind, name, params, retAnnotation] = funcMatch;
+            const returnType = cleanTypeAnnotation(retAnnotation) ?? funcEnv.get(name) ?? 'unknown';
+            symbols.push({
+                name,
+                kind: 'function',
+                line: i,
+                type: returnType,
+                signature: `${kind} ${name}(${params}) -> ${returnType}`,
+                doc: getDocstringAfter(document, i, indentStr.length),
+            });
+            continue;
+        }
+        const classMatch = stripped.match(CLASS_DEF_RE);
+        if (classMatch) {
+            const [, indentStr, kind, name, bases] = classMatch;
+            const traits = bases?.split(',').map(cleanBaseName).filter(Boolean);
+            symbols.push({
+                name,
+                kind: kind === 'trait' ? 'trait' : 'class',
+                line: i,
+                traits,
+                doc: getDocstringAfter(document, i, indentStr.length),
+            });
+            continue;
+        }
+        const newTypeMatch = stripped.match(NEW_TYPE_RE);
+        if (newTypeMatch) {
+            const [, , name, originalType] = newTypeMatch;
+            symbols.push({
+                name,
+                kind: 'new_type',
+                line: i,
+                type: name,
+                mutability: 'const',
+                originalType: originalType.trim(),
+            });
+            env.set(name, 'unknown');
+            continue;
+        }
+        const declMatch = stripped.match(HOVER_DECL_RE);
+        if (declMatch) {
+            const [, , mutability, name, annotation, rhs] = declMatch;
+            const type = cleanTypeAnnotation(annotation)
+                ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv) : 'unknown');
+            symbols.push({
+                name,
+                kind: 'variable',
+                line: i,
+                mutability,
+                type,
+            });
+            env.set(name, parseTypeAnnotation(type) ?? 'unknown');
+        }
+    }
+    return symbols;
+}
+function selectHoverSymbol(symbols, name, line) {
+    const matches = symbols.filter(symbol => symbol.name === name);
+    const visible = matches
+        .filter(symbol => symbol.line <= line)
+        .sort((a, b) => b.line - a.line);
+    return visible[0] ?? matches[0];
+}
+function renderHover(symbol) {
+    const md = new vscode.MarkdownString(undefined, true);
+    md.isTrusted = false;
+    if (symbol.kind === 'variable') {
+        md.appendCodeblock(`${symbol.mutability ?? 'value'} ${symbol.name}: ${symbol.type ?? 'unknown'}`, 'tl');
+    }
+    else if (symbol.kind === 'function') {
+        md.appendCodeblock(symbol.signature ?? `fn ${symbol.name}() -> ${symbol.type ?? 'unknown'}`, 'tl');
+    }
+    else if (symbol.kind === 'class') {
+        md.appendCodeblock(`class ${symbol.name}`, 'tl');
+    }
+    else if (symbol.kind === 'trait') {
+        md.appendCodeblock(`trait ${symbol.name}`, 'tl');
+    }
+    else {
+        md.appendCodeblock(`new_type ${symbol.name}: ${symbol.originalType ?? 'unknown'}`, 'tl');
+    }
+    if (symbol.traits && symbol.traits.length > 0) {
+        md.appendMarkdown(`\n\nTraits: ${symbol.traits.map(t => `\`${t}\``).join(', ')}`);
+    }
+    if (symbol.originalType) {
+        md.appendMarkdown(`\n\nOriginal type: \`${symbol.originalType}\``);
+    }
+    if (symbol.doc) {
+        md.appendMarkdown(`\n\n${symbol.doc}`);
+    }
+    return md;
+}
+function provideHover(document, position) {
+    const range = document.getWordRangeAtPosition(position, /[A-Za-z_]\w*/);
+    if (!range)
+        return undefined;
+    const name = document.getText(range);
+    const symbol = selectHoverSymbol(collectHoverSymbols(document), name, position.line);
+    if (!symbol)
+        return undefined;
+    return new vscode.Hover(renderHover(symbol), range);
+}
 // ===== Inlay hints provider =====
 function provideInlayHints(document, _range) {
     const hints = [];
     // Phase 1: collect all function definitions
     const funcDefs = collectFuncDefs(document);
-    // Phase 2: build funcEnv — annotation takes priority, otherwise infer from body
-    const funcEnv = new Map();
+    // Phase 2: build funcEnv — constructors and annotations take priority, otherwise infer from body
+    const funcEnv = collectConstructorTypes(document);
     for (const def of funcDefs) {
         funcEnv.set(def.name, def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv));
     }

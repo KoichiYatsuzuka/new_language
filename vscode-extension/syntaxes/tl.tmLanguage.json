@@ -8,10 +8,12 @@
     { "include": "#number" },
     { "include": "#function-def" },
     { "include": "#class-def" },
+    { "include": "#new-type-def" },
     { "include": "#keyword" },
     { "include": "#constant" },
     { "include": "#builtin-type" },
     { "include": "#builtin-func" },
+    { "include": "#constructor-call" },
     { "include": "#function-call" },
     { "include": "#operator" },
     { "include": "#variable" }
@@ -66,23 +68,30 @@
       ]
     },
     "function-def": {
-      "match": "\\b(fn)\\s+([A-Za-z_]\\w*)",
+      "match": "\\b(fn|gen)\\s+([A-Za-z_]\\w*)",
       "captures": {
         "1": { "name": "storage.type.function.tl" },
         "2": { "name": "entity.name.function.tl" }
       }
     },
     "class-def": {
-      "match": "\\b(class|template|dataclass|enum)\\s+([A-Za-z_]\\w*)",
+      "match": "\\b(class|trait|template|dataclass|enum)\\s+([A-Za-z_]\\w*)",
       "captures": {
         "1": { "name": "storage.type.class.tl" },
         "2": { "name": "entity.name.type.class.tl" }
       }
     },
+    "new-type-def": {
+      "match": "\\b(new_type)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "storage.type.newtype.tl" },
+        "2": { "name": "entity.name.type.tl" }
+      }
+    },
     "keyword": {
       "patterns": [
         {
-          "match": "\\b(let|mut|const)\\b",
+          "match": "\\b(let|mut|const|freeze)\\b",
           "name": "storage.modifier.tl"
         },
         {
@@ -106,7 +115,7 @@
           "name": "keyword.control.async.tl"
         },
         {
-          "match": "\\b(del|global|nonlocal|with|assert|lambda)\\b",
+          "match": "\\b(del|global|nonlocal|with|assert|lambda|new_type)\\b",
           "name": "keyword.other.tl"
         },
         {
@@ -120,12 +129,18 @@
       "name": "constant.language.tl"
     },
     "builtin-type": {
-      "match": "\\b(int|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type)\\b",
+      "match": "\\b(int|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type|Self|Any|Union|Option)\\b",
       "name": "support.type.builtin.tl"
     },
     "builtin-func": {
       "match": "\\b(print|len|range|enumerate|zip|map|filter|abs|round|pow|divmod|max|min|sum|all|any|sorted|reversed|isinstance|issubclass|callable|getattr|setattr|hasattr|delattr|repr|input|open|chr|ord|hex|oct|bin|id|hash|dir|vars|globals|locals|iter|next|eval|exec|help|format|super|staticmethod|classmethod|property|slice)\\b",
       "name": "support.function.builtin.tl"
+    },
+    "constructor-call": {
+      "match": "\\b([A-Z][A-Za-z_0-9]*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "entity.name.type.class.tl" }
+      }
     },
     "function-call": {
       "match": "\\b([A-Za-z_]\\w*)\\s*(?=\\()",
