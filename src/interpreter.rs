@@ -133,6 +133,8 @@ pub struct ClassValue {
     pub(self) bases: Vec<String>,
     /// Each method name maps to one or more overloads.
     pub(self) methods: HashMap<String, Vec<Rc<FnValue>>>,
+    /// Generator methods (defined with `gen` inside a class body).
+    pub(self) gen_methods: HashMap<String, Rc<GeneratorFnValue>>,
     /// Default values for `mut`/`let` instance fields: (name, default, mutable).
     pub(self) field_defaults: Vec<(String, Value, bool)>,
     /// `const` class variables shared by all instances (always immutable).

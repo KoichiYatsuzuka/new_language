@@ -86,7 +86,7 @@ impl Interpreter {
                 let concrete_params = subst_params(&tmpl.params, &type_map);
                 let concrete_body = subst_stmts(&tmpl.body, &type_map);
                 let gen_fn = Rc::new(GeneratorFnValue { params: concrete_params, body: concrete_body });
-                self.exec_generator(gen_fn, call_args)
+                self.exec_generator(gen_fn, call_args, None)
             }
             _ => Err("TemplateError: expression is not a template".to_string()),
         }
@@ -100,6 +100,7 @@ impl Interpreter {
         call_args: &[CallArg],
     ) -> Result<Value, String> {
         let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
+        let mut gen_methods: HashMap<String, Rc<GeneratorFnValue>> = HashMap::new();
         let mut field_defaults = Vec::new();
         let mut class_vars: HashMap<String, Value> = HashMap::new();
         let mut field_mutability: HashMap<String, bool> = HashMap::new();
@@ -107,6 +108,12 @@ impl Interpreter {
             match stmt {
                 Stmt::FnDef { name: mname, params, body: mbody, .. } => {
                     methods.entry(mname.clone()).or_default().push(Rc::new(FnValue {
+                        params: params.clone(),
+                        body: mbody.clone(),
+                    }));
+                }
+                Stmt::GenDef { name: mname, params, body: mbody, .. } => {
+                    gen_methods.insert(mname.clone(), Rc::new(GeneratorFnValue {
                         params: params.clone(),
                         body: mbody.clone(),
                     }));
@@ -130,6 +137,7 @@ impl Interpreter {
             name: tmpl.name.clone(),
             bases: tmpl.bases.clone(),
             methods,
+            gen_methods,
             field_defaults,
             class_vars,
             field_mutability,

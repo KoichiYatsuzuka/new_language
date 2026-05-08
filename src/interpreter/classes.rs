@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crate::ast::CallArg;
 
-use super::{Interpreter, Value, ClassValue, FnValue, InstanceData};
+use super::{Interpreter, Value, ClassValue, FnValue, InstanceData, GeneratorState};
 
 impl Interpreter {
     // --- Instance freeze ---
@@ -49,9 +49,40 @@ impl Interpreter {
         args: &[CallArg],
     ) -> Result<Value, String> {
         match &obj {
+            Value::List(items) => {
+                if method_name == "__iter__" {
+                    if !args.is_empty() {
+                        return Err("TypeError: list.__iter__() takes no arguments".to_string());
+                    }
+                    return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                        values: items.clone(),
+                        index: 0,
+                    }))));
+                }
+                Err(format!("AttributeError: 'list' object has no method '{method_name}'"))
+            }
+            Value::Str(s) => {
+                if method_name == "__iter__" {
+                    if !args.is_empty() {
+                        return Err("TypeError: str.__iter__() takes no arguments".to_string());
+                    }
+                    let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
+                    return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                        values: chars,
+                        index: 0,
+                    }))));
+                }
+                Err(format!("AttributeError: 'str' object has no method '{method_name}'"))
+            }
             Value::Instance(inst_rc) => {
                 let class = inst_rc.borrow().class.clone();
                 let inst_immutable = inst_rc.borrow().immutable;
+
+                // Check gen_methods first (e.g. __iter__).
+                if let Some(gen_fn) = class.gen_methods.get(method_name).cloned() {
+                    return self.exec_generator(gen_fn, args, Some(obj.clone()));
+                }
+
                 let overloads = self.lookup_method_in_class(&class, method_name)
                     .ok_or_else(|| format!("AttributeError: '{}' has no method '{method_name}'", class.name))?;
 
@@ -92,7 +123,7 @@ impl Interpreter {
                     s.index += 1;
                     Ok(val)
                 } else {
-                    Err("StopIteration: generator is exhausted".to_string())
+                    Err("EndOfIteration: generator is exhausted".to_string())
                 }
             }
             _ => Err(format!(

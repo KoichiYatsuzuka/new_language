@@ -51,6 +51,7 @@ impl Interpreter {
             name: class_name.to_string(),
             bases: vec!["Error".to_string()],
             methods,
+            gen_methods: HashMap::new(),
             field_defaults,
             class_vars: HashMap::new(),
             field_mutability,

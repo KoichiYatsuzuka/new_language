@@ -95,9 +95,10 @@ impl Interpreter {
 
     /// Execute a generator function body, collecting all yielded values eagerly,
     /// and return a Generator object.
-    pub(super) fn exec_generator(&mut self, gen_fn: Rc<GeneratorFnValue>, call_args: &[CallArg]) -> Result<Value, String> {
+    /// `self_val` is `Some(instance)` when called as a method (binds `self` parameter).
+    pub(super) fn exec_generator(&mut self, gen_fn: Rc<GeneratorFnValue>, call_args: &[CallArg], self_val: Option<Value>) -> Result<Value, String> {
         let evaled = self.eval_call_args(call_args)?;
-        let bindings = Self::bind_args(&gen_fn.params, &evaled, None)?;
+        let bindings = Self::bind_args(&gen_fn.params, &evaled, self_val.clone())?;
 
         // Activate yield collection for this generator run.
         GENERATOR_YIELDS.with(|y| {
@@ -109,6 +110,11 @@ impl Interpreter {
         self.push_scope();
         for (name, val, mutable) in bindings {
             self.declare_var(name, Var { value: val, mutable });
+        }
+        // Bind `Self` when executing a generator method on an instance.
+        if let Some(Value::Instance(inst_rc)) = &self_val {
+            let class = inst_rc.borrow().class.clone();
+            self.declare_var("Self".to_string(), Var { value: Value::Class(class), mutable: false });
         }
         let exec_result = self.exec_block(&gen_fn.body);
         self.scopes.truncate(1);

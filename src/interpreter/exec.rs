@@ -1,5 +1,6 @@
 // exec.rs — 文の実行 (exec / exec_block / exec_scoped_block)
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::collections::HashMap;
 
@@ -8,6 +9,7 @@ use crate::ast::{Expr, FieldKind, Stmt};
 use super::{
     Interpreter, Value, Var, ExecResult,
     FnValue, TemplateFnValue, GeneratorFnValue, TemplateGenFnValue, TemplateClassValue,
+    GeneratorState,
     RaisedError, StackFrame,
     RAISE_SENTINEL, GENERATOR_YIELDS,
 };
@@ -116,20 +118,37 @@ impl Interpreter {
             }
             Stmt::For { target, iter, body } => {
                 let iter_val = self.eval(iter)?;
-                let items = match iter_val {
-                    Value::List(items) => items,
-                    Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+                // Obtain a Generator from the iterable via the iterator protocol.
+                let generator = match iter_val {
+                    Value::List(items) => {
+                        Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items, index: 0 })))
+                    }
+                    Value::Str(s) => {
+                        let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
+                        Value::Generator(Rc::new(RefCell::new(GeneratorState { values: chars, index: 0 })))
+                    }
+                    Value::Generator(_) => iter_val,
+                    Value::Instance(_) => {
+                        // Call __iter__() to obtain the generator.
+                        self.eval_method_call(iter_val, "__iter__", &[])?
+                    }
                     _ => return Err("TypeError: object is not iterable".to_string()),
                 };
-                for item in items {
-                    self.push_scope();
-                    self.declare_var(target.clone(), Var { value: item, mutable: true });
-                    let result = self.exec_block(body);
-                    self.pop_scope();
-                    match result? {
-                        ExecResult::Break => break,
-                        ExecResult::Continue | ExecResult::Normal => {}
-                        r => return Ok(r),
+                loop {
+                    match self.eval_method_call(generator.clone(), "next", &[]) {
+                        Ok(item) => {
+                            self.push_scope();
+                            self.declare_var(target.clone(), Var { value: item, mutable: true });
+                            let result = self.exec_block(body);
+                            self.pop_scope();
+                            match result? {
+                                ExecResult::Break => break,
+                                ExecResult::Continue | ExecResult::Normal => {}
+                                r => return Ok(r),
+                            }
+                        }
+                        Err(ref e) if e.starts_with("EndOfIteration") => break,
+                        Err(e) => return Err(e),
                     }
                 }
                 Ok(ExecResult::Normal)
@@ -211,6 +230,7 @@ impl Interpreter {
                             name: name.clone(),
                             bases: orig_cls.bases.clone(),
                             methods: orig_cls.methods.clone(),
+                            gen_methods: orig_cls.gen_methods.clone(),
                             field_defaults: orig_cls.field_defaults.clone(),
                             class_vars: orig_cls.class_vars.clone(),
                             field_mutability: orig_cls.field_mutability.clone(),
@@ -242,6 +262,7 @@ impl Interpreter {
                             name: name.clone(),
                             bases: vec![],
                             methods,
+                            gen_methods: HashMap::new(),
                             field_defaults: vec![],
                             class_vars: HashMap::new(),
                             field_mutability: HashMap::from([("value".to_string(), true)]),
@@ -269,6 +290,7 @@ impl Interpreter {
                     return Ok(ExecResult::Normal);
                 }
                 let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
+                let mut gen_methods: HashMap<String, Rc<GeneratorFnValue>> = HashMap::new();
                 let mut field_defaults = Vec::new();
                 let mut class_vars: HashMap<String, Value> = HashMap::new();
                 let mut field_mutability: HashMap<String, bool> = HashMap::new();
@@ -276,6 +298,12 @@ impl Interpreter {
                     match stmt {
                         Stmt::FnDef { name: mname, params, body: mbody, .. } => {
                             methods.entry(mname.clone()).or_default().push(Rc::new(FnValue {
+                                params: params.clone(),
+                                body: mbody.clone(),
+                            }));
+                        }
+                        Stmt::GenDef { name: mname, params, body: mbody, .. } => {
+                            gen_methods.insert(mname.clone(), Rc::new(GeneratorFnValue {
                                 params: params.clone(),
                                 body: mbody.clone(),
                             }));
@@ -299,6 +327,7 @@ impl Interpreter {
                     name: name.clone(),
                     bases: bases.clone(),
                     methods,
+                    gen_methods,
                     field_defaults,
                     class_vars,
                     field_mutability,

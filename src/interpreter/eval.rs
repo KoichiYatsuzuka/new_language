@@ -192,7 +192,7 @@ impl Interpreter {
                         self.dispatch_overload_evaled(candidates, evaled_args, None, &call_name)
                     }
                     Value::Class(cls) => self.instantiate(cls, args),
-                    Value::GeneratorFn(gen_fn) => self.exec_generator(gen_fn, args),
+                    Value::GeneratorFn(gen_fn) => self.exec_generator(gen_fn, args, None),
                     Value::TemplateFn(_) | Value::TemplateClass(_) | Value::TemplateGenFn(_) => Err(
                         "TemplateError: template must be called with explicit type arguments (e.g. `Func[T](args)`)".to_string()
                     ),

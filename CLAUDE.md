@@ -45,7 +45,9 @@ test_lang/
 │   ├── self_type.tl          # Self 型の動作確認
 │   ├── self_type__errors.tl  # Self 型のパースエラー例
 │   ├── new_type.tl           # new_type の動作確認
-│   └── new_type__errors.tl   # new_type の Self 型不一致エラー例
+│   ├── new_type__errors.tl   # new_type の Self 型不一致エラー例
+│   ├── iterator.tl           # イテレータの動作確認
+│   └── iterator__errors.tl   # EndOfIteration エラーの発生例
 └── vscode-extension/    # VS Code 拡張（型推論インレイヒント）
     └── src/
         ├── extension.ts
@@ -135,7 +137,7 @@ test_lang/
 - ゼロ除算エラー
 - `if` / `elif` / `else`（スコープ分離済み）
 - `while`（`break` / `continue` 対応）
-- `for ... in ...`（`break` / `continue` 対応）
+- `for ... in ...`（`break` / `continue` 対応、イテレータプロトコル経由）
 - `block:` スコープ（`block_return` / `block_yield` 対応）
 - リストリテラル評価
 - 組み込み関数: `print()`、`range(stop)` / `range(start, stop)` / `range(start, stop, step)`、`len()`
@@ -151,6 +153,7 @@ test_lang/
 - **テンプレート関数・クラス**: `Value::TemplateFn` / `Value::TemplateClass` として格納。呼び出し時に型引数の trait 制約を検証し、AST 内の型変数を具体型に置換して実行
 - **`Self` 型**: メソッド実行時に `exec_fn_evaled()` がレシーバインスタンスのクラスを `"Self"` としてスコープに束縛。`Self(...)` は現在のクラスのコンストラクタとして機能し、`new_type` のインスタンスで呼び出すと正しく new_type 側のインスタンスを生成する
 - **`new_type`**: `Stmt::NewTypeDef { name, original }` を実行。元の値が `Value::Class` の場合は `ClassValue` を `name` でコピーして `const` バインド、プリミティブ型の場合は `value` フィールドを持つラッパークラスを自動生成して束縛
+- **イテレータプロトコル**: `for XX in YY:` は `YY.__iter__()` を呼んでジェネレータを取得し、`.next()` を繰り返す。終端で `EndOfIteration` エラーが発生するとループを終了する。`List` / `Str` は組み込みの `__iter__()` を持つ。クラスに `gen __iter__(self) -> T:` を定義することで任意のイテラブルを実装できる。`ClassValue` は `gen_methods: HashMap<String, Rc<GeneratorFnValue>>` フィールドを持ち、`eval_method_call` でジェネレータメソッドを優先的にディスパッチする
 - 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Function(Rc<FnValue>)`, `OverloadedFn(Vec<Rc<FnValue>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `TemplateFn(Rc<TemplateFnValue>)`, `TemplateClass(Rc<TemplateClassValue>)`, `Trait(String)`
 - **トレイトの実行時表現**: `Stmt::TraitDef` 実行時に `Value::Trait(name)` をスコープに束縛。`Error` トレイトは起動時に自動登録されるため常にスコープに存在する
 
@@ -338,6 +341,45 @@ let m = Meters(100)
 let km = Kilometers(5)
 m.add(km)   # StaticTypeError: parameter 'other' of 'add' expects 'Self' = 'Meters' but got 'Kilometers'
 ```
+
+### イテレータプロトコル
+
+`for XX in YY:` 構文はイテレータプロトコルを通じて動作する。
+
+**動作フロー**:
+1. `YY` を評価する
+2. イテレータ（`Value::Generator`）を取得する:
+   - `Value::List` / `Value::Str` → 組み込みの `__iter__()` で Generator を生成
+   - `Value::Generator` → そのまま使用
+   - `Value::Instance` → `__iter__()` メソッドを呼び出してジェネレータを取得
+3. `generator.next()` を繰り返し呼び出し、値を `XX` に束縛してループ本体を実行
+4. `next()` が `EndOfIteration` エラーを返したらループを終了し、実行を継続する
+
+**カスタムイテラブルの定義**:
+
+```tl
+class NumberRange:
+    mut low: int
+    mut high: int
+
+    gen __iter__(self) -> int:
+        mut i = self.low
+        while i <= self.high:
+            yield i
+            i += 1
+
+let r = NumberRange(1, 5)
+for v in r:
+    print(v)   # 1, 2, 3, 4, 5
+```
+
+**仕様**:
+- `gen __iter__(self) -> YieldType:` の形式でクラスにイテレータを定義する
+- `__iter__()` はジェネレータ（`Value::Generator`）を返さなければならない
+- ジェネレータが終端に達した後に `.next()` を呼ぶと `EndOfIteration: generator is exhausted` エラーを送出する
+- `for` ループはこの `EndOfIteration` を内部でキャッチしてループを終了する（エラーはループ外に伝播しない）
+- `break` / `continue` はイテレータベースのループでも通常通り動作する
+- `gen_methods` はクラスボディの `Stmt::GenDef` から収集され、`ClassValue` に格納される。`new_type` や テンプレートクラスのコピー時にも引き継がれる
 
 ## 次に実装すべき機能（優先順）
 
