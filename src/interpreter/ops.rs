@@ -15,6 +15,8 @@ impl Interpreter {
             Value::Str(s) => !s.is_empty(),
             Value::None => false,
             Value::List(items) => !items.is_empty(),
+            Value::Dict(d) => !d.borrow().keys.is_empty(),
+            Value::Tuple(t) => !t.is_empty(),
             Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) | Value::Type(_)
             | Value::Trait(_)
             | Value::TemplateFn(_) | Value::TemplateClass(_)
@@ -37,6 +39,8 @@ impl Interpreter {
             Value::TemplateFn(_) | Value::TemplateClass(_) => "template",
             Value::GeneratorFn(_) | Value::TemplateGenFn(_) => "gen_function",
             Value::Generator(_) => "generator",
+            Value::Dict(_) => "dict",
+            Value::Tuple(_) => "tuple",
         }
     }
 
@@ -71,6 +75,26 @@ impl Interpreter {
                 let s = s.borrow();
                 format!("<generator {}/{}>", s.index, s.values.len())
             }
+            Value::Dict(d) => {
+                let d = d.borrow();
+                if d.keys.is_empty() {
+                    "{}".to_string()
+                } else {
+                    let parts: Vec<String> = d.keys.iter().zip(d.items.iter())
+                        .map(|(k, v)| format!("{}: {}", self.display_repr(k), self.display_repr(v)))
+                        .collect();
+                    format!("{{{}}}", parts.join(", "))
+                }
+            }
+            Value::Tuple(t) => {
+                let vals = t.all_values();
+                if vals.len() == 1 {
+                    format!("({},)", self.display_repr(&vals[0]))
+                } else {
+                    let parts: Vec<String> = vals.iter().map(|v| self.display_repr(v)).collect();
+                    format!("({})", parts.join(", "))
+                }
+            }
         }
     }
 
@@ -81,6 +105,7 @@ impl Interpreter {
                 let parts: Vec<String> = items.iter().map(|v| self.display_repr(v)).collect();
                 format!("[{}]", parts.join(", "))
             }
+            Value::Dict(_) | Value::Tuple(_) => self.display(val),
             _ => self.display(val),
         }
     }
@@ -181,6 +206,11 @@ impl Interpreter {
             (Value::Instance(a), Value::Instance(b)) => Rc::ptr_eq(a, b),
             (Value::Type(a), Value::Type(b)) => a == b,
             (Value::Class(a), Value::Class(b)) => Rc::ptr_eq(a, b),
+            (Value::Tuple(a), Value::Tuple(b)) => {
+                let av = a.all_values();
+                let bv = b.all_values();
+                av.len() == bv.len() && av.iter().zip(bv.iter()).all(|(x, y)| self.values_eq(x, y))
+            }
             _ => false,
         }
     }

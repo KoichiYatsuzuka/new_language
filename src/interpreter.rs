@@ -158,6 +158,105 @@ pub struct InstanceData {
 // Value
 // ---------------------------------------------------------------------------
 
+/// Internal storage for a tuple value.
+/// The internal representation (parallel value/type Vecs) is private;
+/// only the public accessor methods are stable — change the fields freely without
+/// breaking call sites.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct TupleData {
+    /// Ordered element values (Any type at runtime).
+    pub(self) values: Vec<Value>,
+    /// Runtime type name of each element (e.g. "int", "str", "MyClass").
+    pub(self) types: Vec<String>,
+}
+
+#[allow(dead_code)]
+impl TupleData {
+    pub fn new(values: Vec<Value>, types: Vec<String>) -> Self {
+        Self { values, types }
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub fn get(&self, index: usize) -> Option<&Value> {
+        self.values.get(index)
+    }
+
+    pub fn element_type(&self, index: usize) -> Option<&str> {
+        self.types.get(index).map(|s| s.as_str())
+    }
+
+    pub fn all_values(&self) -> &[Value] {
+        &self.values
+    }
+
+    pub fn all_types(&self) -> &[String] {
+        &self.types
+    }
+}
+
+/// Internal storage for a dict value.
+/// Keys and items are stored as parallel Vecs; use `DictData::get`/`set` for access.
+/// The internal representation (parallel lists) is private; only the public API is stable.
+#[derive(Debug)]
+pub struct DictData {
+    /// Type name of valid keys; `"Any"` for untyped dicts.
+    pub key_type: String,
+    /// Type name of valid items; `"Any"` for untyped dicts.
+    pub item_type: String,
+    pub(self) keys: Vec<Value>,
+    pub(self) items: Vec<Value>,
+}
+
+impl DictData {
+    pub fn new(key_type: String, item_type: String) -> Self {
+        Self { key_type, item_type, keys: vec![], items: vec![] }
+    }
+
+    pub fn get(&self, key: &Value) -> Option<Value> {
+        self.find_index(key).map(|i| self.items[i].clone())
+    }
+
+    pub fn set(&mut self, key: Value, value: Value) {
+        if let Some(i) = self.find_index(&key) {
+            self.items[i] = value;
+        } else {
+            self.keys.push(key);
+            self.items.push(value);
+        }
+    }
+
+    pub fn all_keys(&self) -> Vec<Value> {
+        self.keys.clone()
+    }
+
+    pub fn all_items(&self) -> Vec<Value> {
+        self.items.clone()
+    }
+
+    fn find_index(&self, key: &Value) -> Option<usize> {
+        self.keys.iter().position(|k| Self::values_equal(k, key))
+    }
+
+    fn values_equal(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Int(x), Value::Int(y)) => x == y,
+            (Value::Float(x), Value::Float(y)) => x == y,
+            (Value::Str(x), Value::Str(y)) => x == y,
+            (Value::Bool(x), Value::Bool(y)) => x == y,
+            (Value::None, Value::None) => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Value {
     Int(i64),
@@ -186,6 +285,10 @@ pub enum Value {
     TemplateGenFn(Rc<TemplateGenFnValue>),
     /// An instantiated generator: holds all eagerly-collected yielded values.
     Generator(Rc<RefCell<GeneratorState>>),
+    /// A dict value with typed or untyped (Any) keys and items.
+    Dict(Rc<RefCell<DictData>>),
+    /// An immutable, fixed-length sequence with per-element type information.
+    Tuple(Rc<TupleData>),
 }
 
 // ---------------------------------------------------------------------------
@@ -226,9 +329,9 @@ pub struct Interpreter {
 impl Interpreter {
     pub fn new() -> Self {
         let mut global: HashMap<String, Var> = HashMap::new();
-        // Pre-define built-in type values so `int`, `str`, `float`, `bool`
+        // Pre-define built-in type values so `int`, `str`, `float`, `bool`, `dict`
         // can be used as expressions of type `type`.
-        for name in ["int", "str", "float", "bool"] {
+        for name in ["int", "str", "float", "bool", "dict"] {
             global.insert(name.to_string(), Var { value: Value::Type(name.to_string()), mutable: false });
         }
 

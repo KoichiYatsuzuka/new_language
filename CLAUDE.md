@@ -47,7 +47,10 @@ test_lang/
 │   ├── new_type.tl           # new_type の動作確認
 │   ├── new_type__errors.tl   # new_type の Self 型不一致エラー例
 │   ├── iterator.tl           # イテレータの動作確認
-│   └── iterator__errors.tl   # EndOfIteration エラーの発生例
+│   ├── iterator__errors.tl   # EndOfIteration エラーの発生例
+│   ├── dict.tl               # 辞書型の動作確認
+│   ├── dict__errors.tl       # dict 型不一致エラーの発生例
+│   └── tuple.tl              # タプル型の動作確認
 └── vscode-extension/    # VS Code 拡張（型推論インレイヒント）
     └── src/
         ├── extension.ts
@@ -91,6 +94,9 @@ test_lang/
 - 式: 演算子優先順位を仕様通りに実装（右結合 `**` 含む）
 - 関数呼び出し: `f(args)`、属性アクセス: `obj.attr`
 - リストリテラル: `[a, b, c]`
+- **タプルリテラル**: `(val, val, ...)` — 2 要素以上または単要素（末尾カンマ必須 `(val,)`）。`(expr)` は括弧グループ式（タプルではない）。空タプル `()` も有効。コンマの後に改行可
+- **辞書リテラル**: `{key: value, ...}`（コンマの後に改行可）、空の `{}` は `dict[Any, Any]` 型
+- **サブスクリプト演算子**: `expr[index]`（`Expr::Subscript`）。`expr[...]` 直後に `(` が続く場合はテンプレート呼び出しとして解釈（先読みで判別）
 - 制御構文: `if` / `elif` / `else`、`while`、`for ... in ...`、`block`
 - ジャンプ文: `break`、`continue`、`pass`、`return`、`block_return`
 - 関数定義: `fn name(params) -> RetType:`
@@ -126,6 +132,9 @@ test_lang/
 - オーバーロード: 同名関数が複数ある場合、引数個数が一致する候補のみ型検査。複数候補が個数一致する場合は型検査をスキップ
 - `Self` 型パラメータ検査: メソッド呼び出し時にレシーバのクラス名（`NamedInstance`）と引数の型を照合し、不一致なら `SelfTypeMismatch` を発行
 - コンストラクタ呼び出し（`ClassName(args)`）は `InferredType::NamedInstance(ClassName)` を返す。これにより `new_type` で作成した型を静的に区別できる
+- `Expr::Dict(_)` → `InferredType::Dict`。`Expr::Subscript` → `InferredType::Unknown`（実行時委譲）
+- `Expr::Tuple(exprs)` → `InferredType::Tuple(Vec<InferredType>)`（各要素を再帰的に推論）。型注釈では `tuple[T1, T2, ...]` 形式を認識し `InferredType::from_ann` で解析
+- `dict[K, V](literal)` でリテラルの各キー・値の型を検査。不一致があれば `StaticTypeError` を即時送出（インタープリタ層で実施）
 
 **拡張方法**: `TypeErrorKind` に variant を追加 → `check_stmt` / `check_binop` に arm を追加。
 
@@ -154,7 +163,9 @@ test_lang/
 - **`Self` 型**: メソッド実行時に `exec_fn_evaled()` がレシーバインスタンスのクラスを `"Self"` としてスコープに束縛。`Self(...)` は現在のクラスのコンストラクタとして機能し、`new_type` のインスタンスで呼び出すと正しく new_type 側のインスタンスを生成する
 - **`new_type`**: `Stmt::NewTypeDef { name, original }` を実行。元の値が `Value::Class` の場合は `ClassValue` を `name` でコピーして `const` バインド、プリミティブ型の場合は `value` フィールドを持つラッパークラスを自動生成して束縛
 - **イテレータプロトコル**: `for XX in YY:` は `YY.__iter__()` を呼んでジェネレータを取得し、`.next()` を繰り返す。終端で `EndOfIteration` エラーが発生するとループを終了する。`List` / `Str` は組み込みの `__iter__()` を持つ。クラスに `gen __iter__(self) -> T:` を定義することで任意のイテラブルを実装できる。`ClassValue` は `gen_methods: HashMap<String, Rc<GeneratorFnValue>>` フィールドを持ち、`eval_method_call` でジェネレータメソッドを優先的にディスパッチする
-- 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Function(Rc<FnValue>)`, `OverloadedFn(Vec<Rc<FnValue>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `TemplateFn(Rc<TemplateFnValue>)`, `TemplateClass(Rc<TemplateClassValue>)`, `Trait(String)`
+- **辞書型**: `Value::Dict(Rc<RefCell<DictData>>)`。内部は並列 `Vec`（`keys` / `items`）で管理。`dict[K, V]()` で空の型付き辞書を生成、`dict[K, V]({...})` でリテラルから型付き辞書を生成。`d[key]` でルックアップ、`d[key] = val` で追加・更新。書き込み時に型制約を検証（アップキャスト許可）。`d.key()` / `d.item()` でキー・値の `List` を返す。`is_truthy` は空なら偽、非空なら真
+- **タプル型**: `Value::Tuple(Rc<TupleData>)`。`TupleData` は `values: Vec<Value>`（実値）と `types: Vec<String>`（各要素のランタイム型名）の並列 Vec で実装。公開 API（`get` / `len` / `is_empty` / `element_type` / `all_values` / `all_types`）を介してアクセスし、内部表現は将来変更可能。`is_truthy` は空なら偽、非空なら真。`==` は要素数と各要素を比較
+- 値型: `Int`, `Float`, `Str`, `Bool`, `None`, `List`, `Dict(Rc<RefCell<DictData>>)`, `Tuple(Rc<TupleData>)`, `Function(Rc<FnValue>)`, `OverloadedFn(Vec<Rc<FnValue>>)`, `Class(Rc<ClassValue>)`, `Instance(Rc<RefCell<InstanceData>>)`, `TemplateFn(Rc<TemplateFnValue>)`, `TemplateClass(Rc<TemplateClassValue>)`, `Trait(String)`
 - **トレイトの実行時表現**: `Stmt::TraitDef` 実行時に `Value::Trait(name)` をスコープに束縛。`Error` トレイトは起動時に自動登録されるため常にスコープに存在する
 
 ### VS Code 拡張（`vscode-extension/`）
@@ -166,7 +177,7 @@ test_lang/
 
 - **型アノテーションの完全保存**: パース時に型名は取得済みだが、インタープリタ実行時には使われていない（静的型検査で使用）
 - **戻り値型の実行時チェック**: 宣言型と実際の `return` 値の型検証
-- **辞書・セット型**: `{k: v}`、`{a, b}`
+- **セット型**: `{a, b}`
 - **例外処理**: `try` / `except` / `finally` / `raise`
 - **インポート**: `import` / `from ... import`
 - **`match` 文**
@@ -381,9 +392,83 @@ for v in r:
 - `break` / `continue` はイテレータベースのループでも通常通り動作する
 - `gen_methods` はクラスボディの `Stmt::GenDef` から収集され、`ClassValue` に格納される。`new_type` や テンプレートクラスのコピー時にも引き継がれる
 
+### 辞書型（dict）
+
+`dict[K, V]` 構文でキーと値の型を指定した辞書を扱う。
+
+```tl
+# 辞書リテラル → dict[Any, Any]
+let scores = {"alice": 95, "bob": 82}
+print(scores["alice"])   # 95
+
+# 型付きコンストラクタ（空）
+mut d = dict[str, int]()
+d["x"] = 10
+
+# 型付きコンストラクタ（リテラルから）
+let m = dict[int, str]({1: "first", 2: "second"})
+print(m[1])   # first
+
+# key() / item()
+let ks = d.key()    # キー一覧（List）
+let vs = d.item()   # 値一覧（List）
+```
+
+**仕様**:
+- `{}` または辞書リテラル単体 → `dict[Any, Any]` 型（型制約なし）
+- `dict[K, V]()` → 空の型付き辞書を生成。以降の `d[k] = v` で型検証を行う
+- `dict[K, V]({...})` → リテラルの各キー・値が K・V に適合するか検査。不一致なら `StaticTypeError` を送出
+- アップキャストは許容（例: `dict[str, float]` に `int` 値を書き込める）
+- `d[key]` でルックアップ。存在しないキーは `KeyError` を返す
+- `d[key] = val` で追加・更新。型付き辞書では書き込み時に型制約を検証
+- `d.key()` → キーの `List`、`d.item()` → 値の `List`
+- `is_truthy`: 空なら偽、非空なら真
+- 内部実装: `DictData { key_type, item_type, keys: Vec<Value>, items: Vec<Value> }`（並列リスト）
+
+### タプル型（tuple）
+
+`(val, val, ...)` 構文で生成する不変・固定長シーケンス。各要素は異なる型を持てる。
+
+```tl
+let empty  = ()                    # 空タプル
+let single = (42,)                 # 単要素（末尾カンマ必須）
+let pair   = (1, "hello")          # 複数要素
+let nested = ((1, 2), (3, 4))      # ネスト
+
+# (expr) だけはタプルではなくグループ式
+let n = (10 + 20)   # → 30（int）
+
+# 多行リテラル（括弧内では改行がトークンから除去される）
+let triple = (
+    100,
+    200,
+    300
+)
+
+# 等価比較：要素数と各要素の値で比較
+print((1, 2) == (1, 2))   # True
+print((1, 2) == (1, 3))   # False
+
+# 真偽値：空なら偽、非空なら真
+print(not ())       # True
+print(not (1, 2))   # False
+```
+
+**仕様**:
+- 構文: `()` / `(expr,)` / `(expr, expr, ...)`
+- `(expr)` は括弧グループ式（タプルではない）
+- リテラル生成時にその場で型解析が行われ、静的型は `tuple[T1, T2, ...]` となる
+- タプルは不変（要素の追加・変更・削除は不可）
+- 型注釈では `tuple[T1, T2, ...]` 形式を使用（例: `let t: tuple[int, str] = (1, "a")`）
+
+**内部実装**（変更の可能性あり、公開 API は安定）:
+- `TupleData { values: Vec<Value>, types: Vec<String> }` — 実値と型名の並列リスト
+- 公開 API: `get(i)`, `len()`, `is_empty()`, `element_type(i)`, `all_values()`, `all_types()`
+- `Value::Tuple(Rc<TupleData>)` として表現（`Rc` なので Clone が安価）
+
 ## 次に実装すべき機能（優先順）
 
-1. **辞書・セット型**（`{k: v}`、`{a, b}`）
+1. **セット型**（`{a, b}`）
 2. **例外処理**（`try` / `except` / `finally` / `raise`）
 3. **インポートシステム**（`import` / `from ... import`）
 4. **`match` 文**

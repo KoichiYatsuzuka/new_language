@@ -29,6 +29,10 @@ pub enum InferredType {
     /// `Union[T1, T2, ...]` / `Option[T]` (desugared to `Union[T, None]`).
     /// Requires explicit downcast before use in typed operations.
     Union(Vec<InferredType>),
+    /// A dict value (typed or untyped).
+    Dict,
+    /// A tuple with known per-element types: `tuple[T1, T2, ...]`.
+    Tuple(Vec<InferredType>),
     Unknown, // cannot be determined statically
 }
 
@@ -66,6 +70,13 @@ impl InferredType {
             return InferredType::from_ann(inner.trim())
                 .map(|t| Self::Union(vec![t, Self::None]));
         }
+        if let Some(inner) = ann.strip_prefix("tuple[").and_then(|s| s.strip_suffix(']')) {
+            let parts = split_top_level_commas(inner);
+            let types: Vec<InferredType> = parts.iter()
+                .filter_map(|t| InferredType::from_ann(t.trim()))
+                .collect();
+            return Some(Self::Tuple(types));
+        }
         match ann {
             "int" => Some(Self::Int),
             "float" => Some(Self::Float),
@@ -73,6 +84,7 @@ impl InferredType {
             "bool" => Some(Self::Bool),
             "None" => Some(Self::None),
             "list" => Some(Self::List),
+            "dict" => Some(Self::Dict),
             "type" => Some(Self::TypeVal),
             "Self" => Some(Self::SelfType),
             "Any" => Some(Self::Any),
@@ -101,6 +113,7 @@ impl std::fmt::Display for InferredType {
             Self::Bool => write!(f, "bool"),
             Self::None => write!(f, "None"),
             Self::List => write!(f, "list"),
+            Self::Dict => write!(f, "dict"),
             Self::TypeVal => write!(f, "type"),
             Self::SelfType => write!(f, "Self"),
             Self::NamedInstance(name) => write!(f, "{name}"),
@@ -113,6 +126,10 @@ impl std::fmt::Display for InferredType {
                     let parts: Vec<String> = types.iter().map(|t| t.to_string()).collect();
                     write!(f, "Union[{}]", parts.join(", "))
                 }
+            }
+            Self::Tuple(types) => {
+                let parts: Vec<String> = types.iter().map(|t| t.to_string()).collect();
+                write!(f, "tuple[{}]", parts.join(", "))
             }
             Self::Unknown => write!(f, "unknown"),
         }
@@ -579,6 +596,10 @@ impl TypeChecker {
             Expr::Bool(_) => InferredType::Bool,
             Expr::None => InferredType::None,
             Expr::List(_) => InferredType::List,
+            Expr::Tuple(exprs) => {
+                let types: Vec<InferredType> = exprs.iter().map(|e| self.infer(e)).collect();
+                InferredType::Tuple(types)
+            }
             Expr::Attr { object, .. } => {
                 let obj_ty = self.infer(object);
                 match &obj_ty {
@@ -835,6 +856,12 @@ impl TypeChecker {
             Expr::TemplateInstantiate { base, .. } => {
                 // Template instantiation: defer all type checking to the runtime constraint check.
                 self.infer(base);
+                InferredType::Unknown
+            }
+            Expr::Dict(_) => InferredType::Dict,
+            Expr::Subscript { object, index } => {
+                self.infer(object);
+                self.infer(index);
                 InferredType::Unknown
             }
         }

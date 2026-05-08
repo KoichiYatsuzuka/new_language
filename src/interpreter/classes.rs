@@ -108,7 +108,24 @@ impl Interpreter {
                     self.dispatch_overload(callable, args, Some(obj.clone()))
                 }
             }
-            Value::Generator(state) => {
+            Value::Dict(d) => {
+            match method_name {
+                "key" => {
+                    if !args.is_empty() {
+                        return Err("TypeError: dict.key() takes no arguments".to_string());
+                    }
+                    Ok(Value::List(d.borrow().all_keys()))
+                }
+                "item" => {
+                    if !args.is_empty() {
+                        return Err("TypeError: dict.item() takes no arguments".to_string());
+                    }
+                    Ok(Value::List(d.borrow().all_items()))
+                }
+                _ => Err(format!("AttributeError: 'dict' object has no method '{method_name}'")),
+            }
+        }
+        Value::Generator(state) => {
                 if method_name != "next" {
                     return Err(format!(
                         "AttributeError: Generator object has no method '{method_name}'"

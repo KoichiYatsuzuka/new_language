@@ -1,8 +1,11 @@
 // eval.rs — 式の評価・attr_assign (eval / attr_assign)
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::ast::{BinOp, Expr};
 
-use super::{Interpreter, Value};
+use super::{DictData, Interpreter, TupleData, Value};
 
 impl Interpreter {
     pub fn eval(&mut self, expr: &Expr) -> Result<Value, String> {
@@ -92,6 +95,45 @@ impl Interpreter {
                     vals.push(self.eval(item)?);
                 }
                 Ok(Value::List(vals))
+            }
+            Expr::Tuple(exprs) => {
+                let mut values = Vec::new();
+                let mut types = Vec::new();
+                for expr in exprs {
+                    let val = self.eval(expr)?;
+                    types.push(self.type_name(&val).to_string());
+                    values.push(val);
+                }
+                Ok(Value::Tuple(Rc::new(TupleData::new(values, types))))
+            }
+            Expr::Dict(pairs) => {
+                let mut keys = Vec::new();
+                let mut items = Vec::new();
+                for (key_expr, val_expr) in pairs {
+                    keys.push(self.eval(key_expr)?);
+                    items.push(self.eval(val_expr)?);
+                }
+                Ok(Value::Dict(Rc::new(RefCell::new(DictData {
+                    key_type: "Any".to_string(),
+                    item_type: "Any".to_string(),
+                    keys,
+                    items,
+                }))))
+            }
+            Expr::Subscript { object, index } => {
+                let obj = self.eval(object)?;
+                let key = self.eval(index)?;
+                match obj {
+                    Value::Dict(d) => {
+                        d.borrow().get(&key).ok_or_else(|| {
+                            format!("KeyError: {}", self.display(&key))
+                        })
+                    }
+                    _ => Err(format!(
+                        "TypeError: '{}' object is not subscriptable",
+                        self.type_name(&obj)
+                    )),
+                }
             }
             Expr::UnaryOp { op, operand } => {
                 let val = self.eval(operand)?;
@@ -259,8 +301,59 @@ impl Interpreter {
                 }
                 _ => Err("AttributeError: cannot set trait field on non-instance".to_string()),
             }
+        } else if let Expr::Subscript { object, index } = target {
+            let obj_val = self.eval(object)?;
+            let key = self.eval(index)?;
+            match obj_val {
+                Value::Dict(d) => {
+                    let (key_type, item_type) = {
+                        let b = d.borrow();
+                        (b.key_type.clone(), b.item_type.clone())
+                    };
+                    if key_type != "Any" && !Self::value_matches_type(&key, &key_type) {
+                        return Err(format!(
+                            "TypeError: dict key type mismatch: expected '{}', got '{}'",
+                            key_type,
+                            self.type_name(&key)
+                        ));
+                    }
+                    if item_type != "Any" && !Self::value_matches_type(&rhs, &item_type) {
+                        return Err(format!(
+                            "TypeError: dict item type mismatch: expected '{}', got '{}'",
+                            item_type,
+                            self.type_name(&rhs)
+                        ));
+                    }
+                    d.borrow_mut().set(key, rhs);
+                    Ok(())
+                }
+                _ => Err(format!(
+                    "TypeError: '{}' object does not support item assignment",
+                    self.type_name(&obj_val)
+                )),
+            }
         } else {
             Err("SyntaxError: invalid assignment target".to_string())
+        }
+    }
+
+    /// Check whether `val` is compatible with the declared type name.
+    /// `int` is accepted as `float` (upcast); `Any` accepts everything.
+    pub(super) fn value_matches_type(val: &Value, type_name: &str) -> bool {
+        match type_name {
+            "Any" => true,
+            "int" => matches!(val, Value::Int(_)),
+            "float" => matches!(val, Value::Float(_) | Value::Int(_)),
+            "str" => matches!(val, Value::Str(_)),
+            "bool" => matches!(val, Value::Bool(_)),
+            "None" => matches!(val, Value::None),
+            _ => {
+                if let Value::Instance(inst) = val {
+                    inst.borrow().class.name == type_name
+                } else {
+                    false
+                }
+            }
         }
     }
 }

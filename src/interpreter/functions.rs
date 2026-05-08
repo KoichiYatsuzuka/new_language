@@ -307,6 +307,7 @@ impl Interpreter {
     }
 
     pub(super) fn value_matches_ann(val: &Value, ann: &str) -> bool {
+        if ann == "tuple" && matches!(val, Value::Tuple(_)) { return true; }
         matches!(
             (ann, val),
             ("int",   Value::Int(_))

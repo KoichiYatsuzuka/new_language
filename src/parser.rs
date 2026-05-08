@@ -861,6 +861,17 @@ impl Parser {
             }
             tok => return Err(format!("expected type name, got `{tok}`")),
         };
+        // tuple[T1, T2, ...] — preserve element types for the type checker.
+        if base == "tuple" && *self.current() == Token::LBracket {
+            self.advance(); // consume '['
+            let mut args = Vec::new();
+            while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+                args.push(self.parse_type_expr()?);
+                if *self.current() == Token::Comma { self.advance(); }
+            }
+            self.eat(&Token::RBracket)?;
+            return Ok(format!("tuple[{}]", args.join(",")));
+        }
         // Skip optional generic parameters: list[int], dict[str, int], etc.
         if *self.current() == Token::LBracket {
             self.advance();
@@ -875,6 +886,31 @@ impl Parser {
             }
         }
         Ok(base)
+    }
+
+    /// Returns `true` when the current `[...]` at `self.pos` is immediately followed by `(`
+    /// after its matching `]` — indicating a template instantiation call rather than subscript.
+    fn is_template_instantiation(&self) -> bool {
+        let mut i = self.pos + 1; // skip the opening `[`
+        let mut depth = 1usize;
+        while i < self.tokens.len() {
+            match &self.tokens[i].token {
+                Token::LBracket => depth += 1,
+                Token::RBracket => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(
+                            self.tokens.get(i + 1).map(|s| &s.token),
+                            Some(Token::LParen)
+                        );
+                    }
+                }
+                Token::Eof => break,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 
     fn expect_ident(&mut self) -> Result<String, String> {
@@ -1112,19 +1148,27 @@ impl Parser {
                     expr = Expr::TraitAccess { object: Box::new(expr), trait_name, attr };
                 }
                 Token::LBracket => {
-                    // Template instantiation: `expr[T1, T2]`
-                    self.advance(); // consume `[`
-                    let mut type_args = Vec::new();
-                    while *self.current() != Token::RBracket && *self.current() != Token::Eof {
-                        type_args.push(self.parse_type_expr()?);
-                        if *self.current() == Token::Comma {
-                            self.advance();
-                        } else {
-                            break;
+                    if self.is_template_instantiation() {
+                        // Template instantiation: `expr[T1, T2](args)`
+                        self.advance(); // consume `[`
+                        let mut type_args = Vec::new();
+                        while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+                            type_args.push(self.parse_type_expr()?);
+                            if *self.current() == Token::Comma {
+                                self.advance();
+                            } else {
+                                break;
+                            }
                         }
+                        self.eat(&Token::RBracket)?;
+                        expr = Expr::TemplateInstantiate { base: Box::new(expr), type_args };
+                    } else {
+                        // Subscript access: `expr[index]`
+                        self.advance(); // consume `[`
+                        let index = self.parse_expr()?;
+                        self.eat(&Token::RBracket)?;
+                        expr = Expr::Subscript { object: Box::new(expr), index: Box::new(index) };
                     }
-                    self.eat(&Token::RBracket)?;
-                    expr = Expr::TemplateInstantiate { base: Box::new(expr), type_args };
                 }
                 _ => break,
             }
@@ -1152,10 +1196,31 @@ impl Parser {
                 Ok(Expr::Ident("Self".to_string()))
             }
             Token::LParen => {
-                self.advance();
-                let expr = self.parse_expr()?;
+                self.advance(); // consume `(`
+                // Empty tuple: ()
+                if *self.current() == Token::RParen {
+                    self.advance();
+                    return Ok(Expr::Tuple(vec![]));
+                }
+                let first = self.parse_expr()?;
+                // Grouped expression: (expr)  — no comma follows
+                if *self.current() == Token::RParen {
+                    self.advance();
+                    return Ok(first);
+                }
+                // Tuple: (expr, ...)
+                self.eat(&Token::Comma)?;
+                let mut items = vec![first];
+                while *self.current() != Token::RParen && *self.current() != Token::Eof {
+                    items.push(self.parse_expr()?);
+                    if *self.current() == Token::Comma {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
                 self.eat(&Token::RParen)?;
-                Ok(expr)
+                Ok(Expr::Tuple(items))
             }
             Token::LBracket => {
                 self.advance(); // consume `[`
@@ -1170,6 +1235,23 @@ impl Parser {
                 }
                 self.eat(&Token::RBracket)?;
                 Ok(Expr::List(items))
+            }
+            Token::LBrace => {
+                self.advance(); // consume `{`
+                let mut pairs = Vec::new();
+                while *self.current() != Token::RBrace && *self.current() != Token::Eof {
+                    let key = self.parse_expr()?;
+                    self.eat(&Token::Colon)?;
+                    let val = self.parse_expr()?;
+                    pairs.push((key, val));
+                    if *self.current() == Token::Comma {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                self.eat(&Token::RBrace)?;
+                Ok(Expr::Dict(pairs))
             }
             tok => Err(format!("unexpected token: `{tok}`")),
         }

@@ -2,13 +2,14 @@
 // (check_template_constraints / type_satisfies_trait / instantiate_template / instantiate_template_class)
 // + subst_* フリー関数 (AST substitution helpers for template instantiation)
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::{CallArg, ExceptHandler, Expr, FieldKind, Param, Stmt, TemplateParam};
 
 use super::{
-    Interpreter, Value, FnValue, ClassValue, GeneratorFnValue,
+    DictData, Interpreter, Value, FnValue, ClassValue, GeneratorFnValue,
     TemplateClassValue,
 };
 
@@ -87,6 +88,61 @@ impl Interpreter {
                 let concrete_body = subst_stmts(&tmpl.body, &type_map);
                 let gen_fn = Rc::new(GeneratorFnValue { params: concrete_params, body: concrete_body });
                 self.exec_generator(gen_fn, call_args, None)
+            }
+            // Built-in dict type: `dict[KeyType, ItemType](...)`
+            Value::Type(ref t) if t == "dict" => {
+                if type_args.len() != 2 {
+                    return Err(format!(
+                        "TypeError: dict requires exactly 2 type arguments [key_type, item_type], got {}",
+                        type_args.len()
+                    ));
+                }
+                let key_type = type_args[0].clone();
+                let item_type = type_args[1].clone();
+
+                if call_args.is_empty() {
+                    // dict[K, V]() — empty typed dict
+                    Ok(Value::Dict(Rc::new(RefCell::new(DictData::new(key_type, item_type)))))
+                } else if call_args.len() == 1 {
+                    // dict[K, V]({key: val, ...}) — typed dict from a dict literal
+                    let arg_val = self.eval(call_args[0].expr())?;
+                    match arg_val {
+                        Value::Dict(src_rc) => {
+                            let src = src_rc.borrow();
+                            // Type-check each key and item against the declared types
+                            for k in &src.keys {
+                                if !Self::value_matches_type(k, &key_type) {
+                                    return Err(format!(
+                                        "StaticTypeError: dict key type mismatch: \
+                                         expected '{}', got '{}'",
+                                        key_type,
+                                        self.type_name(k)
+                                    ));
+                                }
+                            }
+                            for v in &src.items {
+                                if !Self::value_matches_type(v, &item_type) {
+                                    return Err(format!(
+                                        "StaticTypeError: dict item type mismatch: \
+                                         expected '{}', got '{}'",
+                                        item_type,
+                                        self.type_name(v)
+                                    ));
+                                }
+                            }
+                            let mut new_data = DictData::new(key_type, item_type);
+                            new_data.keys = src.keys.clone();
+                            new_data.items = src.items.clone();
+                            Ok(Value::Dict(Rc::new(RefCell::new(new_data))))
+                        }
+                        _ => Err(
+                            "TypeError: dict constructor argument must be a dict literal `{...}`"
+                                .to_string(),
+                        ),
+                    }
+                } else {
+                    Err("TypeError: dict constructor takes 0 or 1 argument".to_string())
+                }
             }
             _ => Err("TemplateError: expression is not a template".to_string()),
         }
@@ -204,6 +260,14 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             base: Box::new(subst_expr(base, type_map)),
             type_args: type_args.iter().map(|t| subst_type(t, type_map)).collect(),
         },
+        Expr::Subscript { object, index } => Expr::Subscript {
+            object: Box::new(subst_expr(object, type_map)),
+            index: Box::new(subst_expr(index, type_map)),
+        },
+        Expr::Dict(pairs) => Expr::Dict(
+            pairs.iter().map(|(k, v)| (subst_expr(k, type_map), subst_expr(v, type_map))).collect(),
+        ),
+        Expr::Tuple(items) => Expr::Tuple(items.iter().map(|e| subst_expr(e, type_map)).collect()),
     }
 }
 

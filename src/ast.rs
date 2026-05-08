@@ -66,6 +66,12 @@ pub enum Expr {
     /// Template instantiation: `expr[T1, T2]` — type arguments applied to a template value.
     /// Must appear as the `func` of a `Call` expression; not valid as a standalone value.
     TemplateInstantiate { base: Box<Expr>, type_args: Vec<String> },
+    /// Subscript access: `expr[index]` — index lookup on a dict (or future subscriptable types).
+    Subscript { object: Box<Expr>, index: Box<Expr> },
+    /// Dict literal: `{key: value, ...}` — evaluates to a `dict[Any, Any]` value.
+    Dict(Vec<(Expr, Expr)>),
+    /// Tuple literal: `(val, val, ...)` — evaluates to a `tuple[T1, T2, ...]` value.
+    Tuple(Vec<Expr>),
 }
 
 #[derive(Debug, Clone)]
