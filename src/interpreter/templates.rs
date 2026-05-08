@@ -1,6 +1,9 @@
 // templates.rs — テンプレート展開・AST置換
 // (check_template_constraints / type_satisfies_trait / instantiate_template / instantiate_template_class)
 // + subst_* フリー関数 (AST substitution helpers for template instantiation)
+//
+// テンプレート関数・クラス・ジェネレータ関数の呼び出し時に型変数を具体型に置換して実行する。
+// `subst_*` フリー関数群が AST ノードを再帰的に走査して型変数名を書き換える。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -14,7 +17,12 @@ use super::{
 };
 
 impl Interpreter {
-    /// Verify that each concrete type arg satisfies the template parameter's trait constraints.
+    /// 各具体型引数がテンプレートパラメータの trait 制約を満たすか検証する。
+    ///
+    /// - `template_params`: テンプレートパラメータリスト（型変数名と制約）
+    /// - `type_args`: 呼び出し時に渡された具体型名のリスト
+    ///
+    /// 戻り値: `Ok(())` — すべての制約を満たす。`Err(message)` — 型引数数不一致または制約違反
     pub(super) fn check_template_constraints(
         &self,
         template_params: &[TemplateParam],
@@ -27,6 +35,7 @@ impl Interpreter {
                 type_args.len()
             ));
         }
+        // 各型変数とその具体型を対応付けて制約を検証する
         for (param, type_name) in template_params.iter().zip(type_args.iter()) {
             for constraint in &param.constraints {
                 if !self.type_satisfies_trait(type_name, constraint)? {
@@ -41,16 +50,35 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Returns true if the named type implements the given trait (i.e. has it in its bases).
+    /// 指定した型名が trait を実装しているか（`bases` に含まれているか）を返す。
+    ///
+    /// 組み込み型（`int`, `str` 等）は trait を実装していないため常に `false` を返す。
+    ///
+    /// - `type_name`: 検査する型の名前（スコープから検索される）
+    /// - `trait_name`: 実装されているか確認する trait 名
+    ///
+    /// 戻り値: `Ok(true)` — 実装あり、`Ok(false)` — 実装なし、`Err` — 型が未定義
     pub(super) fn type_satisfies_trait(&self, type_name: &str, trait_name: &str) -> Result<bool, String> {
         match self.get_val(type_name) {
             Some(Value::Class(cls)) => Ok(cls.bases.contains(&trait_name.to_string())),
-            Some(_) => Ok(false), // built-in types and non-class values have no trait implementations
+            Some(_) => Ok(false), // 組み込み型や非クラス値は trait を実装していない
             None => Err(format!("NameError: type `{type_name}` is not defined")),
         }
     }
 
-    /// Instantiate a template function or class with the given concrete type arguments.
+    /// テンプレート関数・クラス・ジェネレータを型引数で実体化して実行または構築する。
+    ///
+    /// ディスパッチ先:
+    /// - `TemplateFn`: 型変数を置換して通常関数として実行
+    /// - `TemplateClass`: 型変数を置換してクラスを構築してインスタンス化
+    /// - `TemplateGenFn`: 型変数を置換してジェネレータ関数として実行
+    /// - `Type("dict")`: `dict[K, V](...)` の組み込み辞書コンストラクタとして処理
+    ///
+    /// - `tmpl_val`: 実体化するテンプレート値
+    /// - `type_args`: 具体型名のリスト（テンプレートパラメータと同数）
+    /// - `call_args`: 実体化後の関数/コンストラクタ呼び出し引数
+    ///
+    /// 戻り値: `Ok(Value)` — 実行結果またはインスタンス。`Err(message)` — 制約違反・型エラー等
     pub(super) fn instantiate_template(
         &mut self,
         tmpl_val: Value,
@@ -59,6 +87,7 @@ impl Interpreter {
     ) -> Result<Value, String> {
         match tmpl_val {
             Value::TemplateFn(tmpl) => {
+                // テンプレート関数: 制約を検証し、型変数を具体型に置換して通常関数として実行する
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
                 let type_map: HashMap<String, String> = tmpl.template_params.iter()
                     .zip(type_args.iter())
@@ -70,6 +99,7 @@ impl Interpreter {
                 self.exec_fn(fn_val, call_args, None, "<template_fn>")
             }
             Value::TemplateClass(tmpl) => {
+                // テンプレートクラス: 制約を検証し、型変数を置換してクラスを構築・インスタンス化する
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
                 let type_map: HashMap<String, String> = tmpl.template_params.iter()
                     .zip(type_args.iter())
@@ -79,6 +109,7 @@ impl Interpreter {
                 self.instantiate_template_class(&tmpl, concrete_body, call_args)
             }
             Value::TemplateGenFn(tmpl) => {
+                // テンプレートジェネレータ関数: 型変数を置換してジェネレータとして実行する
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
                 let type_map: HashMap<String, String> = tmpl.template_params.iter()
                     .zip(type_args.iter())
@@ -89,7 +120,7 @@ impl Interpreter {
                 let gen_fn = Rc::new(GeneratorFnValue { params: concrete_params, body: concrete_body });
                 self.exec_generator(gen_fn, call_args, None)
             }
-            // Built-in dict type: `dict[KeyType, ItemType](...)`
+            // 組み込み辞書型コンストラクタ: `dict[KeyType, ItemType](...)`
             Value::Type(ref t) if t == "dict" => {
                 if type_args.len() != 2 {
                     return Err(format!(
@@ -101,15 +132,15 @@ impl Interpreter {
                 let item_type = type_args[1].clone();
 
                 if call_args.is_empty() {
-                    // dict[K, V]() — empty typed dict
+                    // `dict[K, V]()` — 空の型付き辞書を生成する
                     Ok(Value::Dict(Rc::new(RefCell::new(DictData::new(key_type, item_type)))))
                 } else if call_args.len() == 1 {
-                    // dict[K, V]({key: val, ...}) — typed dict from a dict literal
+                    // `dict[K, V]({key: val, ...})` — 辞書リテラルから型付き辞書を生成する
                     let arg_val = self.eval(call_args[0].expr())?;
                     match arg_val {
                         Value::Dict(src_rc) => {
                             let src = src_rc.borrow();
-                            // Type-check each key and item against the declared types
+                            // 各キーと値が宣言された型と一致するか検査する
                             for k in &src.keys {
                                 if !Self::value_matches_type(k, &key_type) {
                                     return Err(format!(
@@ -130,6 +161,7 @@ impl Interpreter {
                                     ));
                                 }
                             }
+                            // 型チェック通過後にソースデータをコピーして新しい型付き辞書を構築する
                             let mut new_data = DictData::new(key_type, item_type);
                             new_data.keys = src.keys.clone();
                             new_data.items = src.items.clone();
@@ -148,7 +180,16 @@ impl Interpreter {
         }
     }
 
-    /// Build a concrete ClassValue from a substituted template class body, then instantiate it.
+    /// 型変数が置換されたテンプレートクラス本体から具体的な `ClassValue` を構築してインスタンス化する。
+    ///
+    /// `exec` の `Stmt::ClassDef` 処理と同様にクラス本体を走査してメソッド・フィールド・クラス変数を収集し、
+    /// `ClassValue` を構築してから `instantiate` でインスタンスを生成する。
+    ///
+    /// - `tmpl`: 元のテンプレートクラス定義（名前・bases を参照する）
+    /// - `concrete_body`: 型変数が具体型に置換済みのクラス本体文リスト
+    /// - `call_args`: コンストラクタ呼び出し引数リスト
+    ///
+    /// 戻り値: `Ok(Value::Instance)` — 構築済みインスタンス。`Err` — 実行エラー
     pub(super) fn instantiate_template_class(
         &mut self,
         tmpl: &TemplateClassValue,
@@ -203,13 +244,18 @@ impl Interpreter {
 }
 
 // ---------------------------------------------------------------------------
-// AST substitution helpers (for template instantiation)
+// AST 置換ヘルパー（テンプレート実体化用）
 // ---------------------------------------------------------------------------
+// `type_map` は型変数名 → 具体型名のマップ。
+// `subst_*` 関数群は AST ノードを再帰的に走査し、型変数名を具体型名に書き換えた新しい AST を返す。
+// コードのロジック自体は変更せず、型アノテーション部分のみを置換する。
 
+/// 型名文字列を置換する。`type_map` にある型変数名なら具体型名に、なければそのまま返す。
 fn subst_type(type_name: &str, type_map: &HashMap<String, String>) -> String {
     type_map.get(type_name).cloned().unwrap_or_else(|| type_name.to_string())
 }
 
+/// 仮引数リストの型アノテーションを置換した新しいリストを返す。
 fn subst_params(params: &[Param], type_map: &HashMap<String, String>) -> Vec<Param> {
     params.iter().map(|p| Param {
         name: p.name.clone(),
@@ -218,6 +264,7 @@ fn subst_params(params: &[Param], type_map: &HashMap<String, String>) -> Vec<Par
     }).collect()
 }
 
+/// 呼び出し引数の式部分を置換した新しい `CallArg` を返す。
 fn subst_call_arg(arg: &CallArg, type_map: &HashMap<String, String>) -> CallArg {
     match arg {
         CallArg::Positional(e) => CallArg::Positional(subst_expr(e, type_map)),
@@ -228,6 +275,8 @@ fn subst_call_arg(arg: &CallArg, type_map: &HashMap<String, String>) -> CallArg 
     }
 }
 
+/// 式内の型変数名を具体型名に置換した新しい `Expr` を返す。
+/// リテラル・識別子などは変更せず、再帰的にサブ式を置換する。
 fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::None => expr.clone(),
@@ -271,10 +320,13 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
     }
 }
 
+/// 文リスト全体を再帰的に置換した新しいリストを返す。
 fn subst_stmts(stmts: &[Stmt], type_map: &HashMap<String, String>) -> Vec<Stmt> {
     stmts.iter().map(|s| subst_stmt(s, type_map)).collect()
 }
 
+/// 文内の型変数名を具体型名に置換した新しい `Stmt` を返す。
+/// 各バリアントを再帰的に処理し、型アノテーション・式・サブ文をすべて置換する。
 fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
     match stmt {
         Stmt::Expr(e) => Stmt::Expr(subst_expr(e, type_map)),
@@ -331,13 +383,13 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             yield_type: yield_type.clone(),
             body: subst_stmts(body, type_map),
         },
-        Stmt::FnDef { name, template_params, params, return_type, body, is_virtual } => Stmt::FnDef {
+        Stmt::FnDef { name, template_params, params, return_type, body, is_abstract } => Stmt::FnDef {
             name: name.clone(),
             template_params: template_params.clone(),
             params: subst_params(params, type_map),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
             body: subst_stmts(body, type_map),
-            is_virtual: *is_virtual,
+            is_abstract: *is_abstract,
         },
         Stmt::ClassDef { name, template_params, bases, body } => Stmt::ClassDef {
             name: name.clone(),

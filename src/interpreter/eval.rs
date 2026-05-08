@@ -1,4 +1,7 @@
 // eval.rs — 式の評価・attr_assign (eval / attr_assign)
+//
+// `Interpreter::eval` が式（`Expr`）を再帰的にツリーウォークして `Value` を返す。
+// 属性への代入（`self.x = v` や `d[k] = v`）は `attr_assign` が担当する。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -8,6 +11,21 @@ use crate::ast::{BinOp, Expr};
 use super::{DictData, Interpreter, TupleData, Value};
 
 impl Interpreter {
+    /// 式（`Expr`）を評価して `Value` を返す。インタープリタの式評価のメインエントリポイント。
+    ///
+    /// 各 `Expr` バリアントを再帰的に処理する:
+    /// - リテラル値（Int/Float/Str/Bool/None）はそのまま対応する `Value` に変換
+    /// - `Ident`: スコープ検索して変数の値を返す
+    /// - `Attr` / `TraitAccess`: インスタンスフィールド・クラス変数・メソッドを順に検索
+    /// - `List` / `Tuple` / `Dict`: 各要素を評価してコレクション値を構築
+    /// - `Subscript`: 辞書のキールックアップ
+    /// - `BinOp`: `and`/`or` は短絡評価、それ以外は `apply_binop` に委譲
+    /// - `Call`: テンプレート呼び出し・メソッド呼び出し・組み込み関数・ユーザー定義関数の順に処理
+    /// - `TemplateInstantiate`: 単独では使用不可（`Call` の一部として処理する）
+    ///
+    /// - `expr`: 評価する式の AST ノード
+    ///
+    /// 戻り値: `Ok(Value)` — 評価結果。`Err(message)` — ランタイムエラー（NameError 等）
     pub fn eval(&mut self, expr: &Expr) -> Result<Value, String> {
         match expr {
             Expr::Int(n) => Ok(Value::Int(*n)),
@@ -20,10 +38,12 @@ impl Interpreter {
                 .map(|v| v.value.clone())
                 .ok_or_else(|| format!("NameError: '{name}' is not defined")),
             Expr::TraitAccess { object, trait_name, attr } => {
+                // `object::TraitName::attr` 形式のトレイトフィールドアクセス
                 let obj_val = self.eval(object)?;
                 match obj_val {
                     Value::Instance(inst_rc) => {
                         let inst = inst_rc.borrow();
+                        // フィールドは "TraitName::attr" のキーで格納されている
                         let key = format!("{}::{}", trait_name, attr);
                         if let Some((v, _)) = inst.fields.get(&key) {
                             return Ok(v.clone());
@@ -37,26 +57,27 @@ impl Interpreter {
                 }
             }
             Expr::Attr { object, attr } => {
+                // `object.attr` 形式の属性アクセス: インスタンスフィールド → クラス変数 → メソッドの順に検索
                 let obj_val = self.eval(object)?;
                 match &obj_val {
                     Value::Instance(inst_rc) => {
                         let inst = inst_rc.borrow();
-                        // 1. Instance field (direct key)
+                        // 1. インスタンスフィールドを直接キーで検索
                         if let Some((v, _)) = inst.fields.get(attr.as_str()) {
                             return Ok(v.clone());
                         }
-                        // 1b. Trait-prefixed field fallback: find any "Trait::attr" key.
+                        // 1b. トレイト名前空間付きフィールドのフォールバック検索（"Trait::attr" 形式）
                         let suffix = format!("::{attr}");
                         if let Some((v, _)) = inst.fields.iter().find_map(|(k, v)| {
                             if k.ends_with(suffix.as_str()) { Some(v) } else { None }
                         }) {
                             return Ok(v.clone());
                         }
-                        // 2. Class variable (const)
+                        // 2. const クラス変数を検索
                         if let Some(v) = Self::lookup_class_var(&inst.class, attr) {
                             return Ok(v);
                         }
-                        // 3. Method
+                        // 3. メソッドを検索（オーバーロードがある場合は OverloadedFn を返す）
                         if let Some(overloads) = inst.class.methods.get(attr.as_str()) {
                             return Ok(if overloads.len() == 1 {
                                 Value::Function(overloads[0].clone())
@@ -70,7 +91,7 @@ impl Interpreter {
                         ))
                     }
                     Value::Class(cls) => {
-                        // Class variable
+                        // クラスオブジェクトへのアクセス: クラス変数 → メソッドの順に検索
                         if let Some(v) = Self::lookup_class_var(cls, attr) {
                             return Ok(v);
                         }
@@ -90,6 +111,7 @@ impl Interpreter {
                 }
             }
             Expr::List(items) => {
+                // リストリテラル: 各要素を評価して Value::List を構築する
                 let mut vals = Vec::new();
                 for item in items {
                     vals.push(self.eval(item)?);
@@ -97,6 +119,7 @@ impl Interpreter {
                 Ok(Value::List(vals))
             }
             Expr::Tuple(exprs) => {
+                // タプルリテラル: 各要素を評価し、型名も収集して TupleData を構築する
                 let mut values = Vec::new();
                 let mut types = Vec::new();
                 for expr in exprs {
@@ -107,6 +130,7 @@ impl Interpreter {
                 Ok(Value::Tuple(Rc::new(TupleData::new(values, types))))
             }
             Expr::Dict(pairs) => {
+                // 辞書リテラル: 各キー・値ペアを評価して型なし（Any）辞書を構築する
                 let mut keys = Vec::new();
                 let mut items = Vec::new();
                 for (key_expr, val_expr) in pairs {
@@ -121,6 +145,7 @@ impl Interpreter {
                 }))))
             }
             Expr::Subscript { object, index } => {
+                // `object[index]`: 現在は辞書のキールックアップのみ対応
                 let obj = self.eval(object)?;
                 let key = self.eval(index)?;
                 match obj {
@@ -136,10 +161,12 @@ impl Interpreter {
                 }
             }
             Expr::UnaryOp { op, operand } => {
+                // 単項演算子: オペランドを評価して apply_unary に委譲する
                 let val = self.eval(operand)?;
                 self.apply_unary(op, val)
             }
             Expr::BinOp { op, left, right, .. } => {
+                // and / or は短絡評価（左辺の結果によって右辺を評価しない）
                 match op {
                     BinOp::And => {
                         let lv = self.eval(left)?;
@@ -151,30 +178,33 @@ impl Interpreter {
                     }
                     _ => {}
                 }
+                // その他の二項演算子: 両辺を評価して apply_binop に委譲する
                 let lv = self.eval(left)?;
                 let rv = self.eval(right)?;
                 self.apply_binop(op, lv, rv)
             }
             Expr::TemplateInstantiate { .. } => {
+                // テンプレート式は単独では使用不可（Call の一部として処理される）
                 Err("TemplateError: template expression must be immediately called (e.g. `Func[T](args)`)".to_string())
             }
             Expr::Call { func, args } => {
-                // Template call: expr[T1, T2](args)
+                // テンプレート呼び出し: `expr[T1, T2](args)` 形式
                 if let Expr::TemplateInstantiate { base, type_args } = func.as_ref() {
                     let tmpl_val = self.eval(base)?;
                     return self.instantiate_template(tmpl_val, type_args, args);
                 }
 
-                // Method call: obj.method(args)
+                // メソッド呼び出し: `obj.method(args)` 形式
                 if let Expr::Attr { object, attr } = func.as_ref() {
                     let obj_val = self.eval(object)?;
                     return self.eval_method_call(obj_val, attr, args);
                 }
 
-                // Builtin functions (not stored in scope)
+                // 組み込み関数（スコープに格納されていない特別扱い）
                 if let Expr::Ident(name) = func.as_ref() {
                     match name.as_str() {
                         "print" => {
+                            // すべての引数を display 形式で評価してスペース区切りで出力する
                             let parts: Result<Vec<_>, _> = args.iter()
                                 .map(|a| self.eval(a.expr()).map(|v| self.display(&v)))
                                 .collect();
@@ -182,6 +212,7 @@ impl Interpreter {
                             return Ok(Value::None);
                         }
                         "range" => {
+                            // range(stop) / range(start, stop) / range(start, stop, step) をリストに展開する
                             let evaled: Result<Vec<_>, _> =
                                 args.iter().map(|a| self.eval(a.expr())).collect();
                             let evaled = evaled?;
@@ -206,6 +237,7 @@ impl Interpreter {
                             };
                         }
                         "len" => {
+                            // len(list) / len(str) のみ対応
                             if args.len() != 1 {
                                 return Err("TypeError: len() takes exactly one argument".to_string());
                             }
@@ -216,12 +248,12 @@ impl Interpreter {
                                 _ => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(&val))),
                             };
                         }
-                        _ => {} // fall through to user-defined lookup
+                        _ => {} // ユーザー定義関数の検索へフォールスルー
                     }
                 }
 
-                // User-defined function / overloaded function / class constructor / generator
-                // Derive a name for traceback frames (best-effort from the func expression).
+                // ユーザー定義関数 / オーバーロード関数 / クラスコンストラクタ / ジェネレータ関数
+                // トレースバックフレーム用に関数名を取得（ベストエフォート）
                 let call_name = match func.as_ref() {
                     Expr::Ident(n) => n.clone(),
                     _ => "<anonymous>".to_string(),
@@ -244,8 +276,19 @@ impl Interpreter {
         }
     }
 
-    // --- Attribute assignment helper ---
+    // --- 属性代入ヘルパー ---
 
+    /// 属性・添字に値を代入する。`AttrAssign` 文と `AttrCompoundAssign` 文から呼ばれる。
+    ///
+    /// 対応する代入ターゲット:
+    /// - `Expr::Attr { object, attr }`: インスタンスフィールドへの代入（可変性・const チェック付き）
+    /// - `Expr::TraitAccess { object, trait_name, attr }`: トレイトフィールドへの代入
+    /// - `Expr::Subscript { object, index }`: 辞書への添字代入（型制約チェック付き）
+    ///
+    /// - `target`: 代入先の式（`Attr` / `TraitAccess` / `Subscript`）
+    /// - `rhs`: 代入する値（評価済み）
+    ///
+    /// 戻り値: `Ok(())` — 成功。`Err(message)` — 型エラー・不変フィールドへの代入エラー等
     pub(super) fn attr_assign(&mut self, target: &Expr, rhs: Value) -> Result<(), String> {
         if let Expr::Attr { object, attr } = target {
             let obj_val = self.eval(object)?;
@@ -337,8 +380,17 @@ impl Interpreter {
         }
     }
 
-    /// Check whether `val` is compatible with the declared type name.
-    /// `int` is accepted as `float` (upcast); `Any` accepts everything.
+    /// 値が宣言された型名と互換性があるかを確認する。
+    ///
+    /// 特別ルール:
+    /// - `"Any"` はすべての型を受け入れる
+    /// - `"float"` には `int` 値も受け入れる（アップキャスト）
+    /// - それ以外のユーザー定義型はクラス名で比較する
+    ///
+    /// - `val`: チェック対象の値
+    /// - `type_name`: 宣言された型名
+    ///
+    /// 戻り値: `true` — 互換あり、`false` — 型不一致
     pub(super) fn value_matches_type(val: &Value, type_name: &str) -> bool {
         match type_name {
             "Any" => true,

@@ -3,6 +3,32 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{BinOp, CallArg, ExceptHandler, Expr, FieldKind, Param, Stmt, TemplateParam, UnaryOp};
 use crate::token::{Span, Spanned, Token};
 
+/// 複合代入演算子トークンを対応する二項演算子（`BinOp`）に変換する。
+///
+/// # 引数
+/// - `token`: 変換対象のトークン参照
+///
+/// # 戻り値
+/// 複合代入演算子に対応する `BinOp` を `Some` で返す。
+/// 複合代入演算子でないトークンの場合は `None` を返す。
+fn token_to_compound_op(token: &Token) -> Option<BinOp> {
+    match token {
+        Token::PlusEq      => Some(BinOp::Add),
+        Token::MinusEq     => Some(BinOp::Sub),
+        Token::StarEq      => Some(BinOp::Mul),
+        Token::SlashEq     => Some(BinOp::Div),
+        Token::SlashSlashEq => Some(BinOp::FloorDiv),
+        Token::PercentEq   => Some(BinOp::Mod),
+        Token::StarStarEq  => Some(BinOp::Pow),
+        Token::AmpEq       => Some(BinOp::BitAnd),
+        Token::PipeEq      => Some(BinOp::BitOr),
+        Token::CaretEq     => Some(BinOp::BitXor),
+        Token::LtLtEq      => Some(BinOp::LShift),
+        Token::GtGtEq      => Some(BinOp::RShift),
+        _                  => None,
+    }
+}
+
 pub struct Parser {
     tokens: Vec<Spanned>,
     pos: usize,
@@ -15,10 +41,19 @@ pub struct Parser {
 }
 
 impl Parser {
+    /// パーサを初期化する。
+    ///
+    /// 組み込みの `Error` トレイトを `known_traits` に事前登録し、
+    /// ユーザー定義クラスが `Error` を継承できるようにする。
+    ///
+    /// # 引数
+    /// - `tokens`: レキサが生成したトークン列（`Spanned` の `Vec`）
+    ///
+    /// # 戻り値
+    /// 初期化済みの `Parser` インスタンス
     pub fn new(tokens: Vec<Spanned>) -> Self {
-        // Pre-register the built-in `Error` trait so that user-defined classes can
-        // inherit from it without declaring the trait themselves.
-        // Fields: message (let, required), code_context/file (mut, default), line/col (mut, default)
+        // 組み込み `Error` トレイトを事前登録する。
+        // フィールド: message（let・必須）、code_context/file（mut・デフォルトあり）、line/col（mut・デフォルトあり）
         let mut known_traits: HashMap<String, (Vec<TemplateParam>, Vec<(String, FieldKind, String, bool)>, Vec<String>)> = HashMap::new();
         known_traits.insert("Error".to_string(), (
             vec![],
@@ -40,24 +75,35 @@ impl Parser {
         }
     }
 
+    /// 現在位置のトークンへの参照を返す。
+    /// トークン列を超えた場合は `Token::Eof` を返す。
     fn current(&self) -> &Token {
         self.tokens.get(self.pos).map(|s| &s.token).unwrap_or(&Token::Eof)
     }
 
+    /// 現在位置の1つ先（先読み1トークン）への参照を返す。
+    /// トークン列を超えた場合は `Token::Eof` を返す。
     fn peek1(&self) -> &Token {
         self.tokens.get(self.pos + 1).map(|s| &s.token).unwrap_or(&Token::Eof)
     }
 
+    /// 現在位置のトークンの `Span`（ファイル名・行・列）を返す。
+    /// トークン列を超えた場合は `Span::unknown()` を返す。
     fn current_span(&self) -> Span {
         self.tokens.get(self.pos).map(|s| s.span.clone()).unwrap_or_else(Span::unknown)
     }
 
+    /// 現在位置を1つ進める。トークン列の末尾では何もしない。
     fn advance(&mut self) {
         if self.pos < self.tokens.len() {
             self.pos += 1;
         }
     }
 
+    /// 現在のトークンが `expected` と一致すれば消費して `Ok(())` を返す。
+    ///
+    /// # エラー
+    /// 一致しない場合は「expected `X`, got `Y`」形式のエラー文字列を返す。
     fn eat(&mut self, expected: &Token) -> Result<(), String> {
         if self.current() == expected {
             self.advance();
@@ -67,6 +113,8 @@ impl Parser {
         }
     }
 
+    /// 改行・インデント・デデント・セミコロンをまとめてスキップする。
+    /// ブロック境界をまたぐ前後のクリーンアップに使用する。
     fn skip_newlines(&mut self) {
         while matches!(
             self.current(),
@@ -76,17 +124,34 @@ impl Parser {
         }
     }
 
+    /// プログラム全体をパースして文のリストを返す。
+    ///
+    /// EOF に達するまで `parse_stmt()` を繰り返し呼び出す。
+    ///
+    /// # 戻り値
+    /// パースに成功した場合は `Vec<Stmt>`、失敗した場合はエラー文字列
+    ///
+    /// # エラー
+    /// いずれかの文のパースに失敗した場合にエラーを返す。
     pub fn parse_program(&mut self) -> Result<Vec<Stmt>, String> {
         let mut stmts = Vec::new();
+        // 先頭の空白行やインデントをスキップ
         self.skip_newlines();
         while *self.current() != Token::Eof {
             stmts.push(self.parse_stmt()?);
+            // 文と文の間の空白行をスキップ
             self.skip_newlines();
         }
         Ok(stmts)
     }
 
-    // Parses an indented block: NEWLINE INDENT stmt* DEDENT
+    /// インデントブロック（`NEWLINE INDENT stmt* DEDENT`）をパースして文のリストを返す。
+    ///
+    /// # 戻り値
+    /// ブロック内の文のリスト
+    ///
+    /// # エラー
+    /// `NEWLINE` または `INDENT` が欠如している場合、もしくは内部の文のパースに失敗した場合
     fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
         self.eat(&Token::Newline)?;
         self.eat(&Token::Indent)?;
@@ -106,96 +171,76 @@ impl Parser {
         Ok(stmts)
     }
 
+    /// 1文をパースして `Stmt` を返す。
+    ///
+    /// 先頭トークンの種別によって適切なサブパーサにディスパッチする。
+    ///
+    /// # 戻り値
+    /// パースに成功した場合は `Stmt`、失敗した場合はエラー文字列
+    ///
+    /// # エラー
+    /// 未対応のトークンが先頭に現れた場合、またはサブパーサがエラーを返した場合
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
         match self.current().clone() {
+            // `let 変数名 [: 型] = 式` — イミュータブル変数宣言
             Token::Let => {
                 self.advance();
                 let name = self.expect_ident()?;
+                // 型アノテーションがあれば読み飛ばす（静的型検査で使用）
                 if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
                 self.eat(&Token::Eq)?;
                 Ok(Stmt::Let(name, self.parse_expr()?))
             }
+            // `const 変数名 [: 型] = 式` — 定数宣言
             Token::Const => {
                 self.advance();
                 let name = self.expect_ident()?;
+                // 型アノテーションがあれば読み飛ばす
                 if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
                 self.eat(&Token::Eq)?;
                 Ok(Stmt::Const(name, self.parse_expr()?))
             }
+            // `mut 変数名 [: 型] = 式` — ミュータブル変数宣言
             Token::Mut => {
                 self.advance();
                 let name = self.expect_ident()?;
+                // 型アノテーションがあれば読み飛ばす
                 if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
                 self.eat(&Token::Eq)?;
                 Ok(Stmt::Mut(name, self.parse_expr()?))
             }
+            // `freeze 変数名` — 変数をイミュータブルに凍結
             Token::Freeze => {
                 let span = self.current_span();
                 self.advance();
                 let name = self.expect_ident()?;
                 Ok(Stmt::Freeze(name, span))
             }
-            Token::Pass => {
-                self.advance();
-                Ok(Stmt::Pass)
-            }
-            Token::Break => {
-                self.advance();
-                Ok(Stmt::Break)
-            }
-            Token::Continue => {
-                self.advance();
-                Ok(Stmt::Continue)
-            }
+            // ジャンプ文・単純文
+            Token::Pass     => { self.advance(); Ok(Stmt::Pass) }
+            Token::Break    => { self.advance(); Ok(Stmt::Break) }
+            Token::Continue => { self.advance(); Ok(Stmt::Continue) }
+            // `return [式]` — 値なし return と値あり return を区別
             Token::Return => {
                 self.advance();
                 if matches!(self.current(), Token::Newline | Token::Eof | Token::Semicolon | Token::Dedent) {
+                    // 値なし return
                     Ok(Stmt::Return(None))
                 } else {
+                    // 値あり return
                     Ok(Stmt::Return(Some(self.parse_expr()?)))
                 }
             }
-            Token::BlockReturn => {
-                self.advance();
-                Ok(Stmt::BlockReturn(self.parse_expr()?))
-            }
-            Token::BlockYield => {
-                self.advance();
-                Ok(Stmt::BlockYield(self.parse_expr()?))
-            }
-            Token::If => {
-                self.advance();
-                let cond = self.parse_expr()?;
-                self.eat(&Token::Colon)?;
-                let body = self.parse_block()?;
-                let mut branches = vec![(cond, body)];
-                let mut else_body = None;
-                loop {
-                    match self.current().clone() {
-                        Token::Elif => {
-                            self.advance();
-                            let c = self.parse_expr()?;
-                            self.eat(&Token::Colon)?;
-                            let b = self.parse_block()?;
-                            branches.push((c, b));
-                        }
-                        Token::Else => {
-                            self.advance();
-                            self.eat(&Token::Colon)?;
-                            else_body = Some(self.parse_block()?);
-                            break;
-                        }
-                        _ => break,
-                    }
-                }
-                Ok(Stmt::If { branches, else_body })
-            }
+            // `block_return 式` / `block_yield 式` — block スコープからの脱出
+            Token::BlockReturn => { self.advance(); Ok(Stmt::BlockReturn(self.parse_expr()?)) }
+            Token::BlockYield  => { self.advance(); Ok(Stmt::BlockYield(self.parse_expr()?)) }
+            // 制御構文
+            Token::If    => self.parse_if_stmt(),
             Token::While => {
                 self.advance();
                 let cond = self.parse_expr()?;
                 self.eat(&Token::Colon)?;
-                let body = self.parse_block()?;
-                Ok(Stmt::While { cond, body })
+                Ok(Stmt::While { cond, body: self.parse_block()? })
             }
             Token::For => {
                 self.advance();
@@ -203,23 +248,22 @@ impl Parser {
                 self.eat(&Token::In)?;
                 let iter = self.parse_expr()?;
                 self.eat(&Token::Colon)?;
-                let body = self.parse_block()?;
-                Ok(Stmt::For { target, iter, body })
+                Ok(Stmt::For { target, iter, body: self.parse_block()? })
             }
+            // `block:` — 値を返せるスコープブロック
             Token::Block => {
                 self.advance();
                 self.eat(&Token::Colon)?;
-                let body = self.parse_block()?;
-                Ok(Stmt::Block(body))
+                Ok(Stmt::Block(self.parse_block()?))
             }
-            Token::Yield => {
-                self.advance();
-                Ok(Stmt::Yield(self.parse_expr()?))
-            }
-            Token::Try => self.parse_try_stmt(),
+            // `yield 式` — ジェネレータ関数内で値を yield する
+            Token::Yield => { self.advance(); Ok(Stmt::Yield(self.parse_expr()?)) }
+            Token::Try   => self.parse_try_stmt(),
+            // `raise [式]` — 例外を送出する
             Token::Raise => {
                 let span = self.current_span();
                 self.advance();
+                // 送出する例外式がなければ None（再 raise 相当）
                 let exc = if matches!(self.current(), Token::Newline | Token::Eof | Token::Semicolon | Token::Dedent) {
                     None
                 } else {
@@ -227,81 +271,151 @@ impl Parser {
                 };
                 Ok(Stmt::Raise { exc, span })
             }
-            Token::Fn => self.parse_fn_def(),
-            Token::Gen => self.parse_gen_def(),
-            Token::Class => self.parse_class_def(),
-            Token::Trait => self.parse_trait_def(),
+            Token::Fn      => self.parse_fn_def(),
+            Token::Gen     => self.parse_gen_def(),
+            Token::Class   => self.parse_class_def(),
+            Token::Trait   => self.parse_trait_def(),
             Token::NewType => self.parse_new_type_def(),
-            Token::Ident(_) => match self.peek1().clone() {
-                Token::Eq => {
-                    let span = self.current_span();
-                    let name = self.expect_ident()?;
-                    if self.known_new_types.contains(&name) {
-                        return Err(format!(
-                            "ParseError: cannot reassign new_type `{name}` — new_type bindings are const"
-                        ));
-                    }
-                    self.advance(); // consume `=`
-                    Ok(Stmt::Assign { name, value: self.parse_expr()?, span })
-                }
-                Token::PlusEq => self.parse_compound(BinOp::Add),
-                Token::MinusEq => self.parse_compound(BinOp::Sub),
-                Token::StarEq => self.parse_compound(BinOp::Mul),
-                Token::SlashEq => self.parse_compound(BinOp::Div),
-                Token::SlashSlashEq => self.parse_compound(BinOp::FloorDiv),
-                Token::PercentEq => self.parse_compound(BinOp::Mod),
-                Token::StarStarEq => self.parse_compound(BinOp::Pow),
-                Token::AmpEq => self.parse_compound(BinOp::BitAnd),
-                Token::PipeEq => self.parse_compound(BinOp::BitOr),
-                Token::CaretEq => self.parse_compound(BinOp::BitXor),
-                Token::LtLtEq => self.parse_compound(BinOp::LShift),
-                Token::GtGtEq => self.parse_compound(BinOp::RShift),
-                _ => {
-                    // May be: expr stmt, attr assign (self.x = v), or attr compound (self.x += v)
-                    let expr = self.parse_expr()?;
-                    match self.current().clone() {
-                        Token::Eq => {
-                            self.advance();
-                            Ok(Stmt::AttrAssign { target: expr, value: self.parse_expr()? })
-                        }
-                        Token::PlusEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::Add,      value: self.parse_expr()? }) }
-                        Token::MinusEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::Sub,      value: self.parse_expr()? }) }
-                        Token::StarEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::Mul,      value: self.parse_expr()? }) }
-                        Token::SlashEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::Div,     value: self.parse_expr()? }) }
-                        Token::SlashSlashEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::FloorDiv, value: self.parse_expr()? }) }
-                        Token::PercentEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::Mod,   value: self.parse_expr()? }) }
-                        Token::StarStarEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::Pow,  value: self.parse_expr()? }) }
-                        Token::AmpEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::BitAnd,   value: self.parse_expr()? }) }
-                        Token::PipeEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::BitOr,   value: self.parse_expr()? }) }
-                        Token::CaretEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::BitXor, value: self.parse_expr()? }) }
-                        Token::LtLtEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::LShift,  value: self.parse_expr()? }) }
-                        Token::GtGtEq => { self.advance(); Ok(Stmt::AttrCompoundAssign { target: expr, op: BinOp::RShift,  value: self.parse_expr()? }) }
-                        _ => Ok(Stmt::Expr(expr)),
-                    }
-                }
-            },
+            Token::Ident(_) => self.parse_ident_stmt(),
             _ => Ok(Stmt::Expr(self.parse_expr()?)),
         }
     }
 
+    /// `if / elif / else` 文をパースして `Stmt::If` を返す。
+    ///
+    /// `if` トークンはすでに現在位置にあることを前提とする。
+    /// `elif` 節は複数連続してよく、`else` 節は最後に1つだけ現れる。
+    ///
+    /// # 戻り値
+    /// `Stmt::If { branches, else_body }` — branches は `(条件式, 本体)` のリスト
+    ///
+    /// # エラー
+    /// 条件式または本体のパースに失敗した場合
+    fn parse_if_stmt(&mut self) -> Result<Stmt, String> {
+        self.advance(); // `if` を消費
+        let cond = self.parse_expr()?;
+        self.eat(&Token::Colon)?;
+        let body = self.parse_block()?;
+        // 最初の if 節を branches の先頭に追加
+        let mut branches = vec![(cond, body)];
+        let mut else_body = None;
+        loop {
+            match self.current().clone() {
+                Token::Elif => {
+                    // elif 節を branches に追加
+                    self.advance();
+                    let c = self.parse_expr()?;
+                    self.eat(&Token::Colon)?;
+                    branches.push((c, self.parse_block()?));
+                }
+                Token::Else => {
+                    // else 節をパースしてループを抜ける
+                    self.advance();
+                    self.eat(&Token::Colon)?;
+                    else_body = Some(self.parse_block()?);
+                    break;
+                }
+                _ => break,
+            }
+        }
+        Ok(Stmt::If { branches, else_body })
+    }
+
+    /// 識別子で始まる文をパースする。
+    ///
+    /// 先読み1トークンによって以下の4パターンに分岐する:
+    /// - `name =`  → 変数への代入（`Stmt::Assign`）
+    /// - `name +=` 等 → 変数への複合代入（`Stmt::CompoundAssign`）
+    /// - `expr =`（属性アクセス等） → 属性代入（`Stmt::AttrAssign`）
+    /// - `expr +=` 等（属性アクセス等） → 属性複合代入（`Stmt::AttrCompoundAssign`）
+    /// - それ以外 → 式文（`Stmt::Expr`）
+    ///
+    /// # エラー
+    /// `new_type` で宣言された名前への代入・複合代入はパースエラーとなる。
+    /// 式または右辺のパースに失敗した場合もエラーを返す。
+    fn parse_ident_stmt(&mut self) -> Result<Stmt, String> {
+        match self.peek1().clone() {
+            // 次のトークンが `=` なら変数への単純代入
+            Token::Eq => {
+                let span = self.current_span();
+                let name = self.expect_ident()?;
+                // new_type 名への再代入はパースエラー
+                if self.known_new_types.contains(&name) {
+                    return Err(format!(
+                        "ParseError: cannot reassign new_type `{name}` — new_type bindings are const"
+                    ));
+                }
+                self.advance(); // `=` を消費
+                Ok(Stmt::Assign { name, value: self.parse_expr()?, span })
+            }
+            tok => {
+                if let Some(op) = token_to_compound_op(&tok) {
+                    // 次のトークンが複合代入演算子なら変数への複合代入
+                    self.parse_compound(op)
+                } else {
+                    // 式文・属性代入・属性複合代入の判定
+                    // まず式全体をパースしてから後続トークンで分岐する
+                    let expr = self.parse_expr()?;
+                    let cur = self.current().clone();
+                    if cur == Token::Eq {
+                        // `expr = 値` — 属性代入（self.x = v など）
+                        self.advance();
+                        Ok(Stmt::AttrAssign { target: expr, value: self.parse_expr()? })
+                    } else if let Some(op) = token_to_compound_op(&cur) {
+                        // `expr += 値` など — 属性複合代入
+                        self.advance();
+                        Ok(Stmt::AttrCompoundAssign { target: expr, op, value: self.parse_expr()? })
+                    } else {
+                        // 代入でなければ式文として返す
+                        Ok(Stmt::Expr(expr))
+                    }
+                }
+            }
+        }
+    }
+
+    /// 変数への複合代入文（`x += expr` 等）をパースして `Stmt::CompoundAssign` を返す。
+    ///
+    /// # 引数
+    /// - `op`: 複合代入に対応する二項演算子（`token_to_compound_op` で変換済み）
+    ///
+    /// # 戻り値
+    /// `Stmt::CompoundAssign { name, op, value, span }`
+    ///
+    /// # エラー
+    /// `new_type` で宣言された名前への複合代入はパースエラー。
+    /// 右辺の式のパースに失敗した場合もエラーを返す。
     fn parse_compound(&mut self, op: BinOp) -> Result<Stmt, String> {
-        let span = self.current_span(); // span of the variable identifier
+        let span = self.current_span(); // 変数識別子の位置情報
         let name = self.expect_ident()?;
+        // new_type 名への再代入はパースエラー
         if self.known_new_types.contains(&name) {
             return Err(format!(
                 "ParseError: cannot reassign new_type `{name}` — new_type bindings are const"
             ));
         }
-        self.advance(); // consume the compound-assignment operator
+        self.advance(); // 複合代入演算子トークンを消費
         Ok(Stmt::CompoundAssign { name, op, value: self.parse_expr()?, span })
     }
 
+    /// `fn` 関数定義をパースして `Stmt::FnDef` を返す。
+    ///
+    /// テンプレートパラメータ・引数リスト・戻り値型・本体ブロックを順番にパースする。
+    /// 本体が `...`（省略記号のみ）の場合は抽象メソッド（`is_abstract: true`）として扱う。
+    ///
+    /// # 戻り値
+    /// `Stmt::FnDef { name, template_params, params, return_type, body, is_abstract }`
+    ///
+    /// # エラー
+    /// 識別子・括弧・本体ブロックのパースに失敗した場合
     fn parse_fn_def(&mut self) -> Result<Stmt, String> {
-        self.advance(); // consume `fn`
+        self.advance(); // `fn` を消費
         let name = self.expect_ident()?;
+        // テンプレートパラメータ `[T: Trait, ...]` をパース（なければ空 Vec）
         let template_params = self.parse_template_params()?;
         self.eat(&Token::LParen)?;
         let mut params = Vec::new();
+        // 引数リストをカンマ区切りでパース
         while *self.current() != Token::RParen && *self.current() != Token::Eof {
             params.push(self.parse_param()?);
             if *self.current() == Token::Comma {
@@ -311,6 +425,7 @@ impl Parser {
             }
         }
         self.eat(&Token::RParen)?;
+        // `-> 戻り値型` があればパース
         let return_type = if *self.current() == Token::Arrow {
             self.advance();
             Some(self.parse_type_expr()?)
@@ -318,11 +433,12 @@ impl Parser {
             None
         };
         self.eat(&Token::Colon)?;
-        // Detect virtual body: NEWLINE INDENT ELLIPSIS [NEWLINE] DEDENT
-        let (body, is_virtual) = if self.is_virtual_body() {
+        // 本体が `...` のみなら抽象メソッド（NEWLINE INDENT ELLIPSIS [NEWLINE] DEDENT）
+        let (body, is_abstract) = if self.is_abstract_body() {
             self.advance(); // Newline
             self.advance(); // Indent
             self.advance(); // Ellipsis
+            // 末尾の改行をスキップ
             while matches!(self.current(), Token::Newline | Token::Semicolon) {
                 self.advance();
             }
@@ -331,17 +447,32 @@ impl Parser {
             }
             (vec![], true)
         } else {
+            // 通常のブロックをパース
             (self.parse_block()?, false)
         };
-        Ok(Stmt::FnDef { name, template_params, params, return_type, body, is_virtual })
+        Ok(Stmt::FnDef { name, template_params, params, return_type, body, is_abstract })
     }
 
+    /// `gen` ジェネレータ関数定義をパースして `Stmt::GenDef` を返す。
+    ///
+    /// ジェネレータ関数の制約:
+    /// - `self` 以外のパラメータに `mut` は使用不可
+    /// - 本体に `return` 文を含めてはならない
+    ///
+    /// # 戻り値
+    /// `Stmt::GenDef { name, template_params, params, yield_type, body }`
+    ///
+    /// # エラー
+    /// `self` 以外の `mut` パラメータが存在する場合、
+    /// または本体に `return` 文が含まれる場合にエラーを返す。
     fn parse_gen_def(&mut self) -> Result<Stmt, String> {
-        self.advance(); // consume `gen`
+        self.advance(); // `gen` を消費
         let name = self.expect_ident()?;
+        // テンプレートパラメータをパース（なければ空 Vec）
         let template_params = self.parse_template_params()?;
         self.eat(&Token::LParen)?;
         let mut params = Vec::new();
+        // 引数リストをパース。self 以外の mut パラメータはエラー
         while *self.current() != Token::RParen && *self.current() != Token::Eof {
             let param = self.parse_param()?;
             if param.mutable && param.name != "self" {
@@ -359,6 +490,7 @@ impl Parser {
             }
         }
         self.eat(&Token::RParen)?;
+        // `-> yield型` があればパース
         let yield_type = if *self.current() == Token::Arrow {
             self.advance();
             Some(self.parse_type_expr()?)
@@ -367,6 +499,7 @@ impl Parser {
         };
         self.eat(&Token::Colon)?;
         let body = self.parse_block()?;
+        // ジェネレータ本体に return 文が含まれていないか検証
         if Self::body_has_return(&body) {
             return Err(format!(
                 "ParseError: generator function `{name}` must not contain a `return` statement"
@@ -375,8 +508,15 @@ impl Parser {
         Ok(Stmt::GenDef { name, template_params, params, yield_type, body })
     }
 
-    /// Returns `true` if `stmts` contains a `return` statement at any depth,
-    /// without descending into nested `fn`/`gen` definitions.
+    /// 文のリストに `return` 文が含まれるかを再帰的に検査する。
+    ///
+    /// ネストされた `fn`/`gen` 定義の内部には降りない（それらは独自の return スコープを持つ）。
+    ///
+    /// # 引数
+    /// - `stmts`: 検査対象の文のスライス
+    ///
+    /// # 戻り値
+    /// `return` 文が見つかれば `true`、見つからなければ `false`
     fn body_has_return(stmts: &[Stmt]) -> bool {
         for stmt in stmts {
             match stmt {
@@ -401,17 +541,34 @@ impl Parser {
         false
     }
 
-    /// Returns true when the upcoming token sequence is NEWLINE INDENT ELLIPSIS,
-    /// indicating a virtual method body (`...`).
-    fn is_virtual_body(&self) -> bool {
+    /// 現在位置から `NEWLINE INDENT ELLIPSIS` の並びが続くかを確認する。
+    ///
+    /// この並びはトレイトの仮想メソッド（抽象メソッド）の本体 `...` を示す。
+    ///
+    /// # 戻り値
+    /// `NEWLINE INDENT ELLIPSIS` の並びが続く場合は `true`
+    fn is_abstract_body(&self) -> bool {
         let t0 = self.tokens.get(self.pos).map(|s| &s.token).unwrap_or(&Token::Eof);
         let t1 = self.tokens.get(self.pos + 1).map(|s| &s.token).unwrap_or(&Token::Eof);
         let t2 = self.tokens.get(self.pos + 2).map(|s| &s.token).unwrap_or(&Token::Eof);
         matches!(t0, Token::Newline) && matches!(t1, Token::Indent) && matches!(t2, Token::Ellipsis)
     }
 
+    /// `try / except / finally` 文をパースして `Stmt::Try` を返す。
+    ///
+    /// `except` 節は0個以上、`finally` 節は任意の1つ。
+    /// ただし両方とも省略するとパースエラーになる。
+    ///
+    /// `except 型名 [as 変数名]:` の形式で例外の型と補足変数名を指定できる。
+    /// 型名を省略した `except:` は全ての例外を捕捉する。
+    ///
+    /// # 戻り値
+    /// `Stmt::Try { body, handlers, finally_body }`
+    ///
+    /// # エラー
+    /// `except` も `finally` も存在しない場合、またはブロックのパースに失敗した場合
     fn parse_try_stmt(&mut self) -> Result<Stmt, String> {
-        self.advance(); // consume `try`
+        self.advance(); // `try` を消費
         self.eat(&Token::Colon)?;
         let body = self.parse_block()?;
 
@@ -454,36 +611,67 @@ impl Parser {
         Ok(Stmt::Try { body, handlers, finally_body })
     }
 
+    /// `new_type 名前: 元の型` 定義をパースして `Stmt::NewTypeDef` を返す。
+    ///
+    /// パース後に名前を `known_new_types` に登録し、
+    /// 以降の同名への代入をパースエラーとして検出できるようにする。
+    ///
+    /// # 戻り値
+    /// `Stmt::NewTypeDef { name, original }`
+    ///
+    /// # エラー
+    /// 識別子または型名のパースに失敗した場合
     fn parse_new_type_def(&mut self) -> Result<Stmt, String> {
-        self.advance(); // consume `new_type`
+        self.advance(); // `new_type` を消費
         let name = self.expect_ident()?;
         self.eat(&Token::Colon)?;
         let original = self.parse_type_expr()?;
+        // 名前を登録して再代入を禁止する
         self.known_new_types.insert(name.clone());
         Ok(Stmt::NewTypeDef { name, original })
     }
 
+    /// `trait` 定義をパースして `Stmt::TraitDef` を返す。
+    ///
+    /// パース完了後に trait 名・テンプレートパラメータ・フィールド情報・
+    /// 仮想メソッド名を `known_traits` に登録する。
+    /// これにより、クラス定義時に継承チェックと auto-init 生成が行える。
+    ///
+    /// トレイトは他のトレイトを継承できない（`trait Foo(Bar):` はエラー）。
+    /// 全てのメソッド（仮想・非仮想を問わず）に型アノテーションが必要。
+    ///
+    /// # 戻り値
+    /// `Stmt::TraitDef { name, template_params, body }`
+    ///
+    /// # エラー
+    /// トレイトが基底型を持つ場合、メソッドの型アノテーションが欠如している場合、
+    /// または本体のパースに失敗した場合
     fn parse_trait_def(&mut self) -> Result<Stmt, String> {
-        self.advance(); // consume `trait`
+        self.advance(); // `trait` を消費
         let name = self.expect_ident()?;
+        // テンプレートパラメータをパース（`[T: Trait, ...]` 形式）
         let template_params = self.parse_template_params()?;
+        // トレイトは継承不可
         if *self.current() == Token::LParen {
             return Err(format!("StaticTypeError: trait `{name}` cannot inherit from another type"));
         }
         self.eat(&Token::Colon)?;
+        // Self 型が有効なスコープに入る
         self.class_or_trait_depth += 1;
         let body = self.parse_class_body()?;
         self.class_or_trait_depth -= 1;
 
-        // Check that non-virtual methods have required type annotations (same rules as classes)
+        // 非仮想・仮想メソッドどちらも型アノテーションを必須とする
         for stmt in &body {
-            if let Stmt::FnDef { name: mname, params, return_type, is_virtual, .. } = stmt {
-                if !is_virtual {
+            if let Stmt::FnDef { name: mname, params, return_type, is_abstract, .. } = stmt {
+                if !is_abstract {
+                    // 非仮想メソッドの戻り値型チェック
                     if return_type.is_none() {
                         return Err(format!(
                             "StaticTypeError: trait method `{mname}` is missing a return type annotation"
                         ));
                     }
+                    // 非仮想メソッドのパラメータ型チェック（self は除外）
                     for p in params {
                         if p.name != "self" && p.type_ann.is_none() {
                             return Err(format!(
@@ -493,7 +681,7 @@ impl Parser {
                         }
                     }
                 } else {
-                    // Virtual methods also need full annotations
+                    // 仮想メソッド（`...` 本体）も型アノテーション必須
                     if return_type.is_none() {
                         return Err(format!(
                             "StaticTypeError: virtual method `{mname}` is missing a return type annotation"
@@ -511,6 +699,7 @@ impl Parser {
             }
         }
 
+        // フィールド情報（名前・種別・型・デフォルト有無）を収集
         let fields: Vec<(String, FieldKind, String, bool)> = body.iter()
             .filter_map(|s| {
                 if let Stmt::Field { name: fname, kind, type_ann, default } = s {
@@ -520,31 +709,52 @@ impl Parser {
                 }
             })
             .collect();
+        // 仮想メソッド（is_abstract: true）の名前リストを収集
         let virtual_methods: Vec<String> = body.iter()
             .filter_map(|s| {
-                if let Stmt::FnDef { name: mname, is_virtual: true, .. } = s {
+                if let Stmt::FnDef { name: mname, is_abstract: true, .. } = s {
                     Some(mname.clone())
                 } else {
                     None
                 }
             })
             .collect();
+        // 後続のクラス定義が参照できるよう known_traits に登録
         self.known_traits.insert(name.clone(), (template_params.clone(), fields, virtual_methods));
 
         Ok(Stmt::TraitDef { name, template_params, body })
     }
 
+    /// `class` 定義をパースして `Stmt::ClassDef` を返す。
+    ///
+    /// テンプレートパラメータ・基底トレイトリスト・クラス本体を順番にパースする。
+    /// 基底クラスには他のクラスを指定できず、`known_traits` に登録済みのトレイトのみ許可される。
+    ///
+    /// パース後:
+    /// 1. `collect_trait_fields_and_check_virtuals()` で仮想メソッドのオーバーライドを検証し、
+    ///    トレイトの必須フィールドを収集する
+    /// 2. `generate_auto_init_if_needed()` で必要に応じて `__init__` を自動生成する
+    ///
+    /// # 戻り値
+    /// `Stmt::ClassDef { name, template_params, bases, body }`
+    ///
+    /// # エラー
+    /// 非トレイト型を基底に指定した場合、仮想メソッドを未オーバーライドの場合、
+    /// または本体のパースに失敗した場合
     fn parse_class_def(&mut self) -> Result<Stmt, String> {
-        self.advance(); // consume `class`
+        self.advance(); // `class` を消費
         let name = self.expect_ident()?;
+        // テンプレートパラメータをパース（`[T: Trait, ...]` 形式）
         let template_params = self.parse_template_params()?;
-        // bases_with_args: (trait_name, concrete_type_args)
+        // 基底トレイトリストとそれぞれの型引数を収集する
+        // bases_with_args: (トレイト名, 具体型引数リスト)
         let mut bases_with_args: Vec<(String, Vec<String>)> = Vec::new();
         let mut bases = Vec::new();
         if *self.current() == Token::LParen {
             self.advance();
             while *self.current() != Token::RParen && *self.current() != Token::Eof {
                 let base_name = self.expect_ident()?;
+                // テンプレートトレイトを具体化する型引数（例: `Container[int]`）
                 let type_args = self.parse_type_args()?;
                 bases_with_args.push((base_name.clone(), type_args));
                 bases.push(base_name);
@@ -556,7 +766,7 @@ impl Parser {
             }
             self.eat(&Token::RParen)?;
         }
-        // Only traits are allowed as bases; class-to-class inheritance is not supported.
+        // 基底にトレイト以外（クラス等）を指定するとエラー
         for base in &bases {
             if !self.known_traits.contains_key(base.as_str()) {
                 return Err(format!(
@@ -565,41 +775,16 @@ impl Parser {
             }
         }
         self.eat(&Token::Colon)?;
+        // Self 型が有効なスコープに入る
         self.class_or_trait_depth += 1;
         let mut body = self.parse_class_body()?;
         self.class_or_trait_depth -= 1;
 
-        // Collect trait required fields and check virtual method overrides.
-        // trait_required: (trait_name, field_name, type_ann)
-        let mut trait_required: Vec<(String, String, String)> = Vec::new();
-        for (base, concrete_args) in &bases_with_args {
-            if let Some((trait_tparams, trait_fields, virtual_methods)) = self.known_traits.get(base).cloned() {
-                // Build substitution map from trait template params to concrete type args
-                let type_map: HashMap<String, String> = trait_tparams.iter()
-                    .zip(concrete_args.iter())
-                    .map(|(tp, arg)| (tp.name.clone(), arg.clone()))
-                    .collect();
-                for virt in &virtual_methods {
-                    let overridden = body.iter().any(|s| {
-                        matches!(s, Stmt::FnDef { name: n, is_virtual: false, .. } if n == virt)
-                    });
-                    if !overridden {
-                        return Err(format!(
-                            "StaticTypeError: class `{name}` must override virtual method `{virt}` from trait `{base}`"
-                        ));
-                    }
-                }
-                for (fname, _kind, ftype, has_default) in &trait_fields {
-                    if !has_default {
-                        // Substitute type variables in field type annotation
-                        let resolved_type = type_map.get(ftype).cloned().unwrap_or_else(|| ftype.clone());
-                        trait_required.push((base.clone(), fname.clone(), resolved_type));
-                    }
-                }
-            }
-        }
+        // 仮想メソッドのオーバーライド検証とトレイト必須フィールドの収集
+        let trait_required =
+            self.collect_trait_fields_and_check_virtuals(&name, &bases_with_args, &body)?;
 
-        // Class's own required fields (mut/let without default).
+        // クラス自身のデフォルトなし mut/let フィールドを収集
         let class_required: Vec<(String, String)> = body.iter()
             .filter_map(|s| {
                 if let Stmt::Field { name: fname, kind: FieldKind::Mut | FieldKind::Let, type_ann, default: None } = s {
@@ -610,66 +795,170 @@ impl Parser {
             })
             .collect();
 
-        // Auto-generate __init__ when there are any required fields (trait + class).
-        // Skip generation only when an existing __init__ has exactly the same signature.
-        if !trait_required.is_empty() || !class_required.is_empty() {
-            let all_required: Vec<(String, String)> = trait_required.iter()
-                .map(|(_, fname, ftype)| (fname.clone(), ftype.clone()))
-                .chain(class_required.iter().cloned())
-                .collect();
-
-            let has_exact_match = body.iter().any(|s| {
-                if let Stmt::FnDef { name: n, params, .. } = s {
-                    n == "__init__" && Self::init_sig_matches(&all_required, params)
-                } else {
-                    false
-                }
-            });
-
-            if !has_exact_match {
-                let mut params = vec![Param { name: "self".to_string(), mutable: true, type_ann: None }];
-                for (_, fname, ftype) in &trait_required {
-                    params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()) });
-                }
-                for (fname, ftype) in &class_required {
-                    params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()) });
-                }
-                let mut init_body: Vec<Stmt> = Vec::new();
-                for (tname, fname, _) in &trait_required {
-                    init_body.push(Stmt::AttrAssign {
-                        target: Expr::TraitAccess {
-                            object: Box::new(Expr::Ident("self".to_string())),
-                            trait_name: tname.clone(),
-                            attr: fname.clone(),
-                        },
-                        value: Expr::Ident(fname.clone()),
-                    });
-                }
-                for (fname, _) in &class_required {
-                    init_body.push(Stmt::AttrAssign {
-                        target: Expr::Attr {
-                            object: Box::new(Expr::Ident("self".to_string())),
-                            attr: fname.clone(),
-                        },
-                        value: Expr::Ident(fname.clone()),
-                    });
-                }
-                body.push(Stmt::FnDef {
-                    name: "__init__".to_string(),
-                    template_params: vec![],
-                    params,
-                    return_type: Some("None".to_string()),
-                    body: init_body,
-                    is_virtual: false,
-                });
-            }
-        }
+        // 必要に応じて __init__ を自動生成して body に追加
+        self.generate_auto_init_if_needed(&trait_required, &class_required, &mut body);
 
         Ok(Stmt::ClassDef { name, template_params, bases, body })
     }
 
-    /// Parses the indented body of a class definition.
-    /// Field declarations (`mut`/`let`/`const`) require a type annotation.
+    /// 継承トレイトの仮想メソッドオーバーライドを検証し、必須フィールドを収集する。
+    ///
+    /// 各基底トレイトについて:
+    /// 1. 仮想メソッドがクラス本体でオーバーライドされているか確認する
+    /// 2. デフォルト値なしのフィールドを `(トレイト名, フィールド名, 型名)` として収集する
+    ///
+    /// テンプレートトレイトの型変数は `concrete_args` で置換する。
+    ///
+    /// # 引数
+    /// - `class_name`: 検証対象のクラス名（エラーメッセージ用）
+    /// - `bases_with_args`: 基底トレイトと具体型引数のリスト
+    /// - `body`: クラス本体の文リスト
+    ///
+    /// # 戻り値
+    /// `(トレイト名, フィールド名, 解決済み型名)` のタプルリスト
+    ///
+    /// # エラー
+    /// 仮想メソッドがオーバーライドされていない場合
+    fn collect_trait_fields_and_check_virtuals(
+        &self,
+        class_name: &str,
+        bases_with_args: &[(String, Vec<String>)],
+        body: &[Stmt],
+    ) -> Result<Vec<(String, String, String)>, String> {
+        let mut trait_required = Vec::new();
+        for (base, concrete_args) in bases_with_args {
+            if let Some((trait_tparams, trait_fields, virtual_methods)) =
+                self.known_traits.get(base).cloned()
+            {
+                // テンプレートパラメータ → 具体型 の変換マップを構築
+                let type_map: HashMap<String, String> = trait_tparams.iter()
+                    .zip(concrete_args.iter())
+                    .map(|(tp, arg)| (tp.name.clone(), arg.clone()))
+                    .collect();
+                // 各仮想メソッドがクラス本体でオーバーライドされているか確認
+                for virt in &virtual_methods {
+                    let overridden = body.iter().any(|s| {
+                        matches!(s, Stmt::FnDef { name: n, is_abstract: false, .. } if n == virt)
+                    });
+                    if !overridden {
+                        return Err(format!(
+                            "StaticTypeError: class `{class_name}` must override virtual method \
+                             `{virt}` from trait `{base}`"
+                        ));
+                    }
+                }
+                // デフォルト値なしのフィールドを必須フィールドとして収集
+                // 型変数が含まれる場合は具体型に解決する
+                for (fname, _kind, ftype, has_default) in &trait_fields {
+                    if !has_default {
+                        let resolved = type_map.get(ftype).cloned().unwrap_or_else(|| ftype.clone());
+                        trait_required.push((base.clone(), fname.clone(), resolved));
+                    }
+                }
+            }
+        }
+        Ok(trait_required)
+    }
+
+    /// 必須フィールドが存在し、かつ完全一致する `__init__` が未定義の場合に
+    /// デフォルトコンストラクタを自動生成して `body` に追加する。
+    ///
+    /// 生成される `__init__` のシグネチャ:
+    /// `fn __init__(mut self, trait_field1: T1, ..., class_field1: T2, ...) -> None:`
+    ///
+    /// 既存の `__init__` の引数型・個数が自動生成と完全一致する場合は生成しない（override）。
+    /// 異なる場合は既存定義と共存する（overload）。
+    ///
+    /// # 引数
+    /// - `trait_required`: トレイトから継承した必須フィールド（トレイト名, フィールド名, 型名）
+    /// - `class_required`: クラス自身の必須フィールド（フィールド名, 型名）
+    /// - `body`: クラス本体の文リスト。生成した `__init__` を末尾に追加する
+    fn generate_auto_init_if_needed(
+        &self,
+        trait_required: &[(String, String, String)],
+        class_required: &[(String, String)],
+        body: &mut Vec<Stmt>,
+    ) {
+        // 必須フィールドが1つもなければ auto-init は不要
+        if trait_required.is_empty() && class_required.is_empty() {
+            return;
+        }
+
+        // トレイトとクラス双方の必須フィールドを統合したリストを作成
+        let all_required: Vec<(String, String)> = trait_required.iter()
+            .map(|(_, fname, ftype)| (fname.clone(), ftype.clone()))
+            .chain(class_required.iter().cloned())
+            .collect();
+
+        // 完全一致する既存 __init__ がある場合は auto-init を生成しない（override）
+        let has_exact_match = body.iter().any(|s| {
+            if let Stmt::FnDef { name: n, params, .. } = s {
+                n == "__init__" && Self::init_sig_matches(&all_required, params)
+            } else {
+                false
+            }
+        });
+
+        if has_exact_match {
+            return;
+        }
+
+        // `mut self` に続いてトレイトフィールド、クラスフィールドの順でパラメータを構築
+        let mut params = vec![Param { name: "self".to_string(), mutable: true, type_ann: None }];
+        for (_, fname, ftype) in trait_required {
+            params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()) });
+        }
+        for (fname, ftype) in class_required {
+            params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()) });
+        }
+
+        // __init__ 本体を構築する
+        // トレイトフィールドは TraitAccess、クラスフィールドは Attr で代入する
+        let mut init_body: Vec<Stmt> = Vec::new();
+        for (tname, fname, _) in trait_required {
+            // `self::TraitName.field = field` の形式で代入
+            init_body.push(Stmt::AttrAssign {
+                target: Expr::TraitAccess {
+                    object: Box::new(Expr::Ident("self".to_string())),
+                    trait_name: tname.clone(),
+                    attr: fname.clone(),
+                },
+                value: Expr::Ident(fname.clone()),
+            });
+        }
+        for (fname, _) in class_required {
+            // `self.field = field` の形式で代入
+            init_body.push(Stmt::AttrAssign {
+                target: Expr::Attr {
+                    object: Box::new(Expr::Ident("self".to_string())),
+                    attr: fname.clone(),
+                },
+                value: Expr::Ident(fname.clone()),
+            });
+        }
+
+        // 生成した __init__ を body の末尾に追加
+        body.push(Stmt::FnDef {
+            name: "__init__".to_string(),
+            template_params: vec![],
+            params,
+            return_type: Some("None".to_string()),
+            body: init_body,
+            is_abstract: false,
+        });
+    }
+
+    /// クラス定義のインデントブロックをパースして文のリストを返す。
+    ///
+    /// `parse_block()` と同様に `NEWLINE INDENT stmt* DEDENT` を処理するが、
+    /// 内部では `parse_class_stmt()` を呼ぶ点が異なる。
+    /// フィールド宣言には型アノテーションが必須。
+    ///
+    /// # 戻り値
+    /// クラス本体の文リスト
+    ///
+    /// # エラー
+    /// `NEWLINE` / `INDENT` が欠如している場合、または `parse_class_stmt()` がエラーを返した場合
     fn parse_class_body(&mut self) -> Result<Vec<Stmt>, String> {
         self.eat(&Token::Newline)?;
         self.eat(&Token::Indent)?;
@@ -689,17 +978,32 @@ impl Parser {
         Ok(stmts)
     }
 
-    /// Parses a single statement inside a class body.
-    /// Field declarations require `: Type` annotations.
-    /// `const` fields are class variables and must include `= default`.
+    /// クラス本体内の1文をパースする。
+    ///
+    /// 受け入れる文の種類:
+    /// - `mut`/`let`/`const` + 識別子 + `: 型` + `[= デフォルト値]` → フィールド宣言
+    /// - `fn` → メソッド定義
+    /// - `gen` → ジェネレータメソッド定義
+    /// - `pass` → 空文
+    ///
+    /// フィールド宣言では型アノテーション（`: 型`）が必須。
+    /// `const` フィールドはデフォルト値が必須。
+    ///
+    /// # 戻り値
+    /// `Stmt::Field` / `Stmt::FnDef` / `Stmt::GenDef` / `Stmt::Pass`
+    ///
+    /// # エラー
+    /// 型アノテーション欠如・`const` のデフォルト値欠如・未対応トークン
     fn parse_class_stmt(&mut self) -> Result<Stmt, String> {
         match self.current().clone() {
+            // フィールド宣言: mut/let/const キーワードで始まる
             Token::Mut | Token::Let | Token::Const => {
                 let kind = match self.current() {
                     Token::Mut   => FieldKind::Mut,
                     Token::Let   => FieldKind::Let,
                     _            => FieldKind::Const,
                 };
+                // エラーメッセージ用にキーワード文字列を保持
                 let keyword = match &kind {
                     FieldKind::Mut   => "mut",
                     FieldKind::Let   => "let",
@@ -707,19 +1011,22 @@ impl Parser {
                 };
                 self.advance();
                 let fname = self.expect_ident()?;
+                // 型アノテーションは必須
                 if *self.current() != Token::Colon {
                     return Err(format!(
                         "class field `{fname}` must have a type annotation (e.g., `{keyword} {fname}: int = 0`)"
                     ));
                 }
-                self.advance(); // consume `:`
+                self.advance(); // `:` を消費
                 let type_ann = self.parse_type_expr()?;
+                // `= デフォルト値` がある場合はパース
                 let default = if *self.current() == Token::Eq {
                     self.advance();
                     Some(self.parse_expr()?)
                 } else {
                     None
                 };
+                // const フィールドはデフォルト値が必須
                 if kind == FieldKind::Const && default.is_none() {
                     return Err(format!(
                         "class variable `{fname}` declared with `const` must have an initial value (e.g., `const {fname}: int = 0`)"
@@ -737,8 +1044,17 @@ impl Parser {
         }
     }
 
-    /// Returns `true` when the given `params` list is an exact signature match for the
-    /// default constructor built from `required_fields` (same non-self count and types).
+    /// 既存の `__init__` のシグネチャが自動生成のシグネチャと完全一致するかを判定する。
+    ///
+    /// `self` を除く引数の個数と各引数の型アノテーションを比較する。
+    /// 完全一致する場合は auto-init の生成をスキップする（override）。
+    ///
+    /// # 引数
+    /// - `required_fields`: 必須フィールドの `(フィールド名, 型名)` リスト
+    /// - `params`: 既存 `__init__` のパラメータリスト
+    ///
+    /// # 戻り値
+    /// 完全一致する場合は `true`
     fn init_sig_matches(required_fields: &[(String, String)], params: &[Param]) -> bool {
         let non_self: Vec<_> = params.iter().filter(|p| p.name != "self").collect();
         non_self.len() == required_fields.len()
@@ -747,8 +1063,15 @@ impl Parser {
             })
     }
 
-    /// Parses optional concrete type arguments at a call/inheritance site: `[Type1, Type2]`.
-    /// Returns an empty vec if the current token is not `[`.
+    /// 呼び出しサイトや継承サイトの具体型引数列 `[Type1, Type2, ...]` をパースする。
+    ///
+    /// 現在のトークンが `[` でない場合は空のベクタを返す（型引数なし）。
+    ///
+    /// # 戻り値
+    /// 型名の文字列リスト（型引数がない場合は空 Vec）
+    ///
+    /// # エラー
+    /// 型名のパースに失敗した場合、または `]` がない場合
     fn parse_type_args(&mut self) -> Result<Vec<String>, String> {
         if *self.current() != Token::LBracket {
             return Ok(vec![]);
@@ -767,8 +1090,16 @@ impl Parser {
         Ok(args)
     }
 
-    /// Parses optional template parameters: `[T1: Trait1 and Trait2, T2: Trait3]`.
-    /// Returns an empty vec if the current token is not `[`.
+    /// テンプレートパラメータ列 `[T1: Trait1 and Trait2, T2: Trait3]` をパースする。
+    ///
+    /// 現在のトークンが `[` でない場合は空のベクタを返す（テンプレートなし）。
+    /// 各パラメータは `名前: トレイト1 [and トレイト2 ...]` の形式。
+    ///
+    /// # 戻り値
+    /// `TemplateParam` のリスト（テンプレートパラメータがない場合は空 Vec）
+    ///
+    /// # エラー
+    /// 識別子やトレイト名のパースに失敗した場合、または `]` がない場合
     fn parse_template_params(&mut self) -> Result<Vec<TemplateParam>, String> {
         if *self.current() != Token::LBracket {
             return Ok(vec![]);
@@ -778,8 +1109,9 @@ impl Parser {
         while *self.current() != Token::RBracket && *self.current() != Token::Eof {
             let name = self.expect_ident()?;
             self.eat(&Token::Colon)?;
+            // 最初のトレイト制約を読む
             let mut constraints = vec![self.expect_ident()?];
-            // `and`-combined constraints: `T: TraitA and TraitB`
+            // `and` で複数のトレイト制約を結合: `T: TraitA and TraitB`
             while *self.current() == Token::And {
                 self.advance();
                 constraints.push(self.expect_ident()?);
@@ -795,7 +1127,19 @@ impl Parser {
         Ok(params)
     }
 
+    /// 関数パラメータを1つパースして `Param` を返す。
+    ///
+    /// 構文: `[mut] 識別子 [: 型]`
+    ///
+    /// # 戻り値
+    /// `Param { name, mutable, type_ann }`
+    /// - `mutable`: `mut` キーワードが先行している場合は `true`
+    /// - `type_ann`: `: 型` がある場合は `Some(型名)`、ない場合は `None`
+    ///
+    /// # エラー
+    /// 識別子または型名のパースに失敗した場合
     fn parse_param(&mut self) -> Result<Param, String> {
+        // `mut` キーワードがあればパラメータはミュータブル
         let mutable = if *self.current() == Token::Mut {
             self.advance();
             true
@@ -803,7 +1147,7 @@ impl Parser {
             false
         };
         let name = self.expect_ident()?;
-        // Capture optional type annotation: : Type
+        // 型アノテーション `: 型` があればパース
         let type_ann = if *self.current() == Token::Colon {
             self.advance();
             Some(self.parse_type_expr()?)
@@ -813,8 +1157,25 @@ impl Parser {
         Ok(Param { name, mutable, type_ann })
     }
 
-    // Parses a type expression and returns the base type name (generic args are skipped).
-    // Accepts identifiers and keyword-tokens that are valid type names (e.g. `None`, `Self`).
+    /// 型アノテーション文字列をパースして基底型名を返す。
+    ///
+    /// ジェネリック引数（`list[int]`・`dict[str, int]` 等）はスキップし基底型名のみ返す。
+    /// ただし `tuple[T1, T2, ...]` は要素型を保持した形式（`"tuple[int,str]"` など）で返す。
+    /// `Union[T1, T2]` / `Option[T]` も完全な文字列表現で返す。
+    ///
+    /// 受け入れる型名:
+    /// - 識別子（`int`, `str`, `MyClass` 等）
+    /// - `None`, `Any`（キーワードトークン）
+    /// - `Self`（クラス・トレイト内のみ有効）
+    /// - `Union[...]`, `Option[...]`（複合型）
+    ///
+    /// # 戻り値
+    /// 型名の文字列
+    ///
+    /// # エラー
+    /// `Self` をクラス・トレイト外で使用した場合、
+    /// 型名として認識できないトークンが現れた場合、
+    /// または `Union` に2つ未満の型引数を指定した場合
     fn parse_type_expr(&mut self) -> Result<String, String> {
         match self.current().clone() {
             Token::Union => {
@@ -888,8 +1249,15 @@ impl Parser {
         Ok(base)
     }
 
-    /// Returns `true` when the current `[...]` at `self.pos` is immediately followed by `(`
-    /// after its matching `]` — indicating a template instantiation call rather than subscript.
+    /// 現在位置の `[...]` がテンプレート呼び出しか subscript かを先読みで判定する。
+    ///
+    /// `]` の直後に `(` が続く場合はテンプレート呼び出し（`f[T](args)` 形式）、
+    /// そうでない場合は subscript（`obj[index]` 形式）とみなす。
+    ///
+    /// ネストした `[]` を正しく追跡するため深さカウンタを使用する。
+    ///
+    /// # 戻り値
+    /// テンプレート呼び出しと判定した場合は `true`、subscript の場合は `false`
     fn is_template_instantiation(&self) -> bool {
         let mut i = self.pos + 1; // skip the opening `[`
         let mut depth = 1usize;
@@ -913,6 +1281,13 @@ impl Parser {
         false
     }
 
+    /// 現在のトークンが識別子（`Token::Ident`）であれば消費して名前を返す。
+    ///
+    /// # 戻り値
+    /// 識別子の名前文字列
+    ///
+    /// # エラー
+    /// 現在のトークンが識別子でない場合
     fn expect_ident(&mut self) -> Result<String, String> {
         if let Token::Ident(name) = self.current().clone() {
             self.advance();
@@ -922,12 +1297,26 @@ impl Parser {
         }
     }
 
-    // --- Expression parsing (precedence climbing) ---
+    // --- 式のパース（優先順位昇順）---
 
+    /// 式をパースする（演算子優先順位の最低レベル）。
+    ///
+    /// 内部的には `parse_or()` に委譲し、`or` 演算子から始まる優先順位の連鎖を経て
+    /// 最終的に `parse_primary()` まで到達する。
+    ///
+    /// # 戻り値
+    /// パースした式（`Expr`）
+    ///
+    /// # エラー
+    /// 式のパースに失敗した場合
     pub fn parse_expr(&mut self) -> Result<Expr, String> {
         self.parse_or()
     }
 
+    /// `or` 二項演算子（短絡評価）を左結合でパースする。
+    ///
+    /// 優先順位: `or` < `and` の関係。
+    /// `parse_and()` を下位に委譲する。
     fn parse_or(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_and()?;
         while *self.current() == Token::Or {
@@ -939,6 +1328,10 @@ impl Parser {
         Ok(left)
     }
 
+    /// `and` 二項演算子（短絡評価）を左結合でパースする。
+    ///
+    /// 優先順位: `and` < `not`。
+    /// `parse_not()` を下位に委譲する。
     fn parse_and(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_not()?;
         while *self.current() == Token::And {
@@ -950,15 +1343,24 @@ impl Parser {
         Ok(left)
     }
 
+    /// `not` 単項演算子（論理否定）を右結合でパースする。
+    ///
+    /// `not not x` のように連鎖する場合も再帰で処理する。
+    /// `not` でない場合は `parse_comparison()` に委譲する。
     fn parse_not(&mut self) -> Result<Expr, String> {
         if *self.current() == Token::Not {
             self.advance();
+            // 再帰で右結合を実現
             let operand = self.parse_not()?;
             return Ok(Expr::UnaryOp { op: UnaryOp::Not, operand: Box::new(operand) });
         }
         self.parse_comparison()
     }
 
+    /// 比較演算子（`==`, `!=`, `<`, `>`, `<=`, `>=`）をパースする。
+    ///
+    /// 連鎖比較（`a < b < c` 等）は非対応。1つの比較式のみを生成する。
+    /// 比較演算子がない場合は `parse_bitor()` に委譲する。
     fn parse_comparison(&mut self) -> Result<Expr, String> {
         let left = self.parse_bitor()?;
         let span = self.current_span();
@@ -979,6 +1381,10 @@ impl Parser {
         Ok(left)
     }
 
+    /// ビット OR 演算子（`|`）を左結合でパースする。
+    ///
+    /// 優先順位: `|` < `^` < `&`。
+    /// `parse_bitxor()` を下位に委譲する。
     fn parse_bitor(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_bitxor()?;
         while *self.current() == Token::Pipe {
@@ -990,6 +1396,9 @@ impl Parser {
         Ok(left)
     }
 
+    /// ビット XOR 演算子（`^`）を左結合でパースする。
+    ///
+    /// `parse_bitand()` を下位に委譲する。
     fn parse_bitxor(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_bitand()?;
         while *self.current() == Token::Caret {
@@ -1001,6 +1410,9 @@ impl Parser {
         Ok(left)
     }
 
+    /// ビット AND 演算子（`&`）を左結合でパースする。
+    ///
+    /// `parse_shift()` を下位に委譲する。
     fn parse_bitand(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_shift()?;
         while *self.current() == Token::Amp {
@@ -1012,6 +1424,9 @@ impl Parser {
         Ok(left)
     }
 
+    /// シフト演算子（`<<`, `>>`）を左結合でパースする。
+    ///
+    /// `parse_additive()` を下位に委譲する。
     fn parse_shift(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_additive()?;
         loop {
@@ -1032,6 +1447,10 @@ impl Parser {
         Ok(left)
     }
 
+    /// 加算・減算演算子（`+`, `-`）を左結合でパースする。
+    ///
+    /// 文字列の `+` 連結もここで処理される。
+    /// `parse_multiplicative()` を下位に委譲する。
     fn parse_additive(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_multiplicative()?;
         loop {
@@ -1052,6 +1471,9 @@ impl Parser {
         Ok(left)
     }
 
+    /// 乗算・除算・剰余演算子（`*`, `/`, `//`, `%`）を左結合でパースする。
+    ///
+    /// `parse_unary()` を下位に委譲する。
     fn parse_multiplicative(&mut self) -> Result<Expr, String> {
         let mut left = self.parse_unary()?;
         loop {
@@ -1074,16 +1496,23 @@ impl Parser {
         Ok(left)
     }
 
+    /// 単項演算子（`-`, `~`, 単項 `+`）をパースする。
+    ///
+    /// 再帰構造により `--x` のような連鎖も正しく処理する。
+    /// 単項演算子でない場合は `parse_power()` に委譲する。
     fn parse_unary(&mut self) -> Result<Expr, String> {
         match self.current() {
+            // 単項マイナス（算術否定）
             Token::Minus => {
                 self.advance();
                 Ok(Expr::UnaryOp { op: UnaryOp::Neg, operand: Box::new(self.parse_unary()?) })
             }
+            // ビット NOT（`~`）
             Token::Tilde => {
                 self.advance();
                 Ok(Expr::UnaryOp { op: UnaryOp::BitNot, operand: Box::new(self.parse_unary()?) })
             }
+            // 単項プラス（`+x` は `x` と同義）
             Token::Plus => {
                 self.advance();
                 self.parse_unary()
@@ -1092,34 +1521,48 @@ impl Parser {
         }
     }
 
+    /// 冪乗演算子（`**`）を右結合でパースする。
+    ///
+    /// 右結合のため右辺は `parse_unary()` で再帰する（`parse_power()` でなく）。
+    /// `**` がない場合は `parse_call()` の結果をそのまま返す。
     fn parse_power(&mut self) -> Result<Expr, String> {
         let base = self.parse_call()?;
         if *self.current() == Token::StarStar {
             let span = self.current_span();
             self.advance();
-            let exp = self.parse_unary()?; // right-associative
+            // 右結合: 右辺は unary レベルから再帰する
+            let exp = self.parse_unary()?;
             Ok(Expr::BinOp { op: BinOp::Pow, left: Box::new(base), right: Box::new(exp), span })
         } else {
             Ok(base)
         }
     }
 
+    /// 後置演算子（関数呼び出し・属性アクセス・subscript・テンプレート呼び出し）をパースする。
+    ///
+    /// `parse_primary()` で基本式をパースした後、後続するトークンに応じてループする:
+    /// - `(` → 関数呼び出し（位置引数・キーワード引数）
+    /// - `.` → 属性アクセス（`Expr::Attr`）
+    /// - `::` → トレイトアクセス（`Expr::TraitAccess`）
+    /// - `[` → `parse_bracket_suffix()` に委譲（template or subscript）
     fn parse_call(&mut self) -> Result<Expr, String> {
         let mut expr = self.parse_primary()?;
         loop {
             match self.current() {
                 Token::LParen => {
-                    self.advance(); // consume `(`
+                    self.advance(); // `(` を消費
                     let mut args = Vec::new();
+                    // 引数リストをパース。キーワード引数（`name=expr`）と位置引数を区別する
                     while *self.current() != Token::RParen && *self.current() != Token::Eof {
-                        // Keyword argument: Ident `=` expr  (not `==`)
+                        // キーワード引数の判定: `Ident =`（`==` ではない）
                         let arg = if let Token::Ident(name) = self.current().clone() {
                             if *self.peek1() == Token::Eq {
                                 let name = name.clone();
-                                self.advance(); // consume Ident
-                                self.advance(); // consume `=`
+                                self.advance(); // Ident を消費
+                                self.advance(); // `=` を消費
                                 CallArg::Keyword { name, value: self.parse_expr()? }
                             } else {
+                                // `==` 等の場合は位置引数として処理
                                 CallArg::Positional(self.parse_expr()?)
                             }
                         } else {
@@ -1136,39 +1579,21 @@ impl Parser {
                     expr = Expr::Call { func: Box::new(expr), args };
                 }
                 Token::Dot => {
-                    self.advance(); // consume `.`
+                    self.advance(); // `.` を消費
                     let attr = self.expect_ident()?;
                     expr = Expr::Attr { object: Box::new(expr), attr };
                 }
                 Token::ColonColon => {
-                    self.advance(); // consume `::`
+                    // `obj::TraitName.attr` 形式のトレイトアクセス
+                    self.advance(); // `::` を消費
                     let trait_name = self.expect_ident()?;
                     self.eat(&Token::Dot)?;
                     let attr = self.expect_ident()?;
                     expr = Expr::TraitAccess { object: Box::new(expr), trait_name, attr };
                 }
                 Token::LBracket => {
-                    if self.is_template_instantiation() {
-                        // Template instantiation: `expr[T1, T2](args)`
-                        self.advance(); // consume `[`
-                        let mut type_args = Vec::new();
-                        while *self.current() != Token::RBracket && *self.current() != Token::Eof {
-                            type_args.push(self.parse_type_expr()?);
-                            if *self.current() == Token::Comma {
-                                self.advance();
-                            } else {
-                                break;
-                            }
-                        }
-                        self.eat(&Token::RBracket)?;
-                        expr = Expr::TemplateInstantiate { base: Box::new(expr), type_args };
-                    } else {
-                        // Subscript access: `expr[index]`
-                        self.advance(); // consume `[`
-                        let index = self.parse_expr()?;
-                        self.eat(&Token::RBracket)?;
-                        expr = Expr::Subscript { object: Box::new(expr), index: Box::new(index) };
-                    }
+                    // `[` の後がテンプレート呼び出しか subscript かを判定して処理
+                    expr = self.parse_bracket_suffix(expr)?;
                 }
                 _ => break,
             }
@@ -1176,17 +1601,64 @@ impl Parser {
         Ok(expr)
     }
 
+    /// `expr[...]` を `Expr::TemplateInstantiate` または `Expr::Subscript` としてパースする。
+    ///
+    /// `is_template_instantiation()` の先読み結果に基づいて分岐する:
+    /// - `]` の直後に `(` がある → テンプレート呼び出し（`f[T](args)` 形式）
+    /// - それ以外 → サブスクリプト（`obj[index]` 形式）
+    ///
+    /// # 引数
+    /// - `expr`: `[...]` の左側にある式
+    ///
+    /// # 戻り値
+    /// `Expr::TemplateInstantiate` または `Expr::Subscript`
+    ///
+    /// # エラー
+    /// 型引数・インデックス式・`]` のパースに失敗した場合
+    fn parse_bracket_suffix(&mut self, expr: Expr) -> Result<Expr, String> {
+        if self.is_template_instantiation() {
+            // テンプレート呼び出し: 型引数リストをパース
+            self.advance(); // `[` を消費
+            let mut type_args = Vec::new();
+            while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+                type_args.push(self.parse_type_expr()?);
+                if *self.current() == Token::Comma { self.advance(); } else { break; }
+            }
+            self.eat(&Token::RBracket)?;
+            Ok(Expr::TemplateInstantiate { base: Box::new(expr), type_args })
+        } else {
+            // サブスクリプト（インデックスアクセス）
+            self.advance(); // `[` を消費
+            let index = self.parse_expr()?;
+            self.eat(&Token::RBracket)?;
+            Ok(Expr::Subscript { object: Box::new(expr), index: Box::new(index) })
+        }
+    }
+
+    /// 基本式（リテラル・識別子・括弧式・リスト・辞書）をパースする。
+    ///
+    /// 先頭トークンに応じて以下を生成する:
+    /// - 整数・浮動小数点数・文字列・真偽値リテラル
+    /// - `None`, `Any`, `Union`, `Option` 識別子
+    /// - 一般識別子（`Expr::Ident`）
+    /// - `Self`（クラス・トレイト内のみ有効）
+    /// - `(...)` → `parse_paren_expr()`（グループ式またはタプル）
+    /// - `[...]` → `parse_list_literal()`
+    /// - `{...}` → `parse_dict_literal()`
+    ///
+    /// # エラー
+    /// 未対応トークンが現れた場合、または `Self` をクラス外で使用した場合
     fn parse_primary(&mut self) -> Result<Expr, String> {
         match self.current().clone() {
-            Token::Int(n) => { self.advance(); Ok(Expr::Int(n)) }
+            Token::Int(n)   => { self.advance(); Ok(Expr::Int(n)) }
             Token::Float(f) => { self.advance(); Ok(Expr::Float(f)) }
-            Token::Str(s) => { self.advance(); Ok(Expr::Str(s)) }
-            Token::True => { self.advance(); Ok(Expr::Bool(true)) }
-            Token::False => { self.advance(); Ok(Expr::Bool(false)) }
-            Token::None => { self.advance(); Ok(Expr::None) }
-            Token::Any => { self.advance(); Ok(Expr::Ident("Any".to_string())) }
-            Token::Union => { self.advance(); Ok(Expr::Ident("Union".to_string())) }
-            Token::Option => { self.advance(); Ok(Expr::Ident("Option".to_string())) }
+            Token::Str(s)   => { self.advance(); Ok(Expr::Str(s)) }
+            Token::True     => { self.advance(); Ok(Expr::Bool(true)) }
+            Token::False    => { self.advance(); Ok(Expr::Bool(false)) }
+            Token::None     => { self.advance(); Ok(Expr::None) }
+            Token::Any      => { self.advance(); Ok(Expr::Ident("Any".to_string())) }
+            Token::Union    => { self.advance(); Ok(Expr::Ident("Union".to_string())) }
+            Token::Option   => { self.advance(); Ok(Expr::Ident("Option".to_string())) }
             Token::Ident(name) => { self.advance(); Ok(Expr::Ident(name)) }
             Token::SelfType => {
                 if self.class_or_trait_depth == 0 {
@@ -1195,66 +1667,89 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Ident("Self".to_string()))
             }
-            Token::LParen => {
-                self.advance(); // consume `(`
-                // Empty tuple: ()
-                if *self.current() == Token::RParen {
-                    self.advance();
-                    return Ok(Expr::Tuple(vec![]));
-                }
-                let first = self.parse_expr()?;
-                // Grouped expression: (expr)  — no comma follows
-                if *self.current() == Token::RParen {
-                    self.advance();
-                    return Ok(first);
-                }
-                // Tuple: (expr, ...)
-                self.eat(&Token::Comma)?;
-                let mut items = vec![first];
-                while *self.current() != Token::RParen && *self.current() != Token::Eof {
-                    items.push(self.parse_expr()?);
-                    if *self.current() == Token::Comma {
-                        self.advance();
-                    } else {
-                        break;
-                    }
-                }
-                self.eat(&Token::RParen)?;
-                Ok(Expr::Tuple(items))
-            }
-            Token::LBracket => {
-                self.advance(); // consume `[`
-                let mut items = Vec::new();
-                while *self.current() != Token::RBracket && *self.current() != Token::Eof {
-                    items.push(self.parse_expr()?);
-                    if *self.current() == Token::Comma {
-                        self.advance();
-                    } else {
-                        break;
-                    }
-                }
-                self.eat(&Token::RBracket)?;
-                Ok(Expr::List(items))
-            }
-            Token::LBrace => {
-                self.advance(); // consume `{`
-                let mut pairs = Vec::new();
-                while *self.current() != Token::RBrace && *self.current() != Token::Eof {
-                    let key = self.parse_expr()?;
-                    self.eat(&Token::Colon)?;
-                    let val = self.parse_expr()?;
-                    pairs.push((key, val));
-                    if *self.current() == Token::Comma {
-                        self.advance();
-                    } else {
-                        break;
-                    }
-                }
-                self.eat(&Token::RBrace)?;
-                Ok(Expr::Dict(pairs))
-            }
+            Token::LParen   => self.parse_paren_expr(),
+            Token::LBracket => self.parse_list_literal(),
+            Token::LBrace   => self.parse_dict_literal(),
             tok => Err(format!("unexpected token: `{tok}`")),
         }
+    }
+
+    /// `(...)` をパースし、グループ式またはタプルを返す。
+    ///
+    /// 判定ルール:
+    /// - `()` → 空タプル（`Expr::Tuple([])`）
+    /// - `(expr)` → グループ式（タプルではない。`expr` をそのまま返す）
+    /// - `(expr,)` → 単要素タプル（末尾カンマ必須）
+    /// - `(expr, expr, ...)` → 多要素タプル
+    ///
+    /// 括弧内では改行がスキップされるため、多行タプルリテラルも有効。
+    ///
+    /// # 戻り値
+    /// グループ式の場合はその式、タプルの場合は `Expr::Tuple(items)`
+    ///
+    /// # エラー
+    /// 内部式または `)` のパースに失敗した場合
+    fn parse_paren_expr(&mut self) -> Result<Expr, String> {
+        self.advance(); // `(` を消費
+        // 空タプル `()` を処理
+        if *self.current() == Token::RParen {
+            self.advance();
+            return Ok(Expr::Tuple(vec![]));
+        }
+        let first = self.parse_expr()?;
+        // `)` が続けばグループ式（タプルではない）
+        if *self.current() == Token::RParen {
+            self.advance();
+            return Ok(first);
+        }
+        // `,` が続けば単要素タプルまたは多要素タプル
+        self.eat(&Token::Comma)?;
+        let mut items = vec![first];
+        while *self.current() != Token::RParen && *self.current() != Token::Eof {
+            items.push(self.parse_expr()?);
+            // 末尾カンマがあればスキップ
+            if *self.current() == Token::Comma { self.advance(); } else { break; }
+        }
+        self.eat(&Token::RParen)?;
+        Ok(Expr::Tuple(items))
+    }
+
+    /// `[expr, ...]` リストリテラルをパースして `Expr::List` を返す。
+    ///
+    /// 空リスト `[]` も有効。
+    ///
+    /// # エラー
+    /// 内部式または `]` のパースに失敗した場合
+    fn parse_list_literal(&mut self) -> Result<Expr, String> {
+        self.advance(); // consume `[`
+        let mut items = Vec::new();
+        while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+            items.push(self.parse_expr()?);
+            if *self.current() == Token::Comma { self.advance(); } else { break; }
+        }
+        self.eat(&Token::RBracket)?;
+        Ok(Expr::List(items))
+    }
+
+    /// `{key: value, ...}` 辞書リテラルをパースして `Expr::Dict` を返す。
+    ///
+    /// 空の `{}` も有効（`dict[Any, Any]` 型として扱われる）。
+    /// 括弧内では改行がスキップされるため、多行辞書リテラルも有効。
+    ///
+    /// # エラー
+    /// キー・値の式または `}` のパースに失敗した場合
+    fn parse_dict_literal(&mut self) -> Result<Expr, String> {
+        self.advance(); // consume `{`
+        let mut pairs = Vec::new();
+        while *self.current() != Token::RBrace && *self.current() != Token::Eof {
+            let key = self.parse_expr()?;
+            self.eat(&Token::Colon)?;
+            let val = self.parse_expr()?;
+            pairs.push((key, val));
+            if *self.current() == Token::Comma { self.advance(); } else { break; }
+        }
+        self.eat(&Token::RBrace)?;
+        Ok(Expr::Dict(pairs))
     }
 }
 
@@ -1716,11 +2211,11 @@ mod tests {
     }
 
     #[test]
-    fn test_trait_virtual_method_is_virtual() {
+    fn test_trait_virtual_method_is_abstract() {
         let stmts = parse("trait Animal:\n    fn speak(self) -> str:\n        ...\n");
         if let Stmt::TraitDef { body, .. } = &stmts[0] {
-            assert!(matches!(&body[0], Stmt::FnDef { name, is_virtual: true, .. } if name == "speak"),
-                "method with `...` body should have is_virtual: true");
+            assert!(matches!(&body[0], Stmt::FnDef { name, is_abstract: true, .. } if name == "speak"),
+                "method with `...` body should have is_abstract: true");
         } else {
             panic!("expected TraitDef");
         }
@@ -1730,8 +2225,8 @@ mod tests {
     fn test_trait_non_virtual_method_is_not_virtual() {
         let stmts = parse("trait Logger:\n    fn log(self, msg: str) -> None:\n        pass\n");
         if let Stmt::TraitDef { body, .. } = &stmts[0] {
-            assert!(matches!(&body[0], Stmt::FnDef { name, is_virtual: false, .. } if name == "log"),
-                "method with real body should have is_virtual: false");
+            assert!(matches!(&body[0], Stmt::FnDef { name, is_abstract: false, .. } if name == "log"),
+                "method with real body should have is_abstract: false");
         } else {
             panic!("expected TraitDef");
         }
@@ -1741,8 +2236,8 @@ mod tests {
     fn test_trait_virtual_body_is_empty() {
         let stmts = parse("trait T:\n    fn f(self) -> int:\n        ...\n");
         if let Stmt::TraitDef { body, .. } = &stmts[0] {
-            if let Stmt::FnDef { body: fn_body, is_virtual, .. } = &body[0] {
-                assert!(*is_virtual);
+            if let Stmt::FnDef { body: fn_body, is_abstract, .. } = &body[0] {
+                assert!(*is_abstract);
                 assert!(fn_body.is_empty(), "virtual method body should be empty");
             } else {
                 panic!("expected FnDef");
@@ -1857,14 +2352,14 @@ mod tests {
     #[test]
     fn test_fn_is_not_virtual_by_default() {
         let stmts = parse("fn hello() -> None:\n    pass\n");
-        assert!(matches!(&stmts[0], Stmt::FnDef { is_virtual: false, .. }));
+        assert!(matches!(&stmts[0], Stmt::FnDef { is_abstract: false, .. }));
     }
 
     #[test]
     fn test_class_method_is_not_virtual() {
         let stmts = parse("class Foo:\n    fn greet(self) -> str:\n        pass\n");
         if let Stmt::ClassDef { body, .. } = &stmts[0] {
-            assert!(matches!(&body[0], Stmt::FnDef { name, is_virtual: false, .. } if name == "greet"));
+            assert!(matches!(&body[0], Stmt::FnDef { name, is_abstract: false, .. } if name == "greet"));
         } else {
             panic!("expected ClassDef");
         }

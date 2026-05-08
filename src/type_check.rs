@@ -9,34 +9,57 @@ use crate::token::Span;
 // Inferred type
 // ---------------------------------------------------------------------------
 
+/// 静的型検査で推論される型の種別。
+///
+/// AST を走査して式に割り当てられる型を表す。実行時の `Value` とは独立した型表現であり、
+/// 静的解析フェーズでのみ使用される。型が静的に確定しない場合は `Unresolved` を使用し、
+/// 実行時の型検査に委ねる。
 #[derive(Debug, Clone, PartialEq)]
 pub enum InferredType {
+    /// 整数型（`int`）
     Int,
+    /// 浮動小数点型（`float`）
     Float,
+    /// 文字列型（`str`）
     Str,
+    /// 真偽値型（`bool`）
     Bool,
+    /// ヌル型（`None`）
     None,
+    /// リスト型（`list`）。要素型は現時点では追跡しない。
     List,
-    /// A value whose runtime type is `type` — it holds a type itself (e.g. `int`, a class).
+    /// 型そのものを値として保持する型（`int`・クラス名などの型値）。
     TypeVal,
-    /// The `Self` type annotation used inside class/trait methods.
-    /// Resolved to the enclosing class at the call site.
+    /// クラス・trait 本体でのみ使用できる特殊な型キーワード。
+    /// 呼び出し時にレシーバのクラスに解決される。
     SelfType,
-    /// An instance of a named class or new_type.
+    /// 名前付きクラスまたは new_type のインスタンス。
+    /// 文字列はクラス名（または new_type 名）を表す。
     NamedInstance(String),
-    /// The `Any` type: holds any value but requires explicit downcast before use.
+    /// 任意の値を受け付ける型。使用前に明示的なダウンキャストが必要。
     Any,
-    /// `Union[T1, T2, ...]` / `Option[T]` (desugared to `Union[T, None]`).
-    /// Requires explicit downcast before use in typed operations.
+    /// `Union[T1, T2, ...]` または `Option[T]`（`Union[T, None]` に脱糖される）。
+    /// 使用前に明示的なダウンキャストが必要。
     Union(Vec<InferredType>),
-    /// A dict value (typed or untyped).
+    /// 辞書型（型付き・型なし共通）。
     Dict,
-    /// A tuple with known per-element types: `tuple[T1, T2, ...]`.
+    /// 各要素の型が既知のタプル型 `tuple[T1, T2, ...]`。
+    /// `Vec` の各要素がタプルの各フィールドの型に対応する。
     Tuple(Vec<InferredType>),
-    Unknown, // cannot be determined statically
+    /// 静的に確定できない型。実行時の型検査に委ねる。
+    Unresolved,
 }
 
-/// Splits `s` by commas at bracket depth 0 (handles nested `Union[...]`, `Option[...]`).
+/// 文字列 `s` をブラケット深さ 0 のカンマで分割する。
+///
+/// `Union[int, str]` や `Option[int]` のようなネストした型引数を正しく分割するために使用する。
+/// ブラケット内のカンマは区切りとして扱われない。
+///
+/// # 引数
+/// - `s`: 分割対象の型注釈文字列（例: `"int, str"`, `"Union[int, str], bool"`）
+///
+/// # 戻り値
+/// トップレベルのカンマで分割されたスライスの `Vec`。末尾の空部分も含まれる。
 fn split_top_level_commas(s: &str) -> Vec<&str> {
     let mut result = Vec::new();
     let mut depth = 0usize;
@@ -57,7 +80,16 @@ fn split_top_level_commas(s: &str) -> Vec<&str> {
 }
 
 impl InferredType {
-    /// Convert a type annotation string (e.g. "int", "Union[int,str]") to InferredType.
+    /// 型注釈文字列（例: `"int"`, `"Union[int,str]"`, `"tuple[int, str]"`）を
+    /// [`InferredType`] に変換する。
+    ///
+    /// 認識できない文字列は `None` を返す。
+    ///
+    /// # 引数
+    /// - `ann`: パーサーが生成した型注釈の文字列表現
+    ///
+    /// # 戻り値
+    /// 対応する `InferredType`。認識できない場合は `None`。
     fn from_ann(ann: &str) -> Option<Self> {
         if let Some(inner) = ann.strip_prefix("Union[").and_then(|s| s.strip_suffix(']')) {
             let parts = split_top_level_commas(inner);
@@ -97,14 +129,24 @@ impl InferredType {
 // Function signature (param types + return type)
 // ---------------------------------------------------------------------------
 
+/// 関数（またはメソッド）のシグネチャ情報。
+///
+/// 前処理パス（[`TypeChecker::collect_fn_sigs`]）で収集し、呼び出し検査で参照する。
+/// オーバーロードがある場合は同じ関数名に複数の `FnSig` が紐付けられる。
 #[derive(Clone)]
 struct FnSig {
-    /// (parameter name, declared type); type is None when no annotation.
+    /// パラメータのリスト。各要素は `(パラメータ名, 宣言された型)` のタプル。
+    /// 型アノテーションがないパラメータの型は `None`。
     params: Vec<(String, Option<InferredType>)>,
+    /// 戻り値の型。型アノテーションがない場合は `None`。
     return_type: Option<InferredType>,
 }
 
 impl std::fmt::Display for InferredType {
+    /// `InferredType` を人間が読める文字列に変換する。
+    ///
+    /// エラーメッセージ中の型名表示に使用される。
+    /// `Union[T, None]` は `Option[T]` として表示し、ユーザーが型注釈で書いた形式と一致させる。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Int => write!(f, "int"),
@@ -119,7 +161,7 @@ impl std::fmt::Display for InferredType {
             Self::NamedInstance(name) => write!(f, "{name}"),
             Self::Any => write!(f, "Any"),
             Self::Union(types) => {
-                // Display as Option[T] when it's Union[T, None] (Option desugaring)
+                // Union[T, None] は Option[T] として表示（型注釈の脱糖と逆変換）
                 if types.len() == 2 && types[1] == Self::None {
                     write!(f, "Option[{}]", types[0])
                 } else {
@@ -131,7 +173,7 @@ impl std::fmt::Display for InferredType {
                 let parts: Vec<String> = types.iter().map(|t| t.to_string()).collect();
                 write!(f, "tuple[{}]", parts.join(", "))
             }
-            Self::Unknown => write!(f, "unknown"),
+            Self::Unresolved => write!(f, "unknown"),
         }
     }
 }
@@ -140,70 +182,148 @@ impl std::fmt::Display for InferredType {
 // Error kind — add new variants here when extending checks
 // ---------------------------------------------------------------------------
 
+/// 静的型エラーの種別。
+///
+/// 新しい型検査ルールを追加する場合はこの enum に variant を追加し、
+/// [`TypeChecker::check_stmt`] / [`TypeChecker::check_binop`] に対応する arm を追加する。
+/// エラーのフォーマットは [`StaticTypeError`] の `Display` 実装で定義される。
 #[derive(Debug, Clone)]
 pub enum TypeErrorKind {
-    /// Ordering comparison between incompatible types (e.g. str < int)
+    /// 順序比較演算子（`<` / `>` / `<=` / `>=`）に互換性のない型を使用した
+    /// （例: `str < int`）。
     IncompatibleComparison {
+        /// 左辺の推論型
         lhs: InferredType,
+        /// 右辺の推論型
         rhs: InferredType,
+        /// 使用された演算子記号（`"<"` / `">"` / `"<="` / `">="` のいずれか）
         op: &'static str,
     },
-    /// Assignment (plain or compound) to an immutable variable
-    AssignToImmutable { name: String },
-    /// Function called with wrong number of arguments
-    CallArgCountMismatch { func_name: String, expected: usize, got: usize },
-    /// Function called with an argument whose type conflicts with the declared parameter type
-    CallArgTypeMismatch {
+    /// 不変変数（`let` / `const`）への代入または複合代入を試みた。
+    AssignToImmutable {
+        /// 代入対象の変数名
+        name: String,
+    },
+    /// 関数呼び出し時に渡した引数の個数が定義と異なる（単一定義の場合）。
+    CallArgCountMismatch {
+        /// 呼び出した関数名
         func_name: String,
+        /// 定義で期待される引数個数
+        expected: usize,
+        /// 実際に渡された引数個数
+        got: usize,
+    },
+    /// 関数呼び出し時に渡した引数の型がパラメータ宣言型と不一致。
+    CallArgTypeMismatch {
+        /// 呼び出した関数名
+        func_name: String,
+        /// 不一致が発生したパラメータの 0 始まりインデックス
         param_index: usize,
+        /// パラメータに宣言された期待型
         expected: InferredType,
+        /// 実際に渡した引数の推論型
         got: InferredType,
     },
-    /// A function parameter is missing a type annotation
-    MissingParamTypeAnn { func_name: String, param_name: String },
-    /// A function definition is missing a return type annotation
-    MissingReturnTypeAnn { func_name: String },
-    /// A keyword argument name does not match any parameter of the function
-    UnknownKeywordArg { func_name: String, arg_name: String },
-    /// Overloaded function: no overload accepts the given number of arguments
-    NoMatchingOverload { func_name: String, got: usize, available: Vec<usize> },
-    /// A `Self`-typed parameter received an instance of a different class/new_type
-    SelfTypeMismatch {
-        method: String,
+    /// 関数パラメータに型アノテーションがない（`self` は除外）。
+    MissingParamTypeAnn {
+        /// 対象の関数名
+        func_name: String,
+        /// アノテーションが欠如しているパラメータ名
         param_name: String,
+    },
+    /// 関数定義に戻り値型アノテーションがない。
+    MissingReturnTypeAnn {
+        /// 対象の関数名
+        func_name: String,
+    },
+    /// キーワード引数の名前が関数のいずれのパラメータとも一致しない。
+    UnknownKeywordArg {
+        /// 呼び出した関数名
+        func_name: String,
+        /// 使用した存在しないキーワード引数名
+        arg_name: String,
+    },
+    /// オーバーロード関数において、渡した引数個数と一致するオーバーロードが存在しない。
+    NoMatchingOverload {
+        /// 呼び出した関数名
+        func_name: String,
+        /// 実際に渡された引数個数
+        got: usize,
+        /// 利用可能なオーバーロードが受け付ける引数個数のリスト
+        available: Vec<usize>,
+    },
+    /// `Self` 型パラメータに異なるクラス / new_type のインスタンスを渡した。
+    SelfTypeMismatch {
+        /// 呼び出したメソッド名
+        method: String,
+        /// `Self` 型が宣言されているパラメータ名
+        param_name: String,
+        /// レシーバのクラス名（期待されるクラス）
         expected_class: String,
+        /// 実際に渡した引数のクラス名
         got_class: String,
     },
-    /// An operator was applied to an `Any`-typed value without an explicit downcast
-    OperationOnAny { op: String },
-    /// An operator was applied to a `Union`/`Option`-typed value without an explicit downcast
-    OperationOnUnion { union_type: String, op: String },
+    /// `Any` 型の値に対して明示的なダウンキャストなしで演算子を適用した。
+    OperationOnAny {
+        /// 適用した演算子の文字列表現
+        op: String,
+    },
+    /// `Union` / `Option` 型の値に対して明示的なダウンキャストなしで演算子を適用した。
+    OperationOnUnion {
+        /// 対象の Union 型の文字列表現（例: `"Union[int, str]"`）
+        union_type: String,
+        /// 適用した演算子の文字列表現
+        op: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
 // StaticTypeError
 // ---------------------------------------------------------------------------
 
+/// 静的型検査で検出されたエラー。
+///
+/// エラーの種別（[`TypeErrorKind`]）とソースコード上の位置情報（[`Span`]）を保持する。
+/// 収集された全エラーは `TypeChecker::check` の戻り値として返され、
+/// 呼び出し元がまとめて表示する。
 #[derive(Debug, Clone)]
 pub struct StaticTypeError {
+    /// エラーの種別と詳細情報
     pub kind: TypeErrorKind,
-    /// Source location of the offending token (None only when span is unavailable).
+    /// エラー発生箇所のソースコード上の位置。
+    /// スパン情報が取得できない場合のみ `None`。
     pub span: Option<Span>,
 }
 
 impl StaticTypeError {
+    /// `IncompatibleComparison` エラーを生成するコンストラクタ。
+    ///
+    /// # 引数
+    /// - `lhs`: 左辺の推論型
+    /// - `rhs`: 右辺の推論型
+    /// - `op`: 演算子記号（`"<"` など）
+    /// - `span`: エラー発生箇所のスパン
     fn incompatible_cmp(lhs: InferredType, rhs: InferredType, op: &'static str, span: Span) -> Self {
         Self { kind: TypeErrorKind::IncompatibleComparison { lhs, rhs, op }, span: Some(span) }
     }
 
+    /// `AssignToImmutable` エラーを生成するコンストラクタ。
+    ///
+    /// # 引数
+    /// - `name`: 代入しようとした不変変数の名前
+    /// - `span`: エラー発生箇所のスパン
     fn assign_immutable(name: &str, span: Span) -> Self {
         Self { kind: TypeErrorKind::AssignToImmutable { name: name.to_string() }, span: Some(span) }
     }
 }
 
 impl std::fmt::Display for StaticTypeError {
+    /// `StaticTypeError` を人間が読めるエラーメッセージに変換する。
+    ///
+    /// フォーマット: `ファイル名:行:列: StaticTypeError: <エラー内容>`
+    /// スパン情報がない場合は `<unknown>:` でプレフィックスされる。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Prefix with location when available.
+        // スパン情報があれば位置を先頭に付与する。
         match &self.span {
             Some(span) => write!(f, "{span}: ")?,
             None => write!(f, "<unknown>: ")?,
@@ -264,8 +384,14 @@ impl std::fmt::Display for StaticTypeError {
 // Type environment
 // ---------------------------------------------------------------------------
 
+/// スコープ内の変数情報。
+///
+/// 各スコープは `HashMap<String, VarInfo>` として管理され、
+/// [`TypeChecker::scope_stack`] の末尾要素が現在の最内スコープとなる。
 struct VarInfo {
+    /// 変数の静的推論型
     ty: InferredType,
+    /// `true` なら可変（`mut`）、`false` なら不変（`let` / `const`）
     mutable: bool,
 }
 
@@ -273,29 +399,42 @@ struct VarInfo {
 // TypeChecker
 // ---------------------------------------------------------------------------
 
+/// 静的型検査器。
+///
+/// プログラム全体の AST を走査し、型エラーを収集する。
+/// エントリポイントは [`TypeChecker::check`]。
+/// 検査はパース後・インタープリタ実行前に行われ、エラーが 1 件以上あれば
+/// 全エラーを表示してプログラムを終了する（終了処理は呼び出し元が担う）。
 pub struct TypeChecker {
-    // Innermost scope is last; lookup searches back-to-front.
-    scopes: Vec<HashMap<String, VarInfo>>,
-    /// All overloads per function name, collected in a pre-pass for forward-call checking.
+    /// スコープのスタック。末尾要素が最内スコープ（現在のスコープ）。
+    /// 変数の検索は末尾から先頭方向（内側から外側）に行う。
+    scope_stack: Vec<HashMap<String, VarInfo>>,
+    /// 関数名ごとのシグネチャ一覧。オーバーロードがある場合は複数エントリを持つ。
+    /// 前方参照に対応するため前処理パスで収集される。
     fn_sigs: HashMap<String, Vec<FnSig>>,
-    /// Per-class method signatures: class_name → method_name → [overloads].
-    /// Used to check Self-type parameters in method calls.
+    /// クラス名 → メソッド名 → シグネチャ一覧のマップ。
+    /// `Self` 型パラメータの検査に使用する。
     class_method_sigs: HashMap<String, HashMap<String, Vec<FnSig>>>,
-    /// Names of classes and new_types known at type-check time.
+    /// 型検査時点で既知のクラス名および new_type 名のセット。
+    /// コンストラクタ呼び出しを [`InferredType::NamedInstance`] として解決するために使用する。
     known_class_names: HashSet<String>,
+    /// 収集された型エラーのリスト。
     pub errors: Vec<StaticTypeError>,
 }
 
 impl TypeChecker {
+    /// 型検査器を初期化する。
+    ///
+    /// グローバルスコープに組み込み型名（`int`, `str`, `float`, `bool`, `Any`）を
+    /// [`InferredType::TypeVal`] として事前登録する。
     pub fn new() -> Self {
         let mut global: HashMap<String, VarInfo> = HashMap::new();
-        // Pre-define built-in type values so that `int`, `str`, `float`, `bool`, `Any`
-        // are recognised as `InferredType::TypeVal` in expression context.
+        // 組み込み型名を TypeVal として事前登録し、式コンテキストで認識できるようにする。
         for name in ["int", "str", "float", "bool", "Any"] {
             global.insert(name.to_string(), VarInfo { ty: InferredType::TypeVal, mutable: false });
         }
         Self {
-            scopes: vec![global],
+            scope_stack: vec![global],
             fn_sigs: HashMap::new(),
             class_method_sigs: HashMap::new(),
             known_class_names: HashSet::new(),
@@ -303,7 +442,16 @@ impl TypeChecker {
         }
     }
 
-    /// Run static type checking over a full program; returns collected errors.
+    /// プログラム全体の静的型検査を実行し、収集されたエラーを返す。
+    ///
+    /// 内部では前処理パス（[`collect_fn_sigs`]）を先に実行して関数シグネチャを収集し、
+    /// 前方参照がある場合でも呼び出し検査が正しく行えるようにする。
+    ///
+    /// # 引数
+    /// - `stmts`: プログラムのトップレベル文のスライス
+    ///
+    /// # 戻り値
+    /// 検出されたすべての [`StaticTypeError`] のリスト。エラーがなければ空 `Vec`。
     pub fn check(stmts: &[Stmt]) -> Vec<StaticTypeError> {
         let mut tc = Self::new();
         tc.collect_fn_sigs(stmts);
@@ -311,10 +459,21 @@ impl TypeChecker {
         tc.errors
     }
 
-    /// Pre-pass: register all FnDef signatures so calls can be validated regardless of order.
-    /// Two passes: first collect ClassDef/FnDef sigs, then resolve NewTypeDef inheritance.
+    /// 前処理パス: 全関数・クラス・new_type のシグネチャを収集する。
+    ///
+    /// 呼び出しが定義より前に出現する前方参照ケースでも型検査を行えるよう、
+    /// 実際の検査（[`check_stmts`]）より先に実行する。
+    ///
+    /// 2 パスで処理する:
+    /// 1. `FnDef` / `ClassDef` / `TraitDef` のシグネチャを収集
+    /// 2. `NewTypeDef` で定義された型エイリアスが元クラスのメソッドシグネチャを継承
+    ///
+    /// # 副作用
+    /// - `self.fn_sigs` に関数シグネチャを追加する
+    /// - `self.class_method_sigs` にクラスメソッドシグネチャを追加する
+    /// - `self.known_class_names` にクラス名・new_type 名を追加する
     fn collect_fn_sigs(&mut self, stmts: &[Stmt]) {
-        // Pass 1: functions and classes.
+        // パス 1: 関数・クラス・trait のシグネチャを収集する。
         for stmt in stmts {
             match stmt {
                 Stmt::FnDef { name, params, return_type, body, .. } => {
@@ -325,11 +484,12 @@ impl TypeChecker {
                         return_type: return_type.as_deref().and_then(InferredType::from_ann),
                     };
                     self.fn_sigs.entry(name.clone()).or_default().push(sig);
+                    // ネストした関数定義も再帰的に収集する。
                     self.collect_fn_sigs(body);
                 }
                 Stmt::ClassDef { name, body, .. } => {
                     self.known_class_names.insert(name.clone());
-                    // Collect per-class method signatures for Self-type checking.
+                    // クラスメソッドのシグネチャを収集（Self 型検査に使用）。
                     let mut cls_methods: HashMap<String, Vec<FnSig>> = HashMap::new();
                     for s in body.iter() {
                         if let Stmt::FnDef { name: mname, params, return_type, .. } = s {
@@ -349,7 +509,7 @@ impl TypeChecker {
                 _ => {}
             }
         }
-        // Pass 2: new_type aliases inherit method sigs from the original class.
+        // パス 2: new_type エイリアスが元クラスのメソッドシグネチャを継承する。
         for stmt in stmts {
             if let Stmt::NewTypeDef { name, original } = stmt {
                 self.known_class_names.insert(name.clone());
@@ -360,80 +520,142 @@ impl TypeChecker {
         }
     }
 
-    // --- Scope helpers ---
+    // --- スコープ操作ヘルパー ---
 
+    /// 新しい内部スコープをスタックにプッシュする。
+    ///
+    /// `if` / `while` / `for` / `block` / 関数定義などのブロックに入る際に呼び出す。
     fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scope_stack.push(HashMap::new());
     }
 
+    /// 現在の内部スコープをスタックからポップする。
+    ///
+    /// グローバルスコープ（スタック先頭）は削除しない。
+    /// ブロックを抜ける際に [`push_scope`] と対で呼び出す。
     fn pop_scope(&mut self) {
-        if self.scopes.len() > 1 {
-            self.scopes.pop();
+        if self.scope_stack.len() > 1 {
+            self.scope_stack.pop();
         }
     }
 
+    /// 現在のスコープに変数を宣言する。
+    ///
+    /// # 引数
+    /// - `name`: 変数名
+    /// - `ty`: 変数の静的推論型
+    /// - `mutable`: `true` なら可変（`mut`）、`false` なら不変（`let` / `const`）
     fn declare(&mut self, name: String, ty: InferredType, mutable: bool) {
-        self.scopes.last_mut().unwrap().insert(name, VarInfo { ty, mutable });
+        self.scope_stack.last_mut().unwrap().insert(name, VarInfo { ty, mutable });
     }
 
+    /// スコープチェーンを内側から外側に向かって変数を検索する。
+    ///
+    /// # 引数
+    /// - `name`: 検索する変数名
+    ///
+    /// # 戻り値
+    /// 見つかった変数の [`VarInfo`] への参照。スコープ内に存在しなければ `None`。
     fn lookup(&self, name: &str) -> Option<&VarInfo> {
-        self.scopes.iter().rev().find_map(|s| s.get(name))
+        self.scope_stack.iter().rev().find_map(|s| s.get(name))
     }
 
-    fn emit(&mut self, err: StaticTypeError) {
+    /// 型エラーを収集リストに追加する。
+    ///
+    /// # 引数
+    /// - `err`: 追加する [`StaticTypeError`]
+    ///
+    /// # 副作用
+    /// `self.errors` ベクタに `err` を追記する。
+    fn report_error(&mut self, err: StaticTypeError) {
         self.errors.push(err);
     }
 
-    // --- Statement checking ---
+    // --- 文の型検査 ---
 
+    /// 文のスライスを順番に型検査する。
+    ///
+    /// # 引数
+    /// - `stmts`: 検査対象の文のスライス
+    ///
+    /// # 副作用
+    /// 各文で検出されたエラーが `self.errors` に追記される。
     fn check_stmts(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             self.check_stmt(stmt);
         }
     }
 
+    /// 1 つの文を型検査する。
+    ///
+    /// 各文の種別に応じて変数宣言・代入・スコープ管理・型アノテーション検査を行う。
+    /// エラーが発生した場合は即時中断せず `self.errors` に追記して続行する。
+    ///
+    /// # 引数
+    /// - `stmt`: 検査対象の文
+    ///
+    /// # 副作用
+    /// 検出されたエラーが `self.errors` に追記される。
+    /// スコープの変数テーブル（`self.scope_stack`）が更新される場合がある。
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
+            // --- 変数宣言 ---
             Stmt::Let(name, expr) => {
+                // let 宣言: 式を推論し、不変変数としてスコープに登録する。
                 let ty = self.infer(expr);
                 self.declare(name.clone(), ty, false);
             }
             Stmt::Const(name, expr) => {
+                // const 宣言: 式を推論し、不変変数としてスコープに登録する。
                 let ty = self.infer(expr);
                 self.declare(name.clone(), ty, false);
             }
             Stmt::Mut(name, expr) => {
+                // mut 宣言: 式を推論し、可変変数としてスコープに登録する。
                 let ty = self.infer(expr);
                 self.declare(name.clone(), ty, true);
             }
+
+            // --- 代入 ---
             Stmt::Assign { name, value, span } => {
+                // 不変変数への代入はエラーとして記録する。
                 if let Some(info) = self.lookup(name) {
                     if !info.mutable {
-                        self.emit(StaticTypeError::assign_immutable(name, span.clone()));
+                        self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
                     }
                 }
                 self.infer(value);
             }
             Stmt::CompoundAssign { name, op: _, value, span } => {
+                // 複合代入（`+=` など）でも不変変数への代入はエラーとして記録する。
                 if let Some(info) = self.lookup(name) {
                     if !info.mutable {
-                        self.emit(StaticTypeError::assign_immutable(name, span.clone()));
+                        self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
                     }
                 }
                 self.infer(value);
             }
             Stmt::AttrAssign { target, value } => {
+                // 属性代入（`self.x = v`）: ターゲットと値を推論するのみ。
+                // フィールド可変性チェックは実行時に委ねる。
                 self.infer(target);
                 self.infer(value);
             }
             Stmt::AttrCompoundAssign { target, op: _, value } => {
+                // 属性複合代入（`self.x += v`）: ターゲットと値を推論するのみ。
                 self.infer(target);
                 self.infer(value);
             }
+
+            // --- 式文 ---
             Stmt::Expr(expr) => {
+                // 式文: 式を推論して副作用（エラー収集）だけ利用する。
                 self.infer(expr);
             }
+
+            // --- 制御構文 ---
             Stmt::If { branches, else_body } => {
+                // if/elif/else: 各分岐で独立したスコープを生成する。
                 for (cond, body) in branches {
                     self.infer(cond);
                     self.push_scope();
@@ -447,30 +669,35 @@ impl TypeChecker {
                 }
             }
             Stmt::While { cond, body } => {
+                // while: 条件式を推論し、ループ本体を独立したスコープで検査する。
                 self.infer(cond);
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
             }
             Stmt::For { target, iter, body } => {
+                // for...in: イテレータ式を推論し、ループ変数を Unresolved として宣言する。
+                // コレクション要素型のトラッキングは未実装のため実行時に委ねる。
                 self.infer(iter);
                 self.push_scope();
-                // Loop variable type is unknown until we track collection element types.
-                self.declare(target.clone(), InferredType::Unknown, true);
+                self.declare(target.clone(), InferredType::Unresolved, true);
                 self.check_stmts(body);
                 self.pop_scope();
             }
             Stmt::Block(body) => {
+                // block: 独立したスコープで本体を検査する。
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
             }
+
+            // --- 関数定義 ---
             Stmt::FnDef { name, params, return_type, body, .. } => {
-                // Check for missing type annotations on parameters (skip `self`).
+                // パラメータの型アノテーション欠如を検査する（`self` は除外）。
                 for param in params.iter() {
                     if param.name == "self" { continue; }
                     if param.type_ann.is_none() {
-                        self.emit(StaticTypeError {
+                        self.report_error(StaticTypeError {
                             kind: TypeErrorKind::MissingParamTypeAnn {
                                 func_name: name.clone(),
                                 param_name: param.name.clone(),
@@ -479,57 +706,73 @@ impl TypeChecker {
                         });
                     }
                 }
-                // Check for missing return type annotation.
+                // 戻り値型アノテーション欠如を検査する。
                 if return_type.is_none() {
-                    self.emit(StaticTypeError {
+                    self.report_error(StaticTypeError {
                         kind: TypeErrorKind::MissingReturnTypeAnn { func_name: name.clone() },
                         span: None,
                     });
                 }
-                self.declare(name.clone(), InferredType::Unknown, false);
+                // 関数名を Unresolved（不変）としてスコープに登録し、本体を検査する。
+                self.declare(name.clone(), InferredType::Unresolved, false);
                 self.push_scope();
                 for param in params {
                     let ty = param.type_ann.as_deref()
                         .and_then(InferredType::from_ann)
-                        .unwrap_or(InferredType::Unknown);
+                        .unwrap_or(InferredType::Unresolved);
                     self.declare(param.name.clone(), ty, param.mutable);
                 }
                 self.check_stmts(body);
                 self.pop_scope();
             }
+
+            // --- クラス・trait 定義 ---
             Stmt::ClassDef { name, body, .. } => {
-                self.declare(name.clone(), InferredType::Unknown, false);
+                // クラス名を Unresolved としてスコープに登録し、本体を独立スコープで検査する。
+                self.declare(name.clone(), InferredType::Unresolved, false);
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
             }
             Stmt::TraitDef { name, body, .. } => {
-                self.declare(name.clone(), InferredType::Unknown, false);
+                // trait 名を Unresolved としてスコープに登録し、本体を独立スコープで検査する。
+                self.declare(name.clone(), InferredType::Unresolved, false);
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
             }
+
+            // --- ジャンプ文 ---
             Stmt::Return(expr) => {
+                // return 文: 戻り値式を推論する（戻り値型の整合性検査は未実装）。
                 if let Some(e) = expr {
                     self.infer(e);
                 }
             }
             Stmt::BlockReturn(expr) | Stmt::BlockYield(expr) | Stmt::Yield(expr) => {
+                // block_return / block_yield / yield: 値式を推論する。
                 self.infer(expr);
             }
+
+            // --- クラスフィールド宣言 ---
             Stmt::Field { name, kind, type_ann, default } => {
-                let ty = InferredType::from_ann(type_ann).unwrap_or(InferredType::Unknown);
+                // フィールドを型アノテーションに基づいてスコープに登録する。
+                // FieldKind::Mut のみ可変として扱う（Let / Const は不変）。
+                let ty = InferredType::from_ann(type_ann).unwrap_or(InferredType::Unresolved);
                 if let Some(expr) = default {
                     self.infer(expr);
                 }
                 let mutable = matches!(kind, crate::ast::FieldKind::Mut);
                 self.declare(name.clone(), ty, mutable);
             }
+
+            // --- ジェネレータ関数定義 ---
             Stmt::GenDef { name, params, yield_type, body, .. } => {
+                // パラメータの型アノテーション欠如を検査する（`self` は除外）。
                 for param in params.iter() {
                     if param.name == "self" { continue; }
                     if param.type_ann.is_none() {
-                        self.emit(StaticTypeError {
+                        self.report_error(StaticTypeError {
                             kind: TypeErrorKind::MissingParamTypeAnn {
                                 func_name: name.clone(),
                                 param_name: param.name.clone(),
@@ -538,40 +781,51 @@ impl TypeChecker {
                         });
                     }
                 }
+                // yield 型アノテーション欠如を戻り値型アノテーション欠如として検査する。
                 if yield_type.is_none() {
-                    self.emit(StaticTypeError {
+                    self.report_error(StaticTypeError {
                         kind: TypeErrorKind::MissingReturnTypeAnn { func_name: name.clone() },
                         span: None,
                     });
                 }
-                self.declare(name.clone(), InferredType::Unknown, false);
+                self.declare(name.clone(), InferredType::Unresolved, false);
                 self.push_scope();
                 for param in params {
                     let ty = param.type_ann.as_deref()
                         .and_then(InferredType::from_ann)
-                        .unwrap_or(InferredType::Unknown);
+                        .unwrap_or(InferredType::Unresolved);
                     self.declare(param.name.clone(), ty, param.mutable);
                 }
                 self.check_stmts(body);
                 self.pop_scope();
             }
+
+            // --- new_type 定義 ---
             Stmt::NewTypeDef { name, .. } => {
-                // new_type bindings are always const (parser enforces no reassignment).
-                self.declare(name.clone(), InferredType::Unknown, false);
+                // new_type バインドは常に const（パーサーが再代入を禁止）。
+                self.declare(name.clone(), InferredType::Unresolved, false);
             }
+
+            // --- 副作用のない文 ---
             Stmt::Pass | Stmt::Break | Stmt::Continue | Stmt::Freeze(..) => {}
+
+            // --- 例外処理 ---
             Stmt::Try { body, handlers, finally_body } => {
+                // try ブロック本体を独立スコープで検査する。
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
+                // 各 except ハンドラを独立スコープで検査する。
+                // 補足した例外がバインドされる変数は Unresolved として宣言する。
                 for handler in handlers {
                     self.push_scope();
                     if let Some(name) = &handler.name {
-                        self.declare(name.clone(), InferredType::Unknown, true);
+                        self.declare(name.clone(), InferredType::Unresolved, true);
                     }
                     self.check_stmts(&handler.body);
                     self.pop_scope();
                 }
+                // finally ブロックを独立スコープで検査する。
                 if let Some(fb) = finally_body {
                     self.push_scope();
                     self.check_stmts(fb);
@@ -579,6 +833,7 @@ impl TypeChecker {
                 }
             }
             Stmt::Raise { exc, .. } => {
+                // raise 文: 例外式を推論する（例外型の静的検査は未実装）。
                 if let Some(e) = exc {
                     self.infer(e);
                 }
@@ -586,10 +841,25 @@ impl TypeChecker {
         }
     }
 
-    // --- Expression type inference ---
+    // --- 式の型推論 ---
 
+    /// 式の静的型を推論して返す。
+    ///
+    /// 式に副作用（エラー収集）が伴う場合はこのメソッドの中で `report_error` を呼ぶ。
+    /// 型が静的に決定できない場合は [`InferredType::Unresolved`] を返し、
+    /// 実行時の型検査に委ねる。
+    ///
+    /// # 引数
+    /// - `expr`: 推論対象の式
+    ///
+    /// # 戻り値
+    /// 式の静的推論型。
+    ///
+    /// # 副作用
+    /// 型エラーが検出された場合に `self.errors` へ追記する場合がある。
     fn infer(&mut self, expr: &Expr) -> InferredType {
         match expr {
+            // --- リテラル ---
             Expr::Int(_) => InferredType::Int,
             Expr::Float(_) => InferredType::Float,
             Expr::Str(_) => InferredType::Str,
@@ -597,17 +867,21 @@ impl TypeChecker {
             Expr::None => InferredType::None,
             Expr::List(_) => InferredType::List,
             Expr::Tuple(exprs) => {
+                // タプルリテラル: 各要素を推論して Tuple 型として返す。
                 let types: Vec<InferredType> = exprs.iter().map(|e| self.infer(e)).collect();
                 InferredType::Tuple(types)
             }
+
+            // --- 属性アクセス ---
             Expr::Attr { object, .. } => {
+                // `Any` / `Union` に対する属性アクセスは明示的ダウンキャストが必要。
                 let obj_ty = self.infer(object);
                 match &obj_ty {
-                    InferredType::Any => self.emit(StaticTypeError {
+                    InferredType::Any => self.report_error(StaticTypeError {
                         kind: TypeErrorKind::OperationOnAny { op: "attribute access".to_string() },
                         span: None,
                     }),
-                    InferredType::Union(_) => self.emit(StaticTypeError {
+                    InferredType::Union(_) => self.report_error(StaticTypeError {
                         kind: TypeErrorKind::OperationOnUnion {
                             union_type: obj_ty.to_string(),
                             op: "attribute access".to_string(),
@@ -616,200 +890,25 @@ impl TypeChecker {
                     }),
                     _ => {}
                 }
-                InferredType::Unknown
+                // 属性の型は静的に追跡しないため Unresolved を返す。
+                InferredType::Unresolved
             }
             Expr::TraitAccess { object, .. } => {
+                // trait アクセス（`T::method` 等）: オブジェクト式を推論するのみ。
                 self.infer(object);
-                InferredType::Unknown
+                InferredType::Unresolved
             }
-            Expr::Call { func, args } => {
-                // Detect method calls on named-instance receivers (for Self-type checking).
-                // Only handle simple `ident.method(...)` — complex receiver exprs yield Unknown.
-                let method_call_info: Option<(String, String)> =
-                    if let Expr::Attr { object, attr } = func.as_ref() {
-                        let obj_ty = match object.as_ref() {
-                            Expr::Ident(n) => {
-                                self.lookup(n).map(|v| v.ty.clone()).unwrap_or(InferredType::Unknown)
-                            }
-                            _ => InferredType::Unknown,
-                        };
-                        if let InferredType::NamedInstance(cls_name) = obj_ty {
-                            Some((cls_name, attr.clone()))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
 
-                // Capture function name before mutably borrowing self for infer calls.
-                let func_name = if let Expr::Ident(name) = func.as_ref() {
-                    Some(name.clone())
-                } else {
-                    None
-                };
-                self.infer(func);
+            // --- 関数呼び出し ---
+            Expr::Call { func, args } => self.infer_call(func, args),
 
-                // Collect (keyword_name, inferred_type) for each argument.
-                let mut arg_data: Vec<(Option<String>, InferredType)> = Vec::new();
-                for arg in args.iter() {
-                    match arg {
-                        CallArg::Positional(e) => arg_data.push((None, self.infer(e))),
-                        CallArg::Keyword { name, value } => {
-                            arg_data.push((Some(name.clone()), self.infer(value)))
-                        }
-                    }
-                }
-
-                // Check Self-type parameters for method calls.
-                if let Some((ref cls_name, ref method_name)) = method_call_info {
-                    if let Some(sigs) = self.class_method_sigs
-                        .get(cls_name)
-                        .and_then(|m| m.get(method_name))
-                        .cloned()
-                    {
-                        // Method params include `self`; args do not. Match on arg_count + 1.
-                        let count_matching: Vec<FnSig> = sigs.iter()
-                            .filter(|s| s.params.len() == arg_data.len() + 1)
-                            .cloned()
-                            .collect();
-                        if count_matching.len() == 1 {
-                            let sig = &count_matching[0];
-                            for (arg_idx, (_, arg_ty)) in arg_data.iter().enumerate() {
-                                let param_idx = arg_idx + 1; // skip `self`
-                                if let Some((param_name, Some(InferredType::SelfType))) =
-                                    sig.params.get(param_idx)
-                                {
-                                    if let InferredType::NamedInstance(got_cls) = arg_ty {
-                                        if got_cls != cls_name {
-                                            self.emit(StaticTypeError {
-                                                kind: TypeErrorKind::SelfTypeMismatch {
-                                                    method: method_name.clone(),
-                                                    param_name: param_name.clone(),
-                                                    expected_class: cls_name.clone(),
-                                                    got_class: got_cls.clone(),
-                                                },
-                                                span: None,
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if let Some(ref fname) = func_name {
-                    if let Some(sigs) = self.fn_sigs.get(fname).cloned() {
-                        let call_count = arg_data.len();
-
-                        // Signatures whose parameter count matches the call.
-                        let count_matching: Vec<FnSig> = sigs.iter()
-                            .filter(|s| s.params.len() == call_count)
-                            .cloned()
-                            .collect();
-
-                        if count_matching.is_empty() {
-                            // No overload accepts this many arguments.
-                            if sigs.len() == 1 {
-                                self.emit(StaticTypeError {
-                                    kind: TypeErrorKind::CallArgCountMismatch {
-                                        func_name: fname.clone(),
-                                        expected: sigs[0].params.len(),
-                                        got: call_count,
-                                    },
-                                    span: None,
-                                });
-                            } else {
-                                let available = sigs.iter().map(|s| s.params.len()).collect();
-                                self.emit(StaticTypeError {
-                                    kind: TypeErrorKind::NoMatchingOverload {
-                                        func_name: fname.clone(),
-                                        got: call_count,
-                                        available,
-                                    },
-                                    span: None,
-                                });
-                            }
-                        } else if count_matching.len() == 1 {
-                            // Exactly one overload matches the count → check arg types.
-                            let sig = &count_matching[0];
-                            let mut positional_idx = 0usize;
-                            for (key, arg_ty) in &arg_data {
-                                match key {
-                                    Some(kwarg_name) => {
-                                        match sig.params.iter().position(|(n, _)| n == kwarg_name) {
-                                            None => self.emit(StaticTypeError {
-                                                kind: TypeErrorKind::UnknownKeywordArg {
-                                                    func_name: fname.clone(),
-                                                    arg_name: kwarg_name.clone(),
-                                                },
-                                                span: None,
-                                            }),
-                                            Some(param_pos) => {
-                                                if let Some(expected) = &sig.params[param_pos].1 {
-                                                    if !Self::type_matches(arg_ty, expected) {
-                                                        self.emit(StaticTypeError {
-                                                            kind: TypeErrorKind::CallArgTypeMismatch {
-                                                                func_name: fname.clone(),
-                                                                param_index: param_pos,
-                                                                expected: expected.clone(),
-                                                                got: arg_ty.clone(),
-                                                            },
-                                                            span: None,
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    None => {
-                                        if let Some((_, param_ty)) = sig.params.get(positional_idx) {
-                                            if let Some(expected) = param_ty {
-                                                if !Self::type_matches(arg_ty, expected) {
-                                                    self.emit(StaticTypeError {
-                                                        kind: TypeErrorKind::CallArgTypeMismatch {
-                                                            func_name: fname.clone(),
-                                                            param_index: positional_idx,
-                                                            expected: expected.clone(),
-                                                            got: arg_ty.clone(),
-                                                        },
-                                                        span: None,
-                                                    });
-                                                }
-                                            }
-                                        }
-                                        positional_idx += 1;
-                                    }
-                                }
-                            }
-                        }
-                        // Multiple count-matching overloads: runtime dispatch decides, skip type check.
-                    }
-                }
-
-                // Constructor call → return a typed NamedInstance so callers can track class identity.
-                if let Some(ref fname) = func_name {
-                    if self.known_class_names.contains(fname.as_str()) {
-                        return InferredType::NamedInstance(fname.clone());
-                    }
-                }
-
-                // Return type: use the unique count-matching overload's return type if there is one.
-                func_name
-                    .as_deref()
-                    .and_then(|n| self.fn_sigs.get(n))
-                    .and_then(|sigs| {
-                        let matching: Vec<_> = sigs.iter()
-                            .filter(|s| s.params.len() == arg_data.len())
-                            .collect();
-                        if matching.len() == 1 { matching[0].return_type.clone() } else { None }
-                    })
-                    .unwrap_or(InferredType::Unknown)
-            }
+            // --- 識別子 ---
             Expr::Ident(name) => {
-                self.lookup(name).map(|v| v.ty.clone()).unwrap_or(InferredType::Unknown)
+                // 識別子: スコープから型を取得する。未宣言なら Unresolved（実行時エラー委譲）。
+                self.lookup(name).map(|v| v.ty.clone()).unwrap_or(InferredType::Unresolved)
             }
+
+            // --- 単項演算子 ---
             Expr::UnaryOp { op, operand } => {
                 let ty = self.infer(operand);
                 let op_str = match op {
@@ -817,121 +916,387 @@ impl TypeChecker {
                     UnaryOp::Not => "not",
                     UnaryOp::BitNot => "~",
                 };
+                // Any / Union オペランドには明示的ダウンキャストが必要。
                 match &ty {
                     InferredType::Any => {
-                        self.emit(StaticTypeError {
+                        self.report_error(StaticTypeError {
                             kind: TypeErrorKind::OperationOnAny { op: op_str.to_string() },
                             span: None,
                         });
-                        return InferredType::Unknown;
+                        return InferredType::Unresolved;
                     }
                     InferredType::Union(_) => {
-                        self.emit(StaticTypeError {
+                        self.report_error(StaticTypeError {
                             kind: TypeErrorKind::OperationOnUnion {
                                 union_type: ty.to_string(),
                                 op: op_str.to_string(),
                             },
                             span: None,
                         });
-                        return InferredType::Unknown;
+                        return InferredType::Unresolved;
                     }
                     _ => {}
                 }
+                // 演算子ごとに結果型を返す。
                 match op {
                     UnaryOp::Not => InferredType::Bool,
                     UnaryOp::Neg => match ty {
                         InferredType::Int => InferredType::Int,
                         InferredType::Float => InferredType::Float,
-                        _ => InferredType::Unknown,
+                        _ => InferredType::Unresolved,
                     },
                     UnaryOp::BitNot => InferredType::Int,
                 }
             }
+
+            // --- 二項演算子 ---
             Expr::BinOp { op, left, right, span } => {
+                // 左右オペランドを推論し、演算の型制約を検査してから結果型を返す。
                 let lt = self.infer(left);
                 let rt = self.infer(right);
                 self.check_binop(op, &lt, &rt, span.clone());
                 Self::infer_binop_result(op, &lt, &rt)
             }
+
+            // --- テンプレート実体化 ---
             Expr::TemplateInstantiate { base, .. } => {
-                // Template instantiation: defer all type checking to the runtime constraint check.
+                // テンプレート実体化: 制約チェックは実行時に行うため静的検査を委譲する。
                 self.infer(base);
-                InferredType::Unknown
+                InferredType::Unresolved
             }
+
+            // --- 辞書・サブスクリプト ---
             Expr::Dict(_) => InferredType::Dict,
             Expr::Subscript { object, index } => {
+                // サブスクリプト（`expr[index]`）: 要素型の追跡は未実装のため Unresolved を返す。
                 self.infer(object);
                 self.infer(index);
-                InferredType::Unknown
+                InferredType::Unresolved
             }
         }
     }
 
-    /// Returns true when `arg_ty` is acceptable where `expected` is required.
+    /// 引数の型 `arg_ty` がパラメータの期待型 `expected` と互換性があるかを判定する。
     ///
-    /// Rules:
-    /// - `Unknown` arg always defers to runtime (ok).
-    /// - `Any` param accepts every arg type.
-    /// - Exact match is always ok.
-    /// - `Union[T1, T2, ...]` param accepts any member type as arg (including nested unions that
-    ///   appear as a direct member of the union).
-    /// - `Union` / `Any` arg may only go to `Union` (same or containing it) / `Any` params.
+    /// 以下のルールに従って判定する:
+    /// - `arg_ty` が `Unresolved` → 静的に確定しないため実行時に委ねる（互換性あり）
+    /// - `expected` が `Any` → あらゆる引数型を受け付ける（互換性あり）
+    /// - `arg_ty == expected` → 完全一致（互換性あり）
+    /// - `expected` が `Union[T1, T2, ...]` → `arg_ty` が Union の直接メンバなら互換性あり
+    /// - `arg_ty` が `Any` / `Union` で `expected` がそれ以外 → 明示的ダウンキャストが必要（互換性なし）
+    ///
+    /// # 引数
+    /// - `arg_ty`: 呼び出し側が渡した引数の推論型
+    /// - `expected`: パラメータ宣言で要求される型
+    ///
+    /// # 戻り値
+    /// 互換性があれば `true`、なければ `false`。
     fn type_matches(arg_ty: &InferredType, expected: &InferredType) -> bool {
-        if *arg_ty == InferredType::Unknown { return true; }
+        if *arg_ty == InferredType::Unresolved { return true; }
         if *expected == InferredType::Any { return true; }
         if arg_ty == expected { return true; }
-        // Union param: check if arg is a direct member of the union (including nested unions).
+        // Union パラメータ: 引数が Union の直接メンバかどうかを確認する。
         if let InferredType::Union(union_types) = expected {
             return union_types.contains(arg_ty);
         }
         false
     }
 
-    // --- Binary operator checks ---
+    // --- 関数呼び出しの型検査 ---
 
-    fn check_binop(&mut self, op: &BinOp, lt: &InferredType, rt: &InferredType, span: Span) {
-        // Any operand on either side is always an error — explicit downcast required.
-        if *lt == InferredType::Any || *rt == InferredType::Any {
-            let op_str = match op {
-                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-                BinOp::Div => "/", BinOp::FloorDiv => "//", BinOp::Mod => "%",
-                BinOp::Pow => "**",
-                BinOp::Eq => "==", BinOp::NotEq => "!=",
-                BinOp::Lt => "<", BinOp::Gt => ">", BinOp::LtEq => "<=", BinOp::GtEq => ">=",
-                BinOp::And => "and", BinOp::Or => "or",
-                BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^",
-                BinOp::LShift => "<<", BinOp::RShift => ">>",
+    /// 関数呼び出し式の型を推論し、引数の型・個数・Self 型パラメータを検査する。
+    ///
+    /// 以下の検査を行う:
+    /// 1. `ident.method(args)` 形式のメソッド呼び出しを検出し、Self 型パラメータ制約を検査する
+    /// 2. 全引数を推論してキーワード引数名・引数個数・引数型を検査する
+    /// 3. コンストラクタ呼び出し（既知クラス名の関数呼び出し）は `NamedInstance` を返す
+    /// 4. 引数個数が一意に一致するオーバーロードがあれば、その戻り値型を返す
+    ///
+    /// # 引数
+    /// - `func`: 呼び出す関数式（`Expr::Ident`, `Expr::Attr` など）
+    /// - `args`: 引数リスト（位置引数・キーワード引数の混在可）
+    ///
+    /// # 戻り値
+    /// 推論された戻り値型。静的に確定できない場合は [`InferredType::Unresolved`]。
+    ///
+    /// # 副作用
+    /// 引数個数・型の不一致や Self 型不一致が検出された場合に `self.errors` へ追記する。
+    fn infer_call(&mut self, func: &Expr, args: &[CallArg]) -> InferredType {
+        // `ident.method(...)` 形式を検出してメソッド呼び出し情報を取得する。
+        // Self 型パラメータ検査のためにレシーバのクラス名とメソッド名が必要。
+        let method_call_info: Option<(String, String)> =
+            if let Expr::Attr { object, attr } = func {
+                let obj_ty = match object.as_ref() {
+                    Expr::Ident(n) => self.lookup(n).map(|v| v.ty.clone()).unwrap_or(InferredType::Unresolved),
+                    _ => InferredType::Unresolved,
+                };
+                if let InferredType::NamedInstance(cls_name) = obj_ty {
+                    Some((cls_name, attr.clone()))
+                } else {
+                    None
+                }
+            } else {
+                None
             };
-            self.emit(StaticTypeError {
-                kind: TypeErrorKind::OperationOnAny { op: op_str.to_string() },
+
+        // 可変借用の前に関数名を取得しておく。
+        let func_name = if let Expr::Ident(name) = func { Some(name.clone()) } else { None };
+        self.infer(func);
+
+        // 全引数の型を推論し、キーワード引数名と型のペアとして収集する。
+        let mut arg_data: Vec<(Option<String>, InferredType)> = Vec::new();
+        for arg in args.iter() {
+            match arg {
+                CallArg::Positional(e) => arg_data.push((None, self.infer(e))),
+                CallArg::Keyword { name, value } => arg_data.push((Some(name.clone()), self.infer(value))),
+            }
+        }
+
+        // Self 型パラメータの制約を検査する。
+        if let Some((ref cls_name, ref method_name)) = method_call_info {
+            self.check_self_type_params(cls_name, method_name, &arg_data);
+        }
+
+        // 引数個数・型・キーワード引数名を検査する。
+        if let Some(ref fname) = func_name {
+            self.check_call_args(fname, &arg_data);
+        }
+
+        // 既知クラス名のコンストラクタ呼び出しは NamedInstance を返す。
+        // これにより new_type などの異なる型を静的に区別できる。
+        if let Some(ref fname) = func_name {
+            if self.known_class_names.contains(fname.as_str()) {
+                return InferredType::NamedInstance(fname.clone());
+            }
+        }
+
+        // 引数個数が一意に一致するオーバーロードがあれば、その戻り値型を返す。
+        // 複数候補がある場合は型が確定しないため Unresolved を返す。
+        func_name
+            .as_deref()
+            .and_then(|n| self.fn_sigs.get(n))
+            .and_then(|sigs| {
+                let matching: Vec<_> = sigs.iter()
+                    .filter(|s| s.params.len() == arg_data.len())
+                    .collect();
+                if matching.len() == 1 { matching[0].return_type.clone() } else { None }
+            })
+            .unwrap_or(InferredType::Unresolved)
+    }
+
+    /// 名前付きインスタンスのメソッド呼び出しにおける `Self` 型パラメータ制約を検査する。
+    ///
+    /// `Self` 型のパラメータに渡された引数がレシーバクラスと異なるクラスのインスタンスである場合、
+    /// [`TypeErrorKind::SelfTypeMismatch`] エラーを生成する。
+    ///
+    /// # 引数
+    /// - `cls_name`: レシーバのクラス名（`Self` が解決されるクラス名）
+    /// - `method_name`: 呼び出されたメソッド名
+    /// - `arg_data`: `(キーワード引数名, 引数の推論型)` のペアのスライス
+    ///
+    /// # 副作用
+    /// `Self` 型不一致が検出された場合に `self.errors` へ追記する。
+    fn check_self_type_params(
+        &mut self,
+        cls_name: &str,
+        method_name: &str,
+        arg_data: &[(Option<String>, InferredType)],
+    ) {
+        let sigs = match self.class_method_sigs
+            .get(cls_name)
+            .and_then(|m| m.get(method_name))
+            .cloned()
+        {
+            Some(s) => s,
+            None => return,
+        };
+        // メソッドパラメータには `self` が含まれるが引数リストには含まれないため、
+        // パラメータ数は引数数 + 1 で一致するものを選ぶ。
+        let count_matching: Vec<FnSig> = sigs.iter()
+            .filter(|s| s.params.len() == arg_data.len() + 1)
+            .cloned()
+            .collect();
+        if count_matching.len() != 1 {
+            // 候補が一意でない場合は実行時に委ねる。
+            return;
+        }
+        let sig = &count_matching[0];
+        for (arg_idx, (_, arg_ty)) in arg_data.iter().enumerate() {
+            let param_idx = arg_idx + 1; // `self` をスキップしてパラメータインデックスに変換する。
+            if let Some((param_name, Some(InferredType::SelfType))) = sig.params.get(param_idx) {
+                if let InferredType::NamedInstance(got_cls) = arg_ty {
+                    if got_cls != cls_name {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::SelfTypeMismatch {
+                                method: method_name.to_string(),
+                                param_name: param_name.clone(),
+                                expected_class: cls_name.to_string(),
+                                got_class: got_cls.clone(),
+                            },
+                            span: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// 名前付き関数呼び出しの引数個数・型・キーワード引数名を検査する。
+    ///
+    /// オーバーロードがある場合の動作:
+    /// - 引数個数が一致するオーバーロードが 0 件 → `NoMatchingOverload` または `CallArgCountMismatch` を報告
+    /// - 引数個数が一致するオーバーロードが複数 → 実行時ディスパッチに委ねる（型検査をスキップ）
+    /// - 引数個数が一致するオーバーロードが 1 件 → 引数型・キーワード引数名を詳細検査する
+    ///
+    /// # 引数
+    /// - `fname`: 呼び出した関数名
+    /// - `arg_data`: `(キーワード引数名, 引数の推論型)` のペアのスライス
+    ///
+    /// # 副作用
+    /// 引数個数・型・キーワード引数名の不一致が検出された場合に `self.errors` へ追記する。
+    fn check_call_args(
+        &mut self,
+        fname: &str,
+        arg_data: &[(Option<String>, InferredType)],
+    ) {
+        let sigs = match self.fn_sigs.get(fname).cloned() {
+            Some(s) => s,
+            None => return, // 未知の関数は実行時エラーに委ねる。
+        };
+        let call_count = arg_data.len();
+        // 引数個数が一致するオーバーロードを絞り込む。
+        let count_matching: Vec<FnSig> = sigs.iter()
+            .filter(|s| s.params.len() == call_count)
+            .cloned()
+            .collect();
+
+        if count_matching.is_empty() {
+            // 引数個数が合う候補がない。
+            if sigs.len() == 1 {
+                // 単一定義の場合は CallArgCountMismatch で期待個数を明示する。
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::CallArgCountMismatch {
+                        func_name: fname.to_string(),
+                        expected: sigs[0].params.len(),
+                        got: call_count,
+                    },
+                    span: None,
+                });
+            } else {
+                // オーバーロードがある場合は NoMatchingOverload で候補一覧を表示する。
+                let available = sigs.iter().map(|s| s.params.len()).collect();
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::NoMatchingOverload {
+                        func_name: fname.to_string(),
+                        got: call_count,
+                        available,
+                    },
+                    span: None,
+                });
+            }
+            return;
+        }
+        if count_matching.len() > 1 {
+            // 複数のオーバーロードが個数一致 → 実行時ディスパッチに委ねる。
+            return;
+        }
+
+        // 個数が一意に一致するオーバーロードが見つかったため、引数型とキーワード引数名を検査する。
+        let sig = &count_matching[0];
+        let mut positional_idx = 0usize;
+        for (key, arg_ty) in arg_data {
+            match key {
+                Some(kwarg_name) => {
+                    // キーワード引数: パラメータ名でマッチングし、型を検査する。
+                    match sig.params.iter().position(|(n, _)| n == kwarg_name) {
+                        None => self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::UnknownKeywordArg {
+                                func_name: fname.to_string(),
+                                arg_name: kwarg_name.clone(),
+                            },
+                            span: None,
+                        }),
+                        Some(param_pos) => {
+                            if let Some(expected) = &sig.params[param_pos].1 {
+                                if !Self::type_matches(arg_ty, expected) {
+                                    self.report_error(StaticTypeError {
+                                        kind: TypeErrorKind::CallArgTypeMismatch {
+                                            func_name: fname.to_string(),
+                                            param_index: param_pos,
+                                            expected: expected.clone(),
+                                            got: arg_ty.clone(),
+                                        },
+                                        span: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                None => {
+                    // 位置引数: インデックス順にパラメータと対応付けて型を検査する。
+                    if let Some((_, param_ty)) = sig.params.get(positional_idx) {
+                        if let Some(expected) = param_ty {
+                            if !Self::type_matches(arg_ty, expected) {
+                                self.report_error(StaticTypeError {
+                                    kind: TypeErrorKind::CallArgTypeMismatch {
+                                        func_name: fname.to_string(),
+                                        param_index: positional_idx,
+                                        expected: expected.clone(),
+                                        got: arg_ty.clone(),
+                                    },
+                                    span: None,
+                                });
+                            }
+                        }
+                    }
+                    positional_idx += 1;
+                }
+            }
+        }
+    }
+
+    // --- 二項演算子の型検査 ---
+
+    /// 二項演算子の型制約を検査する。
+    ///
+    /// 以下の順で検査を行う:
+    /// 1. `Any` オペランドが片方でもあればエラー（明示的ダウンキャストが必要）
+    /// 2. `Union` / `Option` オペランドが片方でもあればエラー（明示的ダウンキャストが必要）
+    /// 3. 順序比較演算子（`<` / `>` / `<=` / `>=`）は互換性のある型かを検査する
+    ///
+    /// # 引数
+    /// - `op`: 二項演算子
+    /// - `lt`: 左辺の推論型
+    /// - `rt`: 右辺の推論型
+    /// - `span`: エラー報告に使用するスパン情報
+    ///
+    /// # 副作用
+    /// 型制約違反が検出された場合に `self.errors` へ追記する。
+    fn check_binop(&mut self, op: &BinOp, lt: &InferredType, rt: &InferredType, span: Span) {
+        // Any オペランドが片方でもあればエラーとする。明示的なダウンキャストが必要。
+        if *lt == InferredType::Any || *rt == InferredType::Any {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::OperationOnAny { op: op.as_str().to_string() },
                 span: Some(span),
             });
             return;
         }
-        // Union/Option operand on either side is also always an error.
+        // Union / Option オペランドが片方でもあればエラーとする。
         let union_side = if matches!(lt, InferredType::Union(_)) { Some(lt) }
                          else if matches!(rt, InferredType::Union(_)) { Some(rt) }
                          else { None };
         if let Some(union_ty) = union_side {
-            let op_str = match op {
-                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-                BinOp::Div => "/", BinOp::FloorDiv => "//", BinOp::Mod => "%",
-                BinOp::Pow => "**",
-                BinOp::Eq => "==", BinOp::NotEq => "!=",
-                BinOp::Lt => "<", BinOp::Gt => ">", BinOp::LtEq => "<=", BinOp::GtEq => ">=",
-                BinOp::And => "and", BinOp::Or => "or",
-                BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^",
-                BinOp::LShift => "<<", BinOp::RShift => ">>",
-            };
-            self.emit(StaticTypeError {
+            self.report_error(StaticTypeError {
                 kind: TypeErrorKind::OperationOnUnion {
                     union_type: union_ty.to_string(),
-                    op: op_str.to_string(),
+                    op: op.as_str().to_string(),
                 },
                 span: Some(span),
             });
             return;
         }
+        // 順序比較演算子の型互換性を検査する（`==` / `!=` は異なる型間でも許容）。
         match op {
             BinOp::Lt => self.check_ordered_cmp(lt, rt, "<", span),
             BinOp::Gt => self.check_ordered_cmp(lt, rt, ">", span),
@@ -941,20 +1306,40 @@ impl TypeChecker {
         }
     }
 
+    /// 順序比較演算子（`<` / `>` / `<=` / `>=`）の型互換性を検査する。
+    ///
+    /// 互換性がない場合は [`StaticTypeError::incompatible_cmp`] を生成して報告する。
+    ///
+    /// # 引数
+    /// - `lt`: 左辺の推論型
+    /// - `rt`: 右辺の推論型
+    /// - `op`: 演算子記号（`"<"` など）
+    /// - `span`: エラー報告に使用するスパン情報
+    ///
+    /// # 副作用
+    /// 型不一致が検出された場合に `self.errors` へ追記する。
     fn check_ordered_cmp(&mut self, lt: &InferredType, rt: &InferredType, op: &'static str, span: Span) {
         if !Self::ordered_comparable(lt, rt) {
-            self.emit(StaticTypeError::incompatible_cmp(lt.clone(), rt.clone(), op, span));
+            self.report_error(StaticTypeError::incompatible_cmp(lt.clone(), rt.clone(), op, span));
         }
     }
 
-    /// Returns true when `lt op rt` is valid for ordering operators.
-    /// Unknown on either side is treated as "may be compatible" (deferred to runtime).
+    /// 順序比較演算子が適用可能な型の組み合わせかどうかを判定する。
+    ///
+    /// どちらか一方が `Unresolved` の場合は「互換性あり」として実行時に委ねる。
+    ///
+    /// # 引数
+    /// - `lt`: 左辺の推論型
+    /// - `rt`: 右辺の推論型
+    ///
+    /// # 戻り値
+    /// `lt op rt` が順序比較として有効なら `true`、そうでなければ `false`。
     fn ordered_comparable(lt: &InferredType, rt: &InferredType) -> bool {
         use InferredType::*;
         matches!(
             (lt, rt),
-            (Unknown, _)
-                | (_, Unknown)
+            (Unresolved, _)     // 片方が未解決 → 実行時に委ねる
+                | (_, Unresolved)
                 | (Int, Int)
                 | (Float, Float)
                 | (Int, Float)
@@ -963,12 +1348,25 @@ impl TypeChecker {
         )
     }
 
+    /// 二項演算の結果型を推論して返す。
+    ///
+    /// `Any` / `Union` オペランドが含まれる場合は既にエラーが報告されているため
+    /// `Unresolved` を返す。
+    ///
+    /// # 引数
+    /// - `op`: 二項演算子
+    /// - `lt`: 左辺の推論型
+    /// - `rt`: 右辺の推論型
+    ///
+    /// # 戻り値
+    /// 演算結果の推論型。静的に確定できない場合は [`InferredType::Unresolved`]。
     fn infer_binop_result(op: &BinOp, lt: &InferredType, rt: &InferredType) -> InferredType {
         use InferredType::*;
-        // Any / Union operand makes the result unknown (operation is already an error).
-        if *lt == Any || *rt == Any { return Unknown; }
-        if matches!(lt, Union(_)) || matches!(rt, Union(_)) { return Unknown; }
+        // Any / Union オペランドは既にエラーが報告されているため、結果は Unresolved にする。
+        if *lt == Any || *rt == Any { return Unresolved; }
+        if matches!(lt, Union(_)) || matches!(rt, Union(_)) { return Unresolved; }
         match op {
+            // 比較・論理演算子は常に Bool を返す。
             BinOp::Eq
             | BinOp::NotEq
             | BinOp::Lt
@@ -977,22 +1375,27 @@ impl TypeChecker {
             | BinOp::GtEq
             | BinOp::And
             | BinOp::Or => Bool,
+            // 加算: int+int → int、浮動小数混在 → float、str+str → str。
             BinOp::Add => match (lt, rt) {
                 (Int, Int) => Int,
                 (Float, Float) | (Int, Float) | (Float, Int) => Float,
                 (Str, Str) => Str,
-                _ => Unknown,
+                _ => Unresolved,
             },
+            // 減算・乗算・べき乗: 数値型のみ確定、それ以外は Unresolved。
             BinOp::Sub | BinOp::Mul | BinOp::Pow => match (lt, rt) {
                 (Int, Int) => Int,
                 (Float, Float) | (Int, Float) | (Float, Int) => Float,
-                _ => Unknown,
+                _ => Unresolved,
             },
+            // 除算: 常に Float（Python 同様）。
             BinOp::Div => Float,
+            // 整数除算・剰余: int 同士のみ int、それ以外は Unresolved。
             BinOp::FloorDiv | BinOp::Mod => match (lt, rt) {
                 (Int, Int) => Int,
-                _ => Unknown,
+                _ => Unresolved,
             },
+            // ビット演算: 常に Int を返す。
             BinOp::BitAnd
             | BinOp::BitOr
             | BinOp::BitXor
@@ -1012,15 +1415,19 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
+    /// ソースコードを字句解析・構文解析・型検査して、検出されたエラーの一覧を返すヘルパー。
     fn check(src: &str) -> Vec<StaticTypeError> {
         let tokens = Lexer::new(src, "").tokenize();
         let stmts = Parser::new(tokens).parse_program().expect("parse error");
         TypeChecker::check(&stmts)
     }
 
+    /// 型エラーが 0 件の場合に `true` を返すヘルパー。
     fn ok(src: &str) -> bool {
         check(src).is_empty()
     }
+
+    /// 型エラーが 1 件以上の場合に `true` を返すヘルパー。
     fn err(src: &str) -> bool {
         !check(src).is_empty()
     }
@@ -1115,7 +1522,7 @@ mod tests {
         assert!(ok(r#"True != "x""#));
     }
 
-    // Unknown on either side → deferred to runtime, no IncompatibleComparison error
+    // Unresolved on either side → deferred to runtime, no IncompatibleComparison error
     #[test]
     fn unknown_param_comparison_ok() {
         // Unannotated params produce MissingParamTypeAnn / MissingReturnTypeAnn errors,
@@ -1188,7 +1595,7 @@ mod tests {
 
     #[test]
     fn call_unknown_arg_skipped_ok() {
-        // If the argument type is Unknown (e.g. a variable without annotation),
+        // If the argument type is Unresolved (e.g. a variable without annotation),
         // the check is deferred to runtime.
         assert!(ok("fn add(a: int, b: int) -> int:\n    pass\nmut x = 1\nadd(x, x)\n"));
     }

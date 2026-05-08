@@ -2,24 +2,40 @@
 
 use crate::token::Span;
 
-/// A template type parameter with its trait constraints.
-/// Syntax: `T: Trait1 and Trait2`
+/// テンプレート型パラメータ（型変数とそのトレイト制約）。
+///
+/// 関数・クラス・trait の定義時に宣言する型変数を表す。
+/// 構文: `T: Trait1 and Trait2`
+///
+/// # フィールド
+/// - `name`        : 型変数の名前（例: `T`, `T1`）。
+/// - `constraints` : この型変数が満たすべきトレイト名のリスト（`and` で結合された複数制約）。
 #[derive(Debug, Clone)]
 pub struct TemplateParam {
-    /// Name of the type variable (e.g. `T`, `T1`).
+    /// 型変数の名前（例: `T`, `T1`）。
     pub name: String,
-    /// Trait names the concrete type must implement (`and`-combined).
+    /// 型変数が満たすべきトレイト名のリスト（`and` で複数結合可能）。
     pub constraints: Vec<String>,
 }
 
-/// A single argument in a function call: positional or keyword (`name=value`).
+/// 関数呼び出しの1引数。位置引数またはキーワード引数のいずれかを表す。
+///
+/// # バリアント
+/// - `Positional(Expr)`                     : 位置引数。式の値をそのまま渡す。
+/// - `Keyword { name: String, value: Expr }`: キーワード引数。`name=value` の形式で渡す。
 #[derive(Debug, Clone)]
 pub enum CallArg {
+    /// 位置引数: `f(expr)` の `expr` 部分。
     Positional(Expr),
+    /// キーワード引数: `f(name=expr)` の形式。
     Keyword { name: String, value: Expr },
 }
 
 impl CallArg {
+    /// 引数の種類（位置引数・キーワード引数）を問わず、内包する式への参照を返す。
+    ///
+    /// # 戻り値
+    /// 引数として渡された式への参照。
     pub fn expr(&self) -> &Expr {
         match self {
             Self::Positional(e) | Self::Keyword { value: e, .. } => e,
@@ -27,167 +43,448 @@ impl CallArg {
     }
 }
 
+/// 関数定義の仮引数（パラメータ）。
+///
+/// # フィールド
+/// - `name`     : パラメータ名（例: `x`, `self`）。
+/// - `mutable`  : `mut` 修飾子が付いているかどうか。`true` なら呼び出し先で変更可能。
+/// - `type_ann` : 型アノテーション文字列（例: `"int"`, `"str"`）。`self` は省略可能。
 #[derive(Debug, Clone)]
 pub struct Param {
+    /// パラメータ名（例: `x`, `self`）。
     pub name: String,
+    /// `mut` 修飾子の有無。可変パラメータなら `true`。
     pub mutable: bool,
+    /// 型アノテーション文字列（`self` は `None` 可）。
     pub type_ann: Option<String>,
 }
 
+/// 二項演算子の種別。
+///
+/// 算術・比較・論理・ビット演算の全演算子を網羅する。
+/// 優先順位はパーサー側で制御される。
+///
+/// # バリアント
+/// - `Add`, `Sub`, `Mul`, `Div`, `FloorDiv`, `Mod`, `Pow` : 算術演算子
+/// - `Eq`, `NotEq`, `Lt`, `Gt`, `LtEq`, `GtEq`           : 比較演算子
+/// - `And`, `Or`                                           : 論理演算子（短絡評価）
+/// - `BitAnd`, `BitOr`, `BitXor`, `LShift`, `RShift`      : ビット演算子
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinOp {
-    Add, Sub, Mul, Div, FloorDiv, Mod, Pow,
-    Eq, NotEq, Lt, Gt, LtEq, GtEq,
-    And, Or,
-    BitAnd, BitOr, BitXor, LShift, RShift,
+    /// 加算 `+`
+    Add,
+    /// 減算 `-`
+    Sub,
+    /// 乗算 `*`
+    Mul,
+    /// 除算 `/`（浮動小数点）
+    Div,
+    /// 整数除算 `//`
+    FloorDiv,
+    /// 剰余 `%`
+    Mod,
+    /// べき乗 `**`（右結合）
+    Pow,
+    /// 等値比較 `==`
+    Eq,
+    /// 非等値比較 `!=`
+    NotEq,
+    /// 未満比較 `<`
+    Lt,
+    /// 超過比較 `>`
+    Gt,
+    /// 以下比較 `<=`
+    LtEq,
+    /// 以上比較 `>=`
+    GtEq,
+    /// 論理積 `and`（短絡評価）
+    And,
+    /// 論理和 `or`（短絡評価）
+    Or,
+    /// ビット積 `&`
+    BitAnd,
+    /// ビット和 `|`
+    BitOr,
+    /// ビット排他的論理和 `^`
+    BitXor,
+    /// 左シフト `<<`
+    LShift,
+    /// 右シフト `>>`
+    RShift,
 }
 
+impl BinOp {
+    /// この演算子に対応するソースコード上の記号文字列を返す。
+    ///
+    /// エラーメッセージや型検査の診断メッセージ生成に使用する。
+    ///
+    /// # 戻り値
+    /// 演算子の文字列表現（例: `"+"`, `"=="`, `"and"` など）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+            BinOp::Div => "/", BinOp::FloorDiv => "//", BinOp::Mod => "%",
+            BinOp::Pow => "**",
+            BinOp::Eq => "==", BinOp::NotEq => "!=",
+            BinOp::Lt => "<", BinOp::Gt => ">", BinOp::LtEq => "<=", BinOp::GtEq => ">=",
+            BinOp::And => "and", BinOp::Or => "or",
+            BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^",
+            BinOp::LShift => "<<", BinOp::RShift => ">>",
+        }
+    }
+}
+
+/// 単項演算子の種別。
+///
+/// # バリアント
+/// - `Neg`    : 算術符号反転 `-x`
+/// - `Not`    : 論理否定 `not x`
+/// - `BitNot` : ビット反転 `~x`
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOp {
+    /// 算術符号反転 `-x`
     Neg,
+    /// 論理否定 `not x`
     Not,
+    /// ビット反転 `~x`
     BitNot,
 }
 
+/// 式（Expression）の AST ノード。
+///
+/// インタープリタが評価すると `Value` を返す構文要素を表す。
+///
+/// # バリアント
+/// - `Int(i64)`       : 整数リテラル。
+/// - `Float(f64)`     : 浮動小数点リテラル。
+/// - `Str(String)`    : 文字列リテラル。
+/// - `Bool(bool)`     : 真偽値リテラル (`True` / `False`)。
+/// - `None`           : `None` リテラル。
+/// - `Ident(String)`  : 変数名・識別子。スコープから値をルックアップする。
+/// - `List(Vec<Expr>)`: リストリテラル `[a, b, c]`。
+/// - `Attr`           : 属性アクセス `obj.attr`。
+/// - `TraitAccess`    : トレイト修飾アクセス `obj::Trait.attr`。
+/// - `BinOp`          : 二項演算 `left op right`。位置情報 `span` を含む。
+/// - `UnaryOp`        : 単項演算 `op operand`。
+/// - `Call`           : 関数呼び出し `func(args)`。
+/// - `TemplateInstantiate` : テンプレート型引数適用 `expr[T1, T2]`。`Call` の `func` として使用する。
+/// - `Subscript`      : 添字アクセス `expr[index]`。辞書のキールックアップなどに使用する。
+/// - `Dict`           : 辞書リテラル `{key: value, ...}`。評価結果は `dict[Any, Any]` 型。
+/// - `Tuple`          : タプルリテラル `(val, val, ...)`。評価結果は `tuple[T1, T2, ...]` 型。
 #[derive(Debug, Clone)]
 pub enum Expr {
+    /// 整数リテラル（10進・16進・8進・2進対応）。
     Int(i64),
+    /// 浮動小数点リテラル。
     Float(f64),
+    /// 文字列リテラル（シングル・ダブル・トリプルクォート対応）。
     Str(String),
+    /// 真偽値リテラル (`True` / `False`)。
     Bool(bool),
+    /// `None` リテラル。
     None,
+    /// 変数参照。スコープチェーンからこの名前の値をルックアップする。
     Ident(String),
+    /// リストリテラル `[a, b, c]`。要素の式を順に評価して `Value::List` を生成する。
     List(Vec<Expr>),
-    Attr { object: Box<Expr>, attr: String }, // obj.attr
-    TraitAccess { object: Box<Expr>, trait_name: String, attr: String }, // obj::Trait.attr
+    /// 属性アクセス `object.attr`。インスタンスフィールドやクラス変数の読み取りに使用する。
+    Attr { object: Box<Expr>, attr: String },
+    /// トレイト修飾アクセス `object::Trait.attr`。特定のトレイト実装のメソッドを明示的に呼び出す。
+    TraitAccess { object: Box<Expr>, trait_name: String, attr: String },
+    /// 二項演算 `left op right`。`span` はエラー報告に使用する位置情報。
     BinOp { op: BinOp, left: Box<Expr>, right: Box<Expr>, span: Span },
+    /// 単項演算 `op operand`（例: `-x`, `not x`, `~x`）。
     UnaryOp { op: UnaryOp, operand: Box<Expr> },
+    /// 関数呼び出し `func(args)`。`func` が `TemplateInstantiate` の場合はテンプレート呼び出しになる。
     Call { func: Box<Expr>, args: Vec<CallArg> },
-    /// Template instantiation: `expr[T1, T2]` — type arguments applied to a template value.
-    /// Must appear as the `func` of a `Call` expression; not valid as a standalone value.
+    /// テンプレート型引数適用: `expr[T1, T2]` — テンプレート値に具体的な型引数を与える。
+    /// `Call` 式の `func` として使用する。単独の値としては無効。
     TemplateInstantiate { base: Box<Expr>, type_args: Vec<String> },
-    /// Subscript access: `expr[index]` — index lookup on a dict (or future subscriptable types).
+    /// 添字アクセス: `expr[index]` — 辞書やリストなどのインデックスルックアップ。
     Subscript { object: Box<Expr>, index: Box<Expr> },
-    /// Dict literal: `{key: value, ...}` — evaluates to a `dict[Any, Any]` value.
+    /// 辞書リテラル: `{key: value, ...}` — 評価結果は `dict[Any, Any]` 型の値になる。
     Dict(Vec<(Expr, Expr)>),
-    /// Tuple literal: `(val, val, ...)` — evaluates to a `tuple[T1, T2, ...]` value.
+    /// タプルリテラル: `(val, val, ...)` — 評価結果は `tuple[T1, T2, ...]` 型の値になる。
+    /// 空タプル `()` や単要素タプル `(val,)` も含む。`(expr)` はタプルではなくグループ式。
     Tuple(Vec<Expr>),
 }
 
+/// 文（Statement）の AST ノード。
+///
+/// インタープリタが実行する構文要素を表す。式文・宣言・制御構文・定義などすべての文種を含む。
+///
+/// # バリアント（主要なもの）
+/// - `Expr(Expr)`             : 式文。副作用のために式を評価する（例: 関数呼び出し単体）。
+/// - `Let` / `Const` / `Mut` : 変数宣言（それぞれ不変・不変定数・可変）。
+/// - `Assign`                 : 変数への代入 `x = expr`。
+/// - `AttrAssign`             : 属性への代入 `obj.attr = expr`。
+/// - `AttrCompoundAssign`     : 属性への複合代入 `obj.attr += expr` など。
+/// - `CompoundAssign`         : 変数への複合代入 `x += expr` など。
+/// - `If`                     : `if` / `elif` / `else` 条件分岐。
+/// - `While`                  : `while` ループ。
+/// - `For`                    : `for target in iter:` イテレータループ。
+/// - `Block`                  : `block:` 無名スコープ。
+/// - `Return`                 : `return [expr]` 関数からの返却。
+/// - `Break` / `Continue` / `Pass` : ループ制御・空文。
+/// - `BlockReturn`            : `block_return expr` — `block:` スコープからの値返却。
+/// - `BlockYield`             : `block_yield expr` — `block:` スコープからの値産出。
+/// - `Yield`                  : `yield expr` — ジェネレータ関数内での値産出。
+/// - `Freeze`                 : `freeze x` — `mut` 変数を `let`（不変）に降格する。
+/// - `FnDef`                  : `fn` 関数定義。テンプレート対応。
+/// - `GenDef`                 : `gen` ジェネレータ関数定義。
+/// - `ClassDef`               : `class` クラス定義。テンプレート対応。
+/// - `TraitDef`               : `trait` トレイト定義。
+/// - `Field`                  : クラス本体内のフィールド宣言 `[mut|let|const] name: Type`。
+/// - `NewTypeDef`             : `new_type NewName: OriginalType` — 新しい型エイリアスの定義。
+/// - `Try`                    : `try` / `except` / `finally` 例外処理。
+/// - `Raise`                  : `raise [expr]` 例外の送出（または再送出）。
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    /// 式文: 副作用のために式を評価する（例: `print(x)`）。
     Expr(Expr),
-    Let(String, Expr),                    // let x = expr   (immutable)
-    Const(String, Expr),                  // const X = expr  (immutable)
-    Mut(String, Expr),                    // mut x = expr    (mutable)
-    Assign { name: String, value: Expr, span: Span },                       // x = expr
-    AttrAssign { target: Expr, value: Expr },                                // obj.attr = expr
-    AttrCompoundAssign { target: Expr, op: BinOp, value: Expr },            // obj.attr += expr
-    CompoundAssign { name: String, op: BinOp, value: Expr, span: Span },    // x += expr
+    /// 不変変数宣言: `let x = expr`。宣言後の再代入はエラー。
+    Let(String, Expr),
+    /// 不変定数宣言: `const X = expr`。`let` と同様に不変だが定数であることを明示する。
+    Const(String, Expr),
+    /// 可変変数宣言: `mut x = expr`。宣言後に再代入可能。
+    Mut(String, Expr),
+    /// 変数への代入: `x = expr`。`span` は型検査・エラー報告に使用する位置情報。
+    Assign { name: String, value: Expr, span: Span },
+    /// 属性（フィールド）への代入: `obj.attr = expr`。
+    AttrAssign { target: Expr, value: Expr },
+    /// 属性への複合代入: `obj.attr += expr` など。`op` は複合代入の演算子。
+    AttrCompoundAssign { target: Expr, op: BinOp, value: Expr },
+    /// 変数への複合代入: `x += expr` など。`span` は型検査・エラー報告に使用する位置情報。
+    CompoundAssign { name: String, op: BinOp, value: Expr, span: Span },
+    /// `if` / `elif` / `else` 条件分岐。
+    ///
+    /// # フィールド
+    /// - `branches`  : `(条件式, ボディ)` のペアのリスト（`if` + 0個以上の `elif`）。
+    /// - `else_body` : `else` 節のボディ。`else` がなければ `None`。
     If {
-        branches: Vec<(Expr, Vec<Stmt>)>, // (condition, body) — if + elif arms
+        /// `if` および `elif` の各節。`(条件式, ボディ文リスト)` の順に格納される。
+        branches: Vec<(Expr, Vec<Stmt>)>,
+        /// `else` 節のボディ文リスト。`else` がない場合は `None`。
         else_body: Option<Vec<Stmt>>,
     },
+    /// `while cond:` ループ。`break` / `continue` をサポートする。
+    ///
+    /// # フィールド
+    /// - `cond` : ループ継続条件式。
+    /// - `body` : ループ本体の文リスト。
     While {
+        /// ループ継続条件式。偽になるとループを終了する。
         cond: Expr,
+        /// ループ本体の文リスト。
         body: Vec<Stmt>,
     },
+    /// `for target in iter:` イテレータループ。
+    ///
+    /// `iter` 式を評価してイテレータを取得し、`target` に各要素を束縛しながらループする。
+    /// `break` / `continue` をサポートする。
+    ///
+    /// # フィールド
+    /// - `target` : ループ変数名（各イテレーション要素が束縛される）。
+    /// - `iter`   : イテラブルな値を返す式（リスト・ジェネレータ・カスタムイテラブルなど）。
+    /// - `body`   : ループ本体の文リスト。
     For {
+        /// ループ変数名。各要素がこの名前にバインドされる。
         target: String,
+        /// イテラブルを返す式（リスト・ジェネレータなど）。
         iter: Expr,
+        /// ループ本体の文リスト。
         body: Vec<Stmt>,
     },
-    Block(Vec<Stmt>),        // block: …  (anonymous scope)
+    /// `block:` 無名スコープ。ブロック内の変数はブロック外に漏れない。
+    Block(Vec<Stmt>),
+    /// `return [expr]` — 関数からの返却。`None` の場合は `return None` と等価。
     Return(Option<Expr>),
+    /// `break` — 最も内側のループを脱出する。
     Break,
+    /// `continue` — 最も内側のループの次のイテレーションへ進む。
     Continue,
+    /// `pass` — 何もしない空文。構文上ボディが必要な箇所に使用する。
     Pass,
-    BlockReturn(Expr),       // block_return expr
-    BlockYield(Expr),        // block_yield expr
-    /// `yield expr` inside a generator function body.
+    /// `block_return expr` — `block:` スコープから値を返却して即座に抜ける。
+    BlockReturn(Expr),
+    /// `block_yield expr` — `block:` スコープから値を産出してブロックを継続する。
+    BlockYield(Expr),
+    /// `yield expr` — ジェネレータ関数内での値産出。
+    /// ジェネレータ関数（`gen` キーワードで定義）の本体内でのみ有効。
     Yield(Expr),
-    /// `freeze x` — demotes a `mut` variable to `let` (immutable) at runtime.
-    /// If the value has a `__freeze__` method, it is called before the demotion.
+    /// `freeze x` — `mut` 変数を `let`（不変）に降格する。
+    /// 値に `__freeze__` メソッドがあれば、降格前に呼び出す。
     Freeze(String, Span),
+    /// `fn` 関数定義。
+    ///
+    /// # フィールド
+    /// - `name`            : 関数名。
+    /// - `template_params` : テンプレート型パラメータのリスト（非テンプレートは空）。
+    /// - `params`          : 仮引数リスト。
+    /// - `return_type`     : 戻り値の型アノテーション文字列。省略可能（`None` は型検査エラー）。
+    /// - `body`            : 関数本体の文リスト。
+    /// - `is_abstract`     : trait 内の抽象メソッドかどうか（本体が空/`pass` のみのもの）。
     FnDef {
+        /// 関数名。
         name: String,
-        /// Template type parameters (empty for non-template functions).
+        /// テンプレート型パラメータのリスト（非テンプレート関数は空リスト）。
         template_params: Vec<TemplateParam>,
+        /// 仮引数リスト（`self` を含む場合はリストの先頭に位置する）。
         params: Vec<Param>,
+        /// 戻り値の型アノテーション文字列（`None` の場合は型検査で `MissingReturnTypeAnn` エラー）。
         return_type: Option<String>,
+        /// 関数本体の文リスト。
         body: Vec<Stmt>,
-        is_virtual: bool,
+        /// `true` の場合、trait 内の抽象メソッド宣言（本体が `pass` のみ）。
+        is_abstract: bool,
     },
-    /// Generator function definition (`gen name[T: Trait](params) -> YieldType:`).
-    /// `yield_type` is T in `Generator[T]` — the type produced by each `yield`.
-    /// The actual call-site return type is `Generator[yield_type]`.
+    /// ジェネレータ関数定義: `gen name[T: Trait](params) -> YieldType:`。
+    ///
+    /// `yield` 文を含む関数を定義する。呼び出し時に `Value::Generator` を返す。
+    ///
+    /// # フィールド
+    /// - `name`            : ジェネレータ関数名。
+    /// - `template_params` : テンプレート型パラメータのリスト。
+    /// - `params`          : 仮引数リスト。
+    /// - `yield_type`      : 各 `yield` で産出される値の型（`Generator[T]` の `T`）。
+    /// - `body`            : ジェネレータ本体の文リスト。
     GenDef {
+        /// ジェネレータ関数名。
         name: String,
+        /// テンプレート型パラメータのリスト（非テンプレートは空リスト）。
         template_params: Vec<TemplateParam>,
+        /// 仮引数リスト。
         params: Vec<Param>,
-        /// Type of each yielded value (the `T` in `Generator[T]`).
+        /// 各 `yield` で産出される値の型（`Generator[T]` の `T`）。省略可能。
         yield_type: Option<String>,
+        /// ジェネレータ本体の文リスト。
         body: Vec<Stmt>,
     },
+    /// `class` クラス定義。
+    ///
+    /// # フィールド
+    /// - `name`            : クラス名。
+    /// - `template_params` : テンプレート型パラメータのリスト（非テンプレートは空）。
+    /// - `bases`           : 継承する基底クラス・トレイト名のリスト。
+    /// - `body`            : クラス本体の文リスト（フィールド宣言・メソッド定義を含む）。
     ClassDef {
+        /// クラス名。
         name: String,
-        /// Template type parameters (empty for non-template classes).
+        /// テンプレート型パラメータのリスト（非テンプレートクラスは空リスト）。
         template_params: Vec<TemplateParam>,
+        /// 継承する基底クラス・トレイト名のリスト。
         bases: Vec<String>,
+        /// クラス本体の文リスト（`Field` / `FnDef` / `GenDef` などを含む）。
         body: Vec<Stmt>,
     },
+    /// `trait` トレイト定義。
+    ///
+    /// # フィールド
+    /// - `name`            : トレイト名。
+    /// - `template_params` : テンプレート型パラメータのリスト。
+    /// - `body`            : トレイト本体の文リスト（抽象メソッド宣言・デフォルト実装を含む）。
     TraitDef {
+        /// トレイト名。
         name: String,
+        /// テンプレート型パラメータのリスト（非テンプレートは空リスト）。
         template_params: Vec<TemplateParam>,
+        /// トレイト本体の文リスト（抽象メソッドやデフォルト実装を含む）。
         body: Vec<Stmt>,
     },
-    /// Typed field declaration inside a class body.
-    /// Syntax: `[mut|let|const] name: Type [= default]`
-    /// `const` fields are class variables and must have a default value.
+    /// クラス本体内の型付きフィールド宣言。
+    ///
+    /// 構文: `[mut|let|const] name: Type [= default]`
+    ///
+    /// # フィールド
+    /// - `name`     : フィールド名。
+    /// - `kind`     : フィールドの種別（`mut` / `let` / `const`）。
+    /// - `type_ann` : 型アノテーション文字列（必須）。
+    /// - `default`  : デフォルト値の式。`const` フィールドは必須、`mut` / `let` は省略可能。
     Field {
+        /// フィールド名。
         name: String,
+        /// フィールドの種別（可変インスタンス変数・不変インスタンス変数・クラス変数）。
         kind: FieldKind,
+        /// 型アノテーション文字列（例: `"int"`, `"str"`）。クラスフィールドでは必須。
         type_ann: String,
+        /// デフォルト値の式。`const` フィールドは必須、`mut` / `let` は `None` 可。
         default: Option<Expr>,
     },
-    /// `new_type NewName: OriginalType`
-    /// Creates a structurally identical subclass of OriginalType with a new name.
-    /// The binding is always const; reassignment is a parse error.
+    /// `new_type NewName: OriginalType` — 既存の型と構造的に同一だが名前が異なる新しい型を定義する。
+    ///
+    /// バインドは常に `const`（再代入はパースエラー）。
+    /// 元の型がクラスの場合はクラス定義をコピー、プリミティブの場合はラッパークラスを自動生成する。
+    ///
+    /// # フィールド
+    /// - `name`     : 新しい型の名前。
+    /// - `original` : 元の型の名前（クラス名・プリミティブ型名・または別の `new_type` 名）。
     NewTypeDef {
+        /// 新しい型の名前。
         name: String,
-        /// The original type name (class, primitive type, or new_type).
+        /// 元の型の名前（クラス名またはプリミティブ型名）。
         original: String,
     },
-    /// `try: ... except Type as name: ... finally: ...`
+    /// `try: ... except Type as name: ... finally: ...` 例外処理構文。
+    ///
+    /// # フィールド
+    /// - `body`         : `try` 節の本体文リスト。
+    /// - `handlers`     : `except` 節のリスト（複数の `except` 節を持てる）。
+    /// - `finally_body` : `finally` 節の本体文リスト。省略可能。
     Try {
+        /// `try` 節の本体文リスト。例外が発生するとハンドラに制御が移る。
         body: Vec<Stmt>,
+        /// `except` 節のリスト。順に評価され、最初にマッチしたハンドラが実行される。
         handlers: Vec<ExceptHandler>,
+        /// `finally` 節の本体文リスト。例外の有無に関わらず常に実行される。
         finally_body: Option<Vec<Stmt>>,
     },
-    /// `raise expr` or bare `raise` (re-raise current exception).
+    /// `raise [expr]` — 例外の送出または再送出。
+    ///
+    /// # フィールド
+    /// - `exc`  : 送出する例外式。`None` の場合は現在の例外を再送出する（bare `raise`）。
+    /// - `span` : エラー報告に使用する位置情報。
     Raise {
+        /// 送出する例外式。`None` の場合は bare `raise`（現在の例外を再送出）。
         exc: Option<Expr>,
+        /// エラー報告・スタックトレースに使用する位置情報。
         span: Span,
     },
 }
 
-/// A single `except` clause inside a `try` statement.
+/// `try` 文内の単一の `except` 節を表す。
+///
+/// # フィールド
+/// - `exc_type` : キャッチする例外型の名前（例: `"ValueError"`）。`None` は bare `except:`（全捕捉）。
+/// - `name`     : 捕捉した例外を束縛する変数名（`as e` の `e`）。省略可能。
+/// - `body`     : このハンドラの本体文リスト。
 #[derive(Debug, Clone)]
 pub struct ExceptHandler {
-    /// Exception type to match, e.g. `ValueError`. `None` = bare `except:` (catch-all).
+    /// キャッチする例外型名（例: `"ValueError"`）。`None` は bare `except:`（すべての例外を捕捉）。
     pub exc_type: Option<String>,
-    /// Name to bind the caught exception to (`as e`). `None` if omitted.
+    /// 捕捉した例外を束縛する変数名（`as e` の `e`）。省略した場合は `None`。
     pub name: Option<String>,
+    /// このハンドラの本体文リスト。
     pub body: Vec<Stmt>,
 }
 
-/// Mutability/ownership kind for a class field declaration.
+/// クラスフィールド宣言の種別。
+///
+/// クラス本体での変数宣言は `mut` / `let` / `const` の3種類に限られる。
+///
+/// # バリアント
+/// - `Mut`   : 可変インスタンス変数 (`mut name: Type [= default]`)。コンストラクタ以降も再代入可能。
+/// - `Let`   : 不変インスタンス変数 (`let name: Type [= default]`)。`__init__` 内の初回代入のみ許可。
+/// - `Const` : クラス変数 (`const name: Type = default`)。全インスタンスで共有。代入不可。
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldKind {
-    /// Mutable instance variable (`mut name: Type [= default]`)
+    /// 可変インスタンス変数 (`mut name: Type [= default]`)。
+    /// コンストラクタ以降も `self.name = value` で再代入できる。
     Mut,
-    /// Immutable instance variable (`let name: Type [= default]`)
+    /// 不変インスタンス変数 (`let name: Type [= default]`)。
+    /// `__init__` 内での初回代入のみ許可。それ以降の代入は実行時 `TypeError`。
     Let,
-    /// Class variable — immutable, shared across all instances (`const name: Type = default`)
+    /// クラス変数 (`const name: Type = default`)。必ず初期値が必要。
+    /// すべてのインスタンスで共有される。インスタンス経由・クラス名経由どちらでもアクセス可能。
+    /// 代入は実行時 `TypeError`。
     Const,
 }

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Set-Location \"d:\\\\repository\\\\new_language\"; \\(Get-Content \"src\\\\parser.rs\" | Measure-Object -Line\\).Lines)",
+      "PowerShell(Set-Location \"d:\\\\repository\\\\new_language\"; \\(Get-Content \"src\\\\type_check.rs\" | Measure-Object -Line\\).Lines)",
+      "Bash(cargo build *)",
+      "Bash(cargo test *)"
+    ]
+  }
+}

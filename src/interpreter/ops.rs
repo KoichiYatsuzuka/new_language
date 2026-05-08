@@ -1,4 +1,7 @@
 // ops.rs — 演算・比較・真偽値・表示 (is_truthy / type_name / display / display_repr / apply_unary / apply_binop / values_eq)
+//
+// `Value` に対する演算・表示・型名取得などの基本操作を実装する。
+// これらはインタープリタ全体から頻繁に呼ばれる共通ユーティリティ群。
 
 use std::rc::Rc;
 
@@ -7,6 +10,22 @@ use crate::ast::{BinOp, UnaryOp};
 use super::{Interpreter, Value};
 
 impl Interpreter {
+    /// 値の真偽判定を行う。
+    ///
+    /// Python ライクなルール:
+    /// - `Bool` → そのまま
+    /// - `Int` → `0` なら偽、それ以外は真
+    /// - `Float` → `0.0` なら偽、それ以外は真
+    /// - `Str` → 空文字列なら偽、それ以外は真
+    /// - `None` → 偽
+    /// - `List` → 空リストなら偽、非空なら真
+    /// - `Dict` → 空辞書なら偽、非空なら真
+    /// - `Tuple` → 空タプルなら偽、非空なら真
+    /// - 関数・クラス・インスタンス等 → 常に真
+    ///
+    /// - `val`: 真偽を判定する値
+    ///
+    /// 戻り値: `true` または `false`
     pub(super) fn is_truthy(&self, val: &Value) -> bool {
         match val {
             Value::Bool(b) => *b,
@@ -17,6 +36,7 @@ impl Interpreter {
             Value::List(items) => !items.is_empty(),
             Value::Dict(d) => !d.borrow().keys.is_empty(),
             Value::Tuple(t) => !t.is_empty(),
+            // 関数・クラス・インスタンス・ジェネレータ等は常に真
             Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) | Value::Type(_)
             | Value::Trait(_)
             | Value::TemplateFn(_) | Value::TemplateClass(_)
@@ -24,6 +44,11 @@ impl Interpreter {
         }
     }
 
+    /// 値のランタイム型名を文字列として返す（エラーメッセージや型検査に使用）。
+    ///
+    /// - `val`: 型名を取得する値
+    ///
+    /// 戻り値: `"int"`, `"str"`, `"list"`, `"object"` 等の静的文字列
     pub(super) fn type_name(&self, val: &Value) -> &'static str {
         match val {
             Value::Int(_) => "int",
@@ -44,6 +69,12 @@ impl Interpreter {
         }
     }
 
+    /// 値を `print()` 出力用の文字列に変換する。
+    /// 文字列値はクォートなしでそのまま返す（`display_repr` との違い）。
+    ///
+    /// - `val`: 表示する値
+    ///
+    /// 戻り値: 人間が読みやすい表示文字列
     pub(super) fn display(&self, val: &Value) -> String {
         match val {
             Value::Int(n) => n.to_string(),
@@ -98,6 +129,13 @@ impl Interpreter {
         }
     }
 
+    /// 値をコレクション内要素の表示用文字列に変換する。
+    /// 文字列値はシングルクォートで囲み、リストは各要素を再帰的に repr 表示する。
+    /// `display` との違い: 文字列値が `'...'` 形式で出力される点。
+    ///
+    /// - `val`: 表示する値
+    ///
+    /// 戻り値: repr 形式の表示文字列
     pub(super) fn display_repr(&self, val: &Value) -> String {
         match val {
             Value::Str(s) => format!("'{s}'"),
@@ -110,6 +148,12 @@ impl Interpreter {
         }
     }
 
+    /// 単項演算子を適用した結果の値を返す。
+    ///
+    /// - `op`: 適用する単項演算子（`Neg`=`-`, `Not`=`not`, `BitNot`=`~`）
+    /// - `val`: オペランドの値
+    ///
+    /// 戻り値: `Ok(Value)` — 演算結果。`Err(message)` — 型エラー（例: `~str`）
     pub(super) fn apply_unary(&self, op: &UnaryOp, val: Value) -> Result<Value, String> {
         match op {
             UnaryOp::Neg => match val {
@@ -125,9 +169,22 @@ impl Interpreter {
         }
     }
 
+    /// 二項演算子を適用した結果の値を返す。
+    ///
+    /// サポートする演算カテゴリ:
+    /// - 算術: `+`, `-`, `*`, `/`, `//`, `%`, `**`（int/float 混在時は昇格）
+    /// - 文字列連結: `+`（str + str）
+    /// - 比較: `==`, `!=`, `<`, `>`, `<=`, `>=`
+    /// - ビット演算: `&`, `|`, `^`, `<<`, `>>`（int のみ）
+    ///
+    /// - `op`: 適用する二項演算子
+    /// - `lv`: 左オペランドの値（評価済み）
+    /// - `rv`: 右オペランドの値（評価済み）
+    ///
+    /// 戻り値: `Ok(Value)` — 演算結果。`Err(message)` — 型エラーまたはゼロ除算エラー
     pub(super) fn apply_binop(&self, op: &BinOp, lv: Value, rv: Value) -> Result<Value, String> {
         match (op, &lv, &rv) {
-            // Arithmetic
+            // 算術演算
             (BinOp::Add, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a + *b)),
             (BinOp::Add, Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a + *b)),
             (BinOp::Add, Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + *b)),
@@ -166,7 +223,7 @@ impl Interpreter {
             (BinOp::Pow, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a.powf(*b))),
             (BinOp::Pow, Value::Int(a), Value::Float(b)) => Ok(Value::Float((*a as f64).powf(*b))),
             (BinOp::Pow, Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powi(*b as i32))),
-            // Comparison
+            // 比較演算
             (BinOp::Eq, _, _) => Ok(Value::Bool(self.values_eq(&lv, &rv))),
             (BinOp::NotEq, _, _) => Ok(Value::Bool(!self.values_eq(&lv, &rv))),
             (BinOp::Lt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(*a < *b)),
@@ -181,7 +238,7 @@ impl Interpreter {
             (BinOp::LtEq, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(*a <= *b)),
             (BinOp::GtEq, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(*a >= *b)),
             (BinOp::GtEq, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(*a >= *b)),
-            // Bitwise
+            // ビット演算（int のみ対応）
             (BinOp::BitAnd, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a & *b)),
             (BinOp::BitOr, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a | *b)),
             (BinOp::BitXor, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a ^ *b)),
@@ -194,18 +251,31 @@ impl Interpreter {
         }
     }
 
+    /// 2つの値が等値かどうかを判定する（`==` / `!=` 演算子および `values_eq` で使用）。
+    ///
+    /// - プリミティブ型（int/float/str/bool/None）は値で比較。int と float は昇格して比較
+    /// - `Instance` と `Class` は参照の同一性（ポインタ比較）で判定
+    /// - `Tuple` は要素数と各要素を再帰的に比較
+    /// - 異なる型同士（例: int と str）は常に `false`
+    ///
+    /// - `a`, `b`: 比較する2つの値
+    ///
+    /// 戻り値: `true` — 等値、`false` — 非等値
     pub(super) fn values_eq(&self, a: &Value, b: &Value) -> bool {
         match (a, b) {
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
+            // int と float の混在比較: int を float に昇格して比較
             (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
             (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::None, Value::None) => true,
+            // インスタンスとクラスは参照の同一性（ポインタ比較）で等値判定
             (Value::Instance(a), Value::Instance(b)) => Rc::ptr_eq(a, b),
             (Value::Type(a), Value::Type(b)) => a == b,
             (Value::Class(a), Value::Class(b)) => Rc::ptr_eq(a, b),
+            // タプルは要素数と各要素を再帰的に比較
             (Value::Tuple(a), Value::Tuple(b)) => {
                 let av = a.all_values();
                 let bv = b.all_values();

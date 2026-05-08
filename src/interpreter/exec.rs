@@ -1,4 +1,7 @@
 // exec.rs — 文の実行 (exec / exec_block / exec_scoped_block)
+//
+// `Interpreter::exec` が文（`Stmt`）を再帰的にツリーウォークして `ExecResult` を返す。
+// 変数宣言・代入・制御構造・関数/クラス定義・例外処理など、すべての文の実行を担当する。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,13 +18,32 @@ use super::{
 };
 
 impl Interpreter {
+    /// 文（`Stmt`）を実行して `ExecResult` を返す。インタープリタの文実行のメインエントリポイント。
+    ///
+    /// 各 `Stmt` バリアントを処理する:
+    /// - `Let` / `Const` / `Mut`: 変数を宣言してスコープに追加
+    /// - `Assign` / `CompoundAssign`: 既存変数への代入（可変性チェック付き）
+    /// - `AttrAssign` / `AttrCompoundAssign`: インスタンスフィールド・辞書添字への代入
+    /// - `If` / `While` / `For` / `Block`: 制御構造の実行
+    /// - `FnDef` / `GenDef`: 関数・ジェネレータ定義をスコープに登録（オーバーロード蓄積）
+    /// - `ClassDef` / `TraitDef` / `NewTypeDef`: クラス・trait・new_type をスコープに登録
+    /// - `Return` / `Break` / `Continue` / `BlockReturn` / `BlockYield`: 制御フロー信号を返す
+    /// - `Yield`: スレッドローカルの yield コレクタに値を追加
+    /// - `Raise` / `Try`: 例外の発生と捕捉
+    /// - `Freeze`: インスタンスを不変化
+    ///
+    /// - `stmt`: 実行する文の AST ノード
+    ///
+    /// 戻り値: `Ok(ExecResult)` — 実行結果（制御フロー信号を含む）。`Err(message)` — ランタイムエラー
     pub fn exec(&mut self, stmt: &Stmt) -> Result<ExecResult, String> {
         match stmt {
             Stmt::Expr(expr) => {
+                // 式文: 式を評価して副作用を実行し、値は捨てる
                 self.eval(expr)?;
                 Ok(ExecResult::Normal)
             }
             Stmt::Let(name, expr) => {
+                // 不変変数宣言: インスタンス値の場合は freeze する
                 let value = self.eval(expr)?;
                 if let Value::Instance(ref inst_rc) = value {
                     Self::freeze_instance(inst_rc);
@@ -30,26 +52,31 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::Const(name, expr) => {
+                // 定数宣言: 常に不変として登録する
                 let value = self.eval(expr)?;
                 self.declare_var(name.clone(), Var { value, mutable: false });
                 Ok(ExecResult::Normal)
             }
             Stmt::Mut(name, expr) => {
+                // 可変変数宣言: mutable フラグを true にして登録する
                 let value = self.eval(expr)?;
                 self.declare_var(name.clone(), Var { value, mutable: true });
                 Ok(ExecResult::Normal)
             }
             Stmt::Assign { name, value, .. } => {
+                // 変数への代入: assign_var で可変性チェックを行う
                 let value = self.eval(value)?;
                 self.assign_var(name, value)?;
                 Ok(ExecResult::Normal)
             }
             Stmt::AttrAssign { target, value } => {
+                // 属性への代入: `self.field = value` や `d[key] = value` など
                 let rhs = self.eval(value)?;
                 self.attr_assign(target, rhs)?;
                 Ok(ExecResult::Normal)
             }
             Stmt::AttrCompoundAssign { target, op, value } => {
+                // 属性への複合代入: `self.field += value` など（現在値を取得して演算後に代入）
                 let rhs = self.eval(value)?;
                 let lhs = self.eval(target)?;
                 let result = self.apply_binop(op, lhs, rhs)?;
@@ -57,6 +84,7 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::CompoundAssign { name, op, value, .. } => {
+                // 変数への複合代入: `x += value` など（可変性チェック付き）
                 let rhs = self.eval(value)?;
                 let lhs = match self.get_var(name) {
                     Some(v) if !v.mutable => {
@@ -72,10 +100,11 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::Pass => Ok(ExecResult::Normal),
-            Stmt::Field { .. } => Ok(ExecResult::Normal), // only valid in class bodies
+            Stmt::Field { .. } => Ok(ExecResult::Normal), // クラス本体内でのみ有効（exec では何もしない）
             Stmt::Break => Ok(ExecResult::Break),
             Stmt::Continue => Ok(ExecResult::Continue),
             Stmt::Return(expr) => {
+                // return 文: 式があれば評価して Return シグナルとして返す
                 let val = match expr {
                     Some(e) => self.eval(e)?,
                     None => Value::None,
@@ -83,14 +112,17 @@ impl Interpreter {
                 Ok(ExecResult::Return(val))
             }
             Stmt::BlockReturn(expr) => {
+                // block_return 文: ブロック式の値として BlockReturn シグナルを返す
                 let val = self.eval(expr)?;
                 Ok(ExecResult::BlockReturn(val))
             }
             Stmt::BlockYield(expr) => {
+                // block_yield 文: block_return と同様に BlockReturn シグナルとして返す
                 let val = self.eval(expr)?;
                 Ok(ExecResult::BlockReturn(val))
             }
             Stmt::If { branches, else_body } => {
+                // if/elif/else: 各条件を順に評価し、最初に truthy になった本体を実行する
                 for (cond, body) in branches {
                     let val = self.eval(cond)?;
                     if self.is_truthy(&val) {
@@ -103,6 +135,7 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::While { cond, body } => {
+                // while ループ: 条件が falsy になるか break が実行されるまでループする
                 loop {
                     let val = self.eval(cond)?;
                     if !self.is_truthy(&val) {
@@ -111,29 +144,32 @@ impl Interpreter {
                     match self.exec_scoped_block(body)? {
                         ExecResult::Break => break,
                         ExecResult::Continue | ExecResult::Normal => {}
-                        r => return Ok(r),
+                        r => return Ok(r), // Return / Raise などはそのまま上位に伝播させる
                     }
                 }
                 Ok(ExecResult::Normal)
             }
             Stmt::For { target, iter, body } => {
                 let iter_val = self.eval(iter)?;
-                // Obtain a Generator from the iterable via the iterator protocol.
+                // イテレータプロトコル: イテラブル値から Generator を取得する
                 let generator = match iter_val {
                     Value::List(items) => {
+                        // リストをそのままジェネレータにラップする
                         Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items, index: 0 })))
                     }
                     Value::Str(s) => {
+                        // 文字列を1文字ずつに展開してジェネレータにラップする
                         let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
                         Value::Generator(Rc::new(RefCell::new(GeneratorState { values: chars, index: 0 })))
                     }
                     Value::Generator(_) => iter_val,
                     Value::Instance(_) => {
-                        // Call __iter__() to obtain the generator.
+                        // インスタンスは `__iter__()` を呼び出してジェネレータを取得する
                         self.eval_method_call(iter_val, "__iter__", &[])?
                     }
                     _ => return Err("TypeError: object is not iterable".to_string()),
                 };
+                // ジェネレータから `next()` を繰り返し呼び出してループ変数に束縛する
                 loop {
                     match self.eval_method_call(generator.clone(), "next", &[]) {
                         Ok(item) => {
@@ -147,6 +183,7 @@ impl Interpreter {
                                 r => return Ok(r),
                             }
                         }
+                        // EndOfIteration: ジェネレータ枯渇でループ終了（エラーは伝播させない）
                         Err(ref e) if e.starts_with("EndOfIteration") => break,
                         Err(e) => return Err(e),
                     }
@@ -154,6 +191,7 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::Block(body) => {
+                // block 式: BlockReturn は Normal に変換する（ブロック外に値を返さない）
                 match self.exec_scoped_block(body)? {
                     ExecResult::BlockReturn(_) | ExecResult::Normal => Ok(ExecResult::Normal),
                     r => Ok(r),
@@ -161,7 +199,7 @@ impl Interpreter {
             }
             Stmt::FnDef { name, template_params, params, body, .. } => {
                 if !template_params.is_empty() {
-                    // Template function: store as TemplateFn (no overloading for now).
+                    // テンプレート関数: TemplateFn として格納する（現在はオーバーロード未対応）
                     let tmpl = Rc::new(TemplateFnValue {
                         template_params: template_params.clone(),
                         params: params.clone(),
@@ -172,7 +210,7 @@ impl Interpreter {
                 } else {
                     let fn_val = Rc::new(FnValue { params: params.clone(), body: body.clone() });
 
-                    // Accumulate overloads within the same scope level.
+                    // 同名の既存定義があれば OverloadedFn に蓄積する（同スコープレベル内）
                     let existing = self.scopes.last()
                         .and_then(|s| s.get(name.as_str()))
                         .map(|v| v.value.clone());
@@ -190,6 +228,7 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::Yield(expr) => {
+                // yield 文: スレッドローカルの yield コレクタに値を追加する
                 let val = self.eval(expr)?;
                 GENERATOR_YIELDS.with(|y| {
                     if let Some(yields) = y.borrow_mut().as_mut() {
@@ -199,6 +238,7 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::GenDef { name, template_params, params, body, .. } => {
+                // ジェネレータ関数定義: GeneratorFn または TemplateGenFn としてスコープに登録する
                 if !template_params.is_empty() {
                     let tmpl = Rc::new(TemplateGenFnValue {
                         template_params: template_params.clone(),
@@ -215,17 +255,19 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::TraitDef { name, .. } => {
+                // trait 定義: Value::Trait として不変バインドする
                 self.declare_var(name.clone(), Var { value: Value::Trait(name.clone()), mutable: false });
                 Ok(ExecResult::Normal)
             }
             Stmt::NewTypeDef { name, original } => {
+                // new_type 定義: 元の型に基づいて新しい型名のクラスを生成してバインドする
                 let orig_val = self.get_val(original)
                     .ok_or_else(|| format!("NameError: type '{original}' is not defined"))?;
                 match orig_val {
                     Value::Class(orig_cls) => {
-                        // Structural copy of the class with a new name.
-                        // Instances of the new type will have class.name = new name,
-                        // so `Self` inside methods correctly refers to the new type.
+                        // 元の型がクラスの場合: 名前だけ変えて構造的コピーを生成する。
+                        // インスタンスは class.name = 新しい名前を持つため、
+                        // メソッド内の `Self` が正しく新しい型に解決される。
                         let new_cls = Rc::new(super::ClassValue {
                             name: name.clone(),
                             bases: orig_cls.bases.clone(),
@@ -238,8 +280,8 @@ impl Interpreter {
                         self.declare_var(name.clone(), Var { value: Value::Class(new_cls), mutable: false });
                     }
                     Value::Type(type_name) => {
-                        // Primitive type: create a single-field wrapper class.
-                        // new_type Meters: int  →  class Meters: mut value: int
+                        // 元の型がプリミティブの場合: `value` フィールドを持つラッパークラスを自動生成する。
+                        // `new_type Meters: int` → `class Meters: mut value: int` と等価
                         let init_body = vec![
                             Stmt::AttrAssign {
                                 target: Expr::Attr {
@@ -279,7 +321,7 @@ impl Interpreter {
             }
             Stmt::ClassDef { name, template_params, bases, body } => {
                 if !template_params.is_empty() {
-                    // Template class: store as TemplateClass without building ClassValue yet.
+                    // テンプレートクラス: ClassValue をまだ構築せず TemplateClass として格納する
                     let tmpl = Rc::new(TemplateClassValue {
                         name: name.clone(),
                         template_params: template_params.clone(),
@@ -289,6 +331,7 @@ impl Interpreter {
                     self.declare_var(name.clone(), Var { value: Value::TemplateClass(tmpl), mutable: false });
                     return Ok(ExecResult::Normal);
                 }
+                // 通常クラス: クラス本体を走査してメソッド・フィールド・クラス変数を収集する
                 let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
                 let mut gen_methods: HashMap<String, Rc<GeneratorFnValue>> = HashMap::new();
                 let mut field_defaults = Vec::new();
@@ -297,22 +340,26 @@ impl Interpreter {
                 for stmt in body {
                     match stmt {
                         Stmt::FnDef { name: mname, params, body: mbody, .. } => {
+                            // 通常メソッド定義: 同名があればオーバーロードとして蓄積する
                             methods.entry(mname.clone()).or_default().push(Rc::new(FnValue {
                                 params: params.clone(),
                                 body: mbody.clone(),
                             }));
                         }
                         Stmt::GenDef { name: mname, params, body: mbody, .. } => {
+                            // ジェネレータメソッド定義: gen_methods に登録する
                             gen_methods.insert(mname.clone(), Rc::new(GeneratorFnValue {
                                 params: params.clone(),
                                 body: mbody.clone(),
                             }));
                         }
                         Stmt::Field { name: fname, kind: FieldKind::Const, default: Some(init), .. } => {
+                            // const クラス変数: 初期値を評価して class_vars に登録する
                             let val = self.eval(init)?;
                             class_vars.insert(fname.clone(), val);
                         }
                         Stmt::Field { name: fname, kind, default, .. } => {
+                            // mut / let インスタンスフィールド: 可変フラグと初期値を記録する
                             let mutable = *kind == FieldKind::Mut;
                             field_mutability.insert(fname.clone(), mutable);
                             if let Some(init) = default {
@@ -336,6 +383,7 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::Freeze(name, span) => {
+                // freeze 文: 変数を不変化する。インスタンスの場合は freeze_instance も呼ぶ。
                 let var = self.get_var(name)
                     .ok_or_else(|| format!("{span}: NameError: '{name}' is not defined"))?;
                 if !var.mutable {
@@ -347,7 +395,7 @@ impl Interpreter {
 
                 if let Value::Instance(ref inst_rc) = val {
                     let class = inst_rc.borrow().class.clone();
-                    // Call __freeze__ before freezing if the class defines it
+                    // `__freeze__` メソッドが定義されている場合は凍結前に呼び出す
                     if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
                         if overloads.len() == 1 {
                             self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__")?;
@@ -363,7 +411,7 @@ impl Interpreter {
             }
 
             Stmt::Raise { exc, span } => {
-                // Bare `raise` — re-raise the active exception.
+                // 裸の `raise`: アクティブな例外を再 raise する
                 if exc.is_none() {
                     match &self.current_exception {
                         Some(err) => {
@@ -376,22 +424,23 @@ impl Interpreter {
 
                 let exc_val = self.eval(exc.as_ref().unwrap())?;
 
-                // Populate context fields on the instance.
+                // 例外インスタンスに file / line / col / code_context を直接書き込む
                 if let Value::Instance(ref inst_rc) = exc_val {
                     let context = self.get_context_lines(&span.file, span.line, 5);
                     let mut inst = inst_rc.borrow_mut();
-                    // Set fields directly so `e.message`, `e.file` etc. work via normal attr access.
+                    // 通常属性アクセス（`e.file` など）で参照できるように直接フィールドに設定する
                     inst.fields.insert("file".to_string(),         (Value::Str(span.file.to_string()), true));
                     inst.fields.insert("line".to_string(),         (Value::Int(span.line as i64),       true));
                     inst.fields.insert("col".to_string(),          (Value::Int(span.col as i64),        true));
                     inst.fields.insert("code_context".to_string(), (Value::Str(context.clone()),        true));
-                    // Also store under the "Error::" namespace for trait-field access.
+                    // トレイトフィールドアクセス（`Error::file` など）のために名前空間付きキーでも登録する
                     inst.fields.insert("Error::file".to_string(),         (Value::Str(span.file.to_string()), true));
                     inst.fields.insert("Error::line".to_string(),         (Value::Int(span.line as i64),       true));
                     inst.fields.insert("Error::col".to_string(),          (Value::Int(span.col as i64),        true));
                     inst.fields.insert("Error::code_context".to_string(), (Value::Str(context),                true));
                 }
 
+                // raise 地点のスタックフレームを生成して ExecResult::Raise に包む
                 let fn_name = self.call_stack.last().cloned().unwrap_or_else(|| "<module>".to_string());
                 let frame = StackFrame {
                     file: span.file.to_string(),
@@ -404,9 +453,10 @@ impl Interpreter {
             }
 
             Stmt::Try { body, handlers, finally_body } => {
+                // try ブロックを実行して例外の発生を検査する
                 let body_result = self.exec_scoped_block(body);
 
-                // Determine if the body produced a Raise signal.
+                // ボディが Raise シグナルを返したか、例外センチネルを返したかを判定する
                 let raise_opt: Option<RaisedError> = match &body_result {
                     Ok(ExecResult::Raise(r)) => Some(r.clone()),
                     Err(e) if e.as_str() == RAISE_SENTINEL => self.current_exception.clone(),
@@ -419,7 +469,7 @@ impl Interpreter {
                     let mut handled = false;
                     for handler in handlers {
                         let matches = match &handler.exc_type {
-                            None => true, // bare `except:` catches everything
+                            None => true, // 裸の `except:` はすべての例外を捕捉する
                             Some(type_name) => {
                                 if let Value::Instance(ref inst_rc) = raised.exception {
                                     Self::exc_matches(&inst_rc.borrow().class, type_name)
@@ -429,11 +479,14 @@ impl Interpreter {
                             }
                         };
                         if matches {
+                            // except ブロック内で current_exception を設定し（裸の raise 用）、
+                            // ブロック終了後に元の値を復元する
                             let prev_exc = self.current_exception.clone();
                             self.current_exception = Some(raised.clone());
 
                             self.push_scope();
                             if let Some(alias) = &handler.name {
+                                // `except ValueError as e:` の `e` をスコープに束縛する
                                 let exc_val = raised.exception.clone();
                                 self.declare_var(alias.clone(), Var { value: exc_val, mutable: false });
                             }
@@ -447,16 +500,16 @@ impl Interpreter {
                         }
                     }
                     if !handled {
-                        // No handler matched — `final_result` is already `body_result`,
-                        // which preserves the original propagation path unchanged
-                        // (Ok(ExecResult::Raise) for direct raises, Err(sentinel) for function raises).
+                        // どの handler にもマッチしなかった場合:
+                        // final_result はそのまま body_result を維持し、元の伝播パスを保持する
+                        // （直接 raise は Ok(ExecResult::Raise)、関数経由は Err(sentinel)）
                     }
                 }
 
-                // Execute `finally` block regardless of outcome.
+                // finally ブロックを結果に関わらず実行する
                 if let Some(finally) = finally_body {
                     let finally_result = self.exec_scoped_block(finally);
-                    // If finally itself raises or returns, it takes precedence.
+                    // finally 自体が raise / return した場合はそちらが優先される
                     match finally_result {
                         Ok(ExecResult::Normal) => {}
                         Ok(signal) => return Ok(signal),
@@ -469,16 +522,27 @@ impl Interpreter {
         }
     }
 
+    /// 文のリストを順に実行する。通常終了以外のシグナル（Break / Return / Raise 等）が発生したら即返す。
+    ///
+    /// - `stmts`: 実行する文のスライス
+    ///
+    /// 戻り値: 最初に発生した非 Normal な `ExecResult`、またはすべて Normal なら `ExecResult::Normal`
     pub(super) fn exec_block(&mut self, stmts: &[Stmt]) -> Result<ExecResult, String> {
         for stmt in stmts {
             match self.exec(stmt)? {
                 ExecResult::Normal => {}
-                signal => return Ok(signal),
+                signal => return Ok(signal), // Break / Continue / Return / Raise などを即上位に返す
             }
         }
         Ok(ExecResult::Normal)
     }
 
+    /// 新しいスコープを積んでから文のリストを実行し、完了後にスコープを取り除く。
+    /// if/while/for の本体など、スコープを分離したいブロック実行に使用する。
+    ///
+    /// - `stmts`: 実行する文のスライス
+    ///
+    /// 戻り値: `exec_block` と同じ
     pub(super) fn exec_scoped_block(&mut self, stmts: &[Stmt]) -> Result<ExecResult, String> {
         self.push_scope();
         let result = self.exec_block(stmts);
