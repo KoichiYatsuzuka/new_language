@@ -41,6 +41,7 @@ impl Interpreter {
                 Param { name: "message".to_string(), mutable: false, type_ann: Some("str".to_string()) },
             ],
             body: init_body,
+            is_python: false,
         });
         let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
         methods.insert("__init__".to_string(), vec![init_fn]);

@@ -449,6 +449,37 @@ pub enum Stmt {
         /// エラー報告・スタックトレースに使用する位置情報。
         span: Span,
     },
+    /// `import[lang] module.submod as alias` — 外部モジュールのインポート。
+    ///
+    /// パース時に対象ファイルを読み込み変換した tl AST を `body` に格納する。
+    /// 型検査器と実行エンジンはどちらも `body` を参照する。
+    ///
+    /// # フィールド
+    /// - `lang`   : 言語識別子（`"py"` など）
+    /// - `module` : モジュールパスの各セグメント（`["os", "path"]` for `os.path`）
+    /// - `alias`  : `as alias` で与えたバインド名。`None` の場合は最後のセグメント名を使用
+    /// - `body`   : パース済みの tl AST（モジュールの内容）
+    Import {
+        lang: String,
+        module: Vec<String>,
+        alias: Option<String>,
+        body: Vec<Stmt>,
+    },
+    /// `from module import[lang] Name1, Name2 as N2` — 名前を直接スコープに導入するインポート。
+    ///
+    /// モジュール全体の `body` を保持する点は `Import` と同じ（型検査・キャッシュのため）。
+    ///
+    /// # フィールド
+    /// - `lang`   : 言語識別子（`"py"` など）
+    /// - `module` : モジュールパスの各セグメント
+    /// - `names`  : `(元の名前, as エイリアス)` のリスト。エイリアスなしは `None`
+    /// - `body`   : パース済みの tl AST（モジュールの内容）
+    FromImport {
+        lang: String,
+        module: Vec<String>,
+        names: Vec<(String, Option<String>)>,
+        body: Vec<Stmt>,
+    },
 }
 
 /// `try` 文内の単一の `except` 節を表す。

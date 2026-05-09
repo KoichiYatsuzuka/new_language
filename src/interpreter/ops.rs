@@ -36,11 +36,12 @@ impl Interpreter {
             Value::List(items) => !items.is_empty(),
             Value::Dict(d) => !d.borrow().keys.is_empty(),
             Value::Tuple(t) => !t.is_empty(),
-            // 関数・クラス・インスタンス・ジェネレータ等は常に真
+            // 関数・クラス・インスタンス・ジェネレータ・名前空間等は常に真
             Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) | Value::Type(_)
             | Value::Trait(_)
             | Value::TemplateFn(_) | Value::TemplateClass(_)
-            | Value::GeneratorFn(_) | Value::TemplateGenFn(_) | Value::Generator(_) => true,
+            | Value::GeneratorFn(_) | Value::TemplateGenFn(_) | Value::Generator(_)
+            | Value::Namespace(_) => true,
         }
     }
 
@@ -66,6 +67,7 @@ impl Interpreter {
             Value::Generator(_) => "generator",
             Value::Dict(_) => "dict",
             Value::Tuple(_) => "tuple",
+            Value::Namespace(_) => "module",
         }
     }
 
@@ -126,6 +128,7 @@ impl Interpreter {
                     format!("({})", parts.join(", "))
                 }
             }
+            Value::Namespace(ns) => format!("<module '{}'>", ns.name),
         }
     }
 

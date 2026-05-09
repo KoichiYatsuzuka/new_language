@@ -6,6 +6,7 @@ mod ast;
 mod interpreter;
 mod lexer;
 mod parser;
+mod python_converter;
 mod token;
 mod type_check;
 
@@ -65,8 +66,13 @@ fn run_program(source: &str, filename: &str) -> Result<(), String> {
     // --- 字句解析: ソースをトークン列（Vec<Spanned>）に変換する ---
     let tokens = Lexer::new(source, filename).tokenize();
 
+    // ソースファイルのディレクトリを解決する（import 時の検索基準）
+    let source_dir = std::path::Path::new(filename)
+        .parent()
+        .map(|p| p.to_path_buf());
+
     // --- 構文解析: トークン列を AST（Vec<Stmt>）に変換する ---
-    let stmts = Parser::new(tokens).parse_program()
+    let stmts = Parser::new(tokens, source_dir).parse_program()
         .map_err(|e| format!("ParseError: {e}"))?;
 
     // --- 静的型検査: AST を走査してエラーを収集し、1件でもあれば全件報告して終了する ---

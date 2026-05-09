@@ -104,6 +104,15 @@ impl Interpreter {
                         }
                         Err(format!("AttributeError: class '{}' has no attribute '{attr}'", cls.name))
                     }
+                    Value::Namespace(ns) => {
+                        // 名前空間（import したモジュール）への属性アクセス
+                        ns.members.get(attr.as_str())
+                            .cloned()
+                            .ok_or_else(|| format!(
+                                "AttributeError: module '{}' has no attribute '{attr}'",
+                                ns.name
+                            ))
+                    }
                     _ => Err(format!(
                         "AttributeError: '{}' object has no attribute '{attr}'",
                         self.type_name(&obj_val)

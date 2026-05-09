@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use crate::ast::{BinOp, CallArg, ExceptHandler, Expr, FieldKind, Param, Stmt, TemplateParam, UnaryOp};
 use crate::token::{Span, Spanned, Token};
+use crate::python_converter;
 
 /// 複合代入演算子トークンを対応する二項演算子（`BinOp`）に変換する。
 ///
@@ -38,6 +40,13 @@ pub struct Parser {
     class_or_trait_depth: usize,
     /// Names declared with `new_type` — any reassignment to these is a parse error.
     known_new_types: HashSet<String>,
+    /// ソースファイルのディレクトリ（import 時のモジュール検索基準）。
+    source_dir: PathBuf,
+    /// モジュールキャッシュ: (lang, 解決済みパス) → 変換済み tl AST。
+    /// パース時に同じモジュールを複数回読み込まないために使用する。
+    module_cache: HashMap<(String, PathBuf), Vec<Stmt>>,
+    /// 循環 import 検出用: 現在読み込み中のモジュールパスのセット。
+    loading: HashSet<PathBuf>,
 }
 
 impl Parser {
@@ -51,7 +60,8 @@ impl Parser {
     ///
     /// # 戻り値
     /// 初期化済みの `Parser` インスタンス
-    pub fn new(tokens: Vec<Spanned>) -> Self {
+    /// パーサを初期化する。`source_dir` には .tl ファイルのディレクトリを渡す。
+    pub fn new(tokens: Vec<Spanned>, source_dir: Option<PathBuf>) -> Self {
         // 組み込み `Error` トレイトを事前登録する。
         // フィールド: message（let・必須）、code_context/file（mut・デフォルトあり）、line/col（mut・デフォルトあり）
         let mut known_traits: HashMap<String, (Vec<TemplateParam>, Vec<(String, FieldKind, String, bool)>, Vec<String>)> = HashMap::new();
@@ -72,6 +82,9 @@ impl Parser {
             known_traits,
             class_or_trait_depth: 0,
             known_new_types: HashSet::new(),
+            source_dir: source_dir.unwrap_or_else(|| PathBuf::from(".")),
+            module_cache: HashMap::new(),
+            loading: HashSet::new(),
         }
     }
 
@@ -276,6 +289,8 @@ impl Parser {
             Token::Class   => self.parse_class_def(),
             Token::Trait   => self.parse_trait_def(),
             Token::NewType => self.parse_new_type_def(),
+            Token::Import  => self.parse_import_stmt(),
+            Token::From    => self.parse_from_import_stmt(),
             Token::Ident(_) => self.parse_ident_stmt(),
             _ => Ok(Stmt::Expr(self.parse_expr()?)),
         }
@@ -629,6 +644,149 @@ impl Parser {
         // 名前を登録して再代入を禁止する
         self.known_new_types.insert(name.clone());
         Ok(Stmt::NewTypeDef { name, original })
+    }
+
+    // -----------------------------------------------------------------------
+    // import 解析
+    // -----------------------------------------------------------------------
+
+    /// `import[lang] module.sub as alias` をパースして `Stmt::Import` を返す。
+    ///
+    /// - `import[py] math as m`
+    /// - `import[py] os.path as p`
+    fn parse_import_stmt(&mut self) -> Result<Stmt, String> {
+        self.advance(); // `import` を消費
+
+        // `[lang]` を読む
+        let lang = self.parse_lang_bracket()?;
+
+        // モジュールパス (`a.b.c`)
+        let module = self.parse_module_path()?;
+
+        // `as alias` (省略可)
+        let alias = if *self.current() == Token::As {
+            self.advance();
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+
+        // モジュールの tl AST を取得（キャッシュ込み）
+        let body = self.load_module(&lang, &module)?;
+
+        Ok(Stmt::Import { lang, module, alias, body })
+    }
+
+    /// `from module import[lang] Name1, Name2 as N2` をパースして `Stmt::FromImport` を返す。
+    fn parse_from_import_stmt(&mut self) -> Result<Stmt, String> {
+        self.advance(); // `from` を消費
+
+        // モジュールパス
+        let module = self.parse_module_path()?;
+
+        // `import[lang]`
+        self.eat(&Token::Import)?;
+        let lang = self.parse_lang_bracket()?;
+
+        // 名前リスト: `Name1, Name2 as N2, ...`
+        let mut names: Vec<(String, Option<String>)> = Vec::new();
+        loop {
+            let name = self.expect_ident()?;
+            let alias = if *self.current() == Token::As {
+                self.advance();
+                Some(self.expect_ident()?)
+            } else {
+                None
+            };
+            names.push((name, alias));
+            if *self.current() == Token::Comma {
+                self.advance();
+                // 行末に来たら終了
+                if matches!(self.current(), Token::Newline | Token::Eof | Token::Semicolon | Token::Dedent) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        // モジュールの tl AST を取得
+        let body = self.load_module(&lang, &module)?;
+
+        Ok(Stmt::FromImport { lang, module, names, body })
+    }
+
+    /// `[lang]` トークン列をパースして言語識別子文字列を返す。
+    fn parse_lang_bracket(&mut self) -> Result<String, String> {
+        self.eat(&Token::LBracket)?;
+        let lang = match self.current().clone() {
+            Token::Ident(s) => { self.advance(); s }
+            other => return Err(format!("expected language identifier, got `{other}`")),
+        };
+        self.eat(&Token::RBracket)?;
+        Ok(lang)
+    }
+
+    /// ドット区切りのモジュールパスをパースして `Vec<String>` を返す。
+    /// 例: `os.path` → `["os", "path"]`
+    fn parse_module_path(&mut self) -> Result<Vec<String>, String> {
+        let mut segments = vec![self.expect_ident()?];
+        while *self.current() == Token::Dot {
+            self.advance();
+            segments.push(self.expect_ident()?);
+        }
+        Ok(segments)
+    }
+
+    /// モジュールを検索・読み込み・変換して tl AST を返す。キャッシュを使用する。
+    fn load_module(&mut self, lang: &str, module: &[String]) -> Result<Vec<Stmt>, String> {
+        match lang {
+            "py" => self.load_python_module(module),
+            other => Err(format!("unknown import language '{other}'")),
+        }
+    }
+
+    /// Python モジュールを検索・変換する（キャッシュ込み）。
+    fn load_python_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
+        // .py ファイルパスを解決する
+        let rel_path: PathBuf = module.iter().collect::<PathBuf>().with_extension("py");
+        let abs_path = self.source_dir.join(&rel_path);
+        let cache_key = ("py".to_string(), abs_path.clone());
+
+        // キャッシュに存在する場合はそのまま返す
+        if let Some(body) = self.module_cache.get(&cache_key) {
+            return Ok(body.clone());
+        }
+
+        // 循環 import 検出
+        if self.loading.contains(&abs_path) {
+            return Err(format!(
+                "circular import detected: '{}'",
+                abs_path.display()
+            ));
+        }
+
+        // ファイルが存在しない場合はエラー
+        let source = std::fs::read_to_string(&abs_path).map_err(|_| {
+            format!(
+                "cannot find module '{}' (looked at '{}')",
+                module.join("."),
+                abs_path.display()
+            )
+        })?;
+
+        // 読み込み中マーカーをセット
+        self.loading.insert(abs_path.clone());
+
+        // Python → tl AST 変換
+        let filename = abs_path.to_string_lossy().to_string();
+        let body = python_converter::convert_python_source(&source, &filename)?;
+
+        // 読み込み中マーカーを解除してキャッシュに登録
+        self.loading.remove(&abs_path);
+        self.module_cache.insert(cache_key, body.clone());
+
+        Ok(body)
     }
 
     /// `trait` 定義をパースして `Stmt::TraitDef` を返す。
@@ -1760,12 +1918,12 @@ mod tests {
 
     fn parse(src: &str) -> Vec<Stmt> {
         let tokens = Lexer::new(src, "").tokenize();
-        Parser::new(tokens).parse_program().expect("parse error")
+        Parser::new(tokens, None).parse_program().expect("parse error")
     }
 
     fn parse_fails(src: &str) -> String {
         let tokens = Lexer::new(src, "").tokenize();
-        Parser::new(tokens).parse_program().expect_err("expected parse error")
+        Parser::new(tokens, None).parse_program().expect_err("expected parse error")
     }
 
     #[test]
@@ -1784,7 +1942,7 @@ mod tests {
     #[test]
     fn test_freeze_requires_ident() {
         let tokens = crate::lexer::Lexer::new("freeze 42\n", "").tokenize();
-        let err = Parser::new(tokens).parse_program().expect_err("expected parse error");
+        let err = Parser::new(tokens, None).parse_program().expect_err("expected parse error");
         assert!(err.contains("expected identifier"), "got: {err}");
     }
 

@@ -149,17 +149,17 @@ impl Interpreter {
             }
             Value::Dict(d) => {
                 match method_name {
-                    // `d.key()` — キーのリストを返す
-                    "key" => {
+                    // `d.key()` / `d.keys()` — キーのリストを返す
+                    "key" | "keys" => {
                         if !args.is_empty() {
-                            return Err("TypeError: dict.key() takes no arguments".to_string());
+                            return Err(format!("TypeError: dict.{method_name}() takes no arguments"));
                         }
                         Ok(Value::List(d.borrow().all_keys()))
                     }
-                    // `d.item()` — 値のリストを返す
-                    "item" => {
+                    // `d.item()` / `d.values()` — 値のリストを返す
+                    "item" | "values" => {
                         if !args.is_empty() {
-                            return Err("TypeError: dict.item() takes no arguments".to_string());
+                            return Err(format!("TypeError: dict.{method_name}() takes no arguments"));
                         }
                         Ok(Value::List(d.borrow().all_items()))
                     }
@@ -184,6 +184,27 @@ impl Interpreter {
                 } else {
                     // ジェネレータが枯渇した: for ループはこのエラーでループを終了する
                     Err("EndOfIteration: generator is exhausted".to_string())
+                }
+            }
+            Value::Namespace(ns) => {
+                // モジュール名前空間の場合: メンバを取り出して関数として呼び出す
+                let member = ns.members.get(method_name)
+                    .cloned()
+                    .ok_or_else(|| format!(
+                        "AttributeError: module '{}' has no attribute '{method_name}'",
+                        ns.name
+                    ))?;
+                match member {
+                    Value::Function(fn_val) => self.exec_fn(fn_val, args, None, method_name),
+                    Value::OverloadedFn(candidates) => {
+                        let evaled = self.eval_call_args(args)?;
+                        self.dispatch_overload_evaled(candidates, evaled, None, method_name)
+                    }
+                    Value::Class(cls) => self.instantiate(cls, args),
+                    Value::GeneratorFn(gen_fn) => self.exec_generator(gen_fn, args, None),
+                    other => Err(format!(
+                        "TypeError: '{}' object is not callable", self.type_name(&other)
+                    )),
                 }
             }
             _ => Err(format!(

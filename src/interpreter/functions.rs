@@ -12,7 +12,7 @@ use crate::ast::{CallArg, Param};
 
 use super::{
     Interpreter, Value, Var, FnValue, GeneratorFnValue, GeneratorState,
-    ExecResult, StackFrame,
+    ExecResult, StackFrame, DictData,
     RAISE_SENTINEL, GENERATOR_YIELDS,
 };
 
@@ -40,13 +40,28 @@ impl Interpreter {
         self_val: Option<Value>,
         fn_name: &str,
     ) -> Result<Value, String> {
-        let bindings = Self::bind_args(&fn_val.params, evaled, self_val.clone())?;
+        let (bindings, extra_kwargs) = if fn_val.is_python {
+            Self::bind_args_relaxed(&fn_val.params, evaled, self_val.clone())?
+        } else {
+            (Self::bind_args(&fn_val.params, evaled, self_val.clone())?, vec![])
+        };
 
         // グローバルスコープ（インデックス 0）以外を一時退避して関数専用スコープを構築する
         let outer_scopes: Vec<_> = self.scopes.drain(1..).collect();
         self.push_scope();
         for (name, val, mutable) in bindings {
             self.declare_var(name, Var { value: val, mutable });
+        }
+        // Python 関数: 引数リストにない余分なキーワード引数を kwargs dict に注入する
+        if fn_val.is_python && !extra_kwargs.is_empty() {
+            let mut dict = DictData::new("str".to_string(), "Any".to_string());
+            for (k, v) in extra_kwargs {
+                dict.set(Value::Str(k), v);
+            }
+            self.declare_var(
+                "kwargs".to_string(),
+                Var { value: Value::Dict(Rc::new(RefCell::new(dict))), mutable: false },
+            );
         }
         // メソッド実行時: `Self` をレシーバインスタンスのクラスにバインドする
         if let Some(Value::Instance(inst_rc)) = &self_val {
@@ -262,6 +277,70 @@ impl Interpreter {
         }
 
         Ok(result)
+    }
+
+    /// Python 関数用の引数バインド。`bind_args` と同じだが、パラメータリストにないキーワード引数を
+    /// エラーにせず `extra_kwargs` として返す。引数個数の検査は位置引数のみで行う。
+    ///
+    /// 戻り値: `Ok((bindings, extra_kwargs))` — `bindings` は通常通り、`extra_kwargs` は余分な kwarg の (名前, 値) リスト
+    pub(super) fn bind_args_relaxed(
+        params: &[Param],
+        evaled: &[(Option<String>, Value)],
+        self_val: Option<Value>,
+    ) -> Result<(Vec<(String, Value, bool)>, Vec<(String, Value)>), String> {
+        let mut result = Vec::new();
+        let mut extra_kwargs = Vec::new();
+
+        let params_to_bind = if let (Some(sv), Some(p)) = (&self_val, params.first()) {
+            if p.name == "self" {
+                result.push(("self".to_string(), sv.clone(), p.mutable));
+                &params[1..]
+            } else {
+                params
+            }
+        } else {
+            params
+        };
+
+        let mut slots: Vec<Option<Value>> = vec![None; params_to_bind.len()];
+        let mut positional_idx = 0usize;
+
+        for (key, val) in evaled {
+            match key {
+                None => {
+                    if positional_idx >= params_to_bind.len() {
+                        return Err(format!(
+                            "TypeError: function takes {} positional argument(s), got too many",
+                            params_to_bind.len()
+                        ));
+                    }
+                    slots[positional_idx] = Some(val.clone());
+                    positional_idx += 1;
+                }
+                Some(name) => {
+                    match params_to_bind.iter().position(|p| p.name == *name) {
+                        Some(pos) => {
+                            if slots[pos].is_some() {
+                                return Err(format!("TypeError: argument '{name}' given twice"));
+                            }
+                            slots[pos] = Some(val.clone());
+                        }
+                        None => {
+                            extra_kwargs.push((name.clone(), val.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        for (i, slot) in slots.into_iter().enumerate() {
+            match slot {
+                Some(v) => result.push((params_to_bind[i].name.clone(), v, params_to_bind[i].mutable)),
+                None => return Err(format!("TypeError: missing argument '{}'", params_to_bind[i].name)),
+            }
+        }
+
+        Ok((result, extra_kwargs))
     }
 
     // --- オーバーロード解決 ---

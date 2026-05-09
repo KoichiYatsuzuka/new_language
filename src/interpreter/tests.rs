@@ -7,7 +7,7 @@ use crate::parser::Parser;
 
 fn run(src: &str) -> Result<(), String> {
     let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens).parse_program()?;
+    let stmts = Parser::new(tokens, None).parse_program()?;
     let mut interp = Interpreter::new();
     for stmt in &stmts {
         let _ = interp.exec(stmt)?;
@@ -17,7 +17,7 @@ fn run(src: &str) -> Result<(), String> {
 
 fn eval_expr(src: &str) -> Value {
     let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens).parse_program().unwrap();
+    let stmts = Parser::new(tokens, None).parse_program().unwrap();
     let mut interp = Interpreter::new();
     interp.eval(match &stmts[0] {
         Stmt::Expr(e) => e,
@@ -27,7 +27,7 @@ fn eval_expr(src: &str) -> Value {
 
 fn run_get(src: &str, var: &str) -> Value {
     let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens).parse_program().unwrap();
+    let stmts = Parser::new(tokens, None).parse_program().unwrap();
     let mut interp = Interpreter::new();
     for stmt in &stmts {
         let _ = interp.exec(stmt).unwrap();
@@ -37,7 +37,7 @@ fn run_get(src: &str, var: &str) -> Value {
 
 fn run_exc(src: &str) -> Result<Option<RaisedError>, String> {
     let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens).parse_program()?;
+    let stmts = Parser::new(tokens, None).parse_program()?;
     let mut interp = Interpreter::new();
     for stmt in &stmts {
         match interp.exec(stmt) {
@@ -487,7 +487,7 @@ fn test_class_inheritance_non_trait_parse_error() {
         "        return \"Woof\"\n",
     );
     let tokens = crate::lexer::Lexer::new(src, "").tokenize();
-    let result = crate::parser::Parser::new(tokens).parse_program();
+    let result = crate::parser::Parser::new(tokens, None).parse_program();
     assert!(result.is_err(), "expected parse error for class-to-class inheritance");
     assert!(result.unwrap_err().contains("cannot inherit from `Animal`"));
 }
@@ -503,7 +503,7 @@ fn test_class_inherit_non_trait_base_parse_error() {
         "    pass\n",
     );
     let tokens = crate::lexer::Lexer::new(src, "").tokenize();
-    let result = crate::parser::Parser::new(tokens).parse_program();
+    let result = crate::parser::Parser::new(tokens, None).parse_program();
     assert!(result.is_err(), "expected parse error for class-to-class inheritance");
     assert!(result.unwrap_err().contains("cannot inherit from `Base`"));
 }
@@ -837,7 +837,7 @@ fn test_self_type_in_param_annotation() {
 fn test_self_type_outside_class_is_parse_error() {
     // `Self` used outside a class or trait must produce a parse error.
     let tokens = crate::lexer::Lexer::new("fn foo() -> Self:\n    pass\n", "").tokenize();
-    let result = crate::parser::Parser::new(tokens).parse_program();
+    let result = crate::parser::Parser::new(tokens, None).parse_program();
     assert!(result.is_err(), "Self outside class/trait must be a parse error");
     assert!(result.unwrap_err().contains("'Self'"), "error should mention 'Self'");
 }
@@ -846,7 +846,7 @@ fn test_self_type_outside_class_is_parse_error() {
 fn test_self_type_in_expression_outside_class_is_parse_error() {
     // `Self` as an expression outside a class must produce a parse error.
     let tokens = crate::lexer::Lexer::new("Self(42)\n", "").tokenize();
-    let result = crate::parser::Parser::new(tokens).parse_program();
+    let result = crate::parser::Parser::new(tokens, None).parse_program();
     assert!(result.is_err(), "Self expression outside class/trait must be a parse error");
 }
 
@@ -960,7 +960,7 @@ fn test_new_type_const_is_parse_error() {
         "Bar = Foo\n",
     );
     let tokens = crate::lexer::Lexer::new(src, "").tokenize();
-    let result = crate::parser::Parser::new(tokens).parse_program();
+    let result = crate::parser::Parser::new(tokens, None).parse_program();
     assert!(result.is_err(), "expected parse error when reassigning a new_type binding");
 }
 
@@ -1156,7 +1156,7 @@ fn test_generator_exhausted_raises_end_of_iteration() {
     );
     assert!(run(src).is_err());
     let tokens = crate::lexer::Lexer::new(src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens).parse_program().unwrap();
+    let stmts = crate::parser::Parser::new(tokens, None).parse_program().unwrap();
     let mut interp = Interpreter::new();
     let mut err_msg = String::new();
     for stmt in &stmts {

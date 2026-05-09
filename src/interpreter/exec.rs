@@ -6,13 +6,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::ast::{Expr, FieldKind, Stmt};
 
 use super::{
     Interpreter, Value, Var, ExecResult,
     FnValue, TemplateFnValue, GeneratorFnValue, TemplateGenFnValue, TemplateClassValue,
-    GeneratorState,
+    GeneratorState, NamespaceData, ModuleState,
     RaisedError, StackFrame,
     RAISE_SENTINEL, GENERATOR_YIELDS,
 };
@@ -208,7 +209,7 @@ impl Interpreter {
                     self.scopes.last_mut().unwrap()
                         .insert(name.clone(), Var { value: Value::TemplateFn(tmpl), mutable: false });
                 } else {
-                    let fn_val = Rc::new(FnValue { params: params.clone(), body: body.clone() });
+                    let fn_val = Rc::new(FnValue { params: params.clone(), body: body.clone(), is_python: self.in_python_module });
 
                     // 同名の既存定義があれば OverloadedFn に蓄積する（同スコープレベル内）
                     let existing = self.scopes.last()
@@ -297,6 +298,7 @@ impl Interpreter {
                                 crate::ast::Param { name: "value".to_string(), mutable: false, type_ann: Some(type_name.clone()) },
                             ],
                             body: init_body,
+                            is_python: false,
                         });
                         let mut methods = HashMap::new();
                         methods.insert("__init__".to_string(), vec![init_fn]);
@@ -344,6 +346,7 @@ impl Interpreter {
                             methods.entry(mname.clone()).or_default().push(Rc::new(FnValue {
                                 params: params.clone(),
                                 body: mbody.clone(),
+                                is_python: self.in_python_module,
                             }));
                         }
                         Stmt::GenDef { name: mname, params, body: mbody, .. } => {
@@ -519,7 +522,101 @@ impl Interpreter {
 
                 final_result
             }
+
+            // ------------------------------------------------------------------
+            // import[lang] module as alias
+            // ------------------------------------------------------------------
+            Stmt::Import { lang, module, alias, body } => {
+                let ns = self.exec_module(lang, module, body)?;
+                let bind_name = alias.clone()
+                    .unwrap_or_else(|| module.last().unwrap().clone());
+                self.declare_var(bind_name, Var { value: Value::Namespace(ns), mutable: false });
+                Ok(ExecResult::Normal)
+            }
+
+            // ------------------------------------------------------------------
+            // from module import[lang] Name1, Name2 as N2
+            // ------------------------------------------------------------------
+            Stmt::FromImport { lang, module, names, body } => {
+                let ns = self.exec_module(lang, module, body)?;
+                for (orig_name, alias) in names {
+                    let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());
+                    let val = ns.members.get(orig_name.as_str())
+                        .cloned()
+                        .ok_or_else(|| format!(
+                            "ImportError: cannot import name '{}' from '{}'",
+                            orig_name, module.join(".")
+                        ))?;
+                    self.declare_var(bind_name, Var { value: val, mutable: false });
+                }
+                Ok(ExecResult::Normal)
+            }
         }
+    }
+
+    /// モジュールの body を孤立スコープで実行し、`Value::Namespace` を返す。
+    /// キャッシュを使用し、循環 import はエラーにする。
+    fn exec_module(
+        &mut self,
+        lang: &str,
+        module: &[String],
+        body: &[Stmt],
+    ) -> Result<Rc<NamespaceData>, String> {
+        // キャッシュキーにはモジュール名を文字列結合で代用（パース時に解決済み）
+        let cache_key = (lang.to_string(), PathBuf::from(module.join("/")));
+
+        match self.module_cache.get(&cache_key).cloned() {
+            Some(ModuleState::Loading) => {
+                return Err(format!(
+                    "RuntimeError: circular import detected: '{}'",
+                    module.join(".")
+                ));
+            }
+            Some(ModuleState::Loaded(ns)) => return Ok(ns),
+            None => {}
+        }
+
+        // Loading マーカーをセット
+        self.module_cache.insert(cache_key.clone(), ModuleState::Loading);
+
+        // body を孤立スコープで実行してトップレベル名を収集
+        let prev_in_python = self.in_python_module;
+        if lang == "py" { self.in_python_module = true; }
+        self.push_scope();
+        for stmt in body {
+            match self.exec(stmt)? {
+                ExecResult::Normal => {}
+                ExecResult::Raise(_) => {
+                    self.pop_scope();
+                    return Err(format!(
+                        "RuntimeError: exception during module initialization: {}",
+                        module.join(".")
+                    ));
+                }
+                _ => {}
+            }
+        }
+        let members: HashMap<String, Value> = self
+            .scopes
+            .last()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.value.clone()))
+            .collect();
+        self.pop_scope();
+        self.in_python_module = prev_in_python;
+
+        // モジュールメンバをグローバルスコープに登録する。
+        // Python モジュールのメソッドが同モジュール内の他の関数を呼び出せるようにするための措置。
+        // 既存のグローバル名は上書きしない（or_insert を使用）。
+        for (name, value) in &members {
+            self.scopes[0].entry(name.clone())
+                .or_insert(Var { value: value.clone(), mutable: false });
+        }
+
+        let ns = Rc::new(NamespaceData { name: module.join("."), members });
+        self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
+        Ok(ns)
     }
 
     /// 文のリストを順に実行する。通常終了以外のシグナル（Break / Return / Raise 等）が発生したら即返す。

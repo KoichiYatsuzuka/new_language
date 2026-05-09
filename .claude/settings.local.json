@@ -4,7 +4,11 @@
       "PowerShell(Set-Location \"d:\\\\repository\\\\new_language\"; \\(Get-Content \"src\\\\parser.rs\" | Measure-Object -Line\\).Lines)",
       "PowerShell(Set-Location \"d:\\\\repository\\\\new_language\"; \\(Get-Content \"src\\\\type_check.rs\" | Measure-Object -Line\\).Lines)",
       "Bash(cargo build *)",
-      "Bash(cargo test *)"
+      "Bash(cargo test *)",
+      "PowerShell(rustup show 2>&1)",
+      "PowerShell(rustup update stable 2>&1)",
+      "PowerShell(cd d:\\\\repository\\\\new_language; \\(Get-Content src\\\\python_converter.rs\\) -replace '\"ParseError: ', '\"' | Set-Content src\\\\python_converter.rs -Encoding utf8)",
+      "Bash(cargo run *)"
     ]
   }
 }

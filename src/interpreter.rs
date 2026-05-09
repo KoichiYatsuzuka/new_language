@@ -16,6 +16,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::ast::{Param, Stmt};
@@ -168,6 +169,10 @@ pub struct TemplateClassValue {
 pub struct FnValue {
     pub(self) params: Vec<Param>,
     pub(self) body: Vec<Stmt>,
+    /// Python モジュールから変換された関数かどうか。
+    /// `true` のとき、引数リストに存在しないキーワード引数をエラーにせず
+    /// `AdditionalParam` dict として関数スコープに注入する。
+    pub(self) is_python: bool,
 }
 
 /// クラス定義の実行時表現。インスタンス化（`instantiate`）の雛形となる。
@@ -340,6 +345,26 @@ impl DictData {
     }
 }
 
+/// モジュールまたは名前空間の実行時データ。
+/// `import[py] mod as m` で `m` にバインドされる。
+/// `m.ClassName()` のように `.` でメンバにアクセスする。
+#[derive(Debug, Clone)]
+pub struct NamespaceData {
+    /// モジュール名（エラーメッセージに使用）
+    pub name: String,
+    /// メンバ名 → 値のマップ
+    pub members: HashMap<String, Value>,
+}
+
+/// モジュールキャッシュのエントリ状態。
+#[derive(Debug, Clone)]
+pub(self) enum ModuleState {
+    /// 現在ロード中（循環 import 検出用）
+    Loading,
+    /// ロード済み
+    Loaded(Rc<NamespaceData>),
+}
+
 /// インタープリタが扱う実行時値の列挙型。
 ///
 /// 各バリアントの概要:
@@ -388,6 +413,8 @@ pub enum Value {
     Dict(Rc<RefCell<DictData>>),
     /// 不変・固定長のシーケンス。各要素に型情報を保持する。
     Tuple(Rc<TupleData>),
+    /// import されたモジュールまたは名前空間。`.` でメンバにアクセスする。
+    Namespace(Rc<NamespaceData>),
 }
 
 // ---------------------------------------------------------------------------
@@ -444,6 +471,12 @@ pub struct Interpreter {
     pub(self) call_stack: Vec<String>,
     /// `except` ブロック内で処理中の例外（裸の `raise` で再 raise するために保持）。
     pub(self) current_exception: Option<RaisedError>,
+    /// モジュールキャッシュ: (lang, 解決済みパス) → ロード状態。
+    /// 循環 import 検出と重複ロード防止に使用する。
+    pub(self) module_cache: HashMap<(String, PathBuf), ModuleState>,
+    /// Python モジュール body を実行中かどうかを示すフラグ。
+    /// このフラグが `true` のとき定義された `FnValue` は `is_python: true` になる。
+    pub(self) in_python_module: bool,
 }
 
 impl Interpreter {
@@ -485,6 +518,8 @@ impl Interpreter {
             source_map: HashMap::new(),
             call_stack: Vec::new(),
             current_exception: None,
+            module_cache: HashMap::new(),
+            in_python_module: false,
         }
     }
 

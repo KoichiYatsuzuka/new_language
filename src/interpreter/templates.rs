@@ -95,7 +95,7 @@ impl Interpreter {
                     .collect();
                 let concrete_params = subst_params(&tmpl.params, &type_map);
                 let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                let fn_val = Rc::new(FnValue { params: concrete_params, body: concrete_body });
+                let fn_val = Rc::new(FnValue { params: concrete_params, body: concrete_body, is_python: false });
                 self.exec_fn(fn_val, call_args, None, "<template_fn>")
             }
             Value::TemplateClass(tmpl) => {
@@ -207,6 +207,7 @@ impl Interpreter {
                     methods.entry(mname.clone()).or_default().push(Rc::new(FnValue {
                         params: params.clone(),
                         body: mbody.clone(),
+                        is_python: false,
                     }));
                 }
                 Stmt::GenDef { name: mname, params, body: mbody, .. } => {
@@ -425,6 +426,19 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         Stmt::Raise { exc, span } => Stmt::Raise {
             exc: exc.as_ref().map(|e| subst_expr(e, type_map)),
             span: span.clone(),
+        },
+        // Import 文は型変数置換の対象外（body はパース時に解決済み）
+        Stmt::Import { lang, module, alias, body } => Stmt::Import {
+            lang: lang.clone(),
+            module: module.clone(),
+            alias: alias.clone(),
+            body: subst_stmts(body, type_map),
+        },
+        Stmt::FromImport { lang, module, names, body } => Stmt::FromImport {
+            lang: lang.clone(),
+            module: module.clone(),
+            names: names.clone(),
+            body: subst_stmts(body, type_map),
         },
     }
 }

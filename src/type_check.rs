@@ -46,6 +46,9 @@ pub enum InferredType {
     /// 各要素の型が既知のタプル型 `tuple[T1, T2, ...]`。
     /// `Vec` の各要素がタプルの各フィールドの型に対応する。
     Tuple(Vec<InferredType>),
+    /// import されたモジュール（名前空間）の型。
+    /// `HashMap` のキーはメンバ名、値はそのメンバの型。
+    Namespace(std::collections::HashMap<String, InferredType>),
     /// 静的に確定できない型。実行時の型検査に委ねる。
     Unresolved,
 }
@@ -173,6 +176,7 @@ impl std::fmt::Display for InferredType {
                 let parts: Vec<String> = types.iter().map(|t| t.to_string()).collect();
                 write!(f, "tuple[{}]", parts.join(", "))
             }
+            Self::Namespace(members) => write!(f, "<module({} members)>", members.len()),
             Self::Unresolved => write!(f, "unknown"),
         }
     }
@@ -838,7 +842,53 @@ impl TypeChecker {
                     self.infer(e);
                 }
             }
+
+            // --- import ---
+            Stmt::Import { module, alias, body, .. } => {
+                // Python モジュールの body を走査してメンバ型を収集し、
+                // InferredType::Namespace としてスコープに登録する。
+                // Python コード内部の型検査は行わない（collect_module_types のみ）。
+                let member_types = self.collect_module_types(body);
+                let bind_name = alias.clone()
+                    .unwrap_or_else(|| module.last().unwrap().clone());
+                self.declare(bind_name, InferredType::Namespace(member_types), false);
+            }
+
+            Stmt::FromImport { names, body, .. } => {
+                // モジュールのメンバ型を収集し、各名前を直接スコープに登録する。
+                let member_types = self.collect_module_types(body);
+                for (orig_name, alias) in names {
+                    let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());
+                    let ty = member_types.get(orig_name.as_str())
+                        .cloned()
+                        .unwrap_or(InferredType::Unresolved);
+                    self.declare(bind_name, ty, false);
+                }
+            }
         }
+    }
+
+    /// モジュールの tl AST を浅くスキャンして「名前 → 型」マップを返す。
+    /// Python コード本体は型検査しない（クラス定義・関数定義の宣言のみ収集）。
+    fn collect_module_types(&self, body: &[Stmt]) -> std::collections::HashMap<String, InferredType> {
+        let mut map = std::collections::HashMap::new();
+        for stmt in body {
+            match stmt {
+                Stmt::ClassDef { name, .. } => {
+                    // クラス定義 → TypeVal（コンストラクタとして使用可能）
+                    map.insert(name.clone(), InferredType::TypeVal);
+                }
+                Stmt::FnDef { name, .. } => {
+                    // 関数定義 → Unresolved（引数型は全て Any なので静的追跡不要）
+                    map.insert(name.clone(), InferredType::Unresolved);
+                }
+                Stmt::Mut(name, _) | Stmt::Let(name, _) | Stmt::Const(name, _) => {
+                    map.insert(name.clone(), InferredType::Unresolved);
+                }
+                _ => {}
+            }
+        }
+        map
     }
 
     // --- 式の型推論 ---
@@ -1418,7 +1468,7 @@ mod tests {
     /// ソースコードを字句解析・構文解析・型検査して、検出されたエラーの一覧を返すヘルパー。
     fn check(src: &str) -> Vec<StaticTypeError> {
         let tokens = Lexer::new(src, "").tokenize();
-        let stmts = Parser::new(tokens).parse_program().expect("parse error");
+        let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
         TypeChecker::check(&stmts)
     }
 
