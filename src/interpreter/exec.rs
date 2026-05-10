@@ -579,6 +579,15 @@ impl Interpreter {
         // Loading マーカーをセット
         self.module_cache.insert(cache_key.clone(), ModuleState::Loading);
 
+        // py-int モジュール: body は型シグネチャ用（型検査済み）。実行時は PyO3 経由でロードする
+        if lang == "py-int" {
+            let search_dirs = self.python_search_dirs.clone();
+            let ns = super::py_interop::load_py_int_module(module, &search_dirs)
+                .map_err(|e| e)?;
+            self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
+            return Ok(ns);
+        }
+
         // body を孤立スコープで実行してトップレベル名を収集
         let prev_in_python = self.in_python_module;
         if lang == "py" { self.in_python_module = true; }

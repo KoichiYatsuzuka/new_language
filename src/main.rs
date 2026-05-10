@@ -72,7 +72,7 @@ fn run_program(source: &str, filename: &str) -> Result<(), String> {
         .map(|p| p.to_path_buf());
 
     // --- 構文解析: トークン列を AST（Vec<Stmt>）に変換する ---
-    let stmts = Parser::new(tokens, source_dir).parse_program()
+    let stmts = Parser::new(tokens, source_dir.clone()).parse_program()
         .map_err(|e| format!("ParseError: {e}"))?;
 
     // --- 静的型検査: AST を走査してエラーを収集し、1件でもあれば全件報告して終了する ---
@@ -90,6 +90,10 @@ fn run_program(source: &str, filename: &str) -> Result<(), String> {
     // ソーステキストはエラー報告時のスタックトレース表示に使用される
     let mut interp = Interpreter::new();
     interp.add_source_text(filename, source);
+    // ソースファイルのディレクトリを import[py-int] の検索パスに追加する
+    if let Some(dir) = &source_dir {
+        interp.add_python_search_dir(dir.clone());
+    }
 
     // --- 各トップレベル文を順番に実行する ---
     for stmt in &stmts {

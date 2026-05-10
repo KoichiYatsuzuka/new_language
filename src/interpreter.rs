@@ -37,6 +37,8 @@ mod classes;
 mod exceptions;
 #[path = "interpreter/templates.rs"]
 mod templates;
+#[path = "interpreter/py_interop.rs"]
+pub(self) mod py_interop;
 
 #[cfg(test)]
 #[path = "interpreter/tests.rs"]
@@ -345,6 +347,18 @@ impl DictData {
     }
 }
 
+/// PyO3 を通じて Python オブジェクトへの参照を保持するハンドル。
+/// GIL を保持せずにオブジェクトを所有でき、ドロップ時に Python 側の参照カウントを自動減少させる。
+pub struct PyObjHandle {
+    pub inner: pyo3::Py<pyo3::PyAny>,
+}
+
+impl std::fmt::Debug for PyObjHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<PyObject>")
+    }
+}
+
 /// モジュールまたは名前空間の実行時データ。
 /// `import[py] mod as m` で `m` にバインドされる。
 /// `m.ClassName()` のように `.` でメンバにアクセスする。
@@ -415,6 +429,9 @@ pub enum Value {
     Tuple(Rc<TupleData>),
     /// import されたモジュールまたは名前空間。`.` でメンバにアクセスする。
     Namespace(Rc<NamespaceData>),
+    /// PyO3 経由で保持する Python オブジェクトへの参照。
+    /// tl 側では不透明（opaque）な値として扱われる。
+    PyObject(Rc<PyObjHandle>),
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +494,8 @@ pub struct Interpreter {
     /// Python モジュール body を実行中かどうかを示すフラグ。
     /// このフラグが `true` のとき定義された `FnValue` は `is_python: true` になる。
     pub(self) in_python_module: bool,
+    /// `import[py-int]` 時に Python の `sys.path` に追加するディレクトリ一覧。
+    pub(self) python_search_dirs: Vec<PathBuf>,
 }
 
 impl Interpreter {
@@ -520,7 +539,13 @@ impl Interpreter {
             current_exception: None,
             module_cache: HashMap::new(),
             in_python_module: false,
+            python_search_dirs: Vec::new(),
         }
+    }
+
+    /// `import[py-int]` 時に Python の `sys.path` に追加するディレクトリを登録する。
+    pub fn add_python_search_dir(&mut self, dir: PathBuf) {
+        self.python_search_dirs.push(dir);
     }
 
     /// ソーステキストをファイル名と対応付けて登録する。

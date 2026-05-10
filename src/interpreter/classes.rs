@@ -202,10 +202,19 @@ impl Interpreter {
                     }
                     Value::Class(cls) => self.instantiate(cls, args),
                     Value::GeneratorFn(gen_fn) => self.exec_generator(gen_fn, args, None),
+                    Value::PyObject(handle) => {
+                        let evaled = self.eval_call_args(args)?;
+                        super::py_interop::call_py_object(&handle, &evaled)
+                    }
                     other => Err(format!(
                         "TypeError: '{}' object is not callable", self.type_name(&other)
                     )),
                 }
+            }
+            Value::PyObject(handle) => {
+                // Python オブジェクトのメソッドを PyO3 経由で呼び出す
+                let evaled = self.eval_call_args(args)?;
+                super::py_interop::call_py_method(&handle, method_name, &evaled)
             }
             _ => Err(format!(
                 "AttributeError: '{}' object has no method '{method_name}'",

@@ -36,12 +36,12 @@ impl Interpreter {
             Value::List(items) => !items.is_empty(),
             Value::Dict(d) => !d.borrow().keys.is_empty(),
             Value::Tuple(t) => !t.is_empty(),
-            // 関数・クラス・インスタンス・ジェネレータ・名前空間等は常に真
+            // 関数・クラス・インスタンス・ジェネレータ・名前空間・Python オブジェクト等は常に真
             Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) | Value::Type(_)
             | Value::Trait(_)
             | Value::TemplateFn(_) | Value::TemplateClass(_)
             | Value::GeneratorFn(_) | Value::TemplateGenFn(_) | Value::Generator(_)
-            | Value::Namespace(_) => true,
+            | Value::Namespace(_) | Value::PyObject(_) => true,
         }
     }
 
@@ -68,6 +68,7 @@ impl Interpreter {
             Value::Dict(_) => "dict",
             Value::Tuple(_) => "tuple",
             Value::Namespace(_) => "module",
+            Value::PyObject(_) => "object",
         }
     }
 
@@ -129,6 +130,12 @@ impl Interpreter {
                 }
             }
             Value::Namespace(ns) => format!("<module '{}'>", ns.name),
+            Value::PyObject(h) => pyo3::Python::with_gil(|py| {
+                use pyo3::types::PyAnyMethods;
+                h.inner.bind(py).repr()
+                    .and_then(|r| r.extract::<String>())
+                    .unwrap_or_else(|_| "<PyObject>".to_string())
+            }),
         }
     }
 

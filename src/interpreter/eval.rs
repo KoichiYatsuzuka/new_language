@@ -113,6 +113,10 @@ impl Interpreter {
                                 ns.name
                             ))
                     }
+                    Value::PyObject(handle) => {
+                        // Python オブジェクトへの属性アクセス: PyO3 経由で getattr を呼ぶ
+                        super::py_interop::py_getattr(&handle, attr)
+                    }
                     _ => Err(format!(
                         "AttributeError: '{}' object has no attribute '{attr}'",
                         self.type_name(&obj_val)
@@ -279,6 +283,11 @@ impl Interpreter {
                     Value::TemplateFn(_) | Value::TemplateClass(_) | Value::TemplateGenFn(_) => Err(
                         "TemplateError: template must be called with explicit type arguments (e.g. `Func[T](args)`)".to_string()
                     ),
+                    Value::PyObject(handle) => {
+                        // Python callable を PyO3 経由で呼び出す
+                        let evaled_args = self.eval_call_args(args)?;
+                        super::py_interop::call_py_object(&handle, &evaled_args)
+                    }
                     _ => Err(format!("TypeError: '{}' object is not callable", self.type_name(&callee))),
                 }
             }

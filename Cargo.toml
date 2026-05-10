@@ -5,3 +5,7 @@ edition = "2021"
 
 [dependencies]
 rustpython-parser = "0.4"
+pyo3 = { version = "0.22", features = ["auto-initialize"] }
+
+[features]
+default = []

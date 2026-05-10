@@ -719,10 +719,18 @@ impl Parser {
     /// `[lang]` トークン列をパースして言語識別子文字列を返す。
     fn parse_lang_bracket(&mut self) -> Result<String, String> {
         self.eat(&Token::LBracket)?;
-        let lang = match self.current().clone() {
+        let mut lang = match self.current().clone() {
             Token::Ident(s) => { self.advance(); s }
             other => return Err(format!("expected language identifier, got `{other}`")),
         };
+        // ハイフン区切りの識別子を許容（例: `py-int`）
+        while *self.current() == Token::Minus {
+            self.advance();
+            match self.current().clone() {
+                Token::Ident(s) => { self.advance(); lang = format!("{lang}-{s}"); }
+                other => return Err(format!("expected identifier after '-' in lang tag, got `{other}`")),
+            }
+        }
         self.eat(&Token::RBracket)?;
         Ok(lang)
     }
@@ -742,6 +750,9 @@ impl Parser {
     fn load_module(&mut self, lang: &str, module: &[String]) -> Result<Vec<Stmt>, String> {
         match lang {
             "py" => self.load_python_module(module),
+            // py-int: .pyi を優先し、なければ .py にフォールバック
+            // body は型検査専用（実行時は PyO3 経由）
+            "py-int" => self.load_python_interface_module(module),
             other => Err(format!("unknown import language '{other}'")),
         }
     }
@@ -787,6 +798,70 @@ impl Parser {
         self.module_cache.insert(cache_key, body.clone());
 
         Ok(body)
+    }
+
+    /// `import[py-int]` 用: .pyi を優先して検索し、なければ .py にフォールバックする。
+    /// body は型検査専用（実行時は PyO3 経由で別ロジックが動く）。
+    fn load_python_interface_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
+        let module_base: PathBuf = module.iter().collect();
+        let pyi_rel = module_base.with_extension("pyi");
+        let py_rel  = module_base.with_extension("py");
+
+        // .pyi → .py の順に search_dirs で探す
+        let search_dirs = self.python_search_dirs();
+        for dir in &search_dirs {
+            let pyi_abs = dir.join(&pyi_rel);
+            if pyi_abs.exists() {
+                return self.load_pyi_file(module, &pyi_abs);
+            }
+        }
+        for dir in &search_dirs {
+            let py_abs = dir.join(&py_rel);
+            if py_abs.exists() {
+                return self.load_pyi_file(module, &py_abs);
+            }
+        }
+
+        // 見つからなければ空の body を返す（型検査スキップ、実行時は PyO3 が担当）
+        Ok(vec![])
+    }
+
+    /// .pyi または .py ファイルをパースして型検査用 body を返す。
+    /// 変換エラーが発生したステートメントは無視する（ベストエフォート）。
+    fn load_pyi_file(&mut self, module: &[String], abs_path: &PathBuf) -> Result<Vec<Stmt>, String> {
+        let cache_key = ("py-int".to_string(), abs_path.clone());
+        if let Some(body) = self.module_cache.get(&cache_key) {
+            return Ok(body.clone());
+        }
+        if self.loading.contains(abs_path) {
+            return Ok(vec![]);
+        }
+        let source = std::fs::read_to_string(abs_path).map_err(|_| {
+            format!("cannot read interface file for module '{}'", module.join("."))
+        })?;
+        self.loading.insert(abs_path.clone());
+        let filename = abs_path.to_string_lossy().to_string();
+        // 変換エラーは無視して空 body を返す（.pyi は実行不要）
+        let body = python_converter::convert_python_source(&source, &filename).unwrap_or_default();
+        self.loading.remove(abs_path);
+        self.module_cache.insert(cache_key, body.clone());
+        Ok(body)
+    }
+
+    /// Python モジュールの検索ディレクトリリストを返す。
+    /// source_dir を先頭に、PYTHONPATH 環境変数、Python site-packages を続ける。
+    fn python_search_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![self.source_dir.clone()];
+        if let Ok(pythonpath) = std::env::var("PYTHONPATH") {
+            for p in std::env::split_paths(&pythonpath) {
+                dirs.push(p);
+            }
+        }
+        // Python インタープリタの sys.prefix から site-packages を推測
+        if let Ok(prefix) = std::env::var("PYTHONHOME") {
+            dirs.push(PathBuf::from(&prefix).join("Lib").join("site-packages"));
+        }
+        dirs
     }
 
     /// `trait` 定義をパースして `Stmt::TraitDef` を返す。
