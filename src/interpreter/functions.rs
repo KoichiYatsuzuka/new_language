@@ -12,7 +12,7 @@ use crate::ast::{CallArg, Param};
 
 use super::{
     Interpreter, Value, Var, FnValue, GeneratorFnValue, GeneratorState,
-    ExecResult, StackFrame, DictData,
+    ExecResult, StackFrame, DictData, InstanceData,
     RAISE_SENTINEL, GENERATOR_YIELDS,
 };
 
@@ -228,7 +228,9 @@ impl Interpreter {
         // self_val が Some かつ先頭パラメータが "self" なら先にバインドして残りのパラメータを取得する
         let params_to_bind = if let (Some(sv), Some(p)) = (&self_val, params.first()) {
             if p.name == "self" {
-                result.push(("self".to_string(), sv.clone(), p.mutable));
+                // let self（不変レシーバ）はディープコピーして元オブジェクトの変更を防ぐ
+                let self_to_bind = if p.mutable { sv.clone() } else { Self::deep_copy_value(sv.clone()) };
+                result.push(("self".to_string(), self_to_bind, p.mutable));
                 &params[1..]
             } else {
                 params
@@ -269,9 +271,14 @@ impl Interpreter {
         }
 
         // 未割り当てスロットがあれば missing argument エラーを返す
+        // let パラメータ（not mut）には参照型をディープコピーして渡す
         for (i, slot) in slots.into_iter().enumerate() {
             match slot {
-                Some(v) => result.push((params_to_bind[i].name.clone(), v, params_to_bind[i].mutable)),
+                Some(v) => {
+                    let param = &params_to_bind[i];
+                    let value = if param.mutable { v } else { Self::deep_copy_value(v) };
+                    result.push((param.name.clone(), value, param.mutable));
+                }
                 None => return Err(format!("TypeError: missing argument '{}'", params_to_bind[i].name)),
             }
         }
@@ -499,5 +506,43 @@ impl Interpreter {
             | ("type",  Value::Class(_))
             | ("Self",  Value::Instance(_))
         )
+    }
+
+    /// 参照型の値を再帰的にディープコピーして返す。
+    ///
+    /// `let` パラメータへのバインド時に呼ばれ、元の可変変数（`mut`）が
+    /// 関数内部から変更されることを防ぐ。
+    ///
+    /// 変換規則:
+    /// - `Instance`: フィールドを再帰コピーして新しい `InstanceData` を生成する
+    /// - `Dict`: キー・値を再帰コピーして新しい `DictData` を生成する
+    /// - `List`: 各要素を再帰コピーする
+    /// - その他: プリミティブ・不変型はそのまま返す（Rust の clone でコピー済み）
+    fn deep_copy_value(val: Value) -> Value {
+        match val {
+            Value::Instance(inst_rc) => {
+                let inst = inst_rc.borrow();
+                let new_fields = inst.fields.iter()
+                    .map(|(k, (v, m))| (k.clone(), (Self::deep_copy_value(v.clone()), *m)))
+                    .collect();
+                Value::Instance(Rc::new(RefCell::new(InstanceData {
+                    class: inst.class.clone(),
+                    fields: new_fields,
+                    immutable: inst.immutable,
+                })))
+            }
+            Value::Dict(d) => {
+                let d_ref = d.borrow();
+                let mut new_dict = DictData::new(d_ref.key_type.clone(), d_ref.item_type.clone());
+                for (k, v) in d_ref.keys.iter().zip(d_ref.items.iter()) {
+                    new_dict.set(Self::deep_copy_value(k.clone()), Self::deep_copy_value(v.clone()));
+                }
+                Value::Dict(Rc::new(RefCell::new(new_dict)))
+            }
+            Value::List(items) => Value::List(items.into_iter().map(Self::deep_copy_value).collect()),
+            // Tuple は Rc<TupleData> だが TupleData は不変なので共有で問題なし
+            // プリミティブ・関数・クラス等はそのまま返す
+            other => other,
+        }
     }
 }
