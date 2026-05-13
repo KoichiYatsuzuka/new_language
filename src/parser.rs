@@ -1530,6 +1530,17 @@ impl Parser {
         }
     }
 
+    /// 型ガード式（`is` / `is not`）の右辺に書ける型名をパースして文字列で返す。
+    ///
+    /// 通常の識別子に加えて `None` キーワードも型名として受け付ける。
+    fn expect_guard_type_name(&mut self) -> Result<String, String> {
+        match self.current().clone() {
+            Token::Ident(name) => { self.advance(); Ok(name) }
+            Token::None => { self.advance(); Ok("None".to_string()) }
+            tok => Err(format!("expected type name after `is`, got `{tok}`")),
+        }
+    }
+
     // --- 式のパース（優先順位昇順）---
 
     /// 式をパースする（演算子優先順位の最低レベル）。
@@ -1597,6 +1608,17 @@ impl Parser {
     fn parse_comparison(&mut self) -> Result<Expr, String> {
         let left = self.parse_bitor()?;
         let span = self.current_span();
+        // `is` / `is not` 型ガード: 右辺は型名（識別子または None キーワード）のみ受け付ける
+        if *self.current() == Token::Is {
+            self.advance();
+            let type_name = self.expect_guard_type_name()?;
+            return Ok(Expr::IsType { expr: Box::new(left), negated: false, type_name, span });
+        }
+        if *self.current() == Token::IsNot {
+            self.advance();
+            let type_name = self.expect_guard_type_name()?;
+            return Ok(Expr::IsType { expr: Box::new(left), negated: true, type_name, span });
+        }
         let op = match self.current() {
             Token::EqEq => Some(BinOp::Eq),
             Token::NotEq => Some(BinOp::NotEq),

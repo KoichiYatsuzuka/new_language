@@ -207,6 +207,20 @@ pub enum Expr {
     /// タプルリテラル: `(val, val, ...)` — 評価結果は `tuple[T1, T2, ...]` 型の値になる。
     /// 空タプル `()` や単要素タプル `(val,)` も含む。`(expr)` はタプルではなくグループ式。
     Tuple(Vec<Expr>),
+    /// 型ガード式: `expr is TypeName` または `expr is not TypeName`。
+    /// ランタイムでは `Bool` を返す。型検査器は直後の `if` 分岐内でオペランドの型を絞り込む。
+    /// - `negated: false` → `is`  （真なら型が一致）
+    /// - `negated: true`  → `is not`（真なら型が不一致）
+    IsType {
+        /// 型を検査する対象の式（通常は変数名 `Ident`）。
+        expr: Box<Expr>,
+        /// `true` なら `is not`、`false` なら `is`。
+        negated: bool,
+        /// 比較先の型名（`"int"`, `"MyClass"` など）。
+        type_name: String,
+        /// エラー報告に使用する位置情報。
+        span: Span,
+    },
 }
 
 /// 文（Statement）の AST ノード。

@@ -279,6 +279,14 @@ pub enum TypeErrorKind {
         /// 適用した演算子の文字列表現
         op: String,
     },
+    /// `x is not T` 型ガードの対象 `x` が `Union` / `Optional` 型ではない。
+    /// `is not` ガードは Union 型にのみ意味があるため、それ以外の型はエラーとする。
+    IsNotOnNonUnion {
+        /// ガード対象の変数名
+        var_name: String,
+        /// 変数の実際の推論型
+        var_type: InferredType,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +387,10 @@ impl std::fmt::Display for StaticTypeError {
             TypeErrorKind::OperationOnUnion { union_type, op } => write!(
                 f,
                 "StaticTypeError: cannot apply '{op}' to '{union_type}' — explicit downcast required"
+            ),
+            TypeErrorKind::IsNotOnNonUnion { var_name, var_type } => write!(
+                f,
+                "StaticTypeError: 'is not' type guard on '{var_name}' requires a Union or Optional type, but got '{var_type}'"
             ),
         }
     }
@@ -660,9 +672,75 @@ impl TypeChecker {
             // --- 制御構文 ---
             Stmt::If { branches, else_body } => {
                 // if/elif/else: 各分岐で独立したスコープを生成する。
+                // 条件式が型ガード（`x is T` / `x is not T`）の場合、
+                // 分岐本体内では変数の型を絞り込む（type narrowing）。
                 for (cond, body) in branches {
+                    // 型ガード情報を条件式 AST から取り出す（借用なし）。
+                    let guard_opt: Option<(String, String, bool, Span)> =
+                        if let Expr::IsType { expr, type_name, negated, span } = cond {
+                            if let Expr::Ident(var_name) = expr.as_ref() {
+                                Some((var_name.clone(), type_name.clone(), *negated, span.clone()))
+                            } else { None }
+                        } else { None };
+
+                    // 絞り込み後の型と、エラー情報を計算する（`self.lookup` による不変借用はここで完了）。
+                    // narrowed: (変数名, 絞り込み後の型, 可変フラグ)
+                    // error_info: (変数名, 変数の元の型, スパン) — `is not` 非 Union 使用時に報告
+                    let (narrowed, error_info): (
+                        Option<(String, InferredType, bool)>,
+                        Option<(String, InferredType, Span)>,
+                    ) = match &guard_opt {
+                        None => (None, None),
+                        Some((var_name, type_name, negated, span)) => {
+                            let guard_ty = Self::type_from_guard_name(type_name);
+                            let (var_ty, is_mut) = self.lookup(var_name)
+                                .map(|v| (v.ty.clone(), v.mutable))
+                                .unwrap_or((InferredType::Unresolved, false));
+
+                            if *negated {
+                                // `x is not T`: x は Union / Optional でなければならない。
+                                match &var_ty {
+                                    InferredType::Union(types) => {
+                                        // Union からガード型を除いた残りの型を求める。
+                                        let remaining: Vec<InferredType> = types.iter()
+                                            .filter(|t| **t != guard_ty)
+                                            .cloned()
+                                            .collect();
+                                        let narrowed_ty = match remaining.len() {
+                                            0 => InferredType::Unresolved,
+                                            1 => remaining.into_iter().next().unwrap(),
+                                            _ => InferredType::Union(remaining),
+                                        };
+                                        (Some((var_name.clone(), narrowed_ty, is_mut)), None)
+                                    }
+                                    InferredType::Unresolved => (None, None),
+                                    _ => {
+                                        // Union でも Unresolved でもない型 → エラー
+                                        (None, Some((var_name.clone(), var_ty.clone(), span.clone())))
+                                    }
+                                }
+                            } else {
+                                // `x is T`: x の型をガード型に絞り込む。
+                                (Some((var_name.clone(), guard_ty, is_mut)), None)
+                            }
+                        }
+                    };
+
                     self.infer(cond);
+
+                    // `is not` 非 Union エラーを報告する。
+                    if let Some((var_name, var_type, span)) = error_info {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::IsNotOnNonUnion { var_name, var_type },
+                            span: Some(span),
+                        });
+                    }
+
+                    // 分岐本体を新しいスコープで検査し、必要なら変数型を絞り込む。
                     self.push_scope();
+                    if let Some((var_name, narrowed_ty, is_mut)) = narrowed {
+                        self.declare(var_name, narrowed_ty, is_mut);
+                    }
                     self.check_stmts(body);
                     self.pop_scope();
                 }
@@ -1022,6 +1100,13 @@ impl TypeChecker {
                 self.infer(object);
                 self.infer(index);
                 InferredType::Unresolved
+            }
+
+            // --- 型ガード式 ---
+            Expr::IsType { expr, .. } => {
+                // 対象式を推論してから Bool を返す。型の絞り込みは Stmt::If 側で行う。
+                self.infer(expr);
+                InferredType::Bool
             }
         }
     }
@@ -1451,6 +1536,21 @@ impl TypeChecker {
             | BinOp::BitXor
             | BinOp::LShift
             | BinOp::RShift => Int,
+        }
+    }
+
+    /// 型ガード式の右辺に書かれた型名文字列を [`InferredType`] に変換する。
+    ///
+    /// プリミティブ型名はそれぞれの型に、その他はすべて `NamedInstance` として扱う。
+    /// これにより、ユーザー定義クラス・new_type・trait 名もカバーする。
+    fn type_from_guard_name(name: &str) -> InferredType {
+        match name {
+            "int" => InferredType::Int,
+            "float" => InferredType::Float,
+            "str" => InferredType::Str,
+            "bool" => InferredType::Bool,
+            "None" => InferredType::None,
+            other => InferredType::NamedInstance(other.to_string()),
         }
     }
 }

@@ -72,6 +72,28 @@ impl Interpreter {
         }
     }
 
+    /// 値が指定した型名に一致するかを判定する（`is` 型ガードのランタイム検査）。
+    ///
+    /// - プリミティブ型: `type_name` が `"int"`, `"float"` 等と一致するか確認する。
+    /// - インスタンス: クラス名または `bases`（実装 trait・基底クラス）に含まれるか確認する。
+    /// - `None` 値: `type_name == "None"` の場合のみ `true`。
+    pub(super) fn value_is_type(&self, val: &Value, type_name: &str) -> bool {
+        match val {
+            Value::Int(_) => type_name == "int",
+            Value::Float(_) => type_name == "float",
+            Value::Str(_) => type_name == "str",
+            Value::Bool(_) => type_name == "bool",
+            Value::None => type_name == "None",
+            Value::Instance(inst_rc) => {
+                let inst = inst_rc.borrow();
+                inst.class.name == type_name
+                    || inst.class.bases.contains(&type_name.to_string())
+            }
+            Value::Class(cls) => cls.name == type_name,
+            _ => false,
+        }
+    }
+
     /// 値を `print()` 出力用の文字列に変換する。
     /// 文字列値はクォートなしでそのまま返す（`display_repr` との違い）。
     ///

@@ -200,6 +200,12 @@ impl Interpreter {
                 // テンプレート式は単独では使用不可（Call の一部として処理される）
                 Err("TemplateError: template expression must be immediately called (e.g. `Func[T](args)`)".to_string())
             }
+            Expr::IsType { expr, negated, type_name, .. } => {
+                // `x is T` / `x is not T`: 実行時の型判定。value_is_type で確認し Bool を返す。
+                let val = self.eval(expr)?;
+                let matches = self.value_is_type(&val, type_name);
+                Ok(Value::Bool(if *negated { !matches } else { matches }))
+            }
             Expr::Call { func, args } => {
                 // テンプレート呼び出し: `expr[T1, T2](args)` 形式
                 if let Expr::TemplateInstantiate { base, type_args } = func.as_ref() {

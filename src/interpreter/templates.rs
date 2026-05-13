@@ -318,6 +318,12 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             pairs.iter().map(|(k, v)| (subst_expr(k, type_map), subst_expr(v, type_map))).collect(),
         ),
         Expr::Tuple(items) => Expr::Tuple(items.iter().map(|e| subst_expr(e, type_map)).collect()),
+        Expr::IsType { expr, negated, type_name, span } => Expr::IsType {
+            expr: Box::new(subst_expr(expr, type_map)),
+            negated: *negated,
+            type_name: subst_type(type_name, type_map),
+            span: span.clone(),
+        },
     }
 }
 
