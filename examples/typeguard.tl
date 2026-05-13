@@ -62,3 +62,26 @@ fn get_optional() -> Option[str]:
 let s = get_optional()
 if s is not None:
     print("s is not None")   # s is not None
+
+# --- elif branches are narrowed the same way ---
+fn get_opt_int() -> Option[int]:
+    return 7
+
+let w = get_opt_int()
+if w is None:
+    print("w is None")
+elif w is not None:
+    print("w has a value")   # w has a value (narrowed to int in this branch)
+
+fn classify(x: Union[int, str, float]) -> str:
+    if x is int:
+        return "int"
+    elif x is str:
+        return "str"
+    elif x is float:
+        return "float"
+    return "other"
+
+print(classify(1))      # int
+print(classify("hi"))   # str
+print(classify(2.5))    # float
