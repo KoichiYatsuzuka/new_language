@@ -2353,4 +2353,80 @@ mod tests {
         ));
         assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
+
+    // --- Type guard (is / is not) ---
+
+    #[test]
+    fn type_guard_is_narrows_in_if_body_ok() {
+        // `if x is int:` narrows x to int; arithmetic inside is fine.
+        assert!(ok(concat!(
+            "fn f() -> Option[int]:\n    return 1\n",
+            "let x = f()\n",
+            "if x is int:\n    let y = x + 1\n",
+        )));
+    }
+
+    #[test]
+    fn type_guard_is_union_without_narrowing_err() {
+        // Using a Union-typed variable in arithmetic without a type guard is an error.
+        let errors = check(concat!(
+            "fn f() -> Option[int]:\n    return 1\n",
+            "let x = f()\n",
+            "let y = x + 1\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::OperationOnUnion { .. })));
+    }
+
+    #[test]
+    fn type_guard_is_not_narrows_in_if_body_ok() {
+        // `if x is not None:` on Option[int] narrows x to int inside the branch.
+        assert!(ok(concat!(
+            "fn f() -> Option[int]:\n    return 1\n",
+            "let x = f()\n",
+            "if x is not None:\n    let y = x + 1\n",
+        )));
+    }
+
+    #[test]
+    fn type_guard_is_not_on_non_union_err() {
+        // `is not` on a plain int variable should raise IsNotOnNonUnion.
+        let errors = check(concat!(
+            "let x = 5\n",
+            "if x is not str:\n    pass\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::IsNotOnNonUnion { .. })));
+    }
+
+    #[test]
+    fn type_guard_elif_narrows_ok() {
+        // elif branches receive the same narrowing as if branches.
+        assert!(ok(concat!(
+            "fn f() -> Option[int]:\n    return 1\n",
+            "let x = f()\n",
+            "if x is int:\n    let a = x + 1\n",
+            "elif x is None:\n    pass\n",
+        )));
+    }
+
+    #[test]
+    fn type_guard_elif_chain_ok() {
+        // Multiple elif branches all get their own narrowed type.
+        assert!(ok(concat!(
+            "fn f() -> Union[int, str]:\n    return 1\n",
+            "let x = f()\n",
+            "if x is int:\n    let a = x + 1\n",
+            "elif x is str:\n    let b = x\n",
+        )));
+    }
+
+    #[test]
+    fn type_guard_elif_is_not_on_non_union_err() {
+        // `is not` on non-Union in an elif condition is also an error.
+        let errors = check(concat!(
+            "let x = 5\n",
+            "if x == 1:\n    pass\n",
+            "elif x is not str:\n    pass\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::IsNotOnNonUnion { .. })));
+    }
 }
