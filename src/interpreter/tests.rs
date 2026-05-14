@@ -1503,3 +1503,104 @@ fn test_tuple_multiline() {
         panic!("expected Tuple");
     }
 }
+
+// --- function type ---
+
+#[test]
+fn test_function_type_call_positional() {
+    let src = concat!(
+        "fn make() -> function[let int]->int:\n",
+        "    fn inner(let x: int) -> int:\n",
+        "        return x\n",
+        "    return inner\n",
+        "let f = make()\n",
+        "let r = f(42)\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 42);
+    } else {
+        panic!("expected Int(42)");
+    }
+}
+
+#[test]
+fn test_function_type_call_named_param() {
+    let src = concat!(
+        "fn make() -> function{let value:int}->int:\n",
+        "    fn inner(let value: int) -> int:\n",
+        "        return value\n",
+        "    return inner\n",
+        "let f = make()\n",
+        "let r = f(value = 99)\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 99);
+    } else {
+        panic!("expected Int(99)");
+    }
+}
+
+#[test]
+fn test_function_type_chained_call() {
+    let src = concat!(
+        "fn make() -> function[let int]->int:\n",
+        "    fn inner(let x: int) -> int:\n",
+        "        return x\n",
+        "    return inner\n",
+        "mut r = make()(7)\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 7);
+    } else {
+        panic!("expected Int(7)");
+    }
+}
+
+#[test]
+fn test_function_type_bare_any_call() {
+    // bare `function` type parameter should work with any call.
+    let src = concat!(
+        "fn apply(let f: function, let x: int) -> int:\n",
+        "    return f(x)\n",
+        "fn double(let n: int) -> int:\n",
+        "    return n * 2\n",
+        "let r = apply(double, 5)\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 10);
+    } else {
+        panic!("expected Int(10)");
+    }
+}
+
+#[test]
+fn test_function_type_zero_params() {
+    let src = concat!(
+        "fn make() -> function[]->int:\n",
+        "    fn inner() -> int:\n",
+        "        return 100\n",
+        "    return inner\n",
+        "let f = make()\n",
+        "let r = f()\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 100);
+    } else {
+        panic!("expected Int(100)");
+    }
+}
+
+#[test]
+fn test_function_type_is_guard() {
+    // `f is function` should be True for a function value.
+    let src = concat!(
+        "fn add(let x: int) -> int:\n",
+        "    return x + 1\n",
+        "let r = add is function\n",
+    );
+    if let Value::Bool(b) = run_get(src, "r") {
+        assert!(b);
+    } else {
+        panic!("expected Bool(true)");
+    }
+}

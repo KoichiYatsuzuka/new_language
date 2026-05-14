@@ -510,8 +510,8 @@ impl Interpreter {
     pub fn new() -> Self {
         let mut global: HashMap<String, Var> = HashMap::new();
 
-        // 組み込み型値を事前定義: `int`, `str`, `float`, `bool`, `dict` を型式として使えるようにする
-        for name in ["int", "str", "float", "bool", "dict"] {
+        // 組み込み型値を事前定義: `int`, `str`, `float`, `bool`, `dict`, `function` を型式として使えるようにする
+        for name in ["int", "str", "float", "bool", "dict", "function"] {
             global.insert(name.to_string(), Var { value: Value::Type(name.to_string()), mutable: false });
         }
 

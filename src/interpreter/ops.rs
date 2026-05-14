@@ -90,6 +90,7 @@ impl Interpreter {
                     || inst.class.bases.contains(&type_name.to_string())
             }
             Value::Class(cls) => cls.name == type_name,
+            Value::Function(_) | Value::OverloadedFn(_) | Value::GeneratorFn(_) => type_name == "function",
             _ => false,
         }
     }

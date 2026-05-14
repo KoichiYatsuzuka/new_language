@@ -14,6 +14,17 @@ use crate::token::Span;
 /// AST を走査して式に割り当てられる型を表す。実行時の `Value` とは独立した型表現であり、
 /// 静的解析フェーズでのみ使用される。型が静的に確定しない場合は `Unresolved` を使用し、
 /// 実行時の型検査に委ねる。
+/// 関数型アノテーション（`function[...]->T` / `function{...}->T`）の1パラメータ。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FnTypeParam {
+    /// パラメータ名（位置引数は自動生成 `param1`, `param2`, ...）。
+    pub name: String,
+    /// `mut` 修飾子の有無。
+    pub mutable: bool,
+    /// パラメータの型（アノテーションなしは `Any`）。
+    pub ty: InferredType,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum InferredType {
     /// 整数型（`int`）
@@ -51,18 +62,21 @@ pub enum InferredType {
     Namespace(std::collections::HashMap<String, InferredType>),
     /// 静的に確定できない型。実行時の型検査に委ねる。
     Unresolved,
+    /// 関数型（`function`, `function[...]->T`, `function{...}->T`）。
+    ///
+    /// - `params = None`  : 任意の引数リスト（bare `function`）
+    /// - `params = Some(v)`: 明示的なパラメータリスト（空なら引数なし）
+    /// - `return_type`    : 戻り値型（アノテーションなしは `Any`）
+    Function {
+        params: Option<Vec<FnTypeParam>>,
+        return_type: Box<InferredType>,
+    },
 }
 
 /// 文字列 `s` をブラケット深さ 0 のカンマで分割する。
 ///
 /// `Union[int, str]` や `Option[int]` のようなネストした型引数を正しく分割するために使用する。
 /// ブラケット内のカンマは区切りとして扱われない。
-///
-/// # 引数
-/// - `s`: 分割対象の型注釈文字列（例: `"int, str"`, `"Union[int, str], bool"`）
-///
-/// # 戻り値
-/// トップレベルのカンマで分割されたスライスの `Vec`。末尾の空部分も含まれる。
 fn split_top_level_commas(s: &str) -> Vec<&str> {
     let mut result = Vec::new();
     let mut depth = 0usize;
@@ -82,17 +96,32 @@ fn split_top_level_commas(s: &str) -> Vec<&str> {
     result
 }
 
+/// `split_top_level_commas` と同様だが `[` / `]` と `{` / `}` の両方を深さに数える。
+/// 関数型アノテーション内のパラメータリスト分割に使用する。
+fn split_top_level_commas_fn(s: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' | '{' => depth += 1,
+            ']' | '}' => { if depth > 0 { depth -= 1; } }
+            ',' if depth == 0 => {
+                result.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    result.push(&s[start..]);
+    result
+}
+
 impl InferredType {
-    /// 型注釈文字列（例: `"int"`, `"Union[int,str]"`, `"tuple[int, str]"`）を
+    /// 型注釈文字列（例: `"int"`, `"Union[int,str]"`, `"tuple[int, str]"`, `"function[let int]->int"`）を
     /// [`InferredType`] に変換する。
     ///
     /// 認識できない文字列は `None` を返す。
-    ///
-    /// # 引数
-    /// - `ann`: パーサーが生成した型注釈の文字列表現
-    ///
-    /// # 戻り値
-    /// 対応する `InferredType`。認識できない場合は `None`。
     fn from_ann(ann: &str) -> Option<Self> {
         if let Some(inner) = ann.strip_prefix("Union[").and_then(|s| s.strip_suffix(']')) {
             let parts = split_top_level_commas(inner);
@@ -112,6 +141,9 @@ impl InferredType {
                 .collect();
             return Some(Self::Tuple(types));
         }
+        if let Some(rest) = ann.strip_prefix("function") {
+            return Self::parse_fn_type_ann(rest);
+        }
         match ann {
             "int" => Some(Self::Int),
             "float" => Some(Self::Float),
@@ -125,6 +157,92 @@ impl InferredType {
             "Any" => Some(Self::Any),
             _ => None,
         }
+    }
+
+    /// `function` の後続文字列（`""`, `"[...]->T"`, `"{...}->T"` など）から
+    /// `InferredType::Function` を構築する。
+    fn parse_fn_type_ann(rest: &str) -> Option<Self> {
+        let (params, after_params) = if rest.starts_with('[') {
+            let close = Self::find_closing_bracket(rest, '[', ']')?;
+            let inner = &rest[1..close];
+            let after = &rest[close + 1..];
+            let params = if inner.trim().is_empty() {
+                vec![]
+            } else {
+                let parts = split_top_level_commas_fn(inner);
+                let mut out = Vec::new();
+                for (i, part) in parts.iter().enumerate() {
+                    let p = part.trim();
+                    let (mutable, type_str) = if let Some(t) = p.strip_prefix("mut ") {
+                        (true, t.trim())
+                    } else if let Some(t) = p.strip_prefix("let ") {
+                        (false, t.trim())
+                    } else {
+                        (false, p)
+                    };
+                    // positional params serialized as "let paramN:type"
+                    let (name, ty_s) = if let Some(colon) = type_str.find(':') {
+                        (type_str[..colon].trim().to_string(), type_str[colon + 1..].trim())
+                    } else {
+                        (format!("param{}", i + 1), type_str)
+                    };
+                    let ty = Self::from_ann(ty_s).unwrap_or(Self::Any);
+                    out.push(FnTypeParam { name, mutable, ty });
+                }
+                out
+            };
+            (Some(params), after)
+        } else if rest.starts_with('{') {
+            let close = Self::find_closing_bracket(rest, '{', '}')?;
+            let inner = &rest[1..close];
+            let after = &rest[close + 1..];
+            let params = if inner.trim().is_empty() {
+                vec![]
+            } else {
+                let parts = split_top_level_commas_fn(inner);
+                let mut out = Vec::new();
+                for part in parts.iter() {
+                    let p = part.trim();
+                    let (mutable, rest_p) = if let Some(t) = p.strip_prefix("mut ") {
+                        (true, t.trim())
+                    } else if let Some(t) = p.strip_prefix("let ") {
+                        (false, t.trim())
+                    } else {
+                        (false, p)
+                    };
+                    let colon = rest_p.find(':')?;
+                    let name = rest_p[..colon].trim().to_string();
+                    let ty_s = rest_p[colon + 1..].trim();
+                    let ty = Self::from_ann(ty_s).unwrap_or(Self::Any);
+                    out.push(FnTypeParam { name, mutable, ty });
+                }
+                out
+            };
+            (Some(params), after)
+        } else {
+            (None, rest)
+        };
+
+        let return_type = if let Some(ret_s) = after_params.strip_prefix("->") {
+            Self::from_ann(ret_s.trim()).unwrap_or(Self::Any)
+        } else {
+            Self::Any
+        };
+
+        Some(Self::Function { params, return_type: Box::new(return_type) })
+    }
+
+    /// 文字列 `s` の先頭から対応するブラケットの閉じ位置を返す。
+    fn find_closing_bracket(s: &str, open: char, close: char) -> Option<usize> {
+        let mut depth = 0usize;
+        for (i, c) in s.char_indices() {
+            if c == open { depth += 1; }
+            else if c == close {
+                depth -= 1;
+                if depth == 0 { return Some(i); }
+            }
+        }
+        None
     }
 }
 
@@ -178,6 +296,22 @@ impl std::fmt::Display for InferredType {
             }
             Self::Namespace(members) => write!(f, "<module({} members)>", members.len()),
             Self::Unresolved => write!(f, "unknown"),
+            Self::Function { params, return_type } => {
+                match params {
+                    None => write!(f, "function")?,
+                    Some(ps) => {
+                        let parts: Vec<String> = ps.iter().map(|p| {
+                            let prefix = if p.mutable { "mut" } else { "let" };
+                            format!("{prefix} {}:{}", p.name, p.ty)
+                        }).collect();
+                        write!(f, "function{{{}}}", parts.join(","))?;
+                    }
+                }
+                if **return_type != Self::Any {
+                    write!(f, "->{return_type}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -287,6 +421,13 @@ pub enum TypeErrorKind {
         /// 変数の実際の推論型
         var_type: InferredType,
     },
+    /// 関数型変数の `mut` パラメータに不変の引数を渡した。
+    CallMutParamWithImmutableArg {
+        /// 呼び出した関数型変数の名前または説明
+        func_name: String,
+        /// `mut` が宣言されているパラメータ名
+        param_name: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -392,6 +533,10 @@ impl std::fmt::Display for StaticTypeError {
                 f,
                 "StaticTypeError: 'is not' type guard on '{var_name}' requires a Union or Optional type, but got '{var_type}'"
             ),
+            TypeErrorKind::CallMutParamWithImmutableArg { func_name, param_name } => write!(
+                f,
+                "StaticTypeError: parameter '{param_name}' of '{func_name}' expects a mutable argument, but got an immutable value"
+            ),
         }
     }
 }
@@ -446,7 +591,7 @@ impl TypeChecker {
     pub fn new() -> Self {
         let mut global: HashMap<String, VarInfo> = HashMap::new();
         // 組み込み型名を TypeVal として事前登録し、式コンテキストで認識できるようにする。
-        for name in ["int", "str", "float", "bool", "Any"] {
+        for name in ["int", "str", "float", "bool", "Any", "function"] {
             global.insert(name.to_string(), VarInfo { ty: InferredType::TypeVal, mutable: false });
         }
         Self {
@@ -1176,7 +1321,7 @@ impl TypeChecker {
 
         // 可変借用の前に関数名を取得しておく。
         let func_name = if let Expr::Ident(name) = func { Some(name.clone()) } else { None };
-        self.infer(func);
+        let func_type = self.infer(func);
 
         // 全引数の型を推論し、キーワード引数名と型のペアとして収集する。
         let mut arg_data: Vec<(Option<String>, InferredType)> = Vec::new();
@@ -1185,6 +1330,21 @@ impl TypeChecker {
                 CallArg::Positional(e) => arg_data.push((None, self.infer(e))),
                 CallArg::Keyword { name, value } => arg_data.push((Some(name.clone()), self.infer(value))),
             }
+        }
+
+        // 関数型変数の呼び出し: func_type が Function なら専用の検査・戻り値推論を行う。
+        match func_type {
+            InferredType::Function { params: Some(fn_params), return_type } => {
+                let fname = func_name.as_deref().unwrap_or("<function>").to_string();
+                let ret = *return_type;
+                self.check_fn_type_call(&fname, args, &arg_data, &fn_params);
+                return ret;
+            }
+            InferredType::Function { params: None, .. } => {
+                // bare `function` — 任意の引数を受け付け、Any を返す。
+                return InferredType::Any;
+            }
+            _ => {}
         }
 
         // Self 型パラメータの制約を検査する。
@@ -1388,6 +1548,105 @@ impl TypeChecker {
                     positional_idx += 1;
                 }
             }
+        }
+    }
+
+    // --- 関数型呼び出しの検査 ---
+
+    /// 関数型変数の呼び出し検査：引数個数・型・キーワード名・`mut` 引数の可変性を検査する。
+    fn check_fn_type_call(
+        &mut self,
+        func_name: &str,
+        args: &[CallArg],
+        arg_data: &[(Option<String>, InferredType)],
+        params: &[FnTypeParam],
+    ) {
+        if arg_data.len() != params.len() {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::CallArgCountMismatch {
+                    func_name: func_name.to_string(),
+                    expected: params.len(),
+                    got: arg_data.len(),
+                },
+                span: None,
+            });
+            return;
+        }
+
+        let mut positional_idx = 0usize;
+        for (i, (key, arg_ty)) in arg_data.iter().enumerate() {
+            let arg_expr = args[i].expr();
+            match key {
+                Some(kwarg_name) => {
+                    match params.iter().position(|p| &p.name == kwarg_name) {
+                        None => self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::UnknownKeywordArg {
+                                func_name: func_name.to_string(),
+                                arg_name: kwarg_name.clone(),
+                            },
+                            span: None,
+                        }),
+                        Some(param_pos) => {
+                            let param = &params[param_pos];
+                            if param.ty != InferredType::Any && !Self::type_matches(arg_ty, &param.ty) {
+                                self.report_error(StaticTypeError {
+                                    kind: TypeErrorKind::CallArgTypeMismatch {
+                                        func_name: func_name.to_string(),
+                                        param_index: param_pos,
+                                        expected: param.ty.clone(),
+                                        got: arg_ty.clone(),
+                                    },
+                                    span: None,
+                                });
+                            }
+                            if param.mutable && !self.is_mutable_expr(arg_expr) {
+                                self.report_error(StaticTypeError {
+                                    kind: TypeErrorKind::CallMutParamWithImmutableArg {
+                                        func_name: func_name.to_string(),
+                                        param_name: param.name.clone(),
+                                    },
+                                    span: None,
+                                });
+                            }
+                        }
+                    }
+                }
+                None => {
+                    if let Some(param) = params.get(positional_idx) {
+                        if param.ty != InferredType::Any && !Self::type_matches(arg_ty, &param.ty) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::CallArgTypeMismatch {
+                                    func_name: func_name.to_string(),
+                                    param_index: positional_idx,
+                                    expected: param.ty.clone(),
+                                    got: arg_ty.clone(),
+                                },
+                                span: None,
+                            });
+                        }
+                        if param.mutable && !self.is_mutable_expr(arg_expr) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::CallMutParamWithImmutableArg {
+                                    func_name: func_name.to_string(),
+                                    param_name: param.name.clone(),
+                                },
+                                span: None,
+                            });
+                        }
+                    }
+                    positional_idx += 1;
+                }
+            }
+        }
+    }
+
+    /// 式が可変変数の参照かどうかを判定する。
+    /// `Expr::Ident(name)` で `name` がスコープ内の可変変数の場合にのみ `true` を返す。
+    fn is_mutable_expr(&self, expr: &Expr) -> bool {
+        if let Expr::Ident(name) = expr {
+            self.lookup(name).map(|v| v.mutable).unwrap_or(false)
+        } else {
+            false
         }
     }
 
@@ -2428,5 +2687,165 @@ mod tests {
             "elif x is not str:\n    pass\n",
         ));
         assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::IsNotOnNonUnion { .. })));
+    }
+
+    // --- function type ---
+
+    #[test]
+    fn function_type_bare_param_ok() {
+        // bare `function` accepts any call.
+        assert!(ok(concat!(
+            "fn caller(let f: function) -> None:\n",
+            "    pass\n",
+        )));
+    }
+
+    #[test]
+    fn function_type_positional_params_ok() {
+        // function[let int]->int: call with int arg is OK.
+        assert!(ok(concat!(
+            "fn make() -> function[let int]->int:\n",
+            "    fn inner(let x: int) -> int:\n",
+            "        return x\n",
+            "    return inner\n",
+            "let f = make()\n",
+            "let r = f(1)\n",
+        )));
+    }
+
+    #[test]
+    fn function_type_return_type_inferred_ok() {
+        // Return type from function[let int]->int should be int.
+        assert!(ok(concat!(
+            "fn make() -> function[let int]->int:\n",
+            "    fn inner(let x: int) -> int:\n",
+            "        return x\n",
+            "    return inner\n",
+            "let f = make()\n",
+            "let r: int = f(1)\n",
+        )));
+    }
+
+    #[test]
+    fn function_type_wrong_arg_type_err() {
+        // Passing str to function[let int]->int should be an error.
+        let errors = check(concat!(
+            "fn make() -> function[let int]->int:\n",
+            "    fn inner(let x: int) -> int:\n",
+            "        return x\n",
+            "    return inner\n",
+            "let f = make()\n",
+            "let r = f(\"hello\")\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+    }
+
+    #[test]
+    fn function_type_wrong_arg_count_err() {
+        // Calling function[let int]->int with 2 args is an error.
+        let errors = check(concat!(
+            "fn make() -> function[let int]->int:\n",
+            "    fn inner(let x: int) -> int:\n",
+            "        return x\n",
+            "    return inner\n",
+            "let f = make()\n",
+            "let r = f(1, 2)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgCountMismatch { .. })));
+    }
+
+    #[test]
+    fn function_type_named_param_keyword_ok() {
+        // Named param call by keyword OK.
+        assert!(ok(concat!(
+            "fn make() -> function{let value:int}->int:\n",
+            "    fn inner(let value: int) -> int:\n",
+            "        return value\n",
+            "    return inner\n",
+            "let f = make()\n",
+            "let r = f(value = 1)\n",
+        )));
+    }
+
+    #[test]
+    fn function_type_named_param_unknown_keyword_err() {
+        // Using an unknown keyword should be an error.
+        let errors = check(concat!(
+            "fn make() -> function{let value:int}->int:\n",
+            "    fn inner(let value: int) -> int:\n",
+            "        return value\n",
+            "    return inner\n",
+            "let f = make()\n",
+            "let r = f(param = 1)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::UnknownKeywordArg { .. })));
+    }
+
+    #[test]
+    fn function_type_mut_param_with_immutable_arg_err() {
+        // Passing an immutable variable to a mut param is an error.
+        let errors = check(concat!(
+            "fn make() -> function{mut value:int}->int:\n",
+            "    fn inner(mut value: int) -> int:\n",
+            "        return value\n",
+            "    return inner\n",
+            "let f = make()\n",
+            "let z = 5\n",
+            "let r = f(value = z)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallMutParamWithImmutableArg { .. })));
+    }
+
+    #[test]
+    fn function_type_mut_param_with_mutable_arg_ok() {
+        // Passing a mutable variable to a mut param is OK.
+        assert!(ok(concat!(
+            "fn make() -> function{mut value:int}->int:\n",
+            "    fn inner(mut value: int) -> int:\n",
+            "        return value\n",
+            "    return inner\n",
+            "let f = make()\n",
+            "mut x = 5\n",
+            "let r = f(value = x)\n",
+        )));
+    }
+
+    #[test]
+    fn function_type_chained_call_ok() {
+        // func()->function[let int]->int: chained call ok.
+        assert!(ok(concat!(
+            "fn make() -> function[let int]->int:\n",
+            "    fn inner(let x: int) -> int:\n",
+            "        return x\n",
+            "    return inner\n",
+            "mut result = make()(3)\n",
+        )));
+    }
+
+    #[test]
+    fn function_type_zero_params_ok() {
+        // function[]->int means 0 params.
+        assert!(ok(concat!(
+            "fn make() -> function[]->int:\n",
+            "    fn inner() -> int:\n",
+            "        return 42\n",
+            "    return inner\n",
+            "let f = make()\n",
+            "let r = f()\n",
+        )));
+    }
+
+    #[test]
+    fn function_type_zero_params_wrong_count_err() {
+        // function[]->int with 1 arg is an error.
+        let errors = check(concat!(
+            "fn make() -> function[]->int:\n",
+            "    fn inner() -> int:\n",
+            "        return 42\n",
+            "    return inner\n",
+            "let f = make()\n",
+            "let r = f(1)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgCountMismatch { .. })));
     }
 }

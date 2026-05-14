@@ -1372,11 +1372,14 @@ impl Parser {
     /// # エラー
     /// 識別子または型名のパースに失敗した場合
     fn parse_param(&mut self) -> Result<Param, String> {
-        // `mut` キーワードがあればパラメータはミュータブル
+        // `mut` / `let` qualifier — mut means mutable, let (or absent) means immutable
         let mutable = if *self.current() == Token::Mut {
             self.advance();
             true
         } else {
+            if *self.current() == Token::Let {
+                self.advance(); // consume optional `let`, treated as immutable
+            }
             false
         };
         let name = self.expect_ident()?;
@@ -1466,6 +1469,10 @@ impl Parser {
             self.eat(&Token::RBracket)?;
             return Ok(format!("tuple[{}]", args.join(",")));
         }
+        // function type — function, function[params]->ret, function{params}->ret
+        if base == "function" {
+            return self.parse_function_type_ann();
+        }
         // Skip optional generic parameters: list[int], dict[str, int], etc.
         if *self.current() == Token::LBracket {
             self.advance();
@@ -1480,6 +1487,78 @@ impl Parser {
             }
         }
         Ok(base)
+    }
+
+    /// `function` キーワードを消費済みの状態で呼び出し、関数型アノテーション文字列を返す。
+    ///
+    /// 構文:
+    /// - `function`                        — 任意の関数型
+    /// - `function[let T, mut T2, ...]`    — 位置引数型付き（引数名は自動生成）
+    /// - `function{let name: T, ...}`      — 名前付き引数型付き
+    /// - `function[...]->RetType`          — 戻り値型付き
+    fn parse_function_type_ann(&mut self) -> Result<String, String> {
+        let params_str = match self.current() {
+            Token::LBracket => {
+                // 位置引数: function[let int, mut str, ...]
+                self.advance(); // consume '['
+                let mut params = Vec::new();
+                let mut auto_idx = 1usize;
+                while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+                    let mutable = match self.current() {
+                        Token::Mut => { self.advance(); true }
+                        Token::Let => { self.advance(); false }
+                        _ => false,
+                    };
+                    let ty = self.parse_type_expr()?;
+                    let prefix = if mutable { "mut" } else { "let" };
+                    params.push(format!("{prefix} param{auto_idx}:{ty}"));
+                    auto_idx += 1;
+                    if *self.current() == Token::Comma { self.advance(); }
+                }
+                self.eat(&Token::RBracket)?;
+                Some(format!("[{}]", params.join(",")))
+            }
+            Token::LBrace => {
+                // 名前付き引数: function{let name: type, mut name2: type2, ...}
+                self.advance(); // consume '{'
+                let mut params = Vec::new();
+                while *self.current() != Token::RBrace && *self.current() != Token::Eof {
+                    let mutable = match self.current() {
+                        Token::Mut => { self.advance(); true }
+                        Token::Let => { self.advance(); false }
+                        _ => false,
+                    };
+                    let name = self.expect_ident()?;
+                    self.eat(&Token::Colon)?;
+                    let ty = self.parse_type_expr()?;
+                    let prefix = if mutable { "mut" } else { "let" };
+                    params.push(format!("{prefix} {name}:{ty}"));
+                    if *self.current() == Token::Comma { self.advance(); }
+                }
+                self.eat(&Token::RBrace)?;
+                Some(format!("{{{}}}", params.join(",")))
+            }
+            _ => None,
+        };
+
+        let ret_str = if *self.current() == Token::Arrow {
+            self.advance(); // consume '->'
+            let ret = self.parse_type_expr()?;
+            format!("->{ret}")
+        } else {
+            String::new()
+        };
+
+        match params_str {
+            Some(p) => Ok(format!("function{p}{ret_str}")),
+            None => {
+                if ret_str.is_empty() {
+                    Ok("function".to_string())
+                } else {
+                    Ok(format!("function{ret_str}"))
+                }
+            }
+        }
     }
 
     /// 現在位置の `[...]` がテンプレート呼び出しか subscript かを先読みで判定する。

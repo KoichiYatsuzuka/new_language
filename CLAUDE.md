@@ -55,7 +55,9 @@ test_lang/
 │   ├── py_additional_param.tl # Python **kwargs examples
 │   ├── py_int_import.tl       # import[py-int] examples
 │   ├── typeguard.tl           # is / is not type guard examples
-│   └── typeguard__errors.tl   # is not on non-Union type StaticTypeError examples
+│   ├── typeguard__errors.tl   # is not on non-Union type StaticTypeError examples
+│   ├── function_type.tl       # function type annotation examples
+│   └── function_type__errors.tl  # function type StaticTypeError examples
 └── vscode-extension/    # VS Code extension (type inference inline hints)
     └── src/
         ├── extension.ts
@@ -106,6 +108,8 @@ Source File
 - List literals: `[a, b, c]`
 - Tuple literals, dictionary literals, subscript operators, control flow, classes, templates, `Self`, and `new_type`
 - Type guard expressions: `expr is TypeName` and `expr is not TypeName` (parsed as `Expr::IsType`)
+- Function type annotations: `function`, `function[let T]->R`, `function{let name:T}->R`, `function[]->R`
+- Function parameters support optional `let` / `mut` qualifiers (`let` = immutable, `mut` = mutable, absent = immutable)
 
 ### Static Type Checking (`src/type_check.rs`)
 
@@ -115,6 +119,7 @@ Traverses the AST after parsing and before execution, collecting and reporting `
   - `x is T` → narrows `x` to `T` (works for primitives, classes, new_types, traits)
   - `x is not T` → requires `x` to be `Union` / `Optional`; narrows by removing `T` from the union members (e.g. `Option[int]` with `is not None` → `int`)
   - `x is not T` on a non-Union type → `StaticTypeError: IsNotOnNonUnion`
+- **Function type checking**: typed function values (`function[let T]->R`, `function{let name:T}->R`) are statically checked at call sites for argument count, argument types, keyword argument names, and mutability (`mut` param requires a mutable variable argument)
 
 ### Interpreter (`src/interpreter.rs`)
 
@@ -127,7 +132,8 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Tuple type
 - `import[py]`
 - `import[py-int]`
-- Type guard (`is` / `is not`): runtime instance-of check against primitive types, class names, and trait membership (via `bases`)
+- Type guard (`is` / `is not`): runtime instance-of check against primitive types, class names, trait membership (via `bases`), and `function`
+- `function` primitive type: `Value::Function`, `Value::OverloadedFn`, `Value::GeneratorFn` all match `x is function`
 
 ### VS Code Extension (`vscode-extension/`)
 
