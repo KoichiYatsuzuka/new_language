@@ -100,15 +100,33 @@ pub struct RaisedError {
 // Function / Class / Instance value types
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Closure support
+// ---------------------------------------------------------------------------
+
+/// クロージャがキャプチャした変数の表現。
+///
+/// - `Immutable(Value)`: 不変変数のディープコピー（定義時点の値を保持）
+/// - `Mutable(Rc<RefCell<Value>>)`: 可変変数の共有セル（外側スコープと読み書きを共有）
+#[derive(Debug, Clone)]
+pub(self) enum CapturedVar {
+    /// 不変変数: 定義時点の値をディープコピーして保持する
+    Immutable(Value),
+    /// 可変変数: 外側スコープと同じセルを共有する
+    Mutable(Rc<RefCell<Value>>),
+}
+
 /// ジェネレータ関数の定義（`gen` キーワードで宣言）。
 /// 呼び出すと `Value::Generator` を返す。
 ///
 /// - `params`: 仮引数リスト
 /// - `body`: 関数本体の文リスト（`yield` 文を含む）
+/// - `captured_env`: キャプチャした外側スコープ変数のマップ
 #[derive(Debug)]
 pub struct GeneratorFnValue {
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
+    pub(self) captured_env: std::collections::HashMap<String, CapturedVar>,
 }
 
 /// 具体型が未確定のテンプレートジェネレータ関数定義。
@@ -167,6 +185,7 @@ pub struct TemplateClassValue {
 ///
 /// - `params`: 仮引数リスト（名前・可変フラグ・型アノテーションを含む）
 /// - `body`: 関数本体の文リスト
+/// - `captured_env`: キャプチャした外側スコープ変数のマップ（クロージャ）
 #[derive(Debug)]
 pub struct FnValue {
     pub(self) params: Vec<Param>,
@@ -175,6 +194,9 @@ pub struct FnValue {
     /// `true` のとき、引数リストに存在しないキーワード引数をエラーにせず
     /// `AdditionalParam` dict として関数スコープに注入する。
     pub(self) is_python: bool,
+    /// キャプチャした外側スコープ変数（クロージャ環境）。
+    /// 不変変数はディープコピー、可変変数は共有セルとして保持する。
+    pub(self) captured_env: std::collections::HashMap<String, CapturedVar>,
 }
 
 /// クラス定義の実行時表現。インスタンス化（`instantiate`）の雛形となる。
@@ -464,11 +486,45 @@ pub enum ExecResult {
 
 /// スコープ内の1つの変数エントリ。
 ///
-/// - `value`: 変数の現在の値
+/// - `value`: 変数の現在の値（`mutable_cell` が `None` のとき有効）
 /// - `mutable`: `true` なら再代入可能（`mut` 宣言）、`false` なら不変（`let` / `const` 宣言）
+/// - `mutable_cell`: クロージャにキャプチャされた可変変数の共有セル。
+///   `Some` のとき読み書きはセル経由で行い、`value` フィールドは使用しない。
 pub(self) struct Var {
     pub(self) value: Value,
     pub(self) mutable: bool,
+    /// クロージャとの共有セル。`Some` のとき読み書きはセル経由。
+    pub(self) mutable_cell: Option<Rc<RefCell<Value>>>,
+}
+
+impl Var {
+    /// 通常の変数エントリを作成する（セルなし）。
+    pub(self) fn new(value: Value, mutable: bool) -> Self {
+        Self { value, mutable, mutable_cell: None }
+    }
+
+    /// クロージャ共有セルに基づく変数エントリを作成する（常に mutable）。
+    pub(self) fn new_cell(cell: Rc<RefCell<Value>>) -> Self {
+        Self { value: Value::None, mutable: true, mutable_cell: Some(cell) }
+    }
+
+    /// 変数の現在の値を返す。セルがある場合はセルの値を返す。
+    pub(self) fn get_value(&self) -> Value {
+        if let Some(cell) = &self.mutable_cell {
+            cell.borrow().clone()
+        } else {
+            self.value.clone()
+        }
+    }
+
+    /// 変数に新しい値をセットする。セルがある場合はセルに書き込む。
+    pub(self) fn set_value(&mut self, val: Value) {
+        if let Some(cell) = &self.mutable_cell {
+            *cell.borrow_mut() = val;
+        } else {
+            self.value = val;
+        }
+    }
 }
 
 /// ツリーウォークインタープリタ本体。
@@ -480,6 +536,7 @@ pub(self) struct Var {
 /// - `source_map`: ファイル名 → ソース行リスト のマップ（トレースバックのコンテキスト表示用）
 /// - `call_stack`: 関数名のスタック（例外フレーム生成時に参照）
 /// - `current_exception`: `except` ブロック内で処理中の例外（裸の `raise` 文で再 raise するため）
+/// - `static_cells`: `static mut` 変数の共有セル。キーは (ファイル名, 行, 列)。
 pub struct Interpreter {
     pub(self) scopes: Vec<HashMap<String, Var>>,
     /// ファイル名 → ソース行リスト のマップ（トレースバックのコンテキスト抽出用）。
@@ -496,6 +553,9 @@ pub struct Interpreter {
     pub(self) in_python_module: bool,
     /// `import[py-int]` 時に Python の `sys.path` に追加するディレクトリ一覧。
     pub(self) python_search_dirs: Vec<PathBuf>,
+    /// `static mut` 変数の永続セル。キーは宣言の (ファイル名, 行, 列)。
+    /// 外側関数の全呼び出しで同じセルを共有する。
+    pub(self) static_cells: HashMap<(String, usize, usize), Rc<RefCell<Value>>>,
 }
 
 impl Interpreter {
@@ -512,11 +572,11 @@ impl Interpreter {
 
         // 組み込み型値を事前定義: `int`, `str`, `float`, `bool`, `dict`, `function` を型式として使えるようにする
         for name in ["int", "str", "float", "bool", "dict", "function"] {
-            global.insert(name.to_string(), Var { value: Value::Type(name.to_string()), mutable: false });
+            global.insert(name.to_string(), Var::new(Value::Type(name.to_string()), false));
         }
 
         // 組み込み `Error` trait を事前登録（値としてアクセス可能にする）
-        global.insert("Error".to_string(), Var { value: Value::Trait("Error".to_string()), mutable: false });
+        global.insert("Error".to_string(), Var::new(Value::Trait("Error".to_string()), false));
 
         // 標準例外クラスをすべて登録する。
         // 各クラスは `__init__(mut self, message: str)` を持ち、
@@ -529,7 +589,7 @@ impl Interpreter {
         ];
         for class_name in exception_names {
             let cls = Self::make_error_class(class_name);
-            global.insert(class_name.to_string(), Var { value: Value::Class(cls), mutable: false });
+            global.insert(class_name.to_string(), Var::new(Value::Class(cls), false));
         }
 
         Self {
@@ -540,6 +600,7 @@ impl Interpreter {
             module_cache: HashMap::new(),
             in_python_module: false,
             python_search_dirs: Vec::new(),
+            static_cells: HashMap::new(),
         }
     }
 

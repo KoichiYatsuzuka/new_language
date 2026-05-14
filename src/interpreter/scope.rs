@@ -39,9 +39,10 @@ impl Interpreter {
     }
 
     /// 指定名の変数の値だけをクローンして返す。
+    /// セル（クロージャキャプチャ）がある場合はセルの値を返す。
     /// 変数が存在しない場合は `None`。
     pub(super) fn get_val(&self, name: &str) -> Option<Value> {
-        self.get_var(name).map(|v| v.value.clone())
+        self.get_var(name).map(|v| v.get_value())
     }
 
     /// 最内部スコープに新しい変数を宣言する。
@@ -69,7 +70,7 @@ impl Interpreter {
                         "TypeError: cannot assign to immutable variable '{name}'"
                     ));
                 }
-                v.value = value;
+                v.set_value(value);
                 return Ok(());
             }
         }
@@ -77,7 +78,7 @@ impl Interpreter {
     }
 
     /// 変数の可変フラグを `false`（不変）に変更する（`freeze` 文で使用）。
-    /// 変数が存在しない場合は何もしない。
+    /// クロージャにキャプチャされた変数（`mutable_cell` が `Some`）は freeze できない。
     ///
     /// - `name`: 不変化する変数名
     pub(super) fn make_var_immutable(&mut self, name: &str) {

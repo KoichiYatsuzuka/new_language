@@ -11,7 +11,7 @@ use std::rc::Rc;
 use crate::ast::{CallArg, Param};
 
 use super::{
-    Interpreter, Value, Var, FnValue, GeneratorFnValue, GeneratorState,
+    CapturedVar, Interpreter, Value, Var, FnValue, GeneratorFnValue, GeneratorState,
     ExecResult, StackFrame, DictData, InstanceData,
     RAISE_SENTINEL, GENERATOR_YIELDS,
 };
@@ -49,8 +49,18 @@ impl Interpreter {
         // グローバルスコープ（インデックス 0）以外を一時退避して関数専用スコープを構築する
         let outer_scopes: Vec<_> = self.scopes.drain(1..).collect();
         self.push_scope();
+
+        // クロージャキャプチャ環境を先に注入する（パラメータより低い優先度になるよう先にセット）
+        for (name, captured) in &fn_val.captured_env {
+            let var = match captured {
+                CapturedVar::Immutable(v) => Var::new(v.clone(), false),
+                CapturedVar::Mutable(cell) => Var::new_cell(cell.clone()),
+            };
+            self.declare_var(name.clone(), var);
+        }
+
         for (name, val, mutable) in bindings {
-            self.declare_var(name, Var { value: val, mutable });
+            self.declare_var(name, Var::new(val, mutable));
         }
         // Python 関数: 引数リストにない余分なキーワード引数を kwargs dict に注入する
         if fn_val.is_python && !extra_kwargs.is_empty() {
@@ -60,13 +70,13 @@ impl Interpreter {
             }
             self.declare_var(
                 "kwargs".to_string(),
-                Var { value: Value::Dict(Rc::new(RefCell::new(dict))), mutable: false },
+                Var::new(Value::Dict(Rc::new(RefCell::new(dict))), false),
             );
         }
         // メソッド実行時: `Self` をレシーバインスタンスのクラスにバインドする
         if let Some(Value::Instance(inst_rc)) = &self_val {
             let class = inst_rc.borrow().class.clone();
-            self.declare_var("Self".to_string(), Var { value: Value::Class(class), mutable: false });
+            self.declare_var("Self".to_string(), Var::new(Value::Class(class), false));
         }
 
         self.call_stack.push(fn_name.to_string());
@@ -157,13 +167,23 @@ impl Interpreter {
         // exec_fn_evaled と同様にグローバルスコープ以外を退避して独立したスコープで実行する
         let outer_scopes: Vec<_> = self.scopes.drain(1..).collect();
         self.push_scope();
+
+        // クロージャキャプチャ環境を注入する
+        for (name, captured) in &gen_fn.captured_env {
+            let var = match captured {
+                CapturedVar::Immutable(v) => Var::new(v.clone(), false),
+                CapturedVar::Mutable(cell) => Var::new_cell(cell.clone()),
+            };
+            self.declare_var(name.clone(), var);
+        }
+
         for (name, val, mutable) in bindings {
-            self.declare_var(name, Var { value: val, mutable });
+            self.declare_var(name, Var::new(val, mutable));
         }
         // ジェネレータメソッド実行時: `Self` をレシーバインスタンスのクラスにバインドする
         if let Some(Value::Instance(inst_rc)) = &self_val {
             let class = inst_rc.borrow().class.clone();
-            self.declare_var("Self".to_string(), Var { value: Value::Class(class), mutable: false });
+            self.declare_var("Self".to_string(), Var::new(Value::Class(class), false));
         }
         let exec_result = self.exec_block(&gen_fn.body);
         self.scopes.truncate(1);
@@ -518,7 +538,7 @@ impl Interpreter {
     /// - `Dict`: キー・値を再帰コピーして新しい `DictData` を生成する
     /// - `List`: 各要素を再帰コピーする
     /// - その他: プリミティブ・不変型はそのまま返す（Rust の clone でコピー済み）
-    fn deep_copy_value(val: Value) -> Value {
+    pub(super) fn deep_copy_value(val: Value) -> Value {
         match val {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();

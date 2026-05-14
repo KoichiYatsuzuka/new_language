@@ -776,6 +776,11 @@ impl TypeChecker {
                 let ty = self.infer(expr);
                 self.declare(name.clone(), ty, true);
             }
+            Stmt::Static(name, expr, _) => {
+                // static mut 宣言: mut と同様に可変変数として登録する。
+                let ty = self.infer(expr);
+                self.declare(name.clone(), ty, true);
+            }
 
             // --- 代入 ---
             Stmt::Assign { name, value, span } => {
@@ -1105,7 +1110,8 @@ impl TypeChecker {
                     // 関数定義 → Unresolved（引数型は全て Any なので静的追跡不要）
                     map.insert(name.clone(), InferredType::Unresolved);
                 }
-                Stmt::Mut(name, _) | Stmt::Let(name, _) | Stmt::Const(name, _) => {
+                Stmt::Mut(name, _) | Stmt::Let(name, _) | Stmt::Const(name, _)
+                | Stmt::Static(name, _, _) => {
                     map.insert(name.clone(), InferredType::Unresolved);
                 }
                 _ => {}

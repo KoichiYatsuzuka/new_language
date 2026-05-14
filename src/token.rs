@@ -145,6 +145,7 @@ pub enum Token {
     Let,
     Const,
     Mut,
+    Static,
     Freeze,
 
     // Value literals (keyword form)
@@ -325,6 +326,7 @@ impl Token {
             Token::Let => Some("let"),
             Token::Const => Some("const"),
             Token::Mut => Some("mut"),
+            Token::Static => Some("static"),
             Token::Freeze => Some("freeze"),
             Token::True => Some("True"),
             Token::False => Some("False"),

@@ -57,7 +57,9 @@ test_lang/
 │   ├── typeguard.tl           # is / is not type guard examples
 │   ├── typeguard__errors.tl   # is not on non-Union type StaticTypeError examples
 │   ├── function_type.tl       # function type annotation examples
-│   └── function_type__errors.tl  # function type StaticTypeError examples
+│   ├── function_type__errors.tl  # function type StaticTypeError examples
+│   ├── closure.tl             # Closure behavior examples (capture, static, nested)
+│   └── closure__errors.tl    # freeze on captured mutable variable TypeError examples
 └── vscode-extension/    # VS Code extension (type inference inline hints)
     └── src/
         ├── extension.ts
@@ -97,11 +99,11 @@ Source File
 - Numeric literals: decimal, hexadecimal, octal, binary, underscore separators
 - Strings: single quote, double quote, triple quote, escapes
 - Adds `Span` (filename, line number, column number) to every token
-- `Token::SelfType` (`Self`), `Token::NewType` (`new_type`)
+- `Token::SelfType` (`Self`), `Token::NewType` (`new_type`), `Token::Static` (`static`)
 
 ### Parsing (`src/parser.rs`)
 
-- Variable declarations: `let` (immutable), `mut` (mutable), `const` (immutable)
+- Variable declarations: `let` (immutable), `mut` (mutable), `const` (immutable), `static mut` (mutable, shared across all calls)
 - Assignment: `x = expr`, compound assignment: `x += expr`, etc.
 - Expressions: operator precedence implemented according to spec (including right-associative `**`)
 - Function calls: `f(args)`, attribute access: `obj.attr`
@@ -134,6 +136,12 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - `import[py-int]`
 - Type guard (`is` / `is not`): runtime instance-of check against primitive types, class names, trait membership (via `bases`), and `function`
 - `function` primitive type: `Value::Function`, `Value::OverloadedFn`, `Value::GeneratorFn` all match `x is function`
+- **Closures**: inner functions capture variables from outer scopes
+  - Immutable (`let`) variables: deep-copied at closure creation time
+  - Mutable (`mut`) variables: captured as a shared `Rc<RefCell<Value>>` cell — inner functions can read and write the same value as the outer scope
+  - Each call to the outer function produces an independent closure environment
+  - `static mut` variables: a single persistent cell keyed by source position, shared across all calls to the outer function
+  - `freeze` is disallowed on a `mut` variable that has been captured by an inner function (`TypeError: cannot freeze '...' because it is captured by a closure`)
 
 ### VS Code Extension (`vscode-extension/`)
 
@@ -159,12 +167,13 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Supports templates
 - Mutable arguments must explicitly use `mut`
 - Empty collections require explicit typing
+- No `nonlocal` keyword: declare the outer variable as `mut` to allow inner functions to modify it
+- `static mut` instead of a class-level attribute for shared closure state across calls
 
 ## Next Features to Implement (Priority Order)
 
 1. **Set type** (`{a, b}`)
 2. **Exception handling** (`try` / `except` / `finally` / `raise`)
 3. **`match` statement**
-4. **Closures** (outer scope capture)
-5. **LLVM IR code generation**
+4. **LLVM IR code generation**
 

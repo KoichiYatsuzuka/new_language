@@ -577,6 +577,7 @@ impl Lexer {
             "let"          => Token::Let,
             "const"        => Token::Const,
             "mut"          => Token::Mut,
+            "static"       => Token::Static,
             "freeze"       => Token::Freeze,
             "True"         => Token::True,
             "False"        => Token::False,

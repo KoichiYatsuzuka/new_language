@@ -262,6 +262,9 @@ pub enum Stmt {
     Const(String, Expr),
     /// 可変変数宣言: `mut x = expr`。宣言後に再代入可能。
     Mut(String, Expr),
+    /// 静的可変変数宣言: `static mut x = expr`。外側関数の全呼び出しでセルを共有する。
+    /// `span` はセルの一意キー（初回評価判定）として使用する。
+    Static(String, Expr, Span),
     /// 変数への代入: `x = expr`。`span` は型検査・エラー報告に使用する位置情報。
     Assign { name: String, value: Expr, span: Span },
     /// 属性（フィールド）への代入: `obj.attr = expr`。

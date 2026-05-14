@@ -42,6 +42,7 @@ impl Interpreter {
             ],
             body: init_body,
             is_python: false,
+            captured_env: std::collections::HashMap::new(),
         });
         let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
         methods.insert("__init__".to_string(), vec![init_fn]);

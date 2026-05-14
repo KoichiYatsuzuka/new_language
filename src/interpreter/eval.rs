@@ -34,8 +34,7 @@ impl Interpreter {
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::None => Ok(Value::None),
             Expr::Ident(name) => self
-                .get_var(name)
-                .map(|v| v.value.clone())
+                .get_val(name)
                 .ok_or_else(|| format!("NameError: '{name}' is not defined")),
             Expr::TraitAccess { object, trait_name, attr } => {
                 // `object::TraitName::attr` 形式のトレイトフィールドアクセス

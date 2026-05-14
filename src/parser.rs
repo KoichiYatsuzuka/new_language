@@ -222,6 +222,16 @@ impl Parser {
                 self.eat(&Token::Eq)?;
                 Ok(Stmt::Mut(name, self.parse_expr()?))
             }
+            // `static mut 変数名 [: 型] = 式` — 静的可変変数宣言（全呼び出しでセル共有）
+            Token::Static => {
+                let span = self.current_span();
+                self.advance();
+                self.eat(&Token::Mut)?;
+                let name = self.expect_ident()?;
+                if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
+                self.eat(&Token::Eq)?;
+                Ok(Stmt::Static(name, self.parse_expr()?, span))
+            }
             // `freeze 変数名` — 変数をイミュータブルに凍結
             Token::Freeze => {
                 let span = self.current_span();

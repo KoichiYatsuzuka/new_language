@@ -95,7 +95,7 @@ impl Interpreter {
                     .collect();
                 let concrete_params = subst_params(&tmpl.params, &type_map);
                 let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                let fn_val = Rc::new(FnValue { params: concrete_params, body: concrete_body, is_python: false });
+                let fn_val = Rc::new(FnValue { params: concrete_params, body: concrete_body, is_python: false, captured_env: std::collections::HashMap::new() });
                 self.exec_fn(fn_val, call_args, None, "<template_fn>")
             }
             Value::TemplateClass(tmpl) => {
@@ -117,7 +117,7 @@ impl Interpreter {
                     .collect();
                 let concrete_params = subst_params(&tmpl.params, &type_map);
                 let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                let gen_fn = Rc::new(GeneratorFnValue { params: concrete_params, body: concrete_body });
+                let gen_fn = Rc::new(GeneratorFnValue { params: concrete_params, body: concrete_body, captured_env: std::collections::HashMap::new() });
                 self.exec_generator(gen_fn, call_args, None)
             }
             // 組み込み辞書型コンストラクタ: `dict[KeyType, ItemType](...)`
@@ -208,12 +208,14 @@ impl Interpreter {
                         params: params.clone(),
                         body: mbody.clone(),
                         is_python: false,
+                        captured_env: std::collections::HashMap::new(),
                     }));
                 }
                 Stmt::GenDef { name: mname, params, body: mbody, .. } => {
                     gen_methods.insert(mname.clone(), Rc::new(GeneratorFnValue {
                         params: params.clone(),
                         body: mbody.clone(),
+                        captured_env: std::collections::HashMap::new(),
                     }));
                 }
                 Stmt::Field { name: fname, kind: FieldKind::Const, default: Some(init), .. } => {
@@ -416,6 +418,7 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             default: default.as_ref().map(|e| subst_expr(e, type_map)),
         },
         Stmt::Freeze(name, span) => Stmt::Freeze(name.clone(), span.clone()),
+        Stmt::Static(name, e, span) => Stmt::Static(name.clone(), subst_expr(e, type_map), span.clone()),
         Stmt::NewTypeDef { name, original } => Stmt::NewTypeDef {
             name: name.clone(),
             original: subst_type(original, type_map),

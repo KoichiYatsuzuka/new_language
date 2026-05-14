@@ -32,7 +32,7 @@ fn run_get(src: &str, var: &str) -> Value {
     for stmt in &stmts {
         let _ = interp.exec(stmt).unwrap();
     }
-    interp.get_var(var).unwrap().value.clone()
+    interp.get_val(var).unwrap()
 }
 
 fn run_exc(src: &str) -> Result<Option<RaisedError>, String> {
@@ -1602,5 +1602,153 @@ fn test_function_type_is_guard() {
         assert!(b);
     } else {
         panic!("expected Bool(true)");
+    }
+}
+
+// --- closures ---
+
+#[test]
+fn test_closure_captures_immutable() {
+    // 不変変数のキャプチャ: 定義時の値が内側関数に保持される
+    let src = concat!(
+        "fn make(let n: int) -> function[]->int:\n",
+        "    fn inner() -> int:\n",
+        "        return n\n",
+        "    return inner\n",
+        "let f = make(42)\n",
+        "let r = f()\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 42);
+    } else {
+        panic!("expected Int(42)");
+    }
+}
+
+#[test]
+fn test_closure_captures_mutable_shared() {
+    // 可変変数のキャプチャ: 内側関数が外側スコープの変数を変更できる
+    let src = concat!(
+        "fn make_counter() -> function[]->int:\n",
+        "    mut count = 0\n",
+        "    fn inc() -> int:\n",
+        "        count += 1\n",
+        "        return count\n",
+        "    return inc\n",
+        "let counter = make_counter()\n",
+        "let r1 = counter()\n",
+        "let r2 = counter()\n",
+        "let r3 = counter()\n",
+    );
+    let tokens = Lexer::new(src, "").tokenize();
+    let stmts = Parser::new(tokens, None).parse_program().unwrap();
+    let mut interp = Interpreter::new();
+    for stmt in &stmts { interp.exec(stmt).unwrap(); }
+    assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(1)));
+    assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(2)));
+    assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(3)));
+}
+
+#[test]
+fn test_closure_each_call_new_env() {
+    // 呼び出しごとに独立したクロージャ環境が生成される
+    let src = concat!(
+        "fn make(let start: int) -> function[]->int:\n",
+        "    mut n = start\n",
+        "    fn inc() -> int:\n",
+        "        n += 1\n",
+        "        return n\n",
+        "    return inc\n",
+        "let a = make(0)\n",
+        "let b = make(100)\n",
+        "let r_a = a()\n",
+        "let r_b = b()\n",
+    );
+    let tokens = Lexer::new(src, "").tokenize();
+    let stmts = Parser::new(tokens, None).parse_program().unwrap();
+    let mut interp = Interpreter::new();
+    for stmt in &stmts { interp.exec(stmt).unwrap(); }
+    assert!(matches!(interp.get_val("r_a").unwrap(), Value::Int(1)));
+    assert!(matches!(interp.get_val("r_b").unwrap(), Value::Int(101)));
+}
+
+#[test]
+fn test_closure_inner_called_from_outer() {
+    // 内側関数が外側関数の実行中に呼ばれ、変更が外側に反映される
+    let src = concat!(
+        "fn outer() -> int:\n",
+        "    mut x = 0\n",
+        "    fn inc() -> int:\n",
+        "        x += 1\n",
+        "        return x\n",
+        "    inc()\n",
+        "    inc()\n",
+        "    return x\n",
+        "let r = outer()\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 2);
+    } else {
+        panic!("expected Int(2)");
+    }
+}
+
+#[test]
+fn test_closure_static_shared_across_calls() {
+    // static mut 変数: 複数の呼び出しで同じセルを共有する
+    let src = concat!(
+        "fn make_counter() -> function[]->int:\n",
+        "    static mut count = 0\n",
+        "    fn inc() -> int:\n",
+        "        count += 1\n",
+        "        return count\n",
+        "    return inc\n",
+        // make_counter() を2回呼ぶ → 両方とも同じ count セルを共有する
+        "let a = make_counter()\n",
+        "let b = make_counter()\n",
+        "let r1 = a()\n",
+        "let r2 = b()\n",
+        "let r3 = a()\n",
+    );
+    let tokens = Lexer::new(src, "").tokenize();
+    let stmts = Parser::new(tokens, None).parse_program().unwrap();
+    let mut interp = Interpreter::new();
+    for stmt in &stmts { interp.exec(stmt).unwrap(); }
+    assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(1)));
+    assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(2)));
+    assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(3)));
+}
+
+#[test]
+fn test_closure_freeze_captured_var_error() {
+    // クロージャにキャプチャされた可変変数は freeze できない
+    let src = concat!(
+        "fn outer() -> None:\n",
+        "    mut x = 0\n",
+        "    fn inner() -> None:\n",
+        "        x += 1\n",
+        "    freeze x\n",
+        "outer()\n",
+    );
+    assert!(run(src).is_err());
+}
+
+#[test]
+fn test_closure_nested() {
+    // 二重ネストしたクロージャ
+    let src = concat!(
+        "fn outer(let a: int) -> function[]->function[]->int:\n",
+        "    fn middle(let b: int) -> function[]->int:\n",
+        "        fn inner() -> int:\n",
+        "            return a + b\n",
+        "        return inner\n",
+        "    return middle\n",
+        "let f = outer(10)(20)\n",
+        "let r = f()\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 30);
+    } else {
+        panic!("expected Int(30)");
     }
 }

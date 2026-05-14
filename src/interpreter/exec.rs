@@ -5,13 +5,13 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::ast::{Expr, FieldKind, Stmt};
+use crate::ast::{Expr, FieldKind, Param, Stmt};
 
 use super::{
-    Interpreter, Value, Var, ExecResult,
+    CapturedVar, Interpreter, Value, Var, ExecResult,
     FnValue, TemplateFnValue, GeneratorFnValue, TemplateGenFnValue, TemplateClassValue,
     GeneratorState, NamespaceData, ModuleState,
     RaisedError, StackFrame,
@@ -49,19 +49,33 @@ impl Interpreter {
                 if let Value::Instance(ref inst_rc) = value {
                     Self::freeze_instance(inst_rc);
                 }
-                self.declare_var(name.clone(), Var { value, mutable: false });
+                self.declare_var(name.clone(), Var::new(value, false));
                 Ok(ExecResult::Normal)
             }
             Stmt::Const(name, expr) => {
                 // 定数宣言: 常に不変として登録する
                 let value = self.eval(expr)?;
-                self.declare_var(name.clone(), Var { value, mutable: false });
+                self.declare_var(name.clone(), Var::new(value, false));
                 Ok(ExecResult::Normal)
             }
             Stmt::Mut(name, expr) => {
                 // 可変変数宣言: mutable フラグを true にして登録する
                 let value = self.eval(expr)?;
-                self.declare_var(name.clone(), Var { value, mutable: true });
+                self.declare_var(name.clone(), Var::new(value, true));
+                Ok(ExecResult::Normal)
+            }
+            Stmt::Static(name, expr, span) => {
+                // static mut 変数宣言: 宣言位置をキーとして永続セルを取得・生成する
+                let key = (span.file.to_string(), span.line, span.col);
+                let cell = if let Some(existing) = self.static_cells.get(&key) {
+                    existing.clone()
+                } else {
+                    let value = self.eval(expr)?;
+                    let new_cell = Rc::new(RefCell::new(value));
+                    self.static_cells.insert(key, new_cell.clone());
+                    new_cell
+                };
+                self.declare_var(name.clone(), Var::new_cell(cell));
                 Ok(ExecResult::Normal)
             }
             Stmt::Assign { name, value, .. } => {
@@ -93,7 +107,7 @@ impl Interpreter {
                             "TypeError: cannot assign to immutable variable '{name}'"
                         ));
                     }
-                    Some(v) => v.value.clone(),
+                    Some(v) => v.get_value(),
                     None => return Err(format!("NameError: '{name}' is not defined")),
                 };
                 let value = self.apply_binop(op, lhs, rhs)?;
@@ -175,7 +189,7 @@ impl Interpreter {
                     match self.eval_method_call(generator.clone(), "next", &[]) {
                         Ok(item) => {
                             self.push_scope();
-                            self.declare_var(target.clone(), Var { value: item, mutable: true });
+                            self.declare_var(target.clone(), Var::new(item, true));
                             let result = self.exec_block(body);
                             self.pop_scope();
                             match result? {
@@ -207,14 +221,25 @@ impl Interpreter {
                         body: body.clone(),
                     });
                     self.scopes.last_mut().unwrap()
-                        .insert(name.clone(), Var { value: Value::TemplateFn(tmpl), mutable: false });
+                        .insert(name.clone(), Var::new(Value::TemplateFn(tmpl), false));
                 } else {
-                    let fn_val = Rc::new(FnValue { params: params.clone(), body: body.clone(), is_python: self.in_python_module });
+                    // クロージャキャプチャ: 非グローバルスコープでの定義時のみ実行する
+                    let captured_env = if self.scopes.len() > 1 {
+                        self.capture_env(body, params)
+                    } else {
+                        HashMap::new()
+                    };
+                    let fn_val = Rc::new(FnValue {
+                        params: params.clone(),
+                        body: body.clone(),
+                        is_python: self.in_python_module,
+                        captured_env,
+                    });
 
                     // 同名の既存定義があれば OverloadedFn に蓄積する（同スコープレベル内）
                     let existing = self.scopes.last()
                         .and_then(|s| s.get(name.as_str()))
-                        .map(|v| v.value.clone());
+                        .map(|v| v.get_value());
                     let new_value = match existing {
                         Some(Value::Function(prev)) => Value::OverloadedFn(vec![prev, fn_val]),
                         Some(Value::OverloadedFn(mut fns)) => {
@@ -224,7 +249,7 @@ impl Interpreter {
                         _ => Value::Function(fn_val),
                     };
                     self.scopes.last_mut().unwrap()
-                        .insert(name.clone(), Var { value: new_value, mutable: false });
+                        .insert(name.clone(), Var::new(new_value, false));
                 }
                 Ok(ExecResult::Normal)
             }
@@ -247,17 +272,26 @@ impl Interpreter {
                         body: body.clone(),
                     });
                     self.scopes.last_mut().unwrap()
-                        .insert(name.clone(), Var { value: Value::TemplateGenFn(tmpl), mutable: false });
+                        .insert(name.clone(), Var::new(Value::TemplateGenFn(tmpl), false));
                 } else {
-                    let gen_fn = Rc::new(GeneratorFnValue { params: params.clone(), body: body.clone() });
+                    let captured_env = if self.scopes.len() > 1 {
+                        self.capture_env(body, params)
+                    } else {
+                        HashMap::new()
+                    };
+                    let gen_fn = Rc::new(GeneratorFnValue {
+                        params: params.clone(),
+                        body: body.clone(),
+                        captured_env,
+                    });
                     self.scopes.last_mut().unwrap()
-                        .insert(name.clone(), Var { value: Value::GeneratorFn(gen_fn), mutable: false });
+                        .insert(name.clone(), Var::new(Value::GeneratorFn(gen_fn), false));
                 }
                 Ok(ExecResult::Normal)
             }
             Stmt::TraitDef { name, .. } => {
                 // trait 定義: Value::Trait として不変バインドする
-                self.declare_var(name.clone(), Var { value: Value::Trait(name.clone()), mutable: false });
+                self.declare_var(name.clone(), Var::new(Value::Trait(name.clone()), false));
                 Ok(ExecResult::Normal)
             }
             Stmt::NewTypeDef { name, original } => {
@@ -278,7 +312,7 @@ impl Interpreter {
                             class_vars: orig_cls.class_vars.clone(),
                             field_mutability: orig_cls.field_mutability.clone(),
                         });
-                        self.declare_var(name.clone(), Var { value: Value::Class(new_cls), mutable: false });
+                        self.declare_var(name.clone(), Var::new(Value::Class(new_cls), false));
                     }
                     Value::Type(type_name) => {
                         // 元の型がプリミティブの場合: `value` フィールドを持つラッパークラスを自動生成する。
@@ -299,6 +333,7 @@ impl Interpreter {
                             ],
                             body: init_body,
                             is_python: false,
+                            captured_env: HashMap::new(),
                         });
                         let mut methods = HashMap::new();
                         methods.insert("__init__".to_string(), vec![init_fn]);
@@ -311,7 +346,7 @@ impl Interpreter {
                             class_vars: HashMap::new(),
                             field_mutability: HashMap::from([("value".to_string(), true)]),
                         });
-                        self.declare_var(name.clone(), Var { value: Value::Class(new_cls), mutable: false });
+                        self.declare_var(name.clone(), Var::new(Value::Class(new_cls), false));
                     }
                     _ => {
                         return Err(format!(
@@ -330,7 +365,7 @@ impl Interpreter {
                         bases: bases.clone(),
                         body: body.clone(),
                     });
-                    self.declare_var(name.clone(), Var { value: Value::TemplateClass(tmpl), mutable: false });
+                    self.declare_var(name.clone(), Var::new(Value::TemplateClass(tmpl), false));
                     return Ok(ExecResult::Normal);
                 }
                 // 通常クラス: クラス本体を走査してメソッド・フィールド・クラス変数を収集する
@@ -347,6 +382,7 @@ impl Interpreter {
                                 params: params.clone(),
                                 body: mbody.clone(),
                                 is_python: self.in_python_module,
+                                captured_env: HashMap::new(),
                             }));
                         }
                         Stmt::GenDef { name: mname, params, body: mbody, .. } => {
@@ -354,6 +390,7 @@ impl Interpreter {
                             gen_methods.insert(mname.clone(), Rc::new(GeneratorFnValue {
                                 params: params.clone(),
                                 body: mbody.clone(),
+                                captured_env: HashMap::new(),
                             }));
                         }
                         Stmt::Field { name: fname, kind: FieldKind::Const, default: Some(init), .. } => {
@@ -382,7 +419,7 @@ impl Interpreter {
                     class_vars,
                     field_mutability,
                 });
-                self.declare_var(name.clone(), Var { value: Value::Class(cls), mutable: false });
+                self.declare_var(name.clone(), Var::new(Value::Class(cls), false));
                 Ok(ExecResult::Normal)
             }
             Stmt::Freeze(name, span) => {
@@ -394,7 +431,13 @@ impl Interpreter {
                         "{span}: TypeError: cannot freeze immutable variable '{name}'"
                     ));
                 }
-                let val = var.value.clone();
+                // クロージャにキャプチャされた可変変数は freeze できない
+                if var.mutable_cell.is_some() {
+                    return Err(format!(
+                        "{span}: TypeError: cannot freeze '{name}' because it is captured by a closure"
+                    ));
+                }
+                let val = var.get_value();
 
                 if let Value::Instance(ref inst_rc) = val {
                     let class = inst_rc.borrow().class.clone();
@@ -491,7 +534,7 @@ impl Interpreter {
                             if let Some(alias) = &handler.name {
                                 // `except ValueError as e:` の `e` をスコープに束縛する
                                 let exc_val = raised.exception.clone();
-                                self.declare_var(alias.clone(), Var { value: exc_val, mutable: false });
+                                self.declare_var(alias.clone(), Var::new(exc_val, false));
                             }
                             let handler_result = self.exec_block(&handler.body);
                             self.pop_scope();
@@ -530,7 +573,7 @@ impl Interpreter {
                 let ns = self.exec_module(lang, module, body)?;
                 let bind_name = alias.clone()
                     .unwrap_or_else(|| module.last().unwrap().clone());
-                self.declare_var(bind_name, Var { value: Value::Namespace(ns), mutable: false });
+                self.declare_var(bind_name, Var::new(Value::Namespace(ns), false));
                 Ok(ExecResult::Normal)
             }
 
@@ -547,7 +590,7 @@ impl Interpreter {
                             "ImportError: cannot import name '{}' from '{}'",
                             orig_name, module.join(".")
                         ))?;
-                    self.declare_var(bind_name, Var { value: val, mutable: false });
+                    self.declare_var(bind_name, Var::new(val, false));
                 }
                 Ok(ExecResult::Normal)
             }
@@ -620,7 +663,7 @@ impl Interpreter {
         // 既存のグローバル名は上書きしない（or_insert を使用）。
         for (name, value) in &members {
             self.scopes[0].entry(name.clone())
-                .or_insert(Var { value: value.clone(), mutable: false });
+                .or_insert_with(|| Var::new(value.clone(), false));
         }
 
         let ns = Rc::new(NamespaceData { name: module.join("."), members });
@@ -654,5 +697,225 @@ impl Interpreter {
         let result = self.exec_block(stmts);
         self.pop_scope();
         result
+    }
+
+    // ---------------------------------------------------------------------------
+    // クロージャキャプチャ
+    // ---------------------------------------------------------------------------
+
+    /// 関数本体のフリー変数を分析して、現在の非グローバルスコープからキャプチャ環境を構築する。
+    ///
+    /// - 不変変数: ディープコピーして `CapturedVar::Immutable` として格納する
+    /// - 可変変数: 共有セルを作成（既存のセルを再利用）して `CapturedVar::Mutable` として格納する。
+    ///   可変変数のスコープエントリも同じセルを参照するよう更新される。
+    pub(super) fn capture_env(
+        &mut self,
+        body: &[Stmt],
+        params: &[Param],
+    ) -> HashMap<String, CapturedVar> {
+        // 関数自身のスコープで宣言される名前（パラメータ + 本体内の宣言）
+        let mut own_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        collect_declared_names(body, &mut own_names);
+
+        // 本体内で参照されるすべての識別子名
+        let mut referenced: HashSet<String> = HashSet::new();
+        collect_referenced_names(body, &mut referenced);
+
+        // フリー変数 = 参照名 - 自分のスコープで宣言される名前
+        let free_vars: Vec<String> = referenced
+            .into_iter()
+            .filter(|n| !own_names.contains(n))
+            .collect();
+
+        let mut captured: HashMap<String, CapturedVar> = HashMap::new();
+        let n_scopes = self.scopes.len();
+
+        for name in &free_vars {
+            // スコープ[1..] を内側から外側へ向けて検索（グローバルスコープはキャプチャしない）
+            for scope_idx in (1..n_scopes).rev() {
+                let found = self.scopes[scope_idx].get(name.as_str()).map(|var| {
+                    (var.mutable, var.mutable_cell.clone(), var.get_value())
+                });
+
+                if let Some((is_mutable, existing_cell, current_value)) = found {
+                    if is_mutable {
+                        // 可変変数: 既存のセルを再利用するか、新しいセルを作成する
+                        let cell = if let Some(cell) = existing_cell {
+                            cell
+                        } else {
+                            let cell = Rc::new(RefCell::new(current_value));
+                            // スコープのエントリも同じセルを参照するよう更新する
+                            if let Some(var) = self.scopes[scope_idx].get_mut(name.as_str()) {
+                                var.mutable_cell = Some(cell.clone());
+                            }
+                            cell
+                        };
+                        captured.insert(name.clone(), CapturedVar::Mutable(cell));
+                    } else {
+                        // 不変変数: ディープコピーして保持する
+                        captured.insert(name.clone(), CapturedVar::Immutable(
+                            Self::deep_copy_value(current_value),
+                        ));
+                    }
+                    break; // このスコープで見つかったので外側は検索しない
+                }
+            }
+        }
+
+        captured
+    }
+}
+
+// ---------------------------------------------------------------------------
+// フリー変数分析ヘルパー（モジュールプライベート）
+// ---------------------------------------------------------------------------
+
+/// 文リスト中で宣言されるすべての名前を `out` に追加する（保守的・過大評価）。
+/// 内側スコープ（if/while/for/block 本体）も再帰的に処理する。
+fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Let(name, _) | Stmt::Const(name, _) | Stmt::Mut(name, _)
+            | Stmt::Static(name, _, _) => {
+                out.insert(name.clone());
+            }
+            Stmt::FnDef { name, .. } | Stmt::GenDef { name, .. }
+            | Stmt::ClassDef { name, .. } | Stmt::TraitDef { name, .. } => {
+                out.insert(name.clone());
+            }
+            Stmt::For { target, body, .. } => {
+                out.insert(target.clone());
+                collect_declared_names(body, out);
+            }
+            Stmt::If { branches, else_body } => {
+                for (_, body) in branches {
+                    collect_declared_names(body, out);
+                }
+                if let Some(body) = else_body {
+                    collect_declared_names(body, out);
+                }
+            }
+            Stmt::While { body, .. } | Stmt::Block(body) => {
+                collect_declared_names(body, out);
+            }
+            Stmt::Try { body, handlers, finally_body } => {
+                collect_declared_names(body, out);
+                for h in handlers {
+                    if let Some(alias) = &h.name {
+                        out.insert(alias.clone());
+                    }
+                    collect_declared_names(&h.body, out);
+                }
+                if let Some(body) = finally_body {
+                    collect_declared_names(body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 文リスト中で参照されるすべての識別子名を `out` に追加する。
+/// 内側関数の本体も再帰的に処理する（ネストしたクロージャのため）。
+fn collect_referenced_names(stmts: &[Stmt], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        collect_referenced_names_stmt(stmt, out);
+    }
+}
+
+fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
+    match stmt {
+        Stmt::Expr(e) => collect_refs_expr(e, out),
+        Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Mut(_, e) | Stmt::Static(_, e, _) => {
+            collect_refs_expr(e, out);
+        }
+        Stmt::Assign { name, value, .. } => {
+            // 代入先の変数も「参照」として扱う（外側スコープへの書き込みのため）
+            out.insert(name.clone());
+            collect_refs_expr(value, out);
+        }
+        Stmt::CompoundAssign { name, value, .. } => {
+            // 複合代入は読み取り + 書き込みの両方
+            out.insert(name.clone());
+            collect_refs_expr(value, out);
+        }
+        Stmt::AttrAssign { target, value } | Stmt::AttrCompoundAssign { target, value, .. } => {
+            collect_refs_expr(target, out);
+            collect_refs_expr(value, out);
+        }
+        Stmt::Return(Some(e)) | Stmt::BlockReturn(e) | Stmt::BlockYield(e) | Stmt::Yield(e) => {
+            collect_refs_expr(e, out);
+        }
+        Stmt::Raise { exc: Some(e), .. } => collect_refs_expr(e, out),
+        Stmt::If { branches, else_body } => {
+            for (cond, body) in branches {
+                collect_refs_expr(cond, out);
+                collect_referenced_names(body, out);
+            }
+            if let Some(body) = else_body {
+                collect_referenced_names(body, out);
+            }
+        }
+        Stmt::While { cond, body } => {
+            collect_refs_expr(cond, out);
+            collect_referenced_names(body, out);
+        }
+        Stmt::For { iter, body, .. } => {
+            collect_refs_expr(iter, out);
+            collect_referenced_names(body, out);
+        }
+        Stmt::Block(body) => collect_referenced_names(body, out),
+        Stmt::FnDef { body, .. } | Stmt::GenDef { body, .. } => {
+            // 内側関数の本体も参照する（ネストしたクロージャがさらに外側を参照するため）
+            collect_referenced_names(body, out);
+        }
+        Stmt::ClassDef { body, .. } | Stmt::TraitDef { body, .. } => {
+            collect_referenced_names(body, out);
+        }
+        Stmt::Try { body, handlers, finally_body } => {
+            collect_referenced_names(body, out);
+            for h in handlers {
+                collect_referenced_names(&h.body, out);
+            }
+            if let Some(body) = finally_body {
+                collect_referenced_names(body, out);
+            }
+        }
+        Stmt::Freeze(name, _) => { out.insert(name.clone()); }
+        _ => {}
+    }
+}
+
+fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
+    match expr {
+        Expr::Ident(name) => { out.insert(name.clone()); }
+        Expr::BinOp { left, right, .. } => {
+            collect_refs_expr(left, out);
+            collect_refs_expr(right, out);
+        }
+        Expr::UnaryOp { operand, .. } => collect_refs_expr(operand, out),
+        Expr::Call { func, args } => {
+            collect_refs_expr(func, out);
+            for arg in args { collect_refs_expr(arg.expr(), out); }
+        }
+        Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => {
+            collect_refs_expr(object, out);
+        }
+        Expr::List(items) | Expr::Tuple(items) => {
+            for item in items { collect_refs_expr(item, out); }
+        }
+        Expr::Dict(pairs) => {
+            for (k, v) in pairs {
+                collect_refs_expr(k, out);
+                collect_refs_expr(v, out);
+            }
+        }
+        Expr::Subscript { object, index } => {
+            collect_refs_expr(object, out);
+            collect_refs_expr(index, out);
+        }
+        Expr::TemplateInstantiate { base, .. } => collect_refs_expr(base, out),
+        Expr::IsType { expr, .. } => collect_refs_expr(expr, out),
+        _ => {} // Int, Float, Str, Bool, None
     }
 }
