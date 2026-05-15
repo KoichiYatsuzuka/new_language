@@ -294,6 +294,16 @@ impl Parser {
                 };
                 Ok(Stmt::Raise { exc, span })
             }
+            Token::At => {
+                let decorators = self.parse_decorators()?;
+                match self.current().clone() {
+                    Token::Fn    => self.parse_fn_def_decorated(decorators),
+                    Token::Class => self.parse_class_def_decorated(decorators),
+                    tok => Err(format!(
+                        "ParseError: '@' decorator must be followed by 'fn' or 'class', got `{tok}`"
+                    )),
+                }
+            }
             Token::Fn      => self.parse_fn_def(),
             Token::Gen     => self.parse_gen_def(),
             Token::Class   => self.parse_class_def(),
@@ -433,7 +443,32 @@ impl Parser {
     ///
     /// # エラー
     /// 識別子・括弧・本体ブロックのパースに失敗した場合
+    /// `@decorator` 構文のリストをパースして式のリストを返す。
+    ///
+    /// 現在のトークンが `@` の間、以下を繰り返す:
+    /// 1. `@` を消費する
+    /// 2. デコレータ式をパース（識別子・属性アクセス・関数呼び出し可）
+    /// 3. 末尾の改行を消費する
+    ///
+    /// 戻り値: `Vec<Expr>` — 上から順に並んだデコレータ式のリスト
+    fn parse_decorators(&mut self) -> Result<Vec<crate::ast::Expr>, String> {
+        let mut decorators = Vec::new();
+        while *self.current() == Token::At {
+            self.advance(); // `@` を消費
+            let expr = self.parse_expr()?;
+            decorators.push(expr);
+            while matches!(self.current(), Token::Newline | Token::Semicolon) {
+                self.advance();
+            }
+        }
+        Ok(decorators)
+    }
+
     fn parse_fn_def(&mut self) -> Result<Stmt, String> {
+        self.parse_fn_def_decorated(vec![])
+    }
+
+    fn parse_fn_def_decorated(&mut self, decorators: Vec<crate::ast::Expr>) -> Result<Stmt, String> {
         self.advance(); // `fn` を消費
         let name = self.expect_ident()?;
         // テンプレートパラメータ `[T: Trait, ...]` をパース（なければ空 Vec）
@@ -475,7 +510,7 @@ impl Parser {
             // 通常のブロックをパース
             (self.parse_block()?, false)
         };
-        Ok(Stmt::FnDef { name, template_params, params, return_type, body, is_abstract })
+        Ok(Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, decorators })
     }
 
     /// `gen` ジェネレータ関数定義をパースして `Stmt::GenDef` を返す。
@@ -985,6 +1020,10 @@ impl Parser {
     /// 非トレイト型を基底に指定した場合、仮想メソッドを未オーバーライドの場合、
     /// または本体のパースに失敗した場合
     fn parse_class_def(&mut self) -> Result<Stmt, String> {
+        self.parse_class_def_decorated(vec![])
+    }
+
+    fn parse_class_def_decorated(&mut self, decorators: Vec<crate::ast::Expr>) -> Result<Stmt, String> {
         self.advance(); // `class` を消費
         let name = self.expect_ident()?;
         // テンプレートパラメータをパース（`[T: Trait, ...]` 形式）
@@ -1041,7 +1080,7 @@ impl Parser {
         // 必要に応じて __init__ を自動生成して body に追加
         self.generate_auto_init_if_needed(&trait_required, &class_required, &mut body);
 
-        Ok(Stmt::ClassDef { name, template_params, bases, body })
+        Ok(Stmt::ClassDef { name, template_params, bases, body, decorators })
     }
 
     /// 継承トレイトの仮想メソッドオーバーライドを検証し、必須フィールドを収集する。
@@ -1188,6 +1227,7 @@ impl Parser {
             return_type: Some("None".to_string()),
             body: init_body,
             is_abstract: false,
+            decorators: vec![],
         });
     }
 
@@ -1468,6 +1508,14 @@ impl Parser {
             }
             tok => return Err(format!("expected type name, got `{tok}`")),
         };
+        // type[T] — preserve inner type for TypeValOf checking in the type checker.
+        if base == "type" && *self.current() == Token::LBracket {
+            self.advance(); // consume '['
+            let inner = self.parse_type_expr()?;
+            if *self.current() == Token::Comma { self.advance(); }
+            self.eat(&Token::RBracket)?;
+            return Ok(format!("type[{inner}]"));
+        }
         // tuple[T1, T2, ...] — preserve element types for the type checker.
         if base == "tuple" && *self.current() == Token::LBracket {
             self.advance(); // consume '['

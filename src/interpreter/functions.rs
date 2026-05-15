@@ -514,6 +514,14 @@ impl Interpreter {
     pub(super) fn value_matches_ann(val: &Value, ann: &str) -> bool {
         // `tuple` アノテーションは任意の Tuple 値に一致する（要素数・型は問わない）
         if ann == "tuple" && matches!(val, Value::Tuple(_)) { return true; }
+        // `type[X]`: 型値がアノテーション内の型名と一致するか確認する（オーバーロード解決用）
+        if let Some(inner) = ann.strip_prefix("type[").and_then(|s| s.strip_suffix(']')) {
+            return match val {
+                Value::Type(name) => name == inner,
+                Value::Class(c) => c.name == inner,
+                _ => false,
+            };
+        }
         matches!(
             (ann, val),
             ("int",   Value::Int(_))

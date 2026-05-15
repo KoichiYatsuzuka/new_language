@@ -212,7 +212,7 @@ impl Interpreter {
                     r => Ok(r),
                 }
             }
-            Stmt::FnDef { name, template_params, params, body, .. } => {
+            Stmt::FnDef { name, template_params, params, body, decorators, .. } => {
                 if !template_params.is_empty() {
                     // テンプレート関数: TemplateFn として格納する（現在はオーバーロード未対応）
                     let tmpl = Rc::new(TemplateFnValue {
@@ -236,20 +236,31 @@ impl Interpreter {
                         captured_env,
                     });
 
-                    // 同名の既存定義があれば OverloadedFn に蓄積する（同スコープレベル内）
-                    let existing = self.scopes.last()
-                        .and_then(|s| s.get(name.as_str()))
-                        .map(|v| v.get_value());
-                    let new_value = match existing {
-                        Some(Value::Function(prev)) => Value::OverloadedFn(vec![prev, fn_val]),
-                        Some(Value::OverloadedFn(mut fns)) => {
-                            fns.push(fn_val);
-                            Value::OverloadedFn(fns)
+                    if decorators.is_empty() {
+                        // デコレータなし: 同名の既存定義があれば OverloadedFn に蓄積する（同スコープレベル内）
+                        let existing = self.scopes.last()
+                            .and_then(|s| s.get(name.as_str()))
+                            .map(|v| v.get_value());
+                        let new_value = match existing {
+                            Some(Value::Function(prev)) => Value::OverloadedFn(vec![prev, fn_val]),
+                            Some(Value::OverloadedFn(mut fns)) => {
+                                fns.push(fn_val);
+                                Value::OverloadedFn(fns)
+                            }
+                            _ => Value::Function(fn_val),
+                        };
+                        self.scopes.last_mut().unwrap()
+                            .insert(name.clone(), Var::new(new_value, false));
+                    } else {
+                        // デコレータあり: 下（末尾）から順に適用する
+                        let mut value = Value::Function(fn_val);
+                        for dec_expr in decorators.iter().rev() {
+                            let dec = self.eval(dec_expr)?;
+                            value = self.apply_value_call(dec, value, name)?;
                         }
-                        _ => Value::Function(fn_val),
-                    };
-                    self.scopes.last_mut().unwrap()
-                        .insert(name.clone(), Var::new(new_value, false));
+                        self.scopes.last_mut().unwrap()
+                            .insert(name.clone(), Var::new(value, false));
+                    }
                 }
                 Ok(ExecResult::Normal)
             }
@@ -356,7 +367,7 @@ impl Interpreter {
                 }
                 Ok(ExecResult::Normal)
             }
-            Stmt::ClassDef { name, template_params, bases, body } => {
+            Stmt::ClassDef { name, template_params, bases, body, decorators } => {
                 if !template_params.is_empty() {
                     // テンプレートクラス: ClassValue をまだ構築せず TemplateClass として格納する
                     let tmpl = Rc::new(TemplateClassValue {
@@ -376,14 +387,31 @@ impl Interpreter {
                 let mut field_mutability: HashMap<String, bool> = HashMap::new();
                 for stmt in body {
                     match stmt {
-                        Stmt::FnDef { name: mname, params, body: mbody, .. } => {
-                            // 通常メソッド定義: 同名があればオーバーロードとして蓄積する
-                            methods.entry(mname.clone()).or_default().push(Rc::new(FnValue {
+                        Stmt::FnDef { name: mname, params, body: mbody, decorators: mdecs, .. } => {
+                            let fn_val = Rc::new(FnValue {
                                 params: params.clone(),
                                 body: mbody.clone(),
                                 is_python: self.in_python_module,
                                 captured_env: HashMap::new(),
-                            }));
+                            });
+                            if mdecs.is_empty() {
+                                // デコレータなし: 同名があればオーバーロードとして蓄積する
+                                methods.entry(mname.clone()).or_default().push(fn_val);
+                            } else {
+                                // デコレータあり: 下から順に適用し、関数値として蓄積する
+                                let mut value = Value::Function(fn_val);
+                                for dec_expr in mdecs.iter().rev() {
+                                    let dec = self.eval(dec_expr)?;
+                                    value = self.apply_value_call(dec, value, mname)?;
+                                }
+                                match value {
+                                    Value::Function(f) => methods.entry(mname.clone()).or_default().push(f),
+                                    other => return Err(format!(
+                                        "TypeError: method decorator on '{}' must return a function, got '{}'",
+                                        mname, self.type_name(&other)
+                                    )),
+                                }
+                            }
                         }
                         Stmt::GenDef { name: mname, params, body: mbody, .. } => {
                             // ジェネレータメソッド定義: gen_methods に登録する
@@ -419,7 +447,17 @@ impl Interpreter {
                     class_vars,
                     field_mutability,
                 });
-                self.declare_var(name.clone(), Var::new(Value::Class(cls), false));
+                if decorators.is_empty() {
+                    self.declare_var(name.clone(), Var::new(Value::Class(cls), false));
+                } else {
+                    // デコレータあり: 下（末尾）から順に適用する
+                    let mut value = Value::Class(cls);
+                    for dec_expr in decorators.iter().rev() {
+                        let dec = self.eval(dec_expr)?;
+                        value = self.apply_value_call(dec, value, name)?;
+                    }
+                    self.declare_var(name.clone(), Var::new(value, false));
+                }
                 Ok(ExecResult::Normal)
             }
             Stmt::Freeze(name, span) => {
@@ -763,6 +801,33 @@ impl Interpreter {
         }
 
         captured
+    }
+
+    /// 評価済みの値 `callee` を単一の評価済み引数 `arg` で呼び出す（デコレータ適用用）。
+    ///
+    /// - `Value::Function` / `Value::OverloadedFn` → 直接呼び出す
+    /// - `Value::Class` → `instantiate_evaled` でインスタンス化する
+    /// - `Value::Instance` → `__call__` メソッドに委譲する
+    pub(super) fn apply_value_call(&mut self, callee: Value, arg: Value, label: &str) -> Result<Value, String> {
+        let evaled = vec![(None, arg)];
+        match callee {
+            Value::Function(fn_val) => self.exec_fn_evaled(fn_val, &evaled, None, label),
+            Value::OverloadedFn(candidates) => self.dispatch_overload_evaled(candidates, evaled, None, label),
+            Value::Class(cls) => self.instantiate_evaled(cls, evaled),
+            Value::Instance(ref inst_rc) => {
+                let class = inst_rc.borrow().class.clone();
+                let overloads = self.lookup_method_in_class(&class, "__call__")
+                    .ok_or_else(|| format!(
+                        "TypeError: '{}' object is not callable (no __call__ method)", class.name
+                    ))?;
+                if overloads.len() == 1 {
+                    self.exec_fn_evaled(overloads[0].clone(), &evaled, Some(callee), "__call__")
+                } else {
+                    self.dispatch_overload_evaled(overloads, evaled, Some(callee), "__call__")
+                }
+            }
+            other => Err(format!("TypeError: '{}' object is not callable as decorator", self.type_name(&other))),
+        }
     }
 }
 

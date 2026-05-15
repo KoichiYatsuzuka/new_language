@@ -182,6 +182,7 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
                 return_type,
                 body,
                 is_abstract: false,
+                decorators: vec![],
             }))
         }
 
@@ -507,6 +508,7 @@ fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt, String> {
                     return_type,
                     body,
                     is_abstract: false,
+                    decorators: vec![],
                 });
             }
             py::Stmt::Pass(_) => {}
@@ -522,6 +524,7 @@ fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt, String> {
         template_params: vec![],
         bases,
         body,
+        decorators: vec![],
     })
 }
 

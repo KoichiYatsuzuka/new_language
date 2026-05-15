@@ -39,8 +39,11 @@ pub enum InferredType {
     None,
     /// リスト型（`list`）。要素型は現時点では追跡しない。
     List,
-    /// 型そのものを値として保持する型（`int`・クラス名などの型値）。
+    /// 型そのものを値として保持する型（bare `type` アノテーション、制約なし）。
     TypeVal,
+    /// 特定の型に制約された型値（`type[T]` アノテーション）。
+    /// `type[int]` は `int` 型またはその派生型（new_type / trait 実装）のみを受け付ける。
+    TypeValOf(Box<InferredType>),
     /// クラス・trait 本体でのみ使用できる特殊な型キーワード。
     /// 呼び出し時にレシーバのクラスに解決される。
     SelfType,
@@ -140,6 +143,20 @@ impl InferredType {
                 .filter_map(|t| InferredType::from_ann(t.trim()))
                 .collect();
             return Some(Self::Tuple(types));
+        }
+        if let Some(inner) = ann.strip_prefix("type[").and_then(|s| s.strip_suffix(']')) {
+            let inner = inner.trim();
+            // 既知プリミティブ型 + NamedInstance フォールバック（クラス・new_type・trait 名）
+            let inner_ty = Self::from_ann(inner).or_else(|| {
+                if inner.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
+                    && inner.chars().all(|c| c.is_alphanumeric() || c == '_')
+                {
+                    Some(Self::NamedInstance(inner.to_string()))
+                } else {
+                    None
+                }
+            });
+            return inner_ty.map(|t| Self::TypeValOf(Box::new(t)));
         }
         if let Some(rest) = ann.strip_prefix("function") {
             return Self::parse_fn_type_ann(rest);
@@ -278,6 +295,7 @@ impl std::fmt::Display for InferredType {
             Self::List => write!(f, "list"),
             Self::Dict => write!(f, "dict"),
             Self::TypeVal => write!(f, "type"),
+            Self::TypeValOf(inner) => write!(f, "type[{inner}]"),
             Self::SelfType => write!(f, "Self"),
             Self::NamedInstance(name) => write!(f, "{name}"),
             Self::Any => write!(f, "Any"),
@@ -428,6 +446,11 @@ pub enum TypeErrorKind {
         /// `mut` が宣言されているパラメータ名
         param_name: String,
     },
+    /// デコレータが対象（関数またはクラス）に対して無効な型シグネチャを持つ。
+    InvalidDecorator {
+        /// エラーの詳細理由
+        reason: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +560,10 @@ impl std::fmt::Display for StaticTypeError {
                 f,
                 "StaticTypeError: parameter '{param_name}' of '{func_name}' expects a mutable argument, but got an immutable value"
             ),
+            TypeErrorKind::InvalidDecorator { reason } => write!(
+                f,
+                "StaticTypeError: invalid decorator: {reason}"
+            ),
         }
     }
 }
@@ -579,6 +606,10 @@ pub struct TypeChecker {
     /// 型検査時点で既知のクラス名および new_type 名のセット。
     /// コンストラクタ呼び出しを [`InferredType::NamedInstance`] として解決するために使用する。
     known_class_names: HashSet<String>,
+    /// `new_type` 名 → 元の型名のマップ。`type[T]` 互換性チェックに使用する。
+    new_type_originals: HashMap<String, String>,
+    /// クラス名 → 基底クラス・トレイト名リストのマップ。`type[Trait]` 互換性チェックに使用する。
+    class_bases: HashMap<String, Vec<String>>,
     /// 収集された型エラーのリスト。
     pub errors: Vec<StaticTypeError>,
 }
@@ -590,15 +621,28 @@ impl TypeChecker {
     /// [`InferredType::TypeVal`] として事前登録する。
     pub fn new() -> Self {
         let mut global: HashMap<String, VarInfo> = HashMap::new();
-        // 組み込み型名を TypeVal として事前登録し、式コンテキストで認識できるようにする。
-        for name in ["int", "str", "float", "bool", "Any", "function"] {
-            global.insert(name.to_string(), VarInfo { ty: InferredType::TypeVal, mutable: false });
+        // 組み込み型名を TypeValOf として事前登録し、式コンテキストで認識できるようにする。
+        let builtins: &[(&str, InferredType)] = &[
+            ("int",      InferredType::Int),
+            ("float",    InferredType::Float),
+            ("str",      InferredType::Str),
+            ("bool",     InferredType::Bool),
+            ("Any",      InferredType::Any),
+            ("function", InferredType::Function { params: None, return_type: Box::new(InferredType::Any) }),
+        ];
+        for (name, inner) in builtins {
+            global.insert(name.to_string(), VarInfo {
+                ty: InferredType::TypeValOf(Box::new(inner.clone())),
+                mutable: false,
+            });
         }
         Self {
             scope_stack: vec![global],
             fn_sigs: HashMap::new(),
             class_method_sigs: HashMap::new(),
             known_class_names: HashSet::new(),
+            new_type_originals: HashMap::new(),
+            class_bases: HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -648,8 +692,9 @@ impl TypeChecker {
                     // ネストした関数定義も再帰的に収集する。
                     self.collect_fn_sigs(body);
                 }
-                Stmt::ClassDef { name, body, .. } => {
+                Stmt::ClassDef { name, bases, body, .. } => {
                     self.known_class_names.insert(name.clone());
+                    self.class_bases.insert(name.clone(), bases.clone());
                     // クラスメソッドのシグネチャを収集（Self 型検査に使用）。
                     let mut cls_methods: HashMap<String, Vec<FnSig>> = HashMap::new();
                     for s in body.iter() {
@@ -674,6 +719,7 @@ impl TypeChecker {
         for stmt in stmts {
             if let Stmt::NewTypeDef { name, original } = stmt {
                 self.known_class_names.insert(name.clone());
+                self.new_type_originals.insert(name.clone(), original.clone());
                 if let Some(orig_sigs) = self.class_method_sigs.get(original).cloned() {
                     self.class_method_sigs.insert(name.clone(), orig_sigs);
                 }
@@ -924,7 +970,11 @@ impl TypeChecker {
             }
 
             // --- 関数定義 ---
-            Stmt::FnDef { name, params, return_type, body, .. } => {
+            Stmt::FnDef { name, params, return_type, body, decorators, .. } => {
+                // デコレータの型シグネチャを検査する（関数デコレータなので is_fn_target=true）。
+                for dec in decorators {
+                    self.check_decorator(dec, true, name);
+                }
                 // パラメータの型アノテーション欠如を検査する（`self` は除外）。
                 for param in params.iter() {
                     if param.name == "self" { continue; }
@@ -959,16 +1009,20 @@ impl TypeChecker {
             }
 
             // --- クラス・trait 定義 ---
-            Stmt::ClassDef { name, body, .. } => {
-                // クラス名を Unresolved としてスコープに登録し、本体を独立スコープで検査する。
-                self.declare(name.clone(), InferredType::Unresolved, false);
+            Stmt::ClassDef { name, body, decorators, .. } => {
+                // デコレータの型シグネチャを検査する（クラスデコレータなので is_fn_target=false）。
+                for dec in decorators {
+                    self.check_decorator(dec, false, name);
+                }
+                // クラス名を TypeValOf(NamedInstance) としてスコープに登録し、本体を独立スコープで検査する。
+                self.declare(name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))), false);
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
             }
             Stmt::TraitDef { name, body, .. } => {
-                // trait 名を Unresolved としてスコープに登録し、本体を独立スコープで検査する。
-                self.declare(name.clone(), InferredType::Unresolved, false);
+                // trait 名を TypeValOf(NamedInstance) としてスコープに登録し、本体を独立スコープで検査する。
+                self.declare(name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))), false);
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
@@ -1035,7 +1089,7 @@ impl TypeChecker {
             // --- new_type 定義 ---
             Stmt::NewTypeDef { name, .. } => {
                 // new_type バインドは常に const（パーサーが再代入を禁止）。
-                self.declare(name.clone(), InferredType::Unresolved, false);
+                self.declare(name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))), false);
             }
 
             // --- 副作用のない文 ---
@@ -1103,8 +1157,8 @@ impl TypeChecker {
         for stmt in body {
             match stmt {
                 Stmt::ClassDef { name, .. } => {
-                    // クラス定義 → TypeVal（コンストラクタとして使用可能）
-                    map.insert(name.clone(), InferredType::TypeVal);
+                    // クラス定義 → TypeValOf(NamedInstance)（コンストラクタとして使用可能）
+                    map.insert(name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))));
                 }
                 Stmt::FnDef { name, .. } => {
                     // 関数定義 → Unresolved（引数型は全て Any なので静的追跡不要）
@@ -1277,14 +1331,58 @@ impl TypeChecker {
     ///
     /// # 戻り値
     /// 互換性があれば `true`、なければ `false`。
-    fn type_matches(arg_ty: &InferredType, expected: &InferredType) -> bool {
+    fn type_matches(&self, arg_ty: &InferredType, expected: &InferredType) -> bool {
         if *arg_ty == InferredType::Unresolved { return true; }
         if *expected == InferredType::Any { return true; }
         if arg_ty == expected { return true; }
+        // bare `type`（TypeVal）: 任意の型値（TypeValOf も含む）を受け付ける。
+        if *expected == InferredType::TypeVal {
+            return matches!(arg_ty, InferredType::TypeValOf(_) | InferredType::TypeVal);
+        }
+        // type[T]: 渡された型値が T またはその派生型かを検査する。
+        if let InferredType::TypeValOf(expected_inner) = expected {
+            return match arg_ty {
+                InferredType::TypeVal => true, // bare `type` 型の変数は寛容に受け付ける
+                InferredType::TypeValOf(arg_inner) => self.type_val_compatible(arg_inner, expected_inner),
+                _ => false,
+            };
+        }
         // Union パラメータ: 引数が Union の直接メンバかどうかを確認する。
         if let InferredType::Union(union_types) = expected {
             return union_types.contains(arg_ty);
         }
+        false
+    }
+
+    /// `arg_inner` が `expected_inner` と互換性のある型値かを判定する。
+    ///
+    /// 以下の場合に `true` を返す:
+    /// - 完全一致（`arg_inner == expected_inner`）
+    /// - `arg_inner` が `NamedInstance` で、その new_type チェーンが `expected_inner` に到達する
+    /// - `arg_inner` が `NamedInstance` で、そのクラス基底に `expected_inner` の名前が含まれる
+    fn type_val_compatible(&self, arg_inner: &InferredType, expected_inner: &InferredType) -> bool {
+        if arg_inner == expected_inner { return true; }
+
+        let InferredType::NamedInstance(arg_name) = arg_inner else { return false; };
+
+        // expected_inner を文字列名に変換（プリミティブは Display、NamedInstance は名前を使用）
+        let expected_name = expected_inner.to_string();
+
+        // new_type チェーンを辿って expected_name に到達するか確認する
+        let mut current = arg_name.clone();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let Some(orig_name) = self.new_type_originals.get(&current).cloned() else { break };
+            if !seen.insert(orig_name.clone()) { break }
+            if orig_name == expected_name { return true; }
+            current = orig_name;
+        }
+
+        // クラス基底・トレイト実装を確認する（`class Foo(Bar)` → type[Bar] に互換）
+        if let Some(bases) = self.class_bases.get(arg_name.as_str()) {
+            return bases.contains(&expected_name);
+        }
+
         false
     }
 
@@ -1519,7 +1617,7 @@ impl TypeChecker {
                         }),
                         Some(param_pos) => {
                             if let Some(expected) = &sig.params[param_pos].1 {
-                                if !Self::type_matches(arg_ty, expected) {
+                                if !self.type_matches(arg_ty, expected) {
                                     self.report_error(StaticTypeError {
                                         kind: TypeErrorKind::CallArgTypeMismatch {
                                             func_name: fname.to_string(),
@@ -1538,7 +1636,7 @@ impl TypeChecker {
                     // 位置引数: インデックス順にパラメータと対応付けて型を検査する。
                     if let Some((_, param_ty)) = sig.params.get(positional_idx) {
                         if let Some(expected) = param_ty {
-                            if !Self::type_matches(arg_ty, expected) {
+                            if !self.type_matches(arg_ty, expected) {
                                 self.report_error(StaticTypeError {
                                     kind: TypeErrorKind::CallArgTypeMismatch {
                                         func_name: fname.to_string(),
@@ -1594,7 +1692,7 @@ impl TypeChecker {
                         }),
                         Some(param_pos) => {
                             let param = &params[param_pos];
-                            if param.ty != InferredType::Any && !Self::type_matches(arg_ty, &param.ty) {
+                            if param.ty != InferredType::Any && !self.type_matches(arg_ty, &param.ty) {
                                 self.report_error(StaticTypeError {
                                     kind: TypeErrorKind::CallArgTypeMismatch {
                                         func_name: func_name.to_string(),
@@ -1619,7 +1717,7 @@ impl TypeChecker {
                 }
                 None => {
                     if let Some(param) = params.get(positional_idx) {
-                        if param.ty != InferredType::Any && !Self::type_matches(arg_ty, &param.ty) {
+                        if param.ty != InferredType::Any && !self.type_matches(arg_ty, &param.ty) {
                             self.report_error(StaticTypeError {
                                 kind: TypeErrorKind::CallArgTypeMismatch {
                                     func_name: func_name.to_string(),
@@ -1802,6 +1900,140 @@ impl TypeChecker {
             | BinOp::LShift
             | BinOp::RShift => Int,
         }
+    }
+
+    /// デコレータ式の型シグネチャを検査する。
+    ///
+    /// - `target_is_fn`: 対象が関数定義なら `true`、クラス定義なら `false`
+    /// - `target_name`: デコレート対象の名前（エラーメッセージ用）
+    ///
+    /// 単純な識別子デコレータのみ静的検査する。複合式は実行時に委ねる。
+    ///
+    /// ### 関数デコレータ（`target_is_fn = true`）の制約
+    /// - 関数の場合: 第 1 引数型は `function`、戻り値型は `function`
+    /// - クラスの場合: `__init__` の第 2 引数（`self` の次）が `function`、`__call__` 戻り値が `function`
+    ///
+    /// ### クラスデコレータ（`target_is_fn = false`）の制約
+    /// - 関数の場合: 第 1 引数型は `type`、戻り値型は `type`
+    /// - クラスの場合: `__init__` の第 2 引数が `type`、`__call__` 戻り値が `type`
+    fn check_decorator(&mut self, decorator: &Expr, target_is_fn: bool, target_name: &str) {
+        self.infer(decorator);
+
+        let dec_name = match decorator {
+            Expr::Ident(name) => name.clone(),
+            _ => return, // 複合式は静的検査不可
+        };
+
+        let expected_what = if target_is_fn { "function" } else { "type" };
+        let target_kind = if target_is_fn { "function" } else { "class" };
+
+        let is_fn_type = |ty: &InferredType| matches!(ty, InferredType::Function { .. });
+        let is_type_type = |ty: &InferredType| matches!(ty, InferredType::TypeVal | InferredType::TypeValOf(_));
+        let kind_matches = |ty: &InferredType| {
+            if target_is_fn { is_fn_type(ty) } else { is_type_type(ty) }
+        };
+
+        // --- Case 1: 関数デコレータ ---
+        if let Some(sigs) = self.fn_sigs.get(&dec_name).cloned() {
+            if sigs.len() != 1 { return; } // オーバーロードは実行時に委ねる
+            let sig = sigs[0].clone();
+
+            // 第 1 引数の型を検査する
+            match sig.params.first() {
+                None => {
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::InvalidDecorator {
+                            reason: format!(
+                                "decorator '{dec_name}' applied to {target_kind} '{target_name}': \
+                                 must have at least one parameter of '{expected_what}' type"
+                            ),
+                        },
+                        span: None,
+                    });
+                }
+                Some((_, Some(first_param_ty))) => {
+                    if !kind_matches(first_param_ty) {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::InvalidDecorator {
+                                reason: format!(
+                                    "decorator '{dec_name}' applied to {target_kind} '{target_name}': \
+                                     first parameter must be '{expected_what}' type, got '{first_param_ty}'"
+                                ),
+                            },
+                            span: None,
+                        });
+                    }
+                }
+                Some((_, None)) => {} // 型アノテーションなし → 実行時に委ねる
+            }
+
+            // 戻り値型を検査する
+            if let Some(return_ty) = &sig.return_type.clone() {
+                if !kind_matches(return_ty) {
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::InvalidDecorator {
+                            reason: format!(
+                                "decorator '{dec_name}' applied to {target_kind} '{target_name}': \
+                                 return type must be '{expected_what}', got '{return_ty}'"
+                            ),
+                        },
+                        span: None,
+                    });
+                }
+            }
+            return;
+        }
+
+        // --- Case 2: クラスデコレータ ---
+        if self.known_class_names.contains(dec_name.as_str()) {
+            let cls_methods = match self.class_method_sigs.get(&dec_name).cloned() {
+                Some(m) => m,
+                None => return,
+            };
+
+            // `__init__` の第 2 引数（インデックス 1、`self` の次）を検査する
+            if let Some(init_sigs) = cls_methods.get("__init__").cloned() {
+                if init_sigs.len() == 1 {
+                    if let Some((_, second_ty_opt)) = init_sigs[0].params.get(1) {
+                        if let Some(second_ty) = second_ty_opt {
+                            if !kind_matches(second_ty) {
+                                self.report_error(StaticTypeError {
+                                    kind: TypeErrorKind::InvalidDecorator {
+                                        reason: format!(
+                                            "class decorator '{dec_name}' applied to {target_kind} '{target_name}': \
+                                             '__init__' second parameter must be '{expected_what}' type, got '{second_ty}'"
+                                        ),
+                                    },
+                                    span: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // `__call__` の戻り値型を検査する
+            if let Some(call_sigs) = cls_methods.get("__call__").cloned() {
+                if call_sigs.len() == 1 {
+                    if let Some(return_ty) = &call_sigs[0].return_type.clone() {
+                        if !kind_matches(return_ty) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::InvalidDecorator {
+                                    reason: format!(
+                                        "class decorator '{dec_name}' applied to {target_kind} '{target_name}': \
+                                         '__call__' return type must be '{expected_what}', got '{return_ty}'"
+                                    ),
+                                },
+                                span: None,
+                            });
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        // 未知の識別子（import 由来など）は実行時に委ねる
     }
 
     /// 型ガード式の右辺に書かれた型名文字列を [`InferredType`] に変換する。
@@ -2853,5 +3085,244 @@ mod tests {
             "let r = f(1)\n",
         ));
         assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgCountMismatch { .. })));
+    }
+
+    // --- type[T] ---
+
+    #[test]
+    fn type_val_of_exact_match_ok() {
+        // type[int] param accepts the `int` type value.
+        assert!(ok(concat!(
+            "fn f(let x: type[int]) -> None:\n    pass\n",
+            "f(int)\n",
+        )));
+    }
+
+    #[test]
+    fn type_val_of_wrong_primitive_err() {
+        // type[int] param rejects `float`.
+        let errors = check(concat!(
+            "fn f(let x: type[int]) -> None:\n    pass\n",
+            "f(float)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+    }
+
+    #[test]
+    fn type_val_of_new_type_upcast_ok() {
+        // type[int] accepts a new_type whose chain leads to int.
+        assert!(ok(concat!(
+            "new_type Index: int\n",
+            "fn f(let x: type[int]) -> None:\n    pass\n",
+            "f(Index)\n",
+        )));
+    }
+
+    #[test]
+    fn type_val_of_new_type_chain_ok() {
+        // type[int] accepts a new_type chain A -> B -> int.
+        assert!(ok(concat!(
+            "new_type A: int\n",
+            "new_type B: A\n",
+            "fn f(let x: type[int]) -> None:\n    pass\n",
+            "f(B)\n",
+        )));
+    }
+
+    #[test]
+    fn type_val_of_new_type_wrong_origin_err() {
+        // type[int] rejects a new_type whose chain leads to str.
+        let errors = check(concat!(
+            "new_type Name: str\n",
+            "fn f(let x: type[int]) -> None:\n    pass\n",
+            "f(Name)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+    }
+
+    #[test]
+    fn type_val_of_trait_upcast_ok() {
+        // type[MyTrait] accepts a class that declares MyTrait as a base.
+        assert!(ok(concat!(
+            "trait MyTrait:\n    pass\n",
+            "class MyClass(MyTrait):\n    pass\n",
+            "fn f(let x: type[MyTrait]) -> None:\n    pass\n",
+            "f(MyClass)\n",
+        )));
+    }
+
+    #[test]
+    fn type_val_of_trait_wrong_class_err() {
+        // type[MyTrait] rejects a class that does not implement MyTrait.
+        let errors = check(concat!(
+            "trait MyTrait:\n    pass\n",
+            "class Other:\n    pass\n",
+            "fn f(let x: type[MyTrait]) -> None:\n    pass\n",
+            "f(Other)\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+    }
+
+    #[test]
+    fn type_val_bare_accepts_any_type_value_ok() {
+        // bare `type` annotation accepts any type value (int, str, user class, etc.).
+        assert!(ok(concat!(
+            "fn f(let x: type) -> None:\n    pass\n",
+            "f(int)\n",
+            "f(str)\n",
+        )));
+    }
+
+    #[test]
+    fn type_val_of_display() {
+        // TypeValOf displays as type[int].
+        let t = InferredType::TypeValOf(Box::new(InferredType::Int));
+        assert_eq!(t.to_string(), "type[int]");
+    }
+
+    // --- Decorator static type checking ---
+
+    #[test]
+    fn decorator_fn_correct_signature_ok() {
+        // Function decorator with `function` param and `function` return is valid.
+        assert!(ok(concat!(
+            "fn log(let f: function) -> function:\n",
+            "    return f\n",
+            "@log\n",
+            "fn greet(let name: str) -> str:\n",
+            "    return name\n",
+        )));
+    }
+
+    #[test]
+    fn decorator_fn_wrong_param_type_err() {
+        // Function decorator whose first param is `int` (not `function`) is invalid.
+        let errors = check(concat!(
+            "fn bad_dec(let x: int) -> function:\n",
+            "    return x\n",
+            "@bad_dec\n",
+            "fn my_func(let a: int) -> int:\n",
+            "    return a\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::InvalidDecorator { .. })));
+    }
+
+    #[test]
+    fn decorator_fn_wrong_return_type_err() {
+        // Function decorator whose return type is `int` (not `function`) is invalid.
+        let errors = check(concat!(
+            "fn bad_dec(let f: function) -> int:\n",
+            "    return 0\n",
+            "@bad_dec\n",
+            "fn my_func(let a: int) -> int:\n",
+            "    return a\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::InvalidDecorator { .. })));
+    }
+
+    #[test]
+    fn decorator_fn_no_params_err() {
+        // Function decorator with no parameters is invalid.
+        let errors = check(concat!(
+            "fn no_param_dec() -> function:\n",
+            "    pass\n",
+            "@no_param_dec\n",
+            "fn my_func(let a: int) -> int:\n",
+            "    return a\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::InvalidDecorator { .. })));
+    }
+
+    #[test]
+    fn decorator_class_correct_signature_ok() {
+        // Class-as-decorator with `type` param in __init__ and `type` return in __call__ is valid.
+        assert!(ok(concat!(
+            "class Singleton:\n",
+            "    fn __init__(self, let cls: type) -> None:\n",
+            "        pass\n",
+            "    fn __call__(self) -> type:\n",
+            "        pass\n",
+            "@Singleton\n",
+            "class MyClass:\n",
+            "    pass\n",
+        )));
+    }
+
+    #[test]
+    fn decorator_class_init_wrong_param_err() {
+        // Class decorator with wrong __init__ second param type is invalid.
+        let errors = check(concat!(
+            "class BadDec:\n",
+            "    fn __init__(self, let x: int) -> None:\n",
+            "        pass\n",
+            "    fn __call__(self) -> type:\n",
+            "        pass\n",
+            "@BadDec\n",
+            "class MyClass:\n",
+            "    pass\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::InvalidDecorator { .. })));
+    }
+
+    #[test]
+    fn decorator_class_call_wrong_return_err() {
+        // Class decorator with __call__ returning int (not type) is invalid.
+        let errors = check(concat!(
+            "class BadDec:\n",
+            "    fn __init__(self, let cls: type) -> None:\n",
+            "        pass\n",
+            "    fn __call__(self) -> int:\n",
+            "        pass\n",
+            "@BadDec\n",
+            "class MyClass:\n",
+            "    pass\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::InvalidDecorator { .. })));
+    }
+
+    #[test]
+    fn decorator_fn_on_fn_class_decorator_ok() {
+        // Class-as-decorator for a function: __init__ second param = function, __call__ returns function.
+        assert!(ok(concat!(
+            "class Retry:\n",
+            "    fn __init__(self, let f: function) -> None:\n",
+            "        pass\n",
+            "    fn __call__(self) -> function:\n",
+            "        pass\n",
+            "@Retry\n",
+            "fn my_func(let a: int) -> int:\n",
+            "    return a\n",
+        )));
+    }
+
+    #[test]
+    fn decorator_stacked_both_valid_ok() {
+        // Stacked function decorators both valid.
+        assert!(ok(concat!(
+            "fn log(let f: function) -> function:\n",
+            "    return f\n",
+            "fn retry(let f: function) -> function:\n",
+            "    return f\n",
+            "@log\n",
+            "@retry\n",
+            "fn my_func(let a: int) -> int:\n",
+            "    return a\n",
+        )));
+    }
+
+    #[test]
+    fn decorator_stacked_second_wrong_err() {
+        // Stacked decorators where second one has wrong param type.
+        let errors = check(concat!(
+            "fn good(let f: function) -> function:\n",
+            "    return f\n",
+            "fn bad(let x: int) -> function:\n",
+            "    return x\n",
+            "@good\n",
+            "@bad\n",
+            "fn my_func(let a: int) -> int:\n",
+            "    return a\n",
+        ));
+        assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::InvalidDecorator { .. })));
     }
 }

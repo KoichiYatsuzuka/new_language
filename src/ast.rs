@@ -354,6 +354,8 @@ pub enum Stmt {
         body: Vec<Stmt>,
         /// `true` の場合、trait 内の抽象メソッド宣言（本体が `pass` のみ）。
         is_abstract: bool,
+        /// `@decorator` 構文で付与されたデコレータ式のリスト（上から順、適用は逆順）。
+        decorators: Vec<Expr>,
     },
     /// ジェネレータ関数定義: `gen name[T: Trait](params) -> YieldType:`。
     ///
@@ -391,6 +393,8 @@ pub enum Stmt {
         template_params: Vec<TemplateParam>,
         /// 継承する基底クラス・トレイト名のリスト。
         bases: Vec<String>,
+        /// `@decorator` 構文で付与されたデコレータ式のリスト（上から順、適用は逆順）。
+        decorators: Vec<Expr>,
         /// クラス本体の文リスト（`Field` / `FnDef` / `GenDef` などを含む）。
         body: Vec<Stmt>,
     },

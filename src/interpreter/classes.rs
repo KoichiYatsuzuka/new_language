@@ -79,6 +79,28 @@ impl Interpreter {
     /// - `args`: 呼び出し引数リスト
     ///
     /// 戻り値: `Ok(Value)` — メソッドの返り値。`Err(message)` — AttributeError 等
+    /// 評価済み引数リストでクラスをインスタンス化する（デコレータ適用などに使用）。
+    pub(super) fn instantiate_evaled(
+        &mut self,
+        class: Rc<ClassValue>,
+        evaled: Vec<(Option<String>, Value)>,
+    ) -> Result<Value, String> {
+        let mut fields = HashMap::new();
+        for (name, default_val, mutable) in &class.field_defaults {
+            fields.insert(name.clone(), (default_val.clone(), *mutable));
+        }
+        let inst_rc = Rc::new(RefCell::new(InstanceData { class: class.clone(), fields, immutable: false }));
+        let inst_val = Value::Instance(inst_rc);
+        if let Some(init_overloads) = self.lookup_method_in_class(&class, "__init__") {
+            if init_overloads.len() == 1 {
+                self.exec_fn_evaled(init_overloads[0].clone(), &evaled, Some(inst_val.clone()), "__init__")?;
+            } else {
+                self.dispatch_overload_evaled(init_overloads, evaled, Some(inst_val.clone()), "__init__")?;
+            }
+        }
+        Ok(inst_val)
+    }
+
     pub(super) fn eval_method_call(
         &mut self,
         obj: Value,

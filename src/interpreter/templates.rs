@@ -392,19 +392,21 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             yield_type: yield_type.clone(),
             body: subst_stmts(body, type_map),
         },
-        Stmt::FnDef { name, template_params, params, return_type, body, is_abstract } => Stmt::FnDef {
+        Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, decorators } => Stmt::FnDef {
             name: name.clone(),
             template_params: template_params.clone(),
             params: subst_params(params, type_map),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
             body: subst_stmts(body, type_map),
             is_abstract: *is_abstract,
+            decorators: decorators.clone(),
         },
-        Stmt::ClassDef { name, template_params, bases, body } => Stmt::ClassDef {
+        Stmt::ClassDef { name, template_params, bases, body, decorators } => Stmt::ClassDef {
             name: name.clone(),
             template_params: template_params.clone(),
             bases: bases.clone(),
             body: subst_stmts(body, type_map),
+            decorators: decorators.clone(),
         },
         Stmt::TraitDef { name, template_params, body } => Stmt::TraitDef {
             name: name.clone(),

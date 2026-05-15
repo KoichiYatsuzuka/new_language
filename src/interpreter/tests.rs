@@ -1752,3 +1752,109 @@ fn test_closure_nested() {
         panic!("expected Int(30)");
     }
 }
+
+// --- Decorator ---
+
+#[test]
+fn test_decorator_fn_basic() {
+    // 関数デコレータ: @log で包まれた関数を呼ぶと wrapper が実行される
+    let src = concat!(
+        "fn log(let f: function) -> function:\n",
+        "    fn wrapper() -> int:\n",
+        "        return 99\n",
+        "    return wrapper\n",
+        "@log\n",
+        "fn original() -> int:\n",
+        "    return 1\n",
+        "let r = original()\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 99);
+    } else {
+        panic!("expected Int(99)");
+    }
+}
+
+#[test]
+fn test_decorator_fn_passes_original() {
+    // デコレータは元の関数を受け取ってラップできる
+    let src = concat!(
+        "fn identity(let f: function) -> function:\n",
+        "    return f\n",
+        "@identity\n",
+        "fn add(let x: int) -> int:\n",
+        "    return x + 10\n",
+        "let r = add(5)\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 15);
+    } else {
+        panic!("expected Int(15)");
+    }
+}
+
+#[test]
+fn test_decorator_stacked() {
+    // スタックされたデコレータは下から順に適用される
+    let src = concat!(
+        "fn add1(let f: function) -> function:\n",
+        "    fn wrapper() -> int:\n",
+        "        return f() + 1\n",
+        "    return wrapper\n",
+        "@add1\n",
+        "@add1\n",
+        "fn base() -> int:\n",
+        "    return 10\n",
+        "let r = base()\n",
+    );
+    // add1 applied to base first → 11, then add1 again → 12
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 12);
+    } else {
+        panic!("expected Int(12)");
+    }
+}
+
+#[test]
+fn test_decorator_class_as_decorator_for_fn() {
+    // クラスデコレータ（関数に適用）
+    let src = concat!(
+        "class Wrap:\n",
+        "    fn __init__(mut self, let f: function) -> None:\n",
+        "        self.inner = f\n",
+        "    fn __call__(self) -> function:\n",
+        "        let fn_copy = self.inner\n",
+        "        fn wrapper() -> int:\n",
+        "            return fn_copy() + 100\n",
+        "        return wrapper\n",
+        "@Wrap\n",
+        "fn base() -> int:\n",
+        "    return 7\n",
+        "let wrapped = base()\n",
+        "let r = wrapped()\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 107);
+    } else {
+        panic!("expected Int(107)");
+    }
+}
+
+#[test]
+fn test_decorator_instance_callable() {
+    // Value::Instance が __call__ を持つ場合に関数として呼び出せる
+    let src = concat!(
+        "class Adder:\n",
+        "    fn __init__(mut self, let n: int) -> None:\n",
+        "        self.n = n\n",
+        "    fn __call__(self) -> int:\n",
+        "        return self.n + 1\n",
+        "let a = Adder(41)\n",
+        "let r = a()\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 42);
+    } else {
+        panic!("expected Int(42)");
+    }
+}

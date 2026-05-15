@@ -293,6 +293,10 @@ impl Interpreter {
                         let evaled_args = self.eval_call_args(args)?;
                         super::py_interop::call_py_object(&handle, &evaled_args)
                     }
+                    Value::Instance(_) => {
+                        // インスタンスを呼び出す: __call__ メソッドに委譲する
+                        self.eval_method_call(callee, "__call__", args)
+                    }
                     _ => Err(format!("TypeError: '{}' object is not callable", self.type_name(&callee))),
                 }
             }
