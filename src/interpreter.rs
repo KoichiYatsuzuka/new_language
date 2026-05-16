@@ -424,7 +424,7 @@ pub enum Value {
     Str(String),
     Bool(bool),
     None,
-    List(Vec<Value>),
+    List(Rc<RefCell<Vec<Value>>>),
     Function(Rc<FnValue>),
     /// 同スコープに同名で2つ以上のオーバーロードが定義された関数値。
     OverloadedFn(Vec<Rc<FnValue>>),

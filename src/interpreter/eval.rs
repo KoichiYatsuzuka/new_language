@@ -128,7 +128,7 @@ impl Interpreter {
                 for item in items {
                     vals.push(self.eval(item)?);
                 }
-                Ok(Value::List(vals))
+                Ok(Value::List(Rc::new(RefCell::new(vals))))
             }
             Expr::Tuple(exprs) => {
                 // タプルリテラル: 各要素を評価し、型名も収集して TupleData を構築する
@@ -157,20 +157,9 @@ impl Interpreter {
                 }))))
             }
             Expr::Subscript { object, index } => {
-                // `object[index]`: 現在は辞書のキールックアップのみ対応
                 let obj = self.eval(object)?;
                 let key = self.eval(index)?;
-                match obj {
-                    Value::Dict(d) => {
-                        d.borrow().get(&key).ok_or_else(|| {
-                            format!("KeyError: {}", self.display(&key))
-                        })
-                    }
-                    _ => Err(format!(
-                        "TypeError: '{}' object is not subscriptable",
-                        self.type_name(&obj)
-                    )),
-                }
+                self.eval_subscript(obj, key)
             }
             Expr::UnaryOp { op, operand } => {
                 // 単項演算子: オペランドを評価して apply_unary に委譲する
@@ -236,10 +225,10 @@ impl Interpreter {
                             let evaled = evaled?;
                             return match evaled.as_slice() {
                                 [Value::Int(stop)] => {
-                                    Ok(Value::List((0..*stop).map(Value::Int).collect()))
+                                    Ok(Value::List(Rc::new(RefCell::new((0..*stop).map(Value::Int).collect()))))
                                 }
                                 [Value::Int(start), Value::Int(stop)] => {
-                                    Ok(Value::List((*start..*stop).map(Value::Int).collect()))
+                                    Ok(Value::List(Rc::new(RefCell::new((*start..*stop).map(Value::Int).collect()))))
                                 }
                                 [Value::Int(start), Value::Int(stop), Value::Int(step)] => {
                                     let mut items = Vec::new();
@@ -249,7 +238,7 @@ impl Interpreter {
                                     } else if *step < 0 {
                                         while i > *stop { items.push(Value::Int(i)); i += step; }
                                     }
-                                    Ok(Value::List(items))
+                                    Ok(Value::List(Rc::new(RefCell::new(items))))
                                 }
                                 _ => Err("TypeError: range() takes 1\u{2013}3 integer arguments".to_string()),
                             };
@@ -261,8 +250,11 @@ impl Interpreter {
                             }
                             let val = self.eval(args[0].expr())?;
                             return match val {
-                                Value::List(items) => Ok(Value::Int(items.len() as i64)),
+                                Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
                                 Value::Str(s) => Ok(Value::Int(s.len() as i64)),
+                                Value::PyObject(ref handle) => {
+                                    super::py_interop::py_len(handle)
+                                }
                                 _ => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(&val))),
                             };
                         }
@@ -374,34 +366,7 @@ impl Interpreter {
         } else if let Expr::Subscript { object, index } = target {
             let obj_val = self.eval(object)?;
             let key = self.eval(index)?;
-            match obj_val {
-                Value::Dict(d) => {
-                    let (key_type, item_type) = {
-                        let b = d.borrow();
-                        (b.key_type.clone(), b.item_type.clone())
-                    };
-                    if key_type != "Any" && !Self::value_matches_type(&key, &key_type) {
-                        return Err(format!(
-                            "TypeError: dict key type mismatch: expected '{}', got '{}'",
-                            key_type,
-                            self.type_name(&key)
-                        ));
-                    }
-                    if item_type != "Any" && !Self::value_matches_type(&rhs, &item_type) {
-                        return Err(format!(
-                            "TypeError: dict item type mismatch: expected '{}', got '{}'",
-                            item_type,
-                            self.type_name(&rhs)
-                        ));
-                    }
-                    d.borrow_mut().set(key, rhs);
-                    Ok(())
-                }
-                _ => Err(format!(
-                    "TypeError: '{}' object does not support item assignment",
-                    self.type_name(&obj_val)
-                )),
-            }
+            self.eval_setitem(obj_val, key, rhs)
         } else {
             Err("SyntaxError: invalid assignment target".to_string())
         }
@@ -433,6 +398,129 @@ impl Interpreter {
                     false
                 }
             }
+        }
+    }
+
+    /// `obj[key]` の評価。リスト・文字列・辞書・PyObject・インスタンスに対応する。
+    pub(super) fn eval_subscript(&mut self, obj: Value, key: Value) -> Result<Value, String> {
+        match obj {
+            Value::List(items) => {
+                let idx = match &key {
+                    Value::Int(i) => *i,
+                    _ => return Err(format!(
+                        "TypeError: list indices must be integers, not '{}'",
+                        self.type_name(&key)
+                    )),
+                };
+                let borrowed = items.borrow();
+                let len = borrowed.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len {
+                    return Err(format!("IndexError: list index {} out of range", idx));
+                }
+                Ok(borrowed[actual as usize].clone())
+            }
+            Value::Str(s) => {
+                let idx = match &key {
+                    Value::Int(i) => *i,
+                    _ => return Err(format!(
+                        "TypeError: string indices must be integers, not '{}'",
+                        self.type_name(&key)
+                    )),
+                };
+                let chars: Vec<char> = s.chars().collect();
+                let len = chars.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len {
+                    return Err(format!("IndexError: string index {} out of range", idx));
+                }
+                Ok(Value::Str(chars[actual as usize].to_string()))
+            }
+            Value::Tuple(td) => {
+                let idx = match &key {
+                    Value::Int(i) => *i,
+                    _ => return Err(format!(
+                        "TypeError: tuple indices must be integers, not '{}'",
+                        self.type_name(&key)
+                    )),
+                };
+                let vals = td.all_values();
+                let len = vals.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len {
+                    return Err(format!("IndexError: tuple index {} out of range", idx));
+                }
+                Ok(vals[actual as usize].clone())
+            }
+            Value::Dict(d) => {
+                d.borrow().get(&key).ok_or_else(|| format!("KeyError: {}", self.display(&key)))
+            }
+            Value::Instance(_) => {
+                self.eval_method_call_evaled(obj, "__getitem__", vec![(None, key)])
+            }
+            Value::PyObject(ref handle) => {
+                super::py_interop::py_getitem(handle, &key)
+            }
+            _ => Err(format!(
+                "TypeError: '{}' object is not subscriptable",
+                self.type_name(&obj)
+            )),
+        }
+    }
+
+    /// `obj[key] = rhs` の実行。リスト・辞書・PyObject・インスタンスに対応する。
+    pub(super) fn eval_setitem(&mut self, obj: Value, key: Value, rhs: Value) -> Result<(), String> {
+        match obj {
+            Value::List(items) => {
+                let idx = match &key {
+                    Value::Int(i) => *i,
+                    _ => return Err(format!(
+                        "TypeError: list indices must be integers, not '{}'",
+                        self.type_name(&key)
+                    )),
+                };
+                let mut borrowed = items.borrow_mut();
+                let len = borrowed.len() as i64;
+                let actual = if idx < 0 { len + idx } else { idx };
+                if actual < 0 || actual >= len {
+                    return Err(format!("IndexError: list assignment index {} out of range", idx));
+                }
+                borrowed[actual as usize] = rhs;
+                Ok(())
+            }
+            Value::Dict(d) => {
+                let (key_type, item_type) = {
+                    let b = d.borrow();
+                    (b.key_type.clone(), b.item_type.clone())
+                };
+                if key_type != "Any" && !Self::value_matches_type(&key, &key_type) {
+                    return Err(format!(
+                        "TypeError: dict key type mismatch: expected '{}', got '{}'",
+                        key_type,
+                        self.type_name(&key)
+                    ));
+                }
+                if item_type != "Any" && !Self::value_matches_type(&rhs, &item_type) {
+                    return Err(format!(
+                        "TypeError: dict item type mismatch: expected '{}', got '{}'",
+                        item_type,
+                        self.type_name(&rhs)
+                    ));
+                }
+                d.borrow_mut().set(key, rhs);
+                Ok(())
+            }
+            Value::Instance(_) => {
+                self.eval_method_call_evaled(obj, "__setitem__", vec![(None, key), (None, rhs)])?;
+                Ok(())
+            }
+            Value::PyObject(ref handle) => {
+                super::py_interop::py_setitem(handle, &key, &rhs)
+            }
+            _ => Err(format!(
+                "TypeError: '{}' object does not support item assignment",
+                self.type_name(&obj)
+            )),
         }
     }
 }

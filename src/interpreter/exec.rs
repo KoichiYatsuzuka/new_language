@@ -169,8 +169,7 @@ impl Interpreter {
                 // イテレータプロトコル: イテラブル値から Generator を取得する
                 let generator = match iter_val {
                     Value::List(items) => {
-                        // リストをそのままジェネレータにラップする
-                        Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items, index: 0 })))
+                        Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items.borrow().clone(), index: 0 })))
                     }
                     Value::Str(s) => {
                         // 文字列を1文字ずつに展開してジェネレータにラップする
@@ -181,6 +180,11 @@ impl Interpreter {
                     Value::Instance(_) => {
                         // インスタンスは `__iter__()` を呼び出してジェネレータを取得する
                         self.eval_method_call(iter_val, "__iter__", &[])?
+                    }
+                    Value::PyObject(ref handle) => {
+                        // Python iterable を一括収集してジェネレータにラップする
+                        let items = super::py_interop::py_collect_iter(handle)?;
+                        Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items, index: 0 })))
                     }
                     _ => return Err("TypeError: object is not iterable".to_string()),
                 };

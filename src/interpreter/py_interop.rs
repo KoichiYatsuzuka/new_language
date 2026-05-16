@@ -7,6 +7,10 @@
 // - `call_py_object`: Python callable を引数付きで呼び出す
 // - `call_py_method`: Python オブジェクトのメソッドを呼び出す
 // - `py_getattr`: Python オブジェクトの属性を取得する
+// - `py_getitem` / `py_setitem`: Python の __getitem__ / __setitem__
+// - `py_len`: Python の __len__
+// - `py_collect_iter`: Python iterable を Vec<Value> に一括収集する
+// - `py_binop` / `py_rbinop`: Python の二項演算子（lhs=PyObject / rhs=PyObject）
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -14,8 +18,11 @@ use std::rc::Rc;
 
 use std::path::PathBuf;
 
+use pyo3::class::basic::CompareOp;
 use pyo3::prelude::*;
 use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModule, PyTuple, PyTupleMethods};
+
+use crate::ast::BinOp;
 
 use super::{DictData, NamespaceData, PyObjHandle, TupleData, Value};
 
@@ -32,10 +39,24 @@ pub fn tl_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
         Value::Bool(b) => Ok(b.to_object(py)),
         Value::None => Ok(py.None()),
         Value::List(items) => {
-            let py_items: Vec<PyObject> = items.iter()
+            let py_items: Vec<PyObject> = items.borrow().iter()
                 .map(|v| tl_to_py(py, v))
                 .collect::<PyResult<_>>()?;
             Ok(PyList::new_bound(py, &py_items).into())
+        }
+        Value::Tuple(td) => {
+            let py_items: Vec<PyObject> = td.values.iter()
+                .map(|v| tl_to_py(py, v))
+                .collect::<PyResult<_>>()?;
+            Ok(PyTuple::new_bound(py, &py_items).into())
+        }
+        Value::Dict(d) => {
+            let dict = PyDict::new_bound(py);
+            let borrowed = d.borrow();
+            for (k, v) in borrowed.all_keys().iter().zip(borrowed.all_items().iter()) {
+                dict.set_item(tl_to_py(py, k)?, tl_to_py(py, v)?)?;
+            }
+            Ok(dict.into())
         }
         Value::PyObject(h) => Ok(h.inner.clone_ref(py)),
         other => Err(pyo3::exceptions::PyTypeError::new_err(format!(
@@ -73,7 +94,7 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
     // list → Value::List
     if let Ok(list) = obj.downcast::<PyList>() {
         let items: Vec<Value> = list.iter().map(|item| py_to_tl(py, &item)).collect();
-        return Value::List(items);
+        return Value::List(Rc::new(RefCell::new(items)));
     }
     // tuple → Value::Tuple
     if let Ok(tup) = obj.downcast::<PyTuple>() {
@@ -184,6 +205,121 @@ pub fn py_getattr(handle: &PyObjHandle, attr: &str) -> Result<Value, String> {
         Ok(py_to_tl(py, &attr_val))
     })
     .map_err(|e| format!("AttributeError: Python attribute '{attr}' not found: {e}"))
+}
+
+/// `obj[key]`: Python の `__getitem__` を呼び出す。
+pub fn py_getitem(handle: &PyObjHandle, key: &Value) -> Result<Value, String> {
+    Python::with_gil(|py| -> PyResult<Value> {
+        let obj = handle.inner.bind(py);
+        let py_key = tl_to_py(py, key)?;
+        let result = obj.get_item(py_key)?;
+        Ok(py_to_tl(py, &result))
+    })
+    .map_err(|e| format!("IndexError: Python __getitem__ failed: {e}"))
+}
+
+/// `obj[key] = val`: Python の `__setitem__` を呼び出す。
+pub fn py_setitem(handle: &PyObjHandle, key: &Value, val: &Value) -> Result<(), String> {
+    Python::with_gil(|py| -> PyResult<()> {
+        let obj = handle.inner.bind(py);
+        let py_key = tl_to_py(py, key)?;
+        let py_val = tl_to_py(py, val)?;
+        obj.set_item(py_key, py_val)?;
+        Ok(())
+    })
+    .map_err(|e| format!("IndexError: Python __setitem__ failed: {e}"))
+}
+
+/// `len(obj)`: Python の `__len__` を呼び出す。
+pub fn py_len(handle: &PyObjHandle) -> Result<Value, String> {
+    Python::with_gil(|py| -> PyResult<Value> {
+        let obj = handle.inner.bind(py);
+        let n = obj.len()?;
+        Ok(Value::Int(n as i64))
+    })
+    .map_err(|e| format!("TypeError: Python __len__ failed: {e}"))
+}
+
+/// Python iterable を走査して要素を `Vec<Value>` に収集する。for ループ用。
+pub fn py_collect_iter(handle: &PyObjHandle) -> Result<Vec<Value>, String> {
+    Python::with_gil(|py| -> PyResult<Vec<Value>> {
+        let obj = handle.inner.bind(py);
+        let iter = obj.iter()?;
+        let mut items = Vec::new();
+        for item in iter {
+            items.push(py_to_tl(py, &item?));
+        }
+        Ok(items)
+    })
+    .map_err(|e| format!("TypeError: Python object is not iterable: {e}"))
+}
+
+/// lhs が `PyObject` のときの二項演算。`op` を Python の演算子メソッドにマップする。
+pub fn py_binop(handle: &PyObjHandle, op: &BinOp, rhs: &Value) -> Result<Value, String> {
+    Python::with_gil(|py| -> PyResult<Value> {
+        let obj = handle.inner.bind(py);
+        let py_rhs = tl_to_py(py, rhs)?;
+        let result = match op {
+            BinOp::Add      => obj.add(py_rhs)?,
+            BinOp::Sub      => obj.sub(py_rhs)?,
+            BinOp::Mul      => obj.mul(py_rhs)?,
+            BinOp::Div      => obj.div(py_rhs)?,
+            BinOp::FloorDiv => obj.floor_div(py_rhs)?,
+            BinOp::Mod      => obj.rem(py_rhs)?,
+            BinOp::Pow      => obj.pow(py_rhs, py.None())?,
+            BinOp::LShift   => obj.lshift(py_rhs)?,
+            BinOp::RShift   => obj.rshift(py_rhs)?,
+            BinOp::BitAnd   => obj.bitand(py_rhs)?,
+            BinOp::BitOr    => obj.bitor(py_rhs)?,
+            BinOp::BitXor   => obj.bitxor(py_rhs)?,
+            BinOp::Eq       => obj.rich_compare(py_rhs, CompareOp::Eq)?,
+            BinOp::NotEq    => obj.rich_compare(py_rhs, CompareOp::Ne)?,
+            BinOp::Lt       => obj.rich_compare(py_rhs, CompareOp::Lt)?,
+            BinOp::Gt       => obj.rich_compare(py_rhs, CompareOp::Gt)?,
+            BinOp::LtEq     => obj.rich_compare(py_rhs, CompareOp::Le)?,
+            BinOp::GtEq     => obj.rich_compare(py_rhs, CompareOp::Ge)?,
+            BinOp::And | BinOp::Or => return Err(pyo3::exceptions::PyTypeError::new_err(
+                "cannot apply 'and'/'or' to Python objects via binop"
+            )),
+        };
+        Ok(py_to_tl(py, &result))
+    })
+    .map_err(|e| format!("TypeError: Python binary operation failed: {e}"))
+}
+
+/// rhs が `PyObject` のときの二項演算。比較は左右を入れ替え、算術は反射メソッドを呼ぶ。
+pub fn py_rbinop(handle: &PyObjHandle, op: &BinOp, lhs: &Value) -> Result<Value, String> {
+    Python::with_gil(|py| -> PyResult<Value> {
+        let obj = handle.inner.bind(py);
+        let py_lhs = tl_to_py(py, lhs)?;
+        let result = match op {
+            // 算術: 反射メソッドを直接呼び出す
+            BinOp::Add      => obj.call_method1("__radd__",      (py_lhs,))?,
+            BinOp::Sub      => obj.call_method1("__rsub__",      (py_lhs,))?,
+            BinOp::Mul      => obj.call_method1("__rmul__",      (py_lhs,))?,
+            BinOp::Div      => obj.call_method1("__rtruediv__",  (py_lhs,))?,
+            BinOp::FloorDiv => obj.call_method1("__rfloordiv__", (py_lhs,))?,
+            BinOp::Mod      => obj.call_method1("__rmod__",      (py_lhs,))?,
+            BinOp::Pow      => obj.call_method1("__rpow__",      (py_lhs,))?,
+            BinOp::LShift   => obj.call_method1("__rlshift__",   (py_lhs,))?,
+            BinOp::RShift   => obj.call_method1("__rrshift__",   (py_lhs,))?,
+            BinOp::BitAnd   => obj.call_method1("__rand__",      (py_lhs,))?,
+            BinOp::BitOr    => obj.call_method1("__ror__",       (py_lhs,))?,
+            BinOp::BitXor   => obj.call_method1("__rxor__",      (py_lhs,))?,
+            // 比較: 左右を入れ替えて対応する演算子を使う
+            BinOp::Eq       => obj.rich_compare(py_lhs, CompareOp::Eq)?,
+            BinOp::NotEq    => obj.rich_compare(py_lhs, CompareOp::Ne)?,
+            BinOp::Lt       => obj.rich_compare(py_lhs, CompareOp::Gt)?,  // lhs < rhs → rhs > lhs
+            BinOp::Gt       => obj.rich_compare(py_lhs, CompareOp::Lt)?,  // lhs > rhs → rhs < lhs
+            BinOp::LtEq     => obj.rich_compare(py_lhs, CompareOp::Ge)?,
+            BinOp::GtEq     => obj.rich_compare(py_lhs, CompareOp::Le)?,
+            BinOp::And | BinOp::Or => return Err(pyo3::exceptions::PyTypeError::new_err(
+                "cannot apply 'and'/'or' to Python objects via binop"
+            )),
+        };
+        Ok(py_to_tl(py, &result))
+    })
+    .map_err(|e| format!("TypeError: Python reflected binary operation failed: {e}"))
 }
 
 // ---------------------------------------------------------------------------

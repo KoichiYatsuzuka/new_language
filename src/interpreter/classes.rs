@@ -113,9 +113,8 @@ impl Interpreter {
                     if !args.is_empty() {
                         return Err("TypeError: list.__iter__() takes no arguments".to_string());
                     }
-                    // リスト全要素をジェネレータにラップして返す
                     return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                        values: items.clone(),
+                        values: items.borrow().clone(),
                         index: 0,
                     }))));
                 }
@@ -176,14 +175,14 @@ impl Interpreter {
                         if !args.is_empty() {
                             return Err(format!("TypeError: dict.{method_name}() takes no arguments"));
                         }
-                        Ok(Value::List(d.borrow().all_keys()))
+                        Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_keys()))))
                     }
                     // `d.item()` / `d.values()` — 値のリストを返す
                     "item" | "values" => {
                         if !args.is_empty() {
                             return Err(format!("TypeError: dict.{method_name}() takes no arguments"));
                         }
-                        Ok(Value::List(d.borrow().all_items()))
+                        Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_items()))))
                     }
                     _ => Err(format!("AttributeError: 'dict' object has no method '{method_name}'")),
                 }
@@ -237,6 +236,53 @@ impl Interpreter {
                 // Python オブジェクトのメソッドを PyO3 経由で呼び出す
                 let evaled = self.eval_call_args(args)?;
                 super::py_interop::call_py_method(&handle, method_name, &evaled)
+            }
+            _ => Err(format!(
+                "AttributeError: '{}' object has no method '{method_name}'",
+                self.type_name(&obj)
+            )),
+        }
+    }
+
+    /// 評価済み引数でメソッドを呼び出す。`__getitem__` / `__setitem__` などの
+    /// subscript ディスパッチ用。Instance と PyObject のみ対応する。
+    pub(super) fn eval_method_call_evaled(
+        &mut self,
+        obj: Value,
+        method_name: &str,
+        evaled: Vec<(Option<String>, Value)>,
+    ) -> Result<Value, String> {
+        match &obj {
+            Value::Instance(inst_rc) => {
+                let class = inst_rc.borrow().class.clone();
+                let inst_immutable = inst_rc.borrow().immutable;
+
+                let overloads = self.lookup_method_in_class(&class, method_name)
+                    .ok_or_else(|| format!("AttributeError: '{}' has no method '{method_name}'", class.name))?;
+
+                let callable: Vec<Rc<FnValue>> = if inst_immutable {
+                    overloads.iter().filter(|f| {
+                        f.params.first().map(|p| p.name != "self" || !p.mutable).unwrap_or(true)
+                    }).cloned().collect()
+                } else {
+                    overloads
+                };
+
+                if callable.is_empty() {
+                    return Err(format!(
+                        "TypeError: cannot call mutable method '{method_name}' on immutable instance of '{}'",
+                        class.name
+                    ));
+                }
+
+                if callable.len() == 1 {
+                    self.exec_fn_evaled(callable[0].clone(), &evaled, Some(obj.clone()), method_name)
+                } else {
+                    self.dispatch_overload_evaled(callable, evaled, Some(obj.clone()), method_name)
+                }
+            }
+            Value::PyObject(handle) => {
+                super::py_interop::call_py_method(handle, method_name, &evaled)
             }
             _ => Err(format!(
                 "AttributeError: '{}' object has no method '{method_name}'",

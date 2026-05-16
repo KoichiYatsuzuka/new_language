@@ -8,7 +8,16 @@
       "PowerShell(rustup show 2>&1)",
       "PowerShell(rustup update stable 2>&1)",
       "PowerShell(cd d:\\\\repository\\\\new_language; \\(Get-Content src\\\\python_converter.rs\\) -replace '\"ParseError: ', '\"' | Set-Content src\\\\python_converter.rs -Encoding utf8)",
-      "Bash(cargo run *)"
+      "Bash(cargo run *)",
+      "Bash(cargo check *)",
+      "Bash(npx tsc *)",
+      "PowerShell(node --version)",
+      "PowerShell(Get-Command tsc -ErrorAction SilentlyContinue)",
+      "PowerShell(nvm list 2>&1)",
+      "PowerShell(Get-Command node -ErrorAction SilentlyContinue)",
+      "Bash(cargo metadata *)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(p['name'],p['version']\\) for p in d['packages'] if p['name']=='pyo3']\")",
+      "PowerShell(Get-ChildItem \"$env:LOCALAPPDATA\\\\Programs\" -Directory -ErrorAction SilentlyContinue | Select-Object Name)"
     ]
   }
 }

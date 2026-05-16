@@ -567,7 +567,9 @@ impl Interpreter {
                 }
                 Value::Dict(Rc::new(RefCell::new(new_dict)))
             }
-            Value::List(items) => Value::List(items.into_iter().map(Self::deep_copy_value).collect()),
+            Value::List(items) => Value::List(Rc::new(RefCell::new(
+                items.borrow().iter().cloned().map(Self::deep_copy_value).collect()
+            ))),
             // Tuple は Rc<TupleData> だが TupleData は不変なので共有で問題なし
             // プリミティブ・関数・クラス等はそのまま返す
             other => other,

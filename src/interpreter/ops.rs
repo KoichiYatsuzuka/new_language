@@ -33,7 +33,7 @@ impl Interpreter {
             Value::Float(f) => *f != 0.0,
             Value::Str(s) => !s.is_empty(),
             Value::None => false,
-            Value::List(items) => !items.is_empty(),
+            Value::List(items) => !items.borrow().is_empty(),
             Value::Dict(d) => !d.borrow().keys.is_empty(),
             Value::Tuple(t) => !t.is_empty(),
             // 関数・クラス・インスタンス・ジェネレータ・名前空間・Python オブジェクト等は常に真
@@ -115,7 +115,7 @@ impl Interpreter {
             Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
             Value::None => "None".to_string(),
             Value::List(items) => {
-                let parts: Vec<String> = items.iter().map(|v| self.display_repr(v)).collect();
+                let parts: Vec<String> = items.borrow().iter().map(|v| self.display_repr(v)).collect();
                 format!("[{}]", parts.join(", "))
             }
             Value::Function(_) => "<function>".to_string(),
@@ -173,7 +173,7 @@ impl Interpreter {
         match val {
             Value::Str(s) => format!("'{s}'"),
             Value::List(items) => {
-                let parts: Vec<String> = items.iter().map(|v| self.display_repr(v)).collect();
+                let parts: Vec<String> = items.borrow().iter().map(|v| self.display_repr(v)).collect();
                 format!("[{}]", parts.join(", "))
             }
             Value::Dict(_) | Value::Tuple(_) => self.display(val),
@@ -216,6 +216,13 @@ impl Interpreter {
     ///
     /// 戻り値: `Ok(Value)` — 演算結果。`Err(message)` — 型エラーまたはゼロ除算エラー
     pub(super) fn apply_binop(&self, op: &BinOp, lv: Value, rv: Value) -> Result<Value, String> {
+        // いずれかのオペランドが PyObject の場合は Python に委譲する
+        if let Value::PyObject(h) = &lv {
+            return super::py_interop::py_binop(h, op, &rv);
+        }
+        if let Value::PyObject(h) = &rv {
+            return super::py_interop::py_rbinop(h, op, &lv);
+        }
         match (op, &lv, &rv) {
             // 算術演算
             (BinOp::Add, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a + *b)),

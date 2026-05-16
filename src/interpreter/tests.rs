@@ -35,6 +35,18 @@ fn run_get(src: &str, var: &str) -> Value {
     interp.get_val(var).unwrap()
 }
 
+/// py-int テスト用: examples/ ディレクトリを Python 検索パスに追加して実行する
+fn run_py_get(src: &str, var: &str) -> Value {
+    let tokens = Lexer::new(src, "").tokenize();
+    let stmts = Parser::new(tokens, None).parse_program().unwrap();
+    let mut interp = Interpreter::new();
+    interp.add_python_search_dir(std::path::PathBuf::from("examples"));
+    for stmt in &stmts {
+        let _ = interp.exec(stmt).unwrap();
+    }
+    interp.get_val(var).unwrap()
+}
+
 fn run_exc(src: &str) -> Result<Option<RaisedError>, String> {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program()?;
@@ -231,7 +243,7 @@ fn test_block_modifies_outer() {
 #[test]
 fn test_range_builtin() {
     if let Value::List(items) = eval_expr("range(3)") {
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.borrow().len(), 3);
     } else {
         panic!();
     }
@@ -1292,7 +1304,7 @@ fn test_dict_key_method() {
     let src = r#"let d = {1: "one", 2: "two"}
 let ks = d.key()"#;
     if let Value::List(ks) = run_get(src, "ks") {
-        assert_eq!(ks.len(), 2);
+        assert_eq!(ks.borrow().len(), 2);
     } else {
         panic!("expected List");
     }
@@ -1303,7 +1315,7 @@ fn test_dict_item_method() {
     let src = r#"let d = {1: "one", 2: "two"}
 let vs = d.item()"#;
     if let Value::List(vs) = run_get(src, "vs") {
-        assert_eq!(vs.len(), 2);
+        assert_eq!(vs.borrow().len(), 2);
     } else {
         panic!("expected List");
     }
@@ -1857,4 +1869,220 @@ fn test_decorator_instance_callable() {
     } else {
         panic!("expected Int(42)");
     }
+}
+
+#[test]
+fn test_tl_to_py_dict() {
+    // Value::Dict を Python に渡せることを確認する (sum_dict はすべての int 値を合計する)
+    let src = concat!(
+        "import[py-int] py_calculator as calc\n",
+        "let d = {\"x\": 10, \"y\": 20, \"z\": 12}\n",
+        "let r = calc.sum_dict(d)\n",
+    );
+    if let Value::Int(n) = run_py_get(src, "r") {
+        assert_eq!(n, 42);
+    } else {
+        panic!("expected Int(42)");
+    }
+}
+
+#[test]
+fn test_tl_to_py_tuple() {
+    // Value::Tuple を Python に渡せることを確認する (first_of_tuple は先頭要素を返す)
+    let src = concat!(
+        "import[py-int] py_calculator as calc\n",
+        "let t = (99, 1, 2)\n",
+        "let r = calc.first_of_tuple(t)\n",
+    );
+    if let Value::Int(n) = run_py_get(src, "r") {
+        assert_eq!(n, 99);
+    } else {
+        panic!("expected Int(99)");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// __getitem__ / __setitem__ — list, str, dict, instance, PyObject
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_list_getitem() {
+    // list[int] インデックスアクセス（正・負）
+    let src = concat!(
+        "let xs = [10, 20, 30]\n",
+        "let a = xs[0]\n",
+        "let b = xs[2]\n",
+        "let c = xs[-1]\n",
+    );
+    assert!(matches!(run_get(src, "a"), Value::Int(10)));
+    assert!(matches!(run_get(src, "b"), Value::Int(30)));
+    assert!(matches!(run_get(src, "c"), Value::Int(30)));
+}
+
+#[test]
+fn test_list_setitem() {
+    // list[int] = value による要素の書き換え
+    let src = concat!(
+        "mut xs = [1, 2, 3]\n",
+        "xs[1] = 99\n",
+        "let r = xs[1]\n",
+    );
+    assert!(matches!(run_get(src, "r"), Value::Int(99)));
+}
+
+#[test]
+fn test_list_setitem_negative() {
+    // 負インデックスでの書き換え
+    let src = concat!(
+        "mut xs = [1, 2, 3]\n",
+        "xs[-1] = 77\n",
+        "let r = xs[2]\n",
+    );
+    assert!(matches!(run_get(src, "r"), Value::Int(77)));
+}
+
+#[test]
+fn test_list_getitem_out_of_range() {
+    let src = concat!(
+        "let xs = [1, 2, 3]\n",
+        "let r = xs[5]\n",
+    );
+    assert!(run(src).is_err());
+}
+
+#[test]
+fn test_str_getitem() {
+    // str[int] インデックスアクセス（正・負）
+    let src = concat!(
+        "let s = \"hello\"\n",
+        "let a = s[0]\n",
+        "let b = s[-1]\n",
+    );
+    if let Value::Str(a) = run_get(src, "a") {
+        assert_eq!(a, "h");
+    } else {
+        panic!("expected Str");
+    }
+    if let Value::Str(b) = run_get(src, "b") {
+        assert_eq!(b, "o");
+    } else {
+        panic!("expected Str");
+    }
+}
+
+#[test]
+fn test_instance_getitem_setitem() {
+    // ユーザー定義クラスの __getitem__ / __setitem__
+    let src = concat!(
+        "class Box:\n",
+        "    fn __init__(mut self) -> None:\n",
+        "        self.data = 0\n",
+        "    fn __getitem__(self, let key: int) -> int:\n",
+        "        return self.data + key\n",
+        "    fn __setitem__(mut self, let key: int, let val: int) -> None:\n",
+        "        self.data = val\n",
+        "mut b = Box()\n",
+        "b[10] = 5\n",
+        "let r = b[1]\n",
+    );
+    assert!(matches!(run_get(src, "r"), Value::Int(6)));
+}
+
+#[test]
+fn test_pyobject_getitem() {
+    // PyObject の subscript read: Container.__getitem__
+    let src = concat!(
+        "import[py-int] py_calculator as calc\n",
+        "let c = calc.make_container([10, 20, 30])\n",
+        "let r = c[1]\n",
+    );
+    if let Value::Int(n) = run_py_get(src, "r") {
+        assert_eq!(n, 20);
+    } else {
+        panic!("expected Int(20)");
+    }
+}
+
+#[test]
+fn test_pyobject_setitem() {
+    // PyObject の subscript write: Container.__setitem__
+    let src = concat!(
+        "import[py-int] py_calculator as calc\n",
+        "let c = calc.make_container([1, 2, 3])\n",
+        "c[0] = 99\n",
+        "let r = c[0]\n",
+    );
+    if let Value::Int(n) = run_py_get(src, "r") {
+        assert_eq!(n, 99);
+    } else {
+        panic!("expected Int(99)");
+    }
+}
+
+#[test]
+fn test_tuple_getitem() {
+    // Python から返ってきた tuple が Value::Tuple に変換された場合の subscript
+    let src = concat!(
+        "let t = (100, 200, 300)\n",
+        "let r = t[1]\n",
+    );
+    assert!(matches!(run_get(src, "r"), Value::Int(200)));
+}
+
+// ---------------------------------------------------------------------------
+// for ループ: PyObject の反復
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pyobject_for_loop() {
+    // Container は Python iterable; for ループで各要素を取得できる
+    let src = concat!(
+        "import[py-int] py_calculator as calc\n",
+        "let c = calc.make_container([10, 20, 30])\n",
+        "mut total = 0\n",
+        "for x in c:\n",
+        "    total += x\n",
+    );
+    assert!(matches!(run_py_get(src, "total"), Value::Int(60)));
+}
+
+// ---------------------------------------------------------------------------
+// 二項演算子: PyObject オペランド
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pyobject_binop_mul_lhs() {
+    // lhs = PyObject: c * 3 → Container.__mul__(3) → 要素数 6 の Container
+    let src = concat!(
+        "import[py-int] py_calculator as calc\n",
+        "let c = calc.make_container([1, 2])\n",
+        "let c2 = c * 3\n",
+        "let r = len(c2)\n",
+    );
+    assert!(matches!(run_py_get(src, "r"), Value::Int(6)));
+}
+
+#[test]
+fn test_pyobject_binop_mul_rhs() {
+    // rhs = PyObject: 3 * c → Container.__rmul__(3) → 要素数 6 の Container
+    let src = concat!(
+        "import[py-int] py_calculator as calc\n",
+        "let c = calc.make_container([1, 2])\n",
+        "let c2 = 3 * c\n",
+        "let r = len(c2)\n",
+    );
+    assert!(matches!(run_py_get(src, "r"), Value::Int(6)));
+}
+
+#[test]
+fn test_pyobject_binop_add() {
+    // c1 + c2 → Container.__add__ → 要素が結合された Container
+    let src = concat!(
+        "import[py-int] py_calculator as calc\n",
+        "let a = calc.make_container([1, 2])\n",
+        "let b = calc.make_container([3, 4, 5])\n",
+        "let c = a + b\n",
+        "let r = len(c)\n",
+    );
+    assert!(matches!(run_py_get(src, "r"), Value::Int(5)));
 }
