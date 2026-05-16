@@ -37,8 +37,8 @@ impl Interpreter {
         ];
         let init_fn = Rc::new(FnValue {
             params: vec![
-                Param { name: "self".to_string(),    mutable: true,  type_ann: None },
-                Param { name: "message".to_string(), mutable: false, type_ann: Some("str".to_string()) },
+                Param { name: "self".to_string(),    mutable: true,  type_ann: None, default: None },
+                Param { name: "message".to_string(), mutable: false, type_ann: Some("str".to_string()), default: None },
             ],
             body: init_body,
             is_python: false,

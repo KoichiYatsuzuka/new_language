@@ -2692,3 +2692,45 @@ fn test_enum_item_type_name() {
         panic!("expected Instance");
     }
 }
+
+// --- default parameters ---
+
+#[test]
+fn test_default_param_uses_default_when_omitted() {
+    let src = "fn greet(let name: str = \"world\") -> str:\n    return name\nlet a = greet()\nlet b = greet(\"Alice\")\n";
+    assert!(matches!(run_get(src, "a"), Value::Str(s) if s == "world"));
+    assert!(matches!(run_get(src, "b"), Value::Str(s) if s == "Alice"));
+}
+
+#[test]
+fn test_default_param_multiple_defaults() {
+    let src = "fn add(let a: int = 1, let b: int = 2) -> int:\n    return a + b\nlet r1 = add()\nlet r2 = add(10)\nlet r3 = add(10, 20)\n";
+    assert_int(run_get(src, "r1"), 3);
+    assert_int(run_get(src, "r2"), 12);
+    assert_int(run_get(src, "r3"), 30);
+}
+
+#[test]
+fn test_default_param_mixed_required_and_default() {
+    let src = "fn f(let x: int, let y: int = 99) -> int:\n    return x + y\nlet a = f(1)\nlet b = f(1, 2)\n";
+    assert_int(run_get(src, "a"), 100);
+    assert_int(run_get(src, "b"), 3);
+}
+
+#[test]
+fn test_default_param_via_keyword_arg() {
+    let src = "fn f(let a: int = 0, let b: int = 0) -> int:\n    return a * 10 + b\nlet r = f(b=5)\n";
+    assert_int(run_get(src, "r"), 5);
+}
+
+#[test]
+fn test_default_param_ordering_error() {
+    let src = "fn f(let a: int = 0, let b: int) -> int:\n    return 0\n";
+    assert!(run(src).is_err(), "expected ParseError for non-default after default");
+}
+
+#[test]
+fn test_default_param_too_many_args_error() {
+    let src = "fn f(let x: int = 0) -> int:\n    return x\nlet r = f(1, 2)\n";
+    assert!(run(src).is_err(), "expected TypeError for too many args");
+}

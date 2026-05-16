@@ -40,10 +40,20 @@ impl Interpreter {
         self_val: Option<Value>,
         fn_name: &str,
     ) -> Result<Value, String> {
+        // デフォルト値を事前評価する（self パラメータは常に None）
+        let mut evaluated_defaults: Vec<Option<Value>> = Vec::new();
+        for p in &fn_val.params {
+            if let Some(ref expr) = p.default {
+                evaluated_defaults.push(Some(self.eval(expr)?));
+            } else {
+                evaluated_defaults.push(None);
+            }
+        }
+
         let (bindings, extra_kwargs) = if fn_val.is_python {
-            Self::bind_args_relaxed(&fn_val.params, evaled, self_val.clone())?
+            Self::bind_args_relaxed(&fn_val.params, evaled, self_val.clone(), &evaluated_defaults)?
         } else {
-            (Self::bind_args(&fn_val.params, evaled, self_val.clone())?, vec![])
+            (Self::bind_args(&fn_val.params, evaled, self_val.clone(), &evaluated_defaults)?, vec![])
         };
 
         // グローバルスコープ（インデックス 0）以外を一時退避して関数専用スコープを構築する
@@ -160,7 +170,15 @@ impl Interpreter {
     ///         `Err(message)` — ランタイムエラーまたは例外センチネル
     pub(super) fn exec_generator(&mut self, gen_fn: Rc<GeneratorFnValue>, call_args: &[CallArg], self_val: Option<Value>) -> Result<Value, String> {
         let evaled = self.eval_call_args(call_args)?;
-        let bindings = Self::bind_args(&gen_fn.params, &evaled, self_val.clone())?;
+        let mut evaluated_defaults: Vec<Option<Value>> = Vec::new();
+        for p in &gen_fn.params {
+            if let Some(ref expr) = p.default {
+                evaluated_defaults.push(Some(self.eval(expr)?));
+            } else {
+                evaluated_defaults.push(None);
+            }
+        }
+        let bindings = Self::bind_args(&gen_fn.params, &evaled, self_val.clone(), &evaluated_defaults)?;
 
         // yield 収集を有効化する（スレッドローカルに収集先を設定）
         GENERATOR_YIELDS.with(|y| {
@@ -237,40 +255,52 @@ impl Interpreter {
     /// - `self_val` が `Some` かつ先頭パラメータが `self` の場合: `self` を先にバインド
     /// - 位置引数: 順番にパラメータスロットに割り当てる
     /// - キーワード引数: パラメータ名で検索してスロットに割り当てる
-    /// - 引数数が一致しない場合や重複キーワードは `TypeError` を返す
+    /// - 未割り当てスロットでデフォルト値がある場合はデフォルト値を使用する
+    /// - 引数数が範囲外の場合や重複キーワードは `TypeError` を返す
     ///
     /// - `params`: 仮引数リスト
     /// - `evaled`: 評価済み引数リスト
     /// - `self_val`: レシーバインスタンス（`None` の場合は通常の引数バインド）
+    /// - `defaults`: `params` と並行な事前評価済みデフォルト値リスト（`self` を含む全パラメータ分）
     ///
     /// 戻り値: `Ok(Vec<(name, value, mutable)>)` — バインド済みリスト。`Err` — 引数エラー
     pub(super) fn bind_args(
         params: &[Param],
         evaled: &[(Option<String>, Value)],
         self_val: Option<Value>,
+        defaults: &[Option<Value>],
     ) -> Result<Vec<(String, Value, bool)>, String> {
         let mut result = Vec::new();
 
         // self_val が Some かつ先頭パラメータが "self" なら先にバインドして残りのパラメータを取得する
-        let params_to_bind = if let (Some(sv), Some(p)) = (&self_val, params.first()) {
+        let (params_to_bind, defaults_to_bind) = if let (Some(sv), Some(p)) = (&self_val, params.first()) {
             if p.name == "self" {
                 // let self（不変レシーバ）はディープコピーして元オブジェクトの変更を防ぐ
                 let self_to_bind = if p.mutable { sv.clone() } else { Self::deep_copy_value(sv.clone()) };
                 result.push(("self".to_string(), self_to_bind, p.mutable));
-                &params[1..]
+                (&params[1..], &defaults[1..])
             } else {
-                params
+                (params, defaults)
             }
         } else {
-            params
+            (params, defaults)
         };
 
-        if evaled.len() != params_to_bind.len() {
-            return Err(format!(
-                "TypeError: function takes {} argument(s), got {}",
-                params_to_bind.len(),
-                evaled.len()
-            ));
+        // デフォルト値なしのパラメータ数（必須引数数）と最大引数数を計算する
+        let required_count = defaults_to_bind.iter().filter(|d| d.is_none()).count();
+        let max_count = params_to_bind.len();
+        if evaled.len() < required_count || evaled.len() > max_count {
+            if required_count == max_count {
+                return Err(format!(
+                    "TypeError: function takes {} argument(s), got {}",
+                    max_count, evaled.len()
+                ));
+            } else {
+                return Err(format!(
+                    "TypeError: function takes {} to {} argument(s), got {}",
+                    required_count, max_count, evaled.len()
+                ));
+            }
         }
 
         // パラメータスロットを用意して位置引数・キーワード引数を割り当てる
@@ -296,17 +326,19 @@ impl Interpreter {
             }
         }
 
-        // 未割り当てスロットがあれば missing argument エラーを返す
+        // 未割り当てスロットはデフォルト値で埋める。デフォルト値もなければ missing argument エラー
         // let パラメータ（not mut）には参照型をディープコピーして渡す
         for (i, slot) in slots.into_iter().enumerate() {
-            match slot {
-                Some(v) => {
-                    let param = &params_to_bind[i];
-                    let value = if param.mutable { v } else { Self::deep_copy_value(v) };
-                    result.push((param.name.clone(), value, param.mutable));
-                }
-                None => return Err(format!("TypeError: missing argument '{}'", params_to_bind[i].name)),
-            }
+            let param = &params_to_bind[i];
+            let v = match slot {
+                Some(v) => v,
+                None => match &defaults_to_bind[i] {
+                    Some(dv) => dv.clone(),
+                    None => return Err(format!("TypeError: missing argument '{}'", param.name)),
+                },
+            };
+            let value = if param.mutable { v } else { Self::deep_copy_value(v) };
+            result.push((param.name.clone(), value, param.mutable));
         }
 
         Ok(result)
@@ -320,19 +352,20 @@ impl Interpreter {
         params: &[Param],
         evaled: &[(Option<String>, Value)],
         self_val: Option<Value>,
+        defaults: &[Option<Value>],
     ) -> Result<(Vec<(String, Value, bool)>, Vec<(String, Value)>), String> {
         let mut result = Vec::new();
         let mut extra_kwargs = Vec::new();
 
-        let params_to_bind = if let (Some(sv), Some(p)) = (&self_val, params.first()) {
+        let (params_to_bind, defaults_to_bind) = if let (Some(sv), Some(p)) = (&self_val, params.first()) {
             if p.name == "self" {
                 result.push(("self".to_string(), sv.clone(), p.mutable));
-                &params[1..]
+                (&params[1..], &defaults[1..])
             } else {
-                params
+                (params, defaults)
             }
         } else {
-            params
+            (params, defaults)
         };
 
         let mut slots: Vec<Option<Value>> = vec![None; params_to_bind.len()];
@@ -367,10 +400,14 @@ impl Interpreter {
         }
 
         for (i, slot) in slots.into_iter().enumerate() {
-            match slot {
-                Some(v) => result.push((params_to_bind[i].name.clone(), v, params_to_bind[i].mutable)),
-                None => return Err(format!("TypeError: missing argument '{}'", params_to_bind[i].name)),
-            }
+            let v = match slot {
+                Some(v) => v,
+                None => match &defaults_to_bind[i] {
+                    Some(dv) => dv.clone(),
+                    None => return Err(format!("TypeError: missing argument '{}'", params_to_bind[i].name)),
+                },
+            };
+            result.push((params_to_bind[i].name.clone(), v, params_to_bind[i].mutable));
         }
 
         Ok((result, extra_kwargs))
@@ -420,21 +457,29 @@ impl Interpreter {
         let call_count = evaled.len();
         let has_self = self_val.is_some();
 
-        // `self` パラメータを除いた有効引数数を計算するクロージャ
-        let effective_param_count = |f: &FnValue| -> usize {
+        // `self` パラメータを除いた有効引数数の範囲（必須数, 最大数）を返すクロージャ
+        let effective_param_range = |f: &FnValue| -> (usize, usize) {
             let self_offset = if has_self && f.params.first().map(|p| p.name == "self").unwrap_or(false) { 1 } else { 0 };
-            f.params.len() - self_offset
+            let params = &f.params[self_offset..];
+            let required = params.iter().filter(|p| p.default.is_none()).count();
+            (required, params.len())
         };
 
-        // 引数数が一致する候補のみに絞り込む
+        // 呼び出し引数数が有効範囲に収まる候補のみに絞り込む
         let count_matching: Vec<Rc<FnValue>> = candidates.iter()
-            .filter(|f| effective_param_count(f) == call_count)
+            .filter(|f| {
+                let (req, max) = effective_param_range(f);
+                call_count >= req && call_count <= max
+            })
             .cloned()
             .collect();
 
         if count_matching.is_empty() {
             let available: Vec<String> = candidates.iter()
-                .map(|f| effective_param_count(f).to_string())
+                .map(|f| {
+                    let (req, max) = effective_param_range(f);
+                    if req == max { req.to_string() } else { format!("{req}-{max}") }
+                })
                 .collect();
             return Err(format!(
                 "TypeError: no overload takes {} argument(s) (overloads take: {})",

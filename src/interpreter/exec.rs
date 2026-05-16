@@ -398,8 +398,8 @@ impl Interpreter {
                         ];
                         let init_fn = Rc::new(FnValue {
                             params: vec![
-                                crate::ast::Param { name: "self".to_string(), mutable: true, type_ann: None },
-                                crate::ast::Param { name: "value".to_string(), mutable: false, type_ann: Some(type_name.clone()) },
+                                crate::ast::Param { name: "self".to_string(), mutable: true, type_ann: None, default: None },
+                                crate::ast::Param { name: "value".to_string(), mutable: false, type_ann: Some(type_name.clone()), default: None },
                             ],
                             body: init_body,
                             is_python: false,
@@ -440,8 +440,8 @@ impl Interpreter {
                 ];
                 let init_fn = Rc::new(FnValue {
                     params: vec![
-                        crate::ast::Param { name: "self".to_string(), mutable: true, type_ann: None },
-                        crate::ast::Param { name: "value".to_string(), mutable: false, type_ann: Some("int".to_string()) },
+                        crate::ast::Param { name: "self".to_string(), mutable: true, type_ann: None, default: None },
+                        crate::ast::Param { name: "value".to_string(), mutable: false, type_ann: Some("int".to_string()), default: None },
                     ],
                     body: init_body,
                     is_python: false,

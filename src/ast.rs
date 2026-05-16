@@ -49,6 +49,7 @@ impl CallArg {
 /// - `name`     : パラメータ名（例: `x`, `self`）。
 /// - `mutable`  : `mut` 修飾子が付いているかどうか。`true` なら呼び出し先で変更可能。
 /// - `type_ann` : 型アノテーション文字列（例: `"int"`, `"str"`）。`self` は省略可能。
+/// - `default`  : デフォルト値の式。省略時は `None`（必須パラメータ）。
 #[derive(Debug, Clone)]
 pub struct Param {
     /// パラメータ名（例: `x`, `self`）。
@@ -57,6 +58,8 @@ pub struct Param {
     pub mutable: bool,
     /// 型アノテーション文字列（`self` は `None` 可）。
     pub type_ann: Option<String>,
+    /// デフォルト値の式。`None` は必須パラメータ。
+    pub default: Option<Expr>,
 }
 
 /// 二項演算子の種別。

@@ -276,6 +276,8 @@ struct FnSig {
     /// パラメータのリスト。各要素は `(パラメータ名, 宣言された型)` のタプル。
     /// 型アノテーションがないパラメータの型は `None`。
     params: Vec<(String, Option<InferredType>)>,
+    /// デフォルト値なしの必須パラメータ数（`self` を含む）。
+    required_count: usize,
     /// 戻り値の型。型アノテーションがない場合は `None`。
     return_type: Option<InferredType>,
 }
@@ -364,8 +366,10 @@ pub enum TypeErrorKind {
     CallArgCountMismatch {
         /// 呼び出した関数名
         func_name: String,
-        /// 定義で期待される引数個数
-        expected: usize,
+        /// 必須引数の最小個数
+        expected_min: usize,
+        /// 受け付ける最大引数個数（デフォルト値なしなら expected_min と同じ）
+        expected_max: usize,
         /// 実際に渡された引数個数
         got: usize,
     },
@@ -513,10 +517,13 @@ impl std::fmt::Display for StaticTypeError {
                 f,
                 "StaticTypeError: cannot assign to immutable variable '{name}'"
             ),
-            TypeErrorKind::CallArgCountMismatch { func_name, expected, got } => write!(
-                f,
-                "StaticTypeError: '{func_name}' takes {expected} argument(s) but {got} were given"
-            ),
+            TypeErrorKind::CallArgCountMismatch { func_name, expected_min, expected_max, got } => {
+                if expected_min == expected_max {
+                    write!(f, "StaticTypeError: '{func_name}' takes {expected_min} argument(s) but {got} were given")
+                } else {
+                    write!(f, "StaticTypeError: '{func_name}' takes {expected_min} to {expected_max} argument(s) but {got} were given")
+                }
+            }
             TypeErrorKind::CallArgTypeMismatch { func_name, param_index, expected, got } => write!(
                 f,
                 "StaticTypeError: argument {param_index} of '{func_name}' expects '{expected}' but got '{got}'"
@@ -686,6 +693,7 @@ impl TypeChecker {
                         params: params.iter()
                             .map(|p| (p.name.clone(), p.type_ann.as_deref().and_then(InferredType::from_ann)))
                             .collect(),
+                        required_count: params.iter().filter(|p| p.default.is_none()).count(),
                         return_type: return_type.as_deref().and_then(InferredType::from_ann),
                     };
                     self.fn_sigs.entry(name.clone()).or_default().push(sig);
@@ -703,6 +711,7 @@ impl TypeChecker {
                                 params: params.iter()
                                     .map(|p| (p.name.clone(), p.type_ann.as_deref().and_then(InferredType::from_ann)))
                                     .collect(),
+                                required_count: params.iter().filter(|p| p.default.is_none()).count(),
                                 return_type: return_type.as_deref().and_then(InferredType::from_ann),
                             };
                             cls_methods.entry(mname.clone()).or_default().push(sig);
@@ -1597,8 +1606,9 @@ impl TypeChecker {
             .as_deref()
             .and_then(|n| self.fn_sigs.get(n))
             .and_then(|sigs| {
+                let call_count = arg_data.len();
                 let matching: Vec<_> = sigs.iter()
-                    .filter(|s| s.params.len() == arg_data.len())
+                    .filter(|s| call_count >= s.required_count && call_count <= s.params.len())
                     .collect();
                 if matching.len() == 1 { matching[0].return_type.clone() } else { None }
             })
@@ -1632,9 +1642,10 @@ impl TypeChecker {
             None => return,
         };
         // メソッドパラメータには `self` が含まれるが引数リストには含まれないため、
-        // パラメータ数は引数数 + 1 で一致するものを選ぶ。
+        // 有効範囲を +1 してチェックする（self 分のオフセット）。
+        let effective_count = arg_data.len() + 1;
         let count_matching: Vec<FnSig> = sigs.iter()
-            .filter(|s| s.params.len() == arg_data.len() + 1)
+            .filter(|s| effective_count >= s.required_count && effective_count <= s.params.len())
             .cloned()
             .collect();
         if count_matching.len() != 1 {
@@ -1685,9 +1696,9 @@ impl TypeChecker {
             None => return, // 未知の関数は実行時エラーに委ねる。
         };
         let call_count = arg_data.len();
-        // 引数個数が一致するオーバーロードを絞り込む。
+        // 呼び出し引数数が有効範囲（required_count..=params.len()）に収まるオーバーロードを絞り込む。
         let count_matching: Vec<FnSig> = sigs.iter()
-            .filter(|s| s.params.len() == call_count)
+            .filter(|s| call_count >= s.required_count && call_count <= s.params.len())
             .cloned()
             .collect();
 
@@ -1698,7 +1709,8 @@ impl TypeChecker {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::CallArgCountMismatch {
                         func_name: fname.to_string(),
-                        expected: sigs[0].params.len(),
+                        expected_min: sigs[0].required_count,
+                        expected_max: sigs[0].params.len(),
                         got: call_count,
                     },
                     span: None,
@@ -1791,7 +1803,8 @@ impl TypeChecker {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::CallArgCountMismatch {
                     func_name: func_name.to_string(),
-                    expected: params.len(),
+                    expected_min: params.len(),
+                    expected_max: params.len(),
                     got: arg_data.len(),
                 },
                 span: None,

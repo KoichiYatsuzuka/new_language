@@ -264,6 +264,7 @@ fn subst_params(params: &[Param], type_map: &HashMap<String, String>) -> Vec<Par
         name: p.name.clone(),
         mutable: p.mutable,
         type_ann: p.type_ann.as_ref().map(|t| subst_type(t, type_map)),
+        default: p.default.clone(),
     }).collect()
 }
 

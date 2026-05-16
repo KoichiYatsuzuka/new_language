@@ -579,6 +579,8 @@ impl Parser {
             }
         }
         self.eat(&Token::RParen)?;
+        // デフォルト値なしのパラメータがデフォルト値ありのパラメータの後に来ていないか検証
+        Self::validate_param_defaults(&params)?;
         // `-> 戻り値型` があればパース
         let return_type = if *self.current() == Token::Arrow {
             self.advance();
@@ -644,6 +646,7 @@ impl Parser {
             }
         }
         self.eat(&Token::RParen)?;
+        Self::validate_param_defaults(&params)?;
         // `-> yield型` があればパース
         let yield_type = if *self.current() == Token::Arrow {
             self.advance();
@@ -1321,12 +1324,12 @@ impl Parser {
         }
 
         // `mut self` に続いてトレイトフィールド、クラスフィールドの順でパラメータを構築
-        let mut params = vec![Param { name: "self".to_string(), mutable: true, type_ann: None }];
+        let mut params = vec![Param { name: "self".to_string(), mutable: true, type_ann: None, default: None }];
         for (_, fname, ftype) in trait_required {
-            params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()) });
+            params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()), default: None });
         }
         for (fname, ftype) in class_required {
-            params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()) });
+            params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()), default: None });
         }
 
         // __init__ 本体を構築する
@@ -1545,14 +1548,34 @@ impl Parser {
         Ok(params)
     }
 
+    /// デフォルト値のないパラメータがデフォルト値ありのパラメータの後に来ていないか検証する。
+    ///
+    /// `self` パラメータはデフォルト値を持たないが先頭に位置するため検査から除外する。
+    fn validate_param_defaults(params: &[Param]) -> Result<(), String> {
+        let mut seen_default = false;
+        for p in params {
+            if p.name == "self" { continue; }
+            if p.default.is_some() {
+                seen_default = true;
+            } else if seen_default {
+                return Err(format!(
+                    "ParseError: non-default parameter '{}' follows a parameter with a default value",
+                    p.name
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// 関数パラメータを1つパースして `Param` を返す。
     ///
-    /// 構文: `[mut] 識別子 [: 型]`
+    /// 構文: `[mut] 識別子 [: 型] [= デフォルト式]`
     ///
     /// # 戻り値
-    /// `Param { name, mutable, type_ann }`
+    /// `Param { name, mutable, type_ann, default }`
     /// - `mutable`: `mut` キーワードが先行している場合は `true`
     /// - `type_ann`: `: 型` がある場合は `Some(型名)`、ない場合は `None`
+    /// - `default`: `= 式` がある場合は `Some(式)`、ない場合は `None`
     ///
     /// # エラー
     /// 識別子または型名のパースに失敗した場合
@@ -1575,7 +1598,14 @@ impl Parser {
         } else {
             None
         };
-        Ok(Param { name, mutable, type_ann })
+        // デフォルト値 `= 式` があればパース
+        let default = if *self.current() == Token::Eq {
+            self.advance();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        Ok(Param { name, mutable, type_ann, default })
     }
 
     /// 型アノテーション文字列をパースして基底型名を返す。
