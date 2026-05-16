@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::ast::{Param, Stmt};
+use crate::ast::{Expr, Param, Stmt};
 
 #[path = "interpreter/scope.rs"]
 mod scope;
@@ -410,6 +410,89 @@ pub(self) enum ModuleState {
     Loaded(Rc<NamespaceData>),
 }
 
+// ---------------------------------------------------------------------------
+// File I/O types
+// ---------------------------------------------------------------------------
+
+/// ファイルオープンモード（Rust 内部表現）。
+/// tl 側の `FileOpenMode` 列挙型と整数値で対応する。
+#[derive(Debug, Clone, PartialEq)]
+pub(self) enum FileOpenModeRust {
+    /// 既存ファイルを読み書きモードで開く（内容保持）
+    Write,
+    /// ファイルを空の状態から読み書きモードで開く（内容破棄）
+    Rewrite,
+    /// 既存ファイルを読み取り専用で開く
+    Read,
+    /// 新規ファイルを作成して読み書きモードで開く（既存時はエラー）
+    MakeAndWrite,
+}
+
+/// バイト認識モード（Rust 内部表現）。
+/// tl 側の `ByteRecognizingMode` 列挙型と整数値で対応する。
+#[derive(Debug, Clone, PartialEq)]
+pub(self) enum ByteModeRust {
+    /// バイト列として扱う: read 系は `list[int]`、write 系は `list[int]` を受け取る
+    Byte,
+    /// UTF-8 テキストとして扱う: read 系は `str`、write 系は `str` を受け取る
+    Text,
+}
+
+/// ファイルオブジェクトの実行時状態。`open()` 組み込み関数で生成される。
+///
+/// - `path`: ファイルパス文字列
+/// - `mode`: オープンモード
+/// - `byte_mode`: バイト/テキストモード
+/// - `content`: ファイル内容のメモリバッファ（open 時に全読み込み）
+/// - `pointer`: 現在の読み書き位置（バイトインデックス）
+/// - `is_closed`: `close()` または Drop 時に `true` にセット
+/// - `file_handle`: 排他ロック保持用のファイルハンドル（close 時に None にセット）
+#[derive(Debug)]
+pub struct FileData {
+    pub(self) path: String,
+    pub(self) mode: FileOpenModeRust,
+    pub(self) byte_mode: ByteModeRust,
+    /// ファイル内容のメモリバッファ。読み書きはこのバッファに対して行い、close 時にディスクへ書き戻す。
+    pub(self) content: Vec<u8>,
+    /// 現在の読み書き位置（バイトインデックス）。0 がファイル先頭、content.len() がEOF。
+    pub(self) pointer: usize,
+    pub(self) is_closed: bool,
+    /// ファイルハンドル。書き込みモードでは排他ロックとして機能し、close 時に None にセット。
+    pub(self) file_handle: Option<std::fs::File>,
+}
+
+impl FileData {
+    /// バッファをディスクに書き戻してファイルハンドルを閉じる。
+    /// 書き込みモード (`write` / `rewrite` / `make_and_write`) のみ実際に書き戻す。
+    /// 既に close 済みの場合は何もしない。
+    pub(self) fn close(&mut self) {
+        if self.is_closed {
+            return;
+        }
+        self.is_closed = true;
+        if matches!(
+            self.mode,
+            FileOpenModeRust::Write | FileOpenModeRust::Rewrite | FileOpenModeRust::MakeAndWrite
+        ) {
+            if let Some(ref mut f) = self.file_handle {
+                use std::io::{Seek, SeekFrom, Write};
+                let _ = f.seek(SeekFrom::Start(0));
+                let _ = f.write_all(&self.content);
+                // ファイルサイズをバッファサイズに合わせてトリム（書き込みが元より短い場合）
+                let _ = f.set_len(self.content.len() as u64);
+                let _ = f.flush();
+            }
+        }
+        self.file_handle = None;
+    }
+}
+
+impl Drop for FileData {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
 /// インタープリタが扱う実行時値の列挙型。
 ///
 /// 各バリアントの概要:
@@ -463,6 +546,9 @@ pub enum Value {
     /// PyO3 経由で保持する Python オブジェクトへの参照。
     /// tl 側では不透明（opaque）な値として扱われる。
     PyObject(Rc<PyObjHandle>),
+    /// ファイルオブジェクト。`open()` 組み込み関数が返す。
+    /// メソッド（read / read_line / read_letter / write / write_line）で読み書きを行う。
+    FileObject(Rc<RefCell<FileData>>),
 }
 
 // ---------------------------------------------------------------------------
@@ -603,6 +689,51 @@ impl Interpreter {
             global.insert(class_name.to_string(), Var::new(Value::Class(cls), false));
         }
 
+        // `path` 型: new_type path: str に相当するラッパークラス
+        {
+            let init_body = vec![Stmt::AttrAssign {
+                target: Expr::Attr {
+                    object: Box::new(Expr::Ident("self".to_string())),
+                    attr: "value".to_string(),
+                },
+                value: Expr::Ident("value".to_string()),
+            }];
+            let init_fn = Rc::new(FnValue {
+                params: vec![
+                    Param { name: "self".to_string(), mutable: true, type_ann: None, default: None },
+                    Param { name: "value".to_string(), mutable: false, type_ann: Some("str".to_string()), default: None },
+                ],
+                body: init_body,
+                is_python: false,
+                captured_env: HashMap::new(),
+            });
+            let mut methods = HashMap::new();
+            methods.insert("__init__".to_string(), vec![init_fn]);
+            let path_cls = Rc::new(ClassValue {
+                name: "path".to_string(),
+                bases: vec![],
+                methods,
+                gen_methods: HashMap::new(),
+                field_defaults: vec![],
+                class_vars: HashMap::new(),
+                field_mutability: HashMap::from([("value".to_string(), true)]),
+            });
+            global.insert("path".to_string(), Var::new(Value::Class(path_cls), false));
+        }
+
+        // ファイル I/O 組み込み列挙型を登録する
+        for (enum_name, variants) in [
+            ("FileOpenMode", vec![("write", 0i64), ("rewrite", 1), ("read", 2), ("make_and_write", 3)]),
+            ("StartPoint",   vec![("top", 0),     ("end", 1)]),
+            ("ByteRecognizingMode", vec![("byte", 0), ("text", 1)]),
+            ("Encoding",     vec![("ASCII", 0),   ("UTF_8", 1), ("UTF_8_with_BOM", 2), ("shift_JIS", 3)]),
+        ] {
+            let (item_name, item_cls, enum_cls) =
+                Self::make_builtin_enum_class(enum_name, &variants);
+            global.insert(item_name, Var::new(Value::Class(item_cls), false));
+            global.insert(enum_name.to_string(), Var::new(Value::Class(enum_cls), false));
+        }
+
         Self {
             scopes: vec![global],
             source_map: HashMap::new(),
@@ -618,6 +749,52 @@ impl Interpreter {
     /// `import[py-int]` 時に Python の `sys.path` に追加するディレクトリを登録する。
     pub fn add_python_search_dir(&mut self, dir: PathBuf) {
         self.python_search_dirs.push(dir);
+    }
+
+    /// ビルトイン enum クラスのペア（item クラス + enum クラス）を Rust コードで生成する。
+    ///
+    /// - `name`: enum クラス名（例: `"FileOpenMode"`）
+    /// - `variants`: (バリアント名, 整数値) のスライス
+    ///
+    /// 戻り値: `(item_cls_name, item_cls, enum_cls)` のタプル
+    fn make_builtin_enum_class(
+        name: &str,
+        variants: &[(&str, i64)],
+    ) -> (String, Rc<ClassValue>, Rc<ClassValue>) {
+        let item_cls_name = format!("enum_item_{name}");
+        // バリアントのインスタンス型（`enum_item_X`）: value フィールドを持つだけ
+        let item_cls = Rc::new(ClassValue {
+            name: item_cls_name.clone(),
+            bases: vec![],
+            methods: HashMap::new(),
+            gen_methods: HashMap::new(),
+            field_defaults: vec![],
+            class_vars: HashMap::new(),
+            field_mutability: HashMap::from([("value".to_string(), true)]),
+        });
+        // 各バリアントをインスタンスとして生成し class_vars に登録
+        let mut class_vars: HashMap<String, Value> = HashMap::new();
+        for (variant_name, int_val) in variants {
+            let mut fields = HashMap::new();
+            fields.insert("value".to_string(), (Value::Int(*int_val), true));
+            let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
+                class: item_cls.clone(),
+                fields,
+                immutable: false,
+            })));
+            class_vars.insert(variant_name.to_string(), inst);
+        }
+        // enum クラス本体（バリアントのみ保持、インスタンス化不可）
+        let enum_cls = Rc::new(ClassValue {
+            name: name.to_string(),
+            bases: vec![],
+            methods: HashMap::new(),
+            gen_methods: HashMap::new(),
+            field_defaults: vec![],
+            class_vars,
+            field_mutability: HashMap::new(),
+        });
+        (item_cls_name, item_cls, enum_cls)
     }
 
     /// ソーステキストをファイル名と対応付けて登録する。

@@ -8,7 +8,67 @@ use std::rc::Rc;
 
 use crate::ast::{BinOp, Expr};
 
-use super::{DictData, ExecResult, GeneratorState, Interpreter, TupleData, Value, Var, RAISE_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH};
+use super::{DictData, ExecResult, FileData, FileOpenModeRust, ByteModeRust, GeneratorState, Interpreter, TupleData, Value, Var, RAISE_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH};
+
+// ---------------------------------------------------------------------------
+// open() / close() ヘルパー
+// ---------------------------------------------------------------------------
+
+/// str または path インスタンスからファイルパス文字列を取り出す。
+fn extract_path_str(val: &Value) -> Result<String, String> {
+    match val {
+        Value::Str(s) => Ok(s.clone()),
+        Value::Instance(inst_rc) => {
+            let inst = inst_rc.borrow();
+            if inst.class.name == "path" {
+                if let Some((Value::Str(s), _)) = inst.fields.get("value") {
+                    return Ok(s.clone());
+                }
+            }
+            Err(format!(
+                "TypeError: open() 'file_path' must be str or path, got instance of '{}'",
+                inst.class.name
+            ))
+        }
+        other => Err(format!(
+            "TypeError: open() 'file_path' must be str or path, got '{}'",
+            match other {
+                Value::Int(_) => "int",
+                Value::Float(_) => "float",
+                Value::Bool(_) => "bool",
+                Value::None => "NoneType",
+                _ => "other",
+            }
+        )),
+    }
+}
+
+/// enum インスタンスの整数値を取り出す。クラス名が一致しない場合はエラー。
+fn extract_enum_int(val: &Value, expected_class: &str) -> Result<i64, String> {
+    if let Value::Instance(inst_rc) = val {
+        let inst = inst_rc.borrow();
+        if inst.class.name == expected_class {
+            if let Some((Value::Int(n), _)) = inst.fields.get("value") {
+                return Ok(*n);
+            }
+        }
+        return Err(format!(
+            "TypeError: expected {expected_class} instance, got instance of '{}'",
+            inst.class.name
+        ));
+    }
+    Err(format!("TypeError: expected {expected_class} instance"))
+}
+
+/// 位置引数とキーワード引数のどちらからでも値を取り出すヘルパー。
+fn get_arg<'a>(
+    pos: &'a [Value],
+    kw: &'a std::collections::HashMap<String, Value>,
+    idx: usize,
+    name: &str,
+) -> Option<&'a Value> {
+    kw.get(name).or_else(|| pos.get(idx))
+}
 
 impl Interpreter {
     /// 式（`Expr`）を評価して `Value` を返す。インタープリタの式評価のメインエントリポイント。
@@ -304,6 +364,133 @@ impl Interpreter {
                                     super::py_interop::py_len(handle)
                                 }
                                 _ => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(&val))),
+                            };
+                        }
+                        "open" => {
+                            use std::collections::HashMap as HMap;
+                            use std::fs::OpenOptions;
+                            use std::io::Read as IoRead;
+                            let evaled = self.eval_call_args(args)?;
+                            let mut kw: HMap<String, Value> = HMap::new();
+                            let mut pos: Vec<Value> = Vec::new();
+                            for (k, v) in evaled {
+                                match k { Some(n) => { kw.insert(n, v); } None => pos.push(v) }
+                            }
+                            let file_path = extract_path_str(
+                                get_arg(&pos, &kw, 0, "file_path")
+                                    .ok_or("TypeError: open() missing required argument 'file_path'")?
+                            )?;
+                            let open_mode_int = extract_enum_int(
+                                get_arg(&pos, &kw, 1, "open_mode")
+                                    .ok_or("TypeError: open() missing required argument 'open_mode'")?,
+                                "enum_item_FileOpenMode",
+                            )?;
+                            let start_point_int: i64 = get_arg(&pos, &kw, 2, "start_point")
+                                .map(|v| extract_enum_int(v, "enum_item_StartPoint"))
+                                .transpose()?.unwrap_or(0); // default: top
+                            let byte_mode_int: i64 = get_arg(&pos, &kw, 3, "byte_recognizing")
+                                .map(|v| extract_enum_int(v, "enum_item_ByteRecognizingMode"))
+                                .transpose()?.unwrap_or(1); // default: text
+                            let enc_int: i64 = get_arg(&pos, &kw, 4, "encoding")
+                                .map(|v| extract_enum_int(v, "enum_item_Encoding"))
+                                .transpose()?.unwrap_or(1); // default: UTF_8
+                            if enc_int == 3 {
+                                return Err("NotImplementedError: Shift-JIS encoding is not yet supported".to_string());
+                            }
+                            let _exclusion: bool = get_arg(&pos, &kw, 5, "exclusion")
+                                .map(|v| match v {
+                                    Value::Bool(b) => Ok(*b),
+                                    _ => Err("TypeError: open() 'exclusion' must be bool".to_string()),
+                                })
+                                .transpose()?.unwrap_or(true);
+
+                            let mode = match open_mode_int {
+                                0 => FileOpenModeRust::Write,
+                                1 => FileOpenModeRust::Rewrite,
+                                2 => FileOpenModeRust::Read,
+                                3 => FileOpenModeRust::MakeAndWrite,
+                                n => return Err(format!("TypeError: invalid FileOpenMode value {n}")),
+                            };
+                            let byte_mode = if byte_mode_int == 0 { ByteModeRust::Byte } else { ByteModeRust::Text };
+
+                            let std_path = std::path::Path::new(&file_path);
+                            if mode == FileOpenModeRust::MakeAndWrite && std_path.exists() {
+                                return Err(format!(
+                                    "RuntimeError: open() make_and_write: file '{}' already exists",
+                                    file_path
+                                ));
+                            }
+
+                            let (file, content) = match mode {
+                                FileOpenModeRust::Read => {
+                                    let mut f = OpenOptions::new().read(true).open(std_path)
+                                        .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
+                                    let mut c = Vec::new();
+                                    f.read_to_end(&mut c)
+                                        .map_err(|e| format!("IOError: cannot read '{}': {e}", file_path))?;
+                                    (f, c)
+                                }
+                                FileOpenModeRust::Write => {
+                                    let mut f = OpenOptions::new().read(true).write(true).open(std_path)
+                                        .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
+                                    let mut c = Vec::new();
+                                    f.read_to_end(&mut c)
+                                        .map_err(|e| format!("IOError: cannot read '{}': {e}", file_path))?;
+                                    (f, c)
+                                }
+                                FileOpenModeRust::Rewrite => {
+                                    let f = OpenOptions::new()
+                                        .read(true).write(true).create(true).truncate(true)
+                                        .open(std_path)
+                                        .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
+                                    (f, Vec::new()) // 内容を空にする
+                                }
+                                FileOpenModeRust::MakeAndWrite => {
+                                    let f = OpenOptions::new()
+                                        .read(true).write(true).create_new(true)
+                                        .open(std_path)
+                                        .map_err(|e| format!("IOError: cannot create '{}': {e}", file_path))?;
+                                    (f, Vec::new())
+                                }
+                            };
+
+                            // BOM 付き UTF-8 の場合は先頭3バイトをスキップ
+                            let (content, bom_skip) = if enc_int == 2
+                                && content.starts_with(&[0xEF, 0xBB, 0xBF])
+                            {
+                                (content[3..].to_vec(), 3usize)
+                            } else {
+                                (content, 0usize)
+                            };
+                            let _ = bom_skip;
+
+                            let pointer = if start_point_int == 1 { content.len() } else { 0 };
+
+                            let fd = FileData {
+                                path: file_path,
+                                mode,
+                                byte_mode,
+                                content,
+                                pointer,
+                                is_closed: false,
+                                file_handle: Some(file),
+                            };
+                            return Ok(Value::FileObject(Rc::new(RefCell::new(fd))));
+                        }
+                        "close" => {
+                            if args.len() != 1 {
+                                return Err("TypeError: close() takes exactly one argument".to_string());
+                            }
+                            let val = self.eval(args[0].expr())?;
+                            return match val {
+                                Value::FileObject(fd_rc) => {
+                                    fd_rc.borrow_mut().close();
+                                    Ok(Value::None)
+                                }
+                                other => Err(format!(
+                                    "TypeError: close() argument must be FileObject, not '{}'",
+                                    self.type_name(&other)
+                                )),
                             };
                         }
                         _ => {} // ユーザー定義関数の検索へフォールスルー

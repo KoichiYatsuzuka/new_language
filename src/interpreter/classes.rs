@@ -10,7 +10,91 @@ use std::rc::Rc;
 
 use crate::ast::CallArg;
 
-use super::{Interpreter, Value, ClassValue, FnValue, InstanceData, GeneratorState};
+use super::{ByteModeRust, FileOpenModeRust, Interpreter, Value, ClassValue, FnValue, InstanceData, GeneratorState};
+
+// ---------------------------------------------------------------------------
+// FileObject メソッド用ヘルパー（自由関数）
+// ---------------------------------------------------------------------------
+
+/// `(backward: bool = default)` 形式の単一引数を解析する。
+fn file_bool_arg(
+    evaled: &[(Option<String>, Value)],
+    name: &str,
+    default: bool,
+) -> Result<bool, String> {
+    match evaled {
+        [] => Ok(default),
+        [(kw_opt, val)] => {
+            if let Some(k) = kw_opt {
+                if k != name {
+                    return Err(format!("TypeError: unexpected keyword argument '{k}'"));
+                }
+            }
+            match val {
+                Value::Bool(b) => Ok(*b),
+                _ => Err(format!("TypeError: '{name}' must be bool")),
+            }
+        }
+        _ => Err(format!("TypeError: {name}() takes at most one argument")),
+    }
+}
+
+/// `(content)` 形式の単一引数を解析して値への参照を返す。
+fn file_content_arg<'a>(
+    evaled: &'a [(Option<String>, Value)],
+    name: &str,
+) -> Result<&'a Value, String> {
+    match evaled {
+        [(kw_opt, val)] => {
+            if let Some(k) = kw_opt {
+                if k != name {
+                    return Err(format!("TypeError: unexpected keyword argument '{k}'"));
+                }
+            }
+            Ok(val)
+        }
+        [] => Err(format!("TypeError: missing required argument '{name}'")),
+        _ => Err("TypeError: too many arguments".to_string()),
+    }
+}
+
+/// `Vec<u8>` をバイトモードに応じた `Value` に変換する。
+/// - Text モード: UTF-8 として `Value::Str` に変換
+/// - Byte モード: バイト値のリスト `Value::List[Value::Int]` に変換
+fn bytes_to_value(data: &[u8], byte_mode: &ByteModeRust) -> Value {
+    match byte_mode {
+        ByteModeRust::Text => Value::Str(String::from_utf8_lossy(data).into_owned()),
+        ByteModeRust::Byte => Value::List(Rc::new(RefCell::new(
+            data.iter().map(|&b| Value::Int(b as i64)).collect(),
+        ))),
+    }
+}
+
+/// `Value` をバイトモードに応じた `Vec<u8>` に変換する。
+/// - Text モード: `Value::Str` → UTF-8 バイト列
+/// - Byte モード: `Value::List[Value::Int]` → バイト列
+fn value_to_bytes(val: &Value, byte_mode: &ByteModeRust) -> Result<Vec<u8>, String> {
+    match byte_mode {
+        ByteModeRust::Text => match val {
+            Value::Str(s) => Ok(s.as_bytes().to_vec()),
+            _ => Err("write() content must be str in text mode".to_string()),
+        },
+        ByteModeRust::Byte => match val {
+            Value::List(items) => {
+                let mut out = Vec::new();
+                for item in items.borrow().iter() {
+                    match item {
+                        Value::Int(n) if (0..=255).contains(n) => out.push(*n as u8),
+                        Value::Int(n) => return Err(format!("write() byte value {n} out of range 0-255")),
+                        _ => return Err("write() content must be list[int] in byte mode".to_string()),
+                    }
+                }
+                Ok(out)
+            }
+            _ => Err("write() content must be list[int] in byte mode".to_string()),
+        },
+    }
+}
 
 impl Interpreter {
     // --- インスタンスの凍結 ---
@@ -237,10 +321,155 @@ impl Interpreter {
                 let evaled = self.eval_call_args(args)?;
                 super::py_interop::call_py_method(&handle, method_name, &evaled)
             }
+            Value::FileObject(fd_rc) => {
+                let fd_rc = fd_rc.clone();
+                let evaled = self.eval_call_args(args)?;
+                self.exec_file_method(fd_rc, method_name, &evaled)
+            }
             _ => Err(format!(
                 "AttributeError: '{}' object has no method '{method_name}'",
                 self.type_name(&obj)
             )),
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // FileObject メソッド
+    // ---------------------------------------------------------------------------
+
+    fn exec_file_method(
+        &mut self,
+        fd_rc: Rc<RefCell<super::FileData>>,
+        method_name: &str,
+        evaled: &[(Option<String>, Value)],
+    ) -> Result<Value, String> {
+        match method_name {
+            "read" => {
+                let backward = file_bool_arg(evaled, "backward", false)?;
+                let mut fd = fd_rc.borrow_mut();
+                if fd.is_closed {
+                    return Err("IOError: I/O operation on closed file".to_string());
+                }
+                if !backward && fd.pointer == fd.content.len() {
+                    return Err("EOFError: EOF".to_string());
+                }
+                if backward && fd.pointer == 0 {
+                    return Err("BOFError: BOF".to_string());
+                }
+                let data: Vec<u8> = if backward {
+                    let result = fd.content[..fd.pointer].to_vec();
+                    fd.pointer = 0;
+                    result
+                } else {
+                    let result = fd.content[fd.pointer..].to_vec();
+                    fd.pointer = fd.content.len();
+                    result
+                };
+                Ok(bytes_to_value(&data, &fd.byte_mode))
+            }
+            "read_line" => {
+                let backward = file_bool_arg(evaled, "backward", false)?;
+                let mut fd = fd_rc.borrow_mut();
+                if fd.is_closed {
+                    return Err("IOError: I/O operation on closed file".to_string());
+                }
+                if !backward && fd.pointer == fd.content.len() {
+                    return Err("EOFError: EOF".to_string());
+                }
+                if backward && fd.pointer == 0 {
+                    return Err("BOFError: BOF".to_string());
+                }
+                if !backward {
+                    // 次の \n を探してその位置（含む）まで返す
+                    let offset = fd.content[fd.pointer..].iter().position(|&b| b == b'\n');
+                    let end = match offset {
+                        Some(i) => fd.pointer + i + 1,
+                        None => fd.content.len(),
+                    };
+                    let data = fd.content[fd.pointer..end].to_vec();
+                    fd.pointer = end;
+                    Ok(bytes_to_value(&data, &fd.byte_mode))
+                } else {
+                    // 現在位置の直前の \n をスキップしてその前の \n を探す
+                    let p = fd.pointer;
+                    let skip_end = if p > 0 && fd.content[p - 1] == b'\n' { p - 1 } else { p };
+                    let prev_nl = fd.content[..skip_end].iter().rposition(|&b| b == b'\n');
+                    let start = match prev_nl {
+                        Some(i) => i + 1,
+                        None => 0,
+                    };
+                    let data = fd.content[start..p].to_vec();
+                    fd.pointer = start;
+                    Ok(bytes_to_value(&data, &fd.byte_mode))
+                }
+            }
+            "read_letter" => {
+                let backward = file_bool_arg(evaled, "backward", false)?;
+                let mut fd = fd_rc.borrow_mut();
+                if fd.is_closed {
+                    return Err("IOError: I/O operation on closed file".to_string());
+                }
+                if !backward && fd.pointer == fd.content.len() {
+                    return Err("EOFError: EOF".to_string());
+                }
+                if backward && fd.pointer == 0 {
+                    return Err("BOFError: BOF".to_string());
+                }
+                match fd.byte_mode {
+                    ByteModeRust::Byte => {
+                        if !backward {
+                            let b = fd.content[fd.pointer];
+                            fd.pointer += 1;
+                            Ok(Value::Int(b as i64))
+                        } else {
+                            fd.pointer -= 1;
+                            Ok(Value::Int(fd.content[fd.pointer] as i64))
+                        }
+                    }
+                    ByteModeRust::Text => {
+                        if !backward {
+                            let s = std::str::from_utf8(&fd.content[fd.pointer..])
+                                .map_err(|_| "IOError: invalid UTF-8 in file".to_string())?;
+                            let ch = s.chars().next().unwrap(); // 空でないことは確認済み
+                            let ch_len = ch.len_utf8();
+                            fd.pointer += ch_len;
+                            Ok(Value::Str(ch.to_string()))
+                        } else {
+                            let s = std::str::from_utf8(&fd.content[..fd.pointer])
+                                .map_err(|_| "IOError: invalid UTF-8 in file".to_string())?;
+                            let ch = s.chars().rev().next().unwrap();
+                            let ch_len = ch.len_utf8();
+                            fd.pointer -= ch_len;
+                            Ok(Value::Str(ch.to_string()))
+                        }
+                    }
+                }
+            }
+            "write" | "write_line" => {
+                let is_write_line = method_name == "write_line";
+                let content_val = file_content_arg(evaled, "content")?;
+                let mut fd = fd_rc.borrow_mut();
+                if fd.is_closed {
+                    return Err("IOError: I/O operation on closed file".to_string());
+                }
+                if fd.mode == FileOpenModeRust::Read {
+                    return Err("IOError: file is opened in read-only mode".to_string());
+                }
+                let mut insert_bytes = value_to_bytes(content_val, &fd.byte_mode)
+                    .map_err(|e| format!("TypeError: {method_name}(): {e}"))?;
+                if is_write_line {
+                    insert_bytes.push(b'\n');
+                }
+                // ポインタ位置に挿入（EOF なら追記、途中なら割り込み）
+                let ptr = fd.pointer;
+                let rest = fd.content[ptr..].to_vec();
+                fd.content.truncate(ptr);
+                fd.content.extend_from_slice(&insert_bytes);
+                fd.content.extend_from_slice(&rest);
+                fd.pointer = ptr + insert_bytes.len();
+                Ok(Value::None)
+            }
+            _ => Err(format!("AttributeError: FileObject has no method '{method_name}'")),
         }
     }
 

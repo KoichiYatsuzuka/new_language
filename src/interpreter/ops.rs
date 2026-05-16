@@ -41,7 +41,7 @@ impl Interpreter {
             | Value::Trait(_)
             | Value::TemplateFn(_) | Value::TemplateClass(_)
             | Value::GeneratorFn(_) | Value::TemplateGenFn(_) | Value::Generator(_)
-            | Value::Namespace(_) | Value::PyObject(_) => true,
+            | Value::Namespace(_) | Value::PyObject(_) | Value::FileObject(_) => true,
         }
     }
 
@@ -69,6 +69,7 @@ impl Interpreter {
             Value::Tuple(_) => "tuple",
             Value::Namespace(_) => "module",
             Value::PyObject(_) => "object",
+            Value::FileObject(_) => "FileObject",
         }
     }
 
@@ -91,6 +92,7 @@ impl Interpreter {
             }
             Value::Class(cls) => cls.name == type_name,
             Value::Function(_) | Value::OverloadedFn(_) | Value::GeneratorFn(_) => type_name == "function",
+            Value::FileObject(_) => type_name == "FileObject",
             _ => false,
         }
     }
@@ -153,6 +155,14 @@ impl Interpreter {
                 }
             }
             Value::Namespace(ns) => format!("<module '{}'>", ns.name),
+            Value::FileObject(fd_rc) => {
+                let fd = fd_rc.borrow();
+                if fd.is_closed {
+                    format!("<FileObject '{}' (closed)>", fd.path)
+                } else {
+                    format!("<FileObject '{}' pos={}>", fd.path, fd.pointer)
+                }
+            }
             Value::PyObject(h) => pyo3::Python::with_gil(|py| {
                 use pyo3::types::PyAnyMethods;
                 h.inner.bind(py).repr()
