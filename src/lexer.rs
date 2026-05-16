@@ -593,6 +593,7 @@ impl Lexer {
             "elif"         => Token::Elif,
             "else"         => Token::Else,
             "match"        => Token::Match,
+            "case"         => Token::Case,
             "for"          => Token::For,
             "while"        => Token::While,
             "break"        => Token::Break,
@@ -602,7 +603,7 @@ impl Lexer {
             // `yield` は `yield from` の可能性があるため先読みする
             "yield"        => self.maybe_two_word("from", Token::YieldFrom, Token::Yield),
             "block_return" => Token::BlockReturn,
-            "block_yield"  => Token::BlockYield,
+            "loop_yield"   => Token::LoopYield,
             "block"        => Token::Block,
             "try"          => Token::Try,
             "except"       => Token::Except,

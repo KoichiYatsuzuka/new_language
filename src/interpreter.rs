@@ -58,6 +58,15 @@ thread_local! {
     /// `None` の場合はジェネレータ実行コンテキスト外であることを意味する。
     /// `exec_generator` が開始時に `Some(Vec::new())` をセットし、終了時に `take()` で回収する。
     pub(self) static GENERATOR_YIELDS: RefCell<Option<Vec<Value>>> = RefCell::new(None);
+
+    /// `for`/`while` 式の評価中に `loop_yield` された値を収集するスレッドローカル変数。
+    /// `None` の場合は for/while 式の外であることを意味する（loop_yield はここで実行時エラー）。
+    /// ネストした for/while 式を正しく扱うため、外側の式の値を退避して評価後に復元する。
+    pub(self) static BLOCK_YIELDS: RefCell<Option<Vec<Value>>> = RefCell::new(None);
+
+    /// 現在の for/while ループ（文・式両形式）のネスト深さ。
+    /// `break` はこれが 0 のときに実行時エラーを返す。
+    pub(self) static LOOP_DEPTH: RefCell<usize> = RefCell::new(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -466,7 +475,8 @@ pub enum Value {
 /// - `Break`: `break` 文が実行された（ループを抜ける）
 /// - `Continue`: `continue` 文が実行された（ループの次の反復へ進む）
 /// - `Return(v)`: `return` 文が実行された（関数を抜けて値 `v` を返す）
-/// - `BlockReturn(v)`: `block_return` 文が実行された（ブロック式の値として `v` を返す）
+/// - `BlockReturn(v)`: `block_return` 文が実行された（ブロック式を即座に終了して `v` を返す）
+/// - `BlockYield(v)`: `block_yield` 文が実行された（実行を継続しつつ `v` を結果リストに積む）
 /// - `Raise(e)`: `raise` 文が実行された（言語レベルの例外 `e` がコールスタックを遡る）
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -476,6 +486,7 @@ pub enum ExecResult {
     Continue,
     Return(Value),
     BlockReturn(Value),
+    BlockYield(Value),
     /// コールスタックを遡って伝播中の言語レベル例外。
     Raise(RaisedError),
 }

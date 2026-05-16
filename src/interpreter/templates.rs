@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::{CallArg, ExceptHandler, Expr, FieldKind, Param, Stmt, TemplateParam};
+use crate::ast::{CallArg, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TemplateParam};
 
 use super::{
     DictData, Interpreter, Value, FnValue, ClassValue, GeneratorFnValue,
@@ -326,6 +326,37 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             type_name: subst_type(type_name, type_map),
             span: span.clone(),
         },
+        Expr::Block { stmts, return_type } => Expr::Block {
+            stmts: subst_stmts(stmts, type_map),
+            return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
+        },
+        Expr::IfExpr { branches, else_body, return_type } => Expr::IfExpr {
+            branches: branches.iter().map(|(c, b)| (subst_expr(c, type_map), subst_stmts(b, type_map))).collect(),
+            else_body: else_body.as_ref().map(|b| subst_stmts(b, type_map)),
+            return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
+        },
+        Expr::ForExpr { target, iter, body, return_type } => Expr::ForExpr {
+            target: target.clone(),
+            iter: Box::new(subst_expr(iter, type_map)),
+            body: subst_stmts(body, type_map),
+            return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
+        },
+        Expr::WhileExpr { cond, body, return_type } => Expr::WhileExpr {
+            cond: Box::new(subst_expr(cond, type_map)),
+            body: subst_stmts(body, type_map),
+            return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
+        },
+        Expr::MatchExpr { subject, arms, return_type } => Expr::MatchExpr {
+            subject: Box::new(subst_expr(subject, type_map)),
+            arms: arms.iter().map(|arm| MatchArm {
+                pattern: match &arm.pattern {
+                    MatchPattern::Case(e) => MatchPattern::Case(subst_expr(e, type_map)),
+                    MatchPattern::IsType(t) => MatchPattern::IsType(subst_type(t, type_map)),
+                },
+                body: subst_stmts(&arm.body, type_map),
+            }).collect(),
+            return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
+        },
     }
 }
 
@@ -383,7 +414,7 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         Stmt::Continue => Stmt::Continue,
         Stmt::Pass => Stmt::Pass,
         Stmt::BlockReturn(e) => Stmt::BlockReturn(subst_expr(e, type_map)),
-        Stmt::BlockYield(e) => Stmt::BlockYield(subst_expr(e, type_map)),
+        Stmt::LoopYield(e) => Stmt::LoopYield(subst_expr(e, type_map)),
         Stmt::Yield(e) => Stmt::Yield(subst_expr(e, type_map)),
         Stmt::GenDef { name, template_params, params, yield_type, body } => Stmt::GenDef {
             name: name.clone(),
@@ -450,6 +481,17 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             module: module.clone(),
             names: names.clone(),
             body: subst_stmts(body, type_map),
+        },
+        Stmt::Match { subject, arms, span } => Stmt::Match {
+            subject: subst_expr(subject, type_map),
+            arms: arms.iter().map(|arm| MatchArm {
+                pattern: match &arm.pattern {
+                    MatchPattern::Case(e) => MatchPattern::Case(subst_expr(e, type_map)),
+                    MatchPattern::IsType(t) => MatchPattern::IsType(subst_type(t, type_map)),
+                },
+                body: subst_stmts(&arm.body, type_map),
+            }).collect(),
+            span: span.clone(),
         },
     }
 }

@@ -91,7 +91,7 @@ pub struct Spanned {
 /// - `For` / `While` — ループ
 /// - `Break` / `Continue` / `Pass` — ループ制御・空文
 /// - `Return` / `Yield` / `YieldFrom` — 関数からの値返却・ジェネレータ
-/// - `BlockReturn` / `BlockYield` / `Block` — ブロック式制御
+/// - `BlockReturn` / `LoopYield` / `Block` — ブロック式制御
 ///
 /// ## 例外処理
 /// - `Try` / `Except` / `Finally` / `Raise` — 例外処理（未実装）
@@ -169,6 +169,7 @@ pub enum Token {
     Elif,
     Else,
     Match,
+    Case,
     For,
     While,
     Break,
@@ -178,7 +179,7 @@ pub enum Token {
     Yield,
     YieldFrom,
     BlockReturn,
-    BlockYield,
+    LoopYield,
     Block,
 
     // Exception handling
@@ -342,6 +343,7 @@ impl Token {
             Token::Elif => Some("elif"),
             Token::Else => Some("else"),
             Token::Match => Some("match"),
+            Token::Case => Some("case"),
             Token::For => Some("for"),
             Token::While => Some("while"),
             Token::Break => Some("break"),
@@ -351,7 +353,7 @@ impl Token {
             Token::Yield => Some("yield"),
             Token::YieldFrom => Some("yield from"),
             Token::BlockReturn => Some("block_return"),
-            Token::BlockYield => Some("block_yield"),
+            Token::LoopYield => Some("loop_yield"),
             Token::Block => Some("block"),
             Token::Try => Some("try"),
             Token::Except => Some("except"),

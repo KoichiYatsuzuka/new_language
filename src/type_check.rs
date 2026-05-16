@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, CallArg, Expr, Stmt, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Stmt, UnaryOp};
 use crate::token::Span;
 
 // ---------------------------------------------------------------------------
@@ -712,6 +712,18 @@ impl TypeChecker {
                     self.collect_fn_sigs(body);
                 }
                 Stmt::TraitDef { body, .. } => self.collect_fn_sigs(body),
+                Stmt::Match { arms, .. } => {
+                    for arm in arms {
+                        self.collect_fn_sigs(&arm.body);
+                    }
+                }
+                Stmt::If { branches, else_body } => {
+                    for (_, body) in branches { self.collect_fn_sigs(body); }
+                    if let Some(body) = else_body { self.collect_fn_sigs(body); }
+                }
+                Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::Block(body) => {
+                    self.collect_fn_sigs(body);
+                }
                 _ => {}
             }
         }
@@ -946,6 +958,37 @@ impl TypeChecker {
                     self.pop_scope();
                 }
             }
+            Stmt::Match { subject, arms, .. } => {
+                // match: subject を推論し、各アームを独立したスコープで検査する。
+                let subject_ty = self.infer(subject);
+                // subject が単純な変数参照かどうかを取得（`is` アームでの型絞り込み用）
+                let subject_name: Option<String> = if let Expr::Ident(n) = subject {
+                    Some(n.clone())
+                } else {
+                    None
+                };
+                for arm in arms {
+                    self.push_scope();
+                    match &arm.pattern {
+                        MatchPattern::Case(expr) => {
+                            self.infer(expr);
+                        }
+                        MatchPattern::IsType(type_name) => {
+                            // `is` アーム: subject が変数なら、アームのスコープ内で型を絞り込む
+                            if let Some(ref var_name) = subject_name {
+                                let narrowed = Self::type_from_guard_name(type_name);
+                                let is_mut = self.lookup(var_name)
+                                    .map(|v| v.mutable)
+                                    .unwrap_or(false);
+                                self.declare(var_name.clone(), narrowed, is_mut);
+                            }
+                            let _ = subject_ty.clone(); // suppress unused warning
+                        }
+                    }
+                    self.check_stmts(&arm.body);
+                    self.pop_scope();
+                }
+            }
             Stmt::While { cond, body } => {
                 // while: 条件式を推論し、ループ本体を独立したスコープで検査する。
                 self.infer(cond);
@@ -1035,8 +1078,8 @@ impl TypeChecker {
                     self.infer(e);
                 }
             }
-            Stmt::BlockReturn(expr) | Stmt::BlockYield(expr) | Stmt::Yield(expr) => {
-                // block_return / block_yield / yield: 値式を推論する。
+            Stmt::BlockReturn(expr) | Stmt::LoopYield(expr) | Stmt::Yield(expr) => {
+                // block_return / loop_yield / yield: 値式を推論する。
                 self.infer(expr);
             }
 
@@ -1312,6 +1355,71 @@ impl TypeChecker {
                 // 対象式を推論してから Bool を返す。型の絞り込みは Stmt::If 側で行う。
                 self.infer(expr);
                 InferredType::Bool
+            }
+            Expr::Block { stmts, return_type } => {
+                // block: 式: ボディを独立したスコープで検査する。
+                self.push_scope();
+                self.check_stmts(stmts);
+                self.pop_scope();
+                if let Some(t) = return_type {
+                    InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
+                } else {
+                    InferredType::Unresolved
+                }
+            }
+            Expr::IfExpr { branches, else_body, return_type } => {
+                for (cond, body) in branches {
+                    self.infer(cond);
+                    self.push_scope();
+                    self.check_stmts(body);
+                    self.pop_scope();
+                }
+                if let Some(body) = else_body {
+                    self.push_scope();
+                    self.check_stmts(body);
+                    self.pop_scope();
+                }
+                if let Some(t) = return_type {
+                    InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
+                } else {
+                    InferredType::Unresolved
+                }
+            }
+            Expr::ForExpr { iter, body, return_type, .. } => {
+                self.infer(iter);
+                self.push_scope();
+                self.check_stmts(body);
+                self.pop_scope();
+                if let Some(t) = return_type {
+                    InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
+                } else {
+                    InferredType::Unresolved
+                }
+            }
+            Expr::WhileExpr { cond, body, return_type } => {
+                self.infer(cond);
+                self.push_scope();
+                self.check_stmts(body);
+                self.pop_scope();
+                if let Some(t) = return_type {
+                    InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
+                } else {
+                    InferredType::Unresolved
+                }
+            }
+            Expr::MatchExpr { subject, arms, return_type } => {
+                self.infer(subject);
+                for arm in arms {
+                    if let crate::ast::MatchPattern::Case(e) = &arm.pattern { self.infer(e); }
+                    self.push_scope();
+                    self.check_stmts(&arm.body);
+                    self.pop_scope();
+                }
+                if let Some(t) = return_type {
+                    InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
+                } else {
+                    InferredType::Unresolved
+                }
             }
         }
     }

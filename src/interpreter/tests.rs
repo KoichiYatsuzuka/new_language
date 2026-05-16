@@ -2086,3 +2086,509 @@ fn test_pyobject_binop_add() {
     );
     assert!(matches!(run_py_get(src, "r"), Value::Int(5)));
 }
+
+// ---------------------------------------------------------------------------
+// block expression tests (block_return / block_yield)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_block_expr_block_return() {
+    let src = "
+let x = block:
+    block_return 42
+";
+    assert!(matches!(run_get(src, "x"), Value::Int(42)));
+}
+
+#[test]
+fn test_block_expr_block_return_early_exit() {
+    let src = "
+let x = block:
+    block_return 1
+    block_return 2
+";
+    // first block_return wins
+    assert!(matches!(run_get(src, "x"), Value::Int(1)));
+}
+
+#[test]
+fn test_block_expr_no_block_return_gives_none() {
+    let src = "
+let x = block:
+    mut a = 10
+    mut b = 20
+";
+    assert!(matches!(run_get(src, "x"), Value::None));
+}
+
+#[test]
+fn test_block_expr_computed_value() {
+    let src = "
+let n = 6
+let result = block:
+    let doubled = n * 2
+    block_return doubled + 1
+";
+    assert!(matches!(run_get(src, "result"), Value::Int(13)));
+}
+
+#[test]
+fn test_block_expr_conditional_return() {
+    let src = "
+fn classify(x: int) -> str:
+    return block:
+        if x > 0:
+            block_return \"positive\"
+        elif x < 0:
+            block_return \"negative\"
+        else:
+            block_return \"zero\"
+let a = classify(5)
+let b = classify(-3)
+let c = classify(0)
+";
+    assert!(matches!(run_get(src, "a"), Value::Str(ref s) if s == "positive"));
+    assert!(matches!(run_get(src, "b"), Value::Str(ref s) if s == "negative"));
+    assert!(matches!(run_get(src, "c"), Value::Str(ref s) if s == "zero"));
+}
+
+#[test]
+fn test_loop_yield_list_from_for_expr() {
+    // loop_yield accumulates values from a for expression
+    let src = "
+let items = for i in range(1, 4) ->list[int]:
+    loop_yield i
+";
+    if let Value::List(lst) = run_get(src, "items") {
+        let borrow = lst.borrow();
+        assert_eq!(borrow.len(), 3);
+        assert!(matches!(borrow[0], Value::Int(1)));
+        assert!(matches!(borrow[1], Value::Int(2)));
+        assert!(matches!(borrow[2], Value::Int(3)));
+    } else {
+        panic!("expected list");
+    }
+}
+
+#[test]
+fn test_loop_yield_in_nested_if_inside_for_expr() {
+    // loop_yield inside an if that's inside a for expression
+    let src = "
+let evens = for i in range(6) ->list[int]:
+    if i % 2 == 0:
+        loop_yield i
+";
+    if let Value::List(lst) = run_get(src, "evens") {
+        let borrow = lst.borrow();
+        assert_eq!(borrow.len(), 3);
+        assert!(matches!(borrow[0], Value::Int(0)));
+        assert!(matches!(borrow[1], Value::Int(2)));
+        assert!(matches!(borrow[2], Value::Int(4)));
+    } else {
+        panic!("expected list");
+    }
+}
+
+#[test]
+fn test_loop_yield_outside_for_while_expr_is_error() {
+    // loop_yield inside block: (not a for/while expression) is a runtime error
+    let src = "
+mut x = 0
+block:
+    loop_yield 999
+    x = 1
+";
+    assert!(run(src).is_err());
+}
+
+#[test]
+fn test_break_outside_loop_is_error() {
+    // break outside any for/while loop is a runtime error
+    let src = "
+fn bad():
+    break
+bad()
+";
+    assert!(run(src).is_err());
+}
+
+#[test]
+fn test_block_return_outside_block_expr_is_error() {
+    // block_return outside any block: expression should be a SyntaxError
+    let src = "
+fn bad() -> int:
+    block_return 42
+    return 0
+bad()
+";
+    assert!(run(src).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// match statement tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_match_case_literal() {
+    let src = "
+mut x = 0
+mut result = 0
+match (x):
+    case 0:
+        result = 1
+    case 1:
+        result = 2
+";
+    assert!(matches!(run_get(src, "result"), Value::Int(1)));
+}
+
+#[test]
+fn test_match_case_no_match() {
+    let src = "
+mut x = 5
+mut result = 0
+match (x):
+    case 0:
+        result = 1
+    case 1:
+        result = 2
+";
+    assert!(matches!(run_get(src, "result"), Value::Int(0)));
+}
+
+#[test]
+fn test_match_case_wildcard() {
+    let src = "
+mut x = 99
+mut result = 0
+match (x):
+    case 0:
+        result = 1
+    case _:
+        result = 99
+";
+    assert!(matches!(run_get(src, "result"), Value::Int(99)));
+}
+
+#[test]
+fn test_match_case_string() {
+    let src = r#"
+mut s = "hello"
+mut result = 0
+match (s):
+    case "world":
+        result = 1
+    case "hello":
+        result = 2
+    case _:
+        result = 3
+"#;
+    assert!(matches!(run_get(src, "result"), Value::Int(2)));
+}
+
+#[test]
+fn test_match_is_int() {
+    let src = "
+mut x = 42
+mut result = 0
+match (x):
+    is int:
+        result = 1
+    is str:
+        result = 2
+";
+    assert!(matches!(run_get(src, "result"), Value::Int(1)));
+}
+
+#[test]
+fn test_match_is_str() {
+    let src = r#"
+mut x = "hello"
+mut result = 0
+match (x):
+    is int:
+        result = 1
+    is str:
+        result = 2
+"#;
+    assert!(matches!(run_get(src, "result"), Value::Int(2)));
+}
+
+#[test]
+fn test_match_is_no_match() {
+    let src = "
+mut x = 3.14
+mut result = 0
+match (x):
+    is int:
+        result = 1
+    is str:
+        result = 2
+";
+    assert!(matches!(run_get(src, "result"), Value::Int(0)));
+}
+
+#[test]
+fn test_match_block_return() {
+    // block_return inside a match arm exits the enclosing block: early
+    let src = "
+mut x = 2
+mut result = 0
+block:
+    match (x):
+        case 1:
+            result = 10
+            block_return 0
+        case 2:
+            result = 20
+            block_return 0
+    result = 999
+";
+    assert!(matches!(run_get(src, "result"), Value::Int(20)));
+}
+
+#[test]
+fn test_match_return_from_function() {
+    let src = "
+fn get(x: int) -> int:
+    match (x):
+        case 1:
+            return 10
+        case 2:
+            return 20
+        case _:
+            return 99
+    return 0
+let result = get(2)
+";
+    assert!(matches!(run_get(src, "result"), Value::Int(20)));
+}
+
+#[test]
+fn test_match_mixed_arms_parse_error() {
+    let src = "
+mut x = 0
+match (x):
+    case 0:
+        pass
+    is int:
+        pass
+";
+    let tokens = crate::lexer::Lexer::new(src, "").tokenize();
+    let result = crate::parser::Parser::new(tokens, None).parse_program();
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(msg.contains("mix"), "expected mix error, got: {msg}");
+}
+
+// ---------------------------------------------------------------------------
+// 制御フロー式テスト (if/for/while/match as expressions)
+// ---------------------------------------------------------------------------
+
+fn assert_str(val: Value, expected: &str) {
+    if let Value::Str(s) = val {
+        assert_eq!(s, expected);
+    } else {
+        panic!("expected Str({:?}), got {:?}", expected, val);
+    }
+}
+
+fn assert_int(val: Value, expected: i64) {
+    if let Value::Int(n) = val {
+        assert_eq!(n, expected);
+    } else {
+        panic!("expected Int({}), got {:?}", expected, val);
+    }
+}
+
+fn assert_int_list(val: Value, expected: &[i64]) {
+    if let Value::List(rc) = val {
+        let list = rc.borrow();
+        assert_eq!(list.len(), expected.len(), "list length mismatch");
+        for (i, (v, e)) in list.iter().zip(expected.iter()).enumerate() {
+            if let Value::Int(n) = v {
+                assert_eq!(n, e, "list[{}] mismatch", i);
+            } else {
+                panic!("list[{}]: expected Int({}), got {:?}", i, e, v);
+            }
+        }
+    } else {
+        panic!("expected List, got {:?}", val);
+    }
+}
+
+#[test]
+fn test_if_expr_true_branch() {
+    let src = "
+let x = if True ->str:
+    block_return \"yes\"
+else:
+    block_return \"no\"
+";
+    assert_str(run_get(src, "x"), "yes");
+}
+
+#[test]
+fn test_if_expr_false_branch() {
+    let src = "
+let x = if False ->str:
+    block_return \"yes\"
+else:
+    block_return \"no\"
+";
+    assert_str(run_get(src, "x"), "no");
+}
+
+#[test]
+fn test_if_expr_no_else_returns_none() {
+    let src = "
+let x = if False ->str:
+    block_return \"yes\"
+";
+    assert!(matches!(run_get(src, "x"), Value::None));
+}
+
+#[test]
+fn test_if_expr_elif() {
+    let src = "
+let n = 7
+let s = if n < 5 ->str:
+    block_return \"small\"
+elif n < 10:
+    block_return \"medium\"
+else:
+    block_return \"large\"
+";
+    assert_str(run_get(src, "s"), "medium");
+}
+
+#[test]
+fn test_for_expr_block_yield() {
+    let src = "
+let evens = for i in range(5) ->list[int]:
+    if i % 2 == 0:
+        loop_yield i
+";
+    assert_int_list(run_get(src, "evens"), &[0, 2, 4]);
+}
+
+#[test]
+fn test_for_expr_block_return_single_value() {
+    let src = "
+let first = for i in range(1, 10) ->int:
+    if i % 2 == 0:
+        block_return i
+";
+    assert_int(run_get(src, "first"), 2);
+}
+
+#[test]
+fn test_for_expr_no_yields_returns_none() {
+    let src = "
+let x = for i in range(0) ->list[int]:
+    loop_yield i
+";
+    assert!(matches!(run_get(src, "x"), Value::None));
+}
+
+#[test]
+fn test_for_expr_break_returns_partial_list() {
+    let src = "
+let partial = for i in range(10) ->list[int]:
+    if i == 3:
+        break
+    loop_yield i
+";
+    assert_int_list(run_get(src, "partial"), &[0, 1, 2]);
+}
+
+#[test]
+fn test_while_expr_block_yield() {
+    let src = "
+mut n = 0
+let vals = while n < 3 ->list[int]:
+    loop_yield n
+    n += 1
+";
+    assert_int_list(run_get(src, "vals"), &[0, 1, 2]);
+}
+
+#[test]
+fn test_while_expr_block_return() {
+    let src = "
+mut n = 0
+let found = while n < 100 ->int:
+    n += 1
+    if n * n > 50:
+        block_return n
+";
+    assert_int(run_get(src, "found"), 8);
+}
+
+#[test]
+fn test_match_expr_block_return() {
+    let src = "
+let v = 2
+let s = match (v) ->str:
+    case 1:
+        block_return \"one\"
+    case 2:
+        block_return \"two\"
+    case _:
+        block_return \"other\"
+";
+    assert_str(run_get(src, "s"), "two");
+}
+
+#[test]
+fn test_match_expr_no_match_returns_none() {
+    let src = "
+let v = 99
+let s = match (v) ->str:
+    case 1:
+        block_return \"one\"
+";
+    assert!(matches!(run_get(src, "s"), Value::None));
+}
+
+#[test]
+fn test_break_exits_regular_for_loop() {
+    let src = "
+mut found = -1
+for i in range(10):
+    if i == 5:
+        found = i
+        break
+";
+    assert_int(run_get(src, "found"), 5);
+}
+
+#[test]
+fn test_block_return_propagates_through_nested_if_to_for_expr() {
+    let src = "
+let result = for i in range(10) ->int:
+    if i > 4:
+        block_return i
+";
+    assert_int(run_get(src, "result"), 5);
+}
+
+#[test]
+fn test_block_expr_with_return_type_annotation() {
+    let src = "
+let x = block ->int:
+    block_return 42
+";
+    assert_int(run_get(src, "x"), 42);
+}
+
+#[test]
+fn test_if_expr_without_annotation_still_works() {
+    let src = "
+let x = if True:
+    block_return 100
+else:
+    block_return 0
+";
+    assert_int(run_get(src, "x"), 100);
+}

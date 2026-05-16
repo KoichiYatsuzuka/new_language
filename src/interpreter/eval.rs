@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use crate::ast::{BinOp, Expr};
 
-use super::{DictData, Interpreter, TupleData, Value};
+use super::{DictData, ExecResult, GeneratorState, Interpreter, TupleData, Value, Var, RAISE_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH};
 
 impl Interpreter {
     /// 式（`Expr`）を評価して `Value` を返す。インタープリタの式評価のメインエントリポイント。
@@ -188,6 +188,54 @@ impl Interpreter {
                 // テンプレート式は単独では使用不可（Call の一部として処理される）
                 Err("TemplateError: template expression must be immediately called (e.g. `Func[T](args)`)".to_string())
             }
+            Expr::Block { stmts, .. } => {
+                // block: 式。block_return で即終了、block_yield でスレッドローカルに値を積みながら継続する。
+                // ネストした block: 式を正しく扱うため、BLOCK_YIELDS の前の値を退避して評価後に復元する。
+                self.eval_block_expr(stmts)
+            }
+            Expr::IfExpr { branches, else_body, .. } => {
+                // if 式: block_return で値を返す。BLOCK_YIELDS は外側コンテキストを引き継ぐ（透過的）。
+                for (cond, body) in branches {
+                    let val = self.eval(cond)?;
+                    if self.is_truthy(&val) {
+                        return self.eval_capture_block_return(body);
+                    }
+                }
+                if let Some(body) = else_body {
+                    return self.eval_capture_block_return(body);
+                }
+                Ok(Value::None)
+            }
+            Expr::ForExpr { target, iter, body, .. } => {
+                // for 式: block_yield でリスト蓄積、block_return で単値返却。
+                // break (= block_return None) はループを終了し蓄積リストを返す。
+                self.eval_for_expr(target, iter, body)
+            }
+            Expr::WhileExpr { cond, body, .. } => {
+                // while 式: ForExpr と同様。
+                self.eval_while_expr(cond, body)
+            }
+            Expr::MatchExpr { subject, arms, .. } => {
+                // match 式: block_return で値を返す。BLOCK_YIELDS は透過的。
+                let subject_val = self.eval(subject)?;
+                for arm in arms {
+                    let matched = match &arm.pattern {
+                        crate::ast::MatchPattern::Case(pattern_expr) => {
+                            if matches!(pattern_expr, Expr::Ident(n) if n == "_") {
+                                true
+                            } else {
+                                let pv = self.eval(pattern_expr)?;
+                                matches!(self.apply_binop(&crate::ast::BinOp::Eq, subject_val.clone(), pv)?, Value::Bool(true))
+                            }
+                        }
+                        crate::ast::MatchPattern::IsType(type_name) => self.value_is_type(&subject_val, type_name),
+                    };
+                    if matched {
+                        return self.eval_capture_block_return(&arm.body);
+                    }
+                }
+                Ok(Value::None)
+            }
             Expr::IsType { expr, negated, type_name, .. } => {
                 // `x is T` / `x is not T`: 実行時の型判定。value_is_type で確認し Bool を返す。
                 let val = self.eval(expr)?;
@@ -299,6 +347,192 @@ impl Interpreter {
 
     /// 属性・添字に値を代入する。`AttrAssign` 文と `AttrCompoundAssign` 文から呼ばれる。
     ///
+    // ---------------------------------------------------------------------------
+    // ブロック式 / 制御フロー式 の共通ヘルパー
+    // ---------------------------------------------------------------------------
+
+    /// block: 式 / Expr::Block の実体。BLOCK_YIELDS コンテキストを退避・復元しながら実行する。
+    pub(super) fn eval_block_expr(&mut self, stmts: &[crate::ast::Stmt]) -> Result<Value, String> {
+        let saved = BLOCK_YIELDS.with(|y| y.borrow_mut().take());
+        BLOCK_YIELDS.with(|y| *y.borrow_mut() = Some(Vec::new()));
+
+        self.push_scope();
+        let mut block_return_val: Option<Value> = None;
+        let mut early_err: Option<String> = None;
+
+        'block_expr: for stmt in stmts {
+            match self.exec(stmt) {
+                Ok(ExecResult::Normal) => {}
+                Ok(ExecResult::BlockReturn(v)) => { block_return_val = Some(v); break 'block_expr; }
+                Ok(ExecResult::BlockYield(_)) => {} // スレッドローカル経由で収集済み
+                Ok(ExecResult::Raise(raised)) => {
+                    self.current_exception = Some(raised);
+                    early_err = Some(RAISE_SENTINEL.to_string());
+                    break 'block_expr;
+                }
+                Ok(ExecResult::Return(_)) => {
+                    early_err = Some("SyntaxError: 'return' inside block expression — use 'block_return'".to_string());
+                    break 'block_expr;
+                }
+                Ok(ExecResult::Break) | Ok(ExecResult::Continue) => {
+                    // block: 式の外にループが無い場合; ループ内にいれば外側ループで処理される
+                    early_err = Some("SyntaxError: 'break'/'continue' inside block expression is not supported outside a loop".to_string());
+                    break 'block_expr;
+                }
+                Err(e) => { early_err = Some(e); break 'block_expr; }
+            }
+        }
+        self.pop_scope();
+
+        let yields = BLOCK_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
+        BLOCK_YIELDS.with(|y| *y.borrow_mut() = saved);
+
+        if let Some(e) = early_err { return Err(e); }
+        match block_return_val {
+            Some(v) => Ok(v),
+            None => if yields.is_empty() { Ok(Value::None) } else { Ok(Value::List(Rc::new(RefCell::new(yields)))) },
+        }
+    }
+
+    /// if / match 式のボディを実行し、BlockReturn シグナルを値として捕捉して返す。
+    /// BLOCK_YIELDS は設定しない（透過的 — 外側の for/while/block 式に yield が届く）。
+    pub(super) fn eval_capture_block_return(&mut self, stmts: &[crate::ast::Stmt]) -> Result<Value, String> {
+        self.push_scope();
+        let mut result_val: Option<Value> = None;
+        let mut early_err: Option<String> = None;
+
+        'body: for stmt in stmts {
+            match self.exec(stmt) {
+                Ok(ExecResult::Normal) => {}
+                Ok(ExecResult::BlockReturn(v)) => { result_val = Some(v); break 'body; }
+                Ok(ExecResult::Raise(raised)) => {
+                    self.current_exception = Some(raised);
+                    early_err = Some(RAISE_SENTINEL.to_string());
+                    break 'body;
+                }
+                Ok(ExecResult::Return(_)) => {
+                    early_err = Some("SyntaxError: 'return' inside block expression — use 'block_return'".to_string());
+                    break 'body;
+                }
+                Ok(other) => {
+                    // Break, Continue, BlockYield: 伝播させない（ここでは捕捉できない）
+                    // これらが届くのは制御フロー式のネストが正しくない場合
+                    // Continue/Break は内側のループに渡すために伝播させる
+                    let _ = other; // Normal として継続
+                }
+                Err(e) => { early_err = Some(e); break 'body; }
+            }
+        }
+        self.pop_scope();
+        if let Some(e) = early_err { return Err(e); }
+        Ok(result_val.unwrap_or(Value::None))
+    }
+
+    /// for 式の実体。BLOCK_YIELDS コンテキストと LOOP_DEPTH を管理し、loop_yield でリスト蓄積、block_return で単値返却。
+    pub(super) fn eval_for_expr(&mut self, target: &str, iter_expr: &crate::ast::Expr, body: &[crate::ast::Stmt]) -> Result<Value, String> {
+        let iter_val = self.eval(iter_expr)?;
+        let generator = match iter_val {
+            Value::List(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items.borrow().clone(), index: 0 }))),
+            Value::Str(s) => {
+                let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
+                Value::Generator(Rc::new(RefCell::new(GeneratorState { values: chars, index: 0 })))
+            }
+            Value::Generator(_) => iter_val,
+            Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[])?,
+            Value::PyObject(ref handle) => {
+                let items = super::py_interop::py_collect_iter(handle)?;
+                Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items, index: 0 })))
+            }
+            _ => return Err("TypeError: object is not iterable".to_string()),
+        };
+
+        let saved = BLOCK_YIELDS.with(|y| y.borrow_mut().take());
+        BLOCK_YIELDS.with(|y| *y.borrow_mut() = Some(Vec::new()));
+        LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
+
+        let mut block_return_val: Option<Value> = None;
+        let mut early_err: Option<String> = None;
+
+        'for_loop: loop {
+            match self.eval_method_call(generator.clone(), "next", &[]) {
+                Ok(item) => {
+                    self.push_scope();
+                    self.declare_var(target.to_string(), Var::new(item, true));
+                    let result = self.exec_block(body);
+                    self.pop_scope();
+                    match result {
+                        Ok(ExecResult::Normal) => {}
+                        Ok(ExecResult::Continue) => continue,
+                        Ok(ExecResult::Break) | Ok(ExecResult::BlockReturn(Value::None)) => break 'for_loop,
+                        Ok(ExecResult::BlockReturn(v)) => { block_return_val = Some(v); break 'for_loop; }
+                        Ok(ExecResult::Raise(raised)) => {
+                            self.current_exception = Some(raised);
+                            early_err = Some(RAISE_SENTINEL.to_string());
+                            break 'for_loop;
+                        }
+                        Ok(ExecResult::Return(v)) => { block_return_val = Some(v); break 'for_loop; } // shouldn't happen
+                        Ok(ExecResult::BlockYield(_)) => {}
+                        Err(e) => { early_err = Some(e); break 'for_loop; }
+                    }
+                }
+                Err(ref e) if e.starts_with("EndOfIteration") => break,
+                Err(e) => { early_err = Some(e); break; }
+            }
+        }
+
+        LOOP_DEPTH.with(|d| *d.borrow_mut() -= 1);
+        let yields = BLOCK_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
+        BLOCK_YIELDS.with(|y| *y.borrow_mut() = saved);
+
+        if let Some(e) = early_err { return Err(e); }
+        match block_return_val {
+            Some(v) => Ok(v),
+            None => if yields.is_empty() { Ok(Value::None) } else { Ok(Value::List(Rc::new(RefCell::new(yields)))) },
+        }
+    }
+
+    /// while 式の実体。for 式と同様に BLOCK_YIELDS と LOOP_DEPTH を管理する。
+    pub(super) fn eval_while_expr(&mut self, cond_expr: &crate::ast::Expr, body: &[crate::ast::Stmt]) -> Result<Value, String> {
+        let saved = BLOCK_YIELDS.with(|y| y.borrow_mut().take());
+        BLOCK_YIELDS.with(|y| *y.borrow_mut() = Some(Vec::new()));
+        LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
+
+        let mut block_return_val: Option<Value> = None;
+        let mut early_err: Option<String> = None;
+
+        'while_loop: loop {
+            let cond_val = match self.eval(cond_expr) {
+                Ok(v) => v,
+                Err(e) => { early_err = Some(e); break; }
+            };
+            if !self.is_truthy(&cond_val) { break; }
+
+            match self.exec_scoped_block(body) {
+                Ok(ExecResult::Normal) => {}
+                Ok(ExecResult::Continue) => continue,
+                Ok(ExecResult::Break) | Ok(ExecResult::BlockReturn(Value::None)) => break 'while_loop,
+                Ok(ExecResult::BlockReturn(v)) => { block_return_val = Some(v); break 'while_loop; }
+                Ok(ExecResult::Raise(raised)) => {
+                    self.current_exception = Some(raised);
+                    early_err = Some(RAISE_SENTINEL.to_string());
+                    break 'while_loop;
+                }
+                Ok(other) => { let _ = other; }
+                Err(e) => { early_err = Some(e); break; }
+            }
+        }
+
+        LOOP_DEPTH.with(|d| *d.borrow_mut() -= 1);
+        let yields = BLOCK_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
+        BLOCK_YIELDS.with(|y| *y.borrow_mut() = saved);
+
+        if let Some(e) = early_err { return Err(e); }
+        match block_return_val {
+            Some(v) => Ok(v),
+            None => if yields.is_empty() { Ok(Value::None) } else { Ok(Value::List(Rc::new(RefCell::new(yields)))) },
+        }
+    }
+
     /// 対応する代入ターゲット:
     /// - `Expr::Attr { object, attr }`: インスタンスフィールドへの代入（可変性・const チェック付き）
     /// - `Expr::TraitAccess { object, trait_name, attr }`: トレイトフィールドへの代入

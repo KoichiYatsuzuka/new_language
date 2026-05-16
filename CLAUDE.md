@@ -59,7 +59,11 @@ test_lang/
 │   ├── function_type.tl       # function type annotation examples
 │   ├── function_type__errors.tl  # function type StaticTypeError examples
 │   ├── closure.tl             # Closure behavior examples (capture, static, nested)
-│   └── closure__errors.tl    # freeze on captured mutable variable TypeError examples
+│   ├── closure__errors.tl     # freeze on captured mutable variable TypeError examples
+│   ├── match.tl               # match statement behavior examples
+│   ├── match__errors.tl       # match mixed-arm parse error examples
+│   ├── block_expr.tl          # block: expression with block_return examples
+│   └── control_flow_expr.tl   # if/for/while/match as expressions with ->Type examples
 └── vscode-extension/    # VS Code extension (type inference inline hints)
     └── src/
         ├── extension.ts
@@ -100,6 +104,7 @@ Source File
 - Strings: single quote, double quote, triple quote, escapes
 - Adds `Span` (filename, line number, column number) to every token
 - `Token::SelfType` (`Self`), `Token::NewType` (`new_type`), `Token::Static` (`static`)
+- `Token::BlockReturn` (`block_return`), `Token::LoopYield` (`loop_yield`), `Token::Block` (`block`)
 
 ### Parsing (`src/parser.rs`)
 
@@ -112,6 +117,15 @@ Source File
 - Type guard expressions: `expr is TypeName` and `expr is not TypeName` (parsed as `Expr::IsType`)
 - Function type annotations: `function`, `function[let T]->R`, `function{let name:T}->R`, `function[]->R`
 - Function parameters support optional `let` / `mut` qualifiers (`let` = immutable, `mut` = mutable, absent = immutable)
+- **`match` statement**: `match (expr): case val: body` with wildcard `case _:` and type-pattern `is Type:` arms; arms must be uniform (all value-case or all type-case, not mixed)
+- **Control flow as expressions** with optional `->Type` annotation:
+  - `if cond ->T: body [elif/else]` — evaluates to the value of the taken branch (via `block_return`)
+  - `for target in iter ->list[T]: body` — evaluates to a list built by `loop_yield`, or a single value via `block_return`
+  - `while cond ->T: body` — same as for expression
+  - `match (expr) ->T: arms` — evaluates to the matched arm's `block_return` value
+  - `block ->T: body` — inline block expression with `block_return`
+  - `->Type` annotation is optional; without it the expression still works but yields untyped results
+  - `parse_opt_return_type()` helper parses the optional `->Type` before `:` in all forms
 
 ### Static Type Checking (`src/type_check.rs`)
 
@@ -136,12 +150,21 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - `import[py-int]`
 - Type guard (`is` / `is not`): runtime instance-of check against primitive types, class names, trait membership (via `bases`), and `function`
 - `function` primitive type: `Value::Function`, `Value::OverloadedFn`, `Value::GeneratorFn` all match `x is function`
+- **`match` statement**: pattern matching with value-case arms (`case val:`), wildcard (`case _:`), and type-pattern arms (`is Type:`)
 - **Closures**: inner functions capture variables from outer scopes
   - Immutable (`let`) variables: deep-copied at closure creation time
   - Mutable (`mut`) variables: captured as a shared `Rc<RefCell<Value>>` cell — inner functions can read and write the same value as the outer scope
   - Each call to the outer function produces an independent closure environment
   - `static mut` variables: a single persistent cell keyed by source position, shared across all calls to the outer function
   - `freeze` is disallowed on a `mut` variable that has been captured by an inner function (`TypeError: cannot freeze '...' because it is captured by a closure`)
+- **`block:` expression** (`Expr::Block`): `let x = block ->T: block_return val` — inline block that returns a single value via `block_return`; returns `None` if `block_return` is never reached
+- **Control flow as expressions** (`Expr::IfExpr`, `Expr::ForExpr`, `Expr::WhileExpr`, `Expr::MatchExpr`):
+  - `block_return val` — exits the immediately enclosing control-flow expression and yields `val` as its result; runtime error if used outside any block/if/for/while/match expression
+  - `loop_yield val` — accumulates `val` into a list inside a `for`/`while` expression; runtime error if used outside a `for`/`while` expression (i.e. not valid in `block:`, `if`, or `match` expressions)
+  - `break` — alias for `block_return None`; exits the innermost `for`/`while` loop (statement or expression form); runtime error if used outside any `for`/`while`
+  - For expressions: if `loop_yield` is used, the expression evaluates to the accumulated list; if `block_return` is used, evaluates to that single value; if neither is reached, evaluates to `None`
+  - Thread-local `BLOCK_YIELDS` (set to `Some(Vec)` inside for/while expression bodies) collects `loop_yield` values without interrupting control flow
+  - Thread-local `LOOP_DEPTH` (incremented for every for/while, statement or expression form) guards `break` usage
 
 ### VS Code Extension (`vscode-extension/`)
 
@@ -151,11 +174,11 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 ## Major Unimplemented Features
 
 - Full preservation of type annotations
-- Runtime return type checking
+- Runtime return type checking for `block_return`/`loop_yield` against `->Type` annotations
+- Mixing check: `block_return` and `loop_yield` in the same block expression (currently not statically detected)
 - Set type (`{a, b}`)
 - Exception handling (`try` / `except` / `finally` / `raise`)
 - Imports (`import` / `from ... import`)
-- `match` statement
 - LLVM IR code generation
 - Python implementation
 
@@ -169,11 +192,14 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Empty collections require explicit typing
 - No `nonlocal` keyword: declare the outer variable as `mut` to allow inner functions to modify it
 - `static mut` instead of a class-level attribute for shared closure state across calls
+- `if` / `for` / `while` / `match` / `block` can be used as expressions with a `->Type` annotation
+- `block_return val` exits a block/if/match/for/while expression with a value (not a function return)
+- `loop_yield val` accumulates values in a `for`/`while` expression into a list (only valid inside `for`/`while` expressions)
+- `break` is an alias of `block_return None` and is only valid inside `for`/`while` loops
 
 ## Next Features to Implement (Priority Order)
 
 1. **Set type** (`{a, b}`)
 2. **Exception handling** (`try` / `except` / `finally` / `raise`)
-3. **`match` statement**
-4. **LLVM IR code generation**
+3. **LLVM IR code generation**
 

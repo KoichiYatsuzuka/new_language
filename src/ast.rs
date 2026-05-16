@@ -207,6 +207,50 @@ pub enum Expr {
     /// タプルリテラル: `(val, val, ...)` — 評価結果は `tuple[T1, T2, ...]` 型の値になる。
     /// 空タプル `()` や単要素タプル `(val,)` も含む。`(expr)` はタプルではなくグループ式。
     Tuple(Vec<Expr>),
+    /// ブロック式: `block [->Type]: body`。
+    ///
+    /// `block_return value` で即座に終了してその値を返す。
+    /// `block_yield value` は値を積みながら実行を継続し、ブロック終了時にリストを返す。
+    /// どちらも使わない場合は `None` を返す。
+    /// `return_type` が `Some` の場合は静的型検査で `block_return`/`block_yield` の型を照合する。
+    Block {
+        stmts: Vec<Stmt>,
+        return_type: Option<String>,
+    },
+    /// if 式: `if cond [->Type]: body [elif cond: body]* [else: body]`。
+    ///
+    /// `->Type` アノテーション付きで式として使用する。各分岐の `block_return` が値を返す。
+    IfExpr {
+        branches: Vec<(Expr, Vec<Stmt>)>,
+        else_body: Option<Vec<Stmt>>,
+        return_type: Option<String>,
+    },
+    /// for 式: `for target in iter [->Type]: body`。
+    ///
+    /// `->list[T]` アノテーションと `block_yield` でリストを構築する。
+    /// `->T` アノテーションと `block_return` で単一値を返す。
+    ForExpr {
+        target: String,
+        iter: Box<Expr>,
+        body: Vec<Stmt>,
+        return_type: Option<String>,
+    },
+    /// while 式: `while cond [->Type]: body`。
+    ///
+    /// ForExpr と同様に `block_yield` または `block_return` で値を返す。
+    WhileExpr {
+        cond: Box<Expr>,
+        body: Vec<Stmt>,
+        return_type: Option<String>,
+    },
+    /// match 式: `match subject [->Type]: arms`。
+    ///
+    /// 各アームの `block_return` が値を返す。
+    MatchExpr {
+        subject: Box<Expr>,
+        arms: Vec<MatchArm>,
+        return_type: Option<String>,
+    },
     /// 型ガード式: `expr is TypeName` または `expr is not TypeName`。
     /// ランタイムでは `Bool` を返す。型検査器は直後の `if` 分岐内でオペランドの型を絞り込む。
     /// - `negated: false` → `is`  （真なら型が一致）
@@ -221,6 +265,26 @@ pub enum Expr {
         /// エラー報告に使用する位置情報。
         span: Span,
     },
+}
+
+/// `match` 文の1アームのパターン部分。
+///
+/// `case` と `is` の2種類があり、1つの `match` 文内での混在はパースエラー。
+#[derive(Debug, Clone)]
+pub enum MatchPattern {
+    /// `case <expr>:` — 値比較パターン。`Expr::Ident("_")` はワイルドカード（常にマッチ）。
+    Case(Expr),
+    /// `is <TypeName>:` — 型チェックパターン（instanceof 検査）。
+    IsType(String),
+}
+
+/// `match` 文の1アーム（パターン + ボディ）。
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    /// パターン部分（`case <expr>` または `is <TypeName>`）。
+    pub pattern: MatchPattern,
+    /// このアームが選択されたときに実行される文リスト。
+    pub body: Vec<Stmt>,
 }
 
 /// 文（Statement）の AST ノード。
@@ -241,7 +305,7 @@ pub enum Expr {
 /// - `Return`                 : `return [expr]` 関数からの返却。
 /// - `Break` / `Continue` / `Pass` : ループ制御・空文。
 /// - `BlockReturn`            : `block_return expr` — `block:` スコープからの値返却。
-/// - `BlockYield`             : `block_yield expr` — `block:` スコープからの値産出。
+/// - `LoopYield`              : `loop_yield expr` — `for`/`while` 式内での値産出（リスト蓄積）。
 /// - `Yield`                  : `yield expr` — ジェネレータ関数内での値産出。
 /// - `Freeze`                 : `freeze x` — `mut` 変数を `let`（不変）に降格する。
 /// - `FnDef`                  : `fn` 関数定義。テンプレート対応。
@@ -284,6 +348,24 @@ pub enum Stmt {
         /// `else` 節のボディ文リスト。`else` がない場合は `None`。
         else_body: Option<Vec<Stmt>>,
     },
+    /// `match (expr):` パターンマッチ文。
+    ///
+    /// `case` アームは `==` で値を比較し、`is` アームは型を検査する。
+    /// `case _:` はワイルドカード（常にマッチ）として扱われる。
+    /// 1つの `match` 文内で `case` と `is` を混在させるとパースエラー。
+    ///
+    /// # フィールド
+    /// - `subject` : 検査対象の式。
+    /// - `arms`    : マッチアームのリスト。
+    /// - `span`    : エラー報告に使用する位置情報。
+    Match {
+        /// 検査対象の式（`match (x):` の `x`）。
+        subject: Expr,
+        /// マッチアームのリスト（`case` または `is` のいずれか一種類のみ）。
+        arms: Vec<MatchArm>,
+        /// エラー報告に使用する位置情報。
+        span: Span,
+    },
     /// `while cond:` ループ。`break` / `continue` をサポートする。
     ///
     /// # フィールド
@@ -324,8 +406,8 @@ pub enum Stmt {
     Pass,
     /// `block_return expr` — `block:` スコープから値を返却して即座に抜ける。
     BlockReturn(Expr),
-    /// `block_yield expr` — `block:` スコープから値を産出してブロックを継続する。
-    BlockYield(Expr),
+    /// `loop_yield expr` — `for`/`while` 式内から値を産出してリストに蓄積する。for/while 式の外では実行時エラー。
+    LoopYield(Expr),
     /// `yield expr` — ジェネレータ関数内での値産出。
     /// ジェネレータ関数（`gen` キーワードで定義）の本体内でのみ有効。
     Yield(Expr),

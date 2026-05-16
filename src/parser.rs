@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::ast::{BinOp, CallArg, ExceptHandler, Expr, FieldKind, Param, Stmt, TemplateParam, UnaryOp};
+use crate::ast::{BinOp, CallArg, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TemplateParam, UnaryOp};
 use crate::token::{Span, Spanned, Token};
 use crate::python_converter;
 
@@ -254,14 +254,16 @@ impl Parser {
                     Ok(Stmt::Return(Some(self.parse_expr()?)))
                 }
             }
-            // `block_return 式` / `block_yield 式` — block スコープからの脱出
+            // `block_return 式` / `loop_yield 式` — block/loop スコープからの脱出
             Token::BlockReturn => { self.advance(); Ok(Stmt::BlockReturn(self.parse_expr()?)) }
-            Token::BlockYield  => { self.advance(); Ok(Stmt::BlockYield(self.parse_expr()?)) }
+            Token::LoopYield   => { self.advance(); Ok(Stmt::LoopYield(self.parse_expr()?)) }
             // 制御構文
             Token::If    => self.parse_if_stmt(),
+            Token::Match => self.parse_match_stmt(),
             Token::While => {
                 self.advance();
                 let cond = self.parse_expr()?;
+                let _ = self.parse_opt_return_type()?; // stmt level: parse and discard
                 self.eat(&Token::Colon)?;
                 Ok(Stmt::While { cond, body: self.parse_block()? })
             }
@@ -270,12 +272,14 @@ impl Parser {
                 let target = self.expect_ident()?;
                 self.eat(&Token::In)?;
                 let iter = self.parse_expr()?;
+                let _ = self.parse_opt_return_type()?; // stmt level: parse and discard
                 self.eat(&Token::Colon)?;
                 Ok(Stmt::For { target, iter, body: self.parse_block()? })
             }
-            // `block:` — 値を返せるスコープブロック
+            // `block [->Type]:` — 値を返せるスコープブロック
             Token::Block => {
                 self.advance();
+                let _ = self.parse_opt_return_type()?; // stmt level: parse and discard
                 self.eat(&Token::Colon)?;
                 Ok(Stmt::Block(self.parse_block()?))
             }
@@ -316,35 +320,39 @@ impl Parser {
         }
     }
 
-    /// `if / elif / else` 文をパースして `Stmt::If` を返す。
+    /// `->Type` アノテーションを省略可能な形でパースして返す。
     ///
-    /// `if` トークンはすでに現在位置にあることを前提とする。
-    /// `elif` 節は複数連続してよく、`else` 節は最後に1つだけ現れる。
+    /// 現在トークンが `->` の場合のみ型アノテーション文字列を返し、それ以外は `None`。
+    fn parse_opt_return_type(&mut self) -> Result<Option<String>, String> {
+        if *self.current() == Token::Arrow {
+            self.advance(); // `->` を消費
+            Ok(Some(self.parse_type_expr()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// `if` キーワードを消費した後の節をパースする共有ヘルパー。
     ///
-    /// # 戻り値
-    /// `Stmt::If { branches, else_body }` — branches は `(条件式, 本体)` のリスト
-    ///
-    /// # エラー
-    /// 条件式または本体のパースに失敗した場合
-    fn parse_if_stmt(&mut self) -> Result<Stmt, String> {
-        self.advance(); // `if` を消費
+    /// `(branches, else_body, return_type)` を返す。
+    /// `return_type` は最初の `if` 直後の `->Type` アノテーション。`elif`/`else` にはない。
+    fn parse_if_components(&mut self) -> Result<(Vec<(Expr, Vec<Stmt>)>, Option<Vec<Stmt>>, Option<String>), String> {
         let cond = self.parse_expr()?;
+        let return_type = self.parse_opt_return_type()?;
         self.eat(&Token::Colon)?;
         let body = self.parse_block()?;
-        // 最初の if 節を branches の先頭に追加
         let mut branches = vec![(cond, body)];
         let mut else_body = None;
         loop {
             match self.current().clone() {
                 Token::Elif => {
-                    // elif 節を branches に追加
                     self.advance();
                     let c = self.parse_expr()?;
+                    let _ = self.parse_opt_return_type()?; // elif の ->Type は無視
                     self.eat(&Token::Colon)?;
                     branches.push((c, self.parse_block()?));
                 }
                 Token::Else => {
-                    // else 節をパースしてループを抜ける
                     self.advance();
                     self.eat(&Token::Colon)?;
                     else_body = Some(self.parse_block()?);
@@ -353,7 +361,92 @@ impl Parser {
                 _ => break,
             }
         }
+        Ok((branches, else_body, return_type))
+    }
+
+    /// `if / elif / else` 文をパースして `Stmt::If` を返す。
+    ///
+    /// `if` トークンはすでに現在位置にあることを前提とする。
+    /// `elif` 節は複数連続してよく、`else` 節は最後に1つだけ現れる。
+    /// `->Type` アノテーションがあってもパースのみ行い、文レベルでは無視する。
+    ///
+    /// # 戻り値
+    /// `Stmt::If { branches, else_body }` — branches は `(条件式, 本体)` のリスト
+    ///
+    /// # エラー
+    /// 条件式または本体のパースに失敗した場合
+    fn parse_if_stmt(&mut self) -> Result<Stmt, String> {
+        self.advance(); // `if` を消費
+        let (branches, else_body, _return_type) = self.parse_if_components()?;
         Ok(Stmt::If { branches, else_body })
+    }
+
+    /// `match expr:` 文をパースして `Stmt::Match` を返す。
+    ///
+    /// 構文:
+    /// ```text
+    /// match expr:
+    ///     case pattern:
+    ///         body
+    ///     is TypeName:
+    ///         body
+    /// ```
+    ///
+    /// `case` アームと `is` アームを混在させるとパースエラー。
+    /// `case _:` はワイルドカードアームとして解釈される。
+    ///
+    /// # エラー
+    /// - `case` と `is` のアームが混在する場合
+    /// - 予期しないトークンがアームの先頭に現れた場合
+    /// match アームリストをパースする共有ヘルパー（`match subject:` の後、INDENT済みの状態で呼ぶ）。
+    fn parse_match_arms(&mut self) -> Result<Vec<MatchArm>, String> {
+        let mut arms: Vec<MatchArm> = Vec::new();
+        let mut is_case_kind: Option<bool> = None;
+        loop {
+            while matches!(self.current(), Token::Newline | Token::Semicolon) {
+                self.advance();
+            }
+            if matches!(self.current(), Token::Dedent | Token::Eof) {
+                break;
+            }
+            match self.current().clone() {
+                Token::Case => {
+                    if is_case_kind == Some(false) {
+                        return Err("match statement cannot mix 'case' and 'is' arms".to_string());
+                    }
+                    is_case_kind = Some(true);
+                    self.advance();
+                    let pattern_expr = self.parse_expr()?;
+                    self.eat(&Token::Colon)?;
+                    arms.push(MatchArm { pattern: MatchPattern::Case(pattern_expr), body: self.parse_block()? });
+                }
+                Token::Is => {
+                    if is_case_kind == Some(true) {
+                        return Err("match statement cannot mix 'case' and 'is' arms".to_string());
+                    }
+                    is_case_kind = Some(false);
+                    self.advance();
+                    let type_name = self.expect_ident()?;
+                    self.eat(&Token::Colon)?;
+                    arms.push(MatchArm { pattern: MatchPattern::IsType(type_name), body: self.parse_block()? });
+                }
+                tok => return Err(format!("expected 'case' or 'is' in match body, got `{tok}`")),
+            }
+        }
+        if *self.current() == Token::Dedent { self.advance(); }
+        Ok(arms)
+    }
+
+    fn parse_match_stmt(&mut self) -> Result<Stmt, String> {
+        let span = self.current_span();
+        self.advance(); // `match` を消費
+        let subject = self.parse_expr()?;
+        let _ = self.parse_opt_return_type()?; // ->Type at stmt level: parse and discard
+        self.eat(&Token::Colon)?;
+        self.eat(&Token::Newline)?;
+        self.eat(&Token::Indent)?;
+        let arms = self.parse_match_arms()?;
+        Ok(Stmt::Match { subject, arms, span })
     }
 
     /// 識別子で始まる文をパースする。
@@ -2062,6 +2155,48 @@ impl Parser {
             Token::LParen   => self.parse_paren_expr(),
             Token::LBracket => self.parse_list_literal(),
             Token::LBrace   => self.parse_dict_literal(),
+            // `if cond [->Type]: body [elif/else]` — if 式
+            Token::If => {
+                self.advance();
+                let (branches, else_body, return_type) = self.parse_if_components()?;
+                Ok(Expr::IfExpr { branches, else_body, return_type })
+            }
+            // `for target in iter [->Type]: body` — for 式
+            Token::For => {
+                self.advance();
+                let target = self.expect_ident()?;
+                self.eat(&Token::In)?;
+                let iter = self.parse_expr()?;
+                let return_type = self.parse_opt_return_type()?;
+                self.eat(&Token::Colon)?;
+                Ok(Expr::ForExpr { target, iter: Box::new(iter), body: self.parse_block()?, return_type })
+            }
+            // `while cond [->Type]: body` — while 式
+            Token::While => {
+                self.advance();
+                let cond = self.parse_expr()?;
+                let return_type = self.parse_opt_return_type()?;
+                self.eat(&Token::Colon)?;
+                Ok(Expr::WhileExpr { cond: Box::new(cond), body: self.parse_block()?, return_type })
+            }
+            // `match subject [->Type]: arms` — match 式
+            Token::Match => {
+                self.advance();
+                let subject = self.parse_expr()?;
+                let return_type = self.parse_opt_return_type()?;
+                self.eat(&Token::Colon)?;
+                self.eat(&Token::Newline)?;
+                self.eat(&Token::Indent)?;
+                let arms = self.parse_match_arms()?;
+                Ok(Expr::MatchExpr { subject: Box::new(subject), arms, return_type })
+            }
+            // `block [->Type]: body` — ブロック式。block_return/block_yield で値を返す。
+            Token::Block => {
+                self.advance(); // `block` を消費
+                let return_type = self.parse_opt_return_type()?;
+                self.eat(&Token::Colon)?;
+                Ok(Expr::Block { stmts: self.parse_block()?, return_type })
+            }
             tok => Err(format!("unexpected token: `{tok}`")),
         }
     }

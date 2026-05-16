@@ -118,8 +118,11 @@ impl Interpreter {
 
         match result? {
             ExecResult::Return(v) => Ok(v),
-            ExecResult::Normal | ExecResult::BlockReturn(_) => Ok(Value::None),
-            ExecResult::Break => Err("SyntaxError: 'break' outside loop".to_string()),
+            ExecResult::Normal => Ok(Value::None),
+            ExecResult::BlockReturn(_) | ExecResult::BlockYield(_) => {
+                Err("SyntaxError: 'block_return' used outside any block expression".to_string())
+            }
+            ExecResult::Break => Err("SyntaxError: 'break' outside for/while loop".to_string()),
             ExecResult::Continue => Err("SyntaxError: 'continue' outside loop".to_string()),
             ExecResult::Raise(_) => unreachable!("Raise already handled above"),
         }
@@ -193,8 +196,11 @@ impl Interpreter {
         let yields = GENERATOR_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
 
         match exec_result? {
-            ExecResult::Normal | ExecResult::BlockReturn(_) => {}
-            ExecResult::Break    => return Err("SyntaxError: 'break' outside loop".to_string()),
+            ExecResult::Normal => {}
+            ExecResult::BlockReturn(_) | ExecResult::BlockYield(_) => {
+                return Err("SyntaxError: 'block_return' used outside any block expression".to_string());
+            }
+            ExecResult::Break => return Err("SyntaxError: 'break' outside for/while loop".to_string()),
             ExecResult::Continue => return Err("SyntaxError: 'continue' outside loop".to_string()),
             ExecResult::Return(_) => {} // パーサーが gen 内の return を禁止しているためここには到達しない
             ExecResult::Raise(raised) => {

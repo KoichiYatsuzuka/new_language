@@ -8,14 +8,14 @@ use std::rc::Rc;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::ast::{Expr, FieldKind, Param, Stmt};
+use crate::ast::{Expr, FieldKind, MatchPattern, Param, Stmt};
 
 use super::{
     CapturedVar, Interpreter, Value, Var, ExecResult,
     FnValue, TemplateFnValue, GeneratorFnValue, TemplateGenFnValue, TemplateClassValue,
     GeneratorState, NamespaceData, ModuleState,
     RaisedError, StackFrame,
-    RAISE_SENTINEL, GENERATOR_YIELDS,
+    RAISE_SENTINEL, GENERATOR_YIELDS, BLOCK_YIELDS, LOOP_DEPTH,
 };
 
 impl Interpreter {
@@ -28,7 +28,7 @@ impl Interpreter {
     /// - `If` / `While` / `For` / `Block`: 制御構造の実行
     /// - `FnDef` / `GenDef`: 関数・ジェネレータ定義をスコープに登録（オーバーロード蓄積）
     /// - `ClassDef` / `TraitDef` / `NewTypeDef`: クラス・trait・new_type をスコープに登録
-    /// - `Return` / `Break` / `Continue` / `BlockReturn` / `BlockYield`: 制御フロー信号を返す
+    /// - `Return` / `Break` / `Continue` / `BlockReturn` / `LoopYield`: 制御フロー信号を返す
     /// - `Yield`: スレッドローカルの yield コレクタに値を追加
     /// - `Raise` / `Try`: 例外の発生と捕捉
     /// - `Freeze`: インスタンスを不変化
@@ -116,7 +116,14 @@ impl Interpreter {
             }
             Stmt::Pass => Ok(ExecResult::Normal),
             Stmt::Field { .. } => Ok(ExecResult::Normal), // クラス本体内でのみ有効（exec では何もしない）
-            Stmt::Break => Ok(ExecResult::Break),
+            Stmt::Break => {
+                // break は for/while ループ内でのみ有効。ループ外で使用すると実行時エラー。
+                let in_loop = LOOP_DEPTH.with(|d| *d.borrow() > 0);
+                if !in_loop {
+                    return Err("SyntaxError: 'break' outside for/while loop".to_string());
+                }
+                Ok(ExecResult::BlockReturn(Value::None))
+            }
             Stmt::Continue => Ok(ExecResult::Continue),
             Stmt::Return(expr) => {
                 // return 文: 式があれば評価して Return シグナルとして返す
@@ -131,10 +138,21 @@ impl Interpreter {
                 let val = self.eval(expr)?;
                 Ok(ExecResult::BlockReturn(val))
             }
-            Stmt::BlockYield(expr) => {
-                // block_yield 文: block_return と同様に BlockReturn シグナルとして返す
+            Stmt::LoopYield(expr) => {
+                // loop_yield 文: for/while 式のリスト蓄積コンテキスト（BLOCK_YIELDS が Some）にのみ有効。
+                // BLOCK_YIELDS が None のとき（for/while 式の外）は実行時エラー。
                 let val = self.eval(expr)?;
-                Ok(ExecResult::BlockReturn(val))
+                let mut in_loop_expr = false;
+                BLOCK_YIELDS.with(|y| {
+                    if let Some(yields) = y.borrow_mut().as_mut() {
+                        yields.push(val);
+                        in_loop_expr = true;
+                    }
+                });
+                if !in_loop_expr {
+                    return Err("SyntaxError: 'loop_yield' can only be used inside a for/while expression (with ->list[T] annotation)".to_string());
+                }
+                Ok(ExecResult::Normal)
             }
             Stmt::If { branches, else_body } => {
                 // if/elif/else: 各条件を順に評価し、最初に truthy になった本体を実行する
@@ -149,20 +167,54 @@ impl Interpreter {
                 }
                 Ok(ExecResult::Normal)
             }
-            Stmt::While { cond, body } => {
-                // while ループ: 条件が falsy になるか break が実行されるまでループする
-                loop {
-                    let val = self.eval(cond)?;
-                    if !self.is_truthy(&val) {
-                        break;
-                    }
-                    match self.exec_scoped_block(body)? {
-                        ExecResult::Break => break,
-                        ExecResult::Continue | ExecResult::Normal => {}
-                        r => return Ok(r), // Return / Raise などはそのまま上位に伝播させる
+            Stmt::Match { subject, arms, .. } => {
+                // match 文: subject を評価し、最初にマッチしたアームの本体を実行する
+                let subject_val = self.eval(subject)?;
+                for arm in arms {
+                    let matched = match &arm.pattern {
+                        MatchPattern::Case(pattern_expr) => {
+                            // `case _:` はワイルドカード — 常にマッチ
+                            if matches!(pattern_expr, Expr::Ident(n) if n == "_") {
+                                true
+                            } else {
+                                let pattern_val = self.eval(pattern_expr)?;
+                                let result = self.apply_binop(
+                                    &crate::ast::BinOp::Eq,
+                                    subject_val.clone(),
+                                    pattern_val,
+                                )?;
+                                matches!(result, Value::Bool(true))
+                            }
+                        }
+                        MatchPattern::IsType(type_name) => {
+                            self.value_is_type(&subject_val, type_name)
+                        }
+                    };
+                    if matched {
+                        return self.exec_scoped_block(&arm.body);
                     }
                 }
                 Ok(ExecResult::Normal)
+            }
+            Stmt::While { cond, body } => {
+                // while ループ: 条件が falsy になるか break が実行されるまでループする
+                LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
+                let result = (|| {
+                    loop {
+                        let val = self.eval(cond)?;
+                        if !self.is_truthy(&val) {
+                            break;
+                        }
+                        match self.exec_scoped_block(body)? {
+                            ExecResult::Break | ExecResult::BlockReturn(Value::None) => break,
+                            ExecResult::Continue | ExecResult::Normal => {}
+                            r => return Ok(r),
+                        }
+                    }
+                    Ok(ExecResult::Normal)
+                })();
+                LOOP_DEPTH.with(|d| *d.borrow_mut() -= 1);
+                result
             }
             Stmt::For { target, iter, body } => {
                 let iter_val = self.eval(iter)?;
@@ -172,48 +224,51 @@ impl Interpreter {
                         Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items.borrow().clone(), index: 0 })))
                     }
                     Value::Str(s) => {
-                        // 文字列を1文字ずつに展開してジェネレータにラップする
                         let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
                         Value::Generator(Rc::new(RefCell::new(GeneratorState { values: chars, index: 0 })))
                     }
                     Value::Generator(_) => iter_val,
-                    Value::Instance(_) => {
-                        // インスタンスは `__iter__()` を呼び出してジェネレータを取得する
-                        self.eval_method_call(iter_val, "__iter__", &[])?
-                    }
+                    Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[])?,
                     Value::PyObject(ref handle) => {
-                        // Python iterable を一括収集してジェネレータにラップする
                         let items = super::py_interop::py_collect_iter(handle)?;
                         Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items, index: 0 })))
                     }
                     _ => return Err("TypeError: object is not iterable".to_string()),
                 };
-                // ジェネレータから `next()` を繰り返し呼び出してループ変数に束縛する
-                loop {
-                    match self.eval_method_call(generator.clone(), "next", &[]) {
-                        Ok(item) => {
-                            self.push_scope();
-                            self.declare_var(target.clone(), Var::new(item, true));
-                            let result = self.exec_block(body);
-                            self.pop_scope();
-                            match result? {
-                                ExecResult::Break => break,
-                                ExecResult::Continue | ExecResult::Normal => {}
-                                r => return Ok(r),
+                LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
+                let result = (|| {
+                    loop {
+                        match self.eval_method_call(generator.clone(), "next", &[]) {
+                            Ok(item) => {
+                                self.push_scope();
+                                self.declare_var(target.clone(), Var::new(item, true));
+                                let result = self.exec_block(body);
+                                self.pop_scope();
+                                match result? {
+                                    ExecResult::Break | ExecResult::BlockReturn(Value::None) => break,
+                                    ExecResult::Continue | ExecResult::Normal => {}
+                                    r => return Ok(r),
+                                }
                             }
+                            Err(ref e) if e.starts_with("EndOfIteration") => break,
+                            Err(e) => return Err(e),
                         }
-                        // EndOfIteration: ジェネレータ枯渇でループ終了（エラーは伝播させない）
-                        Err(ref e) if e.starts_with("EndOfIteration") => break,
-                        Err(e) => return Err(e),
                     }
-                }
-                Ok(ExecResult::Normal)
+                    Ok(ExecResult::Normal)
+                })();
+                LOOP_DEPTH.with(|d| *d.borrow_mut() -= 1);
+                result
             }
             Stmt::Block(body) => {
-                // block 式: BlockReturn は Normal に変換する（ブロック外に値を返さない）
+                // block: 文: 値を返さないスコープブロック。
+                // - BlockReturn(non-None): 値を捨てて Normal を返す（block: が値を吸収）
+                // - BlockReturn(None) (= break): 伝播させる（外側のループが捕捉できるよう）
+                // block_yield はスレッドローカル経由で収集される。
+                // 値を受け取りたいなら block: を式として使う（Expr::Block）。
                 match self.exec_scoped_block(body)? {
-                    ExecResult::BlockReturn(_) | ExecResult::Normal => Ok(ExecResult::Normal),
-                    r => Ok(r),
+                    ExecResult::Normal => Ok(ExecResult::Normal),
+                    ExecResult::BlockReturn(v) if !matches!(v, Value::None) => Ok(ExecResult::Normal),
+                    r => Ok(r), // BlockReturn(None)=break, Continue, Return, Raise は伝播
                 }
             }
             Stmt::FnDef { name, template_params, params, body, decorators, .. } => {
@@ -912,7 +967,7 @@ fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
             collect_refs_expr(target, out);
             collect_refs_expr(value, out);
         }
-        Stmt::Return(Some(e)) | Stmt::BlockReturn(e) | Stmt::BlockYield(e) | Stmt::Yield(e) => {
+        Stmt::Return(Some(e)) | Stmt::BlockReturn(e) | Stmt::LoopYield(e) | Stmt::Yield(e) => {
             collect_refs_expr(e, out);
         }
         Stmt::Raise { exc: Some(e), .. } => collect_refs_expr(e, out),
