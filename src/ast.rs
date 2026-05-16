@@ -527,6 +527,20 @@ pub enum Stmt {
         /// 元の型の名前（クラス名またはプリミティブ型名）。
         original: String,
     },
+    /// `enum Name: variant [= expr] ...` — 整数値に対応する名前付き定数の列挙型定義。
+    ///
+    /// 各バリアントは `enum_item_Name` 型（`new_type enum_item_Name: int` 相当）のインスタンスとして
+    /// クラス `Name` の const メンバーに格納される。値は 0 から始まる自動採番、または明示的に指定可能。
+    ///
+    /// # フィールド
+    /// - `name`     : 列挙型の名前（クラス名としても登録される）。
+    /// - `variants` : `(バリアント名, Option<値式>)` のリスト。`None` は自動採番。
+    EnumDef {
+        /// 列挙型の名前。
+        name: String,
+        /// バリアントのリスト（名前と省略可能な値式のペア）。
+        variants: Vec<(String, Option<Expr>)>,
+    },
     /// `try: ... except Type as name: ... finally: ...` 例外処理構文。
     ///
     /// # フィールド

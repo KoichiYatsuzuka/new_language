@@ -2592,3 +2592,103 @@ else:
 ";
     assert_int(run_get(src, "x"), 100);
 }
+
+// --- enum ---
+
+#[test]
+fn test_enum_basic() {
+    let src = "enum Color:\n    Red\n    Green\n    Blue\n";
+    run(src).unwrap();
+}
+
+#[test]
+fn test_enum_member_access_value() {
+    let src = "enum Color:\n    Red\n    Green\n    Blue\nlet x = Color.Red\n";
+    let val = run_get(src, "x");
+    if let Value::Instance(inst_rc) = val {
+        let inst = inst_rc.borrow();
+        assert_eq!(inst.class.name, "enum_item_Color");
+        let (v, _) = inst.fields.get("value").unwrap();
+        assert!(matches!(v, Value::Int(0)));
+    } else {
+        panic!("expected Instance");
+    }
+}
+
+#[test]
+fn test_enum_auto_numbering() {
+    // Red=0, Green=1, Blue=2 の順で自動採番される
+    let src = "enum Color:\n    Red\n    Green\n    Blue\nlet r = Color.Red\nlet g = Color.Green\nlet b = Color.Blue\n";
+    for (var, expected) in [("r", 0i64), ("g", 1), ("b", 2)] {
+        let val = run_get(src, var);
+        if let Value::Instance(inst_rc) = val {
+            let inst = inst_rc.borrow();
+            let (v, _) = inst.fields.get("value").unwrap();
+            if let Value::Int(n) = v { assert_eq!(*n, expected); } else { panic!("expected Int"); }
+        } else {
+            panic!("expected Instance for {var}");
+        }
+    }
+}
+
+#[test]
+fn test_enum_explicit_value() {
+    let src = "enum MyEnum:\n    a\n    b = 5\n    c\nlet xb = MyEnum.b\nlet xc = MyEnum.c\n";
+    let b = run_get(src, "xb");
+    let c = run_get(src, "xc");
+    if let Value::Instance(inst_rc) = b {
+        let inst = inst_rc.borrow();
+        let (v, _) = inst.fields.get("value").unwrap();
+        if let Value::Int(n) = v { assert_eq!(*n, 5); } else { panic!("expected Int 5"); }
+    } else {
+        panic!("expected Instance for b");
+    }
+    // c は b=5 の次なので 6
+    if let Value::Instance(inst_rc) = c {
+        let inst = inst_rc.borrow();
+        let (v, _) = inst.fields.get("value").unwrap();
+        if let Value::Int(n) = v { assert_eq!(*n, 6); } else { panic!("expected Int 6"); }
+    } else {
+        panic!("expected Instance for c");
+    }
+}
+
+#[test]
+fn test_enum_equality() {
+    // 同じバリアントに2回アクセスしたとき等値になること（Rc::ptr_eq）
+    let src = "enum Color:\n    Red\n    Green\nlet a = Color.Red\nlet b = Color.Red\nlet c = Color.Green\nmut same = False\nmut diff = False\nif a == b:\n    same = True\nif a != c:\n    diff = True\n";
+    assert!(matches!(run_get(src, "same"), Value::Bool(true)));
+    assert!(matches!(run_get(src, "diff"), Value::Bool(true)));
+}
+
+#[test]
+fn test_enum_match() {
+    let src = r#"
+enum Color:
+    Red
+    Green
+    Blue
+let x = Color.Green
+mut result = 0
+match (x):
+    case Color.Red:
+        result = 1
+    case Color.Green:
+        result = 2
+    case Color.Blue:
+        result = 3
+"#;
+    assert_int(run_get(src, "result"), 2);
+}
+
+#[test]
+fn test_enum_item_type_name() {
+    // enum_item_Color 型が登録されていること
+    let src = "enum Color:\n    Red\nlet x = Color.Red\n";
+    let val = run_get(src, "x");
+    if let Value::Instance(inst_rc) = val {
+        assert_eq!(inst_rc.borrow().class.name, "enum_item_Color");
+    } else {
+        panic!("expected Instance");
+    }
+}

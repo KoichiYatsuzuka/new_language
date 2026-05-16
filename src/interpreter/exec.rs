@@ -426,6 +426,73 @@ impl Interpreter {
                 }
                 Ok(ExecResult::Normal)
             }
+            Stmt::EnumDef { name, variants } => {
+                // enum_item_Name クラスを生成する（new_type enum_item_Name: int 相当）
+                let item_type_name = format!("enum_item_{}", name);
+                let init_body = vec![
+                    Stmt::AttrAssign {
+                        target: Expr::Attr {
+                            object: Box::new(Expr::Ident("self".to_string())),
+                            attr: "value".to_string(),
+                        },
+                        value: Expr::Ident("value".to_string()),
+                    },
+                ];
+                let init_fn = Rc::new(FnValue {
+                    params: vec![
+                        crate::ast::Param { name: "self".to_string(), mutable: true, type_ann: None },
+                        crate::ast::Param { name: "value".to_string(), mutable: false, type_ann: Some("int".to_string()) },
+                    ],
+                    body: init_body,
+                    is_python: false,
+                    captured_env: HashMap::new(),
+                });
+                let mut item_methods = HashMap::new();
+                item_methods.insert("__init__".to_string(), vec![init_fn]);
+                let item_cls = Rc::new(super::ClassValue {
+                    name: item_type_name.clone(),
+                    bases: vec![],
+                    methods: item_methods,
+                    gen_methods: HashMap::new(),
+                    field_defaults: vec![],
+                    class_vars: HashMap::new(),
+                    field_mutability: HashMap::from([("value".to_string(), true)]),
+                });
+                self.declare_var(item_type_name.clone(), Var::new(Value::Class(item_cls.clone()), false));
+
+                // 各バリアントの値を計算し、enum クラスの const クラス変数として登録する
+                let mut class_vars: HashMap<String, Value> = HashMap::new();
+                let mut next_value: i64 = 0;
+                for (variant_name, value_expr) in variants {
+                    let int_val = if let Some(expr) = value_expr {
+                        match self.eval(expr)? {
+                            Value::Int(n) => n,
+                            other => return Err(format!(
+                                "TypeError: enum variant '{}' value must be int, got '{}'",
+                                variant_name, self.type_name(&other)
+                            )),
+                        }
+                    } else {
+                        next_value
+                    };
+                    next_value = int_val + 1;
+                    let inst = self.instantiate_evaled(item_cls.clone(), vec![(None, Value::Int(int_val))])?;
+                    class_vars.insert(variant_name.clone(), inst);
+                }
+
+                // 列挙型クラスを定数メンバーのみ持つクラスとして登録する
+                let enum_cls = Rc::new(super::ClassValue {
+                    name: name.clone(),
+                    bases: vec![],
+                    methods: HashMap::new(),
+                    gen_methods: HashMap::new(),
+                    field_defaults: vec![],
+                    class_vars,
+                    field_mutability: HashMap::new(),
+                });
+                self.declare_var(name.clone(), Var::new(Value::Class(enum_cls), false));
+                Ok(ExecResult::Normal)
+            }
             Stmt::ClassDef { name, template_params, bases, body, decorators } => {
                 if !template_params.is_empty() {
                     // テンプレートクラス: ClassValue をまだ構築せず TemplateClass として格納する

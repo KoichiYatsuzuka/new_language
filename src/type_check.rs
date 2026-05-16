@@ -711,6 +711,12 @@ impl TypeChecker {
                     self.class_method_sigs.insert(name.clone(), cls_methods);
                     self.collect_fn_sigs(body);
                 }
+                Stmt::EnumDef { name, .. } => {
+                    // enum Name は class Name と enum_item_Name の両方を既知クラスとして登録する。
+                    self.known_class_names.insert(name.clone());
+                    let item_type_name = format!("enum_item_{}", name);
+                    self.known_class_names.insert(item_type_name);
+                }
                 Stmt::TraitDef { body, .. } => self.collect_fn_sigs(body),
                 Stmt::Match { arms, .. } => {
                     for arm in arms {
@@ -1132,6 +1138,14 @@ impl TypeChecker {
             // --- new_type 定義 ---
             Stmt::NewTypeDef { name, .. } => {
                 // new_type バインドは常に const（パーサーが再代入を禁止）。
+                self.declare(name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))), false);
+            }
+
+            // --- enum 定義 ---
+            Stmt::EnumDef { name, .. } => {
+                // enum Name → クラス Name と enum_item_Name の両方をスコープに登録する。
+                let item_type_name = format!("enum_item_{}", name);
+                self.declare(item_type_name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(item_type_name))), false);
                 self.declare(name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))), false);
             }
 

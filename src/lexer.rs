@@ -612,6 +612,7 @@ impl Lexer {
             "fn"           => Token::Fn,
             "gen"          => Token::Gen,
             "class"        => Token::Class,
+            "enum"         => Token::Enum,
             "trait"        => Token::Trait,
             "lambda"       => Token::Lambda,
             "template"     => Token::Template,

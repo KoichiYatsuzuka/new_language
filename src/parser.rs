@@ -311,6 +311,7 @@ impl Parser {
             Token::Fn      => self.parse_fn_def(),
             Token::Gen     => self.parse_gen_def(),
             Token::Class   => self.parse_class_def(),
+            Token::Enum    => self.parse_enum_def(),
             Token::Trait   => self.parse_trait_def(),
             Token::NewType => self.parse_new_type_def(),
             Token::Import  => self.parse_import_stmt(),
@@ -762,6 +763,47 @@ impl Parser {
         }
 
         Ok(Stmt::Try { body, handlers, finally_body })
+    }
+
+    /// `enum 名前: バリアント [= 値] ...` 定義をパースして `Stmt::EnumDef` を返す。
+    ///
+    /// 各バリアントは `name [= expr]` の形式。値を省略すると前のバリアントの値 + 1 から自動採番される。
+    ///
+    /// # 戻り値
+    /// `Stmt::EnumDef { name, variants }`
+    ///
+    /// # エラー
+    /// 識別子のパースに失敗した場合、またはインデントブロックが欠如している場合
+    fn parse_enum_def(&mut self) -> Result<Stmt, String> {
+        self.advance(); // `enum` を消費
+        let name = self.expect_ident()?;
+        self.eat(&Token::Colon)?;
+        self.eat(&Token::Newline)?;
+        self.eat(&Token::Indent)?;
+        let mut variants = Vec::new();
+        loop {
+            while matches!(self.current(), Token::Newline | Token::Semicolon) {
+                self.advance();
+            }
+            if matches!(self.current(), Token::Dedent | Token::Eof) {
+                break;
+            }
+            let variant_name = self.expect_ident()?;
+            let value = if matches!(self.current(), Token::Eq) {
+                self.advance(); // `=` を消費
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            if matches!(self.current(), Token::Newline | Token::Semicolon) {
+                self.advance();
+            }
+            variants.push((variant_name, value));
+        }
+        if *self.current() == Token::Dedent {
+            self.advance();
+        }
+        Ok(Stmt::EnumDef { name, variants })
     }
 
     /// `new_type 名前: 元の型` 定義をパースして `Stmt::NewTypeDef` を返す。

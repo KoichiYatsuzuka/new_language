@@ -456,6 +456,12 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             name: name.clone(),
             original: subst_type(original, type_map),
         },
+        Stmt::EnumDef { name, variants } => Stmt::EnumDef {
+            name: name.clone(),
+            variants: variants.iter().map(|(vname, vexpr)| {
+                (vname.clone(), vexpr.as_ref().map(|e| subst_expr(e, type_map)))
+            }).collect(),
+        },
         Stmt::Try { body, handlers, finally_body } => Stmt::Try {
             body: subst_stmts(body, type_map),
             handlers: handlers.iter().map(|h| ExceptHandler {
