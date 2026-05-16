@@ -1,5 +1,10 @@
 import * as vscode from 'vscode';
-import { provideHover, provideInlayHints } from './type_infer';
+import {
+    provideHover,
+    provideInlayHints,
+    provideDocumentSemanticTokens,
+    SEMANTIC_TOKENS_LEGEND,
+} from './type_infer';
 
 export function activate(context: vscode.ExtensionContext) {
     const inlayProvider = vscode.languages.registerInlayHintsProvider(
@@ -24,7 +29,18 @@ export function activate(context: vscode.ExtensionContext) {
             },
         }
     );
-    context.subscriptions.push(inlayProvider, hoverProvider);
+    const semanticProvider = vscode.languages.registerDocumentSemanticTokensProvider(
+        { language: 'test_lang' },
+        {
+            provideDocumentSemanticTokens(
+                document: vscode.TextDocument
+            ): vscode.SemanticTokens {
+                return provideDocumentSemanticTokens(document);
+            },
+        },
+        SEMANTIC_TOKENS_LEGEND
+    );
+    context.subscriptions.push(inlayProvider, hoverProvider, semanticProvider);
 }
 
 export function deactivate() {}

@@ -9,6 +9,7 @@
     { "include": "#function-def" },
     { "include": "#class-def" },
     { "include": "#new-type-def" },
+    { "include": "#import-decl" },
     { "include": "#keyword" },
     { "include": "#constant" },
     { "include": "#builtin-type" },
@@ -19,6 +20,15 @@
     { "include": "#variable" }
   ],
   "repository": {
+    "import-decl": {
+      "match": "(import\\[(?:py(?:-int)?)\\])\\s+([A-Za-z_]\\w*)(?:\\s+(as)\\s+([A-Za-z_]\\w*))?",
+      "captures": {
+        "1": { "name": "keyword.control.import.tl" },
+        "2": { "name": "entity.name.namespace.tl" },
+        "3": { "name": "keyword.control.import.tl" },
+        "4": { "name": "entity.name.type.class.tl" }
+      }
+    },
     "comment": {
       "match": "#.*$",
       "name": "comment.line.number-sign.tl"

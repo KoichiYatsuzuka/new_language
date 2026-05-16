@@ -1,7 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.activate = activate;
-exports.deactivate = deactivate;
+exports.deactivate = exports.activate = void 0;
 const vscode = require("vscode");
 const type_infer_1 = require("./type_infer");
 function activate(context) {
@@ -15,7 +14,14 @@ function activate(context) {
             return (0, type_infer_1.provideHover)(document, position);
         },
     });
-    context.subscriptions.push(inlayProvider, hoverProvider);
+    const semanticProvider = vscode.languages.registerDocumentSemanticTokensProvider({ language: 'test_lang' }, {
+        provideDocumentSemanticTokens(document) {
+            return (0, type_infer_1.provideDocumentSemanticTokens)(document);
+        },
+    }, type_infer_1.SEMANTIC_TOKENS_LEGEND);
+    context.subscriptions.push(inlayProvider, hoverProvider, semanticProvider);
 }
+exports.activate = activate;
 function deactivate() { }
+exports.deactivate = deactivate;
 //# sourceMappingURL=extension.js.map
