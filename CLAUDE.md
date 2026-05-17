@@ -63,7 +63,9 @@ test_lang/
 │   ├── match.tl               # match statement behavior examples
 │   ├── match__errors.tl       # match mixed-arm parse error examples
 │   ├── block_expr.tl          # block: expression with block_return examples
-│   └── control_flow_expr.tl   # if/for/while/match as expressions with ->Type examples
+│   ├── control_flow_expr.tl   # if/for/while/match as expressions with ->Type examples
+│   ├── accessibility.tl       # public/private/protected access control examples
+│   └── accessibility__errors.tl  # AccessError on private member access from outside
 └── vscode-extension/    # VS Code extension (type inference inline hints)
     └── src/
         ├── extension.ts
@@ -105,6 +107,7 @@ Source File
 - Adds `Span` (filename, line number, column number) to every token
 - `Token::SelfType` (`Self`), `Token::NewType` (`new_type`), `Token::Static` (`static`)
 - `Token::BlockReturn` (`block_return`), `Token::LoopYield` (`loop_yield`), `Token::Block` (`block`)
+- `Token::Public` (`public`), `Token::Private` (`private`), `Token::Protected` (`protected`)
 
 ### Parsing (`src/parser.rs`)
 
@@ -126,6 +129,7 @@ Source File
   - `block ->T: body` — inline block expression with `block_return`
   - `->Type` annotation is optional; without it the expression still works but yields untyped results
   - `parse_opt_return_type()` helper parses the optional `->Type` before `:` in all forms
+- **Access control sections**: `public:`, `private:`, `protected:` markers inside class/trait bodies switch the accessibility of subsequent members; default is `public`
 
 ### Static Type Checking (`src/type_check.rs`)
 
@@ -165,6 +169,13 @@ Traverses the AST after parsing and before execution, collecting and reporting `
   - For expressions: if `loop_yield` is used, the expression evaluates to the accumulated list; if `block_return` is used, evaluates to that single value; if neither is reached, evaluates to `None`
   - Thread-local `BLOCK_YIELDS` (set to `Some(Vec)` inside for/while expression bodies) collects `loop_yield` values without interrupting control flow
   - Thread-local `LOOP_DEPTH` (incremented for every for/while, statement or expression form) guards `break` usage
+- **Access control** (`public` / `private` / `protected`):
+  - Section-style markers (`public:`, `private:`, `protected:`) inside class or trait bodies apply to all subsequent member declarations
+  - `public` (default): accessible from anywhere
+  - `private`: accessible only from methods of the same class
+  - `protected`: accessible from methods of the same class or any class that implements the same trait
+  - Violation raises `AccessError` at runtime; `current_class` is tracked on `Interpreter` and set/restored around each method call
+  - Trait field access is inherited into class `field_access` maps with namespaced keys (`"TraitName::field"`)
 
 ### VS Code Extension (`vscode-extension/`)
 
@@ -176,8 +187,8 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Full preservation of type annotations
 - Runtime return type checking for `block_return`/`loop_yield` against `->Type` annotations
 - Mixing check: `block_return` and `loop_yield` in the same block expression (currently not statically detected)
+- Static access checking for `private`/`protected` (currently runtime `AccessError` only; no `StaticTypeError` at parse/type-check time)
 - Set type (`{a, b}`)
-- Exception handling (`try` / `except` / `finally` / `raise`)
 - Imports (`import` / `from ... import`)
 - LLVM IR code generation
 - Python implementation
@@ -196,10 +207,11 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - `block_return val` exits a block/if/match/for/while expression with a value (not a function return)
 - `loop_yield val` accumulates values in a `for`/`while` expression into a list (only valid inside `for`/`while` expressions)
 - `break` is an alias of `block_return None` and is only valid inside `for`/`while` loops
+- Access control uses section markers (`public:` / `private:` / `protected:`) rather than per-member keywords; default accessibility is `public`
 
 ## Next Features to Implement (Priority Order)
 
 1. **Set type** (`{a, b}`)
-2. **Exception handling** (`try` / `except` / `finally` / `raise`)
+2. **Imports** (`import` / `from ... import`)
 3. **LLVM IR code generation**
 
