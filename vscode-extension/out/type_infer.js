@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.provideDocumentSemanticTokens = exports.SEMANTIC_TOKENS_LEGEND = exports.provideInlayHints = exports.provideHover = exports.inferExprType = void 0;
+exports.provideDocumentSemanticTokens = exports.SEMANTIC_TOKENS_LEGEND = exports.provideDefinition = exports.provideSignatureHelp = exports.provideDocumentSymbols = exports.provideCompletionItems = exports.provideInlayHints = exports.provideHover = exports.inferExprType = void 0;
 const vscode = require("vscode");
 const fs = require("fs");
 const path = require("path");
@@ -1052,6 +1052,372 @@ function provideInlayHints(document, _range) {
     return hints;
 }
 exports.provideInlayHints = provideInlayHints;
+// ===== Language keywords =====
+const LANG_KEYWORDS = [
+    'let', 'mut', 'const', 'fn', 'gen', 'class', 'trait', 'new_type',
+    'return', 'if', 'elif', 'else', 'for', 'while', 'match', 'case',
+    'and', 'or', 'not', 'in', 'is', 'True', 'False', 'None',
+    'self', 'Self', 'static', 'freeze', 'block',
+    'block_return', 'loop_yield', 'break', 'continue', 'yield', 'pass',
+    'import',
+];
+// ===== Member completion helpers =====
+function findEnclosingClass(document, fromLine) {
+    const fromIndent = (document.lineAt(fromLine).text.match(/^(\s*)/)?.[1] ?? '').length;
+    for (let i = fromLine - 1; i >= 0; i--) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const m = stripped.match(CLASS_DEF_RE);
+        if (!m)
+            continue;
+        const classIndent = (m[1] ?? '').length;
+        if (classIndent < fromIndent)
+            return m[3];
+    }
+    return undefined;
+}
+function collectClassMemberItems(document, className, _visited = new Set()) {
+    if (_visited.has(className))
+        return [];
+    _visited.add(className);
+    // Resolve new_type aliases to their base class
+    for (let i = 0; i < document.lineCount; i++) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const m = stripped.match(NEW_TYPE_RE);
+        if (m && m[2] === className) {
+            return collectClassMemberItems(document, m[3].trim(), _visited);
+        }
+    }
+    // Find the class definition
+    let classLine = -1;
+    let classIndent = 0;
+    for (let i = 0; i < document.lineCount; i++) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const m = stripped.match(CLASS_DEF_RE);
+        if (m && m[3] === className) {
+            classLine = i;
+            classIndent = (m[1] ?? '').length;
+            break;
+        }
+    }
+    if (classLine < 0)
+        return [];
+    // Determine the indentation of direct class body members
+    let memberIndent = -1;
+    for (let i = classLine + 1; i < document.lineCount; i++) {
+        const raw = document.lineAt(i).text;
+        if (!raw.trim())
+            continue;
+        const ind = (raw.match(/^(\s*)/)?.[1] ?? '').length;
+        if (ind <= classIndent)
+            break;
+        memberIndent = ind;
+        break;
+    }
+    if (memberIndent < 0)
+        return [];
+    const items = [];
+    const seen = new Set();
+    for (let i = classLine + 1; i < document.lineCount; i++) {
+        const rawLine = document.lineAt(i).text;
+        const stripped = stripComment(rawLine);
+        if (!stripped.trim())
+            continue;
+        const lineIndent = (rawLine.match(/^(\s*)/)?.[1] ?? '').length;
+        if (lineIndent <= classIndent)
+            break;
+        // Direct class body members (fields and methods)
+        if (lineIndent === memberIndent) {
+            // Field declarations: `let`/`mut`/`const` name [: type] [= value]
+            const fieldMatch = stripped.match(HOVER_DECL_RE);
+            if (fieldMatch) {
+                const [, , , name, type] = fieldMatch;
+                if (!seen.has(name)) {
+                    seen.add(name);
+                    const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Field);
+                    if (type)
+                        item.detail = `: ${type.trim()}`;
+                    items.push(item);
+                }
+            }
+            // Method definitions
+            const funcMatch = stripped.match(FUNC_DEF_RE);
+            if (funcMatch) {
+                const [, , kw, name, params, retType] = funcMatch;
+                if (!seen.has(name)) {
+                    seen.add(name);
+                    const cleanParams = params
+                        .replace(/^\s*(?:let\s+|mut\s+)?self\s*,\s*/, '')
+                        .replace(/^\s*(?:let\s+|mut\s+)?self\s*$/, '');
+                    const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Method);
+                    item.detail = `${kw} ${name}(${cleanParams})${retType ? ' -> ' + retType.trim() : ''}`;
+                    items.push(item);
+                }
+            }
+        }
+        // self.attr = value assignments inside methods (e.g. __init__)
+        const selfAttrMatch = stripped.match(/\bself\.([A-Za-z_]\w*)\s*(?:[+\-*\/%&|^]?=(?!=))/);
+        if (selfAttrMatch && !seen.has(selfAttrMatch[1])) {
+            seen.add(selfAttrMatch[1]);
+            const item = new vscode.CompletionItem(selfAttrMatch[1], vscode.CompletionItemKind.Field);
+            items.push(item);
+        }
+    }
+    return items;
+}
+function resolveMemberItems(document, position, objName) {
+    // 'self' → members of the enclosing class
+    if (objName === 'self') {
+        const cls = findEnclosingClass(document, position.line);
+        return cls ? collectClassMemberItems(document, cls) : [];
+    }
+    const symbols = collectHoverSymbols(document);
+    const sym = selectHoverSymbol(symbols, objName, position.line);
+    if (!sym)
+        return [];
+    // Import module → show py module functions
+    if (sym.kind === 'module') {
+        const { funcTypes } = collectAllPyModuleInfo(document);
+        const funcs = funcTypes.get(objName);
+        if (!funcs)
+            return [];
+        return [...funcs.entries()].map(([name, retType]) => {
+            const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Function);
+            item.detail = `→ ${retType}`;
+            return item;
+        });
+    }
+    // Variable/parameter with a class type → show class members
+    if (sym.type) {
+        return collectClassMemberItems(document, sym.type);
+    }
+    return [];
+}
+// ===== Completion items provider =====
+function provideCompletionItems(document, position) {
+    const prefix = document.lineAt(position.line).text.substring(0, position.character);
+    // Member access context: ends with `identifier.` or `identifier.partial`
+    const dotMatch = prefix.match(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)?$/);
+    if (dotMatch) {
+        return resolveMemberItems(document, position, dotMatch[1]);
+    }
+    // Normal (non-dot) completion
+    const items = [];
+    const seen = new Set();
+    // Document symbols first so user-defined names take priority over built-ins
+    const symbols = collectHoverSymbols(document);
+    for (const sym of symbols) {
+        if (sym.kind === 'variable' && sym.line > position.line)
+            continue;
+        if (seen.has(sym.name))
+            continue;
+        seen.add(sym.name);
+        let kind;
+        switch (sym.kind) {
+            case 'function':
+                kind = vscode.CompletionItemKind.Function;
+                break;
+            case 'class':
+                kind = vscode.CompletionItemKind.Class;
+                break;
+            case 'trait':
+                kind = vscode.CompletionItemKind.Interface;
+                break;
+            case 'new_type':
+                kind = vscode.CompletionItemKind.TypeParameter;
+                break;
+            case 'module':
+                kind = vscode.CompletionItemKind.Module;
+                break;
+            default: kind = vscode.CompletionItemKind.Variable;
+        }
+        const item = new vscode.CompletionItem(sym.name, kind);
+        if (sym.signature)
+            item.detail = sym.signature;
+        else if (sym.type)
+            item.detail = `: ${sym.type}`;
+        if (sym.doc)
+            item.documentation = new vscode.MarkdownString(sym.doc);
+        items.push(item);
+    }
+    // Built-in functions
+    for (const [name, retType] of Object.entries(BUILTIN_RETURN_TYPES)) {
+        if (seen.has(name))
+            continue;
+        seen.add(name);
+        const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Function);
+        item.detail = `→ ${retType}`;
+        items.push(item);
+    }
+    // Language keywords
+    for (const kw of LANG_KEYWORDS) {
+        if (seen.has(kw))
+            continue;
+        seen.add(kw);
+        items.push(new vscode.CompletionItem(kw, vscode.CompletionItemKind.Keyword));
+    }
+    return items;
+}
+exports.provideCompletionItems = provideCompletionItems;
+// ===== Document symbols provider =====
+function provideDocumentSymbols(document) {
+    const result = [];
+    const stack = [];
+    for (let i = 0; i < document.lineCount; i++) {
+        const rawLine = document.lineAt(i).text;
+        const stripped = stripComment(rawLine);
+        if (!stripped.trim())
+            continue;
+        const indent = (rawLine.match(/^(\s*)/)?.[1] ?? '').length;
+        // Pop scopes that have ended at this indentation level
+        while (stack.length > 0 && indent <= stack[stack.length - 1].indent) {
+            stack.pop();
+        }
+        let name = '';
+        let detail = '';
+        let kind = vscode.SymbolKind.Variable;
+        let isContainer = false;
+        const funcMatch = stripped.match(FUNC_DEF_RE);
+        if (funcMatch) {
+            const [, , , funcName, , retType] = funcMatch;
+            name = funcName;
+            kind = vscode.SymbolKind.Function;
+            detail = retType?.trim() ?? '';
+            isContainer = true;
+        }
+        else {
+            const classMatch = stripped.match(CLASS_DEF_RE);
+            if (classMatch) {
+                const [, , kw, className, bases] = classMatch;
+                name = className;
+                kind = kw === 'trait' ? vscode.SymbolKind.Interface : vscode.SymbolKind.Class;
+                detail = bases ? `(${bases})` : '';
+                isContainer = true;
+            }
+            else {
+                const newTypeMatch = stripped.match(NEW_TYPE_RE);
+                if (newTypeMatch) {
+                    const [, , ntName, ntType] = newTypeMatch;
+                    name = ntName;
+                    kind = vscode.SymbolKind.TypeParameter;
+                    detail = ntType.trim();
+                }
+                else {
+                    const importMatch = stripped.match(IMPORT_RE);
+                    if (importMatch) {
+                        const [, importKind, moduleName, alias] = importMatch;
+                        name = alias;
+                        kind = vscode.SymbolKind.Module;
+                        detail = `${importKind} ${moduleName}`;
+                    }
+                    else {
+                        const staticMatch = stripped.match(STATIC_DECL_RE);
+                        if (staticMatch) {
+                            const [, , varName, annot] = staticMatch;
+                            name = varName;
+                            kind = vscode.SymbolKind.Variable;
+                            detail = annot?.trim() ?? '';
+                        }
+                        else if (indent === 0) {
+                            const declMatch = stripped.match(HOVER_DECL_RE);
+                            if (declMatch) {
+                                const [, , , varName, annot] = declMatch;
+                                name = varName;
+                                kind = vscode.SymbolKind.Variable;
+                                detail = annot?.trim() ?? '';
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (!name)
+            continue;
+        const nameIdx = rawLine.indexOf(name, indent);
+        const selRange = nameIdx >= 0
+            ? new vscode.Range(i, nameIdx, i, nameIdx + name.length)
+            : document.lineAt(i).range;
+        const bodyEnd = isContainer ? findBodyEndLine(document, i, indent) : i + 1;
+        const lastLine = Math.min(bodyEnd - 1, document.lineCount - 1);
+        const bodyRange = new vscode.Range(i, 0, lastLine, document.lineAt(lastLine).text.length);
+        const sym = new vscode.DocumentSymbol(name, detail, kind, bodyRange, selRange);
+        if (stack.length === 0) {
+            result.push(sym);
+        }
+        else {
+            stack[stack.length - 1].sym.children.push(sym);
+        }
+        if (isContainer) {
+            stack.push({ sym, indent });
+        }
+    }
+    return result;
+}
+exports.provideDocumentSymbols = provideDocumentSymbols;
+// ===== Signature help provider =====
+function provideSignatureHelp(document, position) {
+    const prefix = document.lineAt(position.line).text.substring(0, position.character);
+    let depth = 0;
+    let activeParam = 0;
+    let funcName = '';
+    for (let i = prefix.length - 1; i >= 0; i--) {
+        const c = prefix[i];
+        if (c === ')' || c === ']' || c === '}') {
+            depth++;
+            continue;
+        }
+        if (c === '(' || c === '[' || c === '{') {
+            if (c === '(' && depth === 0) {
+                const m = prefix.substring(0, i).trimEnd().match(/([A-Za-z_]\w*)$/);
+                funcName = m?.[1] ?? '';
+                break;
+            }
+            if (depth > 0)
+                depth--;
+            continue;
+        }
+        if (c === ',' && depth === 0)
+            activeParam++;
+    }
+    if (!funcName)
+        return undefined;
+    const symbols = collectHoverSymbols(document);
+    const funcSym = symbols.find(s => s.name === funcName && s.kind === 'function');
+    if (!funcSym?.signature)
+        return undefined;
+    const sigInfo = new vscode.SignatureInformation(funcSym.signature, funcSym.doc ? new vscode.MarkdownString(funcSym.doc) : undefined);
+    const paramsMatch = funcSym.signature.match(/\(([^)]*)\)/);
+    if (paramsMatch?.[1]?.trim()) {
+        for (const p of splitComma(paramsMatch[1])) {
+            const trimmed = p.trim();
+            if (trimmed)
+                sigInfo.parameters.push(new vscode.ParameterInformation(trimmed));
+        }
+    }
+    const help = new vscode.SignatureHelp();
+    help.signatures = [sigInfo];
+    help.activeSignature = 0;
+    help.activeParameter = Math.min(activeParam, Math.max(0, sigInfo.parameters.length - 1));
+    return help;
+}
+exports.provideSignatureHelp = provideSignatureHelp;
+// ===== Definition provider =====
+function provideDefinition(document, position) {
+    const range = document.getWordRangeAtPosition(position, /[A-Za-z_]\w*/);
+    if (!range)
+        return undefined;
+    const name = document.getText(range);
+    const symbols = collectHoverSymbols(document);
+    const symbol = selectHoverSymbol(symbols, name, position.line);
+    if (!symbol)
+        return undefined;
+    const targetText = document.lineAt(symbol.line).text;
+    const nameIdx = targetText.indexOf(symbol.name);
+    const targetRange = nameIdx >= 0
+        ? new vscode.Range(symbol.line, nameIdx, symbol.line, nameIdx + symbol.name.length)
+        : document.lineAt(symbol.line).range;
+    return new vscode.Location(document.uri, targetRange);
+}
+exports.provideDefinition = provideDefinition;
 // ===== Semantic tokens (import alias highlighting) =====
 exports.SEMANTIC_TOKENS_LEGEND = new vscode.SemanticTokensLegend(['class'], // token types: index 0 = 'class'
 [] // modifiers: none

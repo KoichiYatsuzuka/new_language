@@ -19,7 +19,28 @@ function activate(context) {
             return (0, type_infer_1.provideDocumentSemanticTokens)(document);
         },
     }, type_infer_1.SEMANTIC_TOKENS_LEGEND);
-    context.subscriptions.push(inlayProvider, hoverProvider, semanticProvider);
+    const completionProvider = vscode.languages.registerCompletionItemProvider({ language: 'test_lang' }, {
+        provideCompletionItems(document, position) {
+            return (0, type_infer_1.provideCompletionItems)(document, position);
+        },
+    }, '.' // trigger member completion on dot
+    );
+    const symbolProvider = vscode.languages.registerDocumentSymbolProvider({ language: 'test_lang' }, {
+        provideDocumentSymbols(document) {
+            return (0, type_infer_1.provideDocumentSymbols)(document);
+        },
+    });
+    const signatureProvider = vscode.languages.registerSignatureHelpProvider({ language: 'test_lang' }, {
+        provideSignatureHelp(document, position) {
+            return (0, type_infer_1.provideSignatureHelp)(document, position);
+        },
+    }, '(', ',');
+    const definitionProvider = vscode.languages.registerDefinitionProvider({ language: 'test_lang' }, {
+        provideDefinition(document, position) {
+            return (0, type_infer_1.provideDefinition)(document, position);
+        },
+    });
+    context.subscriptions.push(inlayProvider, hoverProvider, semanticProvider, completionProvider, symbolProvider, signatureProvider, definitionProvider);
 }
 exports.activate = activate;
 function deactivate() { }

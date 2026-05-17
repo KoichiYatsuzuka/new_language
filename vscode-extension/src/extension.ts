@@ -4,6 +4,10 @@ import {
     provideInlayHints,
     provideDocumentSemanticTokens,
     SEMANTIC_TOKENS_LEGEND,
+    provideCompletionItems,
+    provideDocumentSymbols,
+    provideSignatureHelp,
+    provideDefinition,
 } from './type_infer';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -40,7 +44,55 @@ export function activate(context: vscode.ExtensionContext) {
         },
         SEMANTIC_TOKENS_LEGEND
     );
-    context.subscriptions.push(inlayProvider, hoverProvider, semanticProvider);
+    const completionProvider = vscode.languages.registerCompletionItemProvider(
+        { language: 'test_lang' },
+        {
+            provideCompletionItems(
+                document: vscode.TextDocument,
+                position: vscode.Position
+            ): vscode.CompletionItem[] {
+                return provideCompletionItems(document, position);
+            },
+        },
+        '.'  // trigger member completion on dot
+    );
+    const symbolProvider = vscode.languages.registerDocumentSymbolProvider(
+        { language: 'test_lang' },
+        {
+            provideDocumentSymbols(
+                document: vscode.TextDocument
+            ): vscode.DocumentSymbol[] {
+                return provideDocumentSymbols(document);
+            },
+        }
+    );
+    const signatureProvider = vscode.languages.registerSignatureHelpProvider(
+        { language: 'test_lang' },
+        {
+            provideSignatureHelp(
+                document: vscode.TextDocument,
+                position: vscode.Position
+            ): vscode.SignatureHelp | undefined {
+                return provideSignatureHelp(document, position);
+            },
+        },
+        '(', ','
+    );
+    const definitionProvider = vscode.languages.registerDefinitionProvider(
+        { language: 'test_lang' },
+        {
+            provideDefinition(
+                document: vscode.TextDocument,
+                position: vscode.Position
+            ): vscode.Location | undefined {
+                return provideDefinition(document, position);
+            },
+        }
+    );
+    context.subscriptions.push(
+        inlayProvider, hoverProvider, semanticProvider,
+        completionProvider, symbolProvider, signatureProvider, definitionProvider
+    );
 }
 
 export function deactivate() {}
