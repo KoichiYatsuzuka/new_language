@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use crate::ast::{Accessibility, BinOp, CallArg, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TemplateParam, UnaryOp};
 use crate::token::{Span, Spanned, Token};
 use crate::python_converter;
+use crate::lexer;
 
 /// 複合代入演算子トークンを対応する二項演算子（`BinOp`）に変換する。
 ///
@@ -40,8 +41,11 @@ pub struct Parser {
     class_or_trait_depth: usize,
     /// Names declared with `new_type` — any reassignment to these is a parse error.
     known_new_types: HashSet<String>,
-    /// ソースファイルのディレクトリ（import 時のモジュール検索基準）。
+    /// 現在パース中のファイルのディレクトリ（import の第一検索先）。
     source_dir: PathBuf,
+    /// メインエントリーファイルのディレクトリ（import のフォールバック検索先）。
+    /// サブパーサにも変更せず引き継がれる。
+    root_dir: PathBuf,
     /// モジュールキャッシュ: (lang, 解決済みパス) → 変換済み tl AST。
     /// パース時に同じモジュールを複数回読み込まないために使用する。
     module_cache: HashMap<(String, PathBuf), Vec<Stmt>>,
@@ -76,13 +80,15 @@ impl Parser {
             ],
             vec![],
         ));
+        let resolved = source_dir.unwrap_or_else(|| PathBuf::from("."));
         Self {
             tokens,
             pos: 0,
             known_traits,
             class_or_trait_depth: 0,
             known_new_types: HashSet::new(),
-            source_dir: source_dir.unwrap_or_else(|| PathBuf::from(".")),
+            source_dir: resolved.clone(),
+            root_dir: resolved,
             module_cache: HashMap::new(),
             loading: HashSet::new(),
         }
@@ -840,8 +846,12 @@ impl Parser {
     fn parse_import_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `import` を消費
 
-        // `[lang]` を読む
-        let lang = self.parse_lang_bracket()?;
+        // `[lang]` を読む。省略時は "tl"
+        let lang = if *self.current() == Token::LBracket {
+            self.parse_lang_bracket()?
+        } else {
+            "tl".to_string()
+        };
 
         // モジュールパス (`a.b.c`)
         let module = self.parse_module_path()?;
@@ -867,9 +877,13 @@ impl Parser {
         // モジュールパス
         let module = self.parse_module_path()?;
 
-        // `import[lang]`
+        // `import[lang]` または `import`（省略時は "tl"）
         self.eat(&Token::Import)?;
-        let lang = self.parse_lang_bracket()?;
+        let lang = if *self.current() == Token::LBracket {
+            self.parse_lang_bracket()?
+        } else {
+            "tl".to_string()
+        };
 
         // 名前リスト: `Name1, Name2 as N2, ...`
         let mut names: Vec<(String, Option<String>)> = Vec::new();
@@ -932,12 +946,85 @@ impl Parser {
     /// モジュールを検索・読み込み・変換して tl AST を返す。キャッシュを使用する。
     fn load_module(&mut self, lang: &str, module: &[String]) -> Result<Vec<Stmt>, String> {
         match lang {
-            "py" => self.load_python_module(module),
+            "tl"     => self.load_tl_module(module),
+            "py"     => self.load_python_module(module),
             // py-int: .pyi を優先し、なければ .py にフォールバック
             // body は型検査専用（実行時は PyO3 経由）
             "py-int" => self.load_python_interface_module(module),
             other => Err(format!("unknown import language '{other}'")),
         }
+    }
+
+    /// `.tl` モジュールをロードして AST を返す。
+    ///
+    /// 各検索ディレクトリ (`source_dir` → `root_dir`) に対して以下の順で試す:
+    /// 1. `module.tl`          — ファイルモジュール
+    /// 2. `module/__init__.tl` — パッケージモジュール（ディレクトリに `__init__.tl` が存在する場合）
+    fn load_tl_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
+        let module_base: PathBuf = module.iter().collect();
+        let file_rel = module_base.with_extension("tl");
+        let init_rel = module_base.join("__init__.tl");
+
+        // 検索ディレクトリリスト（source_dir と root_dir が同じなら重複させない）
+        let search_dirs: Vec<PathBuf> = {
+            let a = self.source_dir.clone();
+            let b = self.root_dir.clone();
+            if a == b { vec![a] } else { vec![a, b] }
+        };
+
+        // 各ディレクトリ × 各相対パスの組み合わせを優先順に列挙する
+        let candidates: Vec<PathBuf> = search_dirs.iter()
+            .flat_map(|dir| [dir.join(&file_rel), dir.join(&init_rel)])
+            .collect();
+
+        let abs_path = candidates.iter()
+            .find(|p| p.exists())
+            .cloned()
+            .ok_or_else(|| {
+                let paths = candidates.iter()
+                    .map(|p| format!("'{}'", p.display()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("cannot find module '{}' (looked at {})", module.join("."), paths)
+            })?;
+
+        let cache_key = ("tl".to_string(), abs_path.clone());
+
+        if let Some(body) = self.module_cache.get(&cache_key) {
+            return Ok(body.clone());
+        }
+
+        if self.loading.contains(&abs_path) {
+            return Err(format!(
+                "circular import detected: '{}'",
+                abs_path.display()
+            ));
+        }
+
+        let source = std::fs::read_to_string(&abs_path)
+            .map_err(|e| format!("cannot read module '{}': {e}", module.join(".")))?;
+
+        self.loading.insert(abs_path.clone());
+
+        let filename = abs_path.to_string_lossy().to_string();
+        let tokens = lexer::Lexer::new(&source, filename).tokenize();
+        let module_dir = abs_path.parent().map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let mut sub = Parser::new(tokens, Some(module_dir));
+        // 親のキャッシュ・循環検出セット・ルートディレクトリを引き継ぐ
+        sub.module_cache = self.module_cache.clone();
+        sub.loading = self.loading.clone();
+        sub.root_dir = self.root_dir.clone();
+
+        let body = sub.parse_program()?;
+
+        // 子パーサが生成したキャッシュエントリを親にマージする
+        self.module_cache.extend(sub.module_cache);
+        self.loading.remove(&abs_path);
+        self.module_cache.insert(cache_key, body.clone());
+
+        Ok(body)
     }
 
     /// Python モジュールを検索・変換する（キャッシュ込み）。
