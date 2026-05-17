@@ -1,0 +1,39 @@
+# prime_counter.tl — heavy CPU module for benchmarking
+#
+# Provides:
+#   is_prime(n)             -> bool   trial-division primality test
+#   count_primes_up_to(n)   -> int    count of primes in [2, n]
+#   prime_sum_up_to(n)      -> int    sum   of primes in [2, n]
+#
+# Compile:
+#   cargo run --release -- --compile examples/prime_counter.tl
+
+fn is_prime(n: int) -> bool:
+    if n < 2:
+        return False
+    if n % 2 == 0:
+        return n == 2
+    mut d = 3
+    while d * d <= n:
+        if n % d == 0:
+            return False
+        d += 2
+    return True
+
+fn count_primes_up_to(limit: int) -> int:
+    mut count = 0
+    mut n = 2
+    while n <= limit:
+        if is_prime(n):
+            count += 1
+        n += 1
+    return count
+
+fn prime_sum_up_to(limit: int) -> int:
+    mut total = 0
+    mut n = 2
+    while n <= limit:
+        if is_prime(n):
+            total += n
+        n += 1
+    return total

@@ -1,0 +1,44 @@
+trait Shape:
+    fn area(self) -> float:
+        ...
+    fn perimeter(self) -> float:
+        ...
+
+
+class Circle(Shape)->Circle:
+    mut radius: float
+    const PI: float = ...
+    fn __init__(mut self, r: float) -> None:
+        ...
+    fn area(self) -> float:
+        ...
+    fn perimeter(self) -> float:
+        ...
+
+
+class Rectangle(Shape)->Rectangle:
+    let width: float
+    let height: float
+    fn area(self) -> float:
+        ...
+    fn perimeter(self) -> float:
+        ...
+    fn is_square(self) -> bool:
+        ...
+    fn __init__(mut self, width: float, height: float) -> None:
+        ...
+
+
+new_type Meters: float
+
+enum Color:
+    Red
+    Green
+    Blue = 10
+
+
+fn describe_shape(s: Shape) -> str:
+    ...
+
+fn clamp[T: Comparable](value: T, lo: T, hi: T) -> T:
+    ...

@@ -1,0 +1,49 @@
+# bench_hard.tl — heavy benchmark: count and sum all primes up to LIMIT
+#
+# Two functions from prime_counter are called back-to-back, each scanning
+# every integer in [2, LIMIT] and running trial division on it.
+# At LIMIT = 500_000 this takes ~11 s under the tree-walk interpreter,
+# giving a clear baseline for the future LLVM-compiled comparison.
+#
+# Workflow
+# --------
+#   Step 1  (interpreted module):
+#     cargo run --release -- examples/bench_hard.tl
+#
+#   Step 2  (compile the module):
+#     cargo run --release -- --compile examples/prime_counter.tl
+#
+#   Step 3  (compiled module — same bench file, parser now prefers .tlc):
+#     cargo run --release -- examples/bench_hard.tl
+#
+# Expected: times nearly identical for now (.tlc embeds source text, so the
+# tree-walk interpreter still executes it).  The gap will appear once LLVM IR
+# code-generation replaces the embedded source with native machine code.
+
+import[py-int] time
+import prime_counter
+
+let LIMIT = 500000
+
+print("=== bench_hard: primes up to", LIMIT, "===")
+print("")
+
+# ── count ──────────────────────────────────────────────────────────────────
+print("count_primes_up_to(", LIMIT, ") ...")
+let t0 = time.time()
+let cnt = prime_counter.count_primes_up_to(LIMIT)
+let t1 = time.time()
+print("  Result  :", cnt, "(expected 41538)")
+print("  Elapsed :", t1 - t0, "s")
+print("")
+
+# ── sum ────────────────────────────────────────────────────────────────────
+print("prime_sum_up_to(", LIMIT, ") ...")
+let t2 = time.time()
+let sm = prime_counter.prime_sum_up_to(LIMIT)
+let t3 = time.time()
+print("  Result  :", sm, "(expected 9914236195)")
+print("  Elapsed :", t3 - t2, "s")
+print("")
+
+print("Total     :", (t3 - t0), "s")

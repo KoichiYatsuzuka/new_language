@@ -6,6 +6,7 @@ mod ast;
 mod interpreter;
 mod lexer;
 mod parser;
+mod partial_compiler;
 mod python_converter;
 mod token;
 mod type_check;
@@ -15,36 +16,49 @@ use lexer::Lexer;
 use parser::Parser;
 use type_check::TypeChecker;
 
-/// コマンドライン引数を解析し、実行対象のファイルパスを返す。
+/// コマンドライン引数を解析して実行モードを返す。
 ///
-/// 引数の解釈ルール:
-/// 1. `-src <path>` フラグが見つかればその次の値をファイルパスとして返す。
-///    `-src` の直後に値がない場合はエラーメッセージを出力して終了する。
-/// 2. `-src` が存在しない場合は、`-` で始まらない最初の引数を位置引数として使用する。
-/// 3. どちらも存在しない場合は `None` を返す（標準入力から読み込む）。
-///
-/// # 戻り値
-/// `Some(path)` — 解析されたファイルパス文字列。
-/// `None`       — ファイルパスが指定されていない（標準入力モード）。
-fn parse_args() -> Option<String> {
-    // プログラム名（第0引数）を除いた引数リストを収集する
+/// モードの優先順位:
+/// 1. `--compile <path>` / `-compile <path>` → `Mode::Compile`
+/// 2. `-src <path>` → `Mode::Run`
+/// 3. `-` で始まらない最初の引数 → `Mode::Run`
+/// 4. 引数なし → `Mode::Stdin`
+enum Mode {
+    /// 通常実行モード: ソースファイルをパースして実行する。
+    Run(String),
+    /// コンパイルモード: `.tlc` (バイナリ) と `.tls` (スタブ) を生成する。
+    Compile(String),
+    /// 標準入力モード: stdin からソースを読み込んで実行する。
+    Stdin,
+}
+
+fn parse_args() -> Mode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
 
-    // `-src` フラグを先に探す
     while i < args.len() {
-        if args[i] == "-src" {
-            // `-src` の次の引数をファイルパスとして返す。なければエラー終了する
-            return args.get(i + 1).cloned().or_else(|| {
-                eprintln!("Error: -src requires a file path");
-                std::process::exit(1);
-            });
+        match args[i].as_str() {
+            "--compile" | "-compile" => {
+                return args.get(i + 1).map(|p| Mode::Compile(p.clone())).unwrap_or_else(|| {
+                    eprintln!("Error: --compile requires a file path");
+                    std::process::exit(1);
+                });
+            }
+            "-src" => {
+                return args.get(i + 1).map(|p| Mode::Run(p.clone())).unwrap_or_else(|| {
+                    eprintln!("Error: -src requires a file path");
+                    std::process::exit(1);
+                });
+            }
+            _ => {}
         }
         i += 1;
     }
 
-    // `-src` がなければ `-` で始まらない最初の引数を位置引数として使用する
-    args.into_iter().find(|a| !a.starts_with('-'))
+    args.into_iter()
+        .find(|a| !a.starts_with('-'))
+        .map(Mode::Run)
+        .unwrap_or(Mode::Stdin)
 }
 
 /// ソースコード文字列を受け取り、字句解析・構文解析・静的型検査・実行の全パイプラインを実行する。
@@ -90,7 +104,7 @@ fn run_program(source: &str, filename: &str) -> Result<(), String> {
     // ソーステキストはエラー報告時のスタックトレース表示に使用される
     let mut interp = Interpreter::new();
     interp.add_source_text(filename, source);
-    // ソースファイルのディレクトリを import[py-int] の検索パスに追加する
+    // ソースファイルのディレクトリを import 検索パスに追加する
     if let Some(dir) = &source_dir {
         interp.add_python_search_dir(dir.clone());
     }
@@ -119,33 +133,79 @@ fn run_program(source: &str, filename: &str) -> Result<(), String> {
 }
 
 /// プログラムのエントリーポイント。
-///
-/// 動作:
-/// 1. `parse_args()` でファイルパスを取得する。
-///    - パスが得られた場合: そのファイルを読み込んでソースとする。
-///    - パスが得られなかった場合: 標準入力からソースを読み込む（ファイル名は `"<stdin>"`）。
-/// 2. `run_program()` でパイプライン全体を実行する。
-/// 3. エラーが発生した場合は標準エラー出力にメッセージを表示し、終了コード 1 で終了する。
 fn main() {
-    // ファイルパスがあればファイルから、なければ標準入力からソースを読み込む
-    let (source, filename) = if let Some(path) = parse_args() {
-        // ファイル読み込みに失敗した場合はエラーメッセージを出力して終了する
-        let content = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            eprintln!("Error reading {path}: {e}");
-            std::process::exit(1);
-        });
-        (content, path)
-    } else {
-        // 標準入力からすべてのバイトを読み込む
-        use std::io::Read;
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf).expect("failed to read stdin");
-        (buf, "<stdin>".to_string())
-    };
+    match parse_args() {
+        Mode::Run(path) => {
+            // .tlc: extract embedded source first, then run normally
+            let (source, filename) = if path.ends_with(".tlc") {
+                match partial_compiler::load_tlc(std::path::Path::new(&path)) {
+                    Ok((name, src)) => (src, format!("<compiled:{name}>")),
+                    Err(e) => {
+                        eprintln!("Error loading {path}: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                (read_file(&path), path)
+            };
+            if let Err(e) = run_program(&source, &filename) {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
 
-    // パイプライン実行: エラーがあれば stderr に出力して終了コード 1 で終了する
-    if let Err(e) = run_program(&source, &filename) {
-        eprintln!("{e}");
+        Mode::Stdin => {
+            use std::io::Read;
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf).expect("failed to read stdin");
+            if let Err(e) = run_program(&buf, "<stdin>") {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+
+        Mode::Compile(path) => {
+            compile_module(&path);
+        }
+    }
+}
+
+/// ファイルを読み込む。失敗したら stderr に出力して終了する。
+fn read_file(path: &str) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("Error reading {path}: {e}");
         std::process::exit(1);
+    })
+}
+
+/// `--compile` モード: ソースをパース・型検査して `.tlc` と `.tls` を生成する。
+fn compile_module(path: &str) {
+    let source = read_file(path);
+
+    let tokens = Lexer::new(&source, path).tokenize();
+    let source_dir = std::path::Path::new(path).parent().map(|p| p.to_path_buf());
+
+    let stmts = Parser::new(tokens, source_dir).parse_program().unwrap_or_else(|e| {
+        eprintln!("ParseError: {e}");
+        std::process::exit(1);
+    });
+
+    let type_errors = TypeChecker::check(&stmts);
+    if !type_errors.is_empty() {
+        for e in &type_errors {
+            eprintln!("{e}");
+        }
+        std::process::exit(1);
+    }
+
+    match partial_compiler::compile(&source, &stmts, std::path::Path::new(path)) {
+        Ok((tlc, tls)) => {
+            println!("Compiled : {}", tlc.display());
+            println!("Stub     : {}", tls.display());
+        }
+        Err(e) => {
+            eprintln!("Compile error: {e}");
+            std::process::exit(1);
+        }
     }
 }

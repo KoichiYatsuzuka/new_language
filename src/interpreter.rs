@@ -16,6 +16,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -497,6 +498,34 @@ impl Drop for FileData {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Native function support
+// ---------------------------------------------------------------------------
+
+/// Reference to a native (natively compiled) function exported by a shared library.
+///
+/// The library is identified by its filesystem path; the `Interpreter` holds the
+/// loaded `Library` in `native_libs` keyed by the same path.
+#[derive(Debug, Clone)]
+pub struct NativeFnRef {
+    /// Absolute path of the `.dll` / `.so` / `.dylib` that exports this function.
+    pub lib_path: PathBuf,
+    /// Base name of the tl function (e.g. `"is_prime"`).
+    /// The actual exported symbol is `"{fn_name}_tl"`.
+    pub fn_name: String,
+    /// Number of positional parameters (used to size the args array).
+    pub n_params: usize,
+}
+
+/// Wrapper around `libloading::Library` that implements `Debug`.
+pub(self) struct NativeLibWrapper(pub(self) libloading::Library);
+
+impl fmt::Debug for NativeLibWrapper {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<NativeLib>")
+    }
+}
+
 /// インタープリタが扱う実行時値の列挙型。
 ///
 /// 各バリアントの概要:
@@ -513,6 +542,7 @@ impl Drop for FileData {
 /// - `Generator`: 実体化済みジェネレータ（yield 済み値を保持）
 /// - `Dict`: 型付き or 型なし辞書（キー・値の並列 Vec で内部管理）
 /// - `Tuple`: 不変・固定長のシーケンス（各要素の型情報を保持）
+/// - `NativeFunction`: natively compiled function loaded from a shared library
 #[derive(Debug, Clone)]
 pub enum Value {
     Int(i64),
@@ -553,6 +583,9 @@ pub enum Value {
     /// ファイルオブジェクト。`open()` 組み込み関数が返す。
     /// メソッド（read / read_line / read_letter / write / write_line）で読み書きを行う。
     FileObject(Rc<RefCell<FileData>>),
+    /// Natively compiled function from a shared library.
+    /// Call it via `libloading` using the `{fn_name}_tl` exported symbol.
+    NativeFunction(Rc<NativeFnRef>),
 }
 
 // ---------------------------------------------------------------------------
@@ -663,6 +696,9 @@ pub struct Interpreter {
     /// トレイト名 → (フィールド名 → アクセス可能性) のマップ（TraitDef 実行時に収集）。
     /// クラスが継承したトレイトフィールドのアクセス制御に使用する。
     pub(self) trait_field_access: HashMap<String, HashMap<String, Accessibility>>,
+    /// ロード済みのネイティブ共有ライブラリ。キーは DLL の絶対パス。
+    /// ライブラリはインタープリタの生存期間を通じて保持される（アンロードしない）。
+    pub(self) native_libs: HashMap<PathBuf, NativeLibWrapper>,
 }
 
 impl Interpreter {
@@ -757,6 +793,7 @@ impl Interpreter {
             static_cells: HashMap::new(),
             current_class: None,
             trait_field_access: HashMap::new(),
+            native_libs: HashMap::new(),
         }
     }
 

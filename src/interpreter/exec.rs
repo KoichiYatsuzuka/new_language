@@ -13,7 +13,7 @@ use crate::ast::{Accessibility, Expr, FieldKind, MatchPattern, Param, Stmt};
 use super::{
     CapturedVar, Interpreter, Value, Var, ExecResult,
     FnValue, TemplateFnValue, GeneratorFnValue, TemplateGenFnValue, TemplateClassValue,
-    GeneratorState, NamespaceData, ModuleState,
+    GeneratorState, NamespaceData, ModuleState, NativeFnRef, NativeLibWrapper,
     RaisedError, StackFrame,
     RAISE_SENTINEL, GENERATOR_YIELDS, BLOCK_YIELDS, LOOP_DEPTH,
 };
@@ -845,6 +845,33 @@ impl Interpreter {
             return Ok(ns);
         }
 
+        // tl モジュール: .tlc v1 に埋め込まれたネイティブ DLL がキャッシュにあれば優先する
+        if lang == "tl" {
+            let module_name = module.join(".");
+            if let Some((_exports, dll_bytes)) = crate::partial_compiler::take_native_bytes(&module_name) {
+                let ext = crate::partial_compiler::native_lib_ext();
+                let stem = module.last().cloned().unwrap_or_default();
+                // Write DLL bytes to a deterministic temp path and load from there.
+                let tmp_path = std::env::temp_dir().join(format!("{stem}_tl.{ext}"));
+                match std::fs::write(&tmp_path, &dll_bytes) {
+                    Ok(()) => {
+                        match self.try_load_native_module(module, body, &tmp_path) {
+                            Ok(ns) => {
+                                self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
+                                return Ok(ns);
+                            }
+                            Err(e) => {
+                                eprintln!("NativeLoad: failed: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("NativeLoad: cannot write temp DLL: {e}");
+                    }
+                }
+            }
+        }
+
         // body を孤立スコープで実行してトップレベル名を収集
         let prev_in_python = self.in_python_module;
         if lang == "py" { self.in_python_module = true; }
@@ -882,6 +909,84 @@ impl Interpreter {
 
         let ns = Rc::new(NamespaceData { name: module.join("."), members });
         self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
+        Ok(ns)
+    }
+
+    /// ネイティブ共有ライブラリをロードして、そのモジュールの `Namespace` を構築する。
+    ///
+    /// - 見つかった DLL シンボル (`fn_name_tl`) に対して `Value::NativeFunction` を作成する。
+    /// - DLL に存在しない関数は tree-walk 実行のためそのまま残す（body を通常実行して収集）。
+    fn try_load_native_module(
+        &mut self,
+        module: &[String],
+        body: &[Stmt],
+        lib_path: &std::path::Path,
+    ) -> Result<Rc<NamespaceData>, String> {
+        // Load the shared library.
+        let lib = unsafe { libloading::Library::new(lib_path) }
+            .map_err(|e| format!("libloading: {e}"))?;
+
+        let lib_path_buf = lib_path.to_path_buf();
+
+        // First, execute the body to collect all members via tree-walk.
+        // (This also registers non-native functions, classes, etc.)
+        self.push_scope();
+        for stmt in body {
+            match self.exec(stmt)? {
+                ExecResult::Normal => {}
+                ExecResult::Raise(_raised) => {
+                    self.pop_scope();
+                    return Err(format!(
+                        "RuntimeError: exception during native module init: {}",
+                        module.join(".")
+                    ));
+                }
+                _ => {}
+            }
+        }
+        let mut members: HashMap<String, Value> = self
+            .scopes
+            .last()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.get_value()))
+            .collect();
+        self.pop_scope();
+
+        // Override tree-walk versions with native versions where a symbol exists.
+        for stmt in body {
+            if let Stmt::FnDef { name, params, .. } = stmt {
+                let symbol_name = format!("{name}_tl\0");
+                let has_symbol = unsafe {
+                    lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(
+                        symbol_name.as_bytes()
+                    ).is_ok()
+                };
+                if has_symbol {
+                    let fn_ref = Rc::new(NativeFnRef {
+                        lib_path: lib_path_buf.clone(),
+                        fn_name: name.clone(),
+                        n_params: params.len(),
+                    });
+                    members.insert(name.clone(), Value::NativeFunction(fn_ref));
+                }
+            }
+        }
+
+        // Register globally so intra-module calls among non-native functions work.
+        for (name, value) in &members {
+            self.scopes[0]
+                .entry(name.clone())
+                .or_insert_with(|| Var::new(value.clone(), false));
+        }
+
+        // Store the loaded library so it stays alive for the interpreter's lifetime.
+        self.native_libs.insert(lib_path_buf, NativeLibWrapper(lib));
+
+        let ns = Rc::new(NamespaceData {
+            name: module.join("."),
+            members,
+        });
         Ok(ns)
     }
 

@@ -12,6 +12,7 @@ cargo test                         # Run all tests
 cargo test <name>                  # Filter tests by partial name match
 cargo clippy                       # Lint
 cargo fmt                          # Format
+cargo run -- --compile <file.tl>   # Partially compile a module (see below)
 ```
 
 ## Project Overview
@@ -34,7 +35,10 @@ test_lang/
 │   ├── ast.rs           # AST node definitions (with embedded Span)
 │   ├── parser.rs        # Recursive descent parser (input: Vec<Spanned>)
 │   ├── type_check.rs    # Static type checker (after parsing, before execution)
-│   └── interpreter.rs   # Tree-walk interpreter
+│   ├── interpreter.rs   # Tree-walk interpreter
+│   ├── codegen.rs       # Rust source code generator (tl fn → native i64 ABI)
+│   ├── module_compiler.rs # --compile: writes .tlc (v0/v1) and .tls; v1 embeds DLL inside .tlc
+│   └── stub_gen.rs      # .tls stub file generator
 ├── spec/
 │   ├── general.md       # General language specification
 │   ├── keywords.md      # Keyword list
@@ -71,6 +75,54 @@ test_lang/
         ├── extension.ts
         └── type_infer.ts
 ```
+
+## Partial Compilation
+
+A `.tl` module can be partially compiled to native machine code with `--compile`.  
+This produces two files next to the source:
+
+| Output file | Contents |
+|-------------|----------|
+| `{stem}.tlc` | Compiled module: binary header + embedded source text, optionally with a native shared library embedded (v1 format) |
+| `{stem}.tls` | Type stub: function/class/trait signatures with `...` bodies (used by the VS Code extension and the static type checker) |
+
+### How to compile a module
+
+```bash
+cargo run --release -- --compile examples/prime_counter.tl
+# Output:
+#   NativeLib: compiling 3 function(s): is_prime, count_primes_up_to, prime_sum_up_to
+#   NativeLib: 3 function(s) embedded in examples\prime_counter.tlc
+#   Compiled : examples\prime_counter.tlc
+#   Stub     : examples\prime_counter.tls
+```
+
+### How the compiled module is used
+
+When a `.tl` file imports a module, the parser prefers `.tlc` over `.tl`.  
+If the `.tlc` is v1, the embedded DLL is extracted to a temp file at runtime and loaded via `libloading`.  
+Eligible functions are dispatched natively; all other functions tree-walk as usual.
+
+```
+import prime_counter                      # loads prime_counter.tlc (parser)
+prime_counter.count_primes_up_to(500000)  # calls native code — ~300x faster
+```
+
+### Native eligibility
+
+A function is compiled natively when all of the following are true:
+
+- No template parameters
+- All parameter types and the return type are `int` or `bool`
+- The body contains only: `if`, `while`, `return`, `let`/`mut`/`const`, `=`, `+=` etc., and calls to other functions in the same module
+
+Functions that do not meet these criteria are silently skipped; they continue to be executed by the tree-walk interpreter.  
+If `rustc` is not found in `PATH`, native compilation is skipped entirely and only `.tlc` + `.tls` are written.
+
+### Output file roles
+
+- **`.tlc`** — imported instead of `.tl` by the parser (preferred when both exist); v1 contains embedded native code, v0 is source-only
+- **`.tls`** — read by the VS Code extension for type hints; never executed
 
 ## About Testing
 
@@ -190,7 +242,7 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Static access checking for `private`/`protected` (currently runtime `AccessError` only; no `StaticTypeError` at parse/type-check time)
 - Set type (`{a, b}`)
 - Imports (`import` / `from ... import`)
-- LLVM IR code generation
+- Native compilation: only `int`/`bool` functions with simple control flow are eligible; `float`, `str`, closures, classes, generators not yet supported
 - Python implementation
 
 ## Key Language Differences from Python
@@ -213,5 +265,5 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 
 1. **Set type** (`{a, b}`)
 2. **Imports** (`import` / `from ... import`)
-3. **LLVM IR code generation**
+3. **Expand native compilation** — support `float`, `str`, and more complex control flow in codegen
 

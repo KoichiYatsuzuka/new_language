@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use crate::ast::{Accessibility, BinOp, Expr};
 
-use super::{DictData, ExecResult, FileData, FileOpenModeRust, ByteModeRust, GeneratorState, Interpreter, TupleData, Value, Var, RAISE_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH};
+use super::{DictData, ExecResult, FileData, FileOpenModeRust, ByteModeRust, GeneratorState, Interpreter, TupleData, Value, Var, NativeFnRef, RAISE_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH};
 
 // ---------------------------------------------------------------------------
 // open() / close() ヘルパー
@@ -573,10 +573,70 @@ impl Interpreter {
                         // インスタンスを呼び出す: __call__ メソッドに委譲する
                         self.eval_method_call(callee, "__call__", args)
                     }
+                    Value::NativeFunction(fn_ref) => {
+                        self.call_native_function(&fn_ref, args)
+                    }
                     _ => Err(format!("TypeError: '{}' object is not callable", self.type_name(&callee))),
                 }
             }
         }
+    }
+
+    // --- ネイティブ関数呼び出し ---
+
+    /// `Value::NativeFunction` を呼び出す。
+    ///
+    /// 引数を `i64` に変換して C ABI ラッパー (`fn_name_tl`) を呼び出し、
+    /// 結果を `Value::Int` に変換して返す。
+    pub(super) fn call_native_function(
+        &mut self,
+        fn_ref: &Rc<NativeFnRef>,
+        args: &[crate::ast::CallArg],
+    ) -> Result<Value, String> {
+        // Evaluate arguments (returns Vec<(Option<String>, Value)>).
+        let evaled = self.eval_call_args(args)?;
+
+        // Convert tl values to i64.
+        let mut c_args: Vec<i64> = Vec::with_capacity(evaled.len());
+        for (_, v) in &evaled {
+            match v {
+                Value::Int(n)  => c_args.push(*n),
+                Value::Bool(b) => c_args.push(if *b { 1 } else { 0 }),
+                other => return Err(format!(
+                    "TypeError: native function '{}' argument must be int or bool, got '{}'",
+                    fn_ref.fn_name,
+                    self.type_name(other)
+                )),
+            }
+        }
+
+        // Ensure argument count matches.
+        if c_args.len() != fn_ref.n_params {
+            return Err(format!(
+                "TypeError: native function '{}' expects {} argument(s), got {}",
+                fn_ref.fn_name, fn_ref.n_params, c_args.len()
+            ));
+        }
+
+        // Look up the loaded library.
+        let result = {
+            let lib = self.native_libs.get(&fn_ref.lib_path).ok_or_else(|| {
+                format!(
+                    "RuntimeError: native library not loaded: {}",
+                    fn_ref.lib_path.display()
+                )
+            })?;
+            let symbol_name = format!("{}_tl\0", fn_ref.fn_name);
+            unsafe {
+                let func: libloading::Symbol<unsafe extern "C" fn(*const i64, i32) -> i64> =
+                    lib.0.get(symbol_name.as_bytes()).map_err(|e| {
+                        format!("RuntimeError: symbol '{}' not found: {e}", fn_ref.fn_name)
+                    })?;
+                func(c_args.as_ptr(), c_args.len() as i32)
+            }
+        };
+
+        Ok(Value::Int(result))
     }
 
     // --- 属性代入ヘルパー ---

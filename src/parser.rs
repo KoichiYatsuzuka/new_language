@@ -955,13 +955,15 @@ impl Parser {
         }
     }
 
-    /// `.tl` モジュールをロードして AST を返す。
+    /// `.tl` / `.tlc` モジュールをロードして AST を返す。
     ///
-    /// 各検索ディレクトリ (`source_dir` → `root_dir`) に対して以下の順で試す:
-    /// 1. `module.tl`          — ファイルモジュール
-    /// 2. `module/__init__.tl` — パッケージモジュール（ディレクトリに `__init__.tl` が存在する場合）
+    /// 各検索ディレクトリ (`source_dir` → `root_dir`) に対して以下の優先順で試す:
+    /// 1. `module.tlc`         — コンパイル済みモジュール（埋め込みソース付きバイナリ）
+    /// 2. `module.tl`          — ソースファイルモジュール
+    /// 3. `module/__init__.tl` — パッケージモジュール
     fn load_tl_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
+        let tlc_rel  = module_base.with_extension("tlc");
         let file_rel = module_base.with_extension("tl");
         let init_rel = module_base.join("__init__.tl");
 
@@ -972,17 +974,21 @@ impl Parser {
             if a == b { vec![a] } else { vec![a, b] }
         };
 
-        // 各ディレクトリ × 各相対パスの組み合わせを優先順に列挙する
-        let candidates: Vec<PathBuf> = search_dirs.iter()
-            .flat_map(|dir| [dir.join(&file_rel), dir.join(&init_rel)])
+        // (パス, コンパイル済みか) の候補リスト — .tlc が .tl より先になる
+        let candidates: Vec<(PathBuf, bool)> = search_dirs.iter()
+            .flat_map(|dir| [
+                (dir.join(&tlc_rel),  true),
+                (dir.join(&file_rel), false),
+                (dir.join(&init_rel), false),
+            ])
             .collect();
 
-        let abs_path = candidates.iter()
-            .find(|p| p.exists())
+        let (abs_path, is_compiled) = candidates.iter()
+            .find(|(p, _)| p.exists())
             .cloned()
             .ok_or_else(|| {
                 let paths = candidates.iter()
-                    .map(|p| format!("'{}'", p.display()))
+                    .map(|(p, _)| format!("'{}'", p.display()))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("cannot find module '{}' (looked at {})", module.join("."), paths)
@@ -1001,13 +1007,21 @@ impl Parser {
             ));
         }
 
-        let source = std::fs::read_to_string(&abs_path)
-            .map_err(|e| format!("cannot read module '{}': {e}", module.join(".")))?;
+        // ソースを取得: .tlc はバイナリから埋め込みソースを抽出、.tl は直読み
+        let (source, filename) = if is_compiled {
+            let (mod_name, src) = crate::partial_compiler::load_tlc(&abs_path)
+                .map_err(|e| format!("cannot load compiled module '{}': {e}", module.join(".")))?;
+            let label = format!("<compiled:{mod_name}>");
+            (src, label)
+        } else {
+            let src = std::fs::read_to_string(&abs_path)
+                .map_err(|e| format!("cannot read module '{}': {e}", module.join(".")))?;
+            (src, abs_path.to_string_lossy().into_owned())
+        };
 
         self.loading.insert(abs_path.clone());
 
-        let filename = abs_path.to_string_lossy().to_string();
-        let tokens = lexer::Lexer::new(&source, filename).tokenize();
+        let tokens = lexer::Lexer::new(&source, filename.as_str()).tokenize();
         let module_dir = abs_path.parent().map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
 

@@ -1,0 +1,53 @@
+# compile_demo.tl — sample module for testing --compile
+# Run: cargo run -- --compile examples/compile_demo.tl
+# Expected output: examples/compile_demo.tlc  (binary)
+#                  examples/compile_demo.tls  (stub)
+
+trait Shape:
+    fn area(self) -> float:
+        ...
+    fn perimeter(self) -> float:
+        ...
+
+class Circle(Shape):
+    mut radius: float
+    const PI: float = 3.14159
+
+    fn __init__(mut self, r: float) -> None:
+        self.radius = r
+
+    fn area(self) -> float:
+        return self.PI * self.radius * self.radius
+
+    fn perimeter(self) -> float:
+        return 2.0 * self.PI * self.radius
+
+class Rectangle(Shape):
+    let width: float
+    let height: float
+
+    fn area(self) -> float:
+        return self.width * self.height
+
+    fn perimeter(self) -> float:
+        return 2.0 * (self.width + self.height)
+
+    fn is_square(self) -> bool:
+        return self.width == self.height
+
+new_type Meters: float
+
+enum Color:
+    Red
+    Green
+    Blue = 10
+
+fn describe_shape(s: Shape) -> str:
+    return "shape"
+
+fn clamp[T: Comparable](value: T, lo: T, hi: T) -> T:
+    if value < lo:
+        return lo
+    if value > hi:
+        return hi
+    return value

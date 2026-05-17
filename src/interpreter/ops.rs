@@ -41,7 +41,8 @@ impl Interpreter {
             | Value::Trait(_)
             | Value::TemplateFn(_) | Value::TemplateClass(_)
             | Value::GeneratorFn(_) | Value::TemplateGenFn(_) | Value::Generator(_)
-            | Value::Namespace(_) | Value::PyObject(_) | Value::FileObject(_) => true,
+            | Value::Namespace(_) | Value::PyObject(_) | Value::FileObject(_)
+            | Value::NativeFunction(_) => true,
         }
     }
 
@@ -70,6 +71,7 @@ impl Interpreter {
             Value::Namespace(_) => "module",
             Value::PyObject(_) => "object",
             Value::FileObject(_) => "FileObject",
+            Value::NativeFunction(_) => "function",
         }
     }
 
@@ -91,7 +93,8 @@ impl Interpreter {
                     || inst.class.bases.contains(&type_name.to_string())
             }
             Value::Class(cls) => cls.name == type_name,
-            Value::Function(_) | Value::OverloadedFn(_) | Value::GeneratorFn(_) => type_name == "function",
+            Value::Function(_) | Value::OverloadedFn(_) | Value::GeneratorFn(_)
+            | Value::NativeFunction(_) => type_name == "function",
             Value::FileObject(_) => type_name == "FileObject",
             _ => false,
         }
@@ -169,6 +172,7 @@ impl Interpreter {
                     .and_then(|r| r.extract::<String>())
                     .unwrap_or_else(|_| "<PyObject>".to_string())
             }),
+            Value::NativeFunction(r) => format!("<native function '{}'>", r.fn_name),
         }
     }
 

@@ -1,0 +1,84 @@
+class Point->Point:
+    mut x: int
+    mut y: int
+    fn to_str(self) -> str:
+        ...
+    fn translate(self, dx: int, dy: int) -> Self:
+        ...
+    fn distance_sq(self, other: Self) -> int:
+        ...
+    fn __init__(mut self, x: int, y: int) -> None:
+        ...
+
+
+class Circle->Circle:
+    mut radius: int
+    const PI: int = ...
+    fn __init__(mut self, r: int) -> None:
+        ...
+    fn area_approx(self) -> int:
+        ...
+    fn scale(mut self, factor: int) -> None:
+        ...
+
+
+trait Describable:
+    fn describe(self) -> str:
+        ...
+
+
+trait Measurable:
+    fn measure(self) -> int:
+        ...
+
+
+class Box(Describable, Measurable)->Box:
+    let width: int
+    let height: int
+    fn describe(self) -> str:
+        ...
+    fn measure(self) -> int:
+        ...
+    fn __init__(mut self, width: int, height: int) -> None:
+        ...
+
+
+trait Creature:
+    mut name: str
+    mut hp: int
+    fn speak(self) -> str:
+        ...
+
+
+class Wolf(Creature)->Wolf:
+    mut pack_size: int
+    fn speak(self) -> str:
+        ...
+    fn get_name(self) -> str:
+        ...
+    fn get_hp(self) -> int:
+        ...
+    fn take_damage(mut self, dmg: int) -> None:
+        ...
+    fn is_alive(self) -> bool:
+        ...
+    fn __init__(mut self, name: str, hp: int, pack_size: int) -> None:
+        ...
+
+
+class Builder->Builder:
+    mut value: int
+    fn set(self, v: int) -> Self:
+        ...
+    fn doubled(self) -> Self:
+        ...
+    fn __init__(mut self, value: int) -> None:
+        ...
+
+
+class Token->Token:
+    let kind: str
+    let text: str
+    fn __init__(mut self, kind: str, text: str) -> None:
+        ...
+
