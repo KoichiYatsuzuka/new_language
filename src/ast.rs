@@ -441,6 +441,8 @@ pub enum Stmt {
         is_abstract: bool,
         /// `@decorator` 構文で付与されたデコレータ式のリスト（上から順、適用は逆順）。
         decorators: Vec<Expr>,
+        /// クラス本体内でのアクセス可能性（デフォルトは `Public`）。クラス外の関数定義では無視される。
+        access: Accessibility,
     },
     /// ジェネレータ関数定義: `gen name[T: Trait](params) -> YieldType:`。
     ///
@@ -463,6 +465,8 @@ pub enum Stmt {
         yield_type: Option<String>,
         /// ジェネレータ本体の文リスト。
         body: Vec<Stmt>,
+        /// クラス本体内でのアクセス可能性（デフォルトは `Public`）。
+        access: Accessibility,
     },
     /// `class` クラス定義。
     ///
@@ -506,6 +510,7 @@ pub enum Stmt {
     /// - `kind`     : フィールドの種別（`mut` / `let` / `const`）。
     /// - `type_ann` : 型アノテーション文字列（必須）。
     /// - `default`  : デフォルト値の式。`const` フィールドは必須、`mut` / `let` は省略可能。
+    /// - `access`   : アクセス可能性（`public` / `private` / `protected`、デフォルトは `public`）。
     Field {
         /// フィールド名。
         name: String,
@@ -515,6 +520,8 @@ pub enum Stmt {
         type_ann: String,
         /// デフォルト値の式。`const` フィールドは必須、`mut` / `let` は `None` 可。
         default: Option<Expr>,
+        /// アクセス可能性（デフォルトは `Public`）。
+        access: Accessibility,
     },
     /// `new_type NewName: OriginalType` — 既存の型と構造的に同一だが名前が異なる新しい型を定義する。
     ///
@@ -616,6 +623,29 @@ pub struct ExceptHandler {
     pub name: Option<String>,
     /// このハンドラの本体文リスト。
     pub body: Vec<Stmt>,
+}
+
+/// クラス・トレイトメンバーのアクセス可能性。
+///
+/// クラス本体内で `public:` / `private:` / `protected:` セクションで指定する。
+/// 指定がない場合のデフォルトは `Public`。
+///
+/// # バリアント
+/// - `Public`    : どこからでもアクセス可能（デフォルト）。
+/// - `Private`   : 同じクラスのメソッド内からのみアクセス可能。
+/// - `Protected` : 同じクラスまたは継承クラス（トレイト）のメソッド内からアクセス可能。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Accessibility {
+    /// どこからでもアクセス可能（デフォルト）。
+    Public,
+    /// 同じクラスのメソッド内からのみアクセス可能。
+    Private,
+    /// 同じクラスまたは継承クラスのメソッド内からアクセス可能。
+    Protected,
+}
+
+impl Default for Accessibility {
+    fn default() -> Self { Self::Public }
 }
 
 /// クラスフィールド宣言の種別。

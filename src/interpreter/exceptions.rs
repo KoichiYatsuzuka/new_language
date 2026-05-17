@@ -71,6 +71,8 @@ impl Interpreter {
             field_defaults,
             class_vars: HashMap::new(),
             field_mutability,
+            field_access: HashMap::new(),
+            method_access: HashMap::new(),
         })
     }
 

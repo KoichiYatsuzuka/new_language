@@ -130,7 +130,7 @@ class Builder:
 
 let result = Builder(1).set(5).doubled()
 print(result.value)  # 10
-
+result.
 # --- Immutable let fields (set at construction, never changed) ---
 print("=== let fields ===")
 

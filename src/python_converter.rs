@@ -183,6 +183,7 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
                 body,
                 is_abstract: false,
                 decorators: vec![],
+                access: crate::ast::Accessibility::Public,
             }))
         }
 
@@ -449,6 +450,7 @@ fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt, String> {
                 kind: FieldKind::Mut,
                 type_ann: ftype.clone(),
                 default: None,
+                access: crate::ast::Accessibility::Public,
             });
         }
     }
@@ -466,6 +468,7 @@ fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt, String> {
                                 kind: FieldKind::Const,
                                 type_ann: "Any".to_string(),
                                 default: Some(default),
+                                access: crate::ast::Accessibility::Public,
                             });
                         }
                     }
@@ -484,6 +487,7 @@ fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt, String> {
                                     kind: FieldKind::Const,
                                     type_ann,
                                     default: Some(default),
+                                    access: crate::ast::Accessibility::Public,
                                 });
                             }
                         }
@@ -509,6 +513,7 @@ fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt, String> {
                     body,
                     is_abstract: false,
                     decorators: vec![],
+                    access: crate::ast::Accessibility::Public,
                 });
             }
             py::Stmt::Pass(_) => {}

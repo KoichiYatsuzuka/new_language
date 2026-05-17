@@ -84,14 +84,19 @@ impl Interpreter {
             );
         }
         // メソッド実行時: `Self` をレシーバインスタンスのクラスにバインドする
+        let prev_class = self.current_class.take();
         if let Some(Value::Instance(inst_rc)) = &self_val {
             let class = inst_rc.borrow().class.clone();
-            self.declare_var("Self".to_string(), Var::new(Value::Class(class), false));
+            self.declare_var("Self".to_string(), Var::new(Value::Class(class.clone()), false));
+            self.current_class = Some(class);
         }
 
         self.call_stack.push(fn_name.to_string());
         let result = self.exec_block(&fn_val.body);
         self.call_stack.pop();
+
+        // アクセス制御コンテキストを復元する
+        self.current_class = prev_class;
 
         // スコープを復元する（グローバルのみ残してから退避分を追記）
         self.scopes.truncate(1);

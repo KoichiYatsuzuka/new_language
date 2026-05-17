@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::ast::{Expr, Param, Stmt};
+use crate::ast::{Accessibility, Expr, Param, Stmt};
 
 #[path = "interpreter/scope.rs"]
 mod scope;
@@ -231,6 +231,10 @@ pub struct ClassValue {
     pub(self) class_vars: HashMap<String, Value>,
     /// フィールド名 → 可変フラグ のマップ。初期値なしフィールドを初回代入するときに参照する。
     pub(self) field_mutability: HashMap<String, bool>,
+    /// フィールド名 → アクセス可能性 のマップ。プライベート・保護フィールドのアクセス制御に使用する。
+    pub(self) field_access: HashMap<String, Accessibility>,
+    /// メソッド名 → アクセス可能性 のマップ。プライベート・保護メソッドのアクセス制御に使用する。
+    pub(self) method_access: HashMap<String, Accessibility>,
 }
 
 /// クラスインスタンスの実行時データ。`Rc<RefCell<InstanceData>>` で共有・可変参照する。
@@ -653,6 +657,12 @@ pub struct Interpreter {
     /// `static mut` 変数の永続セル。キーは宣言の (ファイル名, 行, 列)。
     /// 外側関数の全呼び出しで同じセルを共有する。
     pub(self) static_cells: HashMap<(String, usize, usize), Rc<RefCell<Value>>>,
+    /// 現在実行中のメソッドが属するクラス（アクセス制御チェック用）。
+    /// クラスメソッドの外では `None`。
+    pub(self) current_class: Option<Rc<ClassValue>>,
+    /// トレイト名 → (フィールド名 → アクセス可能性) のマップ（TraitDef 実行時に収集）。
+    /// クラスが継承したトレイトフィールドのアクセス制御に使用する。
+    pub(self) trait_field_access: HashMap<String, HashMap<String, Accessibility>>,
 }
 
 impl Interpreter {
@@ -717,6 +727,8 @@ impl Interpreter {
                 field_defaults: vec![],
                 class_vars: HashMap::new(),
                 field_mutability: HashMap::from([("value".to_string(), true)]),
+                field_access: HashMap::new(),
+                method_access: HashMap::new(),
             });
             global.insert("path".to_string(), Var::new(Value::Class(path_cls), false));
         }
@@ -743,6 +755,8 @@ impl Interpreter {
             in_python_module: false,
             python_search_dirs: Vec::new(),
             static_cells: HashMap::new(),
+            current_class: None,
+            trait_field_access: HashMap::new(),
         }
     }
 
@@ -771,6 +785,8 @@ impl Interpreter {
             field_defaults: vec![],
             class_vars: HashMap::new(),
             field_mutability: HashMap::from([("value".to_string(), true)]),
+            field_access: HashMap::new(),
+            method_access: HashMap::new(),
         });
         // 各バリアントをインスタンスとして生成し class_vars に登録
         let mut class_vars: HashMap<String, Value> = HashMap::new();
@@ -793,6 +809,8 @@ impl Interpreter {
             field_defaults: vec![],
             class_vars,
             field_mutability: HashMap::new(),
+            field_access: HashMap::new(),
+            method_access: HashMap::new(),
         });
         (item_cls_name, item_cls, enum_cls)
     }

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::ast::{BinOp, CallArg, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TemplateParam, UnaryOp};
+use crate::ast::{Accessibility, BinOp, CallArg, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TemplateParam, UnaryOp};
 use crate::token::{Span, Spanned, Token};
 use crate::python_converter;
 
@@ -606,7 +606,7 @@ impl Parser {
             // 通常のブロックをパース
             (self.parse_block()?, false)
         };
-        Ok(Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, decorators })
+        Ok(Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, decorators, access: Accessibility::Public })
     }
 
     /// `gen` ジェネレータ関数定義をパースして `Stmt::GenDef` を返す。
@@ -662,7 +662,7 @@ impl Parser {
                 "ParseError: generator function `{name}` must not contain a `return` statement"
             ));
         }
-        Ok(Stmt::GenDef { name, template_params, params, yield_type, body })
+        Ok(Stmt::GenDef { name, template_params, params, yield_type, body, access: Accessibility::Public })
     }
 
     /// 文のリストに `return` 文が含まれるかを再帰的に検査する。
@@ -1118,7 +1118,7 @@ impl Parser {
         // フィールド情報（名前・種別・型・デフォルト有無）を収集
         let fields: Vec<(String, FieldKind, String, bool)> = body.iter()
             .filter_map(|s| {
-                if let Stmt::Field { name: fname, kind, type_ann, default } = s {
+                if let Stmt::Field { name: fname, kind, type_ann, default, .. } = s {
                     Some((fname.clone(), kind.clone(), type_ann.clone(), default.is_some()))
                 } else {
                     None
@@ -1207,7 +1207,7 @@ impl Parser {
         // クラス自身のデフォルトなし mut/let フィールドを収集
         let class_required: Vec<(String, String)> = body.iter()
             .filter_map(|s| {
-                if let Stmt::Field { name: fname, kind: FieldKind::Mut | FieldKind::Let, type_ann, default: None } = s {
+                if let Stmt::Field { name: fname, kind: FieldKind::Mut | FieldKind::Let, type_ann, default: None, .. } = s {
                     Some((fname.clone(), type_ann.clone()))
                 } else {
                     None
@@ -1366,6 +1366,7 @@ impl Parser {
             body: init_body,
             is_abstract: false,
             decorators: vec![],
+            access: Accessibility::Public,
         });
     }
 
@@ -1384,6 +1385,7 @@ impl Parser {
         self.eat(&Token::Newline)?;
         self.eat(&Token::Indent)?;
         let mut stmts = Vec::new();
+        let mut current_access = Accessibility::Public;
         loop {
             while matches!(self.current(), Token::Newline | Token::Semicolon) {
                 self.advance();
@@ -1391,7 +1393,32 @@ impl Parser {
             if matches!(self.current(), Token::Dedent | Token::Eof) {
                 break;
             }
-            stmts.push(self.parse_class_stmt()?);
+            // accessibility section header: `public:` / `private:` / `protected:`
+            match self.current().clone() {
+                Token::Public | Token::Private | Token::Protected => {
+                    current_access = match self.current() {
+                        Token::Public    => Accessibility::Public,
+                        Token::Private   => Accessibility::Private,
+                        _                => Accessibility::Protected,
+                    };
+                    self.advance(); // consume public/private/protected
+                    self.eat(&Token::Colon)?;
+                    while matches!(self.current(), Token::Newline | Token::Semicolon) {
+                        self.advance();
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            let mut stmt = self.parse_class_stmt()?;
+            // apply current accessibility to fields and method definitions
+            match &mut stmt {
+                Stmt::Field { access, .. } => *access = current_access.clone(),
+                Stmt::FnDef { access, .. } => *access = current_access.clone(),
+                Stmt::GenDef { access, .. } => *access = current_access.clone(),
+                _ => {}
+            }
+            stmts.push(stmt);
         }
         if *self.current() == Token::Dedent {
             self.advance();
@@ -1453,7 +1480,7 @@ impl Parser {
                         "class variable `{fname}` declared with `const` must have an initial value (e.g., `const {fname}: int = 0`)"
                     ));
                 }
-                Ok(Stmt::Field { name: fname, kind, type_ann, default })
+                Ok(Stmt::Field { name: fname, kind, type_ann, default, access: Accessibility::Public })
             }
             Token::Fn => self.parse_fn_def(),
             Token::Gen => self.parse_gen_def(),

@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::ast::{BinOp, Expr};
+use crate::ast::{Accessibility, BinOp, Expr};
 
 use super::{DictData, ExecResult, FileData, FileOpenModeRust, ByteModeRust, GeneratorState, Interpreter, TupleData, Value, Var, RAISE_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH};
 
@@ -71,6 +71,44 @@ fn get_arg<'a>(
 }
 
 impl Interpreter {
+    /// メンバー（フィールド or メソッド）のアクセス可能性を検査する。
+    ///
+    /// `class` の `field_access` / `method_access` マップで `member_key` を検索し、
+    /// アクセス制御に違反する場合は `Err(AccessError: ...)` を返す。
+    ///
+    /// - `Public`    : 常に OK。
+    /// - `Private`   : `self.current_class.name == class.name` のときのみ OK。
+    /// - `Protected` : `self.current_class` が同じクラス、またはそのクラスを基底に持つとき OK。
+    fn check_member_access(&self, class: &super::ClassValue, member_key: &str, display_name: &str) -> Result<(), String> {
+        let access = class.field_access.get(member_key)
+            .or_else(|| class.method_access.get(member_key))
+            .cloned()
+            .unwrap_or(Accessibility::Public);
+        match access {
+            Accessibility::Public => Ok(()),
+            Accessibility::Private => {
+                if let Some(cur) = &self.current_class {
+                    if cur.name == class.name { return Ok(()); }
+                }
+                Err(format!(
+                    "AccessError: '{}' is private and cannot be accessed outside '{}'",
+                    display_name, class.name
+                ))
+            }
+            Accessibility::Protected => {
+                if let Some(cur) = &self.current_class {
+                    if cur.name == class.name { return Ok(()); }
+                    // subclass: current_class has class.name in its bases
+                    if cur.bases.contains(&class.name) { return Ok(()); }
+                }
+                Err(format!(
+                    "AccessError: '{}' is protected and cannot be accessed outside '{}' or its subclasses",
+                    display_name, class.name
+                ))
+            }
+        }
+    }
+
     /// 式（`Expr`）を評価して `Value` を返す。インタープリタの式評価のメインエントリポイント。
     ///
     /// 各 `Expr` バリアントを再帰的に処理する:
@@ -121,32 +159,43 @@ impl Interpreter {
                 match &obj_val {
                     Value::Instance(inst_rc) => {
                         let inst = inst_rc.borrow();
+                        let cls = inst.class.clone();
                         // 1. インスタンスフィールドを直接キーで検索
                         if let Some((v, _)) = inst.fields.get(attr.as_str()) {
-                            return Ok(v.clone());
+                            let v = v.clone();
+                            drop(inst);
+                            self.check_member_access(&cls, attr, attr)?;
+                            return Ok(v);
                         }
                         // 1b. トレイト名前空間付きフィールドのフォールバック検索（"Trait::attr" 形式）
                         let suffix = format!("::{attr}");
-                        if let Some((v, _)) = inst.fields.iter().find_map(|(k, v)| {
-                            if k.ends_with(suffix.as_str()) { Some(v) } else { None }
-                        }) {
-                            return Ok(v.clone());
+                        if let Some((full_key, (v, _))) = inst.fields.iter().find(|(k, _)| k.ends_with(suffix.as_str())) {
+                            let v = v.clone();
+                            let full_key = full_key.clone();
+                            drop(inst);
+                            self.check_member_access(&cls, &full_key, attr)?;
+                            return Ok(v);
                         }
                         // 2. const クラス変数を検索
-                        if let Some(v) = Self::lookup_class_var(&inst.class, attr) {
+                        if let Some(v) = Self::lookup_class_var(&cls, attr) {
+                            drop(inst);
+                            self.check_member_access(&cls, attr, attr)?;
                             return Ok(v);
                         }
                         // 3. メソッドを検索（オーバーロードがある場合は OverloadedFn を返す）
-                        if let Some(overloads) = inst.class.methods.get(attr.as_str()) {
-                            return Ok(if overloads.len() == 1 {
+                        if let Some(overloads) = cls.methods.get(attr.as_str()) {
+                            let result = if overloads.len() == 1 {
                                 Value::Function(overloads[0].clone())
                             } else {
                                 Value::OverloadedFn(overloads.clone())
-                            });
+                            };
+                            drop(inst);
+                            self.check_member_access(&cls, attr, attr)?;
+                            return Ok(result);
                         }
                         Err(format!(
                             "AttributeError: '{}' object has no attribute '{attr}'",
-                            inst.class.name
+                            cls.name
                         ))
                     }
                     Value::Class(cls) => {
@@ -740,6 +789,8 @@ impl Interpreter {
                             "TypeError: cannot assign to class variable '{attr}' (declared const)"
                         ));
                     }
+                    // アクセス制御チェック
+                    self.check_member_access(&inst_class, attr, attr)?;
                     let mut inst = inst_rc.borrow_mut();
                     if let Some((_, mutable)) = inst.fields.get(attr.as_str()) {
                         if !mutable {
@@ -768,6 +819,9 @@ impl Interpreter {
                 Value::Instance(inst_rc) => {
                     // Trait fields are stored with a namespaced key "TraitName::field"
                     let key = format!("{}::{}", trait_name, attr);
+                    let inst_class = inst_rc.borrow().class.clone();
+                    // アクセス制御チェック（トレイトフィールドのキーで検索）
+                    self.check_member_access(&inst_class, &key, attr)?;
                     let mut inst = inst_rc.borrow_mut();
                     if let Some((_, false)) = inst.fields.get(&key) {
                         return Err(format!(

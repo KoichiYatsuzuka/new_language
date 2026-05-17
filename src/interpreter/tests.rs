@@ -468,6 +468,127 @@ fn test_class_field_access_required() {
 }
 
 #[test]
+fn test_access_public_field_ok() {
+    let src = concat!(
+        "class C:\n",
+        "    public:\n",
+        "    mut x: int = 42\n",
+        "let obj = C()\n",
+        "let r = obj.x\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 42);
+    } else {
+        panic!();
+    }
+}
+
+#[test]
+fn test_access_private_field_from_outside_errors() {
+    let src = concat!(
+        "class C:\n",
+        "    private:\n",
+        "    mut secret: int = 99\n",
+        "let obj = C()\n",
+        "let r = obj.secret\n",
+    );
+    let result = run(src);
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(msg.contains("AccessError"), "expected AccessError, got: {msg}");
+    assert!(msg.contains("private"), "expected 'private', got: {msg}");
+}
+
+#[test]
+fn test_access_private_field_from_method_ok() {
+    let src = concat!(
+        "class C:\n",
+        "    private:\n",
+        "    mut secret: int = 99\n",
+        "    fn get_secret(self) -> int:\n",
+        "        return self.secret\n",
+        "let obj = C()\n",
+        "let r = obj.get_secret()\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 99);
+    } else {
+        panic!();
+    }
+}
+
+#[test]
+fn test_access_protected_field_from_outside_errors() {
+    let src = concat!(
+        "class C:\n",
+        "    protected:\n",
+        "    mut guarded: int = 7\n",
+        "let obj = C()\n",
+        "let r = obj.guarded\n",
+    );
+    let result = run(src);
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(msg.contains("AccessError"), "expected AccessError, got: {msg}");
+    assert!(msg.contains("protected"), "expected 'protected', got: {msg}");
+}
+
+#[test]
+fn test_access_protected_field_via_method_ok() {
+    let src = concat!(
+        "class C:\n",
+        "    protected:\n",
+        "    mut guarded: int = 7\n",
+        "    fn get_guarded(self) -> int:\n",
+        "        return self.guarded\n",
+        "let obj = C()\n",
+        "let r = obj.get_guarded()\n",
+    );
+    if let Value::Int(n) = run_get(src, "r") {
+        assert_eq!(n, 7);
+    } else {
+        panic!();
+    }
+}
+
+#[test]
+fn test_access_mixed_sections_in_class() {
+    let src = concat!(
+        "class C:\n",
+        "    public:\n",
+        "    mut visible: int = 1\n",
+        "    private:\n",
+        "    mut hidden: int = 2\n",
+        "    fn get_hidden(self) -> int:\n",
+        "        return self.hidden\n",
+        "let obj = C()\n",
+        "let pub_val = obj.visible\n",
+        "let priv_val = obj.get_hidden()\n",
+    );
+    if let (Value::Int(a), Value::Int(b)) = (run_get(src, "pub_val"), run_get(src, "priv_val")) {
+        assert_eq!(a, 1);
+        assert_eq!(b, 2);
+    } else {
+        panic!();
+    }
+}
+
+#[test]
+fn test_access_private_write_from_outside_errors() {
+    let src = concat!(
+        "class C:\n",
+        "    private:\n",
+        "    mut x: int = 0\n",
+        "mut obj = C()\n",
+        "obj.x = 5\n",
+    );
+    let result = run(src);
+    assert!(result.is_err());
+    let msg = result.unwrap_err();
+    assert!(msg.contains("AccessError"), "expected AccessError, got: {msg}");
+}
+
+#[test]
 fn test_class_self_field_in_method() {
     let src = concat!(
         "class Box:\n",

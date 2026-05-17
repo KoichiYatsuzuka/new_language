@@ -217,6 +217,11 @@ pub enum Token {
     // Assertion
     Assert,
 
+    // Access modifiers (class body section headers)
+    Public,
+    Private,
+    Protected,
+
     // Self type keyword (valid only inside class/trait bodies)
     SelfType,
 
@@ -377,6 +382,9 @@ impl Token {
             Token::Async => Some("async"),
             Token::Await => Some("await"),
             Token::Assert => Some("assert"),
+            Token::Public => Some("public"),
+            Token::Private => Some("private"),
+            Token::Protected => Some("protected"),
             Token::SelfType => Some("Self"),
             Token::NewType => Some("new_type"),
             Token::Any => Some("Any"),

@@ -201,9 +201,14 @@ impl Interpreter {
         let mut field_defaults = Vec::new();
         let mut class_vars: HashMap<String, Value> = HashMap::new();
         let mut field_mutability: HashMap<String, bool> = HashMap::new();
+        let mut field_access: HashMap<String, crate::ast::Accessibility> = HashMap::new();
+        let mut method_access: HashMap<String, crate::ast::Accessibility> = HashMap::new();
         for stmt in &concrete_body {
             match stmt {
-                Stmt::FnDef { name: mname, params, body: mbody, .. } => {
+                Stmt::FnDef { name: mname, params, body: mbody, access: macc, .. } => {
+                    if *macc != crate::ast::Accessibility::Public {
+                        method_access.insert(mname.clone(), macc.clone());
+                    }
                     methods.entry(mname.clone()).or_default().push(Rc::new(FnValue {
                         params: params.clone(),
                         body: mbody.clone(),
@@ -211,18 +216,27 @@ impl Interpreter {
                         captured_env: std::collections::HashMap::new(),
                     }));
                 }
-                Stmt::GenDef { name: mname, params, body: mbody, .. } => {
+                Stmt::GenDef { name: mname, params, body: mbody, access: macc, .. } => {
+                    if *macc != crate::ast::Accessibility::Public {
+                        method_access.insert(mname.clone(), macc.clone());
+                    }
                     gen_methods.insert(mname.clone(), Rc::new(GeneratorFnValue {
                         params: params.clone(),
                         body: mbody.clone(),
                         captured_env: std::collections::HashMap::new(),
                     }));
                 }
-                Stmt::Field { name: fname, kind: FieldKind::Const, default: Some(init), .. } => {
+                Stmt::Field { name: fname, kind: FieldKind::Const, default: Some(init), access: facc, .. } => {
+                    if *facc != crate::ast::Accessibility::Public {
+                        field_access.insert(fname.clone(), facc.clone());
+                    }
                     let val = self.eval(init)?;
                     class_vars.insert(fname.clone(), val);
                 }
-                Stmt::Field { name: fname, kind, default, .. } => {
+                Stmt::Field { name: fname, kind, default, access: facc, .. } => {
+                    if *facc != crate::ast::Accessibility::Public {
+                        field_access.insert(fname.clone(), facc.clone());
+                    }
                     let mutable = *kind == FieldKind::Mut;
                     field_mutability.insert(fname.clone(), mutable);
                     if let Some(init) = default {
@@ -241,6 +255,8 @@ impl Interpreter {
             field_defaults,
             class_vars,
             field_mutability,
+            field_access,
+            method_access,
         });
         self.instantiate(cls, call_args)
     }
@@ -417,14 +433,15 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         Stmt::BlockReturn(e) => Stmt::BlockReturn(subst_expr(e, type_map)),
         Stmt::LoopYield(e) => Stmt::LoopYield(subst_expr(e, type_map)),
         Stmt::Yield(e) => Stmt::Yield(subst_expr(e, type_map)),
-        Stmt::GenDef { name, template_params, params, yield_type, body } => Stmt::GenDef {
+        Stmt::GenDef { name, template_params, params, yield_type, body, access } => Stmt::GenDef {
             name: name.clone(),
             template_params: template_params.clone(),
             params: params.clone(),
             yield_type: yield_type.clone(),
             body: subst_stmts(body, type_map),
+            access: access.clone(),
         },
-        Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, decorators } => Stmt::FnDef {
+        Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, decorators, access } => Stmt::FnDef {
             name: name.clone(),
             template_params: template_params.clone(),
             params: subst_params(params, type_map),
@@ -432,6 +449,7 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             body: subst_stmts(body, type_map),
             is_abstract: *is_abstract,
             decorators: decorators.clone(),
+            access: access.clone(),
         },
         Stmt::ClassDef { name, template_params, bases, body, decorators } => Stmt::ClassDef {
             name: name.clone(),
@@ -445,11 +463,12 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             template_params: template_params.clone(),
             body: subst_stmts(body, type_map),
         },
-        Stmt::Field { name, kind, type_ann, default } => Stmt::Field {
+        Stmt::Field { name, kind, type_ann, default, access } => Stmt::Field {
             name: name.clone(),
             kind: kind.clone(),
             type_ann: subst_type(type_ann, type_map),
             default: default.as_ref().map(|e| subst_expr(e, type_map)),
+            access: access.clone(),
         },
         Stmt::Freeze(name, span) => Stmt::Freeze(name.clone(), span.clone()),
         Stmt::Static(name, e, span) => Stmt::Static(name.clone(), subst_expr(e, type_map), span.clone()),

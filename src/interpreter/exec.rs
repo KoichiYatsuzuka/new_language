@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::ast::{Expr, FieldKind, MatchPattern, Param, Stmt};
+use crate::ast::{Accessibility, Expr, FieldKind, MatchPattern, Param, Stmt};
 
 use super::{
     CapturedVar, Interpreter, Value, Var, ExecResult,
@@ -359,8 +359,24 @@ impl Interpreter {
                 }
                 Ok(ExecResult::Normal)
             }
-            Stmt::TraitDef { name, .. } => {
-                // trait 定義: Value::Trait として不変バインドする
+            Stmt::TraitDef { name, body, .. } => {
+                // trait フィールドのアクセス可能性を収集して trait_field_access に保存する
+                let mut trait_access: HashMap<String, Accessibility> = HashMap::new();
+                for stmt in body {
+                    if let Stmt::Field { name: fname, access, .. } = stmt {
+                        if *access != Accessibility::Public {
+                            trait_access.insert(fname.clone(), access.clone());
+                        }
+                    }
+                    if let Stmt::FnDef { name: mname, access, .. } = stmt {
+                        if *access != Accessibility::Public {
+                            trait_access.insert(mname.clone(), access.clone());
+                        }
+                    }
+                }
+                if !trait_access.is_empty() {
+                    self.trait_field_access.insert(name.clone(), trait_access);
+                }
                 self.declare_var(name.clone(), Var::new(Value::Trait(name.clone()), false));
                 Ok(ExecResult::Normal)
             }
@@ -381,6 +397,8 @@ impl Interpreter {
                             field_defaults: orig_cls.field_defaults.clone(),
                             class_vars: orig_cls.class_vars.clone(),
                             field_mutability: orig_cls.field_mutability.clone(),
+                            field_access: orig_cls.field_access.clone(),
+                            method_access: orig_cls.method_access.clone(),
                         });
                         self.declare_var(name.clone(), Var::new(Value::Class(new_cls), false));
                     }
@@ -415,6 +433,8 @@ impl Interpreter {
                             field_defaults: vec![],
                             class_vars: HashMap::new(),
                             field_mutability: HashMap::from([("value".to_string(), true)]),
+                            field_access: HashMap::new(),
+                            method_access: HashMap::new(),
                         });
                         self.declare_var(name.clone(), Var::new(Value::Class(new_cls), false));
                     }
@@ -457,6 +477,8 @@ impl Interpreter {
                     field_defaults: vec![],
                     class_vars: HashMap::new(),
                     field_mutability: HashMap::from([("value".to_string(), true)]),
+                    field_access: HashMap::new(),
+                    method_access: HashMap::new(),
                 });
                 self.declare_var(item_type_name.clone(), Var::new(Value::Class(item_cls.clone()), false));
 
@@ -489,6 +511,8 @@ impl Interpreter {
                     field_defaults: vec![],
                     class_vars,
                     field_mutability: HashMap::new(),
+                    field_access: HashMap::new(),
+                    method_access: HashMap::new(),
                 });
                 self.declare_var(name.clone(), Var::new(Value::Class(enum_cls), false));
                 Ok(ExecResult::Normal)
@@ -511,15 +535,30 @@ impl Interpreter {
                 let mut field_defaults = Vec::new();
                 let mut class_vars: HashMap<String, Value> = HashMap::new();
                 let mut field_mutability: HashMap<String, bool> = HashMap::new();
+                let mut field_access: HashMap<String, Accessibility> = HashMap::new();
+                let mut method_access: HashMap<String, Accessibility> = HashMap::new();
+                // 継承トレイトのフィールドアクセス可能性を引き継ぐ
+                for base in bases {
+                    if let Some(trait_acc) = self.trait_field_access.get(base) {
+                        for (fname, acc) in trait_acc {
+                            // トレイトフィールドはインスタンス内で "TraitName::field" キーで格納されるため
+                            // "TraitName::field" キーでアクセス制御を登録する
+                            field_access.insert(format!("{}::{}", base, fname), acc.clone());
+                        }
+                    }
+                }
                 for stmt in body {
                     match stmt {
-                        Stmt::FnDef { name: mname, params, body: mbody, decorators: mdecs, .. } => {
+                        Stmt::FnDef { name: mname, params, body: mbody, decorators: mdecs, access: macc, .. } => {
                             let fn_val = Rc::new(FnValue {
                                 params: params.clone(),
                                 body: mbody.clone(),
                                 is_python: self.in_python_module,
                                 captured_env: HashMap::new(),
                             });
+                            if *macc != Accessibility::Public {
+                                method_access.insert(mname.clone(), macc.clone());
+                            }
                             if mdecs.is_empty() {
                                 // デコレータなし: 同名があればオーバーロードとして蓄積する
                                 methods.entry(mname.clone()).or_default().push(fn_val);
@@ -539,21 +578,30 @@ impl Interpreter {
                                 }
                             }
                         }
-                        Stmt::GenDef { name: mname, params, body: mbody, .. } => {
+                        Stmt::GenDef { name: mname, params, body: mbody, access: macc, .. } => {
                             // ジェネレータメソッド定義: gen_methods に登録する
+                            if *macc != Accessibility::Public {
+                                method_access.insert(mname.clone(), macc.clone());
+                            }
                             gen_methods.insert(mname.clone(), Rc::new(GeneratorFnValue {
                                 params: params.clone(),
                                 body: mbody.clone(),
                                 captured_env: HashMap::new(),
                             }));
                         }
-                        Stmt::Field { name: fname, kind: FieldKind::Const, default: Some(init), .. } => {
+                        Stmt::Field { name: fname, kind: FieldKind::Const, default: Some(init), access: facc, .. } => {
                             // const クラス変数: 初期値を評価して class_vars に登録する
+                            if *facc != Accessibility::Public {
+                                field_access.insert(fname.clone(), facc.clone());
+                            }
                             let val = self.eval(init)?;
                             class_vars.insert(fname.clone(), val);
                         }
-                        Stmt::Field { name: fname, kind, default, .. } => {
+                        Stmt::Field { name: fname, kind, default, access: facc, .. } => {
                             // mut / let インスタンスフィールド: 可変フラグと初期値を記録する
+                            if *facc != Accessibility::Public {
+                                field_access.insert(fname.clone(), facc.clone());
+                            }
                             let mutable = *kind == FieldKind::Mut;
                             field_mutability.insert(fname.clone(), mutable);
                             if let Some(init) = default {
@@ -572,6 +620,8 @@ impl Interpreter {
                     field_defaults,
                     class_vars,
                     field_mutability,
+                    field_access,
+                    method_access,
                 });
                 if decorators.is_empty() {
                     self.declare_var(name.clone(), Var::new(Value::Class(cls), false));

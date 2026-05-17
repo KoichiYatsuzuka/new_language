@@ -1099,7 +1099,7 @@ impl TypeChecker {
             }
 
             // --- クラスフィールド宣言 ---
-            Stmt::Field { name, kind, type_ann, default } => {
+            Stmt::Field { name, kind, type_ann, default, .. } => {
                 // フィールドを型アノテーションに基づいてスコープに登録する。
                 // FieldKind::Mut のみ可変として扱う（Let / Const は不変）。
                 let ty = InferredType::from_ann(type_ann).unwrap_or(InferredType::Unresolved);
