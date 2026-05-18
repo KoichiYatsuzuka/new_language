@@ -50,30 +50,22 @@ test_lang/
 ├── examples/
 │   ├── variable.tl            # let / mut / const / static mut declarations
 │   ├── variable_error.tl      # declaration error examples
-│   ├── control_flow.tl        # if / for / while / match
-│   ├── control_flow_error.tl  # control flow error examples
+│   ├── control_flow.tl        # if / for / while / match (value-case and type-pattern)
+│   ├── control_flow_error.tl  # control flow error examples (StaticTypeError, ParseError)
 │   ├── control_flow_expr.tl   # if/for/while/match as expressions (->Type)
 │   ├── block_expr.tl          # block: expression with block_return
-│   ├── function_closure.tl    # closures, static mut, nested functions
-│   ├── function_closure_error.tl
-│   ├── class_trait.tl         # class, trait, inheritance, Self, new_type
-│   ├── class_trait_error.tl
+│   ├── functions.tl           # basic fns, typed sigs, default params, closures, generators, decorators
+│   ├── functions__errors.tl   # ParseError (non-default after default) and TypeError (freeze captured mut)
+│   ├── class_trait.tl         # class, trait, inheritance, Self, new_type, access control
+│   ├── class_trait_error.tl   # immutable field and access control errors
 │   ├── collection.tl          # list, dict, tuple, subscript
 │   ├── collection_error.tl
 │   ├── polymorphism.tl        # templates, type guards, Union/Optional
 │   ├── polymorphism_error.tl
-│   ├── subtype.tl             # new_type, covariance
-│   ├── subtype_error.tl
+│   ├── other_typing.tl        # Any, Union, Option, is/is not narrowing, enum
+│   ├── other_typing__errors.tl  # StaticTypeError (is not on non-Union) and enum value type error
 │   ├── subscript.tl           # subscript / indexing behavior
 │   ├── subscript__errors.tl
-│   ├── match.tl               # match value-case and is-type arms
-│   ├── match__errors.tl
-│   ├── accessibility.tl       # public/private/protected section markers
-│   ├── accessibility__errors.tl
-│   ├── default_param.tl       # default parameter values
-│   ├── default_param__errors.tl
-│   ├── enum.tl                # enum definitions
-│   ├── enum__errors.tl
 │   ├── file_io.tl             # import[py] file I/O
 │   ├── file_io__errors.tl
 │   ├── native_ops.tl              # module: typed int/float functions for native compilation

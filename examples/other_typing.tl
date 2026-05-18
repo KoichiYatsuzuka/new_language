@@ -1,6 +1,8 @@
-# subtype.tl — Union, Option, Any, and type guard narrowing (is / is not)
+# other_typing.tl — Union, Option, Any, type guards (is / is not), and enum
 
-# --- Any: accepts any value, no static narrowing ---
+# ============================================================
+# 1. Any: accepts any value, no static narrowing
+# ============================================================
 print("=== Any ===")
 
 fn identity(x: Any) -> Any:
@@ -10,7 +12,9 @@ print(identity(42))       # 42
 print(identity("hello"))  # hello
 print(identity(True))     # True
 
-# --- Union: variable holds one of several concrete types ---
+# ============================================================
+# 2. Union: variable holds one of several concrete types
+# ============================================================
 print("=== Union ===")
 
 fn describe_union(x: Union[int, str, bool]) -> str:
@@ -26,7 +30,9 @@ print(describe_union(10))      # int
 print(describe_union("hi"))    # str
 print(describe_union(True))    # bool
 
-# --- Option[T]: shorthand for Union[T, None] ---
+# ============================================================
+# 3. Option[T]: shorthand for Union[T, None]
+# ============================================================
 print("=== Option ===")
 
 fn maybe_value(flag: bool) -> Option[int]:
@@ -42,7 +48,9 @@ if v1 is not None:
 if v2 is None:
     print("v2 is None")       # v2 is None
 
-# --- is: runtime type check, returns bool ---
+# ============================================================
+# 4. is: runtime type check against primitives and classes
+# ============================================================
 print("=== is ===")
 
 fn type_of(x: Any) -> str:
@@ -61,7 +69,6 @@ print(type_of(1.5))    # float
 print(type_of("a"))    # str
 print(type_of(False))  # bool
 
-# --- is with class types ---
 print("=== is with classes ===")
 
 class Cat:
@@ -83,7 +90,6 @@ let dog = Dog("Rex", "Labrador")
 print(pet_sound(cat))  # Meow
 print(pet_sound(dog))  # Woof
 
-# --- is with trait membership ---
 print("=== is with traits ===")
 
 trait Flyable:
@@ -106,7 +112,17 @@ let fish = Fish("Nemo")
 print(can_fly(bird))  # True
 print(can_fly(fish))  # False
 
-# --- is not: narrowing on Union/Option ---
+print("=== is function ===")
+
+fn square(let n: int) -> int:
+    return n * n
+
+print(square is function)    # True
+print(42 is function)        # False
+
+# ============================================================
+# 5. is not: narrowing on Union / Option
+# ============================================================
 print("=== is not narrowing ===")
 
 fn print_if_present(x: Option[str]) -> None:
@@ -118,7 +134,6 @@ fn print_if_present(x: Option[str]) -> None:
 print_if_present("hello")  # value: hello
 print_if_present(None)     # no value
 
-# --- elif chain narrowing on Union ---
 print("=== elif narrowing on Union ===")
 
 fn classify(x: Union[int, str, float]) -> str:
@@ -134,11 +149,52 @@ print(classify(7))      # integer
 print(classify("yo"))   # string
 print(classify(2.5))    # float
 
-# --- is function: check if a value is callable ---
-print("=== is function ===")
+# ============================================================
+# 6. enum
+# ============================================================
+print("=== enum: basic ===")
 
-fn square(let n: int) -> int:
-    return n * n
+enum Color:
+    Red
+    Green
+    Blue
 
-print(square is function)    # True
-print(42 is function)        # False
+let c = Color.Green
+print(c.value)  # 1
+
+# Explicit values; auto-numbering continues after the explicit value
+enum MyEnum:
+    a
+    b = 5
+    c
+
+print(MyEnum.a.value)  # 0
+print(MyEnum.b.value)  # 5
+print(MyEnum.c.value)  # 6
+
+print("=== enum: is check and equality ===")
+
+let x = Color.Red
+print(x is enum_item_Color)  # True
+
+let r1 = Color.Red
+let r2 = Color.Red
+print(r1 == r2)          # True
+print(r1 == Color.Blue)  # False
+
+print("=== enum: match ===")
+
+mut result = ""
+match (c):
+    case Color.Red:
+        result = "red"
+    case Color.Green:
+        result = "green"
+    case Color.Blue:
+        result = "blue"
+print(result)  # green
+
+print("=== enum: iteration ===")
+
+for item in [Color.Red, Color.Green, Color.Blue]:
+    print(item.value)  # 0, 1, 2

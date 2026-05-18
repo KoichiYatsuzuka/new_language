@@ -141,3 +141,46 @@ class Token:
 let t = Token("ident", "foo")
 print(t.kind, t.text)  # ident foo
 # t.kind = "op"  # TypeError: cannot assign to immutable field 'kind'
+
+# --- Access control: public / private / protected ---
+print("=== access control ===")
+
+class Counter:
+    public:
+    mut label: str
+
+    private:
+    mut count: int
+
+    protected:
+    mut step: int
+
+    fn __init__(mut self, label: str) -> None:
+        self.label = label
+        self.count = 0
+        self.step = 1
+
+    fn increment(mut self) -> None:
+        self.count = self.count + self.step
+
+    fn get_count(self) -> int:
+        return self.count
+
+    fn set_step(mut self, s: int) -> None:
+        self.step = s
+
+    fn show(self) -> None:
+        # inside the class: all members accessible
+        print(self.label)
+        print(self.count)
+        print(self.step)
+
+mut ctr = Counter("hits")
+print(ctr.label)        # public: OK -> hits
+ctr.increment()
+ctr.increment()
+print(ctr.get_count())  # via method: OK -> 2
+ctr.set_step(5)
+ctr.increment()
+print(ctr.get_count())  # -> 7
+ctr.show()              # inside class: all OK -> hits, 7, 5

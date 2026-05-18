@@ -1,4 +1,5 @@
-# function_closure.tl — functions, closures, generators, and decorators
+# functions.tl — basic functions, typed signatures, default params,
+#                closures, generators, and decorators
 
 # ============================================================
 # 1. Basic functions
@@ -65,14 +66,65 @@ fn say_hi() -> None:
 call_any(say_hi)   # hi!
 
 # ============================================================
-# 3. Closures — let capture (deep copy at definition time)
+# 3. Default parameters
+# ============================================================
+print("=== default parameters ===")
+
+fn greet_default(let name: str = "world") -> str:
+    return "Hello, " + name + "!"
+
+print(greet_default())         # Hello, world!
+print(greet_default("Alice"))  # Hello, Alice!
+
+# Multiple default parameters
+fn add_defaults(let a: int = 1, let b: int = 2) -> int:
+    return a + b
+
+print(add_defaults())       # 3
+print(add_defaults(10))     # 12
+print(add_defaults(10, 20)) # 30
+
+# Mixed: required then optional
+fn repeat(let s: str, let n: int = 3) -> str:
+    mut result = ""
+    for i in range(n):
+        result = result + s
+    return result
+
+print(repeat("ab"))     # ababab
+print(repeat("ab", 2))  # abab
+
+# Keyword argument with default
+fn scale(let x: int = 0, let y: int = 0) -> int:
+    return x * 100 + y
+
+print(scale())      # 0
+print(scale(1))     # 100
+print(scale(y=5))   # 5
+print(scale(3, 4))  # 304
+
+# Default in method
+class Counter:
+    mut count: int = 0
+
+    fn increment(mut self, let by: int = 1) -> None:
+        self.count = self.count + by
+
+mut ctr = Counter()
+ctr.increment()
+ctr.increment()
+ctr.increment(5)
+print(ctr.count)  # 7
+
+# ============================================================
+# 4. Closures — let capture (deep copy at definition time)
 # ============================================================
 print("=== closures: let capture ===")
 
 fn make_greeter(let name: str) -> function[]->str:
-    fn greet() -> str:
+    fn inner_greet() -> str:
         return "Hello, " + name
-    return greet
+    return inner_greet
 
 let greet_alice = make_greeter("Alice")
 let greet_bob   = make_greeter("Bob")
@@ -80,7 +132,7 @@ print(greet_alice())   # Hello, Alice
 print(greet_bob())     # Hello, Bob
 
 # ============================================================
-# 4. Closures — mut capture (shared cell, independent per call)
+# 5. Closures — mut capture (shared cell, independent per call)
 # ============================================================
 print("=== closures: mut capture ===")
 
@@ -99,7 +151,7 @@ print(cb())   # 1 (cb is independent from ca)
 print(ca())   # 3
 
 # ============================================================
-# 5. Closures — static mut (shared across ALL calls)
+# 6. Closures — static mut (shared across ALL calls)
 # ============================================================
 print("=== closures: static mut ===")
 
@@ -117,7 +169,7 @@ print(sc2())   # 2 (sc1 and sc2 share the static cell)
 print(sc1())   # 3
 
 # ============================================================
-# 6. Generators (gen + yield)
+# 7. Generators (gen + yield)
 # ============================================================
 print("=== generators ===")
 
@@ -133,16 +185,15 @@ print(g.next())   # 3
 print(g.next())   # 6
 print(g.next())   # 9
 
-# Generator as iterator in for loop
 mut total = 0
 for v in range_step(1, 6, 1):
     total += v
 print("sum 1-5:", total)   # 15
 
 # ============================================================
-# 7. Decorators
+# 8. Decorators
 # ============================================================
-print("=== decorators ===")
+print("=== decorators: basic wrapper ===")
 
 fn logged(let f: function) -> function:
     fn wrapper() -> None:
@@ -160,7 +211,7 @@ hello()
 # hello!
 # << done
 
-# Stacked decorators (applied bottom-up)
+# Stacked decorators (applied bottom-up: logged first, then timed)
 fn timed(let f: function) -> function:
     fn wrapper() -> None:
         print("[timed]")
@@ -177,3 +228,44 @@ goodbye()
 # >> calling
 # goodbye!
 # << done
+
+print("=== decorators: call counter (closure + decorator) ===")
+
+# Decorator that uses a mut closure to count invocations
+fn count_calls(let f: function) -> function:
+    mut calls = 0
+    fn wrapper() -> None:
+        calls += 1
+        print("call #", calls)
+        f()
+    return wrapper
+
+@count_calls
+fn compute() -> None:
+    print("computing...")
+
+compute()   # call #1 / computing...
+compute()   # call #2 / computing...
+compute()   # call #3 / computing...
+
+print("=== decorators: parameterised (decorator factory) ===")
+
+# A decorator factory: repeat(n) returns a decorator that runs f n times
+fn repeat_deco(let n: int) -> function:
+    fn decorator(let f: function) -> function:
+        fn wrapper() -> None:
+            mut i = 0
+            while i < n:
+                f()
+                i += 1
+        return wrapper
+    return decorator
+
+@repeat_deco(3)
+fn ping() -> None:
+    print("ping")
+
+ping()
+# ping
+# ping
+# ping
