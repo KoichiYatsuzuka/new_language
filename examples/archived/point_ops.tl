@@ -1,0 +1,73 @@
+# point_ops.tl — Point class with heavy computation functions.
+#
+# Demonstrates native compilation of functions that operate on class instances.
+# The class itself is always tree-walked; the top-level functions below are
+# compiled to native code and dispatch attribute access through interpreter
+# callbacks (cb_get_attr / cb_set_attr / cb_iter_from / cb_iter_next).
+#
+# Compile:
+#   cargo run --release -- --compile examples/point_ops.tl
+#
+# Functions compiled natively:
+#   sum_sq, count_inside, centroid_x, centroid_y, max_dist_sq
+
+class Point:
+    mut x: int
+    mut y: int
+
+    fn dot(self, other: Point) -> int:
+        return self.x * other.x + self.y * other.y
+
+    fn dist_sq(self, other: Point) -> int:
+        let dx = self.x - other.x
+        let dy = self.y - other.y
+        return dx * dx + dy * dy
+
+
+# Sum of (x² + y²) for every point in the list.
+fn sum_sq(points: list) -> int:
+    mut total = 0
+    for p in points:
+        let x = p.x
+        let y = p.y
+        total += x * x + y * y
+    return total
+
+
+# Count of points where x² + y² <= r_sq  (inside a circle of radius sqrt(r_sq)).
+fn count_inside(points: list, r_sq: int) -> int:
+    mut count = 0
+    for p in points:
+        let x = p.x
+        let y = p.y
+        if x * x + y * y <= r_sq:
+            count += 1
+    return count
+
+
+# Integer centroid x-coordinate  (sum of x / n).
+fn centroid_x(points: list, n: int) -> int:
+    mut total = 0
+    for p in points:
+        total += p.x
+    return total / n
+
+
+# Integer centroid y-coordinate  (sum of y / n).
+fn centroid_y(points: list, n: int) -> int:
+    mut total = 0
+    for p in points:
+        total += p.y
+    return total / n
+
+
+# Maximum squared distance from the origin across all points.
+fn max_dist_sq(points: list) -> int:
+    mut best = 0
+    for p in points:
+        let x = p.x
+        let y = p.y
+        let d = x * x + y * y
+        if d > best:
+            best = d
+    return best

@@ -576,6 +576,63 @@ impl Interpreter {
                     Value::NativeFunction(fn_ref) => {
                         self.call_native_function(&fn_ref, args)
                     }
+                    Value::Type(type_name) => {
+                        let evaled = self.eval_call_args(args)?;
+                        let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                        match type_name.as_str() {
+                            "str" => match vals.as_slice() {
+                                [] => Ok(Value::Str(String::new())),
+                                [v] => Ok(Value::Str(self.display(v))),
+                                _ => Err("TypeError: str() takes at most 1 argument".to_string()),
+                            },
+                            "int" => match vals.as_slice() {
+                                [] => Ok(Value::Int(0)),
+                                [Value::Int(n)] => Ok(Value::Int(*n)),
+                                [Value::Float(f)] => Ok(Value::Int(*f as i64)),
+                                [Value::Bool(b)] => Ok(Value::Int(if *b { 1 } else { 0 })),
+                                [Value::Str(s)] => s.trim().parse::<i64>()
+                                    .map(Value::Int)
+                                    .map_err(|_| format!("ValueError: invalid literal for int(): '{s}'")),
+                                [other] => Err(format!("TypeError: int() argument must be a string or a number, not '{}'", self.type_name(other))),
+                                _ => Err("TypeError: int() takes at most 1 argument".to_string()),
+                            },
+                            "float" => match vals.as_slice() {
+                                [] => Ok(Value::Float(0.0)),
+                                [Value::Float(f)] => Ok(Value::Float(*f)),
+                                [Value::Int(n)] => Ok(Value::Float(*n as f64)),
+                                [Value::Bool(b)] => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
+                                [Value::Str(s)] => s.trim().parse::<f64>()
+                                    .map(Value::Float)
+                                    .map_err(|_| format!("ValueError: invalid literal for float(): '{s}'")),
+                                [other] => Err(format!("TypeError: float() argument must be a string or a number, not '{}'", self.type_name(other))),
+                                _ => Err("TypeError: float() takes at most 1 argument".to_string()),
+                            },
+                            "bool" => match vals.as_slice() {
+                                [] => Ok(Value::Bool(false)),
+                                [Value::Bool(b)] => Ok(Value::Bool(*b)),
+                                [Value::Int(n)] => Ok(Value::Bool(*n != 0)),
+                                [Value::Float(f)] => Ok(Value::Bool(*f != 0.0)),
+                                [Value::Str(s)] => Ok(Value::Bool(!s.is_empty())),
+                                [Value::None] => Ok(Value::Bool(false)),
+                                [Value::List(lst)] => Ok(Value::Bool(!lst.borrow().is_empty())),
+                                [_] => Ok(Value::Bool(true)),
+                                _ => Err("TypeError: bool() takes at most 1 argument".to_string()),
+                            },
+                            "list" => match vals {
+                                ref v if v.is_empty() => Ok(Value::List(Rc::new(RefCell::new(vec![])))),
+                                _ if vals.len() == 1 => match vals.into_iter().next().unwrap() {
+                                    Value::List(lst) => Ok(Value::List(lst)),
+                                    Value::Str(s) => {
+                                        let chars = s.chars().map(|c| Value::Str(c.to_string())).collect();
+                                        Ok(Value::List(Rc::new(RefCell::new(chars))))
+                                    },
+                                    other => Err(format!("TypeError: '{}' object is not iterable", self.type_name(&other))),
+                                },
+                                _ => Err("TypeError: list() takes at most 1 argument".to_string()),
+                            },
+                            other => Err(format!("TypeError: '{}' object is not callable", other)),
+                        }
+                    }
                     _ => Err(format!("TypeError: '{}' object is not callable", self.type_name(&callee))),
                 }
             }
@@ -584,59 +641,276 @@ impl Interpreter {
 
     // --- ネイティブ関数呼び出し ---
 
-    /// `Value::NativeFunction` を呼び出す。
+    /// `Value::NativeFunction` を呼び出す（ハンドルベース ABI）。
     ///
-    /// 引数を `i64` に変換して C ABI ラッパー (`fn_name_tl`) を呼び出し、
-    /// 結果を `Value::Int` に変換して返す。
+    /// 全引数をバリューアリーナのハンドルに変換し、C ABI ラッパーを呼ぶ。
+    /// 結果ハンドルをアリーナから取り出して返す。
+    /// `enter_native_call` / `exit_native_call` でアリーナのセーブポイントを管理し、
+    /// 呼び出しツリーが終わると一括クリーンアップする。
     pub(super) fn call_native_function(
         &mut self,
         fn_ref: &Rc<NativeFnRef>,
         args: &[crate::ast::CallArg],
     ) -> Result<Value, String> {
-        // Evaluate arguments (returns Vec<(Option<String>, Value)>).
         let evaled = self.eval_call_args(args)?;
 
-        // Convert tl values to i64.
-        let mut c_args: Vec<i64> = Vec::with_capacity(evaled.len());
-        for (_, v) in &evaled {
-            match v {
-                Value::Int(n)  => c_args.push(*n),
-                Value::Bool(b) => c_args.push(if *b { 1 } else { 0 }),
-                other => return Err(format!(
-                    "TypeError: native function '{}' argument must be int or bool, got '{}'",
-                    fn_ref.fn_name,
-                    self.type_name(other)
-                )),
-            }
-        }
-
-        // Ensure argument count matches.
-        if c_args.len() != fn_ref.n_params {
+        if evaled.len() != fn_ref.n_params {
             return Err(format!(
                 "TypeError: native function '{}' expects {} argument(s), got {}",
-                fn_ref.fn_name, fn_ref.n_params, c_args.len()
+                fn_ref.fn_name, fn_ref.n_params, evaled.len()
             ));
         }
 
-        // Look up the loaded library.
-        let result = {
-            let lib = self.native_libs.get(&fn_ref.lib_path).ok_or_else(|| {
-                format!(
-                    "RuntimeError: native library not loaded: {}",
-                    fn_ref.lib_path.display()
-                )
-            })?;
+        // Enter call frame — saves arena/iter savepoints at outermost level.
+        let is_outermost = super::native_api::enter_native_call(self as *mut Interpreter);
+
+        // Push args into arena (included in cleanup).
+        let handles: Vec<i64> = evaled.iter()
+            .map(|(_, v)| super::native_api::push_handle(v.clone()))
+            .collect();
+
+        let call_result = {
+            let lib = match self.native_libs.get(&fn_ref.lib_path) {
+                Some(l) => l,
+                None => {
+                    super::native_api::abort_native_call(is_outermost);
+                    return Err(format!(
+                        "RuntimeError: native library not loaded: {}", fn_ref.lib_path.display()
+                    ));
+                }
+            };
             let symbol_name = format!("{}_tl\0", fn_ref.fn_name);
             unsafe {
-                let func: libloading::Symbol<unsafe extern "C" fn(*const i64, i32) -> i64> =
-                    lib.0.get(symbol_name.as_bytes()).map_err(|e| {
-                        format!("RuntimeError: symbol '{}' not found: {e}", fn_ref.fn_name)
-                    })?;
-                func(c_args.as_ptr(), c_args.len() as i32)
+                match lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes()) {
+                    Ok(func) => Ok(func(handles.as_ptr(), handles.len() as i32)),
+                    Err(e) => Err(format!("RuntimeError: symbol '{}' not found: {e}", fn_ref.fn_name)),
+                }
             }
         };
 
-        Ok(Value::Int(result))
+        match call_result {
+            Err(e) => {
+                super::native_api::abort_native_call(is_outermost);
+                Err(e)
+            }
+            Ok(result_h) => {
+                if let Some(err) = super::native_api::take_error() {
+                    super::native_api::abort_native_call(is_outermost);
+                    return Err(err);
+                }
+                Ok(super::native_api::exit_native_call(result_h, is_outermost))
+            }
+        }
+    }
+
+    // --- ネイティブコールバック用ヘルパー ---
+
+    /// 任意の `Value` からその属性値を取得する。
+    /// ネイティブコールバック `tl_get_attr` から呼ばれる。
+    pub(super) fn get_attr_val(&mut self, obj: Value, attr: &str) -> Result<Value, String> {
+        match &obj {
+            Value::Instance(inst_rc) => {
+                let inst = inst_rc.borrow();
+                let cls = inst.class.clone();
+                if let Some((v, _)) = inst.fields.get(attr) {
+                    let v = v.clone();
+                    drop(inst);
+                    self.check_member_access(&cls, attr, attr)?;
+                    return Ok(v);
+                }
+                let suffix = format!("::{attr}");
+                if let Some((full_key, (v, _))) = inst.fields.iter().find(|(k, _)| k.ends_with(suffix.as_str())) {
+                    let v = v.clone();
+                    let full_key = full_key.clone();
+                    drop(inst);
+                    self.check_member_access(&cls, &full_key, attr)?;
+                    return Ok(v);
+                }
+                if let Some(v) = Self::lookup_class_var(&cls, attr) {
+                    drop(inst);
+                    self.check_member_access(&cls, attr, attr)?;
+                    return Ok(v);
+                }
+                if let Some(overloads) = cls.methods.get(attr) {
+                    let result = if overloads.len() == 1 {
+                        Value::Function(overloads[0].clone())
+                    } else {
+                        Value::OverloadedFn(overloads.clone())
+                    };
+                    drop(inst);
+                    self.check_member_access(&cls, attr, attr)?;
+                    return Ok(result);
+                }
+                Err(format!("AttributeError: '{}' object has no attribute '{attr}'", cls.name))
+            }
+            Value::Class(cls) => {
+                if let Some(v) = Self::lookup_class_var(cls, attr) {
+                    return Ok(v);
+                }
+                if let Some(overloads) = cls.methods.get(attr) {
+                    return Ok(if overloads.len() == 1 {
+                        Value::Function(overloads[0].clone())
+                    } else {
+                        Value::OverloadedFn(overloads.clone())
+                    });
+                }
+                Err(format!("AttributeError: class '{}' has no attribute '{attr}'", cls.name))
+            }
+            Value::Namespace(ns) => {
+                ns.members.get(attr).cloned()
+                    .ok_or_else(|| format!("AttributeError: module '{}' has no attribute '{attr}'", ns.name))
+            }
+            Value::PyObject(handle) => {
+                super::py_interop::py_getattr(handle, attr)
+            }
+            _ => Err(format!(
+                "AttributeError: '{}' object has no attribute '{attr}'",
+                self.type_name(&obj)
+            )),
+        }
+    }
+
+    /// 任意の呼び出し可能な `Value` を評価済み引数リストで呼び出す。
+    /// ネイティブコールバック `tl_call_fn` から呼ばれる。
+    pub(super) fn call_value_with_args(&mut self, callee: Value, args: Vec<Value>) -> Result<Value, String> {
+        let evaled: Vec<(Option<String>, Value)> = args.into_iter().map(|v| (None, v)).collect();
+        match callee {
+            Value::Function(fn_val) => {
+                self.exec_fn_evaled(fn_val, &evaled, None, "<fn>")
+            }
+            Value::OverloadedFn(candidates) => {
+                self.dispatch_overload_evaled(candidates, evaled, None, "<overloaded>")
+            }
+            Value::Class(cls) => {
+                // Class constructor called from native code (e.g. `Point(x, y)` via cb_call).
+                self.instantiate_evaled(cls, evaled)
+            }
+            Value::NativeFunction(fn_ref) => {
+                // Re-entrant native call: CURRENT_INTERP is already set; do NOT clear it.
+                // enter_native_call at depth > 0 will not save/restore arena — cleanup happens
+                // at the outermost call_native_function.
+                if evaled.len() != fn_ref.n_params {
+                    return Err(format!(
+                        "TypeError: native function '{}' expects {} argument(s), got {}",
+                        fn_ref.fn_name, fn_ref.n_params, evaled.len()
+                    ));
+                }
+                let is_outermost = super::native_api::enter_native_call(self as *mut Interpreter);
+                let handles: Vec<i64> = evaled.iter()
+                    .map(|(_, v)| super::native_api::push_handle(v.clone()))
+                    .collect();
+                let call_result = {
+                    let lib = match self.native_libs.get(&fn_ref.lib_path) {
+                        Some(l) => l,
+                        None => {
+                            super::native_api::abort_native_call(is_outermost);
+                            return Err(format!(
+                                "RuntimeError: native library not loaded: {}", fn_ref.lib_path.display()
+                            ));
+                        }
+                    };
+                    let symbol_name = format!("{}_tl\0", fn_ref.fn_name);
+                    unsafe {
+                        match lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes()) {
+                            Ok(func) => Ok(func(handles.as_ptr(), handles.len() as i32)),
+                            Err(e) => Err(format!("RuntimeError: symbol '{}' not found: {e}", fn_ref.fn_name)),
+                        }
+                    }
+                };
+                match call_result {
+                    Err(e) => { super::native_api::abort_native_call(is_outermost); Err(e) }
+                    Ok(result_h) => {
+                        if let Some(err) = super::native_api::take_error() {
+                            super::native_api::abort_native_call(is_outermost);
+                            return Err(err);
+                        }
+                        Ok(super::native_api::exit_native_call(result_h, is_outermost))
+                    }
+                }
+            }
+            Value::Type(type_name) => {
+                let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                match type_name.as_str() {
+                    "len" => match vals.as_slice() {
+                        [Value::List(lst)] => Ok(Value::Int(lst.borrow().len() as i64)),
+                        [Value::Str(s)] => Ok(Value::Int(s.len() as i64)),
+                        [other] => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(other))),
+                        _ => Err("TypeError: len() takes exactly 1 argument".to_string()),
+                    },
+                    "str" => match vals.as_slice() {
+                        [] => Ok(Value::Str(String::new())),
+                        [v] => Ok(Value::Str(self.display(v))),
+                        _ => Err("TypeError: str() takes at most 1 argument".to_string()),
+                    },
+                    "int" => match vals.as_slice() {
+                        [] => Ok(Value::Int(0)),
+                        [Value::Int(n)] => Ok(Value::Int(*n)),
+                        [Value::Float(f)] => Ok(Value::Int(*f as i64)),
+                        [Value::Bool(b)] => Ok(Value::Int(if *b { 1 } else { 0 })),
+                        [Value::Str(s)] => s.trim().parse::<i64>()
+                            .map(Value::Int)
+                            .map_err(|_| format!("ValueError: invalid literal for int(): '{s}'")),
+                        [other] => Err(format!("TypeError: int() argument must be a number or string, not '{}'", self.type_name(other))),
+                        _ => Err("TypeError: int() takes at most 1 argument".to_string()),
+                    },
+                    "float" => match vals.as_slice() {
+                        [] => Ok(Value::Float(0.0)),
+                        [Value::Float(f)] => Ok(Value::Float(*f)),
+                        [Value::Int(n)] => Ok(Value::Float(*n as f64)),
+                        [Value::Bool(b)] => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
+                        [Value::Str(s)] => s.trim().parse::<f64>()
+                            .map(Value::Float)
+                            .map_err(|_| format!("ValueError: invalid literal for float(): '{s}'")),
+                        [other] => Err(format!("TypeError: float() argument must be a number or string, not '{}'", self.type_name(other))),
+                        _ => Err("TypeError: float() takes at most 1 argument".to_string()),
+                    },
+                    "bool" => match vals.as_slice() {
+                        [] => Ok(Value::Bool(false)),
+                        [Value::Bool(b)] => Ok(Value::Bool(*b)),
+                        [Value::Int(n)] => Ok(Value::Bool(*n != 0)),
+                        [Value::Float(f)] => Ok(Value::Bool(*f != 0.0)),
+                        [Value::Str(s)] => Ok(Value::Bool(!s.is_empty())),
+                        [Value::None] => Ok(Value::Bool(false)),
+                        [Value::List(lst)] => Ok(Value::Bool(!lst.borrow().is_empty())),
+                        [_] => Ok(Value::Bool(true)),
+                        _ => Err("TypeError: bool() takes at most 1 argument".to_string()),
+                    },
+                    other => Err(format!("TypeError: '{}' object is not callable", other)),
+                }
+            }
+            Value::Instance(_) => {
+                self.eval_method_call_evaled(callee, "__call__", evaled)
+            }
+            Value::PyObject(ref handle) => {
+                super::py_interop::call_py_object(handle, &evaled)
+            }
+            other => Err(format!("TypeError: '{}' object is not callable", self.type_name(&other))),
+        }
+    }
+
+    /// インスタンスの属性に値をセットする。
+    /// ネイティブコールバック `tl_set_attr` から呼ばれる。
+    pub(super) fn set_attr_val(&mut self, obj: Value, attr: &str, val: Value) -> Result<(), String> {
+        match obj {
+            Value::Instance(inst_rc) => {
+                let inst_class = inst_rc.borrow().class.clone();
+                if Self::lookup_class_var(&inst_class, attr).is_some() {
+                    return Err(format!("TypeError: cannot assign to class variable '{attr}' (declared const)"));
+                }
+                self.check_member_access(&inst_class, attr, attr)?;
+                let mut inst = inst_rc.borrow_mut();
+                if let Some((_, false)) = inst.fields.get(attr) {
+                    return Err(format!("TypeError: cannot assign to immutable field '{attr}'"));
+                }
+                if inst.immutable {
+                    return Err(format!("TypeError: cannot assign field '{attr}' on immutable instance"));
+                }
+                let is_mutable = inst.class.field_mutability.get(attr).copied().unwrap_or(true);
+                inst.fields.insert(attr.to_string(), (val, is_mutable));
+                Ok(())
+            }
+            _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
+        }
     }
 
     // --- 属性代入ヘルパー ---

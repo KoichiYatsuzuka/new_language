@@ -846,11 +846,11 @@ impl Parser {
     fn parse_import_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `import` を消費
 
-        // `[lang]` を読む。省略時は "tl"
+        // `[lang]` を読む。省略時は "tl-auto" (auto-select: prefer .tlc over .tl)
         let lang = if *self.current() == Token::LBracket {
             self.parse_lang_bracket()?
         } else {
-            "tl".to_string()
+            "tl-auto".to_string()
         };
 
         // モジュールパス (`a.b.c`)
@@ -877,12 +877,12 @@ impl Parser {
         // モジュールパス
         let module = self.parse_module_path()?;
 
-        // `import[lang]` または `import`（省略時は "tl"）
+        // `import[lang]` または `import`（省略時は "tl-auto"）
         self.eat(&Token::Import)?;
         let lang = if *self.current() == Token::LBracket {
             self.parse_lang_bracket()?
         } else {
-            "tl".to_string()
+            "tl-auto".to_string()
         };
 
         // 名前リスト: `Name1, Name2 as N2, ...`
@@ -946,11 +946,16 @@ impl Parser {
     /// モジュールを検索・読み込み・変換して tl AST を返す。キャッシュを使用する。
     fn load_module(&mut self, lang: &str, module: &[String]) -> Result<Vec<Stmt>, String> {
         match lang {
-            "tl"     => self.load_tl_module(module),
-            "py"     => self.load_python_module(module),
+            // default (no bracket): prefer .tlc, fall back to .tl
+            "tl-auto" => self.load_tl_module(module),
+            // import[tl]: force .tl source, skip .tlc
+            "tl"      => self.load_tl_source_module(module),
+            // import[tlc]: force .tlc, error if not found
+            "tlc"     => self.load_tlc_module(module),
+            "py"      => self.load_python_module(module),
             // py-int: .pyi を優先し、なければ .py にフォールバック
             // body は型検査専用（実行時は PyO3 経由）
-            "py-int" => self.load_python_interface_module(module),
+            "py-int"  => self.load_python_interface_module(module),
             other => Err(format!("unknown import language '{other}'")),
         }
     }
@@ -994,7 +999,7 @@ impl Parser {
                 format!("cannot find module '{}' (looked at {})", module.join("."), paths)
             })?;
 
-        let cache_key = ("tl".to_string(), abs_path.clone());
+        let cache_key = ("tl-auto".to_string(), abs_path.clone());
 
         if let Some(body) = self.module_cache.get(&cache_key) {
             return Ok(body.clone());
@@ -1038,6 +1043,125 @@ impl Parser {
         self.loading.remove(&abs_path);
         self.module_cache.insert(cache_key, body.clone());
 
+        Ok(body)
+    }
+
+    /// `import[tl]`: `.tl` ソースのみをロードする。`.tlc` があっても無視する。
+    fn load_tl_source_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
+        let module_base: PathBuf = module.iter().collect();
+        let file_rel = module_base.with_extension("tl");
+        let init_rel = module_base.join("__init__.tl");
+
+        let search_dirs: Vec<PathBuf> = {
+            let a = self.source_dir.clone();
+            let b = self.root_dir.clone();
+            if a == b { vec![a] } else { vec![a, b] }
+        };
+
+        let candidates: Vec<PathBuf> = search_dirs.iter()
+            .flat_map(|dir| [dir.join(&file_rel), dir.join(&init_rel)])
+            .collect();
+
+        let abs_path = candidates.iter()
+            .find(|p| p.exists())
+            .cloned()
+            .ok_or_else(|| {
+                let paths = candidates.iter()
+                    .map(|p| format!("'{}'", p.display()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "cannot find source module '{}' (looked at {})",
+                    module.join("."), paths
+                )
+            })?;
+
+        let cache_key = ("tl".to_string(), abs_path.clone());
+
+        if let Some(body) = self.module_cache.get(&cache_key) {
+            return Ok(body.clone());
+        }
+        if self.loading.contains(&abs_path) {
+            return Err(format!("circular import detected: '{}'", abs_path.display()));
+        }
+
+        let source = std::fs::read_to_string(&abs_path)
+            .map_err(|e| format!("cannot read module '{}': {e}", module.join(".")))?;
+        let filename = abs_path.to_string_lossy().into_owned();
+
+        self.loading.insert(abs_path.clone());
+
+        let tokens = lexer::Lexer::new(&source, filename.as_str()).tokenize();
+        let module_dir = abs_path.parent().map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut sub = Parser::new(tokens, Some(module_dir));
+        sub.module_cache = self.module_cache.clone();
+        sub.loading = self.loading.clone();
+        sub.root_dir = self.root_dir.clone();
+
+        let body = sub.parse_program()?;
+        self.module_cache.extend(sub.module_cache);
+        self.loading.remove(&abs_path);
+        self.module_cache.insert(cache_key, body.clone());
+        Ok(body)
+    }
+
+    /// `import[tlc]`: `.tlc` コンパイル済みモジュールのみをロードする。`.tl` があっても無視する。
+    fn load_tlc_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
+        let module_base: PathBuf = module.iter().collect();
+        let tlc_rel = module_base.with_extension("tlc");
+
+        let search_dirs: Vec<PathBuf> = {
+            let a = self.source_dir.clone();
+            let b = self.root_dir.clone();
+            if a == b { vec![a] } else { vec![a, b] }
+        };
+
+        let candidates: Vec<PathBuf> = search_dirs.iter()
+            .map(|dir| dir.join(&tlc_rel))
+            .collect();
+
+        let abs_path = candidates.iter()
+            .find(|p| p.exists())
+            .cloned()
+            .ok_or_else(|| {
+                let paths = candidates.iter()
+                    .map(|p| format!("'{}'", p.display()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "cannot find compiled module '{}' (looked at {}; compile with: cargo run --release -- --compile <source.tl>)",
+                    module.join("."), paths
+                )
+            })?;
+
+        let cache_key = ("tlc".to_string(), abs_path.clone());
+
+        if let Some(body) = self.module_cache.get(&cache_key) {
+            return Ok(body.clone());
+        }
+        if self.loading.contains(&abs_path) {
+            return Err(format!("circular import detected: '{}'", abs_path.display()));
+        }
+
+        let (mod_name, source) = crate::partial_compiler::load_tlc(&abs_path)
+            .map_err(|e| format!("cannot load compiled module '{}': {e}", module.join(".")))?;
+        let filename = format!("<compiled:{mod_name}>");
+
+        self.loading.insert(abs_path.clone());
+
+        let tokens = lexer::Lexer::new(&source, filename.as_str()).tokenize();
+        let module_dir = abs_path.parent().map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut sub = Parser::new(tokens, Some(module_dir));
+        sub.module_cache = self.module_cache.clone();
+        sub.loading = self.loading.clone();
+        sub.root_dir = self.root_dir.clone();
+
+        let body = sub.parse_program()?;
+        self.module_cache.extend(sub.module_cache);
+        self.loading.remove(&abs_path);
+        self.module_cache.insert(cache_key, body.clone());
         Ok(body)
     }
 

@@ -1,0 +1,121 @@
+# bench_types.tl — verify correctness and compare speeds across all value types.
+#
+# Workflow:
+#   Step 1  (tree-walk):
+#     cargo run --release -- examples/bench_types.tl
+#
+#   Step 2  (compile):
+#     cargo run --release -- --compile examples/compile_types.tl
+#
+#   Step 3  (native dispatch — same bench file):
+#     cargo run --release -- examples/bench_types.tl
+
+import[py-int] time
+import compile_types
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+fn elapsed(t0: float, t1: float) -> str:
+    return "elapsed: " + str(t1 - t0) + " s"
+
+# ── int / bool ────────────────────────────────────────────────────────────────
+print("=== int / bool ===")
+
+let t0 = time.time()
+mut gcd_acc = 0
+mut i = 1
+while i <= 50000:
+    gcd_acc += compile_types.gcd(i * 97, i * 83)
+    i += 1
+let t1 = time.time()
+print("gcd   accumulator:", gcd_acc)
+print(elapsed(t0, t1))
+print("")
+
+# ── float ─────────────────────────────────────────────────────────────────────
+print("=== float ===")
+
+let v1 = compile_types.Vec3(1.0, 2.0, 3.0)
+let v2 = compile_types.Vec3(4.0, 5.0, 6.0)
+
+let t2 = time.time()
+mut dot_acc = 0.0
+i = 0
+while i < 100000:
+    dot_acc = dot_acc + compile_types.dot3(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+    i += 1
+let t3 = time.time()
+print("dot3 × 100000:", dot_acc)
+print(elapsed(t2, t3))
+
+let vecs_small = for j in range(1000) ->list[Vec3]:
+    loop_yield compile_types.Vec3(j * 1.0, j * 2.0, j * 3.0)
+
+let t4 = time.time()
+let len_sum = compile_types.sum_vec3_lengths(vecs_small)
+let t5 = time.time()
+print("sum_vec3_lengths:", len_sum)
+print(elapsed(t4, t5))
+print("")
+
+# ── str ───────────────────────────────────────────────────────────────────────
+print("=== str ===")
+
+let t6 = time.time()
+mut char_total = 0
+i = 0
+while i < 10000:
+    char_total += compile_types.count_chars("hello world", 11)
+    i += 1
+let t7 = time.time()
+print("count_chars × 10000:", char_total)
+print(elapsed(t6, t7))
+
+let repeated = compile_types.repeat_char("ab", 5)
+print("repeat_char('ab', 5):", repeated)
+print("")
+
+# ── list ──────────────────────────────────────────────────────────────────────
+print("=== list ===")
+
+let nums = for k in range(10000) ->list[int]:
+    loop_yield k * k % 997
+
+let t8 = time.time()
+let s = compile_types.list_sum(nums)
+let mx = compile_types.list_max(nums)
+let cnt = compile_types.list_count_if(nums, 500)
+let t9 = time.time()
+print("sum:", s, "  max:", mx, "  count>500:", cnt)
+print(elapsed(t8, t9))
+print("")
+
+# ── class instances ───────────────────────────────────────────────────────────
+print("=== class instances ===")
+
+let pairs = for k in range(5000) ->list[Pair]:
+    loop_yield compile_types.Pair("k" + str(k), k * k % 10007)
+
+let t10 = time.time()
+let max_val = compile_types.find_max_pair(pairs)
+let keys    = compile_types.collect_keys(pairs)
+let t11 = time.time()
+print("find_max_pair:", max_val)
+print("collect_keys length:", len(keys))
+print(elapsed(t10, t11))
+print("")
+
+# ── mixed ─────────────────────────────────────────────────────────────────────
+print("=== mixed: list[Vec3] + list[float] weights ===")
+
+let vecs = for k in range(2000) ->list[Vec3]:
+    loop_yield compile_types.Vec3(k * 1.0, k * 0.5, k * 0.25)
+
+let weights = for k in range(2000) ->list[float]:
+    loop_yield k * 0.001
+
+let t12 = time.time()
+let ws = compile_types.weighted_sum(vecs, weights, 2000)
+let t13 = time.time()
+print("weighted_sum:", ws)
+print(elapsed(t12, t13))

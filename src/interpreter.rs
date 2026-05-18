@@ -40,6 +40,8 @@ mod exceptions;
 mod templates;
 #[path = "interpreter/py_interop.rs"]
 pub(self) mod py_interop;
+#[path = "interpreter/native_api.rs"]
+pub(self) mod native_api;
 
 #[cfg(test)]
 #[path = "interpreter/tests.rs"]
@@ -714,7 +716,9 @@ impl Interpreter {
         let mut global: HashMap<String, Var> = HashMap::new();
 
         // 組み込み型値を事前定義: `int`, `str`, `float`, `bool`, `dict`, `function` を型式として使えるようにする
-        for name in ["int", "str", "float", "bool", "dict", "function"] {
+        // `len` も `Value::Type` として登録しておく — ネイティブコードが cb_get_global("len") で取得して
+        // call_value_with_args 経由で呼べるようにするため。
+        for name in ["int", "str", "float", "bool", "dict", "function", "len"] {
             global.insert(name.to_string(), Var::new(Value::Type(name.to_string()), false));
         }
 

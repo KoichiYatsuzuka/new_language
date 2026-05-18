@@ -1,0 +1,49 @@
+# native_ops_demo.tl — shows how to use a partially compiled module.
+#
+# Workflow
+# ────────
+#   Step 1  Run interpreted (no .tlc yet):
+#     cargo run --release -- examples/native_ops_demo.tl
+#
+#   Step 2  Compile the module:
+#     cargo run --release -- --compile examples/native_ops.tl
+#     # Output: native_ops.tlc  (source + native library)
+#     #         native_ops.tls  (type stub for the IDE)
+#
+#   Step 3  Run again — same command, now uses native code:
+#     cargo run --release -- examples/native_ops_demo.tl
+#
+# The parser automatically prefers .tlc over .tl when both exist.
+# Type-annotated int/float functions run 100–200× faster natively.
+
+import[py-int] time
+import native_ops
+
+# ── Correctness check ─────────────────────────────────────────────────────────
+print("=== correctness ===")
+print("fib(30)              :", native_ops.fib(30))           # 832040
+print("fib(50)              :", native_ops.fib(50))           # 12586269025
+print("count_divisors(720)  :", native_ops.count_divisors(720))   # 30
+print("digit_sum(123456789) :", native_ops.digit_sum(123456789))  # 45
+print("approx_sqrt(2.0)     :", native_ops.approx_sqrt(2.0))      # ~1.41421356
+print("sum_inv_squares(10)  :", native_ops.sum_inv_squares(10))   # ~1.54977
+print("")
+
+# ── Timing — shows the speedup after compilation ──────────────────────────────
+print("=== timing (interpreted first, then native after --compile) ===")
+
+# Integer loop: 1000 calls to fib(60)
+let t0 = time.time()
+mut k = 0
+while k < 1000:
+    let _ = native_ops.fib(60)
+    k += 1
+let t1 = time.time()
+print("1000 × fib(60)        elapsed:", t1 - t0, "s")
+
+# Float series: converges to pi²/6 ≈ 1.6449
+let t2 = time.time()
+let pi_sq_over_6 = native_ops.sum_inv_squares(500000)
+let t3 = time.time()
+print("sum_inv_squares(500000):", pi_sq_over_6)
+print("  elapsed:", t3 - t2, "s")

@@ -846,7 +846,8 @@ impl Interpreter {
         }
 
         // tl モジュール: .tlc v1 に埋め込まれたネイティブ DLL がキャッシュにあれば優先する
-        if lang == "tl" {
+        // import[tl] (lang=="tl") は明示的にソースを要求しているのでスキップする
+        if lang == "tl-auto" || lang == "tlc" {
             let module_name = module.join(".");
             if let Some((_exports, dll_bytes)) = crate::partial_compiler::take_native_bytes(&module_name) {
                 let ext = crate::partial_compiler::native_lib_ext();
@@ -978,6 +979,18 @@ impl Interpreter {
             self.scopes[0]
                 .entry(name.clone())
                 .or_insert_with(|| Var::new(value.clone(), false));
+        }
+
+        // Call tl_init so the DLL can store the callbacks pointer.
+        {
+            let cb_ptr = super::native_api::get_callbacks();
+            let symbol_name = b"tl_init\0";
+            let init_result = unsafe {
+                lib.get::<unsafe extern "C" fn(*const super::native_api::TlCallbacks)>(symbol_name)
+            };
+            if let Ok(tl_init) = init_result {
+                unsafe { tl_init(cb_ptr) };
+            }
         }
 
         // Store the loaded library so it stays alive for the interpreter's lifetime.

@@ -1,0 +1,144 @@
+# heavy_ops.tl — computationally intensive functions for all value types.
+#
+# Every function here is eligible for native compilation.
+# Compile:
+#   cargo run --release -- --compile examples/heavy_ops.tl
+
+# ── Classes ───────────────────────────────────────────────────────────────────
+
+class Complex:
+    mut re: float
+    mut im: float
+
+# ── int: prime counting / Collatz ─────────────────────────────────────────────
+
+fn is_prime(n: int) -> bool:
+    if n < 2:
+        return False
+    if n == 2:
+        return True
+    if n % 2 == 0:
+        return False
+    mut i = 3
+    while i * i <= n:
+        if n % i == 0:
+            return False
+        i += 2
+    return True
+
+fn count_primes(limit: int) -> int:
+    mut count = 0
+    mut i = 2
+    while i <= limit:
+        if is_prime(i):
+            count += 1
+        i += 1
+    return count
+
+fn collatz_steps(n: int) -> int:
+    mut steps = 0
+    mut x = n
+    while x != 1:
+        if x % 2 == 0:
+            x = x // 2
+        else:
+            x = x * 3 + 1
+        steps += 1
+    return steps
+
+fn total_collatz(limit: int) -> int:
+    mut total = 0
+    mut i = 1
+    while i <= limit:
+        total += collatz_steps(i)
+        i += 1
+    return total
+
+# ── float: Newton sqrt / Leibniz pi ───────────────────────────────────────────
+
+fn newton_sqrt(x: float) -> float:
+    if x <= 0.0:
+        return 0.0
+    mut g = x * 0.5
+    mut i = 0
+    while i < 20:
+        g = (g + x / g) * 0.5
+        i += 1
+    return g
+
+fn sum_sqrts(n: int) -> float:
+    mut total = 0.0
+    mut i = 1
+    while i <= n:
+        total = total + newton_sqrt(i * 1.0)
+        i += 1
+    return total
+
+fn pi_term(i: int, denom: float) -> float:
+    if i % 2 == 0:
+        return 1.0 / denom
+    return -1.0 / denom
+
+fn series_pi(terms: int) -> float:
+    mut result = 0.0
+    mut denom = 1.0
+    mut i = 0
+    while i < terms:
+        result = result + pi_term(i, denom)
+        denom = denom + 2.0
+        i += 1
+    return result * 4.0
+
+# ── str: vowel counting ────────────────────────────────────────────────────────
+
+fn is_vowel(c: str) -> bool:
+    if c == "a":
+        return True
+    if c == "e":
+        return True
+    if c == "i":
+        return True
+    if c == "o":
+        return True
+    if c == "u":
+        return True
+    return False
+
+fn count_vowels(s: str) -> int:
+    mut count = 0
+    for c in s:
+        if is_vowel(c):
+            count += 1
+    return count
+
+fn total_vowels(words: list) -> int:
+    mut total = 0
+    for w in words:
+        total += count_vowels(w)
+    return total
+
+# ── class: Mandelbrot ─────────────────────────────────────────────────────────
+
+fn mandelbrot_iter(cx: float, cy: float, max_iter: int) -> int:
+    mut rx = cx
+    mut ry = cy
+    mut iter = 0
+    while iter < max_iter:
+        let rx2 = rx * rx
+        let ry2 = ry * ry
+        if rx2 + ry2 >= 4.0:
+            return iter
+        let new_rx = rx2 - ry2 + cx
+        ry = 2.0 * rx * ry + cy
+        rx = new_rx
+        iter += 1
+    return max_iter
+
+fn mandelbrot_sum(points: list, max_iter: int, n: int) -> int:
+    mut total = 0
+    mut i = 0
+    while i < n:
+        let p = points[i]
+        total += mandelbrot_iter(p.re, p.im, max_iter)
+        i += 1
+    return total

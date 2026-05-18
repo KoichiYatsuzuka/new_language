@@ -36,40 +36,52 @@ test_lang/
 │   ├── parser.rs        # Recursive descent parser (input: Vec<Spanned>)
 │   ├── type_check.rs    # Static type checker (after parsing, before execution)
 │   ├── interpreter.rs   # Tree-walk interpreter
-│   ├── codegen.rs       # Rust source code generator (tl fn → native i64 ABI)
-│   ├── module_compiler.rs # --compile: writes .tlc (v0/v1) and .tls; v1 embeds DLL inside .tlc
-│   └── stub_gen.rs      # .tls stub file generator
+│   ├── partial_compiler/ # --compile subsystem
+│   │   ├── mod.rs         # Entry point: orchestrates compile pipeline
+│   │   ├── codegen.rs     # Rust source code generator (tl fn → handle-based i64 ABI)
+│   │   ├── module_compiler.rs # Writes .tlc (v0/v1) and .tls; v1 embeds DLL inside .tlc
+│   │   └── stub_gen.rs    # .tls stub file generator
+│   └── interpreter/
+│       └── native_api.rs  # Handle arena, TlCallbacks struct, 19 C callback impls
 ├── spec/
 │   ├── general.md       # General language specification
 │   ├── keywords.md      # Keyword list
 │   └── operator.md      # Operator list / precedence
 ├── examples/
-│   ├── showcase.tl            # Demonstration of all implemented features
-│   ├── type_errors.tl         # Examples generating StaticTypeError
-│   ├── self_type.tl           # Self type behavior examples
-│   ├── self_type__errors.tl   # Self type parse error examples
-│   ├── new_type.tl            # new_type behavior examples
-│   ├── new_type__errors.tl    # new_type Self mismatch error examples
-│   ├── iterator.tl            # Iterator behavior examples
-│   ├── iterator__errors.tl    # EndOfIteration error examples
-│   ├── dict.tl                # Dictionary type behavior examples
-│   ├── dict__errors.tl        # dict type mismatch error examples
-│   ├── tuple.tl               # Tuple type behavior examples
-│   ├── py_import.tl           # import[py] examples
-│   ├── py_additional_param.tl # Python **kwargs examples
-│   ├── py_int_import.tl       # import[py-int] examples
-│   ├── typeguard.tl           # is / is not type guard examples
-│   ├── typeguard__errors.tl   # is not on non-Union type StaticTypeError examples
-│   ├── function_type.tl       # function type annotation examples
-│   ├── function_type__errors.tl  # function type StaticTypeError examples
-│   ├── closure.tl             # Closure behavior examples (capture, static, nested)
-│   ├── closure__errors.tl     # freeze on captured mutable variable TypeError examples
-│   ├── match.tl               # match statement behavior examples
-│   ├── match__errors.tl       # match mixed-arm parse error examples
-│   ├── block_expr.tl          # block: expression with block_return examples
-│   ├── control_flow_expr.tl   # if/for/while/match as expressions with ->Type examples
-│   ├── accessibility.tl       # public/private/protected access control examples
-│   └── accessibility__errors.tl  # AccessError on private member access from outside
+│   ├── variable.tl            # let / mut / const / static mut declarations
+│   ├── variable_error.tl      # declaration error examples
+│   ├── control_flow.tl        # if / for / while / match
+│   ├── control_flow_error.tl  # control flow error examples
+│   ├── control_flow_expr.tl   # if/for/while/match as expressions (->Type)
+│   ├── block_expr.tl          # block: expression with block_return
+│   ├── function_closure.tl    # closures, static mut, nested functions
+│   ├── function_closure_error.tl
+│   ├── class_trait.tl         # class, trait, inheritance, Self, new_type
+│   ├── class_trait_error.tl
+│   ├── collection.tl          # list, dict, tuple, subscript
+│   ├── collection_error.tl
+│   ├── polymorphism.tl        # templates, type guards, Union/Optional
+│   ├── polymorphism_error.tl
+│   ├── subtype.tl             # new_type, covariance
+│   ├── subtype_error.tl
+│   ├── subscript.tl           # subscript / indexing behavior
+│   ├── subscript__errors.tl
+│   ├── match.tl               # match value-case and is-type arms
+│   ├── match__errors.tl
+│   ├── accessibility.tl       # public/private/protected section markers
+│   ├── accessibility__errors.tl
+│   ├── default_param.tl       # default parameter values
+│   ├── default_param__errors.tl
+│   ├── enum.tl                # enum definitions
+│   ├── enum__errors.tl
+│   ├── file_io.tl             # import[py] file I/O
+│   ├── file_io__errors.tl
+│   ├── native_ops.tl              # module: typed int/float functions for native compilation
+│   ├── native_ops_demo.tl         # DEMO: full --compile workflow (start here)
+│   ├── import_qualifier_demo.tl   # DEMO: import / import[tl] / import[tlc] comparison
+│   ├── heavy_ops.tl           # module: heavier benchmarks (all value types)
+│   ├── bench_heavy.tl         # benchmark: speedup across int/float/str/class
+│   └── archived/              # older examples (kept for reference)
 └── vscode-extension/    # VS Code extension (type inference inline hints)
     └── src/
         ├── extension.ts
@@ -86,15 +98,25 @@ This produces two files next to the source:
 | `{stem}.tlc` | Compiled module: binary header + embedded source text, optionally with a native shared library embedded (v1 format) |
 | `{stem}.tls` | Type stub: function/class/trait signatures with `...` bodies (used by the VS Code extension and the static type checker) |
 
-### How to compile a module
+### Canonical demo
+
+`examples/native_ops.tl` is the canonical module for demonstrating native compilation.  
+`examples/native_ops_demo.tl` is the corresponding runner that shows the full workflow.
 
 ```bash
-cargo run --release -- --compile examples/prime_counter.tl
+# Step 1 — run interpreted
+cargo run --release -- examples/native_ops_demo.tl
+
+# Step 2 — compile the module
+cargo run --release -- --compile examples/native_ops.tl
 # Output:
-#   NativeLib: compiling 3 function(s): is_prime, count_primes_up_to, prime_sum_up_to
-#   NativeLib: 3 function(s) embedded in examples\prime_counter.tlc
-#   Compiled : examples\prime_counter.tlc
-#   Stub     : examples\prime_counter.tls
+#   NativeLib: compiling 6 function(s): fib, count_divisors, digit_sum, ...
+#   NativeLib: 6 function(s) embedded in examples\native_ops.tlc
+#   Compiled : examples\native_ops.tlc
+#   Stub     : examples\native_ops.tls
+
+# Step 3 — run again with native dispatch (same command as Step 1)
+cargo run --release -- examples/native_ops_demo.tl
 ```
 
 ### How the compiled module is used
@@ -104,20 +126,47 @@ If the `.tlc` is v1, the embedded DLL is extracted to a temp file at runtime and
 Eligible functions are dispatched natively; all other functions tree-walk as usual.
 
 ```
-import prime_counter                      # loads prime_counter.tlc (parser)
-prime_counter.count_primes_up_to(500000)  # calls native code — ~300x faster
+import native_ops               # loads native_ops.tlc (parser)
+native_ops.fib(60)              # calls native code — ~100× faster for typed int/float
 ```
+
+### Type-specialized codegen
+
+Functions with `int` or `float` parameter and return type annotations generate direct Rust
+arithmetic rather than routing each operation through the callback ABI.
+
+| What is typed | Generated code | vs. untyped |
+|---|---|---|
+| `mut i = 0`, `i += 1` | `_v_i = _v_i + 1i64` | was `cb_binop(OP_ADD, ...)` |
+| `i * i <= n` (while cond) | `(_v_i * _v_i) <= _v_n` | was `cb_is_truthy(cb_binop(...))` |
+| `fn f(x: float) -> float` param | `let _v_x: f64 = cb_to_float(_v_x)` | was handle pass-through |
+
+Speedup for pure int/float loops: **100–200×**. Speedup for handle-heavy workloads (lists, class instances): **2–5×**.
 
 ### Native eligibility
 
-A function is compiled natively when all of the following are true:
+A function is compiled natively when **all** of the following are true:
 
 - No template parameters
-- All parameter types and the return type are `int` or `bool`
-- The body contains only: `if`, `while`, `return`, `let`/`mut`/`const`, `=`, `+=` etc., and calls to other functions in the same module
+- Not abstract
+- The body contains **none** of: `yield`, inner function/generator defs (closures), `try`/`raise`, `block_return`/`loop_yield`, keyword-argument calls, `static mut` variables, `import` statements, or class/trait definitions
 
-Functions that do not meet these criteria are silently skipped; they continue to be executed by the tree-walk interpreter.  
+All value types (`int`, `bool`, `float`, `str`, `list`, `dict`, `tuple`, class instances) can cross the native boundary via the handle-based ABI.  Functions that do not meet these criteria are silently skipped; they continue to be executed by the tree-walk interpreter.  
 If `rustc` is not found in `PATH`, native compilation is skipped entirely and only `.tlc` + `.tls` are written.
+
+#### Handle-based ABI
+
+Every value crossing the native boundary is an `i64` handle:
+
+| Handle | Meaning |
+|--------|---------|
+| `0` | `None` |
+| `1` | `True` |
+| `2` | `False` |
+| `-1` | `StopIteration` |
+| `≥ 3` | Dynamic value stored in `VALUE_ARENA` |
+
+The interpreter owns all values; native code operates on opaque handles via 19 callbacks (`TlCallbacks`) injected at load time via `tl_init`. Speedup for handle-heavy workloads (class instances, lists) is 2–5×; for typed int/float arithmetic loops it reaches 100–200× (direct Rust arithmetic, no callbacks).
 
 ### Output file roles
 
@@ -204,6 +253,9 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Tuple type
 - `import[py]`
 - `import[py-int]`
+- `import[tl]` — force `.tl` source, always tree-walk (ignores `.tlc`)
+- `import[tlc]` — force `.tlc` compiled (parse error if no `.tlc` exists)
+- `import` (no qualifier) — auto: prefer `.tlc` if present, fall back to `.tl`
 - Type guard (`is` / `is not`): runtime instance-of check against primitive types, class names, trait membership (via `bases`), and `function`
 - `function` primitive type: `Value::Function`, `Value::OverloadedFn`, `Value::GeneratorFn` all match `x is function`
 - **`match` statement**: pattern matching with value-case arms (`case val:`), wildcard (`case _:`), and type-pattern arms (`is Type:`)
@@ -242,7 +294,7 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Static access checking for `private`/`protected` (currently runtime `AccessError` only; no `StaticTypeError` at parse/type-check time)
 - Set type (`{a, b}`)
 - Imports (`import` / `from ... import`)
-- Native compilation: only `int`/`bool` functions with simple control flow are eligible; `float`, `str`, closures, classes, generators not yet supported
+- Native compilation: closures (inner functions capturing outer variables), generators, `try`/`raise`, `block_return`/`loop_yield`, and `static mut` are not yet supported in compiled functions
 - Python implementation
 
 ## Key Language Differences from Python
@@ -265,5 +317,5 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 
 1. **Set type** (`{a, b}`)
 2. **Imports** (`import` / `from ... import`)
-3. **Expand native compilation** — support `float`, `str`, and more complex control flow in codegen
+3. **Expand native compilation** — support closures, generators, `try`/`raise`, and `block_return`/`loop_yield` in compiled functions
 

@@ -1,0 +1,53 @@
+class Vec3->Vec3:
+    mut x: float
+    mut y: float
+    mut z: float
+    fn __init__(mut self, x: float, y: float, z: float) -> None:
+        ...
+
+
+class Pair->Pair:
+    mut key: str
+    mut val: int
+    fn __init__(mut self, key: str, val: int) -> None:
+        ...
+
+
+fn gcd(mut a: int, mut b: int) -> int:
+    ...
+
+fn is_even(n: int) -> bool:
+    ...
+
+fn dot3(ax: float, ay: float, az: float, bx: float, by: float, bz: float) -> float:
+    ...
+
+fn vec3_len_sq(v: Vec3) -> float:
+    ...
+
+fn count_chars(s: str, n: int) -> int:
+    ...
+
+fn repeat_char(s: str, times: int) -> str:
+    ...
+
+fn list_sum(items: list) -> int:
+    ...
+
+fn list_max(items: list) -> int:
+    ...
+
+fn list_count_if(items: list, threshold: int) -> int:
+    ...
+
+fn sum_vec3_lengths(vecs: list) -> float:
+    ...
+
+fn find_max_pair(pairs: list) -> int:
+    ...
+
+fn collect_keys(pairs: list) -> str:
+    ...
+
+fn weighted_sum(vecs: list, weights: list, n: int) -> float:
+    ...
