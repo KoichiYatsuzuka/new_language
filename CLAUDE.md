@@ -75,6 +75,8 @@ test_lang/
 │   ├── import_qualifier_demo.tl   # DEMO: import / import[tl] / import[tlc] comparison
 │   ├── heavy_ops.tl           # module: heavier benchmarks (all value types)
 │   ├── bench_heavy.tl         # benchmark: speedup across int/float/str/class
+│   ├── async_demo.tl          # DEMO: AsyncManager, <- operator, raise_immediately, Async enum
+│   ├── async_bench.tl         # benchmark: sequential vs async parallel (prime counting)
 │   └── archived/              # older examples (kept for reference)
 └── vscode-extension/    # VS Code extension (type inference inline hints)
     └── src/
@@ -203,6 +205,7 @@ Source File
 - `Token::SelfType` (`Self`), `Token::NewType` (`new_type`), `Token::Static` (`static`)
 - `Token::BlockReturn` (`block_return`), `Token::LoopYield` (`loop_yield`), `Token::Block` (`block`)
 - `Token::Public` (`public`), `Token::Private` (`private`), `Token::Protected` (`protected`)
+- `Token::LeftArrow` (`<-`)
 
 ### Parsing (`src/parser.rs`)
 
@@ -228,6 +231,7 @@ Source File
   - `->Type` annotation is optional; without it the expression still works but yields untyped results
   - `parse_opt_return_type()` helper parses the optional `->Type` before `:` in all forms
 - **Access control sections**: `public:`, `private:`, `protected:` markers inside class/trait bodies switch the accessibility of subsequent members; default is `public`
+- **Async task submission**: `target <- async->T: body` — parses as `Stmt::AsyncAssign`; `target` must be an `AsyncManager` variable; `body` is a block executed in a separate thread
 
 ### Static Type Checking (`src/type_check.rs`)
 
@@ -279,6 +283,16 @@ Traverses the AST after parsing and before execution, collecting and reporting `
   - `protected`: accessible from methods of the same class or any class that implements the same trait
   - Violation raises `AccessError` at runtime; `current_class` is tracked on `Interpreter` and set/restored around each method call
   - Trait field access is inherited into class `field_access` maps with namespaced keys (`"TraitName::field"`)
+- **Async system** (`src/interpreter/async_mgr.rs`):
+  - `AsyncManager(num_thread=N [, raise_immediately=bool])` — built-in class managing a pool of OS threads
+  - `mng <- async->T: body` — submits a task; all visible variables are deep-cloned into the thread at submission time
+  - Each task runs in a dedicated OS thread (`std::thread::spawn`); results returned via `mpsc` channel
+  - `AsyncManager` fields: `num_thread` (`uint`), `raise_immediately` (`bool`), `results` (list), `error_list` (list of `Optional[str]`), `progress_status` (list of `Async.*`), `thread_status` (list of running task indices)
+  - `AsyncManager` methods: `all_done() -> bool`, `wait_for_finish([await_interval_msec=100])`
+  - `wait_for_finish()` blocks until all tasks complete; if `raise_immediately` is true and any task raised an error, propagates the first error as a catchable `raise` (use `try/except:`)
+  - `Async` namespace: `Async.Waiting`, `Async.Running`, `Async.Done` — task progress states
+  - Capture semantics: all variables are deep-cloned at `<-` time; `mut` captures are independent copies per task (no shared state between threads)
+  - `Value::deep_clone()` creates fully independent copies of all value types (new `Rc`s, no sharing across threads)
 
 ### VS Code Extension (`vscode-extension/`)
 
@@ -310,9 +324,11 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - `loop_yield val` accumulates values in a `for`/`while` expression into a list (only valid inside `for`/`while` expressions)
 - `break` is an alias of `block_return None` and is only valid inside `for`/`while` loops
 - Access control uses section markers (`public:` / `private:` / `protected:`) rather than per-member keywords; default accessibility is `public`
+- `mng <- async->T: body` submits a concurrent task to an `AsyncManager`; variables are deep-cloned at submission time (no shared mutable state)
 
 ## Next Features to Implement (Priority Order)
 
 1. **Imports** (`import` / `from ... import`)
 2. **Expand native compilation** — support closures, generators, `try`/`raise`, and `block_return`/`loop_yield` in compiled functions
+3. **Async enhancements** — `async` blocks inside native-compiled functions; shared mutable state via explicit `Mutex`-style primitives
 

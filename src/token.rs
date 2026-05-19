@@ -284,6 +284,7 @@ pub enum Token {
 
     // Other punctuation
     Arrow,        // ->
+    LeftArrow,    // <-
     Colon,        // :
     Comma,        // ,
     Semicolon,    // ;
@@ -449,6 +450,7 @@ impl std::fmt::Display for Token {
             Token::ColonEq => write!(f, ":="),
             Token::ColonColon => write!(f, "::"),
             Token::Arrow => write!(f, "->"),
+            Token::LeftArrow => write!(f, "<-"),
             Token::Colon => write!(f, ":"),
             Token::Comma => write!(f, ","),
             Token::Semicolon => write!(f, ";"),

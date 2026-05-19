@@ -627,6 +627,19 @@ pub enum Stmt {
         names: Vec<(String, Option<String>)>,
         body: Vec<Stmt>,
     },
+    /// `target <- async [->Type]: body` — 非同期タスクを AsyncManager に追加する。
+    ///
+    /// `target` は `AsyncManager` インスタンスを保持する変数名。
+    /// `body` はスレッド上で実行されるブロック本体（`block_return` で値を返す）。
+    /// 呼び出し時点でのスコープ変数をディープコピーしてスレッドに渡す。
+    AsyncAssign {
+        /// AsyncManager を保持する変数名。
+        target: String,
+        /// 戻り値の型アノテーション（省略可能）。
+        return_type: Option<String>,
+        /// スレッドで実行される文リスト。
+        stmts: Vec<Stmt>,
+    },
 }
 
 /// `try` 文内の単一の `except` 節を表す。

@@ -470,6 +470,16 @@ impl Parser {
     /// 式または右辺のパースに失敗した場合もエラーを返す。
     fn parse_ident_stmt(&mut self) -> Result<Stmt, String> {
         match self.peek1().clone() {
+            // `target <- async [->Type]: body` — 非同期タスクを AsyncManager に追加する
+            Token::LeftArrow => {
+                let target = self.expect_ident()?;
+                self.advance(); // `<-` を消費
+                self.eat(&Token::Async)?;
+                let return_type = self.parse_opt_return_type()?;
+                self.eat(&Token::Colon)?;
+                let stmts = self.parse_block()?;
+                return Ok(Stmt::AsyncAssign { target, return_type, stmts });
+            }
             // 次のトークンが `=` なら変数への単純代入
             Token::Eq => {
                 let span = self.current_span();

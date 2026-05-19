@@ -542,5 +542,10 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             }).collect(),
             span: span.clone(),
         },
+        Stmt::AsyncAssign { target, return_type, stmts } => Stmt::AsyncAssign {
+            target: target.clone(),
+            return_type: return_type.clone(),
+            stmts: subst_stmts(stmts, type_map),
+        },
     }
 }

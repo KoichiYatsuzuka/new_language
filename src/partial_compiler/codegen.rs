@@ -444,6 +444,7 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
         Stmt::Static(..) | Stmt::Import { .. } | Stmt::FromImport { .. } => false,
         Stmt::ClassDef { .. } | Stmt::TraitDef { .. } | Stmt::NewTypeDef { .. } | Stmt::EnumDef { .. } => false,
         Stmt::Field { .. } => false,
+        Stmt::AsyncAssign { .. } => false,
     }
 }
 

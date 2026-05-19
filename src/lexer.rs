@@ -825,7 +825,7 @@ impl Lexer {
                 }
             }
 
-            // `<` / `<=` / `<<` / `<<=` の 4 種を判定する
+            // `<` / `<=` / `<<` / `<<=` / `<-` の 5 種を判定する
             '<' => match self.ch() {
                 Some('<') => {
                     self.pos += 1;
@@ -839,6 +839,10 @@ impl Lexer {
                 Some('=') => {
                     self.pos += 1;
                     Token::LtEq
+                }
+                Some('-') => {
+                    self.pos += 1;
+                    Token::LeftArrow
                 }
                 _ => Token::Lt,
             },

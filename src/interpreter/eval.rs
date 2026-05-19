@@ -360,6 +360,40 @@ impl Interpreter {
                             _ => Err(format!("AttributeError: 'slice' has no attribute '{attr}'")),
                         }
                     }
+                    Value::AsyncManager(mgr_rc) => {
+                        let mgr = mgr_rc.borrow();
+                        match attr.as_str() {
+                            "num_thread" => Ok(Value::UInt(mgr.num_thread as u64)),
+                            "raise_immediately" => Ok(Value::Bool(mgr.raise_immediately)),
+                            "thread_status" => {
+                                // list of indices of currently-running tasks
+                                let running: Vec<Value> = mgr.progress.iter().enumerate()
+                                    .filter(|(_, s)| **s == super::async_mgr::AsyncStatus::Running)
+                                    .map(|(i, _)| Value::Int(i as i64))
+                                    .collect();
+                                Ok(Value::List(Rc::new(RefCell::new(running))))
+                            }
+                            "progress_status" => {
+                                let statuses: Vec<Value> = mgr.progress.iter()
+                                    .map(|s| Value::AsyncStatusVal(s.clone()))
+                                    .collect();
+                                Ok(Value::List(Rc::new(RefCell::new(statuses))))
+                            }
+                            "results" => {
+                                Ok(Value::List(Rc::new(RefCell::new(mgr.results.clone()))))
+                            }
+                            "error_list" => {
+                                let errs: Vec<Value> = mgr.error_list.iter()
+                                    .map(|e| match e {
+                                        Some(s) => Value::Str(s.clone()),
+                                        None => Value::None,
+                                    })
+                                    .collect();
+                                Ok(Value::List(Rc::new(RefCell::new(errs))))
+                            }
+                            _ => Err(format!("AttributeError: 'AsyncManager' has no attribute '{attr}'")),
+                        }
+                    }
                     _ => Err(format!(
                         "AttributeError: '{}' object has no attribute '{attr}'",
                         self.type_name(&obj_val)
@@ -932,6 +966,11 @@ impl Interpreter {
                                 [other] => Err(format!("TypeError: uint() argument must be an integer, not '{}'", self.type_name(other))),
                                 _ => Err("TypeError: uint() takes at most 1 argument".to_string()),
                             },
+                            "AsyncManager" => {
+                                // AsyncManager(num_thread = N [, raise_immediately = bool])
+                                // Accept positional or keyword args from evaled_with_kw (re-eval below)
+                                self.make_async_manager(args)
+                            }
                             other => Err(format!("TypeError: '{}' object is not callable", other)),
                         }
                     }
@@ -1247,6 +1286,49 @@ impl Interpreter {
             }
             other => Err(format!("TypeError: '{}' object is not callable", self.type_name(&other))),
         }
+    }
+
+    /// AsyncManager(num_thread=N [, raise_immediately=bool]) コンストラクタ
+    fn make_async_manager(&mut self, args: &[crate::ast::CallArg]) -> Result<Value, String> {
+        let evaled = self.eval_call_args(args)?;
+
+        let mut num_thread: usize = 1;
+        let mut raise_immediately: bool = false;
+
+        match evaled.as_slice() {
+            [] => {}
+            _ => {
+                for (kw, val) in &evaled {
+                    match kw.as_deref() {
+                        Some("num_thread") | None => {
+                            match val {
+                                Value::Int(n) if *n > 0 => num_thread = *n as usize,
+                                Value::UInt(n) => num_thread = *n as usize,
+                                other => return Err(format!(
+                                    "TypeError: AsyncManager num_thread must be a positive int, got '{}'",
+                                    self.type_name(other)
+                                )),
+                            }
+                        }
+                        Some("raise_immediately") => {
+                            match val {
+                                Value::Bool(b) => raise_immediately = *b,
+                                other => return Err(format!(
+                                    "TypeError: AsyncManager raise_immediately must be bool, got '{}'",
+                                    self.type_name(other)
+                                )),
+                            }
+                        }
+                        Some(k) => return Err(format!(
+                            "TypeError: AsyncManager() got unexpected keyword argument '{k}'"
+                        )),
+                    }
+                }
+            }
+        }
+
+        let mgr = super::async_mgr::AsyncManagerData::new(num_thread, raise_immediately);
+        Ok(Value::AsyncManager(Rc::new(RefCell::new(mgr))))
     }
 
     /// インスタンスの属性に値をセットする。

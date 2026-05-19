@@ -1242,6 +1242,12 @@ impl TypeChecker {
                     self.declare(bind_name, ty, false);
                 }
             }
+
+            Stmt::AsyncAssign { stmts, .. } => {
+                self.push_scope();
+                self.check_stmts(stmts);
+                self.pop_scope();
+            }
         }
     }
 

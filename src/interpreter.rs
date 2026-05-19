@@ -42,6 +42,8 @@ mod templates;
 pub(self) mod py_interop;
 #[path = "interpreter/native_api.rs"]
 pub(self) mod native_api;
+#[path = "interpreter/async_mgr.rs"]
+pub(crate) mod async_mgr;
 
 #[cfg(test)]
 #[path = "interpreter/tests.rs"]
@@ -613,6 +615,189 @@ pub enum Value {
     /// スライス値: `obj[begin:end:step]` または `slice(begin, end, step)` で生成される。
     /// begin/end は Optional[Index]、step は Optional[int]。
     Slice(Rc<SliceValue>),
+    /// AsyncManager インスタンス。`AsyncManager(num_thread=N)` で生成される。
+    AsyncManager(Rc<RefCell<async_mgr::AsyncManagerData>>),
+    /// Async 列挙型の値 (Async.Waiting / Async.Running / Async.Done)。
+    AsyncStatusVal(async_mgr::AsyncStatus),
+}
+
+// ---------------------------------------------------------------------------
+// deep_clone helpers (used when capturing the environment for async tasks)
+// ---------------------------------------------------------------------------
+
+/// Deep-clone a CapturedVar environment map so no Rc is shared across threads.
+pub(self) fn deep_clone_captured_env(
+    env: &std::collections::HashMap<String, CapturedVar>,
+) -> std::collections::HashMap<String, CapturedVar> {
+    env.iter()
+        .map(|(k, v)| {
+            let cloned = match v {
+                CapturedVar::Immutable(val) => CapturedVar::Immutable(val.deep_clone()),
+                CapturedVar::Mutable(cell) => {
+                    CapturedVar::Mutable(Rc::new(RefCell::new(cell.borrow().deep_clone())))
+                }
+            };
+            (k.clone(), cloned)
+        })
+        .collect()
+}
+
+impl ClassValue {
+    /// Create a fully independent deep copy of this ClassValue (no shared Rcs).
+    pub(crate) fn deep_clone(&self) -> ClassValue {
+        let methods = self
+            .methods
+            .iter()
+            .map(|(k, overloads)| {
+                let new_overloads = overloads
+                    .iter()
+                    .map(|rc| {
+                        Rc::new(FnValue {
+                            params: rc.params.clone(),
+                            body: rc.body.clone(),
+                            is_python: rc.is_python,
+                            captured_env: deep_clone_captured_env(&rc.captured_env),
+                        })
+                    })
+                    .collect();
+                (k.clone(), new_overloads)
+            })
+            .collect();
+
+        let gen_methods = self
+            .gen_methods
+            .iter()
+            .map(|(k, rc)| {
+                (
+                    k.clone(),
+                    Rc::new(GeneratorFnValue {
+                        params: rc.params.clone(),
+                        body: rc.body.clone(),
+                        captured_env: deep_clone_captured_env(&rc.captured_env),
+                    }),
+                )
+            })
+            .collect();
+
+        let class_vars = self.class_vars.iter().map(|(k, v)| (k.clone(), v.deep_clone())).collect();
+        let static_vars = self
+            .static_vars
+            .iter()
+            .map(|(k, rc)| (k.clone(), Rc::new(RefCell::new(rc.borrow().deep_clone()))))
+            .collect();
+        let field_defaults = self
+            .field_defaults
+            .iter()
+            .map(|(n, v, m)| (n.clone(), v.deep_clone(), *m))
+            .collect();
+
+        ClassValue {
+            name: self.name.clone(),
+            bases: self.bases.clone(),
+            methods,
+            gen_methods,
+            field_defaults,
+            class_vars,
+            field_mutability: self.field_mutability.clone(),
+            field_access: self.field_access.clone(),
+            method_access: self.method_access.clone(),
+            static_method_names: self.static_method_names.clone(),
+            class_method_names: self.class_method_names.clone(),
+            static_vars,
+        }
+    }
+}
+
+impl Value {
+    /// Create a fully independent deep copy with no shared Rc pointers.
+    /// Used before sending values across thread boundaries for async tasks.
+    pub fn deep_clone(&self) -> Value {
+        match self {
+            Value::Int(n) => Value::Int(*n),
+            Value::UInt(n) => Value::UInt(*n),
+            Value::Float(f) => Value::Float(*f),
+            Value::Str(s) => Value::Str(s.clone()),
+            Value::Bool(b) => Value::Bool(*b),
+            Value::None => Value::None,
+            Value::List(rc) => {
+                let v = rc.borrow().iter().map(|x| x.deep_clone()).collect();
+                Value::List(Rc::new(RefCell::new(v)))
+            }
+            Value::Set(rc) => {
+                let v = rc.borrow().iter().map(|x| x.deep_clone()).collect();
+                Value::Set(Rc::new(RefCell::new(v)))
+            }
+            Value::Dict(rc) => {
+                let b = rc.borrow();
+                let mut d = DictData::new(b.key_type.clone(), b.item_type.clone());
+                for (k, v) in b.keys.iter().zip(b.items.iter()) {
+                    d.set(k.deep_clone(), v.deep_clone());
+                }
+                Value::Dict(Rc::new(RefCell::new(d)))
+            }
+            Value::Tuple(rc) => {
+                let vals = rc.all_values().iter().map(|x| x.deep_clone()).collect();
+                Value::Tuple(Rc::new(TupleData::new(vals, rc.all_types().to_vec())))
+            }
+            Value::Slice(s) => Value::Slice(Rc::new(SliceValue {
+                begin: s.begin.as_ref().map(|v| v.deep_clone()),
+                end:   s.end.as_ref().map(|v| v.deep_clone()),
+                step:  s.step.as_ref().map(|v| v.deep_clone()),
+            })),
+            Value::Instance(rc) => {
+                let b = rc.borrow();
+                let fields = b
+                    .fields
+                    .iter()
+                    .map(|(k, (v, m))| (k.clone(), (v.deep_clone(), *m)))
+                    .collect();
+                Value::Instance(Rc::new(RefCell::new(InstanceData {
+                    class: Rc::new(b.class.deep_clone()),
+                    fields,
+                    immutable: b.immutable,
+                })))
+            }
+            Value::Function(rc) => Value::Function(Rc::new(FnValue {
+                params: rc.params.clone(),
+                body: rc.body.clone(),
+                is_python: rc.is_python,
+                captured_env: deep_clone_captured_env(&rc.captured_env),
+            })),
+            Value::OverloadedFn(fns) => Value::OverloadedFn(
+                fns.iter()
+                    .map(|rc| {
+                        Rc::new(FnValue {
+                            params: rc.params.clone(),
+                            body: rc.body.clone(),
+                            is_python: rc.is_python,
+                            captured_env: deep_clone_captured_env(&rc.captured_env),
+                        })
+                    })
+                    .collect(),
+            ),
+            Value::GeneratorFn(rc) => Value::GeneratorFn(Rc::new(GeneratorFnValue {
+                params: rc.params.clone(),
+                body: rc.body.clone(),
+                captured_env: deep_clone_captured_env(&rc.captured_env),
+            })),
+            Value::Generator(rc) => {
+                let b = rc.borrow();
+                let vals = b.values.iter().map(|v| v.deep_clone()).collect();
+                Value::Generator(Rc::new(RefCell::new(GeneratorState { values: vals, index: b.index })))
+            }
+            Value::Class(rc) => Value::Class(Rc::new(rc.deep_clone())),
+            Value::Namespace(rc) => {
+                let members = rc.members.iter().map(|(k, v)| (k.clone(), v.deep_clone())).collect();
+                Value::Namespace(Rc::new(NamespaceData { name: rc.name.clone(), members }))
+            }
+            // TemplateFn / TemplateClass / TemplateGenFn contain only Clone data (no RefCell)
+            Value::TemplateFn(rc) => Value::TemplateFn(rc.clone()),
+            Value::TemplateClass(rc) => Value::TemplateClass(rc.clone()),
+            Value::TemplateGenFn(rc) => Value::TemplateGenFn(rc.clone()),
+            // Primitive type tags, async values — just clone
+            other => other.clone(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -811,6 +996,27 @@ impl Interpreter {
             global.insert(enum_name.to_string(), Var::new(Value::Class(enum_cls), false));
         }
 
+        // AsyncManager: built-in constructor callable as AsyncManager(num_thread=N)
+        global.insert(
+            "AsyncManager".to_string(),
+            Var::new(Value::Type("AsyncManager".to_string()), false),
+        );
+
+        // Async namespace: Async.Waiting / Async.Running / Async.Done
+        {
+            let mut members = HashMap::new();
+            members.insert("Waiting".to_string(), Value::AsyncStatusVal(async_mgr::AsyncStatus::Waiting));
+            members.insert("Running".to_string(), Value::AsyncStatusVal(async_mgr::AsyncStatus::Running));
+            members.insert("Done".to_string(),    Value::AsyncStatusVal(async_mgr::AsyncStatus::Done));
+            global.insert(
+                "Async".to_string(),
+                Var::new(Value::Namespace(Rc::new(NamespaceData {
+                    name: "Async".to_string(),
+                    members,
+                })), false),
+            );
+        }
+
         Self {
             scopes: vec![global],
             source_map: HashMap::new(),
@@ -967,21 +1173,23 @@ impl Interpreter {
         }
 
         // Exception class name and message.
-        if let Value::Instance(inst_rc) = &raised.exception {
-            let inst = inst_rc.borrow();
-            let class_name = &inst.class.name;
-            let message = inst.fields.get("message")
-                .map(|(v, _)| match v {
-                    Value::Str(s) => s.clone(),
-                    Value::Int(n) => n.to_string(),
-                    Value::Float(f) => f.to_string(),
-                    Value::Bool(b) => b.to_string(),
-                    _ => "<value>".to_string(),
-                })
-                .unwrap_or_default();
-            out.push_str(&format!("{}: {}", class_name, message));
-        } else {
-            out.push_str("<exception>");
+        match &raised.exception {
+            Value::Instance(inst_rc) => {
+                let inst = inst_rc.borrow();
+                let class_name = &inst.class.name;
+                let message = inst.fields.get("message")
+                    .map(|(v, _)| match v {
+                        Value::Str(s) => s.clone(),
+                        Value::Int(n) => n.to_string(),
+                        Value::Float(f) => f.to_string(),
+                        Value::Bool(b) => b.to_string(),
+                        _ => "<value>".to_string(),
+                    })
+                    .unwrap_or_default();
+                out.push_str(&format!("{}: {}", class_name, message));
+            }
+            Value::Str(s) => out.push_str(s),
+            other => out.push_str(&format!("<exception: {:?}>", other)),
         }
 
         out

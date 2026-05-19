@@ -870,6 +870,32 @@ impl Interpreter {
                 }
                 Ok(ExecResult::Normal)
             }
+
+            // ------------------------------------------------------------------
+            // target <- async [->Type]: body
+            // ------------------------------------------------------------------
+            Stmt::AsyncAssign { target, stmts, .. } => {
+                // Resolve the AsyncManager value
+                let mgr_val = self.get_var(target)
+                    .map(|v| v.get_value())
+                    .ok_or_else(|| format!("NameError: '{}' is not defined", target))?;
+
+                let mgr_rc = match mgr_val {
+                    Value::AsyncManager(rc) => rc,
+                    other => return Err(format!(
+                        "TypeError: '<-' operator requires an AsyncManager, got '{}'",
+                        self.type_name(&other)
+                    )),
+                };
+
+                // Deep-clone the current scope environment for the thread
+                let env = super::async_mgr::capture_env(self);
+
+                // Submit the task
+                mgr_rc.borrow_mut().add_task(stmts.clone(), env);
+
+                Ok(ExecResult::Normal)
+            }
         }
     }
 

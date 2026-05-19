@@ -45,7 +45,8 @@ impl Interpreter {
             | Value::TemplateFn(_) | Value::TemplateClass(_)
             | Value::GeneratorFn(_) | Value::TemplateGenFn(_) | Value::Generator(_)
             | Value::Namespace(_) | Value::PyObject(_) | Value::FileObject(_)
-            | Value::NativeFunction(_) | Value::Slice(_) => true,
+            | Value::NativeFunction(_) | Value::Slice(_)
+            | Value::AsyncManager(_) | Value::AsyncStatusVal(_) => true,
         }
     }
 
@@ -78,6 +79,8 @@ impl Interpreter {
             Value::FileObject(_) => "FileObject",
             Value::NativeFunction(_) => "function",
             Value::Slice(_) => "slice",
+            Value::AsyncManager(_) => "AsyncManager",
+            Value::AsyncStatusVal(_) => "Async",
         }
     }
 
@@ -198,6 +201,11 @@ impl Interpreter {
                 let st = s.step.as_ref().map(|v| self.display(v)).unwrap_or_else(|| "None".to_string());
                 format!("slice({b}, {e}, {st})")
             }
+            Value::AsyncManager(rc) => {
+                let mgr = rc.borrow();
+                format!("<AsyncManager num_thread={} tasks={}>", mgr.num_thread, mgr.progress.len())
+            }
+            Value::AsyncStatusVal(s) => s.display_str().to_string(),
         }
     }
 
