@@ -4,4 +4,4 @@ Cargo.lock
 vscode-extension/node_modules/
 vscode-extension/out/
 .cargo/config.toml
-.cargo/config.toml
+
