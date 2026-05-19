@@ -333,6 +333,11 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             object: Box::new(subst_expr(object, type_map)),
             index: Box::new(subst_expr(index, type_map)),
         },
+        Expr::Slice { begin, end, step } => Expr::Slice {
+            begin: begin.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
+            end:   end.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
+            step:  step.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
+        },
         Expr::Dict(pairs) => Expr::Dict(
             pairs.iter().map(|(k, v)| (subst_expr(k, type_map), subst_expr(v, type_map))).collect(),
         ),

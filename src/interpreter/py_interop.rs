@@ -356,6 +356,7 @@ fn type_name_of(val: &Value) -> &'static str {
         Value::Dict(_) => "dict",
         Value::Tuple(_) => "tuple",
         Value::PyObject(_) => "object",
+        Value::Slice(_) => "slice",
         _ => "unknown",
     }
 }

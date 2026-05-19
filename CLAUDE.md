@@ -66,6 +66,8 @@ test_lang/
 │   ├── other_typing__errors.tl  # StaticTypeError (is not on non-Union) and enum value type error
 │   ├── subscript.tl           # subscript / indexing behavior
 │   ├── subscript__errors.tl
+│   ├── slice.tl               # slice syntax and slice() constructor
+│   ├── slice__errors.tl       # TypeError when non-Index used as slice bound
 │   ├── file_io.tl             # import[py] file I/O
 │   ├── file_io__errors.tl
 │   ├── native_ops.tl              # module: typed int/float functions for native compilation
@@ -210,6 +212,7 @@ Source File
 - Function calls: `f(args)`, attribute access: `obj.attr`
 - List literals: `[a, b, c]`
 - Tuple literals, dictionary literals, subscript operators, control flow, classes, templates, `Self`, and `new_type`
+- **Slice syntax**: `obj[begin:end]`, `obj[begin:end:step]`, `obj[::step]`, etc. — generates `Expr::Slice`; `begin`/`end` are `Optional[Index]`, `step` is `Optional[int]`
 - Type guard expressions: `expr is TypeName` and `expr is not TypeName` (parsed as `Expr::IsType`)
 - Function type annotations: `function`, `function[let T]->R`, `function{let name:T}->R`, `function[]->R`
 - Function parameters support optional `let` / `mut` qualifiers (`let` = immutable, `mut` = mutable, absent = immutable)
@@ -243,6 +246,7 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Iterator protocol
 - Dictionary type
 - Tuple type
+- **Slice type** (`Value::Slice`): `obj[begin:end:step]` syntax and `slice(begin, end[, step])` constructor; `begin`/`end` are `Index` or `None`, `step` is `int` or `None`; supports list/str/tuple slicing with Python-compatible semantics; `.begin`, `.end`, `.step` attribute access
 - `import[py]`
 - `import[py-int]`
 - `import[tl]` — force `.tl` source, always tree-walk (ignores `.tlc`)

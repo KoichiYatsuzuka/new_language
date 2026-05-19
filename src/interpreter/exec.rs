@@ -1273,6 +1273,11 @@ fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
             collect_refs_expr(object, out);
             collect_refs_expr(index, out);
         }
+        Expr::Slice { begin, end, step } => {
+            if let Some(e) = begin { collect_refs_expr(e, out); }
+            if let Some(e) = end   { collect_refs_expr(e, out); }
+            if let Some(e) = step  { collect_refs_expr(e, out); }
+        }
         Expr::TemplateInstantiate { base, .. } => collect_refs_expr(base, out),
         Expr::IsType { expr, .. } => collect_refs_expr(expr, out),
         _ => {} // Int, Float, Str, Bool, None

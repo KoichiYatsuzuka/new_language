@@ -205,6 +205,14 @@ pub enum Expr {
     TemplateInstantiate { base: Box<Expr>, type_args: Vec<String> },
     /// 添字アクセス: `expr[index]` — 辞書やリストなどのインデックスルックアップ。
     Subscript { object: Box<Expr>, index: Box<Expr> },
+    /// スライス式: `begin:end` または `begin:end:step`。
+    /// 添字 `expr[begin:end:step]` の中でのみ生成される。
+    /// begin/end は Optional[Index]、step は Optional[int]。
+    Slice {
+        begin: Option<Box<Expr>>,
+        end: Option<Box<Expr>>,
+        step: Option<Box<Expr>>,
+    },
     /// 辞書リテラル: `{key: value, ...}` — 評価結果は `dict[Any, Any]` 型の値になる。
     Dict(Vec<(Expr, Expr)>),
     /// タプルリテラル: `(val, val, ...)` — 評価結果は `tuple[T1, T2, ...]` 型の値になる。

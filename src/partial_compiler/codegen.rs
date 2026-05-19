@@ -459,6 +459,7 @@ fn expr_eligible(expr: &Expr) -> bool {
         Expr::Attr { object, .. } => expr_eligible(object),
         Expr::TraitAccess { object, .. } => expr_eligible(object),
         Expr::Subscript { object, index } => expr_eligible(object) && expr_eligible(index),
+        Expr::Slice { .. } => false, // スライスはネイティブコンパイル非対応
         // Type check
         Expr::IsType { expr, .. } => expr_eligible(expr),
         // Template instantiation — treat the base as eligible

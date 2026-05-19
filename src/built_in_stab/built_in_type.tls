@@ -1,0 +1,12 @@
+new_type Index: int
+new_type Size: int
+new_type path: str
+
+class slice:
+    begin: Index
+    end: Index
+    step: int
+    fn __init__(mut self, let begin: Index, let end: Index):
+        ...
+    fn __init__(mut self, let begin: Index, let end: Index, let step: int):
+        ...

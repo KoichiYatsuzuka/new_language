@@ -2436,11 +2436,65 @@ impl Parser {
             self.eat(&Token::RBracket)?;
             Ok(Expr::TemplateInstantiate { base: Box::new(expr), type_args })
         } else {
-            // サブスクリプト（インデックスアクセス）
             self.advance(); // `[` を消費
-            let index = self.parse_expr()?;
+
+            // スライス構文の検出: `[:]`, `[:end]`, `[begin:]`, `[begin:end]`, `[::step]` 等
+            // 注意: `::` は lexer が Token::ColonColon として 1 トークンにまとめる。
+            let index = if *self.current() == Token::ColonColon {
+                // `[::step]` または `[::]`
+                self.advance(); // `::` を消費
+                let step = self.parse_slice_part()?;
+                Expr::Slice { begin: None, end: None, step }
+            } else if *self.current() == Token::Colon {
+                // `[:...]` — begin なし
+                self.advance(); // `:` を消費
+                let end = self.parse_slice_part()?;
+                let step = self.parse_slice_step()?;
+                Expr::Slice { begin: None, end, step }
+            } else {
+                // 先に式を1つ読む。その後 `:` / `::` が来ればスライス、なければ通常添字。
+                let first = self.parse_expr()?;
+                if *self.current() == Token::ColonColon {
+                    // `[begin::step]` または `[begin::]`
+                    self.advance(); // `::` を消費
+                    let step = self.parse_slice_part()?;
+                    Expr::Slice { begin: Some(Box::new(first)), end: None, step }
+                } else if *self.current() == Token::Colon {
+                    self.advance(); // `:` を消費
+                    let end = self.parse_slice_part()?;
+                    let step = self.parse_slice_step()?;
+                    Expr::Slice { begin: Some(Box::new(first)), end, step }
+                } else {
+                    first // 通常添字（スライスなし）
+                }
+            };
+
             self.eat(&Token::RBracket)?;
             Ok(Expr::Subscript { object: Box::new(expr), index: Box::new(index) })
+        }
+    }
+
+    /// スライスの begin/end/step 部分（省略可能な式）をパースする。
+    /// `]`, `:`, `::` または EOF が来た場合は `None` を返す。
+    fn parse_slice_part(&mut self) -> Result<Option<Box<Expr>>, String> {
+        if matches!(*self.current(), Token::RBracket | Token::Colon | Token::ColonColon | Token::Eof) {
+            Ok(None)
+        } else {
+            Ok(Some(Box::new(self.parse_expr()?)))
+        }
+    }
+
+    /// end の後の step 部分をパースする（`:step` または `::step` に対応）。
+    fn parse_slice_step(&mut self) -> Result<Option<Box<Expr>>, String> {
+        if *self.current() == Token::Colon {
+            self.advance(); // `:` を消費
+            self.parse_slice_part()
+        } else if *self.current() == Token::ColonColon {
+            // `end::step` — end の直後に `::` (ありえないが念のため対応)
+            self.advance();
+            self.parse_slice_part()
+        } else {
+            Ok(None)
         }
     }
 

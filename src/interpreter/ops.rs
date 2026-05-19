@@ -42,7 +42,7 @@ impl Interpreter {
             | Value::TemplateFn(_) | Value::TemplateClass(_)
             | Value::GeneratorFn(_) | Value::TemplateGenFn(_) | Value::Generator(_)
             | Value::Namespace(_) | Value::PyObject(_) | Value::FileObject(_)
-            | Value::NativeFunction(_) => true,
+            | Value::NativeFunction(_) | Value::Slice(_) => true,
         }
     }
 
@@ -72,6 +72,7 @@ impl Interpreter {
             Value::PyObject(_) => "object",
             Value::FileObject(_) => "FileObject",
             Value::NativeFunction(_) => "function",
+            Value::Slice(_) => "slice",
         }
     }
 
@@ -96,6 +97,7 @@ impl Interpreter {
             Value::Function(_) | Value::OverloadedFn(_) | Value::GeneratorFn(_)
             | Value::NativeFunction(_) => type_name == "function",
             Value::FileObject(_) => type_name == "FileObject",
+            Value::Slice(_) => type_name == "slice",
             _ => false,
         }
     }
@@ -173,6 +175,12 @@ impl Interpreter {
                     .unwrap_or_else(|_| "<PyObject>".to_string())
             }),
             Value::NativeFunction(r) => format!("<native function '{}'>", r.fn_name),
+            Value::Slice(s) => {
+                let b = s.begin.as_ref().map(|v| self.display(v)).unwrap_or_else(|| "None".to_string());
+                let e = s.end.as_ref().map(|v| self.display(v)).unwrap_or_else(|| "None".to_string());
+                let st = s.step.as_ref().map(|v| self.display(v)).unwrap_or_else(|| "None".to_string());
+                format!("slice({b}, {e}, {st})")
+            }
         }
     }
 
@@ -190,7 +198,7 @@ impl Interpreter {
                 let parts: Vec<String> = items.borrow().iter().map(|v| self.display_repr(v)).collect();
                 format!("[{}]", parts.join(", "))
             }
-            Value::Dict(_) | Value::Tuple(_) => self.display(val),
+            Value::Dict(_) | Value::Tuple(_) | Value::Slice(_) => self.display(val),
             _ => self.display(val),
         }
     }

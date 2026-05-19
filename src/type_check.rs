@@ -643,12 +643,28 @@ impl TypeChecker {
                 mutable: false,
             });
         }
+        // 組み込み new_type: path (str), Index (int), Size (int)
+        let mut known_class_names: HashSet<String> = HashSet::new();
+        let mut new_type_originals: HashMap<String, String> = HashMap::new();
+        for (cls_name, prim_type) in [("path", "str"), ("Index", "int"), ("Size", "int")] {
+            known_class_names.insert(cls_name.to_string());
+            new_type_originals.insert(cls_name.to_string(), prim_type.to_string());
+        }
+        // 組み込み slice 型: `slice(...)` 呼び出しが NamedInstance("slice") として推論されるよう登録
+        known_class_names.insert("slice".to_string());
+        // 組み込み定数: begin / last は Index インスタンス
+        for name in ["begin", "last"] {
+            global.insert(name.to_string(), VarInfo {
+                ty: InferredType::NamedInstance("Index".to_string()),
+                mutable: false,
+            });
+        }
         Self {
             scope_stack: vec![global],
             fn_sigs: HashMap::new(),
             class_method_sigs: HashMap::new(),
-            known_class_names: HashSet::new(),
-            new_type_originals: HashMap::new(),
+            known_class_names,
+            new_type_originals,
             class_bases: HashMap::new(),
             errors: Vec::new(),
         }
@@ -1371,6 +1387,12 @@ impl TypeChecker {
                 self.infer(object);
                 self.infer(index);
                 InferredType::Unresolved
+            }
+            Expr::Slice { begin, end, step } => {
+                if let Some(e) = begin { self.infer(e); }
+                if let Some(e) = end   { self.infer(e); }
+                if let Some(e) = step  { self.infer(e); }
+                InferredType::NamedInstance("slice".to_string())
             }
 
             // --- 型ガード式 ---

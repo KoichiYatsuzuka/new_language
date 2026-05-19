@@ -262,6 +262,16 @@ pub struct InstanceData {
 /// 内部表現（並列 Vec）はプライベートであり、公開 API（`get` / `len` / `element_type` など）のみが安定。
 /// 内部フィールドは将来自由に変更できる。
 ///
+/// スライス値: `begin:end:step` の内部表現。
+/// `tuple[Optional[Index], Optional[Index], Optional[int]]` に相当する。
+/// begin/end は `Index` インスタンスまたは `None`、step は `int` または `None`。
+#[derive(Debug, Clone)]
+pub struct SliceValue {
+    pub begin: Option<Value>,
+    pub end: Option<Value>,
+    pub step: Option<Value>,
+}
+
 /// - `values`: 実値の順序付きリスト（実行時は任意の型）
 /// - `types`: 各要素のランタイム型名（例: `"int"`, `"str"`, `"MyClass"`）
 #[derive(Debug)]
@@ -588,6 +598,9 @@ pub enum Value {
     /// Natively compiled function from a shared library.
     /// Call it via `libloading` using the `{fn_name}_tl` exported symbol.
     NativeFunction(Rc<NativeFnRef>),
+    /// スライス値: `obj[begin:end:step]` または `slice(begin, end, step)` で生成される。
+    /// begin/end は Optional[Index]、step は Optional[int]。
+    Slice(Rc<SliceValue>),
 }
 
 // ---------------------------------------------------------------------------
@@ -715,10 +728,10 @@ impl Interpreter {
     pub fn new() -> Self {
         let mut global: HashMap<String, Var> = HashMap::new();
 
-        // 組み込み型値を事前定義: `int`, `str`, `float`, `bool`, `dict`, `function` を型式として使えるようにする
+        // 組み込み型値を事前定義: `int`, `str`, `float`, `bool`, `dict`, `function`, `slice` を型式として使えるようにする
         // `len` も `Value::Type` として登録しておく — ネイティブコードが cb_get_global("len") で取得して
         // call_value_with_args 経由で呼べるようにするため。
-        for name in ["int", "str", "float", "bool", "dict", "function", "len"] {
+        for name in ["int", "str", "float", "bool", "dict", "function", "len", "slice"] {
             global.insert(name.to_string(), Var::new(Value::Type(name.to_string()), false));
         }
 
@@ -739,38 +752,29 @@ impl Interpreter {
             global.insert(class_name.to_string(), Var::new(Value::Class(cls), false));
         }
 
-        // `path` 型: new_type path: str に相当するラッパークラス
-        {
-            let init_body = vec![Stmt::AttrAssign {
-                target: Expr::Attr {
-                    object: Box::new(Expr::Ident("self".to_string())),
-                    attr: "value".to_string(),
-                },
-                value: Expr::Ident("value".to_string()),
-            }];
-            let init_fn = Rc::new(FnValue {
-                params: vec![
-                    Param { name: "self".to_string(), mutable: true, type_ann: None, default: None },
-                    Param { name: "value".to_string(), mutable: false, type_ann: Some("str".to_string()), default: None },
-                ],
-                body: init_body,
-                is_python: false,
-                captured_env: HashMap::new(),
-            });
-            let mut methods = HashMap::new();
-            methods.insert("__init__".to_string(), vec![init_fn]);
-            let path_cls = Rc::new(ClassValue {
-                name: "path".to_string(),
-                bases: vec![],
-                methods,
-                gen_methods: HashMap::new(),
-                field_defaults: vec![],
-                class_vars: HashMap::new(),
-                field_mutability: HashMap::from([("value".to_string(), true)]),
-                field_access: HashMap::new(),
-                method_access: HashMap::new(),
-            });
-            global.insert("path".to_string(), Var::new(Value::Class(path_cls), false));
+        // 組み込み new_type ラッパークラスを登録する
+        // `path`: new_type path: str 相当、`Size`: new_type Size: int 相当
+        for (cls_name, prim_type) in [("path", "str"), ("Size", "int")] {
+            global.insert(
+                cls_name.to_string(),
+                Var::new(Value::Class(Self::make_primitive_wrapper_class(cls_name, prim_type)), false),
+            );
+        }
+
+        // Index クラスを先に生成し、begin / last 定数のインスタンス生成に再利用する
+        let index_cls = Self::make_primitive_wrapper_class("Index", "int");
+        global.insert("Index".to_string(), Var::new(Value::Class(index_cls.clone()), false));
+
+        // 組み込み定数: begin = Index(0)、last = Index(-1)
+        for (const_name, int_val) in [("begin", 0i64), ("last", -1i64)] {
+            let mut fields = HashMap::new();
+            fields.insert("value".to_string(), (Value::Int(int_val), true));
+            let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
+                class: index_cls.clone(),
+                fields,
+                immutable: false,
+            })));
+            global.insert(const_name.to_string(), Var::new(inst, false));
         }
 
         // ファイル I/O 組み込み列挙型を登録する
@@ -804,6 +808,40 @@ impl Interpreter {
     /// `import[py-int]` 時に Python の `sys.path` に追加するディレクトリを登録する。
     pub fn add_python_search_dir(&mut self, dir: PathBuf) {
         self.python_search_dirs.push(dir);
+    }
+
+    /// `new_type <name>: <prim_type>` 相当のラッパークラスを生成する。
+    /// 生成クラスは `mut value: <prim_type>` フィールドと `__init__(mut self, value: <prim_type>)` を持つ。
+    fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<ClassValue> {
+        let init_body = vec![Stmt::AttrAssign {
+            target: Expr::Attr {
+                object: Box::new(Expr::Ident("self".to_string())),
+                attr: "value".to_string(),
+            },
+            value: Expr::Ident("value".to_string()),
+        }];
+        let init_fn = Rc::new(FnValue {
+            params: vec![
+                Param { name: "self".to_string(), mutable: true, type_ann: None, default: None },
+                Param { name: "value".to_string(), mutable: false, type_ann: Some(prim_type.to_string()), default: None },
+            ],
+            body: init_body,
+            is_python: false,
+            captured_env: HashMap::new(),
+        });
+        let mut methods = HashMap::new();
+        methods.insert("__init__".to_string(), vec![init_fn]);
+        Rc::new(ClassValue {
+            name: name.to_string(),
+            bases: vec![],
+            methods,
+            gen_methods: HashMap::new(),
+            field_defaults: vec![],
+            class_vars: HashMap::new(),
+            field_mutability: HashMap::from([("value".to_string(), true)]),
+            field_access: HashMap::new(),
+            method_access: HashMap::new(),
+        })
     }
 
     /// ビルトイン enum クラスのペア（item クラス + enum クラス）を Rust コードで生成する。
