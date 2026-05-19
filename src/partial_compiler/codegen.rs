@@ -92,6 +92,7 @@ struct TlCallbacks {
     compact_many:  unsafe extern "C" fn(*const i64, i32, u64, *mut i64),
     to_int:        unsafe extern "C" fn(i64) -> i64,
     to_float:      unsafe extern "C" fn(i64) -> f64,
+    deep_copy:     unsafe extern "C" fn(i64) -> i64,
 }
 
 static mut CB: *const TlCallbacks = std::ptr::null();
@@ -126,6 +127,7 @@ pub unsafe extern "C" fn tl_init(cb: *const TlCallbacks) {
 #[inline(always)] unsafe fn cb_compact_many(i: *const i64, n: i32, s: u64, o: *mut i64) { ((*CB).compact_many)(i, n, s, o) }
 #[inline(always)] unsafe fn cb_to_int(h: i64) -> i64                     { ((*CB).to_int)(h) }
 #[inline(always)] unsafe fn cb_to_float(h: i64) -> f64                   { ((*CB).to_float)(h) }
+#[inline(always)] unsafe fn cb_deep_copy(h: i64) -> i64                  { ((*CB).deep_copy)(h) }
 
 // ── Pure-Rust helpers for Python-compatible int floor-div and mod ────────────
 #[inline(always)] fn _tl_idiv(a: i64, b: i64) -> i64 {
@@ -147,8 +149,12 @@ pub unsafe extern "C" fn tl_init(cb: *const TlCallbacks) {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Ty { Int, Float, Bool, Handle }
 
-/// Signature of a module function: return storage type.
-struct FnSig { ret: Ty }
+/// Signature of a module function: return type and per-parameter mutability flags.
+struct FnSig {
+    ret: Ty,
+    /// `true` = `mut` parameter, `false` = `let` parameter (immutable, requires deep copy at call site).
+    param_mutabilities: Vec<bool>,
+}
 
 fn ann_ty(s: Option<&str>) -> Ty {
     match s {
@@ -282,6 +288,10 @@ impl<'a> GenCtx<'a> {
         self.fn_sigs.get(name).map(|s| s.ret).unwrap_or(Ty::Handle)
     }
 
+    fn fn_param_mutabilities(&self, name: &str) -> Option<&Vec<bool>> {
+        self.fn_sigs.get(name).map(|s| &s.param_mutabilities)
+    }
+
     fn child(&self) -> GenCtx<'a> {
         GenCtx {
             locals: self.locals.clone(),
@@ -332,7 +342,8 @@ pub fn generate_rust_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
         .iter()
         .map(|f| {
             let ret = ann_ty(f.return_type);
-            (f.name.to_string(), FnSig { ret })
+            let param_mutabilities = f.params.iter().map(|p| p.mutable).collect();
+            (f.name.to_string(), FnSig { ret, param_mutabilities })
         })
         .collect();
 
@@ -836,10 +847,17 @@ fn gen_call(func: &Expr, args: &[CallArg], ctx: &mut GenCtx) -> String {
     // Collect positional arg expressions (keyword args were filtered by expr_eligible)
     let arg_exprs: Vec<String> = args.iter().map(|a| gen_expr(a.expr(), ctx)).collect();
 
-    // Intra-module direct call: `name` in module_fns and not shadowed by a local
+    // Intra-module direct call: `name` in module_fns and not shadowed by a local.
+    // Immutable (`let`) parameters are wrapped with cb_deep_copy so the callee
+    // cannot mutate the caller's reference-type values.
     if let Expr::Ident(name) = func {
         if ctx.is_module_fn(name) && !ctx.is_local(name) {
-            let args_str = arg_exprs.join(", ");
+            let mutabilities = ctx.fn_param_mutabilities(name);
+            let wrapped: Vec<String> = arg_exprs.iter().enumerate().map(|(i, expr)| {
+                let is_mut = mutabilities.and_then(|m| m.get(i)).copied().unwrap_or(true);
+                if is_mut { expr.clone() } else { format!("cb_deep_copy({expr})") }
+            }).collect();
+            let args_str = wrapped.join(", ");
             return format!("{{let _s=cb_arena_save();let _r={name}_impl({args_str});cb_arena_compact(_r,_s)}}");
         }
     }

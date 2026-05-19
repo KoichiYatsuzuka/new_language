@@ -113,6 +113,25 @@ impl Interpreter {
         }
     }
 
+    /// 値に対してフリーズプロトコルを適用する。
+    ///
+    /// インスタンスの場合: `__freeze__` メソッドが定義されていれば呼び出し、その後 `freeze_instance` を実行する。
+    /// その他の型: 現時点では何もしない（将来の拡張用）。
+    pub(super) fn apply_freeze_to_value(&mut self, val: &Value) -> Result<(), String> {
+        if let Value::Instance(ref inst_rc) = val {
+            let class = inst_rc.borrow().class.clone();
+            if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
+                if overloads.len() == 1 {
+                    self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__")?;
+                } else {
+                    self.dispatch_overload(overloads, &[], Some(val.clone()))?;
+                }
+            }
+            Self::freeze_instance(inst_rc);
+        }
+        Ok(())
+    }
+
     // --- クラスのインスタンス化 ---
 
     /// クラスを引数付きでインスタンス化して `Value::Instance` を返す。

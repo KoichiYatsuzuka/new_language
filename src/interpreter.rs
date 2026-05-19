@@ -527,6 +527,9 @@ pub struct NativeFnRef {
     pub fn_name: String,
     /// Number of positional parameters (used to size the args array).
     pub n_params: usize,
+    /// Per-parameter mutability flags (`true` = `mut`, `false` = `let`).
+    /// Used at call sites to deep-copy arguments bound to immutable parameters.
+    pub param_mutabilities: Vec<bool>,
 }
 
 /// Wrapper around `libloading::Library` that implements `Debug`.
@@ -558,6 +561,7 @@ impl fmt::Debug for NativeLibWrapper {
 #[derive(Debug, Clone)]
 pub enum Value {
     Int(i64),
+    UInt(u64),
     Float(f64),
     Str(String),
     Bool(bool),
@@ -731,9 +735,18 @@ impl Interpreter {
         // 組み込み型値を事前定義: `int`, `str`, `float`, `bool`, `dict`, `function`, `slice` を型式として使えるようにする
         // `len` も `Value::Type` として登録しておく — ネイティブコードが cb_get_global("len") で取得して
         // call_value_with_args 経由で呼べるようにするため。
-        for name in ["int", "str", "float", "bool", "dict", "function", "len", "slice"] {
+        for name in ["int", "uint", "str", "float", "bool", "dict", "function", "len", "slice"] {
             global.insert(name.to_string(), Var::new(Value::Type(name.to_string()), false));
         }
+
+        // `pointer` は `new_type pointer: uint` 相当のラッパークラスとして事前登録する。
+        global.insert(
+            "pointer".to_string(),
+            Var::new(Value::Class(Self::make_primitive_wrapper_class("pointer", "uint")), false),
+        );
+
+        // `id` 組み込み関数: 任意のオブジェクトの同一性を表す pointer 値を返す。
+        global.insert("id".to_string(), Var::new(Value::Type("id".to_string()), false));
 
         // 組み込み `Error` trait を事前登録（値としてアクセス可能にする）
         global.insert("Error".to_string(), Var::new(Value::Trait("Error".to_string()), false));

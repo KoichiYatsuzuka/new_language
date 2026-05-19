@@ -30,6 +30,7 @@ impl Interpreter {
         match val {
             Value::Bool(b) => *b,
             Value::Int(n) => *n != 0,
+            Value::UInt(n) => *n != 0,
             Value::Float(f) => *f != 0.0,
             Value::Str(s) => !s.is_empty(),
             Value::None => false,
@@ -54,6 +55,7 @@ impl Interpreter {
     pub(super) fn type_name(&self, val: &Value) -> &'static str {
         match val {
             Value::Int(_) => "int",
+            Value::UInt(_) => "uint",
             Value::Float(_) => "float",
             Value::Str(_) => "str",
             Value::Bool(_) => "bool",
@@ -84,6 +86,7 @@ impl Interpreter {
     pub(super) fn value_is_type(&self, val: &Value, type_name: &str) -> bool {
         match val {
             Value::Int(_) => type_name == "int",
+            Value::UInt(_) => type_name == "uint",
             Value::Float(_) => type_name == "float",
             Value::Str(_) => type_name == "str",
             Value::Bool(_) => type_name == "bool",
@@ -111,6 +114,7 @@ impl Interpreter {
     pub(super) fn display(&self, val: &Value) -> String {
         match val {
             Value::Int(n) => n.to_string(),
+            Value::UInt(n) => n.to_string(),
             Value::Float(f) => {
                 if f.fract() == 0.0 && f.abs() < 1e15 {
                     format!("{f:.1}")
@@ -219,6 +223,7 @@ impl Interpreter {
             UnaryOp::Not => Ok(Value::Bool(!self.is_truthy(&val))),
             UnaryOp::BitNot => match val {
                 Value::Int(n) => Ok(Value::Int(!n)),
+                Value::UInt(n) => Ok(Value::UInt(!n)),
                 _ => Err(format!("TypeError: bad operand type for unary `~`: {}", self.type_name(&val))),
             },
         }
@@ -300,6 +305,31 @@ impl Interpreter {
             (BinOp::LtEq, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(*a <= *b)),
             (BinOp::GtEq, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(*a >= *b)),
             (BinOp::GtEq, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(*a >= *b)),
+            // uint 算術・比較
+            (BinOp::Add,      Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_add(*b))),
+            (BinOp::Sub,      Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_sub(*b))),
+            (BinOp::Mul,      Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_mul(*b))),
+            (BinOp::Div,      Value::UInt(a), Value::UInt(b)) => {
+                if *b == 0 { return Err("ZeroDivisionError: division by zero".to_string()); }
+                Ok(Value::UInt(*a / *b))
+            }
+            (BinOp::FloorDiv, Value::UInt(a), Value::UInt(b)) => {
+                if *b == 0 { return Err("ZeroDivisionError: integer division by zero".to_string()); }
+                Ok(Value::UInt(*a / *b))
+            }
+            (BinOp::Mod,      Value::UInt(a), Value::UInt(b)) => {
+                if *b == 0 { return Err("ZeroDivisionError: modulo by zero".to_string()); }
+                Ok(Value::UInt(*a % *b))
+            }
+            (BinOp::Lt,   Value::UInt(a), Value::UInt(b)) => Ok(Value::Bool(*a < *b)),
+            (BinOp::LtEq, Value::UInt(a), Value::UInt(b)) => Ok(Value::Bool(*a <= *b)),
+            (BinOp::Gt,   Value::UInt(a), Value::UInt(b)) => Ok(Value::Bool(*a > *b)),
+            (BinOp::GtEq, Value::UInt(a), Value::UInt(b)) => Ok(Value::Bool(*a >= *b)),
+            (BinOp::BitAnd, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(*a & *b)),
+            (BinOp::BitOr,  Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(*a | *b)),
+            (BinOp::BitXor, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(*a ^ *b)),
+            (BinOp::LShift, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(*a << *b)),
+            (BinOp::RShift, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(*a >> *b)),
             // ビット演算（int のみ対応）
             (BinOp::BitAnd, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a & *b)),
             (BinOp::BitOr, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a | *b)),
@@ -326,6 +356,7 @@ impl Interpreter {
     pub(super) fn values_eq(&self, a: &Value, b: &Value) -> bool {
         match (a, b) {
             (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::UInt(a), Value::UInt(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             // int と float の混在比較: int を float に昇格して比較
             (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,

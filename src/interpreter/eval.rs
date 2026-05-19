@@ -560,6 +560,45 @@ impl Interpreter {
                                 _ => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(&val))),
                             };
                         }
+                        "id" => {
+                            if args.len() != 1 {
+                                return Err("TypeError: id() takes exactly one argument".to_string());
+                            }
+                            let val = self.eval(args[0].expr())?;
+                            let raw: u64 = match &val {
+                                Value::Instance(rc) => Rc::as_ptr(rc) as u64,
+                                Value::List(rc)     => Rc::as_ptr(rc) as u64,
+                                Value::Dict(rc)     => Rc::as_ptr(rc) as u64,
+                                Value::Function(rc) => Rc::as_ptr(rc) as u64,
+                                Value::OverloadedFn(v) => v.as_ptr() as u64,
+                                Value::Generator(rc)  => Rc::as_ptr(rc) as u64,
+                                Value::GeneratorFn(rc) => Rc::as_ptr(rc) as u64,
+                                Value::Tuple(rc)    => Rc::as_ptr(rc) as u64,
+                                // value types: identity derived from the value itself
+                                Value::Int(n)  => *n as u64,
+                                Value::UInt(n) => *n,
+                                Value::Float(f) => f.to_bits(),
+                                Value::Bool(b) => *b as u64,
+                                Value::Str(s)  => {
+                                    use std::hash::{Hash, Hasher};
+                                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                                    s.hash(&mut h);
+                                    h.finish()
+                                }
+                                Value::None => 0u64,
+                                _ => 0u64,
+                            };
+                            // wrap in a pointer instance
+                            let pointer_cls = match self.get_val("pointer") {
+                                Some(Value::Class(cls)) => cls,
+                                _ => return Err("RuntimeError: 'pointer' type is not defined".to_string()),
+                            };
+                            let mut fields = std::collections::HashMap::new();
+                            fields.insert("value".to_string(), (Value::UInt(raw), true));
+                            return Ok(Value::Instance(Rc::new(RefCell::new(
+                                crate::interpreter::InstanceData { class: pointer_cls, fields, immutable: false }
+                            ))));
+                        }
                         "open" => {
                             use std::collections::HashMap as HMap;
                             use std::fs::OpenOptions;
@@ -814,6 +853,14 @@ impl Interpreter {
                                     _ => Err("TypeError: slice() takes 2 or 3 arguments".to_string()),
                                 }
                             }
+                            "uint" => match vals.as_slice() {
+                                [] => Ok(Value::UInt(0)),
+                                [Value::UInt(n)] => Ok(Value::UInt(*n)),
+                                [Value::Int(n)] => Ok(Value::UInt(*n as u64)),
+                                [Value::Bool(b)] => Ok(Value::UInt(if *b { 1 } else { 0 })),
+                                [other] => Err(format!("TypeError: uint() argument must be an integer, not '{}'", self.type_name(other))),
+                                _ => Err("TypeError: uint() takes at most 1 argument".to_string()),
+                            },
                             other => Err(format!("TypeError: '{}' object is not callable", other)),
                         }
                     }
@@ -848,9 +895,14 @@ impl Interpreter {
         // Enter call frame — saves arena/iter savepoints at outermost level.
         let is_outermost = super::native_api::enter_native_call(self as *mut Interpreter);
 
-        // Push args into arena (included in cleanup).
-        let handles: Vec<i64> = evaled.iter()
-            .map(|(_, v)| super::native_api::push_handle(v.clone()))
+        // Push args into arena. Immutable (`let`) parameters receive a deep copy so
+        // the native function body cannot mutate the caller's reference-type values.
+        let handles: Vec<i64> = evaled.iter().enumerate()
+            .map(|(i, (_, v))| {
+                let is_mut = fn_ref.param_mutabilities.get(i).copied().unwrap_or(true);
+                let owned = if is_mut { v.clone() } else { Self::deep_copy_value(v.clone()) };
+                super::native_api::push_handle(owned)
+            })
             .collect();
 
         let call_result = {
@@ -980,8 +1032,12 @@ impl Interpreter {
                     ));
                 }
                 let is_outermost = super::native_api::enter_native_call(self as *mut Interpreter);
-                let handles: Vec<i64> = evaled.iter()
-                    .map(|(_, v)| super::native_api::push_handle(v.clone()))
+                let handles: Vec<i64> = evaled.iter().enumerate()
+                    .map(|(i, (_, v))| {
+                        let is_mut = fn_ref.param_mutabilities.get(i).copied().unwrap_or(true);
+                        let owned = if is_mut { v.clone() } else { Self::deep_copy_value(v.clone()) };
+                        super::native_api::push_handle(owned)
+                    })
                     .collect();
                 let call_result = {
                     let lib = match self.native_libs.get(&fn_ref.lib_path) {
@@ -1058,6 +1114,53 @@ impl Interpreter {
                         [Value::List(lst)] => Ok(Value::Bool(!lst.borrow().is_empty())),
                         [_] => Ok(Value::Bool(true)),
                         _ => Err("TypeError: bool() takes at most 1 argument".to_string()),
+                    },
+                    "uint" => match vals.as_slice() {
+                        [] => Ok(Value::UInt(0)),
+                        [Value::UInt(n)] => Ok(Value::UInt(*n)),
+                        [Value::Int(n)] => Ok(Value::UInt(*n as u64)),
+                        [Value::Bool(b)] => Ok(Value::UInt(if *b { 1 } else { 0 })),
+                        [other] => Err(format!("TypeError: uint() argument must be an integer, not '{}'", self.type_name(other))),
+                        _ => Err("TypeError: uint() takes at most 1 argument".to_string()),
+                    },
+                    "id" => {
+                        // id() はトップレベルの識別子として呼ばれた場合は上で処理される;
+                        // Value::Type("id") 経由で来た場合のフォールバック
+                        if vals.len() != 1 {
+                            return Err("TypeError: id() takes exactly one argument".to_string());
+                        }
+                        let val = vals.into_iter().next().unwrap();
+                        let raw: u64 = match &val {
+                            Value::Instance(rc) => Rc::as_ptr(rc) as u64,
+                            Value::List(rc)     => Rc::as_ptr(rc) as u64,
+                            Value::Dict(rc)     => Rc::as_ptr(rc) as u64,
+                            Value::Function(rc) => Rc::as_ptr(rc) as u64,
+                            Value::OverloadedFn(v) => v.as_ptr() as u64,
+                            Value::Generator(rc)  => Rc::as_ptr(rc) as u64,
+                            Value::GeneratorFn(rc) => Rc::as_ptr(rc) as u64,
+                            Value::Tuple(rc)    => Rc::as_ptr(rc) as u64,
+                            Value::Int(n)  => *n as u64,
+                            Value::UInt(n) => *n,
+                            Value::Float(f) => f.to_bits(),
+                            Value::Bool(b) => *b as u64,
+                            Value::Str(s)  => {
+                                use std::hash::{Hash, Hasher};
+                                let mut h = std::collections::hash_map::DefaultHasher::new();
+                                s.hash(&mut h);
+                                h.finish()
+                            }
+                            Value::None => 0u64,
+                            _ => 0u64,
+                        };
+                        let pointer_cls = match self.get_val("pointer") {
+                            Some(Value::Class(cls)) => cls,
+                            _ => return Err("RuntimeError: 'pointer' type is not defined".to_string()),
+                        };
+                        let mut fields = std::collections::HashMap::new();
+                        fields.insert("value".to_string(), (Value::UInt(raw), true));
+                        Ok(Value::Instance(Rc::new(RefCell::new(
+                            crate::interpreter::InstanceData { class: pointer_cls, fields, immutable: false }
+                        ))))
                     },
                     other => Err(format!("TypeError: '{}' object is not callable", other)),
                 }

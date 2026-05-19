@@ -258,6 +258,7 @@ pub struct TlCallbacks {
     pub compact_many:  extern "C" fn(*const i64, i32, u64, *mut i64),
     pub to_int:        extern "C" fn(i64) -> i64,
     pub to_float:      extern "C" fn(i64) -> f64,
+    pub deep_copy:     extern "C" fn(i64) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
@@ -660,6 +661,12 @@ extern "C" fn tl_compact_many(
 // Used by type-specialized generated functions to unwrap handle parameters to
 // raw Rust values at function entry, eliminating per-operation cb_binop calls.
 
+extern "C" fn tl_deep_copy(h: i64) -> i64 {
+    let val = clone_value_at(h);
+    let copied = super::Interpreter::deep_copy_value(val);
+    push_handle(copied)
+}
+
 extern "C" fn tl_to_int(h: i64) -> i64 {
     match h {
         TL_NONE  => 0,
@@ -668,6 +675,7 @@ extern "C" fn tl_to_int(h: i64) -> i64 {
         n if n >= 3 && (n as usize) < INT_CACHE_BASE => n - 3,
         n => VALUE_ARENA.with(|a| match a.borrow().get(n as usize) {
             Some(Value::Int(v))   => *v,
+            Some(Value::UInt(v))  => *v as i64,
             Some(Value::Float(f)) => *f as i64,
             Some(Value::Bool(b))  => *b as i64,
             _ => 0,
@@ -683,6 +691,7 @@ extern "C" fn tl_to_float(h: i64) -> f64 {
         n if n >= 3 && (n as usize) < INT_CACHE_BASE => (n - 3) as f64,
         n => VALUE_ARENA.with(|a| match a.borrow().get(n as usize) {
             Some(Value::Int(v))   => *v as f64,
+            Some(Value::UInt(v))  => *v as f64,
             Some(Value::Float(f)) => *f,
             Some(Value::Bool(b))  => *b as u8 as f64,
             _ => 0.0,
@@ -717,4 +726,5 @@ static CALLBACKS: TlCallbacks = TlCallbacks {
     compact_many:  tl_compact_many,
     to_int:        tl_to_int,
     to_float:      tl_to_float,
+    deep_copy:     tl_deep_copy,
 };

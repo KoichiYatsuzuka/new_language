@@ -602,7 +602,7 @@ impl Interpreter {
     /// - `Dict`: キー・値を再帰コピーして新しい `DictData` を生成する
     /// - `List`: 各要素を再帰コピーする
     /// - その他: プリミティブ・不変型はそのまま返す（Rust の clone でコピー済み）
-    pub(super) fn deep_copy_value(val: Value) -> Value {
+    pub(crate) fn deep_copy_value(val: Value) -> Value {
         match val {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();

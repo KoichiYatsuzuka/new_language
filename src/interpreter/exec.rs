@@ -44,11 +44,32 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::Let(name, expr) => {
-                // 不変変数宣言: インスタンス値の場合は freeze する
+                // mut → let: deep copy してからフリーズプロトコルを適用する。
+                // let → let: そのまま代入（コピー不要・再フリーズ不要）。
+                // 式 → let: フリーズのみ（新規値なのでコピー不要）。
+                let source_var = if let Expr::Ident(src) = expr {
+                    self.get_var(src).map(|v| (v.mutable, v.mutable_cell.is_some()))
+                } else {
+                    None
+                };
                 let value = self.eval(expr)?;
-                if let Value::Instance(ref inst_rc) = value {
-                    Self::freeze_instance(inst_rc);
-                }
+                let value = match source_var {
+                    Some((true, _)) => {
+                        // mut → let: deep copy + freeze
+                        let copied = Self::deep_copy_value(value);
+                        self.apply_freeze_to_value(&copied)?;
+                        copied
+                    }
+                    Some((false, _)) => {
+                        // let → let: 既にフリーズ済みの値を共有するだけ
+                        value
+                    }
+                    None => {
+                        // 式 → let: 新規値をフリーズしてバインド
+                        self.apply_freeze_to_value(&value)?;
+                        value
+                    }
+                };
                 self.declare_var(name.clone(), Var::new(value, false));
                 Ok(ExecResult::Normal)
             }
@@ -59,8 +80,10 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::Mut(name, expr) => {
-                // 可変変数宣言: mutable フラグを true にして登録する
+                // いずれの代入でも独立したコピーを持つよう deep copy する。
+                // let → mut / mut → mut のどちらも対象。
                 let value = self.eval(expr)?;
+                let value = Self::deep_copy_value(value);
                 self.declare_var(name.clone(), Var::new(value, true));
                 Ok(ExecResult::Normal)
             }
@@ -968,6 +991,7 @@ impl Interpreter {
                         lib_path: lib_path_buf.clone(),
                         fn_name: name.clone(),
                         n_params: params.len(),
+                        param_mutabilities: params.iter().map(|p| p.mutable).collect(),
                     });
                     members.insert(name.clone(), Value::NativeFunction(fn_ref));
                 }
