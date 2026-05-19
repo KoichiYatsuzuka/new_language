@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::ast::{Accessibility, BinOp, Expr};
+use crate::ast::{Accessibility, BinOp, CallArg, Expr};
 
 use super::{DictData, ExecResult, FileData, FileOpenModeRust, ByteModeRust, GeneratorState, Interpreter, SliceValue, TupleData, Value, Var, NativeFnRef, RAISE_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH};
 
@@ -807,6 +807,67 @@ impl Interpreter {
                                     self.type_name(&other)
                                 )),
                             };
+                        }
+                        "enumerate" => {
+                            let mut positional: Vec<Value> = Vec::new();
+                            let mut start_val: Option<Value> = None;
+                            for arg in args {
+                                match arg {
+                                    CallArg::Positional(e) => positional.push(self.eval(e)?),
+                                    CallArg::Keyword { name, value } if name == "start" => {
+                                        start_val = Some(self.eval(value)?);
+                                    }
+                                    CallArg::Keyword { name, .. } => {
+                                        return Err(format!("TypeError: enumerate() got unexpected keyword argument '{name}'"));
+                                    }
+                                }
+                            }
+                            if positional.len() != 1 {
+                                return Err(format!(
+                                    "TypeError: enumerate() expected 1 positional argument, got {}",
+                                    positional.len()
+                                ));
+                            }
+                            let start = match start_val {
+                                Some(Value::Int(n)) => n,
+                                Some(other) => return Err(format!(
+                                    "TypeError: enumerate() 'start' must be int, not '{}'",
+                                    self.type_name(&other)
+                                )),
+                                None => 0i64,
+                            };
+                            let items = self.collect_iterable(positional.into_iter().next().unwrap())?;
+                            let tuples: Vec<Value> = items.into_iter().enumerate().map(|(i, v)| {
+                                let idx = start + i as i64;
+                                let type_str = self.type_name(&v).to_string();
+                                Value::Tuple(Rc::new(TupleData::new(
+                                    vec![Value::Int(idx), v],
+                                    vec!["int".to_string(), type_str],
+                                )))
+                            }).collect();
+                            return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: tuples, index: 0 }))));
+                        }
+                        "zip" => {
+                            for arg in args.iter() {
+                                if matches!(arg, CallArg::Keyword { .. }) {
+                                    return Err("TypeError: zip() takes no keyword arguments".to_string());
+                                }
+                            }
+                            let mut iters: Vec<Vec<Value>> = Vec::new();
+                            for arg in args.iter() {
+                                let v = self.eval(arg.expr())?;
+                                iters.push(self.collect_iterable(v)?);
+                            }
+                            if iters.is_empty() {
+                                return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: vec![], index: 0 }))));
+                            }
+                            let min_len = iters.iter().map(|it| it.len()).min().unwrap_or(0);
+                            let tuples: Vec<Value> = (0..min_len).map(|i| {
+                                let vals: Vec<Value> = iters.iter().map(|it| it[i].clone()).collect();
+                                let types: Vec<String> = vals.iter().map(|v| self.type_name(v).to_string()).collect();
+                                Value::Tuple(Rc::new(TupleData::new(vals, types)))
+                            }).collect();
+                            return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: tuples, index: 0 }))));
                         }
                         _ => {} // ユーザー定義関数の検索へフォールスルー
                     }
@@ -1843,12 +1904,13 @@ impl Interpreter {
         }
     }
 
-    /// 任意の反復可能値を `Vec<Value>` に収集する（スライス代入の右辺に使用）。
+    /// 任意の反復可能値を `Vec<Value>` に収集する（スライス代入、enumerate、zip で使用）。
     fn collect_iterable(&self, val: Value) -> Result<Vec<Value>, String> {
         match val {
             Value::List(lst)  => Ok(lst.borrow().clone()),
             Value::Tuple(td)  => Ok(td.all_values().to_vec()),
             Value::Str(s)     => Ok(s.chars().map(|c| Value::Str(c.to_string())).collect()),
+            Value::Set(items) => Ok(items.borrow().clone()),
             Value::Generator(gen) => {
                 let g = gen.borrow();
                 Ok(g.values[g.index..].to_vec())
@@ -1916,4 +1978,5 @@ impl Interpreter {
             )),
         }
     }
+
 }

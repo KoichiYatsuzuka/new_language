@@ -426,7 +426,7 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
                 && else_body.as_ref().map_or(true, |b| body_eligible(b))
         }
         Stmt::While { cond, body } => expr_eligible(cond) && body_eligible(body),
-        Stmt::For { iter, body, .. } => expr_eligible(iter) && body_eligible(body),
+        Stmt::For { targets, iter, body } => targets.len() == 1 && expr_eligible(iter) && body_eligible(body),
         Stmt::Match { subject, arms, .. } => {
             expr_eligible(subject)
                 && arms.iter().all(|arm| {
@@ -438,6 +438,7 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
                 })
         }
         // Ineligible
+        Stmt::LetTuple { .. } => false, // not yet supported in native compilation
         Stmt::Yield(_) | Stmt::BlockReturn(_) | Stmt::LoopYield(_) => false,
         Stmt::FnDef { .. } | Stmt::GenDef { .. } => false, // closures
         Stmt::Try { .. } | Stmt::Raise { .. } => false,
@@ -643,7 +644,9 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
             ctx.counter = child.counter;
             out.push_str(&format!("{pad}}}\n"));
         }
-        Stmt::For { target, iter, body } => {
+        Stmt::For { targets, iter, body } => {
+            // Tuple targets are ineligible and filtered by stmt_eligible; only single target here.
+            let target = &targets[0];
             let iter_expr = gen_expr(iter, ctx);
             let tmp = ctx.fresh();
             out.push_str(&format!("{pad}{{\n"));

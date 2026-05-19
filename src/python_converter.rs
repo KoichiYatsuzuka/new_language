@@ -338,7 +338,7 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
             };
             let iter = convert_expr(&f.iter, filename)?;
             let body = convert_stmts(&f.body, filename)?;
-            Ok(Some(Stmt::For { target, iter, body }))
+            Ok(Some(Stmt::For { targets: vec![target], iter, body }))
         }
 
         // ----- with（未サポート） -----

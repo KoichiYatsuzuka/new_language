@@ -335,6 +335,19 @@ pub struct MatchArm {
 /// - `NewTypeDef`             : `new_type NewName: OriginalType` — 新しい型エイリアスの定義。
 /// - `Try`                    : `try` / `except` / `finally` 例外処理。
 /// - `Raise`                  : `raise [expr]` 例外の送出（または再送出）。
+/// One binding slot in a tuple-unpacking declaration (`let x, mut y, _ = expr`).
+#[derive(Debug, Clone)]
+pub enum TupleTarget {
+    /// `let name` — immutable binding
+    Let(String),
+    /// `mut name` — mutable binding
+    Mut(String),
+    /// `_` — discard all remaining elements (must be last)
+    Wildcard,
+    /// `name` with no qualifier — accepted by the parser, rejected by the type checker
+    Bare(String),
+}
+
 #[derive(Debug, Clone)]
 pub enum Stmt {
     /// 式文: 副作用のために式を評価する（例: `print(x)`）。
@@ -345,6 +358,9 @@ pub enum Stmt {
     Const(String, Expr),
     /// 可変変数宣言: `mut x = expr`。宣言後に再代入可能。
     Mut(String, Expr),
+    /// タプルアンパック宣言: `let x, mut y, _ = expr`。
+    /// `_` は末尾に置いて残余要素をすべて破棄する。
+    LetTuple { targets: Vec<TupleTarget>, value: Expr, span: Span },
     /// 静的可変変数宣言: `static mut x = expr`。外側関数の全呼び出しでセルを共有する。
     /// `span` はセルの一意キー（初回評価判定）として使用する。
     Static(String, Expr, Span),
@@ -406,8 +422,8 @@ pub enum Stmt {
     /// - `iter`   : イテラブルな値を返す式（リスト・ジェネレータ・カスタムイテラブルなど）。
     /// - `body`   : ループ本体の文リスト。
     For {
-        /// ループ変数名。各要素がこの名前にバインドされる。
-        target: String,
+        /// ループ変数名のリスト。単一変数なら `vec!["x"]`、タプルアンパックなら `vec!["x", "y"]`。
+        targets: Vec<String>,
         /// イテラブルを返す式（リスト・ジェネレータなど）。
         iter: Expr,
         /// ループ本体の文リスト。

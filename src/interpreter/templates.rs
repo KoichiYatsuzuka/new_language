@@ -411,6 +411,11 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         Stmt::Let(name, e) => Stmt::Let(name.clone(), subst_expr(e, type_map)),
         Stmt::Const(name, e) => Stmt::Const(name.clone(), subst_expr(e, type_map)),
         Stmt::Mut(name, e) => Stmt::Mut(name.clone(), subst_expr(e, type_map)),
+        Stmt::LetTuple { targets, value, span } => Stmt::LetTuple {
+            targets: targets.clone(),
+            value: subst_expr(value, type_map),
+            span: span.clone(),
+        },
         Stmt::Assign { name, value, span } => Stmt::Assign {
             name: name.clone(),
             value: subst_expr(value, type_map),
@@ -441,8 +446,8 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             cond: subst_expr(cond, type_map),
             body: subst_stmts(body, type_map),
         },
-        Stmt::For { target, iter, body } => Stmt::For {
-            target: target.clone(),
+        Stmt::For { targets, iter, body } => Stmt::For {
+            targets: targets.clone(),
             iter: subst_expr(iter, type_map),
             body: subst_stmts(body, type_map),
         },

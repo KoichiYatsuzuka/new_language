@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::ast::{Accessibility, Expr, FieldKind, MatchPattern, Param, Stmt};
+use crate::ast::{Accessibility, Expr, FieldKind, MatchPattern, Param, Stmt, TupleTarget};
 
 use super::{
     CapturedVar, Interpreter, Value, Var, ExecResult,
@@ -87,6 +87,45 @@ impl Interpreter {
                 self.declare_var(name.clone(), Var::new(value, true));
                 Ok(ExecResult::Normal)
             }
+            Stmt::LetTuple { targets, value, .. } => {
+                let val = self.eval(value)?;
+                let tuple_rc = match val {
+                    Value::Tuple(rc) => rc,
+                    _ => return Err("TypeError: cannot unpack non-tuple value in tuple assignment".to_string()),
+                };
+                let has_wildcard = targets.iter().any(|t| matches!(t, TupleTarget::Wildcard));
+                let named = targets.iter().filter(|t| !matches!(t, TupleTarget::Wildcard)).count();
+                let tlen = tuple_rc.len();
+                if has_wildcard {
+                    if named > tlen {
+                        return Err(format!(
+                            "TypeError: not enough values to unpack (need at least {named}, got {tlen})"
+                        ));
+                    }
+                } else if named != tlen {
+                    return Err(format!(
+                        "TypeError: not enough values to unpack (expected {named}, got {tlen})"
+                    ));
+                }
+                let mut idx = 0usize;
+                for target in targets.iter() {
+                    match target {
+                        TupleTarget::Wildcard => break,
+                        TupleTarget::Let(name) | TupleTarget::Bare(name) => {
+                            let v = tuple_rc.get(idx).unwrap().clone();
+                            self.apply_freeze_to_value(&v)?;
+                            self.declare_var(name.clone(), Var::new(v, false));
+                            idx += 1;
+                        }
+                        TupleTarget::Mut(name) => {
+                            let v = Self::deep_copy_value(tuple_rc.get(idx).unwrap().clone());
+                            self.declare_var(name.clone(), Var::new(v, true));
+                            idx += 1;
+                        }
+                    }
+                }
+                Ok(ExecResult::Normal)
+            }
             Stmt::Static(name, expr, span) => {
                 // static mut 変数宣言: 宣言位置をキーとして永続セルを取得・生成する
                 let key = (span.file.to_string(), span.line, span.col);
@@ -147,7 +186,13 @@ impl Interpreter {
                 }
                 Ok(ExecResult::BlockReturn(Value::None))
             }
-            Stmt::Continue => Ok(ExecResult::Continue),
+            Stmt::Continue => {
+                let in_loop = LOOP_DEPTH.with(|d| *d.borrow() > 0);
+                if !in_loop {
+                    return Err("SyntaxError: 'continue' outside for/while loop".to_string());
+                }
+                Ok(ExecResult::Continue)
+            }
             Stmt::Return(expr) => {
                 // return 文: 式があれば評価して Return シグナルとして返す
                 let val = match expr {
@@ -239,7 +284,7 @@ impl Interpreter {
                 LOOP_DEPTH.with(|d| *d.borrow_mut() -= 1);
                 result
             }
-            Stmt::For { target, iter, body } => {
+            Stmt::For { targets, iter, body } => {
                 let iter_val = self.eval(iter)?;
                 // イテレータプロトコル: イテラブル値から Generator を取得する
                 let generator = match iter_val {
@@ -252,6 +297,9 @@ impl Interpreter {
                     }
                     Value::Set(items) => {
                         Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items.borrow().clone(), index: 0 })))
+                    }
+                    Value::Tuple(td) => {
+                        Value::Generator(Rc::new(RefCell::new(GeneratorState { values: td.all_values().to_vec(), index: 0 })))
                     }
                     Value::Generator(_) => iter_val,
                     Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[])?,
@@ -267,7 +315,29 @@ impl Interpreter {
                         match self.eval_method_call(generator.clone(), "next", &[]) {
                             Ok(item) => {
                                 self.push_scope();
-                                self.declare_var(target.clone(), Var::new(item, true));
+                                if targets.len() == 1 {
+                                    self.declare_var(targets[0].clone(), Var::new(item, true));
+                                } else {
+                                    // Tuple unpack: item must be a tuple with matching element count
+                                    let elems = match &item {
+                                        Value::Tuple(td) => {
+                                            if td.len() != targets.len() {
+                                                return Err(format!(
+                                                    "ValueError: not enough values to unpack \
+                                                     (expected {}, got {})",
+                                                    targets.len(), td.len()
+                                                ));
+                                            }
+                                            td.all_values().to_vec()
+                                        }
+                                        _ => return Err(format!(
+                                            "TypeError: cannot unpack non-tuple value in for loop"
+                                        )),
+                                    };
+                                    for (name, val) in targets.iter().zip(elems) {
+                                        self.declare_var(name.clone(), Var::new(val, true));
+                                    }
+                                }
                                 let result = self.exec_block(body);
                                 self.pop_scope();
                                 match result? {
@@ -1227,12 +1297,20 @@ fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
             | Stmt::Static(name, _, _) => {
                 out.insert(name.clone());
             }
+            Stmt::LetTuple { targets, .. } => {
+                for t in targets {
+                    match t {
+                        TupleTarget::Let(n) | TupleTarget::Mut(n) | TupleTarget::Bare(n) => { out.insert(n.clone()); }
+                        TupleTarget::Wildcard => {}
+                    }
+                }
+            }
             Stmt::FnDef { name, .. } | Stmt::GenDef { name, .. }
             | Stmt::ClassDef { name, .. } | Stmt::TraitDef { name, .. } => {
                 out.insert(name.clone());
             }
-            Stmt::For { target, body, .. } => {
-                out.insert(target.clone());
+            Stmt::For { targets, body, .. } => {
+                for t in targets { out.insert(t.clone()); }
                 collect_declared_names(body, out);
             }
             Stmt::If { branches, else_body } => {
@@ -1277,6 +1355,7 @@ fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
         Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Mut(_, e) | Stmt::Static(_, e, _) => {
             collect_refs_expr(e, out);
         }
+        Stmt::LetTuple { value, .. } => { collect_refs_expr(value, out); }
         Stmt::Assign { name, value, .. } => {
             // 代入先の変数も「参照」として扱う（外側スコープへの書き込みのため）
             out.insert(name.clone());

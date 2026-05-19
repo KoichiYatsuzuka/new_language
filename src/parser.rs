@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::ast::{Accessibility, BinOp, CallArg, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TemplateParam, UnaryOp};
+use crate::ast::{Accessibility, BinOp, CallArg, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TemplateParam, TupleTarget, UnaryOp};
 use crate::token::{Span, Spanned, Token};
 use crate::python_converter;
 use crate::lexer;
@@ -190,6 +190,39 @@ impl Parser {
         Ok(stmts)
     }
 
+    /// `let x, mut y, _ = expr` 形式のタプルアンパック宣言をパースする。
+    /// `first` は既にパースされた先頭ターゲット。現在位置は最初のカンマを指している。
+    fn parse_tuple_unpack(&mut self, first: TupleTarget) -> Result<Stmt, String> {
+        let span = self.current_span();
+        let mut targets = vec![first];
+        while *self.current() == Token::Comma {
+            self.advance(); // skip ','
+            match self.current().clone() {
+                Token::Let => {
+                    self.advance();
+                    targets.push(TupleTarget::Let(self.expect_ident()?));
+                }
+                Token::Mut => {
+                    self.advance();
+                    targets.push(TupleTarget::Mut(self.expect_ident()?));
+                }
+                Token::Ident(n) if n == "_" => {
+                    self.advance();
+                    targets.push(TupleTarget::Wildcard);
+                    break; // _ absorbs the rest — nothing can follow
+                }
+                Token::Ident(n) => {
+                    let name = n.clone();
+                    self.advance();
+                    targets.push(TupleTarget::Bare(name));
+                }
+                other => return Err(format!("expected `let`, `mut`, or `_` in tuple unpack, got `{other}`")),
+            }
+        }
+        self.eat(&Token::Eq)?;
+        Ok(Stmt::LetTuple { targets, value: self.parse_expr()?, span })
+    }
+
     /// 1文をパースして `Stmt` を返す。
     ///
     /// 先頭トークンの種別によって適切なサブパーサにディスパッチする。
@@ -202,9 +235,13 @@ impl Parser {
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
         match self.current().clone() {
             // `let 変数名 [: 型] = 式` — イミュータブル変数宣言
+            // `let x, mut y, _ = expr` — タプルアンパック宣言
             Token::Let => {
                 self.advance();
                 let name = self.expect_ident()?;
+                if *self.current() == Token::Comma {
+                    return self.parse_tuple_unpack(TupleTarget::Let(name));
+                }
                 // 型アノテーションがあれば読み飛ばす（静的型検査で使用）
                 if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
                 self.eat(&Token::Eq)?;
@@ -220,9 +257,13 @@ impl Parser {
                 Ok(Stmt::Const(name, self.parse_expr()?))
             }
             // `mut 変数名 [: 型] = 式` — ミュータブル変数宣言
+            // `mut x, let y, _ = expr` — タプルアンパック宣言
             Token::Mut => {
                 self.advance();
                 let name = self.expect_ident()?;
+                if *self.current() == Token::Comma {
+                    return self.parse_tuple_unpack(TupleTarget::Mut(name));
+                }
                 // 型アノテーションがあれば読み飛ばす
                 if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
                 self.eat(&Token::Eq)?;
@@ -275,12 +316,17 @@ impl Parser {
             }
             Token::For => {
                 self.advance();
-                let target = self.expect_ident()?;
+                let first = self.expect_ident()?;
+                let mut targets = vec![first];
+                while *self.current() == Token::Comma {
+                    self.advance();
+                    targets.push(self.expect_ident()?);
+                }
                 self.eat(&Token::In)?;
                 let iter = self.parse_expr()?;
                 let _ = self.parse_opt_return_type()?; // stmt level: parse and discard
                 self.eat(&Token::Colon)?;
-                Ok(Stmt::For { target, iter, body: self.parse_block()? })
+                Ok(Stmt::For { targets, iter, body: self.parse_block()? })
             }
             // `block [->Type]:` — 値を返せるスコープブロック
             Token::Block => {
@@ -2871,7 +2917,7 @@ mod tests {
     #[test]
     fn test_for_stmt() {
         let stmts = parse("for i in [1, 2, 3]:\n    pass\n");
-        assert!(matches!(&stmts[0], Stmt::For { target, .. } if target == "i"));
+        assert!(matches!(&stmts[0], Stmt::For { targets, .. } if targets == &["i"]));
     }
 
     #[test]

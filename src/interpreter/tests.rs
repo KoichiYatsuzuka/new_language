@@ -2685,6 +2685,74 @@ for i in range(10):
 }
 
 #[test]
+fn test_continue_in_while_loop() {
+    let src = "
+mut evens = 0
+mut i = 0
+while i < 10:
+    i += 1
+    if i % 2 != 0:
+        continue
+    evens += i
+";
+    assert_int(run_get(src, "evens"), 30); // 2+4+6+8+10
+}
+
+#[test]
+fn test_continue_in_for_loop() {
+    let src = "
+mut s = 0
+for n in range(1, 11):
+    if n % 3 == 0:
+        continue
+    s += n
+";
+    assert_int(run_get(src, "s"), 37); // 1+2+4+5+7+8+10
+}
+
+#[test]
+fn test_continue_skips_rest_of_body() {
+    // continue skips the remaining statements in the body
+    let src = "
+mut touched = 0
+for i in range(5):
+    continue
+    touched += 1
+";
+    assert_int(run_get(src, "touched"), 0);
+}
+
+#[test]
+fn test_continue_in_nested_loop() {
+    // continue only skips the innermost loop iteration
+    let src = "
+mut s = 0
+for i in range(1, 4):
+    for j in range(1, 4):
+        if j == 2:
+            continue
+        s += j
+";
+    // j=1 and j=3 contribute per outer iteration: (1+3)*3 = 12
+    assert_int(run_get(src, "s"), 12);
+}
+
+#[test]
+fn test_continue_outside_loop_is_error() {
+    let src = "
+fn bad():
+    continue
+bad()
+";
+    assert!(run(src).is_err());
+}
+
+#[test]
+fn test_continue_outside_loop_toplevel_is_error() {
+    assert!(run("continue").is_err());
+}
+
+#[test]
 fn test_block_return_propagates_through_nested_if_to_for_expr() {
     let src = "
 let result = for i in range(10) ->int:
@@ -3625,4 +3693,193 @@ x <- async->int:
     block_return 1
 ";
     assert!(run(src).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Tuple unpack tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_tuple_unpack_basic() {
+    let src = "
+let a = (1, 2)
+let x, mut y = a
+";
+    assert!(matches!(run_get(src, "x"), Value::Int(1)));
+    assert!(matches!(run_get(src, "y"), Value::Int(2)));
+}
+
+#[test]
+fn test_tuple_unpack_immutable() {
+    let src = "
+let x, let y = (10, 20)
+";
+    assert!(matches!(run_get(src, "x"), Value::Int(10)));
+    assert!(matches!(run_get(src, "y"), Value::Int(20)));
+}
+
+#[test]
+fn test_tuple_unpack_mut_is_mutable() {
+    let src = "
+let x, mut y = (1, 2)
+y = 99
+";
+    assert!(matches!(run_get(src, "y"), Value::Int(99)));
+}
+
+#[test]
+fn test_tuple_unpack_wildcard() {
+    let src = "
+let a = (10, 20, 30, 40)
+let p, mut q, _ = a
+";
+    assert!(matches!(run_get(src, "p"), Value::Int(10)));
+    assert!(matches!(run_get(src, "q"), Value::Int(20)));
+}
+
+#[test]
+fn test_tuple_unpack_wildcard_two_remaining() {
+    let src = "
+let p, _ = (5, 6, 7, 8)
+";
+    assert!(matches!(run_get(src, "p"), Value::Int(5)));
+}
+
+#[test]
+fn test_tuple_unpack_arity_mismatch_runtime() {
+    // Static check catches tuple literals; for dynamic RHS the runtime catches it
+    let src = "
+fn get() -> tuple[int, int, int]:
+    return (1, 2, 3)
+let x, mut y = get()
+";
+    assert!(run(src).is_err());
+}
+
+#[test]
+fn test_tuple_unpack_non_tuple_error() {
+    let src = "
+let x, mut y = 42
+";
+    assert!(run(src).is_err());
+}
+
+#[test]
+fn test_tuple_unpack_static_missing_qualifier() {
+    let src = "let x, y = (1, 2)";
+    let tokens = crate::lexer::Lexer::new(src, "").tokenize();
+    let stmts = crate::parser::Parser::new(tokens, None).parse_program().unwrap();
+    let errors = crate::type_check::TypeChecker::check(&stmts);
+    assert!(!errors.is_empty(), "expected a StaticTypeError for missing qualifier");
+}
+
+#[test]
+fn test_tuple_unpack_static_arity_mismatch() {
+    let src = "let x, mut y = (1, 2, 3)";
+    let tokens = crate::lexer::Lexer::new(src, "").tokenize();
+    let stmts = crate::parser::Parser::new(tokens, None).parse_program().unwrap();
+    let errors = crate::type_check::TypeChecker::check(&stmts);
+    assert!(!errors.is_empty(), "expected a StaticTypeError for arity mismatch");
+}
+
+// ---------------------------------------------------------------------------
+// enumerate / zip tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_enumerate_basic() {
+    // Check index and value sum: sum of (i + val) for [10,20,30] → (0+10)+(1+20)+(2+30) = 63
+    let src = "
+mut total = 0
+for i, v in enumerate([10, 20, 30]):
+    total = total + i + v
+";
+    assert!(matches!(run_get(src, "total"), Value::Int(63)));
+}
+
+#[test]
+fn test_enumerate_start() {
+    let src = "
+mut first_idx = 0
+for i, v in enumerate([10, 20], start=5):
+    first_idx = i
+    break
+";
+    assert!(matches!(run_get(src, "first_idx"), Value::Int(5)));
+}
+
+#[test]
+fn test_enumerate_for_unpack() {
+    // sum of idx + val for enumerate([100,200,300]) = (0+100)+(1+200)+(2+300) = 603
+    let src = "
+mut sum = 0
+for idx, val in enumerate([100, 200, 300]):
+    sum = sum + idx + val
+";
+    assert!(matches!(run_get(src, "sum"), Value::Int(603)));
+}
+
+#[test]
+fn test_zip_basic() {
+    // sum of a + b for zip([1,2,3],[10,20,30]) = 11+22+33 = 66
+    let src = "
+mut total = 0
+for a, b in zip([1, 2, 3], [10, 20, 30]):
+    total = total + a + b
+";
+    assert!(matches!(run_get(src, "total"), Value::Int(66)));
+}
+
+#[test]
+fn test_zip_stops_at_shortest() {
+    let src = "
+mut count = 0
+for a, b in zip([1, 2, 3, 4], [10, 20]):
+    count = count + 1
+";
+    assert!(matches!(run_get(src, "count"), Value::Int(2)));
+}
+
+#[test]
+fn test_zip_three() {
+    let src = "
+mut last_sum = 0
+for x, y, z in zip([1, 2], [10, 20], [100, 200]):
+    last_sum = x + y + z
+";
+    assert!(matches!(run_get(src, "last_sum"), Value::Int(222)));
+}
+
+#[test]
+fn test_zip_empty() {
+    assert!(run("for a, b in zip():\n    pass\n").is_ok());
+}
+
+#[test]
+fn test_for_tuple_target_mismatch_error() {
+    let src = "
+for a, b in [(1, 2, 3)]:
+    pass
+";
+    assert!(run(src).is_err());
+}
+
+#[test]
+fn test_for_single_target_still_works() {
+    let src = "
+mut s = 0
+for x in [1, 2, 3, 4]:
+    s = s + x
+";
+    assert!(matches!(run_get(src, "s"), Value::Int(10)));
+}
+
+#[test]
+fn test_tuple_iteration_in_for() {
+    let src = "
+mut s = 0
+for x in (1, 2, 3):
+    s = s + x
+";
+    assert!(matches!(run_get(src, "s"), Value::Int(6)));
 }

@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Stmt, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Stmt, TupleTarget, UnaryOp};
 use crate::token::Span;
 
 // ---------------------------------------------------------------------------
@@ -468,6 +468,20 @@ pub enum TypeErrorKind {
         /// エラーの詳細理由
         reason: String,
     },
+    /// タプルアンパック宣言でひとつの変数に `let` / `mut` 修飾子がない。
+    TupleUnpackMissingQualifier {
+        /// 修飾子のない変数名
+        name: String,
+    },
+    /// タプルアンパック宣言で変数の個数とタプルの要素数が合わない。
+    TupleUnpackArityMismatch {
+        /// タプルの要素数
+        tuple_len: usize,
+        /// 宣言した変数の個数（`_` を除く）
+        target_count: usize,
+        /// `_` が含まれているか（true なら target_count <= tuple_len でよい）
+        has_wildcard: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -584,6 +598,17 @@ impl std::fmt::Display for StaticTypeError {
                 f,
                 "StaticTypeError: invalid decorator: {reason}"
             ),
+            TypeErrorKind::TupleUnpackMissingQualifier { name } => write!(
+                f,
+                "StaticTypeError: variable '{name}' in tuple unpack requires `let` or `mut` qualifier"
+            ),
+            TypeErrorKind::TupleUnpackArityMismatch { tuple_len, target_count, has_wildcard } => {
+                if *has_wildcard {
+                    write!(f, "StaticTypeError: tuple unpack has {target_count} variable(s) but tuple has only {tuple_len} element(s)")
+                } else {
+                    write!(f, "StaticTypeError: tuple unpack expects {target_count} element(s) but tuple has {tuple_len}")
+                }
+            }
         }
     }
 }
@@ -883,6 +908,48 @@ impl TypeChecker {
                 let ty = self.infer(expr);
                 self.declare(name.clone(), ty, true);
             }
+            Stmt::LetTuple { targets, value, span } => {
+                let rhs_ty = self.infer(value);
+
+                // Check each target for missing qualifier
+                for target in targets.iter() {
+                    if let TupleTarget::Bare(name) = target {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::TupleUnpackMissingQualifier { name: name.clone() },
+                            span: Some(span.clone()),
+                        });
+                    }
+                }
+
+                // Arity check when the RHS is a known-length tuple type
+                if let InferredType::Tuple(ref elem_types) = rhs_ty {
+                    let has_wildcard = targets.iter().any(|t| matches!(t, TupleTarget::Wildcard));
+                    let named = targets.iter().filter(|t| !matches!(t, TupleTarget::Wildcard)).count();
+                    let tlen = elem_types.len();
+                    let bad = if has_wildcard { named > tlen } else { named != tlen };
+                    if bad {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::TupleUnpackArityMismatch {
+                                tuple_len: tlen,
+                                target_count: named,
+                                has_wildcard,
+                            },
+                            span: Some(span.clone()),
+                        });
+                    }
+                }
+
+                // Declare each named target variable
+                let elem_types = if let InferredType::Tuple(ref v) = rhs_ty { v.clone() } else { vec![] };
+                for (i, target) in targets.iter().enumerate() {
+                    let ty = elem_types.get(i).cloned().unwrap_or(InferredType::Any);
+                    match target {
+                        TupleTarget::Let(name) | TupleTarget::Bare(name) => self.declare(name.clone(), ty, false),
+                        TupleTarget::Mut(name) => self.declare(name.clone(), ty, true),
+                        TupleTarget::Wildcard => {}
+                    }
+                }
+            }
 
             // --- 代入 ---
             Stmt::Assign { name, value, span } => {
@@ -1040,12 +1107,14 @@ impl TypeChecker {
                 self.check_stmts(body);
                 self.pop_scope();
             }
-            Stmt::For { target, iter, body } => {
+            Stmt::For { targets, iter, body } => {
                 // for...in: イテレータ式を推論し、ループ変数を Unresolved として宣言する。
                 // コレクション要素型のトラッキングは未実装のため実行時に委ねる。
                 self.infer(iter);
                 self.push_scope();
-                self.declare(target.clone(), InferredType::Unresolved, true);
+                for t in targets {
+                    self.declare(t.clone(), InferredType::Unresolved, true);
+                }
                 self.check_stmts(body);
                 self.pop_scope();
             }
@@ -1268,6 +1337,16 @@ impl TypeChecker {
                 Stmt::Mut(name, _) | Stmt::Let(name, _) | Stmt::Const(name, _)
                 | Stmt::Static(name, _, _) => {
                     map.insert(name.clone(), InferredType::Unresolved);
+                }
+                Stmt::LetTuple { targets, .. } => {
+                    for t in targets {
+                        match t {
+                            TupleTarget::Let(n) | TupleTarget::Mut(n) | TupleTarget::Bare(n) => {
+                                map.insert(n.clone(), InferredType::Unresolved);
+                            }
+                            TupleTarget::Wildcard => {}
+                        }
+                    }
                 }
                 _ => {}
             }
