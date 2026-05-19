@@ -1,14 +1,58 @@
 # test_lang
+名前はまだない。
+This have not been named.
 
 ## 概要（Overview）
+Pythonのとっつきやすさ・汎用性と型安全の両立を目指したスクリプト言語です。
+Python, C++, Rustの影響を受けています。
 
-`test_lang` は、Python 風のインデント構文を土台に、明示的な変数宣言、静的型検査、trait、template などを試している独自スクリプト言語です。
+---
+## 特長（Features）
+### 一応スクリプト言語（This is a script, maybe）
+この言語はPython的な見た目をしたスクリプト言語ですが、静的に強く型付けをします。Pythonでいうところの構文解析時のエラー（syntax error）を送出するタイミングで型検査も行い、その時点で型が合わないと判断される場合には実行を始めません。
 
-将来的なターゲットは LLVM IR ですが、現在の実装は Rust 製の tree-walk interpreter です。実行時は `.tl` ソースを字句解析、構文解析、静的型検査したあとにインタープリタで評価します。将来的には部分的にコンパイルすることで高速化を可能にする予定です。また、Python などで書かれた外部ライブラリを使用可能にする予定です。
+また、確定している属性のみをアクセス可能にしているため、Any型、Union型、Optional型はtype_guard節以外では属性参照をまともにできないようにしています。
 
-`test_lang` is a custom scripting language built on Python-style indented syntax, exploring explicit variable declarations, static type checking, traits, templates, and more.
+ソースコードの終わりの方になってTypeErrorが上がってきて、それまでの実行時間が無駄になった、ということがないように、そもそも実行する前に修正を強います。
 
-The ultimate target is LLVM IR, but the current implementation is a Rust-based tree-walk interpreter. At runtime, `.tl` source code is lexically analyzed, parsed, statically type-checked, and then evaluated by the interpreter. In the future, we plan to enable faster execution through partial compilation and integration with external libraries written in Python and other languages.
+### 部分コンパイルによる高速化（Accelaration by partial compile）
+構文解析時の情報を派生させ、高速化が容易な部分に関してをネイティブな機械語に落とし込む機能を備えています。仕様を決めたモジュールはコンパイルしてから読み込むことで、その部分を高速化できます、C++やRustほどの高速化は見込めませんが、同じ言語内でコンパイル済みライブラリを扱えるスクリプト言語であることが特徴です。コンパイルする内容次第ですが、数値計算に関しては最高で50倍ほどの高速化が見込めます。それ以上の速度を望むならC++やRustでライブラリを作成しましょう。
+
+Pythonの高速化はノウハウが必要ですが、この言語は標準機能ですぐ試せます。
+
+### タダ乗り（Free ride）
+Python製のライブラリを使えます。
+機能拡張中ですが、Pythonインタープリタを呼び出してライブラリを処理させることで、大抵のライブラリが使えます。速度最適化などは今後の検討課題。
+
+今後、RustやC++、C#のライブラリも使えるようにする予定。
+
+Pythonのライブラリの多さがゆえに後発言語が超えられなかった汎用性を同レベルまでに引き上げています。Pythonでなければ〇〇ができない、を封じます。
+
+### 二種類の実装（2 implementations）
+この言語は速度優先のRust製インタープリタと頒布性優先のPython製インタープリタの両方を実装予定です。
+Pythonが使えるなら後者の実装ごと配れば即座に使えるようにします。
+
+### 変数の自動管理（Automatic management of mutabilitis of variables）
+変数と関数の引数は定数属性、可変属性、非可変属性に分かれています。値が変わらないことが保証される場合には参照を渡すことで、コピーによるオーバーヘッドを防ぎ、速度を上げます。逆に値が変更されうる時には値をコピーして渡すようにします。これにより、借用権の管理を行わずに、値が変更されうることを防ぎます。可変引数も値の編集が終われば固定化（feeze）することもできます。その他、インスタンスのメンバ変数を変更しうるメンバ関数と変更しないメンバ関数が明示されるなど、値が変更されうるタイミングを追跡しやすくしています。
+
+定数は本当に定数として振る舞い、構文解析時に値が定まっていなければエラーとしています。
+
+ある制御構文内で定義された変数はそのブロックを抜けると自動的に破棄されます。また、特に何もしないブロックを作ることもでき、意図的に寿命の短い変数を宣言可能です（Rustに似ている）。
+
+これらは変数に関する情報を整理し、コードの読み手が抱えるべき情報を減らします。
+
+### typing
+Pythonでは標準ライブラリであるAny, Union, Optional, NewTypeをbuilt-inにしています（ただし、使い勝手はPythonのそれとは異なり、強い制約を与えています）。これにより、Pythonのように場合によって型が変わるような場合も対応しつつ、型安全なコードを強制します。
+
+また、クラスの継承は許可しておらず、trait（C++やPythonでいう抽象クラス、C#のインターフェース、Rustのtraitをよりクラスっぽくしたもの）の継承のみを許可しています。つまり、すべてのクラスはインスタンス化されることが前提で、traitはインスタンス化を許可されていません。
+
+templateを実装しています（C++のようなintのtemplateは未実装）。
+
+overloadを実装しています。型注釈用のものではなく、インスタンスを複数個定義可能です。
+
+型推論により、変数の型は明示する必要がありません。また、型推論によって得られた情報により静的な型検査を行います。これにより、型注釈を書く煩わしさを防ぎつつ、静的な型付けを行います。
+
+これらはポリモーフィズムと耐久性の両立のために実装を選定しました。
 
 ---
 
