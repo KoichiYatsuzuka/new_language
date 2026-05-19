@@ -68,11 +68,11 @@ test_lang/
 │   ├── subscript__errors.tl
 │   ├── slice.tl               # slice syntax and slice() constructor
 │   ├── slice__errors.tl       # TypeError when non-Index used as slice bound
-│   ├── file_io.tl             # import[py] file I/O
+│   ├── built_in.tl            # id(), enumerate(), zip(), file I/O (path/open/close/modes)
 │   ├── file_io__errors.tl
 │   ├── native_ops.tl              # module: typed int/float functions for native compilation
-│   ├── native_ops_demo.tl         # DEMO: full --compile workflow (start here)
-│   ├── import_qualifier_demo.tl   # DEMO: import / import[tl] / import[tlc] comparison
+│   ├── importation.tl             # all import styles: auto/[tl]/[tlc]/[py-int]/from; native_ops demo, pandas, py_calculator, tl_math
+│   ├── importation__errors.tl     # ParseError: import[tlc] when no .tlc exists
 │   ├── heavy_ops.tl           # module: heavier benchmarks (all value types)
 │   ├── bench_heavy.tl         # benchmark: speedup across int/float/str/class
 │   ├── async_demo.tl          # DEMO: AsyncManager, <- operator, raise_immediately, Async enum
@@ -97,22 +97,22 @@ This produces two files next to the source:
 ### Canonical demo
 
 `examples/native_ops.tl` is the canonical module for demonstrating native compilation.  
-`examples/native_ops_demo.tl` is the corresponding runner that shows the full workflow.
+`examples/importation.tl` is the corresponding runner that shows the full workflow.
 
 ```bash
 # Step 1 — run interpreted
-cargo run --release -- examples/native_ops_demo.tl
+cargo run --release -- examples/importation.tl
 
 # Step 2 — compile the module
-cargo run --release -- --compile examples/native_ops.tl
+cargo run --release -- --compile examples/test_modules/native_ops.tl
 # Output:
 #   NativeLib: compiling 6 function(s): fib, count_divisors, digit_sum, ...
-#   NativeLib: 6 function(s) embedded in examples\native_ops.tlc
-#   Compiled : examples\native_ops.tlc
-#   Stub     : examples\native_ops.tls
+#   NativeLib: 6 function(s) embedded in examples\test_modules\native_ops.tlc
+#   Compiled : examples\test_modules\native_ops.tlc
+#   Stub     : examples\test_modules\native_ops.tls
 
 # Step 3 — run again with native dispatch (same command as Step 1)
-cargo run --release -- examples/native_ops_demo.tl
+cargo run --release -- examples/importation.tl
 ```
 
 ### How the compiled module is used
@@ -122,8 +122,8 @@ If the `.tlc` is v1, the embedded DLL is extracted to a temp file at runtime and
 Eligible functions are dispatched natively; all other functions tree-walk as usual.
 
 ```
-import native_ops               # loads native_ops.tlc (parser)
-native_ops.fib(60)              # calls native code — ~100× faster for typed int/float
+import test_modules.native_ops               # loads test_modules/native_ops.tlc (parser)
+test_modules.native_ops.fib(60)              # calls native code — ~100× faster for typed int/float
 ```
 
 ### Type-specialized codegen
@@ -176,7 +176,7 @@ When adding a specification, testing must follow these rules:
 - When the specification is completed:
   - Add interpreter tests
   - Create sample code in the `examples` folder that successfully uses the feature and test it
-  - Create sample code in the `examples` folder that intentionally triggers the expected error and verify that the expected error is raised and execution terminates correctly. The filename must end with `__errors`. However, if the specification does not mention error behavior, this step may be omitted.
+  - Create sample code in the `examples` folder that intentionally triggers the expected error and verify that the expected error is raised and execution terminates correctly. The filename must end with `_errors`. However, if the specification does not mention error behavior, this step may be omitted.
 
 - During incremental implementation before completion:
   - Only interpreter tests are required

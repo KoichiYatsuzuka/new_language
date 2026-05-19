@@ -102,6 +102,44 @@ print(mm)   # (3, 7)
 let nested_t = ((1, 2), (3, 4))
 print(nested_t)   # ((1, 2), (3, 4))
 
+# Tuple unpacking — let/mut qualifier required for each variable
+let tup1 = (1, 2)
+let tx, mut ty = tup1
+print(tx)    # 1
+print(ty)    # 2
+
+# Both qualifiers can be let
+let tp, let tq = (10, 20)
+print(tp)    # 10
+print(tq)    # 20
+
+# Mutable variable can be reassigned after unpacking
+ty = 99
+print(ty)    # 99
+
+# First qualifier may also be mut
+mut tm, let tn = (3, 4)
+print(tm)    # 3
+print(tn)    # 4
+tm = 100
+print(tm)    # 100
+
+# _ discards all remaining elements (must be last)
+let tup2 = (10, 20, 30, 40)
+let tr, mut ts, _ = tup2
+print(tr)    # 10
+print(ts)    # 20
+
+# _ absorbs a single trailing element
+let tup3 = (5, 6)
+let only, _ = tup3
+print(only)  # 5
+
+# Unpack directly from a literal tuple
+let ti, mut tj = (7, 8)
+print(ti)    # 7
+print(tj)    # 8
+
 # ============================================================
 # 4. Set
 # ============================================================
@@ -204,3 +242,112 @@ for i in range(10):
         groups["odds"] += 1
 print("evens:", groups["evens"])   # 5
 print("odds:",  groups["odds"])    # 5
+
+# ============================================================
+# 6. Subscript / Indexing
+# ============================================================
+print("=== subscript ===")
+
+# list
+mut xs = [10, 20, 30, 40, 50]
+print(xs[0])       # 10
+print(xs[-1])      # 50
+xs[2] = 99
+print(xs[2])       # 99
+
+# str
+let greet = "hello"
+print(greet[0])    # h
+print(greet[-1])   # o
+
+# dict
+mut idx_d = {"a": 1, "b": 2}
+print(idx_d["a"])  # 1
+idx_d["c"] = 3
+print(idx_d["c"])  # 3
+
+# tuple
+let idx_t = (100, 200, 300)
+print(idx_t[1])    # 200
+print(idx_t[-1])   # 300
+
+# user-defined __getitem__ / __setitem__
+class Stack:
+    fn __init__(mut self) -> None:
+        self.items = [0, 0, 0, 0, 0]
+
+    fn __getitem__(self, let idx: int) -> int:
+        return self.items[idx]
+
+    fn __setitem__(mut self, let idx: int, let val: int) -> None:
+        self.items[idx] = val
+
+mut stack = Stack()
+stack[0] = 42
+stack[1] = 7
+print(stack[0])    # 42
+print(stack[1])    # 7
+
+# ============================================================
+# 7. Slice
+# ============================================================
+print("=== slice ===")
+
+# list slicing — basic bounds
+mut lst = [10, 20, 30, 40, 50]
+print(lst[Index(1):Index(4)])    # [20, 30, 40]
+print(lst[:Index(3)])            # [10, 20, 30]
+print(lst[Index(2):])            # [30, 40, 50]
+print(lst[:])                    # [10, 20, 30, 40, 50]
+
+# step
+print(lst[::2])                  # [10, 30, 50]
+print(lst[Index(1):Index(4):2])  # [20, 40]
+print(lst[::-1])                 # [50, 40, 30, 20, 10]
+
+# string slicing
+let word = "hello"
+print(word[Index(1):Index(4)])   # ell
+print(word[::-1])                # olleh
+
+# tuple slicing
+let sl_t = (1, 2, 3, 4, 5)
+print(sl_t[Index(1):Index(3)])   # (2, 3)
+print(sl_t[::-1])                # (5, 4, 3, 2, 1)
+
+# slice() constructor
+let slc = slice(Index(1), Index(4))
+print(slc)                       # slice(<Index object>, <Index object>, None)
+print(lst[slc])                  # [20, 30, 40]
+let slc2 = slice(Index(0), Index(5), 2)
+print(lst[slc2])                 # [10, 30, 50]
+print(slc.step)                  # None
+
+# list slice assignment (step = 1)
+mut sl_a = [1, 2, 3, 4, 5]
+sl_a[Index(1):Index(3)] = [20, 30]
+print(sl_a)                      # [1, 20, 30, 4, 5]
+sl_a[Index(1):Index(3)] = [99]
+print(sl_a)                      # [1, 99, 4, 5]
+sl_a[Index(1):Index(2)] = [10, 20, 30]
+print(sl_a)                      # [1, 10, 20, 30, 4, 5]
+sl_a[Index(1):Index(4)] = []
+print(sl_a)                      # [1, 4, 5]
+sl_a[:Index(0)] = [0]
+print(sl_a)                      # [0, 1, 4, 5]
+sl_a[Index(4):] = [6, 7]
+print(sl_a)                      # [0, 1, 4, 5, 6, 7]
+
+# list slice assignment (step ≠ 1)
+mut sl_b = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+sl_b[::2] = [10, 30, 50, 70, 90]
+print(sl_b)                      # [10, 1, 30, 3, 50, 5, 70, 7, 90, 9]
+sl_b[::-1] = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+print(sl_b)                      # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+# assign from tuple / string
+mut sl_c = [1, 2, 3, 4, 5]
+sl_c[Index(1):Index(3)] = (20, 30)
+print(sl_c)                      # [1, 20, 30, 4, 5]
+sl_c[Index(0):Index(3)] = "abc"
+print(sl_c)                      # ['a', 'b', 'c', 4, 5]
