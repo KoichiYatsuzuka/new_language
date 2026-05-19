@@ -15,7 +15,7 @@
 //   exec(stmt) / eval(expr) を通じてツリーウォーク実行を行う。
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -238,6 +238,12 @@ pub struct ClassValue {
     pub(self) field_access: HashMap<String, Accessibility>,
     /// メソッド名 → アクセス可能性 のマップ。プライベート・保護メソッドのアクセス制御に使用する。
     pub(self) method_access: HashMap<String, Accessibility>,
+    /// `static fn` で定義されたスタティックメソッド名のセット。`self` を受け取らない。
+    pub(self) static_method_names: HashSet<String>,
+    /// `class_method fn` で定義されたクラスメソッド名のセット。第1引数は `cls`（クラス自身）。
+    pub(self) class_method_names: HashSet<String>,
+    /// `static mut` で定義されたクラス静的変数。全インスタンスで共有される可変セル。
+    pub(self) static_vars: HashMap<String, Rc<RefCell<Value>>>,
 }
 
 /// クラスインスタンスの実行時データ。`Rc<RefCell<InstanceData>>` で共有・可変参照する。
@@ -856,6 +862,9 @@ impl Interpreter {
             field_mutability: HashMap::from([("value".to_string(), true)]),
             field_access: HashMap::new(),
             method_access: HashMap::new(),
+            static_method_names: HashSet::new(),
+            class_method_names: HashSet::new(),
+            static_vars: HashMap::new(),
         })
     }
 
@@ -881,6 +890,9 @@ impl Interpreter {
             field_mutability: HashMap::from([("value".to_string(), true)]),
             field_access: HashMap::new(),
             method_access: HashMap::new(),
+            static_method_names: HashSet::new(),
+            class_method_names: HashSet::new(),
+            static_vars: HashMap::new(),
         });
         // 各バリアントをインスタンスとして生成し class_vars に登録
         let mut class_vars: HashMap<String, Value> = HashMap::new();
@@ -905,6 +917,9 @@ impl Interpreter {
             field_mutability: HashMap::new(),
             field_access: HashMap::new(),
             method_access: HashMap::new(),
+            static_method_names: HashSet::new(),
+            class_method_names: HashSet::new(),
+            static_vars: HashMap::new(),
         });
         (item_cls_name, item_cls, enum_cls)
     }

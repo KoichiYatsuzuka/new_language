@@ -281,8 +281,30 @@ impl Interpreter {
                             self.check_member_access(&cls, attr, attr)?;
                             return Ok(v);
                         }
+                        // 2b. static mut クラス静的変数を検索
+                        if let Some(cell) = cls.static_vars.get(attr.as_str()).cloned() {
+                            drop(inst);
+                            self.check_member_access(&cls, attr, attr)?;
+                            return Ok(cell.borrow().clone());
+                        }
                         // 3. メソッドを検索（オーバーロードがある場合は OverloadedFn を返す）
-                        if let Some(overloads) = cls.methods.get(attr.as_str()) {
+                        if cls.methods.contains_key(attr.as_str()) {
+                            // static / class_method はインスタンス経由でアクセス不可
+                            if cls.static_method_names.contains(attr.as_str()) {
+                                drop(inst);
+                                return Err(format!(
+                                    "AttributeError: static method '{}' is not accessible on an instance of '{}'; use '{}.{}'",
+                                    attr, cls.name, cls.name, attr
+                                ));
+                            }
+                            if cls.class_method_names.contains(attr.as_str()) {
+                                drop(inst);
+                                return Err(format!(
+                                    "AttributeError: class method '{}' is not accessible on an instance of '{}'; use '{}.{}'",
+                                    attr, cls.name, cls.name, attr
+                                ));
+                            }
+                            let overloads = cls.methods.get(attr.as_str()).unwrap();
                             let result = if overloads.len() == 1 {
                                 Value::Function(overloads[0].clone())
                             } else {
@@ -298,9 +320,15 @@ impl Interpreter {
                         ))
                     }
                     Value::Class(cls) => {
-                        // クラスオブジェクトへのアクセス: クラス変数 → メソッドの順に検索
+                        // クラスオブジェクトへのアクセス: name → クラス変数 → static_vars → メソッドの順に検索
+                        if attr == "name" {
+                            return Ok(Value::Str(cls.name.clone()));
+                        }
                         if let Some(v) = Self::lookup_class_var(cls, attr) {
                             return Ok(v);
+                        }
+                        if let Some(cell) = cls.static_vars.get(attr.as_str()) {
+                            return Ok(cell.borrow().clone());
                         }
                         if let Some(overloads) = cls.methods.get(attr.as_str()) {
                             return Ok(if overloads.len() == 1 {
@@ -1457,6 +1485,12 @@ impl Interpreter {
                             "TypeError: cannot assign to class variable '{attr}' (declared const)"
                         ));
                     }
+                    // static mut 変数への代入: 共有セルを更新する
+                    if let Some(cell) = inst_class.static_vars.get(attr.as_str()).cloned() {
+                        self.check_member_access(&inst_class, attr, attr)?;
+                        *cell.borrow_mut() = rhs;
+                        return Ok(());
+                    }
                     // アクセス制御チェック
                     self.check_member_access(&inst_class, attr, attr)?;
                     let mut inst = inst_rc.borrow_mut();
@@ -1478,6 +1512,22 @@ impl Interpreter {
                         inst.fields.insert(attr.clone(), (rhs, is_mutable));
                     }
                     Ok(())
+                }
+                Value::Class(cls) => {
+                    // クラスオブジェクトへの代入: static mut 変数のみ許可
+                    if let Some(cell) = cls.static_vars.get(attr.as_str()).cloned() {
+                        *cell.borrow_mut() = rhs;
+                        return Ok(());
+                    }
+                    if Self::lookup_class_var(&cls, attr).is_some() {
+                        return Err(format!(
+                            "TypeError: cannot assign to class variable '{attr}' (declared const)"
+                        ));
+                    }
+                    Err(format!(
+                        "AttributeError: class '{}' has no static field '{attr}'",
+                        cls.name
+                    ))
                 }
                 _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
             }

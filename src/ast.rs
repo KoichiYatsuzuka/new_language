@@ -455,6 +455,10 @@ pub enum Stmt {
         body: Vec<Stmt>,
         /// `true` の場合、trait 内の抽象メソッド宣言（本体が `pass` のみ）。
         is_abstract: bool,
+        /// `true` の場合、`static` キーワードで修飾されたスタティックメソッド。`self` を受け取らない。
+        is_static: bool,
+        /// `true` の場合、`class_method` キーワードで修飾されたクラスメソッド。第1引数は `cls: type[Self]`。
+        is_class_method: bool,
         /// `@decorator` 構文で付与されたデコレータ式のリスト（上から順、適用は逆順）。
         decorators: Vec<Expr>,
         /// クラス本体内でのアクセス可能性（デフォルトは `Public`）。クラス外の関数定義では無視される。
@@ -684,4 +688,7 @@ pub enum FieldKind {
     /// すべてのインスタンスで共有される。インスタンス経由・クラス名経由どちらでもアクセス可能。
     /// 代入は実行時 `TypeError`。
     Const,
+    /// 静的可変クラス変数 (`static mut name: Type [= default]`)。
+    /// すべてのインスタンスで共有される可変セル。インスタンス経由・クラス名経由どちらでもアクセス・代入可能。
+    StaticMut,
 }

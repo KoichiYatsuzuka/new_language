@@ -565,10 +565,14 @@ impl Parser {
     }
 
     fn parse_fn_def(&mut self) -> Result<Stmt, String> {
-        self.parse_fn_def_decorated(vec![])
+        self.parse_fn_def_with_flags(vec![], false, false)
     }
 
     fn parse_fn_def_decorated(&mut self, decorators: Vec<crate::ast::Expr>) -> Result<Stmt, String> {
+        self.parse_fn_def_with_flags(decorators, false, false)
+    }
+
+    fn parse_fn_def_with_flags(&mut self, decorators: Vec<crate::ast::Expr>, is_static: bool, is_class_method: bool) -> Result<Stmt, String> {
         self.advance(); // `fn` を消費
         let name = self.expect_ident()?;
         // テンプレートパラメータ `[T: Trait, ...]` をパース（なければ空 Vec）
@@ -612,7 +616,7 @@ impl Parser {
             // 通常のブロックをパース
             (self.parse_block()?, false)
         };
-        Ok(Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, decorators, access: Accessibility::Public })
+        Ok(Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, is_static, is_class_method, decorators, access: Accessibility::Public })
     }
 
     /// `gen` ジェネレータ関数定義をパースして `Stmt::GenDef` を返す。
@@ -1590,6 +1594,8 @@ impl Parser {
             return_type: Some("None".to_string()),
             body: init_body,
             is_abstract: false,
+            is_static: false,
+            is_class_method: false,
             decorators: vec![],
             access: Accessibility::Public,
         });
@@ -1678,9 +1684,10 @@ impl Parser {
                 };
                 // エラーメッセージ用にキーワード文字列を保持
                 let keyword = match &kind {
-                    FieldKind::Mut   => "mut",
-                    FieldKind::Let   => "let",
-                    FieldKind::Const => "const",
+                    FieldKind::Mut       => "mut",
+                    FieldKind::Let       => "let",
+                    FieldKind::Const     => "const",
+                    FieldKind::StaticMut => "static mut",
                 };
                 self.advance();
                 let fname = self.expect_ident()?;
@@ -1709,6 +1716,38 @@ impl Parser {
             }
             Token::Fn => self.parse_fn_def(),
             Token::Gen => self.parse_gen_def(),
+            Token::Static => {
+                self.advance(); // consume `static`
+                match self.current().clone() {
+                    Token::Fn => self.parse_fn_def_with_flags(vec![], true, false),
+                    Token::Mut => {
+                        self.advance(); // consume `mut`
+                        let fname = self.expect_ident()?;
+                        if *self.current() != Token::Colon {
+                            return Err(format!(
+                                "class static field `{fname}` must have a type annotation (e.g., `static mut {fname}: int = 0`)"
+                            ));
+                        }
+                        self.advance(); // consume `:`
+                        let type_ann = self.parse_type_expr()?;
+                        let default = if *self.current() == Token::Eq {
+                            self.advance();
+                            Some(self.parse_expr()?)
+                        } else {
+                            None
+                        };
+                        Ok(Stmt::Field { name: fname, kind: FieldKind::StaticMut, type_ann, default, access: Accessibility::Public })
+                    }
+                    tok => Err(format!("expected `fn` or `mut` after `static` in class body, got `{tok}`")),
+                }
+            }
+            Token::ClassMethod => {
+                self.advance(); // consume `class_method`
+                if *self.current() != Token::Fn {
+                    return Err(format!("expected `fn` after `class_method`, got `{}`", self.current()));
+                }
+                self.parse_fn_def_with_flags(vec![], false, true)
+            }
             Token::Pass => {
                 self.advance();
                 Ok(Stmt::Pass)

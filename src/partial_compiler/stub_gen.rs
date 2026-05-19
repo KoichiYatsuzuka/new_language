@@ -258,9 +258,10 @@ fn class_body_item_stub(stmt: &Stmt, indent_level: usize) -> Option<(Accessibili
         } => {
             let i = ind(indent_level);
             let kw = match kind {
-                FieldKind::Mut => "mut",
-                FieldKind::Let => "let",
-                FieldKind::Const => "const",
+                FieldKind::Mut       => "mut",
+                FieldKind::Let       => "let",
+                FieldKind::Const     => "const",
+                FieldKind::StaticMut => "static mut",
             };
             let default_str = if default.is_some() { " = ..." } else { "" };
             Some((

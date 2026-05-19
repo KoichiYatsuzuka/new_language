@@ -73,6 +73,9 @@ impl Interpreter {
             field_mutability,
             field_access: HashMap::new(),
             method_access: HashMap::new(),
+            static_method_names: std::collections::HashSet::new(),
+            class_method_names: std::collections::HashSet::new(),
+            static_vars: HashMap::new(),
         })
     }
 

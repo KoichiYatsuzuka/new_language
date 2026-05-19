@@ -222,6 +222,9 @@ pub enum Token {
     Private,
     Protected,
 
+    // Method kind modifiers (class body only)
+    ClassMethod,  // class_method fn — first param must be cls: type[Self]
+
     // Self type keyword (valid only inside class/trait bodies)
     SelfType,
 
@@ -385,6 +388,7 @@ impl Token {
             Token::Public => Some("public"),
             Token::Private => Some("private"),
             Token::Protected => Some("protected"),
+            Token::ClassMethod => Some("class_method"),
             Token::SelfType => Some("Self"),
             Token::NewType => Some("new_type"),
             Token::Any => Some("Any"),

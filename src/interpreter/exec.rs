@@ -425,6 +425,9 @@ impl Interpreter {
                             field_mutability: orig_cls.field_mutability.clone(),
                             field_access: orig_cls.field_access.clone(),
                             method_access: orig_cls.method_access.clone(),
+                            static_method_names: orig_cls.static_method_names.clone(),
+                            class_method_names: orig_cls.class_method_names.clone(),
+                            static_vars: orig_cls.static_vars.clone(),
                         });
                         self.declare_var(name.clone(), Var::new(Value::Class(new_cls), false));
                     }
@@ -461,6 +464,9 @@ impl Interpreter {
                             field_mutability: HashMap::from([("value".to_string(), true)]),
                             field_access: HashMap::new(),
                             method_access: HashMap::new(),
+                            static_method_names: std::collections::HashSet::new(),
+                            class_method_names: std::collections::HashSet::new(),
+                            static_vars: HashMap::new(),
                         });
                         self.declare_var(name.clone(), Var::new(Value::Class(new_cls), false));
                     }
@@ -505,6 +511,9 @@ impl Interpreter {
                     field_mutability: HashMap::from([("value".to_string(), true)]),
                     field_access: HashMap::new(),
                     method_access: HashMap::new(),
+                    static_method_names: std::collections::HashSet::new(),
+                    class_method_names: std::collections::HashSet::new(),
+                    static_vars: HashMap::new(),
                 });
                 self.declare_var(item_type_name.clone(), Var::new(Value::Class(item_cls.clone()), false));
 
@@ -539,6 +548,9 @@ impl Interpreter {
                     field_mutability: HashMap::new(),
                     field_access: HashMap::new(),
                     method_access: HashMap::new(),
+                    static_method_names: std::collections::HashSet::new(),
+                    class_method_names: std::collections::HashSet::new(),
+                    static_vars: HashMap::new(),
                 });
                 self.declare_var(name.clone(), Var::new(Value::Class(enum_cls), false));
                 Ok(ExecResult::Normal)
@@ -563,6 +575,9 @@ impl Interpreter {
                 let mut field_mutability: HashMap<String, bool> = HashMap::new();
                 let mut field_access: HashMap<String, Accessibility> = HashMap::new();
                 let mut method_access: HashMap<String, Accessibility> = HashMap::new();
+                let mut static_method_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut class_method_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut static_vars: HashMap<String, Rc<RefCell<Value>>> = HashMap::new();
                 // 継承トレイトのフィールドアクセス可能性を引き継ぐ
                 for base in bases {
                     if let Some(trait_acc) = self.trait_field_access.get(base) {
@@ -575,13 +590,19 @@ impl Interpreter {
                 }
                 for stmt in body {
                     match stmt {
-                        Stmt::FnDef { name: mname, params, body: mbody, decorators: mdecs, access: macc, .. } => {
+                        Stmt::FnDef { name: mname, params, body: mbody, decorators: mdecs, access: macc, is_static, is_class_method, .. } => {
                             let fn_val = Rc::new(FnValue {
                                 params: params.clone(),
                                 body: mbody.clone(),
                                 is_python: self.in_python_module,
                                 captured_env: HashMap::new(),
                             });
+                            if *is_static {
+                                static_method_names.insert(mname.clone());
+                            }
+                            if *is_class_method {
+                                class_method_names.insert(mname.clone());
+                            }
                             if *macc != Accessibility::Public {
                                 method_access.insert(mname.clone(), macc.clone());
                             }
@@ -623,6 +644,18 @@ impl Interpreter {
                             let val = self.eval(init)?;
                             class_vars.insert(fname.clone(), val);
                         }
+                        Stmt::Field { name: fname, kind: FieldKind::StaticMut, default, access: facc, .. } => {
+                            // static mut クラス静的変数: 全インスタンスで共有される可変セルを作成する
+                            if *facc != Accessibility::Public {
+                                field_access.insert(fname.clone(), facc.clone());
+                            }
+                            let val = if let Some(init) = default {
+                                self.eval(init)?
+                            } else {
+                                Value::None
+                            };
+                            static_vars.insert(fname.clone(), Rc::new(RefCell::new(val)));
+                        }
                         Stmt::Field { name: fname, kind, default, access: facc, .. } => {
                             // mut / let インスタンスフィールド: 可変フラグと初期値を記録する
                             if *facc != Accessibility::Public {
@@ -648,6 +681,9 @@ impl Interpreter {
                     field_mutability,
                     field_access,
                     method_access,
+                    static_method_names,
+                    class_method_names,
+                    static_vars,
                 });
                 if decorators.is_empty() {
                     self.declare_var(name.clone(), Var::new(Value::Class(cls), false));

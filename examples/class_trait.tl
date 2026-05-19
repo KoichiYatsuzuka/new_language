@@ -184,3 +184,36 @@ ctr.set_step(5)
 ctr.increment()
 print(ctr.get_count())  # -> 7
 ctr.show()              # inside class: all OK -> hits, 7, 5
+
+# --- static methods and class methods ---
+print("=== static / class_method ===")
+
+class Registry:
+    static mut entry_count: int = 0
+
+    fn __init__(mut self) -> None:
+        Registry.entry_count += 1
+
+    static fn reset() -> None:
+        Registry.entry_count = 0
+
+    static fn count() -> int:
+        return Registry.entry_count
+
+    class_method fn describe(cls: type[Self]) -> str:
+        return cls.name
+
+# static method called on the class
+print(Registry.count())        # 0
+let r1 = Registry()
+let r2 = Registry()
+print(Registry.count())        # 2
+
+# static mut field shared across instances — write via class
+Registry.reset()
+print(Registry.count())        # 0
+let r3 = Registry()
+print(Registry.count())        # 1
+
+# class_method called on the class
+print(Registry.describe())     # Registry

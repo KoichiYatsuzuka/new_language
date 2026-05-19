@@ -182,6 +182,8 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
                 return_type,
                 body,
                 is_abstract: false,
+                is_static: false,
+                is_class_method: false,
                 decorators: vec![],
                 access: crate::ast::Accessibility::Public,
             }))
@@ -512,6 +514,8 @@ fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt, String> {
                     return_type,
                     body,
                     is_abstract: false,
+                    is_static: false,
+                    is_class_method: false,
                     decorators: vec![],
                     access: crate::ast::Accessibility::Public,
                 });

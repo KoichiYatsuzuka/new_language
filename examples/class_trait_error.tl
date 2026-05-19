@@ -34,3 +34,16 @@ class MyClass:
 
 let obj = MyClass()
 print(obj.y)   # AccessError: 'y' is private
+
+# Section 3 — AttributeError: calling a static method on an instance
+#   Expected error (runtime AttributeError):
+#     static method 'count' must be called on the class, not an instance
+
+class Registry:
+    static mut entry_count: int = 0
+
+    static fn count() -> int:
+        return Registry.entry_count
+
+let reg = Registry()
+reg.count()   # AttributeError: static method 'count' must be called on the class, not an instance

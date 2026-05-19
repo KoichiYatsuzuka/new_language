@@ -249,6 +249,20 @@ impl Interpreter {
                 let overloads = self.lookup_method_in_class(&class, method_name)
                     .ok_or_else(|| format!("AttributeError: '{}' has no method '{method_name}'", class.name))?;
 
+                // static / class_method はインスタンスからは呼び出せない
+                if class.static_method_names.contains(method_name) {
+                    return Err(format!(
+                        "AttributeError: static method '{}' must be called on the class, not an instance; use '{}.{}(...)'",
+                        method_name, class.name, method_name
+                    ));
+                }
+                if class.class_method_names.contains(method_name) {
+                    return Err(format!(
+                        "AttributeError: class method '{}' must be called on the class, not an instance; use '{}.{}(...)'",
+                        method_name, class.name, method_name
+                    ));
+                }
+
                 // 不変インスタンスは `mut self` を要求するオーバーロードを除外する
                 let callable: Vec<Rc<FnValue>> = if inst_immutable {
                     overloads.iter().filter(|f| {
@@ -270,6 +284,36 @@ impl Interpreter {
                 } else {
                     self.dispatch_overload(callable, args, Some(obj.clone()))
                 }
+            }
+            Value::Class(cls) => {
+                // クラスオブジェクトに対するメソッド呼び出し: static / class_method のみ許可
+                let overloads = self.lookup_method_in_class(&cls, method_name)
+                    .ok_or_else(|| format!("AttributeError: class '{}' has no method '{method_name}'", cls.name))?;
+
+                if cls.static_method_names.contains(method_name) {
+                    return if overloads.len() == 1 {
+                        self.exec_fn(overloads[0].clone(), args, None, method_name)
+                    } else {
+                        self.dispatch_overload(overloads, args, None)
+                    };
+                }
+
+                if cls.class_method_names.contains(method_name) {
+                    let cls_val = Value::Class(cls.clone());
+                    let evaled = self.eval_call_args(args)?;
+                    let mut all_evaled = vec![(None, cls_val)];
+                    all_evaled.extend(evaled);
+                    return if overloads.len() == 1 {
+                        self.exec_fn_evaled(overloads[0].clone(), &all_evaled, None, method_name)
+                    } else {
+                        self.dispatch_overload_evaled(overloads, all_evaled, None, method_name)
+                    };
+                }
+
+                Err(format!(
+                    "TypeError: cannot call instance method '{method_name}' on class '{}' directly; use an instance",
+                    cls.name
+                ))
             }
             Value::Dict(d) => {
                 match method_name {

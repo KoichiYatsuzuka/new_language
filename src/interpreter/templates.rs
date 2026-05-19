@@ -203,9 +203,14 @@ impl Interpreter {
         let mut field_mutability: HashMap<String, bool> = HashMap::new();
         let mut field_access: HashMap<String, crate::ast::Accessibility> = HashMap::new();
         let mut method_access: HashMap<String, crate::ast::Accessibility> = HashMap::new();
+        let mut static_method_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut class_method_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut static_vars: HashMap<String, Rc<RefCell<Value>>> = HashMap::new();
         for stmt in &concrete_body {
             match stmt {
-                Stmt::FnDef { name: mname, params, body: mbody, access: macc, .. } => {
+                Stmt::FnDef { name: mname, params, body: mbody, access: macc, is_static, is_class_method, .. } => {
+                    if *is_static { static_method_names.insert(mname.clone()); }
+                    if *is_class_method { class_method_names.insert(mname.clone()); }
                     if *macc != crate::ast::Accessibility::Public {
                         method_access.insert(mname.clone(), macc.clone());
                     }
@@ -233,6 +238,13 @@ impl Interpreter {
                     let val = self.eval(init)?;
                     class_vars.insert(fname.clone(), val);
                 }
+                Stmt::Field { name: fname, kind: FieldKind::StaticMut, default, access: facc, .. } => {
+                    if *facc != crate::ast::Accessibility::Public {
+                        field_access.insert(fname.clone(), facc.clone());
+                    }
+                    let val = if let Some(init) = default { self.eval(init)? } else { Value::None };
+                    static_vars.insert(fname.clone(), Rc::new(RefCell::new(val)));
+                }
                 Stmt::Field { name: fname, kind, default, access: facc, .. } => {
                     if *facc != crate::ast::Accessibility::Public {
                         field_access.insert(fname.clone(), facc.clone());
@@ -257,6 +269,9 @@ impl Interpreter {
             field_mutability,
             field_access,
             method_access,
+            static_method_names,
+            class_method_names,
+            static_vars,
         });
         self.instantiate(cls, call_args)
     }
@@ -447,13 +462,15 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             body: subst_stmts(body, type_map),
             access: access.clone(),
         },
-        Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, decorators, access } => Stmt::FnDef {
+        Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, is_static, is_class_method, decorators, access } => Stmt::FnDef {
             name: name.clone(),
             template_params: template_params.clone(),
             params: subst_params(params, type_map),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
             body: subst_stmts(body, type_map),
             is_abstract: *is_abstract,
+            is_static: *is_static,
+            is_class_method: *is_class_method,
             decorators: decorators.clone(),
             access: access.clone(),
         },

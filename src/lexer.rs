@@ -629,6 +629,7 @@ impl Lexer {
             "public"       => Token::Public,
             "private"      => Token::Private,
             "protected"    => Token::Protected,
+            "class_method" => Token::ClassMethod,
             "Self"         => Token::SelfType,
             "new_type"     => Token::NewType,
             "Any"          => Token::Any,
