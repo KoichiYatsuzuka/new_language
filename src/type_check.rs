@@ -57,6 +57,8 @@ pub enum InferredType {
     Union(Vec<InferredType>),
     /// 辞書型（型付き・型なし共通）。
     Dict,
+    /// セット型（重複なしコレクション）。要素型は現時点では追跡しない。
+    Set,
     /// 各要素の型が既知のタプル型 `tuple[T1, T2, ...]`。
     /// `Vec` の各要素がタプルの各フィールドの型に対応する。
     Tuple(Vec<InferredType>),
@@ -137,6 +139,15 @@ impl InferredType {
             return InferredType::from_ann(inner.trim())
                 .map(|t| Self::Union(vec![t, Self::None]));
         }
+        if ann.strip_prefix("list[").and_then(|s| s.strip_suffix(']')).is_some() {
+            return Some(Self::List);
+        }
+        if ann.strip_prefix("set[").and_then(|s| s.strip_suffix(']')).is_some() {
+            return Some(Self::Set);
+        }
+        if ann.strip_prefix("dict[").and_then(|s| s.strip_suffix(']')).is_some() {
+            return Some(Self::Dict);
+        }
         if let Some(inner) = ann.strip_prefix("tuple[").and_then(|s| s.strip_suffix(']')) {
             let parts = split_top_level_commas(inner);
             let types: Vec<InferredType> = parts.iter()
@@ -169,6 +180,7 @@ impl InferredType {
             "None" => Some(Self::None),
             "list" => Some(Self::List),
             "dict" => Some(Self::Dict),
+            "set" => Some(Self::Set),
             "type" => Some(Self::TypeVal),
             "Self" => Some(Self::SelfType),
             "Any" => Some(Self::Any),
@@ -296,6 +308,7 @@ impl std::fmt::Display for InferredType {
             Self::None => write!(f, "None"),
             Self::List => write!(f, "list"),
             Self::Dict => write!(f, "dict"),
+            Self::Set => write!(f, "set"),
             Self::TypeVal => write!(f, "type"),
             Self::TypeValOf(inner) => write!(f, "type[{inner}]"),
             Self::SelfType => write!(f, "Self"),
@@ -1281,6 +1294,7 @@ impl TypeChecker {
             Expr::Bool(_) => InferredType::Bool,
             Expr::None => InferredType::None,
             Expr::List(_) => InferredType::List,
+            Expr::Set(_) => InferredType::Set,
             Expr::Tuple(exprs) => {
                 // タプルリテラル: 各要素を推論して Tuple 型として返す。
                 let types: Vec<InferredType> = exprs.iter().map(|e| self.infer(e)).collect();
@@ -2020,6 +2034,14 @@ impl TypeChecker {
         // Any / Union オペランドは既にエラーが報告されているため、結果は Unresolved にする。
         if *lt == Any || *rt == Any { return Unresolved; }
         if matches!(lt, Union(_)) || matches!(rt, Union(_)) { return Unresolved; }
+        // セット演算
+        if *lt == Set && *rt == Set {
+            return match op {
+                BinOp::BitOr | BinOp::BitAnd | BinOp::BitXor | BinOp::Sub => Set,
+                BinOp::Eq | BinOp::NotEq => Bool,
+                _ => Unresolved,
+            };
+        }
         match op {
             // 比較・論理演算子は常に Bool を返す。
             BinOp::Eq
@@ -2029,7 +2051,9 @@ impl TypeChecker {
             | BinOp::LtEq
             | BinOp::GtEq
             | BinOp::And
-            | BinOp::Or => Bool,
+            | BinOp::Or
+            | BinOp::In
+            | BinOp::NotIn => Bool,
             // 加算: int+int → int、浮動小数混在 → float、str+str → str。
             BinOp::Add => match (lt, rt) {
                 (Int, Int) => Int,

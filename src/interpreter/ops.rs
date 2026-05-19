@@ -3,6 +3,7 @@
 // `Value` に対する演算・表示・型名取得などの基本操作を実装する。
 // これらはインタープリタ全体から頻繁に呼ばれる共通ユーティリティ群。
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::ast::{BinOp, UnaryOp};
@@ -37,6 +38,7 @@ impl Interpreter {
             Value::List(items) => !items.borrow().is_empty(),
             Value::Dict(d) => !d.borrow().keys.is_empty(),
             Value::Tuple(t) => !t.is_empty(),
+            Value::Set(s) => !s.borrow().is_empty(),
             // 関数・クラス・インスタンス・ジェネレータ・名前空間・Python オブジェクト等は常に真
             Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) | Value::Type(_)
             | Value::Trait(_)
@@ -70,6 +72,7 @@ impl Interpreter {
             Value::Generator(_) => "generator",
             Value::Dict(_) => "dict",
             Value::Tuple(_) => "tuple",
+            Value::Set(_) => "set",
             Value::Namespace(_) => "module",
             Value::PyObject(_) => "object",
             Value::FileObject(_) => "FileObject",
@@ -101,6 +104,7 @@ impl Interpreter {
             | Value::NativeFunction(_) => type_name == "function",
             Value::FileObject(_) => type_name == "FileObject",
             Value::Slice(_) => type_name == "slice",
+            Value::Set(_) => type_name == "set",
             _ => false,
         }
     }
@@ -161,6 +165,15 @@ impl Interpreter {
                 } else {
                     let parts: Vec<String> = vals.iter().map(|v| self.display_repr(v)).collect();
                     format!("({})", parts.join(", "))
+                }
+            }
+            Value::Set(s) => {
+                let s = s.borrow();
+                if s.is_empty() {
+                    "set()".to_string()
+                } else {
+                    let parts: Vec<String> = s.iter().map(|v| self.display_repr(v)).collect();
+                    format!("{{{}}}", parts.join(", "))
                 }
             }
             Value::Namespace(ns) => format!("<module '{}'>", ns.name),
@@ -251,6 +264,80 @@ impl Interpreter {
             return super::py_interop::py_rbinop(h, op, &lv);
         }
         match (op, &lv, &rv) {
+            // セット演算（算術演算より先にチェック）
+            (BinOp::BitOr, Value::Set(a), Value::Set(b)) => {
+                let mut result = a.borrow().clone();
+                for v in b.borrow().iter() {
+                    if !result.iter().any(|x| self.values_eq(x, v)) {
+                        result.push(v.clone());
+                    }
+                }
+                Ok(Value::Set(Rc::new(RefCell::new(result))))
+            }
+            (BinOp::BitAnd, Value::Set(a), Value::Set(b)) => {
+                let b_ref = b.borrow();
+                let result: Vec<Value> = a.borrow().iter()
+                    .filter(|v| b_ref.iter().any(|x| self.values_eq(x, v)))
+                    .cloned().collect();
+                Ok(Value::Set(Rc::new(RefCell::new(result))))
+            }
+            (BinOp::Sub, Value::Set(a), Value::Set(b)) => {
+                let b_ref = b.borrow();
+                let result: Vec<Value> = a.borrow().iter()
+                    .filter(|v| !b_ref.iter().any(|x| self.values_eq(x, v)))
+                    .cloned().collect();
+                Ok(Value::Set(Rc::new(RefCell::new(result))))
+            }
+            (BinOp::BitXor, Value::Set(a), Value::Set(b)) => {
+                let a_ref = a.borrow();
+                let b_ref = b.borrow();
+                let mut result: Vec<Value> = a_ref.iter()
+                    .filter(|v| !b_ref.iter().any(|x| self.values_eq(x, v)))
+                    .cloned().collect();
+                for v in b_ref.iter() {
+                    if !a_ref.iter().any(|x| self.values_eq(x, v)) {
+                        result.push(v.clone());
+                    }
+                }
+                Ok(Value::Set(Rc::new(RefCell::new(result))))
+            }
+            // 包含検査 `in` / `not in`
+            (BinOp::In, item, Value::List(lst)) => {
+                Ok(Value::Bool(lst.borrow().iter().any(|v| self.values_eq(v, item))))
+            }
+            (BinOp::In, item, Value::Set(s)) => {
+                Ok(Value::Bool(s.borrow().iter().any(|v| self.values_eq(v, item))))
+            }
+            (BinOp::In, Value::Str(sub), Value::Str(s)) => {
+                Ok(Value::Bool(s.contains(sub.as_str())))
+            }
+            (BinOp::In, item, Value::Dict(d)) => {
+                Ok(Value::Bool(d.borrow().get(item).is_some()))
+            }
+            (BinOp::In, item, Value::Tuple(t)) => {
+                Ok(Value::Bool(t.all_values().iter().any(|v| self.values_eq(v, item))))
+            }
+            (BinOp::NotIn, item, Value::List(lst)) => {
+                Ok(Value::Bool(!lst.borrow().iter().any(|v| self.values_eq(v, item))))
+            }
+            (BinOp::NotIn, item, Value::Set(s)) => {
+                Ok(Value::Bool(!s.borrow().iter().any(|v| self.values_eq(v, item))))
+            }
+            (BinOp::NotIn, Value::Str(sub), Value::Str(s)) => {
+                Ok(Value::Bool(!s.contains(sub.as_str())))
+            }
+            (BinOp::NotIn, item, Value::Dict(d)) => {
+                Ok(Value::Bool(d.borrow().get(item).is_none()))
+            }
+            (BinOp::NotIn, item, Value::Tuple(t)) => {
+                Ok(Value::Bool(!t.all_values().iter().any(|v| self.values_eq(v, item))))
+            }
+            (BinOp::In, _, rv) => Err(format!(
+                "TypeError: argument of type '{}' is not iterable", self.type_name(rv)
+            )),
+            (BinOp::NotIn, _, rv) => Err(format!(
+                "TypeError: argument of type '{}' is not iterable", self.type_name(rv)
+            )),
             // 算術演算
             (BinOp::Add, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a + *b)),
             (BinOp::Add, Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a + *b)),
@@ -373,6 +460,13 @@ impl Interpreter {
                 let av = a.all_values();
                 let bv = b.all_values();
                 av.len() == bv.len() && av.iter().zip(bv.iter()).all(|(x, y)| self.values_eq(x, y))
+            }
+            // セットは要素数と各要素の包含関係で比較（順序無関係）
+            (Value::Set(a), Value::Set(b)) => {
+                let ar = a.borrow();
+                let br = b.borrow();
+                ar.len() == br.len()
+                    && ar.iter().all(|v| br.iter().any(|w| self.values_eq(v, w)))
             }
             _ => false,
         }

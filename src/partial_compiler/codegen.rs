@@ -59,6 +59,8 @@ const OP_BIT_OR: i32 = 14;
 const OP_BIT_XOR: i32 = 15;
 const OP_LSHIFT: i32 = 16;
 const OP_RSHIFT: i32 = 17;
+const OP_IN: i32 = 18;
+const OP_NOTIN: i32 = 19;
 
 // ── UnaryOp codes ─────────────────────────────────────────────────────────────
 const UOP_NEG: i32 = 0;
@@ -475,6 +477,8 @@ fn expr_eligible(expr: &Expr) -> bool {
         Expr::IsType { expr, .. } => expr_eligible(expr),
         // Template instantiation — treat the base as eligible
         Expr::TemplateInstantiate { base, .. } => expr_eligible(base),
+        // Set literals: ineligible (no native set support)
+        Expr::Set(_) => false,
         // Expression forms of control flow: ineligible
         Expr::Block { .. } | Expr::IfExpr { .. } | Expr::ForExpr { .. }
         | Expr::WhileExpr { .. } | Expr::MatchExpr { .. } => false,
@@ -893,6 +897,8 @@ fn binop_code(op: &BinOp) -> i32 {
         BinOp::BitXor   => 15,
         BinOp::LShift   => 16,
         BinOp::RShift   => 17,
+        BinOp::In       => 18,
+        BinOp::NotIn    => 19,
         BinOp::And | BinOp::Or => unreachable!("and/or handled separately"),
     }
 }

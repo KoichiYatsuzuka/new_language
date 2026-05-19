@@ -3200,3 +3200,277 @@ fn test_id_wrong_arg_count_error() {
     assert!(run("let r = id()\n").is_err());
     assert!(run("let r = id(1, 2)\n").is_err());
 }
+
+// ---------------------------------------------------------------------------
+// set type
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_set_literal_basic() {
+    let val = run_get("let s = {1, 2, 3}\n", "s");
+    if let Value::Set(items) = val {
+        let v = items.borrow();
+        assert_eq!(v.len(), 3);
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_literal_dedup() {
+    let val = run_get("let s = {1, 2, 2, 3, 1}\n", "s");
+    if let Value::Set(items) = val {
+        assert_eq!(items.borrow().len(), 3);
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_constructor_empty() {
+    let val = run_get("let s = set()\n", "s");
+    assert!(matches!(val, Value::Set(_)));
+    if let Value::Set(items) = val {
+        assert!(items.borrow().is_empty());
+    }
+}
+
+#[test]
+fn test_set_constructor_from_list() {
+    let val = run_get("let s = set([1, 2, 2, 3])\n", "s");
+    if let Value::Set(items) = val {
+        assert_eq!(items.borrow().len(), 3);
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_constructor_from_str() {
+    // "aab" → {'a', 'b'}
+    let val = run_get("let s = set(\"aab\")\n", "s");
+    if let Value::Set(items) = val {
+        assert_eq!(items.borrow().len(), 2);
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_add() {
+    let src = "let s = {1, 2}\ns.add(3)\n";
+    let val = run_get(src, "s");
+    if let Value::Set(items) = val {
+        assert_eq!(items.borrow().len(), 3);
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_add_duplicate() {
+    let src = "let s = {1, 2}\ns.add(2)\n";
+    let val = run_get(src, "s");
+    if let Value::Set(items) = val {
+        assert_eq!(items.borrow().len(), 2);
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_discard() {
+    let src = "let s = {1, 2, 3}\ns.discard(2)\n";
+    let val = run_get(src, "s");
+    if let Value::Set(items) = val {
+        assert_eq!(items.borrow().len(), 2);
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_discard_missing_no_error() {
+    assert!(run("let s = {1, 2}\ns.discard(99)\n").is_ok());
+}
+
+#[test]
+fn test_set_remove() {
+    let src = "let s = {1, 2, 3}\ns.remove(2)\n";
+    let val = run_get(src, "s");
+    if let Value::Set(items) = val {
+        assert_eq!(items.borrow().len(), 2);
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_remove_missing_error() {
+    assert!(run("let s = {1, 2}\ns.remove(99)\n").is_err());
+}
+
+#[test]
+fn test_set_pop() {
+    let src = "let s = {1, 2, 3}\nlet v = s.pop()\n";
+    let val = run_get(src, "v");
+    assert!(matches!(val, Value::Int(_)));
+}
+
+#[test]
+fn test_set_pop_empty_error() {
+    assert!(run("let s = set()\ns.pop()\n").is_err());
+}
+
+#[test]
+fn test_set_clear() {
+    let src = "let s = {1, 2, 3}\ns.clear()\n";
+    let val = run_get(src, "s");
+    if let Value::Set(items) = val {
+        assert!(items.borrow().is_empty());
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_len() {
+    let val = run_get("let n = len({1, 2, 3})\n", "n");
+    assert!(matches!(val, Value::Int(3)));
+}
+
+#[test]
+fn test_set_len_empty() {
+    let val = run_get("let n = len(set())\n", "n");
+    assert!(matches!(val, Value::Int(0)));
+}
+
+#[test]
+fn test_set_in_operator() {
+    let val = run_get("let r = 2 in {1, 2, 3}\n", "r");
+    assert!(matches!(val, Value::Bool(true)));
+}
+
+#[test]
+fn test_set_in_operator_false() {
+    let val = run_get("let r = 99 in {1, 2, 3}\n", "r");
+    assert!(matches!(val, Value::Bool(false)));
+}
+
+#[test]
+fn test_set_not_in_operator() {
+    let val = run_get("let r = 99 not in {1, 2, 3}\n", "r");
+    assert!(matches!(val, Value::Bool(true)));
+}
+
+#[test]
+fn test_set_union() {
+    let src = "let a = {1, 2}\nlet b = {2, 3}\nlet c = a | b\n";
+    let val = run_get(src, "c");
+    if let Value::Set(items) = val {
+        assert_eq!(items.borrow().len(), 3);
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_intersection() {
+    let src = "let a = {1, 2, 3}\nlet b = {2, 3, 4}\nlet c = a & b\n";
+    let val = run_get(src, "c");
+    if let Value::Set(items) = val {
+        assert_eq!(items.borrow().len(), 2);
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_difference() {
+    let src = "let a = {1, 2, 3}\nlet b = {2, 3}\nlet c = a - b\n";
+    let val = run_get(src, "c");
+    if let Value::Set(items) = val {
+        assert_eq!(items.borrow().len(), 1);
+        assert!(matches!(items.borrow()[0], Value::Int(1)));
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_symmetric_difference() {
+    let src = "let a = {1, 2, 3}\nlet b = {2, 3, 4}\nlet c = a ^ b\n";
+    let val = run_get(src, "c");
+    if let Value::Set(items) = val {
+        assert_eq!(items.borrow().len(), 2);
+    } else {
+        panic!("expected Set");
+    }
+}
+
+#[test]
+fn test_set_equality() {
+    let val = run_get("let r = {1, 2, 3} == {3, 1, 2}\n", "r");
+    assert!(matches!(val, Value::Bool(true)));
+}
+
+#[test]
+fn test_set_equality_false() {
+    let val = run_get("let r = {1, 2} == {1, 2, 3}\n", "r");
+    assert!(matches!(val, Value::Bool(false)));
+}
+
+#[test]
+fn test_set_issubset() {
+    let src = "let a = {1, 2}\nlet b = {1, 2, 3}\nlet r = a.issubset(b)\n";
+    let val = run_get(src, "r");
+    assert!(matches!(val, Value::Bool(true)));
+}
+
+#[test]
+fn test_set_issuperset() {
+    let src = "let a = {1, 2, 3}\nlet b = {1, 2}\nlet r = a.issuperset(b)\n";
+    let val = run_get(src, "r");
+    assert!(matches!(val, Value::Bool(true)));
+}
+
+#[test]
+fn test_set_iteration() {
+    let src = concat!(
+        "mut total = 0\n",
+        "for x in {1, 2, 3}:\n",
+        "    total = total + x\n",
+    );
+    let val = run_get(src, "total");
+    assert!(matches!(val, Value::Int(6)));
+}
+
+#[test]
+fn test_set_bool_truthy() {
+    let val = run_get("let r = bool({1})\n", "r");
+    assert!(matches!(val, Value::Bool(true)));
+}
+
+#[test]
+fn test_set_bool_falsy() {
+    let val = run_get("let r = bool(set())\n", "r");
+    assert!(matches!(val, Value::Bool(false)));
+}
+
+#[test]
+fn test_list_in_operator() {
+    let val = run_get("let r = 2 in [1, 2, 3]\n", "r");
+    assert!(matches!(val, Value::Bool(true)));
+}
+
+#[test]
+fn test_str_in_operator() {
+    let val = run_get("let r = \"bc\" in \"abcd\"\n", "r");
+    assert!(matches!(val, Value::Bool(true)));
+}
+
+#[test]
+fn test_dict_in_operator() {
+    let val = run_get("let r = \"a\" in {\"a\": 1, \"b\": 2}\n", "r");
+    assert!(matches!(val, Value::Bool(true)));
+}

@@ -43,6 +43,8 @@ pub const OP_BIT_OR: i32 = 14;
 pub const OP_BIT_XOR: i32 = 15;
 pub const OP_LSHIFT: i32 = 16;
 pub const OP_RSHIFT: i32 = 17;
+pub const OP_IN: i32 = 18;
+pub const OP_NOTIN: i32 = 19;
 
 // ── UnaryOp codes ────────────────────────────────────────────────────────────
 
@@ -224,6 +226,8 @@ fn i32_to_binop(op: i32) -> Option<crate::ast::BinOp> {
         OP_BIT_XOR => Some(BinOp::BitXor),
         OP_LSHIFT => Some(BinOp::LShift),
         OP_RSHIFT => Some(BinOp::RShift),
+        OP_IN     => Some(BinOp::In),
+        OP_NOTIN  => Some(BinOp::NotIn),
         _ => None,
     }
 }

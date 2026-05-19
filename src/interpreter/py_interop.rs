@@ -281,6 +281,19 @@ pub fn py_binop(handle: &PyObjHandle, op: &BinOp, rhs: &Value) -> Result<Value, 
             BinOp::And | BinOp::Or => return Err(pyo3::exceptions::PyTypeError::new_err(
                 "cannot apply 'and'/'or' to Python objects via binop"
             )),
+            BinOp::In => {
+                // obj (LHS item) in py_rhs (RHS container)
+                let container = py_rhs.bind(py);
+                let c = container.call_method1("__contains__", (obj.clone().unbind(),))?;
+                let b: bool = c.extract()?;
+                return Ok(Value::Bool(b));
+            },
+            BinOp::NotIn => {
+                let container = py_rhs.bind(py);
+                let c = container.call_method1("__contains__", (obj.clone().unbind(),))?;
+                let b: bool = c.extract()?;
+                return Ok(Value::Bool(!b));
+            },
         };
         Ok(py_to_tl(py, &result))
     })
@@ -316,6 +329,17 @@ pub fn py_rbinop(handle: &PyObjHandle, op: &BinOp, lhs: &Value) -> Result<Value,
             BinOp::And | BinOp::Or => return Err(pyo3::exceptions::PyTypeError::new_err(
                 "cannot apply 'and'/'or' to Python objects via binop"
             )),
+            BinOp::In => {
+                // py_lhs (item) in obj/handle (RHS container)
+                let c = obj.call_method1("__contains__", (py_lhs.clone_ref(py),))?;
+                let b: bool = c.extract()?;
+                return Ok(Value::Bool(b));
+            },
+            BinOp::NotIn => {
+                let c = obj.call_method1("__contains__", (py_lhs.clone_ref(py),))?;
+                let b: bool = c.extract()?;
+                return Ok(Value::Bool(!b));
+            },
         };
         Ok(py_to_tl(py, &result))
     })

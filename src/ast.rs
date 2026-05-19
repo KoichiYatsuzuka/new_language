@@ -114,6 +114,10 @@ pub enum BinOp {
     LShift,
     /// 右シフト `>>`
     RShift,
+    /// 包含検査 `in`
+    In,
+    /// 非包含検査 `not in`
+    NotIn,
 }
 
 impl BinOp {
@@ -133,6 +137,7 @@ impl BinOp {
             BinOp::And => "and", BinOp::Or => "or",
             BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^",
             BinOp::LShift => "<<", BinOp::RShift => ">>",
+            BinOp::In => "in", BinOp::NotIn => "not in",
         }
     }
 }
@@ -218,6 +223,9 @@ pub enum Expr {
     /// タプルリテラル: `(val, val, ...)` — 評価結果は `tuple[T1, T2, ...]` 型の値になる。
     /// 空タプル `()` や単要素タプル `(val,)` も含む。`(expr)` はタプルではなくグループ式。
     Tuple(Vec<Expr>),
+    /// セットリテラル: `{val, val, ...}` — 評価結果は `set` 型の値になる。
+    /// 空セットは `set()` コンストラクタで生成する（`{}` は空辞書）。
+    Set(Vec<Expr>),
     /// ブロック式: `block [->Type]: body`。
     ///
     /// `block_return value` で即座に終了してその値を返す。

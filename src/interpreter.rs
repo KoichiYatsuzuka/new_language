@@ -591,6 +591,8 @@ pub enum Value {
     Dict(Rc<RefCell<DictData>>),
     /// 不変・固定長のシーケンス。各要素に型情報を保持する。
     Tuple(Rc<TupleData>),
+    /// 重複なしの可変コレクション。要素の順序は保証しない。
+    Set(Rc<RefCell<Vec<Value>>>),
     /// import されたモジュールまたは名前空間。`.` でメンバにアクセスする。
     Namespace(Rc<NamespaceData>),
     /// PyO3 経由で保持する Python オブジェクトへの参照。
@@ -735,7 +737,7 @@ impl Interpreter {
         // 組み込み型値を事前定義: `int`, `str`, `float`, `bool`, `dict`, `function`, `slice` を型式として使えるようにする
         // `len` も `Value::Type` として登録しておく — ネイティブコードが cb_get_global("len") で取得して
         // call_value_with_args 経由で呼べるようにするため。
-        for name in ["int", "uint", "str", "float", "bool", "dict", "function", "len", "slice"] {
+        for name in ["int", "uint", "str", "float", "bool", "dict", "set", "function", "len", "slice"] {
             global.insert(name.to_string(), Var::new(Value::Type(name.to_string()), false));
         }
 

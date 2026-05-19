@@ -10,6 +10,13 @@ use crate::ast::{Accessibility, BinOp, Expr};
 
 use super::{DictData, ExecResult, FileData, FileOpenModeRust, ByteModeRust, GeneratorState, Interpreter, SliceValue, TupleData, Value, Var, NativeFnRef, RAISE_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH};
 
+/// ヘルパー: セットに要素を重複なしで追加する。
+fn set_insert(set: &mut Vec<Value>, item: Value, interp: &Interpreter) {
+    if !set.iter().any(|v| interp.values_eq(v, &item)) {
+        set.push(item);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // スライス計算ヘルパー
 // ---------------------------------------------------------------------------
@@ -365,6 +372,15 @@ impl Interpreter {
                     items,
                 }))))
             }
+            Expr::Set(items) => {
+                // セットリテラル: 各要素を評価し、重複を除いて Value::Set を構築する
+                let mut vals: Vec<Value> = Vec::new();
+                for item in items {
+                    let v = self.eval(item)?;
+                    set_insert(&mut vals, v, self);
+                }
+                Ok(Value::Set(Rc::new(RefCell::new(vals))))
+            }
             Expr::Subscript { object, index } => {
                 let obj = self.eval(object)?;
                 let key = self.eval(index)?;
@@ -554,6 +570,9 @@ impl Interpreter {
                             return match val {
                                 Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
                                 Value::Str(s) => Ok(Value::Int(s.len() as i64)),
+                                Value::Dict(d) => Ok(Value::Int(d.borrow().all_keys().len() as i64)),
+                                Value::Set(s) => Ok(Value::Int(s.borrow().len() as i64)),
+                                Value::Tuple(t) => Ok(Value::Int(t.len() as i64)),
                                 Value::PyObject(ref handle) => {
                                     super::py_interop::py_len(handle)
                                 }
@@ -569,6 +588,7 @@ impl Interpreter {
                                 Value::Instance(rc) => Rc::as_ptr(rc) as u64,
                                 Value::List(rc)     => Rc::as_ptr(rc) as u64,
                                 Value::Dict(rc)     => Rc::as_ptr(rc) as u64,
+                                Value::Set(rc)      => Rc::as_ptr(rc) as u64,
                                 Value::Function(rc) => Rc::as_ptr(rc) as u64,
                                 Value::OverloadedFn(v) => v.as_ptr() as u64,
                                 Value::Generator(rc)  => Rc::as_ptr(rc) as u64,
@@ -799,6 +819,7 @@ impl Interpreter {
                                 [Value::Str(s)] => Ok(Value::Bool(!s.is_empty())),
                                 [Value::None] => Ok(Value::Bool(false)),
                                 [Value::List(lst)] => Ok(Value::Bool(!lst.borrow().is_empty())),
+                                [Value::Set(s)] => Ok(Value::Bool(!s.borrow().is_empty())),
                                 [_] => Ok(Value::Bool(true)),
                                 _ => Err("TypeError: bool() takes at most 1 argument".to_string()),
                             },
@@ -806,6 +827,9 @@ impl Interpreter {
                                 ref v if v.is_empty() => Ok(Value::List(Rc::new(RefCell::new(vec![])))),
                                 _ if vals.len() == 1 => match vals.into_iter().next().unwrap() {
                                     Value::List(lst) => Ok(Value::List(lst)),
+                                    Value::Set(s) => {
+                                        Ok(Value::List(Rc::new(RefCell::new(s.borrow().clone()))))
+                                    },
                                     Value::Str(s) => {
                                         let chars = s.chars().map(|c| Value::Str(c.to_string())).collect();
                                         Ok(Value::List(Rc::new(RefCell::new(chars))))
@@ -813,6 +837,25 @@ impl Interpreter {
                                     other => Err(format!("TypeError: '{}' object is not iterable", self.type_name(&other))),
                                 },
                                 _ => Err("TypeError: list() takes at most 1 argument".to_string()),
+                            },
+                            "set" => match vals {
+                                ref v if v.is_empty() => Ok(Value::Set(Rc::new(RefCell::new(vec![])))),
+                                _ if vals.len() == 1 => {
+                                    let arg = vals.into_iter().next().unwrap();
+                                    let items: Vec<Value> = match arg {
+                                        Value::Set(s) => s.borrow().clone(),
+                                        Value::List(lst) => lst.borrow().clone(),
+                                        Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+                                        Value::Tuple(t) => t.all_values().to_vec(),
+                                        other => return Err(format!("TypeError: '{}' object is not iterable", self.type_name(&other))),
+                                    };
+                                    let mut result: Vec<Value> = Vec::new();
+                                    for v in items {
+                                        set_insert(&mut result, v, self);
+                                    }
+                                    Ok(Value::Set(Rc::new(RefCell::new(result))))
+                                },
+                                _ => Err("TypeError: set() takes at most 1 argument".to_string()),
                             },
                             "slice" => {
                                 // slice(begin, end) or slice(begin, end, step)
@@ -1074,6 +1117,9 @@ impl Interpreter {
                     "len" => match vals.as_slice() {
                         [Value::List(lst)] => Ok(Value::Int(lst.borrow().len() as i64)),
                         [Value::Str(s)] => Ok(Value::Int(s.len() as i64)),
+                        [Value::Dict(d)] => Ok(Value::Int(d.borrow().all_keys().len() as i64)),
+                        [Value::Set(s)] => Ok(Value::Int(s.borrow().len() as i64)),
+                        [Value::Tuple(t)] => Ok(Value::Int(t.len() as i64)),
                         [other] => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(other))),
                         _ => Err("TypeError: len() takes exactly 1 argument".to_string()),
                     },
@@ -1290,6 +1336,7 @@ impl Interpreter {
         let iter_val = self.eval(iter_expr)?;
         let generator = match iter_val {
             Value::List(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items.borrow().clone(), index: 0 }))),
+            Value::Set(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items.borrow().clone(), index: 0 }))),
             Value::Str(s) => {
                 let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
                 Value::Generator(Rc::new(RefCell::new(GeneratorState { values: chars, index: 0 })))

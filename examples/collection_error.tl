@@ -1,8 +1,12 @@
-# collection_error.tl — KeyError: accessing a missing dict key
+# collection_error.tl — intentional collection errors
 #
-# Expected error (runtime KeyError):
-#   Subscripting a dict with a key that does not exist raises a KeyError.
+# Each section raises a different runtime error.
+# Only one should be active at a time.
 
-let d = {"a": 1, "b": 2}
-print(d["a"])   # 1 — OK
-print(d["c"])   # KeyError: key 'c' not found
+# --- Error 1: KeyError — accessing a missing dict key ---
+# let d = {"a": 1, "b": 2}
+# print(d["c"])   # KeyError: key 'c' not found
+
+# --- Error 2: KeyError — set.remove() on an absent element ---
+let s = {1, 2, 3}
+s.remove(99)   # KeyError: 99 is not in set

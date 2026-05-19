@@ -250,6 +250,9 @@ impl Interpreter {
                         let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
                         Value::Generator(Rc::new(RefCell::new(GeneratorState { values: chars, index: 0 })))
                     }
+                    Value::Set(items) => {
+                        Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items.borrow().clone(), index: 0 })))
+                    }
                     Value::Generator(_) => iter_val,
                     Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[])?,
                     Value::PyObject(ref handle) => {

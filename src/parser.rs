@@ -2173,6 +2173,16 @@ impl Parser {
             let type_name = self.expect_guard_type_name()?;
             return Ok(Expr::IsType { expr: Box::new(left), negated: true, type_name, span });
         }
+        if *self.current() == Token::In {
+            self.advance();
+            let right = self.parse_bitor()?;
+            return Ok(Expr::BinOp { op: BinOp::In, left: Box::new(left), right: Box::new(right), span });
+        }
+        if *self.current() == Token::NotIn {
+            self.advance();
+            let right = self.parse_bitor()?;
+            return Ok(Expr::BinOp { op: BinOp::NotIn, left: Box::new(left), right: Box::new(right), span });
+        }
         let op = match self.current() {
             Token::EqEq => Some(BinOp::Eq),
             Token::NotEq => Some(BinOp::NotEq),
@@ -2532,7 +2542,7 @@ impl Parser {
             }
             Token::LParen   => self.parse_paren_expr(),
             Token::LBracket => self.parse_list_literal(),
-            Token::LBrace   => self.parse_dict_literal(),
+            Token::LBrace   => self.parse_dict_or_set_literal(),
             // `if cond [->Type]: body [elif/else]` — if 式
             Token::If => {
                 self.advance();
@@ -2637,24 +2647,52 @@ impl Parser {
     }
 
     /// `{key: value, ...}` 辞書リテラルをパースして `Expr::Dict` を返す。
+    /// `{...}` をパースして辞書またはセットリテラルを返す。
     ///
-    /// 空の `{}` も有効（`dict[Any, Any]` 型として扱われる）。
-    /// 括弧内では改行がスキップされるため、多行辞書リテラルも有効。
+    /// - `{}` → 空辞書 `Expr::Dict([])`
+    /// - `{key: val, ...}` → 辞書 `Expr::Dict([...])`
+    /// - `{val, val, ...}` → セット `Expr::Set([...])`
+    ///
+    /// 最初の式の後に `:` が続けば辞書、`,` または `}` が続けばセットとして扱う。
+    /// 括弧内では改行がスキップされるため、多行リテラルも有効。
     ///
     /// # エラー
-    /// キー・値の式または `}` のパースに失敗した場合
-    fn parse_dict_literal(&mut self) -> Result<Expr, String> {
+    /// 式または `}` のパースに失敗した場合
+    fn parse_dict_or_set_literal(&mut self) -> Result<Expr, String> {
         self.advance(); // consume `{`
-        let mut pairs = Vec::new();
-        while *self.current() != Token::RBrace && *self.current() != Token::Eof {
-            let key = self.parse_expr()?;
-            self.eat(&Token::Colon)?;
-            let val = self.parse_expr()?;
-            pairs.push((key, val));
-            if *self.current() == Token::Comma { self.advance(); } else { break; }
+        // Empty braces → empty dict
+        if *self.current() == Token::RBrace {
+            self.advance();
+            return Ok(Expr::Dict(vec![]));
         }
-        self.eat(&Token::RBrace)?;
-        Ok(Expr::Dict(pairs))
+        // Parse first expression to determine dict vs set
+        let first = self.parse_expr()?;
+        if *self.current() == Token::Colon {
+            // Dict path
+            self.advance(); // consume `:`
+            let val = self.parse_expr()?;
+            let mut pairs = vec![(first, val)];
+            while *self.current() == Token::Comma {
+                self.advance();
+                if *self.current() == Token::RBrace { break; }
+                let key = self.parse_expr()?;
+                self.eat(&Token::Colon)?;
+                let val = self.parse_expr()?;
+                pairs.push((key, val));
+            }
+            self.eat(&Token::RBrace)?;
+            Ok(Expr::Dict(pairs))
+        } else {
+            // Set path
+            let mut items = vec![first];
+            while *self.current() == Token::Comma {
+                self.advance();
+                if *self.current() == Token::RBrace { break; }
+                items.push(self.parse_expr()?);
+            }
+            self.eat(&Token::RBrace)?;
+            Ok(Expr::Set(items))
+        }
     }
 }
 

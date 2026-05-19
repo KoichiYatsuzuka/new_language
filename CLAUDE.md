@@ -58,8 +58,8 @@ test_lang/
 │   ├── functions__errors.tl   # ParseError (non-default after default) and TypeError (freeze captured mut)
 │   ├── class_trait.tl         # class, trait, inheritance, Self, new_type, access control
 │   ├── class_trait_error.tl   # immutable field and access control errors
-│   ├── collection.tl          # list, dict, tuple, subscript
-│   ├── collection_error.tl
+│   ├── collection.tl          # list, dict, tuple, set
+│   ├── collection_error.tl    # KeyError (missing dict key, set.remove on absent element)
 │   ├── polymorphism.tl        # templates, type guards, Union/Optional
 │   ├── polymorphism_error.tl
 │   ├── other_typing.tl        # Any, Union, Option, is/is not narrowing, enum
@@ -212,7 +212,9 @@ Source File
 - Function calls: `f(args)`, attribute access: `obj.attr`
 - List literals: `[a, b, c]`
 - Tuple literals, dictionary literals, subscript operators, control flow, classes, templates, `Self`, and `new_type`
+- **Set literals**: `{val, val, ...}` → `Expr::Set`; disambiguated from dict `{k: v}` by lookahead after first expression; `{}` → empty dict; `set()` constructor always produces empty set
 - **Slice syntax**: `obj[begin:end]`, `obj[begin:end:step]`, `obj[::step]`, etc. — generates `Expr::Slice`; `begin`/`end` are `Optional[Index]`, `step` is `Optional[int]`
+- **Membership operators**: `x in y` and `x not in y` — parsed in `parse_comparison` as `BinOp::In` / `BinOp::NotIn`; work for list, set, dict (key), str, tuple
 - Type guard expressions: `expr is TypeName` and `expr is not TypeName` (parsed as `Expr::IsType`)
 - Function type annotations: `function`, `function[let T]->R`, `function{let name:T}->R`, `function[]->R`
 - Function parameters support optional `let` / `mut` qualifiers (`let` = immutable, `mut` = mutable, absent = immutable)
@@ -247,6 +249,7 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Dictionary type
 - Tuple type
 - **Slice type** (`Value::Slice`): `obj[begin:end:step]` syntax and `slice(begin, end[, step])` constructor; `begin`/`end` are `Index` or `None`, `step` is `int` or `None`; supports list/str/tuple slicing with Python-compatible semantics; `.begin`, `.end`, `.step` attribute access
+- **Set type** (`Value::Set`): `{a, b, c}` literal (deduplicated); `set()` constructor (from list/str/tuple/set); methods: `add`, `remove`, `discard`, `pop`, `clear`, `copy`, `union`, `intersection`, `difference`, `symmetric_difference`, `issubset`, `issuperset`; operators `|`, `&`, `-`, `^`; `in`/`not in` membership; iteration; `len()`; equality (`==`/`!=`); static type annotation `set` / `set[T]`
 - `import[py]`
 - `import[py-int]`
 - `import[tl]` — force `.tl` source, always tree-walk (ignores `.tlc`)
@@ -288,7 +291,6 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Runtime return type checking for `block_return`/`loop_yield` against `->Type` annotations
 - Mixing check: `block_return` and `loop_yield` in the same block expression (currently not statically detected)
 - Static access checking for `private`/`protected` (currently runtime `AccessError` only; no `StaticTypeError` at parse/type-check time)
-- Set type (`{a, b}`)
 - Imports (`import` / `from ... import`)
 - Native compilation: closures (inner functions capturing outer variables), generators, `try`/`raise`, `block_return`/`loop_yield`, and `static mut` are not yet supported in compiled functions
 - Python implementation
@@ -311,7 +313,6 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 
 ## Next Features to Implement (Priority Order)
 
-1. **Set type** (`{a, b}`)
-2. **Imports** (`import` / `from ... import`)
-3. **Expand native compilation** — support closures, generators, `try`/`raise`, and `block_return`/`loop_yield` in compiled functions
+1. **Imports** (`import` / `from ... import`)
+2. **Expand native compilation** — support closures, generators, `try`/`raise`, and `block_return`/`loop_yield` in compiled functions
 

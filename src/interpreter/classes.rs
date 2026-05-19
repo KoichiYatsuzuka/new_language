@@ -290,6 +290,184 @@ impl Interpreter {
                     _ => Err(format!("AttributeError: 'dict' object has no method '{method_name}'")),
                 }
             }
+            Value::Set(s) => {
+                match method_name {
+                    "__iter__" => {
+                        if !args.is_empty() {
+                            return Err("TypeError: set.__iter__() takes no arguments".to_string());
+                        }
+                        let items = s.borrow().clone();
+                        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items, index: 0 }))))
+                    }
+                    "add" => {
+                        let evaled = self.eval_call_args(args)?;
+                        if evaled.len() != 1 {
+                            return Err("TypeError: set.add() takes exactly 1 argument".to_string());
+                        }
+                        let item = evaled.into_iter().next().unwrap().1;
+                        let mut s_mut = s.borrow_mut();
+                        if !s_mut.iter().any(|v| self.values_eq(v, &item)) {
+                            s_mut.push(item);
+                        }
+                        Ok(Value::None)
+                    }
+                    "discard" => {
+                        let evaled = self.eval_call_args(args)?;
+                        if evaled.len() != 1 {
+                            return Err("TypeError: set.discard() takes exactly 1 argument".to_string());
+                        }
+                        let item = &evaled[0].1;
+                        let mut s_mut = s.borrow_mut();
+                        if let Some(pos) = s_mut.iter().position(|v| self.values_eq(v, item)) {
+                            s_mut.remove(pos);
+                        }
+                        Ok(Value::None)
+                    }
+                    "remove" => {
+                        let evaled = self.eval_call_args(args)?;
+                        if evaled.len() != 1 {
+                            return Err("TypeError: set.remove() takes exactly 1 argument".to_string());
+                        }
+                        let item = &evaled[0].1;
+                        let mut s_mut = s.borrow_mut();
+                        if let Some(pos) = s_mut.iter().position(|v| self.values_eq(v, item)) {
+                            s_mut.remove(pos);
+                            Ok(Value::None)
+                        } else {
+                            Err(format!("KeyError: {} is not in set", self.display(item)))
+                        }
+                    }
+                    "pop" => {
+                        if !args.is_empty() {
+                            return Err("TypeError: set.pop() takes no arguments".to_string());
+                        }
+                        let mut s_mut = s.borrow_mut();
+                        if s_mut.is_empty() {
+                            Err("KeyError: pop from an empty set".to_string())
+                        } else {
+                            Ok(s_mut.remove(0))
+                        }
+                    }
+                    "clear" => {
+                        if !args.is_empty() {
+                            return Err("TypeError: set.clear() takes no arguments".to_string());
+                        }
+                        s.borrow_mut().clear();
+                        Ok(Value::None)
+                    }
+                    "copy" => {
+                        if !args.is_empty() {
+                            return Err("TypeError: set.copy() takes no arguments".to_string());
+                        }
+                        Ok(Value::Set(Rc::new(RefCell::new(s.borrow().clone()))))
+                    }
+                    "union" => {
+                        let evaled = self.eval_call_args(args)?;
+                        if evaled.len() != 1 {
+                            return Err("TypeError: set.union() takes exactly 1 argument".to_string());
+                        }
+                        let other = &evaled[0].1;
+                        let other_items: Vec<Value> = match other {
+                            Value::Set(o) => o.borrow().clone(),
+                            Value::List(l) => l.borrow().clone(),
+                            _ => return Err(format!("TypeError: set.union() argument must be a set or list, not '{}'", self.type_name(other))),
+                        };
+                        let mut result = s.borrow().clone();
+                        for v in other_items {
+                            if !result.iter().any(|x| self.values_eq(x, &v)) {
+                                result.push(v);
+                            }
+                        }
+                        Ok(Value::Set(Rc::new(RefCell::new(result))))
+                    }
+                    "intersection" => {
+                        let evaled = self.eval_call_args(args)?;
+                        if evaled.len() != 1 {
+                            return Err("TypeError: set.intersection() takes exactly 1 argument".to_string());
+                        }
+                        let other = &evaled[0].1;
+                        let other_items: Vec<Value> = match other {
+                            Value::Set(o) => o.borrow().clone(),
+                            Value::List(l) => l.borrow().clone(),
+                            _ => return Err(format!("TypeError: set.intersection() argument must be a set or list, not '{}'", self.type_name(other))),
+                        };
+                        let result: Vec<Value> = s.borrow().iter()
+                            .filter(|v| other_items.iter().any(|x| self.values_eq(x, v)))
+                            .cloned().collect();
+                        Ok(Value::Set(Rc::new(RefCell::new(result))))
+                    }
+                    "difference" => {
+                        let evaled = self.eval_call_args(args)?;
+                        if evaled.len() != 1 {
+                            return Err("TypeError: set.difference() takes exactly 1 argument".to_string());
+                        }
+                        let other = &evaled[0].1;
+                        let other_items: Vec<Value> = match other {
+                            Value::Set(o) => o.borrow().clone(),
+                            Value::List(l) => l.borrow().clone(),
+                            _ => return Err(format!("TypeError: set.difference() argument must be a set or list, not '{}'", self.type_name(other))),
+                        };
+                        let result: Vec<Value> = s.borrow().iter()
+                            .filter(|v| !other_items.iter().any(|x| self.values_eq(x, v)))
+                            .cloned().collect();
+                        Ok(Value::Set(Rc::new(RefCell::new(result))))
+                    }
+                    "symmetric_difference" => {
+                        let evaled = self.eval_call_args(args)?;
+                        if evaled.len() != 1 {
+                            return Err("TypeError: set.symmetric_difference() takes exactly 1 argument".to_string());
+                        }
+                        let other = &evaled[0].1;
+                        let other_items: Vec<Value> = match other {
+                            Value::Set(o) => o.borrow().clone(),
+                            Value::List(l) => l.borrow().clone(),
+                            _ => return Err(format!("TypeError: set.symmetric_difference() argument must be a set or list, not '{}'", self.type_name(other))),
+                        };
+                        let s_ref = s.borrow();
+                        let mut result: Vec<Value> = s_ref.iter()
+                            .filter(|v| !other_items.iter().any(|x| self.values_eq(x, v)))
+                            .cloned().collect();
+                        for v in &other_items {
+                            if !s_ref.iter().any(|x| self.values_eq(x, v)) {
+                                result.push(v.clone());
+                            }
+                        }
+                        Ok(Value::Set(Rc::new(RefCell::new(result))))
+                    }
+                    "issubset" => {
+                        let evaled = self.eval_call_args(args)?;
+                        if evaled.len() != 1 {
+                            return Err("TypeError: set.issubset() takes exactly 1 argument".to_string());
+                        }
+                        let other = &evaled[0].1;
+                        let other_items: Vec<Value> = match other {
+                            Value::Set(o) => o.borrow().clone(),
+                            Value::List(l) => l.borrow().clone(),
+                            _ => return Err(format!("TypeError: set.issubset() argument must be a set or list, not '{}'", self.type_name(other))),
+                        };
+                        let result = s.borrow().iter()
+                            .all(|v| other_items.iter().any(|x| self.values_eq(x, v)));
+                        Ok(Value::Bool(result))
+                    }
+                    "issuperset" => {
+                        let evaled = self.eval_call_args(args)?;
+                        if evaled.len() != 1 {
+                            return Err("TypeError: set.issuperset() takes exactly 1 argument".to_string());
+                        }
+                        let other = &evaled[0].1;
+                        let other_items: Vec<Value> = match other {
+                            Value::Set(o) => o.borrow().clone(),
+                            Value::List(l) => l.borrow().clone(),
+                            _ => return Err(format!("TypeError: set.issuperset() argument must be a set or list, not '{}'", self.type_name(other))),
+                        };
+                        let s_ref = s.borrow();
+                        let result = other_items.iter()
+                            .all(|v| s_ref.iter().any(|x| self.values_eq(x, v)));
+                        Ok(Value::Bool(result))
+                    }
+                    _ => Err(format!("AttributeError: 'set' object has no method '{method_name}'")),
+                }
+            }
             Value::Generator(state) => {
                 if method_name != "next" {
                     return Err(format!(

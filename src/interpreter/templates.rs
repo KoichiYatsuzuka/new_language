@@ -379,6 +379,7 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             }).collect(),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
         },
+        Expr::Set(items) => Expr::Set(items.iter().map(|e| subst_expr(e, type_map)).collect()),
     }
 }
 

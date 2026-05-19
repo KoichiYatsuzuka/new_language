@@ -1,4 +1,4 @@
-# collection.tl — list, dict, and tuple
+# collection.tl — list, dict, tuple, and set
 
 # ============================================================
 # 1. List
@@ -103,7 +103,88 @@ let nested_t = ((1, 2), (3, 4))
 print(nested_t)   # ((1, 2), (3, 4))
 
 # ============================================================
-# 4. Mixed usage
+# 4. Set
+# ============================================================
+print("=== set ===")
+
+# Set literal — automatically deduplicated
+let s = {1, 2, 2, 3, 1}
+print(s)           # {1, 2, 3}
+print(len(s))      # 3
+
+# Empty set via constructor (not {}, which is an empty dict)
+let e = set()
+print(e)           # set()
+print(bool(e))     # False
+
+# set() from list / string
+let from_list = set([4, 5, 4, 6])
+print(from_list)   # {4, 5, 6}
+let chars = set("hello")
+print(len(chars))  # 4  (h, e, l, o)
+
+# add / discard / remove
+let a = {10, 20, 30}
+a.add(40)
+print(a)          # {10, 20, 30, 40}
+a.discard(20)
+print(a)          # {10, 30, 40}
+a.discard(99)     # no error when element is absent
+a.remove(30)
+print(a)          # {10, 40}
+
+# pop / clear
+let b = {7, 8, 9}
+let popped = b.pop()
+print(len(b))     # 2
+let c = {1, 2, 3}
+c.clear()
+print(c)          # set()
+
+# in / not in
+print(2 in {1, 2, 3})        # True
+print(99 not in {1, 2, 3})   # True
+
+# Set operators: | & - ^
+let x = {1, 2, 3}
+let y = {2, 3, 4}
+print(x | y)   # {1, 2, 3, 4}  union
+print(x & y)   # {2, 3}        intersection
+print(x - y)   # {1}           difference
+print(x ^ y)   # {1, 4}        symmetric difference
+
+# Method equivalents
+print(x.union(y))                 # {1, 2, 3, 4}
+print(x.intersection(y))         # {2, 3}
+print(x.difference(y))           # {1}
+print(x.symmetric_difference(y)) # {1, 4}
+
+# Equality
+print({1, 2, 3} == {3, 2, 1})   # True
+print({1, 2} == {1, 2, 3})      # False
+
+# issubset / issuperset
+let small = {1, 2}
+let big   = {1, 2, 3}
+print(small.issubset(big))    # True
+print(big.issuperset(small))  # True
+print(big.issubset(small))    # False
+
+# copy
+let orig = {1, 2, 3}
+let cp = orig.copy()
+cp.add(4)
+print(orig)   # {1, 2, 3}  (unaffected)
+print(cp)     # {1, 2, 3, 4}
+
+# Iteration
+mut total = 0
+for n in {1, 2, 3, 4, 5}:
+    total = total + n
+print(total)   # 15
+
+# ============================================================
+# 5. Mixed usage
 # ============================================================
 print("=== mixed ===")
 
