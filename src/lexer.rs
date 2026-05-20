@@ -805,11 +805,14 @@ impl Lexer {
                 }
             }
 
-            // `=` または `==`
+            // `=` / `==` / `=>`
             '=' => {
                 if self.ch() == Some('=') {
                     self.pos += 1;
                     Token::EqEq
+                } else if self.ch() == Some('>') {
+                    self.pos += 1;
+                    Token::FatArrow
                 } else {
                     Token::Eq
                 }

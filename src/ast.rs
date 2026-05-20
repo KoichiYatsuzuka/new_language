@@ -270,6 +270,19 @@ pub enum Expr {
         arms: Vec<MatchArm>,
         return_type: Option<String>,
     },
+    /// キャスト式: `expr => TypeName`。
+    ///
+    /// インスタンスが `__cast__[TypeName]` 特殊メソッドを持つ場合に呼び出す。
+    /// `new_type` へのキャストはコンストラクタ呼び出しに自動変換される。
+    /// `let` パラメータへの代入時に型が合わない場合も自動的に適用される。
+    Cast {
+        /// キャスト対象の式。
+        object: Box<Expr>,
+        /// キャスト先の型名文字列（例: `"int"`, `"dict[str, int]"`）。
+        type_name: String,
+        /// エラー報告に使用する位置情報。
+        span: Span,
+    },
     /// 型ガード式: `expr is TypeName` または `expr is not TypeName`。
     /// ランタイムでは `Bool` を返す。型検査器は直後の `if` 分岐内でオペランドの型を絞り込む。
     /// - `negated: false` → `is`  （真なら型が一致）

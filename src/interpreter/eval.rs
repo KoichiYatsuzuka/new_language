@@ -299,6 +299,7 @@ impl Interpreter {
                 Ok(Value::Bool(if *negated { !result } else { result }))
             }
             Expr::Call { func, args } => self.eval_call(func, args),
+            Expr::Cast { object, type_name, .. } => self.eval_cast(object, type_name),
         }
     }
 
@@ -594,6 +595,49 @@ impl Interpreter {
                 self.eval_type_constructor_call(&type_name, args)
             }
             other => Err(format!("TypeError: '{}' object is not callable", self.type_name(&other))),
+        }
+    }
+
+    /// キャスト式 `obj => TypeName` を評価する。
+    ///
+    /// 動作:
+    /// 1. ターゲット型が `new_type` クラスの場合 → コンストラクタ呼び出し `TypeName(obj)`
+    /// 2. オブジェクトがインスタンスで `__cast__[TypeName]` メソッドを持つ場合 → そのメソッドを呼び出す
+    /// 3. それ以外 → TypeError
+    fn eval_cast(&mut self, object: &crate::ast::Expr, type_name: &str) -> Result<Value, String> {
+        let obj = self.eval(object)?;
+
+        // --- new_type へのダウンキャスト: TypeName(obj) と等価 ---
+        if let Some(target_val) = self.get_val(type_name) {
+            if let Value::Class(ref cls) = target_val {
+                if cls.new_type_base.is_some() {
+                    let cls_rc = cls.clone();
+                    return self.instantiate_evaled(cls_rc, vec![(None, obj)]);
+                }
+            }
+        }
+
+        // --- インスタンスの __cast__[TypeName] メソッド呼び出し ---
+        match &obj {
+            Value::Instance(inst_rc) => {
+                let class = inst_rc.borrow().class.clone();
+                let method_key = format!("__cast__[{}]", type_name);
+                let overloads = self.lookup_method_in_class(&class, &method_key)
+                    .ok_or_else(|| format!(
+                        "TypeError: '{}' is not castable to '{}' (no __cast__[{}] method defined)",
+                        class.name, type_name, type_name
+                    ))?;
+                if overloads.len() == 1 {
+                    self.exec_fn(overloads[0].clone(), &[], Some(obj), "__cast__")
+                } else {
+                    self.dispatch_overload(overloads, &[], Some(obj))
+                }
+            }
+            other => Err(format!(
+                "TypeError: cast operator '=>' requires an instance or new_type target, \
+                 got '{}' cast to '{}'",
+                self.type_name(other), type_name
+            )),
         }
     }
 

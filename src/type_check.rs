@@ -760,7 +760,13 @@ impl TypeChecker {
                     // クラスメソッドのシグネチャを収集（Self 型検査に使用）。
                     let mut cls_methods: HashMap<String, Vec<FnSig>> = HashMap::new();
                     for s in body.iter() {
-                        if let Stmt::FnDef { name: mname, params, return_type, .. } = s {
+                        if let Stmt::FnDef { name: mname, template_params, params, return_type, .. } = s {
+                            // `__cast__[TypeName]` メソッドはキャスト専用のキー名で格納する。
+                            let storage_name = if mname == "__cast__" && !template_params.is_empty() {
+                                format!("__cast__[{}]", template_params[0].name)
+                            } else {
+                                mname.clone()
+                            };
                             let sig = FnSig {
                                 params: params.iter()
                                     .map(|p| (p.name.clone(), p.type_ann.as_deref().and_then(InferredType::from_ann)))
@@ -768,7 +774,7 @@ impl TypeChecker {
                                 required_count: params.iter().filter(|p| p.default.is_none()).count(),
                                 return_type: return_type.as_deref().and_then(InferredType::from_ann),
                             };
-                            cls_methods.entry(mname.clone()).or_default().push(sig);
+                            cls_methods.entry(storage_name).or_default().push(sig);
                         }
                     }
                     self.class_method_sigs.insert(name.clone(), cls_methods);
@@ -1565,6 +1571,10 @@ impl TypeChecker {
                     InferredType::Unresolved
                 }
             }
+            // キャスト式: ターゲット型を返す（静的型検査は省略し、実行時に委ねる）。
+            Expr::Cast { type_name, .. } => {
+                InferredType::from_ann(type_name).unwrap_or(InferredType::Unresolved)
+            }
         }
     }
 
@@ -1602,6 +1612,16 @@ impl TypeChecker {
         // Union パラメータ: 引数が Union の直接メンバかどうかを確認する。
         if let InferredType::Union(union_types) = expected {
             return union_types.contains(arg_ty);
+        }
+        // 自動キャスト: 引数の型がインスタンス型で、そのクラスが期待型への __cast__ を持つ場合は許可。
+        if let InferredType::NamedInstance(class_name) = arg_ty {
+            let expected_name = expected.to_string();
+            let cast_key = format!("__cast__[{}]", expected_name);
+            if let Some(methods) = self.class_method_sigs.get(class_name.as_str()) {
+                if methods.contains_key(&cast_key) {
+                    return true;
+                }
+            }
         }
         false
     }

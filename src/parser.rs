@@ -1875,15 +1875,22 @@ impl Parser {
         self.advance(); // consume `[`
         let mut params = Vec::new();
         while *self.current() != Token::RBracket && *self.current() != Token::Eof {
-            let name = self.expect_ident()?;
-            self.eat(&Token::Colon)?;
-            // 最初のトレイト制約を読む
-            let mut constraints = vec![self.expect_ident()?];
-            // `and` で複数のトレイト制約を結合: `T: TraitA and TraitB`
-            while *self.current() == Token::And {
-                self.advance();
-                constraints.push(self.expect_ident()?);
-            }
+            // 型名として完全な型式（例: `int`, `dict[str, int]`, `T`）を受け付ける。
+            // `__cast__[int]` のように制約なしの具体型名を使える。
+            let name = self.parse_type_expr()?;
+            // `: constraint` は省略可能。省略した場合は制約なし。
+            let constraints = if *self.current() == Token::Colon {
+                self.advance(); // consume `:`
+                let mut cs = vec![self.expect_ident()?];
+                // `and` で複数のトレイト制約を結合: `T: TraitA and TraitB`
+                while *self.current() == Token::And {
+                    self.advance();
+                    cs.push(self.expect_ident()?);
+                }
+                cs
+            } else {
+                vec![]
+            };
             params.push(TemplateParam { name, constraints });
             if *self.current() == Token::Comma {
                 self.advance();
@@ -2508,6 +2515,14 @@ impl Parser {
                 Token::LBracket => {
                     // `[` の後がテンプレート呼び出しか subscript かを判定して処理
                     expr = self.parse_bracket_suffix(expr)?;
+                }
+                Token::FatArrow => {
+                    // `expr => Type` — キャスト式。`=>` を消費して型名をパースする。
+                    let span = self.current_span();
+                    self.advance(); // consume `=>`
+                    let type_name = self.parse_type_expr()?;
+                    expr = Expr::Cast { object: Box::new(expr), type_name, span };
+                    // ループを継続して `.method()` などをチェーン可能にする
                 }
                 _ => break,
             }

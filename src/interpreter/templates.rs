@@ -208,13 +208,18 @@ impl Interpreter {
         let mut static_vars: HashMap<String, Rc<RefCell<Value>>> = HashMap::new();
         for stmt in &concrete_body {
             match stmt {
-                Stmt::FnDef { name: mname, params, body: mbody, access: macc, is_static, is_class_method, .. } => {
-                    if *is_static { static_method_names.insert(mname.clone()); }
-                    if *is_class_method { class_method_names.insert(mname.clone()); }
+                Stmt::FnDef { name: mname, template_params, params, body: mbody, access: macc, is_static, is_class_method, .. } => {
+                    let storage_name = if mname == "__cast__" && !template_params.is_empty() {
+                        format!("__cast__[{}]", template_params[0].name)
+                    } else {
+                        mname.clone()
+                    };
+                    if *is_static { static_method_names.insert(storage_name.clone()); }
+                    if *is_class_method { class_method_names.insert(storage_name.clone()); }
                     if *macc != crate::ast::Accessibility::Public {
-                        method_access.insert(mname.clone(), macc.clone());
+                        method_access.insert(storage_name.clone(), macc.clone());
                     }
-                    methods.entry(mname.clone()).or_default().push(Rc::new(FnValue {
+                    methods.entry(storage_name).or_default().push(Rc::new(FnValue {
                         name: mname.clone(),
                         params: params.clone(),
                         body: mbody.clone(),
@@ -398,6 +403,11 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
         },
         Expr::Set(items) => Expr::Set(items.iter().map(|e| subst_expr(e, type_map)).collect()),
+        Expr::Cast { object, type_name, span } => Expr::Cast {
+            object: Box::new(subst_expr(object, type_map)),
+            type_name: subst_type(type_name, type_map),
+            span: span.clone(),
+        },
     }
 }
 

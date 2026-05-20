@@ -778,6 +778,7 @@ impl Interpreter {
             match stmt {
                 Stmt::FnDef {
                     name: mname,
+                    template_params,
                     params,
                     body: mbody,
                     decorators: mdecs,
@@ -793,17 +794,24 @@ impl Interpreter {
                         is_python: self.in_python_module,
                         captured_env: HashMap::new(),
                     });
+                    // `__cast__[TypeName]` メソッドはキャスト専用のキー名で格納する。
+                    // テンプレートパラメータの名前（具体型名）をキーとして使用する。
+                    let storage_name = if mname == "__cast__" && !template_params.is_empty() {
+                        format!("__cast__[{}]", template_params[0].name)
+                    } else {
+                        mname.clone()
+                    };
                     if *is_static {
-                        static_method_names.insert(mname.clone());
+                        static_method_names.insert(storage_name.clone());
                     }
                     if *is_class_method {
-                        class_method_names.insert(mname.clone());
+                        class_method_names.insert(storage_name.clone());
                     }
                     if *macc != Accessibility::Public {
-                        method_access.insert(mname.clone(), macc.clone());
+                        method_access.insert(storage_name.clone(), macc.clone());
                     }
                     if mdecs.is_empty() {
-                        methods.entry(mname.clone()).or_default().push(fn_val);
+                        methods.entry(storage_name).or_default().push(fn_val);
                     } else {
                         let mut value = Value::Function(fn_val);
                         for dec_expr in mdecs.iter().rev() {
@@ -812,7 +820,7 @@ impl Interpreter {
                         }
                         match value {
                             Value::Function(f) => {
-                                methods.entry(mname.clone()).or_default().push(f)
+                                methods.entry(storage_name).or_default().push(f)
                             }
                             other => return Err(format!(
                                 "TypeError: method decorator on '{}' must return a function, got '{}'",

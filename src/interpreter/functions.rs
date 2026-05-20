@@ -50,11 +50,53 @@ impl Interpreter {
             }
         }
 
-        let (bindings, extra_kwargs) = if fn_val.is_python {
+        let (mut bindings, extra_kwargs) = if fn_val.is_python {
             Self::bind_args_relaxed(&fn_val.params, evaled, self_val.clone(), &evaluated_defaults)?
         } else {
             (Self::bind_args(&fn_val.params, evaled, self_val.clone(), &evaluated_defaults)?, vec![])
         };
+
+        // 自動キャスト: `let` パラメータに型アノテーションがあり、渡された値がインスタンスで
+        // かつ型が異なる場合、__cast__[TypeName] メソッドが定義されていれば自動的にキャストする。
+        // `mut` パラメータは自動キャストしない。
+        {
+            let params_ref = fn_val.params.clone();
+            // 第1パス: キャスト対象を特定する（self は除外）
+            let mut cast_targets: Vec<(usize, String, Value)> = Vec::new();
+            for (idx, (name, val, mutable)) in bindings.iter().enumerate() {
+                if *mutable || name == "self" { continue; }
+                let type_ann = params_ref.iter()
+                    .find(|p| &p.name == name)
+                    .and_then(|p| p.type_ann.as_deref());
+                if let (Some(type_ann), Value::Instance(inst_rc)) = (type_ann, val) {
+                    let class = inst_rc.borrow().class.clone();
+                    if class.name != type_ann {
+                        let method_key = format!("__cast__[{}]", type_ann);
+                        if self.lookup_method_in_class(&class, &method_key).is_some() {
+                            cast_targets.push((idx, type_ann.to_string(), val.clone()));
+                        }
+                    }
+                }
+            }
+            // 第2パス: 実際にキャストを実行して binding を更新する
+            for (idx, type_ann, val) in cast_targets {
+                let class = match &bindings[idx].1 {
+                    Value::Instance(rc) => rc.borrow().class.clone(),
+                    _ => continue,
+                };
+                let method_key = format!("__cast__[{}]", type_ann);
+                let overloads = match self.lookup_method_in_class(&class, &method_key) {
+                    Some(ov) => ov,
+                    None => continue,
+                };
+                let cast_result = if overloads.len() == 1 {
+                    self.exec_fn(overloads[0].clone(), &[], Some(val), "__cast__")?
+                } else {
+                    self.dispatch_overload(overloads, &[], Some(val))?
+                };
+                bindings[idx].1 = cast_result;
+            }
+        }
 
         // グローバルスコープ（インデックス 0）以外を一時退避して関数専用スコープを構築する
         let outer_scopes: Vec<_> = self.scopes.drain(1..).collect();

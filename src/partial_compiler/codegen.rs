@@ -484,6 +484,8 @@ fn expr_eligible(expr: &Expr) -> bool {
         // Expression forms of control flow: ineligible
         Expr::Block { .. } | Expr::IfExpr { .. } | Expr::ForExpr { .. }
         | Expr::WhileExpr { .. } | Expr::MatchExpr { .. } => false,
+        // Cast expressions: ineligible (runtime dispatch required)
+        Expr::Cast { .. } => false,
     }
 }
 
