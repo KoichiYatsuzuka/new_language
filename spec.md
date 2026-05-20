@@ -59,7 +59,9 @@ test_lang/
   → Interpreter   ツリーウォーク実行
 ```
 
+---
 ## 機能
+基本はPythonに同じ。特にPythonと異なる点を挙げる
 
 ### 変数のlet/mut/const属性
 - 変数は可変（mut）、非可変（let）、定数（const）属性が付与されなければならない。
