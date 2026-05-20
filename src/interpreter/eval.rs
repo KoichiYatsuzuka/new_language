@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::ast::{Accessibility, BinOp, CallArg, Expr};
+use crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchArm, MatchPattern};
 
 use super::{DictData, ExecResult, FileData, FileOpenModeRust, ByteModeRust, GeneratorState, Interpreter, SliceValue, TupleData, Value, Var, NativeFnRef, RAISE_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH};
 
@@ -208,21 +208,7 @@ impl Interpreter {
         }
     }
 
-    /// 式（`Expr`）を評価して `Value` を返す。インタープリタの式評価のメインエントリポイント。
-    ///
-    /// 各 `Expr` バリアントを再帰的に処理する:
-    /// - リテラル値（Int/Float/Str/Bool/None）はそのまま対応する `Value` に変換
-    /// - `Ident`: スコープ検索して変数の値を返す
-    /// - `Attr` / `TraitAccess`: インスタンスフィールド・クラス変数・メソッドを順に検索
-    /// - `List` / `Tuple` / `Dict`: 各要素を評価してコレクション値を構築
-    /// - `Subscript`: 辞書のキールックアップ
-    /// - `BinOp`: `and`/`or` は短絡評価、それ以外は `apply_binop` に委譲
-    /// - `Call`: テンプレート呼び出し・メソッド呼び出し・組み込み関数・ユーザー定義関数の順に処理
-    /// - `TemplateInstantiate`: 単独では使用不可（`Call` の一部として処理する）
-    ///
-    /// - `expr`: 評価する式の AST ノード
-    ///
-    /// 戻り値: `Ok(Value)` — 評価結果。`Err(message)` — ランタイムエラー（NameError 等）
+    /// 式（`Expr`）を評価して `Value` を返す。各バリアントを専用メソッドに委譲する薄いディスパッチャ。
     pub fn eval(&mut self, expr: &Expr) -> Result<Value, String> {
         match expr {
             Expr::Int(n) => Ok(Value::Int(*n)),
@@ -234,174 +220,10 @@ impl Interpreter {
                 .get_val(name)
                 .ok_or_else(|| format!("NameError: '{name}' is not defined")),
             Expr::TraitAccess { object, trait_name, attr } => {
-                // `object::TraitName::attr` 形式のトレイトフィールドアクセス
-                let obj_val = self.eval(object)?;
-                match obj_val {
-                    Value::Instance(inst_rc) => {
-                        let inst = inst_rc.borrow();
-                        // フィールドは "TraitName::attr" のキーで格納されている
-                        let key = format!("{}::{}", trait_name, attr);
-                        if let Some((v, _)) = inst.fields.get(&key) {
-                            return Ok(v.clone());
-                        }
-                        Err(format!(
-                            "AttributeError: trait field '{trait_name}::{attr}' not found on '{}'",
-                            inst.class.name
-                        ))
-                    }
-                    _ => Err("AttributeError: cannot access trait field on non-instance".to_string()),
-                }
+                self.eval_trait_access(object, trait_name, attr)
             }
-            Expr::Attr { object, attr } => {
-                // `object.attr` 形式の属性アクセス: インスタンスフィールド → クラス変数 → メソッドの順に検索
-                let obj_val = self.eval(object)?;
-                match &obj_val {
-                    Value::Instance(inst_rc) => {
-                        let inst = inst_rc.borrow();
-                        let cls = inst.class.clone();
-                        // 1. インスタンスフィールドを直接キーで検索
-                        if let Some((v, _)) = inst.fields.get(attr.as_str()) {
-                            let v = v.clone();
-                            drop(inst);
-                            self.check_member_access(&cls, attr, attr)?;
-                            return Ok(v);
-                        }
-                        // 1b. トレイト名前空間付きフィールドのフォールバック検索（"Trait::attr" 形式）
-                        let suffix = format!("::{attr}");
-                        if let Some((full_key, (v, _))) = inst.fields.iter().find(|(k, _)| k.ends_with(suffix.as_str())) {
-                            let v = v.clone();
-                            let full_key = full_key.clone();
-                            drop(inst);
-                            self.check_member_access(&cls, &full_key, attr)?;
-                            return Ok(v);
-                        }
-                        // 2. const クラス変数を検索
-                        if let Some(v) = Self::lookup_class_var(&cls, attr) {
-                            drop(inst);
-                            self.check_member_access(&cls, attr, attr)?;
-                            return Ok(v);
-                        }
-                        // 2b. static mut クラス静的変数を検索
-                        if let Some(cell) = cls.static_vars.get(attr.as_str()).cloned() {
-                            drop(inst);
-                            self.check_member_access(&cls, attr, attr)?;
-                            return Ok(cell.borrow().clone());
-                        }
-                        // 3. メソッドを検索（オーバーロードがある場合は OverloadedFn を返す）
-                        if cls.methods.contains_key(attr.as_str()) {
-                            // static / class_method はインスタンス経由でアクセス不可
-                            if cls.static_method_names.contains(attr.as_str()) {
-                                drop(inst);
-                                return Err(format!(
-                                    "AttributeError: static method '{}' is not accessible on an instance of '{}'; use '{}.{}'",
-                                    attr, cls.name, cls.name, attr
-                                ));
-                            }
-                            if cls.class_method_names.contains(attr.as_str()) {
-                                drop(inst);
-                                return Err(format!(
-                                    "AttributeError: class method '{}' is not accessible on an instance of '{}'; use '{}.{}'",
-                                    attr, cls.name, cls.name, attr
-                                ));
-                            }
-                            let overloads = cls.methods.get(attr.as_str()).unwrap();
-                            let result = if overloads.len() == 1 {
-                                Value::Function(overloads[0].clone())
-                            } else {
-                                Value::OverloadedFn(overloads.clone())
-                            };
-                            drop(inst);
-                            self.check_member_access(&cls, attr, attr)?;
-                            return Ok(result);
-                        }
-                        Err(format!(
-                            "AttributeError: '{}' object has no attribute '{attr}'",
-                            cls.name
-                        ))
-                    }
-                    Value::Class(cls) => {
-                        // クラスオブジェクトへのアクセス: name → クラス変数 → static_vars → メソッドの順に検索
-                        if attr == "name" {
-                            return Ok(Value::Str(cls.name.clone()));
-                        }
-                        if let Some(v) = Self::lookup_class_var(cls, attr) {
-                            return Ok(v);
-                        }
-                        if let Some(cell) = cls.static_vars.get(attr.as_str()) {
-                            return Ok(cell.borrow().clone());
-                        }
-                        if let Some(overloads) = cls.methods.get(attr.as_str()) {
-                            return Ok(if overloads.len() == 1 {
-                                Value::Function(overloads[0].clone())
-                            } else {
-                                Value::OverloadedFn(overloads.clone())
-                            });
-                        }
-                        Err(format!("AttributeError: class '{}' has no attribute '{attr}'", cls.name))
-                    }
-                    Value::Namespace(ns) => {
-                        // 名前空間（import したモジュール）への属性アクセス
-                        ns.members.get(attr.as_str())
-                            .cloned()
-                            .ok_or_else(|| format!(
-                                "AttributeError: module '{}' has no attribute '{attr}'",
-                                ns.name
-                            ))
-                    }
-                    Value::PyObject(handle) => {
-                        // Python オブジェクトへの属性アクセス: PyO3 経由で getattr を呼ぶ
-                        super::py_interop::py_getattr(&handle, attr)
-                    }
-                    Value::Slice(s) => {
-                        match attr.as_str() {
-                            "begin" => Ok(s.begin.clone().unwrap_or(Value::None)),
-                            "end"   => Ok(s.end.clone().unwrap_or(Value::None)),
-                            "step"  => Ok(s.step.clone().unwrap_or(Value::None)),
-                            _ => Err(format!("AttributeError: 'slice' has no attribute '{attr}'")),
-                        }
-                    }
-                    Value::AsyncManager(mgr_rc) => {
-                        let mgr = mgr_rc.borrow();
-                        match attr.as_str() {
-                            "num_thread" => Ok(Value::UInt(mgr.num_thread as u64)),
-                            "raise_immediately" => Ok(Value::Bool(mgr.raise_immediately)),
-                            "thread_status" => {
-                                // list of indices of currently-running tasks
-                                let running: Vec<Value> = mgr.progress.iter().enumerate()
-                                    .filter(|(_, s)| **s == super::async_mgr::AsyncStatus::Running)
-                                    .map(|(i, _)| Value::Int(i as i64))
-                                    .collect();
-                                Ok(Value::List(Rc::new(RefCell::new(running))))
-                            }
-                            "progress_status" => {
-                                let statuses: Vec<Value> = mgr.progress.iter()
-                                    .map(|s| Value::AsyncStatusVal(s.clone()))
-                                    .collect();
-                                Ok(Value::List(Rc::new(RefCell::new(statuses))))
-                            }
-                            "results" => {
-                                Ok(Value::List(Rc::new(RefCell::new(mgr.results.clone()))))
-                            }
-                            "error_list" => {
-                                let errs: Vec<Value> = mgr.error_list.iter()
-                                    .map(|e| match e {
-                                        Some(s) => Value::Str(s.clone()),
-                                        None => Value::None,
-                                    })
-                                    .collect();
-                                Ok(Value::List(Rc::new(RefCell::new(errs))))
-                            }
-                            _ => Err(format!("AttributeError: 'AsyncManager' has no attribute '{attr}'")),
-                        }
-                    }
-                    _ => Err(format!(
-                        "AttributeError: '{}' object has no attribute '{attr}'",
-                        self.type_name(&obj_val)
-                    )),
-                }
-            }
+            Expr::Attr { object, attr } => self.eval_attr(object, attr),
             Expr::List(items) => {
-                // リストリテラル: 各要素を評価して Value::List を構築する
                 let mut vals = Vec::new();
                 for item in items {
                     vals.push(self.eval(item)?);
@@ -409,7 +231,6 @@ impl Interpreter {
                 Ok(Value::List(Rc::new(RefCell::new(vals))))
             }
             Expr::Tuple(exprs) => {
-                // タプルリテラル: 各要素を評価し、型名も収集して TupleData を構築する
                 let mut values = Vec::new();
                 let mut types = Vec::new();
                 for expr in exprs {
@@ -420,7 +241,6 @@ impl Interpreter {
                 Ok(Value::Tuple(Rc::new(TupleData::new(values, types))))
             }
             Expr::Dict(pairs) => {
-                // 辞書リテラル: 各キー・値ペアを評価して型なし（Any）辞書を構築する
                 let mut keys = Vec::new();
                 let mut items = Vec::new();
                 for (key_expr, val_expr) in pairs {
@@ -435,7 +255,6 @@ impl Interpreter {
                 }))))
             }
             Expr::Set(items) => {
-                // セットリテラル: 各要素を評価し、重複を除いて Value::Set を構築する
                 let mut vals: Vec<Value> = Vec::new();
                 for item in items {
                     let v = self.eval(item)?;
@@ -448,85 +267,17 @@ impl Interpreter {
                 let key = self.eval(index)?;
                 self.eval_subscript(obj, key)
             }
-            Expr::Slice { begin, end, step } => {
-                let begin = match begin {
-                    None => None,
-                    Some(e) => {
-                        let v = self.eval(e)?;
-                        match &v {
-                            Value::None => None,
-                            Value::Instance(inst) if inst.borrow().class.name == "Index" => Some(v),
-                            _ => return Err(format!(
-                                "TypeError: slice begin must be Index or None, got '{}'",
-                                self.type_name(&v)
-                            )),
-                        }
-                    }
-                };
-                let end = match end {
-                    None => None,
-                    Some(e) => {
-                        let v = self.eval(e)?;
-                        match &v {
-                            Value::None => None,
-                            Value::Instance(inst) if inst.borrow().class.name == "Index" => Some(v),
-                            _ => return Err(format!(
-                                "TypeError: slice end must be Index or None, got '{}'",
-                                self.type_name(&v)
-                            )),
-                        }
-                    }
-                };
-                let step = match step {
-                    None => None,
-                    Some(e) => {
-                        let v = self.eval(e)?;
-                        match &v {
-                            Value::None => None,
-                            Value::Int(_) => Some(v),
-                            _ => return Err(format!(
-                                "TypeError: slice step must be int or None, got '{}'",
-                                self.type_name(&v)
-                            )),
-                        }
-                    }
-                };
-                Ok(Value::Slice(Rc::new(SliceValue { begin, end, step })))
-            }
+            Expr::Slice { begin, end, step } => self.eval_slice_expr(begin, end, step),
             Expr::UnaryOp { op, operand } => {
-                // 単項演算子: オペランドを評価して apply_unary に委譲する
                 let val = self.eval(operand)?;
                 self.apply_unary(op, val)
             }
-            Expr::BinOp { op, left, right, .. } => {
-                // and / or は短絡評価（左辺の結果によって右辺を評価しない）
-                match op {
-                    BinOp::And => {
-                        let lv = self.eval(left)?;
-                        return if !self.is_truthy(&lv) { Ok(lv) } else { self.eval(right) };
-                    }
-                    BinOp::Or => {
-                        let lv = self.eval(left)?;
-                        return if self.is_truthy(&lv) { Ok(lv) } else { self.eval(right) };
-                    }
-                    _ => {}
-                }
-                // その他の二項演算子: 両辺を評価して apply_binop に委譲する
-                let lv = self.eval(left)?;
-                let rv = self.eval(right)?;
-                self.apply_binop(op, lv, rv)
-            }
-            Expr::TemplateInstantiate { .. } => {
-                // テンプレート式は単独では使用不可（Call の一部として処理される）
-                Err("TemplateError: template expression must be immediately called (e.g. `Func[T](args)`)".to_string())
-            }
-            Expr::Block { stmts, .. } => {
-                // block: 式。block_return で即終了、block_yield でスレッドローカルに値を積みながら継続する。
-                // ネストした block: 式を正しく扱うため、BLOCK_YIELDS の前の値を退避して評価後に復元する。
-                self.eval_block_expr(stmts)
-            }
+            Expr::BinOp { op, left, right, .. } => self.eval_binop_expr(op, left, right),
+            Expr::TemplateInstantiate { .. } => Err(
+                "TemplateError: template expression must be immediately called (e.g. `Func[T](args)`)".to_string()
+            ),
+            Expr::Block { stmts, .. } => self.eval_block_expr(stmts),
             Expr::IfExpr { branches, else_body, .. } => {
-                // if 式: block_return で値を返す。BLOCK_YIELDS は外側コンテキストを引き継ぐ（透過的）。
                 for (cond, body) in branches {
                     let val = self.eval(cond)?;
                     if self.is_truthy(&val) {
@@ -538,506 +289,751 @@ impl Interpreter {
                 }
                 Ok(Value::None)
             }
-            Expr::ForExpr { target, iter, body, .. } => {
-                // for 式: block_yield でリスト蓄積、block_return で単値返却。
-                // break (= block_return None) はループを終了し蓄積リストを返す。
-                self.eval_for_expr(target, iter, body)
-            }
-            Expr::WhileExpr { cond, body, .. } => {
-                // while 式: ForExpr と同様。
-                self.eval_while_expr(cond, body)
-            }
-            Expr::MatchExpr { subject, arms, .. } => {
-                // match 式: block_return で値を返す。BLOCK_YIELDS は透過的。
-                let subject_val = self.eval(subject)?;
-                for arm in arms {
-                    let matched = match &arm.pattern {
-                        crate::ast::MatchPattern::Case(pattern_expr) => {
-                            if matches!(pattern_expr, Expr::Ident(n) if n == "_") {
-                                true
-                            } else {
-                                let pv = self.eval(pattern_expr)?;
-                                matches!(self.apply_binop(&crate::ast::BinOp::Eq, subject_val.clone(), pv)?, Value::Bool(true))
-                            }
-                        }
-                        crate::ast::MatchPattern::IsType(type_name) => self.value_is_type(&subject_val, type_name),
-                    };
-                    if matched {
-                        return self.eval_capture_block_return(&arm.body);
-                    }
-                }
-                Ok(Value::None)
-            }
+            Expr::ForExpr { target, iter, body, .. } => self.eval_for_expr(target, iter, body),
+            Expr::WhileExpr { cond, body, .. } => self.eval_while_expr(cond, body),
+            Expr::MatchExpr { subject, arms, .. } => self.eval_match_expr(subject, arms),
             Expr::IsType { expr, negated, type_name, .. } => {
-                // `x is T` / `x is not T`: 実行時の型判定。value_is_type で確認し Bool を返す。
                 let val = self.eval(expr)?;
-                let matches = self.value_is_type(&val, type_name);
-                Ok(Value::Bool(if *negated { !matches } else { matches }))
+                let result = self.value_is_type(&val, type_name);
+                Ok(Value::Bool(if *negated { !result } else { result }))
             }
-            Expr::Call { func, args } => {
-                // テンプレート呼び出し: `expr[T1, T2](args)` 形式
-                if let Expr::TemplateInstantiate { base, type_args } = func.as_ref() {
-                    let tmpl_val = self.eval(base)?;
-                    return self.instantiate_template(tmpl_val, type_args, args);
+            Expr::Call { func, args } => self.eval_call(func, args),
+        }
+    }
+
+    // --- eval() から抽出したメソッド群 ---
+
+    fn eval_trait_access(&mut self, object: &Expr, trait_name: &str, attr: &str) -> Result<Value, String> {
+        let obj_val = self.eval(object)?;
+        match obj_val {
+            Value::Instance(inst_rc) => {
+                let inst = inst_rc.borrow();
+                let key = format!("{}::{}", trait_name, attr);
+                if let Some((v, _)) = inst.fields.get(&key) {
+                    return Ok(v.clone());
                 }
+                Err(format!(
+                    "AttributeError: trait field '{trait_name}::{attr}' not found on '{}'",
+                    inst.class.name
+                ))
+            }
+            _ => Err("AttributeError: cannot access trait field on non-instance".to_string()),
+        }
+    }
 
-                // メソッド呼び出し: `obj.method(args)` 形式
-                if let Expr::Attr { object, attr } = func.as_ref() {
-                    let obj_val = self.eval(object)?;
-                    return self.eval_method_call(obj_val, attr, args);
+    fn eval_attr(&mut self, object: &Expr, attr: &str) -> Result<Value, String> {
+        let obj_val = self.eval(object)?;
+        match &obj_val {
+            Value::Instance(inst_rc) => {
+                let inst = inst_rc.borrow();
+                let cls = inst.class.clone();
+                if let Some((v, _)) = inst.fields.get(attr) {
+                    let v = v.clone();
+                    drop(inst);
+                    self.check_member_access(&cls, attr, attr)?;
+                    return Ok(v);
                 }
+                let suffix = format!("::{attr}");
+                if let Some((full_key, (v, _))) = inst.fields.iter().find(|(k, _)| k.ends_with(suffix.as_str())) {
+                    let v = v.clone();
+                    let full_key = full_key.clone();
+                    drop(inst);
+                    self.check_member_access(&cls, &full_key, attr)?;
+                    return Ok(v);
+                }
+                if let Some(v) = Self::lookup_class_var(&cls, attr) {
+                    drop(inst);
+                    self.check_member_access(&cls, attr, attr)?;
+                    return Ok(v);
+                }
+                if let Some(cell) = cls.static_vars.get(attr).cloned() {
+                    drop(inst);
+                    self.check_member_access(&cls, attr, attr)?;
+                    return Ok(cell.borrow().clone());
+                }
+                if cls.methods.contains_key(attr) {
+                    if cls.static_method_names.contains(attr) {
+                        drop(inst);
+                        return Err(format!(
+                            "AttributeError: static method '{}' is not accessible on an instance of '{}'; use '{}.{}'",
+                            attr, cls.name, cls.name, attr
+                        ));
+                    }
+                    if cls.class_method_names.contains(attr) {
+                        drop(inst);
+                        return Err(format!(
+                            "AttributeError: class method '{}' is not accessible on an instance of '{}'; use '{}.{}'",
+                            attr, cls.name, cls.name, attr
+                        ));
+                    }
+                    let overloads = cls.methods.get(attr).unwrap();
+                    let result = if overloads.len() == 1 {
+                        Value::Function(overloads[0].clone())
+                    } else {
+                        Value::OverloadedFn(overloads.clone())
+                    };
+                    drop(inst);
+                    self.check_member_access(&cls, attr, attr)?;
+                    return Ok(result);
+                }
+                Err(format!(
+                    "AttributeError: '{}' object has no attribute '{attr}'",
+                    cls.name
+                ))
+            }
+            Value::Class(cls) => {
+                if attr == "name" {
+                    return Ok(Value::Str(cls.name.clone()));
+                }
+                if let Some(v) = Self::lookup_class_var(cls, attr) {
+                    return Ok(v);
+                }
+                if let Some(cell) = cls.static_vars.get(attr) {
+                    return Ok(cell.borrow().clone());
+                }
+                if let Some(overloads) = cls.methods.get(attr) {
+                    return Ok(if overloads.len() == 1 {
+                        Value::Function(overloads[0].clone())
+                    } else {
+                        Value::OverloadedFn(overloads.clone())
+                    });
+                }
+                Err(format!("AttributeError: class '{}' has no attribute '{attr}'", cls.name))
+            }
+            Value::Namespace(ns) => {
+                ns.members.get(attr)
+                    .cloned()
+                    .ok_or_else(|| format!(
+                        "AttributeError: module '{}' has no attribute '{attr}'",
+                        ns.name
+                    ))
+            }
+            Value::PyObject(handle) => {
+                super::py_interop::py_getattr(handle, attr)
+            }
+            Value::Slice(s) => {
+                match attr {
+                    "begin" => Ok(s.begin.clone().unwrap_or(Value::None)),
+                    "end"   => Ok(s.end.clone().unwrap_or(Value::None)),
+                    "step"  => Ok(s.step.clone().unwrap_or(Value::None)),
+                    _ => Err(format!("AttributeError: 'slice' has no attribute '{attr}'")),
+                }
+            }
+            Value::AsyncManager(mgr_rc) => {
+                let mgr = mgr_rc.borrow();
+                match attr {
+                    "num_thread" => Ok(Value::UInt(mgr.num_thread as u64)),
+                    "raise_immediately" => Ok(Value::Bool(mgr.raise_immediately)),
+                    "thread_status" => {
+                        let running: Vec<Value> = mgr.progress.iter().enumerate()
+                            .filter(|(_, s)| **s == super::async_mgr::AsyncStatus::Running)
+                            .map(|(i, _)| Value::Int(i as i64))
+                            .collect();
+                        Ok(Value::List(Rc::new(RefCell::new(running))))
+                    }
+                    "progress_status" => {
+                        let statuses: Vec<Value> = mgr.progress.iter()
+                            .map(|s| Value::AsyncStatusVal(s.clone()))
+                            .collect();
+                        Ok(Value::List(Rc::new(RefCell::new(statuses))))
+                    }
+                    "results" => {
+                        Ok(Value::List(Rc::new(RefCell::new(mgr.results.clone()))))
+                    }
+                    "error_list" => {
+                        let errs: Vec<Value> = mgr.error_list.iter()
+                            .map(|e| match e {
+                                Some(s) => Value::Str(s.clone()),
+                                None => Value::None,
+                            })
+                            .collect();
+                        Ok(Value::List(Rc::new(RefCell::new(errs))))
+                    }
+                    _ => Err(format!("AttributeError: 'AsyncManager' has no attribute '{attr}'")),
+                }
+            }
+            _ => Err(format!(
+                "AttributeError: '{}' object has no attribute '{attr}'",
+                self.type_name(&obj_val)
+            )),
+        }
+    }
 
-                // 組み込み関数（スコープに格納されていない特別扱い）
-                if let Expr::Ident(name) = func.as_ref() {
-                    match name.as_str() {
-                        "print" => {
-                            // すべての引数を display 形式で評価してスペース区切りで出力する
-                            let parts: Result<Vec<_>, _> = args.iter()
-                                .map(|a| self.eval(a.expr()).map(|v| self.display(&v)))
-                                .collect();
-                            println!("{}", parts?.join(" "));
-                            return Ok(Value::None);
-                        }
-                        "range" => {
-                            // range(stop) / range(start, stop) / range(start, stop, step) をリストに展開する
-                            let evaled: Result<Vec<_>, _> =
-                                args.iter().map(|a| self.eval(a.expr())).collect();
-                            let evaled = evaled?;
-                            return match evaled.as_slice() {
-                                [Value::Int(stop)] => {
-                                    Ok(Value::List(Rc::new(RefCell::new((0..*stop).map(Value::Int).collect()))))
-                                }
-                                [Value::Int(start), Value::Int(stop)] => {
-                                    Ok(Value::List(Rc::new(RefCell::new((*start..*stop).map(Value::Int).collect()))))
-                                }
-                                [Value::Int(start), Value::Int(stop), Value::Int(step)] => {
-                                    let mut items = Vec::new();
-                                    let mut i = *start;
-                                    if *step > 0 {
-                                        while i < *stop { items.push(Value::Int(i)); i += step; }
-                                    } else if *step < 0 {
-                                        while i > *stop { items.push(Value::Int(i)); i += step; }
-                                    }
-                                    Ok(Value::List(Rc::new(RefCell::new(items))))
-                                }
-                                _ => Err("TypeError: range() takes 1\u{2013}3 integer arguments".to_string()),
-                            };
-                        }
-                        "len" => {
-                            // len(list) / len(str) のみ対応
-                            if args.len() != 1 {
-                                return Err("TypeError: len() takes exactly one argument".to_string());
-                            }
-                            let val = self.eval(args[0].expr())?;
-                            return match val {
-                                Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
-                                Value::Str(s) => Ok(Value::Int(s.len() as i64)),
-                                Value::Dict(d) => Ok(Value::Int(d.borrow().all_keys().len() as i64)),
-                                Value::Set(s) => Ok(Value::Int(s.borrow().len() as i64)),
-                                Value::Tuple(t) => Ok(Value::Int(t.len() as i64)),
-                                Value::PyObject(ref handle) => {
-                                    super::py_interop::py_len(handle)
-                                }
-                                _ => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(&val))),
-                            };
-                        }
-                        "id" => {
-                            if args.len() != 1 {
-                                return Err("TypeError: id() takes exactly one argument".to_string());
-                            }
-                            let val = self.eval(args[0].expr())?;
-                            let raw: u64 = match &val {
-                                Value::Instance(rc) => Rc::as_ptr(rc) as u64,
-                                Value::List(rc)     => Rc::as_ptr(rc) as u64,
-                                Value::Dict(rc)     => Rc::as_ptr(rc) as u64,
-                                Value::Set(rc)      => Rc::as_ptr(rc) as u64,
-                                Value::Function(rc) => Rc::as_ptr(rc) as u64,
-                                Value::OverloadedFn(v) => v.as_ptr() as u64,
-                                Value::Generator(rc)  => Rc::as_ptr(rc) as u64,
-                                Value::GeneratorFn(rc) => Rc::as_ptr(rc) as u64,
-                                Value::Tuple(rc)    => Rc::as_ptr(rc) as u64,
-                                // value types: identity derived from the value itself
-                                Value::Int(n)  => *n as u64,
-                                Value::UInt(n) => *n,
-                                Value::Float(f) => f.to_bits(),
-                                Value::Bool(b) => *b as u64,
-                                Value::Str(s)  => {
-                                    use std::hash::{Hash, Hasher};
-                                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                                    s.hash(&mut h);
-                                    h.finish()
-                                }
-                                Value::None => 0u64,
-                                _ => 0u64,
-                            };
-                            // wrap in a pointer instance
-                            let pointer_cls = match self.get_val("pointer") {
-                                Some(Value::Class(cls)) => cls,
-                                _ => return Err("RuntimeError: 'pointer' type is not defined".to_string()),
-                            };
-                            let mut fields = std::collections::HashMap::new();
-                            fields.insert("value".to_string(), (Value::UInt(raw), true));
-                            return Ok(Value::Instance(Rc::new(RefCell::new(
-                                crate::interpreter::InstanceData { class: pointer_cls, fields, immutable: false }
-                            ))));
-                        }
-                        "open" => {
-                            use std::collections::HashMap as HMap;
-                            use std::fs::OpenOptions;
-                            use std::io::Read as IoRead;
-                            let evaled = self.eval_call_args(args)?;
-                            let mut kw: HMap<String, Value> = HMap::new();
-                            let mut pos: Vec<Value> = Vec::new();
-                            for (k, v) in evaled {
-                                match k { Some(n) => { kw.insert(n, v); } None => pos.push(v) }
-                            }
-                            let file_path = extract_path_str(
-                                get_arg(&pos, &kw, 0, "file_path")
-                                    .ok_or("TypeError: open() missing required argument 'file_path'")?
-                            )?;
-                            let open_mode_int = extract_enum_int(
-                                get_arg(&pos, &kw, 1, "open_mode")
-                                    .ok_or("TypeError: open() missing required argument 'open_mode'")?,
-                                "enum_item_FileOpenMode",
-                            )?;
-                            let start_point_int: i64 = get_arg(&pos, &kw, 2, "start_point")
-                                .map(|v| extract_enum_int(v, "enum_item_StartPoint"))
-                                .transpose()?.unwrap_or(0); // default: top
-                            let byte_mode_int: i64 = get_arg(&pos, &kw, 3, "byte_recognizing")
-                                .map(|v| extract_enum_int(v, "enum_item_ByteRecognizingMode"))
-                                .transpose()?.unwrap_or(1); // default: text
-                            let enc_int: i64 = get_arg(&pos, &kw, 4, "encoding")
-                                .map(|v| extract_enum_int(v, "enum_item_Encoding"))
-                                .transpose()?.unwrap_or(1); // default: UTF_8
-                            if enc_int == 3 {
-                                return Err("NotImplementedError: Shift-JIS encoding is not yet supported".to_string());
-                            }
-                            let _exclusion: bool = get_arg(&pos, &kw, 5, "exclusion")
-                                .map(|v| match v {
-                                    Value::Bool(b) => Ok(*b),
-                                    _ => Err("TypeError: open() 'exclusion' must be bool".to_string()),
-                                })
-                                .transpose()?.unwrap_or(true);
+    fn eval_slice_expr(
+        &mut self,
+        begin: &Option<Box<Expr>>,
+        end: &Option<Box<Expr>>,
+        step: &Option<Box<Expr>>,
+    ) -> Result<Value, String> {
+        let begin = match begin {
+            None => None,
+            Some(e) => {
+                let v = self.eval(e)?;
+                match &v {
+                    Value::None => None,
+                    Value::Instance(inst) if inst.borrow().class.name == "Index" => Some(v),
+                    _ => return Err(format!(
+                        "TypeError: slice begin must be Index or None, got '{}'",
+                        self.type_name(&v)
+                    )),
+                }
+            }
+        };
+        let end = match end {
+            None => None,
+            Some(e) => {
+                let v = self.eval(e)?;
+                match &v {
+                    Value::None => None,
+                    Value::Instance(inst) if inst.borrow().class.name == "Index" => Some(v),
+                    _ => return Err(format!(
+                        "TypeError: slice end must be Index or None, got '{}'",
+                        self.type_name(&v)
+                    )),
+                }
+            }
+        };
+        let step = match step {
+            None => None,
+            Some(e) => {
+                let v = self.eval(e)?;
+                match &v {
+                    Value::None => None,
+                    Value::Int(_) => Some(v),
+                    _ => return Err(format!(
+                        "TypeError: slice step must be int or None, got '{}'",
+                        self.type_name(&v)
+                    )),
+                }
+            }
+        };
+        Ok(Value::Slice(Rc::new(SliceValue { begin, end, step })))
+    }
 
-                            let mode = match open_mode_int {
-                                0 => FileOpenModeRust::Write,
-                                1 => FileOpenModeRust::Rewrite,
-                                2 => FileOpenModeRust::Read,
-                                3 => FileOpenModeRust::MakeAndWrite,
-                                n => return Err(format!("TypeError: invalid FileOpenMode value {n}")),
-                            };
-                            let byte_mode = if byte_mode_int == 0 { ByteModeRust::Byte } else { ByteModeRust::Text };
+    fn eval_binop_expr(&mut self, op: &BinOp, left: &Expr, right: &Expr) -> Result<Value, String> {
+        match op {
+            BinOp::And => {
+                let lv = self.eval(left)?;
+                if !self.is_truthy(&lv) { Ok(lv) } else { self.eval(right) }
+            }
+            BinOp::Or => {
+                let lv = self.eval(left)?;
+                if self.is_truthy(&lv) { Ok(lv) } else { self.eval(right) }
+            }
+            _ => {
+                let lv = self.eval(left)?;
+                let rv = self.eval(right)?;
+                self.apply_binop(op, lv, rv)
+            }
+        }
+    }
 
-                            let std_path = std::path::Path::new(&file_path);
-                            if mode == FileOpenModeRust::MakeAndWrite && std_path.exists() {
-                                return Err(format!(
-                                    "RuntimeError: open() make_and_write: file '{}' already exists",
-                                    file_path
-                                ));
-                            }
-
-                            let (file, content) = match mode {
-                                FileOpenModeRust::Read => {
-                                    let mut f = OpenOptions::new().read(true).open(std_path)
-                                        .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
-                                    let mut c = Vec::new();
-                                    f.read_to_end(&mut c)
-                                        .map_err(|e| format!("IOError: cannot read '{}': {e}", file_path))?;
-                                    (f, c)
-                                }
-                                FileOpenModeRust::Write => {
-                                    let mut f = OpenOptions::new().read(true).write(true).open(std_path)
-                                        .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
-                                    let mut c = Vec::new();
-                                    f.read_to_end(&mut c)
-                                        .map_err(|e| format!("IOError: cannot read '{}': {e}", file_path))?;
-                                    (f, c)
-                                }
-                                FileOpenModeRust::Rewrite => {
-                                    let f = OpenOptions::new()
-                                        .read(true).write(true).create(true).truncate(true)
-                                        .open(std_path)
-                                        .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
-                                    (f, Vec::new()) // 内容を空にする
-                                }
-                                FileOpenModeRust::MakeAndWrite => {
-                                    let f = OpenOptions::new()
-                                        .read(true).write(true).create_new(true)
-                                        .open(std_path)
-                                        .map_err(|e| format!("IOError: cannot create '{}': {e}", file_path))?;
-                                    (f, Vec::new())
-                                }
-                            };
-
-                            // BOM 付き UTF-8 の場合は先頭3バイトをスキップ
-                            let (content, bom_skip) = if enc_int == 2
-                                && content.starts_with(&[0xEF, 0xBB, 0xBF])
-                            {
-                                (content[3..].to_vec(), 3usize)
-                            } else {
-                                (content, 0usize)
-                            };
-                            let _ = bom_skip;
-
-                            let pointer = if start_point_int == 1 { content.len() } else { 0 };
-
-                            let fd = FileData {
-                                path: file_path,
-                                mode,
-                                byte_mode,
-                                content,
-                                pointer,
-                                is_closed: false,
-                                file_handle: Some(file),
-                            };
-                            return Ok(Value::FileObject(Rc::new(RefCell::new(fd))));
-                        }
-                        "close" => {
-                            if args.len() != 1 {
-                                return Err("TypeError: close() takes exactly one argument".to_string());
-                            }
-                            let val = self.eval(args[0].expr())?;
-                            return match val {
-                                Value::FileObject(fd_rc) => {
-                                    fd_rc.borrow_mut().close();
-                                    Ok(Value::None)
-                                }
-                                other => Err(format!(
-                                    "TypeError: close() argument must be FileObject, not '{}'",
-                                    self.type_name(&other)
-                                )),
-                            };
-                        }
-                        "enumerate" => {
-                            let mut positional: Vec<Value> = Vec::new();
-                            let mut start_val: Option<Value> = None;
-                            for arg in args {
-                                match arg {
-                                    CallArg::Positional(e) => positional.push(self.eval(e)?),
-                                    CallArg::Keyword { name, value } if name == "start" => {
-                                        start_val = Some(self.eval(value)?);
-                                    }
-                                    CallArg::Keyword { name, .. } => {
-                                        return Err(format!("TypeError: enumerate() got unexpected keyword argument '{name}'"));
-                                    }
-                                }
-                            }
-                            if positional.len() != 1 {
-                                return Err(format!(
-                                    "TypeError: enumerate() expected 1 positional argument, got {}",
-                                    positional.len()
-                                ));
-                            }
-                            let start = match start_val {
-                                Some(Value::Int(n)) => n,
-                                Some(other) => return Err(format!(
-                                    "TypeError: enumerate() 'start' must be int, not '{}'",
-                                    self.type_name(&other)
-                                )),
-                                None => 0i64,
-                            };
-                            let items = self.collect_iterable(positional.into_iter().next().unwrap())?;
-                            let tuples: Vec<Value> = items.into_iter().enumerate().map(|(i, v)| {
-                                let idx = start + i as i64;
-                                let type_str = self.type_name(&v).to_string();
-                                Value::Tuple(Rc::new(TupleData::new(
-                                    vec![Value::Int(idx), v],
-                                    vec!["int".to_string(), type_str],
-                                )))
-                            }).collect();
-                            return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: tuples, index: 0 }))));
-                        }
-                        "zip" => {
-                            for arg in args.iter() {
-                                if matches!(arg, CallArg::Keyword { .. }) {
-                                    return Err("TypeError: zip() takes no keyword arguments".to_string());
-                                }
-                            }
-                            let mut iters: Vec<Vec<Value>> = Vec::new();
-                            for arg in args.iter() {
-                                let v = self.eval(arg.expr())?;
-                                iters.push(self.collect_iterable(v)?);
-                            }
-                            if iters.is_empty() {
-                                return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: vec![], index: 0 }))));
-                            }
-                            let min_len = iters.iter().map(|it| it.len()).min().unwrap_or(0);
-                            let tuples: Vec<Value> = (0..min_len).map(|i| {
-                                let vals: Vec<Value> = iters.iter().map(|it| it[i].clone()).collect();
-                                let types: Vec<String> = vals.iter().map(|v| self.type_name(v).to_string()).collect();
-                                Value::Tuple(Rc::new(TupleData::new(vals, types)))
-                            }).collect();
-                            return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: tuples, index: 0 }))));
-                        }
-                        _ => {} // ユーザー定義関数の検索へフォールスルー
+    fn eval_match_expr(&mut self, subject: &Expr, arms: &[MatchArm]) -> Result<Value, String> {
+        let subject_val = self.eval(subject)?;
+        for arm in arms {
+            let matched = match &arm.pattern {
+                MatchPattern::Case(pattern_expr) => {
+                    if matches!(pattern_expr, Expr::Ident(n) if n == "_") {
+                        true
+                    } else {
+                        let pv = self.eval(pattern_expr)?;
+                        matches!(self.apply_binop(&BinOp::Eq, subject_val.clone(), pv)?, Value::Bool(true))
                     }
                 }
+                MatchPattern::IsType(type_name) => self.value_is_type(&subject_val, type_name),
+            };
+            if matched {
+                return self.eval_capture_block_return(&arm.body);
+            }
+        }
+        Ok(Value::None)
+    }
 
-                // ユーザー定義関数 / オーバーロード関数 / クラスコンストラクタ / ジェネレータ関数
-                // トレースバックフレーム用に関数名を取得（ベストエフォート）
-                let call_name = match func.as_ref() {
-                    Expr::Ident(n) => n.clone(),
-                    _ => "<anonymous>".to_string(),
+    fn eval_call(&mut self, func: &Expr, args: &[CallArg]) -> Result<Value, String> {
+        if let Expr::TemplateInstantiate { base, type_args } = func {
+            let tmpl_val = self.eval(base)?;
+            return self.instantiate_template(tmpl_val, type_args, args);
+        }
+        if let Expr::Attr { object, attr } = func {
+            let obj_val = self.eval(object)?;
+            return self.eval_method_call(obj_val, attr, args);
+        }
+        if let Expr::Ident(name) = func {
+            if let Some(result) = self.eval_builtin_ident_call(name, args) {
+                return result;
+            }
+        }
+        let call_name = match func {
+            Expr::Ident(n) => n.clone(),
+            _ => "<anonymous>".to_string(),
+        };
+        let callee = self.eval(func)?;
+        match callee {
+            Value::Function(fn_val) => self.exec_fn(fn_val, args, None, &call_name),
+            Value::OverloadedFn(candidates) => {
+                let evaled_args = self.eval_call_args(args)?;
+                self.dispatch_overload_evaled(candidates, evaled_args, None, &call_name)
+            }
+            Value::Class(cls) => self.instantiate(cls, args),
+            Value::GeneratorFn(gen_fn) => self.exec_generator(gen_fn, args, None),
+            Value::TemplateFn(_) | Value::TemplateClass(_) | Value::TemplateGenFn(_) => Err(
+                "TemplateError: template must be called with explicit type arguments (e.g. `Func[T](args)`)".to_string()
+            ),
+            Value::PyObject(handle) => {
+                let evaled_args = self.eval_call_args(args)?;
+                super::py_interop::call_py_object(&handle, &evaled_args)
+            }
+            Value::Instance(_) => {
+                self.eval_method_call(callee, "__call__", args)
+            }
+            Value::NativeFunction(fn_ref) => {
+                self.call_native_function(&fn_ref, args)
+            }
+            Value::Type(type_name) => {
+                self.eval_type_constructor_call(&type_name, args)
+            }
+            other => Err(format!("TypeError: '{}' object is not callable", self.type_name(&other))),
+        }
+    }
+
+    /// 組み込み関数名を受け取り、該当する組み込みを実行して結果を返す。
+    /// 未知の名前には `None` を返してユーザー定義関数の探索にフォールスルーする。
+    fn eval_builtin_ident_call(&mut self, name: &str, args: &[CallArg]) -> Option<Result<Value, String>> {
+        match name {
+            "print" => {
+                let parts: Result<Vec<_>, _> = args.iter()
+                    .map(|a| self.eval(a.expr()).map(|v| self.display(&v)))
+                    .collect();
+                match parts {
+                    Err(e) => Some(Err(e)),
+                    Ok(p) => { println!("{}", p.join(" ")); Some(Ok(Value::None)) }
+                }
+            }
+            "range" => {
+                let evaled: Result<Vec<_>, _> = args.iter().map(|a| self.eval(a.expr())).collect();
+                let evaled = match evaled {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
                 };
-                let callee = self.eval(func)?;
-                match callee {
-                    Value::Function(fn_val) => self.exec_fn(fn_val, args, None, &call_name),
-                    Value::OverloadedFn(candidates) => {
-                        let evaled_args = self.eval_call_args(args)?;
-                        self.dispatch_overload_evaled(candidates, evaled_args, None, &call_name)
+                Some(match evaled.as_slice() {
+                    [Value::Int(stop)] => {
+                        Ok(Value::List(Rc::new(RefCell::new((0..*stop).map(Value::Int).collect()))))
                     }
-                    Value::Class(cls) => self.instantiate(cls, args),
-                    Value::GeneratorFn(gen_fn) => self.exec_generator(gen_fn, args, None),
-                    Value::TemplateFn(_) | Value::TemplateClass(_) | Value::TemplateGenFn(_) => Err(
-                        "TemplateError: template must be called with explicit type arguments (e.g. `Func[T](args)`)".to_string()
-                    ),
-                    Value::PyObject(handle) => {
-                        // Python callable を PyO3 経由で呼び出す
-                        let evaled_args = self.eval_call_args(args)?;
-                        super::py_interop::call_py_object(&handle, &evaled_args)
+                    [Value::Int(start), Value::Int(stop)] => {
+                        Ok(Value::List(Rc::new(RefCell::new((*start..*stop).map(Value::Int).collect()))))
                     }
-                    Value::Instance(_) => {
-                        // インスタンスを呼び出す: __call__ メソッドに委譲する
-                        self.eval_method_call(callee, "__call__", args)
+                    [Value::Int(start), Value::Int(stop), Value::Int(step)] => {
+                        let mut items = Vec::new();
+                        let mut i = *start;
+                        if *step > 0 {
+                            while i < *stop { items.push(Value::Int(i)); i += step; }
+                        } else if *step < 0 {
+                            while i > *stop { items.push(Value::Int(i)); i += step; }
+                        }
+                        Ok(Value::List(Rc::new(RefCell::new(items))))
                     }
-                    Value::NativeFunction(fn_ref) => {
-                        self.call_native_function(&fn_ref, args)
+                    _ => Err("TypeError: range() takes 1\u{2013}3 integer arguments".to_string()),
+                })
+            }
+            "len" => {
+                if args.len() != 1 {
+                    return Some(Err("TypeError: len() takes exactly one argument".to_string()));
+                }
+                let val = match self.eval(args[0].expr()) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                Some(match &val {
+                    Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
+                    Value::Str(s) => Ok(Value::Int(s.len() as i64)),
+                    Value::Dict(d) => Ok(Value::Int(d.borrow().all_keys().len() as i64)),
+                    Value::Set(s) => Ok(Value::Int(s.borrow().len() as i64)),
+                    Value::Tuple(t) => Ok(Value::Int(t.len() as i64)),
+                    Value::PyObject(handle) => super::py_interop::py_len(handle),
+                    _ => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(&val))),
+                })
+            }
+            "id" => {
+                if args.len() != 1 {
+                    return Some(Err("TypeError: id() takes exactly one argument".to_string()));
+                }
+                let val = match self.eval(args[0].expr()) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                let raw: u64 = match &val {
+                    Value::Instance(rc) => Rc::as_ptr(rc) as u64,
+                    Value::List(rc)     => Rc::as_ptr(rc) as u64,
+                    Value::Dict(rc)     => Rc::as_ptr(rc) as u64,
+                    Value::Set(rc)      => Rc::as_ptr(rc) as u64,
+                    Value::Function(rc) => Rc::as_ptr(rc) as u64,
+                    Value::OverloadedFn(v) => v.as_ptr() as u64,
+                    Value::Generator(rc)  => Rc::as_ptr(rc) as u64,
+                    Value::GeneratorFn(rc) => Rc::as_ptr(rc) as u64,
+                    Value::Tuple(rc)    => Rc::as_ptr(rc) as u64,
+                    Value::Int(n)  => *n as u64,
+                    Value::UInt(n) => *n,
+                    Value::Float(f) => f.to_bits(),
+                    Value::Bool(b) => *b as u64,
+                    Value::Str(s)  => {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        s.hash(&mut h);
+                        h.finish()
                     }
-                    Value::Type(type_name) => {
-                        let evaled = self.eval_call_args(args)?;
-                        let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
-                        match type_name.as_str() {
-                            "str" => match vals.as_slice() {
-                                [] => Ok(Value::Str(String::new())),
-                                [v] => Ok(Value::Str(self.display(v))),
-                                _ => Err("TypeError: str() takes at most 1 argument".to_string()),
-                            },
-                            "int" => match vals.as_slice() {
-                                [] => Ok(Value::Int(0)),
-                                [Value::Int(n)] => Ok(Value::Int(*n)),
-                                [Value::Float(f)] => Ok(Value::Int(*f as i64)),
-                                [Value::Bool(b)] => Ok(Value::Int(if *b { 1 } else { 0 })),
-                                [Value::Str(s)] => s.trim().parse::<i64>()
-                                    .map(Value::Int)
-                                    .map_err(|_| format!("ValueError: invalid literal for int(): '{s}'")),
-                                [other] => Err(format!("TypeError: int() argument must be a string or a number, not '{}'", self.type_name(other))),
-                                _ => Err("TypeError: int() takes at most 1 argument".to_string()),
-                            },
-                            "float" => match vals.as_slice() {
-                                [] => Ok(Value::Float(0.0)),
-                                [Value::Float(f)] => Ok(Value::Float(*f)),
-                                [Value::Int(n)] => Ok(Value::Float(*n as f64)),
-                                [Value::Bool(b)] => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
-                                [Value::Str(s)] => s.trim().parse::<f64>()
-                                    .map(Value::Float)
-                                    .map_err(|_| format!("ValueError: invalid literal for float(): '{s}'")),
-                                [other] => Err(format!("TypeError: float() argument must be a string or a number, not '{}'", self.type_name(other))),
-                                _ => Err("TypeError: float() takes at most 1 argument".to_string()),
-                            },
-                            "bool" => match vals.as_slice() {
-                                [] => Ok(Value::Bool(false)),
-                                [Value::Bool(b)] => Ok(Value::Bool(*b)),
-                                [Value::Int(n)] => Ok(Value::Bool(*n != 0)),
-                                [Value::Float(f)] => Ok(Value::Bool(*f != 0.0)),
-                                [Value::Str(s)] => Ok(Value::Bool(!s.is_empty())),
-                                [Value::None] => Ok(Value::Bool(false)),
-                                [Value::List(lst)] => Ok(Value::Bool(!lst.borrow().is_empty())),
-                                [Value::Set(s)] => Ok(Value::Bool(!s.borrow().is_empty())),
-                                [_] => Ok(Value::Bool(true)),
-                                _ => Err("TypeError: bool() takes at most 1 argument".to_string()),
-                            },
-                            "list" => match vals {
-                                ref v if v.is_empty() => Ok(Value::List(Rc::new(RefCell::new(vec![])))),
-                                _ if vals.len() == 1 => match vals.into_iter().next().unwrap() {
-                                    Value::List(lst) => Ok(Value::List(lst)),
-                                    Value::Set(s) => {
-                                        Ok(Value::List(Rc::new(RefCell::new(s.borrow().clone()))))
-                                    },
-                                    Value::Str(s) => {
-                                        let chars = s.chars().map(|c| Value::Str(c.to_string())).collect();
-                                        Ok(Value::List(Rc::new(RefCell::new(chars))))
-                                    },
-                                    other => Err(format!("TypeError: '{}' object is not iterable", self.type_name(&other))),
-                                },
-                                _ => Err("TypeError: list() takes at most 1 argument".to_string()),
-                            },
-                            "set" => match vals {
-                                ref v if v.is_empty() => Ok(Value::Set(Rc::new(RefCell::new(vec![])))),
-                                _ if vals.len() == 1 => {
-                                    let arg = vals.into_iter().next().unwrap();
-                                    let items: Vec<Value> = match arg {
-                                        Value::Set(s) => s.borrow().clone(),
-                                        Value::List(lst) => lst.borrow().clone(),
-                                        Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
-                                        Value::Tuple(t) => t.all_values().to_vec(),
-                                        other => return Err(format!("TypeError: '{}' object is not iterable", self.type_name(&other))),
-                                    };
-                                    let mut result: Vec<Value> = Vec::new();
-                                    for v in items {
-                                        set_insert(&mut result, v, self);
-                                    }
-                                    Ok(Value::Set(Rc::new(RefCell::new(result))))
-                                },
-                                _ => Err("TypeError: set() takes at most 1 argument".to_string()),
-                            },
-                            "slice" => {
-                                // slice(begin, end) or slice(begin, end, step)
-                                let check_index = |v: Value, label: &str| -> Result<Option<Value>, String> {
-                                    match v {
-                                        Value::None => Ok(None),
-                                        Value::Instance(ref inst) if inst.borrow().class.name == "Index" => Ok(Some(v)),
-                                        other => Err(format!(
-                                            "TypeError: slice {label} must be Index or None, got '{}'",
-                                            self.type_name(&other)
-                                        )),
-                                    }
-                                };
-                                let check_step = |v: Value| -> Result<Option<Value>, String> {
-                                    match v {
-                                        Value::None => Ok(None),
-                                        Value::Int(_) => Ok(Some(v)),
-                                        other => Err(format!(
-                                            "TypeError: slice step must be int or None, got '{}'",
-                                            self.type_name(&other)
-                                        )),
-                                    }
-                                };
-                                match vals.len() {
-                                    2 => {
-                                        let mut it = vals.into_iter();
-                                        let begin = check_index(it.next().unwrap(), "begin")?;
-                                        let end   = check_index(it.next().unwrap(), "end")?;
-                                        Ok(Value::Slice(Rc::new(SliceValue { begin, end, step: None })))
-                                    }
-                                    3 => {
-                                        let mut it = vals.into_iter();
-                                        let begin = check_index(it.next().unwrap(), "begin")?;
-                                        let end   = check_index(it.next().unwrap(), "end")?;
-                                        let step  = check_step(it.next().unwrap())?;
-                                        Ok(Value::Slice(Rc::new(SliceValue { begin, end, step })))
-                                    }
-                                    _ => Err("TypeError: slice() takes 2 or 3 arguments".to_string()),
-                                }
+                    Value::None => 0u64,
+                    _ => 0u64,
+                };
+                let pointer_cls = match self.get_val("pointer") {
+                    Some(Value::Class(cls)) => cls,
+                    _ => return Some(Err("RuntimeError: 'pointer' type is not defined".to_string())),
+                };
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("value".to_string(), (Value::UInt(raw), true));
+                Some(Ok(Value::Instance(Rc::new(RefCell::new(
+                    crate::interpreter::InstanceData { class: pointer_cls, fields, immutable: false }
+                )))))
+            }
+            "open" => Some(self.eval_builtin_open(args)),
+            "close" => {
+                if args.len() != 1 {
+                    return Some(Err("TypeError: close() takes exactly one argument".to_string()));
+                }
+                let val = match self.eval(args[0].expr()) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                Some(match val {
+                    Value::FileObject(fd_rc) => {
+                        fd_rc.borrow_mut().close();
+                        Ok(Value::None)
+                    }
+                    other => Err(format!(
+                        "TypeError: close() argument must be FileObject, not '{}'",
+                        self.type_name(&other)
+                    )),
+                })
+            }
+            "enumerate" => {
+                let mut positional: Vec<Value> = Vec::new();
+                let mut start_val: Option<Value> = None;
+                for arg in args {
+                    match arg {
+                        CallArg::Positional(e) => match self.eval(e) {
+                            Ok(v) => positional.push(v),
+                            Err(e) => return Some(Err(e)),
+                        },
+                        CallArg::Keyword { name, value } if name == "start" => {
+                            match self.eval(value) {
+                                Ok(v) => start_val = Some(v),
+                                Err(e) => return Some(Err(e)),
                             }
-                            "uint" => match vals.as_slice() {
-                                [] => Ok(Value::UInt(0)),
-                                [Value::UInt(n)] => Ok(Value::UInt(*n)),
-                                [Value::Int(n)] => Ok(Value::UInt(*n as u64)),
-                                [Value::Bool(b)] => Ok(Value::UInt(if *b { 1 } else { 0 })),
-                                [other] => Err(format!("TypeError: uint() argument must be an integer, not '{}'", self.type_name(other))),
-                                _ => Err("TypeError: uint() takes at most 1 argument".to_string()),
-                            },
-                            "AsyncManager" => {
-                                // AsyncManager(num_thread = N [, raise_immediately = bool])
-                                // Accept positional or keyword args from evaled_with_kw (re-eval below)
-                                self.make_async_manager(args)
-                            }
-                            other => Err(format!("TypeError: '{}' object is not callable", other)),
+                        }
+                        CallArg::Keyword { name, .. } => {
+                            return Some(Err(format!("TypeError: enumerate() got unexpected keyword argument '{name}'")));
                         }
                     }
-                    _ => Err(format!("TypeError: '{}' object is not callable", self.type_name(&callee))),
+                }
+                if positional.len() != 1 {
+                    return Some(Err(format!(
+                        "TypeError: enumerate() expected 1 positional argument, got {}",
+                        positional.len()
+                    )));
+                }
+                let start = match start_val {
+                    Some(Value::Int(n)) => n,
+                    Some(other) => return Some(Err(format!(
+                        "TypeError: enumerate() 'start' must be int, not '{}'",
+                        self.type_name(&other)
+                    ))),
+                    None => 0i64,
+                };
+                let items = match self.collect_iterable(positional.into_iter().next().unwrap()) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                let tuples: Vec<Value> = items.into_iter().enumerate().map(|(i, v)| {
+                    let idx = start + i as i64;
+                    let type_str = self.type_name(&v).to_string();
+                    Value::Tuple(Rc::new(TupleData::new(
+                        vec![Value::Int(idx), v],
+                        vec!["int".to_string(), type_str],
+                    )))
+                }).collect();
+                Some(Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: tuples, index: 0 })))))
+            }
+            "zip" => {
+                for arg in args.iter() {
+                    if matches!(arg, CallArg::Keyword { .. }) {
+                        return Some(Err("TypeError: zip() takes no keyword arguments".to_string()));
+                    }
+                }
+                let mut iters: Vec<Vec<Value>> = Vec::new();
+                for arg in args.iter() {
+                    let v = match self.eval(arg.expr()) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let items = match self.collect_iterable(v) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    iters.push(items);
+                }
+                if iters.is_empty() {
+                    return Some(Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: vec![], index: 0 })))));
+                }
+                let min_len = iters.iter().map(|it| it.len()).min().unwrap_or(0);
+                let tuples: Vec<Value> = (0..min_len).map(|i| {
+                    let vals: Vec<Value> = iters.iter().map(|it| it[i].clone()).collect();
+                    let types: Vec<String> = vals.iter().map(|v| self.type_name(v).to_string()).collect();
+                    Value::Tuple(Rc::new(TupleData::new(vals, types)))
+                }).collect();
+                Some(Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: tuples, index: 0 })))))
+            }
+            _ => None,
+        }
+    }
+
+    fn eval_builtin_open(&mut self, args: &[CallArg]) -> Result<Value, String> {
+        use std::collections::HashMap as HMap;
+        use std::fs::OpenOptions;
+        use std::io::Read as IoRead;
+        let evaled = self.eval_call_args(args)?;
+        let mut kw: HMap<String, Value> = HMap::new();
+        let mut pos: Vec<Value> = Vec::new();
+        for (k, v) in evaled {
+            match k { Some(n) => { kw.insert(n, v); } None => pos.push(v) }
+        }
+        let file_path = extract_path_str(
+            get_arg(&pos, &kw, 0, "file_path")
+                .ok_or("TypeError: open() missing required argument 'file_path'")?
+        )?;
+        let open_mode_int = extract_enum_int(
+            get_arg(&pos, &kw, 1, "open_mode")
+                .ok_or("TypeError: open() missing required argument 'open_mode'")?,
+            "enum_item_FileOpenMode",
+        )?;
+        let start_point_int: i64 = get_arg(&pos, &kw, 2, "start_point")
+            .map(|v| extract_enum_int(v, "enum_item_StartPoint"))
+            .transpose()?.unwrap_or(0);
+        let byte_mode_int: i64 = get_arg(&pos, &kw, 3, "byte_recognizing")
+            .map(|v| extract_enum_int(v, "enum_item_ByteRecognizingMode"))
+            .transpose()?.unwrap_or(1);
+        let enc_int: i64 = get_arg(&pos, &kw, 4, "encoding")
+            .map(|v| extract_enum_int(v, "enum_item_Encoding"))
+            .transpose()?.unwrap_or(1);
+        if enc_int == 3 {
+            return Err("NotImplementedError: Shift-JIS encoding is not yet supported".to_string());
+        }
+        let _exclusion: bool = get_arg(&pos, &kw, 5, "exclusion")
+            .map(|v| match v {
+                Value::Bool(b) => Ok(*b),
+                _ => Err("TypeError: open() 'exclusion' must be bool".to_string()),
+            })
+            .transpose()?.unwrap_or(true);
+
+        let mode = match open_mode_int {
+            0 => FileOpenModeRust::Write,
+            1 => FileOpenModeRust::Rewrite,
+            2 => FileOpenModeRust::Read,
+            3 => FileOpenModeRust::MakeAndWrite,
+            n => return Err(format!("TypeError: invalid FileOpenMode value {n}")),
+        };
+        let byte_mode = if byte_mode_int == 0 { ByteModeRust::Byte } else { ByteModeRust::Text };
+
+        let std_path = std::path::Path::new(&file_path);
+        if mode == FileOpenModeRust::MakeAndWrite && std_path.exists() {
+            return Err(format!(
+                "RuntimeError: open() make_and_write: file '{}' already exists",
+                file_path
+            ));
+        }
+
+        let (file, content) = match mode {
+            FileOpenModeRust::Read => {
+                let mut f = OpenOptions::new().read(true).open(std_path)
+                    .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
+                let mut c = Vec::new();
+                f.read_to_end(&mut c)
+                    .map_err(|e| format!("IOError: cannot read '{}': {e}", file_path))?;
+                (f, c)
+            }
+            FileOpenModeRust::Write => {
+                let mut f = OpenOptions::new().read(true).write(true).open(std_path)
+                    .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
+                let mut c = Vec::new();
+                f.read_to_end(&mut c)
+                    .map_err(|e| format!("IOError: cannot read '{}': {e}", file_path))?;
+                (f, c)
+            }
+            FileOpenModeRust::Rewrite => {
+                let f = OpenOptions::new()
+                    .read(true).write(true).create(true).truncate(true)
+                    .open(std_path)
+                    .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
+                (f, Vec::new())
+            }
+            FileOpenModeRust::MakeAndWrite => {
+                let f = OpenOptions::new()
+                    .read(true).write(true).create_new(true)
+                    .open(std_path)
+                    .map_err(|e| format!("IOError: cannot create '{}': {e}", file_path))?;
+                (f, Vec::new())
+            }
+        };
+
+        let (content, bom_skip) = if enc_int == 2
+            && content.starts_with(&[0xEF, 0xBB, 0xBF])
+        {
+            (content[3..].to_vec(), 3usize)
+        } else {
+            (content, 0usize)
+        };
+        let _ = bom_skip;
+        let pointer = if start_point_int == 1 { content.len() } else { 0 };
+
+        let fd = FileData {
+            path: file_path,
+            mode,
+            byte_mode,
+            content,
+            pointer,
+            is_closed: false,
+            file_handle: Some(file),
+        };
+        Ok(Value::FileObject(Rc::new(RefCell::new(fd))))
+    }
+
+    fn eval_type_constructor_call(&mut self, type_name: &str, args: &[CallArg]) -> Result<Value, String> {
+        let evaled = self.eval_call_args(args)?;
+        let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+        match type_name {
+            "str" => match vals.as_slice() {
+                [] => Ok(Value::Str(String::new())),
+                [v] => Ok(Value::Str(self.display(v))),
+                _ => Err("TypeError: str() takes at most 1 argument".to_string()),
+            },
+            "int" => match vals.as_slice() {
+                [] => Ok(Value::Int(0)),
+                [Value::Int(n)] => Ok(Value::Int(*n)),
+                [Value::Float(f)] => Ok(Value::Int(*f as i64)),
+                [Value::Bool(b)] => Ok(Value::Int(if *b { 1 } else { 0 })),
+                [Value::Str(s)] => s.trim().parse::<i64>()
+                    .map(Value::Int)
+                    .map_err(|_| format!("ValueError: invalid literal for int(): '{s}'")),
+                [other] => Err(format!("TypeError: int() argument must be a string or a number, not '{}'", self.type_name(other))),
+                _ => Err("TypeError: int() takes at most 1 argument".to_string()),
+            },
+            "float" => match vals.as_slice() {
+                [] => Ok(Value::Float(0.0)),
+                [Value::Float(f)] => Ok(Value::Float(*f)),
+                [Value::Int(n)] => Ok(Value::Float(*n as f64)),
+                [Value::Bool(b)] => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
+                [Value::Str(s)] => s.trim().parse::<f64>()
+                    .map(Value::Float)
+                    .map_err(|_| format!("ValueError: invalid literal for float(): '{s}'")),
+                [other] => Err(format!("TypeError: float() argument must be a string or a number, not '{}'", self.type_name(other))),
+                _ => Err("TypeError: float() takes at most 1 argument".to_string()),
+            },
+            "bool" => match vals.as_slice() {
+                [] => Ok(Value::Bool(false)),
+                [Value::Bool(b)] => Ok(Value::Bool(*b)),
+                [Value::Int(n)] => Ok(Value::Bool(*n != 0)),
+                [Value::Float(f)] => Ok(Value::Bool(*f != 0.0)),
+                [Value::Str(s)] => Ok(Value::Bool(!s.is_empty())),
+                [Value::None] => Ok(Value::Bool(false)),
+                [Value::List(lst)] => Ok(Value::Bool(!lst.borrow().is_empty())),
+                [Value::Set(s)] => Ok(Value::Bool(!s.borrow().is_empty())),
+                [_] => Ok(Value::Bool(true)),
+                _ => Err("TypeError: bool() takes at most 1 argument".to_string()),
+            },
+            "list" => match vals {
+                ref v if v.is_empty() => Ok(Value::List(Rc::new(RefCell::new(vec![])))),
+                _ if vals.len() == 1 => match vals.into_iter().next().unwrap() {
+                    Value::List(lst) => Ok(Value::List(lst)),
+                    Value::Set(s) => {
+                        Ok(Value::List(Rc::new(RefCell::new(s.borrow().clone()))))
+                    },
+                    Value::Str(s) => {
+                        let chars = s.chars().map(|c| Value::Str(c.to_string())).collect();
+                        Ok(Value::List(Rc::new(RefCell::new(chars))))
+                    },
+                    other => Err(format!("TypeError: '{}' object is not iterable", self.type_name(&other))),
+                },
+                _ => Err("TypeError: list() takes at most 1 argument".to_string()),
+            },
+            "set" => match vals {
+                ref v if v.is_empty() => Ok(Value::Set(Rc::new(RefCell::new(vec![])))),
+                _ if vals.len() == 1 => {
+                    let arg = vals.into_iter().next().unwrap();
+                    let items: Vec<Value> = match arg {
+                        Value::Set(s) => s.borrow().clone(),
+                        Value::List(lst) => lst.borrow().clone(),
+                        Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+                        Value::Tuple(t) => t.all_values().to_vec(),
+                        other => return Err(format!("TypeError: '{}' object is not iterable", self.type_name(&other))),
+                    };
+                    let mut result: Vec<Value> = Vec::new();
+                    for v in items {
+                        set_insert(&mut result, v, self);
+                    }
+                    Ok(Value::Set(Rc::new(RefCell::new(result))))
+                },
+                _ => Err("TypeError: set() takes at most 1 argument".to_string()),
+            },
+            "slice" => {
+                let check_index = |v: Value, label: &str| -> Result<Option<Value>, String> {
+                    match v {
+                        Value::None => Ok(None),
+                        Value::Instance(ref inst) if inst.borrow().class.name == "Index" => Ok(Some(v)),
+                        other => Err(format!(
+                            "TypeError: slice {label} must be Index or None, got '{}'",
+                            self.type_name(&other)
+                        )),
+                    }
+                };
+                let check_step = |v: Value| -> Result<Option<Value>, String> {
+                    match v {
+                        Value::None => Ok(None),
+                        Value::Int(_) => Ok(Some(v)),
+                        other => Err(format!(
+                            "TypeError: slice step must be int or None, got '{}'",
+                            self.type_name(&other)
+                        )),
+                    }
+                };
+                match vals.len() {
+                    2 => {
+                        let mut it = vals.into_iter();
+                        let begin = check_index(it.next().unwrap(), "begin")?;
+                        let end   = check_index(it.next().unwrap(), "end")?;
+                        Ok(Value::Slice(Rc::new(SliceValue { begin, end, step: None })))
+                    }
+                    3 => {
+                        let mut it = vals.into_iter();
+                        let begin = check_index(it.next().unwrap(), "begin")?;
+                        let end   = check_index(it.next().unwrap(), "end")?;
+                        let step  = check_step(it.next().unwrap())?;
+                        Ok(Value::Slice(Rc::new(SliceValue { begin, end, step })))
+                    }
+                    _ => Err("TypeError: slice() takes 2 or 3 arguments".to_string()),
                 }
             }
+            "uint" => match vals.as_slice() {
+                [] => Ok(Value::UInt(0)),
+                [Value::UInt(n)] => Ok(Value::UInt(*n)),
+                [Value::Int(n)] => Ok(Value::UInt(*n as u64)),
+                [Value::Bool(b)] => Ok(Value::UInt(if *b { 1 } else { 0 })),
+                [other] => Err(format!("TypeError: uint() argument must be an integer, not '{}'", self.type_name(other))),
+                _ => Err("TypeError: uint() takes at most 1 argument".to_string()),
+            },
+            "AsyncManager" => {
+                // AsyncManager(num_thread = N [, raise_immediately = bool])
+                // Accept positional or keyword args from evaled_with_kw (re-eval below)
+                self.make_async_manager(args)
+            }
+            other => Err(format!("TypeError: '{}' object is not callable", other)),
         }
     }
 
