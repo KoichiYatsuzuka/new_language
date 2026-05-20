@@ -1,4 +1,4 @@
-// ops.rs — 演算・比較・真偽値・表示 (is_truthy / type_name / display / display_repr / apply_unary / apply_binop / values_eq)
+// ops.rs — 演算・比較・真偽値・表示 (is_truthy / type_name / display / display_repr / repr_val / apply_unary / apply_binop / values_eq)
 //
 // `Value` に対する演算・表示・型名取得などの基本操作を実装する。
 // これらはインタープリタ全体から頻繁に呼ばれる共通ユーティリティ群。
@@ -6,9 +6,26 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::ast::{BinOp, UnaryOp};
+use crate::ast::{BinOp, Param, UnaryOp};
 
 use super::{Interpreter, Value};
+
+/// 関数パラメータリストを `(name: Type, name2)` 形式の文字列に変換する。
+/// `self` パラメータは除外する。
+fn format_fn_params(params: &[Param]) -> String {
+    params
+        .iter()
+        .filter(|p| p.name != "self")
+        .map(|p| {
+            if let Some(t) = &p.type_ann {
+                format!("{}: {}", p.name, t)
+            } else {
+                p.name.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 impl Interpreter {
     /// 値の真偽判定を行う。
@@ -136,19 +153,37 @@ impl Interpreter {
                 let parts: Vec<String> = items.borrow().iter().map(|v| self.display_repr(v)).collect();
                 format!("[{}]", parts.join(", "))
             }
-            Value::Function(_) => "<function>".to_string(),
-            Value::OverloadedFn(fns) => format!("<function ({} overloads)>", fns.len()),
+            Value::Function(fn_rc) => {
+                let addr = Rc::as_ptr(fn_rc) as usize;
+                let sig = format_fn_params(&fn_rc.params);
+                format!("<function '{}'({}) at 0x{:x}>", fn_rc.name, sig, addr)
+            }
+            Value::OverloadedFn(fns) => {
+                let first = &fns[0];
+                let addr = Rc::as_ptr(first) as usize;
+                format!("<function '{}' ({} overloads) at 0x{:x}>", first.name, fns.len(), addr)
+            }
             Value::Class(c) => format!("<class '{}'>", c.name),
-            Value::Instance(i) => format!("<{} object>", i.borrow().class.name),
-            Value::Type(name) => format!("<type '{name}'>"),
+            Value::Instance(i) => {
+                let class_name = i.borrow().class.name.clone();
+                let addr = Rc::as_ptr(i) as usize;
+                format!("<{} object at 0x{:x}>", class_name, addr)
+            }
+            Value::Type(name) => format!("<class '{name}'>"),
             Value::Trait(name) => format!("<trait '{name}'>"),
-            Value::TemplateFn(t) => format!("<template fn ({} type params)>", t.template_params.len()),
+            Value::TemplateFn(t) => format!("<template function '{}'>", t.name),
             Value::TemplateClass(t) => format!("<template class '{}'>", t.name),
-            Value::GeneratorFn(_) => "<generator function>".to_string(),
-            Value::TemplateGenFn(t) => format!("<template gen ({} type params)>", t.template_params.len()),
+            Value::GeneratorFn(gf) => format!("<generator function '{}'>", gf.name),
+            Value::TemplateGenFn(t) => format!("<template generator function '{}'>", t.name),
             Value::Generator(s) => {
-                let s = s.borrow();
-                format!("<generator {}/{}>", s.index, s.values.len())
+                let state = s.borrow();
+                let addr = Rc::as_ptr(s) as usize;
+                let yield_type = if state.values.is_empty() {
+                    "Any".to_string()
+                } else {
+                    self.type_name(&state.values[0]).to_string()
+                };
+                format!("<generator object[{}] at 0x{:x}>", yield_type, addr)
             }
             Value::Dict(d) => {
                 let d = d.borrow();
@@ -225,6 +260,96 @@ impl Interpreter {
             }
             Value::Dict(_) | Value::Tuple(_) | Value::Slice(_) => self.display(val),
             _ => self.display(val),
+        }
+    }
+
+    /// `repr(val)` の実装。ユーザー定義 `__repr__` メソッドを呼び出し、
+    /// 定義されていない場合はデフォルトの repr 文字列を返す。
+    /// コレクション内のインスタンスに対しても再帰的に `__repr__` を呼び出す。
+    ///
+    /// 戻り値: `Ok(String)` — repr 文字列。`Err(message)` — `__repr__` 内でエラーが発生した場合。
+    pub(super) fn repr_val(&mut self, val: &Value) -> Result<String, String> {
+        match val {
+            // コレクション: 各要素に repr_val を再帰適用
+            Value::List(items) => {
+                let items_clone: Vec<Value> = items.borrow().clone();
+                let parts: Result<Vec<String>, _> =
+                    items_clone.iter().map(|v| self.repr_val(v)).collect();
+                Ok(format!("[{}]", parts?.join(", ")))
+            }
+            Value::Dict(d) => {
+                let (keys, vals): (Vec<Value>, Vec<Value>) = {
+                    let db = d.borrow();
+                    (db.keys.clone(), db.items.clone())
+                };
+                if keys.is_empty() {
+                    return Ok("{}".to_string());
+                }
+                let mut parts = Vec::new();
+                for (k, v) in keys.iter().zip(vals.iter()) {
+                    let kr = self.repr_val(k)?;
+                    let vr = self.repr_val(v)?;
+                    parts.push(format!("{kr}: {vr}"));
+                }
+                Ok(format!("{{{}}}", parts.join(", ")))
+            }
+            Value::Tuple(t) => {
+                let vals = t.all_values().to_vec();
+                if vals.len() == 1 {
+                    let r = self.repr_val(&vals[0])?;
+                    Ok(format!("({r},)"))
+                } else {
+                    let parts: Result<Vec<String>, _> =
+                        vals.iter().map(|v| self.repr_val(v)).collect();
+                    Ok(format!("({})", parts?.join(", ")))
+                }
+            }
+            Value::Set(s) => {
+                let items_clone: Vec<Value> = s.borrow().clone();
+                if items_clone.is_empty() {
+                    return Ok("set()".to_string());
+                }
+                let parts: Result<Vec<String>, _> =
+                    items_clone.iter().map(|v| self.repr_val(v)).collect();
+                Ok(format!("{{{}}}", parts?.join(", ")))
+            }
+            // インスタンス: new_type_base または __repr__ を優先して使用
+            Value::Instance(inst_rc) => {
+                let class = inst_rc.borrow().class.clone();
+
+                // new_type でプリミティブを基底とする場合: ClassName(repr_of_value)
+                if let Some(ref base) = class.new_type_base {
+                    if matches!(base.as_str(), "int" | "float" | "str" | "bool" | "uint") {
+                        let inner_val = inst_rc
+                            .borrow()
+                            .fields
+                            .get("value")
+                            .map(|(v, _)| v.clone());
+                        if let Some(v) = inner_val {
+                            let inner = self.repr_val(&v)?;
+                            return Ok(format!("{}({})", class.name, inner));
+                        }
+                    }
+                }
+
+                // ユーザー定義 __repr__ を呼び出す
+                if class.methods.contains_key("__repr__") {
+                    let result = self.eval_method_call_evaled(
+                        val.clone(),
+                        "__repr__",
+                        vec![],
+                    )?;
+                    return match result {
+                        Value::Str(s) => Ok(s),
+                        other => Ok(self.display(&other)),
+                    };
+                }
+
+                // デフォルト: <ClassName object at 0xADDR>
+                Ok(self.display(val))
+            }
+            // その他の型はデフォルト表示
+            _ => Ok(self.display_repr(val)),
         }
     }
 

@@ -133,11 +133,13 @@ pub(self) enum CapturedVar {
 /// ジェネレータ関数の定義（`gen` キーワードで宣言）。
 /// 呼び出すと `Value::Generator` を返す。
 ///
+/// - `name`: ジェネレータ関数名（`__repr__` 等の表示に使用）
 /// - `params`: 仮引数リスト
 /// - `body`: 関数本体の文リスト（`yield` 文を含む）
 /// - `captured_env`: キャプチャした外側スコープ変数のマップ
 #[derive(Debug)]
 pub struct GeneratorFnValue {
+    pub name: String,
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
     pub(self) captured_env: std::collections::HashMap<String, CapturedVar>,
@@ -146,11 +148,13 @@ pub struct GeneratorFnValue {
 /// 具体型が未確定のテンプレートジェネレータ関数定義。
 /// `gen fn[T: Trait](...)` 構文でパースされ、型引数を渡して実体化される。
 ///
+/// - `name`: ジェネレータ関数名（実体化後の `GeneratorFnValue` に引き継がれる）
 /// - `template_params`: 型変数とその trait 制約
 /// - `params`: 仮引数リスト（型変数名を含む場合がある）
 /// - `body`: 関数本体の文リスト
 #[derive(Debug)]
 pub struct TemplateGenFnValue {
+    pub name: String,
     pub template_params: Vec<crate::ast::TemplateParam>,
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
@@ -170,11 +174,13 @@ pub struct GeneratorState {
 /// 具体型が未確定のテンプレート関数定義（`fn f[T: Trait](...)` 構文）。
 /// 型引数付きで呼び出されたとき（`f[ConcreteType](args)`）、型変数を具体型に置換して実行される。
 ///
+/// - `name`: 関数名（実体化後の `FnValue` に引き継がれる）
 /// - `template_params`: 型変数名とその trait 制約のリスト
 /// - `params`: 仮引数リスト（型変数名を型アノテーションに含む場合がある）
 /// - `body`: 関数本体の文リスト
 #[derive(Debug)]
 pub struct TemplateFnValue {
+    pub name: String,
     pub template_params: Vec<crate::ast::TemplateParam>,
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
@@ -197,11 +203,13 @@ pub struct TemplateClassValue {
 
 /// 通常の関数定義（`fn` キーワード）の実行時表現。
 ///
+/// - `name`: 関数名（`__repr__` 等の表示に使用。匿名の場合は `"<anonymous>"`）
 /// - `params`: 仮引数リスト（名前・可変フラグ・型アノテーションを含む）
 /// - `body`: 関数本体の文リスト
 /// - `captured_env`: キャプチャした外側スコープ変数のマップ（クロージャ）
 #[derive(Debug)]
 pub struct FnValue {
+    pub name: String,
     pub(self) params: Vec<Param>,
     pub(self) body: Vec<Stmt>,
     /// Python モジュールから変換された関数かどうか。
@@ -246,6 +254,9 @@ pub struct ClassValue {
     pub(self) class_method_names: HashSet<String>,
     /// `static mut` で定義されたクラス静的変数。全インスタンスで共有される可変セル。
     pub(self) static_vars: HashMap<String, Rc<RefCell<Value>>>,
+    /// `new_type Name: PrimType` で生成されたクラスの場合、元のプリミティブ型名を保持する。
+    /// `repr()` でプリミティブ風の表示 (`Name(value)`) に使う。`None` は通常クラス。
+    pub(self) new_type_base: Option<String>,
 }
 
 /// クラスインスタンスの実行時データ。`Rc<RefCell<InstanceData>>` で共有・可変参照する。
@@ -653,6 +664,7 @@ impl ClassValue {
                     .iter()
                     .map(|rc| {
                         Rc::new(FnValue {
+                            name: rc.name.clone(),
                             params: rc.params.clone(),
                             body: rc.body.clone(),
                             is_python: rc.is_python,
@@ -671,6 +683,7 @@ impl ClassValue {
                 (
                     k.clone(),
                     Rc::new(GeneratorFnValue {
+                        name: rc.name.clone(),
                         params: rc.params.clone(),
                         body: rc.body.clone(),
                         captured_env: deep_clone_captured_env(&rc.captured_env),
@@ -704,6 +717,7 @@ impl ClassValue {
             static_method_names: self.static_method_names.clone(),
             class_method_names: self.class_method_names.clone(),
             static_vars,
+            new_type_base: self.new_type_base.clone(),
         }
     }
 }
@@ -758,6 +772,7 @@ impl Value {
                 })))
             }
             Value::Function(rc) => Value::Function(Rc::new(FnValue {
+                name: rc.name.clone(),
                 params: rc.params.clone(),
                 body: rc.body.clone(),
                 is_python: rc.is_python,
@@ -767,6 +782,7 @@ impl Value {
                 fns.iter()
                     .map(|rc| {
                         Rc::new(FnValue {
+                            name: rc.name.clone(),
                             params: rc.params.clone(),
                             body: rc.body.clone(),
                             is_python: rc.is_python,
@@ -776,6 +792,7 @@ impl Value {
                     .collect(),
             ),
             Value::GeneratorFn(rc) => Value::GeneratorFn(Rc::new(GeneratorFnValue {
+                name: rc.name.clone(),
                 params: rc.params.clone(),
                 body: rc.body.clone(),
                 captured_env: deep_clone_captured_env(&rc.captured_env),
@@ -1048,6 +1065,7 @@ impl Interpreter {
             value: Expr::Ident("value".to_string()),
         }];
         let init_fn = Rc::new(FnValue {
+            name: "__init__".to_string(),
             params: vec![
                 Param { name: "self".to_string(), mutable: true, type_ann: None, default: None },
                 Param { name: "value".to_string(), mutable: false, type_ann: Some(prim_type.to_string()), default: None },
@@ -1071,6 +1089,7 @@ impl Interpreter {
             static_method_names: HashSet::new(),
             class_method_names: HashSet::new(),
             static_vars: HashMap::new(),
+            new_type_base: None,
         })
     }
 
@@ -1099,6 +1118,7 @@ impl Interpreter {
             static_method_names: HashSet::new(),
             class_method_names: HashSet::new(),
             static_vars: HashMap::new(),
+            new_type_base: None,
         });
         // 各バリアントをインスタンスとして生成し class_vars に登録
         let mut class_vars: HashMap<String, Value> = HashMap::new();
@@ -1126,6 +1146,7 @@ impl Interpreter {
             static_method_names: HashSet::new(),
             class_method_names: HashSet::new(),
             static_vars: HashMap::new(),
+            new_type_base: None,
         });
         (item_cls_name, item_cls, enum_cls)
     }

@@ -609,6 +609,16 @@ impl Interpreter {
                     Ok(p) => { println!("{}", p.join(" ")); Some(Ok(Value::None)) }
                 }
             }
+            "repr" => {
+                if args.len() != 1 {
+                    return Some(Err("TypeError: repr() takes exactly one argument".to_string()));
+                }
+                let val = match self.eval(args[0].expr()) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                Some(self.repr_val(&val).map(Value::Str))
+            }
             "range" => {
                 let evaled: Result<Vec<_>, _> = args.iter().map(|a| self.eval(a.expr())).collect();
                 let evaled = match evaled {

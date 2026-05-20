@@ -95,7 +95,7 @@ impl Interpreter {
                     .collect();
                 let concrete_params = subst_params(&tmpl.params, &type_map);
                 let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                let fn_val = Rc::new(FnValue { params: concrete_params, body: concrete_body, is_python: false, captured_env: std::collections::HashMap::new() });
+                let fn_val = Rc::new(FnValue { name: tmpl.name.clone(), params: concrete_params, body: concrete_body, is_python: false, captured_env: std::collections::HashMap::new() });
                 self.exec_fn(fn_val, call_args, None, "<template_fn>")
             }
             Value::TemplateClass(tmpl) => {
@@ -117,7 +117,7 @@ impl Interpreter {
                     .collect();
                 let concrete_params = subst_params(&tmpl.params, &type_map);
                 let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                let gen_fn = Rc::new(GeneratorFnValue { params: concrete_params, body: concrete_body, captured_env: std::collections::HashMap::new() });
+                let gen_fn = Rc::new(GeneratorFnValue { name: tmpl.name.clone(), params: concrete_params, body: concrete_body, captured_env: std::collections::HashMap::new() });
                 self.exec_generator(gen_fn, call_args, None)
             }
             // 組み込み辞書型コンストラクタ: `dict[KeyType, ItemType](...)`
@@ -215,6 +215,7 @@ impl Interpreter {
                         method_access.insert(mname.clone(), macc.clone());
                     }
                     methods.entry(mname.clone()).or_default().push(Rc::new(FnValue {
+                        name: mname.clone(),
                         params: params.clone(),
                         body: mbody.clone(),
                         is_python: false,
@@ -226,6 +227,7 @@ impl Interpreter {
                         method_access.insert(mname.clone(), macc.clone());
                     }
                     gen_methods.insert(mname.clone(), Rc::new(GeneratorFnValue {
+                        name: mname.clone(),
                         params: params.clone(),
                         body: mbody.clone(),
                         captured_env: std::collections::HashMap::new(),
@@ -272,6 +274,7 @@ impl Interpreter {
             static_method_names,
             class_method_names,
             static_vars,
+            new_type_base: None,
         });
         self.instantiate(cls, call_args)
     }

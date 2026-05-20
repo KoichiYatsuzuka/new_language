@@ -453,6 +453,7 @@ impl Interpreter {
     ) -> Result<ExecResult, String> {
         if !template_params.is_empty() {
             let tmpl = Rc::new(TemplateFnValue {
+                name: name.to_string(),
                 template_params: template_params.to_vec(),
                 params: params.to_vec(),
                 body: body.to_vec(),
@@ -468,6 +469,7 @@ impl Interpreter {
             HashMap::new()
         };
         let fn_val = Rc::new(FnValue {
+            name: name.to_string(),
             params: params.to_vec(),
             body: body.to_vec(),
             is_python: self.in_python_module,
@@ -509,6 +511,7 @@ impl Interpreter {
     ) -> Result<ExecResult, String> {
         if !template_params.is_empty() {
             let tmpl = Rc::new(TemplateGenFnValue {
+                name: name.to_string(),
                 template_params: template_params.to_vec(),
                 params: params.to_vec(),
                 body: body.to_vec(),
@@ -522,6 +525,7 @@ impl Interpreter {
                 HashMap::new()
             };
             let gen_fn = Rc::new(GeneratorFnValue {
+                name: name.to_string(),
                 params: params.to_vec(),
                 body: body.to_vec(),
                 captured_env,
@@ -575,6 +579,7 @@ impl Interpreter {
                     static_method_names: orig_cls.static_method_names.clone(),
                     class_method_names: orig_cls.class_method_names.clone(),
                     static_vars: orig_cls.static_vars.clone(),
+                    new_type_base: orig_cls.new_type_base.clone(),
                 });
                 self.declare_var(name.to_string(), Var::new(Value::Class(new_cls), false));
             }
@@ -588,6 +593,7 @@ impl Interpreter {
                     value: Expr::Ident("value".to_string()),
                 }];
                 let init_fn = Rc::new(FnValue {
+                    name: "__init__".to_string(),
                     params: vec![
                         crate::ast::Param {
                             name: "self".to_string(),
@@ -621,6 +627,7 @@ impl Interpreter {
                     static_method_names: HashSet::new(),
                     class_method_names: HashSet::new(),
                     static_vars: HashMap::new(),
+                    new_type_base: Some(type_name.clone()),
                 });
                 self.declare_var(name.to_string(), Var::new(Value::Class(new_cls), false));
             }
@@ -648,6 +655,7 @@ impl Interpreter {
             value: Expr::Ident("value".to_string()),
         }];
         let init_fn = Rc::new(FnValue {
+            name: "__init__".to_string(),
             params: vec![
                 crate::ast::Param {
                     name: "self".to_string(),
@@ -681,6 +689,7 @@ impl Interpreter {
             static_method_names: HashSet::new(),
             class_method_names: HashSet::new(),
             static_vars: HashMap::new(),
+            new_type_base: None,
         });
         self.declare_var(item_type_name.clone(), Var::new(Value::Class(item_cls.clone()), false));
 
@@ -719,6 +728,7 @@ impl Interpreter {
             static_method_names: HashSet::new(),
             class_method_names: HashSet::new(),
             static_vars: HashMap::new(),
+            new_type_base: None,
         });
         self.declare_var(name.to_string(), Var::new(Value::Class(enum_cls), false));
         Ok(ExecResult::Normal)
@@ -776,6 +786,7 @@ impl Interpreter {
                     ..
                 } => {
                     let fn_val = Rc::new(FnValue {
+                        name: mname.clone(),
                         params: params.clone(),
                         body: mbody.clone(),
                         is_python: self.in_python_module,
@@ -815,6 +826,7 @@ impl Interpreter {
                         method_access.insert(mname.clone(), macc.clone());
                     }
                     gen_methods.insert(mname.clone(), Rc::new(GeneratorFnValue {
+                        name: mname.clone(),
                         params: params.clone(),
                         body: mbody.clone(),
                         captured_env: HashMap::new(),
@@ -878,6 +890,7 @@ impl Interpreter {
             static_method_names,
             class_method_names,
             static_vars,
+            new_type_base: None,
         });
         if decorators.is_empty() {
             self.declare_var(name.to_string(), Var::new(Value::Class(cls), false));

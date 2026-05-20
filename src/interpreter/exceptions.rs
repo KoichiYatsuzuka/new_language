@@ -36,6 +36,7 @@ impl Interpreter {
             },
         ];
         let init_fn = Rc::new(FnValue {
+            name: "__init__".to_string(),
             params: vec![
                 Param { name: "self".to_string(),    mutable: true,  type_ann: None, default: None },
                 Param { name: "message".to_string(), mutable: false, type_ann: Some("str".to_string()), default: None },
@@ -76,6 +77,7 @@ impl Interpreter {
             static_method_names: std::collections::HashSet::new(),
             class_method_names: std::collections::HashSet::new(),
             static_vars: HashMap::new(),
+            new_type_base: None,
         })
     }
 
