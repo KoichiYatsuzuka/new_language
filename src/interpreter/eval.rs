@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchArm, MatchPattern};
 
@@ -1057,7 +1058,7 @@ impl Interpreter {
     /// 呼び出しツリーが終わると一括クリーンアップする。
     pub(super) fn call_native_function(
         &mut self,
-        fn_ref: &Rc<NativeFnRef>,
+        fn_ref: &Arc<NativeFnRef>,
         args: &[crate::ast::CallArg],
     ) -> Result<Value, String> {
         let evaled = self.eval_call_args(args)?;

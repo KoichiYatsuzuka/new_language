@@ -15,6 +15,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -1208,7 +1209,7 @@ impl Interpreter {
                     ).is_ok()
                 };
                 if has_symbol {
-                    let fn_ref = Rc::new(NativeFnRef {
+                    let fn_ref = Arc::new(NativeFnRef {
                         lib_path: lib_path_buf.clone(),
                         fn_name: name.clone(),
                         n_params: params.len(),

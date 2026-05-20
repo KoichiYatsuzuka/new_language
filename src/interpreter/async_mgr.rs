@@ -108,6 +108,12 @@ impl AsyncManagerData {
 
     /// Submit a new task and immediately start it if a thread slot is free.
     pub fn add_task(&mut self, body: Vec<Stmt>, env: Vec<(String, Value, bool)>) {
+        if env.iter().any(|(_, v, _)| matches!(v, Value::PyObject(_))) {
+            eprintln!(
+                "Warning: async task captures Python objects; \
+                 Python's GIL will serialize execution across tasks (no true parallelism)"
+            );
+        }
         let task_idx = self.progress.len();
         self.progress.push(AsyncStatus::Waiting);
         self.results.push(Value::None);

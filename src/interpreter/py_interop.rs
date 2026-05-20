@@ -15,6 +15,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use std::path::PathBuf;
 
@@ -116,7 +117,7 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
         return Value::Dict(Rc::new(RefCell::new(dict)));
     }
     // その他 → PyObject（opaque ラップ）
-    Value::PyObject(Rc::new(PyObjHandle { inner: obj.clone().unbind() }))
+    Value::PyObject(Arc::new(PyObjHandle { inner: obj.clone().unbind() }))
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +154,7 @@ pub fn load_py_int_module(
             if name.starts_with('_') { continue; }
 
             if let Ok(attr) = module.getattr(name.as_str()) {
-                let val = Value::PyObject(Rc::new(PyObjHandle { inner: attr.unbind() }));
+                let val = Value::PyObject(Arc::new(PyObjHandle { inner: attr.unbind() }));
                 members.insert(name, val);
             }
         }
