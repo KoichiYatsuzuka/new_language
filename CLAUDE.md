@@ -4,6 +4,8 @@ Guidelines for Claude Code when working in this repository.
 
 ## Commands
 
+### Rust implementation (primary)
+
 ```bash
 cargo build                        # Compile
 cargo run -- -src <file.tl>        # Execute a .tl file
@@ -15,13 +17,24 @@ cargo fmt                          # Format
 cargo run -- --compile <file.tl>   # Partially compile a module (see below)
 ```
 
+### Python implementation (`impl_python/`)
+
+```bash
+# Run from the repository root (test_lang/)
+python -m impl_python <file.tl>
+
+# Examples
+python -m impl_python examples/variable.tl
+python -m impl_python examples/control_flow.tl
+```
+
 ## Project Overview
 
 **test_lang** is a custom scripting language targeting LLVM IR.  
 It aims to provide a Python-based syntax with static type checking and additional custom extensions.
 
 - File extension: `.tl`
-- Implementation language: **Rust** (main), with Python planned in the future
+- Implementation language: **Rust** (main) and **Python** (`impl_python/`)
 - Indentation-based block structure (Python-style)
 
 ## Directory Structure
@@ -78,6 +91,20 @@ test_lang/
 │   ├── async_demo.tl          # DEMO: AsyncManager, <- operator, raise_immediately, Async enum
 │   ├── async_bench.tl         # benchmark: sequential vs async parallel (prime counting)
 │   └── archived/              # older examples (kept for reference)
+├── impl_python/         # Python implementation of the interpreter
+│   ├── __main__.py      # CLI entry point: python -m impl_python <file.tl>
+│   ├── token.py         # Token / Span / Spanned definitions
+│   ├── lexer.py         # Lexer
+│   ├── ast.py           # AST node dataclasses
+│   ├── parser.py        # Recursive descent parser
+│   ├── type_check.py    # Static type checker
+│   └── interpreter/     # Tree-walk interpreter package
+│       ├── __init__.py      # run(stmts) entry point
+│       ├── interpreter.py   # Interpreter class (exec / eval)
+│       ├── value.py         # Runtime value types (TlList, TlClass, TlInstance, …)
+│       ├── env.py           # Lexical scope / Environment
+│       ├── exceptions.py    # Control-flow signals (ReturnSignal, RaiseSignal, …)
+│       └── builtins.py      # Built-in functions and collection method dispatch
 └── vscode-extension/    # VS Code extension (type inference inline hints)
     └── src/
         ├── extension.ts
@@ -307,7 +334,7 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Static access checking for `private`/`protected` (currently runtime `AccessError` only; no `StaticTypeError` at parse/type-check time)
 - Imports (`import` / `from ... import`)
 - Native compilation: closures (inner functions capturing outer variables), generators, `try`/`raise`, `block_return`/`loop_yield`, and `static mut` are not yet supported in compiled functions
-- Python implementation
+- Python implementation: async tasks (`<-`), `import[py]`/`import[py-int]` modules, and full `import`/`from … import` resolution are not yet complete
 
 ## Key Language Differences from Python
 
