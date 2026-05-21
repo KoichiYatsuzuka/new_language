@@ -19,7 +19,7 @@ import[py-int] matplotlib.pyplot as plt
 
 # ── 1. Load ───────────────────────────────────────────────────────────────────
 
-let df = pd.read_csv("examples/data/sales_data.csv")
+mut df = pd.read_csv("examples/data/sales_data.csv")
 
 print("=== Raw Data ===")
 print(df)

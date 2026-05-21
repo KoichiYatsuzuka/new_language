@@ -848,6 +848,16 @@ impl TypeChecker {
         self.scope_stack.iter().rev().find_map(|s| s.get(name))
     }
 
+    /// サブスクリプトチェーン `x[i][j]...` のルート識別子名を返す。
+    /// `Expr::Subscript` でない式（属性アクセスなど）は `None`。
+    fn subscript_root_ident(expr: &Expr) -> Option<&str> {
+        match expr {
+            Expr::Ident(name) => Some(name.as_str()),
+            Expr::Subscript { object, .. } => Self::subscript_root_ident(object),
+            _ => None,
+        }
+    }
+
     /// 型エラーを収集リストに追加する。
     ///
     /// # 引数
@@ -971,13 +981,36 @@ impl TypeChecker {
                 self.infer(value);
             }
             Stmt::AttrAssign { target, value } => {
-                // 属性代入（`self.x = v`）: ターゲットと値を推論するのみ。
-                // フィールド可変性チェックは実行時に委ねる。
+                // サブスクリプト代入（`x[i] = v`）のとき、ルート変数が let なら静的エラー。
+                if matches!(target, Expr::Subscript { .. }) {
+                    if let Some(name) = Self::subscript_root_ident(target) {
+                        if let Some(info) = self.lookup(name) {
+                            if !info.mutable {
+                                self.report_error(StaticTypeError {
+                                    kind: TypeErrorKind::AssignToImmutable { name: name.to_string() },
+                                    span: None,
+                                });
+                            }
+                        }
+                    }
+                }
                 self.infer(target);
                 self.infer(value);
             }
             Stmt::AttrCompoundAssign { target, op: _, value } => {
-                // 属性複合代入（`self.x += v`）: ターゲットと値を推論するのみ。
+                // サブスクリプト複合代入（`x[i] += v`）のとき、ルート変数が let なら静的エラー。
+                if matches!(target, Expr::Subscript { .. }) {
+                    if let Some(name) = Self::subscript_root_ident(target) {
+                        if let Some(info) = self.lookup(name) {
+                            if !info.mutable {
+                                self.report_error(StaticTypeError {
+                                    kind: TypeErrorKind::AssignToImmutable { name: name.to_string() },
+                                    span: None,
+                                });
+                            }
+                        }
+                    }
+                }
                 self.infer(target);
                 self.infer(value);
             }
