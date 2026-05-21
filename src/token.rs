@@ -97,14 +97,14 @@ pub enum FStrPart {
 ///
 /// ## 制御フロー
 /// - `If` / `Elif` / `Else` — 条件分岐
-/// - `Match` — パターンマッチ（未実装）
+/// - `Match` — パターンマッチ
 /// - `For` / `While` — ループ
 /// - `Break` / `Continue` / `Pass` — ループ制御・空文
 /// - `Return` / `Yield` / `YieldFrom` — 関数からの値返却・ジェネレータ
 /// - `BlockReturn` / `LoopYield` / `Block` — ブロック式制御
 ///
 /// ## 例外処理
-/// - `Try` / `Except` / `Finally` / `Raise` — 例外処理（未実装）
+/// - `Try` / `Except` / `Finally` / `Raise` — 例外処理
 ///
 /// ## 定義キーワード
 /// - `Fn`       — 関数定義

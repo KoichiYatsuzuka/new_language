@@ -4,12 +4,13 @@
 // 標準例外クラスの `ClassValue` を構築するファクトリ関数と、
 // トレースバック表示のためのソースコンテキスト抽出・例外マッチング判定を提供する。
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::{Param, Stmt};
 
-use super::{Interpreter, Value, ClassValue, FnValue};
+use super::{Interpreter, Value, ClassValue, FnValue, InstanceData, RaisedError};
 
 impl Interpreter {
     /// 標準例外クラス用の `ClassValue` を構築して返す。
@@ -99,6 +100,56 @@ impl Interpreter {
         let start = line.saturating_sub(half + 1);
         let end = (line + half).min(lines.len());
         lines[start..end].join("\n")
+    }
+
+    /// インタープリタ内部の `Err("ClassName: message")` 文字列を `RaisedError` に変換する。
+    ///
+    /// 既知の例外クラス名で始まる文字列のみ変換する。マッチしない場合は `None`。
+    /// これにより `try/except` がインタープリタ内部エラーを捕捉できるようになる。
+    pub(super) fn make_internal_raised_error(&mut self, msg: &str) -> Option<RaisedError> {
+        const CATCHABLE: &[&str] = &[
+            "ZeroDivisionError", "NotImplementedError", "AttributeError",
+            "ArithmeticError", "AssertionError", "OverflowError", "AccessError",
+            "RuntimeError", "ValueError", "TypeError", "NameError",
+            "IndexError", "KeyError", "IOError", "OSError",
+            "StopIteration", "Exception",
+        ];
+
+        let class_name = CATCHABLE.iter().find(|&&cn| {
+            msg.starts_with(cn)
+                && (msg.len() == cn.len()
+                    || msg.as_bytes().get(cn.len()).copied() == Some(b':')
+                    || msg.as_bytes().get(cn.len()).copied() == Some(b' '))
+        })?;
+
+        let message = msg[class_name.len()..]
+            .trim_start_matches(':')
+            .trim()
+            .to_string();
+
+        let cls = match self.get_val(class_name) {
+            Some(Value::Class(c)) => c,
+            _ => return None,
+        };
+
+        let mut fields = HashMap::new();
+        fields.insert("message".to_string(),             (Value::Str(message),         false));
+        fields.insert("code_context".to_string(),        (Value::Str(String::new()),   true));
+        fields.insert("file".to_string(),                (Value::Str(String::new()),   true));
+        fields.insert("line".to_string(),                (Value::Int(0),               true));
+        fields.insert("col".to_string(),                 (Value::Int(0),               true));
+        fields.insert("Error::code_context".to_string(), (Value::Str(String::new()),   true));
+        fields.insert("Error::file".to_string(),         (Value::Str(String::new()),   true));
+        fields.insert("Error::line".to_string(),         (Value::Int(0),               true));
+        fields.insert("Error::col".to_string(),          (Value::Int(0),               true));
+
+        let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
+            class: cls,
+            fields,
+            immutable: false,
+        })));
+
+        Some(RaisedError { exception: inst, frames: vec![] })
     }
 
     /// 例外インスタンスのクラスが `except` 節の型名にマッチするか判定する。

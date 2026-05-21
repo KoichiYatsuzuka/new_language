@@ -299,10 +299,11 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - **Control flow as expressions** (`Expr::IfExpr`, `Expr::ForExpr`, `Expr::WhileExpr`, `Expr::MatchExpr`):
   - `block_return val` — exits the immediately enclosing control-flow expression and yields `val` as its result; runtime error if used outside any block/if/for/while/match expression
   - `loop_yield val` — accumulates `val` into a list inside a `for`/`while` expression; runtime error if used outside a `for`/`while` expression (i.e. not valid in `block:`, `if`, or `match` expressions)
-  - `break` — alias for `block_return None`; exits the innermost `for`/`while` loop (statement or expression form); runtime error if used outside any `for`/`while`
-  - For expressions: if `loop_yield` is used, the expression evaluates to the accumulated list; if `block_return` is used, evaluates to that single value; if neither is reached, evaluates to `None`
+  - `break` — exits the innermost `for`/`while` loop (statement or expression form); propagates through nested `if`/`match`/`block:` expression bodies via `BREAK_SENTINEL` error signal until caught by the enclosing loop; in a loop expression, `break` returns the accumulated `loop_yield` list (or `None` if none); differs from `block_return None` which explicitly returns `None` even when yields exist; runtime error if used outside any `for`/`while`
+  - For expressions: if `loop_yield` is used, the expression evaluates to the accumulated list; if `block_return val` is used, evaluates to `val`; if `break` is used, evaluates to the accumulated list or `None`; if none of these is reached, evaluates to `None`
   - Thread-local `BLOCK_YIELDS` (set to `Some(Vec)` inside for/while expression bodies) collects `loop_yield` values without interrupting control flow
-  - Thread-local `LOOP_DEPTH` (incremented for every for/while, statement or expression form) guards `break` usage
+  - Thread-local `LOOP_DEPTH` (incremented for every for/while, statement or expression form) guards `break` usage; reset to 0 on function entry to prevent break from crossing function boundaries
+  - `BREAK_SENTINEL` (`"\x00__break__"`) — internal error string that propagates `break` through `eval()` channels (e.g., through `if`/`match`/`block:` expression bodies); caught and consumed by the enclosing loop handler
 - **Access control** (`public` / `private` / `protected`):
   - Section-style markers (`public:`, `private:`, `protected:`) inside class or trait bodies apply to all subsequent member declarations
   - `public` (default): accessible from anywhere
@@ -332,7 +333,6 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Runtime return type checking for `block_return`/`loop_yield` against `->Type` annotations
 - Mixing check: `block_return` and `loop_yield` in the same block expression (currently not statically detected)
 - Static access checking for `private`/`protected` (currently runtime `AccessError` only; no `StaticTypeError` at parse/type-check time)
-- Imports (`import` / `from ... import`)
 - Native compilation: closures (inner functions capturing outer variables), generators, `try`/`raise`, `block_return`/`loop_yield`, and `static mut` are not yet supported in compiled functions
 - Python implementation: async tasks (`<-`), `import[py]`/`import[py-int]` modules, and full `import`/`from … import` resolution are not yet complete
 
@@ -349,13 +349,12 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - `if` / `for` / `while` / `match` / `block` can be used as expressions with a `->Type` annotation
 - `block_return val` exits a block/if/match/for/while expression with a value (not a function return)
 - `loop_yield val` accumulates values in a `for`/`while` expression into a list (only valid inside `for`/`while` expressions)
-- `break` is an alias of `block_return None` and is only valid inside `for`/`while` loops
+- `break` exits the innermost `for`/`while` loop; it propagates through nested `if`/`match`/`block:` expressions to reach the enclosing loop; in a `for`/`while` expression using `loop_yield`, `break` returns the accumulated list; differs from `block_return None` which explicitly sets the expression result to `None`
 - Access control uses section markers (`public:` / `private:` / `protected:`) rather than per-member keywords; default accessibility is `public`
 - `mng <- async->T: body` submits a concurrent task to an `AsyncManager`; variables are deep-cloned at submission time (no shared mutable state)
 
 ## Next Features to Implement (Priority Order)
 
-1. **Imports** (`import` / `from ... import`)
-2. **Expand native compilation** — support closures, generators, `try`/`raise`, and `block_return`/`loop_yield` in compiled functions
-3. **Async enhancements** — `async` blocks inside native-compiled functions; shared mutable state via explicit `Mutex`-style primitives
+1. **Expand native compilation** — support closures, generators, and `block_return`/`loop_yield` in compiled functions
+2. **Async enhancements** — `async` blocks inside native-compiled functions; shared mutable state via explicit `Mutex`-style primitives
 

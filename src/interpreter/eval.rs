@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchArm, MatchPattern};
 
-use super::{DictData, ExecResult, FileData, FileOpenModeRust, ByteModeRust, GeneratorState, Interpreter, SliceValue, TupleData, Value, Var, NativeFnRef, RAISE_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH};
+use super::{DictData, ExecResult, FileData, FileOpenModeRust, ByteModeRust, GeneratorState, Interpreter, SliceValue, TupleData, Value, Var, NativeFnRef, RAISE_SENTINEL, BREAK_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH};
 
 /// ヘルパー: セットに要素を重複なしで追加する。
 fn set_insert(set: &mut Vec<Value>, item: Value, interp: &Interpreter) {
@@ -1311,9 +1311,13 @@ impl Interpreter {
                     early_err = Some("SyntaxError: 'return' inside block expression — use 'block_return'".to_string());
                     break 'block_expr;
                 }
-                Ok(ExecResult::Break) | Ok(ExecResult::Continue) => {
-                    // block: 式の外にループが無い場合; ループ内にいれば外側ループで処理される
-                    early_err = Some("SyntaxError: 'break'/'continue' inside block expression is not supported outside a loop".to_string());
+                Ok(ExecResult::Break) => {
+                    // break propagates through block: expressions to reach the enclosing loop
+                    early_err = Some(BREAK_SENTINEL.to_string());
+                    break 'block_expr;
+                }
+                Ok(ExecResult::Continue) => {
+                    early_err = Some("SyntaxError: 'continue' inside block expression is not supported outside a loop".to_string());
                     break 'block_expr;
                 }
                 Err(e) => { early_err = Some(e); break 'block_expr; }
@@ -1342,6 +1346,11 @@ impl Interpreter {
             match self.exec(stmt) {
                 Ok(ExecResult::Normal) => {}
                 Ok(ExecResult::BlockReturn(v)) => { result_val = Some(v); break 'body; }
+                Ok(ExecResult::Break) => {
+                    // break propagates through if/match expressions to reach the enclosing loop
+                    early_err = Some(BREAK_SENTINEL.to_string());
+                    break 'body;
+                }
                 Ok(ExecResult::Raise(raised)) => {
                     self.current_exception = Some(raised);
                     early_err = Some(RAISE_SENTINEL.to_string());
@@ -1351,12 +1360,7 @@ impl Interpreter {
                     early_err = Some("SyntaxError: 'return' inside block expression — use 'block_return'".to_string());
                     break 'body;
                 }
-                Ok(other) => {
-                    // Break, Continue, BlockYield: 伝播させない（ここでは捕捉できない）
-                    // これらが届くのは制御フロー式のネストが正しくない場合
-                    // Continue/Break は内側のループに渡すために伝播させる
-                    let _ = other; // Normal として継続
-                }
+                Ok(other) => { let _ = other; }
                 Err(e) => { early_err = Some(e); break 'body; }
             }
         }
@@ -1401,7 +1405,10 @@ impl Interpreter {
                     match result {
                         Ok(ExecResult::Normal) => {}
                         Ok(ExecResult::Continue) => continue,
-                        Ok(ExecResult::Break) | Ok(ExecResult::BlockReturn(Value::None)) => break 'for_loop,
+                        // break: exit loop and return accumulated loop_yields (or None)
+                        Ok(ExecResult::Break) => break 'for_loop,
+                        // block_return None: exit loop with explicit None (ignores yields)
+                        Ok(ExecResult::BlockReturn(Value::None)) => { block_return_val = Some(Value::None); break 'for_loop; }
                         Ok(ExecResult::BlockReturn(v)) => { block_return_val = Some(v); break 'for_loop; }
                         Ok(ExecResult::Raise(raised)) => {
                             self.current_exception = Some(raised);
@@ -1410,6 +1417,8 @@ impl Interpreter {
                         }
                         Ok(ExecResult::Return(v)) => { block_return_val = Some(v); break 'for_loop; } // shouldn't happen
                         Ok(ExecResult::BlockYield(_)) => {}
+                        // break from inside an eval context (e.g. if expression body)
+                        Err(ref e) if e.as_str() == BREAK_SENTINEL => break 'for_loop,
                         Err(e) => { early_err = Some(e); break 'for_loop; }
                     }
                 }
@@ -1448,7 +1457,10 @@ impl Interpreter {
             match self.exec_scoped_block(body) {
                 Ok(ExecResult::Normal) => {}
                 Ok(ExecResult::Continue) => continue,
-                Ok(ExecResult::Break) | Ok(ExecResult::BlockReturn(Value::None)) => break 'while_loop,
+                // break: exit loop and return accumulated loop_yields (or None)
+                Ok(ExecResult::Break) => break 'while_loop,
+                // block_return None: exit loop with explicit None (ignores yields)
+                Ok(ExecResult::BlockReturn(Value::None)) => { block_return_val = Some(Value::None); break 'while_loop; }
                 Ok(ExecResult::BlockReturn(v)) => { block_return_val = Some(v); break 'while_loop; }
                 Ok(ExecResult::Raise(raised)) => {
                     self.current_exception = Some(raised);
@@ -1456,6 +1468,8 @@ impl Interpreter {
                     break 'while_loop;
                 }
                 Ok(other) => { let _ = other; }
+                // break from inside an eval context (e.g. if expression body)
+                Err(ref e) if e.as_str() == BREAK_SENTINEL => break 'while_loop,
                 Err(e) => { early_err = Some(e); break; }
             }
         }

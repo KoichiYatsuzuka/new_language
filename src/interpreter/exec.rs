@@ -30,7 +30,7 @@ use super::{
     FnValue, TemplateFnValue, GeneratorFnValue, TemplateGenFnValue, TemplateClassValue,
     GeneratorState, NamespaceData, ModuleState, NativeFnRef, NativeLibWrapper,
     RaisedError, StackFrame,
-    RAISE_SENTINEL, GENERATOR_YIELDS, BLOCK_YIELDS, LOOP_DEPTH,
+    RAISE_SENTINEL, BREAK_SENTINEL, GENERATOR_YIELDS, BLOCK_YIELDS, LOOP_DEPTH,
     debugger::DbgMode,
 };
 
@@ -89,7 +89,7 @@ impl Interpreter {
                 if !LOOP_DEPTH.with(|d| *d.borrow() > 0) {
                     return Err("SyntaxError: 'break' outside for/while loop".to_string());
                 }
-                Ok(ExecResult::BlockReturn(Value::None))
+                Ok(ExecResult::Break)
             }
             Stmt::Continue => {
                 if !LOOP_DEPTH.with(|d| *d.borrow() > 0) {
@@ -347,10 +347,12 @@ impl Interpreter {
                 if !self.is_truthy(&val) {
                     break;
                 }
-                match self.exec_scoped_block(body)? {
-                    ExecResult::Break | ExecResult::BlockReturn(Value::None) => break,
-                    ExecResult::Continue | ExecResult::Normal => {}
-                    r => return Ok(r),
+                match self.exec_scoped_block(body) {
+                    Ok(ExecResult::Break) | Ok(ExecResult::BlockReturn(Value::None)) => break,
+                    Ok(ExecResult::Continue) | Ok(ExecResult::Normal) => {}
+                    Ok(r) => return Ok(r),
+                    Err(ref e) if e.as_str() == BREAK_SENTINEL => break,
+                    Err(e) => return Err(e),
                 }
             }
             Ok(ExecResult::Normal)
@@ -429,10 +431,12 @@ impl Interpreter {
                         }
                         let result = self.exec_block(body);
                         self.pop_scope();
-                        match result? {
-                            ExecResult::Break | ExecResult::BlockReturn(Value::None) => break,
-                            ExecResult::Continue | ExecResult::Normal => {}
-                            r => return Ok(r),
+                        match result {
+                            Ok(ExecResult::Break) | Ok(ExecResult::BlockReturn(Value::None)) => break,
+                            Ok(ExecResult::Continue) | Ok(ExecResult::Normal) => {}
+                            Ok(r) => return Ok(r),
+                            Err(ref e) if e.as_str() == BREAK_SENTINEL => break,
+                            Err(e) => return Err(e),
                         }
                     }
                     Err(ref e) if e.starts_with("EndOfIteration") => break,
@@ -446,11 +450,10 @@ impl Interpreter {
     }
 
     fn exec_block_stmt(&mut self, body: &[Stmt]) -> Result<ExecResult, String> {
-        // BlockReturn(non-None) は値を吸収して Normal を返す。
-        // BlockReturn(None) (= break) は伝播させる（外側のループが捕捉できるよう）。
+        // All BlockReturn values are absorbed (the block: statement consumes them).
+        // Break, Continue, Return, Raise propagate outward to the enclosing loop/function.
         match self.exec_scoped_block(body)? {
-            ExecResult::Normal => Ok(ExecResult::Normal),
-            ExecResult::BlockReturn(v) if !matches!(v, Value::None) => Ok(ExecResult::Normal),
+            ExecResult::Normal | ExecResult::BlockReturn(_) => Ok(ExecResult::Normal),
             r => Ok(r),
         }
     }
@@ -1010,9 +1013,16 @@ impl Interpreter {
     ) -> Result<ExecResult, String> {
         let body_result = self.exec_scoped_block(body);
 
+        let mut converted_internal = false;
         let raise_opt: Option<RaisedError> = match &body_result {
             Ok(ExecResult::Raise(r)) => Some(r.clone()),
             Err(e) if e.as_str() == RAISE_SENTINEL => self.current_exception.clone(),
+            Err(e) => {
+                let msg = e.clone();
+                let r = self.make_internal_raised_error(&msg);
+                if r.is_some() { converted_internal = true; }
+                r
+            }
             _ => None,
         };
 
@@ -1049,9 +1059,10 @@ impl Interpreter {
                     break;
                 }
             }
-            if !handled {
-                // どの handler にもマッチしなかった場合:
-                // final_result はそのまま body_result を維持し、元の伝播パスを保持する
+            if !handled && converted_internal {
+                // 内部エラーから変換された RaisedError がどのハンドラにもマッチしなかった場合:
+                // ExecResult::Raise として上位に伝播させ、トレースバック表示が機能するようにする
+                final_result = Ok(ExecResult::Raise(raised));
             }
         }
 

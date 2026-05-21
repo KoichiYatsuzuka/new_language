@@ -13,7 +13,7 @@ use crate::ast::{CallArg, Param};
 use super::{
     CapturedVar, Interpreter, Value, Var, FnValue, GeneratorFnValue, GeneratorState,
     ExecResult, StackFrame, DictData, InstanceData,
-    RAISE_SENTINEL, GENERATOR_YIELDS,
+    RAISE_SENTINEL, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
 };
 
 impl Interpreter {
@@ -133,9 +133,15 @@ impl Interpreter {
             self.current_class = Some(class);
         }
 
+        // Reset LOOP_DEPTH so that break/continue cannot escape this function's body
+        // and cannot accidentally see loop depth from an outer call site.
+        let prev_loop_depth = LOOP_DEPTH.with(|d| { let prev = *d.borrow(); *d.borrow_mut() = 0; prev });
+
         self.call_stack.push(fn_name.to_string());
         let result = self.exec_block(&fn_val.body);
         self.call_stack.pop();
+
+        LOOP_DEPTH.with(|d| *d.borrow_mut() = prev_loop_depth);
 
         // アクセス制御コンテキストを復元する
         self.current_class = prev_class;
@@ -169,6 +175,24 @@ impl Interpreter {
                         context: String::new(),
                     });
                 }
+                return Err(RAISE_SENTINEL.to_string());
+            }
+            // BREAK_SENTINEL should not escape a function — it means break was inside an eval
+            // context (e.g., if expression) within a function that has no enclosing loop.
+            if e.as_str() == BREAK_SENTINEL {
+                return Err("SyntaxError: 'break' outside for/while loop".to_string());
+            }
+            // 内部エラー文字列を RaisedError に変換してスタックフレームを付加してから伝播する
+            let msg = e.clone();
+            if let Some(mut raised) = self.make_internal_raised_error(&msg) {
+                raised.frames.push(StackFrame {
+                    file: String::new(),
+                    line: 0,
+                    col: 0,
+                    fn_name: fn_name.to_string(),
+                    context: String::new(),
+                });
+                self.current_exception = Some(raised);
                 return Err(RAISE_SENTINEL.to_string());
             }
         }
@@ -253,12 +277,20 @@ impl Interpreter {
             let class = inst_rc.borrow().class.clone();
             self.declare_var("Self".to_string(), Var::new(Value::Class(class), false));
         }
+        let prev_loop_depth = LOOP_DEPTH.with(|d| { let prev = *d.borrow(); *d.borrow_mut() = 0; prev });
         let exec_result = self.exec_block(&gen_fn.body);
+        LOOP_DEPTH.with(|d| *d.borrow_mut() = prev_loop_depth);
         self.scopes.truncate(1);
         self.scopes.extend(outer_scopes);
 
         // エラー時も含めて必ずスレッドローカルをクリーンアップして yield 値を回収する
         let yields = GENERATOR_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
+
+        if let Err(ref e) = exec_result {
+            if e.as_str() == BREAK_SENTINEL {
+                return Err("SyntaxError: 'break' outside for/while loop".to_string());
+            }
+        }
 
         match exec_result? {
             ExecResult::Normal => {}

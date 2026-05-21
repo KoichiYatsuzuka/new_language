@@ -1250,6 +1250,147 @@ fn test_exception_propagates_through_function() {
     assert!(matches!(v, Value::Int(1)));
 }
 
+// --- internal error catchability ---
+
+#[test]
+fn test_catch_internal_type_error() {
+    let src = concat!(
+        "mut caught = 0\n",
+        "try:\n",
+        "    let x: int = 1 + \"bad\"\n",
+        "except TypeError:\n",
+        "    caught = 1\n",
+    );
+    let v = run_get(src, "caught");
+    assert!(matches!(v, Value::Int(1)));
+}
+
+#[test]
+fn test_catch_internal_index_error() {
+    let src = concat!(
+        "mut caught = 0\n",
+        "let lst = [1, 2, 3]\n",
+        "try:\n",
+        "    let x = lst[10]\n",
+        "except IndexError:\n",
+        "    caught = 1\n",
+    );
+    let v = run_get(src, "caught");
+    assert!(matches!(v, Value::Int(1)));
+}
+
+#[test]
+fn test_catch_internal_key_error() {
+    let src = concat!(
+        "mut caught = 0\n",
+        "let d = {\"a\": 1}\n",
+        "try:\n",
+        "    let x = d[\"missing\"]\n",
+        "except KeyError:\n",
+        "    caught = 1\n",
+    );
+    let v = run_get(src, "caught");
+    assert!(matches!(v, Value::Int(1)));
+}
+
+#[test]
+fn test_catch_internal_zero_division() {
+    let src = concat!(
+        "mut caught = 0\n",
+        "try:\n",
+        "    let x = 10 / 0\n",
+        "except ZeroDivisionError:\n",
+        "    caught = 1\n",
+    );
+    let v = run_get(src, "caught");
+    assert!(matches!(v, Value::Int(1)));
+}
+
+#[test]
+fn test_catch_internal_name_error() {
+    let src = concat!(
+        "mut caught = 0\n",
+        "try:\n",
+        "    let x = undefined_variable\n",
+        "except NameError:\n",
+        "    caught = 1\n",
+    );
+    let v = run_get(src, "caught");
+    assert!(matches!(v, Value::Int(1)));
+}
+
+#[test]
+fn test_internal_error_message_accessible() {
+    let src = concat!(
+        "mut msg = \"\"\n",
+        "let lst = [1, 2]\n",
+        "try:\n",
+        "    let x = lst[99]\n",
+        "except IndexError as e:\n",
+        "    msg = e.message\n",
+    );
+    let v = run_get(src, "msg");
+    match v {
+        Value::Str(s) => assert!(!s.is_empty(), "message should be non-empty"),
+        _ => panic!("expected Str"),
+    }
+}
+
+#[test]
+fn test_bare_except_catches_internal_error() {
+    let src = concat!(
+        "mut caught = 0\n",
+        "try:\n",
+        "    let x = 1 / 0\n",
+        "except:\n",
+        "    caught = 1\n",
+    );
+    let v = run_get(src, "caught");
+    assert!(matches!(v, Value::Int(1)));
+}
+
+#[test]
+fn test_internal_error_not_caught_by_wrong_type() {
+    let src = concat!(
+        "try:\n",
+        "    let x = 1 / 0\n",
+        "except ValueError:\n",
+        "    pass\n",
+    );
+    let raised = run_exc(src).unwrap();
+    assert!(raised.is_some(), "ZeroDivisionError should not be caught by ValueError handler");
+}
+
+#[test]
+fn test_internal_error_in_function_is_catchable() {
+    let src = concat!(
+        "fn divide(a: int, b: int) -> int:\n",
+        "    return a / b\n",
+        "mut caught = 0\n",
+        "try:\n",
+        "    divide(10, 0)\n",
+        "except ZeroDivisionError:\n",
+        "    caught = 1\n",
+    );
+    let v = run_get(src, "caught");
+    assert!(matches!(v, Value::Int(1)));
+}
+
+#[test]
+fn test_finally_runs_after_internal_error() {
+    let src = concat!(
+        "mut x = 0\n",
+        "try:\n",
+        "    let y = 1 / 0\n",
+        "except ZeroDivisionError:\n",
+        "    x = 1\n",
+        "finally:\n",
+        "    x = 2\n",
+    );
+    let v = run_get(src, "x");
+    assert!(matches!(v, Value::Int(2)));
+}
+
 // --- iterator ---
 
 #[test]
@@ -2682,6 +2823,125 @@ for i in range(10):
         break
 ";
     assert_int(run_get(src, "found"), 5);
+}
+
+// --- break propagation through nested control-flow expressions ---
+
+#[test]
+fn test_break_inside_if_expr_exits_for_loop() {
+    // break inside an if expression body should exit the enclosing for loop
+    let src = "
+mut found = -1
+for i in range(10):
+    let _ = if i == 4 ->int:
+        found = i
+        break
+    else:
+        0
+";
+    assert_int(run_get(src, "found"), 4);
+    // loop must have stopped: next iteration would set found to 5+
+    let src2 = "
+mut count = 0
+for i in range(10):
+    let _ = if i == 3 ->int:
+        break
+    else:
+        0
+    count += 1
+";
+    assert_int(run_get(src2, "count"), 3); // iterations 0, 1, 2 complete
+}
+
+#[test]
+fn test_break_inside_if_expr_exits_while_loop() {
+    let src = "
+mut i = 0
+mut stopped_at = -1
+while i < 20:
+    let _ = if i == 7 ->int:
+        stopped_at = i
+        break
+    else:
+        0
+    i += 1
+";
+    assert_int(run_get(src, "stopped_at"), 7);
+}
+
+#[test]
+fn test_break_inside_block_expr_exits_loop() {
+    // break inside a block: expression should exit the enclosing loop
+    let src = "
+mut found = -1
+for i in range(10):
+    let _ = block ->int:
+        if i == 5:
+            found = i
+            break
+        block_return i
+";
+    assert_int(run_get(src, "found"), 5);
+}
+
+#[test]
+fn test_for_expr_break_inside_if_expr_returns_yields() {
+    // break inside an if expression in a for expression should return accumulated yields
+    let src = "
+let result = for i in range(10) ->list[int]:
+    let _ = if i == 3 ->int:
+        break
+    else:
+        0
+    loop_yield i
+";
+    assert_int_list(run_get(src, "result"), &[0, 1, 2]);
+}
+
+#[test]
+fn test_while_expr_break_inside_if_expr_returns_yields() {
+    let src = "
+mut n = 0
+let result = while True ->list[int]:
+    let _ = if n == 4 ->int:
+        break
+    else:
+        0
+    loop_yield n
+    n += 1
+";
+    assert_int_list(run_get(src, "result"), &[0, 1, 2, 3]);
+}
+
+#[test]
+fn test_break_does_not_cross_function_boundary() {
+    // break inside a function that has no loop should be an error
+    let src = "
+fn bad():
+    let _ = if True ->int:
+        break
+    else:
+        0
+bad()
+";
+    assert!(run(src).is_err());
+}
+
+#[test]
+fn test_break_inside_function_loop_does_not_exit_outer_loop() {
+    // break inside an inner function's loop must not affect the outer loop
+    let src = "
+mut outer_count = 0
+fn inner() -> int:
+    for i in range(5):
+        if i == 2:
+            break
+    return 42
+for _ in range(4):
+    inner()
+    outer_count += 1
+";
+    assert_int(run_get(src, "outer_count"), 4);
 }
 
 #[test]

@@ -88,6 +88,11 @@ mod tests;
 ///   interpreter bug rather than a user `raise`.
 pub(self) const RAISE_SENTINEL: &str = "\x00__raise__";
 
+/// Sentinel error string used to propagate a `break` signal through `eval()` return channels.
+/// Produced when `break` is executed inside a control-flow expression body (e.g., an `if` or
+/// `block:` expression) and needs to bubble up to the enclosing `for`/`while` loop.
+pub(self) const BREAK_SENTINEL: &str = "\x00__break__";
+
 thread_local! {
     /// ジェネレータ本体の一括評価中に `yield` された値を収集するスレッドローカル変数。
     /// `None` の場合はジェネレータ実行コンテキスト外であることを意味する。
@@ -1053,7 +1058,7 @@ impl Interpreter {
             "Exception", "ValueError", "TypeError", "NameError", "AttributeError",
             "IndexError", "KeyError", "ZeroDivisionError", "RuntimeError",
             "StopIteration", "NotImplementedError", "OverflowError", "IOError",
-            "OSError", "AssertionError", "ArithmeticError",
+            "OSError", "AssertionError", "ArithmeticError", "AccessError",
         ];
         for class_name in exception_names {
             let cls = Self::make_error_class(class_name);
