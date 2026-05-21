@@ -20,7 +20,9 @@
       "PowerShell(Get-ChildItem \"$env:LOCALAPPDATA\\\\Programs\" -Directory -ErrorAction SilentlyContinue | Select-Object Name)",
       "PowerShell(Get-ChildItem \"C:\\\\\", \"D:\\\\\", \"$env:LOCALAPPDATA\", \"$env:APPDATA\" -Filter \"node.exe\" -Recurse -ErrorAction SilentlyContinue -Depth 5 | Select-Object FullName)",
       "PowerShell(cargo run --release -- examples/bench_hard.tl 2>&1)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(node node_modules/typescript/bin/tsc --version)",
+      "Bash(npm run *)"
     ]
   }
 }

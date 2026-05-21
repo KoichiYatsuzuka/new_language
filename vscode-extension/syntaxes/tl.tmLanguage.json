@@ -1,7 +1,7 @@
 {
   "name": "test_lang",
   "scopeName": "source.tl",
-  "fileTypes": ["tl"],
+  "fileTypes": ["tl", "tls"],
   "patterns": [
     { "include": "#comment" },
     { "include": "#string" },
@@ -101,11 +101,18 @@
     "keyword": {
       "patterns": [
         {
-          "match": "\\b(let|mut|const|freeze)\\b",
+          "match": "\\b(const)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "storage.modifier.tl" },
+            "2": { "name": "variable.other.constant.tl" }
+          }
+        },
+        {
+          "match": "\\b(let|mut|freeze)\\b",
           "name": "storage.modifier.tl"
         },
         {
-          "match": "\\b(yield from|yield|return|block_return|block_yield|pass|break|continue)\\b",
+          "match": "\\b(yield from|yield|return|block_return|loop_yield|pass|break|continue)\\b",
           "name": "keyword.control.flow.tl"
         },
         {
@@ -125,11 +132,35 @@
           "name": "keyword.control.async.tl"
         },
         {
-          "match": "\\b(del|global|nonlocal|with|assert|lambda|new_type)\\b",
+          "match": "\\b(public|private|protected)\\b",
+          "name": "keyword.other.access.tl"
+        },
+        {
+          "match": "\\b(del|global|nonlocal|with|assert|lambda|new_type|static)\\b",
           "name": "keyword.other.tl"
         },
         {
-          "match": "\\b(not in|is not|and|or|not|in|is)\\b",
+          "match": "\\bnot in\\b",
+          "name": "keyword.control.tl"
+        },
+        {
+          "match": "\\bis not\\b",
+          "name": "keyword.control.tl"
+        },
+        {
+          "match": "\\bin\\b",
+          "name": "keyword.control.tl"
+        },
+        {
+          "match": "\\bis\\b",
+          "name": "keyword.control.tl"
+        },
+        {
+          "match": "\\bnot\\b",
+          "name": "keyword.control.tl"
+        },
+        {
+          "match": "\\b(and|or)\\b",
           "name": "keyword.operator.logical.tl"
         }
       ]
@@ -139,12 +170,20 @@
       "name": "constant.language.tl"
     },
     "builtin-type": {
-      "match": "\\b(int|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type|Self|Any|Union|Option)\\b",
+      "match": "\\b(int|uint|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type|Self|Any|Union|Option)\\b",
       "name": "support.type.builtin.tl"
     },
     "builtin-func": {
-      "match": "\\b(print|len|range|enumerate|zip|map|filter|abs|round|pow|divmod|max|min|sum|all|any|sorted|reversed|isinstance|issubclass|callable|getattr|setattr|hasattr|delattr|repr|input|open|chr|ord|hex|oct|bin|id|hash|dir|vars|globals|locals|iter|next|eval|exec|help|format|super|staticmethod|classmethod|property|slice)\\b",
-      "name": "support.function.builtin.tl"
+      "patterns": [
+        {
+          "match": "\\b(enumerate|zip)\\b",
+          "name": "entity.name.type.class.tl"
+        },
+        {
+          "match": "\\b(print|len|range|map|filter|abs|round|pow|divmod|max|min|sum|all|any|sorted|reversed|isinstance|issubclass|callable|getattr|setattr|hasattr|delattr|repr|input|open|chr|ord|hex|oct|bin|id|hash|dir|vars|globals|locals|iter|next|eval|exec|help|format|super|staticmethod|classmethod|property|slice)\\b",
+          "name": "support.function.builtin.tl"
+        }
+      ]
     },
     "constructor-call": {
       "match": "\\b([A-Z][A-Za-z_0-9]*)\\s*(?=\\()",

@@ -113,7 +113,7 @@ const BUILTIN_RETURN_TYPES = {
     print: 'None', exec: 'None',
     len: 'int', id: 'int', hash: 'int', ord: 'int', round: 'int',
     chr: 'str', hex: 'str', oct: 'str', bin: 'str', repr: 'str', input: 'str', format: 'str',
-    int: 'int', float: 'float', str: 'str', bool: 'bool',
+    int: 'int', uint: 'uint', float: 'float', str: 'str', bool: 'bool',
     isinstance: 'bool', issubclass: 'bool', callable: 'bool', hasattr: 'bool',
     abs: 'unknown', max: 'unknown', min: 'unknown', sum: 'unknown',
     range: 'unknown', enumerate: 'unknown', zip: 'unknown', map: 'unknown', filter: 'unknown',
@@ -144,11 +144,12 @@ const OP_DUNDER = {
     GTGT: ['__rshift__', '__rrshift__'],
 };
 class ExprInferrer {
-    constructor(tokens, env, funcEnv, pyClassMethods = new Map()) {
+    constructor(tokens, env, funcEnv, pyClassMethods = new Map(), templateParams = new Map()) {
         this.tokens = tokens;
         this.env = env;
         this.funcEnv = funcEnv;
         this.pyClassMethods = pyClassMethods;
+        this.templateParams = templateParams;
         this.pos = 0;
     }
     cur() { return this.tokens[this.pos] ?? { kind: 'EOF', value: '' }; }
@@ -303,6 +304,23 @@ class ExprInferrer {
                         this.eat();
                     isChained = true;
                 }
+                // Capture type argument for template calls: Name[ConcreteType](...)
+                let typeArg;
+                if (!isChained && this.cur().kind === 'LBRACKET') {
+                    this.eat();
+                    if (this.cur().kind === 'IDENT') {
+                        typeArg = this.cur().value;
+                        this.eat();
+                    }
+                    let depth = 1;
+                    while (depth > 0 && this.cur().kind !== 'EOF') {
+                        if (this.cur().kind === 'LBRACKET')
+                            depth++;
+                        else if (this.cur().kind === 'RBRACKET')
+                            depth--;
+                        this.eat();
+                    }
+                }
                 if (this.cur().kind === 'LPAREN') {
                     this.eat();
                     while (this.cur().kind !== 'RPAREN' && this.cur().kind !== 'EOF') {
@@ -318,10 +336,20 @@ class ExprInferrer {
                         return 'unknown';
                     if (name in BUILTIN_RETURN_TYPES)
                         return BUILTIN_RETURN_TYPES[name];
-                    return this.funcEnv.get(name) ?? 'unknown';
+                    const retType = this.funcEnv.get(name) ?? 'unknown';
+                    if (typeArg && retType !== 'unknown') {
+                        // Constructor call: Box[MyInt](a) → Box[MyInt]
+                        if (retType === name)
+                            return `${name}[${typeArg}]`;
+                        // Template function: min_of[MyInt](x,y) with ->T → MyInt
+                        const tParam = this.templateParams.get(name);
+                        if (tParam && retType === tParam)
+                            return typeArg;
+                    }
+                    return retType;
                 }
                 if (isChained)
-                    return 'unknown';
+                    return this.funcEnv.has(name) ? name : 'unknown';
                 return this.env.get(name) ?? 'unknown';
             }
             case 'LPAREN': {
@@ -399,7 +427,7 @@ class ExprInferrer {
         }
     }
 }
-function inferExprType(src, env, funcEnv = new Map(), importAliases = new Set(), importFuncTypes = new Map(), pyClassMethods = new Map()) {
+function inferExprType(src, env, funcEnv = new Map(), importAliases = new Set(), importFuncTypes = new Map(), pyClassMethods = new Map(), templateParams = new Map()) {
     const trimmed = src.trim();
     // Intercept alias.anything before ExprInferrer to avoid alias-name leaking as type
     const dotMatch = trimmed.match(/^([A-Za-z_]\w*)\./);
@@ -416,7 +444,7 @@ function inferExprType(src, env, funcEnv = new Map(), importAliases = new Set(),
         }
         return 'unknown';
     }
-    return new ExprInferrer(tokenize(src), env, funcEnv, pyClassMethods).infer();
+    return new ExprInferrer(tokenize(src), env, funcEnv, pyClassMethods, templateParams).infer();
 }
 exports.inferExprType = inferExprType;
 // ===== Strip comment (respecting strings) =====
@@ -460,19 +488,24 @@ function stripComment(line) {
 }
 // ===== Regex constants =====
 // Function definition — RetType can be complex: function[T]->R, function{name:T}->R, etc.
-const FUNC_DEF_RE = /^(\s*)(fn|gen)\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*(?:->\s*(.+?))?\s*:\s*$/;
+// The optional (?:\[[^\]]*\])? skips template parameters like [T: Constraint].
+const FUNC_DEF_RE = /^(\s*)(fn|gen)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*\(([^)]*)\)\s*(?:->\s*(.+?))?\s*:\s*$/;
 // Variable declarations
 const DECL_RE = /^(\s*)(let|mut|const)\s+([A-Za-z_]\w*)\s*=(?!=)/;
 const STATIC_DECL_RE = /^(\s*)static\s+mut\s+([A-Za-z_]\w*)\s*(?::\s*([^=#]+?))?\s*=(?!=)\s*(.*)/;
 const RETURN_RE = /^return(?:\s+(.+))?$/;
-const CLASS_NAME_RE = /^\s*(?:class|trait)\s+([A-Za-z_]\w*)/;
+const CLASS_NAME_RE = /^\s*(?:class|trait|enum)\s+([A-Za-z_]\w*)/;
 const NEW_TYPE_NAME_RE = /^\s*new_type\s+([A-Za-z_]\w*)\s*:/;
 // Hover-specific
 const HOVER_DECL_RE = /^(\s*)(let|mut|const)\s+([A-Za-z_]\w*)\s*(?::\s*([^=#]+?))?\s*(?:=(?!=)\s*(.*))?$/;
-const CLASS_DEF_RE = /^(\s*)(class|trait)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*(?:\(([^)]*)\))?\s*:/;
+const CLASS_DEF_RE = /^(\s*)(class|trait|enum)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*(?:\(([^)]*)\))?\s*:/;
 const NEW_TYPE_RE = /^(\s*)new_type\s+([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\], ]*)/;
 // freeze(varName)
 const FREEZE_RE = /^\s*freeze\s*\(\s*([A-Za-z_]\w*)\s*\)/;
+// Access section markers: public: / private: / protected:
+const ACCESS_SECTION_RE = /^(\s*)(public|private|protected)\s*:\s*$/;
+// Tuple destructuring: let/mut a, b = expr
+const TUPLE_DECL_RE = /^(\s*)(let|mut)\s+((?:[A-Za-z_]\w*\s*,\s*)+[A-Za-z_]\w*)\s*=(?!=)\s*(.*)/;
 // import[py] / import[py-int]  — captures: 1=keyword, 2=module, 3=alias
 const IMPORT_RE = /^\s*(import\[(?:py(?:-int)?)\])\s+([A-Za-z_]\w*)\s+as\s+([A-Za-z_]\w*)/;
 // Typeguard — check is-not before is to avoid accidental match
@@ -513,6 +546,14 @@ function computeIsNotNarrowedType(declaredType, removedType) {
         }
     }
     return undefined;
+}
+// Extract per-element types from tuple[T1, T2, ...]; falls back to 'unknown' per slot
+function extractTupleElemTypes(tupleType, count) {
+    const m = tupleType.match(/^tuple\[(.+)\]$/);
+    if (!m)
+        return Array(count).fill('unknown');
+    const elems = splitComma(m[1]).map(e => e.trim());
+    return elems;
 }
 // Find (startLine, endLine) of the indented block that follows ifLine at ifIndent
 function findBlockBounds(document, ifLine, ifIndent) {
@@ -647,7 +688,19 @@ function collectFuncDefs(document) {
     }
     return defs;
 }
-function inferBodyReturnType(document, defLine, defIndent, funcEnv, importAliases = new Set(), importFuncTypes = new Map(), pyClassMethods = new Map()) {
+// Maps function name → first template parameter name, e.g. "min_of" → "T"
+function collectTemplateParams(document) {
+    const map = new Map();
+    const re = /^\s*(?:fn|gen)\s+([A-Za-z_]\w*)\[([A-Za-z_]\w*)/;
+    for (let i = 0; i < document.lineCount; i++) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const m = stripped.match(re);
+        if (m)
+            map.set(m[1], m[2]);
+    }
+    return map;
+}
+function inferBodyReturnType(document, defLine, defIndent, funcEnv, importAliases = new Set(), importFuncTypes = new Map(), pyClassMethods = new Map(), templateParams = new Map()) {
     const localEnv = new Map();
     const returnTypes = [];
     for (let i = defLine + 1; i < document.lineCount; i++) {
@@ -661,12 +714,12 @@ function inferBodyReturnType(document, defLine, defIndent, funcEnv, importAliase
         const declM = stripped.match(DECL_RE);
         if (declM) {
             const rhs = stripped.slice(declM[0].length).trim();
-            localEnv.set(declM[3], inferExprType(rhs, localEnv, funcEnv, importAliases, importFuncTypes, pyClassMethods));
+            localEnv.set(declM[3], inferExprType(rhs, localEnv, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams));
         }
         const retM = trimmed.match(RETURN_RE);
         if (retM) {
             const retExpr = retM[1]?.trim();
-            returnTypes.push(retExpr ? inferExprType(retExpr, localEnv, funcEnv, importAliases, importFuncTypes, pyClassMethods) : 'None');
+            returnTypes.push(retExpr ? inferExprType(retExpr, localEnv, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams) : 'None');
         }
     }
     if (returnTypes.length === 0)
@@ -752,12 +805,46 @@ function collectHoverSymbols(document) {
     const { funcTypes: importFuncTypes, classMethods: pyClassMethods } = collectAllPyModuleInfo(document);
     const funcDefs = collectFuncDefs(document);
     const funcEnv = collectConstructorTypes(document);
+    const templateParams = collectTemplateParams(document);
     for (const def of funcDefs) {
-        funcEnv.set(def.name, def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods));
+        funcEnv.set(def.name, def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams));
     }
+    // Stack tracking class/trait bodies for access modifier inheritance
+    const classContextStack = [];
     for (let i = 0; i < document.lineCount; i++) {
         const raw = document.lineAt(i).text;
         const stripped = stripComment(raw);
+        const trimmedLine = stripped.trim();
+        const lineIndentLen = (stripped.match(/^(\s*)/)?.[1] ?? '').length;
+        // Maintain class context stack on every non-empty line
+        if (trimmedLine) {
+            while (classContextStack.length > 0 && lineIndentLen <= classContextStack[classContextStack.length - 1].indent) {
+                classContextStack.pop();
+            }
+            if (classContextStack.length > 0) {
+                const top = classContextStack[classContextStack.length - 1];
+                if (top.bodyIndent === -1)
+                    top.bodyIndent = lineIndentLen;
+            }
+        }
+        // Access section marker (public: / private: / protected:) inside a class body
+        const accessM = trimmedLine ? stripped.match(ACCESS_SECTION_RE) : null;
+        if (accessM && classContextStack.length > 0) {
+            const top = classContextStack[classContextStack.length - 1];
+            if (top.bodyIndent !== -1 && lineIndentLen === top.bodyIndent) {
+                top.access = accessM[2];
+            }
+            continue;
+        }
+        // Determine access for direct class/trait members at the body indent level
+        const currentAccess = (() => {
+            if (classContextStack.length === 0)
+                return undefined;
+            const top = classContextStack[classContextStack.length - 1];
+            if (top.bodyIndent === -1 || lineIndentLen !== top.bodyIndent)
+                return undefined;
+            return top.access;
+        })();
         // Import declaration
         const importMatch = stripped.match(IMPORT_RE);
         if (importMatch) {
@@ -783,6 +870,7 @@ function collectHoverSymbols(document) {
                 type: returnType,
                 signature: `${kind} ${name}(${params}) -> ${returnType}`,
                 doc: getDocstringAfter(document, i, indentStr.length),
+                access: currentAccess,
             });
             const bodyEndLine = findBodyEndLine(document, i, indentStr.length);
             for (const paramSym of parseParams(params, i, bodyEndLine)) {
@@ -796,11 +884,12 @@ function collectHoverSymbols(document) {
             const traits = bases?.split(',').map(cleanBaseName).filter(Boolean);
             symbols.push({
                 name,
-                kind: kind === 'trait' ? 'trait' : 'class',
+                kind: kind === 'trait' ? 'trait' : (kind === 'enum' ? 'enum' : 'class'),
                 line: i,
                 traits,
                 doc: getDocstringAfter(document, i, indentStr.length),
             });
+            classContextStack.push({ indent: indentStr.length, bodyIndent: -1, access: 'public' });
             continue;
         }
         const newTypeMatch = stripped.match(NEW_TYPE_RE);
@@ -822,17 +911,32 @@ function collectHoverSymbols(document) {
         if (staticMatch) {
             const [, , name, annotation, rhs] = staticMatch;
             const type = cleanTypeAnnotation(annotation)
-                ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods) : 'unknown');
-            symbols.push({ name, kind: 'variable', line: i, mutability: 'static', type });
+                ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams) : 'unknown');
+            symbols.push({ name, kind: 'variable', line: i, mutability: 'static', type, access: currentAccess });
             env.set(name, type);
+            continue;
+        }
+        // Tuple destructuring: let/mut a, b = expr
+        const tupleM = stripped.match(TUPLE_DECL_RE);
+        if (tupleM) {
+            const [, , mutability, names, rhs] = tupleM;
+            const rhsType = rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams) : 'unknown';
+            const nameList = names.split(',').map(n => n.trim()).filter(Boolean);
+            const elemTypes = extractTupleElemTypes(rhsType, nameList.length);
+            for (let idx = 0; idx < nameList.length; idx++) {
+                const varName = nameList[idx];
+                const elemType = elemTypes[idx] ?? 'unknown';
+                symbols.push({ name: varName, kind: 'variable', line: i, mutability, type: elemType, access: currentAccess });
+                env.set(varName, elemType);
+            }
             continue;
         }
         const declMatch = stripped.match(HOVER_DECL_RE);
         if (declMatch) {
             const [, , mutability, name, annotation, rhs] = declMatch;
             const type = cleanTypeAnnotation(annotation)
-                ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods) : 'unknown');
-            symbols.push({ name, kind: 'variable', line: i, mutability, type });
+                ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams) : 'unknown');
+            symbols.push({ name, kind: 'variable', line: i, mutability, type, access: currentAccess });
             env.set(name, parseTypeAnnotation(type) ?? 'unknown');
         }
     }
@@ -910,16 +1014,21 @@ function renderHover(symbol, opts) {
     md.isTrusted = false;
     const mutability = opts?.isFrozen ? 'frozen' : (symbol.mutability ?? 'value');
     if (symbol.kind === 'variable') {
-        md.appendCodeblock(`${mutability} ${symbol.name}: ${symbol.type ?? 'unknown'}`, 'tl');
+        const accessPrefix = symbol.access ? `${symbol.access} ` : '';
+        md.appendCodeblock(`${accessPrefix}${mutability} ${symbol.name}: ${symbol.type ?? 'unknown'}`, 'tl');
         if (opts?.narrowedFrom) {
             md.appendMarkdown(`\n\n*narrowed from* \`${opts.narrowedFrom}\``);
         }
     }
     else if (symbol.kind === 'function') {
-        md.appendCodeblock(symbol.signature ?? `fn ${symbol.name}() -> ${symbol.type ?? 'unknown'}`, 'tl');
+        const baseSig = symbol.signature ?? `fn ${symbol.name}() -> ${symbol.type ?? 'unknown'}`;
+        md.appendCodeblock(symbol.access ? `${symbol.access} ${baseSig}` : baseSig, 'tl');
     }
     else if (symbol.kind === 'class') {
         md.appendCodeblock(`class ${symbol.name}`, 'tl');
+    }
+    else if (symbol.kind === 'enum') {
+        md.appendCodeblock(`enum ${symbol.name}`, 'tl');
     }
     else if (symbol.kind === 'trait') {
         md.appendCodeblock(`trait ${symbol.name}`, 'tl');
@@ -937,10 +1046,6 @@ function renderHover(symbol, opts) {
     // Variable/param of a class type: show class's traits
     if (opts?.classTraits && opts.classTraits.length > 0) {
         md.appendMarkdown(`\n\nTraits: ${opts.classTraits.map(t => `\`${t}\``).join(', ')}`);
-    }
-    // new_type: original type already shown in code block; add it as context below too
-    if (symbol.kind === 'new_type' && symbol.originalType) {
-        md.appendMarkdown(`\n\nOriginal type: \`${symbol.originalType}\``);
     }
     if (symbol.doc) {
         md.appendMarkdown(`\n\n---\n\n${symbol.doc}`);
@@ -989,8 +1094,9 @@ function provideInlayHints(document, _range) {
     const funcDefs = collectFuncDefs(document);
     // Phase 2: build funcEnv
     const funcEnv = collectConstructorTypes(document);
+    const templateParams = collectTemplateParams(document);
     for (const def of funcDefs) {
-        funcEnv.set(def.name, def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods));
+        funcEnv.set(def.name, def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams));
     }
     // Phase 3: inlay hints on function definition lines (only when no annotation)
     for (const def of funcDefs) {
@@ -1018,7 +1124,7 @@ function provideInlayHints(document, _range) {
         if (staticMatch) {
             const [, indent, name, annotation, rhs] = staticMatch;
             const type = cleanTypeAnnotation(annotation)
-                ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods) : 'unknown');
+                ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams) : 'unknown');
             env.set(name, type);
             if (!annotation) {
                 const nameStart = rawLine.indexOf(name, indent.length + 'static mut '.length);
@@ -1031,23 +1137,48 @@ function provideInlayHints(document, _range) {
             }
             continue;
         }
-        // let/mut/const declarations
-        const m = line.match(DECL_RE);
-        if (!m)
+        // Tuple destructuring: let/mut a, b = expr
+        const tupleM = line.match(TUPLE_DECL_RE);
+        if (tupleM) {
+            const [, indent, keyword, names, rhs] = tupleM;
+            const rhsType = inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams);
+            const nameList = names.split(',').map(n => n.trim()).filter(Boolean);
+            const elemTypes = extractTupleElemTypes(rhsType, nameList.length);
+            let searchFrom = indent.length + keyword.length;
+            for (let idx = 0; idx < nameList.length; idx++) {
+                const varName = nameList[idx];
+                const elemType = elemTypes[idx] ?? 'unknown';
+                env.set(varName, elemType);
+                const nameStart = rawLine.indexOf(varName, searchFrom);
+                if (nameStart >= 0) {
+                    const pos = new vscode.Position(lineIdx, nameStart + varName.length);
+                    const hint = new vscode.InlayHint(pos, `: ${elemType}`, vscode.InlayHintKind.Type);
+                    hint.paddingLeft = true;
+                    hints.push(hint);
+                    searchFrom = nameStart + varName.length;
+                }
+            }
             continue;
-        const [full, indent, keyword, name] = m;
-        const nameStart = rawLine.indexOf(name, indent.length + keyword.length);
-        if (nameStart < 0)
+        }
+        // let/mut/const declarations — use HOVER_DECL_RE so annotated declarations
+        // also update env (fixes type inference for variables used after a typed cast/annotation)
+        const declM = line.match(HOVER_DECL_RE);
+        if (!declM)
             continue;
-        const rhs = line.slice(full.length).trim();
-        if (!rhs)
-            continue;
-        const type = inferExprType(rhs, env, funcEnv, importAliases, importFuncTypes, pyClassMethods);
+        const [, indent, keyword, name, annotation, rhs] = declM;
+        const type = cleanTypeAnnotation(annotation)
+            ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams) : 'unknown');
         env.set(name, type);
-        const pos = new vscode.Position(lineIdx, nameStart + name.length);
-        const hint = new vscode.InlayHint(pos, `: ${type}`, vscode.InlayHintKind.Type);
-        hint.paddingLeft = true;
-        hints.push(hint);
+        // Emit hint only when there is no visible annotation
+        if (!annotation && rhs) {
+            const nameStart = rawLine.indexOf(name, (indent ?? '').length + keyword.length);
+            if (nameStart >= 0) {
+                const pos = new vscode.Position(lineIdx, nameStart + name.length);
+                const hint = new vscode.InlayHint(pos, `: ${type}`, vscode.InlayHintKind.Type);
+                hint.paddingLeft = true;
+                hints.push(hint);
+            }
+        }
     }
     return hints;
 }
@@ -1059,7 +1190,9 @@ const LANG_KEYWORDS = [
     'and', 'or', 'not', 'in', 'is', 'True', 'False', 'None',
     'self', 'Self', 'static', 'freeze', 'block',
     'block_return', 'loop_yield', 'break', 'continue', 'yield', 'pass',
-    'import',
+    'import', 'enumerate', 'zip',
+    'public', 'private', 'protected',
+    'uint',
 ];
 // ===== Member completion helpers =====
 function findEnclosingClass(document, fromLine) {

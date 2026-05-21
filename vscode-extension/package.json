@@ -40,7 +40,8 @@
           "tl"
         ],
         "extensions": [
-          ".tl"
+          ".tl",
+          ".tls"
         ],
         "configuration": "./language-configuration.json"
       }
