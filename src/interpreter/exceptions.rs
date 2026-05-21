@@ -25,6 +25,7 @@ impl Interpreter {
     /// 戻り値: `Rc<ClassValue>` — 構築した例外クラス定義
     pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
         use crate::ast::Expr as E;
+        use crate::token::Span;
 
         // __init__ 本体: `self.message = message` を表す AST ノード
         let init_body = vec![
@@ -32,6 +33,7 @@ impl Interpreter {
                 target: E::Attr {
                     object: Box::new(E::Ident("self".to_string())),
                     attr: "message".to_string(),
+                    span: Span::unknown(),
                 },
                 value: E::Ident("message".to_string()),
             },

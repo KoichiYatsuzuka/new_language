@@ -328,9 +328,10 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
         Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::None => expr.clone(),
         Expr::Ident(name) => Expr::Ident(name.clone()),
         Expr::List(items) => Expr::List(items.iter().map(|e| subst_expr(e, type_map)).collect()),
-        Expr::Attr { object, attr } => Expr::Attr {
+        Expr::Attr { object, attr, span } => Expr::Attr {
             object: Box::new(subst_expr(object, type_map)),
             attr: attr.clone(),
+            span: span.clone(),
         },
         Expr::TraitAccess { object, trait_name, attr } => Expr::TraitAccess {
             object: Box::new(subst_expr(object, type_map)),

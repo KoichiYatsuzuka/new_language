@@ -1,8 +1,8 @@
 # class_trait_error.tl — expected class/trait/access errors
 #
-# Section 1 — TypeError: assigning to a let (immutable) field
-#   Expected error (runtime TypeError):
-#     Assigning to a let field outside of construction
+# Section 1 — StaticTypeError: assigning to a let (immutable) field
+#   Expected error (StaticTypeError):
+#     Cannot assign to immutable field outside of __init__
 
 class Token:
     let kind: str
@@ -13,9 +13,9 @@ print(t.kind)   # ident — OK
 
 t.kind = "op"   # TypeError: cannot assign to immutable field 'kind'
 
-# Section 2 — AccessError: accessing private/protected from invalid scope
-#   Expected error (runtime AccessError):
-#     'y' is private
+# Section 2 — StaticTypeError: accessing a private field from outside the class
+#   Expected error (StaticTypeError):
+#     'y' is private and cannot be accessed outside 'MyClass'
 
 class MyClass:
     public:

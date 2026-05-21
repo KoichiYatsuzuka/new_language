@@ -556,7 +556,7 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
             out.push_str(&format!("{pad}_v_{name} = {final_code};\n"));
         }
         Stmt::AttrAssign { target, value } => {
-            if let Expr::Attr { object, attr } = target {
+            if let Expr::Attr { object, attr, .. } = target {
                 let obj = gen_expr(object, ctx);
                 let val = gen_expr(value, ctx);
                 let attr_bytes = format!("b\"{}\"", attr);
@@ -574,7 +574,7 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
             }
         }
         Stmt::AttrCompoundAssign { target, op, value } => {
-            if let Expr::Attr { object, attr } = target {
+            if let Expr::Attr { object, attr, .. } = target {
                 let obj_expr = gen_expr(object, ctx);
                 let tmp = ctx.fresh();
                 let attr_bytes = format!("b\"{}\"", attr);
@@ -775,7 +775,7 @@ fn gen_typed_expr(expr: &Expr, ctx: &mut GenCtx) -> (String, Ty) {
             let o = gen_expr(operand, ctx);
             (format!("cb_unop({op_code}, {o})"), Ty::Handle)
         }
-        Expr::Attr { object, attr } => {
+        Expr::Attr { object, attr, .. } => {
             let obj = gen_expr(object, ctx);
             let escaped = escape_bytes(attr.as_bytes());
             (format!("cb_get_attr({obj}, b\"{escaped}\")"), Ty::Handle)

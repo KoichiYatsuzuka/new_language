@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Stmt, TupleTarget, UnaryOp};
+use crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchPattern, Stmt, TupleTarget, UnaryOp};
 use crate::token::Span;
 
 // ---------------------------------------------------------------------------
@@ -482,6 +482,34 @@ pub enum TypeErrorKind {
         /// `_` が含まれているか（true なら target_count <= tuple_len でよい）
         has_wildcard: bool,
     },
+    /// `let` フィールドへの代入を `__init__` 以外から試みた。
+    AssignToImmutableField {
+        /// 代入対象のフィールド名
+        field_name: String,
+        /// フィールドを持つクラス名
+        class_name: String,
+    },
+    /// `private` メンバへのアクセスをクラス外から試みた。
+    PrivateAccessError {
+        /// アクセス対象のメンバ名
+        member_name: String,
+        /// メンバを所有するクラス名
+        class_name: String,
+    },
+    /// `protected` メンバへのアクセスをクラス外（かつ派生クラス外）から試みた。
+    ProtectedAccessError {
+        /// アクセス対象のメンバ名
+        member_name: String,
+        /// メンバを所有するクラス名
+        class_name: String,
+    },
+    /// `static` メソッドをインスタンスから呼び出そうとした。
+    StaticMethodOnInstance {
+        /// 呼び出したメソッド名
+        method_name: String,
+        /// メソッドを所有するクラス名
+        class_name: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -524,91 +552,136 @@ impl StaticTypeError {
     }
 }
 
+/// Wraps `s` in single quotes with magenta+bold ANSI codes: `'value'`
+fn hl_q(s: impl std::fmt::Display) -> String {
+    format!("'\x1b[1;35m{s}\x1b[0m'")
+}
+
+/// Wraps `s` in backticks with magenta+bold ANSI codes: `` `value` ``
+fn hl_bt(s: impl std::fmt::Display) -> String {
+    format!("`\x1b[1;35m{s}\x1b[0m`")
+}
+
 impl std::fmt::Display for StaticTypeError {
     /// `StaticTypeError` を人間が読めるエラーメッセージに変換する。
     ///
     /// フォーマット: `ファイル名:行:列: StaticTypeError: <エラー内容>`
     /// スパン情報がない場合は `<unknown>:` でプレフィックスされる。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // スパン情報があれば位置を先頭に付与する。
+        const R: &str = "\x1b[31m";
+        const X: &str = "\x1b[0m";
+
         match &self.span {
             Some(span) => write!(f, "{span}: ")?,
-            None => write!(f, "<unknown>: ")?,
+            None => write!(f, "\x1b[33m<unknown>\x1b[0m: ")?,
         }
         match &self.kind {
             TypeErrorKind::IncompatibleComparison { lhs, rhs, op } => write!(
                 f,
-                "StaticTypeError: cannot compare '{lhs}' and '{rhs}' with `{op}`"
+                "{R}StaticTypeError{X}: cannot compare {} and {} with {}",
+                hl_q(lhs), hl_q(rhs), hl_bt(op)
             ),
             TypeErrorKind::AssignToImmutable { name } => write!(
                 f,
-                "StaticTypeError: cannot assign to immutable variable '{name}'"
+                "{R}StaticTypeError{X}: cannot assign to immutable variable {}",
+                hl_q(name)
             ),
             TypeErrorKind::CallArgCountMismatch { func_name, expected_min, expected_max, got } => {
                 if expected_min == expected_max {
-                    write!(f, "StaticTypeError: '{func_name}' takes {expected_min} argument(s) but {got} were given")
+                    write!(f, "{R}StaticTypeError{X}: {} takes {expected_min} argument(s) but {got} were given", hl_q(func_name))
                 } else {
-                    write!(f, "StaticTypeError: '{func_name}' takes {expected_min} to {expected_max} argument(s) but {got} were given")
+                    write!(f, "{R}StaticTypeError{X}: {} takes {expected_min} to {expected_max} argument(s) but {got} were given", hl_q(func_name))
                 }
             }
             TypeErrorKind::CallArgTypeMismatch { func_name, param_index, expected, got } => write!(
                 f,
-                "StaticTypeError: argument {param_index} of '{func_name}' expects '{expected}' but got '{got}'"
+                "{R}StaticTypeError{X}: argument {param_index} of {} expects {} but got {}",
+                hl_q(func_name), hl_q(expected), hl_q(got)
             ),
             TypeErrorKind::MissingParamTypeAnn { func_name, param_name } => write!(
                 f,
-                "StaticTypeError: parameter '{param_name}' of function '{func_name}' is missing a type annotation"
+                "{R}StaticTypeError{X}: parameter {} of function {} is missing a type annotation",
+                hl_q(param_name), hl_q(func_name)
             ),
             TypeErrorKind::MissingReturnTypeAnn { func_name } => write!(
                 f,
-                "StaticTypeError: function '{func_name}' is missing a return type annotation"
+                "{R}StaticTypeError{X}: function {} is missing a return type annotation",
+                hl_q(func_name)
             ),
             TypeErrorKind::UnknownKeywordArg { func_name, arg_name } => write!(
                 f,
-                "StaticTypeError: '{func_name}' has no parameter named '{arg_name}'"
+                "{R}StaticTypeError{X}: {} has no parameter named {}",
+                hl_q(func_name), hl_q(arg_name)
             ),
             TypeErrorKind::NoMatchingOverload { func_name, got, available } => {
                 let avail = available.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ");
                 write!(
                     f,
-                    "StaticTypeError: no overload of '{func_name}' takes {got} argument(s) (overloads take: {avail})"
+                    "{R}StaticTypeError{X}: no overload of {} takes {got} argument(s) (overloads take: {avail})",
+                    hl_q(func_name)
                 )
             }
             TypeErrorKind::SelfTypeMismatch { method, param_name, expected_class, got_class } => write!(
                 f,
-                "StaticTypeError: parameter '{param_name}' of '{method}' expects 'Self' = '{expected_class}' but got '{got_class}'"
+                "{R}StaticTypeError{X}: parameter {} of {} expects {} = {} but got {}",
+                hl_q(param_name), hl_q(method), hl_q("Self"), hl_q(expected_class), hl_q(got_class)
             ),
             TypeErrorKind::OperationOnAny { op } => write!(
                 f,
-                "StaticTypeError: cannot apply '{op}' to 'Any' — explicit downcast required"
+                "{R}StaticTypeError{X}: cannot apply {} to {} — explicit downcast required",
+                hl_bt(op), hl_q("Any")
             ),
             TypeErrorKind::OperationOnUnion { union_type, op } => write!(
                 f,
-                "StaticTypeError: cannot apply '{op}' to '{union_type}' — explicit downcast required"
+                "{R}StaticTypeError{X}: cannot apply {} to {} — explicit downcast required",
+                hl_bt(op), hl_q(union_type)
             ),
             TypeErrorKind::IsNotOnNonUnion { var_name, var_type } => write!(
                 f,
-                "StaticTypeError: 'is not' type guard on '{var_name}' requires a Union or Optional type, but got '{var_type}'"
+                "{R}StaticTypeError{X}: {} type guard on {} requires a Union or Optional type, but got {}",
+                hl_q("is not"), hl_q(var_name), hl_q(var_type)
             ),
             TypeErrorKind::CallMutParamWithImmutableArg { func_name, param_name } => write!(
                 f,
-                "StaticTypeError: parameter '{param_name}' of '{func_name}' expects a mutable argument, but got an immutable value"
+                "{R}StaticTypeError{X}: parameter {} of {} expects a mutable argument, but got an immutable value",
+                hl_q(param_name), hl_q(func_name)
             ),
             TypeErrorKind::InvalidDecorator { reason } => write!(
                 f,
-                "StaticTypeError: invalid decorator: {reason}"
+                "{R}StaticTypeError{X}: invalid decorator: \x1b[1;35m{reason}\x1b[0m"
             ),
             TypeErrorKind::TupleUnpackMissingQualifier { name } => write!(
                 f,
-                "StaticTypeError: variable '{name}' in tuple unpack requires `let` or `mut` qualifier"
+                "{R}StaticTypeError{X}: variable {} in tuple unpack requires {} or {} qualifier",
+                hl_q(name), hl_bt("let"), hl_bt("mut")
             ),
             TypeErrorKind::TupleUnpackArityMismatch { tuple_len, target_count, has_wildcard } => {
                 if *has_wildcard {
-                    write!(f, "StaticTypeError: tuple unpack has {target_count} variable(s) but tuple has only {tuple_len} element(s)")
+                    write!(f, "{R}StaticTypeError{X}: tuple unpack has \x1b[1;35m{target_count}\x1b[0m variable(s) but tuple has only \x1b[1;35m{tuple_len}\x1b[0m element(s)")
                 } else {
-                    write!(f, "StaticTypeError: tuple unpack expects {target_count} element(s) but tuple has {tuple_len}")
+                    write!(f, "{R}StaticTypeError{X}: tuple unpack expects \x1b[1;35m{target_count}\x1b[0m element(s) but tuple has \x1b[1;35m{tuple_len}\x1b[0m")
                 }
             }
+            TypeErrorKind::AssignToImmutableField { field_name, class_name } => write!(
+                f,
+                "{R}StaticTypeError{X}: cannot assign to immutable field {} of class {}",
+                hl_q(field_name), hl_q(class_name)
+            ),
+            TypeErrorKind::PrivateAccessError { member_name, class_name } => write!(
+                f,
+                "{R}StaticTypeError{X}: {} is private and cannot be accessed outside {}",
+                hl_q(member_name), hl_q(class_name)
+            ),
+            TypeErrorKind::ProtectedAccessError { member_name, class_name } => write!(
+                f,
+                "{R}StaticTypeError{X}: {} is protected and cannot be accessed outside {} or its subclasses",
+                hl_q(member_name), hl_q(class_name)
+            ),
+            TypeErrorKind::StaticMethodOnInstance { method_name, class_name } => write!(
+                f,
+                "{R}StaticTypeError{X}: static method {} must be called on {}, not an instance",
+                hl_q(method_name), hl_bt(class_name)
+            ),
         }
     }
 }
@@ -655,6 +728,17 @@ pub struct TypeChecker {
     new_type_originals: HashMap<String, String>,
     /// クラス名 → 基底クラス・トレイト名リストのマップ。`type[Trait]` 互換性チェックに使用する。
     class_bases: HashMap<String, Vec<String>>,
+    /// クラス名 → (フィールド名 → 可変フラグ) のマップ。`let` フィールドへの代入を静的検査するために使用する。
+    class_fields: HashMap<String, HashMap<String, bool>>,
+    /// クラス名 → (メンバ名 → アクセス可能性) のマップ。`private`/`protected` メンバへのアクセス静的検査に使用する。
+    /// デフォルト（`public`）のメンバは格納しない。
+    class_member_access: HashMap<String, HashMap<String, Accessibility>>,
+    /// クラス名 → static メソッド名集合のマップ。インスタンスからの static メソッド呼び出しを静的検査するために使用する。
+    class_static_methods: HashMap<String, HashSet<String>>,
+    /// 現在型検査中の関数名。`__init__` 内での `let` フィールド初期化を許可するために使用する。
+    current_fn_name: Option<String>,
+    /// 現在型検査中のクラス名。クラス本体内での `self.<field>` 代入検査に使用する。
+    current_class_name: Option<String>,
     /// 収集された型エラーのリスト。
     pub errors: Vec<StaticTypeError>,
 }
@@ -704,6 +788,11 @@ impl TypeChecker {
             known_class_names,
             new_type_originals,
             class_bases: HashMap::new(),
+            class_fields: HashMap::new(),
+            class_member_access: HashMap::new(),
+            class_static_methods: HashMap::new(),
+            current_fn_name: None,
+            current_class_name: None,
             errors: Vec::new(),
         }
     }
@@ -778,6 +867,35 @@ impl TypeChecker {
                         }
                     }
                     self.class_method_sigs.insert(name.clone(), cls_methods);
+                    // フィールド名 → 可変フラグ のマップと、メンバ名 → アクセス可能性 のマップを収集する。
+                    let mut fields: HashMap<String, bool> = HashMap::new();
+                    let mut member_access: HashMap<String, Accessibility> = HashMap::new();
+                    let mut static_methods: HashSet<String> = HashSet::new();
+                    for s in body.iter() {
+                        match s {
+                            Stmt::Field { name: fname, kind, access, .. } => {
+                                let mutable = matches!(kind, crate::ast::FieldKind::Mut);
+                                fields.insert(fname.clone(), mutable);
+                                if *access != Accessibility::Public {
+                                    member_access.insert(fname.clone(), access.clone());
+                                }
+                            }
+                            Stmt::FnDef { name: mname, is_static, access, .. } => {
+                                if *access != Accessibility::Public {
+                                    member_access.insert(mname.clone(), access.clone());
+                                }
+                                if *is_static {
+                                    static_methods.insert(mname.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.class_fields.insert(name.clone(), fields);
+                    self.class_member_access.insert(name.clone(), member_access);
+                    if !static_methods.is_empty() {
+                        self.class_static_methods.insert(name.clone(), static_methods);
+                    }
                     self.collect_fn_sigs(body);
                 }
                 Stmt::EnumDef { name, .. } => {
@@ -852,6 +970,96 @@ impl TypeChecker {
     /// 見つかった変数の [`VarInfo`] への参照。スコープ内に存在しなければ `None`。
     fn lookup(&self, name: &str) -> Option<&VarInfo> {
         self.scope_stack.iter().rev().find_map(|s| s.get(name))
+    }
+
+    /// `class_name` のフィールド `member_name` へのアクセスが現在のコンテキストで許可されているか検査する。
+    ///
+    /// メソッドへのアクセスはランタイムが強制しないため、フィールドのみを対象とする。
+    /// - `private`: 同じクラス内からのみ許可。
+    /// - `protected`: 同じクラスまたは派生クラスからのみ許可。
+    fn check_member_access_static(&mut self, class_name: &str, member_name: &str, span: Option<Span>) {
+        // フィールドのみ検査する（メソッドへのアクセスはランタイムでも強制されない）。
+        let is_field = self.class_fields
+            .get(class_name)
+            .map(|f| f.contains_key(member_name))
+            .unwrap_or(false);
+        if !is_field { return; }
+
+        let access = self.class_member_access
+            .get(class_name)
+            .and_then(|m| m.get(member_name))
+            .cloned()
+            .unwrap_or(Accessibility::Public);
+        match access {
+            Accessibility::Public => {}
+            Accessibility::Private => {
+                if self.current_class_name.as_deref() == Some(class_name) {
+                    return;
+                }
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::PrivateAccessError {
+                        member_name: member_name.to_string(),
+                        class_name: class_name.to_string(),
+                    },
+                    span,
+                });
+            }
+            Accessibility::Protected => {
+                if let Some(cur) = self.current_class_name.clone() {
+                    if cur == class_name { return; }
+                    if self.class_bases.get(&cur)
+                        .map(|b| b.contains(&class_name.to_string()))
+                        .unwrap_or(false)
+                    {
+                        return;
+                    }
+                }
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::ProtectedAccessError {
+                        member_name: member_name.to_string(),
+                        class_name: class_name.to_string(),
+                    },
+                    span,
+                });
+            }
+        }
+    }
+
+    /// `obj.attr = val` のとき `attr` が `let` フィールドであれば `AssignToImmutableField` エラーを記録する。
+    ///
+    /// `__init__` メソッド内で `self.attr` に代入する場合（フィールド初期化）はエラーとしない。
+    fn check_immutable_field_assign(&mut self, target: &Expr) {
+        if let Expr::Attr { object, attr, span } = target {
+            // `__init__` 内の `self.<field>` への代入はフィールド初期化として許可する。
+            let is_self_in_init = matches!(object.as_ref(), Expr::Ident(n) if n == "self")
+                && self.current_fn_name.as_deref() == Some("__init__");
+            if is_self_in_init {
+                return;
+            }
+            // クラス名を決定する:
+            // (a) `self.<field>` の場合は current_class_name から取得する。
+            // (b) 型が NamedInstance として解決された場合はそこから取得する。
+            let class_name_opt: Option<String> =
+                if matches!(object.as_ref(), Expr::Ident(n) if n == "self") {
+                    self.current_class_name.clone()
+                } else {
+                    let obj_ty = self.infer(object);
+                    if let InferredType::NamedInstance(cls) = obj_ty { Some(cls) } else { None }
+                };
+            if let Some(class_name) = class_name_opt {
+                if let Some(fields) = self.class_fields.get(&class_name) {
+                    if fields.get(attr.as_str()) == Some(&false) {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::AssignToImmutableField {
+                                field_name: attr.clone(),
+                                class_name,
+                            },
+                            span: Some(span.clone()),
+                        });
+                    }
+                }
+            }
+        }
     }
 
     /// サブスクリプトチェーン `x[i][j]...` のルート識別子名を返す。
@@ -1000,6 +1208,8 @@ impl TypeChecker {
                         }
                     }
                 }
+                // `obj.attr = v` のとき、attr が let フィールドなら静的エラー（__init__ 内の self への初期化は除く）。
+                self.check_immutable_field_assign(target);
                 self.infer(target);
                 self.infer(value);
             }
@@ -1017,6 +1227,8 @@ impl TypeChecker {
                         }
                     }
                 }
+                // `obj.attr += v` のとき、attr が let フィールドなら静的エラー。
+                self.check_immutable_field_assign(target);
                 self.infer(target);
                 self.infer(value);
             }
@@ -1194,12 +1406,22 @@ impl TypeChecker {
                 self.declare(name.clone(), InferredType::Unresolved, false);
                 self.push_scope();
                 for param in params {
-                    let ty = param.type_ann.as_deref()
-                        .and_then(InferredType::from_ann)
-                        .unwrap_or(InferredType::Unresolved);
+                    let ty = if param.name == "self" {
+                        // クラスメソッド内の `self` はクラスのインスタンス型として宣言する。
+                        self.current_class_name.as_ref()
+                            .map(|c| InferredType::NamedInstance(c.clone()))
+                            .unwrap_or(InferredType::Unresolved)
+                    } else {
+                        param.type_ann.as_deref()
+                            .and_then(InferredType::from_ann)
+                            .unwrap_or(InferredType::Unresolved)
+                    };
                     self.declare(param.name.clone(), ty, param.mutable);
                 }
+                let prev_fn = self.current_fn_name.take();
+                self.current_fn_name = Some(name.clone());
                 self.check_stmts(body);
+                self.current_fn_name = prev_fn;
                 self.pop_scope();
             }
 
@@ -1212,7 +1434,9 @@ impl TypeChecker {
                 // クラス名を TypeValOf(NamedInstance) としてスコープに登録し、本体を独立スコープで検査する。
                 self.declare(name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))), false);
                 self.push_scope();
+                let prev_class = self.current_class_name.replace(name.clone());
                 self.check_stmts(body);
+                self.current_class_name = prev_class;
                 self.pop_scope();
             }
             Stmt::TraitDef { name, body, .. } => {
@@ -1427,22 +1651,31 @@ impl TypeChecker {
             }
 
             // --- 属性アクセス ---
-            Expr::Attr { object, .. } => {
+            Expr::Attr { object, attr, span } => {
                 // `Any` / `Union` に対する属性アクセスは明示的ダウンキャストが必要。
                 let obj_ty = self.infer(object);
+                // NamedInstance のとき `private`/`protected` アクセス制御を静的に検査する。
+                let class_name_opt = if let InferredType::NamedInstance(cls) = &obj_ty {
+                    Some(cls.clone())
+                } else {
+                    None
+                };
                 match &obj_ty {
                     InferredType::Any => self.report_error(StaticTypeError {
                         kind: TypeErrorKind::OperationOnAny { op: "attribute access".to_string() },
-                        span: None,
+                        span: Some(span.clone()),
                     }),
                     InferredType::Union(_) => self.report_error(StaticTypeError {
                         kind: TypeErrorKind::OperationOnUnion {
                             union_type: obj_ty.to_string(),
                             op: "attribute access".to_string(),
                         },
-                        span: None,
+                        span: Some(span.clone()),
                     }),
                     _ => {}
+                }
+                if let Some(class_name) = class_name_opt {
+                    self.check_member_access_static(&class_name, attr, Some(span.clone()));
                 }
                 // 属性の型は静的に追跡しないため Unresolved を返す。
                 InferredType::Unresolved
@@ -1716,12 +1949,26 @@ impl TypeChecker {
         // `ident.method(...)` 形式を検出してメソッド呼び出し情報を取得する。
         // Self 型パラメータ検査のためにレシーバのクラス名とメソッド名が必要。
         let method_call_info: Option<(String, String)> =
-            if let Expr::Attr { object, attr } = func {
+            if let Expr::Attr { object, attr, span } = func {
                 let obj_ty = match object.as_ref() {
                     Expr::Ident(n) => self.lookup(n).map(|v| v.ty.clone()).unwrap_or(InferredType::Unresolved),
                     _ => InferredType::Unresolved,
                 };
                 if let InferredType::NamedInstance(cls_name) = obj_ty {
+                    // static メソッドをインスタンスから呼び出していないか検査する。
+                    let is_static = self.class_static_methods
+                        .get(&cls_name)
+                        .map(|s| s.contains(attr.as_str()))
+                        .unwrap_or(false);
+                    if is_static {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::StaticMethodOnInstance {
+                                method_name: attr.clone(),
+                                class_name: cls_name.clone(),
+                            },
+                            span: Some(span.clone()),
+                        });
+                    }
                     Some((cls_name, attr.clone()))
                 } else {
                     None
@@ -2437,6 +2684,161 @@ mod tests {
         assert!(ok("mut x = 1\nif True:\n    x = 2\n"));
     }
 
+    // --- Immutable field assignment ---
+
+    #[test]
+    fn let_field_assign_outside_class_err() {
+        assert!(err(concat!(
+            "class Token:\n",
+            "    let kind: str\n",
+            "let t = Token(\"ident\")\n",
+            "t.kind = \"op\"\n",
+        )));
+    }
+
+    #[test]
+    fn let_field_assign_in_other_method_err() {
+        assert!(err(concat!(
+            "class Token:\n",
+            "    let kind: str\n",
+            "    fn reset(mut self) -> None:\n",
+            "        self.kind = \"op\"\n",
+        )));
+    }
+
+    #[test]
+    fn let_field_assign_in_init_ok() {
+        assert!(ok(concat!(
+            "class Token:\n",
+            "    let kind: str\n",
+            "    fn __init__(mut self, k: str) -> None:\n",
+            "        self.kind = k\n",
+        )));
+    }
+
+    #[test]
+    fn mut_field_assign_ok() {
+        assert!(ok(concat!(
+            "class Counter:\n",
+            "    mut count: int\n",
+            "    fn __init__(mut self) -> None:\n",
+            "        self.count = 0\n",
+            "let c = Counter()\n",
+            "c.count = 5\n",
+        )));
+    }
+
+    #[test]
+    fn let_field_compound_assign_outside_err() {
+        assert!(err(concat!(
+            "class Node:\n",
+            "    let value: int\n",
+            "let n = Node(1)\n",
+            "n.value += 1\n",
+        )));
+    }
+
+    // --- Private / protected field access ---
+
+    #[test]
+    fn private_field_read_outside_err() {
+        assert!(err(concat!(
+            "class MyClass:\n",
+            "    private:\n",
+            "    mut y: int\n",
+            "    fn __init__(mut self) -> None:\n",
+            "        self.y = 0\n",
+            "let obj = MyClass()\n",
+            "print(obj.y)\n",
+        )));
+    }
+
+    #[test]
+    fn private_field_read_inside_ok() {
+        assert!(ok(concat!(
+            "class MyClass:\n",
+            "    private:\n",
+            "    mut y: int\n",
+            "    fn __init__(mut self) -> None:\n",
+            "        self.y = 0\n",
+            "    fn get_y(self) -> int:\n",
+            "        return self.y\n",
+        )));
+    }
+
+    #[test]
+    fn private_field_write_outside_err() {
+        assert!(err(concat!(
+            "class MyClass:\n",
+            "    private:\n",
+            "    mut y: int\n",
+            "    fn __init__(mut self) -> None:\n",
+            "        self.y = 0\n",
+            "let obj = MyClass()\n",
+            "obj.y = 5\n",
+        )));
+    }
+
+    #[test]
+    fn public_field_read_outside_ok() {
+        assert!(ok(concat!(
+            "class MyClass:\n",
+            "    public:\n",
+            "    mut x: int\n",
+            "    fn __init__(mut self) -> None:\n",
+            "        self.x = 1\n",
+            "let obj = MyClass()\n",
+            "print(obj.x)\n",
+        )));
+    }
+
+    #[test]
+    fn protected_field_read_outside_err() {
+        assert!(err(concat!(
+            "class MyClass:\n",
+            "    protected:\n",
+            "    mut z: int\n",
+            "    fn __init__(mut self) -> None:\n",
+            "        self.z = 0\n",
+            "let obj = MyClass()\n",
+            "print(obj.z)\n",
+        )));
+    }
+
+    #[test]
+    fn protected_field_read_same_class_ok() {
+        // protected field accessible from within the owning class itself
+        assert!(ok(concat!(
+            "class MyClass:\n",
+            "    protected:\n",
+            "    mut z: int\n",
+            "    fn __init__(mut self) -> None:\n",
+            "        self.z = 0\n",
+            "    fn get_z(self) -> int:\n",
+            "        return self.z\n",
+        )));
+    }
+
+    #[test]
+    fn private_field_error_message() {
+        let errors = check(concat!(
+            "class A:\n",
+            "    private:\n",
+            "    mut secret: int\n",
+            "    fn __init__(mut self) -> None:\n",
+            "        self.secret = 1\n",
+            "let a = A()\n",
+            "print(a.secret)\n",
+        ));
+        let msg = errors.iter()
+            .find(|e| matches!(&e.kind, TypeErrorKind::PrivateAccessError { .. }))
+            .unwrap()
+            .to_string();
+        assert!(msg.contains("StaticTypeError"));
+        assert!(msg.contains("secret"));
+        assert!(msg.contains("A"));
+    }
+
     // --- Ordering comparison ---
 
     #[test]
@@ -2520,7 +2922,7 @@ mod tests {
         let errors = check("let x = 1\nx = 2");
         assert!(errors[0].to_string().contains("StaticTypeError"));
         assert!(errors[0].to_string().contains("immutable"));
-        assert!(errors[0].to_string().contains("'x'"));
+        assert!(errors[0].to_string().contains("x"));
     }
 
     #[test]
@@ -2587,7 +2989,7 @@ mod tests {
         let errors = check("fn f(a: int, b: int) -> None:\n    pass\nf(1)\n");
         let msg = errors[0].to_string();
         assert!(msg.contains("StaticTypeError"));
-        assert!(msg.contains("'f'"));
+        assert!(msg.contains("f"));
         assert!(msg.contains("2"));
         assert!(msg.contains("1"));
     }
@@ -2597,7 +2999,7 @@ mod tests {
         let errors = check("fn f(a: int) -> None:\n    pass\nf(\"hello\")\n");
         let msg = errors[0].to_string();
         assert!(msg.contains("StaticTypeError"));
-        assert!(msg.contains("'f'"));
+        assert!(msg.contains("f"));
         assert!(msg.contains("int"));
         assert!(msg.contains("str"));
     }
@@ -2643,8 +3045,8 @@ mod tests {
         let errors = check("fn f(x) -> int:\n    pass\n");
         let msg = errors[0].to_string();
         assert!(msg.contains("StaticTypeError"));
-        assert!(msg.contains("'x'"));
-        assert!(msg.contains("'f'"));
+        assert!(msg.contains("x"));
+        assert!(msg.contains("f"));
     }
 
     #[test]
@@ -2652,7 +3054,7 @@ mod tests {
         let errors = check("fn f(x: int):\n    pass\n");
         let msg = errors[0].to_string();
         assert!(msg.contains("StaticTypeError"));
-        assert!(msg.contains("'f'"));
+        assert!(msg.contains("f"));
     }
 
     // --- Keyword arguments ---
@@ -2688,8 +3090,8 @@ mod tests {
         let errors = check("fn f(a: int) -> None:\n    pass\nf(z=1)\n");
         let msg = errors[0].to_string();
         assert!(msg.contains("StaticTypeError"));
-        assert!(msg.contains("'f'"));
-        assert!(msg.contains("'z'"));
+        assert!(msg.contains("f"));
+        assert!(msg.contains("z"));
     }
 
     // --- Overloading ---
@@ -2760,7 +3162,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(msg.contains("StaticTypeError"));
-        assert!(msg.contains("'f'"));
+        assert!(msg.contains("f"));
         assert!(msg.contains('3'));
     }
 

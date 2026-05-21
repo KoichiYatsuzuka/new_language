@@ -653,7 +653,7 @@ fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
 
         py::Expr::Attribute(a) => {
             let obj = convert_expr(&a.value, filename)?;
-            Ok(Expr::Attr { object: Box::new(obj), attr: a.attr.to_string() })
+            Ok(Expr::Attr { object: Box::new(obj), attr: a.attr.to_string(), span: make_span(filename) })
         }
 
         py::Expr::BinOp(b) => {

@@ -38,12 +38,14 @@ impl std::fmt::Display for Span {
     /// - `file` が空の場合は `"line N, col M"` 形式
     /// - それ以外は `"ファイル名:行:列"` 形式（エラーメッセージの標準形式）
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const Y: &str = "\x1b[33m";
+        const X: &str = "\x1b[0m";
         if self.line == 0 {
-            write!(f, "<unknown>")
+            write!(f, "{Y}<unknown>{X}")
         } else if self.file.is_empty() {
-            write!(f, "line {}, col {}", self.line, self.col)
+            write!(f, "{Y}line {}, col {}{X}", self.line, self.col)
         } else {
-            write!(f, "{}:{}:{}", self.file, self.line, self.col)
+            write!(f, "{Y}{}:{}:{}{X}", self.file, self.line, self.col)
         }
     }
 }

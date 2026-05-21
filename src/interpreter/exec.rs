@@ -632,6 +632,7 @@ impl Interpreter {
                     target: Expr::Attr {
                         object: Box::new(Expr::Ident("self".to_string())),
                         attr: "value".to_string(),
+                        span: crate::token::Span::unknown(),
                     },
                     value: Expr::Ident("value".to_string()),
                 }];
@@ -694,6 +695,7 @@ impl Interpreter {
             target: Expr::Attr {
                 object: Box::new(Expr::Ident("self".to_string())),
                 attr: "value".to_string(),
+                span: crate::token::Span::unknown(),
             },
             value: Expr::Ident("value".to_string()),
         }];

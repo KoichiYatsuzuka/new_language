@@ -196,7 +196,7 @@ pub enum Expr {
     /// リストリテラル `[a, b, c]`。要素の式を順に評価して `Value::List` を生成する。
     List(Vec<Expr>),
     /// 属性アクセス `object.attr`。インスタンスフィールドやクラス変数の読み取りに使用する。
-    Attr { object: Box<Expr>, attr: String },
+    Attr { object: Box<Expr>, attr: String, span: Span },
     /// トレイト修飾アクセス `object::Trait.attr`。特定のトレイト実装のメソッドを明示的に呼び出す。
     TraitAccess { object: Box<Expr>, trait_name: String, attr: String },
     /// 二項演算 `left op right`。`span` はエラー報告に使用する位置情報。

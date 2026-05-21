@@ -1651,6 +1651,7 @@ impl Parser {
                 target: Expr::Attr {
                     object: Box::new(Expr::Ident("self".to_string())),
                     attr: fname.clone(),
+                    span: Span::unknown(),
                 },
                 value: Expr::Ident(fname.clone()),
             });
@@ -2532,9 +2533,10 @@ impl Parser {
                     expr = Expr::Call { func: Box::new(expr), args, span: call_span };
                 }
                 Token::Dot => {
+                    let dot_span = self.current_span();
                     self.advance(); // `.` を消費
                     let attr = self.expect_attr_name()?;
-                    expr = Expr::Attr { object: Box::new(expr), attr };
+                    expr = Expr::Attr { object: Box::new(expr), attr, span: dot_span };
                 }
                 Token::ColonColon => {
                     // `obj::TraitName.attr` 形式のトレイトアクセス

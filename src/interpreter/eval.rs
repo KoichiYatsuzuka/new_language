@@ -228,7 +228,7 @@ impl Interpreter {
             Expr::TraitAccess { object, trait_name, attr } => {
                 self.eval_trait_access(object, trait_name, attr)
             }
-            Expr::Attr { object, attr } => self.eval_attr(object, attr),
+            Expr::Attr { object, attr, .. } => self.eval_attr(object, attr),
             Expr::List(items) => {
                 let mut vals = Vec::new();
                 for item in items {
@@ -437,7 +437,7 @@ impl Interpreter {
             let tmpl_val = self.eval(base)?;
             return self.instantiate_template(tmpl_val, type_args, args);
         }
-        if let Expr::Attr { object, attr } = func {
+        if let Expr::Attr { object, attr, .. } = func {
             let obj_val = self.eval(object)?;
             return self.eval_method_call(obj_val, attr, args);
         }
@@ -1527,7 +1527,7 @@ impl Interpreter {
     ///
     /// 戻り値: `Ok(())` — 成功。`Err(message)` — 型エラー・不変フィールドへの代入エラー等
     pub(super) fn attr_assign(&mut self, target: &Expr, rhs: Value) -> Result<(), String> {
-        if let Expr::Attr { object, attr } = target {
+        if let Expr::Attr { object, attr, .. } = target {
             let obj_val = self.eval(object)?;
             match obj_val {
                 Value::Instance(inst_rc) => {

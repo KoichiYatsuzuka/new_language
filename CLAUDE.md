@@ -68,7 +68,7 @@ test_lang/
 │   ├── control_flow_expr.tl   # if/for/while/match as expressions (->Type)
 │   ├── block_expr.tl          # block: expression with block_return
 │   ├── functions.tl           # basic fns, typed sigs, default params, closures, generators, decorators
-│   ├── functions__errors.tl   # ParseError (non-default after default) and TypeError (freeze captured mut)
+│   ├── functions_errors.tl   # ParseError (non-default after default) and TypeError (freeze captured mut)
 │   ├── class_trait.tl         # class, trait, inheritance, Self, new_type, access control
 │   ├── class_trait_error.tl   # immutable field and access control errors
 │   ├── collection.tl          # list, dict, tuple, set
@@ -76,16 +76,16 @@ test_lang/
 │   ├── polymorphism.tl        # templates, type guards, Union/Optional
 │   ├── polymorphism_error.tl
 │   ├── other_typing.tl        # Any, Union, Option, is/is not narrowing, enum
-│   ├── other_typing__errors.tl  # StaticTypeError (is not on non-Union) and enum value type error
+│   ├── other_typing_errors.tl  # StaticTypeError (is not on non-Union) and enum value type error
 │   ├── subscript.tl           # subscript / indexing behavior
-│   ├── subscript__errors.tl
+│   ├── subscript_errors.tl
 │   ├── slice.tl               # slice syntax and slice() constructor
-│   ├── slice__errors.tl       # TypeError when non-Index used as slice bound
+│   ├── slice_errors.tl       # TypeError when non-Index used as slice bound
 │   ├── built_in.tl            # id(), enumerate(), zip(), file I/O (path/open/close/modes)
-│   ├── file_io__errors.tl
+│   ├── file_io_errors.tl
 │   ├── native_ops.tl              # module: typed int/float functions for native compilation
 │   ├── importation.tl             # all import styles: auto/[tl]/[tlc]/[py-int]/from; native_ops demo, pandas, py_calculator, tl_math
-│   ├── importation__errors.tl     # ParseError: import[tlc] when no .tlc exists
+│   ├── importation_errors.tl     # ParseError: import[tlc] when no .tlc exists
 │   ├── heavy_ops.tl           # module: heavier benchmarks (all value types)
 │   ├── bench_heavy.tl         # benchmark: speedup across int/float/str/class
 │   ├── async_demo.tl          # DEMO: AsyncManager, <- operator, raise_immediately, Async enum

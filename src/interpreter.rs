@@ -24,6 +24,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::{Accessibility, Expr, Param, Stmt};
+use crate::token::Span;
 
 #[path = "interpreter/scope.rs"]
 mod scope;
@@ -467,11 +468,11 @@ impl DictData {
     }
 
     /// 指定キーを辞書から削除する。存在しない場合は何もしない。
-    pub(self) fn remove(&mut self, key: &Value) {
-        if let Some(k) = DictKey::from_value(key) {
-            self.map.shift_remove(&k);
-        }
-    }
+    // pub(self) fn remove(&mut self, key: &Value) {
+    //     if let Some(k) = DictKey::from_value(key) {
+    //         self.map.shift_remove(&k);
+    //     }
+    // }
 
     /// エントリ数を返す。
     pub fn len(&self) -> usize {
@@ -1158,6 +1159,7 @@ impl Interpreter {
             target: Expr::Attr {
                 object: Box::new(Expr::Ident("self".to_string())),
                 attr: "value".to_string(),
+                span: Span::unknown(),
             },
             value: Expr::Ident("value".to_string()),
         }];
