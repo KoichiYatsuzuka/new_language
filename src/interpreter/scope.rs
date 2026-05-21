@@ -65,7 +65,7 @@ impl Interpreter {
     pub(super) fn assign_var(&mut self, name: &str, value: Value) -> Result<(), String> {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(v) = scope.get_mut(name) {
-                if !v.mutable {
+                if !v.is_mutable() {
                     return Err(format!(
                         "TypeError: cannot assign to immutable variable '{name}'"
                     ));
@@ -77,14 +77,14 @@ impl Interpreter {
         Err(format!("NameError: '{name}' is not defined"))
     }
 
-    /// 変数の可変フラグを `false`（不変）に変更する（`freeze` 文で使用）。
-    /// クロージャにキャプチャされた変数（`mutable_cell` が `Some`）は freeze できない。
-    ///
-    /// - `name`: 不変化する変数名
+    /// 変数を不変（`Immutable`）に変更する（`freeze` 文で使用）。
+    /// `Cell` 変数（クロージャにキャプチャ済み）は freeze できない。
     pub(super) fn make_var_immutable(&mut self, name: &str) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(v) = scope.get_mut(name) {
-                v.mutable = false;
+                if let Var::Mutable(val) = v {
+                    *v = Var::Immutable(std::mem::replace(val, Value::None));
+                }
                 return;
             }
         }

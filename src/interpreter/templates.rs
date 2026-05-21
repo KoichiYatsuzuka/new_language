@@ -140,8 +140,10 @@ impl Interpreter {
                     match arg_val {
                         Value::Dict(src_rc) => {
                             let src = src_rc.borrow();
+                            let src_keys = src.all_keys();
+                            let src_vals = src.all_items();
                             // 各キーと値が宣言された型と一致するか検査する
-                            for k in &src.keys {
+                            for k in &src_keys {
                                 if !Self::value_matches_type(k, &key_type) {
                                     return Err(format!(
                                         "StaticTypeError: dict key type mismatch: \
@@ -151,7 +153,7 @@ impl Interpreter {
                                     ));
                                 }
                             }
-                            for v in &src.items {
+                            for v in &src_vals {
                                 if !Self::value_matches_type(v, &item_type) {
                                     return Err(format!(
                                         "StaticTypeError: dict item type mismatch: \
@@ -163,8 +165,9 @@ impl Interpreter {
                             }
                             // 型チェック通過後にソースデータをコピーして新しい型付き辞書を構築する
                             let mut new_data = DictData::new(key_type, item_type);
-                            new_data.keys = src.keys.clone();
-                            new_data.items = src.items.clone();
+                            for (k, v) in src_keys.into_iter().zip(src_vals) {
+                                new_data.set(k, v);
+                            }
                             Ok(Value::Dict(Rc::new(RefCell::new(new_data))))
                         }
                         _ => Err(

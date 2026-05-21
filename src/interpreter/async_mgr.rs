@@ -270,7 +270,7 @@ pub(super) fn capture_env(interp: &Interpreter) -> Vec<(String, Value, bool)> {
     for scope in interp.scopes.iter().rev() {
         for (name, var) in scope {
             if seen.insert(name.clone()) {
-                env.push((name.clone(), var.get_value().deep_clone(), var.mutable));
+                env.push((name.clone(), var.get_value().deep_clone(), var.is_mutable()));
             }
         }
     }

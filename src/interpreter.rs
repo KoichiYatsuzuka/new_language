@@ -21,6 +21,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use indexmap::IndexMap;
+
 use crate::ast::{Accessibility, Expr, Param, Stmt};
 
 #[path = "interpreter/scope.rs"]
@@ -58,9 +60,32 @@ mod tests;
 // Sentinel / thread-local (private to this module tree)
 // ---------------------------------------------------------------------------
 
-/// 例外が伝播中であることを示すセンチネル文字列。
-/// `Err(RAISE_SENTINEL)` として返されたとき、呼び出し元は言語レベルの `raise` と
-/// インタープリタ内部のバグエラーを区別するためにこの値を検査する。
+/// Sentinel string used to signal an in-flight language-level `raise` through the
+/// `eval()` return channel (`Result<Value, String>`).
+///
+/// ## Dual error-channel design
+///
+/// The interpreter has two distinct error paths:
+///
+/// | Path | Type | Used by | Carries |
+/// |------|------|---------|---------|
+/// | `exec()` return | `Ok(ExecResult::Raise(e))` | statement execution | full `RaisedError` |
+/// | `eval()` return | `Err(RAISE_SENTINEL)` | expression evaluation | only a sentinel; full error in `self.current_exception` |
+///
+/// The split exists because `eval()` returns `Result<Value, String>`, which cannot
+/// carry a `RaisedError` directly.  When `eval()` returns `Err(RAISE_SENTINEL)`,
+/// `self.current_exception` holds the `RaisedError`.
+///
+/// ## Invariants
+///
+/// * Every site that returns `Err(RAISE_SENTINEL)` **must** have set
+///   `self.current_exception = Some(…)` immediately before.
+/// * Every site that checks for `RAISE_SENTINEL` in an `Err` must propagate or
+///   consume the error: either call `self.take_current_exception()` or re-return
+///   `Err(RAISE_SENTINEL)` so the caller can do so.
+/// * Internal bugs should return a plain, non-sentinel `Err(message)`.  A caller
+///   that sees an `Err` string not equal to `RAISE_SENTINEL` knows it is an
+///   interpreter bug rather than a user `raise`.
 pub(self) const RAISE_SENTINEL: &str = "\x00__raise__";
 
 thread_local! {
@@ -349,73 +374,103 @@ impl TupleData {
 }
 
 /// 辞書値の内部ストレージ。
-/// キーと値を並列 Vec で保持する。アクセスには `get` / `set` メソッドを使用すること。
-/// 内部表現（並列リスト）はプライベートであり、公開 API のみが安定。
+/// `IndexMap` で挿入順を保持しつつ O(1) ルックアップを提供する。
+/// アクセスには `get` / `set` メソッドを使用すること。
 ///
 /// - `key_type`: 有効なキーの型名。型なし辞書は `"Any"`
 /// - `item_type`: 有効な値の型名。型なし辞書は `"Any"`
-/// - `keys` / `items`: 並列 Vec でキーと値を格納（同一インデックスが対応する）
 #[derive(Debug)]
 pub struct DictData {
     /// 有効なキーの型名。型なし辞書は `"Any"`。
     pub key_type: String,
     /// 有効な値の型名。型なし辞書は `"Any"`。
     pub item_type: String,
-    pub(self) keys: Vec<Value>,
-    pub(self) items: Vec<Value>,
+    pub(self) map: IndexMap<DictKey, Value>,
+}
+
+/// `IndexMap` のキーとして使用するラッパー。`Value` のプリミティブ部分のみハッシュ可能。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(self) enum DictKey {
+    Int(i64),
+    Str(String),
+    Bool(bool),
+    None,
+}
+
+impl DictKey {
+    fn from_value(v: &Value) -> Option<Self> {
+        match v {
+            Value::Int(n)  => Some(DictKey::Int(*n)),
+            Value::Float(f) => {
+                // 整数値の float (e.g. 1.0) は Int キーとして扱う（Python 互換）
+                if f.fract() == 0.0 && f.is_finite() {
+                    Some(DictKey::Int(*f as i64))
+                } else {
+                    None
+                }
+            }
+            Value::Str(s)  => Some(DictKey::Str(s.clone())),
+            Value::Bool(b) => Some(DictKey::Bool(*b)),
+            Value::None    => Some(DictKey::None),
+            _ => None,
+        }
+    }
 }
 
 impl DictData {
     /// 空の型付き辞書を生成する。
-    ///
-    /// - `key_type`: キーの型名（型なしは `"Any"`）
-    /// - `item_type`: 値の型名（型なしは `"Any"`）
     pub fn new(key_type: String, item_type: String) -> Self {
-        Self { key_type, item_type, keys: vec![], items: vec![] }
+        Self { key_type, item_type, map: IndexMap::new() }
     }
 
     /// 指定したキーに対応する値を返す。キーが存在しない場合は `None`。
     pub fn get(&self, key: &Value) -> Option<Value> {
-        self.find_index(key).map(|i| self.items[i].clone())
+        DictKey::from_value(key).and_then(|k| self.map.get(&k).cloned())
     }
 
     /// キーと値を追加、またはキーが既に存在する場合は値を更新する。
     pub fn set(&mut self, key: Value, value: Value) {
-        if let Some(i) = self.find_index(&key) {
-            // 既存キーの値を更新
-            self.items[i] = value;
-        } else {
-            // 新規キーと値を末尾に追加
-            self.keys.push(key);
-            self.items.push(value);
+        if let Some(k) = DictKey::from_value(&key) {
+            self.map.insert(k, value);
         }
+        // unhashable key (e.g. instance) silently ignored — same as before
     }
 
-    /// すべてのキーをクローンしてリストとして返す。
+    /// すべてのキーを `Value` リストとして返す（挿入順）。
     pub fn all_keys(&self) -> Vec<Value> {
-        self.keys.clone()
+        self.map.keys().map(|k| match k {
+            DictKey::Int(n)  => Value::Int(*n),
+            DictKey::Str(s)  => Value::Str(s.clone()),
+            DictKey::Bool(b) => Value::Bool(*b),
+            DictKey::None    => Value::None,
+        }).collect()
     }
 
-    /// すべての値をクローンしてリストとして返す。
+    /// すべての値をクローンしてリストとして返す（挿入順）。
     pub fn all_items(&self) -> Vec<Value> {
-        self.items.clone()
+        self.map.values().cloned().collect()
     }
 
-    /// `keys` 内でキーが最初に見つかった位置（インデックス）を返す。存在しない場合は `None`。
-    fn find_index(&self, key: &Value) -> Option<usize> {
-        self.keys.iter().position(|k| Self::values_equal(k, key))
+    /// キー・値のペアを挿入順で走査するイテレータ。
+    pub(self) fn iter(&self) -> impl Iterator<Item = (&DictKey, &Value)> {
+        self.map.iter()
     }
 
-    /// 辞書キー比較用の等値判定。プリミティブ型のみ対応（インスタンス等は常に `false`）。
-    fn values_equal(a: &Value, b: &Value) -> bool {
-        match (a, b) {
-            (Value::Int(x), Value::Int(y)) => x == y,
-            (Value::Float(x), Value::Float(y)) => x == y,
-            (Value::Str(x), Value::Str(y)) => x == y,
-            (Value::Bool(x), Value::Bool(y)) => x == y,
-            (Value::None, Value::None) => true,
-            _ => false,
+    /// 指定キーを辞書から削除する。存在しない場合は何もしない。
+    pub(self) fn remove(&mut self, key: &Value) {
+        if let Some(k) = DictKey::from_value(key) {
+            self.map.shift_remove(&k);
         }
+    }
+
+    /// エントリ数を返す。
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// 辞書が空なら `true`。
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
     }
 }
 
@@ -749,8 +804,14 @@ impl Value {
             Value::Dict(rc) => {
                 let b = rc.borrow();
                 let mut d = DictData::new(b.key_type.clone(), b.item_type.clone());
-                for (k, v) in b.keys.iter().zip(b.items.iter()) {
-                    d.set(k.deep_clone(), v.deep_clone());
+                for (k, v) in b.iter() {
+                    let key_val = match k {
+                        DictKey::Int(n)  => Value::Int(*n),
+                        DictKey::Str(s)  => Value::Str(s.clone()),
+                        DictKey::Bool(b) => Value::Bool(*b),
+                        DictKey::None    => Value::None,
+                    };
+                    d.set(key_val, v.deep_clone());
                 }
                 Value::Dict(Rc::new(RefCell::new(d)))
             }
@@ -857,43 +918,52 @@ pub enum ExecResult {
 
 /// スコープ内の1つの変数エントリ。
 ///
-/// - `value`: 変数の現在の値（`mutable_cell` が `None` のとき有効）
-/// - `mutable`: `true` なら再代入可能（`mut` 宣言）、`false` なら不変（`let` / `const` 宣言）
-/// - `mutable_cell`: クロージャにキャプチャされた可変変数の共有セル。
-///   `Some` のとき読み書きはセル経由で行い、`value` フィールドは使用しない。
-pub(self) struct Var {
-    pub(self) value: Value,
-    pub(self) mutable: bool,
-    /// クロージャとの共有セル。`Some` のとき読み書きはセル経由。
-    pub(self) mutable_cell: Option<Rc<RefCell<Value>>>,
+/// - `Immutable(Value)`: 不変変数（`let` / `const`）
+/// - `Mutable(Value)`: 可変変数（`mut`）。クロージャにキャプチャされるまでは値を直接保持する。
+/// - `Cell(Rc<RefCell<Value>>)`: クロージャにキャプチャされた可変変数。外側スコープと共有セルを通じて読み書きする。
+pub(self) enum Var {
+    Immutable(Value),
+    Mutable(Value),
+    Cell(Rc<RefCell<Value>>),
 }
 
 impl Var {
-    /// 通常の変数エントリを作成する（セルなし）。
+    /// 通常の変数エントリを作成する。
     pub(self) fn new(value: Value, mutable: bool) -> Self {
-        Self { value, mutable, mutable_cell: None }
+        if mutable { Var::Mutable(value) } else { Var::Immutable(value) }
     }
 
     /// クロージャ共有セルに基づく変数エントリを作成する（常に mutable）。
     pub(self) fn new_cell(cell: Rc<RefCell<Value>>) -> Self {
-        Self { value: Value::None, mutable: true, mutable_cell: Some(cell) }
+        Var::Cell(cell)
     }
 
-    /// 変数の現在の値を返す。セルがある場合はセルの値を返す。
+    /// 変数の現在の値を返す。
     pub(self) fn get_value(&self) -> Value {
-        if let Some(cell) = &self.mutable_cell {
-            cell.borrow().clone()
-        } else {
-            self.value.clone()
+        match self {
+            Var::Immutable(v) | Var::Mutable(v) => v.clone(),
+            Var::Cell(rc) => rc.borrow().clone(),
         }
     }
 
-    /// 変数に新しい値をセットする。セルがある場合はセルに書き込む。
+    /// 変数に新しい値をセットする。`Immutable` に対して呼ぶのは呼び出し元の責任。
     pub(self) fn set_value(&mut self, val: Value) {
-        if let Some(cell) = &self.mutable_cell {
-            *cell.borrow_mut() = val;
-        } else {
-            self.value = val;
+        match self {
+            Var::Immutable(v) | Var::Mutable(v) => *v = val,
+            Var::Cell(rc) => *rc.borrow_mut() = val,
+        }
+    }
+
+    /// 変数が再代入可能かどうかを返す。
+    pub(self) fn is_mutable(&self) -> bool {
+        matches!(self, Var::Mutable(_) | Var::Cell(_))
+    }
+
+    /// クロージャ共有セルを返す。`Cell` でない場合は `None`。
+    pub(self) fn cell(&self) -> Option<Rc<RefCell<Value>>> {
+        match self {
+            Var::Cell(rc) => Some(rc.clone()),
+            _ => None,
         }
     }
 }

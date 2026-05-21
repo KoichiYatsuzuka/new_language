@@ -511,7 +511,7 @@ extern "C" fn tl_iter_from(obj_h: i64) -> i64 {
         Value::List(l) => l.borrow().clone(),
         Value::Tuple(t) => t.all_values().to_vec(),
         Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
-        Value::Dict(d) => d.borrow().keys.clone(),
+        Value::Dict(d) => d.borrow().all_keys(),
         other => {
             set_error(format!(
                 "TypeError: value of type '{}' is not iterable in native context",

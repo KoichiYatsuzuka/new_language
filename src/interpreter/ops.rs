@@ -54,7 +54,7 @@ impl Interpreter {
             Value::Str(s) => !s.is_empty(),
             Value::None => false,
             Value::List(items) => !items.borrow().is_empty(),
-            Value::Dict(d) => !d.borrow().keys.is_empty(),
+            Value::Dict(d) => !d.borrow().is_empty(),
             Value::Tuple(t) => !t.is_empty(),
             Value::Set(s) => !s.borrow().is_empty(),
             // 関数・クラス・インスタンス・ジェネレータ・名前空間・Python オブジェクト等は常に真
@@ -188,10 +188,12 @@ impl Interpreter {
             }
             Value::Dict(d) => {
                 let d = d.borrow();
-                if d.keys.is_empty() {
+                if d.is_empty() {
                     "{}".to_string()
                 } else {
-                    let parts: Vec<String> = d.keys.iter().zip(d.items.iter())
+                    let keys = d.all_keys();
+                    let vals = d.all_items();
+                    let parts: Vec<String> = keys.iter().zip(vals.iter())
                         .map(|(k, v)| format!("{}: {}", self.display_repr(k), self.display_repr(v)))
                         .collect();
                     format!("{{{}}}", parts.join(", "))
@@ -279,9 +281,9 @@ impl Interpreter {
                 Ok(format!("[{}]", parts?.join(", ")))
             }
             Value::Dict(d) => {
-                let (keys, vals): (Vec<Value>, Vec<Value>) = {
+                let (keys, vals) = {
                     let db = d.borrow();
-                    (db.keys.clone(), db.items.clone())
+                    (db.all_keys(), db.all_items())
                 };
                 if keys.is_empty() {
                     return Ok("{}".to_string());

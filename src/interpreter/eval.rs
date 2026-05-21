@@ -247,18 +247,13 @@ impl Interpreter {
                 Ok(Value::Tuple(Rc::new(TupleData::new(values, types))))
             }
             Expr::Dict(pairs) => {
-                let mut keys = Vec::new();
-                let mut items = Vec::new();
+                let mut d = DictData::new("Any".to_string(), "Any".to_string());
                 for (key_expr, val_expr) in pairs {
-                    keys.push(self.eval(key_expr)?);
-                    items.push(self.eval(val_expr)?);
+                    let k = self.eval(key_expr)?;
+                    let v = self.eval(val_expr)?;
+                    d.set(k, v);
                 }
-                Ok(Value::Dict(Rc::new(RefCell::new(DictData {
-                    key_type: "Any".to_string(),
-                    item_type: "Any".to_string(),
-                    keys,
-                    items,
-                }))))
+                Ok(Value::Dict(Rc::new(RefCell::new(d))))
             }
             Expr::Set(items) => {
                 let mut vals: Vec<Value> = Vec::new();
@@ -330,140 +325,7 @@ impl Interpreter {
 
     fn eval_attr(&mut self, object: &Expr, attr: &str) -> Result<Value, String> {
         let obj_val = self.eval(object)?;
-        match &obj_val {
-            Value::Instance(inst_rc) => {
-                let inst = inst_rc.borrow();
-                let cls = inst.class.clone();
-                if let Some((v, _)) = inst.fields.get(attr) {
-                    let v = v.clone();
-                    drop(inst);
-                    self.check_member_access(&cls, attr, attr)?;
-                    return Ok(v);
-                }
-                let suffix = format!("::{attr}");
-                if let Some((full_key, (v, _))) = inst.fields.iter().find(|(k, _)| k.ends_with(suffix.as_str())) {
-                    let v = v.clone();
-                    let full_key = full_key.clone();
-                    drop(inst);
-                    self.check_member_access(&cls, &full_key, attr)?;
-                    return Ok(v);
-                }
-                if let Some(v) = Self::lookup_class_var(&cls, attr) {
-                    drop(inst);
-                    self.check_member_access(&cls, attr, attr)?;
-                    return Ok(v);
-                }
-                if let Some(cell) = cls.static_vars.get(attr).cloned() {
-                    drop(inst);
-                    self.check_member_access(&cls, attr, attr)?;
-                    return Ok(cell.borrow().clone());
-                }
-                if cls.methods.contains_key(attr) {
-                    if cls.static_method_names.contains(attr) {
-                        drop(inst);
-                        return Err(format!(
-                            "AttributeError: static method '{}' is not accessible on an instance of '{}'; use '{}.{}'",
-                            attr, cls.name, cls.name, attr
-                        ));
-                    }
-                    if cls.class_method_names.contains(attr) {
-                        drop(inst);
-                        return Err(format!(
-                            "AttributeError: class method '{}' is not accessible on an instance of '{}'; use '{}.{}'",
-                            attr, cls.name, cls.name, attr
-                        ));
-                    }
-                    let overloads = cls.methods.get(attr).unwrap();
-                    let result = if overloads.len() == 1 {
-                        Value::Function(overloads[0].clone())
-                    } else {
-                        Value::OverloadedFn(overloads.clone())
-                    };
-                    drop(inst);
-                    self.check_member_access(&cls, attr, attr)?;
-                    return Ok(result);
-                }
-                Err(format!(
-                    "AttributeError: '{}' object has no attribute '{attr}'",
-                    cls.name
-                ))
-            }
-            Value::Class(cls) => {
-                if attr == "name" {
-                    return Ok(Value::Str(cls.name.clone()));
-                }
-                if let Some(v) = Self::lookup_class_var(cls, attr) {
-                    return Ok(v);
-                }
-                if let Some(cell) = cls.static_vars.get(attr) {
-                    return Ok(cell.borrow().clone());
-                }
-                if let Some(overloads) = cls.methods.get(attr) {
-                    return Ok(if overloads.len() == 1 {
-                        Value::Function(overloads[0].clone())
-                    } else {
-                        Value::OverloadedFn(overloads.clone())
-                    });
-                }
-                Err(format!("AttributeError: class '{}' has no attribute '{attr}'", cls.name))
-            }
-            Value::Namespace(ns) => {
-                ns.members.get(attr)
-                    .cloned()
-                    .ok_or_else(|| format!(
-                        "AttributeError: module '{}' has no attribute '{attr}'",
-                        ns.name
-                    ))
-            }
-            Value::PyObject(handle) => {
-                super::py_interop::py_getattr(handle, attr)
-            }
-            Value::Slice(s) => {
-                match attr {
-                    "begin" => Ok(s.begin.clone().unwrap_or(Value::None)),
-                    "end"   => Ok(s.end.clone().unwrap_or(Value::None)),
-                    "step"  => Ok(s.step.clone().unwrap_or(Value::None)),
-                    _ => Err(format!("AttributeError: 'slice' has no attribute '{attr}'")),
-                }
-            }
-            Value::AsyncManager(mgr_rc) => {
-                let mgr = mgr_rc.borrow();
-                match attr {
-                    "num_thread" => Ok(Value::UInt(mgr.num_thread as u64)),
-                    "raise_immediately" => Ok(Value::Bool(mgr.raise_immediately)),
-                    "thread_status" => {
-                        let running: Vec<Value> = mgr.progress.iter().enumerate()
-                            .filter(|(_, s)| **s == super::async_mgr::AsyncStatus::Running)
-                            .map(|(i, _)| Value::Int(i as i64))
-                            .collect();
-                        Ok(Value::List(Rc::new(RefCell::new(running))))
-                    }
-                    "progress_status" => {
-                        let statuses: Vec<Value> = mgr.progress.iter()
-                            .map(|s| Value::AsyncStatusVal(s.clone()))
-                            .collect();
-                        Ok(Value::List(Rc::new(RefCell::new(statuses))))
-                    }
-                    "results" => {
-                        Ok(Value::List(Rc::new(RefCell::new(mgr.results.clone()))))
-                    }
-                    "error_list" => {
-                        let errs: Vec<Value> = mgr.error_list.iter()
-                            .map(|e| match e {
-                                Some(s) => Value::Str(s.clone()),
-                                None => Value::None,
-                            })
-                            .collect();
-                        Ok(Value::List(Rc::new(RefCell::new(errs))))
-                    }
-                    _ => Err(format!("AttributeError: 'AsyncManager' has no attribute '{attr}'")),
-                }
-            }
-            _ => Err(format!(
-                "AttributeError: '{}' object has no attribute '{attr}'",
-                self.type_name(&obj_val)
-            )),
-        }
+        self.get_attr_val(obj_val, attr)
     }
 
     fn eval_slice_expr(
@@ -721,38 +583,7 @@ impl Interpreter {
                     Ok(v) => v,
                     Err(e) => return Some(Err(e)),
                 };
-                let raw: u64 = match &val {
-                    Value::Instance(rc) => Rc::as_ptr(rc) as u64,
-                    Value::List(rc)     => Rc::as_ptr(rc) as u64,
-                    Value::Dict(rc)     => Rc::as_ptr(rc) as u64,
-                    Value::Set(rc)      => Rc::as_ptr(rc) as u64,
-                    Value::Function(rc) => Rc::as_ptr(rc) as u64,
-                    Value::OverloadedFn(v) => v.as_ptr() as u64,
-                    Value::Generator(rc)  => Rc::as_ptr(rc) as u64,
-                    Value::GeneratorFn(rc) => Rc::as_ptr(rc) as u64,
-                    Value::Tuple(rc)    => Rc::as_ptr(rc) as u64,
-                    Value::Int(n)  => *n as u64,
-                    Value::UInt(n) => *n,
-                    Value::Float(f) => f.to_bits(),
-                    Value::Bool(b) => *b as u64,
-                    Value::Str(s)  => {
-                        use std::hash::{Hash, Hasher};
-                        let mut h = std::collections::hash_map::DefaultHasher::new();
-                        s.hash(&mut h);
-                        h.finish()
-                    }
-                    Value::None => 0u64,
-                    _ => 0u64,
-                };
-                let pointer_cls = match self.get_val("pointer") {
-                    Some(Value::Class(cls)) => cls,
-                    _ => return Some(Err("RuntimeError: 'pointer' type is not defined".to_string())),
-                };
-                let mut fields = std::collections::HashMap::new();
-                fields.insert("value".to_string(), (Value::UInt(raw), true));
-                Some(Ok(Value::Instance(Rc::new(RefCell::new(
-                    crate::interpreter::InstanceData { class: pointer_cls, fields, immutable: false }
-                )))))
+                Some(self.call_type_by_name_evaled("id", vec![val]))
             }
             "open" => Some(self.eval_builtin_open(args)),
             "close" => {
@@ -966,8 +797,18 @@ impl Interpreter {
     }
 
     fn eval_type_constructor_call(&mut self, type_name: &str, args: &[CallArg]) -> Result<Value, String> {
+        if type_name == "AsyncManager" {
+            return self.make_async_manager(args);
+        }
         let evaled = self.eval_call_args(args)?;
         let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+        self.call_type_by_name_evaled(type_name, vals)
+    }
+
+    /// Dispatch an already-evaluated argument list to a built-in type constructor.
+    /// Called by `eval_type_constructor_call` (from AST) and `call_value_with_args`
+    /// (from native callbacks that hold a `Value::Type`).
+    pub(super) fn call_type_by_name_evaled(&mut self, type_name: &str, vals: Vec<Value>) -> Result<Value, String> {
         match type_name {
             "str" => match vals.as_slice() {
                 [] => Ok(Value::Str(String::new())),
@@ -1012,9 +853,7 @@ impl Interpreter {
                 ref v if v.is_empty() => Ok(Value::List(Rc::new(RefCell::new(vec![])))),
                 _ if vals.len() == 1 => match vals.into_iter().next().unwrap() {
                     Value::List(lst) => Ok(Value::List(lst)),
-                    Value::Set(s) => {
-                        Ok(Value::List(Rc::new(RefCell::new(s.borrow().clone()))))
-                    },
+                    Value::Set(s) => Ok(Value::List(Rc::new(RefCell::new(s.borrow().clone())))),
                     Value::Str(s) => {
                         let chars = s.chars().map(|c| Value::Str(c.to_string())).collect();
                         Ok(Value::List(Rc::new(RefCell::new(chars))))
@@ -1035,9 +874,7 @@ impl Interpreter {
                         other => return Err(format!("TypeError: '{}' object is not iterable", self.type_name(&other))),
                     };
                     let mut result: Vec<Value> = Vec::new();
-                    for v in items {
-                        set_insert(&mut result, v, self);
-                    }
+                    for v in items { set_insert(&mut result, v, self); }
                     Ok(Value::Set(Rc::new(RefCell::new(result))))
                 },
                 _ => Err("TypeError: set() takes at most 1 argument".to_string()),
@@ -1088,11 +925,52 @@ impl Interpreter {
                 [other] => Err(format!("TypeError: uint() argument must be an integer, not '{}'", self.type_name(other))),
                 _ => Err("TypeError: uint() takes at most 1 argument".to_string()),
             },
-            "AsyncManager" => {
-                // AsyncManager(num_thread = N [, raise_immediately = bool])
-                // Accept positional or keyword args from evaled_with_kw (re-eval below)
-                self.make_async_manager(args)
+            "id" => {
+                if vals.len() != 1 {
+                    return Err("TypeError: id() takes exactly one argument".to_string());
+                }
+                let val = vals.into_iter().next().unwrap();
+                let raw: u64 = match &val {
+                    Value::Instance(rc) => Rc::as_ptr(rc) as u64,
+                    Value::List(rc)     => Rc::as_ptr(rc) as u64,
+                    Value::Dict(rc)     => Rc::as_ptr(rc) as u64,
+                    Value::Function(rc) => Rc::as_ptr(rc) as u64,
+                    Value::OverloadedFn(v) => v.as_ptr() as u64,
+                    Value::Generator(rc)  => Rc::as_ptr(rc) as u64,
+                    Value::GeneratorFn(rc) => Rc::as_ptr(rc) as u64,
+                    Value::Tuple(rc)    => Rc::as_ptr(rc) as u64,
+                    Value::Int(n)  => *n as u64,
+                    Value::UInt(n) => *n,
+                    Value::Float(f) => f.to_bits(),
+                    Value::Bool(b) => *b as u64,
+                    Value::Str(s)  => {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        s.hash(&mut h);
+                        h.finish()
+                    }
+                    Value::None => 0u64,
+                    _ => 0u64,
+                };
+                let pointer_cls = match self.get_val("pointer") {
+                    Some(Value::Class(cls)) => cls,
+                    _ => return Err("RuntimeError: 'pointer' type is not defined".to_string()),
+                };
+                let mut fields = std::collections::HashMap::new();
+                fields.insert("value".to_string(), (Value::UInt(raw), true));
+                Ok(Value::Instance(Rc::new(RefCell::new(
+                    crate::interpreter::InstanceData { class: pointer_cls, fields, immutable: false }
+                ))))
             }
+            "len" => match vals.as_slice() {
+                [Value::List(lst)] => Ok(Value::Int(lst.borrow().len() as i64)),
+                [Value::Str(s)] => Ok(Value::Int(s.len() as i64)),
+                [Value::Dict(d)] => Ok(Value::Int(d.borrow().len() as i64)),
+                [Value::Set(s)] => Ok(Value::Int(s.borrow().len() as i64)),
+                [Value::Tuple(t)] => Ok(Value::Int(t.len() as i64)),
+                [other] => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(other))),
+                _ => Err("TypeError: len() takes exactly 1 argument".to_string()),
+            },
             other => Err(format!("TypeError: '{}' object is not callable", other)),
         }
     }
@@ -1111,21 +989,29 @@ impl Interpreter {
         args: &[crate::ast::CallArg],
     ) -> Result<Value, String> {
         let evaled = self.eval_call_args(args)?;
+        let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+        self.dispatch_native_evaled(fn_ref, vals)
+    }
 
-        if evaled.len() != fn_ref.n_params {
+    /// Core native-dispatch path: push already-evaluated args into the arena and invoke
+    /// the exported `{fn_name}_tl` symbol.  Used by both `call_native_function` (called
+    /// from AST) and `call_value_with_args` (called from native callbacks).
+    pub(super) fn dispatch_native_evaled(
+        &mut self,
+        fn_ref: &Arc<NativeFnRef>,
+        vals: Vec<Value>,
+    ) -> Result<Value, String> {
+        if vals.len() != fn_ref.n_params {
             return Err(format!(
                 "TypeError: native function '{}' expects {} argument(s), got {}",
-                fn_ref.fn_name, fn_ref.n_params, evaled.len()
+                fn_ref.fn_name, fn_ref.n_params, vals.len()
             ));
         }
 
-        // Enter call frame — saves arena/iter savepoints at outermost level.
         let is_outermost = super::native_api::enter_native_call(self as *mut Interpreter);
 
-        // Push args into arena. Immutable (`let`) parameters receive a deep copy so
-        // the native function body cannot mutate the caller's reference-type values.
-        let handles: Vec<i64> = evaled.iter().enumerate()
-            .map(|(i, (_, v))| {
+        let handles: Vec<i64> = vals.iter().enumerate()
+            .map(|(i, v)| {
                 let is_mut = fn_ref.param_mutabilities.get(i).copied().unwrap_or(true);
                 let owned = if is_mut { v.clone() } else { Self::deep_copy_value(v.clone()) };
                 super::native_api::push_handle(owned)
@@ -1168,8 +1054,8 @@ impl Interpreter {
 
     // --- ネイティブコールバック用ヘルパー ---
 
-    /// 任意の `Value` からその属性値を取得する。
-    /// ネイティブコールバック `tl_get_attr` から呼ばれる。
+    /// Resolve an attribute on any `Value`.
+    /// Used by both `eval_attr` (from AST) and native callbacks (`tl_get_attr`).
     pub(super) fn get_attr_val(&mut self, obj: Value, attr: &str) -> Result<Value, String> {
         match &obj {
             Value::Instance(inst_rc) => {
@@ -1194,7 +1080,27 @@ impl Interpreter {
                     self.check_member_access(&cls, attr, attr)?;
                     return Ok(v);
                 }
-                if let Some(overloads) = cls.methods.get(attr) {
+                if let Some(cell) = cls.static_vars.get(attr).cloned() {
+                    drop(inst);
+                    self.check_member_access(&cls, attr, attr)?;
+                    return Ok(cell.borrow().clone());
+                }
+                if cls.methods.contains_key(attr) {
+                    if cls.static_method_names.contains(attr) {
+                        drop(inst);
+                        return Err(format!(
+                            "AttributeError: static method '{}' is not accessible on an instance of '{}'; use '{}.{}'",
+                            attr, cls.name, cls.name, attr
+                        ));
+                    }
+                    if cls.class_method_names.contains(attr) {
+                        drop(inst);
+                        return Err(format!(
+                            "AttributeError: class method '{}' is not accessible on an instance of '{}'; use '{}.{}'",
+                            attr, cls.name, cls.name, attr
+                        ));
+                    }
+                    let overloads = cls.methods.get(attr).unwrap();
                     let result = if overloads.len() == 1 {
                         Value::Function(overloads[0].clone())
                     } else {
@@ -1207,8 +1113,14 @@ impl Interpreter {
                 Err(format!("AttributeError: '{}' object has no attribute '{attr}'", cls.name))
             }
             Value::Class(cls) => {
+                if attr == "name" {
+                    return Ok(Value::Str(cls.name.clone()));
+                }
                 if let Some(v) = Self::lookup_class_var(cls, attr) {
                     return Ok(v);
+                }
+                if let Some(cell) = cls.static_vars.get(attr) {
+                    return Ok(cell.borrow().clone());
                 }
                 if let Some(overloads) = cls.methods.get(attr) {
                     return Ok(if overloads.len() == 1 {
@@ -1225,6 +1137,40 @@ impl Interpreter {
             }
             Value::PyObject(handle) => {
                 super::py_interop::py_getattr(handle, attr)
+            }
+            Value::Slice(s) => match attr {
+                "begin" => Ok(s.begin.clone().unwrap_or(Value::None)),
+                "end"   => Ok(s.end.clone().unwrap_or(Value::None)),
+                "step"  => Ok(s.step.clone().unwrap_or(Value::None)),
+                _ => Err(format!("AttributeError: 'slice' has no attribute '{attr}'")),
+            },
+            Value::AsyncManager(mgr_rc) => {
+                let mgr = mgr_rc.borrow();
+                match attr {
+                    "num_thread" => Ok(Value::UInt(mgr.num_thread as u64)),
+                    "raise_immediately" => Ok(Value::Bool(mgr.raise_immediately)),
+                    "thread_status" => {
+                        let running: Vec<Value> = mgr.progress.iter().enumerate()
+                            .filter(|(_, s)| **s == super::async_mgr::AsyncStatus::Running)
+                            .map(|(i, _)| Value::Int(i as i64))
+                            .collect();
+                        Ok(Value::List(Rc::new(RefCell::new(running))))
+                    }
+                    "progress_status" => {
+                        let statuses: Vec<Value> = mgr.progress.iter()
+                            .map(|s| Value::AsyncStatusVal(s.clone()))
+                            .collect();
+                        Ok(Value::List(Rc::new(RefCell::new(statuses))))
+                    }
+                    "results" => Ok(Value::List(Rc::new(RefCell::new(mgr.results.clone())))),
+                    "error_list" => {
+                        let errs: Vec<Value> = mgr.error_list.iter()
+                            .map(|e| match e { Some(s) => Value::Str(s.clone()), None => Value::None })
+                            .collect();
+                        Ok(Value::List(Rc::new(RefCell::new(errs))))
+                    }
+                    _ => Err(format!("AttributeError: 'AsyncManager' has no attribute '{attr}'")),
+                }
             }
             _ => Err(format!(
                 "AttributeError: '{}' object has no attribute '{attr}'",
@@ -1249,151 +1195,12 @@ impl Interpreter {
                 self.instantiate_evaled(cls, evaled)
             }
             Value::NativeFunction(fn_ref) => {
-                // Re-entrant native call: CURRENT_INTERP is already set; do NOT clear it.
-                // enter_native_call at depth > 0 will not save/restore arena — cleanup happens
-                // at the outermost call_native_function.
-                if evaled.len() != fn_ref.n_params {
-                    return Err(format!(
-                        "TypeError: native function '{}' expects {} argument(s), got {}",
-                        fn_ref.fn_name, fn_ref.n_params, evaled.len()
-                    ));
-                }
-                let is_outermost = super::native_api::enter_native_call(self as *mut Interpreter);
-                let handles: Vec<i64> = evaled.iter().enumerate()
-                    .map(|(i, (_, v))| {
-                        let is_mut = fn_ref.param_mutabilities.get(i).copied().unwrap_or(true);
-                        let owned = if is_mut { v.clone() } else { Self::deep_copy_value(v.clone()) };
-                        super::native_api::push_handle(owned)
-                    })
-                    .collect();
-                let call_result = {
-                    let lib = match self.native_libs.get(&fn_ref.lib_path) {
-                        Some(l) => l,
-                        None => {
-                            super::native_api::abort_native_call(is_outermost);
-                            return Err(format!(
-                                "RuntimeError: native library not loaded: {}", fn_ref.lib_path.display()
-                            ));
-                        }
-                    };
-                    let symbol_name = format!("{}_tl\0", fn_ref.fn_name);
-                    unsafe {
-                        match lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes()) {
-                            Ok(func) => Ok(func(handles.as_ptr(), handles.len() as i32)),
-                            Err(e) => Err(format!("RuntimeError: symbol '{}' not found: {e}", fn_ref.fn_name)),
-                        }
-                    }
-                };
-                match call_result {
-                    Err(e) => { super::native_api::abort_native_call(is_outermost); Err(e) }
-                    Ok(result_h) => {
-                        if let Some(err) = super::native_api::take_error() {
-                            super::native_api::abort_native_call(is_outermost);
-                            return Err(err);
-                        }
-                        Ok(super::native_api::exit_native_call(result_h, is_outermost))
-                    }
-                }
+                let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                self.dispatch_native_evaled(&fn_ref, vals)
             }
             Value::Type(type_name) => {
                 let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
-                match type_name.as_str() {
-                    "len" => match vals.as_slice() {
-                        [Value::List(lst)] => Ok(Value::Int(lst.borrow().len() as i64)),
-                        [Value::Str(s)] => Ok(Value::Int(s.len() as i64)),
-                        [Value::Dict(d)] => Ok(Value::Int(d.borrow().all_keys().len() as i64)),
-                        [Value::Set(s)] => Ok(Value::Int(s.borrow().len() as i64)),
-                        [Value::Tuple(t)] => Ok(Value::Int(t.len() as i64)),
-                        [other] => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(other))),
-                        _ => Err("TypeError: len() takes exactly 1 argument".to_string()),
-                    },
-                    "str" => match vals.as_slice() {
-                        [] => Ok(Value::Str(String::new())),
-                        [v] => Ok(Value::Str(self.display(v))),
-                        _ => Err("TypeError: str() takes at most 1 argument".to_string()),
-                    },
-                    "int" => match vals.as_slice() {
-                        [] => Ok(Value::Int(0)),
-                        [Value::Int(n)] => Ok(Value::Int(*n)),
-                        [Value::Float(f)] => Ok(Value::Int(*f as i64)),
-                        [Value::Bool(b)] => Ok(Value::Int(if *b { 1 } else { 0 })),
-                        [Value::Str(s)] => s.trim().parse::<i64>()
-                            .map(Value::Int)
-                            .map_err(|_| format!("ValueError: invalid literal for int(): '{s}'")),
-                        [other] => Err(format!("TypeError: int() argument must be a number or string, not '{}'", self.type_name(other))),
-                        _ => Err("TypeError: int() takes at most 1 argument".to_string()),
-                    },
-                    "float" => match vals.as_slice() {
-                        [] => Ok(Value::Float(0.0)),
-                        [Value::Float(f)] => Ok(Value::Float(*f)),
-                        [Value::Int(n)] => Ok(Value::Float(*n as f64)),
-                        [Value::Bool(b)] => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
-                        [Value::Str(s)] => s.trim().parse::<f64>()
-                            .map(Value::Float)
-                            .map_err(|_| format!("ValueError: invalid literal for float(): '{s}'")),
-                        [other] => Err(format!("TypeError: float() argument must be a number or string, not '{}'", self.type_name(other))),
-                        _ => Err("TypeError: float() takes at most 1 argument".to_string()),
-                    },
-                    "bool" => match vals.as_slice() {
-                        [] => Ok(Value::Bool(false)),
-                        [Value::Bool(b)] => Ok(Value::Bool(*b)),
-                        [Value::Int(n)] => Ok(Value::Bool(*n != 0)),
-                        [Value::Float(f)] => Ok(Value::Bool(*f != 0.0)),
-                        [Value::Str(s)] => Ok(Value::Bool(!s.is_empty())),
-                        [Value::None] => Ok(Value::Bool(false)),
-                        [Value::List(lst)] => Ok(Value::Bool(!lst.borrow().is_empty())),
-                        [_] => Ok(Value::Bool(true)),
-                        _ => Err("TypeError: bool() takes at most 1 argument".to_string()),
-                    },
-                    "uint" => match vals.as_slice() {
-                        [] => Ok(Value::UInt(0)),
-                        [Value::UInt(n)] => Ok(Value::UInt(*n)),
-                        [Value::Int(n)] => Ok(Value::UInt(*n as u64)),
-                        [Value::Bool(b)] => Ok(Value::UInt(if *b { 1 } else { 0 })),
-                        [other] => Err(format!("TypeError: uint() argument must be an integer, not '{}'", self.type_name(other))),
-                        _ => Err("TypeError: uint() takes at most 1 argument".to_string()),
-                    },
-                    "id" => {
-                        // id() はトップレベルの識別子として呼ばれた場合は上で処理される;
-                        // Value::Type("id") 経由で来た場合のフォールバック
-                        if vals.len() != 1 {
-                            return Err("TypeError: id() takes exactly one argument".to_string());
-                        }
-                        let val = vals.into_iter().next().unwrap();
-                        let raw: u64 = match &val {
-                            Value::Instance(rc) => Rc::as_ptr(rc) as u64,
-                            Value::List(rc)     => Rc::as_ptr(rc) as u64,
-                            Value::Dict(rc)     => Rc::as_ptr(rc) as u64,
-                            Value::Function(rc) => Rc::as_ptr(rc) as u64,
-                            Value::OverloadedFn(v) => v.as_ptr() as u64,
-                            Value::Generator(rc)  => Rc::as_ptr(rc) as u64,
-                            Value::GeneratorFn(rc) => Rc::as_ptr(rc) as u64,
-                            Value::Tuple(rc)    => Rc::as_ptr(rc) as u64,
-                            Value::Int(n)  => *n as u64,
-                            Value::UInt(n) => *n,
-                            Value::Float(f) => f.to_bits(),
-                            Value::Bool(b) => *b as u64,
-                            Value::Str(s)  => {
-                                use std::hash::{Hash, Hasher};
-                                let mut h = std::collections::hash_map::DefaultHasher::new();
-                                s.hash(&mut h);
-                                h.finish()
-                            }
-                            Value::None => 0u64,
-                            _ => 0u64,
-                        };
-                        let pointer_cls = match self.get_val("pointer") {
-                            Some(Value::Class(cls)) => cls,
-                            _ => return Err("RuntimeError: 'pointer' type is not defined".to_string()),
-                        };
-                        let mut fields = std::collections::HashMap::new();
-                        fields.insert("value".to_string(), (Value::UInt(raw), true));
-                        Ok(Value::Instance(Rc::new(RefCell::new(
-                            crate::interpreter::InstanceData { class: pointer_cls, fields, immutable: false }
-                        ))))
-                    },
-                    other => Err(format!("TypeError: '{}' object is not callable", other)),
-                }
+                self.call_type_by_name_evaled(&type_name, vals)
             }
             Value::Instance(_) => {
                 self.eval_method_call_evaled(callee, "__call__", evaled)

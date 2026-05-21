@@ -180,7 +180,7 @@ impl Interpreter {
         // let → let: そのまま代入（コピー不要・再フリーズ不要）。
         // 式 → let: フリーズのみ（新規値なのでコピー不要）。
         let source_var = if let Expr::Ident(src) = expr {
-            self.get_var(src).map(|v| (v.mutable, v.mutable_cell.is_some()))
+            self.get_var(src).map(|v| (v.is_mutable(), v.cell().is_some()))
         } else {
             None
         };
@@ -258,7 +258,7 @@ impl Interpreter {
     fn exec_compound_assign(&mut self, name: &str, op: &BinOp, value: &Expr) -> Result<ExecResult, String> {
         let rhs = self.eval(value)?;
         let lhs = match self.get_var(name) {
-            Some(v) if !v.mutable => {
+            Some(v) if !v.is_mutable() => {
                 return Err(format!(
                     "TypeError: cannot assign to immutable variable '{name}'"
                 ));
@@ -936,12 +936,12 @@ impl Interpreter {
     fn exec_freeze(&mut self, name: &str, span: &Span) -> Result<ExecResult, String> {
         let var = self.get_var(name)
             .ok_or_else(|| format!("{span}: NameError: '{name}' is not defined"))?;
-        if !var.mutable {
+        if !var.is_mutable() {
             return Err(format!(
                 "{span}: TypeError: cannot freeze immutable variable '{name}'"
             ));
         }
-        if var.mutable_cell.is_some() {
+        if var.cell().is_some() {
             return Err(format!(
                 "{span}: TypeError: cannot freeze '{name}' because it is captured by a closure"
             ));
@@ -1171,7 +1171,7 @@ impl Interpreter {
             .last()
             .unwrap()
             .iter()
-            .map(|(k, v)| (k.clone(), v.value.clone()))
+            .map(|(k, v)| (k.clone(), v.get_value()))
             .collect();
         self.pop_scope();
         self.in_python_module = prev_in_python;
@@ -1319,7 +1319,7 @@ impl Interpreter {
         for name in &free_vars {
             for scope_idx in (1..n_scopes).rev() {
                 let found = self.scopes[scope_idx].get(name.as_str()).map(|var| {
-                    (var.mutable, var.mutable_cell.clone(), var.get_value())
+                    (var.is_mutable(), var.cell(), var.get_value())
                 });
 
                 if let Some((is_mutable, existing_cell, current_value)) = found {
@@ -1328,8 +1328,9 @@ impl Interpreter {
                             cell
                         } else {
                             let cell = Rc::new(RefCell::new(current_value));
+                            // Upgrade Mutable → Cell so the outer scope shares the same Rc.
                             if let Some(var) = self.scopes[scope_idx].get_mut(name.as_str()) {
-                                var.mutable_cell = Some(cell.clone());
+                                *var = Var::Cell(cell.clone());
                             }
                             cell
                         };

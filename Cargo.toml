@@ -8,6 +8,7 @@ rustpython-parser = "0.4"
 pyo3 = { version = "0.22", features = ["auto-initialize"] }
 libloading = "0.8"
 regex = "1"
+indexmap = "2"
 
 [features]
 default = []

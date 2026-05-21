@@ -660,8 +660,8 @@ impl Interpreter {
             Value::Dict(d) => {
                 let d_ref = d.borrow();
                 let mut new_dict = DictData::new(d_ref.key_type.clone(), d_ref.item_type.clone());
-                for (k, v) in d_ref.keys.iter().zip(d_ref.items.iter()) {
-                    new_dict.set(Self::deep_copy_value(k.clone()), Self::deep_copy_value(v.clone()));
+                for (k, v) in d_ref.all_keys().into_iter().zip(d_ref.all_items()) {
+                    new_dict.set(Self::deep_copy_value(k), Self::deep_copy_value(v));
                 }
                 Value::Dict(Rc::new(RefCell::new(new_dict)))
             }
