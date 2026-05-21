@@ -1263,7 +1263,8 @@ impl TypeChecker {
             }
 
             // --- 副作用のない文 ---
-            Stmt::Pass | Stmt::Break | Stmt::Continue | Stmt::Freeze(..) => {}
+            Stmt::Pass | Stmt::Break | Stmt::Continue | Stmt::Freeze(..)
+            | Stmt::BreakPoint { .. } | Stmt::DebugLet(..) => {}
 
             // --- 例外処理 ---
             Stmt::Try { body, handlers, finally_body } => {
@@ -1420,7 +1421,7 @@ impl TypeChecker {
             }
 
             // --- 関数呼び出し ---
-            Expr::Call { func, args } => self.infer_call(func, args),
+            Expr::Call { func, args, .. } => self.infer_call(func, args),
 
             // --- 識別子 ---
             Expr::Ident(name) => {
@@ -1575,6 +1576,7 @@ impl TypeChecker {
             Expr::Cast { type_name, .. } => {
                 InferredType::from_ann(type_name).unwrap_or(InferredType::Unresolved)
             }
+            Expr::DebugVar(_) => InferredType::Unresolved,
         }
     }
 

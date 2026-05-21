@@ -25,6 +25,8 @@ use crate::ast::{Accessibility, Expr, Param, Stmt};
 
 #[path = "interpreter/scope.rs"]
 mod scope;
+#[path = "interpreter/str_methods.rs"]
+pub(super) mod str_methods;
 #[path = "interpreter/ops.rs"]
 mod ops;
 #[path = "interpreter/exec.rs"]
@@ -45,6 +47,8 @@ pub(self) mod py_interop;
 pub(self) mod native_api;
 #[path = "interpreter/async_mgr.rs"]
 pub(crate) mod async_mgr;
+#[path = "interpreter/debugger.rs"]
+pub(self) mod debugger;
 
 #[cfg(test)]
 #[path = "interpreter/tests.rs"]
@@ -932,6 +936,13 @@ pub struct Interpreter {
     /// ロード済みのネイティブ共有ライブラリ。キーは DLL の絶対パス。
     /// ライブラリはインタープリタの生存期間を通じて保持される（アンロードしない）。
     pub(self) native_libs: HashMap<PathBuf, NativeLibWrapper>,
+    /// デバッガ REPL 内で `let dbg::name = expr` として宣言された一時変数。
+    /// `q`（再開）または `break_point` のスコープ終了時にクリアされる。
+    pub(self) dbg_vars: HashMap<String, Var>,
+    /// Last span successfully extracted from a statement — used as fallback
+    /// when the current statement has no extractable location (e.g. `Stmt::Mut`
+    /// wrapping a bare `Expr::Call(Expr::Ident(...))`).
+    pub(self) dbg_last_span: Option<crate::token::Span>,
 }
 
 impl Interpreter {
@@ -1050,6 +1061,8 @@ impl Interpreter {
             current_class: None,
             trait_field_access: HashMap::new(),
             native_libs: HashMap::new(),
+            dbg_vars: HashMap::new(),
+            dbg_last_span: None,
         }
     }
 

@@ -724,7 +724,7 @@ fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
                     value: convert_expr(&kw.value, filename)?,
                 });
             }
-            Ok(Expr::Call { func: Box::new(func), args })
+            Ok(Expr::Call { func: Box::new(func), args, span: crate::token::Span::unknown() })
         }
 
         py::Expr::Subscript(s) => {

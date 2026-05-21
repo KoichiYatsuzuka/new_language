@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::ast::{Accessibility, BinOp, CallArg, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TemplateParam, TupleTarget, UnaryOp};
-use crate::token::{Span, Spanned, Token};
+use crate::token::{FStrPart, Span, Spanned, Token};
 use crate::python_converter;
 use crate::lexer;
 
@@ -236,9 +236,17 @@ impl Parser {
         match self.current().clone() {
             // `let 変数名 [: 型] = 式` — イミュータブル変数宣言
             // `let x, mut y, _ = expr` — タプルアンパック宣言
+            // `let dbg::name = expr` — デバッガ REPL 内一時変数宣言
             Token::Let => {
                 self.advance();
                 let name = self.expect_ident()?;
+                // `let dbg::varname = expr` — debug namespace declaration
+                if name == "dbg" && *self.current() == Token::ColonColon {
+                    self.advance(); // consume ::
+                    let dbg_name = self.expect_ident()?;
+                    self.eat(&Token::Eq)?;
+                    return Ok(Stmt::DebugLet(dbg_name, self.parse_expr()?));
+                }
                 if *self.current() == Token::Comma {
                     return self.parse_tuple_unpack(TupleTarget::Let(name));
                 }
@@ -304,6 +312,12 @@ impl Parser {
             // `block_return 式` / `loop_yield 式` — block/loop スコープからの脱出
             Token::BlockReturn => { self.advance(); Ok(Stmt::BlockReturn(self.parse_expr()?)) }
             Token::LoopYield   => { self.advance(); Ok(Stmt::LoopYield(self.parse_expr()?)) }
+            // `break_point` — デバッガ REPL を起動して実行を一時停止する
+            Token::BreakPoint => {
+                let span = self.current_span();
+                self.advance();
+                Ok(Stmt::BreakPoint { span })
+            }
             // 制御構文
             Token::If    => self.parse_if_stmt(),
             Token::Match => self.parse_match_stmt(),
@@ -2186,6 +2200,23 @@ impl Parser {
         }
     }
 
+    /// `.attr` コンテキストで属性名を取得する。
+    ///
+    /// 通常の識別子に加えて、メソッド名として使用されるキーワード（`match`, `format`,
+    /// `split` など）も受け付ける。これにより `obj.match(...)` のような呼び出しを許可する。
+    fn expect_attr_name(&mut self) -> Result<String, String> {
+        let name = match self.current().clone() {
+            Token::Ident(s) => s,
+            // Allow any keyword that can also be used as a method name
+            tok => match tok.keyword_str() {
+                Some(s) => s.to_string(),
+                None => return Err(format!("expected attribute name, got `{}`", self.current())),
+            },
+        };
+        self.advance();
+        Ok(name)
+    }
+
     /// 型ガード式（`is` / `is not`）の右辺に書ける型名をパースして文字列で返す。
     ///
     /// 通常の識別子に加えて `None` キーワードも型名として受け付ける。
@@ -2471,6 +2502,7 @@ impl Parser {
         loop {
             match self.current() {
                 Token::LParen => {
+                    let call_span = self.current_span();
                     self.advance(); // `(` を消費
                     let mut args = Vec::new();
                     // 引数リストをパース。キーワード引数（`name=expr`）と位置引数を区別する
@@ -2497,11 +2529,11 @@ impl Parser {
                         }
                     }
                     self.eat(&Token::RParen)?;
-                    expr = Expr::Call { func: Box::new(expr), args };
+                    expr = Expr::Call { func: Box::new(expr), args, span: call_span };
                 }
                 Token::Dot => {
                     self.advance(); // `.` を消費
-                    let attr = self.expect_ident()?;
+                    let attr = self.expect_attr_name()?;
                     expr = Expr::Attr { object: Box::new(expr), attr };
                 }
                 Token::ColonColon => {
@@ -2509,7 +2541,7 @@ impl Parser {
                     self.advance(); // `::` を消費
                     let trait_name = self.expect_ident()?;
                     self.eat(&Token::Dot)?;
-                    let attr = self.expect_ident()?;
+                    let attr = self.expect_attr_name()?;
                     expr = Expr::TraitAccess { object: Box::new(expr), trait_name, attr };
                 }
                 Token::LBracket => {
@@ -2618,6 +2650,44 @@ impl Parser {
         }
     }
 
+    /// f-string パーツ列を文字列連結式（`BinOp::Add`）にデシュガーする。
+    ///
+    /// `f"Hello {name}!"` → `"Hello " + str(name) + "!"`
+    fn desugar_fstring(&mut self, parts: Vec<FStrPart>) -> Result<Expr, String> {
+        if parts.is_empty() {
+            return Ok(Expr::Str(String::new()));
+        }
+        let span = Span::unknown();
+        let mut exprs: Vec<Expr> = Vec::new();
+        for part in parts {
+            match part {
+                FStrPart::Lit(s) => exprs.push(Expr::Str(s)),
+                FStrPart::Expr(src) => {
+                    // Re-lex and re-parse the expression source
+                    let tokens = lexer::Lexer::new(&src, "<fstring>").tokenize();
+                    let mut sub_parser = Parser::new(tokens, None);
+                    let expr = sub_parser.parse_expr()?;
+                    // Wrap in str() call to convert to string
+                    exprs.push(Expr::Call {
+                        func: Box::new(Expr::Ident("str".to_string())),
+                        args: vec![crate::ast::CallArg::Positional(expr)],
+                        span: span.clone(),
+                    });
+                }
+            }
+        }
+        // Fold into left-associative BinOp::Add chain
+        let mut iter = exprs.into_iter();
+        let first = iter.next().unwrap();
+        let result = iter.fold(first, |acc, e| Expr::BinOp {
+            op: BinOp::Add,
+            left: Box::new(acc),
+            right: Box::new(e),
+            span: span.clone(),
+        });
+        Ok(result)
+    }
+
     /// 基本式（リテラル・識別子・括弧式・リスト・辞書）をパースする。
     ///
     /// 先頭トークンに応じて以下を生成する:
@@ -2636,12 +2706,26 @@ impl Parser {
             Token::Int(n)   => { self.advance(); Ok(Expr::Int(n)) }
             Token::Float(f) => { self.advance(); Ok(Expr::Float(f)) }
             Token::Str(s)   => { self.advance(); Ok(Expr::Str(s)) }
+            Token::FStr(parts) => {
+                self.advance();
+                Ok(self.desugar_fstring(parts)?)
+            }
             Token::True     => { self.advance(); Ok(Expr::Bool(true)) }
             Token::False    => { self.advance(); Ok(Expr::Bool(false)) }
             Token::None     => { self.advance(); Ok(Expr::None) }
             Token::Any      => { self.advance(); Ok(Expr::Ident("Any".to_string())) }
             Token::Union    => { self.advance(); Ok(Expr::Ident("Union".to_string())) }
             Token::Option   => { self.advance(); Ok(Expr::Ident("Option".to_string())) }
+            Token::Ident(name) if name == "dbg" => {
+                self.advance();
+                if *self.current() == Token::ColonColon {
+                    self.advance(); // consume ::
+                    let dbg_name = self.expect_ident()?;
+                    Ok(Expr::DebugVar(dbg_name))
+                } else {
+                    Err("ParseError: 'dbg' is a reserved name for the debugger namespace (use dbg::varname)".to_string())
+                }
+            }
             Token::Ident(name) => { self.advance(); Ok(Expr::Ident(name)) }
             Token::SelfType => {
                 if self.class_or_trait_depth == 0 {

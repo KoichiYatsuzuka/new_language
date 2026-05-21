@@ -344,9 +344,10 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             op: op.clone(),
             operand: Box::new(subst_expr(operand, type_map)),
         },
-        Expr::Call { func, args } => Expr::Call {
+        Expr::Call { func, args, span } => Expr::Call {
             func: Box::new(subst_expr(func, type_map)),
             args: args.iter().map(|a| subst_call_arg(a, type_map)).collect(),
+            span: span.clone(),
         },
         Expr::TemplateInstantiate { base, type_args } => Expr::TemplateInstantiate {
             base: Box::new(subst_expr(base, type_map)),
@@ -408,6 +409,7 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             type_name: subst_type(type_name, type_map),
             span: span.clone(),
         },
+        Expr::DebugVar(name) => Expr::DebugVar(name.clone()),
     }
 }
 
@@ -565,5 +567,7 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             return_type: return_type.clone(),
             stmts: subst_stmts(stmts, type_map),
         },
+        Stmt::BreakPoint { span } => Stmt::BreakPoint { span: span.clone() },
+        Stmt::DebugLet(name, e) => Stmt::DebugLet(name.clone(), subst_expr(e, type_map)),
     }
 }

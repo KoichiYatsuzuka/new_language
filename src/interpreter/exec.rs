@@ -31,11 +31,20 @@ use super::{
     GeneratorState, NamespaceData, ModuleState, NativeFnRef, NativeLibWrapper,
     RaisedError, StackFrame,
     RAISE_SENTINEL, GENERATOR_YIELDS, BLOCK_YIELDS, LOOP_DEPTH,
+    debugger::DbgMode,
 };
 
 impl Interpreter {
     /// 文（`Stmt`）を実行して `ExecResult` を返す。各 Stmt バリアントを専用メソッドに委譲する。
     pub fn exec(&mut self, stmt: &Stmt) -> Result<ExecResult, String> {
+        // Step-mode check: pause before this statement if the debugger asked us to.
+        // Skip the check when we're already inside a break_point (would re-enter).
+        if super::debugger::DBG_MODE.with(|m| *m.borrow() != DbgMode::Inactive) {
+            if let Some(span) = self.should_pause_at(stmt) {
+                self.exec_breakpoint(&span)?;
+            }
+        }
+
         match stmt {
             Stmt::Expr(expr) => {
                 self.eval(expr)?;
@@ -153,6 +162,12 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::AsyncAssign { target, stmts, .. } => self.exec_async_assign(target, stmts),
+            Stmt::BreakPoint { span } => self.exec_breakpoint(span),
+            Stmt::DebugLet(name, expr) => {
+                let value = self.eval(expr)?;
+                self.dbg_vars.insert(name.clone(), Var::new(value, false));
+                Ok(ExecResult::Normal)
+            }
         }
     }
 
@@ -1500,7 +1515,7 @@ fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
             collect_refs_expr(right, out);
         }
         Expr::UnaryOp { operand, .. } => collect_refs_expr(operand, out),
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             collect_refs_expr(func, out);
             for arg in args { collect_refs_expr(arg.expr(), out); }
         }

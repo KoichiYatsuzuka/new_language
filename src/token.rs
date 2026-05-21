@@ -62,6 +62,16 @@ pub struct Spanned {
     pub span: Span,
 }
 
+/// f-string (f"...{expr}...") の各セグメント。
+///
+/// - `Lit`  — 補間なしのリテラル文字列部分
+/// - `Expr` — `{...}` で囲まれた式のソーステキスト
+#[derive(Debug, Clone, PartialEq)]
+pub enum FStrPart {
+    Lit(String),
+    Expr(String),
+}
+
 /// 字句解析器が生成する全トークン種別。
 ///
 /// キーワード・演算子・リテラル・識別子・インデント制御トークンなどを網羅する。
@@ -217,6 +227,9 @@ pub enum Token {
     // Assertion
     Assert,
 
+    // Debugger
+    BreakPoint,
+
     // Access modifiers (class body section headers)
     Public,
     Private,
@@ -304,6 +317,8 @@ pub enum Token {
     Int(i64),
     Float(f64),
     Str(String),
+    /// f-string: セグメントのリスト（リテラル文字列 + 補間式ソーステキスト）
+    FStr(Vec<FStrPart>),
 
     // Identifier
     Ident(String),
@@ -387,6 +402,7 @@ impl Token {
             Token::Async => Some("async"),
             Token::Await => Some("await"),
             Token::Assert => Some("assert"),
+            Token::BreakPoint => Some("break_point"),
             Token::Public => Some("public"),
             Token::Private => Some("private"),
             Token::Protected => Some("protected"),
@@ -467,6 +483,7 @@ impl std::fmt::Display for Token {
             Token::Int(n) => write!(f, "{n}"),
             Token::Float(n) => write!(f, "{n}"),
             Token::Str(s) => write!(f, "{s:?}"),
+            Token::FStr(_) => write!(f, "f-string"),
             Token::Ident(s) => write!(f, "{s}"),
             Token::Newline => write!(f, "NEWLINE"),
             Token::Indent => write!(f, "INDENT"),

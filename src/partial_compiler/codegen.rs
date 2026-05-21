@@ -446,6 +446,7 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
         Stmt::ClassDef { .. } | Stmt::TraitDef { .. } | Stmt::NewTypeDef { .. } | Stmt::EnumDef { .. } => false,
         Stmt::Field { .. } => false,
         Stmt::AsyncAssign { .. } => false,
+        Stmt::BreakPoint { .. } | Stmt::DebugLet(..) => false,
     }
 }
 
@@ -463,7 +464,7 @@ fn expr_eligible(expr: &Expr) -> bool {
         Expr::Tuple(items) => items.iter().all(expr_eligible),
         Expr::Dict(pairs) => pairs.iter().all(|(k, v)| expr_eligible(k) && expr_eligible(v)),
         // Calls: positional args only
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             expr_eligible(func)
                 && args.iter().all(|a| match a {
                     CallArg::Positional(e) => expr_eligible(e),
@@ -486,6 +487,8 @@ fn expr_eligible(expr: &Expr) -> bool {
         | Expr::WhileExpr { .. } | Expr::MatchExpr { .. } => false,
         // Cast expressions: ineligible (runtime dispatch required)
         Expr::Cast { .. } => false,
+        // Debug vars: ineligible (REPL only)
+        Expr::DebugVar(_) => false,
     }
 }
 
@@ -798,7 +801,7 @@ fn gen_typed_expr(expr: &Expr, ctx: &mut GenCtx) -> (String, Ty) {
                 (type_h, Ty::Handle)
             }
         }
-        Expr::Call { func, args } => {
+        Expr::Call { func, args, .. } => {
             // For typed intra-module calls, unwrap the returned handle to a raw native value.
             if let Expr::Ident(name) = func.as_ref() {
                 if ctx.is_module_fn(name) && !ctx.is_local(name) {

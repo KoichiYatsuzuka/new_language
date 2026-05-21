@@ -1,6 +1,170 @@
 use std::sync::Arc;
 
-use crate::token::{Span, Spanned, Token};
+use crate::token::{FStrPart, Span, Spanned, Token};
+
+// --- Math string rendering helpers ---
+
+fn to_superscript_char(c: char) -> Option<&'static str> {
+    Some(match c {
+        '0' => "⁰", '1' => "¹", '2' => "²", '3' => "³",
+        '4' => "⁴", '5' => "⁵", '6' => "⁶", '7' => "⁷",
+        '8' => "⁸", '9' => "⁹",
+        'a' => "ᵃ", 'b' => "ᵇ", 'c' => "ᶜ", 'd' => "ᵈ",
+        'e' => "ᵉ", 'f' => "ᶠ", 'g' => "ᵍ", 'h' => "ʰ",
+        'i' => "ⁱ", 'j' => "ʲ", 'k' => "ᵏ", 'l' => "ˡ",
+        'm' => "ᵐ", 'n' => "ⁿ", 'o' => "ᵒ", 'p' => "ᵖ",
+        'r' => "ʳ", 's' => "ˢ", 't' => "ᵗ", 'u' => "ᵘ",
+        'v' => "ᵛ", 'w' => "ʷ", 'x' => "ˣ", 'y' => "ʸ", 'z' => "ᶻ",
+        'A' => "ᴬ", 'B' => "ᴮ", 'D' => "ᴰ", 'E' => "ᴱ", 'G' => "ᴳ",
+        'H' => "ᴴ", 'I' => "ᴵ", 'J' => "ᴶ", 'K' => "ᴷ", 'L' => "ᴸ",
+        'M' => "ᴹ", 'N' => "ᴺ", 'O' => "ᴼ", 'P' => "ᴾ", 'R' => "ᴿ",
+        'T' => "ᵀ", 'U' => "ᵁ", 'V' => "ⱽ", 'W' => "ᵂ",
+        '+' => "⁺", '-' => "⁻", '=' => "⁼", '(' => "⁽", ')' => "⁾",
+        _ => return None,
+    })
+}
+
+fn to_subscript_char(c: char) -> Option<&'static str> {
+    Some(match c {
+        '0' => "₀", '1' => "₁", '2' => "₂", '3' => "₃",
+        '4' => "₄", '5' => "₅", '6' => "₆", '7' => "₇",
+        '8' => "₈", '9' => "₉",
+        'a' => "ₐ", 'e' => "ₑ", 'i' => "ᵢ", 'j' => "ⱼ",
+        'n' => "ₙ", 'o' => "ₒ", 'p' => "ₚ", 'r' => "ᵣ",
+        's' => "ₛ", 't' => "ₜ", 'u' => "ᵤ", 'v' => "ᵥ", 'x' => "ₓ",
+        '+' => "₊", '-' => "₋", '=' => "₌", '(' => "₍", ')' => "₎",
+        _ => return None,
+    })
+}
+
+fn math_command_to_str(name: &str) -> &'static str {
+    match name {
+        "alpha" => "α", "beta" => "β", "gamma" => "γ", "delta" => "δ",
+        "epsilon" => "ε", "zeta" => "ζ", "eta" => "η", "theta" => "θ",
+        "iota" => "ι", "kappa" => "κ", "lambda" => "λ", "mu" => "μ",
+        "nu" => "ν", "xi" => "ξ", "pi" => "π", "rho" => "ρ",
+        "sigma" => "σ", "tau" => "τ", "upsilon" => "υ", "phi" => "φ",
+        "chi" => "χ", "psi" => "ψ", "omega" => "ω",
+        "Alpha" => "Α", "Beta" => "Β", "Gamma" => "Γ", "Delta" => "Δ",
+        "Epsilon" => "Ε", "Theta" => "Θ", "Lambda" => "Λ", "Pi" => "Π",
+        "Sigma" => "Σ", "Phi" => "Φ", "Psi" => "Ψ", "Omega" => "Ω",
+        "times" => "×", "div" => "÷", "pm" => "±", "mp" => "∓",
+        "neq" | "ne" => "≠", "leq" | "le" => "≤", "geq" | "ge" => "≥",
+        "approx" => "≈", "equiv" => "≡", "propto" => "∝",
+        "sqrt" => "√", "infty" => "∞", "partial" => "∂",
+        "cdot" => "·", "ldots" => "…", "cdots" => "⋯",
+        "sum" => "∑", "prod" => "∏", "int" => "∫",
+        "in" => "∈", "notin" => "∉", "subset" => "⊂", "supset" => "⊃",
+        "cup" => "∪", "cap" => "∩", "emptyset" => "∅",
+        "nabla" => "∇", "forall" => "∀", "exists" => "∃",
+        "rightarrow" | "to" => "→", "leftarrow" | "gets" => "←",
+        "Rightarrow" | "implies" => "⇒", "Leftrightarrow" | "iff" => "⟺",
+        "langle" => "⟨", "rangle" => "⟩",
+        _ => "",
+    }
+}
+
+/// LaTeX-like math notation を Unicode に変換する。
+/// `^N` / `^{...}` → 上付き文字, `_N` / `_{...}` → 下付き文字,
+/// `\name` → ギリシャ文字・数学記号。`^{}` / `_{}` 内の `\name` も処理する。
+pub fn render_math_str(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut result = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '^' => {
+                i += 1;
+                if i < chars.len() && chars[i] == '{' {
+                    i += 1;
+                    while i < chars.len() && chars[i] != '}' {
+                        if chars[i] == '\\' {
+                            i += 1;
+                            let name_start = i;
+                            while i < chars.len() && chars[i].is_alphabetic() { i += 1; }
+                            let name: String = chars[name_start..i].iter().collect();
+                            let sym = math_command_to_str(&name);
+                            if sym.is_empty() { result.push('\\'); result.push_str(&name); }
+                            else { for c in sym.chars() { if let Some(s) = to_superscript_char(c) { result.push_str(s); } else { result.push(c); } } }
+                        } else {
+                            let c = chars[i];
+                            if let Some(s) = to_superscript_char(c) { result.push_str(s); }
+                            else { result.push('^'); result.push(c); }
+                            i += 1;
+                        }
+                    }
+                    if i < chars.len() { i += 1; }
+                } else if i < chars.len() {
+                    if chars[i] == '\\' {
+                        i += 1;
+                        let name_start = i;
+                        while i < chars.len() && chars[i].is_alphabetic() { i += 1; }
+                        let name: String = chars[name_start..i].iter().collect();
+                        let sym = math_command_to_str(&name);
+                        if sym.is_empty() { result.push('^'); result.push('\\'); result.push_str(&name); }
+                        else { for c in sym.chars() { result.push_str(to_superscript_char(c).unwrap_or(sym)); } }
+                    } else {
+                        let c = chars[i];
+                        if let Some(s) = to_superscript_char(c) { result.push_str(s); }
+                        else { result.push('^'); result.push(c); }
+                        i += 1;
+                    }
+                }
+            }
+            '_' => {
+                i += 1;
+                if i < chars.len() && chars[i] == '{' {
+                    i += 1;
+                    while i < chars.len() && chars[i] != '}' {
+                        if chars[i] == '\\' {
+                            i += 1;
+                            let name_start = i;
+                            while i < chars.len() && chars[i].is_alphabetic() { i += 1; }
+                            let name: String = chars[name_start..i].iter().collect();
+                            let sym = math_command_to_str(&name);
+                            if sym.is_empty() { result.push('\\'); result.push_str(&name); }
+                            else { for c in sym.chars() { if let Some(s) = to_subscript_char(c) { result.push_str(s); } else { result.push(c); } } }
+                        } else {
+                            let c = chars[i];
+                            if let Some(s) = to_subscript_char(c) { result.push_str(s); }
+                            else { result.push('_'); result.push(c); }
+                            i += 1;
+                        }
+                    }
+                    if i < chars.len() { i += 1; }
+                } else if i < chars.len() {
+                    if chars[i] == '\\' {
+                        i += 1;
+                        let name_start = i;
+                        while i < chars.len() && chars[i].is_alphabetic() { i += 1; }
+                        let name: String = chars[name_start..i].iter().collect();
+                        let sym = math_command_to_str(&name);
+                        if sym.is_empty() { result.push('_'); result.push('\\'); result.push_str(&name); }
+                        else { for c in sym.chars() { result.push_str(to_subscript_char(c).unwrap_or(sym)); } }
+                    } else {
+                        let c = chars[i];
+                        if let Some(s) = to_subscript_char(c) { result.push_str(s); }
+                        else { result.push('_'); result.push(c); }
+                        i += 1;
+                    }
+                }
+            }
+            '\\' => {
+                i += 1;
+                let name_start = i;
+                while i < chars.len() && chars[i].is_alphabetic() {
+                    i += 1;
+                }
+                let name: String = chars[name_start..i].iter().collect();
+                let sym = math_command_to_str(&name);
+                if sym.is_empty() { result.push('\\'); result.push_str(&name); }
+                else { result.push_str(sym); }
+            }
+            c => { result.push(c); i += 1; }
+        }
+    }
+    result
+}
 
 /// ソーステキストの各文字インデックスに対応する `(行番号, 列番号)` を事前計算する。
 ///
@@ -159,6 +323,41 @@ impl Lexer {
             Some('"') | Some('\'') => {
                 let tok = self.lex_string();
                 self.spanned(tok, start)
+            }
+
+            // f"" / r"" / m"" / b"" 単一プレフィックス文字列
+            Some(c) if (c == 'f' || c == 'r' || c == 'm' || c == 'b')
+                && matches!(self.ch1(), Some('"') | Some('\'')) => {
+                self.pos += 1;
+                let tok = match c {
+                    'f' => self.lex_fstring(false),
+                    'r' => Token::Str(self.lex_string_inner(true)),
+                    // Math strings use raw mode so \alpha, \times etc. reach render_math_str intact
+                    'm' => Token::Str(render_math_str(&self.lex_string_inner(true))),
+                    _ => Token::Str(self.lex_string_inner(false)),
+                };
+                self.spanned(tok, start)
+            }
+
+            // fr"" / rf"" 二重プレフィックス（raw f-string）
+            Some(c) if (c == 'f' || c == 'r')
+                && (self.ch1() == Some('f') || self.ch1() == Some('r'))
+                && matches!(self.ch2(), Some('"') | Some('\'')) => {
+                self.pos += 2;
+                let tok = self.lex_fstring(true);
+                self.spanned(tok, start)
+            }
+
+            // $...$ 数学文字列 (LaTeX インライン数式スタイル)
+            Some('$') => {
+                self.pos += 1;
+                let mut s = String::new();
+                while let Some(c) = self.ch() {
+                    if c == '$' { self.pos += 1; break; }
+                    s.push(c);
+                    self.pos += 1;
+                }
+                self.spanned(Token::Str(render_math_str(&s)), start)
             }
 
             // 数字で始まる数値リテラルを解析する
@@ -363,35 +562,20 @@ impl Lexer {
 
     // --- 文字列リテラル ---
 
-    /// 文字列リテラルを解析して `Token::Str` を返す。
+    /// 文字列の内容を読み取って `String` として返す共通ルーティン。
     ///
-    /// シングルクォート・ダブルクォートのどちらでも解析できる。
-    /// 先頭の引用符が 3 つ並んでいる場合はトリプルクォート文字列として
-    /// 複数行にまたがる内容を解析する。
-    ///
-    /// エスケープシーケンス: `\n`, `\t`, `\r`, `\\`, `\'`, `\"`, `\0` を認識する。
-    /// 未知のエスケープは `\` を保持してそのまま追記する。
-    ///
-    /// # 戻り値
-    /// エスケープ処理済みの文字列値を持つ `Token::Str(String)`
-    fn lex_string(&mut self) -> Token {
-        // 先頭の引用符文字を取得し、トリプルクォートか判定する
+    /// `raw=true` のときはバックスラッシュエスケープを処理せずそのまま保持する。
+    /// 呼び出し前に文字列プレフィックス（`r`, `f`, `m` など）は消費済みであること。
+    fn lex_string_inner(&mut self, raw: bool) -> String {
         let quote = self.bump().unwrap();
         let triple = self.ch() == Some(quote) && self.ch1() == Some(quote);
-        if triple {
-            // トリプルクォートの残り 2 文字分を読み飛ばす
-            self.pos += 2;
-        }
+        if triple { self.pos += 2; }
         let mut s = String::new();
-
         loop {
             match self.ch() {
-                // EOF に達した場合はループを抜ける（未閉じ文字列）
                 None => break,
-
-                // バックスラッシュエスケープを処理する
-                Some('\\') => {
-                    self.pos += 1; // `\` を消費する
+                Some('\\') if !raw => {
+                    self.pos += 1;
                     match self.bump() {
                         Some('n')  => s.push('\n'),
                         Some('t')  => s.push('\t'),
@@ -400,42 +584,124 @@ impl Lexer {
                         Some('\'') => s.push('\''),
                         Some('"')  => s.push('"'),
                         Some('0')  => s.push('\0'),
-                        // 未知のエスケープシーケンスはそのまま保持する
-                        Some(c) => {
-                            s.push('\\');
-                            s.push(c);
-                        }
-                        None => break,
+                        Some(c)    => { s.push('\\'); s.push(c); }
+                        None       => break,
                     }
                 }
-
-                // 引用符文字に達した場合：終端判定を行う
+                Some('\\') => {
+                    // raw モード: バックスラッシュをそのまま保持する
+                    s.push('\\');
+                    self.pos += 1;
+                    if let Some(c) = self.ch() { s.push(c); self.pos += 1; }
+                }
                 Some(c) if c == quote => {
                     if triple {
-                        // トリプルクォートの終端は引用符が 3 つ連続する場合のみ
                         if self.ch1() == Some(quote) && self.ch2() == Some(quote) {
                             self.pos += 3;
                             break;
                         } else {
-                            // 引用符 1 つだけなら文字列の一部として追記する
                             s.push(c);
                             self.pos += 1;
                         }
                     } else {
-                        // 通常クォートは 1 つの引用符で終端
                         self.pos += 1;
                         break;
                     }
                 }
-
-                // 通常の文字はそのまま文字列に追記する
-                Some(c) => {
-                    s.push(c);
-                    self.pos += 1;
-                }
+                Some(c) => { s.push(c); self.pos += 1; }
             }
         }
-        Token::Str(s)
+        s
+    }
+
+    /// 通常の文字列リテラル（プレフィックスなし）を解析して `Token::Str` を返す。
+    fn lex_string(&mut self) -> Token {
+        Token::Str(self.lex_string_inner(false))
+    }
+
+    /// f-string を解析して `Token::FStr(Vec<FStrPart>)` を返す。
+    ///
+    /// `{expr}` をリテラル部分と式部分に分割する。
+    /// `{{` / `}}` はエスケープされた `{` / `}` として処理する。
+    /// `raw=true` のときはエスケープを行わない（`fr""` / `rf""`）。
+    fn lex_fstring(&mut self, raw: bool) -> Token {
+        let quote = self.bump().unwrap();
+        let triple = self.ch() == Some(quote) && self.ch1() == Some(quote);
+        if triple { self.pos += 2; }
+        let mut parts: Vec<FStrPart> = Vec::new();
+        let mut lit = String::new();
+        loop {
+            match self.ch() {
+                None => break,
+                Some('\\') if !raw => {
+                    self.pos += 1;
+                    match self.bump() {
+                        Some('n')  => lit.push('\n'),
+                        Some('t')  => lit.push('\t'),
+                        Some('r')  => lit.push('\r'),
+                        Some('\\') => lit.push('\\'),
+                        Some('\'') => lit.push('\''),
+                        Some('"')  => lit.push('"'),
+                        Some('0')  => lit.push('\0'),
+                        Some('{')  => lit.push('{'),
+                        Some('}')  => lit.push('}'),
+                        Some(c)    => { lit.push('\\'); lit.push(c); }
+                        None       => break,
+                    }
+                }
+                Some('\\') => {
+                    lit.push('\\');
+                    self.pos += 1;
+                    if let Some(c) = self.ch() { lit.push(c); self.pos += 1; }
+                }
+                Some('{') if self.ch1() == Some('{') => {
+                    lit.push('{');
+                    self.pos += 2;
+                }
+                Some('{') => {
+                    if !lit.is_empty() {
+                        parts.push(FStrPart::Lit(std::mem::take(&mut lit)));
+                    }
+                    self.pos += 1; // consume {
+                    let mut expr_src = String::new();
+                    let mut depth = 1usize;
+                    while let Some(c) = self.ch() {
+                        match c {
+                            '{' => { depth += 1; expr_src.push(c); self.pos += 1; }
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 { self.pos += 1; break; }
+                                expr_src.push(c);
+                                self.pos += 1;
+                            }
+                            _ => { expr_src.push(c); self.pos += 1; }
+                        }
+                    }
+                    parts.push(FStrPart::Expr(expr_src));
+                }
+                Some('}') if self.ch1() == Some('}') => {
+                    lit.push('}');
+                    self.pos += 2;
+                }
+                Some(c) if c == quote => {
+                    if triple {
+                        if self.ch1() == Some(quote) && self.ch2() == Some(quote) {
+                            self.pos += 3;
+                            break;
+                        } else {
+                            lit.push(c);
+                            self.pos += 1;
+                        }
+                    } else {
+                        self.pos += 1;
+                        break;
+                    }
+                }
+                Some(c) => { lit.push(c); self.pos += 1; }
+            }
+        }
+        if !lit.is_empty() { parts.push(FStrPart::Lit(lit)); }
+        Token::FStr(parts)
     }
 
     // --- 数値リテラル ---
@@ -605,6 +871,7 @@ impl Lexer {
             "block_return" => Token::BlockReturn,
             "loop_yield"   => Token::LoopYield,
             "block"        => Token::Block,
+            "break_point"  => Token::BreakPoint,
             "try"          => Token::Try,
             "except"       => Token::Except,
             "finally"      => Token::Finally,

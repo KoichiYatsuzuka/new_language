@@ -220,6 +220,11 @@ impl Interpreter {
             Expr::Ident(name) => self
                 .get_val(name)
                 .ok_or_else(|| format!("NameError: '{name}' is not defined")),
+            Expr::DebugVar(name) => self
+                .dbg_vars
+                .get(name)
+                .map(|v| v.get_value())
+                .ok_or_else(|| format!("NameError: 'dbg::{name}' is not defined")),
             Expr::TraitAccess { object, trait_name, attr } => {
                 self.eval_trait_access(object, trait_name, attr)
             }
@@ -298,7 +303,7 @@ impl Interpreter {
                 let result = self.value_is_type(&val, type_name);
                 Ok(Value::Bool(if *negated { !result } else { result }))
             }
-            Expr::Call { func, args } => self.eval_call(func, args),
+            Expr::Call { func, args, .. } => self.eval_call(func, args),
             Expr::Cast { object, type_name, .. } => self.eval_cast(object, type_name),
         }
     }

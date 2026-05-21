@@ -1,0 +1,349 @@
+// debugger.rs — break_point REPL and single-step machinery
+//
+// When the interpreter encounters `Stmt::BreakPoint`, it calls
+// `Interpreter::exec_breakpoint()`, which:
+//   1. Prints source context (current line ± 2).
+//   2. Enters a REPL loop reading from stdin.
+//   3. Handles commands: empty (step over), e (step into),
+//      o (step out), q (resume).
+//
+// Step modes are communicated to `exec()` via thread-locals so that
+// checking is cheap and requires no borrow of the interpreter.
+
+use std::cell::RefCell;
+use std::io::{self, Write};
+
+use crate::ast::{Expr, Stmt};
+use crate::lexer::Lexer;
+use crate::parser::Parser;
+use crate::token::Span;
+
+use super::{ExecResult, Interpreter, Value};
+
+// ---------------------------------------------------------------------------
+// Thread-local debugger state
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum DbgMode {
+    /// Normal execution — no stepping.
+    Inactive,
+    /// Pause before the next `exec()` call at the same call-stack depth
+    /// as when the breakpoint fired.
+    StepOver,
+    /// Pause at the first `exec()` call that is *deeper* than the entry depth
+    /// (i.e., we just entered a function).  Falls back to StepOver if no
+    /// function call is made.
+    StepInto,
+    /// Pause when the call-stack depth drops back to `target` (i.e., we have
+    /// returned from the function we were debugging).
+    StepOut { target: usize },
+}
+
+thread_local! {
+    pub(super) static DBG_MODE: RefCell<DbgMode> = RefCell::new(DbgMode::Inactive);
+    /// The call-stack depth at the moment the debugger was last entered.
+    pub(super) static DBG_ENTRY_DEPTH: RefCell<usize> = RefCell::new(0);
+    /// Number of same-depth exec() calls to skip before pausing in StepInto mode.
+    /// Set to 1 when StepInto is activated so the statement-with-the-call runs first.
+    pub(super) static DBG_STEP_INTO_SKIP: RefCell<usize> = RefCell::new(0);
+    /// Whether we are currently inside the REPL (to avoid re-entering).
+    static IN_REPL: RefCell<bool> = RefCell::new(false);
+}
+
+// ---------------------------------------------------------------------------
+// Source context helpers
+// ---------------------------------------------------------------------------
+
+const YELLOW: &str = "\x1b[33m";
+const CYAN:   &str = "\x1b[36m";
+const GREEN:  &str = "\x1b[32m";
+const RESET:  &str = "\x1b[0m";
+
+/// Print up to 2 lines before and 2 lines after `target_line` (1-based)
+/// from the source map, highlighting the target line with `>>`.
+fn print_context(interp: &Interpreter, file: &str, target_line: usize) {
+    if target_line == 0 {
+        println!("  (source location unknown)");
+        return;
+    }
+    let map = &interp.source_map;
+    let lines = match map.get(file) {
+        Some(l) => l,
+        None => {
+            println!("  (no source available for '{file}')");
+            return;
+        }
+    };
+
+    let total = lines.len();
+    let first = target_line.saturating_sub(2);
+    let last = (target_line + 2).min(total);
+
+    for lineno in first..=last {
+        if lineno == 0 || lineno > total { continue; }
+        let text = &lines[lineno - 1];
+        if lineno == target_line {
+            println!("{YELLOW}{lineno:>4}{RESET} {CYAN}>>{RESET} {text}");
+        } else {
+            println!("{YELLOW}{lineno:>4}{RESET}    {text}");
+        }
+    }
+}
+
+/// Try to extract a representative (file, line) from a `Stmt` for display.
+pub(super) fn stmt_location(stmt: &Stmt) -> Option<(String, usize)> {
+    fn from_span(s: &Span) -> Option<(String, usize)> {
+        if s.line == 0 { None } else { Some((s.file.to_string(), s.line)) }
+    }
+    fn from_expr(e: &Expr) -> Option<(String, usize)> {
+        match e {
+            Expr::BinOp { span, .. } => from_span(span),
+            Expr::Cast { span, .. } => from_span(span),
+            Expr::IsType { span, .. } => from_span(span),
+            Expr::Call { span, .. } => from_span(span),
+            _ => None,
+        }
+    }
+    match stmt {
+        Stmt::Assign { span, .. }
+        | Stmt::CompoundAssign { span, .. }
+        | Stmt::Match { span, .. }
+        | Stmt::Raise { span, .. }
+        | Stmt::BreakPoint { span }
+        | Stmt::Freeze(_, span)
+        | Stmt::Static(_, _, span) => from_span(span),
+        Stmt::LetTuple { span, .. } => from_span(span),
+        Stmt::Expr(e) | Stmt::Let(_, e) | Stmt::Mut(_, e) | Stmt::Const(_, e)
+        | Stmt::DebugLet(_, e) => from_expr(e),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// REPL command result
+// ---------------------------------------------------------------------------
+
+enum ReplCmd {
+    StepOver,
+    StepInto,
+    StepOut,
+    Resume,
+}
+
+// ---------------------------------------------------------------------------
+// Debugger REPL
+// ---------------------------------------------------------------------------
+
+impl Interpreter {
+    /// Entry point called from `exec()` for `Stmt::BreakPoint { span }`.
+    /// Also called from the step-check in `exec()` when a step mode fires.
+    pub(super) fn exec_breakpoint(&mut self, span: &Span) -> Result<ExecResult, String> {
+        // Prevent re-entrancy (e.g. if the REPL itself triggers exec_breakpoint)
+        let already_in = IN_REPL.with(|r| *r.borrow());
+        if already_in {
+            return Ok(ExecResult::Normal);
+        }
+
+        IN_REPL.with(|r| *r.borrow_mut() = true);
+
+        // Record this span so statements without spans can fall back to it.
+        self.record_dbg_span(span);
+
+        // -- print header --
+        let file = span.file.to_string();
+        let line = span.line;
+        println!("\n[break_point] Paused at {GREEN}{file}{RESET}:{line}");
+        print_context(self, &file, line);
+        println!("  Commands: <Enter> step | e step-into | o step-out | q resume");
+        println!("  Debug vars: let dbg::x = expr  |  access: dbg::x");
+
+        // Record entry depth for step commands
+        let entry_depth = self.call_stack.len();
+        DBG_ENTRY_DEPTH.with(|d| *d.borrow_mut() = entry_depth);
+
+        let cmd = self.repl_loop();
+
+        // Clear dbg vars when the debugger exits (resume or step)
+        // For step commands we keep them until q is pressed.
+        // We always clear on 'q' (resume).
+        match &cmd {
+            ReplCmd::Resume => {
+                self.dbg_vars.clear();
+                DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::Inactive);
+            }
+            ReplCmd::StepOver => {
+                DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::StepOver);
+            }
+            ReplCmd::StepInto => {
+                DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::StepInto);
+                // Skip the immediate next same-depth exec() call so the
+                // statement containing the function call gets to execute first.
+                DBG_STEP_INTO_SKIP.with(|s| *s.borrow_mut() = 1);
+            }
+            ReplCmd::StepOut => {
+                if entry_depth == 0 {
+                    println!("  [dbg] Not inside a function — cannot step out.");
+                    // Stay in the REPL
+                    IN_REPL.with(|r| *r.borrow_mut() = false);
+                    return self.exec_breakpoint(span);
+                }
+                DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::StepOut { target: entry_depth - 1 });
+            }
+        }
+
+        IN_REPL.with(|r| *r.borrow_mut() = false);
+        Ok(ExecResult::Normal)
+    }
+
+    /// Inner REPL loop: reads lines until a command is entered.
+    fn repl_loop(&mut self) -> ReplCmd {
+        loop {
+            print!("(dbg) ");
+            let _ = io::stdout().flush();
+
+            let mut raw = String::new();
+            if io::stdin().read_line(&mut raw).is_err() {
+                // EOF / broken pipe — resume
+                return ReplCmd::Resume;
+            }
+            let line = raw.trim_end_matches('\n').trim_end_matches('\r').to_string();
+
+            match line.trim() {
+                "" => return ReplCmd::StepOver,
+                "e" => return ReplCmd::StepInto,
+                "o" => return ReplCmd::StepOut,
+                "q" => return ReplCmd::Resume,
+                code => {
+                    if let Err(e) = self.exec_debug_input(code) {
+                        eprintln!("  [dbg] Error: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Parse and execute a single line of debug input.
+    /// Assignments to non-dbg variables are rejected.
+    fn exec_debug_input(&mut self, code: &str) -> Result<(), String> {
+        let tokens = Lexer::new(code, "<debugger>").tokenize();
+        let mut parser = Parser::new(tokens, None);
+        let stmts = parser.parse_program().map_err(|e| e.to_string())?;
+        let stmt = stmts.into_iter().next()
+            .ok_or_else(|| "empty input".to_string())?;
+
+        // Reject mutations of non-debugger variables
+        match &stmt {
+            Stmt::Assign { name, .. } => {
+                return Err(format!(
+                    "assignment to '{name}' is not allowed in the debugger \
+                     (use 'let dbg::name = expr' for temporary variables)"
+                ));
+            }
+            Stmt::Mut(name, _) => {
+                return Err(format!(
+                    "mutation '{name}' is not allowed in the debugger \
+                     (use 'let dbg::name = expr' for temporary variables)"
+                ));
+            }
+            Stmt::CompoundAssign { name, .. } => {
+                return Err(format!(
+                    "compound assignment to '{name}' is not allowed in the debugger"
+                ));
+            }
+            Stmt::AttrAssign { .. } | Stmt::AttrCompoundAssign { .. } => {
+                return Err("attribute assignment is not allowed in the debugger".to_string());
+            }
+            _ => {}
+        }
+
+        match self.exec(&stmt)? {
+            ExecResult::Normal => {}
+            ExecResult::Return(v) => {
+                if !matches!(v, Value::None) {
+                    println!("{}", self.display(&v));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Check whether execution should pause before running `stmt`.
+    /// Called at the start of every `exec()`.  Returns `Some(span)` when we
+    /// should pause, where `span` is the location to show (may be a fallback).
+    pub(super) fn should_pause_at(&self, stmt: &Stmt) -> Option<Span> {
+        let mode = DBG_MODE.with(|m| m.borrow().clone());
+        match mode {
+            DbgMode::Inactive => None,
+            DbgMode::StepOver => {
+                // Only pause at the same depth as when the breakpoint fired.
+                let entry = DBG_ENTRY_DEPTH.with(|d| *d.borrow());
+                if self.call_stack.len() != entry { return None; }
+                Some(self.best_span_for(stmt))
+            }
+            DbgMode::StepInto => {
+                let entry = DBG_ENTRY_DEPTH.with(|d| *d.borrow());
+                let depth = self.call_stack.len();
+                if depth > entry {
+                    // We entered a function — switch to StepOver and pause here.
+                    DBG_ENTRY_DEPTH.with(|d| *d.borrow_mut() = depth);
+                    DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::StepOver);
+                    DBG_STEP_INTO_SKIP.with(|s| *s.borrow_mut() = 0);
+                    Some(self.best_span_for(stmt))
+                } else if depth == entry {
+                    // Same depth: check if we still need to let one statement pass.
+                    let skip = DBG_STEP_INTO_SKIP.with(|s| {
+                        let v = *s.borrow();
+                        if v > 0 { *s.borrow_mut() = v - 1; }
+                        v
+                    });
+                    if skip > 0 {
+                        // Let this statement execute; the function call inside it
+                        // will trigger the depth > entry branch above.
+                        None
+                    } else {
+                        // The statement that was supposed to call a function has
+                        // already run (or had no call). Fall back to step-over.
+                        DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::StepOver);
+                        Some(self.best_span_for(stmt))
+                    }
+                } else {
+                    None
+                }
+            }
+            DbgMode::StepOut { target } => {
+                if self.call_stack.len() <= target {
+                    // We have returned to (or past) the target depth.
+                    DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::StepOver);
+                    DBG_ENTRY_DEPTH.with(|d| *d.borrow_mut() = self.call_stack.len());
+                    Some(self.best_span_for(stmt))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Return the best available `Span` for a statement.
+    /// Falls back to the last successfully-extracted span, then to line 0.
+    fn best_span_for(&self, stmt: &Stmt) -> Span {
+        if let Some((file, line)) = stmt_location(stmt) {
+            return Span { file: file.into(), line, col: 1 };
+        }
+        // Fall back to last known good span (set in exec() after every successful pause).
+        if let Some(ref s) = self.dbg_last_span {
+            return s.clone();
+        }
+        let file = self.source_map.keys().next().cloned().unwrap_or_default();
+        Span { file: file.into(), line: 0, col: 0 }
+    }
+
+    /// Record the span that was just shown, so it can serve as fallback for
+    /// the next statement that has no extractable location.
+    pub(super) fn record_dbg_span(&mut self, span: &Span) {
+        if span.line != 0 {
+            self.dbg_last_span = Some(span.clone());
+        }
+    }
+}

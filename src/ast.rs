@@ -204,7 +204,7 @@ pub enum Expr {
     /// 単項演算 `op operand`（例: `-x`, `not x`, `~x`）。
     UnaryOp { op: UnaryOp, operand: Box<Expr> },
     /// 関数呼び出し `func(args)`。`func` が `TemplateInstantiate` の場合はテンプレート呼び出しになる。
-    Call { func: Box<Expr>, args: Vec<CallArg> },
+    Call { func: Box<Expr>, args: Vec<CallArg>, span: Span },
     /// テンプレート型引数適用: `expr[T1, T2]` — テンプレート値に具体的な型引数を与える。
     /// `Call` 式の `func` として使用する。単独の値としては無効。
     TemplateInstantiate { base: Box<Expr>, type_args: Vec<String> },
@@ -297,6 +297,8 @@ pub enum Expr {
         /// エラー報告に使用する位置情報。
         span: Span,
     },
+    /// デバッガ名前空間アクセス: `dbg::name`。デバッガ REPL 内でのみ有効。
+    DebugVar(String),
 }
 
 /// `match` 文の1アームのパターン部分。
@@ -669,6 +671,10 @@ pub enum Stmt {
         /// スレッドで実行される文リスト。
         stmts: Vec<Stmt>,
     },
+    /// `break_point` — 実行を一時停止してデバッガ REPL を起動する。
+    BreakPoint { span: Span },
+    /// `let dbg::name = expr` — デバッガ REPL 内限定の一時変数宣言。再開時に削除される。
+    DebugLet(String, Expr),
 }
 
 /// `try` 文内の単一の `except` 節を表す。

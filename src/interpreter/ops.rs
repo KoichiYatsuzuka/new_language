@@ -9,6 +9,7 @@ use std::rc::Rc;
 use crate::ast::{BinOp, Param, UnaryOp};
 
 use super::{Interpreter, Value};
+use super::str_methods::percent_format;
 
 /// 関数パラメータリストを `(name: Type, name2)` 形式の文字列に変換する。
 /// `self` パラメータは除外する。
@@ -477,6 +478,19 @@ impl Interpreter {
             (BinOp::Add, Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + *b)),
             (BinOp::Add, Value::Float(a), Value::Int(b)) => Ok(Value::Float(*a + *b as f64)),
             (BinOp::Add, Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{a}{b}"))),
+            // str * int / int * str → repeat
+            (BinOp::Mul, Value::Str(s), Value::Int(n)) => Ok(Value::Str(s.repeat((*n).max(0) as usize))),
+            (BinOp::Mul, Value::Int(n), Value::Str(s)) => Ok(Value::Str(s.repeat((*n).max(0) as usize))),
+            // str % args → printf-style format
+            (BinOp::Mod, Value::Str(fmt), rv) => {
+                let display_fn = |v: &Value| self.display(v);
+                let args: Vec<Value> = match rv {
+                    Value::Tuple(t) => t.all_values().to_vec(),
+                    other => vec![other.clone()],
+                };
+                let result = percent_format(fmt, &args, &display_fn)?;
+                Ok(Value::Str(result))
+            }
             (BinOp::Sub, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a - *b)),
             (BinOp::Sub, Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a - *b)),
             (BinOp::Sub, Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 - *b)),
