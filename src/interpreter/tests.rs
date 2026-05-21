@@ -3042,6 +3042,108 @@ else:
     assert_int(run_get(src, "x"), 100);
 }
 
+#[test]
+fn test_block_return_type_check_ok() {
+    let src = "let x = block ->int:\n    block_return 42\n";
+    assert_int(run_get(src, "x"), 42);
+}
+
+#[test]
+fn test_block_return_type_check_error() {
+    let src = "let x = block ->int:\n    block_return \"hello\"\n";
+    let err = run(src).unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+    assert!(err.contains("'int'"), "expected annotation in error: {err}");
+}
+
+#[test]
+fn test_if_expr_block_return_type_check_ok() {
+    let src = "let x = if True ->str:\n    block_return \"ok\"\nelse:\n    block_return \"no\"\n";
+    assert_str(run_get(src, "x"), "ok");
+}
+
+#[test]
+fn test_if_expr_block_return_type_check_error() {
+    let src = "let x = if True ->str:\n    block_return 42\n";
+    let err = run(src).unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+}
+
+#[test]
+fn test_for_expr_block_return_type_check_ok() {
+    let src = "let x = for i in range(5) ->int:\n    if i == 3:\n        block_return i\n";
+    assert_int(run_get(src, "x"), 3);
+}
+
+#[test]
+fn test_for_expr_block_return_type_check_error() {
+    let src = "let x = for i in range(5) ->int:\n    if i == 3:\n        block_return \"three\"\n";
+    let err = run(src).unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+}
+
+#[test]
+fn test_while_expr_block_return_type_check_ok() {
+    let src = concat!(
+        "mut n = 0\n",
+        "let x = while n < 10 ->int:\n",
+        "    n += 1\n",
+        "    if n == 5:\n",
+        "        block_return n\n",
+    );
+    assert_int(run_get(src, "x"), 5);
+}
+
+#[test]
+fn test_while_expr_block_return_type_check_error() {
+    let src = concat!(
+        "mut n = 0\n",
+        "let x = while n < 10 ->int:\n",
+        "    n += 1\n",
+        "    if n == 5:\n",
+        "        block_return \"five\"\n",
+    );
+    let err = run(src).unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+}
+
+#[test]
+fn test_match_expr_block_return_type_check_ok() {
+    let src = concat!(
+        "let x = match (1) ->str:\n",
+        "    case 1:\n",
+        "        block_return \"one\"\n",
+        "    case _:\n",
+        "        block_return \"other\"\n",
+    );
+    assert_str(run_get(src, "x"), "one");
+}
+
+#[test]
+fn test_match_expr_block_return_type_check_error() {
+    let src = concat!(
+        "let x = match (1) ->str:\n",
+        "    case 1:\n",
+        "        block_return 1\n",
+        "    case _:\n",
+        "        block_return 0\n",
+    );
+    let err = run(src).unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+}
+
+#[test]
+fn test_block_return_option_type_check_ok() {
+    let src = "let x = block ->Option[int]:\n    block_return None\n";
+    assert!(matches!(run_get(src, "x"), Value::None));
+}
+
+#[test]
+fn test_block_return_no_annotation_no_check() {
+    let src = "let x = block:\n    block_return \"anything\"\n";
+    assert_str(run_get(src, "x"), "anything");
+}
+
 // --- enum ---
 
 #[test]

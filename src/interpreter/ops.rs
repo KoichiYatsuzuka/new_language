@@ -102,6 +102,64 @@ impl Interpreter {
         }
     }
 
+    /// ランタイム値が型アノテーション文字列に一致するかを判定する（block_return/loop_yield の型チェック用）。
+    ///
+    /// - `Any` は常に true。
+    /// - `list[T]`, `dict[K,V]` 等はアウター型のみチェック（`list` として扱う）。
+    /// - `Optional[T]` / `Option[T]` は None またはインナー型を受け入れる。
+    /// - `Union[T,U,...]` は各候補のいずれかにマッチすれば true。
+    /// - クラス名・トレイト名は `value_is_type` に委譲する。
+    pub(super) fn value_matches_type_ann(&self, val: &Value, ann: &str) -> bool {
+        match ann {
+            "Any" => true,
+            "None" => matches!(val, Value::None),
+            "int" => matches!(val, Value::Int(_)),
+            "uint" => matches!(val, Value::UInt(_)),
+            "float" => matches!(val, Value::Float(_)),
+            "str" => matches!(val, Value::Str(_)),
+            "bool" => matches!(val, Value::Bool(_)),
+            "list" => matches!(val, Value::List(_)),
+            "dict" => matches!(val, Value::Dict(_)),
+            "tuple" => matches!(val, Value::Tuple(_)),
+            "set" => matches!(val, Value::Set(_)),
+            "function" => matches!(
+                val,
+                Value::Function(_) | Value::OverloadedFn(_) | Value::GeneratorFn(_) | Value::NativeFunction(_)
+            ),
+            _ if ann.starts_with("list[") => matches!(val, Value::List(_)),
+            _ if ann.starts_with("dict[") => matches!(val, Value::Dict(_)),
+            _ if ann.starts_with("set[") => matches!(val, Value::Set(_)),
+            _ if ann.starts_with("tuple[") => matches!(val, Value::Tuple(_)),
+            _ if ann.starts_with("Optional[") || ann.starts_with("Option[") => {
+                if matches!(val, Value::None) {
+                    return true;
+                }
+                let inner_start = ann.find('[').map_or(ann.len(), |i| i + 1);
+                let inner = ann[inner_start..].trim_end_matches(']');
+                self.value_matches_type_ann(val, inner.trim())
+            }
+            _ if ann.starts_with("Union[") => {
+                let inner = ann[6..].trim_end_matches(']');
+                inner.split(',').any(|t| self.value_matches_type_ann(val, t.trim()))
+            }
+            _ => self.value_is_type(val, ann),
+        }
+    }
+
+    /// `block_return` の値の型をアノテーション文字列に対してチェックする。
+    /// 不一致の場合は `Err(TypeError: ...)` を返す。
+    pub(super) fn check_block_return_type(&self, val: &Value, ann: &str) -> Result<(), String> {
+        if self.value_matches_type_ann(val, ann) {
+            Ok(())
+        } else {
+            Err(format!(
+                "TypeError: block_return value has type '{}', but '{}' was expected",
+                self.type_name(val),
+                ann
+            ))
+        }
+    }
+
     /// 値が指定した型名に一致するかを判定する（`is` 型ガードのランタイム検査）。
     ///
     /// - プリミティブ型: `type_name` が `"int"`, `"float"` 等と一致するか確認する。

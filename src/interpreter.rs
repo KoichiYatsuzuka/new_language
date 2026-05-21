@@ -107,6 +107,11 @@ thread_local! {
     /// 現在の for/while ループ（文・式両形式）のネスト深さ。
     /// `break` はこれが 0 のときに実行時エラーを返す。
     pub(self) static LOOP_DEPTH: RefCell<usize> = RefCell::new(0);
+
+    /// block_return / loop_yield のランタイム型チェック用。
+    /// block:/if/for/while/match 式へ入るときに期待型アノテーション文字列を push し、
+    /// 抜けるときに pop する。None は型注釈なし（任意の型を受け入れる）を意味する。
+    pub(self) static BLOCK_RETURN_EXPECTED_TYPE: RefCell<Vec<Option<String>>> = RefCell::new(Vec::new());
 }
 
 // ---------------------------------------------------------------------------

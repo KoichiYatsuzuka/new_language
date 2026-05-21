@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchArm, MatchPattern};
 
-use super::{DictData, ExecResult, FileData, FileOpenModeRust, ByteModeRust, GeneratorState, Interpreter, SliceValue, TupleData, Value, Var, NativeFnRef, RAISE_SENTINEL, BREAK_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH};
+use super::{DictData, ExecResult, FileData, FileOpenModeRust, ByteModeRust, GeneratorState, Interpreter, SliceValue, TupleData, Value, Var, NativeFnRef, RAISE_SENTINEL, BREAK_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH, BLOCK_RETURN_EXPECTED_TYPE};
 
 /// ヘルパー: セットに要素を重複なしで追加する。
 fn set_insert(set: &mut Vec<Value>, item: Value, interp: &Interpreter) {
@@ -277,22 +277,36 @@ impl Interpreter {
             Expr::TemplateInstantiate { .. } => Err(
                 "TemplateError: template expression must be immediately called (e.g. `Func[T](args)`)".to_string()
             ),
-            Expr::Block { stmts, .. } => self.eval_block_expr(stmts),
-            Expr::IfExpr { branches, else_body, .. } => {
-                for (cond, body) in branches {
-                    let val = self.eval(cond)?;
-                    if self.is_truthy(&val) {
-                        return self.eval_capture_block_return(body);
-                    }
-                }
-                if let Some(body) = else_body {
-                    return self.eval_capture_block_return(body);
-                }
-                Ok(Value::None)
+            Expr::Block { stmts, return_type } => {
+                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
+                let result = self.eval_block_expr(stmts);
+                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
+                result
             }
-            Expr::ForExpr { target, iter, body, .. } => self.eval_for_expr(target, iter, body),
-            Expr::WhileExpr { cond, body, .. } => self.eval_while_expr(cond, body),
-            Expr::MatchExpr { subject, arms, .. } => self.eval_match_expr(subject, arms),
+            Expr::IfExpr { branches, else_body, return_type } => {
+                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
+                let result = self.eval_if_expr_body(branches, else_body);
+                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
+                result
+            }
+            Expr::ForExpr { target, iter, body, return_type } => {
+                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
+                let result = self.eval_for_expr(target, iter, body);
+                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
+                result
+            }
+            Expr::WhileExpr { cond, body, return_type } => {
+                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
+                let result = self.eval_while_expr(cond, body);
+                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
+                result
+            }
+            Expr::MatchExpr { subject, arms, return_type } => {
+                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
+                let result = self.eval_match_expr(subject, arms);
+                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
+                result
+            }
             Expr::IsType { expr, negated, type_name, .. } => {
                 let val = self.eval(expr)?;
                 let result = self.value_is_type(&val, type_name);
@@ -1333,6 +1347,24 @@ impl Interpreter {
             Some(v) => Ok(v),
             None => if yields.is_empty() { Ok(Value::None) } else { Ok(Value::List(Rc::new(RefCell::new(yields)))) },
         }
+    }
+
+    /// IfExpr のブランチ評価ロジック。BLOCK_RETURN_EXPECTED_TYPE の push/pop は呼び出し元が行う。
+    fn eval_if_expr_body(
+        &mut self,
+        branches: &[(crate::ast::Expr, Vec<crate::ast::Stmt>)],
+        else_body: &Option<Vec<crate::ast::Stmt>>,
+    ) -> Result<Value, String> {
+        for (cond, body) in branches {
+            let val = self.eval(cond)?;
+            if self.is_truthy(&val) {
+                return self.eval_capture_block_return(body);
+            }
+        }
+        if let Some(body) = else_body {
+            return self.eval_capture_block_return(body);
+        }
+        Ok(Value::None)
     }
 
     /// if / match 式のボディを実行し、BlockReturn シグナルを値として捕捉して返す。

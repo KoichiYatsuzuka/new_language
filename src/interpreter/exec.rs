@@ -30,9 +30,15 @@ use super::{
     FnValue, TemplateFnValue, GeneratorFnValue, TemplateGenFnValue, TemplateClassValue,
     GeneratorState, NamespaceData, ModuleState, NativeFnRef, NativeLibWrapper,
     RaisedError, StackFrame,
-    RAISE_SENTINEL, BREAK_SENTINEL, GENERATOR_YIELDS, BLOCK_YIELDS, LOOP_DEPTH,
+    RAISE_SENTINEL, BREAK_SENTINEL, GENERATOR_YIELDS, BLOCK_YIELDS, LOOP_DEPTH, BLOCK_RETURN_EXPECTED_TYPE,
     debugger::DbgMode,
 };
+
+/// `"list[T]"` からアイテム型 `"T"` を取り出す。`"list"` や他の型は `None` を返す。
+fn extract_list_elem_type(ann: &str) -> Option<&str> {
+    let inner = ann.strip_prefix("list[")?.strip_suffix(']')?;
+    Some(inner.trim())
+}
 
 impl Interpreter {
     /// 文（`Stmt`）を実行して `ExecResult` を返す。各 Stmt バリアントを専用メソッドに委譲する。
@@ -106,6 +112,10 @@ impl Interpreter {
             }
             Stmt::BlockReturn(expr) => {
                 let val = self.eval(expr)?;
+                let expected = BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow().last().cloned().flatten());
+                if let Some(ann) = expected {
+                    self.check_block_return_type(&val, &ann)?;
+                }
                 Ok(ExecResult::BlockReturn(val))
             }
             Stmt::LoopYield(expr) => self.exec_loop_yield(expr),
@@ -277,6 +287,20 @@ impl Interpreter {
 
     fn exec_loop_yield(&mut self, expr: &Expr) -> Result<ExecResult, String> {
         let val = self.eval(expr)?;
+
+        // Type-check the yielded value against the element type from a `->list[T]` annotation.
+        let expected = BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow().last().cloned().flatten());
+        if let Some(ref ann) = expected {
+            if let Some(elem_type) = extract_list_elem_type(ann) {
+                if !self.value_matches_type_ann(&val, elem_type) {
+                    return Err(format!(
+                        "TypeError: loop_yield value has type '{}', but element type '{}' was expected (from ->{})",
+                        self.type_name(&val), elem_type, ann
+                    ));
+                }
+            }
+        }
+
         let mut in_loop_expr = false;
         BLOCK_YIELDS.with(|y| {
             if let Some(yields) = y.borrow_mut().as_mut() {
