@@ -18,6 +18,20 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "test_lang.sendToRepl",
+        "title": "Send to REPL",
+        "category": "test_lang"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "test_lang.sendToRepl",
+        "key": "ctrl+enter",
+        "when": "editorTextFocus && editorLangId == test_lang"
+      }
+    ],
     "languages": [
       {
         "id": "test_lang",

@@ -1232,4 +1232,36 @@ impl Interpreter {
 
         out
     }
+
+    /// Execute one statement in REPL mode.
+    ///
+    /// When `is_last` is true and the statement is a bare expression (`Stmt::Expr`),
+    /// the value is evaluated and returned as a display string (skipping `None`).
+    /// All other statements are executed normally via `exec`.
+    /// Errors are returned as formatted strings instead of terminating the process.
+    pub fn exec_repl_stmt(&mut self, stmt: &crate::ast::Stmt, is_last: bool) -> Result<Option<String>, String> {
+        if is_last {
+            if let crate::ast::Stmt::Expr(expr) = stmt {
+                return match self.eval(expr) {
+                    Ok(val) => Ok(if matches!(val, Value::None) { None } else { Some(self.display(&val)) }),
+                    Err(e) if e == RAISE_SENTINEL => Err(
+                        self.take_current_exception()
+                            .map(|r| Self::format_error_report(&r))
+                            .unwrap_or_else(|| "UnhandledException".to_string())
+                    ),
+                    Err(e) => Err(e),
+                };
+            }
+        }
+        match self.exec(stmt) {
+            Ok(ExecResult::Raise(raised)) => Err(Self::format_error_report(&raised)),
+            Ok(_) => Ok(None),
+            Err(e) if e == RAISE_SENTINEL => Err(
+                self.take_current_exception()
+                    .map(|r| Self::format_error_report(&r))
+                    .unwrap_or_else(|| "UnhandledException".to_string())
+            ),
+            Err(e) => Err(e),
+        }
+    }
 }

@@ -8,6 +8,7 @@ mod lexer;
 mod parser;
 mod partial_compiler;
 mod python_converter;
+mod repl;
 mod token;
 mod type_check;
 
@@ -30,6 +31,8 @@ enum Mode {
     Compile(String),
     /// 標準入力モード: stdin からソースを読み込んで実行する。
     Stdin,
+    /// REPL モード: stdin からブロックを受け取り、インタープリタを維持しながら実行する。
+    Repl,
 }
 
 fn parse_args() -> Mode {
@@ -50,6 +53,7 @@ fn parse_args() -> Mode {
                     std::process::exit(1);
                 });
             }
+            "--repl" => return Mode::Repl,
             _ => {}
         }
         i += 1;
@@ -166,6 +170,10 @@ fn main() {
 
         Mode::Compile(path) => {
             compile_module(&path);
+        }
+
+        Mode::Repl => {
+            repl::run_repl();
         }
     }
 }
