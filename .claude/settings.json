@@ -6,7 +6,8 @@
       "Bash(node node_modules/vsce/out/vsce.js package)",
       "Bash(node node_modules/vsce/out/main.js package)",
       "Bash(Get-ChildItem -Path \"d:\\\\repository\\\\new_language\\\\src\" -File)",
-      "Bash(Select-Object Name)"
+      "Bash(Select-Object Name)",
+      "Bash(Get-ChildItem -Path \"d:\\\\repository\\\\new_language\\\\src\\\\interpreter\" -File -Name)"
     ]
   }
 }

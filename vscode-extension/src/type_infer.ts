@@ -239,10 +239,41 @@ class ExprInferrer {
         return t;
     }
 
+    private parseCastType(): LangType {
+        if (this.cur().kind !== 'IDENT') return 'unknown';
+        let typeName = this.eat().value;
+        if (this.cur().kind === 'LBRACKET') {
+            this.eat();
+            const parts: string[] = [];
+            let depth = 1;
+            while (depth > 0 && this.cur().kind !== 'EOF') {
+                const tok = this.eat();
+                if (tok.kind === 'LBRACKET') { depth++; parts.push('['); }
+                else if (tok.kind === 'RBRACKET') { depth--; if (depth > 0) parts.push(']'); }
+                else { parts.push(tok.value); }
+            }
+            typeName = `${typeName}[${parts.join('')}]`;
+        }
+        return typeName;
+    }
+
+    private parseCast(): LangType {
+        let t = this.parsePower();
+        while (
+            this.cur().kind === 'OTHER' && this.cur().value === '=' &&
+            this.tokens[this.pos + 1]?.kind === 'GT'
+        ) {
+            this.eat(); // eat '='
+            this.eat(); // eat '>'
+            t = this.parseCastType();
+        }
+        return t;
+    }
+
     private parseUnary(): LangType {
         if (this.cur().kind === 'MINUS' || this.cur().kind === 'PLUS') { this.eat(); return this.parseUnary(); }
         if (this.cur().kind === 'TILDE') { this.eat(); this.parseUnary(); return 'int'; }
-        return this.parsePower();
+        return this.parseCast();
     }
 
     private parsePower(): LangType {
@@ -501,6 +532,11 @@ function computeIsNotNarrowedType(declaredType: LangType | undefined, removedTyp
     return undefined;
 }
 
+// Resolve 'Self' to the enclosing class name, if known
+function resolveSelf(type: LangType, enclosingClass: string | undefined): LangType {
+    return type === 'Self' && enclosingClass ? enclosingClass : type;
+}
+
 // Extract per-element types from tuple[T1, T2, ...]; falls back to 'unknown' per slot
 function extractTupleElemTypes(tupleType: LangType, count: number): LangType[] {
     const m = tupleType.match(/^tuple\[(.+)\]$/);
@@ -612,6 +648,7 @@ interface FuncDef {
     defLine: number;
     defIndent: number;
     annotation: LangType | undefined;
+    enclosingClass?: string;
 }
 
 function collectConstructorTypes(document: vscode.TextDocument): Map<string, LangType> {
@@ -628,8 +665,16 @@ function collectConstructorTypes(document: vscode.TextDocument): Map<string, Lan
 
 function collectFuncDefs(document: vscode.TextDocument): FuncDef[] {
     const defs: FuncDef[] = [];
+    const classStack: Array<{ name: string; indent: number }> = [];
     for (let i = 0; i < document.lineCount; i++) {
         const stripped = stripComment(document.lineAt(i).text);
+        if (!stripped.trim()) continue;
+        const lineIndent = (stripped.match(/^(\s*)/)?.[1] ?? '').length;
+        while (classStack.length > 0 && lineIndent <= classStack[classStack.length - 1].indent) {
+            classStack.pop();
+        }
+        const classM = stripped.match(CLASS_DEF_RE);
+        if (classM) { classStack.push({ name: classM[3], indent: (classM[1] ?? '').length }); continue; }
         const m = stripped.match(FUNC_DEF_RE);
         if (!m) continue;
         const [, indentStr, , name, , retAnnotation] = m;
@@ -638,6 +683,7 @@ function collectFuncDefs(document: vscode.TextDocument): FuncDef[] {
             defLine: i,
             defIndent: indentStr.length,
             annotation: parseTypeAnnotation(retAnnotation),
+            enclosingClass: classStack.at(-1)?.name,
         });
     }
     return defs;
@@ -782,13 +828,12 @@ function collectHoverSymbols(document: vscode.TextDocument): HoverSymbol[] {
     const templateParams = collectTemplateParams(document);
 
     for (const def of funcDefs) {
-        funcEnv.set(def.name,
-            def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams)
-        );
+        const rawType = def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams);
+        funcEnv.set(def.name, resolveSelf(rawType, def.enclosingClass));
     }
 
-    // Stack tracking class/trait bodies for access modifier inheritance
-    const classContextStack: Array<{ indent: number; bodyIndent: number; access: 'public' | 'private' | 'protected' }> = [];
+    // Stack tracking class/trait bodies for access modifier inheritance and Self resolution
+    const classContextStack: Array<{ name: string; indent: number; bodyIndent: number; access: 'public' | 'private' | 'protected' }> = [];
 
     for (let i = 0; i < document.lineCount; i++) {
         const raw = document.lineAt(i).text;
@@ -844,7 +889,9 @@ function collectHoverSymbols(document: vscode.TextDocument): HoverSymbol[] {
         const funcMatch = stripped.match(FUNC_DEF_RE);
         if (funcMatch) {
             const [, indentStr, kind, name, params, retAnnotation] = funcMatch;
-            const returnType = cleanTypeAnnotation(retAnnotation) ?? funcEnv.get(name) ?? 'unknown';
+            const enclosingClass = classContextStack.at(-1)?.name;
+            const rawReturnType = cleanTypeAnnotation(retAnnotation) ?? funcEnv.get(name) ?? 'unknown';
+            const returnType = resolveSelf(rawReturnType, enclosingClass);
             symbols.push({
                 name,
                 kind: 'function',
@@ -872,7 +919,7 @@ function collectHoverSymbols(document: vscode.TextDocument): HoverSymbol[] {
                 traits,
                 doc: getDocstringAfter(document, i, indentStr.length),
             });
-            classContextStack.push({ indent: indentStr.length, bodyIndent: -1, access: 'public' });
+            classContextStack.push({ name, indent: indentStr.length, bodyIndent: -1, access: 'public' });
             continue;
         }
 
@@ -1118,9 +1165,8 @@ export function provideInlayHints(
     const funcEnv = collectConstructorTypes(document);
     const templateParams = collectTemplateParams(document);
     for (const def of funcDefs) {
-        funcEnv.set(def.name,
-            def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams)
-        );
+        const rawType = def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams);
+        funcEnv.set(def.name, resolveSelf(rawType, def.enclosingClass));
     }
 
     // Phase 3: inlay hints on function definition lines (only when no annotation)
