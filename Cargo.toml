@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+terminal_size = "0.4"
 rustpython-parser = "0.4"
 pyo3 = { version = "0.22", features = ["auto-initialize"] }
 libloading = "0.8"

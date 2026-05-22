@@ -80,6 +80,116 @@ fn parse_args() -> Mode {
 /// - `ParseError`      : 構文解析に失敗した場合。
 /// - `StaticTypeError` : 静的型検査で1件以上のエラーが検出された場合（全件を改行区切りで返す）。
 /// - 実行時エラー      : インタープリタが `Raise` または内部エラー文字列を返した場合。
+/// ANSI エスケープシーケンスを除去した表示幅を返す。
+fn ansi_display_len(s: &str) -> usize {
+    let mut len = 0;
+    let mut in_escape = false;
+    for c in s.chars() {
+        if in_escape {
+            if c == 'm' { in_escape = false; }
+        } else if c == '\x1b' {
+            in_escape = true;
+        } else {
+            len += 1;
+        }
+    }
+    len
+}
+
+/// ANSI コード付き文字列を視覚的幅 `width` に右パディングする。
+fn ansi_pad(s: &str, width: usize) -> String {
+    let visible = ansi_display_len(s);
+    let pad = if width > visible { width - visible } else { 0 };
+    format!("{}{}", s, " ".repeat(pad))
+}
+
+/// ANSI コード付き文字列をスペース区切りで折り返す。各行の視覚的幅は `budget` 以内。
+fn word_wrap_ansi(s: &str, budget: usize) -> Vec<String> {
+    if budget < 4 {
+        return vec![s.to_string()];
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_len = 0usize;
+    for word in s.split(' ') {
+        let wlen = ansi_display_len(word);
+        if current.is_empty() {
+            current.push_str(word);
+            current_len = wlen;
+        } else if current_len + 1 + wlen <= budget {
+            current.push(' ');
+            current.push_str(word);
+            current_len += 1 + wlen;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+            current_len = wlen;
+        }
+    }
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// 現在のターミナル幅を返す。取得できない場合は 120 を返す。
+fn terminal_width() -> usize {
+    use terminal_size::{terminal_size, Width};
+    terminal_size().map(|(Width(w), _)| w as usize).unwrap_or(120)
+}
+
+/// 静的型エラーをテーブル形式にフォーマットして返す。
+fn format_static_errors(errors: &[type_check::StaticTypeError]) -> String {
+    const R: &str = "\x1b[31m";
+    const Y: &str = "\x1b[33m";
+    const C: &str = "\x1b[1;36m";
+    const X: &str = "\x1b[0m";
+
+    let rows: Vec<(String, String, &str, String)> = errors.iter()
+        .map(|e| (e.file_str(), e.line_col_str(), e.error_type_str(), e.detail_str()))
+        .collect();
+
+    let w1 = rows.iter().map(|(f, _, _, _)| f.len()).max().unwrap_or(0).max("File".len());
+    let w2 = rows.iter().map(|(_, l, _, _)| l.len()).max().unwrap_or(0).max("Line:Col".len());
+    let w3 = "StaticTypeError".len().max("Error Type".len());
+
+    // col separators: 3 × "  " = 6 chars; compute remaining width for message column
+    let fixed = w1 + w2 + w3 + 6;
+    let msg_budget = terminal_width().saturating_sub(fixed).max(20);
+
+    let sep = format!(
+        "{}{}{X}  {}{}{X}  {}{}{X}  {}{}{X}",
+        Y, "─".repeat(w1), Y, "─".repeat(w2), Y, "─".repeat(w3), Y, "─".repeat(msg_budget)
+    );
+    let header = format!(
+        "{}{}{}  {}{}{}  {}{}{}  {}{}{}",
+        C, ansi_pad("File", w1), X,
+        C, ansi_pad("Line:Col", w2), X,
+        C, ansi_pad("Error Type", w3), X,
+        C, "Message", X,
+    );
+
+    // blank prefix for continuation lines (cols 1-3 replaced by spaces)
+    let blank_prefix = format!("{}  {}  {}  ", " ".repeat(w1), " ".repeat(w2), " ".repeat(w3));
+
+    let mut lines = vec![header, sep];
+    for (file, loc, etype, msg) in &rows {
+        let msg_lines = word_wrap_ansi(msg, msg_budget);
+        let first = msg_lines.first().map(String::as_str).unwrap_or("");
+        lines.push(format!(
+            "{}{}{}  {}{}{}  {}{}{}  {}",
+            Y, ansi_pad(file, w1), X,
+            Y, ansi_pad(loc, w2), X,
+            R, ansi_pad(etype, w3), X,
+            first,
+        ));
+        for cont in msg_lines.iter().skip(1) {
+            lines.push(format!("{}{}", blank_prefix, cont));
+        }
+    }
+    format!("\n\n{}\n\n", lines.join("\n"))
+}
+
 fn run_program(source: &str, filename: &str) -> Result<(), String> {
     // --- 字句解析: ソースをトークン列（Vec<Spanned>）に変換する ---
     let tokens = Lexer::new(source, filename).tokenize();
@@ -96,12 +206,7 @@ fn run_program(source: &str, filename: &str) -> Result<(), String> {
     // --- 静的型検査: AST を走査してエラーを収集し、1件でもあれば全件報告して終了する ---
     let type_errors = TypeChecker::check(&stmts);
     if !type_errors.is_empty() {
-        // 複数エラーを改行区切りで結合してまとめて返す
-        let msg = type_errors.iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(msg);
+        return Err(format_static_errors(&type_errors));
     }
 
     // --- インタープリタの初期化とソーステキストの登録 ---

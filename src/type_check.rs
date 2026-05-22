@@ -578,6 +578,115 @@ impl StaticTypeError {
     fn assign_immutable(name: &str, span: Span) -> Self {
         Self { kind: TypeErrorKind::AssignToImmutable { name: name.to_string() }, span: Some(span) }
     }
+
+    /// ファイル名部分を返す（スパンがない場合は `"<unknown>"`）。
+    pub fn file_str(&self) -> String {
+        match &self.span {
+            Some(span) if span.line != 0 && !span.file.is_empty() => span.file.to_string(),
+            _ => "<unknown>".to_string(),
+        }
+    }
+
+    /// 行:列 文字列を返す（スパンがない場合は `"-"`）。
+    pub fn line_col_str(&self) -> String {
+        match &self.span {
+            Some(span) if span.line != 0 => format!("{}:{}", span.line, span.col),
+            _ => "-".to_string(),
+        }
+    }
+
+    /// エラー種別名を返す（常に `"StaticTypeError"`）。
+    pub fn error_type_str(&self) -> &'static str {
+        "StaticTypeError"
+    }
+
+    /// エラー詳細メッセージを返す（ANSI カラーコード付き、エラー種別プレフィックスなし）。
+    pub fn detail_str(&self) -> String {
+        match &self.kind {
+            TypeErrorKind::IncompatibleComparison { lhs, rhs, op } => format!(
+                "cannot compare {} and {} with {}", hl_q(lhs), hl_q(rhs), hl_bt(op)
+            ),
+            TypeErrorKind::AssignToImmutable { name } => format!(
+                "cannot assign to immutable variable {}", hl_q(name)
+            ),
+            TypeErrorKind::CallArgCountMismatch { func_name, expected_min, expected_max, got } => {
+                if expected_min == expected_max {
+                    format!("{} takes {expected_min} argument(s) but {got} were given", hl_q(func_name))
+                } else {
+                    format!("{} takes {expected_min} to {expected_max} argument(s) but {got} were given", hl_q(func_name))
+                }
+            }
+            TypeErrorKind::CallArgTypeMismatch { func_name, param_index, expected, got } => format!(
+                "argument {param_index} of {} expects {} but got {}",
+                hl_q(func_name), hl_q(expected), hl_q(got)
+            ),
+            TypeErrorKind::MissingParamTypeAnn { func_name, param_name } => format!(
+                "parameter {} of function {} is missing a type annotation",
+                hl_q(param_name), hl_q(func_name)
+            ),
+            TypeErrorKind::MissingReturnTypeAnn { func_name } => format!(
+                "function {} is missing a return type annotation", hl_q(func_name)
+            ),
+            TypeErrorKind::UnknownKeywordArg { func_name, arg_name } => format!(
+                "{} has no parameter named {}", hl_q(func_name), hl_q(arg_name)
+            ),
+            TypeErrorKind::NoMatchingOverload { func_name, got, available } => {
+                let avail = available.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ");
+                format!("no overload of {} takes {got} argument(s) (overloads take: {avail})", hl_q(func_name))
+            }
+            TypeErrorKind::SelfTypeMismatch { method, param_name, expected_class, got_class } => format!(
+                "parameter {} of {} expects {} = {} but got {}",
+                hl_q(param_name), hl_q(method), hl_q("Self"), hl_q(expected_class), hl_q(got_class)
+            ),
+            TypeErrorKind::OperationOnAny { op } => format!(
+                "cannot apply {} to {} — explicit downcast required", hl_bt(op), hl_q("Any")
+            ),
+            TypeErrorKind::OperationOnUnion { union_type, op } => format!(
+                "cannot apply {} to {} — explicit downcast required", hl_bt(op), hl_q(union_type)
+            ),
+            TypeErrorKind::IsNotOnNonUnion { var_name, var_type } => format!(
+                "{} type guard on {} requires a Union or Optional type, but got {}",
+                hl_q("is not"), hl_q(var_name), hl_q(var_type)
+            ),
+            TypeErrorKind::CallMutParamWithImmutableArg { func_name, param_name } => format!(
+                "parameter {} of {} expects a mutable argument, but got an immutable value",
+                hl_q(param_name), hl_q(func_name)
+            ),
+            TypeErrorKind::InvalidDecorator { reason } => format!(
+                "invalid decorator: \x1b[1;35m{reason}\x1b[0m"
+            ),
+            TypeErrorKind::TupleUnpackMissingQualifier { name } => format!(
+                "variable {} in tuple unpack requires {} or {} qualifier",
+                hl_q(name), hl_bt("let"), hl_bt("mut")
+            ),
+            TypeErrorKind::TupleUnpackArityMismatch { tuple_len, target_count, has_wildcard } => {
+                if *has_wildcard {
+                    format!("tuple unpack has \x1b[1;35m{target_count}\x1b[0m variable(s) but tuple has only \x1b[1;35m{tuple_len}\x1b[0m element(s)")
+                } else {
+                    format!("tuple unpack expects \x1b[1;35m{target_count}\x1b[0m element(s) but tuple has \x1b[1;35m{tuple_len}\x1b[0m")
+                }
+            }
+            TypeErrorKind::AssignToImmutableField { field_name, class_name } => format!(
+                "cannot assign to immutable field {} of class {}", hl_q(field_name), hl_q(class_name)
+            ),
+            TypeErrorKind::PrivateAccessError { member_name, class_name } => format!(
+                "{} is private and cannot be accessed outside {}", hl_q(member_name), hl_q(class_name)
+            ),
+            TypeErrorKind::ProtectedAccessError { member_name, class_name } => format!(
+                "{} is protected and cannot be accessed outside {} or its subclasses",
+                hl_q(member_name), hl_q(class_name)
+            ),
+            TypeErrorKind::StaticMethodOnInstance { method_name, class_name } => format!(
+                "static method {} must be called on {}, not an instance",
+                hl_q(method_name), hl_bt(class_name)
+            ),
+            TypeErrorKind::BlockReturnInLoopExpr => format!(
+                "{} cannot be used directly in a {} or {} expression body; use {} to accumulate values or nest inside an {} / {} / {} expression",
+                hl_bt("block_return"), hl_bt("for"), hl_bt("while"),
+                hl_bt("loop_yield"), hl_bt("if"), hl_bt("match"), hl_bt("block:")
+            ),
+        }
+    }
 }
 
 /// Wraps `s` in single quotes with magenta+bold ANSI codes: `'value'`
@@ -598,125 +707,11 @@ impl std::fmt::Display for StaticTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         const R: &str = "\x1b[31m";
         const X: &str = "\x1b[0m";
-
-        match &self.span {
-            Some(span) => write!(f, "{span}: ")?,
-            None => write!(f, "\x1b[33m<unknown>\x1b[0m: ")?,
-        }
-        match &self.kind {
-            TypeErrorKind::IncompatibleComparison { lhs, rhs, op } => write!(
-                f,
-                "{R}StaticTypeError{X}: cannot compare {} and {} with {}",
-                hl_q(lhs), hl_q(rhs), hl_bt(op)
-            ),
-            TypeErrorKind::AssignToImmutable { name } => write!(
-                f,
-                "{R}StaticTypeError{X}: cannot assign to immutable variable {}",
-                hl_q(name)
-            ),
-            TypeErrorKind::CallArgCountMismatch { func_name, expected_min, expected_max, got } => {
-                if expected_min == expected_max {
-                    write!(f, "{R}StaticTypeError{X}: {} takes {expected_min} argument(s) but {got} were given", hl_q(func_name))
-                } else {
-                    write!(f, "{R}StaticTypeError{X}: {} takes {expected_min} to {expected_max} argument(s) but {got} were given", hl_q(func_name))
-                }
-            }
-            TypeErrorKind::CallArgTypeMismatch { func_name, param_index, expected, got } => write!(
-                f,
-                "{R}StaticTypeError{X}: argument {param_index} of {} expects {} but got {}",
-                hl_q(func_name), hl_q(expected), hl_q(got)
-            ),
-            TypeErrorKind::MissingParamTypeAnn { func_name, param_name } => write!(
-                f,
-                "{R}StaticTypeError{X}: parameter {} of function {} is missing a type annotation",
-                hl_q(param_name), hl_q(func_name)
-            ),
-            TypeErrorKind::MissingReturnTypeAnn { func_name } => write!(
-                f,
-                "{R}StaticTypeError{X}: function {} is missing a return type annotation",
-                hl_q(func_name)
-            ),
-            TypeErrorKind::UnknownKeywordArg { func_name, arg_name } => write!(
-                f,
-                "{R}StaticTypeError{X}: {} has no parameter named {}",
-                hl_q(func_name), hl_q(arg_name)
-            ),
-            TypeErrorKind::NoMatchingOverload { func_name, got, available } => {
-                let avail = available.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ");
-                write!(
-                    f,
-                    "{R}StaticTypeError{X}: no overload of {} takes {got} argument(s) (overloads take: {avail})",
-                    hl_q(func_name)
-                )
-            }
-            TypeErrorKind::SelfTypeMismatch { method, param_name, expected_class, got_class } => write!(
-                f,
-                "{R}StaticTypeError{X}: parameter {} of {} expects {} = {} but got {}",
-                hl_q(param_name), hl_q(method), hl_q("Self"), hl_q(expected_class), hl_q(got_class)
-            ),
-            TypeErrorKind::OperationOnAny { op } => write!(
-                f,
-                "{R}StaticTypeError{X}: cannot apply {} to {} — explicit downcast required",
-                hl_bt(op), hl_q("Any")
-            ),
-            TypeErrorKind::OperationOnUnion { union_type, op } => write!(
-                f,
-                "{R}StaticTypeError{X}: cannot apply {} to {} — explicit downcast required",
-                hl_bt(op), hl_q(union_type)
-            ),
-            TypeErrorKind::IsNotOnNonUnion { var_name, var_type } => write!(
-                f,
-                "{R}StaticTypeError{X}: {} type guard on {} requires a Union or Optional type, but got {}",
-                hl_q("is not"), hl_q(var_name), hl_q(var_type)
-            ),
-            TypeErrorKind::CallMutParamWithImmutableArg { func_name, param_name } => write!(
-                f,
-                "{R}StaticTypeError{X}: parameter {} of {} expects a mutable argument, but got an immutable value",
-                hl_q(param_name), hl_q(func_name)
-            ),
-            TypeErrorKind::InvalidDecorator { reason } => write!(
-                f,
-                "{R}StaticTypeError{X}: invalid decorator: \x1b[1;35m{reason}\x1b[0m"
-            ),
-            TypeErrorKind::TupleUnpackMissingQualifier { name } => write!(
-                f,
-                "{R}StaticTypeError{X}: variable {} in tuple unpack requires {} or {} qualifier",
-                hl_q(name), hl_bt("let"), hl_bt("mut")
-            ),
-            TypeErrorKind::TupleUnpackArityMismatch { tuple_len, target_count, has_wildcard } => {
-                if *has_wildcard {
-                    write!(f, "{R}StaticTypeError{X}: tuple unpack has \x1b[1;35m{target_count}\x1b[0m variable(s) but tuple has only \x1b[1;35m{tuple_len}\x1b[0m element(s)")
-                } else {
-                    write!(f, "{R}StaticTypeError{X}: tuple unpack expects \x1b[1;35m{target_count}\x1b[0m element(s) but tuple has \x1b[1;35m{tuple_len}\x1b[0m")
-                }
-            }
-            TypeErrorKind::AssignToImmutableField { field_name, class_name } => write!(
-                f,
-                "{R}StaticTypeError{X}: cannot assign to immutable field {} of class {}",
-                hl_q(field_name), hl_q(class_name)
-            ),
-            TypeErrorKind::PrivateAccessError { member_name, class_name } => write!(
-                f,
-                "{R}StaticTypeError{X}: {} is private and cannot be accessed outside {}",
-                hl_q(member_name), hl_q(class_name)
-            ),
-            TypeErrorKind::ProtectedAccessError { member_name, class_name } => write!(
-                f,
-                "{R}StaticTypeError{X}: {} is protected and cannot be accessed outside {} or its subclasses",
-                hl_q(member_name), hl_q(class_name)
-            ),
-            TypeErrorKind::StaticMethodOnInstance { method_name, class_name } => write!(
-                f,
-                "{R}StaticTypeError{X}: static method {} must be called on {}, not an instance",
-                hl_q(method_name), hl_bt(class_name)
-            ),
-            TypeErrorKind::BlockReturnInLoopExpr => write!(
-                f,
-                "{R}StaticTypeError{X}: {} cannot be used directly in a {} or {} expression body; use {} to accumulate values or nest inside an {} / {} / {} expression",
-                hl_bt("block_return"), hl_bt("for"), hl_bt("while"),
-                hl_bt("loop_yield"), hl_bt("if"), hl_bt("match"), hl_bt("block:")
-            ),
-        }
+        let loc = match &self.span {
+            Some(span) => format!("{span}"),
+            None => "\x1b[33m<unknown>\x1b[0m".to_string(),
+        };
+        write!(f, "{loc}: {R}StaticTypeError{X}: {}", self.detail_str())
     }
 }
 
