@@ -329,6 +329,7 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 
 ## Major Unimplemented Features
 
+- `block_return` directly in a `for`/`while` expression body is a `StaticTypeError`; it is valid only when nested inside an `if`/`match`/`block:` expression within the loop body
 - Mixing check: `block_return` and `loop_yield` in the same block expression (currently not statically detected)
 - Native compilation: closures (inner functions capturing outer variables), generators, `try`/`raise`, `block_return`/`loop_yield`, and `static mut` are not yet supported in compiled functions
 - Python implementation: async tasks (`<-`), `import[py]`/`import[py-int]` modules, and full `import`/`from … import` resolution are not yet complete

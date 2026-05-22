@@ -110,7 +110,7 @@ impl Interpreter {
                 };
                 Ok(ExecResult::Return(val))
             }
-            Stmt::BlockReturn(expr) => {
+            Stmt::BlockReturn(expr, _span) => {
                 let val = self.eval(expr)?;
                 let expected = BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow().last().cloned().flatten());
                 if let Some(ann) = expected {
@@ -1503,7 +1503,7 @@ fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
             collect_refs_expr(target, out);
             collect_refs_expr(value, out);
         }
-        Stmt::Return(Some(e)) | Stmt::BlockReturn(e) | Stmt::LoopYield(e) | Stmt::Yield(e) => {
+        Stmt::Return(Some(e)) | Stmt::BlockReturn(e, _) | Stmt::LoopYield(e) | Stmt::Yield(e) => {
             collect_refs_expr(e, out);
         }
         Stmt::Raise { exc: Some(e), .. } => collect_refs_expr(e, out),

@@ -534,6 +534,10 @@ pub enum TypeErrorKind {
         /// メソッドを所有するクラス名
         class_name: String,
     },
+    /// `block_return` を `for` または `while` 式の直接本体内で使用した。
+    /// `for`/`while` 式の直接本体では `loop_yield` を使用する必要がある。
+    /// `block_return` は `for`/`while` 内にネストされた `if`/`match`/`block:` 式の中でのみ有効。
+    BlockReturnInLoopExpr,
 }
 
 // ---------------------------------------------------------------------------
@@ -706,6 +710,12 @@ impl std::fmt::Display for StaticTypeError {
                 "{R}StaticTypeError{X}: static method {} must be called on {}, not an instance",
                 hl_q(method_name), hl_bt(class_name)
             ),
+            TypeErrorKind::BlockReturnInLoopExpr => write!(
+                f,
+                "{R}StaticTypeError{X}: {} cannot be used directly in a {} or {} expression body; use {} to accumulate values or nest inside an {} / {} / {} expression",
+                hl_bt("block_return"), hl_bt("for"), hl_bt("while"),
+                hl_bt("loop_yield"), hl_bt("if"), hl_bt("match"), hl_bt("block:")
+            ),
         }
     }
 }
@@ -763,6 +773,10 @@ pub struct TypeChecker {
     current_fn_name: Option<String>,
     /// 現在型検査中のクラス名。クラス本体内での `self.<field>` 代入検査に使用する。
     current_class_name: Option<String>,
+    /// `for`/`while` 式の直接本体内にいる深さ。
+    /// 正値のとき `block_return` は静的エラーとなる。
+    /// `if`/`match`/`block:` 式に入ると 0 にリセットされ、関数定義でも 0 にリセットされる。
+    block_return_forbidden_depth: usize,
     /// 収集された型エラーのリスト。
     pub errors: Vec<StaticTypeError>,
 }
@@ -817,6 +831,7 @@ impl TypeChecker {
             class_static_methods: HashMap::new(),
             current_fn_name: None,
             current_class_name: None,
+            block_return_forbidden_depth: 0,
             errors: Vec::new(),
         }
     }
@@ -1444,7 +1459,10 @@ impl TypeChecker {
                 }
                 let prev_fn = self.current_fn_name.take();
                 self.current_fn_name = Some(name.clone());
+                let saved_depth = self.block_return_forbidden_depth;
+                self.block_return_forbidden_depth = 0;
                 self.check_stmts(body);
+                self.block_return_forbidden_depth = saved_depth;
                 self.current_fn_name = prev_fn;
                 self.pop_scope();
             }
@@ -1478,8 +1496,16 @@ impl TypeChecker {
                     self.infer(e);
                 }
             }
-            Stmt::BlockReturn(expr) | Stmt::LoopYield(expr) | Stmt::Yield(expr) => {
-                // block_return / loop_yield / yield: 値式を推論する。
+            Stmt::BlockReturn(expr, span) => {
+                if self.block_return_forbidden_depth > 0 {
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::BlockReturnInLoopExpr,
+                        span: Some(span.clone()),
+                    });
+                }
+                self.infer(expr);
+            }
+            Stmt::LoopYield(expr) | Stmt::Yield(expr) => {
                 self.infer(expr);
             }
 
@@ -1525,7 +1551,10 @@ impl TypeChecker {
                         .unwrap_or(InferredType::Unresolved);
                     self.declare(param.name.clone(), ty, param.mutable);
                 }
+                let saved_depth = self.block_return_forbidden_depth;
+                self.block_return_forbidden_depth = 0;
                 self.check_stmts(body);
+                self.block_return_forbidden_depth = saved_depth;
                 self.pop_scope();
             }
 
@@ -1842,10 +1871,13 @@ impl TypeChecker {
                 InferredType::Bool
             }
             Expr::Block { stmts, return_type } => {
-                // block: 式: ボディを独立したスコープで検査する。
+                // block: 式は block_return を吸収する: 外側の for/while 式の直接本体フラグをリセット。
+                let saved_depth = self.block_return_forbidden_depth;
+                self.block_return_forbidden_depth = 0;
                 self.push_scope();
                 self.check_stmts(stmts);
                 self.pop_scope();
+                self.block_return_forbidden_depth = saved_depth;
                 if let Some(t) = return_type {
                     InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
                 } else {
@@ -1853,6 +1885,9 @@ impl TypeChecker {
                 }
             }
             Expr::IfExpr { branches, else_body, return_type } => {
+                // if 式は block_return を吸収する: 外側の for/while 式の直接本体フラグをリセット。
+                let saved_depth = self.block_return_forbidden_depth;
+                self.block_return_forbidden_depth = 0;
                 for (cond, body) in branches {
                     self.infer(cond);
                     self.push_scope();
@@ -1864,6 +1899,7 @@ impl TypeChecker {
                     self.check_stmts(body);
                     self.pop_scope();
                 }
+                self.block_return_forbidden_depth = saved_depth;
                 if let Some(t) = return_type {
                     InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
                 } else {
@@ -1872,9 +1908,12 @@ impl TypeChecker {
             }
             Expr::ForExpr { iter, body, return_type, .. } => {
                 self.infer(iter);
+                // for 式の直接本体では block_return は禁止。
+                self.block_return_forbidden_depth += 1;
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
+                self.block_return_forbidden_depth -= 1;
                 if let Some(t) = return_type {
                     InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
                 } else {
@@ -1883,9 +1922,12 @@ impl TypeChecker {
             }
             Expr::WhileExpr { cond, body, return_type } => {
                 self.infer(cond);
+                // while 式の直接本体では block_return は禁止。
+                self.block_return_forbidden_depth += 1;
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
+                self.block_return_forbidden_depth -= 1;
                 if let Some(t) = return_type {
                     InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
                 } else {
@@ -1893,6 +1935,9 @@ impl TypeChecker {
                 }
             }
             Expr::MatchExpr { subject, arms, return_type } => {
+                // match 式は block_return を吸収する: 外側の for/while 式の直接本体フラグをリセット。
+                let saved_depth = self.block_return_forbidden_depth;
+                self.block_return_forbidden_depth = 0;
                 self.infer(subject);
                 for arm in arms {
                     if let crate::ast::MatchPattern::Case(e) = &arm.pattern { self.infer(e); }
@@ -1900,6 +1945,7 @@ impl TypeChecker {
                     self.check_stmts(&arm.body);
                     self.pop_scope();
                 }
+                self.block_return_forbidden_depth = saved_depth;
                 if let Some(t) = return_type {
                     InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
                 } else {

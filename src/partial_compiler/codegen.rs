@@ -439,7 +439,7 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
         }
         // Ineligible
         Stmt::LetTuple { .. } => false, // not yet supported in native compilation
-        Stmt::Yield(_) | Stmt::BlockReturn(_) | Stmt::LoopYield(_) => false,
+        Stmt::Yield(_) | Stmt::BlockReturn(_, _) | Stmt::LoopYield(_) => false,
         Stmt::FnDef { .. } | Stmt::GenDef { .. } => false, // closures
         Stmt::Try { .. } | Stmt::Raise { .. } => false,
         Stmt::Static(..) | Stmt::Import { .. } | Stmt::FromImport { .. } => false,

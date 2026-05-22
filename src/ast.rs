@@ -455,7 +455,7 @@ pub enum Stmt {
     /// `pass` — 何もしない空文。構文上ボディが必要な箇所に使用する。
     Pass,
     /// `block_return expr` — `block:` スコープから値を返却して即座に抜ける。
-    BlockReturn(Expr),
+    BlockReturn(Expr, Span),
     /// `loop_yield expr` — `for`/`while` 式内から値を産出してリストに蓄積する。for/while 式の外では実行時エラー。
     LoopYield(Expr),
     /// `yield expr` — ジェネレータ関数内での値産出。

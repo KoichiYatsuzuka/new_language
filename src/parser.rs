@@ -310,7 +310,11 @@ impl Parser {
                 }
             }
             // `block_return 式` / `loop_yield 式` — block/loop スコープからの脱出
-            Token::BlockReturn => { self.advance(); Ok(Stmt::BlockReturn(self.parse_expr()?)) }
+            Token::BlockReturn => {
+                let span = self.current_span();
+                self.advance();
+                Ok(Stmt::BlockReturn(self.parse_expr()?, span))
+            }
             Token::LoopYield   => { self.advance(); Ok(Stmt::LoopYield(self.parse_expr()?)) }
             // `break_point` — デバッガ REPL を起動して実行を一時停止する
             Token::BreakPoint => {

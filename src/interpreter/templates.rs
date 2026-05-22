@@ -475,7 +475,7 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         Stmt::Break => Stmt::Break,
         Stmt::Continue => Stmt::Continue,
         Stmt::Pass => Stmt::Pass,
-        Stmt::BlockReturn(e) => Stmt::BlockReturn(subst_expr(e, type_map)),
+        Stmt::BlockReturn(e, span) => Stmt::BlockReturn(subst_expr(e, type_map), span.clone()),
         Stmt::LoopYield(e) => Stmt::LoopYield(subst_expr(e, type_map)),
         Stmt::Yield(e) => Stmt::Yield(subst_expr(e, type_map)),
         Stmt::GenDef { name, template_params, params, yield_type, body, access } => Stmt::GenDef {
