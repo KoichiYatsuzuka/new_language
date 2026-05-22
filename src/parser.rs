@@ -2065,7 +2065,33 @@ impl Parser {
         if base == "function" {
             return self.parse_function_type_ann();
         }
-        // Skip optional generic parameters: list[int], dict[str, int], etc.
+        // list[T] — preserve element type
+        if base == "list" && *self.current() == Token::LBracket {
+            self.advance(); // consume '['
+            let elem = self.parse_type_expr()?;
+            if *self.current() == Token::Comma { self.advance(); }
+            self.eat(&Token::RBracket)?;
+            return Ok(format!("list[{elem}]"));
+        }
+        // set[T] — preserve element type
+        if base == "set" && *self.current() == Token::LBracket {
+            self.advance(); // consume '['
+            let elem = self.parse_type_expr()?;
+            if *self.current() == Token::Comma { self.advance(); }
+            self.eat(&Token::RBracket)?;
+            return Ok(format!("set[{elem}]"));
+        }
+        // dict[K, V] — preserve key and value types
+        if base == "dict" && *self.current() == Token::LBracket {
+            self.advance(); // consume '['
+            let key = self.parse_type_expr()?;
+            if *self.current() == Token::Comma { self.advance(); }
+            let val = self.parse_type_expr()?;
+            if *self.current() == Token::Comma { self.advance(); }
+            self.eat(&Token::RBracket)?;
+            return Ok(format!("dict[{key},{val}]"));
+        }
+        // Skip optional generic parameters for all other types (custom classes, etc.)
         if *self.current() == Token::LBracket {
             self.advance();
             let mut depth = 1usize;
@@ -3220,7 +3246,7 @@ mod tests {
             let init = body.iter().find(|s| matches!(s, Stmt::FnDef { name, .. } if name == "__init__"));
             assert!(init.is_some(), "auto __init__ should be present for required fields");
             if let Some(Stmt::FnDef { params, .. }) = init {
-                assert_eq!(params[1].type_ann.as_deref(), Some("list"));
+                assert_eq!(params[1].type_ann.as_deref(), Some("list[int]"));
             }
         } else {
             panic!("expected ClassDef");

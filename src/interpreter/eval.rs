@@ -1636,6 +1636,14 @@ impl Interpreter {
             "str" => matches!(val, Value::Str(_)),
             "bool" => matches!(val, Value::Bool(_)),
             "None" => matches!(val, Value::None),
+            "list" => matches!(val, Value::List(_)),
+            "dict" => matches!(val, Value::Dict(_)),
+            "set" => matches!(val, Value::Set(_)),
+            "tuple" => matches!(val, Value::Tuple(_)),
+            _ if type_name.starts_with("list[") => matches!(val, Value::List(_)),
+            _ if type_name.starts_with("dict[") => matches!(val, Value::Dict(_)),
+            _ if type_name.starts_with("set[") => matches!(val, Value::Set(_)),
+            _ if type_name.starts_with("tuple[") => matches!(val, Value::Tuple(_)),
             _ => {
                 if let Value::Instance(inst) = val {
                     inst.borrow().class.name == type_name

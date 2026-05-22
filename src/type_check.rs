@@ -37,8 +37,10 @@ pub enum InferredType {
     Bool,
     /// ヌル型（`None`）
     None,
-    /// リスト型（`list`）。要素型は現時点では追跡しない。
+    /// リスト型（bare `list`、要素型不明）。`list[T]` を受け付けるパラメータにも使用する。
     List,
+    /// 要素型が既知のリスト型（`list[T]`）。
+    ListOf(Box<InferredType>),
     /// 型そのものを値として保持する型（bare `type` アノテーション、制約なし）。
     TypeVal,
     /// 特定の型に制約された型値（`type[T]` アノテーション）。
@@ -55,10 +57,14 @@ pub enum InferredType {
     /// `Union[T1, T2, ...]` または `Option[T]`（`Union[T, None]` に脱糖される）。
     /// 使用前に明示的なダウンキャストが必要。
     Union(Vec<InferredType>),
-    /// 辞書型（型付き・型なし共通）。
+    /// 辞書型（bare `dict`、キー・値型不明）。
     Dict,
-    /// セット型（重複なしコレクション）。要素型は現時点では追跡しない。
+    /// キー型と値型が既知の辞書型（`dict[K, V]`）。
+    DictOf(Box<InferredType>, Box<InferredType>),
+    /// セット型（bare `set`、要素型不明）。
     Set,
+    /// 要素型が既知のセット型（`set[T]`）。
+    SetOf(Box<InferredType>),
     /// 各要素の型が既知のタプル型 `tuple[T1, T2, ...]`。
     /// `Vec` の各要素がタプルの各フィールドの型に対応する。
     Tuple(Vec<InferredType>),
@@ -139,13 +145,28 @@ impl InferredType {
             return InferredType::from_ann(inner.trim())
                 .map(|t| Self::Union(vec![t, Self::None]));
         }
-        if ann.strip_prefix("list[").and_then(|s| s.strip_suffix(']')).is_some() {
-            return Some(Self::List);
+        if let Some(inner) = ann.strip_prefix("list[").and_then(|s| s.strip_suffix(']')) {
+            return Some(match InferredType::from_ann(inner.trim()) {
+                Some(t) => Self::ListOf(Box::new(t)),
+                None => Self::List,
+            });
         }
-        if ann.strip_prefix("set[").and_then(|s| s.strip_suffix(']')).is_some() {
-            return Some(Self::Set);
+        if let Some(inner) = ann.strip_prefix("set[").and_then(|s| s.strip_suffix(']')) {
+            return Some(match InferredType::from_ann(inner.trim()) {
+                Some(t) => Self::SetOf(Box::new(t)),
+                None => Self::Set,
+            });
         }
-        if ann.strip_prefix("dict[").and_then(|s| s.strip_suffix(']')).is_some() {
+        if let Some(inner) = ann.strip_prefix("dict[").and_then(|s| s.strip_suffix(']')) {
+            let parts = split_top_level_commas(inner);
+            if parts.len() >= 2 {
+                if let (Some(k), Some(v)) = (
+                    InferredType::from_ann(parts[0].trim()),
+                    InferredType::from_ann(parts[1].trim()),
+                ) {
+                    return Some(Self::DictOf(Box::new(k), Box::new(v)));
+                }
+            }
             return Some(Self::Dict);
         }
         if let Some(inner) = ann.strip_prefix("tuple[").and_then(|s| s.strip_suffix(']')) {
@@ -307,8 +328,11 @@ impl std::fmt::Display for InferredType {
             Self::Bool => write!(f, "bool"),
             Self::None => write!(f, "None"),
             Self::List => write!(f, "list"),
+            Self::ListOf(t) => write!(f, "list[{t}]"),
             Self::Dict => write!(f, "dict"),
+            Self::DictOf(k, v) => write!(f, "dict[{k},{v}]"),
             Self::Set => write!(f, "set"),
+            Self::SetOf(t) => write!(f, "set[{t}]"),
             Self::TypeVal => write!(f, "type"),
             Self::TypeValOf(inner) => write!(f, "type[{inner}]"),
             Self::SelfType => write!(f, "Self"),
@@ -1642,8 +1666,34 @@ impl TypeChecker {
             Expr::Str(_) => InferredType::Str,
             Expr::Bool(_) => InferredType::Bool,
             Expr::None => InferredType::None,
-            Expr::List(_) => InferredType::List,
-            Expr::Set(_) => InferredType::Set,
+            Expr::List(elems) => {
+                // 全要素の型を推論し、全て同じ型であれば ListOf(T) を返す。
+                // 空リストや型が混在する場合は bare List を返す。
+                if elems.is_empty() {
+                    InferredType::List
+                } else {
+                    let types: Vec<InferredType> = elems.iter().map(|e| self.infer(e)).collect();
+                    let first = &types[0];
+                    if *first != InferredType::Unresolved && types.iter().all(|t| t == first) {
+                        InferredType::ListOf(Box::new(first.clone()))
+                    } else {
+                        InferredType::List
+                    }
+                }
+            }
+            Expr::Set(elems) => {
+                if elems.is_empty() {
+                    InferredType::Set
+                } else {
+                    let types: Vec<InferredType> = elems.iter().map(|e| self.infer(e)).collect();
+                    let first = &types[0];
+                    if *first != InferredType::Unresolved && types.iter().all(|t| t == first) {
+                        InferredType::SetOf(Box::new(first.clone()))
+                    } else {
+                        InferredType::Set
+                    }
+                }
+            }
             Expr::Tuple(exprs) => {
                 // タプルリテラル: 各要素を推論して Tuple 型として返す。
                 let types: Vec<InferredType> = exprs.iter().map(|e| self.infer(e)).collect();
@@ -1753,7 +1803,25 @@ impl TypeChecker {
             }
 
             // --- 辞書・サブスクリプト ---
-            Expr::Dict(_) => InferredType::Dict,
+            Expr::Dict(pairs) => {
+                if pairs.is_empty() {
+                    InferredType::Dict
+                } else {
+                    let key_types: Vec<InferredType> = pairs.iter().map(|(k, _)| self.infer(k)).collect();
+                    let val_types: Vec<InferredType> = pairs.iter().map(|(_, v)| self.infer(v)).collect();
+                    let first_k = &key_types[0];
+                    let first_v = &val_types[0];
+                    if *first_k != InferredType::Unresolved
+                        && *first_v != InferredType::Unresolved
+                        && key_types.iter().all(|t| t == first_k)
+                        && val_types.iter().all(|t| t == first_v)
+                    {
+                        InferredType::DictOf(Box::new(first_k.clone()), Box::new(first_v.clone()))
+                    } else {
+                        InferredType::Dict
+                    }
+                }
+            }
             Expr::Subscript { object, index } => {
                 // サブスクリプト（`expr[index]`）: 要素型の追跡は未実装のため Unresolved を返す。
                 self.infer(object);
@@ -1877,9 +1945,28 @@ impl TypeChecker {
                 _ => false,
             };
         }
-        // Union パラメータ: 引数が Union の直接メンバかどうかを確認する。
+        // list / set / dict サブタイプ規則:
+        //   - list[T] は list を満たす（具体型は汎用型の部分型）
+        //   - list は list[T] を満たす（要素型不明のため寛容に受け入れる）
+        //   - list[T] は list[U] を満たす iff type_matches(T, U)
+        match (arg_ty, expected) {
+            (InferredType::ListOf(_), InferredType::List) => return true,
+            (InferredType::List, InferredType::ListOf(_)) => return true,
+            (InferredType::ListOf(a), InferredType::ListOf(e)) => return self.type_matches(a, e),
+            (InferredType::SetOf(_), InferredType::Set) => return true,
+            (InferredType::Set, InferredType::SetOf(_)) => return true,
+            (InferredType::SetOf(a), InferredType::SetOf(e)) => return self.type_matches(a, e),
+            (InferredType::DictOf(_, _), InferredType::Dict) => return true,
+            (InferredType::Dict, InferredType::DictOf(_, _)) => return true,
+            (InferredType::DictOf(ak, av), InferredType::DictOf(ek, ev)) => {
+                return self.type_matches(ak, ek) && self.type_matches(av, ev);
+            }
+            _ => {}
+        }
+        // Union パラメータ: 引数が Union のいずれかのメンバと互換性があるか確認する。
+        // サブタイプ関係（list[T] ∈ Union[list, None] など）を考慮して type_matches を使用する。
         if let InferredType::Union(union_types) = expected {
-            return union_types.contains(arg_ty);
+            return union_types.iter().any(|ut| self.type_matches(arg_ty, ut));
         }
         // 自動キャスト: 引数の型がインスタンス型で、そのクラスが期待型への __cast__ を持つ場合は許可。
         if let InferredType::NamedInstance(class_name) = arg_ty {
@@ -4047,5 +4134,86 @@ mod tests {
             "    return a\n",
         ));
         assert!(errors.iter().any(|e| matches!(&e.kind, TypeErrorKind::InvalidDecorator { .. })));
+    }
+
+    // --- Collection generics type checking ---
+
+    #[test]
+    fn list_of_int_matches_list_of_int_ok() {
+        assert!(ok(concat!(
+            "fn f(items: list[int]) -> int:\n",
+            "    return 0\n",
+            "let xs: list[int] = [1, 2, 3]\n",
+            "f(xs)\n",
+        )));
+    }
+
+    #[test]
+    fn list_of_str_to_list_of_int_err() {
+        assert!(err(concat!(
+            "fn f(items: list[int]) -> int:\n",
+            "    return 0\n",
+            "let xs: list[str] = [\"a\", \"b\"]\n",
+            "f(xs)\n",
+        )));
+    }
+
+    #[test]
+    fn list_literal_inferred_as_list_of_int_ok() {
+        assert!(ok(concat!(
+            "fn f(items: list[int]) -> int:\n",
+            "    return 0\n",
+            "f([1, 2, 3])\n",
+        )));
+    }
+
+    #[test]
+    fn list_literal_wrong_elem_type_err() {
+        assert!(err(concat!(
+            "fn f(items: list[int]) -> int:\n",
+            "    return 0\n",
+            "f([\"a\", \"b\"])\n",
+        )));
+    }
+
+    #[test]
+    fn untyped_list_matches_list_of_any_ok() {
+        // A bare list (no annotation) is compatible with list[T] — lenient.
+        assert!(ok(concat!(
+            "fn f(items: list[int]) -> int:\n",
+            "    return 0\n",
+            "let xs = []\n",
+            "f(xs)\n",
+        )));
+    }
+
+    #[test]
+    fn set_of_int_to_set_of_str_err() {
+        assert!(err(concat!(
+            "fn f(s: set[str]) -> int:\n",
+            "    return 0\n",
+            "let xs: set[int] = {1, 2}\n",
+            "f(xs)\n",
+        )));
+    }
+
+    #[test]
+    fn dict_of_str_int_ok() {
+        assert!(ok(concat!(
+            "fn f(d: dict[str,int]) -> int:\n",
+            "    return 0\n",
+            "let d: dict[str,int] = {\"a\": 1}\n",
+            "f(d)\n",
+        )));
+    }
+
+    #[test]
+    fn dict_key_type_mismatch_err() {
+        assert!(err(concat!(
+            "fn f(d: dict[str,int]) -> int:\n",
+            "    return 0\n",
+            "let d: dict[int,int] = {1: 2}\n",
+            "f(d)\n",
+        )));
     }
 }

@@ -329,9 +329,7 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 
 ## Major Unimplemented Features
 
-- Full preservation of type annotations (parser strips generic params from `list[T]`, `dict[K,V]`, `set[T]` — only the base type is stored; `loop_yield` element-type checking therefore requires a parser enhancement)
 - Mixing check: `block_return` and `loop_yield` in the same block expression (currently not statically detected)
-- Static access checking for `private`/`protected` (currently runtime `AccessError` only; no `StaticTypeError` at parse/type-check time)
 - Native compilation: closures (inner functions capturing outer variables), generators, `try`/`raise`, `block_return`/`loop_yield`, and `static mut` are not yet supported in compiled functions
 - Python implementation: async tasks (`<-`), `import[py]`/`import[py-int]` modules, and full `import`/`from … import` resolution are not yet complete
 
