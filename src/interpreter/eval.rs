@@ -1002,9 +1002,119 @@ impl Interpreter {
         fn_ref: &Arc<NativeFnRef>,
         args: &[crate::ast::CallArg],
     ) -> Result<Value, String> {
+        use crate::interpreter::PtrParam;
+
+        // Fast path: no write-back parameters
+        let has_writeback = fn_ref.ptr_params.iter().any(|p| *p == PtrParam::MutPtr);
+        if !has_writeback {
+            let evaled = self.eval_call_args(args)?;
+            let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+            return self.dispatch_native_evaled(fn_ref, vals);
+        }
+
+        // Write-back path — verify MutPtr args are `mut` variable identifiers
+        for (i, pp) in fn_ref.ptr_params.iter().enumerate() {
+            if *pp != PtrParam::MutPtr { continue; }
+            let expr = args.get(i).map(|a| a.expr());
+            match expr {
+                Some(crate::ast::Expr::Ident(name)) => {
+                    let is_mut = self.get_var(name).map(|v| v.is_mutable()).unwrap_or(false);
+                    if !is_mut {
+                        return Err(format!(
+                            "TypeError: pointer parameter {i} requires a `mut` variable, '{}' is not mutable",
+                            name
+                        ));
+                    }
+                }
+                _ => return Err(format!(
+                    "TypeError: pointer parameter {i} requires a `mut` variable argument"
+                )),
+            }
+        }
+
         let evaled = self.eval_call_args(args)?;
-        let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
-        self.dispatch_native_evaled(fn_ref, vals)
+        let mut vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+
+        if vals.len() < fn_ref.min_params || vals.len() > fn_ref.n_params {
+            let expected = if fn_ref.min_params == fn_ref.n_params {
+                format!("{}", fn_ref.n_params)
+            } else {
+                format!("{}–{}", fn_ref.min_params, fn_ref.n_params)
+            };
+            return Err(format!(
+                "TypeError: native function '{}' expects {} argument(s), got {}",
+                fn_ref.fn_name, expected, vals.len()
+            ));
+        }
+        // Pad missing optional args with None (handle 0 → NULL for pointer params)
+        while vals.len() < fn_ref.n_params {
+            vals.push(Value::None);
+        }
+
+        let is_outermost = super::native_api::enter_native_call(self as *mut Interpreter);
+
+        // Push handles; MutPtr params get writable arena slots
+        let mut writebacks: Vec<(String, i64)> = Vec::new();
+        let handles: Vec<i64> = vals.iter().enumerate()
+            .map(|(i, v)| {
+                let pp = fn_ref.ptr_params.get(i).copied().unwrap_or(PtrParam::None);
+                if pp == PtrParam::MutPtr {
+                    let h = super::native_api::push_handle_writeback(v.clone());
+                    let name = match args[i].expr() {
+                        crate::ast::Expr::Ident(n) => n.clone(),
+                        _ => unreachable!(),
+                    };
+                    writebacks.push((name, h));
+                    h
+                } else {
+                    let is_mut = fn_ref.param_mutabilities.get(i).copied().unwrap_or(true);
+                    let owned = if is_mut { v.clone() } else { Self::deep_copy_value(v.clone()) };
+                    super::native_api::push_handle(owned)
+                }
+            })
+            .collect();
+
+        let call_result = {
+            let lib = match self.native_libs.get(&fn_ref.lib_path) {
+                Some(l) => l,
+                None => {
+                    super::native_api::abort_native_call(is_outermost);
+                    return Err(format!(
+                        "RuntimeError: native library not loaded: {}", fn_ref.lib_path.display()
+                    ));
+                }
+            };
+            let symbol_name = format!("{}_tl\0", fn_ref.fn_name);
+            unsafe {
+                match lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes()) {
+                    Ok(func) => Ok(func(handles.as_ptr(), handles.len() as i32)),
+                    Err(e) => Err(format!("RuntimeError: symbol '{}' not found: {e}", fn_ref.fn_name)),
+                }
+            }
+        };
+
+        match call_result {
+            Err(e) => {
+                super::native_api::abort_native_call(is_outermost);
+                Err(e)
+            }
+            Ok(result_h) => {
+                if let Some(err) = super::native_api::take_error() {
+                    super::native_api::abort_native_call(is_outermost);
+                    return Err(err);
+                }
+                // Read back write-back values BEFORE exit_native_call truncates the arena
+                let updated: Vec<(String, Value)> = writebacks.iter()
+                    .map(|(name, h)| (name.clone(), super::native_api::clone_value_at(*h)))
+                    .collect();
+                let result = super::native_api::exit_native_call(result_h, is_outermost);
+                // Assign updated values back to the mut variables
+                for (name, val) in updated {
+                    self.assign_var(&name, val)?;
+                }
+                Ok(result)
+            }
+        }
     }
 
     /// Core native-dispatch path: push already-evaluated args into the arena and invoke
@@ -1013,13 +1123,21 @@ impl Interpreter {
     pub(super) fn dispatch_native_evaled(
         &mut self,
         fn_ref: &Arc<NativeFnRef>,
-        vals: Vec<Value>,
+        mut vals: Vec<Value>,
     ) -> Result<Value, String> {
-        if vals.len() != fn_ref.n_params {
+        if vals.len() < fn_ref.min_params || vals.len() > fn_ref.n_params {
+            let expected = if fn_ref.min_params == fn_ref.n_params {
+                format!("{}", fn_ref.n_params)
+            } else {
+                format!("{}–{}", fn_ref.min_params, fn_ref.n_params)
+            };
             return Err(format!(
                 "TypeError: native function '{}' expects {} argument(s), got {}",
-                fn_ref.fn_name, fn_ref.n_params, vals.len()
+                fn_ref.fn_name, expected, vals.len()
             ));
+        }
+        while vals.len() < fn_ref.n_params {
+            vals.push(Value::None);
         }
 
         let is_outermost = super::native_api::enter_native_call(self as *mut Interpreter);

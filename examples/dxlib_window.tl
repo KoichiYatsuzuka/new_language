@@ -1,9 +1,8 @@
 # dxlib_window.tl — 60fps DxLib window demo (requires DxLib_x64.lib + MSVC)
 #
-# The import[cpp-lib] line uses two string literals:
-#   1. Path to DxLib_x64.lib  — adjust to match your installation.
-#   2. Path to dxlib_stub.h   — flat C signatures that describe the functions
-#                               we want (see examples/dxlib_stub.h).
+# import[cpp-lib] DxLib.DxLib_x64 with dxlib_stub as dx
+#   - DxLib.DxLib_x64 → examples/DxLib/DxLib_x64.lib (relative to this file)
+#   - dxlib_stub      → examples/dxlib_stub.h (flat C signatures for the bridge)
 #
 # At import time the interpreter will:
 #   1. Find vcvarsall.bat from your Visual Studio installation.
@@ -13,7 +12,7 @@
 #
 # Required: Visual Studio 2019 or 2022 (Community or higher).
 
-import[cpp-lib] "C:\\Users\\Koichi Yatsuduka\\Downloads\\DxLib_VC3_24f\\DxLib_VC\\プロジェクトに追加すべきファイル_VC用\\DxLib_x64.lib" with "examples\\dxlib_stub.h" as dx
+import[cpp-lib] DxLib.DxLib as dx
 
 # ── Setup (must be before DxLib_Init) ────────────────────────────────────────
 dx.ChangeWindowMode(1)          # 1=TRUE → windowed (not full-screen)

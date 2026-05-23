@@ -95,6 +95,8 @@ struct TlCallbacks {
     to_int:        unsafe extern "C" fn(i64) -> i64,
     to_float:      unsafe extern "C" fn(i64) -> f64,
     deep_copy:     unsafe extern "C" fn(i64) -> i64,
+    to_cstr:       unsafe extern "C" fn(i64) -> *const u8,
+    write_handle:  unsafe extern "C" fn(i64, i64),
 }
 
 static mut CB: *const TlCallbacks = std::ptr::null();

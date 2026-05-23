@@ -1297,7 +1297,9 @@ impl Interpreter {
                         lib_path: lib_path_buf.clone(),
                         fn_name: name.clone(),
                         n_params: params.len(),
+                        min_params: params.len(),
                         param_mutabilities: params.iter().map(|p| p.mutable).collect(),
+                        ptr_params: vec![crate::interpreter::PtrParam::None; params.len()],
                     });
                     members.insert(name.clone(), Value::NativeFunction(fn_ref));
                 }
@@ -1334,183 +1336,99 @@ impl Interpreter {
     // C++ bridge module loading
     // ---------------------------------------------------------------------------
 
-    /// Load a C++ DLL (`cpp-dll`) or static library (`cpp-lib`) as a tl module.
+    /// Load a C++ library (`cpp-lib`) or DLL (`cpp-dll`) as a tl module.
     ///
-    /// Steps:
-    /// 1. Parse the `.h` header (if provided) to extract `extern "C"` function
-    ///    signatures.
-    /// 2. Generate a thin Rust wrapper that:
-    ///    - For `cpp-dll`: dynamically loads `file_path` via `LoadLibraryA`/`dlopen`
-    ///      and calls each function through a transmuted pointer.
-    ///    - For `cpp-lib`: statically links `file_path` via `#[link(..., kind="static")]`.
-    /// 3. Compile the wrapper with `rustc --crate-type cdylib`.
-    /// 4. Load the resulting DLL and build a `Namespace` of `NativeFunction` values.
+    /// `header_path_str` is the path to the `.h` header file (resolved by the parser).
+    /// For `cpp-lib`: builds `tl_{stem}.dll` next to the header via MSVC + rustc, with
+    ///   permanent caching (never rebuilt unless `tl_{stem}.dll` is deleted).
+    /// For `cpp-dll`: wraps the adjacent `{stem}.dll` via a rustc-compiled shim.
     fn load_cpp_module(
         &mut self,
         lang: &str,
-        file_path: &str,
-        header_path: Option<&str>,
+        header_path_str: &str,
+        _with_file: Option<&str>,
     ) -> Result<Rc<NamespaceData>, String> {
-        // 1. Parse header
-        let sigs: Vec<super::cpp_bridge::CFnSig> = match header_path {
-            Some(h) => {
-                let content = std::fs::read_to_string(h)
-                    .map_err(|e| format!("CppImport: cannot read header '{h}': {e}"))?;
-                let parsed = super::cpp_bridge::parse_header(&content);
-                if parsed.is_empty() {
-                    eprintln!("CppImport: no supported extern \"C\" functions found in '{h}'");
-                }
-                parsed
-            }
-            None => {
-                eprintln!("CppImport: no `with` header provided — namespace will be empty");
-                vec![]
-            }
-        };
+        let header_path = std::path::Path::new(header_path_str);
+        let header_dir = header_path.parent().unwrap_or(std::path::Path::new("."));
 
-        eprintln!(
-            "CppImport[{lang}]: building wrapper for {} function(s) from '{file_path}'",
-            sigs.len()
-        );
+        // Parse the header to extract function signatures.
+        // Read as raw bytes then convert lossily: non-UTF-8 bytes (e.g. Shift-JIS
+        // in Japanese comments) become U+FFFD replacement chars, which strip_comments
+        // discards along with the surrounding comment text.
+        let raw = std::fs::read(header_path)
+            .map_err(|e| format!("CppImport: cannot read header '{header_path_str}': {e}"))?;
+        let raw_str = String::from_utf8_lossy(&raw);
+        let mut sigs = super::cpp_bridge::parse_header(&raw_str);
 
-        // For cpp-lib on Windows: attempt MSVC shim path (handles C++ name mangling).
-        // Falls back to the rustc gen_lib_wrapper path on failure or if MSVC is absent.
-        #[cfg(windows)]
-        if lang == "cpp-lib" && !sigs.is_empty() {
-            match self.try_msvc_shim(file_path, &sigs) {
-                Ok(Some(ns)) => return Ok(ns),
-                Ok(None)     => {} // MSVC not found — fall through
-                Err(e)       => eprintln!("CppShim: {e}\nFalling back to rustc path"),
-            }
-        }
-
-        // 2. Generate wrapper source (fallback / cpp-dll path)
-        let (rust_src, extra_link_dirs) = match lang {
-            "cpp-dll" => {
-                let src = super::cpp_bridge::gen_dll_wrapper(file_path, &sigs);
-                (src, vec![])
-            }
+        match lang {
             "cpp-lib" => {
-                let stem = std::path::Path::new(file_path)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                // Strip leading "lib" prefix on Unix (libfoo.a → "foo")
-                #[cfg(not(windows))]
-                let stem = stem.strip_prefix("lib").unwrap_or(&stem).to_string();
-                let (src, lib_dir) = super::cpp_bridge::gen_lib_wrapper(file_path, &stem, &sigs);
-                (src, vec![lib_dir])
+                // Build tl_{stem}.dll next to the header (permanent cache).
+                let config = super::cpp_bridge::load_cpp_config(header_dir);
+
+                // When precompile_macros are set, the main header may conditionally
+                // include other headers (e.g. WINDOWS_DESKTOP_OS → DxFunctionWin.h).
+                // Scan for local #include directives and parse those headers too so
+                // their function signatures are available in the tl namespace.
+                if !config.precompile_macros.is_empty() {
+                    let included = super::cpp_bridge::collect_included_headers(&raw_str, header_dir);
+                    let mut known_names: std::collections::HashSet<String> =
+                        sigs.iter().map(|s| s.name.clone()).collect();
+                    for inc_path in &included {
+                        if let Ok(inc_raw) = std::fs::read(inc_path) {
+                            let inc_str = String::from_utf8_lossy(&inc_raw);
+                            let inc_sigs = super::cpp_bridge::parse_header(&inc_str);
+                            let new_count = inc_sigs.iter().filter(|s| !known_names.contains(&s.name)).count();
+                            if new_count > 0 {
+                                eprintln!(
+                                    "CppImport: {} additional function(s) from '{}'",
+                                    new_count,
+                                    inc_path.display()
+                                );
+                            }
+                            for s in inc_sigs {
+                                if known_names.insert(s.name.clone()) {
+                                    sigs.push(s);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if sigs.is_empty() {
+                    eprintln!("CppImport: no supported functions found in '{header_path_str}'");
+                }
+                eprintln!("CppImport[{lang}]: {} function(s) total", sigs.len());
+
+                let (dll_path, effective_sigs) = super::cpp_bridge::compile_tl_dll(header_path, &sigs, &config)?;
+                self.load_cpp_wrapper_dll(&dll_path, &effective_sigs, header_path_str)
+            }
+            "cpp-dll" => {
+                // Find the DLL by stem next to the header and wrap it dynamically.
+                let stem = header_path.file_stem().and_then(|s| s.to_str()).unwrap_or("lib");
+                let dll_path = header_dir.join(format!("{stem}.dll"));
+                let dll_str = dll_path.to_string_lossy().into_owned();
+                let rust_src = super::cpp_bridge::gen_dll_wrapper(&dll_str, &sigs);
+                let dll_bytes = super::cpp_bridge::compile_wrapper(&rust_src, &[])?;
+                let ext = crate::partial_compiler::native_lib_ext();
+                let tmp_path = std::env::temp_dir()
+                    .join(format!("_tl_cpp_{:x}.{ext}", simple_hash(header_path_str)));
+                std::fs::write(&tmp_path, &dll_bytes)
+                    .map_err(|e| format!("CppImport: cannot write wrapper DLL: {e}"))?;
+                self.load_cpp_wrapper_dll(&tmp_path, &sigs, header_path_str)
             }
             _ => unreachable!(),
-        };
-
-        // 3. Compile
-        let dll_bytes = super::cpp_bridge::compile_wrapper(&rust_src, &extra_link_dirs)?;
-
-        // 4. Write to temp file and load
-        let ext      = crate::partial_compiler::native_lib_ext();
-        let tmp_path = std::env::temp_dir()
-            .join(format!("_tl_cpp_{:x}.{ext}", simple_hash(file_path)));
-
-        std::fs::write(&tmp_path, &dll_bytes)
-            .map_err(|e| format!("CppImport: cannot write wrapper DLL: {e}"))?;
-
-        self.load_cpp_wrapper_dll(&tmp_path, &sigs, file_path)
+        }
     }
 
-    /// Windows-only: try to build a C++ shim DLL via MSVC then wrap it.
-    ///
-    /// Steps:
-    ///  1. Find `vcvarsall.bat`.
-    ///  2. Find the C++ header next to the `.lib` (e.g. `DxLib.h` beside `DxLib_x64.lib`).
-    ///  3. Generate a shim `.cpp` that includes the real header and exports flat C wrappers.
-    ///  4. Compile the shim to a `.dll` with `cl.exe`, linking all `.lib` files in the
-    ///     lib directory plus standard Windows DirectX / multimedia libs.
-    ///  5. Generate a Rust wrapper (via `gen_dll_wrapper`) that loads the shim DLL.
-    ///  6. Compile and load the Rust wrapper.
-    ///
-    /// Returns `Ok(None)` when MSVC or the header is not found (caller should fall back).
-    #[cfg(windows)]
-    fn try_msvc_shim(
-        &mut self,
-        lib_path: &str,
-        sigs: &[super::cpp_bridge::CFnSig],
-    ) -> Result<Option<Rc<NamespaceData>>, String> {
-        use super::cpp_bridge::{
-            find_msvc_vcvarsall, gen_cpp_shim_source, compile_cpp_shim, lib_namespace_from_stem,
-        };
-
-        // 1. Find MSVC
-        let msvc = match find_msvc_vcvarsall() {
-            Some(m) => m,
-            None => {
-                eprintln!("CppShim: MSVC not found — falling back to rustc path");
-                return Ok(None);
-            }
-        };
-
-        let lib = std::path::Path::new(lib_path);
-        let lib_dir = match lib.parent() {
-            Some(d) if !d.as_os_str().is_empty() => d,
-            _ => std::path::Path::new("."),
-        };
-        let stem = lib.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let namespace = lib_namespace_from_stem(stem);
-
-        // 2. Find C++ header: try "{namespace}.h" and "{stem}.h" in lib_dir
-        let header = [
-            lib_dir.join(format!("{namespace}.h")),
-            lib_dir.join(format!("{stem}.h")),
-        ]
-        .into_iter()
-        .find(|p| p.exists());
-
-        let header = match header {
-            Some(h) => h,
-            None => {
-                eprintln!(
-                    "CppShim: no C++ header found in '{}' (tried {namespace}.h, {stem}.h) — falling back",
-                    lib_dir.display()
-                );
-                return Ok(None);
-            }
-        };
-
-        eprintln!(
-            "CppShim: header='{}', namespace='{namespace}'",
-            header.display()
-        );
-
-        // 3. Generate shim source.
-        // Pass only the header filename (e.g. "DxLib.h"), not the full path.
-        // compile_cpp_shim adds /I lib_dir to the cl.exe call so the compiler
-        // can find the header. This keeps shim.cpp pure ASCII, avoiding
-        // any code-page issues when cl.exe reads the source file.
-        let header_name = header.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("header.h");
-        let shim_src = gen_cpp_shim_source(sigs, header_name, Some(&namespace));
-
-        // 4. Compile shim to DLL
-        let shim_dll = compile_cpp_shim(&shim_src, &msvc, lib)?;
-
-        // 5. Wrap the shim DLL with the standard gen_dll_wrapper path
-        let shim_dll_str = shim_dll.to_string_lossy().to_string();
-        let wrapper_src = super::cpp_bridge::gen_dll_wrapper(&shim_dll_str, sigs);
-
-        // 6. Compile the Rust wrapper and load it
-        let wrapper_bytes = super::cpp_bridge::compile_wrapper(&wrapper_src, &[])?;
-
-        let ext = crate::partial_compiler::native_lib_ext();
-        let tmp_path = std::env::temp_dir()
-            .join(format!("_tl_cpp_shim_{:x}.{ext}", simple_hash(lib_path)));
-
-        std::fs::write(&tmp_path, &wrapper_bytes)
-            .map_err(|e| format!("CppShim: cannot write wrapper DLL: {e}"))?;
-
-        let ns = self.load_cpp_wrapper_dll(&tmp_path, sigs, lib_path)?;
-        Ok(Some(ns))
+    /// Map a C parameter type to the interpreter's `PtrParam` kind.
+    fn sig_to_ptr_param_fn(ct: &super::cpp_bridge::CType) -> crate::interpreter::PtrParam {
+        use super::cpp_bridge::CType;
+        use crate::interpreter::PtrParam;
+        match ct {
+            CType::Ptr { mutable: true, .. } => PtrParam::MutPtr,
+            CType::Ptr { mutable: false, .. } | CType::CharPtr => PtrParam::ConstPtr,
+            _ => PtrParam::None,
+        }
     }
 
     /// Load a pre-compiled cpp wrapper DLL and build its `Namespace`.
@@ -1551,11 +1469,16 @@ impl Interpreter {
                 lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol.as_bytes()).is_ok()
             };
             if has_sym {
+                let ptr_params: Vec<crate::interpreter::PtrParam> = sig.params.iter()
+                    .map(|(_, ct)| Self::sig_to_ptr_param_fn(ct))
+                    .collect();
                 let fn_ref = Arc::new(NativeFnRef {
                     lib_path: lib_path_buf.clone(),
                     fn_name: sig.name.clone(),
                     n_params: sig.params.len(),
+                    min_params: sig.n_required,
                     param_mutabilities: vec![false; sig.params.len()],
+                    ptr_params,
                 });
                 members.insert(sig.name.clone(), Value::NativeFunction(fn_ref));
             }

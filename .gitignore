@@ -5,3 +5,5 @@ vscode-extension/node_modules/
 vscode-extension/out/
 .cargo/config.toml
 
+examples/DxLib
+Log.txt

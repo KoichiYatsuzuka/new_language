@@ -8,7 +8,13 @@
       "Bash(Get-ChildItem -Path \"d:\\\\repository\\\\new_language\\\\src\" -File)",
       "Bash(Select-Object Name)",
       "Bash(Get-ChildItem -Path \"d:\\\\repository\\\\new_language\\\\src\\\\interpreter\" -File -Name)",
-      "Bash(git stash *)"
+      "Bash(git stash *)",
+      "PowerShell(Get-Content \"$env:TEMP\\\\tl_shim_DxLib_x64\\\\DxLib.h\" | Select-String \"ChangeWindowMode|DrawString|SetWindowText\" | Select-Object -First 10)",
+      "PowerShell(Get-ChildItem \"$env:TEMP\\\\tl_shim_DxLib_x64\\\\\" | Select-Object Name)",
+      "PowerShell(Get-ChildItem -Path \"$env:TEMP\\\\tl_shim_DxLib_x64\" -Force | ForEach-Object { $_.Name })",
+      "PowerShell(Remove-Item \"$env:TEMP\\\\tl_shim_DxLib_x64\\\\shim.dll\" -Force -ErrorAction SilentlyContinue; \"cleared\")",
+      "PowerShell(Get-Content \"$env:TEMP\\\\tl_err.txt\" | Select-String \"error|failed|produced|CppShim\" | Select-Object -First 15)",
+      "PowerShell(Get-ChildItem \"d:\\\\repository\\\\new_language\\\\examples\\\\DxLib\" -Force | ForEach-Object { $_.Name })"
     ]
   }
 }

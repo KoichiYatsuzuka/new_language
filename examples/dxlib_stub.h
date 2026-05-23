@@ -30,4 +30,9 @@ int GetColor(int r, int g, int b);
 int DrawFillBox(int x1, int y1, int x2, int y2, int color);
 int GetNowCount(void);
 
+/* string-parameter functions */
+/* SetWindowTextDX is DxLib's Windows-macro-safe alias for SetWindowText */
+int SetWindowTextDX(const char* text);
+int DrawString(int x, int y, const char* str, int color);
+
 }

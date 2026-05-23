@@ -78,6 +78,11 @@ thread_local! {
     /// Set by `enter_native_call` at depth 0; cleared by `exit_native_call` / `abort_native_call`.
     static CURRENT_INTERP: Cell<*mut Interpreter> = Cell::new(std::ptr::null_mut());
 
+    /// Scratch buffers for null-terminated C strings produced by `tl_to_cstr`.
+    /// Cleared at the end of the outermost native call so the pointers remain valid
+    /// for the duration of any single call chain.
+    static CSTR_BUFS: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
+
     /// Value arena.
     /// indices 0-2: placeholder None/True/False (accessed via TL_* constants)
     /// indices 3 .. INT_CACHE_BASE-1: pre-cached Int(0)..Int(255) — permanent, never freed
@@ -136,6 +141,7 @@ pub fn exit_native_call(result_h: i64, is_outermost: bool) -> Value {
         CURRENT_INTERP.with(|c| c.set(std::ptr::null_mut()));
         VALUE_ARENA.with(|a| a.borrow_mut().truncate(ARENA_SAVE.with(|s| s.get())));
         ITER_TABLE.with(|t| t.borrow_mut().truncate(ITER_SAVE.with(|s| s.get())));
+        CSTR_BUFS.with(|b| b.borrow_mut().clear());
     }
     result
 }
@@ -148,6 +154,7 @@ pub fn abort_native_call(is_outermost: bool) {
         CURRENT_INTERP.with(|c| c.set(std::ptr::null_mut()));
         VALUE_ARENA.with(|a| a.borrow_mut().truncate(ARENA_SAVE.with(|s| s.get())));
         ITER_TABLE.with(|t| t.borrow_mut().truncate(ITER_SAVE.with(|s| s.get())));
+        CSTR_BUFS.with(|b| b.borrow_mut().clear());
     }
 }
 
@@ -166,6 +173,20 @@ pub fn push_handle(v: Value) -> i64 {
             h
         }),
     }
+}
+
+/// Push a Value into the arena as a **fresh, writable slot** and return its handle.
+///
+/// Unlike `push_handle`, this never returns a pre-cached constant handle — it always
+/// appends a new slot that the native DLL can later overwrite via `tl_write_handle`.
+/// Used for `MutPtr` (write-back) arguments in the cpp-bridge.
+pub fn push_handle_writeback(v: Value) -> i64 {
+    VALUE_ARENA.with(|a| {
+        let mut arena = a.borrow_mut();
+        let h = arena.len() as i64;
+        arena.push(v);
+        h
+    })
 }
 
 /// Clone the Value at `h` from the arena.
@@ -263,6 +284,12 @@ pub struct TlCallbacks {
     pub to_int:        extern "C" fn(i64) -> i64,
     pub to_float:      extern "C" fn(i64) -> f64,
     pub deep_copy:     extern "C" fn(i64) -> i64,
+    /// Convert a tl string handle to a null-terminated C string pointer.
+    /// The pointer is valid until the end of the outermost native call.
+    pub to_cstr:       extern "C" fn(i64) -> *const u8,
+    /// Overwrite arena[target_h] with a clone of the value at new_val_h.
+    /// Used by cpp-bridge wrappers for T* write-back parameters.
+    pub write_handle:  extern "C" fn(i64, i64),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
@@ -703,6 +730,42 @@ extern "C" fn tl_to_float(h: i64) -> f64 {
     }
 }
 
+// ── cpp-bridge helpers ───────────────────────────────────────────────────────
+
+/// Convert the tl string handle `h` to a null-terminated C string.
+///
+/// The bytes are stored in the thread-local `CSTR_BUFS` scratch buffer so the
+/// returned pointer remains valid until `exit_native_call` / `abort_native_call`
+/// clears the buffer at the end of the outermost native call.
+extern "C" fn tl_to_cstr(h: i64) -> *const u8 {
+    let s = match clone_value_at(h) {
+        Value::Str(s) => s,
+        _ => String::new(),
+    };
+    CSTR_BUFS.with(|bufs| {
+        let mut bufs = bufs.borrow_mut();
+        let mut bytes = s.into_bytes();
+        bytes.push(0u8); // null terminator
+        bufs.push(bytes);
+        bufs.last().unwrap().as_ptr()
+    })
+}
+
+/// Overwrite the arena slot at `target_h` with a clone of the value at `new_val_h`.
+///
+/// Used by generated cpp-bridge wrappers to write back `T*` output-parameter
+/// values after a C call.
+extern "C" fn tl_write_handle(target_h: i64, new_val_h: i64) {
+    if target_h < 3 { return; } // never overwrite fixed slots
+    let new_val = clone_value_at(new_val_h);
+    VALUE_ARENA.with(|a| {
+        let mut arena = a.borrow_mut();
+        if let Some(slot) = arena.get_mut(target_h as usize) {
+            *slot = new_val;
+        }
+    });
+}
+
 // ── Static callbacks instance ─────────────────────────────────────────────────
 
 static CALLBACKS: TlCallbacks = TlCallbacks {
@@ -731,4 +794,6 @@ static CALLBACKS: TlCallbacks = TlCallbacks {
     to_int:        tl_to_int,
     to_float:      tl_to_float,
     deep_copy:     tl_deep_copy,
+    to_cstr:       tl_to_cstr,
+    write_handle:  tl_write_handle,
 };

@@ -931,7 +931,7 @@ impl Parser {
             "tl-auto".to_string()
         };
 
-        // cpp-dll / cpp-lib: `import[cpp-dll] "path.dll" with "path.h" as alias`
+        // cpp-dll / cpp-lib: `import[cpp-dll] Dir.Name with stub as alias`
         if lang == "cpp-dll" || lang == "cpp-lib" {
             return self.parse_cpp_import(lang);
         }
@@ -953,31 +953,42 @@ impl Parser {
         Ok(Stmt::Import { lang, module, with_file: None, alias, body })
     }
 
-    /// `import[cpp-dll] "lib.dll" with "lib.h" as alias` をパースする。
-    /// `import[cpp-lib] "lib.lib" with "lib.h" as alias` も同様。
+    /// `import[cpp-lib] Dir.Name as alias` をパースする。
+    /// `import[cpp-dll] Dir.Name as alias` も同様。
+    ///
+    /// ドット区切り識別子をヘッダファイルパスに解決する:
+    ///   `DxLib.DxLib` → `{source_dir}/DxLib/DxLib.h`
+    ///   最後のコンポーネントに `.h` 拡張子が付く。
+    ///
+    /// スタブは自動生成されるため `with` 句は不要 (構文上存在しない)。
     fn parse_cpp_import(&mut self, lang: String) -> Result<Stmt, String> {
-        // ファイルパス (文字列リテラル)
-        let file_path = match self.current().clone() {
-            Token::Str(s) => { self.advance(); s }
+        // ヘッダパス: IDENT ('.' IDENT)*
+        let first = match self.current().clone() {
+            Token::Ident(s) => { self.advance(); s }
             other => return Err(format!(
-                "import[{lang}]: expected string literal for library path, got `{other}`"
+                "import[{lang}]: expected dotted identifier for header path, got `{other}`"
             )),
         };
-
-        // `with "header.h"` (省略可)
-        let with_file = if *self.current() == Token::With {
+        let mut parts = vec![first];
+        while *self.current() == Token::Dot {
             self.advance();
-            match self.current().clone() {
-                Token::Str(s) => { self.advance(); Some(s) }
-                other => return Err(format!(
-                    "import[{lang}]: expected string literal after `with`, got `{other}`"
-                )),
-            }
-        } else {
-            None
-        };
+            parts.push(self.expect_ident()?);
+        }
 
-        // `as alias` — cpp imports はエイリアスを強く推奨するが省略可
+        // ドット区切りパーツを source_dir 基準のヘッダパスに解決する
+        // 例: DxLib.DxLib → {source_dir}/DxLib/DxLib.h
+        let mut resolved = self.source_dir.clone();
+        let n = parts.len();
+        for (i, part) in parts.iter().enumerate() {
+            if i == n - 1 {
+                resolved.push(format!("{part}.h"));
+            } else {
+                resolved.push(part.as_str());
+            }
+        }
+        let file_path = resolved.to_string_lossy().into_owned();
+
+        // `as alias` — 省略可
         let alias = if *self.current() == Token::As {
             self.advance();
             Some(self.expect_ident()?)
@@ -985,9 +996,8 @@ impl Parser {
             None
         };
 
-        // ファイルパスをモジュール識別子として使う (キャッシュキー兼デフォルト名に利用)
         let module = vec![file_path];
-        Ok(Stmt::Import { lang, module, with_file, alias, body: vec![] })
+        Ok(Stmt::Import { lang, module, with_file: None, alias, body: vec![] })
     }
 
     /// `from module import[lang] Name1, Name2 as N2` をパースして `Stmt::FromImport` を返す。

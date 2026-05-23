@@ -606,6 +606,18 @@ impl Drop for FileData {
 // Native function support
 // ---------------------------------------------------------------------------
 
+/// Describes how a C function parameter should be handled at the native boundary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PtrParam {
+    /// Not a pointer — value passed by value.
+    None,
+    /// `const T*` — read-only pointer; any expression is accepted, no write-back.
+    ConstPtr,
+    /// `T*` — mutable pointer; requires a `mut` variable argument; value is written
+    /// back to the variable after the call returns.
+    MutPtr,
+}
+
 /// Reference to a native (natively compiled) function exported by a shared library.
 ///
 /// The library is identified by its filesystem path; the `Interpreter` holds the
@@ -617,11 +629,18 @@ pub struct NativeFnRef {
     /// Base name of the tl function (e.g. `"is_prime"`).
     /// The actual exported symbol is `"{fn_name}_tl"`.
     pub fn_name: String,
-    /// Number of positional parameters (used to size the args array).
+    /// Total number of positional parameters (used to size the args array).
     pub n_params: usize,
+    /// Minimum number of required arguments (tail parameters may be optional,
+    /// e.g. C++ DEFAULTPARAM / default arguments). Omitted args are padded with 0 (None).
+    /// For non-C++ functions this equals `n_params`.
+    pub min_params: usize,
     /// Per-parameter mutability flags (`true` = `mut`, `false` = `let`).
     /// Used at call sites to deep-copy arguments bound to immutable parameters.
     pub param_mutabilities: Vec<bool>,
+    /// Per-parameter pointer kind.  For cpp-bridge functions, `MutPtr` parameters
+    /// require a `mut` variable argument and trigger write-back after the call.
+    pub ptr_params: Vec<PtrParam>,
 }
 
 /// Wrapper around `libloading::Library` that implements `Debug`.

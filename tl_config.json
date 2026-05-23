@@ -1,0 +1,5 @@
+{
+  "cpp": {
+    "precompile_macros": ["WINDOWS_DESKTOP_OS"]
+  }
+}
