@@ -354,9 +354,10 @@ impl Interpreter {
                 let v = self.eval(e)?;
                 match &v {
                     Value::None => None,
+                    Value::Int(_) => Some(v),
                     Value::Instance(inst) if inst.borrow().class.name == "Index" => Some(v),
                     _ => return Err(format!(
-                        "TypeError: slice begin must be Index or None, got '{}'",
+                        "TypeError: slice begin must be int, Index, or None, got '{}'",
                         self.type_name(&v)
                     )),
                 }
@@ -368,9 +369,10 @@ impl Interpreter {
                 let v = self.eval(e)?;
                 match &v {
                     Value::None => None,
+                    Value::Int(_) => Some(v),
                     Value::Instance(inst) if inst.borrow().class.name == "Index" => Some(v),
                     _ => return Err(format!(
-                        "TypeError: slice end must be Index or None, got '{}'",
+                        "TypeError: slice end must be int, Index, or None, got '{}'",
                         self.type_name(&v)
                     )),
                 }
@@ -482,18 +484,34 @@ impl Interpreter {
     /// キャスト式 `obj => TypeName` を評価する。
     ///
     /// 動作:
-    /// 1. ターゲット型が `new_type` クラスの場合 → コンストラクタ呼び出し `TypeName(obj)`
-    /// 2. オブジェクトがインスタンスで `__cast__[TypeName]` メソッドを持つ場合 → そのメソッドを呼び出す
-    /// 3. それ以外 → TypeError
+    /// 1. ターゲット型が `new_type` クラスの場合 → コンストラクタ呼び出し `TypeName(inner_val)`
+    ///    (obj 自身が new_type インスタンスのときは先に `.value` を取り出してからラップする)
+    /// 2. obj が new_type インスタンスかつターゲット型がそのベース型の場合 → `.value` を返す
+    /// 3. オブジェクトがインスタンスで `__cast__[TypeName]` メソッドを持つ場合 → そのメソッドを呼び出す
+    /// 4. それ以外 → TypeError
     fn eval_cast(&mut self, object: &crate::ast::Expr, type_name: &str) -> Result<Value, String> {
         let obj = self.eval(object)?;
 
+        // new_type インスタンスなら内部値を先に取り出しておく
+        let inner_val = if let Value::Instance(ref inst_rc) = obj {
+            let cls = inst_rc.borrow().class.clone();
+            if cls.new_type_base.is_some() {
+                inst_rc.borrow().fields.get("value").map(|(v, _)| v.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // --- new_type へのダウンキャスト: TypeName(obj) と等価 ---
+        // obj 自身が new_type インスタンスの場合は内部値を渡してネストを防ぐ
         if let Some(target_val) = self.get_val(type_name) {
             if let Value::Class(ref cls) = target_val {
                 if cls.new_type_base.is_some() {
                     let cls_rc = cls.clone();
-                    return self.instantiate_evaled(cls_rc, vec![(None, obj)]);
+                    let arg = inner_val.unwrap_or(obj);
+                    return self.instantiate_evaled(cls_rc, vec![(None, arg)]);
                 }
             }
         }
@@ -502,6 +520,17 @@ impl Interpreter {
         match &obj {
             Value::Instance(inst_rc) => {
                 let class = inst_rc.borrow().class.clone();
+
+                // new_type インスタンスをそのベース型にキャスト: .value を返す
+                if let Some(ref base) = class.new_type_base {
+                    if base == type_name {
+                        let val = inst_rc.borrow().fields.get("value").map(|(v, _)| v.clone());
+                        return val.ok_or_else(|| {
+                            format!("TypeError: '{}' has no 'value' field", class.name)
+                        });
+                    }
+                }
+
                 let method_key = format!("__cast__[{}]", type_name);
                 let overloads = self.lookup_method_in_class(&class, &method_key)
                     .ok_or_else(|| format!(
@@ -897,9 +926,10 @@ impl Interpreter {
                 let check_index = |v: Value, label: &str| -> Result<Option<Value>, String> {
                     match v {
                         Value::None => Ok(None),
+                        Value::Int(_) => Ok(Some(v)),
                         Value::Instance(ref inst) if inst.borrow().class.name == "Index" => Ok(Some(v)),
                         other => Err(format!(
-                            "TypeError: slice {label} must be Index or None, got '{}'",
+                            "TypeError: slice {label} must be int, Index, or None, got '{}'",
                             self.type_name(&other)
                         )),
                     }

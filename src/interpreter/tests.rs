@@ -4485,3 +4485,61 @@ fn test_str_match() {
         Value::None
     ));
 }
+
+// ── cast operator: new_type ──────────────────────────────────────────────────
+
+#[test]
+fn test_cast_primitive_to_new_type_int() {
+    // 4 => MyInt should produce a MyInt instance wrapping 4
+    let src = "new_type MyInt: int\nlet x = 4=>MyInt\n";
+    let val = run_get(src, "x");
+    if let Value::Instance(rc) = val {
+        let inner = rc.borrow().fields.get("value").map(|(v, _)| v.clone());
+        assert!(matches!(inner, Some(Value::Int(4))));
+        assert_eq!(rc.borrow().class.name, "MyInt");
+    } else {
+        panic!("expected Instance, got {:?}", val);
+    }
+}
+
+#[test]
+fn test_cast_primitive_to_new_type_float() {
+    let src = "new_type Meters: float\nlet m = 2.5=>Meters\n";
+    let val = run_get(src, "m");
+    if let Value::Instance(rc) = val {
+        let inner = rc.borrow().fields.get("value").map(|(v, _)| v.clone());
+        assert!(matches!(inner, Some(Value::Float(f)) if (f - 2.5).abs() < 1e-10));
+        assert_eq!(rc.borrow().class.name, "Meters");
+    } else {
+        panic!("expected Instance");
+    }
+}
+
+#[test]
+fn test_cast_new_type_instance_to_base_int() {
+    // MyInt(7) => int should return the inner int value 7
+    let src = "new_type MyInt: int\nlet inst = MyInt(7)\nlet x = inst=>int\n";
+    let val = run_get(src, "x");
+    assert!(matches!(val, Value::Int(7)));
+}
+
+#[test]
+fn test_cast_new_type_instance_to_base_float() {
+    let src = "new_type Meters: float\nlet m = Meters(3.0)\nlet f = m=>float\n";
+    let val = run_get(src, "f");
+    assert!(matches!(val, Value::Float(f) if (f - 3.0).abs() < 1e-10));
+}
+
+#[test]
+fn test_cast_cross_new_type_same_base() {
+    // MyInt(9) => YourInt should produce YourInt(9), not YourInt(MyInt(9))
+    let src = "new_type MyInt: int\nnew_type YourInt: int\nlet a = MyInt(9)=>YourInt\n";
+    let val = run_get(src, "a");
+    if let Value::Instance(rc) = val {
+        assert_eq!(rc.borrow().class.name, "YourInt");
+        let inner = rc.borrow().fields.get("value").map(|(v, _)| v.clone());
+        assert!(matches!(inner, Some(Value::Int(9))), "inner value should be 9, not a nested instance");
+    } else {
+        panic!("expected Instance");
+    }
+}
