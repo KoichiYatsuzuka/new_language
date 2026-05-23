@@ -543,15 +543,17 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             span: span.clone(),
         },
         // Import 文は型変数置換の対象外（body はパース時に解決済み）
-        Stmt::Import { lang, module, alias, body } => Stmt::Import {
+        Stmt::Import { lang, module, with_file, alias, body } => Stmt::Import {
             lang: lang.clone(),
             module: module.clone(),
+            with_file: with_file.clone(),
             alias: alias.clone(),
             body: subst_stmts(body, type_map),
         },
-        Stmt::FromImport { lang, module, names, body } => Stmt::FromImport {
+        Stmt::FromImport { lang, module, with_file, names, body } => Stmt::FromImport {
             lang: lang.clone(),
             module: module.clone(),
+            with_file: with_file.clone(),
             names: names.clone(),
             body: subst_stmts(body, type_map),
         },

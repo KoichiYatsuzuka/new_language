@@ -640,6 +640,8 @@ pub enum Stmt {
     Import {
         lang: String,
         module: Vec<String>,
+        /// `.h` / header file path for `import[cpp-dll]` and `import[cpp-lib]`.
+        with_file: Option<String>,
         alias: Option<String>,
         body: Vec<Stmt>,
     },
@@ -655,6 +657,8 @@ pub enum Stmt {
     FromImport {
         lang: String,
         module: Vec<String>,
+        /// `.h` / header file path for `from import[cpp-dll]` / `import[cpp-lib]`.
+        with_file: Option<String>,
         names: Vec<(String, Option<String>)>,
         body: Vec<Stmt>,
     },

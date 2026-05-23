@@ -109,8 +109,8 @@ print(f.value)   # 212
 
 # Celsius and Fahrenheit are distinct — cannot be mixed
 # let bad = c.value + f.value  # allowed here since we extract int first
-let c_int = c.value
-let f_int = f.value
+let c_int = c=>int
+let f_int = f=>int
 print(c_int + f_int)  # 312 (plain ints can be added)
 
 # --- Trait-based polymorphism: dispatch via a common interface ---

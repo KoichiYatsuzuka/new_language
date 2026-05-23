@@ -150,14 +150,38 @@ impl Interpreter {
             Stmt::Try { body, handlers, finally_body } => {
                 self.exec_try(body, handlers, finally_body)
             }
-            Stmt::Import { lang, module, alias, body } => {
-                let ns = self.exec_module(lang, module, body)?;
-                let bind_name = alias.clone()
-                    .unwrap_or_else(|| module.last().unwrap().clone());
+            Stmt::Import { lang, module, with_file, alias, body } => {
+                let ns = if lang == "cpp-dll" || lang == "cpp-lib" {
+                    let file_path = module.first().map(|s| s.as_str()).unwrap_or("");
+                    let cache_key = (lang.clone(), PathBuf::from(file_path));
+                    if let Some(ModuleState::Loaded(cached)) = self.module_cache.get(&cache_key).cloned() {
+                        cached
+                    } else {
+                        self.module_cache.insert(cache_key.clone(), ModuleState::Loading);
+                        let ns = self.load_cpp_module(lang, file_path, with_file.as_deref())?;
+                        self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
+                        ns
+                    }
+                } else {
+                    self.exec_module(lang, module, body)?
+                };
+                // Default bind name: for cpp imports use the file stem; otherwise last module segment
+                let bind_name = alias.clone().unwrap_or_else(|| {
+                    if lang == "cpp-dll" || lang == "cpp-lib" {
+                        let path = module.first().map(|s| s.as_str()).unwrap_or("lib");
+                        std::path::Path::new(path)
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("lib")
+                            .to_string()
+                    } else {
+                        module.last().unwrap().clone()
+                    }
+                });
                 self.declare_var(bind_name, Var::new(Value::Namespace(ns), false));
                 Ok(ExecResult::Normal)
             }
-            Stmt::FromImport { lang, module, names, body } => {
+            Stmt::FromImport { lang, module, with_file: _, names, body } => {
                 let ns = self.exec_module(lang, module, body)?;
                 for (orig_name, alias) in names {
                     let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());
@@ -1307,6 +1331,248 @@ impl Interpreter {
     }
 
     // ---------------------------------------------------------------------------
+    // C++ bridge module loading
+    // ---------------------------------------------------------------------------
+
+    /// Load a C++ DLL (`cpp-dll`) or static library (`cpp-lib`) as a tl module.
+    ///
+    /// Steps:
+    /// 1. Parse the `.h` header (if provided) to extract `extern "C"` function
+    ///    signatures.
+    /// 2. Generate a thin Rust wrapper that:
+    ///    - For `cpp-dll`: dynamically loads `file_path` via `LoadLibraryA`/`dlopen`
+    ///      and calls each function through a transmuted pointer.
+    ///    - For `cpp-lib`: statically links `file_path` via `#[link(..., kind="static")]`.
+    /// 3. Compile the wrapper with `rustc --crate-type cdylib`.
+    /// 4. Load the resulting DLL and build a `Namespace` of `NativeFunction` values.
+    fn load_cpp_module(
+        &mut self,
+        lang: &str,
+        file_path: &str,
+        header_path: Option<&str>,
+    ) -> Result<Rc<NamespaceData>, String> {
+        // 1. Parse header
+        let sigs: Vec<super::cpp_bridge::CFnSig> = match header_path {
+            Some(h) => {
+                let content = std::fs::read_to_string(h)
+                    .map_err(|e| format!("CppImport: cannot read header '{h}': {e}"))?;
+                let parsed = super::cpp_bridge::parse_header(&content);
+                if parsed.is_empty() {
+                    eprintln!("CppImport: no supported extern \"C\" functions found in '{h}'");
+                }
+                parsed
+            }
+            None => {
+                eprintln!("CppImport: no `with` header provided — namespace will be empty");
+                vec![]
+            }
+        };
+
+        eprintln!(
+            "CppImport[{lang}]: building wrapper for {} function(s) from '{file_path}'",
+            sigs.len()
+        );
+
+        // For cpp-lib on Windows: attempt MSVC shim path (handles C++ name mangling).
+        // Falls back to the rustc gen_lib_wrapper path on failure or if MSVC is absent.
+        #[cfg(windows)]
+        if lang == "cpp-lib" && !sigs.is_empty() {
+            match self.try_msvc_shim(file_path, &sigs) {
+                Ok(Some(ns)) => return Ok(ns),
+                Ok(None)     => {} // MSVC not found — fall through
+                Err(e)       => eprintln!("CppShim: {e}\nFalling back to rustc path"),
+            }
+        }
+
+        // 2. Generate wrapper source (fallback / cpp-dll path)
+        let (rust_src, extra_link_dirs) = match lang {
+            "cpp-dll" => {
+                let src = super::cpp_bridge::gen_dll_wrapper(file_path, &sigs);
+                (src, vec![])
+            }
+            "cpp-lib" => {
+                let stem = std::path::Path::new(file_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                // Strip leading "lib" prefix on Unix (libfoo.a → "foo")
+                #[cfg(not(windows))]
+                let stem = stem.strip_prefix("lib").unwrap_or(&stem).to_string();
+                let (src, lib_dir) = super::cpp_bridge::gen_lib_wrapper(file_path, &stem, &sigs);
+                (src, vec![lib_dir])
+            }
+            _ => unreachable!(),
+        };
+
+        // 3. Compile
+        let dll_bytes = super::cpp_bridge::compile_wrapper(&rust_src, &extra_link_dirs)?;
+
+        // 4. Write to temp file and load
+        let ext      = crate::partial_compiler::native_lib_ext();
+        let tmp_path = std::env::temp_dir()
+            .join(format!("_tl_cpp_{:x}.{ext}", simple_hash(file_path)));
+
+        std::fs::write(&tmp_path, &dll_bytes)
+            .map_err(|e| format!("CppImport: cannot write wrapper DLL: {e}"))?;
+
+        self.load_cpp_wrapper_dll(&tmp_path, &sigs, file_path)
+    }
+
+    /// Windows-only: try to build a C++ shim DLL via MSVC then wrap it.
+    ///
+    /// Steps:
+    ///  1. Find `vcvarsall.bat`.
+    ///  2. Find the C++ header next to the `.lib` (e.g. `DxLib.h` beside `DxLib_x64.lib`).
+    ///  3. Generate a shim `.cpp` that includes the real header and exports flat C wrappers.
+    ///  4. Compile the shim to a `.dll` with `cl.exe`, linking all `.lib` files in the
+    ///     lib directory plus standard Windows DirectX / multimedia libs.
+    ///  5. Generate a Rust wrapper (via `gen_dll_wrapper`) that loads the shim DLL.
+    ///  6. Compile and load the Rust wrapper.
+    ///
+    /// Returns `Ok(None)` when MSVC or the header is not found (caller should fall back).
+    #[cfg(windows)]
+    fn try_msvc_shim(
+        &mut self,
+        lib_path: &str,
+        sigs: &[super::cpp_bridge::CFnSig],
+    ) -> Result<Option<Rc<NamespaceData>>, String> {
+        use super::cpp_bridge::{
+            find_msvc_vcvarsall, gen_cpp_shim_source, compile_cpp_shim, lib_namespace_from_stem,
+        };
+
+        // 1. Find MSVC
+        let msvc = match find_msvc_vcvarsall() {
+            Some(m) => m,
+            None => {
+                eprintln!("CppShim: MSVC not found — falling back to rustc path");
+                return Ok(None);
+            }
+        };
+
+        let lib = std::path::Path::new(lib_path);
+        let lib_dir = match lib.parent() {
+            Some(d) if !d.as_os_str().is_empty() => d,
+            _ => std::path::Path::new("."),
+        };
+        let stem = lib.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let namespace = lib_namespace_from_stem(stem);
+
+        // 2. Find C++ header: try "{namespace}.h" and "{stem}.h" in lib_dir
+        let header = [
+            lib_dir.join(format!("{namespace}.h")),
+            lib_dir.join(format!("{stem}.h")),
+        ]
+        .into_iter()
+        .find(|p| p.exists());
+
+        let header = match header {
+            Some(h) => h,
+            None => {
+                eprintln!(
+                    "CppShim: no C++ header found in '{}' (tried {namespace}.h, {stem}.h) — falling back",
+                    lib_dir.display()
+                );
+                return Ok(None);
+            }
+        };
+
+        eprintln!(
+            "CppShim: header='{}', namespace='{namespace}'",
+            header.display()
+        );
+
+        // 3. Generate shim source.
+        // Pass only the header filename (e.g. "DxLib.h"), not the full path.
+        // compile_cpp_shim adds /I lib_dir to the cl.exe call so the compiler
+        // can find the header. This keeps shim.cpp pure ASCII, avoiding
+        // any code-page issues when cl.exe reads the source file.
+        let header_name = header.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("header.h");
+        let shim_src = gen_cpp_shim_source(sigs, header_name, Some(&namespace));
+
+        // 4. Compile shim to DLL
+        let shim_dll = compile_cpp_shim(&shim_src, &msvc, lib)?;
+
+        // 5. Wrap the shim DLL with the standard gen_dll_wrapper path
+        let shim_dll_str = shim_dll.to_string_lossy().to_string();
+        let wrapper_src = super::cpp_bridge::gen_dll_wrapper(&shim_dll_str, sigs);
+
+        // 6. Compile the Rust wrapper and load it
+        let wrapper_bytes = super::cpp_bridge::compile_wrapper(&wrapper_src, &[])?;
+
+        let ext = crate::partial_compiler::native_lib_ext();
+        let tmp_path = std::env::temp_dir()
+            .join(format!("_tl_cpp_shim_{:x}.{ext}", simple_hash(lib_path)));
+
+        std::fs::write(&tmp_path, &wrapper_bytes)
+            .map_err(|e| format!("CppShim: cannot write wrapper DLL: {e}"))?;
+
+        let ns = self.load_cpp_wrapper_dll(&tmp_path, sigs, lib_path)?;
+        Ok(Some(ns))
+    }
+
+    /// Load a pre-compiled cpp wrapper DLL and build its `Namespace`.
+    ///
+    /// Calls `tl_init_bridge` (if present) to give the wrapper the callback
+    /// table and trigger DLL loading, then registers each function as a
+    /// `NativeFunction` value keyed by its name.
+    fn load_cpp_wrapper_dll(
+        &mut self,
+        lib_path: &std::path::Path,
+        sigs: &[super::cpp_bridge::CFnSig],
+        module_name: &str,
+    ) -> Result<Rc<NamespaceData>, String> {
+        let lib = unsafe { libloading::Library::new(lib_path) }
+            .map_err(|e| format!("CppImport: cannot load wrapper DLL: {e}"))?;
+
+        let lib_path_buf = lib_path.to_path_buf();
+
+        // Initialise: prefer tl_init_bridge (cpp-dll), fall back to tl_init
+        let cb_ptr = super::native_api::get_callbacks();
+        let bridge_init = unsafe {
+            lib.get::<unsafe extern "C" fn(*const super::native_api::TlCallbacks)>(
+                b"tl_init_bridge\0"
+            )
+        };
+        if let Ok(f) = bridge_init {
+            unsafe { f(cb_ptr) };
+        } else if let Ok(f) = unsafe {
+            lib.get::<unsafe extern "C" fn(*const super::native_api::TlCallbacks)>(b"tl_init\0")
+        } {
+            unsafe { f(cb_ptr) };
+        }
+
+        let mut members: HashMap<String, Value> = HashMap::new();
+        for sig in sigs {
+            let symbol = format!("{}_tl\0", sig.name);
+            let has_sym = unsafe {
+                lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol.as_bytes()).is_ok()
+            };
+            if has_sym {
+                let fn_ref = Arc::new(NativeFnRef {
+                    lib_path: lib_path_buf.clone(),
+                    fn_name: sig.name.clone(),
+                    n_params: sig.params.len(),
+                    param_mutabilities: vec![false; sig.params.len()],
+                });
+                members.insert(sig.name.clone(), Value::NativeFunction(fn_ref));
+            }
+        }
+
+        // Register into global scope so module-level calls resolve
+        for (name, value) in &members {
+            self.scopes[0].entry(name.clone())
+                .or_insert_with(|| Var::new(value.clone(), false));
+        }
+
+        self.native_libs.insert(lib_path_buf, NativeLibWrapper(lib));
+
+        Ok(Rc::new(NamespaceData { name: module_name.to_string(), members }))
+    }
+
+    // ---------------------------------------------------------------------------
     // Block execution helpers
     // ---------------------------------------------------------------------------
 
@@ -1419,6 +1685,21 @@ impl Interpreter {
             )),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Misc free helpers
+// ---------------------------------------------------------------------------
+
+/// Simple non-cryptographic hash of a string — used to generate stable temp
+/// file names for cpp bridge DLLs.
+fn simple_hash(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }
 
 // ---------------------------------------------------------------------------

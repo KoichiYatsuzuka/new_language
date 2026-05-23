@@ -931,6 +931,11 @@ impl Parser {
             "tl-auto".to_string()
         };
 
+        // cpp-dll / cpp-lib: `import[cpp-dll] "path.dll" with "path.h" as alias`
+        if lang == "cpp-dll" || lang == "cpp-lib" {
+            return self.parse_cpp_import(lang);
+        }
+
         // モジュールパス (`a.b.c`)
         let module = self.parse_module_path()?;
 
@@ -945,7 +950,44 @@ impl Parser {
         // モジュールの tl AST を取得（キャッシュ込み）
         let body = self.load_module(&lang, &module)?;
 
-        Ok(Stmt::Import { lang, module, alias, body })
+        Ok(Stmt::Import { lang, module, with_file: None, alias, body })
+    }
+
+    /// `import[cpp-dll] "lib.dll" with "lib.h" as alias` をパースする。
+    /// `import[cpp-lib] "lib.lib" with "lib.h" as alias` も同様。
+    fn parse_cpp_import(&mut self, lang: String) -> Result<Stmt, String> {
+        // ファイルパス (文字列リテラル)
+        let file_path = match self.current().clone() {
+            Token::Str(s) => { self.advance(); s }
+            other => return Err(format!(
+                "import[{lang}]: expected string literal for library path, got `{other}`"
+            )),
+        };
+
+        // `with "header.h"` (省略可)
+        let with_file = if *self.current() == Token::With {
+            self.advance();
+            match self.current().clone() {
+                Token::Str(s) => { self.advance(); Some(s) }
+                other => return Err(format!(
+                    "import[{lang}]: expected string literal after `with`, got `{other}`"
+                )),
+            }
+        } else {
+            None
+        };
+
+        // `as alias` — cpp imports はエイリアスを強く推奨するが省略可
+        let alias = if *self.current() == Token::As {
+            self.advance();
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+
+        // ファイルパスをモジュール識別子として使う (キャッシュキー兼デフォルト名に利用)
+        let module = vec![file_path];
+        Ok(Stmt::Import { lang, module, with_file, alias, body: vec![] })
     }
 
     /// `from module import[lang] Name1, Name2 as N2` をパースして `Stmt::FromImport` を返す。
@@ -988,7 +1030,7 @@ impl Parser {
         // モジュールの tl AST を取得
         let body = self.load_module(&lang, &module)?;
 
-        Ok(Stmt::FromImport { lang, module, names, body })
+        Ok(Stmt::FromImport { lang, module, with_file: None, names, body })
     }
 
     /// `[lang]` トークン列をパースして言語識別子文字列を返す。

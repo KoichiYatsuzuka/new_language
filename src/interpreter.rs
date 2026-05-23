@@ -48,6 +48,8 @@ mod templates;
 pub(self) mod py_interop;
 #[path = "interpreter/native_api.rs"]
 pub(self) mod native_api;
+#[path = "interpreter/cpp_bridge.rs"]
+pub(self) mod cpp_bridge;
 #[path = "interpreter/async_mgr.rs"]
 pub(crate) mod async_mgr;
 #[path = "interpreter/debugger.rs"]
