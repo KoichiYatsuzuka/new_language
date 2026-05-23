@@ -319,7 +319,7 @@ Traverses the AST after parsing and before execution, collecting and reporting `
   - `AsyncManager` methods: `all_done() -> bool`, `wait_for_finish([await_interval_msec=100])`
   - `wait_for_finish()` blocks until all tasks complete; if `raise_immediately` is true and any task raised an error, propagates the first error as a catchable `raise` (use `try/except:`)
   - `Async` namespace: `Async.Waiting`, `Async.Running`, `Async.Done` — task progress states
-  - Capture semantics: all variables are deep-cloned at `<-` time; `mut` captures are independent copies per task (no shared state between threads)
+  - Capture semantics: at `<-` time, `mut` variables are captured by shared reference (Rc clone) so the task can propagate mutations back to the caller's scope; `let` variables are deep-cloned (independent copies)
   - `Value::deep_clone()` creates fully independent copies of all value types (new `Rc`s, no sharing across threads)
 
 ### VS Code Extension (`vscode-extension/`)

@@ -1,8 +1,8 @@
 // async_mgr.rs — AsyncStatus, AsyncManagerData, threading logic
 //
-// Each async task captures the caller's scope as a deep-cloned environment,
-// runs in a dedicated OS thread via std::thread::spawn, and sends its result
-// back through an mpsc channel.  AsyncManagerData::try_schedule starts new
+// Each async task captures the caller's scope: mut variables are shared by Rc reference
+// (allowing mutation propagation), let variables are deep-cloned.  The task runs in a
+// dedicated OS thread via std::thread::spawn and sends its result back through an mpsc channel.  AsyncManagerData::try_schedule starts new
 // threads whenever a slot is free (up to num_thread), and poll_completed
 // harvests finished threads via try_recv.
 
@@ -262,15 +262,23 @@ impl AsyncStatus {
 // Collect captured environment from interpreter scopes (deep-cloned)
 // ---------------------------------------------------------------------------
 
-/// Snapshot the visible scope variables, deep-cloning each value.
-/// The outermost (global) scope is included so built-in lookups work.
+/// Snapshot the visible scope variables for an async task.
+/// - `mut` variables: shared by reference (Rc clone) so the task sees and propagates mutations.
+/// - `let` variables: deep-cloned for an independent copy (mutations are impossible anyway).
+/// SAFETY: sharing Rc across threads via SendableEnv's unsafe impl Send; the caller is
+/// responsible for avoiding concurrent access to the same Rc from multiple threads.
 pub(super) fn capture_env(interp: &Interpreter) -> Vec<(String, Value, bool)> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut env: Vec<(String, Value, bool)> = Vec::new();
     for scope in interp.scopes.iter().rev() {
         for (name, var) in scope {
             if seen.insert(name.clone()) {
-                env.push((name.clone(), var.get_value().deep_clone(), var.is_mutable()));
+                let value = if var.is_mutable() {
+                    var.get_value().clone()
+                } else {
+                    var.get_value().deep_clone()
+                };
+                env.push((name.clone(), value, var.is_mutable()));
             }
         }
     }
