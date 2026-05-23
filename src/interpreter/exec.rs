@@ -1358,12 +1358,13 @@ impl Interpreter {
         let raw = std::fs::read(header_path)
             .map_err(|e| format!("CppImport: cannot read header '{header_path_str}': {e}"))?;
         let raw_str = String::from_utf8_lossy(&raw);
-        let mut sigs = super::cpp_bridge::parse_header(&raw_str);
+        // Load config before parsing so custom_type_map is available for all parse_header calls.
+        let config = super::cpp_bridge::load_cpp_config(header_dir);
+        let mut sigs = super::cpp_bridge::parse_header(&raw_str, &config.custom_type_map);
 
         match lang {
             "cpp-lib" => {
                 // Build tl_{stem}.dll next to the header (permanent cache).
-                let config = super::cpp_bridge::load_cpp_config(header_dir);
 
                 // When precompile_macros are set, the main header may conditionally
                 // include other headers (e.g. WINDOWS_DESKTOP_OS → DxFunctionWin.h).
@@ -1376,7 +1377,7 @@ impl Interpreter {
                     for inc_path in &included {
                         if let Ok(inc_raw) = std::fs::read(inc_path) {
                             let inc_str = String::from_utf8_lossy(&inc_raw);
-                            let inc_sigs = super::cpp_bridge::parse_header(&inc_str);
+                            let inc_sigs = super::cpp_bridge::parse_header(&inc_str, &config.custom_type_map);
                             let new_count = inc_sigs.iter().filter(|s| !known_names.contains(&s.name)).count();
                             if new_count > 0 {
                                 eprintln!(

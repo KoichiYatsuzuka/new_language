@@ -7,7 +7,7 @@
 //   1. parse_header() reads the stub .h file and extracts extern "C" function signatures.
 //   2. gen_dll_wrapper() emits a standalone Rust source file that:
 //        - Dynamically loads the original DLL via OS APIs (LoadLibraryA / dlopen).
-//        - Exports one `{name}_tl(cb, argc, argv) -> i64` wrapper per function,
+//        - Exports one `{name}_tl(argc, argv) -> i64` wrapper per function,
 //          marshaling between tl handles and native C types.
 //   3. compile_wrapper() compiles the source with `rustc --crate-type cdylib`.
 //   4. The resulting DLL is loaded by the interpreter via the existing NativeFnRef ABI.
@@ -19,8 +19,36 @@
 // Supported C types: int / long / float / double / bool / void / void* / const char*
 // Not yet supported: struct / union / enum types, function pointers.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use super::native_api::{TL_FALSE, TL_NONE, TL_TRUE};
+
+// ── Implementation constants ─────────────────────────────────────────────────
+const TMP_RS_NAME: &str         = "_tl_cpp_bridge.rs";
+const TMP_DLL_STEM: &str        = "_tl_cpp_bridge";
+const RUSTC_EDITION: &str       = "2021";
+const RUSTC_OPT_LEVEL: &str     = "2";
+const DEFAULTPARAM_MACRO: &str  = "DEFAULTPARAM";
+const CONFIG_FILE_NAME: &str    = "tl_config.json";
+const TL_DLL_PREFIX: &str       = "tl_";
+const TL_SYMS_EXT: &str         = "syms";
+const TL_SHIM_SUFFIX: &str      = "_shim";
+const MAX_COMPILE_PASSES: usize = 5;
+// RTLD_LAZY = 1 on all POSIX platforms; this value is embedded as literal `1`
+// in the PLATFORM_LOADER string below (it cannot be referenced via a Rust const
+// inside a string literal without converting the const to a runtime function).
+#[allow(dead_code)]
+const RTLD_LAZY: i32 = 1;
+
+const DEFAULT_SYSTEM_LIBS: &[&str] = &[
+    "winmm.lib", "imm32.lib", "ws2_32.lib", "dxguid.lib",
+    "d3d9.lib", "d3d11.lib", "dxgi.lib", "dinput8.lib", "d3dcompiler.lib",
+];
+// Ordered by preference: more specific (versioned) first.
+const DEFAULT_LIB_PATTERNS: &[&str] = &["_vs2015_x64_md.lib", "_x64.lib"];
+const DEFAULT_TARGET_ARCH: &str = "amd64";
 
 // ── C type model ─────────────────────────────────────────────────────────────
 
@@ -106,7 +134,7 @@ impl CType {
             CType::Long    => format!("((*CB).to_int)({handle})"),
             CType::Float   => format!("((*CB).to_float)({handle}) as f32"),
             CType::Double  => format!("((*CB).to_float)({handle})"),
-            CType::Bool    => format!("if {handle} == 1i64 {{ 1i32 }} else {{ 0i32 }}"),
+            CType::Bool    => format!("if {handle} == {TL_TRUE}i64 {{ 1i32 }} else {{ 0i32 }}"),
             CType::Void    => "()".to_string(),
             CType::VoidPtr | CType::OpaqueStructPtr { .. } => format!("{handle} as *mut i8"),
             CType::CharPtr => format!("((*CB).to_cstr)({handle})"),
@@ -121,13 +149,12 @@ impl CType {
             CType::Long    => format!("((*CB).make_int)({val})"),
             CType::Float   => format!("((*CB).make_float)({val} as f64)"),
             CType::Double  => format!("((*CB).make_float)({val})"),
-            CType::Bool    => format!("if {val} != 0 {{ 1i64 }} else {{ 2i64 }}"),
-            CType::Void    => "0i64".to_string(), // TL_NONE
+            CType::Bool    => format!("if {val} != 0 {{ {TL_TRUE}i64 }} else {{ {TL_FALSE}i64 }}"),
+            CType::Void    => format!("{TL_NONE}i64"),
             CType::VoidPtr | CType::OpaqueStructPtr { .. } => format!("{val} as i64"),
-            CType::CharPtr | CType::Ptr { .. } => "0i64".to_string(), // pointers as return are opaque
+            CType::CharPtr | CType::Ptr { .. } => format!("{TL_NONE}i64"), // pointers as return are opaque
         }
     }
-
 }
 
 // ── Function signature ───────────────────────────────────────────────────────
@@ -150,22 +177,25 @@ pub struct CFnSig {
 
 /// Parse C/C++ function declarations from a header file.
 ///
+/// `custom` maps additional C type names to tl primitive types
+/// (`"int"` / `"long"` / `"float"` / `"double"` / `"bool"` / `"void"`).
+/// These are checked before the built-in Windows type table.
+///
 /// Recognises:
 /// - `extern "C" { ... }` blocks — plain C linkage, recurses with same namespace
 /// - `namespace X { ... }` blocks — recurses with namespace = X
 /// - Windows types (TCHAR, HWND, DWORD, …) are automatically mapped to tl types
 ///
 /// Functions with unresolvable types are silently skipped.
-pub fn parse_header(content: &str) -> Vec<CFnSig> {
+pub fn parse_header(content: &str, custom: &HashMap<String, String>) -> Vec<CFnSig> {
     let stripped = strip_comments(content);
     let mut decls: Vec<(String, Option<String>)> = Vec::new();
     scan_scope(&stripped, None, &mut decls);
 
     let mut sigs = Vec::new();
     for (decl, ns) in &decls {
-        match parse_fn_decl_ns(decl, ns.clone()) {
-            Ok(sig) => sigs.push(sig),
-            Err(_) => {}
+        if let Ok(sig) = parse_fn_decl_ns(decl, ns.clone(), custom) {
+            sigs.push(sig);
         }
     }
     sigs
@@ -289,7 +319,11 @@ fn scan_scope(text: &str, ns: Option<String>, decls: &mut Vec<(String, Option<St
 
 /// Parse a function declaration that may have a leading `extern` keyword,
 /// default-parameter macros (e.g. `DEFAULTPARAM(= NULL)`), and a namespace.
-fn parse_fn_decl_ns(decl: &str, namespace: Option<String>) -> Result<CFnSig, String> {
+fn parse_fn_decl_ns(
+    decl: &str,
+    namespace: Option<String>,
+    custom: &HashMap<String, String>,
+) -> Result<CFnSig, String> {
     // Strip leading `extern` keyword
     let decl = decl.trim();
     let decl = if decl.starts_with("extern") {
@@ -318,7 +352,7 @@ fn parse_fn_decl_ns(decl: &str, namespace: Option<String>) -> Result<CFnSig, Str
     if name.is_empty() || name.contains("operator") || name.starts_with('~') {
         return Err("not a plain function".to_string());
     }
-    let ret = parse_c_type_str(ret_str.trim())?;
+    let ret = parse_c_type_str(ret_str.trim(), custom)?;
 
     let mut params: Vec<(String, CType)> = Vec::new();
     // Track which raw (pre-strip) params have DEFAULTPARAM to compute n_required
@@ -332,7 +366,7 @@ fn parse_fn_decl_ns(decl: &str, namespace: Option<String>) -> Result<CFnSig, Str
                 Ok(r) => r,
                 Err(_) => (p.to_string(), format!("_p{idx}")),
             };
-            match parse_c_type_str(type_str.trim()) {
+            match parse_c_type_str(type_str.trim(), custom) {
                 Ok(ct) => params.push((pname, ct)),
                 Err(e) => return Err(format!("param {pname}: {e}")),
             }
@@ -342,7 +376,7 @@ fn parse_fn_decl_ns(decl: &str, namespace: Option<String>) -> Result<CFnSig, Str
     // n_required = index of first param that has DEFAULTPARAM in the raw declaration
     // (params after the first optional one are also optional)
     let n_required = raw_param_list.iter()
-        .position(|p| p.contains("DEFAULTPARAM"))
+        .position(|p| p.contains(DEFAULTPARAM_MACRO))
         .unwrap_or(params.len());
     // n_required must not exceed actual parsed params count
     let n_required = n_required.min(params.len());
@@ -487,7 +521,12 @@ fn split_type_and_name(s: &str) -> Result<(String, String), String> {
 }
 
 /// Map a C type string (possibly with trailing `*`) to `CType`.
-fn parse_c_type_str(s: &str) -> Result<CType, String> {
+///
+/// `custom` entries are checked first; they map a C type name (without `*`, without
+/// qualifiers) to a tl primitive: `"int"` / `"long"` / `"float"` / `"double"` /
+/// `"bool"` / `"void"`.  If a custom mapping exists for the base type name, it is
+/// applied and then pointer decoration is wrapped as usual.
+fn parse_c_type_str(s: &str, custom: &HashMap<String, String>) -> Result<CType, String> {
     let s = s.trim();
 
     // Count and strip trailing '*'
@@ -507,6 +546,25 @@ fn parse_c_type_str(s: &str) -> Result<CType, String> {
         .filter(|t| !matches!(**t, "unsigned" | "signed"))
         .copied()
         .collect();
+
+    // ── Check user-defined type mappings first ────────────────────────────────
+    let core_str = core.join(" ");
+    if let Some(tl_type) = custom.get(&core_str) {
+        let base_ct = match tl_type.as_str() {
+            "int"    => CType::Int,
+            "long"   => CType::Long,
+            "float"  => CType::Float,
+            "double" => CType::Double,
+            "bool"   => CType::Bool,
+            "void"   => CType::Void,
+            other    => return Err(format!("custom_type_map: unknown tl type '{other}'")),
+        };
+        return Ok(if ptr_count > 0 {
+            CType::Ptr { inner: Box::new(base_ct), mutable: !is_const }
+        } else {
+            base_ct
+        });
+    }
 
     if ptr_count > 0 {
         if ptr_count > 1 {
@@ -625,7 +683,8 @@ static mut CB: *const TlCallbacks = std::ptr::null();
 pub unsafe extern "C" fn tl_init(cb: *const TlCallbacks) { CB = cb; }
 "#;
 
-// Platform loader inserted into dll-wrapper source
+// Platform loader inserted into dll-wrapper source.
+// RTLD_LAZY is embedded as the literal `1` (standardized value on all POSIX platforms).
 const PLATFORM_LOADER: &str = r#"
 #[cfg(windows)]
 mod _loader {
@@ -670,7 +729,7 @@ unsafe fn _dll() -> usize {
 ///
 /// The wrapper uses OS-level `LoadLibraryA`/`dlopen` to load `dll_path` at
 /// `tl_init` time, then resolves each function via `GetProcAddress`/`dlsym`
-/// on every call.  All functions follow the `{name}_tl(cb, argc, argv) -> i64`
+/// on every call.  All functions follow the `{name}_tl(argc, argv) -> i64`
 /// convention so the existing `NativeFnRef` machinery can drive them.
 pub fn gen_dll_wrapper(dll_path: &str, sigs: &[CFnSig]) -> String {
     let mut src = String::new();
@@ -800,16 +859,20 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
 /// `extra_link_dirs` are passed as `-L` flags (used by `cpp-lib` to locate
 /// the static library).
 pub fn compile_wrapper(rust_src: &str, extra_link_dirs: &[PathBuf]) -> Result<Vec<u8>, String> {
-    let tmp_dir = std::env::temp_dir();
-    let rs_path  = tmp_dir.join("_tl_cpp_bridge.rs");
+    let tmp_dir  = std::env::temp_dir();
+    let rs_path  = tmp_dir.join(TMP_RS_NAME);
     let ext      = crate::partial_compiler::native_lib_ext();
-    let dll_path = tmp_dir.join(format!("_tl_cpp_bridge.{ext}"));
+    let dll_path = tmp_dir.join(format!("{TMP_DLL_STEM}.{ext}"));
 
     std::fs::write(&rs_path, rust_src)
         .map_err(|e| format!("CppImport: cannot write wrapper source: {e}"))?;
 
     let mut cmd = Command::new("rustc");
-    cmd.args(["--edition", "2021", "--crate-type", "cdylib", "-C", "opt-level=2"]);
+    cmd.args([
+        "--edition", RUSTC_EDITION,
+        "--crate-type", "cdylib",
+        "-C", &format!("opt-level={RUSTC_OPT_LEVEL}"),
+    ]);
     for dir in extra_link_dirs {
         cmd.arg("-L").arg(dir);
     }
@@ -848,22 +911,33 @@ pub struct MsvcPaths {
     pub vcvarsall: PathBuf,
 }
 
-/// Search common Visual Studio installation paths for `vcvarsall.bat`.
-/// Returns `None` if no MSVC installation is found.
-pub fn find_msvc_vcvarsall() -> Option<MsvcPaths> {
-    let candidates = [
-        r"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2017\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2017\Professional\VC\Auxiliary\Build\vcvarsall.bat",
-        r"C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvarsall.bat",
-    ];
-    for path in &candidates {
+/// Built-in Visual Studio installation candidates searched when no explicit
+/// `msvc` path is given in `tl_config.json`.
+const MSVC_CANDIDATES: &[&str] = &[
+    r"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
+    r"C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat",
+    r"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat",
+    r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat",
+    r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
+    r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Professional\VC\Auxiliary\Build\vcvarsall.bat",
+    r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat",
+    r"C:\Program Files (x86)\Microsoft Visual Studio\2017\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
+    r"C:\Program Files (x86)\Microsoft Visual Studio\2017\Professional\VC\Auxiliary\Build\vcvarsall.bat",
+    r"C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvarsall.bat",
+];
+
+/// Search for `vcvarsall.bat`.
+///
+/// Checks `extra_paths` (from `tl_config.json` → `msvc_search_paths`) first,
+/// then falls back to the built-in `MSVC_CANDIDATES` list.
+/// Returns `None` if no installation is found.
+pub fn find_msvc_vcvarsall(extra_paths: &[String]) -> Option<MsvcPaths> {
+    for p in extra_paths {
+        if Path::new(p).exists() {
+            return Some(MsvcPaths { vcvarsall: PathBuf::from(p) });
+        }
+    }
+    for path in MSVC_CANDIDATES {
         if Path::new(path).exists() {
             return Some(MsvcPaths { vcvarsall: PathBuf::from(path) });
         }
@@ -875,10 +949,20 @@ pub fn find_msvc_vcvarsall() -> Option<MsvcPaths> {
 ///
 /// Each `CFnSig::namespace` is used per-function so multiple namespaces can
 /// coexist (though in practice all DxLib functions share one namespace).
-pub fn gen_cpp_shim_source(sigs: &[CFnSig], header_name: &str, precompile_macros: &[String]) -> String {
+///
+/// `win32_lean_and_mean` controls whether `#define WIN32_LEAN_AND_MEAN` is
+/// emitted before the Windows header includes.
+pub fn gen_cpp_shim_source(
+    sigs: &[CFnSig],
+    header_name: &str,
+    precompile_macros: &[String],
+    win32_lean_and_mean: bool,
+) -> String {
     let mut src = String::new();
 
-    src.push_str("#define WIN32_LEAN_AND_MEAN\n");
+    if win32_lean_and_mean {
+        src.push_str("#define WIN32_LEAN_AND_MEAN\n");
+    }
     for m in precompile_macros {
         src.push_str(&format!("#define {m}\n"));
     }
@@ -944,13 +1028,48 @@ pub fn gen_cpp_shim_source(sigs: &[CFnSig], header_name: &str, precompile_macros
 // ── Build config ────────────────────────────────────────────────────────────
 
 /// Build configuration loaded from `tl_config.json`.
-#[derive(Default)]
 pub struct CppBuildConfig {
-    /// Explicit path to `vcvarsall.bat`.  When `None`, auto-detection is used.
+    /// Explicit path to `vcvarsall.bat`. When `None`, auto-detection is used.
     pub msvc: Option<PathBuf>,
+    /// Additional search paths tried before `MSVC_CANDIDATES` when `msvc` is `None`.
+    /// Configurable via `"msvc_search_paths": [...]` in `tl_config.json`.
+    pub msvc_search_paths: Vec<String>,
     /// Preprocessor macros to `#define` before the header `#include` in the shim.
-    /// E.g. `["WINDOWS_DESKTOP_OS"]` causes `DxLib.h` to include `DxFunctionWin.h`.
     pub precompile_macros: Vec<String>,
+    /// Target architecture passed to `vcvarsall.bat` (default: `"amd64"`).
+    pub target_arch: String,
+    /// Extra flags appended to the `cl.exe` invocation (after the fixed base flags).
+    pub cl_extra_flags: Vec<String>,
+    /// Extra flags appended to the `/link` section of the `cl.exe` invocation.
+    pub link_extra_flags: Vec<String>,
+    /// System / SDK libraries to link. Defaults to `DEFAULT_SYSTEM_LIBS`.
+    pub system_libs: Vec<String>,
+    /// Whether to emit `#define WIN32_LEAN_AND_MEAN` in the shim (default: `true`).
+    pub win32_lean_and_mean: bool,
+    /// Additional C type → tl primitive mappings checked before the built-in table.
+    /// Keys are C type names (no `*`, no qualifiers); values are tl primitive names
+    /// (`"int"` / `"long"` / `"float"` / `"double"` / `"bool"` / `"void"`).
+    pub custom_type_map: HashMap<String, String>,
+    /// Suffix patterns used to discover library files next to the header.
+    /// Ordered by preference (most specific first). Defaults to `DEFAULT_LIB_PATTERNS`.
+    pub lib_patterns: Vec<String>,
+}
+
+impl Default for CppBuildConfig {
+    fn default() -> Self {
+        CppBuildConfig {
+            msvc: None,
+            msvc_search_paths: Vec::new(),
+            precompile_macros: Vec::new(),
+            target_arch: DEFAULT_TARGET_ARCH.to_string(),
+            cl_extra_flags: Vec::new(),
+            link_extra_flags: Vec::new(),
+            system_libs: DEFAULT_SYSTEM_LIBS.iter().map(|s| s.to_string()).collect(),
+            win32_lean_and_mean: true,
+            custom_type_map: HashMap::new(),
+            lib_patterns: DEFAULT_LIB_PATTERNS.iter().map(|s| s.to_string()).collect(),
+        }
+    }
 }
 
 /// Search for `tl_config.json` starting at `start_dir` and walking up to
@@ -973,7 +1092,7 @@ pub fn load_cpp_config(start_dir: &Path) -> CppBuildConfig {
     }
 
     for dir in &search {
-        let cfg_path = dir.join("tl_config.json");
+        let cfg_path = dir.join(CONFIG_FILE_NAME);
         if cfg_path.exists() {
             if let Ok(text) = std::fs::read_to_string(&cfg_path) {
                 parse_tl_config_json(&text, &mut config);
@@ -986,12 +1105,25 @@ pub fn load_cpp_config(start_dir: &Path) -> CppBuildConfig {
 }
 
 /// Minimal JSON parser for `tl_config.json` — no external dependencies.
-/// Handles the expected schema:
+///
+/// Expected schema:
 /// ```json
-/// { "cpp": { "msvc": "...", "precompile_macros": ["MACRO1", "MACRO2"] } }
+/// {
+///   "cpp": {
+///     "msvc": "...",
+///     "msvc_search_paths": ["C:/path/to/vcvarsall.bat"],
+///     "precompile_macros": ["MACRO1"],
+///     "target_arch": "amd64",
+///     "cl_extra_flags": ["/W4"],
+///     "link_extra_flags": [],
+///     "system_libs": ["winmm.lib"],
+///     "win32_lean_and_mean": true,
+///     "custom_type_map": { "MY_TYPE": "int" },
+///     "lib_patterns": ["_vs2015_x64_md.lib", "_x64.lib"]
+///   }
+/// }
 /// ```
 fn parse_tl_config_json(content: &str, config: &mut CppBuildConfig) {
-    // Extract the value of `"cpp": { ... }` block
     let cpp_block = match extract_json_object(content, "cpp") {
         Some(b) => b,
         None => return,
@@ -1000,19 +1132,41 @@ fn parse_tl_config_json(content: &str, config: &mut CppBuildConfig) {
     if let Some(v) = extract_json_string(&cpp_block, "msvc") {
         config.msvc = Some(PathBuf::from(v));
     }
-
-    if let Some(arr) = extract_json_array(&cpp_block, "precompile_macros") {
-        config.precompile_macros = arr;
+    if let Some(v) = extract_json_array(&cpp_block, "msvc_search_paths") {
+        config.msvc_search_paths = v;
+    }
+    if let Some(v) = extract_json_array(&cpp_block, "precompile_macros") {
+        config.precompile_macros = v;
+    }
+    if let Some(v) = extract_json_string(&cpp_block, "target_arch") {
+        config.target_arch = v;
+    }
+    if let Some(v) = extract_json_array(&cpp_block, "cl_extra_flags") {
+        config.cl_extra_flags = v;
+    }
+    if let Some(v) = extract_json_array(&cpp_block, "link_extra_flags") {
+        config.link_extra_flags = v;
+    }
+    if let Some(v) = extract_json_array(&cpp_block, "system_libs") {
+        config.system_libs = v;
+    }
+    if let Some(v) = extract_json_bool(&cpp_block, "win32_lean_and_mean") {
+        config.win32_lean_and_mean = v;
+    }
+    if let Some(v) = extract_json_string_map(&cpp_block, "custom_type_map") {
+        config.custom_type_map = v;
+    }
+    if let Some(v) = extract_json_array(&cpp_block, "lib_patterns") {
+        config.lib_patterns = v;
     }
 }
 
 /// Extract the string content of a JSON string value for the given key.
-/// Handles: `"key": "value"` with basic escape handling.
-fn extract_json_string<'a>(json: &'a str, key: &str) -> Option<String> {
+fn extract_json_string(json: &str, key: &str) -> Option<String> {
     let needle = format!("\"{}\"", key);
     let pos = json.find(&needle)?;
     let after_key = &json[pos + needle.len()..];
-    let colon_pos = after_key.find(':')? ;
+    let colon_pos = after_key.find(':')?;
     let after_colon = after_key[colon_pos + 1..].trim_start();
     if !after_colon.starts_with('"') { return None; }
     let inner = &after_colon[1..];
@@ -1020,8 +1174,19 @@ fn extract_json_string<'a>(json: &'a str, key: &str) -> Option<String> {
     Some(inner[..end].replace("\\\\", "\\").replace("\\\"", "\"").replace("\\/", "/"))
 }
 
+/// Extract a JSON boolean value for the given key.
+fn extract_json_bool(json: &str, key: &str) -> Option<bool> {
+    let needle = format!("\"{}\"", key);
+    let pos = json.find(&needle)?;
+    let after_key = &json[pos + needle.len()..];
+    let colon_pos = after_key.find(':')?;
+    let after_colon = after_key[colon_pos + 1..].trim_start();
+    if after_colon.starts_with("true") { Some(true) }
+    else if after_colon.starts_with("false") { Some(false) }
+    else { None }
+}
+
 /// Extract a JSON array of strings for the given key.
-/// Handles: `"key": ["val1", "val2"]`
 fn extract_json_array(json: &str, key: &str) -> Option<Vec<String>> {
     let needle = format!("\"{}\"", key);
     let pos = json.find(&needle)?;
@@ -1044,8 +1209,31 @@ fn extract_json_array(json: &str, key: &str) -> Option<Vec<String>> {
     Some(items)
 }
 
+/// Extract a JSON object `{ "key": "value", ... }` as a `HashMap<String, String>`.
+/// Only string-valued keys are extracted; non-string values are skipped.
+fn extract_json_string_map(json: &str, key: &str) -> Option<HashMap<String, String>> {
+    let block = extract_json_object(json, key)?;
+    let mut map = HashMap::new();
+    let mut rest = block.as_str();
+    while let Some(q1) = rest.find('"') {
+        rest = &rest[q1 + 1..];
+        let q2 = match rest.find('"') { Some(i) => i, None => break };
+        let k = rest[..q2].to_string();
+        rest = &rest[q2 + 1..];
+        let colon = match rest.find(':') { Some(i) => i, None => break };
+        rest = rest[colon + 1..].trim_start();
+        if !rest.starts_with('"') { continue; }
+        rest = &rest[1..];
+        let q3 = match rest.find('"') { Some(i) => i, None => break };
+        let v = rest[..q3].to_string();
+        rest = &rest[q3 + 1..];
+        map.insert(k, v);
+    }
+    Some(map)
+}
+
 /// Extract the object content `{ ... }` for the given key from a JSON string.
-fn extract_json_object<'a>(json: &'a str, key: &str) -> Option<String> {
+fn extract_json_object(json: &str, key: &str) -> Option<String> {
     let needle = format!("\"{}\"", key);
     let pos = json.find(&needle)?;
     let after_key = &json[pos + needle.len()..];
@@ -1075,12 +1263,11 @@ fn extract_json_object<'a>(json: &'a str, key: &str) -> Option<String> {
 ///
 /// Steps:
 ///   1. If `tl_{stem}.dll` already exists — return it immediately (permanent cache).
-///   2. Find MSVC (`tl_config.json` or auto-detect).
+///   2. Find MSVC (`tl_config.json` or auto-detect via `find_msvc_vcvarsall`).
 ///   3. Compile an MSVC C++ shim (`tl_{stem}_shim.dll`) next to the header.
 ///   4. Compile a Rust wrapper around the shim → `tl_{stem}.dll`.
 ///
-/// Once generated, `tl_{stem}.dll` is never rebuilt unless it is deleted or
-/// `--compile` is passed explicitly.
+/// Once generated, `tl_{stem}.dll` is never rebuilt unless it is deleted.
 pub fn compile_tl_dll(
     header_path: &Path,
     sigs: &[CFnSig],
@@ -1092,9 +1279,9 @@ pub fn compile_tl_dll(
     let stem = header_abs.file_stem().and_then(|s| s.to_str()).unwrap_or("lib");
     let ext  = crate::partial_compiler::native_lib_ext();
 
-    let dll_path  = header_dir.join(format!("tl_{stem}.{ext}"));
-    let shim_path = header_dir.join(format!("tl_{stem}_shim.{ext}"));
-    let syms_path = header_dir.join(format!("tl_{stem}.syms"));
+    let dll_path  = header_dir.join(format!("{TL_DLL_PREFIX}{stem}.{ext}"));
+    let shim_path = header_dir.join(format!("{TL_DLL_PREFIX}{stem}{TL_SHIM_SUFFIX}.{ext}"));
+    let syms_path = header_dir.join(format!("{TL_DLL_PREFIX}{stem}.{TL_SYMS_EXT}"));
 
     // Permanent cache: wrapper DLL exists → skip compilation, read saved function list
     if dll_path.exists() {
@@ -1113,10 +1300,10 @@ pub fn compile_tl_dll(
         }
         MsvcPaths { vcvarsall: p.clone() }
     } else {
-        find_msvc_vcvarsall().ok_or_else(|| {
+        find_msvc_vcvarsall(&config.msvc_search_paths).ok_or_else(|| {
             "CppBridge: MSVC not found.\n\
-             Install Visual Studio 2019/2022 or add to tl_config.json:\n\
-             {\"cpp\": {\"msvc\": \"C:/path/to/vcvarsall.bat\"}}".to_string()
+             Install Visual Studio 2017/2019/2022, add paths to tl_config.json:\n\
+             {\"cpp\": {\"msvc_search_paths\": [\"C:/path/to/vcvarsall.bat\"]}}".to_string()
         })?
     };
 
@@ -1131,14 +1318,19 @@ pub fn compile_tl_dll(
     let header_name = header_abs.file_name().and_then(|n| n.to_str()).unwrap_or("header.h");
 
     // Iterative compile: on C/LNK errors, extract offending function names, remove
-    // them, and retry. Repeats up to 5 times to handle cascading or batched errors.
-    for pass in 0..5 {
-        let shim_src = gen_cpp_shim_source(&effective_sigs, header_name, &config.precompile_macros);
-        match compile_msvc_shim(&shim_src, &msvc, &header_abs, &shim_path) {
+    // them, and retry. Repeats up to MAX_COMPILE_PASSES times.
+    for pass in 0..MAX_COMPILE_PASSES {
+        let shim_src = gen_cpp_shim_source(
+            &effective_sigs,
+            header_name,
+            &config.precompile_macros,
+            config.win32_lean_and_mean,
+        );
+        match compile_msvc_shim(&shim_src, &msvc, &header_abs, &shim_path, config) {
             Ok(()) => break,
             Err(err_msg) => {
-                let bad = extract_bad_fn_names(&err_msg);
-                if bad.is_empty() || pass == 4 {
+                let bad = super::msvc_errors::extract_bad_fn_names(&err_msg);
+                if bad.is_empty() || pass == MAX_COMPILE_PASSES - 1 {
                     return Err(err_msg);
                 }
                 let before = effective_sigs.len();
@@ -1171,71 +1363,6 @@ pub fn compile_tl_dll(
     Ok((dll_path, effective_sigs))
 }
 
-/// Parse cl.exe error/linker output and return names of functions to remove.
-/// Handles:
-///   C2039 — function not a namespace member
-///   C2733 — overload not allowed in extern "C"
-///   C2664 — argument type mismatch
-///   LNK2019 — unresolved external (function declared but not in the library)
-fn extract_bad_fn_names(err: &str) -> std::collections::HashSet<String> {
-    let mut names = std::collections::HashSet::new();
-    for line in err.lines() {
-        // C2039 / C2733: 'FunctionName': ...
-        for code in &["C2039", "C2733"] {
-            if let Some(pos) = line.find(code) {
-                let rest = &line[pos + code.len()..];
-                if let Some(q1) = rest.find('\'') {
-                    let rest2 = &rest[q1 + 1..];
-                    if let Some(q2) = rest2.find('\'') {
-                        let name = &rest2[..q2];
-                        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                            names.insert(name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        // C2664: 'int DxLib::FunctionName(...)': argument N from T to U
-        if let Some(pos) = line.find("C2664") {
-            let rest = &line[pos..];
-            if let Some(dc) = rest.find("::") {
-                let rest2 = &rest[dc + 2..];
-                let name_end = rest2.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest2.len());
-                let name = &rest2[..name_end];
-                if !name.is_empty() {
-                    names.insert(name.to_string());
-                }
-            }
-        }
-        // LNK2019: unresolved external symbol "..." (?MangedName@...) referenced in function X
-        // The error message is in the system locale (Japanese on this machine), so we cannot
-        // rely on the English "referenced in function" phrase. Instead, extract the calling
-        // function name from the C++ mangled symbol: "(?FunctionName@Namespace@@...)" where
-        // FunctionName is the shim function we need to remove.
-        if line.contains("LNK2019") {
-            // Approach 1: extract from mangled name "(?Name@..." — language-agnostic
-            if let Some(mq) = line.find("(?") {
-                let rest = &line[mq + 2..];
-                let name_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
-                let name = &rest[..name_end];
-                if !name.is_empty() {
-                    names.insert(name.to_string());
-                }
-            }
-            // Approach 2: English locale fallback
-            if let Some(pos) = line.rfind("referenced in function ") {
-                let rest = &line[pos + "referenced in function ".len()..];
-                let name_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
-                let name = &rest[..name_end];
-                if !name.is_empty() {
-                    names.insert(name.to_string());
-                }
-            }
-        }
-    }
-    names
-}
-
 /// Read the `.syms` companion file and return the subset of `all_sigs` that were compiled.
 /// Falls back to all sigs if the file is missing (e.g., first run before the syms file existed).
 fn read_syms_file(syms_path: &Path, all_sigs: &[CFnSig]) -> Vec<CFnSig> {
@@ -1249,21 +1376,17 @@ fn read_syms_file(syms_path: &Path, all_sigs: &[CFnSig]) -> Vec<CFnSig> {
 
 /// Compile `cpp_src` into a DLL at `out_dll` using MSVC `cl.exe`.
 ///
-/// Links all `_vs2015_x64_MD.lib` and non-debug `_x64.lib` files found in
-/// the same directory as `header_path`, plus standard Windows/DirectX libs.
-/// The output path is absolute so the bat file always resolves it correctly.
-/// Strip the Windows extended-path `\\?\` prefix that `std::fs::canonicalize`
-/// adds, because cl.exe does not accept it for `/I` or `/LIBPATH` flags.
-fn strip_unc_prefix(path: &Path) -> String {
-    let s = path.to_string_lossy();
-    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
-}
-
+/// Library files are selected from the same directory as `header_path` according
+/// to `config.lib_patterns` (most-specific pattern wins when both exist for the
+/// same base name).  `config.system_libs` provides the SDK / Windows libs.
+/// The target architecture is `config.target_arch`; extra compiler and linker
+/// flags come from `config.cl_extra_flags` / `config.link_extra_flags`.
 fn compile_msvc_shim(
     cpp_src: &str,
     msvc: &MsvcPaths,
     header_path: &Path,
     out_dll: &Path,
+    config: &CppBuildConfig,
 ) -> Result<(), String> {
     // If shim already exists and source is unchanged, skip recompilation
     let stem = out_dll.file_stem().and_then(|s| s.to_str()).unwrap_or("shim");
@@ -1288,8 +1411,13 @@ fn compile_msvc_shim(
     let lib_dir_abs = std::fs::canonicalize(lib_dir).unwrap_or_else(|_| lib_dir.to_path_buf());
     let libdir_str = strip_unc_prefix(&lib_dir_abs);
 
-    // Collect libs: main header-matched lib + vs2015_x64_MD supporting libs
+    // Collect libs matching config.lib_patterns, excluding other-family and debug variants.
     let header_stem = header_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let hs_lower = header_stem.to_lowercase();
+    let patterns_lc: Vec<String> = config.lib_patterns.iter()
+        .map(|p| p.to_lowercase())
+        .collect();
+
     let mut lib_names: Vec<String> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&lib_dir_abs) {
         for entry in entries.flatten() {
@@ -1297,40 +1425,33 @@ fn compile_msvc_shim(
             if p.extension().and_then(|e| e.to_str()) != Some("lib") { continue; }
             if let Some(fname) = p.file_name().and_then(|n| n.to_str()) {
                 let lower = fname.to_lowercase();
-                let hs_lower = header_stem.to_lowercase();
 
-                // Main lib: prefer header_stem + _x64.lib (x64 build); the bare
-                // header_stem.lib is typically x86 and causes LNK1112 if linked.
-                let is_main = lower == format!("{hs_lower}_x64.lib");
+                // Accept only files whose name ends with a configured pattern
+                let matches_pattern = patterns_lc.iter().any(|pat| lower.ends_with(pat.as_str()));
+                if !matches_pattern { continue; }
 
-                // Supporting libs: vs2015 x64 MD build — matches our /MD flag
-                // Also include generic _x64 libs that have no version suffix
-                let is_vs2015_md = lower.ends_with("_vs2015_x64_md.lib");
-                let is_generic_x64 = lower.ends_with("_x64.lib")
-                    && !lower.contains("vs20")
-                    && !lower.contains("_d.");
+                // Skip debug builds (e.g. DxLib_d.lib, DxLib_x64_d.lib)
+                if lower.contains("_d.") { continue; }
 
-                // Exclude: other main-lib variants (DxLibW, DxLib_vs2015_*, etc.)
-                let is_other_main = lower.starts_with(&hs_lower)
-                    && !is_main
-                    && fname.to_lowercase() != format!("{hs_lower}_x64.lib");
+                // Skip variants from a different library family: e.g. exclude DxLibW_x64.lib
+                // when the header stem is DxLib.  Strip any matching pattern suffix to get
+                // the base name; if it starts with hs_lower but is longer, it's another family.
+                let is_other_family = patterns_lc.iter()
+                    .filter_map(|pat| lower.strip_suffix(pat.as_str()))
+                    .any(|base| base.starts_with(&hs_lower) && base.len() > hs_lower.len());
+                if is_other_family { continue; }
 
-                if is_main || ((is_vs2015_md || is_generic_x64) && !is_other_main) {
-                    lib_names.push(fname.to_string());
-                }
+                lib_names.push(fname.to_string());
             }
         }
     }
-    // Deduplication: prefer _vs2015_x64_MD over generic _x64 for the same base
-    let deduped = dedup_prefer_versioned(lib_names);
+    // Prefer versioned/specific patterns over generic ones for the same base name.
+    let deduped = dedup_by_pattern_priority(lib_names, &patterns_lc);
 
-    // Standard Windows / DirectX libs
+    // Append system libs from config (defaults to DEFAULT_SYSTEM_LIBS)
     let mut final_libs = deduped;
-    for syslib in &[
-        "winmm.lib", "imm32.lib", "ws2_32.lib", "dxguid.lib",
-        "d3d9.lib", "d3d11.lib", "dxgi.lib", "dinput8.lib", "d3dcompiler.lib",
-    ] {
-        final_libs.push(syslib.to_string());
+    for syslib in &config.system_libs {
+        final_libs.push(syslib.clone());
     }
     let libs_str = final_libs.join(" ");
 
@@ -1339,15 +1460,19 @@ fn compile_msvc_shim(
     let dll_str  = strip_unc_prefix(out_dll);
     let bat_file = temp_dir.join("build.bat");
 
+    let extra_cl   = config.cl_extra_flags.join(" ");
+    let extra_link = config.link_extra_flags.join(" ");
+    let arch       = &config.target_arch;
+
     let bat = format!(
         "@echo off\r\n\
-         call \"{vcvarsall_str}\" amd64\r\n\
-         cl.exe /nologo /LD /MD /W3 \
+         call \"{vcvarsall_str}\" {arch}\r\n\
+         cl.exe /nologo /LD /MD /W3 {extra_cl} \
              /I \"{libdir_str}\" \
              /Fe\"{dll_str}\" \
              \"{cpp_str}\" \
              {libs_str} \
-             /link /LIBPATH:\"{libdir_str}\" /SUBSYSTEM:WINDOWS /NODEFAULTLIB:LIBCMT\r\n\
+             /link /LIBPATH:\"{libdir_str}\" /SUBSYSTEM:WINDOWS /NODEFAULTLIB:LIBCMT {extra_link}\r\n\
          exit /b %ERRORLEVEL%\r\n"
     );
     std::fs::write(&bat_file, to_acp_bytes(&bat))
@@ -1371,28 +1496,45 @@ fn compile_msvc_shim(
     Ok(())
 }
 
-/// When the same codec appears as both `_vs2015_x64_MD.lib` and `_x64.lib`,
-/// keep only the versioned one (matches our `/MD` flag).
-fn dedup_prefer_versioned(libs: Vec<String>) -> Vec<String> {
-    let versioned_bases: std::collections::HashSet<String> = libs.iter()
-        .filter(|n| n.to_lowercase().ends_with("_vs2015_x64_md.lib"))
-        .map(|n| {
-            let lower = n.to_lowercase();
-            lower[..lower.len() - "_vs2015_x64_md.lib".len()].to_string()
-        })
-        .collect();
+/// Among libs that share a base name, keep only those matching the highest-priority
+/// pattern (lowest index in `patterns`).  Libs not matching any pattern are kept as-is.
+///
+/// Example with `patterns = ["_vs2015_x64_md.lib", "_x64.lib"]`:
+///   - `DxLib_vs2015_x64_MD.lib` (index 0) is kept and `DxLib_x64.lib` (index 1) dropped.
+///   - `DxThread_x64.lib` has no versioned counterpart → kept.
+fn dedup_by_pattern_priority(libs: Vec<String>, patterns: &[String]) -> Vec<String> {
+    if patterns.len() <= 1 { return libs; }
 
-    libs.into_iter()
-        .filter(|n| {
-            let lower = n.to_lowercase();
-            if lower.ends_with("_x64.lib") && !lower.contains("vs20") {
-                let base = &lower[..lower.len() - "_x64.lib".len()];
-                !versioned_bases.contains(base)
-            } else {
-                true
-            }
-        })
-        .collect()
+    // For each lib find (priority_index, base_name)
+    let match_info = |name: &str| -> Option<(usize, String)> {
+        let lower = name.to_lowercase();
+        patterns.iter().enumerate()
+            .find(|(_, pat)| lower.ends_with(pat.as_str()))
+            .map(|(i, pat)| (i, lower[..lower.len() - pat.len()].to_string()))
+    };
+
+    // Best (lowest index) priority per base name
+    let mut best: HashMap<String, usize> = HashMap::new();
+    for lib in &libs {
+        if let Some((pri, base)) = match_info(lib) {
+            let entry = best.entry(base).or_insert(usize::MAX);
+            if pri < *entry { *entry = pri; }
+        }
+    }
+
+    libs.into_iter().filter(|lib| {
+        match match_info(lib) {
+            Some((pri, base)) => best.get(&base).map_or(true, |&best_pri| pri <= best_pri),
+            None => true,
+        }
+    }).collect()
+}
+
+/// Strip the Windows extended-path `\\?\` prefix that `std::fs::canonicalize`
+/// adds, because cl.exe does not accept it for `/I` or `/LIBPATH` flags.
+fn strip_unc_prefix(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
 }
 
 /// Convert a UTF-8 string to the system ANSI code page bytes.
@@ -1433,4 +1575,3 @@ fn to_acp_bytes(s: &str) -> Vec<u8> {
     }
     s.as_bytes().to_vec()
 }
-

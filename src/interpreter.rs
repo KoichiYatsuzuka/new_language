@@ -50,6 +50,8 @@ pub(self) mod py_interop;
 pub(self) mod native_api;
 #[path = "interpreter/cpp_bridge.rs"]
 pub(self) mod cpp_bridge;
+#[path = "interpreter/msvc_errors.rs"]
+pub(self) mod msvc_errors;
 #[path = "interpreter/async_mgr.rs"]
 pub(crate) mod async_mgr;
 #[path = "interpreter/debugger.rs"]
