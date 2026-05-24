@@ -11,6 +11,8 @@ mod python_converter;
 mod repl;
 mod token;
 mod type_check;
+#[cfg(test)]
+mod frontend_tests;
 
 use interpreter::{ExecResult, Interpreter};
 use lexer::Lexer;
