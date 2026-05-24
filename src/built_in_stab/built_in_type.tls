@@ -2,6 +2,13 @@ new_type Index: int
 new_type Size: int
 new_type path: str
 
+trait Error:
+    let message: str
+    mut code_context: str = ""
+    mut file: str = ""
+    mut line: int = 0
+    mut col: int = 0
+
 class slice:
     begin: Index
     end: Index
