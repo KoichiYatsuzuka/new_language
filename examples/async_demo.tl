@@ -44,7 +44,7 @@ mng2 <- async->int:
     block_return 42
 
 mng2 <- async->int:
-    raise "SimulatedError: something went wrong"
+    raise RuntimeError("SimulatedError: something went wrong")
 
 mng2 <- async->int:
     block_return 99
@@ -66,7 +66,7 @@ mng3 <- async->int:
     block_return slow_add(1, 1)
 
 mng3 <- async->int:
-    raise "AnotherError: oops"
+    raise RuntimeError("AnotherError: oops")
 
 mng3.wait_for_finish()
 print("results:", mng3.results)

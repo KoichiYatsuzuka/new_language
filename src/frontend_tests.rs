@@ -9,21 +9,33 @@ mod lexer_tests {
 
     /// テスト用ヘルパー: ソース文字列を字句解析してトークン種別のみを返す。
     fn lex(source: &str) -> Vec<Token> {
-        Lexer::new(source, "").tokenize().into_iter().map(|spanned| spanned.token).collect()
+        Lexer::new(source, "")
+            .tokenize()
+            .into_iter()
+            .map(|spanned| spanned.token)
+            .collect()
     }
 
     #[test]
     fn test_variable_keywords() {
-        assert_eq!(lex("let const mut freeze"), vec![
-            Token::Let, Token::Const, Token::Mut, Token::Freeze, Token::Eof,
-        ]);
+        assert_eq!(
+            lex("let const mut freeze"),
+            vec![
+                Token::Let,
+                Token::Const,
+                Token::Mut,
+                Token::Freeze,
+                Token::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_value_literals() {
-        assert_eq!(lex("True False None"), vec![
-            Token::True, Token::False, Token::None, Token::Eof,
-        ]);
+        assert_eq!(
+            lex("True False None"),
+            vec![Token::True, Token::False, Token::None, Token::Eof,]
+        );
     }
 
     #[test]
@@ -42,43 +54,78 @@ mod lexer_tests {
 
     #[test]
     fn test_arithmetic_operators() {
-        assert_eq!(lex("+ - * / // % ** @"), vec![
-            Token::Plus, Token::Minus, Token::Star, Token::Slash,
-            Token::SlashSlash, Token::Percent, Token::StarStar, Token::At,
-            Token::Eof,
-        ]);
+        assert_eq!(
+            lex("+ - * / // % ** @"),
+            vec![
+                Token::Plus,
+                Token::Minus,
+                Token::Star,
+                Token::Slash,
+                Token::SlashSlash,
+                Token::Percent,
+                Token::StarStar,
+                Token::At,
+                Token::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_compound_assignment() {
-        assert_eq!(lex("+= -= *= /= //= %= **= @="), vec![
-            Token::PlusEq, Token::MinusEq, Token::StarEq, Token::SlashEq,
-            Token::SlashSlashEq, Token::PercentEq, Token::StarStarEq, Token::AtEq,
-            Token::Eof,
-        ]);
+        assert_eq!(
+            lex("+= -= *= /= //= %= **= @="),
+            vec![
+                Token::PlusEq,
+                Token::MinusEq,
+                Token::StarEq,
+                Token::SlashEq,
+                Token::SlashSlashEq,
+                Token::PercentEq,
+                Token::StarStarEq,
+                Token::AtEq,
+                Token::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_comparison_operators() {
-        assert_eq!(lex("== != < > <= >="), vec![
-            Token::EqEq, Token::NotEq, Token::Lt, Token::Gt,
-            Token::LtEq, Token::GtEq,
-            Token::Eof,
-        ]);
+        assert_eq!(
+            lex("== != < > <= >="),
+            vec![
+                Token::EqEq,
+                Token::NotEq,
+                Token::Lt,
+                Token::Gt,
+                Token::LtEq,
+                Token::GtEq,
+                Token::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_bitwise_operators() {
-        assert_eq!(lex("& | ^ ~ << >>"), vec![
-            Token::Amp, Token::Pipe, Token::Caret, Token::Tilde,
-            Token::LtLt, Token::GtGt,
-            Token::Eof,
-        ]);
+        assert_eq!(
+            lex("& | ^ ~ << >>"),
+            vec![
+                Token::Amp,
+                Token::Pipe,
+                Token::Caret,
+                Token::Tilde,
+                Token::LtLt,
+                Token::GtGt,
+                Token::Eof,
+            ]
+        );
     }
 
     #[test]
     fn test_shift_assign() {
-        assert_eq!(lex("<<= >>="), vec![Token::LtLtEq, Token::GtGtEq, Token::Eof]);
+        assert_eq!(
+            lex("<<= >>="),
+            vec![Token::LtLtEq, Token::GtGtEq, Token::Eof]
+        );
     }
 
     #[test]
@@ -167,19 +214,26 @@ mod lexer_tests {
 
     #[test]
     fn test_arrow_ellipsis_walrus() {
-        assert_eq!(lex("-> ... :="), vec![
-            Token::Arrow, Token::Ellipsis, Token::ColonEq, Token::Eof,
-        ]);
+        assert_eq!(
+            lex("-> ... :="),
+            vec![Token::Arrow, Token::Ellipsis, Token::ColonEq, Token::Eof,]
+        );
     }
 
     #[test]
     fn test_delimiters() {
-        assert_eq!(lex("()[]{}"), vec![
-            Token::LParen, Token::RParen,
-            Token::LBracket, Token::RBracket,
-            Token::LBrace, Token::RBrace,
-            Token::Eof,
-        ]);
+        assert_eq!(
+            lex("()[]{}"),
+            vec![
+                Token::LParen,
+                Token::RParen,
+                Token::LBracket,
+                Token::RBracket,
+                Token::LBrace,
+                Token::RBrace,
+                Token::Eof,
+            ]
+        );
     }
 
     #[test]
@@ -190,7 +244,10 @@ mod lexer_tests {
         assert_eq!(spanned[0].span.line, 1);
         assert_eq!(spanned[0].span.col, 1);
         // `mut` は行2・列1
-        let mut_tok = spanned.iter().find(|spanned_tok| spanned_tok.token == Token::Mut).unwrap();
+        let mut_tok = spanned
+            .iter()
+            .find(|spanned_tok| spanned_tok.token == Token::Mut)
+            .unwrap();
         assert_eq!(mut_tok.span.line, 2);
         assert_eq!(mut_tok.span.col, 1);
     }
@@ -215,9 +272,10 @@ mod lexer_tests {
 
     #[test]
     fn test_colon_vs_colon_colon_vs_colon_eq() {
-        assert_eq!(lex(": :: :="), vec![
-            Token::Colon, Token::ColonColon, Token::ColonEq, Token::Eof,
-        ]);
+        assert_eq!(
+            lex(": :: :="),
+            vec![Token::Colon, Token::ColonColon, Token::ColonEq, Token::Eof,]
+        );
     }
 
     #[test]
@@ -243,13 +301,17 @@ mod parser_tests {
     /// テスト用ヘルパー: ソース文字列を解析して AST を返す。
     fn parse(source: &str) -> Vec<Stmt> {
         let tokens = Lexer::new(source, "").tokenize();
-        Parser::new(tokens, None).parse_program().expect("parse error")
+        Parser::new(tokens, None)
+            .parse_program()
+            .expect("parse error")
     }
 
     /// テスト用ヘルパー: パースエラーが発生することを確認してエラーメッセージを返す。
     fn parse_fails(source: &str) -> String {
         let tokens = Lexer::new(source, "").tokenize();
-        Parser::new(tokens, None).parse_program().expect_err("expected parse error")
+        Parser::new(tokens, None)
+            .parse_program()
+            .expect_err("expected parse error")
     }
 
     #[test]
@@ -268,7 +330,9 @@ mod parser_tests {
     #[test]
     fn test_freeze_requires_ident() {
         let tokens = crate::lexer::Lexer::new("freeze 42\n", "").tokenize();
-        let err = Parser::new(tokens, None).parse_program().expect_err("expected parse error");
+        let err = Parser::new(tokens, None)
+            .parse_program()
+            .expect_err("expected parse error");
         assert!(err.contains("expected identifier"), "got: {err}");
     }
 
@@ -302,7 +366,12 @@ mod parser_tests {
     #[test]
     fn test_binop_precedence() {
         let stmts = parse("2 + 3 * 4");
-        if let Stmt::Expr(Expr::BinOp { op: BinOp::Add, right, .. }) = &stmts[0] {
+        if let Stmt::Expr(Expr::BinOp {
+            op: BinOp::Add,
+            right,
+            ..
+        }) = &stmts[0]
+        {
             assert!(matches!(right.as_ref(), Expr::BinOp { op: BinOp::Mul, .. }));
         } else {
             panic!("unexpected AST");
@@ -318,13 +387,24 @@ mod parser_tests {
     #[test]
     fn test_unary_neg() {
         let stmts = parse("-5");
-        assert!(matches!(&stmts[0], Stmt::Expr(Expr::UnaryOp { op: UnaryOp::Neg, .. })));
+        assert!(matches!(
+            &stmts[0],
+            Stmt::Expr(Expr::UnaryOp {
+                op: UnaryOp::Neg,
+                ..
+            })
+        ));
     }
 
     #[test]
     fn test_power_right_assoc() {
         let stmts = parse("2 ** 3 ** 2");
-        if let Stmt::Expr(Expr::BinOp { op: BinOp::Pow, right, .. }) = &stmts[0] {
+        if let Stmt::Expr(Expr::BinOp {
+            op: BinOp::Pow,
+            right,
+            ..
+        }) = &stmts[0]
+        {
             assert!(matches!(right.as_ref(), Expr::BinOp { op: BinOp::Pow, .. }));
         } else {
             panic!("unexpected AST");
@@ -340,13 +420,23 @@ mod parser_tests {
     #[test]
     fn test_if_else_stmt() {
         let stmts = parse("if True:\n    pass\nelse:\n    pass\n");
-        assert!(matches!(&stmts[0], Stmt::If { else_body: Some(_), .. }));
+        assert!(matches!(
+            &stmts[0],
+            Stmt::If {
+                else_body: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
     fn test_if_elif_else_stmt() {
         let stmts = parse("if True:\n    pass\nelif False:\n    pass\nelse:\n    pass\n");
-        if let Stmt::If { branches, else_body } = &stmts[0] {
+        if let Stmt::If {
+            branches,
+            else_body,
+        } = &stmts[0]
+        {
             assert_eq!(branches.len(), 2);
             assert!(else_body.is_some());
         } else {
@@ -508,10 +598,14 @@ mod parser_tests {
         let src = "class Foo:\n    mut x: int = 0\n    let y: str = \"\"\n";
         let stmts = parse(src);
         if let Stmt::ClassDef { body, .. } = &stmts[0] {
-            assert!(matches!(&body[0], Stmt::Field { name, kind: FieldKind::Mut, type_ann, .. }
-                if name == "x" && type_ann == "int"));
-            assert!(matches!(&body[1], Stmt::Field { name, kind: FieldKind::Let, type_ann, .. }
-                if name == "y" && type_ann == "str"));
+            assert!(
+                matches!(&body[0], Stmt::Field { name, kind: FieldKind::Mut, type_ann, .. }
+                if name == "x" && type_ann == "int")
+            );
+            assert!(
+                matches!(&body[1], Stmt::Field { name, kind: FieldKind::Let, type_ann, .. }
+                if name == "y" && type_ann == "str")
+            );
         } else {
             panic!("expected ClassDef");
         }
@@ -522,9 +616,19 @@ mod parser_tests {
         let src = "class Point:\n    mut x: int\n    mut y: int\n";
         let stmts = parse(src);
         if let Stmt::ClassDef { body, .. } = &stmts[0] {
-            let init = body.iter().find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"));
-            assert!(init.is_some(), "auto __init__ should be present for required fields");
-            if let Some(Stmt::FnDef { params, return_type, .. }) = init {
+            let init = body
+                .iter()
+                .find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"));
+            assert!(
+                init.is_some(),
+                "auto __init__ should be present for required fields"
+            );
+            if let Some(Stmt::FnDef {
+                params,
+                return_type,
+                ..
+            }) = init
+            {
                 assert_eq!(params.len(), 3); // self + x + y
                 assert_eq!(params[0].name, "self");
                 assert_eq!(params[1].name, "x");
@@ -542,8 +646,13 @@ mod parser_tests {
         let src = "class Point:\n    mut x: int = 0\n    mut y: int = 0\n";
         let stmts = parse(src);
         if let Stmt::ClassDef { body, .. } = &stmts[0] {
-            let init = body.iter().find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"));
-            assert!(init.is_none(), "no auto __init__ when all fields have defaults");
+            let init = body
+                .iter()
+                .find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"));
+            assert!(
+                init.is_none(),
+                "no auto __init__ when all fields have defaults"
+            );
         } else {
             panic!("expected ClassDef");
         }
@@ -554,8 +663,13 @@ mod parser_tests {
         let src = "class Foo:\n    mut items: list[int]\n";
         let stmts = parse(src);
         if let Stmt::ClassDef { body, .. } = &stmts[0] {
-            let init = body.iter().find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"));
-            assert!(init.is_some(), "auto __init__ should be present for required fields");
+            let init = body
+                .iter()
+                .find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"));
+            assert!(
+                init.is_some(),
+                "auto __init__ should be present for required fields"
+            );
             if let Some(Stmt::FnDef { params, .. }) = init {
                 assert_eq!(params[1].type_ann.as_deref(), Some("list[int]"));
             }
@@ -569,10 +683,15 @@ mod parser_tests {
         let src = "class Foo:\n    mut x: int\n    fn __init__(mut self, x: int) -> None:\n        self.x = x\n";
         let stmts = parse(src);
         if let Stmt::ClassDef { body, .. } = &stmts[0] {
-            let inits: Vec<_> = body.iter()
+            let inits: Vec<_> = body
+                .iter()
                 .filter(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"))
                 .collect();
-            assert_eq!(inits.len(), 1, "exact-match explicit __init__ overrides auto-init");
+            assert_eq!(
+                inits.len(),
+                1,
+                "exact-match explicit __init__ overrides auto-init"
+            );
         } else {
             panic!("expected ClassDef");
         }
@@ -583,10 +702,15 @@ mod parser_tests {
         let src = "class Foo:\n    mut x: int\n    fn __init__(mut self, x: int, y: int) -> None:\n        self.x = x\n";
         let stmts = parse(src);
         if let Stmt::ClassDef { body, .. } = &stmts[0] {
-            let inits: Vec<_> = body.iter()
+            let inits: Vec<_> = body
+                .iter()
                 .filter(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"))
                 .collect();
-            assert_eq!(inits.len(), 2, "different-sig explicit __init__ + auto-init both present");
+            assert_eq!(
+                inits.len(),
+                2,
+                "different-sig explicit __init__ + auto-init both present"
+            );
         } else {
             panic!("expected ClassDef");
         }
@@ -597,8 +721,13 @@ mod parser_tests {
         let src = "class Foo:\n    fn greet(self) -> str:\n        pass\n";
         let stmts = parse(src);
         if let Stmt::ClassDef { body, .. } = &stmts[0] {
-            let init = body.iter().find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"));
-            assert!(init.is_none(), "no auto __init__ when there are no required fields");
+            let init = body
+                .iter()
+                .find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"));
+            assert!(
+                init.is_none(),
+                "no auto __init__ when there are no required fields"
+            );
         } else {
             panic!("expected ClassDef");
         }
@@ -606,10 +735,11 @@ mod parser_tests {
 
     #[test]
     fn test_class_field_requires_type_annotation() {
-        let result = std::panic::catch_unwind(|| {
-            parse("class Foo:\n    mut x = 0\n")
-        });
-        assert!(result.is_err(), "missing type annotation should cause a parse error");
+        let result = std::panic::catch_unwind(|| parse("class Foo:\n    mut x = 0\n"));
+        assert!(
+            result.is_err(),
+            "missing type annotation should cause a parse error"
+        );
     }
 
     #[test]
@@ -673,10 +803,14 @@ mod parser_tests {
     fn test_trait_with_fields() {
         let stmts = parse("trait HasName:\n    mut name: str\n    let id: int\n");
         if let Stmt::TraitDef { body, .. } = &stmts[0] {
-            assert!(matches!(&body[0], Stmt::Field { name, kind: FieldKind::Mut, type_ann, .. }
-                if name == "name" && type_ann == "str"));
-            assert!(matches!(&body[1], Stmt::Field { name, kind: FieldKind::Let, type_ann, .. }
-                if name == "id" && type_ann == "int"));
+            assert!(
+                matches!(&body[0], Stmt::Field { name, kind: FieldKind::Mut, type_ann, .. }
+                if name == "name" && type_ann == "str")
+            );
+            assert!(
+                matches!(&body[1], Stmt::Field { name, kind: FieldKind::Let, type_ann, .. }
+                if name == "id" && type_ann == "int")
+            );
         } else {
             panic!("expected TraitDef");
         }
@@ -686,8 +820,10 @@ mod parser_tests {
     fn test_trait_virtual_method_is_abstract() {
         let stmts = parse("trait Animal:\n    fn speak(self) -> str:\n        ...\n");
         if let Stmt::TraitDef { body, .. } = &stmts[0] {
-            assert!(matches!(&body[0], Stmt::FnDef { name, is_abstract: true, .. } if name == "speak"),
-                "method with `...` body should have is_abstract: true");
+            assert!(
+                matches!(&body[0], Stmt::FnDef { name, is_abstract: true, .. } if name == "speak"),
+                "method with `...` body should have is_abstract: true"
+            );
         } else {
             panic!("expected TraitDef");
         }
@@ -697,8 +833,10 @@ mod parser_tests {
     fn test_trait_non_virtual_method_is_not_virtual() {
         let stmts = parse("trait Logger:\n    fn log(self, msg: str) -> None:\n        pass\n");
         if let Stmt::TraitDef { body, .. } = &stmts[0] {
-            assert!(matches!(&body[0], Stmt::FnDef { name, is_abstract: false, .. } if name == "log"),
-                "method with real body should have is_abstract: false");
+            assert!(
+                matches!(&body[0], Stmt::FnDef { name, is_abstract: false, .. } if name == "log"),
+                "method with real body should have is_abstract: false"
+            );
         } else {
             panic!("expected TraitDef");
         }
@@ -708,7 +846,12 @@ mod parser_tests {
     fn test_trait_virtual_body_is_empty() {
         let stmts = parse("trait T:\n    fn f(self) -> int:\n        ...\n");
         if let Stmt::TraitDef { body, .. } = &stmts[0] {
-            if let Stmt::FnDef { body: fn_body, is_abstract, .. } = &body[0] {
+            if let Stmt::FnDef {
+                body: fn_body,
+                is_abstract,
+                ..
+            } = &body[0]
+            {
                 assert!(*is_abstract);
                 assert!(fn_body.is_empty(), "virtual method body should be empty");
             } else {
@@ -722,7 +865,10 @@ mod parser_tests {
     #[test]
     fn test_trait_cannot_inherit() {
         let result = std::panic::catch_unwind(|| parse("trait Foo(Bar):\n    pass\n"));
-        assert!(result.is_err(), "trait with base class should cause a parse error");
+        assert!(
+            result.is_err(),
+            "trait with base class should cause a parse error"
+        );
     }
 
     #[test]
@@ -742,14 +888,19 @@ mod parser_tests {
 
     #[test]
     fn test_class_missing_virtual_override_error() {
-        let result = std::panic::catch_unwind(|| parse(concat!(
-            "trait Animal:\n",
-            "    fn speak(self) -> str:\n",
-            "        ...\n",
-            "class Cat(Animal):\n",
-            "    pass\n",
-        )));
-        assert!(result.is_err(), "missing virtual method override should cause a parse error");
+        let result = std::panic::catch_unwind(|| {
+            parse(concat!(
+                "trait Animal:\n",
+                "    fn speak(self) -> str:\n",
+                "        ...\n",
+                "class Cat(Animal):\n",
+                "    pass\n",
+            ))
+        });
+        assert!(
+            result.is_err(),
+            "missing virtual method override should cause a parse error"
+        );
     }
 
     #[test]
@@ -761,9 +912,16 @@ mod parser_tests {
             "    mut y: int\n",
         ));
         if let Stmt::ClassDef { body, .. } = &stmts[1] {
-            let init = body.iter().find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"));
+            let init = body
+                .iter()
+                .find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"));
             assert!(init.is_some(), "combined __init__ should be generated");
-            if let Some(Stmt::FnDef { params, return_type, .. }) = init {
+            if let Some(Stmt::FnDef {
+                params,
+                return_type,
+                ..
+            }) = init
+            {
                 assert_eq!(params.len(), 3);
                 assert_eq!(params[0].name, "self");
                 assert_eq!(params[1].name, "x");
@@ -786,17 +944,26 @@ mod parser_tests {
             "    mut y: int\n",
         ));
         if let Stmt::ClassDef { body, .. } = &stmts[1] {
-            if let Some(Stmt::FnDef { body: init_body, .. }) =
-                body.iter().find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"))
+            if let Some(Stmt::FnDef {
+                body: init_body, ..
+            }) = body
+                .iter()
+                .find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"))
             {
-                assert!(matches!(&init_body[0],
-                    Stmt::AttrAssign { target: Expr::TraitAccess { trait_name, attr, .. }, .. }
-                    if trait_name == "HasX" && attr == "x"
-                ), "trait field assignment should use TraitAccess");
-                assert!(matches!(&init_body[1],
-                    Stmt::AttrAssign { target: Expr::Attr { attr, .. }, .. }
-                    if attr == "y"
-                ), "class field assignment should use Attr");
+                assert!(
+                    matches!(&init_body[0],
+                        Stmt::AttrAssign { target: Expr::TraitAccess { trait_name, attr, .. }, .. }
+                        if trait_name == "HasX" && attr == "x"
+                    ),
+                    "trait field assignment should use TraitAccess"
+                );
+                assert!(
+                    matches!(&init_body[1],
+                        Stmt::AttrAssign { target: Expr::Attr { attr, .. }, .. }
+                        if attr == "y"
+                    ),
+                    "class field assignment should use Attr"
+                );
             } else {
                 panic!("__init__ not found");
             }
@@ -808,7 +975,10 @@ mod parser_tests {
     #[test]
     fn test_trait_access_expr_parsed() {
         let stmts = parse("self::MyTrait.field\n");
-        if let Stmt::Expr(Expr::TraitAccess { trait_name, attr, .. }) = &stmts[0] {
+        if let Stmt::Expr(Expr::TraitAccess {
+            trait_name, attr, ..
+        }) = &stmts[0]
+        {
             assert_eq!(trait_name, "MyTrait");
             assert_eq!(attr, "field");
         } else {
@@ -819,14 +989,22 @@ mod parser_tests {
     #[test]
     fn test_fn_is_not_virtual_by_default() {
         let stmts = parse("fn hello() -> None:\n    pass\n");
-        assert!(matches!(&stmts[0], Stmt::FnDef { is_abstract: false, .. }));
+        assert!(matches!(
+            &stmts[0],
+            Stmt::FnDef {
+                is_abstract: false,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn test_class_method_is_not_virtual() {
         let stmts = parse("class Foo:\n    fn greet(self) -> str:\n        pass\n");
         if let Stmt::ClassDef { body, .. } = &stmts[0] {
-            assert!(matches!(&body[0], Stmt::FnDef { name, is_abstract: false, .. } if name == "greet"));
+            assert!(
+                matches!(&body[0], Stmt::FnDef { name, is_abstract: false, .. } if name == "greet")
+            );
         } else {
             panic!("expected ClassDef");
         }
@@ -843,10 +1021,15 @@ mod parser_tests {
             "        pass\n",
         ));
         if let Stmt::ClassDef { body, .. } = &stmts[1] {
-            let inits: Vec<_> = body.iter()
+            let inits: Vec<_> = body
+                .iter()
                 .filter(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"))
                 .collect();
-            assert_eq!(inits.len(), 1, "exact-match explicit __init__ should override auto-init");
+            assert_eq!(
+                inits.len(),
+                1,
+                "exact-match explicit __init__ should override auto-init"
+            );
         } else {
             panic!("expected ClassDef");
         }
@@ -854,17 +1037,22 @@ mod parser_tests {
 
     #[test]
     fn test_trait_with_multiple_virtual_methods_all_must_be_overridden() {
-        let result = std::panic::catch_unwind(|| parse(concat!(
-            "trait Ops:\n",
-            "    fn add(self, x: int) -> int:\n",
-            "        ...\n",
-            "    fn sub(self, x: int) -> int:\n",
-            "        ...\n",
-            "class MyOps(Ops):\n",
-            "    fn add(self, x: int) -> int:\n",
-            "        pass\n",
-        )));
-        assert!(result.is_err(), "not overriding all virtual methods should be a parse error");
+        let result = std::panic::catch_unwind(|| {
+            parse(concat!(
+                "trait Ops:\n",
+                "    fn add(self, x: int) -> int:\n",
+                "        ...\n",
+                "    fn sub(self, x: int) -> int:\n",
+                "        ...\n",
+                "class MyOps(Ops):\n",
+                "    fn add(self, x: int) -> int:\n",
+                "        pass\n",
+            ))
+        });
+        assert!(
+            result.is_err(),
+            "not overriding all virtual methods should be a parse error"
+        );
     }
 
     #[test]
@@ -876,7 +1064,9 @@ mod parser_tests {
             "    pass\n",
         ));
         if let Stmt::ClassDef { body, .. } = &stmts[1] {
-            let init = body.iter().find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"));
+            let init = body
+                .iter()
+                .find(|stmt| matches!(stmt, Stmt::FnDef { name, .. } if name == "__init__"));
             assert!(init.is_some());
             if let Some(Stmt::FnDef { params, .. }) = init {
                 assert_eq!(params.len(), 2); // self + name
@@ -899,7 +1089,9 @@ mod type_check_tests {
     /// ソースコードを字句解析・構文解析・型検査して、検出されたエラーの一覧を返すヘルパー。
     fn check(source: &str) -> Vec<StaticTypeError> {
         let tokens = Lexer::new(source, "").tokenize();
-        let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+        let stmts = Parser::new(tokens, None)
+            .parse_program()
+            .expect("parse error");
         TypeChecker::check(&stmts)
     }
 
@@ -1095,7 +1287,8 @@ mod type_check_tests {
             "let a = A()\n",
             "print(a.secret)\n",
         ));
-        let msg = errors.iter()
+        let msg = errors
+            .iter()
             .find(|error| matches!(&error.kind, TypeErrorKind::PrivateAccessError { .. }))
             .unwrap()
             .to_string();
@@ -1159,9 +1352,13 @@ mod type_check_tests {
     #[test]
     fn unknown_param_comparison_ok() {
         let errors = check("fn f(x):\n    x < 1\n");
-        assert!(!errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::IncompatibleComparison { .. })));
+        assert!(!errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::IncompatibleComparison { .. })));
         let errors = check("fn f(x):\n    x < \"hello\"\n");
-        assert!(!errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::IncompatibleComparison { .. })));
+        assert!(!errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::IncompatibleComparison { .. })));
     }
 
     #[test]
@@ -1200,7 +1397,9 @@ mod type_check_tests {
 
     #[test]
     fn call_arg_type_mismatch_err() {
-        assert!(err("fn add(a: int, b: int) -> int:\n    pass\nadd(1, \"hello\")\n"));
+        assert!(err(
+            "fn add(a: int, b: int) -> int:\n    pass\nadd(1, \"hello\")\n"
+        ));
     }
 
     #[test]
@@ -1210,28 +1409,38 @@ mod type_check_tests {
 
     #[test]
     fn call_arg_count_too_many_err() {
-        assert!(err("fn add(a: int, b: int) -> int:\n    pass\nadd(1, 2, 3)\n"));
+        assert!(err(
+            "fn add(a: int, b: int) -> int:\n    pass\nadd(1, 2, 3)\n"
+        ));
     }
 
     #[test]
     fn call_no_annotation_no_type_mismatch() {
         let errors = check("fn f(x, y):\n    pass\nf(1, \"hello\")\n");
-        assert!(!errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+        assert!(!errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
     #[test]
     fn call_unknown_arg_skipped_ok() {
-        assert!(ok("fn add(a: int, b: int) -> int:\n    pass\nmut x = 1\nadd(x, x)\n"));
+        assert!(ok(
+            "fn add(a: int, b: int) -> int:\n    pass\nmut x = 1\nadd(x, x)\n"
+        ));
     }
 
     #[test]
     fn call_forward_definition_checked() {
-        assert!(err("add(1, \"oops\")\nfn add(a: int, b: int) -> int:\n    pass\n"));
+        assert!(err(
+            "add(1, \"oops\")\nfn add(a: int, b: int) -> int:\n    pass\n"
+        ));
     }
 
     #[test]
     fn call_return_type_inferred() {
-        assert!(ok("fn get_int() -> int:\n    pass\nlet v = get_int()\nv < 10\n"));
+        assert!(ok(
+            "fn get_int() -> int:\n    pass\nlet v = get_int()\nv < 10\n"
+        ));
     }
 
     #[test]
@@ -1309,17 +1518,23 @@ mod type_check_tests {
 
     #[test]
     fn kwarg_correct_ok() {
-        assert!(ok("fn f(a: int, b: str) -> None:\n    pass\nf(a=1, b=\"hi\")\n"));
+        assert!(ok(
+            "fn f(a: int, b: str) -> None:\n    pass\nf(a=1, b=\"hi\")\n"
+        ));
     }
 
     #[test]
     fn kwarg_reversed_order_ok() {
-        assert!(ok("fn f(a: int, b: str) -> None:\n    pass\nf(b=\"hi\", a=1)\n"));
+        assert!(ok(
+            "fn f(a: int, b: str) -> None:\n    pass\nf(b=\"hi\", a=1)\n"
+        ));
     }
 
     #[test]
     fn kwarg_unknown_name_err() {
-        assert!(err("fn f(a: int, b: int) -> None:\n    pass\nf(a=1, z=2)\n"));
+        assert!(err(
+            "fn f(a: int, b: int) -> None:\n    pass\nf(a=1, z=2)\n"
+        ));
     }
 
     #[test]
@@ -1329,7 +1544,9 @@ mod type_check_tests {
 
     #[test]
     fn kwarg_mixed_positional_keyword_ok() {
-        assert!(ok("fn f(a: int, b: str) -> None:\n    pass\nf(1, b=\"hi\")\n"));
+        assert!(ok(
+            "fn f(a: int, b: str) -> None:\n    pass\nf(1, b=\"hi\")\n"
+        ));
     }
 
     #[test]
@@ -1371,16 +1588,17 @@ mod type_check_tests {
             "f(1, 2, 3)\n",
         ));
         assert!(errors.iter().any(|error| matches!(
-            &error.kind, TypeErrorKind::NoMatchingOverload { got: 3, .. }
+            &error.kind,
+            TypeErrorKind::NoMatchingOverload { got: 3, .. }
         )));
     }
 
     #[test]
     fn overload_single_def_count_err_uses_count_mismatch() {
         let errors = check("fn f(a: int) -> None:\n    pass\nf(1, 2)\n");
-        assert!(errors.iter().any(|error| matches!(
-            &error.kind, TypeErrorKind::CallArgCountMismatch { .. }
-        )));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgCountMismatch { .. })));
     }
 
     #[test]
@@ -1390,7 +1608,9 @@ mod type_check_tests {
             "fn f(x: str) -> None:\n    pass\n",
             "f(True)\n",
         ));
-        assert!(!errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+        assert!(!errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
     #[test]
@@ -1400,7 +1620,8 @@ mod type_check_tests {
             "fn f(a: int, b: int) -> None:\n    pass\n",
             "f(1, 2, 3)\n",
         ));
-        let msg = errors.iter()
+        let msg = errors
+            .iter()
             .find(|error| matches!(&error.kind, TypeErrorKind::NoMatchingOverload { .. }))
             .unwrap()
             .to_string();
@@ -1426,7 +1647,9 @@ mod type_check_tests {
             "fn f(x: Union[int, str]) -> None:\n    pass\n",
             "f(True)\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
     #[test]
@@ -1443,7 +1666,9 @@ mod type_check_tests {
             "fn f(x: Union[int, str]) -> None:\n",
             "    let y = x + 1\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { op, .. } if op == "+")));
+        assert!(errors.iter().any(
+            |error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { op, .. } if op == "+")
+        ));
     }
 
     #[test]
@@ -1452,7 +1677,9 @@ mod type_check_tests {
             "fn f(x: Union[int, str]) -> None:\n",
             "    let y = x < 10\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. })));
     }
 
     #[test]
@@ -1461,7 +1688,9 @@ mod type_check_tests {
             "fn needs_int(n: int) -> None:\n    pass\n",
             "fn caller(x: Union[int, str]) -> None:\n    needs_int(x)\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
     #[test]
@@ -1470,7 +1699,9 @@ mod type_check_tests {
             "fn f(x: Union[int, str]) -> None:\n",
             "    let y = x.upper\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. })));
     }
 
     #[test]
@@ -1479,9 +1710,11 @@ mod type_check_tests {
             "fn f(x: Union[int, str]) -> None:\n",
             "    let y = x + 1\n",
         ));
-        let msg = errors.iter()
+        let msg = errors
+            .iter()
             .find(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. }))
-            .unwrap().to_string();
+            .unwrap()
+            .to_string();
         assert!(msg.contains("Union[int, str]"));
         assert!(msg.contains("downcast"));
     }
@@ -1501,7 +1734,9 @@ mod type_check_tests {
             "fn f(x: Option[int]) -> None:\n    pass\n",
             "f(\"oops\")\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
     #[test]
@@ -1510,7 +1745,9 @@ mod type_check_tests {
             "fn f(x: Option[int]) -> None:\n",
             "    let y = x + 1\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. })));
     }
 
     #[test]
@@ -1519,9 +1756,11 @@ mod type_check_tests {
             "fn f(x: Option[int]) -> None:\n",
             "    let y = x + 1\n",
         ));
-        let msg = errors.iter()
+        let msg = errors
+            .iter()
             .find(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. }))
-            .unwrap().to_string();
+            .unwrap()
+            .to_string();
         assert!(msg.contains("Option[int]"));
     }
 
@@ -1550,29 +1789,26 @@ mod type_check_tests {
 
     #[test]
     fn any_typed_var_binary_op_err() {
-        let errors = check(concat!(
-            "fn f(x: Any) -> None:\n",
-            "    let y = x + 1\n",
-        ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "+")));
+        let errors = check(concat!("fn f(x: Any) -> None:\n", "    let y = x + 1\n",));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "+")));
     }
 
     #[test]
     fn any_typed_var_comparison_err() {
-        let errors = check(concat!(
-            "fn f(x: Any) -> None:\n",
-            "    let y = x < 10\n",
-        ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "<")));
+        let errors = check(concat!("fn f(x: Any) -> None:\n", "    let y = x < 10\n",));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "<")));
     }
 
     #[test]
     fn any_typed_var_eq_err() {
-        let errors = check(concat!(
-            "fn f(x: Any) -> None:\n",
-            "    let y = x == 1\n",
+        let errors = check(concat!("fn f(x: Any) -> None:\n", "    let y = x == 1\n",));
+        assert!(errors.iter().any(
+            |error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "==")
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "==")));
     }
 
     #[test]
@@ -1581,24 +1817,22 @@ mod type_check_tests {
             "fn f(x: Any) -> None:\n",
             "    let y = x and True\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { .. })));
     }
 
     #[test]
     fn any_typed_var_unary_neg_err() {
-        let errors = check(concat!(
-            "fn f(x: Any) -> None:\n",
-            "    let y = -x\n",
-        ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "-")));
+        let errors = check(concat!("fn f(x: Any) -> None:\n", "    let y = -x\n",));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "-")));
     }
 
     #[test]
     fn any_typed_var_attr_access_err() {
-        let errors = check(concat!(
-            "fn f(x: Any) -> None:\n",
-            "    let y = x.value\n",
-        ));
+        let errors = check(concat!("fn f(x: Any) -> None:\n", "    let y = x.value\n",));
         assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "attribute access")));
     }
 
@@ -1629,11 +1863,9 @@ mod type_check_tests {
 
     #[test]
     fn operation_on_any_display() {
-        let errors = check(concat!(
-            "fn f(x: Any) -> None:\n",
-            "    let y = x + 1\n",
-        ));
-        let msg = errors.iter()
+        let errors = check(concat!("fn f(x: Any) -> None:\n", "    let y = x + 1\n",));
+        let msg = errors
+            .iter()
             .find(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { .. }))
             .unwrap()
             .to_string();
@@ -1736,7 +1968,8 @@ mod type_check_tests {
             "let b = FooAlias(2)\n",
             "a.bar(b)\n",
         ));
-        let msg = errors.iter()
+        let msg = errors
+            .iter()
             .find(|error| matches!(&error.kind, TypeErrorKind::SelfTypeMismatch { .. }))
             .unwrap()
             .to_string();
@@ -1802,7 +2035,31 @@ mod type_check_tests {
             "    pass\n",
             "use_x(\"wrong\")\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+    }
+
+    #[test]
+    fn raise_builtin_error_instance_ok() {
+        assert!(ok("raise ValueError(\"bad\")\n"));
+    }
+
+    #[test]
+    fn raise_user_error_instance_ok() {
+        assert!(ok(concat!(
+            "class MyError(Error):\n",
+            "    pass\n",
+            "raise MyError(\"bad\")\n",
+        )));
+    }
+
+    #[test]
+    fn raise_non_error_type_detected() {
+        let errors = check("raise \"bad\"\n");
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::InvalidRaiseType { .. })));
     }
 
     // --- Type guard (is / is not) ---
@@ -1823,7 +2080,9 @@ mod type_check_tests {
             "let x = f()\n",
             "let y = x + 1\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. })));
     }
 
     #[test]
@@ -1837,11 +2096,10 @@ mod type_check_tests {
 
     #[test]
     fn type_guard_is_not_on_non_union_err() {
-        let errors = check(concat!(
-            "let x = 5\n",
-            "if x is not str:\n    pass\n",
-        ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::IsNotOnNonUnion { .. })));
+        let errors = check(concat!("let x = 5\n", "if x is not str:\n    pass\n",));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::IsNotOnNonUnion { .. })));
     }
 
     #[test]
@@ -1871,7 +2129,9 @@ mod type_check_tests {
             "if x == 1:\n    pass\n",
             "elif x is not str:\n    pass\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::IsNotOnNonUnion { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::IsNotOnNonUnion { .. })));
     }
 
     // --- function type ---
@@ -1918,7 +2178,9 @@ mod type_check_tests {
             "let f = make()\n",
             "let r = f(\"hello\")\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
     #[test]
@@ -1931,7 +2193,9 @@ mod type_check_tests {
             "let f = make()\n",
             "let r = f(1, 2)\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallArgCountMismatch { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgCountMismatch { .. })));
     }
 
     #[test]
@@ -1956,7 +2220,9 @@ mod type_check_tests {
             "let f = make()\n",
             "let r = f(param = 1)\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::UnknownKeywordArg { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::UnknownKeywordArg { .. })));
     }
 
     #[test]
@@ -1970,7 +2236,10 @@ mod type_check_tests {
             "let z = 5\n",
             "let r = f(value = z)\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallMutParamWithImmutableArg { .. })));
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            TypeErrorKind::CallMutParamWithImmutableArg { .. }
+        )));
     }
 
     #[test]
@@ -2019,7 +2288,9 @@ mod type_check_tests {
             "let f = make()\n",
             "let r = f(1)\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallArgCountMismatch { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgCountMismatch { .. })));
     }
 
     // --- type[T] ---
@@ -2038,7 +2309,9 @@ mod type_check_tests {
             "fn f(let x: type[int]) -> None:\n    pass\n",
             "f(float)\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
     #[test]
@@ -2067,7 +2340,9 @@ mod type_check_tests {
             "fn f(let x: type[int]) -> None:\n    pass\n",
             "f(Name)\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
     #[test]
@@ -2088,7 +2363,9 @@ mod type_check_tests {
             "fn f(let x: type[MyTrait]) -> None:\n    pass\n",
             "f(Other)\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
     #[test]
@@ -2128,7 +2405,9 @@ mod type_check_tests {
             "fn my_func(let a: int) -> int:\n",
             "    return a\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
     }
 
     #[test]
@@ -2140,7 +2419,9 @@ mod type_check_tests {
             "fn my_func(let a: int) -> int:\n",
             "    return a\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
     }
 
     #[test]
@@ -2152,7 +2433,9 @@ mod type_check_tests {
             "fn my_func(let a: int) -> int:\n",
             "    return a\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
     }
 
     #[test]
@@ -2181,7 +2464,9 @@ mod type_check_tests {
             "class MyClass:\n",
             "    pass\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
     }
 
     #[test]
@@ -2196,7 +2481,9 @@ mod type_check_tests {
             "class MyClass:\n",
             "    pass\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
     }
 
     #[test]
@@ -2239,7 +2526,9 @@ mod type_check_tests {
             "fn my_func(let a: int) -> int:\n",
             "    return a\n",
         ));
-        assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
+        assert!(errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
     }
 
     // --- Collection generics type checking ---

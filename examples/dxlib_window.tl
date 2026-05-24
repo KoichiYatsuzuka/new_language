@@ -21,7 +21,7 @@ dx.SetWaitVSyncFlag(0)          # 0=FALSE → manual frame-rate control
 
 # ── Initialize ───────────────────────────────────────────────────────────────
 if dx.DxLib_Init() == -1:
-    raise "DxLib_Init failed"
+    raise RuntimeError("DxLib_Init failed")
 
 const FPS      = 60
 const FRAME_MS = 1000 / FPS     # 16 ms per frame

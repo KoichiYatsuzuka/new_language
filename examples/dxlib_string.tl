@@ -11,7 +11,7 @@ dx.SetGraphMode(640, 480, 32, 60)
 dx.SetWaitVSyncFlag(0)
 
 if dx.DxLib_Init() == -1:
-    raise "DxLib_Init failed"
+    raise RuntimeError("DxLib_Init failed")
 
 # Pass a tl string to a const char* parameter
 dx.SetWindowTextDX("tl language - string test")

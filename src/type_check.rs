@@ -1,4 +1,4 @@
-﻿#![allow(dead_code)]
+#![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
 
@@ -95,7 +95,11 @@ fn split_top_level_commas(s: &str) -> Vec<&str> {
     for (i, c) in s.char_indices() {
         match c {
             '[' => depth += 1,
-            ']' => { if depth > 0 { depth -= 1; } }
+            ']' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
             ',' if depth == 0 => {
                 result.push(&s[start..i]);
                 start = i + 1;
@@ -116,7 +120,11 @@ fn split_top_level_commas_fn(s: &str) -> Vec<&str> {
     for (i, c) in s.char_indices() {
         match c {
             '[' | '{' => depth += 1,
-            ']' | '}' => { if depth > 0 { depth -= 1; } }
+            ']' | '}' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
             ',' if depth == 0 => {
                 result.push(&s[start..i]);
                 start = i + 1;
@@ -136,14 +144,21 @@ impl InferredType {
     fn from_ann(ann: &str) -> Option<Self> {
         if let Some(inner) = ann.strip_prefix("Union[").and_then(|s| s.strip_suffix(']')) {
             let parts = split_top_level_commas(inner);
-            let types: Vec<InferredType> = parts.iter()
+            let types: Vec<InferredType> = parts
+                .iter()
                 .filter_map(|t| InferredType::from_ann(t.trim()))
                 .collect();
-            return if types.len() >= 2 { Some(Self::Union(types)) } else { None };
+            return if types.len() >= 2 {
+                Some(Self::Union(types))
+            } else {
+                None
+            };
         }
-        if let Some(inner) = ann.strip_prefix("Option[").and_then(|s| s.strip_suffix(']')) {
-            return InferredType::from_ann(inner.trim())
-                .map(|t| Self::Union(vec![t, Self::None]));
+        if let Some(inner) = ann
+            .strip_prefix("Option[")
+            .and_then(|s| s.strip_suffix(']'))
+        {
+            return InferredType::from_ann(inner.trim()).map(|t| Self::Union(vec![t, Self::None]));
         }
         if let Some(inner) = ann.strip_prefix("list[").and_then(|s| s.strip_suffix(']')) {
             return Some(match InferredType::from_ann(inner.trim()) {
@@ -171,7 +186,8 @@ impl InferredType {
         }
         if let Some(inner) = ann.strip_prefix("tuple[").and_then(|s| s.strip_suffix(']')) {
             let parts = split_top_level_commas(inner);
-            let types: Vec<InferredType> = parts.iter()
+            let types: Vec<InferredType> = parts
+                .iter()
                 .filter_map(|t| InferredType::from_ann(t.trim()))
                 .collect();
             return Some(Self::Tuple(types));
@@ -180,7 +196,11 @@ impl InferredType {
             let inner = inner.trim();
             // 既知プリミティブ型 + NamedInstance フォールバック（クラス・new_type・trait 名）
             let inner_ty = Self::from_ann(inner).or_else(|| {
-                if inner.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
+                if inner
+                    .chars()
+                    .next()
+                    .map(|c| c.is_alphabetic() || c == '_')
+                    .unwrap_or(false)
                     && inner.chars().all(|c| c.is_alphanumeric() || c == '_')
                 {
                     Some(Self::NamedInstance(inner.to_string()))
@@ -232,7 +252,10 @@ impl InferredType {
                     };
                     // positional params serialized as "let paramN:type"
                     let (name, ty_s) = if let Some(colon) = type_str.find(':') {
-                        (type_str[..colon].trim().to_string(), type_str[colon + 1..].trim())
+                        (
+                            type_str[..colon].trim().to_string(),
+                            type_str[colon + 1..].trim(),
+                        )
                     } else {
                         (format!("param{}", i + 1), type_str)
                     };
@@ -279,17 +302,23 @@ impl InferredType {
             Self::Any
         };
 
-        Some(Self::Function { params, return_type: Box::new(return_type) })
+        Some(Self::Function {
+            params,
+            return_type: Box::new(return_type),
+        })
     }
 
     /// 文字列 `s` の先頭から対応するブラケットの閉じ位置を返す。
     fn find_closing_bracket(s: &str, open: char, close: char) -> Option<usize> {
         let mut depth = 0usize;
         for (i, c) in s.char_indices() {
-            if c == open { depth += 1; }
-            else if c == close {
+            if c == open {
+                depth += 1;
+            } else if c == close {
                 depth -= 1;
-                if depth == 0 { return Some(i); }
+                if depth == 0 {
+                    return Some(i);
+                }
             }
         }
         None
@@ -353,14 +382,20 @@ impl std::fmt::Display for InferredType {
             }
             Self::Namespace(members) => write!(f, "<module({} members)>", members.len()),
             Self::Unresolved => write!(f, "unknown"),
-            Self::Function { params, return_type } => {
+            Self::Function {
+                params,
+                return_type,
+            } => {
                 match params {
                     None => write!(f, "function")?,
                     Some(ps) => {
-                        let parts: Vec<String> = ps.iter().map(|p| {
-                            let prefix = if p.mutable { "mut" } else { "let" };
-                            format!("{prefix} {}:{}", p.name, p.ty)
-                        }).collect();
+                        let parts: Vec<String> = ps
+                            .iter()
+                            .map(|p| {
+                                let prefix = if p.mutable { "mut" } else { "let" };
+                                format!("{prefix} {}:{}", p.name, p.ty)
+                            })
+                            .collect();
                         write!(f, "function{{{}}}", parts.join(","))?;
                     }
                 }
@@ -538,6 +573,11 @@ pub enum TypeErrorKind {
     /// `for`/`while` 式の直接本体では `loop_yield` を使用する必要がある。
     /// `block_return` は `for`/`while` 内にネストされた `if`/`match`/`block:` 式の中でのみ有効。
     BlockReturnInLoopExpr,
+    /// `raise` に `Error` trait を実装していない値を渡した。
+    InvalidRaiseType {
+        /// `raise` 式の推論型
+        got: InferredType,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -566,8 +606,16 @@ impl StaticTypeError {
     /// - `rhs`: 右辺の推論型
     /// - `op`: 演算子記号（`"<"` など）
     /// - `span`: エラー発生箇所のスパン
-    fn incompatible_cmp(lhs: InferredType, rhs: InferredType, op: &'static str, span: Span) -> Self {
-        Self { kind: TypeErrorKind::IncompatibleComparison { lhs, rhs, op }, span: Some(span) }
+    fn incompatible_cmp(
+        lhs: InferredType,
+        rhs: InferredType,
+        op: &'static str,
+        span: Span,
+    ) -> Self {
+        Self {
+            kind: TypeErrorKind::IncompatibleComparison { lhs, rhs, op },
+            span: Some(span),
+        }
     }
 
     /// `AssignToImmutable` エラーを生成するコンストラクタ。
@@ -576,7 +624,12 @@ impl StaticTypeError {
     /// - `name`: 代入しようとした不変変数の名前
     /// - `span`: エラー発生箇所のスパン
     fn assign_immutable(name: &str, span: Span) -> Self {
-        Self { kind: TypeErrorKind::AssignToImmutable { name: name.to_string() }, span: Some(span) }
+        Self {
+            kind: TypeErrorKind::AssignToImmutable {
+                name: name.to_string(),
+            },
+            span: Some(span),
+        }
     }
 
     /// ファイル名部分を返す（スパンがない場合は `"<unknown>"`）。
@@ -685,6 +738,10 @@ impl StaticTypeError {
                 hl_bt("block_return"), hl_bt("for"), hl_bt("while"),
                 hl_bt("loop_yield"), hl_bt("if"), hl_bt("match"), hl_bt("block:")
             ),
+            TypeErrorKind::InvalidRaiseType { got } => format!(
+                "{} expects an instance implementing trait {}, but got {}",
+                hl_bt("raise"), hl_q("Error"), hl_q(got)
+            ),
         }
     }
 }
@@ -785,18 +842,27 @@ impl TypeChecker {
         let mut global: HashMap<String, VarInfo> = HashMap::new();
         // 組み込み型名を TypeValOf として事前登録し、式コンテキストで認識できるようにする。
         let builtins: &[(&str, InferredType)] = &[
-            ("int",      InferredType::Int),
-            ("float",    InferredType::Float),
-            ("str",      InferredType::Str),
-            ("bool",     InferredType::Bool),
-            ("Any",      InferredType::Any),
-            ("function", InferredType::Function { params: None, return_type: Box::new(InferredType::Any) }),
+            ("int", InferredType::Int),
+            ("float", InferredType::Float),
+            ("str", InferredType::Str),
+            ("bool", InferredType::Bool),
+            ("Any", InferredType::Any),
+            (
+                "function",
+                InferredType::Function {
+                    params: None,
+                    return_type: Box::new(InferredType::Any),
+                },
+            ),
         ];
         for (name, inner) in builtins {
-            global.insert(name.to_string(), VarInfo {
-                ty: InferredType::TypeValOf(Box::new(inner.clone())),
-                mutable: false,
-            });
+            global.insert(
+                name.to_string(),
+                VarInfo {
+                    ty: InferredType::TypeValOf(Box::new(inner.clone())),
+                    mutable: false,
+                },
+            );
         }
         // 組み込み new_type: path (str), Index (int), Size (int)
         let mut known_class_names: HashSet<String> = HashSet::new();
@@ -809,10 +875,58 @@ impl TypeChecker {
         known_class_names.insert("slice".to_string());
         // 組み込み定数: begin / last は Index インスタンス
         for name in ["begin", "last"] {
-            global.insert(name.to_string(), VarInfo {
-                ty: InferredType::NamedInstance("Index".to_string()),
+            global.insert(
+                name.to_string(),
+                VarInfo {
+                    ty: InferredType::NamedInstance("Index".to_string()),
+                    mutable: false,
+                },
+            );
+        }
+        // 組み込み Error trait と標準例外クラスを静的環境にも登録する。
+        global.insert(
+            "Error".to_string(),
+            VarInfo {
+                ty: InferredType::TypeValOf(Box::new(InferredType::NamedInstance(
+                    "Error".to_string(),
+                ))),
                 mutable: false,
-            });
+            },
+        );
+        let exception_names = [
+            "Exception",
+            "ValueError",
+            "TypeError",
+            "NameError",
+            "AttributeError",
+            "IndexError",
+            "KeyError",
+            "ZeroDivisionError",
+            "RuntimeError",
+            "StopIteration",
+            "NotImplementedError",
+            "OverflowError",
+            "IOError",
+            "OSError",
+            "AssertionError",
+            "ArithmeticError",
+            "AccessError",
+        ];
+        for class_name in exception_names {
+            known_class_names.insert(class_name.to_string());
+            global.insert(
+                class_name.to_string(),
+                VarInfo {
+                    ty: InferredType::TypeValOf(Box::new(InferredType::NamedInstance(
+                        class_name.to_string(),
+                    ))),
+                    mutable: false,
+                },
+            );
+        }
+        let mut class_bases: HashMap<String, Vec<String>> = HashMap::new();
+        for class_name in exception_names {
+            class_bases.insert(class_name.to_string(), vec!["Error".to_string()]);
         }
         Self {
             scope_stack: vec![global],
@@ -820,7 +934,7 @@ impl TypeChecker {
             class_method_sigs: HashMap::new(),
             known_class_names,
             new_type_originals,
-            class_bases: HashMap::new(),
+            class_bases,
             class_fields: HashMap::new(),
             class_member_access: HashMap::new(),
             class_static_methods: HashMap::new(),
@@ -865,10 +979,22 @@ impl TypeChecker {
         // パス 1: 関数・クラス・trait のシグネチャを収集する。
         for stmt in stmts {
             match stmt {
-                Stmt::FnDef { name, params, return_type, body, .. } => {
+                Stmt::FnDef {
+                    name,
+                    params,
+                    return_type,
+                    body,
+                    ..
+                } => {
                     let sig = FnSig {
-                        params: params.iter()
-                            .map(|p| (p.name.clone(), p.type_ann.as_deref().and_then(InferredType::from_ann)))
+                        params: params
+                            .iter()
+                            .map(|p| {
+                                (
+                                    p.name.clone(),
+                                    p.type_ann.as_deref().and_then(InferredType::from_ann),
+                                )
+                            })
                             .collect(),
                         required_count: params.iter().filter(|p| p.default.is_none()).count(),
                         return_type: return_type.as_deref().and_then(InferredType::from_ann),
@@ -877,25 +1003,46 @@ impl TypeChecker {
                     // ネストした関数定義も再帰的に収集する。
                     self.collect_fn_sigs(body);
                 }
-                Stmt::ClassDef { name, bases, body, .. } => {
+                Stmt::ClassDef {
+                    name, bases, body, ..
+                } => {
                     self.known_class_names.insert(name.clone());
                     self.class_bases.insert(name.clone(), bases.clone());
                     // クラスメソッドのシグネチャを収集（Self 型検査に使用）。
                     let mut cls_methods: HashMap<String, Vec<FnSig>> = HashMap::new();
                     for s in body.iter() {
-                        if let Stmt::FnDef { name: mname, template_params, params, return_type, .. } = s {
+                        if let Stmt::FnDef {
+                            name: mname,
+                            template_params,
+                            params,
+                            return_type,
+                            ..
+                        } = s
+                        {
                             // `__cast__[TypeName]` メソッドはキャスト専用のキー名で格納する。
-                            let storage_name = if mname == "__cast__" && !template_params.is_empty() {
+                            let storage_name = if mname == "__cast__" && !template_params.is_empty()
+                            {
                                 format!("__cast__[{}]", template_params[0].name)
                             } else {
                                 mname.clone()
                             };
                             let sig = FnSig {
-                                params: params.iter()
-                                    .map(|p| (p.name.clone(), p.type_ann.as_deref().and_then(InferredType::from_ann)))
+                                params: params
+                                    .iter()
+                                    .map(|p| {
+                                        (
+                                            p.name.clone(),
+                                            p.type_ann.as_deref().and_then(InferredType::from_ann),
+                                        )
+                                    })
                                     .collect(),
-                                required_count: params.iter().filter(|p| p.default.is_none()).count(),
-                                return_type: return_type.as_deref().and_then(InferredType::from_ann),
+                                required_count: params
+                                    .iter()
+                                    .filter(|p| p.default.is_none())
+                                    .count(),
+                                return_type: return_type
+                                    .as_deref()
+                                    .and_then(InferredType::from_ann),
                             };
                             cls_methods.entry(storage_name).or_default().push(sig);
                         }
@@ -907,14 +1054,24 @@ impl TypeChecker {
                     let mut static_methods: HashSet<String> = HashSet::new();
                     for s in body.iter() {
                         match s {
-                            Stmt::Field { name: fname, kind, access, .. } => {
+                            Stmt::Field {
+                                name: fname,
+                                kind,
+                                access,
+                                ..
+                            } => {
                                 let mutable = matches!(kind, crate::ast::FieldKind::Mut);
                                 fields.insert(fname.clone(), mutable);
                                 if *access != Accessibility::Public {
                                     member_access.insert(fname.clone(), access.clone());
                                 }
                             }
-                            Stmt::FnDef { name: mname, is_static, access, .. } => {
+                            Stmt::FnDef {
+                                name: mname,
+                                is_static,
+                                access,
+                                ..
+                            } => {
                                 if *access != Accessibility::Public {
                                     member_access.insert(mname.clone(), access.clone());
                                 }
@@ -928,7 +1085,8 @@ impl TypeChecker {
                     self.class_fields.insert(name.clone(), fields);
                     self.class_member_access.insert(name.clone(), member_access);
                     if !static_methods.is_empty() {
-                        self.class_static_methods.insert(name.clone(), static_methods);
+                        self.class_static_methods
+                            .insert(name.clone(), static_methods);
                     }
                     self.collect_fn_sigs(body);
                 }
@@ -944,9 +1102,16 @@ impl TypeChecker {
                         self.collect_fn_sigs(&arm.body);
                     }
                 }
-                Stmt::If { branches, else_body } => {
-                    for (_, body) in branches { self.collect_fn_sigs(body); }
-                    if let Some(body) = else_body { self.collect_fn_sigs(body); }
+                Stmt::If {
+                    branches,
+                    else_body,
+                } => {
+                    for (_, body) in branches {
+                        self.collect_fn_sigs(body);
+                    }
+                    if let Some(body) = else_body {
+                        self.collect_fn_sigs(body);
+                    }
                 }
                 Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::Block(body) => {
                     self.collect_fn_sigs(body);
@@ -958,7 +1123,8 @@ impl TypeChecker {
         for stmt in stmts {
             if let Stmt::NewTypeDef { name, original } = stmt {
                 self.known_class_names.insert(name.clone());
-                self.new_type_originals.insert(name.clone(), original.clone());
+                self.new_type_originals
+                    .insert(name.clone(), original.clone());
                 if let Some(orig_sigs) = self.class_method_sigs.get(original).cloned() {
                     self.class_method_sigs.insert(name.clone(), orig_sigs);
                 }
@@ -992,7 +1158,10 @@ impl TypeChecker {
     /// - `ty`: 変数の静的推論型
     /// - `mutable`: `true` なら可変（`mut`）、`false` なら不変（`let` / `const`）
     fn declare(&mut self, name: String, ty: InferredType, mutable: bool) {
-        self.scope_stack.last_mut().unwrap().insert(name, VarInfo { ty, mutable });
+        self.scope_stack
+            .last_mut()
+            .unwrap()
+            .insert(name, VarInfo { ty, mutable });
     }
 
     /// スコープチェーンを内側から外側に向かって変数を検索する。
@@ -1011,15 +1180,24 @@ impl TypeChecker {
     /// メソッドへのアクセスはランタイムが強制しないため、フィールドのみを対象とする。
     /// - `private`: 同じクラス内からのみ許可。
     /// - `protected`: 同じクラスまたは派生クラスからのみ許可。
-    fn check_member_access_static(&mut self, class_name: &str, member_name: &str, span: Option<Span>) {
+    fn check_member_access_static(
+        &mut self,
+        class_name: &str,
+        member_name: &str,
+        span: Option<Span>,
+    ) {
         // フィールドのみ検査する（メソッドへのアクセスはランタイムでも強制されない）。
-        let is_field = self.class_fields
+        let is_field = self
+            .class_fields
             .get(class_name)
             .map(|f| f.contains_key(member_name))
             .unwrap_or(false);
-        if !is_field { return; }
+        if !is_field {
+            return;
+        }
 
-        let access = self.class_member_access
+        let access = self
+            .class_member_access
             .get(class_name)
             .and_then(|m| m.get(member_name))
             .cloned()
@@ -1040,8 +1218,12 @@ impl TypeChecker {
             }
             Accessibility::Protected => {
                 if let Some(cur) = self.current_class_name.clone() {
-                    if cur == class_name { return; }
-                    if self.class_bases.get(&cur)
+                    if cur == class_name {
+                        return;
+                    }
+                    if self
+                        .class_bases
+                        .get(&cur)
                         .map(|b| b.contains(&class_name.to_string()))
                         .unwrap_or(false)
                     {
@@ -1073,13 +1255,17 @@ impl TypeChecker {
             // クラス名を決定する:
             // (a) `self.<field>` の場合は current_class_name から取得する。
             // (b) 型が NamedInstance として解決された場合はそこから取得する。
-            let class_name_opt: Option<String> =
-                if matches!(object.as_ref(), Expr::Ident(n) if n == "self") {
-                    self.current_class_name.clone()
+            let class_name_opt: Option<String> = if matches!(object.as_ref(), Expr::Ident(n) if n == "self")
+            {
+                self.current_class_name.clone()
+            } else {
+                let obj_ty = self.infer(object);
+                if let InferredType::NamedInstance(cls) = obj_ty {
+                    Some(cls)
                 } else {
-                    let obj_ty = self.infer(object);
-                    if let InferredType::NamedInstance(cls) = obj_ty { Some(cls) } else { None }
-                };
+                    None
+                }
+            };
             if let Some(class_name) = class_name_opt {
                 if let Some(fields) = self.class_fields.get(&class_name) {
                     if fields.get(attr.as_str()) == Some(&false) {
@@ -1166,7 +1352,11 @@ impl TypeChecker {
                 let ty = self.infer(expr);
                 self.declare(name.clone(), ty, true);
             }
-            Stmt::LetTuple { targets, value, span } => {
+            Stmt::LetTuple {
+                targets,
+                value,
+                span,
+            } => {
                 let rhs_ty = self.infer(value);
 
                 // Check each target for missing qualifier
@@ -1182,9 +1372,16 @@ impl TypeChecker {
                 // Arity check when the RHS is a known-length tuple type
                 if let InferredType::Tuple(ref elem_types) = rhs_ty {
                     let has_wildcard = targets.iter().any(|t| matches!(t, TupleTarget::Wildcard));
-                    let named = targets.iter().filter(|t| !matches!(t, TupleTarget::Wildcard)).count();
+                    let named = targets
+                        .iter()
+                        .filter(|t| !matches!(t, TupleTarget::Wildcard))
+                        .count();
                     let tlen = elem_types.len();
-                    let bad = if has_wildcard { named > tlen } else { named != tlen };
+                    let bad = if has_wildcard {
+                        named > tlen
+                    } else {
+                        named != tlen
+                    };
                     if bad {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::TupleUnpackArityMismatch {
@@ -1198,11 +1395,17 @@ impl TypeChecker {
                 }
 
                 // Declare each named target variable
-                let elem_types = if let InferredType::Tuple(ref v) = rhs_ty { v.clone() } else { vec![] };
+                let elem_types = if let InferredType::Tuple(ref v) = rhs_ty {
+                    v.clone()
+                } else {
+                    vec![]
+                };
                 for (i, target) in targets.iter().enumerate() {
                     let ty = elem_types.get(i).cloned().unwrap_or(InferredType::Any);
                     match target {
-                        TupleTarget::Let(name) | TupleTarget::Bare(name) => self.declare(name.clone(), ty, false),
+                        TupleTarget::Let(name) | TupleTarget::Bare(name) => {
+                            self.declare(name.clone(), ty, false)
+                        }
                         TupleTarget::Mut(name) => self.declare(name.clone(), ty, true),
                         TupleTarget::Wildcard => {}
                     }
@@ -1219,7 +1422,12 @@ impl TypeChecker {
                 }
                 self.infer(value);
             }
-            Stmt::CompoundAssign { name, op: _, value, span } => {
+            Stmt::CompoundAssign {
+                name,
+                op: _,
+                value,
+                span,
+            } => {
                 // 複合代入（`+=` など）でも不変変数への代入はエラーとして記録する。
                 if let Some(info) = self.lookup(name) {
                     if !info.mutable {
@@ -1235,7 +1443,9 @@ impl TypeChecker {
                         if let Some(info) = self.lookup(name) {
                             if !info.mutable {
                                 self.report_error(StaticTypeError {
-                                    kind: TypeErrorKind::AssignToImmutable { name: name.to_string() },
+                                    kind: TypeErrorKind::AssignToImmutable {
+                                        name: name.to_string(),
+                                    },
                                     span: None,
                                 });
                             }
@@ -1247,14 +1457,20 @@ impl TypeChecker {
                 self.infer(target);
                 self.infer(value);
             }
-            Stmt::AttrCompoundAssign { target, op: _, value } => {
+            Stmt::AttrCompoundAssign {
+                target,
+                op: _,
+                value,
+            } => {
                 // サブスクリプト複合代入（`x[i] += v`）のとき、ルート変数が let なら静的エラー。
                 if matches!(target, Expr::Subscript { .. }) {
                     if let Some(name) = Self::subscript_root_ident(target) {
                         if let Some(info) = self.lookup(name) {
                             if !info.mutable {
                                 self.report_error(StaticTypeError {
-                                    kind: TypeErrorKind::AssignToImmutable { name: name.to_string() },
+                                    kind: TypeErrorKind::AssignToImmutable {
+                                        name: name.to_string(),
+                                    },
                                     span: None,
                                 });
                             }
@@ -1274,18 +1490,30 @@ impl TypeChecker {
             }
 
             // --- 制御構文 ---
-            Stmt::If { branches, else_body } => {
+            Stmt::If {
+                branches,
+                else_body,
+            } => {
                 // if/elif/else: 各分岐で独立したスコープを生成する。
                 // 条件式が型ガード（`x is T` / `x is not T`）の場合、
                 // 分岐本体内では変数の型を絞り込む（type narrowing）。
                 for (cond, body) in branches {
                     // 型ガード情報を条件式 AST から取り出す（借用なし）。
-                    let guard_opt: Option<(String, String, bool, Span)> =
-                        if let Expr::IsType { expr, type_name, negated, span } = cond {
-                            if let Expr::Ident(var_name) = expr.as_ref() {
-                                Some((var_name.clone(), type_name.clone(), *negated, span.clone()))
-                            } else { None }
-                        } else { None };
+                    let guard_opt: Option<(String, String, bool, Span)> = if let Expr::IsType {
+                        expr,
+                        type_name,
+                        negated,
+                        span,
+                    } = cond
+                    {
+                        if let Expr::Ident(var_name) = expr.as_ref() {
+                            Some((var_name.clone(), type_name.clone(), *negated, span.clone()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
 
                     // 絞り込み後の型と、エラー情報を計算する（`self.lookup` による不変借用はここで完了）。
                     // narrowed: (変数名, 絞り込み後の型, 可変フラグ)
@@ -1297,7 +1525,8 @@ impl TypeChecker {
                         None => (None, None),
                         Some((var_name, type_name, negated, span)) => {
                             let guard_ty = Self::type_from_guard_name(type_name);
-                            let (var_ty, is_mut) = self.lookup(var_name)
+                            let (var_ty, is_mut) = self
+                                .lookup(var_name)
                                 .map(|v| (v.ty.clone(), v.mutable))
                                 .unwrap_or((InferredType::Unresolved, false));
 
@@ -1306,7 +1535,8 @@ impl TypeChecker {
                                 match &var_ty {
                                     InferredType::Union(types) => {
                                         // Union からガード型を除いた残りの型を求める。
-                                        let remaining: Vec<InferredType> = types.iter()
+                                        let remaining: Vec<InferredType> = types
+                                            .iter()
                                             .filter(|t| **t != guard_ty)
                                             .cloned()
                                             .collect();
@@ -1320,7 +1550,10 @@ impl TypeChecker {
                                     InferredType::Unresolved => (None, None),
                                     _ => {
                                         // Union でも Unresolved でもない型 → エラー
-                                        (None, Some((var_name.clone(), var_ty.clone(), span.clone())))
+                                        (
+                                            None,
+                                            Some((var_name.clone(), var_ty.clone(), span.clone())),
+                                        )
                                     }
                                 }
                             } else {
@@ -1373,9 +1606,8 @@ impl TypeChecker {
                             // `is` アーム: subject が変数なら、アームのスコープ内で型を絞り込む
                             if let Some(ref var_name) = subject_name {
                                 let narrowed = Self::type_from_guard_name(type_name);
-                                let is_mut = self.lookup(var_name)
-                                    .map(|v| v.mutable)
-                                    .unwrap_or(false);
+                                let is_mut =
+                                    self.lookup(var_name).map(|v| v.mutable).unwrap_or(false);
                                 self.declare(var_name.clone(), narrowed, is_mut);
                             }
                             let _ = subject_ty.clone(); // suppress unused warning
@@ -1392,7 +1624,11 @@ impl TypeChecker {
                 self.check_stmts(body);
                 self.pop_scope();
             }
-            Stmt::For { targets, iter, body } => {
+            Stmt::For {
+                targets,
+                iter,
+                body,
+            } => {
                 // for...in: イテレータ式を推論し、ループ変数を Unresolved として宣言する。
                 // コレクション要素型のトラッキングは未実装のため実行時に委ねる。
                 self.infer(iter);
@@ -1411,14 +1647,23 @@ impl TypeChecker {
             }
 
             // --- 関数定義 ---
-            Stmt::FnDef { name, params, return_type, body, decorators, .. } => {
+            Stmt::FnDef {
+                name,
+                params,
+                return_type,
+                body,
+                decorators,
+                ..
+            } => {
                 // デコレータの型シグネチャを検査する（関数デコレータなので is_fn_target=true）。
                 for dec in decorators {
                     self.check_decorator(dec, true, name);
                 }
                 // パラメータの型アノテーション欠如を検査する（`self` は除外）。
                 for param in params.iter() {
-                    if param.name == "self" { continue; }
+                    if param.name == "self" {
+                        continue;
+                    }
                     if param.type_ann.is_none() {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::MissingParamTypeAnn {
@@ -1432,7 +1677,9 @@ impl TypeChecker {
                 // 戻り値型アノテーション欠如を検査する。
                 if return_type.is_none() {
                     self.report_error(StaticTypeError {
-                        kind: TypeErrorKind::MissingReturnTypeAnn { func_name: name.clone() },
+                        kind: TypeErrorKind::MissingReturnTypeAnn {
+                            func_name: name.clone(),
+                        },
                         span: None,
                     });
                 }
@@ -1442,11 +1689,14 @@ impl TypeChecker {
                 for param in params {
                     let ty = if param.name == "self" {
                         // クラスメソッド内の `self` はクラスのインスタンス型として宣言する。
-                        self.current_class_name.as_ref()
+                        self.current_class_name
+                            .as_ref()
                             .map(|c| InferredType::NamedInstance(c.clone()))
                             .unwrap_or(InferredType::Unresolved)
                     } else {
-                        param.type_ann.as_deref()
+                        param
+                            .type_ann
+                            .as_deref()
                             .and_then(InferredType::from_ann)
                             .unwrap_or(InferredType::Unresolved)
                     };
@@ -1463,13 +1713,22 @@ impl TypeChecker {
             }
 
             // --- クラス・trait 定義 ---
-            Stmt::ClassDef { name, body, decorators, .. } => {
+            Stmt::ClassDef {
+                name,
+                body,
+                decorators,
+                ..
+            } => {
                 // デコレータの型シグネチャを検査する（クラスデコレータなので is_fn_target=false）。
                 for dec in decorators {
                     self.check_decorator(dec, false, name);
                 }
                 // クラス名を TypeValOf(NamedInstance) としてスコープに登録し、本体を独立スコープで検査する。
-                self.declare(name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))), false);
+                self.declare(
+                    name.clone(),
+                    InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))),
+                    false,
+                );
                 self.push_scope();
                 let prev_class = self.current_class_name.replace(name.clone());
                 self.check_stmts(body);
@@ -1478,7 +1737,11 @@ impl TypeChecker {
             }
             Stmt::TraitDef { name, body, .. } => {
                 // trait 名を TypeValOf(NamedInstance) としてスコープに登録し、本体を独立スコープで検査する。
-                self.declare(name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))), false);
+                self.declare(
+                    name.clone(),
+                    InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))),
+                    false,
+                );
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
@@ -1505,7 +1768,13 @@ impl TypeChecker {
             }
 
             // --- クラスフィールド宣言 ---
-            Stmt::Field { name, kind, type_ann, default, .. } => {
+            Stmt::Field {
+                name,
+                kind,
+                type_ann,
+                default,
+                ..
+            } => {
                 // フィールドを型アノテーションに基づいてスコープに登録する。
                 // FieldKind::Mut のみ可変として扱う（Let / Const は不変）。
                 let ty = InferredType::from_ann(type_ann).unwrap_or(InferredType::Unresolved);
@@ -1517,10 +1786,18 @@ impl TypeChecker {
             }
 
             // --- ジェネレータ関数定義 ---
-            Stmt::GenDef { name, params, yield_type, body, .. } => {
+            Stmt::GenDef {
+                name,
+                params,
+                yield_type,
+                body,
+                ..
+            } => {
                 // パラメータの型アノテーション欠如を検査する（`self` は除外）。
                 for param in params.iter() {
-                    if param.name == "self" { continue; }
+                    if param.name == "self" {
+                        continue;
+                    }
                     if param.type_ann.is_none() {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::MissingParamTypeAnn {
@@ -1534,14 +1811,18 @@ impl TypeChecker {
                 // yield 型アノテーション欠如を戻り値型アノテーション欠如として検査する。
                 if yield_type.is_none() {
                     self.report_error(StaticTypeError {
-                        kind: TypeErrorKind::MissingReturnTypeAnn { func_name: name.clone() },
+                        kind: TypeErrorKind::MissingReturnTypeAnn {
+                            func_name: name.clone(),
+                        },
                         span: None,
                     });
                 }
                 self.declare(name.clone(), InferredType::Unresolved, false);
                 self.push_scope();
                 for param in params {
-                    let ty = param.type_ann.as_deref()
+                    let ty = param
+                        .type_ann
+                        .as_deref()
                         .and_then(InferredType::from_ann)
                         .unwrap_or(InferredType::Unresolved);
                     self.declare(param.name.clone(), ty, param.mutable);
@@ -1556,23 +1837,43 @@ impl TypeChecker {
             // --- new_type 定義 ---
             Stmt::NewTypeDef { name, .. } => {
                 // new_type バインドは常に const（パーサーが再代入を禁止）。
-                self.declare(name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))), false);
+                self.declare(
+                    name.clone(),
+                    InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))),
+                    false,
+                );
             }
 
             // --- enum 定義 ---
             Stmt::EnumDef { name, .. } => {
                 // enum Name → クラス Name と enum_item_Name の両方をスコープに登録する。
                 let item_type_name = format!("enum_item_{}", name);
-                self.declare(item_type_name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(item_type_name))), false);
-                self.declare(name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))), false);
+                self.declare(
+                    item_type_name.clone(),
+                    InferredType::TypeValOf(Box::new(InferredType::NamedInstance(item_type_name))),
+                    false,
+                );
+                self.declare(
+                    name.clone(),
+                    InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))),
+                    false,
+                );
             }
 
             // --- 副作用のない文 ---
-            Stmt::Pass | Stmt::Break | Stmt::Continue | Stmt::Freeze(..)
-            | Stmt::BreakPoint { .. } | Stmt::DebugLet(..) => {}
+            Stmt::Pass
+            | Stmt::Break
+            | Stmt::Continue
+            | Stmt::Freeze(..)
+            | Stmt::BreakPoint { .. }
+            | Stmt::DebugLet(..) => {}
 
             // --- 例外処理 ---
-            Stmt::Try { body, handlers, finally_body } => {
+            Stmt::Try {
+                body,
+                handlers,
+                finally_body,
+            } => {
                 // try ブロック本体を独立スコープで検査する。
                 self.push_scope();
                 self.check_stmts(body);
@@ -1594,20 +1895,32 @@ impl TypeChecker {
                     self.pop_scope();
                 }
             }
-            Stmt::Raise { exc, .. } => {
-                // raise 文: 例外式を推論する（例外型の静的検査は未実装）。
+            Stmt::Raise { exc, span } => {
+                // raise 文: Error trait 実装インスタンスだけを送出できる。
                 if let Some(e) = exc {
-                    self.infer(e);
+                    let ty = self.infer(e);
+                    if !self.is_error_instance_type(&ty) {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::InvalidRaiseType { got: ty },
+                            span: Some(span.clone()),
+                        });
+                    }
                 }
             }
 
             // --- import ---
-            Stmt::Import { module, alias, body, .. } => {
+            Stmt::Import {
+                module,
+                alias,
+                body,
+                ..
+            } => {
                 // Python モジュールの body を走査してメンバ型を収集し、
                 // InferredType::Namespace としてスコープに登録する。
                 // Python コード内部の型検査は行わない（collect_module_types のみ）。
                 let member_types = self.collect_module_types(body);
-                let bind_name = alias.clone()
+                let bind_name = alias
+                    .clone()
                     .unwrap_or_else(|| module.last().unwrap().clone());
                 self.declare(bind_name, InferredType::Namespace(member_types), false);
             }
@@ -1617,7 +1930,8 @@ impl TypeChecker {
                 let member_types = self.collect_module_types(body);
                 for (orig_name, alias) in names {
                     let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());
-                    let ty = member_types.get(orig_name.as_str())
+                    let ty = member_types
+                        .get(orig_name.as_str())
                         .cloned()
                         .unwrap_or(InferredType::Unresolved);
                     self.declare(bind_name, ty, false);
@@ -1634,19 +1948,29 @@ impl TypeChecker {
 
     /// モジュールの tl AST を浅くスキャンして「名前 → 型」マップを返す。
     /// Python コード本体は型検査しない（クラス定義・関数定義の宣言のみ収集）。
-    fn collect_module_types(&self, body: &[Stmt]) -> std::collections::HashMap<String, InferredType> {
+    fn collect_module_types(
+        &self,
+        body: &[Stmt],
+    ) -> std::collections::HashMap<String, InferredType> {
         let mut map = std::collections::HashMap::new();
         for stmt in body {
             match stmt {
                 Stmt::ClassDef { name, .. } => {
                     // クラス定義 → TypeValOf(NamedInstance)（コンストラクタとして使用可能）
-                    map.insert(name.clone(), InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))));
+                    map.insert(
+                        name.clone(),
+                        InferredType::TypeValOf(Box::new(InferredType::NamedInstance(
+                            name.clone(),
+                        ))),
+                    );
                 }
                 Stmt::FnDef { name, .. } => {
                     // 関数定義 → Unresolved（引数型は全て Any なので静的追跡不要）
                     map.insert(name.clone(), InferredType::Unresolved);
                 }
-                Stmt::Mut(name, _) | Stmt::Let(name, _) | Stmt::Const(name, _)
+                Stmt::Mut(name, _)
+                | Stmt::Let(name, _)
+                | Stmt::Const(name, _)
                 | Stmt::Static(name, _, _) => {
                     map.insert(name.clone(), InferredType::Unresolved);
                 }
@@ -1736,7 +2060,9 @@ impl TypeChecker {
                 };
                 match &obj_ty {
                     InferredType::Any => self.report_error(StaticTypeError {
-                        kind: TypeErrorKind::OperationOnAny { op: "attribute access".to_string() },
+                        kind: TypeErrorKind::OperationOnAny {
+                            op: "attribute access".to_string(),
+                        },
                         span: Some(span.clone()),
                     }),
                     InferredType::Union(_) => self.report_error(StaticTypeError {
@@ -1766,7 +2092,9 @@ impl TypeChecker {
             // --- 識別子 ---
             Expr::Ident(name) => {
                 // 識別子: スコープから型を取得する。未宣言なら Unresolved（実行時エラー委譲）。
-                self.lookup(name).map(|v| v.ty.clone()).unwrap_or(InferredType::Unresolved)
+                self.lookup(name)
+                    .map(|v| v.ty.clone())
+                    .unwrap_or(InferredType::Unresolved)
             }
 
             // --- 単項演算子 ---
@@ -1781,7 +2109,9 @@ impl TypeChecker {
                 match &ty {
                     InferredType::Any => {
                         self.report_error(StaticTypeError {
-                            kind: TypeErrorKind::OperationOnAny { op: op_str.to_string() },
+                            kind: TypeErrorKind::OperationOnAny {
+                                op: op_str.to_string(),
+                            },
                             span: None,
                         });
                         return InferredType::Unresolved;
@@ -1811,7 +2141,12 @@ impl TypeChecker {
             }
 
             // --- 二項演算子 ---
-            Expr::BinOp { op, left, right, span } => {
+            Expr::BinOp {
+                op,
+                left,
+                right,
+                span,
+            } => {
                 // 左右オペランドを推論し、演算の型制約を検査してから結果型を返す。
                 let lt = self.infer(left);
                 let rt = self.infer(right);
@@ -1831,8 +2166,10 @@ impl TypeChecker {
                 if pairs.is_empty() {
                     InferredType::Dict
                 } else {
-                    let key_types: Vec<InferredType> = pairs.iter().map(|(k, _)| self.infer(k)).collect();
-                    let val_types: Vec<InferredType> = pairs.iter().map(|(_, v)| self.infer(v)).collect();
+                    let key_types: Vec<InferredType> =
+                        pairs.iter().map(|(k, _)| self.infer(k)).collect();
+                    let val_types: Vec<InferredType> =
+                        pairs.iter().map(|(_, v)| self.infer(v)).collect();
                     let first_k = &key_types[0];
                     let first_v = &val_types[0];
                     if *first_k != InferredType::Unresolved
@@ -1853,9 +2190,15 @@ impl TypeChecker {
                 InferredType::Unresolved
             }
             Expr::Slice { begin, end, step } => {
-                if let Some(e) = begin { self.infer(e); }
-                if let Some(e) = end   { self.infer(e); }
-                if let Some(e) = step  { self.infer(e); }
+                if let Some(e) = begin {
+                    self.infer(e);
+                }
+                if let Some(e) = end {
+                    self.infer(e);
+                }
+                if let Some(e) = step {
+                    self.infer(e);
+                }
                 InferredType::NamedInstance("slice".to_string())
             }
 
@@ -1879,7 +2222,11 @@ impl TypeChecker {
                     InferredType::Unresolved
                 }
             }
-            Expr::IfExpr { branches, else_body, return_type } => {
+            Expr::IfExpr {
+                branches,
+                else_body,
+                return_type,
+            } => {
                 // if 式は block_return を吸収する: 外側の for/while 式の直接本体フラグをリセット。
                 let saved_depth = self.block_return_forbidden_depth;
                 self.block_return_forbidden_depth = 0;
@@ -1901,7 +2248,12 @@ impl TypeChecker {
                     InferredType::Unresolved
                 }
             }
-            Expr::ForExpr { iter, body, return_type, .. } => {
+            Expr::ForExpr {
+                iter,
+                body,
+                return_type,
+                ..
+            } => {
                 self.infer(iter);
                 // for 式の直接本体では block_return は禁止。
                 self.block_return_forbidden_depth += 1;
@@ -1915,7 +2267,11 @@ impl TypeChecker {
                     InferredType::Unresolved
                 }
             }
-            Expr::WhileExpr { cond, body, return_type } => {
+            Expr::WhileExpr {
+                cond,
+                body,
+                return_type,
+            } => {
                 self.infer(cond);
                 // while 式の直接本体では block_return は禁止。
                 self.block_return_forbidden_depth += 1;
@@ -1929,13 +2285,19 @@ impl TypeChecker {
                     InferredType::Unresolved
                 }
             }
-            Expr::MatchExpr { subject, arms, return_type } => {
+            Expr::MatchExpr {
+                subject,
+                arms,
+                return_type,
+            } => {
                 // match 式は block_return を吸収する: 外側の for/while 式の直接本体フラグをリセット。
                 let saved_depth = self.block_return_forbidden_depth;
                 self.block_return_forbidden_depth = 0;
                 self.infer(subject);
                 for arm in arms {
-                    if let crate::ast::MatchPattern::Case(e) = &arm.pattern { self.infer(e); }
+                    if let crate::ast::MatchPattern::Case(e) = &arm.pattern {
+                        self.infer(e);
+                    }
                     self.push_scope();
                     self.check_stmts(&arm.body);
                     self.pop_scope();
@@ -1971,9 +2333,15 @@ impl TypeChecker {
     /// # 戻り値
     /// 互換性があれば `true`、なければ `false`。
     fn type_matches(&self, arg_ty: &InferredType, expected: &InferredType) -> bool {
-        if *arg_ty == InferredType::Unresolved { return true; }
-        if *expected == InferredType::Any { return true; }
-        if arg_ty == expected { return true; }
+        if *arg_ty == InferredType::Unresolved {
+            return true;
+        }
+        if *expected == InferredType::Any {
+            return true;
+        }
+        if arg_ty == expected {
+            return true;
+        }
         // bare `type`（TypeVal）: 任意の型値（TypeValOf も含む）を受け付ける。
         if *expected == InferredType::TypeVal {
             return matches!(arg_ty, InferredType::TypeValOf(_) | InferredType::TypeVal);
@@ -1982,7 +2350,9 @@ impl TypeChecker {
         if let InferredType::TypeValOf(expected_inner) = expected {
             return match arg_ty {
                 InferredType::TypeVal => true, // bare `type` 型の変数は寛容に受け付ける
-                InferredType::TypeValOf(arg_inner) => self.type_val_compatible(arg_inner, expected_inner),
+                InferredType::TypeValOf(arg_inner) => {
+                    self.type_val_compatible(arg_inner, expected_inner)
+                }
                 _ => false,
             };
         }
@@ -2029,9 +2399,13 @@ impl TypeChecker {
     /// - `arg_inner` が `NamedInstance` で、その new_type チェーンが `expected_inner` に到達する
     /// - `arg_inner` が `NamedInstance` で、そのクラス基底に `expected_inner` の名前が含まれる
     fn type_val_compatible(&self, arg_inner: &InferredType, expected_inner: &InferredType) -> bool {
-        if arg_inner == expected_inner { return true; }
+        if arg_inner == expected_inner {
+            return true;
+        }
 
-        let InferredType::NamedInstance(arg_name) = arg_inner else { return false; };
+        let InferredType::NamedInstance(arg_name) = arg_inner else {
+            return false;
+        };
 
         // expected_inner を文字列名に変換（プリミティブは Display、NamedInstance は名前を使用）
         let expected_name = expected_inner.to_string();
@@ -2040,9 +2414,15 @@ impl TypeChecker {
         let mut current = arg_name.clone();
         let mut seen = std::collections::HashSet::new();
         loop {
-            let Some(orig_name) = self.new_type_originals.get(&current).cloned() else { break };
-            if !seen.insert(orig_name.clone()) { break }
-            if orig_name == expected_name { return true; }
+            let Some(orig_name) = self.new_type_originals.get(&current).cloned() else {
+                break;
+            };
+            if !seen.insert(orig_name.clone()) {
+                break;
+            }
+            if orig_name == expected_name {
+                return true;
+            }
             current = orig_name;
         }
 
@@ -2051,6 +2431,40 @@ impl TypeChecker {
             return bases.contains(&expected_name);
         }
 
+        false
+    }
+
+    /// `raise` できる型かを判定する。
+    ///
+    /// `raise` は `Error` trait を実装したクラスのインスタンスだけを受け付ける。
+    /// 静的に型が確定しない値は安全側で拒否し、必要なら `Error` 実装クラスの
+    /// インスタンスとして明示的に構築してから送出させる。
+    fn is_error_instance_type(&self, ty: &InferredType) -> bool {
+        match ty {
+            InferredType::NamedInstance(class_name) => {
+                self.class_implements_trait(class_name, "Error")
+            }
+            InferredType::Union(types) => types.iter().all(|t| self.is_error_instance_type(t)),
+            _ => false,
+        }
+    }
+
+    /// クラスが指定 trait を実装しているかを基底リストから確認する。
+    fn class_implements_trait(&self, class_name: &str, trait_name: &str) -> bool {
+        let mut stack = vec![class_name.to_string()];
+        let mut seen = HashSet::new();
+        while let Some(cur) = stack.pop() {
+            if !seen.insert(cur.clone()) {
+                continue;
+            }
+            let Some(bases) = self.class_bases.get(cur.as_str()) else {
+                continue;
+            };
+            if bases.iter().any(|base| base == trait_name) {
+                return true;
+            }
+            stack.extend(bases.iter().cloned());
+        }
         false
     }
 
@@ -2079,12 +2493,16 @@ impl TypeChecker {
         let method_call_info: Option<(String, String)> =
             if let Expr::Attr { object, attr, span } = func {
                 let obj_ty = match object.as_ref() {
-                    Expr::Ident(n) => self.lookup(n).map(|v| v.ty.clone()).unwrap_or(InferredType::Unresolved),
+                    Expr::Ident(n) => self
+                        .lookup(n)
+                        .map(|v| v.ty.clone())
+                        .unwrap_or(InferredType::Unresolved),
                     _ => InferredType::Unresolved,
                 };
                 if let InferredType::NamedInstance(cls_name) = obj_ty {
                     // static メソッドをインスタンスから呼び出していないか検査する。
-                    let is_static = self.class_static_methods
+                    let is_static = self
+                        .class_static_methods
                         .get(&cls_name)
                         .map(|s| s.contains(attr.as_str()))
                         .unwrap_or(false);
@@ -2106,7 +2524,11 @@ impl TypeChecker {
             };
 
         // 可変借用の前に関数名を取得しておく。
-        let func_name = if let Expr::Ident(name) = func { Some(name.clone()) } else { None };
+        let func_name = if let Expr::Ident(name) = func {
+            Some(name.clone())
+        } else {
+            None
+        };
         let func_type = self.infer(func);
 
         // 全引数の型を推論し、キーワード引数名と型のペアとして収集する。
@@ -2114,13 +2536,18 @@ impl TypeChecker {
         for arg in args.iter() {
             match arg {
                 CallArg::Positional(e) => arg_data.push((None, self.infer(e))),
-                CallArg::Keyword { name, value } => arg_data.push((Some(name.clone()), self.infer(value))),
+                CallArg::Keyword { name, value } => {
+                    arg_data.push((Some(name.clone()), self.infer(value)))
+                }
             }
         }
 
         // 関数型変数の呼び出し: func_type が Function なら専用の検査・戻り値推論を行う。
         match func_type {
-            InferredType::Function { params: Some(fn_params), return_type } => {
+            InferredType::Function {
+                params: Some(fn_params),
+                return_type,
+            } => {
                 let fname = func_name.as_deref().unwrap_or("<function>").to_string();
                 let ret = *return_type;
                 self.check_fn_type_call(&fname, args, &arg_data, &fn_params);
@@ -2158,10 +2585,15 @@ impl TypeChecker {
             .and_then(|n| self.fn_sigs.get(n))
             .and_then(|sigs| {
                 let call_count = arg_data.len();
-                let matching: Vec<_> = sigs.iter()
+                let matching: Vec<_> = sigs
+                    .iter()
                     .filter(|s| call_count >= s.required_count && call_count <= s.params.len())
                     .collect();
-                if matching.len() == 1 { matching[0].return_type.clone() } else { None }
+                if matching.len() == 1 {
+                    matching[0].return_type.clone()
+                } else {
+                    None
+                }
             })
             .unwrap_or(InferredType::Unresolved)
     }
@@ -2184,7 +2616,8 @@ impl TypeChecker {
         method_name: &str,
         arg_data: &[(Option<String>, InferredType)],
     ) {
-        let sigs = match self.class_method_sigs
+        let sigs = match self
+            .class_method_sigs
             .get(cls_name)
             .and_then(|m| m.get(method_name))
             .cloned()
@@ -2195,7 +2628,8 @@ impl TypeChecker {
         // メソッドパラメータには `self` が含まれるが引数リストには含まれないため、
         // 有効範囲を +1 してチェックする（self 分のオフセット）。
         let effective_count = arg_data.len() + 1;
-        let count_matching: Vec<FnSig> = sigs.iter()
+        let count_matching: Vec<FnSig> = sigs
+            .iter()
             .filter(|s| effective_count >= s.required_count && effective_count <= s.params.len())
             .cloned()
             .collect();
@@ -2237,18 +2671,15 @@ impl TypeChecker {
     ///
     /// # 副作用
     /// 引数個数・型・キーワード引数名の不一致が検出された場合に `self.errors` へ追記する。
-    fn check_call_args(
-        &mut self,
-        fname: &str,
-        arg_data: &[(Option<String>, InferredType)],
-    ) {
+    fn check_call_args(&mut self, fname: &str, arg_data: &[(Option<String>, InferredType)]) {
         let sigs = match self.fn_sigs.get(fname).cloned() {
             Some(s) => s,
             None => return, // 未知の関数は実行時エラーに委ねる。
         };
         let call_count = arg_data.len();
         // 呼び出し引数数が有効範囲（required_count..=params.len()）に収まるオーバーロードを絞り込む。
-        let count_matching: Vec<FnSig> = sigs.iter()
+        let count_matching: Vec<FnSig> = sigs
+            .iter()
             .filter(|s| call_count >= s.required_count && call_count <= s.params.len())
             .cloned()
             .collect();
@@ -2367,40 +2798,38 @@ impl TypeChecker {
         for (i, (key, arg_ty)) in arg_data.iter().enumerate() {
             let arg_expr = args[i].expr();
             match key {
-                Some(kwarg_name) => {
-                    match params.iter().position(|p| &p.name == kwarg_name) {
-                        None => self.report_error(StaticTypeError {
-                            kind: TypeErrorKind::UnknownKeywordArg {
-                                func_name: func_name.to_string(),
-                                arg_name: kwarg_name.clone(),
-                            },
-                            span: None,
-                        }),
-                        Some(param_pos) => {
-                            let param = &params[param_pos];
-                            if param.ty != InferredType::Any && !self.type_matches(arg_ty, &param.ty) {
-                                self.report_error(StaticTypeError {
-                                    kind: TypeErrorKind::CallArgTypeMismatch {
-                                        func_name: func_name.to_string(),
-                                        param_index: param_pos,
-                                        expected: param.ty.clone(),
-                                        got: arg_ty.clone(),
-                                    },
-                                    span: None,
-                                });
-                            }
-                            if param.mutable && !self.is_mutable_expr(arg_expr) {
-                                self.report_error(StaticTypeError {
-                                    kind: TypeErrorKind::CallMutParamWithImmutableArg {
-                                        func_name: func_name.to_string(),
-                                        param_name: param.name.clone(),
-                                    },
-                                    span: None,
-                                });
-                            }
+                Some(kwarg_name) => match params.iter().position(|p| &p.name == kwarg_name) {
+                    None => self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::UnknownKeywordArg {
+                            func_name: func_name.to_string(),
+                            arg_name: kwarg_name.clone(),
+                        },
+                        span: None,
+                    }),
+                    Some(param_pos) => {
+                        let param = &params[param_pos];
+                        if param.ty != InferredType::Any && !self.type_matches(arg_ty, &param.ty) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::CallArgTypeMismatch {
+                                    func_name: func_name.to_string(),
+                                    param_index: param_pos,
+                                    expected: param.ty.clone(),
+                                    got: arg_ty.clone(),
+                                },
+                                span: None,
+                            });
+                        }
+                        if param.mutable && !self.is_mutable_expr(arg_expr) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::CallMutParamWithImmutableArg {
+                                    func_name: func_name.to_string(),
+                                    param_name: param.name.clone(),
+                                },
+                                span: None,
+                            });
                         }
                     }
-                }
+                },
                 None => {
                     if let Some(param) = params.get(positional_idx) {
                         if param.ty != InferredType::Any && !self.type_matches(arg_ty, &param.ty) {
@@ -2461,15 +2890,21 @@ impl TypeChecker {
         // Any オペランドが片方でもあればエラーとする。明示的なダウンキャストが必要。
         if *lt == InferredType::Any || *rt == InferredType::Any {
             self.report_error(StaticTypeError {
-                kind: TypeErrorKind::OperationOnAny { op: op.as_str().to_string() },
+                kind: TypeErrorKind::OperationOnAny {
+                    op: op.as_str().to_string(),
+                },
                 span: Some(span),
             });
             return;
         }
         // Union / Option オペランドが片方でもあればエラーとする。
-        let union_side = if matches!(lt, InferredType::Union(_)) { Some(lt) }
-                         else if matches!(rt, InferredType::Union(_)) { Some(rt) }
-                         else { None };
+        let union_side = if matches!(lt, InferredType::Union(_)) {
+            Some(lt)
+        } else if matches!(rt, InferredType::Union(_)) {
+            Some(rt)
+        } else {
+            None
+        };
         if let Some(union_ty) = union_side {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::OperationOnUnion {
@@ -2502,9 +2937,20 @@ impl TypeChecker {
     ///
     /// # 副作用
     /// 型不一致が検出された場合に `self.errors` へ追記する。
-    fn check_ordered_cmp(&mut self, lt: &InferredType, rt: &InferredType, op: &'static str, span: Span) {
+    fn check_ordered_cmp(
+        &mut self,
+        lt: &InferredType,
+        rt: &InferredType,
+        op: &'static str,
+        span: Span,
+    ) {
         if !Self::ordered_comparable(lt, rt) {
-            self.report_error(StaticTypeError::incompatible_cmp(lt.clone(), rt.clone(), op, span));
+            self.report_error(StaticTypeError::incompatible_cmp(
+                lt.clone(),
+                rt.clone(),
+                op,
+                span,
+            ));
         }
     }
 
@@ -2547,8 +2993,12 @@ impl TypeChecker {
     fn infer_binop_result(op: &BinOp, lt: &InferredType, rt: &InferredType) -> InferredType {
         use InferredType::*;
         // Any / Union オペランドは既にエラーが報告されているため、結果は Unresolved にする。
-        if *lt == Any || *rt == Any { return Unresolved; }
-        if matches!(lt, Union(_)) || matches!(rt, Union(_)) { return Unresolved; }
+        if *lt == Any || *rt == Any {
+            return Unresolved;
+        }
+        if matches!(lt, Union(_)) || matches!(rt, Union(_)) {
+            return Unresolved;
+        }
         // セット演算
         if *lt == Set && *rt == Set {
             return match op {
@@ -2590,11 +3040,7 @@ impl TypeChecker {
                 _ => Unresolved,
             },
             // ビット演算: 常に Int を返す。
-            BinOp::BitAnd
-            | BinOp::BitOr
-            | BinOp::BitXor
-            | BinOp::LShift
-            | BinOp::RShift => Int,
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::LShift | BinOp::RShift => Int,
         }
     }
 
@@ -2624,14 +3070,21 @@ impl TypeChecker {
         let target_kind = if target_is_fn { "function" } else { "class" };
 
         let is_fn_type = |ty: &InferredType| matches!(ty, InferredType::Function { .. });
-        let is_type_type = |ty: &InferredType| matches!(ty, InferredType::TypeVal | InferredType::TypeValOf(_));
+        let is_type_type =
+            |ty: &InferredType| matches!(ty, InferredType::TypeVal | InferredType::TypeValOf(_));
         let kind_matches = |ty: &InferredType| {
-            if target_is_fn { is_fn_type(ty) } else { is_type_type(ty) }
+            if target_is_fn {
+                is_fn_type(ty)
+            } else {
+                is_type_type(ty)
+            }
         };
 
         // --- Case 1: 関数デコレータ ---
         if let Some(sigs) = self.fn_sigs.get(&dec_name).cloned() {
-            if sigs.len() != 1 { return; } // オーバーロードは実行時に委ねる
+            if sigs.len() != 1 {
+                return;
+            } // オーバーロードは実行時に委ねる
             let sig = sigs[0].clone();
 
             // 第 1 引数の型を検査する

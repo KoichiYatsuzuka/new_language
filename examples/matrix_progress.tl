@@ -31,7 +31,7 @@ dx.SetGraphMode(760, 570, 32, 60)
 dx.SetWaitVSyncFlag(0)
 
 if dx.DxLib_Init() == -1:
-    raise "DxLib_Init failed"
+    raise RuntimeError("DxLib_Init failed")
 
 dx.SetWindowTextDX("Matrix Computation (async) - A = A x B  [2000x2000]")
 
