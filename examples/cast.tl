@@ -57,6 +57,19 @@ new_type Count: int
 let cnt = 42=>Count        # Count(42)
 print(repr(cnt))           # Count(42)
 
+# ── new_type upcast: new_type instance => base primitive ─────────────────────
+
+let raw_f = m=>float       # Meters(5.0) => float  → 5.0
+let raw_i = cnt=>int       # Count(42)   => int    → 42
+print(raw_f)               # 5.0
+print(raw_i)               # 42
+
+# ── cross new_type cast: new_type instance => new_type with same base ─────────
+
+new_type Kg: float
+let kg = m=>Kg             # Meters(5.0) => Kg  — extracts inner value, wraps as Kg(5.0)
+print(repr(kg))            # Kg(5.0)
+
 # ── Automatic cast for `let` parameters ─────────────────────────────────────
 
 class Wrapper:
