@@ -42,7 +42,9 @@ pub fn str_format(
                 field.push(chars[i]);
                 i += 1;
             }
-            if i < chars.len() { i += 1; } // consume }
+            if i < chars.len() {
+                i += 1;
+            } // consume }
 
             // Split field into name and format_spec
             let (field_name, fmt_spec) = if let Some(colon) = field.find(':') {
@@ -53,15 +55,22 @@ pub fn str_format(
 
             let val = if field_name.is_empty() {
                 // Auto index
-                let v = pos_args.get(auto_idx)
-                    .ok_or_else(|| format!("IndexError: not enough positional arguments (needed {})", auto_idx + 1))?;
+                let v = pos_args.get(auto_idx).ok_or_else(|| {
+                    format!(
+                        "IndexError: not enough positional arguments (needed {})",
+                        auto_idx + 1
+                    )
+                })?;
                 auto_idx += 1;
                 v
             } else if let Ok(idx) = field_name.parse::<usize>() {
-                pos_args.get(idx)
-                    .ok_or_else(|| format!("IndexError: positional argument index {idx} out of range"))?
+                pos_args.get(idx).ok_or_else(|| {
+                    format!("IndexError: positional argument index {idx} out of range")
+                })?
             } else {
-                kw_args.iter().find(|(k, _)| k == field_name)
+                kw_args
+                    .iter()
+                    .find(|(k, _)| k == field_name)
                     .map(|(_, v)| v)
                     .ok_or_else(|| format!("KeyError: keyword argument '{field_name}' not found"))?
             };
@@ -105,41 +114,82 @@ fn apply_format_spec(
     } else {
         (' ', None)
     };
-    if align.is_some() { i += if fill == ' ' && matches!(chars[0], '<' | '>' | '^' | '=') { 1 } else { 2 }; }
+    if align.is_some() {
+        i += if fill == ' ' && matches!(chars[0], '<' | '>' | '^' | '=') {
+            1
+        } else {
+            2
+        };
+    }
 
     // sign
     let _sign = if i < chars.len() && matches!(chars[i], '+' | '-' | ' ') {
-        let s = chars[i]; i += 1; Some(s)
-    } else { None };
+        let s = chars[i];
+        i += 1;
+        Some(s)
+    } else {
+        None
+    };
 
     // # flag (alternate form)
-    if i < chars.len() && chars[i] == '#' { i += 1; }
+    if i < chars.len() && chars[i] == '#' {
+        i += 1;
+    }
 
     // zero flag: when '0' precedes width and no explicit align, use '0' fill with right-align
-    let zero_flag = if i < chars.len() && chars[i] == '0' && align.is_none() { i += 1; true } else { false };
+    let zero_flag = if i < chars.len() && chars[i] == '0' && align.is_none() {
+        i += 1;
+        true
+    } else {
+        false
+    };
     let fill = if zero_flag { '0' } else { fill };
     let align = if zero_flag { Some('>') } else { align };
 
     // width
     let width_start = i;
-    while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        i += 1;
+    }
     let width: usize = if width_start < i {
-        chars[width_start..i].iter().collect::<String>().parse().unwrap_or(0)
-    } else { 0 };
+        chars[width_start..i]
+            .iter()
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
     // grouping (_  or ,)
-    if i < chars.len() && (chars[i] == '_' || chars[i] == ',') { i += 1; }
+    if i < chars.len() && (chars[i] == '_' || chars[i] == ',') {
+        i += 1;
+    }
 
     // .precision
     let precision: Option<usize> = if i < chars.len() && chars[i] == '.' {
         i += 1;
         let p_start = i;
-        while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
-        Some(chars[p_start..i].iter().collect::<String>().parse().unwrap_or(0))
-    } else { None };
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        Some(
+            chars[p_start..i]
+                .iter()
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0),
+        )
+    } else {
+        None
+    };
 
     // type
-    let type_char: Option<char> = if i < chars.len() { Some(chars[i]) } else { None };
+    let type_char: Option<char> = if i < chars.len() {
+        Some(chars[i])
+    } else {
+        None
+    };
 
     let s = match type_char {
         Some('d') | Some('i') => match val {
@@ -189,7 +239,9 @@ fn apply_format_spec(
         },
         Some('s') | None => {
             let mut s = display(val);
-            if let Some(p) = precision { s.truncate(p); }
+            if let Some(p) = precision {
+                s.truncate(p);
+            }
             s
         }
         Some('%') => {
@@ -203,13 +255,22 @@ fn apply_format_spec(
     // Apply width / alignment
     if width > 0 && s.len() < width {
         let pad = width - s.len();
-        let aligned = match align.unwrap_or(if matches!(val, Value::Int(_) | Value::Float(_)) { '>' } else { '<' }) {
+        let aligned = match align.unwrap_or(if matches!(val, Value::Int(_) | Value::Float(_)) {
+            '>'
+        } else {
+            '<'
+        }) {
             '<' => format!("{}{}", s, fill.to_string().repeat(pad)),
             '>' => format!("{}{}", fill.to_string().repeat(pad), s),
             '^' => {
                 let left = pad / 2;
                 let right = pad - left;
-                format!("{}{}{}", fill.to_string().repeat(left), s, fill.to_string().repeat(right))
+                format!(
+                    "{}{}{}",
+                    fill.to_string().repeat(left),
+                    s,
+                    fill.to_string().repeat(right)
+                )
             }
             _ => s,
         };
@@ -223,7 +284,10 @@ fn to_f64(val: &Value) -> Result<f64, String> {
     match val {
         Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
-        other => Err(format!("TypeError: cannot format {} as float", value_type_name(other))),
+        other => Err(format!(
+            "TypeError: cannot format {} as float",
+            value_type_name(other)
+        )),
     }
 }
 
@@ -267,7 +331,9 @@ pub fn percent_format(
             continue;
         }
         i += 1;
-        if i >= chars.len() { break; }
+        if i >= chars.len() {
+            break;
+        }
 
         if chars[i] == '%' {
             result.push('%');
@@ -287,37 +353,69 @@ pub fn percent_format(
 
         // Width
         let width_start = i;
-        while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
         let width: usize = if width_start < i {
-            chars[width_start..i].iter().collect::<String>().parse().unwrap_or(0)
-        } else { 0 };
+            chars[width_start..i]
+                .iter()
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0)
+        } else {
+            0
+        };
 
         // .precision
         let precision: Option<usize> = if i < chars.len() && chars[i] == '.' {
             i += 1;
             let p_start = i;
-            while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
-            Some(chars[p_start..i].iter().collect::<String>().parse().unwrap_or(0))
-        } else { None };
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            Some(
+                chars[p_start..i]
+                    .iter()
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or(0),
+            )
+        } else {
+            None
+        };
 
-        if i >= chars.len() { break; }
+        if i >= chars.len() {
+            break;
+        }
         let spec = chars[i];
         i += 1;
 
-        let arg = args.get(arg_idx)
-            .ok_or_else(|| format!("TypeError: not enough arguments for format string (needed index {})", arg_idx))?;
+        let arg = args.get(arg_idx).ok_or_else(|| {
+            format!(
+                "TypeError: not enough arguments for format string (needed index {})",
+                arg_idx
+            )
+        })?;
         arg_idx += 1;
 
         let s = match spec {
             'd' | 'i' | 'u' => {
                 let n = to_i64(arg)?;
-                let s = if plus_sign && n >= 0 { format!("+{n}") } else { format!("{n}") };
+                let s = if plus_sign && n >= 0 {
+                    format!("+{n}")
+                } else {
+                    format!("{n}")
+                };
                 pad_str(&s, width, left_align, if zero_pad { '0' } else { ' ' })
             }
             'f' | 'F' => {
                 let n = to_f64(arg)?;
                 let prec = precision.unwrap_or(6);
-                let s = if plus_sign && n >= 0.0 { format!("+{:.prec$}", n) } else { format!("{:.prec$}", n) };
+                let s = if plus_sign && n >= 0.0 {
+                    format!("+{:.prec$}", n)
+                } else {
+                    format!("{:.prec$}", n)
+                };
                 pad_str(&s, width, left_align, if zero_pad { '0' } else { ' ' })
             }
             'e' => {
@@ -344,7 +442,9 @@ pub fn percent_format(
             }
             's' => {
                 let mut s = display(arg);
-                if let Some(p) = precision { s.truncate(p); }
+                if let Some(p) = precision {
+                    s.truncate(p);
+                }
                 pad_str(&s, width, left_align, ' ')
             }
             'r' => {
@@ -390,12 +490,17 @@ fn to_i64(val: &Value) -> Result<i64, String> {
         Value::Int(n) => Ok(*n),
         Value::Float(f) => Ok(*f as i64),
         Value::Bool(b) => Ok(if *b { 1 } else { 0 }),
-        other => Err(format!("TypeError: %d format: cannot convert {} to int", value_type_name(other))),
+        other => Err(format!(
+            "TypeError: %d format: cannot convert {} to int",
+            value_type_name(other)
+        )),
     }
 }
 
 fn pad_str(s: &str, width: usize, left_align: bool, fill: char) -> String {
-    if s.len() >= width { return s.to_string(); }
+    if s.len() >= width {
+        return s.to_string();
+    }
     let pad = width - s.len();
     if left_align {
         format!("{}{}", s, fill.to_string().repeat(pad))
@@ -409,13 +514,16 @@ fn pad_str(s: &str, width: usize, left_align: bool, fill: char) -> String {
 // ────────────────────────────────────────────────────────────────────────────
 
 fn build_regex(pattern: &str, flags: &str) -> Result<Regex, String> {
-    let prefix: String = flags.chars().filter_map(|c| match c {
-        'i' | 'I' => Some("(?i)"),
-        'm' | 'M' => Some("(?m)"),
-        's' | 'S' => Some("(?s)"),
-        'x' | 'X' => Some("(?x)"),
-        _ => None,
-    }).collect();
+    let prefix: String = flags
+        .chars()
+        .filter_map(|c| match c {
+            'i' | 'I' => Some("(?i)"),
+            'm' | 'M' => Some("(?m)"),
+            's' | 'S' => Some("(?s)"),
+            'x' | 'X' => Some("(?x)"),
+            _ => None,
+        })
+        .collect();
     let full = format!("{}{}", prefix, pattern);
     Regex::new(&full).map_err(|e| format!("RegexError: {e}"))
 }
@@ -455,20 +563,26 @@ pub fn regex_findall(text: &str, pattern: &str, flags: &str) -> Result<Vec<Strin
 
 /// `text.sub(pattern, repl[, count[, flags]])` — マッチを `repl` で置換する。
 /// `count=0` は全置換（Python の `re.sub` と同じ）。
-pub fn regex_sub(text: &str, pattern: &str, repl: &str, count: usize, flags: &str) -> Result<String, String> {
+pub fn regex_sub(
+    text: &str,
+    pattern: &str,
+    repl: &str,
+    count: usize,
+    flags: &str,
+) -> Result<String, String> {
     let re = build_regex(pattern, flags)?;
     if count == 0 {
         // Replace all
-        let result = re.replace_all(text, |caps: &Captures| {
-            expand_replacement(repl, caps)
-        });
+        let result = re.replace_all(text, |caps: &Captures| expand_replacement(repl, caps));
         Ok(result.into_owned())
     } else {
         let mut result = String::new();
         let mut last = 0;
         let mut n = 0;
         for mat in re.find_iter(text) {
-            if n >= count { break; }
+            if n >= count {
+                break;
+            }
             result.push_str(&text[last..mat.start()]);
             // For simple replacements without group references
             let caps = re.captures(&text[mat.start()..mat.end()]);
@@ -493,7 +607,9 @@ fn expand_replacement(repl: &str, caps: &Captures) -> String {
         if chars[i] == '\\' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
             i += 1;
             let n = chars[i].to_digit(10).unwrap_or(0) as usize;
-            if let Some(g) = caps.get(n) { out.push_str(g.as_str()); }
+            if let Some(g) = caps.get(n) {
+                out.push_str(g.as_str());
+            }
             i += 1;
         } else {
             out.push(chars[i]);
@@ -504,12 +620,19 @@ fn expand_replacement(repl: &str, caps: &Captures) -> String {
 }
 
 /// `text.regex_split(pattern[, maxsplit[, flags]])` — 正規表現で分割する。
-pub fn regex_split(text: &str, pattern: &str, maxsplit: usize, flags: &str) -> Result<Vec<String>, String> {
+pub fn regex_split(
+    text: &str,
+    pattern: &str,
+    maxsplit: usize,
+    flags: &str,
+) -> Result<Vec<String>, String> {
     let re = build_regex(pattern, flags)?;
     let parts: Vec<String> = if maxsplit == 0 {
         re.split(text).map(|s| s.to_string()).collect()
     } else {
-        re.splitn(text, maxsplit + 1).map(|s| s.to_string()).collect()
+        re.splitn(text, maxsplit + 1)
+            .map(|s| s.to_string())
+            .collect()
     };
     Ok(parts)
 }

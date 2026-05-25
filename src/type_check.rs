@@ -1964,9 +1964,15 @@ impl TypeChecker {
                         ))),
                     );
                 }
-                Stmt::FnDef { name, .. } => {
-                    // 関数定義 → Unresolved（引数型は全て Any なので静的追跡不要）
-                    map.insert(name.clone(), InferredType::Unresolved);
+                Stmt::FnDef {
+                    name, return_type, ..
+                } => {
+                    // 戻り値型アノテーションがあれば推論型に変換する（C++ スタブなど）。
+                    let ty = return_type
+                        .as_deref()
+                        .map(Self::type_ann_to_inferred)
+                        .unwrap_or(InferredType::Unresolved);
+                    map.insert(name.clone(), ty);
                 }
                 Stmt::Mut(name, _)
                 | Stmt::Let(name, _)
@@ -1988,6 +1994,19 @@ impl TypeChecker {
             }
         }
         map
+    }
+
+    /// 型アノテーション文字列（`"int"`, `"float"` など）を `InferredType` に変換する。
+    /// C++ ヘッダスタブの戻り値型など、単純なプリミティブ型名のみを処理する。
+    fn type_ann_to_inferred(s: &str) -> InferredType {
+        match s {
+            "int" => InferredType::Int,
+            "float" => InferredType::Float,
+            "str" => InferredType::Str,
+            "bool" => InferredType::Bool,
+            "None" => InferredType::None,
+            _ => InferredType::Unresolved,
+        }
     }
 
     // --- 式の型推論 ---

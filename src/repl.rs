@@ -18,7 +18,9 @@ use crate::parser::Parser;
 const EXEC_SENTINEL: &str = "##REPL_EXEC##";
 
 pub fn run_repl() {
-    eprintln!("\x1b[32mtest_lang REPL\x1b[0m  — Ctrl+Enter in VS Code to run selection · Ctrl+D to exit");
+    eprintln!(
+        "\x1b[32mtest_lang REPL\x1b[0m  — Ctrl+Enter in VS Code to run selection · Ctrl+D to exit"
+    );
 
     let mut interp = Interpreter::new();
     let stdin = io::stdin();

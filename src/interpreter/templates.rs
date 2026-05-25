@@ -9,11 +9,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::{CallArg, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TemplateParam};
+use crate::ast::{
+    CallArg, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TemplateParam,
+};
 
 use super::{
-    DictData, Interpreter, Value, FnValue, ClassValue, GeneratorFnValue,
-    TemplateClassValue,
+    ClassValue, DictData, FnValue, GeneratorFnValue, Interpreter, TemplateClassValue, Value,
 };
 
 impl Interpreter {
@@ -58,7 +59,11 @@ impl Interpreter {
     /// - `trait_name`: 実装されているか確認する trait 名
     ///
     /// 戻り値: `Ok(true)` — 実装あり、`Ok(false)` — 実装なし、`Err` — 型が未定義
-    pub(super) fn type_satisfies_trait(&self, type_name: &str, trait_name: &str) -> Result<bool, String> {
+    pub(super) fn type_satisfies_trait(
+        &self,
+        type_name: &str,
+        trait_name: &str,
+    ) -> Result<bool, String> {
         match self.get_val(type_name) {
             Some(Value::Class(cls)) => Ok(cls.bases.contains(&trait_name.to_string())),
             Some(_) => Ok(false), // 組み込み型や非クラス値は trait を実装していない
@@ -89,19 +94,29 @@ impl Interpreter {
             Value::TemplateFn(tmpl) => {
                 // テンプレート関数: 制約を検証し、型変数を具体型に置換して通常関数として実行する
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
-                let type_map: HashMap<String, String> = tmpl.template_params.iter()
+                let type_map: HashMap<String, String> = tmpl
+                    .template_params
+                    .iter()
                     .zip(type_args.iter())
                     .map(|(p, t)| (p.name.clone(), t.clone()))
                     .collect();
                 let concrete_params = subst_params(&tmpl.params, &type_map);
                 let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                let fn_val = Rc::new(FnValue { name: tmpl.name.clone(), params: concrete_params, body: concrete_body, is_python: false, captured_env: std::collections::HashMap::new() });
+                let fn_val = Rc::new(FnValue {
+                    name: tmpl.name.clone(),
+                    params: concrete_params,
+                    body: concrete_body,
+                    is_python: false,
+                    captured_env: std::collections::HashMap::new(),
+                });
                 self.exec_fn(fn_val, call_args, None, "<template_fn>")
             }
             Value::TemplateClass(tmpl) => {
                 // テンプレートクラス: 制約を検証し、型変数を置換してクラスを構築・インスタンス化する
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
-                let type_map: HashMap<String, String> = tmpl.template_params.iter()
+                let type_map: HashMap<String, String> = tmpl
+                    .template_params
+                    .iter()
                     .zip(type_args.iter())
                     .map(|(p, t)| (p.name.clone(), t.clone()))
                     .collect();
@@ -111,13 +126,20 @@ impl Interpreter {
             Value::TemplateGenFn(tmpl) => {
                 // テンプレートジェネレータ関数: 型変数を置換してジェネレータとして実行する
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
-                let type_map: HashMap<String, String> = tmpl.template_params.iter()
+                let type_map: HashMap<String, String> = tmpl
+                    .template_params
+                    .iter()
                     .zip(type_args.iter())
                     .map(|(p, t)| (p.name.clone(), t.clone()))
                     .collect();
                 let concrete_params = subst_params(&tmpl.params, &type_map);
                 let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                let gen_fn = Rc::new(GeneratorFnValue { name: tmpl.name.clone(), params: concrete_params, body: concrete_body, captured_env: std::collections::HashMap::new() });
+                let gen_fn = Rc::new(GeneratorFnValue {
+                    name: tmpl.name.clone(),
+                    params: concrete_params,
+                    body: concrete_body,
+                    captured_env: std::collections::HashMap::new(),
+                });
                 self.exec_generator(gen_fn, call_args, None)
             }
             // 組み込み辞書型コンストラクタ: `dict[KeyType, ItemType](...)`
@@ -133,7 +155,9 @@ impl Interpreter {
 
                 if call_args.is_empty() {
                     // `dict[K, V]()` — 空の型付き辞書を生成する
-                    Ok(Value::Dict(Rc::new(RefCell::new(DictData::new(key_type, item_type)))))
+                    Ok(Value::Dict(Rc::new(RefCell::new(DictData::new(
+                        key_type, item_type,
+                    )))))
                 } else if call_args.len() == 1 {
                     // `dict[K, V]({key: val, ...})` — 辞書リテラルから型付き辞書を生成する
                     let arg_val = self.eval(call_args[0].expr())?;
@@ -206,56 +230,105 @@ impl Interpreter {
         let mut field_mutability: HashMap<String, bool> = HashMap::new();
         let mut field_access: HashMap<String, crate::ast::Accessibility> = HashMap::new();
         let mut method_access: HashMap<String, crate::ast::Accessibility> = HashMap::new();
-        let mut static_method_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut class_method_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut static_method_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut class_method_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut static_vars: HashMap<String, Rc<RefCell<Value>>> = HashMap::new();
         for stmt in &concrete_body {
             match stmt {
-                Stmt::FnDef { name: mname, template_params, params, body: mbody, access: macc, is_static, is_class_method, .. } => {
+                Stmt::FnDef {
+                    name: mname,
+                    template_params,
+                    params,
+                    body: mbody,
+                    access: macc,
+                    is_static,
+                    is_class_method,
+                    ..
+                } => {
                     let storage_name = if mname == "__cast__" && !template_params.is_empty() {
                         format!("__cast__[{}]", template_params[0].name)
                     } else {
                         mname.clone()
                     };
-                    if *is_static { static_method_names.insert(storage_name.clone()); }
-                    if *is_class_method { class_method_names.insert(storage_name.clone()); }
+                    if *is_static {
+                        static_method_names.insert(storage_name.clone());
+                    }
+                    if *is_class_method {
+                        class_method_names.insert(storage_name.clone());
+                    }
                     if *macc != crate::ast::Accessibility::Public {
                         method_access.insert(storage_name.clone(), macc.clone());
                     }
-                    methods.entry(storage_name).or_default().push(Rc::new(FnValue {
-                        name: mname.clone(),
-                        params: params.clone(),
-                        body: mbody.clone(),
-                        is_python: false,
-                        captured_env: std::collections::HashMap::new(),
-                    }));
+                    methods
+                        .entry(storage_name)
+                        .or_default()
+                        .push(Rc::new(FnValue {
+                            name: mname.clone(),
+                            params: params.clone(),
+                            body: mbody.clone(),
+                            is_python: false,
+                            captured_env: std::collections::HashMap::new(),
+                        }));
                 }
-                Stmt::GenDef { name: mname, params, body: mbody, access: macc, .. } => {
+                Stmt::GenDef {
+                    name: mname,
+                    params,
+                    body: mbody,
+                    access: macc,
+                    ..
+                } => {
                     if *macc != crate::ast::Accessibility::Public {
                         method_access.insert(mname.clone(), macc.clone());
                     }
-                    gen_methods.insert(mname.clone(), Rc::new(GeneratorFnValue {
-                        name: mname.clone(),
-                        params: params.clone(),
-                        body: mbody.clone(),
-                        captured_env: std::collections::HashMap::new(),
-                    }));
+                    gen_methods.insert(
+                        mname.clone(),
+                        Rc::new(GeneratorFnValue {
+                            name: mname.clone(),
+                            params: params.clone(),
+                            body: mbody.clone(),
+                            captured_env: std::collections::HashMap::new(),
+                        }),
+                    );
                 }
-                Stmt::Field { name: fname, kind: FieldKind::Const, default: Some(init), access: facc, .. } => {
+                Stmt::Field {
+                    name: fname,
+                    kind: FieldKind::Const,
+                    default: Some(init),
+                    access: facc,
+                    ..
+                } => {
                     if *facc != crate::ast::Accessibility::Public {
                         field_access.insert(fname.clone(), facc.clone());
                     }
                     let val = self.eval(init)?;
                     class_vars.insert(fname.clone(), val);
                 }
-                Stmt::Field { name: fname, kind: FieldKind::StaticMut, default, access: facc, .. } => {
+                Stmt::Field {
+                    name: fname,
+                    kind: FieldKind::StaticMut,
+                    default,
+                    access: facc,
+                    ..
+                } => {
                     if *facc != crate::ast::Accessibility::Public {
                         field_access.insert(fname.clone(), facc.clone());
                     }
-                    let val = if let Some(init) = default { self.eval(init)? } else { Value::None };
+                    let val = if let Some(init) = default {
+                        self.eval(init)?
+                    } else {
+                        Value::None
+                    };
                     static_vars.insert(fname.clone(), Rc::new(RefCell::new(val)));
                 }
-                Stmt::Field { name: fname, kind, default, access: facc, .. } => {
+                Stmt::Field {
+                    name: fname,
+                    kind,
+                    default,
+                    access: facc,
+                    ..
+                } => {
                     if *facc != crate::ast::Accessibility::Public {
                         field_access.insert(fname.clone(), facc.clone());
                     }
@@ -297,17 +370,23 @@ impl Interpreter {
 
 /// 型名文字列を置換する。`type_map` にある型変数名なら具体型名に、なければそのまま返す。
 fn subst_type(type_name: &str, type_map: &HashMap<String, String>) -> String {
-    type_map.get(type_name).cloned().unwrap_or_else(|| type_name.to_string())
+    type_map
+        .get(type_name)
+        .cloned()
+        .unwrap_or_else(|| type_name.to_string())
 }
 
 /// 仮引数リストの型アノテーションを置換した新しいリストを返す。
 fn subst_params(params: &[Param], type_map: &HashMap<String, String>) -> Vec<Param> {
-    params.iter().map(|p| Param {
-        name: p.name.clone(),
-        mutable: p.mutable,
-        type_ann: p.type_ann.as_ref().map(|t| subst_type(t, type_map)),
-        default: p.default.clone(),
-    }).collect()
+    params
+        .iter()
+        .map(|p| Param {
+            name: p.name.clone(),
+            mutable: p.mutable,
+            type_ann: p.type_ann.as_ref().map(|t| subst_type(t, type_map)),
+            default: p.default.clone(),
+        })
+        .collect()
 }
 
 /// 呼び出し引数の式部分を置換した新しい `CallArg` を返す。
@@ -333,12 +412,21 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             attr: attr.clone(),
             span: span.clone(),
         },
-        Expr::TraitAccess { object, trait_name, attr } => Expr::TraitAccess {
+        Expr::TraitAccess {
+            object,
+            trait_name,
+            attr,
+        } => Expr::TraitAccess {
             object: Box::new(subst_expr(object, type_map)),
             trait_name: trait_name.clone(),
             attr: attr.clone(),
         },
-        Expr::BinOp { op, left, right, span } => Expr::BinOp {
+        Expr::BinOp {
+            op,
+            left,
+            right,
+            span,
+        } => Expr::BinOp {
             op: op.clone(),
             left: Box::new(subst_expr(left, type_map)),
             right: Box::new(subst_expr(right, type_map)),
@@ -363,14 +451,22 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
         },
         Expr::Slice { begin, end, step } => Expr::Slice {
             begin: begin.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
-            end:   end.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
-            step:  step.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
+            end: end.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
+            step: step.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
         },
         Expr::Dict(pairs) => Expr::Dict(
-            pairs.iter().map(|(k, v)| (subst_expr(k, type_map), subst_expr(v, type_map))).collect(),
+            pairs
+                .iter()
+                .map(|(k, v)| (subst_expr(k, type_map), subst_expr(v, type_map)))
+                .collect(),
         ),
         Expr::Tuple(items) => Expr::Tuple(items.iter().map(|e| subst_expr(e, type_map)).collect()),
-        Expr::IsType { expr, negated, type_name, span } => Expr::IsType {
+        Expr::IsType {
+            expr,
+            negated,
+            type_name,
+            span,
+        } => Expr::IsType {
             expr: Box::new(subst_expr(expr, type_map)),
             negated: *negated,
             type_name: subst_type(type_name, type_map),
@@ -380,35 +476,62 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             stmts: subst_stmts(stmts, type_map),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
         },
-        Expr::IfExpr { branches, else_body, return_type } => Expr::IfExpr {
-            branches: branches.iter().map(|(c, b)| (subst_expr(c, type_map), subst_stmts(b, type_map))).collect(),
+        Expr::IfExpr {
+            branches,
+            else_body,
+            return_type,
+        } => Expr::IfExpr {
+            branches: branches
+                .iter()
+                .map(|(c, b)| (subst_expr(c, type_map), subst_stmts(b, type_map)))
+                .collect(),
             else_body: else_body.as_ref().map(|b| subst_stmts(b, type_map)),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
         },
-        Expr::ForExpr { target, iter, body, return_type } => Expr::ForExpr {
+        Expr::ForExpr {
+            target,
+            iter,
+            body,
+            return_type,
+        } => Expr::ForExpr {
             target: target.clone(),
             iter: Box::new(subst_expr(iter, type_map)),
             body: subst_stmts(body, type_map),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
         },
-        Expr::WhileExpr { cond, body, return_type } => Expr::WhileExpr {
+        Expr::WhileExpr {
+            cond,
+            body,
+            return_type,
+        } => Expr::WhileExpr {
             cond: Box::new(subst_expr(cond, type_map)),
             body: subst_stmts(body, type_map),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
         },
-        Expr::MatchExpr { subject, arms, return_type } => Expr::MatchExpr {
+        Expr::MatchExpr {
+            subject,
+            arms,
+            return_type,
+        } => Expr::MatchExpr {
             subject: Box::new(subst_expr(subject, type_map)),
-            arms: arms.iter().map(|arm| MatchArm {
-                pattern: match &arm.pattern {
-                    MatchPattern::Case(e) => MatchPattern::Case(subst_expr(e, type_map)),
-                    MatchPattern::IsType(t) => MatchPattern::IsType(subst_type(t, type_map)),
-                },
-                body: subst_stmts(&arm.body, type_map),
-            }).collect(),
+            arms: arms
+                .iter()
+                .map(|arm| MatchArm {
+                    pattern: match &arm.pattern {
+                        MatchPattern::Case(e) => MatchPattern::Case(subst_expr(e, type_map)),
+                        MatchPattern::IsType(t) => MatchPattern::IsType(subst_type(t, type_map)),
+                    },
+                    body: subst_stmts(&arm.body, type_map),
+                })
+                .collect(),
             return_type: return_type.as_ref().map(|t| subst_type(t, type_map)),
         },
         Expr::Set(items) => Expr::Set(items.iter().map(|e| subst_expr(e, type_map)).collect()),
-        Expr::Cast { object, type_name, span } => Expr::Cast {
+        Expr::Cast {
+            object,
+            type_name,
+            span,
+        } => Expr::Cast {
             object: Box::new(subst_expr(object, type_map)),
             type_name: subst_type(type_name, type_map),
             span: span.clone(),
@@ -430,7 +553,11 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         Stmt::Let(name, e) => Stmt::Let(name.clone(), subst_expr(e, type_map)),
         Stmt::Const(name, e) => Stmt::Const(name.clone(), subst_expr(e, type_map)),
         Stmt::Mut(name, e) => Stmt::Mut(name.clone(), subst_expr(e, type_map)),
-        Stmt::LetTuple { targets, value, span } => Stmt::LetTuple {
+        Stmt::LetTuple {
+            targets,
+            value,
+            span,
+        } => Stmt::LetTuple {
             targets: targets.clone(),
             value: subst_expr(value, type_map),
             span: span.clone(),
@@ -449,14 +576,23 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             op: op.clone(),
             value: subst_expr(value, type_map),
         },
-        Stmt::CompoundAssign { name, op, value, span } => Stmt::CompoundAssign {
+        Stmt::CompoundAssign {
+            name,
+            op,
+            value,
+            span,
+        } => Stmt::CompoundAssign {
             name: name.clone(),
             op: op.clone(),
             value: subst_expr(value, type_map),
             span: span.clone(),
         },
-        Stmt::If { branches, else_body } => Stmt::If {
-            branches: branches.iter()
+        Stmt::If {
+            branches,
+            else_body,
+        } => Stmt::If {
+            branches: branches
+                .iter()
                 .map(|(cond, body)| (subst_expr(cond, type_map), subst_stmts(body, type_map)))
                 .collect(),
             else_body: else_body.as_ref().map(|b| subst_stmts(b, type_map)),
@@ -465,7 +601,11 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             cond: subst_expr(cond, type_map),
             body: subst_stmts(body, type_map),
         },
-        Stmt::For { targets, iter, body } => Stmt::For {
+        Stmt::For {
+            targets,
+            iter,
+            body,
+        } => Stmt::For {
             targets: targets.clone(),
             iter: subst_expr(iter, type_map),
             body: subst_stmts(body, type_map),
@@ -478,7 +618,14 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         Stmt::BlockReturn(e, span) => Stmt::BlockReturn(subst_expr(e, type_map), span.clone()),
         Stmt::LoopYield(e) => Stmt::LoopYield(subst_expr(e, type_map)),
         Stmt::Yield(e) => Stmt::Yield(subst_expr(e, type_map)),
-        Stmt::GenDef { name, template_params, params, yield_type, body, access } => Stmt::GenDef {
+        Stmt::GenDef {
+            name,
+            template_params,
+            params,
+            yield_type,
+            body,
+            access,
+        } => Stmt::GenDef {
             name: name.clone(),
             template_params: template_params.clone(),
             params: params.clone(),
@@ -486,7 +633,18 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             body: subst_stmts(body, type_map),
             access: access.clone(),
         },
-        Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, is_static, is_class_method, decorators, access } => Stmt::FnDef {
+        Stmt::FnDef {
+            name,
+            template_params,
+            params,
+            return_type,
+            body,
+            is_abstract,
+            is_static,
+            is_class_method,
+            decorators,
+            access,
+        } => Stmt::FnDef {
             name: name.clone(),
             template_params: template_params.clone(),
             params: subst_params(params, type_map),
@@ -498,19 +656,35 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             decorators: decorators.clone(),
             access: access.clone(),
         },
-        Stmt::ClassDef { name, template_params, bases, body, decorators } => Stmt::ClassDef {
+        Stmt::ClassDef {
+            name,
+            template_params,
+            bases,
+            body,
+            decorators,
+        } => Stmt::ClassDef {
             name: name.clone(),
             template_params: template_params.clone(),
             bases: bases.clone(),
             body: subst_stmts(body, type_map),
             decorators: decorators.clone(),
         },
-        Stmt::TraitDef { name, template_params, body } => Stmt::TraitDef {
+        Stmt::TraitDef {
+            name,
+            template_params,
+            body,
+        } => Stmt::TraitDef {
             name: name.clone(),
             template_params: template_params.clone(),
             body: subst_stmts(body, type_map),
         },
-        Stmt::Field { name, kind, type_ann, default, access } => Stmt::Field {
+        Stmt::Field {
+            name,
+            kind,
+            type_ann,
+            default,
+            access,
+        } => Stmt::Field {
             name: name.clone(),
             kind: kind.clone(),
             type_ann: subst_type(type_ann, type_map),
@@ -518,24 +692,39 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             access: access.clone(),
         },
         Stmt::Freeze(name, span) => Stmt::Freeze(name.clone(), span.clone()),
-        Stmt::Static(name, e, span) => Stmt::Static(name.clone(), subst_expr(e, type_map), span.clone()),
+        Stmt::Static(name, e, span) => {
+            Stmt::Static(name.clone(), subst_expr(e, type_map), span.clone())
+        }
         Stmt::NewTypeDef { name, original } => Stmt::NewTypeDef {
             name: name.clone(),
             original: subst_type(original, type_map),
         },
         Stmt::EnumDef { name, variants } => Stmt::EnumDef {
             name: name.clone(),
-            variants: variants.iter().map(|(vname, vexpr)| {
-                (vname.clone(), vexpr.as_ref().map(|e| subst_expr(e, type_map)))
-            }).collect(),
+            variants: variants
+                .iter()
+                .map(|(vname, vexpr)| {
+                    (
+                        vname.clone(),
+                        vexpr.as_ref().map(|e| subst_expr(e, type_map)),
+                    )
+                })
+                .collect(),
         },
-        Stmt::Try { body, handlers, finally_body } => Stmt::Try {
+        Stmt::Try {
+            body,
+            handlers,
+            finally_body,
+        } => Stmt::Try {
             body: subst_stmts(body, type_map),
-            handlers: handlers.iter().map(|h| ExceptHandler {
-                exc_type: h.exc_type.clone(),
-                name: h.name.clone(),
-                body: subst_stmts(&h.body, type_map),
-            }).collect(),
+            handlers: handlers
+                .iter()
+                .map(|h| ExceptHandler {
+                    exc_type: h.exc_type.clone(),
+                    name: h.name.clone(),
+                    body: subst_stmts(&h.body, type_map),
+                })
+                .collect(),
             finally_body: finally_body.as_ref().map(|b| subst_stmts(b, type_map)),
         },
         Stmt::Raise { exc, span } => Stmt::Raise {
@@ -543,32 +732,55 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             span: span.clone(),
         },
         // Import 文は型変数置換の対象外（body はパース時に解決済み）
-        Stmt::Import { lang, module, with_file, alias, body } => Stmt::Import {
+        Stmt::Import {
+            lang,
+            module,
+            with_file,
+            alias,
+            body,
+        } => Stmt::Import {
             lang: lang.clone(),
             module: module.clone(),
             with_file: with_file.clone(),
             alias: alias.clone(),
             body: subst_stmts(body, type_map),
         },
-        Stmt::FromImport { lang, module, with_file, names, body } => Stmt::FromImport {
+        Stmt::FromImport {
+            lang,
+            module,
+            with_file,
+            names,
+            body,
+        } => Stmt::FromImport {
             lang: lang.clone(),
             module: module.clone(),
             with_file: with_file.clone(),
             names: names.clone(),
             body: subst_stmts(body, type_map),
         },
-        Stmt::Match { subject, arms, span } => Stmt::Match {
+        Stmt::Match {
+            subject,
+            arms,
+            span,
+        } => Stmt::Match {
             subject: subst_expr(subject, type_map),
-            arms: arms.iter().map(|arm| MatchArm {
-                pattern: match &arm.pattern {
-                    MatchPattern::Case(e) => MatchPattern::Case(subst_expr(e, type_map)),
-                    MatchPattern::IsType(t) => MatchPattern::IsType(subst_type(t, type_map)),
-                },
-                body: subst_stmts(&arm.body, type_map),
-            }).collect(),
+            arms: arms
+                .iter()
+                .map(|arm| MatchArm {
+                    pattern: match &arm.pattern {
+                        MatchPattern::Case(e) => MatchPattern::Case(subst_expr(e, type_map)),
+                        MatchPattern::IsType(t) => MatchPattern::IsType(subst_type(t, type_map)),
+                    },
+                    body: subst_stmts(&arm.body, type_map),
+                })
+                .collect(),
             span: span.clone(),
         },
-        Stmt::AsyncAssign { target, return_type, stmts } => Stmt::AsyncAssign {
+        Stmt::AsyncAssign {
+            target,
+            return_type,
+            stmts,
+        } => Stmt::AsyncAssign {
             target: target.clone(),
             return_type: return_type.clone(),
             stmts: subst_stmts(stmts, type_map),

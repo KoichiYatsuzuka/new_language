@@ -10,8 +10,13 @@ use std::rc::Rc;
 
 use crate::ast::CallArg;
 
-use super::{ByteModeRust, FileOpenModeRust, Interpreter, Value, ClassValue, FnValue, InstanceData, GeneratorState, RaisedError, RAISE_SENTINEL};
-use super::str_methods::{regex_findall, regex_match, regex_search, regex_split, regex_sub, str_format};
+use super::str_methods::{
+    regex_findall, regex_match, regex_search, regex_split, regex_sub, str_format,
+};
+use super::{
+    ByteModeRust, ClassValue, FileOpenModeRust, FnValue, GeneratorState, InstanceData, Interpreter,
+    RaisedError, Value, RAISE_SENTINEL,
+};
 
 // ---------------------------------------------------------------------------
 // FileObject メソッド用ヘルパー（自由関数）
@@ -86,8 +91,12 @@ fn value_to_bytes(val: &Value, byte_mode: &ByteModeRust) -> Result<Vec<u8>, Stri
                 for item in items.borrow().iter() {
                     match item {
                         Value::Int(n) if (0..=255).contains(n) => out.push(*n as u8),
-                        Value::Int(n) => return Err(format!("write() byte value {n} out of range 0-255")),
-                        _ => return Err("write() content must be list[int] in byte mode".to_string()),
+                        Value::Int(n) => {
+                            return Err(format!("write() byte value {n} out of range 0-255"))
+                        }
+                        _ => {
+                            return Err("write() content must be list[int] in byte mode".to_string())
+                        }
                     }
                 }
                 Ok(out)
@@ -146,19 +155,32 @@ impl Interpreter {
     /// - `call_args`: コンストラクタ引数リスト（AST の `CallArg`）
     ///
     /// 戻り値: `Ok(Value::Instance)` — 初期化済みインスタンス。`Err` — コンストラクタ実行エラー
-    pub(super) fn instantiate(&mut self, class: Rc<ClassValue>, call_args: &[CallArg]) -> Result<Value, String> {
+    pub(super) fn instantiate(
+        &mut self,
+        class: Rc<ClassValue>,
+        call_args: &[CallArg],
+    ) -> Result<Value, String> {
         // デフォルト値付きフィールドをインスタンスに事前設定する
         let mut fields = HashMap::new();
         for (name, default_val, mutable) in &class.field_defaults {
             fields.insert(name.clone(), (default_val.clone(), *mutable));
         }
-        let inst_rc = Rc::new(RefCell::new(InstanceData { class: class.clone(), fields, immutable: false }));
+        let inst_rc = Rc::new(RefCell::new(InstanceData {
+            class: class.clone(),
+            fields,
+            immutable: false,
+        }));
         let inst_val = Value::Instance(inst_rc);
 
         // `__init__` を呼び出す（定義がない場合はスキップ）
         if let Some(init_overloads) = self.lookup_method_in_class(&class, "__init__") {
             if init_overloads.len() == 1 {
-                self.exec_fn(init_overloads[0].clone(), call_args, Some(inst_val.clone()), "__init__")?;
+                self.exec_fn(
+                    init_overloads[0].clone(),
+                    call_args,
+                    Some(inst_val.clone()),
+                    "__init__",
+                )?;
             } else {
                 self.dispatch_overload(init_overloads, call_args, Some(inst_val.clone()))?;
             }
@@ -193,13 +215,27 @@ impl Interpreter {
         for (name, default_val, mutable) in &class.field_defaults {
             fields.insert(name.clone(), (default_val.clone(), *mutable));
         }
-        let inst_rc = Rc::new(RefCell::new(InstanceData { class: class.clone(), fields, immutable: false }));
+        let inst_rc = Rc::new(RefCell::new(InstanceData {
+            class: class.clone(),
+            fields,
+            immutable: false,
+        }));
         let inst_val = Value::Instance(inst_rc);
         if let Some(init_overloads) = self.lookup_method_in_class(&class, "__init__") {
             if init_overloads.len() == 1 {
-                self.exec_fn_evaled(init_overloads[0].clone(), &evaled, Some(inst_val.clone()), "__init__")?;
+                self.exec_fn_evaled(
+                    init_overloads[0].clone(),
+                    &evaled,
+                    Some(inst_val.clone()),
+                    "__init__",
+                )?;
             } else {
-                self.dispatch_overload_evaled(init_overloads, evaled, Some(inst_val.clone()), "__init__")?;
+                self.dispatch_overload_evaled(
+                    init_overloads,
+                    evaled,
+                    Some(inst_val.clone()),
+                    "__init__",
+                )?;
             }
         }
         Ok(inst_val)
@@ -222,11 +258,11 @@ impl Interpreter {
                         index: 0,
                     }))));
                 }
-                Err(format!("AttributeError: 'list' object has no method '{method_name}'"))
+                Err(format!(
+                    "AttributeError: 'list' object has no method '{method_name}'"
+                ))
             }
-            Value::Str(s) => {
-                self.eval_str_method(s.clone(), method_name, args)
-            }
+            Value::Str(s) => self.eval_str_method(s.clone(), method_name, args),
             Value::Instance(inst_rc) => {
                 let class = inst_rc.borrow().class.clone();
                 let inst_immutable = inst_rc.borrow().immutable;
@@ -236,8 +272,14 @@ impl Interpreter {
                     return self.exec_generator(gen_fn, args, Some(obj.clone()));
                 }
 
-                let overloads = self.lookup_method_in_class(&class, method_name)
-                    .ok_or_else(|| format!("AttributeError: '{}' has no method '{method_name}'", class.name))?;
+                let overloads = self
+                    .lookup_method_in_class(&class, method_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "AttributeError: '{}' has no method '{method_name}'",
+                            class.name
+                        )
+                    })?;
 
                 // static / class_method はインスタンスからは呼び出せない
                 if class.static_method_names.contains(method_name) {
@@ -255,9 +297,16 @@ impl Interpreter {
 
                 // 不変インスタンスは `mut self` を要求するオーバーロードを除外する
                 let callable: Vec<Rc<FnValue>> = if inst_immutable {
-                    overloads.iter().filter(|f| {
-                        f.params.first().map(|p| p.name != "self" || !p.mutable).unwrap_or(true)
-                    }).cloned().collect()
+                    overloads
+                        .iter()
+                        .filter(|f| {
+                            f.params
+                                .first()
+                                .map(|p| p.name != "self" || !p.mutable)
+                                .unwrap_or(true)
+                        })
+                        .cloned()
+                        .collect()
                 } else {
                     overloads
                 };
@@ -277,8 +326,14 @@ impl Interpreter {
             }
             Value::Class(cls) => {
                 // クラスオブジェクトに対するメソッド呼び出し: static / class_method のみ許可
-                let overloads = self.lookup_method_in_class(&cls, method_name)
-                    .ok_or_else(|| format!("AttributeError: class '{}' has no method '{method_name}'", cls.name))?;
+                let overloads =
+                    self.lookup_method_in_class(&cls, method_name)
+                        .ok_or_else(|| {
+                            format!(
+                                "AttributeError: class '{}' has no method '{method_name}'",
+                                cls.name
+                            )
+                        })?;
 
                 if cls.static_method_names.contains(method_name) {
                     return if overloads.len() == 1 {
@@ -310,18 +365,24 @@ impl Interpreter {
                     // `d.key()` / `d.keys()` — キーのリストを返す
                     "key" | "keys" => {
                         if !args.is_empty() {
-                            return Err(format!("TypeError: dict.{method_name}() takes no arguments"));
+                            return Err(format!(
+                                "TypeError: dict.{method_name}() takes no arguments"
+                            ));
                         }
                         Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_keys()))))
                     }
                     // `d.item()` / `d.values()` — 値のリストを返す
                     "item" | "values" => {
                         if !args.is_empty() {
-                            return Err(format!("TypeError: dict.{method_name}() takes no arguments"));
+                            return Err(format!(
+                                "TypeError: dict.{method_name}() takes no arguments"
+                            ));
                         }
                         Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_items()))))
                     }
-                    _ => Err(format!("AttributeError: 'dict' object has no method '{method_name}'")),
+                    _ => Err(format!(
+                        "AttributeError: 'dict' object has no method '{method_name}'"
+                    )),
                 }
             }
             Value::Set(s) => {
@@ -331,7 +392,10 @@ impl Interpreter {
                             return Err("TypeError: set.__iter__() takes no arguments".to_string());
                         }
                         let items = s.borrow().clone();
-                        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items, index: 0 }))))
+                        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                            values: items,
+                            index: 0,
+                        }))))
                     }
                     "add" => {
                         let evaled = self.eval_call_args(args)?;
@@ -348,7 +412,9 @@ impl Interpreter {
                     "discard" => {
                         let evaled = self.eval_call_args(args)?;
                         if evaled.len() != 1 {
-                            return Err("TypeError: set.discard() takes exactly 1 argument".to_string());
+                            return Err(
+                                "TypeError: set.discard() takes exactly 1 argument".to_string()
+                            );
                         }
                         let item = &evaled[0].1;
                         let mut s_mut = s.borrow_mut();
@@ -360,7 +426,9 @@ impl Interpreter {
                     "remove" => {
                         let evaled = self.eval_call_args(args)?;
                         if evaled.len() != 1 {
-                            return Err("TypeError: set.remove() takes exactly 1 argument".to_string());
+                            return Err(
+                                "TypeError: set.remove() takes exactly 1 argument".to_string()
+                            );
                         }
                         let item = &evaled[0].1;
                         let mut s_mut = s.borrow_mut();
@@ -398,13 +466,18 @@ impl Interpreter {
                     "union" => {
                         let evaled = self.eval_call_args(args)?;
                         if evaled.len() != 1 {
-                            return Err("TypeError: set.union() takes exactly 1 argument".to_string());
+                            return Err(
+                                "TypeError: set.union() takes exactly 1 argument".to_string()
+                            );
                         }
                         let other = &evaled[0].1;
                         let other_items: Vec<Value> = match other {
                             Value::Set(o) => o.borrow().clone(),
                             Value::List(l) => l.borrow().clone(),
-                            _ => return Err(format!("TypeError: set.union() argument must be a set or list, not '{}'", self.type_name(other))),
+                            _ => return Err(format!(
+                                "TypeError: set.union() argument must be a set or list, not '{}'",
+                                self.type_name(other)
+                            )),
                         };
                         let mut result = s.borrow().clone();
                         for v in other_items {
@@ -417,7 +490,8 @@ impl Interpreter {
                     "intersection" => {
                         let evaled = self.eval_call_args(args)?;
                         if evaled.len() != 1 {
-                            return Err("TypeError: set.intersection() takes exactly 1 argument".to_string());
+                            return Err("TypeError: set.intersection() takes exactly 1 argument"
+                                .to_string());
                         }
                         let other = &evaled[0].1;
                         let other_items: Vec<Value> = match other {
@@ -425,15 +499,20 @@ impl Interpreter {
                             Value::List(l) => l.borrow().clone(),
                             _ => return Err(format!("TypeError: set.intersection() argument must be a set or list, not '{}'", self.type_name(other))),
                         };
-                        let result: Vec<Value> = s.borrow().iter()
+                        let result: Vec<Value> = s
+                            .borrow()
+                            .iter()
                             .filter(|v| other_items.iter().any(|x| self.values_eq(x, v)))
-                            .cloned().collect();
+                            .cloned()
+                            .collect();
                         Ok(Value::Set(Rc::new(RefCell::new(result))))
                     }
                     "difference" => {
                         let evaled = self.eval_call_args(args)?;
                         if evaled.len() != 1 {
-                            return Err("TypeError: set.difference() takes exactly 1 argument".to_string());
+                            return Err(
+                                "TypeError: set.difference() takes exactly 1 argument".to_string()
+                            );
                         }
                         let other = &evaled[0].1;
                         let other_items: Vec<Value> = match other {
@@ -441,15 +520,21 @@ impl Interpreter {
                             Value::List(l) => l.borrow().clone(),
                             _ => return Err(format!("TypeError: set.difference() argument must be a set or list, not '{}'", self.type_name(other))),
                         };
-                        let result: Vec<Value> = s.borrow().iter()
+                        let result: Vec<Value> = s
+                            .borrow()
+                            .iter()
                             .filter(|v| !other_items.iter().any(|x| self.values_eq(x, v)))
-                            .cloned().collect();
+                            .cloned()
+                            .collect();
                         Ok(Value::Set(Rc::new(RefCell::new(result))))
                     }
                     "symmetric_difference" => {
                         let evaled = self.eval_call_args(args)?;
                         if evaled.len() != 1 {
-                            return Err("TypeError: set.symmetric_difference() takes exactly 1 argument".to_string());
+                            return Err(
+                                "TypeError: set.symmetric_difference() takes exactly 1 argument"
+                                    .to_string(),
+                            );
                         }
                         let other = &evaled[0].1;
                         let other_items: Vec<Value> = match other {
@@ -458,9 +543,11 @@ impl Interpreter {
                             _ => return Err(format!("TypeError: set.symmetric_difference() argument must be a set or list, not '{}'", self.type_name(other))),
                         };
                         let s_ref = s.borrow();
-                        let mut result: Vec<Value> = s_ref.iter()
+                        let mut result: Vec<Value> = s_ref
+                            .iter()
                             .filter(|v| !other_items.iter().any(|x| self.values_eq(x, v)))
-                            .cloned().collect();
+                            .cloned()
+                            .collect();
                         for v in &other_items {
                             if !s_ref.iter().any(|x| self.values_eq(x, v)) {
                                 result.push(v.clone());
@@ -471,7 +558,9 @@ impl Interpreter {
                     "issubset" => {
                         let evaled = self.eval_call_args(args)?;
                         if evaled.len() != 1 {
-                            return Err("TypeError: set.issubset() takes exactly 1 argument".to_string());
+                            return Err(
+                                "TypeError: set.issubset() takes exactly 1 argument".to_string()
+                            );
                         }
                         let other = &evaled[0].1;
                         let other_items: Vec<Value> = match other {
@@ -479,14 +568,18 @@ impl Interpreter {
                             Value::List(l) => l.borrow().clone(),
                             _ => return Err(format!("TypeError: set.issubset() argument must be a set or list, not '{}'", self.type_name(other))),
                         };
-                        let result = s.borrow().iter()
+                        let result = s
+                            .borrow()
+                            .iter()
                             .all(|v| other_items.iter().any(|x| self.values_eq(x, v)));
                         Ok(Value::Bool(result))
                     }
                     "issuperset" => {
                         let evaled = self.eval_call_args(args)?;
                         if evaled.len() != 1 {
-                            return Err("TypeError: set.issuperset() takes exactly 1 argument".to_string());
+                            return Err(
+                                "TypeError: set.issuperset() takes exactly 1 argument".to_string()
+                            );
                         }
                         let other = &evaled[0].1;
                         let other_items: Vec<Value> = match other {
@@ -495,11 +588,14 @@ impl Interpreter {
                             _ => return Err(format!("TypeError: set.issuperset() argument must be a set or list, not '{}'", self.type_name(other))),
                         };
                         let s_ref = s.borrow();
-                        let result = other_items.iter()
+                        let result = other_items
+                            .iter()
                             .all(|v| s_ref.iter().any(|x| self.values_eq(x, v)));
                         Ok(Value::Bool(result))
                     }
-                    _ => Err(format!("AttributeError: 'set' object has no method '{method_name}'")),
+                    _ => Err(format!(
+                        "AttributeError: 'set' object has no method '{method_name}'"
+                    )),
                 }
             }
             Value::Generator(state) => {
@@ -524,12 +620,12 @@ impl Interpreter {
             }
             Value::Namespace(ns) => {
                 // モジュール名前空間の場合: メンバを取り出して関数として呼び出す
-                let member = ns.members.get(method_name)
-                    .cloned()
-                    .ok_or_else(|| format!(
+                let member = ns.members.get(method_name).cloned().ok_or_else(|| {
+                    format!(
                         "AttributeError: module '{}' has no attribute '{method_name}'",
                         ns.name
-                    ))?;
+                    )
+                })?;
                 match member {
                     Value::Function(fn_val) => self.exec_fn(fn_val, args, None, method_name),
                     Value::OverloadedFn(candidates) => {
@@ -542,11 +638,10 @@ impl Interpreter {
                         let evaled = self.eval_call_args(args)?;
                         super::py_interop::call_py_object(&handle, &evaled)
                     }
-                    Value::NativeFunction(fn_ref) => {
-                        self.call_native_function(&fn_ref, args)
-                    }
+                    Value::NativeFunction(fn_ref) => self.call_native_function(&fn_ref, args),
                     other => Err(format!(
-                        "TypeError: '{}' object is not callable", self.type_name(&other)
+                        "TypeError: '{}' object is not callable",
+                        self.type_name(&other)
                     )),
                 }
             }
@@ -564,7 +659,9 @@ impl Interpreter {
                 match method_name {
                     "all_done" => {
                         if !args.is_empty() {
-                            return Err("TypeError: AsyncManager.all_done() takes no arguments".to_string());
+                            return Err(
+                                "TypeError: AsyncManager.all_done() takes no arguments".to_string()
+                            );
                         }
                         let all = mgr_rc.borrow().all_done();
                         Ok(Value::Bool(all))
@@ -588,7 +685,9 @@ impl Interpreter {
                                 (done, abort)
                             };
 
-                            if done { break; }
+                            if done {
+                                break;
+                            }
 
                             if abort_triggered {
                                 // Cancel remaining pending tasks then wait for running ones
@@ -598,9 +697,13 @@ impl Interpreter {
                                     {
                                         let mut mgr = mgr_rc.borrow_mut();
                                         mgr.poll_completed();
-                                        if mgr.all_done() { break; }
+                                        if mgr.all_done() {
+                                            break;
+                                        }
                                     }
-                                    std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+                                    std::thread::sleep(std::time::Duration::from_millis(
+                                        interval_ms,
+                                    ));
                                 }
                                 break;
                             }
@@ -611,7 +714,11 @@ impl Interpreter {
                         // Propagate first error if raise_immediately, as a catchable raise
                         let first_err = {
                             let mgr = mgr_rc.borrow();
-                            if mgr.raise_immediately { mgr.first_error() } else { None }
+                            if mgr.raise_immediately {
+                                mgr.first_error()
+                            } else {
+                                None
+                            }
                         };
                         if let Some(e) = first_err {
                             self.current_exception = Some(RaisedError {
@@ -623,7 +730,9 @@ impl Interpreter {
 
                         Ok(Value::None)
                     }
-                    _ => Err(format!("AttributeError: 'AsyncManager' has no method '{method_name}'")),
+                    _ => Err(format!(
+                        "AttributeError: 'AsyncManager' has no method '{method_name}'"
+                    )),
                 }
             }
             _ => Err(format!(
@@ -692,7 +801,11 @@ impl Interpreter {
                 } else {
                     // 現在位置の直前の \n をスキップしてその前の \n を探す
                     let p = fd.pointer;
-                    let skip_end = if p > 0 && fd.content[p - 1] == b'\n' { p - 1 } else { p };
+                    let skip_end = if p > 0 && fd.content[p - 1] == b'\n' {
+                        p - 1
+                    } else {
+                        p
+                    };
                     let prev_nl = fd.content[..skip_end].iter().rposition(|&b| b == b'\n');
                     let start = match prev_nl {
                         Some(i) => i + 1,
@@ -769,7 +882,9 @@ impl Interpreter {
                 fd.pointer = ptr + insert_bytes.len();
                 Ok(Value::None)
             }
-            _ => Err(format!("AttributeError: FileObject has no method '{method_name}'")),
+            _ => Err(format!(
+                "AttributeError: FileObject has no method '{method_name}'"
+            )),
         }
     }
 
@@ -786,13 +901,26 @@ impl Interpreter {
                 let class = inst_rc.borrow().class.clone();
                 let inst_immutable = inst_rc.borrow().immutable;
 
-                let overloads = self.lookup_method_in_class(&class, method_name)
-                    .ok_or_else(|| format!("AttributeError: '{}' has no method '{method_name}'", class.name))?;
+                let overloads = self
+                    .lookup_method_in_class(&class, method_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "AttributeError: '{}' has no method '{method_name}'",
+                            class.name
+                        )
+                    })?;
 
                 let callable: Vec<Rc<FnValue>> = if inst_immutable {
-                    overloads.iter().filter(|f| {
-                        f.params.first().map(|p| p.name != "self" || !p.mutable).unwrap_or(true)
-                    }).cloned().collect()
+                    overloads
+                        .iter()
+                        .filter(|f| {
+                            f.params
+                                .first()
+                                .map(|p| p.name != "self" || !p.mutable)
+                                .unwrap_or(true)
+                        })
+                        .cloned()
+                        .collect()
                 } else {
                     overloads
                 };
@@ -805,7 +933,12 @@ impl Interpreter {
                 }
 
                 if callable.len() == 1 {
-                    self.exec_fn_evaled(callable[0].clone(), &evaled, Some(obj.clone()), method_name)
+                    self.exec_fn_evaled(
+                        callable[0].clone(),
+                        &evaled,
+                        Some(obj.clone()),
+                        method_name,
+                    )
                 } else {
                     self.dispatch_overload_evaled(callable, evaled, Some(obj.clone()), method_name)
                 }
@@ -837,12 +970,21 @@ impl Interpreter {
             ($idx:expr, $name:literal) => {
                 match vals.get($idx) {
                     Some(Value::Str(s)) => s.clone(),
-                    Some(other) => return Err(format!(
-                        "TypeError: {}.{}() argument {} must be str, not '{}'",
-                        method_name, $name, $idx + 1,
-                        self.type_name(other)
-                    )),
-                    None => return Err(format!("TypeError: {}() missing argument '{}'", method_name, $name)),
+                    Some(other) => {
+                        return Err(format!(
+                            "TypeError: {}.{}() argument {} must be str, not '{}'",
+                            method_name,
+                            $name,
+                            $idx + 1,
+                            self.type_name(other)
+                        ))
+                    }
+                    None => {
+                        return Err(format!(
+                            "TypeError: {}() missing argument '{}'",
+                            method_name, $name
+                        ))
+                    }
                 }
             };
         }
@@ -851,10 +993,13 @@ impl Interpreter {
                 match vals.get($idx) {
                     Some(Value::Str(s)) => Some(s.clone()),
                     Some(Value::None) | None => None,
-                    Some(other) => return Err(format!(
-                        "TypeError: {}() argument must be str or None, not '{}'", method_name,
-                        self.type_name(other)
-                    )),
+                    Some(other) => {
+                        return Err(format!(
+                            "TypeError: {}() argument must be str or None, not '{}'",
+                            method_name,
+                            self.type_name(other)
+                        ))
+                    }
                 }
             };
         }
@@ -863,10 +1008,13 @@ impl Interpreter {
                 match vals.get($idx) {
                     Some(Value::Int(n)) => *n,
                     None => $default,
-                    Some(other) => return Err(format!(
-                        "TypeError: {}() argument must be int, not '{}'", method_name,
-                        self.type_name(other)
-                    )),
+                    Some(other) => {
+                        return Err(format!(
+                            "TypeError: {}() argument must be int, not '{}'",
+                            method_name,
+                            self.type_name(other)
+                        ))
+                    }
                 }
             };
         }
@@ -877,16 +1025,26 @@ impl Interpreter {
                     return Err("TypeError: str.__iter__() takes no arguments".to_string());
                 }
                 let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
-                return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: chars, index: 0 }))));
+                return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                    values: chars,
+                    index: 0,
+                }))));
             }
 
             // ── 大文字・小文字変換 ──────────────────────────────────────────
-            "upper"      => Ok(Value::Str(s.to_uppercase())),
-            "lower"      => Ok(Value::Str(s.to_lowercase())),
-            "swapcase"   => Ok(Value::Str(s.chars().map(|c| {
-                if c.is_uppercase() { c.to_lowercase().next().unwrap_or(c) }
-                else { c.to_uppercase().next().unwrap_or(c) }
-            }).collect())),
+            "upper" => Ok(Value::Str(s.to_uppercase())),
+            "lower" => Ok(Value::Str(s.to_lowercase())),
+            "swapcase" => Ok(Value::Str(
+                s.chars()
+                    .map(|c| {
+                        if c.is_uppercase() {
+                            c.to_lowercase().next().unwrap_or(c)
+                        } else {
+                            c.to_uppercase().next().unwrap_or(c)
+                        }
+                    })
+                    .collect(),
+            )),
             "capitalize" => Ok(Value::Str({
                 let mut cs = s.chars();
                 match cs.next() {
@@ -941,19 +1099,26 @@ impl Interpreter {
                 let parts: Vec<Value> = match sep {
                     None => {
                         if maxsplit < 0 {
-                            s.split_whitespace().map(|p| Value::Str(p.to_string())).collect()
+                            s.split_whitespace()
+                                .map(|p| Value::Str(p.to_string()))
+                                .collect()
                         } else {
-                            let mut result: Vec<&str> = s.splitn(maxsplit as usize + 1, |c: char| c.is_whitespace()).collect();
+                            let mut result: Vec<&str> = s
+                                .splitn(maxsplit as usize + 1, |c: char| c.is_whitespace())
+                                .collect();
                             result.retain(|p| !p.is_empty());
                             result.iter().map(|p| Value::Str(p.to_string())).collect()
                         }
                     }
                     Some(ref sep) => {
                         if maxsplit < 0 {
-                            s.split(sep.as_str()).map(|p| Value::Str(p.to_string())).collect()
+                            s.split(sep.as_str())
+                                .map(|p| Value::Str(p.to_string()))
+                                .collect()
                         } else {
                             s.splitn(maxsplit as usize + 1, sep.as_str())
-                                .map(|p| Value::Str(p.to_string())).collect()
+                                .map(|p| Value::Str(p.to_string()))
+                                .collect()
                         }
                     }
                 };
@@ -965,18 +1130,25 @@ impl Interpreter {
                 let parts: Vec<Value> = match sep {
                     None => {
                         if maxsplit < 0 {
-                            s.split_whitespace().map(|p| Value::Str(p.to_string())).collect()
+                            s.split_whitespace()
+                                .map(|p| Value::Str(p.to_string()))
+                                .collect()
                         } else {
-                            let mut result: Vec<&str> = s.rsplitn(maxsplit as usize + 1, |c: char| c.is_whitespace()).collect();
+                            let mut result: Vec<&str> = s
+                                .rsplitn(maxsplit as usize + 1, |c: char| c.is_whitespace())
+                                .collect();
                             result.reverse();
                             result.iter().map(|p| Value::Str(p.to_string())).collect()
                         }
                     }
                     Some(ref sep) => {
                         if maxsplit < 0 {
-                            s.split(sep.as_str()).map(|p| Value::Str(p.to_string())).collect()
+                            s.split(sep.as_str())
+                                .map(|p| Value::Str(p.to_string()))
+                                .collect()
                         } else {
-                            let mut v: Vec<&str> = s.rsplitn(maxsplit as usize + 1, sep.as_str()).collect();
+                            let mut v: Vec<&str> =
+                                s.rsplitn(maxsplit as usize + 1, sep.as_str()).collect();
                             v.reverse();
                             v.iter().map(|p| Value::Str(p.to_string())).collect()
                         }
@@ -991,15 +1163,19 @@ impl Interpreter {
 
             // ── 結合 ────────────────────────────────────────────────────────
             "join" => {
-                let iterable = vals.first()
+                let iterable = vals
+                    .first()
                     .ok_or_else(|| "TypeError: join() missing argument 'iterable'".to_string())?;
                 let items = match iterable {
                     Value::List(lst) => lst.borrow().clone(),
                     Value::Tuple(t) => t.all_values().to_vec(),
                     Value::Generator(g) => g.borrow().values[g.borrow().index..].to_vec(),
-                    other => return Err(format!(
-                        "TypeError: join() argument must be iterable, not '{}'", self.type_name(other)
-                    )),
+                    other => {
+                        return Err(format!(
+                            "TypeError: join() argument must be iterable, not '{}'",
+                            self.type_name(other)
+                        ))
+                    }
                 };
                 let parts: Vec<String> = items.iter().map(|v| self.display(v)).collect();
                 Ok(Value::Str(parts.join(&s)))
@@ -1051,8 +1227,11 @@ impl Interpreter {
                 let start = arg_int!(1, 0).max(0) as usize;
                 let end = arg_int!(2, s.len() as i64).max(0) as usize;
                 let slice = &s[start.min(s.len())..end.min(s.len())];
-                let n = if sub.is_empty() { slice.chars().count() + 1 }
-                        else { slice.matches(sub.as_str()).count() };
+                let n = if sub.is_empty() {
+                    slice.chars().count() + 1
+                } else {
+                    slice.matches(sub.as_str()).count()
+                };
                 Ok(Value::Int(n as i64))
             }
             "contains" => {
@@ -1081,11 +1260,15 @@ impl Interpreter {
             }
             "removeprefix" => {
                 let prefix = arg_str!(0, "prefix");
-                Ok(Value::Str(s.strip_prefix(prefix.as_str()).unwrap_or(&s).to_string()))
+                Ok(Value::Str(
+                    s.strip_prefix(prefix.as_str()).unwrap_or(&s).to_string(),
+                ))
             }
             "removesuffix" => {
                 let suffix = arg_str!(0, "suffix");
-                Ok(Value::Str(s.strip_suffix(suffix.as_str()).unwrap_or(&s).to_string()))
+                Ok(Value::Str(
+                    s.strip_suffix(suffix.as_str()).unwrap_or(&s).to_string(),
+                ))
             }
 
             // ── 書式変換 ────────────────────────────────────────────────────
@@ -1093,8 +1276,11 @@ impl Interpreter {
                 let mut pos_args: Vec<Value> = Vec::new();
                 let mut kw_args: Vec<(String, Value)> = Vec::new();
                 for (kw, v) in self.eval_call_args(args)? {
-                    if let Some(k) = kw { kw_args.push((k, v)); }
-                    else { pos_args.push(v); }
+                    if let Some(k) = kw {
+                        kw_args.push((k, v));
+                    } else {
+                        pos_args.push(v);
+                    }
                 }
                 let display_fn = |v: &Value| self.display(v);
                 let result = str_format(&s, &pos_args, &kw_args, &display_fn)?;
@@ -1102,39 +1288,74 @@ impl Interpreter {
             }
 
             // ── 文字判定 ────────────────────────────────────────────────────
-            "isdigit"  => Ok(Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))),
-            "isnumeric"=> Ok(Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_numeric()))),
-            "isalpha"  => Ok(Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_alphabetic()))),
-            "isalnum"  => Ok(Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_alphanumeric()))),
-            "isspace"  => Ok(Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_whitespace()))),
-            "isupper"  => Ok(Value::Bool(!s.is_empty() && s.chars().any(|c| c.is_alphabetic()) && s.chars().all(|c| !c.is_alphabetic() || c.is_uppercase()))),
-            "islower"  => Ok(Value::Bool(!s.is_empty() && s.chars().any(|c| c.is_alphabetic()) && s.chars().all(|c| !c.is_alphabetic() || c.is_lowercase()))),
-            "isascii"  => Ok(Value::Bool(s.is_ascii())),
+            "isdigit" => Ok(Value::Bool(
+                !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()),
+            )),
+            "isnumeric" => Ok(Value::Bool(
+                !s.is_empty() && s.chars().all(|c| c.is_numeric()),
+            )),
+            "isalpha" => Ok(Value::Bool(
+                !s.is_empty() && s.chars().all(|c| c.is_alphabetic()),
+            )),
+            "isalnum" => Ok(Value::Bool(
+                !s.is_empty() && s.chars().all(|c| c.is_alphanumeric()),
+            )),
+            "isspace" => Ok(Value::Bool(
+                !s.is_empty() && s.chars().all(|c| c.is_whitespace()),
+            )),
+            "isupper" => Ok(Value::Bool(
+                !s.is_empty()
+                    && s.chars().any(|c| c.is_alphabetic())
+                    && s.chars().all(|c| !c.is_alphabetic() || c.is_uppercase()),
+            )),
+            "islower" => Ok(Value::Bool(
+                !s.is_empty()
+                    && s.chars().any(|c| c.is_alphabetic())
+                    && s.chars().all(|c| !c.is_alphabetic() || c.is_lowercase()),
+            )),
+            "isascii" => Ok(Value::Bool(s.is_ascii())),
             "isprintable" => Ok(Value::Bool(s.chars().all(|c| !c.is_control()))),
 
             // ── 幅揃え・ゼロ埋め ────────────────────────────────────────────
             "zfill" => {
                 let width = arg_int!(0, 0).max(0) as usize;
-                Ok(Value::Str(if s.len() >= width { s.clone() }
-                    else { format!("{:0>width$}", s) }))
+                Ok(Value::Str(if s.len() >= width {
+                    s.clone()
+                } else {
+                    format!("{:0>width$}", s)
+                }))
             }
             "ljust" => {
                 let width = arg_int!(0, 0).max(0) as usize;
                 let fill = match vals.get(1) {
                     Some(Value::Str(f)) if f.chars().count() == 1 => f.chars().next().unwrap(),
                     None => ' ',
-                    _ => return Err("TypeError: ljust() fillchar must be single char str".to_string()),
+                    _ => {
+                        return Err(
+                            "TypeError: ljust() fillchar must be single char str".to_string()
+                        )
+                    }
                 };
-                Ok(Value::Str(format!("{:<width$}", s, width = width).replace(' ', &fill.to_string()).replacen(&fill.to_string(), &fill.to_string(), width)))
+                Ok(Value::Str(
+                    format!("{:<width$}", s, width = width)
+                        .replace(' ', &fill.to_string())
+                        .replacen(&fill.to_string(), &fill.to_string(), width),
+                ))
             }
             "rjust" => {
                 let width = arg_int!(0, 0).max(0) as usize;
                 let fill = match vals.get(1) {
                     Some(Value::Str(f)) if f.chars().count() == 1 => f.chars().next().unwrap(),
                     None => ' ',
-                    _ => return Err("TypeError: rjust() fillchar must be single char str".to_string()),
+                    _ => {
+                        return Err(
+                            "TypeError: rjust() fillchar must be single char str".to_string()
+                        )
+                    }
                 };
-                if s.len() >= width { return Ok(Value::Str(s.clone())); }
+                if s.len() >= width {
+                    return Ok(Value::Str(s.clone()));
+                }
                 let pad = width - s.len();
                 Ok(Value::Str(format!("{}{}", fill.to_string().repeat(pad), s)))
             }
@@ -1143,13 +1364,24 @@ impl Interpreter {
                 let fill = match vals.get(1) {
                     Some(Value::Str(f)) if f.chars().count() == 1 => f.chars().next().unwrap(),
                     None => ' ',
-                    _ => return Err("TypeError: center() fillchar must be single char str".to_string()),
+                    _ => {
+                        return Err(
+                            "TypeError: center() fillchar must be single char str".to_string()
+                        )
+                    }
                 };
-                if s.len() >= width { return Ok(Value::Str(s.clone())); }
+                if s.len() >= width {
+                    return Ok(Value::Str(s.clone()));
+                }
                 let pad = width - s.len();
                 let left = pad / 2;
                 let right = pad - left;
-                Ok(Value::Str(format!("{}{}{}", fill.to_string().repeat(left), s, fill.to_string().repeat(right))))
+                Ok(Value::Str(format!(
+                    "{}{}{}",
+                    fill.to_string().repeat(left),
+                    s,
+                    fill.to_string().repeat(right)
+                )))
             }
 
             // ── 分割（区切りを含む） ─────────────────────────────────────────
@@ -1191,7 +1423,8 @@ impl Interpreter {
             }
             "encode" => {
                 // 簡易実装: UTF-8 バイト列を int のリストで返す
-                let bytes: Vec<Value> = s.as_bytes().iter().map(|b| Value::Int(*b as i64)).collect();
+                let bytes: Vec<Value> =
+                    s.as_bytes().iter().map(|b| Value::Int(*b as i64)).collect();
                 Ok(Value::List(Rc::new(RefCell::new(bytes))))
             }
             "chars" => {
@@ -1204,7 +1437,10 @@ impl Interpreter {
                 let mut cs = s.chars();
                 match (cs.next(), cs.next()) {
                     (Some(c), None) => Ok(Value::Int(c as i64)),
-                    _ => Err("TypeError: ord() expected a character, but found a string of length != 1".to_string()),
+                    _ => Err(
+                        "TypeError: ord() expected a character, but found a string of length != 1"
+                            .to_string(),
+                    ),
                 }
             }
 
@@ -1214,7 +1450,12 @@ impl Interpreter {
                 let flags = match vals.get(1) {
                     Some(Value::Str(f)) => f.clone(),
                     None => String::new(),
-                    Some(other) => return Err(format!("TypeError: match() flags must be str, not '{}'", self.type_name(other))),
+                    Some(other) => {
+                        return Err(format!(
+                            "TypeError: match() flags must be str, not '{}'",
+                            self.type_name(other)
+                        ))
+                    }
                 };
                 match regex_match(&s, &pattern, &flags)? {
                     Some(m) => Ok(Value::Str(m)),
@@ -1226,7 +1467,12 @@ impl Interpreter {
                 let flags = match vals.get(1) {
                     Some(Value::Str(f)) => f.clone(),
                     None => String::new(),
-                    Some(other) => return Err(format!("TypeError: search() flags must be str, not '{}'", self.type_name(other))),
+                    Some(other) => {
+                        return Err(format!(
+                            "TypeError: search() flags must be str, not '{}'",
+                            self.type_name(other)
+                        ))
+                    }
                 };
                 match regex_search(&s, &pattern, &flags)? {
                     Some(m) => Ok(Value::Str(m)),
@@ -1238,11 +1484,16 @@ impl Interpreter {
                 let flags = match vals.get(1) {
                     Some(Value::Str(f)) => f.clone(),
                     None => String::new(),
-                    Some(other) => return Err(format!("TypeError: findall() flags must be str, not '{}'", self.type_name(other))),
+                    Some(other) => {
+                        return Err(format!(
+                            "TypeError: findall() flags must be str, not '{}'",
+                            self.type_name(other)
+                        ))
+                    }
                 };
                 let matches = regex_findall(&s, &pattern, &flags)?;
                 Ok(Value::List(Rc::new(RefCell::new(
-                    matches.into_iter().map(Value::Str).collect()
+                    matches.into_iter().map(Value::Str).collect(),
                 ))))
             }
             "sub" => {
@@ -1252,7 +1503,12 @@ impl Interpreter {
                 let flags = match vals.get(3) {
                     Some(Value::Str(f)) => f.clone(),
                     None => String::new(),
-                    Some(other) => return Err(format!("TypeError: sub() flags must be str, not '{}'", self.type_name(other))),
+                    Some(other) => {
+                        return Err(format!(
+                            "TypeError: sub() flags must be str, not '{}'",
+                            self.type_name(other)
+                        ))
+                    }
                 };
                 Ok(Value::Str(regex_sub(&s, &pattern, &repl, count, &flags)?))
             }
@@ -1262,15 +1518,22 @@ impl Interpreter {
                 let flags = match vals.get(2) {
                     Some(Value::Str(f)) => f.clone(),
                     None => String::new(),
-                    Some(other) => return Err(format!("TypeError: regex_split() flags must be str, not '{}'", self.type_name(other))),
+                    Some(other) => {
+                        return Err(format!(
+                            "TypeError: regex_split() flags must be str, not '{}'",
+                            self.type_name(other)
+                        ))
+                    }
                 };
                 let parts = regex_split(&s, &pattern, maxsplit, &flags)?;
                 Ok(Value::List(Rc::new(RefCell::new(
-                    parts.into_iter().map(Value::Str).collect()
+                    parts.into_iter().map(Value::Str).collect(),
                 ))))
             }
 
-            _ => Err(format!("AttributeError: 'str' object has no method '{method_name}'")),
+            _ => Err(format!(
+                "AttributeError: 'str' object has no method '{method_name}'"
+            )),
         }
     }
 
@@ -1282,7 +1545,11 @@ impl Interpreter {
     /// - `method_name`: 検索するメソッド名
     ///
     /// 戻り値: `Some(Vec<Rc<FnValue>>)` — オーバーロード候補リスト。`None` — 見つからない
-    pub(super) fn lookup_method_in_class(&self, class: &Rc<ClassValue>, method_name: &str) -> Option<Vec<Rc<FnValue>>> {
+    pub(super) fn lookup_method_in_class(
+        &self,
+        class: &Rc<ClassValue>,
+        method_name: &str,
+    ) -> Option<Vec<Rc<FnValue>>> {
         if let Some(overloads) = class.methods.get(method_name) {
             return Some(overloads.clone());
         }

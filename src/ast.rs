@@ -129,15 +129,28 @@ impl BinOp {
     /// 演算子の文字列表現（例: `"+"`, `"=="`, `"and"` など）。
     pub fn as_str(&self) -> &'static str {
         match self {
-            BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-            BinOp::Div => "/", BinOp::FloorDiv => "//", BinOp::Mod => "%",
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::FloorDiv => "//",
+            BinOp::Mod => "%",
             BinOp::Pow => "**",
-            BinOp::Eq => "==", BinOp::NotEq => "!=",
-            BinOp::Lt => "<", BinOp::Gt => ">", BinOp::LtEq => "<=", BinOp::GtEq => ">=",
-            BinOp::And => "and", BinOp::Or => "or",
-            BinOp::BitAnd => "&", BinOp::BitOr => "|", BinOp::BitXor => "^",
-            BinOp::LShift => "<<", BinOp::RShift => ">>",
-            BinOp::In => "in", BinOp::NotIn => "not in",
+            BinOp::Eq => "==",
+            BinOp::NotEq => "!=",
+            BinOp::Lt => "<",
+            BinOp::Gt => ">",
+            BinOp::LtEq => "<=",
+            BinOp::GtEq => ">=",
+            BinOp::And => "and",
+            BinOp::Or => "or",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::LShift => "<<",
+            BinOp::RShift => ">>",
+            BinOp::In => "in",
+            BinOp::NotIn => "not in",
         }
     }
 }
@@ -196,18 +209,38 @@ pub enum Expr {
     /// リストリテラル `[a, b, c]`。要素の式を順に評価して `Value::List` を生成する。
     List(Vec<Expr>),
     /// 属性アクセス `object.attr`。インスタンスフィールドやクラス変数の読み取りに使用する。
-    Attr { object: Box<Expr>, attr: String, span: Span },
+    Attr {
+        object: Box<Expr>,
+        attr: String,
+        span: Span,
+    },
     /// トレイト修飾アクセス `object::Trait.attr`。特定のトレイト実装のメソッドを明示的に呼び出す。
-    TraitAccess { object: Box<Expr>, trait_name: String, attr: String },
+    TraitAccess {
+        object: Box<Expr>,
+        trait_name: String,
+        attr: String,
+    },
     /// 二項演算 `left op right`。`span` はエラー報告に使用する位置情報。
-    BinOp { op: BinOp, left: Box<Expr>, right: Box<Expr>, span: Span },
+    BinOp {
+        op: BinOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+        span: Span,
+    },
     /// 単項演算 `op operand`（例: `-x`, `not x`, `~x`）。
     UnaryOp { op: UnaryOp, operand: Box<Expr> },
     /// 関数呼び出し `func(args)`。`func` が `TemplateInstantiate` の場合はテンプレート呼び出しになる。
-    Call { func: Box<Expr>, args: Vec<CallArg>, span: Span },
+    Call {
+        func: Box<Expr>,
+        args: Vec<CallArg>,
+        span: Span,
+    },
     /// テンプレート型引数適用: `expr[T1, T2]` — テンプレート値に具体的な型引数を与える。
     /// `Call` 式の `func` として使用する。単独の値としては無効。
-    TemplateInstantiate { base: Box<Expr>, type_args: Vec<String> },
+    TemplateInstantiate {
+        base: Box<Expr>,
+        type_args: Vec<String>,
+    },
     /// 添字アクセス: `expr[index]` — 辞書やリストなどのインデックスルックアップ。
     Subscript { object: Box<Expr>, index: Box<Expr> },
     /// スライス式: `begin:end` または `begin:end:step`。
@@ -375,18 +408,35 @@ pub enum Stmt {
     Mut(String, Expr),
     /// タプルアンパック宣言: `let x, mut y, _ = expr`。
     /// `_` は末尾に置いて残余要素をすべて破棄する。
-    LetTuple { targets: Vec<TupleTarget>, value: Expr, span: Span },
+    LetTuple {
+        targets: Vec<TupleTarget>,
+        value: Expr,
+        span: Span,
+    },
     /// 静的可変変数宣言: `static mut x = expr`。外側関数の全呼び出しでセルを共有する。
     /// `span` はセルの一意キー（初回評価判定）として使用する。
     Static(String, Expr, Span),
     /// 変数への代入: `x = expr`。`span` は型検査・エラー報告に使用する位置情報。
-    Assign { name: String, value: Expr, span: Span },
+    Assign {
+        name: String,
+        value: Expr,
+        span: Span,
+    },
     /// 属性（フィールド）への代入: `obj.attr = expr`。
     AttrAssign { target: Expr, value: Expr },
     /// 属性への複合代入: `obj.attr += expr` など。`op` は複合代入の演算子。
-    AttrCompoundAssign { target: Expr, op: BinOp, value: Expr },
+    AttrCompoundAssign {
+        target: Expr,
+        op: BinOp,
+        value: Expr,
+    },
     /// 変数への複合代入: `x += expr` など。`span` は型検査・エラー報告に使用する位置情報。
-    CompoundAssign { name: String, op: BinOp, value: Expr, span: Span },
+    CompoundAssign {
+        name: String,
+        op: BinOp,
+        value: Expr,
+        span: Span,
+    },
     /// `if` / `elif` / `else` 条件分岐。
     ///
     /// # フィールド
@@ -717,7 +767,9 @@ pub enum Accessibility {
 }
 
 impl Default for Accessibility {
-    fn default() -> Self { Self::Public }
+    fn default() -> Self {
+        Self::Public
+    }
 }
 
 /// クラスフィールド宣言の種別。

@@ -2,7 +2,6 @@
 ///
 /// `Lexer` の実装を機能単位に分割した補助ファイル。
 /// メソッドは `scan.rs` で定義された `Lexer` に対する `impl` ブロックとして提供する。
-
 use crate::token::Token;
 
 use super::scan::Lexer;

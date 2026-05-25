@@ -14,24 +14,23 @@
 //   - exec_async_assign                                                      (非同期)
 
 use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::ast::{
-    Accessibility, BinOp, Expr, ExceptHandler, FieldKind, MatchArm, MatchPattern,
-    Param, Stmt, TemplateParam, TupleTarget,
+    Accessibility, BinOp, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt,
+    TemplateParam, TupleTarget,
 };
 use crate::token::Span;
 
 use super::{
-    CapturedVar, Interpreter, Value, Var, ExecResult,
-    FnValue, TemplateFnValue, GeneratorFnValue, TemplateGenFnValue, TemplateClassValue,
-    GeneratorState, NamespaceData, ModuleState, NativeFnRef, NativeLibWrapper,
-    RaisedError, StackFrame,
-    RAISE_SENTINEL, BREAK_SENTINEL, GENERATOR_YIELDS, BLOCK_YIELDS, LOOP_DEPTH, BLOCK_RETURN_EXPECTED_TYPE,
-    debugger::DbgMode,
+    debugger::DbgMode, CapturedVar, ExecResult, FnValue, GeneratorFnValue, GeneratorState,
+    Interpreter, ModuleState, NamespaceData, NativeFnRef, NativeLibWrapper, RaisedError,
+    StackFrame, TemplateClassValue, TemplateFnValue, TemplateGenFnValue, Value, Var,
+    BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
+    RAISE_SENTINEL,
 };
 
 /// `"list[T]"` からアイテム型 `"T"` を取り出す。`"list"` や他の型は `None` を返す。
@@ -86,9 +85,9 @@ impl Interpreter {
                 self.attr_assign(target, result)?;
                 Ok(ExecResult::Normal)
             }
-            Stmt::CompoundAssign { name, op, value, .. } => {
-                self.exec_compound_assign(name, op, value)
-            }
+            Stmt::CompoundAssign {
+                name, op, value, ..
+            } => self.exec_compound_assign(name, op, value),
             Stmt::Pass => Ok(ExecResult::Normal),
             Stmt::Field { .. } => Ok(ExecResult::Normal),
             Stmt::Break => {
@@ -112,21 +111,34 @@ impl Interpreter {
             }
             Stmt::BlockReturn(expr, _span) => {
                 let val = self.eval(expr)?;
-                let expected = BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow().last().cloned().flatten());
+                let expected =
+                    BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow().last().cloned().flatten());
                 if let Some(ann) = expected {
                     self.check_block_return_type(&val, &ann)?;
                 }
                 Ok(ExecResult::BlockReturn(val))
             }
             Stmt::LoopYield(expr) => self.exec_loop_yield(expr),
-            Stmt::If { branches, else_body } => self.exec_if_stmt(branches, else_body),
+            Stmt::If {
+                branches,
+                else_body,
+            } => self.exec_if_stmt(branches, else_body),
             Stmt::Match { subject, arms, .. } => self.exec_match_stmt(subject, arms),
             Stmt::While { cond, body } => self.exec_while_stmt(cond, body),
-            Stmt::For { targets, iter, body } => self.exec_for_stmt(targets, iter, body),
+            Stmt::For {
+                targets,
+                iter,
+                body,
+            } => self.exec_for_stmt(targets, iter, body),
             Stmt::Block(body) => self.exec_block_stmt(body),
-            Stmt::FnDef { name, template_params, params, body, decorators, .. } => {
-                self.exec_fn_def(name, template_params, params, body, decorators)
-            }
+            Stmt::FnDef {
+                name,
+                template_params,
+                params,
+                body,
+                decorators,
+                ..
+            } => self.exec_fn_def(name, template_params, params, body, decorators),
             Stmt::Yield(expr) => {
                 let val = self.eval(expr)?;
                 GENERATOR_YIELDS.with(|y| {
@@ -136,30 +148,50 @@ impl Interpreter {
                 });
                 Ok(ExecResult::Normal)
             }
-            Stmt::GenDef { name, template_params, params, body, .. } => {
-                self.exec_gen_def(name, template_params, params, body)
-            }
+            Stmt::GenDef {
+                name,
+                template_params,
+                params,
+                body,
+                ..
+            } => self.exec_gen_def(name, template_params, params, body),
             Stmt::TraitDef { name, body, .. } => self.exec_trait_def(name, body),
             Stmt::NewTypeDef { name, original } => self.exec_new_type_def(name, original),
             Stmt::EnumDef { name, variants } => self.exec_enum_def(name, variants),
-            Stmt::ClassDef { name, template_params, bases, body, decorators } => {
-                self.exec_class_def(name, template_params, bases, body, decorators)
-            }
+            Stmt::ClassDef {
+                name,
+                template_params,
+                bases,
+                body,
+                decorators,
+            } => self.exec_class_def(name, template_params, bases, body, decorators),
             Stmt::Freeze(name, span) => self.exec_freeze(name, span),
             Stmt::Raise { exc, span } => self.exec_raise(exc, span),
-            Stmt::Try { body, handlers, finally_body } => {
-                self.exec_try(body, handlers, finally_body)
-            }
-            Stmt::Import { lang, module, with_file, alias, body } => {
+            Stmt::Try {
+                body,
+                handlers,
+                finally_body,
+            } => self.exec_try(body, handlers, finally_body),
+            Stmt::Import {
+                lang,
+                module,
+                with_file,
+                alias,
+                body,
+            } => {
                 let ns = if lang == "cpp-dll" || lang == "cpp-lib" {
                     let file_path = module.first().map(|s| s.as_str()).unwrap_or("");
                     let cache_key = (lang.clone(), PathBuf::from(file_path));
-                    if let Some(ModuleState::Loaded(cached)) = self.module_cache.get(&cache_key).cloned() {
+                    if let Some(ModuleState::Loaded(cached)) =
+                        self.module_cache.get(&cache_key).cloned()
+                    {
                         cached
                     } else {
-                        self.module_cache.insert(cache_key.clone(), ModuleState::Loading);
+                        self.module_cache
+                            .insert(cache_key.clone(), ModuleState::Loading);
                         let ns = self.load_cpp_module(lang, file_path, with_file.as_deref())?;
-                        self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
+                        self.module_cache
+                            .insert(cache_key, ModuleState::Loaded(ns.clone()));
                         ns
                     }
                 } else {
@@ -181,16 +213,23 @@ impl Interpreter {
                 self.declare_var(bind_name, Var::new(Value::Namespace(ns), false));
                 Ok(ExecResult::Normal)
             }
-            Stmt::FromImport { lang, module, with_file: _, names, body } => {
+            Stmt::FromImport {
+                lang,
+                module,
+                with_file: _,
+                names,
+                body,
+            } => {
                 let ns = self.exec_module(lang, module, body)?;
                 for (orig_name, alias) in names {
                     let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());
-                    let val = ns.members.get(orig_name.as_str())
-                        .cloned()
-                        .ok_or_else(|| format!(
+                    let val = ns.members.get(orig_name.as_str()).cloned().ok_or_else(|| {
+                        format!(
                             "ImportError: cannot import name '{}' from '{}'",
-                            orig_name, module.join(".")
-                        ))?;
+                            orig_name,
+                            module.join(".")
+                        )
+                    })?;
                     self.declare_var(bind_name, Var::new(val, false));
                 }
                 Ok(ExecResult::Normal)
@@ -214,7 +253,8 @@ impl Interpreter {
         // let → let: そのまま代入（コピー不要・再フリーズ不要）。
         // 式 → let: フリーズのみ（新規値なのでコピー不要）。
         let source_var = if let Expr::Ident(src) = expr {
-            self.get_var(src).map(|v| (v.is_mutable(), v.cell().is_some()))
+            self.get_var(src)
+                .map(|v| (v.is_mutable(), v.cell().is_some()))
         } else {
             None
         };
@@ -235,14 +275,25 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
-    fn exec_let_tuple(&mut self, targets: &[TupleTarget], value: &Expr) -> Result<ExecResult, String> {
+    fn exec_let_tuple(
+        &mut self,
+        targets: &[TupleTarget],
+        value: &Expr,
+    ) -> Result<ExecResult, String> {
         let val = self.eval(value)?;
         let tuple_rc = match val {
             Value::Tuple(rc) => rc,
-            _ => return Err("TypeError: cannot unpack non-tuple value in tuple assignment".to_string()),
+            _ => {
+                return Err(
+                    "TypeError: cannot unpack non-tuple value in tuple assignment".to_string(),
+                )
+            }
         };
         let has_wildcard = targets.iter().any(|t| matches!(t, TupleTarget::Wildcard));
-        let named = targets.iter().filter(|t| !matches!(t, TupleTarget::Wildcard)).count();
+        let named = targets
+            .iter()
+            .filter(|t| !matches!(t, TupleTarget::Wildcard))
+            .count();
         let tlen = tuple_rc.len();
         if has_wildcard {
             if named > tlen {
@@ -275,7 +326,12 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
-    fn exec_static_var(&mut self, name: &str, expr: &Expr, span: &Span) -> Result<ExecResult, String> {
+    fn exec_static_var(
+        &mut self,
+        name: &str,
+        expr: &Expr,
+        span: &Span,
+    ) -> Result<ExecResult, String> {
         let key = (span.file.to_string(), span.line, span.col);
         let cell = if let Some(existing) = self.static_cells.get(&key) {
             existing.clone()
@@ -289,7 +345,12 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
-    fn exec_compound_assign(&mut self, name: &str, op: &BinOp, value: &Expr) -> Result<ExecResult, String> {
+    fn exec_compound_assign(
+        &mut self,
+        name: &str,
+        op: &BinOp,
+        value: &Expr,
+    ) -> Result<ExecResult, String> {
         let rhs = self.eval(value)?;
         let lhs = match self.get_var(name) {
             Some(v) if !v.is_mutable() => {
@@ -368,17 +429,12 @@ impl Interpreter {
                         true
                     } else {
                         let pattern_val = self.eval(pattern_expr)?;
-                        let result = self.apply_binop(
-                            &BinOp::Eq,
-                            subject_val.clone(),
-                            pattern_val,
-                        )?;
+                        let result =
+                            self.apply_binop(&BinOp::Eq, subject_val.clone(), pattern_val)?;
                         matches!(result, Value::Bool(true))
                     }
                 }
-                MatchPattern::IsType(type_name) => {
-                    self.value_is_type(&subject_val, type_name)
-                }
+                MatchPattern::IsType(type_name) => self.value_is_type(&subject_val, type_name),
             };
             if matched {
                 return self.exec_scoped_block(&arm.body);
@@ -417,82 +473,85 @@ impl Interpreter {
     ) -> Result<ExecResult, String> {
         let iter_val = self.eval(iter)?;
         let generator = match iter_val {
-            Value::List(items) => {
-                Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                    values: items.borrow().clone(),
-                    index: 0,
-                })))
-            }
+            Value::List(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                values: items.borrow().clone(),
+                index: 0,
+            }))),
             Value::Str(s) => {
                 let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
-                Value::Generator(Rc::new(RefCell::new(GeneratorState { values: chars, index: 0 })))
-            }
-            Value::Set(items) => {
                 Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                    values: items.borrow().clone(),
+                    values: chars,
                     index: 0,
                 })))
             }
-            Value::Tuple(td) => {
-                Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                    values: td.all_values().to_vec(),
-                    index: 0,
-                })))
-            }
+            Value::Set(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                values: items.borrow().clone(),
+                index: 0,
+            }))),
+            Value::Tuple(td) => Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                values: td.all_values().to_vec(),
+                index: 0,
+            }))),
             Value::Generator(_) => iter_val,
             Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[])?,
             Value::PyObject(ref handle) => {
                 let items = super::py_interop::py_collect_iter(handle)?;
-                Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items, index: 0 })))
+                Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                    values: items,
+                    index: 0,
+                })))
             }
             _ => return Err("TypeError: object is not iterable".to_string()),
         };
         LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
-        let result = (|| {
-            loop {
-                match self.eval_method_call(generator.clone(), "next", &[]) {
-                    Ok(item) => {
-                        self.push_scope();
-                        if targets.len() == 1 {
-                            self.declare_var(targets[0].clone(), Var::new(item, true));
-                        } else {
-                            let elems = match &item {
-                                Value::Tuple(td) => {
-                                    if td.len() != targets.len() {
-                                        return Err(format!(
-                                            "ValueError: not enough values to unpack \
+        let result =
+            (|| {
+                loop {
+                    match self.eval_method_call(generator.clone(), "next", &[]) {
+                        Ok(item) => {
+                            self.push_scope();
+                            if targets.len() == 1 {
+                                self.declare_var(targets[0].clone(), Var::new(item, true));
+                            } else {
+                                let elems =
+                                    match &item {
+                                        Value::Tuple(td) => {
+                                            if td.len() != targets.len() {
+                                                return Err(format!(
+                                                    "ValueError: not enough values to unpack \
                                              (expected {}, got {})",
-                                            targets.len(),
-                                            td.len()
-                                        ));
-                                    }
-                                    td.all_values().to_vec()
+                                                    targets.len(),
+                                                    td.len()
+                                                ));
+                                            }
+                                            td.all_values().to_vec()
+                                        }
+                                        _ => return Err(
+                                            "TypeError: cannot unpack non-tuple value in for loop"
+                                                .to_string(),
+                                        ),
+                                    };
+                                for (name, val) in targets.iter().zip(elems) {
+                                    self.declare_var(name.clone(), Var::new(val, true));
                                 }
-                                _ => return Err(
-                                    "TypeError: cannot unpack non-tuple value in for loop"
-                                        .to_string(),
-                                ),
-                            };
-                            for (name, val) in targets.iter().zip(elems) {
-                                self.declare_var(name.clone(), Var::new(val, true));
+                            }
+                            let result = self.exec_block(body);
+                            self.pop_scope();
+                            match result {
+                                Ok(ExecResult::Break)
+                                | Ok(ExecResult::BlockReturn(Value::None)) => break,
+                                Ok(ExecResult::Continue) | Ok(ExecResult::Normal) => {}
+                                Ok(r) => return Ok(r),
+                                Err(ref e) if e.as_str() == BREAK_SENTINEL => break,
+                                Err(e) => return Err(e),
                             }
                         }
-                        let result = self.exec_block(body);
-                        self.pop_scope();
-                        match result {
-                            Ok(ExecResult::Break) | Ok(ExecResult::BlockReturn(Value::None)) => break,
-                            Ok(ExecResult::Continue) | Ok(ExecResult::Normal) => {}
-                            Ok(r) => return Ok(r),
-                            Err(ref e) if e.as_str() == BREAK_SENTINEL => break,
-                            Err(e) => return Err(e),
-                        }
+                        Err(ref e) if e.starts_with("EndOfIteration") => break,
+                        Err(e) => return Err(e),
                     }
-                    Err(ref e) if e.starts_with("EndOfIteration") => break,
-                    Err(e) => return Err(e),
                 }
-            }
-            Ok(ExecResult::Normal)
-        })();
+                Ok(ExecResult::Normal)
+            })();
         LOOP_DEPTH.with(|d| *d.borrow_mut() -= 1);
         result
     }
@@ -525,7 +584,9 @@ impl Interpreter {
                 params: params.to_vec(),
                 body: body.to_vec(),
             });
-            self.scopes.last_mut().unwrap()
+            self.scopes
+                .last_mut()
+                .unwrap()
                 .insert(name.to_string(), Var::new(Value::TemplateFn(tmpl), false));
             return Ok(ExecResult::Normal);
         }
@@ -544,7 +605,9 @@ impl Interpreter {
         });
 
         if decorators.is_empty() {
-            let existing = self.scopes.last()
+            let existing = self
+                .scopes
+                .last()
                 .and_then(|s| s.get(name))
                 .map(|v| v.get_value());
             let new_value = match existing {
@@ -555,7 +618,9 @@ impl Interpreter {
                 }
                 _ => Value::Function(fn_val),
             };
-            self.scopes.last_mut().unwrap()
+            self.scopes
+                .last_mut()
+                .unwrap()
                 .insert(name.to_string(), Var::new(new_value, false));
         } else {
             let mut value = Value::Function(fn_val);
@@ -563,7 +628,9 @@ impl Interpreter {
                 let dec = self.eval(dec_expr)?;
                 value = self.apply_value_call(dec, value, name)?;
             }
-            self.scopes.last_mut().unwrap()
+            self.scopes
+                .last_mut()
+                .unwrap()
                 .insert(name.to_string(), Var::new(value, false));
         }
         Ok(ExecResult::Normal)
@@ -583,8 +650,10 @@ impl Interpreter {
                 params: params.to_vec(),
                 body: body.to_vec(),
             });
-            self.scopes.last_mut().unwrap()
-                .insert(name.to_string(), Var::new(Value::TemplateGenFn(tmpl), false));
+            self.scopes.last_mut().unwrap().insert(
+                name.to_string(),
+                Var::new(Value::TemplateGenFn(tmpl), false),
+            );
         } else {
             let captured_env = if self.scopes.len() > 1 {
                 self.capture_env(body, params)
@@ -597,8 +666,10 @@ impl Interpreter {
                 body: body.to_vec(),
                 captured_env,
             });
-            self.scopes.last_mut().unwrap()
-                .insert(name.to_string(), Var::new(Value::GeneratorFn(gen_fn), false));
+            self.scopes.last_mut().unwrap().insert(
+                name.to_string(),
+                Var::new(Value::GeneratorFn(gen_fn), false),
+            );
         }
         Ok(ExecResult::Normal)
     }
@@ -610,26 +681,41 @@ impl Interpreter {
     fn exec_trait_def(&mut self, name: &str, body: &[Stmt]) -> Result<ExecResult, String> {
         let mut trait_access: HashMap<String, Accessibility> = HashMap::new();
         for stmt in body {
-            if let Stmt::Field { name: fname, access, .. } = stmt {
+            if let Stmt::Field {
+                name: fname,
+                access,
+                ..
+            } = stmt
+            {
                 if *access != Accessibility::Public {
                     trait_access.insert(fname.clone(), access.clone());
                 }
             }
-            if let Stmt::FnDef { name: mname, access, .. } = stmt {
+            if let Stmt::FnDef {
+                name: mname,
+                access,
+                ..
+            } = stmt
+            {
                 if *access != Accessibility::Public {
                     trait_access.insert(mname.clone(), access.clone());
                 }
             }
         }
         if !trait_access.is_empty() {
-            self.trait_field_access.insert(name.to_string(), trait_access);
+            self.trait_field_access
+                .insert(name.to_string(), trait_access);
         }
-        self.declare_var(name.to_string(), Var::new(Value::Trait(name.to_string()), false));
+        self.declare_var(
+            name.to_string(),
+            Var::new(Value::Trait(name.to_string()), false),
+        );
         Ok(ExecResult::Normal)
     }
 
     fn exec_new_type_def(&mut self, name: &str, original: &str) -> Result<ExecResult, String> {
-        let orig_val = self.get_val(original)
+        let orig_val = self
+            .get_val(original)
             .ok_or_else(|| format!("NameError: type '{original}' is not defined"))?;
         match orig_val {
             Value::Class(orig_cls) => {
@@ -760,7 +846,10 @@ impl Interpreter {
             static_vars: HashMap::new(),
             new_type_base: None,
         });
-        self.declare_var(item_type_name.clone(), Var::new(Value::Class(item_cls.clone()), false));
+        self.declare_var(
+            item_type_name.clone(),
+            Var::new(Value::Class(item_cls.clone()), false),
+        );
 
         // 各バリアントの値を計算し、enum クラスの const クラス変数として登録する
         let mut class_vars: HashMap<String, Value> = HashMap::new();
@@ -769,11 +858,13 @@ impl Interpreter {
             let int_val = if let Some(expr) = value_expr {
                 match self.eval(expr)? {
                     Value::Int(n) => n,
-                    other => return Err(format!(
-                        "TypeError: enum variant '{}' value must be int, got '{}'",
-                        variant_name,
-                        self.type_name(&other)
-                    )),
+                    other => {
+                        return Err(format!(
+                            "TypeError: enum variant '{}' value must be int, got '{}'",
+                            variant_name,
+                            self.type_name(&other)
+                        ))
+                    }
                 }
             } else {
                 next_value
@@ -818,7 +909,10 @@ impl Interpreter {
                 bases: bases.to_vec(),
                 body: body.to_vec(),
             });
-            self.declare_var(name.to_string(), Var::new(Value::TemplateClass(tmpl), false));
+            self.declare_var(
+                name.to_string(),
+                Var::new(Value::TemplateClass(tmpl), false),
+            );
             return Ok(ExecResult::Normal);
         }
 
@@ -898,16 +992,25 @@ impl Interpreter {
                         }
                     }
                 }
-                Stmt::GenDef { name: mname, params, body: mbody, access: macc, .. } => {
+                Stmt::GenDef {
+                    name: mname,
+                    params,
+                    body: mbody,
+                    access: macc,
+                    ..
+                } => {
                     if *macc != Accessibility::Public {
                         method_access.insert(mname.clone(), macc.clone());
                     }
-                    gen_methods.insert(mname.clone(), Rc::new(GeneratorFnValue {
-                        name: mname.clone(),
-                        params: params.clone(),
-                        body: mbody.clone(),
-                        captured_env: HashMap::new(),
-                    }));
+                    gen_methods.insert(
+                        mname.clone(),
+                        Rc::new(GeneratorFnValue {
+                            name: mname.clone(),
+                            params: params.clone(),
+                            body: mbody.clone(),
+                            captured_env: HashMap::new(),
+                        }),
+                    );
                 }
                 Stmt::Field {
                     name: fname,
@@ -939,7 +1042,13 @@ impl Interpreter {
                     };
                     static_vars.insert(fname.clone(), Rc::new(RefCell::new(val)));
                 }
-                Stmt::Field { name: fname, kind, default, access: facc, .. } => {
+                Stmt::Field {
+                    name: fname,
+                    kind,
+                    default,
+                    access: facc,
+                    ..
+                } => {
                     if *facc != Accessibility::Public {
                         field_access.insert(fname.clone(), facc.clone());
                     }
@@ -987,7 +1096,8 @@ impl Interpreter {
     // ---------------------------------------------------------------------------
 
     fn exec_freeze(&mut self, name: &str, span: &Span) -> Result<ExecResult, String> {
-        let var = self.get_var(name)
+        let var = self
+            .get_var(name)
             .ok_or_else(|| format!("{span}: NameError: '{name}' is not defined"))?;
         if !var.is_mutable() {
             return Err(format!(
@@ -1034,17 +1144,41 @@ impl Interpreter {
         if let Value::Instance(ref inst_rc) = exc_val {
             let context = self.get_context_lines(&span.file, span.line, 5);
             let mut inst = inst_rc.borrow_mut();
-            inst.fields.insert("file".to_string(),         (Value::Str(span.file.to_string()), true));
-            inst.fields.insert("line".to_string(),         (Value::Int(span.line as i64),      true));
-            inst.fields.insert("col".to_string(),          (Value::Int(span.col as i64),       true));
-            inst.fields.insert("code_context".to_string(), (Value::Str(context.clone()),       true));
-            inst.fields.insert("Error::file".to_string(),         (Value::Str(span.file.to_string()), true));
-            inst.fields.insert("Error::line".to_string(),         (Value::Int(span.line as i64),      true));
-            inst.fields.insert("Error::col".to_string(),          (Value::Int(span.col as i64),       true));
-            inst.fields.insert("Error::code_context".to_string(), (Value::Str(context),               true));
+            inst.fields.insert(
+                "file".to_string(),
+                (Value::Str(span.file.to_string()), true),
+            );
+            inst.fields
+                .insert("line".to_string(), (Value::Int(span.line as i64), true));
+            inst.fields
+                .insert("col".to_string(), (Value::Int(span.col as i64), true));
+            inst.fields.insert(
+                "code_context".to_string(),
+                (Value::Str(context.clone()), true),
+            );
+            inst.fields.insert(
+                "Error::file".to_string(),
+                (Value::Str(span.file.to_string()), true),
+            );
+            inst.fields.insert(
+                "Error::line".to_string(),
+                (Value::Int(span.line as i64), true),
+            );
+            inst.fields.insert(
+                "Error::col".to_string(),
+                (Value::Int(span.col as i64), true),
+            );
+            inst.fields.insert(
+                "Error::code_context".to_string(),
+                (Value::Str(context), true),
+            );
         }
 
-        let fn_name = self.call_stack.last().cloned().unwrap_or_else(|| "<module>".to_string());
+        let fn_name = self
+            .call_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "<module>".to_string());
         let frame = StackFrame {
             file: span.file.to_string(),
             line: span.line,
@@ -1052,7 +1186,10 @@ impl Interpreter {
             fn_name,
             context: self.get_context_lines(&span.file, span.line, 5),
         };
-        Ok(ExecResult::Raise(RaisedError { exception: exc_val, frames: vec![frame] }))
+        Ok(ExecResult::Raise(RaisedError {
+            exception: exc_val,
+            frames: vec![frame],
+        }))
     }
 
     fn exec_try(
@@ -1070,7 +1207,9 @@ impl Interpreter {
             Err(e) => {
                 let msg = e.clone();
                 let r = self.make_internal_raised_error(&msg);
-                if r.is_some() { converted_internal = true; }
+                if r.is_some() {
+                    converted_internal = true;
+                }
                 r
             }
             _ => None,
@@ -1133,16 +1272,19 @@ impl Interpreter {
     // ---------------------------------------------------------------------------
 
     fn exec_async_assign(&mut self, target: &str, stmts: &[Stmt]) -> Result<ExecResult, String> {
-        let mgr_val = self.get_var(target)
+        let mgr_val = self
+            .get_var(target)
             .map(|v| v.get_value())
             .ok_or_else(|| format!("NameError: '{}' is not defined", target))?;
 
         let mgr_rc = match mgr_val {
             Value::AsyncManager(rc) => rc,
-            other => return Err(format!(
-                "TypeError: '<-' operator requires an AsyncManager, got '{}'",
-                self.type_name(&other)
-            )),
+            other => {
+                return Err(format!(
+                    "TypeError: '<-' operator requires an AsyncManager, got '{}'",
+                    self.type_name(&other)
+                ))
+            }
         };
 
         let env = super::async_mgr::capture_env(self);
@@ -1175,35 +1317,37 @@ impl Interpreter {
             None => {}
         }
 
-        self.module_cache.insert(cache_key.clone(), ModuleState::Loading);
+        self.module_cache
+            .insert(cache_key.clone(), ModuleState::Loading);
 
         if lang == "py-int" {
             let search_dirs = self.python_search_dirs.clone();
-            let ns = super::py_interop::load_py_int_module(module, &search_dirs)
-                .map_err(|e| e)?;
-            self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
+            let ns = super::py_interop::load_py_int_module(module, &search_dirs).map_err(|e| e)?;
+            self.module_cache
+                .insert(cache_key, ModuleState::Loaded(ns.clone()));
             return Ok(ns);
         }
 
         // tl-auto / tlc: .tlc v1 に埋め込まれたネイティブ DLL がキャッシュにあれば優先する
         if lang == "tl-auto" || lang == "tlc" {
             let module_name = module.join(".");
-            if let Some((_exports, dll_bytes)) = crate::partial_compiler::take_native_bytes(&module_name) {
+            if let Some((_exports, dll_bytes)) =
+                crate::partial_compiler::take_native_bytes(&module_name)
+            {
                 let ext = crate::partial_compiler::native_lib_ext();
                 let stem = module.last().cloned().unwrap_or_default();
                 let tmp_path = std::env::temp_dir().join(format!("{stem}_tl.{ext}"));
                 match std::fs::write(&tmp_path, &dll_bytes) {
-                    Ok(()) => {
-                        match self.try_load_native_module(module, body, &tmp_path) {
-                            Ok(ns) => {
-                                self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
-                                return Ok(ns);
-                            }
-                            Err(e) => {
-                                eprintln!("NativeLoad: failed: {e}");
-                            }
+                    Ok(()) => match self.try_load_native_module(module, body, &tmp_path) {
+                        Ok(ns) => {
+                            self.module_cache
+                                .insert(cache_key, ModuleState::Loaded(ns.clone()));
+                            return Ok(ns);
                         }
-                    }
+                        Err(e) => {
+                            eprintln!("NativeLoad: failed: {e}");
+                        }
+                    },
                     Err(e) => {
                         eprintln!("NativeLoad: cannot write temp DLL: {e}");
                     }
@@ -1212,7 +1356,9 @@ impl Interpreter {
         }
 
         let prev_in_python = self.in_python_module;
-        if lang == "py" { self.in_python_module = true; }
+        if lang == "py" {
+            self.in_python_module = true;
+        }
         self.push_scope();
         for stmt in body {
             match self.exec(stmt)? {
@@ -1240,12 +1386,17 @@ impl Interpreter {
         // Python モジュールのメソッドが同モジュール内の他の関数を呼び出せるように
         // モジュールメンバをグローバルスコープに登録する（既存エントリは上書きしない）。
         for (name, value) in &members {
-            self.scopes[0].entry(name.clone())
+            self.scopes[0]
+                .entry(name.clone())
                 .or_insert_with(|| Var::new(value.clone(), false));
         }
 
-        let ns = Rc::new(NamespaceData { name: module.join("."), members });
-        self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
+        let ns = Rc::new(NamespaceData {
+            name: module.join("."),
+            members,
+        });
+        self.module_cache
+            .insert(cache_key, ModuleState::Loaded(ns.clone()));
         Ok(ns)
     }
 
@@ -1288,9 +1439,8 @@ impl Interpreter {
             if let Stmt::FnDef { name, params, .. } = stmt {
                 let symbol_name = format!("{name}_tl\0");
                 let has_symbol = unsafe {
-                    lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(
-                        symbol_name.as_bytes()
-                    ).is_ok()
+                    lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
+                        .is_ok()
                 };
                 if has_symbol {
                     let fn_ref = Arc::new(NativeFnRef {
@@ -1360,7 +1510,12 @@ impl Interpreter {
         let raw_str = String::from_utf8_lossy(&raw);
         // Load config before parsing so custom_type_map is available for all parse_header calls.
         let config = super::cpp_bridge::load_cpp_config(header_dir);
-        let mut sigs = super::cpp_bridge::parse_header(&raw_str, &config.custom_type_map);
+        let typedefs = super::cpp_bridge::load_system_typedefs(
+            &config.system_headers,
+            &config.precompile_macros,
+        );
+        let (mut sigs, mut struct_defs) =
+            super::cpp_bridge::parse_header_full(&raw_str, &config.custom_type_map, &typedefs);
 
         match lang {
             "cpp-lib" => {
@@ -1371,14 +1526,21 @@ impl Interpreter {
                 // Scan for local #include directives and parse those headers too so
                 // their function signatures are available in the tl namespace.
                 if !config.precompile_macros.is_empty() {
-                    let included = super::cpp_bridge::collect_included_headers(&raw_str, header_dir);
+                    let included =
+                        super::cpp_bridge::collect_included_headers(&raw_str, header_dir);
                     let mut known_names: std::collections::HashSet<String> =
                         sigs.iter().map(|s| s.name.clone()).collect();
+                    let mut known_structs: std::collections::HashSet<String> =
+                        struct_defs.iter().map(|d| d.name.clone()).collect();
                     for inc_path in &included {
                         if let Ok(inc_raw) = std::fs::read(inc_path) {
                             let inc_str = String::from_utf8_lossy(&inc_raw);
-                            let inc_sigs = super::cpp_bridge::parse_header(&inc_str, &config.custom_type_map);
-                            let new_count = inc_sigs.iter().filter(|s| !known_names.contains(&s.name)).count();
+                            let (inc_sigs, inc_structs) =
+                                super::cpp_bridge::parse_header_full(&inc_str, &config.custom_type_map, &typedefs);
+                            let new_count = inc_sigs
+                                .iter()
+                                .filter(|s| !known_names.contains(&s.name))
+                                .count();
                             if new_count > 0 {
                                 eprintln!(
                                     "CppImport: {} additional function(s) from '{}'",
@@ -1391,6 +1553,11 @@ impl Interpreter {
                                     sigs.push(s);
                                 }
                             }
+                            for d in inc_structs {
+                                if known_structs.insert(d.name.clone()) {
+                                    struct_defs.push(d);
+                                }
+                            }
                         }
                     }
                 }
@@ -1400,22 +1567,26 @@ impl Interpreter {
                 }
                 eprintln!("CppImport[{lang}]: {} function(s) total", sigs.len());
 
-                let (dll_path, effective_sigs) = super::cpp_bridge::compile_tl_dll(header_path, &sigs, &config)?;
-                self.load_cpp_wrapper_dll(&dll_path, &effective_sigs, header_path_str)
+                let (dll_path, effective_sigs) =
+                    super::cpp_bridge::compile_tl_dll(header_path, &sigs, &struct_defs, &config)?;
+                self.load_cpp_wrapper_dll(&dll_path, &effective_sigs, &struct_defs, header_path_str)
             }
             "cpp-dll" => {
                 // Find the DLL by stem next to the header and wrap it dynamically.
-                let stem = header_path.file_stem().and_then(|s| s.to_str()).unwrap_or("lib");
+                let stem = header_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("lib");
                 let dll_path = header_dir.join(format!("{stem}.dll"));
                 let dll_str = dll_path.to_string_lossy().into_owned();
-                let rust_src = super::cpp_bridge::gen_dll_wrapper(&dll_str, &sigs);
+                let rust_src = super::cpp_bridge::gen_dll_wrapper(&dll_str, &sigs, &struct_defs);
                 let dll_bytes = super::cpp_bridge::compile_wrapper(&rust_src, &[])?;
                 let ext = crate::partial_compiler::native_lib_ext();
                 let tmp_path = std::env::temp_dir()
                     .join(format!("_tl_cpp_{:x}.{ext}", simple_hash(header_path_str)));
                 std::fs::write(&tmp_path, &dll_bytes)
                     .map_err(|e| format!("CppImport: cannot write wrapper DLL: {e}"))?;
-                self.load_cpp_wrapper_dll(&tmp_path, &sigs, header_path_str)
+                self.load_cpp_wrapper_dll(&tmp_path, &sigs, &struct_defs, header_path_str)
             }
             _ => unreachable!(),
         }
@@ -1441,6 +1612,7 @@ impl Interpreter {
         &mut self,
         lib_path: &std::path::Path,
         sigs: &[super::cpp_bridge::CFnSig],
+        struct_defs: &[super::cpp_bridge::CStructDef],
         module_name: &str,
     ) -> Result<Rc<NamespaceData>, String> {
         let lib = unsafe { libloading::Library::new(lib_path) }
@@ -1452,7 +1624,7 @@ impl Interpreter {
         let cb_ptr = super::native_api::get_callbacks();
         let bridge_init = unsafe {
             lib.get::<unsafe extern "C" fn(*const super::native_api::TlCallbacks)>(
-                b"tl_init_bridge\0"
+                b"tl_init_bridge\0",
             )
         };
         if let Ok(f) = bridge_init {
@@ -1464,13 +1636,85 @@ impl Interpreter {
         }
 
         let mut members: HashMap<String, Value> = HashMap::new();
+
+        // Build tl class values for each C struct so that tl code can construct
+        // and access struct instances, and native code can call get_global/call_fn.
+        for sdef in struct_defs {
+            use crate::interpreter::{ClassValue, FnValue};
+            use crate::ast::Param;
+            use crate::token::Span;
+
+            let mut field_mutability: HashMap<String, bool> = HashMap::new();
+            let mut init_params: Vec<Param> = vec![Param {
+                name: "self".to_string(),
+                mutable: true,
+                type_ann: None,
+                default: None,
+            }];
+            for (fname, _) in &sdef.fields {
+                field_mutability.insert(fname.clone(), true);
+                init_params.push(Param {
+                    name: fname.clone(),
+                    mutable: false,
+                    type_ann: None,
+                    default: None,
+                });
+            }
+
+            // __init__ body: `self.field = field` for each field
+            let init_body: Vec<crate::ast::Stmt> = sdef
+                .fields
+                .iter()
+                .map(|(fname, _)| crate::ast::Stmt::AttrAssign {
+                    target: crate::ast::Expr::Attr {
+                        object: Box::new(crate::ast::Expr::Ident("self".to_string())),
+                        attr: fname.clone(),
+                        span: Span::unknown(),
+                    },
+                    value: crate::ast::Expr::Ident(fname.clone()),
+                })
+                .collect();
+
+            let init_fn = Rc::new(FnValue {
+                name: "__init__".to_string(),
+                params: init_params,
+                body: init_body,
+                is_python: false,
+                captured_env: HashMap::new(),
+            });
+
+            let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
+            methods.insert("__init__".to_string(), vec![init_fn]);
+
+            let cls = Rc::new(ClassValue {
+                name: sdef.name.clone(),
+                bases: vec![],
+                methods,
+                gen_methods: HashMap::new(),
+                class_vars: HashMap::new(),
+                field_defaults: vec![],
+                field_mutability,
+                field_access: HashMap::new(),
+                method_access: HashMap::new(),
+                static_method_names: std::collections::HashSet::new(),
+                class_method_names: std::collections::HashSet::new(),
+                static_vars: HashMap::new(),
+                new_type_base: None,
+            });
+
+            members.insert(sdef.name.clone(), Value::Class(cls));
+        }
+
         for sig in sigs {
             let symbol = format!("{}_tl\0", sig.name);
             let has_sym = unsafe {
-                lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol.as_bytes()).is_ok()
+                lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol.as_bytes())
+                    .is_ok()
             };
             if has_sym {
-                let ptr_params: Vec<crate::interpreter::PtrParam> = sig.params.iter()
+                let ptr_params: Vec<crate::interpreter::PtrParam> = sig
+                    .params
+                    .iter()
                     .map(|(_, ct)| Self::sig_to_ptr_param_fn(ct))
                     .collect();
                 let fn_ref = Arc::new(NativeFnRef {
@@ -1485,15 +1729,21 @@ impl Interpreter {
             }
         }
 
-        // Register into global scope so module-level calls resolve
+        // Register into global scope so module-level calls and get_global() from
+        // native code resolve. Struct classes are registered so native wrappers can
+        // call get_global("VECTOR") then call_fn to construct instances.
         for (name, value) in &members {
-            self.scopes[0].entry(name.clone())
+            self.scopes[0]
+                .entry(name.clone())
                 .or_insert_with(|| Var::new(value.clone(), false));
         }
 
         self.native_libs.insert(lib_path_buf, NativeLibWrapper(lib));
 
-        Ok(Rc::new(NamespaceData { name: module_name.to_string(), members }))
+        Ok(Rc::new(NamespaceData {
+            name: module_name.to_string(),
+            members,
+        }))
     }
 
     // ---------------------------------------------------------------------------
@@ -1545,9 +1795,9 @@ impl Interpreter {
 
         for name in &free_vars {
             for scope_idx in (1..n_scopes).rev() {
-                let found = self.scopes[scope_idx].get(name.as_str()).map(|var| {
-                    (var.is_mutable(), var.cell(), var.get_value())
-                });
+                let found = self.scopes[scope_idx]
+                    .get(name.as_str())
+                    .map(|var| (var.is_mutable(), var.cell(), var.get_value()));
 
                 if let Some((is_mutable, existing_cell, current_value)) = found {
                     if is_mutable {
@@ -1592,11 +1842,14 @@ impl Interpreter {
             Value::Class(cls) => self.instantiate_evaled(cls, evaled),
             Value::Instance(ref inst_rc) => {
                 let class = inst_rc.borrow().class.clone();
-                let overloads = self.lookup_method_in_class(&class, "__call__")
-                    .ok_or_else(|| format!(
-                        "TypeError: '{}' object is not callable (no __call__ method)",
-                        class.name
-                    ))?;
+                let overloads =
+                    self.lookup_method_in_class(&class, "__call__")
+                        .ok_or_else(|| {
+                            format!(
+                                "TypeError: '{}' object is not callable (no __call__ method)",
+                                class.name
+                            )
+                        })?;
                 if overloads.len() == 1 {
                     self.exec_fn_evaled(overloads[0].clone(), &evaled, Some(callee), "__call__")
                 } else {
@@ -1633,7 +1886,9 @@ fn simple_hash(s: &str) -> u64 {
 fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
     for stmt in stmts {
         match stmt {
-            Stmt::Let(name, _) | Stmt::Const(name, _) | Stmt::Mut(name, _)
+            Stmt::Let(name, _)
+            | Stmt::Const(name, _)
+            | Stmt::Mut(name, _)
             | Stmt::Static(name, _, _) => {
                 out.insert(name.clone());
             }
@@ -1647,15 +1902,22 @@ fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
                     }
                 }
             }
-            Stmt::FnDef { name, .. } | Stmt::GenDef { name, .. }
-            | Stmt::ClassDef { name, .. } | Stmt::TraitDef { name, .. } => {
+            Stmt::FnDef { name, .. }
+            | Stmt::GenDef { name, .. }
+            | Stmt::ClassDef { name, .. }
+            | Stmt::TraitDef { name, .. } => {
                 out.insert(name.clone());
             }
             Stmt::For { targets, body, .. } => {
-                for t in targets { out.insert(t.clone()); }
+                for t in targets {
+                    out.insert(t.clone());
+                }
                 collect_declared_names(body, out);
             }
-            Stmt::If { branches, else_body } => {
+            Stmt::If {
+                branches,
+                else_body,
+            } => {
                 for (_, body) in branches {
                     collect_declared_names(body, out);
                 }
@@ -1666,7 +1928,11 @@ fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
             Stmt::While { body, .. } | Stmt::Block(body) => {
                 collect_declared_names(body, out);
             }
-            Stmt::Try { body, handlers, finally_body } => {
+            Stmt::Try {
+                body,
+                handlers,
+                finally_body,
+            } => {
                 collect_declared_names(body, out);
                 for h in handlers {
                     if let Some(alias) = &h.name {
@@ -1695,7 +1961,9 @@ fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
         Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Mut(_, e) | Stmt::Static(_, e, _) => {
             collect_refs_expr(e, out);
         }
-        Stmt::LetTuple { value, .. } => { collect_refs_expr(value, out); }
+        Stmt::LetTuple { value, .. } => {
+            collect_refs_expr(value, out);
+        }
         Stmt::Assign { name, value, .. } => {
             out.insert(name.clone());
             collect_refs_expr(value, out);
@@ -1712,7 +1980,10 @@ fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
             collect_refs_expr(e, out);
         }
         Stmt::Raise { exc: Some(e), .. } => collect_refs_expr(e, out),
-        Stmt::If { branches, else_body } => {
+        Stmt::If {
+            branches,
+            else_body,
+        } => {
             for (cond, body) in branches {
                 collect_refs_expr(cond, out);
                 collect_referenced_names(body, out);
@@ -1736,7 +2007,11 @@ fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
         Stmt::ClassDef { body, .. } | Stmt::TraitDef { body, .. } => {
             collect_referenced_names(body, out);
         }
-        Stmt::Try { body, handlers, finally_body } => {
+        Stmt::Try {
+            body,
+            handlers,
+            finally_body,
+        } => {
             collect_referenced_names(body, out);
             for h in handlers {
                 collect_referenced_names(&h.body, out);
@@ -1745,14 +2020,18 @@ fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
                 collect_referenced_names(body, out);
             }
         }
-        Stmt::Freeze(name, _) => { out.insert(name.clone()); }
+        Stmt::Freeze(name, _) => {
+            out.insert(name.clone());
+        }
         _ => {}
     }
 }
 
 fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
     match expr {
-        Expr::Ident(name) => { out.insert(name.clone()); }
+        Expr::Ident(name) => {
+            out.insert(name.clone());
+        }
         Expr::BinOp { left, right, .. } => {
             collect_refs_expr(left, out);
             collect_refs_expr(right, out);
@@ -1760,13 +2039,17 @@ fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
         Expr::UnaryOp { operand, .. } => collect_refs_expr(operand, out),
         Expr::Call { func, args, .. } => {
             collect_refs_expr(func, out);
-            for arg in args { collect_refs_expr(arg.expr(), out); }
+            for arg in args {
+                collect_refs_expr(arg.expr(), out);
+            }
         }
         Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => {
             collect_refs_expr(object, out);
         }
         Expr::List(items) | Expr::Tuple(items) => {
-            for item in items { collect_refs_expr(item, out); }
+            for item in items {
+                collect_refs_expr(item, out);
+            }
         }
         Expr::Dict(pairs) => {
             for (k, v) in pairs {
@@ -1779,9 +2062,15 @@ fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
             collect_refs_expr(index, out);
         }
         Expr::Slice { begin, end, step } => {
-            if let Some(e) = begin { collect_refs_expr(e, out); }
-            if let Some(e) = end   { collect_refs_expr(e, out); }
-            if let Some(e) = step  { collect_refs_expr(e, out); }
+            if let Some(e) = begin {
+                collect_refs_expr(e, out);
+            }
+            if let Some(e) = end {
+                collect_refs_expr(e, out);
+            }
+            if let Some(e) = step {
+                collect_refs_expr(e, out);
+            }
         }
         Expr::TemplateInstantiate { base, .. } => collect_refs_expr(base, out),
         Expr::IsType { expr, .. } => collect_refs_expr(expr, out),

@@ -32,15 +32,14 @@
 /// [4 bytes]  dll_len  : u32 LE
 /// [dll_len]  dll_bytes: raw shared-library bytes
 /// ```
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-use crate::ast::Stmt;
 use super::codegen;
 use super::stub_gen;
+use crate::ast::Stmt;
 
 const MAGIC: &[u8; 4] = b"TLC\x00";
 const VERSION_V0: u32 = 0;
@@ -161,15 +160,14 @@ fn compile_native(stmts: &[Stmt]) -> Result<(Vec<u8>, Vec<codegen::FnExport>), S
     let ext = native_lib_ext();
     let dll_path = tmp_dir.join(format!("tl_native_module.{ext}"));
 
-    std::fs::write(&rs_path, &rust_src)
-        .map_err(|e| format!("cannot write temp source: {e}"))?;
+    std::fs::write(&rs_path, &rust_src).map_err(|e| format!("cannot write temp source: {e}"))?;
 
     let compile_result = invoke_rustc(&rs_path, &dll_path);
     let _ = std::fs::remove_file(&rs_path);
     compile_result?;
 
-    let dll_bytes = std::fs::read(&dll_path)
-        .map_err(|e| format!("cannot read compiled DLL: {e}"))?;
+    let dll_bytes =
+        std::fs::read(&dll_path).map_err(|e| format!("cannot read compiled DLL: {e}"))?;
     let _ = std::fs::remove_file(&dll_path);
 
     Ok((dll_bytes, exports))
@@ -179,10 +177,14 @@ fn compile_native(stmts: &[Stmt]) -> Result<(Vec<u8>, Vec<codegen::FnExport>), S
 fn invoke_rustc(rs_path: &Path, dll_path: &Path) -> Result<(), String> {
     let output = Command::new("rustc")
         .args([
-            "--edition", "2021",
-            "--crate-type", "cdylib",
-            "-C", "opt-level=3",
-            "-o", dll_path.to_str().unwrap_or("output"),
+            "--edition",
+            "2021",
+            "--crate-type",
+            "cdylib",
+            "-C",
+            "opt-level=3",
+            "-o",
+            dll_path.to_str().unwrap_or("output"),
             rs_path.to_str().unwrap_or(""),
         ])
         .output();
@@ -290,7 +292,10 @@ fn parse_tlc(
         let fn_name = String::from_utf8(fn_name_bytes.to_vec())
             .map_err(|_| "function name is not valid UTF-8".to_string())?;
         let n_params = read_u32(data, &mut pos)? as usize;
-        exports.push(codegen::FnExport { name: fn_name, n_params });
+        exports.push(codegen::FnExport {
+            name: fn_name,
+            n_params,
+        });
     }
 
     let dll_len = read_u32(data, &mut pos)? as usize;

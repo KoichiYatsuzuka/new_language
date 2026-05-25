@@ -14,7 +14,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::{Interpreter, Value, DictData, TupleData};
+use super::{DictData, Interpreter, TupleData, Value};
 
 // ── Handle constants ─────────────────────────────────────────────────────────
 
@@ -120,7 +120,11 @@ thread_local! {
 /// Returns `true` for the outermost call (depth was 0); `false` for re-entrant calls.
 /// At the outermost level, saves the arena / iter-table savepoints and sets CURRENT_INTERP.
 pub fn enter_native_call(interp: *mut Interpreter) -> bool {
-    let prev = CALL_DEPTH.with(|c| { let v = c.get(); c.set(v + 1); v });
+    let prev = CALL_DEPTH.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    });
     if prev == 0 {
         CURRENT_INTERP.with(|c| c.set(interp));
         VALUE_ARENA.with(|a| ARENA_SAVE.with(|s| s.set(a.borrow().len())));
@@ -136,7 +140,12 @@ pub fn enter_native_call(interp: *mut Interpreter) -> bool {
 /// table back to the saved positions and clears CURRENT_INTERP.
 pub fn exit_native_call(result_h: i64, is_outermost: bool) -> Value {
     let result = clone_value_at(result_h);
-    CALL_DEPTH.with(|c| { let v = c.get(); if v > 0 { c.set(v - 1); } });
+    CALL_DEPTH.with(|c| {
+        let v = c.get();
+        if v > 0 {
+            c.set(v - 1);
+        }
+    });
     if is_outermost {
         CURRENT_INTERP.with(|c| c.set(std::ptr::null_mut()));
         VALUE_ARENA.with(|a| a.borrow_mut().truncate(ARENA_SAVE.with(|s| s.get())));
@@ -149,7 +158,12 @@ pub fn exit_native_call(result_h: i64, is_outermost: bool) -> Value {
 /// Exit a native function call (error path).
 /// Does the same cleanup as `exit_native_call` but returns nothing.
 pub fn abort_native_call(is_outermost: bool) {
-    CALL_DEPTH.with(|c| { let v = c.get(); if v > 0 { c.set(v - 1); } });
+    CALL_DEPTH.with(|c| {
+        let v = c.get();
+        if v > 0 {
+            c.set(v - 1);
+        }
+    });
     if is_outermost {
         CURRENT_INTERP.with(|c| c.set(std::ptr::null_mut()));
         VALUE_ARENA.with(|a| a.borrow_mut().truncate(ARENA_SAVE.with(|s| s.get())));
@@ -195,9 +209,9 @@ pub fn clone_value_at(h: i64) -> Value {
         TL_NONE => Value::None,
         TL_TRUE => Value::Bool(true),
         TL_FALSE => Value::Bool(false),
-        n if n >= 3 => VALUE_ARENA.with(|a| {
-            a.borrow().get(n as usize).cloned().unwrap_or(Value::None)
-        }),
+        n if n >= 3 => {
+            VALUE_ARENA.with(|a| a.borrow().get(n as usize).cloned().unwrap_or(Value::None))
+        }
         _ => Value::None, // TL_STOP_ITER or invalid
     }
 }
@@ -247,8 +261,8 @@ fn i32_to_binop(op: i32) -> Option<crate::ast::BinOp> {
         OP_BIT_XOR => Some(BinOp::BitXor),
         OP_LSHIFT => Some(BinOp::LShift),
         OP_RSHIFT => Some(BinOp::RShift),
-        OP_IN     => Some(BinOp::In),
-        OP_NOTIN  => Some(BinOp::NotIn),
+        OP_IN => Some(BinOp::In),
+        OP_NOTIN => Some(BinOp::NotIn),
         _ => None,
     }
 }
@@ -259,37 +273,37 @@ fn i32_to_binop(op: i32) -> Option<crate::ast::BinOp> {
 /// Layout must exactly match the `TlCallbacks` struct emitted by codegen.rs.
 #[repr(C)]
 pub struct TlCallbacks {
-    pub make_int:   extern "C" fn(i64) -> i64,
+    pub make_int: extern "C" fn(i64) -> i64,
     pub make_float: extern "C" fn(f64) -> i64,
-    pub make_bool:  extern "C" fn(i32) -> i64,
-    pub make_str:   extern "C" fn(*const u8, i32) -> i64,
-    pub make_list:  extern "C" fn(*const i64, i32) -> i64,
+    pub make_bool: extern "C" fn(i32) -> i64,
+    pub make_str: extern "C" fn(*const u8, i32) -> i64,
+    pub make_list: extern "C" fn(*const i64, i32) -> i64,
     pub make_tuple: extern "C" fn(*const i64, i32) -> i64,
-    pub make_dict:  extern "C" fn(*const i64, *const i64, i32) -> i64,
-    pub make_none:  extern "C" fn() -> i64,
-    pub is_truthy:  extern "C" fn(i64) -> i32,
-    pub binop:      extern "C" fn(i32, i64, i64) -> i64,
-    pub unop:       extern "C" fn(i32, i64) -> i64,
-    pub call_fn:    extern "C" fn(i64, *const i64, i32) -> i64,
-    pub get_attr:   extern "C" fn(i64, *const u8, i32) -> i64,
-    pub set_attr:   extern "C" fn(i64, *const u8, i32, i64),
-    pub subscript:  extern "C" fn(i64, i64) -> i64,
+    pub make_dict: extern "C" fn(*const i64, *const i64, i32) -> i64,
+    pub make_none: extern "C" fn() -> i64,
+    pub is_truthy: extern "C" fn(i64) -> i32,
+    pub binop: extern "C" fn(i32, i64, i64) -> i64,
+    pub unop: extern "C" fn(i32, i64) -> i64,
+    pub call_fn: extern "C" fn(i64, *const i64, i32) -> i64,
+    pub get_attr: extern "C" fn(i64, *const u8, i32) -> i64,
+    pub set_attr: extern "C" fn(i64, *const u8, i32, i64),
+    pub subscript: extern "C" fn(i64, i64) -> i64,
     pub get_global: extern "C" fn(*const u8, i32) -> i64,
-    pub iter_from:    extern "C" fn(i64) -> i64,
-    pub iter_next:    extern "C" fn(i64) -> i64,
-    pub is_type:      extern "C" fn(i64, *const u8, i32) -> i64,
-    pub arena_save:    extern "C" fn() -> u64,
+    pub iter_from: extern "C" fn(i64) -> i64,
+    pub iter_next: extern "C" fn(i64) -> i64,
+    pub is_type: extern "C" fn(i64, *const u8, i32) -> i64,
+    pub arena_save: extern "C" fn() -> u64,
     pub arena_compact: extern "C" fn(i64, u64) -> i64,
-    pub compact_many:  extern "C" fn(*const i64, i32, u64, *mut i64),
-    pub to_int:        extern "C" fn(i64) -> i64,
-    pub to_float:      extern "C" fn(i64) -> f64,
-    pub deep_copy:     extern "C" fn(i64) -> i64,
+    pub compact_many: extern "C" fn(*const i64, i32, u64, *mut i64),
+    pub to_int: extern "C" fn(i64) -> i64,
+    pub to_float: extern "C" fn(i64) -> f64,
+    pub deep_copy: extern "C" fn(i64) -> i64,
     /// Convert a tl string handle to a null-terminated C string pointer.
     /// The pointer is valid until the end of the outermost native call.
-    pub to_cstr:       extern "C" fn(i64) -> *const u8,
+    pub to_cstr: extern "C" fn(i64) -> *const u8,
     /// Overwrite arena[target_h] with a clone of the value at new_val_h.
     /// Used by cpp-bridge wrappers for T* write-back parameters.
-    pub write_handle:  extern "C" fn(i64, i64),
+    pub write_handle: extern "C" fn(i64, i64),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
@@ -308,13 +322,16 @@ extern "C" fn tl_make_float(f: f64) -> i64 {
 }
 
 extern "C" fn tl_make_bool(b: i32) -> i64 {
-    if b != 0 { TL_TRUE } else { TL_FALSE }
+    if b != 0 {
+        TL_TRUE
+    } else {
+        TL_FALSE
+    }
 }
 
 extern "C" fn tl_make_str(ptr: *const u8, len: i32) -> i64 {
-    let s = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len as usize))
-    }.to_owned();
+    let s = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len as usize)) }
+        .to_owned();
     VALUE_ARENA.with(|a| {
         let mut arena = a.borrow_mut();
         let h = arena.len() as i64;
@@ -388,7 +405,9 @@ extern "C" fn tl_is_truthy(h: i64) -> i32 {
 }
 
 extern "C" fn tl_binop(op: i32, a: i64, b: i64) -> i64 {
-    if has_error() { return TL_NONE; }
+    if has_error() {
+        return TL_NONE;
+    }
     let ast_op = match i32_to_binop(op) {
         Some(o) => o,
         None => {
@@ -406,12 +425,17 @@ extern "C" fn tl_binop(op: i32, a: i64, b: i64) -> i64 {
     let interp = unsafe { &*ptr };
     match interp.apply_binop(&ast_op, lhs, rhs) {
         Ok(v) => push_handle(v),
-        Err(e) => { set_error(e); TL_NONE }
+        Err(e) => {
+            set_error(e);
+            TL_NONE
+        }
     }
 }
 
 extern "C" fn tl_unop(op: i32, a: i64) -> i64 {
-    if has_error() { return TL_NONE; }
+    if has_error() {
+        return TL_NONE;
+    }
     use crate::ast::UnaryOp;
     let ast_op = match op {
         UOP_NEG => UnaryOp::Neg,
@@ -431,12 +455,17 @@ extern "C" fn tl_unop(op: i32, a: i64) -> i64 {
     let interp = unsafe { &*ptr };
     match interp.apply_unary(&ast_op, operand) {
         Ok(v) => push_handle(v),
-        Err(e) => { set_error(e); TL_NONE }
+        Err(e) => {
+            set_error(e);
+            TL_NONE
+        }
     }
 }
 
 extern "C" fn tl_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
-    if has_error() { return TL_NONE; }
+    if has_error() {
+        return TL_NONE;
+    }
     let fn_val = clone_value_at(fn_h);
     let args: Vec<Value> = (0..n_args as usize)
         .map(|i| clone_value_at(unsafe { *args_ptr.add(i) }))
@@ -449,17 +478,21 @@ extern "C" fn tl_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
     let interp = unsafe { &mut *ptr };
     match interp.call_value_with_args(fn_val, args) {
         Ok(v) => push_handle(v),
-        Err(e) => { set_error(e); TL_NONE }
+        Err(e) => {
+            set_error(e);
+            TL_NONE
+        }
     }
 }
 
 extern "C" fn tl_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
-    if has_error() { return TL_NONE; }
+    if has_error() {
+        return TL_NONE;
+    }
     let name = unsafe {
-        std::str::from_utf8_unchecked(
-            std::slice::from_raw_parts(name_ptr, name_len as usize)
-        )
-    }.to_owned();
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    }
+    .to_owned();
     let obj = clone_value_at(obj_h);
     let ptr = get_interp_ptr();
     if ptr.is_null() {
@@ -469,17 +502,21 @@ extern "C" fn tl_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64
     let interp = unsafe { &mut *ptr };
     match interp.get_attr_val(obj, &name) {
         Ok(v) => push_handle(v),
-        Err(e) => { set_error(e); TL_NONE }
+        Err(e) => {
+            set_error(e);
+            TL_NONE
+        }
     }
 }
 
 extern "C" fn tl_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64) {
-    if has_error() { return; }
+    if has_error() {
+        return;
+    }
     let name = unsafe {
-        std::str::from_utf8_unchecked(
-            std::slice::from_raw_parts(name_ptr, name_len as usize)
-        )
-    }.to_owned();
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    }
+    .to_owned();
     let obj = clone_value_at(obj_h);
     let val = clone_value_at(val_h);
     let ptr = get_interp_ptr();
@@ -494,7 +531,9 @@ extern "C" fn tl_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h:
 }
 
 extern "C" fn tl_subscript(obj_h: i64, key_h: i64) -> i64 {
-    if has_error() { return TL_NONE; }
+    if has_error() {
+        return TL_NONE;
+    }
     let obj = clone_value_at(obj_h);
     let key = clone_value_at(key_h);
     let ptr = get_interp_ptr();
@@ -505,20 +544,26 @@ extern "C" fn tl_subscript(obj_h: i64, key_h: i64) -> i64 {
     let interp = unsafe { &mut *ptr };
     match interp.eval_subscript(obj, key) {
         Ok(v) => push_handle(v),
-        Err(e) => { set_error(e); TL_NONE }
+        Err(e) => {
+            set_error(e);
+            TL_NONE
+        }
     }
 }
 
 extern "C" fn tl_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
-    if has_error() { return TL_NONE; }
+    if has_error() {
+        return TL_NONE;
+    }
     let name = unsafe {
-        std::str::from_utf8_unchecked(
-            std::slice::from_raw_parts(name_ptr, name_len as usize)
-        )
-    }.to_owned();
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    }
+    .to_owned();
     let ptr = get_interp_ptr();
     if ptr.is_null() {
-        set_error(format!("NativeError: interpreter not set (looking up '{name}')"));
+        set_error(format!(
+            "NativeError: interpreter not set (looking up '{name}')"
+        ));
         return TL_NONE;
     }
     let interp = unsafe { &mut *ptr };
@@ -532,7 +577,9 @@ extern "C" fn tl_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
 }
 
 extern "C" fn tl_iter_from(obj_h: i64) -> i64 {
-    if has_error() { return TL_NONE; }
+    if has_error() {
+        return TL_NONE;
+    }
     let obj = clone_value_at(obj_h);
     let items: Vec<Value> = match obj {
         Value::List(l) => l.borrow().clone(),
@@ -563,7 +610,9 @@ extern "C" fn tl_iter_from(obj_h: i64) -> i64 {
 }
 
 extern "C" fn tl_iter_next(iter_h: i64) -> i64 {
-    if has_error() { return TL_STOP_ITER; }
+    if has_error() {
+        return TL_STOP_ITER;
+    }
     if iter_h > -2 {
         set_error(format!("NativeError: invalid iter handle {iter_h}"));
         return TL_STOP_ITER;
@@ -587,9 +636,7 @@ extern "C" fn tl_iter_next(iter_h: i64) -> i64 {
 
 extern "C" fn tl_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
     let name = unsafe {
-        std::str::from_utf8_unchecked(
-            std::slice::from_raw_parts(name_ptr, name_len as usize)
-        )
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
     };
     let obj = clone_value_at(obj_h);
     let ptr = get_interp_ptr();
@@ -610,7 +657,11 @@ extern "C" fn tl_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 
             _ => false,
         }
     };
-    if result { TL_TRUE } else { TL_FALSE }
+    if result {
+        TL_TRUE
+    } else {
+        TL_FALSE
+    }
 }
 
 // ── Arena save / compact helpers ────────────────────────────────────────────
@@ -664,12 +715,7 @@ extern "C" fn tl_arena_compact(h: i64, saved: u64) -> i64 {
 //       _v_x = _cout[0]; _v_y = _cout[1]; ...
 //   }
 
-extern "C" fn tl_compact_many(
-    handles_in: *const i64,
-    n: i32,
-    save: u64,
-    handles_out: *mut i64,
-) {
+extern "C" fn tl_compact_many(handles_in: *const i64, n: i32, save: u64, handles_out: *mut i64) {
     let n = n as usize;
     if n == 0 {
         VALUE_ARENA.with(|a| a.borrow_mut().truncate(save as usize));
@@ -700,15 +746,15 @@ extern "C" fn tl_deep_copy(h: i64) -> i64 {
 
 extern "C" fn tl_to_int(h: i64) -> i64 {
     match h {
-        TL_NONE  => 0,
-        TL_TRUE  => 1,
+        TL_NONE => 0,
+        TL_TRUE => 1,
         TL_FALSE => 0,
         n if n >= 3 && (n as usize) < INT_CACHE_BASE => n - 3,
         n => VALUE_ARENA.with(|a| match a.borrow().get(n as usize) {
-            Some(Value::Int(v))   => *v,
-            Some(Value::UInt(v))  => *v as i64,
+            Some(Value::Int(v)) => *v,
+            Some(Value::UInt(v)) => *v as i64,
             Some(Value::Float(f)) => *f as i64,
-            Some(Value::Bool(b))  => *b as i64,
+            Some(Value::Bool(b)) => *b as i64,
             _ => 0,
         }),
     }
@@ -716,15 +762,15 @@ extern "C" fn tl_to_int(h: i64) -> i64 {
 
 extern "C" fn tl_to_float(h: i64) -> f64 {
     match h {
-        TL_NONE  => 0.0,
-        TL_TRUE  => 1.0,
+        TL_NONE => 0.0,
+        TL_TRUE => 1.0,
         TL_FALSE => 0.0,
         n if n >= 3 && (n as usize) < INT_CACHE_BASE => (n - 3) as f64,
         n => VALUE_ARENA.with(|a| match a.borrow().get(n as usize) {
-            Some(Value::Int(v))   => *v as f64,
-            Some(Value::UInt(v))  => *v as f64,
+            Some(Value::Int(v)) => *v as f64,
+            Some(Value::UInt(v)) => *v as f64,
             Some(Value::Float(f)) => *f,
-            Some(Value::Bool(b))  => *b as u8 as f64,
+            Some(Value::Bool(b)) => *b as u8 as f64,
             _ => 0.0,
         }),
     }
@@ -756,7 +802,9 @@ extern "C" fn tl_to_cstr(h: i64) -> *const u8 {
 /// Used by generated cpp-bridge wrappers to write back `T*` output-parameter
 /// values after a C call.
 extern "C" fn tl_write_handle(target_h: i64, new_val_h: i64) {
-    if target_h < 3 { return; } // never overwrite fixed slots
+    if target_h < 3 {
+        return;
+    } // never overwrite fixed slots
     let new_val = clone_value_at(new_val_h);
     VALUE_ARENA.with(|a| {
         let mut arena = a.borrow_mut();
@@ -769,31 +817,31 @@ extern "C" fn tl_write_handle(target_h: i64, new_val_h: i64) {
 // ── Static callbacks instance ─────────────────────────────────────────────────
 
 static CALLBACKS: TlCallbacks = TlCallbacks {
-    make_int:   tl_make_int,
+    make_int: tl_make_int,
     make_float: tl_make_float,
-    make_bool:  tl_make_bool,
-    make_str:   tl_make_str,
-    make_list:  tl_make_list,
+    make_bool: tl_make_bool,
+    make_str: tl_make_str,
+    make_list: tl_make_list,
     make_tuple: tl_make_tuple,
-    make_dict:  tl_make_dict,
-    make_none:  tl_make_none,
-    is_truthy:  tl_is_truthy,
-    binop:      tl_binop,
-    unop:       tl_unop,
-    call_fn:    tl_call_fn,
-    get_attr:   tl_get_attr,
-    set_attr:   tl_set_attr,
-    subscript:  tl_subscript,
+    make_dict: tl_make_dict,
+    make_none: tl_make_none,
+    is_truthy: tl_is_truthy,
+    binop: tl_binop,
+    unop: tl_unop,
+    call_fn: tl_call_fn,
+    get_attr: tl_get_attr,
+    set_attr: tl_set_attr,
+    subscript: tl_subscript,
     get_global: tl_get_global,
-    iter_from:    tl_iter_from,
-    iter_next:    tl_iter_next,
-    is_type:      tl_is_type,
-    arena_save:    tl_arena_save,
+    iter_from: tl_iter_from,
+    iter_next: tl_iter_next,
+    is_type: tl_is_type,
+    arena_save: tl_arena_save,
     arena_compact: tl_arena_compact,
-    compact_many:  tl_compact_many,
-    to_int:        tl_to_int,
-    to_float:      tl_to_float,
-    deep_copy:     tl_deep_copy,
-    to_cstr:       tl_to_cstr,
-    write_handle:  tl_write_handle,
+    compact_many: tl_compact_many,
+    to_int: tl_to_int,
+    to_float: tl_to_float,
+    deep_copy: tl_deep_copy,
+    to_cstr: tl_to_cstr,
+    write_handle: tl_write_handle,
 };

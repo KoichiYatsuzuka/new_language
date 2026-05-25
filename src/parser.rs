@@ -1,10 +1,13 @@
-﻿use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::ast::{Accessibility, BinOp, CallArg, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param, Stmt, TemplateParam, TupleTarget, UnaryOp};
-use crate::token::{FStrPart, Span, Spanned, Token};
-use crate::python_converter;
+use crate::ast::{
+    Accessibility, BinOp, CallArg, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param,
+    Stmt, TemplateParam, TupleTarget, UnaryOp,
+};
 use crate::lexer;
+use crate::python_converter;
+use crate::token::{FStrPart, Span, Spanned, Token};
 
 /// 複合代入演算子トークンを対応する二項演算子（`BinOp`）に変換する。
 ///
@@ -14,21 +17,40 @@ use crate::lexer;
 /// # 戻り値
 /// 複合代入演算子に対応する `BinOp` を `Some` で返す。
 /// 複合代入演算子でないトークンの場合は `None` を返す。
+/// C 型を対応する tl プリミティブ型名に変換する（静的型検査スタブ生成用）。
+fn ctype_to_tl_str(ct: &crate::interpreter::cpp_bridge::CType) -> &'static str {
+    use crate::interpreter::cpp_bridge::CType;
+    match ct {
+        CType::Void => "None",
+        CType::Bool => "bool",
+        CType::Float | CType::Double => "float",
+        CType::CharPtr => "str",
+        // int / long / opaque pointer / mutable pointer → すべて int として扱う
+        CType::Int
+        | CType::Long
+        | CType::VoidPtr
+        | CType::OpaqueStructPtr { .. }
+        | CType::ByValueStruct { .. }
+        | CType::Ptr { .. } => "int",
+        CType::FnPtr => "function",
+    }
+}
+
 fn token_to_compound_op(token: &Token) -> Option<BinOp> {
     match token {
-        Token::PlusEq      => Some(BinOp::Add),
-        Token::MinusEq     => Some(BinOp::Sub),
-        Token::StarEq      => Some(BinOp::Mul),
-        Token::SlashEq     => Some(BinOp::Div),
+        Token::PlusEq => Some(BinOp::Add),
+        Token::MinusEq => Some(BinOp::Sub),
+        Token::StarEq => Some(BinOp::Mul),
+        Token::SlashEq => Some(BinOp::Div),
         Token::SlashSlashEq => Some(BinOp::FloorDiv),
-        Token::PercentEq   => Some(BinOp::Mod),
-        Token::StarStarEq  => Some(BinOp::Pow),
-        Token::AmpEq       => Some(BinOp::BitAnd),
-        Token::PipeEq      => Some(BinOp::BitOr),
-        Token::CaretEq     => Some(BinOp::BitXor),
-        Token::LtLtEq      => Some(BinOp::LShift),
-        Token::GtGtEq      => Some(BinOp::RShift),
-        _                  => None,
+        Token::PercentEq => Some(BinOp::Mod),
+        Token::StarStarEq => Some(BinOp::Pow),
+        Token::AmpEq => Some(BinOp::BitAnd),
+        Token::PipeEq => Some(BinOp::BitOr),
+        Token::CaretEq => Some(BinOp::BitXor),
+        Token::LtLtEq => Some(BinOp::LShift),
+        Token::GtGtEq => Some(BinOp::RShift),
+        _ => None,
     }
 }
 
@@ -36,7 +58,14 @@ pub struct Parser {
     tokens: Vec<Spanned>,
     pos: usize,
     /// trait name → (template_params, fields: [(name, kind, type_ann, has_default)], virtual_methods: [name])
-    known_traits: HashMap<String, (Vec<TemplateParam>, Vec<(String, FieldKind, String, bool)>, Vec<String>)>,
+    known_traits: HashMap<
+        String,
+        (
+            Vec<TemplateParam>,
+            Vec<(String, FieldKind, String, bool)>,
+            Vec<String>,
+        ),
+    >,
     /// Incremented when entering a class/trait body; `Self` is only valid when this is > 0.
     class_or_trait_depth: usize,
     /// Names declared with `new_type` — any reassignment to these is a parse error.
@@ -68,18 +97,38 @@ impl Parser {
     pub fn new(tokens: Vec<Spanned>, source_dir: Option<PathBuf>) -> Self {
         // 組み込み `Error` トレイトを事前登録する。
         // フィールド: message（let・必須）、code_context/file（mut・デフォルトあり）、line/col（mut・デフォルトあり）
-        let mut known_traits: HashMap<String, (Vec<TemplateParam>, Vec<(String, FieldKind, String, bool)>, Vec<String>)> = HashMap::new();
-        known_traits.insert("Error".to_string(), (
-            vec![],
-            vec![
-                ("message".to_string(),      FieldKind::Let, "str".to_string(), false),
-                ("code_context".to_string(), FieldKind::Mut, "str".to_string(), true),
-                ("file".to_string(),         FieldKind::Mut, "str".to_string(), true),
-                ("line".to_string(),         FieldKind::Mut, "int".to_string(), true),
-                ("col".to_string(),          FieldKind::Mut, "int".to_string(), true),
-            ],
-            vec![],
-        ));
+        let mut known_traits: HashMap<
+            String,
+            (
+                Vec<TemplateParam>,
+                Vec<(String, FieldKind, String, bool)>,
+                Vec<String>,
+            ),
+        > = HashMap::new();
+        known_traits.insert(
+            "Error".to_string(),
+            (
+                vec![],
+                vec![
+                    (
+                        "message".to_string(),
+                        FieldKind::Let,
+                        "str".to_string(),
+                        false,
+                    ),
+                    (
+                        "code_context".to_string(),
+                        FieldKind::Mut,
+                        "str".to_string(),
+                        true,
+                    ),
+                    ("file".to_string(), FieldKind::Mut, "str".to_string(), true),
+                    ("line".to_string(), FieldKind::Mut, "int".to_string(), true),
+                    ("col".to_string(), FieldKind::Mut, "int".to_string(), true),
+                ],
+                vec![],
+            ),
+        );
         let resolved = source_dir.unwrap_or_else(|| PathBuf::from("."));
         Self {
             tokens,
@@ -97,19 +146,28 @@ impl Parser {
     /// 現在位置のトークンへの参照を返す。
     /// トークン列を超えた場合は `Token::Eof` を返す。
     fn current(&self) -> &Token {
-        self.tokens.get(self.pos).map(|s| &s.token).unwrap_or(&Token::Eof)
+        self.tokens
+            .get(self.pos)
+            .map(|s| &s.token)
+            .unwrap_or(&Token::Eof)
     }
 
     /// 現在位置の1つ先（先読み1トークン）への参照を返す。
     /// トークン列を超えた場合は `Token::Eof` を返す。
     fn peek1(&self) -> &Token {
-        self.tokens.get(self.pos + 1).map(|s| &s.token).unwrap_or(&Token::Eof)
+        self.tokens
+            .get(self.pos + 1)
+            .map(|s| &s.token)
+            .unwrap_or(&Token::Eof)
     }
 
     /// 現在位置のトークンの `Span`（ファイル名・行・列）を返す。
     /// トークン列を超えた場合は `Span::unknown()` を返す。
     fn current_span(&self) -> Span {
-        self.tokens.get(self.pos).map(|s| s.span.clone()).unwrap_or_else(Span::unknown)
+        self.tokens
+            .get(self.pos)
+            .map(|s| s.span.clone())
+            .unwrap_or_else(Span::unknown)
     }
 
     /// 現在位置を1つ進める。トークン列の末尾では何もしない。
@@ -216,11 +274,19 @@ impl Parser {
                     self.advance();
                     targets.push(TupleTarget::Bare(name));
                 }
-                other => return Err(format!("expected `let`, `mut`, or `_` in tuple unpack, got `{other}`")),
+                other => {
+                    return Err(format!(
+                        "expected `let`, `mut`, or `_` in tuple unpack, got `{other}`"
+                    ))
+                }
             }
         }
         self.eat(&Token::Eq)?;
-        Ok(Stmt::LetTuple { targets, value: self.parse_expr()?, span })
+        Ok(Stmt::LetTuple {
+            targets,
+            value: self.parse_expr()?,
+            span,
+        })
     }
 
     /// 1文をパースして `Stmt` を返す。
@@ -251,7 +317,10 @@ impl Parser {
                     return self.parse_tuple_unpack(TupleTarget::Let(name));
                 }
                 // 型アノテーションがあれば読み飛ばす（静的型検査で使用）
-                if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
+                if *self.current() == Token::Colon {
+                    self.advance();
+                    self.parse_type_expr()?;
+                }
                 self.eat(&Token::Eq)?;
                 Ok(Stmt::Let(name, self.parse_expr()?))
             }
@@ -260,7 +329,10 @@ impl Parser {
                 self.advance();
                 let name = self.expect_ident()?;
                 // 型アノテーションがあれば読み飛ばす
-                if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
+                if *self.current() == Token::Colon {
+                    self.advance();
+                    self.parse_type_expr()?;
+                }
                 self.eat(&Token::Eq)?;
                 Ok(Stmt::Const(name, self.parse_expr()?))
             }
@@ -273,7 +345,10 @@ impl Parser {
                     return self.parse_tuple_unpack(TupleTarget::Mut(name));
                 }
                 // 型アノテーションがあれば読み飛ばす
-                if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
+                if *self.current() == Token::Colon {
+                    self.advance();
+                    self.parse_type_expr()?;
+                }
                 self.eat(&Token::Eq)?;
                 Ok(Stmt::Mut(name, self.parse_expr()?))
             }
@@ -283,7 +358,10 @@ impl Parser {
                 self.advance();
                 self.eat(&Token::Mut)?;
                 let name = self.expect_ident()?;
-                if *self.current() == Token::Colon { self.advance(); self.parse_type_expr()?; }
+                if *self.current() == Token::Colon {
+                    self.advance();
+                    self.parse_type_expr()?;
+                }
                 self.eat(&Token::Eq)?;
                 Ok(Stmt::Static(name, self.parse_expr()?, span))
             }
@@ -295,13 +373,25 @@ impl Parser {
                 Ok(Stmt::Freeze(name, span))
             }
             // ジャンプ文・単純文
-            Token::Pass     => { self.advance(); Ok(Stmt::Pass) }
-            Token::Break    => { self.advance(); Ok(Stmt::Break) }
-            Token::Continue => { self.advance(); Ok(Stmt::Continue) }
+            Token::Pass => {
+                self.advance();
+                Ok(Stmt::Pass)
+            }
+            Token::Break => {
+                self.advance();
+                Ok(Stmt::Break)
+            }
+            Token::Continue => {
+                self.advance();
+                Ok(Stmt::Continue)
+            }
             // `return [式]` — 値なし return と値あり return を区別
             Token::Return => {
                 self.advance();
-                if matches!(self.current(), Token::Newline | Token::Eof | Token::Semicolon | Token::Dedent) {
+                if matches!(
+                    self.current(),
+                    Token::Newline | Token::Eof | Token::Semicolon | Token::Dedent
+                ) {
                     // 値なし return
                     Ok(Stmt::Return(None))
                 } else {
@@ -315,7 +405,10 @@ impl Parser {
                 self.advance();
                 Ok(Stmt::BlockReturn(self.parse_expr()?, span))
             }
-            Token::LoopYield   => { self.advance(); Ok(Stmt::LoopYield(self.parse_expr()?)) }
+            Token::LoopYield => {
+                self.advance();
+                Ok(Stmt::LoopYield(self.parse_expr()?))
+            }
             // `break_point` — デバッガ REPL を起動して実行を一時停止する
             Token::BreakPoint => {
                 let span = self.current_span();
@@ -323,14 +416,17 @@ impl Parser {
                 Ok(Stmt::BreakPoint { span })
             }
             // 制御構文
-            Token::If    => self.parse_if_stmt(),
+            Token::If => self.parse_if_stmt(),
             Token::Match => self.parse_match_stmt(),
             Token::While => {
                 self.advance();
                 let cond = self.parse_expr()?;
                 let _ = self.parse_opt_return_type()?; // stmt level: parse and discard
                 self.eat(&Token::Colon)?;
-                Ok(Stmt::While { cond, body: self.parse_block()? })
+                Ok(Stmt::While {
+                    cond,
+                    body: self.parse_block()?,
+                })
             }
             Token::For => {
                 self.advance();
@@ -344,7 +440,11 @@ impl Parser {
                 let iter = self.parse_expr()?;
                 let _ = self.parse_opt_return_type()?; // stmt level: parse and discard
                 self.eat(&Token::Colon)?;
-                Ok(Stmt::For { targets, iter, body: self.parse_block()? })
+                Ok(Stmt::For {
+                    targets,
+                    iter,
+                    body: self.parse_block()?,
+                })
             }
             // `block [->Type]:` — 値を返せるスコープブロック
             Token::Block => {
@@ -354,14 +454,20 @@ impl Parser {
                 Ok(Stmt::Block(self.parse_block()?))
             }
             // `yield 式` — ジェネレータ関数内で値を yield する
-            Token::Yield => { self.advance(); Ok(Stmt::Yield(self.parse_expr()?)) }
-            Token::Try   => self.parse_try_stmt(),
+            Token::Yield => {
+                self.advance();
+                Ok(Stmt::Yield(self.parse_expr()?))
+            }
+            Token::Try => self.parse_try_stmt(),
             // `raise [式]` — 例外を送出する
             Token::Raise => {
                 let span = self.current_span();
                 self.advance();
                 // 送出する例外式がなければ None（再 raise 相当）
-                let exc = if matches!(self.current(), Token::Newline | Token::Eof | Token::Semicolon | Token::Dedent) {
+                let exc = if matches!(
+                    self.current(),
+                    Token::Newline | Token::Eof | Token::Semicolon | Token::Dedent
+                ) {
                     None
                 } else {
                     Some(self.parse_expr()?)
@@ -371,21 +477,21 @@ impl Parser {
             Token::At => {
                 let decorators = self.parse_decorators()?;
                 match self.current().clone() {
-                    Token::Fn    => self.parse_fn_def_decorated(decorators),
+                    Token::Fn => self.parse_fn_def_decorated(decorators),
                     Token::Class => self.parse_class_def_decorated(decorators),
                     tok => Err(format!(
                         "ParseError: '@' decorator must be followed by 'fn' or 'class', got `{tok}`"
                     )),
                 }
             }
-            Token::Fn      => self.parse_fn_def(),
-            Token::Gen     => self.parse_gen_def(),
-            Token::Class   => self.parse_class_def(),
-            Token::Enum    => self.parse_enum_def(),
-            Token::Trait   => self.parse_trait_def(),
+            Token::Fn => self.parse_fn_def(),
+            Token::Gen => self.parse_gen_def(),
+            Token::Class => self.parse_class_def(),
+            Token::Enum => self.parse_enum_def(),
+            Token::Trait => self.parse_trait_def(),
             Token::NewType => self.parse_new_type_def(),
-            Token::Import  => self.parse_import_stmt(),
-            Token::From    => self.parse_from_import_stmt(),
+            Token::Import => self.parse_import_stmt(),
+            Token::From => self.parse_from_import_stmt(),
             Token::Ident(_) => self.parse_ident_stmt(),
             _ => Ok(Stmt::Expr(self.parse_expr()?)),
         }
@@ -407,7 +513,9 @@ impl Parser {
     ///
     /// `(branches, else_body, return_type)` を返す。
     /// `return_type` は最初の `if` 直後の `->Type` アノテーション。`elif`/`else` にはない。
-    fn parse_if_components(&mut self) -> Result<(Vec<(Expr, Vec<Stmt>)>, Option<Vec<Stmt>>, Option<String>), String> {
+    fn parse_if_components(
+        &mut self,
+    ) -> Result<(Vec<(Expr, Vec<Stmt>)>, Option<Vec<Stmt>>, Option<String>), String> {
         let cond = self.parse_expr()?;
         let return_type = self.parse_opt_return_type()?;
         self.eat(&Token::Colon)?;
@@ -449,7 +557,10 @@ impl Parser {
     fn parse_if_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `if` を消費
         let (branches, else_body, _return_type) = self.parse_if_components()?;
-        Ok(Stmt::If { branches, else_body })
+        Ok(Stmt::If {
+            branches,
+            else_body,
+        })
     }
 
     /// `match expr:` 文をパースして `Stmt::Match` を返す。
@@ -489,7 +600,10 @@ impl Parser {
                     self.advance();
                     let pattern_expr = self.parse_expr()?;
                     self.eat(&Token::Colon)?;
-                    arms.push(MatchArm { pattern: MatchPattern::Case(pattern_expr), body: self.parse_block()? });
+                    arms.push(MatchArm {
+                        pattern: MatchPattern::Case(pattern_expr),
+                        body: self.parse_block()?,
+                    });
                 }
                 Token::Is => {
                     if is_case_kind == Some(true) {
@@ -499,12 +613,21 @@ impl Parser {
                     self.advance();
                     let type_name = self.expect_ident()?;
                     self.eat(&Token::Colon)?;
-                    arms.push(MatchArm { pattern: MatchPattern::IsType(type_name), body: self.parse_block()? });
+                    arms.push(MatchArm {
+                        pattern: MatchPattern::IsType(type_name),
+                        body: self.parse_block()?,
+                    });
                 }
-                tok => return Err(format!("expected 'case' or 'is' in match body, got `{tok}`")),
+                tok => {
+                    return Err(format!(
+                        "expected 'case' or 'is' in match body, got `{tok}`"
+                    ))
+                }
             }
         }
-        if *self.current() == Token::Dedent { self.advance(); }
+        if *self.current() == Token::Dedent {
+            self.advance();
+        }
         Ok(arms)
     }
 
@@ -517,7 +640,11 @@ impl Parser {
         self.eat(&Token::Newline)?;
         self.eat(&Token::Indent)?;
         let arms = self.parse_match_arms()?;
-        Ok(Stmt::Match { subject, arms, span })
+        Ok(Stmt::Match {
+            subject,
+            arms,
+            span,
+        })
     }
 
     /// 識別子で始まる文をパースする。
@@ -542,7 +669,11 @@ impl Parser {
                 let return_type = self.parse_opt_return_type()?;
                 self.eat(&Token::Colon)?;
                 let stmts = self.parse_block()?;
-                return Ok(Stmt::AsyncAssign { target, return_type, stmts });
+                return Ok(Stmt::AsyncAssign {
+                    target,
+                    return_type,
+                    stmts,
+                });
             }
             // 次のトークンが `=` なら変数への単純代入
             Token::Eq => {
@@ -555,7 +686,11 @@ impl Parser {
                     ));
                 }
                 self.advance(); // `=` を消費
-                Ok(Stmt::Assign { name, value: self.parse_expr()?, span })
+                Ok(Stmt::Assign {
+                    name,
+                    value: self.parse_expr()?,
+                    span,
+                })
             }
             tok => {
                 if let Some(op) = token_to_compound_op(&tok) {
@@ -569,11 +704,18 @@ impl Parser {
                     if cur == Token::Eq {
                         // `expr = 値` — 属性代入（self.x = v など）
                         self.advance();
-                        Ok(Stmt::AttrAssign { target: expr, value: self.parse_expr()? })
+                        Ok(Stmt::AttrAssign {
+                            target: expr,
+                            value: self.parse_expr()?,
+                        })
                     } else if let Some(op) = token_to_compound_op(&cur) {
                         // `expr += 値` など — 属性複合代入
                         self.advance();
-                        Ok(Stmt::AttrCompoundAssign { target: expr, op, value: self.parse_expr()? })
+                        Ok(Stmt::AttrCompoundAssign {
+                            target: expr,
+                            op,
+                            value: self.parse_expr()?,
+                        })
                     } else {
                         // 代入でなければ式文として返す
                         Ok(Stmt::Expr(expr))
@@ -604,7 +746,12 @@ impl Parser {
             ));
         }
         self.advance(); // 複合代入演算子トークンを消費
-        Ok(Stmt::CompoundAssign { name, op, value: self.parse_expr()?, span })
+        Ok(Stmt::CompoundAssign {
+            name,
+            op,
+            value: self.parse_expr()?,
+            span,
+        })
     }
 
     /// `fn` 関数定義をパースして `Stmt::FnDef` を返す。
@@ -642,11 +789,19 @@ impl Parser {
         self.parse_fn_def_with_flags(vec![], false, false)
     }
 
-    fn parse_fn_def_decorated(&mut self, decorators: Vec<crate::ast::Expr>) -> Result<Stmt, String> {
+    fn parse_fn_def_decorated(
+        &mut self,
+        decorators: Vec<crate::ast::Expr>,
+    ) -> Result<Stmt, String> {
         self.parse_fn_def_with_flags(decorators, false, false)
     }
 
-    fn parse_fn_def_with_flags(&mut self, decorators: Vec<crate::ast::Expr>, is_static: bool, is_class_method: bool) -> Result<Stmt, String> {
+    fn parse_fn_def_with_flags(
+        &mut self,
+        decorators: Vec<crate::ast::Expr>,
+        is_static: bool,
+        is_class_method: bool,
+    ) -> Result<Stmt, String> {
         self.advance(); // `fn` を消費
         let name = self.expect_ident()?;
         // テンプレートパラメータ `[T: Trait, ...]` をパース（なければ空 Vec）
@@ -678,7 +833,7 @@ impl Parser {
             self.advance(); // Newline
             self.advance(); // Indent
             self.advance(); // Ellipsis
-            // 末尾の改行をスキップ
+                            // 末尾の改行をスキップ
             while matches!(self.current(), Token::Newline | Token::Semicolon) {
                 self.advance();
             }
@@ -690,7 +845,18 @@ impl Parser {
             // 通常のブロックをパース
             (self.parse_block()?, false)
         };
-        Ok(Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, is_static, is_class_method, decorators, access: Accessibility::Public })
+        Ok(Stmt::FnDef {
+            name,
+            template_params,
+            params,
+            return_type,
+            body,
+            is_abstract,
+            is_static,
+            is_class_method,
+            decorators,
+            access: Accessibility::Public,
+        })
     }
 
     /// `gen` ジェネレータ関数定義をパースして `Stmt::GenDef` を返す。
@@ -746,7 +912,14 @@ impl Parser {
                 "ParseError: generator function `{name}` must not contain a `return` statement"
             ));
         }
-        Ok(Stmt::GenDef { name, template_params, params, yield_type, body, access: Accessibility::Public })
+        Ok(Stmt::GenDef {
+            name,
+            template_params,
+            params,
+            yield_type,
+            body,
+            access: Accessibility::Public,
+        })
     }
 
     /// 文のリストに `return` 文が含まれるかを再帰的に検査する。
@@ -762,7 +935,10 @@ impl Parser {
         for stmt in stmts {
             match stmt {
                 Stmt::Return(_) => return true,
-                Stmt::If { branches, else_body } => {
+                Stmt::If {
+                    branches,
+                    else_body,
+                } => {
                     if branches.iter().any(|(_, b)| Self::body_has_return(b)) {
                         return true;
                     }
@@ -789,9 +965,21 @@ impl Parser {
     /// # 戻り値
     /// `NEWLINE INDENT ELLIPSIS` の並びが続く場合は `true`
     fn is_abstract_body(&self) -> bool {
-        let t0 = self.tokens.get(self.pos).map(|s| &s.token).unwrap_or(&Token::Eof);
-        let t1 = self.tokens.get(self.pos + 1).map(|s| &s.token).unwrap_or(&Token::Eof);
-        let t2 = self.tokens.get(self.pos + 2).map(|s| &s.token).unwrap_or(&Token::Eof);
+        let t0 = self
+            .tokens
+            .get(self.pos)
+            .map(|s| &s.token)
+            .unwrap_or(&Token::Eof);
+        let t1 = self
+            .tokens
+            .get(self.pos + 1)
+            .map(|s| &s.token)
+            .unwrap_or(&Token::Eof);
+        let t2 = self
+            .tokens
+            .get(self.pos + 2)
+            .map(|s| &s.token)
+            .unwrap_or(&Token::Eof);
         matches!(t0, Token::Newline) && matches!(t1, Token::Indent) && matches!(t2, Token::Ellipsis)
     }
 
@@ -819,7 +1007,7 @@ impl Parser {
         // Parse zero or more `except` clauses
         while *self.current() == Token::Except {
             self.advance(); // consume `except`
-            // Determine exception type and optional name binding
+                            // Determine exception type and optional name binding
             let (exc_type, name) = if matches!(self.current(), Token::Colon) {
                 // bare `except:`
                 (None, None)
@@ -835,7 +1023,11 @@ impl Parser {
             };
             self.eat(&Token::Colon)?;
             let handler_body = self.parse_block()?;
-            handlers.push(ExceptHandler { exc_type, name, body: handler_body });
+            handlers.push(ExceptHandler {
+                exc_type,
+                name,
+                body: handler_body,
+            });
         }
 
         // Optional `finally` clause
@@ -846,10 +1038,16 @@ impl Parser {
         }
 
         if handlers.is_empty() && finally_body.is_none() {
-            return Err("try statement requires at least one `except` or `finally` clause".to_string());
+            return Err(
+                "try statement requires at least one `except` or `finally` clause".to_string(),
+            );
         }
 
-        Ok(Stmt::Try { body, handlers, finally_body })
+        Ok(Stmt::Try {
+            body,
+            handlers,
+            finally_body,
+        })
     }
 
     /// `enum 名前: バリアント [= 値] ...` 定義をパースして `Stmt::EnumDef` を返す。
@@ -950,7 +1148,13 @@ impl Parser {
         // モジュールの tl AST を取得（キャッシュ込み）
         let body = self.load_module(&lang, &module)?;
 
-        Ok(Stmt::Import { lang, module, with_file: None, alias, body })
+        Ok(Stmt::Import {
+            lang,
+            module,
+            with_file: None,
+            alias,
+            body,
+        })
     }
 
     /// `import[cpp-lib] Dir.Name as alias` をパースする。
@@ -960,14 +1164,19 @@ impl Parser {
     ///   `DxLib.DxLib` → `{source_dir}/DxLib/DxLib.h`
     ///   最後のコンポーネントに `.h` 拡張子が付く。
     ///
-    /// スタブは自動生成されるため `with` 句は不要 (構文上存在しない)。
+    /// ヘッダが存在する場合は静的型情報として Stmt::FnDef スタブを body に積む。
     fn parse_cpp_import(&mut self, lang: String) -> Result<Stmt, String> {
         // ヘッダパス: IDENT ('.' IDENT)*
         let first = match self.current().clone() {
-            Token::Ident(s) => { self.advance(); s }
-            other => return Err(format!(
-                "import[{lang}]: expected dotted identifier for header path, got `{other}`"
-            )),
+            Token::Ident(s) => {
+                self.advance();
+                s
+            }
+            other => {
+                return Err(format!(
+                    "import[{lang}]: expected dotted identifier for header path, got `{other}`"
+                ))
+            }
         };
         let mut parts = vec![first];
         while *self.current() == Token::Dot {
@@ -996,8 +1205,88 @@ impl Parser {
             None
         };
 
+        // ヘッダファイルを読み込んで静的型スタブを生成する。
+        // ファイルが存在しない場合は空の body になる（実行時に解決される）。
+        let body = std::fs::read_to_string(&resolved)
+            .ok()
+            .map(|content| {
+                let cfg = crate::interpreter::cpp_bridge::load_cpp_config(
+                    resolved.parent().unwrap_or(std::path::Path::new(".")),
+                );
+                let typedefs = crate::interpreter::cpp_bridge::load_system_typedefs(
+                    &cfg.system_headers,
+                    &cfg.precompile_macros,
+                );
+                use crate::interpreter::cpp_bridge::CType;
+                let (sigs, struct_defs) = crate::interpreter::cpp_bridge::parse_header_full(
+                    &content,
+                    &cfg.custom_type_map,
+                    &typedefs,
+                );
+                let mut stmts: Vec<Stmt> = Vec::new();
+                // Generate Stmt::ClassDef stubs for C structs so the type checker
+                // knows about their fields.
+                for sdef in &struct_defs {
+                    let field_stmts = sdef
+                        .fields
+                        .iter()
+                        .map(|(fname, fct)| Stmt::Field {
+                            name: fname.clone(),
+                            kind: crate::ast::FieldKind::Mut,
+                            type_ann: ctype_to_tl_str(fct).to_string(),
+                            default: None,
+                            access: Accessibility::Public,
+                        })
+                        .collect();
+                    stmts.push(Stmt::ClassDef {
+                        name: sdef.name.clone(),
+                        template_params: vec![],
+                        bases: vec![],
+                        decorators: vec![],
+                        body: field_stmts,
+                    });
+                }
+                for sig in sigs {
+                    let ret_str = ctype_to_tl_str(&sig.ret).to_string();
+                    let params = sig
+                        .params
+                        .into_iter()
+                        .map(|(pname, ct)| {
+                            let mutable =
+                                matches!(&ct, CType::Ptr { mutable: true, .. });
+                            Param {
+                                name: pname,
+                                mutable,
+                                type_ann: Some(ctype_to_tl_str(&ct).to_string()),
+                                default: None,
+                            }
+                        })
+                        .collect();
+                    stmts.push(Stmt::FnDef {
+                        name: sig.name,
+                        template_params: vec![],
+                        params,
+                        return_type: Some(ret_str),
+                        body: vec![],
+                        is_abstract: false,
+                        is_static: false,
+                        is_class_method: false,
+                        decorators: vec![],
+                        access: Accessibility::Public,
+                    });
+                }
+                stmts
+            })
+            .unwrap_or_default();
+
         let module = vec![file_path];
-        Ok(Stmt::Import { lang, module, with_file: None, alias, body: vec![] })
+        Ok(Stmt::Import {
+            lang,
+            module,
+            with_file: None,
+            alias,
+            body,
+        })
     }
 
     /// `from module import[lang] Name1, Name2 as N2` をパースして `Stmt::FromImport` を返す。
@@ -1029,7 +1318,10 @@ impl Parser {
             if *self.current() == Token::Comma {
                 self.advance();
                 // 行末に来たら終了
-                if matches!(self.current(), Token::Newline | Token::Eof | Token::Semicolon | Token::Dedent) {
+                if matches!(
+                    self.current(),
+                    Token::Newline | Token::Eof | Token::Semicolon | Token::Dedent
+                ) {
                     break;
                 }
             } else {
@@ -1040,22 +1332,38 @@ impl Parser {
         // モジュールの tl AST を取得
         let body = self.load_module(&lang, &module)?;
 
-        Ok(Stmt::FromImport { lang, module, with_file: None, names, body })
+        Ok(Stmt::FromImport {
+            lang,
+            module,
+            with_file: None,
+            names,
+            body,
+        })
     }
 
     /// `[lang]` トークン列をパースして言語識別子文字列を返す。
     fn parse_lang_bracket(&mut self) -> Result<String, String> {
         self.eat(&Token::LBracket)?;
         let mut lang = match self.current().clone() {
-            Token::Ident(s) => { self.advance(); s }
+            Token::Ident(s) => {
+                self.advance();
+                s
+            }
             other => return Err(format!("expected language identifier, got `{other}`")),
         };
         // ハイフン区切りの識別子を許容（例: `py-int`）
         while *self.current() == Token::Minus {
             self.advance();
             match self.current().clone() {
-                Token::Ident(s) => { self.advance(); lang = format!("{lang}-{s}"); }
-                other => return Err(format!("expected identifier after '-' in lang tag, got `{other}`")),
+                Token::Ident(s) => {
+                    self.advance();
+                    lang = format!("{lang}-{s}");
+                }
+                other => {
+                    return Err(format!(
+                        "expected identifier after '-' in lang tag, got `{other}`"
+                    ))
+                }
             }
         }
         self.eat(&Token::RBracket)?;
@@ -1079,13 +1387,13 @@ impl Parser {
             // default (no bracket): prefer .tlc, fall back to .tl
             "tl-auto" => self.load_tl_module(module),
             // import[tl]: force .tl source, skip .tlc
-            "tl"      => self.load_tl_source_module(module),
+            "tl" => self.load_tl_source_module(module),
             // import[tlc]: force .tlc, error if not found
-            "tlc"     => self.load_tlc_module(module),
-            "py"      => self.load_python_module(module),
+            "tlc" => self.load_tlc_module(module),
+            "py" => self.load_python_module(module),
             // py-int: .pyi を優先し、なければ .py にフォールバック
             // body は型検査専用（実行時は PyO3 経由）
-            "py-int"  => self.load_python_interface_module(module),
+            "py-int" => self.load_python_interface_module(module),
             other => Err(format!("unknown import language '{other}'")),
         }
     }
@@ -1098,7 +1406,7 @@ impl Parser {
     /// 3. `module/__init__.tl` — パッケージモジュール
     fn load_tl_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
-        let tlc_rel  = module_base.with_extension("tlc");
+        let tlc_rel = module_base.with_extension("tlc");
         let file_rel = module_base.with_extension("tl");
         let init_rel = module_base.join("__init__.tl");
 
@@ -1106,27 +1414,40 @@ impl Parser {
         let search_dirs: Vec<PathBuf> = {
             let a = self.source_dir.clone();
             let b = self.root_dir.clone();
-            if a == b { vec![a] } else { vec![a, b] }
+            if a == b {
+                vec![a]
+            } else {
+                vec![a, b]
+            }
         };
 
         // (パス, コンパイル済みか) の候補リスト — .tlc が .tl より先になる
-        let candidates: Vec<(PathBuf, bool)> = search_dirs.iter()
-            .flat_map(|dir| [
-                (dir.join(&tlc_rel),  true),
-                (dir.join(&file_rel), false),
-                (dir.join(&init_rel), false),
-            ])
+        let candidates: Vec<(PathBuf, bool)> = search_dirs
+            .iter()
+            .flat_map(|dir| {
+                [
+                    (dir.join(&tlc_rel), true),
+                    (dir.join(&file_rel), false),
+                    (dir.join(&init_rel), false),
+                ]
+            })
             .collect();
 
-        let (abs_path, is_compiled) = candidates.iter()
+        let (abs_path, is_compiled) = candidates
+            .iter()
             .find(|(p, _)| p.exists())
             .cloned()
             .ok_or_else(|| {
-                let paths = candidates.iter()
+                let paths = candidates
+                    .iter()
                     .map(|(p, _)| format!("'{}'", p.display()))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("cannot find module '{}' (looked at {})", module.join("."), paths)
+                format!(
+                    "cannot find module '{}' (looked at {})",
+                    module.join("."),
+                    paths
+                )
             })?;
 
         let cache_key = ("tl-auto".to_string(), abs_path.clone());
@@ -1157,7 +1478,9 @@ impl Parser {
         self.loading.insert(abs_path.clone());
 
         let tokens = lexer::Lexer::new(&source, filename.as_str()).tokenize();
-        let module_dir = abs_path.parent().map(|p| p.to_path_buf())
+        let module_dir = abs_path
+            .parent()
+            .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
 
         let mut sub = Parser::new(tokens, Some(module_dir));
@@ -1185,24 +1508,32 @@ impl Parser {
         let search_dirs: Vec<PathBuf> = {
             let a = self.source_dir.clone();
             let b = self.root_dir.clone();
-            if a == b { vec![a] } else { vec![a, b] }
+            if a == b {
+                vec![a]
+            } else {
+                vec![a, b]
+            }
         };
 
-        let candidates: Vec<PathBuf> = search_dirs.iter()
+        let candidates: Vec<PathBuf> = search_dirs
+            .iter()
             .flat_map(|dir| [dir.join(&file_rel), dir.join(&init_rel)])
             .collect();
 
-        let abs_path = candidates.iter()
+        let abs_path = candidates
+            .iter()
             .find(|p| p.exists())
             .cloned()
             .ok_or_else(|| {
-                let paths = candidates.iter()
+                let paths = candidates
+                    .iter()
                     .map(|p| format!("'{}'", p.display()))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
                     "cannot find source module '{}' (looked at {})",
-                    module.join("."), paths
+                    module.join("."),
+                    paths
                 )
             })?;
 
@@ -1212,7 +1543,10 @@ impl Parser {
             return Ok(body.clone());
         }
         if self.loading.contains(&abs_path) {
-            return Err(format!("circular import detected: '{}'", abs_path.display()));
+            return Err(format!(
+                "circular import detected: '{}'",
+                abs_path.display()
+            ));
         }
 
         let source = std::fs::read_to_string(&abs_path)
@@ -1222,7 +1556,9 @@ impl Parser {
         self.loading.insert(abs_path.clone());
 
         let tokens = lexer::Lexer::new(&source, filename.as_str()).tokenize();
-        let module_dir = abs_path.parent().map(|p| p.to_path_buf())
+        let module_dir = abs_path
+            .parent()
+            .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
         let mut sub = Parser::new(tokens, Some(module_dir));
         sub.module_cache = self.module_cache.clone();
@@ -1244,12 +1580,14 @@ impl Parser {
         let search_dirs: Vec<PathBuf> = {
             let a = self.source_dir.clone();
             let b = self.root_dir.clone();
-            if a == b { vec![a] } else { vec![a, b] }
+            if a == b {
+                vec![a]
+            } else {
+                vec![a, b]
+            }
         };
 
-        let candidates: Vec<PathBuf> = search_dirs.iter()
-            .map(|dir| dir.join(&tlc_rel))
-            .collect();
+        let candidates: Vec<PathBuf> = search_dirs.iter().map(|dir| dir.join(&tlc_rel)).collect();
 
         let abs_path = candidates.iter()
             .find(|p| p.exists())
@@ -1271,7 +1609,10 @@ impl Parser {
             return Ok(body.clone());
         }
         if self.loading.contains(&abs_path) {
-            return Err(format!("circular import detected: '{}'", abs_path.display()));
+            return Err(format!(
+                "circular import detected: '{}'",
+                abs_path.display()
+            ));
         }
 
         let (mod_name, source) = crate::partial_compiler::load_tlc(&abs_path)
@@ -1281,7 +1622,9 @@ impl Parser {
         self.loading.insert(abs_path.clone());
 
         let tokens = lexer::Lexer::new(&source, filename.as_str()).tokenize();
-        let module_dir = abs_path.parent().map(|p| p.to_path_buf())
+        let module_dir = abs_path
+            .parent()
+            .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
         let mut sub = Parser::new(tokens, Some(module_dir));
         sub.module_cache = self.module_cache.clone();
@@ -1343,7 +1686,7 @@ impl Parser {
     fn load_python_interface_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
         let pyi_rel = module_base.with_extension("pyi");
-        let py_rel  = module_base.with_extension("py");
+        let py_rel = module_base.with_extension("py");
 
         // .pyi → .py の順に search_dirs で探す
         let search_dirs = self.python_search_dirs();
@@ -1366,7 +1709,11 @@ impl Parser {
 
     /// .pyi または .py ファイルをパースして型検査用 body を返す。
     /// 変換エラーが発生したステートメントは無視する（ベストエフォート）。
-    fn load_pyi_file(&mut self, module: &[String], abs_path: &PathBuf) -> Result<Vec<Stmt>, String> {
+    fn load_pyi_file(
+        &mut self,
+        module: &[String],
+        abs_path: &PathBuf,
+    ) -> Result<Vec<Stmt>, String> {
         let cache_key = ("py-int".to_string(), abs_path.clone());
         if let Some(body) = self.module_cache.get(&cache_key) {
             return Ok(body.clone());
@@ -1375,7 +1722,10 @@ impl Parser {
             return Ok(vec![]);
         }
         let source = std::fs::read_to_string(abs_path).map_err(|_| {
-            format!("cannot read interface file for module '{}'", module.join("."))
+            format!(
+                "cannot read interface file for module '{}'",
+                module.join(".")
+            )
         })?;
         self.loading.insert(abs_path.clone());
         let filename = abs_path.to_string_lossy().to_string();
@@ -1424,7 +1774,9 @@ impl Parser {
         let template_params = self.parse_template_params()?;
         // トレイトは継承不可
         if *self.current() == Token::LParen {
-            return Err(format!("StaticTypeError: trait `{name}` cannot inherit from another type"));
+            return Err(format!(
+                "StaticTypeError: trait `{name}` cannot inherit from another type"
+            ));
         }
         self.eat(&Token::Colon)?;
         // Self 型が有効なスコープに入る
@@ -1434,7 +1786,14 @@ impl Parser {
 
         // 非仮想・仮想メソッドどちらも型アノテーションを必須とする
         for stmt in &body {
-            if let Stmt::FnDef { name: mname, params, return_type, is_abstract, .. } = stmt {
+            if let Stmt::FnDef {
+                name: mname,
+                params,
+                return_type,
+                is_abstract,
+                ..
+            } = stmt
+            {
                 if !is_abstract {
                     // 非仮想メソッドの戻り値型チェック
                     if return_type.is_none() {
@@ -1471,19 +1830,38 @@ impl Parser {
         }
 
         // フィールド情報（名前・種別・型・デフォルト有無）を収集
-        let fields: Vec<(String, FieldKind, String, bool)> = body.iter()
+        let fields: Vec<(String, FieldKind, String, bool)> = body
+            .iter()
             .filter_map(|s| {
-                if let Stmt::Field { name: fname, kind, type_ann, default, .. } = s {
-                    Some((fname.clone(), kind.clone(), type_ann.clone(), default.is_some()))
+                if let Stmt::Field {
+                    name: fname,
+                    kind,
+                    type_ann,
+                    default,
+                    ..
+                } = s
+                {
+                    Some((
+                        fname.clone(),
+                        kind.clone(),
+                        type_ann.clone(),
+                        default.is_some(),
+                    ))
                 } else {
                     None
                 }
             })
             .collect();
         // 仮想メソッド（is_abstract: true）の名前リストを収集
-        let virtual_methods: Vec<String> = body.iter()
+        let virtual_methods: Vec<String> = body
+            .iter()
             .filter_map(|s| {
-                if let Stmt::FnDef { name: mname, is_abstract: true, .. } = s {
+                if let Stmt::FnDef {
+                    name: mname,
+                    is_abstract: true,
+                    ..
+                } = s
+                {
                     Some(mname.clone())
                 } else {
                     None
@@ -1491,9 +1869,16 @@ impl Parser {
             })
             .collect();
         // 後続のクラス定義が参照できるよう known_traits に登録
-        self.known_traits.insert(name.clone(), (template_params.clone(), fields, virtual_methods));
+        self.known_traits.insert(
+            name.clone(),
+            (template_params.clone(), fields, virtual_methods),
+        );
 
-        Ok(Stmt::TraitDef { name, template_params, body })
+        Ok(Stmt::TraitDef {
+            name,
+            template_params,
+            body,
+        })
     }
 
     /// `class` 定義をパースして `Stmt::ClassDef` を返す。
@@ -1516,7 +1901,10 @@ impl Parser {
         self.parse_class_def_decorated(vec![])
     }
 
-    fn parse_class_def_decorated(&mut self, decorators: Vec<crate::ast::Expr>) -> Result<Stmt, String> {
+    fn parse_class_def_decorated(
+        &mut self,
+        decorators: Vec<crate::ast::Expr>,
+    ) -> Result<Stmt, String> {
         self.advance(); // `class` を消費
         let name = self.expect_ident()?;
         // テンプレートパラメータをパース（`[T: Trait, ...]` 形式）
@@ -1560,9 +1948,17 @@ impl Parser {
             self.collect_trait_fields_and_check_virtuals(&name, &bases_with_args, &body)?;
 
         // クラス自身のデフォルトなし mut/let フィールドを収集
-        let class_required: Vec<(String, String)> = body.iter()
+        let class_required: Vec<(String, String)> = body
+            .iter()
             .filter_map(|s| {
-                if let Stmt::Field { name: fname, kind: FieldKind::Mut | FieldKind::Let, type_ann, default: None, .. } = s {
+                if let Stmt::Field {
+                    name: fname,
+                    kind: FieldKind::Mut | FieldKind::Let,
+                    type_ann,
+                    default: None,
+                    ..
+                } = s
+                {
                     Some((fname.clone(), type_ann.clone()))
                 } else {
                     None
@@ -1573,7 +1969,13 @@ impl Parser {
         // 必要に応じて __init__ を自動生成して body に追加
         self.generate_auto_init_if_needed(&trait_required, &class_required, &mut body);
 
-        Ok(Stmt::ClassDef { name, template_params, bases, body, decorators })
+        Ok(Stmt::ClassDef {
+            name,
+            template_params,
+            bases,
+            body,
+            decorators,
+        })
     }
 
     /// 継承トレイトの仮想メソッドオーバーライドを検証し、必須フィールドを収集する。
@@ -1606,7 +2008,8 @@ impl Parser {
                 self.known_traits.get(base).cloned()
             {
                 // テンプレートパラメータ → 具体型 の変換マップを構築
-                let type_map: HashMap<String, String> = trait_tparams.iter()
+                let type_map: HashMap<String, String> = trait_tparams
+                    .iter()
                     .zip(concrete_args.iter())
                     .map(|(tp, arg)| (tp.name.clone(), arg.clone()))
                     .collect();
@@ -1626,7 +2029,10 @@ impl Parser {
                 // 型変数が含まれる場合は具体型に解決する
                 for (fname, _kind, ftype, has_default) in &trait_fields {
                     if !has_default {
-                        let resolved = type_map.get(ftype).cloned().unwrap_or_else(|| ftype.clone());
+                        let resolved = type_map
+                            .get(ftype)
+                            .cloned()
+                            .unwrap_or_else(|| ftype.clone());
                         trait_required.push((base.clone(), fname.clone(), resolved));
                     }
                 }
@@ -1660,14 +2066,18 @@ impl Parser {
         }
 
         // トレイトとクラス双方の必須フィールドを統合したリストを作成
-        let all_required: Vec<(String, String)> = trait_required.iter()
+        let all_required: Vec<(String, String)> = trait_required
+            .iter()
             .map(|(_, fname, ftype)| (fname.clone(), ftype.clone()))
             .chain(class_required.iter().cloned())
             .collect();
 
         // 完全一致する既存 __init__ がある場合は auto-init を生成しない（override）
         let has_exact_match = body.iter().any(|s| {
-            if let Stmt::FnDef { name: n, params, .. } = s {
+            if let Stmt::FnDef {
+                name: n, params, ..
+            } = s
+            {
                 n == "__init__" && Self::init_sig_matches(&all_required, params)
             } else {
                 false
@@ -1679,12 +2089,27 @@ impl Parser {
         }
 
         // `mut self` に続いてトレイトフィールド、クラスフィールドの順でパラメータを構築
-        let mut params = vec![Param { name: "self".to_string(), mutable: true, type_ann: None, default: None }];
+        let mut params = vec![Param {
+            name: "self".to_string(),
+            mutable: true,
+            type_ann: None,
+            default: None,
+        }];
         for (_, fname, ftype) in trait_required {
-            params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()), default: None });
+            params.push(Param {
+                name: fname.clone(),
+                mutable: false,
+                type_ann: Some(ftype.clone()),
+                default: None,
+            });
         }
         for (fname, ftype) in class_required {
-            params.push(Param { name: fname.clone(), mutable: false, type_ann: Some(ftype.clone()), default: None });
+            params.push(Param {
+                name: fname.clone(),
+                mutable: false,
+                type_ann: Some(ftype.clone()),
+                default: None,
+            });
         }
 
         // __init__ 本体を構築する
@@ -1755,9 +2180,9 @@ impl Parser {
             match self.current().clone() {
                 Token::Public | Token::Private | Token::Protected => {
                     current_access = match self.current() {
-                        Token::Public    => Accessibility::Public,
-                        Token::Private   => Accessibility::Private,
-                        _                => Accessibility::Protected,
+                        Token::Public => Accessibility::Public,
+                        Token::Private => Accessibility::Private,
+                        _ => Accessibility::Protected,
                     };
                     self.advance(); // consume public/private/protected
                     self.eat(&Token::Colon)?;
@@ -1805,15 +2230,15 @@ impl Parser {
             // フィールド宣言: mut/let/const キーワードで始まる
             Token::Mut | Token::Let | Token::Const => {
                 let kind = match self.current() {
-                    Token::Mut   => FieldKind::Mut,
-                    Token::Let   => FieldKind::Let,
-                    _            => FieldKind::Const,
+                    Token::Mut => FieldKind::Mut,
+                    Token::Let => FieldKind::Let,
+                    _ => FieldKind::Const,
                 };
                 // エラーメッセージ用にキーワード文字列を保持
                 let keyword = match &kind {
-                    FieldKind::Mut       => "mut",
-                    FieldKind::Let       => "let",
-                    FieldKind::Const     => "const",
+                    FieldKind::Mut => "mut",
+                    FieldKind::Let => "let",
+                    FieldKind::Const => "const",
                     FieldKind::StaticMut => "static mut",
                 };
                 self.advance();
@@ -1839,7 +2264,13 @@ impl Parser {
                         "class variable `{fname}` declared with `const` must have an initial value (e.g., `const {fname}: int = 0`)"
                     ));
                 }
-                Ok(Stmt::Field { name: fname, kind, type_ann, default, access: Accessibility::Public })
+                Ok(Stmt::Field {
+                    name: fname,
+                    kind,
+                    type_ann,
+                    default,
+                    access: Accessibility::Public,
+                })
             }
             Token::Fn => self.parse_fn_def(),
             Token::Gen => self.parse_gen_def(),
@@ -1863,15 +2294,26 @@ impl Parser {
                         } else {
                             None
                         };
-                        Ok(Stmt::Field { name: fname, kind: FieldKind::StaticMut, type_ann, default, access: Accessibility::Public })
+                        Ok(Stmt::Field {
+                            name: fname,
+                            kind: FieldKind::StaticMut,
+                            type_ann,
+                            default,
+                            access: Accessibility::Public,
+                        })
                     }
-                    tok => Err(format!("expected `fn` or `mut` after `static` in class body, got `{tok}`")),
+                    tok => Err(format!(
+                        "expected `fn` or `mut` after `static` in class body, got `{tok}`"
+                    )),
                 }
             }
             Token::ClassMethod => {
                 self.advance(); // consume `class_method`
                 if *self.current() != Token::Fn {
-                    return Err(format!("expected `fn` after `class_method`, got `{}`", self.current()));
+                    return Err(format!(
+                        "expected `fn` after `class_method`, got `{}`",
+                        self.current()
+                    ));
                 }
                 self.parse_fn_def_with_flags(vec![], false, true)
             }
@@ -1897,9 +2339,10 @@ impl Parser {
     fn init_sig_matches(required_fields: &[(String, String)], params: &[Param]) -> bool {
         let non_self: Vec<_> = params.iter().filter(|p| p.name != "self").collect();
         non_self.len() == required_fields.len()
-            && non_self.iter().zip(required_fields.iter()).all(|(p, (_, ftype))| {
-                p.type_ann.as_deref() == Some(ftype.as_str())
-            })
+            && non_self
+                .iter()
+                .zip(required_fields.iter())
+                .all(|(p, (_, ftype))| p.type_ann.as_deref() == Some(ftype.as_str()))
     }
 
     /// 呼び出しサイトや継承サイトの具体型引数列 `[Type1, Type2, ...]` をパースする。
@@ -1979,7 +2422,9 @@ impl Parser {
     fn validate_param_defaults(params: &[Param]) -> Result<(), String> {
         let mut seen_default = false;
         for p in params {
-            if p.name == "self" { continue; }
+            if p.name == "self" {
+                continue;
+            }
             if p.default.is_some() {
                 seen_default = true;
             } else if seen_default {
@@ -2030,7 +2475,12 @@ impl Parser {
         } else {
             None
         };
-        Ok(Param { name, mutable, type_ann, default })
+        Ok(Param {
+            name,
+            mutable,
+            type_ann,
+            default,
+        })
     }
 
     /// 型アノテーション文字列をパースして基底型名を返す。
@@ -2057,17 +2507,24 @@ impl Parser {
             Token::Union => {
                 self.advance();
                 if *self.current() != Token::LBracket {
-                    return Err("Union requires type arguments: Union[Type1, Type2, ...]".to_string());
+                    return Err(
+                        "Union requires type arguments: Union[Type1, Type2, ...]".to_string()
+                    );
                 }
                 self.advance(); // consume '['
                 let mut args = Vec::new();
                 while *self.current() != Token::RBracket && *self.current() != Token::Eof {
                     args.push(self.parse_type_expr()?);
-                    if *self.current() == Token::Comma { self.advance(); }
+                    if *self.current() == Token::Comma {
+                        self.advance();
+                    }
                 }
                 self.eat(&Token::RBracket)?;
                 if args.len() < 2 {
-                    return Err(format!("Union requires at least 2 type arguments, got {}", args.len()));
+                    return Err(format!(
+                        "Union requires at least 2 type arguments, got {}",
+                        args.len()
+                    ));
                 }
                 return Ok(format!("Union[{}]", args.join(",")));
             }
@@ -2078,7 +2535,9 @@ impl Parser {
                 }
                 self.advance(); // consume '['
                 let inner = self.parse_type_expr()?;
-                if *self.current() == Token::Comma { self.advance(); }
+                if *self.current() == Token::Comma {
+                    self.advance();
+                }
                 self.eat(&Token::RBracket)?;
                 return Ok(format!("Option[{inner}]"));
             }
@@ -2086,12 +2545,24 @@ impl Parser {
         }
 
         let base = match self.current().clone() {
-            Token::Ident(name) => { self.advance(); name }
-            Token::None => { self.advance(); "None".to_string() }
-            Token::Any => { self.advance(); "Any".to_string() }
+            Token::Ident(name) => {
+                self.advance();
+                name
+            }
+            Token::None => {
+                self.advance();
+                "None".to_string()
+            }
+            Token::Any => {
+                self.advance();
+                "Any".to_string()
+            }
             Token::SelfType => {
                 if self.class_or_trait_depth == 0 {
-                    return Err("ParseError: 'Self' can only be used inside class or trait definitions".to_string());
+                    return Err(
+                        "ParseError: 'Self' can only be used inside class or trait definitions"
+                            .to_string(),
+                    );
                 }
                 self.advance();
                 "Self".to_string()
@@ -2102,7 +2573,9 @@ impl Parser {
         if base == "type" && *self.current() == Token::LBracket {
             self.advance(); // consume '['
             let inner = self.parse_type_expr()?;
-            if *self.current() == Token::Comma { self.advance(); }
+            if *self.current() == Token::Comma {
+                self.advance();
+            }
             self.eat(&Token::RBracket)?;
             return Ok(format!("type[{inner}]"));
         }
@@ -2112,7 +2585,9 @@ impl Parser {
             let mut args = Vec::new();
             while *self.current() != Token::RBracket && *self.current() != Token::Eof {
                 args.push(self.parse_type_expr()?);
-                if *self.current() == Token::Comma { self.advance(); }
+                if *self.current() == Token::Comma {
+                    self.advance();
+                }
             }
             self.eat(&Token::RBracket)?;
             return Ok(format!("tuple[{}]", args.join(",")));
@@ -2125,7 +2600,9 @@ impl Parser {
         if base == "list" && *self.current() == Token::LBracket {
             self.advance(); // consume '['
             let elem = self.parse_type_expr()?;
-            if *self.current() == Token::Comma { self.advance(); }
+            if *self.current() == Token::Comma {
+                self.advance();
+            }
             self.eat(&Token::RBracket)?;
             return Ok(format!("list[{elem}]"));
         }
@@ -2133,7 +2610,9 @@ impl Parser {
         if base == "set" && *self.current() == Token::LBracket {
             self.advance(); // consume '['
             let elem = self.parse_type_expr()?;
-            if *self.current() == Token::Comma { self.advance(); }
+            if *self.current() == Token::Comma {
+                self.advance();
+            }
             self.eat(&Token::RBracket)?;
             return Ok(format!("set[{elem}]"));
         }
@@ -2141,9 +2620,13 @@ impl Parser {
         if base == "dict" && *self.current() == Token::LBracket {
             self.advance(); // consume '['
             let key = self.parse_type_expr()?;
-            if *self.current() == Token::Comma { self.advance(); }
+            if *self.current() == Token::Comma {
+                self.advance();
+            }
             let val = self.parse_type_expr()?;
-            if *self.current() == Token::Comma { self.advance(); }
+            if *self.current() == Token::Comma {
+                self.advance();
+            }
             self.eat(&Token::RBracket)?;
             return Ok(format!("dict[{key},{val}]"));
         }
@@ -2179,15 +2662,23 @@ impl Parser {
                 let mut auto_idx = 1usize;
                 while *self.current() != Token::RBracket && *self.current() != Token::Eof {
                     let mutable = match self.current() {
-                        Token::Mut => { self.advance(); true }
-                        Token::Let => { self.advance(); false }
+                        Token::Mut => {
+                            self.advance();
+                            true
+                        }
+                        Token::Let => {
+                            self.advance();
+                            false
+                        }
                         _ => false,
                     };
                     let ty = self.parse_type_expr()?;
                     let prefix = if mutable { "mut" } else { "let" };
                     params.push(format!("{prefix} param{auto_idx}:{ty}"));
                     auto_idx += 1;
-                    if *self.current() == Token::Comma { self.advance(); }
+                    if *self.current() == Token::Comma {
+                        self.advance();
+                    }
                 }
                 self.eat(&Token::RBracket)?;
                 Some(format!("[{}]", params.join(",")))
@@ -2198,8 +2689,14 @@ impl Parser {
                 let mut params = Vec::new();
                 while *self.current() != Token::RBrace && *self.current() != Token::Eof {
                     let mutable = match self.current() {
-                        Token::Mut => { self.advance(); true }
-                        Token::Let => { self.advance(); false }
+                        Token::Mut => {
+                            self.advance();
+                            true
+                        }
+                        Token::Let => {
+                            self.advance();
+                            false
+                        }
                         _ => false,
                     };
                     let name = self.expect_ident()?;
@@ -2207,7 +2704,9 @@ impl Parser {
                     let ty = self.parse_type_expr()?;
                     let prefix = if mutable { "mut" } else { "let" };
                     params.push(format!("{prefix} {name}:{ty}"));
-                    if *self.current() == Token::Comma { self.advance(); }
+                    if *self.current() == Token::Comma {
+                        self.advance();
+                    }
                 }
                 self.eat(&Token::RBrace)?;
                 Some(format!("{{{}}}", params.join(",")))
@@ -2305,8 +2804,14 @@ impl Parser {
     /// 通常の識別子に加えて `None` キーワードも型名として受け付ける。
     fn expect_guard_type_name(&mut self) -> Result<String, String> {
         match self.current().clone() {
-            Token::Ident(name) => { self.advance(); Ok(name) }
-            Token::None => { self.advance(); Ok("None".to_string()) }
+            Token::Ident(name) => {
+                self.advance();
+                Ok(name)
+            }
+            Token::None => {
+                self.advance();
+                Ok("None".to_string())
+            }
             tok => Err(format!("expected type name after `is`, got `{tok}`")),
         }
     }
@@ -2337,7 +2842,12 @@ impl Parser {
             let span = self.current_span();
             self.advance();
             let right = self.parse_and()?;
-            left = Expr::BinOp { op: BinOp::Or, left: Box::new(left), right: Box::new(right), span };
+            left = Expr::BinOp {
+                op: BinOp::Or,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            };
         }
         Ok(left)
     }
@@ -2352,7 +2862,12 @@ impl Parser {
             let span = self.current_span();
             self.advance();
             let right = self.parse_not()?;
-            left = Expr::BinOp { op: BinOp::And, left: Box::new(left), right: Box::new(right), span };
+            left = Expr::BinOp {
+                op: BinOp::And,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            };
         }
         Ok(left)
     }
@@ -2366,7 +2881,10 @@ impl Parser {
             self.advance();
             // 再帰で右結合を実現
             let operand = self.parse_not()?;
-            return Ok(Expr::UnaryOp { op: UnaryOp::Not, operand: Box::new(operand) });
+            return Ok(Expr::UnaryOp {
+                op: UnaryOp::Not,
+                operand: Box::new(operand),
+            });
         }
         self.parse_comparison()
     }
@@ -2382,22 +2900,42 @@ impl Parser {
         if *self.current() == Token::Is {
             self.advance();
             let type_name = self.expect_guard_type_name()?;
-            return Ok(Expr::IsType { expr: Box::new(left), negated: false, type_name, span });
+            return Ok(Expr::IsType {
+                expr: Box::new(left),
+                negated: false,
+                type_name,
+                span,
+            });
         }
         if *self.current() == Token::IsNot {
             self.advance();
             let type_name = self.expect_guard_type_name()?;
-            return Ok(Expr::IsType { expr: Box::new(left), negated: true, type_name, span });
+            return Ok(Expr::IsType {
+                expr: Box::new(left),
+                negated: true,
+                type_name,
+                span,
+            });
         }
         if *self.current() == Token::In {
             self.advance();
             let right = self.parse_bitor()?;
-            return Ok(Expr::BinOp { op: BinOp::In, left: Box::new(left), right: Box::new(right), span });
+            return Ok(Expr::BinOp {
+                op: BinOp::In,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            });
         }
         if *self.current() == Token::NotIn {
             self.advance();
             let right = self.parse_bitor()?;
-            return Ok(Expr::BinOp { op: BinOp::NotIn, left: Box::new(left), right: Box::new(right), span });
+            return Ok(Expr::BinOp {
+                op: BinOp::NotIn,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            });
         }
         let op = match self.current() {
             Token::EqEq => Some(BinOp::Eq),
@@ -2411,7 +2949,12 @@ impl Parser {
         if let Some(op) = op {
             self.advance();
             let right = self.parse_bitor()?;
-            return Ok(Expr::BinOp { op, left: Box::new(left), right: Box::new(right), span });
+            return Ok(Expr::BinOp {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            });
         }
         Ok(left)
     }
@@ -2426,7 +2969,12 @@ impl Parser {
             let span = self.current_span();
             self.advance();
             let right = self.parse_bitxor()?;
-            left = Expr::BinOp { op: BinOp::BitOr, left: Box::new(left), right: Box::new(right), span };
+            left = Expr::BinOp {
+                op: BinOp::BitOr,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            };
         }
         Ok(left)
     }
@@ -2440,7 +2988,12 @@ impl Parser {
             let span = self.current_span();
             self.advance();
             let right = self.parse_bitand()?;
-            left = Expr::BinOp { op: BinOp::BitXor, left: Box::new(left), right: Box::new(right), span };
+            left = Expr::BinOp {
+                op: BinOp::BitXor,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            };
         }
         Ok(left)
     }
@@ -2454,7 +3007,12 @@ impl Parser {
             let span = self.current_span();
             self.advance();
             let right = self.parse_shift()?;
-            left = Expr::BinOp { op: BinOp::BitAnd, left: Box::new(left), right: Box::new(right), span };
+            left = Expr::BinOp {
+                op: BinOp::BitAnd,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            };
         }
         Ok(left)
     }
@@ -2474,7 +3032,12 @@ impl Parser {
             if let Some(op) = op {
                 self.advance();
                 let right = self.parse_additive()?;
-                left = Expr::BinOp { op, left: Box::new(left), right: Box::new(right), span };
+                left = Expr::BinOp {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    span,
+                };
             } else {
                 break;
             }
@@ -2498,7 +3061,12 @@ impl Parser {
             if let Some(op) = op {
                 self.advance();
                 let right = self.parse_multiplicative()?;
-                left = Expr::BinOp { op, left: Box::new(left), right: Box::new(right), span };
+                left = Expr::BinOp {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    span,
+                };
             } else {
                 break;
             }
@@ -2523,7 +3091,12 @@ impl Parser {
             if let Some(op) = op {
                 self.advance();
                 let right = self.parse_unary()?;
-                left = Expr::BinOp { op, left: Box::new(left), right: Box::new(right), span };
+                left = Expr::BinOp {
+                    op,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    span,
+                };
             } else {
                 break;
             }
@@ -2540,12 +3113,18 @@ impl Parser {
             // 単項マイナス（算術否定）
             Token::Minus => {
                 self.advance();
-                Ok(Expr::UnaryOp { op: UnaryOp::Neg, operand: Box::new(self.parse_unary()?) })
+                Ok(Expr::UnaryOp {
+                    op: UnaryOp::Neg,
+                    operand: Box::new(self.parse_unary()?),
+                })
             }
             // ビット NOT（`~`）
             Token::Tilde => {
                 self.advance();
-                Ok(Expr::UnaryOp { op: UnaryOp::BitNot, operand: Box::new(self.parse_unary()?) })
+                Ok(Expr::UnaryOp {
+                    op: UnaryOp::BitNot,
+                    operand: Box::new(self.parse_unary()?),
+                })
             }
             // 単項プラス（`+x` は `x` と同義）
             Token::Plus => {
@@ -2567,7 +3146,12 @@ impl Parser {
             self.advance();
             // 右結合: 右辺は unary レベルから再帰する
             let exp = self.parse_unary()?;
-            Ok(Expr::BinOp { op: BinOp::Pow, left: Box::new(base), right: Box::new(exp), span })
+            Ok(Expr::BinOp {
+                op: BinOp::Pow,
+                left: Box::new(base),
+                right: Box::new(exp),
+                span,
+            })
         } else {
             Ok(base)
         }
@@ -2596,7 +3180,10 @@ impl Parser {
                                 let name = name.clone();
                                 self.advance(); // Ident を消費
                                 self.advance(); // `=` を消費
-                                CallArg::Keyword { name, value: self.parse_expr()? }
+                                CallArg::Keyword {
+                                    name,
+                                    value: self.parse_expr()?,
+                                }
                             } else {
                                 // `==` 等の場合は位置引数として処理
                                 CallArg::Positional(self.parse_expr()?)
@@ -2612,13 +3199,21 @@ impl Parser {
                         }
                     }
                     self.eat(&Token::RParen)?;
-                    expr = Expr::Call { func: Box::new(expr), args, span: call_span };
+                    expr = Expr::Call {
+                        func: Box::new(expr),
+                        args,
+                        span: call_span,
+                    };
                 }
                 Token::Dot => {
                     let dot_span = self.current_span();
                     self.advance(); // `.` を消費
                     let attr = self.expect_attr_name()?;
-                    expr = Expr::Attr { object: Box::new(expr), attr, span: dot_span };
+                    expr = Expr::Attr {
+                        object: Box::new(expr),
+                        attr,
+                        span: dot_span,
+                    };
                 }
                 Token::ColonColon => {
                     // `obj::TraitName.attr` 形式のトレイトアクセス
@@ -2626,7 +3221,11 @@ impl Parser {
                     let trait_name = self.expect_ident()?;
                     self.eat(&Token::Dot)?;
                     let attr = self.expect_attr_name()?;
-                    expr = Expr::TraitAccess { object: Box::new(expr), trait_name, attr };
+                    expr = Expr::TraitAccess {
+                        object: Box::new(expr),
+                        trait_name,
+                        attr,
+                    };
                 }
                 Token::LBracket => {
                     // `[` の後がテンプレート呼び出しか subscript かを判定して処理
@@ -2637,7 +3236,11 @@ impl Parser {
                     let span = self.current_span();
                     self.advance(); // consume `=>`
                     let type_name = self.parse_type_expr()?;
-                    expr = Expr::Cast { object: Box::new(expr), type_name, span };
+                    expr = Expr::Cast {
+                        object: Box::new(expr),
+                        type_name,
+                        span,
+                    };
                     // ループを継続して `.method()` などをチェーン可能にする
                 }
                 _ => break,
@@ -2667,10 +3270,17 @@ impl Parser {
             let mut type_args = Vec::new();
             while *self.current() != Token::RBracket && *self.current() != Token::Eof {
                 type_args.push(self.parse_type_expr()?);
-                if *self.current() == Token::Comma { self.advance(); } else { break; }
+                if *self.current() == Token::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
             }
             self.eat(&Token::RBracket)?;
-            Ok(Expr::TemplateInstantiate { base: Box::new(expr), type_args })
+            Ok(Expr::TemplateInstantiate {
+                base: Box::new(expr),
+                type_args,
+            })
         } else {
             self.advance(); // `[` を消費
 
@@ -2680,13 +3290,21 @@ impl Parser {
                 // `[::step]` または `[::]`
                 self.advance(); // `::` を消費
                 let step = self.parse_slice_part()?;
-                Expr::Slice { begin: None, end: None, step }
+                Expr::Slice {
+                    begin: None,
+                    end: None,
+                    step,
+                }
             } else if *self.current() == Token::Colon {
                 // `[:...]` — begin なし
                 self.advance(); // `:` を消費
                 let end = self.parse_slice_part()?;
                 let step = self.parse_slice_step()?;
-                Expr::Slice { begin: None, end, step }
+                Expr::Slice {
+                    begin: None,
+                    end,
+                    step,
+                }
             } else {
                 // 先に式を1つ読む。その後 `:` / `::` が来ればスライス、なければ通常添字。
                 let first = self.parse_expr()?;
@@ -2694,26 +3312,40 @@ impl Parser {
                     // `[begin::step]` または `[begin::]`
                     self.advance(); // `::` を消費
                     let step = self.parse_slice_part()?;
-                    Expr::Slice { begin: Some(Box::new(first)), end: None, step }
+                    Expr::Slice {
+                        begin: Some(Box::new(first)),
+                        end: None,
+                        step,
+                    }
                 } else if *self.current() == Token::Colon {
                     self.advance(); // `:` を消費
                     let end = self.parse_slice_part()?;
                     let step = self.parse_slice_step()?;
-                    Expr::Slice { begin: Some(Box::new(first)), end, step }
+                    Expr::Slice {
+                        begin: Some(Box::new(first)),
+                        end,
+                        step,
+                    }
                 } else {
                     first // 通常添字（スライスなし）
                 }
             };
 
             self.eat(&Token::RBracket)?;
-            Ok(Expr::Subscript { object: Box::new(expr), index: Box::new(index) })
+            Ok(Expr::Subscript {
+                object: Box::new(expr),
+                index: Box::new(index),
+            })
         }
     }
 
     /// スライスの begin/end/step 部分（省略可能な式）をパースする。
     /// `]`, `:`, `::` または EOF が来た場合は `None` を返す。
     fn parse_slice_part(&mut self) -> Result<Option<Box<Expr>>, String> {
-        if matches!(*self.current(), Token::RBracket | Token::Colon | Token::ColonColon | Token::Eof) {
+        if matches!(
+            *self.current(),
+            Token::RBracket | Token::Colon | Token::ColonColon | Token::Eof
+        ) {
             Ok(None)
         } else {
             Ok(Some(Box::new(self.parse_expr()?)))
@@ -2787,19 +3419,46 @@ impl Parser {
     /// 未対応トークンが現れた場合、または `Self` をクラス外で使用した場合
     fn parse_primary(&mut self) -> Result<Expr, String> {
         match self.current().clone() {
-            Token::Int(n)   => { self.advance(); Ok(Expr::Int(n)) }
-            Token::Float(f) => { self.advance(); Ok(Expr::Float(f)) }
-            Token::Str(s)   => { self.advance(); Ok(Expr::Str(s)) }
+            Token::Int(n) => {
+                self.advance();
+                Ok(Expr::Int(n))
+            }
+            Token::Float(f) => {
+                self.advance();
+                Ok(Expr::Float(f))
+            }
+            Token::Str(s) => {
+                self.advance();
+                Ok(Expr::Str(s))
+            }
             Token::FStr(parts) => {
                 self.advance();
                 Ok(self.desugar_fstring(parts)?)
             }
-            Token::True     => { self.advance(); Ok(Expr::Bool(true)) }
-            Token::False    => { self.advance(); Ok(Expr::Bool(false)) }
-            Token::None     => { self.advance(); Ok(Expr::None) }
-            Token::Any      => { self.advance(); Ok(Expr::Ident("Any".to_string())) }
-            Token::Union    => { self.advance(); Ok(Expr::Ident("Union".to_string())) }
-            Token::Option   => { self.advance(); Ok(Expr::Ident("Option".to_string())) }
+            Token::True => {
+                self.advance();
+                Ok(Expr::Bool(true))
+            }
+            Token::False => {
+                self.advance();
+                Ok(Expr::Bool(false))
+            }
+            Token::None => {
+                self.advance();
+                Ok(Expr::None)
+            }
+            Token::Any => {
+                self.advance();
+                Ok(Expr::Ident("Any".to_string()))
+            }
+            Token::Union => {
+                self.advance();
+                Ok(Expr::Ident("Union".to_string()))
+            }
+            Token::Option => {
+                self.advance();
+                Ok(Expr::Ident("Option".to_string()))
+            }
             Token::Ident(name) if name == "dbg" => {
                 self.advance();
                 if *self.current() == Token::ColonColon {
@@ -2810,22 +3469,32 @@ impl Parser {
                     Err("ParseError: 'dbg' is a reserved name for the debugger namespace (use dbg::varname)".to_string())
                 }
             }
-            Token::Ident(name) => { self.advance(); Ok(Expr::Ident(name)) }
+            Token::Ident(name) => {
+                self.advance();
+                Ok(Expr::Ident(name))
+            }
             Token::SelfType => {
                 if self.class_or_trait_depth == 0 {
-                    return Err("ParseError: 'Self' can only be used inside class or trait definitions".to_string());
+                    return Err(
+                        "ParseError: 'Self' can only be used inside class or trait definitions"
+                            .to_string(),
+                    );
                 }
                 self.advance();
                 Ok(Expr::Ident("Self".to_string()))
             }
-            Token::LParen   => self.parse_paren_expr(),
+            Token::LParen => self.parse_paren_expr(),
             Token::LBracket => self.parse_list_literal(),
-            Token::LBrace   => self.parse_dict_or_set_literal(),
+            Token::LBrace => self.parse_dict_or_set_literal(),
             // `if cond [->Type]: body [elif/else]` — if 式
             Token::If => {
                 self.advance();
                 let (branches, else_body, return_type) = self.parse_if_components()?;
-                Ok(Expr::IfExpr { branches, else_body, return_type })
+                Ok(Expr::IfExpr {
+                    branches,
+                    else_body,
+                    return_type,
+                })
             }
             // `for target in iter [->Type]: body` — for 式
             Token::For => {
@@ -2835,7 +3504,12 @@ impl Parser {
                 let iter = self.parse_expr()?;
                 let return_type = self.parse_opt_return_type()?;
                 self.eat(&Token::Colon)?;
-                Ok(Expr::ForExpr { target, iter: Box::new(iter), body: self.parse_block()?, return_type })
+                Ok(Expr::ForExpr {
+                    target,
+                    iter: Box::new(iter),
+                    body: self.parse_block()?,
+                    return_type,
+                })
             }
             // `while cond [->Type]: body` — while 式
             Token::While => {
@@ -2843,7 +3517,11 @@ impl Parser {
                 let cond = self.parse_expr()?;
                 let return_type = self.parse_opt_return_type()?;
                 self.eat(&Token::Colon)?;
-                Ok(Expr::WhileExpr { cond: Box::new(cond), body: self.parse_block()?, return_type })
+                Ok(Expr::WhileExpr {
+                    cond: Box::new(cond),
+                    body: self.parse_block()?,
+                    return_type,
+                })
             }
             // `match subject [->Type]: arms` — match 式
             Token::Match => {
@@ -2854,14 +3532,21 @@ impl Parser {
                 self.eat(&Token::Newline)?;
                 self.eat(&Token::Indent)?;
                 let arms = self.parse_match_arms()?;
-                Ok(Expr::MatchExpr { subject: Box::new(subject), arms, return_type })
+                Ok(Expr::MatchExpr {
+                    subject: Box::new(subject),
+                    arms,
+                    return_type,
+                })
             }
             // `block [->Type]: body` — ブロック式。block_return/block_yield で値を返す。
             Token::Block => {
                 self.advance(); // `block` を消費
                 let return_type = self.parse_opt_return_type()?;
                 self.eat(&Token::Colon)?;
-                Ok(Expr::Block { stmts: self.parse_block()?, return_type })
+                Ok(Expr::Block {
+                    stmts: self.parse_block()?,
+                    return_type,
+                })
             }
             tok => Err(format!("unexpected token: `{tok}`")),
         }
@@ -2884,7 +3569,7 @@ impl Parser {
     /// 内部式または `)` のパースに失敗した場合
     fn parse_paren_expr(&mut self) -> Result<Expr, String> {
         self.advance(); // `(` を消費
-        // 空タプル `()` を処理
+                        // 空タプル `()` を処理
         if *self.current() == Token::RParen {
             self.advance();
             return Ok(Expr::Tuple(vec![]));
@@ -2901,7 +3586,11 @@ impl Parser {
         while *self.current() != Token::RParen && *self.current() != Token::Eof {
             items.push(self.parse_expr()?);
             // 末尾カンマがあればスキップ
-            if *self.current() == Token::Comma { self.advance(); } else { break; }
+            if *self.current() == Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
         }
         self.eat(&Token::RParen)?;
         Ok(Expr::Tuple(items))
@@ -2918,7 +3607,11 @@ impl Parser {
         let mut items = Vec::new();
         while *self.current() != Token::RBracket && *self.current() != Token::Eof {
             items.push(self.parse_expr()?);
-            if *self.current() == Token::Comma { self.advance(); } else { break; }
+            if *self.current() == Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
         }
         self.eat(&Token::RBracket)?;
         Ok(Expr::List(items))
@@ -2938,7 +3631,7 @@ impl Parser {
     /// 式または `}` のパースに失敗した場合
     fn parse_dict_or_set_literal(&mut self) -> Result<Expr, String> {
         self.advance(); // consume `{`
-        // Empty braces → empty dict
+                        // Empty braces → empty dict
         if *self.current() == Token::RBrace {
             self.advance();
             return Ok(Expr::Dict(vec![]));
@@ -2952,7 +3645,9 @@ impl Parser {
             let mut pairs = vec![(first, val)];
             while *self.current() == Token::Comma {
                 self.advance();
-                if *self.current() == Token::RBrace { break; }
+                if *self.current() == Token::RBrace {
+                    break;
+                }
                 let key = self.parse_expr()?;
                 self.eat(&Token::Colon)?;
                 let val = self.parse_expr()?;
@@ -2965,7 +3660,9 @@ impl Parser {
             let mut items = vec![first];
             while *self.current() == Token::Comma {
                 self.advance();
-                if *self.current() == Token::RBrace { break; }
+                if *self.current() == Token::RBrace {
+                    break;
+                }
                 items.push(self.parse_expr()?);
             }
             self.eat(&Token::RBrace)?;

@@ -3,6 +3,8 @@
 /// パイプラインは以下の順序で処理を行う:
 ///   ソースファイル → Lexer（字句解析）→ Parser（構文解析）→ TypeChecker（静的型検査）→ Interpreter（実行）
 mod ast;
+#[cfg(test)]
+mod frontend_tests;
 mod interpreter;
 mod lexer;
 mod parser;
@@ -11,8 +13,6 @@ mod python_converter;
 mod repl;
 mod token;
 mod type_check;
-#[cfg(test)]
-mod frontend_tests;
 
 use interpreter::{ExecResult, Interpreter};
 use lexer::Lexer;
@@ -44,16 +44,22 @@ fn parse_args() -> Mode {
     while i < args.len() {
         match args[i].as_str() {
             "--compile" | "-compile" => {
-                return args.get(i + 1).map(|p| Mode::Compile(p.clone())).unwrap_or_else(|| {
-                    eprintln!("Error: --compile requires a file path");
-                    std::process::exit(1);
-                });
+                return args
+                    .get(i + 1)
+                    .map(|p| Mode::Compile(p.clone()))
+                    .unwrap_or_else(|| {
+                        eprintln!("Error: --compile requires a file path");
+                        std::process::exit(1);
+                    });
             }
             "-src" => {
-                return args.get(i + 1).map(|p| Mode::Run(p.clone())).unwrap_or_else(|| {
-                    eprintln!("Error: -src requires a file path");
-                    std::process::exit(1);
-                });
+                return args
+                    .get(i + 1)
+                    .map(|p| Mode::Run(p.clone()))
+                    .unwrap_or_else(|| {
+                        eprintln!("Error: -src requires a file path");
+                        std::process::exit(1);
+                    });
             }
             "--repl" => return Mode::Repl,
             _ => {}
@@ -67,13 +73,14 @@ fn parse_args() -> Mode {
         .unwrap_or(Mode::Stdin)
 }
 
-
 fn ansi_display_len(s: &str) -> usize {
     let mut len = 0;
     let mut in_escape = false;
     for c in s.chars() {
         if in_escape {
-            if c == 'm' { in_escape = false; }
+            if c == 'm' {
+                in_escape = false;
+            }
         } else if c == '\x1b' {
             in_escape = true;
         } else {
@@ -122,7 +129,9 @@ fn word_wrap_ansi(s: &str, budget: usize) -> Vec<String> {
 /// 現在のターミナル幅を返す。取得できない場合は 120 を返す。
 fn terminal_width() -> usize {
     use terminal_size::{terminal_size, Width};
-    terminal_size().map(|(Width(w), _)| w as usize).unwrap_or(120)
+    terminal_size()
+        .map(|(Width(w), _)| w as usize)
+        .unwrap_or(120)
 }
 
 /// 静的型エラーをテーブル形式にフォーマットして返す。
@@ -132,12 +141,30 @@ fn format_static_errors(errors: &[type_check::StaticTypeError]) -> String {
     const C: &str = "\x1b[1;36m";
     const X: &str = "\x1b[0m";
 
-    let rows: Vec<(String, String, &str, String)> = errors.iter()
-        .map(|e| (e.file_str(), e.line_col_str(), e.error_type_str(), e.detail_str()))
+    let rows: Vec<(String, String, &str, String)> = errors
+        .iter()
+        .map(|e| {
+            (
+                e.file_str(),
+                e.line_col_str(),
+                e.error_type_str(),
+                e.detail_str(),
+            )
+        })
         .collect();
 
-    let w1 = rows.iter().map(|(f, _, _, _)| f.len()).max().unwrap_or(0).max("File".len());
-    let w2 = rows.iter().map(|(_, l, _, _)| l.len()).max().unwrap_or(0).max("Line:Col".len());
+    let w1 = rows
+        .iter()
+        .map(|(f, _, _, _)| f.len())
+        .max()
+        .unwrap_or(0)
+        .max("File".len());
+    let w2 = rows
+        .iter()
+        .map(|(_, l, _, _)| l.len())
+        .max()
+        .unwrap_or(0)
+        .max("Line:Col".len());
     let w3 = "StaticTypeError".len().max("Error Type".len());
 
     // col separators: 3 × "  " = 6 chars; compute remaining width for message column
@@ -146,18 +173,38 @@ fn format_static_errors(errors: &[type_check::StaticTypeError]) -> String {
 
     let sep = format!(
         "{}{}{X}  {}{}{X}  {}{}{X}  {}{}{X}",
-        Y, "─".repeat(w1), Y, "─".repeat(w2), Y, "─".repeat(w3), Y, "─".repeat(msg_budget)
+        Y,
+        "─".repeat(w1),
+        Y,
+        "─".repeat(w2),
+        Y,
+        "─".repeat(w3),
+        Y,
+        "─".repeat(msg_budget)
     );
     let header = format!(
         "{}{}{}  {}{}{}  {}{}{}  {}{}{}",
-        C, ansi_pad("File", w1), X,
-        C, ansi_pad("Line:Col", w2), X,
-        C, ansi_pad("Error Type", w3), X,
-        C, "Message", X,
+        C,
+        ansi_pad("File", w1),
+        X,
+        C,
+        ansi_pad("Line:Col", w2),
+        X,
+        C,
+        ansi_pad("Error Type", w3),
+        X,
+        C,
+        "Message",
+        X,
     );
 
     // blank prefix for continuation lines (cols 1-3 replaced by spaces)
-    let blank_prefix = format!("{}  {}  {}  ", " ".repeat(w1), " ".repeat(w2), " ".repeat(w3));
+    let blank_prefix = format!(
+        "{}  {}  {}  ",
+        " ".repeat(w1),
+        " ".repeat(w2),
+        " ".repeat(w3)
+    );
 
     let mut lines = vec![header, sep];
     for (file, loc, etype, msg) in &rows {
@@ -165,9 +212,15 @@ fn format_static_errors(errors: &[type_check::StaticTypeError]) -> String {
         let first = msg_lines.first().map(String::as_str).unwrap_or("");
         lines.push(format!(
             "{}{}{}  {}{}{}  {}{}{}  {}",
-            Y, ansi_pad(file, w1), X,
-            Y, ansi_pad(loc, w2), X,
-            R, ansi_pad(etype, w3), X,
+            Y,
+            ansi_pad(file, w1),
+            X,
+            Y,
+            ansi_pad(loc, w2),
+            X,
+            R,
+            ansi_pad(etype, w3),
+            X,
             first,
         ));
         for cont in msg_lines.iter().skip(1) {
@@ -203,7 +256,8 @@ fn run_program(source: &str, filename: &str) -> Result<(), String> {
         .map(|p| p.to_path_buf());
 
     // --- 構文解析: トークン列を AST（Vec<Stmt>）に変換する ---
-    let stmts = Parser::new(tokens, source_dir.clone()).parse_program()
+    let stmts = Parser::new(tokens, source_dir.clone())
+        .parse_program()
         .map_err(|e| format!("ParseError: {e}"))?;
 
     // --- 静的型検査: AST を走査してエラーを収集し、1件でもあれば全件報告して終了する ---
@@ -232,7 +286,8 @@ fn run_program(source: &str, filename: &str) -> Result<(), String> {
             Ok(_) => {}
             // 内部シグナル `\x00__raise__`: インタープリタが例外を保持している場合に送出される
             Err(e) if e == "\x00__raise__" => {
-                let msg = interp.take_current_exception()
+                let msg = interp
+                    .take_current_exception()
                     .map(|r| Interpreter::format_error_report(&r))
                     .unwrap_or_else(|| "UnhandledException: (no details available)".to_string());
                 return Err(msg);
@@ -269,7 +324,9 @@ fn main() {
         Mode::Stdin => {
             use std::io::Read;
             let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf).expect("failed to read stdin");
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .expect("failed to read stdin");
             if let Err(e) = run_program(&buf, "<stdin>") {
                 eprintln!("{e}");
                 std::process::exit(1);
@@ -301,10 +358,12 @@ fn compile_module(path: &str) {
     let tokens = Lexer::new(&source, path).tokenize();
     let source_dir = std::path::Path::new(path).parent().map(|p| p.to_path_buf());
 
-    let stmts = Parser::new(tokens, source_dir).parse_program().unwrap_or_else(|e| {
-        eprintln!("ParseError: {e}");
-        std::process::exit(1);
-    });
+    let stmts = Parser::new(tokens, source_dir)
+        .parse_program()
+        .unwrap_or_else(|e| {
+            eprintln!("ParseError: {e}");
+            std::process::exit(1);
+        });
 
     let type_errors = TypeChecker::check(&stmts);
     if !type_errors.is_empty() {

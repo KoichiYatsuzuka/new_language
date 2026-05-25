@@ -2,7 +2,6 @@
 ///
 /// - `math`  — LaTeX-like 数式表記を Unicode に変換するユーティリティ
 /// - `scan`  — `Lexer` 本体（インデント処理・トークン生成）
-
 mod chars;
 mod keyword;
 mod literal;
@@ -11,4 +10,3 @@ mod scan;
 mod symbol;
 
 pub use scan::Lexer;
-

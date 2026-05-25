@@ -151,7 +151,12 @@ pub unsafe extern "C" fn tl_init(cb: *const TlCallbacks) {
 /// `Bool` is used only as a transient expression type (comparison result);
 /// variables are always stored as Int, Float, or Handle.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Ty { Int, Float, Bool, Handle }
+enum Ty {
+    Int,
+    Float,
+    Bool,
+    Handle,
+}
 
 /// Signature of a module function: return type and per-parameter mutability flags.
 struct FnSig {
@@ -162,45 +167,51 @@ struct FnSig {
 
 fn ann_ty(s: Option<&str>) -> Ty {
     match s {
-        Some("int")   => Ty::Int,
+        Some("int") => Ty::Int,
         Some("float") => Ty::Float,
-        Some("bool")  => Ty::Handle, // bool values are TL_TRUE/TL_FALSE handles
-        _             => Ty::Handle,
+        Some("bool") => Ty::Handle, // bool values are TL_TRUE/TL_FALSE handles
+        _ => Ty::Handle,
     }
 }
 
 /// How to store an expression: Bool → Handle (TL_TRUE/TL_FALSE), others unchanged.
-fn store_ty(t: Ty) -> Ty { if t == Ty::Bool { Ty::Handle } else { t } }
+fn store_ty(t: Ty) -> Ty {
+    if t == Ty::Bool {
+        Ty::Handle
+    } else {
+        t
+    }
+}
 
 fn coerce_to_h(code: &str, t: Ty) -> String {
     match t {
-        Ty::Int    => format!("cb_make_int({code})"),
-        Ty::Float  => format!("cb_make_float({code})"),
-        Ty::Bool   => format!("(if {code} {{ TL_TRUE }} else {{ TL_FALSE }})"),
+        Ty::Int => format!("cb_make_int({code})"),
+        Ty::Float => format!("cb_make_float({code})"),
+        Ty::Bool => format!("(if {code} {{ TL_TRUE }} else {{ TL_FALSE }})"),
         Ty::Handle => code.to_string(),
     }
 }
 fn coerce_to_i(code: &str, t: Ty) -> String {
     match t {
-        Ty::Int    => code.to_string(),
-        Ty::Float  => format!("({code} as i64)"),
-        Ty::Bool   => format!("(if {code} {{ 1i64 }} else {{ 0i64 }})"),
+        Ty::Int => code.to_string(),
+        Ty::Float => format!("({code} as i64)"),
+        Ty::Bool => format!("(if {code} {{ 1i64 }} else {{ 0i64 }})"),
         Ty::Handle => format!("cb_to_int({code})"),
     }
 }
 fn coerce_to_f(code: &str, t: Ty) -> String {
     match t {
-        Ty::Float  => code.to_string(),
-        Ty::Int    => format!("({code} as f64)"),
-        Ty::Bool   => format!("(if {code} {{ 1.0f64 }} else {{ 0.0f64 }})"),
+        Ty::Float => code.to_string(),
+        Ty::Int => format!("({code} as f64)"),
+        Ty::Bool => format!("(if {code} {{ 1.0f64 }} else {{ 0.0f64 }})"),
         Ty::Handle => format!("cb_to_float({code})"),
     }
 }
 fn coerce_to_cond(code: &str, t: Ty) -> String {
     match t {
-        Ty::Bool   => code.to_string(),
-        Ty::Int    => format!("({code} != 0i64)"),
-        Ty::Float  => format!("({code} != 0.0f64)"),
+        Ty::Bool => code.to_string(),
+        Ty::Int => format!("({code} != 0i64)"),
+        Ty::Float => format!("({code} != 0.0f64)"),
         Ty::Handle => format!("cb_is_truthy({code})"),
     }
 }
@@ -209,43 +220,57 @@ fn specialize_binop(op: &BinOp, l: &str, lt: Ty, r: &str, rt: Ty) -> (String, Ty
     // If either side is a Handle we can't specialize — fall back to cb_binop.
     if lt == Ty::Handle || rt == Ty::Handle {
         let oc = binop_code(op);
-        return (format!("cb_binop({oc}, {}, {})", coerce_to_h(l, lt), coerce_to_h(r, rt)), Ty::Handle);
+        return (
+            format!(
+                "cb_binop({oc}, {}, {})",
+                coerce_to_h(l, lt),
+                coerce_to_h(r, rt)
+            ),
+            Ty::Handle,
+        );
     }
     // Promote mixed Int/Float to Float.
     let (l, r, nt): (String, String, Ty) = match (lt, rt) {
         (Ty::Int, Ty::Float) => (format!("({l} as f64)"), r.to_string(), Ty::Float),
         (Ty::Float, Ty::Int) => (l.to_string(), format!("({r} as f64)"), Ty::Float),
-        (t, _)               => (l.to_string(), r.to_string(), t),
+        (t, _) => (l.to_string(), r.to_string(), t),
     };
     let (l, r) = (l.as_str(), r.as_str());
     match (op, nt) {
-        (BinOp::Add, Ty::Int)   => (format!("({l} + {r})"), Ty::Int),
-        (BinOp::Sub, Ty::Int)   => (format!("({l} - {r})"), Ty::Int),
-        (BinOp::Mul, Ty::Int)   => (format!("({l} * {r})"), Ty::Int),
-        (BinOp::Div, Ty::Int)   => (format!("(({l} as f64) / ({r} as f64))"), Ty::Float),
+        (BinOp::Add, Ty::Int) => (format!("({l} + {r})"), Ty::Int),
+        (BinOp::Sub, Ty::Int) => (format!("({l} - {r})"), Ty::Int),
+        (BinOp::Mul, Ty::Int) => (format!("({l} * {r})"), Ty::Int),
+        (BinOp::Div, Ty::Int) => (format!("(({l} as f64) / ({r} as f64))"), Ty::Float),
         (BinOp::FloorDiv, Ty::Int) => (format!("_tl_idiv({l}, {r})"), Ty::Int),
-        (BinOp::Mod,      Ty::Int) => (format!("_tl_imod({l}, {r})"), Ty::Int),
-        (BinOp::BitAnd,   Ty::Int) => (format!("({l} & {r})"), Ty::Int),
-        (BinOp::BitOr,    Ty::Int) => (format!("({l} | {r})"), Ty::Int),
-        (BinOp::BitXor,   Ty::Int) => (format!("({l} ^ {r})"), Ty::Int),
-        (BinOp::LShift,   Ty::Int) => (format!("({l} << {r})"), Ty::Int),
-        (BinOp::RShift,   Ty::Int) => (format!("({l} >> {r})"), Ty::Int),
-        (BinOp::Add, Ty::Float)    => (format!("({l} + {r})"), Ty::Float),
-        (BinOp::Sub, Ty::Float)    => (format!("({l} - {r})"), Ty::Float),
-        (BinOp::Mul, Ty::Float)    => (format!("({l} * {r})"), Ty::Float),
-        (BinOp::Div, Ty::Float)    => (format!("({l} / {r})"), Ty::Float),
+        (BinOp::Mod, Ty::Int) => (format!("_tl_imod({l}, {r})"), Ty::Int),
+        (BinOp::BitAnd, Ty::Int) => (format!("({l} & {r})"), Ty::Int),
+        (BinOp::BitOr, Ty::Int) => (format!("({l} | {r})"), Ty::Int),
+        (BinOp::BitXor, Ty::Int) => (format!("({l} ^ {r})"), Ty::Int),
+        (BinOp::LShift, Ty::Int) => (format!("({l} << {r})"), Ty::Int),
+        (BinOp::RShift, Ty::Int) => (format!("({l} >> {r})"), Ty::Int),
+        (BinOp::Add, Ty::Float) => (format!("({l} + {r})"), Ty::Float),
+        (BinOp::Sub, Ty::Float) => (format!("({l} - {r})"), Ty::Float),
+        (BinOp::Mul, Ty::Float) => (format!("({l} * {r})"), Ty::Float),
+        (BinOp::Div, Ty::Float) => (format!("({l} / {r})"), Ty::Float),
         (BinOp::FloorDiv, Ty::Float) => (format!("(({l}) / ({r})).floor()"), Ty::Float),
-        (BinOp::Mod,      Ty::Float) => (format!("(({l}).rem_euclid({r}))"), Ty::Float),
-        (BinOp::Pow,      Ty::Float) => (format!("(({l}).powf({r}))"), Ty::Float),
-        (BinOp::Eq,    _) => (format!("({l} == {r})"), Ty::Bool),
+        (BinOp::Mod, Ty::Float) => (format!("(({l}).rem_euclid({r}))"), Ty::Float),
+        (BinOp::Pow, Ty::Float) => (format!("(({l}).powf({r}))"), Ty::Float),
+        (BinOp::Eq, _) => (format!("({l} == {r})"), Ty::Bool),
         (BinOp::NotEq, _) => (format!("({l} != {r})"), Ty::Bool),
-        (BinOp::Lt,    _) => (format!("({l} < {r})"),  Ty::Bool),
-        (BinOp::LtEq,  _) => (format!("({l} <= {r})"), Ty::Bool),
-        (BinOp::Gt,    _) => (format!("({l} > {r})"),  Ty::Bool),
-        (BinOp::GtEq,  _) => (format!("({l} >= {r})"), Ty::Bool),
+        (BinOp::Lt, _) => (format!("({l} < {r})"), Ty::Bool),
+        (BinOp::LtEq, _) => (format!("({l} <= {r})"), Ty::Bool),
+        (BinOp::Gt, _) => (format!("({l} > {r})"), Ty::Bool),
+        (BinOp::GtEq, _) => (format!("({l} >= {r})"), Ty::Bool),
         _ => {
             let oc = binop_code(op);
-            (format!("cb_binop({oc}, {}, {})", coerce_to_h(l, nt), coerce_to_h(r, nt)), Ty::Handle)
+            (
+                format!(
+                    "cb_binop({oc}, {}, {})",
+                    coerce_to_h(l, nt),
+                    coerce_to_h(r, nt)
+                ),
+                Ty::Handle,
+            )
         }
     }
 }
@@ -263,7 +288,12 @@ struct GenCtx<'a> {
 
 impl<'a> GenCtx<'a> {
     fn new(module_fns: &'a HashSet<String>, fn_sigs: &'a HashMap<String, FnSig>) -> Self {
-        Self { locals: HashMap::new(), module_fns, fn_sigs, counter: 0 }
+        Self {
+            locals: HashMap::new(),
+            module_fns,
+            fn_sigs,
+            counter: 0,
+        }
     }
 
     fn fresh(&mut self) -> String {
@@ -322,12 +352,27 @@ pub fn generate_rust_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
         .iter()
         .filter_map(|s| {
             if let Stmt::FnDef {
-                name, template_params, params, body, is_abstract, return_type, ..
+                name,
+                template_params,
+                params,
+                body,
+                is_abstract,
+                return_type,
+                ..
             } = s
             {
-                if !template_params.is_empty() || *is_abstract { return None; }
-                if !body_eligible(body) { return None; }
-                Some(EligibleFn { name, params, return_type: return_type.as_deref(), body })
+                if !template_params.is_empty() || *is_abstract {
+                    return None;
+                }
+                if !body_eligible(body) {
+                    return None;
+                }
+                Some(EligibleFn {
+                    name,
+                    params,
+                    return_type: return_type.as_deref(),
+                    body,
+                })
             } else {
                 None
             }
@@ -347,7 +392,13 @@ pub fn generate_rust_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
         .map(|f| {
             let ret = ann_ty(f.return_type);
             let param_mutabilities = f.params.iter().map(|p| p.mutable).collect();
-            (f.name.to_string(), FnSig { ret, param_mutabilities })
+            (
+                f.name.to_string(),
+                FnSig {
+                    ret,
+                    param_mutabilities,
+                },
+            )
         })
         .collect();
 
@@ -360,7 +411,11 @@ pub fn generate_rust_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
         out.push_str(&format!(
             "unsafe fn {}_impl({}) -> i64 {{\n",
             f.name,
-            param_vars.iter().map(|v| format!("mut {v}: i64")).collect::<Vec<_>>().join(", ")
+            param_vars
+                .iter()
+                .map(|v| format!("mut {v}: i64"))
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
 
         let mut ctx = GenCtx::new(&module_fns, &fn_sigs);
@@ -369,10 +424,12 @@ pub fn generate_rust_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
             let mut_kw = if p.mutable { "mut " } else { "" };
             match pt {
                 Ty::Int => out.push_str(&format!(
-                    "    let {mut_kw}_v_{n}: i64 = cb_to_int(_v_{n});\n", n = p.name
+                    "    let {mut_kw}_v_{n}: i64 = cb_to_int(_v_{n});\n",
+                    n = p.name
                 )),
                 Ty::Float => out.push_str(&format!(
-                    "    let {mut_kw}_v_{n}: f64 = cb_to_float(_v_{n});\n", n = p.name
+                    "    let {mut_kw}_v_{n}: f64 = cb_to_float(_v_{n});\n",
+                    n = p.name
                 )),
                 _ => {}
             }
@@ -387,7 +444,10 @@ pub fn generate_rust_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
 
     let exports: Vec<FnExport> = eligible
         .iter()
-        .map(|f| FnExport { name: f.name.to_string(), n_params: f.params.len() })
+        .map(|f| FnExport {
+            name: f.name.to_string(),
+            n_params: f.params.len(),
+        })
         .collect();
 
     for exp in &exports {
@@ -416,19 +476,30 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
         Stmt::Let(_, e) | Stmt::Mut(_, e) | Stmt::Const(_, e) => expr_eligible(e),
         Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => expr_eligible(value),
         Stmt::AttrAssign { target, value } => expr_eligible(target) && expr_eligible(value),
-        Stmt::AttrCompoundAssign { target, value, .. } => expr_eligible(target) && expr_eligible(value),
+        Stmt::AttrCompoundAssign { target, value, .. } => {
+            expr_eligible(target) && expr_eligible(value)
+        }
         Stmt::Return(Some(e)) => expr_eligible(e),
         Stmt::Return(None) => true,
         Stmt::Pass | Stmt::Break | Stmt::Continue => true,
         Stmt::Expr(e) => expr_eligible(e),
         Stmt::Freeze(_, _) => true, // no runtime effect in native code
         Stmt::Block(stmts) => body_eligible(stmts),
-        Stmt::If { branches, else_body } => {
-            branches.iter().all(|(cond, body)| expr_eligible(cond) && body_eligible(body))
+        Stmt::If {
+            branches,
+            else_body,
+        } => {
+            branches
+                .iter()
+                .all(|(cond, body)| expr_eligible(cond) && body_eligible(body))
                 && else_body.as_ref().map_or(true, |b| body_eligible(b))
         }
         Stmt::While { cond, body } => expr_eligible(cond) && body_eligible(body),
-        Stmt::For { targets, iter, body } => targets.len() == 1 && expr_eligible(iter) && body_eligible(body),
+        Stmt::For {
+            targets,
+            iter,
+            body,
+        } => targets.len() == 1 && expr_eligible(iter) && body_eligible(body),
         Stmt::Match { subject, arms, .. } => {
             expr_eligible(subject)
                 && arms.iter().all(|arm| {
@@ -445,7 +516,10 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
         Stmt::FnDef { .. } | Stmt::GenDef { .. } => false, // closures
         Stmt::Try { .. } | Stmt::Raise { .. } => false,
         Stmt::Static(..) | Stmt::Import { .. } | Stmt::FromImport { .. } => false,
-        Stmt::ClassDef { .. } | Stmt::TraitDef { .. } | Stmt::NewTypeDef { .. } | Stmt::EnumDef { .. } => false,
+        Stmt::ClassDef { .. }
+        | Stmt::TraitDef { .. }
+        | Stmt::NewTypeDef { .. }
+        | Stmt::EnumDef { .. } => false,
         Stmt::Field { .. } => false,
         Stmt::AsyncAssign { .. } => false,
         Stmt::BreakPoint { .. } | Stmt::DebugLet(..) => false,
@@ -464,7 +538,9 @@ fn expr_eligible(expr: &Expr) -> bool {
         // Collection literals
         Expr::List(items) => items.iter().all(expr_eligible),
         Expr::Tuple(items) => items.iter().all(expr_eligible),
-        Expr::Dict(pairs) => pairs.iter().all(|(k, v)| expr_eligible(k) && expr_eligible(v)),
+        Expr::Dict(pairs) => pairs
+            .iter()
+            .all(|(k, v)| expr_eligible(k) && expr_eligible(v)),
         // Calls: positional args only
         Expr::Call { func, args, .. } => {
             expr_eligible(func)
@@ -485,8 +561,11 @@ fn expr_eligible(expr: &Expr) -> bool {
         // Set literals: ineligible (no native set support)
         Expr::Set(_) => false,
         // Expression forms of control flow: ineligible
-        Expr::Block { .. } | Expr::IfExpr { .. } | Expr::ForExpr { .. }
-        | Expr::WhileExpr { .. } | Expr::MatchExpr { .. } => false,
+        Expr::Block { .. }
+        | Expr::IfExpr { .. }
+        | Expr::ForExpr { .. }
+        | Expr::WhileExpr { .. }
+        | Expr::MatchExpr { .. } => false,
         // Cast expressions: ineligible (runtime dispatch required)
         Expr::Cast { .. } => false,
         // Debug vars: ineligible (REPL only)
@@ -510,9 +589,18 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
             let st = store_ty(ty);
             ctx.add_local(name, false, st);
             match st {
-                Ty::Int   => out.push_str(&format!("{pad}let _v_{name}: i64 = {};\n", coerce_to_i(&code, ty))),
-                Ty::Float => out.push_str(&format!("{pad}let _v_{name}: f64 = {};\n", coerce_to_f(&code, ty))),
-                _         => out.push_str(&format!("{pad}let _v_{name}: i64 = {};\n", coerce_to_h(&code, ty))),
+                Ty::Int => out.push_str(&format!(
+                    "{pad}let _v_{name}: i64 = {};\n",
+                    coerce_to_i(&code, ty)
+                )),
+                Ty::Float => out.push_str(&format!(
+                    "{pad}let _v_{name}: f64 = {};\n",
+                    coerce_to_f(&code, ty)
+                )),
+                _ => out.push_str(&format!(
+                    "{pad}let _v_{name}: i64 = {};\n",
+                    coerce_to_h(&code, ty)
+                )),
             }
         }
         Stmt::Const(name, expr) => {
@@ -520,9 +608,18 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
             let st = store_ty(ty);
             ctx.add_local(name, false, st);
             match st {
-                Ty::Int   => out.push_str(&format!("{pad}let _v_{name}: i64 = {};\n", coerce_to_i(&code, ty))),
-                Ty::Float => out.push_str(&format!("{pad}let _v_{name}: f64 = {};\n", coerce_to_f(&code, ty))),
-                _         => out.push_str(&format!("{pad}let _v_{name}: i64 = {};\n", coerce_to_h(&code, ty))),
+                Ty::Int => out.push_str(&format!(
+                    "{pad}let _v_{name}: i64 = {};\n",
+                    coerce_to_i(&code, ty)
+                )),
+                Ty::Float => out.push_str(&format!(
+                    "{pad}let _v_{name}: f64 = {};\n",
+                    coerce_to_f(&code, ty)
+                )),
+                _ => out.push_str(&format!(
+                    "{pad}let _v_{name}: i64 = {};\n",
+                    coerce_to_h(&code, ty)
+                )),
             }
         }
         Stmt::Mut(name, expr) => {
@@ -530,30 +627,41 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
             let st = store_ty(ty);
             ctx.add_local(name, true, st);
             match st {
-                Ty::Int   => out.push_str(&format!("{pad}let mut _v_{name}: i64 = {};\n", coerce_to_i(&code, ty))),
-                Ty::Float => out.push_str(&format!("{pad}let mut _v_{name}: f64 = {};\n", coerce_to_f(&code, ty))),
-                _         => out.push_str(&format!("{pad}let mut _v_{name}: i64 = {};\n", coerce_to_h(&code, ty))),
+                Ty::Int => out.push_str(&format!(
+                    "{pad}let mut _v_{name}: i64 = {};\n",
+                    coerce_to_i(&code, ty)
+                )),
+                Ty::Float => out.push_str(&format!(
+                    "{pad}let mut _v_{name}: f64 = {};\n",
+                    coerce_to_f(&code, ty)
+                )),
+                _ => out.push_str(&format!(
+                    "{pad}let mut _v_{name}: i64 = {};\n",
+                    coerce_to_h(&code, ty)
+                )),
             }
         }
         Stmt::Assign { name, value, .. } => {
             let (code, ty) = gen_typed_expr(value, ctx);
             let lt = ctx.local_type(name);
             let final_code = match lt {
-                Ty::Int   => coerce_to_i(&code, ty),
+                Ty::Int => coerce_to_i(&code, ty),
                 Ty::Float => coerce_to_f(&code, ty),
-                _         => coerce_to_h(&code, ty),
+                _ => coerce_to_h(&code, ty),
             };
             out.push_str(&format!("{pad}_v_{name} = {final_code};\n"));
         }
-        Stmt::CompoundAssign { name, op, value, .. } => {
+        Stmt::CompoundAssign {
+            name, op, value, ..
+        } => {
             let lt = ctx.local_type(name);
             let (rhs, rt) = gen_typed_expr(value, ctx);
             let lhs = format!("_v_{name}");
             let (result, result_ty) = specialize_binop(op, &lhs, lt, &rhs, rt);
             let final_code = match lt {
-                Ty::Int   => coerce_to_i(&result, result_ty),
+                Ty::Int => coerce_to_i(&result, result_ty),
                 Ty::Float => coerce_to_f(&result, result_ty),
-                _         => coerce_to_h(&result, result_ty),
+                _ => coerce_to_h(&result, result_ty),
             };
             out.push_str(&format!("{pad}_v_{name} = {final_code};\n"));
         }
@@ -583,9 +691,15 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
                 let op_code = binop_code(op);
                 let rhs = gen_expr(value, ctx);
                 out.push_str(&format!("{pad}let {tmp}_obj: i64 = {obj_expr};\n"));
-                out.push_str(&format!("{pad}let {tmp}_old: i64 = cb_get_attr({tmp}_obj, {attr_bytes});\n"));
-                out.push_str(&format!("{pad}let {tmp}_new: i64 = cb_binop({op_code}, {tmp}_old, {rhs});\n"));
-                out.push_str(&format!("{pad}cb_set_attr({tmp}_obj, {attr_bytes}, {tmp}_new);\n"));
+                out.push_str(&format!(
+                    "{pad}let {tmp}_old: i64 = cb_get_attr({tmp}_obj, {attr_bytes});\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}let {tmp}_new: i64 = cb_binop({op_code}, {tmp}_old, {rhs});\n"
+                ));
+                out.push_str(&format!(
+                    "{pad}cb_set_attr({tmp}_obj, {attr_bytes}, {tmp}_new);\n"
+                ));
             }
         }
         Stmt::Return(Some(e)) => {
@@ -621,7 +735,10 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
             ctx.counter = child.counter;
             out.push_str(&format!("{pad}}}\n"));
         }
-        Stmt::If { branches, else_body } => {
+        Stmt::If {
+            branches,
+            else_body,
+        } => {
             for (i, (cond, body)) in branches.iter().enumerate() {
                 let (cond_code, cond_ty) = gen_typed_expr(cond, ctx);
                 let cond_str = coerce_to_cond(&cond_code, cond_ty);
@@ -651,16 +768,26 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
             ctx.counter = child.counter;
             out.push_str(&format!("{pad}}}\n"));
         }
-        Stmt::For { targets, iter, body } => {
+        Stmt::For {
+            targets,
+            iter,
+            body,
+        } => {
             // Tuple targets are ineligible and filtered by stmt_eligible; only single target here.
             let target = &targets[0];
             let iter_expr = gen_expr(iter, ctx);
             let tmp = ctx.fresh();
             out.push_str(&format!("{pad}{{\n"));
-            out.push_str(&format!("{pad}    let {tmp}_iter: i64 = cb_iter_from({iter_expr});\n"));
+            out.push_str(&format!(
+                "{pad}    let {tmp}_iter: i64 = cb_iter_from({iter_expr});\n"
+            ));
             out.push_str(&format!("{pad}    loop {{\n"));
-            out.push_str(&format!("{pad}        let _v_{target}: i64 = cb_iter_next({tmp}_iter);\n"));
-            out.push_str(&format!("{pad}        if _v_{target} == TL_STOP_ITER {{ break; }}\n"));
+            out.push_str(&format!(
+                "{pad}        let _v_{target}: i64 = cb_iter_next({tmp}_iter);\n"
+            ));
+            out.push_str(&format!(
+                "{pad}        if _v_{target} == TL_STOP_ITER {{ break; }}\n"
+            ));
             let mut child = ctx.child();
             child.add_local(target, false, Ty::Handle);
             gen_stmts(body, &mut child, indent + 2, out);
@@ -674,8 +801,12 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
             out.push_str(&format!("{pad}let {tmp}_subj: i64 = {subj_expr};\n"));
 
             // Detect arm type: all Case or all IsType
-            let has_value_case = arms.iter().any(|a| matches!(a.pattern, MatchPattern::Case(_)));
-            let has_is_type = arms.iter().any(|a| matches!(a.pattern, MatchPattern::IsType(_)));
+            let has_value_case = arms
+                .iter()
+                .any(|a| matches!(a.pattern, MatchPattern::Case(_)));
+            let has_is_type = arms
+                .iter()
+                .any(|a| matches!(a.pattern, MatchPattern::IsType(_)));
 
             let _ = has_value_case;
             let _ = has_is_type;
@@ -734,11 +865,18 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
 /// Int/Float locals and literals yield raw i64/f64; everything else yields an i64 handle.
 fn gen_typed_expr(expr: &Expr, ctx: &mut GenCtx) -> (String, Ty) {
     match expr {
-        Expr::Int(n)   => (format!("{n}i64"), Ty::Int),
+        Expr::Int(n) => (format!("{n}i64"), Ty::Int),
         Expr::Float(f) => (format!("{f}f64"), Ty::Float),
-        Expr::Bool(b)  => (if *b { "TL_TRUE".to_string() } else { "TL_FALSE".to_string() }, Ty::Handle),
-        Expr::None     => ("TL_NONE".to_string(), Ty::Handle),
-        Expr::Str(s)   => {
+        Expr::Bool(b) => (
+            if *b {
+                "TL_TRUE".to_string()
+            } else {
+                "TL_FALSE".to_string()
+            },
+            Ty::Handle,
+        ),
+        Expr::None => ("TL_NONE".to_string(), Ty::Handle),
+        Expr::Str(s) => {
             let escaped = escape_bytes(s.as_bytes());
             (format!("cb_make_str(b\"{escaped}\")"), Ty::Handle)
         }
@@ -751,7 +889,9 @@ fn gen_typed_expr(expr: &Expr, ctx: &mut GenCtx) -> (String, Ty) {
                 (format!("cb_get_global(b\"{escaped}\")"), Ty::Handle)
             }
         }
-        Expr::BinOp { op, left, right, .. } => {
+        Expr::BinOp {
+            op, left, right, ..
+        } => {
             match op {
                 BinOp::And => {
                     let tmp = ctx.fresh();
@@ -782,7 +922,11 @@ fn gen_typed_expr(expr: &Expr, ctx: &mut GenCtx) -> (String, Ty) {
             let escaped = escape_bytes(attr.as_bytes());
             (format!("cb_get_attr({obj}, b\"{escaped}\")"), Ty::Handle)
         }
-        Expr::TraitAccess { object, trait_name, attr } => {
+        Expr::TraitAccess {
+            object,
+            trait_name,
+            attr,
+        } => {
             let obj = gen_expr(object, ctx);
             let key = format!("{trait_name}::{attr}");
             let escaped = escape_bytes(key.as_bytes());
@@ -793,12 +937,20 @@ fn gen_typed_expr(expr: &Expr, ctx: &mut GenCtx) -> (String, Ty) {
             let key = gen_expr(index, ctx);
             (format!("cb_subscript({obj}, {key})"), Ty::Handle)
         }
-        Expr::IsType { expr, negated, type_name, .. } => {
+        Expr::IsType {
+            expr,
+            negated,
+            type_name,
+            ..
+        } => {
             let obj = gen_expr(expr, ctx);
             let escaped = escape_bytes(type_name.as_bytes());
             let type_h = format!("cb_is_type({obj}, b\"{escaped}\")");
             if *negated {
-                (format!("(if {type_h} == TL_TRUE {{ TL_FALSE }} else {{ TL_TRUE }})"), Ty::Handle)
+                (
+                    format!("(if {type_h} == TL_TRUE {{ TL_FALSE }} else {{ TL_TRUE }})"),
+                    Ty::Handle,
+                )
             } else {
                 (type_h, Ty::Handle)
             }
@@ -811,7 +963,7 @@ fn gen_typed_expr(expr: &Expr, ctx: &mut GenCtx) -> (String, Ty) {
                     if ret != Ty::Handle {
                         let call_h = gen_call(func, args, ctx);
                         return match ret {
-                            Ty::Int   => (format!("cb_to_int({call_h})"), Ty::Int),
+                            Ty::Int => (format!("cb_to_int({call_h})"), Ty::Int),
                             Ty::Float => (format!("cb_to_float({call_h})"), Ty::Float),
                             _ => unreachable!(),
                         };
@@ -833,7 +985,10 @@ fn gen_typed_expr(expr: &Expr, ctx: &mut GenCtx) -> (String, Ty) {
                 ("cb_make_tuple(&[])".to_string(), Ty::Handle)
             } else {
                 let exprs: Vec<String> = items.iter().map(|e| gen_expr(e, ctx)).collect();
-                (format!("cb_make_tuple(&[{}])", exprs.join(", ")), Ty::Handle)
+                (
+                    format!("cb_make_tuple(&[{}])", exprs.join(", ")),
+                    Ty::Handle,
+                )
             }
         }
         Expr::Dict(pairs) => {
@@ -842,12 +997,13 @@ fn gen_typed_expr(expr: &Expr, ctx: &mut GenCtx) -> (String, Ty) {
             } else {
                 let ks: Vec<String> = pairs.iter().map(|(k, _)| gen_expr(k, ctx)).collect();
                 let vs: Vec<String> = pairs.iter().map(|(_, v)| gen_expr(v, ctx)).collect();
-                (format!("cb_make_dict(&[{}], &[{}])", ks.join(", "), vs.join(", ")), Ty::Handle)
+                (
+                    format!("cb_make_dict(&[{}], &[{}])", ks.join(", "), vs.join(", ")),
+                    Ty::Handle,
+                )
             }
         }
-        Expr::TemplateInstantiate { base, .. } => {
-            (gen_expr(base, ctx), Ty::Handle)
-        }
+        Expr::TemplateInstantiate { base, .. } => (gen_expr(base, ctx), Ty::Handle),
         _ => ("TL_NONE /* unsupported expr */".to_string(), Ty::Handle),
     }
 }
@@ -868,12 +1024,22 @@ fn gen_call(func: &Expr, args: &[CallArg], ctx: &mut GenCtx) -> String {
     if let Expr::Ident(name) = func {
         if ctx.is_module_fn(name) && !ctx.is_local(name) {
             let mutabilities = ctx.fn_param_mutabilities(name);
-            let wrapped: Vec<String> = arg_exprs.iter().enumerate().map(|(i, expr)| {
-                let is_mut = mutabilities.and_then(|m| m.get(i)).copied().unwrap_or(true);
-                if is_mut { expr.clone() } else { format!("cb_deep_copy({expr})") }
-            }).collect();
+            let wrapped: Vec<String> = arg_exprs
+                .iter()
+                .enumerate()
+                .map(|(i, expr)| {
+                    let is_mut = mutabilities.and_then(|m| m.get(i)).copied().unwrap_or(true);
+                    if is_mut {
+                        expr.clone()
+                    } else {
+                        format!("cb_deep_copy({expr})")
+                    }
+                })
+                .collect();
             let args_str = wrapped.join(", ");
-            return format!("{{let _s=cb_arena_save();let _r={name}_impl({args_str});cb_arena_compact(_r,_s)}}");
+            return format!(
+                "{{let _s=cb_arena_save();let _r={name}_impl({args_str});cb_arena_compact(_r,_s)}}"
+            );
         }
     }
 
@@ -890,34 +1056,34 @@ fn gen_call(func: &Expr, args: &[CallArg], ctx: &mut GenCtx) -> String {
 
 fn binop_code(op: &BinOp) -> i32 {
     match op {
-        BinOp::Add      => 0,
-        BinOp::Sub      => 1,
-        BinOp::Mul      => 2,
-        BinOp::Div      => 3,
+        BinOp::Add => 0,
+        BinOp::Sub => 1,
+        BinOp::Mul => 2,
+        BinOp::Div => 3,
         BinOp::FloorDiv => 4,
-        BinOp::Mod      => 5,
-        BinOp::Pow      => 6,
-        BinOp::Eq       => 7,
-        BinOp::NotEq    => 8,
-        BinOp::Lt       => 9,
-        BinOp::LtEq     => 10,
-        BinOp::Gt       => 11,
-        BinOp::GtEq     => 12,
-        BinOp::BitAnd   => 13,
-        BinOp::BitOr    => 14,
-        BinOp::BitXor   => 15,
-        BinOp::LShift   => 16,
-        BinOp::RShift   => 17,
-        BinOp::In       => 18,
-        BinOp::NotIn    => 19,
+        BinOp::Mod => 5,
+        BinOp::Pow => 6,
+        BinOp::Eq => 7,
+        BinOp::NotEq => 8,
+        BinOp::Lt => 9,
+        BinOp::LtEq => 10,
+        BinOp::Gt => 11,
+        BinOp::GtEq => 12,
+        BinOp::BitAnd => 13,
+        BinOp::BitOr => 14,
+        BinOp::BitXor => 15,
+        BinOp::LShift => 16,
+        BinOp::RShift => 17,
+        BinOp::In => 18,
+        BinOp::NotIn => 19,
         BinOp::And | BinOp::Or => unreachable!("and/or handled separately"),
     }
 }
 
 fn unop_code(op: &UnaryOp) -> i32 {
     match op {
-        UnaryOp::Neg    => 0,
-        UnaryOp::Not    => 1,
+        UnaryOp::Neg => 0,
+        UnaryOp::Not => 1,
         UnaryOp::BitNot => 2,
     }
 }
@@ -927,7 +1093,7 @@ fn escape_bytes(bytes: &[u8]) -> String {
     let mut out = String::new();
     for &b in bytes {
         match b {
-            b'"'  => out.push_str("\\\""),
+            b'"' => out.push_str("\\\""),
             b'\\' => out.push_str("\\\\"),
             b'\n' => out.push_str("\\n"),
             b'\r' => out.push_str("\\r"),

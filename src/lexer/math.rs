@@ -1,20 +1,65 @@
 /// 文字を上付き Unicode 文字列に変換する。対応しない文字は `None` を返す。
 fn to_superscript_char(c: char) -> Option<&'static str> {
     Some(match c {
-        '0' => "⁰", '1' => "¹", '2' => "²", '3' => "³",
-        '4' => "⁴", '5' => "⁵", '6' => "⁶", '7' => "⁷",
-        '8' => "⁸", '9' => "⁹",
-        'a' => "ᵃ", 'b' => "ᵇ", 'c' => "ᶜ", 'd' => "ᵈ",
-        'e' => "ᵉ", 'f' => "ᶠ", 'g' => "ᵍ", 'h' => "ʰ",
-        'i' => "ⁱ", 'j' => "ʲ", 'k' => "ᵏ", 'l' => "ˡ",
-        'm' => "ᵐ", 'n' => "ⁿ", 'o' => "ᵒ", 'p' => "ᵖ",
-        'r' => "ʳ", 's' => "ˢ", 't' => "ᵗ", 'u' => "ᵘ",
-        'v' => "ᵛ", 'w' => "ʷ", 'x' => "ˣ", 'y' => "ʸ", 'z' => "ᶻ",
-        'A' => "ᴬ", 'B' => "ᴮ", 'D' => "ᴰ", 'E' => "ᴱ", 'G' => "ᴳ",
-        'H' => "ᴴ", 'I' => "ᴵ", 'J' => "ᴶ", 'K' => "ᴷ", 'L' => "ᴸ",
-        'M' => "ᴹ", 'N' => "ᴺ", 'O' => "ᴼ", 'P' => "ᴾ", 'R' => "ᴿ",
-        'T' => "ᵀ", 'U' => "ᵁ", 'V' => "ⱽ", 'W' => "ᵂ",
-        '+' => "⁺", '-' => "⁻", '=' => "⁼", '(' => "⁽", ')' => "⁾",
+        '0' => "⁰",
+        '1' => "¹",
+        '2' => "²",
+        '3' => "³",
+        '4' => "⁴",
+        '5' => "⁵",
+        '6' => "⁶",
+        '7' => "⁷",
+        '8' => "⁸",
+        '9' => "⁹",
+        'a' => "ᵃ",
+        'b' => "ᵇ",
+        'c' => "ᶜ",
+        'd' => "ᵈ",
+        'e' => "ᵉ",
+        'f' => "ᶠ",
+        'g' => "ᵍ",
+        'h' => "ʰ",
+        'i' => "ⁱ",
+        'j' => "ʲ",
+        'k' => "ᵏ",
+        'l' => "ˡ",
+        'm' => "ᵐ",
+        'n' => "ⁿ",
+        'o' => "ᵒ",
+        'p' => "ᵖ",
+        'r' => "ʳ",
+        's' => "ˢ",
+        't' => "ᵗ",
+        'u' => "ᵘ",
+        'v' => "ᵛ",
+        'w' => "ʷ",
+        'x' => "ˣ",
+        'y' => "ʸ",
+        'z' => "ᶻ",
+        'A' => "ᴬ",
+        'B' => "ᴮ",
+        'D' => "ᴰ",
+        'E' => "ᴱ",
+        'G' => "ᴳ",
+        'H' => "ᴴ",
+        'I' => "ᴵ",
+        'J' => "ᴶ",
+        'K' => "ᴷ",
+        'L' => "ᴸ",
+        'M' => "ᴹ",
+        'N' => "ᴺ",
+        'O' => "ᴼ",
+        'P' => "ᴾ",
+        'R' => "ᴿ",
+        'T' => "ᵀ",
+        'U' => "ᵁ",
+        'V' => "ⱽ",
+        'W' => "ᵂ",
+        '+' => "⁺",
+        '-' => "⁻",
+        '=' => "⁼",
+        '(' => "⁽",
+        ')' => "⁾",
         _ => return None,
     })
 }
@@ -22,13 +67,34 @@ fn to_superscript_char(c: char) -> Option<&'static str> {
 /// 文字を下付き Unicode 文字列に変換する。対応しない文字は `None` を返す。
 fn to_subscript_char(c: char) -> Option<&'static str> {
     Some(match c {
-        '0' => "₀", '1' => "₁", '2' => "₂", '3' => "₃",
-        '4' => "₄", '5' => "₅", '6' => "₆", '7' => "₇",
-        '8' => "₈", '9' => "₉",
-        'a' => "ₐ", 'e' => "ₑ", 'i' => "ᵢ", 'j' => "ⱼ",
-        'n' => "ₙ", 'o' => "ₒ", 'p' => "ₚ", 'r' => "ᵣ",
-        's' => "ₛ", 't' => "ₜ", 'u' => "ᵤ", 'v' => "ᵥ", 'x' => "ₓ",
-        '+' => "₊", '-' => "₋", '=' => "₌", '(' => "₍", ')' => "₎",
+        '0' => "₀",
+        '1' => "₁",
+        '2' => "₂",
+        '3' => "₃",
+        '4' => "₄",
+        '5' => "₅",
+        '6' => "₆",
+        '7' => "₇",
+        '8' => "₈",
+        '9' => "₉",
+        'a' => "ₐ",
+        'e' => "ₑ",
+        'i' => "ᵢ",
+        'j' => "ⱼ",
+        'n' => "ₙ",
+        'o' => "ₒ",
+        'p' => "ₚ",
+        'r' => "ᵣ",
+        's' => "ₛ",
+        't' => "ₜ",
+        'u' => "ᵤ",
+        'v' => "ᵥ",
+        'x' => "ₓ",
+        '+' => "₊",
+        '-' => "₋",
+        '=' => "₌",
+        '(' => "₍",
+        ')' => "₎",
         _ => return None,
     })
 }
@@ -37,27 +103,76 @@ fn to_subscript_char(c: char) -> Option<&'static str> {
 /// 未知のコマンド名に対しては空文字列を返す。
 fn math_command_to_str(name: &str) -> &'static str {
     match name {
-        "alpha" => "α", "beta" => "β", "gamma" => "γ", "delta" => "δ",
-        "epsilon" => "ε", "zeta" => "ζ", "eta" => "η", "theta" => "θ",
-        "iota" => "ι", "kappa" => "κ", "lambda" => "λ", "mu" => "μ",
-        "nu" => "ν", "xi" => "ξ", "pi" => "π", "rho" => "ρ",
-        "sigma" => "σ", "tau" => "τ", "upsilon" => "υ", "phi" => "φ",
-        "chi" => "χ", "psi" => "ψ", "omega" => "ω",
-        "Alpha" => "Α", "Beta" => "Β", "Gamma" => "Γ", "Delta" => "Δ",
-        "Epsilon" => "Ε", "Theta" => "Θ", "Lambda" => "Λ", "Pi" => "Π",
-        "Sigma" => "Σ", "Phi" => "Φ", "Psi" => "Ψ", "Omega" => "Ω",
-        "times" => "×", "div" => "÷", "pm" => "±", "mp" => "∓",
-        "neq" | "ne" => "≠", "leq" | "le" => "≤", "geq" | "ge" => "≥",
-        "approx" => "≈", "equiv" => "≡", "propto" => "∝",
-        "sqrt" => "√", "infty" => "∞", "partial" => "∂",
-        "cdot" => "·", "ldots" => "…", "cdots" => "⋯",
-        "sum" => "∑", "prod" => "∏", "int" => "∫",
-        "in" => "∈", "notin" => "∉", "subset" => "⊂", "supset" => "⊃",
-        "cup" => "∪", "cap" => "∩", "emptyset" => "∅",
-        "nabla" => "∇", "forall" => "∀", "exists" => "∃",
-        "rightarrow" | "to" => "→", "leftarrow" | "gets" => "←",
-        "Rightarrow" | "implies" => "⇒", "Leftrightarrow" | "iff" => "⟺",
-        "langle" => "⟨", "rangle" => "⟩",
+        "alpha" => "α",
+        "beta" => "β",
+        "gamma" => "γ",
+        "delta" => "δ",
+        "epsilon" => "ε",
+        "zeta" => "ζ",
+        "eta" => "η",
+        "theta" => "θ",
+        "iota" => "ι",
+        "kappa" => "κ",
+        "lambda" => "λ",
+        "mu" => "μ",
+        "nu" => "ν",
+        "xi" => "ξ",
+        "pi" => "π",
+        "rho" => "ρ",
+        "sigma" => "σ",
+        "tau" => "τ",
+        "upsilon" => "υ",
+        "phi" => "φ",
+        "chi" => "χ",
+        "psi" => "ψ",
+        "omega" => "ω",
+        "Alpha" => "Α",
+        "Beta" => "Β",
+        "Gamma" => "Γ",
+        "Delta" => "Δ",
+        "Epsilon" => "Ε",
+        "Theta" => "Θ",
+        "Lambda" => "Λ",
+        "Pi" => "Π",
+        "Sigma" => "Σ",
+        "Phi" => "Φ",
+        "Psi" => "Ψ",
+        "Omega" => "Ω",
+        "times" => "×",
+        "div" => "÷",
+        "pm" => "±",
+        "mp" => "∓",
+        "neq" | "ne" => "≠",
+        "leq" | "le" => "≤",
+        "geq" | "ge" => "≥",
+        "approx" => "≈",
+        "equiv" => "≡",
+        "propto" => "∝",
+        "sqrt" => "√",
+        "infty" => "∞",
+        "partial" => "∂",
+        "cdot" => "·",
+        "ldots" => "…",
+        "cdots" => "⋯",
+        "sum" => "∑",
+        "prod" => "∏",
+        "int" => "∫",
+        "in" => "∈",
+        "notin" => "∉",
+        "subset" => "⊂",
+        "supset" => "⊃",
+        "cup" => "∪",
+        "cap" => "∩",
+        "emptyset" => "∅",
+        "nabla" => "∇",
+        "forall" => "∀",
+        "exists" => "∃",
+        "rightarrow" | "to" => "→",
+        "leftarrow" | "gets" => "←",
+        "Rightarrow" | "implies" => "⇒",
+        "Leftrightarrow" | "iff" => "⟺",
+        "langle" => "⟨",
+        "rangle" => "⟩",
         _ => "",
     }
 }
@@ -89,32 +204,63 @@ pub fn render_math_str(source: &str) -> String {
                         if chars[i] == '\\' {
                             i += 1;
                             let name_start = i;
-                            while i < chars.len() && chars[i].is_alphabetic() { i += 1; }
+                            while i < chars.len() && chars[i].is_alphabetic() {
+                                i += 1;
+                            }
                             let name: String = chars[name_start..i].iter().collect();
                             let sym = math_command_to_str(&name);
-                            if sym.is_empty() { result.push('\\'); result.push_str(&name); }
-                            else { for c in sym.chars() { if let Some(s) = to_superscript_char(c) { result.push_str(s); } else { result.push(c); } } }
+                            if sym.is_empty() {
+                                result.push('\\');
+                                result.push_str(&name);
+                            } else {
+                                for c in sym.chars() {
+                                    if let Some(s) = to_superscript_char(c) {
+                                        result.push_str(s);
+                                    } else {
+                                        result.push(c);
+                                    }
+                                }
+                            }
                         } else {
                             let c = chars[i];
-                            if let Some(s) = to_superscript_char(c) { result.push_str(s); }
-                            else { result.push('^'); result.push(c); }
+                            if let Some(s) = to_superscript_char(c) {
+                                result.push_str(s);
+                            } else {
+                                result.push('^');
+                                result.push(c);
+                            }
                             i += 1;
                         }
                     }
-                    if i < chars.len() { i += 1; }
+                    if i < chars.len() {
+                        i += 1;
+                    }
                 } else if i < chars.len() {
                     if chars[i] == '\\' {
                         i += 1;
                         let name_start = i;
-                        while i < chars.len() && chars[i].is_alphabetic() { i += 1; }
+                        while i < chars.len() && chars[i].is_alphabetic() {
+                            i += 1;
+                        }
                         let name: String = chars[name_start..i].iter().collect();
                         let sym = math_command_to_str(&name);
-                        if sym.is_empty() { result.push('^'); result.push('\\'); result.push_str(&name); }
-                        else { for c in sym.chars() { result.push_str(to_superscript_char(c).unwrap_or(sym)); } }
+                        if sym.is_empty() {
+                            result.push('^');
+                            result.push('\\');
+                            result.push_str(&name);
+                        } else {
+                            for c in sym.chars() {
+                                result.push_str(to_superscript_char(c).unwrap_or(sym));
+                            }
+                        }
                     } else {
                         let c = chars[i];
-                        if let Some(s) = to_superscript_char(c) { result.push_str(s); }
-                        else { result.push('^'); result.push(c); }
+                        if let Some(s) = to_superscript_char(c) {
+                            result.push_str(s);
+                        } else {
+                            result.push('^');
+                            result.push(c);
+                        }
                         i += 1;
                     }
                 }
@@ -127,32 +273,63 @@ pub fn render_math_str(source: &str) -> String {
                         if chars[i] == '\\' {
                             i += 1;
                             let name_start = i;
-                            while i < chars.len() && chars[i].is_alphabetic() { i += 1; }
+                            while i < chars.len() && chars[i].is_alphabetic() {
+                                i += 1;
+                            }
                             let name: String = chars[name_start..i].iter().collect();
                             let sym = math_command_to_str(&name);
-                            if sym.is_empty() { result.push('\\'); result.push_str(&name); }
-                            else { for c in sym.chars() { if let Some(s) = to_subscript_char(c) { result.push_str(s); } else { result.push(c); } } }
+                            if sym.is_empty() {
+                                result.push('\\');
+                                result.push_str(&name);
+                            } else {
+                                for c in sym.chars() {
+                                    if let Some(s) = to_subscript_char(c) {
+                                        result.push_str(s);
+                                    } else {
+                                        result.push(c);
+                                    }
+                                }
+                            }
                         } else {
                             let c = chars[i];
-                            if let Some(s) = to_subscript_char(c) { result.push_str(s); }
-                            else { result.push('_'); result.push(c); }
+                            if let Some(s) = to_subscript_char(c) {
+                                result.push_str(s);
+                            } else {
+                                result.push('_');
+                                result.push(c);
+                            }
                             i += 1;
                         }
                     }
-                    if i < chars.len() { i += 1; }
+                    if i < chars.len() {
+                        i += 1;
+                    }
                 } else if i < chars.len() {
                     if chars[i] == '\\' {
                         i += 1;
                         let name_start = i;
-                        while i < chars.len() && chars[i].is_alphabetic() { i += 1; }
+                        while i < chars.len() && chars[i].is_alphabetic() {
+                            i += 1;
+                        }
                         let name: String = chars[name_start..i].iter().collect();
                         let sym = math_command_to_str(&name);
-                        if sym.is_empty() { result.push('_'); result.push('\\'); result.push_str(&name); }
-                        else { for c in sym.chars() { result.push_str(to_subscript_char(c).unwrap_or(sym)); } }
+                        if sym.is_empty() {
+                            result.push('_');
+                            result.push('\\');
+                            result.push_str(&name);
+                        } else {
+                            for c in sym.chars() {
+                                result.push_str(to_subscript_char(c).unwrap_or(sym));
+                            }
+                        }
                     } else {
                         let c = chars[i];
-                        if let Some(s) = to_subscript_char(c) { result.push_str(s); }
-                        else { result.push('_'); result.push(c); }
+                        if let Some(s) = to_subscript_char(c) {
+                            result.push_str(s);
+                        } else {
+                            result.push('_');
+                            result.push(c);
+                        }
                         i += 1;
                     }
                 }
@@ -165,10 +342,17 @@ pub fn render_math_str(source: &str) -> String {
                 }
                 let name: String = chars[name_start..i].iter().collect();
                 let sym = math_command_to_str(&name);
-                if sym.is_empty() { result.push('\\'); result.push_str(&name); }
-                else { result.push_str(sym); }
+                if sym.is_empty() {
+                    result.push('\\');
+                    result.push_str(&name);
+                } else {
+                    result.push_str(sym);
+                }
             }
-            c => { result.push(c); i += 1; }
+            c => {
+                result.push(c);
+                i += 1;
+            }
         }
     }
     result

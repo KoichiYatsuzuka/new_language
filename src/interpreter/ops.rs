@@ -8,8 +8,8 @@ use std::rc::Rc;
 
 use crate::ast::{BinOp, Param, UnaryOp};
 
-use super::{Interpreter, Value};
 use super::str_methods::percent_format;
+use super::{Interpreter, Value};
 
 /// 関数パラメータリストを `(name: Type, name2)` 形式の文字列に変換する。
 /// `self` パラメータは除外する。
@@ -58,13 +58,24 @@ impl Interpreter {
             Value::Tuple(t) => !t.is_empty(),
             Value::Set(s) => !s.borrow().is_empty(),
             // 関数・クラス・インスタンス・ジェネレータ・名前空間・Python オブジェクト等は常に真
-            Value::Function(_) | Value::OverloadedFn(_) | Value::Class(_) | Value::Instance(_) | Value::Type(_)
+            Value::Function(_)
+            | Value::OverloadedFn(_)
+            | Value::Class(_)
+            | Value::Instance(_)
+            | Value::Type(_)
             | Value::Trait(_)
-            | Value::TemplateFn(_) | Value::TemplateClass(_)
-            | Value::GeneratorFn(_) | Value::TemplateGenFn(_) | Value::Generator(_)
-            | Value::Namespace(_) | Value::PyObject(_) | Value::FileObject(_)
-            | Value::NativeFunction(_) | Value::Slice(_)
-            | Value::AsyncManager(_) | Value::AsyncStatusVal(_) => true,
+            | Value::TemplateFn(_)
+            | Value::TemplateClass(_)
+            | Value::GeneratorFn(_)
+            | Value::TemplateGenFn(_)
+            | Value::Generator(_)
+            | Value::Namespace(_)
+            | Value::PyObject(_)
+            | Value::FileObject(_)
+            | Value::NativeFunction(_)
+            | Value::Slice(_)
+            | Value::AsyncManager(_)
+            | Value::AsyncStatusVal(_) => true,
         }
     }
 
@@ -124,7 +135,10 @@ impl Interpreter {
             "set" => matches!(val, Value::Set(_)),
             "function" => matches!(
                 val,
-                Value::Function(_) | Value::OverloadedFn(_) | Value::GeneratorFn(_) | Value::NativeFunction(_)
+                Value::Function(_)
+                    | Value::OverloadedFn(_)
+                    | Value::GeneratorFn(_)
+                    | Value::NativeFunction(_)
             ),
             _ if ann.starts_with("list[") => matches!(val, Value::List(_)),
             _ if ann.starts_with("dict[") => matches!(val, Value::Dict(_)),
@@ -140,7 +154,9 @@ impl Interpreter {
             }
             _ if ann.starts_with("Union[") => {
                 let inner = ann[6..].trim_end_matches(']');
-                inner.split(',').any(|t| self.value_matches_type_ann(val, t.trim()))
+                inner
+                    .split(',')
+                    .any(|t| self.value_matches_type_ann(val, t.trim()))
             }
             _ => self.value_is_type(val, ann),
         }
@@ -175,11 +191,12 @@ impl Interpreter {
             Value::None => type_name == "None",
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
-                inst.class.name == type_name
-                    || inst.class.bases.contains(&type_name.to_string())
+                inst.class.name == type_name || inst.class.bases.contains(&type_name.to_string())
             }
             Value::Class(cls) => cls.name == type_name,
-            Value::Function(_) | Value::OverloadedFn(_) | Value::GeneratorFn(_)
+            Value::Function(_)
+            | Value::OverloadedFn(_)
+            | Value::GeneratorFn(_)
             | Value::NativeFunction(_) => type_name == "function",
             Value::FileObject(_) => type_name == "FileObject",
             Value::Slice(_) => type_name == "slice",
@@ -209,7 +226,11 @@ impl Interpreter {
             Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
             Value::None => "None".to_string(),
             Value::List(items) => {
-                let parts: Vec<String> = items.borrow().iter().map(|v| self.display_repr(v)).collect();
+                let parts: Vec<String> = items
+                    .borrow()
+                    .iter()
+                    .map(|v| self.display_repr(v))
+                    .collect();
                 format!("[{}]", parts.join(", "))
             }
             Value::Function(fn_rc) => {
@@ -220,7 +241,12 @@ impl Interpreter {
             Value::OverloadedFn(fns) => {
                 let first = &fns[0];
                 let addr = Rc::as_ptr(first) as usize;
-                format!("<function '{}' ({} overloads) at 0x{:x}>", first.name, fns.len(), addr)
+                format!(
+                    "<function '{}' ({} overloads) at 0x{:x}>",
+                    first.name,
+                    fns.len(),
+                    addr
+                )
             }
             Value::Class(c) => format!("<class '{}'>", c.name),
             Value::Instance(i) => {
@@ -251,7 +277,9 @@ impl Interpreter {
                 } else {
                     let keys = d.all_keys();
                     let vals = d.all_items();
-                    let parts: Vec<String> = keys.iter().zip(vals.iter())
+                    let parts: Vec<String> = keys
+                        .iter()
+                        .zip(vals.iter())
                         .map(|(k, v)| format!("{}: {}", self.display_repr(k), self.display_repr(v)))
                         .collect();
                     format!("{{{}}}", parts.join(", "))
@@ -286,20 +314,38 @@ impl Interpreter {
             }
             Value::PyObject(h) => pyo3::Python::with_gil(|py| {
                 use pyo3::types::PyAnyMethods;
-                h.inner.bind(py).repr()
+                h.inner
+                    .bind(py)
+                    .repr()
                     .and_then(|r| r.extract::<String>())
                     .unwrap_or_else(|_| "<PyObject>".to_string())
             }),
             Value::NativeFunction(r) => format!("<native function '{}'>", r.fn_name),
             Value::Slice(s) => {
-                let b = s.begin.as_ref().map(|v| self.display(v)).unwrap_or_else(|| "None".to_string());
-                let e = s.end.as_ref().map(|v| self.display(v)).unwrap_or_else(|| "None".to_string());
-                let st = s.step.as_ref().map(|v| self.display(v)).unwrap_or_else(|| "None".to_string());
+                let b = s
+                    .begin
+                    .as_ref()
+                    .map(|v| self.display(v))
+                    .unwrap_or_else(|| "None".to_string());
+                let e = s
+                    .end
+                    .as_ref()
+                    .map(|v| self.display(v))
+                    .unwrap_or_else(|| "None".to_string());
+                let st = s
+                    .step
+                    .as_ref()
+                    .map(|v| self.display(v))
+                    .unwrap_or_else(|| "None".to_string());
                 format!("slice({b}, {e}, {st})")
             }
             Value::AsyncManager(rc) => {
                 let mgr = rc.borrow();
-                format!("<AsyncManager num_thread={} tasks={}>", mgr.num_thread, mgr.progress.len())
+                format!(
+                    "<AsyncManager num_thread={} tasks={}>",
+                    mgr.num_thread,
+                    mgr.progress.len()
+                )
             }
             Value::AsyncStatusVal(s) => s.display_str().to_string(),
         }
@@ -316,7 +362,11 @@ impl Interpreter {
         match val {
             Value::Str(s) => format!("'{s}'"),
             Value::List(items) => {
-                let parts: Vec<String> = items.borrow().iter().map(|v| self.display_repr(v)).collect();
+                let parts: Vec<String> = items
+                    .borrow()
+                    .iter()
+                    .map(|v| self.display_repr(v))
+                    .collect();
                 format!("[{}]", parts.join(", "))
             }
             Value::Dict(_) | Value::Tuple(_) | Value::Slice(_) => self.display(val),
@@ -381,11 +431,8 @@ impl Interpreter {
                 // new_type でプリミティブを基底とする場合: ClassName(repr_of_value)
                 if let Some(ref base) = class.new_type_base {
                     if matches!(base.as_str(), "int" | "float" | "str" | "bool" | "uint") {
-                        let inner_val = inst_rc
-                            .borrow()
-                            .fields
-                            .get("value")
-                            .map(|(v, _)| v.clone());
+                        let inner_val =
+                            inst_rc.borrow().fields.get("value").map(|(v, _)| v.clone());
                         if let Some(v) = inner_val {
                             let inner = self.repr_val(&v)?;
                             return Ok(format!("{}({})", class.name, inner));
@@ -395,11 +442,7 @@ impl Interpreter {
 
                 // ユーザー定義 __repr__ を呼び出す
                 if class.methods.contains_key("__repr__") {
-                    let result = self.eval_method_call_evaled(
-                        val.clone(),
-                        "__repr__",
-                        vec![],
-                    )?;
+                    let result = self.eval_method_call_evaled(val.clone(), "__repr__", vec![])?;
                     return match result {
                         Value::Str(s) => Ok(s),
                         other => Ok(self.display(&other)),
@@ -425,13 +468,19 @@ impl Interpreter {
             UnaryOp::Neg => match val {
                 Value::Int(n) => Ok(Value::Int(-n)),
                 Value::Float(f) => Ok(Value::Float(-f)),
-                _ => Err(format!("TypeError: bad operand type for unary `-`: {}", self.type_name(&val))),
+                _ => Err(format!(
+                    "TypeError: bad operand type for unary `-`: {}",
+                    self.type_name(&val)
+                )),
             },
             UnaryOp::Not => Ok(Value::Bool(!self.is_truthy(&val))),
             UnaryOp::BitNot => match val {
                 Value::Int(n) => Ok(Value::Int(!n)),
                 Value::UInt(n) => Ok(Value::UInt(!n)),
-                _ => Err(format!("TypeError: bad operand type for unary `~`: {}", self.type_name(&val))),
+                _ => Err(format!(
+                    "TypeError: bad operand type for unary `~`: {}",
+                    self.type_name(&val)
+                )),
             },
         }
     }
@@ -470,24 +519,32 @@ impl Interpreter {
             }
             (BinOp::BitAnd, Value::Set(a), Value::Set(b)) => {
                 let b_ref = b.borrow();
-                let result: Vec<Value> = a.borrow().iter()
+                let result: Vec<Value> = a
+                    .borrow()
+                    .iter()
                     .filter(|v| b_ref.iter().any(|x| self.values_eq(x, v)))
-                    .cloned().collect();
+                    .cloned()
+                    .collect();
                 Ok(Value::Set(Rc::new(RefCell::new(result))))
             }
             (BinOp::Sub, Value::Set(a), Value::Set(b)) => {
                 let b_ref = b.borrow();
-                let result: Vec<Value> = a.borrow().iter()
+                let result: Vec<Value> = a
+                    .borrow()
+                    .iter()
                     .filter(|v| !b_ref.iter().any(|x| self.values_eq(x, v)))
-                    .cloned().collect();
+                    .cloned()
+                    .collect();
                 Ok(Value::Set(Rc::new(RefCell::new(result))))
             }
             (BinOp::BitXor, Value::Set(a), Value::Set(b)) => {
                 let a_ref = a.borrow();
                 let b_ref = b.borrow();
-                let mut result: Vec<Value> = a_ref.iter()
+                let mut result: Vec<Value> = a_ref
+                    .iter()
                     .filter(|v| !b_ref.iter().any(|x| self.values_eq(x, v)))
-                    .cloned().collect();
+                    .cloned()
+                    .collect();
                 for v in b_ref.iter() {
                     if !a_ref.iter().any(|x| self.values_eq(x, v)) {
                         result.push(v.clone());
@@ -496,41 +553,39 @@ impl Interpreter {
                 Ok(Value::Set(Rc::new(RefCell::new(result))))
             }
             // 包含検査 `in` / `not in`
-            (BinOp::In, item, Value::List(lst)) => {
-                Ok(Value::Bool(lst.borrow().iter().any(|v| self.values_eq(v, item))))
-            }
-            (BinOp::In, item, Value::Set(s)) => {
-                Ok(Value::Bool(s.borrow().iter().any(|v| self.values_eq(v, item))))
-            }
+            (BinOp::In, item, Value::List(lst)) => Ok(Value::Bool(
+                lst.borrow().iter().any(|v| self.values_eq(v, item)),
+            )),
+            (BinOp::In, item, Value::Set(s)) => Ok(Value::Bool(
+                s.borrow().iter().any(|v| self.values_eq(v, item)),
+            )),
             (BinOp::In, Value::Str(sub), Value::Str(s)) => {
                 Ok(Value::Bool(s.contains(sub.as_str())))
             }
-            (BinOp::In, item, Value::Dict(d)) => {
-                Ok(Value::Bool(d.borrow().get(item).is_some()))
-            }
-            (BinOp::In, item, Value::Tuple(t)) => {
-                Ok(Value::Bool(t.all_values().iter().any(|v| self.values_eq(v, item))))
-            }
-            (BinOp::NotIn, item, Value::List(lst)) => {
-                Ok(Value::Bool(!lst.borrow().iter().any(|v| self.values_eq(v, item))))
-            }
-            (BinOp::NotIn, item, Value::Set(s)) => {
-                Ok(Value::Bool(!s.borrow().iter().any(|v| self.values_eq(v, item))))
-            }
+            (BinOp::In, item, Value::Dict(d)) => Ok(Value::Bool(d.borrow().get(item).is_some())),
+            (BinOp::In, item, Value::Tuple(t)) => Ok(Value::Bool(
+                t.all_values().iter().any(|v| self.values_eq(v, item)),
+            )),
+            (BinOp::NotIn, item, Value::List(lst)) => Ok(Value::Bool(
+                !lst.borrow().iter().any(|v| self.values_eq(v, item)),
+            )),
+            (BinOp::NotIn, item, Value::Set(s)) => Ok(Value::Bool(
+                !s.borrow().iter().any(|v| self.values_eq(v, item)),
+            )),
             (BinOp::NotIn, Value::Str(sub), Value::Str(s)) => {
                 Ok(Value::Bool(!s.contains(sub.as_str())))
             }
-            (BinOp::NotIn, item, Value::Dict(d)) => {
-                Ok(Value::Bool(d.borrow().get(item).is_none()))
-            }
-            (BinOp::NotIn, item, Value::Tuple(t)) => {
-                Ok(Value::Bool(!t.all_values().iter().any(|v| self.values_eq(v, item))))
-            }
+            (BinOp::NotIn, item, Value::Dict(d)) => Ok(Value::Bool(d.borrow().get(item).is_none())),
+            (BinOp::NotIn, item, Value::Tuple(t)) => Ok(Value::Bool(
+                !t.all_values().iter().any(|v| self.values_eq(v, item)),
+            )),
             (BinOp::In, _, rv) => Err(format!(
-                "TypeError: argument of type '{}' is not iterable", self.type_name(rv)
+                "TypeError: argument of type '{}' is not iterable",
+                self.type_name(rv)
             )),
             (BinOp::NotIn, _, rv) => Err(format!(
-                "TypeError: argument of type '{}' is not iterable", self.type_name(rv)
+                "TypeError: argument of type '{}' is not iterable",
+                self.type_name(rv)
             )),
             // 算術演算
             (BinOp::Add, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a + *b)),
@@ -539,8 +594,12 @@ impl Interpreter {
             (BinOp::Add, Value::Float(a), Value::Int(b)) => Ok(Value::Float(*a + *b as f64)),
             (BinOp::Add, Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{a}{b}"))),
             // str * int / int * str → repeat
-            (BinOp::Mul, Value::Str(s), Value::Int(n)) => Ok(Value::Str(s.repeat((*n).max(0) as usize))),
-            (BinOp::Mul, Value::Int(n), Value::Str(s)) => Ok(Value::Str(s.repeat((*n).max(0) as usize))),
+            (BinOp::Mul, Value::Str(s), Value::Int(n)) => {
+                Ok(Value::Str(s.repeat((*n).max(0) as usize)))
+            }
+            (BinOp::Mul, Value::Int(n), Value::Str(s)) => {
+                Ok(Value::Str(s.repeat((*n).max(0) as usize)))
+            }
             // str % args → printf-style format
             (BinOp::Mod, Value::Str(fmt), rv) => {
                 let display_fn = |v: &Value| self.display(v);
@@ -560,18 +619,24 @@ impl Interpreter {
             (BinOp::Mul, Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 * *b)),
             (BinOp::Mul, Value::Float(a), Value::Int(b)) => Ok(Value::Float(*a * *b as f64)),
             (BinOp::Div, Value::Int(a), Value::Int(b)) => {
-                if *b == 0 { return Err("ZeroDivisionError: division by zero".to_string()); }
+                if *b == 0 {
+                    return Err("ZeroDivisionError: division by zero".to_string());
+                }
                 Ok(Value::Float(*a as f64 / *b as f64))
             }
             (BinOp::Div, Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a / *b)),
             (BinOp::Div, Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 / *b)),
             (BinOp::Div, Value::Float(a), Value::Int(b)) => Ok(Value::Float(*a / *b as f64)),
             (BinOp::FloorDiv, Value::Int(a), Value::Int(b)) => {
-                if *b == 0 { return Err("ZeroDivisionError: integer division by zero".to_string()); }
+                if *b == 0 {
+                    return Err("ZeroDivisionError: integer division by zero".to_string());
+                }
                 Ok(Value::Int(a.div_euclid(*b)))
             }
             (BinOp::Mod, Value::Int(a), Value::Int(b)) => {
-                if *b == 0 { return Err("ZeroDivisionError: modulo by zero".to_string()); }
+                if *b == 0 {
+                    return Err("ZeroDivisionError: modulo by zero".to_string());
+                }
                 Ok(Value::Int(a.rem_euclid(*b)))
             }
             (BinOp::Pow, Value::Int(a), Value::Int(b)) => {
@@ -600,27 +665,33 @@ impl Interpreter {
             (BinOp::GtEq, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(*a >= *b)),
             (BinOp::GtEq, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(*a >= *b)),
             // uint 算術・比較
-            (BinOp::Add,      Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_add(*b))),
-            (BinOp::Sub,      Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_sub(*b))),
-            (BinOp::Mul,      Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_mul(*b))),
-            (BinOp::Div,      Value::UInt(a), Value::UInt(b)) => {
-                if *b == 0 { return Err("ZeroDivisionError: division by zero".to_string()); }
+            (BinOp::Add, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_add(*b))),
+            (BinOp::Sub, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_sub(*b))),
+            (BinOp::Mul, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_mul(*b))),
+            (BinOp::Div, Value::UInt(a), Value::UInt(b)) => {
+                if *b == 0 {
+                    return Err("ZeroDivisionError: division by zero".to_string());
+                }
                 Ok(Value::UInt(*a / *b))
             }
             (BinOp::FloorDiv, Value::UInt(a), Value::UInt(b)) => {
-                if *b == 0 { return Err("ZeroDivisionError: integer division by zero".to_string()); }
+                if *b == 0 {
+                    return Err("ZeroDivisionError: integer division by zero".to_string());
+                }
                 Ok(Value::UInt(*a / *b))
             }
-            (BinOp::Mod,      Value::UInt(a), Value::UInt(b)) => {
-                if *b == 0 { return Err("ZeroDivisionError: modulo by zero".to_string()); }
+            (BinOp::Mod, Value::UInt(a), Value::UInt(b)) => {
+                if *b == 0 {
+                    return Err("ZeroDivisionError: modulo by zero".to_string());
+                }
                 Ok(Value::UInt(*a % *b))
             }
-            (BinOp::Lt,   Value::UInt(a), Value::UInt(b)) => Ok(Value::Bool(*a < *b)),
+            (BinOp::Lt, Value::UInt(a), Value::UInt(b)) => Ok(Value::Bool(*a < *b)),
             (BinOp::LtEq, Value::UInt(a), Value::UInt(b)) => Ok(Value::Bool(*a <= *b)),
-            (BinOp::Gt,   Value::UInt(a), Value::UInt(b)) => Ok(Value::Bool(*a > *b)),
+            (BinOp::Gt, Value::UInt(a), Value::UInt(b)) => Ok(Value::Bool(*a > *b)),
             (BinOp::GtEq, Value::UInt(a), Value::UInt(b)) => Ok(Value::Bool(*a >= *b)),
             (BinOp::BitAnd, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(*a & *b)),
-            (BinOp::BitOr,  Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(*a | *b)),
+            (BinOp::BitOr, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(*a | *b)),
             (BinOp::BitXor, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(*a ^ *b)),
             (BinOp::LShift, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(*a << *b)),
             (BinOp::RShift, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(*a >> *b)),
@@ -632,7 +703,8 @@ impl Interpreter {
             (BinOp::RShift, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a >> *b)),
             _ => Err(format!(
                 "TypeError: unsupported operand types for `{op:?}`: {} and {}",
-                self.type_name(&lv), self.type_name(&rv)
+                self.type_name(&lv),
+                self.type_name(&rv)
             )),
         }
     }
@@ -672,8 +744,7 @@ impl Interpreter {
             (Value::Set(a), Value::Set(b)) => {
                 let ar = a.borrow();
                 let br = b.borrow();
-                ar.len() == br.len()
-                    && ar.iter().all(|v| br.iter().any(|w| self.values_eq(v, w)))
+                ar.len() == br.len() && ar.iter().all(|v| br.iter().any(|w| self.values_eq(v, w)))
             }
             _ => false,
         }

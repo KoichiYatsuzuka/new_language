@@ -85,7 +85,7 @@ impl Lexer {
             filename: filename.into(),
             indent_stack: vec![0], // インデントスタックは常に 0 から始める
             pending: Vec::new(),
-            at_line_start: true,   // ファイル先頭は行頭扱い
+            at_line_start: true, // ファイル先頭は行頭扱い
             bracket_depth: 0,
         }
     }
@@ -164,8 +164,10 @@ impl Lexer {
             }
 
             // f"" / r"" / m"" / b"" 単一プレフィックス文字列
-            Some(ch) if (ch == 'f' || ch == 'r' || ch == 'm' || ch == 'b')
-                && matches!(self.ch1(), Some('"') | Some('\'')) => {
+            Some(ch)
+                if (ch == 'f' || ch == 'r' || ch == 'm' || ch == 'b')
+                    && matches!(self.ch1(), Some('"') | Some('\'')) =>
+            {
                 self.pos += 1;
                 let tok = match ch {
                     'f' => self.lex_fstring(false),
@@ -178,9 +180,11 @@ impl Lexer {
             }
 
             // fr"" / rf"" 二重プレフィックス（raw f-string）
-            Some(ch) if (ch == 'f' || ch == 'r')
-                && (self.ch1() == Some('f') || self.ch1() == Some('r'))
-                && matches!(self.ch2(), Some('"') | Some('\'')) => {
+            Some(ch)
+                if (ch == 'f' || ch == 'r')
+                    && (self.ch1() == Some('f') || self.ch1() == Some('r'))
+                    && matches!(self.ch2(), Some('"') | Some('\'')) =>
+            {
                 self.pos += 2;
                 let tok = self.lex_fstring(true);
                 self.spanned(tok, start)
@@ -191,7 +195,10 @@ impl Lexer {
                 self.pos += 1;
                 let mut s = String::new();
                 while let Some(ch) = self.ch() {
-                    if ch == '$' { self.pos += 1; break; }
+                    if ch == '$' {
+                        self.pos += 1;
+                        break;
+                    }
                     s.push(ch);
                     self.pos += 1;
                 }
@@ -229,7 +236,11 @@ impl Lexer {
     /// `char_pos` に対応するファイル名・行番号・列番号を持つ `Span`
     fn span_at(&self, char_pos: usize) -> Span {
         let (line, col) = self.positions.get(char_pos).copied().unwrap_or((1, 1));
-        Span { file: self.filename.clone(), line, col }
+        Span {
+            file: self.filename.clone(),
+            line,
+            col,
+        }
     }
 
     /// トークンと開始位置から `Spanned` を生成する。
@@ -241,7 +252,10 @@ impl Lexer {
     /// # 戻り値
     /// `token` と `start_pos` の位置情報を持つ `Spanned`
     fn spanned(&self, token: Token, start_pos: usize) -> Spanned {
-        Spanned { token, span: self.span_at(start_pos) }
+        Spanned {
+            token,
+            span: self.span_at(start_pos),
+        }
     }
 
     // --- EOF 処理 ---
@@ -261,7 +275,10 @@ impl Lexer {
         // インデントスタックが残っていれば DEDENT を生成して pending に積む
         while self.indent_stack.len() > 1 {
             self.indent_stack.pop();
-            self.pending.push(Spanned { token: Token::Dedent, span: span.clone() });
+            self.pending.push(Spanned {
+                token: Token::Dedent,
+                span: span.clone(),
+            });
         }
 
         // pending があれば先に返す（再帰は使わず先頭を直接取り出す）
@@ -269,7 +286,10 @@ impl Lexer {
             return self.pending.remove(0);
         }
 
-        Spanned { token: Token::Eof, span }
+        Spanned {
+            token: Token::Eof,
+            span,
+        }
     }
 
     // --- インデント処理 ---
@@ -317,12 +337,18 @@ impl Lexer {
                     if level > current {
                         // インデント増加：スタックに積んで INDENT トークンを返す
                         self.indent_stack.push(level);
-                        return Spanned { token: Token::Indent, span };
+                        return Spanned {
+                            token: Token::Indent,
+                            span,
+                        };
                     } else if level < current {
                         // インデント減少：スタックを巻き戻して必要な数の DEDENT を生成する
                         while *self.indent_stack.last().unwrap() > level {
                             self.indent_stack.pop();
-                            self.pending.push(Spanned { token: Token::Dedent, span: span.clone() });
+                            self.pending.push(Spanned {
+                                token: Token::Dedent,
+                                span: span.clone(),
+                            });
                         }
                         return self.pending.remove(0);
                     } else {
@@ -397,5 +423,4 @@ impl Lexer {
             self.pos += 1;
         }
     }
-
 }

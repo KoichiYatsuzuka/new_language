@@ -21,7 +21,9 @@ use std::path::PathBuf;
 
 use pyo3::class::basic::CompareOp;
 use pyo3::prelude::*;
-use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModule, PyTuple, PyTupleMethods};
+use pyo3::types::{
+    PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModule, PyTuple, PyTupleMethods,
+};
 
 use crate::ast::BinOp;
 
@@ -40,13 +42,17 @@ pub fn tl_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
         Value::Bool(b) => Ok(b.to_object(py)),
         Value::None => Ok(py.None()),
         Value::List(items) => {
-            let py_items: Vec<PyObject> = items.borrow().iter()
+            let py_items: Vec<PyObject> = items
+                .borrow()
+                .iter()
                 .map(|v| tl_to_py(py, v))
                 .collect::<PyResult<_>>()?;
             Ok(PyList::new_bound(py, &py_items).into())
         }
         Value::Tuple(td) => {
-            let py_items: Vec<PyObject> = td.values.iter()
+            let py_items: Vec<PyObject> = td
+                .values
+                .iter()
                 .map(|v| tl_to_py(py, v))
                 .collect::<PyResult<_>>()?;
             Ok(PyTuple::new_bound(py, &py_items).into())
@@ -74,7 +80,11 @@ pub fn tl_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
 /// PyO3 の `Bound<'_, PyAny>` を tl の `Value` に変換する。
 pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
     // bool は int のサブクラスなので先にチェックする
-    let type_name = obj.get_type().name().map(|s| s.to_string()).unwrap_or_default();
+    let type_name = obj
+        .get_type()
+        .name()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
     if type_name == "bool" {
         if let Ok(b) = obj.extract::<bool>() {
             return Value::Bool(b);
@@ -117,7 +127,9 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
         return Value::Dict(Rc::new(RefCell::new(dict)));
     }
     // その他 → PyObject（opaque ラップ）
-    Value::PyObject(Arc::new(PyObjHandle { inner: obj.clone().unbind() }))
+    Value::PyObject(Arc::new(PyObjHandle {
+        inner: obj.clone().unbind(),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -151,15 +163,22 @@ pub fn load_py_int_module(
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            if name.starts_with('_') { continue; }
+            if name.starts_with('_') {
+                continue;
+            }
 
             if let Ok(attr) = module.getattr(name.as_str()) {
-                let val = Value::PyObject(Arc::new(PyObjHandle { inner: attr.unbind() }));
+                let val = Value::PyObject(Arc::new(PyObjHandle {
+                    inner: attr.unbind(),
+                }));
                 members.insert(name, val);
             }
         }
 
-        Ok(Rc::new(NamespaceData { name: module_name, members }))
+        Ok(Rc::new(NamespaceData {
+            name: module_name,
+            members,
+        }))
     })
     .map_err(|e| format!("ImportError: {e}"))
 }
@@ -261,40 +280,42 @@ pub fn py_binop(handle: &PyObjHandle, op: &BinOp, rhs: &Value) -> Result<Value, 
         let obj = handle.inner.bind(py);
         let py_rhs = tl_to_py(py, rhs)?;
         let result = match op {
-            BinOp::Add      => obj.add(py_rhs)?,
-            BinOp::Sub      => obj.sub(py_rhs)?,
-            BinOp::Mul      => obj.mul(py_rhs)?,
-            BinOp::Div      => obj.div(py_rhs)?,
+            BinOp::Add => obj.add(py_rhs)?,
+            BinOp::Sub => obj.sub(py_rhs)?,
+            BinOp::Mul => obj.mul(py_rhs)?,
+            BinOp::Div => obj.div(py_rhs)?,
             BinOp::FloorDiv => obj.floor_div(py_rhs)?,
-            BinOp::Mod      => obj.rem(py_rhs)?,
-            BinOp::Pow      => obj.pow(py_rhs, py.None())?,
-            BinOp::LShift   => obj.lshift(py_rhs)?,
-            BinOp::RShift   => obj.rshift(py_rhs)?,
-            BinOp::BitAnd   => obj.bitand(py_rhs)?,
-            BinOp::BitOr    => obj.bitor(py_rhs)?,
-            BinOp::BitXor   => obj.bitxor(py_rhs)?,
-            BinOp::Eq       => obj.rich_compare(py_rhs, CompareOp::Eq)?,
-            BinOp::NotEq    => obj.rich_compare(py_rhs, CompareOp::Ne)?,
-            BinOp::Lt       => obj.rich_compare(py_rhs, CompareOp::Lt)?,
-            BinOp::Gt       => obj.rich_compare(py_rhs, CompareOp::Gt)?,
-            BinOp::LtEq     => obj.rich_compare(py_rhs, CompareOp::Le)?,
-            BinOp::GtEq     => obj.rich_compare(py_rhs, CompareOp::Ge)?,
-            BinOp::And | BinOp::Or => return Err(pyo3::exceptions::PyTypeError::new_err(
-                "cannot apply 'and'/'or' to Python objects via binop"
-            )),
+            BinOp::Mod => obj.rem(py_rhs)?,
+            BinOp::Pow => obj.pow(py_rhs, py.None())?,
+            BinOp::LShift => obj.lshift(py_rhs)?,
+            BinOp::RShift => obj.rshift(py_rhs)?,
+            BinOp::BitAnd => obj.bitand(py_rhs)?,
+            BinOp::BitOr => obj.bitor(py_rhs)?,
+            BinOp::BitXor => obj.bitxor(py_rhs)?,
+            BinOp::Eq => obj.rich_compare(py_rhs, CompareOp::Eq)?,
+            BinOp::NotEq => obj.rich_compare(py_rhs, CompareOp::Ne)?,
+            BinOp::Lt => obj.rich_compare(py_rhs, CompareOp::Lt)?,
+            BinOp::Gt => obj.rich_compare(py_rhs, CompareOp::Gt)?,
+            BinOp::LtEq => obj.rich_compare(py_rhs, CompareOp::Le)?,
+            BinOp::GtEq => obj.rich_compare(py_rhs, CompareOp::Ge)?,
+            BinOp::And | BinOp::Or => {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "cannot apply 'and'/'or' to Python objects via binop",
+                ))
+            }
             BinOp::In => {
                 // obj (LHS item) in py_rhs (RHS container)
                 let container = py_rhs.bind(py);
                 let c = container.call_method1("__contains__", (obj.clone().unbind(),))?;
                 let b: bool = c.extract()?;
                 return Ok(Value::Bool(b));
-            },
+            }
             BinOp::NotIn => {
                 let container = py_rhs.bind(py);
                 let c = container.call_method1("__contains__", (obj.clone().unbind(),))?;
                 let b: bool = c.extract()?;
                 return Ok(Value::Bool(!b));
-            },
+            }
         };
         Ok(py_to_tl(py, &result))
     })
@@ -308,39 +329,41 @@ pub fn py_rbinop(handle: &PyObjHandle, op: &BinOp, lhs: &Value) -> Result<Value,
         let py_lhs = tl_to_py(py, lhs)?;
         let result = match op {
             // 算術: 反射メソッドを直接呼び出す
-            BinOp::Add      => obj.call_method1("__radd__",      (py_lhs,))?,
-            BinOp::Sub      => obj.call_method1("__rsub__",      (py_lhs,))?,
-            BinOp::Mul      => obj.call_method1("__rmul__",      (py_lhs,))?,
-            BinOp::Div      => obj.call_method1("__rtruediv__",  (py_lhs,))?,
+            BinOp::Add => obj.call_method1("__radd__", (py_lhs,))?,
+            BinOp::Sub => obj.call_method1("__rsub__", (py_lhs,))?,
+            BinOp::Mul => obj.call_method1("__rmul__", (py_lhs,))?,
+            BinOp::Div => obj.call_method1("__rtruediv__", (py_lhs,))?,
             BinOp::FloorDiv => obj.call_method1("__rfloordiv__", (py_lhs,))?,
-            BinOp::Mod      => obj.call_method1("__rmod__",      (py_lhs,))?,
-            BinOp::Pow      => obj.call_method1("__rpow__",      (py_lhs,))?,
-            BinOp::LShift   => obj.call_method1("__rlshift__",   (py_lhs,))?,
-            BinOp::RShift   => obj.call_method1("__rrshift__",   (py_lhs,))?,
-            BinOp::BitAnd   => obj.call_method1("__rand__",      (py_lhs,))?,
-            BinOp::BitOr    => obj.call_method1("__ror__",       (py_lhs,))?,
-            BinOp::BitXor   => obj.call_method1("__rxor__",      (py_lhs,))?,
+            BinOp::Mod => obj.call_method1("__rmod__", (py_lhs,))?,
+            BinOp::Pow => obj.call_method1("__rpow__", (py_lhs,))?,
+            BinOp::LShift => obj.call_method1("__rlshift__", (py_lhs,))?,
+            BinOp::RShift => obj.call_method1("__rrshift__", (py_lhs,))?,
+            BinOp::BitAnd => obj.call_method1("__rand__", (py_lhs,))?,
+            BinOp::BitOr => obj.call_method1("__ror__", (py_lhs,))?,
+            BinOp::BitXor => obj.call_method1("__rxor__", (py_lhs,))?,
             // 比較: 左右を入れ替えて対応する演算子を使う
-            BinOp::Eq       => obj.rich_compare(py_lhs, CompareOp::Eq)?,
-            BinOp::NotEq    => obj.rich_compare(py_lhs, CompareOp::Ne)?,
-            BinOp::Lt       => obj.rich_compare(py_lhs, CompareOp::Gt)?,  // lhs < rhs → rhs > lhs
-            BinOp::Gt       => obj.rich_compare(py_lhs, CompareOp::Lt)?,  // lhs > rhs → rhs < lhs
-            BinOp::LtEq     => obj.rich_compare(py_lhs, CompareOp::Ge)?,
-            BinOp::GtEq     => obj.rich_compare(py_lhs, CompareOp::Le)?,
-            BinOp::And | BinOp::Or => return Err(pyo3::exceptions::PyTypeError::new_err(
-                "cannot apply 'and'/'or' to Python objects via binop"
-            )),
+            BinOp::Eq => obj.rich_compare(py_lhs, CompareOp::Eq)?,
+            BinOp::NotEq => obj.rich_compare(py_lhs, CompareOp::Ne)?,
+            BinOp::Lt => obj.rich_compare(py_lhs, CompareOp::Gt)?, // lhs < rhs → rhs > lhs
+            BinOp::Gt => obj.rich_compare(py_lhs, CompareOp::Lt)?, // lhs > rhs → rhs < lhs
+            BinOp::LtEq => obj.rich_compare(py_lhs, CompareOp::Ge)?,
+            BinOp::GtEq => obj.rich_compare(py_lhs, CompareOp::Le)?,
+            BinOp::And | BinOp::Or => {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "cannot apply 'and'/'or' to Python objects via binop",
+                ))
+            }
             BinOp::In => {
                 // py_lhs (item) in obj/handle (RHS container)
                 let c = obj.call_method1("__contains__", (py_lhs.clone_ref(py),))?;
                 let b: bool = c.extract()?;
                 return Ok(Value::Bool(b));
-            },
+            }
             BinOp::NotIn => {
                 let c = obj.call_method1("__contains__", (py_lhs.clone_ref(py),))?;
                 let b: bool = c.extract()?;
                 return Ok(Value::Bool(!b));
-            },
+            }
         };
         Ok(py_to_tl(py, &result))
     })
@@ -362,7 +385,9 @@ fn build_py_args<'py>(
         let py_val = tl_to_py(py, val)?;
         match name {
             None => positional.push(py_val),
-            Some(k) => { kwargs.set_item(k, py_val)?; }
+            Some(k) => {
+                kwargs.set_item(k, py_val)?;
+            }
         }
     }
     let args_tuple = PyTuple::new_bound(py, positional);

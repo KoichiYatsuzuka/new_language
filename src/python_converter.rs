@@ -10,8 +10,7 @@ use crate::token::Span;
 // ---------------------------------------------------------------------------
 
 pub fn convert_python_source(source: &str, filename: &str) -> Result<Vec<Stmt>, String> {
-    let ast = py::Suite::parse(source, filename)
-        .map_err(|e| format!("{filename}: {e}"))?;
+    let ast = py::Suite::parse(source, filename).map_err(|e| format!("{filename}: {e}"))?;
     convert_stmts(&ast, filename)
 }
 
@@ -20,7 +19,11 @@ pub fn convert_python_source(source: &str, filename: &str) -> Result<Vec<Stmt>, 
 // ---------------------------------------------------------------------------
 
 fn make_span(filename: &str) -> Span {
-    Span { file: filename.into(), line: 0, col: 0 }
+    Span {
+        file: filename.into(),
+        line: 0,
+        col: 0,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +121,10 @@ fn convert_stmt_in_hoist_ctx(
             else_body = Some(convert_stmts_hoisted_branch(orelse, filename, hoisted)?);
             break;
         }
-        return Ok(Some(Stmt::If { branches, else_body }));
+        return Ok(Some(Stmt::If {
+            branches,
+            else_body,
+        }));
     }
 
     convert_stmt(stmt, filename)
@@ -139,10 +145,7 @@ fn convert_stmts_hoisted_branch(
 }
 
 /// if 文のすべてのブランチ内で単純名前代入される変数を収集する（再帰あり）。
-fn collect_if_branch_assigns(
-    i: &py::StmtIf,
-    out: &mut std::collections::HashSet<String>,
-) {
+fn collect_if_branch_assigns(i: &py::StmtIf, out: &mut std::collections::HashSet<String>) {
     for stmt in i.body.iter().chain(i.orelse.iter()) {
         match stmt {
             py::Stmt::Assign(a) if a.targets.len() == 1 => {
@@ -208,7 +211,11 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
 
         // ----- return -----
         py::Stmt::Return(r) => {
-            let expr = r.value.as_deref().map(|e| convert_expr(e, filename)).transpose()?;
+            let expr = r
+                .value
+                .as_deref()
+                .map(|e| convert_expr(e, filename))
+                .transpose()?;
             Ok(Some(Stmt::Return(expr)))
         }
 
@@ -228,40 +235,42 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
                 py::Expr::Attribute(_) => {
                     let target_expr = convert_expr(target, filename)?;
                     let val = convert_expr(&a.value, filename)?;
-                    Ok(Some(Stmt::AttrAssign { target: target_expr, value: val }))
+                    Ok(Some(Stmt::AttrAssign {
+                        target: target_expr,
+                        value: val,
+                    }))
                 }
                 py::Expr::Tuple(_) | py::Expr::List(_) => Err(format!(
                     "{filename}: tuple/list unpacking in assignment is not supported"
                 )),
-                _ => Err(format!(
-                    "{filename}: unsupported assignment target"
-                )),
+                _ => Err(format!("{filename}: unsupported assignment target")),
             }
         }
 
         // ----- 型アノテーション付き代入: `x: int = 5` -----
-        py::Stmt::AnnAssign(a) => {
-            match &*a.target {
-                py::Expr::Name(n) => {
-                    if let Some(val_expr) = &a.value {
-                        let val = convert_expr(val_expr, filename)?;
-                        Ok(Some(Stmt::Mut(n.id.to_string(), val)))
-                    } else {
-                        Ok(None)
-                    }
+        py::Stmt::AnnAssign(a) => match &*a.target {
+            py::Expr::Name(n) => {
+                if let Some(val_expr) = &a.value {
+                    let val = convert_expr(val_expr, filename)?;
+                    Ok(Some(Stmt::Mut(n.id.to_string(), val)))
+                } else {
+                    Ok(None)
                 }
-                py::Expr::Attribute(_) => {
-                    if let Some(val_expr) = &a.value {
-                        let target_expr = convert_expr(&a.target, filename)?;
-                        let val = convert_expr(val_expr, filename)?;
-                        Ok(Some(Stmt::AttrAssign { target: target_expr, value: val }))
-                    } else {
-                        Ok(None)
-                    }
-                }
-                _ => Ok(None),
             }
-        }
+            py::Expr::Attribute(_) => {
+                if let Some(val_expr) = &a.value {
+                    let target_expr = convert_expr(&a.target, filename)?;
+                    let val = convert_expr(val_expr, filename)?;
+                    Ok(Some(Stmt::AttrAssign {
+                        target: target_expr,
+                        value: val,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
+        },
 
         // ----- 拡張代入: `x += expr` -----
         py::Stmt::AugAssign(a) => {
@@ -280,9 +289,15 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
                 py::Expr::Attribute(_) => {
                     let target_expr = convert_expr(&a.target, filename)?;
                     let val = convert_expr(&a.value, filename)?;
-                    Ok(Some(Stmt::AttrCompoundAssign { target: target_expr, op, value: val }))
+                    Ok(Some(Stmt::AttrCompoundAssign {
+                        target: target_expr,
+                        op,
+                        value: val,
+                    }))
                 }
-                _ => Err(format!("{filename}: unsupported augmented assignment target")),
+                _ => Err(format!(
+                    "{filename}: unsupported augmented assignment target"
+                )),
             }
         }
 
@@ -318,7 +333,10 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
                 break;
             }
 
-            Ok(Some(Stmt::If { branches, else_body }))
+            Ok(Some(Stmt::If {
+                branches,
+                else_body,
+            }))
         }
 
         // ----- while -----
@@ -332,19 +350,23 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
         py::Stmt::For(f) => {
             let target = match &*f.target {
                 py::Expr::Name(n) => n.id.to_string(),
-                _ => return Err(format!(
-                    "{filename}: tuple unpacking in for-loop target is not supported"
-                )),
+                _ => {
+                    return Err(format!(
+                        "{filename}: tuple unpacking in for-loop target is not supported"
+                    ))
+                }
             };
             let iter = convert_expr(&f.iter, filename)?;
             let body = convert_stmts(&f.body, filename)?;
-            Ok(Some(Stmt::For { targets: vec![target], iter, body }))
+            Ok(Some(Stmt::For {
+                targets: vec![target],
+                iter,
+                body,
+            }))
         }
 
         // ----- with（未サポート） -----
-        py::Stmt::With(_) => Err(format!(
-            "{filename}: 'with' statement is not supported"
-        )),
+        py::Stmt::With(_) => Err(format!("{filename}: 'with' statement is not supported")),
         py::Stmt::AsyncWith(_) => Err(format!(
             "{filename}: 'async with' statement is not supported"
         )),
@@ -365,19 +387,31 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
                 });
                 let name = eh.name.as_ref().map(|n| n.to_string());
                 let hbody = convert_stmts(&eh.body, filename)?;
-                handlers.push(ExceptHandler { exc_type, name, body: hbody });
+                handlers.push(ExceptHandler {
+                    exc_type,
+                    name,
+                    body: hbody,
+                });
             }
             let finally_body = if t.finalbody.is_empty() {
                 None
             } else {
                 Some(convert_stmts(&t.finalbody, filename)?)
             };
-            Ok(Some(Stmt::Try { body, handlers, finally_body }))
+            Ok(Some(Stmt::Try {
+                body,
+                handlers,
+                finally_body,
+            }))
         }
 
         // ----- raise -----
         py::Stmt::Raise(r) => {
-            let exc = r.exc.as_deref().map(|e| convert_expr(e, filename)).transpose()?;
+            let exc = r
+                .exc
+                .as_deref()
+                .map(|e| convert_expr(e, filename))
+                .transpose()?;
             let span = make_span(filename);
             Ok(Some(Stmt::Raise { exc, span }))
         }
@@ -402,9 +436,7 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
         py::Stmt::Import(_) | py::Stmt::ImportFrom(_) => Ok(None),
 
         // ----- match（未サポート） -----
-        py::Stmt::Match(_) => Err(format!(
-            "{filename}: 'match' statement is not supported"
-        )),
+        py::Stmt::Match(_) => Err(format!("{filename}: 'match' statement is not supported")),
 
         // ----- type alias（Python 3.12+） -----
         py::Stmt::TypeAlias(_) => Ok(None),
@@ -653,7 +685,11 @@ fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
 
         py::Expr::Attribute(a) => {
             let obj = convert_expr(&a.value, filename)?;
-            Ok(Expr::Attr { object: Box::new(obj), attr: a.attr.to_string(), span: make_span(filename) })
+            Ok(Expr::Attr {
+                object: Box::new(obj),
+                attr: a.attr.to_string(),
+                span: make_span(filename),
+            })
         }
 
         py::Expr::BinOp(b) => {
@@ -661,26 +697,34 @@ fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
             let left = convert_expr(&b.left, filename)?;
             let right = convert_expr(&b.right, filename)?;
             let span = make_span(filename);
-            Ok(Expr::BinOp { op, left: Box::new(left), right: Box::new(right), span })
+            Ok(Expr::BinOp {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            })
         }
 
         py::Expr::UnaryOp(u) => {
             let op = match &u.op {
                 py::UnaryOp::USub => UnaryOp::Neg,
-                py::UnaryOp::Not  => UnaryOp::Not,
+                py::UnaryOp::Not => UnaryOp::Not,
                 py::UnaryOp::Invert => UnaryOp::BitNot,
                 py::UnaryOp::UAdd => {
                     return convert_expr(&u.operand, filename);
                 }
             };
             let operand = convert_expr(&u.operand, filename)?;
-            Ok(Expr::UnaryOp { op, operand: Box::new(operand) })
+            Ok(Expr::UnaryOp {
+                op,
+                operand: Box::new(operand),
+            })
         }
 
         py::Expr::BoolOp(b) => {
             let op = match &b.op {
                 py::BoolOp::And => BinOp::And,
-                py::BoolOp::Or  => BinOp::Or,
+                py::BoolOp::Or => BinOp::Or,
             };
             let mut values = b.values.iter();
             let first = convert_expr(values.next().unwrap(), filename)?;
@@ -688,22 +732,30 @@ fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
             for val in values {
                 let right = convert_expr(val, filename)?;
                 let span = Span::unknown();
-                result = Expr::BinOp { op: op.clone(), left: Box::new(result), right: Box::new(right), span };
+                result = Expr::BinOp {
+                    op: op.clone(),
+                    left: Box::new(result),
+                    right: Box::new(right),
+                    span,
+                };
             }
             Ok(result)
         }
 
         py::Expr::Compare(c) => {
             if c.ops.len() != 1 || c.comparators.len() != 1 {
-                return Err(format!(
-                    "{filename}: chained comparisons are not supported"
-                ));
+                return Err(format!("{filename}: chained comparisons are not supported"));
             }
             let op = convert_cmpop(&c.ops[0], filename)?;
             let left = convert_expr(&c.left, filename)?;
             let right = convert_expr(&c.comparators[0], filename)?;
             let span = make_span(filename);
-            Ok(Expr::BinOp { op, left: Box::new(left), right: Box::new(right), span })
+            Ok(Expr::BinOp {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            })
         }
 
         py::Expr::Call(c) => {
@@ -724,22 +776,31 @@ fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
                     value: convert_expr(&kw.value, filename)?,
                 });
             }
-            Ok(Expr::Call { func: Box::new(func), args, span: crate::token::Span::unknown() })
+            Ok(Expr::Call {
+                func: Box::new(func),
+                args,
+                span: crate::token::Span::unknown(),
+            })
         }
 
         py::Expr::Subscript(s) => {
             let obj = convert_expr(&s.value, filename)?;
             let idx = convert_expr(&s.slice, filename)?;
-            Ok(Expr::Subscript { object: Box::new(obj), index: Box::new(idx) })
+            Ok(Expr::Subscript {
+                object: Box::new(obj),
+                index: Box::new(idx),
+            })
         }
 
         py::Expr::List(l) => {
-            let items: Result<Vec<Expr>, _> = l.elts.iter().map(|e| convert_expr(e, filename)).collect();
+            let items: Result<Vec<Expr>, _> =
+                l.elts.iter().map(|e| convert_expr(e, filename)).collect();
             Ok(Expr::List(items?))
         }
 
         py::Expr::Tuple(t) => {
-            let items: Result<Vec<Expr>, _> = t.elts.iter().map(|e| convert_expr(e, filename)).collect();
+            let items: Result<Vec<Expr>, _> =
+                t.elts.iter().map(|e| convert_expr(e, filename)).collect();
             Ok(Expr::Tuple(items?))
         }
 
@@ -747,16 +808,19 @@ fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
             let mut pairs: Vec<(Expr, Expr)> = Vec::new();
             for (k, v) in d.keys.iter().zip(d.values.iter()) {
                 let Some(k) = k else {
-                    return Err(format!("{filename}: **dict unpacking in dict literal is not supported"));
+                    return Err(format!(
+                        "{filename}: **dict unpacking in dict literal is not supported"
+                    ));
                 };
                 pairs.push((convert_expr(k, filename)?, convert_expr(v, filename)?));
             }
             Ok(Expr::Dict(pairs))
         }
 
-        py::Expr::ListComp(_) | py::Expr::SetComp(_) | py::Expr::DictComp(_) | py::Expr::GeneratorExp(_) => {
-            Err(format!("{filename}: comprehensions are not supported"))
-        }
+        py::Expr::ListComp(_)
+        | py::Expr::SetComp(_)
+        | py::Expr::DictComp(_)
+        | py::Expr::GeneratorExp(_) => Err(format!("{filename}: comprehensions are not supported")),
 
         py::Expr::Lambda(_) => Err(format!("{filename}: lambda is not supported")),
 
@@ -768,11 +832,11 @@ fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
             "{filename}: yield expression in Python is not supported"
         )),
 
-        py::Expr::NamedExpr(_) =>
-            Err(format!("{filename}: walrus operator ':=' is not supported")),
+        py::Expr::NamedExpr(_) => Err(format!("{filename}: walrus operator ':=' is not supported")),
 
-        py::Expr::IfExp(_) =>
-            Err(format!("{filename}: inline 'if' expression is not supported")),
+        py::Expr::IfExp(_) => Err(format!(
+            "{filename}: inline 'if' expression is not supported"
+        )),
 
         py::Expr::Starred(_) => Err(format!(
             "{filename}: starred expression is not supported in this context"
@@ -780,8 +844,7 @@ fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
 
         py::Expr::Set(_) => Err(format!("{filename}: set literal is not supported")),
 
-        py::Expr::Slice(_) =>
-            Err(format!("{filename}: slice expression is not supported")),
+        py::Expr::Slice(_) => Err(format!("{filename}: slice expression is not supported")),
 
         #[allow(unreachable_patterns)]
         _ => Err(format!("{filename}: unsupported Python expression")),
@@ -805,7 +868,9 @@ fn convert_constant(c: &py::ExprConstant, filename: &str) -> Result<Expr, String
         py::Constant::Bytes(_) => Err(format!("{filename}: bytes literals are not supported")),
         py::Constant::Ellipsis => Ok(Expr::None),
         py::Constant::Tuple(_) => Err(format!("{filename}: constant tuple is not supported")),
-        py::Constant::Complex { .. } => Err(format!("{filename}: complex numbers are not supported")),
+        py::Constant::Complex { .. } => {
+            Err(format!("{filename}: complex numbers are not supported"))
+        }
     }
 }
 
@@ -815,19 +880,21 @@ fn convert_constant(c: &py::ExprConstant, filename: &str) -> Result<Expr, String
 
 fn convert_binop(op: &py::Operator, filename: &str) -> Result<BinOp, String> {
     Ok(match op {
-        py::Operator::Add      => BinOp::Add,
-        py::Operator::Sub      => BinOp::Sub,
-        py::Operator::Mult     => BinOp::Mul,
-        py::Operator::Div      => BinOp::Div,
+        py::Operator::Add => BinOp::Add,
+        py::Operator::Sub => BinOp::Sub,
+        py::Operator::Mult => BinOp::Mul,
+        py::Operator::Div => BinOp::Div,
         py::Operator::FloorDiv => BinOp::FloorDiv,
-        py::Operator::Mod      => BinOp::Mod,
-        py::Operator::Pow      => BinOp::Pow,
-        py::Operator::BitAnd   => BinOp::BitAnd,
-        py::Operator::BitOr    => BinOp::BitOr,
-        py::Operator::BitXor   => BinOp::BitXor,
-        py::Operator::LShift   => BinOp::LShift,
-        py::Operator::RShift   => BinOp::RShift,
-        py::Operator::MatMult  => return Err(format!("{filename}: '@' matrix multiply is not supported")),
+        py::Operator::Mod => BinOp::Mod,
+        py::Operator::Pow => BinOp::Pow,
+        py::Operator::BitAnd => BinOp::BitAnd,
+        py::Operator::BitOr => BinOp::BitOr,
+        py::Operator::BitXor => BinOp::BitXor,
+        py::Operator::LShift => BinOp::LShift,
+        py::Operator::RShift => BinOp::RShift,
+        py::Operator::MatMult => {
+            return Err(format!("{filename}: '@' matrix multiply is not supported"))
+        }
     })
 }
 
@@ -837,15 +904,23 @@ fn convert_augop(op: &py::Operator, filename: &str) -> Result<BinOp, String> {
 
 fn convert_cmpop(op: &py::CmpOp, filename: &str) -> Result<BinOp, String> {
     Ok(match op {
-        py::CmpOp::Eq    => BinOp::Eq,
+        py::CmpOp::Eq => BinOp::Eq,
         py::CmpOp::NotEq => BinOp::NotEq,
-        py::CmpOp::Lt    => BinOp::Lt,
-        py::CmpOp::LtE   => BinOp::LtEq,
-        py::CmpOp::Gt    => BinOp::Gt,
-        py::CmpOp::GtE   => BinOp::GtEq,
-        py::CmpOp::In    => return Err(format!("{filename}: 'in' operator is not supported in expression context")),
-        py::CmpOp::NotIn => return Err(format!("{filename}: 'not in' operator is not supported in expression context")),
-        py::CmpOp::Is    => return Err(format!("{filename}: 'is' operator is not supported")),
+        py::CmpOp::Lt => BinOp::Lt,
+        py::CmpOp::LtE => BinOp::LtEq,
+        py::CmpOp::Gt => BinOp::Gt,
+        py::CmpOp::GtE => BinOp::GtEq,
+        py::CmpOp::In => {
+            return Err(format!(
+                "{filename}: 'in' operator is not supported in expression context"
+            ))
+        }
+        py::CmpOp::NotIn => {
+            return Err(format!(
+                "{filename}: 'not in' operator is not supported in expression context"
+            ))
+        }
+        py::CmpOp::Is => return Err(format!("{filename}: 'is' operator is not supported")),
         py::CmpOp::IsNot => return Err(format!("{filename}: 'is not' operator is not supported")),
     })
 }
@@ -865,13 +940,13 @@ pub fn convert_annotation(expr: &py::Expr) -> String {
             let base = convert_annotation(&s.value);
             let arg = convert_annotation_subscript_slice(&s.slice);
             match base.as_str() {
-                "Option"  => format!("Option[{arg}]"),
-                "Union"   => format!("Union[{arg}]"),
-                "list"    => format!("list[{arg}]"),
-                "dict"    => format!("dict[{arg}]"),
-                "tuple"   => format!("tuple[{arg}]"),
+                "Option" => format!("Option[{arg}]"),
+                "Union" => format!("Union[{arg}]"),
+                "list" => format!("list[{arg}]"),
+                "dict" => format!("dict[{arg}]"),
+                "tuple" => format!("tuple[{arg}]"),
                 "Optional" => format!("Option[{arg}]"),
-                other     => format!("{other}[{arg}]"),
+                other => format!("{other}[{arg}]"),
             }
         }
         py::Expr::Constant(c) if matches!(c.value, py::Constant::None) => "None".to_string(),
@@ -895,22 +970,22 @@ fn convert_annotation_subscript_slice(expr: &py::Expr) -> String {
 
 fn map_type_name(name: &str) -> String {
     match name {
-        "int"       => "int".to_string(),
-        "str"       => "str".to_string(),
-        "float"     => "float".to_string(),
-        "bool"      => "bool".to_string(),
-        "None"      => "None".to_string(),
-        "NoneType"  => "None".to_string(),
-        "list"      => "list".to_string(),
-        "List"      => "list".to_string(),
-        "dict"      => "dict".to_string(),
-        "Dict"      => "dict".to_string(),
-        "tuple"     => "tuple".to_string(),
-        "Tuple"     => "tuple".to_string(),
-        "Optional"  => "Option".to_string(),
-        "Union"     => "Union".to_string(),
-        "Any"       => "Any".to_string(),
-        other       => other.to_string(),
+        "int" => "int".to_string(),
+        "str" => "str".to_string(),
+        "float" => "float".to_string(),
+        "bool" => "bool".to_string(),
+        "None" => "None".to_string(),
+        "NoneType" => "None".to_string(),
+        "list" => "list".to_string(),
+        "List" => "list".to_string(),
+        "dict" => "dict".to_string(),
+        "Dict" => "dict".to_string(),
+        "tuple" => "tuple".to_string(),
+        "Tuple" => "tuple".to_string(),
+        "Optional" => "Option".to_string(),
+        "Union" => "Union".to_string(),
+        "Any" => "Any".to_string(),
+        other => other.to_string(),
     }
 }
 

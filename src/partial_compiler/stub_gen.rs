@@ -3,7 +3,6 @@
 /// Walks the top-level AST and emits type-only declarations with `...` bodies.
 /// The output is valid `.tl` syntax and is used by the type checker and VS Code
 /// extension to inspect a compiled module without its implementation.
-
 use crate::ast::{Accessibility, FieldKind, Param, Stmt, TemplateParam};
 
 /// Generate a `.tls` stub string from a parsed program's top-level statements.
@@ -137,9 +136,7 @@ fn fn_stub(
     let i = ind(indent_level);
     let tparams = template_params_str(template_params);
     let pstr = params_str(params);
-    let ret = return_type
-        .map(|r| format!(" -> {r}"))
-        .unwrap_or_default();
+    let ret = return_type.map(|r| format!(" -> {r}")).unwrap_or_default();
     let body_i = ind(indent_level + 1);
     format!("{i}fn {name}{tparams}({pstr}){ret}:\n{body_i}...\n")
 }
@@ -154,9 +151,7 @@ fn gen_stub(
     let i = ind(indent_level);
     let tparams = template_params_str(template_params);
     let pstr = params_str(params);
-    let ret = yield_type
-        .map(|t| format!(" -> {t}"))
-        .unwrap_or_default();
+    let ret = yield_type.map(|t| format!(" -> {t}")).unwrap_or_default();
     let body_i = ind(indent_level + 1);
     format!("{i}gen {name}{tparams}({pstr}){ret}:\n{body_i}...\n")
 }
@@ -258,9 +253,9 @@ fn class_body_item_stub(stmt: &Stmt, indent_level: usize) -> Option<(Accessibili
         } => {
             let i = ind(indent_level);
             let kw = match kind {
-                FieldKind::Mut       => "mut",
-                FieldKind::Let       => "let",
-                FieldKind::Const     => "const",
+                FieldKind::Mut => "mut",
+                FieldKind::Let => "let",
+                FieldKind::Const => "const",
                 FieldKind::StaticMut => "static mut",
             };
             let default_str = if default.is_some() { " = ..." } else { "" };

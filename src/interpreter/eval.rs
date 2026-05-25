@@ -9,7 +9,11 @@ use std::sync::Arc;
 
 use crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchArm, MatchPattern};
 
-use super::{DictData, ExecResult, FileData, FileOpenModeRust, ByteModeRust, GeneratorState, Interpreter, SliceValue, TupleData, Value, Var, NativeFnRef, RAISE_SENTINEL, BREAK_SENTINEL, BLOCK_YIELDS, LOOP_DEPTH, BLOCK_RETURN_EXPECTED_TYPE};
+use super::{
+    ByteModeRust, DictData, ExecResult, FileData, FileOpenModeRust, GeneratorState, Interpreter,
+    NativeFnRef, SliceValue, TupleData, Value, Var, BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS,
+    BREAK_SENTINEL, LOOP_DEPTH, RAISE_SENTINEL,
+};
 
 /// ヘルパー: セットに要素を重複なしで追加する。
 fn set_insert(set: &mut Vec<Value>, item: Value, interp: &Interpreter) {
@@ -98,9 +102,13 @@ fn compute_slice_indices(len: i64, begin: Option<i64>, end: Option<i64>, step: i
     let mut i = start;
     loop {
         if step > 0 {
-            if i >= stop { break; }
+            if i >= stop {
+                break;
+            }
         } else {
-            if i <= stop || i < 0 { break; }
+            if i <= stop || i < 0 {
+                break;
+            }
         }
         if i >= 0 && i < len {
             result.push(i as usize);
@@ -179,8 +187,15 @@ impl Interpreter {
     /// - `Public`    : 常に OK。
     /// - `Private`   : `self.current_class.name == class.name` のときのみ OK。
     /// - `Protected` : `self.current_class` が同じクラス、またはそのクラスを基底に持つとき OK。
-    fn check_member_access(&self, class: &super::ClassValue, member_key: &str, display_name: &str) -> Result<(), String> {
-        let access = class.field_access.get(member_key)
+    fn check_member_access(
+        &self,
+        class: &super::ClassValue,
+        member_key: &str,
+        display_name: &str,
+    ) -> Result<(), String> {
+        let access = class
+            .field_access
+            .get(member_key)
             .or_else(|| class.method_access.get(member_key))
             .cloned()
             .unwrap_or(Accessibility::Public);
@@ -188,7 +203,9 @@ impl Interpreter {
             Accessibility::Public => Ok(()),
             Accessibility::Private => {
                 if let Some(cur) = &self.current_class {
-                    if cur.name == class.name { return Ok(()); }
+                    if cur.name == class.name {
+                        return Ok(());
+                    }
                 }
                 Err(format!(
                     "AccessError: '{}' is private and cannot be accessed outside '{}'",
@@ -197,9 +214,13 @@ impl Interpreter {
             }
             Accessibility::Protected => {
                 if let Some(cur) = &self.current_class {
-                    if cur.name == class.name { return Ok(()); }
+                    if cur.name == class.name {
+                        return Ok(());
+                    }
                     // subclass: current_class has class.name in its bases
-                    if cur.bases.contains(&class.name) { return Ok(()); }
+                    if cur.bases.contains(&class.name) {
+                        return Ok(());
+                    }
                 }
                 Err(format!(
                     "AccessError: '{}' is protected and cannot be accessed outside '{}' or its subclasses",
@@ -319,7 +340,12 @@ impl Interpreter {
 
     // --- eval() から抽出したメソッド群 ---
 
-    fn eval_trait_access(&mut self, object: &Expr, trait_name: &str, attr: &str) -> Result<Value, String> {
+    fn eval_trait_access(
+        &mut self,
+        object: &Expr,
+        trait_name: &str,
+        attr: &str,
+    ) -> Result<Value, String> {
         let obj_val = self.eval(object)?;
         match obj_val {
             Value::Instance(inst_rc) => {
@@ -356,10 +382,12 @@ impl Interpreter {
                     Value::None => None,
                     Value::Int(_) => Some(v),
                     Value::Instance(inst) if inst.borrow().class.name == "Index" => Some(v),
-                    _ => return Err(format!(
-                        "TypeError: slice begin must be int, Index, or None, got '{}'",
-                        self.type_name(&v)
-                    )),
+                    _ => {
+                        return Err(format!(
+                            "TypeError: slice begin must be int, Index, or None, got '{}'",
+                            self.type_name(&v)
+                        ))
+                    }
                 }
             }
         };
@@ -371,10 +399,12 @@ impl Interpreter {
                     Value::None => None,
                     Value::Int(_) => Some(v),
                     Value::Instance(inst) if inst.borrow().class.name == "Index" => Some(v),
-                    _ => return Err(format!(
-                        "TypeError: slice end must be int, Index, or None, got '{}'",
-                        self.type_name(&v)
-                    )),
+                    _ => {
+                        return Err(format!(
+                            "TypeError: slice end must be int, Index, or None, got '{}'",
+                            self.type_name(&v)
+                        ))
+                    }
                 }
             }
         };
@@ -385,10 +415,12 @@ impl Interpreter {
                 match &v {
                     Value::None => None,
                     Value::Int(_) => Some(v),
-                    _ => return Err(format!(
-                        "TypeError: slice step must be int or None, got '{}'",
-                        self.type_name(&v)
-                    )),
+                    _ => {
+                        return Err(format!(
+                            "TypeError: slice step must be int or None, got '{}'",
+                            self.type_name(&v)
+                        ))
+                    }
                 }
             }
         };
@@ -399,11 +431,19 @@ impl Interpreter {
         match op {
             BinOp::And => {
                 let lv = self.eval(left)?;
-                if !self.is_truthy(&lv) { Ok(lv) } else { self.eval(right) }
+                if !self.is_truthy(&lv) {
+                    Ok(lv)
+                } else {
+                    self.eval(right)
+                }
             }
             BinOp::Or => {
                 let lv = self.eval(left)?;
-                if self.is_truthy(&lv) { Ok(lv) } else { self.eval(right) }
+                if self.is_truthy(&lv) {
+                    Ok(lv)
+                } else {
+                    self.eval(right)
+                }
             }
             _ => {
                 let lv = self.eval(left)?;
@@ -422,7 +462,10 @@ impl Interpreter {
                         true
                     } else {
                         let pv = self.eval(pattern_expr)?;
-                        matches!(self.apply_binop(&BinOp::Eq, subject_val.clone(), pv)?, Value::Bool(true))
+                        matches!(
+                            self.apply_binop(&BinOp::Eq, subject_val.clone(), pv)?,
+                            Value::Bool(true)
+                        )
                     }
                 }
                 MatchPattern::IsType(type_name) => self.value_is_type(&subject_val, type_name),
@@ -532,11 +575,14 @@ impl Interpreter {
                 }
 
                 let method_key = format!("__cast__[{}]", type_name);
-                let overloads = self.lookup_method_in_class(&class, &method_key)
-                    .ok_or_else(|| format!(
+                let overloads = self
+                    .lookup_method_in_class(&class, &method_key)
+                    .ok_or_else(|| {
+                        format!(
                         "TypeError: '{}' is not castable to '{}' (no __cast__[{}] method defined)",
                         class.name, type_name, type_name
-                    ))?;
+                    )
+                    })?;
                 if overloads.len() == 1 {
                     self.exec_fn(overloads[0].clone(), &[], Some(obj), "__cast__")
                 } else {
@@ -546,27 +592,38 @@ impl Interpreter {
             other => Err(format!(
                 "TypeError: cast operator '=>' requires an instance or new_type target, \
                  got '{}' cast to '{}'",
-                self.type_name(other), type_name
+                self.type_name(other),
+                type_name
             )),
         }
     }
 
     /// 組み込み関数名を受け取り、該当する組み込みを実行して結果を返す。
     /// 未知の名前には `None` を返してユーザー定義関数の探索にフォールスルーする。
-    fn eval_builtin_ident_call(&mut self, name: &str, args: &[CallArg]) -> Option<Result<Value, String>> {
+    fn eval_builtin_ident_call(
+        &mut self,
+        name: &str,
+        args: &[CallArg],
+    ) -> Option<Result<Value, String>> {
         match name {
             "print" => {
-                let parts: Result<Vec<_>, _> = args.iter()
+                let parts: Result<Vec<_>, _> = args
+                    .iter()
                     .map(|a| self.eval(a.expr()).map(|v| self.display(&v)))
                     .collect();
                 match parts {
                     Err(e) => Some(Err(e)),
-                    Ok(p) => { println!("{}", p.join(" ")); Some(Ok(Value::None)) }
+                    Ok(p) => {
+                        println!("{}", p.join(" "));
+                        Some(Ok(Value::None))
+                    }
                 }
             }
             "repr" => {
                 if args.len() != 1 {
-                    return Some(Err("TypeError: repr() takes exactly one argument".to_string()));
+                    return Some(Err(
+                        "TypeError: repr() takes exactly one argument".to_string()
+                    ));
                 }
                 let val = match self.eval(args[0].expr()) {
                     Ok(v) => v,
@@ -581,19 +638,25 @@ impl Interpreter {
                     Err(e) => return Some(Err(e)),
                 };
                 Some(match evaled.as_slice() {
-                    [Value::Int(stop)] => {
-                        Ok(Value::List(Rc::new(RefCell::new((0..*stop).map(Value::Int).collect()))))
-                    }
-                    [Value::Int(start), Value::Int(stop)] => {
-                        Ok(Value::List(Rc::new(RefCell::new((*start..*stop).map(Value::Int).collect()))))
-                    }
+                    [Value::Int(stop)] => Ok(Value::List(Rc::new(RefCell::new(
+                        (0..*stop).map(Value::Int).collect(),
+                    )))),
+                    [Value::Int(start), Value::Int(stop)] => Ok(Value::List(Rc::new(
+                        RefCell::new((*start..*stop).map(Value::Int).collect()),
+                    ))),
                     [Value::Int(start), Value::Int(stop), Value::Int(step)] => {
                         let mut items = Vec::new();
                         let mut i = *start;
                         if *step > 0 {
-                            while i < *stop { items.push(Value::Int(i)); i += step; }
+                            while i < *stop {
+                                items.push(Value::Int(i));
+                                i += step;
+                            }
                         } else if *step < 0 {
-                            while i > *stop { items.push(Value::Int(i)); i += step; }
+                            while i > *stop {
+                                items.push(Value::Int(i));
+                                i += step;
+                            }
                         }
                         Ok(Value::List(Rc::new(RefCell::new(items))))
                     }
@@ -602,7 +665,9 @@ impl Interpreter {
             }
             "len" => {
                 if args.len() != 1 {
-                    return Some(Err("TypeError: len() takes exactly one argument".to_string()));
+                    return Some(Err(
+                        "TypeError: len() takes exactly one argument".to_string()
+                    ));
                 }
                 let val = match self.eval(args[0].expr()) {
                     Ok(v) => v,
@@ -615,7 +680,10 @@ impl Interpreter {
                     Value::Set(s) => Ok(Value::Int(s.borrow().len() as i64)),
                     Value::Tuple(t) => Ok(Value::Int(t.len() as i64)),
                     Value::PyObject(handle) => super::py_interop::py_len(handle),
-                    _ => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(&val))),
+                    _ => Err(format!(
+                        "TypeError: object of type '{}' has no len()",
+                        self.type_name(&val)
+                    )),
                 })
             }
             "id" => {
@@ -631,7 +699,9 @@ impl Interpreter {
             "open" => Some(self.eval_builtin_open(args)),
             "close" => {
                 if args.len() != 1 {
-                    return Some(Err("TypeError: close() takes exactly one argument".to_string()));
+                    return Some(Err(
+                        "TypeError: close() takes exactly one argument".to_string()
+                    ));
                 }
                 let val = match self.eval(args[0].expr()) {
                     Ok(v) => v,
@@ -664,7 +734,9 @@ impl Interpreter {
                             }
                         }
                         CallArg::Keyword { name, .. } => {
-                            return Some(Err(format!("TypeError: enumerate() got unexpected keyword argument '{name}'")));
+                            return Some(Err(format!(
+                                "TypeError: enumerate() got unexpected keyword argument '{name}'"
+                            )));
                         }
                     }
                 }
@@ -676,30 +748,43 @@ impl Interpreter {
                 }
                 let start = match start_val {
                     Some(Value::Int(n)) => n,
-                    Some(other) => return Some(Err(format!(
-                        "TypeError: enumerate() 'start' must be int, not '{}'",
-                        self.type_name(&other)
-                    ))),
+                    Some(other) => {
+                        return Some(Err(format!(
+                            "TypeError: enumerate() 'start' must be int, not '{}'",
+                            self.type_name(&other)
+                        )))
+                    }
                     None => 0i64,
                 };
                 let items = match self.collect_iterable(positional.into_iter().next().unwrap()) {
                     Ok(v) => v,
                     Err(e) => return Some(Err(e)),
                 };
-                let tuples: Vec<Value> = items.into_iter().enumerate().map(|(i, v)| {
-                    let idx = start + i as i64;
-                    let type_str = self.type_name(&v).to_string();
-                    Value::Tuple(Rc::new(TupleData::new(
-                        vec![Value::Int(idx), v],
-                        vec!["int".to_string(), type_str],
-                    )))
-                }).collect();
-                Some(Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: tuples, index: 0 })))))
+                let tuples: Vec<Value> = items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let idx = start + i as i64;
+                        let type_str = self.type_name(&v).to_string();
+                        Value::Tuple(Rc::new(TupleData::new(
+                            vec![Value::Int(idx), v],
+                            vec!["int".to_string(), type_str],
+                        )))
+                    })
+                    .collect();
+                Some(Ok(Value::Generator(Rc::new(RefCell::new(
+                    GeneratorState {
+                        values: tuples,
+                        index: 0,
+                    },
+                )))))
             }
             "zip" => {
                 for arg in args.iter() {
                     if matches!(arg, CallArg::Keyword { .. }) {
-                        return Some(Err("TypeError: zip() takes no keyword arguments".to_string()));
+                        return Some(Err(
+                            "TypeError: zip() takes no keyword arguments".to_string()
+                        ));
                     }
                 }
                 let mut iters: Vec<Vec<Value>> = Vec::new();
@@ -715,15 +800,28 @@ impl Interpreter {
                     iters.push(items);
                 }
                 if iters.is_empty() {
-                    return Some(Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: vec![], index: 0 })))));
+                    return Some(Ok(Value::Generator(Rc::new(RefCell::new(
+                        GeneratorState {
+                            values: vec![],
+                            index: 0,
+                        },
+                    )))));
                 }
                 let min_len = iters.iter().map(|it| it.len()).min().unwrap_or(0);
-                let tuples: Vec<Value> = (0..min_len).map(|i| {
-                    let vals: Vec<Value> = iters.iter().map(|it| it[i].clone()).collect();
-                    let types: Vec<String> = vals.iter().map(|v| self.type_name(v).to_string()).collect();
-                    Value::Tuple(Rc::new(TupleData::new(vals, types)))
-                }).collect();
-                Some(Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: tuples, index: 0 })))))
+                let tuples: Vec<Value> = (0..min_len)
+                    .map(|i| {
+                        let vals: Vec<Value> = iters.iter().map(|it| it[i].clone()).collect();
+                        let types: Vec<String> =
+                            vals.iter().map(|v| self.type_name(v).to_string()).collect();
+                        Value::Tuple(Rc::new(TupleData::new(vals, types)))
+                    })
+                    .collect();
+                Some(Ok(Value::Generator(Rc::new(RefCell::new(
+                    GeneratorState {
+                        values: tuples,
+                        index: 0,
+                    },
+                )))))
             }
             _ => None,
         }
@@ -737,11 +835,16 @@ impl Interpreter {
         let mut kw: HMap<String, Value> = HMap::new();
         let mut pos: Vec<Value> = Vec::new();
         for (k, v) in evaled {
-            match k { Some(n) => { kw.insert(n, v); } None => pos.push(v) }
+            match k {
+                Some(n) => {
+                    kw.insert(n, v);
+                }
+                None => pos.push(v),
+            }
         }
         let file_path = extract_path_str(
             get_arg(&pos, &kw, 0, "file_path")
-                .ok_or("TypeError: open() missing required argument 'file_path'")?
+                .ok_or("TypeError: open() missing required argument 'file_path'")?,
         )?;
         let open_mode_int = extract_enum_int(
             get_arg(&pos, &kw, 1, "open_mode")
@@ -750,13 +853,16 @@ impl Interpreter {
         )?;
         let start_point_int: i64 = get_arg(&pos, &kw, 2, "start_point")
             .map(|v| extract_enum_int(v, "enum_item_StartPoint"))
-            .transpose()?.unwrap_or(0);
+            .transpose()?
+            .unwrap_or(0);
         let byte_mode_int: i64 = get_arg(&pos, &kw, 3, "byte_recognizing")
             .map(|v| extract_enum_int(v, "enum_item_ByteRecognizingMode"))
-            .transpose()?.unwrap_or(1);
+            .transpose()?
+            .unwrap_or(1);
         let enc_int: i64 = get_arg(&pos, &kw, 4, "encoding")
             .map(|v| extract_enum_int(v, "enum_item_Encoding"))
-            .transpose()?.unwrap_or(1);
+            .transpose()?
+            .unwrap_or(1);
         if enc_int == 3 {
             return Err("NotImplementedError: Shift-JIS encoding is not yet supported".to_string());
         }
@@ -765,7 +871,8 @@ impl Interpreter {
                 Value::Bool(b) => Ok(*b),
                 _ => Err("TypeError: open() 'exclusion' must be bool".to_string()),
             })
-            .transpose()?.unwrap_or(true);
+            .transpose()?
+            .unwrap_or(true);
 
         let mode = match open_mode_int {
             0 => FileOpenModeRust::Write,
@@ -774,7 +881,11 @@ impl Interpreter {
             3 => FileOpenModeRust::MakeAndWrite,
             n => return Err(format!("TypeError: invalid FileOpenMode value {n}")),
         };
-        let byte_mode = if byte_mode_int == 0 { ByteModeRust::Byte } else { ByteModeRust::Text };
+        let byte_mode = if byte_mode_int == 0 {
+            ByteModeRust::Byte
+        } else {
+            ByteModeRust::Text
+        };
 
         let std_path = std::path::Path::new(&file_path);
         if mode == FileOpenModeRust::MakeAndWrite && std_path.exists() {
@@ -786,7 +897,9 @@ impl Interpreter {
 
         let (file, content) = match mode {
             FileOpenModeRust::Read => {
-                let mut f = OpenOptions::new().read(true).open(std_path)
+                let mut f = OpenOptions::new()
+                    .read(true)
+                    .open(std_path)
                     .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
                 let mut c = Vec::new();
                 f.read_to_end(&mut c)
@@ -794,7 +907,10 @@ impl Interpreter {
                 (f, c)
             }
             FileOpenModeRust::Write => {
-                let mut f = OpenOptions::new().read(true).write(true).open(std_path)
+                let mut f = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(std_path)
                     .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
                 let mut c = Vec::new();
                 f.read_to_end(&mut c)
@@ -803,29 +919,36 @@ impl Interpreter {
             }
             FileOpenModeRust::Rewrite => {
                 let f = OpenOptions::new()
-                    .read(true).write(true).create(true).truncate(true)
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
                     .open(std_path)
                     .map_err(|e| format!("IOError: cannot open '{}': {e}", file_path))?;
                 (f, Vec::new())
             }
             FileOpenModeRust::MakeAndWrite => {
                 let f = OpenOptions::new()
-                    .read(true).write(true).create_new(true)
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
                     .open(std_path)
                     .map_err(|e| format!("IOError: cannot create '{}': {e}", file_path))?;
                 (f, Vec::new())
             }
         };
 
-        let (content, bom_skip) = if enc_int == 2
-            && content.starts_with(&[0xEF, 0xBB, 0xBF])
-        {
+        let (content, bom_skip) = if enc_int == 2 && content.starts_with(&[0xEF, 0xBB, 0xBF]) {
             (content[3..].to_vec(), 3usize)
         } else {
             (content, 0usize)
         };
         let _ = bom_skip;
-        let pointer = if start_point_int == 1 { content.len() } else { 0 };
+        let pointer = if start_point_int == 1 {
+            content.len()
+        } else {
+            0
+        };
 
         let fd = FileData {
             path: file_path,
@@ -839,7 +962,11 @@ impl Interpreter {
         Ok(Value::FileObject(Rc::new(RefCell::new(fd))))
     }
 
-    fn eval_type_constructor_call(&mut self, type_name: &str, args: &[CallArg]) -> Result<Value, String> {
+    fn eval_type_constructor_call(
+        &mut self,
+        type_name: &str,
+        args: &[CallArg],
+    ) -> Result<Value, String> {
         if type_name == "AsyncManager" {
             return self.make_async_manager(args);
         }
@@ -851,7 +978,11 @@ impl Interpreter {
     /// Dispatch an already-evaluated argument list to a built-in type constructor.
     /// Called by `eval_type_constructor_call` (from AST) and `call_value_with_args`
     /// (from native callbacks that hold a `Value::Type`).
-    pub(super) fn call_type_by_name_evaled(&mut self, type_name: &str, vals: Vec<Value>) -> Result<Value, String> {
+    pub(super) fn call_type_by_name_evaled(
+        &mut self,
+        type_name: &str,
+        vals: Vec<Value>,
+    ) -> Result<Value, String> {
         match type_name {
             "str" => match vals.as_slice() {
                 [] => Ok(Value::Str(String::new())),
@@ -863,10 +994,15 @@ impl Interpreter {
                 [Value::Int(n)] => Ok(Value::Int(*n)),
                 [Value::Float(f)] => Ok(Value::Int(*f as i64)),
                 [Value::Bool(b)] => Ok(Value::Int(if *b { 1 } else { 0 })),
-                [Value::Str(s)] => s.trim().parse::<i64>()
+                [Value::Str(s)] => s
+                    .trim()
+                    .parse::<i64>()
                     .map(Value::Int)
                     .map_err(|_| format!("ValueError: invalid literal for int(): '{s}'")),
-                [other] => Err(format!("TypeError: int() argument must be a string or a number, not '{}'", self.type_name(other))),
+                [other] => Err(format!(
+                    "TypeError: int() argument must be a string or a number, not '{}'",
+                    self.type_name(other)
+                )),
                 _ => Err("TypeError: int() takes at most 1 argument".to_string()),
             },
             "float" => match vals.as_slice() {
@@ -874,10 +1010,15 @@ impl Interpreter {
                 [Value::Float(f)] => Ok(Value::Float(*f)),
                 [Value::Int(n)] => Ok(Value::Float(*n as f64)),
                 [Value::Bool(b)] => Ok(Value::Float(if *b { 1.0 } else { 0.0 })),
-                [Value::Str(s)] => s.trim().parse::<f64>()
+                [Value::Str(s)] => s
+                    .trim()
+                    .parse::<f64>()
                     .map(Value::Float)
                     .map_err(|_| format!("ValueError: invalid literal for float(): '{s}'")),
-                [other] => Err(format!("TypeError: float() argument must be a string or a number, not '{}'", self.type_name(other))),
+                [other] => Err(format!(
+                    "TypeError: float() argument must be a string or a number, not '{}'",
+                    self.type_name(other)
+                )),
                 _ => Err("TypeError: float() takes at most 1 argument".to_string()),
             },
             "bool" => match vals.as_slice() {
@@ -900,8 +1041,11 @@ impl Interpreter {
                     Value::Str(s) => {
                         let chars = s.chars().map(|c| Value::Str(c.to_string())).collect();
                         Ok(Value::List(Rc::new(RefCell::new(chars))))
-                    },
-                    other => Err(format!("TypeError: '{}' object is not iterable", self.type_name(&other))),
+                    }
+                    other => Err(format!(
+                        "TypeError: '{}' object is not iterable",
+                        self.type_name(&other)
+                    )),
                 },
                 _ => Err("TypeError: list() takes at most 1 argument".to_string()),
             },
@@ -914,12 +1058,19 @@ impl Interpreter {
                         Value::List(lst) => lst.borrow().clone(),
                         Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
                         Value::Tuple(t) => t.all_values().to_vec(),
-                        other => return Err(format!("TypeError: '{}' object is not iterable", self.type_name(&other))),
+                        other => {
+                            return Err(format!(
+                                "TypeError: '{}' object is not iterable",
+                                self.type_name(&other)
+                            ))
+                        }
                     };
                     let mut result: Vec<Value> = Vec::new();
-                    for v in items { set_insert(&mut result, v, self); }
+                    for v in items {
+                        set_insert(&mut result, v, self);
+                    }
                     Ok(Value::Set(Rc::new(RefCell::new(result))))
-                },
+                }
                 _ => Err("TypeError: set() takes at most 1 argument".to_string()),
             },
             "slice" => {
@@ -927,7 +1078,9 @@ impl Interpreter {
                     match v {
                         Value::None => Ok(None),
                         Value::Int(_) => Ok(Some(v)),
-                        Value::Instance(ref inst) if inst.borrow().class.name == "Index" => Ok(Some(v)),
+                        Value::Instance(ref inst) if inst.borrow().class.name == "Index" => {
+                            Ok(Some(v))
+                        }
                         other => Err(format!(
                             "TypeError: slice {label} must be int, Index, or None, got '{}'",
                             self.type_name(&other)
@@ -948,14 +1101,18 @@ impl Interpreter {
                     2 => {
                         let mut it = vals.into_iter();
                         let begin = check_index(it.next().unwrap(), "begin")?;
-                        let end   = check_index(it.next().unwrap(), "end")?;
-                        Ok(Value::Slice(Rc::new(SliceValue { begin, end, step: None })))
+                        let end = check_index(it.next().unwrap(), "end")?;
+                        Ok(Value::Slice(Rc::new(SliceValue {
+                            begin,
+                            end,
+                            step: None,
+                        })))
                     }
                     3 => {
                         let mut it = vals.into_iter();
                         let begin = check_index(it.next().unwrap(), "begin")?;
-                        let end   = check_index(it.next().unwrap(), "end")?;
-                        let step  = check_step(it.next().unwrap())?;
+                        let end = check_index(it.next().unwrap(), "end")?;
+                        let step = check_step(it.next().unwrap())?;
                         Ok(Value::Slice(Rc::new(SliceValue { begin, end, step })))
                     }
                     _ => Err("TypeError: slice() takes 2 or 3 arguments".to_string()),
@@ -966,7 +1123,10 @@ impl Interpreter {
                 [Value::UInt(n)] => Ok(Value::UInt(*n)),
                 [Value::Int(n)] => Ok(Value::UInt(*n as u64)),
                 [Value::Bool(b)] => Ok(Value::UInt(if *b { 1 } else { 0 })),
-                [other] => Err(format!("TypeError: uint() argument must be an integer, not '{}'", self.type_name(other))),
+                [other] => Err(format!(
+                    "TypeError: uint() argument must be an integer, not '{}'",
+                    self.type_name(other)
+                )),
                 _ => Err("TypeError: uint() takes at most 1 argument".to_string()),
             },
             "id" => {
@@ -976,18 +1136,18 @@ impl Interpreter {
                 let val = vals.into_iter().next().unwrap();
                 let raw: u64 = match &val {
                     Value::Instance(rc) => Rc::as_ptr(rc) as u64,
-                    Value::List(rc)     => Rc::as_ptr(rc) as u64,
-                    Value::Dict(rc)     => Rc::as_ptr(rc) as u64,
+                    Value::List(rc) => Rc::as_ptr(rc) as u64,
+                    Value::Dict(rc) => Rc::as_ptr(rc) as u64,
                     Value::Function(rc) => Rc::as_ptr(rc) as u64,
                     Value::OverloadedFn(v) => v.as_ptr() as u64,
-                    Value::Generator(rc)  => Rc::as_ptr(rc) as u64,
+                    Value::Generator(rc) => Rc::as_ptr(rc) as u64,
                     Value::GeneratorFn(rc) => Rc::as_ptr(rc) as u64,
-                    Value::Tuple(rc)    => Rc::as_ptr(rc) as u64,
-                    Value::Int(n)  => *n as u64,
+                    Value::Tuple(rc) => Rc::as_ptr(rc) as u64,
+                    Value::Int(n) => *n as u64,
                     Value::UInt(n) => *n,
                     Value::Float(f) => f.to_bits(),
                     Value::Bool(b) => *b as u64,
-                    Value::Str(s)  => {
+                    Value::Str(s) => {
                         use std::hash::{Hash, Hasher};
                         let mut h = std::collections::hash_map::DefaultHasher::new();
                         s.hash(&mut h);
@@ -1003,7 +1163,11 @@ impl Interpreter {
                 let mut fields = std::collections::HashMap::new();
                 fields.insert("value".to_string(), (Value::UInt(raw), true));
                 Ok(Value::Instance(Rc::new(RefCell::new(
-                    crate::interpreter::InstanceData { class: pointer_cls, fields, immutable: false }
+                    crate::interpreter::InstanceData {
+                        class: pointer_cls,
+                        fields,
+                        immutable: false,
+                    },
                 ))))
             }
             "len" => match vals.as_slice() {
@@ -1012,7 +1176,10 @@ impl Interpreter {
                 [Value::Dict(d)] => Ok(Value::Int(d.borrow().len() as i64)),
                 [Value::Set(s)] => Ok(Value::Int(s.borrow().len() as i64)),
                 [Value::Tuple(t)] => Ok(Value::Int(t.len() as i64)),
-                [other] => Err(format!("TypeError: object of type '{}' has no len()", self.type_name(other))),
+                [other] => Err(format!(
+                    "TypeError: object of type '{}' has no len()",
+                    self.type_name(other)
+                )),
                 _ => Err("TypeError: len() takes exactly 1 argument".to_string()),
             },
             other => Err(format!("TypeError: '{}' object is not callable", other)),
@@ -1042,23 +1209,20 @@ impl Interpreter {
             return self.dispatch_native_evaled(fn_ref, vals);
         }
 
-        // Write-back path — verify MutPtr args are `mut` variable identifiers
+        // Write-back path — verify MutPtr args that are named variables are mutable.
+        // Non-variable expressions (literals, calls, etc.) are allowed but receive no write-back.
         for (i, pp) in fn_ref.ptr_params.iter().enumerate() {
-            if *pp != PtrParam::MutPtr { continue; }
-            let expr = args.get(i).map(|a| a.expr());
-            match expr {
-                Some(crate::ast::Expr::Ident(name)) => {
-                    let is_mut = self.get_var(name).map(|v| v.is_mutable()).unwrap_or(false);
-                    if !is_mut {
-                        return Err(format!(
-                            "TypeError: pointer parameter {i} requires a `mut` variable, '{}' is not mutable",
-                            name
-                        ));
-                    }
+            if *pp != PtrParam::MutPtr {
+                continue;
+            }
+            if let Some(crate::ast::Expr::Ident(name)) = args.get(i).map(|a| a.expr()) {
+                let is_mut = self.get_var(name).map(|v| v.is_mutable()).unwrap_or(false);
+                if !is_mut {
+                    return Err(format!(
+                        "TypeError: pointer parameter {i} requires a `mut` variable, '{}' is not mutable",
+                        name
+                    ));
                 }
-                _ => return Err(format!(
-                    "TypeError: pointer parameter {i} requires a `mut` variable argument"
-                )),
             }
         }
 
@@ -1073,7 +1237,9 @@ impl Interpreter {
             };
             return Err(format!(
                 "TypeError: native function '{}' expects {} argument(s), got {}",
-                fn_ref.fn_name, expected, vals.len()
+                fn_ref.fn_name,
+                expected,
+                vals.len()
             ));
         }
         // Pad missing optional args with None (handle 0 → NULL for pointer params)
@@ -1085,20 +1251,28 @@ impl Interpreter {
 
         // Push handles; MutPtr params get writable arena slots
         let mut writebacks: Vec<(String, i64)> = Vec::new();
-        let handles: Vec<i64> = vals.iter().enumerate()
+        let handles: Vec<i64> = vals
+            .iter()
+            .enumerate()
             .map(|(i, v)| {
                 let pp = fn_ref.ptr_params.get(i).copied().unwrap_or(PtrParam::None);
                 if pp == PtrParam::MutPtr {
-                    let h = super::native_api::push_handle_writeback(v.clone());
-                    let name = match args[i].expr() {
-                        crate::ast::Expr::Ident(n) => n.clone(),
-                        _ => unreachable!(),
-                    };
-                    writebacks.push((name, h));
-                    h
+                    // Only do write-back when the argument is a named mut variable.
+                    // Literals / expressions are passed read-only (no write-back needed).
+                    if let Some(crate::ast::Expr::Ident(n)) = args.get(i).map(|a| a.expr()) {
+                        let h = super::native_api::push_handle_writeback(v.clone());
+                        writebacks.push((n.clone(), h));
+                        h
+                    } else {
+                        super::native_api::push_handle(v.clone())
+                    }
                 } else {
                     let is_mut = fn_ref.param_mutabilities.get(i).copied().unwrap_or(true);
-                    let owned = if is_mut { v.clone() } else { Self::deep_copy_value(v.clone()) };
+                    let owned = if is_mut {
+                        v.clone()
+                    } else {
+                        Self::deep_copy_value(v.clone())
+                    };
                     super::native_api::push_handle(owned)
                 }
             })
@@ -1110,15 +1284,22 @@ impl Interpreter {
                 None => {
                     super::native_api::abort_native_call(is_outermost);
                     return Err(format!(
-                        "RuntimeError: native library not loaded: {}", fn_ref.lib_path.display()
+                        "RuntimeError: native library not loaded: {}",
+                        fn_ref.lib_path.display()
                     ));
                 }
             };
             let symbol_name = format!("{}_tl\0", fn_ref.fn_name);
             unsafe {
-                match lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes()) {
+                match lib
+                    .0
+                    .get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
+                {
                     Ok(func) => Ok(func(handles.as_ptr(), handles.len() as i32)),
-                    Err(e) => Err(format!("RuntimeError: symbol '{}' not found: {e}", fn_ref.fn_name)),
+                    Err(e) => Err(format!(
+                        "RuntimeError: symbol '{}' not found: {e}",
+                        fn_ref.fn_name
+                    )),
                 }
             }
         };
@@ -1134,7 +1315,8 @@ impl Interpreter {
                     return Err(err);
                 }
                 // Read back write-back values BEFORE exit_native_call truncates the arena
-                let updated: Vec<(String, Value)> = writebacks.iter()
+                let updated: Vec<(String, Value)> = writebacks
+                    .iter()
                     .map(|(name, h)| (name.clone(), super::native_api::clone_value_at(*h)))
                     .collect();
                 let result = super::native_api::exit_native_call(result_h, is_outermost);
@@ -1163,7 +1345,9 @@ impl Interpreter {
             };
             return Err(format!(
                 "TypeError: native function '{}' expects {} argument(s), got {}",
-                fn_ref.fn_name, expected, vals.len()
+                fn_ref.fn_name,
+                expected,
+                vals.len()
             ));
         }
         while vals.len() < fn_ref.n_params {
@@ -1172,10 +1356,16 @@ impl Interpreter {
 
         let is_outermost = super::native_api::enter_native_call(self as *mut Interpreter);
 
-        let handles: Vec<i64> = vals.iter().enumerate()
+        let handles: Vec<i64> = vals
+            .iter()
+            .enumerate()
             .map(|(i, v)| {
                 let is_mut = fn_ref.param_mutabilities.get(i).copied().unwrap_or(true);
-                let owned = if is_mut { v.clone() } else { Self::deep_copy_value(v.clone()) };
+                let owned = if is_mut {
+                    v.clone()
+                } else {
+                    Self::deep_copy_value(v.clone())
+                };
                 super::native_api::push_handle(owned)
             })
             .collect();
@@ -1186,15 +1376,22 @@ impl Interpreter {
                 None => {
                     super::native_api::abort_native_call(is_outermost);
                     return Err(format!(
-                        "RuntimeError: native library not loaded: {}", fn_ref.lib_path.display()
+                        "RuntimeError: native library not loaded: {}",
+                        fn_ref.lib_path.display()
                     ));
                 }
             };
             let symbol_name = format!("{}_tl\0", fn_ref.fn_name);
             unsafe {
-                match lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes()) {
+                match lib
+                    .0
+                    .get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
+                {
                     Ok(func) => Ok(func(handles.as_ptr(), handles.len() as i32)),
-                    Err(e) => Err(format!("RuntimeError: symbol '{}' not found: {e}", fn_ref.fn_name)),
+                    Err(e) => Err(format!(
+                        "RuntimeError: symbol '{}' not found: {e}",
+                        fn_ref.fn_name
+                    )),
                 }
             }
         };
@@ -1230,7 +1427,11 @@ impl Interpreter {
                     return Ok(v);
                 }
                 let suffix = format!("::{attr}");
-                if let Some((full_key, (v, _))) = inst.fields.iter().find(|(k, _)| k.ends_with(suffix.as_str())) {
+                if let Some((full_key, (v, _))) = inst
+                    .fields
+                    .iter()
+                    .find(|(k, _)| k.ends_with(suffix.as_str()))
+                {
                     let v = v.clone();
                     let full_key = full_key.clone();
                     drop(inst);
@@ -1272,7 +1473,10 @@ impl Interpreter {
                     self.check_member_access(&cls, attr, attr)?;
                     return Ok(result);
                 }
-                Err(format!("AttributeError: '{}' object has no attribute '{attr}'", cls.name))
+                Err(format!(
+                    "AttributeError: '{}' object has no attribute '{attr}'",
+                    cls.name
+                ))
             }
             Value::Class(cls) => {
                 if attr == "name" {
@@ -1291,19 +1495,22 @@ impl Interpreter {
                         Value::OverloadedFn(overloads.clone())
                     });
                 }
-                Err(format!("AttributeError: class '{}' has no attribute '{attr}'", cls.name))
+                Err(format!(
+                    "AttributeError: class '{}' has no attribute '{attr}'",
+                    cls.name
+                ))
             }
-            Value::Namespace(ns) => {
-                ns.members.get(attr).cloned()
-                    .ok_or_else(|| format!("AttributeError: module '{}' has no attribute '{attr}'", ns.name))
-            }
-            Value::PyObject(handle) => {
-                super::py_interop::py_getattr(handle, attr)
-            }
+            Value::Namespace(ns) => ns.members.get(attr).cloned().ok_or_else(|| {
+                format!(
+                    "AttributeError: module '{}' has no attribute '{attr}'",
+                    ns.name
+                )
+            }),
+            Value::PyObject(handle) => super::py_interop::py_getattr(handle, attr),
             Value::Slice(s) => match attr {
                 "begin" => Ok(s.begin.clone().unwrap_or(Value::None)),
-                "end"   => Ok(s.end.clone().unwrap_or(Value::None)),
-                "step"  => Ok(s.step.clone().unwrap_or(Value::None)),
+                "end" => Ok(s.end.clone().unwrap_or(Value::None)),
+                "step" => Ok(s.step.clone().unwrap_or(Value::None)),
                 _ => Err(format!("AttributeError: 'slice' has no attribute '{attr}'")),
             },
             Value::AsyncManager(mgr_rc) => {
@@ -1312,26 +1519,38 @@ impl Interpreter {
                     "num_thread" => Ok(Value::UInt(mgr.num_thread as u64)),
                     "raise_immediately" => Ok(Value::Bool(mgr.raise_immediately)),
                     "thread_status" => {
-                        let running: Vec<Value> = mgr.progress.iter().enumerate()
+                        let running: Vec<Value> = mgr
+                            .progress
+                            .iter()
+                            .enumerate()
                             .filter(|(_, s)| **s == super::async_mgr::AsyncStatus::Running)
                             .map(|(i, _)| Value::Int(i as i64))
                             .collect();
                         Ok(Value::List(Rc::new(RefCell::new(running))))
                     }
                     "progress_status" => {
-                        let statuses: Vec<Value> = mgr.progress.iter()
+                        let statuses: Vec<Value> = mgr
+                            .progress
+                            .iter()
                             .map(|s| Value::AsyncStatusVal(s.clone()))
                             .collect();
                         Ok(Value::List(Rc::new(RefCell::new(statuses))))
                     }
                     "results" => Ok(Value::List(Rc::new(RefCell::new(mgr.results.clone())))),
                     "error_list" => {
-                        let errs: Vec<Value> = mgr.error_list.iter()
-                            .map(|e| match e { Some(s) => Value::Str(s.clone()), None => Value::None })
+                        let errs: Vec<Value> = mgr
+                            .error_list
+                            .iter()
+                            .map(|e| match e {
+                                Some(s) => Value::Str(s.clone()),
+                                None => Value::None,
+                            })
                             .collect();
                         Ok(Value::List(Rc::new(RefCell::new(errs))))
                     }
-                    _ => Err(format!("AttributeError: 'AsyncManager' has no attribute '{attr}'")),
+                    _ => Err(format!(
+                        "AttributeError: 'AsyncManager' has no attribute '{attr}'"
+                    )),
                 }
             }
             _ => Err(format!(
@@ -1343,12 +1562,14 @@ impl Interpreter {
 
     /// 任意の呼び出し可能な `Value` を評価済み引数リストで呼び出す。
     /// ネイティブコールバック `tl_call_fn` から呼ばれる。
-    pub(super) fn call_value_with_args(&mut self, callee: Value, args: Vec<Value>) -> Result<Value, String> {
+    pub(super) fn call_value_with_args(
+        &mut self,
+        callee: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, String> {
         let evaled: Vec<(Option<String>, Value)> = args.into_iter().map(|v| (None, v)).collect();
         match callee {
-            Value::Function(fn_val) => {
-                self.exec_fn_evaled(fn_val, &evaled, None, "<fn>")
-            }
+            Value::Function(fn_val) => self.exec_fn_evaled(fn_val, &evaled, None, "<fn>"),
             Value::OverloadedFn(candidates) => {
                 self.dispatch_overload_evaled(candidates, evaled, None, "<overloaded>")
             }
@@ -1364,13 +1585,12 @@ impl Interpreter {
                 let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
                 self.call_type_by_name_evaled(&type_name, vals)
             }
-            Value::Instance(_) => {
-                self.eval_method_call_evaled(callee, "__call__", evaled)
-            }
-            Value::PyObject(ref handle) => {
-                super::py_interop::call_py_object(handle, &evaled)
-            }
-            other => Err(format!("TypeError: '{}' object is not callable", self.type_name(&other))),
+            Value::Instance(_) => self.eval_method_call_evaled(callee, "__call__", evaled),
+            Value::PyObject(ref handle) => super::py_interop::call_py_object(handle, &evaled),
+            other => Err(format!(
+                "TypeError: '{}' object is not callable",
+                self.type_name(&other)
+            )),
         }
     }
 
@@ -1419,22 +1639,38 @@ impl Interpreter {
 
     /// インスタンスの属性に値をセットする。
     /// ネイティブコールバック `tl_set_attr` から呼ばれる。
-    pub(super) fn set_attr_val(&mut self, obj: Value, attr: &str, val: Value) -> Result<(), String> {
+    pub(super) fn set_attr_val(
+        &mut self,
+        obj: Value,
+        attr: &str,
+        val: Value,
+    ) -> Result<(), String> {
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
                 if Self::lookup_class_var(&inst_class, attr).is_some() {
-                    return Err(format!("TypeError: cannot assign to class variable '{attr}' (declared const)"));
+                    return Err(format!(
+                        "TypeError: cannot assign to class variable '{attr}' (declared const)"
+                    ));
                 }
                 self.check_member_access(&inst_class, attr, attr)?;
                 let mut inst = inst_rc.borrow_mut();
                 if let Some((_, false)) = inst.fields.get(attr) {
-                    return Err(format!("TypeError: cannot assign to immutable field '{attr}'"));
+                    return Err(format!(
+                        "TypeError: cannot assign to immutable field '{attr}'"
+                    ));
                 }
                 if inst.immutable {
-                    return Err(format!("TypeError: cannot assign field '{attr}' on immutable instance"));
+                    return Err(format!(
+                        "TypeError: cannot assign field '{attr}' on immutable instance"
+                    ));
                 }
-                let is_mutable = inst.class.field_mutability.get(attr).copied().unwrap_or(true);
+                let is_mutable = inst
+                    .class
+                    .field_mutability
+                    .get(attr)
+                    .copied()
+                    .unwrap_or(true);
                 inst.fields.insert(attr.to_string(), (val, is_mutable));
                 Ok(())
             }
@@ -1462,7 +1698,10 @@ impl Interpreter {
         'block_expr: for stmt in stmts {
             match self.exec(stmt) {
                 Ok(ExecResult::Normal) => {}
-                Ok(ExecResult::BlockReturn(v)) => { block_return_val = Some(v); break 'block_expr; }
+                Ok(ExecResult::BlockReturn(v)) => {
+                    block_return_val = Some(v);
+                    break 'block_expr;
+                }
                 Ok(ExecResult::BlockYield(_)) => {} // スレッドローカル経由で収集済み
                 Ok(ExecResult::Raise(raised)) => {
                     self.current_exception = Some(raised);
@@ -1470,7 +1709,10 @@ impl Interpreter {
                     break 'block_expr;
                 }
                 Ok(ExecResult::Return(_)) => {
-                    early_err = Some("SyntaxError: 'return' inside block expression — use 'block_return'".to_string());
+                    early_err = Some(
+                        "SyntaxError: 'return' inside block expression — use 'block_return'"
+                            .to_string(),
+                    );
                     break 'block_expr;
                 }
                 Ok(ExecResult::Break) => {
@@ -1482,7 +1724,10 @@ impl Interpreter {
                     early_err = Some("SyntaxError: 'continue' inside block expression is not supported outside a loop".to_string());
                     break 'block_expr;
                 }
-                Err(e) => { early_err = Some(e); break 'block_expr; }
+                Err(e) => {
+                    early_err = Some(e);
+                    break 'block_expr;
+                }
             }
         }
         self.pop_scope();
@@ -1490,10 +1735,18 @@ impl Interpreter {
         let yields = BLOCK_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
         BLOCK_YIELDS.with(|y| *y.borrow_mut() = saved);
 
-        if let Some(e) = early_err { return Err(e); }
+        if let Some(e) = early_err {
+            return Err(e);
+        }
         match block_return_val {
             Some(v) => Ok(v),
-            None => if yields.is_empty() { Ok(Value::None) } else { Ok(Value::List(Rc::new(RefCell::new(yields)))) },
+            None => {
+                if yields.is_empty() {
+                    Ok(Value::None)
+                } else {
+                    Ok(Value::List(Rc::new(RefCell::new(yields))))
+                }
+            }
         }
     }
 
@@ -1517,7 +1770,10 @@ impl Interpreter {
 
     /// if / match 式のボディを実行し、BlockReturn シグナルを値として捕捉して返す。
     /// BLOCK_YIELDS は設定しない（透過的 — 外側の for/while/block 式に yield が届く）。
-    pub(super) fn eval_capture_block_return(&mut self, stmts: &[crate::ast::Stmt]) -> Result<Value, String> {
+    pub(super) fn eval_capture_block_return(
+        &mut self,
+        stmts: &[crate::ast::Stmt],
+    ) -> Result<Value, String> {
         self.push_scope();
         let mut result_val: Option<Value> = None;
         let mut early_err: Option<String> = None;
@@ -1525,7 +1781,10 @@ impl Interpreter {
         'body: for stmt in stmts {
             match self.exec(stmt) {
                 Ok(ExecResult::Normal) => {}
-                Ok(ExecResult::BlockReturn(v)) => { result_val = Some(v); break 'body; }
+                Ok(ExecResult::BlockReturn(v)) => {
+                    result_val = Some(v);
+                    break 'body;
+                }
                 Ok(ExecResult::Break) => {
                     // break propagates through if/match expressions to reach the enclosing loop
                     early_err = Some(BREAK_SENTINEL.to_string());
@@ -1537,33 +1796,60 @@ impl Interpreter {
                     break 'body;
                 }
                 Ok(ExecResult::Return(_)) => {
-                    early_err = Some("SyntaxError: 'return' inside block expression — use 'block_return'".to_string());
+                    early_err = Some(
+                        "SyntaxError: 'return' inside block expression — use 'block_return'"
+                            .to_string(),
+                    );
                     break 'body;
                 }
-                Ok(other) => { let _ = other; }
-                Err(e) => { early_err = Some(e); break 'body; }
+                Ok(other) => {
+                    let _ = other;
+                }
+                Err(e) => {
+                    early_err = Some(e);
+                    break 'body;
+                }
             }
         }
         self.pop_scope();
-        if let Some(e) = early_err { return Err(e); }
+        if let Some(e) = early_err {
+            return Err(e);
+        }
         Ok(result_val.unwrap_or(Value::None))
     }
 
     /// for 式の実体。BLOCK_YIELDS コンテキストと LOOP_DEPTH を管理し、loop_yield でリスト蓄積、block_return で単値返却。
-    pub(super) fn eval_for_expr(&mut self, target: &str, iter_expr: &crate::ast::Expr, body: &[crate::ast::Stmt]) -> Result<Value, String> {
+    pub(super) fn eval_for_expr(
+        &mut self,
+        target: &str,
+        iter_expr: &crate::ast::Expr,
+        body: &[crate::ast::Stmt],
+    ) -> Result<Value, String> {
         let iter_val = self.eval(iter_expr)?;
         let generator = match iter_val {
-            Value::List(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items.borrow().clone(), index: 0 }))),
-            Value::Set(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items.borrow().clone(), index: 0 }))),
+            Value::List(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                values: items.borrow().clone(),
+                index: 0,
+            }))),
+            Value::Set(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                values: items.borrow().clone(),
+                index: 0,
+            }))),
             Value::Str(s) => {
                 let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
-                Value::Generator(Rc::new(RefCell::new(GeneratorState { values: chars, index: 0 })))
+                Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                    values: chars,
+                    index: 0,
+                })))
             }
             Value::Generator(_) => iter_val,
             Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[])?,
             Value::PyObject(ref handle) => {
                 let items = super::py_interop::py_collect_iter(handle)?;
-                Value::Generator(Rc::new(RefCell::new(GeneratorState { values: items, index: 0 })))
+                Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                    values: items,
+                    index: 0,
+                })))
             }
             _ => return Err("TypeError: object is not iterable".to_string()),
         };
@@ -1588,22 +1874,37 @@ impl Interpreter {
                         // break: exit loop and return accumulated loop_yields (or None)
                         Ok(ExecResult::Break) => break 'for_loop,
                         // block_return None: exit loop with explicit None (ignores yields)
-                        Ok(ExecResult::BlockReturn(Value::None)) => { block_return_val = Some(Value::None); break 'for_loop; }
-                        Ok(ExecResult::BlockReturn(v)) => { block_return_val = Some(v); break 'for_loop; }
+                        Ok(ExecResult::BlockReturn(Value::None)) => {
+                            block_return_val = Some(Value::None);
+                            break 'for_loop;
+                        }
+                        Ok(ExecResult::BlockReturn(v)) => {
+                            block_return_val = Some(v);
+                            break 'for_loop;
+                        }
                         Ok(ExecResult::Raise(raised)) => {
                             self.current_exception = Some(raised);
                             early_err = Some(RAISE_SENTINEL.to_string());
                             break 'for_loop;
                         }
-                        Ok(ExecResult::Return(v)) => { block_return_val = Some(v); break 'for_loop; } // shouldn't happen
+                        Ok(ExecResult::Return(v)) => {
+                            block_return_val = Some(v);
+                            break 'for_loop;
+                        } // shouldn't happen
                         Ok(ExecResult::BlockYield(_)) => {}
                         // break from inside an eval context (e.g. if expression body)
                         Err(ref e) if e.as_str() == BREAK_SENTINEL => break 'for_loop,
-                        Err(e) => { early_err = Some(e); break 'for_loop; }
+                        Err(e) => {
+                            early_err = Some(e);
+                            break 'for_loop;
+                        }
                     }
                 }
                 Err(ref e) if e.starts_with("EndOfIteration") => break,
-                Err(e) => { early_err = Some(e); break; }
+                Err(e) => {
+                    early_err = Some(e);
+                    break;
+                }
             }
         }
 
@@ -1611,15 +1912,27 @@ impl Interpreter {
         let yields = BLOCK_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
         BLOCK_YIELDS.with(|y| *y.borrow_mut() = saved);
 
-        if let Some(e) = early_err { return Err(e); }
+        if let Some(e) = early_err {
+            return Err(e);
+        }
         match block_return_val {
             Some(v) => Ok(v),
-            None => if yields.is_empty() { Ok(Value::None) } else { Ok(Value::List(Rc::new(RefCell::new(yields)))) },
+            None => {
+                if yields.is_empty() {
+                    Ok(Value::None)
+                } else {
+                    Ok(Value::List(Rc::new(RefCell::new(yields))))
+                }
+            }
         }
     }
 
     /// while 式の実体。for 式と同様に BLOCK_YIELDS と LOOP_DEPTH を管理する。
-    pub(super) fn eval_while_expr(&mut self, cond_expr: &crate::ast::Expr, body: &[crate::ast::Stmt]) -> Result<Value, String> {
+    pub(super) fn eval_while_expr(
+        &mut self,
+        cond_expr: &crate::ast::Expr,
+        body: &[crate::ast::Stmt],
+    ) -> Result<Value, String> {
         let saved = BLOCK_YIELDS.with(|y| y.borrow_mut().take());
         BLOCK_YIELDS.with(|y| *y.borrow_mut() = Some(Vec::new()));
         LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
@@ -1630,9 +1943,14 @@ impl Interpreter {
         'while_loop: loop {
             let cond_val = match self.eval(cond_expr) {
                 Ok(v) => v,
-                Err(e) => { early_err = Some(e); break; }
+                Err(e) => {
+                    early_err = Some(e);
+                    break;
+                }
             };
-            if !self.is_truthy(&cond_val) { break; }
+            if !self.is_truthy(&cond_val) {
+                break;
+            }
 
             match self.exec_scoped_block(body) {
                 Ok(ExecResult::Normal) => {}
@@ -1640,17 +1958,28 @@ impl Interpreter {
                 // break: exit loop and return accumulated loop_yields (or None)
                 Ok(ExecResult::Break) => break 'while_loop,
                 // block_return None: exit loop with explicit None (ignores yields)
-                Ok(ExecResult::BlockReturn(Value::None)) => { block_return_val = Some(Value::None); break 'while_loop; }
-                Ok(ExecResult::BlockReturn(v)) => { block_return_val = Some(v); break 'while_loop; }
+                Ok(ExecResult::BlockReturn(Value::None)) => {
+                    block_return_val = Some(Value::None);
+                    break 'while_loop;
+                }
+                Ok(ExecResult::BlockReturn(v)) => {
+                    block_return_val = Some(v);
+                    break 'while_loop;
+                }
                 Ok(ExecResult::Raise(raised)) => {
                     self.current_exception = Some(raised);
                     early_err = Some(RAISE_SENTINEL.to_string());
                     break 'while_loop;
                 }
-                Ok(other) => { let _ = other; }
+                Ok(other) => {
+                    let _ = other;
+                }
                 // break from inside an eval context (e.g. if expression body)
                 Err(ref e) if e.as_str() == BREAK_SENTINEL => break 'while_loop,
-                Err(e) => { early_err = Some(e); break; }
+                Err(e) => {
+                    early_err = Some(e);
+                    break;
+                }
             }
         }
 
@@ -1658,10 +1987,18 @@ impl Interpreter {
         let yields = BLOCK_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
         BLOCK_YIELDS.with(|y| *y.borrow_mut() = saved);
 
-        if let Some(e) = early_err { return Err(e); }
+        if let Some(e) = early_err {
+            return Err(e);
+        }
         match block_return_val {
             Some(v) => Ok(v),
-            None => if yields.is_empty() { Ok(Value::None) } else { Ok(Value::List(Rc::new(RefCell::new(yields)))) },
+            None => {
+                if yields.is_empty() {
+                    Ok(Value::None)
+                } else {
+                    Ok(Value::List(Rc::new(RefCell::new(yields))))
+                }
+            }
         }
     }
 
@@ -1707,8 +2044,12 @@ impl Interpreter {
                                 "TypeError: cannot assign field '{attr}' on immutable instance"
                             ));
                         }
-                        let is_mutable = inst.class.field_mutability
-                            .get(attr.as_str()).copied().unwrap_or(true);
+                        let is_mutable = inst
+                            .class
+                            .field_mutability
+                            .get(attr.as_str())
+                            .copied()
+                            .unwrap_or(true);
                         inst.fields.insert(attr.clone(), (rhs, is_mutable));
                     }
                     Ok(())
@@ -1731,7 +2072,12 @@ impl Interpreter {
                 }
                 _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
             }
-        } else if let Expr::TraitAccess { object, trait_name, attr } = target {
+        } else if let Expr::TraitAccess {
+            object,
+            trait_name,
+            attr,
+        } = target
+        {
             let obj_val = self.eval(object)?;
             match obj_val {
                 Value::Instance(inst_rc) => {
@@ -1810,10 +2156,12 @@ impl Interpreter {
         }
         match obj {
             Value::List(items) => {
-                let idx = value_as_index(&key).ok_or_else(|| format!(
-                    "TypeError: list indices must be integers or Index, not '{}'",
-                    self.type_name(&key)
-                ))?;
+                let idx = value_as_index(&key).ok_or_else(|| {
+                    format!(
+                        "TypeError: list indices must be integers or Index, not '{}'",
+                        self.type_name(&key)
+                    )
+                })?;
                 let borrowed = items.borrow();
                 let len = borrowed.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
@@ -1823,10 +2171,12 @@ impl Interpreter {
                 Ok(borrowed[actual as usize].clone())
             }
             Value::Str(s) => {
-                let idx = value_as_index(&key).ok_or_else(|| format!(
-                    "TypeError: string indices must be integers or Index, not '{}'",
-                    self.type_name(&key)
-                ))?;
+                let idx = value_as_index(&key).ok_or_else(|| {
+                    format!(
+                        "TypeError: string indices must be integers or Index, not '{}'",
+                        self.type_name(&key)
+                    )
+                })?;
                 let chars: Vec<char> = s.chars().collect();
                 let len = chars.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
@@ -1836,10 +2186,12 @@ impl Interpreter {
                 Ok(Value::Str(chars[actual as usize].to_string()))
             }
             Value::Tuple(td) => {
-                let idx = value_as_index(&key).ok_or_else(|| format!(
-                    "TypeError: tuple indices must be integers or Index, not '{}'",
-                    self.type_name(&key)
-                ))?;
+                let idx = value_as_index(&key).ok_or_else(|| {
+                    format!(
+                        "TypeError: tuple indices must be integers or Index, not '{}'",
+                        self.type_name(&key)
+                    )
+                })?;
                 let vals = td.all_values();
                 let len = vals.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
@@ -1848,15 +2200,14 @@ impl Interpreter {
                 }
                 Ok(vals[actual as usize].clone())
             }
-            Value::Dict(d) => {
-                d.borrow().get(&key).ok_or_else(|| format!("KeyError: {}", self.display(&key)))
-            }
+            Value::Dict(d) => d
+                .borrow()
+                .get(&key)
+                .ok_or_else(|| format!("KeyError: {}", self.display(&key))),
             Value::Instance(_) => {
                 self.eval_method_call_evaled(obj, "__getitem__", vec![(None, key)])
             }
-            Value::PyObject(ref handle) => {
-                super::py_interop::py_getitem(handle, &key)
-            }
+            Value::PyObject(ref handle) => super::py_interop::py_getitem(handle, &key),
             _ => Err(format!(
                 "TypeError: '{}' object is not subscriptable",
                 self.type_name(&obj)
@@ -1876,14 +2227,16 @@ impl Interpreter {
             return Err("ValueError: slice step cannot be zero".to_string());
         }
         let begin = index_val_to_i64(&s.begin);
-        let end   = index_val_to_i64(&s.end);
+        let end = index_val_to_i64(&s.end);
 
         match obj {
             Value::List(items) => {
                 let borrowed = items.borrow();
                 let len = borrowed.len() as i64;
                 let indices = compute_slice_indices(len, begin, end, step);
-                Ok(Value::List(Rc::new(RefCell::new(indices.into_iter().map(|i| borrowed[i].clone()).collect()))))
+                Ok(Value::List(Rc::new(RefCell::new(
+                    indices.into_iter().map(|i| borrowed[i].clone()).collect(),
+                ))))
             }
             Value::Str(s_val) => {
                 let chars: Vec<char> = s_val.chars().collect();
@@ -1893,7 +2246,8 @@ impl Interpreter {
             }
             Value::Tuple(td) => {
                 let vals = td.all_values();
-                let types: Vec<String> = vals.iter().map(|v| self.type_name(v).to_string()).collect();
+                let types: Vec<String> =
+                    vals.iter().map(|v| self.type_name(v).to_string()).collect();
                 let len = vals.len() as i64;
                 let indices = compute_slice_indices(len, begin, end, step);
                 let new_vals: Vec<Value> = indices.iter().map(|&i| vals[i].clone()).collect();
@@ -1914,7 +2268,12 @@ impl Interpreter {
     /// `obj[slice] = rhs` を実行する。
     /// - `Value::List`: Python 互換のスライス代入（step=1 は長さ変更可、step≠1 は同数必須）
     /// - `Value::Instance`: `__setitem__(slice, rhs)` に委譲する
-    fn eval_setitem_slice(&mut self, obj: Value, s: Rc<SliceValue>, rhs: Value) -> Result<(), String> {
+    fn eval_setitem_slice(
+        &mut self,
+        obj: Value,
+        s: Rc<SliceValue>,
+        rhs: Value,
+    ) -> Result<(), String> {
         let step = match &s.step {
             None => 1i64,
             Some(Value::Int(n)) => *n,
@@ -1924,7 +2283,7 @@ impl Interpreter {
             return Err("ValueError: slice step cannot be zero".to_string());
         }
         let begin = index_val_to_i64(&s.begin);
-        let end   = index_val_to_i64(&s.end);
+        let end = index_val_to_i64(&s.end);
 
         match obj {
             Value::List(items) => {
@@ -1935,7 +2294,7 @@ impl Interpreter {
                 if step == 1 {
                     // step=1: Python 互換。置換先の長さと代入元の長さが違っても構わない。
                     let start = normalize_slice_bound_start(begin, len);
-                    let stop  = normalize_slice_bound_stop(end, len);
+                    let stop = normalize_slice_bound_stop(end, len);
                     // start > stop のときは空スライスへの挿入（Python の動作と一致）
                     let stop = stop.max(start);
                     borrowed.splice(start..stop, new_vals);
@@ -1957,7 +2316,8 @@ impl Interpreter {
             // カスタムクラス: __setitem__ にスライスオブジェクトと値を渡して委譲する
             Value::Instance(_) => {
                 self.eval_method_call_evaled(
-                    obj, "__setitem__",
+                    obj,
+                    "__setitem__",
                     vec![(None, Value::Slice(s)), (None, rhs)],
                 )?;
                 Ok(())
@@ -1972,9 +2332,9 @@ impl Interpreter {
     /// 任意の反復可能値を `Vec<Value>` に収集する（スライス代入、enumerate、zip で使用）。
     fn collect_iterable(&self, val: Value) -> Result<Vec<Value>, String> {
         match val {
-            Value::List(lst)  => Ok(lst.borrow().clone()),
-            Value::Tuple(td)  => Ok(td.all_values().to_vec()),
-            Value::Str(s)     => Ok(s.chars().map(|c| Value::Str(c.to_string())).collect()),
+            Value::List(lst) => Ok(lst.borrow().clone()),
+            Value::Tuple(td) => Ok(td.all_values().to_vec()),
+            Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string())).collect()),
             Value::Set(items) => Ok(items.borrow().clone()),
             Value::Generator(gen) => {
                 let g = gen.borrow();
@@ -1989,21 +2349,31 @@ impl Interpreter {
 
     /// `obj[key] = rhs` の実行。リスト・辞書・PyObject・インスタンスに対応する。
     /// `key` が `Value::Slice` の場合はスライス代入 `eval_setitem_slice` に委譲する。
-    pub(super) fn eval_setitem(&mut self, obj: Value, key: Value, rhs: Value) -> Result<(), String> {
+    pub(super) fn eval_setitem(
+        &mut self,
+        obj: Value,
+        key: Value,
+        rhs: Value,
+    ) -> Result<(), String> {
         if let Value::Slice(s) = key {
             return self.eval_setitem_slice(obj, s, rhs);
         }
         match obj {
             Value::List(items) => {
-                let idx = value_as_index(&key).ok_or_else(|| format!(
-                    "TypeError: list indices must be integers or Index, not '{}'",
-                    self.type_name(&key)
-                ))?;
+                let idx = value_as_index(&key).ok_or_else(|| {
+                    format!(
+                        "TypeError: list indices must be integers or Index, not '{}'",
+                        self.type_name(&key)
+                    )
+                })?;
                 let mut borrowed = items.borrow_mut();
                 let len = borrowed.len() as i64;
                 let actual = if idx < 0 { len + idx } else { idx };
                 if actual < 0 || actual >= len {
-                    return Err(format!("IndexError: list assignment index {} out of range", idx));
+                    return Err(format!(
+                        "IndexError: list assignment index {} out of range",
+                        idx
+                    ));
                 }
                 borrowed[actual as usize] = rhs;
                 Ok(())
@@ -2034,14 +2404,11 @@ impl Interpreter {
                 self.eval_method_call_evaled(obj, "__setitem__", vec![(None, key), (None, rhs)])?;
                 Ok(())
             }
-            Value::PyObject(ref handle) => {
-                super::py_interop::py_setitem(handle, &key, &rhs)
-            }
+            Value::PyObject(ref handle) => super::py_interop::py_setitem(handle, &key, &rhs),
             _ => Err(format!(
                 "TypeError: '{}' object does not support item assignment",
                 self.type_name(&obj)
             )),
         }
     }
-
 }

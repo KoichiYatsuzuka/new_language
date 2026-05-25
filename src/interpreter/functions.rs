@@ -11,9 +11,9 @@ use std::rc::Rc;
 use crate::ast::{CallArg, Param};
 
 use super::{
-    CapturedVar, Interpreter, Value, Var, FnValue, GeneratorFnValue, GeneratorState,
-    ExecResult, StackFrame, DictData, InstanceData,
-    RAISE_SENTINEL, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
+    CapturedVar, DictData, ExecResult, FnValue, GeneratorFnValue, GeneratorState, InstanceData,
+    Interpreter, StackFrame, Value, Var, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
+    RAISE_SENTINEL,
 };
 
 impl Interpreter {
@@ -51,9 +51,22 @@ impl Interpreter {
         }
 
         let (mut bindings, extra_kwargs) = if fn_val.is_python {
-            Self::bind_args_relaxed(&fn_val.params, evaled, self_val.clone(), &evaluated_defaults)?
+            Self::bind_args_relaxed(
+                &fn_val.params,
+                evaled,
+                self_val.clone(),
+                &evaluated_defaults,
+            )?
         } else {
-            (Self::bind_args(&fn_val.params, evaled, self_val.clone(), &evaluated_defaults)?, vec![])
+            (
+                Self::bind_args(
+                    &fn_val.params,
+                    evaled,
+                    self_val.clone(),
+                    &evaluated_defaults,
+                )?,
+                vec![],
+            )
         };
 
         // 自動キャスト: `let` パラメータに型アノテーションがあり、渡された値がインスタンスで
@@ -64,8 +77,11 @@ impl Interpreter {
             // 第1パス: キャスト対象を特定する（self は除外）
             let mut cast_targets: Vec<(usize, String, Value)> = Vec::new();
             for (idx, (name, val, mutable)) in bindings.iter().enumerate() {
-                if *mutable || name == "self" { continue; }
-                let type_ann = params_ref.iter()
+                if *mutable || name == "self" {
+                    continue;
+                }
+                let type_ann = params_ref
+                    .iter()
                     .find(|p| &p.name == name)
                     .and_then(|p| p.type_ann.as_deref());
                 if let (Some(type_ann), Value::Instance(inst_rc)) = (type_ann, val) {
@@ -129,13 +145,20 @@ impl Interpreter {
         let prev_class = self.current_class.take();
         if let Some(Value::Instance(inst_rc)) = &self_val {
             let class = inst_rc.borrow().class.clone();
-            self.declare_var("Self".to_string(), Var::new(Value::Class(class.clone()), false));
+            self.declare_var(
+                "Self".to_string(),
+                Var::new(Value::Class(class.clone()), false),
+            );
             self.current_class = Some(class);
         }
 
         // Reset LOOP_DEPTH so that break/continue cannot escape this function's body
         // and cannot accidentally see loop depth from an outer call site.
-        let prev_loop_depth = LOOP_DEPTH.with(|d| { let prev = *d.borrow(); *d.borrow_mut() = 0; prev });
+        let prev_loop_depth = LOOP_DEPTH.with(|d| {
+            let prev = *d.borrow();
+            *d.borrow_mut() = 0;
+            prev
+        });
 
         self.call_stack.push(fn_name.to_string());
         let result = self.exec_block(&fn_val.body);
@@ -239,7 +262,12 @@ impl Interpreter {
     ///
     /// 戻り値: `Ok(Value::Generator)` — 収集済みの yield 値を保持するジェネレータ。
     ///         `Err(message)` — ランタイムエラーまたは例外センチネル
-    pub(super) fn exec_generator(&mut self, gen_fn: Rc<GeneratorFnValue>, call_args: &[CallArg], self_val: Option<Value>) -> Result<Value, String> {
+    pub(super) fn exec_generator(
+        &mut self,
+        gen_fn: Rc<GeneratorFnValue>,
+        call_args: &[CallArg],
+        self_val: Option<Value>,
+    ) -> Result<Value, String> {
         let evaled = self.eval_call_args(call_args)?;
         let mut evaluated_defaults: Vec<Option<Value>> = Vec::new();
         for p in &gen_fn.params {
@@ -249,7 +277,12 @@ impl Interpreter {
                 evaluated_defaults.push(None);
             }
         }
-        let bindings = Self::bind_args(&gen_fn.params, &evaled, self_val.clone(), &evaluated_defaults)?;
+        let bindings = Self::bind_args(
+            &gen_fn.params,
+            &evaled,
+            self_val.clone(),
+            &evaluated_defaults,
+        )?;
 
         // yield 収集を有効化する（スレッドローカルに収集先を設定）
         GENERATOR_YIELDS.with(|y| {
@@ -277,7 +310,11 @@ impl Interpreter {
             let class = inst_rc.borrow().class.clone();
             self.declare_var("Self".to_string(), Var::new(Value::Class(class), false));
         }
-        let prev_loop_depth = LOOP_DEPTH.with(|d| { let prev = *d.borrow(); *d.borrow_mut() = 0; prev });
+        let prev_loop_depth = LOOP_DEPTH.with(|d| {
+            let prev = *d.borrow();
+            *d.borrow_mut() = 0;
+            prev
+        });
         let exec_result = self.exec_block(&gen_fn.body);
         LOOP_DEPTH.with(|d| *d.borrow_mut() = prev_loop_depth);
         self.scopes.truncate(1);
@@ -295,9 +332,13 @@ impl Interpreter {
         match exec_result? {
             ExecResult::Normal => {}
             ExecResult::BlockReturn(_) | ExecResult::BlockYield(_) => {
-                return Err("SyntaxError: 'block_return' used outside any block expression".to_string());
+                return Err(
+                    "SyntaxError: 'block_return' used outside any block expression".to_string(),
+                );
             }
-            ExecResult::Break => return Err("SyntaxError: 'break' outside for/while loop".to_string()),
+            ExecResult::Break => {
+                return Err("SyntaxError: 'break' outside for/while loop".to_string())
+            }
             ExecResult::Continue => return Err("SyntaxError: 'continue' outside loop".to_string()),
             ExecResult::Return(_) => {} // パーサーが gen 内の return を禁止しているためここには到達しない
             ExecResult::Raise(raised) => {
@@ -306,7 +347,10 @@ impl Interpreter {
             }
         }
 
-        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState { values: yields, index: 0 }))))
+        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+            values: yields,
+            index: 0,
+        }))))
     }
 
     /// 呼び出し引数リスト（AST の `CallArg`）を評価して `(name, value)` ペアのリストを返す。
@@ -317,12 +361,17 @@ impl Interpreter {
     /// - `call_args`: 評価前の呼び出し引数リスト
     ///
     /// 戻り値: `Ok(Vec<(Option<String>, Value)>)` — 評価済み引数リスト。`Err` — 評価エラー
-    pub(super) fn eval_call_args(&mut self, call_args: &[CallArg]) -> Result<Vec<(Option<String>, Value)>, String> {
+    pub(super) fn eval_call_args(
+        &mut self,
+        call_args: &[CallArg],
+    ) -> Result<Vec<(Option<String>, Value)>, String> {
         let mut result = Vec::new();
         for arg in call_args {
             match arg {
                 CallArg::Positional(e) => result.push((None, self.eval(e)?)),
-                CallArg::Keyword { name, value } => result.push((Some(name.clone()), self.eval(value)?)),
+                CallArg::Keyword { name, value } => {
+                    result.push((Some(name.clone()), self.eval(value)?))
+                }
             }
         }
         Ok(result)
@@ -352,18 +401,23 @@ impl Interpreter {
         let mut result = Vec::new();
 
         // self_val が Some かつ先頭パラメータが "self" なら先にバインドして残りのパラメータを取得する
-        let (params_to_bind, defaults_to_bind) = if let (Some(sv), Some(p)) = (&self_val, params.first()) {
-            if p.name == "self" {
-                // let self（不変レシーバ）はディープコピーして元オブジェクトの変更を防ぐ
-                let self_to_bind = if p.mutable { sv.clone() } else { Self::deep_copy_value(sv.clone()) };
-                result.push(("self".to_string(), self_to_bind, p.mutable));
-                (&params[1..], &defaults[1..])
+        let (params_to_bind, defaults_to_bind) =
+            if let (Some(sv), Some(p)) = (&self_val, params.first()) {
+                if p.name == "self" {
+                    // let self（不変レシーバ）はディープコピーして元オブジェクトの変更を防ぐ
+                    let self_to_bind = if p.mutable {
+                        sv.clone()
+                    } else {
+                        Self::deep_copy_value(sv.clone())
+                    };
+                    result.push(("self".to_string(), self_to_bind, p.mutable));
+                    (&params[1..], &defaults[1..])
+                } else {
+                    (params, defaults)
+                }
             } else {
                 (params, defaults)
-            }
-        } else {
-            (params, defaults)
-        };
+            };
 
         // デフォルト値なしのパラメータ数（必須引数数）と最大引数数を計算する
         let required_count = defaults_to_bind.iter().filter(|d| d.is_none()).count();
@@ -372,12 +426,15 @@ impl Interpreter {
             if required_count == max_count {
                 return Err(format!(
                     "TypeError: function takes {} argument(s), got {}",
-                    max_count, evaled.len()
+                    max_count,
+                    evaled.len()
                 ));
             } else {
                 return Err(format!(
                     "TypeError: function takes {} to {} argument(s), got {}",
-                    required_count, max_count, evaled.len()
+                    required_count,
+                    max_count,
+                    evaled.len()
                 ));
             }
         }
@@ -395,8 +452,12 @@ impl Interpreter {
                 }
                 Some(name) => {
                     // キーワード引数: パラメータ名でスロットを検索して割り当てる
-                    let pos = params_to_bind.iter().position(|p| p.name == *name)
-                        .ok_or_else(|| format!("TypeError: unexpected keyword argument '{name}'"))?;
+                    let pos = params_to_bind
+                        .iter()
+                        .position(|p| p.name == *name)
+                        .ok_or_else(|| {
+                            format!("TypeError: unexpected keyword argument '{name}'")
+                        })?;
                     if slots[pos].is_some() {
                         return Err(format!("TypeError: argument '{name}' given twice"));
                     }
@@ -416,7 +477,11 @@ impl Interpreter {
                     None => return Err(format!("TypeError: missing argument '{}'", param.name)),
                 },
             };
-            let value = if param.mutable { v } else { Self::deep_copy_value(v) };
+            let value = if param.mutable {
+                v
+            } else {
+                Self::deep_copy_value(v)
+            };
             result.push((param.name.clone(), value, param.mutable));
         }
 
@@ -436,16 +501,17 @@ impl Interpreter {
         let mut result = Vec::new();
         let mut extra_kwargs = Vec::new();
 
-        let (params_to_bind, defaults_to_bind) = if let (Some(sv), Some(p)) = (&self_val, params.first()) {
-            if p.name == "self" {
-                result.push(("self".to_string(), sv.clone(), p.mutable));
-                (&params[1..], &defaults[1..])
+        let (params_to_bind, defaults_to_bind) =
+            if let (Some(sv), Some(p)) = (&self_val, params.first()) {
+                if p.name == "self" {
+                    result.push(("self".to_string(), sv.clone(), p.mutable));
+                    (&params[1..], &defaults[1..])
+                } else {
+                    (params, defaults)
+                }
             } else {
                 (params, defaults)
-            }
-        } else {
-            (params, defaults)
-        };
+            };
 
         let mut slots: Vec<Option<Value>> = vec![None; params_to_bind.len()];
         let mut positional_idx = 0usize;
@@ -462,19 +528,17 @@ impl Interpreter {
                     slots[positional_idx] = Some(val.clone());
                     positional_idx += 1;
                 }
-                Some(name) => {
-                    match params_to_bind.iter().position(|p| p.name == *name) {
-                        Some(pos) => {
-                            if slots[pos].is_some() {
-                                return Err(format!("TypeError: argument '{name}' given twice"));
-                            }
-                            slots[pos] = Some(val.clone());
+                Some(name) => match params_to_bind.iter().position(|p| p.name == *name) {
+                    Some(pos) => {
+                        if slots[pos].is_some() {
+                            return Err(format!("TypeError: argument '{name}' given twice"));
                         }
-                        None => {
-                            extra_kwargs.push((name.clone(), val.clone()));
-                        }
+                        slots[pos] = Some(val.clone());
                     }
-                }
+                    None => {
+                        extra_kwargs.push((name.clone(), val.clone()));
+                    }
+                },
             }
         }
 
@@ -483,7 +547,12 @@ impl Interpreter {
                 Some(v) => v,
                 None => match &defaults_to_bind[i] {
                     Some(dv) => dv.clone(),
-                    None => return Err(format!("TypeError: missing argument '{}'", params_to_bind[i].name)),
+                    None => {
+                        return Err(format!(
+                            "TypeError: missing argument '{}'",
+                            params_to_bind[i].name
+                        ))
+                    }
                 },
             };
             result.push((params_to_bind[i].name.clone(), v, params_to_bind[i].mutable));
@@ -538,14 +607,20 @@ impl Interpreter {
 
         // `self` パラメータを除いた有効引数数の範囲（必須数, 最大数）を返すクロージャ
         let effective_param_range = |f: &FnValue| -> (usize, usize) {
-            let self_offset = if has_self && f.params.first().map(|p| p.name == "self").unwrap_or(false) { 1 } else { 0 };
+            let self_offset =
+                if has_self && f.params.first().map(|p| p.name == "self").unwrap_or(false) {
+                    1
+                } else {
+                    0
+                };
             let params = &f.params[self_offset..];
             let required = params.iter().filter(|p| p.default.is_none()).count();
             (required, params.len())
         };
 
         // 呼び出し引数数が有効範囲に収まる候補のみに絞り込む
-        let count_matching: Vec<Rc<FnValue>> = candidates.iter()
+        let count_matching: Vec<Rc<FnValue>> = candidates
+            .iter()
             .filter(|f| {
                 let (req, max) = effective_param_range(f);
                 call_count >= req && call_count <= max
@@ -554,15 +629,21 @@ impl Interpreter {
             .collect();
 
         if count_matching.is_empty() {
-            let available: Vec<String> = candidates.iter()
+            let available: Vec<String> = candidates
+                .iter()
                 .map(|f| {
                     let (req, max) = effective_param_range(f);
-                    if req == max { req.to_string() } else { format!("{req}-{max}") }
+                    if req == max {
+                        req.to_string()
+                    } else {
+                        format!("{req}-{max}")
+                    }
                 })
                 .collect();
             return Err(format!(
                 "TypeError: no overload takes {} argument(s) (overloads take: {})",
-                call_count, available.join(", ")
+                call_count,
+                available.join(", ")
             ));
         }
 
@@ -597,7 +678,13 @@ impl Interpreter {
         self_val: &Option<Value>,
     ) -> bool {
         // self_val がある場合は `self` パラメータをスキップして残りを対象にする
-        let params = if self_val.is_some() && fn_val.params.first().map(|p| p.name == "self").unwrap_or(false) {
+        let params = if self_val.is_some()
+            && fn_val
+                .params
+                .first()
+                .map(|p| p.name == "self")
+                .unwrap_or(false)
+        {
             &fn_val.params[1..]
         } else {
             &fn_val.params[..]
@@ -610,7 +697,9 @@ impl Interpreter {
         for (key, val) in evaled {
             match key {
                 None => {
-                    if positional_idx >= params.len() { return false; }
+                    if positional_idx >= params.len() {
+                        return false;
+                    }
                     slots[positional_idx] = Some(val);
                     positional_idx += 1;
                 }
@@ -643,7 +732,9 @@ impl Interpreter {
     /// 戻り値: `true` — 型が一致する
     pub(super) fn value_matches_ann(val: &Value, ann: &str) -> bool {
         // `tuple` アノテーションは任意の Tuple 値に一致する（要素数・型は問わない）
-        if ann == "tuple" && matches!(val, Value::Tuple(_)) { return true; }
+        if ann == "tuple" && matches!(val, Value::Tuple(_)) {
+            return true;
+        }
         // `type[X]`: 型値がアノテーション内の型名と一致するか確認する（オーバーロード解決用）
         if let Some(inner) = ann.strip_prefix("type[").and_then(|s| s.strip_suffix(']')) {
             return match val {
@@ -654,15 +745,15 @@ impl Interpreter {
         }
         matches!(
             (ann, val),
-            ("int",   Value::Int(_))
-            | ("float", Value::Float(_))
-            | ("str",   Value::Str(_))
-            | ("bool",  Value::Bool(_))
-            | ("None",  Value::None)
-            | ("list",  Value::List(_))
-            | ("type",  Value::Type(_))
-            | ("type",  Value::Class(_))
-            | ("Self",  Value::Instance(_))
+            ("int", Value::Int(_))
+                | ("float", Value::Float(_))
+                | ("str", Value::Str(_))
+                | ("bool", Value::Bool(_))
+                | ("None", Value::None)
+                | ("list", Value::List(_))
+                | ("type", Value::Type(_))
+                | ("type", Value::Class(_))
+                | ("Self", Value::Instance(_))
         )
     }
 
@@ -680,7 +771,9 @@ impl Interpreter {
         match val {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
-                let new_fields = inst.fields.iter()
+                let new_fields = inst
+                    .fields
+                    .iter()
                     .map(|(k, (v, m))| (k.clone(), (Self::deep_copy_value(v.clone()), *m)))
                     .collect();
                 Value::Instance(Rc::new(RefCell::new(InstanceData {
@@ -698,7 +791,12 @@ impl Interpreter {
                 Value::Dict(Rc::new(RefCell::new(new_dict)))
             }
             Value::List(items) => Value::List(Rc::new(RefCell::new(
-                items.borrow().iter().cloned().map(Self::deep_copy_value).collect()
+                items
+                    .borrow()
+                    .iter()
+                    .cloned()
+                    .map(Self::deep_copy_value)
+                    .collect(),
             ))),
             // Tuple は Rc<TupleData> だが TupleData は不変なので共有で問題なし
             // プリミティブ・関数・クラス等はそのまま返す

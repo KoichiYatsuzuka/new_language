@@ -1,0 +1,9 @@
+EXPORTS
+    point_create
+    point_destroy
+    point_get_x
+    point_get_y
+    point_set_x
+    point_set_y
+    point_move
+    point_distance_sq

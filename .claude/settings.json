@@ -14,7 +14,11 @@
       "PowerShell(Get-ChildItem -Path \"$env:TEMP\\\\tl_shim_DxLib_x64\" -Force | ForEach-Object { $_.Name })",
       "PowerShell(Remove-Item \"$env:TEMP\\\\tl_shim_DxLib_x64\\\\shim.dll\" -Force -ErrorAction SilentlyContinue; \"cleared\")",
       "PowerShell(Get-Content \"$env:TEMP\\\\tl_err.txt\" | Select-String \"error|failed|produced|CppShim\" | Select-Object -First 15)",
-      "PowerShell(Get-ChildItem \"d:\\\\repository\\\\new_language\\\\examples\\\\DxLib\" -Force | ForEach-Object { $_.Name })"
+      "PowerShell(Get-ChildItem \"d:\\\\repository\\\\new_language\\\\examples\\\\DxLib\" -Force | ForEach-Object { $_.Name })",
+      "Bash(npm --version)",
+      "Bash(where node *)",
+      "Bash(nvm list *)",
+      "PowerShell(cmd /c \"`\"C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\2019\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat`\" && cd /d `\"d:\\\\repository\\\\new_language\\\\examples\\\\test_modules`\" && cl /LD /EHsc /nologo point.cpp\" 2>&1)"
     ]
   }
 }

@@ -8,9 +8,8 @@
 
 use std::collections::VecDeque;
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc,
+    mpsc, Arc,
 };
 
 use crate::ast::Stmt;
@@ -88,7 +87,12 @@ pub struct AsyncManagerData {
 
 impl std::fmt::Debug for AsyncManagerData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<AsyncManager num_thread={} tasks={}>", self.num_thread, self.progress.len())
+        write!(
+            f,
+            "<AsyncManager num_thread={} tasks={}>",
+            self.num_thread,
+            self.progress.len()
+        )
     }
 }
 
@@ -125,7 +129,9 @@ impl AsyncManagerData {
     /// Start pending tasks in free thread slots.
     fn try_schedule(&mut self) {
         while self.running.len() < self.num_thread {
-            let Some((task_idx, task)) = self.pending.pop_front() else { break };
+            let Some((task_idx, task)) = self.pending.pop_front() else {
+                break;
+            };
 
             let abort = self.abort.clone();
             let (tx, rx) = mpsc::channel::<ThreadResult>();
@@ -144,7 +150,11 @@ impl AsyncManagerData {
             });
 
             self.progress[task_idx] = AsyncStatus::Running;
-            self.running.push(RunningSlot { task_idx, rx, _join: handle });
+            self.running.push(RunningSlot {
+                task_idx,
+                rx,
+                _join: handle,
+            });
         }
     }
 
@@ -169,7 +179,9 @@ impl AsyncManagerData {
                     self.running.swap_remove(i);
                     // don't advance i — swap_remove put the last element here
                 }
-                Err(mpsc::TryRecvError::Empty) => { i += 1; }
+                Err(mpsc::TryRecvError::Empty) => {
+                    i += 1;
+                }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     // thread panicked without sending — record as error
                     let idx = self.running[i].task_idx;
@@ -206,7 +218,8 @@ impl AsyncManagerData {
     pub fn cancel_pending(&mut self) {
         for (task_idx, _) in self.pending.drain(..) {
             self.progress[task_idx] = AsyncStatus::Done;
-            self.error_list[task_idx] = Some("AsyncError: task cancelled (raise_immediately)".to_string());
+            self.error_list[task_idx] =
+                Some("AsyncError: task cancelled (raise_immediately)".to_string());
         }
     }
 }
@@ -215,7 +228,11 @@ impl AsyncManagerData {
 // Thread body
 // ---------------------------------------------------------------------------
 
-fn run_task(body: Vec<Stmt>, env: Vec<(String, Value, bool)>, abort: Arc<AtomicBool>) -> ThreadResult {
+fn run_task(
+    body: Vec<Stmt>,
+    env: Vec<(String, Value, bool)>,
+    abort: Arc<AtomicBool>,
+) -> ThreadResult {
     if abort.load(Ordering::Relaxed) {
         return ThreadResult {
             value: None,
@@ -231,16 +248,26 @@ fn run_task(body: Vec<Stmt>, env: Vec<(String, Value, bool)>, abort: Arc<AtomicB
 
     let result = interp.eval_block_expr(&body);
     match result {
-        Ok(value) => ThreadResult { value: Some(value), error: None },
+        Ok(value) => ThreadResult {
+            value: Some(value),
+            error: None,
+        },
         Err(e) if e == super::RAISE_SENTINEL => {
             // raise inside the thread: extract and format the exception from
             // the thread-local interpreter so the main thread gets a plain string.
-            let msg = interp.take_current_exception()
+            let msg = interp
+                .take_current_exception()
                 .map(|r| super::Interpreter::format_error_report(&r))
                 .unwrap_or_else(|| "UnhandledException: (no details available)".to_string());
-            ThreadResult { value: None, error: Some(msg) }
+            ThreadResult {
+                value: None,
+                error: Some(msg),
+            }
         }
-        Err(e) => ThreadResult { value: None, error: Some(e) },
+        Err(e) => ThreadResult {
+            value: None,
+            error: Some(e),
+        },
     }
 }
 
@@ -253,7 +280,7 @@ impl AsyncStatus {
         match self {
             AsyncStatus::Waiting => "Async.Waiting",
             AsyncStatus::Running => "Async.Running",
-            AsyncStatus::Done    => "Async.Done",
+            AsyncStatus::Done => "Async.Done",
         }
     }
 }

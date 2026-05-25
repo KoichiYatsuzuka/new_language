@@ -19,10 +19,12 @@ fn eval_expr(src: &str) -> Value {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().unwrap();
     let mut interp = Interpreter::new();
-    interp.eval(match &stmts[0] {
-        Stmt::Expr(e) => e,
-        _ => panic!("not an expr"),
-    }).unwrap()
+    interp
+        .eval(match &stmts[0] {
+            Stmt::Expr(e) => e,
+            _ => panic!("not an expr"),
+        })
+        .unwrap()
 }
 
 fn run_get(src: &str, var: &str) -> Value {
@@ -184,7 +186,9 @@ fn test_while_break() {
 
 #[test]
 fn test_while_scope_isolation() {
-    assert!(run("mut cond = True\nwhile cond:\n    let x = 1\n    cond = False\nprint(x)\n").is_err());
+    assert!(
+        run("mut cond = True\nwhile cond:\n    let x = 1\n    cond = False\nprint(x)\n").is_err()
+    );
 }
 
 // --- for ---
@@ -448,7 +452,8 @@ fn test_class_method_call() {
 #[test]
 fn test_class_field_access() {
     // Fields have defaults; use defaults when instantiating.
-    let src = "class Pair:\n    mut x: int = 10\n    mut y: int = 20\nlet p = Pair()\nlet r = p.x\n";
+    let src =
+        "class Pair:\n    mut x: int = 10\n    mut y: int = 20\nlet p = Pair()\nlet r = p.x\n";
     if let Value::Int(n) = run_get(src, "r") {
         assert_eq!(n, 10);
     } else {
@@ -495,7 +500,10 @@ fn test_access_private_field_from_outside_errors() {
     let result = run(src);
     assert!(result.is_err());
     let msg = result.unwrap_err();
-    assert!(msg.contains("AccessError"), "expected AccessError, got: {msg}");
+    assert!(
+        msg.contains("AccessError"),
+        "expected AccessError, got: {msg}"
+    );
     assert!(msg.contains("private"), "expected 'private', got: {msg}");
 }
 
@@ -529,8 +537,14 @@ fn test_access_protected_field_from_outside_errors() {
     let result = run(src);
     assert!(result.is_err());
     let msg = result.unwrap_err();
-    assert!(msg.contains("AccessError"), "expected AccessError, got: {msg}");
-    assert!(msg.contains("protected"), "expected 'protected', got: {msg}");
+    assert!(
+        msg.contains("AccessError"),
+        "expected AccessError, got: {msg}"
+    );
+    assert!(
+        msg.contains("protected"),
+        "expected 'protected', got: {msg}"
+    );
 }
 
 #[test]
@@ -585,7 +599,10 @@ fn test_access_private_write_from_outside_errors() {
     let result = run(src);
     assert!(result.is_err());
     let msg = result.unwrap_err();
-    assert!(msg.contains("AccessError"), "expected AccessError, got: {msg}");
+    assert!(
+        msg.contains("AccessError"),
+        "expected AccessError, got: {msg}"
+    );
 }
 
 #[test]
@@ -597,7 +614,7 @@ fn test_class_self_field_in_method() {
         "        self.value = v\n",
         "    fn get(self) -> int:\n",
         "        return self.value\n",
-        "mut b = Box()\n",    // mut: instance will be mutated via set()
+        "mut b = Box()\n", // mut: instance will be mutated via set()
         "b.set(42)\n",
         "let r = b.get()\n",
     );
@@ -621,7 +638,10 @@ fn test_class_inheritance_non_trait_parse_error() {
     );
     let tokens = crate::lexer::Lexer::new(src, "").tokenize();
     let result = crate::parser::Parser::new(tokens, None).parse_program();
-    assert!(result.is_err(), "expected parse error for class-to-class inheritance");
+    assert!(
+        result.is_err(),
+        "expected parse error for class-to-class inheritance"
+    );
     assert!(result.unwrap_err().contains("cannot inherit from `Animal`"));
 }
 
@@ -637,7 +657,10 @@ fn test_class_inherit_non_trait_base_parse_error() {
     );
     let tokens = crate::lexer::Lexer::new(src, "").tokenize();
     let result = crate::parser::Parser::new(tokens, None).parse_program();
-    assert!(result.is_err(), "expected parse error for class-to-class inheritance");
+    assert!(
+        result.is_err(),
+        "expected parse error for class-to-class inheritance"
+    );
     assert!(result.unwrap_err().contains("cannot inherit from `Base`"));
 }
 
@@ -749,7 +772,10 @@ fn test_let_instance_mut_method_forbidden() {
         "let c = Counter()\n",
         "c.inc()\n",
     );
-    assert!(run(src).is_err(), "calling mut self method on let instance must fail");
+    assert!(
+        run(src).is_err(),
+        "calling mut self method on let instance must fail"
+    );
 }
 
 #[test]
@@ -802,8 +828,14 @@ fn test_let_instance_error_message_names_method() {
         "f.bar()\n",
     );
     let err = run(src).expect_err("should fail");
-    assert!(err.contains("bar"), "error should mention method name, got: {err}");
-    assert!(err.contains("immutable"), "error should mention immutable, got: {err}");
+    assert!(
+        err.contains("bar"),
+        "error should mention method name, got: {err}"
+    );
+    assert!(
+        err.contains("immutable"),
+        "error should mention immutable, got: {err}"
+    );
 }
 
 // --- freeze statement ---
@@ -816,7 +848,7 @@ fn test_freeze_makes_variable_immutable() {
         "    mut x: int = 0\n",
         "mut f = Foo()\n",
         "freeze f\n",
-        "f = Foo()\n",   // reassign the variable
+        "f = Foo()\n", // reassign the variable
     );
     assert!(run(src).is_err(), "reassigning a frozen variable must fail");
 }
@@ -846,7 +878,10 @@ fn test_freeze_forbids_mut_self_methods() {
         "freeze c\n",
         "c.inc()\n",
     );
-    assert!(run(src).is_err(), "calling mut self method on frozen instance must fail");
+    assert!(
+        run(src).is_err(),
+        "calling mut self method on frozen instance must fail"
+    );
 }
 
 #[test]
@@ -903,7 +938,10 @@ fn test_freeze_on_let_variable_errors() {
 
 #[test]
 fn test_freeze_on_undefined_variable_errors() {
-    assert!(run("freeze x\n").is_err(), "freeze on undefined variable must fail");
+    assert!(
+        run("freeze x\n").is_err(),
+        "freeze on undefined variable must fail"
+    );
 }
 
 // --- Self type ---
@@ -971,8 +1009,14 @@ fn test_self_type_outside_class_is_parse_error() {
     // `Self` used outside a class or trait must produce a parse error.
     let tokens = crate::lexer::Lexer::new("fn foo() -> Self:\n    pass\n", "").tokenize();
     let result = crate::parser::Parser::new(tokens, None).parse_program();
-    assert!(result.is_err(), "Self outside class/trait must be a parse error");
-    assert!(result.unwrap_err().contains("'Self'"), "error should mention 'Self'");
+    assert!(
+        result.is_err(),
+        "Self outside class/trait must be a parse error"
+    );
+    assert!(
+        result.unwrap_err().contains("'Self'"),
+        "error should mention 'Self'"
+    );
 }
 
 #[test]
@@ -980,7 +1024,10 @@ fn test_self_type_in_expression_outside_class_is_parse_error() {
     // `Self` as an expression outside a class must produce a parse error.
     let tokens = crate::lexer::Lexer::new("Self(42)\n", "").tokenize();
     let result = crate::parser::Parser::new(tokens, None).parse_program();
-    assert!(result.is_err(), "Self expression outside class/trait must be a parse error");
+    assert!(
+        result.is_err(),
+        "Self expression outside class/trait must be a parse error"
+    );
 }
 
 #[test]
@@ -994,7 +1041,7 @@ fn test_trait_field_write_via_method() {
         "        self::HasCount.count = self::HasCount.count + 1\n",
         "    fn get(self) -> int:\n",
         "        return self::HasCount.count\n",
-        "mut c = Counter(0)\n",   // mut: instance will be mutated via increment()
+        "mut c = Counter(0)\n", // mut: instance will be mutated via increment()
         "c.increment()\n",
         "c.increment()\n",
         "let r = c.get()\n",
@@ -1094,7 +1141,10 @@ fn test_new_type_const_is_parse_error() {
     );
     let tokens = crate::lexer::Lexer::new(src, "").tokenize();
     let result = crate::parser::Parser::new(tokens, None).parse_program();
-    assert!(result.is_err(), "expected parse error when reassigning a new_type binding");
+    assert!(
+        result.is_err(),
+        "expected parse error when reassigning a new_type binding"
+    );
 }
 
 // --- Exception handling tests ---
@@ -1138,7 +1188,10 @@ fn test_try_except_does_not_catch_different_type() {
         "    pass\n",
     );
     let raised = run_exc(src).unwrap();
-    assert!(raised.is_some(), "TypeError should not be caught by ValueError handler");
+    assert!(
+        raised.is_some(),
+        "TypeError should not be caught by ValueError handler"
+    );
     if let Some(r) = raised {
         if let Value::Instance(inst) = &r.exception {
             assert_eq!(inst.borrow().class.name, "TypeError");
@@ -1358,7 +1411,10 @@ fn test_internal_error_not_caught_by_wrong_type() {
         "    pass\n",
     );
     let raised = run_exc(src).unwrap();
-    assert!(raised.is_some(), "ZeroDivisionError should not be caught by ValueError handler");
+    assert!(
+        raised.is_some(),
+        "ZeroDivisionError should not be caught by ValueError handler"
+    );
 }
 
 #[test]
@@ -1430,16 +1486,24 @@ fn test_generator_exhausted_raises_end_of_iteration() {
     );
     assert!(run(src).is_err());
     let tokens = crate::lexer::Lexer::new(src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None).parse_program().unwrap();
+    let stmts = crate::parser::Parser::new(tokens, None)
+        .parse_program()
+        .unwrap();
     let mut interp = Interpreter::new();
     let mut err_msg = String::new();
     for stmt in &stmts {
         match interp.exec(stmt) {
-            Err(e) => { err_msg = e; break; }
+            Err(e) => {
+                err_msg = e;
+                break;
+            }
             _ => {}
         }
     }
-    assert!(err_msg.starts_with("EndOfIteration"), "expected EndOfIteration, got: {err_msg}");
+    assert!(
+        err_msg.starts_with("EndOfIteration"),
+        "expected EndOfIteration, got: {err_msg}"
+    );
 }
 
 #[test]
@@ -1917,7 +1981,9 @@ fn test_closure_captures_mutable_shared() {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().unwrap();
     let mut interp = Interpreter::new();
-    for stmt in &stmts { interp.exec(stmt).unwrap(); }
+    for stmt in &stmts {
+        interp.exec(stmt).unwrap();
+    }
     assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(1)));
     assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(2)));
     assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(3)));
@@ -1941,7 +2007,9 @@ fn test_closure_each_call_new_env() {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().unwrap();
     let mut interp = Interpreter::new();
-    for stmt in &stmts { interp.exec(stmt).unwrap(); }
+    for stmt in &stmts {
+        interp.exec(stmt).unwrap();
+    }
     assert!(matches!(interp.get_val("r_a").unwrap(), Value::Int(1)));
     assert!(matches!(interp.get_val("r_b").unwrap(), Value::Int(101)));
 }
@@ -1987,7 +2055,9 @@ fn test_closure_static_shared_across_calls() {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().unwrap();
     let mut interp = Interpreter::new();
-    for stmt in &stmts { interp.exec(stmt).unwrap(); }
+    for stmt in &stmts {
+        interp.exec(stmt).unwrap();
+    }
     assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(1)));
     assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(2)));
     assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(3)));
@@ -2184,42 +2254,27 @@ fn test_list_getitem() {
 #[test]
 fn test_list_setitem() {
     // list[int] = value による要素の書き換え
-    let src = concat!(
-        "mut xs = [1, 2, 3]\n",
-        "xs[1] = 99\n",
-        "let r = xs[1]\n",
-    );
+    let src = concat!("mut xs = [1, 2, 3]\n", "xs[1] = 99\n", "let r = xs[1]\n",);
     assert!(matches!(run_get(src, "r"), Value::Int(99)));
 }
 
 #[test]
 fn test_list_setitem_negative() {
     // 負インデックスでの書き換え
-    let src = concat!(
-        "mut xs = [1, 2, 3]\n",
-        "xs[-1] = 77\n",
-        "let r = xs[2]\n",
-    );
+    let src = concat!("mut xs = [1, 2, 3]\n", "xs[-1] = 77\n", "let r = xs[2]\n",);
     assert!(matches!(run_get(src, "r"), Value::Int(77)));
 }
 
 #[test]
 fn test_list_getitem_out_of_range() {
-    let src = concat!(
-        "let xs = [1, 2, 3]\n",
-        "let r = xs[5]\n",
-    );
+    let src = concat!("let xs = [1, 2, 3]\n", "let r = xs[5]\n",);
     assert!(run(src).is_err());
 }
 
 #[test]
 fn test_str_getitem() {
     // str[int] インデックスアクセス（正・負）
-    let src = concat!(
-        "let s = \"hello\"\n",
-        "let a = s[0]\n",
-        "let b = s[-1]\n",
-    );
+    let src = concat!("let s = \"hello\"\n", "let a = s[0]\n", "let b = s[-1]\n",);
     if let Value::Str(a) = run_get(src, "a") {
         assert_eq!(a, "h");
     } else {
@@ -2284,10 +2339,7 @@ fn test_pyobject_setitem() {
 #[test]
 fn test_tuple_getitem() {
     // Python から返ってきた tuple が Value::Tuple に変換された場合の subscript
-    let src = concat!(
-        "let t = (100, 200, 300)\n",
-        "let r = t[1]\n",
-    );
+    let src = concat!("let t = (100, 200, 300)\n", "let r = t[1]\n",);
     assert!(matches!(run_get(src, "r"), Value::Int(200)));
 }
 
@@ -3175,7 +3227,11 @@ fn test_enum_auto_numbering() {
         if let Value::Instance(inst_rc) = val {
             let inst = inst_rc.borrow();
             let (v, _) = inst.fields.get("value").unwrap();
-            if let Value::Int(n) = v { assert_eq!(*n, expected); } else { panic!("expected Int"); }
+            if let Value::Int(n) = v {
+                assert_eq!(*n, expected);
+            } else {
+                panic!("expected Int");
+            }
         } else {
             panic!("expected Instance for {var}");
         }
@@ -3190,7 +3246,11 @@ fn test_enum_explicit_value() {
     if let Value::Instance(inst_rc) = b {
         let inst = inst_rc.borrow();
         let (v, _) = inst.fields.get("value").unwrap();
-        if let Value::Int(n) = v { assert_eq!(*n, 5); } else { panic!("expected Int 5"); }
+        if let Value::Int(n) = v {
+            assert_eq!(*n, 5);
+        } else {
+            panic!("expected Int 5");
+        }
     } else {
         panic!("expected Instance for b");
     }
@@ -3198,7 +3258,11 @@ fn test_enum_explicit_value() {
     if let Value::Instance(inst_rc) = c {
         let inst = inst_rc.borrow();
         let (v, _) = inst.fields.get("value").unwrap();
-        if let Value::Int(n) = v { assert_eq!(*n, 6); } else { panic!("expected Int 6"); }
+        if let Value::Int(n) = v {
+            assert_eq!(*n, 6);
+        } else {
+            panic!("expected Int 6");
+        }
     } else {
         panic!("expected Instance for c");
     }
@@ -3270,14 +3334,18 @@ fn test_default_param_mixed_required_and_default() {
 
 #[test]
 fn test_default_param_via_keyword_arg() {
-    let src = "fn f(let a: int = 0, let b: int = 0) -> int:\n    return a * 10 + b\nlet r = f(b=5)\n";
+    let src =
+        "fn f(let a: int = 0, let b: int = 0) -> int:\n    return a * 10 + b\nlet r = f(b=5)\n";
     assert_int(run_get(src, "r"), 5);
 }
 
 #[test]
 fn test_default_param_ordering_error() {
     let src = "fn f(let a: int = 0, let b: int) -> int:\n    return 0\n";
-    assert!(run(src).is_err(), "expected ParseError for non-default after default");
+    assert!(
+        run(src).is_err(),
+        "expected ParseError for non-default after default"
+    );
 }
 
 #[test]
@@ -3305,14 +3373,20 @@ fn test_file_open_mode_enum() {
     // FileOpenMode enum が正しくグローバルスコープに登録されているかを確認する
     let src = "let m = FileOpenMode.read\nlet v = m.value\n";
     let val = run_get(src, "v");
-    assert!(matches!(val, Value::Int(2)), "FileOpenMode.read.value should be 2");
+    assert!(
+        matches!(val, Value::Int(2)),
+        "FileOpenMode.read.value should be 2"
+    );
 }
 
 #[test]
 fn test_file_start_point_enum() {
     let src = "let s = StartPoint.end\nlet v = s.value\n";
     let val = run_get(src, "v");
-    assert!(matches!(val, Value::Int(1)), "StartPoint.end.value should be 1");
+    assert!(
+        matches!(val, Value::Int(1)),
+        "StartPoint.end.value should be 1"
+    );
 }
 
 #[test]
@@ -3320,7 +3394,10 @@ fn test_file_path_type() {
     // path 型のインスタンスを生成できることを確認する
     let src = "let p = path(\"foo.txt\")\nlet v = p.value\n";
     let val = run_get(src, "v");
-    assert!(matches!(val, Value::Str(s) if s == "foo.txt"), "path.value should be 'foo.txt'");
+    assert!(
+        matches!(val, Value::Str(s) if s == "foo.txt"),
+        "path.value should be 'foo.txt'"
+    );
 }
 
 #[test]
@@ -3332,12 +3409,13 @@ fn test_file_rewrite_and_read() {
          let g = open(\"{p}\", FileOpenMode.read)\nlet r = g.read()\nclose(g)\n",
     );
     run(&src).expect("file rewrite + read should succeed");
-    let src2 = format!(
-        "let g = open(\"{p}\", FileOpenMode.read)\nlet r = g.read()\nclose(g)\n"
-    );
+    let src2 = format!("let g = open(\"{p}\", FileOpenMode.read)\nlet r = g.read()\nclose(g)\n");
     let val = run_get(&src2, "r");
     cleanup(&p);
-    assert!(matches!(val, Value::Str(s) if s == "hello"), "read() should return written text");
+    assert!(
+        matches!(val, Value::Str(s) if s == "hello"),
+        "read() should return written text"
+    );
 }
 
 #[test]
@@ -3368,14 +3446,24 @@ fn test_file_read_line_forward() {
          let a = f.read_line()\nlet b = f.read_line()\nclose(f)\n"
     );
     let tokens = crate::lexer::Lexer::new(&src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None).parse_program().unwrap();
+    let stmts = crate::parser::Parser::new(tokens, None)
+        .parse_program()
+        .unwrap();
     let mut interp = Interpreter::new();
-    for stmt in &stmts { interp.exec(stmt).unwrap(); }
+    for stmt in &stmts {
+        interp.exec(stmt).unwrap();
+    }
     let a = interp.get_val("a").unwrap();
     let b = interp.get_val("b").unwrap();
     cleanup(&p);
-    assert!(matches!(a, Value::Str(s) if s == "alpha\n"), "first read_line should be 'alpha\\n'");
-    assert!(matches!(b, Value::Str(s) if s == "beta\n"), "second read_line should be 'beta\\n'");
+    assert!(
+        matches!(a, Value::Str(s) if s == "alpha\n"),
+        "first read_line should be 'alpha\\n'"
+    );
+    assert!(
+        matches!(b, Value::Str(s) if s == "beta\n"),
+        "second read_line should be 'beta\\n'"
+    );
 }
 
 #[test]
@@ -3388,14 +3476,24 @@ fn test_file_read_letter() {
          let a = f.read_letter()\nlet b = f.read_letter()\nclose(f)\n"
     );
     let tokens = crate::lexer::Lexer::new(&src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None).parse_program().unwrap();
+    let stmts = crate::parser::Parser::new(tokens, None)
+        .parse_program()
+        .unwrap();
     let mut interp = Interpreter::new();
-    for stmt in &stmts { interp.exec(stmt).unwrap(); }
+    for stmt in &stmts {
+        interp.exec(stmt).unwrap();
+    }
     let a = interp.get_val("a").unwrap();
     let b = interp.get_val("b").unwrap();
     cleanup(&p);
-    assert!(matches!(a, Value::Str(s) if s == "A"), "first letter should be 'A'");
-    assert!(matches!(b, Value::Str(s) if s == "B"), "second letter should be 'B'");
+    assert!(
+        matches!(a, Value::Str(s) if s == "A"),
+        "first letter should be 'A'"
+    );
+    assert!(
+        matches!(b, Value::Str(s) if s == "B"),
+        "second letter should be 'B'"
+    );
 }
 
 #[test]
@@ -3427,7 +3525,10 @@ fn test_file_make_and_write_existing_error() {
     let p = temp_path("maw_exist");
     std::fs::write(&p, "existing").unwrap();
     let src = format!("let f = open(\"{p}\", FileOpenMode.make_and_write)\nclose(f)\n");
-    assert!(run(&src).is_err(), "make_and_write on existing file should error");
+    assert!(
+        run(&src).is_err(),
+        "make_and_write on existing file should error"
+    );
     cleanup(&p);
 }
 
@@ -3436,9 +3537,7 @@ fn test_file_write_read_only_error() {
     let p = temp_path("write_ro");
     cleanup(&p);
     std::fs::write(&p, "hello").unwrap();
-    let src = format!(
-        "let f = open(\"{p}\", FileOpenMode.read)\nf.write(\"x\")\nclose(f)\n"
-    );
+    let src = format!("let f = open(\"{p}\", FileOpenMode.read)\nf.write(\"x\")\nclose(f)\n");
     assert!(run(&src).is_err(), "write on read-only file should error");
     cleanup(&p);
 }
@@ -3457,7 +3556,10 @@ fn test_file_insert_midpoint() {
     run(&src).expect("insert mid should succeed");
     let content = std::fs::read_to_string(&p).unwrap();
     cleanup(&p);
-    assert_eq!(content, "hello", "inserting 'l' at position 3 should give 'hello'");
+    assert_eq!(
+        content, "hello",
+        "inserting 'l' at position 3 should give 'hello'"
+    );
 }
 
 #[test]
@@ -3471,9 +3573,13 @@ fn test_file_byte_mode_write_read() {
          let r = g.read()\nclose(g)\n"
     );
     let tokens = crate::lexer::Lexer::new(&src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None).parse_program().unwrap();
+    let stmts = crate::parser::Parser::new(tokens, None)
+        .parse_program()
+        .unwrap();
     let mut interp = Interpreter::new();
-    for stmt in &stmts { interp.exec(stmt).unwrap(); }
+    for stmt in &stmts {
+        interp.exec(stmt).unwrap();
+    }
     let val = interp.get_val("r").unwrap();
     cleanup(&p);
     // r should be [72, 105]
@@ -3518,16 +3624,34 @@ fn test_uint_from_bool() {
 
 #[test]
 fn test_uint_arithmetic() {
-    assert!(matches!(run_get("let r = uint(10) + uint(5)\n", "r"), Value::UInt(15)));
-    assert!(matches!(run_get("let r = uint(10) - uint(3)\n", "r"), Value::UInt(7)));
-    assert!(matches!(run_get("let r = uint(3) * uint(4)\n", "r"), Value::UInt(12)));
+    assert!(matches!(
+        run_get("let r = uint(10) + uint(5)\n", "r"),
+        Value::UInt(15)
+    ));
+    assert!(matches!(
+        run_get("let r = uint(10) - uint(3)\n", "r"),
+        Value::UInt(7)
+    ));
+    assert!(matches!(
+        run_get("let r = uint(3) * uint(4)\n", "r"),
+        Value::UInt(12)
+    ));
 }
 
 #[test]
 fn test_uint_comparison() {
-    assert!(matches!(run_get("let r = uint(5) < uint(10)\n", "r"), Value::Bool(true)));
-    assert!(matches!(run_get("let r = uint(5) == uint(5)\n", "r"), Value::Bool(true)));
-    assert!(matches!(run_get("let r = uint(5) > uint(10)\n", "r"), Value::Bool(false)));
+    assert!(matches!(
+        run_get("let r = uint(5) < uint(10)\n", "r"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        run_get("let r = uint(5) == uint(5)\n", "r"),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        run_get("let r = uint(5) > uint(10)\n", "r"),
+        Value::Bool(false)
+    ));
 }
 
 #[test]
@@ -3621,7 +3745,8 @@ fn test_id_let_alias_same_as_original() {
 #[test]
 fn test_id_value_types_equal_int() {
     // Equal integers should have equal ids (value-based identity)
-    let src = "let a = 5\nlet b = 5\nlet pa = id(a)\nlet pb = id(b)\nlet same = pa.value == pb.value\n";
+    let src =
+        "let a = 5\nlet b = 5\nlet pa = id(a)\nlet pb = id(b)\nlet same = pa.value == pb.value\n";
     assert!(matches!(run_get(src, "same"), Value::Bool(true)));
 }
 
@@ -3917,13 +4042,19 @@ fn test_async_manager_constructor() {
 
 #[test]
 fn test_async_manager_num_thread_attr() {
-    let val = run_get("mut mng = AsyncManager(num_thread=4)\nlet n = mng.num_thread\n", "n");
+    let val = run_get(
+        "mut mng = AsyncManager(num_thread=4)\nlet n = mng.num_thread\n",
+        "n",
+    );
     assert!(matches!(val, Value::UInt(4)));
 }
 
 #[test]
 fn test_async_manager_raise_immediately_default_false() {
-    let val = run_get("mut mng = AsyncManager(num_thread=1)\nlet r = mng.raise_immediately\n", "r");
+    let val = run_get(
+        "mut mng = AsyncManager(num_thread=1)\nlet r = mng.raise_immediately\n",
+        "r",
+    );
     assert!(matches!(val, Value::Bool(false)));
 }
 
@@ -3988,7 +4119,7 @@ fn test_async_error_stored_in_error_list() {
     let src = "
 mut mng = AsyncManager(num_thread=1)
 mng <- async->int:
-    raise \"TestError\"
+    raise RuntimeError(\"TestError\")
 mng.wait_for_finish()
 let errs = mng.error_list
 ";
@@ -4026,7 +4157,7 @@ fn test_async_raise_immediately_propagates_to_try_except() {
     let src = "
 mut mng = AsyncManager(num_thread=1, raise_immediately=True)
 mng <- async->int:
-    raise \"AsyncFail\"
+    raise RuntimeError(\"AsyncFail\")
 mut caught = False
 try:
     mng.wait_for_finish()
@@ -4042,9 +4173,18 @@ fn test_async_status_enum_values() {
     let w = run_get("let w = Async.Waiting\n", "w");
     let r = run_get("let r = Async.Running\n", "r");
     let d = run_get("let d = Async.Done\n", "d");
-    assert!(matches!(w, Value::AsyncStatusVal(async_mgr::AsyncStatus::Waiting)));
-    assert!(matches!(r, Value::AsyncStatusVal(async_mgr::AsyncStatus::Running)));
-    assert!(matches!(d, Value::AsyncStatusVal(async_mgr::AsyncStatus::Done)));
+    assert!(matches!(
+        w,
+        Value::AsyncStatusVal(async_mgr::AsyncStatus::Waiting)
+    ));
+    assert!(matches!(
+        r,
+        Value::AsyncStatusVal(async_mgr::AsyncStatus::Running)
+    ));
+    assert!(matches!(
+        d,
+        Value::AsyncStatusVal(async_mgr::AsyncStatus::Done)
+    ));
 }
 
 #[test]
@@ -4130,18 +4270,28 @@ let x, mut y = 42
 fn test_tuple_unpack_static_missing_qualifier() {
     let src = "let x, y = (1, 2)";
     let tokens = crate::lexer::Lexer::new(src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None).parse_program().unwrap();
+    let stmts = crate::parser::Parser::new(tokens, None)
+        .parse_program()
+        .unwrap();
     let errors = crate::type_check::TypeChecker::check(&stmts);
-    assert!(!errors.is_empty(), "expected a StaticTypeError for missing qualifier");
+    assert!(
+        !errors.is_empty(),
+        "expected a StaticTypeError for missing qualifier"
+    );
 }
 
 #[test]
 fn test_tuple_unpack_static_arity_mismatch() {
     let src = "let x, mut y = (1, 2, 3)";
     let tokens = crate::lexer::Lexer::new(src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None).parse_program().unwrap();
+    let stmts = crate::parser::Parser::new(tokens, None)
+        .parse_program()
+        .unwrap();
     let errors = crate::type_check::TypeChecker::check(&stmts);
-    assert!(!errors.is_empty(), "expected a StaticTypeError for arity mismatch");
+    assert!(
+        !errors.is_empty(),
+        "expected a StaticTypeError for arity mismatch"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -4337,31 +4487,50 @@ fn test_str_split_join() {
 
 #[test]
 fn test_str_replace() {
-    assert!(matches!(eval_expr(r#""hello world".replace("world", "Rust")"#), Value::Str(ref s) if s == "hello Rust"));
+    assert!(
+        matches!(eval_expr(r#""hello world".replace("world", "Rust")"#), Value::Str(ref s) if s == "hello Rust")
+    );
     assert!(matches!(eval_expr(r#""aaa".replace("a", "b", 2)"#), Value::Str(ref s) if s == "bba"));
 }
 
 #[test]
 fn test_str_find() {
     assert!(matches!(eval_expr(r#""hello".find("ll")"#), Value::Int(2)));
-    assert!(matches!(eval_expr(r#""hello".find("xyz")"#), Value::Int(-1)));
+    assert!(matches!(
+        eval_expr(r#""hello".find("xyz")"#),
+        Value::Int(-1)
+    ));
 }
 
 #[test]
 fn test_str_startswith_endswith() {
-    assert!(matches!(eval_expr(r#""hello".startswith("he")"#), Value::Bool(true)));
-    assert!(matches!(eval_expr(r#""hello".endswith("lo")"#), Value::Bool(true)));
-    assert!(matches!(eval_expr(r#""hello".startswith("lo")"#), Value::Bool(false)));
+    assert!(matches!(
+        eval_expr(r#""hello".startswith("he")"#),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval_expr(r#""hello".endswith("lo")"#),
+        Value::Bool(true)
+    ));
+    assert!(matches!(
+        eval_expr(r#""hello".startswith("lo")"#),
+        Value::Bool(false)
+    ));
 }
 
 #[test]
 fn test_str_count() {
-    assert!(matches!(eval_expr(r#""banana".count("an")"#), Value::Int(2)));
+    assert!(matches!(
+        eval_expr(r#""banana".count("an")"#),
+        Value::Int(2)
+    ));
 }
 
 #[test]
 fn test_str_format() {
-    assert!(matches!(eval_expr(r#""Hello, {}!".format("World")"#), Value::Str(ref s) if s == "Hello, World!"));
+    assert!(
+        matches!(eval_expr(r#""Hello, {}!".format("World")"#), Value::Str(ref s) if s == "Hello, World!")
+    );
     assert!(matches!(eval_expr(r#""{:.2f}".format(3.14159)"#), Value::Str(ref s) if s == "3.14"));
     assert!(matches!(eval_expr(r#""{0} + {1}".format(1, 2)"#), Value::Str(ref s) if s == "1 + 2"));
 }
@@ -4370,7 +4539,10 @@ fn test_str_format() {
 fn test_str_is_checks() {
     assert!(matches!(eval_expr(r#""123".isdigit()"#), Value::Bool(true)));
     assert!(matches!(eval_expr(r#""abc".isalpha()"#), Value::Bool(true)));
-    assert!(matches!(eval_expr(r#""abc123".isalnum()"#), Value::Bool(true)));
+    assert!(matches!(
+        eval_expr(r#""abc123".isalnum()"#),
+        Value::Bool(true)
+    ));
     assert!(matches!(eval_expr(r#""   ".isspace()"#), Value::Bool(true)));
     assert!(matches!(eval_expr(r#""ABC".isupper()"#), Value::Bool(true)));
     assert!(matches!(eval_expr(r#""abc".islower()"#), Value::Bool(true)));
@@ -4400,15 +4572,23 @@ fn test_str_partition() {
 
 #[test]
 fn test_str_removeprefix_removesuffix() {
-    assert!(matches!(eval_expr(r#""Hello, World!".removeprefix("Hello, ")"#), Value::Str(ref s) if s == "World!"));
-    assert!(matches!(eval_expr(r#""Hello, World!".removesuffix(", World!")"#), Value::Str(ref s) if s == "Hello"));
+    assert!(
+        matches!(eval_expr(r#""Hello, World!".removeprefix("Hello, ")"#), Value::Str(ref s) if s == "World!")
+    );
+    assert!(
+        matches!(eval_expr(r#""Hello, World!".removesuffix(", World!")"#), Value::Str(ref s) if s == "Hello")
+    );
 }
 
 #[test]
 fn test_str_title_capitalize_swapcase() {
-    assert!(matches!(eval_expr(r#""hello world".title()"#), Value::Str(ref s) if s == "Hello World"));
+    assert!(
+        matches!(eval_expr(r#""hello world".title()"#), Value::Str(ref s) if s == "Hello World")
+    );
     assert!(matches!(eval_expr(r#""hello".capitalize()"#), Value::Str(ref s) if s == "Hello"));
-    assert!(matches!(eval_expr(r#""Hello World".swapcase()"#), Value::Str(ref s) if s == "hELLO wORLD"));
+    assert!(
+        matches!(eval_expr(r#""Hello World".swapcase()"#), Value::Str(ref s) if s == "hELLO wORLD")
+    );
 }
 
 #[test]
@@ -4425,12 +4605,16 @@ fn test_percent_format_float() {
 
 #[test]
 fn test_percent_format_str() {
-    assert!(matches!(eval_expr(r#""%s world" % "hello""#), Value::Str(ref s) if s == "hello world"));
+    assert!(
+        matches!(eval_expr(r#""%s world" % "hello""#), Value::Str(ref s) if s == "hello world")
+    );
 }
 
 #[test]
 fn test_percent_format_tuple() {
-    assert!(matches!(eval_expr(r#""%s is %d" % ("Alice", 30)"#), Value::Str(ref s) if s == "Alice is 30"));
+    assert!(
+        matches!(eval_expr(r#""%s is %d" % ("Alice", 30)"#), Value::Str(ref s) if s == "Alice is 30")
+    );
 }
 
 #[test]
@@ -4538,7 +4722,10 @@ fn test_cast_cross_new_type_same_base() {
     if let Value::Instance(rc) = val {
         assert_eq!(rc.borrow().class.name, "YourInt");
         let inner = rc.borrow().fields.get("value").map(|(v, _)| v.clone());
-        assert!(matches!(inner, Some(Value::Int(9))), "inner value should be 9, not a nested instance");
+        assert!(
+            matches!(inner, Some(Value::Int(9))),
+            "inner value should be 9, not a nested instance"
+        );
     } else {
         panic!("expected Instance");
     }

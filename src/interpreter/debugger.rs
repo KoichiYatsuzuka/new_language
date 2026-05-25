@@ -56,9 +56,9 @@ thread_local! {
 // ---------------------------------------------------------------------------
 
 const YELLOW: &str = "\x1b[33m";
-const CYAN:   &str = "\x1b[36m";
-const GREEN:  &str = "\x1b[32m";
-const RESET:  &str = "\x1b[0m";
+const CYAN: &str = "\x1b[36m";
+const GREEN: &str = "\x1b[32m";
+const RESET: &str = "\x1b[0m";
 
 /// Print up to 2 lines before and 2 lines after `target_line` (1-based)
 /// from the source map, highlighting the target line with `>>`.
@@ -81,7 +81,9 @@ fn print_context(interp: &Interpreter, file: &str, target_line: usize) {
     let last = (target_line + 2).min(total);
 
     for lineno in first..=last {
-        if lineno == 0 || lineno > total { continue; }
+        if lineno == 0 || lineno > total {
+            continue;
+        }
         let text = &lines[lineno - 1];
         if lineno == target_line {
             println!("{YELLOW}{lineno:>4}{RESET} {CYAN}>>{RESET} {text}");
@@ -94,7 +96,11 @@ fn print_context(interp: &Interpreter, file: &str, target_line: usize) {
 /// Try to extract a representative (file, line) from a `Stmt` for display.
 pub(super) fn stmt_location(stmt: &Stmt) -> Option<(String, usize)> {
     fn from_span(s: &Span) -> Option<(String, usize)> {
-        if s.line == 0 { None } else { Some((s.file.to_string(), s.line)) }
+        if s.line == 0 {
+            None
+        } else {
+            Some((s.file.to_string(), s.line))
+        }
     }
     fn from_expr(e: &Expr) -> Option<(String, usize)> {
         match e {
@@ -114,7 +120,10 @@ pub(super) fn stmt_location(stmt: &Stmt) -> Option<(String, usize)> {
         | Stmt::Freeze(_, span)
         | Stmt::Static(_, _, span) => from_span(span),
         Stmt::LetTuple { span, .. } => from_span(span),
-        Stmt::Expr(e) | Stmt::Let(_, e) | Stmt::Mut(_, e) | Stmt::Const(_, e)
+        Stmt::Expr(e)
+        | Stmt::Let(_, e)
+        | Stmt::Mut(_, e)
+        | Stmt::Const(_, e)
         | Stmt::DebugLet(_, e) => from_expr(e),
         _ => None,
     }
@@ -188,7 +197,11 @@ impl Interpreter {
                     IN_REPL.with(|r| *r.borrow_mut() = false);
                     return self.exec_breakpoint(span);
                 }
-                DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::StepOut { target: entry_depth - 1 });
+                DBG_MODE.with(|m| {
+                    *m.borrow_mut() = DbgMode::StepOut {
+                        target: entry_depth - 1,
+                    }
+                });
             }
         }
 
@@ -207,7 +220,10 @@ impl Interpreter {
                 // EOF / broken pipe — resume
                 return ReplCmd::Resume;
             }
-            let line = raw.trim_end_matches('\n').trim_end_matches('\r').to_string();
+            let line = raw
+                .trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .to_string();
 
             match line.trim() {
                 "" => return ReplCmd::StepOver,
@@ -229,7 +245,9 @@ impl Interpreter {
         let tokens = Lexer::new(code, "<debugger>").tokenize();
         let mut parser = Parser::new(tokens, None);
         let stmts = parser.parse_program().map_err(|e| e.to_string())?;
-        let stmt = stmts.into_iter().next()
+        let stmt = stmts
+            .into_iter()
+            .next()
             .ok_or_else(|| "empty input".to_string())?;
 
         // Reject mutations of non-debugger variables
@@ -279,7 +297,9 @@ impl Interpreter {
             DbgMode::StepOver => {
                 // Only pause at the same depth as when the breakpoint fired.
                 let entry = DBG_ENTRY_DEPTH.with(|d| *d.borrow());
-                if self.call_stack.len() != entry { return None; }
+                if self.call_stack.len() != entry {
+                    return None;
+                }
                 Some(self.best_span_for(stmt))
             }
             DbgMode::StepInto => {
@@ -295,7 +315,9 @@ impl Interpreter {
                     // Same depth: check if we still need to let one statement pass.
                     let skip = DBG_STEP_INTO_SKIP.with(|s| {
                         let v = *s.borrow();
-                        if v > 0 { *s.borrow_mut() = v - 1; }
+                        if v > 0 {
+                            *s.borrow_mut() = v - 1;
+                        }
                         v
                     });
                     if skip > 0 {
@@ -329,14 +351,22 @@ impl Interpreter {
     /// Falls back to the last successfully-extracted span, then to line 0.
     fn best_span_for(&self, stmt: &Stmt) -> Span {
         if let Some((file, line)) = stmt_location(stmt) {
-            return Span { file: file.into(), line, col: 1 };
+            return Span {
+                file: file.into(),
+                line,
+                col: 1,
+            };
         }
         // Fall back to last known good span (set in exec() after every successful pause).
         if let Some(ref s) = self.dbg_last_span {
             return s.clone();
         }
         let file = self.source_map.keys().next().cloned().unwrap_or_default();
-        Span { file: file.into(), line: 0, col: 0 }
+        Span {
+            file: file.into(),
+            line: 0,
+            col: 0,
+        }
     }
 
     /// Record the span that was just shown, so it can serve as fallback for

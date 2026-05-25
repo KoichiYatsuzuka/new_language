@@ -2,7 +2,6 @@
 ///
 /// `Lexer` の現在読み取り位置（`pos`）周辺の文字を参照・消費する低レベルヘルパー。
 /// すべてのメソッドは `scan.rs` で定義された `Lexer` に対する `impl` ブロックとして提供する。
-
 use super::scan::Lexer;
 
 impl Lexer {

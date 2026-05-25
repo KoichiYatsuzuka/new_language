@@ -27,7 +27,11 @@ impl Span {
     /// # 戻り値
     /// `line = 0`, `col = 0`, `file = ""` の `Span`
     pub fn unknown() -> Self {
-        Self { file: "".into(), line: 0, col: 0 }
+        Self {
+            file: "".into(),
+            line: 0,
+            col: 0,
+        }
     }
 }
 
@@ -238,7 +242,7 @@ pub enum Token {
     Protected,
 
     // Method kind modifiers (class body only)
-    ClassMethod,  // class_method fn — first param must be cls: type[Self]
+    ClassMethod, // class_method fn — first param must be cls: type[Self]
 
     // Self type keyword (valid only inside class/trait bodies)
     SelfType,
@@ -254,30 +258,30 @@ pub enum Token {
     Option,
 
     // Arithmetic operators
-    Plus,         // +
-    Minus,        // -
-    Star,         // *
-    Slash,        // /
-    SlashSlash,   // //
-    Percent,      // %
-    StarStar,     // **
-    At,           // @
+    Plus,       // +
+    Minus,      // -
+    Star,       // *
+    Slash,      // /
+    SlashSlash, // //
+    Percent,    // %
+    StarStar,   // **
+    At,         // @
 
     // Comparison operators
-    EqEq,         // ==
-    NotEq,        // !=
-    Lt,           // <
-    Gt,           // >
-    LtEq,         // <=
-    GtEq,         // >=
+    EqEq,  // ==
+    NotEq, // !=
+    Lt,    // <
+    Gt,    // >
+    LtEq,  // <=
+    GtEq,  // >=
 
     // Bitwise operators
-    Amp,          // &
-    Pipe,         // |
-    Caret,        // ^
-    Tilde,        // ~
-    LtLt,         // <<
-    GtGt,         // >>
+    Amp,   // &
+    Pipe,  // |
+    Caret, // ^
+    Tilde, // ~
+    LtLt,  // <<
+    GtGt,  // >>
 
     // Assignment operators
     Eq,           // =
@@ -298,22 +302,22 @@ pub enum Token {
     ColonColon,   // ::
 
     // Other punctuation
-    Arrow,        // ->
-    LeftArrow,    // <-
-    FatArrow,     // =>
-    Colon,        // :
-    Comma,        // ,
-    Semicolon,    // ;
-    Dot,          // .
-    Ellipsis,     // ...
+    Arrow,     // ->
+    LeftArrow, // <-
+    FatArrow,  // =>
+    Colon,     // :
+    Comma,     // ,
+    Semicolon, // ;
+    Dot,       // .
+    Ellipsis,  // ...
 
     // Delimiters
-    LParen,       // (
-    RParen,       // )
-    LBracket,     // [
-    RBracket,     // ]
-    LBrace,       // {
-    RBrace,       // }
+    LParen,   // (
+    RParen,   // )
+    LBracket, // [
+    RBracket, // ]
+    LBrace,   // {
+    RBrace,   // }
 
     // Literals
     Int(i64),

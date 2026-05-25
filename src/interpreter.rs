@@ -26,36 +26,36 @@ use indexmap::IndexMap;
 use crate::ast::{Accessibility, Expr, Param, Stmt};
 use crate::token::Span;
 
+#[path = "interpreter/async_mgr.rs"]
+pub(crate) mod async_mgr;
+#[path = "interpreter/classes.rs"]
+mod classes;
+#[path = "interpreter/cpp_bridge.rs"]
+pub(crate) mod cpp_bridge;
+#[path = "interpreter/debugger.rs"]
+pub(self) mod debugger;
+#[path = "interpreter/eval.rs"]
+mod eval;
+#[path = "interpreter/exceptions.rs"]
+mod exceptions;
+#[path = "interpreter/exec.rs"]
+mod exec;
+#[path = "interpreter/functions.rs"]
+mod functions;
+#[path = "interpreter/msvc_errors.rs"]
+pub(self) mod msvc_errors;
+#[path = "interpreter/native_api.rs"]
+pub(self) mod native_api;
+#[path = "interpreter/ops.rs"]
+mod ops;
+#[path = "interpreter/py_interop.rs"]
+pub(self) mod py_interop;
 #[path = "interpreter/scope.rs"]
 mod scope;
 #[path = "interpreter/str_methods.rs"]
 pub(super) mod str_methods;
-#[path = "interpreter/ops.rs"]
-mod ops;
-#[path = "interpreter/exec.rs"]
-mod exec;
-#[path = "interpreter/eval.rs"]
-mod eval;
-#[path = "interpreter/functions.rs"]
-mod functions;
-#[path = "interpreter/classes.rs"]
-mod classes;
-#[path = "interpreter/exceptions.rs"]
-mod exceptions;
 #[path = "interpreter/templates.rs"]
 mod templates;
-#[path = "interpreter/py_interop.rs"]
-pub(self) mod py_interop;
-#[path = "interpreter/native_api.rs"]
-pub(self) mod native_api;
-#[path = "interpreter/cpp_bridge.rs"]
-pub(self) mod cpp_bridge;
-#[path = "interpreter/msvc_errors.rs"]
-pub(self) mod msvc_errors;
-#[path = "interpreter/async_mgr.rs"]
-pub(crate) mod async_mgr;
-#[path = "interpreter/debugger.rs"]
-pub(self) mod debugger;
 
 #[cfg(test)]
 #[path = "interpreter/tests.rs"]
@@ -415,7 +415,7 @@ pub(self) enum DictKey {
 impl DictKey {
     fn from_value(v: &Value) -> Option<Self> {
         match v {
-            Value::Int(n)  => Some(DictKey::Int(*n)),
+            Value::Int(n) => Some(DictKey::Int(*n)),
             Value::Float(f) => {
                 // 整数値の float (e.g. 1.0) は Int キーとして扱う（Python 互換）
                 if f.fract() == 0.0 && f.is_finite() {
@@ -424,9 +424,9 @@ impl DictKey {
                     None
                 }
             }
-            Value::Str(s)  => Some(DictKey::Str(s.clone())),
+            Value::Str(s) => Some(DictKey::Str(s.clone())),
             Value::Bool(b) => Some(DictKey::Bool(*b)),
-            Value::None    => Some(DictKey::None),
+            Value::None => Some(DictKey::None),
             _ => None,
         }
     }
@@ -435,7 +435,11 @@ impl DictKey {
 impl DictData {
     /// 空の型付き辞書を生成する。
     pub fn new(key_type: String, item_type: String) -> Self {
-        Self { key_type, item_type, map: IndexMap::new() }
+        Self {
+            key_type,
+            item_type,
+            map: IndexMap::new(),
+        }
     }
 
     /// 指定したキーに対応する値を返す。キーが存在しない場合は `None`。
@@ -453,12 +457,15 @@ impl DictData {
 
     /// すべてのキーを `Value` リストとして返す（挿入順）。
     pub fn all_keys(&self) -> Vec<Value> {
-        self.map.keys().map(|k| match k {
-            DictKey::Int(n)  => Value::Int(*n),
-            DictKey::Str(s)  => Value::Str(s.clone()),
-            DictKey::Bool(b) => Value::Bool(*b),
-            DictKey::None    => Value::None,
-        }).collect()
+        self.map
+            .keys()
+            .map(|k| match k {
+                DictKey::Int(n) => Value::Int(*n),
+                DictKey::Str(s) => Value::Str(s.clone()),
+                DictKey::Bool(b) => Value::Bool(*b),
+                DictKey::None => Value::None,
+            })
+            .collect()
     }
 
     /// すべての値をクローンしてリストとして返す（挿入順）。
@@ -786,7 +793,11 @@ impl ClassValue {
             })
             .collect();
 
-        let class_vars = self.class_vars.iter().map(|(k, v)| (k.clone(), v.deep_clone())).collect();
+        let class_vars = self
+            .class_vars
+            .iter()
+            .map(|(k, v)| (k.clone(), v.deep_clone()))
+            .collect();
         let static_vars = self
             .static_vars
             .iter()
@@ -840,10 +851,10 @@ impl Value {
                 let mut d = DictData::new(b.key_type.clone(), b.item_type.clone());
                 for (k, v) in b.iter() {
                     let key_val = match k {
-                        DictKey::Int(n)  => Value::Int(*n),
-                        DictKey::Str(s)  => Value::Str(s.clone()),
+                        DictKey::Int(n) => Value::Int(*n),
+                        DictKey::Str(s) => Value::Str(s.clone()),
                         DictKey::Bool(b) => Value::Bool(*b),
-                        DictKey::None    => Value::None,
+                        DictKey::None => Value::None,
                     };
                     d.set(key_val, v.deep_clone());
                 }
@@ -855,8 +866,8 @@ impl Value {
             }
             Value::Slice(s) => Value::Slice(Rc::new(SliceValue {
                 begin: s.begin.as_ref().map(|v| v.deep_clone()),
-                end:   s.end.as_ref().map(|v| v.deep_clone()),
-                step:  s.step.as_ref().map(|v| v.deep_clone()),
+                end: s.end.as_ref().map(|v| v.deep_clone()),
+                step: s.step.as_ref().map(|v| v.deep_clone()),
             })),
             Value::Instance(rc) => {
                 let b = rc.borrow();
@@ -900,12 +911,22 @@ impl Value {
             Value::Generator(rc) => {
                 let b = rc.borrow();
                 let vals = b.values.iter().map(|v| v.deep_clone()).collect();
-                Value::Generator(Rc::new(RefCell::new(GeneratorState { values: vals, index: b.index })))
+                Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                    values: vals,
+                    index: b.index,
+                })))
             }
             Value::Class(rc) => Value::Class(Rc::new(rc.deep_clone())),
             Value::Namespace(rc) => {
-                let members = rc.members.iter().map(|(k, v)| (k.clone(), v.deep_clone())).collect();
-                Value::Namespace(Rc::new(NamespaceData { name: rc.name.clone(), members }))
+                let members = rc
+                    .members
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.deep_clone()))
+                    .collect();
+                Value::Namespace(Rc::new(NamespaceData {
+                    name: rc.name.clone(),
+                    members,
+                }))
             }
             // TemplateFn / TemplateClass / TemplateGenFn contain only Clone data (no RefCell)
             Value::TemplateFn(rc) => Value::TemplateFn(rc.clone()),
@@ -964,7 +985,11 @@ pub(self) enum Var {
 impl Var {
     /// 通常の変数エントリを作成する。
     pub(self) fn new(value: Value, mutable: bool) -> Self {
-        if mutable { Var::Mutable(value) } else { Var::Immutable(value) }
+        if mutable {
+            Var::Mutable(value)
+        } else {
+            Var::Immutable(value)
+        }
     }
 
     /// クロージャ共有セルに基づく変数エントリを作成する（常に mutable）。
@@ -1064,30 +1089,57 @@ impl Interpreter {
         // 組み込み型値を事前定義: `int`, `str`, `float`, `bool`, `dict`, `function`, `slice` を型式として使えるようにする
         // `len` も `Value::Type` として登録しておく — ネイティブコードが cb_get_global("len") で取得して
         // call_value_with_args 経由で呼べるようにするため。
-        for name in ["int", "uint", "str", "float", "bool", "dict", "set", "function", "len", "slice"] {
-            global.insert(name.to_string(), Var::new(Value::Type(name.to_string()), false));
+        for name in [
+            "int", "uint", "str", "float", "bool", "dict", "set", "function", "len", "slice",
+        ] {
+            global.insert(
+                name.to_string(),
+                Var::new(Value::Type(name.to_string()), false),
+            );
         }
 
         // `pointer` は `new_type pointer: uint` 相当のラッパークラスとして事前登録する。
         global.insert(
             "pointer".to_string(),
-            Var::new(Value::Class(Self::make_primitive_wrapper_class("pointer", "uint")), false),
+            Var::new(
+                Value::Class(Self::make_primitive_wrapper_class("pointer", "uint")),
+                false,
+            ),
         );
 
         // `id` 組み込み関数: 任意のオブジェクトの同一性を表す pointer 値を返す。
-        global.insert("id".to_string(), Var::new(Value::Type("id".to_string()), false));
+        global.insert(
+            "id".to_string(),
+            Var::new(Value::Type("id".to_string()), false),
+        );
 
         // 組み込み `Error` trait を事前登録（値としてアクセス可能にする）
-        global.insert("Error".to_string(), Var::new(Value::Trait("Error".to_string()), false));
+        global.insert(
+            "Error".to_string(),
+            Var::new(Value::Trait("Error".to_string()), false),
+        );
 
         // 標準例外クラスをすべて登録する。
         // 各クラスは `__init__(mut self, message: str)` を持ち、
         // code_context / file / line / col フィールドは raise 時にインタープリタが設定する。
         let exception_names = [
-            "Exception", "ValueError", "TypeError", "NameError", "AttributeError",
-            "IndexError", "KeyError", "ZeroDivisionError", "RuntimeError",
-            "StopIteration", "NotImplementedError", "OverflowError", "IOError",
-            "OSError", "AssertionError", "ArithmeticError", "AccessError",
+            "Exception",
+            "ValueError",
+            "TypeError",
+            "NameError",
+            "AttributeError",
+            "IndexError",
+            "KeyError",
+            "ZeroDivisionError",
+            "RuntimeError",
+            "StopIteration",
+            "NotImplementedError",
+            "OverflowError",
+            "IOError",
+            "OSError",
+            "AssertionError",
+            "ArithmeticError",
+            "AccessError",
         ];
         for class_name in exception_names {
             let cls = Self::make_error_class(class_name);
@@ -1099,13 +1151,19 @@ impl Interpreter {
         for (cls_name, prim_type) in [("path", "str"), ("Size", "int")] {
             global.insert(
                 cls_name.to_string(),
-                Var::new(Value::Class(Self::make_primitive_wrapper_class(cls_name, prim_type)), false),
+                Var::new(
+                    Value::Class(Self::make_primitive_wrapper_class(cls_name, prim_type)),
+                    false,
+                ),
             );
         }
 
         // Index クラスを先に生成し、begin / last 定数のインスタンス生成に再利用する
         let index_cls = Self::make_primitive_wrapper_class("Index", "int");
-        global.insert("Index".to_string(), Var::new(Value::Class(index_cls.clone()), false));
+        global.insert(
+            "Index".to_string(),
+            Var::new(Value::Class(index_cls.clone()), false),
+        );
 
         // 組み込み定数: begin = Index(0)、last = Index(-1)
         for (const_name, int_val) in [("begin", 0i64), ("last", -1i64)] {
@@ -1121,15 +1179,34 @@ impl Interpreter {
 
         // ファイル I/O 組み込み列挙型を登録する
         for (enum_name, variants) in [
-            ("FileOpenMode", vec![("write", 0i64), ("rewrite", 1), ("read", 2), ("make_and_write", 3)]),
-            ("StartPoint",   vec![("top", 0),     ("end", 1)]),
+            (
+                "FileOpenMode",
+                vec![
+                    ("write", 0i64),
+                    ("rewrite", 1),
+                    ("read", 2),
+                    ("make_and_write", 3),
+                ],
+            ),
+            ("StartPoint", vec![("top", 0), ("end", 1)]),
             ("ByteRecognizingMode", vec![("byte", 0), ("text", 1)]),
-            ("Encoding",     vec![("ASCII", 0),   ("UTF_8", 1), ("UTF_8_with_BOM", 2), ("shift_JIS", 3)]),
+            (
+                "Encoding",
+                vec![
+                    ("ASCII", 0),
+                    ("UTF_8", 1),
+                    ("UTF_8_with_BOM", 2),
+                    ("shift_JIS", 3),
+                ],
+            ),
         ] {
             let (item_name, item_cls, enum_cls) =
                 Self::make_builtin_enum_class(enum_name, &variants);
             global.insert(item_name, Var::new(Value::Class(item_cls), false));
-            global.insert(enum_name.to_string(), Var::new(Value::Class(enum_cls), false));
+            global.insert(
+                enum_name.to_string(),
+                Var::new(Value::Class(enum_cls), false),
+            );
         }
 
         // AsyncManager: built-in constructor callable as AsyncManager(num_thread=N)
@@ -1141,15 +1218,27 @@ impl Interpreter {
         // Async namespace: Async.Waiting / Async.Running / Async.Done
         {
             let mut members = HashMap::new();
-            members.insert("Waiting".to_string(), Value::AsyncStatusVal(async_mgr::AsyncStatus::Waiting));
-            members.insert("Running".to_string(), Value::AsyncStatusVal(async_mgr::AsyncStatus::Running));
-            members.insert("Done".to_string(),    Value::AsyncStatusVal(async_mgr::AsyncStatus::Done));
+            members.insert(
+                "Waiting".to_string(),
+                Value::AsyncStatusVal(async_mgr::AsyncStatus::Waiting),
+            );
+            members.insert(
+                "Running".to_string(),
+                Value::AsyncStatusVal(async_mgr::AsyncStatus::Running),
+            );
+            members.insert(
+                "Done".to_string(),
+                Value::AsyncStatusVal(async_mgr::AsyncStatus::Done),
+            );
             global.insert(
                 "Async".to_string(),
-                Var::new(Value::Namespace(Rc::new(NamespaceData {
-                    name: "Async".to_string(),
-                    members,
-                })), false),
+                Var::new(
+                    Value::Namespace(Rc::new(NamespaceData {
+                        name: "Async".to_string(),
+                        members,
+                    })),
+                    false,
+                ),
             );
         }
 
@@ -1189,8 +1278,18 @@ impl Interpreter {
         let init_fn = Rc::new(FnValue {
             name: "__init__".to_string(),
             params: vec![
-                Param { name: "self".to_string(), mutable: true, type_ann: None, default: None },
-                Param { name: "value".to_string(), mutable: false, type_ann: Some(prim_type.to_string()), default: None },
+                Param {
+                    name: "self".to_string(),
+                    mutable: true,
+                    type_ann: None,
+                    default: None,
+                },
+                Param {
+                    name: "value".to_string(),
+                    mutable: false,
+                    type_ann: Some(prim_type.to_string()),
+                    default: None,
+                },
             ],
             body: init_body,
             is_python: false,
@@ -1301,7 +1400,10 @@ impl Interpreter {
         // frames[0] is innermost (raise site); display outermost first.
         for frame in raised.frames.iter().rev() {
             if frame.line == 0 {
-                out.push_str(&format!("  File \"{}\", in {}\n", frame.file, frame.fn_name));
+                out.push_str(&format!(
+                    "  File \"{}\", in {}\n",
+                    frame.file, frame.fn_name
+                ));
             } else {
                 out.push_str(&format!(
                     "  File \"{}\", line {}, col {}, in {}\n",
@@ -1320,7 +1422,9 @@ impl Interpreter {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
                 let class_name = &inst.class.name;
-                let message = inst.fields.get("message")
+                let message = inst
+                    .fields
+                    .get("message")
                     .map(|(v, _)| match v {
                         Value::Str(s) => s.clone(),
                         Value::Int(n) => n.to_string(),
@@ -1344,16 +1448,23 @@ impl Interpreter {
     /// the value is evaluated and returned as a display string (skipping `None`).
     /// All other statements are executed normally via `exec`.
     /// Errors are returned as formatted strings instead of terminating the process.
-    pub fn exec_repl_stmt(&mut self, stmt: &crate::ast::Stmt, is_last: bool) -> Result<Option<String>, String> {
+    pub fn exec_repl_stmt(
+        &mut self,
+        stmt: &crate::ast::Stmt,
+        is_last: bool,
+    ) -> Result<Option<String>, String> {
         if is_last {
             if let crate::ast::Stmt::Expr(expr) = stmt {
                 return match self.eval(expr) {
-                    Ok(val) => Ok(if matches!(val, Value::None) { None } else { Some(self.display(&val)) }),
-                    Err(e) if e == RAISE_SENTINEL => Err(
-                        self.take_current_exception()
-                            .map(|r| Self::format_error_report(&r))
-                            .unwrap_or_else(|| "UnhandledException".to_string())
-                    ),
+                    Ok(val) => Ok(if matches!(val, Value::None) {
+                        None
+                    } else {
+                        Some(self.display(&val))
+                    }),
+                    Err(e) if e == RAISE_SENTINEL => Err(self
+                        .take_current_exception()
+                        .map(|r| Self::format_error_report(&r))
+                        .unwrap_or_else(|| "UnhandledException".to_string())),
                     Err(e) => Err(e),
                 };
             }
@@ -1361,11 +1472,10 @@ impl Interpreter {
         match self.exec(stmt) {
             Ok(ExecResult::Raise(raised)) => Err(Self::format_error_report(&raised)),
             Ok(_) => Ok(None),
-            Err(e) if e == RAISE_SENTINEL => Err(
-                self.take_current_exception()
-                    .map(|r| Self::format_error_report(&r))
-                    .unwrap_or_else(|| "UnhandledException".to_string())
-            ),
+            Err(e) if e == RAISE_SENTINEL => Err(self
+                .take_current_exception()
+                .map(|r| Self::format_error_report(&r))
+                .unwrap_or_else(|| "UnhandledException".to_string())),
             Err(e) => Err(e),
         }
     }

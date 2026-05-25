@@ -18,7 +18,9 @@ use std::collections::HashSet;
 pub fn extract_bad_fn_names(err: &str) -> HashSet<String> {
     let mut names = HashSet::new();
     for line in err.lines() {
-        if !is_msvc_diagnostic(line) { continue; }
+        if !is_msvc_diagnostic(line) {
+            continue;
+        }
         extract_from_line(line, &mut names);
     }
     names
@@ -81,6 +83,8 @@ fn extract_from_line(line: &str, names: &mut HashSet<String>) {
 
 fn is_valid_c_ident(s: &str) -> bool {
     !s.is_empty()
-        && s.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_')
+        && s.chars()
+            .next()
+            .map_or(false, |c| c.is_alphabetic() || c == '_')
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }

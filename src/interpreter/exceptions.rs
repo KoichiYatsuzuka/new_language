@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use crate::ast::{Param, Stmt};
 
-use super::{Interpreter, Value, ClassValue, FnValue, InstanceData, RaisedError};
+use super::{ClassValue, FnValue, InstanceData, Interpreter, RaisedError, Value};
 
 impl Interpreter {
     /// 標準例外クラス用の `ClassValue` を構築して返す。
@@ -28,21 +28,29 @@ impl Interpreter {
         use crate::token::Span;
 
         // __init__ 本体: `self.message = message` を表す AST ノード
-        let init_body = vec![
-            Stmt::AttrAssign {
-                target: E::Attr {
-                    object: Box::new(E::Ident("self".to_string())),
-                    attr: "message".to_string(),
-                    span: Span::unknown(),
-                },
-                value: E::Ident("message".to_string()),
+        let init_body = vec![Stmt::AttrAssign {
+            target: E::Attr {
+                object: Box::new(E::Ident("self".to_string())),
+                attr: "message".to_string(),
+                span: Span::unknown(),
             },
-        ];
+            value: E::Ident("message".to_string()),
+        }];
         let init_fn = Rc::new(FnValue {
             name: "__init__".to_string(),
             params: vec![
-                Param { name: "self".to_string(),    mutable: true,  type_ann: None, default: None },
-                Param { name: "message".to_string(), mutable: false, type_ann: Some("str".to_string()), default: None },
+                Param {
+                    name: "self".to_string(),
+                    mutable: true,
+                    type_ann: None,
+                    default: None,
+                },
+                Param {
+                    name: "message".to_string(),
+                    mutable: false,
+                    type_ann: Some("str".to_string()),
+                    default: None,
+                },
             ],
             body: init_body,
             is_python: false,
@@ -54,18 +62,18 @@ impl Interpreter {
         // raise 時にインタープリタが自動上書きするフィールドのデフォルト値（空文字・0で初期化）
         let field_defaults = vec![
             ("code_context".to_string(), Value::Str("".to_string()), true),
-            ("file".to_string(),         Value::Str("".to_string()), true),
-            ("line".to_string(),         Value::Int(0),              true),
-            ("col".to_string(),          Value::Int(0),              true),
+            ("file".to_string(), Value::Str("".to_string()), true),
+            ("line".to_string(), Value::Int(0), true),
+            ("col".to_string(), Value::Int(0), true),
         ];
 
         // フィールドの可変フラグ: `message` は `let`（__init__ 後は不変）、他は `mut`（可変）
         let mut field_mutability: HashMap<String, bool> = HashMap::new();
-        field_mutability.insert("message".to_string(),      false); // let — __init__ 後は不変
+        field_mutability.insert("message".to_string(), false); // let — __init__ 後は不変
         field_mutability.insert("code_context".to_string(), true);
-        field_mutability.insert("file".to_string(),         true);
-        field_mutability.insert("line".to_string(),         true);
-        field_mutability.insert("col".to_string(),          true);
+        field_mutability.insert("file".to_string(), true);
+        field_mutability.insert("line".to_string(), true);
+        field_mutability.insert("col".to_string(), true);
 
         Rc::new(ClassValue {
             name: class_name.to_string(),
@@ -96,7 +104,9 @@ impl Interpreter {
             Some(l) => l,
             None => return String::new(),
         };
-        if line == 0 || lines.is_empty() { return String::new(); }
+        if line == 0 || lines.is_empty() {
+            return String::new();
+        }
         let half = n / 2;
         // 0始まりインデックスに変換してパディング付きで範囲を決定する
         let start = line.saturating_sub(half + 1);
@@ -110,11 +120,23 @@ impl Interpreter {
     /// これにより `try/except` がインタープリタ内部エラーを捕捉できるようになる。
     pub(super) fn make_internal_raised_error(&mut self, msg: &str) -> Option<RaisedError> {
         const CATCHABLE: &[&str] = &[
-            "ZeroDivisionError", "NotImplementedError", "AttributeError",
-            "ArithmeticError", "AssertionError", "OverflowError", "AccessError",
-            "RuntimeError", "ValueError", "TypeError", "NameError",
-            "IndexError", "KeyError", "IOError", "OSError",
-            "StopIteration", "Exception",
+            "ZeroDivisionError",
+            "NotImplementedError",
+            "AttributeError",
+            "ArithmeticError",
+            "AssertionError",
+            "OverflowError",
+            "AccessError",
+            "RuntimeError",
+            "ValueError",
+            "TypeError",
+            "NameError",
+            "IndexError",
+            "KeyError",
+            "IOError",
+            "OSError",
+            "StopIteration",
+            "Exception",
         ];
 
         let class_name = CATCHABLE.iter().find(|&&cn| {
@@ -135,15 +157,21 @@ impl Interpreter {
         };
 
         let mut fields = HashMap::new();
-        fields.insert("message".to_string(),             (Value::Str(message),         false));
-        fields.insert("code_context".to_string(),        (Value::Str(String::new()),   true));
-        fields.insert("file".to_string(),                (Value::Str(String::new()),   true));
-        fields.insert("line".to_string(),                (Value::Int(0),               true));
-        fields.insert("col".to_string(),                 (Value::Int(0),               true));
-        fields.insert("Error::code_context".to_string(), (Value::Str(String::new()),   true));
-        fields.insert("Error::file".to_string(),         (Value::Str(String::new()),   true));
-        fields.insert("Error::line".to_string(),         (Value::Int(0),               true));
-        fields.insert("Error::col".to_string(),          (Value::Int(0),               true));
+        fields.insert("message".to_string(), (Value::Str(message), false));
+        fields.insert(
+            "code_context".to_string(),
+            (Value::Str(String::new()), true),
+        );
+        fields.insert("file".to_string(), (Value::Str(String::new()), true));
+        fields.insert("line".to_string(), (Value::Int(0), true));
+        fields.insert("col".to_string(), (Value::Int(0), true));
+        fields.insert(
+            "Error::code_context".to_string(),
+            (Value::Str(String::new()), true),
+        );
+        fields.insert("Error::file".to_string(), (Value::Str(String::new()), true));
+        fields.insert("Error::line".to_string(), (Value::Int(0), true));
+        fields.insert("Error::col".to_string(), (Value::Int(0), true));
 
         let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
             class: cls,
@@ -151,7 +179,10 @@ impl Interpreter {
             immutable: false,
         })));
 
-        Some(RaisedError { exception: inst, frames: vec![] })
+        Some(RaisedError {
+            exception: inst,
+            frames: vec![],
+        })
     }
 
     /// 例外インスタンスのクラスが `except` 節の型名にマッチするか判定する。

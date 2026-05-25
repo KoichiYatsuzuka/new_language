@@ -2,7 +2,6 @@
 ///
 /// `Lexer` の実装を機能単位に分割した補助ファイル。
 /// すべてのメソッドは `scan.rs` で定義された `Lexer` に対する `impl` ブロックとして提供する。
-
 use crate::token::{FStrPart, Token};
 
 use super::scan::Lexer;
@@ -23,7 +22,9 @@ impl Lexer {
     pub(super) fn lex_string_inner(&mut self, raw: bool) -> String {
         let quote = self.bump().unwrap();
         let triple = self.ch() == Some(quote) && self.ch1() == Some(quote);
-        if triple { self.pos += 2; }
+        if triple {
+            self.pos += 2;
+        }
         let mut s = String::new();
         loop {
             match self.ch() {
@@ -31,22 +32,28 @@ impl Lexer {
                 Some('\\') if !raw => {
                     self.pos += 1;
                     match self.bump() {
-                        Some('n')  => s.push('\n'),
-                        Some('t')  => s.push('\t'),
-                        Some('r')  => s.push('\r'),
+                        Some('n') => s.push('\n'),
+                        Some('t') => s.push('\t'),
+                        Some('r') => s.push('\r'),
                         Some('\\') => s.push('\\'),
                         Some('\'') => s.push('\''),
-                        Some('"')  => s.push('"'),
-                        Some('0')  => s.push('\0'),
-                        Some(ch)   => { s.push('\\'); s.push(ch); }
-                        None       => break,
+                        Some('"') => s.push('"'),
+                        Some('0') => s.push('\0'),
+                        Some(ch) => {
+                            s.push('\\');
+                            s.push(ch);
+                        }
+                        None => break,
                     }
                 }
                 Some('\\') => {
                     // raw モード: バックスラッシュをそのまま保持する
                     s.push('\\');
                     self.pos += 1;
-                    if let Some(ch) = self.ch() { s.push(ch); self.pos += 1; }
+                    if let Some(ch) = self.ch() {
+                        s.push(ch);
+                        self.pos += 1;
+                    }
                 }
                 Some(ch) if ch == quote => {
                     if triple {
@@ -62,7 +69,10 @@ impl Lexer {
                         break;
                     }
                 }
-                Some(ch) => { s.push(ch); self.pos += 1; }
+                Some(ch) => {
+                    s.push(ch);
+                    self.pos += 1;
+                }
             }
         }
         s
@@ -86,7 +96,9 @@ impl Lexer {
     pub(super) fn lex_fstring(&mut self, raw: bool) -> Token {
         let quote = self.bump().unwrap();
         let triple = self.ch() == Some(quote) && self.ch1() == Some(quote);
-        if triple { self.pos += 2; }
+        if triple {
+            self.pos += 2;
+        }
         let mut parts: Vec<FStrPart> = Vec::new();
         let mut lit = String::new();
         loop {
@@ -95,23 +107,29 @@ impl Lexer {
                 Some('\\') if !raw => {
                     self.pos += 1;
                     match self.bump() {
-                        Some('n')  => lit.push('\n'),
-                        Some('t')  => lit.push('\t'),
-                        Some('r')  => lit.push('\r'),
+                        Some('n') => lit.push('\n'),
+                        Some('t') => lit.push('\t'),
+                        Some('r') => lit.push('\r'),
                         Some('\\') => lit.push('\\'),
                         Some('\'') => lit.push('\''),
-                        Some('"')  => lit.push('"'),
-                        Some('0')  => lit.push('\0'),
-                        Some('{')  => lit.push('{'),
-                        Some('}')  => lit.push('}'),
-                        Some(ch)   => { lit.push('\\'); lit.push(ch); }
-                        None       => break,
+                        Some('"') => lit.push('"'),
+                        Some('0') => lit.push('\0'),
+                        Some('{') => lit.push('{'),
+                        Some('}') => lit.push('}'),
+                        Some(ch) => {
+                            lit.push('\\');
+                            lit.push(ch);
+                        }
+                        None => break,
                     }
                 }
                 Some('\\') => {
                     lit.push('\\');
                     self.pos += 1;
-                    if let Some(ch) = self.ch() { lit.push(ch); self.pos += 1; }
+                    if let Some(ch) = self.ch() {
+                        lit.push(ch);
+                        self.pos += 1;
+                    }
                 }
                 Some('{') if self.ch1() == Some('{') => {
                     lit.push('{');
@@ -126,14 +144,24 @@ impl Lexer {
                     let mut depth = 1usize;
                     while let Some(ch) = self.ch() {
                         match ch {
-                            '{' => { depth += 1; expr_src.push(ch); self.pos += 1; }
-                            '}' => {
-                                depth -= 1;
-                                if depth == 0 { self.pos += 1; break; }
+                            '{' => {
+                                depth += 1;
                                 expr_src.push(ch);
                                 self.pos += 1;
                             }
-                            _ => { expr_src.push(ch); self.pos += 1; }
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    self.pos += 1;
+                                    break;
+                                }
+                                expr_src.push(ch);
+                                self.pos += 1;
+                            }
+                            _ => {
+                                expr_src.push(ch);
+                                self.pos += 1;
+                            }
                         }
                     }
                     parts.push(FStrPart::Expr(expr_src));
@@ -156,10 +184,15 @@ impl Lexer {
                         break;
                     }
                 }
-                Some(ch) => { lit.push(ch); self.pos += 1; }
+                Some(ch) => {
+                    lit.push(ch);
+                    self.pos += 1;
+                }
             }
         }
-        if !lit.is_empty() { parts.push(FStrPart::Lit(lit)); }
+        if !lit.is_empty() {
+            parts.push(FStrPart::Lit(lit));
+        }
         Token::FStr(parts)
     }
 
@@ -179,14 +212,17 @@ impl Lexer {
         if self.ch() == Some('0') {
             match self.ch1() {
                 // 16 進数: `0x` / `0X`
-                Some('x') | Some('X') =>
-                    return self.lex_radix_int(start, 16, |ch| ch.is_ascii_hexdigit()),
+                Some('x') | Some('X') => {
+                    return self.lex_radix_int(start, 16, |ch| ch.is_ascii_hexdigit())
+                }
                 // 8 進数: `0o` / `0O`
-                Some('o') | Some('O') =>
-                    return self.lex_radix_int(start, 8, |ch| matches!(ch, '0'..='7')),
+                Some('o') | Some('O') => {
+                    return self.lex_radix_int(start, 8, |ch| matches!(ch, '0'..='7'))
+                }
                 // 2 進数: `0b` / `0B`
-                Some('b') | Some('B') =>
-                    return self.lex_radix_int(start, 2, |ch| matches!(ch, '0' | '1')),
+                Some('b') | Some('B') => {
+                    return self.lex_radix_int(start, 2, |ch| matches!(ch, '0' | '1'))
+                }
                 _ => {}
             }
         }
@@ -259,7 +295,7 @@ impl Lexer {
         if matches!(self.ch(), Some('e') | Some('E')) {
             is_float = true;
             self.pos += 1; // `e` / `E` を消費する
-            // 符号（`+` / `-`）が続く場合は消費する
+                           // 符号（`+` / `-`）が続く場合は消費する
             if matches!(self.ch(), Some('+') | Some('-')) {
                 self.pos += 1;
             }
