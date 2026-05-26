@@ -1,5 +1,8 @@
 {
   "cpp": {
-    "precompile_macros": ["WINDOWS_DESKTOP_OS"]
+    "precompile_macros": ["WINDOWS_DESKTOP_OS", "_WIN64"],
+    "system_headers": [
+      "C:/Program Files (x86)/Windows Kits/10/Include/10.0.18362.0/um/Windows.h"
+    ]
   }
 }

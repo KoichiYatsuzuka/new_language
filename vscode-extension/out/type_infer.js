@@ -255,6 +255,43 @@ class ExprInferrer {
         }
         return t;
     }
+    parseCastType() {
+        if (this.cur().kind !== 'IDENT')
+            return 'unknown';
+        let typeName = this.eat().value;
+        if (this.cur().kind === 'LBRACKET') {
+            this.eat();
+            const parts = [];
+            let depth = 1;
+            while (depth > 0 && this.cur().kind !== 'EOF') {
+                const tok = this.eat();
+                if (tok.kind === 'LBRACKET') {
+                    depth++;
+                    parts.push('[');
+                }
+                else if (tok.kind === 'RBRACKET') {
+                    depth--;
+                    if (depth > 0)
+                        parts.push(']');
+                }
+                else {
+                    parts.push(tok.value);
+                }
+            }
+            typeName = `${typeName}[${parts.join('')}]`;
+        }
+        return typeName;
+    }
+    parseCast() {
+        let t = this.parsePower();
+        while (this.cur().kind === 'OTHER' && this.cur().value === '=' &&
+            this.tokens[this.pos + 1]?.kind === 'GT') {
+            this.eat(); // eat '='
+            this.eat(); // eat '>'
+            t = this.parseCastType();
+        }
+        return t;
+    }
     parseUnary() {
         if (this.cur().kind === 'MINUS' || this.cur().kind === 'PLUS') {
             this.eat();
@@ -265,7 +302,7 @@ class ExprInferrer {
             this.parseUnary();
             return 'int';
         }
-        return this.parsePower();
+        return this.parseCast();
     }
     parsePower() {
         const base = this.parsePrimary();
@@ -436,11 +473,15 @@ function inferExprType(src, env, funcEnv = new Map(), importAliases = new Set(),
         const callMatch = trimmed.match(/^[A-Za-z_]\w*\.([A-Za-z_]\w*)\s*\(/);
         if (callMatch) {
             const memberName = callMatch[1];
+            const pyTypes = importFuncTypes.get(alias);
+            if (pyTypes) {
+                const retType = pyTypes.get(memberName);
+                if (retType !== undefined)
+                    return retType;
+            }
+            // Uppercase name not found in known functions → treat as class constructor
             if (/^[A-Z]/.test(memberName))
                 return memberName;
-            const pyTypes = importFuncTypes.get(alias);
-            if (pyTypes)
-                return pyTypes.get(memberName) ?? 'unknown';
         }
         return 'unknown';
     }
@@ -506,11 +547,271 @@ const FREEZE_RE = /^\s*freeze\s*\(\s*([A-Za-z_]\w*)\s*\)/;
 const ACCESS_SECTION_RE = /^(\s*)(public|private|protected)\s*:\s*$/;
 // Tuple destructuring: let/mut a, b = expr
 const TUPLE_DECL_RE = /^(\s*)(let|mut)\s+((?:[A-Za-z_]\w*\s*,\s*)+[A-Za-z_]\w*)\s*=(?!=)\s*(.*)/;
-// import[py] / import[py-int]  — captures: 1=keyword, 2=module, 3=alias
-const IMPORT_RE = /^\s*(import\[(?:py(?:-int)?)\])\s+([A-Za-z_]\w*)\s+as\s+([A-Za-z_]\w*)/;
+// All import variants — captures: 1=keyword, 2=module path, 3=stub name (opt), 4=alias
+// Handles: import[py], import[py-int], import[tl], import[tlc], import[cpp-lib],
+//          import[cpp-dll], and bare `import` (auto mode)
+const IMPORT_RE = /^\s*(import(?:\[(?:py(?:-int)?|tlc?|cpp-(?:lib|dll))\])?)\s+([\w.]+)(?:\s+with\s+(\w+))?\s+as\s+([A-Za-z_]\w*)/;
 // Typeguard — check is-not before is to avoid accidental match
 const TYPEGUARD_IS_NOT_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+not\s+([A-Za-z_]\w*)\s*:/;
 const TYPEGUARD_IS_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+([A-Za-z_]\w*)\s*:/;
+// ===== C++ / TL native module support =====
+function importKindOf(keyword) {
+    if (keyword.includes('cpp'))
+        return 'cpp';
+    if (keyword === 'import' || keyword.startsWith('import[tl'))
+        return 'tl';
+    return 'py';
+}
+/** Map a C/C++ type string to the corresponding tl primitive type. */
+function cTypeToTl(cType) {
+    const t = cType.replace(/\bconst\b/g, '').trim();
+    if (!t || t === 'void')
+        return 'None';
+    if (/\bchar\b/.test(t) && /[*\[]/.test(t))
+        return 'str';
+    if (/\b(?:double|float)\b/.test(t))
+        return 'float';
+    if (/\bbool\b/.test(t))
+        return 'bool';
+    if (/[*\[]/.test(t))
+        return 'int'; // pointer/array → opaque handle
+    return 'int'; // int, long, DWORD, HWND, size_t, etc.
+}
+/** Convert a single C parameter declaration to a tl-style `name: type` string. */
+function parseCParam(param, idx) {
+    const isPointer = param.includes('*');
+    const clean = param.replace(/\bconst\b/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim();
+    const parts = clean.split(/\s+/);
+    const rawName = parts.length > 1 ? parts[parts.length - 1] : '';
+    const finalName = /^[A-Za-z_]\w*$/.test(rawName) ? rawName : `p${idx}`;
+    const baseType = (parts.length > 1 ? parts.slice(0, -1).join(' ') : parts[0]).trim();
+    const tlType = isPointer
+        ? (/\bchar\b/.test(baseType) ? 'str' : 'int')
+        : cTypeToTl(baseType);
+    return `${finalName}: ${tlType}`;
+}
+/** Parse a flat C header file (extern "C" { ... }) and extract function signatures. */
+function parseCHeader(content, dir = '', _depth = 0) {
+    const funcs = new Map();
+    const sigs = new Map();
+    // Strip line comments and block comments
+    const src = content.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    // Match: RetType FuncName ( params ) ;
+    const re = /\b([A-Za-z_][\w\s]*?(?:\s*\*)?)\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*;/g;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+        const retCType = m[1].trim();
+        const name = m[2].trim();
+        const paramsRaw = m[3].trim();
+        if (/^(?:typedef|struct|class|union|enum)\b/.test(retCType))
+            continue;
+        const retType = cTypeToTl(retCType);
+        funcs.set(name, retType);
+        const tlParams = !paramsRaw || paramsRaw === 'void' ? '' :
+            paramsRaw.split(',').map((p, i) => parseCParam(p.trim(), i)).join(', ');
+        sigs.set(name, `fn ${name}(${tlParams}) -> ${retType}`);
+    }
+    const classes = parseCppClasses(src);
+    // Follow #include "..." directives up to 2 levels deep
+    if (dir && _depth < 2) {
+        const includeRe = /^#include\s+"([^"]+)"/gm;
+        let inc;
+        while ((inc = includeRe.exec(content)) !== null) {
+            const incPath = path.join(dir, inc[1]);
+            if (fs.existsSync(incPath)) {
+                try {
+                    const sub = parseCHeader(fs.readFileSync(incPath, 'utf8'), path.dirname(incPath), _depth + 1);
+                    for (const [k, v] of sub.funcs)
+                        if (!funcs.has(k))
+                            funcs.set(k, v);
+                    for (const [k, v] of sub.sigs)
+                        if (!sigs.has(k))
+                            sigs.set(k, v);
+                    for (const [k, v] of sub.classes)
+                        if (!classes.has(k))
+                            classes.set(k, v);
+                }
+                catch { /* ignore unreadable sub-headers */ }
+            }
+        }
+    }
+    return { funcs, sigs, classes };
+}
+/**
+ * Parse C++ class/struct definitions from a pre-stripped header source and
+ * extract public field names with their tl-mapped types.
+ *
+ * Handles:
+ *   class  Foo { public: int x; };          (class – private by default)
+ *   struct Bar { float x, y; };             (struct – public by default)
+ *   typedef struct { int r; } Color;        (typedef struct)
+ */
+function parseCppClasses(src) {
+    const classes = new Map();
+    const classStack = [];
+    let depth = 0;
+    // When we see `class Foo` or `struct Foo` without a `{` yet, keep the name here
+    let pendingName;
+    let pendingIsStruct = false;
+    for (const rawLine of src.split('\n')) {
+        const line = rawLine.trim();
+        const prevDepth = depth;
+        // Count brace depth changes on this line
+        for (const ch of rawLine) {
+            if (ch === '{')
+                depth++;
+            else if (ch === '}')
+                depth--;
+        }
+        // If a class name was pending and we just entered a new brace level, activate it
+        if (pendingName !== undefined && depth > prevDepth) {
+            classStack.push({
+                name: pendingName, openDepth: depth,
+                isPublic: pendingIsStruct, fields: new Map(), fieldSigs: [], isTyepdef: false,
+            });
+            pendingName = undefined;
+        }
+        // Pop classes whose body has closed
+        while (classStack.length > 0 && depth < classStack[classStack.length - 1].openDepth) {
+            const cls = classStack.pop();
+            // For typedef struct, look for trailing name on `} Name;` line
+            if (cls.isTyepdef) {
+                const tdName = line.match(/\}\s*([A-Za-z_]\w*)\s*;/)?.[1];
+                if (tdName)
+                    cls.name = tdName;
+            }
+            if (cls.name && cls.fields.size > 0) {
+                classes.set(cls.name, { fields: cls.fields, fieldSigs: cls.fieldSigs });
+            }
+        }
+        if (!line || line.startsWith('#'))
+            continue;
+        // typedef struct { ...
+        const typedefM = line.match(/^typedef\s+(?:class|struct)\s*(?:[A-Za-z_]\w*)?\s*\{/);
+        if (typedefM && depth > prevDepth) {
+            classStack.push({
+                name: '', openDepth: depth, isPublic: true,
+                fields: new Map(), fieldSigs: [], isTyepdef: true,
+            });
+            continue;
+        }
+        // class/struct Foo [: base] { or  class/struct Foo [: base]
+        const classRe = /\b(class|struct)\s+([A-Za-z_]\w*)\s*(?::[^{]*)?\{?/;
+        const cm = line.match(classRe);
+        if (cm && !/^(extern|typedef)/.test(line)) {
+            const isStruct = cm[1] === 'struct';
+            const name = cm[2];
+            if (line.includes('{') && depth > prevDepth) {
+                classStack.push({
+                    name, openDepth: depth, isPublic: isStruct,
+                    fields: new Map(), fieldSigs: [], isTyepdef: false,
+                });
+            }
+            else if (!line.includes('{')) {
+                pendingName = name;
+                pendingIsStruct = isStruct;
+            }
+            continue;
+        }
+        // Process fields when at the direct body depth of the top class on the stack
+        if (classStack.length === 0)
+            continue;
+        const ctx = classStack[classStack.length - 1];
+        if (depth !== ctx.openDepth)
+            continue; // inside a nested block
+        // Access modifier
+        const accessM = line.match(/^(public|private|protected)\s*:/);
+        if (accessM) {
+            ctx.isPublic = accessM[1] === 'public';
+            continue;
+        }
+        if (!ctx.isPublic)
+            continue;
+        // Skip methods, constructors, destructors, using, typedef, etc.
+        if (line.includes('('))
+            continue;
+        if (/^(typedef|using|static|virtual|explicit|inline|friend|extern|template)/.test(line))
+            continue;
+        if (line.startsWith('~') || line.startsWith(ctx.name + ' ') || line === ctx.name)
+            continue;
+        // Field declaration: [const] [unsigned] [long] TYPE [*] name1[, name2] [= val] ;
+        const fieldRe = /^(?:(?:const|unsigned|long|short|signed)\s+)*([A-Za-z_]\w*(?:\s*\*+)?)\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*(?:=\s*[^,;]*)?\s*;/;
+        const fm = line.match(fieldRe);
+        if (!fm)
+            continue;
+        const rawCType = fm[1].trim();
+        const tlType = cTypeToTl(rawCType);
+        for (const nameRaw of fm[2].split(',')) {
+            const n = nameRaw.trim();
+            if (/^[A-Za-z_]\w*$/.test(n)) {
+                ctx.fields.set(n, tlType);
+                ctx.fieldSigs.push(`${n}: ${tlType}`);
+            }
+        }
+    }
+    // Flush any unclosed classes (malformed header)
+    for (const cls of classStack) {
+        if (cls.name && cls.fields.size > 0) {
+            classes.set(cls.name, { fields: cls.fields, fieldSigs: cls.fieldSigs });
+        }
+    }
+    return classes;
+}
+/** Parse a .tls stub file and extract function signatures. */
+function parseTlStub(content) {
+    const funcs = new Map();
+    const sigs = new Map();
+    for (const line of content.split('\n')) {
+        const m = line.match(FUNC_DEF_RE);
+        if (!m)
+            continue;
+        const [, , kw, name, params, retType] = m;
+        const ret = retType?.trim() ?? 'unknown';
+        funcs.set(name, ret);
+        sigs.set(name, `${kw} ${name}(${params.trim()}) -> ${ret}`);
+    }
+    return { funcs, sigs, classes: new Map() };
+}
+/**
+ * Load function signatures for one import statement.
+ * - cpp-lib / cpp-dll: reads the `with stubname.h` header file; if no stub
+ *   name is given, falls back to `<module/path>.h` next to the module source.
+ * - tl / tlc / auto:   reads the adjacent `.tls` stub file
+ */
+function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
+    const empty = { funcs: new Map(), sigs: new Map(), classes: new Map() };
+    if (importKindOf(importKind) === 'cpp') {
+        // Prefer explicit stub name; fall back to auto-detecting <module-path>.h
+        const candidates = [];
+        if (stubName) {
+            candidates.push(path.join(docDir, stubName + '.h'));
+        }
+        // Auto-detect: examples/test_modules/point.h for "test_modules.point"
+        const parts = modulePath.split('.');
+        candidates.push(path.join(docDir, ...parts) + '.h');
+        // Also try just the last component in docDir
+        candidates.push(path.join(docDir, parts[parts.length - 1] + '.h'));
+        for (const hPath of candidates) {
+            if (fs.existsSync(hPath)) {
+                try {
+                    return parseCHeader(fs.readFileSync(hPath, 'utf8'), path.dirname(hPath));
+                }
+                catch { /* ignore */ }
+            }
+        }
+        return empty;
+    }
+    // tl / tlc / auto: look for .tls stub file adjacent to the module
+    const filePath = path.join(docDir, ...modulePath.split('.'));
+    const tlsPath = filePath + '.tls';
+    if (fs.existsSync(tlsPath)) {
+        try {
+            return parseTlStub(fs.readFileSync(tlsPath, 'utf8'));
+        }
+        catch { /* ignore */ }
+    }
+    return empty;
+}
 // ===== Utilities =====
 // Split comma-separated items respecting nested brackets
 function splitComma(s) {
@@ -546,6 +847,10 @@ function computeIsNotNarrowedType(declaredType, removedType) {
         }
     }
     return undefined;
+}
+// Resolve 'Self' to the enclosing class name, if known
+function resolveSelf(type, enclosingClass) {
+    return type === 'Self' && enclosingClass ? enclosingClass : type;
 }
 // Extract per-element types from tuple[T1, T2, ...]; falls back to 'unknown' per slot
 function extractTupleElemTypes(tupleType, count) {
@@ -673,8 +978,20 @@ function collectConstructorTypes(document) {
 }
 function collectFuncDefs(document) {
     const defs = [];
+    const classStack = [];
     for (let i = 0; i < document.lineCount; i++) {
         const stripped = stripComment(document.lineAt(i).text);
+        if (!stripped.trim())
+            continue;
+        const lineIndent = (stripped.match(/^(\s*)/)?.[1] ?? '').length;
+        while (classStack.length > 0 && lineIndent <= classStack[classStack.length - 1].indent) {
+            classStack.pop();
+        }
+        const classM = stripped.match(CLASS_DEF_RE);
+        if (classM) {
+            classStack.push({ name: classM[3], indent: (classM[1] ?? '').length });
+            continue;
+        }
         const m = stripped.match(FUNC_DEF_RE);
         if (!m)
             continue;
@@ -684,6 +1001,7 @@ function collectFuncDefs(document) {
             defLine: i,
             defIndent: indentStr.length,
             annotation: parseTypeAnnotation(retAnnotation),
+            enclosingClass: classStack.at(-1)?.name,
         });
     }
     return defs;
@@ -729,12 +1047,12 @@ function inferBodyReturnType(document, defLine, defIndent, funcEnv, importAliase
 }
 // ===== Import alias collection =====
 function collectImportAliases(document) {
-    const aliases = new Map(); // alias → python module name
+    const aliases = new Map(); // alias → module path
     for (let i = 0; i < document.lineCount; i++) {
         const stripped = stripComment(document.lineAt(i).text);
         const m = stripped.match(IMPORT_RE);
         if (m)
-            aliases.set(m[3], m[2]);
+            aliases.set(m[4], m[2]); // group 4 = alias, group 2 = module path
     }
     return aliases;
 }
@@ -784,16 +1102,38 @@ function collectPyModuleInfo(moduleName, docDir) {
 }
 function collectAllPyModuleInfo(document) {
     const funcTypes = new Map();
+    const funcSigs = new Map();
     const classMethods = new Map();
-    const aliasMap = collectImportAliases(document);
+    const cppClasses = new Map();
     const docDir = path.dirname(document.uri.fsPath);
-    for (const [alias, moduleName] of aliasMap) {
-        const info = collectPyModuleInfo(moduleName, docDir);
-        funcTypes.set(alias, info.funcs);
-        for (const [cls, methods] of info.classes)
-            classMethods.set(cls, methods);
+    for (let i = 0; i < document.lineCount; i++) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const m = stripped.match(IMPORT_RE);
+        if (!m)
+            continue;
+        const [, importKind, modulePath, stubName, alias] = m;
+        if (importKindOf(importKind) === 'py') {
+            const info = collectPyModuleInfo(modulePath, docDir);
+            funcTypes.set(alias, info.funcs);
+            funcSigs.set(alias, info.funcs); // py stubs have no full param signatures
+            for (const [cls, methods] of info.classes)
+                classMethods.set(cls, methods);
+        }
+        else {
+            const info = loadNativeModuleInfo(importKind, modulePath, stubName, docDir);
+            if (info.funcs.size > 0) {
+                funcTypes.set(alias, info.funcs);
+                funcSigs.set(alias, info.sigs);
+            }
+            // Collect C++ classes from all cpp imports (regardless of function count)
+            if (importKindOf(importKind) === 'cpp') {
+                for (const [className, classInfo] of info.classes) {
+                    cppClasses.set(className, classInfo);
+                }
+            }
+        }
     }
-    return { funcTypes, classMethods };
+    return { funcTypes, funcSigs, classMethods, cppClasses };
 }
 // ===== Hover symbol collection =====
 function collectHoverSymbols(document) {
@@ -802,14 +1142,19 @@ function collectHoverSymbols(document) {
     // Collect import aliases first so type inference can use them throughout
     const importAliasMap = collectImportAliases(document);
     const importAliases = new Set(importAliasMap.keys());
-    const { funcTypes: importFuncTypes, classMethods: pyClassMethods } = collectAllPyModuleInfo(document);
+    const { funcTypes: importFuncTypes, classMethods: pyClassMethods, cppClasses } = collectAllPyModuleInfo(document);
     const funcDefs = collectFuncDefs(document);
     const funcEnv = collectConstructorTypes(document);
     const templateParams = collectTemplateParams(document);
-    for (const def of funcDefs) {
-        funcEnv.set(def.name, def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams));
+    // Register C++ class names as constructors so `POINT(x,y)` resolves to type `POINT`
+    for (const [className] of cppClasses) {
+        funcEnv.set(className, className);
     }
-    // Stack tracking class/trait bodies for access modifier inheritance
+    for (const def of funcDefs) {
+        const rawType = def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams);
+        funcEnv.set(def.name, resolveSelf(rawType, def.enclosingClass));
+    }
+    // Stack tracking class/trait bodies for access modifier inheritance and Self resolution
     const classContextStack = [];
     for (let i = 0; i < document.lineCount; i++) {
         const raw = document.lineAt(i).text;
@@ -845,24 +1190,26 @@ function collectHoverSymbols(document) {
                 return undefined;
             return top.access;
         })();
-        // Import declaration
+        // Import declaration (all variants: py, cpp-lib, cpp-dll, tl, tlc, auto)
         const importMatch = stripped.match(IMPORT_RE);
         if (importMatch) {
-            const [, importKind, moduleName, alias] = importMatch;
+            const [, importKind, modulePath, , alias] = importMatch; // skip group 3 (stub name)
             symbols.push({
                 name: alias,
                 kind: 'module',
                 line: i,
                 mutability: 'const',
                 type: alias,
-                originalType: `${importKind} ${moduleName}`,
+                originalType: `${importKind} ${modulePath}`,
             });
             continue;
         }
         const funcMatch = stripped.match(FUNC_DEF_RE);
         if (funcMatch) {
             const [, indentStr, kind, name, params, retAnnotation] = funcMatch;
-            const returnType = cleanTypeAnnotation(retAnnotation) ?? funcEnv.get(name) ?? 'unknown';
+            const enclosingClass = classContextStack.at(-1)?.name;
+            const rawReturnType = cleanTypeAnnotation(retAnnotation) ?? funcEnv.get(name) ?? 'unknown';
+            const returnType = resolveSelf(rawReturnType, enclosingClass);
             symbols.push({
                 name,
                 kind: 'function',
@@ -889,7 +1236,7 @@ function collectHoverSymbols(document) {
                 traits,
                 doc: getDocstringAfter(document, i, indentStr.length),
             });
-            classContextStack.push({ indent: indentStr.length, bodyIndent: -1, access: 'public' });
+            classContextStack.push({ name, indent: indentStr.length, bodyIndent: -1, access: 'public' });
             continue;
         }
         const newTypeMatch = stripped.match(NEW_TYPE_RE);
@@ -1058,6 +1405,50 @@ function provideHover(document, position) {
     if (!range)
         return undefined;
     const name = document.getText(range);
+    // Detect member access: `obj.memberName` — check the character before the word
+    const lineText = document.lineAt(position.line).text;
+    const prefixStr = lineText.substring(0, range.start.character);
+    const dotAccess = prefixStr.match(/([A-Za-z_]\w*)\.$/);
+    if (dotAccess) {
+        const objName = dotAccess[1];
+        const { funcTypes, funcSigs, cppClasses } = collectAllPyModuleInfo(document);
+        // Module function: `alias.funcName`
+        const retType = funcTypes.get(objName)?.get(name);
+        if (retType !== undefined) {
+            const md = new vscode.MarkdownString(undefined, true);
+            const sig = funcSigs.get(objName)?.get(name) ?? `fn ${name}() -> ${retType}`;
+            md.appendCodeblock(sig, 'tl');
+            return new vscode.Hover(md, range);
+        }
+        // C++ class field: `instance.fieldName` where instance has a cpp class type
+        const objSymbols = collectHoverSymbols(document);
+        const objSym = selectHoverSymbol(objSymbols, objName, position.line);
+        if (objSym?.type) {
+            const cppCls = cppClasses.get(objSym.type);
+            if (cppCls) {
+                const fieldType = cppCls.fields.get(name);
+                if (fieldType !== undefined) {
+                    const md = new vscode.MarkdownString(undefined, true);
+                    md.appendCodeblock(`${name}: ${fieldType}`, 'tl');
+                    md.appendMarkdown(`\n\n*field of* \`${objSym.type}\``);
+                    return new vscode.Hover(md, range);
+                }
+            }
+        }
+    }
+    // C++ class type hover: hovering over the class name itself (e.g. `POINT`)
+    {
+        const { cppClasses } = collectAllPyModuleInfo(document);
+        const cppCls = cppClasses.get(name);
+        if (cppCls) {
+            const md = new vscode.MarkdownString(undefined, true);
+            const body = cppCls.fieldSigs.length > 0
+                ? cppCls.fieldSigs.map(s => `    ${s}`).join('\n')
+                : '    (no public fields)';
+            md.appendCodeblock(`class ${name} {\n${body}\n}`, 'cpp');
+            return new vscode.Hover(md, range);
+        }
+    }
     const symbols = collectHoverSymbols(document);
     const symbol = selectHoverSymbol(symbols, name, position.line);
     if (!symbol)
@@ -1090,13 +1481,18 @@ function provideInlayHints(document, _range) {
     // Phase 1: collect import aliases and function definitions
     const importAliasMap = collectImportAliases(document);
     const importAliases = new Set(importAliasMap.keys());
-    const { funcTypes: importFuncTypes, classMethods: pyClassMethods } = collectAllPyModuleInfo(document);
+    const { funcTypes: importFuncTypes, classMethods: pyClassMethods, cppClasses } = collectAllPyModuleInfo(document);
     const funcDefs = collectFuncDefs(document);
     // Phase 2: build funcEnv
     const funcEnv = collectConstructorTypes(document);
     const templateParams = collectTemplateParams(document);
+    // Register C++ class names as constructors so `POINT(x,y)` resolves to type `POINT`
+    for (const [className] of cppClasses) {
+        funcEnv.set(className, className);
+    }
     for (const def of funcDefs) {
-        funcEnv.set(def.name, def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams));
+        const rawType = def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams);
+        funcEnv.set(def.name, resolveSelf(rawType, def.enclosingClass));
     }
     // Phase 3: inlay hints on function definition lines (only when no annotation)
     for (const def of funcDefs) {
@@ -1307,20 +1703,32 @@ function resolveMemberItems(document, position, objName) {
     const sym = selectHoverSymbol(symbols, objName, position.line);
     if (!sym)
         return [];
-    // Import module → show py module functions
+    // Import module (py, cpp-lib, cpp-dll, tl, tlc, auto) → show exported functions
     if (sym.kind === 'module') {
-        const { funcTypes } = collectAllPyModuleInfo(document);
+        const { funcTypes, funcSigs } = collectAllPyModuleInfo(document);
         const funcs = funcTypes.get(objName);
+        const sigsMap = funcSigs.get(objName);
         if (!funcs)
             return [];
         return [...funcs.entries()].map(([name, retType]) => {
             const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Function);
-            item.detail = `→ ${retType}`;
+            const sig = sigsMap?.get(name);
+            // Show full signature when available (cpp/tl stubs), else just return type
+            item.detail = sig ?? `→ ${retType}`;
             return item;
         });
     }
-    // Variable/parameter with a class type → show class members
+    // Variable/parameter with a class type → check C++ header classes first, then .tl classes
     if (sym.type) {
+        const { cppClasses } = collectAllPyModuleInfo(document);
+        const cppCls = cppClasses.get(sym.type);
+        if (cppCls) {
+            return [...cppCls.fields.entries()].map(([fieldName, fieldType]) => {
+                const item = new vscode.CompletionItem(fieldName, vscode.CompletionItemKind.Field);
+                item.detail = `: ${fieldType}`;
+                return item;
+            });
+        }
         return collectClassMemberItems(document, sym.type);
     }
     return [];
@@ -1437,10 +1845,10 @@ function provideDocumentSymbols(document) {
                 else {
                     const importMatch = stripped.match(IMPORT_RE);
                     if (importMatch) {
-                        const [, importKind, moduleName, alias] = importMatch;
+                        const [, importKind, modulePath, , alias] = importMatch; // skip stub (group 3)
                         name = alias;
                         kind = vscode.SymbolKind.Module;
-                        detail = `${importKind} ${moduleName}`;
+                        detail = `${importKind} ${modulePath}`;
                     }
                     else {
                         const staticMatch = stripped.match(STATIC_DECL_RE);

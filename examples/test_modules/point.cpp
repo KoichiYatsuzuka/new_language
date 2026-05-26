@@ -10,6 +10,7 @@ public:
 // Object pool: index returned by point_create() is the stable handle.
 static std::vector<POINT*> g_pool;
 
+extern "C" {
 
 int point_create(int x, int y) {
     g_pool.push_back(new POINT(x, y));
@@ -38,3 +39,5 @@ int point_distance_sq(int ha, int hb) {
     int dy = g_pool[ha]->y - g_pool[hb]->y;
     return dx * dx + dy * dy;
 }
+
+} // extern "C"
