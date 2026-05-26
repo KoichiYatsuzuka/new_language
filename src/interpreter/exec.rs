@@ -1328,8 +1328,8 @@ impl Interpreter {
             return Ok(ns);
         }
 
-        // tl-auto / tlc: .tlc v1 に埋め込まれたネイティブ DLL がキャッシュにあれば優先する
-        if lang == "tl-auto" || lang == "tlc" {
+        // tl-auto / tlc / rs: DLL がキャッシュにあれば優先する
+        if lang == "tl-auto" || lang == "tlc" || lang == "rs" {
             let module_name = module.join(".");
             if let Some((_exports, dll_bytes)) =
                 crate::partial_compiler::take_native_bytes(&module_name)

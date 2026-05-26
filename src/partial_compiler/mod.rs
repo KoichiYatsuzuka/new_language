@@ -6,6 +6,7 @@
 ///   stub_gen        — .tls stub text generator
 mod codegen;
 mod module_compiler;
+pub mod rs_loader;
 mod stub_gen;
 
 pub use module_compiler::{compile, load_tlc, native_lib_ext, take_native_bytes};

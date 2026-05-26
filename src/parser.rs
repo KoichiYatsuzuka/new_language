@@ -1137,6 +1137,13 @@ impl Parser {
         // モジュールパス (`a.b.c`)
         let module = self.parse_module_path()?;
 
+        // `[version]` — `import[rs] libm[0.2]` のバージョン指定（rs のみ）
+        let version = if lang == "rs" && *self.current() == Token::LBracket {
+            Some(self.parse_version_bracket()?)
+        } else {
+            None
+        };
+
         // `as alias` (省略可)
         let alias = if *self.current() == Token::As {
             self.advance();
@@ -1146,7 +1153,7 @@ impl Parser {
         };
 
         // モジュールの tl AST を取得（キャッシュ込み）
-        let body = self.load_module(&lang, &module)?;
+        let body = self.load_module(&lang, &module, version.as_deref())?;
 
         Ok(Stmt::Import {
             lang,
@@ -1330,7 +1337,7 @@ impl Parser {
         }
 
         // モジュールの tl AST を取得
-        let body = self.load_module(&lang, &module)?;
+        let body = self.load_module(&lang, &module, None)?;
 
         Ok(Stmt::FromImport {
             lang,
@@ -1382,7 +1389,7 @@ impl Parser {
     }
 
     /// モジュールを検索・読み込み・変換して tl AST を返す。キャッシュを使用する。
-    fn load_module(&mut self, lang: &str, module: &[String]) -> Result<Vec<Stmt>, String> {
+    fn load_module(&mut self, lang: &str, module: &[String], version: Option<&str>) -> Result<Vec<Stmt>, String> {
         match lang {
             // default (no bracket): prefer .tlc, fall back to .tl
             "tl-auto" => self.load_tl_module(module),
@@ -1394,8 +1401,58 @@ impl Parser {
             // py-int: .pyi を優先し、なければ .py にフォールバック
             // body は型検査専用（実行時は PyO3 経由）
             "py-int" => self.load_python_interface_module(module),
+            // import[rs]: クレートバインディングをコンパイル・キャッシュし stubs を返す
+            "rs" => self.load_rs_module(module, version),
             other => Err(format!("unknown import language '{other}'")),
         }
+    }
+
+    /// `import[rs] name[version]` — クレートバインディングをコンパイル・キャッシュし、
+    /// 型チェッカ・インタプリタが使う `Stmt::FnDef` スタブを返す。
+    /// `version` が `Some` ならそれを直接使用し、`None` なら `tl_crates.json` を参照する。
+    fn load_rs_module(&mut self, module: &[String], version: Option<&str>) -> Result<Vec<Stmt>, String> {
+        let module_name = module.last().cloned().unwrap_or_default();
+        let cache_key = ("rs".to_string(), std::path::PathBuf::from(&module_name));
+        if let Some(body) = self.module_cache.get(&cache_key) {
+            return Ok(body.clone());
+        }
+
+        let search_dirs: Vec<std::path::PathBuf> = {
+            let a = self.source_dir.clone();
+            let b = self.root_dir.clone();
+            if a == b { vec![a] } else { vec![a, b] }
+        };
+
+        let body = crate::partial_compiler::rs_loader::load(&module_name, &search_dirs, version)
+            .map_err(|e| format!("import[rs] '{}': {e}", module.join(".")))?;
+
+        self.module_cache.insert(cache_key, body.clone());
+        Ok(body)
+    }
+
+    /// `[X.Y.Z]` 形式のバージョンブラケットをパースして文字列で返す。
+    /// 例: `[0.2]` → `"0.2"`, `[1]` → `"1"`, `[1.2.3]` → `"1.2.3"`
+    fn parse_version_bracket(&mut self) -> Result<String, String> {
+        self.eat(&Token::LBracket)?;
+        let mut ver = String::new();
+        loop {
+            match self.current().clone() {
+                Token::RBracket => { self.advance(); break; }
+                Token::Eof | Token::Newline => {
+                    return Err("unterminated version bracket in import[rs]".to_string());
+                }
+                Token::Int(n) => { ver.push_str(&n.to_string()); self.advance(); }
+                Token::Float(f) => { ver.push_str(&format!("{f}")); self.advance(); }
+                Token::Dot => { ver.push('.'); self.advance(); }
+                Token::Ident(s) => { ver.push_str(&s); self.advance(); }
+                Token::Str(s) => { ver.push_str(&s); self.advance(); }
+                other => return Err(format!("unexpected token `{other}` in version bracket")),
+            }
+        }
+        if ver.is_empty() {
+            return Err("version bracket cannot be empty in import[rs]".to_string());
+        }
+        Ok(ver)
     }
 
     /// `.tl` / `.tlc` モジュールをロードして AST を返す。

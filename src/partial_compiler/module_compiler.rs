@@ -61,6 +61,11 @@ pub fn take_native_bytes(module_name: &str) -> Option<(Vec<codegen::FnExport>, V
     NATIVE_CACHE.with(|c| c.borrow_mut().remove(module_name))
 }
 
+/// Insert pre-compiled native data into the cache (used by `rs_loader`).
+pub fn cache_native(module_name: &str, exports: Vec<codegen::FnExport>, dll_bytes: Vec<u8>) {
+    NATIVE_CACHE.with(|c| c.borrow_mut().insert(module_name.to_string(), (exports, dll_bytes)));
+}
+
 // ── public API ────────────────────────────────────────────────────────────────
 
 /// Compile `source` (already parsed into `stmts`) and write `.tlc` + `.tls`
