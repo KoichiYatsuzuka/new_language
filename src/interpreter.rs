@@ -30,7 +30,7 @@ use crate::token::Span;
 pub(crate) mod async_mgr;
 #[path = "interpreter/classes.rs"]
 mod classes;
-#[path = "interpreter/cpp_bridge.rs"]
+#[path = "interpreter/cpp_bridge/mod.rs"]
 pub(crate) mod cpp_bridge;
 #[path = "interpreter/debugger.rs"]
 pub(self) mod debugger;
