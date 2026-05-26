@@ -73,6 +73,10 @@ impl TypeChecker {
                 if let Some(class_name) = class_name_opt {
                     self.check_member_access_static(&class_name, attr, Some(span.clone()));
                 }
+                // Namespace (imported module) — return the member's type directly.
+                if let InferredType::Namespace(ref members) = obj_ty {
+                    return members.get(attr.as_str()).cloned().unwrap_or(InferredType::Unresolved);
+                }
                 InferredType::Unresolved
             }
             Expr::TraitAccess { object, .. } => {

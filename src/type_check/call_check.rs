@@ -41,10 +41,10 @@ impl TypeChecker {
                 None
             };
 
-        let func_name = if let Expr::Ident(name) = func {
-            Some(name.clone())
-        } else {
-            None
+        let func_name = match func {
+            Expr::Ident(name) => Some(name.clone()),
+            Expr::Attr { attr, .. } => Some(attr.clone()),
+            _ => None,
         };
         let func_type = self.infer(func);
 

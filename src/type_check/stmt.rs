@@ -4,7 +4,7 @@ use crate::ast::{Expr, FieldKind, MatchPattern, Stmt, TupleTarget};
 use crate::token::Span;
 
 use super::errors::{StaticTypeError, TypeErrorKind};
-use super::types::InferredType;
+use super::types::{FnTypeParam, InferredType};
 use super::TypeChecker;
 
 impl TypeChecker {
@@ -587,14 +587,29 @@ impl TypeChecker {
                         ))),
                     );
                 }
-                Stmt::FnDef {
-                    name, return_type, ..
-                } => {
-                    let ty = return_type
+                Stmt::FnDef { name, params, return_type, .. } => {
+                    let ret = return_type
                         .as_deref()
                         .map(Self::type_ann_to_inferred)
                         .unwrap_or(InferredType::Unresolved);
-                    map.insert(name.clone(), ty);
+                    let fn_params: Vec<FnTypeParam> = params
+                        .iter()
+                        .map(|p| FnTypeParam {
+                            name: p.name.clone(),
+                            mutable: p.mutable,
+                            ty: p.type_ann
+                                .as_deref()
+                                .and_then(InferredType::from_ann)
+                                .unwrap_or(InferredType::Any),
+                        })
+                        .collect();
+                    map.insert(
+                        name.clone(),
+                        InferredType::Function {
+                            params: Some(fn_params),
+                            return_type: Box::new(ret),
+                        },
+                    );
                 }
                 Stmt::Mut(name, _)
                 | Stmt::Let(name, _)
