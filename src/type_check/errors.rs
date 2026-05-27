@@ -7,6 +7,7 @@ use crate::token::Span;
 // Error kind
 // ---------------------------------------------------------------------------
 
+/// 静的型エラーの種別を表す列挙型。各バリアントに診断に必要な情報を保持する。
 #[derive(Debug, Clone)]
 pub enum TypeErrorKind {
     IncompatibleComparison {
@@ -103,6 +104,7 @@ pub enum TypeErrorKind {
 // StaticTypeError
 // ---------------------------------------------------------------------------
 
+/// 静的型検査で収集されるエラー情報。エラー種別とソース位置を保持する。
 #[derive(Debug, Clone)]
 pub struct StaticTypeError {
     pub kind: TypeErrorKind,
@@ -110,6 +112,7 @@ pub struct StaticTypeError {
 }
 
 impl StaticTypeError {
+    /// 互換性のない型同士の比較エラーを生成するファクトリ関数。
     pub(super) fn incompatible_cmp(
         lhs: InferredType,
         rhs: InferredType,
@@ -122,6 +125,7 @@ impl StaticTypeError {
         }
     }
 
+    /// イミュータブル変数への代入エラーを生成するファクトリ関数。
     pub(super) fn assign_immutable(name: &str, span: Span) -> Self {
         Self {
             kind: TypeErrorKind::AssignToImmutable {
@@ -131,6 +135,7 @@ impl StaticTypeError {
         }
     }
 
+    /// エラーが発生したファイル名を返す。スパン情報がない場合は `"<unknown>"` を返す。
     pub fn file_str(&self) -> String {
         match &self.span {
             Some(span) if span.line != 0 && !span.file.is_empty() => span.file.to_string(),
@@ -138,6 +143,7 @@ impl StaticTypeError {
         }
     }
 
+    /// エラー発生位置の行番号と列番号を `"行:列"` 形式で返す。不明な場合は `"-"` を返す。
     pub fn line_col_str(&self) -> String {
         match &self.span {
             Some(span) if span.line != 0 => format!("{}:{}", span.line, span.col),
@@ -145,10 +151,12 @@ impl StaticTypeError {
         }
     }
 
+    /// エラー種別の固定文字列 `"StaticTypeError"` を返す。
     pub fn error_type_str(&self) -> &'static str {
         "StaticTypeError"
     }
 
+    /// エラーの詳細メッセージ文字列を ANSI エスケープシーケンス付きで返す。
     pub fn detail_str(&self) -> String {
         match &self.kind {
             TypeErrorKind::IncompatibleComparison { lhs, rhs, op } => format!(
@@ -241,15 +249,18 @@ impl StaticTypeError {
     }
 }
 
+/// 値をシングルクォートで囲み、マゼンタ太字の ANSI 装飾を付けた文字列を返す。
 fn hl_q(s: impl std::fmt::Display) -> String {
     format!("'\x1b[1;35m{s}\x1b[0m'")
 }
 
+/// 値をバッククォートで囲み、マゼンタ太字の ANSI 装飾を付けた文字列を返す。
 fn hl_bt(s: impl std::fmt::Display) -> String {
     format!("`\x1b[1;35m{s}\x1b[0m`")
 }
 
 impl std::fmt::Display for StaticTypeError {
+    /// エラーを `"位置: StaticTypeError: 詳細"` 形式の ANSI 色付き文字列として出力する。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         const R: &str = "\x1b[31m";
         const X: &str = "\x1b[0m";

@@ -9,6 +9,7 @@ use crate::token::Span;
 // 公開エントリポイント
 // ---------------------------------------------------------------------------
 
+/// Python ソースコード文字列を解析し、tl の `Stmt` リストに変換する。
 pub fn convert_python_source(source: &str, filename: &str) -> Result<Vec<Stmt>, String> {
     let ast = py::Suite::parse(source, filename).map_err(|e| format!("{filename}: {e}"))?;
     convert_stmts(&ast, filename)
@@ -18,6 +19,7 @@ pub fn convert_python_source(source: &str, filename: &str) -> Result<Vec<Stmt>, 
 // スパン生成ヘルパー
 // ---------------------------------------------------------------------------
 
+/// 指定ファイル名を持つダミースパン（行・列 0）を生成する。
 fn make_span(filename: &str) -> Span {
     Span {
         file: filename.into(),
@@ -30,6 +32,7 @@ fn make_span(filename: &str) -> Span {
 // 文変換
 // ---------------------------------------------------------------------------
 
+/// Python 文のスライスを tl の `Stmt` リストに変換する（ホイストなし）。
 fn convert_stmts(stmts: &[py::Stmt], filename: &str) -> Result<Vec<Stmt>, String> {
     convert_stmts_with_hoist(stmts, filename, false)
 }
@@ -39,6 +42,7 @@ fn convert_stmts_fn_body(stmts: &[py::Stmt], filename: &str) -> Result<Vec<Stmt>
     convert_stmts_with_hoist(stmts, filename, true)
 }
 
+/// ホイストフラグを指定して Python 文のスライスを tl の `Stmt` リストに変換する。
 fn convert_stmts_with_hoist(
     stmts: &[py::Stmt],
     filename: &str,
@@ -130,6 +134,7 @@ fn convert_stmt_in_hoist_ctx(
     convert_stmt(stmt, filename)
 }
 
+/// ホイストコンテキストを引き継いで if/elif/else ブランチ内の文群を変換する。
 fn convert_stmts_hoisted_branch(
     stmts: &[py::Stmt],
     filename: &str,
@@ -450,6 +455,8 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
 // クラス変換
 // ---------------------------------------------------------------------------
 
+/// Python クラス定義を tl の `Stmt::ClassDef` に変換する。
+/// フィールドは `__init__` からの `self.x = ...` 代入と型アノテーションを元に収集する。
 fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt, String> {
     let class_name = c.name.to_string();
     let bases: Vec<String> = c.bases.iter().map(|b| expr_to_name(b)).collect();
@@ -635,6 +642,7 @@ fn extract_param_types(args: &py::Arguments) -> std::collections::HashMap<String
 // パラメータ変換
 // ---------------------------------------------------------------------------
 
+/// Python の引数リスト（`py::Arguments`）を tl の `Param` リストに変換する。
 fn convert_params(args: &py::Arguments, _filename: &str) -> Result<Vec<Param>, String> {
     let mut params: Vec<Param> = Vec::new();
 
@@ -677,6 +685,7 @@ fn convert_params(args: &py::Arguments, _filename: &str) -> Result<Vec<Param>, S
 // 式変換
 // ---------------------------------------------------------------------------
 
+/// 単一の Python 式を tl の `Expr` に変換する。
 fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
     match expr {
         py::Expr::Constant(c) => convert_constant(c, filename),
@@ -855,6 +864,7 @@ fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
 // 定数変換
 // ---------------------------------------------------------------------------
 
+/// Python のリテラル定数を tl の `Expr` に変換する。
 fn convert_constant(c: &py::ExprConstant, filename: &str) -> Result<Expr, String> {
     match &c.value {
         py::Constant::Int(n) => {
@@ -878,6 +888,7 @@ fn convert_constant(c: &py::ExprConstant, filename: &str) -> Result<Expr, String
 // 演算子変換
 // ---------------------------------------------------------------------------
 
+/// Python の二項演算子 (`py::Operator`) を tl の `BinOp` に変換する。
 fn convert_binop(op: &py::Operator, filename: &str) -> Result<BinOp, String> {
     Ok(match op {
         py::Operator::Add => BinOp::Add,
@@ -898,10 +909,12 @@ fn convert_binop(op: &py::Operator, filename: &str) -> Result<BinOp, String> {
     })
 }
 
+/// Python の拡張代入演算子を tl の `BinOp` に変換する（`convert_binop` の別名）。
 fn convert_augop(op: &py::Operator, filename: &str) -> Result<BinOp, String> {
     convert_binop(op, filename)
 }
 
+/// Python の比較演算子 (`py::CmpOp`) を tl の `BinOp` に変換する。
 fn convert_cmpop(op: &py::CmpOp, filename: &str) -> Result<BinOp, String> {
     Ok(match op {
         py::CmpOp::Eq => BinOp::Eq,
@@ -929,6 +942,7 @@ fn convert_cmpop(op: &py::CmpOp, filename: &str) -> Result<BinOp, String> {
 // 型アノテーション変換
 // ---------------------------------------------------------------------------
 
+/// Python の型アノテーション式を tl の型文字列（例: `"list[int]"`）に変換する。
 pub fn convert_annotation(expr: &py::Expr) -> String {
     match expr {
         py::Expr::Name(n) => map_type_name(n.id.as_str()),
@@ -958,6 +972,7 @@ pub fn convert_annotation(expr: &py::Expr) -> String {
     }
 }
 
+/// 添字スライス式（タプルまたは単一要素）を型文字列に変換する。
 fn convert_annotation_subscript_slice(expr: &py::Expr) -> String {
     match expr {
         py::Expr::Tuple(t) => {
@@ -968,6 +983,7 @@ fn convert_annotation_subscript_slice(expr: &py::Expr) -> String {
     }
 }
 
+/// Python の型名を tl の型名にマッピングする（例: `"List"` → `"list"`）。
 fn map_type_name(name: &str) -> String {
     match name {
         "int" => "int".to_string(),
@@ -993,10 +1009,12 @@ fn map_type_name(name: &str) -> String {
 // ユーティリティ
 // ---------------------------------------------------------------------------
 
+/// 式が `self` という名前の識別子かどうかを判定する。
 fn is_self(expr: &py::Expr) -> bool {
     matches!(expr, py::Expr::Name(n) if n.id.as_str() == "self")
 }
 
+/// 式が `if __name__ == "__main__":` ガード条件かどうかを判定する。
 fn is_main_guard(expr: &py::Expr) -> bool {
     if let py::Expr::Compare(c) = expr {
         if c.ops.len() == 1 && matches!(c.ops[0], py::CmpOp::Eq) {
@@ -1014,6 +1032,7 @@ fn is_main_guard(expr: &py::Expr) -> bool {
     false
 }
 
+/// Python の式からクラス継承基底名などの名前文字列を取り出す。属性アクセスは `"a.b"` 形式に展開する。
 fn expr_to_name(expr: &py::Expr) -> String {
     match expr {
         py::Expr::Name(n) => n.id.to_string(),

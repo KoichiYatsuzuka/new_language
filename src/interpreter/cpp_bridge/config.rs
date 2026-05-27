@@ -28,38 +28,35 @@ pub(crate) const DEFAULT_TARGET_ARCH: &str = "amd64";
 
 // ── Build config ──────────────────────────────────────────────────────────────
 
-/// Build configuration loaded from `tl_config.json`.
+/// `tl_config.json` から読み込まれる C++ ビルド設定。
 pub struct CppBuildConfig {
-    /// Explicit path to `vcvarsall.bat`. When `None`, auto-detection is used.
+    /// `vcvarsall.bat` への明示パス。`None` の場合は自動検出を使用する。
     pub msvc: Option<PathBuf>,
-    /// Additional search paths tried before `MSVC_CANDIDATES` when `msvc` is `None`.
-    /// Configurable via `"msvc_search_paths": [...]` in `tl_config.json`.
+    /// `msvc` が `None` の場合に `MSVC_CANDIDATES` より先に試みる追加検索パス。`"msvc_search_paths"` キーで設定する。
     pub msvc_search_paths: Vec<String>,
-    /// Preprocessor macros to `#define` before the header `#include` in the shim.
+    /// シムの `#include` 前に `#define` するプリプロセッサマクロ。
     pub precompile_macros: Vec<String>,
-    /// Target architecture passed to `vcvarsall.bat` (default: `"amd64"`).
+    /// `vcvarsall.bat` に渡すターゲットアーキテクチャ（デフォルト: `"amd64"`）。
     pub target_arch: String,
-    /// Extra flags appended to the `cl.exe` invocation (after the fixed base flags).
+    /// `cl.exe` 呼び出しに追加するフラグ（固定フラグの後に追記）。
     pub cl_extra_flags: Vec<String>,
-    /// Extra flags appended to the `/link` section of the `cl.exe` invocation.
+    /// `cl.exe` の `/link` セクションに追加するフラグ。
     pub link_extra_flags: Vec<String>,
-    /// System / SDK libraries to link. Defaults to `DEFAULT_SYSTEM_LIBS`.
+    /// リンクするシステム / SDK ライブラリ。デフォルトは `DEFAULT_SYSTEM_LIBS`。
     pub system_libs: Vec<String>,
-    /// Whether to emit `#define WIN32_LEAN_AND_MEAN` in the shim (default: `true`).
+    /// シムに `#define WIN32_LEAN_AND_MEAN` を出力するかどうか（デフォルト: `true`）。
     pub win32_lean_and_mean: bool,
-    /// Additional C type → tl primitive mappings checked before the built-in table.
-    /// Keys are C type names (no `*`, no qualifiers); values are tl primitive names
-    /// (`"int"` / `"long"` / `"float"` / `"double"` / `"bool"` / `"void"`).
+    /// 組み込みテーブルより先に参照する追加 C 型 → tl プリミティブ マッピング。
+    /// キーは C 型名（`*` や修飾子なし）、値は tl プリミティブ名（`"int"` / `"long"` / `"float"` / `"double"` / `"bool"` / `"void"`）。
     pub custom_type_map: HashMap<String, String>,
-    /// Suffix patterns used to discover library files next to the header.
-    /// Ordered by preference (most specific first). Defaults to `DEFAULT_LIB_PATTERNS`.
+    /// ヘッダ隣接ライブラリを検出するサフィックスパターン（優先度の高い順）。デフォルトは `DEFAULT_LIB_PATTERNS`。
     pub lib_patterns: Vec<String>,
-    /// OS/SDK system headers to load for typedef alias resolution.
-    /// E.g. `["C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um/Windows.h"]`.
+    /// typedef エイリアス解決のためにロードする OS/SDK システムヘッダ。
     pub system_headers: Vec<String>,
 }
 
 impl Default for CppBuildConfig {
+    /// `CppBuildConfig` のデフォルト値を返す。各フィールドはデフォルト定数で初期化される。
     fn default() -> Self {
         CppBuildConfig {
             msvc: None,
@@ -79,8 +76,8 @@ impl Default for CppBuildConfig {
 
 // ── Config loader ─────────────────────────────────────────────────────────────
 
-/// Search for `tl_config.json` starting at `start_dir` and walking up to
-/// parent directories, then the current working directory.
+/// `start_dir` から親ディレクトリへと遡りながら `tl_config.json` を検索してロードする。
+/// 見つからなければ現在のワーキングディレクトリも確認する。
 pub fn load_cpp_config(start_dir: &Path) -> CppBuildConfig {
     let mut config = CppBuildConfig::default();
 
@@ -113,25 +110,7 @@ pub fn load_cpp_config(start_dir: &Path) -> CppBuildConfig {
     config
 }
 
-/// Minimal JSON parser for `tl_config.json` — no external dependencies.
-///
-/// Expected schema:
-/// ```json
-/// {
-///   "cpp": {
-///     "msvc": "...",
-///     "msvc_search_paths": ["C:/path/to/vcvarsall.bat"],
-///     "precompile_macros": ["MACRO1"],
-///     "target_arch": "amd64",
-///     "cl_extra_flags": ["/W4"],
-///     "link_extra_flags": [],
-///     "system_libs": ["winmm.lib"],
-///     "win32_lean_and_mean": true,
-///     "custom_type_map": { "MY_TYPE": "int" },
-///     "lib_patterns": ["_vs2015_x64_md.lib", "_x64.lib"]
-///   }
-/// }
-/// ```
+/// `tl_config.json` の内容を最小限の JSON パーサで解析し `config` に設定値を反映する。外部依存なし。
 fn parse_tl_config_json(content: &str, config: &mut CppBuildConfig) {
     let cpp_block = match extract_json_object(content, "cpp") {
         Some(b) => b,
@@ -175,7 +154,7 @@ fn parse_tl_config_json(content: &str, config: &mut CppBuildConfig) {
 
 // ── Minimal JSON helpers ──────────────────────────────────────────────────────
 
-/// Extract the string content of a JSON string value for the given key.
+/// 指定キーに対応する JSON 文字列値の内容を取り出して返す。
 fn extract_json_string(json: &str, key: &str) -> Option<String> {
     let needle = format!("\"{}\"", key);
     let pos = json.find(&needle)?;
@@ -195,7 +174,7 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
     )
 }
 
-/// Extract a JSON boolean value for the given key.
+/// 指定キーに対応する JSON 真偽値を取り出して返す。
 fn extract_json_bool(json: &str, key: &str) -> Option<bool> {
     let needle = format!("\"{}\"", key);
     let pos = json.find(&needle)?;
@@ -211,7 +190,7 @@ fn extract_json_bool(json: &str, key: &str) -> Option<bool> {
     }
 }
 
-/// Extract a JSON array of strings for the given key.
+/// 指定キーに対応する JSON 文字列配列を取り出して返す。
 fn extract_json_array(json: &str, key: &str) -> Option<Vec<String>> {
     let needle = format!("\"{}\"", key);
     let pos = json.find(&needle)?;
@@ -237,8 +216,7 @@ fn extract_json_array(json: &str, key: &str) -> Option<Vec<String>> {
     Some(items)
 }
 
-/// Extract a JSON object `{ "key": "value", ... }` as a `HashMap<String, String>`.
-/// Only string-valued keys are extracted; non-string values are skipped.
+/// 指定キーに対応する JSON オブジェクト `{ "key": "value", ... }` を `HashMap<String, String>` として取り出す。文字列値のキーのみ抽出し、非文字列値はスキップする。
 fn extract_json_string_map(json: &str, key: &str) -> Option<HashMap<String, String>> {
     let block = extract_json_object(json, key)?;
     let mut map = HashMap::new();
@@ -271,7 +249,7 @@ fn extract_json_string_map(json: &str, key: &str) -> Option<HashMap<String, Stri
     Some(map)
 }
 
-/// Extract the object content `{ ... }` for the given key from a JSON string.
+/// 指定キーに対応する JSON オブジェクト `{ ... }` の内容文字列を取り出して返す。
 fn extract_json_object(json: &str, key: &str) -> Option<String> {
     let needle = format!("\"{}\"", key);
     let pos = json.find(&needle)?;

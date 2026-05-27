@@ -32,7 +32,7 @@ const RTLD_LAZY: i32 = 1;
 
 // ── MSVC toolchain ────────────────────────────────────────────────────────────
 
-/// Paths to the MSVC toolchain.
+/// MSVC ツールチェーンへのパス。
 pub struct MsvcPaths {
     pub vcvarsall: PathBuf,
 }
@@ -52,11 +52,9 @@ const MSVC_CANDIDATES: &[&str] = &[
     r"C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvarsall.bat",
 ];
 
-/// Search for `vcvarsall.bat`.
-///
-/// Checks `extra_paths` (from `tl_config.json` → `msvc_search_paths`) first,
-/// then falls back to the built-in `MSVC_CANDIDATES` list.
-/// Returns `None` if no installation is found.
+/// `vcvarsall.bat` を検索する。
+/// `extra_paths`（`tl_config.json` の `msvc_search_paths`）を先に確認し、見つからなければ組み込み `MSVC_CANDIDATES` リストにフォールバックする。
+/// インストールが見つからない場合は `None` を返す。
 pub fn find_msvc_vcvarsall(extra_paths: &[String]) -> Option<MsvcPaths> {
     for p in extra_paths {
         if Path::new(p).exists() {
@@ -77,10 +75,8 @@ pub fn find_msvc_vcvarsall(extra_paths: &[String]) -> Option<MsvcPaths> {
 
 // ── Rust wrapper compiler ─────────────────────────────────────────────────────
 
-/// Compile `rust_src` to a cdylib and return the raw DLL bytes.
-///
-/// `extra_link_dirs` are passed as `-L` flags (used by `cpp-lib` to locate
-/// the static library).
+/// `rust_src` を cdylib としてコンパイルし、生の DLL バイト列を返す。
+/// `extra_link_dirs` は `-L` フラグとして渡される（`cpp-lib` がスタティックライブラリを探すために使用）。
 pub fn compile_wrapper(rust_src: &str, extra_link_dirs: &[PathBuf]) -> Result<Vec<u8>, String> {
     let tmp_dir = std::env::temp_dir();
     let rs_path = tmp_dir.join(TMP_RS_NAME);
@@ -132,13 +128,9 @@ pub fn compile_wrapper(rust_src: &str, extra_link_dirs: &[PathBuf]) -> Result<Ve
 
 // ── MSVC C++ shim generator ───────────────────────────────────────────────────
 
-/// Generate the MSVC shim C++ source.
-///
-/// Each `CFnSig::namespace` is used per-function so multiple namespaces can
-/// coexist (though in practice all DxLib functions share one namespace).
-///
-/// `win32_lean_and_mean` controls whether `#define WIN32_LEAN_AND_MEAN` is
-/// emitted before the Windows header includes.
+/// MSVC シム C++ ソースを生成する。
+/// 各関数の名前空間には `CFnSig::namespace` を使用する（実際には全 DxLib 関数が同一名前空間）。
+/// `win32_lean_and_mean` が `true` の場合、Windows ヘッダのインクルード前に `#define WIN32_LEAN_AND_MEAN` を出力する。
 pub fn gen_cpp_shim_source(
     sigs: &[CFnSig],
     header_name: &str,
@@ -251,15 +243,9 @@ pub fn gen_cpp_shim_source(
 
 // ── Full build pipeline ───────────────────────────────────────────────────────
 
-/// Build `tl_{stem}.dll` next to `header_path` from the given signatures.
-///
-/// Steps:
-///   1. If `tl_{stem}.dll` already exists — return it immediately (permanent cache).
-///   2. Find MSVC (`tl_config.json` or auto-detect via `find_msvc_vcvarsall`).
-///   3. Compile an MSVC C++ shim (`tl_{stem}_shim.dll`) next to the header.
-///   4. Compile a Rust wrapper around the shim → `tl_{stem}.dll`.
-///
-/// Once generated, `tl_{stem}.dll` is never rebuilt unless it is deleted.
+/// `header_path` の隣に `tl_{stem}.dll` を生成する。
+/// 手順: (1) 既存 DLL があれば即座に返す (2) MSVC を検索 (3) C++ シム DLL をコンパイル (4) Rust ラッパーを DLL に変換。
+/// 生成後は削除しない限り再ビルドしない。
 pub fn compile_tl_dll(
     header_path: &Path,
     sigs: &[CFnSig],
@@ -370,8 +356,8 @@ pub fn compile_tl_dll(
     Ok((dll_path, effective_sigs))
 }
 
-/// Read the `.syms` companion file and return the subset of `all_sigs` that were compiled.
-/// Falls back to all sigs if the file is missing (e.g., first run before the syms file existed).
+/// `.syms` コンパニオンファイルを読み込み、コンパイル済みの `all_sigs` のサブセットを返す。
+/// ファイルが存在しない場合（初回実行前など）は全シグネチャにフォールバックする。
 fn read_syms_file(syms_path: &Path, all_sigs: &[CFnSig]) -> Vec<CFnSig> {
     if let Ok(text) = std::fs::read_to_string(syms_path) {
         let allowed: std::collections::HashSet<&str> = text.lines().collect();
@@ -387,13 +373,9 @@ fn read_syms_file(syms_path: &Path, all_sigs: &[CFnSig]) -> Vec<CFnSig> {
 
 // ── MSVC shim compiler ────────────────────────────────────────────────────────
 
-/// Compile `cpp_src` into a DLL at `out_dll` using MSVC `cl.exe`.
-///
-/// Library files are selected from the same directory as `header_path` according
-/// to `config.lib_patterns` (most-specific pattern wins when both exist for the
-/// same base name).  `config.system_libs` provides the SDK / Windows libs.
-/// The target architecture is `config.target_arch`; extra compiler and linker
-/// flags come from `config.cl_extra_flags` / `config.link_extra_flags`.
+/// `cpp_src` を MSVC `cl.exe` を使って `out_dll` に DLL としてコンパイルする。
+/// ライブラリは `header_path` と同じディレクトリから `config.lib_patterns` に従って選択される（同名で複数存在する場合は最も具体的なパターンが優先）。
+/// `config.system_libs` は SDK / Windows システムライブラリを提供し、アーキテクチャは `config.target_arch`、追加フラグは `config.cl_extra_flags` / `config.link_extra_flags` から取得する。
 fn compile_msvc_shim(
     cpp_src: &str,
     msvc: &MsvcPaths,
@@ -531,12 +513,7 @@ fn compile_msvc_shim(
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-/// Among libs that share a base name, keep only those matching the highest-priority
-/// pattern (lowest index in `patterns`).  Libs not matching any pattern are kept as-is.
-///
-/// Example with `patterns = ["_vs2015_x64_md.lib", "_x64.lib"]`:
-///   - `DxLib_vs2015_x64_MD.lib` (index 0) is kept and `DxLib_x64.lib` (index 1) dropped.
-///   - `DxThread_x64.lib` has no versioned counterpart → kept.
+/// 同じベース名を持つライブラリのうち、最高優先度（`patterns` の最小インデックス）のパターンに一致するものだけを残す。どのパターンにも一致しないライブラリはそのまま保持する。
 fn dedup_by_pattern_priority(libs: Vec<String>, patterns: &[String]) -> Vec<String> {
     if patterns.len() <= 1 {
         return libs;
@@ -571,18 +548,16 @@ fn dedup_by_pattern_priority(libs: Vec<String>, patterns: &[String]) -> Vec<Stri
         .collect()
 }
 
-/// Strip the Windows extended-path `\\?\` prefix that `std::fs::canonicalize`
-/// adds, because cl.exe does not accept it for `/I` or `/LIBPATH` flags.
+/// `std::fs::canonicalize` が付加する Windows 拡張パスプレフィックス `\\?\` を除去する。
+/// `cl.exe` は `/I` や `/LIBPATH` フラグでこのプレフィックスを受け付けないため必要。
 pub(crate) fn strip_unc_prefix(path: &Path) -> String {
     let s = path.to_string_lossy();
     s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
 }
 
-/// Convert a UTF-8 string to the system ANSI code page bytes.
-///
-/// On Japanese Windows the ANSI code page is Shift-JIS (932).  Writing .bat
-/// files with this encoding ensures cmd.exe correctly interprets non-ASCII
-/// directory paths (e.g. Japanese characters in the DxLib install path).
+/// UTF-8 文字列をシステムの ANSI コードページバイト列に変換する。
+/// 日本語 Windows では ANSI コードページは Shift-JIS（932）であり、.bat ファイルをこのエンコーディングで書き込むことで
+/// cmd.exe が非 ASCII ディレクトリパス（DxLib インストールパス中の日本語文字など）を正しく解釈できる。
 fn to_acp_bytes(s: &str) -> Vec<u8> {
     #[cfg(windows)]
     {

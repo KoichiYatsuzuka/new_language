@@ -241,6 +241,7 @@ impl Interpreter {
         Ok(inst_val)
     }
 
+    /// オブジェクトのメソッドを呼び出して結果を返す。List / Str / Instance / Dict / Generator 等の各値型へディスパッチする。
     pub(super) fn eval_method_call(
         &mut self,
         obj: Value,
@@ -746,6 +747,7 @@ impl Interpreter {
     // FileObject メソッド
     // ---------------------------------------------------------------------------
 
+    /// `FileObject` のメソッド（`read` / `write` / `close` / `seek` 等）を実行する。
     fn exec_file_method(
         &mut self,
         fd_rc: Rc<RefCell<super::FileData>>,
@@ -955,6 +957,7 @@ impl Interpreter {
 
     // ── str メソッドディスパッチ ──────────────────────────────────────────────
 
+    /// 文字列値のメソッド（`split` / `strip` / `replace` / `startswith` 等）を評価して結果を返す。
     #[allow(clippy::too_many_lines)]
     pub(super) fn eval_str_method(
         &mut self,

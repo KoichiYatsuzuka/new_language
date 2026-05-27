@@ -5,6 +5,7 @@ use crate::ast::Stmt;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 
+/// テストソースを字句解析・構文解析・実行する。エラーがあれば `Err` を返す。
 fn run(src: &str) -> Result<(), String> {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program()?;
@@ -15,6 +16,7 @@ fn run(src: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 単一の式文を評価して `Value` を返すテストヘルパー。
 fn eval_expr(src: &str) -> Value {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().unwrap();
@@ -27,6 +29,7 @@ fn eval_expr(src: &str) -> Value {
         .unwrap()
 }
 
+/// テストソースを実行して変数 `var` の値を返すテストヘルパー。
 fn run_get(src: &str, var: &str) -> Value {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().unwrap();
@@ -49,6 +52,7 @@ fn run_py_get(src: &str, var: &str) -> Value {
     interp.get_val(var).unwrap()
 }
 
+/// テストソースを実行し、最初の `raise` で発生した例外を返すテストヘルパー。例外がなければ `Ok(None)`。
 fn run_exc(src: &str) -> Result<Option<RaisedError>, String> {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program()?;
@@ -64,6 +68,7 @@ fn run_exc(src: &str) -> Result<Option<RaisedError>, String> {
     Ok(None)
 }
 
+/// arithmetic のテスト。
 #[test]
 fn test_arithmetic() {
     assert!(matches!(eval_expr("2 + 3"), Value::Int(5)));
@@ -74,6 +79,7 @@ fn test_arithmetic() {
     assert!(matches!(eval_expr("2 ** 10"), Value::Int(1024)));
 }
 
+/// float_arithmetic のテスト。
 #[test]
 fn test_float_arithmetic() {
     if let Value::Float(f) = eval_expr("1.0 + 2.0") {
@@ -83,6 +89,7 @@ fn test_float_arithmetic() {
     }
 }
 
+/// string_concat のテスト。
 #[test]
 fn test_string_concat() {
     if let Value::Str(s) = eval_expr(r#""hello" + " " + "world""#) {
@@ -92,6 +99,7 @@ fn test_string_concat() {
     }
 }
 
+/// comparison のテスト。
 #[test]
 fn test_comparison() {
     assert!(matches!(eval_expr("1 < 2"), Value::Bool(true)));
@@ -100,6 +108,7 @@ fn test_comparison() {
     assert!(matches!(eval_expr("4 != 5"), Value::Bool(true)));
 }
 
+/// logical のテスト。
 #[test]
 fn test_logical() {
     assert!(matches!(eval_expr("True and False"), Value::Bool(false)));
@@ -107,16 +116,19 @@ fn test_logical() {
     assert!(matches!(eval_expr("not True"), Value::Bool(false)));
 }
 
+/// let_immutable のテスト。
 #[test]
 fn test_let_immutable() {
     assert!(run("let x = 1\nx = 2").is_err());
 }
 
+/// mut_mutable のテスト。
 #[test]
 fn test_mut_mutable() {
     assert!(run("mut x = 1\nx = 2").is_ok());
 }
 
+/// compound_assign のテスト。
 #[test]
 fn test_compound_assign() {
     if let Value::Int(n) = run_get("mut x = 10\nx += 5", "x") {
@@ -126,11 +138,13 @@ fn test_compound_assign() {
     }
 }
 
+/// print_runs のテスト。
 #[test]
 fn test_print_runs() {
     assert!(run(r#"print("hello", "world")"#).is_ok());
 }
 
+/// zero_division のテスト。
 #[test]
 fn test_zero_division() {
     assert!(run("1 // 0").is_err());
@@ -138,6 +152,7 @@ fn test_zero_division() {
 
 // --- if ---
 
+/// if_true_branch のテスト。
 #[test]
 fn test_if_true_branch() {
     if let Value::Int(n) = run_get("mut x = 0\nif True:\n    x = 1\n", "x") {
@@ -147,6 +162,7 @@ fn test_if_true_branch() {
     }
 }
 
+/// if_false_else_branch のテスト。
 #[test]
 fn test_if_false_else_branch() {
     if let Value::Int(n) = run_get("mut x = 0\nif False:\n    x = 1\nelse:\n    x = 2\n", "x") {
@@ -156,6 +172,7 @@ fn test_if_false_else_branch() {
     }
 }
 
+/// if_scope_isolation のテスト。
 #[test]
 fn test_if_scope_isolation() {
     assert!(run("if True:\n    let x = 1\nprint(x)\n").is_err());
@@ -163,6 +180,7 @@ fn test_if_scope_isolation() {
 
 // --- while ---
 
+/// while_loop のテスト。
 #[test]
 fn test_while_loop() {
     if let Value::Int(n) = run_get("mut i = 0\nwhile i < 5:\n    i += 1\n", "i") {
@@ -172,6 +190,7 @@ fn test_while_loop() {
     }
 }
 
+/// while_break のテスト。
 #[test]
 fn test_while_break() {
     if let Value::Int(n) = run_get(
@@ -184,6 +203,7 @@ fn test_while_break() {
     }
 }
 
+/// while_scope_isolation のテスト。
 #[test]
 fn test_while_scope_isolation() {
     assert!(
@@ -193,6 +213,7 @@ fn test_while_scope_isolation() {
 
 // --- for ---
 
+/// for_range のテスト。
 #[test]
 fn test_for_range() {
     if let Value::Int(n) = run_get("mut s = 0\nfor i in range(5):\n    s += i\n", "s") {
@@ -202,6 +223,7 @@ fn test_for_range() {
     }
 }
 
+/// for_list のテスト。
 #[test]
 fn test_for_list() {
     if let Value::Int(n) = run_get("mut s = 0\nfor x in [1, 2, 3]:\n    s += x\n", "s") {
@@ -211,11 +233,13 @@ fn test_for_list() {
     }
 }
 
+/// for_loop_var_scope_isolation のテスト。
 #[test]
 fn test_for_loop_var_scope_isolation() {
     assert!(run("for i in range(3):\n    pass\nprint(i)\n").is_err());
 }
 
+/// for_body_scope_isolation のテスト。
 #[test]
 fn test_for_body_scope_isolation() {
     assert!(run("for i in range(1):\n    let x = 99\nprint(x)\n").is_err());
@@ -223,16 +247,19 @@ fn test_for_body_scope_isolation() {
 
 // --- block ---
 
+/// block_scope_isolation のテスト。
 #[test]
 fn test_block_scope_isolation() {
     assert!(run("block:\n    let x = 1\nprint(x)\n").is_err());
 }
 
+/// block_reads_outer のテスト。
 #[test]
 fn test_block_reads_outer() {
     assert!(run("let x = 1\nblock:\n    print(x)\n").is_ok());
 }
 
+/// block_modifies_outer のテスト。
 #[test]
 fn test_block_modifies_outer() {
     if let Value::Int(n) = run_get("mut x = 0\nblock:\n    x = 42\n", "x") {
@@ -244,6 +271,7 @@ fn test_block_modifies_outer() {
 
 // --- builtins ---
 
+/// range_builtin のテスト。
 #[test]
 fn test_range_builtin() {
     if let Value::List(items) = eval_expr("range(3)") {
@@ -253,6 +281,7 @@ fn test_range_builtin() {
     }
 }
 
+/// len_builtin のテスト。
 #[test]
 fn test_len_builtin() {
     assert!(matches!(eval_expr("len([1, 2, 3])"), Value::Int(3)));
@@ -260,6 +289,7 @@ fn test_len_builtin() {
 
 // --- functions ---
 
+/// fn_call_returns_value のテスト。
 #[test]
 fn test_fn_call_returns_value() {
     let src = "fn add(a: int, b: int) -> int:\n    return a + b\nlet result = add(3, 4)\n";
@@ -270,12 +300,14 @@ fn test_fn_call_returns_value() {
     }
 }
 
+/// fn_no_return_gives_none のテスト。
 #[test]
 fn test_fn_no_return_gives_none() {
     let src = "fn noop() -> None:\n    pass\nlet r = noop()\n";
     assert!(matches!(run_get(src, "r"), Value::None));
 }
 
+/// fn_recursion のテスト。
 #[test]
 fn test_fn_recursion() {
     let src = "fn fact(n: int) -> int:\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\nlet r = fact(5)\n";
@@ -286,6 +318,7 @@ fn test_fn_recursion() {
     }
 }
 
+/// fn_kwarg_call のテスト。
 #[test]
 fn test_fn_kwarg_call() {
     let src = "fn sub(a: int, b: int) -> int:\n    return a - b\nlet r = sub(b=1, a=10)\n";
@@ -296,6 +329,7 @@ fn test_fn_kwarg_call() {
     }
 }
 
+/// fn_scope_isolation のテスト。
 #[test]
 fn test_fn_scope_isolation() {
     let src = "fn f() -> None:\n    let x = 99\nf()\n";
@@ -304,6 +338,7 @@ fn test_fn_scope_isolation() {
 
 // --- overloading ---
 
+/// overload_by_count のテスト。
 #[test]
 fn test_overload_by_count() {
     // Two overloads differing only in argument count.
@@ -323,6 +358,7 @@ fn test_overload_by_count() {
     }
 }
 
+/// overload_by_type のテスト。
 #[test]
 fn test_overload_by_type() {
     // Two overloads with the same argument count but different types.
@@ -342,6 +378,7 @@ fn test_overload_by_type() {
     }
 }
 
+/// overload_three_variants のテスト。
 #[test]
 fn test_overload_three_variants() {
     let src = concat!(
@@ -366,6 +403,7 @@ fn test_overload_three_variants() {
     }
 }
 
+/// overload_wrong_count_err のテスト。
 #[test]
 fn test_overload_wrong_count_err() {
     let src = concat!(
@@ -376,6 +414,7 @@ fn test_overload_wrong_count_err() {
     assert!(run(src).is_err());
 }
 
+/// overload_method_by_type のテスト。
 #[test]
 fn test_overload_method_by_type() {
     // Method overloading inside a class.
@@ -397,6 +436,7 @@ fn test_overload_method_by_type() {
     }
 }
 
+/// overload_method_by_count のテスト。
 #[test]
 fn test_overload_method_by_count() {
     let src = concat!(
@@ -419,6 +459,7 @@ fn test_overload_method_by_count() {
 
 // --- classes ---
 
+/// class_instantiate のテスト。
 #[test]
 fn test_class_instantiate() {
     // Fields have defaults → no required args → Point() is the right call.
@@ -426,6 +467,7 @@ fn test_class_instantiate() {
     assert!(run(src).is_ok());
 }
 
+/// class_instantiate_required_fields のテスト。
 #[test]
 fn test_class_instantiate_required_fields() {
     // Fields without defaults → auto-init requires args.
@@ -433,12 +475,14 @@ fn test_class_instantiate_required_fields() {
     assert!(run(src).is_ok());
 }
 
+/// class_init_sets_field のテスト。
 #[test]
 fn test_class_init_sets_field() {
     let src = "class Dog:\n    mut name: str = \"\"\n    fn __init__(mut self, name: str) -> None:\n        self.name = name\nlet d = Dog(\"Rex\")\n";
     assert!(run(src).is_ok());
 }
 
+/// class_method_call のテスト。
 #[test]
 fn test_class_method_call() {
     let src = "class Greeter:\n    fn greet(self) -> str:\n        return \"hello\"\nlet g = Greeter()\nlet r = g.greet()\n";
@@ -449,6 +493,7 @@ fn test_class_method_call() {
     }
 }
 
+/// class_field_access のテスト。
 #[test]
 fn test_class_field_access() {
     // Fields have defaults; use defaults when instantiating.
@@ -461,6 +506,7 @@ fn test_class_field_access() {
     }
 }
 
+/// class_field_access_required のテスト。
 #[test]
 fn test_class_field_access_required() {
     // Fields without defaults require constructor args.
@@ -472,6 +518,7 @@ fn test_class_field_access_required() {
     }
 }
 
+/// access_public_field_ok のテスト。
 #[test]
 fn test_access_public_field_ok() {
     let src = concat!(
@@ -488,6 +535,7 @@ fn test_access_public_field_ok() {
     }
 }
 
+/// access_private_field_from_outside_errors のテスト。
 #[test]
 fn test_access_private_field_from_outside_errors() {
     let src = concat!(
@@ -507,6 +555,7 @@ fn test_access_private_field_from_outside_errors() {
     assert!(msg.contains("private"), "expected 'private', got: {msg}");
 }
 
+/// access_private_field_from_method_ok のテスト。
 #[test]
 fn test_access_private_field_from_method_ok() {
     let src = concat!(
@@ -525,6 +574,7 @@ fn test_access_private_field_from_method_ok() {
     }
 }
 
+/// access_protected_field_from_outside_errors のテスト。
 #[test]
 fn test_access_protected_field_from_outside_errors() {
     let src = concat!(
@@ -547,6 +597,7 @@ fn test_access_protected_field_from_outside_errors() {
     );
 }
 
+/// access_protected_field_via_method_ok のテスト。
 #[test]
 fn test_access_protected_field_via_method_ok() {
     let src = concat!(
@@ -565,6 +616,7 @@ fn test_access_protected_field_via_method_ok() {
     }
 }
 
+/// access_mixed_sections_in_class のテスト。
 #[test]
 fn test_access_mixed_sections_in_class() {
     let src = concat!(
@@ -587,6 +639,7 @@ fn test_access_mixed_sections_in_class() {
     }
 }
 
+/// access_private_write_from_outside_errors のテスト。
 #[test]
 fn test_access_private_write_from_outside_errors() {
     let src = concat!(
@@ -605,6 +658,7 @@ fn test_access_private_write_from_outside_errors() {
     );
 }
 
+/// class_self_field_in_method のテスト。
 #[test]
 fn test_class_self_field_in_method() {
     let src = concat!(
@@ -625,6 +679,7 @@ fn test_class_self_field_in_method() {
     }
 }
 
+/// class_inheritance_non_trait_parse_error のテスト。
 #[test]
 fn test_class_inheritance_non_trait_parse_error() {
     // Class-to-class inheritance is not supported; must use traits instead.
@@ -645,6 +700,7 @@ fn test_class_inheritance_non_trait_parse_error() {
     assert!(result.unwrap_err().contains("cannot inherit from `Animal`"));
 }
 
+/// class_inherit_non_trait_base_parse_error のテスト。
 #[test]
 fn test_class_inherit_non_trait_base_parse_error() {
     // Class-to-class inheritance is no longer supported; the parser must reject it.
@@ -666,6 +722,7 @@ fn test_class_inherit_non_trait_base_parse_error() {
 
 // --- trait ---
 
+/// trait_class_instantiate_combined_constructor のテスト。
 #[test]
 fn test_trait_class_instantiate_combined_constructor() {
     // Class inheriting a trait; combined __init__ takes trait fields then class fields.
@@ -679,6 +736,7 @@ fn test_trait_class_instantiate_combined_constructor() {
     assert!(run(src).is_ok());
 }
 
+/// trait_field_read_via_class_method のテスト。
 #[test]
 fn test_trait_field_read_via_class_method() {
     // A method defined in the CLASS body reads a trait field via TraitAccess.
@@ -707,6 +765,7 @@ fn test_trait_field_read_via_class_method() {
     }
 }
 
+/// trait_virtual_override_executes のテスト。
 #[test]
 fn test_trait_virtual_override_executes() {
     // Virtual method overridden in class; override body actually runs.
@@ -728,6 +787,7 @@ fn test_trait_virtual_override_executes() {
     }
 }
 
+/// trait_only_required_fields_no_class_fields のテスト。
 #[test]
 fn test_trait_only_required_fields_no_class_fields() {
     // Class body has no required fields; only the trait's required field.
@@ -749,6 +809,7 @@ fn test_trait_only_required_fields_no_class_fields() {
 
 // --- let-binding immutability for instances ---
 
+/// let_instance_field_is_frozen のテスト。
 #[test]
 fn test_let_instance_field_is_frozen() {
     // let binding freezes all mut fields — direct field write must fail
@@ -761,6 +822,7 @@ fn test_let_instance_field_is_frozen() {
     assert!(run(src).is_err(), "assigning to a frozen field must fail");
 }
 
+/// let_instance_mut_method_forbidden のテスト。
 #[test]
 fn test_let_instance_mut_method_forbidden() {
     // let binding forbids calling methods with mut self
@@ -778,6 +840,7 @@ fn test_let_instance_mut_method_forbidden() {
     );
 }
 
+/// let_instance_immutable_method_allowed のテスト。
 #[test]
 fn test_let_instance_immutable_method_allowed() {
     // let binding still allows calling methods with (non-mut) self
@@ -796,6 +859,7 @@ fn test_let_instance_immutable_method_allowed() {
     }
 }
 
+/// mut_instance_mut_method_allowed のテスト。
 #[test]
 fn test_mut_instance_mut_method_allowed() {
     // mut binding allows calling mut self methods normally
@@ -818,6 +882,7 @@ fn test_mut_instance_mut_method_allowed() {
     }
 }
 
+/// let_instance_error_message_names_method のテスト。
 #[test]
 fn test_let_instance_error_message_names_method() {
     let src = concat!(
@@ -840,6 +905,7 @@ fn test_let_instance_error_message_names_method() {
 
 // --- freeze statement ---
 
+/// freeze_makes_variable_immutable のテスト。
 #[test]
 fn test_freeze_makes_variable_immutable() {
     // After freeze, reassigning the variable itself must fail
@@ -853,6 +919,7 @@ fn test_freeze_makes_variable_immutable() {
     assert!(run(src).is_err(), "reassigning a frozen variable must fail");
 }
 
+/// freeze_freezes_instance_fields のテスト。
 #[test]
 fn test_freeze_freezes_instance_fields() {
     // After freeze, writing to a mut field must fail
@@ -866,6 +933,7 @@ fn test_freeze_freezes_instance_fields() {
     assert!(run(src).is_err(), "writing to a frozen field must fail");
 }
 
+/// freeze_forbids_mut_self_methods のテスト。
 #[test]
 fn test_freeze_forbids_mut_self_methods() {
     // After freeze, calling a mut self method must fail
@@ -884,6 +952,7 @@ fn test_freeze_forbids_mut_self_methods() {
     );
 }
 
+/// freeze_allows_immutable_methods のテスト。
 #[test]
 fn test_freeze_allows_immutable_methods() {
     // After freeze, calling a (non-mut) self method must still work
@@ -903,6 +972,7 @@ fn test_freeze_allows_immutable_methods() {
     }
 }
 
+/// freeze_calls_dunder_freeze のテスト。
 #[test]
 fn test_freeze_calls_dunder_freeze() {
     // freeze must call __freeze__ on the instance before freezing
@@ -924,6 +994,7 @@ fn test_freeze_calls_dunder_freeze() {
     }
 }
 
+/// freeze_on_let_variable_errors のテスト。
 #[test]
 fn test_freeze_on_let_variable_errors() {
     // freeze on an already-immutable variable must fail
@@ -936,6 +1007,7 @@ fn test_freeze_on_let_variable_errors() {
     assert!(run(src).is_err(), "freeze on a let variable must fail");
 }
 
+/// freeze_on_undefined_variable_errors のテスト。
 #[test]
 fn test_freeze_on_undefined_variable_errors() {
     assert!(
@@ -946,6 +1018,7 @@ fn test_freeze_on_undefined_variable_errors() {
 
 // --- Self type ---
 
+/// self_type_as_constructor_in_method のテスト。
 #[test]
 fn test_self_type_as_constructor_in_method() {
     // Self(...) inside a method creates a new instance of the same class.
@@ -966,6 +1039,7 @@ fn test_self_type_as_constructor_in_method() {
     }
 }
 
+/// self_type_in_return_annotation のテスト。
 #[test]
 fn test_self_type_in_return_annotation() {
     // `-> Self` is a valid return type annotation inside a class method.
@@ -985,6 +1059,7 @@ fn test_self_type_in_return_annotation() {
     }
 }
 
+/// self_type_in_param_annotation のテスト。
 #[test]
 fn test_self_type_in_param_annotation() {
     // `other: Self` is a valid parameter type annotation inside a class method.
@@ -1004,6 +1079,7 @@ fn test_self_type_in_param_annotation() {
     }
 }
 
+/// self_type_outside_class_is_parse_error のテスト。
 #[test]
 fn test_self_type_outside_class_is_parse_error() {
     // `Self` used outside a class or trait must produce a parse error.
@@ -1019,6 +1095,7 @@ fn test_self_type_outside_class_is_parse_error() {
     );
 }
 
+/// self_type_in_expression_outside_class_is_parse_error のテスト。
 #[test]
 fn test_self_type_in_expression_outside_class_is_parse_error() {
     // `Self` as an expression outside a class must produce a parse error.
@@ -1030,6 +1107,7 @@ fn test_self_type_in_expression_outside_class_is_parse_error() {
     );
 }
 
+/// trait_field_write_via_method のテスト。
 #[test]
 fn test_trait_field_write_via_method() {
     // A class method writes to a trait field using TraitAccess assignment.
@@ -1055,6 +1133,7 @@ fn test_trait_field_write_via_method() {
 
 // --- new_type ---
 
+/// new_type_class_copy_same_behavior のテスト。
 #[test]
 fn test_new_type_class_copy_same_behavior() {
     // new_type creates a structurally identical class — field access and methods work.
@@ -1074,6 +1153,7 @@ fn test_new_type_class_copy_same_behavior() {
     }
 }
 
+/// new_type_instances_are_distinct のテスト。
 #[test]
 fn test_new_type_instances_are_distinct() {
     // new_type gives a different class name — class name of instance is distinct.
@@ -1094,6 +1174,7 @@ fn test_new_type_instances_are_distinct() {
     }
 }
 
+/// new_type_primitive_wrapper のテスト。
 #[test]
 fn test_new_type_primitive_wrapper() {
     // new_type from a primitive type creates a wrapper class with .value field.
@@ -1109,6 +1190,7 @@ fn test_new_type_primitive_wrapper() {
     }
 }
 
+/// new_type_self_resolves_to_new_type のテスト。
 #[test]
 fn test_new_type_self_resolves_to_new_type() {
     // When a method inherited via new_type calls Self(...), it creates an instance
@@ -1130,6 +1212,7 @@ fn test_new_type_self_resolves_to_new_type() {
     }
 }
 
+/// new_type_const_is_parse_error のテスト。
 #[test]
 fn test_new_type_const_is_parse_error() {
     // Reassigning a new_type binding is a parse error.
@@ -1149,6 +1232,7 @@ fn test_new_type_const_is_parse_error() {
 
 // --- Exception handling tests ---
 
+/// raise_uncaught_reaches_caller のテスト。
 #[test]
 fn test_raise_uncaught_reaches_caller() {
     let raised = run_exc("raise ValueError(\"oops\")\n").unwrap();
@@ -1165,6 +1249,7 @@ fn test_raise_uncaught_reaches_caller() {
     }
 }
 
+/// try_except_catches_matching_type のテスト。
 #[test]
 fn test_try_except_catches_matching_type() {
     let src = concat!(
@@ -1179,6 +1264,7 @@ fn test_try_except_catches_matching_type() {
     assert!(matches!(x, Value::Int(1)));
 }
 
+/// try_except_does_not_catch_different_type のテスト。
 #[test]
 fn test_try_except_does_not_catch_different_type() {
     let src = concat!(
@@ -1199,6 +1285,7 @@ fn test_try_except_does_not_catch_different_type() {
     }
 }
 
+/// try_finally_runs_always のテスト。
 #[test]
 fn test_try_finally_runs_always() {
     let src = concat!(
@@ -1214,6 +1301,7 @@ fn test_try_finally_runs_always() {
     assert!(matches!(x, Value::Int(2)));
 }
 
+/// try_no_raise_skips_except のテスト。
 #[test]
 fn test_try_no_raise_skips_except() {
     let src = concat!(
@@ -1227,6 +1315,7 @@ fn test_try_no_raise_skips_except() {
     assert!(matches!(x, Value::Int(5)));
 }
 
+/// try_bare_except_catches_all のテスト。
 #[test]
 fn test_try_bare_except_catches_all() {
     let src = concat!(
@@ -1240,6 +1329,7 @@ fn test_try_bare_except_catches_all() {
     assert!(matches!(v, Value::Int(1)));
 }
 
+/// user_defined_error_class のテスト。
 #[test]
 fn test_user_defined_error_class() {
     let src = concat!(
@@ -1255,6 +1345,7 @@ fn test_user_defined_error_class() {
     assert!(matches!(v, Value::Int(1)));
 }
 
+/// exception_message_accessible のテスト。
 #[test]
 fn test_exception_message_accessible() {
     let src = concat!(
@@ -1271,6 +1362,7 @@ fn test_exception_message_accessible() {
     }
 }
 
+/// bare_raise_reraises のテスト。
 #[test]
 fn test_bare_raise_reraises() {
     let src = concat!(
@@ -1288,6 +1380,7 @@ fn test_bare_raise_reraises() {
     assert!(matches!(v, Value::Int(2)));
 }
 
+/// exception_propagates_through_function のテスト。
 #[test]
 fn test_exception_propagates_through_function() {
     let src = concat!(
@@ -1305,6 +1398,7 @@ fn test_exception_propagates_through_function() {
 
 // --- internal error catchability ---
 
+/// catch_internal_type_error のテスト。
 #[test]
 fn test_catch_internal_type_error() {
     let src = concat!(
@@ -1318,6 +1412,7 @@ fn test_catch_internal_type_error() {
     assert!(matches!(v, Value::Int(1)));
 }
 
+/// catch_internal_index_error のテスト。
 #[test]
 fn test_catch_internal_index_error() {
     let src = concat!(
@@ -1332,6 +1427,7 @@ fn test_catch_internal_index_error() {
     assert!(matches!(v, Value::Int(1)));
 }
 
+/// catch_internal_key_error のテスト。
 #[test]
 fn test_catch_internal_key_error() {
     let src = concat!(
@@ -1346,6 +1442,7 @@ fn test_catch_internal_key_error() {
     assert!(matches!(v, Value::Int(1)));
 }
 
+/// catch_internal_zero_division のテスト。
 #[test]
 fn test_catch_internal_zero_division() {
     let src = concat!(
@@ -1359,6 +1456,7 @@ fn test_catch_internal_zero_division() {
     assert!(matches!(v, Value::Int(1)));
 }
 
+/// catch_internal_name_error のテスト。
 #[test]
 fn test_catch_internal_name_error() {
     let src = concat!(
@@ -1372,6 +1470,7 @@ fn test_catch_internal_name_error() {
     assert!(matches!(v, Value::Int(1)));
 }
 
+/// internal_error_message_accessible のテスト。
 #[test]
 fn test_internal_error_message_accessible() {
     let src = concat!(
@@ -1389,6 +1488,7 @@ fn test_internal_error_message_accessible() {
     }
 }
 
+/// bare_except_catches_internal_error のテスト。
 #[test]
 fn test_bare_except_catches_internal_error() {
     let src = concat!(
@@ -1402,6 +1502,7 @@ fn test_bare_except_catches_internal_error() {
     assert!(matches!(v, Value::Int(1)));
 }
 
+/// internal_error_not_caught_by_wrong_type のテスト。
 #[test]
 fn test_internal_error_not_caught_by_wrong_type() {
     let src = concat!(
@@ -1417,6 +1518,7 @@ fn test_internal_error_not_caught_by_wrong_type() {
     );
 }
 
+/// internal_error_in_function_is_catchable のテスト。
 #[test]
 fn test_internal_error_in_function_is_catchable() {
     let src = concat!(
@@ -1432,6 +1534,7 @@ fn test_internal_error_in_function_is_catchable() {
     assert!(matches!(v, Value::Int(1)));
 }
 
+/// finally_runs_after_internal_error のテスト。
 #[test]
 fn test_finally_runs_after_internal_error() {
     let src = concat!(
@@ -1449,6 +1552,7 @@ fn test_finally_runs_after_internal_error() {
 
 // --- iterator ---
 
+/// list_iter_for_loop のテスト。
 #[test]
 fn test_list_iter_for_loop() {
     // for loop over a list uses __iter__ internally
@@ -1460,6 +1564,7 @@ fn test_list_iter_for_loop() {
     }
 }
 
+/// list_iter_method_direct のテスト。
 #[test]
 fn test_list_iter_method_direct() {
     // list.__iter__() returns a Generator; .next() yields each element
@@ -1475,6 +1580,7 @@ fn test_list_iter_method_direct() {
     assert!(matches!(run_get(src, "c"), Value::Int(30)));
 }
 
+/// generator_exhausted_raises_end_of_iteration のテスト。
 #[test]
 fn test_generator_exhausted_raises_end_of_iteration() {
     // .next() on an exhausted generator must raise EndOfIteration
@@ -1506,6 +1612,7 @@ fn test_generator_exhausted_raises_end_of_iteration() {
     );
 }
 
+/// custom_iter_class のテスト。
 #[test]
 fn test_custom_iter_class() {
     // A class with gen __iter__ can be used in a for loop
@@ -1527,6 +1634,7 @@ fn test_custom_iter_class() {
     }
 }
 
+/// custom_iter_with_fields のテスト。
 #[test]
 fn test_custom_iter_with_fields() {
     // __iter__ can access self fields to yield instance data
@@ -1550,6 +1658,7 @@ fn test_custom_iter_with_fields() {
     }
 }
 
+/// str_iter_for_loop のテスト。
 #[test]
 fn test_str_iter_for_loop() {
     // for loop over a string iterates over characters
@@ -1561,6 +1670,7 @@ fn test_str_iter_for_loop() {
     }
 }
 
+/// for_break_with_iterator のテスト。
 #[test]
 fn test_for_break_with_iterator() {
     // break still works correctly inside an iterator-based for loop
@@ -1576,18 +1686,21 @@ fn test_for_break_with_iterator() {
 // Dict tests
 // ---------------------------------------------------------------------------
 
+/// dict_literal_empty のテスト。
 #[test]
 fn test_dict_literal_empty() {
     let src = "let d = {}";
     assert!(run(src).is_ok());
 }
 
+/// dict_literal_with_entries のテスト。
 #[test]
 fn test_dict_literal_with_entries() {
     let src = r#"let d = {"a": 1, "b": 2}"#;
     assert!(run(src).is_ok());
 }
 
+/// dict_subscript_read のテスト。
 #[test]
 fn test_dict_subscript_read() {
     let src = r#"let d = {"x": 42}
@@ -1599,6 +1712,7 @@ let v = d["x"]"#;
     }
 }
 
+/// dict_subscript_write のテスト。
 #[test]
 fn test_dict_subscript_write() {
     let src = r#"mut d = {"a": 1}
@@ -1606,6 +1720,7 @@ d["a"] = 99"#;
     run(src).expect("should not fail");
 }
 
+/// dict_subscript_add_new_key のテスト。
 #[test]
 fn test_dict_subscript_add_new_key() {
     let src = r#"mut d = {}
@@ -1618,6 +1733,7 @@ let v = d["k"]"#;
     }
 }
 
+/// dict_key_not_found_error のテスト。
 #[test]
 fn test_dict_key_not_found_error() {
     let src = r#"let d = {"a": 1}
@@ -1625,6 +1741,7 @@ let v = d["missing"]"#;
     assert!(run(src).is_err());
 }
 
+/// dict_key_method のテスト。
 #[test]
 fn test_dict_key_method() {
     let src = r#"let d = {1: "one", 2: "two"}
@@ -1636,6 +1753,7 @@ let ks = d.key()"#;
     }
 }
 
+/// dict_item_method のテスト。
 #[test]
 fn test_dict_item_method() {
     let src = r#"let d = {1: "one", 2: "two"}
@@ -1647,18 +1765,21 @@ let vs = d.item()"#;
     }
 }
 
+/// dict_typed_constructor_empty のテスト。
 #[test]
 fn test_dict_typed_constructor_empty() {
     let src = "let d = dict[str, int]()";
     assert!(run(src).is_ok());
 }
 
+/// dict_typed_constructor_from_literal のテスト。
 #[test]
 fn test_dict_typed_constructor_from_literal() {
     let src = r#"let d = dict[str, int]({"hello": 1, "world": 2})"#;
     assert!(run(src).is_ok());
 }
 
+/// dict_typed_constructor_type_mismatch_key_err のテスト。
 #[test]
 fn test_dict_typed_constructor_type_mismatch_key_err() {
     let src = r#"let d = dict[int, str]({1: "ok", "bad": "value"})"#;
@@ -1666,6 +1787,7 @@ fn test_dict_typed_constructor_type_mismatch_key_err() {
     assert!(err.contains("StaticTypeError"), "got: {err}");
 }
 
+/// dict_typed_constructor_type_mismatch_item_err のテスト。
 #[test]
 fn test_dict_typed_constructor_type_mismatch_item_err() {
     let src = r#"let d = dict[str, int]({"ok": 1, "bad": "not_an_int"})"#;
@@ -1673,6 +1795,7 @@ fn test_dict_typed_constructor_type_mismatch_item_err() {
     assert!(err.contains("StaticTypeError"), "got: {err}");
 }
 
+/// dict_typed_write_type_check のテスト。
 #[test]
 fn test_dict_typed_write_type_check() {
     let src = r#"mut d = dict[str, int]()
@@ -1680,6 +1803,7 @@ d["key"] = 42"#;
     assert!(run(src).is_ok());
 }
 
+/// dict_typed_write_wrong_key_type_err のテスト。
 #[test]
 fn test_dict_typed_write_wrong_key_type_err() {
     let src = r#"mut d = dict[str, int]()
@@ -1688,6 +1812,7 @@ d[123] = 42"#;
     assert!(err.contains("TypeError"), "got: {err}");
 }
 
+/// dict_typed_write_wrong_item_type_err のテスト。
 #[test]
 fn test_dict_typed_write_wrong_item_type_err() {
     let src = r#"mut d = dict[str, int]()
@@ -1696,12 +1821,14 @@ d["key"] = "not_int""#;
     assert!(err.contains("TypeError"), "got: {err}");
 }
 
+/// dict_multiline_literal のテスト。
 #[test]
 fn test_dict_multiline_literal() {
     let src = "let d = {\n    \"a\": 1,\n    \"b\": 2\n}";
     assert!(run(src).is_ok());
 }
 
+/// dict_int_upcast_to_float_ok のテスト。
 #[test]
 fn test_dict_int_upcast_to_float_ok() {
     // int value is accepted where float is declared (upcast)
@@ -1710,6 +1837,7 @@ d["pi"] = 3"#;
     assert!(run(src).is_ok());
 }
 
+/// dict_is_truthy_empty のテスト。
 #[test]
 fn test_dict_is_truthy_empty() {
     let src = "let d = {}\nlet t = not d";
@@ -1720,6 +1848,7 @@ fn test_dict_is_truthy_empty() {
     }
 }
 
+/// dict_is_truthy_nonempty のテスト。
 #[test]
 fn test_dict_is_truthy_nonempty() {
     let src = r#"let d = {"x": 1}
@@ -1733,6 +1862,7 @@ let t = not d"#;
 
 // --- tuples ---
 
+/// tuple_empty のテスト。
 #[test]
 fn test_tuple_empty() {
     let v = eval_expr("()");
@@ -1743,6 +1873,7 @@ fn test_tuple_empty() {
     }
 }
 
+/// tuple_single のテスト。
 #[test]
 fn test_tuple_single() {
     let v = eval_expr("(42,)");
@@ -1754,6 +1885,7 @@ fn test_tuple_single() {
     }
 }
 
+/// tuple_multi のテスト。
 #[test]
 fn test_tuple_multi() {
     let v = eval_expr(r#"(1, "hello", True)"#);
@@ -1767,6 +1899,7 @@ fn test_tuple_multi() {
     }
 }
 
+/// tuple_types のテスト。
 #[test]
 fn test_tuple_types() {
     let v = eval_expr(r#"(1, "hello", True)"#);
@@ -1779,6 +1912,7 @@ fn test_tuple_types() {
     }
 }
 
+/// tuple_grouped_expr_not_tuple のテスト。
 #[test]
 fn test_tuple_grouped_expr_not_tuple() {
     // (expr) without comma is NOT a tuple
@@ -1786,12 +1920,14 @@ fn test_tuple_grouped_expr_not_tuple() {
     assert!(matches!(v, Value::Int(42)));
 }
 
+/// tuple_display のテスト。
 #[test]
 fn test_tuple_display() {
     let src = r#"let t = (1, "a", True)"#;
     assert!(run(src).is_ok());
 }
 
+/// tuple_equality のテスト。
 #[test]
 fn test_tuple_equality() {
     let src = "let a = (1, 2)\nlet b = (1, 2)\nlet eq = a == b\n";
@@ -1802,6 +1938,7 @@ fn test_tuple_equality() {
     }
 }
 
+/// tuple_inequality_different_values のテスト。
 #[test]
 fn test_tuple_inequality_different_values() {
     let src = "let a = (1, 2)\nlet b = (1, 3)\nlet eq = a == b\n";
@@ -1812,6 +1949,7 @@ fn test_tuple_inequality_different_values() {
     }
 }
 
+/// tuple_truthy_nonempty のテスト。
 #[test]
 fn test_tuple_truthy_nonempty() {
     let src = "let t = (1, 2)\nlet r = not t\n";
@@ -1822,6 +1960,7 @@ fn test_tuple_truthy_nonempty() {
     }
 }
 
+/// tuple_falsy_empty のテスト。
 #[test]
 fn test_tuple_falsy_empty() {
     let src = "let t = ()\nlet r = not t\n";
@@ -1832,6 +1971,7 @@ fn test_tuple_falsy_empty() {
     }
 }
 
+/// tuple_multiline のテスト。
 #[test]
 fn test_tuple_multiline() {
     let src = "let t = (1,\n    2,\n    3)\n";
@@ -1844,6 +1984,7 @@ fn test_tuple_multiline() {
 
 // --- function type ---
 
+/// function_type_call_positional のテスト。
 #[test]
 fn test_function_type_call_positional() {
     let src = concat!(
@@ -1861,6 +2002,7 @@ fn test_function_type_call_positional() {
     }
 }
 
+/// function_type_call_named_param のテスト。
 #[test]
 fn test_function_type_call_named_param() {
     let src = concat!(
@@ -1878,6 +2020,7 @@ fn test_function_type_call_named_param() {
     }
 }
 
+/// function_type_chained_call のテスト。
 #[test]
 fn test_function_type_chained_call() {
     let src = concat!(
@@ -1894,6 +2037,7 @@ fn test_function_type_chained_call() {
     }
 }
 
+/// function_type_bare_any_call のテスト。
 #[test]
 fn test_function_type_bare_any_call() {
     // bare `function` type parameter should work with any call.
@@ -1911,6 +2055,7 @@ fn test_function_type_bare_any_call() {
     }
 }
 
+/// function_type_zero_params のテスト。
 #[test]
 fn test_function_type_zero_params() {
     let src = concat!(
@@ -1928,6 +2073,7 @@ fn test_function_type_zero_params() {
     }
 }
 
+/// function_type_is_guard のテスト。
 #[test]
 fn test_function_type_is_guard() {
     // `f is function` should be True for a function value.
@@ -1945,6 +2091,7 @@ fn test_function_type_is_guard() {
 
 // --- closures ---
 
+/// closure_captures_immutable のテスト。
 #[test]
 fn test_closure_captures_immutable() {
     // 不変変数のキャプチャ: 定義時の値が内側関数に保持される
@@ -1963,6 +2110,7 @@ fn test_closure_captures_immutable() {
     }
 }
 
+/// closure_captures_mutable_shared のテスト。
 #[test]
 fn test_closure_captures_mutable_shared() {
     // 可変変数のキャプチャ: 内側関数が外側スコープの変数を変更できる
@@ -1989,6 +2137,7 @@ fn test_closure_captures_mutable_shared() {
     assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(3)));
 }
 
+/// closure_each_call_new_env のテスト。
 #[test]
 fn test_closure_each_call_new_env() {
     // 呼び出しごとに独立したクロージャ環境が生成される
@@ -2014,6 +2163,7 @@ fn test_closure_each_call_new_env() {
     assert!(matches!(interp.get_val("r_b").unwrap(), Value::Int(101)));
 }
 
+/// closure_inner_called_from_outer のテスト。
 #[test]
 fn test_closure_inner_called_from_outer() {
     // 内側関数が外側関数の実行中に呼ばれ、変更が外側に反映される
@@ -2035,6 +2185,7 @@ fn test_closure_inner_called_from_outer() {
     }
 }
 
+/// closure_static_shared_across_calls のテスト。
 #[test]
 fn test_closure_static_shared_across_calls() {
     // static mut 変数: 複数の呼び出しで同じセルを共有する
@@ -2063,6 +2214,7 @@ fn test_closure_static_shared_across_calls() {
     assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(3)));
 }
 
+/// closure_freeze_captured_var_error のテスト。
 #[test]
 fn test_closure_freeze_captured_var_error() {
     // クロージャにキャプチャされた可変変数は freeze できない
@@ -2077,6 +2229,7 @@ fn test_closure_freeze_captured_var_error() {
     assert!(run(src).is_err());
 }
 
+/// closure_nested のテスト。
 #[test]
 fn test_closure_nested() {
     // 二重ネストしたクロージャ
@@ -2099,6 +2252,7 @@ fn test_closure_nested() {
 
 // --- Decorator ---
 
+/// decorator_fn_basic のテスト。
 #[test]
 fn test_decorator_fn_basic() {
     // 関数デコレータ: @log で包まれた関数を呼ぶと wrapper が実行される
@@ -2119,6 +2273,7 @@ fn test_decorator_fn_basic() {
     }
 }
 
+/// decorator_fn_passes_original のテスト。
 #[test]
 fn test_decorator_fn_passes_original() {
     // デコレータは元の関数を受け取ってラップできる
@@ -2137,6 +2292,7 @@ fn test_decorator_fn_passes_original() {
     }
 }
 
+/// decorator_stacked のテスト。
 #[test]
 fn test_decorator_stacked() {
     // スタックされたデコレータは下から順に適用される
@@ -2159,6 +2315,7 @@ fn test_decorator_stacked() {
     }
 }
 
+/// decorator_class_as_decorator_for_fn のテスト。
 #[test]
 fn test_decorator_class_as_decorator_for_fn() {
     // クラスデコレータ（関数に適用）
@@ -2184,6 +2341,7 @@ fn test_decorator_class_as_decorator_for_fn() {
     }
 }
 
+/// decorator_instance_callable のテスト。
 #[test]
 fn test_decorator_instance_callable() {
     // Value::Instance が __call__ を持つ場合に関数として呼び出せる
@@ -2203,6 +2361,7 @@ fn test_decorator_instance_callable() {
     }
 }
 
+/// tl_to_py_dict のテスト。
 #[test]
 fn test_tl_to_py_dict() {
     // Value::Dict を Python に渡せることを確認する (sum_dict はすべての int 値を合計する)
@@ -2218,6 +2377,7 @@ fn test_tl_to_py_dict() {
     }
 }
 
+/// tl_to_py_tuple のテスト。
 #[test]
 fn test_tl_to_py_tuple() {
     // Value::Tuple を Python に渡せることを確認する (first_of_tuple は先頭要素を返す)
@@ -2237,6 +2397,7 @@ fn test_tl_to_py_tuple() {
 // __getitem__ / __setitem__ — list, str, dict, instance, PyObject
 // ---------------------------------------------------------------------------
 
+/// list_getitem のテスト。
 #[test]
 fn test_list_getitem() {
     // list[int] インデックスアクセス（正・負）
@@ -2251,6 +2412,7 @@ fn test_list_getitem() {
     assert!(matches!(run_get(src, "c"), Value::Int(30)));
 }
 
+/// list_setitem のテスト。
 #[test]
 fn test_list_setitem() {
     // list[int] = value による要素の書き換え
@@ -2258,6 +2420,7 @@ fn test_list_setitem() {
     assert!(matches!(run_get(src, "r"), Value::Int(99)));
 }
 
+/// list_setitem_negative のテスト。
 #[test]
 fn test_list_setitem_negative() {
     // 負インデックスでの書き換え
@@ -2265,12 +2428,14 @@ fn test_list_setitem_negative() {
     assert!(matches!(run_get(src, "r"), Value::Int(77)));
 }
 
+/// list_getitem_out_of_range のテスト。
 #[test]
 fn test_list_getitem_out_of_range() {
     let src = concat!("let xs = [1, 2, 3]\n", "let r = xs[5]\n",);
     assert!(run(src).is_err());
 }
 
+/// str_getitem のテスト。
 #[test]
 fn test_str_getitem() {
     // str[int] インデックスアクセス（正・負）
@@ -2287,6 +2452,7 @@ fn test_str_getitem() {
     }
 }
 
+/// instance_getitem_setitem のテスト。
 #[test]
 fn test_instance_getitem_setitem() {
     // ユーザー定義クラスの __getitem__ / __setitem__
@@ -2305,6 +2471,7 @@ fn test_instance_getitem_setitem() {
     assert!(matches!(run_get(src, "r"), Value::Int(6)));
 }
 
+/// pyobject_getitem のテスト。
 #[test]
 fn test_pyobject_getitem() {
     // PyObject の subscript read: Container.__getitem__
@@ -2320,6 +2487,7 @@ fn test_pyobject_getitem() {
     }
 }
 
+/// pyobject_setitem のテスト。
 #[test]
 fn test_pyobject_setitem() {
     // PyObject の subscript write: Container.__setitem__
@@ -2336,6 +2504,7 @@ fn test_pyobject_setitem() {
     }
 }
 
+/// tuple_getitem のテスト。
 #[test]
 fn test_tuple_getitem() {
     // Python から返ってきた tuple が Value::Tuple に変換された場合の subscript
@@ -2347,6 +2516,7 @@ fn test_tuple_getitem() {
 // for ループ: PyObject の反復
 // ---------------------------------------------------------------------------
 
+/// pyobject_for_loop のテスト。
 #[test]
 fn test_pyobject_for_loop() {
     // Container は Python iterable; for ループで各要素を取得できる
@@ -2364,6 +2534,7 @@ fn test_pyobject_for_loop() {
 // 二項演算子: PyObject オペランド
 // ---------------------------------------------------------------------------
 
+/// pyobject_binop_mul_lhs のテスト。
 #[test]
 fn test_pyobject_binop_mul_lhs() {
     // lhs = PyObject: c * 3 → Container.__mul__(3) → 要素数 6 の Container
@@ -2376,6 +2547,7 @@ fn test_pyobject_binop_mul_lhs() {
     assert!(matches!(run_py_get(src, "r"), Value::Int(6)));
 }
 
+/// pyobject_binop_mul_rhs のテスト。
 #[test]
 fn test_pyobject_binop_mul_rhs() {
     // rhs = PyObject: 3 * c → Container.__rmul__(3) → 要素数 6 の Container
@@ -2388,6 +2560,7 @@ fn test_pyobject_binop_mul_rhs() {
     assert!(matches!(run_py_get(src, "r"), Value::Int(6)));
 }
 
+/// pyobject_binop_add のテスト。
 #[test]
 fn test_pyobject_binop_add() {
     // c1 + c2 → Container.__add__ → 要素が結合された Container
@@ -2405,6 +2578,7 @@ fn test_pyobject_binop_add() {
 // block expression tests (block_return / block_yield)
 // ---------------------------------------------------------------------------
 
+/// block_expr_block_return のテスト。
 #[test]
 fn test_block_expr_block_return() {
     let src = "
@@ -2414,6 +2588,7 @@ let x = block:
     assert!(matches!(run_get(src, "x"), Value::Int(42)));
 }
 
+/// block_expr_block_return_early_exit のテスト。
 #[test]
 fn test_block_expr_block_return_early_exit() {
     let src = "
@@ -2425,6 +2600,7 @@ let x = block:
     assert!(matches!(run_get(src, "x"), Value::Int(1)));
 }
 
+/// block_expr_no_block_return_gives_none のテスト。
 #[test]
 fn test_block_expr_no_block_return_gives_none() {
     let src = "
@@ -2435,6 +2611,7 @@ let x = block:
     assert!(matches!(run_get(src, "x"), Value::None));
 }
 
+/// block_expr_computed_value のテスト。
 #[test]
 fn test_block_expr_computed_value() {
     let src = "
@@ -2446,6 +2623,7 @@ let result = block:
     assert!(matches!(run_get(src, "result"), Value::Int(13)));
 }
 
+/// block_expr_conditional_return のテスト。
 #[test]
 fn test_block_expr_conditional_return() {
     let src = "
@@ -2466,6 +2644,7 @@ let c = classify(0)
     assert!(matches!(run_get(src, "c"), Value::Str(ref s) if s == "zero"));
 }
 
+/// loop_yield_list_from_for_expr のテスト。
 #[test]
 fn test_loop_yield_list_from_for_expr() {
     // loop_yield accumulates values from a for expression
@@ -2484,6 +2663,7 @@ let items = for i in range(1, 4) ->list[int]:
     }
 }
 
+/// loop_yield_in_nested_if_inside_for_expr のテスト。
 #[test]
 fn test_loop_yield_in_nested_if_inside_for_expr() {
     // loop_yield inside an if that's inside a for expression
@@ -2503,6 +2683,7 @@ let evens = for i in range(6) ->list[int]:
     }
 }
 
+/// loop_yield_outside_for_while_expr_is_error のテスト。
 #[test]
 fn test_loop_yield_outside_for_while_expr_is_error() {
     // loop_yield inside block: (not a for/while expression) is a runtime error
@@ -2515,6 +2696,7 @@ block:
     assert!(run(src).is_err());
 }
 
+/// break_outside_loop_is_error のテスト。
 #[test]
 fn test_break_outside_loop_is_error() {
     // break outside any for/while loop is a runtime error
@@ -2526,6 +2708,7 @@ bad()
     assert!(run(src).is_err());
 }
 
+/// block_return_outside_block_expr_is_error のテスト。
 #[test]
 fn test_block_return_outside_block_expr_is_error() {
     // block_return outside any block: expression should be a SyntaxError
@@ -2542,6 +2725,7 @@ bad()
 // match statement tests
 // ---------------------------------------------------------------------------
 
+/// match_case_literal のテスト。
 #[test]
 fn test_match_case_literal() {
     let src = "
@@ -2556,6 +2740,7 @@ match (x):
     assert!(matches!(run_get(src, "result"), Value::Int(1)));
 }
 
+/// match_case_no_match のテスト。
 #[test]
 fn test_match_case_no_match() {
     let src = "
@@ -2570,6 +2755,7 @@ match (x):
     assert!(matches!(run_get(src, "result"), Value::Int(0)));
 }
 
+/// match_case_wildcard のテスト。
 #[test]
 fn test_match_case_wildcard() {
     let src = "
@@ -2584,6 +2770,7 @@ match (x):
     assert!(matches!(run_get(src, "result"), Value::Int(99)));
 }
 
+/// match_case_string のテスト。
 #[test]
 fn test_match_case_string() {
     let src = r#"
@@ -2600,6 +2787,7 @@ match (s):
     assert!(matches!(run_get(src, "result"), Value::Int(2)));
 }
 
+/// match_is_int のテスト。
 #[test]
 fn test_match_is_int() {
     let src = "
@@ -2614,6 +2802,7 @@ match (x):
     assert!(matches!(run_get(src, "result"), Value::Int(1)));
 }
 
+/// match_is_str のテスト。
 #[test]
 fn test_match_is_str() {
     let src = r#"
@@ -2628,6 +2817,7 @@ match (x):
     assert!(matches!(run_get(src, "result"), Value::Int(2)));
 }
 
+/// match_is_no_match のテスト。
 #[test]
 fn test_match_is_no_match() {
     let src = "
@@ -2642,6 +2832,7 @@ match (x):
     assert!(matches!(run_get(src, "result"), Value::Int(0)));
 }
 
+/// match_block_return のテスト。
 #[test]
 fn test_match_block_return() {
     // block_return inside a match arm exits the enclosing block: early
@@ -2661,6 +2852,7 @@ block:
     assert!(matches!(run_get(src, "result"), Value::Int(20)));
 }
 
+/// match_return_from_function のテスト。
 #[test]
 fn test_match_return_from_function() {
     let src = "
@@ -2678,6 +2870,7 @@ let result = get(2)
     assert!(matches!(run_get(src, "result"), Value::Int(20)));
 }
 
+/// match_mixed_arms_parse_error のテスト。
 #[test]
 fn test_match_mixed_arms_parse_error() {
     let src = "
@@ -2699,6 +2892,7 @@ match (x):
 // 制御フロー式テスト (if/for/while/match as expressions)
 // ---------------------------------------------------------------------------
 
+/// `val` が `Str(expected)` であることを表明するテストヘルパー。
 fn assert_str(val: Value, expected: &str) {
     if let Value::Str(s) = val {
         assert_eq!(s, expected);
@@ -2707,6 +2901,7 @@ fn assert_str(val: Value, expected: &str) {
     }
 }
 
+/// `val` が `Int(expected)` であることを表明するテストヘルパー。
 fn assert_int(val: Value, expected: i64) {
     if let Value::Int(n) = val {
         assert_eq!(n, expected);
@@ -2715,6 +2910,7 @@ fn assert_int(val: Value, expected: i64) {
     }
 }
 
+/// `val` が `List([Int(...)])` であることを表明するテストヘルパー。各要素の整数値を検証する。
 fn assert_int_list(val: Value, expected: &[i64]) {
     if let Value::List(rc) = val {
         let list = rc.borrow();
@@ -2731,6 +2927,7 @@ fn assert_int_list(val: Value, expected: &[i64]) {
     }
 }
 
+/// if_expr_true_branch のテスト。
 #[test]
 fn test_if_expr_true_branch() {
     let src = "
@@ -2742,6 +2939,7 @@ else:
     assert_str(run_get(src, "x"), "yes");
 }
 
+/// if_expr_false_branch のテスト。
 #[test]
 fn test_if_expr_false_branch() {
     let src = "
@@ -2753,6 +2951,7 @@ else:
     assert_str(run_get(src, "x"), "no");
 }
 
+/// if_expr_no_else_returns_none のテスト。
 #[test]
 fn test_if_expr_no_else_returns_none() {
     let src = "
@@ -2762,6 +2961,7 @@ let x = if False ->str:
     assert!(matches!(run_get(src, "x"), Value::None));
 }
 
+/// if_expr_elif のテスト。
 #[test]
 fn test_if_expr_elif() {
     let src = "
@@ -2776,6 +2976,7 @@ else:
     assert_str(run_get(src, "s"), "medium");
 }
 
+/// for_expr_block_yield のテスト。
 #[test]
 fn test_for_expr_block_yield() {
     let src = "
@@ -2786,6 +2987,7 @@ let evens = for i in range(5) ->list[int]:
     assert_int_list(run_get(src, "evens"), &[0, 2, 4]);
 }
 
+/// for_expr_block_return_single_value のテスト。
 #[test]
 fn test_for_expr_block_return_single_value() {
     let src = "
@@ -2796,6 +2998,7 @@ let first = for i in range(1, 10) ->int:
     assert_int(run_get(src, "first"), 2);
 }
 
+/// for_expr_no_yields_returns_none のテスト。
 #[test]
 fn test_for_expr_no_yields_returns_none() {
     let src = "
@@ -2805,6 +3008,7 @@ let x = for i in range(0) ->list[int]:
     assert!(matches!(run_get(src, "x"), Value::None));
 }
 
+/// for_expr_break_returns_partial_list のテスト。
 #[test]
 fn test_for_expr_break_returns_partial_list() {
     let src = "
@@ -2816,6 +3020,7 @@ let partial = for i in range(10) ->list[int]:
     assert_int_list(run_get(src, "partial"), &[0, 1, 2]);
 }
 
+/// while_expr_block_yield のテスト。
 #[test]
 fn test_while_expr_block_yield() {
     let src = "
@@ -2827,6 +3032,7 @@ let vals = while n < 3 ->list[int]:
     assert_int_list(run_get(src, "vals"), &[0, 1, 2]);
 }
 
+/// while_expr_block_return のテスト。
 #[test]
 fn test_while_expr_block_return() {
     let src = "
@@ -2839,6 +3045,7 @@ let found = while n < 100 ->int:
     assert_int(run_get(src, "found"), 8);
 }
 
+/// match_expr_block_return のテスト。
 #[test]
 fn test_match_expr_block_return() {
     let src = "
@@ -2854,6 +3061,7 @@ let s = match (v) ->str:
     assert_str(run_get(src, "s"), "two");
 }
 
+/// match_expr_no_match_returns_none のテスト。
 #[test]
 fn test_match_expr_no_match_returns_none() {
     let src = "
@@ -2865,6 +3073,7 @@ let s = match (v) ->str:
     assert!(matches!(run_get(src, "s"), Value::None));
 }
 
+/// break_exits_regular_for_loop のテスト。
 #[test]
 fn test_break_exits_regular_for_loop() {
     let src = "
@@ -2879,6 +3088,7 @@ for i in range(10):
 
 // --- break propagation through nested control-flow expressions ---
 
+/// break_inside_if_expr_exits_for_loop のテスト。
 #[test]
 fn test_break_inside_if_expr_exits_for_loop() {
     // break inside an if expression body should exit the enclosing for loop
@@ -2905,6 +3115,7 @@ for i in range(10):
     assert_int(run_get(src2, "count"), 3); // iterations 0, 1, 2 complete
 }
 
+/// break_inside_if_expr_exits_while_loop のテスト。
 #[test]
 fn test_break_inside_if_expr_exits_while_loop() {
     let src = "
@@ -2921,6 +3132,7 @@ while i < 20:
     assert_int(run_get(src, "stopped_at"), 7);
 }
 
+/// break_inside_block_expr_exits_loop のテスト。
 #[test]
 fn test_break_inside_block_expr_exits_loop() {
     // break inside a block: expression should exit the enclosing loop
@@ -2936,6 +3148,7 @@ for i in range(10):
     assert_int(run_get(src, "found"), 5);
 }
 
+/// for_expr_break_inside_if_expr_returns_yields のテスト。
 #[test]
 fn test_for_expr_break_inside_if_expr_returns_yields() {
     // break inside an if expression in a for expression should return accumulated yields
@@ -2950,6 +3163,7 @@ let result = for i in range(10) ->list[int]:
     assert_int_list(run_get(src, "result"), &[0, 1, 2]);
 }
 
+/// while_expr_break_inside_if_expr_returns_yields のテスト。
 #[test]
 fn test_while_expr_break_inside_if_expr_returns_yields() {
     let src = "
@@ -2965,6 +3179,7 @@ let result = while True ->list[int]:
     assert_int_list(run_get(src, "result"), &[0, 1, 2, 3]);
 }
 
+/// break_does_not_cross_function_boundary のテスト。
 #[test]
 fn test_break_does_not_cross_function_boundary() {
     // break inside a function that has no loop should be an error
@@ -2979,6 +3194,7 @@ bad()
     assert!(run(src).is_err());
 }
 
+/// break_inside_function_loop_does_not_exit_outer_loop のテスト。
 #[test]
 fn test_break_inside_function_loop_does_not_exit_outer_loop() {
     // break inside an inner function's loop must not affect the outer loop
@@ -2996,6 +3212,7 @@ for _ in range(4):
     assert_int(run_get(src, "outer_count"), 4);
 }
 
+/// continue_in_while_loop のテスト。
 #[test]
 fn test_continue_in_while_loop() {
     let src = "
@@ -3010,6 +3227,7 @@ while i < 10:
     assert_int(run_get(src, "evens"), 30); // 2+4+6+8+10
 }
 
+/// continue_in_for_loop のテスト。
 #[test]
 fn test_continue_in_for_loop() {
     let src = "
@@ -3022,6 +3240,7 @@ for n in range(1, 11):
     assert_int(run_get(src, "s"), 37); // 1+2+4+5+7+8+10
 }
 
+/// continue_skips_rest_of_body のテスト。
 #[test]
 fn test_continue_skips_rest_of_body() {
     // continue skips the remaining statements in the body
@@ -3034,6 +3253,7 @@ for i in range(5):
     assert_int(run_get(src, "touched"), 0);
 }
 
+/// continue_in_nested_loop のテスト。
 #[test]
 fn test_continue_in_nested_loop() {
     // continue only skips the innermost loop iteration
@@ -3049,6 +3269,7 @@ for i in range(1, 4):
     assert_int(run_get(src, "s"), 12);
 }
 
+/// continue_outside_loop_is_error のテスト。
 #[test]
 fn test_continue_outside_loop_is_error() {
     let src = "
@@ -3059,11 +3280,13 @@ bad()
     assert!(run(src).is_err());
 }
 
+/// continue_outside_loop_toplevel_is_error のテスト。
 #[test]
 fn test_continue_outside_loop_toplevel_is_error() {
     assert!(run("continue").is_err());
 }
 
+/// block_return_propagates_through_nested_if_to_for_expr のテスト。
 #[test]
 fn test_block_return_propagates_through_nested_if_to_for_expr() {
     let src = "
@@ -3074,6 +3297,7 @@ let result = for i in range(10) ->int:
     assert_int(run_get(src, "result"), 5);
 }
 
+/// block_expr_with_return_type_annotation のテスト。
 #[test]
 fn test_block_expr_with_return_type_annotation() {
     let src = "
@@ -3083,6 +3307,7 @@ let x = block ->int:
     assert_int(run_get(src, "x"), 42);
 }
 
+/// if_expr_without_annotation_still_works のテスト。
 #[test]
 fn test_if_expr_without_annotation_still_works() {
     let src = "
@@ -3094,12 +3319,14 @@ else:
     assert_int(run_get(src, "x"), 100);
 }
 
+/// block_return_type_check_ok のテスト。
 #[test]
 fn test_block_return_type_check_ok() {
     let src = "let x = block ->int:\n    block_return 42\n";
     assert_int(run_get(src, "x"), 42);
 }
 
+/// block_return_type_check_error のテスト。
 #[test]
 fn test_block_return_type_check_error() {
     let src = "let x = block ->int:\n    block_return \"hello\"\n";
@@ -3108,12 +3335,14 @@ fn test_block_return_type_check_error() {
     assert!(err.contains("'int'"), "expected annotation in error: {err}");
 }
 
+/// if_expr_block_return_type_check_ok のテスト。
 #[test]
 fn test_if_expr_block_return_type_check_ok() {
     let src = "let x = if True ->str:\n    block_return \"ok\"\nelse:\n    block_return \"no\"\n";
     assert_str(run_get(src, "x"), "ok");
 }
 
+/// if_expr_block_return_type_check_error のテスト。
 #[test]
 fn test_if_expr_block_return_type_check_error() {
     let src = "let x = if True ->str:\n    block_return 42\n";
@@ -3121,12 +3350,14 @@ fn test_if_expr_block_return_type_check_error() {
     assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
 }
 
+/// for_expr_block_return_type_check_ok のテスト。
 #[test]
 fn test_for_expr_block_return_type_check_ok() {
     let src = "let x = for i in range(5) ->int:\n    if i == 3:\n        block_return i\n";
     assert_int(run_get(src, "x"), 3);
 }
 
+/// for_expr_block_return_type_check_error のテスト。
 #[test]
 fn test_for_expr_block_return_type_check_error() {
     let src = "let x = for i in range(5) ->int:\n    if i == 3:\n        block_return \"three\"\n";
@@ -3134,6 +3365,7 @@ fn test_for_expr_block_return_type_check_error() {
     assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
 }
 
+/// while_expr_block_return_type_check_ok のテスト。
 #[test]
 fn test_while_expr_block_return_type_check_ok() {
     let src = concat!(
@@ -3146,6 +3378,7 @@ fn test_while_expr_block_return_type_check_ok() {
     assert_int(run_get(src, "x"), 5);
 }
 
+/// while_expr_block_return_type_check_error のテスト。
 #[test]
 fn test_while_expr_block_return_type_check_error() {
     let src = concat!(
@@ -3159,6 +3392,7 @@ fn test_while_expr_block_return_type_check_error() {
     assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
 }
 
+/// match_expr_block_return_type_check_ok のテスト。
 #[test]
 fn test_match_expr_block_return_type_check_ok() {
     let src = concat!(
@@ -3171,6 +3405,7 @@ fn test_match_expr_block_return_type_check_ok() {
     assert_str(run_get(src, "x"), "one");
 }
 
+/// match_expr_block_return_type_check_error のテスト。
 #[test]
 fn test_match_expr_block_return_type_check_error() {
     let src = concat!(
@@ -3184,12 +3419,14 @@ fn test_match_expr_block_return_type_check_error() {
     assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
 }
 
+/// block_return_option_type_check_ok のテスト。
 #[test]
 fn test_block_return_option_type_check_ok() {
     let src = "let x = block ->Option[int]:\n    block_return None\n";
     assert!(matches!(run_get(src, "x"), Value::None));
 }
 
+/// block_return_no_annotation_no_check のテスト。
 #[test]
 fn test_block_return_no_annotation_no_check() {
     let src = "let x = block:\n    block_return \"anything\"\n";
@@ -3198,12 +3435,14 @@ fn test_block_return_no_annotation_no_check() {
 
 // --- enum ---
 
+/// enum_basic のテスト。
 #[test]
 fn test_enum_basic() {
     let src = "enum Color:\n    Red\n    Green\n    Blue\n";
     run(src).unwrap();
 }
 
+/// enum_member_access_value のテスト。
 #[test]
 fn test_enum_member_access_value() {
     let src = "enum Color:\n    Red\n    Green\n    Blue\nlet x = Color.Red\n";
@@ -3218,6 +3457,7 @@ fn test_enum_member_access_value() {
     }
 }
 
+/// enum_auto_numbering のテスト。
 #[test]
 fn test_enum_auto_numbering() {
     // Red=0, Green=1, Blue=2 の順で自動採番される
@@ -3238,6 +3478,7 @@ fn test_enum_auto_numbering() {
     }
 }
 
+/// enum_explicit_value のテスト。
 #[test]
 fn test_enum_explicit_value() {
     let src = "enum MyEnum:\n    a\n    b = 5\n    c\nlet xb = MyEnum.b\nlet xc = MyEnum.c\n";
@@ -3268,6 +3509,7 @@ fn test_enum_explicit_value() {
     }
 }
 
+/// enum_equality のテスト。
 #[test]
 fn test_enum_equality() {
     // 同じバリアントに2回アクセスしたとき等値になること（Rc::ptr_eq）
@@ -3276,6 +3518,7 @@ fn test_enum_equality() {
     assert!(matches!(run_get(src, "diff"), Value::Bool(true)));
 }
 
+/// enum_match のテスト。
 #[test]
 fn test_enum_match() {
     let src = r#"
@@ -3296,6 +3539,7 @@ match (x):
     assert_int(run_get(src, "result"), 2);
 }
 
+/// enum_item_type_name のテスト。
 #[test]
 fn test_enum_item_type_name() {
     // enum_item_Color 型が登録されていること
@@ -3310,6 +3554,7 @@ fn test_enum_item_type_name() {
 
 // --- default parameters ---
 
+/// default_param_uses_default_when_omitted のテスト。
 #[test]
 fn test_default_param_uses_default_when_omitted() {
     let src = "fn greet(let name: str = \"world\") -> str:\n    return name\nlet a = greet()\nlet b = greet(\"Alice\")\n";
@@ -3317,6 +3562,7 @@ fn test_default_param_uses_default_when_omitted() {
     assert!(matches!(run_get(src, "b"), Value::Str(s) if s == "Alice"));
 }
 
+/// default_param_multiple_defaults のテスト。
 #[test]
 fn test_default_param_multiple_defaults() {
     let src = "fn add(let a: int = 1, let b: int = 2) -> int:\n    return a + b\nlet r1 = add()\nlet r2 = add(10)\nlet r3 = add(10, 20)\n";
@@ -3325,6 +3571,7 @@ fn test_default_param_multiple_defaults() {
     assert_int(run_get(src, "r3"), 30);
 }
 
+/// default_param_mixed_required_and_default のテスト。
 #[test]
 fn test_default_param_mixed_required_and_default() {
     let src = "fn f(let x: int, let y: int = 99) -> int:\n    return x + y\nlet a = f(1)\nlet b = f(1, 2)\n";
@@ -3332,6 +3579,7 @@ fn test_default_param_mixed_required_and_default() {
     assert_int(run_get(src, "b"), 3);
 }
 
+/// default_param_via_keyword_arg のテスト。
 #[test]
 fn test_default_param_via_keyword_arg() {
     let src =
@@ -3339,6 +3587,7 @@ fn test_default_param_via_keyword_arg() {
     assert_int(run_get(src, "r"), 5);
 }
 
+/// default_param_ordering_error のテスト。
 #[test]
 fn test_default_param_ordering_error() {
     let src = "fn f(let a: int = 0, let b: int) -> int:\n    return 0\n";
@@ -3348,6 +3597,7 @@ fn test_default_param_ordering_error() {
     );
 }
 
+/// default_param_too_many_args_error のテスト。
 #[test]
 fn test_default_param_too_many_args_error() {
     let src = "fn f(let x: int = 0) -> int:\n    return x\nlet r = f(1, 2)\n";
@@ -3368,6 +3618,7 @@ fn cleanup(path: &str) {
     let _ = std::fs::remove_file(path);
 }
 
+/// file_open_mode_enum のテスト。
 #[test]
 fn test_file_open_mode_enum() {
     // FileOpenMode enum が正しくグローバルスコープに登録されているかを確認する
@@ -3379,6 +3630,7 @@ fn test_file_open_mode_enum() {
     );
 }
 
+/// file_start_point_enum のテスト。
 #[test]
 fn test_file_start_point_enum() {
     let src = "let s = StartPoint.end\nlet v = s.value\n";
@@ -3389,6 +3641,7 @@ fn test_file_start_point_enum() {
     );
 }
 
+/// file_path_type のテスト。
 #[test]
 fn test_file_path_type() {
     // path 型のインスタンスを生成できることを確認する
@@ -3400,6 +3653,7 @@ fn test_file_path_type() {
     );
 }
 
+/// file_rewrite_and_read のテスト。
 #[test]
 fn test_file_rewrite_and_read() {
     let p = temp_path("rewrite_read");
@@ -3418,6 +3672,7 @@ fn test_file_rewrite_and_read() {
     );
 }
 
+/// file_write_line のテスト。
 #[test]
 fn test_file_write_line() {
     let p = temp_path("write_line");
@@ -3436,6 +3691,7 @@ fn test_file_write_line() {
     );
 }
 
+/// file_read_line_forward のテスト。
 #[test]
 fn test_file_read_line_forward() {
     let p = temp_path("read_line_fwd");
@@ -3466,6 +3722,7 @@ fn test_file_read_line_forward() {
     );
 }
 
+/// file_read_letter のテスト。
 #[test]
 fn test_file_read_letter() {
     let p = temp_path("read_letter");
@@ -3496,6 +3753,7 @@ fn test_file_read_letter() {
     );
 }
 
+/// file_eof_error のテスト。
 #[test]
 fn test_file_eof_error() {
     let p = temp_path("eof");
@@ -3508,6 +3766,7 @@ fn test_file_eof_error() {
     cleanup(&p);
 }
 
+/// file_bof_error のテスト。
 #[test]
 fn test_file_bof_error() {
     let p = temp_path("bof");
@@ -3520,6 +3779,7 @@ fn test_file_bof_error() {
     cleanup(&p);
 }
 
+/// file_make_and_write_existing_error のテスト。
 #[test]
 fn test_file_make_and_write_existing_error() {
     let p = temp_path("maw_exist");
@@ -3532,6 +3792,7 @@ fn test_file_make_and_write_existing_error() {
     cleanup(&p);
 }
 
+/// file_write_read_only_error のテスト。
 #[test]
 fn test_file_write_read_only_error() {
     let p = temp_path("write_ro");
@@ -3542,6 +3803,7 @@ fn test_file_write_read_only_error() {
     cleanup(&p);
 }
 
+/// file_insert_midpoint のテスト。
 #[test]
 fn test_file_insert_midpoint() {
     let p = temp_path("insert_mid");
@@ -3562,6 +3824,7 @@ fn test_file_insert_midpoint() {
     );
 }
 
+/// file_byte_mode_write_read のテスト。
 #[test]
 fn test_file_byte_mode_write_read() {
     let p = temp_path("byte_mode");
@@ -3597,6 +3860,7 @@ fn test_file_byte_mode_write_read() {
 // uint primitive type
 // ---------------------------------------------------------------------------
 
+/// uint_literal_via_cast のテスト。
 #[test]
 fn test_uint_literal_via_cast() {
     // uint(42) returns a UInt value
@@ -3604,24 +3868,28 @@ fn test_uint_literal_via_cast() {
     assert!(matches!(val, Value::UInt(42)));
 }
 
+/// uint_zero のテスト。
 #[test]
 fn test_uint_zero() {
     let val = run_get("let u = uint()\n", "u");
     assert!(matches!(val, Value::UInt(0)));
 }
 
+/// uint_from_int のテスト。
 #[test]
 fn test_uint_from_int() {
     let val = run_get("let u = uint(100)\n", "u");
     assert!(matches!(val, Value::UInt(100)));
 }
 
+/// uint_from_bool のテスト。
 #[test]
 fn test_uint_from_bool() {
     let val = run_get("let u = uint(True)\n", "u");
     assert!(matches!(val, Value::UInt(1)));
 }
 
+/// uint_arithmetic のテスト。
 #[test]
 fn test_uint_arithmetic() {
     assert!(matches!(
@@ -3638,6 +3906,7 @@ fn test_uint_arithmetic() {
     ));
 }
 
+/// uint_comparison のテスト。
 #[test]
 fn test_uint_comparison() {
     assert!(matches!(
@@ -3654,12 +3923,14 @@ fn test_uint_comparison() {
     ));
 }
 
+/// uint_is_type のテスト。
 #[test]
 fn test_uint_is_type() {
     let val = run_get("let r = uint(7) is uint\n", "r");
     assert!(matches!(val, Value::Bool(true)));
 }
 
+/// uint_str_display のテスト。
 #[test]
 fn test_uint_str_display() {
     // uint should display as its decimal value
@@ -3671,6 +3942,7 @@ fn test_uint_str_display() {
 // id() built-in function
 // ---------------------------------------------------------------------------
 
+/// id_returns_pointer_instance のテスト。
 #[test]
 fn test_id_returns_pointer_instance() {
     // id(x) should return a pointer instance with a .value field of type uint
@@ -3679,6 +3951,7 @@ fn test_id_returns_pointer_instance() {
     assert!(matches!(val, Value::UInt(_)));
 }
 
+/// id_same_instance_same_pointer のテスト。
 #[test]
 fn test_id_same_instance_same_pointer() {
     // The same instance should have the same id (same Rc allocation)
@@ -3694,6 +3967,7 @@ fn test_id_same_instance_same_pointer() {
     assert!(matches!(run_get(src, "same"), Value::Bool(true)));
 }
 
+/// id_different_instances_different_pointers のテスト。
 #[test]
 fn test_id_different_instances_different_pointers() {
     // Two separate instances should have different ids
@@ -3710,6 +3984,7 @@ fn test_id_different_instances_different_pointers() {
     assert!(matches!(run_get(src, "diff"), Value::Bool(true)));
 }
 
+/// id_mut_copy_different_from_original のテスト。
 #[test]
 fn test_id_mut_copy_different_from_original() {
     // mut z = x creates a deep copy, so id(z) != id(x) for reference types
@@ -3726,6 +4001,7 @@ fn test_id_mut_copy_different_from_original() {
     assert!(matches!(run_get(src, "diff"), Value::Bool(true)));
 }
 
+/// id_let_alias_same_as_original のテスト。
 #[test]
 fn test_id_let_alias_same_as_original() {
     // let y = x (both let) shares the same Rc, so id(x) == id(y)
@@ -3742,6 +4018,7 @@ fn test_id_let_alias_same_as_original() {
     assert!(matches!(run_get(src, "same"), Value::Bool(true)));
 }
 
+/// id_value_types_equal_int のテスト。
 #[test]
 fn test_id_value_types_equal_int() {
     // Equal integers should have equal ids (value-based identity)
@@ -3750,6 +4027,7 @@ fn test_id_value_types_equal_int() {
     assert!(matches!(run_get(src, "same"), Value::Bool(true)));
 }
 
+/// id_wrong_arg_count_error のテスト。
 #[test]
 fn test_id_wrong_arg_count_error() {
     assert!(run("let r = id()\n").is_err());
@@ -3760,6 +4038,7 @@ fn test_id_wrong_arg_count_error() {
 // set type
 // ---------------------------------------------------------------------------
 
+/// set_literal_basic のテスト。
 #[test]
 fn test_set_literal_basic() {
     let val = run_get("let s = {1, 2, 3}\n", "s");
@@ -3771,6 +4050,7 @@ fn test_set_literal_basic() {
     }
 }
 
+/// set_literal_dedup のテスト。
 #[test]
 fn test_set_literal_dedup() {
     let val = run_get("let s = {1, 2, 2, 3, 1}\n", "s");
@@ -3781,6 +4061,7 @@ fn test_set_literal_dedup() {
     }
 }
 
+/// set_constructor_empty のテスト。
 #[test]
 fn test_set_constructor_empty() {
     let val = run_get("let s = set()\n", "s");
@@ -3790,6 +4071,7 @@ fn test_set_constructor_empty() {
     }
 }
 
+/// set_constructor_from_list のテスト。
 #[test]
 fn test_set_constructor_from_list() {
     let val = run_get("let s = set([1, 2, 2, 3])\n", "s");
@@ -3800,6 +4082,7 @@ fn test_set_constructor_from_list() {
     }
 }
 
+/// set_constructor_from_str のテスト。
 #[test]
 fn test_set_constructor_from_str() {
     // "aab" → {'a', 'b'}
@@ -3811,6 +4094,7 @@ fn test_set_constructor_from_str() {
     }
 }
 
+/// set_add のテスト。
 #[test]
 fn test_set_add() {
     let src = "let s = {1, 2}\ns.add(3)\n";
@@ -3822,6 +4106,7 @@ fn test_set_add() {
     }
 }
 
+/// set_add_duplicate のテスト。
 #[test]
 fn test_set_add_duplicate() {
     let src = "let s = {1, 2}\ns.add(2)\n";
@@ -3833,6 +4118,7 @@ fn test_set_add_duplicate() {
     }
 }
 
+/// set_discard のテスト。
 #[test]
 fn test_set_discard() {
     let src = "let s = {1, 2, 3}\ns.discard(2)\n";
@@ -3844,11 +4130,13 @@ fn test_set_discard() {
     }
 }
 
+/// set_discard_missing_no_error のテスト。
 #[test]
 fn test_set_discard_missing_no_error() {
     assert!(run("let s = {1, 2}\ns.discard(99)\n").is_ok());
 }
 
+/// set_remove のテスト。
 #[test]
 fn test_set_remove() {
     let src = "let s = {1, 2, 3}\ns.remove(2)\n";
@@ -3860,11 +4148,13 @@ fn test_set_remove() {
     }
 }
 
+/// set_remove_missing_error のテスト。
 #[test]
 fn test_set_remove_missing_error() {
     assert!(run("let s = {1, 2}\ns.remove(99)\n").is_err());
 }
 
+/// set_pop のテスト。
 #[test]
 fn test_set_pop() {
     let src = "let s = {1, 2, 3}\nlet v = s.pop()\n";
@@ -3872,11 +4162,13 @@ fn test_set_pop() {
     assert!(matches!(val, Value::Int(_)));
 }
 
+/// set_pop_empty_error のテスト。
 #[test]
 fn test_set_pop_empty_error() {
     assert!(run("let s = set()\ns.pop()\n").is_err());
 }
 
+/// set_clear のテスト。
 #[test]
 fn test_set_clear() {
     let src = "let s = {1, 2, 3}\ns.clear()\n";
@@ -3888,36 +4180,42 @@ fn test_set_clear() {
     }
 }
 
+/// set_len のテスト。
 #[test]
 fn test_set_len() {
     let val = run_get("let n = len({1, 2, 3})\n", "n");
     assert!(matches!(val, Value::Int(3)));
 }
 
+/// set_len_empty のテスト。
 #[test]
 fn test_set_len_empty() {
     let val = run_get("let n = len(set())\n", "n");
     assert!(matches!(val, Value::Int(0)));
 }
 
+/// set_in_operator のテスト。
 #[test]
 fn test_set_in_operator() {
     let val = run_get("let r = 2 in {1, 2, 3}\n", "r");
     assert!(matches!(val, Value::Bool(true)));
 }
 
+/// set_in_operator_false のテスト。
 #[test]
 fn test_set_in_operator_false() {
     let val = run_get("let r = 99 in {1, 2, 3}\n", "r");
     assert!(matches!(val, Value::Bool(false)));
 }
 
+/// set_not_in_operator のテスト。
 #[test]
 fn test_set_not_in_operator() {
     let val = run_get("let r = 99 not in {1, 2, 3}\n", "r");
     assert!(matches!(val, Value::Bool(true)));
 }
 
+/// set_union のテスト。
 #[test]
 fn test_set_union() {
     let src = "let a = {1, 2}\nlet b = {2, 3}\nlet c = a | b\n";
@@ -3929,6 +4227,7 @@ fn test_set_union() {
     }
 }
 
+/// set_intersection のテスト。
 #[test]
 fn test_set_intersection() {
     let src = "let a = {1, 2, 3}\nlet b = {2, 3, 4}\nlet c = a & b\n";
@@ -3940,6 +4239,7 @@ fn test_set_intersection() {
     }
 }
 
+/// set_difference のテスト。
 #[test]
 fn test_set_difference() {
     let src = "let a = {1, 2, 3}\nlet b = {2, 3}\nlet c = a - b\n";
@@ -3952,6 +4252,7 @@ fn test_set_difference() {
     }
 }
 
+/// set_symmetric_difference のテスト。
 #[test]
 fn test_set_symmetric_difference() {
     let src = "let a = {1, 2, 3}\nlet b = {2, 3, 4}\nlet c = a ^ b\n";
@@ -3963,18 +4264,21 @@ fn test_set_symmetric_difference() {
     }
 }
 
+/// set_equality のテスト。
 #[test]
 fn test_set_equality() {
     let val = run_get("let r = {1, 2, 3} == {3, 1, 2}\n", "r");
     assert!(matches!(val, Value::Bool(true)));
 }
 
+/// set_equality_false のテスト。
 #[test]
 fn test_set_equality_false() {
     let val = run_get("let r = {1, 2} == {1, 2, 3}\n", "r");
     assert!(matches!(val, Value::Bool(false)));
 }
 
+/// set_issubset のテスト。
 #[test]
 fn test_set_issubset() {
     let src = "let a = {1, 2}\nlet b = {1, 2, 3}\nlet r = a.issubset(b)\n";
@@ -3982,6 +4286,7 @@ fn test_set_issubset() {
     assert!(matches!(val, Value::Bool(true)));
 }
 
+/// set_issuperset のテスト。
 #[test]
 fn test_set_issuperset() {
     let src = "let a = {1, 2, 3}\nlet b = {1, 2}\nlet r = a.issuperset(b)\n";
@@ -3989,6 +4294,7 @@ fn test_set_issuperset() {
     assert!(matches!(val, Value::Bool(true)));
 }
 
+/// set_iteration のテスト。
 #[test]
 fn test_set_iteration() {
     let src = concat!(
@@ -4000,30 +4306,35 @@ fn test_set_iteration() {
     assert!(matches!(val, Value::Int(6)));
 }
 
+/// set_bool_truthy のテスト。
 #[test]
 fn test_set_bool_truthy() {
     let val = run_get("let r = bool({1})\n", "r");
     assert!(matches!(val, Value::Bool(true)));
 }
 
+/// set_bool_falsy のテスト。
 #[test]
 fn test_set_bool_falsy() {
     let val = run_get("let r = bool(set())\n", "r");
     assert!(matches!(val, Value::Bool(false)));
 }
 
+/// list_in_operator のテスト。
 #[test]
 fn test_list_in_operator() {
     let val = run_get("let r = 2 in [1, 2, 3]\n", "r");
     assert!(matches!(val, Value::Bool(true)));
 }
 
+/// str_in_operator のテスト。
 #[test]
 fn test_str_in_operator() {
     let val = run_get("let r = \"bc\" in \"abcd\"\n", "r");
     assert!(matches!(val, Value::Bool(true)));
 }
 
+/// dict_in_operator のテスト。
 #[test]
 fn test_dict_in_operator() {
     let val = run_get("let r = \"a\" in {\"a\": 1, \"b\": 2}\n", "r");
@@ -4034,12 +4345,14 @@ fn test_dict_in_operator() {
 // Async tests
 // ---------------------------------------------------------------------------
 
+/// async_manager_constructor のテスト。
 #[test]
 fn test_async_manager_constructor() {
     let val = run_get("mut mng = AsyncManager(num_thread=2)\n", "mng");
     assert!(matches!(val, Value::AsyncManager(_)));
 }
 
+/// async_manager_num_thread_attr のテスト。
 #[test]
 fn test_async_manager_num_thread_attr() {
     let val = run_get(
@@ -4049,6 +4362,7 @@ fn test_async_manager_num_thread_attr() {
     assert!(matches!(val, Value::UInt(4)));
 }
 
+/// async_manager_raise_immediately_default_false のテスト。
 #[test]
 fn test_async_manager_raise_immediately_default_false() {
     let val = run_get(
@@ -4058,12 +4372,14 @@ fn test_async_manager_raise_immediately_default_false() {
     assert!(matches!(val, Value::Bool(false)));
 }
 
+/// async_manager_raise_immediately_set のテスト。
 #[test]
 fn test_async_manager_raise_immediately_set() {
     let val = run_get("mut mng = AsyncManager(num_thread=1, raise_immediately=True)\nlet r = mng.raise_immediately\n", "r");
     assert!(matches!(val, Value::Bool(true)));
 }
 
+/// async_single_task_result のテスト。
 #[test]
 fn test_async_single_task_result() {
     let val = run_get(
@@ -4079,6 +4395,7 @@ fn test_async_single_task_result() {
     }
 }
 
+/// async_multiple_tasks_all_done のテスト。
 #[test]
 fn test_async_multiple_tasks_all_done() {
     let src = "
@@ -4094,6 +4411,7 @@ let done = mng.all_done()
     assert!(matches!(val, Value::Bool(true)));
 }
 
+/// async_task_captures_env のテスト。
 #[test]
 fn test_async_task_captures_env() {
     let src = "
@@ -4114,6 +4432,7 @@ let r = mng.results
     }
 }
 
+/// async_error_stored_in_error_list のテスト。
 #[test]
 fn test_async_error_stored_in_error_list() {
     let src = "
@@ -4133,6 +4452,7 @@ let errs = mng.error_list
     }
 }
 
+/// async_no_error_gives_none_in_error_list のテスト。
 #[test]
 fn test_async_no_error_gives_none_in_error_list() {
     let src = "
@@ -4152,6 +4472,7 @@ let errs = mng.error_list
     }
 }
 
+/// async_raise_immediately_propagates_to_try_except のテスト。
 #[test]
 fn test_async_raise_immediately_propagates_to_try_except() {
     let src = "
@@ -4168,6 +4489,7 @@ except:
     assert!(matches!(val, Value::Bool(true)));
 }
 
+/// async_status_enum_values のテスト。
 #[test]
 fn test_async_status_enum_values() {
     let w = run_get("let w = Async.Waiting\n", "w");
@@ -4187,6 +4509,7 @@ fn test_async_status_enum_values() {
     ));
 }
 
+/// async_wrong_target_type_error のテスト。
 #[test]
 fn test_async_wrong_target_type_error() {
     let src = "
@@ -4201,6 +4524,7 @@ x <- async->int:
 // Tuple unpack tests
 // ---------------------------------------------------------------------------
 
+/// tuple_unpack_basic のテスト。
 #[test]
 fn test_tuple_unpack_basic() {
     let src = "
@@ -4211,6 +4535,7 @@ let x, mut y = a
     assert!(matches!(run_get(src, "y"), Value::Int(2)));
 }
 
+/// tuple_unpack_immutable のテスト。
 #[test]
 fn test_tuple_unpack_immutable() {
     let src = "
@@ -4220,6 +4545,7 @@ let x, let y = (10, 20)
     assert!(matches!(run_get(src, "y"), Value::Int(20)));
 }
 
+/// tuple_unpack_mut_is_mutable のテスト。
 #[test]
 fn test_tuple_unpack_mut_is_mutable() {
     let src = "
@@ -4229,6 +4555,7 @@ y = 99
     assert!(matches!(run_get(src, "y"), Value::Int(99)));
 }
 
+/// tuple_unpack_wildcard のテスト。
 #[test]
 fn test_tuple_unpack_wildcard() {
     let src = "
@@ -4239,6 +4566,7 @@ let p, mut q, _ = a
     assert!(matches!(run_get(src, "q"), Value::Int(20)));
 }
 
+/// tuple_unpack_wildcard_two_remaining のテスト。
 #[test]
 fn test_tuple_unpack_wildcard_two_remaining() {
     let src = "
@@ -4247,6 +4575,7 @@ let p, _ = (5, 6, 7, 8)
     assert!(matches!(run_get(src, "p"), Value::Int(5)));
 }
 
+/// tuple_unpack_arity_mismatch_runtime のテスト。
 #[test]
 fn test_tuple_unpack_arity_mismatch_runtime() {
     // Static check catches tuple literals; for dynamic RHS the runtime catches it
@@ -4258,6 +4587,7 @@ let x, mut y = get()
     assert!(run(src).is_err());
 }
 
+/// tuple_unpack_non_tuple_error のテスト。
 #[test]
 fn test_tuple_unpack_non_tuple_error() {
     let src = "
@@ -4266,6 +4596,7 @@ let x, mut y = 42
     assert!(run(src).is_err());
 }
 
+/// tuple_unpack_static_missing_qualifier のテスト。
 #[test]
 fn test_tuple_unpack_static_missing_qualifier() {
     let src = "let x, y = (1, 2)";
@@ -4280,6 +4611,7 @@ fn test_tuple_unpack_static_missing_qualifier() {
     );
 }
 
+/// tuple_unpack_static_arity_mismatch のテスト。
 #[test]
 fn test_tuple_unpack_static_arity_mismatch() {
     let src = "let x, mut y = (1, 2, 3)";
@@ -4298,6 +4630,7 @@ fn test_tuple_unpack_static_arity_mismatch() {
 // enumerate / zip tests
 // ---------------------------------------------------------------------------
 
+/// enumerate_basic のテスト。
 #[test]
 fn test_enumerate_basic() {
     // Check index and value sum: sum of (i + val) for [10,20,30] → (0+10)+(1+20)+(2+30) = 63
@@ -4309,6 +4642,7 @@ for i, v in enumerate([10, 20, 30]):
     assert!(matches!(run_get(src, "total"), Value::Int(63)));
 }
 
+/// enumerate_start のテスト。
 #[test]
 fn test_enumerate_start() {
     let src = "
@@ -4320,6 +4654,7 @@ for i, v in enumerate([10, 20], start=5):
     assert!(matches!(run_get(src, "first_idx"), Value::Int(5)));
 }
 
+/// enumerate_for_unpack のテスト。
 #[test]
 fn test_enumerate_for_unpack() {
     // sum of idx + val for enumerate([100,200,300]) = (0+100)+(1+200)+(2+300) = 603
@@ -4331,6 +4666,7 @@ for idx, val in enumerate([100, 200, 300]):
     assert!(matches!(run_get(src, "sum"), Value::Int(603)));
 }
 
+/// zip_basic のテスト。
 #[test]
 fn test_zip_basic() {
     // sum of a + b for zip([1,2,3],[10,20,30]) = 11+22+33 = 66
@@ -4342,6 +4678,7 @@ for a, b in zip([1, 2, 3], [10, 20, 30]):
     assert!(matches!(run_get(src, "total"), Value::Int(66)));
 }
 
+/// zip_stops_at_shortest のテスト。
 #[test]
 fn test_zip_stops_at_shortest() {
     let src = "
@@ -4352,6 +4689,7 @@ for a, b in zip([1, 2, 3, 4], [10, 20]):
     assert!(matches!(run_get(src, "count"), Value::Int(2)));
 }
 
+/// zip_three のテスト。
 #[test]
 fn test_zip_three() {
     let src = "
@@ -4362,11 +4700,13 @@ for x, y, z in zip([1, 2], [10, 20], [100, 200]):
     assert!(matches!(run_get(src, "last_sum"), Value::Int(222)));
 }
 
+/// zip_empty のテスト。
 #[test]
 fn test_zip_empty() {
     assert!(run("for a, b in zip():\n    pass\n").is_ok());
 }
 
+/// for_tuple_target_mismatch_error のテスト。
 #[test]
 fn test_for_tuple_target_mismatch_error() {
     let src = "
@@ -4376,6 +4716,7 @@ for a, b in [(1, 2, 3)]:
     assert!(run(src).is_err());
 }
 
+/// for_single_target_still_works のテスト。
 #[test]
 fn test_for_single_target_still_works() {
     let src = "
@@ -4386,6 +4727,7 @@ for x in [1, 2, 3, 4]:
     assert!(matches!(run_get(src, "s"), Value::Int(10)));
 }
 
+/// tuple_iteration_in_for のテスト。
 #[test]
 fn test_tuple_iteration_in_for() {
     let src = "
@@ -4398,6 +4740,7 @@ for x in (1, 2, 3):
 
 // ─── String features ─────────────────────────────────────────────────────────
 
+/// fstring_basic のテスト。
 #[test]
 fn test_fstring_basic() {
     let src = r#"
@@ -4408,6 +4751,7 @@ let s = f"Hello, {name}! Age: {age}"
     assert!(matches!(run_get(src, "s"), Value::Str(ref s) if s == "Hello, Alice! Age: 30"));
 }
 
+/// fstring_expr のテスト。
 #[test]
 fn test_fstring_expr() {
     let src = r#"
@@ -4418,6 +4762,7 @@ let s = f"sum = {x + y}"
     assert!(matches!(run_get(src, "s"), Value::Str(ref s) if s == "sum = 12"));
 }
 
+/// fstring_empty のテスト。
 #[test]
 fn test_fstring_empty() {
     let val = eval_expr(r#"f"""#);
@@ -4425,6 +4770,7 @@ fn test_fstring_empty() {
     assert!(matches!(val, Value::Str(ref s) if s.is_empty()));
 }
 
+/// raw_string のテスト。
 #[test]
 fn test_raw_string() {
     // r"" should not process escape sequences
@@ -4432,36 +4778,42 @@ fn test_raw_string() {
     assert!(matches!(val, Value::Str(ref s) if s == r"\n\t"));
 }
 
+/// math_string_superscript のテスト。
 #[test]
 fn test_math_string_superscript() {
     let val = eval_expr(r#"m"x^2""#);
     assert!(matches!(val, Value::Str(ref s) if s == "x²"));
 }
 
+/// math_string_subscript のテスト。
 #[test]
 fn test_math_string_subscript() {
     let val = eval_expr(r#"m"x_0""#);
     assert!(matches!(val, Value::Str(ref s) if s == "x₀"));
 }
 
+/// math_string_greek のテスト。
 #[test]
 fn test_math_string_greek() {
     let val = eval_expr(r#"m"\alpha + \beta""#);
     assert!(matches!(val, Value::Str(ref s) if s == "α + β"));
 }
 
+/// dollar_math_string のテスト。
 #[test]
 fn test_dollar_math_string() {
     let val = eval_expr("$x^2 + y^2$");
     assert!(matches!(val, Value::Str(ref s) if s == "x² + y²"));
 }
 
+/// str_upper_lower のテスト。
 #[test]
 fn test_str_upper_lower() {
     assert!(matches!(eval_expr(r#""hello".upper()"#), Value::Str(ref s) if s == "HELLO"));
     assert!(matches!(eval_expr(r#""WORLD".lower()"#), Value::Str(ref s) if s == "world"));
 }
 
+/// str_strip のテスト。
 #[test]
 fn test_str_strip() {
     assert!(matches!(eval_expr(r#""  hi  ".strip()"#), Value::Str(ref s) if s == "hi"));
@@ -4469,6 +4821,7 @@ fn test_str_strip() {
     assert!(matches!(eval_expr(r#""  hi  ".rstrip()"#), Value::Str(ref s) if s == "  hi"));
 }
 
+/// str_split_join のテスト。
 #[test]
 fn test_str_split_join() {
     let src = r#"let parts = "a,b,c".split(",")"#;
@@ -4485,6 +4838,7 @@ fn test_str_split_join() {
     assert!(matches!(eval_expr(r#"",".join(["x", "y", "z"])"#), Value::Str(ref s) if s == "x,y,z"));
 }
 
+/// str_replace のテスト。
 #[test]
 fn test_str_replace() {
     assert!(
@@ -4493,6 +4847,7 @@ fn test_str_replace() {
     assert!(matches!(eval_expr(r#""aaa".replace("a", "b", 2)"#), Value::Str(ref s) if s == "bba"));
 }
 
+/// str_find のテスト。
 #[test]
 fn test_str_find() {
     assert!(matches!(eval_expr(r#""hello".find("ll")"#), Value::Int(2)));
@@ -4502,6 +4857,7 @@ fn test_str_find() {
     ));
 }
 
+/// str_startswith_endswith のテスト。
 #[test]
 fn test_str_startswith_endswith() {
     assert!(matches!(
@@ -4518,6 +4874,7 @@ fn test_str_startswith_endswith() {
     ));
 }
 
+/// str_count のテスト。
 #[test]
 fn test_str_count() {
     assert!(matches!(
@@ -4526,6 +4883,7 @@ fn test_str_count() {
     ));
 }
 
+/// str_format のテスト。
 #[test]
 fn test_str_format() {
     assert!(
@@ -4535,6 +4893,7 @@ fn test_str_format() {
     assert!(matches!(eval_expr(r#""{0} + {1}".format(1, 2)"#), Value::Str(ref s) if s == "1 + 2"));
 }
 
+/// str_is_checks のテスト。
 #[test]
 fn test_str_is_checks() {
     assert!(matches!(eval_expr(r#""123".isdigit()"#), Value::Bool(true)));
@@ -4548,6 +4907,7 @@ fn test_str_is_checks() {
     assert!(matches!(eval_expr(r#""abc".islower()"#), Value::Bool(true)));
 }
 
+/// str_zfill_ljust_rjust_center のテスト。
 #[test]
 fn test_str_zfill_ljust_rjust_center() {
     assert!(matches!(eval_expr(r#""42".zfill(5)"#), Value::Str(ref s) if s == "00042"));
@@ -4556,6 +4916,7 @@ fn test_str_zfill_ljust_rjust_center() {
     assert!(matches!(eval_expr(r#""hi".center(6)"#), Value::Str(ref s) if s == "  hi  "));
 }
 
+/// str_partition のテスト。
 #[test]
 fn test_str_partition() {
     let src = r#"let t = "one:two:three".partition(":")"#;
@@ -4570,6 +4931,7 @@ fn test_str_partition() {
     }
 }
 
+/// str_removeprefix_removesuffix のテスト。
 #[test]
 fn test_str_removeprefix_removesuffix() {
     assert!(
@@ -4580,6 +4942,7 @@ fn test_str_removeprefix_removesuffix() {
     );
 }
 
+/// str_title_capitalize_swapcase のテスト。
 #[test]
 fn test_str_title_capitalize_swapcase() {
     assert!(
@@ -4591,6 +4954,7 @@ fn test_str_title_capitalize_swapcase() {
     );
 }
 
+/// percent_format_int のテスト。
 #[test]
 fn test_percent_format_int() {
     assert!(matches!(eval_expr(r#""%d" % 42"#), Value::Str(ref s) if s == "42"));
@@ -4598,11 +4962,13 @@ fn test_percent_format_int() {
     assert!(matches!(eval_expr(r#""%x" % 255"#), Value::Str(ref s) if s == "ff"));
 }
 
+/// percent_format_float のテスト。
 #[test]
 fn test_percent_format_float() {
     assert!(matches!(eval_expr(r#""%.2f" % 3.14159"#), Value::Str(ref s) if s == "3.14"));
 }
 
+/// percent_format_str のテスト。
 #[test]
 fn test_percent_format_str() {
     assert!(
@@ -4610,6 +4976,7 @@ fn test_percent_format_str() {
     );
 }
 
+/// percent_format_tuple のテスト。
 #[test]
 fn test_percent_format_tuple() {
     assert!(
@@ -4617,12 +4984,14 @@ fn test_percent_format_tuple() {
     );
 }
 
+/// str_repeat のテスト。
 #[test]
 fn test_str_repeat() {
     assert!(matches!(eval_expr(r#""ha" * 3"#), Value::Str(ref s) if s == "hahaha"));
     assert!(matches!(eval_expr(r#"3 * "na""#), Value::Str(ref s) if s == "nanana"));
 }
 
+/// str_regex_findall のテスト。
 #[test]
 fn test_str_regex_findall() {
     let src = r#"let ms = "abc 123 def 456".findall(r"\d+")"#;
@@ -4637,6 +5006,7 @@ fn test_str_regex_findall() {
     }
 }
 
+/// str_regex_sub のテスト。
 #[test]
 fn test_str_regex_sub() {
     assert!(matches!(
@@ -4645,6 +5015,7 @@ fn test_str_regex_sub() {
     ));
 }
 
+/// str_regex_search のテスト。
 #[test]
 fn test_str_regex_search() {
     assert!(matches!(
@@ -4657,6 +5028,7 @@ fn test_str_regex_search() {
     ));
 }
 
+/// str_match のテスト。
 #[test]
 fn test_str_match() {
     assert!(matches!(
@@ -4672,6 +5044,7 @@ fn test_str_match() {
 
 // ── cast operator: new_type ──────────────────────────────────────────────────
 
+/// cast_primitive_to_new_type_int のテスト。
 #[test]
 fn test_cast_primitive_to_new_type_int() {
     // 4 => MyInt should produce a MyInt instance wrapping 4
@@ -4686,6 +5059,7 @@ fn test_cast_primitive_to_new_type_int() {
     }
 }
 
+/// cast_primitive_to_new_type_float のテスト。
 #[test]
 fn test_cast_primitive_to_new_type_float() {
     let src = "new_type Meters: float\nlet m = 2.5=>Meters\n";
@@ -4699,6 +5073,7 @@ fn test_cast_primitive_to_new_type_float() {
     }
 }
 
+/// cast_new_type_instance_to_base_int のテスト。
 #[test]
 fn test_cast_new_type_instance_to_base_int() {
     // MyInt(7) => int should return the inner int value 7
@@ -4707,6 +5082,7 @@ fn test_cast_new_type_instance_to_base_int() {
     assert!(matches!(val, Value::Int(7)));
 }
 
+/// cast_new_type_instance_to_base_float のテスト。
 #[test]
 fn test_cast_new_type_instance_to_base_float() {
     let src = "new_type Meters: float\nlet m = Meters(3.0)\nlet f = m=>float\n";
@@ -4714,6 +5090,7 @@ fn test_cast_new_type_instance_to_base_float() {
     assert!(matches!(val, Value::Float(f) if (f - 3.0).abs() < 1e-10));
 }
 
+/// cast_cross_new_type_same_base のテスト。
 #[test]
 fn test_cast_cross_new_type_same_base() {
     // MyInt(9) => YourInt should produce YourInt(9), not YourInt(MyInt(9))

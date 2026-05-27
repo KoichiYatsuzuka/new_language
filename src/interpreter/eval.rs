@@ -340,6 +340,8 @@ impl Interpreter {
 
     // --- eval() から抽出したメソッド群 ---
 
+    /// トレイトアクセス式 `obj:TraitName::attr` を評価する。
+    /// インスタンスのフィールドマップから名前空間付きキー `TraitName::attr` を検索して返す。
     fn eval_trait_access(
         &mut self,
         object: &Expr,
@@ -363,11 +365,14 @@ impl Interpreter {
         }
     }
 
+    /// 属性アクセス式 `obj.attr` を評価する。`get_attr_val` に委譲するシンラッパー。
     fn eval_attr(&mut self, object: &Expr, attr: &str) -> Result<Value, String> {
         let obj_val = self.eval(object)?;
         self.get_attr_val(obj_val, attr)
     }
 
+    /// スライス式 `begin:end:step` を評価して `Value::Slice` を生成する。
+    /// 各境界は int・Index インスタンス・None のいずれかでなければならない。
     fn eval_slice_expr(
         &mut self,
         begin: &Option<Box<Expr>>,
@@ -427,6 +432,7 @@ impl Interpreter {
         Ok(Value::Slice(Rc::new(SliceValue { begin, end, step })))
     }
 
+    /// 二項演算式を評価する。`And` / `Or` は短絡評価、それ以外は両辺を評価して `apply_binop` に渡す。
     fn eval_binop_expr(&mut self, op: &BinOp, left: &Expr, right: &Expr) -> Result<Value, String> {
         match op {
             BinOp::And => {
@@ -453,6 +459,7 @@ impl Interpreter {
         }
     }
 
+    /// match 式を評価する。各アームのパターンとサブジェクトを照合し、最初に一致したアームのボディを実行して値を返す。
     fn eval_match_expr(&mut self, subject: &Expr, arms: &[MatchArm]) -> Result<Value, String> {
         let subject_val = self.eval(subject)?;
         for arm in arms {
@@ -477,6 +484,9 @@ impl Interpreter {
         Ok(Value::None)
     }
 
+    /// 関数呼び出し式 `func(args)` を評価する。
+    /// テンプレート instantiate・メソッド呼び出し・組み込み関数・ユーザー定義関数・クラスコンストラクタ・
+    /// ジェネレータ・ネイティブ関数・型コンストラクタなど、呼び出し先の種別に応じて適切なパスへ分岐する。
     fn eval_call(&mut self, func: &Expr, args: &[CallArg]) -> Result<Value, String> {
         if let Expr::TemplateInstantiate { base, type_args } = func {
             let tmpl_val = self.eval(base)?;
@@ -827,6 +837,9 @@ impl Interpreter {
         }
     }
 
+    /// 組み込み関数 `open()` を実行してファイルオブジェクト (`Value::FileObject`) を返す。
+    /// 引数 `file_path`, `open_mode`, `start_point`, `byte_recognizing`, `encoding`, `exclusion` を解析し、
+    /// 対応する `std::fs::OpenOptions` を構築してファイルを開く。
     fn eval_builtin_open(&mut self, args: &[CallArg]) -> Result<Value, String> {
         use std::collections::HashMap as HMap;
         use std::fs::OpenOptions;
@@ -962,6 +975,7 @@ impl Interpreter {
         Ok(Value::FileObject(Rc::new(RefCell::new(fd))))
     }
 
+    /// 型コンストラクタ呼び出し（`list(...)`, `dict(...)`, `str(...)` 等）を評価する。
     fn eval_type_constructor_call(
         &mut self,
         type_name: &str,

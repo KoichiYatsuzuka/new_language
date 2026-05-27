@@ -248,6 +248,7 @@ impl Interpreter {
     // Variable declarations & assignment
     // ---------------------------------------------------------------------------
 
+    /// `let` 宣言を実行する。ソースが `mut` 変数の場合はディープコピーとフリーズを適用する。
     fn exec_let(&mut self, name: &str, expr: &Expr) -> Result<ExecResult, String> {
         // mut → let: deep copy してからフリーズプロトコルを適用する。
         // let → let: そのまま代入（コピー不要・再フリーズ不要）。
@@ -275,6 +276,7 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
+    /// タプル分解を伴う `let (a, b, ...) = expr` 宣言を実行する。
     fn exec_let_tuple(
         &mut self,
         targets: &[TupleTarget],
@@ -326,6 +328,7 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
+    /// `static mut` 変数宣言を実行する。ソース位置をキーに静的セルを確保し、呼び出し間で値を共有する。
     fn exec_static_var(
         &mut self,
         name: &str,
@@ -345,6 +348,7 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
+    /// `+=` / `-=` などの複合代入文を実行する。変数の可変性を確認してから演算結果を書き戻す。
     fn exec_compound_assign(
         &mut self,
         name: &str,
@@ -370,6 +374,7 @@ impl Interpreter {
     // Control flow signals
     // ---------------------------------------------------------------------------
 
+    /// `loop_yield expr` 文を実行する。for/while 式の中で値を蓄積する制御フロー信号。
     fn exec_loop_yield(&mut self, expr: &Expr) -> Result<ExecResult, String> {
         let val = self.eval(expr)?;
 
@@ -403,6 +408,7 @@ impl Interpreter {
     // Control flow structures
     // ---------------------------------------------------------------------------
 
+    /// `if / elif / else` 文を実行する。最初に真となった条件のブランチをスコープ付きブロックとして実行する。
     fn exec_if_stmt(
         &mut self,
         branches: &[(Expr, Vec<Stmt>)],
@@ -420,6 +426,7 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
+    /// `match` 文を実行する。サブジェクトを各アームのパターンと照合し、最初に一致したアームのボディを実行する。
     fn exec_match_stmt(&mut self, subject: &Expr, arms: &[MatchArm]) -> Result<ExecResult, String> {
         let subject_val = self.eval(subject)?;
         for arm in arms {
@@ -443,6 +450,7 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
+    /// `while cond: body` 文を実行する。条件が偽になるか `break` が発生するまでボディを繰り返す。
     fn exec_while_stmt(&mut self, cond: &Expr, body: &[Stmt]) -> Result<ExecResult, String> {
         LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
         let result = (|| {
@@ -465,6 +473,7 @@ impl Interpreter {
         result
     }
 
+    /// `for target in iter: body` 文を実行する。イテラブルを展開して各要素でボディを繰り返す。
     fn exec_for_stmt(
         &mut self,
         targets: &[String],
@@ -556,6 +565,7 @@ impl Interpreter {
         result
     }
 
+    /// `block: body` 文を実行する。`BlockReturn` を消費し、それ以外の制御フローは外へ伝播させる。
     fn exec_block_stmt(&mut self, body: &[Stmt]) -> Result<ExecResult, String> {
         // All BlockReturn values are absorbed (the block: statement consumes them).
         // Break, Continue, Return, Raise propagate outward to the enclosing loop/function.
@@ -569,6 +579,7 @@ impl Interpreter {
     // Function / generator definitions
     // ---------------------------------------------------------------------------
 
+    /// `fn` 定義を実行して関数値をスコープに登録する。テンプレート関数はテンプレート値として格納する。
     fn exec_fn_def(
         &mut self,
         name: &str,
@@ -636,6 +647,7 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
+    /// `gen` 定義を実行してジェネレータ関数値をスコープに登録する。
     fn exec_gen_def(
         &mut self,
         name: &str,
@@ -678,6 +690,7 @@ impl Interpreter {
     // Type definitions
     // ---------------------------------------------------------------------------
 
+    /// `trait` 定義を実行してトレイト値をスコープに登録する。アクセス制御情報も収集する。
     fn exec_trait_def(&mut self, name: &str, body: &[Stmt]) -> Result<ExecResult, String> {
         let mut trait_access: HashMap<String, Accessibility> = HashMap::new();
         for stmt in body {
@@ -713,6 +726,7 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
+    /// `new_type name: OriginalType` を実行して新しい型をスコープに登録する。
     fn exec_new_type_def(&mut self, name: &str, original: &str) -> Result<ExecResult, String> {
         let orig_val = self
             .get_val(original)
@@ -794,6 +808,7 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
+    /// `enum` 定義を実行して列挙型クラスと各バリアントをスコープに登録する。
     fn exec_enum_def(
         &mut self,
         name: &str,
@@ -894,6 +909,7 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
+    /// `class` 定義を実行してクラス値をスコープに登録する。トレイト継承・フィールド・メソッドを処理する。
     fn exec_class_def(
         &mut self,
         name: &str,
@@ -1095,6 +1111,7 @@ impl Interpreter {
     // Exception handling
     // ---------------------------------------------------------------------------
 
+    /// `freeze name` 文を実行する。変数を不変化し、インスタンスフィールドも再帰的にフリーズする。
     fn exec_freeze(&mut self, name: &str, span: &Span) -> Result<ExecResult, String> {
         let var = self
             .get_var(name)
@@ -1127,6 +1144,7 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
+    /// `raise [exc]` 文を実行する。例外値を評価して `ExecResult::Raise` を返す。引数なしは再 raise。
     fn exec_raise(&mut self, exc: &Option<Expr>, span: &Span) -> Result<ExecResult, String> {
         if exc.is_none() {
             match &self.current_exception {
@@ -1192,6 +1210,7 @@ impl Interpreter {
         }))
     }
 
+    /// `try / except / finally` 文を実行する。例外を捕捉してハンドラを実行し、finally ブロックは常に実行する。
     fn exec_try(
         &mut self,
         body: &[Stmt],
@@ -1271,6 +1290,7 @@ impl Interpreter {
     // Async
     // ---------------------------------------------------------------------------
 
+    /// `target <- async->T: body` 文を実行する。`AsyncManager` にタスクを追加する。
     fn exec_async_assign(&mut self, target: &str, stmts: &[Stmt]) -> Result<ExecResult, String> {
         let mgr_val = self
             .get_var(target)
@@ -1486,12 +1506,8 @@ impl Interpreter {
     // C++ bridge module loading
     // ---------------------------------------------------------------------------
 
-    /// Load a C++ library (`cpp-lib`) or DLL (`cpp-dll`) as a tl module.
-    ///
-    /// `header_path_str` is the path to the `.h` header file (resolved by the parser).
-    /// For `cpp-lib`: builds `tl_{stem}.dll` next to the header via MSVC + rustc, with
-    ///   permanent caching (never rebuilt unless `tl_{stem}.dll` is deleted).
-    /// For `cpp-dll`: wraps the adjacent `{stem}.dll` via a rustc-compiled shim.
+    /// C++ ライブラリ（`cpp-lib`）または DLL（`cpp-dll`）を tl モジュールとしてロードする。
+    /// ヘッダーをパースして関数シグネチャを収集し、ラッパー DLL を構築・ロードして名前空間を返す。
     fn load_cpp_module(
         &mut self,
         lang: &str,
@@ -1592,7 +1608,7 @@ impl Interpreter {
         }
     }
 
-    /// Map a C parameter type to the interpreter's `PtrParam` kind.
+    /// C パラメータ型を tl の `PtrParam` 種別にマッピングする。
     fn sig_to_ptr_param_fn(ct: &super::cpp_bridge::CType) -> crate::interpreter::PtrParam {
         use super::cpp_bridge::CType;
         use crate::interpreter::PtrParam;
@@ -1603,11 +1619,8 @@ impl Interpreter {
         }
     }
 
-    /// Load a pre-compiled cpp wrapper DLL and build its `Namespace`.
-    ///
-    /// Calls `tl_init_bridge` (if present) to give the wrapper the callback
-    /// table and trigger DLL loading, then registers each function as a
-    /// `NativeFunction` value keyed by its name.
+    /// コンパイル済み C++ ラッパー DLL をロードして名前空間を構築する。
+    /// `tl_init_bridge`（あれば）でコールバックテーブルを初期化し、各関数を `NativeFunction` として登録する。
     fn load_cpp_wrapper_dll(
         &mut self,
         lib_path: &std::path::Path,

@@ -23,10 +23,12 @@ pub fn generate_stub(stmts: &[Stmt]) -> String {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/// 指定インデントレベルに対応するスペース文字列を返す（4スペース単位）。
 fn ind(level: usize) -> String {
     "    ".repeat(level)
 }
 
+/// テンプレートパラメータリストを `[T, U: Constraint]` 形式の文字列に変換する。空の場合は空文字列。
 fn template_params_str(params: &[TemplateParam]) -> String {
     if params.is_empty() {
         return String::new();
@@ -44,6 +46,7 @@ fn template_params_str(params: &[TemplateParam]) -> String {
     format!("[{}]", parts.join(", "))
 }
 
+/// パラメータリストをカンマ区切りの文字列に変換する。型アノテーションとデフォルト値 (`= ...`) を含む。
 fn params_str(params: &[Param]) -> String {
     params
         .iter()
@@ -69,6 +72,7 @@ fn params_str(params: &[Param]) -> String {
 
 // ── top-level dispatch ────────────────────────────────────────────────────────
 
+/// トップレベル文からスタブ文字列を生成する。対象外の文（変数宣言など）には `None` を返す。
 fn top_level_stub(stmt: &Stmt) -> Option<String> {
     match stmt {
         Stmt::FnDef {
@@ -125,6 +129,7 @@ fn top_level_stub(stmt: &Stmt) -> Option<String> {
 
 // ── function / generator stubs ───────────────────────────────────────────────
 
+/// 関数定義のスタブ文字列（`fn name(...) -> T:\n    ...`）を生成する。
 fn fn_stub(
     name: &str,
     template_params: &[TemplateParam],
@@ -141,6 +146,7 @@ fn fn_stub(
     format!("{i}fn {name}{tparams}({pstr}){ret}:\n{body_i}...\n")
 }
 
+/// ジェネレータ定義のスタブ文字列（`gen name(...) -> T:\n    ...`）を生成する。
 fn gen_stub(
     name: &str,
     template_params: &[TemplateParam],
@@ -158,6 +164,7 @@ fn gen_stub(
 
 // ── class stub ────────────────────────────────────────────────────────────────
 
+/// クラス定義のスタブ文字列を生成する。`->Name` コンストラクタ戻り値アノテーション付き。
 fn class_stub(
     name: &str,
     template_params: &[TemplateParam],
@@ -185,6 +192,7 @@ fn class_stub(
 
 // ── trait stub ────────────────────────────────────────────────────────────────
 
+/// trait 定義のスタブ文字列を生成する。
 fn trait_stub(name: &str, template_params: &[TemplateParam], body: &[Stmt]) -> String {
     let tparams = template_params_str(template_params);
     let mut out = format!("trait {name}{tparams}:\n");
@@ -309,6 +317,7 @@ fn class_body_item_stub(stmt: &Stmt, indent_level: usize) -> Option<(Accessibili
 
 // ── enum stub ─────────────────────────────────────────────────────────────────
 
+/// enum 定義のスタブ文字列を生成する。
 fn enum_stub(name: &str, variants: &[(String, Option<crate::ast::Expr>)]) -> String {
     let mut out = format!("enum {name}:\n");
     for (variant, value) in variants {

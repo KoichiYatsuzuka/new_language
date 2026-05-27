@@ -19,12 +19,9 @@ const DEFAULTPARAM_MACRO: &str = "DEFAULTPARAM";
 
 // ── Header parser ────────────────────────────────────────────────────────────
 
-/// Parse C/C++ function declarations and struct definitions from a header file.
-/// Returns `(functions, structs)`.  Struct definitions are only emitted when
-/// every field type is resolvable to a primitive `CType`.
-///
-/// `custom` maps C type names to tl primitive types.
-/// `typedefs` is a pre-resolved alias map built by `load_system_typedefs`.
+/// C/C++ ヘッダから関数宣言と構造体定義を解析する。`(functions, structs)` を返す。
+/// 全フィールドがプリミティブ `CType` に解決できる構造体のみ出力する。
+/// `custom` は C 型名から tl プリミティブ型へのマッピング、`typedefs` は `load_system_typedefs` で構築済みのエイリアスマップ。
 pub fn parse_header_full(
     content: &str,
     custom: &HashMap<String, String>,
@@ -45,6 +42,7 @@ pub fn parse_header_full(
     (sigs, structs)
 }
 
+/// C/C++ ヘッダから関数シグネチャのみを解析して返す（構造体定義は無視）。
 #[allow(dead_code)]
 pub fn parse_header(
     content: &str,
@@ -54,8 +52,7 @@ pub fn parse_header(
     parse_header_full(content, custom, typedefs).0
 }
 
-/// Scan a header's raw text for local `#include "filename.h"` directives and
-/// return paths that exist relative to `header_dir`.
+/// ヘッダの生テキストからローカル `#include "filename.h"` ディレクティブを検索し、`header_dir` からの相対パスとして存在するパスを返す。
 pub fn collect_included_headers(raw_content: &str, header_dir: &Path) -> Vec<PathBuf> {
     let mut result = Vec::new();
     for line in raw_content.lines() {
@@ -83,9 +80,7 @@ pub fn collect_included_headers(raw_content: &str, header_dir: &Path) -> Vec<Pat
 
 // ── Shared text-parsing utilities (pub(crate) for typedef_loader) ─────────────
 
-/// Returns true if `seg` is a function-pointer typedef.
-/// Catches `(*name)`, `(__cdecl* name)`, `(CALLBACK* name)`, `(NTAPI* name)`, etc.
-/// by looking for any `*` that appears inside a `(…)` group.
+/// `seg` が関数ポインタ typedef かどうかを返す。`(…)` グループ内に `*` が現れる場合（`(*name)`, `(__cdecl* name)` 等）を検出する。
 pub(crate) fn typedef_contains_fn_ptr(seg: &str) -> bool {
     let mut depth = 0i32;
     for c in seg.chars() {
@@ -99,8 +94,7 @@ pub(crate) fn typedef_contains_fn_ptr(seg: &str) -> bool {
     false
 }
 
-/// Extract `(identifier, pointer_count)` from a raw alias token like `"*PVOID"` or `"LPDWORD"`.
-/// Returns `("", 0)` if the token is not a valid identifier.
+/// `"*PVOID"` や `"LPDWORD"` のような生エイリアストークンから `(識別子, ポインタ数)` を取り出す。有効な識別子でない場合は `("", 0)` を返す。
 pub(crate) fn extract_alias_token(raw: &str) -> (&str, usize) {
     let leading = raw.chars().take_while(|&c| c == '*').count();
     let without_leading = &raw[leading..];
@@ -112,8 +106,7 @@ pub(crate) fn extract_alias_token(raw: &str) -> (&str, usize) {
     (alias, leading + trailing)
 }
 
-/// Parse a comma-separated alias list (the `A, *B, C` part after `}` in a struct typedef)
-/// against a given base type.
+/// 構造体 typedef の `}` の後に続くカンマ区切りエイリアスリスト（`A, *B, C` の部分）を指定ベース型に対してパースする。
 pub(crate) fn parse_alias_list(aliases_str: &str, base_type: &str) -> Vec<(String, String)> {
     let mut results = Vec::new();
     for part in aliases_str.split(',') {
@@ -137,7 +130,7 @@ pub(crate) fn parse_alias_list(aliases_str: &str, base_type: &str) -> Vec<(Strin
     results
 }
 
-/// Strip C/C++ line and block comments from `src`.
+/// `src` から C/C++ の行コメントおよびブロックコメントを除去する。
 pub(crate) fn strip_comments(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut chars = src.chars().peekable();
@@ -183,11 +176,8 @@ pub(crate) fn strip_comments(src: &str) -> String {
     out
 }
 
-/// Strip C/C++ comments and resolve `#ifdef`/`#ifndef`/`#if defined(…)`/
-/// `#elif defined(…)`/`#else`/`#endif` preprocessor conditionals.
-///
-/// Lines excluded by a false condition are replaced with blank lines (preserving
-/// line count). All other `#` directives are also replaced with blank lines.
+/// C/C++ コメントを除去し、`#ifdef`/`#ifndef`/`#if defined(…)`/`#elif defined(…)`/`#else`/`#endif` プリプロセッサ条件を解決する。
+/// 偽の条件で除外された行は空行に置き換える（行数を保持）。その他の `#` ディレクティブも空行にする。
 pub(crate) fn strip_and_preprocess(src: &str, macros: &[String]) -> String {
     // Stack frames: (branch_active, any_branch_taken, parent_active)
     let mut cond_stack: Vec<(bool, bool, bool)> = Vec::new();
@@ -314,7 +304,7 @@ pub(crate) fn strip_and_preprocess(src: &str, macros: &[String]) -> String {
     out
 }
 
-/// Find the closing `}` that matches the opening `{` at position 0 of `s`.
+/// `s` の位置 0 にある開き `{` に対応する閉じ `}` の位置を返す。
 pub(crate) fn find_matching_brace(s: &str) -> Option<usize> {
     let mut depth = 0;
     for (i, c) in s.char_indices() {
@@ -334,9 +324,8 @@ pub(crate) fn find_matching_brace(s: &str) -> Option<usize> {
 
 // ── Struct body parsing ───────────────────────────────────────────────────────
 
-/// Scan stripped source for `typedef struct/union Tag { … } Alias;` definitions
-/// and return a `CStructDef` for each alias (non-pointer only) whose every field
-/// resolves to a primitive `CType`.
+/// ストリップ済みソースから `typedef struct/union Tag { … } Alias;` 定義を走査し、
+/// 全フィールドがプリミティブ `CType` に解決できるエイリアス（非ポインタのみ）ごとに `CStructDef` を返す。
 pub(crate) fn parse_struct_bodies(
     stripped: &str,
     custom: &HashMap<String, String>,
@@ -408,15 +397,7 @@ pub(crate) fn parse_struct_bodies(
     result
 }
 
-/// Parse field declarations inside a struct body.
-///
-/// Handles:
-/// - `float x;` → one field
-/// - `float x, y, z;` → three fields
-/// - `int m[4][4];` → skipped (array declarators)
-/// - Nested `struct { … }` → skipped
-///
-/// Returns only fields whose type resolves to a primitive `CType`.
+/// 構造体本体のフィールド宣言をパースする。`float x, y, z;` → 3 フィールド、配列宣言やネスト構造体はスキップ。プリミティブ `CType` に解決できるフィールドのみ返す。
 fn parse_struct_field_decls(
     body: &str,
     custom: &HashMap<String, String>,
@@ -448,8 +429,7 @@ fn parse_struct_field_decls(
     fields
 }
 
-/// Parse a single `;`-delimited field segment like `float x, y, z` or `int flags`.
-/// Appends resolved `(name, CType)` pairs to `out`.
+/// `;` 区切りの 1 フィールドセグメント（`float x, y, z` や `int flags` など）をパースし、解決済みの `(name, CType)` ペアを `out` に追加する。
 fn parse_field_segment(
     seg: &str,
     custom: &HashMap<String, String>,
@@ -547,12 +527,8 @@ fn parse_field_segment(
 
 // ── Scope scanner ─────────────────────────────────────────────────────────────
 
-/// Recursively scan a C/C++ scope for function declarations.
-///
-/// - `extern "C" { ... }` → recurse with the same inherited namespace
-/// - `namespace X { ... }` → recurse with `ns = Some("X")`
-/// - Any `{ ... }` that is neither of the above → skip (struct / class / union body)
-/// - `;` at the current level → flush the accumulated text as a declaration candidate
+/// C/C++ スコープを再帰的に走査して関数宣言を収集する。
+/// `extern "C" { ... }` は同じ名前空間で再帰し、`namespace X { ... }` は `ns = Some("X")` で再帰し、それ以外の `{ ... }` はスキップ（struct/class/union 本体）、`;` はフラッシュして宣言候補として格納する。
 pub(crate) fn scan_scope(text: &str, ns: Option<String>, decls: &mut Vec<(String, Option<String>)>) {
     let mut i = 0;
     let mut seg_start = 0; // start of the current `;`-delimited declaration
@@ -638,8 +614,7 @@ pub(crate) fn scan_scope(text: &str, ns: Option<String>, decls: &mut Vec<(String
 
 // ── Function declaration parser ───────────────────────────────────────────────
 
-/// Parse a function declaration that may have a leading `extern` keyword,
-/// default-parameter macros (e.g. `DEFAULTPARAM(= NULL)`), and a namespace.
+/// 先頭の `extern` キーワード、デフォルト引数マクロ（`DEFAULTPARAM(= NULL)` など）、および名前空間を含む可能性のある関数宣言をパースする。
 fn parse_fn_decl_ns(
     decl: &str,
     namespace: Option<String>,
@@ -723,7 +698,7 @@ fn parse_fn_decl_ns(
     })
 }
 
-/// Split a parameter list by `,`, respecting nested `()`.
+/// `,` でパラメータリストを分割する。ネストした `()` は考慮して分割する。
 pub(crate) fn split_params(s: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut current = String::new();
@@ -751,8 +726,7 @@ pub(crate) fn split_params(s: &str) -> Vec<String> {
     result
 }
 
-/// Remove `IDENTIFIER(...)` macro-call patterns from a parameter string.
-/// Used to strip default-parameter macros like `DEFAULTPARAM(= NULL)`.
+/// パラメータ文字列から `IDENTIFIER(...)` 形式のマクロ呼び出しパターンを除去する。`DEFAULTPARAM(= NULL)` などのデフォルト引数マクロの除去に使用する。
 fn strip_parameter_macros(s: &str) -> String {
     let mut result = String::new();
     let mut chars = s.chars().peekable();
@@ -797,10 +771,7 @@ fn strip_parameter_macros(s: &str) -> String {
 
 // ── Type string parser ────────────────────────────────────────────────────────
 
-/// Split a C declaration like `"int *foo"` or `"const int* bar"` into `("int*", "foo")`.
-///
-/// Stars (`*`) attached to the name are moved to the type string so that
-/// `parse_c_type_str` can see the full pointer decoration.
+/// `"int *foo"` や `"const int* bar"` のような C 宣言を `("int*", "foo")` に分割する。名前に付いた `*` は型文字列に移動し `parse_c_type_str` が完全なポインタ装飾を確認できるようにする。
 fn split_type_and_name(s: &str) -> Result<(String, String), String> {
     let s = s.trim();
     let parts: Vec<&str> = s.split_whitespace().collect();
@@ -827,15 +798,9 @@ fn split_type_and_name(s: &str) -> Result<(String, String), String> {
     Ok((type_str, name.to_string()))
 }
 
-/// Map a C type string (possibly with trailing `*`) to `CType`.
-///
-/// Resolution order:
-///   1. `custom` — user overrides (C alias → tl primitive name)
-///   2. `typedefs` — system typedef aliases resolved by `load_system_typedefs`
-///   3. Built-in C/C++ primitive names (`int`, `long`, `float`, …)
-///
-/// Pointer decoration (`*`) in the input is handled before the lookup.
-/// Functions whose types cannot be resolved are signalled with `Err`.
+/// C 型文字列（末尾に `*` を含む可能性あり）を `CType` にマップする。
+/// 解決順: (1) `custom`（ユーザー上書き）→ (2) `typedefs`（システム typedef エイリアス）→ (3) 組み込み C/C++ プリミティブ名。
+/// 解決できない型は `Err` を返す。
 pub(crate) fn parse_c_type_str(
     s: &str,
     custom: &HashMap<String, String>,

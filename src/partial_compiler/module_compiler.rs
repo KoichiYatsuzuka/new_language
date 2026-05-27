@@ -209,6 +209,7 @@ fn invoke_rustc(rs_path: &Path, dll_path: &Path) -> Result<(), String> {
 
 // ── writers ───────────────────────────────────────────────────────────────────
 
+/// ソーステキストのみを埋め込んだ v0 形式の `.tlc` ファイルを書き出す。
 fn write_tlc_v0(source: &str, module_name: &str, path: &Path) -> std::io::Result<()> {
     let name_bytes = module_name.as_bytes();
     let src_bytes = source.as_bytes();
@@ -224,6 +225,7 @@ fn write_tlc_v0(source: &str, module_name: &str, path: &Path) -> std::io::Result
     std::fs::write(path, buf)
 }
 
+/// ソーステキストとネイティブ DLL バイト列を埋め込んだ v1 形式の `.tlc` ファイルを書き出す。
 fn write_tlc_v1(
     source: &str,
     module_name: &str,
@@ -309,6 +311,7 @@ fn parse_tlc(
     Ok((module_name, source, Some((exports, dll_bytes))))
 }
 
+/// バイト列の現在位置から u32 をリトルエンディアンで読み取り、位置を4バイト進める。
 fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, String> {
     if data.len() < *pos + 4 {
         return Err("unexpected end of .tlc data".into());
@@ -318,6 +321,7 @@ fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, String> {
     Ok(v)
 }
 
+/// バイト列の現在位置から `len` バイトのスライスを返し、位置を進める。
 fn read_bytes<'a>(data: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8], String> {
     if data.len() < *pos + len {
         return Err("unexpected end of .tlc data".into());

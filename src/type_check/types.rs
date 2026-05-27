@@ -62,6 +62,7 @@ pub struct FnTypeParam {
     pub ty: InferredType,
 }
 
+/// 型推論システムが扱う型を表す列挙型。プリミティブ型・コレクション型・Union 型・関数型などを網羅する。
 #[derive(Debug, Clone, PartialEq)]
 pub enum InferredType {
     Int,
@@ -91,6 +92,7 @@ pub enum InferredType {
 }
 
 impl InferredType {
+    /// 型アノテーション文字列を [`InferredType`] に変換する。解析できない場合は `None` を返す。
     pub fn from_ann(ann: &str) -> Option<Self> {
         if let Some(inner) = ann.strip_prefix("Union[").and_then(|s| s.strip_suffix(']')) {
             let parts = split_top_level_commas(inner);
@@ -178,6 +180,7 @@ impl InferredType {
         }
     }
 
+    /// `function[...]->R` または `function{...}->R` 形式の関数型アノテーションを解析する。
     fn parse_fn_type_ann(rest: &str) -> Option<Self> {
         let (params, after_params) = if rest.starts_with('[') {
             let close = Self::find_closing_bracket(rest, '[', ']')?;
@@ -254,6 +257,7 @@ impl InferredType {
         })
     }
 
+    /// 対応する閉じブラケットの位置を返す。見つからない場合は `None` を返す。
     fn find_closing_bracket(s: &str, open: char, close: char) -> Option<usize> {
         let mut depth = 0usize;
         for (i, c) in s.char_indices() {
@@ -271,6 +275,7 @@ impl InferredType {
 }
 
 impl std::fmt::Display for InferredType {
+    /// [`InferredType`] を人間可読な型アノテーション文字列に変換して表示する。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Int => write!(f, "int"),
@@ -333,6 +338,7 @@ impl std::fmt::Display for InferredType {
 // Function signature
 // ---------------------------------------------------------------------------
 
+/// 関数シグネチャ情報。パラメータ名・型アノテーション・必須引数数・戻り値型を保持する。
 #[derive(Clone)]
 pub(crate) struct FnSig {
     pub(crate) params: Vec<(String, Option<InferredType>)>,
@@ -344,6 +350,7 @@ pub(crate) struct FnSig {
 // Variable info (scope entry)
 // ---------------------------------------------------------------------------
 
+/// スコープ内の変数情報。推論済み型と可変性フラグを保持する。
 pub(crate) struct VarInfo {
     pub(crate) ty: InferredType,
     pub(crate) mutable: bool,

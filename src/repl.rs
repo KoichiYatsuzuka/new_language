@@ -17,6 +17,11 @@ use crate::parser::Parser;
 
 const EXEC_SENTINEL: &str = "##REPL_EXEC##";
 
+/// 対話式 REPL ループを起動する。
+///
+/// 標準入力からコードブロックを読み込み、センチネル行 (`##REPL_EXEC##`) を受信するたびに
+/// そのブロックを実行する。インタープリタは呼び出し間で維持されるため、
+/// あるブロックで宣言した変数や関数は次のブロックから参照できる。
 pub fn run_repl() {
     eprintln!(
         "\x1b[32mtest_lang REPL\x1b[0m  — Ctrl+Enter in VS Code to run selection · Ctrl+D to exit"
@@ -47,6 +52,10 @@ pub fn run_repl() {
     }
 }
 
+/// 単一のコードブロックを字句解析・構文解析・実行する。
+///
+/// 最後の文が式文であり、その評価結果が `None` 以外の場合は標準出力に repr を出力する。
+/// パースエラーまたは実行時エラーが発生した場合は標準エラー出力に表示してブロックの処理を中断する。
 fn run_block(interp: &mut Interpreter, code: &str) {
     let tokens = Lexer::new(code, "<repl>").tokenize();
     let stmts = match Parser::new(tokens, None).parse_program() {

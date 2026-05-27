@@ -14,20 +14,9 @@ use super::header_parser::{
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-/// Load `typedef` aliases from the given system/SDK header files and resolve
-/// them transitively to C++ primitive type strings.
-///
-/// The returned map covers:
-/// - Plain `typedef`: `typedef unsigned long DWORD` → `"DWORD"` → `"unsigned long"`
-/// - Multi-alias: `typedef unsigned long DWORD, *LPDWORD` → both aliases
-/// - Struct typedef: `typedef struct tag { … } A, *B` → `A → tag`, `B → tag*`
-/// - `DECLARE_HANDLE(X)` macro → `"X"` → `"void*"` (opaque pointer)
-///
-/// `macros` is the list of predefined macros (from `precompile_macros`) used to
-/// resolve `#ifdef`/`#elif defined(…)` branches.
-///
-/// Each listed header and its angle-bracket sub-headers are followed recursively.
-/// Transitive aliases are fully resolved (e.g. `DWORD_PTR` → `ULONG_PTR` → `unsigned __int64`).
+/// 指定したシステム/SDK ヘッダから `typedef` エイリアスを読み込み、C++ プリミティブ型文字列に推移的に解決する。
+/// 返すマップは plain `typedef`、複数エイリアス、struct typedef、`DECLARE_HANDLE(X)` マクロをカバーする。
+/// 各ヘッダとその角括弧サブヘッダを再帰的に追跡し、`DWORD_PTR → ULONG_PTR → unsigned __int64` のような推移的エイリアスも完全解決する。
 pub fn load_system_typedefs(header_paths: &[String], macros: &[String]) -> HashMap<String, String> {
     let mut raw: HashMap<String, String> = HashMap::new();
     let mut visited: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
@@ -40,6 +29,7 @@ pub fn load_system_typedefs(header_paths: &[String], macros: &[String]) -> HashM
 
 // ── File-level collection ─────────────────────────────────────────────────────
 
+/// ファイルパスから typedef エイリアスを再帰的に収集して `out` に追加する。既訪問ファイルはスキップする。
 fn collect_typedefs_from_file(
     path: &Path,
     out: &mut HashMap<String, String>,
@@ -65,9 +55,7 @@ fn collect_typedefs_from_file(
 }
 
 /// Collect headers to follow for typedef loading.
-/// Follows both `#include "file.h"` (quoted) and `#include <file.h>` (angle-bracket).
-/// Angle-bracket names are resolved relative to `header_dir`; if not found there,
-/// sibling directories (one level up from `header_dir`) are also checked.
+/// ヘッダ生テキストからインクルードパスを収集する。クォートと角括弧の両形式に対応し、見つからない場合は `header_dir` の兄弟ディレクトリも確認する。
 fn collect_typedef_includes(raw_content: &str, header_dir: &Path) -> Vec<PathBuf> {
     // Sibling dirs: e.g. `um/` and `shared/` both live under the SDK version root.
     let parent = header_dir.parent();
@@ -119,8 +107,7 @@ fn collect_typedef_includes(raw_content: &str, header_dir: &Path) -> Vec<PathBuf
     result
 }
 
-/// Detect `DECLARE_HANDLE(Name)` macro calls in stripped source and register
-/// each `Name` as an opaque pointer (`void*`).
+/// ストリップ済みソースから `DECLARE_HANDLE(Name)` マクロ呼び出しを検出し、各 `Name` を不透明ポインタ（`void*`）として登録する。
 fn collect_declare_handles(stripped: &str, out: &mut HashMap<String, String>) {
     let mut rest = stripped;
     while let Some(pos) = rest.find("DECLARE_HANDLE") {
@@ -140,8 +127,7 @@ fn collect_declare_handles(stripped: &str, out: &mut HashMap<String, String>) {
     }
 }
 
-/// Scan stripped source for `typedef <type_expr> <Alias>;` statements and
-/// populate `out` with `Alias → type_expr` entries (first definition wins).
+/// ストリップ済みソースを走査して `typedef <type_expr> <Alias>;` 文を検出し、`out` に `Alias → type_expr` エントリを追加する（先着優先）。
 fn collect_typedefs_from_text(stripped: &str, out: &mut HashMap<String, String>) {
     let mut i = 0;
     let mut seg_start = 0;
@@ -203,14 +189,8 @@ fn collect_typedefs_from_text(stripped: &str, out: &mut HashMap<String, String>)
 
 // ── Typedef segment parser ────────────────────────────────────────────────────
 
-/// Parse a `typedef` segment and return all `(alias, type_expr)` pairs it declares.
-///
-/// Handles all three equivalent forms:
-///  - `typedef struct Tag { … } A, *B;`  →  `A → Tag`, `B → Tag*`
-///  - `typedef unsigned long DWORD, *LPDWORD;`  →  `DWORD → unsigned long`, `LPDWORD → unsigned long*`
-///  - `typedef void *PVOID;`  →  `PVOID → void*`
-///
-/// Function-pointer typedefs (any `*` inside `(…)`) are skipped.
+/// `typedef` セグメントをパースして宣言されている全 `(alias, type_expr)` ペアを返す。
+/// struct typedef、複数エイリアス、単純 typedef の 3 形式に対応。関数ポインタ typedef（`(…)` 内の `*`）はスキップする。
 fn parse_typedef_segments(seg: &str) -> Vec<(String, String)> {
     let words: Vec<&str> = seg.split_whitespace().collect();
     if words.first().copied() != Some("typedef") || words.len() < 3 {
@@ -307,9 +287,8 @@ fn parse_typedef_segments(seg: &str) -> Vec<(String, String)> {
 
 // ── Alias resolution ──────────────────────────────────────────────────────────
 
-/// Transitively resolve all alias entries until stable (max 32 passes).
-/// After this, every value in the map is either a C++ primitive string or an
-/// unresolvable type expression (struct name, unknown typedef, etc.).
+/// マップ内の全エイリアスエントリを安定するまで推移的に解決する（最大 32 パス）。
+/// 終了後、各値は C++ プリミティブ文字列か解決不能な型式（struct 名、不明 typedef 等）になる。
 pub(crate) fn resolve_typedef_map(map: &mut HashMap<String, String>) {
     for _ in 0..32 {
         let mut changed = false;
@@ -327,8 +306,7 @@ pub(crate) fn resolve_typedef_map(map: &mut HashMap<String, String>) {
     }
 }
 
-/// Attempt one resolution step: look up the base type of `expr` in `map`.
-/// Handles pointer types: `"DWORD *"` → look up `"DWORD"`, prepend `*` to result.
+/// 解決ステップを 1 回試みる。`expr` のベース型を `map` で検索する。ポインタ型 `"DWORD *"` は `"DWORD"` を検索し結果に `*` を前置する。
 fn resolve_one_typedef(expr: &str, map: &HashMap<String, String>) -> String {
     // Strip qualifiers for lookup, then restore pointer decoration
     let tokens: Vec<&str> = expr

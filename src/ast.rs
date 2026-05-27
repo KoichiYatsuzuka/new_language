@@ -383,7 +383,11 @@ pub struct MatchArm {
 /// - `NewTypeDef`             : `new_type NewName: OriginalType` — 新しい型エイリアスの定義。
 /// - `Try`                    : `try` / `except` / `finally` 例外処理。
 /// - `Raise`                  : `raise [expr]` 例外の送出（または再送出）。
-/// One binding slot in a tuple-unpacking declaration (`let x, mut y, _ = expr`).
+
+/// タプルアンパック宣言 (`let x, mut y, _ = expr`) における1バインディングスロット。
+///
+/// パーサーが生成し、型検査器が各スロットの可変性を検証する。
+/// `Wildcard` は末尾にのみ配置できる（残余要素をすべて破棄する）。
 #[derive(Debug, Clone)]
 pub enum TupleTarget {
     /// `let name` — immutable binding
@@ -396,6 +400,10 @@ pub enum TupleTarget {
     Bare(String),
 }
 
+/// 文（Statement）の AST ノード。
+///
+/// インタープリタが実行するすべての構文要素を表す。式文・変数宣言・制御構文・
+/// 関数/クラス/トレイト定義・インポート・非同期タスクなどすべての文種を含む。
 #[derive(Debug, Clone)]
 pub enum Stmt {
     /// 式文: 副作用のために式を評価する（例: `print(x)`）。
@@ -767,6 +775,9 @@ pub enum Accessibility {
 }
 
 impl Default for Accessibility {
+    /// デフォルト値として `Public` を返す。
+    ///
+    /// クラス/トレイト本体でアクセス修飾子が指定されていない場合に使用される。
     fn default() -> Self {
         Self::Public
     }

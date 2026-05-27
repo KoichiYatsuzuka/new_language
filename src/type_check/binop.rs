@@ -8,6 +8,7 @@ use super::types::InferredType;
 use super::TypeChecker;
 
 impl TypeChecker {
+    /// 二項演算子の型検査を行い、`Any` 型・`Union` 型への演算や順序比較の不整合をエラーとして記録する。
     pub(super) fn check_binop(
         &mut self,
         op: &BinOp,
@@ -50,6 +51,7 @@ impl TypeChecker {
         }
     }
 
+    /// 順序比較演算子 (`<`, `>`, `<=`, `>=`) の型整合性を検査し、不整合があればエラーを記録する。
     fn check_ordered_cmp(
         &mut self,
         lt: &InferredType,
@@ -67,6 +69,7 @@ impl TypeChecker {
         }
     }
 
+    /// 2 つの型が順序比較可能な組み合わせかどうかを判定する。
     fn ordered_comparable(lt: &InferredType, rt: &InferredType) -> bool {
         use InferredType::*;
         matches!(
@@ -81,6 +84,7 @@ impl TypeChecker {
         )
     }
 
+    /// 二項演算子と両辺の型から演算結果の型を推論して返す。
     pub(super) fn infer_binop_result(
         op: &BinOp,
         lt: &InferredType,

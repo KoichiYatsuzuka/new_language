@@ -93,9 +93,8 @@ unsafe fn _dll() -> usize {
 
 // ── Struct bridge helpers ─────────────────────────────────────────────────────
 
-/// Map a `CType` to the Rust primitive type string used inside a `#[repr(C)]` struct.
-/// Returns `None` for types that cannot be represented as a simple Rust field
-/// (e.g. nested structs — represented as `ByValueStruct`).
+/// `CType` を `#[repr(C)]` 構造体フィールドで使用する Rust プリミティブ型文字列にマップする。
+/// `ByValueStruct` など単純な Rust フィールドで表現できない型は `None` を返す。
 pub(crate) fn ctype_to_rust_field(ct: &CType) -> Option<&'static str> {
     match ct {
         CType::Int | CType::Bool => Some("i32"),
@@ -112,14 +111,12 @@ pub(crate) fn ctype_to_rust_field(ct: &CType) -> Option<&'static str> {
     }
 }
 
-/// Returns `true` if every field of the struct maps to a Rust primitive
-/// (i.e. the struct can be represented as `#[repr(C)]` without nested structs).
+/// 構造体の全フィールドが Rust プリミティブにマップできる場合（ネスト構造体なし）に `true` を返す。
 pub(crate) fn struct_is_bridgeable(def: &CStructDef) -> bool {
     !def.fields.is_empty() && def.fields.iter().all(|(_, ct)| ctype_to_rust_field(ct).is_some())
 }
 
-/// Generate the Rust expression that reads a handle from the arena and converts
-/// it to the Rust type for a struct field.
+/// アリーナからハンドルを読み取り、構造体フィールドの Rust 型に変換する Rust 式を生成する。
 fn field_from_handle(ct: &CType, handle: &str) -> String {
     match ct {
         CType::Int => format!("((*CB).to_int)({handle}) as i32"),
@@ -131,7 +128,7 @@ fn field_from_handle(ct: &CType, handle: &str) -> String {
     }
 }
 
-/// Generate the Rust expression that wraps a struct field value into a tl handle.
+/// 構造体フィールドの値を tl ハンドルにラップする Rust 式を生成する。
 fn field_to_handle(ct: &CType, val: &str) -> String {
     match ct {
         CType::Int => format!("((*CB).make_int)({val} as i64)"),
@@ -147,12 +144,10 @@ fn field_to_handle(ct: &CType, val: &str) -> String {
 
 // ── Dynamic DLL wrapper generator ────────────────────────────────────────────
 
-/// Generate a standalone Rust wrapper for a **dynamic** DLL.
-///
-/// The wrapper uses OS-level `LoadLibraryA`/`dlopen` to load `dll_path` at
-/// `tl_init` time, then resolves each function via `GetProcAddress`/`dlsym`
-/// on every call.  All functions follow the `{name}_tl(argc, argv) -> i64`
-/// convention so the existing `NativeFnRef` machinery can drive them.
+/// **動的** DLL 用のスタンドアロン Rust ラッパーを生成する。
+/// ラッパーは `tl_init` 時に `LoadLibraryA`/`dlopen` で DLL をロードし、各呼び出しで
+/// `GetProcAddress`/`dlsym` を使ってシンボルを解決する。
+/// すべての関数は `{name}_tl(argc, argv) -> i64` 規約に従う。
 pub fn gen_dll_wrapper(
     dll_path: &str,
     sigs: &[CFnSig],
@@ -213,6 +208,7 @@ pub unsafe extern "C" fn tl_init_bridge(cb: *const TlCallbacks) {
     src
 }
 
+/// 1 つの C 関数シグネチャに対して `{name}_tl(argc, argv) -> i64` 形式の Rust ラッパー関数ソースを生成する。
 fn gen_dll_fn(sig: &CFnSig, struct_defs: &HashMap<String, &CStructDef>) -> String {
     let mut s = String::new();
     let n = &sig.name;

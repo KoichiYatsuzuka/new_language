@@ -10,16 +10,19 @@ use super::types::{InferredType, VarInfo};
 use super::TypeChecker;
 
 impl TypeChecker {
+    /// 新しいスコープをスタックに積む。
     pub(super) fn push_scope(&mut self) {
         self.scope_stack.push(HashMap::new());
     }
 
+    /// 現在のスコープをスタックから取り除く。グローバルスコープは取り除かない。
     pub(super) fn pop_scope(&mut self) {
         if self.scope_stack.len() > 1 {
             self.scope_stack.pop();
         }
     }
 
+    /// 現在スコープに変数を宣言する。同名の変数があれば上書きする。
     pub(super) fn declare(&mut self, name: String, ty: InferredType, mutable: bool) {
         self.scope_stack
             .last_mut()
@@ -27,10 +30,12 @@ impl TypeChecker {
             .insert(name, VarInfo { ty, mutable });
     }
 
+    /// スコープスタックを内側から外側へ走査して変数情報を返す。見つからない場合は `None`。
     pub(super) fn lookup(&self, name: &str) -> Option<&VarInfo> {
         self.scope_stack.iter().rev().find_map(|s| s.get(name))
     }
 
+    /// 静的型エラーをエラーリストに追加する。
     pub(super) fn report_error(&mut self, err: StaticTypeError) {
         self.errors.push(err);
     }

@@ -413,6 +413,7 @@ pub(self) enum DictKey {
 }
 
 impl DictKey {
+    /// `Value` を `DictKey` に変換する。ハッシュ不可能な型（リスト・インスタンス等）は `None` を返す。
     fn from_value(v: &Value) -> Option<Self> {
         match v {
             Value::Int(n) => Some(DictKey::Int(*n)),
@@ -503,6 +504,7 @@ pub struct PyObjHandle {
 }
 
 impl std::fmt::Debug for PyObjHandle {
+    /// `PyObjHandle` のデバッグ表示。常に `"<PyObject>"` を出力する。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<PyObject>")
     }
@@ -606,6 +608,8 @@ impl FileData {
 }
 
 impl Drop for FileData {
+    /// `FileData` がスコープを抜けるときに自動的に `close()` を呼び出す。
+    /// 書き込みモードの場合、バッファをディスクに書き戻してからハンドルを解放する。
     fn drop(&mut self) {
         self.close();
     }
@@ -656,6 +660,7 @@ pub struct NativeFnRef {
 pub(self) struct NativeLibWrapper(pub(self) libloading::Library);
 
 impl fmt::Debug for NativeLibWrapper {
+    /// `NativeLibWrapper` のデバッグ表示。常に `"<NativeLib>"` を出力する。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "<NativeLib>")
     }

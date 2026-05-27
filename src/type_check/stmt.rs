@@ -8,12 +8,14 @@ use super::types::{FnTypeParam, InferredType};
 use super::TypeChecker;
 
 impl TypeChecker {
+    /// 文のスライスを順に型検査する。
     pub(super) fn check_stmts(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             self.check_stmt(stmt);
         }
     }
 
+    /// 単一の文を型検査する。変数宣言・代入・制御構文・定義文・例外処理・import を網羅する。
     pub(super) fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             // --- 変数宣言 ---
@@ -633,6 +635,7 @@ impl TypeChecker {
         map
     }
 
+    /// プリミティブ型アノテーション文字列を対応する [`InferredType`] に変換する。未知の場合は `Unresolved`。
     pub(super) fn type_ann_to_inferred(s: &str) -> InferredType {
         match s {
             "int" => InferredType::Int,

@@ -9,15 +9,11 @@ use crate::lexer;
 use crate::python_converter;
 use crate::token::{FStrPart, Span, Spanned, Token};
 
-/// 複合代入演算子トークンを対応する二項演算子（`BinOp`）に変換する。
-///
-/// # 引数
-/// - `token`: 変換対象のトークン参照
-///
-/// # 戻り値
-/// 複合代入演算子に対応する `BinOp` を `Some` で返す。
-/// 複合代入演算子でないトークンの場合は `None` を返す。
 /// C 型を対応する tl プリミティブ型名に変換する（静的型検査スタブ生成用）。
+///
+/// `CType::Void` → `"None"`, `CType::Bool` → `"bool"`,
+/// `CType::Float` / `CType::Double` → `"float"`, `CType::CharPtr` → `"str"`,
+/// その他の整数・ポインタ型 → `"int"`, `CType::FnPtr` → `"function"` として扱う。
 fn ctype_to_tl_str(ct: &crate::interpreter::cpp_bridge::CType) -> &'static str {
     use crate::interpreter::cpp_bridge::CType;
     match ct {
@@ -36,6 +32,10 @@ fn ctype_to_tl_str(ct: &crate::interpreter::cpp_bridge::CType) -> &'static str {
     }
 }
 
+/// 複合代入演算子トークンを対応する二項演算子（`BinOp`）に変換する。
+///
+/// `+=`, `-=`, `*=` などのトークンを対応する `BinOp` にマッピングする。
+/// 複合代入演算子でないトークンの場合は `None` を返す。
 fn token_to_compound_op(token: &Token) -> Option<BinOp> {
     match token {
         Token::PlusEq => Some(BinOp::Add),
@@ -54,6 +54,10 @@ fn token_to_compound_op(token: &Token) -> Option<BinOp> {
     }
 }
 
+/// tl 言語の再帰降下パーサ。
+///
+/// トークン列（`Vec<Spanned>`）を受け取り、プログラム全体の AST（`Vec<Stmt>`）を生成する。
+/// import 文の解決・モジュールキャッシュ・循環 import 検出なども担当する。
 pub struct Parser {
     tokens: Vec<Spanned>,
     pos: usize,
@@ -563,16 +567,7 @@ impl Parser {
         })
     }
 
-    /// `match expr:` 文をパースして `Stmt::Match` を返す。
-    ///
-    /// 構文:
-    /// ```text
-    /// match expr:
-    ///     case pattern:
-    ///         body
-    ///     is TypeName:
-    ///         body
-    /// ```
+    /// match アームリストをパースする共有ヘルパー（`match subject:` の後、INDENT済みの状態で呼ぶ）。
     ///
     /// `case` アームと `is` アームを混在させるとパースエラー。
     /// `case _:` はワイルドカードアームとして解釈される。
@@ -580,7 +575,6 @@ impl Parser {
     /// # エラー
     /// - `case` と `is` のアームが混在する場合
     /// - 予期しないトークンがアームの先頭に現れた場合
-    /// match アームリストをパースする共有ヘルパー（`match subject:` の後、INDENT済みの状態で呼ぶ）。
     fn parse_match_arms(&mut self) -> Result<Vec<MatchArm>, String> {
         let mut arms: Vec<MatchArm> = Vec::new();
         let mut is_case_kind: Option<bool> = None;
@@ -754,16 +748,6 @@ impl Parser {
         })
     }
 
-    /// `fn` 関数定義をパースして `Stmt::FnDef` を返す。
-    ///
-    /// テンプレートパラメータ・引数リスト・戻り値型・本体ブロックを順番にパースする。
-    /// 本体が `...`（省略記号のみ）の場合は抽象メソッド（`is_abstract: true`）として扱う。
-    ///
-    /// # 戻り値
-    /// `Stmt::FnDef { name, template_params, params, return_type, body, is_abstract }`
-    ///
-    /// # エラー
-    /// 識別子・括弧・本体ブロックのパースに失敗した場合
     /// `@decorator` 構文のリストをパースして式のリストを返す。
     ///
     /// 現在のトークンが `@` の間、以下を繰り返す:
@@ -785,10 +769,16 @@ impl Parser {
         Ok(decorators)
     }
 
+    /// `fn` 関数定義をパースして `Stmt::FnDef` を返す。
+    ///
+    /// デコレータなし・静的でない通常の関数定義に使用する委譲ヘルパー。
     fn parse_fn_def(&mut self) -> Result<Stmt, String> {
         self.parse_fn_def_with_flags(vec![], false, false)
     }
 
+    /// デコレータ付き `fn` 関数定義をパースして `Stmt::FnDef` を返す。
+    ///
+    /// `@decorator` の後に `fn` が続く場合に呼ばれる。
     fn parse_fn_def_decorated(
         &mut self,
         decorators: Vec<crate::ast::Expr>,
@@ -796,6 +786,21 @@ impl Parser {
         self.parse_fn_def_with_flags(decorators, false, false)
     }
 
+    /// `fn` 関数定義の共通パース処理。デコレータ・`static`・`class_method` フラグを受け取る。
+    ///
+    /// テンプレートパラメータ・引数リスト・戻り値型・本体ブロックを順番にパースする。
+    /// 本体が `...`（省略記号のみ）の場合は抽象メソッド（`is_abstract: true`）として扱う。
+    ///
+    /// # 引数
+    /// - `decorators`: 事前にパース済みのデコレータ式リスト
+    /// - `is_static`: `static fn` かどうか
+    /// - `is_class_method`: `class_method fn` かどうか
+    ///
+    /// # 戻り値
+    /// `Stmt::FnDef { name, template_params, params, return_type, body, is_abstract, ... }`
+    ///
+    /// # エラー
+    /// 識別子・括弧・本体ブロックのパースに失敗した場合
     fn parse_fn_def_with_flags(
         &mut self,
         decorators: Vec<crate::ast::Expr>,
@@ -1958,6 +1963,8 @@ impl Parser {
         self.parse_class_def_decorated(vec![])
     }
 
+    /// デコレータ付きクラス定義をパースして `Stmt::ClassDef` を返す。
+    /// `parse_class_def` から呼ばれるほか、デコレータ構文のパス（`@decorator class ...`）でも使われる。
     fn parse_class_def_decorated(
         &mut self,
         decorators: Vec<crate::ast::Expr>,

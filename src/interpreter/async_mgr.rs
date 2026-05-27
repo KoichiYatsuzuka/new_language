@@ -20,6 +20,7 @@ use super::{Interpreter, Value, Var};
 // AsyncStatus
 // ---------------------------------------------------------------------------
 
+/// 非同期タスクの進行状態を表す列挙型。
 #[derive(Debug, Clone, PartialEq)]
 pub enum AsyncStatus {
     Waiting,
@@ -36,9 +37,11 @@ pub enum AsyncStatus {
 // is safe: each thread owns its copy exclusively.
 // ---------------------------------------------------------------------------
 
+/// スレッド境界を越えてスコープ環境（変数名・値・可変フラグ）を送るためのラッパー。
 struct SendableEnv(Vec<(String, Value, bool)>);
 unsafe impl Send for SendableEnv {}
 
+/// スレッド境界を越えてタスク本体の AST を送るためのラッパー。
 struct SendableBody(Vec<Stmt>);
 unsafe impl Send for SendableBody {}
 
@@ -46,11 +49,13 @@ unsafe impl Send for SendableBody {}
 // Thread task / result
 // ---------------------------------------------------------------------------
 
+/// ペンディング状態の非同期タスク（本体とキャプチャ済み環境を保持）。
 struct AsyncTask {
     body: Vec<Stmt>,
     env: Vec<(String, Value, bool)>,
 }
 
+/// スレッドから親スレッドへ返す実行結果（値またはエラー文字列）。
 pub(super) struct ThreadResult {
     pub(super) value: Option<Value>,
     pub(super) error: Option<String>,
@@ -61,6 +66,7 @@ unsafe impl Send for ThreadResult {}
 // Running slot (one per live thread)
 // ---------------------------------------------------------------------------
 
+/// 実行中スレッドのスロット（タスクインデックス・受信チャネル・JoinHandle を保持）。
 struct RunningSlot {
     task_idx: usize,
     rx: mpsc::Receiver<ThreadResult>,
@@ -71,6 +77,7 @@ struct RunningSlot {
 // AsyncManagerData
 // ---------------------------------------------------------------------------
 
+/// `AsyncManager` のランタイムデータ。スレッドプール・タスクキュー・進行状態を管理する。
 pub struct AsyncManagerData {
     pub num_thread: usize,
     pub raise_immediately: bool,
@@ -86,6 +93,7 @@ pub struct AsyncManagerData {
 }
 
 impl std::fmt::Debug for AsyncManagerData {
+    /// `<AsyncManager num_thread=N tasks=M>` 形式の文字列として表示する。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -97,6 +105,7 @@ impl std::fmt::Debug for AsyncManagerData {
 }
 
 impl AsyncManagerData {
+    /// 指定スレッド数と `raise_immediately` フラグで新しい `AsyncManagerData` を生成する。
     pub fn new(num_thread: usize, raise_immediately: bool) -> Self {
         Self {
             num_thread,
@@ -110,7 +119,7 @@ impl AsyncManagerData {
         }
     }
 
-    /// Submit a new task and immediately start it if a thread slot is free.
+    /// 新しいタスクを登録し、スレッドスロットが空いていれば即座に実行を開始する。
     pub fn add_task(&mut self, body: Vec<Stmt>, env: Vec<(String, Value, bool)>) {
         if env.iter().any(|(_, v, _)| matches!(v, Value::PyObject(_))) {
             eprintln!(
@@ -126,7 +135,7 @@ impl AsyncManagerData {
         self.try_schedule();
     }
 
-    /// Start pending tasks in free thread slots.
+    /// 空きスレッドスロットにペンディングタスクを順次割り当てて実行開始する。
     fn try_schedule(&mut self) {
         while self.running.len() < self.num_thread {
             let Some((task_idx, task)) = self.pending.pop_front() else {
@@ -158,8 +167,8 @@ impl AsyncManagerData {
         }
     }
 
-    /// Poll all running threads for completed results (non-blocking).
-    /// Returns true if the abort flag was set due to raise_immediately.
+    /// 実行中スレッドの完了結果をノンブロッキングでポーリングする。
+    /// `raise_immediately` フラグにより中断が発生した場合は `true` を返す。
     pub fn poll_completed(&mut self) -> bool {
         let mut i = 0;
         let mut abort_triggered = false;
@@ -198,23 +207,24 @@ impl AsyncManagerData {
         abort_triggered
     }
 
-    /// Public alias for try_schedule (needed from classes.rs).
+    /// `try_schedule` の公開エイリアス（`classes.rs` から呼ばれる）。
     pub fn try_schedule_pub(&mut self) {
         self.try_schedule();
     }
 
+    /// すべてのタスクが完了し、ペンディングおよび実行中スロットが空かどうかを返す。
     pub fn all_done(&self) -> bool {
         self.progress.iter().all(|s| *s == AsyncStatus::Done)
             && self.pending.is_empty()
             && self.running.is_empty()
     }
 
-    /// First error in error_list (if any), for raise_immediately propagation.
+    /// `error_list` 内の最初のエラー文字列を返す（`raise_immediately` 伝播用）。
     pub fn first_error(&self) -> Option<String> {
         self.error_list.iter().find_map(|e| e.clone())
     }
 
-    /// Cancel all pending (not-yet-started) tasks.
+    /// ペンディング中（未開始）のタスクをすべてキャンセルしてエラー状態にする。
     pub fn cancel_pending(&mut self) {
         for (task_idx, _) in self.pending.drain(..) {
             self.progress[task_idx] = AsyncStatus::Done;
@@ -228,6 +238,7 @@ impl AsyncManagerData {
 // Thread body
 // ---------------------------------------------------------------------------
 
+/// スレッド内でタスク本体を実行し、結果またはエラーを `ThreadResult` として返す。
 fn run_task(
     body: Vec<Stmt>,
     env: Vec<(String, Value, bool)>,
@@ -276,6 +287,7 @@ fn run_task(
 // ---------------------------------------------------------------------------
 
 impl AsyncStatus {
+    /// `"Async.Waiting"` / `"Async.Running"` / `"Async.Done"` の表示文字列を返す。
     pub fn display_str(&self) -> &'static str {
         match self {
             AsyncStatus::Waiting => "Async.Waiting",
@@ -289,11 +301,8 @@ impl AsyncStatus {
 // Collect captured environment from interpreter scopes (deep-cloned)
 // ---------------------------------------------------------------------------
 
-/// Snapshot the visible scope variables for an async task.
-/// - `mut` variables: shared by reference (Rc clone) so the task sees and propagates mutations.
-/// - `let` variables: deep-cloned for an independent copy (mutations are impossible anyway).
-/// SAFETY: sharing Rc across threads via SendableEnv's unsafe impl Send; the caller is
-/// responsible for avoiding concurrent access to the same Rc from multiple threads.
+/// インタープリタのスコープスタックから非同期タスク用の環境スナップショットを取得する。
+/// `mut` 変数は Rc クローン（変更が伝播）、`let` 変数はディープクローン（独立コピー）となる。
 pub(super) fn capture_env(interp: &Interpreter) -> Vec<(String, Value, bool)> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut env: Vec<(String, Value, bool)> = Vec::new();

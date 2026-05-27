@@ -24,6 +24,8 @@ use super::{ExecResult, Interpreter, Value};
 // Thread-local debugger state
 // ---------------------------------------------------------------------------
 
+/// デバッガのステップ実行モードを表す列挙型。
+/// スレッドローカルの `DBG_MODE` に格納され、`exec()` の各呼び出しで参照される。
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum DbgMode {
     /// Normal execution — no stepping.
@@ -60,8 +62,7 @@ const CYAN: &str = "\x1b[36m";
 const GREEN: &str = "\x1b[32m";
 const RESET: &str = "\x1b[0m";
 
-/// Print up to 2 lines before and 2 lines after `target_line` (1-based)
-/// from the source map, highlighting the target line with `>>`.
+/// ソースマップから `target_line`（1 始まり）の前後 2 行を表示し、対象行を `>>` でハイライトする。
 fn print_context(interp: &Interpreter, file: &str, target_line: usize) {
     if target_line == 0 {
         println!("  (source location unknown)");
@@ -93,7 +94,7 @@ fn print_context(interp: &Interpreter, file: &str, target_line: usize) {
     }
 }
 
-/// Try to extract a representative (file, line) from a `Stmt` for display.
+/// 文から代表的な（ファイル名, 行番号）を取り出す。スパンを持たない文は `None` を返す。
 pub(super) fn stmt_location(stmt: &Stmt) -> Option<(String, usize)> {
     fn from_span(s: &Span) -> Option<(String, usize)> {
         if s.line == 0 {
@@ -133,6 +134,7 @@ pub(super) fn stmt_location(stmt: &Stmt) -> Option<(String, usize)> {
 // REPL command result
 // ---------------------------------------------------------------------------
 
+/// デバッガ REPL のユーザーコマンドを表す列挙型。
 enum ReplCmd {
     StepOver,
     StepInto,
@@ -145,8 +147,7 @@ enum ReplCmd {
 // ---------------------------------------------------------------------------
 
 impl Interpreter {
-    /// Entry point called from `exec()` for `Stmt::BreakPoint { span }`.
-    /// Also called from the step-check in `exec()` when a step mode fires.
+    /// `Stmt::BreakPoint` または ステップ実行時に `exec()` から呼ばれるデバッガ REPL エントリポイント。
     pub(super) fn exec_breakpoint(&mut self, span: &Span) -> Result<ExecResult, String> {
         // Prevent re-entrancy (e.g. if the REPL itself triggers exec_breakpoint)
         let already_in = IN_REPL.with(|r| *r.borrow());
@@ -209,7 +210,7 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
-    /// Inner REPL loop: reads lines until a command is entered.
+    /// デバッガ REPL の内部ループ。コマンドが入力されるまでラインを読み続ける。
     fn repl_loop(&mut self) -> ReplCmd {
         loop {
             print!("(dbg) ");
@@ -239,8 +240,7 @@ impl Interpreter {
         }
     }
 
-    /// Parse and execute a single line of debug input.
-    /// Assignments to non-dbg variables are rejected.
+    /// デバッガ入力の 1 行をパースして実行する。非デバッガ変数への代入は拒否する。
     fn exec_debug_input(&mut self, code: &str) -> Result<(), String> {
         let tokens = Lexer::new(code, "<debugger>").tokenize();
         let mut parser = Parser::new(tokens, None);
@@ -287,9 +287,7 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Check whether execution should pause before running `stmt`.
-    /// Called at the start of every `exec()`.  Returns `Some(span)` when we
-    /// should pause, where `span` is the location to show (may be a fallback).
+    /// 文の実行前に一時停止すべきかを判定する。`exec()` 冒頭で毎回呼ばれ、停止する場合は表示スパンを返す。
     pub(super) fn should_pause_at(&self, stmt: &Stmt) -> Option<Span> {
         let mode = DBG_MODE.with(|m| m.borrow().clone());
         match mode {
@@ -347,8 +345,7 @@ impl Interpreter {
         }
     }
 
-    /// Return the best available `Span` for a statement.
-    /// Falls back to the last successfully-extracted span, then to line 0.
+    /// 文に使用可能な最良の `Span` を返す。スパンがなければ最後の既知スパン、最悪は行 0 を返す。
     fn best_span_for(&self, stmt: &Stmt) -> Span {
         if let Some((file, line)) = stmt_location(stmt) {
             return Span {
@@ -369,8 +366,7 @@ impl Interpreter {
         }
     }
 
-    /// Record the span that was just shown, so it can serve as fallback for
-    /// the next statement that has no extractable location.
+    /// 直前に表示したスパンを記録し、次の位置不明文のフォールバックとして使えるようにする。
     pub(super) fn record_dbg_span(&mut self, span: &Span) {
         if span.line != 0 {
             self.dbg_last_span = Some(span.clone());

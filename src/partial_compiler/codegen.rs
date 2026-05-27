@@ -22,7 +22,8 @@ use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Param, Stmt, UnaryOp};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-/// Metadata for one exported native function.
+/// ネイティブにエクスポートされた関数のメタデータ。
+/// 関数名とパラメータ数を保持し、DLL呼び出し時に使用される。
 #[derive(Debug, Clone)]
 pub struct FnExport {
     pub name: String,
@@ -147,9 +148,8 @@ pub unsafe extern "C" fn tl_init(cb: *const TlCallbacks) {
 
 // ── Native type system ────────────────────────────────────────────────────────
 
-/// The Rust storage type for a generated variable or expression.
-/// `Bool` is used only as a transient expression type (comparison result);
-/// variables are always stored as Int, Float, or Handle.
+/// 生成された変数・式のRustストレージ型。
+/// `Bool` は比較結果の一時型としてのみ使用され、変数は常に `Int`・`Float`・`Handle` として格納される。
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Ty {
     Int,
@@ -158,13 +158,14 @@ enum Ty {
     Handle,
 }
 
-/// Signature of a module function: return type and per-parameter mutability flags.
+/// モジュール関数のシグネチャ: 戻り値の型と各パラメータの可変性フラグ。
 struct FnSig {
     ret: Ty,
-    /// `true` = `mut` parameter, `false` = `let` parameter (immutable, requires deep copy at call site).
+    /// `true` = `mut` パラメータ, `false` = `let` パラメータ（イミュータブル、呼び出し時にディープコピーが必要）。
     param_mutabilities: Vec<bool>,
 }
 
+/// 型アノテーション文字列から対応するネイティブ型 `Ty` を返す。
 fn ann_ty(s: Option<&str>) -> Ty {
     match s {
         Some("int") => Ty::Int,
@@ -174,7 +175,7 @@ fn ann_ty(s: Option<&str>) -> Ty {
     }
 }
 
-/// How to store an expression: Bool → Handle (TL_TRUE/TL_FALSE), others unchanged.
+/// 式の型をストレージ型に変換する: `Bool` → `Handle`（TL_TRUE/TL_FALSE）、それ以外は変化なし。
 fn store_ty(t: Ty) -> Ty {
     if t == Ty::Bool {
         Ty::Handle
@@ -183,6 +184,7 @@ fn store_ty(t: Ty) -> Ty {
     }
 }
 
+/// 任意の型のコードをハンドル (`i64`) に変換するRustコードを生成する。
 fn coerce_to_h(code: &str, t: Ty) -> String {
     match t {
         Ty::Int => format!("cb_make_int({code})"),
@@ -191,6 +193,8 @@ fn coerce_to_h(code: &str, t: Ty) -> String {
         Ty::Handle => code.to_string(),
     }
 }
+
+/// 任意の型のコードを整数 (`i64`) に変換するRustコードを生成する。
 fn coerce_to_i(code: &str, t: Ty) -> String {
     match t {
         Ty::Int => code.to_string(),
@@ -199,6 +203,8 @@ fn coerce_to_i(code: &str, t: Ty) -> String {
         Ty::Handle => format!("cb_to_int({code})"),
     }
 }
+
+/// 任意の型のコードを浮動小数点数 (`f64`) に変換するRustコードを生成する。
 fn coerce_to_f(code: &str, t: Ty) -> String {
     match t {
         Ty::Float => code.to_string(),
@@ -207,6 +213,8 @@ fn coerce_to_f(code: &str, t: Ty) -> String {
         Ty::Handle => format!("cb_to_float({code})"),
     }
 }
+
+/// 任意の型のコードを条件式 (`bool`) に変換するRustコードを生成する。
 fn coerce_to_cond(code: &str, t: Ty) -> String {
     match t {
         Ty::Bool => code.to_string(),
@@ -216,6 +224,8 @@ fn coerce_to_cond(code: &str, t: Ty) -> String {
     }
 }
 
+/// 二項演算子を型特化されたRustコードに変換し、結果の型も返す。
+/// いずれかの側が `Handle` の場合は `cb_binop` にフォールバックする。
 fn specialize_binop(op: &BinOp, l: &str, lt: Ty, r: &str, rt: Ty) -> (String, Ty) {
     // If either side is a Handle we can't specialize — fall back to cb_binop.
     if lt == Ty::Handle || rt == Ty::Handle {
@@ -277,7 +287,7 @@ fn specialize_binop(op: &BinOp, l: &str, lt: Ty, r: &str, rt: Ty) -> (String, Ty
 
 // ── Code generation context ───────────────────────────────────────────────────
 
-/// Tracks which names are local variables and which functions are intra-module.
+/// コード生成コンテキスト: ローカル変数とモジュール内関数の追跡情報を保持する。
 struct GenCtx<'a> {
     /// name → (is_mutable, storage_type)
     locals: HashMap<String, (bool, Ty)>,
@@ -287,6 +297,7 @@ struct GenCtx<'a> {
 }
 
 impl<'a> GenCtx<'a> {
+    /// 新しいコンテキストを作成する。モジュール内関数名セットと関数シグネチャマップを受け取る。
     fn new(module_fns: &'a HashSet<String>, fn_sigs: &'a HashMap<String, FnSig>) -> Self {
         Self {
             locals: HashMap::new(),
@@ -296,36 +307,44 @@ impl<'a> GenCtx<'a> {
         }
     }
 
+    /// 一意な一時変数名を生成して返す。
     fn fresh(&mut self) -> String {
         let n = self.counter;
         self.counter += 1;
         format!("_t{n}")
     }
 
+    /// ローカル変数を可変性と型情報付きで登録する。
     fn add_local(&mut self, name: &str, mutable: bool, ty: Ty) {
         self.locals.insert(name.to_string(), (mutable, ty));
     }
 
+    /// 指定した名前がローカル変数として登録されているか確認する。
     fn is_local(&self, name: &str) -> bool {
         self.locals.contains_key(name)
     }
 
+    /// 指定した名前がモジュール内関数として登録されているか確認する。
     fn is_module_fn(&self, name: &str) -> bool {
         self.module_fns.contains(name)
     }
 
+    /// ローカル変数のストレージ型を返す。登録されていない場合は `Handle` を返す。
     fn local_type(&self, name: &str) -> Ty {
         self.locals.get(name).map(|(_, t)| *t).unwrap_or(Ty::Handle)
     }
 
+    /// モジュール内関数の戻り値型を返す。シグネチャが未登録の場合は `Handle` を返す。
     fn fn_ret_type(&self, name: &str) -> Ty {
         self.fn_sigs.get(name).map(|s| s.ret).unwrap_or(Ty::Handle)
     }
 
+    /// モジュール内関数のパラメータ可変性リストへの参照を返す。
     fn fn_param_mutabilities(&self, name: &str) -> Option<&Vec<bool>> {
         self.fn_sigs.get(name).map(|s| &s.param_mutabilities)
     }
 
+    /// ローカル変数をコピーした子コンテキストを作成する（ネストしたスコープ用）。
     fn child(&self) -> GenCtx<'a> {
         GenCtx {
             locals: self.locals.clone(),
@@ -338,8 +357,8 @@ impl<'a> GenCtx<'a> {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-/// Generate a Rust source file for all eligible functions in `stmts`.
-/// Returns `Some((rust_source, exports))` if at least one fn is eligible.
+/// `stmts` 内のすべての適格な関数に対してRustソースファイルを生成する。
+/// 少なくとも1つの適格な関数がある場合に `Some((rust_source, exports))` を返す。
 pub fn generate_rust_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
     struct EligibleFn<'a> {
         name: &'a str,
@@ -466,10 +485,13 @@ pub fn generate_rust_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
 
 // ── Eligibility ───────────────────────────────────────────────────────────────
 
+/// 文のリストがすべてネイティブコンパイル適格かどうかを判定する。
 fn body_eligible(stmts: &[Stmt]) -> bool {
     stmts.iter().all(|s| stmt_eligible(s))
 }
 
+/// 単一の文がネイティブコンパイル適格かどうかを判定する。
+/// yield・クロージャ・例外処理・block_return・キーワード引数を含む文は非適格とする。
 fn stmt_eligible(stmt: &Stmt) -> bool {
     match stmt {
         // Supported statements
@@ -526,6 +548,8 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
     }
 }
 
+/// 単一の式がネイティブコンパイル適格かどうかを判定する。
+/// スライス・セット・制御フロー式・キーワード引数は非適格とする。
 fn expr_eligible(expr: &Expr) -> bool {
     match expr {
         // Literals: always OK
@@ -575,12 +599,14 @@ fn expr_eligible(expr: &Expr) -> bool {
 
 // ── Statement generation ──────────────────────────────────────────────────────
 
+/// 文のリストに対してRustコードを生成し `out` に追記する。
 fn gen_stmts(stmts: &[Stmt], ctx: &mut GenCtx, indent: usize, out: &mut String) {
     for stmt in stmts {
         gen_stmt(stmt, ctx, indent, out);
     }
 }
 
+/// 単一の文に対してRustコードを生成し `out` に追記する。
 fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
     let pad = "    ".repeat(indent);
     match stmt {
@@ -861,8 +887,8 @@ fn gen_stmt(stmt: &Stmt, ctx: &mut GenCtx, indent: usize, out: &mut String) {
 
 // ── Expression generation ─────────────────────────────────────────────────────
 
-/// Generate a Rust expression with its native type.
-/// Int/Float locals and literals yield raw i64/f64; everything else yields an i64 handle.
+/// 式に対してネイティブ型付きのRust式を生成する。
+/// `Int`/`Float` のローカル変数やリテラルは生の `i64`/`f64` を返し、それ以外は `i64` ハンドルを返す。
 fn gen_typed_expr(expr: &Expr, ctx: &mut GenCtx) -> (String, Ty) {
     match expr {
         Expr::Int(n) => (format!("{n}i64"), Ty::Int),
@@ -1008,12 +1034,15 @@ fn gen_typed_expr(expr: &Expr, ctx: &mut GenCtx) -> (String, Ty) {
     }
 }
 
-/// Generate a handle-typed (`i64`) Rust expression for `expr`.
+/// ハンドル型 (`i64`) のRust式を生成して返す。
 fn gen_expr(expr: &Expr, ctx: &mut GenCtx) -> String {
     let (code, ty) = gen_typed_expr(expr, ctx);
     coerce_to_h(&code, ty)
 }
 
+/// 関数呼び出しのRustコードを生成する。
+/// モジュール内直接呼び出しの場合はアリーナ保存・コンパクション付きの直接呼び出しを生成し、
+/// それ以外は `cb_call` を通じたハンドル呼び出しを生成する。
 fn gen_call(func: &Expr, args: &[CallArg], ctx: &mut GenCtx) -> String {
     // Collect positional arg expressions (keyword args were filtered by expr_eligible)
     let arg_exprs: Vec<String> = args.iter().map(|a| gen_expr(a.expr(), ctx)).collect();
@@ -1054,6 +1083,7 @@ fn gen_call(func: &Expr, args: &[CallArg], ctx: &mut GenCtx) -> String {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// 二項演算子を対応する整数コードに変換する。
 fn binop_code(op: &BinOp) -> i32 {
     match op {
         BinOp::Add => 0,
@@ -1080,6 +1110,7 @@ fn binop_code(op: &BinOp) -> i32 {
     }
 }
 
+/// 単項演算子を対応する整数コードに変換する。
 fn unop_code(op: &UnaryOp) -> i32 {
     match op {
         UnaryOp::Neg => 0,
@@ -1088,7 +1119,7 @@ fn unop_code(op: &UnaryOp) -> i32 {
     }
 }
 
-/// Escape raw bytes for use inside a Rust `b"..."` byte string literal.
+/// バイト列をRustの `b"..."` バイト文字列リテラル内で使用可能な形式にエスケープする。
 fn escape_bytes(bytes: &[u8]) -> String {
     let mut out = String::new();
     for &b in bytes {

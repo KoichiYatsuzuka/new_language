@@ -93,6 +93,9 @@ pub fn str_format(
 }
 
 /// `{:>10.2f}` のような書式指定子を値に適用する。
+///
+/// `fill`・`align`・`width`・`precision`・`type` を解析し、
+/// 整形された文字列を返す。未知の型文字の場合は `ValueError` を返す。
 fn apply_format_spec(
     val: &Value,
     spec: &str,
@@ -280,6 +283,7 @@ fn apply_format_spec(
     }
 }
 
+/// `Value` を `f64` に変換する補助関数。`Int` と `Float` のみ許容し、それ以外は `TypeError` を返す。
 fn to_f64(val: &Value) -> Result<f64, String> {
     match val {
         Value::Float(f) => Ok(*f),
@@ -291,6 +295,7 @@ fn to_f64(val: &Value) -> Result<f64, String> {
     }
 }
 
+/// `Value` のランタイム型名を静的文字列で返す（エラーメッセージ用の簡易版）。
 fn value_type_name(v: &Value) -> &'static str {
     match v {
         Value::Int(_) => "int",
@@ -485,6 +490,7 @@ pub fn percent_format(
     Ok(result)
 }
 
+/// `Value` を `i64` に変換する補助関数。`Int`・`Float`・`Bool` を受け入れ、それ以外は `TypeError` を返す。
 fn to_i64(val: &Value) -> Result<i64, String> {
     match val {
         Value::Int(n) => Ok(*n),
@@ -497,6 +503,8 @@ fn to_i64(val: &Value) -> Result<i64, String> {
     }
 }
 
+/// 文字列 `s` を指定した `width` に合わせてパディングする。
+/// `left_align` が `true` の場合は左寄せ、`false` の場合は右寄せ。`fill` はパディング文字。
 fn pad_str(s: &str, width: usize, left_align: bool, fill: char) -> String {
     if s.len() >= width {
         return s.to_string();
@@ -513,6 +521,8 @@ fn pad_str(s: &str, width: usize, left_align: bool, fill: char) -> String {
 // 正規表現メソッド
 // ────────────────────────────────────────────────────────────────────────────
 
+/// パターン文字列とフラグ文字列（`"i"`, `"m"`, `"s"`, `"x"` の組み合わせ）から `Regex` を構築する。
+/// フラグは `(?i)` などのインラインフラグとしてパターン先頭に付与する。
 fn build_regex(pattern: &str, flags: &str) -> Result<Regex, String> {
     let prefix: String = flags
         .chars()
@@ -599,6 +609,7 @@ pub fn regex_sub(
     }
 }
 
+/// 置換文字列 `repl` 内の `\1`, `\2` 等のバックリファレンスをキャプチャグループの内容で展開する。
 fn expand_replacement(repl: &str, caps: &Captures) -> String {
     let mut out = String::new();
     let chars: Vec<char> = repl.chars().collect();

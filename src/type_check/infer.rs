@@ -7,6 +7,7 @@ use super::types::InferredType;
 use super::TypeChecker;
 
 impl TypeChecker {
+    /// 式の型を推論して [`InferredType`] を返す。副作用として型エラーを収集する場合がある。
     pub(super) fn infer(&mut self, expr: &Expr) -> InferredType {
         match expr {
             // --- リテラル ---

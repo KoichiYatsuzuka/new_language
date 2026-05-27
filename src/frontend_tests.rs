@@ -16,6 +16,7 @@ mod lexer_tests {
             .collect()
     }
 
+    /// variable_keywords のテスト。
     #[test]
     fn test_variable_keywords() {
         assert_eq!(
@@ -30,6 +31,7 @@ mod lexer_tests {
         );
     }
 
+    /// value_literals のテスト。
     #[test]
     fn test_value_literals() {
         assert_eq!(
@@ -38,6 +40,7 @@ mod lexer_tests {
         );
     }
 
+    /// two_word_keywords のテスト。
     #[test]
     fn test_two_word_keywords() {
         assert_eq!(lex("not in"), vec![Token::NotIn, Token::Eof]);
@@ -45,6 +48,7 @@ mod lexer_tests {
         assert_eq!(lex("yield from"), vec![Token::YieldFrom, Token::Eof]);
     }
 
+    /// not_followed_by_other_word のテスト。
     #[test]
     fn test_not_followed_by_other_word() {
         let tokens = lex("not insert");
@@ -52,6 +56,7 @@ mod lexer_tests {
         assert_eq!(tokens[1], Token::Ident("insert".to_string()));
     }
 
+    /// arithmetic_operators のテスト。
     #[test]
     fn test_arithmetic_operators() {
         assert_eq!(
@@ -70,6 +75,7 @@ mod lexer_tests {
         );
     }
 
+    /// compound_assignment のテスト。
     #[test]
     fn test_compound_assignment() {
         assert_eq!(
@@ -88,6 +94,7 @@ mod lexer_tests {
         );
     }
 
+    /// comparison_operators のテスト。
     #[test]
     fn test_comparison_operators() {
         assert_eq!(
@@ -104,6 +111,7 @@ mod lexer_tests {
         );
     }
 
+    /// bitwise_operators のテスト。
     #[test]
     fn test_bitwise_operators() {
         assert_eq!(
@@ -120,6 +128,7 @@ mod lexer_tests {
         );
     }
 
+    /// shift_assign のテスト。
     #[test]
     fn test_shift_assign() {
         assert_eq!(
@@ -128,6 +137,7 @@ mod lexer_tests {
         );
     }
 
+    /// integer_literals のテスト。
     #[test]
     fn test_integer_literals() {
         let tokens = lex("42 0 1_000_000 0xFF 0o17 0b1010");
@@ -139,6 +149,7 @@ mod lexer_tests {
         assert_eq!(tokens[5], Token::Int(10));
     }
 
+    /// float_literals のテスト。
     #[test]
     fn test_float_literals() {
         let tokens = lex("3.14 1.0e10 2.5E-3");
@@ -147,6 +158,7 @@ mod lexer_tests {
         assert_eq!(tokens[2], Token::Float(2.5e-3));
     }
 
+    /// string_literals のテスト。
     #[test]
     fn test_string_literals() {
         let tokens = lex(r#""hello" 'world'"#);
@@ -154,18 +166,21 @@ mod lexer_tests {
         assert_eq!(tokens[1], Token::Str("world".to_string()));
     }
 
+    /// string_escape のテスト。
     #[test]
     fn test_string_escape() {
         let tokens = lex(r#""\n\t\\""#);
         assert_eq!(tokens[0], Token::Str("\n\t\\".to_string()));
     }
 
+    /// triple_quoted_string のテスト。
     #[test]
     fn test_triple_quoted_string() {
         let tokens = lex(r#""""hello world""""#);
         assert_eq!(tokens[0], Token::Str("hello world".to_string()));
     }
 
+    /// indentation のテスト。
     #[test]
     fn test_indentation() {
         let src = "if True:\n    pass\n";
@@ -176,6 +191,7 @@ mod lexer_tests {
         assert!(tokens.contains(&Token::Dedent));
     }
 
+    /// nested_indentation のテスト。
     #[test]
     fn test_nested_indentation() {
         let src = "if True:\n    if False:\n        pass\nx\n";
@@ -184,6 +200,7 @@ mod lexer_tests {
         assert_eq!(dedent_count, 2);
     }
 
+    /// blank_lines_skipped のテスト。
     #[test]
     fn test_blank_lines_skipped() {
         let src = "x\n\ny\n";
@@ -193,6 +210,7 @@ mod lexer_tests {
         assert_eq!(tokens[2], Token::Ident("y".to_string()));
     }
 
+    /// comment_skipped のテスト。
     #[test]
     fn test_comment_skipped() {
         let src = "x # comment\ny\n";
@@ -202,6 +220,7 @@ mod lexer_tests {
         assert_eq!(tokens[2], Token::Ident("y".to_string()));
     }
 
+    /// newline_inside_brackets_ignored のテスト。
     #[test]
     fn test_newline_inside_brackets_ignored() {
         let src = "(\n    1,\n    2\n)\n";
@@ -212,6 +231,7 @@ mod lexer_tests {
         assert_eq!(newline_count, 1);
     }
 
+    /// arrow_ellipsis_walrus のテスト。
     #[test]
     fn test_arrow_ellipsis_walrus() {
         assert_eq!(
@@ -220,6 +240,7 @@ mod lexer_tests {
         );
     }
 
+    /// delimiters のテスト。
     #[test]
     fn test_delimiters() {
         assert_eq!(
@@ -236,6 +257,7 @@ mod lexer_tests {
         );
     }
 
+    /// span_line_col のテスト。
     #[test]
     fn test_span_line_col() {
         let src = "let x = 1\nmut y = 2\n";
@@ -252,6 +274,7 @@ mod lexer_tests {
         assert_eq!(mut_tok.span.col, 1);
     }
 
+    /// span_filename のテスト。
     #[test]
     fn test_span_filename() {
         let spanned = Lexer::new("x\n", "foo.tl").tokenize();
@@ -260,16 +283,19 @@ mod lexer_tests {
 
     // --- trait / :: ---
 
+    /// trait_keyword のテスト。
     #[test]
     fn test_trait_keyword() {
         assert_eq!(lex("trait"), vec![Token::Trait, Token::Eof]);
     }
 
+    /// colon_colon_token のテスト。
     #[test]
     fn test_colon_colon_token() {
         assert_eq!(lex("::"), vec![Token::ColonColon, Token::Eof]);
     }
 
+    /// colon_vs_colon_colon_vs_colon_eq のテスト。
     #[test]
     fn test_colon_vs_colon_colon_vs_colon_eq() {
         assert_eq!(
@@ -278,6 +304,7 @@ mod lexer_tests {
         );
     }
 
+    /// trait_access_syntax_tokens のテスト。
     #[test]
     fn test_trait_access_syntax_tokens() {
         // self::MyTrait.field — 括弧なし形式
@@ -314,12 +341,14 @@ mod parser_tests {
             .expect_err("expected parse error")
     }
 
+    /// literal_expr のテスト。
     #[test]
     fn test_literal_expr() {
         let stmts = parse("42");
         assert!(matches!(stmts[0], Stmt::Expr(Expr::Int(42))));
     }
 
+    /// freeze_stmt のテスト。
     #[test]
     fn test_freeze_stmt() {
         let stmts = parse("mut x = 5\nfreeze x\n");
@@ -327,6 +356,7 @@ mod parser_tests {
         assert!(matches!(&stmts[1], Stmt::Freeze(name, ..) if name == "x"));
     }
 
+    /// freeze_requires_ident のテスト。
     #[test]
     fn test_freeze_requires_ident() {
         let tokens = crate::lexer::Lexer::new("freeze 42\n", "").tokenize();
@@ -336,24 +366,28 @@ mod parser_tests {
         assert!(err.contains("expected identifier"), "got: {err}");
     }
 
+    /// let_decl のテスト。
     #[test]
     fn test_let_decl() {
         let stmts = parse("let x = 10");
         assert!(matches!(&stmts[0], Stmt::Let(name, Expr::Int(10)) if name == "x"));
     }
 
+    /// mut_decl のテスト。
     #[test]
     fn test_mut_decl() {
         let stmts = parse("mut y = 3.14");
         assert!(matches!(&stmts[0], Stmt::Mut(name, Expr::Float(_)) if name == "y"));
     }
 
+    /// assign のテスト。
     #[test]
     fn test_assign() {
         let stmts = parse("mut x = 0\nx = 5");
         assert!(matches!(&stmts[1], Stmt::Assign { name, value: Expr::Int(5), .. } if name == "x"));
     }
 
+    /// compound_assign のテスト。
     #[test]
     fn test_compound_assign() {
         let stmts = parse("mut x = 0\nx += 1");
@@ -363,6 +397,7 @@ mod parser_tests {
         ));
     }
 
+    /// binop_precedence のテスト。
     #[test]
     fn test_binop_precedence() {
         let stmts = parse("2 + 3 * 4");
@@ -378,12 +413,14 @@ mod parser_tests {
         }
     }
 
+    /// call_expr のテスト。
     #[test]
     fn test_call_expr() {
         let stmts = parse(r#"print("hello")"#);
         assert!(matches!(&stmts[0], Stmt::Expr(Expr::Call { .. })));
     }
 
+    /// unary_neg のテスト。
     #[test]
     fn test_unary_neg() {
         let stmts = parse("-5");
@@ -396,6 +433,7 @@ mod parser_tests {
         ));
     }
 
+    /// power_right_assoc のテスト。
     #[test]
     fn test_power_right_assoc() {
         let stmts = parse("2 ** 3 ** 2");
@@ -411,12 +449,14 @@ mod parser_tests {
         }
     }
 
+    /// if_stmt のテスト。
     #[test]
     fn test_if_stmt() {
         let stmts = parse("if True:\n    pass\n");
         assert!(matches!(&stmts[0], Stmt::If { branches, else_body: None } if branches.len() == 1));
     }
 
+    /// if_else_stmt のテスト。
     #[test]
     fn test_if_else_stmt() {
         let stmts = parse("if True:\n    pass\nelse:\n    pass\n");
@@ -429,6 +469,7 @@ mod parser_tests {
         ));
     }
 
+    /// if_elif_else_stmt のテスト。
     #[test]
     fn test_if_elif_else_stmt() {
         let stmts = parse("if True:\n    pass\nelif False:\n    pass\nelse:\n    pass\n");
@@ -444,24 +485,28 @@ mod parser_tests {
         }
     }
 
+    /// while_stmt のテスト。
     #[test]
     fn test_while_stmt() {
         let stmts = parse("while True:\n    break\n");
         assert!(matches!(&stmts[0], Stmt::While { .. }));
     }
 
+    /// for_stmt のテスト。
     #[test]
     fn test_for_stmt() {
         let stmts = parse("for i in [1, 2, 3]:\n    pass\n");
         assert!(matches!(&stmts[0], Stmt::For { targets, .. } if targets == &["i"]));
     }
 
+    /// block_stmt のテスト。
     #[test]
     fn test_block_stmt() {
         let stmts = parse("block:\n    pass\n");
         assert!(matches!(&stmts[0], Stmt::Block(_)));
     }
 
+    /// list_literal のテスト。
     #[test]
     fn test_list_literal() {
         let stmts = parse("[1, 2, 3]");
@@ -470,12 +515,14 @@ mod parser_tests {
 
     // --- fn ---
 
+    /// fn_def のテスト。
     #[test]
     fn test_fn_def() {
         let stmts = parse("fn add(a, b):\n    pass\n");
         assert!(matches!(&stmts[0], Stmt::FnDef { name, .. } if name == "add"));
     }
 
+    /// fn_no_params のテスト。
     #[test]
     fn test_fn_no_params() {
         let stmts = parse("fn hello():\n    pass\n");
@@ -486,6 +533,7 @@ mod parser_tests {
         }
     }
 
+    /// fn_mut_param のテスト。
     #[test]
     fn test_fn_mut_param() {
         let stmts = parse("fn modify(mut x):\n    pass\n");
@@ -497,6 +545,7 @@ mod parser_tests {
         }
     }
 
+    /// fn_type_annotations のテスト。
     #[test]
     fn test_fn_type_annotations() {
         let stmts = parse("fn add(a: int, b: int) -> int:\n    pass\n");
@@ -509,12 +558,14 @@ mod parser_tests {
         }
     }
 
+    /// fn_generic_type_annotation のテスト。
     #[test]
     fn test_fn_generic_type_annotation() {
         let stmts = parse("fn first(items: list[int]) -> int:\n    pass\n");
         assert!(matches!(&stmts[0], Stmt::FnDef { name, .. } if name == "first"));
     }
 
+    /// fn_with_body のテスト。
     #[test]
     fn test_fn_with_body() {
         let stmts = parse("fn abs(x):\n    if x < 0:\n        return -x\n    return x\n");
@@ -527,6 +578,7 @@ mod parser_tests {
 
     // --- class ---
 
+    /// class_empty のテスト。
     #[test]
     fn test_class_empty() {
         let stmts = parse("class Foo:\n    pass\n");
@@ -534,18 +586,21 @@ mod parser_tests {
             if name == "Foo" && bases.is_empty()));
     }
 
+    /// class_with_non_trait_base_errors のテスト。
     #[test]
     fn test_class_with_non_trait_base_errors() {
         let err = parse_fails("class Bar(Foo):\n    pass\n");
         assert!(err.contains("cannot inherit from `Foo`"), "got: {err}");
     }
 
+    /// class_multiple_non_trait_bases_errors のテスト。
     #[test]
     fn test_class_multiple_non_trait_bases_errors() {
         let err = parse_fails("class C(A, B):\n    pass\n");
         assert!(err.contains("cannot inherit from"), "got: {err}");
     }
 
+    /// class_with_method のテスト。
     #[test]
     fn test_class_with_method() {
         let stmts = parse("class Foo:\n    fn greet(self):\n        pass\n");
@@ -556,6 +611,7 @@ mod parser_tests {
         }
     }
 
+    /// class_multiple_methods のテスト。
     #[test]
     fn test_class_multiple_methods() {
         let src = "class Counter:\n    fn inc(mut self):\n        pass\n    fn dec(mut self):\n        pass\n";
@@ -567,6 +623,7 @@ mod parser_tests {
         }
     }
 
+    /// class_method_with_params のテスト。
     #[test]
     fn test_class_method_with_params() {
         let src = "class Adder:\n    fn add(self, a: int, b: int) -> int:\n        pass\n";
@@ -582,6 +639,7 @@ mod parser_tests {
         }
     }
 
+    /// class_with_field_and_method のテスト。
     #[test]
     fn test_class_with_field_and_method() {
         let src = "class Point:\n    mut x: int = 0\n    mut y: int = 0\n    fn move(mut self, dx: int, dy: int) -> None:\n        pass\n";
@@ -593,6 +651,7 @@ mod parser_tests {
         }
     }
 
+    /// class_field_parsed_as_field_stmt のテスト。
     #[test]
     fn test_class_field_parsed_as_field_stmt() {
         let src = "class Foo:\n    mut x: int = 0\n    let y: str = \"\"\n";
@@ -611,6 +670,7 @@ mod parser_tests {
         }
     }
 
+    /// class_auto_init_generated のテスト。
     #[test]
     fn test_class_auto_init_generated() {
         let src = "class Point:\n    mut x: int\n    mut y: int\n";
@@ -641,6 +701,7 @@ mod parser_tests {
         }
     }
 
+    /// class_auto_init_not_generated_all_fields_have_defaults のテスト。
     #[test]
     fn test_class_auto_init_not_generated_all_fields_have_defaults() {
         let src = "class Point:\n    mut x: int = 0\n    mut y: int = 0\n";
@@ -658,6 +719,7 @@ mod parser_tests {
         }
     }
 
+    /// class_auto_init_generated_with_list_field のテスト。
     #[test]
     fn test_class_auto_init_generated_with_list_field() {
         let src = "class Foo:\n    mut items: list[int]\n";
@@ -678,6 +740,7 @@ mod parser_tests {
         }
     }
 
+    /// class_auto_init_override_exact_match のテスト。
     #[test]
     fn test_class_auto_init_override_exact_match() {
         let src = "class Foo:\n    mut x: int\n    fn __init__(mut self, x: int) -> None:\n        self.x = x\n";
@@ -697,6 +760,7 @@ mod parser_tests {
         }
     }
 
+    /// class_auto_init_overload_different_sig のテスト。
     #[test]
     fn test_class_auto_init_overload_different_sig() {
         let src = "class Foo:\n    mut x: int\n    fn __init__(mut self, x: int, y: int) -> None:\n        self.x = x\n";
@@ -716,6 +780,7 @@ mod parser_tests {
         }
     }
 
+    /// class_auto_init_not_generated_without_required_fields のテスト。
     #[test]
     fn test_class_auto_init_not_generated_without_required_fields() {
         let src = "class Foo:\n    fn greet(self) -> str:\n        pass\n";
@@ -733,6 +798,7 @@ mod parser_tests {
         }
     }
 
+    /// class_field_requires_type_annotation のテスト。
     #[test]
     fn test_class_field_requires_type_annotation() {
         let result = std::panic::catch_unwind(|| parse("class Foo:\n    mut x = 0\n"));
@@ -742,6 +808,7 @@ mod parser_tests {
         );
     }
 
+    /// nested_if のテスト。
     #[test]
     fn test_nested_if() {
         let src = "if True:\n    if False:\n        pass\n    pass\n";
@@ -755,6 +822,7 @@ mod parser_tests {
 
     // --- keyword arguments ---
 
+    /// call_positional_args のテスト。
     #[test]
     fn test_call_positional_args() {
         let stmts = parse("f(1, 2)");
@@ -767,6 +835,7 @@ mod parser_tests {
         }
     }
 
+    /// call_keyword_arg のテスト。
     #[test]
     fn test_call_keyword_arg() {
         let stmts = parse("f(x=1, y=2)");
@@ -779,6 +848,7 @@ mod parser_tests {
         }
     }
 
+    /// call_mixed_args のテスト。
     #[test]
     fn test_call_mixed_args() {
         let stmts = parse("f(1, y=2)");
@@ -793,12 +863,14 @@ mod parser_tests {
 
     // --- trait ---
 
+    /// trait_empty のテスト。
     #[test]
     fn test_trait_empty() {
         let stmts = parse("trait Foo:\n    pass\n");
         assert!(matches!(&stmts[0], Stmt::TraitDef { name, .. } if name == "Foo"));
     }
 
+    /// trait_with_fields のテスト。
     #[test]
     fn test_trait_with_fields() {
         let stmts = parse("trait HasName:\n    mut name: str\n    let id: int\n");
@@ -816,6 +888,7 @@ mod parser_tests {
         }
     }
 
+    /// trait_virtual_method_is_abstract のテスト。
     #[test]
     fn test_trait_virtual_method_is_abstract() {
         let stmts = parse("trait Animal:\n    fn speak(self) -> str:\n        ...\n");
@@ -829,6 +902,7 @@ mod parser_tests {
         }
     }
 
+    /// trait_non_virtual_method_is_not_virtual のテスト。
     #[test]
     fn test_trait_non_virtual_method_is_not_virtual() {
         let stmts = parse("trait Logger:\n    fn log(self, msg: str) -> None:\n        pass\n");
@@ -842,6 +916,7 @@ mod parser_tests {
         }
     }
 
+    /// trait_virtual_body_is_empty のテスト。
     #[test]
     fn test_trait_virtual_body_is_empty() {
         let stmts = parse("trait T:\n    fn f(self) -> int:\n        ...\n");
@@ -862,6 +937,7 @@ mod parser_tests {
         }
     }
 
+    /// trait_cannot_inherit のテスト。
     #[test]
     fn test_trait_cannot_inherit() {
         let result = std::panic::catch_unwind(|| parse("trait Foo(Bar):\n    pass\n"));
@@ -871,6 +947,7 @@ mod parser_tests {
         );
     }
 
+    /// class_inherits_trait_ok のテスト。
     #[test]
     fn test_class_inherits_trait_ok() {
         let stmts = parse(concat!(
@@ -886,6 +963,7 @@ mod parser_tests {
         assert!(matches!(&stmts[1], Stmt::ClassDef { name, .. } if name == "Dog"));
     }
 
+    /// class_missing_virtual_override_error のテスト。
     #[test]
     fn test_class_missing_virtual_override_error() {
         let result = std::panic::catch_unwind(|| {
@@ -903,6 +981,7 @@ mod parser_tests {
         );
     }
 
+    /// class_inherits_trait_combined_init_generated のテスト。
     #[test]
     fn test_class_inherits_trait_combined_init_generated() {
         let stmts = parse(concat!(
@@ -935,6 +1014,7 @@ mod parser_tests {
         }
     }
 
+    /// class_inherits_trait_combined_init_body_uses_trait_access のテスト。
     #[test]
     fn test_class_inherits_trait_combined_init_body_uses_trait_access() {
         let stmts = parse(concat!(
@@ -972,6 +1052,7 @@ mod parser_tests {
         }
     }
 
+    /// trait_access_expr_parsed のテスト。
     #[test]
     fn test_trait_access_expr_parsed() {
         let stmts = parse("self::MyTrait.field\n");
@@ -986,6 +1067,7 @@ mod parser_tests {
         }
     }
 
+    /// fn_is_not_virtual_by_default のテスト。
     #[test]
     fn test_fn_is_not_virtual_by_default() {
         let stmts = parse("fn hello() -> None:\n    pass\n");
@@ -998,6 +1080,7 @@ mod parser_tests {
         ));
     }
 
+    /// class_method_is_not_virtual のテスト。
     #[test]
     fn test_class_method_is_not_virtual() {
         let stmts = parse("class Foo:\n    fn greet(self) -> str:\n        pass\n");
@@ -1010,6 +1093,7 @@ mod parser_tests {
         }
     }
 
+    /// trait_combined_init_override_by_exact_match のテスト。
     #[test]
     fn test_trait_combined_init_override_by_exact_match() {
         let stmts = parse(concat!(
@@ -1035,6 +1119,7 @@ mod parser_tests {
         }
     }
 
+    /// trait_with_multiple_virtual_methods_all_must_be_overridden のテスト。
     #[test]
     fn test_trait_with_multiple_virtual_methods_all_must_be_overridden() {
         let result = std::panic::catch_unwind(|| {
@@ -1055,6 +1140,7 @@ mod parser_tests {
         );
     }
 
+    /// trait_class_only_trait_required_fields_no_class_fields のテスト。
     #[test]
     fn test_trait_class_only_trait_required_fields_no_class_fields() {
         let stmts = parse(concat!(
@@ -1107,36 +1193,43 @@ mod type_check_tests {
 
     // --- Immutable assignment ---
 
+    /// let_immutable_assign のテスト。
     #[test]
     fn let_immutable_assign() {
         assert!(err("let x = 1\nx = 2"));
     }
 
+    /// const_immutable_assign のテスト。
     #[test]
     fn const_immutable_assign() {
         assert!(err("const X = 1\nX = 2"));
     }
 
+    /// mut_assign_ok のテスト。
     #[test]
     fn mut_assign_ok() {
         assert!(ok("mut x = 1\nx = 2"));
     }
 
+    /// let_compound_assign_immutable のテスト。
     #[test]
     fn let_compound_assign_immutable() {
         assert!(err("let x = 1\nx += 1"));
     }
 
+    /// mut_compound_assign_ok のテスト。
     #[test]
     fn mut_compound_assign_ok() {
         assert!(ok("mut x = 1\nx += 1"));
     }
 
+    /// immutable_assign_inside_if のテスト。
     #[test]
     fn immutable_assign_inside_if() {
         assert!(err("let x = 1\nif True:\n    x = 2\n"));
     }
 
+    /// mut_assign_inside_if_ok のテスト。
     #[test]
     fn mut_assign_inside_if_ok() {
         assert!(ok("mut x = 1\nif True:\n    x = 2\n"));
@@ -1144,6 +1237,7 @@ mod type_check_tests {
 
     // --- Immutable field assignment ---
 
+    /// let_field_assign_outside_class_err のテスト。
     #[test]
     fn let_field_assign_outside_class_err() {
         assert!(err(concat!(
@@ -1154,6 +1248,7 @@ mod type_check_tests {
         )));
     }
 
+    /// let_field_assign_in_other_method_err のテスト。
     #[test]
     fn let_field_assign_in_other_method_err() {
         assert!(err(concat!(
@@ -1164,6 +1259,7 @@ mod type_check_tests {
         )));
     }
 
+    /// let_field_assign_in_init_ok のテスト。
     #[test]
     fn let_field_assign_in_init_ok() {
         assert!(ok(concat!(
@@ -1174,6 +1270,7 @@ mod type_check_tests {
         )));
     }
 
+    /// mut_field_assign_ok のテスト。
     #[test]
     fn mut_field_assign_ok() {
         assert!(ok(concat!(
@@ -1186,6 +1283,7 @@ mod type_check_tests {
         )));
     }
 
+    /// let_field_compound_assign_outside_err のテスト。
     #[test]
     fn let_field_compound_assign_outside_err() {
         assert!(err(concat!(
@@ -1198,6 +1296,7 @@ mod type_check_tests {
 
     // --- Private / protected field access ---
 
+    /// private_field_read_outside_err のテスト。
     #[test]
     fn private_field_read_outside_err() {
         assert!(err(concat!(
@@ -1211,6 +1310,7 @@ mod type_check_tests {
         )));
     }
 
+    /// private_field_read_inside_ok のテスト。
     #[test]
     fn private_field_read_inside_ok() {
         assert!(ok(concat!(
@@ -1224,6 +1324,7 @@ mod type_check_tests {
         )));
     }
 
+    /// private_field_write_outside_err のテスト。
     #[test]
     fn private_field_write_outside_err() {
         assert!(err(concat!(
@@ -1237,6 +1338,7 @@ mod type_check_tests {
         )));
     }
 
+    /// public_field_read_outside_ok のテスト。
     #[test]
     fn public_field_read_outside_ok() {
         assert!(ok(concat!(
@@ -1250,6 +1352,7 @@ mod type_check_tests {
         )));
     }
 
+    /// protected_field_read_outside_err のテスト。
     #[test]
     fn protected_field_read_outside_err() {
         assert!(err(concat!(
@@ -1263,6 +1366,7 @@ mod type_check_tests {
         )));
     }
 
+    /// protected_field_read_same_class_ok のテスト。
     #[test]
     fn protected_field_read_same_class_ok() {
         assert!(ok(concat!(
@@ -1276,6 +1380,7 @@ mod type_check_tests {
         )));
     }
 
+    /// private_field_error_message のテスト。
     #[test]
     fn private_field_error_message() {
         let errors = check(concat!(
@@ -1299,56 +1404,67 @@ mod type_check_tests {
 
     // --- Ordering comparison ---
 
+    /// int_int_lt_ok のテスト。
     #[test]
     fn int_int_lt_ok() {
         assert!(ok("1 < 2"));
     }
 
+    /// float_float_lt_ok のテスト。
     #[test]
     fn float_float_lt_ok() {
         assert!(ok("1.0 < 2.0"));
     }
 
+    /// int_float_lt_ok のテスト。
     #[test]
     fn int_float_lt_ok() {
         assert!(ok("1 < 2.0"));
     }
 
+    /// str_str_lt_ok のテスト。
     #[test]
     fn str_str_lt_ok() {
         assert!(ok(r#""a" < "b""#));
     }
 
+    /// str_int_lt_err のテスト。
     #[test]
     fn str_int_lt_err() {
         assert!(err(r#""hello" < 42"#));
     }
 
+    /// int_str_gt_err のテスト。
     #[test]
     fn int_str_gt_err() {
         assert!(err(r#"42 > "hello""#));
     }
 
+    /// bool_int_lt_err のテスト。
     #[test]
     fn bool_int_lt_err() {
         assert!(err("True < 1"));
     }
 
+    /// str_float_le_err のテスト。
     #[test]
     fn str_float_le_err() {
         assert!(err(r#""x" <= 1.5"#));
     }
 
+    /// eq_different_types_ok のテスト。
     #[test]
     fn eq_different_types_ok() {
         assert!(ok(r#"1 == "hello""#));
     }
 
+    /// neq_different_types_ok のテスト。
     #[test]
     fn neq_different_types_ok() {
         assert!(ok(r#"True != "x""#));
     }
 
+    /// unknown_param_comparison_ok のテスト。
     #[test]
     fn unknown_param_comparison_ok() {
         let errors = check("fn f(x):\n    x < 1\n");
@@ -1361,17 +1477,20 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::IncompatibleComparison { .. })));
     }
 
+    /// int_str_lt_is_error のテスト。
     #[test]
     fn int_str_lt_is_error() {
         assert!(err("mut x = 1\nx < \"hello\""));
     }
 
+    /// collects_multiple_errors のテスト。
     #[test]
     fn collects_multiple_errors() {
         let errors = check("let a = 1\na = 2\nlet b = 1\nb = 3\n");
         assert_eq!(errors.len(), 2);
     }
 
+    /// error_display_assign のテスト。
     #[test]
     fn error_display_assign() {
         let errors = check("let x = 1\nx = 2");
@@ -1380,6 +1499,7 @@ mod type_check_tests {
         assert!(errors[0].to_string().contains("x"));
     }
 
+    /// error_display_comparison のテスト。
     #[test]
     fn error_display_comparison() {
         let errors = check(r#""a" < 1"#);
@@ -1390,11 +1510,13 @@ mod type_check_tests {
 
     // --- Function call argument checking ---
 
+    /// call_correct_types_ok のテスト。
     #[test]
     fn call_correct_types_ok() {
         assert!(ok("fn add(a: int, b: int) -> int:\n    pass\nadd(1, 2)\n"));
     }
 
+    /// call_arg_type_mismatch_err のテスト。
     #[test]
     fn call_arg_type_mismatch_err() {
         assert!(err(
@@ -1402,11 +1524,13 @@ mod type_check_tests {
         ));
     }
 
+    /// call_arg_count_too_few_err のテスト。
     #[test]
     fn call_arg_count_too_few_err() {
         assert!(err("fn add(a: int, b: int) -> int:\n    pass\nadd(1)\n"));
     }
 
+    /// call_arg_count_too_many_err のテスト。
     #[test]
     fn call_arg_count_too_many_err() {
         assert!(err(
@@ -1414,6 +1538,7 @@ mod type_check_tests {
         ));
     }
 
+    /// call_no_annotation_no_type_mismatch のテスト。
     #[test]
     fn call_no_annotation_no_type_mismatch() {
         let errors = check("fn f(x, y):\n    pass\nf(1, \"hello\")\n");
@@ -1422,6 +1547,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
+    /// call_unknown_arg_skipped_ok のテスト。
     #[test]
     fn call_unknown_arg_skipped_ok() {
         assert!(ok(
@@ -1429,6 +1555,7 @@ mod type_check_tests {
         ));
     }
 
+    /// call_forward_definition_checked のテスト。
     #[test]
     fn call_forward_definition_checked() {
         assert!(err(
@@ -1436,6 +1563,7 @@ mod type_check_tests {
         ));
     }
 
+    /// call_return_type_inferred のテスト。
     #[test]
     fn call_return_type_inferred() {
         assert!(ok(
@@ -1443,6 +1571,7 @@ mod type_check_tests {
         ));
     }
 
+    /// error_display_call_count のテスト。
     #[test]
     fn error_display_call_count() {
         let errors = check("fn f(a: int, b: int) -> None:\n    pass\nf(1)\n");
@@ -1453,6 +1582,7 @@ mod type_check_tests {
         assert!(msg.contains("1"));
     }
 
+    /// error_display_call_type のテスト。
     #[test]
     fn error_display_call_type() {
         let errors = check("fn f(a: int) -> None:\n    pass\nf(\"hello\")\n");
@@ -1465,38 +1595,45 @@ mod type_check_tests {
 
     // --- Missing type annotation ---
 
+    /// fn_fully_annotated_ok のテスト。
     #[test]
     fn fn_fully_annotated_ok() {
         assert!(ok("fn add(a: int, b: int) -> int:\n    pass\n"));
     }
 
+    /// fn_missing_param_ann_err のテスト。
     #[test]
     fn fn_missing_param_ann_err() {
         assert!(err("fn f(x) -> int:\n    pass\n"));
     }
 
+    /// fn_missing_return_ann_err のテスト。
     #[test]
     fn fn_missing_return_ann_err() {
         assert!(err("fn f(x: int):\n    pass\n"));
     }
 
+    /// fn_missing_both_ann_err のテスト。
     #[test]
     fn fn_missing_both_ann_err() {
         let errors = check("fn f(x):\n    pass\n");
         assert_eq!(errors.len(), 2);
     }
 
+    /// fn_multiple_missing_params_err のテスト。
     #[test]
     fn fn_multiple_missing_params_err() {
         let errors = check("fn f(a, b, c) -> int:\n    pass\n");
         assert_eq!(errors.len(), 3);
     }
 
+    /// fn_no_params_missing_return_err のテスト。
     #[test]
     fn fn_no_params_missing_return_err() {
         assert!(err("fn greet():\n    pass\n"));
     }
 
+    /// error_display_missing_param_ann のテスト。
     #[test]
     fn error_display_missing_param_ann() {
         let errors = check("fn f(x) -> int:\n    pass\n");
@@ -1506,6 +1643,7 @@ mod type_check_tests {
         assert!(msg.contains("f"));
     }
 
+    /// error_display_missing_return_ann のテスト。
     #[test]
     fn error_display_missing_return_ann() {
         let errors = check("fn f(x: int):\n    pass\n");
@@ -1516,6 +1654,7 @@ mod type_check_tests {
 
     // --- Keyword arguments ---
 
+    /// kwarg_correct_ok のテスト。
     #[test]
     fn kwarg_correct_ok() {
         assert!(ok(
@@ -1523,6 +1662,7 @@ mod type_check_tests {
         ));
     }
 
+    /// kwarg_reversed_order_ok のテスト。
     #[test]
     fn kwarg_reversed_order_ok() {
         assert!(ok(
@@ -1530,6 +1670,7 @@ mod type_check_tests {
         ));
     }
 
+    /// kwarg_unknown_name_err のテスト。
     #[test]
     fn kwarg_unknown_name_err() {
         assert!(err(
@@ -1537,11 +1678,13 @@ mod type_check_tests {
         ));
     }
 
+    /// kwarg_type_mismatch_err のテスト。
     #[test]
     fn kwarg_type_mismatch_err() {
         assert!(err("fn f(a: int) -> None:\n    pass\nf(a=\"hello\")\n"));
     }
 
+    /// kwarg_mixed_positional_keyword_ok のテスト。
     #[test]
     fn kwarg_mixed_positional_keyword_ok() {
         assert!(ok(
@@ -1549,6 +1692,7 @@ mod type_check_tests {
         ));
     }
 
+    /// error_display_unknown_kwarg のテスト。
     #[test]
     fn error_display_unknown_kwarg() {
         let errors = check("fn f(a: int) -> None:\n    pass\nf(z=1)\n");
@@ -1560,6 +1704,7 @@ mod type_check_tests {
 
     // --- Overloading ---
 
+    /// overload_by_count_ok のテスト。
     #[test]
     fn overload_by_count_ok() {
         assert!(ok(concat!(
@@ -1570,6 +1715,7 @@ mod type_check_tests {
         )));
     }
 
+    /// overload_by_type_ok のテスト。
     #[test]
     fn overload_by_type_ok() {
         assert!(ok(concat!(
@@ -1580,6 +1726,7 @@ mod type_check_tests {
         )));
     }
 
+    /// overload_wrong_count_err のテスト。
     #[test]
     fn overload_wrong_count_err() {
         let errors = check(concat!(
@@ -1593,6 +1740,7 @@ mod type_check_tests {
         )));
     }
 
+    /// overload_single_def_count_err_uses_count_mismatch のテスト。
     #[test]
     fn overload_single_def_count_err_uses_count_mismatch() {
         let errors = check("fn f(a: int) -> None:\n    pass\nf(1, 2)\n");
@@ -1601,6 +1749,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::CallArgCountMismatch { .. })));
     }
 
+    /// overload_multiple_count_match_skips_type_check のテスト。
     #[test]
     fn overload_multiple_count_match_skips_type_check() {
         let errors = check(concat!(
@@ -1613,6 +1762,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
+    /// overload_display_no_matching のテスト。
     #[test]
     fn overload_display_no_matching() {
         let errors = check(concat!(
@@ -1632,6 +1782,7 @@ mod type_check_tests {
 
     // --- Union / Option type ---
 
+    /// union_param_accepts_member_types_ok のテスト。
     #[test]
     fn union_param_accepts_member_types_ok() {
         assert!(ok(concat!(
@@ -1641,6 +1792,7 @@ mod type_check_tests {
         )));
     }
 
+    /// union_param_rejects_non_member_err のテスト。
     #[test]
     fn union_param_rejects_non_member_err() {
         let errors = check(concat!(
@@ -1652,6 +1804,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
+    /// union_param_accepts_same_union_ok のテスト。
     #[test]
     fn union_param_accepts_same_union_ok() {
         assert!(ok(concat!(
@@ -1660,6 +1813,7 @@ mod type_check_tests {
         )));
     }
 
+    /// union_value_binary_op_err のテスト。
     #[test]
     fn union_value_binary_op_err() {
         let errors = check(concat!(
@@ -1671,6 +1825,7 @@ mod type_check_tests {
         ));
     }
 
+    /// union_value_comparison_err のテスト。
     #[test]
     fn union_value_comparison_err() {
         let errors = check(concat!(
@@ -1682,6 +1837,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. })));
     }
 
+    /// union_value_to_typed_param_err のテスト。
     #[test]
     fn union_value_to_typed_param_err() {
         let errors = check(concat!(
@@ -1693,6 +1849,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
+    /// union_value_attr_access_err のテスト。
     #[test]
     fn union_value_attr_access_err() {
         let errors = check(concat!(
@@ -1704,6 +1861,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. })));
     }
 
+    /// union_display_format のテスト。
     #[test]
     fn union_display_format() {
         let errors = check(concat!(
@@ -1719,6 +1877,7 @@ mod type_check_tests {
         assert!(msg.contains("downcast"));
     }
 
+    /// option_param_accepts_inner_type_and_none_ok のテスト。
     #[test]
     fn option_param_accepts_inner_type_and_none_ok() {
         assert!(ok(concat!(
@@ -1728,6 +1887,7 @@ mod type_check_tests {
         )));
     }
 
+    /// option_param_rejects_wrong_type_err のテスト。
     #[test]
     fn option_param_rejects_wrong_type_err() {
         let errors = check(concat!(
@@ -1739,6 +1899,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
+    /// option_value_binary_op_err のテスト。
     #[test]
     fn option_value_binary_op_err() {
         let errors = check(concat!(
@@ -1750,6 +1911,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. })));
     }
 
+    /// option_display_shows_option_format のテスト。
     #[test]
     fn option_display_shows_option_format() {
         let errors = check(concat!(
@@ -1764,6 +1926,7 @@ mod type_check_tests {
         assert!(msg.contains("Option[int]"));
     }
 
+    /// nested_union_option_in_union_ok のテスト。
     #[test]
     fn nested_union_option_in_union_ok() {
         assert!(ok(concat!(
@@ -1776,6 +1939,7 @@ mod type_check_tests {
 
     // --- Any type ---
 
+    /// any_param_accepts_all_arg_types_ok のテスト。
     #[test]
     fn any_param_accepts_all_arg_types_ok() {
         assert!(ok(concat!(
@@ -1787,6 +1951,7 @@ mod type_check_tests {
         )));
     }
 
+    /// any_typed_var_binary_op_err のテスト。
     #[test]
     fn any_typed_var_binary_op_err() {
         let errors = check(concat!("fn f(x: Any) -> None:\n", "    let y = x + 1\n",));
@@ -1795,6 +1960,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "+")));
     }
 
+    /// any_typed_var_comparison_err のテスト。
     #[test]
     fn any_typed_var_comparison_err() {
         let errors = check(concat!("fn f(x: Any) -> None:\n", "    let y = x < 10\n",));
@@ -1803,6 +1969,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "<")));
     }
 
+    /// any_typed_var_eq_err のテスト。
     #[test]
     fn any_typed_var_eq_err() {
         let errors = check(concat!("fn f(x: Any) -> None:\n", "    let y = x == 1\n",));
@@ -1811,6 +1978,7 @@ mod type_check_tests {
         ));
     }
 
+    /// any_typed_var_logical_op_err のテスト。
     #[test]
     fn any_typed_var_logical_op_err() {
         let errors = check(concat!(
@@ -1822,6 +1990,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { .. })));
     }
 
+    /// any_typed_var_unary_neg_err のテスト。
     #[test]
     fn any_typed_var_unary_neg_err() {
         let errors = check(concat!("fn f(x: Any) -> None:\n", "    let y = -x\n",));
@@ -1830,12 +1999,14 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "-")));
     }
 
+    /// any_typed_var_attr_access_err のテスト。
     #[test]
     fn any_typed_var_attr_access_err() {
         let errors = check(concat!("fn f(x: Any) -> None:\n", "    let y = x.value\n",));
         assert!(errors.iter().any(|error| matches!(&error.kind, TypeErrorKind::OperationOnAny { op } if op == "attribute access")));
     }
 
+    /// passing_any_to_typed_param_err のテスト。
     #[test]
     fn passing_any_to_typed_param_err() {
         let errors = check(concat!(
@@ -1851,6 +2022,7 @@ mod type_check_tests {
         )));
     }
 
+    /// any_to_any_param_ok のテスト。
     #[test]
     fn any_to_any_param_ok() {
         assert!(ok(concat!(
@@ -1861,6 +2033,7 @@ mod type_check_tests {
         )));
     }
 
+    /// operation_on_any_display のテスト。
     #[test]
     fn operation_on_any_display() {
         let errors = check(concat!("fn f(x: Any) -> None:\n", "    let y = x + 1\n",));
@@ -1876,6 +2049,7 @@ mod type_check_tests {
 
     // --- new_type ---
 
+    /// new_type_class_copy_no_type_errors のテスト。
     #[test]
     fn new_type_class_copy_no_type_errors() {
         assert!(ok(concat!(
@@ -1887,6 +2061,7 @@ mod type_check_tests {
         )));
     }
 
+    /// new_type_constructor_returns_named_instance のテスト。
     #[test]
     fn new_type_constructor_returns_named_instance() {
         let errors = check(concat!(
@@ -1899,6 +2074,7 @@ mod type_check_tests {
         assert!(errors.is_empty());
     }
 
+    /// self_type_same_class_ok のテスト。
     #[test]
     fn self_type_same_class_ok() {
         assert!(ok(concat!(
@@ -1912,6 +2088,7 @@ mod type_check_tests {
         )));
     }
 
+    /// self_type_mismatch_new_type_err のテスト。
     #[test]
     fn self_type_mismatch_new_type_err() {
         let errors = check(concat!(
@@ -1934,6 +2111,7 @@ mod type_check_tests {
         )));
     }
 
+    /// self_type_mismatch_reverse_err のテスト。
     #[test]
     fn self_type_mismatch_reverse_err() {
         let errors = check(concat!(
@@ -1956,6 +2134,7 @@ mod type_check_tests {
         )));
     }
 
+    /// self_type_mismatch_display のテスト。
     #[test]
     fn self_type_mismatch_display() {
         let errors = check(concat!(
@@ -1981,6 +2160,7 @@ mod type_check_tests {
 
     // --- trait ---
 
+    /// trait_with_virtual_method_no_type_errors のテスト。
     #[test]
     fn trait_with_virtual_method_no_type_errors() {
         assert!(ok(concat!(
@@ -1990,6 +2170,7 @@ mod type_check_tests {
         )));
     }
 
+    /// trait_with_non_virtual_method_no_type_errors のテスト。
     #[test]
     fn trait_with_non_virtual_method_no_type_errors() {
         assert!(ok(concat!(
@@ -1999,6 +2180,7 @@ mod type_check_tests {
         )));
     }
 
+    /// trait_with_fields_no_type_errors のテスト。
     #[test]
     fn trait_with_fields_no_type_errors() {
         assert!(ok(concat!(
@@ -2008,6 +2190,7 @@ mod type_check_tests {
         )));
     }
 
+    /// trait_class_inheriting_no_type_errors のテスト。
     #[test]
     fn trait_class_inheriting_no_type_errors() {
         assert!(ok(concat!(
@@ -2021,6 +2204,7 @@ mod type_check_tests {
         )));
     }
 
+    /// trait_class_call_type_mismatch_detected のテスト。
     #[test]
     fn trait_class_call_type_mismatch_detected() {
         let errors = check(concat!(
@@ -2040,11 +2224,13 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
+    /// raise_builtin_error_instance_ok のテスト。
     #[test]
     fn raise_builtin_error_instance_ok() {
         assert!(ok("raise ValueError(\"bad\")\n"));
     }
 
+    /// raise_user_error_instance_ok のテスト。
     #[test]
     fn raise_user_error_instance_ok() {
         assert!(ok(concat!(
@@ -2054,6 +2240,7 @@ mod type_check_tests {
         )));
     }
 
+    /// raise_non_error_type_detected のテスト。
     #[test]
     fn raise_non_error_type_detected() {
         let errors = check("raise \"bad\"\n");
@@ -2064,6 +2251,7 @@ mod type_check_tests {
 
     // --- Type guard (is / is not) ---
 
+    /// type_guard_is_narrows_in_if_body_ok のテスト。
     #[test]
     fn type_guard_is_narrows_in_if_body_ok() {
         assert!(ok(concat!(
@@ -2073,6 +2261,7 @@ mod type_check_tests {
         )));
     }
 
+    /// type_guard_is_union_without_narrowing_err のテスト。
     #[test]
     fn type_guard_is_union_without_narrowing_err() {
         let errors = check(concat!(
@@ -2085,6 +2274,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::OperationOnUnion { .. })));
     }
 
+    /// type_guard_is_not_narrows_in_if_body_ok のテスト。
     #[test]
     fn type_guard_is_not_narrows_in_if_body_ok() {
         assert!(ok(concat!(
@@ -2094,6 +2284,7 @@ mod type_check_tests {
         )));
     }
 
+    /// type_guard_is_not_on_non_union_err のテスト。
     #[test]
     fn type_guard_is_not_on_non_union_err() {
         let errors = check(concat!("let x = 5\n", "if x is not str:\n    pass\n",));
@@ -2102,6 +2293,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::IsNotOnNonUnion { .. })));
     }
 
+    /// type_guard_elif_narrows_ok のテスト。
     #[test]
     fn type_guard_elif_narrows_ok() {
         assert!(ok(concat!(
@@ -2112,6 +2304,7 @@ mod type_check_tests {
         )));
     }
 
+    /// type_guard_elif_chain_ok のテスト。
     #[test]
     fn type_guard_elif_chain_ok() {
         assert!(ok(concat!(
@@ -2122,6 +2315,7 @@ mod type_check_tests {
         )));
     }
 
+    /// type_guard_elif_is_not_on_non_union_err のテスト。
     #[test]
     fn type_guard_elif_is_not_on_non_union_err() {
         let errors = check(concat!(
@@ -2136,6 +2330,7 @@ mod type_check_tests {
 
     // --- function type ---
 
+    /// function_type_bare_param_ok のテスト。
     #[test]
     fn function_type_bare_param_ok() {
         assert!(ok(concat!(
@@ -2144,6 +2339,7 @@ mod type_check_tests {
         )));
     }
 
+    /// function_type_positional_params_ok のテスト。
     #[test]
     fn function_type_positional_params_ok() {
         assert!(ok(concat!(
@@ -2156,6 +2352,7 @@ mod type_check_tests {
         )));
     }
 
+    /// function_type_return_type_inferred_ok のテスト。
     #[test]
     fn function_type_return_type_inferred_ok() {
         assert!(ok(concat!(
@@ -2168,6 +2365,7 @@ mod type_check_tests {
         )));
     }
 
+    /// function_type_wrong_arg_type_err のテスト。
     #[test]
     fn function_type_wrong_arg_type_err() {
         let errors = check(concat!(
@@ -2183,6 +2381,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
+    /// function_type_wrong_arg_count_err のテスト。
     #[test]
     fn function_type_wrong_arg_count_err() {
         let errors = check(concat!(
@@ -2198,6 +2397,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::CallArgCountMismatch { .. })));
     }
 
+    /// function_type_named_param_keyword_ok のテスト。
     #[test]
     fn function_type_named_param_keyword_ok() {
         assert!(ok(concat!(
@@ -2210,6 +2410,7 @@ mod type_check_tests {
         )));
     }
 
+    /// function_type_named_param_unknown_keyword_err のテスト。
     #[test]
     fn function_type_named_param_unknown_keyword_err() {
         let errors = check(concat!(
@@ -2225,6 +2426,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::UnknownKeywordArg { .. })));
     }
 
+    /// function_type_mut_param_with_immutable_arg_err のテスト。
     #[test]
     fn function_type_mut_param_with_immutable_arg_err() {
         let errors = check(concat!(
@@ -2242,6 +2444,7 @@ mod type_check_tests {
         )));
     }
 
+    /// function_type_mut_param_with_mutable_arg_ok のテスト。
     #[test]
     fn function_type_mut_param_with_mutable_arg_ok() {
         assert!(ok(concat!(
@@ -2255,6 +2458,7 @@ mod type_check_tests {
         )));
     }
 
+    /// function_type_chained_call_ok のテスト。
     #[test]
     fn function_type_chained_call_ok() {
         assert!(ok(concat!(
@@ -2266,6 +2470,7 @@ mod type_check_tests {
         )));
     }
 
+    /// function_type_zero_params_ok のテスト。
     #[test]
     fn function_type_zero_params_ok() {
         assert!(ok(concat!(
@@ -2278,6 +2483,7 @@ mod type_check_tests {
         )));
     }
 
+    /// function_type_zero_params_wrong_count_err のテスト。
     #[test]
     fn function_type_zero_params_wrong_count_err() {
         let errors = check(concat!(
@@ -2295,6 +2501,7 @@ mod type_check_tests {
 
     // --- type[T] ---
 
+    /// type_val_of_exact_match_ok のテスト。
     #[test]
     fn type_val_of_exact_match_ok() {
         assert!(ok(concat!(
@@ -2303,6 +2510,7 @@ mod type_check_tests {
         )));
     }
 
+    /// type_val_of_wrong_primitive_err のテスト。
     #[test]
     fn type_val_of_wrong_primitive_err() {
         let errors = check(concat!(
@@ -2314,6 +2522,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
+    /// type_val_of_new_type_upcast_ok のテスト。
     #[test]
     fn type_val_of_new_type_upcast_ok() {
         assert!(ok(concat!(
@@ -2323,6 +2532,7 @@ mod type_check_tests {
         )));
     }
 
+    /// type_val_of_new_type_chain_ok のテスト。
     #[test]
     fn type_val_of_new_type_chain_ok() {
         assert!(ok(concat!(
@@ -2333,6 +2543,7 @@ mod type_check_tests {
         )));
     }
 
+    /// type_val_of_new_type_wrong_origin_err のテスト。
     #[test]
     fn type_val_of_new_type_wrong_origin_err() {
         let errors = check(concat!(
@@ -2345,6 +2556,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
+    /// type_val_of_trait_upcast_ok のテスト。
     #[test]
     fn type_val_of_trait_upcast_ok() {
         assert!(ok(concat!(
@@ -2355,6 +2567,7 @@ mod type_check_tests {
         )));
     }
 
+    /// type_val_of_trait_wrong_class_err のテスト。
     #[test]
     fn type_val_of_trait_wrong_class_err() {
         let errors = check(concat!(
@@ -2368,6 +2581,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::CallArgTypeMismatch { .. })));
     }
 
+    /// type_val_bare_accepts_any_type_value_ok のテスト。
     #[test]
     fn type_val_bare_accepts_any_type_value_ok() {
         assert!(ok(concat!(
@@ -2377,6 +2591,7 @@ mod type_check_tests {
         )));
     }
 
+    /// type_val_of_display のテスト。
     #[test]
     fn type_val_of_display() {
         let type_value = InferredType::TypeValOf(Box::new(InferredType::Int));
@@ -2385,6 +2600,7 @@ mod type_check_tests {
 
     // --- Decorator static type checking ---
 
+    /// decorator_fn_correct_signature_ok のテスト。
     #[test]
     fn decorator_fn_correct_signature_ok() {
         assert!(ok(concat!(
@@ -2396,6 +2612,7 @@ mod type_check_tests {
         )));
     }
 
+    /// decorator_fn_wrong_param_type_err のテスト。
     #[test]
     fn decorator_fn_wrong_param_type_err() {
         let errors = check(concat!(
@@ -2410,6 +2627,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
     }
 
+    /// decorator_fn_wrong_return_type_err のテスト。
     #[test]
     fn decorator_fn_wrong_return_type_err() {
         let errors = check(concat!(
@@ -2424,6 +2642,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
     }
 
+    /// decorator_fn_no_params_err のテスト。
     #[test]
     fn decorator_fn_no_params_err() {
         let errors = check(concat!(
@@ -2438,6 +2657,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
     }
 
+    /// decorator_class_correct_signature_ok のテスト。
     #[test]
     fn decorator_class_correct_signature_ok() {
         assert!(ok(concat!(
@@ -2452,6 +2672,7 @@ mod type_check_tests {
         )));
     }
 
+    /// decorator_class_init_wrong_param_err のテスト。
     #[test]
     fn decorator_class_init_wrong_param_err() {
         let errors = check(concat!(
@@ -2469,6 +2690,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
     }
 
+    /// decorator_class_call_wrong_return_err のテスト。
     #[test]
     fn decorator_class_call_wrong_return_err() {
         let errors = check(concat!(
@@ -2486,6 +2708,7 @@ mod type_check_tests {
             .any(|error| matches!(&error.kind, TypeErrorKind::InvalidDecorator { .. })));
     }
 
+    /// decorator_fn_on_fn_class_decorator_ok のテスト。
     #[test]
     fn decorator_fn_on_fn_class_decorator_ok() {
         assert!(ok(concat!(
@@ -2500,6 +2723,7 @@ mod type_check_tests {
         )));
     }
 
+    /// decorator_stacked_both_valid_ok のテスト。
     #[test]
     fn decorator_stacked_both_valid_ok() {
         assert!(ok(concat!(
@@ -2514,6 +2738,7 @@ mod type_check_tests {
         )));
     }
 
+    /// decorator_stacked_second_wrong_err のテスト。
     #[test]
     fn decorator_stacked_second_wrong_err() {
         let errors = check(concat!(
@@ -2533,6 +2758,7 @@ mod type_check_tests {
 
     // --- Collection generics type checking ---
 
+    /// list_of_int_matches_list_of_int_ok のテスト。
     #[test]
     fn list_of_int_matches_list_of_int_ok() {
         assert!(ok(concat!(
@@ -2543,6 +2769,7 @@ mod type_check_tests {
         )));
     }
 
+    /// list_of_str_to_list_of_int_err のテスト。
     #[test]
     fn list_of_str_to_list_of_int_err() {
         assert!(err(concat!(
@@ -2553,6 +2780,7 @@ mod type_check_tests {
         )));
     }
 
+    /// list_literal_inferred_as_list_of_int_ok のテスト。
     #[test]
     fn list_literal_inferred_as_list_of_int_ok() {
         assert!(ok(concat!(
@@ -2562,6 +2790,7 @@ mod type_check_tests {
         )));
     }
 
+    /// list_literal_wrong_elem_type_err のテスト。
     #[test]
     fn list_literal_wrong_elem_type_err() {
         assert!(err(concat!(
@@ -2571,6 +2800,7 @@ mod type_check_tests {
         )));
     }
 
+    /// untyped_list_matches_list_of_any_ok のテスト。
     #[test]
     fn untyped_list_matches_list_of_any_ok() {
         assert!(ok(concat!(
@@ -2581,6 +2811,7 @@ mod type_check_tests {
         )));
     }
 
+    /// set_of_int_to_set_of_str_err のテスト。
     #[test]
     fn set_of_int_to_set_of_str_err() {
         assert!(err(concat!(
@@ -2591,6 +2822,7 @@ mod type_check_tests {
         )));
     }
 
+    /// dict_of_str_int_ok のテスト。
     #[test]
     fn dict_of_str_int_ok() {
         assert!(ok(concat!(
@@ -2601,6 +2833,7 @@ mod type_check_tests {
         )));
     }
 
+    /// dict_key_type_mismatch_err のテスト。
     #[test]
     fn dict_key_type_mismatch_err() {
         assert!(err(concat!(

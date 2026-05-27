@@ -26,7 +26,8 @@ pub fn extract_bad_fn_names(err: &str) -> HashSet<String> {
     names
 }
 
-/// True for lines that look like MSVC compiler or linker diagnostics.
+/// MSVC コンパイラまたはリンカの診断行かどうかを判定する。
+/// `error C` または `error LNK` を含む行を診断行とみなす。
 fn is_msvc_diagnostic(line: &str) -> bool {
     line.contains(": error C")
         || line.contains(": error LNK")
@@ -34,6 +35,8 @@ fn is_msvc_diagnostic(line: &str) -> bool {
         || line.contains(": fatal error LNK")
 }
 
+/// MSVC 診断行から問題のある関数・シンボル名を抽出して `names` セットに追加する。
+/// シングルクォート囲みの識別子、マングル済み C++ シンボル、`referenced in function` 形式の3パターンを試みる。
 fn extract_from_line(line: &str, names: &mut HashSet<String>) {
     // Pattern 1: single-quoted identifier 'Name'
     // Appears in C2039 ("not a member"), C2733 ("overload in extern C"),
@@ -81,6 +84,8 @@ fn extract_from_line(line: &str, names: &mut HashSet<String>) {
     }
 }
 
+/// 文字列が有効な C 識別子かどうかを判定する。
+/// 先頭がアルファベットまたはアンダースコアで、残りがすべて英数字またはアンダースコアであれば `true`。
 fn is_valid_c_ident(s: &str) -> bool {
     !s.is_empty()
         && s.chars()

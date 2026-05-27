@@ -5,7 +5,7 @@ use super::super::native_api::{TL_FALSE, TL_NONE, TL_TRUE};
 
 // ── C type model ─────────────────────────────────────────────────────────────
 
-/// A C type that can cross the tl ↔ native boundary.
+/// tl ↔ ネイティブ境界を越えることができる C の型を表す列挙型。
 #[derive(Debug, Clone, PartialEq)]
 pub enum CType {
     /// `int`, `short`, `char`, `int32_t`, `uint32_t` → tl `int`
@@ -42,7 +42,7 @@ pub enum CType {
 }
 
 impl CType {
-    /// C type string used in the generated C++ shim source.
+    /// 生成された C++ シム ソースで使用する C 型文字列を返す。
     pub fn c_type_str(&self) -> String {
         match self {
             CType::Int => "int".to_string(),
@@ -67,7 +67,7 @@ impl CType {
         }
     }
 
-    /// Rust type used in the `extern "C"` declaration inside the generated wrapper.
+    /// 生成されたラッパー内の `extern "C"` 宣言で使用する Rust 型文字列を返す。
     pub(crate) fn rust_extern_type(&self) -> String {
         match self {
             CType::Int => "i32".to_string(),
@@ -90,8 +90,8 @@ impl CType {
         }
     }
 
-    /// Rust expression that converts a tl handle (`i64`) to this C type (non-pointer only).
-    /// For pointer types, use `gen_ptr_init` instead.
+    /// tl ハンドル (`i64`) をこの C 型（非ポインタ）に変換する Rust 式を返す。
+    /// ポインタ型の場合は代わりに `gen_ptr_init` を使うこと。
     pub(crate) fn from_handle(&self, handle: &str) -> String {
         match self {
             CType::Int => format!("((*CB).to_int)({handle}) as i32"),
@@ -107,7 +107,7 @@ impl CType {
         }
     }
 
-    /// Rust expression that wraps a C return value into a tl handle.
+    /// C の戻り値を tl ハンドルにラップする Rust 式を返す。
     pub(crate) fn to_handle(&self, val: &str) -> String {
         match self {
             CType::Int => format!("((*CB).make_int)({val} as i64)"),
@@ -126,28 +126,28 @@ impl CType {
 
 // ── Struct definition ─────────────────────────────────────────────────────────
 
-/// A C struct/union definition extracted from a `typedef struct { … } Name;` form.
-/// Only structs whose every field resolves to a primitive `CType` are emitted.
+/// `typedef struct { … } Name;` 形式から抽出した C 構造体/共用体の定義。
+/// すべてのフィールドがプリミティブ `CType` に解決できる構造体のみ出力される。
 #[derive(Debug, Clone)]
 pub struct CStructDef {
-    /// The typedef alias name (e.g. `"VECTOR"`).
+    /// typedef エイリアス名（例: `"VECTOR"`）。
     pub name: String,
-    /// Fields in declaration order: `(field_name, CType)`.
+    /// 宣言順のフィールド一覧: `(フィールド名, CType)`。
     pub fields: Vec<(String, CType)>,
 }
 
 // ── Function signature ───────────────────────────────────────────────────────
 
-/// A C function signature extracted from a `.h` file.
+/// `.h` ファイルから抽出した C 関数シグネチャ。
 #[derive(Debug, Clone)]
 pub struct CFnSig {
     pub name: String,
     pub params: Vec<(String, CType)>,
     pub ret: CType,
-    /// C++ namespace this function lives in, if any (e.g. `"DxLib"`).
+    /// この関数が属する C++ 名前空間（例: `"DxLib"`）。名前空間がない場合は `None`。
     pub namespace: Option<String>,
-    /// Index of the first optional parameter (those with DEFAULTPARAM / C++ default args).
-    /// Callers may omit tail parameters from index `n_required` onwards; omitted args
-    /// are padded with 0 (the tl None handle, which marshals to a NULL pointer or 0).
+    /// 最初のオプション引数のインデックス（DEFAULTPARAM / C++ デフォルト引数を持つもの）。
+    /// 呼び出し側は `n_required` 以降の末尾引数を省略できる。省略された引数は
+    /// 0（tl の None ハンドル、NULL ポインタまたは 0 にマーシャリングされる）で埋められる。
     pub n_required: usize,
 }

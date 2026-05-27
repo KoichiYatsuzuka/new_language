@@ -33,17 +33,20 @@ use super::module_compiler::{cache_native, native_lib_ext};
 
 // ── Internal types ────────────────────────────────────────────────────────────
 
+/// Rust クレートから解析した関数シグネチャ情報。
 struct RsFnSig {
     name: String,
     params: Vec<RsParam>,
     return_type: Option<String>,
 }
 
+/// Rust 関数の単一パラメータ情報（名前と Rust 型）。
 struct RsParam {
     name: String,
     rust_type: String,
 }
 
+/// クレートのソース種別。レジストリ（crates.io）またはローカルパスを表す。
 enum CrateSource {
     Registry { crate_name: String, version_req: String },
     LocalPath { crate_name: String, path: PathBuf },
@@ -135,6 +138,7 @@ pub fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&str>) -
 
 // ── Config parsing ────────────────────────────────────────────────────────────
 
+/// `tl_crates.json` を検索ディレクトリから探し、該当モジュールの [`CrateSource`] を返す。
 fn find_config(module_name: &str, search_dirs: &[PathBuf]) -> Result<CrateSource, String> {
     for dir in search_dirs {
         let p = dir.join("tl_crates.json");
@@ -370,6 +374,7 @@ fn follow_pub_use(
     }
 }
 
+/// ディレクトリを再帰的に走査して、ABI 互換な `pub fn` シグネチャを収集する。
 fn collect_sigs(
     dir: &Path,
     out: &mut Vec<RsFnSig>,
@@ -397,6 +402,7 @@ fn collect_sigs(
 
 // ── Signature parsing ─────────────────────────────────────────────────────────
 
+/// ソーステキストからトップレベルの `pub fn` シグネチャを解析して返す。
 fn parse_fn_sigs(source: &str) -> Vec<RsFnSig> {
     let mut sigs = Vec::new();
     for line in source.lines() {
@@ -410,6 +416,7 @@ fn parse_fn_sigs(source: &str) -> Vec<RsFnSig> {
     sigs
 }
 
+/// 1行の `pub fn ...` 宣言を解析して [`RsFnSig`] を返す。ジェネリックや非互換型の場合は `None`。
 fn parse_single_line_sig(line: &str) -> Option<RsFnSig> {
     let rest = line.strip_prefix("pub fn ")?;
 
@@ -462,6 +469,7 @@ fn parse_single_line_sig(line: &str) -> Option<RsFnSig> {
     Some(RsFnSig { name, params, return_type })
 }
 
+/// Rust 型文字列が tl ABI と互換性があるかを判定する（整数・浮動小数点・bool・文字列型）。
 fn is_abi_compatible(t: &str) -> bool {
     matches!(
         t.trim(),
@@ -473,6 +481,7 @@ fn is_abi_compatible(t: &str) -> bool {
     )
 }
 
+/// 開きブラケットに対応する閉じブラケットの位置を返す。見つからない場合は `None`。
 fn find_matching(s: &str, open: char, close: char) -> Option<usize> {
     let mut depth = 0usize;
     for (i, c) in s.char_indices() {
@@ -485,6 +494,7 @@ fn find_matching(s: &str, open: char, close: char) -> Option<usize> {
     None
 }
 
+/// パラメータリスト文字列を解析して [`RsParam`] のリストを返す。
 fn parse_params(s: &str) -> Vec<RsParam> {
     if s.trim().is_empty() { return vec![]; }
     let mut params = Vec::new();
@@ -505,6 +515,7 @@ fn parse_params(s: &str) -> Vec<RsParam> {
     params
 }
 
+/// `name: Type` 形式の1パラメータ文字列を解析する。`self` 系パラメータは `None` を返す。
 fn parse_one_param(s: &str) -> Option<RsParam> {
     let s = s.trim();
     if matches!(s, "self" | "&self" | "&mut self" | "mut self") { return None; }
@@ -518,6 +529,7 @@ fn parse_one_param(s: &str) -> Option<RsParam> {
 
 // ── Type mapping ──────────────────────────────────────────────────────────────
 
+/// Rust 型文字列を対応する tl 型名に変換する（`i64` → `"int"` など）。
 fn rust_type_to_tl(rt: &str) -> &str {
     match rt.trim() {
         "i8" | "i16" | "i32" | "i64" | "i128"
@@ -532,6 +544,7 @@ fn rust_type_to_tl(rt: &str) -> &str {
 
 // ── Stub generation ───────────────────────────────────────────────────────────
 
+/// Rust 関数シグネチャから tl の `Stmt::FnDef` スタブリストを生成する（型注釈のみ・本体なし）。
 fn make_stubs(sigs: &[RsFnSig]) -> Vec<Stmt> {
     sigs.iter()
         .map(|sig| {
@@ -622,6 +635,7 @@ unsafe fn handle_to_string(h: i64) -> String {
 
 "#;
 
+/// ラッパー `lib.rs` のソース文字列を生成する。ABI ヘッダと全関数ラッパーを結合して返す。
 fn lib_rs(sigs: &[RsFnSig], crate_ident: &str) -> String {
     let mut out = ABI_HEADER.to_string();
     for sig in sigs {
@@ -650,6 +664,7 @@ fn fn_wrapper(sig: &RsFnSig, crate_ident: &str) -> String {
     out
 }
 
+/// 引数インデックス・名前・Rust 型から、ハンドルを Rust 型に変換するコードを生成する。
 fn param_conversion(i: usize, name: &str, rust_type: &str) -> String {
     match rust_type.trim() {
         "i64" | "isize" => format!("    let {name}: i64 = cb_to_int(*args.add({i}));\n"),
@@ -670,6 +685,7 @@ fn param_conversion(i: usize, name: &str, rust_type: &str) -> String {
     }
 }
 
+/// 関数呼び出し式と戻り値 Rust 型から、結果をハンドルに変換して返すコードを生成する。
 fn return_conversion(call: &str, rust_type: Option<&str>) -> String {
     match rust_type.map(str::trim) {
         None | Some("()") =>

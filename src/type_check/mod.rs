@@ -23,6 +23,7 @@ use crate::ast::{Accessibility, Stmt};
 // TypeChecker
 // ---------------------------------------------------------------------------
 
+/// 静的型検査器。AST を走査してすべての型エラーを収集し報告する。
 pub struct TypeChecker {
     scope_stack: Vec<HashMap<String, VarInfo>>,
     fn_sigs: HashMap<String, Vec<FnSig>>,
@@ -40,6 +41,7 @@ pub struct TypeChecker {
 }
 
 impl TypeChecker {
+    /// 組み込み型・例外クラスを登録した初期状態の [`TypeChecker`] を生成する。
     pub fn new() -> Self {
         let mut global: HashMap<String, VarInfo> = HashMap::new();
         let builtins: &[(&str, InferredType)] = &[
@@ -142,6 +144,7 @@ impl TypeChecker {
         }
     }
 
+    /// 文のスライスを静的型検査して、収集されたすべての [`StaticTypeError`] を返す。
     pub fn check(stmts: &[Stmt]) -> Vec<StaticTypeError> {
         let mut tc = Self::new();
         tc.collect_fn_sigs(stmts);
@@ -149,6 +152,7 @@ impl TypeChecker {
         tc.errors
     }
 
+    /// 文のスライスを先行スキャンして関数・クラス・trait のシグネチャ情報をキャッシュする。
     pub(crate) fn collect_fn_sigs(&mut self, stmts: &[Stmt]) {
         for stmt in stmts {
             match stmt {

@@ -68,6 +68,7 @@ pub const UOP_BIT_NOT: i32 = 2;
 const INT_CACHE_END: i64 = 256;
 const INT_CACHE_BASE: usize = 3 + INT_CACHE_END as usize; // 259
 
+/// 整数キャッシュ領域内の整数 `n`（0 以上 INT_CACHE_END 未満）に対応するアリーナハンドルを返す。
 #[inline(always)]
 fn int_cache_handle(n: i64) -> i64 {
     3 + n
@@ -116,9 +117,9 @@ thread_local! {
 
 // ── Public API for the interpreter ──────────────────────────────────────────
 
-/// Enter a native function call.  Must be paired with `exit_native_call` or `abort_native_call`.
-/// Returns `true` for the outermost call (depth was 0); `false` for re-entrant calls.
-/// At the outermost level, saves the arena / iter-table savepoints and sets CURRENT_INTERP.
+/// ネイティブ関数呼び出しを開始する。`exit_native_call` または `abort_native_call` と対で使用する。
+/// 最外呼び出し（深さが 0）のとき `true`、再入呼び出しのとき `false` を返す。
+/// 最外レベルでは、アリーナとイテレータテーブルの保存点を記録し `CURRENT_INTERP` をセットする。
 pub fn enter_native_call(interp: *mut Interpreter) -> bool {
     let prev = CALL_DEPTH.with(|c| {
         let v = c.get();
@@ -135,9 +136,8 @@ pub fn enter_native_call(interp: *mut Interpreter) -> bool {
     }
 }
 
-/// Exit a native function call (success path).
-/// Clones the result value from `result_h`, then — if outermost — truncates the arena/iter
-/// table back to the saved positions and clears CURRENT_INTERP.
+/// ネイティブ関数呼び出しを正常終了する（成功パス）。
+/// `result_h` から結果値をクローンし、最外呼び出しであればアリーナ・イテレータテーブルを保存点まで巻き戻し `CURRENT_INTERP` をクリアする。
 pub fn exit_native_call(result_h: i64, is_outermost: bool) -> Value {
     let result = clone_value_at(result_h);
     CALL_DEPTH.with(|c| {
@@ -155,8 +155,8 @@ pub fn exit_native_call(result_h: i64, is_outermost: bool) -> Value {
     result
 }
 
-/// Exit a native function call (error path).
-/// Does the same cleanup as `exit_native_call` but returns nothing.
+/// ネイティブ関数呼び出しをエラー終了する（エラーパス）。
+/// `exit_native_call` と同じクリーンアップを行うが値を返さない。
 pub fn abort_native_call(is_outermost: bool) {
     CALL_DEPTH.with(|c| {
         let v = c.get();
@@ -172,8 +172,8 @@ pub fn abort_native_call(is_outermost: bool) {
     }
 }
 
-/// Push a Value into the arena and return its handle.
-/// Small integers (0..INT_CACHE_END) and booleans return pre-cached handles.
+/// 値をアリーナにプッシュしてハンドルを返す。
+/// 小整数（0..INT_CACHE_END）と真偽値は事前キャッシュ済みハンドルを返す。
 pub fn push_handle(v: Value) -> i64 {
     match &v {
         Value::None => TL_NONE,
@@ -189,11 +189,10 @@ pub fn push_handle(v: Value) -> i64 {
     }
 }
 
-/// Push a Value into the arena as a **fresh, writable slot** and return its handle.
-///
-/// Unlike `push_handle`, this never returns a pre-cached constant handle — it always
-/// appends a new slot that the native DLL can later overwrite via `tl_write_handle`.
-/// Used for `MutPtr` (write-back) arguments in the cpp-bridge.
+/// 値をアリーナに**常に新規スロット**としてプッシュしてハンドルを返す。
+/// `push_handle` と異なり、キャッシュ済みの定数ハンドルは返さず、ネイティブ DLL が
+/// `tl_write_handle` で後から上書き可能な新しいスロットを確保する。
+/// cpp-bridge の `MutPtr`（書き戻し）引数に使用する。
 pub fn push_handle_writeback(v: Value) -> i64 {
     VALUE_ARENA.with(|a| {
         let mut arena = a.borrow_mut();
@@ -203,7 +202,7 @@ pub fn push_handle_writeback(v: Value) -> i64 {
     })
 }
 
-/// Clone the Value at `h` from the arena.
+/// アリーナのハンドル `h` が指す値をクローンして返す。
 pub fn clone_value_at(h: i64) -> Value {
     match h {
         TL_NONE => Value::None,
@@ -216,30 +215,35 @@ pub fn clone_value_at(h: i64) -> Value {
     }
 }
 
-/// Take and return any error set by the last native call chain.
+/// 直前のネイティブ呼び出しチェーンでセットされたエラーを取り出して返す。
 pub fn take_error() -> Option<String> {
     NATIVE_ERROR.with(|e| e.borrow_mut().take())
 }
 
-/// Get a `*const TlCallbacks` pointing to the static callbacks instance.
+/// 静的コールバックインスタンスへの `*const TlCallbacks` ポインタを返す。
 pub fn get_callbacks() -> *const TlCallbacks {
     &CALLBACKS as *const TlCallbacks
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
+/// スレッドローカルに保持している現在の `Interpreter` への生ポインタを返す。
 fn get_interp_ptr() -> *mut Interpreter {
     CURRENT_INTERP.with(|c| c.get())
 }
 
+/// ネイティブコールバックがエラーをセット済みかどうかを返す。
 fn has_error() -> bool {
     NATIVE_ERROR.with(|e| e.borrow().is_some())
 }
 
+/// ネイティブコールバックのエラーメッセージをスレッドローカル変数にセットする。
 fn set_error(msg: String) {
     NATIVE_ERROR.with(|e| *e.borrow_mut() = Some(msg));
 }
 
+/// `i32` の二項演算コードを AST の `BinOp` 列挙型に変換する。
+/// 未知のコードの場合は `None` を返す。
 fn i32_to_binop(op: i32) -> Option<crate::ast::BinOp> {
     use crate::ast::BinOp;
     match op {
@@ -269,8 +273,8 @@ fn i32_to_binop(op: i32) -> Option<crate::ast::BinOp> {
 
 // ── TlCallbacks struct ───────────────────────────────────────────────────────
 
-/// C-compatible struct of function pointers passed to native DLLs via `tl_init`.
-/// Layout must exactly match the `TlCallbacks` struct emitted by codegen.rs.
+/// ネイティブ DLL に `tl_init` 経由で渡される C 互換の関数ポインタ構造体。
+/// レイアウトは `codegen.rs` が生成する `TlCallbacks` 構造体と完全に一致しなければならない。
 #[repr(C)]
 pub struct TlCallbacks {
     pub make_int: extern "C" fn(i64) -> i64,
@@ -298,20 +302,20 @@ pub struct TlCallbacks {
     pub to_int: extern "C" fn(i64) -> i64,
     pub to_float: extern "C" fn(i64) -> f64,
     pub deep_copy: extern "C" fn(i64) -> i64,
-    /// Convert a tl string handle to a null-terminated C string pointer.
-    /// The pointer is valid until the end of the outermost native call.
+    /// tl 文字列ハンドルをヌル終端 C 文字列ポインタに変換する。ポインタは最外ネイティブ呼び出し終了まで有効。
     pub to_cstr: extern "C" fn(i64) -> *const u8,
-    /// Overwrite arena[target_h] with a clone of the value at new_val_h.
-    /// Used by cpp-bridge wrappers for T* write-back parameters.
+    /// `arena[target_h]` を `new_val_h` の値のクローンで上書きする。cpp-bridge の T* 書き戻しパラメータ用。
     pub write_handle: extern "C" fn(i64, i64),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
 
+/// `i64` 整数値からアリーナハンドルを生成して返す C コールバック。
 extern "C" fn tl_make_int(n: i64) -> i64 {
     push_handle(Value::Int(n))
 }
 
+/// `f64` 浮動小数点値からアリーナハンドルを生成して返す C コールバック。
 extern "C" fn tl_make_float(f: f64) -> i64 {
     VALUE_ARENA.with(|a| {
         let mut arena = a.borrow_mut();
@@ -321,6 +325,7 @@ extern "C" fn tl_make_float(f: f64) -> i64 {
     })
 }
 
+/// `i32` の真偽値（0=false, 非0=true）から `TL_TRUE` / `TL_FALSE` ハンドルを返す C コールバック。
 extern "C" fn tl_make_bool(b: i32) -> i64 {
     if b != 0 {
         TL_TRUE
@@ -329,6 +334,7 @@ extern "C" fn tl_make_bool(b: i32) -> i64 {
     }
 }
 
+/// UTF-8 バイト列ポインタと長さから文字列値を生成してハンドルを返す C コールバック。
 extern "C" fn tl_make_str(ptr: *const u8, len: i32) -> i64 {
     let s = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len as usize)) }
         .to_owned();
@@ -340,6 +346,7 @@ extern "C" fn tl_make_str(ptr: *const u8, len: i32) -> i64 {
     })
 }
 
+/// ハンドル配列からリスト値を生成してハンドルを返す C コールバック。
 extern "C" fn tl_make_list(items_ptr: *const i64, n: i32) -> i64 {
     let items: Vec<Value> = (0..n as usize)
         .map(|i| clone_value_at(unsafe { *items_ptr.add(i) }))
@@ -353,6 +360,7 @@ extern "C" fn tl_make_list(items_ptr: *const i64, n: i32) -> i64 {
     })
 }
 
+/// ハンドル配列からタプル値を生成してハンドルを返す C コールバック。
 extern "C" fn tl_make_tuple(items_ptr: *const i64, n: i32) -> i64 {
     let elements: Vec<Value> = (0..n as usize)
         .map(|i| clone_value_at(unsafe { *items_ptr.add(i) }))
@@ -366,6 +374,7 @@ extern "C" fn tl_make_tuple(items_ptr: *const i64, n: i32) -> i64 {
     })
 }
 
+/// キー配列と値配列からディクショナリ値を生成してハンドルを返す C コールバック。
 extern "C" fn tl_make_dict(keys_ptr: *const i64, vals_ptr: *const i64, n: i32) -> i64 {
     let mut dict = DictData::new("Any".to_string(), "Any".to_string());
     for i in 0..n as usize {
@@ -381,10 +390,13 @@ extern "C" fn tl_make_dict(keys_ptr: *const i64, vals_ptr: *const i64, n: i32) -
     })
 }
 
+/// `None` 値を表すハンドル定数 `TL_NONE` を返す C コールバック。
 extern "C" fn tl_make_none() -> i64 {
     TL_NONE
 }
 
+/// ハンドルの値が真値かどうかを `i32`（1=true, 0=false）で返す C コールバック。
+/// インタープリタが利用可能な場合は `is_truthy` に委譲し、そうでない場合は基本型のみ判定する。
 extern "C" fn tl_is_truthy(h: i64) -> i32 {
     let v = clone_value_at(h);
     let ptr = get_interp_ptr();
@@ -404,6 +416,8 @@ extern "C" fn tl_is_truthy(h: i64) -> i32 {
     }
 }
 
+/// 二項演算コードと二つのオペランドハンドルを受け取り演算結果のハンドルを返す C コールバック。
+/// エラーが既にセットされている場合や演算コードが不正な場合は `TL_NONE` を返す。
 extern "C" fn tl_binop(op: i32, a: i64, b: i64) -> i64 {
     if has_error() {
         return TL_NONE;
@@ -432,6 +446,8 @@ extern "C" fn tl_binop(op: i32, a: i64, b: i64) -> i64 {
     }
 }
 
+/// 単項演算コードとオペランドハンドルを受け取り演算結果のハンドルを返す C コールバック。
+/// エラーが既にセットされている場合や演算コードが不正な場合は `TL_NONE` を返す。
 extern "C" fn tl_unop(op: i32, a: i64) -> i64 {
     if has_error() {
         return TL_NONE;
@@ -462,6 +478,8 @@ extern "C" fn tl_unop(op: i32, a: i64) -> i64 {
     }
 }
 
+/// 関数ハンドルと引数ハンドル配列を受け取りインタープリタ経由で関数を呼び出す C コールバック。
+/// 呼び出し結果のハンドルを返す。エラー時は `TL_NONE` を返しエラーをセットする。
 extern "C" fn tl_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
     if has_error() {
         return TL_NONE;
@@ -485,6 +503,8 @@ extern "C" fn tl_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
     }
 }
 
+/// オブジェクトハンドルと属性名から属性値のハンドルを取得する C コールバック。
+/// インタープリタの `get_attr_val` に委譲する。エラー時は `TL_NONE` を返す。
 extern "C" fn tl_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
     if has_error() {
         return TL_NONE;
@@ -509,6 +529,8 @@ extern "C" fn tl_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64
     }
 }
 
+/// オブジェクトハンドル・属性名・新しい値ハンドルを受け取りオブジェクトの属性を更新する C コールバック。
+/// インタープリタの `set_attr_val` に委譲する。エラー時はエラーをセットする。
 extern "C" fn tl_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64) {
     if has_error() {
         return;
@@ -530,6 +552,8 @@ extern "C" fn tl_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h:
     }
 }
 
+/// オブジェクトハンドルとキーハンドルを受け取りサブスクリプト演算結果のハンドルを返す C コールバック。
+/// インタープリタの `eval_subscript` に委譲する。エラー時は `TL_NONE` を返す。
 extern "C" fn tl_subscript(obj_h: i64, key_h: i64) -> i64 {
     if has_error() {
         return TL_NONE;
@@ -551,6 +575,8 @@ extern "C" fn tl_subscript(obj_h: i64, key_h: i64) -> i64 {
     }
 }
 
+/// グローバルスコープから変数名に対応する値ハンドルを取得する C コールバック。
+/// 変数が見つからない場合は `NameError` をセットして `TL_NONE` を返す。
 extern "C" fn tl_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
     if has_error() {
         return TL_NONE;
@@ -576,6 +602,8 @@ extern "C" fn tl_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
     }
 }
 
+/// イテラブルなオブジェクトハンドルからイテレータハンドルを生成する C コールバック。
+/// イテレータハンドルは `-(idx+2)` の負値でエンコードされる（`TL_STOP_ITER=-1` と区別するため）。
 extern "C" fn tl_iter_from(obj_h: i64) -> i64 {
     if has_error() {
         return TL_NONE;
@@ -609,6 +637,8 @@ extern "C" fn tl_iter_from(obj_h: i64) -> i64 {
     })
 }
 
+/// イテレータハンドルから次の要素ハンドルを取得する C コールバック。
+/// イテレーションが終了した場合は `TL_STOP_ITER` を返す。
 extern "C" fn tl_iter_next(iter_h: i64) -> i64 {
     if has_error() {
         return TL_STOP_ITER;
@@ -634,6 +664,8 @@ extern "C" fn tl_iter_next(iter_h: i64) -> i64 {
     })
 }
 
+/// オブジェクトハンドルが指定した型名に一致するか判定する C コールバック。
+/// 一致すれば `TL_TRUE`、一致しなければ `TL_FALSE` を返す。
 extern "C" fn tl_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
     let name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
@@ -675,10 +707,14 @@ extern "C" fn tl_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 
 //   let _r = some_fn_impl(args...);
 //   let _r = cb_arena_compact(_r, _s);  // truncates callee's intermediates
 
+/// アリーナの現在のサイズを保存点として返す C コールバック。
+/// 関数呼び出し前後でアリーナを巻き戻すために使用する。
 extern "C" fn tl_arena_save() -> u64 {
     VALUE_ARENA.with(|a| a.borrow().len() as u64)
 }
 
+/// 結果ハンドルを保持しつつアリーナを保存点まで切り詰める C コールバック。
+/// 結果ハンドルが保存点より後に確保されていた場合は値をクローンして再プッシュする。
 extern "C" fn tl_arena_compact(h: i64, saved: u64) -> i64 {
     let saved = saved as usize;
     // Always truncate to `saved` to discard callee's intermediates.
@@ -715,6 +751,8 @@ extern "C" fn tl_arena_compact(h: i64, saved: u64) -> i64 {
 //       _v_x = _cout[0]; _v_y = _cout[1]; ...
 //   }
 
+/// ループ本体終端で複数の生存変数ハンドルをまとめて保存点まで巻き戻す C コールバック。
+/// 入力ハンドル配列の値をクローンしてからアリーナを切り詰め、出力配列に再プッシュする。
 extern "C" fn tl_compact_many(handles_in: *const i64, n: i32, save: u64, handles_out: *mut i64) {
     let n = n as usize;
     if n == 0 {
@@ -738,12 +776,16 @@ extern "C" fn tl_compact_many(handles_in: *const i64, n: i32, save: u64, handles
 // Used by type-specialized generated functions to unwrap handle parameters to
 // raw Rust values at function entry, eliminating per-operation cb_binop calls.
 
+/// ハンドルの値を完全にディープコピーして新しいハンドルとして返す C コールバック。
+/// スレッド間で値を独立して渡す際などに使用する。
 extern "C" fn tl_deep_copy(h: i64) -> i64 {
     let val = clone_value_at(h);
     let copied = super::Interpreter::deep_copy_value(val);
     push_handle(copied)
 }
 
+/// ハンドルの値を `i64` 整数として取り出す C コールバック。
+/// 型特化コード生成で、関数エントリ時にハンドルを生の Rust 値に変換するために使用する。
 extern "C" fn tl_to_int(h: i64) -> i64 {
     match h {
         TL_NONE => 0,
@@ -760,6 +802,8 @@ extern "C" fn tl_to_int(h: i64) -> i64 {
     }
 }
 
+/// ハンドルの値を `f64` 浮動小数点数として取り出す C コールバック。
+/// 型特化コード生成で、関数エントリ時にハンドルを生の Rust 値に変換するために使用する。
 extern "C" fn tl_to_float(h: i64) -> f64 {
     match h {
         TL_NONE => 0.0,
@@ -778,11 +822,9 @@ extern "C" fn tl_to_float(h: i64) -> f64 {
 
 // ── cpp-bridge helpers ───────────────────────────────────────────────────────
 
-/// Convert the tl string handle `h` to a null-terminated C string.
-///
-/// The bytes are stored in the thread-local `CSTR_BUFS` scratch buffer so the
-/// returned pointer remains valid until `exit_native_call` / `abort_native_call`
-/// clears the buffer at the end of the outermost native call.
+/// tl 文字列ハンドル `h` をヌル終端 C 文字列に変換する C コールバック。
+/// バイト列はスレッドローカルの `CSTR_BUFS` スクラッチバッファに格納され、最外ネイティブ呼び出しが
+/// 終了して `exit_native_call` / `abort_native_call` がバッファをクリアするまでポインタは有効。
 extern "C" fn tl_to_cstr(h: i64) -> *const u8 {
     let s = match clone_value_at(h) {
         Value::Str(s) => s,
@@ -797,10 +839,8 @@ extern "C" fn tl_to_cstr(h: i64) -> *const u8 {
     })
 }
 
-/// Overwrite the arena slot at `target_h` with a clone of the value at `new_val_h`.
-///
-/// Used by generated cpp-bridge wrappers to write back `T*` output-parameter
-/// values after a C call.
+/// `target_h` のアリーナスロットを `new_val_h` の値のクローンで上書きする C コールバック。
+/// C 呼び出し後に `T*` 出力パラメータ値を書き戻すため、生成された cpp-bridge ラッパーが使用する。
 extern "C" fn tl_write_handle(target_h: i64, new_val_h: i64) {
     if target_h < 3 {
         return;

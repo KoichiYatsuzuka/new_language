@@ -19,13 +19,9 @@ use lexer::Lexer;
 use parser::Parser;
 use type_check::TypeChecker;
 
-/// コマンドライン引数を解析して実行モードを返す。
+/// インタープリタの実行モードを表す列挙型。
 ///
-/// モードの優先順位:
-/// 1. `--compile <path>` / `-compile <path>` → `Mode::Compile`
-/// 2. `-src <path>` → `Mode::Run`
-/// 3. `-` で始まらない最初の引数 → `Mode::Run`
-/// 4. 引数なし → `Mode::Stdin`
+/// `parse_args()` が返す値として使われ、`main()` がモードに応じた処理へ分岐する。
 enum Mode {
     /// 通常実行モード: ソースファイルをパースして実行する。
     Run(String),
@@ -37,6 +33,14 @@ enum Mode {
     Repl,
 }
 
+/// コマンドライン引数を解析して実行モードを返す。
+///
+/// モードの優先順位:
+/// 1. `--compile <path>` / `-compile <path>` → `Mode::Compile`
+/// 2. `-src <path>` → `Mode::Run`
+/// 3. `--repl` → `Mode::Repl`
+/// 4. `-` で始まらない最初の引数 → `Mode::Run`
+/// 5. 引数なし → `Mode::Stdin`
 fn parse_args() -> Mode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -73,6 +77,7 @@ fn parse_args() -> Mode {
         .unwrap_or(Mode::Stdin)
 }
 
+/// ANSI エスケープシーケンスを除去した文字列の表示幅（文字数）を返す。
 fn ansi_display_len(s: &str) -> usize {
     let mut len = 0;
     let mut in_escape = false;
@@ -245,7 +250,6 @@ fn format_static_errors(errors: &[type_check::StaticTypeError]) -> String {
 /// - `ParseError`      : 構文解析に失敗した場合。
 /// - `StaticTypeError` : 静的型検査で1件以上のエラーが検出された場合（全件を改行区切りで返す）。
 /// - 実行時エラー      : インタープリタが `Raise` または内部エラー文字列を返した場合。
-/// ANSI エスケープシーケンスを除去した表示幅を返す。
 fn run_program(source: &str, filename: &str) -> Result<(), String> {
     // --- 字句解析: ソースをトークン列（Vec<Spanned>）に変換する ---
     let tokens = Lexer::new(source, filename).tokenize();
