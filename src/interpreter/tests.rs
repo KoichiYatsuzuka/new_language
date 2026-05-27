@@ -46,6 +46,7 @@ fn run_py_get(src: &str, var: &str) -> Value {
     let stmts = Parser::new(tokens, None).parse_program().unwrap();
     let mut interp = Interpreter::new();
     interp.add_python_search_dir(std::path::PathBuf::from("examples"));
+    interp.add_python_search_dir(std::path::PathBuf::from("examples/test_modules"));
     for stmt in &stmts {
         let _ = interp.exec(stmt).unwrap();
     }

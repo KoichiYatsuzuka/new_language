@@ -76,9 +76,7 @@ impl TypeChecker {
 
         if let Some((ref cls_name, ref method_name)) = method_call_info {
             self.check_self_type_params(cls_name, method_name, &arg_data);
-        }
-
-        if let Some(ref fname) = func_name {
+        } else if let Some(ref fname) = func_name {
             self.check_call_args(fname, &arg_data);
         }
 
