@@ -23,8 +23,8 @@ use type_check::TypeChecker;
 ///
 /// `parse_args()` が返す値として使われ、`main()` がモードに応じた処理へ分岐する。
 enum Mode {
-    /// 通常実行モード: ソースファイルをパースして実行する。
-    Run(String),
+    /// 通常実行モード: ソースファイルをパースして実行する。第2要素はユーザー定義CLIパラメータ。
+    Run(String, std::collections::HashMap<String, String>),
     /// コンパイルモード: `.tlc` (バイナリ) と `.tls` (スタブ) を生成する。
     Compile(String),
     /// 標準入力モード: stdin からソースを読み込んで実行する。
@@ -41,9 +41,15 @@ enum Mode {
 /// 3. `--repl` → `Mode::Repl`
 /// 4. `-` で始まらない最初の引数 → `Mode::Run`
 /// 5. 引数なし → `Mode::Stdin`
+///
+/// `Mode::Run` には `--key value` 形式で渡されたユーザー定義パラメータも含まれる。
+/// 値のないフラグ (`--flag`) は値 `"true"` として記録される。
 fn parse_args() -> Mode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
+    let mut file_path: Option<String> = None;
+    let mut cli_params: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     while i < args.len() {
         match args[i].as_str() {
@@ -57,24 +63,47 @@ fn parse_args() -> Mode {
                     });
             }
             "-src" => {
-                return args
-                    .get(i + 1)
-                    .map(|p| Mode::Run(p.clone()))
-                    .unwrap_or_else(|| {
-                        eprintln!("Error: -src requires a file path");
-                        std::process::exit(1);
-                    });
+                if let Some(p) = args.get(i + 1) {
+                    file_path = Some(p.clone());
+                    i += 2;
+                    continue;
+                } else {
+                    eprintln!("Error: -src requires a file path");
+                    std::process::exit(1);
+                }
             }
             "--repl" => return Mode::Repl,
+            arg if arg.starts_with("--") => {
+                // User-defined parameter: --key [value]
+                let key = arg[2..].to_string();
+                let next = args.get(i + 1);
+                // If the next token exists and does not itself look like a flag, treat it as the value.
+                if let Some(val) = next.filter(|v| !v.starts_with("--")) {
+                    cli_params.insert(key, val.clone());
+                    i += 2;
+                } else {
+                    cli_params.insert(key, "true".to_string());
+                    i += 1;
+                }
+                continue;
+            }
+            arg if !arg.starts_with('-') => {
+                // Positional argument → file path (first one wins)
+                if file_path.is_none() {
+                    file_path = Some(arg.to_string());
+                }
+                i += 1;
+                continue;
+            }
             _ => {}
         }
         i += 1;
     }
 
-    args.into_iter()
-        .find(|a| !a.starts_with('-'))
-        .map(Mode::Run)
-        .unwrap_or(Mode::Stdin)
+    match file_path {
+        Some(path) => Mode::Run(path, cli_params),
+        None => Mode::Stdin,
+    }
 }
 
 /// ANSI エスケープシーケンスを除去した文字列の表示幅（文字数）を返す。
@@ -250,7 +279,11 @@ fn format_static_errors(errors: &[type_check::StaticTypeError]) -> String {
 /// - `ParseError`      : 構文解析に失敗した場合。
 /// - `StaticTypeError` : 静的型検査で1件以上のエラーが検出された場合（全件を改行区切りで返す）。
 /// - 実行時エラー      : インタープリタが `Raise` または内部エラー文字列を返した場合。
-fn run_program(source: &str, filename: &str) -> Result<(), String> {
+fn run_program(
+    source: &str,
+    filename: &str,
+    cli_args: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
     // --- 字句解析: ソースをトークン列（Vec<Spanned>）に変換する ---
     let tokens = Lexer::new(source, filename).tokenize();
 
@@ -278,6 +311,8 @@ fn run_program(source: &str, filename: &str) -> Result<(), String> {
     if let Some(dir) = &source_dir {
         interp.add_python_search_dir(dir.clone());
     }
+    // CLIパラメータを `args` dict としてグローバルスコープに登録する
+    interp.set_cli_args(cli_args);
 
     // --- 各トップレベル文を順番に実行する ---
     for stmt in &stmts {
@@ -306,7 +341,7 @@ fn run_program(source: &str, filename: &str) -> Result<(), String> {
 /// プログラムのエントリーポイント。
 fn main() {
     match parse_args() {
-        Mode::Run(path) => {
+        Mode::Run(path, cli_args) => {
             // .tlc: extract embedded source first, then run normally
             let (source, filename) = if path.ends_with(".tlc") {
                 match partial_compiler::load_tlc(std::path::Path::new(&path)) {
@@ -319,7 +354,7 @@ fn main() {
             } else {
                 (read_file(&path), path)
             };
-            if let Err(e) = run_program(&source, &filename) {
+            if let Err(e) = run_program(&source, &filename, cli_args) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }
@@ -331,7 +366,7 @@ fn main() {
             std::io::stdin()
                 .read_to_string(&mut buf)
                 .expect("failed to read stdin");
-            if let Err(e) = run_program(&buf, "<stdin>") {
+            if let Err(e) = run_program(&buf, "<stdin>", std::collections::HashMap::new()) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

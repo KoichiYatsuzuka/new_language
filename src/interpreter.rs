@@ -1269,6 +1269,19 @@ impl Interpreter {
         self.python_search_dirs.push(dir);
     }
 
+    /// CLIパラメータをグローバルスコープの `args` dict として登録する。
+    /// スクリプト内では `args["key"]` でアクセスできる。
+    pub fn set_cli_args(&mut self, params: HashMap<String, String>) {
+        let mut dict = DictData::new("str".to_string(), "str".to_string());
+        for (k, v) in params {
+            dict.set(Value::Str(k), Value::Str(v));
+        }
+        self.scopes[0].insert(
+            "args".to_string(),
+            Var::new(Value::Dict(Rc::new(RefCell::new(dict))), false),
+        );
+    }
+
     /// `new_type <name>: <prim_type>` 相当のラッパークラスを生成する。
     /// 生成クラスは `mut value: <prim_type>` フィールドと `__init__(mut self, value: <prim_type>)` を持つ。
     fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<ClassValue> {
