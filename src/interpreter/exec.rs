@@ -1164,31 +1164,31 @@ impl Interpreter {
             let mut inst = inst_rc.borrow_mut();
             inst.fields.insert(
                 "file".to_string(),
-                (Value::Str(span.file.to_string()), true),
+                (Value::Str(span.file.to_string()), false),
             );
             inst.fields
-                .insert("line".to_string(), (Value::Int(span.line as i64), true));
+                .insert("line".to_string(), (Value::Int(span.line as i64), false));
             inst.fields
-                .insert("col".to_string(), (Value::Int(span.col as i64), true));
+                .insert("col".to_string(), (Value::Int(span.col as i64), false));
             inst.fields.insert(
                 "code_context".to_string(),
-                (Value::Str(context.clone()), true),
+                (Value::Str(context.clone()), false),
             );
             inst.fields.insert(
                 "Error::file".to_string(),
-                (Value::Str(span.file.to_string()), true),
+                (Value::Str(span.file.to_string()), false),
             );
             inst.fields.insert(
                 "Error::line".to_string(),
-                (Value::Int(span.line as i64), true),
+                (Value::Int(span.line as i64), false),
             );
             inst.fields.insert(
                 "Error::col".to_string(),
-                (Value::Int(span.col as i64), true),
+                (Value::Int(span.col as i64), false),
             );
             inst.fields.insert(
                 "Error::code_context".to_string(),
-                (Value::Str(context), true),
+                (Value::Str(context), false),
             );
         }
 

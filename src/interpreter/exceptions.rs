@@ -16,9 +16,9 @@ impl Interpreter {
     /// 標準例外クラス用の `ClassValue` を構築して返す。
     ///
     /// 生成されるクラスの構造:
-    /// - フィールド: `message`（let・不変）, `code_context`, `file`, `line`, `col`（mut・可変）
+    /// - フィールド: `message`, `code_context`, `file`, `line`, `col`（すべて let・不変）
     /// - `__init__(mut self, message: str)` メソッドで `self.message = message` を実行
-    /// - `code_context` / `file` / `line` / `col` は raise 時にインタープリタが上書きする
+    /// - `code_context` / `file` / `line` / `col` は raise 時にインタープリタが直接書き込む（不変フラグのまま）
     ///
     /// - `class_name`: 生成するクラスの名前（例: `"ValueError"`, `"TypeError"`）
     ///
@@ -61,19 +61,19 @@ impl Interpreter {
 
         // raise 時にインタープリタが自動上書きするフィールドのデフォルト値（空文字・0で初期化）
         let field_defaults = vec![
-            ("code_context".to_string(), Value::Str("".to_string()), true),
-            ("file".to_string(), Value::Str("".to_string()), true),
-            ("line".to_string(), Value::Int(0), true),
-            ("col".to_string(), Value::Int(0), true),
+            ("code_context".to_string(), Value::Str("".to_string()), false),
+            ("file".to_string(), Value::Str("".to_string()), false),
+            ("line".to_string(), Value::Int(0), false),
+            ("col".to_string(), Value::Int(0), false),
         ];
 
         // フィールドの可変フラグ: `message` は `let`（__init__ 後は不変）、他は `mut`（可変）
         let mut field_mutability: HashMap<String, bool> = HashMap::new();
-        field_mutability.insert("message".to_string(), false); // let — __init__ 後は不変
-        field_mutability.insert("code_context".to_string(), true);
-        field_mutability.insert("file".to_string(), true);
-        field_mutability.insert("line".to_string(), true);
-        field_mutability.insert("col".to_string(), true);
+        field_mutability.insert("message".to_string(), false);
+        field_mutability.insert("code_context".to_string(), false);
+        field_mutability.insert("file".to_string(), false);
+        field_mutability.insert("line".to_string(), false);
+        field_mutability.insert("col".to_string(), false);
 
         Rc::new(ClassValue {
             name: class_name.to_string(),
@@ -160,18 +160,18 @@ impl Interpreter {
         fields.insert("message".to_string(), (Value::Str(message), false));
         fields.insert(
             "code_context".to_string(),
-            (Value::Str(String::new()), true),
+            (Value::Str(String::new()), false),
         );
-        fields.insert("file".to_string(), (Value::Str(String::new()), true));
-        fields.insert("line".to_string(), (Value::Int(0), true));
-        fields.insert("col".to_string(), (Value::Int(0), true));
+        fields.insert("file".to_string(), (Value::Str(String::new()), false));
+        fields.insert("line".to_string(), (Value::Int(0), false));
+        fields.insert("col".to_string(), (Value::Int(0), false));
         fields.insert(
             "Error::code_context".to_string(),
-            (Value::Str(String::new()), true),
+            (Value::Str(String::new()), false),
         );
-        fields.insert("Error::file".to_string(), (Value::Str(String::new()), true));
-        fields.insert("Error::line".to_string(), (Value::Int(0), true));
-        fields.insert("Error::col".to_string(), (Value::Int(0), true));
+        fields.insert("Error::file".to_string(), (Value::Str(String::new()), false));
+        fields.insert("Error::line".to_string(), (Value::Int(0), false));
+        fields.insert("Error::col".to_string(), (Value::Int(0), false));
 
         let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
             class: cls,

@@ -1,0 +1,77 @@
+trait Error:
+    let message: str
+    let code_context: str
+    let file: str
+    let line: int
+    let col: int
+
+    fn __init__(mut self, let message: str):
+        ...
+
+
+class Exception(Error):
+    ...
+
+
+class ValueError(Error):
+    ...
+
+
+class TypeError(Error):
+    ...
+
+
+class NameError(Error):
+    ...
+
+
+class AttributeError(Error):
+    ...
+
+
+class IndexError(Error):
+    ...
+
+
+class KeyError(Error):
+    ...
+
+
+class ZeroDivisionError(Error):
+    ...
+
+
+class RuntimeError(Error):
+    ...
+
+
+class StopIteration(Error):
+    ...
+
+
+class NotImplementedError(Error):
+    ...
+
+
+class OverflowError(Error):
+    ...
+
+
+class IOError(Error):
+    ...
+
+
+class OSError(Error):
+    ...
+
+
+class AssertionError(Error):
+    ...
+
+
+class ArithmeticError(Error):
+    ...
+
+
+class AccessError(Error):
+    ...
