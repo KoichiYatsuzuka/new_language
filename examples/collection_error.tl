@@ -22,3 +22,12 @@ s.remove(99)   # KeyError: 99 is not in set
 # --- Error 5: TypeError — raw int used as slice bound (must wrap in Index()) ---
 # mut lst = [1, 2, 3, 4, 5]
 # print(lst[1:3])   # TypeError: slice begin must be Index or None
+
+# --- Error 6: StaticTypeError — typed collection argument mismatch ---
+# fn sum_ints(items: list[int]) -> int:
+#     mut total = 0
+#     for x in items:
+#         total += x
+#     return total
+# let words: list[str] = ["hello", "world"]
+# sum_ints(words)   # StaticTypeError: list[str] is not compatible with list[int]

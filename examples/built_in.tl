@@ -5,6 +5,7 @@
 #   2. enumerate()     — indexed iteration
 #   3. zip()           — parallel iteration
 #   4. File I/O        — path, open/close, FileOpenMode, StartPoint, ByteRecognizingMode
+#   5. String features — f/r/m/$-strings, %, format(), methods, regex, ord()
 
 # ── 1. id() ──────────────────────────────────────────────────────────────────
 # id() returns a pointer instance wrapping a uint value
@@ -208,3 +209,139 @@ let br = open("examples/_tmp_bytes.txt", FileOpenMode.read, StartPoint.top, Byte
 let bytes = br.read()
 close(br)
 print(bytes)   # [72, 101, 108, 108, 111]
+
+# ── 5. String features ────────────────────────────────────────────────────────
+
+# f-string (interpolation)
+let name = "Alice"
+let age = 30
+print(f"Hello, {name}! You are {age} years old.")
+
+let pi_val = 3.14159
+print(f"pi ≈ {pi_val}")
+
+let items = [1, 2, 3]
+print(f"list: {items}")
+
+# r-string (raw — backslashes kept as-is)
+let raw = r"\n is not a newline in raw strings"
+print(raw)
+
+let win_path = r"C:\Users\Alice\Documents"
+print(win_path)
+
+# m"..." math string (LaTeX-style Unicode conversion)
+print(m"Pythagorean theorem: a^2 + b^2 = c^2")
+print(m"Euler's identity: e^{i\pi} + 1 = 0")
+print(m"Subscript example: x_0, x_1, x_2")
+print(m"Greek letters: \alpha, \beta, \gamma, \delta, \pi, \omega")
+print(m"Operators: a \times b, a \div b, a \pm b, a \neq b, a \leq b")
+print(m"Calculus: \int f(x) dx, \sum_{i=0}^{n} x_i, \partial f / \partial x")
+
+# $...$ math string (compact notation)
+print($x^2 + y^2 = z^2$)
+print($E = mc^2$)
+print($F = G \cdot m_1 m_2 / r^2$)
+
+# % format operator
+let pi = 3.14159265
+print("pi = %.4f" % pi)
+print("int: %d, hex: %x, oct: %o" % (255, 255, 255))
+print("name: %s, age: %d" % ("Bob", 25))
+print("scientific: %e" % 0.000123)
+print("padded: '%10s'" % "hi")
+print("left-aligned: '%-10s|'" % "hi")
+print("zero-padded: '%05d'" % 42)
+
+# str.format()
+print("Hello, {}! You are {} years old.".format("Carol", 22))
+print("{0} + {1} = {2}".format(1, 2, 3))
+print("pi = {:.3f}".format(3.14159))
+print("{name} scored {score:05d}".format(name="Dave", score=99))
+print("{:>10}".format("right"))
+print("{:<10}|".format("left"))
+print("{:^10}".format("center"))
+
+# String methods
+let s = "  Hello, World!  "
+print(s.strip())
+print(s.lstrip())
+print(s.rstrip())
+print("hello world".upper())
+print("HELLO WORLD".lower())
+print("hello world".title())
+print("Hello World".swapcase())
+print("hello".capitalize())
+
+let csv = "one,two,three,four"
+let parts = csv.split(",")
+print(parts)
+print(",".join(["a", "b", "c"]))
+print("hello world python".split(" ", 1))
+print("a::b::c".rsplit("::", 1))
+
+print("Hello, World!".find("World"))
+print("Hello, World!".rfind("l"))
+print("banana".count("an"))
+print("Hello".startswith("He"))
+print("Hello".endswith("lo"))
+print("hello world".replace("world", "Python"))
+print("hello world".replace("l", "L", 1))
+
+print("Hello, World!".removeprefix("Hello, "))
+print("Hello, World!".removesuffix(", World!"))
+
+let part = "one:two:three".partition(":")
+print(part)
+
+print("123".isdigit())
+print("abc".isalpha())
+print("abc123".isalnum())
+print("   ".isspace())
+print("HELLO".isupper())
+print("hello".islower())
+
+print("42".zfill(6))
+print("hi".ljust(10, "*"))
+print("hi".rjust(10, "*"))
+print("hi".center(10, "-"))
+
+let multiline = "line1\nline2\nline3"
+print(multiline.splitlines())
+
+print("a\tb\tc".expandtabs(4))
+
+let str_bytes = "Hi".encode()
+print(str_bytes)
+
+# * repetition operator
+print("ha" * 3)
+print(3 * "na" + " Batman!")
+
+# Regex methods
+let text = "Hello, my phone is 090-1234-5678 and email is alice@example.com"
+
+let phone = text.search(r"\d{3}-\d{4}-\d{4}")
+print(phone)
+
+let digits = "abc 123 def 456 ghi 789".findall(r"\d+")
+print(digits)
+
+let cleaned = "foo123bar456".sub(r"\d+", "NUM")
+print(cleaned)
+
+let re_words = "one two  three   four".regex_split(r"\s+")
+print(re_words)
+
+let matched = "hello world".match(r"hello")
+print(matched)
+
+let no_match = "hello world".match(r"world")
+print(no_match)
+
+let ci = "Hello World".findall(r"hello", "i")
+print(ci)
+
+# ord() — character to code point
+print("A".ord())
+print("α".ord())

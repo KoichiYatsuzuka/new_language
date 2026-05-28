@@ -5,6 +5,7 @@
 #   import[tl]         — force .tl source (tree-walk, ignores .tlc)
 #   import[tlc]        — force .tlc compiled (error if no .tlc exists)
 #   import[py-int]     — Python module with integer conversion
+#   import[rs]         — Rust crate (auto-discovered or declared in tl_crates.json)
 #   from … import      — selective import from a .tl module
 #   subdir.module      — subdirectory .tl module
 #
@@ -172,3 +173,40 @@ import subdir.sub_module as sub
 let sub_result: int = sub.compute(10, 32)
 print(sub_result)
 print(sub.LABEL)
+
+# ── 6. import[rs] — Rust crates ──────────────────────────────────────────────
+
+# libm — pure-Rust math functions (auto-discovered from cargo registry)
+import[rs] libm[0.2]
+
+let pi: float = 3.141592653589793
+
+print("=== libm ===")
+print(f"sin(pi/2)   = {libm.sin(pi / 2.0)}")
+print(f"cos(0)      = {libm.cos(0.0)}")
+print(f"sqrt(2)     = {libm.sqrt(2.0)}")
+print(f"pow(2, 10)  = {libm.pow(2.0, 10.0)}")
+print(f"log(e)      = {libm.log(2.718281828459045)}")
+print(f"exp(1)      = {libm.exp(1.0)}")
+print(f"fabs(-3.14) = {libm.fabs(-3.14)}")
+print(f"floor(2.9)  = {libm.floor(2.9)}")
+print(f"ceil(2.1)   = {libm.ceil(2.1)}")
+
+# rand_ops — random number generation (declared in tl_crates.json)
+import[rs] rand_ops
+
+print("=== rand_ops ===")
+mut ri = 0
+while ri < 5:
+    print(f"  float={rand_ops.random_float()}  int={rand_ops.random_int()}  bool={rand_ops.random_bool()}")
+    ri += 1
+
+# sha2_ops — SHA-256/512 hashing (declared in tl_crates.json)
+import[rs] sha2_ops
+
+let msg = "hello, world"
+print("=== sha2_ops ===")
+let h256: str = sha2_ops.sha256(msg)
+print(f"SHA-256({msg}) = {h256}")
+let h512: str = sha2_ops.sha512(msg)
+print(f"SHA-512({msg}) = {h512}")

@@ -1,4 +1,4 @@
-# other_typing.tl — Union, Option, Any, type guards (is / is not), and enum
+# other_typing.tl — Union, Option, Any, type guards (is / is not), enum, and cast (=>)
 
 # ============================================================
 # 1. Any: accepts any value, no static narrowing
@@ -198,3 +198,104 @@ print("=== enum: iteration ===")
 
 for item in [Color.Red, Color.Green, Color.Blue]:
     print(item.value)  # 0, 1, 2
+
+# ============================================================
+# 7. Cast operator (=>)  and  __cast__ special method
+# ============================================================
+print("=== cast: basic ===")
+
+class Celsius:
+    let value: float
+
+    fn __init__(mut self, value: float)->None:
+        self.value = value
+
+    fn __cast__[float](let self)->float:
+        return self.value
+
+    fn __cast__[int](let self)->int:
+        return int(self.value)
+
+    fn __repr__(let self)->str:
+        return "Celsius(" + repr(self.value) + ")"
+
+let temp = Celsius(36.6)
+let cast_f: float = temp=>float
+let cast_i: int   = temp=>int
+print(cast_f)   # 36.6
+print(cast_i)   # 36
+
+print("=== cast: chaining ===")
+
+class JsonLike:
+    let data: dict[str, int]
+
+    fn __init__(mut self, data: dict[str, int])->None:
+        self.data = data
+
+    fn __cast__[dict[str, int]](let self)->dict[str, int]:
+        return self.data
+
+let jl = JsonLike(dict[str, int]({"a": 1, "b": 2}))
+let jl_keys = jl=>dict[str, int].keys()
+print(jl_keys)  # ["a", "b"]
+
+print("=== cast: new_type ===")
+
+new_type Meters: float
+new_type Celsius2: float
+new_type Count: int
+new_type Kg: float
+
+let m = 5.0=>Meters
+let c2_val = 100.0=>Celsius2
+print(repr(m))      # Meters(5.0)
+print(repr(c2_val)) # Celsius2(100.0)
+
+let cnt = 42=>Count
+print(repr(cnt))    # Count(42)
+
+let raw_f = m=>float
+let raw_i = cnt=>int
+print(raw_f)        # 5.0
+print(raw_i)        # 42
+
+let kg = m=>Kg
+print(repr(kg))     # Kg(5.0)
+
+print("=== cast: auto-cast for let parameters ===")
+
+class Wrapper:
+    let val: int
+
+    fn __init__(mut self, val: int)->None:
+        self.val = val
+
+    fn __cast__[int](let self)->int:
+        return self.val
+
+fn double(let x: int)->int:
+    return x * 2
+
+let w = Wrapper(21)
+print(double(w))    # 42
+
+print("=== cast: multiple targets ===")
+
+class CastPoint:
+    let x: int
+    let y: int
+
+    fn __init__(mut self, x: int, y: int)->None:
+        self.x = x
+        self.y = y
+
+    fn __cast__[str](let self)->str:
+        return "(" + repr(self.x) + ", " + repr(self.y) + ")"
+
+    fn __cast__[list](let self)->list:
+        return [self.x, self.y]
+
+let cp = CastPoint(3, 4)
+print(cp=>str)   # (3, 4)
+print(cp=>list)  # [3, 4]

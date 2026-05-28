@@ -351,3 +351,64 @@ sl_c[Index(1):Index(3)] = (20, 30)
 print(sl_c)                      # [1, 20, 30, 4, 5]
 sl_c[Index(0):Index(3)] = "abc"
 print(sl_c)                      # ['a', 'b', 'c', 4, 5]
+
+# ============================================================
+# 8. Typed collection generics — list[T], dict[K,V], set[T]
+# ============================================================
+print("=== typed generics ===")
+
+fn sum_ints(items: list[int]) -> int:
+    mut total = 0
+    for x in items:
+        total += x
+    return total
+
+let typed_nums: list[int] = [1, 2, 3, 4, 5]
+print("sum:", sum_ints(typed_nums))   # 15
+
+fn join_strs(items: list[str]) -> str:
+    mut result = ""
+    for s in items:
+        result = result + s + " "
+    return result
+
+let words: list[str] = ["hello", "world"]
+print("joined:", join_strs(words))   # hello world
+
+fn lookup(d: dict[str,int], key: str) -> int:
+    return d[key]
+
+let scores: dict[str,int] = {"alice": 90, "bob": 85}
+print("alice:", lookup(scores, "alice"))   # 90
+print("bob:", lookup(scores, "bob"))       # 85
+
+fn count_unique(items: set[int]) -> int:
+    return len(items)
+
+let unique: set[int] = {1, 2, 3, 2, 1}
+print("unique count:", count_unique(unique))   # 3
+
+fn first_row(matrix: list[list[int]]) -> list[int]:
+    for row in matrix:
+        return row
+    return []
+
+let matrix: list[list[int]] = [[1, 2], [3, 4]]
+print("first row:", first_row(matrix))   # [1, 2]
+
+class Stats:
+    mut values: list[int]
+
+    fn max_val(self) -> int:
+        mut m = 0
+        for v in self.values:
+            if v > m:
+                m = v
+        return m
+
+    fn count(self) -> int:
+        return len(self.values)
+
+let stats = Stats(values=[3, 1, 4, 1, 5, 9, 2, 6])
+print("count:", stats.count())   # 8
+print("max:", stats.max_val())   # 9

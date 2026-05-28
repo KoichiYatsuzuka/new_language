@@ -1,4 +1,4 @@
-# control_flow.tl — if/elif/else, while, for, break, continue, pass
+# control_flow.tl — if/elif/else, while, for, break, continue, pass, match, block expressions, block scoping
 
 # ============================================================
 # 1. if / elif / else
@@ -249,3 +249,185 @@ match (animal):
         print("it's a dog")   # it's a dog
     is Cat:
         print("it's a cat")
+
+# ============================================================
+# 8. Control flow as expressions (block_return / loop_yield)
+# ============================================================
+print("=== if expression ===")
+
+mut cf_flag = True
+let if_expr_x = if cf_flag == True ->str:
+    block_return "true"
+else:
+    block_return "false"
+print(if_expr_x)   # true
+
+cf_flag = False
+let if_expr_y = if cf_flag == True ->str:
+    block_return "true"
+else:
+    block_return "false"
+print(if_expr_y)   # false
+
+# if without else returns None when no branch matches
+let nothing = if False ->str:
+    block_return "unreachable"
+print(nothing)   # None
+
+print("=== for expression ===")
+
+let evens = for i in range(10) ->list[int]:
+    if i % 2 == 0:
+        loop_yield i
+print(evens)   # [0, 2, 4, 6, 8]
+
+let squares = for i in range(1, 6) ->list[int]:
+    loop_yield i * i
+print(squares)   # [1, 4, 9, 16, 25]
+
+# break exits the loop and returns the accumulated list
+let partial = for i in range(10) ->list[int]:
+    if i == 3:
+        break
+    loop_yield i
+print(partial)   # [0, 1, 2]
+
+print("=== while expression ===")
+
+mut cf_count = 0
+let while_result = while cf_count < 5 ->list[int]:
+    loop_yield cf_count
+    cf_count += 1
+print(while_result)   # [0, 1, 2, 3, 4]
+
+print("=== match expression ===")
+
+let match_score = 85
+let match_grade = match (match_score // 10) ->str:
+    case 10:
+        block_return "A+"
+    case 9:
+        block_return "A"
+    case 8:
+        block_return "B"
+    case 7:
+        block_return "C"
+    case _:
+        block_return "F"
+print(match_grade)   # B
+
+# break in regular for loop
+mut found_val = -1
+for i in range(10):
+    if i == 5:
+        found_val = i
+        break
+    found_val = i
+print(found_val)   # 5
+
+print("=== block: expression ===")
+
+let computed = block ->int:
+    let ba = 6
+    let bb = 7
+    block_return ba * bb
+print(computed)   # 42
+
+# loop_yield with no elements → None
+let empty = for i in range(0) ->list[int]:
+    loop_yield i
+print(empty)   # None
+
+print("=== ->Type annotation ===")
+
+# Option[T]: None is accepted alongside the concrete type
+let opt = block ->Option[int]:
+    block_return None
+print(opt)   # None
+
+let opt2 = block ->Option[int]:
+    block_return 7
+print(opt2)   # 7
+
+let maybe = if False ->Option[str]:
+    block_return "value"
+else:
+    block_return None
+print(maybe)   # None
+
+# no annotation: no type check applied
+let raw_block = block:
+    block_return 99
+print(raw_block)   # 99
+
+# ============================================================
+# 9. Block scoping
+# ============================================================
+print("=== block scope ===")
+
+mut outer = 10
+
+block:
+    mut inner = 99
+    outer = 42
+    print("inside block: outer =", outer)   # 42
+    print("inside block: inner =", inner)   # 99
+
+print("after block: outer =", outer)        # 42
+
+print("=== if scope ===")
+
+mut scope_result = 0
+
+if True:
+    mut local = 5
+    scope_result = local * 2
+    print("inside if: local =", local)  # 5
+
+print("result after if:", scope_result)  # 10
+
+print("=== for scope ===")
+
+mut scope_sum = 0
+
+for si in range(5):
+    mut step = si * 2
+    scope_sum += step
+
+print("sum:", scope_sum)   # 20
+
+print("=== while scope ===")
+
+mut scope_total = 0
+mut scope_idx = 0
+
+while scope_idx < 4:
+    mut contribution = scope_idx * scope_idx
+    scope_total += contribution
+    scope_idx += 1
+
+print("total:", scope_total)   # 14
+
+print("=== nested blocks ===")
+
+mut val = 1
+
+block:
+    mut val2 = 100
+    block:
+        mut val3 = val2 + val
+        print("inner-inner val3:", val3)   # 101
+    print("inner val2:", val2)             # 100
+
+print("outer val:", val)    # 1
+
+print("=== block as computation scope ===")
+
+mut answer = 0
+
+block:
+    let ba2 = 7
+    let bb2 = 6
+    answer = ba2 * bb2
+
+print("answer:", answer)   # 42
