@@ -2085,10 +2085,11 @@ export function provideDefinition(
 // ===== Semantic tokens =====
 
 // Standard VS Code semantic token types — themes guarantee colors for these.
-// Index 0 = 'class'  (import aliases, user-defined classes/traits/new_types)
-// Index 1 = 'type'   (built-in primitive and composite type names)
+// Index 0 = 'class'    (import aliases, user-defined classes/traits/new_types)
+// Index 1 = 'type'     (built-in type name in a type-annotation position)
+// Index 2 = 'variable' (built-in type name used as an identifier, e.g. parameter name)
 export const SEMANTIC_TOKENS_LEGEND = new vscode.SemanticTokensLegend(
-    ['class', 'type'],
+    ['class', 'type', 'variable'],
     []
 );
 
@@ -2199,13 +2200,25 @@ export function provideDocumentSemanticTokens(document: vscode.TextDocument): vs
         interface Hit { col: number; len: number; tokenType: number; }
         const hits: Hit[] = [];
 
-        // Built-in types → 'type' (index 1), ONLY at annotation positions
+        // Built-in types:
+        //  • annotation position  → 'type'     (index 1)
+        //  • followed by `(` or `[` → no token (TextMate grammar gives type color for constructor/cast)
+        //  • everything else       → 'variable' (index 2) to OVERRIDE the grammar's builtin-type rule
         for (const name of BUILTIN_TYPE_NAMES) {
             const re = new RegExp(`\\b${name}\\b`, 'g');
             let m: RegExpExecArray | null;
             while ((m = re.exec(lineText)) !== null) {
                 if (typePositions.has(m.index)) {
                     hits.push({ col: m.index, len: name.length, tokenType: 1 });
+                } else {
+                    // Skip past whitespace to find what follows the name
+                    let j = m.index + name.length;
+                    while (j < lineText.length && (lineText[j] === ' ' || lineText[j] === '\t')) j++;
+                    const next = lineText[j];
+                    if (next !== '(' && next !== '[') {
+                        // Not a constructor/cast call — override grammar so it reads as a variable
+                        hits.push({ col: m.index, len: name.length, tokenType: 2 });
+                    }
                 }
             }
         }

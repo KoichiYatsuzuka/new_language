@@ -2029,9 +2029,10 @@ function provideDefinition(document, position) {
 exports.provideDefinition = provideDefinition;
 // ===== Semantic tokens =====
 // Standard VS Code semantic token types — themes guarantee colors for these.
-// Index 0 = 'class'  (import aliases, user-defined classes/traits/new_types)
-// Index 1 = 'type'   (built-in primitive and composite type names)
-exports.SEMANTIC_TOKENS_LEGEND = new vscode.SemanticTokensLegend(['class', 'type'], []);
+// Index 0 = 'class'    (import aliases, user-defined classes/traits/new_types)
+// Index 1 = 'type'     (built-in type name in a type-annotation position)
+// Index 2 = 'variable' (built-in type name used as an identifier, e.g. parameter name)
+exports.SEMANTIC_TOKENS_LEGEND = new vscode.SemanticTokensLegend(['class', 'type', 'variable'], []);
 const BUILTIN_TYPE_NAMES = new Set([
     'int', 'uint', 'float', 'str', 'bool',
     'list', 'dict', 'set', 'tuple', 'bytes',
@@ -2133,13 +2134,27 @@ function provideDocumentSemanticTokens(document) {
         // Compute type-annotation positions for this line once (used to gate built-in types)
         const typePositions = typeAnnotationPositions(lineText);
         const hits = [];
-        // Built-in types → 'type' (index 1), ONLY at annotation positions
+        // Built-in types:
+        //  • annotation position  → 'type'     (index 1)
+        //  • followed by `(` or `[` → no token (TextMate grammar gives type color for constructor/cast)
+        //  • everything else       → 'variable' (index 2) to OVERRIDE the grammar's builtin-type rule
         for (const name of BUILTIN_TYPE_NAMES) {
             const re = new RegExp(`\\b${name}\\b`, 'g');
             let m;
             while ((m = re.exec(lineText)) !== null) {
                 if (typePositions.has(m.index)) {
                     hits.push({ col: m.index, len: name.length, tokenType: 1 });
+                }
+                else {
+                    // Skip past whitespace to find what follows the name
+                    let j = m.index + name.length;
+                    while (j < lineText.length && (lineText[j] === ' ' || lineText[j] === '\t'))
+                        j++;
+                    const next = lineText[j];
+                    if (next !== '(' && next !== '[') {
+                        // Not a constructor/cast call — override grammar so it reads as a variable
+                        hits.push({ col: m.index, len: name.length, tokenType: 2 });
+                    }
                 }
             }
         }
