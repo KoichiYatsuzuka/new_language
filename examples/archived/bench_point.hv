@@ -1,4 +1,4 @@
-# bench_point.tl — benchmark: class instance operations (interpreted vs compiled)
+﻿# bench_point.tl — benchmark: class instance operations (interpreted vs compiled)
 #
 # Measures the speed of functions that operate on a list of Point instances.
 # The `point_ops` module is loaded as source (.tl) or compiled (.tlc)
@@ -7,13 +7,13 @@
 # Workflow
 # --------
 #   Step 1  (tree-walk / source module):
-#     cargo run --release -- examples/bench_point.tl
+#     cargo run --release -- examples/bench_point.hv
 #
 #   Step 2  (compile the module):
-#     cargo run --release -- --compile examples/point_ops.tl
+#     cargo run --release -- --compile examples/point_ops.hv
 #
 #   Step 3  (compiled module — same bench file, parser now prefers .tlc):
-#     cargo run --release -- examples/bench_point.tl
+#     cargo run --release -- examples/bench_point.hv
 #
 # What is compiled in Step 2:
 #   sum_sq, count_inside, centroid_x, centroid_y, max_dist_sq  (all eligible)

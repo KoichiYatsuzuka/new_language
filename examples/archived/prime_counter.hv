@@ -1,4 +1,4 @@
-# prime_counter.tl — heavy CPU module for benchmarking
+﻿# prime_counter.tl — heavy CPU module for benchmarking
 #
 # Provides:
 #   is_prime(n)             -> bool   trial-division primality test
@@ -6,7 +6,7 @@
 #   prime_sum_up_to(n)      -> int    sum   of primes in [2, n]
 #
 # Compile:
-#   cargo run --release -- --compile examples/prime_counter.tl
+#   cargo run --release -- --compile examples/prime_counter.hv
 
 fn is_prime(n: int) -> bool:
     if n < 2:

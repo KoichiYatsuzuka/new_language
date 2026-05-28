@@ -1,4 +1,4 @@
-// codegen.rs — Generate the standalone Rust wrapper source that bridges
+﻿// codegen.rs — Generate the standalone Rust wrapper source that bridges
 // tl handles to a C/C++ DLL or static library.
 //
 // Public API:
@@ -15,7 +15,7 @@ pub(crate) const WRAPPER_HEADER: &str = r#"// Auto-generated cpp bridge — do n
 #![allow(dead_code, unused_variables, non_snake_case, unused_unsafe, static_mut_refs)]
 
 #[repr(C)]
-struct TlCallbacks {
+struct HvCallbacks {
     make_int:      unsafe extern "C" fn(i64) -> i64,
     make_float:    unsafe extern "C" fn(f64) -> i64,
     make_bool:     unsafe extern "C" fn(i32) -> i64,
@@ -45,10 +45,10 @@ struct TlCallbacks {
     write_handle:  unsafe extern "C" fn(i64, i64),
 }
 
-static mut CB: *const TlCallbacks = std::ptr::null();
+static mut CB: *const HvCallbacks = std::ptr::null();
 
 #[no_mangle]
-pub unsafe extern "C" fn tl_init(cb: *const TlCallbacks) { CB = cb; }
+pub unsafe extern "C" fn hv_init(cb: *const HvCallbacks) { CB = cb; }
 "#;
 
 // Platform loader inserted into dll-wrapper source.
@@ -145,7 +145,7 @@ fn field_to_handle(ct: &CType, val: &str) -> String {
 // ── Dynamic DLL wrapper generator ────────────────────────────────────────────
 
 /// **動的** DLL 用のスタンドアロン Rust ラッパーを生成する。
-/// ラッパーは `tl_init` 時に `LoadLibraryA`/`dlopen` で DLL をロードし、各呼び出しで
+/// ラッパーは `hv_init` 時に `LoadLibraryA`/`dlopen` で DLL をロードし、各呼び出しで
 /// `GetProcAddress`/`dlsym` を使ってシンボルを解決する。
 /// すべての関数は `{name}_tl(argc, argv) -> i64` 規約に従う。
 pub fn gen_dll_wrapper(
@@ -171,14 +171,14 @@ pub fn gen_dll_wrapper(
 
     src.push_str(PLATFORM_LOADER);
 
-    // Override tl_init to also load the original DLL
+    // Override hv_init to also load the original DLL
     let escaped = dll_path.replace('\\', "\\\\");
     src.push_str(&format!(
         r#"
 const _DLL_PATH: &str = "{escaped}";
 
 #[no_mangle]
-pub unsafe extern "C" fn tl_init_cpp(cb: *const TlCallbacks) {{
+pub unsafe extern "C" fn hv_init_cpp(cb: *const HvCallbacks) {{
     CB = cb;
     _DLL_HANDLE = _loader::load(_DLL_PATH);
     if _DLL_HANDLE == 0 {{ panic!("cpp bridge: cannot load DLL: {{}}", _DLL_PATH); }}
@@ -186,14 +186,14 @@ pub unsafe extern "C" fn tl_init_cpp(cb: *const TlCallbacks) {{
 "#
     ));
 
-    // Re-export tl_init so the standard tl_init call also works
+    // Re-export hv_init so the standard hv_init call also works
     src.push_str(
         r#"
 // Called by the interpreter at module load — initialise callbacks then load DLL.
 #[no_mangle]
-pub unsafe extern "C" fn tl_init_bridge(cb: *const TlCallbacks) {
-    tl_init(cb);
-    tl_init_cpp(cb);
+pub unsafe extern "C" fn hv_init_bridge(cb: *const HvCallbacks) {
+    hv_init(cb);
+    hv_init_cpp(cb);
 }
 "#,
     );

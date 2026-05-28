@@ -1,56 +1,56 @@
 {
-  "name": "test-lang",
-  "displayName": "test_lang",
-  "description": "Type inference inlay hints for test_lang (.tl files)",
+  "name": "havakyrie",
+  "displayName": "Havakyrie",
+  "description": "Type inference inlay hints for Havakyrie (.hv files)",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.80.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/placeholder/test_lang"
+    "url": "https://github.com/placeholder/havakyrie"
   },
   "categories": [
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:test_lang"
+    "onLanguage:havakyrie"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "test_lang.sendToRepl",
+        "command": "havakyrie.sendToRepl",
         "title": "Send to REPL",
-        "category": "test_lang"
+        "category": "Havakyrie"
       }
     ],
     "keybindings": [
       {
-        "command": "test_lang.sendToRepl",
+        "command": "havakyrie.sendToRepl",
         "key": "ctrl+enter",
-        "when": "editorTextFocus && editorLangId == test_lang"
+        "when": "editorTextFocus && editorLangId == havakyrie"
       }
     ],
     "languages": [
       {
-        "id": "test_lang",
+        "id": "havakyrie",
         "aliases": [
-          "test_lang",
-          "tl"
+          "Havakyrie",
+          "hv"
         ],
         "extensions": [
-          ".tl",
-          ".tls"
+          ".hv",
+          ".hvs"
         ],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
-        "language": "test_lang",
-        "scopeName": "source.tl",
-        "path": "./syntaxes/tl.tmLanguage.json"
+        "language": "havakyrie",
+        "scopeName": "source.hv",
+        "path": "./syntaxes/havakyrie.tmLanguage.json"
       }
     ]
   },

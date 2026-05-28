@@ -1,4 +1,4 @@
-# point_ops.tl — Point class with heavy computation functions.
+﻿# point_ops.tl — Point class with heavy computation functions.
 #
 # Demonstrates native compilation of functions that operate on class instances.
 # The class itself is always tree-walked; the top-level functions below are
@@ -6,7 +6,7 @@
 # callbacks (cb_get_attr / cb_set_attr / cb_iter_from / cb_iter_next).
 #
 # Compile:
-#   cargo run --release -- --compile examples/point_ops.tl
+#   cargo run --release -- --compile examples/point_ops.hv
 #
 # Functions compiled natively:
 #   sum_sq, count_inside, centroid_x, centroid_y, max_dist_sq

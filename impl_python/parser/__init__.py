@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+﻿# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
 """Parser package (mirrors src/parser/mod.rs).
 
 Sub-modules:
@@ -26,7 +26,7 @@ class ParseError(Exception):
 
 
 class Parser(_ParserStmts, _ParserExprs, _ParserClasses, _ParserImports, _ParserTypes):
-    """Recursive descent parser for test_lang source code."""
+    """Recursive descent parser for Havakyrie source code."""
 
     def __init__(self, tokens: list[Spanned], source_dir: Optional[Path] = None) -> None:
         self._tokens = tokens

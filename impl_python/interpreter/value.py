@@ -1,5 +1,5 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
-"""Runtime value types for the test_lang interpreter."""
+﻿# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+"""Runtime value types for the Havakyrie interpreter."""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING

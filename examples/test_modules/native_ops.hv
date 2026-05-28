@@ -1,4 +1,4 @@
-# native_ops.tl — a module designed for partial native compilation.
+﻿# native_ops.tl — a module designed for partial native compilation.
 #
 # Every function here carries explicit int/float type annotations.
 # The compiler uses those annotations to generate direct Rust arithmetic
@@ -6,7 +6,7 @@
 # 100–200× speedup on tight loops compared to the tree-walk interpreter.
 #
 # Compile:
-#   cargo run --release -- --compile examples/native_ops.tl
+#   cargo run --release -- --compile examples/native_ops.hv
 #
 # Eligible functions are those with:
 #   - explicit int / float parameters and return type

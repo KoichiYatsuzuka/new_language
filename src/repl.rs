@@ -1,4 +1,4 @@
-// repl.rs — persistent REPL mode (`--repl` flag)
+﻿// repl.rs — persistent REPL mode (`--repl` flag)
 //
 // Reads code blocks from stdin. Blocks are terminated by a sentinel line
 // ("##REPL_EXEC##") that the VS Code extension appends after the selection.
@@ -24,7 +24,7 @@ const EXEC_SENTINEL: &str = "##REPL_EXEC##";
 /// あるブロックで宣言した変数や関数は次のブロックから参照できる。
 pub fn run_repl() {
     eprintln!(
-        "\x1b[32mtest_lang REPL\x1b[0m  — Ctrl+Enter in VS Code to run selection · Ctrl+D to exit"
+        "\x1b[32mHavakyrie REPL\x1b[0m  — Ctrl+Enter in VS Code to run selection · Ctrl+D to exit"
     );
 
     let mut interp = Interpreter::new();

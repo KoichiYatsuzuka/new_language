@@ -1,4 +1,4 @@
-// eval.rs — 式の評価・attr_assign (eval / attr_assign)
+﻿// eval.rs — 式の評価・attr_assign (eval / attr_assign)
 //
 // `Interpreter::eval` が式（`Expr`）を再帰的にツリーウォークして `Value` を返す。
 // 属性への代入（`self.x = v` や `d[k] = v`）は `attr_assign` が担当する。
@@ -1428,7 +1428,7 @@ impl Interpreter {
     // --- ネイティブコールバック用ヘルパー ---
 
     /// Resolve an attribute on any `Value`.
-    /// Used by both `eval_attr` (from AST) and native callbacks (`tl_get_attr`).
+    /// Used by both `eval_attr` (from AST) and native callbacks (`hv_get_attr`).
     pub(super) fn get_attr_val(&mut self, obj: Value, attr: &str) -> Result<Value, String> {
         match &obj {
             Value::Instance(inst_rc) => {
@@ -1575,7 +1575,7 @@ impl Interpreter {
     }
 
     /// 任意の呼び出し可能な `Value` を評価済み引数リストで呼び出す。
-    /// ネイティブコールバック `tl_call_fn` から呼ばれる。
+    /// ネイティブコールバック `hv_call_fn` から呼ばれる。
     pub(super) fn call_value_with_args(
         &mut self,
         callee: Value,
@@ -1652,7 +1652,7 @@ impl Interpreter {
     }
 
     /// インスタンスの属性に値をセットする。
-    /// ネイティブコールバック `tl_set_attr` から呼ばれる。
+    /// ネイティブコールバック `hv_set_attr` から呼ばれる。
     pub(super) fn set_attr_val(
         &mut self,
         obj: Value,

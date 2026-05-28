@@ -1,4 +1,4 @@
-# test_lang
+﻿# Havakyrie
 名前はまだない。
 This have not been named.
 
@@ -65,7 +65,7 @@ cargo run -- examples/hello.tl
 cargo test
 ```
 
-`-src <file.tl>` と位置引数のどちらでも実行できます。引数がない場合は標準入力からソースを読みます。/ You can run using either `-src <file.tl>` or positional arguments. If no arguments are provided, the source is read from standard input.
+`-src <file.hv>` と位置引数のどちらでも実行できます。引数がない場合は標準入力からソースを読みます。/ You can run using either `-src <file.hv>` or positional arguments. If no arguments are provided, the source is read from standard input.
 
 ---
 
@@ -111,7 +111,7 @@ print(describe[Point](p))
 ## プロジェクト構成（Project Structure）
 
 ```text
-test_lang/
+Havakyrie/
 ├── src/
 │   ├── main.rs          # CLI と実行フロー (CLI and execution flow)
 │   ├── token.rs         # Token / Span / Spanned
@@ -123,7 +123,7 @@ test_lang/
 ├── spec/                # 言語仕様メモ (Language specification notes)
 ├── examples/            # 正常系・エラー系サンプル (Success and error case samples)
 ├── stdlib/              # 標準 trait の実験置き場 (Standard trait experiment area)
-└── vscode-extension/    # .tl 用 VS Code 拡張 (VS Code extension for .tl)
+└── vscode-extension/    # .tl 用 VS Code 拡張 (VS Code extension for .hv)
 ```
 
 ---
@@ -131,7 +131,7 @@ test_lang/
 ## 実行フロー（Execution Flow）
 
 ```text
-source.tl
+source.hv
   -> Lexer        Vec<Spanned> を生成 (Generate Vec<Spanned>)
   -> Parser       Vec<Stmt> の AST を生成 (Generate AST (Vec<Stmt>))
   -> TypeChecker  StaticTypeError をまとめて報告 (Collect and report StaticTypeErrors)
@@ -185,17 +185,17 @@ source.tl
 
 代表的な動作確認ファイルです。/ Representative test files for verifying functionality.
 
-- `examples/showcase.tl`: 主要機能のまとめ / Summary of main features
-- `examples/type_errors.tl`: 静的型エラー例 / Static type error examples
-- `examples/fn_kwargs_success.tl` / `examples/fn_kwargs_errors.tl`: キーワード引数 / Keyword arguments
-- `examples/overload_success.tl` / `examples/overload_errors.tl`: オーバーロード / Overloading
-- `examples/trait_sample.tl` / `examples/trait_template.tl`: trait / Traits
-- `examples/template_sample.tl` / `examples/template_constraint_error.tl`: template / Templates
-- `examples/self_type.tl` / `examples/self_type__errors.tl`: `Self`
-- `examples/new_type.tl` / `examples/new_type__errors.tl`: `new_type`
-- `examples/freeze.tl`: `freeze`
-- `examples/generator.tl`: generator / Generators
-- `examples/union_option.tl` / `examples/union_option__errors.tl`: `Union` / `Option`
+- `examples/showcase.hv`: 主要機能のまとめ / Summary of main features
+- `examples/type_errors.hv`: 静的型エラー例 / Static type error examples
+- `examples/fn_kwargs_success.hv` / `examples/fn_kwargs_errors.hv`: キーワード引数 / Keyword arguments
+- `examples/overload_success.hv` / `examples/overload_errors.hv`: オーバーロード / Overloading
+- `examples/trait_sample.hv` / `examples/trait_template.hv`: trait / Traits
+- `examples/template_sample.hv` / `examples/template_constraint_error.hv`: template / Templates
+- `examples/self_type.hv` / `examples/self_type__errors.hv`: `Self`
+- `examples/new_type.hv` / `examples/new_type__errors.hv`: `new_type`
+- `examples/freeze.hv`: `freeze`
+- `examples/generator.hv`: generator / Generators
+- `examples/union_option.hv` / `examples/union_option__errors.hv`: `Union` / `Option`
 
 エラー確認用のサンプルは、ファイル名に `__errors` または `_errors` を含めています。/ Sample files for error verification are named with `__errors` or `_errors` suffix.
 

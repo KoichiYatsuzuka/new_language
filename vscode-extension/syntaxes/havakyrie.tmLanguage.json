@@ -1,7 +1,7 @@
-{
-  "name": "test_lang",
-  "scopeName": "source.tl",
-  "fileTypes": ["tl", "tls"],
+﻿{
+  "name": "Havakyrie",
+  "scopeName": "source.hv",
+  "fileTypes": ["hv", "hvs"],
   "patterns": [
     { "include": "#comment" },
     { "include": "#string" },
@@ -22,42 +22,42 @@
   "repository": {
     "import-decl": {
       "comment": "Handles all import variants: import[py], import[py-int], import[tl], import[tlc], import[cpp-lib], import[cpp-dll], and bare import",
-      "match": "\\b(import(?:\\[(?:py(?:-int)?|tlc?|cpp-(?:lib|dll))\\])?)\\s+([\\w.]+)(?:\\s+(with)\\s+(\\w+))?(?:\\s+(as)\\s+([A-Za-z_]\\w*))?",
+      "match": "\\b(import(?:\\[(?:py(?:-int)?|hvc?|cpp-(?:lib|dll))\\])?)\\s+([\\w.]+)(?:\\s+(with)\\s+(\\w+))?(?:\\s+(as)\\s+([A-Za-z_]\\w*))?",
       "captures": {
-        "1": { "name": "keyword.control.import.tl" },
-        "2": { "name": "entity.name.namespace.tl" },
-        "3": { "name": "keyword.control.import.tl" },
-        "4": { "name": "entity.name.namespace.tl" },
-        "5": { "name": "keyword.control.import.tl" },
-        "6": { "name": "entity.name.type.class.tl" }
+        "1": { "name": "keyword.control.import.hv" },
+        "2": { "name": "entity.name.namespace.hv" },
+        "3": { "name": "keyword.control.import.hv" },
+        "4": { "name": "entity.name.namespace.hv" },
+        "5": { "name": "keyword.control.import.hv" },
+        "6": { "name": "entity.name.type.class.hv" }
       }
     },
     "comment": {
       "match": "#.*$",
-      "name": "comment.line.number-sign.tl"
+      "name": "comment.line.number-sign.hv"
     },
     "string": {
       "patterns": [
         {
-          "name": "string.quoted.triple.double.tl",
+          "name": "string.quoted.triple.double.hv",
           "begin": "\"\"\"",
           "end": "\"\"\"",
           "patterns": [{ "include": "#string-escape" }]
         },
         {
-          "name": "string.quoted.triple.single.tl",
+          "name": "string.quoted.triple.single.hv",
           "begin": "'''",
           "end": "'''",
           "patterns": [{ "include": "#string-escape" }]
         },
         {
-          "name": "string.quoted.double.tl",
+          "name": "string.quoted.double.hv",
           "begin": "\"(?!\"\")",
           "end": "\"",
           "patterns": [{ "include": "#string-escape" }]
         },
         {
-          "name": "string.quoted.single.tl",
+          "name": "string.quoted.single.hv",
           "begin": "'(?!'')",
           "end": "'",
           "patterns": [{ "include": "#string-escape" }]
@@ -65,40 +65,40 @@
       ]
     },
     "string-escape": {
-      "name": "constant.character.escape.tl",
+      "name": "constant.character.escape.hv",
       "match": "\\\\(\\\\|[nrtbfv'\"0]|x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\\{[^}]+\\}|[0-7]{1,3})"
     },
     "number": {
       "patterns": [
-        { "match": "\\b0[xX][0-9a-fA-F_]+\\b", "name": "constant.numeric.hex.tl" },
-        { "match": "\\b0[oO][0-7_]+\\b", "name": "constant.numeric.octal.tl" },
-        { "match": "\\b0[bB][01_]+\\b", "name": "constant.numeric.binary.tl" },
+        { "match": "\\b0[xX][0-9a-fA-F_]+\\b", "name": "constant.numeric.hex.hv" },
+        { "match": "\\b0[oO][0-7_]+\\b", "name": "constant.numeric.octal.hv" },
+        { "match": "\\b0[bB][01_]+\\b", "name": "constant.numeric.binary.hv" },
         {
           "match": "\\b[0-9][0-9_]*\\.([0-9_]+([eE][+-]?[0-9_]+)?|[eE][+-]?[0-9_]+)\\b",
-          "name": "constant.numeric.float.tl"
+          "name": "constant.numeric.float.hv"
         },
-        { "match": "\\b[0-9][0-9_]*\\b", "name": "constant.numeric.integer.tl" }
+        { "match": "\\b[0-9][0-9_]*\\b", "name": "constant.numeric.integer.hv" }
       ]
     },
     "function-def": {
       "match": "\\b(fn|gen)\\s+([A-Za-z_]\\w*)",
       "captures": {
-        "1": { "name": "storage.type.function.tl" },
-        "2": { "name": "entity.name.function.tl" }
+        "1": { "name": "storage.type.function.hv" },
+        "2": { "name": "entity.name.function.hv" }
       }
     },
     "class-def": {
       "match": "\\b(class|trait|template|dataclass|enum)\\s+([A-Za-z_]\\w*)",
       "captures": {
-        "1": { "name": "storage.type.class.tl" },
-        "2": { "name": "entity.name.type.class.tl" }
+        "1": { "name": "storage.type.class.hv" },
+        "2": { "name": "entity.name.type.class.hv" }
       }
     },
     "new-type-def": {
       "match": "\\b(new_type)\\s+([A-Za-z_]\\w*)",
       "captures": {
-        "1": { "name": "storage.type.newtype.tl" },
-        "2": { "name": "entity.name.type.tl" }
+        "1": { "name": "storage.type.newtype.hv" },
+        "2": { "name": "entity.name.type.hv" }
       }
     },
     "keyword": {
@@ -106,129 +106,129 @@
         {
           "match": "\\b(const)\\s+([A-Za-z_]\\w*)",
           "captures": {
-            "1": { "name": "storage.modifier.tl" },
-            "2": { "name": "variable.other.constant.tl" }
+            "1": { "name": "storage.modifier.hv" },
+            "2": { "name": "variable.other.constant.hv" }
           }
         },
         {
           "match": "\\b(let|mut|freeze)\\b",
-          "name": "storage.modifier.tl"
+          "name": "storage.modifier.hv"
         },
         {
           "match": "\\b(yield from|yield|return|block_return|loop_yield|pass|break|continue)\\b",
-          "name": "keyword.control.flow.tl"
+          "name": "keyword.control.flow.hv"
         },
         {
           "match": "\\b(if|elif|else|match|for|while|block)\\b",
-          "name": "keyword.control.tl"
+          "name": "keyword.control.hv"
         },
         {
           "match": "\\b(try|except|finally|raise)\\b",
-          "name": "keyword.control.exception.tl"
+          "name": "keyword.control.exception.hv"
         },
         {
           "match": "\\b(import|from|as)\\b",
-          "name": "keyword.control.import.tl"
+          "name": "keyword.control.import.hv"
         },
         {
           "match": "\\b(async|await)\\b",
-          "name": "keyword.control.async.tl"
+          "name": "keyword.control.async.hv"
         },
         {
           "match": "\\b(public|private|protected)\\b",
-          "name": "keyword.other.access.tl"
+          "name": "keyword.other.access.hv"
         },
         {
           "match": "\\b(del|global|nonlocal|with|assert|lambda|new_type|static)\\b",
-          "name": "keyword.other.tl"
+          "name": "keyword.other.hv"
         },
         {
           "match": "\\bnot in\\b",
-          "name": "keyword.control.tl"
+          "name": "keyword.control.hv"
         },
         {
           "match": "\\bis not\\b",
-          "name": "keyword.control.tl"
+          "name": "keyword.control.hv"
         },
         {
           "match": "\\bin\\b",
-          "name": "keyword.control.tl"
+          "name": "keyword.control.hv"
         },
         {
           "match": "\\bis\\b",
-          "name": "keyword.control.tl"
+          "name": "keyword.control.hv"
         },
         {
           "match": "\\bnot\\b",
-          "name": "keyword.control.tl"
+          "name": "keyword.control.hv"
         },
         {
           "match": "\\b(and|or)\\b",
-          "name": "keyword.operator.logical.tl"
+          "name": "keyword.operator.logical.hv"
         }
       ]
     },
     "constant": {
       "match": "\\b(True|False|None)\\b",
-      "name": "constant.language.tl"
+      "name": "constant.language.hv"
     },
     "builtin-type": {
       "match": "\\b(int|uint|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type|any|Self|Any|Union|Option|Optional|pointer|path|slice)\\b",
-      "name": "support.type.builtin.tl"
+      "name": "support.type.builtin.hv"
     },
     "builtin-func": {
       "patterns": [
         {
           "match": "\\b(enumerate|zip)\\b",
-          "name": "entity.name.type.class.tl"
+          "name": "entity.name.type.class.hv"
         },
         {
           "match": "\\b(print|len|range|map|filter|abs|round|pow|divmod|max|min|sum|all|any|sorted|reversed|isinstance|issubclass|callable|getattr|setattr|hasattr|delattr|repr|input|open|chr|ord|hex|oct|bin|id|hash|dir|vars|globals|locals|iter|next|eval|exec|help|format|super|staticmethod|classmethod|property|slice)\\b",
-          "name": "support.function.builtin.tl"
+          "name": "support.function.builtin.hv"
         }
       ]
     },
     "constructor-call": {
       "match": "\\b([A-Z][A-Za-z_0-9]*)\\s*(?=\\()",
       "captures": {
-        "1": { "name": "entity.name.type.class.tl" }
+        "1": { "name": "entity.name.type.class.hv" }
       }
     },
     "function-call": {
       "match": "\\b([A-Za-z_]\\w*)\\s*(?=\\()",
       "captures": {
-        "1": { "name": "entity.name.function.tl" }
+        "1": { "name": "entity.name.function.hv" }
       }
     },
     "variable": {
       "match": "\\b([A-Za-z_]\\w*)\\b",
-      "name": "variable.other.readwrite.tl"
+      "name": "variable.other.readwrite.hv"
     },
     "operator": {
       "patterns": [
         {
           "match": "\\*\\*=|//=|<<=|>>=|[+\\-*/%@&|^]=|:=",
-          "name": "keyword.operator.assignment.augmented.tl"
+          "name": "keyword.operator.assignment.augmented.hv"
         },
         {
           "match": "->",
-          "name": "keyword.operator.arrow.tl"
+          "name": "keyword.operator.arrow.hv"
         },
         {
           "match": "=(?!=)",
-          "name": "keyword.operator.assignment.tl"
+          "name": "keyword.operator.assignment.hv"
         },
         {
           "match": "==|!=|<=|>=|<|>",
-          "name": "keyword.operator.comparison.tl"
+          "name": "keyword.operator.comparison.hv"
         },
         {
           "match": "\\*\\*|//|<<|>>",
-          "name": "keyword.operator.arithmetic.tl"
+          "name": "keyword.operator.arithmetic.hv"
         },
         {
           "match": "[+\\-*/%@&|^~]",
-          "name": "keyword.operator.arithmetic.tl"
+          "name": "keyword.operator.arithmetic.hv"
         }
       ]
     }

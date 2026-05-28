@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+﻿# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
 """REPL support (mirrors src/repl.rs).
 
 Reads blocks from stdin, executes on the ##REPL_EXEC## sentinel,
@@ -11,7 +11,7 @@ REPL_EXEC_SENTINEL = "##REPL_EXEC##"
 
 
 def run_repl() -> None:
-    """Run an interactive REPL that reads test_lang source from stdin."""
+    """Run an interactive REPL that reads Havakyrie source from stdin."""
     from .parser import parse, ParseError
     from .type_check import TypeChecker, StaticTypeError
     from .interpreter import Interpreter
@@ -20,7 +20,7 @@ def run_repl() -> None:
     interp = Interpreter()
     accumulated_lines: list[str] = []
 
-    print("test_lang REPL (Python impl) — enter code, finish block with ##REPL_EXEC##")
+    print("Havakyrie REPL (Python impl) — enter code, finish block with ##REPL_EXEC##")
 
     for raw_line in sys.stdin:
         line = raw_line.rstrip("\n")

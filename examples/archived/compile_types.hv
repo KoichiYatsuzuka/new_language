@@ -1,4 +1,4 @@
-# compile_types.tl — demonstrates native compilation with ALL value types.
+﻿# compile_types.tl — demonstrates native compilation with ALL value types.
 #
 # Every top-level function here is eligible for native compilation via the
 # handle-based ABI (interpreter/native_api.rs).  Class instances, floats,
@@ -6,7 +6,7 @@
 # the interpreter owns and operates on the actual values.
 #
 # Compile:
-#   cargo run --release -- --compile examples/compile_types.tl
+#   cargo run --release -- --compile examples/compile_types.hv
 
 # ── Classes used by compiled functions ───────────────────────────────────────
 

@@ -1,8 +1,8 @@
-// py_interop.rs — PyO3 を介した Python ランタイム呼び出し
+﻿// py_interop.rs — PyO3 を介した Python ランタイム呼び出し
 //
 // `import[py-int]` で読み込んだモジュールの実行時ディスパッチを担当する。
 // - `load_py_int_module`: Python モジュールを PyO3 でロードし NamespaceData を構築する
-// - `tl_to_py`: tl の Value を PyO3 PyObject に変換する
+// - `hv_to_py`: tl の Value を PyO3 PyObject に変換する
 // - `py_to_tl`: PyO3 Bound<PyAny> を tl の Value に変換する（プリミティブ自動変換）
 // - `call_py_object`: Python callable を引数付きで呼び出す
 // - `call_py_method`: Python オブジェクトのメソッドを呼び出す
@@ -34,7 +34,7 @@ use super::{DictData, NamespaceData, PyObjHandle, TupleData, Value};
 // ---------------------------------------------------------------------------
 
 /// tl の `Value` を PyO3 の `PyObject`（`Py<PyAny>`）に変換する。
-pub fn tl_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
+pub fn hv_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
     match val {
         Value::Int(n) => Ok(n.to_object(py)),
         Value::Float(f) => Ok(f.to_object(py)),
@@ -45,7 +45,7 @@ pub fn tl_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
             let py_items: Vec<PyObject> = items
                 .borrow()
                 .iter()
-                .map(|v| tl_to_py(py, v))
+                .map(|v| hv_to_py(py, v))
                 .collect::<PyResult<_>>()?;
             Ok(PyList::new_bound(py, &py_items).into())
         }
@@ -53,7 +53,7 @@ pub fn tl_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
             let py_items: Vec<PyObject> = td
                 .values
                 .iter()
-                .map(|v| tl_to_py(py, v))
+                .map(|v| hv_to_py(py, v))
                 .collect::<PyResult<_>>()?;
             Ok(PyTuple::new_bound(py, &py_items).into())
         }
@@ -61,7 +61,7 @@ pub fn tl_to_py(py: Python<'_>, val: &Value) -> PyResult<PyObject> {
             let dict = PyDict::new_bound(py);
             let borrowed = d.borrow();
             for (k, v) in borrowed.all_keys().iter().zip(borrowed.all_items().iter()) {
-                dict.set_item(tl_to_py(py, k)?, tl_to_py(py, v)?)?;
+                dict.set_item(hv_to_py(py, k)?, hv_to_py(py, v)?)?;
             }
             Ok(dict.into())
         }
@@ -231,7 +231,7 @@ pub fn py_getattr(handle: &PyObjHandle, attr: &str) -> Result<Value, String> {
 pub fn py_getitem(handle: &PyObjHandle, key: &Value) -> Result<Value, String> {
     Python::with_gil(|py| -> PyResult<Value> {
         let obj = handle.inner.bind(py);
-        let py_key = tl_to_py(py, key)?;
+        let py_key = hv_to_py(py, key)?;
         let result = obj.get_item(py_key)?;
         Ok(py_to_tl(py, &result))
     })
@@ -242,8 +242,8 @@ pub fn py_getitem(handle: &PyObjHandle, key: &Value) -> Result<Value, String> {
 pub fn py_setitem(handle: &PyObjHandle, key: &Value, val: &Value) -> Result<(), String> {
     Python::with_gil(|py| -> PyResult<()> {
         let obj = handle.inner.bind(py);
-        let py_key = tl_to_py(py, key)?;
-        let py_val = tl_to_py(py, val)?;
+        let py_key = hv_to_py(py, key)?;
+        let py_val = hv_to_py(py, val)?;
         obj.set_item(py_key, py_val)?;
         Ok(())
     })
@@ -278,7 +278,7 @@ pub fn py_collect_iter(handle: &PyObjHandle) -> Result<Vec<Value>, String> {
 pub fn py_binop(handle: &PyObjHandle, op: &BinOp, rhs: &Value) -> Result<Value, String> {
     Python::with_gil(|py| -> PyResult<Value> {
         let obj = handle.inner.bind(py);
-        let py_rhs = tl_to_py(py, rhs)?;
+        let py_rhs = hv_to_py(py, rhs)?;
         let result = match op {
             BinOp::Add => obj.add(py_rhs)?,
             BinOp::Sub => obj.sub(py_rhs)?,
@@ -326,7 +326,7 @@ pub fn py_binop(handle: &PyObjHandle, op: &BinOp, rhs: &Value) -> Result<Value, 
 pub fn py_rbinop(handle: &PyObjHandle, op: &BinOp, lhs: &Value) -> Result<Value, String> {
     Python::with_gil(|py| -> PyResult<Value> {
         let obj = handle.inner.bind(py);
-        let py_lhs = tl_to_py(py, lhs)?;
+        let py_lhs = hv_to_py(py, lhs)?;
         let result = match op {
             // 算術: 反射メソッドを直接呼び出す
             BinOp::Add => obj.call_method1("__radd__", (py_lhs,))?,
@@ -382,7 +382,7 @@ fn build_py_args<'py>(
     let mut positional: Vec<PyObject> = Vec::new();
     let kwargs = PyDict::new_bound(py);
     for (name, val) in evaled {
-        let py_val = tl_to_py(py, val)?;
+        let py_val = hv_to_py(py, val)?;
         match name {
             None => positional.push(py_val),
             Some(k) => {

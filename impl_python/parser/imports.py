@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+﻿# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
 """Import statement parsing (mirrors src/parser/imports.rs)."""
 from __future__ import annotations
 import struct
@@ -10,11 +10,11 @@ from ..ast import Stmt, StmtImport, StmtFromImport
 from ..lexer import lex
 
 
-def _extract_tlc_source(path: Path) -> str:
-    """Extract embedded source text from a .tlc binary (v0/v1 format)."""
+def _extract_hvc_source(path: Path) -> str:
+    """Extract embedded source text from a .hvc binary (v0/v1 format)."""
     data = path.read_bytes()
     if len(data) < 8 or data[:3] != b"TLC":
-        raise _make_parse_error(f"invalid .tlc file: '{path}'")
+        raise _make_parse_error(f"invalid .hvc file: '{path}'")
     version = data[3]
     src_offset = struct.unpack_from("<I", data, 4)[0]
     if version == 0:
@@ -22,7 +22,7 @@ def _extract_tlc_source(path: Path) -> str:
     if version == 1:
         src_len = struct.unpack_from("<I", data, src_offset)[0]
         return data[src_offset + 4: src_offset + 4 + src_len].decode("utf-8")
-    raise _make_parse_error(f"unknown .tlc version {version} in '{path}'")
+    raise _make_parse_error(f"unknown .hvc version {version} in '{path}'")
 
 
 def _make_parse_error(msg: str) -> Exception:
@@ -117,9 +117,9 @@ class _ParserImports:
             search_dirs.append(self._root_dir)
         for d in search_dirs:
             if not force_source:
-                candidates.append((d / module_base.with_suffix(".tlc"), True))
-            candidates.append((d / module_base.with_suffix(".tl"), False))
-            candidates.append((d / module_base / "__init__.tl", False))
+                candidates.append((d / module_base.with_suffix(".hvc"), True))
+            candidates.append((d / module_base.with_suffix(".hv"), False))
+            candidates.append((d / module_base / "__init__.hv", False))
 
         found: Optional[tuple[Path, bool]] = None
         for path, is_tlc in candidates:
@@ -139,7 +139,7 @@ class _ParserImports:
             raise self._error(f"circular import detected: '{abs_path}'")
 
         if is_tlc:
-            source = _extract_tlc_source(abs_path)
+            source = _extract_hvc_source(abs_path)
             filename = f"<compiled:{module_base.stem}>"
         else:
             source = abs_path.read_text(encoding="utf-8")
@@ -164,20 +164,20 @@ class _ParserImports:
         search_dirs = [self._source_dir]
         if self._root_dir != self._source_dir:
             search_dirs.append(self._root_dir)
-        candidates = [d / module_base.with_suffix(".tlc") for d in search_dirs]
+        candidates = [d / module_base.with_suffix(".hvc") for d in search_dirs]
         found: Optional[Path] = next((p for p in candidates if p.exists()), None)
         if found is None:
             checked = ", ".join(f"'{p}'" for p in candidates)
             raise self._error(
                 f"cannot find compiled module '{'.'.join(module)}' (looked at {checked}; "
-                "compile with: cargo run --release -- --compile <source.tl>)"
+                "compile with: cargo run --release -- --compile <source.hv>)"
             )
         cache_key = ("tlc", found)
         if cache_key in self._module_cache:
             return self._module_cache[cache_key]
         if found in self._loading:
             raise self._error(f"circular import detected: '{found}'")
-        source = _extract_tlc_source(found)
+        source = _extract_hvc_source(found)
         filename = f"<compiled:{module_base.stem}>"
         self._loading.add(found)
         tokens = lex(source, filename)

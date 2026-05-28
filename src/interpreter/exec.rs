@@ -1,4 +1,4 @@
-// exec.rs — 文の実行 (exec / exec_block / exec_scoped_block)
+﻿// exec.rs — 文の実行 (exec / exec_block / exec_scoped_block)
 //
 // `Interpreter::exec` が文（`Stmt`）を再帰的にツリーウォークして `ExecResult` を返す。
 // 変数宣言・代入・制御構造・関数/クラス定義・例外処理など、すべての文の実行を担当する。
@@ -1484,12 +1484,12 @@ impl Interpreter {
 
         {
             let cb_ptr = super::native_api::get_callbacks();
-            let symbol_name = b"tl_init\0";
+            let symbol_name = b"hv_init\0";
             let init_result = unsafe {
-                lib.get::<unsafe extern "C" fn(*const super::native_api::TlCallbacks)>(symbol_name)
+                lib.get::<unsafe extern "C" fn(*const super::native_api::HvCallbacks)>(symbol_name)
             };
-            if let Ok(tl_init) = init_result {
-                unsafe { tl_init(cb_ptr) };
+            if let Ok(hv_init) = init_result {
+                unsafe { hv_init(cb_ptr) };
             }
         }
 
@@ -1620,7 +1620,7 @@ impl Interpreter {
     }
 
     /// コンパイル済み C++ ラッパー DLL をロードして名前空間を構築する。
-    /// `tl_init_bridge`（あれば）でコールバックテーブルを初期化し、各関数を `NativeFunction` として登録する。
+    /// `hv_init_bridge`（あれば）でコールバックテーブルを初期化し、各関数を `NativeFunction` として登録する。
     fn load_cpp_wrapper_dll(
         &mut self,
         lib_path: &std::path::Path,
@@ -1633,17 +1633,17 @@ impl Interpreter {
 
         let lib_path_buf = lib_path.to_path_buf();
 
-        // Initialise: prefer tl_init_bridge (cpp-dll), fall back to tl_init
+        // Initialise: prefer hv_init_bridge (cpp-dll), fall back to hv_init
         let cb_ptr = super::native_api::get_callbacks();
         let bridge_init = unsafe {
-            lib.get::<unsafe extern "C" fn(*const super::native_api::TlCallbacks)>(
-                b"tl_init_bridge\0",
+            lib.get::<unsafe extern "C" fn(*const super::native_api::HvCallbacks)>(
+                b"hv_init_bridge\0",
             )
         };
         if let Ok(f) = bridge_init {
             unsafe { f(cb_ptr) };
         } else if let Ok(f) = unsafe {
-            lib.get::<unsafe extern "C" fn(*const super::native_api::TlCallbacks)>(b"tl_init\0")
+            lib.get::<unsafe extern "C" fn(*const super::native_api::HvCallbacks)>(b"hv_init\0")
         } {
             unsafe { f(cb_ptr) };
         }

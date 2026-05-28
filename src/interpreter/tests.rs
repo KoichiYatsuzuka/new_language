@@ -1,4 +1,4 @@
-// tests.rs — インタープリタ単体テスト
+﻿// tests.rs — インタープリタ単体テスト
 
 use super::*;
 use crate::ast::Stmt;
@@ -2362,9 +2362,9 @@ fn test_decorator_instance_callable() {
     }
 }
 
-/// tl_to_py_dict のテスト。
+/// hv_to_py_dict のテスト。
 #[test]
-fn test_tl_to_py_dict() {
+fn test_hv_to_py_dict() {
     // Value::Dict を Python に渡せることを確認する (sum_dict はすべての int 値を合計する)
     let src = concat!(
         "import[py-int] py_calculator as calc\n",
@@ -2378,9 +2378,9 @@ fn test_tl_to_py_dict() {
     }
 }
 
-/// tl_to_py_tuple のテスト。
+/// hv_to_py_tuple のテスト。
 #[test]
-fn test_tl_to_py_tuple() {
+fn test_hv_to_py_tuple() {
     // Value::Tuple を Python に渡せることを確認する (first_of_tuple は先頭要素を返す)
     let src = concat!(
         "import[py-int] py_calculator as calc\n",

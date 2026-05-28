@@ -1,4 +1,4 @@
-# variable.tl — let, const, mut, freeze, static mut
+﻿# variable.tl — let, const, mut, freeze, static mut
 
 # --- let: immutable variable ---
 print("=== let ===")
@@ -11,7 +11,7 @@ print(name, age, pi, flag)
 # --- const: named constant (signals compile-time constant) ---
 print("=== const ===")
 const MAX_ITEMS = 100
-const LANG_NAME = "test_lang"
+const LANG_NAME = "Havakyrie"
 print(MAX_ITEMS, LANG_NAME)
 
 # --- mut: mutable variable ---

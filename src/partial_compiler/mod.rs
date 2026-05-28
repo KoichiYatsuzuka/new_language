@@ -1,9 +1,9 @@
-/// Partial compiler: native code generation, .tlc/.tls writing, and stub generation.
+﻿/// Partial compiler: native code generation, .hvc/.hvs writing, and stub generation.
 ///
 /// Submodules:
 ///   codegen         — Rust source generator (tl fn → i64 ABI)
-///   module_compiler — .tlc (v0/v1) and .tls writer + runtime DLL cache
-///   stub_gen        — .tls stub text generator
+///   module_compiler — .hvc (v0/v1) and .hvs writer + runtime DLL cache
+///   stub_gen        — .hvs stub text generator
 mod codegen;
 mod module_compiler;
 pub mod rs_loader;

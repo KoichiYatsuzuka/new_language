@@ -1,14 +1,14 @@
-# bench_heavy.tl — confirm speedup for int, float, str, and class after compilation.
+﻿# bench_heavy.tl — confirm speedup for int, float, str, and class after compilation.
 #
 # Workflow:
 #   Step 1  (tree-walk baseline):
-#     cargo run --release -- examples/bench_heavy.tl
+#     cargo run --release -- examples/bench_heavy.hv
 #
 #   Step 2  (compile the module):
-#     cargo run --release -- --compile examples/heavy_ops.tl
+#     cargo run --release -- --compile examples/heavy_ops.hv
 #
 #   Step 3  (native dispatch — same bench file):
-#     cargo run --release -- examples/bench_heavy.tl
+#     cargo run --release -- examples/bench_heavy.hv
 
 import[py-int] time
 import heavy_ops

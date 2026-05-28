@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+﻿# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
 """Command-line entry point for the Python implementation (mirrors src/main.rs)."""
 from __future__ import annotations
 import sys
@@ -9,8 +9,8 @@ def main() -> None:
     args = sys.argv[1:]
 
     if not args:
-        print("Usage: python -m impl_python [-src] <file.tl>", file=sys.stderr)
-        print("       python -m impl_python --compile <file.tl>", file=sys.stderr)
+        print("Usage: python -m impl_python [-src] <file.hv>", file=sys.stderr)
+        print("       python -m impl_python --compile <file.hv>", file=sys.stderr)
         print("       python -m impl_python --repl", file=sys.stderr)
         sys.exit(1)
 

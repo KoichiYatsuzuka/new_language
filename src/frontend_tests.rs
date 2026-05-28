@@ -1,4 +1,4 @@
-// frontend_tests.rs — 字句解析器・構文解析器・静的型検査器の単体テスト
+﻿// frontend_tests.rs — 字句解析器・構文解析器・静的型検査器の単体テスト
 
 // ============================================================================
 // 字句解析器テスト (Lexer)
@@ -261,7 +261,7 @@ mod lexer_tests {
     #[test]
     fn test_span_line_col() {
         let src = "let x = 1\nmut y = 2\n";
-        let spanned = Lexer::new(src, "test.tl").tokenize();
+        let spanned = Lexer::new(src, "test.hv").tokenize();
         // `let` は行1・列1
         assert_eq!(spanned[0].span.line, 1);
         assert_eq!(spanned[0].span.col, 1);
@@ -277,8 +277,8 @@ mod lexer_tests {
     /// span_filename のテスト。
     #[test]
     fn test_span_filename() {
-        let spanned = Lexer::new("x\n", "foo.tl").tokenize();
-        assert_eq!(&*spanned[0].span.file, "foo.tl");
+        let spanned = Lexer::new("x\n", "foo.hv").tokenize();
+        assert_eq!(&*spanned[0].span.file, "foo.hv");
     }
 
     // --- trait / :: ---

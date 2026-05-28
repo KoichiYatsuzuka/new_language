@@ -1,14 +1,14 @@
-# bench_types.tl — verify correctness and compare speeds across all value types.
+﻿# bench_types.tl — verify correctness and compare speeds across all value types.
 #
 # Workflow:
 #   Step 1  (tree-walk):
-#     cargo run --release -- examples/bench_types.tl
+#     cargo run --release -- examples/bench_types.hv
 #
 #   Step 2  (compile):
-#     cargo run --release -- --compile examples/compile_types.tl
+#     cargo run --release -- --compile examples/compile_types.hv
 #
 #   Step 3  (native dispatch — same bench file):
-#     cargo run --release -- examples/bench_types.tl
+#     cargo run --release -- examples/bench_types.hv
 
 import[py-int] time
 import compile_types

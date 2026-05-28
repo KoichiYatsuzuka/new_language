@@ -1,4 +1,4 @@
-# bench_hard.tl — heavy benchmark: count and sum all primes up to LIMIT
+﻿# bench_hard.tl — heavy benchmark: count and sum all primes up to LIMIT
 #
 # Two functions from prime_counter are called back-to-back, each scanning
 # every integer in [2, LIMIT] and running trial division on it.
@@ -8,13 +8,13 @@
 # Workflow
 # --------
 #   Step 1  (interpreted module):
-#     cargo run --release -- examples/bench_hard.tl
+#     cargo run --release -- examples/bench_hard.hv
 #
 #   Step 2  (compile the module):
-#     cargo run --release -- --compile examples/prime_counter.tl
+#     cargo run --release -- --compile examples/prime_counter.hv
 #
 #   Step 3  (compiled module — same bench file, parser now prefers .tlc):
-#     cargo run --release -- examples/bench_hard.tl
+#     cargo run --release -- examples/bench_hard.hv
 #
 # Expected: times nearly identical for now (.tlc embeds source text, so the
 # tree-walk interpreter still executes it).  The gap will appear once LLVM IR

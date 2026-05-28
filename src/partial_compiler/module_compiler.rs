@@ -1,4 +1,4 @@
-/// `.tlc` compiled module format — writer and reader.
+﻿/// `.hvc` compiled module format — writer and reader.
 ///
 /// # File format (version 0)
 ///
@@ -56,7 +56,7 @@ thread_local! {
 }
 
 /// Consume and return the cached native data for a module (if any).
-/// Called once per `import[tl]` evaluation; subsequent calls return `None`.
+/// Called once per `import[hv]` evaluation; subsequent calls return `None`.
 pub fn take_native_bytes(module_name: &str) -> Option<(Vec<codegen::FnExport>, Vec<u8>)> {
     NATIVE_CACHE.with(|c| c.borrow_mut().remove(module_name))
 }
@@ -68,15 +68,15 @@ pub fn cache_native(module_name: &str, exports: Vec<codegen::FnExport>, dll_byte
 
 // ── public API ────────────────────────────────────────────────────────────────
 
-/// Compile `source` (already parsed into `stmts`) and write `.tlc` + `.tls`
+/// Compile `source` (already parsed into `stmts`) and write `.hvc` + `.hvs`
 /// next to the original `source_path`.
 ///
-/// If native compilation succeeds, the `.tlc` is written as **version 1**
+/// If native compilation succeeds, the `.hvc` is written as **version 1**
 /// with the DLL bytes embedded inside it.  No separate `_tl.*` file is
 /// created.  If `rustc` is unavailable or no functions are eligible, the
-/// `.tlc` is written as version 0 (source-only) and a warning is printed.
+/// `.hvc` is written as version 0 (source-only) and a warning is printed.
 ///
-/// Returns the paths of the two output files (`.tlc`, `.tls`) on success.
+/// Returns the paths of the two output files (`.hvc`, `.hvs`) on success.
 pub fn compile(
     source: &str,
     stmts: &[Stmt],
@@ -89,8 +89,8 @@ pub fn compile(
 
     let parent = source_path.parent().unwrap_or(Path::new("."));
 
-    let tlc_path = parent.join(format!("{stem}.tlc"));
-    let tls_path = parent.join(format!("{stem}.tls"));
+    let tlc_path = parent.join(format!("{stem}.hvc"));
+    let tls_path = parent.join(format!("{stem}.hvs"));
 
     let stub = stub_gen::generate_stub(stmts);
     std::fs::write(&tls_path, &stub)?;
@@ -126,7 +126,7 @@ pub fn native_lib_ext() -> &'static str {
     }
 }
 
-/// Load a `.tlc` file and return `(module_name, source_text)`.
+/// Load a `.hvc` file and return `(module_name, source_text)`.
 ///
 /// If the file is v1, the embedded native data is placed in the
 /// thread-local `NATIVE_CACHE` so that `exec.rs` can pick it up when
@@ -161,9 +161,9 @@ fn compile_native(stmts: &[Stmt]) -> Result<(Vec<u8>, Vec<codegen::FnExport>), S
     );
 
     let tmp_dir = std::env::temp_dir();
-    let rs_path = tmp_dir.join("tl_native_module.rs");
+    let rs_path = tmp_dir.join("hv_native_module.rs");
     let ext = native_lib_ext();
-    let dll_path = tmp_dir.join(format!("tl_native_module.{ext}"));
+    let dll_path = tmp_dir.join(format!("hv_native_module.{ext}"));
 
     std::fs::write(&rs_path, &rust_src).map_err(|e| format!("cannot write temp source: {e}"))?;
 
@@ -209,7 +209,7 @@ fn invoke_rustc(rs_path: &Path, dll_path: &Path) -> Result<(), String> {
 
 // ── writers ───────────────────────────────────────────────────────────────────
 
-/// ソーステキストのみを埋め込んだ v0 形式の `.tlc` ファイルを書き出す。
+/// ソーステキストのみを埋め込んだ v0 形式の `.hvc` ファイルを書き出す。
 fn write_tlc_v0(source: &str, module_name: &str, path: &Path) -> std::io::Result<()> {
     let name_bytes = module_name.as_bytes();
     let src_bytes = source.as_bytes();
@@ -225,7 +225,7 @@ fn write_tlc_v0(source: &str, module_name: &str, path: &Path) -> std::io::Result
     std::fs::write(path, buf)
 }
 
-/// ソーステキストとネイティブ DLL バイト列を埋め込んだ v1 形式の `.tlc` ファイルを書き出す。
+/// ソーステキストとネイティブ DLL バイト列を埋め込んだ v1 形式の `.hvc` ファイルを書き出す。
 fn write_tlc_v1(
     source: &str,
     module_name: &str,
@@ -267,13 +267,13 @@ fn parse_tlc(
     let mut pos = 0;
 
     if data.len() < 4 || &data[..4] != MAGIC {
-        return Err("not a valid .tlc file (bad magic)".into());
+        return Err("not a valid .hvc file (bad magic)".into());
     }
     pos += 4;
 
     let version = read_u32(data, &mut pos)?;
     if version > VERSION_V1 {
-        return Err(format!("unsupported .tlc version {version}"));
+        return Err(format!("unsupported .hvc version {version}"));
     }
 
     let name_len = read_u32(data, &mut pos)? as usize;
@@ -314,7 +314,7 @@ fn parse_tlc(
 /// バイト列の現在位置から u32 をリトルエンディアンで読み取り、位置を4バイト進める。
 fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, String> {
     if data.len() < *pos + 4 {
-        return Err("unexpected end of .tlc data".into());
+        return Err("unexpected end of .hvc data".into());
     }
     let v = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
     *pos += 4;
@@ -324,7 +324,7 @@ fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, String> {
 /// バイト列の現在位置から `len` バイトのスライスを返し、位置を進める。
 fn read_bytes<'a>(data: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8], String> {
     if data.len() < *pos + len {
-        return Err("unexpected end of .tlc data".into());
+        return Err("unexpected end of .hvc data".into());
     }
     let slice = &data[*pos..*pos + len];
     *pos += len;

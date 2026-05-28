@@ -1,11 +1,11 @@
-# import_qualifier_demo.tl — demonstrates [tl] and [tlc] import qualifiers.
+﻿# import_qualifier_demo.tl — demonstrates [tl] and [tlc] import qualifiers.
 #
 # import native_ops          — auto: prefers .tlc if present, falls back to .tl
 # import[tl]  native_ops    — force .tl source (tree-walk, ignores .tlc)
 # import[tlc] native_ops    — force .tlc compiled (error if no .tlc exists)
 #
 # Prerequisites:
-#   cargo run --release -- --compile examples/native_ops.tl
+#   cargo run --release -- --compile examples/native_ops.hv
 
 import[py-int] time
 

@@ -1,11 +1,11 @@
-/// `.tls` stub file generator.
+﻿/// `.hvs` stub file generator.
 ///
 /// Walks the top-level AST and emits type-only declarations with `...` bodies.
-/// The output is valid `.tl` syntax and is used by the type checker and VS Code
+/// The output is valid `.hv` syntax and is used by the type checker and VS Code
 /// extension to inspect a compiled module without its implementation.
 use crate::ast::{Accessibility, FieldKind, Param, Stmt, TemplateParam};
 
-/// Generate a `.tls` stub string from a parsed program's top-level statements.
+/// Generate a `.hvs` stub string from a parsed program's top-level statements.
 pub fn generate_stub(stmts: &[Stmt]) -> String {
     let mut out = String::new();
     let mut first = true;

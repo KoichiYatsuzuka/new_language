@@ -1,4 +1,4 @@
-# CLAUDE.md
+﻿# CLAUDE.md
 
 Guidelines for Claude Code when working in this repository.
 
@@ -8,20 +8,20 @@ Guidelines for Claude Code when working in this repository.
 
 ```bash
 cargo build                        # Compile
-cargo run -- -src <file.tl>        # Execute a .tl file
-cargo run -- <file.tl>             # Positional argument also supported
+cargo run -- -src <file.hv>        # Execute a .tl file
+cargo run -- <file.hv>             # Positional argument also supported
 cargo test                         # Run all tests
 cargo test <name>                  # Filter tests by partial name match
 cargo clippy                       # Lint
 cargo fmt                          # Format
-cargo run -- --compile <file.tl>   # Partially compile a module (see below)
+cargo run -- --compile <file.hv>   # Partially compile a module (see below)
 ```
 
 ### Python implementation (`impl_python/`)
 
 ```bash
-# Run from the repository root (test_lang/)
-python -m impl_python <file.tl>
+# Run from the repository root (Havakyrie/)
+python -m impl_python <file.hv>
 
 # Examples
 python -m impl_python examples/variable.tl
@@ -30,17 +30,17 @@ python -m impl_python examples/control_flow.tl
 
 ## Project Overview
 
-**test_lang** is a custom scripting language targeting LLVM IR.  
+**Havakyrie** is a custom scripting language targeting LLVM IR.  
 It aims to provide a Python-based syntax with static type checking and additional custom extensions.
 
-- File extension: `.tl`
+- File extension: `.hv`
 - Implementation language: **Rust** (main) and **Python** (`impl_python/`)
 - Indentation-based block structure (Python-style)
 
 ## Directory Structure
 
 ```text
-test_lang/
+Havakyrie/
 ├── src/
 │   ├── main.rs          # Entry point / argument parsing
 │   ├── token.rs         # Token enum / Span / Spanned definitions
@@ -52,7 +52,7 @@ test_lang/
 │   ├── partial_compiler/ # --compile subsystem
 │   │   ├── mod.rs         # Entry point: orchestrates compile pipeline
 │   │   ├── codegen.rs     # Rust source code generator (tl fn → handle-based i64 ABI)
-│   │   ├── module_compiler.rs # Writes .tlc (v0/v1) and .tls; v1 embeds DLL inside .tlc
+│   │   ├── module_compiler.rs # Writes .hvc (v0/v1) and .tls; v1 embeds DLL inside .tlc
 │   │   └── stub_gen.rs    # .tls stub file generator
 │   └── interpreter/
 │       └── native_api.rs  # Handle arena, TlCallbacks struct, 19 C callback impls
@@ -85,14 +85,14 @@ test_lang/
 │   ├── file_io_errors.tl
 │   ├── native_ops.tl              # module: typed int/float functions for native compilation
 │   ├── importation.tl             # all import styles: auto/[tl]/[tlc]/[py-int]/from; native_ops demo, pandas, py_calculator, tl_math
-│   ├── importation_errors.tl     # ParseError: import[tlc] when no .tlc exists
+│   ├── importation_errors.tl     # ParseError: import[hvc] when no .tlc exists
 │   ├── heavy_ops.tl           # module: heavier benchmarks (all value types)
 │   ├── bench_heavy.tl         # benchmark: speedup across int/float/str/class
 │   ├── async_demo.tl          # DEMO: AsyncManager, <- operator, raise_immediately, Async enum
 │   ├── async_bench.tl         # benchmark: sequential vs async parallel (prime counting)
 │   └── archived/              # older examples (kept for reference)
 ├── impl_python/         # Python implementation of the interpreter
-│   ├── __main__.py      # CLI entry point: python -m impl_python <file.tl>
+│   ├── __main__.py      # CLI entry point: python -m impl_python <file.hv>
 │   ├── token.py         # Token / Span / Spanned definitions
 │   ├── lexer.py         # Lexer
 │   ├── ast.py           # AST node dataclasses
@@ -113,18 +113,18 @@ test_lang/
 
 ## Partial Compilation
 
-A `.tl` module can be partially compiled to native machine code with `--compile`.  
+A `.hv` module can be partially compiled to native machine code with `--compile`.  
 This produces two files next to the source:
 
 | Output file | Contents |
 |-------------|----------|
-| `{stem}.tlc` | Compiled module: binary header + embedded source text, optionally with a native shared library embedded (v1 format) |
-| `{stem}.tls` | Type stub: function/class/trait signatures with `...` bodies (used by the VS Code extension and the static type checker) |
+| `{stem}.hvc` | Compiled module: binary header + embedded source text, optionally with a native shared library embedded (v1 format) |
+| `{stem}.hvs` | Type stub: function/class/trait signatures with `...` bodies (used by the VS Code extension and the static type checker) |
 
 ### Canonical demo
 
-`examples/native_ops.tl` is the canonical module for demonstrating native compilation.  
-`examples/importation.tl` is the corresponding runner that shows the full workflow.
+`examples/native_ops.hv` is the canonical module for demonstrating native compilation.  
+`examples/importation.hv` is the corresponding runner that shows the full workflow.
 
 ```bash
 # Step 1 — run interpreted
@@ -134,9 +134,9 @@ cargo run --release -- examples/importation.tl
 cargo run --release -- --compile examples/test_modules/native_ops.tl
 # Output:
 #   NativeLib: compiling 6 function(s): fib, count_divisors, digit_sum, ...
-#   NativeLib: 6 function(s) embedded in examples\test_modules\native_ops.tlc
-#   Compiled : examples\test_modules\native_ops.tlc
-#   Stub     : examples\test_modules\native_ops.tls
+#   NativeLib: 6 function(s) embedded in examples\test_modules\native_ops.hvc
+#   Compiled : examples\test_modules\native_ops.hvc
+#   Stub     : examples\test_modules\native_ops.hvs
 
 # Step 3 — run again with native dispatch (same command as Step 1)
 cargo run --release -- examples/importation.tl
@@ -144,12 +144,12 @@ cargo run --release -- examples/importation.tl
 
 ### How the compiled module is used
 
-When a `.tl` file imports a module, the parser prefers `.tlc` over `.tl`.  
-If the `.tlc` is v1, the embedded DLL is extracted to a temp file at runtime and loaded via `libloading`.  
+When a `.hv` file imports a module, the parser prefers `.hvc` over `.hv`.  
+If the `.hvc` is v1, the embedded DLL is extracted to a temp file at runtime and loaded via `libloading`.  
 Eligible functions are dispatched natively; all other functions tree-walk as usual.
 
 ```
-import test_modules.native_ops               # loads test_modules/native_ops.tlc (parser)
+import test_modules.native_ops               # loads test_modules/native_ops.hvc (parser)
 test_modules.native_ops.fib(60)              # calls native code — ~100× faster for typed int/float
 ```
 
@@ -175,7 +175,7 @@ A function is compiled natively when **all** of the following are true:
 - The body contains **none** of: `yield`, inner function/generator defs (closures), `try`/`raise`, `block_return`/`loop_yield`, keyword-argument calls, `static mut` variables, `import` statements, or class/trait definitions
 
 All value types (`int`, `bool`, `float`, `str`, `list`, `dict`, `tuple`, class instances) can cross the native boundary via the handle-based ABI.  Functions that do not meet these criteria are silently skipped; they continue to be executed by the tree-walk interpreter.  
-If `rustc` is not found in `PATH`, native compilation is skipped entirely and only `.tlc` + `.tls` are written.
+If `rustc` is not found in `PATH`, native compilation is skipped entirely and only `.hvc` + `.hvs` are written.
 
 #### Handle-based ABI
 
@@ -193,8 +193,8 @@ The interpreter owns all values; native code operates on opaque handles via 19 c
 
 ### Output file roles
 
-- **`.tlc`** — imported instead of `.tl` by the parser (preferred when both exist); v1 contains embedded native code, v0 is source-only
-- **`.tls`** — read by the VS Code extension for type hints; never executed
+- **`.hvc`** — imported instead of `.hv` by the parser (preferred when both exist); v1 contains embedded native code, v0 is source-only
+- **`.hvs`** — read by the VS Code extension for type hints; never executed
 
 ## About Testing
 
@@ -283,9 +283,9 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - **Set type** (`Value::Set`): `{a, b, c}` literal (deduplicated); `set()` constructor (from list/str/tuple/set); methods: `add`, `remove`, `discard`, `pop`, `clear`, `copy`, `union`, `intersection`, `difference`, `symmetric_difference`, `issubset`, `issuperset`; operators `|`, `&`, `-`, `^`; `in`/`not in` membership; iteration; `len()`; equality (`==`/`!=`); static type annotation `set` / `set[T]`
 - `import[py]`
 - `import[py-int]`
-- `import[tl]` — force `.tl` source, always tree-walk (ignores `.tlc`)
-- `import[tlc]` — force `.tlc` compiled (parse error if no `.tlc` exists)
-- `import` (no qualifier) — auto: prefer `.tlc` if present, fall back to `.tl`
+- `import[hv]` — force `.hv` source, always tree-walk (ignores `.hvc`)
+- `import[hvc]` — force `.hvc` compiled (parse error if no `.hvc` exists)
+- `import` (no qualifier) — auto: prefer `.hvc` if present, fall back to `.hv`
 - Type guard (`is` / `is not`): runtime instance-of check against primitive types, class names, trait membership (via `bases`), and `function`
 - `function` primitive type: `Value::Function`, `Value::OverloadedFn`, `Value::GeneratorFn` all match `x is function`
 - **`match` statement**: pattern matching with value-case arms (`case val:`), wildcard (`case _:`), and type-pattern arms (`is Type:`)
@@ -324,7 +324,7 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 
 ### VS Code Extension (`vscode-extension/`)
 
-- Syntax highlighting for `.tl`
+- Syntax highlighting for `.hv`
 - Type inference inline hints
 
 ## Major Unimplemented Features

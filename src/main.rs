@@ -1,4 +1,4 @@
-/// test_lang インタープリタのエントリーポイント。
+﻿/// Havakyrie インタープリタのエントリーポイント。
 ///
 /// パイプラインは以下の順序で処理を行う:
 ///   ソースファイル → Lexer（字句解析）→ Parser（構文解析）→ TypeChecker（静的型検査）→ Interpreter（実行）
@@ -25,7 +25,7 @@ use type_check::TypeChecker;
 enum Mode {
     /// 通常実行モード: ソースファイルをパースして実行する。第2要素はユーザー定義CLIパラメータ。
     Run(String, std::collections::HashMap<String, String>),
-    /// コンパイルモード: `.tlc` (バイナリ) と `.tls` (スタブ) を生成する。
+    /// コンパイルモード: `.hvc` (バイナリ) と `.hvs` (スタブ) を生成する。
     Compile(String),
     /// 標準入力モード: stdin からソースを読み込んで実行する。
     Stdin,
@@ -267,8 +267,8 @@ fn format_static_errors(errors: &[type_check::StaticTypeError]) -> String {
 /// ソースコード文字列を受け取り、字句解析・構文解析・静的型検査・実行の全パイプラインを実行する。
 ///
 /// # 引数
-/// - `source`   : 実行するソースコード文字列（`.tl` ファイルの内容など）。
-/// - `filename` : エラーメッセージのスパン情報に使用するファイル名（例: `"script.tl"` や `"<stdin>"`）。
+/// - `source`   : 実行するソースコード文字列（`.hv` ファイルの内容など）。
+/// - `filename` : エラーメッセージのスパン情報に使用するファイル名（例: `"script.hv"` や `"<stdin>"`）。
 ///
 /// # 戻り値
 /// - `Ok(())`    : プログラムが正常終了した場合。
@@ -342,8 +342,8 @@ fn run_program(
 fn main() {
     match parse_args() {
         Mode::Run(path, cli_args) => {
-            // .tlc: extract embedded source first, then run normally
-            let (source, filename) = if path.ends_with(".tlc") {
+            // .hvc: extract embedded source first, then run normally
+            let (source, filename) = if path.ends_with(".hvc") {
                 match partial_compiler::load_tlc(std::path::Path::new(&path)) {
                     Ok((name, src)) => (src, format!("<compiled:{name}>")),
                     Err(e) => {
@@ -390,7 +390,7 @@ fn read_file(path: &str) -> String {
     })
 }
 
-/// `--compile` モード: ソースをパース・型検査して `.tlc` と `.tls` を生成する。
+/// `--compile` モード: ソースをパース・型検査して `.hvc` と `.hvs` を生成する。
 fn compile_module(path: &str) {
     let source = read_file(path);
 

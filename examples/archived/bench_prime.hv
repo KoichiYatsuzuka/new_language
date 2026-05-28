@@ -1,16 +1,16 @@
-# bench_prime.tl — benchmark: prime factorisation timing
+﻿# bench_prime.tl — benchmark: prime factorisation timing
 #
 # The module is loaded as interpreted (.tl) or compiled (.tlc) depending on
 # what exists on disk.  Run the two scenarios in order:
 #
 #   Step 1 — interpreted:
-#     cargo run --release -- examples/bench_prime.tl
+#     cargo run --release -- examples/bench_prime.hv
 #
 #   Step 2 — compile the module:
-#     cargo run --release -- --compile examples/prime_factors.tl
+#     cargo run --release -- --compile examples/prime_factors.hv
 #
 #   Step 3 — compiled module (same bench file, module is now .tlc):
-#     cargo run --release -- examples/bench_prime.tl
+#     cargo run --release -- examples/bench_prime.hv
 #
 # Expected: times are similar for now because .tlc embeds the source text and
 # the interpreter still executes it.  They will diverge once LLVM IR

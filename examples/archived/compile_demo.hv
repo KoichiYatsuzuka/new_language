@@ -1,7 +1,7 @@
-# compile_demo.tl — sample module for testing --compile
-# Run: cargo run -- --compile examples/compile_demo.tl
-# Expected output: examples/compile_demo.tlc  (binary)
-#                  examples/compile_demo.tls  (stub)
+﻿# compile_demo.tl — sample module for testing --compile
+# Run: cargo run -- --compile examples/compile_demo.hv
+# Expected output: examples/compile_demo.hvc  (binary)
+#                  examples/compile_demo.hvs  (stub)
 
 trait Shape:
     fn area(self) -> float:

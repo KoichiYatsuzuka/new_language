@@ -1,8 +1,8 @@
-# heavy_ops.tl — computationally intensive functions for all value types.
+﻿# heavy_ops.tl — computationally intensive functions for all value types.
 #
 # Every function here is eligible for native compilation.
 # Compile:
-#   cargo run --release -- --compile examples/heavy_ops.tl
+#   cargo run --release -- --compile examples/heavy_ops.hv
 
 # ── Classes ───────────────────────────────────────────────────────────────────
 

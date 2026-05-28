@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+﻿# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
 """Static type checker package (mirrors src/type_check.rs).
 
 Sub-modules:
@@ -48,7 +48,7 @@ class TypeChecker(
     _TypeCheckerInfer,
     _TypeCheckerStmts,
 ):
-    """Static type checker for test_lang source code."""
+    """Static type checker for Havakyrie source code."""
 
     def __init__(self) -> None:
         global_scope: dict[str, _VarInfo] = {}

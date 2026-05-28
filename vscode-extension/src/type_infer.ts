@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+﻿import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -126,7 +126,7 @@ let builtinStub: NativeModuleInfo = {
 };
 
 /**
- * Load the built-in function stub file (builtins.tls next to this extension).
+ * Load the built-in function stub file (builtins.hvs next to this extension).
  * Called once from extension.ts activate() with context.extensionPath.
  */
 export function initBuiltinStub(tlsPath: string): void {
@@ -734,7 +734,7 @@ function parseCppClasses(src: string): Map<string, CppClassInfo> {
     return classes;
 }
 
-/** Parse a .tls stub file and extract function signatures and docstrings. */
+/** Parse a .hvs stub file and extract function signatures and docstrings. */
 function parseTlStub(content: string): NativeModuleInfo {
     const funcs = new Map<string, LangType>();
     const sigs = new Map<string, string>();
@@ -763,7 +763,7 @@ function parseTlStub(content: string): NativeModuleInfo {
  * Load function signatures for one import statement.
  * - cpp-lib / cpp-dll: reads the `with stubname.h` header file; if no stub
  *   name is given, falls back to `<module/path>.h` next to the module source.
- * - tl / tlc / auto:   reads the adjacent `.tls` stub file
+ * - hv / hvc / auto:   reads the adjacent `.hvs` stub file
  */
 function loadNativeModuleInfo(
     importKind: string,
@@ -790,11 +790,11 @@ function loadNativeModuleInfo(
         }
         return empty;
     }
-    // tl / tlc / auto: look for .tls stub file adjacent to the module
+    // hv / hvc / auto: look for .hvs stub file adjacent to the module
     const filePath = path.join(docDir, ...modulePath.split('.'));
-    const tlsPath = filePath + '.tls';
-    if (fs.existsSync(tlsPath)) {
-        try { return parseTlStub(fs.readFileSync(tlsPath, 'utf8')); } catch { /* ignore */ }
+    const hvsPath = filePath + '.hvs';
+    if (fs.existsSync(hvsPath)) {
+        try { return parseTlStub(fs.readFileSync(hvsPath, 'utf8')); } catch { /* ignore */ }
     }
     return empty;
 }
@@ -1805,7 +1805,7 @@ function resolveMemberItems(
         });
     }
 
-    // Variable/parameter with a class type → check C++ header classes first, then .tl classes
+    // Variable/parameter with a class type → check C++ header classes first, then .hv classes
     if (sym.type) {
         const { cppClasses } = collectAllPyModuleInfo(document);
         const cppCls = cppClasses.get(sym.type);

@@ -1,6 +1,6 @@
-# VS Code Extension TODO
+﻿# VS Code Extension TODO
 
-VS Code extension updates for `test_lang` (`.tl`) files.
+VS Code extension updates for `Havakyrie` (`.hv`) files.
 
 ## Mouse Over
 - [x] マウスオーバーによって型と、その行でのconst/let/mut属性が表示されるようにする。

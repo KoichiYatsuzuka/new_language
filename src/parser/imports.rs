@@ -1,4 +1,4 @@
-// imports.rs — import statement parsing and module loading for the tl parser.
+﻿// imports.rs — import statement parsing and module loading for the tl parser.
 
 use super::Parser;
 use crate::ast::{Accessibility, FieldKind, Param, Stmt};
@@ -38,7 +38,7 @@ impl Parser {
     pub(super) fn parse_import_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `import` を消費
 
-        // `[lang]` を読む。省略時は "tl-auto" (auto-select: prefer .tlc over .tl)
+        // `[lang]` を読む。省略時は "tl-auto" (auto-select: prefer .hvc over .hv)
         let lang = if *self.current() == Token::LBracket {
             self.parse_lang_bracket()?
         } else {
@@ -311,11 +311,11 @@ impl Parser {
         version: Option<&str>,
     ) -> Result<Vec<Stmt>, String> {
         match lang {
-            // default (no bracket): prefer .tlc, fall back to .tl
+            // default (no bracket): prefer .hvc, fall back to .hv
             "tl-auto" => self.load_tl_module(module),
-            // import[tl]: force .tl source, skip .tlc
+            // import[hv]: force .hv source, skip .hvc
             "tl" => self.load_tl_source_module(module),
-            // import[tlc]: force .tlc, error if not found
+            // import[hvc]: force .hvc, error if not found
             "tlc" => self.load_tlc_module(module),
             "py" => self.load_python_module(module),
             // py-int: .pyi を優先し、なければ .py にフォールバック
@@ -329,7 +329,7 @@ impl Parser {
 
     /// `import[rs] name[version]` — クレートバインディングをコンパイル・キャッシュし、
     /// 型チェッカ・インタプリタが使う `Stmt::FnDef` スタブを返す。
-    /// `version` が `Some` ならそれを直接使用し、`None` なら `tl_crates.json` を参照する。
+    /// `version` が `Some` ならそれを直接使用し、`None` なら `hv_crates.json` を参照する。
     fn load_rs_module(
         &mut self,
         module: &[String],
@@ -379,17 +379,17 @@ impl Parser {
         Ok(ver)
     }
 
-    /// `.tl` / `.tlc` モジュールをロードして AST を返す。
+    /// `.hv` / `.hvc` モジュールをロードして AST を返す。
     ///
     /// 各検索ディレクトリ (`source_dir` → `root_dir`) に対して以下の優先順で試す:
-    /// 1. `module.tlc`         — コンパイル済みモジュール（埋め込みソース付きバイナリ）
-    /// 2. `module.tl`          — ソースファイルモジュール
-    /// 3. `module/__init__.tl` — パッケージモジュール
+    /// 1. `module.hvc`         — コンパイル済みモジュール（埋め込みソース付きバイナリ）
+    /// 2. `module.hv`          — ソースファイルモジュール
+    /// 3. `module/__init__.hv` — パッケージモジュール
     fn load_tl_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
         let tlc_rel = module_base.with_extension("tlc");
         let file_rel = module_base.with_extension("tl");
-        let init_rel = module_base.join("__init__.tl");
+        let init_rel = module_base.join("__init__.hv");
 
         // 検索ディレクトリリスト（source_dir と root_dir が同じなら重複させない）
         let search_dirs: Vec<PathBuf> = {
@@ -398,7 +398,7 @@ impl Parser {
             if a == b { vec![a] } else { vec![a, b] }
         };
 
-        // (パス, コンパイル済みか) の候補リスト — .tlc が .tl より先になる
+        // (パス, コンパイル済みか) の候補リスト — .hvc が .hv より先になる
         let candidates: Vec<(PathBuf, bool)> = search_dirs
             .iter()
             .flat_map(|dir| {
@@ -440,7 +440,7 @@ impl Parser {
             ));
         }
 
-        // ソースを取得: .tlc はバイナリから埋め込みソースを抽出、.tl は直読み
+        // ソースを取得: .hvc はバイナリから埋め込みソースを抽出、.hv は直読み
         let (source, filename) = if is_compiled {
             let (mod_name, src) = crate::partial_compiler::load_tlc(&abs_path)
                 .map_err(|e| format!("cannot load compiled module '{}': {e}", module.join(".")))?;
@@ -476,11 +476,11 @@ impl Parser {
         Ok(body)
     }
 
-    /// `import[tl]`: `.tl` ソースのみをロードする。`.tlc` があっても無視する。
+    /// `import[hv]`: `.hv` ソースのみをロードする。`.hvc` があっても無視する。
     fn load_tl_source_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
         let file_rel = module_base.with_extension("tl");
-        let init_rel = module_base.join("__init__.tl");
+        let init_rel = module_base.join("__init__.hv");
 
         let search_dirs: Vec<PathBuf> = {
             let a = self.source_dir.clone();
@@ -545,7 +545,7 @@ impl Parser {
         Ok(body)
     }
 
-    /// `import[tlc]`: `.tlc` コンパイル済みモジュールのみをロードする。`.tl` があっても無視する。
+    /// `import[hvc]`: `.hvc` コンパイル済みモジュールのみをロードする。`.hv` があっても無視する。
     fn load_tlc_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
         let tlc_rel = module_base.with_extension("tlc");
@@ -570,7 +570,7 @@ impl Parser {
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
-                    "cannot find compiled module '{}' (looked at {}; compile with: cargo run --release -- --compile <source.tl>)",
+                    "cannot find compiled module '{}' (looked at {}; compile with: cargo run --release -- --compile <source.hv>)",
                     module.join("."), paths
                 )
             })?;

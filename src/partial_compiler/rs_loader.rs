@@ -1,8 +1,8 @@
-/// Native module loader for `import[rs]` — reads crate source directly from the
+﻿/// Native module loader for `import[rs]` — reads crate source directly from the
 /// cargo registry (or a local path), auto-discovers compatible `pub fn`, and
 /// generates call-through ABI wrappers.  No function bodies are written by the user.
 ///
-/// # Config format (`tl_crates.json` in the source directory)
+/// # Config format (`hv_crates.json` in the source directory)
 ///
 /// ```json
 /// {
@@ -54,7 +54,7 @@ enum CrateSource {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-/// Find `tl_crates.json` in `search_dirs`, resolve the crate, parse compatible
+/// Find `hv_crates.json` in `search_dirs`, resolve the crate, parse compatible
 /// `pub fn` from its source, compile a call-through wrapper DLL, cache it, and
 /// return `Stmt::FnDef` stubs.
 pub fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&str>) -> Result<Vec<Stmt>, String> {
@@ -67,7 +67,7 @@ pub fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&str>) -
     };
 
     let stem = module_name.replace(['.', '-'], "_");
-    let tmp = std::env::temp_dir().join(format!("tl_rs_{stem}"));
+    let tmp = std::env::temp_dir().join(format!("hv_rs_{stem}"));
 
     // Build wrapper skeleton + run cargo metadata to resolve / download the dep.
     let (crate_src_dir, crate_ident) = prepare_wrapper(&source, &stem, &tmp)?;
@@ -120,7 +120,7 @@ pub fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&str>) -
 
     let lib_prefix = if cfg!(target_os = "windows") { "" } else { "lib" };
     let ext = native_lib_ext();
-    let dll_name = format!("{lib_prefix}tl_rs_{stem}.{ext}");
+    let dll_name = format!("{lib_prefix}hv_rs_{stem}.{ext}");
     let dll_path = tmp.join("target").join("release").join(&dll_name);
 
     let dll_bytes =
@@ -138,10 +138,10 @@ pub fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&str>) -
 
 // ── Config parsing ────────────────────────────────────────────────────────────
 
-/// `tl_crates.json` を検索ディレクトリから探し、該当モジュールの [`CrateSource`] を返す。
+/// `hv_crates.json` を検索ディレクトリから探し、該当モジュールの [`CrateSource`] を返す。
 fn find_config(module_name: &str, search_dirs: &[PathBuf]) -> Result<CrateSource, String> {
     for dir in search_dirs {
-        let p = dir.join("tl_crates.json");
+        let p = dir.join("hv_crates.json");
         if !p.exists() {
             continue;
         }
@@ -180,7 +180,7 @@ fn find_config(module_name: &str, search_dirs: &[PathBuf]) -> Result<CrateSource
             CrateSource::Registry { crate_name, version_req: ver.to_string() }
         } else {
             return Err(format!(
-                "`{module_name}` in tl_crates.json: expected a version string or \
+                "`{module_name}` in hv_crates.json: expected a version string or \
                  an object with `path` or `version`"
             ));
         };
@@ -189,7 +189,7 @@ fn find_config(module_name: &str, search_dirs: &[PathBuf]) -> Result<CrateSource
     }
 
     Err(format!(
-        "no entry for `{module_name}` in tl_crates.json (searched: {})",
+        "no entry for `{module_name}` in hv_crates.json (searched: {})",
         search_dirs
             .iter()
             .map(|d| format!("'{}'", d.display()))
@@ -218,7 +218,7 @@ fn prepare_wrapper(
     let (cargo_toml_content, crate_name) = match source {
         CrateSource::Registry { crate_name, version_req } => {
             let toml = format!(
-                "[package]\nname=\"tl_rs_{stem}\"\nversion=\"0.0.0\"\nedition=\"2021\"\n\
+                "[package]\nname=\"hv_rs_{stem}\"\nversion=\"0.0.0\"\nedition=\"2021\"\n\
                  [lib]\ncrate-type=[\"cdylib\"]\n[dependencies]\n{crate_name}=\"{version_req}\"\n"
             );
             (toml, crate_name.clone())
@@ -227,7 +227,7 @@ fn prepare_wrapper(
             let abs = path.canonicalize().unwrap_or_else(|_| path.clone());
             let path_str = abs.display().to_string().replace('\\', "/");
             let toml = format!(
-                "[package]\nname=\"tl_rs_{stem}\"\nversion=\"0.0.0\"\nedition=\"2021\"\n\
+                "[package]\nname=\"hv_rs_{stem}\"\nversion=\"0.0.0\"\nedition=\"2021\"\n\
                  [lib]\ncrate-type=[\"cdylib\"]\n[dependencies]\n\
                  {crate_name}={{path=\"{path_str}\"}}\n"
             );
@@ -585,7 +585,7 @@ const TL_TRUE:  i64 = 1;
 const TL_FALSE: i64 = 2;
 
 #[repr(C)]
-struct TlCallbacks {
+struct HvCallbacks {
     make_int:      unsafe extern "C" fn(i64) -> i64,
     make_float:    unsafe extern "C" fn(f64) -> i64,
     make_bool:     unsafe extern "C" fn(i32) -> i64,
@@ -615,10 +615,10 @@ struct TlCallbacks {
     write_handle:  unsafe extern "C" fn(i64, i64),
 }
 
-static mut CB: *const TlCallbacks = std::ptr::null();
+static mut CB: *const HvCallbacks = std::ptr::null();
 
 #[no_mangle]
-pub unsafe extern "C" fn tl_init(cb: *const TlCallbacks) { CB = cb; }
+pub unsafe extern "C" fn hv_init(cb: *const HvCallbacks) { CB = cb; }
 
 #[inline(always)] unsafe fn cb_make_int(n: i64) -> i64   { ((*CB).make_int)(n) }
 #[inline(always)] unsafe fn cb_make_float(f: f64) -> i64  { ((*CB).make_float)(f) }

@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $root   = Split-Path $MyInvocation.MyCommand.Path
-$vsix   = Join-Path $root "test-lang-0.0.1.vsix"
+$vsix   = Join-Path $root "havakyrie-0.0.1.vsix"
 $tmp    = Join-Path $root "__vsix_build"
 
 # --- clean up any previous run ---
@@ -36,10 +36,10 @@ $contentTypes = @'
   xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"
   xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Language="en-US" Id="test-lang" Version="0.0.1" Publisher="test-lang-publisher"/>
-    <DisplayName>test_lang</DisplayName>
-    <Description xml:space="preserve">Coding intelligence for test_lang (.tl files)</Description>
-    <Tags>test_lang,tl</Tags>
+    <Identity Language="en-US" Id="havakyrie" Version="0.0.1" Publisher="havakyrie-publisher"/>
+    <DisplayName>Havakyrie</DisplayName>
+    <Description xml:space="preserve">Coding intelligence for Havakyrie (.hv files)</Description>
+    <Tags>Havakyrie,hv</Tags>
     <Categories>Programming Languages</Categories>
     <GalleryFlags>Public</GalleryFlags>
     <Badges></Badges>
@@ -76,8 +76,8 @@ New-Item -ItemType Directory "$tmp\extension\syntaxes" | Out-Null
 
 Copy-Item "$root\out\extension.js"   "$tmp\extension\out\extension.js"
 Copy-Item "$root\out\type_infer.js"  "$tmp\extension\out\type_infer.js"
-Copy-Item "$root\syntaxes\tl.tmLanguage.json" "$tmp\extension\syntaxes\tl.tmLanguage.json"
-Copy-Item "$root\builtins.tls"       "$tmp\extension\builtins.tls"
+Copy-Item "$root\syntaxes\havakyrie.tmLanguage.json" "$tmp\extension\syntaxes\havakyrie.tmLanguage.json"
+Copy-Item "$root\builtins.hvs"       "$tmp\extension\builtins.hvs"
 
 # -------------------------------------------------------
 # Zip → .vsix

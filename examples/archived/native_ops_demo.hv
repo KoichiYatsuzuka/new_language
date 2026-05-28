@@ -1,4 +1,4 @@
-# native_ops_demo.tl — shows how to use a partially compiled module.
+﻿# native_ops_demo.tl — shows how to use a partially compiled module.
 #
 # Workflow
 # ────────
@@ -6,7 +6,7 @@
 #     cargo run --release -- examples/native_ops_demo.tl
 #
 #   Step 2  Compile the module:
-#     cargo run --release -- --compile examples/native_ops.tl
+#     cargo run --release -- --compile examples/native_ops.hv
 #     # Output: native_ops.tlc  (source + native library)
 #     #         native_ops.tls  (type stub for the IDE)
 #
