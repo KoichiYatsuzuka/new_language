@@ -1,3 +1,4 @@
+# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
 """Scope / environment management for the interpreter."""
 from __future__ import annotations
 from .value import Value, MISSING, CapturedImm, CapturedMut, CapturedVar

@@ -1,3 +1,4 @@
+# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
 """Tree-walk interpreter for test_lang."""
 from __future__ import annotations
 import copy
@@ -10,7 +11,7 @@ from ..ast import (
     ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
-    ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType,
+    ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType, ExprCast,
     # Statements
     StmtExpr, StmtLet, StmtConst, StmtMut, StmtStatic,
     StmtAssign, StmtAttrAssign, StmtAttrCompoundAssign, StmtCompoundAssign,
@@ -491,6 +492,9 @@ class Interpreter:
                 val = self.eval(inner)
                 result = self._is_type(val, tname)
                 return result if not negated else not result
+
+            case ExprCast(object=obj_expr, type_name=tname):
+                return self._eval_cast(obj_expr, tname)
 
             case _:
                 raise InterpreterError(f"Unknown expression type: {type(expr).__name__}")
@@ -1041,6 +1045,12 @@ class Interpreter:
                 val = self.eval(param.default)
             else:
                 raise RuntimeError(f"TypeError: missing argument '{param.name}'")
+            # Auto-cast: let parameters with type annotation — call __cast__[T] if needed
+            if not param.mutable and param.type_ann is not None:
+                if isinstance(val, TlInstance) and val.cls.name != param.type_ann:
+                    cast_key = f"__cast__[{param.type_ann}]"
+                    if cast_key in val.cls.methods:
+                        val = self._call_method(val, cast_key, [], {})
             self._env.declare(param.name, val, mutable=param.mutable)
 
     def _resolve_overload(self, overloads: list, args: list, kwargs: dict) -> TlFunction:
@@ -1090,19 +1100,28 @@ class Interpreter:
                     if access != Accessibility.PUBLIC:
                         current_access = access
                     acc = access if access != Accessibility.PUBLIC else current_access
-                    if tparams:
+                    # __cast__[TypeName] methods stored with namespaced key
+                    if fname == "__cast__" and tparams:
+                        storage_name = f"__cast__[{tparams[0].name}]"
+                        captured = self._env.capture_all()
+                        fn = TlFunction(name=storage_name, params=params, body=fbody,
+                                        captured_env=captured,
+                                        is_static=is_static, is_class_method=is_cm)
+                    elif tparams:
+                        storage_name = fname
                         fn = TlTemplateFn(name=fname, template_params=tparams, params=params, body=fbody)
                     else:
+                        storage_name = fname
                         captured = self._env.capture_all()
                         fn = TlFunction(name=fname, params=params, body=fbody,
                                         captured_env=captured,
                                         is_static=is_static, is_class_method=is_cm)
-                    if fname not in methods:
-                        methods[fname] = []
-                    methods[fname].append(fn)
-                    method_access[fname] = acc
-                    if is_static: static_method_names.add(fname)
-                    if is_cm: class_method_names.add(fname)
+                    if storage_name not in methods:
+                        methods[storage_name] = []
+                    methods[storage_name].append(fn)
+                    method_access[storage_name] = acc
+                    if is_static: static_method_names.add(storage_name)
+                    if is_cm: class_method_names.add(storage_name)
 
                 case StmtGenDef(name=fname, template_params=tparams, params=params,
                                 yield_type=_, body=fbody, access=access):
@@ -1299,6 +1318,54 @@ class Interpreter:
         if isinstance(val, TlClass):
             return val.name == tname
         return False
+
+    # ------------------------------------------------------------------
+    # Cast operator (=>)
+    # ------------------------------------------------------------------
+
+    def _eval_cast(self, obj_expr, tname: str) -> Value:
+        obj = self.eval(obj_expr)
+
+        def _get_new_type_inner(inst: TlInstance):
+            """Extract the inner value from a new_type instance (handles both 'value' and '__value__')."""
+            raw = inst.fields.get("value") or inst.fields.get("__value__")
+            return raw[0] if raw is not None else None
+
+        # If obj is a new_type instance, extract inner value to avoid nesting
+        inner_val = None
+        if isinstance(obj, TlInstance) and obj.cls.new_type_base is not None:
+            inner_val = _get_new_type_inner(obj)
+
+        # --- new_type downcast: TypeName(obj) equivalent ---
+        target_cls_val = self._env.get(tname)
+        if target_cls_val is not None and isinstance(target_cls_val, TlClass):
+            if target_cls_val.new_type_base is not None:
+                arg = inner_val if inner_val is not None else obj
+                return self._instantiate_class(target_cls_val, [arg], {})
+
+        # --- instance cast ---
+        if isinstance(obj, TlInstance):
+            cls = obj.cls
+            # new_type instance to its base type: return inner value
+            if cls.new_type_base is not None and cls.new_type_base == tname:
+                val = _get_new_type_inner(obj)
+                if val is not None:
+                    return val
+                raise InterpreterError(f"TypeError: '{cls.name}' has no 'value' field")
+
+            # __cast__[TypeName] method
+            method_key = f"__cast__[{tname}]"
+            if method_key in cls.methods:
+                return self._call_method(obj, method_key, [], {})
+            raise InterpreterError(
+                f"TypeError: '{cls.name}' is not castable to '{tname}' "
+                f"(no __cast__[{tname}] method defined)"
+            )
+
+        raise InterpreterError(
+            f"TypeError: cast operator '=>' requires an instance or new_type target, "
+            f"got '{type_name(obj)}' cast to '{tname}'"
+        )
 
     # ------------------------------------------------------------------
     # for-loop target binding

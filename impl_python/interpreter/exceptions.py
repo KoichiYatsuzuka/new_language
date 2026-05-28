@@ -1,3 +1,4 @@
+# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
 """Control-flow signals and language-level error types."""
 from __future__ import annotations
 from typing import TYPE_CHECKING

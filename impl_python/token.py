@@ -1,3 +1,4 @@
+# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -164,6 +165,7 @@ class TokenKind(Enum):
 
     # Other punctuation
     ARROW        = auto()  # ->
+    FAT_ARROW    = auto()  # =>
     COLON        = auto()  # :
     COMMA        = auto()  # ,
     SEMICOLON    = auto()  # ;
@@ -303,6 +305,7 @@ _TOKEN_STR: dict[TokenKind, str] = {
     TokenKind.COLON_EQ:       ":=",
     TokenKind.COLON_COLON:    "::",
     TokenKind.ARROW:          "->",
+    TokenKind.FAT_ARROW:      "=>",
     TokenKind.COLON:          ":",
     TokenKind.COMMA:          ",",
     TokenKind.SEMICOLON:      ";",

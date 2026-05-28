@@ -1,3 +1,4 @@
+# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -291,13 +292,19 @@ class ExprIsType:
     type_name: str
     span: Span
 
+@dataclass
+class ExprCast:
+    object: "Expr"
+    type_name: str
+    span: Span
+
 
 Expr = (
     ExprInt | ExprFloat | ExprStr | ExprBool | ExprNone | ExprIdent |
     ExprList | ExprAttr | ExprTraitAccess | ExprBinOp | ExprUnaryOp |
     ExprCall | ExprTemplateInstantiate | ExprSubscript | ExprSlice |
     ExprDict | ExprTuple | ExprSet | ExprBlock | ExprIfExpr |
-    ExprForExpr | ExprWhileExpr | ExprMatchExpr | ExprIsType
+    ExprForExpr | ExprWhileExpr | ExprMatchExpr | ExprIsType | ExprCast
 )
 
 
