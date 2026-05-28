@@ -9,6 +9,7 @@ import {
     provideDocumentSymbols,
     provideSignatureHelp,
     provideDefinition,
+    initBuiltinStub,
 } from './type_infer';
 
 // ---------------------------------------------------------------------------
@@ -29,6 +30,9 @@ function getReplTerminal(projectRoot: string): vscode.Terminal {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+    // Load built-in function stubs for hover / completion / signature-help intelligence.
+    initBuiltinStub(path.join(context.extensionPath, 'builtins.tls'));
+
     // Clear the cached terminal handle when the user closes it.
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(t => { if (t === replTerminal) replTerminal = undefined; })

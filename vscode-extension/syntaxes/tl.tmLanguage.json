@@ -173,7 +173,7 @@
       "name": "constant.language.tl"
     },
     "builtin-type": {
-      "match": "\\b(int|uint|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type|Self|Any|Union|Option)\\b",
+      "match": "\\b(int|uint|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type|any|Self|Any|Union|Option|Optional|pointer|path|slice)\\b",
       "name": "support.type.builtin.tl"
     },
     "builtin-func": {

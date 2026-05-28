@@ -77,6 +77,7 @@ New-Item -ItemType Directory "$tmp\extension\syntaxes" | Out-Null
 Copy-Item "$root\out\extension.js"   "$tmp\extension\out\extension.js"
 Copy-Item "$root\out\type_infer.js"  "$tmp\extension\out\type_infer.js"
 Copy-Item "$root\syntaxes\tl.tmLanguage.json" "$tmp\extension\syntaxes\tl.tmLanguage.json"
+Copy-Item "$root\builtins.tls"       "$tmp\extension\builtins.tls"
 
 # -------------------------------------------------------
 # Zip → .vsix

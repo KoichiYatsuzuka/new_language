@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.provideDocumentSemanticTokens = exports.SEMANTIC_TOKENS_LEGEND = exports.provideDefinition = exports.provideSignatureHelp = exports.provideDocumentSymbols = exports.provideCompletionItems = exports.provideInlayHints = exports.provideHover = exports.inferExprType = void 0;
+exports.provideDocumentSemanticTokens = exports.SEMANTIC_TOKENS_LEGEND = exports.provideDefinition = exports.provideSignatureHelp = exports.provideDocumentSymbols = exports.provideCompletionItems = exports.provideInlayHints = exports.provideHover = exports.inferExprType = exports.initBuiltinStub = void 0;
 const vscode = require("vscode");
 const fs = require("fs");
 const path = require("path");
@@ -121,6 +121,23 @@ const BUILTIN_RETURN_TYPES = {
     iter: 'unknown', open: 'unknown', eval: 'unknown', globals: 'unknown',
     locals: 'unknown', vars: 'unknown', dir: 'unknown', super: 'unknown', type: 'unknown',
 };
+// ===== Built-in stub =====
+let builtinStub = {
+    funcs: new Map(), sigs: new Map(), docs: new Map(), classes: new Map(),
+};
+/**
+ * Load the built-in function stub file (builtins.tls next to this extension).
+ * Called once from extension.ts activate() with context.extensionPath.
+ */
+function initBuiltinStub(tlsPath) {
+    if (!fs.existsSync(tlsPath))
+        return;
+    try {
+        builtinStub = parseTlStub(fs.readFileSync(tlsPath, 'utf8'));
+    }
+    catch { /* ignore unreadable stub */ }
+}
+exports.initBuiltinStub = initBuiltinStub;
 function mergeNumeric(a, b) {
     if (a === 'float' || b === 'float')
         return 'float';
@@ -635,7 +652,7 @@ function parseCHeader(content, dir = '', _depth = 0) {
             }
         }
     }
-    return { funcs, sigs, classes };
+    return { funcs, sigs, docs: new Map(), classes };
 }
 /**
  * Parse C++ class/struct definitions from a pre-stripped header source and
@@ -757,20 +774,32 @@ function parseCppClasses(src) {
     }
     return classes;
 }
-/** Parse a .tls stub file and extract function signatures. */
+/** Parse a .tls stub file and extract function signatures and docstrings. */
 function parseTlStub(content) {
     const funcs = new Map();
     const sigs = new Map();
-    for (const line of content.split('\n')) {
-        const m = line.match(FUNC_DEF_RE);
+    const docs = new Map();
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        const m = lines[i].match(FUNC_DEF_RE);
         if (!m)
             continue;
         const [, , kw, name, params, retType] = m;
         const ret = retType?.trim() ?? 'unknown';
         funcs.set(name, ret);
         sigs.set(name, `${kw} ${name}(${params.trim()}) -> ${ret}`);
+        // Extract single-line docstring from the next non-empty line inside the body
+        for (let j = i + 1; j < lines.length; j++) {
+            const next = lines[j].trim();
+            if (!next)
+                continue;
+            const docM = next.match(/^(?:"""(.*?)"""|'''(.*?)''')$/);
+            if (docM)
+                docs.set(name, (docM[1] ?? docM[2]).trim());
+            break;
+        }
     }
-    return { funcs, sigs, classes: new Map() };
+    return { funcs, sigs, docs, classes: new Map() };
 }
 /**
  * Load function signatures for one import statement.
@@ -779,7 +808,7 @@ function parseTlStub(content) {
  * - tl / tlc / auto:   reads the adjacent `.tls` stub file
  */
 function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
-    const empty = { funcs: new Map(), sigs: new Map(), classes: new Map() };
+    const empty = { funcs: new Map(), sigs: new Map(), docs: new Map(), classes: new Map() };
     if (importKindOf(importKind) === 'cpp') {
         // Prefer explicit stub name; fall back to auto-detecting <module-path>.h
         const candidates = [];
@@ -1451,8 +1480,19 @@ function provideHover(document, position) {
     }
     const symbols = collectHoverSymbols(document);
     const symbol = selectHoverSymbol(symbols, name, position.line);
-    if (!symbol)
+    if (!symbol) {
+        // Fall back to the built-in stub
+        const builtinSig = builtinStub.sigs.get(name);
+        if (builtinSig) {
+            const md = new vscode.MarkdownString(undefined, true);
+            md.appendCodeblock(builtinSig, 'tl');
+            const doc = builtinStub.docs.get(name);
+            if (doc)
+                md.appendMarkdown(`\n\n${doc}`);
+            return new vscode.Hover(md, range);
+        }
         return undefined;
+    }
     // Freeze detection: show 'frozen' if freeze(name) was called before hover line
     const freezeLines = collectFreezeLines(document);
     const freezeLine = freezeLines.get(name);
@@ -1780,7 +1820,18 @@ function provideCompletionItems(document, position) {
             item.documentation = new vscode.MarkdownString(sym.doc);
         items.push(item);
     }
-    // Built-in functions
+    // Built-in functions — prefer stub (has full signatures + docs), fall back to BUILTIN_RETURN_TYPES
+    for (const [name, sig] of builtinStub.sigs) {
+        if (seen.has(name))
+            continue;
+        seen.add(name);
+        const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Function);
+        item.detail = sig;
+        const doc = builtinStub.docs.get(name);
+        if (doc)
+            item.documentation = new vscode.MarkdownString(doc);
+        items.push(item);
+    }
     for (const [name, retType] of Object.entries(BUILTIN_RETURN_TYPES)) {
         if (seen.has(name))
             continue;
@@ -1921,12 +1972,29 @@ function provideSignatureHelp(document, position) {
     }
     if (!funcName)
         return undefined;
+    // Resolve signature: check document symbols first, then the built-in stub
+    let sigStr;
+    let sigDoc;
     const symbols = collectHoverSymbols(document);
     const funcSym = symbols.find(s => s.name === funcName && s.kind === 'function');
-    if (!funcSym?.signature)
+    if (funcSym?.signature) {
+        sigStr = funcSym.signature;
+        if (funcSym.doc)
+            sigDoc = new vscode.MarkdownString(funcSym.doc);
+    }
+    else {
+        const builtinSig = builtinStub.sigs.get(funcName);
+        if (builtinSig) {
+            sigStr = builtinSig;
+            const doc = builtinStub.docs.get(funcName);
+            if (doc)
+                sigDoc = new vscode.MarkdownString(doc);
+        }
+    }
+    if (!sigStr)
         return undefined;
-    const sigInfo = new vscode.SignatureInformation(funcSym.signature, funcSym.doc ? new vscode.MarkdownString(funcSym.doc) : undefined);
-    const paramsMatch = funcSym.signature.match(/\(([^)]*)\)/);
+    const sigInfo = new vscode.SignatureInformation(sigStr, sigDoc);
+    const paramsMatch = sigStr.match(/\(([^)]*)\)/);
     if (paramsMatch?.[1]?.trim()) {
         for (const p of splitComma(paramsMatch[1])) {
             const trimmed = p.trim();
@@ -1959,31 +2027,148 @@ function provideDefinition(document, position) {
     return new vscode.Location(document.uri, targetRange);
 }
 exports.provideDefinition = provideDefinition;
-// ===== Semantic tokens (import alias highlighting) =====
-exports.SEMANTIC_TOKENS_LEGEND = new vscode.SemanticTokensLegend(['class'], // token types: index 0 = 'class'
-[] // modifiers: none
-);
+// ===== Semantic tokens =====
+// Standard VS Code semantic token types — themes guarantee colors for these.
+// Index 0 = 'class'  (import aliases, user-defined classes/traits/new_types)
+// Index 1 = 'type'   (built-in primitive and composite type names)
+exports.SEMANTIC_TOKENS_LEGEND = new vscode.SemanticTokensLegend(['class', 'type'], []);
+const BUILTIN_TYPE_NAMES = new Set([
+    'int', 'uint', 'float', 'str', 'bool',
+    'list', 'dict', 'set', 'tuple', 'bytes',
+    'slice', 'path', 'pointer',
+    'any', 'Any', 'Union', 'Option', 'Optional',
+    'Self', 'object', 'type',
+]);
 function escapeRegex(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+/**
+ * Parse one type expression starting at `pos` in `line` (already comment-stripped).
+ * Records the column of each type-name identifier found (including nested generics).
+ * Returns the position immediately after the expression.
+ *
+ * Grammar handled:  TypeName  |  TypeName [ TypeExpr (, TypeExpr)* ]
+ */
+function parseTypeAt(line, pos, out) {
+    // skip leading whitespace
+    while (pos < line.length && (line[pos] === ' ' || line[pos] === '\t'))
+        pos++;
+    if (pos >= line.length || !/[A-Za-z_]/.test(line[pos]))
+        return pos;
+    out.add(pos);
+    while (pos < line.length && /\w/.test(line[pos]))
+        pos++;
+    // skip whitespace before optional `[`
+    while (pos < line.length && (line[pos] === ' ' || line[pos] === '\t'))
+        pos++;
+    if (pos < line.length && line[pos] === '[') {
+        pos++; // consume '['
+        while (pos < line.length && line[pos] !== ']') {
+            if (',\t '.includes(line[pos])) {
+                pos++;
+                continue;
+            }
+            pos = parseTypeAt(line, pos, out);
+        }
+        if (pos < line.length)
+            pos++; // consume ']'
+    }
+    return pos;
+}
+/**
+ * Return the set of column positions on `rawLine` that are in a type-annotation context:
+ *   - after  `identifier :`   (variable / parameter annotation)
+ *   - after  `->`             (return type)
+ *   - after  `is`             (type guard)
+ *   - after  `is not`         (negated type guard)
+ * Positions inside generic brackets are added recursively by parseTypeAt.
+ */
+function typeAnnotationPositions(rawLine) {
+    const out = new Set();
+    const src = stripComment(rawLine);
+    // `identifier: TypeExpr`  — requires a letter/_ after the colon (excludes `class Foo:` etc.)
+    // `:(?!=)` excludes `:=`
+    const colonRe = /[A-Za-z_]\w*[ \t]*:(?!=)(?=[ \t]*[A-Za-z_])/g;
+    let m;
+    while ((m = colonRe.exec(src)) !== null) {
+        // m[0] ends with `:`, so afterColon is right after it
+        parseTypeAt(src, m.index + m[0].length, out);
+    }
+    // `-> TypeExpr`  — return type / control-flow expression type
+    const arrowRe = /->[ \t]*/g;
+    while ((m = arrowRe.exec(src)) !== null) {
+        parseTypeAt(src, m.index + m[0].length, out);
+    }
+    // `is not TypeName`  — negated type guard (match before `is` to avoid partial overlap)
+    const isNotRe = /\bis[ \t]+not[ \t]+/g;
+    while ((m = isNotRe.exec(src)) !== null) {
+        parseTypeAt(src, m.index + m[0].length, out);
+    }
+    // `is TypeName`  — type guard (must not be `is not`)
+    const isRe = /\bis[ \t]+(?!not\b)/g;
+    while ((m = isRe.exec(src)) !== null) {
+        parseTypeAt(src, m.index + m[0].length, out);
+    }
+    return out;
+}
 function provideDocumentSemanticTokens(document) {
     const builder = new vscode.SemanticTokensBuilder(exports.SEMANTIC_TOKENS_LEGEND);
+    // Collect import aliases (colored as 'class', index 0)
     const aliases = collectImportAliases(document);
-    if (aliases.size === 0)
-        return builder.build();
+    // Collect user-defined class / trait / enum / new_type names (colored as 'class', index 0)
+    const userTypes = new Set();
+    for (let i = 0; i < document.lineCount; i++) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const classM = stripped.match(CLASS_DEF_RE);
+        if (classM) {
+            userTypes.add(classM[3]);
+            continue;
+        }
+        const ntM = stripped.match(NEW_TYPE_RE);
+        if (ntM)
+            userTypes.add(ntM[2]);
+    }
     for (let lineIdx = 0; lineIdx < document.lineCount; lineIdx++) {
         const lineText = document.lineAt(lineIdx).text;
-        const lineMatches = [];
+        // Compute type-annotation positions for this line once (used to gate built-in types)
+        const typePositions = typeAnnotationPositions(lineText);
+        const hits = [];
+        // Built-in types → 'type' (index 1), ONLY at annotation positions
+        for (const name of BUILTIN_TYPE_NAMES) {
+            const re = new RegExp(`\\b${name}\\b`, 'g');
+            let m;
+            while ((m = re.exec(lineText)) !== null) {
+                if (typePositions.has(m.index)) {
+                    hits.push({ col: m.index, len: name.length, tokenType: 1 });
+                }
+            }
+        }
+        // Import aliases → 'class' (index 0), all occurrences
         for (const [alias] of aliases) {
             const re = new RegExp(`\\b${escapeRegex(alias)}\\b`, 'g');
             let m;
             while ((m = re.exec(lineText)) !== null) {
-                lineMatches.push({ col: m.index, len: alias.length });
+                hits.push({ col: m.index, len: alias.length, tokenType: 0 });
             }
         }
-        lineMatches.sort((a, b) => a.col - b.col);
-        for (const { col, len } of lineMatches) {
-            builder.push(lineIdx, col, len, 0, 0);
+        // User-defined types → 'class' (index 0), all occurrences
+        // (constructor calls, inheritance lists, annotations — all are correct to color)
+        for (const name of userTypes) {
+            const re = new RegExp(`\\b${escapeRegex(name)}\\b`, 'g');
+            let m;
+            while ((m = re.exec(lineText)) !== null) {
+                hits.push({ col: m.index, len: name.length, tokenType: 0 });
+            }
+        }
+        // Sort by column; for same column, 'class' (0) wins over 'type' (1)
+        hits.sort((a, b) => a.col !== b.col ? a.col - b.col : a.tokenType - b.tokenType);
+        // Emit non-overlapping tokens
+        let prevEnd = 0;
+        for (const { col, len, tokenType } of hits) {
+            if (col < prevEnd)
+                continue;
+            builder.push(lineIdx, col, len, tokenType, 0);
+            prevEnd = col + len;
         }
     }
     return builder.build();

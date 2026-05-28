@@ -19,6 +19,8 @@ function getReplTerminal(projectRoot) {
     return replTerminal;
 }
 function activate(context) {
+    // Load built-in function stubs for hover / completion / signature-help intelligence.
+    (0, type_infer_1.initBuiltinStub)(path.join(context.extensionPath, 'builtins.tls'));
     // Clear the cached terminal handle when the user closes it.
     context.subscriptions.push(vscode.window.onDidCloseTerminal(t => { if (t === replTerminal)
         replTerminal = undefined; }));
