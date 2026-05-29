@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.provideDocumentSemanticTokens = exports.SEMANTIC_TOKENS_LEGEND = exports.provideDefinition = exports.provideSignatureHelp = exports.provideDocumentSymbols = exports.provideCompletionItems = exports.provideInlayHints = exports.provideHover = exports.inferExprType = exports.initBuiltinStub = void 0;
+exports.provideDocumentSemanticTokens = exports.SEMANTIC_TOKENS_LEGEND = exports.provideDiagnostics = exports.provideDefinition = exports.provideSignatureHelp = exports.provideDocumentSymbols = exports.provideCompletionItems = exports.provideInlayHints = exports.provideHover = exports.inferExprType = exports.initBuiltinStub = void 0;
 const vscode = require("vscode");
 const fs = require("fs");
 const path = require("path");
@@ -559,7 +559,8 @@ const HOVER_DECL_RE = /^(\s*)(let|mut|const)\s+([A-Za-z_]\w*)\s*(?::\s*([^=#]+?)
 const CLASS_DEF_RE = /^(\s*)(class|trait|enum)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*(?:\(([^)]*)\))?\s*:/;
 const NEW_TYPE_RE = /^(\s*)new_type\s+([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\], ]*)/;
 // freeze(varName)
-const FREEZE_RE = /^\s*freeze\s*\(\s*([A-Za-z_]\w*)\s*\)/;
+// Matches both `freeze varName` (statement form) and `freeze(varName)` (call form).
+const FREEZE_RE = /^\s*freeze(?:\s*\(\s*|\s+)([A-Za-z_]\w*)(?:\s*\))?/;
 // Access section markers: public: / private: / protected:
 const ACCESS_SECTION_RE = /^(\s*)(public|private|protected)\s*:\s*$/;
 // Tuple destructuring: let/mut a, b = expr
@@ -1388,6 +1389,8 @@ function selectHoverSymbol(symbols, name, line) {
 function renderHover(symbol, opts) {
     const md = new vscode.MarkdownString(undefined, true);
     md.isTrusted = false;
+    // `let` stays "let" (immutable by declaration).
+    // `mut` after freeze() becomes "frozen" (acquired immutability at runtime).
     const mutability = opts?.isFrozen ? 'frozen' : (symbol.mutability ?? 'value');
     if (symbol.kind === 'variable') {
         const accessPrefix = symbol.access ? `${symbol.access} ` : '';
@@ -2027,6 +2030,129 @@ function provideDefinition(document, position) {
     return new vscode.Location(document.uri, targetRange);
 }
 exports.provideDefinition = provideDefinition;
+// ===== Diagnostics =====
+/** Matches a bare re-assignment: `identifier =` or `identifier +=`, etc. (not a declaration). */
+const REASSIGN_RE = /^(\s*)([A-Za-z_]\w*)\s*(?:[+\-*\/%&|^]?=(?!=))/;
+const PRIMITIVE_TYPES = new Set(['int', 'uint', 'float', 'str', 'bool', 'None']);
+function isTypeCompatible(declared, inferred) {
+    if (declared === inferred)
+        return true;
+    if (inferred === 'unknown' || declared === 'unknown')
+        return true;
+    if (declared.includes('[') || inferred.includes('['))
+        return true;
+    if (declared.startsWith('Union') || declared.startsWith('Option') || declared.startsWith('Optional'))
+        return true;
+    // bool is a subtype of int/uint
+    if (inferred === 'bool' && (declared === 'int' || declared === 'uint'))
+        return true;
+    // int/uint widens to float
+    if (declared === 'float' && (inferred === 'int' || inferred === 'uint' || inferred === 'bool'))
+        return true;
+    // int and uint are interchangeable for inference purposes
+    if ((declared === 'int' && inferred === 'uint') || (declared === 'uint' && inferred === 'int'))
+        return true;
+    return false;
+}
+function provideDiagnostics(document) {
+    const diagnostics = [];
+    const importAliasMap = collectImportAliases(document);
+    const importAliases = new Set(importAliasMap.keys());
+    const { funcTypes: importFuncTypes, classMethods: pyClassMethods, cppClasses } = collectAllPyModuleInfo(document);
+    const funcDefs = collectFuncDefs(document);
+    const funcEnv = collectConstructorTypes(document);
+    const templateParams = collectTemplateParams(document);
+    for (const [className] of cppClasses)
+        funcEnv.set(className, className);
+    for (const def of funcDefs) {
+        const rawType = def.annotation ?? inferBodyReturnType(document, def.defLine, def.defIndent, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams);
+        funcEnv.set(def.name, resolveSelf(rawType, def.enclosingClass));
+    }
+    const symbols = collectHoverSymbols(document);
+    const freezeLines = collectFreezeLines(document);
+    const env = new Map();
+    for (let i = 0; i < document.lineCount; i++) {
+        const raw = document.lineAt(i).text;
+        const stripped = stripComment(raw);
+        if (!stripped.trim())
+            continue;
+        // Skip lines that open a new scope — they are not assignments
+        if (stripped.match(FUNC_DEF_RE) || stripped.match(CLASS_DEF_RE) || stripped.match(IMPORT_RE))
+            continue;
+        // static mut declarations
+        const staticM = stripped.match(STATIC_DECL_RE);
+        if (staticM) {
+            const [, , name, annotation, rhs] = staticM;
+            const type = cleanTypeAnnotation(annotation)
+                ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams) : 'unknown');
+            env.set(name, type);
+            continue;
+        }
+        // Tuple declarations
+        const tupleM = stripped.match(TUPLE_DECL_RE);
+        if (tupleM) {
+            const [, , , names, rhs] = tupleM;
+            const rhsType = inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams);
+            const nameList = names.split(',').map(n => n.trim()).filter(Boolean);
+            const elemTypes = extractTupleElemTypes(rhsType, nameList.length);
+            for (let idx = 0; idx < nameList.length; idx++)
+                env.set(nameList[idx], elemTypes[idx] ?? 'unknown');
+            continue;
+        }
+        // Variable declarations: check for type annotation vs RHS type mismatch
+        const declM = stripped.match(HOVER_DECL_RE);
+        if (declM) {
+            const [, indent, keyword, name, annotation, rhs] = declM;
+            const declaredType = cleanTypeAnnotation(annotation);
+            if (declaredType && rhs) {
+                const inferredType = inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams);
+                env.set(name, declaredType);
+                if (PRIMITIVE_TYPES.has(declaredType) &&
+                    PRIMITIVE_TYPES.has(inferredType) &&
+                    !isTypeCompatible(declaredType, inferredType)) {
+                    // Underline the type annotation (the declared type that contradicts the RHS)
+                    const indentLen = (indent ?? '').length;
+                    const colonIdx = raw.indexOf(':', indentLen + (keyword ?? '').length + name.length);
+                    if (colonIdx >= 0) {
+                        const annotStart = raw.indexOf(declaredType, colonIdx + 1);
+                        if (annotStart >= 0) {
+                            diagnostics.push(new vscode.Diagnostic(new vscode.Range(i, annotStart, i, annotStart + declaredType.length), `Type mismatch: declared '${declaredType}', but right-hand side has type '${inferredType}'`, vscode.DiagnosticSeverity.Error));
+                        }
+                    }
+                }
+            }
+            else {
+                env.set(name, declaredType ?? (rhs
+                    ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams)
+                    : 'unknown'));
+            }
+            continue;
+        }
+        // Re-assignment check: catches `x = expr` and `x += expr` on non-declaration lines
+        const reassignM = stripped.match(REASSIGN_RE);
+        if (!reassignM)
+            continue;
+        const [, indent, varName] = reassignM;
+        const sym = selectHoverSymbol(symbols, varName, i);
+        if (!sym || sym.kind !== 'variable')
+            continue;
+        const nameStart = raw.indexOf(varName, (indent ?? '').length);
+        if (nameStart < 0)
+            continue;
+        const range = new vscode.Range(i, nameStart, i, nameStart + varName.length);
+        if (sym.mutability === 'let' || sym.mutability === 'const') {
+            diagnostics.push(new vscode.Diagnostic(range, `Cannot assign to '${sym.mutability}' variable '${varName}'`, vscode.DiagnosticSeverity.Error));
+        }
+        else if (sym.mutability === 'mut') {
+            const freezeLine = freezeLines.get(varName);
+            if (freezeLine !== undefined && i > freezeLine) {
+                diagnostics.push(new vscode.Diagnostic(range, `Cannot assign to frozen variable '${varName}'`, vscode.DiagnosticSeverity.Error));
+            }
+        }
+    }
+    return diagnostics;
+}
+exports.provideDiagnostics = provideDiagnostics;
 // ===== Semantic tokens =====
 // Standard VS Code semantic token types — themes guarantee colors for these.
 // Index 0 = 'class'    (import aliases, user-defined classes/traits/new_types)

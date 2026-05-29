@@ -111,7 +111,7 @@
           }
         },
         {
-          "match": "\\b(let|mut|freeze)\\b",
+          "match": "\\b(let|mut|freeze|frozen)\\b",
           "name": "storage.modifier.hv"
         },
         {

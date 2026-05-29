@@ -84,6 +84,32 @@ function activate(context) {
         terminal.sendText(code, false); // send code without auto-newline
         terminal.sendText('\n' + REPL_SENTINEL); // sentinel on its own line
     });
+    // ---- Diagnostics (red underlines) ----
+    const diagCollection = vscode.languages.createDiagnosticCollection('havakyrie');
+    const debounceMap = new Map();
+    function scheduleDiagnostics(document) {
+        if (document.languageId !== 'havakyrie')
+            return;
+        const key = document.uri.toString();
+        const existing = debounceMap.get(key);
+        if (existing)
+            clearTimeout(existing);
+        debounceMap.set(key, setTimeout(() => {
+            debounceMap.delete(key);
+            diagCollection.set(document.uri, (0, type_infer_1.provideDiagnostics)(document));
+        }, 400));
+    }
+    context.subscriptions.push(diagCollection, vscode.workspace.onDidOpenTextDocument(scheduleDiagnostics), vscode.workspace.onDidChangeTextDocument(e => scheduleDiagnostics(e.document)), vscode.workspace.onDidCloseTextDocument(doc => {
+        diagCollection.delete(doc.uri);
+        const key = doc.uri.toString();
+        const t = debounceMap.get(key);
+        if (t) {
+            clearTimeout(t);
+            debounceMap.delete(key);
+        }
+    }));
+    // Run on documents already open when the extension activates
+    vscode.workspace.textDocuments.forEach(scheduleDiagnostics);
     context.subscriptions.push(inlayProvider, hoverProvider, semanticProvider, completionProvider, symbolProvider, signatureProvider, definitionProvider, sendToRepl);
 }
 exports.activate = activate;

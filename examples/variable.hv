@@ -54,7 +54,7 @@ class Config:
 mut cfg = Config(True, 10)
 cfg.debug = False
 freeze cfg
-# cfg.debug = True  # TypeError after freeze
+cfg.debug = True  # TypeError after freeze
 
 # --- static mut: single shared cell across all closure calls ---
 print("=== static mut ===")
