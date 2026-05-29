@@ -1,4 +1,4 @@
-﻿# CLAUDE.md
+# CLAUDE.md
 
 Guidelines for Claude Code when working in this repository.
 
@@ -8,8 +8,9 @@ Guidelines for Claude Code when working in this repository.
 
 ```bash
 cargo build                        # Compile
-cargo run -- -src <file.hv>        # Execute a .tl file
+cargo run -- -src <file.hv>        # Execute a .hv file
 cargo run -- <file.hv>             # Positional argument also supported
+cargo run -- --repl                # Start interactive REPL
 cargo test                         # Run all tests
 cargo test <name>                  # Filter tests by partial name match
 cargo clippy                       # Lint
@@ -20,13 +21,19 @@ cargo run -- --compile <file.hv>   # Partially compile a module (see below)
 ### Python implementation (`impl_python/`)
 
 ```bash
-# Run from the repository root (Havakyrie/)
+# Run from the repository root
 python -m impl_python <file.hv>
 
 # Examples
-python -m impl_python examples/variable.tl
-python -m impl_python examples/control_flow.tl
+python -m impl_python examples/variable.hv
+python -m impl_python examples/control_flow.hv
 ```
+
+## Regulations
+- When a new grammer is implemented, an example code to check if it works must be generated in example folder. And if error pattern is implemented, an error example is also neede, whose name has "_error" at the last.
+- When Python implementation is updated, also update the git SHA to track and syncronize the versions between the Rust-implementation and Python-implementation. 
+- If running the same script(s) many times, make them .ps1 file to ease command permission.
+- When VS code extension is updated, the compilation and the generation of VSIX file are required. To generate VSIX filee, run make-vsix.ps1.
 
 ## Project Overview
 
@@ -42,70 +49,123 @@ It aims to provide a Python-based syntax with static type checking and additiona
 ```text
 Havakyrie/
 ├── src/
-│   ├── main.rs          # Entry point / argument parsing
-│   ├── token.rs         # Token enum / Span / Spanned definitions
-│   ├── lexer.rs         # Lexer (returns Vec<Spanned>)
-│   ├── ast.rs           # AST node definitions (with embedded Span)
-│   ├── parser.rs        # Recursive descent parser (input: Vec<Spanned>)
-│   ├── type_check.rs    # Static type checker (after parsing, before execution)
-│   ├── interpreter.rs   # Tree-walk interpreter
-│   ├── partial_compiler/ # --compile subsystem
-│   │   ├── mod.rs         # Entry point: orchestrates compile pipeline
-│   │   ├── codegen.rs     # Rust source code generator (tl fn → handle-based i64 ABI)
-│   │   ├── module_compiler.rs # Writes .hvc (v0/v1) and .tls; v1 embeds DLL inside .tlc
-│   │   └── stub_gen.rs    # .tls stub file generator
-│   └── interpreter/
-│       └── native_api.rs  # Handle arena, TlCallbacks struct, 19 C callback impls
-├── spec/
-│   ├── general.md       # General language specification
-│   ├── keywords.md      # Keyword list
-│   └── operator.md      # Operator list / precedence
+│   ├── main.rs              # Entry point / argument parsing / error formatting
+│   ├── token.rs             # Token enum / Span / Spanned definitions
+│   ├── ast.rs               # AST node definitions (with embedded Span)
+│   ├── python_converter.rs  # Python source converter utilities
+│   ├── repl.rs              # Interactive REPL implementation
+│   ├── frontend_tests.rs    # Lexer/parser/type-checker tests
+│   ├── lexer/               # Lexer module
+│   │   ├── mod.rs           # Lexer entry point (returns Vec<Spanned>)
+│   │   ├── chars.rs         # Character utilities
+│   │   ├── keyword.rs       # Keyword recognition
+│   │   ├── literal.rs       # Numeric / string literal scanning
+│   │   ├── math.rs          # Operator scanning
+│   │   ├── scan.rs          # Main scan loop
+│   │   └── symbol.rs        # Symbol / punctuation scanning
+│   ├── parser/              # Parser module
+│   │   ├── mod.rs           # Parser entry point (input: Vec<Spanned>)
+│   │   ├── stmts.rs         # Statement parsing
+│   │   ├── exprs.rs         # Expression parsing
+│   │   ├── classes.rs       # Class / trait parsing
+│   │   ├── types.rs         # Type annotation parsing
+│   │   └── imports.rs       # Import statement parsing
+│   ├── type_check/          # Static type checker module
+│   │   ├── mod.rs           # Type checker entry point
+│   │   ├── stmt.rs          # Statement type checking
+│   │   ├── infer.rs         # Type inference
+│   │   ├── types.rs         # Type representations
+│   │   ├── errors.rs        # StaticTypeError definitions
+│   │   ├── scope.rs         # Scope / environment
+│   │   ├── type_utils.rs    # Type utility functions
+│   │   ├── call_check.rs    # Function call type checking
+│   │   ├── binop.rs         # Binary operator type checking
+│   │   └── decorator.rs     # Decorator type checking
+│   ├── interpreter.rs       # Interpreter entry point (re-exports interpreter/ module)
+│   ├── interpreter/         # Interpreter module
+│   │   ├── eval.rs          # Expression evaluation
+│   │   ├── exec.rs          # Statement execution
+│   │   ├── functions.rs     # Function / closure / generator execution
+│   │   ├── classes.rs       # Class / trait execution
+│   │   ├── templates.rs     # Template instantiation
+│   │   ├── ops.rs           # Operator implementations
+│   │   ├── str_methods.rs   # String method dispatch
+│   │   ├── scope.rs         # Lexical scope / environment
+│   │   ├── exceptions.rs    # Exception handling (try/except/finally/raise)
+│   │   ├── async_mgr.rs     # AsyncManager and task submission
+│   │   ├── native_api.rs    # Handle arena, TlCallbacks struct, C callback impls
+│   │   ├── py_interop.rs    # Python interop (import[py] / import[py-int])
+│   │   ├── debugger.rs      # break_point debugger support
+│   │   ├── msvc_errors.rs   # MSVC-style error formatting
+│   │   └── tests.rs         # Interpreter integration tests
+│   ├── partial_compiler/    # --compile subsystem
+│   │   ├── mod.rs           # Entry point: orchestrates compile pipeline
+│   │   ├── codegen.rs       # Rust source code generator (fn → handle-based i64 ABI)
+│   │   ├── module_compiler.rs # Writes .hvc (v0/v1) and .hvs; v1 embeds DLL inside .hvc
+│   │   ├── rs_loader.rs     # Loads and links compiled Rust shared libraries
+│   │   └── stub_gen.rs      # .hvs stub file generator
+│   └── built_in_stab/       # Built-in type stubs (used by VS Code extension)
+│       ├── built_in_const.hvs
+│       ├── built_in_type.hvs
+│       ├── basic_traits.hvs
+│       └── error.hvs
+├── spec.md                  # Language specification
 ├── examples/
-│   ├── variable.tl            # let / mut / const / static mut declarations
-│   ├── variable_error.tl      # declaration error examples
-│   ├── control_flow.tl        # if / for / while / match (value-case and type-pattern)
-│   ├── control_flow_error.tl  # control flow error examples (StaticTypeError, ParseError)
-│   ├── control_flow_expr.tl   # if/for/while/match as expressions (->Type)
-│   ├── block_expr.tl          # block: expression with block_return
-│   ├── functions.tl           # basic fns, typed sigs, default params, closures, generators, decorators
-│   ├── functions_errors.tl   # ParseError (non-default after default) and TypeError (freeze captured mut)
-│   ├── class_trait.tl         # class, trait, inheritance, Self, new_type, access control
-│   ├── class_trait_error.tl   # immutable field and access control errors
-│   ├── collection.tl          # list, dict, tuple, set
-│   ├── collection_error.tl    # KeyError (missing dict key, set.remove on absent element)
-│   ├── polymorphism.tl        # templates, type guards, Union/Optional
-│   ├── polymorphism_error.tl
-│   ├── other_typing.tl        # Any, Union, Option, is/is not narrowing, enum
-│   ├── other_typing_errors.tl  # StaticTypeError (is not on non-Union) and enum value type error
-│   ├── subscript.tl           # subscript / indexing behavior
-│   ├── subscript_errors.tl
-│   ├── slice.tl               # slice syntax and slice() constructor
-│   ├── slice_errors.tl       # TypeError when non-Index used as slice bound
-│   ├── built_in.tl            # id(), enumerate(), zip(), file I/O (path/open/close/modes)
-│   ├── file_io_errors.tl
-│   ├── native_ops.tl              # module: typed int/float functions for native compilation
-│   ├── importation.tl             # all import styles: auto/[tl]/[tlc]/[py-int]/from; native_ops demo, pandas, py_calculator, tl_math
-│   ├── importation_errors.tl     # ParseError: import[hvc] when no .tlc exists
-│   ├── heavy_ops.tl           # module: heavier benchmarks (all value types)
-│   ├── bench_heavy.tl         # benchmark: speedup across int/float/str/class
-│   ├── async_demo.tl          # DEMO: AsyncManager, <- operator, raise_immediately, Async enum
-│   ├── async_bench.tl         # benchmark: sequential vs async parallel (prime counting)
+│   ├── variable.hv            # let / mut / const / static mut declarations
+│   ├── variable_error.hv      # declaration error examples
+│   ├── control_flow.hv        # if / for / while / match (value-case and type-pattern)
+│   ├── control_flow_error.hv  # control flow error examples (StaticTypeError, ParseError)
+│   ├── functions.hv           # basic fns, typed sigs, default params, closures, generators, decorators
+│   ├── functions_errors.hv    # ParseError (non-default after default) and TypeError (freeze captured mut)
+│   ├── class_trait.hv         # class, trait, inheritance, Self, new_type, access control
+│   ├── class_trait_error.hv   # immutable field and access control errors
+│   ├── collection.hv          # list, dict, tuple, set
+│   ├── collection_error.hv    # KeyError (missing dict key, set.remove on absent element)
+│   ├── polymorphism.hv        # templates, type guards, Union/Optional
+│   ├── polymorphism_error.hv
+│   ├── other_typing.hv        # Any, Union, Option, is/is not narrowing, enum
+│   ├── other_typing_errors.hv # StaticTypeError (is not on non-Union) and enum value type error
+│   ├── built_in.hv            # id(), enumerate(), zip(), file I/O (path/open/close/modes)
+│   ├── built_in_error.hv      # built-in function error examples
+│   ├── try_except.hv          # try / except / finally, raise, built-in exception types
+│   ├── try_except_errors.hv   # exception error examples
+│   ├── importation.hv         # all import styles: auto/[hv]/[hvc]/[py-int]/from
+│   ├── importation_errors.hv  # ParseError: import[hvc] when no .hvc exists
+│   ├── async_demo.hv          # DEMO: AsyncManager, <- operator, raise_immediately, Async enum
+│   ├── async_bench.hv         # benchmark: sequential vs async parallel (prime counting)
+│   ├── debug_demo.hv          # break_point debugger demo
+│   ├── test_modules/          # modules used by importation.hv
+│   │   ├── native_ops.hv      # typed int/float functions for native compilation
+│   │   ├── native_ops.hvc     # compiled module (v1, with embedded DLL)
+│   │   ├── native_ops.hvs     # type stub
+│   │   └── prime_factors.hv   # prime factorization module
+│   ├── geometry/              # example package
+│   │   ├── __init__.hv
+│   │   ├── __init__.hvc
+│   │   └── __init__.hvs
 │   └── archived/              # older examples (kept for reference)
-├── impl_python/         # Python implementation of the interpreter
-│   ├── __main__.py      # CLI entry point: python -m impl_python <file.hv>
-│   ├── token.py         # Token / Span / Spanned definitions
-│   ├── lexer.py         # Lexer
-│   ├── ast.py           # AST node dataclasses
-│   ├── parser.py        # Recursive descent parser
-│   ├── type_check.py    # Static type checker
-│   └── interpreter/     # Tree-walk interpreter package
-│       ├── __init__.py      # run(stmts) entry point
-│       ├── interpreter.py   # Interpreter class (exec / eval)
-│       ├── value.py         # Runtime value types (TlList, TlClass, TlInstance, …)
-│       ├── env.py           # Lexical scope / Environment
-│       ├── exceptions.py    # Control-flow signals (ReturnSignal, RaiseSignal, …)
-│       └── builtins.py      # Built-in functions and collection method dispatch
-└── vscode-extension/    # VS Code extension (type inference inline hints)
+├── impl_python/               # Python implementation of the interpreter
+│   ├── __main__.py            # CLI entry point: python -m impl_python <file.hv>
+│   ├── __init__.py
+│   ├── token.py               # Token / Span / Spanned definitions
+│   ├── ast.py                 # AST node dataclasses
+│   ├── repl.py                # Interactive REPL
+│   ├── lexer/                 # Lexer module (mirrors src/lexer/)
+│   ├── parser/                # Parser module (mirrors src/parser/)
+│   ├── type_check/            # Static type checker module (mirrors src/type_check/)
+│   ├── interpreter/           # Tree-walk interpreter package
+│   │   ├── __init__.py        # run(stmts) entry point
+│   │   ├── interpreter.py     # Interpreter class (exec / eval)
+│   │   ├── value.py           # Runtime value types (TlList, TlClass, TlInstance, …)
+│   │   ├── env.py             # Lexical scope / Environment
+│   │   ├── exceptions.py      # Control-flow signals (ReturnSignal, RaiseSignal, …)
+│   │   ├── native_api.py      # Native API bindings
+│   │   └── builtins.py        # Built-in functions and collection method dispatch
+│   └── partial_compiler/      # Partial compiler (mirrors src/partial_compiler/)
+│       ├── codegen.py
+│       ├── module_compiler.py
+│       └── stub_gen.py
+└── vscode-extension/          # VS Code extension (type inference inline hints)
     └── src/
         ├── extension.ts
         └── type_infer.ts
@@ -123,15 +183,15 @@ This produces two files next to the source:
 
 ### Canonical demo
 
-`examples/native_ops.hv` is the canonical module for demonstrating native compilation.  
+`examples/test_modules/native_ops.hv` is the canonical module for demonstrating native compilation.  
 `examples/importation.hv` is the corresponding runner that shows the full workflow.
 
 ```bash
 # Step 1 — run interpreted
-cargo run --release -- examples/importation.tl
+cargo run --release -- examples/importation.hv
 
 # Step 2 — compile the module
-cargo run --release -- --compile examples/test_modules/native_ops.tl
+cargo run --release -- --compile examples/test_modules/native_ops.hv
 # Output:
 #   NativeLib: compiling 6 function(s): fib, count_divisors, digit_sum, ...
 #   NativeLib: 6 function(s) embedded in examples\test_modules\native_ops.hvc
@@ -139,7 +199,7 @@ cargo run --release -- --compile examples/test_modules/native_ops.tl
 #   Stub     : examples\test_modules\native_ops.hvs
 
 # Step 3 — run again with native dispatch (same command as Step 1)
-cargo run --release -- examples/importation.tl
+cargo run --release -- examples/importation.hv
 ```
 
 ### How the compiled module is used
@@ -189,7 +249,7 @@ Every value crossing the native boundary is an `i64` handle:
 | `-1` | `StopIteration` |
 | `≥ 3` | Dynamic value stored in `VALUE_ARENA` |
 
-The interpreter owns all values; native code operates on opaque handles via 19 callbacks (`TlCallbacks`) injected at load time via `tl_init`. Speedup for handle-heavy workloads (class instances, lists) is 2–5×; for typed int/float arithmetic loops it reaches 100–200× (direct Rust arithmetic, no callbacks).
+The interpreter owns all values; native code operates on opaque handles via C callbacks (`TlCallbacks`) injected at load time via `tl_init`. Speedup for handle-heavy workloads (class instances, lists) is 2–5×; for typed int/float arithmetic loops it reaches 100–200× (direct Rust arithmetic, no callbacks).
 
 ### Output file roles
 
@@ -220,7 +280,7 @@ Source File
 
 ## Implemented Features
 
-### Lexical Analysis (`src/lexer.rs`)
+### Lexical Analysis (`src/lexer/`)
 
 - Supports all keywords, operators, and literals
 - Indentation tracking (`INDENT` / `DEDENT` token generation)
@@ -234,7 +294,7 @@ Source File
 - `Token::Public` (`public`), `Token::Private` (`private`), `Token::Protected` (`protected`)
 - `Token::LeftArrow` (`<-`)
 
-### Parsing (`src/parser.rs`)
+### Parsing (`src/parser/`)
 
 - Variable declarations: `let` (immutable), `mut` (mutable), `const` (immutable), `static mut` (mutable, shared across all calls)
 - Assignment: `x = expr`, compound assignment: `x += expr`, etc.
@@ -260,7 +320,7 @@ Source File
 - **Access control sections**: `public:`, `private:`, `protected:` markers inside class/trait bodies switch the accessibility of subsequent members; default is `public`
 - **Async task submission**: `target <- async->T: body` — parses as `Stmt::AsyncAssign`; `target` must be an `AsyncManager` variable; `body` is a block executed in a separate thread
 
-### Static Type Checking (`src/type_check.rs`)
+### Static Type Checking (`src/type_check/`)
 
 Traverses the AST after parsing and before execution, collecting and reporting `StaticTypeError`s together.
 
@@ -270,7 +330,7 @@ Traverses the AST after parsing and before execution, collecting and reporting `
   - `x is not T` on a non-Union type → `StaticTypeError: IsNotOnNonUnion`
 - **Function type checking**: typed function values (`function[let T]->R`, `function{let name:T}->R`) are statically checked at call sites for argument count, argument types, keyword argument names, and mutability (`mut` param requires a mutable variable argument)
 
-### Interpreter (`src/interpreter.rs`)
+### Interpreter (`src/interpreter/`)
 
 - Runtime mutability checking
 - Arithmetic, comparison, logical, and bitwise operators
@@ -281,6 +341,7 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 - Tuple type
 - **Slice type** (`Value::Slice`): `obj[begin:end:step]` syntax and `slice(begin, end[, step])` constructor; `begin`/`end` are `Index` or `None`, `step` is `int` or `None`; supports list/str/tuple slicing with Python-compatible semantics; `.begin`, `.end`, `.step` attribute access
 - **Set type** (`Value::Set`): `{a, b, c}` literal (deduplicated); `set()` constructor (from list/str/tuple/set); methods: `add`, `remove`, `discard`, `pop`, `clear`, `copy`, `union`, `intersection`, `difference`, `symmetric_difference`, `issubset`, `issuperset`; operators `|`, `&`, `-`, `^`; `in`/`not in` membership; iteration; `len()`; equality (`==`/`!=`); static type annotation `set` / `set[T]`
+- **Exception handling** (`src/interpreter/exceptions.rs`): `try`/`except`/`finally` blocks; `raise ExcType(msg)` and `raise ExcType(msg) from cause`; `except ExcType as e:` binds the exception object with `.message`; built-in exception types (`ValueError`, `TypeError`, `IndexError`, `KeyError`, etc.); unhandled exceptions propagate as `RaiseSignal` until caught or reported at the top level
 - `import[py]`
 - `import[py-int]`
 - `import[hv]` — force `.hv` source, always tree-walk (ignores `.hvc`)
@@ -321,18 +382,13 @@ Traverses the AST after parsing and before execution, collecting and reporting `
   - `Async` namespace: `Async.Waiting`, `Async.Running`, `Async.Done` — task progress states
   - Capture semantics: at `<-` time, `mut` variables are captured by shared reference (Rc clone) so the task can propagate mutations back to the caller's scope; `let` variables are deep-cloned (independent copies)
   - `Value::deep_clone()` creates fully independent copies of all value types (new `Rc`s, no sharing across threads)
+- **Debugger** (`src/interpreter/debugger.rs`): `break_point` statement pauses execution and drops into an interactive debug session
 
 ### VS Code Extension (`vscode-extension/`)
 
 - Syntax highlighting for `.hv`
 - Type inference inline hints
 
-## Major Unimplemented Features
-
-- `block_return` directly in a `for`/`while` expression body is a `StaticTypeError`; it is valid only when nested inside an `if`/`match`/`block:` expression within the loop body
-- Mixing check: `block_return` and `loop_yield` in the same block expression (currently not statically detected)
-- Native compilation: closures (inner functions capturing outer variables), generators, `try`/`raise`, `block_return`/`loop_yield`, and `static mut` are not yet supported in compiled functions
-- Python implementation: async tasks (`<-`), `import[py]`/`import[py-int]` modules, and full `import`/`from … import` resolution are not yet complete
 
 ## Key Language Differences from Python
 
@@ -355,4 +411,3 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 
 1. **Expand native compilation** — support closures, generators, and `block_return`/`loop_yield` in compiled functions
 2. **Async enhancements** — `async` blocks inside native-compiled functions; shared mutable state via explicit `Mutex`-style primitives
-
