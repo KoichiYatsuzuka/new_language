@@ -68,6 +68,13 @@ $manifest = @'
 [System.IO.File]::WriteAllText("$tmp\extension.vsixmanifest", $manifest, $utf8NoBom)
 
 # -------------------------------------------------------
+# Compile TypeScript
+# -------------------------------------------------------
+Write-Host "Compiling TypeScript..."
+npm --prefix "$root" run compile
+if (-not $?) { throw "TypeScript compilation failed" }
+
+# -------------------------------------------------------
 # Copy extension files
 # -------------------------------------------------------
 Copy-Item "$root\package.json"               "$tmp\extension\package.json"

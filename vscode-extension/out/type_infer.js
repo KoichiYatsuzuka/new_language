@@ -506,6 +506,39 @@ function inferExprType(src, env, funcEnv = new Map(), importAliases = new Set(),
 }
 exports.inferExprType = inferExprType;
 // ===== Strip comment (respecting strings) =====
+/**
+ * Returns [start, end) column ranges occupied by string literals on the line,
+ * stopping before `codeEnd` (the comment-start column).
+ */
+function stringLiteralRanges(line, codeEnd) {
+    const ranges = [];
+    let i = 0;
+    while (i < codeEnd) {
+        const c = line[i];
+        if (c === '"' || c === "'") {
+            const q = c;
+            const triple = line.startsWith(q + q + q, i);
+            const start = i;
+            i += triple ? 3 : 1;
+            while (i < codeEnd) {
+                if (line[i] === '\\') {
+                    i += 2;
+                    continue;
+                }
+                if (triple ? line.startsWith(q + q + q, i) : line[i] === q) {
+                    i += triple ? 3 : 1;
+                    break;
+                }
+                i++;
+            }
+            ranges.push([start, i]);
+        }
+        else {
+            i++;
+        }
+    }
+    return ranges;
+}
 function stripComment(line) {
     let inStr = false;
     let strChar = '';
@@ -2257,6 +2290,12 @@ function provideDocumentSemanticTokens(document) {
     }
     for (let lineIdx = 0; lineIdx < document.lineCount; lineIdx++) {
         const lineText = document.lineAt(lineIdx).text;
+        // Determine which columns are "live code": not inside a comment and not inside a string.
+        // Semantic tokens must not be emitted for those regions so that the TextMate grammar
+        // comment/string scopes keep their theme colors unmodified.
+        const commentStart = stripComment(lineText).length;
+        const strRanges = stringLiteralRanges(lineText, commentStart);
+        const isLiveCode = (col) => col < commentStart && !strRanges.some(([s, e]) => col >= s && col < e);
         // Compute type-annotation positions for this line once (used to gate built-in types)
         const typePositions = typeAnnotationPositions(lineText);
         const hits = [];
@@ -2268,6 +2307,8 @@ function provideDocumentSemanticTokens(document) {
             const re = new RegExp(`\\b${name}\\b`, 'g');
             let m;
             while ((m = re.exec(lineText)) !== null) {
+                if (!isLiveCode(m.index))
+                    continue;
                 if (typePositions.has(m.index)) {
                     hits.push({ col: m.index, len: name.length, tokenType: 1 });
                 }
@@ -2289,6 +2330,8 @@ function provideDocumentSemanticTokens(document) {
             const re = new RegExp(`\\b${escapeRegex(alias)}\\b`, 'g');
             let m;
             while ((m = re.exec(lineText)) !== null) {
+                if (!isLiveCode(m.index))
+                    continue;
                 hits.push({ col: m.index, len: alias.length, tokenType: 0 });
             }
         }
@@ -2298,6 +2341,8 @@ function provideDocumentSemanticTokens(document) {
             const re = new RegExp(`\\b${escapeRegex(name)}\\b`, 'g');
             let m;
             while ((m = re.exec(lineText)) !== null) {
+                if (!isLiveCode(m.index))
+                    continue;
                 hits.push({ col: m.index, len: name.length, tokenType: 0 });
             }
         }

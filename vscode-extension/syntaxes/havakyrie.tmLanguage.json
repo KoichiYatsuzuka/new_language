@@ -36,31 +36,60 @@
       "match": "#.*$",
       "name": "comment.line.number-sign.hv"
     },
+    "string-interpolation": {
+      "name": "meta.interpolation.hv",
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": { "0": { "name": "keyword.reserved.hv" } },
+      "endCaptures": { "0": { "name": "keyword.reserved.hv" } },
+      "patterns": [
+        { "match": "[!:][^}]*", "name": "keyword.reserved.hv" },
+        { "include": "#keyword" },
+        { "include": "#constant" },
+        { "include": "#number" },
+        { "include": "#builtin-type" },
+        { "include": "#builtin-func" },
+        { "include": "#operator" },
+        { "include": "#variable" }
+      ]
+    },
     "string": {
       "patterns": [
         {
           "name": "string.quoted.triple.double.hv",
           "begin": "\"\"\"",
           "end": "\"\"\"",
-          "patterns": [{ "include": "#string-escape" }]
+          "patterns": [
+            { "include": "#string-interpolation" },
+            { "include": "#string-escape" }
+          ]
         },
         {
           "name": "string.quoted.triple.single.hv",
           "begin": "'''",
           "end": "'''",
-          "patterns": [{ "include": "#string-escape" }]
+          "patterns": [
+            { "include": "#string-interpolation" },
+            { "include": "#string-escape" }
+          ]
         },
         {
           "name": "string.quoted.double.hv",
           "begin": "\"(?!\"\")",
           "end": "\"",
-          "patterns": [{ "include": "#string-escape" }]
+          "patterns": [
+            { "include": "#string-interpolation" },
+            { "include": "#string-escape" }
+          ]
         },
         {
           "name": "string.quoted.single.hv",
           "begin": "'(?!'')",
           "end": "'",
-          "patterns": [{ "include": "#string-escape" }]
+          "patterns": [
+            { "include": "#string-interpolation" },
+            { "include": "#string-escape" }
+          ]
         }
       ]
     },
