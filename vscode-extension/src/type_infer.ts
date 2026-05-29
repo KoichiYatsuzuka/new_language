@@ -487,9 +487,9 @@ const ACCESS_SECTION_RE = /^(\s*)(public|private|protected)\s*:\s*$/;
 const TUPLE_DECL_RE = /^(\s*)(let|mut)\s+((?:[A-Za-z_]\w*\s*,\s*)+[A-Za-z_]\w*)\s*=(?!=)\s*(.*)/;
 
 // All import variants — captures: 1=keyword, 2=module path, 3=stub name (opt), 4=alias
-// Handles: import[py], import[py-int], import[tl], import[tlc], import[cpp-lib],
+// Handles: import[py], import[py-int], import[hv], import[hvc], import[cpp-lib],
 //          import[cpp-dll], and bare `import` (auto mode)
-const IMPORT_RE = /^\s*(import(?:\[(?:py(?:-int)?|tlc?|cpp-(?:lib|dll))\])?)\s+([\w.]+)(?:\s+with\s+(\w+))?\s+as\s+([A-Za-z_]\w*)/;
+const IMPORT_RE = /^\s*(import(?:\[(?:py(?:-int)?|hvc?|cpp-(?:lib|dll))\])?)\s+([\w.]+)(?:\s+with\s+(\w+))?\s+as\s+([A-Za-z_]\w*)/;
 
 // Typeguard — check is-not before is to avoid accidental match
 const TYPEGUARD_IS_NOT_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+not\s+([A-Za-z_]\w*)\s*:/;
@@ -522,9 +522,9 @@ interface ScopeOverride {
 
 // ===== C++ / TL native module support =====
 
-function importKindOf(keyword: string): 'py' | 'cpp' | 'tl' {
+function importKindOf(keyword: string): 'py' | 'cpp' | 'hv' {
     if (keyword.includes('cpp')) return 'cpp';
-    if (keyword === 'import' || keyword.startsWith('import[tl')) return 'tl';
+    if (keyword === 'import' || keyword.startsWith('import[hv')) return 'hv';
     return 'py';
 }
 
@@ -1398,23 +1398,23 @@ function renderHover(symbol: HoverSymbol, opts?: {
 
     if (symbol.kind === 'variable') {
         const accessPrefix = symbol.access ? `${symbol.access} ` : '';
-        md.appendCodeblock(`${accessPrefix}${mutability} ${symbol.name}: ${symbol.type ?? 'unknown'}`, 'tl');
+        md.appendCodeblock(`${accessPrefix}${mutability} ${symbol.name}: ${symbol.type ?? 'unknown'}`, 'havakyrie');
         if (opts?.narrowedFrom) {
             md.appendMarkdown(`\n\n*narrowed from* \`${opts.narrowedFrom}\``);
         }
     } else if (symbol.kind === 'function') {
         const baseSig = symbol.signature ?? `fn ${symbol.name}() -> ${symbol.type ?? 'unknown'}`;
-        md.appendCodeblock(symbol.access ? `${symbol.access} ${baseSig}` : baseSig, 'tl');
+        md.appendCodeblock(symbol.access ? `${symbol.access} ${baseSig}` : baseSig, 'havakyrie');
     } else if (symbol.kind === 'class') {
-        md.appendCodeblock(`class ${symbol.name}`, 'tl');
+        md.appendCodeblock(`class ${symbol.name}`, 'havakyrie');
     } else if (symbol.kind === 'enum') {
-        md.appendCodeblock(`enum ${symbol.name}`, 'tl');
+        md.appendCodeblock(`enum ${symbol.name}`, 'havakyrie');
     } else if (symbol.kind === 'trait') {
-        md.appendCodeblock(`trait ${symbol.name}`, 'tl');
+        md.appendCodeblock(`trait ${symbol.name}`, 'havakyrie');
     } else if (symbol.kind === 'module') {
-        md.appendCodeblock(`${symbol.originalType ?? 'import[py] ?'} as ${symbol.name}`, 'tl');
+        md.appendCodeblock(`${symbol.originalType ?? 'import[py] ?'} as ${symbol.name}`, 'havakyrie');
     } else {
-        md.appendCodeblock(`new_type ${symbol.name}: ${symbol.originalType ?? 'unknown'}`, 'tl');
+        md.appendCodeblock(`new_type ${symbol.name}: ${symbol.originalType ?? 'unknown'}`, 'havakyrie');
     }
 
     // Class/trait definitions: show what they implement
@@ -1458,7 +1458,7 @@ export function provideHover(
         if (retType !== undefined) {
             const md = new vscode.MarkdownString(undefined, true);
             const sig = funcSigs.get(objName)?.get(name) ?? `fn ${name}() -> ${retType}`;
-            md.appendCodeblock(sig, 'tl');
+            md.appendCodeblock(sig, 'havakyrie');
             return new vscode.Hover(md, range);
         }
 
@@ -1471,7 +1471,7 @@ export function provideHover(
                 const fieldType = cppCls.fields.get(name);
                 if (fieldType !== undefined) {
                     const md = new vscode.MarkdownString(undefined, true);
-                    md.appendCodeblock(`${name}: ${fieldType}`, 'tl');
+                    md.appendCodeblock(`${name}: ${fieldType}`, 'havakyrie');
                     md.appendMarkdown(`\n\n*field of* \`${objSym.type}\``);
                     return new vscode.Hover(md, range);
                 }
@@ -1500,7 +1500,7 @@ export function provideHover(
         const builtinSig = builtinStub.sigs.get(name);
         if (builtinSig) {
             const md = new vscode.MarkdownString(undefined, true);
-            md.appendCodeblock(builtinSig, 'tl');
+            md.appendCodeblock(builtinSig, 'havakyrie');
             const doc = builtinStub.docs.get(name);
             if (doc) md.appendMarkdown(`\n\n${doc}`);
             return new vscode.Hover(md, range);

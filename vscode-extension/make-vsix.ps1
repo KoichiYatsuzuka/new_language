@@ -25,12 +25,13 @@ $contentTypes = @'
   <Default Extension="png"          ContentType="image/png"/>
 </Types>
 '@
-[System.IO.File]::WriteAllText("$tmp\[Content_Types].xml", $contentTypes, [System.Text.Encoding]::UTF8)
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[System.IO.File]::WriteAllText("$tmp\[Content_Types].xml", $contentTypes, $utf8NoBom)
 
 # -------------------------------------------------------
 # extension.vsixmanifest
 # -------------------------------------------------------
-@'
+$manifest = @'
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0"
   xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"
@@ -63,7 +64,8 @@ $contentTypes = @'
            d:Source="File" Path="|self|" Addressable="true"/>
   </Assets>
 </PackageManifest>
-'@ | Out-File -Encoding utf8 "$tmp\extension.vsixmanifest"
+'@
+[System.IO.File]::WriteAllText("$tmp\extension.vsixmanifest", $manifest, $utf8NoBom)
 
 # -------------------------------------------------------
 # Copy extension files

@@ -1,4 +1,4 @@
-﻿# Built-in function stubs for Havakyrie
+# Built-in function stubs for Havakyrie
 # Loaded by the VS Code extension to power hover, completion, and signature help.
 # Format: fn name(params) -> ReturnType:
 #             """Single-line docstring."""
