@@ -144,7 +144,7 @@
           "name": "storage.modifier.hv"
         },
         {
-          "match": "\\b(yield from|yield|return|block_return|loop_yield|pass|break|continue)\\b",
+          "match": "\\b(yield from|yield|return|block_return|loop_yield|pass|break|continue|break_point)\\b",
           "name": "keyword.control.flow.hv"
         },
         {
