@@ -1,0 +1,1171 @@
+# converter.hv — Havakyrie-to-Python code generator.
+#
+# Imported by __init__.hv after sys.path has been extended so that
+# import[py-int] impl_python.* resolves correctly.
+
+import node_utils as nu
+import[py-int] impl_python.parser as hv_parser
+
+class HvToPyConverter:
+    mut _needs_copy: bool
+    mut _needs_abc: bool
+    mut _typing: set[str]
+    mut _mut_vars: set[str]
+    mut _tmp_n: int
+    mut _in_trait: bool
+
+    fn __init__(mut self) -> None:
+        self._needs_copy = False
+        self._needs_abc = False
+        self._typing = set()
+        self._mut_vars = set()
+        self._tmp_n = 0
+        self._in_trait = False
+
+    # ------------------------------------------------------------------ utils
+
+    fn ind(self, level: int) -> str:
+        mut s: str = ""
+        mut i: int = 0
+        while i < level:
+            s = s + "    "
+            i += 1
+        return s
+
+    fn next_tmp(mut self) -> str:
+        let n: int = self._tmp_n
+        self._tmp_n = self._tmp_n + 1
+        return "_sv" + str(n)
+
+    fn starts_with(self, s: str, prefix: str) -> bool:
+        let pl: int = len(prefix)
+        if len(s) < pl:
+            return False
+        return s[0:pl] == prefix
+
+    fn is_body_abstract(self, body) -> bool:
+        # A body is "abstract" (no real implementation) when it is empty
+        # or contains only `...` (ExprNone) or `pass`.
+        if len(body) == 0:
+            return True
+        if len(body) == 1:
+            let st = body[0]
+            let t: str = nu.get_type_name(st)
+            if t == "StmtPass":
+                return True
+            if t == "StmtExpr":
+                let et: str = nu.get_type_name(st.expr)
+                if et == "ExprNone":
+                    return True
+        return False
+
+    fn type_to_py(mut self, ann: str) -> str:
+        if ann == "":
+            return ""
+        if ann == "Any":
+            self._typing.add("Any")
+            return "Any"
+        if self.starts_with(ann, "Option["):
+            self._typing.add("Optional")
+            let inner: str = ann[7:len(ann) - 1]
+            return "Optional[" + self.type_to_py(inner) + "]"
+        if self.starts_with(ann, "Union["):
+            self._typing.add("Union")
+            return ann
+        if self.starts_with(ann, "function"):
+            self._typing.add("Callable")
+            return "Callable"
+        if ann == "Self":
+            self._typing.add("Self")
+            return "Self"
+        if ann == "None":
+            return "None"
+        return ann
+
+    fn build_header(self) -> str:
+        mut h: str = ""
+        if self._needs_abc:
+            h = h + "from abc import ABC, abstractmethod\n"
+        if self._needs_copy:
+            h = h + "import copy\n"
+        if len(self._typing) > 0:
+            mut names: str = ""
+            mut first: bool = True
+            for name in self._typing:
+                if not first:
+                    names = names + ", "
+                names = names + name
+                first = False
+            h = h + "from typing import " + names + "\n"
+        if len(h) > 0:
+            h = h + "\n"
+        return h
+
+    # -------------------------------------------------------- entry points
+
+    fn convert_file(mut self, path: str) -> str:
+        let f = open(path, FileOpenMode.read)
+        let source: str = f.read()
+        let stmts = hv_parser.parse(source, path)
+        return self.convert_program(stmts)
+
+    fn convert_program(mut self, stmts) -> str:
+        let body: str = self.conv_stmts(stmts, 0, "", "", False)
+        return self.build_header() + body
+
+    # ---------------------------------------------------- statement lists
+
+    fn conv_stmts(mut self, stmts, indent: int, asgn: str, yield_: str, in_loop: bool) -> str:
+        mut out: str = ""
+        for stmt in stmts:
+            out = out + self.conv_stmt(stmt, indent, asgn, yield_, in_loop)
+        return out
+
+    # ------------------------------------------------- statement dispatch
+
+    fn conv_stmt(mut self, stmt, indent: int, asgn: str, yield_: str, in_loop: bool) -> str:
+        let t: str = nu.get_type_name(stmt)
+
+        if t == "StmtLet":
+            return self.conv_let(stmt, indent)
+        elif t == "StmtMut":
+            return self.conv_mut(stmt, indent)
+        elif t == "StmtConst":
+            return self.conv_const(stmt, indent)
+        elif t == "StmtStatic":
+            return self.conv_static(stmt, indent)
+        elif t == "StmtAssign":
+            return self.conv_assign(stmt, indent)
+        elif t == "StmtAttrAssign":
+            return self.conv_attr_assign(stmt, indent)
+        elif t == "StmtAttrCompoundAssign":
+            return self.conv_attr_compound_assign(stmt, indent)
+        elif t == "StmtCompoundAssign":
+            return self.conv_compound_assign(stmt, indent)
+        elif t == "StmtIf":
+            return self.conv_if_stmt(stmt, indent, asgn, yield_, in_loop)
+        elif t == "StmtWhile":
+            return self.conv_while_stmt(stmt, indent)
+        elif t == "StmtFor":
+            return self.conv_for_stmt(stmt, indent)
+        elif t == "StmtMatch":
+            return self.conv_match_stmt(stmt, indent, asgn)
+        elif t == "StmtBlock":
+            return self.conv_stmts(stmt.stmts, indent, asgn, yield_, in_loop)
+        elif t == "StmtReturn":
+            return self.conv_return(stmt, indent)
+        elif t == "StmtBreak":
+            return self.ind(indent) + "break\n"
+        elif t == "StmtContinue":
+            return self.ind(indent) + "continue\n"
+        elif t == "StmtPass":
+            return self.ind(indent) + "pass\n"
+        elif t == "StmtBlockReturn":
+            return self.conv_block_return(stmt, indent, asgn, in_loop)
+        elif t == "StmtLoopYield":
+            return self.conv_loop_yield(stmt, indent, yield_)
+        elif t == "StmtYield":
+            return self.ind(indent) + "yield " + self.conv_expr(stmt.expr) + "\n"
+        elif t == "StmtFreeze":
+            return ""
+        elif t == "StmtFnDef":
+            return self.conv_fn_def(stmt, indent)
+        elif t == "StmtGenDef":
+            return self.conv_gen_def(stmt, indent)
+        elif t == "StmtClassDef":
+            return self.conv_class_def(stmt, indent)
+        elif t == "StmtTraitDef":
+            return self.conv_trait_def(stmt, indent)
+        elif t == "StmtField":
+            return self.conv_field(stmt, indent)
+        elif t == "StmtNewTypeDef":
+            return self.conv_new_type(stmt, indent)
+        elif t == "StmtEnumDef":
+            return self.conv_enum_def(stmt, indent)
+        elif t == "StmtTry":
+            return self.conv_try(stmt, indent)
+        elif t == "StmtRaise":
+            return self.conv_raise(stmt, indent)
+        elif t == "StmtImport":
+            return self.conv_import(stmt, indent)
+        elif t == "StmtFromImport":
+            return self.conv_from_import(stmt, indent)
+        elif t == "StmtLetTuple":
+            return self.conv_let_tuple(stmt, indent)
+        elif t == "StmtAsyncAssign":
+            return self.conv_async(stmt, indent)
+        elif t == "StmtExpr":
+            return self.conv_stmt_expr(stmt, indent, asgn, yield_, in_loop)
+        return self.ind(indent) + "# UNSUPPORTED STMT: " + t + "\n"
+
+    # --------------------------------------------------------- stmt_expr
+
+    fn conv_stmt_expr(mut self, stmt, indent: int, asgn: str, yield_: str, in_loop: bool) -> str:
+        let expr = stmt.expr
+        let t: str = nu.get_type_name(expr)
+        let ind: str = self.ind(indent)
+
+        if t == "ExprIfExpr":
+            if asgn != "":
+                return self.conv_if_expr_asgn(expr, asgn, indent)
+            return self.conv_stmts(self.if_expr_as_stmts(expr), indent, "", "", in_loop)
+        elif t == "ExprForExpr":
+            if asgn != "":
+                return self.conv_for_expr_asgn(expr, asgn, indent)
+            return self.conv_for_expr_standalone(expr, indent)
+        elif t == "ExprWhileExpr":
+            if asgn != "":
+                return self.conv_while_expr_asgn(expr, asgn, indent)
+            return self.conv_while_expr_standalone(expr, indent)
+        elif t == "ExprMatchExpr":
+            if asgn != "":
+                return self.conv_match_expr_asgn(expr, asgn, indent)
+            return self.conv_match_expr_standalone(expr, indent)
+        elif t == "ExprBlock":
+            if asgn != "":
+                return self.conv_block_expr_asgn(expr, asgn, indent)
+            return self.conv_stmts(expr.stmts, indent, "", "", in_loop)
+        else:
+            return ind + self.conv_expr(expr) + "\n"
+
+    # -------------------------------------------------------- let / mut / const / static
+
+    fn conv_let_or_mut(mut self, name: str, expr, is_mut: bool, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let t: str = nu.get_type_name(expr)
+
+        if t == "ExprIfExpr":
+            return self.conv_if_expr_asgn(expr, name, indent)
+        elif t == "ExprForExpr":
+            return self.conv_for_expr_asgn(expr, name, indent)
+        elif t == "ExprWhileExpr":
+            return self.conv_while_expr_asgn(expr, name, indent)
+        elif t == "ExprMatchExpr":
+            return self.conv_match_expr_asgn(expr, name, indent)
+        elif t == "ExprBlock":
+            return self.conv_block_expr_asgn(expr, name, indent)
+        else:
+            return ind + name + " = " + self.conv_expr(expr) + "\n"
+
+    fn conv_let(mut self, stmt, indent: int) -> str:
+        return self.conv_let_or_mut(stmt.name, stmt.expr, False, indent)
+
+    fn conv_mut(mut self, stmt, indent: int) -> str:
+        let name: str = stmt.name
+        self._mut_vars.add(name)
+        return self.conv_let_or_mut(name, stmt.expr, True, indent)
+
+    fn conv_const(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        self._typing.add("Final")
+        return ind + stmt.name + ": Final = " + self.conv_expr(stmt.expr) + "\n"
+
+    fn conv_static(mut self, stmt, indent: int) -> str:
+        # static mut → module/class-level variable (no special Python equivalent)
+        let ind: str = self.ind(indent)
+        return ind + stmt.name + " = " + self.conv_expr(stmt.expr) + "  # static mut\n"
+
+    # -------------------------------------------------------- assignment
+
+    fn conv_assign(mut self, stmt, indent: int) -> str:
+        return self.ind(indent) + stmt.name + " = " + self.conv_expr(stmt.value) + "\n"
+
+    fn conv_attr_assign(mut self, stmt, indent: int) -> str:
+        return self.ind(indent) + self.conv_expr(stmt.target) + " = " + self.conv_expr(stmt.value) + "\n"
+
+    fn conv_attr_compound_assign(mut self, stmt, indent: int) -> str:
+        let op_str: str = nu.get_binop_str(stmt.op)
+        return self.ind(indent) + self.conv_expr(stmt.target) + " " + op_str + "= " + self.conv_expr(stmt.value) + "\n"
+
+    fn conv_compound_assign(mut self, stmt, indent: int) -> str:
+        let op_str: str = nu.get_binop_str(stmt.op)
+        return self.ind(indent) + stmt.name + " " + op_str + "= " + self.conv_expr(stmt.value) + "\n"
+
+    # ---------------------------------------------------------- if
+
+    fn conv_if_stmt(mut self, stmt, indent: int, asgn: str, yield_: str, in_loop: bool) -> str:
+        let ind: str = self.ind(indent)
+        mut out: str = ""
+        mut first: bool = True
+        for branch in stmt.branches:
+            let cond = branch[0]
+            let body = branch[1]
+            let cond_code: str = self.conv_expr(cond)
+            if first:
+                out = out + ind + "if " + cond_code + ":\n"
+                first = False
+            else:
+                out = out + ind + "elif " + cond_code + ":\n"
+            let body_code: str = self.conv_stmts(body, indent + 1, asgn, yield_, in_loop)
+            if len(body_code) == 0:
+                out = out + self.ind(indent + 1) + "pass\n"
+            else:
+                out = out + body_code
+        let eb = stmt.else_body
+        if eb != None:
+            out = out + ind + "else:\n"
+            let eb_code: str = self.conv_stmts(eb, indent + 1, asgn, yield_, in_loop)
+            if len(eb_code) == 0:
+                out = out + self.ind(indent + 1) + "pass\n"
+            else:
+                out = out + eb_code
+        return out
+
+    # ---------------------------------------------------------- while / for
+
+    fn conv_while_stmt(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let cond_code: str = self.conv_expr(stmt.cond)
+        let body_code: str = self.conv_stmts(stmt.body, indent + 1, "", "", True)
+        mut out: str = ind + "while " + cond_code + ":\n"
+        if len(body_code) == 0:
+            out = out + self.ind(indent + 1) + "pass\n"
+        else:
+            out = out + body_code
+        return out
+
+    fn conv_for_stmt(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let targets = stmt.targets
+        mut target_str: str = ""
+        mut first: bool = True
+        for tgt in targets:
+            if not first:
+                target_str = target_str + ", "
+            target_str = target_str + tgt
+            first = False
+        let iter_code: str = self.conv_expr(stmt.iter)
+        let body_code: str = self.conv_stmts(stmt.body, indent + 1, "", "", True)
+        mut out: str = ind + "for " + target_str + " in " + iter_code + ":\n"
+        if len(body_code) == 0:
+            out = out + self.ind(indent + 1) + "pass\n"
+        else:
+            out = out + body_code
+        return out
+
+    # ---------------------------------------------------------- match
+
+    fn conv_match_stmt(mut self, stmt, indent: int, asgn: str) -> str:
+        # Convert match to if/elif chain for Python compatibility
+        let ind: str = self.ind(indent)
+        let tmp: str = self.next_tmp()
+        let subj_code: str = self.conv_expr(stmt.subject)
+        mut out: str = ind + tmp + " = " + subj_code + "\n"
+        mut first: bool = True
+        for arm in stmt.arms:
+            let pattern = arm.pattern
+            let pt: str = nu.get_type_name(pattern)
+            let body = arm.body
+            mut cond: str = ""
+            if pt == "MatchPatternCase":
+                let pexpr = pattern.expr
+                let pet: str = nu.get_type_name(pexpr)
+                if pet == "ExprIdent" and pexpr.name == "_":
+                    # wildcard
+                    out = out + ind + "else:\n"
+                    let bc: str = self.conv_stmts(body, indent + 1, asgn, "", False)
+                    if len(bc) == 0:
+                        out = out + self.ind(indent + 1) + "pass\n"
+                    else:
+                        out = out + bc
+                    first = False
+                    break
+                else:
+                    cond = tmp + " == " + self.conv_expr(pexpr)
+            elif pt == "MatchPatternIsType":
+                cond = "isinstance(" + tmp + ", " + pattern.type_name + ")"
+            if first:
+                out = out + ind + "if " + cond + ":\n"
+                first = False
+            else:
+                out = out + ind + "elif " + cond + ":\n"
+            let bc: str = self.conv_stmts(body, indent + 1, asgn, "", False)
+            if len(bc) == 0:
+                out = out + self.ind(indent + 1) + "pass\n"
+            else:
+                out = out + bc
+        return out
+
+    # ---------------------------------------------------------- return
+
+    fn conv_return(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let expr = stmt.expr
+        if expr == None:
+            return ind + "return\n"
+        return ind + "return " + self.conv_expr(expr) + "\n"
+
+    # ---------------------------------------------------------- block_return / loop_yield
+
+    fn conv_block_return(mut self, stmt, indent: int, asgn: str, in_loop: bool) -> str:
+        let ind: str = self.ind(indent)
+        let val_code: str = self.conv_expr(stmt.expr)
+        if asgn == "":
+            return ind + "# block_return " + val_code + "  # (no assignment target)\n"
+        mut out: str = ind + asgn + " = " + val_code + "\n"
+        if in_loop:
+            out = out + ind + "break\n"
+        return out
+
+    fn conv_loop_yield(mut self, stmt, indent: int, yield_: str) -> str:
+        let ind: str = self.ind(indent)
+        let val_code: str = self.conv_expr(stmt.expr)
+        if yield_ == "":
+            return ind + "# loop_yield " + val_code + "  # (no accumulator)\n"
+        return ind + yield_ + ".append(" + val_code + ")\n"
+
+    # ---------------------------------------------------------- fn def
+
+    fn conv_params(mut self, params) -> str:
+        mut out: str = ""
+        mut first: bool = True
+        for p in params:
+            if not first:
+                out = out + ", "
+            first = False
+            let pname: str = p.name
+            let type_ann = p.type_ann
+            let default = p.default
+            mut pstr: str = pname
+            if type_ann != None:
+                pstr = pstr + ": " + self.type_to_py(type_ann)
+            if default != None:
+                pstr = pstr + " = " + self.conv_expr(default)
+            out = out + pstr
+        return out
+
+    fn conv_fn_def(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        mut out: str = ""
+
+        # decorators defined in the source
+        for dec in stmt.decorators:
+            out = out + ind + "@" + self.conv_expr(dec) + "\n"
+
+        let is_static: bool = stmt.is_static
+        let is_classmethod: bool = stmt.is_class_method
+        let is_explicit_abstract: bool = stmt.is_abstract
+        # In a trait, a method is abstract only when its body has no real code.
+        # Outside traits, only an explicit `is_abstract` flag makes it abstract.
+        let is_abstract: bool = is_explicit_abstract or (self._in_trait and self.is_body_abstract(stmt.body))
+
+        if is_static:
+            out = out + ind + "@staticmethod\n"
+        elif is_classmethod:
+            out = out + ind + "@classmethod\n"
+        if is_abstract:
+            self._needs_abc = True
+            out = out + ind + "@abstractmethod\n"
+
+        let params_str: str = self.conv_params(stmt.params)
+        let ret = stmt.return_type
+        mut sig: str = ind + "def " + stmt.name + "(" + params_str + ")"
+        if ret != None:
+            sig = sig + " -> " + self.type_to_py(ret)
+        sig = sig + ":\n"
+        out = out + sig
+
+        let body = stmt.body
+        if len(body) == 0 or is_abstract:
+            out = out + self.ind(indent + 1) + "...\n"
+        else:
+            let saved_mut = self._mut_vars.copy()
+            self._mut_vars = set()
+            # Mark mut params as mutable in this scope
+            for p in stmt.params:
+                let pm: bool = p.mutable
+                if pm:
+                    self._mut_vars.add(p.name)
+            let body_code: str = self.conv_stmts(body, indent + 1, "", "", False)
+            self._mut_vars = saved_mut
+            if len(body_code) == 0:
+                out = out + self.ind(indent + 1) + "pass\n"
+            else:
+                out = out + body_code
+        out = out + "\n"
+        return out
+
+    fn conv_gen_def(mut self, stmt, indent: int) -> str:
+        # Generator function — same as fn but body uses yield
+        let ind: str = self.ind(indent)
+        let params_str: str = self.conv_params(stmt.params)
+        let yt = stmt.yield_type
+        mut sig: str = ind + "def " + stmt.name + "(" + params_str + ")"
+        if yt != None:
+            self._typing.add("Generator")
+            sig = sig + " -> Generator[" + self.type_to_py(yt) + ", None, None]"
+        sig = sig + ":\n"
+        let saved_mut = self._mut_vars.copy()
+        self._mut_vars = set()
+        let body_code: str = self.conv_stmts(stmt.body, indent + 1, "", "", False)
+        self._mut_vars = saved_mut
+        mut out: str = sig
+        if len(body_code) == 0:
+            out = out + self.ind(indent + 1) + "pass\n"
+        else:
+            out = out + body_code
+        return out + "\n"
+
+    # ---------------------------------------------------------- class / trait
+
+    fn conv_class_def(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let name: str = stmt.name
+        let bases = stmt.bases
+        mut bases_str: str = ""
+        mut first: bool = True
+        for b in bases:
+            if not first:
+                bases_str = bases_str + ", "
+            bases_str = bases_str + b
+            first = False
+        let template_params = stmt.template_params
+        if len(template_params) > 0:
+            # Python generics via Generic[T]
+            mut tp_str: str = ""
+            mut tf: bool = True
+            for tp in template_params:
+                if not tf:
+                    tp_str = tp_str + ", "
+                tp_str = tp_str + tp.name
+                tf = False
+            self._typing.add("Generic")
+            if len(bases_str) > 0:
+                bases_str = bases_str + ", Generic[" + tp_str + "]"
+            else:
+                bases_str = "Generic[" + tp_str + "]"
+
+        for dec in stmt.decorators:
+            ind + "@" + self.conv_expr(dec) + "\n"
+
+        mut header: str = ind + "class " + name
+        if len(bases_str) > 0:
+            header = header + "(" + bases_str + ")"
+        header = header + ":\n"
+
+        let saved_mut = self._mut_vars.copy()
+        self._mut_vars = set()
+        let body_code: str = self.conv_stmts(stmt.body, indent + 1, "", "", False)
+        self._mut_vars = saved_mut
+
+        mut out: str = header
+        if len(body_code) == 0:
+            out = out + self.ind(indent + 1) + "pass\n"
+        else:
+            out = out + body_code
+        return out + "\n"
+
+    fn conv_trait_def(mut self, stmt, indent: int) -> str:
+        # Traits become ABC classes
+        self._needs_abc = True
+        let ind: str = self.ind(indent)
+        let name: str = stmt.name
+        let template_params = stmt.template_params
+        mut tp_str: str = ""
+        if len(template_params) > 0:
+            mut tf: bool = True
+            for tp in template_params:
+                if not tf:
+                    tp_str = tp_str + ", "
+                tp_str = tp_str + tp.name
+                tf = False
+            self._typing.add("Generic")
+            tp_str = ", Generic[" + tp_str + "]"
+
+        let header: str = ind + "class " + name + "(ABC" + tp_str + "):\n"
+
+        let saved_mut = self._mut_vars.copy()
+        let saved_in_trait: bool = self._in_trait
+        self._mut_vars = set()
+        self._in_trait = True
+        let body_code: str = self.conv_stmts(stmt.body, indent + 1, "", "", False)
+        self._mut_vars = saved_mut
+        self._in_trait = saved_in_trait
+
+        mut out: str = header
+        if len(body_code) == 0:
+            out = out + self.ind(indent + 1) + "pass\n"
+        else:
+            out = out + body_code
+        return out + "\n"
+
+    # ---------------------------------------------------------- field
+
+    fn conv_field(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let name: str = stmt.name
+        let type_ann: str = stmt.type_ann
+        let kind_name: str = nu.get_type_name(stmt.kind)
+        let default = stmt.default
+
+        mut ty_str: str = self.type_to_py(type_ann)
+        mut prefix: str = ""
+
+        if kind_name == "FieldKind" and stmt.kind.name == "CONST":
+            self._typing.add("Final")
+            if len(ty_str) > 0:
+                ty_str = "Final[" + ty_str + "]"
+            else:
+                ty_str = "Final"
+        elif kind_name == "FieldKind" and stmt.kind.name == "STATIC_MUT":
+            prefix = "# static mut — class-level variable\n" + ind
+
+        mut out: str = ind + prefix + name
+        if len(ty_str) > 0:
+            out = out + ": " + ty_str
+        if default != None:
+            out = out + " = " + self.conv_expr(default)
+        elif kind_name == "FieldKind" and stmt.kind.name == "STATIC_MUT":
+            out = out + " = None"
+        return out + "\n"
+
+    # ---------------------------------------------------------- new_type / enum
+
+    fn conv_new_type(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        self._typing.add("NewType")
+        return ind + stmt.name + " = NewType('" + stmt.name + "', " + stmt.original + ")\n"
+
+    fn conv_enum_def(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let ind1: str = self.ind(indent + 1)
+        mut out: str = ind + "from enum import Enum as _Enum, auto as _auto\n"
+        out = out + ind + "class " + stmt.name + "(_Enum):\n"
+        for variant in stmt.variants:
+            let vname: str = variant[0]
+            let vval = variant[1]
+            if vval == None:
+                out = out + ind1 + vname + " = _auto()\n"
+            else:
+                out = out + ind1 + vname + " = " + self.conv_expr(vval) + "\n"
+        return out + "\n"
+
+    # ---------------------------------------------------------- try / raise
+
+    fn conv_try(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let ind1: str = self.ind(indent + 1)
+        mut out: str = ind + "try:\n"
+        let body_code: str = self.conv_stmts(stmt.body, indent + 1, "", "", False)
+        if len(body_code) == 0:
+            out = out + ind1 + "pass\n"
+        else:
+            out = out + body_code
+        for handler in stmt.handlers:
+            let et = handler.exc_type
+            let en = handler.name
+            if et == None:
+                out = out + ind + "except:\n"
+            elif en != None:
+                out = out + ind + "except " + et + " as " + en + ":\n"
+            else:
+                out = out + ind + "except " + et + ":\n"
+            let hc: str = self.conv_stmts(handler.body, indent + 1, "", "", False)
+            if len(hc) == 0:
+                out = out + ind1 + "pass\n"
+            else:
+                out = out + hc
+        let fb = stmt.finally_body
+        if fb != None:
+            out = out + ind + "finally:\n"
+            let fc: str = self.conv_stmts(fb, indent + 1, "", "", False)
+            if len(fc) == 0:
+                out = out + ind1 + "pass\n"
+            else:
+                out = out + fc
+        return out
+
+    fn conv_raise(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let exc = stmt.exc
+        if exc == None:
+            return ind + "raise\n"
+        return ind + "raise " + self.conv_expr(exc) + "\n"
+
+    # ---------------------------------------------------------- import
+
+    fn conv_import(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let lang: str = stmt.lang
+        let module = stmt.module
+        mut mod_str: str = ""
+        mut first: bool = True
+        for part in module:
+            if not first:
+                mod_str = mod_str + "."
+            mod_str = mod_str + part
+            first = False
+        let alias = stmt.alias
+
+        if lang == "py" or lang == "py-int":
+            if alias != None:
+                return ind + "import " + mod_str + " as " + alias + "\n"
+            return ind + "import " + mod_str + "\n"
+        elif lang == "hv" or lang == "hvc" or lang == "hv-auto":
+            # Havakyrie module import — comment it and emit a placeholder
+            let comment: str = ind + "# import[" + lang + "] " + mod_str
+            if alias != None:
+                return comment + " as " + alias + "  # Havakyrie module\n"
+            return comment + "  # Havakyrie module\n"
+        elif lang == "rs":
+            return ind + "# import[rs] " + mod_str + "  # Rust crate (no Python equivalent)\n"
+        else:
+            # auto import — assume Python-compatible module
+            if alias != None:
+                return ind + "import " + mod_str + " as " + alias + "\n"
+            return ind + "import " + mod_str + "\n"
+
+    fn conv_from_import(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let lang: str = stmt.lang
+        let module = stmt.module
+        mut mod_str: str = ""
+        mut first: bool = True
+        for part in module:
+            if not first:
+                mod_str = mod_str + "."
+            mod_str = mod_str + part
+            first = False
+        let names = stmt.names
+
+        if lang == "py" or lang == "py-int" or lang == "hv-auto":
+            mut names_str: str = ""
+            mut nf: bool = True
+            for pair in names:
+                if not nf:
+                    names_str = names_str + ", "
+                nf = False
+                let nm: str = pair[0]
+                let al = pair[1]
+                if al != None:
+                    names_str = names_str + nm + " as " + al
+                else:
+                    names_str = names_str + nm
+            return ind + "from " + mod_str + " import " + names_str + "\n"
+        else:
+            return ind + "# from[" + lang + "] " + mod_str + " import ...\n"
+
+    # ---------------------------------------------------------- let_tuple
+
+    fn conv_let_tuple(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        mut targets_str: str = ""
+        mut first: bool = True
+        for tgt in stmt.targets:
+            if not first:
+                targets_str = targets_str + ", "
+            first = False
+            let kind: str = nu.tuple_target_kind(tgt)
+            if kind == "wildcard":
+                targets_str = targets_str + "_"
+            else:
+                let tname: str = tgt.name
+                if kind == "mut":
+                    self._mut_vars.add(tname)
+                targets_str = targets_str + tname
+        return ind + targets_str + " = " + self.conv_expr(stmt.value) + "\n"
+
+    # ---------------------------------------------------------- async
+
+    fn conv_async(mut self, stmt, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        return ind + "raise NotImplementedError('async block conversion not supported')\n"
+
+    # ========================================================
+    # Expression-as-assignment converters
+    # ========================================================
+
+    fn conv_if_expr_asgn(mut self, expr, name: str, indent: int) -> str:
+        # let/mut x = if cond -> T: ... else: ...
+        # Convert branches with block_return replaced by assignment to `name`.
+        let ind: str = self.ind(indent)
+        mut out: str = ""
+        # Initialize target to None in case no branch is taken
+        out = out + ind + name + " = None\n"
+        mut first: bool = True
+        for branch in expr.branches:
+            let cond = branch[0]
+            let body = branch[1]
+            let cond_code: str = self.conv_expr(cond)
+            if first:
+                out = out + ind + "if " + cond_code + ":\n"
+                first = False
+            else:
+                out = out + ind + "elif " + cond_code + ":\n"
+            let bc: str = self.conv_stmts(body, indent + 1, name, "", False)
+            if len(bc) == 0:
+                out = out + self.ind(indent + 1) + "pass\n"
+            else:
+                out = out + bc
+        let eb = expr.else_body
+        if eb != None:
+            out = out + ind + "else:\n"
+            let ec: str = self.conv_stmts(eb, indent + 1, name, "", False)
+            if len(ec) == 0:
+                out = out + self.ind(indent + 1) + "pass\n"
+            else:
+                out = out + ec
+        return out
+
+    fn conv_for_expr_asgn(mut self, expr, name: str, indent: int) -> str:
+        # let/mut x = for tgt in iter -> list[T]: loop_yield val
+        let ind: str = self.ind(indent)
+        let uses_yield: bool = nu.has_loop_yield(expr.body)
+        let target: str = expr.target
+        let iter_code: str = self.conv_expr(expr.iter)
+
+        if uses_yield:
+            mut out: str = ind + name + " = []\n"
+            out = out + ind + "for " + target + " in " + iter_code + ":\n"
+            let bc: str = self.conv_stmts(expr.body, indent + 1, "", name, True)
+            if len(bc) == 0:
+                out = out + self.ind(indent + 1) + "pass\n"
+            else:
+                out = out + bc
+            return out
+        else:
+            # block_return variant
+            mut out: str = ind + name + " = None\n"
+            out = out + ind + "for " + target + " in " + iter_code + ":\n"
+            let bc: str = self.conv_stmts(expr.body, indent + 1, name, "", True)
+            if len(bc) == 0:
+                out = out + self.ind(indent + 1) + "pass\n"
+            else:
+                out = out + bc
+            return out
+
+    fn conv_while_expr_asgn(mut self, expr, name: str, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let uses_yield: bool = nu.has_loop_yield(expr.body)
+        let cond_code: str = self.conv_expr(expr.cond)
+
+        if uses_yield:
+            mut out: str = ind + name + " = []\n"
+            out = out + ind + "while " + cond_code + ":\n"
+            let bc: str = self.conv_stmts(expr.body, indent + 1, "", name, True)
+            if len(bc) == 0:
+                out = out + self.ind(indent + 1) + "pass\n"
+            else:
+                out = out + bc
+            return out
+        else:
+            mut out: str = ind + name + " = None\n"
+            out = out + ind + "while " + cond_code + ":\n"
+            let bc: str = self.conv_stmts(expr.body, indent + 1, name, "", True)
+            if len(bc) == 0:
+                out = out + self.ind(indent + 1) + "pass\n"
+            else:
+                out = out + bc
+            return out
+
+    fn conv_match_expr_asgn(mut self, expr, name: str, indent: int) -> str:
+        # Reuse conv_match_stmt logic passing asgn=name
+        let ind: str = self.ind(indent)
+        let tmp: str = self.next_tmp()
+        let subj_code: str = self.conv_expr(expr.subject)
+        mut out: str = ind + name + " = None\n"
+        out = out + ind + tmp + " = " + subj_code + "\n"
+        mut first: bool = True
+        for arm in expr.arms:
+            let pattern = arm.pattern
+            let pt: str = nu.get_type_name(pattern)
+            let body = arm.body
+            mut cond: str = ""
+            if pt == "MatchPatternCase":
+                let pexpr = pattern.expr
+                let pet: str = nu.get_type_name(pexpr)
+                if pet == "ExprIdent" and pexpr.name == "_":
+                    out = out + ind + "else:\n"
+                    let bc: str = self.conv_stmts(body, indent + 1, name, "", False)
+                    if len(bc) == 0:
+                        out = out + self.ind(indent + 1) + "pass\n"
+                    else:
+                        out = out + bc
+                    first = False
+                    break
+                else:
+                    cond = tmp + " == " + self.conv_expr(pexpr)
+            elif pt == "MatchPatternIsType":
+                cond = "isinstance(" + tmp + ", " + pattern.type_name + ")"
+            if first:
+                out = out + ind + "if " + cond + ":\n"
+                first = False
+            else:
+                out = out + ind + "elif " + cond + ":\n"
+            let bc: str = self.conv_stmts(body, indent + 1, name, "", False)
+            if len(bc) == 0:
+                out = out + self.ind(indent + 1) + "pass\n"
+            else:
+                out = out + bc
+        return out
+
+    fn conv_block_expr_asgn(mut self, expr, name: str, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        mut out: str = ind + name + " = None\n"
+        out = out + self.conv_stmts(expr.stmts, indent, name, "", False)
+        return out
+
+    # ---------------------------------------------------------- standalone expr-loops
+
+    fn if_expr_as_stmts(mut self, expr) -> list[str]:
+        # Returns a list of synthetic StmtExpr — not used directly;
+        # we just treat the branches as statement lists with no asgn.
+        # This returns nothing useful but we just call conv_stmts directly instead.
+        return []
+
+    fn conv_for_expr_standalone(mut self, expr, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let target: str = expr.target
+        let iter_code: str = self.conv_expr(expr.iter)
+        let body_code: str = self.conv_stmts(expr.body, indent + 1, "", "", True)
+        mut out: str = ind + "for " + target + " in " + iter_code + ":\n"
+        if len(body_code) == 0:
+            out = out + self.ind(indent + 1) + "pass\n"
+        else:
+            out = out + body_code
+        return out
+
+    fn conv_while_expr_standalone(mut self, expr, indent: int) -> str:
+        let ind: str = self.ind(indent)
+        let cond_code: str = self.conv_expr(expr.cond)
+        let body_code: str = self.conv_stmts(expr.body, indent + 1, "", "", True)
+        mut out: str = ind + "while " + cond_code + ":\n"
+        if len(body_code) == 0:
+            out = out + self.ind(indent + 1) + "pass\n"
+        else:
+            out = out + body_code
+        return out
+
+    fn conv_match_expr_standalone(mut self, expr, indent: int) -> str:
+        return self.conv_match_stmt(expr, indent, "")
+
+    # ========================================================
+    # Expression converter
+    # ========================================================
+
+    fn conv_expr(mut self, expr) -> str:
+        let t: str = nu.get_type_name(expr)
+
+        if t == "ExprInt":
+            return str(expr.value)
+        elif t == "ExprFloat":
+            return str(expr.value)
+        elif t == "ExprStr":
+            let raw: str = expr.value
+            return "'" + raw.replace("\\", "\\\\").replace("'", "\\'") + "'"
+        elif t == "ExprBool":
+            let bv: bool = expr.value
+            if bv:
+                return "True"
+            return "False"
+        elif t == "ExprNone":
+            return "None"
+        elif t == "ExprIdent":
+            return expr.name
+        elif t == "ExprList":
+            return self.conv_list_expr(expr)
+        elif t == "ExprDict":
+            return self.conv_dict_expr(expr)
+        elif t == "ExprTuple":
+            return self.conv_tuple_expr(expr)
+        elif t == "ExprSet":
+            return self.conv_set_expr(expr)
+        elif t == "ExprBinOp":
+            return self.conv_binop_expr(expr)
+        elif t == "ExprUnaryOp":
+            return self.conv_unary_expr(expr)
+        elif t == "ExprCall":
+            return self.conv_call_expr(expr)
+        elif t == "ExprAttr":
+            return self.conv_expr(expr.object) + "." + expr.attr
+        elif t == "ExprTraitAccess":
+            # obj::Trait.attr → obj.attr (drop trait qualifier)
+            return self.conv_expr(expr.object) + "." + expr.attr
+        elif t == "ExprSubscript":
+            return self.conv_expr(expr.object) + "[" + self.conv_expr(expr.index) + "]"
+        elif t == "ExprSlice":
+            return self.conv_slice_expr(expr)
+        elif t == "ExprTemplateInstantiate":
+            # Base[T1, T2] — keep as-is for Python generic hints
+            let base_code: str = self.conv_expr(expr.base)
+            mut type_args: str = ""
+            mut first: bool = True
+            for ta in expr.type_args:
+                if not first:
+                    type_args = type_args + ", "
+                type_args = type_args + self.type_to_py(ta)
+                first = False
+            return base_code + "[" + type_args + "]"
+        elif t == "ExprIsType":
+            return self.conv_is_type_expr(expr)
+        elif t == "ExprCast":
+            return self.type_to_py(expr.type_name) + "(" + self.conv_expr(expr.object) + ")"
+        elif t == "ExprIfExpr":
+            return self.conv_inline_if_expr(expr)
+        elif t == "ExprForExpr":
+            return self.conv_inline_for_expr(expr)
+        elif t == "ExprWhileExpr":
+            return "(None)  # TODO: WhileExpr as inline expression"
+        elif t == "ExprMatchExpr":
+            return "(None)  # TODO: MatchExpr as inline expression"
+        elif t == "ExprBlock":
+            return "(None)  # TODO: Block expr as inline expression"
+        return "(None)  # UNSUPPORTED EXPR: " + t
+
+    fn conv_list_expr(mut self, expr) -> str:
+        mut elems: str = ""
+        mut first: bool = True
+        for e in expr.elements:
+            if not first:
+                elems = elems + ", "
+            elems = elems + self.conv_expr(e)
+            first = False
+        return "[" + elems + "]"
+
+    fn conv_dict_expr(mut self, expr) -> str:
+        mut pairs: str = ""
+        mut first: bool = True
+        for pair in expr.pairs:
+            if not first:
+                pairs = pairs + ", "
+            pairs = pairs + self.conv_expr(pair[0]) + ": " + self.conv_expr(pair[1])
+            first = False
+        return "{" + pairs + "}"
+
+    fn conv_tuple_expr(mut self, expr) -> str:
+        let elems = expr.elements
+        mut out: str = ""
+        mut first: bool = True
+        for e in elems:
+            if not first:
+                out = out + ", "
+            out = out + self.conv_expr(e)
+            first = False
+        if len(out) == 0:
+            return "()"
+        return "(" + out + ",)"
+
+    fn conv_set_expr(mut self, expr) -> str:
+        mut elems: str = ""
+        mut first: bool = True
+        for e in expr.elements:
+            if not first:
+                elems = elems + ", "
+            elems = elems + self.conv_expr(e)
+            first = False
+        if len(elems) == 0:
+            return "set()"
+        return "{" + elems + "}"
+
+    fn conv_binop_expr(mut self, expr) -> str:
+        let left: str = self.conv_expr(expr.left)
+        let right: str = self.conv_expr(expr.right)
+        let op_str: str = nu.get_binop_str(expr.op)
+        if op_str == "in" or op_str == "not in":
+            return left + " " + op_str + " " + right
+        return "(" + left + " " + op_str + " " + right + ")"
+
+    fn conv_unary_expr(mut self, expr) -> str:
+        let op_str: str = nu.get_unary_str(expr.op)
+        let operand: str = self.conv_expr(expr.operand)
+        return "(" + op_str + operand + ")"
+
+    fn conv_call_expr(mut self, expr) -> str:
+        let func_code: str = self.conv_expr(expr.func)
+        let args_str: str = self.conv_call_args(expr.args)
+        return func_code + "(" + args_str + ")"
+
+    fn conv_call_args(mut self, args) -> str:
+        mut out: str = ""
+        mut first: bool = True
+        for arg in args:
+            if not first:
+                out = out + ", "
+            first = False
+            let t: str = nu.get_type_name(arg)
+            if t == "CallArgKeyword":
+                let kname: str = arg.name
+                let kval = arg.value
+                let kcode: str = self.conv_expr_with_deepcopy(kval)
+                out = out + kname + "=" + kcode
+            else:
+                let acode: str = self.conv_expr_with_deepcopy(arg.expr)
+                out = out + acode
+        return out
+
+    fn conv_expr_with_deepcopy(mut self, expr) -> str:
+        # Wrap with copy.deepcopy() if expr is a mut variable
+        let t: str = nu.get_type_name(expr)
+        if t == "ExprIdent":
+            let name: str = expr.name
+            if name in self._mut_vars:
+                self._needs_copy = True
+                return "copy.deepcopy(" + name + ")"
+        return self.conv_expr(expr)
+
+    fn conv_slice_expr(mut self, expr) -> str:
+        let begin = expr.begin
+        let end = expr.end
+        let step = expr.step
+        mut bstr: str = ""
+        if begin != None:
+            bstr = self.conv_expr(begin)
+        mut estr: str = ""
+        if end != None:
+            estr = self.conv_expr(end)
+        mut sstr: str = ""
+        if step != None:
+            sstr = self.conv_expr(step)
+        if step != None:
+            return bstr + ":" + estr + ":" + sstr
+        return bstr + ":" + estr
+
+    fn conv_is_type_expr(mut self, expr) -> str:
+        let inner: str = self.conv_expr(expr.expr)
+        let type_name: str = expr.type_name
+        let negated: bool = expr.negated
+
+        if type_name == "None":
+            if negated:
+                return inner + " is not None"
+            return inner + " is None"
+        if type_name == "int" or type_name == "str" or type_name == "float" or type_name == "bool":
+            if negated:
+                return "not isinstance(" + inner + ", " + type_name + ")"
+            return "isinstance(" + inner + ", " + type_name + ")"
+        if negated:
+            return "not isinstance(" + inner + ", " + type_name + ")"
+        return "isinstance(" + inner + ", " + type_name + ")"
+
+    fn conv_inline_if_expr(mut self, expr) -> str:
+        # Simple ternary for single if/else with one block_return each
+        if nu.is_simple_if_expr(expr):
+            let branches = expr.branches
+            let branch = branches[0]
+            let cond = branch[0]
+            let body = branch[1]
+            let then_val: str = self.conv_expr(body[0].expr)
+            let else_val: str = self.conv_expr(expr.else_body[0].expr)
+            return "(" + then_val + " if " + self.conv_expr(cond) + " else " + else_val + ")"
+        return "(None)  # TODO: complex IfExpr as inline expression — convert manually"
+
+    fn conv_inline_for_expr(mut self, expr) -> str:
+        # Simple list comprehension for single loop_yield
+        let uses_yield: bool = nu.has_loop_yield(expr.body)
+        if not uses_yield:
+            return "(None)  # TODO: ForExpr with block_return as inline expression"
+        let body = expr.body
+        if len(body) == 1:
+            let st = body[0]
+            let st_t: str = nu.get_type_name(st)
+            if st_t == "StmtLoopYield":
+                let val_code: str = self.conv_expr(st.expr)
+                let target: str = expr.target
+                let iter_code: str = self.conv_expr(expr.iter)
+                return "[" + val_code + " for " + target + " in " + iter_code + "]"
+        return "(None)  # TODO: complex ForExpr as inline expression — convert manually"
+
+
+fn convert_file(path: str) -> str:
+    mut c = HvToPyConverter()
+    return c.convert_file(path)
