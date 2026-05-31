@@ -210,73 +210,9 @@ Eligible functions are dispatched natively; all other functions tree-walk as usu
 
 ```
 import test_modules.physics                  # loads test_modules/physics.hvc (parser)
-test_modules.physics.total_energy(a, b, N)   # calls native code — ~3300× faster with approach-1
+test_modules.physics.total_energy(a, b, N)   # calls native code
 ```
-
-### Type-specialized codegen
-
-Functions with `int` or `float` parameter and return type annotations generate direct Rust
-arithmetic rather than routing each operation through the callback ABI.
-
-| What is typed | Generated code | vs. untyped |
-|---|---|---|
-| `mut i = 0`, `i += 1` | `_v_i = _v_i + 1i64` | was `cb_binop(OP_ADD, ...)` |
-| `i * i <= n` (while cond) | `(_v_i * _v_i) <= _v_n` | was `cb_is_truthy(cb_binop(...))` |
-| `fn f(x: float) -> float` param | `let _v_x: f64 = cb_to_float(_v_x)` | was handle pass-through |
-
-Speedup for pure int/float loops: **100–200×**. Speedup for handle-heavy workloads (lists, class instances): **2–5×**.
-
-### Native eligibility
-
-A function is compiled natively when **all** of the following are true:
-
-- No template parameters
-- Not abstract
-- The body contains **none** of: `yield`, inner function/generator defs (closures), `try`/`raise`, `block_return`/`loop_yield`, keyword-argument calls, `static mut` variables, `import` statements, or class/trait definitions
-
-All value types (`int`, `bool`, `float`, `str`, `list`, `dict`, `tuple`, class instances) can cross the native boundary via the handle-based ABI.  Functions that do not meet these criteria are silently skipped; they continue to be executed by the tree-walk interpreter.  
-If `rustc` is not found in `PATH`, native compilation is skipped entirely and only `.hvc` + `.hvs` are written.
-
-#### Handle-based ABI
-
-Every value crossing the native boundary is an `i64` handle:
-
-| Handle | Meaning |
-|--------|---------|
-| `0` | `None` |
-| `1` | `True` |
-| `2` | `False` |
-| `-1` | `StopIteration` |
-| `≥ 3` | Dynamic value stored in `VALUE_ARENA` |
-
-The interpreter owns all values; native code operates on opaque handles via C callbacks (`TlCallbacks`) injected at load time via `tl_init`. Speedup for handle-heavy workloads (class instances, lists) is 2–5×; for typed int/float arithmetic loops it reaches 100–200× (direct Rust arithmetic, no callbacks).
-
-### Output file roles
-
-- **`.hvc`** — imported instead of `.hv` by the parser (preferred when both exist); v1 contains embedded native code, v0 is source-only
-- **`.hvs`** — read by the VS Code extension for type hints; never executed
-
-## About Testing
-
-When adding a specification, testing must follow these rules:
-
-- When the specification is completed:
-  - Add interpreter tests
-  - Create sample code in the `examples` folder that successfully uses the feature and test it
-  - Create sample code in the `examples` folder that intentionally triggers the expected error and verify that the expected error is raised and execution terminates correctly. The filename must end with `_errors`. However, if the specification does not mention error behavior, this step may be omitted.
-
-- During incremental implementation before completion:
-  - Only interpreter tests are required
-
-## Execution Flow
-
-```text
-Source File
-  → Lexer         Generates Vec<Spanned> (each token includes file/line/column)
-  → Parser        Generates AST (Vec<Stmt>). Embeds Span into Expr::BinOp / Stmt::Assign etc.
-  → TypeChecker   Collects StaticTypeError. If any exist, prints all and exits with exit(1)
-  → Interpreter   Executes via tree-walk evaluation
-```
+The details for how it is implemented, refer to ./for_claude/partial_compile.md
 
 ## Implemented Features
 
