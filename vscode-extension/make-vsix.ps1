@@ -83,8 +83,9 @@ Copy-Item "$root\language-configuration.json" "$tmp\extension\language-configura
 New-Item -ItemType Directory "$tmp\extension\out"      | Out-Null
 New-Item -ItemType Directory "$tmp\extension\syntaxes" | Out-Null
 
-Copy-Item "$root\out\extension.js"   "$tmp\extension\out\extension.js"
-Copy-Item "$root\out\type_infer.js"  "$tmp\extension\out\type_infer.js"
+Get-ChildItem "$root\out\*.js" | ForEach-Object {
+    Copy-Item $_.FullName "$tmp\extension\out\$($_.Name)"
+}
 Copy-Item "$root\syntaxes\havakyrie.tmLanguage.json" "$tmp\extension\syntaxes\havakyrie.tmLanguage.json"
 Copy-Item "$root\builtins.hvs"       "$tmp\extension\builtins.hvs"
 
