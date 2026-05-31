@@ -214,6 +214,22 @@ test_modules.physics.total_energy(a, b, N)   # calls native code
 ```
 The details for how it is implemented, refer to ./for_claude/partial_compile.md
 
+## Importation of .hv, .py, .dll (C language), .lib, and .rs
+
+Import syntax: `import[lang] module.path as alias` / `from module import[lang] Name`.  
+The `[lang]` tag selects the source type; omitting it defaults to `hv-auto`.
+
+| Tag | Loads |
+|-----|-------|
+| *(none)* | `.hvc` preferred, falls back to `.hv` or `__init__.hv` |
+| `hv` / `hvc` | Force `.hv` source only / force `.hvc` compiled only |
+| `py` | Python `.py` via converter |
+| `py-int` | `.pyi`→`.py` for type checking only; runtime via PyO3 |
+| `rs` | Rust crate — auto-compiles a wrapper DLL (requires `hv_config.json` with `rust.crates_path`) |
+| `cpp-dll` / `cpp-lib` | C header (`Dir.Name` → `Dir/Name.h`) for type stubs; runtime via `cpp_bridge` |
+
+For implementation details see `./for_claude/importation.md`.
+
 ## Implemented Features
 
 ### Lexical Analysis (`src/lexer/`)
