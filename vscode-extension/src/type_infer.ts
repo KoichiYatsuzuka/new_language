@@ -1666,6 +1666,15 @@ export function provideHover(
                 return new vscode.Hover(md, range);
             }
         }
+
+        // Havakyrie class member: self.member or instance.member
+        const hvClassName = objName === 'self'
+            ? findEnclosingClass(document, position.line)
+            : objSym?.type;
+        if (hvClassName) {
+            const memberSym = findClassMember(document, hvClassName, name);
+            if (memberSym) return new vscode.Hover(renderHover(memberSym), range);
+        }
         return undefined;
     }
 
@@ -1963,6 +1972,115 @@ function collectClassMemberItems(
     }
 
     return items;
+}
+
+/**
+ * Find a specific named member (field or method) within a Havakyrie class body.
+ * Returns a HoverSymbol on match, undefined if not found.
+ */
+function findClassMember(
+    document: vscode.TextDocument,
+    className: string,
+    memberName: string,
+    _visited: Set<string> = new Set()
+): HoverSymbol | undefined {
+    if (_visited.has(className)) return undefined;
+    _visited.add(className);
+
+    // Resolve new_type aliases to their base class
+    for (let i = 0; i < document.lineCount; i++) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const m = stripped.match(NEW_TYPE_RE);
+        if (m && m[2] === className) {
+            return findClassMember(document, m[3].trim(), memberName, _visited);
+        }
+    }
+
+    // Find the class definition
+    let classLine = -1;
+    let classIndent = 0;
+    for (let i = 0; i < document.lineCount; i++) {
+        const stripped = stripComment(document.lineAt(i).text);
+        const m = stripped.match(CLASS_DEF_RE);
+        if (m && m[3] === className) {
+            classLine = i;
+            classIndent = (m[1] ?? '').length;
+            break;
+        }
+    }
+    if (classLine < 0) return undefined;
+
+    // Determine the indentation of direct class body members
+    let memberIndent = -1;
+    for (let i = classLine + 1; i < document.lineCount; i++) {
+        const raw = document.lineAt(i).text;
+        if (!raw.trim()) continue;
+        const ind = (raw.match(/^(\s*)/)?.[1] ?? '').length;
+        if (ind <= classIndent) break;
+        memberIndent = ind;
+        break;
+    }
+    if (memberIndent < 0) return undefined;
+
+    for (let i = classLine + 1; i < document.lineCount; i++) {
+        const rawLine = document.lineAt(i).text;
+        const stripped = stripComment(rawLine);
+        if (!stripped.trim()) continue;
+
+        const lineIndent = (rawLine.match(/^(\s*)/)?.[1] ?? '').length;
+        if (lineIndent <= classIndent) break;
+
+        // Direct class body members (fields and methods)
+        if (lineIndent === memberIndent) {
+            const funcMatch = stripped.match(FUNC_DEF_RE);
+            if (funcMatch) {
+                const [, indentStr, kw, name, params, retAnnotation] = funcMatch;
+                if (name === memberName) {
+                    const returnType = cleanTypeAnnotation(retAnnotation) ?? 'unknown';
+                    const cleanParams = params
+                        .replace(/^\s*(?:let\s+|mut\s+)?self\s*,\s*/, '')
+                        .replace(/^\s*(?:let\s+|mut\s+)?self\s*$/, '');
+                    return {
+                        name,
+                        kind: 'function',
+                        line: i,
+                        type: returnType,
+                        signature: `${kw} ${name}(${cleanParams}) -> ${returnType}`,
+                        doc: getDocstringAfter(document, i, (indentStr ?? '').length),
+                    };
+                }
+                continue;
+            }
+
+            const fieldMatch = stripped.match(HOVER_DECL_RE);
+            if (fieldMatch) {
+                const [, , mutability, name, annotation] = fieldMatch;
+                if (name === memberName) {
+                    return {
+                        name,
+                        kind: 'variable',
+                        line: i,
+                        mutability: mutability ?? 'let',
+                        type: annotation?.trim() ?? 'unknown',
+                    };
+                }
+            }
+        }
+
+        // self.attr = ... assignments inside methods (any indent within class body)
+        const selfAttrMatch = stripped.match(/\bself\.([A-Za-z_]\w*)\s*(?:[+\-*\/%&|^]?=(?!=))/);
+        if (selfAttrMatch && selfAttrMatch[1] === memberName) {
+            return {
+                name: memberName,
+                kind: 'variable',
+                line: i,
+                mutability: 'mut',
+                type: 'unknown',
+            };
+        }
+    }
+
+    return undefined;
 }
 
 function resolveMemberItems(
