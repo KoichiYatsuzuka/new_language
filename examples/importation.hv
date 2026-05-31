@@ -1,67 +1,109 @@
-# importation.tl — demonstrates all import styles and qualifiers.
+# importation.hv — demonstrates all import styles and qualifiers.
 #
 # Import styles:
-#   import             — auto: prefers .tlc if present, falls back to .tl
-#   import[tl]         — force .tl source (tree-walk, ignores .tlc)
-#   import[tlc]        — force .tlc compiled (error if no .tlc exists)
+#   import             — auto: prefers .hvc if present, falls back to .hv
+#   import[hv]         — force .hv source (tree-walk, ignores .hvc)
+#   import[hvc]        — force .hvc compiled (error if no .hvc exists)
 #   import[py-int]     — Python module with integer conversion
-#   import[rs]         — Rust crate (auto-discovered or declared in tl_crates.json)
-#   from … import      — selective import from a .tl module
-#   subdir.module      — subdirectory .tl module
+#   import[rs]         — Rust crate (auto-discovered or declared in hv_config.json)
+#   from … import      — selective import from a .hv module
+#   subdir.module      — subdirectory .hv module
 #
-# Prerequisites for native sections:
-#   cargo run --release -- --compile examples/test_modules/native_ops.tl
+# Prerequisites for section 1 (physics benchmark):
+#   cargo run --release -- --compile examples/bench_modules/physics.hv
 
 import[py-int] time
 
-# ── 1. Import qualifiers: auto / [tl] / [tlc] ────────────────────────────────
+# ── 1. Physics benchmark: native class-method dispatch ─────────────────────────
+#
+# Compares three execution paths for a Body class with four method calls per
+# loop iteration (potential, vel_dot, kinetic×2):
+#   import[hv]  — always tree-walk interpreter
+#   import      — auto-selects native DLL (.hvc) when available
+# Inline baseline pre-reads fields as local floats — upper speed bound.
 
-import        test_modules.native_ops as auto_mod
-import[tl]    test_modules.native_ops as tl_mod
-import[tlc]   test_modules.native_ops as tlc_mod
+import[hv]  bench_modules.physics as interp_mod
+import      bench_modules.physics as native_mod
 
-let t0 = time.time()
-let r_auto = auto_mod.fib(40)
-let t1 = time.time()
-print("auto  fib(40):", r_auto, "  elapsed:", t1 - t0, "s")
+const N: int = 7_000_000
 
-let t2 = time.time()
-let r_tl = tl_mod.fib(40)
-let t3 = time.time()
-print("[tl]  fib(40):", r_tl, "  elapsed:", t3 - t2, "s")
+print("=== Physics benchmark  N =", N, " ===")
+print("  Loop body: potential(other) + vel_dot(other) + kinetic() + kinetic()")
+print("  = 4 method calls per iteration, ~40 callbacks per iteration in method bodies")
+print()
 
-let t4 = time.time()
-let r_tlc = tlc_mod.fib(40)
-let t5 = time.time()
-print("[tlc] fib(40):", r_tlc, "  elapsed:", t5 - t4, "s")
+mut a_n = native_mod.Body()
+a_n.x = 1.0
+a_n.y = 2.0
+a_n.z = 3.0
+a_n.vx = 0.5
+a_n.vy = -0.3
+a_n.vz = 0.7
+a_n.mass = 2.0
 
-print("all results equal:", r_auto == r_tl, r_tl == r_tlc)
+mut b_n = native_mod.Body()
+b_n.x = -1.0
+b_n.y = 0.5
+b_n.z = -2.0
+b_n.vx = -0.2
+b_n.vy = 0.8
+b_n.vz = 0.1
+b_n.mass = 3.0
 
-# ── 2. Native module — correctness and timing ─────────────────────────────────
+mut a_i = interp_mod.Body()
+a_i.x = 1.0
+a_i.y = 2.0
+a_i.z = 3.0
+a_i.vx = 0.5
+a_i.vy = -0.3
+a_i.vz = 0.7
+a_i.mass = 2.0
 
-print("=== correctness ===")
-print("fib(30)              :", auto_mod.fib(30))           # 832040
-print("fib(50)              :", auto_mod.fib(50))           # 12586269025
-print("count_divisors(720)  :", auto_mod.count_divisors(720))   # 30
-print("digit_sum(123456789) :", auto_mod.digit_sum(123456789))  # 45
-print("approx_sqrt(2.0)     :", auto_mod.approx_sqrt(2.0))      # ~1.41421356
-print("sum_inv_squares(10)  :", auto_mod.sum_inv_squares(10))   # ~1.54977
+mut b_i = interp_mod.Body()
+b_i.x = -1.0
+b_i.y = 0.5
+b_i.z = -2.0
+b_i.vx = -0.2
+b_i.vy = 0.8
+b_i.vz = 0.1
+b_i.mass = 3.0
 
-print("=== timing ===")
-let t6 = time.time()
-mut k = 0
-while k < 1000:
-    let _ = auto_mod.fib(60)
-    k += 1
-let t7 = time.time()
-print("1000 × fib(60)  elapsed:", t7 - t6, "s")
+print("Running NATIVE (method bodies compiled, dispatch native) ...")
+let t0: float = time.time()
+let r_native: float = native_mod.total_energy(a_n, b_n, N)
+let t1: float = time.time()
+let t_native: float = t1 - t0
+print("  result:", r_native, "  time:", t_native, "s")
+print()
 
-let t8 = time.time()
-let pi_sq_over_6 = auto_mod.sum_inv_squares(500000)
-let t9 = time.time()
-print("sum_inv_squares(500000):", pi_sq_over_6, "  elapsed:", t9 - t8, "s")
+print("Running INTERPRETED (all method calls through tree-walker) ...")
+let t2: float = time.time()
+let r_interp: float = interp_mod.total_energy(a_i, b_i, N)
+let t3: float = time.time()
+let t_interp: float = t3 - t2
+print("  result:", r_interp, "  time:", t_interp, "s")
+print()
 
-# ── 3. import[py-int] — pandas ───────────────────────────────────────────────
+print("Running INLINE baseline (typed float fields pre-read, native loop) ...")
+let t4: float = time.time()
+let r_inline: float = native_mod.total_energy_inline(a_n, b_n, N)
+let t5: float = time.time()
+let t_inline: float = t5 - t4
+print("  result:", r_inline, "  time:", t_inline, "s")
+print()
+
+print("=== Summary ===")
+if t_native > 0.0:
+    print("  Speedup (native methods vs interp):", t_interp / t_native, "x")
+if t_inline > 0.0:
+    print("  Speedup (inline float vs interp)  :", t_interp / t_inline, "x")
+    print("  Speedup (inline float vs native)  :", t_native / t_inline, "x")
+print()
+print("  [native]  loop compiled, method bodies run as native DLL code via CB_GET_ATTR/CB_BINOP callbacks")
+print("  [inline]  loop + all arithmetic compiled — upper bound (no callbacks for fields)")
+print()
+
+# ── 2. import[py-int] — pandas ───────────────────────────────────────────────
 
 import[py-int] warnings as w
 w.simplefilter("ignore")   # suppress pandas CoW FutureWarning
@@ -102,7 +144,7 @@ let sorted_df = df.sort_values("score", ascending=False)
 print("top 3 by score:")
 print(sorted_df.head(3))
 
-# ── 4. import[py-int] — PyObject operators and iteration ─────────────────────
+# ── 3. import[py-int] — PyObject operators and iteration ─────────────────────
 
 import[py-int] test_modules.py_calculator as calc
 
@@ -137,7 +179,7 @@ for v2 in outer:
     result += v2 * 10
 print(result)                # 60
 
-# ── 5. import / from … import — .tl module ───────────────────────────────────
+# ── 4. import / from … import — .hv module ───────────────────────────────────
 
 import tl_math as tm
 
@@ -174,7 +216,7 @@ let sub_result: int = sub.compute(10, 32)
 print(sub_result)
 print(sub.LABEL)
 
-# ── 6. import[rs] — Rust crates ──────────────────────────────────────────────
+# ── 5. import[rs] — Rust crates ──────────────────────────────────────────────
 
 # libm — pure-Rust math functions (auto-discovered from cargo registry)
 import[rs] libm[0.2]
@@ -192,7 +234,7 @@ print(f"fabs(-3.14) = {libm.fabs(-3.14)}")
 print(f"floor(2.9)  = {libm.floor(2.9)}")
 print(f"ceil(2.1)   = {libm.ceil(2.1)}")
 
-# rand_ops — random number generation (declared in tl_crates.json)
+# rand_ops — random number generation (declared in hv_config.json)
 import[rs] rand_ops
 
 print("=== rand_ops ===")
@@ -201,12 +243,12 @@ while ri < 5:
     print(f"  float={rand_ops.random_float()}  int={rand_ops.random_int()}  bool={rand_ops.random_bool()}")
     ri += 1
 
-# sha2_ops — SHA-256/512 hashing (declared in tl_crates.json)
+# sha2_ops — SHA-256/512 hashing (declared in hv_config.json)
 import[rs] sha2_ops
 
-let msg = "hello, world"
+let hmsg = "hello, world"
 print("=== sha2_ops ===")
-let h256: str = sha2_ops.sha256(msg)
-print(f"SHA-256({msg}) = {h256}")
-let h512: str = sha2_ops.sha512(msg)
-print(f"SHA-512({msg}) = {h512}")
+let h256: str = sha2_ops.sha256(hmsg)
+print(f"SHA-256({hmsg}) = {h256}")
+let h512: str = sha2_ops.sha512(hmsg)
+print(f"SHA-512({hmsg}) = {h512}")

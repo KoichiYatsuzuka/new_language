@@ -1,12 +1,18 @@
-﻿/// Partial compiler: native code generation, .hvc/.hvs writing, and stub generation.
+/// Partial compiler: native code generation, .hvc/.hvs writing, and stub generation.
 ///
 /// Submodules:
-///   codegen         — Rust source generator (tl fn → i64 ABI)
-///   module_compiler — .hvc (v0/v1) and .hvs writer + runtime DLL cache
+///   llvm_codegen    — LLVM IR text generator (clang fallback path)
+///   inkwell_codegen — inkwell JIT compiler (feature = "llvm", primary path)
+///   module_compiler — .hvc (v0/v1/v2) and .hvs writer + runtime cache
 ///   stub_gen        — .hvs stub text generator
-mod codegen;
+pub mod llvm_codegen;
+#[cfg(feature = "llvm")]
+pub mod inkwell_codegen;
 mod module_compiler;
 pub mod rs_loader;
 mod stub_gen;
 
-pub use module_compiler::{compile, load_tlc, native_lib_ext, take_native_bytes};
+pub use module_compiler::{
+    compile, load_tlc, native_lib_ext, take_native_bytes,
+    NativePayload,
+};

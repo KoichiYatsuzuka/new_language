@@ -312,11 +312,11 @@ impl Parser {
     ) -> Result<Vec<Stmt>, String> {
         match lang {
             // default (no bracket): prefer .hvc, fall back to .hv
-            "tl-auto" => self.load_tl_module(module),
+            "tl-auto" | "hv-auto" => self.load_tl_module(module),
             // import[hv]: force .hv source, skip .hvc
-            "tl" => self.load_tl_source_module(module),
+            "tl" | "hv" => self.load_tl_source_module(module),
             // import[hvc]: force .hvc, error if not found
-            "tlc" => self.load_tlc_module(module),
+            "tlc" | "hvc" => self.load_tlc_module(module),
             "py" => self.load_python_module(module),
             // py-int: .pyi を優先し、なければ .py にフォールバック
             // body は型検査専用（実行時は PyO3 経由）
@@ -387,8 +387,8 @@ impl Parser {
     /// 3. `module/__init__.hv` — パッケージモジュール
     fn load_tl_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
-        let tlc_rel = module_base.with_extension("tlc");
-        let file_rel = module_base.with_extension("tl");
+        let tlc_rel = module_base.with_extension("hvc");
+        let file_rel = module_base.with_extension("hv");
         let init_rel = module_base.join("__init__.hv");
 
         // 検索ディレクトリリスト（source_dir と root_dir が同じなら重複させない）
@@ -427,7 +427,7 @@ impl Parser {
                 )
             })?;
 
-        let cache_key = ("tl-auto".to_string(), abs_path.clone());
+        let cache_key = ("hv-auto".to_string(), abs_path.clone());
 
         if let Some(body) = self.module_cache.get(&cache_key) {
             return Ok(body.clone());
@@ -479,7 +479,7 @@ impl Parser {
     /// `import[hv]`: `.hv` ソースのみをロードする。`.hvc` があっても無視する。
     fn load_tl_source_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
-        let file_rel = module_base.with_extension("tl");
+        let file_rel = module_base.with_extension("hv");
         let init_rel = module_base.join("__init__.hv");
 
         let search_dirs: Vec<PathBuf> = {
@@ -510,7 +510,7 @@ impl Parser {
                 )
             })?;
 
-        let cache_key = ("tl".to_string(), abs_path.clone());
+        let cache_key = ("hv".to_string(), abs_path.clone());
 
         if let Some(body) = self.module_cache.get(&cache_key) {
             return Ok(body.clone());
@@ -548,7 +548,7 @@ impl Parser {
     /// `import[hvc]`: `.hvc` コンパイル済みモジュールのみをロードする。`.hv` があっても無視する。
     fn load_tlc_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
-        let tlc_rel = module_base.with_extension("tlc");
+        let tlc_rel = module_base.with_extension("hvc");
 
         let search_dirs: Vec<PathBuf> = {
             let a = self.source_dir.clone();
@@ -575,7 +575,7 @@ impl Parser {
                 )
             })?;
 
-        let cache_key = ("tlc".to_string(), abs_path.clone());
+        let cache_key = ("hvc".to_string(), abs_path.clone());
 
         if let Some(body) = self.module_cache.get(&cache_key) {
             return Ok(body.clone());

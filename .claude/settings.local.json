@@ -22,7 +22,11 @@
       "PowerShell(cargo run --release -- examples/bench_hard.tl 2>&1)",
       "Bash(python -c ' *)",
       "Bash(node node_modules/typescript/bin/tsc --version)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "PowerShell(New-Item -ItemType Directory -Path \"d:\\\\repository\\\\new_language\\\\examples\\\\bench_modules\" -Force)",
+      "PowerShell(\"ok\")",
+      "PowerShell(cargo add inkwell@0.9 --optional --dry-run 2>&1)",
+      "PowerShell(cargo metadata --format-version 1 --no-deps 2>&1)"
     ]
   }
 }

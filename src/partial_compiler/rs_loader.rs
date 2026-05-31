@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ast::{Accessibility, Param, Stmt};
 
-use super::codegen::FnExport;
+use super::llvm_codegen::FnExport;
 use super::module_compiler::{cache_native, native_lib_ext};
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -129,7 +129,7 @@ pub fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&str>) -
 
     let exports: Vec<FnExport> = sigs
         .iter()
-        .map(|s| FnExport { name: s.name.clone(), n_params: s.params.len() })
+        .map(|s| FnExport { name: s.name.clone(), n_params: s.params.len(), class_name: None })
         .collect();
 
     cache_native(module_name, exports, dll_bytes);
@@ -613,6 +613,12 @@ struct HvCallbacks {
     deep_copy:     unsafe extern "C" fn(i64) -> i64,
     to_cstr:       unsafe extern "C" fn(i64) -> *const u8,
     write_handle:  unsafe extern "C" fn(i64, i64),
+    list_append:   unsafe extern "C" fn(i64, i64) -> i64,
+    raise_exc:     unsafe extern "C" fn(i64, i64) -> i64,
+    make_cell:     unsafe extern "C" fn(i64) -> i64,
+    get_cell:      unsafe extern "C" fn(i64) -> i64,
+    set_cell:      unsafe extern "C" fn(i64, i64),
+    call_method:   unsafe extern "C" fn(i64, *const u8, i32, *const i64, i32) -> i64,
 }
 
 static mut CB: *const HvCallbacks = std::ptr::null();

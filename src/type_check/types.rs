@@ -176,6 +176,11 @@ impl InferredType {
             "type" => Some(Self::TypeVal),
             "Self" => Some(Self::SelfType),
             "Any" => Some(Self::Any),
+            // Unknown identifier that looks like a class name → treat as instance type.
+            // This allows `a: Vec2D` parameters to have method calls type-checked correctly.
+            other if other.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+                     && other.chars().all(|c| c.is_alphanumeric() || c == '_') =>
+                Some(Self::NamedInstance(other.to_string())),
             _ => None,
         }
     }

@@ -1,6 +1,11 @@
 {
   "permissions": {
     "allow": [
+      "PowerShell(cargo build *)",
+      "PowerShell(cargo run *)",
+      "PowerShell(cargo test *)",
+      "PowerShell(cargo clippy *)",
+      "PowerShell(cargo fmt *)",
       "Bash(npx vsce *)",
       "Bash(node node_modules/vsce/out/vsce package)",
       "Bash(node node_modules/vsce/out/vsce.js package)",
@@ -19,7 +24,8 @@
       "Bash(where node *)",
       "Bash(nvm list *)",
       "PowerShell(cmd /c \"`\"C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\2019\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat`\" && cd /d `\"d:\\\\repository\\\\new_language\\\\examples\\\\test_modules`\" && cl /LD /EHsc /nologo point.cpp\" 2>&1)",
-      "PowerShell(.\\\\vscode-extension\\\\make-vsix.ps1)"
+      "PowerShell(.\\\\vscode-extension\\\\make-vsix.ps1)",
+      "Bash(npm run compile)"
     ]
   }
 }

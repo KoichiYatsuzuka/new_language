@@ -22,6 +22,8 @@ pub const TL_NONE: i64 = 0;
 pub const TL_TRUE: i64 = 1;
 pub const TL_FALSE: i64 = 2;
 pub const TL_STOP_ITER: i64 = -1;
+/// Sentinel returned by CB_RAISE: native code raised an exception stored in PENDING_RAISE.
+pub const TL_EXCEPTION: i64 = -2;
 
 // ── BinOp codes (must mirror codegen.rs constants) ──────────────────────────
 
@@ -105,6 +107,14 @@ thread_local! {
 
     /// Error set by a callback on failure; checked after each native call.
     static NATIVE_ERROR: RefCell<Option<String>> = RefCell::new(None);
+
+    /// Exception raised by CB_RAISE; (type_name, message) pair.
+    static PENDING_RAISE: RefCell<Option<(String, String)>> = RefCell::new(None);
+
+    /// Native method dispatch table: (class_name, method_name) → fn_ptr.
+    /// Populated by `register_native_method` when a DLL is loaded.
+    static NATIVE_METHODS: RefCell<std::collections::HashMap<(String, String), usize>> =
+        RefCell::new(std::collections::HashMap::new());
 
     // ── Call-frame tracking for arena cleanup ────────────────────────────────
     /// Nesting depth of native calls (0 = not inside any native call).
@@ -220,6 +230,23 @@ pub fn take_error() -> Option<String> {
     NATIVE_ERROR.with(|e| e.borrow_mut().take())
 }
 
+/// Take any exception raised by CB_RAISE. Returns (type_name, message) if set.
+pub fn take_pending_raise() -> Option<(String, String)> {
+    PENDING_RAISE.with(|p| p.borrow_mut().take())
+}
+
+/// Register a natively compiled class method so `hv_call_method` can dispatch to it.
+pub fn register_native_method(class_name: &str, method_name: &str, fn_ptr: usize) {
+    NATIVE_METHODS.with(|m| {
+        m.borrow_mut().insert((class_name.to_string(), method_name.to_string()), fn_ptr);
+    });
+}
+
+/// Clear all registered native methods (call on unload / hot-reload).
+pub fn clear_native_methods() {
+    NATIVE_METHODS.with(|m| m.borrow_mut().clear());
+}
+
 /// 静的コールバックインスタンスへの `*const HvCallbacks` ポインタを返す。
 pub fn get_callbacks() -> *const HvCallbacks {
     &CALLBACKS as *const HvCallbacks
@@ -306,6 +333,29 @@ pub struct HvCallbacks {
     pub to_cstr: extern "C" fn(i64) -> *const u8,
     /// `arena[target_h]` を `new_val_h` の値のクローンで上書きする。cpp-bridge の T* 書き戻しパラメータ用。
     pub write_handle: extern "C" fn(i64, i64),
+
+    // ── Feature-extension callbacks (fields 27-31) ──────────────────────────
+    /// Append `item_h` to the list at `list_h`; returns the same list handle.
+    pub list_append: extern "C" fn(i64, i64) -> i64,
+    /// Raise an exception: (type_handle, msg_handle) → stores in PENDING_RAISE, returns TL_EXCEPTION.
+    pub raise_exc: extern "C" fn(i64, i64) -> i64,
+    /// Allocate a mutable cell initialised to `init_h`; returns a cell handle.
+    pub make_cell: extern "C" fn(i64) -> i64,
+    /// Read the current value stored in a cell; returns a value handle.
+    pub get_cell: extern "C" fn(i64) -> i64,
+    /// Write a new value into a cell (no return value).
+    pub set_cell: extern "C" fn(i64, i64),
+    /// Call a named method on an object, binding `self` automatically.
+    /// Equivalent to `eval_method_call(obj, method_name, args)`.
+    pub call_method: extern "C" fn(i64, *const u8, i32, *const i64, i32) -> i64,
+
+    // ── Typed field-read callbacks (fields 33-34) ────────────────────────────
+    /// Read a float-typed field from an object; returns the raw f64 without allocating
+    /// an arena handle.  Faster than CB_GET_ATTR + CB_TO_FLOAT for typed class fields.
+    pub get_float_field: extern "C" fn(i64, *const u8, i32) -> f64,
+    /// Read an int-typed field from an object; returns the raw i64 without allocating
+    /// an arena handle.  Faster than CB_GET_ATTR + CB_TO_INT for typed class fields.
+    pub get_int_field: extern "C" fn(i64, *const u8, i32) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
@@ -854,6 +904,157 @@ extern "C" fn hv_write_handle(target_h: i64, new_val_h: i64) {
     });
 }
 
+// ── Feature-extension callbacks ──────────────────────────────────────────────
+
+extern "C" fn hv_list_append(list_h: i64, item_h: i64) -> i64 {
+    if has_error() { return list_h; }
+    let item = clone_value_at(item_h);
+    VALUE_ARENA.with(|a| {
+        if let Some(Value::List(list)) = a.borrow().get(list_h as usize) {
+            list.borrow_mut().push(item);
+        }
+    });
+    list_h
+}
+
+extern "C" fn hv_raise_exc(type_h: i64, msg_h: i64) -> i64 {
+    let type_name = match clone_value_at(type_h) {
+        Value::Str(s) => s,
+        Value::Class(c) => c.name.clone(),
+        Value::Instance(inst) => inst.borrow().class.name.clone(),
+        _ => "Exception".to_string(),
+    };
+    let msg = match clone_value_at(msg_h) {
+        Value::Str(s) => s,
+        Value::None => String::new(),
+        Value::Instance(inst) => {
+            inst.borrow().fields.get("message")
+                .and_then(|(v, _)| if let Value::Str(s) = v { Some(s.clone()) } else { None })
+                .unwrap_or_default()
+        }
+        other => format!("{other:?}"),
+    };
+    PENDING_RAISE.with(|p| *p.borrow_mut() = Some((type_name, msg)));
+    TL_EXCEPTION
+}
+
+extern "C" fn hv_make_cell(init_h: i64) -> i64 {
+    let val = clone_value_at(init_h);
+    let cell = Rc::new(RefCell::new(vec![val]));
+    VALUE_ARENA.with(|a| {
+        let mut arena = a.borrow_mut();
+        let h = arena.len() as i64;
+        arena.push(Value::List(cell));
+        h
+    })
+}
+
+extern "C" fn hv_get_cell(cell_h: i64) -> i64 {
+    VALUE_ARENA.with(|a| {
+        if let Some(Value::List(list)) = a.borrow().get(cell_h as usize) {
+            if let Some(v) = list.borrow().first().cloned() {
+                return push_handle(v);
+            }
+        }
+        TL_NONE
+    })
+}
+
+extern "C" fn hv_call_method(obj_h: i64, name_ptr: *const u8, name_len: i32, args_ptr: *const i64, n_args: i32) -> i64 {
+    if has_error() { return TL_NONE; }
+    let name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    }.to_owned();
+    let obj = clone_value_at(obj_h);
+
+    // ── Native dispatch: check NATIVE_METHODS table first ─────────────────────
+    if let Value::Instance(ref inst_rc) = obj {
+        let class_name = inst_rc.borrow().class.name.clone();
+        let fn_ptr = NATIVE_METHODS.with(|m| {
+            m.borrow().get(&(class_name.clone(), name.clone())).copied()
+        });
+        if let Some(ptr) = fn_ptr {
+            // Build [self_h, arg0, arg1, ...] and call native function directly.
+            let mut all_args = Vec::with_capacity(1 + n_args as usize);
+            all_args.push(obj_h);
+            for i in 0..n_args as usize {
+                all_args.push(unsafe { *args_ptr.add(i) });
+            }
+            unsafe {
+                let func: unsafe extern "C" fn(*const i64, i32) -> i64 =
+                    std::mem::transmute(ptr);
+                return func(all_args.as_ptr(), all_args.len() as i32);
+            }
+        }
+    }
+
+    // ── Interpreter fallback ──────────────────────────────────────────────────
+    let args: Vec<Value> = (0..n_args as usize)
+        .map(|i| clone_value_at(unsafe { *args_ptr.add(i) }))
+        .collect();
+    let ptr = get_interp_ptr();
+    if ptr.is_null() { set_error(format!("NativeError: interpreter not set for call_method '{name}'")); return TL_NONE; }
+    let interp = unsafe { &mut *ptr };
+    let evaled: Vec<(Option<String>, Value)> = args.into_iter().map(|v| (None, v)).collect();
+    match interp.eval_method_call_evaled(obj, &name, evaled) {
+        Ok(v) => push_handle(v),
+        Err(e) => { set_error(e); TL_NONE }
+    }
+}
+
+extern "C" fn hv_set_cell(cell_h: i64, val_h: i64) {
+    let val = clone_value_at(val_h);
+    VALUE_ARENA.with(|a| {
+        if let Some(Value::List(list)) = a.borrow().get(cell_h as usize) {
+            if let Some(slot) = list.borrow_mut().first_mut() {
+                *slot = val;
+            }
+        }
+    });
+}
+
+// ── Typed field-read callbacks ────────────────────────────────────────────────
+
+/// Read a float-typed field directly from an object handle without boxing the result
+/// into an arena handle.  Equivalent to CB_GET_ATTR + CB_TO_FLOAT but with a single
+/// callback and no intermediate arena allocation.
+extern "C" fn hv_get_float_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -> f64 {
+    if has_error() { return 0.0; }
+    let name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    };
+    let obj = clone_value_at(obj_h);
+    let ptr = get_interp_ptr();
+    if ptr.is_null() { set_error(format!("NativeError: interpreter not set (get_float_field '{name}')")); return 0.0; }
+    let interp = unsafe { &mut *ptr };
+    match interp.get_attr_val(obj, name) {
+        Ok(Value::Float(f)) => f,
+        Ok(Value::Int(n))   => n as f64,
+        Ok(Value::Bool(b))  => b as u8 as f64,
+        Ok(_) | Err(_)      => 0.0,
+    }
+}
+
+/// Read an int-typed field directly from an object handle without boxing the result.
+/// Equivalent to CB_GET_ATTR + CB_TO_INT but with a single callback and no intermediate
+/// arena allocation.
+extern "C" fn hv_get_int_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
+    if has_error() { return 0; }
+    let name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    };
+    let obj = clone_value_at(obj_h);
+    let ptr = get_interp_ptr();
+    if ptr.is_null() { set_error(format!("NativeError: interpreter not set (get_int_field '{name}')")); return 0; }
+    let interp = unsafe { &mut *ptr };
+    match interp.get_attr_val(obj, name) {
+        Ok(Value::Int(n))   => n,
+        Ok(Value::Float(f)) => f as i64,
+        Ok(Value::Bool(b))  => b as i64,
+        Ok(_) | Err(_)      => 0,
+    }
+}
+
 // ── Static callbacks instance ─────────────────────────────────────────────────
 
 static CALLBACKS: HvCallbacks = HvCallbacks {
@@ -884,4 +1085,12 @@ static CALLBACKS: HvCallbacks = HvCallbacks {
     deep_copy: hv_deep_copy,
     to_cstr: hv_to_cstr,
     write_handle: hv_write_handle,
+    list_append: hv_list_append,
+    raise_exc: hv_raise_exc,
+    make_cell: hv_make_cell,
+    get_cell: hv_get_cell,
+    set_cell: hv_set_cell,
+    call_method: hv_call_method,
+    get_float_field: hv_get_float_field,
+    get_int_field: hv_get_int_field,
 };

@@ -37,33 +37,46 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
-use super::codegen;
+use super::llvm_codegen as codegen;
 use super::stub_gen;
 use crate::ast::Stmt;
 
 const MAGIC: &[u8; 4] = b"TLC\x00";
 const VERSION_V0: u32 = 0;
 const VERSION_V1: u32 = 1;
+/// v2: LLVM bitcode embedded instead of a native DLL.
+const VERSION_V2: u32 = 2;
 
 // ---------------------------------------------------------------------------
-// Thread-local cache: module_name → (exports, dll_bytes)
-// Populated by load_tlc() when it reads a v1 file; consumed by exec.rs.
+// Thread-local cache: module_name → (exports, NativePayload)
+// Populated by load_tlc(); consumed by exec.rs.
 // ---------------------------------------------------------------------------
+
+/// Payload stored in the native cache and embedded in .hvc v1/v2.
+#[derive(Clone)]
+pub enum NativePayload {
+    /// v1: raw shared-library bytes, written to a temp file and loaded via libloading.
+    Dll(Vec<u8>),
+    /// v2: LLVM bitcode, re-JIT'd in-process via inkwell (no temp file needed).
+    Bitcode(Vec<u8>),
+}
 
 thread_local! {
-    static NATIVE_CACHE: RefCell<HashMap<String, (Vec<codegen::FnExport>, Vec<u8>)>> =
+    static NATIVE_CACHE: RefCell<HashMap<String, (Vec<codegen::FnExport>, NativePayload)>> =
         RefCell::new(HashMap::new());
 }
 
 /// Consume and return the cached native data for a module (if any).
-/// Called once per `import[hv]` evaluation; subsequent calls return `None`.
-pub fn take_native_bytes(module_name: &str) -> Option<(Vec<codegen::FnExport>, Vec<u8>)> {
+pub fn take_native_bytes(module_name: &str) -> Option<(Vec<codegen::FnExport>, NativePayload)> {
     NATIVE_CACHE.with(|c| c.borrow_mut().remove(module_name))
 }
 
-/// Insert pre-compiled native data into the cache (used by `rs_loader`).
+/// Insert pre-compiled native data (DLL bytes) into the cache (used by `rs_loader`).
 pub fn cache_native(module_name: &str, exports: Vec<codegen::FnExport>, dll_bytes: Vec<u8>) {
-    NATIVE_CACHE.with(|c| c.borrow_mut().insert(module_name.to_string(), (exports, dll_bytes)));
+    NATIVE_CACHE.with(|c| c.borrow_mut().insert(
+        module_name.to_string(),
+        (exports, NativePayload::Dll(dll_bytes)),
+    ));
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -97,13 +110,23 @@ pub fn compile(
 
     // Attempt native compilation.
     match compile_native(stmts) {
-        Ok((dll_bytes, exports)) => {
-            write_tlc_v1(source, stem, &exports, &dll_bytes, &tlc_path)?;
-            println!(
-                "NativeLib: {} function(s) embedded in {}",
-                exports.len(),
-                tlc_path.display()
-            );
+        Ok((payload, exports)) => {
+            match &payload {
+                NativePayload::Bitcode(bytes) => {
+                    write_tlc_v2(source, stem, &exports, bytes, &tlc_path)?;
+                    println!(
+                        "NativeLib: {} function(s) (LLVM bitcode) embedded in {}",
+                        exports.len(), tlc_path.display()
+                    );
+                }
+                NativePayload::Dll(bytes) => {
+                    write_tlc_v1(source, stem, &exports, bytes, &tlc_path)?;
+                    println!(
+                        "NativeLib: {} function(s) (DLL) embedded in {}",
+                        exports.len(), tlc_path.display()
+                    );
+                }
+            }
         }
         Err(e) => {
             eprintln!("NativeLib: skipped ({e})");
@@ -136,9 +159,9 @@ pub fn load_tlc(path: &Path) -> std::io::Result<(String, String)> {
     let (name, source, native_opt) = parse_tlc(&data)
         .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidData, msg))?;
 
-    if let Some((exports, dll_bytes)) = native_opt {
+    if let Some((exports, payload)) = native_opt {
         NATIVE_CACHE.with(|c| {
-            c.borrow_mut().insert(name.clone(), (exports, dll_bytes));
+            c.borrow_mut().insert(name.clone(), (exports, payload));
         });
     }
 
@@ -147,63 +170,78 @@ pub fn load_tlc(path: &Path) -> std::io::Result<(String, String)> {
 
 // ── native compilation ────────────────────────────────────────────────────────
 
-/// Compile eligible functions to a temporary DLL, read it back, and return
-/// the raw bytes together with the export table.
-fn compile_native(stmts: &[Stmt]) -> Result<(Vec<u8>, Vec<codegen::FnExport>), String> {
-    let (rust_src, exports) = codegen::generate_rust_module(stmts)
+/// Compile eligible functions to a `NativePayload`.
+///
+/// Priority:
+///   1. inkwell JIT (feature = "llvm"): produces LLVM bitcode, no external tools.
+///   2. clang fallback: produces a DLL via the old text-IR pipeline.
+fn compile_native(stmts: &[Stmt]) -> Result<(NativePayload, Vec<codegen::FnExport>), String> {
+    // ── inkwell path (preferred) ──────────────────────────────────────────────
+    #[cfg(feature = "llvm")]
+    {
+        match super::inkwell_codegen::get_bitcode(stmts) {
+            Ok((bitcode, exports)) => return Ok((NativePayload::Bitcode(bitcode), exports)),
+            Err(e) => eprintln!("NativeLib(inkwell): {e}"),
+        }
+    }
+
+    // ── clang fallback ────────────────────────────────────────────────────────
+    let (llvm_ir, exports) = codegen::generate_llvm_module(stmts)
         .ok_or_else(|| "no codegen-eligible functions".to_string())?;
 
     let fn_names: Vec<&str> = exports.iter().map(|e| e.name.as_str()).collect();
-    eprintln!(
-        "NativeLib: compiling {} function(s): {}",
-        fn_names.len(),
-        fn_names.join(", ")
-    );
+    eprintln!("NativeLib(clang): compiling {} function(s): {}", fn_names.len(), fn_names.join(", "));
 
-    let tmp_dir = std::env::temp_dir();
-    let rs_path = tmp_dir.join("hv_native_module.rs");
-    let ext = native_lib_ext();
+    let tmp_dir  = std::env::temp_dir();
+    let ll_path  = tmp_dir.join("hv_native_module.ll");
+    let ext      = native_lib_ext();
     let dll_path = tmp_dir.join(format!("hv_native_module.{ext}"));
 
-    std::fs::write(&rs_path, &rust_src).map_err(|e| format!("cannot write temp source: {e}"))?;
+    std::fs::write(&ll_path, &llvm_ir)
+        .map_err(|e| format!("cannot write LLVM IR: {e}"))?;
 
-    let compile_result = invoke_rustc(&rs_path, &dll_path);
-    let _ = std::fs::remove_file(&rs_path);
-    compile_result?;
+    let result = invoke_clang(&ll_path, &dll_path);
+    let _ = std::fs::remove_file(&ll_path);
+    result?;
 
-    let dll_bytes =
-        std::fs::read(&dll_path).map_err(|e| format!("cannot read compiled DLL: {e}"))?;
+    let dll_bytes = std::fs::read(&dll_path)
+        .map_err(|e| format!("cannot read compiled DLL: {e}"))?;
     let _ = std::fs::remove_file(&dll_path);
-
-    Ok((dll_bytes, exports))
+    Ok((NativePayload::Dll(dll_bytes), exports))
 }
 
-/// Invoke `rustc --crate-type cdylib` to compile `rs_path` → `dll_path`.
-fn invoke_rustc(rs_path: &Path, dll_path: &Path) -> Result<(), String> {
-    let output = Command::new("rustc")
-        .args([
-            "--edition",
-            "2021",
-            "--crate-type",
-            "cdylib",
-            "-C",
-            "opt-level=3",
-            "-o",
-            dll_path.to_str().unwrap_or("output"),
-            rs_path.to_str().unwrap_or(""),
-        ])
-        .output();
+/// Invoke `clang -O3 -shared` to compile `ll_path` → `dll_path` (fallback path).
+fn invoke_clang(ll_path: &Path, dll_path: &Path) -> Result<(), String> {
+    let out_str = dll_path.to_str().unwrap_or("output");
+    let in_str  = ll_path.to_str().unwrap_or("");
+    let mut args: Vec<&str> = vec!["-O3", "-shared", "-o", out_str, in_str];
+    #[cfg(not(target_os = "windows"))]
+    args.push("-fPIC");
+    #[cfg(target_os = "windows")]
+    args.extend_from_slice(&["-Wno-dll-attribute-on-redeclaration"]);
 
+    // Try clang from PATH first; fall back to llvm.path in hv_config.json.
+    let clang_exe = if Command::new("clang").arg("--version").output()
+        .map_or(false, |o| o.status.success())
+    {
+        std::path::PathBuf::from("clang")
+    } else {
+        let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
+        let from_config = std::env::current_dir().ok()
+            .and_then(|d| std::fs::read_to_string(d.join("hv_config.json")).ok())
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|j| j.get("llvm")?.get("path")?.as_str().map(|s| s.to_string()))
+            .map(|p| std::path::PathBuf::from(p).join("bin").join(format!("clang{ext}")));
+        from_config.filter(|p| p.exists()).unwrap_or_else(|| std::path::PathBuf::from("clang"))
+    };
+
+    let output = Command::new(&clang_exe).args(&args).output();
     match output {
         Ok(out) if out.status.success() => Ok(()),
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            Err(format!("rustc failed:\n{stderr}"))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Err("rustc not found in PATH".to_string())
-        }
-        Err(e) => Err(format!("cannot run rustc: {e}")),
+        Ok(out) => Err(format!("clang failed:\n{}", String::from_utf8_lossy(&out.stderr))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound =>
+            Err("clang not found in PATH (or llvm.path in hv_config.json)".to_string()),
+        Err(e) => Err(format!("cannot run clang: {e}")),
     }
 }
 
@@ -258,12 +296,41 @@ fn write_tlc_v1(
     std::fs::write(path, buf)
 }
 
+/// v2: identical layout to v1 but uses LLVM bitcode bytes instead of DLL bytes.
+fn write_tlc_v2(
+    source: &str,
+    module_name: &str,
+    exports: &[codegen::FnExport],
+    bitcode: &[u8],
+    path: &Path,
+) -> std::io::Result<()> {
+    let name_bytes = module_name.as_bytes();
+    let src_bytes  = source.as_bytes();
+    let mut buf    = Vec::new();
+    buf.extend_from_slice(MAGIC);
+    buf.extend_from_slice(&VERSION_V2.to_le_bytes());
+    buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(name_bytes);
+    buf.extend_from_slice(&(src_bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(src_bytes);
+    buf.extend_from_slice(&(exports.len() as u32).to_le_bytes());
+    for exp in exports {
+        let nb = exp.name.as_bytes();
+        buf.extend_from_slice(&(nb.len() as u32).to_le_bytes());
+        buf.extend_from_slice(nb);
+        buf.extend_from_slice(&(exp.n_params as u32).to_le_bytes());
+    }
+    buf.extend_from_slice(&(bitcode.len() as u32).to_le_bytes());
+    buf.extend_from_slice(bitcode);
+    std::fs::write(path, buf)
+}
+
 // ── reader ────────────────────────────────────────────────────────────────────
 
-/// Returns `(module_name, source, Option<(exports, dll_bytes)>)`.
+/// Returns `(module_name, source, Option<(exports, NativePayload)>)`.
 fn parse_tlc(
     data: &[u8],
-) -> Result<(String, String, Option<(Vec<codegen::FnExport>, Vec<u8>)>), String> {
+) -> Result<(String, String, Option<(Vec<codegen::FnExport>, NativePayload)>), String> {
     let mut pos = 0;
 
     if data.len() < 4 || &data[..4] != MAGIC {
@@ -272,7 +339,7 @@ fn parse_tlc(
     pos += 4;
 
     let version = read_u32(data, &mut pos)?;
-    if version > VERSION_V1 {
+    if version > VERSION_V2 {
         return Err(format!("unsupported .hvc version {version}"));
     }
 
@@ -290,25 +357,27 @@ fn parse_tlc(
         return Ok((module_name, source, None));
     }
 
-    // version == 1: parse native section
+    // version 1 or 2: parse fn export table (identical layout)
     let n_fns = read_u32(data, &mut pos)? as usize;
     let mut exports = Vec::with_capacity(n_fns);
     for _ in 0..n_fns {
-        let fn_name_len = read_u32(data, &mut pos)? as usize;
+        let fn_name_len   = read_u32(data, &mut pos)? as usize;
         let fn_name_bytes = read_bytes(data, &mut pos, fn_name_len)?;
-        let fn_name = String::from_utf8(fn_name_bytes.to_vec())
+        let fn_name       = String::from_utf8(fn_name_bytes.to_vec())
             .map_err(|_| "function name is not valid UTF-8".to_string())?;
         let n_params = read_u32(data, &mut pos)? as usize;
-        exports.push(codegen::FnExport {
-            name: fn_name,
-            n_params,
-        });
+        exports.push(codegen::FnExport { name: fn_name, n_params, class_name: None });
     }
 
-    let dll_len = read_u32(data, &mut pos)? as usize;
-    let dll_bytes = read_bytes(data, &mut pos, dll_len)?.to_vec();
+    let payload_len   = read_u32(data, &mut pos)? as usize;
+    let payload_bytes = read_bytes(data, &mut pos, payload_len)?.to_vec();
+    let payload = if version == VERSION_V1 {
+        NativePayload::Dll(payload_bytes)
+    } else {
+        NativePayload::Bitcode(payload_bytes)
+    };
 
-    Ok((module_name, source, Some((exports, dll_bytes))))
+    Ok((module_name, source, Some((exports, payload))))
 }
 
 /// バイト列の現在位置から u32 をリトルエンディアンで読み取り、位置を4バイト進める。

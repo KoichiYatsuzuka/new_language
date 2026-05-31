@@ -631,29 +631,29 @@ pub enum PtrParam {
     MutPtr,
 }
 
-/// Reference to a native (natively compiled) function exported by a shared library.
+/// Reference to a native (natively compiled) function.
 ///
-/// The library is identified by its filesystem path; the `Interpreter` holds the
-/// loaded `Library` in `native_libs` keyed by the same path.
+/// Two dispatch modes:
+///   - `raw_fn_ptr != 0`: inkwell JIT — call the pointer directly (no libloading).
+///   - `raw_fn_ptr == 0`: DLL via libloading — use `lib_path` to look up the library.
 #[derive(Debug, Clone)]
 pub struct NativeFnRef {
-    /// Absolute path of the `.dll` / `.so` / `.dylib` that exports this function.
+    /// Absolute path of the `.dll` / `.so` / `.dylib`.  Empty for JIT functions.
     pub lib_path: PathBuf,
     /// Base name of the tl function (e.g. `"is_prime"`).
     /// The actual exported symbol is `"{fn_name}_tl"`.
     pub fn_name: String,
     /// Total number of positional parameters (used to size the args array).
     pub n_params: usize,
-    /// Minimum number of required arguments (tail parameters may be optional,
-    /// e.g. C++ DEFAULTPARAM / default arguments). Omitted args are padded with 0 (None).
-    /// For non-C++ functions this equals `n_params`.
+    /// Minimum number of required arguments.
     pub min_params: usize,
     /// Per-parameter mutability flags (`true` = `mut`, `false` = `let`).
-    /// Used at call sites to deep-copy arguments bound to immutable parameters.
     pub param_mutabilities: Vec<bool>,
-    /// Per-parameter pointer kind.  For cpp-bridge functions, `MutPtr` parameters
-    /// require a `mut` variable argument and trigger write-back after the call.
+    /// Per-parameter pointer kind (cpp-bridge only).
     pub ptr_params: Vec<PtrParam>,
+    /// Non-zero for inkwell JIT functions: address of `fname_tl` in JIT memory.
+    /// Cast to `unsafe extern "C" fn(*const i64, i32) -> i64` at call time.
+    pub raw_fn_ptr: usize,
 }
 
 /// Wrapper around `libloading::Library` that implements `Debug`.
@@ -1070,6 +1070,10 @@ pub struct Interpreter {
     /// ロード済みのネイティブ共有ライブラリ。キーは DLL の絶対パス。
     /// ライブラリはインタープリタの生存期間を通じて保持される（アンロードしない）。
     pub(self) native_libs: HashMap<PathBuf, NativeLibWrapper>,
+    /// Keeps inkwell JIT modules alive for the interpreter's lifetime.
+    /// Each entry owns the `ExecutionEngine` whose function pointers are in use.
+    #[allow(dead_code)]
+    pub(self) jit_handles: Vec<Box<dyn std::any::Any>>,
     /// デバッガ REPL 内で `let dbg::name = expr` として宣言された一時変数。
     /// `q`（再開）または `break_point` のスコープ終了時にクリアされる。
     pub(self) dbg_vars: HashMap<String, Var>,
@@ -1259,6 +1263,7 @@ impl Interpreter {
             current_class: None,
             trait_field_access: HashMap::new(),
             native_libs: HashMap::new(),
+            jit_handles: Vec::new(),
             dbg_vars: HashMap::new(),
             dbg_last_span: None,
         }

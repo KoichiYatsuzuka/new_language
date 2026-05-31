@@ -30,6 +30,7 @@ python -m impl_python examples/control_flow.hv
 ```
 
 ## Regulations
+- Read .claude.json to check the permitted commands and avoid asking permissions by using the commands in the file.
 - When a new grammer is implemented, an example code to check if it works must be generated in example folder. And if error pattern is implemented, an error example is also neede, whose name has "_error" at the last.
 - When Python implementation is updated, also update the git SHA to track and syncronize the versions between the Rust-implementation and Python-implementation. 
 - If running the same script(s) many times, make them .ps1 file to ease command permission.
@@ -135,10 +136,9 @@ Havakyrie/
 │   ├── async_bench.hv         # benchmark: sequential vs async parallel (prime counting)
 │   ├── debug_demo.hv          # break_point debugger demo
 │   ├── test_modules/          # modules used by importation.hv
-│   │   ├── native_ops.hv      # typed int/float functions for native compilation
-│   │   ├── native_ops.hvc     # compiled module (v1, with embedded DLL)
-│   │   ├── native_ops.hvs     # type stub
-│   │   └── prime_factors.hv   # prime factorization module
+│   │   ├── physics.hv         # Body class benchmark — canonical native compilation demo
+│   │   ├── physics.hvc        # compiled module (v1) — regenerate with --compile
+│   │   └── physics.hvs        # type stub
 │   ├── geometry/              # example package
 │   │   ├── __init__.hv
 │   │   ├── __init__.hvc
@@ -183,20 +183,20 @@ This produces two files next to the source:
 
 ### Canonical demo
 
-`examples/test_modules/native_ops.hv` is the canonical module for demonstrating native compilation.  
-`examples/importation.hv` is the corresponding runner that shows the full workflow.
+`examples/test_modules/physics.hv` is the canonical module for demonstrating native compilation.  
+`examples/importation.hv` (section 1) is the corresponding runner that shows the full workflow.
 
 ```bash
 # Step 1 — run interpreted
 cargo run --release -- examples/importation.hv
 
 # Step 2 — compile the module
-cargo run --release -- --compile examples/test_modules/native_ops.hv
+cargo run --release -- --compile examples/test_modules/physics.hv
 # Output:
-#   NativeLib: compiling 6 function(s): fib, count_divisors, digit_sum, ...
-#   NativeLib: 6 function(s) embedded in examples\test_modules\native_ops.hvc
-#   Compiled : examples\test_modules\native_ops.hvc
-#   Stub     : examples\test_modules\native_ops.hvs
+#   NativeLib: compiling 6 function(s): potential, kinetic, vel_dot, ...
+#   NativeLib: 6 function(s) embedded in examples\test_modules\physics.hvc
+#   Compiled : examples\test_modules\physics.hvc
+#   Stub     : examples\test_modules\physics.hvs
 
 # Step 3 — run again with native dispatch (same command as Step 1)
 cargo run --release -- examples/importation.hv
@@ -209,8 +209,8 @@ If the `.hvc` is v1, the embedded DLL is extracted to a temp file at runtime and
 Eligible functions are dispatched natively; all other functions tree-walk as usual.
 
 ```
-import test_modules.native_ops               # loads test_modules/native_ops.hvc (parser)
-test_modules.native_ops.fib(60)              # calls native code — ~100× faster for typed int/float
+import test_modules.physics                  # loads test_modules/physics.hvc (parser)
+test_modules.physics.total_energy(a, b, N)   # calls native code — ~3300× faster with approach-1
 ```
 
 ### Type-specialized codegen

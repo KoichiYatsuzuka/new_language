@@ -1292,7 +1292,14 @@ impl Interpreter {
             })
             .collect();
 
-        let call_result = {
+        let call_result = if fn_ref.raw_fn_ptr != 0 {
+            // inkwell JIT path: fn pointer stored directly, no libloading needed
+            unsafe {
+                let func: unsafe extern "C" fn(*const i64, i32) -> i64 =
+                    std::mem::transmute(fn_ref.raw_fn_ptr);
+                Ok(func(handles.as_ptr(), handles.len() as i32))
+            }
+        } else {
             let lib = match self.native_libs.get(&fn_ref.lib_path) {
                 Some(l) => l,
                 None => {
@@ -1328,6 +1335,13 @@ impl Interpreter {
                     super::native_api::abort_native_call(is_outermost);
                     return Err(err);
                 }
+                if result_h == super::native_api::TL_EXCEPTION {
+                    super::native_api::abort_native_call(is_outermost);
+                    if let Some((type_name, msg)) = super::native_api::take_pending_raise() {
+                        return Err(format!("{type_name}: {msg}"));
+                    }
+                    return Err("NativeError: CB_RAISE called but no pending raise".to_string());
+                }
                 // Read back write-back values BEFORE exit_native_call truncates the arena
                 let updated: Vec<(String, Value)> = writebacks
                     .iter()
@@ -1344,7 +1358,8 @@ impl Interpreter {
     }
 
     /// Core native-dispatch path: push already-evaluated args into the arena and invoke
-    /// the exported `{fn_name}_tl` symbol.  Used by both `call_native_function` (called
+    /// `{fn_name}_tl` either via a raw JIT pointer or via libloading.
+    /// Used by both `call_native_function` (called
     /// from AST) and `call_value_with_args` (called from native callbacks).
     pub(super) fn dispatch_native_evaled(
         &mut self,
@@ -1384,7 +1399,14 @@ impl Interpreter {
             })
             .collect();
 
-        let call_result = {
+        let call_result = if fn_ref.raw_fn_ptr != 0 {
+            // inkwell JIT path: fn pointer stored directly, no libloading needed
+            unsafe {
+                let func: unsafe extern "C" fn(*const i64, i32) -> i64 =
+                    std::mem::transmute(fn_ref.raw_fn_ptr);
+                Ok(func(handles.as_ptr(), handles.len() as i32))
+            }
+        } else {
             let lib = match self.native_libs.get(&fn_ref.lib_path) {
                 Some(l) => l,
                 None => {
@@ -1419,6 +1441,13 @@ impl Interpreter {
                 if let Some(err) = super::native_api::take_error() {
                     super::native_api::abort_native_call(is_outermost);
                     return Err(err);
+                }
+                if result_h == super::native_api::TL_EXCEPTION {
+                    super::native_api::abort_native_call(is_outermost);
+                    if let Some((type_name, msg)) = super::native_api::take_pending_raise() {
+                        return Err(format!("{type_name}: {msg}"));
+                    }
+                    return Err("NativeError: CB_RAISE called but no pending raise".to_string());
                 }
                 Ok(super::native_api::exit_native_call(result_h, is_outermost))
             }

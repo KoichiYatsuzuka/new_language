@@ -1348,28 +1348,57 @@ impl Interpreter {
             return Ok(ns);
         }
 
-        // tl-auto / tlc / rs: DLL がキャッシュにあれば優先する
-        if lang == "tl-auto" || lang == "tlc" || lang == "rs" {
+        // tl-auto / tlc / rs: native payload in cache → try to load natively
+        if lang == "tl-auto" || lang == "hv-auto" || lang == "tlc" || lang == "hvc" || lang == "rs" {
             let module_name = module.join(".");
-            if let Some((_exports, dll_bytes)) =
-                crate::partial_compiler::take_native_bytes(&module_name)
+            // .hvc files store only the stem as their module name; fall back to last segment.
+            let native_data = crate::partial_compiler::take_native_bytes(&module_name)
+                .or_else(|| {
+                    let stem = module.last().map(|s| s.as_str()).unwrap_or("");
+                    if stem != module_name { crate::partial_compiler::take_native_bytes(stem) } else { None }
+                });
+            if let Some((_exports, payload)) = native_data
             {
-                let ext = crate::partial_compiler::native_lib_ext();
-                let stem = module.last().cloned().unwrap_or_default();
-                let tmp_path = std::env::temp_dir().join(format!("{stem}_tl.{ext}"));
-                match std::fs::write(&tmp_path, &dll_bytes) {
-                    Ok(()) => match self.try_load_native_module(module, body, &tmp_path) {
-                        Ok(ns) => {
-                            self.module_cache
-                                .insert(cache_key, ModuleState::Loaded(ns.clone()));
-                            return Ok(ns);
+                use crate::partial_compiler::NativePayload;
+                match payload {
+                    // ── inkwell JIT path (v2 bitcode) ─────────────────────────
+                    #[cfg(feature = "llvm")]
+                    NativePayload::Bitcode(bitcode) => {
+                        match crate::partial_compiler::inkwell_codegen::jit_from_bitcode(
+                            &bitcode, &exports,
+                        ) {
+                            Ok((jit_handle, fn_ptrs)) => {
+                                match self.load_jit_module(module, body, &exports, &fn_ptrs, jit_handle) {
+                                    Ok(ns) => {
+                                        self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
+                                        return Ok(ns);
+                                    }
+                                    Err(e) => eprintln!("NativeLoad(JIT): {e}"),
+                                }
+                            }
+                            Err(e) => eprintln!("NativeLoad(JIT): bitcode re-JIT failed: {e}"),
                         }
-                        Err(e) => {
-                            eprintln!("NativeLoad: failed: {e}");
+                    }
+                    // ── DLL path (v1) ─────────────────────────────────────────
+                    NativePayload::Dll(dll_bytes) => {
+                        let ext = crate::partial_compiler::native_lib_ext();
+                        let stem = module.last().cloned().unwrap_or_default();
+                        let tmp_path = std::env::temp_dir().join(format!("{stem}_tl.{ext}"));
+                        match std::fs::write(&tmp_path, &dll_bytes) {
+                            Ok(()) => match self.try_load_native_module(module, body, &tmp_path) {
+                                Ok(ns) => {
+                                    self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
+                                    return Ok(ns);
+                                }
+                                Err(e) => eprintln!("NativeLoad(DLL): {e}"),
+                            },
+                            Err(e) => eprintln!("NativeLoad(DLL): cannot write temp DLL: {e}"),
                         }
-                    },
-                    Err(e) => {
-                        eprintln!("NativeLoad: cannot write temp DLL: {e}");
+                    }
+                    // When the llvm feature is disabled, silently ignore Bitcode payloads
+                    #[cfg(not(feature = "llvm"))]
+                    NativePayload::Bitcode(_) => {
+                        eprintln!("NativeLoad: bitcode .hvc requires --features llvm");
                     }
                 }
             }
@@ -1420,6 +1449,83 @@ impl Interpreter {
         Ok(ns)
     }
 
+    /// inkwell JIT モジュールから `Namespace` を構築する。
+    /// `fn_ptrs` は `(fn_name, raw_address)` のリスト。
+    /// `jit_handle` は JIT エンジンの所有権を保持するボックスで、インタープリタに格納される。
+    #[cfg(feature = "llvm")]
+    fn load_jit_module(
+        &mut self,
+        module: &[String],
+        body:   &[Stmt],
+        exports: &[crate::partial_compiler::llvm_codegen::FnExport],
+        fn_ptrs: &[(String, usize)],
+        jit_handle: crate::partial_compiler::inkwell_codegen::JitHandle,
+    ) -> Result<Rc<NamespaceData>, String> {
+        use crate::interpreter::native_api::{get_callbacks, HvCallbacks};
+
+        // Call hv_init via the JIT module to set the @CB global
+        {
+            // Look up hv_init by address if we can, otherwise skip
+            // (the @CB global in the JIT module is separate from any DLL @CB)
+            let hv_init_sym = fn_ptrs.iter()
+                .find(|(n, _)| n == "hv_init")
+                .map(|(_, p)| *p);
+            if let Some(addr) = hv_init_sym {
+                let cb_ptr = get_callbacks();
+                unsafe {
+                    let hv_init: unsafe extern "C" fn(*const HvCallbacks) =
+                        std::mem::transmute(addr);
+                    hv_init(cb_ptr);
+                }
+            } else {
+                // hv_init address not in fn_ptrs; get it via the engine
+                // (we'd need to expose it — for now assume the engine was
+                //  already initialised by jit_from_bitcode which calls it)
+            }
+        }
+
+        // Build the namespace: for each body statement that is a FnDef
+        // and has a raw fn_ptr, create a NativeFnRef with raw_fn_ptr set.
+        let mut members: HashMap<String, Value> = HashMap::new();
+        self.push_scope();
+        for stmt in body {
+            self.exec(stmt)?;
+        }
+        members = self.scopes.last()
+            .map(|s| s.iter().map(|(k, v)| (k.clone(), v.value.clone())).collect())
+            .unwrap_or_default();
+        self.pop_scope();
+
+        // Override tree-walk functions with JIT versions
+        let ptr_map: HashMap<&str, usize> =
+            fn_ptrs.iter().map(|(n, p)| (n.as_str(), *p)).collect();
+        for exp in exports {
+            if let Some(&fn_ptr) = ptr_map.get(exp.name.as_str()) {
+                if fn_ptr != 0 {
+                    let fn_ref = Arc::new(NativeFnRef {
+                        lib_path: PathBuf::new(), // not used for JIT
+                        fn_name: exp.name.clone(),
+                        n_params: exp.n_params,
+                        min_params: exp.n_params,
+                        param_mutabilities: vec![false; exp.n_params],
+                        ptr_params: vec![crate::interpreter::PtrParam::None; exp.n_params],
+                        raw_fn_ptr: fn_ptr,
+                    });
+                    members.insert(exp.name.clone(), Value::NativeFunction(fn_ref));
+                }
+            }
+        }
+
+        // Keep the JIT engine alive
+        self.jit_handles.push(Box::new(jit_handle));
+
+        eprintln!("NativeLoad(JIT): {} function(s) loaded", exports.len());
+        Ok(Rc::new(NamespaceData {
+            name: module.join("."),
+            members,
+        }))
+    }
+
     /// ネイティブ共有ライブラリをロードして、そのモジュールの `Namespace` を構築する。
     fn try_load_native_module(
         &mut self,
@@ -1456,23 +1562,44 @@ impl Interpreter {
         self.pop_scope();
 
         for stmt in body {
-            if let Stmt::FnDef { name, params, .. } = stmt {
-                let symbol_name = format!("{name}_tl\0");
-                let has_symbol = unsafe {
-                    lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
-                        .is_ok()
-                };
-                if has_symbol {
-                    let fn_ref = Arc::new(NativeFnRef {
-                        lib_path: lib_path_buf.clone(),
-                        fn_name: name.clone(),
-                        n_params: params.len(),
-                        min_params: params.len(),
-                        param_mutabilities: params.iter().map(|p| p.mutable).collect(),
-                        ptr_params: vec![crate::interpreter::PtrParam::None; params.len()],
-                    });
-                    members.insert(name.clone(), Value::NativeFunction(fn_ref));
+            match stmt {
+                Stmt::FnDef { name, params, .. } | Stmt::GenDef { name, params, .. } => {
+                    let symbol_name = format!("{name}_tl\0");
+                    let has_symbol = unsafe {
+                        lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes()).is_ok()
+                    };
+                    if has_symbol {
+                        let fn_ref = Arc::new(NativeFnRef {
+                            lib_path: lib_path_buf.clone(),
+                            fn_name: name.clone(),
+                            n_params: params.len(),
+                            min_params: params.len(),
+                            param_mutabilities: params.iter().map(|p| p.mutable).collect(),
+                            ptr_params: vec![crate::interpreter::PtrParam::None; params.len()],
+                            raw_fn_ptr: 0,
+                        });
+                        members.insert(name.clone(), Value::NativeFunction(fn_ref));
+                    }
                 }
+                Stmt::ClassDef { name: class_name, body: class_body, .. } => {
+                    for method_stmt in class_body {
+                        let (mname, params) = match method_stmt {
+                            Stmt::FnDef { name, params, .. } => (name, params),
+                            Stmt::GenDef { name, params, .. } => (name, params),
+                            _ => continue,
+                        };
+                        let symbol = crate::partial_compiler::llvm_codegen::method_symbol(class_name, mname);
+                        let symbol_name = format!("{symbol}_tl\0");
+                        if let Ok(func) = unsafe {
+                            lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
+                        } {
+                            let fn_ptr = unsafe { *func } as usize;
+                            super::native_api::register_native_method(class_name, mname, fn_ptr);
+                            eprintln!("NativeMethod: {class_name}.{mname} ({} param(s)) → native", params.len());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -1737,6 +1864,7 @@ impl Interpreter {
                     min_params: sig.n_required,
                     param_mutabilities: vec![false; sig.params.len()],
                     ptr_params,
+                    raw_fn_ptr: 0,
                 });
                 members.insert(sig.name.clone(), Value::NativeFunction(fn_ref));
             }
