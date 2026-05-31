@@ -37,18 +37,20 @@
       "name": "comment.line.number-sign.hv"
     },
     "string-interpolation": {
-      "name": "meta.interpolation.hv",
+      "name": "meta.template.expression.hv",
       "begin": "\\{",
       "end": "\\}",
-      "beginCaptures": { "0": { "name": "keyword.reserved.hv" } },
-      "endCaptures": { "0": { "name": "keyword.reserved.hv" } },
+      "beginCaptures": { "0": { "name": "punctuation.definition.template-expression.begin.hv" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.template-expression.end.hv" } },
       "patterns": [
-        { "match": "[!:][^}]*", "name": "keyword.reserved.hv" },
+        { "match": "[!:][^}]*", "name": "constant.other.format-spec.hv" },
         { "include": "#keyword" },
         { "include": "#constant" },
         { "include": "#number" },
         { "include": "#builtin-type" },
         { "include": "#builtin-func" },
+        { "include": "#constructor-call" },
+        { "include": "#function-call" },
         { "include": "#operator" },
         { "include": "#variable" }
       ]
