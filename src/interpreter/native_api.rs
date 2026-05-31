@@ -247,6 +247,63 @@ pub fn clear_native_methods() {
     NATIVE_METHODS.with(|m| m.borrow_mut().clear());
 }
 
+/// Look up the raw function pointer for a native class method.
+/// Returns `Some(ptr)` if registered, `None` otherwise.
+pub fn lookup_native_method_ptr(class_name: &str, method_name: &str) -> Option<usize> {
+    NATIVE_METHODS.with(|m| {
+        m.borrow().get(&(class_name.to_string(), method_name.to_string())).copied()
+    })
+}
+
+/// Dispatch a native class method from interpreter code (not from within a native call).
+///
+/// - `obj`: the `Value::Instance` on which the method is called (self)
+/// - `method_name`: name of the method
+/// - `arg_vals`: already-evaluated argument values (excluding self)
+///
+/// Returns `Some(Ok(value))` when a native method was registered and ran successfully,
+/// `Some(Err(msg))` on native error, or `None` if no native method is registered for
+/// `(class_name, method_name)`.
+pub fn try_dispatch_native_method(
+    interp: &mut Interpreter,
+    obj: Value,
+    method_name: &str,
+    arg_vals: Vec<Value>,
+) -> Option<Result<Value, String>> {
+    let class_name = match &obj {
+        Value::Instance(rc) => rc.borrow().class.name.clone(),
+        _ => return None,
+    };
+
+    let fn_ptr = lookup_native_method_ptr(&class_name, method_name)?;
+
+    let is_outermost = enter_native_call(interp as *mut Interpreter);
+
+    let obj_h = push_handle(obj);
+    let mut all_args: Vec<i64> = Vec::with_capacity(1 + arg_vals.len());
+    all_args.push(obj_h);
+    for v in &arg_vals {
+        all_args.push(push_handle(v.clone()));
+    }
+
+    let result_h = unsafe {
+        let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(fn_ptr);
+        func(all_args.as_ptr(), all_args.len() as i32)
+    };
+
+    if let Some(err) = take_error() {
+        abort_native_call(is_outermost);
+        return Some(Err(err));
+    }
+
+    if let Some((exc_type, exc_msg)) = take_pending_raise() {
+        abort_native_call(is_outermost);
+        return Some(Err(format!("{exc_type}: {exc_msg}")));
+    }
+
+    Some(Ok(exit_native_call(result_h, is_outermost)))
+}
+
 /// 静的コールバックインスタンスへの `*const HvCallbacks` ポインタを返す。
 pub fn get_callbacks() -> *const HvCallbacks {
     &CALLBACKS as *const HvCallbacks

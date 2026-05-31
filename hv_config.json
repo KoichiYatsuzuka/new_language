@@ -8,7 +8,10 @@
 
   "rust":{
     "std_lib_path":"C:/Users/Koichi Yatsuduka/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/src/rust/library",
-    "trait_path":"C:/Users/Koichi Yatsuduka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f"
+    "crates_path":[
+      "examples/rs_crates",
+      "C:/Users/Koichi Yatsuduka/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f"
+    ]
   },
 
   "llvm": {

@@ -5,12 +5,12 @@
 #   import[hv]         — force .hv source (tree-walk, ignores .hvc)
 #   import[hvc]        — force .hvc compiled (error if no .hvc exists)
 #   import[py-int]     — Python module with integer conversion
-#   import[rs]         — Rust crate (auto-discovered or declared in hv_config.json)
+#   import[rs]         — Rust crate (auto-discovered from hv_config.json rust.crates_path)
 #   from … import      — selective import from a .hv module
 #   subdir.module      — subdirectory .hv module
 #
 # Prerequisites for section 1 (physics benchmark):
-#   cargo run --release -- --compile examples/bench_modules/physics.hv
+#   cargo run --release -- --compile examples/test_modules/physics.hv
 
 import[py-int] time
 
@@ -22,8 +22,8 @@ import[py-int] time
 #   import      — auto-selects native DLL (.hvc) when available
 # Inline baseline pre-reads fields as local floats — upper speed bound.
 
-import[hv]  bench_modules.physics as interp_mod
-import      bench_modules.physics as native_mod
+import[hv]  test_modules.physics as interp_mod
+import      test_modules.physics as native_mod
 
 const N: int = 7_000_000
 
@@ -32,41 +32,10 @@ print("  Loop body: potential(other) + vel_dot(other) + kinetic() + kinetic()")
 print("  = 4 method calls per iteration, ~40 callbacks per iteration in method bodies")
 print()
 
-mut a_n = native_mod.Body()
-a_n.x = 1.0
-a_n.y = 2.0
-a_n.z = 3.0
-a_n.vx = 0.5
-a_n.vy = -0.3
-a_n.vz = 0.7
-a_n.mass = 2.0
-
-mut b_n = native_mod.Body()
-b_n.x = -1.0
-b_n.y = 0.5
-b_n.z = -2.0
-b_n.vx = -0.2
-b_n.vy = 0.8
-b_n.vz = 0.1
-b_n.mass = 3.0
-
-mut a_i = interp_mod.Body()
-a_i.x = 1.0
-a_i.y = 2.0
-a_i.z = 3.0
-a_i.vx = 0.5
-a_i.vy = -0.3
-a_i.vz = 0.7
-a_i.mass = 2.0
-
-mut b_i = interp_mod.Body()
-b_i.x = -1.0
-b_i.y = 0.5
-b_i.z = -2.0
-b_i.vx = -0.2
-b_i.vy = 0.8
-b_i.vz = 0.1
-b_i.mass = 3.0
+let a_n = native_mod.Body(1.0,  2.0,  3.0,   0.5, -0.3, 0.7, 2.0)
+let b_n = native_mod.Body(-1.0, 0.5, -2.0,  -0.2,  0.8, 0.1, 3.0)
+let a_i = interp_mod.Body(1.0,  2.0,  3.0,   0.5, -0.3, 0.7, 2.0)
+let b_i = interp_mod.Body(-1.0, 0.5, -2.0,  -0.2,  0.8, 0.1, 3.0)
 
 print("Running NATIVE (method bodies compiled, dispatch native) ...")
 let t0: float = time.time()
@@ -110,7 +79,7 @@ w.simplefilter("ignore")   # suppress pandas CoW FutureWarning
 
 import[py-int] pandas as pd
 
-let df = pd.DataFrame({
+mut df = pd.DataFrame({
     "name":  ["Alice", "Bob", "Charlie", "Diana", "Eve"],
     "age":   [25, 30, 35, 28, 22],
     "score": [85, 92, 78, 95, 88]
@@ -181,7 +150,7 @@ print(result)                # 60
 
 # ── 4. import / from … import — .hv module ───────────────────────────────────
 
-import tl_math as tm
+import test_modules.tl_math as tm
 
 let tl_result: int = tm.add(3, 4)
 print(tl_result)
@@ -191,7 +160,7 @@ print(msg)
 
 print(tm.PI)
 
-from tl_math import add, greet
+from test_modules.tl_math import add, greet
 
 let r2: int = add(10, 20)
 print(r2)
@@ -217,8 +186,11 @@ print(sub_result)
 print(sub.LABEL)
 
 # ── 5. import[rs] — Rust crates ──────────────────────────────────────────────
+#
+# Crates are auto-discovered from rust.crates_path in hv_config.json.
+# Only pub fn / pub struct with primitive-type signatures are wrapped.
 
-# libm — pure-Rust math functions (auto-discovered from cargo registry)
+# libm — pure-Rust math library
 import[rs] libm[0.2]
 
 let pi: float = 3.141592653589793
@@ -234,21 +206,89 @@ print(f"fabs(-3.14) = {libm.fabs(-3.14)}")
 print(f"floor(2.9)  = {libm.floor(2.9)}")
 print(f"ceil(2.1)   = {libm.ceil(2.1)}")
 
-# rand_ops — random number generation (declared in hv_config.json)
-import[rs] rand_ops
+# rand — random number generation (ABI-compatible subset)
+#   random_bool(p: float) -> bool  — true with probability p
+#   random_ratio(n: int, d: int)   -> bool  — true with probability n/d
+import[rs] rand
 
-print("=== rand_ops ===")
+print("=== rand ===")
 mut ri = 0
 while ri < 5:
-    print(f"  float={rand_ops.random_float()}  int={rand_ops.random_int()}  bool={rand_ops.random_bool()}")
+    print(f"  coin={rand.random_bool(0.5)}  one_in_six={rand.random_ratio(1, 6)}")
     ri += 1
 
-# sha2_ops — SHA-256/512 hashing (declared in hv_config.json)
-import[rs] sha2_ops
+# sha2 — SHA-256/512 hashing (Digest-trait pattern: pub type Sha256 = CoreWrapper<...>)
+import[rs] sha2
 
 let hmsg = "hello, world"
-print("=== sha2_ops ===")
-let h256: str = sha2_ops.sha256(hmsg)
+print("=== sha2 ===")
+let h256: str = sha2.sha256(hmsg)
 print(f"SHA-256({hmsg}) = {h256}")
-let h512: str = sha2_ops.sha512(hmsg)
+let h512: str = sha2.sha512(hmsg)
 print(f"SHA-512({hmsg}) = {h512}")
+
+# ── 6. import[rs] with struct — vec2 ─────────────────────────────────────────
+#
+# `vec2` is a local crate under examples/rs_crates/vec2/.
+# Demonstrates:
+#   pub struct Vec2 { pub x: f64, pub y: f64 }  → Havakyrie class
+#   pub fn new(x, y) -> Self                     → __init__
+#   pub fn length(&self) -> f64                  → instance method
+#   pub fn dot(&self, ox, oy) -> f64             → instance method with extra args
+#   pub fn scale(&mut self, f)                   → mutable instance method
+#   pub fn add(&self, ox, oy) -> Vec2            → method returning a struct
+#   pub fn scaled(&self, f) -> Vec2              → method returning a struct
+#   pub x: f64                                   → field cached on the HV instance
+#   get_x / set_x                                → generated accessors
+#   pub fn distance(...)                         → free function
+
+import[rs] vec2
+
+print("=== Rust struct: Vec2 ===")
+
+let v = vec2.Vec2(3.0, 4.0)
+print("v.x =", v.x, "  v.y =", v.y)           # fields cached by __init__
+
+let L = v.length()
+print("length() =", L)                         # 5.0
+
+let lsq = v.length_sq()
+print("length_sq() =", lsq)                    # 25.0
+
+let d = v.dot(1.0, 0.0)
+print("dot((1,0)) =", d)                       # 3.0
+
+mut v2 = vec2.Vec2(1.0, 2.0)
+v2.scale(3.0)
+print("after scale(3):", v2.get_x(), v2.get_y())   # 3.0, 6.0
+
+mut v3 = vec2.Vec2(3.0, 4.0)
+v3.normalize()
+print("after normalize: (", v3.get_x(), ",", v3.get_y(), ")")  # 0.6, 0.8
+print("length after normalize =", v3.length())                  # 1.0
+
+mut v4 = vec2.Vec2(0.0, 0.0)
+v4.set_x(5.0)
+v4.set_y(12.0)
+print("after set_x(5), set_y(12): length =", v4.length())      # 13.0
+
+let dist = vec2.distance(0.0, 0.0, 3.0, 4.0)
+print("distance(0,0 → 3,4) =", dist)                           # 5.0
+
+# Methods returning a struct — the DLL extracts the result's fields, then calls
+# cb_call_fn(Vec2_class, [x, y]) which triggers Vec2.__init__ natively.
+let v5 = vec2.Vec2(1.0, 2.0)
+let v6 = v5.add(4.0, 5.0)
+print("v5.add(4,5):", v6.get_x(), v6.get_y())                  # 5.0, 7.0
+print("v6 length =", v6.length())                               # ≈ 8.602
+
+let v7 = v5.scaled(3.0)
+print("v5.scaled(3):", v7.get_x(), v7.get_y())                 # 3.0, 6.0
+
+print("v5 unchanged:", v5.get_x(), v5.get_y())                 # 1.0, 2.0
+
+let v8 = v5.add(1.0, 0.0).scaled(2.0)
+print("chain add+scaled:", v8.get_x(), v8.get_y())             # 4.0, 4.0
+
+v2.drop()
+print("v2 dropped")

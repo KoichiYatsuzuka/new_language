@@ -1,19 +1,29 @@
 # physics.hv — CPU-heavy benchmark using a Body class with multiple methods.
 #
 # Compile with:
-#   cargo run --release -- --compile examples/bench_modules/physics.hv
+#   cargo run --release -- --compile examples/test_modules/physics.hv
 
 class Body:
-    mut x:    float = 0.0
-    mut y:    float = 0.0
-    mut z:    float = 0.0
-    mut vx:   float = 0.0
-    mut vy:   float = 0.0
-    mut vz:   float = 0.0
-    mut mass: float = 1.0
+    let x:    float
+    let y:    float
+    let z:    float
+    let vx:   float
+    let vy:   float
+    let vz:   float
+    let mass: float
+
+    fn __init__(mut self, x: float, y: float, z: float,
+                vx: float, vy: float, vz: float, mass: float) -> None:
+        self.x    = x
+        self.y    = y
+        self.z    = z
+        self.vx   = vx
+        self.vy   = vy
+        self.vz   = vz
+        self.mass = mass
 
     # Gravitational potential ∝ m₁·m₂ / r²  (softened by ε=0.001)
-    fn potential(mut self, let other: Body) -> float:
+    fn potential(let self, let other: Body) -> float:
         let dx = self.x - other.x
         let dy = self.y - other.y
         let dz = self.z - other.z
@@ -21,15 +31,15 @@ class Body:
         return self.mass * other.mass / r2
 
     # Kinetic energy ½·m·v²
-    fn kinetic(mut self) -> float:
+    fn kinetic(let self) -> float:
         return 0.5 * self.mass * (self.vx * self.vx + self.vy * self.vy + self.vz * self.vz)
 
     # Dot product of velocity vectors
-    fn vel_dot(mut self, let other: Body) -> float:
+    fn vel_dot(let self, let other: Body) -> float:
         return self.vx * other.vx + self.vy * other.vy + self.vz * other.vz
 
     # Squared distance between positions
-    fn dist_sq(mut self, let other: Body) -> float:
+    fn dist_sq(let self, let other: Body) -> float:
         let dx = self.x - other.x
         let dy = self.y - other.y
         let dz = self.z - other.z
@@ -55,9 +65,9 @@ fn total_energy(a: Body, b: Body, n: int) -> float:
 # constant-folding the entire loop).  The perturbation is negligible (1e-9 per
 # iteration) so results remain close to the method version.
 fn total_energy_inline(a: Body, b: Body, n: int) -> float:
-    let ax = a.x
-    let ay = a.y
-    let az = a.z
+    let ax  = a.x
+    let ay  = a.y
+    let az  = a.z
     let avx = a.vx
     let avy = a.vy
     let avz = a.vz

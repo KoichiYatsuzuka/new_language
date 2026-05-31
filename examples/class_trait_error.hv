@@ -47,3 +47,12 @@ class Registry:
 
 let reg = Registry()
 reg.count()   # AttributeError: static method 'count' must be called on the class, not an instance
+
+# Section 4 — StaticTypeError: default value on mut/let field in class declaration
+#   Expected error (StaticTypeError):
+#     'mut' / 'let' field cannot have a default value in the class declaration
+
+class WithDefaults:
+    mut x: int = 10     # StaticTypeError: mut field 'x' cannot have a default value
+    let y: str = "hi"   # StaticTypeError: let field 'y' cannot have a default value
+    const PI: float = 3.14  # OK: const fields may have defaults

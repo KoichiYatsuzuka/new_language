@@ -172,6 +172,20 @@ impl Interpreter {
         }));
         let inst_val = Value::Instance(inst_rc);
 
+        // Native __init__ dispatch (for import[rs] structs and compiled classes).
+        // Check NATIVE_METHODS before falling back to tree-walk.
+        let class_name = class.name.clone();
+        if super::native_api::lookup_native_method_ptr(&class_name, "__init__").is_some() {
+            let evaled = self.eval_call_args(call_args)?;
+            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+            if let Some(result) = super::native_api::try_dispatch_native_method(
+                self, inst_val.clone(), "__init__", arg_vals,
+            ) {
+                result?;
+            }
+            return Ok(inst_val);
+        }
+
         // `__init__` を呼び出す（定義がない場合はスキップ）
         if let Some(init_overloads) = self.lookup_method_in_class(&class, "__init__") {
             if init_overloads.len() == 1 {
@@ -221,6 +235,17 @@ impl Interpreter {
             immutable: false,
         }));
         let inst_val = Value::Instance(inst_rc);
+        // Native __init__ dispatch
+        let class_name = class.name.clone();
+        if super::native_api::lookup_native_method_ptr(&class_name, "__init__").is_some() {
+            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+            if let Some(result) = super::native_api::try_dispatch_native_method(
+                self, inst_val.clone(), "__init__", arg_vals,
+            ) {
+                result?;
+            }
+            return Ok(inst_val);
+        }
         if let Some(init_overloads) = self.lookup_method_in_class(&class, "__init__") {
             if init_overloads.len() == 1 {
                 self.exec_fn_evaled(
@@ -271,6 +296,17 @@ impl Interpreter {
                 // gen_methods（`gen` キーワードで定義されたメソッド、例: `__iter__`）を優先的にチェック
                 if let Some(gen_fn) = class.gen_methods.get(method_name).cloned() {
                     return self.exec_generator(gen_fn, args, Some(obj.clone()));
+                }
+
+                // Native method dispatch — check NATIVE_METHODS before tree-walk.
+                if super::native_api::lookup_native_method_ptr(&class.name, method_name).is_some() {
+                    let evaled = self.eval_call_args(args)?;
+                    let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                    if let Some(result) = super::native_api::try_dispatch_native_method(
+                        self, obj.clone(), method_name, arg_vals,
+                    ) {
+                        return result;
+                    }
                 }
 
                 let overloads = self
@@ -902,6 +938,17 @@ impl Interpreter {
             Value::Instance(inst_rc) => {
                 let class = inst_rc.borrow().class.clone();
                 let inst_immutable = inst_rc.borrow().immutable;
+
+                // Native method dispatch — check NATIVE_METHODS before tree-walk.
+                // When a native ptr is registered we always dispatch natively (no fallback).
+                if super::native_api::lookup_native_method_ptr(&class.name, method_name).is_some() {
+                    let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                    return super::native_api::try_dispatch_native_method(
+                        self, obj.clone(), method_name, arg_vals,
+                    ).unwrap_or_else(|| {
+                        Err(format!("NativeError: dispatch failed for {}.{method_name}", class.name))
+                    });
+                }
 
                 let overloads = self
                     .lookup_method_in_class(&class, method_name)
