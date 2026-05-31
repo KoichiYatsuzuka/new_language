@@ -112,37 +112,10 @@ Havakyrie/
 │       └── error.hvs
 ├── spec.md                  # Language specification
 ├── examples/
-│   ├── variable.hv            # let / mut / const / static mut declarations
-│   ├── variable_error.hv      # declaration error examples
-│   ├── control_flow.hv        # if / for / while / match (value-case and type-pattern)
-│   ├── control_flow_error.hv  # control flow error examples (StaticTypeError, ParseError)
-│   ├── functions.hv           # basic fns, typed sigs, default params, closures, generators, decorators
-│   ├── functions_errors.hv    # ParseError (non-default after default) and TypeError (freeze captured mut)
-│   ├── class_trait.hv         # class, trait, inheritance, Self, new_type, access control
-│   ├── class_trait_error.hv   # immutable field and access control errors
-│   ├── collection.hv          # list, dict, tuple, set
-│   ├── collection_error.hv    # KeyError (missing dict key, set.remove on absent element)
-│   ├── polymorphism.hv        # templates, type guards, Union/Optional
-│   ├── polymorphism_error.hv
-│   ├── other_typing.hv        # Any, Union, Option, is/is not narrowing, enum
-│   ├── other_typing_errors.hv # StaticTypeError (is not on non-Union) and enum value type error
-│   ├── built_in.hv            # id(), enumerate(), zip(), file I/O (path/open/close/modes)
-│   ├── built_in_error.hv      # built-in function error examples
-│   ├── try_except.hv          # try / except / finally, raise, built-in exception types
-│   ├── try_except_errors.hv   # exception error examples
-│   ├── importation.hv         # all import styles: auto/[hv]/[hvc]/[py-int]/from
-│   ├── importation_errors.hv  # ParseError: import[hvc] when no .hvc exists
-│   ├── async_demo.hv          # DEMO: AsyncManager, <- operator, raise_immediately, Async enum
-│   ├── async_bench.hv         # benchmark: sequential vs async parallel (prime counting)
-│   ├── debug_demo.hv          # break_point debugger demo
+│   ├── ....hv                 # Example files
+│   ├── ..._error.hv           # Error examples 
 │   ├── test_modules/          # modules used by importation.hv
-│   │   ├── physics.hv         # Body class benchmark — canonical native compilation demo
-│   │   ├── physics.hvc        # compiled module (v1) — regenerate with --compile
-│   │   └── physics.hvs        # type stub
 │   ├── geometry/              # example package
-│   │   ├── __init__.hv
-│   │   ├── __init__.hvc
-│   │   └── __init__.hvs
 │   └── archived/              # older examples (kept for reference)
 ├── impl_python/               # Python implementation of the interpreter
 │   ├── __main__.py            # CLI entry point: python -m impl_python <file.hv>
@@ -248,29 +221,19 @@ For implementation details see `./for_claude/importation.md`.
 
 ### Parsing (`src/parser/`)
 
-- Variable declarations: `let` (immutable), `mut` (mutable), `const` (immutable), `static mut` (mutable, shared across all calls)
-- Assignment: `x = expr`, compound assignment: `x += expr`, etc.
-- Expressions: operator precedence implemented according to spec (including right-associative `**`)
-- Function calls: `f(args)`, attribute access: `obj.attr`
-- List literals: `[a, b, c]`
-- Tuple literals, dictionary literals, subscript operators, control flow, classes, templates, `Self`, and `new_type`
-- **Set literals**: `{val, val, ...}` → `Expr::Set`; disambiguated from dict `{k: v}` by lookahead after first expression; `{}` → empty dict; `set()` constructor always produces empty set
-- **Slice syntax**: `obj[begin:end]`, `obj[begin:end:step]`, `obj[::step]`, etc. — generates `Expr::Slice`; `begin`/`end` are `Optional[Index]`, `step` is `Optional[int]`
-- **Membership operators**: `x in y` and `x not in y` — parsed in `parse_comparison` as `BinOp::In` / `BinOp::NotIn`; work for list, set, dict (key), str, tuple
-- Type guard expressions: `expr is TypeName` and `expr is not TypeName` (parsed as `Expr::IsType`)
-- Function type annotations: `function`, `function[let T]->R`, `function{let name:T}->R`, `function[]->R`
-- Function parameters support optional `let` / `mut` qualifiers (`let` = immutable, `mut` = mutable, absent = immutable)
-- **`match` statement**: `match (expr): case val: body` with wildcard `case _:` and type-pattern `is Type:` arms; arms must be uniform (all value-case or all type-case, not mixed)
-- **Control flow as expressions** with optional `->Type` annotation:
-  - `if cond ->T: body [elif/else]` — evaluates to the value of the taken branch (via `block_return`)
-  - `for target in iter ->list[T]: body` — evaluates to a list built by `loop_yield`, or a single value via `block_return`
-  - `while cond ->T: body` — same as for expression
-  - `match (expr) ->T: arms` — evaluates to the matched arm's `block_return` value
-  - `block ->T: body` — inline block expression with `block_return`
-  - `->Type` annotation is optional; without it the expression still works but yields untyped results
-  - `parse_opt_return_type()` helper parses the optional `->Type` before `:` in all forms
-- **Access control sections**: `public:`, `private:`, `protected:` markers inside class/trait bodies switch the accessibility of subsequent members; default is `public`
-- **Async task submission**: `target <- async->T: body` — parses as `Stmt::AsyncAssign`; `target` must be an `AsyncManager` variable; `body` is a block executed in a separate thread
+Recursive-descent parser. Input: `Vec<Spanned>` tokens. Output: `Vec<Stmt>` AST. Module loading also happens here — imported module ASTs are embedded in `Stmt::Import.body` at parse time.
+
+- Declarations: `let` / `mut` / `const` / `static mut`; tuple unpack `let x, mut y = expr`
+- Assignments: `x = expr`, compound `x += expr`, attribute `obj.x = expr`
+- Expressions: full precedence chain (`or`→`and`→`not`→comparison→bitwise→arithmetic→unary→`**`→postfix); set `{a,b}` disambiguated from dict `{k:v}` by lookahead; slice `a[i:j:k]`; `is` / `is not` type guards; `in` / `not in` membership
+- Control flow: `if/elif/else`, `for`, `while`, `match` (value-case and type-pattern arms, not mixed), `try/except/finally`, `raise`
+- `if` / `for` / `while` / `match` / `block` can appear as expressions with optional `->Type` annotation; `parse_opt_return_type()` handles the `->` before `:`
+- Functions: `fn` / `gen`; template params `[T: Trait]`; `let`/`mut` param qualifiers; default params (non-default after default is a parse error); abstract body `...`
+- Classes / traits: inheritance, access-control sections (`public:` / `private:` / `protected:`), `Self`, `new_type`
+- Async: `target <- async->T: body` → `Stmt::AsyncAssign`
+- Parse-time checks: mixed `case`/`is` arms, `return` in `gen`, `mut` param in `gen`, `new_type` reassignment, missing trait method annotations
+
+For full details see `./for_claude/parser.md`.
 
 ### Static Type Checking (`src/type_check/`)
 
@@ -284,57 +247,19 @@ Traverses the AST after parsing and before execution, collecting and reporting `
 
 ### Interpreter (`src/interpreter/`)
 
-- Runtime mutability checking
-- Arithmetic, comparison, logical, and bitwise operators
-- Function execution
-- Class execution
-- Iterator protocol
-- Dictionary type
-- Tuple type
-- **Slice type** (`Value::Slice`): `obj[begin:end:step]` syntax and `slice(begin, end[, step])` constructor; `begin`/`end` are `Index` or `None`, `step` is `int` or `None`; supports list/str/tuple slicing with Python-compatible semantics; `.begin`, `.end`, `.step` attribute access
-- **Set type** (`Value::Set`): `{a, b, c}` literal (deduplicated); `set()` constructor (from list/str/tuple/set); methods: `add`, `remove`, `discard`, `pop`, `clear`, `copy`, `union`, `intersection`, `difference`, `symmetric_difference`, `issubset`, `issuperset`; operators `|`, `&`, `-`, `^`; `in`/`not in` membership; iteration; `len()`; equality (`==`/`!=`); static type annotation `set` / `set[T]`
-- **Exception handling** (`src/interpreter/exceptions.rs`): `try`/`except`/`finally` blocks; `raise ExcType(msg)` and `raise ExcType(msg) from cause`; `except ExcType as e:` binds the exception object with `.message`; built-in exception types (`ValueError`, `TypeError`, `IndexError`, `KeyError`, etc.); unhandled exceptions propagate as `RaiseSignal` until caught or reported at the top level
-- `import[py]`
-- `import[py-int]`
-- `import[hv]` — force `.hv` source, always tree-walk (ignores `.hvc`)
-- `import[hvc]` — force `.hvc` compiled (parse error if no `.hvc` exists)
-- `import` (no qualifier) — auto: prefer `.hvc` if present, fall back to `.hv`
-- Type guard (`is` / `is not`): runtime instance-of check against primitive types, class names, trait membership (via `bases`), and `function`
-- `function` primitive type: `Value::Function`, `Value::OverloadedFn`, `Value::GeneratorFn` all match `x is function`
-- **`match` statement**: pattern matching with value-case arms (`case val:`), wildcard (`case _:`), and type-pattern arms (`is Type:`)
-- **Closures**: inner functions capture variables from outer scopes
-  - Immutable (`let`) variables: deep-copied at closure creation time
-  - Mutable (`mut`) variables: captured as a shared `Rc<RefCell<Value>>` cell — inner functions can read and write the same value as the outer scope
-  - Each call to the outer function produces an independent closure environment
-  - `static mut` variables: a single persistent cell keyed by source position, shared across all calls to the outer function
-  - `freeze` is disallowed on a `mut` variable that has been captured by an inner function (`TypeError: cannot freeze '...' because it is captured by a closure`)
-- **`block:` expression** (`Expr::Block`): `let x = block ->T: block_return val` — inline block that returns a single value via `block_return`; returns `None` if `block_return` is never reached
-- **Control flow as expressions** (`Expr::IfExpr`, `Expr::ForExpr`, `Expr::WhileExpr`, `Expr::MatchExpr`):
-  - `block_return val` — exits the immediately enclosing control-flow expression and yields `val` as its result; runtime error if used outside any block/if/for/while/match expression
-  - `loop_yield val` — accumulates `val` into a list inside a `for`/`while` expression; runtime error if used outside a `for`/`while` expression (i.e. not valid in `block:`, `if`, or `match` expressions)
-  - `break` — exits the innermost `for`/`while` loop (statement or expression form); propagates through nested `if`/`match`/`block:` expression bodies via `BREAK_SENTINEL` error signal until caught by the enclosing loop; in a loop expression, `break` returns the accumulated `loop_yield` list (or `None` if none); differs from `block_return None` which explicitly returns `None` even when yields exist; runtime error if used outside any `for`/`while`
-  - For expressions: if `loop_yield` is used, the expression evaluates to the accumulated list; if `block_return val` is used, evaluates to `val`; if `break` is used, evaluates to the accumulated list or `None`; if none of these is reached, evaluates to `None`
-  - Thread-local `BLOCK_YIELDS` (set to `Some(Vec)` inside for/while expression bodies) collects `loop_yield` values without interrupting control flow
-  - Thread-local `LOOP_DEPTH` (incremented for every for/while, statement or expression form) guards `break` usage; reset to 0 on function entry to prevent break from crossing function boundaries
-  - `BREAK_SENTINEL` (`"\x00__break__"`) — internal error string that propagates `break` through `eval()` channels (e.g., through `if`/`match`/`block:` expression bodies); caught and consumed by the enclosing loop handler
-- **Access control** (`public` / `private` / `protected`):
-  - Section-style markers (`public:`, `private:`, `protected:`) inside class or trait bodies apply to all subsequent member declarations
-  - `public` (default): accessible from anywhere
-  - `private`: accessible only from methods of the same class
-  - `protected`: accessible from methods of the same class or any class that implements the same trait
-  - Violation raises `AccessError` at runtime; `current_class` is tracked on `Interpreter` and set/restored around each method call
-  - Trait field access is inherited into class `field_access` maps with namespaced keys (`"TraitName::field"`)
-- **Async system** (`src/interpreter/async_mgr.rs`):
-  - `AsyncManager(num_thread=N [, raise_immediately=bool])` — built-in class managing a pool of OS threads
-  - `mng <- async->T: body` — submits a task; all visible variables are deep-cloned into the thread at submission time
-  - Each task runs in a dedicated OS thread (`std::thread::spawn`); results returned via `mpsc` channel
-  - `AsyncManager` fields: `num_thread` (`uint`), `raise_immediately` (`bool`), `results` (list), `error_list` (list of `Optional[str]`), `progress_status` (list of `Async.*`), `thread_status` (list of running task indices)
-  - `AsyncManager` methods: `all_done() -> bool`, `wait_for_finish([await_interval_msec=100])`
-  - `wait_for_finish()` blocks until all tasks complete; if `raise_immediately` is true and any task raised an error, propagates the first error as a catchable `raise` (use `try/except:`)
-  - `Async` namespace: `Async.Waiting`, `Async.Running`, `Async.Done` — task progress states
-  - Capture semantics: at `<-` time, `mut` variables are captured by shared reference (Rc clone) so the task can propagate mutations back to the caller's scope; `let` variables are deep-cloned (independent copies)
-  - `Value::deep_clone()` creates fully independent copies of all value types (new `Rc`s, no sharing across threads)
-- **Debugger** (`src/interpreter/debugger.rs`): `break_point` statement pauses execution and drops into an interactive debug session
+Tree-walk interpreter. `exec(stmt)` / `eval(expr)` dispatch on the AST recursively. Lexical scopes are a `Vec<HashMap>` searched tail-to-head.
+
+- **Values**: `Int`, `Float`, `Bool`, `Str`, `None`, `List`, `Dict`, `Tuple`, `Set`, `Slice`, `Function`, `Generator`, `Class`, `Instance`, `Namespace`, `NativeFn`, `PyObject`
+- **Mutability**: `let` → immutable; `mut` → mutable (deep-copied on declaration); `freeze` makes a variable immutable; `static mut` → single shared cell keyed by source position
+- **Closures**: `let` captures are deep-copied; `mut` captures share an `Rc<RefCell<Value>>` cell with the outer scope
+- **Control-flow signals**: `return` via `ExecResult`; `break` via `BREAK_SENTINEL` error string propagating through `eval()`; `block_return` / `loop_yield` via thread-locals `BLOCK_YIELDS` and `RAISE_SENTINEL`
+- **Exceptions**: `raise` / `try/except/finally` use a sentinel error string `"\x00__raise__:..."`; built-in classes (`ValueError`, `TypeError`, `KeyError`, …) pre-registered at startup
+- **Access control**: `public` / `private` / `protected` enforced at runtime via `current_class` tracked on `Interpreter`; violation raises `AccessError`
+- **Async**: `mng <- async->T: body` spawns an OS thread (`std::thread::spawn`); `mut` captures share Rc, `let` captures are deep-cloned before crossing the thread boundary
+- **Native modules**: values cross the ABI as `i64` handles into a thread-local `VALUE_ARENA`; `HvCallbacks` struct passed to DLLs via `hv_init()`
+- **Debugger**: `break_point` enters an interactive REPL; step mode driven by `DBG_MODE` thread-local
+
+For full details see `./for_claude/interpreter.md`.
 
 ### VS Code Extension (`vscode-extension/`)
 
