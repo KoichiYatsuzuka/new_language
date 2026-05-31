@@ -419,6 +419,16 @@ impl TypeChecker {
             } => {
                 let ty = InferredType::from_ann(type_ann).unwrap_or(InferredType::Unresolved);
                 if let Some(expr) = default {
+                    if matches!(kind, FieldKind::Mut | FieldKind::Let) {
+                        let kind_str = if matches!(kind, FieldKind::Mut) { "mut" } else { "let" };
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::FieldDefaultNotAllowed {
+                                field_name: name.clone(),
+                                kind: kind_str.to_string(),
+                            },
+                            span: None,
+                        });
+                    }
                     self.infer(expr);
                 }
                 let mutable = matches!(kind, FieldKind::Mut);

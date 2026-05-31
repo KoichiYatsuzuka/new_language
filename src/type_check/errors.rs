@@ -98,6 +98,10 @@ pub enum TypeErrorKind {
     InvalidRaiseType {
         got: InferredType,
     },
+    FieldDefaultNotAllowed {
+        field_name: String,
+        kind: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +248,10 @@ impl StaticTypeError {
             TypeErrorKind::InvalidRaiseType { got } => format!(
                 "{} expects an instance implementing trait {}, but got {}",
                 hl_bt("raise"), hl_q("Error"), hl_q(got)
+            ),
+            TypeErrorKind::FieldDefaultNotAllowed { field_name, kind } => format!(
+                "{} field {} cannot have a default value in the class declaration; only {} fields may have defaults",
+                hl_bt(kind), hl_q(field_name), hl_bt("const")
             ),
         }
     }

@@ -618,7 +618,7 @@ pub enum Stmt {
     /// - `name`     : フィールド名。
     /// - `kind`     : フィールドの種別（`mut` / `let` / `const`）。
     /// - `type_ann` : 型アノテーション文字列（必須）。
-    /// - `default`  : デフォルト値の式。`const` フィールドは必須、`mut` / `let` は省略可能。
+    /// - `default`  : デフォルト値の式。`const` フィールドは必須、`mut` / `let` は不可（静的型エラー）。
     /// - `access`   : アクセス可能性（`public` / `private` / `protected`、デフォルトは `public`）。
     Field {
         /// フィールド名。
@@ -627,7 +627,7 @@ pub enum Stmt {
         kind: FieldKind,
         /// 型アノテーション文字列（例: `"int"`, `"str"`）。クラスフィールドでは必須。
         type_ann: String,
-        /// デフォルト値の式。`const` フィールドは必須、`mut` / `let` は `None` 可。
+        /// デフォルト値の式。`const` フィールドは必須、`mut` / `let` は `None` のみ許可（値があれば静的型エラー）。
         default: Option<Expr>,
         /// アクセス可能性（デフォルトは `Public`）。
         access: Accessibility,
