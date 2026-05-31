@@ -121,6 +121,97 @@ const BUILTIN_RETURN_TYPES = {
     iter: 'unknown', open: 'unknown', eval: 'unknown', globals: 'unknown',
     locals: 'unknown', vars: 'unknown', dir: 'unknown', super: 'unknown', type: 'unknown',
 };
+const BUILTIN_TYPE_METHODS = {
+    str: {
+        upper: { ret: 'str', sig: 'fn upper() -> str' },
+        lower: { ret: 'str', sig: 'fn lower() -> str' },
+        swapcase: { ret: 'str', sig: 'fn swapcase() -> str' },
+        capitalize: { ret: 'str', sig: 'fn capitalize() -> str' },
+        title: { ret: 'str', sig: 'fn title() -> str' },
+        strip: { ret: 'str', sig: 'fn strip(chars: str = None) -> str' },
+        lstrip: { ret: 'str', sig: 'fn lstrip(chars: str = None) -> str' },
+        rstrip: { ret: 'str', sig: 'fn rstrip(chars: str = None) -> str' },
+        split: { ret: 'list[str]', sig: 'fn split(sep: str = None, maxsplit: int = -1) -> list[str]' },
+        rsplit: { ret: 'list[str]', sig: 'fn rsplit(sep: str = None, maxsplit: int = -1) -> list[str]' },
+        splitlines: { ret: 'list[str]', sig: 'fn splitlines() -> list[str]' },
+        join: { ret: 'str', sig: 'fn join(iterable: any) -> str' },
+        find: { ret: 'int', sig: 'fn find(sub: str, start: int = 0, end: int = -1) -> int' },
+        rfind: { ret: 'int', sig: 'fn rfind(sub: str, start: int = 0, end: int = -1) -> int' },
+        index: { ret: 'int', sig: 'fn index(sub: str, start: int = 0, end: int = -1) -> int' },
+        rindex: { ret: 'int', sig: 'fn rindex(sub: str, start: int = 0, end: int = -1) -> int' },
+        count: { ret: 'int', sig: 'fn count(sub: str, start: int = 0, end: int = -1) -> int' },
+        contains: { ret: 'bool', sig: 'fn contains(sub: str) -> bool' },
+        startswith: { ret: 'bool', sig: 'fn startswith(prefix: str) -> bool' },
+        endswith: { ret: 'bool', sig: 'fn endswith(suffix: str) -> bool' },
+        replace: { ret: 'str', sig: 'fn replace(old: str, new: str, count: int = -1) -> str' },
+        removeprefix: { ret: 'str', sig: 'fn removeprefix(prefix: str) -> str' },
+        removesuffix: { ret: 'str', sig: 'fn removesuffix(suffix: str) -> str' },
+        format: { ret: 'str', sig: 'fn format(args: any) -> str' },
+        isdigit: { ret: 'bool', sig: 'fn isdigit() -> bool' },
+        isnumeric: { ret: 'bool', sig: 'fn isnumeric() -> bool' },
+        isalpha: { ret: 'bool', sig: 'fn isalpha() -> bool' },
+        isalnum: { ret: 'bool', sig: 'fn isalnum() -> bool' },
+        isspace: { ret: 'bool', sig: 'fn isspace() -> bool' },
+        isupper: { ret: 'bool', sig: 'fn isupper() -> bool' },
+        islower: { ret: 'bool', sig: 'fn islower() -> bool' },
+        isascii: { ret: 'bool', sig: 'fn isascii() -> bool' },
+        isprintable: { ret: 'bool', sig: 'fn isprintable() -> bool' },
+        zfill: { ret: 'str', sig: 'fn zfill(width: int) -> str' },
+        ljust: { ret: 'str', sig: 'fn ljust(width: int, fillchar: str = " ") -> str' },
+        rjust: { ret: 'str', sig: 'fn rjust(width: int, fillchar: str = " ") -> str' },
+        center: { ret: 'str', sig: 'fn center(width: int, fillchar: str = " ") -> str' },
+        partition: { ret: 'tuple[str, str, str]', sig: 'fn partition(sep: str) -> tuple[str, str, str]' },
+        rpartition: { ret: 'tuple[str, str, str]', sig: 'fn rpartition(sep: str) -> tuple[str, str, str]' },
+        expandtabs: { ret: 'str', sig: 'fn expandtabs(tabsize: int = 8) -> str' },
+        encode: { ret: 'list[int]', sig: 'fn encode() -> list[int]' },
+        chars: { ret: 'list[str]', sig: 'fn chars() -> list[str]' },
+        ord: { ret: 'int', sig: 'fn ord() -> int' },
+        match: { ret: 'Option[str]', sig: 'fn match(pattern: str, flags: str = "") -> Option[str]' },
+        search: { ret: 'Option[str]', sig: 'fn search(pattern: str, flags: str = "") -> Option[str]' },
+        findall: { ret: 'list[str]', sig: 'fn findall(pattern: str, flags: str = "") -> list[str]' },
+        sub: { ret: 'str', sig: 'fn sub(pattern: str, repl: str, count: int = 0, flags: str = "") -> str' },
+        regex_split: { ret: 'list[str]', sig: 'fn regex_split(pattern: str, maxsplit: int = 0, flags: str = "") -> list[str]' },
+    },
+    list: {
+        append: { ret: 'None', sig: 'fn append(x: any) -> None' },
+        extend: { ret: 'None', sig: 'fn extend(iterable: any) -> None' },
+        insert: { ret: 'None', sig: 'fn insert(i: int, x: any) -> None' },
+        remove: { ret: 'None', sig: 'fn remove(x: any) -> None' },
+        pop: { ret: 'any', sig: 'fn pop(i: int = -1) -> any' },
+        clear: { ret: 'None', sig: 'fn clear() -> None' },
+        index: { ret: 'int', sig: 'fn index(x: any) -> int' },
+        count: { ret: 'int', sig: 'fn count(x: any) -> int' },
+        sort: { ret: 'None', sig: 'fn sort(key: any = None, reverse: bool = False) -> None' },
+        reverse: { ret: 'None', sig: 'fn reverse() -> None' },
+        copy: { ret: 'list', sig: 'fn copy() -> list' },
+    },
+    dict: {
+        get: { ret: 'any', sig: 'fn get(key: any, default: any = None) -> any' },
+        keys: { ret: 'list', sig: 'fn keys() -> list' },
+        key: { ret: 'list', sig: 'fn key() -> list' },
+        values: { ret: 'list', sig: 'fn values() -> list' },
+        items: { ret: 'list', sig: 'fn items() -> list' },
+        update: { ret: 'None', sig: 'fn update(other: dict) -> None' },
+        pop: { ret: 'any', sig: 'fn pop(key: any, default: any = None) -> any' },
+        clear: { ret: 'None', sig: 'fn clear() -> None' },
+        copy: { ret: 'dict', sig: 'fn copy() -> dict' },
+        setdefault: { ret: 'any', sig: 'fn setdefault(key: any, default: any = None) -> any' },
+    },
+    set: {
+        add: { ret: 'None', sig: 'fn add(x: any) -> None' },
+        remove: { ret: 'None', sig: 'fn remove(x: any) -> None' },
+        discard: { ret: 'None', sig: 'fn discard(x: any) -> None' },
+        pop: { ret: 'any', sig: 'fn pop() -> any' },
+        clear: { ret: 'None', sig: 'fn clear() -> None' },
+        copy: { ret: 'set', sig: 'fn copy() -> set' },
+        union: { ret: 'set', sig: 'fn union(other: set) -> set' },
+        intersection: { ret: 'set', sig: 'fn intersection(other: set) -> set' },
+        difference: { ret: 'set', sig: 'fn difference(other: set) -> set' },
+        symmetric_difference: { ret: 'set', sig: 'fn symmetric_difference(other: set) -> set' },
+        issubset: { ret: 'bool', sig: 'fn issubset(other: set) -> bool' },
+        issuperset: { ret: 'bool', sig: 'fn issuperset(other: set) -> bool' },
+    },
+};
 // ===== Built-in stub =====
 let builtinStub = {
     funcs: new Map(), sigs: new Map(), docs: new Map(), classes: new Map(),
@@ -352,10 +443,13 @@ class ExprInferrer {
                 const name = tok.value;
                 this.eat();
                 let isChained = false;
+                let lastMember = '';
                 while (this.cur().kind === 'OTHER' && this.cur().value === '.') {
                     this.eat();
-                    if (this.cur().kind === 'IDENT')
+                    if (this.cur().kind === 'IDENT') {
+                        lastMember = this.cur().value;
                         this.eat();
+                    }
                     isChained = true;
                 }
                 // Capture type argument for template calls: Name[ConcreteType](...)
@@ -386,8 +480,10 @@ class ExprInferrer {
                     }
                     if (this.cur().kind === 'RPAREN')
                         this.eat();
-                    if (isChained)
-                        return 'unknown';
+                    if (isChained) {
+                        const baseType = this.env.get(name) ?? 'unknown';
+                        return BUILTIN_TYPE_METHODS[baseType]?.[lastMember]?.ret ?? 'unknown';
+                    }
                     if (name in BUILTIN_RETURN_TYPES)
                         return BUILTIN_RETURN_TYPES[name];
                     const retType = this.funcEnv.get(name) ?? 'unknown';
@@ -864,14 +960,21 @@ function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
         }
         return empty;
     }
-    // hv / hvc / auto: look for .hvs stub file adjacent to the module
+    // hv / hvc / auto: prefer .hvs stub; fall back to .hv source; also check package __init__
     const filePath = path.join(docDir, ...modulePath.split('.'));
-    const hvsPath = filePath + '.hvs';
-    if (fs.existsSync(hvsPath)) {
-        try {
-            return parseTlStub(fs.readFileSync(hvsPath, 'utf8'));
+    const candidates = [
+        filePath + '.hvs',
+        filePath + '.hv',
+        path.join(filePath, '__init__.hvs'),
+        path.join(filePath, '__init__.hv'),
+    ];
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+            try {
+                return parseTlStub(fs.readFileSync(candidate, 'utf8'));
+            }
+            catch { /* ignore */ }
         }
-        catch { /* ignore */ }
     }
     return empty;
 }
@@ -1119,23 +1222,35 @@ function collectImportAliases(document) {
     }
     return aliases;
 }
-function collectPyModuleInfo(moduleName, docDir) {
+function collectPyModuleInfo(moduleName, docDir, extraPaths = []) {
     const funcs = new Map();
+    const sigs = new Map();
     const classes = new Map();
-    const pyPath = path.join(docDir, moduleName + '.py');
-    if (!fs.existsSync(pyPath))
-        return { funcs, classes };
+    // Search docDir first, then configured extra paths; prefer .pyi stubs over .py source
     let content;
-    try {
-        content = fs.readFileSync(pyPath, 'utf8');
+    for (const searchDir of [docDir, ...extraPaths]) {
+        for (const ext of ['.pyi', '.py']) {
+            const candidate = path.join(searchDir, moduleName + ext);
+            if (fs.existsSync(candidate)) {
+                try {
+                    content = fs.readFileSync(candidate, 'utf8');
+                    break;
+                }
+                catch { /* ignore */ }
+            }
+        }
+        if (content !== undefined)
+            break;
     }
-    catch {
-        return { funcs, classes };
-    }
+    if (content === undefined)
+        return { funcs, sigs, classes };
     let currentClass = null;
     let classIndent = -1;
     const classRe = /^(\s*)class\s+([A-Za-z_]\w*)/;
-    const funcRe = /^(\s*)def\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*(?:->\s*(.+?))?\s*:/;
+    // Capture group 3 = params, group 4 = return type
+    const funcRe = /^(\s*)def\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*(?:->\s*(.+?))?\s*:/;
+    // Module-level annotated variable at indent 0: `name: Type` (not inside a class/function)
+    const moduleVarRe = /^([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\], |.]*)/;
     for (const line of content.split('\n')) {
         const classM = line.match(classRe);
         if (classM) {
@@ -1153,22 +1268,42 @@ function collectPyModuleInfo(moduleName, docDir) {
             classIndent = -1;
         }
         const funcM = line.match(funcRe);
-        if (funcM?.[3]) {
-            const retType = funcM[3].trim().replace(/^['"]|['"]$/g, '');
-            if (currentClass !== null)
-                classes.get(currentClass).set(funcM[2], retType);
-            else
-                funcs.set(funcM[2], retType);
+        if (funcM) {
+            const [, , name, params, retAnnot] = funcM;
+            const retType = retAnnot ? retAnnot.trim().replace(/^['"]|['"]$/g, '') : 'None';
+            if (currentClass !== null) {
+                classes.get(currentClass).set(name, retType);
+            }
+            else {
+                funcs.set(name, retType);
+                sigs.set(name, `def ${name}(${params.trim()}) -> ${retType}`);
+            }
+            continue;
+        }
+        // Module-level annotated variable (only at indent 0, outside any class)
+        if (currentClass === null && lineIndent === 0) {
+            const varM = line.match(moduleVarRe);
+            if (varM) {
+                funcs.set(varM[1], varM[2].trim());
+                sigs.set(varM[1], `${varM[1]}: ${varM[2].trim()}`);
+            }
         }
     }
-    return { funcs, classes };
+    return { funcs, sigs, classes };
 }
+const _moduleInfoCache = new Map();
+const _hoverSymbolsCache = new Map();
 function collectAllPyModuleInfo(document) {
+    const cacheKey = document.uri.toString();
+    const cached = _moduleInfoCache.get(cacheKey);
+    if (cached?.version === document.version)
+        return cached.data;
     const funcTypes = new Map();
     const funcSigs = new Map();
     const classMethods = new Map();
     const cppClasses = new Map();
     const docDir = path.dirname(document.uri.fsPath);
+    const pythonLibPaths = vscode.workspace.getConfiguration('havakyrie').get('pythonLibraryPaths', []);
     for (let i = 0; i < document.lineCount; i++) {
         const stripped = stripComment(document.lineAt(i).text);
         const m = stripped.match(IMPORT_RE);
@@ -1176,9 +1311,9 @@ function collectAllPyModuleInfo(document) {
             continue;
         const [, importKind, modulePath, stubName, alias] = m;
         if (importKindOf(importKind) === 'py') {
-            const info = collectPyModuleInfo(modulePath, docDir);
+            const info = collectPyModuleInfo(modulePath, docDir, pythonLibPaths);
             funcTypes.set(alias, info.funcs);
-            funcSigs.set(alias, info.funcs); // py stubs have no full param signatures
+            funcSigs.set(alias, info.sigs);
             for (const [cls, methods] of info.classes)
                 classMethods.set(cls, methods);
         }
@@ -1196,10 +1331,16 @@ function collectAllPyModuleInfo(document) {
             }
         }
     }
-    return { funcTypes, funcSigs, classMethods, cppClasses };
+    const data = { funcTypes, funcSigs, classMethods, cppClasses };
+    _moduleInfoCache.set(cacheKey, { version: document.version, data });
+    return data;
 }
 // ===== Hover symbol collection =====
 function collectHoverSymbols(document) {
+    const cacheKey = document.uri.toString();
+    const cached = _hoverSymbolsCache.get(cacheKey);
+    if (cached?.version === document.version)
+        return cached.data;
     const symbols = [];
     const env = new Map();
     // Collect import aliases first so type inference can use them throughout
@@ -1350,6 +1491,7 @@ function collectHoverSymbols(document) {
             env.set(name, parseTypeAnnotation(type) ?? 'unknown');
         }
     }
+    _hoverSymbolsCache.set(cacheKey, { version: document.version, data: symbols });
     return symbols;
 }
 // ===== Scope override collection (typeguard narrowing) =====
@@ -1499,7 +1641,15 @@ function provideHover(document, position) {
                     return new vscode.Hover(md, range);
                 }
             }
+            // Built-in type method: str.split(), list.append(), etc.
+            const builtinMethod = BUILTIN_TYPE_METHODS[objSym.type]?.[name];
+            if (builtinMethod) {
+                const md = new vscode.MarkdownString(undefined, true);
+                md.appendCodeblock(builtinMethod.sig, 'havakyrie');
+                return new vscode.Hover(md, range);
+            }
         }
+        return undefined;
     }
     // C++ class type hover: hovering over the class name itself (e.g. `POINT`)
     {
@@ -1802,6 +1952,16 @@ function resolveMemberItems(document, position, objName) {
             return [...cppCls.fields.entries()].map(([fieldName, fieldType]) => {
                 const item = new vscode.CompletionItem(fieldName, vscode.CompletionItemKind.Field);
                 item.detail = `: ${fieldType}`;
+                return item;
+            });
+        }
+        // Strip generic parameter for lookup: list[str] → list
+        const baseType = sym.type.replace(/\[.*$/, '');
+        const builtinMethods = BUILTIN_TYPE_METHODS[baseType];
+        if (builtinMethods) {
+            return Object.entries(builtinMethods).map(([methodName, info]) => {
+                const item = new vscode.CompletionItem(methodName, vscode.CompletionItemKind.Method);
+                item.detail = info.sig;
                 return item;
             });
         }

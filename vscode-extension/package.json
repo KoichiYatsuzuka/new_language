@@ -13,10 +13,7 @@
   "categories": [
     "Programming Languages"
   ],
-  "activationEvents": [
-    "onLanguage:havakyrie"
-  ],
-  "main": "./out/extension.js",
+"main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
@@ -52,7 +49,18 @@
         "scopeName": "source.hv",
         "path": "./syntaxes/havakyrie.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Havakyrie",
+      "properties": {
+        "havakyrie.pythonLibraryPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "markdownDescription": "Paths to search for Python module files (`.py` / `.pyi`) used by `import[py-int]` statements. Add your Python standard library path, e.g. `C:\\Python311\\Lib` or `C:\\Users\\you\\AppData\\Local\\Programs\\Python\\Python312\\Lib`."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
