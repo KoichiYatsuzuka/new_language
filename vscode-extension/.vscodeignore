@@ -1,0 +1,17 @@
+# Exclude debug-only tooling from the VSIX package
+out_debug/**
+src/vscode_mock.ts
+src/debug_runner.ts
+out/vscode_mock.js
+out/vscode_mock.js.map
+out/debug_runner.js
+out/debug_runner.js.map
+tsconfig.debug.json
+run_debug.js
+
+# Standard excludes
+.vscode-test/**
+src/**
+.gitignore
+tsconfig.json
+node_modules/**

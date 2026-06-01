@@ -65,6 +65,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
+    "compile:debug": "tsc -p tsconfig.debug.json",
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {

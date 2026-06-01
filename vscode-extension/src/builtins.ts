@@ -11,6 +11,7 @@ export const BUILTIN_RETURN_TYPES: Record<string, LangType> = {
     len: 'int', id: 'int', hash: 'int', ord: 'int', round: 'int',
     chr: 'str', hex: 'str', oct: 'str', bin: 'str', repr: 'str', input: 'str', format: 'str',
     int: 'int', uint: 'uint', float: 'float', str: 'str', bool: 'bool',
+    list: 'list', dict: 'dict', set: 'set', tuple: 'tuple', slice: 'slice',
     isinstance: 'bool', issubclass: 'bool', callable: 'bool', hasattr: 'bool',
     abs: 'unknown', max: 'unknown', min: 'unknown', sum: 'unknown',
     range: 'unknown', enumerate: 'unknown', zip: 'unknown', map: 'unknown', filter: 'unknown',

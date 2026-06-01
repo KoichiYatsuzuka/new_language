@@ -292,11 +292,18 @@ function resolveMemberItems(
     if (sym.type) {
         const cppCls = (a.cppClasses as Map<string, CppClassInfo>).get(sym.type);
         if (cppCls) {
-            return [...cppCls.fields.entries()].map(([fieldName, fieldType]) => {
+            const items: vscode.CompletionItem[] = [];
+            for (const [fieldName, fieldType] of cppCls.fields) {
                 const item = new vscode.CompletionItem(fieldName, vscode.CompletionItemKind.Field);
                 item.detail = `: ${fieldType}`;
-                return item;
-            });
+                items.push(item);
+            }
+            for (const [methodName, info] of cppCls.methods) {
+                const item = new vscode.CompletionItem(methodName, vscode.CompletionItemKind.Method);
+                item.detail = info.sig;
+                items.push(item);
+            }
+            return items;
         }
         const baseType = sym.type.replace(/\[.*$/, '');
         const builtinMethods = BUILTIN_TYPE_METHODS[baseType];
@@ -419,6 +426,13 @@ export function provideHover(
                     md.appendMarkdown(`\n\n*field of* \`${objSym.type}\``);
                     return new vscode.Hover(md, range);
                 }
+                const methodInfo = cppCls.methods.get(name);
+                if (methodInfo !== undefined) {
+                    const md = new vscode.MarkdownString(undefined, true);
+                    md.appendCodeblock(methodInfo.sig, 'havakyrie');
+                    md.appendMarkdown(`\n\n*method of* \`${objSym.type}\``);
+                    return new vscode.Hover(md, range);
+                }
             }
             const builtinMethod = BUILTIN_TYPE_METHODS[objSym.type]?.[name];
             if (builtinMethod) {
@@ -449,15 +463,19 @@ export function provideHover(
         return undefined;
     }
 
-    // C++ class type hover
+    // Imported class type hover (C++/Rust)
     {
         const a = DocumentAnalysis.for(document);
         const cppCls = (a.cppClasses as Map<string, CppClassInfo>).get(name);
         if (cppCls) {
             const md = new vscode.MarkdownString(undefined, true);
-            const body = cppCls.fieldSigs.length > 0
-                ? cppCls.fieldSigs.map(s => `    ${s}`).join('\n')
-                : '    (no public fields)';
+            const allSigs = [
+                ...cppCls.fieldSigs,
+                ...cppCls.methodSigs,
+            ];
+            const body = allSigs.length > 0
+                ? allSigs.map(s => `    ${s}`).join('\n')
+                : '    (no public members)';
             md.appendCodeblock(`class ${name} {\n${body}\n}`, 'cpp');
             return new vscode.Hover(md, range);
         }
@@ -717,7 +735,8 @@ export function provideDocumentSymbols(
                 } else {
                     const importMatch = stripped.match(IMPORT_RE);
                     if (importMatch) {
-                        const [, importKind, modulePath, , alias] = importMatch;
+                        const [, importKind, modulePath, , , explicitAlias] = importMatch;
+                        const alias = explicitAlias ?? (modulePath.split('.').pop() ?? modulePath);
                         name = alias; kind = vscode.SymbolKind.Module; detail = `${importKind} ${modulePath}`;
                     } else {
                         const staticMatch = stripped.match(STATIC_DECL_RE);
@@ -934,6 +953,30 @@ export function provideDiagnostics(document: vscode.TextDocument): vscode.Diagno
                 ));
             }
         }
+    }
+
+    // Check 'is not' applied to a non-Union/Option variable (StaticTypeError: IsNotOnNonUnion)
+    const IS_NOT_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+not\s+([A-Za-z_]\w*)\s*:/;
+    for (let i = 0; i < document.lineCount; i++) {
+        const raw = document.lineAt(i).text;
+        const stripped = stripComment(raw);
+        const m = stripped.match(IS_NOT_RE);
+        if (!m) continue;
+        const varName = m[2];
+        const sym = selectHoverSymbol(a.symbols, varName, i);
+        if (!sym?.type) continue;
+        const t = sym.type;
+        if (t === 'unknown' || t === 'Any' ||
+            t.startsWith('Union[') || t.startsWith('Option[') || t.startsWith('Optional[')) continue;
+        const indent = (m[1] ?? '').length;
+        const keywordLen = stripped.slice(indent).startsWith('elif') ? 4 : 2;
+        const nameStart = raw.indexOf(varName, indent + keywordLen);
+        if (nameStart < 0) continue;
+        diagnostics.push(new vscode.Diagnostic(
+            new vscode.Range(i, nameStart, i, nameStart + varName.length),
+            `'is not' requires a Union or Option type, but '${varName}' has type '${t}'`,
+            vscode.DiagnosticSeverity.Error
+        ));
     }
 
     return diagnostics;

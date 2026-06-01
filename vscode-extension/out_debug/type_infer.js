@@ -29,17 +29,18 @@ function isTypeCompatible(declared, inferred) {
 }
 // ===== Hover rendering =====
 function renderHover(symbol, opts) {
+    var _a, _b, _c, _d, _e, _f;
     const md = new vscode.MarkdownString(undefined, true);
     md.isTrusted = false;
-    const mutability = opts?.isFrozen ? 'frozen' : (symbol.mutability ?? 'value');
+    const mutability = (opts === null || opts === void 0 ? void 0 : opts.isFrozen) ? 'frozen' : ((_a = symbol.mutability) !== null && _a !== void 0 ? _a : 'value');
     if (symbol.kind === 'variable') {
         const accessPrefix = symbol.access ? `${symbol.access} ` : '';
-        md.appendCodeblock(`${accessPrefix}${mutability} ${symbol.name}: ${symbol.type ?? 'unknown'}`, 'havakyrie');
-        if (opts?.narrowedFrom)
+        md.appendCodeblock(`${accessPrefix}${mutability} ${symbol.name}: ${(_b = symbol.type) !== null && _b !== void 0 ? _b : 'unknown'}`, 'havakyrie');
+        if (opts === null || opts === void 0 ? void 0 : opts.narrowedFrom)
             md.appendMarkdown(`\n\n*narrowed from* \`${opts.narrowedFrom}\``);
     }
     else if (symbol.kind === 'function') {
-        const baseSig = symbol.signature ?? `fn ${symbol.name}() -> ${symbol.type ?? 'unknown'}`;
+        const baseSig = (_c = symbol.signature) !== null && _c !== void 0 ? _c : `fn ${symbol.name}() -> ${(_d = symbol.type) !== null && _d !== void 0 ? _d : 'unknown'}`;
         md.appendCodeblock(symbol.access ? `${symbol.access} ${baseSig}` : baseSig, 'havakyrie');
     }
     else if (symbol.kind === 'class') {
@@ -52,15 +53,15 @@ function renderHover(symbol, opts) {
         md.appendCodeblock(`trait ${symbol.name}`, 'havakyrie');
     }
     else if (symbol.kind === 'module') {
-        md.appendCodeblock(`${symbol.originalType ?? 'import[py] ?'} as ${symbol.name}`, 'havakyrie');
+        md.appendCodeblock(`${(_e = symbol.originalType) !== null && _e !== void 0 ? _e : 'import[py] ?'} as ${symbol.name}`, 'havakyrie');
     }
     else {
-        md.appendCodeblock(`new_type ${symbol.name}: ${symbol.originalType ?? 'unknown'}`, 'havakyrie');
+        md.appendCodeblock(`new_type ${symbol.name}: ${(_f = symbol.originalType) !== null && _f !== void 0 ? _f : 'unknown'}`, 'havakyrie');
     }
     if (symbol.traits && symbol.traits.length > 0) {
         md.appendMarkdown(`\n\nImplements: ${symbol.traits.map(t => `\`${t}\``).join(', ')}`);
     }
-    if (opts?.classTraits && opts.classTraits.length > 0) {
+    if ((opts === null || opts === void 0 ? void 0 : opts.classTraits) && opts.classTraits.length > 0) {
         md.appendMarkdown(`\n\nTraits: ${opts.classTraits.map(t => `\`${t}\``).join(', ')}`);
     }
     if (symbol.doc)
@@ -69,19 +70,21 @@ function renderHover(symbol, opts) {
 }
 // ===== Completion member helpers =====
 function findEnclosingClass(document, fromLine) {
-    const fromIndent = (document.lineAt(fromLine).text.match(/^(\s*)/)?.[1] ?? '').length;
+    var _a, _b, _c;
+    const fromIndent = ((_b = (_a = document.lineAt(fromLine).text.match(/^(\s*)/)) === null || _a === void 0 ? void 0 : _a[1]) !== null && _b !== void 0 ? _b : '').length;
     for (let i = fromLine - 1; i >= 0; i--) {
         const stripped = (0, analysis_1.stripComment)(document.lineAt(i).text);
         const m = stripped.match(analysis_1.CLASS_DEF_RE);
         if (!m)
             continue;
-        const classIndent = (m[1] ?? '').length;
+        const classIndent = ((_c = m[1]) !== null && _c !== void 0 ? _c : '').length;
         if (classIndent < fromIndent)
             return m[3];
     }
     return undefined;
 }
 function collectClassMemberItems(document, className, _visited = new Set()) {
+    var _a, _b, _c, _d, _e;
     if (_visited.has(className))
         return [];
     _visited.add(className);
@@ -99,7 +102,7 @@ function collectClassMemberItems(document, className, _visited = new Set()) {
         const m = stripped.match(analysis_1.CLASS_DEF_RE);
         if (m && m[3] === className) {
             classLine = i;
-            classIndent = (m[1] ?? '').length;
+            classIndent = ((_a = m[1]) !== null && _a !== void 0 ? _a : '').length;
             break;
         }
     }
@@ -110,7 +113,7 @@ function collectClassMemberItems(document, className, _visited = new Set()) {
         const raw = document.lineAt(i).text;
         if (!raw.trim())
             continue;
-        const ind = (raw.match(/^(\s*)/)?.[1] ?? '').length;
+        const ind = ((_c = (_b = raw.match(/^(\s*)/)) === null || _b === void 0 ? void 0 : _b[1]) !== null && _c !== void 0 ? _c : '').length;
         if (ind <= classIndent)
             break;
         memberIndent = ind;
@@ -125,7 +128,7 @@ function collectClassMemberItems(document, className, _visited = new Set()) {
         const stripped = (0, analysis_1.stripComment)(rawLine);
         if (!stripped.trim())
             continue;
-        const lineIndent = (rawLine.match(/^(\s*)/)?.[1] ?? '').length;
+        const lineIndent = ((_e = (_d = rawLine.match(/^(\s*)/)) === null || _d === void 0 ? void 0 : _d[1]) !== null && _e !== void 0 ? _e : '').length;
         if (lineIndent <= classIndent)
             break;
         if (lineIndent === memberIndent) {
@@ -163,6 +166,7 @@ function collectClassMemberItems(document, className, _visited = new Set()) {
     return items;
 }
 function findClassMember(document, className, memberName, _visited = new Set()) {
+    var _a, _b, _c, _d, _e, _f, _g;
     if (_visited.has(className))
         return undefined;
     _visited.add(className);
@@ -180,7 +184,7 @@ function findClassMember(document, className, memberName, _visited = new Set()) 
         const m = stripped.match(analysis_1.CLASS_DEF_RE);
         if (m && m[3] === className) {
             classLine = i;
-            classIndent = (m[1] ?? '').length;
+            classIndent = ((_a = m[1]) !== null && _a !== void 0 ? _a : '').length;
             break;
         }
     }
@@ -191,7 +195,7 @@ function findClassMember(document, className, memberName, _visited = new Set()) 
         const raw = document.lineAt(i).text;
         if (!raw.trim())
             continue;
-        const ind = (raw.match(/^(\s*)/)?.[1] ?? '').length;
+        const ind = ((_c = (_b = raw.match(/^(\s*)/)) === null || _b === void 0 ? void 0 : _b[1]) !== null && _c !== void 0 ? _c : '').length;
         if (ind <= classIndent)
             break;
         memberIndent = ind;
@@ -204,7 +208,7 @@ function findClassMember(document, className, memberName, _visited = new Set()) 
         const stripped = (0, analysis_1.stripComment)(rawLine);
         if (!stripped.trim())
             continue;
-        const lineIndent = (rawLine.match(/^(\s*)/)?.[1] ?? '').length;
+        const lineIndent = ((_e = (_d = rawLine.match(/^(\s*)/)) === null || _d === void 0 ? void 0 : _d[1]) !== null && _e !== void 0 ? _e : '').length;
         if (lineIndent <= classIndent)
             break;
         if (lineIndent === memberIndent) {
@@ -212,7 +216,7 @@ function findClassMember(document, className, memberName, _visited = new Set()) 
             if (funcMatch) {
                 const [, indentStr, kw, name, params, retAnnotation] = funcMatch;
                 if (name === memberName) {
-                    const returnType = (0, analysis_1.cleanTypeAnnotation)(retAnnotation) ?? 'unknown';
+                    const returnType = (_f = (0, analysis_1.cleanTypeAnnotation)(retAnnotation)) !== null && _f !== void 0 ? _f : 'unknown';
                     const cleanParams = params
                         .replace(/^\s*(?:let\s+|mut\s+)?self\s*,\s*/, '')
                         .replace(/^\s*(?:let\s+|mut\s+)?self\s*$/, '');
@@ -222,7 +226,7 @@ function findClassMember(document, className, memberName, _visited = new Set()) 
                         line: i,
                         type: returnType,
                         signature: `${kw} ${name}(${cleanParams}) -> ${returnType}`,
-                        doc: (0, analysis_1.getDocstringAfter)(document, i, (indentStr ?? '').length),
+                        doc: (0, analysis_1.getDocstringAfter)(document, i, (indentStr !== null && indentStr !== void 0 ? indentStr : '').length),
                     };
                 }
                 continue;
@@ -235,8 +239,8 @@ function findClassMember(document, className, memberName, _visited = new Set()) 
                         name,
                         kind: 'variable',
                         line: i,
-                        mutability: mutability ?? 'let',
-                        type: annotation?.trim() ?? 'unknown',
+                        mutability: mutability !== null && mutability !== void 0 ? mutability : 'let',
+                        type: (_g = annotation === null || annotation === void 0 ? void 0 : annotation.trim()) !== null && _g !== void 0 ? _g : 'unknown',
                     };
                 }
             }
@@ -263,8 +267,9 @@ function resolveMemberItems(document, position, objName) {
         if (!funcs)
             return [];
         return [...funcs.entries()].map(([name, retType]) => {
+            var _a;
             const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Function);
-            item.detail = sigsMap?.get(name) ?? `→ ${retType}`;
+            item.detail = (_a = sigsMap === null || sigsMap === void 0 ? void 0 : sigsMap.get(name)) !== null && _a !== void 0 ? _a : `→ ${retType}`;
             return item;
         });
     }
@@ -378,6 +383,7 @@ function typeAnnotationPositions(rawLine) {
 }
 // ===== Providers =====
 function provideHover(document, position) {
+    var _a, _b, _c, _d, _e;
     const range = document.getWordRangeAtPosition(position, /[A-Za-z_]\w*/);
     if (!range)
         return undefined;
@@ -388,15 +394,15 @@ function provideHover(document, position) {
     if (dotAccess) {
         const objName = dotAccess[1];
         const a = analysis_1.DocumentAnalysis.for(document);
-        const retType = a.importFuncTypes.get(objName)?.get(name);
+        const retType = (_a = a.importFuncTypes.get(objName)) === null || _a === void 0 ? void 0 : _a.get(name);
         if (retType !== undefined) {
             const md = new vscode.MarkdownString(undefined, true);
-            const sig = a.importFuncSigs.get(objName)?.get(name) ?? `fn ${name}() -> ${retType}`;
+            const sig = (_c = (_b = a.importFuncSigs.get(objName)) === null || _b === void 0 ? void 0 : _b.get(name)) !== null && _c !== void 0 ? _c : `fn ${name}() -> ${retType}`;
             md.appendCodeblock(sig, 'havakyrie');
             return new vscode.Hover(md, range);
         }
         const objSym = (0, analysis_1.selectHoverSymbol)(a.symbols, objName, position.line);
-        if (objSym?.type) {
+        if (objSym === null || objSym === void 0 ? void 0 : objSym.type) {
             const cppCls = a.cppClasses.get(objSym.type);
             if (cppCls) {
                 const fieldType = cppCls.fields.get(name);
@@ -414,7 +420,7 @@ function provideHover(document, position) {
                     return new vscode.Hover(md, range);
                 }
             }
-            const builtinMethod = builtins_1.BUILTIN_TYPE_METHODS[objSym.type]?.[name];
+            const builtinMethod = (_d = builtins_1.BUILTIN_TYPE_METHODS[objSym.type]) === null || _d === void 0 ? void 0 : _d[name];
             if (builtinMethod) {
                 const md = new vscode.MarkdownString(undefined, true);
                 md.appendCodeblock(builtinMethod.sig, 'havakyrie');
@@ -423,7 +429,7 @@ function provideHover(document, position) {
         }
         const hvClassName = objName === 'self'
             ? findEnclosingClass(document, position.line)
-            : objSym?.type;
+            : objSym === null || objSym === void 0 ? void 0 : objSym.type;
         if (hvClassName) {
             const memberSym = findClassMember(document, hvClassName, name);
             if (memberSym)
@@ -475,7 +481,7 @@ function provideHover(document, position) {
     const freezeLine = a.freezeLines.get(name);
     const isFrozen = freezeLine !== undefined && position.line >= freezeLine && symbol.mutability === 'mut';
     const override = a.scopeOverrides.find(o => o.varName === name && position.line >= o.startLine && position.line < o.endLine);
-    const effectiveType = override?.narrowedType ?? symbol.type;
+    const effectiveType = (_e = override === null || override === void 0 ? void 0 : override.narrowedType) !== null && _e !== void 0 ? _e : symbol.type;
     const rawClassTraits = effectiveType ? a.classTraitsMap.get(effectiveType) : undefined;
     const classTraits = rawClassTraits && rawClassTraits.length > 0 ? rawClassTraits : undefined;
     const displaySymbol = override ? { ...symbol, type: override.narrowedType } : symbol;
@@ -487,6 +493,7 @@ function provideHover(document, position) {
 }
 exports.provideHover = provideHover;
 function provideInlayHints(document, _range) {
+    var _a, _b, _c, _d, _e, _f, _g;
     const hints = [];
     const a = analysis_1.DocumentAnalysis.for(document);
     // Inlay hints on function definition lines (only when no annotation)
@@ -511,24 +518,24 @@ function provideInlayHints(document, _range) {
         if (line.match(analysis_1.IMPORT_RE))
             continue;
         if (line.trim()) {
-            const lineIndent = (rawLine.match(/^(\s*)/)?.[1] ?? '').length;
+            const lineIndent = ((_b = (_a = rawLine.match(/^(\s*)/)) === null || _a === void 0 ? void 0 : _a[1]) !== null && _b !== void 0 ? _b : '').length;
             if (classContext && lineIndent <= classContext.indent) {
                 classContext = undefined;
                 selfType = undefined;
             }
             const classM = line.match(analysis_1.CLASS_DEF_RE);
             if (classM) {
-                classContext = { name: classM[3], indent: (classM[1] ?? '').length };
+                classContext = { name: classM[3], indent: ((_c = classM[1]) !== null && _c !== void 0 ? _c : '').length };
                 selfType = undefined;
                 continue;
             }
             const funcM = line.match(builtins_1.FUNC_DEF_RE);
             if (funcM) {
-                selfType = classContext?.name;
+                selfType = classContext === null || classContext === void 0 ? void 0 : classContext.name;
                 const params = funcM[4];
                 for (const p of (0, analysis_1.splitComma)(params)) {
                     const pm = p.trim().match(/^(?:(?:let|mut)\s+)?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
-                    if (pm && pm[1] !== 'self' && pm[2]?.trim()) {
+                    if (pm && pm[1] !== 'self' && ((_d = pm[2]) === null || _d === void 0 ? void 0 : _d.trim())) {
                         const pt = pm[2].trim();
                         env.set(pm[1], pt === 'Self' && selfType ? selfType : pt);
                     }
@@ -539,8 +546,7 @@ function provideInlayHints(document, _range) {
         const staticMatch = line.match(analysis_1.STATIC_DECL_RE);
         if (staticMatch) {
             const [, indent, name, annotation, rhs] = staticMatch;
-            const type = (0, analysis_1.cleanTypeAnnotation)(annotation)
-                ?? (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
+            const type = (_e = (0, analysis_1.cleanTypeAnnotation)(annotation)) !== null && _e !== void 0 ? _e : (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
             env.set(name, type);
             if (!annotation) {
                 const nameStart = rawLine.indexOf(name, indent.length + 'static mut '.length);
@@ -561,7 +567,7 @@ function provideInlayHints(document, _range) {
             let searchFrom = indent.length + keyword.length;
             for (let idx = 0; idx < nameList.length; idx++) {
                 const varName = nameList[idx];
-                const elemType = elemTypes[idx] ?? 'unknown';
+                const elemType = (_f = elemTypes[idx]) !== null && _f !== void 0 ? _f : 'unknown';
                 env.set(varName, elemType);
                 const nameStart = rawLine.indexOf(varName, searchFrom);
                 if (nameStart >= 0) {
@@ -577,11 +583,10 @@ function provideInlayHints(document, _range) {
         if (!declM)
             continue;
         const [, indent, keyword, name, annotation, rhs] = declM;
-        const type = (0, analysis_1.cleanTypeAnnotation)(annotation)
-            ?? (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
+        const type = (_g = (0, analysis_1.cleanTypeAnnotation)(annotation)) !== null && _g !== void 0 ? _g : (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
         env.set(name, type);
         if (!annotation && rhs) {
-            const nameStart = rawLine.indexOf(name, (indent ?? '').length + keyword.length);
+            const nameStart = rawLine.indexOf(name, (indent !== null && indent !== void 0 ? indent : '').length + keyword.length);
             if (nameStart >= 0) {
                 const hint = new vscode.InlayHint(new vscode.Position(lineIdx, nameStart + name.length), `: ${type}`, vscode.InlayHintKind.Type);
                 hint.paddingLeft = true;
@@ -664,6 +669,7 @@ function provideCompletionItems(document, position) {
 }
 exports.provideCompletionItems = provideCompletionItems;
 function provideDocumentSymbols(document) {
+    var _a, _b, _c, _d, _e, _f;
     const result = [];
     const stack = [];
     for (let i = 0; i < document.lineCount; i++) {
@@ -671,7 +677,7 @@ function provideDocumentSymbols(document) {
         const stripped = (0, analysis_1.stripComment)(rawLine);
         if (!stripped.trim())
             continue;
-        const indent = (rawLine.match(/^(\s*)/)?.[1] ?? '').length;
+        const indent = ((_b = (_a = rawLine.match(/^(\s*)/)) === null || _a === void 0 ? void 0 : _a[1]) !== null && _b !== void 0 ? _b : '').length;
         while (stack.length > 0 && indent <= stack[stack.length - 1].indent) {
             stack.pop();
         }
@@ -684,7 +690,7 @@ function provideDocumentSymbols(document) {
             const [, , , funcName, , retType] = funcMatch;
             name = funcName;
             kind = vscode.SymbolKind.Function;
-            detail = retType?.trim() ?? '';
+            detail = (_c = retType === null || retType === void 0 ? void 0 : retType.trim()) !== null && _c !== void 0 ? _c : '';
             isContainer = true;
         }
         else {
@@ -708,7 +714,7 @@ function provideDocumentSymbols(document) {
                     const importMatch = stripped.match(analysis_1.IMPORT_RE);
                     if (importMatch) {
                         const [, importKind, modulePath, , , explicitAlias] = importMatch;
-                        const alias = explicitAlias ?? (modulePath.split('.').pop() ?? modulePath);
+                        const alias = explicitAlias !== null && explicitAlias !== void 0 ? explicitAlias : ((_d = modulePath.split('.').pop()) !== null && _d !== void 0 ? _d : modulePath);
                         name = alias;
                         kind = vscode.SymbolKind.Module;
                         detail = `${importKind} ${modulePath}`;
@@ -719,7 +725,7 @@ function provideDocumentSymbols(document) {
                             const [, , varName, annot] = staticMatch;
                             name = varName;
                             kind = vscode.SymbolKind.Variable;
-                            detail = annot?.trim() ?? '';
+                            detail = (_e = annot === null || annot === void 0 ? void 0 : annot.trim()) !== null && _e !== void 0 ? _e : '';
                         }
                         else if (indent === 0) {
                             const declMatch = stripped.match(analysis_1.HOVER_DECL_RE);
@@ -727,7 +733,7 @@ function provideDocumentSymbols(document) {
                                 const [, , , varName, annot] = declMatch;
                                 name = varName;
                                 kind = vscode.SymbolKind.Variable;
-                                detail = annot?.trim() ?? '';
+                                detail = (_f = annot === null || annot === void 0 ? void 0 : annot.trim()) !== null && _f !== void 0 ? _f : '';
                             }
                         }
                     }
@@ -757,6 +763,7 @@ function provideDocumentSymbols(document) {
 }
 exports.provideDocumentSymbols = provideDocumentSymbols;
 function provideSignatureHelp(document, position) {
+    var _a, _b;
     const prefix = document.lineAt(position.line).text.substring(0, position.character);
     let depth = 0;
     let activeParam = 0;
@@ -770,7 +777,7 @@ function provideSignatureHelp(document, position) {
         if (c === '(' || c === '[' || c === '{') {
             if (c === '(' && depth === 0) {
                 const m = prefix.substring(0, i).trimEnd().match(/([A-Za-z_]\w*)$/);
-                funcName = m?.[1] ?? '';
+                funcName = (_a = m === null || m === void 0 ? void 0 : m[1]) !== null && _a !== void 0 ? _a : '';
                 break;
             }
             if (depth > 0)
@@ -786,7 +793,7 @@ function provideSignatureHelp(document, position) {
     const funcSym = a.symbols.find(s => s.name === funcName && s.kind === 'function');
     let sigStr;
     let sigDoc;
-    if (funcSym?.signature) {
+    if (funcSym === null || funcSym === void 0 ? void 0 : funcSym.signature) {
         sigStr = funcSym.signature;
         if (funcSym.doc)
             sigDoc = new vscode.MarkdownString(funcSym.doc);
@@ -804,7 +811,7 @@ function provideSignatureHelp(document, position) {
         return undefined;
     const sigInfo = new vscode.SignatureInformation(sigStr, sigDoc);
     const paramsMatch = sigStr.match(/\(([^)]*)\)/);
-    if (paramsMatch?.[1]?.trim()) {
+    if ((_b = paramsMatch === null || paramsMatch === void 0 ? void 0 : paramsMatch[1]) === null || _b === void 0 ? void 0 : _b.trim()) {
         for (const p of (0, analysis_1.splitComma)(paramsMatch[1])) {
             const trimmed = p.trim();
             if (trimmed)
@@ -836,6 +843,7 @@ function provideDefinition(document, position) {
 }
 exports.provideDefinition = provideDefinition;
 function provideDiagnostics(document) {
+    var _a, _b, _c;
     const diagnostics = [];
     const a = analysis_1.DocumentAnalysis.for(document);
     const env = new Map();
@@ -849,8 +857,7 @@ function provideDiagnostics(document) {
         const staticM = stripped.match(analysis_1.STATIC_DECL_RE);
         if (staticM) {
             const [, , name, annotation, rhs] = staticM;
-            const type = (0, analysis_1.cleanTypeAnnotation)(annotation)
-                ?? (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams) : 'unknown');
+            const type = (_a = (0, analysis_1.cleanTypeAnnotation)(annotation)) !== null && _a !== void 0 ? _a : (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams) : 'unknown');
             env.set(name, type);
             continue;
         }
@@ -861,7 +868,7 @@ function provideDiagnostics(document) {
             const nameList = names.split(',').map(n => n.trim()).filter(Boolean);
             const elemTypes = (0, analysis_1.extractTupleElemTypes)(rhsType, nameList.length);
             for (let idx = 0; idx < nameList.length; idx++)
-                env.set(nameList[idx], elemTypes[idx] ?? 'unknown');
+                env.set(nameList[idx], (_b = elemTypes[idx]) !== null && _b !== void 0 ? _b : 'unknown');
             continue;
         }
         const declM = stripped.match(analysis_1.HOVER_DECL_RE);
@@ -874,8 +881,8 @@ function provideDiagnostics(document) {
                 if (PRIMITIVE_TYPES.has(declaredType) &&
                     PRIMITIVE_TYPES.has(inferredType) &&
                     !isTypeCompatible(declaredType, inferredType)) {
-                    const indentLen = (indent ?? '').length;
-                    const colonIdx = raw.indexOf(':', indentLen + (keyword ?? '').length + name.length);
+                    const indentLen = (indent !== null && indent !== void 0 ? indent : '').length;
+                    const colonIdx = raw.indexOf(':', indentLen + (keyword !== null && keyword !== void 0 ? keyword : '').length + name.length);
                     if (colonIdx >= 0) {
                         const annotStart = raw.indexOf(declaredType, colonIdx + 1);
                         if (annotStart >= 0) {
@@ -885,7 +892,7 @@ function provideDiagnostics(document) {
                 }
             }
             else {
-                env.set(name, declaredType ?? (rhs
+                env.set(name, declaredType !== null && declaredType !== void 0 ? declaredType : (rhs
                     ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams)
                     : 'unknown'));
             }
@@ -898,7 +905,7 @@ function provideDiagnostics(document) {
         const sym = (0, analysis_1.selectHoverSymbol)(a.symbols, varName, i);
         if (!sym || sym.kind !== 'variable')
             continue;
-        const nameStart = raw.indexOf(varName, (indent ?? '').length);
+        const nameStart = raw.indexOf(varName, (indent !== null && indent !== void 0 ? indent : '').length);
         if (nameStart < 0)
             continue;
         const diagRange = new vscode.Range(i, nameStart, i, nameStart + varName.length);
@@ -922,13 +929,13 @@ function provideDiagnostics(document) {
             continue;
         const varName = m[2];
         const sym = (0, analysis_1.selectHoverSymbol)(a.symbols, varName, i);
-        if (!sym?.type)
+        if (!(sym === null || sym === void 0 ? void 0 : sym.type))
             continue;
         const t = sym.type;
         if (t === 'unknown' || t === 'Any' ||
             t.startsWith('Union[') || t.startsWith('Option[') || t.startsWith('Optional['))
             continue;
-        const indent = (m[1] ?? '').length;
+        const indent = ((_c = m[1]) !== null && _c !== void 0 ? _c : '').length;
         const keywordLen = stripped.slice(indent).startsWith('elif') ? 4 : 2;
         const nameStart = raw.indexOf(varName, indent + keywordLen);
         if (nameStart < 0)

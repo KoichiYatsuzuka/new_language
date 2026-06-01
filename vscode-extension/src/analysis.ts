@@ -23,11 +23,20 @@ const NEW_TYPE_RE      = /^(\s*)new_type\s+([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\
 const FREEZE_RE        = /^\s*freeze(?:\s*\(\s*|\s+)([A-Za-z_]\w*)(?:\s*\))?/;
 const ACCESS_SECTION_RE = /^(\s*)(public|private|protected)\s*:\s*$/;
 const TUPLE_DECL_RE    = /^(\s*)(let|mut)\s+((?:[A-Za-z_]\w*\s*,\s*)+[A-Za-z_]\w*)\s*=(?!=)\s*(.*)/;
-const IMPORT_RE        = /^\s*(import(?:\[(?:py(?:-int)?|hvc?|cpp-(?:lib|dll))\])?)\s+([\w.]+)(?:\s+with\s+(\w+))?\s+as\s+([A-Za-z_]\w*)/;
+// Groups: 1=kind, 2=path, 3=version[?], 4=with-stub[?], 5=alias[?]
+const IMPORT_RE        = /^\s*(import(?:\[(?:py(?:-int)?|rs|hvc?|cpp-(?:lib|dll))\])?)\s+([\w.]+)(?:\[([^\]]*)\])?(?:\s+with\s+(\w+))?(?:\s+as\s+([A-Za-z_]\w*))?/;
 const TYPEGUARD_IS_NOT_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+not\s+([A-Za-z_]\w*)\s*:/;
 const TYPEGUARD_IS_RE     = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+([A-Za-z_]\w*)\s*:/;
 
 export { DECL_RE, STATIC_DECL_RE, HOVER_DECL_RE, CLASS_DEF_RE, NEW_TYPE_RE, IMPORT_RE, TUPLE_DECL_RE };
+
+/** Derive the binding alias from a module path and optional explicit alias.
+ *  e.g. `libm` (no explicit) → `libm`; `test_modules.physics` → `physics`. */
+function importAlias(modulePath: string, explicit: string | undefined): string {
+    if (explicit) return explicit;
+    const parts = modulePath.split('.');
+    return parts[parts.length - 1];
+}
 
 // ===== Types =====
 
@@ -56,6 +65,7 @@ export interface ScopeOverride {
 
 export interface FuncDef {
     name: string;
+    kind: 'fn' | 'gen';
     defLine: number;
     defIndent: number;
     annotation: LangType | undefined;
@@ -415,13 +425,17 @@ class ExprInferrer {
                 let typeArg: string | undefined;
                 if (!isChained && this.cur().kind === 'LBRACKET') {
                     this.eat();
-                    if (this.cur().kind === 'IDENT') { typeArg = this.cur().value; this.eat(); }
+                    // Capture the full type-argument list (including commas and nested brackets)
+                    const argParts: string[] = [];
                     let depth = 1;
                     while (depth > 0 && this.cur().kind !== 'EOF') {
-                        if (this.cur().kind === 'LBRACKET') depth++;
-                        else if (this.cur().kind === 'RBRACKET') depth--;
-                        this.eat();
+                        const t = this.eat();
+                        if (t.kind === 'LBRACKET') { depth++; argParts.push('['); }
+                        else if (t.kind === 'RBRACKET') { if (--depth > 0) argParts.push(']'); }
+                        else if (t.kind === 'COMMA') argParts.push(', ');
+                        else argParts.push(t.value);
                     }
+                    if (argParts.length > 0) typeArg = argParts.join('');
                 }
                 if (this.cur().kind === 'LPAREN') {
                     this.eat();
@@ -437,8 +451,10 @@ class ExprInferrer {
                         return this.funcEnv.get(lastMember) ?? 'unknown';
                     }
                     if (name === 'Self' && this.selfType) return this.selfType;
-                    if (name in BUILTIN_RETURN_TYPES) return BUILTIN_RETURN_TYPES[name];
-                    const retType = this.funcEnv.get(name) ?? 'unknown';
+                    // Resolve from builtins first, then funcEnv; apply typeArg for both
+                    const retType = (name in BUILTIN_RETURN_TYPES ? BUILTIN_RETURN_TYPES[name] : undefined)
+                        ?? this.funcEnv.get(name)
+                        ?? 'unknown';
                     if (typeArg && retType !== 'unknown') {
                         if (retType === name) return `${name}[${typeArg}]`;
                         const tParam = this.templateParams.get(name);
@@ -523,6 +539,11 @@ export function inferExprType(
     selfType: LangType | undefined = undefined
 ): LangType {
     const trimmed = src.trim();
+    // Block-expression RHS (if/for/while/match/block): extract -> ReturnType annotation
+    if (/^(?:if|for|while|match|block)\b/.test(trimmed)) {
+        const arrowM = trimmed.match(/->[ \t]*([A-Za-z_][\w\[\], ]*)[ \t]*:?\s*$/);
+        return arrowM ? arrowM[1].trim() : 'unknown';
+    }
     const dotMatch = trimmed.match(/^([A-Za-z_]\w*)\./);
     if (dotMatch && importAliases.has(dotMatch[1])) {
         const alias = dotMatch[1];
@@ -548,7 +569,10 @@ export function collectImportAliases(document: vscode.TextDocument): Map<string,
     for (let i = 0; i < document.lineCount; i++) {
         const stripped = stripComment(document.lineAt(i).text);
         const m = stripped.match(IMPORT_RE);
-        if (m) aliases.set(m[4], m[2]);
+        if (m) {
+            const alias = importAlias(m[2], m[5]);
+            aliases.set(alias, m[2]);
+        }
     }
     return aliases;
 }
@@ -631,7 +655,8 @@ function collectAllPyModuleInfo(document: vscode.TextDocument): DocModuleInfo {
         const stripped = stripComment(document.lineAt(i).text);
         const m = stripped.match(IMPORT_RE);
         if (!m) continue;
-        const [, importKind, modulePath, stubName, alias] = m;
+        const [, importKind, modulePath, , stubName, explicitAlias] = m;
+        const alias = importAlias(modulePath, explicitAlias);
         if (importKindOf(importKind) === 'py') {
             const info = collectPyModuleInfo(modulePath, docDir, pythonLibPaths);
             funcTypes.set(alias, info.funcs);
@@ -639,11 +664,12 @@ function collectAllPyModuleInfo(document: vscode.TextDocument): DocModuleInfo {
             for (const [cls, methods] of info.classes) classMethods.set(cls, methods);
         } else {
             const info = loadNativeModuleInfo(importKind, modulePath, stubName, docDir);
-            if (info.funcs.size > 0) {
+            if (info.funcs.size > 0 || info.classes.size > 0) {
                 funcTypes.set(alias, info.funcs);
                 funcSigs.set(alias, info.sigs);
             }
-            if (importKindOf(importKind) === 'cpp') {
+            const kind = importKindOf(importKind);
+            if (kind === 'cpp' || kind === 'rs') {
                 for (const [className, classInfo] of info.classes) {
                     cppClasses.set(className, classInfo);
                 }
@@ -679,9 +705,10 @@ export function collectFuncDefs(document: vscode.TextDocument): FuncDef[] {
         if (classM) { classStack.push({ name: classM[3], indent: (classM[1] ?? '').length }); continue; }
         const m = stripped.match(FUNC_DEF_RE);
         if (!m) continue;
-        const [, indentStr, , name, , retAnnotation] = m;
+        const [, indentStr, kind, name, , retAnnotation] = m;
         defs.push({
             name,
+            kind: kind as 'fn' | 'gen',
             defLine: i,
             defIndent: indentStr.length,
             annotation: parseTypeAnnotation(retAnnotation),
@@ -793,7 +820,8 @@ function collectHoverSymbols(
 
         const importMatch = stripped.match(IMPORT_RE);
         if (importMatch) {
-            const [, importKind, modulePath, , alias] = importMatch;
+            const [, importKind, modulePath, , , explicitAlias] = importMatch;
+            const alias = importAlias(modulePath, explicitAlias);
             symbols.push({
                 name: alias,
                 kind: 'module',
@@ -1054,7 +1082,16 @@ export class DocumentAnalysis {
                 document, def.defLine, def.defIndent, this.funcEnv,
                 this.importAliases, this.importFuncTypes, this.classMethods, this.templateParams
             );
-            this.funcEnv.set(def.name, resolveSelf(rawType, def.enclosingClass));
+            const resolvedType = resolveSelf(rawType, def.enclosingClass);
+            // gen functions return a generator object; store generator[T] so callers
+            // get the right variable type (e.g. let g = range_step(...) → generator[int])
+            let envType = resolvedType;
+            if (def.kind === 'gen') {
+                envType = (resolvedType !== 'unknown' && resolvedType !== 'None')
+                    ? `generator[${resolvedType}]`
+                    : 'generator';
+            }
+            this.funcEnv.set(def.name, envType);
         }
 
         // Phase 4: hover symbols (uses pre-built funcEnv — no duplicate work)
