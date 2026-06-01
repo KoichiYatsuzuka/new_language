@@ -109,21 +109,62 @@ thread_local! {
 
 ## Eligibility Rules (`llvm_codegen.rs` — `stmt_eligible` / `expr_eligible`)
 
-A function is compiled natively when **all** of the following hold:
-
-- Not a template (`template_params` is empty)
-- Not abstract
-- Body contains none of:
-  - `yield` from a `gen` function (unless using the eager-accumulator strategy — see generators)
-  - Nested function definitions or generator definitions (closures)
-  - `try` / `raise` (only top-level `raise ExcType(msg)` with no nested blocks)
-  - `block_return` / `loop_yield` at statement level (they *are* supported inside control-flow expressions)
-  - Keyword-argument calls (`CallArg::Keyword`)
-  - `static mut` variable declarations
-  - `import` statements
-  - Class or trait definitions
-
 The eligibility check recurses into nested `if`, `while`, `for`, `match`, and `block` bodies. Control-flow expressions (`Expr::IfExpr`, `Expr::ForExpr`, etc.) are eligible and generate correct LLVM IR including `block_return` and `loop_yield` semantics.
+
+### Function-level — entire function skipped
+
+| Case | Reason |
+|------|--------|
+| Template function/gen (`template_params` non-empty) | Cannot monomorphize at compile time |
+| Abstract function (`is_abstract = true`) | No body to compile |
+| Method inside a template class | Class is not instantiated at compile time |
+
+### Ineligible statements — any occurrence in the body skips the whole function
+
+| Statement | Notes |
+|-----------|-------|
+| `import` | No cross-module inlining |
+| Nested `fn` / `gen` definition | Requires runtime closure capture |
+| Nested `class` / `trait` definition | Type-system structure, not native-compilable |
+| `try` / `except` / `finally` | Exception protocol uses sentinel strings incompatible with LLVM IR |
+| Bare `raise` (re-raise with no expression) | Same exception-protocol reason |
+| `raise expr` where `expr` is not a positional constructor call | Only `raise ExcType(msg)` form is eligible; `raise x`, `raise X(kw=v)` are not |
+| `static mut` declaration | Shared global cell keyed by source position; not representable in LLVM IR |
+| `async` assignment (`target <- async->T: body`) | Thread-spawning semantics require the interpreter |
+| Tuple-unpacking `let` / `mut` (`let x, y = expr`) | Not implemented in codegen |
+| Multi-target `for` (`for x, y in iter`) | Only single-target `for` is lowered; `targets.len() > 1` fails the check |
+
+### Ineligible expressions — any occurrence in the body skips the whole function
+
+| Expression | Notes |
+|------------|-------|
+| Keyword argument in any call (`f(x=1)`) | Only positional `CallArg::Positional` is supported |
+| Set literal (`{a, b, c}`) | Not implemented |
+| Slice (`a[i:j:k]`) | Not implemented |
+| Lambda (`lambda x: expr`) | Requires closure capture |
+| List / dict / set comprehension | Not implemented |
+| `yield` as an expression | N/A in compiled context |
+| `await` expression | Async semantics require the interpreter |
+| F-string / format string | Not implemented |
+
+### Additional restrictions for `gen` functions
+
+A `gen` function is compiled with an **eager-accumulator** strategy (all `yield` values collected into a list, returned at once). The following make a `gen` body ineligible on top of the rules above:
+
+| Statement | Reason |
+|-----------|--------|
+| `loop_yield` in body | Incompatible with eager accumulator; only plain `yield` is allowed |
+| `block_return` in body | Same — only `yield` is the intended exit mechanism |
+
+### Compiles but with reduced optimizations
+
+These cases are **not** ineligible — the function compiles — but specific optimizations do not apply:
+
+| Situation | What is lost |
+|-----------|-------------|
+| Parameter annotated with a trait type (not a concrete class) | Treated as opaque `Handle`; no fast field reads (`CB_GET_FLOAT_FIELD` / `CB_GET_INT_FIELD`), no `_fast` variant, all method calls go through `CB_CALL_METHOD` |
+| Class-instance parameter whose fields are written in the body | Pre-read optimization and `_fast` variant are suppressed for that parameter (purity check `body_writes_param` fails) |
+| `gen` function (any eligible gen) | Returns an eager list instead of a lazy generator; semantics differ from the interpreter's lazy protocol |
 
 ---
 
