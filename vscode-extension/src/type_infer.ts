@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { BUILTIN_RETURN_TYPES, BUILTIN_TYPE_METHODS, BUILTIN_TYPE_NAMES, LANG_KEYWORDS } from './builtins';
+import { BUILTIN_RETURN_TYPES, BUILTIN_TYPE_METHODS, BUILTIN_TYPE_NAMES, LANG_KEYWORDS, FUNC_DEF_RE } from './builtins';
 import {
     type LangType, type HoverSymbol, type CppClassInfo,
     stripComment, splitComma, inferExprType, resolveSelf,
@@ -438,6 +438,17 @@ export function provideHover(
         return undefined;
     }
 
+    // Self type hover — resolves to the enclosing class
+    if (name === 'Self') {
+        const cls = findEnclosingClass(document, position.line);
+        if (cls) {
+            const md = new vscode.MarkdownString(undefined, true);
+            md.appendCodeblock(`type Self = ${cls}`, 'havakyrie');
+            return new vscode.Hover(md, range);
+        }
+        return undefined;
+    }
+
     // C++ class type hover
     {
         const a = DocumentAnalysis.for(document);
@@ -505,6 +516,8 @@ export function provideInlayHints(
 
     // Inlay hints on variable declarations — requires a sequential per-line env
     const env = new Map<string, LangType>();
+    let classContext: { name: string; indent: number } | undefined;
+    let selfType: string | undefined;
 
     for (let lineIdx = 0; lineIdx < document.lineCount; lineIdx++) {
         const rawLine = document.lineAt(lineIdx).text;
@@ -512,11 +525,38 @@ export function provideInlayHints(
 
         if (line.match(IMPORT_RE)) continue;
 
+        if (line.trim()) {
+            const lineIndent = (rawLine.match(/^(\s*)/)?.[1] ?? '').length;
+            if (classContext && lineIndent <= classContext.indent) {
+                classContext = undefined;
+                selfType = undefined;
+            }
+            const classM = line.match(CLASS_DEF_RE);
+            if (classM) {
+                classContext = { name: classM[3], indent: (classM[1] ?? '').length };
+                selfType = undefined;
+                continue;
+            }
+            const funcM = line.match(FUNC_DEF_RE);
+            if (funcM) {
+                selfType = classContext?.name;
+                const params = funcM[4];
+                for (const p of splitComma(params)) {
+                    const pm = p.trim().match(/^(?:(?:let|mut)\s+)?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
+                    if (pm && pm[1] !== 'self' && pm[2]?.trim()) {
+                        const pt = pm[2].trim();
+                        env.set(pm[1], pt === 'Self' && selfType ? selfType : pt);
+                    }
+                }
+                continue;
+            }
+        }
+
         const staticMatch = line.match(STATIC_DECL_RE);
         if (staticMatch) {
             const [, indent, name, annotation, rhs] = staticMatch;
             const type = cleanTypeAnnotation(annotation)
-                ?? (rhs ? inferExprType(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams) : 'unknown');
+                ?? (rhs ? inferExprType(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
             env.set(name, type);
             if (!annotation) {
                 const nameStart = rawLine.indexOf(name, indent.length + 'static mut '.length);
@@ -532,7 +572,7 @@ export function provideInlayHints(
         const tupleM = line.match(TUPLE_DECL_RE);
         if (tupleM) {
             const [, indent, keyword, names, rhs] = tupleM;
-            const rhsType = inferExprType(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams);
+            const rhsType = inferExprType(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType);
             const nameList = names.split(',').map(n => n.trim()).filter(Boolean);
             const elemTypes = extractTupleElemTypes(rhsType, nameList.length);
             let searchFrom = indent.length + keyword.length;
@@ -556,7 +596,7 @@ export function provideInlayHints(
 
         const [, indent, keyword, name, annotation, rhs] = declM;
         const type = cleanTypeAnnotation(annotation)
-            ?? (rhs ? inferExprType(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams) : 'unknown');
+            ?? (rhs ? inferExprType(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
         env.set(name, type);
 
         if (!annotation && rhs) {

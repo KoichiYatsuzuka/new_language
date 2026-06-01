@@ -257,7 +257,9 @@ class ExprInferrer {
         private readonly env: Map<string, LangType>,
         private readonly funcEnv: ReadonlyMap<string, LangType>,
         private readonly pyClassMethods: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map(),
-        private readonly templateParams: ReadonlyMap<string, string> = new Map()
+        private readonly templateParams: ReadonlyMap<string, string> = new Map(),
+        private readonly classFieldTypes: ReadonlyMap<string, ReadonlyMap<string, LangType>> = new Map(),
+        private readonly selfType: LangType | undefined = undefined
     ) {}
 
     private cur(): Token { return this.tokens[this.pos] ?? { kind: 'EOF', value: '' }; }
@@ -429,9 +431,12 @@ class ExprInferrer {
                     }
                     if (this.cur().kind === 'RPAREN') this.eat();
                     if (isChained) {
-                        const baseType = this.env.get(name) ?? 'unknown';
-                        return BUILTIN_TYPE_METHODS[baseType]?.[lastMember]?.ret ?? 'unknown';
+                        const baseType = (name === 'self' ? this.selfType : this.env.get(name)) ?? 'unknown';
+                        const builtinRet = BUILTIN_TYPE_METHODS[baseType]?.[lastMember]?.ret;
+                        if (builtinRet !== undefined) return builtinRet;
+                        return this.funcEnv.get(lastMember) ?? 'unknown';
                     }
+                    if (name === 'Self' && this.selfType) return this.selfType;
                     if (name in BUILTIN_RETURN_TYPES) return BUILTIN_RETURN_TYPES[name];
                     const retType = this.funcEnv.get(name) ?? 'unknown';
                     if (typeArg && retType !== 'unknown') {
@@ -441,7 +446,17 @@ class ExprInferrer {
                     }
                     return retType;
                 }
-                if (isChained) return this.funcEnv.has(name) ? name : 'unknown';
+                if (isChained) {
+                    if (lastMember) {
+                        const baseType = (name === 'self' ? this.selfType : this.env.get(name)) ?? 'unknown';
+                        if (baseType !== 'unknown') {
+                            const fieldType = this.classFieldTypes.get(baseType)?.get(lastMember);
+                            if (fieldType !== undefined) return fieldType;
+                        }
+                    }
+                    return this.funcEnv.has(name) ? name : 'unknown';
+                }
+                if (name === 'Self' && this.selfType) return this.selfType;
                 return this.env.get(name) ?? 'unknown';
             }
             case 'LPAREN': {
@@ -503,7 +518,9 @@ export function inferExprType(
     importAliases: ReadonlySet<string> = new Set(),
     importFuncTypes: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map(),
     pyClassMethods: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map(),
-    templateParams: ReadonlyMap<string, string> = new Map()
+    templateParams: ReadonlyMap<string, string> = new Map(),
+    classFieldTypes: ReadonlyMap<string, ReadonlyMap<string, LangType>> = new Map(),
+    selfType: LangType | undefined = undefined
 ): LangType {
     const trimmed = src.trim();
     const dotMatch = trimmed.match(/^([A-Za-z_]\w*)\./);
@@ -521,7 +538,7 @@ export function inferExprType(
         }
         return 'unknown';
     }
-    return new ExprInferrer(tokenize(src), env, funcEnv, pyClassMethods, templateParams).infer();
+    return new ExprInferrer(tokenize(src), env, funcEnv, pyClassMethods, templateParams, classFieldTypes, selfType).infer();
 }
 
 // ===== Collection functions =====
@@ -733,7 +750,8 @@ function collectHoverSymbols(
     importFuncTypes: ReadonlyMap<string, ReadonlyMap<string, string>>,
     pyClassMethods: ReadonlyMap<string, ReadonlyMap<string, string>>,
     cppClasses: ReadonlyMap<string, CppClassInfo>,
-    templateParams: ReadonlyMap<string, string>
+    templateParams: ReadonlyMap<string, string>,
+    classFieldTypes: ReadonlyMap<string, ReadonlyMap<string, LangType>>
 ): HoverSymbol[] {
     const symbols: HoverSymbol[] = [];
     const env = new Map<string, LangType>();
@@ -804,7 +822,10 @@ function collectHoverSymbols(
             });
             const bodyEndLine = findBodyEndLine(document, i, indentStr.length);
             for (const paramSym of parseParams(params, i, bodyEndLine)) {
-                symbols.push(paramSym);
+                const resolvedType = resolveSelf(paramSym.type ?? 'unknown', enclosingClass);
+                const resolvedSym: HoverSymbol = resolvedType !== paramSym.type ? { ...paramSym, type: resolvedType } : paramSym;
+                symbols.push(resolvedSym);
+                if (resolvedType && resolvedType !== 'unknown') env.set(paramSym.name, resolvedType);
             }
             continue;
         }
@@ -840,11 +861,13 @@ function collectHoverSymbols(
             continue;
         }
 
+        const selfType = classContextStack.at(-1)?.name;
+
         const staticMatch = stripped.match(STATIC_DECL_RE);
         if (staticMatch) {
             const [, , name, annotation, rhs] = staticMatch;
             const type = cleanTypeAnnotation(annotation)
-                ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams) : 'unknown');
+                ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType) : 'unknown');
             symbols.push({ name, kind: 'variable', line: i, mutability: 'static', type, access: currentAccess });
             env.set(name, type);
             continue;
@@ -853,7 +876,7 @@ function collectHoverSymbols(
         const tupleM = stripped.match(TUPLE_DECL_RE);
         if (tupleM) {
             const [, , mutability, names, rhs] = tupleM;
-            const rhsType = rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams) : 'unknown';
+            const rhsType = rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType) : 'unknown';
             const nameList = names.split(',').map(n => n.trim()).filter(Boolean);
             const elemTypes = extractTupleElemTypes(rhsType, nameList.length);
             for (let idx = 0; idx < nameList.length; idx++) {
@@ -869,7 +892,7 @@ function collectHoverSymbols(
         if (declMatch) {
             const [, , mutability, name, annotation, rhs] = declMatch;
             const type = cleanTypeAnnotation(annotation)
-                ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams) : 'unknown');
+                ?? (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType) : 'unknown');
             symbols.push({ name, kind: 'variable', line: i, mutability, type, access: currentAccess });
             env.set(name, parseTypeAnnotation(type) ?? 'unknown');
         }
@@ -921,6 +944,44 @@ function collectClassTraits(document: vscode.TextDocument): Map<string, string[]
     return map;
 }
 
+function collectClassFieldTypes(document: vscode.TextDocument): Map<string, Map<string, LangType>> {
+    const result = new Map<string, Map<string, LangType>>();
+    let currentClass: string | null = null;
+    let classIndent = -1;
+    let bodyIndent = -1;
+
+    for (let i = 0; i < document.lineCount; i++) {
+        const raw = document.lineAt(i).text;
+        const stripped = stripComment(raw);
+        if (!stripped.trim()) continue;
+        const lineIndent = (raw.match(/^(\s*)/)?.[1] ?? '').length;
+
+        if (currentClass !== null && lineIndent <= classIndent) {
+            currentClass = null; classIndent = -1; bodyIndent = -1;
+        }
+
+        const classM = stripped.match(CLASS_DEF_RE);
+        if (classM) {
+            currentClass = classM[3];
+            classIndent = (classM[1] ?? '').length;
+            bodyIndent = -1;
+            result.set(currentClass, new Map());
+            continue;
+        }
+
+        if (currentClass === null) continue;
+        if (bodyIndent === -1) bodyIndent = lineIndent;
+        if (lineIndent !== bodyIndent) continue;
+
+        const fieldM = stripped.match(HOVER_DECL_RE);
+        if (fieldM) {
+            const [, , , name, annotation] = fieldM;
+            if (annotation) result.get(currentClass)!.set(name, annotation.trim());
+        }
+    }
+    return result;
+}
+
 function collectFreezeLines(document: vscode.TextDocument): Map<string, number> {
     const map = new Map<string, number>();
     for (let i = 0; i < document.lineCount; i++) {
@@ -953,6 +1014,7 @@ export class DocumentAnalysis {
     readonly classMethods: ReadonlyMap<string, ReadonlyMap<string, string>>;
     readonly cppClasses: ReadonlyMap<string, CppClassInfo>;
     readonly templateParams: ReadonlyMap<string, string>;
+    readonly classFieldTypes: ReadonlyMap<string, ReadonlyMap<string, LangType>>;
     readonly freezeLines: ReadonlyMap<string, number>;
     readonly scopeOverrides: readonly ScopeOverride[];
     readonly classTraitsMap: ReadonlyMap<string, string[]>;
@@ -996,9 +1058,11 @@ export class DocumentAnalysis {
         }
 
         // Phase 4: hover symbols (uses pre-built funcEnv — no duplicate work)
+        this.classFieldTypes = collectClassFieldTypes(document);
         this.symbols = collectHoverSymbols(
             document, this.funcEnv, this.importAliases,
-            this.importFuncTypes, this.classMethods, this.cppClasses, this.templateParams
+            this.importFuncTypes, this.classMethods, this.cppClasses, this.templateParams,
+            this.classFieldTypes
         );
 
         // Phase 5: secondary analysis

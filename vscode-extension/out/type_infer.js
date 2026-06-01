@@ -417,6 +417,16 @@ function provideHover(document, position) {
         }
         return undefined;
     }
+    // Self type hover — resolves to the enclosing class
+    if (name === 'Self') {
+        const cls = findEnclosingClass(document, position.line);
+        if (cls) {
+            const md = new vscode.MarkdownString(undefined, true);
+            md.appendCodeblock(`type Self = ${cls}`, 'havakyrie');
+            return new vscode.Hover(md, range);
+        }
+        return undefined;
+    }
     // C++ class type hover
     {
         const a = analysis_1.DocumentAnalysis.for(document);
@@ -475,16 +485,44 @@ function provideInlayHints(document, _range) {
     }
     // Inlay hints on variable declarations — requires a sequential per-line env
     const env = new Map();
+    let classContext;
+    let selfType;
     for (let lineIdx = 0; lineIdx < document.lineCount; lineIdx++) {
         const rawLine = document.lineAt(lineIdx).text;
         const line = (0, analysis_1.stripComment)(rawLine);
         if (line.match(analysis_1.IMPORT_RE))
             continue;
+        if (line.trim()) {
+            const lineIndent = (rawLine.match(/^(\s*)/)?.[1] ?? '').length;
+            if (classContext && lineIndent <= classContext.indent) {
+                classContext = undefined;
+                selfType = undefined;
+            }
+            const classM = line.match(analysis_1.CLASS_DEF_RE);
+            if (classM) {
+                classContext = { name: classM[3], indent: (classM[1] ?? '').length };
+                selfType = undefined;
+                continue;
+            }
+            const funcM = line.match(builtins_1.FUNC_DEF_RE);
+            if (funcM) {
+                selfType = classContext?.name;
+                const params = funcM[4];
+                for (const p of (0, analysis_1.splitComma)(params)) {
+                    const pm = p.trim().match(/^(?:(?:let|mut)\s+)?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
+                    if (pm && pm[1] !== 'self' && pm[2]?.trim()) {
+                        const pt = pm[2].trim();
+                        env.set(pm[1], pt === 'Self' && selfType ? selfType : pt);
+                    }
+                }
+                continue;
+            }
+        }
         const staticMatch = line.match(analysis_1.STATIC_DECL_RE);
         if (staticMatch) {
             const [, indent, name, annotation, rhs] = staticMatch;
             const type = (0, analysis_1.cleanTypeAnnotation)(annotation)
-                ?? (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams) : 'unknown');
+                ?? (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
             env.set(name, type);
             if (!annotation) {
                 const nameStart = rawLine.indexOf(name, indent.length + 'static mut '.length);
@@ -499,7 +537,7 @@ function provideInlayHints(document, _range) {
         const tupleM = line.match(analysis_1.TUPLE_DECL_RE);
         if (tupleM) {
             const [, indent, keyword, names, rhs] = tupleM;
-            const rhsType = (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams);
+            const rhsType = (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType);
             const nameList = names.split(',').map(n => n.trim()).filter(Boolean);
             const elemTypes = (0, analysis_1.extractTupleElemTypes)(rhsType, nameList.length);
             let searchFrom = indent.length + keyword.length;
@@ -522,7 +560,7 @@ function provideInlayHints(document, _range) {
             continue;
         const [, indent, keyword, name, annotation, rhs] = declM;
         const type = (0, analysis_1.cleanTypeAnnotation)(annotation)
-            ?? (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams) : 'unknown');
+            ?? (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
         env.set(name, type);
         if (!annotation && rhs) {
             const nameStart = rawLine.indexOf(name, (indent ?? '').length + keyword.length);
