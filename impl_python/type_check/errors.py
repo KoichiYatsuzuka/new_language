@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
 """Static type error kinds and StaticTypeError (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from dataclasses import dataclass
@@ -84,13 +84,18 @@ class ErrCallMutParamWithImmutableArg:
 class ErrInvalidDecorator:
     reason: str
 
+@dataclass
+class ErrFieldDefaultNotAllowed:
+    field_name: str
+    kind: str
+
 
 TypeErrorKind = (
     ErrIncompatibleComparison | ErrAssignToImmutable | ErrCallArgCountMismatch |
     ErrCallArgTypeMismatch | ErrMissingParamTypeAnn | ErrMissingReturnTypeAnn |
     ErrUnknownKeywordArg | ErrNoMatchingOverload | ErrSelfTypeMismatch |
     ErrOperationOnAny | ErrOperationOnUnion | ErrIsNotOnNonUnion |
-    ErrCallMutParamWithImmutableArg | ErrInvalidDecorator
+    ErrCallMutParamWithImmutableArg | ErrInvalidDecorator | ErrFieldDefaultNotAllowed
 )
 
 
@@ -131,6 +136,9 @@ def _format_kind(kind: "TypeErrorKind") -> str:
                     f"expects a mutable argument, but got an immutable value")
         case ErrInvalidDecorator(reason=r):
             return f"StaticTypeError: invalid decorator: {r}"
+        case ErrFieldDefaultNotAllowed(field_name=fn, kind=k):
+            return (f"StaticTypeError: `{k}` field '{fn}' cannot have a default value "
+                    f"in the class declaration; only `const` fields may have defaults")
         case _:
             return f"StaticTypeError: <unknown error {kind!r}>"
 

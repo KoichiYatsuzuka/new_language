@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
 """Expression type inference mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import TYPE_CHECKING
@@ -105,7 +105,6 @@ class _TypeCheckerInfer:
 
             case ExprCast(object=obj, type_name=tname):
                 self._infer(obj)
-                from .types import TyNamedInstance, inferred_type_from_ann
                 ty = inferred_type_from_ann(tname)
                 return ty if ty is not None else TyNamedInstance(tname)
 

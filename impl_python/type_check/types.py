@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
 """InferredType variants and type annotation parsing (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from dataclasses import dataclass
@@ -275,8 +275,14 @@ def inferred_type_from_ann(ann: str) -> Optional["InferredType"]:
     if ann.startswith("function"):
         return _parse_fn_type_ann(ann[8:])
 
-    return {
+    result = {
         "int": TyInt(), "float": TyFloat(), "str": TyStr(), "bool": TyBool(),
         "None": TyNone(), "list": TyList(), "dict": TyDict(), "set": TySet(),
         "type": TyTypeVal(), "Self": TySelfType(), "Any": TyAny(),
     }.get(ann)
+    if result is not None:
+        return result
+    # Unknown identifier that looks like a class name → treat as instance type.
+    if ann and ann[0].isupper() and all(c.isalnum() or c == "_" for c in ann):
+        return TyNamedInstance(ann)
+    return None

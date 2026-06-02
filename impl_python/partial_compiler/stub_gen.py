@@ -1,4 +1,4 @@
-﻿# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+﻿# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
 """Stub file generator stub (mirrors src/partial_compiler/stub_gen.rs).
 
 Generates .hvs type stub files. Not implemented in Python.

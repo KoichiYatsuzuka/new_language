@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
 """Statement type checking and signature collection mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
@@ -19,7 +19,8 @@ from ..ast import (
 from .types import (
     TyInt, TyNamedInstance, TyTypeValOf, TyUnresolved, InferredType, inferred_type_from_ann,
 )
-from .errors import ErrAssignToImmutable, ErrMissingParamTypeAnn, ErrMissingReturnTypeAnn, ErrIsNotOnNonUnion
+from .errors import (ErrAssignToImmutable, ErrMissingParamTypeAnn, ErrMissingReturnTypeAnn,
+                     ErrIsNotOnNonUnion, ErrFieldDefaultNotAllowed)
 from .scope import _FnSig
 from .type_utils import _type_from_guard_name
 
@@ -195,6 +196,9 @@ class _TypeCheckerStmts:
             case StmtField(name=name, kind=kind, type_ann=type_ann, default=default):
                 ty = inferred_type_from_ann(type_ann) or TyUnresolved()
                 if default is not None:
+                    if kind in (FieldKind.MUT, FieldKind.LET):
+                        kind_str = "mut" if kind == FieldKind.MUT else "let"
+                        self._report(ErrFieldDefaultNotAllowed(field_name=name, kind=kind_str))
                     self._infer(default)
                 self._declare(name, ty, kind == FieldKind.MUT)
 

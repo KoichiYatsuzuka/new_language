@@ -1,4 +1,4 @@
-﻿# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+﻿# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
 """Import statement parsing (mirrors src/parser/imports.rs)."""
 from __future__ import annotations
 import struct
@@ -101,9 +101,9 @@ class _ParserImports:
     # ------------------------------------------------------------------
 
     def _load_module(self, lang: str, module: list[str]) -> list[Stmt]:
-        if lang in ("tl-auto", "tl"):
-            return self._load_tl_module(module, force_source=(lang == "tl"))
-        if lang == "tlc":
+        if lang in ("tl-auto", "hv-auto", "tl", "hv"):
+            return self._load_tl_module(module, force_source=(lang in ("tl", "hv")))
+        if lang in ("tlc", "hvc"):
             return self._load_tlc_module(module)
         if lang in ("py", "py-int"):
             return []  # Python modules have no AST body in Python impl
