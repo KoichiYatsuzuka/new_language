@@ -1,0 +1,67 @@
+# life_game.hv — Conway's Game of Life
+#
+# Grid   : 680 x 480 cells (1 cell = 1 pixel)
+# Window : 680 x 480 px via DxLib
+# Rules  : numpy computation delegated to life_game_ops.py
+# Init   : alive-cell positions loaded from life_game_init.csv via pandas
+#
+# Boundary cells (row/col 0 and max) are always dead.
+#
+# Initial patterns
+#   - Gosper Glider Gun (top-left area, generates periodic gliders)
+#   - R-pentomino        (chaotic short-lived pattern)
+#   - Acorn              (long-lived methuselah)
+#   - Pulsar             (period-3 oscillator)
+#   - Diehard            (survives 130 gens then disappears)
+#   - Glider             (single diagonal traveller)
+#   - Blinker            (period-2 oscillator)
+#   - Pentadecathlon     (period-15 oscillator)
+#   - Block              (still life)
+#
+# Run:
+#   cargo run -- examples/practical_examples/DxLib/life_game.hv
+
+import[cpp-lib] DxLib.DxLib as dx
+import[py-int] life_game_ops as ops
+
+const COLS:     int = 680
+const ROWS:     int = 480
+const CSV_PATH: str = "examples/practical_examples/DxLib/life_game_init.csv"
+
+# ── Window setup (must come before DxLib_Init) ────────────────────────────────
+dx.ChangeWindowMode(1)
+dx.SetGraphMode(COLS, ROWS, 32, 60)
+dx.SetWaitVSyncFlag(0)
+
+if dx.DxLib_Init() == -1:
+    raise RuntimeError("DxLib_Init failed")
+
+# ── Load initial state from CSV via pandas ────────────────────────────────────
+mut grid = ops.load_initial_grid(CSV_PATH)
+
+# ── Colours ───────────────────────────────────────────────────────────────────
+let col_alive = dx.GetColor(0, 240, 100)
+
+# ── Main game loop ────────────────────────────────────────────────────────────
+mut running    = True
+mut generation = 0
+
+while running:
+    if dx.ProcessMessage() != 0:
+        running = False
+        continue
+
+    dx.ClearDrawScreen()
+
+    # Draw every alive cell as a single pixel
+    let alive = ops.get_alive_xy(grid)
+    for pos in alive:
+        dx.DrawPixel(pos[0], pos[1], col_alive)
+
+    dx.ScreenFlip()
+
+    # Advance one generation using numpy
+    grid = ops.next_generation(grid)
+    generation += 1
+
+dx.DxLib_End()

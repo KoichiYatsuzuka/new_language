@@ -41,6 +41,11 @@ fn extract_from_line(line: &str, names: &mut HashSet<String>) {
     // Pattern 1: single-quoted identifier 'Name'
     // Appears in C2039 ("not a member"), C2733 ("overload in extern C"),
     // C2664 ("cannot convert argument") and similar diagnostics.
+    //
+    // C2664 error format (Japanese locale):
+    //   error C2664: 'ReturnType DxLib::FunctionName(params)': 引数 N が...
+    // The single-quoted section contains the full C++ signature, not just a name.
+    // We extract the function name: last identifier before the first '(' inside the quoted string.
     let mut scan = line;
     while let Some(q1) = scan.find('\'') {
         let after = &scan[q1 + 1..];
@@ -49,6 +54,18 @@ fn extract_from_line(line: &str, names: &mut HashSet<String>) {
                 let candidate = &after[..q2];
                 if is_valid_c_ident(candidate) {
                     names.insert(candidate.to_string());
+                } else if let Some(paren) = candidate.find('(') {
+                    // C2664-style: extract function name before first '('
+                    // e.g. "int DxLib::SetASyncLoadFinishCallback" → "SetASyncLoadFinishCallback"
+                    let before_paren = &candidate[..paren];
+                    let fn_name = before_paren
+                        .split("::")
+                        .last()
+                        .and_then(|s| s.trim().split_whitespace().last())
+                        .unwrap_or("");
+                    if is_valid_c_ident(fn_name) {
+                        names.insert(fn_name.to_string());
+                    }
                 }
                 scan = &after[q2 + 1..];
             }
