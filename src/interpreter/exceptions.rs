@@ -1,97 +1,18 @@
 // exceptions.rs — 例外クラス構築・トレースバック
-// (make_error_class / get_context_lines / exc_matches)
+// (get_context_lines / exc_matches / make_internal_raised_error)
 //
-// 標準例外クラスの `ClassValue` を構築するファクトリ関数と、
-// トレースバック表示のためのソースコンテキスト抽出・例外マッチング判定を提供する。
+// トレースバック表示のためのソースコンテキスト抽出・例外マッチング判定・
+// インタープリタ内部エラーを言語例外へ変換するユーティリティを提供する。
+//
+// 注: 標準例外クラスの構築 (make_error_class) は built_in_types.rs に移動した。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::{Param, Stmt};
-
-use super::{ClassValue, FnValue, InstanceData, Interpreter, RaisedError, Value};
+use super::{ClassValue, InstanceData, Interpreter, RaisedError, Value};
 
 impl Interpreter {
-    /// 標準例外クラス用の `ClassValue` を構築して返す。
-    ///
-    /// 生成されるクラスの構造:
-    /// - フィールド: `message`, `code_context`, `file`, `line`, `col`（すべて let・不変）
-    /// - `__init__(mut self, message: str)` メソッドで `self.message = message` を実行
-    /// - `code_context` / `file` / `line` / `col` は raise 時にインタープリタが直接書き込む（不変フラグのまま）
-    ///
-    /// - `class_name`: 生成するクラスの名前（例: `"ValueError"`, `"TypeError"`）
-    ///
-    /// 戻り値: `Rc<ClassValue>` — 構築した例外クラス定義
-    pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
-        use crate::ast::Expr as E;
-        use crate::token::Span;
-
-        // __init__ 本体: `self.message = message` を表す AST ノード
-        let init_body = vec![Stmt::AttrAssign {
-            target: E::Attr {
-                object: Box::new(E::Ident("self".to_string())),
-                attr: "message".to_string(),
-                span: Span::unknown(),
-            },
-            value: E::Ident("message".to_string()),
-        }];
-        let init_fn = Rc::new(FnValue {
-            name: "__init__".to_string(),
-            params: vec![
-                Param {
-                    name: "self".to_string(),
-                    mutable: true,
-                    type_ann: None,
-                    default: None,
-                },
-                Param {
-                    name: "message".to_string(),
-                    mutable: false,
-                    type_ann: Some("str".to_string()),
-                    default: None,
-                },
-            ],
-            body: init_body,
-            is_python: false,
-            captured_env: std::collections::HashMap::new(),
-        });
-        let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
-        methods.insert("__init__".to_string(), vec![init_fn]);
-
-        // raise 時にインタープリタが自動上書きするフィールドのデフォルト値（空文字・0で初期化）
-        let field_defaults = vec![
-            ("code_context".to_string(), Value::Str("".to_string()), false),
-            ("file".to_string(), Value::Str("".to_string()), false),
-            ("line".to_string(), Value::Int(0), false),
-            ("col".to_string(), Value::Int(0), false),
-        ];
-
-        // フィールドの可変フラグ: `message` は `let`（__init__ 後は不変）、他は `mut`（可変）
-        let mut field_mutability: HashMap<String, bool> = HashMap::new();
-        field_mutability.insert("message".to_string(), false);
-        field_mutability.insert("code_context".to_string(), false);
-        field_mutability.insert("file".to_string(), false);
-        field_mutability.insert("line".to_string(), false);
-        field_mutability.insert("col".to_string(), false);
-
-        Rc::new(ClassValue {
-            name: class_name.to_string(),
-            bases: vec!["Error".to_string()],
-            methods,
-            gen_methods: HashMap::new(),
-            field_defaults,
-            class_vars: HashMap::new(),
-            field_mutability,
-            field_access: HashMap::new(),
-            method_access: HashMap::new(),
-            static_method_names: std::collections::HashSet::new(),
-            class_method_names: std::collections::HashSet::new(),
-            static_vars: HashMap::new(),
-            new_type_base: None,
-        })
-    }
-
     /// ソースマップから指定行の前後 `n` 行以内のソースコンテキストを返す。
     ///
     /// - `file`: ソースファイル名（`source_map` のキーと一致させること）
