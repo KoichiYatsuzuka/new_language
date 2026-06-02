@@ -1,0 +1,5 @@
+{
+  "rust": {
+    "crates_path": "rs_crates"
+  }
+}

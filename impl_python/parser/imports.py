@@ -1,4 +1,4 @@
-﻿# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+﻿# git SHA: c4e3615a36e8f7183b626dacab73bfc500682e96
 """Import statement parsing (mirrors src/parser/imports.rs)."""
 from __future__ import annotations
 import struct
@@ -45,11 +45,15 @@ class _ParserImports:
             return self._parse_cpp_import(lang)
 
         module = self._parse_module_path()
+        # import[rs] crate_name[0.2] — optional version bracket
+        version: Optional[str] = None
+        if lang == "rs":
+            version = self._parse_version_bracket()
         alias: Optional[str] = None
         if self._current_kind() == TokenKind.AS:
             self._advance()
             alias = self._expect_ident()
-        body = self._load_module(lang, module)
+        body = self._load_module(lang, module, version=version)
         return StmtImport(lang=lang, module=module, alias=alias, body=body)
 
     def _parse_from_import_stmt(self) -> Stmt:
@@ -74,7 +78,7 @@ class _ParserImports:
                     break
             else:
                 break
-        body = self._load_module(lang, module)
+        body = self._load_module(lang, module, version=None)
         return StmtFromImport(lang=lang, module=module, names=names, body=body)
 
     def _parse_lang_bracket(self) -> str:
@@ -196,7 +200,23 @@ class _ParserImports:
 
         return StmtImport(lang=lang, module=[file_path], alias=alias, body=body)
 
-    def _load_module(self, lang: str, module: list[str]) -> list[Stmt]:
+    def _parse_version_bracket(self) -> Optional[str]:
+        """Parse optional [X.Y.Z] version tag after a crate name."""
+        if self._current_kind() != TokenKind.LBRACKET:
+            return None
+        # Peek: if this looks like a version string, consume it
+        self._advance()  # eat '['
+        parts = []
+        while self._current_kind() not in (TokenKind.RBRACKET, TokenKind.EOF):
+            parts.append(str(self._current().value))
+            self._advance()
+        if self._current_kind() == TokenKind.RBRACKET:
+            self._advance()  # eat ']'
+        return "".join(parts) if parts else None
+
+    def _load_module(
+        self, lang: str, module: list[str], version: Optional[str] = None
+    ) -> list[Stmt]:
         if lang in ("tl-auto", "hv-auto", "tl", "hv"):
             return self._load_tl_module(module, force_source=(lang in ("tl", "hv")))
         if lang in ("tlc", "hvc"):
@@ -205,6 +225,8 @@ class _ParserImports:
             return []  # Python modules have no AST body in Python impl
         if lang in ("cpp-dll", "cpp-lib"):
             return []  # handled by _parse_cpp_import; body already filled there
+        if lang == "rs":
+            return self._load_rs_module(module, version)
         raise self._error(f"unknown import language '{lang}'")
 
     def _load_tl_module(self, module: list[str], force_source: bool = False) -> list[Stmt]:
@@ -289,3 +311,24 @@ class _ParserImports:
         self._loading.discard(found)
         self._module_cache[cache_key] = body
         return body
+
+    def _load_rs_module(
+        self, module: list[str], version: Optional[str] = None
+    ) -> list[Stmt]:
+        crate_name = ".".join(module)
+        cache_key = ("rs", crate_name)
+        if cache_key in self._module_cache:
+            return self._module_cache[cache_key]
+
+        from ..partial_compiler.rs_loader import load as rs_load, _RS_DLL_CACHE
+        search_dirs = [self._source_dir]
+        if self._root_dir != self._source_dir:
+            search_dirs.append(self._root_dir)
+
+        try:
+            stmts, _dll_bytes = rs_load(crate_name, search_dirs, version)
+        except Exception as e:
+            raise self._error(str(e))
+
+        self._module_cache[cache_key] = stmts
+        return stmts

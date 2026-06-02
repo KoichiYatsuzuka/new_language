@@ -1,4 +1,4 @@
-﻿# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+﻿# git SHA: c4e3615a36e8f7183b626dacab73bfc500682e96
 """Tree-walk interpreter for Havakyrie."""
 from __future__ import annotations
 import copy
@@ -746,6 +746,10 @@ class Interpreter:
             overloads = cls.methods[attr]
             if len(overloads) == 1:
                 fn = overloads[0]
+                if isinstance(fn, _NativeCallable):
+                    def _bound_native(args, kwargs, _fn=fn, _inst=inst):
+                        return _fn.call([_inst] + list(args), kwargs)
+                    return _make_native(attr, _bound_native)
                 return self._bind_method(inst, fn)
             return self._bind_overloaded(inst, overloads)
 
@@ -943,7 +947,10 @@ class Interpreter:
         if name in cls.methods:
             overloads = cls.methods[name]
             if len(overloads) == 1:
-                return self._exec_function(overloads[0], args, kwargs, self_val=inst)
+                fn = overloads[0]
+                if isinstance(fn, _NativeCallable):
+                    return fn.call([inst] + list(args), kwargs)
+                return self._exec_function(fn, args, kwargs, self_val=inst)
             fn = self._resolve_overload(overloads, args, kwargs)
             return self._exec_function(fn, args, kwargs, self_val=inst)
         if name in cls.gen_methods:
@@ -1732,6 +1739,19 @@ class Interpreter:
             self._env.declare(bound_name, ns, mutable=False)
             return
 
+        # import[rs]: load pre-compiled DLL via ctypes, wire through handle arena
+        if lang == "rs":
+            crate_name = ".".join(module)
+            cache_key = ("rs", crate_name)
+            if cache_key not in Interpreter._cpp_module_cache:
+                Interpreter._cpp_module_cache[cache_key] = self._exec_rs_import(
+                    crate_name, body
+                )
+            ns = Interpreter._cpp_module_cache[cache_key]
+            bound_name = alias if alias else module[-1]
+            self._env.declare(bound_name, ns, mutable=False)
+            return
+
         mod_name = ".".join(module)
         # Execute pre-parsed body in a sub-interpreter, collect as namespace
         sub = Interpreter()
@@ -1799,6 +1819,21 @@ class Interpreter:
                     self._env.declare(bound, val, mutable=False)
             return
 
+        if lang == "rs":
+            crate_name = ".".join(module)
+            cache_key = ("rs", crate_name)
+            if cache_key not in Interpreter._cpp_module_cache:
+                Interpreter._cpp_module_cache[cache_key] = self._exec_rs_import(
+                    crate_name, body
+                )
+            ns = Interpreter._cpp_module_cache[cache_key]
+            for orig_name, alias_name in names:
+                val = ns.members.get(orig_name)
+                if val is not None:
+                    bound = alias_name if alias_name else orig_name
+                    self._env.declare(bound, val, mutable=False)
+            return
+
         mod_name = ".".join(module)
         sub = Interpreter()
         sub._known_classes = self._known_classes
@@ -1818,6 +1853,139 @@ class Interpreter:
             if orig_name in members:
                 bound = alias if alias else orig_name
                 self._env.declare(bound, members[orig_name], mutable=False)
+
+    def _exec_rs_import(self, crate_name: str, body: list) -> "TlNamespace":
+        """Load the compiled Rust crate DLL and return a TlNamespace.
+
+        The DLL was compiled at parse time and its bytes are cached in
+        rs_loader._RS_DLL_CACHE[crate_name].  We write them to a temp file,
+        load via ctypes, call hv_init() to register the Python arena callbacks,
+        then wrap each _tl symbol as a native callable.
+        """
+        import ctypes
+        import tempfile
+        from pathlib import Path
+        from ..ast import StmtFnDef, StmtClassDef, StmtField
+        from .native_api import (
+            make_hv_callbacks, HvCallbacks,
+            alloc_handle, get_handle,
+        )
+        from .value import TlNamespace, TlClass, TlInstance
+        from .builtins import _make_native
+        from ..partial_compiler.rs_loader import _RS_DLL_CACHE, native_lib_ext
+
+        dll_bytes = _RS_DLL_CACHE.get(crate_name)
+        if dll_bytes is None:
+            raise RuntimeError(
+                f"import[rs]: DLL for '{crate_name}' not in cache "
+                "(re-run to trigger recompilation)"
+            )
+
+        # Write DLL bytes to a temp file that persists for the process lifetime
+        ext = native_lib_ext()
+        stem = crate_name.replace(".", "_").replace("-", "_")
+        tmp_path = Path(tempfile.gettempdir()) / f"hv_rs_{stem}_rt.{ext}"
+        tmp_path.write_bytes(dll_bytes)
+
+        try:
+            lib = ctypes.CDLL(str(tmp_path))
+        except OSError as e:
+            raise RuntimeError(
+                f"import[rs]: cannot load DLL for '{crate_name}': {e}"
+            ) from e
+
+        # Register Python arena callbacks with the DLL
+        cb = make_hv_callbacks()
+        try:
+            hv_init_fn = lib.hv_init
+            hv_init_fn.argtypes = [ctypes.POINTER(HvCallbacks)]
+            hv_init_fn.restype = None
+            hv_init_fn(ctypes.byref(cb))
+        except AttributeError:
+            pass
+
+        def _make_tl_wrapper(tl_sym: str, n_params: int):
+            """Return a callable(args, kwargs)->value that calls {tl_sym} in the DLL."""
+            try:
+                fn = getattr(lib, tl_sym)
+            except AttributeError:
+                return None
+            fn.argtypes = [ctypes.POINTER(ctypes.c_int64), ctypes.c_int32]
+            fn.restype = ctypes.c_int64
+
+            def wrapper(args: list, kwargs: dict) -> object:
+                padded = (list(args) + [None] * n_params)[:n_params]
+                handles = (ctypes.c_int64 * n_params)(
+                    *[alloc_handle(a) for a in padded]
+                )
+                ret_h = fn(handles, n_params)
+                return get_handle(ret_h)
+
+            return wrapper
+
+        members: dict[str, object] = {}
+        built_classes: dict[str, object] = {}
+
+        for stmt in body:
+            if isinstance(stmt, StmtFnDef):
+                # Free function: args[0..n] are the positional params
+                n = len(stmt.params)
+                w = _make_tl_wrapper(f"{stmt.name}_tl", n)
+                if w is not None:
+                    members[stmt.name] = _make_native(stmt.name, w)
+
+            elif isinstance(stmt, StmtClassDef):
+                cls_name = stmt.name
+
+                # Collect field names from StmtField stubs (skip __rs_handle__)
+                field_names = [
+                    s.name for s in stmt.body
+                    if isinstance(s, StmtField) and s.name != "__rs_handle__"
+                ]
+
+                # Build method dict: method_name → _NativeCallable
+                # _call_method / _get_instance_attr handle _NativeCallable in methods
+                methods: dict[str, list] = {}
+                for m in stmt.body:
+                    if not isinstance(m, StmtFnDef):
+                        continue
+                    mname = m.name
+                    if mname == "__init__":
+                        tl_sym = f"{cls_name}____init___tl"
+                    else:
+                        tl_sym = f"{cls_name}__{mname}_tl"
+                    n = len(m.params)
+                    w = _make_tl_wrapper(tl_sym, n)
+                    if w is not None:
+                        methods[mname] = [_make_native(mname, w)]
+
+                # field_defaults: include __rs_handle__ so _instantiate_class fills it
+                field_defaults = [("__rs_handle__", 0, True)] + [
+                    (fname, None, True) for fname in field_names
+                ]
+
+                cls = TlClass(
+                    name=cls_name,
+                    bases=[],
+                    methods=methods,
+                    gen_methods={},
+                    field_defaults=field_defaults,
+                    class_vars={},
+                    field_mutability={"__rs_handle__": True, **{f: True for f in field_names}},
+                    field_access={},
+                    method_access={},
+                    static_method_names=set(),
+                    class_method_names=set(),
+                    static_vars={},
+                )
+                members[cls_name] = cls
+                built_classes[cls_name] = cls
+
+        # Register classes in the global var registry so cb_get_global can find them
+        from .native_api import _GLOBAL_VARS
+        _GLOBAL_VARS.update(built_classes)
+
+        return TlNamespace(name=crate_name, members=members)
 
     # ------------------------------------------------------------------
     # Async assign
