@@ -10,7 +10,7 @@ pub mod llvm_codegen;
 pub mod inkwell_codegen;
 mod module_compiler;
 pub mod rs_loader;
-mod stub_gen;
+pub mod stub_gen;
 
 pub use module_compiler::{
     compile, load_tlc, native_lib_ext, take_native_bytes,

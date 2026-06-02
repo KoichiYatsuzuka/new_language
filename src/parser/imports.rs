@@ -350,6 +350,11 @@ impl Parser {
         let body = crate::partial_compiler::rs_loader::load(&module_name, &search_dirs, version)
             .map_err(|e| format!("import[rs] '{}': {e}", module.join(".")))?;
 
+        // Write .hvs stub so the VS Code extension can provide hover/completion
+        let stub_text = crate::partial_compiler::stub_gen::generate_stub(&body);
+        let stub_path = self.source_dir.join(format!("{module_name}.hvs"));
+        let _ = std::fs::write(&stub_path, &stub_text);
+
         self.module_cache.insert(cache_key, body.clone());
         Ok(body)
     }
