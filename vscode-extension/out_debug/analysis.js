@@ -423,7 +423,7 @@ class ExprInferrer {
         return base;
     }
     parsePrimary() {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _j;
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
         const tok = this.cur();
         switch (tok.kind) {
             case 'INT':
@@ -495,12 +495,16 @@ class ExprInferrer {
                         const builtinRet = (_c = (_b = builtins_1.BUILTIN_TYPE_METHODS[baseType]) === null || _b === void 0 ? void 0 : _b[lastMember]) === null || _c === void 0 ? void 0 : _c.ret;
                         if (builtinRet !== undefined)
                             return builtinRet;
-                        return (_d = this.funcEnv.get(lastMember)) !== null && _d !== void 0 ? _d : 'unknown';
+                        // Check user-defined / cpp / rs class methods
+                        const classRet = (_d = this.pyClassMethods.get(baseType)) === null || _d === void 0 ? void 0 : _d.get(lastMember);
+                        if (classRet !== undefined)
+                            return classRet;
+                        return (_e = this.funcEnv.get(lastMember)) !== null && _e !== void 0 ? _e : 'unknown';
                     }
                     if (name === 'Self' && this.selfType)
                         return this.selfType;
                     // Resolve from builtins first, then funcEnv; apply typeArg for both
-                    const retType = (_f = (_e = (name in builtins_1.BUILTIN_RETURN_TYPES ? builtins_1.BUILTIN_RETURN_TYPES[name] : undefined)) !== null && _e !== void 0 ? _e : this.funcEnv.get(name)) !== null && _f !== void 0 ? _f : 'unknown';
+                    const retType = (_g = (_f = (name in builtins_1.BUILTIN_RETURN_TYPES ? builtins_1.BUILTIN_RETURN_TYPES[name] : undefined)) !== null && _f !== void 0 ? _f : this.funcEnv.get(name)) !== null && _g !== void 0 ? _g : 'unknown';
                     if (typeArg && retType !== 'unknown') {
                         if (retType === name)
                             return `${name}[${typeArg}]`;
@@ -512,9 +516,9 @@ class ExprInferrer {
                 }
                 if (isChained) {
                     if (lastMember) {
-                        const baseType = (_g = (name === 'self' ? this.selfType : this.env.get(name))) !== null && _g !== void 0 ? _g : 'unknown';
+                        const baseType = (_h = (name === 'self' ? this.selfType : this.env.get(name))) !== null && _h !== void 0 ? _h : 'unknown';
                         if (baseType !== 'unknown') {
-                            const fieldType = (_h = this.classFieldTypes.get(baseType)) === null || _h === void 0 ? void 0 : _h.get(lastMember);
+                            const fieldType = (_j = this.classFieldTypes.get(baseType)) === null || _j === void 0 ? void 0 : _j.get(lastMember);
                             if (fieldType !== undefined)
                                 return fieldType;
                         }
@@ -523,7 +527,7 @@ class ExprInferrer {
                 }
                 if (name === 'Self' && this.selfType)
                     return this.selfType;
-                return (_j = this.env.get(name)) !== null && _j !== void 0 ? _j : 'unknown';
+                return (_k = this.env.get(name)) !== null && _k !== void 0 ? _k : 'unknown';
             }
             case 'LPAREN': {
                 this.eat();
@@ -648,18 +652,26 @@ function collectPyModuleInfo(moduleName, docDir, extraPaths = []) {
     const classes = new Map();
     let content;
     for (const searchDir of [docDir, ...extraPaths]) {
-        for (const ext of ['.pyi', '.py']) {
-            const candidate = path.join(searchDir, moduleName + ext);
-            if (fs.existsSync(candidate)) {
-                try {
-                    content = fs.readFileSync(candidate, 'utf8');
-                    break;
-                }
-                catch { /* ignore */ }
-            }
-        }
         if (content !== undefined)
             break;
+        for (const ext of ['.pyi', '.py']) {
+            if (content !== undefined)
+                break;
+            // Try directory path first: 'pkg.mod' → 'pkg/mod.py'
+            for (const candidate of [
+                path.join(searchDir, ...moduleName.split('.')) + ext,
+                path.join(searchDir, moduleName + ext),
+            ]) {
+                if (fs.existsSync(candidate)) {
+                    try {
+                        content = fs.readFileSync(candidate, 'utf8');
+                    }
+                    catch { /* ignore */ }
+                    if (content !== undefined)
+                        break;
+                }
+            }
+        }
     }
     if (content === undefined)
         return { funcs, sigs, classes };
@@ -1098,8 +1110,19 @@ class DocumentAnalysis {
         const moduleInfo = collectAllPyModuleInfo(document);
         this.importFuncTypes = moduleInfo.funcTypes;
         this.importFuncSigs = moduleInfo.funcSigs;
-        this.classMethods = moduleInfo.classMethods;
         this.cppClasses = moduleInfo.cppClasses;
+        // Merge cpp/rs class method return types into classMethods so inferExprType
+        // can resolve calls like v.length() when v: Vec2 (Rust-imported struct)
+        const mergedMethods = new Map(moduleInfo.classMethods);
+        for (const [className, classInfo] of moduleInfo.cppClasses) {
+            const methodRets = new Map();
+            for (const [methodName, info] of classInfo.methods) {
+                methodRets.set(methodName, info.ret);
+            }
+            if (methodRets.size > 0)
+                mergedMethods.set(className, methodRets);
+        }
+        this.classMethods = mergedMethods;
         // Phase 3: function type environment
         this.funcEnv = collectConstructorTypes(document);
         this.templateParams = collectTemplateParams(document);

@@ -281,6 +281,162 @@ export function parseTlStub(content: string): NativeModuleInfo {
     return { funcs, sigs, docs, classes };
 }
 
+// ===== Rust source parser =====
+
+interface HvConfig {
+    rust?: { crates_path?: string | string[] };
+}
+
+/** Walk up from startDir to find the directory containing hv_config.json. */
+function findHvConfigDir(startDir: string): string | undefined {
+    let current = startDir;
+    for (;;) {
+        if (fs.existsSync(path.join(current, 'hv_config.json'))) return current;
+        const parent = path.dirname(current);
+        if (parent === current) return undefined;
+        current = parent;
+    }
+}
+
+function loadHvConfig(startDir: string): HvConfig | undefined {
+    const dir = findHvConfigDir(startDir);
+    if (!dir) return undefined;
+    try { return JSON.parse(fs.readFileSync(path.join(dir, 'hv_config.json'), 'utf8')); }
+    catch { return undefined; }
+}
+
+/** Convert a Rust type string to the equivalent Havakyrie LangType. */
+function rsTypeToTl(rs: string, selfName?: string): LangType {
+    // Strip reference/mut qualifiers
+    const t = rs.trim().replace(/^&\s*(?:mut\s+)?/, '').replace(/^mut\s+/, '').trim();
+    if (t === 'f32' || t === 'f64') return 'float';
+    if (/^[iu](?:8|16|32|64|128|size)$/.test(t)) return 'int';
+    if (t === 'bool') return 'bool';
+    if (t === 'String' || t === 'str' || t === '&str') return 'str';
+    if (t === '()' || t === '') return 'None';
+    if (t === 'Self') return selfName ?? 'unknown';
+    const vecM  = t.match(/^Vec\s*<\s*(.+)\s*>$/);
+    if (vecM) return `list[${rsTypeToTl(vecM[1], selfName)}]`;
+    const optM  = t.match(/^Option\s*<\s*(.+)\s*>$/);
+    if (optM) return `Option[${rsTypeToTl(optM[1], selfName)}]`;
+    if (/^[A-Z]/.test(t)) return t;  // named struct/enum — use as-is
+    return 'unknown';
+}
+
+/** Convert a Rust parameter list to Havakyrie parameter string. */
+function rsParamsToHv(params: string, selfName?: string): string {
+    const parts: string[] = [];
+    for (const raw of params.split(',')) {
+        const p = raw.trim().replace(/\s+/g, ' ');
+        if (!p) continue;
+        if (/^&?\s*self$/.test(p))     { parts.push('let self'); continue; }
+        if (/^&?\s*mut\s+self$/.test(p)) { parts.push('mut self'); continue; }
+        const withoutRef = p.replace(/^&\s*(?:mut\s+)?/, '');
+        const colon = withoutRef.indexOf(':');
+        if (colon < 0) continue;
+        const pName = withoutRef.slice(0, colon).trim().replace(/^mut\s+/, '');
+        const pType = rsTypeToTl(withoutRef.slice(colon + 1).trim(), selfName);
+        if (pName && pName !== 'self') parts.push(`${pName}: ${pType}`);
+    }
+    return parts.join(', ');
+}
+
+/** Return the index of the closing brace matching the opening brace at startIdx. */
+function matchingBrace(src: string, startIdx: number): number {
+    let depth = 0;
+    for (let i = startIdx; i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}' && --depth === 0) return i;
+    }
+    return src.length - 1;
+}
+
+/**
+ * Parse a Rust lib.rs file and extract public struct fields,
+ * impl methods, and top-level free functions.
+ */
+export function parseRustLib(source: string): NativeModuleInfo {
+    const funcs   = new Map<string, LangType>();
+    const sigs    = new Map<string, string>();
+    const docs    = new Map<string, string>();
+    const classes = new Map<string, CppClassInfo>();
+
+    // Strip block comments and line comments (preserving line structure)
+    const src = source
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')
+        .replace(/\/\/[^\n]*/g, '');
+
+    // ── pub struct Name { … } ──────────────────────────────────────────────────
+    const structRe = /\bpub\s+struct\s+([A-Za-z_]\w*)\s*\{/g;
+    let m: RegExpExecArray | null;
+    while ((m = structRe.exec(src)) !== null) {
+        const name     = m[1];
+        const openIdx  = m.index + m[0].lastIndexOf('{');
+        const closeIdx = matchingBrace(src, openIdx);
+        const body     = src.slice(openIdx + 1, closeIdx);
+
+        const cls: CppClassInfo = { fields: new Map(), fieldSigs: [], methods: new Map(), methodSigs: [] };
+        classes.set(name, cls);
+
+        // pub fieldname: Type,
+        const fieldRe = /\bpub\s+([A-Za-z_]\w*)\s*:\s*([^,\n}]+)/g;
+        let fm: RegExpExecArray | null;
+        while ((fm = fieldRe.exec(body)) !== null) {
+            const fname = fm[1];
+            const ftype = rsTypeToTl(fm[2].trim(), name);
+            cls.fields.set(fname, ftype);
+            cls.fieldSigs.push(`${fname}: ${ftype}`);
+        }
+    }
+
+    // ── impl StructName { … } ─────────────────────────────────────────────────
+    const implRe = /\bimpl\s+([A-Za-z_]\w*)\s*\{/g;
+    while ((m = implRe.exec(src)) !== null) {
+        const implName = m[1];
+        const openIdx  = m.index + m[0].lastIndexOf('{');
+        const closeIdx = matchingBrace(src, openIdx);
+        const body     = src.slice(openIdx + 1, closeIdx);
+
+        const cls = classes.get(implName);
+        if (!cls) continue;
+
+        // pub fn name(params) -> RetType { … }
+        const fnRe = /\bpub\s+fn\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*(?:->\s*([^{;,\n]+?))?\s*[{;]/g;
+        let fm: RegExpExecArray | null;
+        while ((fm = fnRe.exec(body)) !== null) {
+            const [, fname, paramsRaw, retRs] = fm;
+            if (fname === 'new') continue;  // constructor → handled as class call
+            const ret    = retRs ? rsTypeToTl(retRs.trim(), implName) : 'None';
+            const hvPrms = rsParamsToHv(paramsRaw, implName);
+            const msig   = `fn ${fname}(${hvPrms}) -> ${ret}`;
+            cls.methods.set(fname, { ret, sig: msig });
+            cls.methodSigs.push(msig);
+        }
+    }
+
+    // ── top-level pub fn (depth 0 only) ───────────────────────────────────────
+    const topFnRe = /\bpub\s+fn\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*(?:->\s*([^{;,\n]+?))?\s*\{/g;
+    while ((m = topFnRe.exec(src)) !== null) {
+        // Skip if inside any {} block
+        let depth = 0;
+        for (let i = 0; i < m.index; i++) {
+            if (src[i] === '{') depth++;
+            else if (src[i] === '}') depth--;
+        }
+        if (depth !== 0) continue;
+
+        const [, fname, paramsRaw, retRs] = m;
+        const ret    = retRs ? rsTypeToTl(retRs.trim()) : 'None';
+        const hvPrms = rsParamsToHv(paramsRaw);
+        funcs.set(fname, ret);
+        sigs.set(fname, `fn ${fname}(${hvPrms}) -> ${ret}`);
+    }
+
+    return { funcs, sigs, docs, classes };
+}
+
+// ===== loadNativeModuleInfo =====
+
 export function loadNativeModuleInfo(
     importKind: string,
     modulePath: string,
@@ -303,6 +459,24 @@ export function loadNativeModuleInfo(
         }
         return empty;
     }
+    // ── import[rs]: parse Rust source via hv_config.json crates_path ──────────
+    if (importKindOf(importKind) === 'rs') {
+        const config    = loadHvConfig(docDir);
+        const configDir = findHvConfigDir(docDir) ?? docDir;
+        const rawPaths  = config?.rust?.crates_path;
+        const cratesPaths: string[] = Array.isArray(rawPaths) ? rawPaths : rawPaths ? [rawPaths] : [];
+        for (const cratesPath of cratesPaths) {
+            const resolved = path.isAbsolute(cratesPath)
+                ? cratesPath
+                : path.resolve(configDir, cratesPath);
+            const libRs = path.join(resolved, modulePath, 'src', 'lib.rs');
+            if (fs.existsSync(libRs)) {
+                try { return parseRustLib(fs.readFileSync(libRs, 'utf8')); } catch { /* ignore */ }
+            }
+        }
+        return empty;
+    }
+    // ── import[hv] / import[hvc]: look for .hvs or .hv stub ──────────────────
     const filePath = path.join(docDir, ...modulePath.split('.'));
     const candidates = [
         filePath + '.hvs',

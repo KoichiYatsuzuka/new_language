@@ -448,6 +448,9 @@ class ExprInferrer {
                         const baseType = (name === 'self' ? this.selfType : this.env.get(name)) ?? 'unknown';
                         const builtinRet = BUILTIN_TYPE_METHODS[baseType]?.[lastMember]?.ret;
                         if (builtinRet !== undefined) return builtinRet;
+                        // Check user-defined / cpp / rs class methods
+                        const classRet = this.pyClassMethods.get(baseType)?.get(lastMember);
+                        if (classRet !== undefined) return classRet;
                         return this.funcEnv.get(lastMember) ?? 'unknown';
                     }
                     if (name === 'Self' && this.selfType) return this.selfType;
@@ -590,13 +593,20 @@ function collectPyModuleInfo(moduleName: string, docDir: string, extraPaths: str
 
     let content: string | undefined;
     for (const searchDir of [docDir, ...extraPaths]) {
+        if (content !== undefined) break;
         for (const ext of ['.pyi', '.py']) {
-            const candidate = path.join(searchDir, moduleName + ext);
-            if (fs.existsSync(candidate)) {
-                try { content = fs.readFileSync(candidate, 'utf8'); break; } catch { /* ignore */ }
+            if (content !== undefined) break;
+            // Try directory path first: 'pkg.mod' → 'pkg/mod.py'
+            for (const candidate of [
+                path.join(searchDir, ...moduleName.split('.')) + ext,
+                path.join(searchDir, moduleName + ext),
+            ]) {
+                if (fs.existsSync(candidate)) {
+                    try { content = fs.readFileSync(candidate, 'utf8'); } catch { /* ignore */ }
+                    if (content !== undefined) break;
+                }
             }
         }
-        if (content !== undefined) break;
     }
     if (content === undefined) return { funcs, sigs, classes };
 
@@ -1067,8 +1077,18 @@ export class DocumentAnalysis {
         const moduleInfo = collectAllPyModuleInfo(document);
         this.importFuncTypes = moduleInfo.funcTypes;
         this.importFuncSigs  = moduleInfo.funcSigs;
-        this.classMethods    = moduleInfo.classMethods;
         this.cppClasses      = moduleInfo.cppClasses;
+        // Merge cpp/rs class method return types into classMethods so inferExprType
+        // can resolve calls like v.length() when v: Vec2 (Rust-imported struct)
+        const mergedMethods = new Map<string, ReadonlyMap<string, string>>(moduleInfo.classMethods);
+        for (const [className, classInfo] of moduleInfo.cppClasses) {
+            const methodRets = new Map<string, string>();
+            for (const [methodName, info] of classInfo.methods) {
+                methodRets.set(methodName, info.ret);
+            }
+            if (methodRets.size > 0) mergedMethods.set(className, methodRets);
+        }
+        this.classMethods = mergedMethods;
 
         // Phase 3: function type environment
         this.funcEnv = collectConstructorTypes(document);

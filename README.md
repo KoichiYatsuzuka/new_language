@@ -66,6 +66,14 @@ cargo test
 
 `-src <file.hv>` と位置引数のどちらでも実行できます。引数がない場合は標準入力からソースを読みます。/ You can run using either `-src <file.hv>` or positional arguments. If no arguments are provided, the source is read from standard input.
 
+### ビルド後の実行ファイルの実行方法
+ビルドされた実行ファイルがあるディレクトリにパスを通したあとで
+```bash
+havakirie.exe examples/variable.hv //ファイル実行
+havakirie.exe --repl //対話画面起動
+havakirie.exe --compile examples/test_modules/physics.hv //モジュールとしてコンパイル
+
+```
 ---
 
 ## サンプル（Examples）
