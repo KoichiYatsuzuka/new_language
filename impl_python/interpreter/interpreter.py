@@ -1647,7 +1647,91 @@ class Interpreter:
     # Import
     # ------------------------------------------------------------------
 
+    def _exec_cpp_import(self, lang: str, header_path_str: str) -> "TlNamespace":
+        """Load a C DLL (cpp-dll) or compile+load a static lib (cpp-lib).
+
+        Mirrors load_cpp_module from exec.rs but uses ctypes directly instead
+        of a Rust wrapper DLL.  Results are cached by header path.
+        """
+        from pathlib import Path
+        from .cpp_bridge import (
+            parse_header_full, collect_included_headers, load_cpp_config,
+            compile_tl_dll, load_cpp_dll, native_lib_ext,
+        )
+
+        header_path = Path(header_path_str)
+        if not header_path.exists():
+            raise RuntimeError(
+                f"CppImport: header file not found: '{header_path_str}'"
+            )
+
+        header_dir = header_path.parent
+        stem = header_path.stem
+        mod_name = stem
+
+        config = load_cpp_config(header_dir)
+        content = header_path.read_bytes().decode("utf-8", errors="replace")
+        sigs, struct_defs = parse_header_full(content, config.custom_type_map, {})
+
+        if lang == "cpp-lib":
+            # Also parse headers included via precompile_macros
+            if config.precompile_macros:
+                included = collect_included_headers(content, header_dir)
+                known_names: set[str] = {s.name for s in sigs}
+                for inc_path in included:
+                    try:
+                        inc_text = inc_path.read_bytes().decode("utf-8", errors="replace")
+                        inc_sigs, inc_structs = parse_header_full(
+                            inc_text, config.custom_type_map, {}
+                        )
+                        for s in inc_sigs:
+                            if s.name not in known_names:
+                                known_names.add(s.name)
+                                sigs.append(s)
+                        for d in inc_structs:
+                            if d.name not in {sd.name for sd in struct_defs}:
+                                struct_defs.append(d)
+                    except Exception:
+                        pass
+
+            import sys
+            print(
+                f"CppImport[{lang}]: {len(sigs)} function(s) total",
+                file=sys.stderr,
+            )
+            dll_path, effective_sigs = compile_tl_dll(
+                header_path, sigs, struct_defs, config
+            )
+            return load_cpp_dll(dll_path, effective_sigs, struct_defs, mod_name)
+
+        else:  # cpp-dll
+            ext = native_lib_ext()
+            dll_path = header_dir / f"{stem}.{ext}"
+            if not dll_path.exists():
+                raise RuntimeError(
+                    f"CppImport: DLL not found: '{dll_path}' "
+                    f"(expected next to '{header_path_str}')"
+                )
+            return load_cpp_dll(dll_path, sigs, struct_defs, mod_name)
+
+    # Module-level cache for cpp imports: header_path → TlNamespace
+    _cpp_module_cache: dict = {}
+
     def _exec_import(self, lang: str, module: list[str], alias: Optional[str], body: list) -> None:
+        # cpp-dll / cpp-lib: bypass tree-walk; load via ctypes
+        if lang in ("cpp-dll", "cpp-lib"):
+            header_path_str = module[0] if module else ""
+            cache_key = (lang, header_path_str)
+            if cache_key not in Interpreter._cpp_module_cache:
+                Interpreter._cpp_module_cache[cache_key] = self._exec_cpp_import(
+                    lang, header_path_str
+                )
+            ns = Interpreter._cpp_module_cache[cache_key]
+            from pathlib import Path
+            bound_name = alias if alias else Path(header_path_str).stem
+            self._env.declare(bound_name, ns, mutable=False)
+            return
+
         mod_name = ".".join(module)
         # Execute pre-parsed body in a sub-interpreter, collect as namespace
         sub = Interpreter()
@@ -1700,6 +1784,21 @@ class Interpreter:
                 pass
 
     def _exec_from_import(self, lang: str, module: list[str], names: list, body: list) -> None:
+        if lang in ("cpp-dll", "cpp-lib"):
+            header_path_str = module[0] if module else ""
+            cache_key = (lang, header_path_str)
+            if cache_key not in Interpreter._cpp_module_cache:
+                Interpreter._cpp_module_cache[cache_key] = self._exec_cpp_import(
+                    lang, header_path_str
+                )
+            ns = Interpreter._cpp_module_cache[cache_key]
+            for orig_name, alias_name in names:
+                val = ns.members.get(orig_name)
+                if val is not None:
+                    bound = alias_name if alias_name else orig_name
+                    self._env.declare(bound, val, mutable=False)
+            return
+
         mod_name = ".".join(module)
         sub = Interpreter()
         sub._known_classes = self._known_classes

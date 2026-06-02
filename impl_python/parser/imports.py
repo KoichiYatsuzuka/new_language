@@ -40,6 +40,10 @@ class _ParserImports:
     def _parse_import_stmt(self) -> Stmt:
         self._eat(TokenKind.IMPORT)
         lang = self._parse_lang_bracket() if self._current_kind() == TokenKind.LBRACKET else "tl-auto"
+
+        if lang in ("cpp-dll", "cpp-lib"):
+            return self._parse_cpp_import(lang)
+
         module = self._parse_module_path()
         alias: Optional[str] = None
         if self._current_kind() == TokenKind.AS:
@@ -100,6 +104,98 @@ class _ParserImports:
     # Module loading
     # ------------------------------------------------------------------
 
+    def _parse_cpp_import(self, lang: str) -> Stmt:
+        """Parse import[cpp-dll] Dir.Name or import[cpp-lib] Dir.Name.
+
+        The dotted path is resolved to a header file:
+          Dir.Name → {source_dir}/Dir/Name.h
+        The full resolved header path is stored as module[0].
+        The body contains StmtFnDef stubs generated from the header (for type checking).
+        """
+        from ..ast import StmtFnDef, StmtField, StmtClassDef
+        from ..ast import Param as AstParam, FieldKind, Accessibility
+
+        # Parse dotted identifier: Dir.Name
+        parts = [self._expect_ident()]
+        while self._current_kind() == TokenKind.DOT:
+            self._advance()
+            parts.append(self._expect_ident())
+
+        # Resolve to header path: last part gets .h extension
+        resolved = self._source_dir
+        for i, part in enumerate(parts):
+            if i == len(parts) - 1:
+                resolved = resolved / f"{part}.h"
+            else:
+                resolved = resolved / part
+
+        file_path = str(resolved)
+
+        # Optional alias
+        alias: Optional[str] = None
+        if self._current_kind() == TokenKind.AS:
+            self._advance()
+            alias = self._expect_ident()
+
+        # Generate type stubs from the header if it exists
+        body: list[Stmt] = []
+        if resolved.exists():
+            try:
+                from ..interpreter.cpp_bridge import (
+                    parse_header_full, load_cpp_config, ctype_to_tl_str,
+                )
+                header_dir = resolved.parent
+                config = load_cpp_config(header_dir)
+                content = resolved.read_text(encoding="utf-8", errors="replace")
+                sigs, struct_defs = parse_header_full(content, config.custom_type_map, {})
+
+                for sdef in struct_defs:
+                    field_stmts = [
+                        StmtField(
+                            name=fname,
+                            kind=FieldKind.MUT,
+                            type_ann=ctype_to_tl_str(fct),
+                            default=None,
+                            access=Accessibility.PUBLIC,
+                        )
+                        for fname, fct in sdef.fields
+                    ]
+                    body.append(StmtClassDef(
+                        name=sdef.name,
+                        template_params=[],
+                        bases=[],
+                        decorators=[],
+                        body=field_stmts,
+                    ))
+
+                from ..interpreter.cpp_bridge.types import CPtr
+                for sig in sigs:
+                    params = [
+                        AstParam(
+                            name=pname or f"p{i}",
+                            mutable=isinstance(ct, CPtr) and ct.mutable,
+                            type_ann=ctype_to_tl_str(ct),
+                            default=None,
+                        )
+                        for i, (pname, ct) in enumerate(sig.params)
+                    ]
+                    body.append(StmtFnDef(
+                        name=sig.name,
+                        template_params=[],
+                        params=params,
+                        return_type=ctype_to_tl_str(sig.ret),
+                        body=[],
+                        is_abstract=False,
+                        is_static=False,
+                        is_class_method=False,
+                        decorators=[],
+                        access=Accessibility.PUBLIC,
+                    ))
+            except Exception:
+                pass  # header parse errors are non-fatal; runtime handles errors
+
+        return StmtImport(lang=lang, module=[file_path], alias=alias, body=body)
+
     def _load_module(self, lang: str, module: list[str]) -> list[Stmt]:
         if lang in ("tl-auto", "hv-auto", "tl", "hv"):
             return self._load_tl_module(module, force_source=(lang in ("tl", "hv")))
@@ -107,6 +203,8 @@ class _ParserImports:
             return self._load_tlc_module(module)
         if lang in ("py", "py-int"):
             return []  # Python modules have no AST body in Python impl
+        if lang in ("cpp-dll", "cpp-lib"):
+            return []  # handled by _parse_cpp_import; body already filled there
         raise self._error(f"unknown import language '{lang}'")
 
     def _load_tl_module(self, module: list[str], force_source: bool = False) -> list[Stmt]:
