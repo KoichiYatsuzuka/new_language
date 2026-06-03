@@ -10,98 +10,132 @@ use crate::token::Span;
 /// 静的型エラーの種別を表す列挙型。各バリアントに診断に必要な情報を保持する。
 #[derive(Debug, Clone)]
 pub enum TypeErrorKind {
+    /// 互換性のない型同士の比較演算（例: `int == str`）。
     IncompatibleComparison {
         lhs: InferredType,
         rhs: InferredType,
         op: &'static str,
     },
+    /// 不変変数（`let` / `const`）への代入。
     AssignToImmutable {
         name: String,
     },
+    /// 関数呼び出しの引数数が宣言と一致しない（少なすぎる / 多すぎる）。
     CallArgCountMismatch {
         func_name: String,
+        /// 最小必須引数数（デフォルト引数を除いた引数数）。
         expected_min: usize,
+        /// 最大許容引数数（全引数数）。
         expected_max: usize,
+        /// 実際に渡された引数数。
         got: usize,
     },
+    /// 関数呼び出しの特定位置の引数型が宣言の型と不一致。
     CallArgTypeMismatch {
         func_name: String,
+        /// 0始まりの引数インデックス。
         param_index: usize,
         expected: InferredType,
         got: InferredType,
     },
+    /// 関数パラメータに型アノテーションがない。
     MissingParamTypeAnn {
         func_name: String,
         param_name: String,
     },
+    /// 関数定義に戻り値型アノテーションがない。
     MissingReturnTypeAnn {
         func_name: String,
     },
+    /// 関数に存在しないキーワード引数が渡された。
     UnknownKeywordArg {
         func_name: String,
         arg_name: String,
     },
+    /// オーバーロード関数でどのオーバーロードにも引数数が一致しない。
     NoMatchingOverload {
         func_name: String,
+        /// 実際に渡された引数数。
         got: usize,
+        /// 各オーバーロードが受け付ける引数数のリスト。
         available: Vec<usize>,
     },
+    /// メソッドの `self` / `cls` パラメータの型注釈がクラス名と不一致。
     SelfTypeMismatch {
         method: String,
         param_name: String,
         expected_class: String,
         got_class: String,
     },
+    /// `Any` 型の値に対して演算子を適用した（明示的ダウンキャストが必要）。
     OperationOnAny {
         op: String,
     },
+    /// `Union` 型の値に対して演算子を適用した（明示的ダウンキャストが必要）。
     OperationOnUnion {
         union_type: String,
         op: String,
     },
+    /// `is not` 型ガードを非 Union 型に適用した（Union/Optional 型にのみ有効）。
     IsNotOnNonUnion {
         var_name: String,
         var_type: InferredType,
     },
+    /// `mut` パラメータに不変変数（`let`/`const`）を渡した。
     CallMutParamWithImmutableArg {
         func_name: String,
         param_name: String,
     },
+    /// デコレータの型シグネチャが無効（引数型や戻り値型が不一致など）。
     InvalidDecorator {
         reason: String,
     },
+    /// タプルアンパック宣言の変数に `let` / `mut` 修飾子がない。
     TupleUnpackMissingQualifier {
         name: String,
     },
+    /// タプルアンパックのターゲット数と右辺タプルの要素数が一致しない。
     TupleUnpackArityMismatch {
+        /// 右辺タプルの要素数。
         tuple_len: usize,
+        /// タプルアンパックで宣言されたターゲット数（ワイルドカードを除く）。
         target_count: usize,
+        /// ワイルドカード `_` が含まれているかどうか。
         has_wildcard: bool,
     },
+    /// 不変フィールド（`let` フィールド）への代入（`__init__` 外）。
     AssignToImmutableField {
         field_name: String,
         class_name: String,
     },
+    /// `private` メンバーにクラス外からアクセスした。
     PrivateAccessError {
         member_name: String,
         class_name: String,
     },
+    /// `protected` メンバーに継承クラス外からアクセスした。
     ProtectedAccessError {
         member_name: String,
         class_name: String,
     },
+    /// `static` メソッドをインスタンス経由で呼び出した（クラス名経由でのみ呼び出せる）。
     StaticMethodOnInstance {
         method_name: String,
         class_name: String,
     },
+    /// `for`/`while` 式の直下に `block_return` が使われた（`loop_yield` か内側のブロック式に移す必要がある）。
     BlockReturnInLoopExpr,
+    /// `raise` の対象が例外インスタンスでない。
     InvalidRaiseType {
         got: InferredType,
     },
+    /// `mut` / `let` フィールドにデフォルト値が指定された（`const` フィールドのみデフォルト値を持てる）。
     FieldDefaultNotAllowed {
         field_name: String,
+        /// フィールドの種別文字列（`"mut"` または `"let"`）。
         kind: String,
     },
+    /// `__freeze__` メソッドを直接呼び出した（`freeze` キーワード経由でのみ使用可能）。
     DirectFreezeCall,
 }
 

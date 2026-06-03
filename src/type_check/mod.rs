@@ -25,18 +25,43 @@ use crate::ast::{Accessibility, Stmt};
 
 /// 静的型検査器。AST を走査してすべての型エラーを収集し報告する。
 pub struct TypeChecker {
+    /// 変数スコープのスタック。インデックス 0 がグローバルスコープ、末尾がローカルスコープ。
+    /// 各エントリは変数名 → `VarInfo`（型・可変フラグ）のマップ。
     scope_stack: Vec<HashMap<String, VarInfo>>,
+    /// トップレベルおよびネストした関数のシグネチャキャッシュ。
+    /// キー: 関数名、値: オーバーロード候補の `FnSig` リスト。
     fn_sigs: HashMap<String, Vec<FnSig>>,
+    /// クラスメソッドのシグネチャキャッシュ。
+    /// キー: クラス名 → (メソッド名 → `FnSig` リスト)。
     class_method_sigs: HashMap<String, HashMap<String, Vec<FnSig>>>,
+    /// パース済みクラス・new_type 名の集合。`NamedInstance` の解決に使用する。
     known_class_names: HashSet<String>,
+    /// `new_type Name: Original` の元の型名マップ。
+    /// キー: 新しい型名、値: 元の型名（プリミティブ名またはクラス名）。
     new_type_originals: HashMap<String, String>,
+    /// クラスの基底クラス・トレイト名のリスト。
+    /// キー: クラス名、値: 基底クラス/トレイト名のリスト。継承チェック・protected アクセス検査に使用。
     class_bases: HashMap<String, Vec<String>>,
+    /// クラスフィールドの可変フラグマップ。
+    /// キー: クラス名 → (フィールド名 → 可変フラグ)。`let` フィールドへの代入チェックに使用。
     class_fields: HashMap<String, HashMap<String, bool>>,
+    /// クラスメンバーのアクセス可能性マップ。
+    /// キー: クラス名 → (メンバー名 → `Accessibility`)。`Public` 以外のみ格納。
     class_member_access: HashMap<String, HashMap<String, Accessibility>>,
+    /// `static fn` で定義されたスタティックメソッド名の集合。
+    /// キー: クラス名、値: スタティックメソッド名のセット。インスタンス経由の呼び出しをエラーとして検出する。
     class_static_methods: HashMap<String, HashSet<String>>,
+    /// 現在型検査中の関数名。`None` はトップレベルまたはクラス本体を示す。
+    /// メソッドの `Self` 型チェック・`__init__` 内の不変フィールド代入許可に使用する。
     current_fn_name: Option<String>,
+    /// 現在型検査中のクラス名。`None` はクラス外を示す。
+    /// `private`/`protected` メンバーへのアクセス検査・`Self` 型解決に使用する。
     current_class_name: Option<String>,
+    /// `for`/`while`/`match`/`block` 式の入れ子深さ。
+    /// `block_return` を直接含む `for`/`while` 式ボディを検出するために使用する。
+    /// この値が 1 以上のとき `block_return` は型エラー `BlockReturnInLoopExpr` を発生させる。
     block_return_forbidden_depth: usize,
+    /// 収集された静的型エラーのリスト。`check()` が返す前にここへ蓄積される。
     pub errors: Vec<StaticTypeError>,
 }
 

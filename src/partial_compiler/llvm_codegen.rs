@@ -14,25 +14,43 @@ use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Param, Stmt, UnaryOp};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
+/// ネイティブコンパイルされた関数の公開情報。`.hvc` ファイルへ埋め込まれる。
 #[derive(Debug, Clone)]
 pub struct FnExport {
+    /// エクスポートされた関数名（LLVM IR および DLL のシンボル名と一致する）。
     pub name:       String,
+    /// 関数が受け取るパラメータ数（`self` を含む）。
     pub n_params:   usize,
-    /// Set when this export is a class method: the owning class name.
+    /// クラスメソッドの場合は所有クラス名、通常関数は `None`。
     pub class_name: Option<String>,
 }
 
 // ── Internal type system ──────────────────────────────────────────────────────
 
+/// コードジェネレータ内部で使用する型区分。
+/// LLVM IR の型と handle ABI の間のマッピングに使用する。
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Ty { Int, Float, Bool, Handle }
+enum Ty {
+    /// `i64` ネイティブ整数として扱う。
+    Int,
+    /// `double` ネイティブ浮動小数点として扱う。
+    Float,
+    /// `i64` ハンドル（`TL_TRUE`/`TL_FALSE`）として扱う。ストア時は Handle に昇格。
+    Bool,
+    /// `i64` ハンドル（アリーナ参照）として扱う。
+    Handle,
+}
 
+/// コードジェネレータ内部の関数シグネチャ情報。
 struct FnSig {
+    /// 戻り値の型区分。
     ret: Ty,
+    /// パラメータごとの可変フラグリスト。`true` は `mut` パラメータ。
     param_mutabilities: Vec<bool>,
 }
 
 /// `let list[ClassName]` パラメータの平坦レイアウト情報。
+/// クラスの数値フィールドを連続メモリに展開した flat-array 形式でネイティブコードに渡す。
 #[derive(Clone)]
 struct FlatListInfo {
     /// 要素クラス名。
@@ -43,6 +61,8 @@ struct FlatListInfo {
     stride: usize,
 }
 
+/// 型アノテーション文字列を内部型区分 `Ty` に変換する。
+/// `"int"` → `Ty::Int`、`"float"` → `Ty::Float`、その他は `Ty::Handle`。
 fn ann_ty(s: Option<&str>) -> Ty {
     match s {
         Some("int")   => Ty::Int,
@@ -51,8 +71,12 @@ fn ann_ty(s: Option<&str>) -> Ty {
     }
 }
 
+/// `Bool` 型を `Handle` に昇格させる（ストア時に使用）。
+/// Bool 値はネイティブ i64 ではなく Handle (TL_TRUE/TL_FALSE) として格納する必要があるため。
 fn store_ty(t: Ty) -> Ty { if t == Ty::Bool { Ty::Handle } else { t } }
 
+/// 型区分に対応する LLVM IR 型文字列を返す。
+/// `Float` → `"double"`、それ以外 → `"i64"`。
 fn llvm_ty(ty: Ty) -> &'static str {
     if ty == Ty::Float { "double" } else { "i64" }
 }

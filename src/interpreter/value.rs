@@ -650,20 +650,30 @@ impl FlatLayout {
 /// - `NativeFunction`: natively compiled function loaded from a shared library
 #[derive(Debug, Clone)]
 pub enum Value {
+    /// 符号付き 64 ビット整数プリミティブ値。
     Int(i64),
+    /// 符号なし 64 ビット整数値（ビット演算・ネイティブ ABI との連携用）。
     UInt(u64),
+    /// 64 ビット浮動小数点プリミティブ値。
     Float(f64),
+    /// 文字列プリミティブ値（Unicode UTF-8）。
     Str(String),
+    /// 真偽値プリミティブ値（`true` / `false`）。
     Bool(bool),
+    /// `None` リテラル。Python の `None` に相当する。
     None,
+    /// 可変長リスト値。要素は任意の型を混在できる。`Rc<RefCell<...>>` により共有・可変参照する。
     List(Rc<RefCell<Vec<Value>>>),
-    /// freeze で変換されたフラット固定長リスト。全要素が同一クラスかつ全フィールドが int/float。
+    /// `freeze` で変換されたフラット固定長リスト。全要素が同一クラスかつ全フィールドが int/float。
     /// `data` は平坦バイト列（各要素は stride バイト、フィールドはアルファベット順 little-endian）。
     FrozenList { data: Rc<Vec<u8>>, layout: Rc<FlatLayout>, len: usize },
+    /// 通常の関数値（`fn` キーワードで定義された関数）。
     Function(Rc<FnValue>),
     /// 同スコープに同名で2つ以上のオーバーロードが定義された関数値。
     OverloadedFn(Vec<Rc<FnValue>>),
+    /// クラス定義値。コンストラクタとして呼び出すとインスタンスを生成する。
     Class(Rc<ClassValue>),
+    /// クラスインスタンス値。`Rc<RefCell<...>>` により共有・可変参照する。
     Instance(Rc<RefCell<InstanceData>>),
     /// 組み込み型名を保持する型値（`int`, `str`, `float`, `bool`）。
     /// ユーザー定義クラス型は `Value::Class` で表現する。
@@ -940,12 +950,18 @@ impl Value {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum ExecResult {
+    /// 通常終了。次の文へ制御を移す。
     Normal,
+    /// `break` 文が実行された。最も内側のループを抜ける。
     Break,
+    /// `continue` 文が実行された。ループの次のイテレーションへ進む。
     Continue,
+    /// `return expr` 文が実行された。現在の関数を即座に終了して値を返す。
     Return(Value),
+    /// `block_return expr` 文が実行された。`block:` / `if` / `match` / `for` / `while` 式を即座に終了して値を返す。
     BlockReturn(Value),
+    /// `loop_yield expr` 文が実行された。実行を継続しつつ値を結果リストに積む。`for`/`while` 式でのみ有効。
     BlockYield(Value),
-    /// コールスタックを遡って伝播中の言語レベル例外。
+    /// コールスタックを遡って伝播中の言語レベル例外。`try/except` で捕捉される。
     Raise(RaisedError),
 }

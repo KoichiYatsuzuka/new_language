@@ -55,42 +55,78 @@ fn split_top_level_commas_fn(s: &str) -> Vec<&str> {
 }
 
 /// 関数型アノテーションの 1 パラメータ。
+///
+/// - `name`    : パラメータ名（位置引数の場合は `"param1"` などの自動生成名になる場合もある）
+/// - `mutable` : `mut` 修飾子の有無。`true` なら可変引数として扱う
+/// - `ty`      : パラメータの推論済み型
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnTypeParam {
+    /// パラメータ名。
     pub name: String,
+    /// `mut` 修飾子の有無。
     pub mutable: bool,
+    /// パラメータの推論済み型。
     pub ty: InferredType,
 }
 
 /// 型推論システムが扱う型を表す列挙型。プリミティブ型・コレクション型・Union 型・関数型などを網羅する。
 #[derive(Debug, Clone, PartialEq)]
 pub enum InferredType {
+    /// `int` プリミティブ型。
     Int,
+    /// `float` プリミティブ型。
     Float,
+    /// `str` プリミティブ型。
     Str,
+    /// `bool` プリミティブ型。
     Bool,
+    /// `None` 型（値が存在しないことを表す）。
     None,
+    /// 要素型未知のリスト型 `list`。
     List,
+    /// 要素型既知のリスト型 `list[T]`。
     ListOf(Box<InferredType>),
+    /// 要素型未知の固定長リスト型 `fixed_list`（型検査で変更禁止）。
     FixedList,
+    /// 要素型既知の固定長リスト型 `fixed_list[T]`。
     FixedListOf(Box<InferredType>),
+    /// `list` と `fixed_list` の両方を受け入れる抽象リスト型 `list_like`。
     ListLike,
+    /// 要素型既知の抽象リスト型 `list_like[T]`。
     ListLikeOf(Box<InferredType>),
+    /// 型値（クラス自体）を表す `type` 型。型引数なし。
     TypeVal,
+    /// 具体的な内部型を持つ型値 `type[T]`（例: `type[int]`, `type[MyClass]`）。
     TypeValOf(Box<InferredType>),
+    /// クラス・トレイト本体内でのみ有効な自己参照型 `Self`。
     SelfType,
+    /// ユーザー定義クラスのインスタンス型。内部文字列はクラス名。
     NamedInstance(String),
+    /// 動的型エスケープ `Any`。演算子の型検査を抑制するため明示的なダウンキャストが必要。
     Any,
+    /// `Union[T1, T2, ...]` 型。`Option[T]` は `Union[T, None]` の糖衣構文。
     Union(Vec<InferredType>),
+    /// 要素型未知の辞書型 `dict`。
     Dict,
+    /// キー型・値型既知の辞書型 `dict[K, V]`。
     DictOf(Box<InferredType>, Box<InferredType>),
+    /// 要素型未知の集合型 `set`。
     Set,
+    /// 要素型既知の集合型 `set[T]`。
     SetOf(Box<InferredType>),
+    /// タプル型 `tuple[T1, T2, ...]`。各要素に独立した型を持つ。
     Tuple(Vec<InferredType>),
+    /// モジュールやパッケージを表す名前空間型。メンバー名 → 推論済み型のマップ。
     Namespace(HashMap<String, InferredType>),
+    /// 推論に失敗した・または未解決の型（エラーの伝播抑制のため使用する）。
     Unresolved,
+    /// 関数型 `function[params]->R` または `function{params}->R`。
+    /// - `params`: `None` は型引数なし（シグネチャ未確定）、`Some(vec)` は型付きパラメータリスト
+    /// - `return_type`: 戻り値の型
     Function {
+        /// `None` はシグネチャ未確定（`function` のみ）、`Some(vec)` は型付きパラメータリスト。
         params: Option<Vec<FnTypeParam>>,
+        /// 戻り値の型。
         return_type: Box<InferredType>,
     },
 }

@@ -141,8 +141,11 @@ pub struct CStructDef {
 /// `.h` ファイルから抽出した C 関数シグネチャ。
 #[derive(Debug, Clone)]
 pub struct CFnSig {
+    /// C 関数名（例: `"CreateWindow"`）。
     pub name: String,
+    /// 宣言順のパラメータ一覧: `(パラメータ名, CType)`。
     pub params: Vec<(String, CType)>,
+    /// 戻り値の `CType`。
     pub ret: CType,
     /// この関数が属する C++ 名前空間（例: `"DxLib"`）。名前空間がない場合は `None`。
     pub namespace: Option<String>,

@@ -23,8 +23,11 @@ use super::{Interpreter, Value, Var};
 /// 非同期タスクの進行状態を表す列挙型。
 #[derive(Debug, Clone, PartialEq)]
 pub enum AsyncStatus {
+    /// スレッドスロットが空くのを待機中。
     Waiting,
+    /// スレッドが起動して実行中。
     Running,
+    /// タスクが完了（成功またはエラー）。結果は `results` / `error_list` に格納済み。
     Done,
 }
 
@@ -79,16 +82,24 @@ struct RunningSlot {
 
 /// `AsyncManager` のランタイムデータ。スレッドプール・タスクキュー・進行状態を管理する。
 pub struct AsyncManagerData {
+    /// 同時実行するスレッドの最大数。
     pub num_thread: usize,
+    /// `true` の場合、タスクが例外を送出したら即座に再送出する（デフォルト: 遅延収集）。
     pub raise_immediately: bool,
 
-    // Per-task state (indexed by submission order)
+    // タスクごとの進行状態（サブミット順のインデックスで管理）
+    /// 各タスクの進行状態（`Waiting` / `Running` / `Done`）のリスト。
     pub progress: Vec<AsyncStatus>,
+    /// 各タスクの完了結果（`Done` になった時点で設定される）。実行中は `Value::None`。
     pub results: Vec<Value>,
+    /// 各タスクのエラーメッセージ（タスクが例外を送出した場合に設定される）。
     pub error_list: Vec<Option<String>>,
 
+    /// 実行待ちタスクのキュー。スロットが空くたびに先頭から順番に取り出して実行する。
     pending: VecDeque<(usize, AsyncTask)>,
+    /// 現在実行中のスレッドスロットのリスト。`num_thread` 個まで同時実行できる。
     running: Vec<RunningSlot>,
+    /// すべてのスレッドに中断を要求するフラグ（`AsyncManager` がドロップされたとき設定される）。
     abort: Arc<AtomicBool>,
 }
 
