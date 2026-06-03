@@ -569,6 +569,35 @@ impl Interpreter {
             }
         }
 
+        // --- list ⇒ fixed_list: flat conversion ---
+        let target_is_fixed = type_name == "fixed_list"
+            || type_name.starts_with("fixed_list[");
+        let target_is_list = type_name == "list"
+            || type_name.starts_with("list[");
+        if target_is_fixed {
+            return match obj {
+                Value::FrozenList { .. } => Ok(obj),  // already a fixed_list
+                Value::List(ref rc) => {
+                    let items = rc.borrow().clone();
+                    Self::try_flat_freeze(&items).ok_or_else(|| {
+                        "CastError: cannot cast list to fixed_list: \
+                         elements must be homogeneous class instances \
+                         with only int/float fields".to_string()
+                    })
+                }
+                _ => Err(format!(
+                    "CastError: cannot cast '{}' to 'fixed_list'",
+                    self.type_name(&obj)
+                )),
+            };
+        }
+        if target_is_list {
+            if let Value::FrozenList { ref data, ref layout, len } = obj {
+                let items = (0..len).map(|i| layout.reconstruct_item(data, i)).collect();
+                return Ok(Value::List(Rc::new(RefCell::new(items))));
+            }
+        }
+
         // --- インスタンスの __cast__[TypeName] メソッド呼び出し ---
         match &obj {
             Value::Instance(inst_rc) => {
@@ -685,6 +714,7 @@ impl Interpreter {
                 };
                 Some(match &val {
                     Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
+                    Value::FrozenList { len, .. } => Ok(Value::Int(*len as i64)),
                     Value::Str(s) => Ok(Value::Int(s.len() as i64)),
                     Value::Dict(d) => Ok(Value::Int(d.borrow().all_keys().len() as i64)),
                     Value::Set(s) => Ok(Value::Int(s.borrow().len() as i64)),
@@ -1051,6 +1081,10 @@ impl Interpreter {
                 ref v if v.is_empty() => Ok(Value::List(Rc::new(RefCell::new(vec![])))),
                 _ if vals.len() == 1 => match vals.into_iter().next().unwrap() {
                     Value::List(lst) => Ok(Value::List(lst)),
+                    Value::FrozenList { ref data, ref layout, len } => {
+                        let items = (0..len).map(|i| layout.reconstruct_item(data, i)).collect();
+                        Ok(Value::List(Rc::new(RefCell::new(items))))
+                    }
                     Value::Set(s) => Ok(Value::List(Rc::new(RefCell::new(s.borrow().clone())))),
                     Value::Str(s) => {
                         let chars = s.chars().map(|c| Value::Str(c.to_string())).collect();
@@ -1186,6 +1220,7 @@ impl Interpreter {
             }
             "len" => match vals.as_slice() {
                 [Value::List(lst)] => Ok(Value::Int(lst.borrow().len() as i64)),
+                [Value::FrozenList { len, .. }] => Ok(Value::Int(*len as i64)),
                 [Value::Str(s)] => Ok(Value::Int(s.len() as i64)),
                 [Value::Dict(d)] => Ok(Value::Int(d.borrow().len() as i64)),
                 [Value::Set(s)] => Ok(Value::Int(s.borrow().len() as i64)),
@@ -2174,10 +2209,14 @@ impl Interpreter {
             "bool" => matches!(val, Value::Bool(_)),
             "None" => matches!(val, Value::None),
             "list" => matches!(val, Value::List(_)),
+            "fixed_list" => matches!(val, Value::FrozenList { .. }),
+            "list_like" => matches!(val, Value::List(_) | Value::FrozenList { .. }),
             "dict" => matches!(val, Value::Dict(_)),
             "set" => matches!(val, Value::Set(_)),
             "tuple" => matches!(val, Value::Tuple(_)),
             _ if type_name.starts_with("list[") => matches!(val, Value::List(_)),
+            _ if type_name.starts_with("fixed_list[") => matches!(val, Value::FrozenList { .. }),
+            _ if type_name.starts_with("list_like[") => matches!(val, Value::List(_) | Value::FrozenList { .. }),
             _ if type_name.starts_with("dict[") => matches!(val, Value::Dict(_)),
             _ if type_name.starts_with("set[") => matches!(val, Value::Set(_)),
             _ if type_name.starts_with("tuple[") => matches!(val, Value::Tuple(_)),
@@ -2212,6 +2251,20 @@ impl Interpreter {
                     return Err(format!("IndexError: list index {} out of range", idx));
                 }
                 Ok(borrowed[actual as usize].clone())
+            }
+            Value::FrozenList { ref data, ref layout, len } => {
+                let idx = value_as_index(&key).ok_or_else(|| {
+                    format!(
+                        "TypeError: list indices must be integers or Index, not '{}'",
+                        self.type_name(&key)
+                    )
+                })?;
+                let n = len as i64;
+                let actual = if idx < 0 { n + idx } else { idx };
+                if actual < 0 || actual >= n {
+                    return Err(format!("IndexError: list index {} out of range", idx));
+                }
+                Ok(layout.reconstruct_item(data, actual as usize))
             }
             Value::Str(s) => {
                 let idx = value_as_index(&key).ok_or_else(|| {
@@ -2376,6 +2429,9 @@ impl Interpreter {
     fn collect_iterable(&self, val: Value) -> Result<Vec<Value>, String> {
         match val {
             Value::List(lst) => Ok(lst.borrow().clone()),
+            Value::FrozenList { ref data, ref layout, len } => {
+                Ok((0..len).map(|i| layout.reconstruct_item(data, i)).collect())
+            }
             Value::Tuple(td) => Ok(td.all_values().to_vec()),
             Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string())).collect()),
             Value::Set(items) => Ok(items.borrow().clone()),

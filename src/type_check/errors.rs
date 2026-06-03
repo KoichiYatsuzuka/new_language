@@ -102,6 +102,7 @@ pub enum TypeErrorKind {
         field_name: String,
         kind: String,
     },
+    DirectFreezeCall,
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +253,10 @@ impl StaticTypeError {
             TypeErrorKind::FieldDefaultNotAllowed { field_name, kind } => format!(
                 "{} field {} cannot have a default value in the class declaration; only {} fields may have defaults",
                 hl_bt(kind), hl_q(field_name), hl_bt("const")
+            ),
+            TypeErrorKind::DirectFreezeCall => format!(
+                "{} cannot be called directly; use the {} keyword instead",
+                hl_bt("__freeze__"), hl_bt("freeze")
             ),
         }
     }

@@ -114,6 +114,78 @@ impl Interpreter {
     /// `let` バインドされたインスタンスに適用される。以降は `mut self` メソッド呼び出しが禁止される。
     ///
     /// - `inst_rc`: 不変化するインスタンスへの共有参照
+    /// 同一クラス・全フィールドが int/float の `Value::List` を平坦バイト配列に変換する。
+    /// 変換できない場合は `None` を返す。フィールドはアルファベット順で格納される。
+    pub(super) fn try_flat_freeze(items: &[Value]) -> Option<Value> {
+        if items.is_empty() {
+            return None;
+        }
+        // First item must be an Instance
+        let first_rc = match &items[0] {
+            Value::Instance(rc) => rc.clone(),
+            _ => return None,
+        };
+        let class = first_rc.borrow().class.clone();
+        let class_name = class.name.clone();
+
+        // Build sorted field list from first instance
+        let fields_sorted: Vec<(String, super::value::FlatFieldTy)> = {
+            let inst = first_rc.borrow();
+            let mut flds: Vec<(String, super::value::FlatFieldTy)> = inst.fields
+                .iter()
+                .map(|(name, (val, _))| {
+                    let fty = match val {
+                        Value::Float(_) => Some(super::value::FlatFieldTy::Float),
+                        Value::Int(_)   => Some(super::value::FlatFieldTy::Int),
+                        _ => None,
+                    }?;
+                    Some((name.clone(), fty))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            flds.sort_by(|a, b| a.0.cmp(&b.0));
+            flds
+        };
+        if fields_sorted.is_empty() {
+            return None;
+        }
+        let stride = fields_sorted.len() * 8;
+        let mut data: Vec<u8> = Vec::with_capacity(items.len() * stride);
+
+        for item in items {
+            let inst_rc = match item {
+                Value::Instance(rc) => rc.clone(),
+                _ => return None,
+            };
+            let inst = inst_rc.borrow();
+            if inst.class.name != class_name {
+                return None;
+            }
+            for (field_name, field_ty) in &fields_sorted {
+                match inst.fields.get(field_name) {
+                    Some((Value::Float(f), _)) if *field_ty == super::value::FlatFieldTy::Float => {
+                        data.extend_from_slice(&f.to_le_bytes());
+                    }
+                    Some((Value::Int(n), _)) if *field_ty == super::value::FlatFieldTy::Int => {
+                        data.extend_from_slice(&n.to_le_bytes());
+                    }
+                    _ => return None,
+                }
+            }
+        }
+
+        let layout = super::value::FlatLayout {
+            class_name,
+            fields: fields_sorted,
+            stride,
+            class,
+        };
+        Some(Value::FrozenList {
+            data: Rc::new(data),
+            layout: Rc::new(layout),
+            len: items.len(),
+        })
+    }
+
     pub(super) fn freeze_instance(inst_rc: &Rc<RefCell<InstanceData>>) {
         let mut inst = inst_rc.borrow_mut();
         inst.immutable = true;
@@ -128,16 +200,42 @@ impl Interpreter {
     /// インスタンスの場合: `__freeze__` メソッドが定義されていれば呼び出し、その後 `freeze_instance` を実行する。
     /// その他の型: 現時点では何もしない（将来の拡張用）。
     pub(super) fn apply_freeze_to_value(&mut self, val: &Value) -> Result<(), String> {
-        if let Value::Instance(ref inst_rc) = val {
-            let class = inst_rc.borrow().class.clone();
-            if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
-                if overloads.len() == 1 {
-                    self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__")?;
-                } else {
-                    self.dispatch_overload(overloads, &[], Some(val.clone()))?;
+        match val {
+            Value::Instance(ref inst_rc) => {
+                let class = inst_rc.borrow().class.clone();
+                if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
+                    if overloads.len() == 1 {
+                        self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__")?;
+                    } else {
+                        self.dispatch_overload(overloads, &[], Some(val.clone()))?;
+                    }
+                }
+                Self::freeze_instance(inst_rc);
+            }
+            Value::List(ref rc) => {
+                let items = rc.borrow().clone();
+                for item in &items {
+                    self.apply_freeze_to_value(item)?;
                 }
             }
-            Self::freeze_instance(inst_rc);
+            Value::Set(ref rc) => {
+                let items = rc.borrow().clone();
+                for item in &items {
+                    self.apply_freeze_to_value(item)?;
+                }
+            }
+            Value::Dict(ref rc) => {
+                let vals = rc.borrow().all_items();
+                for v in &vals {
+                    self.apply_freeze_to_value(v)?;
+                }
+            }
+            Value::Tuple(ref td) => {
+                for item in td.all_values() {
+                    self.apply_freeze_to_value(item)?;
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -287,6 +385,39 @@ impl Interpreter {
                 Err(format!(
                     "AttributeError: 'list' object has no method '{method_name}'"
                 ))
+            }
+            Value::FrozenList { ref data, ref layout, len } => {
+                match method_name {
+                    "__iter__" => {
+                        if !args.is_empty() {
+                            return Err("TypeError: fixed_list.__iter__() takes no arguments".to_string());
+                        }
+                        let values = (0..*len).map(|i| layout.reconstruct_item(data, i)).collect();
+                        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                            values,
+                            index: 0,
+                        }))))
+                    }
+                    "__contains__" => {
+                        let evaled = self.eval_call_args(args)?;
+                        if evaled.len() != 1 {
+                            return Err("TypeError: fixed_list.__contains__() takes exactly 1 argument".to_string());
+                        }
+                        let needle = &evaled[0].1;
+                        let found = (0..*len)
+                            .map(|i| layout.reconstruct_item(data, i))
+                            .any(|v| self.values_eq(&v, needle));
+                        Ok(Value::Bool(found))
+                    }
+                    // Mutating methods explicitly rejected
+                    "append" | "pop" | "sort" | "reverse" | "clear" | "extend"
+                    | "insert" | "remove" => Err(format!(
+                        "TypeError: 'fixed_list' is immutable — '{method_name}' is not allowed"
+                    )),
+                    _ => Err(format!(
+                        "AttributeError: 'fixed_list' object has no method '{method_name}'"
+                    )),
+                }
             }
             Value::Str(s) => self.eval_str_method(s.clone(), method_name, args),
             Value::Instance(inst_rc) => {

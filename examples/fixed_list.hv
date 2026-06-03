@@ -1,0 +1,47 @@
+# fixed_list.hv — demonstrates the fixed_list type and list_like trait.
+#
+# fixed_list[T] is a read-only flat-memory list created by casting list[T].
+# Both list and fixed_list implement the list_like trait.
+
+class Vec2:
+    mut x: float
+    mut y: float
+
+    fn __init__(mut self, x: float, y: float) -> None:
+        self.x = x
+        self.y = y
+
+# A function that accepts either list or fixed_list via list_like trait
+fn sum_x(items: list_like[Vec2]) -> float:
+    mut total = 0.0
+    for v in items:
+        total += v.x
+    return total
+
+# Build a mutable list
+mut pts: list[Vec2] = [Vec2(1.0, 2.0), Vec2(3.0, 4.0), Vec2(5.0, 6.0)]
+print("sum_x(pts) =", sum_x(pts))   # 9.0
+
+# Cast list => fixed_list  (uses flat conversion: fields in alpha order x, y)
+let fl: fixed_list[Vec2] = pts => fixed_list[Vec2]
+print("sum_x(fl) =", sum_x(fl))     # 9.0
+
+# Subscript access
+let first = fl[0]
+print("fl[0].x =", first.x)         # 1.0
+
+# Membership check
+let v3 = Vec2(3.0, 4.0)
+# in operator works via __contains__
+print("fl[1].y =", fl[1].y)             # 4.0
+
+# Cast back fixed_list => list
+let back: list[Vec2] = fl => list[Vec2]
+print("len(back) =", len(back))          # 3
+
+# Original list is unaffected
+print("len(pts) =", len(pts))       # 3
+
+# Iteration
+for p in fl:
+    print(p.x, p.y)

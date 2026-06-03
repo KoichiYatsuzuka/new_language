@@ -2,6 +2,16 @@ new_type Index: int
 new_type Size: int
 new_type path: str
 
+class fixed_list[T](list_like[T]):
+    fn __iter__(self) -> Generatable[T]:
+        ...
+    fn __getitem__(self, idx: int) -> T:
+        ...
+    fn __contains__(self, item: T) -> bool:
+        ...
+    fn __len__(self) -> int:
+        ...
+
 trait Error:
     let message: str
     mut code_context: str = ""

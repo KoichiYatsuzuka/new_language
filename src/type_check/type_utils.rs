@@ -29,10 +29,29 @@ impl TypeChecker {
                 _ => false,
             };
         }
+        // list_like accepts both list and fixed_list
+        let is_list_like = |t: &InferredType| matches!(
+            t, InferredType::List | InferredType::ListOf(_)
+              | InferredType::FixedList | InferredType::FixedListOf(_)
+        );
         match (arg_ty, expected) {
+            // list compatibility
             (InferredType::ListOf(_), InferredType::List) => return true,
             (InferredType::List, InferredType::ListOf(_)) => return true,
             (InferredType::ListOf(a), InferredType::ListOf(e)) => return self.type_matches(a, e),
+            // fixed_list compatibility
+            (InferredType::FixedListOf(_), InferredType::FixedList) => return true,
+            (InferredType::FixedList, InferredType::FixedListOf(_)) => return true,
+            (InferredType::FixedListOf(a), InferredType::FixedListOf(e)) => return self.type_matches(a, e),
+            // list_like accepts list or fixed_list (with or without inner type)
+            (a, InferredType::ListLike) if is_list_like(a) => return true,
+            (a, InferredType::ListLikeOf(e)) if is_list_like(a) => {
+                let a_inner = match a {
+                    InferredType::ListOf(i) | InferredType::FixedListOf(i) => Some(i.as_ref()),
+                    _ => None,
+                };
+                return a_inner.map_or(true, |ai| self.type_matches(ai, e));
+            }
             (InferredType::SetOf(_), InferredType::Set) => return true,
             (InferredType::Set, InferredType::SetOf(_)) => return true,
             (InferredType::SetOf(a), InferredType::SetOf(e)) => return self.type_matches(a, e),

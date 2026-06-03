@@ -1,0 +1,47 @@
+# flat_bench.hv — benchmark: list[Particle] vs fixed_list[Particle] iteration.
+#
+# 1. cargo run --release -- --compile examples/flat_bench_module.hv
+# 2. cargo run --release -- examples/flat_bench.hv
+
+import[py-int] time
+from flat_bench_module import Particle
+from flat_bench_module import compute_mut
+from flat_bench_module import compute_frozen
+
+let N    = 50000    # particles per list
+let REPS = 500      # repetitions  → 25 M element-accesses per path
+
+# ── Build mutable particle list (loop_yield) ─────────────────────────────────
+mut pts_mut = for i in range(N)->list[Particle]:
+    let fi = float(i)
+    loop_yield Particle(fi * 0.001, fi * 0.002, fi * 0.003, 1.0 + fi * 0.0001)
+
+# ── Baseline: mutable list — compiled code uses CB_ITER_FROM / CB_ITER_NEXT ──
+let t0 = time.time()
+mut r0 = 0.0
+mut k = 0
+while k < REPS:
+    r0 = compute_mut(pts_mut)
+    k += 1
+let t1 = time.time()
+let elapsed_mut = t1 - t0
+print("mutable  list: " + str(elapsed_mut) + " s   (result=" + str(r0) + ")")
+
+# ── Cast list => fixed_list (flat bytes, zero callbacks in compiled hot loop) ─
+mut pts_src = for j in range(N)->list[Particle]:
+    let fj = float(j)
+    loop_yield Particle(fj * 0.001, fj * 0.002, fj * 0.003, 1.0 + fj * 0.0001)
+let pts_fixed = pts_src => fixed_list[Particle]
+
+let t2 = time.time()
+mut r1 = 0.0
+mut m = 0
+while m < REPS:
+    r1 = compute_frozen(pts_fixed)
+    m += 1
+let t3 = time.time()
+let elapsed_fixed = t3 - t2
+print("fixed_list:    " + str(elapsed_fixed) + " s   (result=" + str(r1) + ")")
+
+let speedup = elapsed_mut / elapsed_fixed
+print("speedup: " + str(speedup) + "x")

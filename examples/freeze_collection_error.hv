@@ -1,0 +1,6 @@
+class Foo:
+    fn __freeze__(mut self) -> None:
+        pass
+
+mut f = Foo()
+f.__freeze__()   # StaticTypeError: __freeze__ cannot be called directly

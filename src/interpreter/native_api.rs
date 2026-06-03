@@ -413,6 +413,14 @@ pub struct HvCallbacks {
     /// Read an int-typed field from an object; returns the raw i64 without allocating
     /// an arena handle.  Faster than CB_GET_ATTR + CB_TO_INT for typed class fields.
     pub get_int_field: extern "C" fn(i64, *const u8, i32) -> i64,
+
+    // ── Flat frozen-list access callbacks (fields 35-36) ─────────────────────
+    /// Return the raw data pointer of a FrozenList as i64 (cast via `inttoptr` in LLVM).
+    /// Returns 0 if the handle is not a FrozenList.
+    pub flat_data_ptr: extern "C" fn(i64) -> i64,
+    /// Return the element count of a FrozenList.
+    /// Returns 0 if the handle is not a FrozenList.
+    pub flat_len: extern "C" fn(i64) -> i64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
@@ -718,6 +726,9 @@ extern "C" fn hv_iter_from(obj_h: i64) -> i64 {
     let obj = clone_value_at(obj_h);
     let items: Vec<Value> = match obj {
         Value::List(l) => l.borrow().clone(),
+        Value::FrozenList { ref data, ref layout, len } => {
+            (0..len).map(|i| layout.reconstruct_item(data, i)).collect()
+        }
         Value::Tuple(t) => t.all_values().to_vec(),
         Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
         Value::Dict(d) => d.borrow().all_keys(),
@@ -790,7 +801,8 @@ extern "C" fn hv_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 
             Value::Str(_) => name == "str",
             Value::Bool(_) => name == "bool",
             Value::None => name == "None" || name == "NoneType",
-            Value::List(_) => name == "list",
+            Value::List(_) => name == "list" || name == "list_like",
+            Value::FrozenList { .. } => name == "fixed_list" || name == "list_like",
             Value::Dict(_) => name == "dict",
             Value::Tuple(_) => name == "tuple",
             _ => false,
@@ -1112,6 +1124,26 @@ extern "C" fn hv_get_int_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -
     }
 }
 
+/// FrozenList ハンドルのフラットデータバッファの生ポインタを i64 として返す C コールバック。
+/// FrozenList 以外のハンドルでは 0 を返す。コンパイル済みコードは `inttoptr` で ptr に変換する。
+extern "C" fn hv_flat_data_ptr(h: i64) -> i64 {
+    if has_error() { return 0; }
+    match clone_value_at(h) {
+        Value::FrozenList { data, .. } => data.as_ptr() as i64,
+        _ => 0,
+    }
+}
+
+/// FrozenList ハンドルの要素数を i64 として返す C コールバック。
+/// FrozenList 以外のハンドルでは 0 を返す。
+extern "C" fn hv_flat_len(h: i64) -> i64 {
+    if has_error() { return 0; }
+    match clone_value_at(h) {
+        Value::FrozenList { len, .. } => len as i64,
+        _ => 0,
+    }
+}
+
 // ── Static callbacks instance ─────────────────────────────────────────────────
 
 static CALLBACKS: HvCallbacks = HvCallbacks {
@@ -1150,4 +1182,6 @@ static CALLBACKS: HvCallbacks = HvCallbacks {
     call_method: hv_call_method,
     get_float_field: hv_get_float_field,
     get_int_field: hv_get_int_field,
+    flat_data_ptr: hv_flat_data_ptr,
+    flat_len: hv_flat_len,
 };

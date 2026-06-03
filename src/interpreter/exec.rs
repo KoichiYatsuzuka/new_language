@@ -486,6 +486,10 @@ impl Interpreter {
                 values: items.borrow().clone(),
                 index: 0,
             }))),
+            Value::FrozenList { ref data, ref layout, len } => {
+                let values = (0..len).map(|i| layout.reconstruct_item(data, i)).collect();
+                Value::Generator(Rc::new(RefCell::new(GeneratorState { values, index: 0 })))
+            }
             Value::Str(s) => {
                 let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
                 Value::Generator(Rc::new(RefCell::new(GeneratorState {
@@ -1128,18 +1132,54 @@ impl Interpreter {
         }
         let val = var.get_value();
 
-        if let Value::Instance(ref inst_rc) = val {
-            let class = inst_rc.borrow().class.clone();
-            if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
-                if overloads.len() == 1 {
-                    self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__")?;
-                } else {
-                    self.dispatch_overload(overloads, &[], Some(val.clone()))?;
+        let replacement = match &val {
+            Value::Instance(ref inst_rc) => {
+                let class = inst_rc.borrow().class.clone();
+                if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
+                    if overloads.len() == 1 {
+                        self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__")?;
+                    } else {
+                        self.dispatch_overload(overloads, &[], Some(val.clone()))?;
+                    }
                 }
+                Self::freeze_instance(inst_rc);
+                None
             }
-            Self::freeze_instance(inst_rc);
-        }
+            Value::List(ref rc) => {
+                let items = rc.borrow().clone();
+                for item in &items {
+                    self.apply_freeze_to_value(item)?;
+                }
+                None
+            }
+            Value::Set(ref rc) => {
+                let items = rc.borrow().clone();
+                for item in &items {
+                    self.apply_freeze_to_value(item)?;
+                }
+                None
+            }
+            Value::Dict(ref rc) => {
+                let vals = rc.borrow().all_items();
+                for v in &vals {
+                    self.apply_freeze_to_value(v)?;
+                }
+                None
+            }
+            Value::Tuple(ref td) => {
+                for item in td.all_values() {
+                    self.apply_freeze_to_value(item)?;
+                }
+                None
+            }
+            _ => None,
+        };
 
+        // If a flat conversion was produced, update the variable value before sealing it.
+        if let Some(flat) = replacement {
+            self.assign_var(name, flat)
+                .map_err(|e| format!("{span}: {e}"))?;
+        }
         self.make_var_immutable(name);
         Ok(ExecResult::Normal)
     }

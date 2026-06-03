@@ -25,7 +25,8 @@
       "Bash(nvm list *)",
       "PowerShell(cmd /c \"`\"C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\2019\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat`\" && cd /d `\"d:\\\\repository\\\\new_language\\\\examples\\\\test_modules`\" && cl /LD /EHsc /nologo point.cpp\" 2>&1)",
       "PowerShell(.\\\\vscode-extension\\\\make-vsix.ps1)",
-      "Bash(npm run compile)"
+      "Bash(npm run compile)",
+      "Bash(grep \"src\\\\\\\\\")"
     ]
   }
 }

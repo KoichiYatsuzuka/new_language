@@ -72,6 +72,10 @@ pub enum InferredType {
     None,
     List,
     ListOf(Box<InferredType>),
+    FixedList,
+    FixedListOf(Box<InferredType>),
+    ListLike,
+    ListLikeOf(Box<InferredType>),
     TypeVal,
     TypeValOf(Box<InferredType>),
     SelfType,
@@ -116,6 +120,18 @@ impl InferredType {
             return Some(match InferredType::from_ann(inner.trim()) {
                 Some(t) => Self::ListOf(Box::new(t)),
                 None => Self::List,
+            });
+        }
+        if let Some(inner) = ann.strip_prefix("fixed_list[").and_then(|s| s.strip_suffix(']')) {
+            return Some(match InferredType::from_ann(inner.trim()) {
+                Some(t) => Self::FixedListOf(Box::new(t)),
+                None => Self::FixedList,
+            });
+        }
+        if let Some(inner) = ann.strip_prefix("list_like[").and_then(|s| s.strip_suffix(']')) {
+            return Some(match InferredType::from_ann(inner.trim()) {
+                Some(t) => Self::ListLikeOf(Box::new(t)),
+                None => Self::ListLike,
             });
         }
         if let Some(inner) = ann.strip_prefix("set[").and_then(|s| s.strip_suffix(']')) {
@@ -171,6 +187,8 @@ impl InferredType {
             "bool" => Some(Self::Bool),
             "None" => Some(Self::None),
             "list" => Some(Self::List),
+            "fixed_list" => Some(Self::FixedList),
+            "list_like" => Some(Self::ListLike),
             "dict" => Some(Self::Dict),
             "set" => Some(Self::Set),
             "type" => Some(Self::TypeVal),
@@ -290,6 +308,10 @@ impl std::fmt::Display for InferredType {
             Self::None => write!(f, "None"),
             Self::List => write!(f, "list"),
             Self::ListOf(t) => write!(f, "list[{t}]"),
+            Self::FixedList => write!(f, "fixed_list"),
+            Self::FixedListOf(t) => write!(f, "fixed_list[{t}]"),
+            Self::ListLike => write!(f, "list_like"),
+            Self::ListLikeOf(t) => write!(f, "list_like[{t}]"),
             Self::Dict => write!(f, "dict"),
             Self::DictOf(k, v) => write!(f, "dict[{k},{v}]"),
             Self::Set => write!(f, "set"),

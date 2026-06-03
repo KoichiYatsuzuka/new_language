@@ -266,6 +266,22 @@ impl Parser {
             self.eat(&Token::RBracket)?;
             return Ok(format!("list[{elem}]"));
         }
+        // fixed_list[T] — preserve element type
+        if base == "fixed_list" && *self.current() == Token::LBracket {
+            self.advance();
+            let elem = self.parse_type_expr()?;
+            if *self.current() == Token::Comma { self.advance(); }
+            self.eat(&Token::RBracket)?;
+            return Ok(format!("fixed_list[{elem}]"));
+        }
+        // list_like[T] — preserve element type
+        if base == "list_like" && *self.current() == Token::LBracket {
+            self.advance();
+            let elem = self.parse_type_expr()?;
+            if *self.current() == Token::Comma { self.advance(); }
+            self.eat(&Token::RBracket)?;
+            return Ok(format!("list_like[{elem}]"));
+        }
         // set[T] — preserve element type
         if base == "set" && *self.current() == Token::LBracket {
             self.advance(); // consume '['

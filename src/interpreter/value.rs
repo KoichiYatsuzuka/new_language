@@ -578,6 +578,56 @@ impl fmt::Debug for NativeLibWrapper {
 }
 
 // ---------------------------------------------------------------------------
+// Flat-frozen list layout
+// ---------------------------------------------------------------------------
+
+/// フラットリストの各フィールドの型（int または float のみ対象）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FlatFieldTy {
+    Int,
+    Float,
+}
+
+/// FrozenList の平坦メモリレイアウト記述。
+/// `fields` はアルファベット順。全フィールドが int または float のクラスにのみ適用される。
+#[derive(Debug, Clone)]
+pub struct FlatLayout {
+    pub class_name: String,
+    /// (フィールド名, 型) のアルファベット順リスト。
+    pub fields: Vec<(String, FlatFieldTy)>,
+    /// 要素1つあたりのバイト数 = `fields.len() * 8`。
+    pub stride: usize,
+    /// 再構成用クラス定義。
+    pub class: Rc<ClassValue>,
+}
+
+impl FlatLayout {
+    /// フラット配列インデックス `idx` の要素を `Value::Instance` として再構成する。
+    pub fn reconstruct_item(&self, data: &[u8], idx: usize) -> Value {
+        let mut fields: HashMap<String, (Value, bool)> = HashMap::new();
+        for (fi, (field_name, field_ty)) in self.fields.iter().enumerate() {
+            let offset = idx * self.stride + fi * 8;
+            let val = match field_ty {
+                FlatFieldTy::Float => {
+                    let bytes: [u8; 8] = data[offset..offset + 8].try_into().unwrap_or([0u8; 8]);
+                    Value::Float(f64::from_le_bytes(bytes))
+                }
+                FlatFieldTy::Int => {
+                    let bytes: [u8; 8] = data[offset..offset + 8].try_into().unwrap_or([0u8; 8]);
+                    Value::Int(i64::from_le_bytes(bytes))
+                }
+            };
+            fields.insert(field_name.clone(), (val, false));
+        }
+        Value::Instance(Rc::new(RefCell::new(InstanceData {
+            class: self.class.clone(),
+            fields,
+            immutable: true,
+        })))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Value enum
 // ---------------------------------------------------------------------------
 
@@ -607,6 +657,9 @@ pub enum Value {
     Bool(bool),
     None,
     List(Rc<RefCell<Vec<Value>>>),
+    /// freeze で変換されたフラット固定長リスト。全要素が同一クラスかつ全フィールドが int/float。
+    /// `data` は平坦バイト列（各要素は stride バイト、フィールドはアルファベット順 little-endian）。
+    FrozenList { data: Rc<Vec<u8>>, layout: Rc<FlatLayout>, len: usize },
     Function(Rc<FnValue>),
     /// 同スコープに同名で2つ以上のオーバーロードが定義された関数値。
     OverloadedFn(Vec<Rc<FnValue>>),
@@ -762,6 +815,16 @@ impl Value {
                 let v = rc.borrow().iter().map(|x| x.deep_clone()).collect();
                 Value::List(Rc::new(RefCell::new(v)))
             }
+            Value::FrozenList { data, layout, len } => Value::FrozenList {
+                data: Rc::new((**data).clone()),
+                layout: Rc::new(FlatLayout {
+                    class_name: layout.class_name.clone(),
+                    fields: layout.fields.clone(),
+                    stride: layout.stride,
+                    class: Rc::new(layout.class.deep_clone()),
+                }),
+                len: *len,
+            },
             Value::Set(rc) => {
                 let v = rc.borrow().iter().map(|x| x.deep_clone()).collect();
                 Value::Set(Rc::new(RefCell::new(v)))

@@ -9,6 +9,24 @@ use super::TypeChecker;
 impl TypeChecker {
     /// 関数呼び出し式の型を推論し、引数の型・個数・Self 型パラメータを検査する。
     pub(super) fn infer_call(&mut self, func: &Expr, args: &[CallArg]) -> InferredType {
+        // __freeze__ may only be invoked via the `freeze` keyword, never as a direct call.
+        let freeze_span = match func {
+            Expr::Attr { attr, span, .. } if attr == "__freeze__" => Some(span.clone()),
+            Expr::Ident(name) if name == "__freeze__" => None,
+            _ => {
+                // Not a __freeze__ call — proceed normally.
+                #[allow(clippy::needless_return)]
+                return self.infer_call_inner(func, args);
+            }
+        };
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::DirectFreezeCall,
+            span: freeze_span,
+        });
+        return InferredType::Unresolved;
+    }
+
+    fn infer_call_inner(&mut self, func: &Expr, args: &[CallArg]) -> InferredType {
         let method_call_info: Option<(String, String)> =
             if let Expr::Attr { object, attr, span } = func {
                 let obj_ty = match object.as_ref() {

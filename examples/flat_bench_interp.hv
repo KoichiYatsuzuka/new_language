@@ -1,0 +1,71 @@
+# flat_bench_interp.hv — same benchmark run through the INTERPRETER (no compiled module).
+# Compares mutable list vs frozen list iteration in the tree-walk interpreter.
+#
+# Run: cargo run --release -- examples/flat_bench_interp.hv
+
+import[py-int] time
+
+class Particle:
+    mut x: float
+    mut y: float
+    mut z: float
+    mut mass: float
+
+    fn __init__(mut self, x: float, y: float, z: float, mass: float) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+        self.mass = mass
+
+fn compute_mut(mut pts: list[Particle]) -> float:
+    mut total = 0.0
+    for p in pts:
+        let d2 = p.x * p.x + p.y * p.y + p.z * p.z
+        total += p.mass * d2
+    return total
+
+fn compute_frozen(let pts: fixed_list[Particle]) -> float:
+    mut total = 0.0
+    for p in pts:
+        let d2 = p.x * p.x + p.y * p.y + p.z * p.z
+        total += p.mass * d2
+    return total
+
+let N    = 5000
+let REPS = 200
+
+# Build mutable list
+mut pts_mut = for i in range(N)->list[Particle]:
+    let fi = float(i)
+    loop_yield Particle(fi * 0.001, fi * 0.002, fi * 0.003, 1.0 + fi * 0.0001)
+
+# Mutable list path (interpreter)
+let t0 = time.time()
+mut r0 = 0.0
+mut k = 0
+while k < REPS:
+    r0 = compute_mut(pts_mut)
+    k += 1
+let t1 = time.time()
+let elapsed_mut = t1 - t0
+print("interpreted mutable  list: " + str(elapsed_mut) + " s   (result=" + str(r0) + ")")
+
+# Build frozen list
+mut pts_raw = for j in range(N)->list[Particle]:
+    let fj = float(j)
+    loop_yield Particle(fj * 0.001, fj * 0.002, fj * 0.003, 1.0 + fj * 0.0001)
+let pts_frozen = pts_raw => fixed_list[Particle]
+
+# Frozen list path (interpreter)
+let t2 = time.time()
+mut r1 = 0.0
+mut m = 0
+while m < REPS:
+    r1 = compute_frozen(pts_frozen)
+    m += 1
+let t3 = time.time()
+let elapsed_frozen = t3 - t2
+print("interpreted frozen   list: " + str(elapsed_frozen) + " s   (result=" + str(r1) + ")")
+
+let ratio = elapsed_frozen / elapsed_mut
+print("frozen / mutable ratio: " + str(ratio) + "x  (>1.0 = frozen is slower in interpreter)")

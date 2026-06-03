@@ -1,0 +1,28 @@
+class Point:
+    mut x: float
+    mut y: float
+
+    fn __init__(mut self, x: float, y: float) -> None:
+        self.x = x
+        self.y = y
+
+    fn __freeze__(mut self) -> None:
+        print("Point(" + str(self.x) + ", " + str(self.y) + ") frozen")
+
+# freeze on a list: __freeze__ is called on each contained instance
+mut pts: list[Point] = [Point(1.0, 2.0), Point(3.0, 4.0), Point(5.0, 6.0)]
+freeze pts
+
+# freeze on a dict: __freeze__ is called on each value instance
+mut d: dict[str, Point] = {"a": Point(0.0, 0.0), "b": Point(1.0, 1.0)}
+freeze d
+
+# freeze on a tuple containing instances
+mut t = (Point(9.0, 9.0),)
+freeze t
+
+# freeze on a set of primitives (no __freeze__ to call, no-op on elements)
+mut s: set[int] = {10, 20, 30}
+freeze s
+
+print("done")
