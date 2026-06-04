@@ -58,6 +58,8 @@ mod templates;
 #[path = "interpreter/tests.rs"]
 mod tests;
 
+#[path = "interpreter/ast_value.rs"]
+pub(self) mod ast_value;
 #[path = "interpreter/built_in_types.rs"]
 mod built_in_types;
 

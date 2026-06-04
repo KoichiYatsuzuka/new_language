@@ -1,10 +1,9 @@
 # converter.hv — Havakyrie-to-Python code generator.
 #
-# Imported by __init__.hv after sys.path has been extended so that
-# import[py-int] impl_python.* resolves correctly.
+# Standalone: requires only the Havakyrie runtime (no Python dependency).
+# Uses the built-in parse_hv() to parse source into AST namespaces.
 
 import node_utils as nu
-import[py-int] impl_python.parser as hv_parser
 
 class HvToPyConverter:
     mut _needs_copy: bool
@@ -106,7 +105,7 @@ class HvToPyConverter:
     fn convert_file(mut self, path: str) -> str:
         let f = open(path, FileOpenMode.read)
         let source: str = f.read()
-        let stmts = hv_parser.parse(source, path)
+        let stmts = parse_hv(source, path)
         return self.convert_program(stmts)
 
     fn convert_program(mut self, stmts) -> str:
@@ -361,8 +360,11 @@ class HvToPyConverter:
                 let pexpr = pattern.expr
                 let pet: str = nu.get_type_name(pexpr)
                 if pet == "ExprIdent" and pexpr.name == "_":
-                    # wildcard
-                    out = out + ind + "else:\n"
+                    # wildcard — use else: if there was a preceding if/elif, else if True:
+                    if first:
+                        out = out + ind + "if True:  # wildcard\n"
+                    else:
+                        out = out + ind + "else:\n"
                     let bc: str = self.conv_stmts(body, indent + 1, asgn, "", False)
                     if len(bc) == 0:
                         out = out + self.ind(indent + 1) + "pass\n"
@@ -875,7 +877,10 @@ class HvToPyConverter:
                 let pexpr = pattern.expr
                 let pet: str = nu.get_type_name(pexpr)
                 if pet == "ExprIdent" and pexpr.name == "_":
-                    out = out + ind + "else:\n"
+                    if first:
+                        out = out + ind + "if True:  # wildcard\n"
+                    else:
+                        out = out + ind + "else:\n"
                     let bc: str = self.conv_stmts(body, indent + 1, name, "", False)
                     if len(bc) == 0:
                         out = out + self.ind(indent + 1) + "pass\n"
@@ -952,7 +957,8 @@ class HvToPyConverter:
             return str(expr.value)
         elif t == "ExprStr":
             let raw: str = expr.value
-            return "'" + raw.replace("\\", "\\\\").replace("'", "\\'") + "'"
+            let escaped: str = raw.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+            return "'" + escaped + "'"
         elif t == "ExprBool":
             let bv: bool = expr.value
             if bv:

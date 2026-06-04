@@ -864,6 +864,79 @@ impl Interpreter {
                     },
                 )))))
             }
+            "getenv" => {
+                if args.is_empty() || args.len() > 2 {
+                    return Some(Err(
+                        "TypeError: getenv() takes 1 or 2 arguments (name[, default])".to_string(),
+                    ));
+                }
+                let name = match self.eval(args[0].expr()) {
+                    Ok(Value::Str(s)) => s,
+                    Ok(other) => {
+                        return Some(Err(format!(
+                            "TypeError: getenv() name must be str, not '{}'",
+                            self.type_name(&other)
+                        )))
+                    }
+                    Err(e) => return Some(Err(e)),
+                };
+                let default = if args.len() > 1 {
+                    match self.eval(args[1].expr()) {
+                        Ok(Value::Str(s)) => s,
+                        Ok(other) => {
+                            return Some(Err(format!(
+                                "TypeError: getenv() default must be str, not '{}'",
+                                self.type_name(&other)
+                            )))
+                        }
+                        Err(e) => return Some(Err(e)),
+                    }
+                } else {
+                    String::new()
+                };
+                Some(Ok(Value::Str(std::env::var(&name).unwrap_or(default))))
+            }
+            "parse_hv" => {
+                if args.is_empty() || args.len() > 2 {
+                    return Some(Err(
+                        "TypeError: parse_hv() takes 1 or 2 arguments (source[, path])".to_string(),
+                    ));
+                }
+                let source = match self.eval(args[0].expr()) {
+                    Ok(Value::Str(s)) => s,
+                    Ok(other) => {
+                        return Some(Err(format!(
+                            "TypeError: parse_hv() source must be str, not '{}'",
+                            self.type_name(&other)
+                        )))
+                    }
+                    Err(e) => return Some(Err(e)),
+                };
+                let path = if args.len() > 1 {
+                    match self.eval(args[1].expr()) {
+                        Ok(Value::Str(s)) => s,
+                        Ok(other) => {
+                            return Some(Err(format!(
+                                "TypeError: parse_hv() path must be str, not '{}'",
+                                self.type_name(&other)
+                            )))
+                        }
+                        Err(e) => return Some(Err(e)),
+                    }
+                } else {
+                    String::new()
+                };
+                let source = source.strip_prefix('\u{FEFF}').map(str::to_string).unwrap_or(source);
+                let tokens = crate::lexer::Lexer::new(&source, &*path).tokenize();
+                let source_dir = std::path::Path::new(&path)
+                    .parent()
+                    .map(|p| p.to_path_buf());
+                let stmts = match crate::parser::Parser::new(tokens, source_dir).parse_program() {
+                    Ok(s) => s,
+                    Err(e) => return Some(Err(format!("ParseError in parse_hv: {e}"))),
+                };
+                Some(Ok(super::ast_value::stmts_to_value(&stmts)))
+            }
             _ => None,
         }
     }

@@ -1,32 +1,29 @@
 # node_utils.hv — AST helper utilities for the .hv → .py converter.
 #
-# All functions accept Python AST nodes (dataclass instances that arrive via
-# import[py-int]) and return plain Havakyrie values.
-# No Python-module imports are needed: attribute access on PyObjects is enough.
+# All functions accept Havakyrie namespace objects produced by parse_hv().
+# The __type__ field is the node-type discriminator (set by ast_value.rs).
 
-# Return the Python class name of any AST node, e.g. "StmtLet", "ExprInt".
+# Return the type name of any AST node, e.g. "StmtLet", "ExprInt".
 fn get_type_name(node) -> str:
-    return node.__class__.__name__
+    return node.__type__
 
-# Return the Python operator string for a BinOp enum value.
-# Delegates to the enum's own .as_str() method.
+# Return the operator string for a BinOp — the value IS already the string.
 fn get_binop_str(op) -> str:
-    return op.as_str()
+    return op
 
-# Return the Python operator prefix for a UnaryOp enum value.
+# Return the operator prefix string for a UnaryOp name ("NEG", "NOT", "BIT_NOT").
 fn get_unary_str(op) -> str:
-    let name: str = op.name   # "NEG", "NOT", or "BIT_NOT"
-    if name == "NEG":
+    if op == "NEG":
         return "-"
-    elif name == "NOT":
+    elif op == "NOT":
         return "not "
-    elif name == "BIT_NOT":
+    elif op == "BIT_NOT":
         return "~"
     return ""
 
 # Return "let", "mut", "bare", or "wildcard" for a TupleTarget node.
 fn tuple_target_kind(target) -> str:
-    let t: str = target.__class__.__name__
+    let t: str = target.__type__
     if t == "TupleTargetLet":
         return "let"
     elif t == "TupleTargetMut":
@@ -41,7 +38,7 @@ fn tuple_target_kind(target) -> str:
 # Does NOT recurse into nested fn / class / trait definitions.
 fn has_loop_yield(stmts) -> bool:
     for stmt in stmts:
-        let t: str = stmt.__class__.__name__
+        let t: str = stmt.__type__
         if t == "StmtLoopYield":
             return True
         if t == "StmtFnDef" or t == "StmtGenDef" or t == "StmtClassDef" or t == "StmtTraitDef":
@@ -79,7 +76,7 @@ fn has_loop_yield(stmts) -> bool:
 # Return True when an IfExpr can be emitted as a Python ternary:
 #   exactly one branch with a single block_return, and an else with a single block_return.
 fn is_simple_if_expr(expr) -> bool:
-    let t: str = expr.__class__.__name__
+    let t: str = expr.__type__
     if t != "ExprIfExpr":
         return False
     let branches = expr.branches
@@ -96,7 +93,7 @@ fn is_simple_if_expr(expr) -> bool:
     if body_len != 1:
         return False
     let st = body[0]
-    if st.__class__.__name__ != "StmtBlockReturn":
+    if st.__type__ != "StmtBlockReturn":
         return False
     let eb = expr.else_body
     if eb == None:
@@ -107,6 +104,6 @@ fn is_simple_if_expr(expr) -> bool:
     if eb_len != 1:
         return False
     let est = eb[0]
-    if est.__class__.__name__ != "StmtBlockReturn":
+    if est.__type__ != "StmtBlockReturn":
         return False
     return True
