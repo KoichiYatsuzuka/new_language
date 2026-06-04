@@ -359,32 +359,34 @@ function parseTypeAt(line: string, pos: number, out: Set<number>): number {
         pos++;
         while (pos < line.length && line[pos] !== ']') {
             if (',\t '.includes(line[pos])) { pos++; continue; }
-            pos = parseTypeAt(line, pos, out);
+            const newPos = parseTypeAt(line, pos, out);
+            pos = newPos > pos ? newPos : pos + 1;  // always advance to prevent infinite loop
         }
         if (pos < line.length) pos++;
     }
     return pos;
 }
 
-function typeAnnotationPositions(rawLine: string): Set<number> {
+function typeAnnotationPositions(rawLine: string, strRanges: Array<[number, number]>): Set<number> {
     const out = new Set<number>();
     const src = stripComment(rawLine);
+    const inString = (pos: number): boolean => strRanges.some(([s, e]) => pos >= s && pos < e);
     const colonRe = /[A-Za-z_]\w*[ \t]*:(?!=)(?=[ \t]*[A-Za-z_])/g;
     let m: RegExpExecArray | null;
     while ((m = colonRe.exec(src)) !== null) {
-        parseTypeAt(src, m.index + m[0].length, out);
+        if (!inString(m.index)) parseTypeAt(src, m.index + m[0].length, out);
     }
     const arrowRe = /->[ \t]*/g;
     while ((m = arrowRe.exec(src)) !== null) {
-        parseTypeAt(src, m.index + m[0].length, out);
+        if (!inString(m.index)) parseTypeAt(src, m.index + m[0].length, out);
     }
     const isNotRe = /\bis[ \t]+not[ \t]+/g;
     while ((m = isNotRe.exec(src)) !== null) {
-        parseTypeAt(src, m.index + m[0].length, out);
+        if (!inString(m.index)) parseTypeAt(src, m.index + m[0].length, out);
     }
     const isRe = /\bis[ \t]+(?!not\b)/g;
     while ((m = isRe.exec(src)) !== null) {
-        parseTypeAt(src, m.index + m[0].length, out);
+        if (!inString(m.index)) parseTypeAt(src, m.index + m[0].length, out);
     }
     return out;
 }
@@ -1002,7 +1004,7 @@ export async function provideDocumentSemanticTokens(document: vscode.TextDocumen
         const isLiveCode = (col: number): boolean =>
             col < commentStart && !strRanges.some(([s, e]) => col >= s && col < e);
 
-        const typePositions = typeAnnotationPositions(lineText);
+        const typePositions = typeAnnotationPositions(lineText, strRanges);
 
         interface Hit { col: number; len: number; tokenType: number; }
         const hits: Hit[] = [];

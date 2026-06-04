@@ -177,7 +177,7 @@ function wordPos(line, name) {
     return m ? m.index : -1;
 }
 // ── Main ──────────────────────────────────────────────────────────────────────
-function main() {
+async function main() {
     var _a, _b, _c, _d, _e;
     const filePath = process.argv[2];
     if (!filePath) {
@@ -192,11 +192,11 @@ function main() {
     const content = fs.readFileSync(absPath, 'utf8');
     const doc = new MockTextDocument(absPath, content);
     // Run all providers
-    const analysis = analysis_1.DocumentAnalysis.for(doc);
-    const hintsAll = (0, type_infer_1.provideInlayHints)(doc, { start: { line: 0, character: 0 }, end: { line: doc.lineCount, character: 0 } });
-    const semTokens = (0, type_infer_1.provideDocumentSemanticTokens)(doc);
+    const analysis = await analysis_1.DocumentAnalysis.for(doc);
+    const hintsAll = await (0, type_infer_1.provideInlayHints)(doc, { start: { line: 0, character: 0 }, end: { line: doc.lineCount, character: 0 } });
+    const semTokens = await (0, type_infer_1.provideDocumentSemanticTokens)(doc);
     const tokenList = (_a = semTokens.tokenList) !== null && _a !== void 0 ? _a : [];
-    const diagnostics = (0, type_infer_1.provideDiagnostics)(doc);
+    const diagnostics = await (0, type_infer_1.provideDiagnostics)(doc);
     // Group by line
     const hintsByLine = new Map();
     for (const hint of hintsAll) {
@@ -230,7 +230,7 @@ function main() {
         if (nameIdx < 0)
             continue;
         const pos = { line: sym.line, character: nameIdx };
-        const hover = (0, type_infer_1.provideHover)(doc, pos);
+        const hover = await (0, type_infer_1.provideHover)(doc, pos);
         if (!hover)
             continue;
         const hl = extractHoverLines(hover);
@@ -303,7 +303,7 @@ function main() {
         if (nameIdx < 0)
             continue;
         const pos = { line: sym.line, character: nameIdx };
-        const hover = (0, type_infer_1.provideHover)(doc, pos);
+        const hover = await (0, type_infer_1.provideHover)(doc, pos);
         const kindCol = (_e = KIND_COLOR[sym.kind]) !== null && _e !== void 0 ? _e : A.bWhite;
         const location = c(A.gray, `L:${String(sym.line + 1).padStart(4, '0')}`);
         const kind = c(kindCol, sym.kind.padEnd(9));
@@ -336,5 +336,5 @@ function main() {
     }
     process.stdout.write('\n' + sep + '\n\n');
 }
-main();
+main().catch(err => { console.error(err); process.exit(1); });
 //# sourceMappingURL=debug_runner.js.map

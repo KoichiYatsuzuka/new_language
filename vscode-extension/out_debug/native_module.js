@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.loadNativeModuleInfo = exports.parseRustLib = exports.parseTlStub = exports.parseCppClasses = exports.parseCHeader = exports.parseCParam = exports.cTypeToTl = exports.importKindOf = void 0;
-const fs = require("fs");
+const fs_1 = require("fs");
 const path = require("path");
 const builtins_1 = require("./builtins");
 // ===== C++ / native module support =====
@@ -43,7 +43,7 @@ function parseCParam(param, idx) {
     return `${finalName}: ${tlType}`;
 }
 exports.parseCParam = parseCParam;
-function parseCHeader(content, dir = '', _depth = 0) {
+async function parseCHeader(content, dir = '', _depth = 0) {
     const funcs = new Map();
     const sigs = new Map();
     const src = content.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -65,11 +65,13 @@ function parseCHeader(content, dir = '', _depth = 0) {
     if (dir && _depth < 2) {
         const includeRe = /^#include\s+"([^"]+)"/gm;
         let inc;
+        const subPromises = [];
         while ((inc = includeRe.exec(content)) !== null) {
             const incPath = path.join(dir, inc[1]);
-            if (fs.existsSync(incPath)) {
+            subPromises.push((async (p) => {
                 try {
-                    const sub = parseCHeader(fs.readFileSync(incPath, 'utf8'), path.dirname(incPath), _depth + 1);
+                    const subContent = await fs_1.promises.readFile(p, 'utf8');
+                    const sub = await parseCHeader(subContent, path.dirname(p), _depth + 1);
                     for (const [k, v] of sub.funcs)
                         if (!funcs.has(k))
                             funcs.set(k, v);
@@ -81,8 +83,9 @@ function parseCHeader(content, dir = '', _depth = 0) {
                             classes.set(k, v);
                 }
                 catch { /* ignore unreadable sub-headers */ }
-            }
+            })(incPath));
         }
+        await Promise.all(subPromises);
     }
     return { funcs, sigs, docs: new Map(), classes };
 }
@@ -277,23 +280,27 @@ function parseTlStub(content) {
 }
 exports.parseTlStub = parseTlStub;
 /** Walk up from startDir to find the directory containing hv_config.json. */
-function findHvConfigDir(startDir) {
+async function findHvConfigDir(startDir) {
     let current = startDir;
     for (;;) {
-        if (fs.existsSync(path.join(current, 'hv_config.json')))
+        try {
+            await fs_1.promises.access(path.join(current, 'hv_config.json'));
             return current;
-        const parent = path.dirname(current);
-        if (parent === current)
-            return undefined;
-        current = parent;
+        }
+        catch {
+            const parent = path.dirname(current);
+            if (parent === current)
+                return undefined;
+            current = parent;
+        }
     }
 }
-function loadHvConfig(startDir) {
-    const dir = findHvConfigDir(startDir);
+async function loadHvConfig(startDir) {
+    const dir = await findHvConfigDir(startDir);
     if (!dir)
         return undefined;
     try {
-        return JSON.parse(fs.readFileSync(path.join(dir, 'hv_config.json'), 'utf8'));
+        return JSON.parse(await fs_1.promises.readFile(path.join(dir, 'hv_config.json'), 'utf8'));
     }
     catch {
         return undefined;
@@ -442,7 +449,7 @@ function parseRustLib(source) {
 }
 exports.parseRustLib = parseRustLib;
 // ===== loadNativeModuleInfo =====
-function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
+async function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
     var _a, _b;
     const empty = { funcs: new Map(), sigs: new Map(), docs: new Map(), classes: new Map() };
     if (importKindOf(importKind) === 'cpp') {
@@ -454,19 +461,18 @@ function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
         candidates.push(path.join(docDir, ...parts) + '.h');
         candidates.push(path.join(docDir, parts[parts.length - 1] + '.h'));
         for (const hPath of candidates) {
-            if (fs.existsSync(hPath)) {
-                try {
-                    return parseCHeader(fs.readFileSync(hPath, 'utf8'), path.dirname(hPath));
-                }
-                catch { /* ignore */ }
+            try {
+                const content = await fs_1.promises.readFile(hPath, 'utf8');
+                return parseCHeader(content, path.dirname(hPath));
             }
+            catch { /* try next candidate */ }
         }
         return empty;
     }
     // ── import[rs]: parse Rust source via hv_config.json crates_path ──────────
     if (importKindOf(importKind) === 'rs') {
-        const config = loadHvConfig(docDir);
-        const configDir = (_a = findHvConfigDir(docDir)) !== null && _a !== void 0 ? _a : docDir;
+        const config = await loadHvConfig(docDir);
+        const configDir = (_a = await findHvConfigDir(docDir)) !== null && _a !== void 0 ? _a : docDir;
         const rawPaths = (_b = config === null || config === void 0 ? void 0 : config.rust) === null || _b === void 0 ? void 0 : _b.crates_path;
         const cratesPaths = Array.isArray(rawPaths) ? rawPaths : rawPaths ? [rawPaths] : [];
         for (const cratesPath of cratesPaths) {
@@ -474,12 +480,11 @@ function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
                 ? cratesPath
                 : path.resolve(configDir, cratesPath);
             const libRs = path.join(resolved, modulePath, 'src', 'lib.rs');
-            if (fs.existsSync(libRs)) {
-                try {
-                    return parseRustLib(fs.readFileSync(libRs, 'utf8'));
-                }
-                catch { /* ignore */ }
+            try {
+                const content = await fs_1.promises.readFile(libRs, 'utf8');
+                return parseRustLib(content);
             }
+            catch { /* try next candidate */ }
         }
         return empty;
     }
@@ -492,12 +497,11 @@ function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
         path.join(filePath, '__init__.hv'),
     ];
     for (const candidate of candidates) {
-        if (fs.existsSync(candidate)) {
-            try {
-                return parseTlStub(fs.readFileSync(candidate, 'utf8'));
-            }
-            catch { /* ignore */ }
+        try {
+            const content = await fs_1.promises.readFile(candidate, 'utf8');
+            return parseTlStub(content);
         }
+        catch { /* try next candidate */ }
     }
     return empty;
 }

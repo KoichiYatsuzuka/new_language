@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.initBuiltinStub = exports.builtinStub = exports.DocumentAnalysis = exports.selectHoverSymbol = exports.inferBodyReturnType = exports.collectTemplateParams = exports.collectFuncDefs = exports.collectConstructorTypes = exports.collectImportAliases = exports.inferExprType = exports.getDocstringAfter = exports.cleanTypeAnnotation = exports.parseParams = exports.findBodyEndLine = exports.findBlockBounds = exports.extractTupleElemTypes = exports.resolveSelf = exports.splitComma = exports.stripComment = exports.TUPLE_DECL_RE = exports.IMPORT_RE = exports.NEW_TYPE_RE = exports.CLASS_DEF_RE = exports.HOVER_DECL_RE = exports.STATIC_DECL_RE = exports.DECL_RE = void 0;
 const vscode = require("vscode");
 const fs = require("fs");
+const fs_1 = require("fs");
 const path = require("path");
 const builtins_1 = require("./builtins");
 const tokenizer_1 = require("./tokenizer");
@@ -645,31 +646,23 @@ function collectImportAliases(document) {
     return aliases;
 }
 exports.collectImportAliases = collectImportAliases;
-function collectPyModuleInfo(moduleName, docDir, extraPaths = []) {
+async function collectPyModuleInfo(moduleName, docDir, extraPaths = []) {
     var _a, _b;
     const funcs = new Map();
     const sigs = new Map();
     const classes = new Map();
     let content;
-    for (const searchDir of [docDir, ...extraPaths]) {
-        if (content !== undefined)
-            break;
+    outer: for (const searchDir of [docDir, ...extraPaths]) {
         for (const ext of ['.pyi', '.py']) {
-            if (content !== undefined)
-                break;
-            // Try directory path first: 'pkg.mod' → 'pkg/mod.py'
             for (const candidate of [
                 path.join(searchDir, ...moduleName.split('.')) + ext,
                 path.join(searchDir, moduleName + ext),
             ]) {
-                if (fs.existsSync(candidate)) {
-                    try {
-                        content = fs.readFileSync(candidate, 'utf8');
-                    }
-                    catch { /* ignore */ }
-                    if (content !== undefined)
-                        break;
+                try {
+                    content = await fs_1.promises.readFile(candidate, 'utf8');
+                    break outer;
                 }
+                catch { /* try next */ }
             }
         }
     }
@@ -719,13 +712,14 @@ function collectPyModuleInfo(moduleName, docDir, extraPaths = []) {
     }
     return { funcs, sigs, classes };
 }
-function collectAllPyModuleInfo(document) {
+async function collectAllPyModuleInfo(document) {
     const funcTypes = new Map();
     const funcSigs = new Map();
     const classMethods = new Map();
     const cppClasses = new Map();
     const docDir = path.dirname(document.uri.fsPath);
     const pythonLibPaths = vscode.workspace.getConfiguration('havakyrie').get('pythonLibraryPaths', []);
+    const imports = [];
     for (let i = 0; i < document.lineCount; i++) {
         const stripped = stripComment(document.lineAt(i).text);
         const m = stripped.match(IMPORT_RE);
@@ -733,15 +727,18 @@ function collectAllPyModuleInfo(document) {
             continue;
         const [, importKind, modulePath, , stubName, explicitAlias] = m;
         const alias = importAlias(modulePath, explicitAlias);
+        imports.push([importKind, modulePath, stubName, alias]);
+    }
+    await Promise.all(imports.map(async ([importKind, modulePath, stubName, alias]) => {
         if ((0, native_module_1.importKindOf)(importKind) === 'py') {
-            const info = collectPyModuleInfo(modulePath, docDir, pythonLibPaths);
+            const info = await collectPyModuleInfo(modulePath, docDir, pythonLibPaths);
             funcTypes.set(alias, info.funcs);
             funcSigs.set(alias, info.sigs);
             for (const [cls, methods] of info.classes)
                 classMethods.set(cls, methods);
         }
         else {
-            const info = (0, native_module_1.loadNativeModuleInfo)(importKind, modulePath, stubName, docDir);
+            const info = await (0, native_module_1.loadNativeModuleInfo)(importKind, modulePath, stubName, docDir);
             if (info.funcs.size > 0 || info.classes.size > 0) {
                 funcTypes.set(alias, info.funcs);
                 funcSigs.set(alias, info.sigs);
@@ -753,7 +750,7 @@ function collectAllPyModuleInfo(document) {
                 }
             }
         }
-    }
+    }));
     return { funcTypes, funcSigs, classMethods, cppClasses };
 }
 function collectConstructorTypes(document) {
@@ -1094,20 +1091,37 @@ exports.selectHoverSymbol = selectHoverSymbol;
 class DocumentAnalysis {
     static for(document) {
         const key = document.uri.toString();
+        const version = document.version;
         const cached = DocumentAnalysis._cache.get(key);
-        if ((cached === null || cached === void 0 ? void 0 : cached.version) === document.version)
-            return cached.data;
-        const data = new DocumentAnalysis(document);
-        DocumentAnalysis._cache.set(key, { version: document.version, data });
-        return data;
+        if ((cached === null || cached === void 0 ? void 0 : cached.version) === version)
+            return Promise.resolve(cached.data);
+        const pending = DocumentAnalysis._pending.get(key);
+        if ((pending === null || pending === void 0 ? void 0 : pending.version) === version)
+            return pending.promise;
+        const promise = DocumentAnalysis._build(document).then(data => {
+            DocumentAnalysis._cache.set(key, { version, data });
+            DocumentAnalysis._pending.delete(key);
+            return data;
+        });
+        DocumentAnalysis._pending.set(key, { version, promise });
+        return promise;
     }
-    constructor(document) {
+    /** Remove cached data for a document (call when document is closed). */
+    static evict(uri) {
+        const key = uri.toString();
+        DocumentAnalysis._cache.delete(key);
+        DocumentAnalysis._pending.delete(key);
+    }
+    static async _build(document) {
+        const moduleInfo = await collectAllPyModuleInfo(document);
+        return new DocumentAnalysis(document, moduleInfo);
+    }
+    constructor(document, moduleInfo) {
         var _a;
         // Phase 1: import aliases
         const importAliasMap = collectImportAliases(document);
         this.importAliases = new Set(importAliasMap.keys());
-        // Phase 2: module info
-        const moduleInfo = collectAllPyModuleInfo(document);
+        // Phase 2: module info (pre-fetched asynchronously)
         this.importFuncTypes = moduleInfo.funcTypes;
         this.importFuncSigs = moduleInfo.funcSigs;
         this.cppClasses = moduleInfo.cppClasses;
@@ -1154,6 +1168,7 @@ class DocumentAnalysis {
 }
 exports.DocumentAnalysis = DocumentAnalysis;
 DocumentAnalysis._cache = new Map();
+DocumentAnalysis._pending = new Map();
 // ===== Built-in stub (shared state initialised from extension.ts) =====
 exports.builtinStub = {
     funcs: new Map(), sigs: new Map(), docs: new Map(), classes: new Map(),

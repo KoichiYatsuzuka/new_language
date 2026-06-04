@@ -252,12 +252,12 @@ function findClassMember(document, className, memberName, _visited = new Set()) 
     }
     return undefined;
 }
-function resolveMemberItems(document, position, objName) {
+async function resolveMemberItems(document, position, objName) {
     if (objName === 'self') {
         const cls = findEnclosingClass(document, position.line);
         return cls ? collectClassMemberItems(document, cls) : [];
     }
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     const sym = (0, analysis_1.selectHoverSymbol)(a.symbols, objName, position.line);
     if (!sym)
         return [];
@@ -352,37 +352,43 @@ function parseTypeAt(line, pos, out) {
                 pos++;
                 continue;
             }
-            pos = parseTypeAt(line, pos, out);
+            const newPos = parseTypeAt(line, pos, out);
+            pos = newPos > pos ? newPos : pos + 1; // always advance to prevent infinite loop
         }
         if (pos < line.length)
             pos++;
     }
     return pos;
 }
-function typeAnnotationPositions(rawLine) {
+function typeAnnotationPositions(rawLine, strRanges) {
     const out = new Set();
     const src = (0, analysis_1.stripComment)(rawLine);
+    const inString = (pos) => strRanges.some(([s, e]) => pos >= s && pos < e);
     const colonRe = /[A-Za-z_]\w*[ \t]*:(?!=)(?=[ \t]*[A-Za-z_])/g;
     let m;
     while ((m = colonRe.exec(src)) !== null) {
-        parseTypeAt(src, m.index + m[0].length, out);
+        if (!inString(m.index))
+            parseTypeAt(src, m.index + m[0].length, out);
     }
     const arrowRe = /->[ \t]*/g;
     while ((m = arrowRe.exec(src)) !== null) {
-        parseTypeAt(src, m.index + m[0].length, out);
+        if (!inString(m.index))
+            parseTypeAt(src, m.index + m[0].length, out);
     }
     const isNotRe = /\bis[ \t]+not[ \t]+/g;
     while ((m = isNotRe.exec(src)) !== null) {
-        parseTypeAt(src, m.index + m[0].length, out);
+        if (!inString(m.index))
+            parseTypeAt(src, m.index + m[0].length, out);
     }
     const isRe = /\bis[ \t]+(?!not\b)/g;
     while ((m = isRe.exec(src)) !== null) {
-        parseTypeAt(src, m.index + m[0].length, out);
+        if (!inString(m.index))
+            parseTypeAt(src, m.index + m[0].length, out);
     }
     return out;
 }
 // ===== Providers =====
-function provideHover(document, position) {
+async function provideHover(document, position) {
     var _a, _b, _c, _d, _e;
     const range = document.getWordRangeAtPosition(position, /[A-Za-z_]\w*/);
     if (!range)
@@ -393,7 +399,7 @@ function provideHover(document, position) {
     const dotAccess = prefixStr.match(/([A-Za-z_]\w*)\.$/);
     if (dotAccess) {
         const objName = dotAccess[1];
-        const a = analysis_1.DocumentAnalysis.for(document);
+        const a = await analysis_1.DocumentAnalysis.for(document);
         const retType = (_a = a.importFuncTypes.get(objName)) === null || _a === void 0 ? void 0 : _a.get(name);
         if (retType !== undefined) {
             const md = new vscode.MarkdownString(undefined, true);
@@ -449,7 +455,7 @@ function provideHover(document, position) {
     }
     // Imported class type hover (C++/Rust)
     {
-        const a = analysis_1.DocumentAnalysis.for(document);
+        const a = await analysis_1.DocumentAnalysis.for(document);
         const cppCls = a.cppClasses.get(name);
         if (cppCls) {
             const md = new vscode.MarkdownString(undefined, true);
@@ -464,7 +470,7 @@ function provideHover(document, position) {
             return new vscode.Hover(md, range);
         }
     }
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     const symbol = (0, analysis_1.selectHoverSymbol)(a.symbols, name, position.line);
     if (!symbol) {
         const builtinSig = analysis_1.builtinStub.sigs.get(name);
@@ -492,10 +498,10 @@ function provideHover(document, position) {
     }), range);
 }
 exports.provideHover = provideHover;
-function provideInlayHints(document, _range) {
+async function provideInlayHints(document, _range) {
     var _a, _b, _c, _d, _e, _f, _g;
     const hints = [];
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     // Inlay hints on function definition lines (only when no annotation)
     for (const def of a.funcDefs) {
         if (def.annotation !== undefined)
@@ -597,7 +603,7 @@ function provideInlayHints(document, _range) {
     return hints;
 }
 exports.provideInlayHints = provideInlayHints;
-function provideCompletionItems(document, position) {
+async function provideCompletionItems(document, position) {
     const prefix = document.lineAt(position.line).text.substring(0, position.character);
     const dotMatch = prefix.match(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)?$/);
     if (dotMatch) {
@@ -605,7 +611,7 @@ function provideCompletionItems(document, position) {
     }
     const items = [];
     const seen = new Set();
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     for (const sym of a.symbols) {
         if (sym.kind === 'variable' && sym.line > position.line)
             continue;
@@ -762,7 +768,7 @@ function provideDocumentSymbols(document) {
     return result;
 }
 exports.provideDocumentSymbols = provideDocumentSymbols;
-function provideSignatureHelp(document, position) {
+async function provideSignatureHelp(document, position) {
     var _a, _b;
     const prefix = document.lineAt(position.line).text.substring(0, position.character);
     let depth = 0;
@@ -789,7 +795,7 @@ function provideSignatureHelp(document, position) {
     }
     if (!funcName)
         return undefined;
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     const funcSym = a.symbols.find(s => s.name === funcName && s.kind === 'function');
     let sigStr;
     let sigDoc;
@@ -825,12 +831,12 @@ function provideSignatureHelp(document, position) {
     return help;
 }
 exports.provideSignatureHelp = provideSignatureHelp;
-function provideDefinition(document, position) {
+async function provideDefinition(document, position) {
     const range = document.getWordRangeAtPosition(position, /[A-Za-z_]\w*/);
     if (!range)
         return undefined;
     const name = document.getText(range);
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     const symbol = (0, analysis_1.selectHoverSymbol)(a.symbols, name, position.line);
     if (!symbol)
         return undefined;
@@ -842,10 +848,10 @@ function provideDefinition(document, position) {
     return new vscode.Location(document.uri, targetRange);
 }
 exports.provideDefinition = provideDefinition;
-function provideDiagnostics(document) {
+async function provideDiagnostics(document) {
     var _a, _b, _c;
     const diagnostics = [];
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     const env = new Map();
     for (let i = 0; i < document.lineCount; i++) {
         const raw = document.lineAt(i).text;
@@ -945,9 +951,9 @@ function provideDiagnostics(document) {
     return diagnostics;
 }
 exports.provideDiagnostics = provideDiagnostics;
-function provideDocumentSemanticTokens(document) {
+async function provideDocumentSemanticTokens(document) {
     const builder = new vscode.SemanticTokensBuilder(exports.SEMANTIC_TOKENS_LEGEND);
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     const userTypes = new Set();
     for (let i = 0; i < document.lineCount; i++) {
         const stripped = (0, analysis_1.stripComment)(document.lineAt(i).text);
@@ -965,7 +971,7 @@ function provideDocumentSemanticTokens(document) {
         const commentStart = (0, analysis_1.stripComment)(lineText).length;
         const strRanges = stringLiteralRanges(lineText, commentStart);
         const isLiveCode = (col) => col < commentStart && !strRanges.some(([s, e]) => col >= s && col < e);
-        const typePositions = typeAnnotationPositions(lineText);
+        const typePositions = typeAnnotationPositions(lineText, strRanges);
         const hits = [];
         for (const name of builtins_1.BUILTIN_TYPE_NAMES) {
             const re = new RegExp(`\\b${name}\\b`, 'g');
