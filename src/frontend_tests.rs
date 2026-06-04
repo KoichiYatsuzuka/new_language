@@ -600,6 +600,14 @@ mod parser_tests {
         assert!(err.contains("cannot inherit from"), "got: {err}");
     }
 
+    /// protected_in_class_is_parse_err のテスト。
+    #[test]
+    fn test_protected_in_class_is_parse_err() {
+        let err = parse_fails("class MyClass:\n    protected:\n    mut z: int\n");
+        assert!(err.contains("ParseError"), "got: {err}");
+        assert!(err.contains("protected"), "got: {err}");
+    }
+
     /// class_with_method のテスト。
     #[test]
     fn test_class_with_method() {
@@ -1352,29 +1360,16 @@ mod type_check_tests {
         )));
     }
 
-    /// protected_field_read_outside_err のテスト。
-    #[test]
-    fn protected_field_read_outside_err() {
-        assert!(err(concat!(
-            "class MyClass:\n",
-            "    protected:\n",
-            "    mut z: int\n",
-            "    fn __init__(mut self) -> None:\n",
-            "        self.z = 0\n",
-            "let obj = MyClass()\n",
-            "print(obj.z)\n",
-        )));
-    }
-
     /// protected_field_read_same_class_ok のテスト。
     #[test]
     fn protected_field_read_same_class_ok() {
         assert!(ok(concat!(
-            "class MyClass:\n",
+            "trait T:\n",
             "    protected:\n",
             "    mut z: int\n",
-            "    fn __init__(mut self) -> None:\n",
-            "        self.z = 0\n",
+            "class MyClass(T):\n",
+            "    fn __init__(mut self, z: int) -> None:\n",
+            "        self.z = z\n",
             "    fn get_z(self) -> int:\n",
             "        return self.z\n",
         )));

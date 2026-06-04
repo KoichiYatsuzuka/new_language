@@ -1,11 +1,11 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: 0d9de3df5f5d8ee4fbe5c6d3f7bb1ddfea131979
 """Built-in functions and collection method dispatch."""
 from __future__ import annotations
 from typing import Optional, Callable, TYPE_CHECKING
 
 from .value import (
     Value, MISSING,
-    TlList, TlDict, TlTuple, TlSet, TlFunction, TlOverloadedFn,
+    TlList, TlFixedList, TlDict, TlTuple, TlSet, TlFunction, TlOverloadedFn,
     TlGeneratorFn, TlGenerator, TlClass, TlInstance, TlType, TlTrait,
     TlNamespace, TlSlice, TlFileObject,
     type_name, display, is_truthy, _values_equal,
@@ -47,7 +47,7 @@ def _raise_builtin(name: str, msg: str, known_classes: dict) -> None:
 
 def iterate(val: Value) -> list[Value]:
     """Collect all items from an iterable value."""
-    if isinstance(val, TlList):
+    if isinstance(val, (TlList, TlFixedList)):
         return list(val.items)
     if isinstance(val, TlTuple):
         return list(val.values)
@@ -100,8 +100,8 @@ def apply_slice(obj: Value, sl: TlSlice, known_classes: dict) -> Value:
             return v
         raise RuntimeError(f"TypeError: slice step must be int, got '{type_name(v)}'")
 
-    if isinstance(obj, (TlList, TlTuple, str)):
-        seq = obj.items if isinstance(obj, TlList) else (obj.values if isinstance(obj, TlTuple) else list(obj))
+    if isinstance(obj, (TlList, TlFixedList, TlTuple, str)):
+        seq = obj.items if isinstance(obj, (TlList, TlFixedList)) else (obj.values if isinstance(obj, TlTuple) else list(obj))
         n = len(seq)
 
         begin_v, end_v, step_v = sl.begin, sl.end, sl.step
@@ -137,6 +137,8 @@ def apply_slice(obj: Value, sl: TlSlice, known_classes: dict) -> Value:
                 result.append(seq[i])
                 i += step
 
+        if isinstance(obj, TlFixedList):
+            return TlFixedList(items=result)
         if isinstance(obj, TlList):
             return TlList(items=result)
         if isinstance(obj, TlTuple):
@@ -154,7 +156,7 @@ def subscript_get(obj: Value, index: Value, known_classes: dict) -> Value:
     if isinstance(index, TlSlice):
         return apply_slice(obj, index, known_classes)
 
-    if isinstance(obj, TlList):
+    if isinstance(obj, (TlList, TlFixedList)):
         i = _to_index(index, len(obj.items), known_classes)
         return obj.items[i]
 
@@ -187,6 +189,8 @@ def subscript_get(obj: Value, index: Value, known_classes: dict) -> Value:
 
 
 def subscript_set(obj: Value, index: Value, value: Value, known_classes: dict) -> None:
+    if isinstance(obj, TlFixedList):
+        raise RuntimeError("TypeError: 'fixed_list' is immutable")
     if isinstance(obj, TlList):
         if isinstance(index, TlSlice):
             # Slice assignment
@@ -244,6 +248,23 @@ def _to_index(index: Value, length: int, known_classes: dict) -> int:
 
 def get_attr_builtin(obj: Value, attr: str, known_classes: dict) -> Value:
     """Return a bound method or attribute for built-in types."""
+
+    # ---- fixed_list methods (read-only) ----
+    if isinstance(obj, TlFixedList):
+        items = obj.items
+        if attr == "count":
+            return _make_native(attr, lambda a, k: sum(1 for x in items if _values_equal(x, a[0])))
+        if attr == "index":
+            def fl_index(args, kwargs):
+                for i, x in enumerate(items):
+                    if _values_equal(x, args[0]): return i
+                _raise_builtin("ValueError", "value not in fixed_list", known_classes)
+            return _make_native(attr, fl_index)
+        if attr == "__iter__":
+            def fl_iter(args, kwargs):
+                return TlGenerator(values=list(items))
+            return _make_native(attr, fl_iter)
+        raise RuntimeError(f"TypeError: 'fixed_list' is immutable; '{attr}' not supported")
 
     # ---- list methods ----
     if isinstance(obj, TlList):
@@ -620,7 +641,7 @@ def make_builtins(known_classes: dict) -> dict[str, Value]:
 
     def builtin_len(args: list, kwargs: dict) -> int:
         v = args[0]
-        if isinstance(v, TlList): return len(v.items)
+        if isinstance(v, (TlList, TlFixedList)): return len(v.items)
         if isinstance(v, TlDict): return len(v.keys)
         if isinstance(v, TlTuple): return len(v.values)
         if isinstance(v, TlSet): return len(v.items)
@@ -737,8 +758,10 @@ def make_builtins(known_classes: dict) -> dict[str, Value]:
 
     def builtin_list(args: list, kwargs: dict) -> TlList:
         if not args: return TlList(items=[])
-        items = iterate(args[0])
-        return TlList(items=items)
+        v = args[0]
+        if isinstance(v, TlFixedList):
+            return TlList(items=list(v.items))
+        return TlList(items=iterate(v))
 
     def builtin_dict(args: list, kwargs: dict) -> TlDict:
         d = TlDict()

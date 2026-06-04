@@ -24,13 +24,9 @@ class MyClass:
     private:
     mut y: int
 
-    protected:
-    mut z: int
-
     fn __init__(mut self) -> None:
         self.x = 1
         self.y = 2
-        self.z = 3
 
 let obj = MyClass()
 print(obj.y)   # AccessError: 'y' is private

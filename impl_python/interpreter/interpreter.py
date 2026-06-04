@@ -1,4 +1,4 @@
-﻿# git SHA: c4e3615a36e8f7183b626dacab73bfc500682e96
+﻿# git SHA: 0d9de3df5f5d8ee4fbe5c6d3f7bb1ddfea131979
 """Tree-walk interpreter for Havakyrie."""
 from __future__ import annotations
 import copy
@@ -29,7 +29,7 @@ from ..ast import (
 )
 from .value import (
     Value, MISSING,
-    TlList, TlDict, TlTuple, TlSet,
+    TlList, TlFixedList, TlDict, TlTuple, TlSet,
     TlFunction, TlOverloadedFn, TlGeneratorFn, TlGenerator,
     TlTemplateFn, TlTemplateGenFn, TlTemplateClass,
     TlClass, TlInstance, TlType, TlTrait,
@@ -526,6 +526,8 @@ class Interpreter:
                     return left + right
                 if isinstance(left, TlList) and isinstance(right, TlList):
                     return TlList(items=left.items + right.items)
+                if isinstance(left, TlFixedList) and isinstance(right, TlFixedList):
+                    return TlFixedList(items=left.items + right.items)
                 raise RuntimeError(f"TypeError: unsupported operand types for +: '{type_name(left)}' and '{type_name(right)}'")
             case BinOp.SUB:
                 if isinstance(left, TlSet) and isinstance(right, TlSet):
@@ -681,7 +683,7 @@ class Interpreter:
         raise RuntimeError(f"TypeError: '{op}' not supported between '{type_name(left)}' and '{type_name(right)}'")
 
     def _contains(self, container: Value, item: Value) -> bool:
-        if isinstance(container, TlList):
+        if isinstance(container, (TlList, TlFixedList)):
             return any(self._values_eq(x, item) for x in container.items)
         if isinstance(container, TlSet):
             return any(self._values_eq(x, item) for x in container.items)
@@ -1309,7 +1311,9 @@ class Interpreter:
         if tname == "float": return isinstance(val, float)
         if tname == "str": return isinstance(val, str)
         if tname == "bool": return isinstance(val, bool)
-        if tname == "list": return isinstance(val, TlList)
+        if tname == "list" or tname.startswith("list["): return isinstance(val, TlList)
+        if tname == "fixed_list" or tname.startswith("fixed_list["): return isinstance(val, TlFixedList)
+        if tname == "list_like" or tname.startswith("list_like["): return isinstance(val, (TlList, TlFixedList))
         if tname == "dict": return isinstance(val, TlDict)
         if tname == "tuple": return isinstance(val, TlTuple)
         if tname == "set": return isinstance(val, TlSet)
@@ -1332,6 +1336,22 @@ class Interpreter:
 
     def _eval_cast(self, obj_expr, tname: str) -> Value:
         obj = self.eval(obj_expr)
+
+        # --- list => fixed_list ---
+        target_is_fixed = tname == "fixed_list" or tname.startswith("fixed_list[")
+        if target_is_fixed:
+            if isinstance(obj, TlFixedList):
+                return obj  # already a fixed_list
+            if isinstance(obj, TlList):
+                return TlFixedList(items=list(obj.items))
+            raise InterpreterError(
+                f"CastError: cannot cast '{type_name(obj)}' to 'fixed_list'"
+            )
+
+        # --- fixed_list => list ---
+        target_is_list = tname == "list" or tname.startswith("list[")
+        if target_is_list and isinstance(obj, TlFixedList):
+            return TlList(items=list(obj.items))
 
         def _get_new_type_inner(inst: TlInstance):
             """Extract the inner value from a new_type instance (handles both 'value' and '__value__')."""
@@ -1385,7 +1405,7 @@ class Interpreter:
             # Unpack tuple
             if isinstance(item, TlTuple):
                 vals = item.values
-            elif isinstance(item, TlList):
+            elif isinstance(item, (TlList, TlFixedList)):
                 vals = item.items
             else:
                 vals = [item]
@@ -1429,7 +1449,7 @@ class Interpreter:
     def _unpack_tuple(self, targets: list, val: Value) -> None:
         if isinstance(val, TlTuple):
             vals = val.values
-        elif isinstance(val, TlList):
+        elif isinstance(val, (TlList, TlFixedList)):
             vals = val.items
         else:
             vals = [val]

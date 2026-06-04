@@ -35,7 +35,7 @@ impl Parser {
         self.eat(&Token::Colon)?;
         // Self 型が有効なスコープに入る
         self.class_or_trait_depth += 1;
-        let body = self.parse_class_body()?;
+        let body = self.parse_class_body(true)?;
         self.class_or_trait_depth -= 1;
 
         // 非仮想・仮想メソッドどちらも型アノテーションを必須とする
@@ -196,7 +196,7 @@ impl Parser {
         self.eat(&Token::Colon)?;
         // Self 型が有効なスコープに入る
         self.class_or_trait_depth += 1;
-        let mut body = self.parse_class_body()?;
+        let mut body = self.parse_class_body(false)?;
         self.class_or_trait_depth -= 1;
 
         // 仮想メソッドのオーバーライド検証とトレイト必須フィールドの収集
@@ -420,7 +420,7 @@ impl Parser {
     ///
     /// # エラー
     /// `NEWLINE` / `INDENT` が欠如している場合、または `parse_class_stmt()` がエラーを返した場合
-    fn parse_class_body(&mut self) -> Result<Vec<Stmt>, String> {
+    fn parse_class_body(&mut self, is_trait: bool) -> Result<Vec<Stmt>, String> {
         self.eat(&Token::Newline)?;
         self.eat(&Token::Indent)?;
         let mut stmts = Vec::new();
@@ -435,6 +435,13 @@ impl Parser {
             // accessibility section header: `public:` / `private:` / `protected:`
             match self.current().clone() {
                 Token::Public | Token::Private | Token::Protected => {
+                    if *self.current() == Token::Protected && !is_trait {
+                        return Err(
+                            "ParseError: `protected:` sections are not allowed in class definitions; \
+                             declare protected fields in a trait instead"
+                                .to_string(),
+                        );
+                    }
                     current_access = match self.current() {
                         Token::Public => Accessibility::Public,
                         Token::Private => Accessibility::Private,

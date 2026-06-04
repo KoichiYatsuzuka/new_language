@@ -1,4 +1,4 @@
-﻿# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+﻿# git SHA: 0d9de3df5f5d8ee4fbe5c6d3f7bb1ddfea131979
 """Runtime value types for the Havakyrie interpreter."""
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -50,6 +50,15 @@ class TlList:
 
     def __repr__(self) -> str:
         return f"[{', '.join(_repr_val(x) for x in self.items)}]"
+
+
+@dataclass
+class TlFixedList:
+    """Read-only fixed-size list; created by casting list[T] => fixed_list[T]."""
+    items: list  # list[Value] — do not mutate after creation
+
+    def __repr__(self) -> str:
+        return f"fixed_list[{', '.join(_repr_val(x) for x in self.items)}]"
 
 
 @dataclass
@@ -307,7 +316,7 @@ class TlFileObject:
 
 Value = (
     int | float | str | bool | type(None) |
-    TlList | TlDict | TlTuple | TlSet |
+    TlList | TlFixedList | TlDict | TlTuple | TlSet |
     TlFunction | TlOverloadedFn | TlGeneratorFn | TlGenerator |
     TlClass | TlInstance |
     TlType | TlTrait |
@@ -371,6 +380,8 @@ def type_name(v: "Value") -> str:
         return "float"
     if isinstance(v, str):
         return "str"
+    if isinstance(v, TlFixedList):
+        return "fixed_list"
     if isinstance(v, TlList):
         return "list"
     if isinstance(v, TlDict):
@@ -419,6 +430,8 @@ def display(v: "Value") -> str:
         return s
     if isinstance(v, str):
         return v
+    if isinstance(v, TlFixedList):
+        return "[" + ", ".join(display(x) for x in v.items) + "]"
     if isinstance(v, TlList):
         return "[" + ", ".join(display(x) for x in v.items) + "]"
     if isinstance(v, TlDict):
@@ -468,6 +481,8 @@ def is_truthy(v: "Value") -> bool:
         return v != 0.0
     if isinstance(v, str):
         return len(v) > 0
+    if isinstance(v, TlFixedList):
+        return len(v.items) > 0
     if isinstance(v, TlList):
         return len(v.items) > 0
     if isinstance(v, TlDict):
@@ -483,6 +498,8 @@ def deep_clone(v: "Value") -> "Value":
     """Create a fully independent deep copy of a value."""
     if v is None or isinstance(v, (bool, int, float, str)):
         return v
+    if isinstance(v, TlFixedList):
+        return TlFixedList(items=[deep_clone(x) for x in v.items])
     if isinstance(v, TlList):
         return TlList(items=[deep_clone(x) for x in v.items])
     if isinstance(v, TlDict):

@@ -579,10 +579,12 @@ fn test_access_private_field_from_method_ok() {
 #[test]
 fn test_access_protected_field_from_outside_errors() {
     let src = concat!(
-        "class C:\n",
+        "trait Guarding:\n",
         "    protected:\n",
-        "    mut guarded: int = 7\n",
-        "let obj = C()\n",
+        "    mut guarded: int\n",
+        "class C(Guarding):\n",
+        "    pass\n",
+        "let obj = C(7)\n",
         "let r = obj.guarded\n",
     );
     let result = run(src);
@@ -602,12 +604,13 @@ fn test_access_protected_field_from_outside_errors() {
 #[test]
 fn test_access_protected_field_via_method_ok() {
     let src = concat!(
-        "class C:\n",
+        "trait Guarding:\n",
         "    protected:\n",
-        "    mut guarded: int = 7\n",
+        "    mut guarded: int\n",
+        "class C(Guarding):\n",
         "    fn get_guarded(self) -> int:\n",
         "        return self.guarded\n",
-        "let obj = C()\n",
+        "let obj = C(7)\n",
         "let r = obj.get_guarded()\n",
     );
     if let Value::Int(n) = run_get(src, "r") {

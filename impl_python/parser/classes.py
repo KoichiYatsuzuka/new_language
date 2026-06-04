@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: 0d9de3df5f5d8ee4fbe5c6d3f7bb1ddfea131979
 """Class and trait definition parsing (mirrors src/parser/classes.rs)."""
 from __future__ import annotations
 from typing import Optional
@@ -36,7 +36,7 @@ class _ParserClasses:
             raise self._error(f"StaticTypeError: trait `{name}` cannot inherit from another type")
         self._eat(TokenKind.COLON)
         self._class_or_trait_depth += 1
-        body = self._parse_class_body()
+        body = self._parse_class_body(is_trait=True)
         self._class_or_trait_depth -= 1
 
         for stmt in body:
@@ -105,7 +105,7 @@ class _ParserClasses:
                 )
         self._eat(TokenKind.COLON)
         self._class_or_trait_depth += 1
-        body = self._parse_class_body()
+        body = self._parse_class_body(is_trait=False)
         self._class_or_trait_depth -= 1
 
         trait_required = self._collect_trait_fields_and_check_virtuals(name, bases_with_args, body)
@@ -219,7 +219,7 @@ class _ParserClasses:
     # Class body
     # ------------------------------------------------------------------
 
-    def _parse_class_body(self) -> list[Stmt]:
+    def _parse_class_body(self, is_trait: bool = False) -> list[Stmt]:
         self._eat(TokenKind.NEWLINE)
         self._eat(TokenKind.INDENT)
         stmts: list[Stmt] = []
@@ -243,6 +243,11 @@ class _ParserClasses:
                     self._advance()
                 continue
             if k == TokenKind.PROTECTED:
+                if not is_trait:
+                    raise self._error(
+                        "ParseError: `protected:` sections are not allowed in class definitions; "
+                        "declare protected fields in a trait instead"
+                    )
                 current_access = Accessibility.PROTECTED
                 self._advance(); self._eat(TokenKind.COLON)
                 while self._current_kind() in (TokenKind.NEWLINE, TokenKind.SEMICOLON):
