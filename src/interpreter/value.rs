@@ -656,6 +656,8 @@ pub enum Value {
     UInt(u64),
     /// 64 ビット浮動小数点プリミティブ値。
     Float(f64),
+    /// 複素数プリミティブ値（実部・虚部はそれぞれ f64）。
+    Complex(f64, f64),
     /// 文字列プリミティブ値（Unicode UTF-8）。
     Str(String),
     /// 真偽値プリミティブ値（`true` / `false`）。
@@ -818,6 +820,7 @@ impl Value {
             Value::Int(n) => Value::Int(*n),
             Value::UInt(n) => Value::UInt(*n),
             Value::Float(f) => Value::Float(*f),
+            Value::Complex(re, im) => Value::Complex(*re, *im),
             Value::Str(s) => Value::Str(s.clone()),
             Value::Bool(b) => Value::Bool(*b),
             Value::None => Value::None,

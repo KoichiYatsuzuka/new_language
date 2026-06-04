@@ -180,6 +180,11 @@ class ExprFloat:
     value: float
 
 @dataclass
+class ExprImaginaryLit:
+    """Imaginary-unit literal: e.g. 2j → coeff=2.0. Evaluates to complex(0, coeff)."""
+    value: float  # imaginary coefficient
+
+@dataclass
 class ExprStr:
     value: str
 
@@ -300,7 +305,7 @@ class ExprCast:
 
 
 Expr = (
-    ExprInt | ExprFloat | ExprStr | ExprBool | ExprNone | ExprIdent |
+    ExprInt | ExprFloat | ExprImaginaryLit | ExprStr | ExprBool | ExprNone | ExprIdent |
     ExprList | ExprAttr | ExprTraitAccess | ExprBinOp | ExprUnaryOp |
     ExprCall | ExprTemplateInstantiate | ExprSubscript | ExprSlice |
     ExprDict | ExprTuple | ExprSet | ExprBlock | ExprIfExpr |

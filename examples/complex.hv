@@ -1,0 +1,62 @@
+# complex type demo
+
+# Imaginary literals
+let z1: complex = 3j
+let z2: complex = -2j
+let z3: complex = 0.5j
+
+print(z1)    # (0.0+3.0j)
+print(z2)    # (0.0-2.0j)
+
+# Arithmetic: int/float + imaginary builds a complex
+let a: complex = 1 + 2j
+let b: complex = 3 + 4j
+print(a)     # (1.0+2.0j)
+print(b)     # (3.0+4.0j)
+
+# complex arithmetic
+let c_add: complex = a + b
+let c_sub: complex = b - a
+let c_mul: complex = a * b
+let c_div: complex = b / a
+print(c_add)  # (4.0+6.0j)
+print(c_sub)  # (2.0+2.0j)
+print(c_mul)  # (-5.0+10.0j)  (1+2j)(3+4j) = 3+4j+6j+8j^2 = -5+10j
+print(c_div)  # (11.0/5 + 2/5j) = (2.2+0.4j)
+
+# mixed scalar arithmetic
+let d: complex = 2.0 + 3j
+let e: complex = d + 1
+let f: complex = d * 2.0
+print(e)   # (3.0+3.0j)
+print(f)   # (4.0+6.0j)
+
+# unary negation
+let neg: complex = -(1 + 1j)
+print(neg)  # (-1.0-1.0j)
+
+# complex() constructor
+let from_re: complex = complex(5)
+let from_re_im: complex = complex(3, 4)
+let from_cplx: complex = complex(a)
+print(from_re)     # (5.0+0.0j)
+print(from_re_im)  # (3.0+4.0j)
+print(from_cplx)   # (1.0+2.0j)
+
+# member methods
+let v: complex = 3 + 4j
+print(v.real())   # 3.0
+print(v.imag())   # 4.0
+print(v.angle())  # ~0.9272952… (atan2(4,3))
+
+# equality
+let p: complex = 1 + 2j
+let q: complex = 1 + 2j
+let r: complex = 1 + 3j
+print(p == q)  # True
+print(p == r)  # False
+
+# is-type check
+let x: complex = 2j
+if x is complex:
+    print("x is complex")  # x is complex

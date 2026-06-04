@@ -420,6 +420,33 @@ impl Interpreter {
                 }
             }
             Value::Str(s) => self.eval_str_method(s.clone(), method_name, args),
+            Value::Complex(re, im) => {
+                let re = *re;
+                let im = *im;
+                match method_name {
+                    "real" => {
+                        if !args.is_empty() {
+                            return Err("TypeError: complex.real() takes no arguments".to_string());
+                        }
+                        Ok(Value::Float(re))
+                    }
+                    "imag" => {
+                        if !args.is_empty() {
+                            return Err("TypeError: complex.imag() takes no arguments".to_string());
+                        }
+                        Ok(Value::Float(im))
+                    }
+                    "angle" => {
+                        if !args.is_empty() {
+                            return Err("TypeError: complex.angle() takes no arguments".to_string());
+                        }
+                        Ok(Value::Float(im.atan2(re)))
+                    }
+                    _ => Err(format!(
+                        "AttributeError: 'complex' object has no method '{method_name}'"
+                    )),
+                }
+            }
             Value::Instance(inst_rc) => {
                 let class = inst_rc.borrow().class.clone();
                 let inst_immutable = inst_rc.borrow().immutable;

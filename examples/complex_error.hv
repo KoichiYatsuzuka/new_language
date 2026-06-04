@@ -1,0 +1,4 @@
+# complex error example: calling a non-existent method
+
+let z: complex = 1 + 2j
+print(z.conjugate())  # AttributeError: 'complex' object has no method 'conjugate'

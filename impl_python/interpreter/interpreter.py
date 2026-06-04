@@ -1,4 +1,4 @@
-﻿# git SHA: 0d9de3df5f5d8ee4fbe5c6d3f7bb1ddfea131979
+﻿# git SHA: 72d280d65fc4cfdf05891c5c08c1331617d7e194
 """Tree-walk interpreter for Havakyrie."""
 from __future__ import annotations
 import copy
@@ -7,7 +7,7 @@ from typing import Optional, TYPE_CHECKING
 
 from ..ast import (
     # Expressions
-    ExprInt, ExprFloat, ExprStr, ExprBool, ExprNone, ExprIdent,
+    ExprInt, ExprFloat, ExprImaginaryLit, ExprStr, ExprBool, ExprNone, ExprIdent,
     ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
@@ -33,7 +33,7 @@ from .value import (
     TlFunction, TlOverloadedFn, TlGeneratorFn, TlGenerator,
     TlTemplateFn, TlTemplateGenFn, TlTemplateClass,
     TlClass, TlInstance, TlType, TlTrait,
-    TlNamespace, TlSlice, TlFileObject,
+    TlNamespace, TlSlice, TlFileObject, TlComplex,
     CapturedImm, CapturedMut,
     type_name, display, is_truthy, _values_equal, deep_clone, _repr_val,
 )
@@ -416,6 +416,7 @@ class Interpreter:
         match expr:
             case ExprInt(value=v): return v
             case ExprFloat(value=v): return v
+            case ExprImaginaryLit(value=v): return TlComplex(real=0.0, imag=v)
             case ExprStr(value=v): return v
             case ExprBool(value=v): return v
             case ExprNone(): return None
@@ -515,7 +516,32 @@ class Interpreter:
         right = self.eval(right_expr)
         return self._apply_binop(op, left, right)
 
+    @staticmethod
+    def _to_complex(v: Value) -> "TlComplex":
+        if isinstance(v, TlComplex): return v
+        if isinstance(v, float): return TlComplex(real=v, imag=0.0)
+        if isinstance(v, int) and not isinstance(v, bool): return TlComplex(real=float(v), imag=0.0)
+        raise RuntimeError(f"TypeError: cannot convert '{type_name(v)}' to complex")
+
     def _apply_binop(self, op: BinOp, left: Value, right: Value) -> Value:  # noqa: C901
+        # complex arithmetic (any operand is TlComplex)
+        either_complex = isinstance(left, TlComplex) or isinstance(right, TlComplex)
+        if either_complex and op in (BinOp.ADD, BinOp.SUB, BinOp.MUL, BinOp.DIV):
+            l = self._to_complex(left)
+            r = self._to_complex(right)
+            if op == BinOp.ADD:
+                return TlComplex(real=l.real + r.real, imag=l.imag + r.imag)
+            if op == BinOp.SUB:
+                return TlComplex(real=l.real - r.real, imag=l.imag - r.imag)
+            if op == BinOp.MUL:
+                return TlComplex(real=l.real * r.real - l.imag * r.imag,
+                                 imag=l.real * r.imag + l.imag * r.real)
+            if op == BinOp.DIV:
+                denom = r.real * r.real + r.imag * r.imag
+                if denom == 0.0:
+                    raise RuntimeError("ZeroDivisionError: complex division by zero")
+                return TlComplex(real=(l.real * r.real + l.imag * r.imag) / denom,
+                                 imag=(l.imag * r.real - l.real * r.imag) / denom)
         match op:
             case BinOp.ADD:
                 if isinstance(left, int) and not isinstance(left, bool) and isinstance(right, int) and not isinstance(right, bool):
@@ -623,6 +649,7 @@ class Interpreter:
             case UnaryOp.NEG:
                 if isinstance(val, int) and not isinstance(val, bool): return -val
                 if isinstance(val, float): return -val
+                if isinstance(val, TlComplex): return TlComplex(real=-val.real, imag=-val.imag)
                 raise RuntimeError(f"TypeError: bad operand type for unary -: '{type_name(val)}'")
             case UnaryOp.NOT:
                 return not is_truthy(val)
@@ -642,6 +669,7 @@ class Interpreter:
         if a is None or b is None: return False
         if type(a) is bool and type(b) is bool: return a == b
         if type(a) is bool or type(b) is bool: return False
+        if isinstance(a, TlComplex) and isinstance(b, TlComplex): return a.real == b.real and a.imag == b.imag
         if isinstance(a, (int, float)) and isinstance(b, (int, float)): return float(a) == float(b)
         if isinstance(a, str) and isinstance(b, str): return a == b
         if isinstance(a, TlList) and isinstance(b, TlList):
@@ -1309,6 +1337,7 @@ class Interpreter:
         if tname == "None": return val is None
         if tname == "int": return isinstance(val, int) and not isinstance(val, bool)
         if tname == "float": return isinstance(val, float)
+        if tname == "complex": return isinstance(val, TlComplex)
         if tname == "str": return isinstance(val, str)
         if tname == "bool": return isinstance(val, bool)
         if tname == "list" or tname.startswith("list["): return isinstance(val, TlList)

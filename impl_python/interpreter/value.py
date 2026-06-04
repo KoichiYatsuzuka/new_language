@@ -1,4 +1,4 @@
-﻿# git SHA: 0d9de3df5f5d8ee4fbe5c6d3f7bb1ddfea131979
+﻿# git SHA: 72d280d65fc4cfdf05891c5c08c1331617d7e194
 """Runtime value types for the Havakyrie interpreter."""
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -314,8 +314,27 @@ class TlFileObject:
 # Value type alias
 # ---------------------------------------------------------------------------
 
+@dataclass
+class TlComplex:
+    """Complex number: real + imag*j."""
+    real: float
+    imag: float
+
+    def __repr__(self) -> str:
+        def _fmt(f: float) -> str:
+            f = 0.0 if f == 0.0 else f  # normalize -0.0
+            if f == int(f) and abs(f) < 1e15:
+                return f"{f:.1f}"
+            return str(f)
+        re = 0.0 if self.real == 0.0 else self.real
+        im = 0.0 if self.imag == 0.0 else self.imag
+        if im >= 0:
+            return f"({_fmt(re)}+{_fmt(im)}j)"
+        return f"({_fmt(re)}-{_fmt(abs(im))}j)"
+
+
 Value = (
-    int | float | str | bool | type(None) |
+    int | float | TlComplex | str | bool | type(None) |
     TlList | TlFixedList | TlDict | TlTuple | TlSet |
     TlFunction | TlOverloadedFn | TlGeneratorFn | TlGenerator |
     TlClass | TlInstance |
@@ -342,6 +361,8 @@ def _values_equal(a: "Value", b: "Value") -> bool:
         return a == b
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
         return float(a) == float(b)
+    if isinstance(a, TlComplex) and isinstance(b, TlComplex):
+        return a.real == b.real and a.imag == b.imag
     if isinstance(a, str) and isinstance(b, str):
         return a == b
     if isinstance(a, TlTuple) and isinstance(b, TlTuple):
@@ -378,6 +399,8 @@ def type_name(v: "Value") -> str:
         return "int"
     if isinstance(v, float):
         return "float"
+    if isinstance(v, TlComplex):
+        return "complex"
     if isinstance(v, str):
         return "str"
     if isinstance(v, TlFixedList):
@@ -428,6 +451,8 @@ def display(v: "Value") -> str:
         if "." not in s and "e" not in s:
             s += ".0"
         return s
+    if isinstance(v, TlComplex):
+        return repr(v)
     if isinstance(v, str):
         return v
     if isinstance(v, TlFixedList):
@@ -479,6 +504,8 @@ def is_truthy(v: "Value") -> bool:
         return v != 0
     if isinstance(v, float):
         return v != 0.0
+    if isinstance(v, TlComplex):
+        return v.real != 0.0 or v.imag != 0.0
     if isinstance(v, str):
         return len(v) > 0
     if isinstance(v, TlFixedList):
@@ -498,6 +525,8 @@ def deep_clone(v: "Value") -> "Value":
     """Create a fully independent deep copy of a value."""
     if v is None or isinstance(v, (bool, int, float, str)):
         return v
+    if isinstance(v, TlComplex):
+        return TlComplex(real=v.real, imag=v.imag)
     if isinstance(v, TlFixedList):
         return TlFixedList(items=[deep_clone(x) for x in v.items])
     if isinstance(v, TlList):

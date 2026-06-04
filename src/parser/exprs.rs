@@ -617,6 +617,10 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Float(f))
             }
+            Token::ImaginaryFloat(f) => {
+                self.advance();
+                Ok(Expr::ImaginaryLit(f))
+            }
             Token::Str(s) => {
                 self.advance();
                 Ok(Expr::Str(s))

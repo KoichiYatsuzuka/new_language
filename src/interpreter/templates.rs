@@ -404,7 +404,8 @@ fn subst_call_arg(arg: &CallArg, type_map: &HashMap<String, String>) -> CallArg 
 /// リテラル・識別子などは変更せず、再帰的にサブ式を置換する。
 fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
     match expr {
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::None => expr.clone(),
+        Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
+        | Expr::Str(_) | Expr::Bool(_) | Expr::None => expr.clone(),
         Expr::Ident(name) => Expr::Ident(name.clone()),
         Expr::List(items) => Expr::List(items.iter().map(|e| subst_expr(e, type_map)).collect()),
         Expr::Attr { object, attr, span } => Expr::Attr {

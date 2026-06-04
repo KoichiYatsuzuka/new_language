@@ -213,7 +213,7 @@ pub(super) fn register_builtin_globals(global: &mut HashMap<String, Var>) {
     // `len` も `Value::Type` として登録しておく — ネイティブコードが cb_get_global("len") で取得して
     // call_value_with_args 経由で呼べるようにするため。
     for name in [
-        "int", "uint", "str", "float", "bool", "dict", "set", "function", "len", "slice",
+        "int", "uint", "str", "float", "complex", "bool", "dict", "set", "function", "len", "slice",
     ] {
         global.insert(
             name.to_string(),

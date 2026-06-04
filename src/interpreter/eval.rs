@@ -235,6 +235,7 @@ impl Interpreter {
         match expr {
             Expr::Int(n) => Ok(Value::Int(*n)),
             Expr::Float(f) => Ok(Value::Float(*f)),
+            Expr::ImaginaryLit(f) => Ok(Value::Complex(0.0, *f)),
             Expr::Str(s) => Ok(Value::Str(s.clone())),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::None => Ok(Value::None),
@@ -1064,6 +1065,22 @@ impl Interpreter {
                     self.type_name(other)
                 )),
                 _ => Err("TypeError: float() takes at most 1 argument".to_string()),
+            },
+            "complex" => match vals.as_slice() {
+                [] => Ok(Value::Complex(0.0, 0.0)),
+                [Value::Complex(re, im)] => Ok(Value::Complex(*re, *im)),
+                [Value::Float(f)] => Ok(Value::Complex(*f, 0.0)),
+                [Value::Int(n)] => Ok(Value::Complex(*n as f64, 0.0)),
+                [Value::Complex(re, _), Value::Float(im2)] => Ok(Value::Complex(*re, *im2)),
+                [Value::Float(re), Value::Float(im)] => Ok(Value::Complex(*re, *im)),
+                [Value::Int(re), Value::Int(im)] => Ok(Value::Complex(*re as f64, *im as f64)),
+                [Value::Int(re), Value::Float(im)] => Ok(Value::Complex(*re as f64, *im)),
+                [Value::Float(re), Value::Int(im)] => Ok(Value::Complex(*re, *im as f64)),
+                [other] => Err(format!(
+                    "TypeError: complex() argument must be a number, not '{}'",
+                    self.type_name(other)
+                )),
+                _ => Err("TypeError: complex() takes at most 2 arguments".to_string()),
             },
             "bool" => match vals.as_slice() {
                 [] => Ok(Value::Bool(false)),

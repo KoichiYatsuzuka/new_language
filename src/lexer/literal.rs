@@ -308,6 +308,23 @@ impl Lexer {
         // 収集した文字列からアンダースコアを除去してパースする
         let raw: String = self.chars[token_start..self.pos].iter().collect();
         let clean = raw.replace('_', "");
+
+        // `j` サフィックスが続く場合は虚数リテラルとして返す
+        if self.ch() == Some('j') {
+            // 'j' の次が英数字やアンダースコアなら識別子の一部なので消費しない
+            let next_is_alnum =
+                matches!(self.ch1(), Some(c) if c.is_alphanumeric() || c == '_');
+            if !next_is_alnum {
+                self.pos += 1; // `j` を消費する
+                let imag: f64 = if is_float {
+                    clean.parse().unwrap_or(0.0)
+                } else {
+                    clean.parse::<i64>().unwrap_or(0) as f64
+                };
+                return Token::ImaginaryFloat(imag);
+            }
+        }
+
         if is_float {
             Token::Float(clean.parse().unwrap_or(0.0))
         } else {

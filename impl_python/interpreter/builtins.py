@@ -1,4 +1,4 @@
-# git SHA: 0d9de3df5f5d8ee4fbe5c6d3f7bb1ddfea131979
+# git SHA: 72d280d65fc4cfdf05891c5c08c1331617d7e194
 """Built-in functions and collection method dispatch."""
 from __future__ import annotations
 from typing import Optional, Callable, TYPE_CHECKING
@@ -7,7 +7,7 @@ from .value import (
     Value, MISSING,
     TlList, TlFixedList, TlDict, TlTuple, TlSet, TlFunction, TlOverloadedFn,
     TlGeneratorFn, TlGenerator, TlClass, TlInstance, TlType, TlTrait,
-    TlNamespace, TlSlice, TlFileObject,
+    TlNamespace, TlSlice, TlFileObject, TlComplex,
     type_name, display, is_truthy, _values_equal,
 )
 from .exceptions import RaiseSignal, StopIterationSignal
@@ -248,6 +248,20 @@ def _to_index(index: Value, length: int, known_classes: dict) -> int:
 
 def get_attr_builtin(obj: Value, attr: str, known_classes: dict) -> Value:
     """Return a bound method or attribute for built-in types."""
+
+    # ---- complex methods ----
+    if isinstance(obj, TlComplex):
+        import math as _math
+        if attr == "real":
+            re = obj.real
+            return _make_native("real", lambda a, k: re)
+        if attr == "imag":
+            im = obj.imag
+            return _make_native("imag", lambda a, k: im)
+        if attr == "angle":
+            re, im = obj.real, obj.imag
+            return _make_native("angle", lambda a, k: _math.atan2(im, re))
+        raise RuntimeError(f"AttributeError: 'complex' object has no attribute '{attr}'")
 
     # ---- fixed_list methods (read-only) ----
     if isinstance(obj, TlFixedList):
@@ -700,6 +714,21 @@ def make_builtins(known_classes: dict) -> dict[str, Value]:
             except ValueError: raise RuntimeError(f"ValueError: invalid literal for float(): '{v}'")
         raise RuntimeError(f"TypeError: float() argument must be numeric or str, not '{type_name(v)}'")
 
+    def builtin_complex(args: list, kwargs: dict) -> TlComplex:
+        import math as _math
+        if not args:
+            return TlComplex(real=0.0, imag=0.0)
+        def _to_f(v) -> float:
+            if isinstance(v, (int, float)) and not isinstance(v, bool): return float(v)
+            raise RuntimeError(f"TypeError: complex() argument must be numeric, not '{type_name(v)}'")
+        if len(args) == 1:
+            v = args[0]
+            if isinstance(v, TlComplex): return TlComplex(real=v.real, imag=v.imag)
+            return TlComplex(real=_to_f(v), imag=0.0)
+        if len(args) == 2:
+            return TlComplex(real=_to_f(args[0]), imag=_to_f(args[1]))
+        raise RuntimeError("TypeError: complex() takes at most 2 arguments")
+
     def builtin_bool(args: list, kwargs: dict) -> bool:
         return is_truthy(args[0]) if args else False
 
@@ -989,6 +1018,7 @@ def make_builtins(known_classes: dict) -> dict[str, Value]:
         "repr":      _make_native("repr", builtin_repr),
         "int":       _make_native("int", builtin_int),
         "float":     _make_native("float", builtin_float),
+        "complex":   _make_native("complex", builtin_complex),
         "bool":      _make_native("bool", builtin_bool),
         "abs":       _make_native("abs", builtin_abs),
         "min":       _make_native("min", builtin_min),

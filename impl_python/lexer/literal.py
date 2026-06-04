@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: 72d280d65fc4cfdf05891c5c08c1331617d7e194
 """String and number literal parsing (mirrors src/lexer/literal.rs)."""
 from __future__ import annotations
 from ..token import Token, TokenKind
@@ -91,6 +91,18 @@ class _LexerLiteral:
 
         raw = ''.join(self._chars[start:self._pos])
         clean = raw.replace('_', '')
+
+        # imaginary suffix 'j'
+        if self._ch() == 'j':
+            next_ch = self._ch1()
+            if next_ch is None or not (next_ch.isalnum() or next_ch == '_'):
+                self._pos += 1  # consume 'j'
+                try:
+                    imag = float(clean) if is_float else float(int(clean))
+                except ValueError:
+                    imag = 0.0
+                return Token(TokenKind.IMAGINARY_FLOAT, value=imag)
+
         if is_float:
             try:
                 return Token(TokenKind.FLOAT, value=float(clean))

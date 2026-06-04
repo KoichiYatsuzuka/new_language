@@ -118,15 +118,29 @@ impl TypeChecker {
             BinOp::Add => match (lt, rt) {
                 (Int, Int) => Int,
                 (Float, Float) | (Int, Float) | (Float, Int) => Float,
+                (Complex, Complex)
+                | (Complex, Float) | (Float, Complex)
+                | (Complex, Int)   | (Int, Complex) => Complex,
                 (Str, Str) => Str,
                 _ => Unresolved,
             },
-            BinOp::Sub | BinOp::Mul | BinOp::Pow => match (lt, rt) {
+            BinOp::Sub | BinOp::Mul => match (lt, rt) {
+                (Int, Int) => Int,
+                (Float, Float) | (Int, Float) | (Float, Int) => Float,
+                (Complex, Complex)
+                | (Complex, Float) | (Float, Complex)
+                | (Complex, Int)   | (Int, Complex) => Complex,
+                _ => Unresolved,
+            },
+            BinOp::Pow => match (lt, rt) {
                 (Int, Int) => Int,
                 (Float, Float) | (Int, Float) | (Float, Int) => Float,
                 _ => Unresolved,
             },
-            BinOp::Div => Float,
+            BinOp::Div => match (lt, rt) {
+                (Complex, _) | (_, Complex) => Complex,
+                _ => Float,
+            },
             BinOp::FloorDiv | BinOp::Mod => match (lt, rt) {
                 (Int, Int) => Int,
                 _ => Unresolved,

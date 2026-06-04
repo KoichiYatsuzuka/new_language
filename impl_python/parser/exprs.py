@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: 72d280d65fc4cfdf05891c5c08c1331617d7e194
 """Expression parsing (mirrors src/parser/exprs.rs)."""
 from __future__ import annotations
 from typing import Optional
@@ -6,7 +6,7 @@ from typing import Optional
 from ..token import TokenKind
 from ..ast import (
     BinOp, UnaryOp,
-    ExprInt, ExprFloat, ExprStr, ExprBool, ExprNone, ExprIdent,
+    ExprInt, ExprFloat, ExprImaginaryLit, ExprStr, ExprBool, ExprNone, ExprIdent,
     ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
@@ -312,6 +312,8 @@ class _ParserExprs:
             v = tok.value; self._advance(); return ExprInt(value=v)  # type: ignore[arg-type]
         if k == TokenKind.FLOAT:
             v = tok.value; self._advance(); return ExprFloat(value=v)  # type: ignore[arg-type]
+        if k == TokenKind.IMAGINARY_FLOAT:
+            v = tok.value; self._advance(); return ExprImaginaryLit(value=v)  # type: ignore[arg-type]
         if k == TokenKind.STR:
             v = tok.value; self._advance(); return ExprStr(value=v)  # type: ignore[arg-type]
         if k == TokenKind.TRUE:

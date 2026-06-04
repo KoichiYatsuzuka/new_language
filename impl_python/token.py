@@ -183,6 +183,7 @@ class TokenKind(Enum):
     # Literals (kind only; value stored in Token.value)
     INT          = auto()
     FLOAT        = auto()
+    IMAGINARY_FLOAT = auto()  # e.g. 2j → coefficient 2.0
     STR          = auto()
 
     # Identifier

@@ -76,6 +76,8 @@ pub enum InferredType {
     Int,
     /// `float` プリミティブ型。
     Float,
+    /// `complex` プリミティブ型（実部・虚部それぞれ f64）。
+    Complex,
     /// `str` プリミティブ型。
     Str,
     /// `bool` プリミティブ型。
@@ -219,6 +221,7 @@ impl InferredType {
         match ann {
             "int" => Some(Self::Int),
             "float" => Some(Self::Float),
+            "complex" => Some(Self::Complex),
             "str" => Some(Self::Str),
             "bool" => Some(Self::Bool),
             "None" => Some(Self::None),
@@ -339,6 +342,7 @@ impl std::fmt::Display for InferredType {
         match self {
             Self::Int => write!(f, "int"),
             Self::Float => write!(f, "float"),
+            Self::Complex => write!(f, "complex"),
             Self::Str => write!(f, "str"),
             Self::Bool => write!(f, "bool"),
             Self::None => write!(f, "None"),

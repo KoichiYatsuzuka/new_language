@@ -13,6 +13,7 @@ impl TypeChecker {
             // --- リテラル ---
             Expr::Int(_) => InferredType::Int,
             Expr::Float(_) => InferredType::Float,
+            Expr::ImaginaryLit(_) => InferredType::Complex,
             Expr::Str(_) => InferredType::Str,
             Expr::Bool(_) => InferredType::Bool,
             Expr::None => InferredType::None,
@@ -129,6 +130,7 @@ impl TypeChecker {
                     UnaryOp::Neg => match ty {
                         InferredType::Int => InferredType::Int,
                         InferredType::Float => InferredType::Float,
+                        InferredType::Complex => InferredType::Complex,
                         _ => InferredType::Unresolved,
                     },
                     UnaryOp::BitNot => InferredType::Int,

@@ -51,6 +51,7 @@ impl Interpreter {
             Value::Int(n) => *n != 0,
             Value::UInt(n) => *n != 0,
             Value::Float(f) => *f != 0.0,
+            Value::Complex(re, im) => *re != 0.0 || *im != 0.0,
             Value::Str(s) => !s.is_empty(),
             Value::None => false,
             Value::List(items) => !items.borrow().is_empty(),
@@ -90,6 +91,7 @@ impl Interpreter {
             Value::Int(_) => "int",
             Value::UInt(_) => "uint",
             Value::Float(_) => "float",
+            Value::Complex(_, _) => "complex",
             Value::Str(_) => "str",
             Value::Bool(_) => "bool",
             Value::None => "NoneType",
@@ -129,6 +131,7 @@ impl Interpreter {
             "int" => matches!(val, Value::Int(_)),
             "uint" => matches!(val, Value::UInt(_)),
             "float" => matches!(val, Value::Float(_)),
+            "complex" => matches!(val, Value::Complex(_, _)),
             "str" => matches!(val, Value::Str(_)),
             "bool" => matches!(val, Value::Bool(_)),
             "list" => matches!(val, Value::List(_)),
@@ -188,6 +191,7 @@ impl Interpreter {
             Value::Int(_) => type_name == "int",
             Value::UInt(_) => type_name == "uint",
             Value::Float(_) => type_name == "float",
+            Value::Complex(_, _) => type_name == "complex",
             Value::Str(_) => type_name == "str",
             Value::Bool(_) => type_name == "bool",
             Value::None => type_name == "None",
@@ -222,6 +226,23 @@ impl Interpreter {
                     format!("{f:.1}")
                 } else {
                     f.to_string()
+                }
+            }
+            Value::Complex(re, im) => {
+                let fmt_f = |f: f64| -> String {
+                    let f = if f == 0.0 { 0.0 } else { f }; // normalize -0.0
+                    if f.fract() == 0.0 && f.abs() < 1e15 {
+                        format!("{f:.1}")
+                    } else {
+                        f.to_string()
+                    }
+                };
+                let re_n = if *re == 0.0 { 0.0 } else { *re };
+                let im_n = if *im == 0.0 { 0.0 } else { *im };
+                if im_n >= 0.0 {
+                    format!("({}+{}j)", fmt_f(re_n), fmt_f(im_n))
+                } else {
+                    format!("({}-{}j)", fmt_f(re_n), fmt_f(im_n.abs()))
                 }
             }
             Value::Str(s) => s.clone(),
@@ -476,6 +497,7 @@ impl Interpreter {
             UnaryOp::Neg => match val {
                 Value::Int(n) => Ok(Value::Int(-n)),
                 Value::Float(f) => Ok(Value::Float(-f)),
+                Value::Complex(re, im) => Ok(Value::Complex(-re, -im)),
                 _ => Err(format!(
                     "TypeError: bad operand type for unary `-`: {}",
                     self.type_name(&val)
@@ -715,6 +737,93 @@ impl Interpreter {
             (BinOp::BitXor, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a ^ *b)),
             (BinOp::LShift, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a << *b)),
             (BinOp::RShift, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a >> *b)),
+            // 複素数算術（complex との加減乗除）
+            (BinOp::Add, Value::Complex(r1, i1), Value::Complex(r2, i2)) => {
+                Ok(Value::Complex(r1 + r2, i1 + i2))
+            }
+            (BinOp::Sub, Value::Complex(r1, i1), Value::Complex(r2, i2)) => {
+                Ok(Value::Complex(r1 - r2, i1 - i2))
+            }
+            (BinOp::Mul, Value::Complex(r1, i1), Value::Complex(r2, i2)) => {
+                Ok(Value::Complex(r1 * r2 - i1 * i2, r1 * i2 + i1 * r2))
+            }
+            (BinOp::Div, Value::Complex(r1, i1), Value::Complex(r2, i2)) => {
+                let denom = r2 * r2 + i2 * i2;
+                if denom == 0.0 {
+                    return Err("ZeroDivisionError: complex division by zero".to_string());
+                }
+                Ok(Value::Complex(
+                    (r1 * r2 + i1 * i2) / denom,
+                    (i1 * r2 - r1 * i2) / denom,
+                ))
+            }
+            // complex と scalar の混合
+            (BinOp::Add, Value::Complex(re, im), Value::Float(s)) => {
+                Ok(Value::Complex(re + s, *im))
+            }
+            (BinOp::Add, Value::Float(s), Value::Complex(re, im)) => {
+                Ok(Value::Complex(s + re, *im))
+            }
+            (BinOp::Add, Value::Complex(re, im), Value::Int(n)) => {
+                Ok(Value::Complex(re + *n as f64, *im))
+            }
+            (BinOp::Add, Value::Int(n), Value::Complex(re, im)) => {
+                Ok(Value::Complex(*n as f64 + re, *im))
+            }
+            (BinOp::Sub, Value::Complex(re, im), Value::Float(s)) => {
+                Ok(Value::Complex(re - s, *im))
+            }
+            (BinOp::Sub, Value::Float(s), Value::Complex(re, im)) => {
+                Ok(Value::Complex(s - re, -im))
+            }
+            (BinOp::Sub, Value::Complex(re, im), Value::Int(n)) => {
+                Ok(Value::Complex(re - *n as f64, *im))
+            }
+            (BinOp::Sub, Value::Int(n), Value::Complex(re, im)) => {
+                Ok(Value::Complex(*n as f64 - re, -im))
+            }
+            (BinOp::Mul, Value::Complex(re, im), Value::Float(s)) => {
+                Ok(Value::Complex(re * s, im * s))
+            }
+            (BinOp::Mul, Value::Float(s), Value::Complex(re, im)) => {
+                Ok(Value::Complex(s * re, s * im))
+            }
+            (BinOp::Mul, Value::Complex(re, im), Value::Int(n)) => {
+                let ns = *n as f64;
+                Ok(Value::Complex(re * ns, im * ns))
+            }
+            (BinOp::Mul, Value::Int(n), Value::Complex(re, im)) => {
+                let ns = *n as f64;
+                Ok(Value::Complex(ns * re, ns * im))
+            }
+            (BinOp::Div, Value::Complex(re, im), Value::Float(s)) => {
+                if *s == 0.0 {
+                    return Err("ZeroDivisionError: complex division by zero".to_string());
+                }
+                Ok(Value::Complex(re / s, im / s))
+            }
+            (BinOp::Div, Value::Float(s), Value::Complex(re, im)) => {
+                let denom = re * re + im * im;
+                if denom == 0.0 {
+                    return Err("ZeroDivisionError: complex division by zero".to_string());
+                }
+                Ok(Value::Complex(s * re / denom, -s * im / denom))
+            }
+            (BinOp::Div, Value::Complex(re, im), Value::Int(n)) => {
+                let ns = *n as f64;
+                if ns == 0.0 {
+                    return Err("ZeroDivisionError: complex division by zero".to_string());
+                }
+                Ok(Value::Complex(re / ns, im / ns))
+            }
+            (BinOp::Div, Value::Int(n), Value::Complex(re, im)) => {
+                let ns = *n as f64;
+                let denom = re * re + im * im;
+                if denom == 0.0 {
+                    return Err("ZeroDivisionError: complex division by zero".to_string());
+                }
+                Ok(Value::Complex(ns * re / denom, -ns * im / denom))
+            }
             _ => Err(format!(
                 "TypeError: unsupported operand types for `{op:?}`: {} and {}",
                 self.type_name(&lv),
@@ -738,6 +847,7 @@ impl Interpreter {
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::UInt(a), Value::UInt(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Complex(r1, i1), Value::Complex(r2, i2)) => r1 == r2 && i1 == i2,
             // int と float の混在比較: int を float に昇格して比較
             (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
             (Value::Float(a), Value::Int(b)) => *a == (*b as f64),

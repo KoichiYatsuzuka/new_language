@@ -322,6 +322,8 @@ pub enum Token {
     // Literals
     Int(i64),
     Float(f64),
+    /// Imaginary-unit literal: the coefficient before `j` (e.g. `2j` → `ImaginaryFloat(2.0)`).
+    ImaginaryFloat(f64),
     Str(String),
     /// f-string: セグメントのリスト（リテラル文字列 + 補間式ソーステキスト）
     FStr(Vec<FStrPart>),
@@ -488,6 +490,7 @@ impl std::fmt::Display for Token {
             Token::RBrace => write!(f, "}}"),
             Token::Int(n) => write!(f, "{n}"),
             Token::Float(n) => write!(f, "{n}"),
+            Token::ImaginaryFloat(n) => write!(f, "{n}j"),
             Token::Str(s) => write!(f, "{s:?}"),
             Token::FStr(_) => write!(f, "f-string"),
             Token::Ident(s) => write!(f, "{s}"),

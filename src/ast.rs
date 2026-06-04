@@ -198,6 +198,8 @@ pub enum Expr {
     Int(i64),
     /// 浮動小数点リテラル。
     Float(f64),
+    /// 虚数リテラル（例: `2j` → 係数 `2.0`）。評価結果は `Value::Complex(0.0, coeff)`。
+    ImaginaryLit(f64),
     /// 文字列リテラル（シングル・ダブル・トリプルクォート対応）。
     Str(String),
     /// 真偽値リテラル (`True` / `False`)。

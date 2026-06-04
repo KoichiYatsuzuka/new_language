@@ -2188,7 +2188,8 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
 
 fn expr_eligible(expr: &Expr) -> bool {
     match expr {
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::None => true,
+        Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
+        | Expr::Str(_) | Expr::Bool(_) | Expr::None => true,
         Expr::Ident(_) => true,
         Expr::BinOp { left, right, .. } => expr_eligible(left) && expr_eligible(right),
         Expr::UnaryOp { operand, .. } => expr_eligible(operand),
