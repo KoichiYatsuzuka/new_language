@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import { promises as fsPromises } from 'fs';
 import * as path from 'path';
 import { type LangType, BUILTIN_RETURN_TYPES, BUILTIN_TYPE_METHODS, FUNC_DEF_RE } from './builtins';
 import { type TK, type Token, tokenize } from './tokenizer';
@@ -586,25 +587,23 @@ interface PyModuleInfo {
     classes: Map<string, Map<string, string>>;
 }
 
-function collectPyModuleInfo(moduleName: string, docDir: string, extraPaths: string[] = []): PyModuleInfo {
+async function collectPyModuleInfo(moduleName: string, docDir: string, extraPaths: string[] = []): Promise<PyModuleInfo> {
     const funcs = new Map<string, string>();
     const sigs = new Map<string, string>();
     const classes = new Map<string, Map<string, string>>();
 
     let content: string | undefined;
+    outer:
     for (const searchDir of [docDir, ...extraPaths]) {
-        if (content !== undefined) break;
         for (const ext of ['.pyi', '.py']) {
-            if (content !== undefined) break;
-            // Try directory path first: 'pkg.mod' → 'pkg/mod.py'
             for (const candidate of [
                 path.join(searchDir, ...moduleName.split('.')) + ext,
                 path.join(searchDir, moduleName + ext),
             ]) {
-                if (fs.existsSync(candidate)) {
-                    try { content = fs.readFileSync(candidate, 'utf8'); } catch { /* ignore */ }
-                    if (content !== undefined) break;
-                }
+                try {
+                    content = await fsPromises.readFile(candidate, 'utf8');
+                    break outer;
+                } catch { /* try next */ }
             }
         }
     }
@@ -654,26 +653,32 @@ function collectPyModuleInfo(moduleName: string, docDir: string, extraPaths: str
     return { funcs, sigs, classes };
 }
 
-function collectAllPyModuleInfo(document: vscode.TextDocument): DocModuleInfo {
+async function collectAllPyModuleInfo(document: vscode.TextDocument): Promise<DocModuleInfo> {
     const funcTypes = new Map<string, Map<string, string>>();
     const funcSigs  = new Map<string, Map<string, string>>();
     const classMethods = new Map<string, Map<string, string>>();
     const cppClasses = new Map<string, CppClassInfo>();
     const docDir = path.dirname(document.uri.fsPath);
     const pythonLibPaths: string[] = vscode.workspace.getConfiguration('havakyrie').get('pythonLibraryPaths', []);
+
+    const imports: Array<[string, string, string | undefined, string]> = [];
     for (let i = 0; i < document.lineCount; i++) {
         const stripped = stripComment(document.lineAt(i).text);
         const m = stripped.match(IMPORT_RE);
         if (!m) continue;
         const [, importKind, modulePath, , stubName, explicitAlias] = m;
         const alias = importAlias(modulePath, explicitAlias);
+        imports.push([importKind, modulePath, stubName, alias]);
+    }
+
+    await Promise.all(imports.map(async ([importKind, modulePath, stubName, alias]) => {
         if (importKindOf(importKind) === 'py') {
-            const info = collectPyModuleInfo(modulePath, docDir, pythonLibPaths);
+            const info = await collectPyModuleInfo(modulePath, docDir, pythonLibPaths);
             funcTypes.set(alias, info.funcs);
             funcSigs.set(alias, info.sigs);
             for (const [cls, methods] of info.classes) classMethods.set(cls, methods);
         } else {
-            const info = loadNativeModuleInfo(importKind, modulePath, stubName, docDir);
+            const info = await loadNativeModuleInfo(importKind, modulePath, stubName, docDir);
             if (info.funcs.size > 0 || info.classes.size > 0) {
                 funcTypes.set(alias, info.funcs);
                 funcSigs.set(alias, info.sigs);
@@ -685,7 +690,8 @@ function collectAllPyModuleInfo(document: vscode.TextDocument): DocModuleInfo {
                 }
             }
         }
-    }
+    }));
+
     return { funcTypes, funcSigs, classMethods, cppClasses };
 }
 
@@ -1058,23 +1064,45 @@ export class DocumentAnalysis {
     readonly classTraitsMap: ReadonlyMap<string, string[]>;
 
     private static readonly _cache = new Map<string, { version: number; data: DocumentAnalysis }>();
+    private static readonly _pending = new Map<string, { version: number; promise: Promise<DocumentAnalysis> }>();
 
-    static for(document: vscode.TextDocument): DocumentAnalysis {
+    static for(document: vscode.TextDocument): Promise<DocumentAnalysis> {
         const key = document.uri.toString();
+        const version = document.version;
+
         const cached = DocumentAnalysis._cache.get(key);
-        if (cached?.version === document.version) return cached.data;
-        const data = new DocumentAnalysis(document);
-        DocumentAnalysis._cache.set(key, { version: document.version, data });
-        return data;
+        if (cached?.version === version) return Promise.resolve(cached.data);
+
+        const pending = DocumentAnalysis._pending.get(key);
+        if (pending?.version === version) return pending.promise;
+
+        const promise = DocumentAnalysis._build(document).then(data => {
+            DocumentAnalysis._cache.set(key, { version, data });
+            DocumentAnalysis._pending.delete(key);
+            return data;
+        });
+        DocumentAnalysis._pending.set(key, { version, promise });
+        return promise;
     }
 
-    private constructor(document: vscode.TextDocument) {
+    /** Remove cached data for a document (call when document is closed). */
+    static evict(uri: vscode.Uri): void {
+        const key = uri.toString();
+        DocumentAnalysis._cache.delete(key);
+        DocumentAnalysis._pending.delete(key);
+    }
+
+    private static async _build(document: vscode.TextDocument): Promise<DocumentAnalysis> {
+        const moduleInfo = await collectAllPyModuleInfo(document);
+        return new DocumentAnalysis(document, moduleInfo);
+    }
+
+    private constructor(document: vscode.TextDocument, moduleInfo: DocModuleInfo) {
         // Phase 1: import aliases
         const importAliasMap = collectImportAliases(document);
         this.importAliases = new Set(importAliasMap.keys());
 
-        // Phase 2: module info
-        const moduleInfo = collectAllPyModuleInfo(document);
+        // Phase 2: module info (pre-fetched asynchronously)
         this.importFuncTypes = moduleInfo.funcTypes;
         this.importFuncSigs  = moduleInfo.funcSigs;
         this.cppClasses      = moduleInfo.cppClasses;

@@ -4,6 +4,7 @@ exports.deactivate = exports.activate = void 0;
 const vscode = require("vscode");
 const path = require("path");
 const type_infer_1 = require("./type_infer");
+const analysis_1 = require("./analysis");
 // ===== REPL terminal =====
 const REPL_SENTINEL = '##REPL_EXEC##';
 let replTerminal;
@@ -69,7 +70,7 @@ function activate(context) {
             clearTimeout(existing);
         debounceMap.set(key, setTimeout(() => {
             debounceMap.delete(key);
-            diagCollection.set(document.uri, (0, type_infer_1.provideDiagnostics)(document));
+            (0, type_infer_1.provideDiagnostics)(document).then(diags => diagCollection.set(document.uri, diags));
         }, 400));
     }
     context.subscriptions.push(diagCollection, vscode.workspace.onDidOpenTextDocument(scheduleDiagnostics), vscode.workspace.onDidChangeTextDocument(e => scheduleDiagnostics(e.document)), vscode.workspace.onDidCloseTextDocument(doc => {
@@ -80,6 +81,7 @@ function activate(context) {
             clearTimeout(t);
             debounceMap.delete(key);
         }
+        analysis_1.DocumentAnalysis.evict(doc.uri);
     }));
     vscode.workspace.textDocuments.forEach(scheduleDiagnostics);
 }

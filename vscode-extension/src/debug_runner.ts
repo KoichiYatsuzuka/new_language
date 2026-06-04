@@ -198,7 +198,7 @@ function wordPos(line: string, name: string): number {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-function main(): void {
+async function main(): Promise<void> {
     const filePath = process.argv[2];
     if (!filePath) {
         console.error('Usage: node run_debug.js <path/to/file.hv>');
@@ -215,11 +215,11 @@ function main(): void {
     const doc = new MockTextDocument(absPath, content) as unknown as vscode.TextDocument;
 
     // Run all providers
-    const analysis = DocumentAnalysis.for(doc);
-    const hintsAll  = provideInlayHints(doc, { start: { line: 0, character: 0 }, end: { line: doc.lineCount, character: 0 } } as unknown as vscode.Range);
-    const semTokens = provideDocumentSemanticTokens(doc);
+    const analysis = await DocumentAnalysis.for(doc);
+    const hintsAll  = await provideInlayHints(doc, { start: { line: 0, character: 0 }, end: { line: doc.lineCount, character: 0 } } as unknown as vscode.Range);
+    const semTokens = await provideDocumentSemanticTokens(doc);
     const tokenList: SemanticTokenEntry[] = (semTokens as unknown as { tokenList: SemanticTokenEntry[] }).tokenList ?? [];
-    const diagnostics = provideDiagnostics(doc);
+    const diagnostics = await provideDiagnostics(doc);
 
     // Group by line
     const hintsByLine = new Map<number, Array<{ col: number; text: string }>>();
@@ -253,7 +253,7 @@ function main(): void {
         const nameIdx  = wordPos(lineText, sym.name);
         if (nameIdx < 0) continue;
         const pos = { line: sym.line, character: nameIdx };
-        const hover = provideHover(doc, pos as unknown as vscode.Position);
+        const hover = await provideHover(doc, pos as unknown as vscode.Position);
         if (!hover) continue;
         const hl = extractHoverLines(hover);
         if (hl.length === 0) continue;
@@ -339,7 +339,7 @@ function main(): void {
         if (nameIdx < 0) continue;
 
         const pos   = { line: sym.line, character: nameIdx };
-        const hover = provideHover(doc, pos as unknown as vscode.Position);
+        const hover = await provideHover(doc, pos as unknown as vscode.Position);
 
         const kindCol  = KIND_COLOR[sym.kind] ?? A.bWhite;
         const location = c(A.gray, `L:${String(sym.line + 1).padStart(4, '0')}`);
@@ -377,4 +377,4 @@ function main(): void {
     process.stdout.write('\n' + sep + '\n\n');
 }
 
-main();
+main().catch(err => { console.error(err); process.exit(1); });

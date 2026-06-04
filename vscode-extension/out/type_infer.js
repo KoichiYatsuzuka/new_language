@@ -248,12 +248,12 @@ function findClassMember(document, className, memberName, _visited = new Set()) 
     }
     return undefined;
 }
-function resolveMemberItems(document, position, objName) {
+async function resolveMemberItems(document, position, objName) {
     if (objName === 'self') {
         const cls = findEnclosingClass(document, position.line);
         return cls ? collectClassMemberItems(document, cls) : [];
     }
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     const sym = (0, analysis_1.selectHoverSymbol)(a.symbols, objName, position.line);
     if (!sym)
         return [];
@@ -377,7 +377,7 @@ function typeAnnotationPositions(rawLine) {
     return out;
 }
 // ===== Providers =====
-function provideHover(document, position) {
+async function provideHover(document, position) {
     const range = document.getWordRangeAtPosition(position, /[A-Za-z_]\w*/);
     if (!range)
         return undefined;
@@ -387,7 +387,7 @@ function provideHover(document, position) {
     const dotAccess = prefixStr.match(/([A-Za-z_]\w*)\.$/);
     if (dotAccess) {
         const objName = dotAccess[1];
-        const a = analysis_1.DocumentAnalysis.for(document);
+        const a = await analysis_1.DocumentAnalysis.for(document);
         const retType = a.importFuncTypes.get(objName)?.get(name);
         if (retType !== undefined) {
             const md = new vscode.MarkdownString(undefined, true);
@@ -443,7 +443,7 @@ function provideHover(document, position) {
     }
     // Imported class type hover (C++/Rust)
     {
-        const a = analysis_1.DocumentAnalysis.for(document);
+        const a = await analysis_1.DocumentAnalysis.for(document);
         const cppCls = a.cppClasses.get(name);
         if (cppCls) {
             const md = new vscode.MarkdownString(undefined, true);
@@ -458,7 +458,7 @@ function provideHover(document, position) {
             return new vscode.Hover(md, range);
         }
     }
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     const symbol = (0, analysis_1.selectHoverSymbol)(a.symbols, name, position.line);
     if (!symbol) {
         const builtinSig = analysis_1.builtinStub.sigs.get(name);
@@ -486,9 +486,9 @@ function provideHover(document, position) {
     }), range);
 }
 exports.provideHover = provideHover;
-function provideInlayHints(document, _range) {
+async function provideInlayHints(document, _range) {
     const hints = [];
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     // Inlay hints on function definition lines (only when no annotation)
     for (const def of a.funcDefs) {
         if (def.annotation !== undefined)
@@ -592,7 +592,7 @@ function provideInlayHints(document, _range) {
     return hints;
 }
 exports.provideInlayHints = provideInlayHints;
-function provideCompletionItems(document, position) {
+async function provideCompletionItems(document, position) {
     const prefix = document.lineAt(position.line).text.substring(0, position.character);
     const dotMatch = prefix.match(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)?$/);
     if (dotMatch) {
@@ -600,7 +600,7 @@ function provideCompletionItems(document, position) {
     }
     const items = [];
     const seen = new Set();
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     for (const sym of a.symbols) {
         if (sym.kind === 'variable' && sym.line > position.line)
             continue;
@@ -756,7 +756,7 @@ function provideDocumentSymbols(document) {
     return result;
 }
 exports.provideDocumentSymbols = provideDocumentSymbols;
-function provideSignatureHelp(document, position) {
+async function provideSignatureHelp(document, position) {
     const prefix = document.lineAt(position.line).text.substring(0, position.character);
     let depth = 0;
     let activeParam = 0;
@@ -782,7 +782,7 @@ function provideSignatureHelp(document, position) {
     }
     if (!funcName)
         return undefined;
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     const funcSym = a.symbols.find(s => s.name === funcName && s.kind === 'function');
     let sigStr;
     let sigDoc;
@@ -818,12 +818,12 @@ function provideSignatureHelp(document, position) {
     return help;
 }
 exports.provideSignatureHelp = provideSignatureHelp;
-function provideDefinition(document, position) {
+async function provideDefinition(document, position) {
     const range = document.getWordRangeAtPosition(position, /[A-Za-z_]\w*/);
     if (!range)
         return undefined;
     const name = document.getText(range);
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     const symbol = (0, analysis_1.selectHoverSymbol)(a.symbols, name, position.line);
     if (!symbol)
         return undefined;
@@ -835,9 +835,9 @@ function provideDefinition(document, position) {
     return new vscode.Location(document.uri, targetRange);
 }
 exports.provideDefinition = provideDefinition;
-function provideDiagnostics(document) {
+async function provideDiagnostics(document) {
     const diagnostics = [];
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     const env = new Map();
     for (let i = 0; i < document.lineCount; i++) {
         const raw = document.lineAt(i).text;
@@ -938,9 +938,9 @@ function provideDiagnostics(document) {
     return diagnostics;
 }
 exports.provideDiagnostics = provideDiagnostics;
-function provideDocumentSemanticTokens(document) {
+async function provideDocumentSemanticTokens(document) {
     const builder = new vscode.SemanticTokensBuilder(exports.SEMANTIC_TOKENS_LEGEND);
-    const a = analysis_1.DocumentAnalysis.for(document);
+    const a = await analysis_1.DocumentAnalysis.for(document);
     const userTypes = new Set();
     for (let i = 0; i < document.lineCount; i++) {
         const stripped = (0, analysis_1.stripComment)(document.lineAt(i).text);

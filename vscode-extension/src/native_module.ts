@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { promises as fsPromises } from 'fs';
 import * as path from 'path';
 import type { LangType } from './builtins';
 import { FUNC_DEF_RE } from './builtins';
@@ -49,7 +50,7 @@ export interface NativeModuleInfo {
     classes: Map<string, CppClassInfo>;
 }
 
-export function parseCHeader(content: string, dir: string = '', _depth: number = 0): NativeModuleInfo {
+export async function parseCHeader(content: string, dir: string = '', _depth: number = 0): Promise<NativeModuleInfo> {
     const funcs = new Map<string, LangType>();
     const sigs = new Map<string, string>();
     const src = content.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
@@ -70,17 +71,20 @@ export function parseCHeader(content: string, dir: string = '', _depth: number =
     if (dir && _depth < 2) {
         const includeRe = /^#include\s+"([^"]+)"/gm;
         let inc: RegExpExecArray | null;
+        const subPromises: Promise<void>[] = [];
         while ((inc = includeRe.exec(content)) !== null) {
             const incPath = path.join(dir, inc[1]);
-            if (fs.existsSync(incPath)) {
+            subPromises.push((async (p: string) => {
                 try {
-                    const sub = parseCHeader(fs.readFileSync(incPath, 'utf8'), path.dirname(incPath), _depth + 1);
+                    const subContent = await fsPromises.readFile(p, 'utf8');
+                    const sub = await parseCHeader(subContent, path.dirname(p), _depth + 1);
                     for (const [k, v] of sub.funcs) if (!funcs.has(k)) funcs.set(k, v);
                     for (const [k, v] of sub.sigs)  if (!sigs.has(k))  sigs.set(k, v);
                     for (const [k, v] of sub.classes) if (!classes.has(k)) classes.set(k, v);
                 } catch { /* ignore unreadable sub-headers */ }
-            }
+            })(incPath));
         }
+        await Promise.all(subPromises);
     }
     return { funcs, sigs, docs: new Map(), classes };
 }
@@ -288,20 +292,24 @@ interface HvConfig {
 }
 
 /** Walk up from startDir to find the directory containing hv_config.json. */
-function findHvConfigDir(startDir: string): string | undefined {
+async function findHvConfigDir(startDir: string): Promise<string | undefined> {
     let current = startDir;
     for (;;) {
-        if (fs.existsSync(path.join(current, 'hv_config.json'))) return current;
-        const parent = path.dirname(current);
-        if (parent === current) return undefined;
-        current = parent;
+        try {
+            await fsPromises.access(path.join(current, 'hv_config.json'));
+            return current;
+        } catch {
+            const parent = path.dirname(current);
+            if (parent === current) return undefined;
+            current = parent;
+        }
     }
 }
 
-function loadHvConfig(startDir: string): HvConfig | undefined {
-    const dir = findHvConfigDir(startDir);
+async function loadHvConfig(startDir: string): Promise<HvConfig | undefined> {
+    const dir = await findHvConfigDir(startDir);
     if (!dir) return undefined;
-    try { return JSON.parse(fs.readFileSync(path.join(dir, 'hv_config.json'), 'utf8')); }
+    try { return JSON.parse(await fsPromises.readFile(path.join(dir, 'hv_config.json'), 'utf8')); }
     catch { return undefined; }
 }
 
@@ -437,12 +445,12 @@ export function parseRustLib(source: string): NativeModuleInfo {
 
 // ===== loadNativeModuleInfo =====
 
-export function loadNativeModuleInfo(
+export async function loadNativeModuleInfo(
     importKind: string,
     modulePath: string,
     stubName: string | undefined,
     docDir: string
-): NativeModuleInfo {
+): Promise<NativeModuleInfo> {
     const empty: NativeModuleInfo = { funcs: new Map(), sigs: new Map(), docs: new Map(), classes: new Map() };
     if (importKindOf(importKind) === 'cpp') {
         const candidates: string[] = [];
@@ -453,16 +461,17 @@ export function loadNativeModuleInfo(
         candidates.push(path.join(docDir, ...parts) + '.h');
         candidates.push(path.join(docDir, parts[parts.length - 1] + '.h'));
         for (const hPath of candidates) {
-            if (fs.existsSync(hPath)) {
-                try { return parseCHeader(fs.readFileSync(hPath, 'utf8'), path.dirname(hPath)); } catch { /* ignore */ }
-            }
+            try {
+                const content = await fsPromises.readFile(hPath, 'utf8');
+                return parseCHeader(content, path.dirname(hPath));
+            } catch { /* try next candidate */ }
         }
         return empty;
     }
     // ── import[rs]: parse Rust source via hv_config.json crates_path ──────────
     if (importKindOf(importKind) === 'rs') {
-        const config    = loadHvConfig(docDir);
-        const configDir = findHvConfigDir(docDir) ?? docDir;
+        const config    = await loadHvConfig(docDir);
+        const configDir = await findHvConfigDir(docDir) ?? docDir;
         const rawPaths  = config?.rust?.crates_path;
         const cratesPaths: string[] = Array.isArray(rawPaths) ? rawPaths : rawPaths ? [rawPaths] : [];
         for (const cratesPath of cratesPaths) {
@@ -470,9 +479,10 @@ export function loadNativeModuleInfo(
                 ? cratesPath
                 : path.resolve(configDir, cratesPath);
             const libRs = path.join(resolved, modulePath, 'src', 'lib.rs');
-            if (fs.existsSync(libRs)) {
-                try { return parseRustLib(fs.readFileSync(libRs, 'utf8')); } catch { /* ignore */ }
-            }
+            try {
+                const content = await fsPromises.readFile(libRs, 'utf8');
+                return parseRustLib(content);
+            } catch { /* try next candidate */ }
         }
         return empty;
     }
@@ -485,9 +495,10 @@ export function loadNativeModuleInfo(
         path.join(filePath, '__init__.hv'),
     ];
     for (const candidate of candidates) {
-        if (fs.existsSync(candidate)) {
-            try { return parseTlStub(fs.readFileSync(candidate, 'utf8')); } catch { /* ignore */ }
-        }
+        try {
+            const content = await fsPromises.readFile(candidate, 'utf8');
+            return parseTlStub(content);
+        } catch { /* try next candidate */ }
     }
     return empty;
 }

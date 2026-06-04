@@ -264,17 +264,17 @@ function findClassMember(
     return undefined;
 }
 
-function resolveMemberItems(
+async function resolveMemberItems(
     document: vscode.TextDocument,
     position: vscode.Position,
     objName: string
-): vscode.CompletionItem[] {
+): Promise<vscode.CompletionItem[]> {
     if (objName === 'self') {
         const cls = findEnclosingClass(document, position.line);
         return cls ? collectClassMemberItems(document, cls) : [];
     }
 
-    const a = DocumentAnalysis.for(document);
+    const a = await DocumentAnalysis.for(document);
     const sym = selectHoverSymbol(a.symbols, objName, position.line);
     if (!sym) return [];
 
@@ -391,10 +391,10 @@ function typeAnnotationPositions(rawLine: string): Set<number> {
 
 // ===== Providers =====
 
-export function provideHover(
+export async function provideHover(
     document: vscode.TextDocument,
     position: vscode.Position
-): vscode.Hover | undefined {
+): Promise<vscode.Hover | undefined> {
     const range = document.getWordRangeAtPosition(position, /[A-Za-z_]\w*/);
     if (!range) return undefined;
 
@@ -405,7 +405,7 @@ export function provideHover(
 
     if (dotAccess) {
         const objName = dotAccess[1];
-        const a = DocumentAnalysis.for(document);
+        const a = await DocumentAnalysis.for(document);
 
         const retType = a.importFuncTypes.get(objName)?.get(name);
         if (retType !== undefined) {
@@ -465,7 +465,7 @@ export function provideHover(
 
     // Imported class type hover (C++/Rust)
     {
-        const a = DocumentAnalysis.for(document);
+        const a = await DocumentAnalysis.for(document);
         const cppCls = (a.cppClasses as Map<string, CppClassInfo>).get(name);
         if (cppCls) {
             const md = new vscode.MarkdownString(undefined, true);
@@ -481,7 +481,7 @@ export function provideHover(
         }
     }
 
-    const a = DocumentAnalysis.for(document);
+    const a = await DocumentAnalysis.for(document);
     const symbol = selectHoverSymbol(a.symbols, name, position.line);
     if (!symbol) {
         const builtinSig = builtinStub.sigs.get(name);
@@ -514,12 +514,12 @@ export function provideHover(
     }), range);
 }
 
-export function provideInlayHints(
+export async function provideInlayHints(
     document: vscode.TextDocument,
     _range: vscode.Range
-): vscode.InlayHint[] {
+): Promise<vscode.InlayHint[]> {
     const hints: vscode.InlayHint[] = [];
-    const a = DocumentAnalysis.for(document);
+    const a = await DocumentAnalysis.for(document);
 
     // Inlay hints on function definition lines (only when no annotation)
     for (const def of a.funcDefs) {
@@ -630,10 +630,10 @@ export function provideInlayHints(
     return hints;
 }
 
-export function provideCompletionItems(
+export async function provideCompletionItems(
     document: vscode.TextDocument,
     position: vscode.Position
-): vscode.CompletionItem[] {
+): Promise<vscode.CompletionItem[]> {
     const prefix = document.lineAt(position.line).text.substring(0, position.character);
 
     const dotMatch = prefix.match(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)?$/);
@@ -644,7 +644,7 @@ export function provideCompletionItems(
     const items: vscode.CompletionItem[] = [];
     const seen = new Set<string>();
 
-    const a = DocumentAnalysis.for(document);
+    const a = await DocumentAnalysis.for(document);
     for (const sym of a.symbols) {
         if (sym.kind === 'variable' && sym.line > position.line) continue;
         if (seen.has(sym.name)) continue;
@@ -780,10 +780,10 @@ export function provideDocumentSymbols(
     return result;
 }
 
-export function provideSignatureHelp(
+export async function provideSignatureHelp(
     document: vscode.TextDocument,
     position: vscode.Position
-): vscode.SignatureHelp | undefined {
+): Promise<vscode.SignatureHelp | undefined> {
     const prefix = document.lineAt(position.line).text.substring(0, position.character);
     let depth = 0;
     let activeParam = 0;
@@ -806,7 +806,7 @@ export function provideSignatureHelp(
 
     if (!funcName) return undefined;
 
-    const a = DocumentAnalysis.for(document);
+    const a = await DocumentAnalysis.for(document);
     const funcSym = a.symbols.find(s => s.name === funcName && s.kind === 'function');
     let sigStr: string | undefined;
     let sigDoc: vscode.MarkdownString | undefined;
@@ -841,15 +841,15 @@ export function provideSignatureHelp(
     return help;
 }
 
-export function provideDefinition(
+export async function provideDefinition(
     document: vscode.TextDocument,
     position: vscode.Position
-): vscode.Location | undefined {
+): Promise<vscode.Location | undefined> {
     const range = document.getWordRangeAtPosition(position, /[A-Za-z_]\w*/);
     if (!range) return undefined;
 
     const name = document.getText(range);
-    const a = DocumentAnalysis.for(document);
+    const a = await DocumentAnalysis.for(document);
     const symbol = selectHoverSymbol(a.symbols, name, position.line);
     if (!symbol) return undefined;
 
@@ -862,9 +862,9 @@ export function provideDefinition(
     return new vscode.Location(document.uri, targetRange);
 }
 
-export function provideDiagnostics(document: vscode.TextDocument): vscode.Diagnostic[] {
+export async function provideDiagnostics(document: vscode.TextDocument): Promise<vscode.Diagnostic[]> {
     const diagnostics: vscode.Diagnostic[] = [];
-    const a = DocumentAnalysis.for(document);
+    const a = await DocumentAnalysis.for(document);
     const env = new Map<string, LangType>();
 
     for (let i = 0; i < document.lineCount; i++) {
@@ -982,9 +982,9 @@ export function provideDiagnostics(document: vscode.TextDocument): vscode.Diagno
     return diagnostics;
 }
 
-export function provideDocumentSemanticTokens(document: vscode.TextDocument): vscode.SemanticTokens {
+export async function provideDocumentSemanticTokens(document: vscode.TextDocument): Promise<vscode.SemanticTokens> {
     const builder = new vscode.SemanticTokensBuilder(SEMANTIC_TOKENS_LEGEND);
-    const a = DocumentAnalysis.for(document);
+    const a = await DocumentAnalysis.for(document);
 
     const userTypes = new Set<string>();
     for (let i = 0; i < document.lineCount; i++) {

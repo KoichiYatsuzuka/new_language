@@ -12,6 +12,7 @@ import {
     provideDiagnostics,
     initBuiltinStub,
 } from './type_infer';
+import { DocumentAnalysis } from './analysis';
 
 // ===== REPL terminal =====
 
@@ -118,7 +119,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (existing) clearTimeout(existing);
         debounceMap.set(key, setTimeout(() => {
             debounceMap.delete(key);
-            diagCollection.set(document.uri, provideDiagnostics(document));
+            provideDiagnostics(document).then(diags => diagCollection.set(document.uri, diags));
         }, 400));
     }
 
@@ -131,6 +132,7 @@ export function activate(context: vscode.ExtensionContext) {
             const key = doc.uri.toString();
             const t = debounceMap.get(key);
             if (t) { clearTimeout(t); debounceMap.delete(key); }
+            DocumentAnalysis.evict(doc.uri);
         })
     );
 
