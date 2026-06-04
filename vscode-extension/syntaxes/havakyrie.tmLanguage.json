@@ -6,6 +6,7 @@
     { "include": "#comment" },
     { "include": "#string" },
     { "include": "#number" },
+    { "include": "#modifier-member-def" },
     { "include": "#function-def" },
     { "include": "#class-def" },
     { "include": "#new-type-def" },
@@ -20,6 +21,28 @@
     { "include": "#variable" }
   ],
   "repository": {
+    "modifier-member-def": {
+      "patterns": [
+        {
+          "comment": "static fn/gen or class_method fn/gen — method definition with a modifier",
+          "match": "\\b(static|class_method)\\s+(fn|gen)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.other.hv" },
+            "2": { "name": "storage.type.function.hv" },
+            "3": { "name": "entity.name.function.hv" }
+          }
+        },
+        {
+          "comment": "static mut/let/const — static field declaration",
+          "match": "\\b(static)\\s+(mut|let|const)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.other.hv" },
+            "2": { "name": "storage.modifier.hv" },
+            "3": { "name": "entity.name.field.hv" }
+          }
+        }
+      ]
+    },
     "import-decl": {
       "comment": "Handles all import variants: import[py], import[py-int], import[tl], import[tlc], import[cpp-lib], import[cpp-dll], and bare import",
       "match": "\\b(import(?:\\[(?:py(?:-int)?|hvc?|cpp-(?:lib|dll))\\])?)\\s+([\\w.]+)(?:\\s+(with)\\s+(\\w+))?(?:\\s+(as)\\s+([A-Za-z_]\\w*))?",
@@ -170,7 +193,7 @@
           "name": "keyword.other.access.hv"
         },
         {
-          "match": "\\b(del|global|nonlocal|with|assert|lambda|new_type|static)\\b",
+          "match": "\\b(del|global|nonlocal|with|assert|lambda|new_type|static|class_method)\\b",
           "name": "keyword.other.hv"
         },
         {
