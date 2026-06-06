@@ -1,0 +1,95 @@
+# langtons_ant.hv — Langton's Ant cellular automaton visualised with DxLib
+#
+# Rules:
+#   - On a WHITE cell: turn 90° RIGHT, flip to BLACK, move forward
+#   - On a BLACK cell: turn 90° LEFT,  flip to WHITE, move forward
+#
+# Grid   : 640×480 pixels (one cell = one pixel), wrapping at all four edges.
+# Window : 640×480 px (default DxLib window size).
+#
+# Drawing is delegated to the native-compiled ant_render module.
+# Compile once before running:
+#   cargo run --release -- --compile examples/practical_examples/DxLib/ant_render.hv
+#
+# Run:
+#   cargo run -- examples/practical_examples/DxLib/langtons_ant.hv
+
+import ant_render as render
+from ant_render import Cell
+import[cpp-lib] DxLib.DxLib as dx
+
+# ── Window setup (must come before DxLib_Init) ────────────────────────────────
+dx.ChangeWindowMode(1)
+dx.SetGraphMode(640, 480, 32, 60)
+dx.SetWaitVSyncFlag(0)
+
+if dx.DxLib_Init() == -1:
+    raise RuntimeError("DxLib_Init failed")
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+const WIDTH  = 640
+const HEIGHT = 480
+
+const DIR_UP    = 0
+const DIR_RIGHT = 1
+const DIR_DOWN  = 2
+const DIR_LEFT  = 3
+
+# ── Grid: persistent mutable fixed_list[Cell] (0=white, 1=black) ─────────────
+# create_flat_int_list allocates the flat byte buffer directly in O(n) —
+# no Cell instances created.  flat_get_int / flat_set_int update element
+# i's v-field in O(1) via the RefCell-backed buffer.
+let grid: fixed_list[Cell] = create_flat_int_list(WIDTH * HEIGHT, 0)
+
+# ── Ant state ─────────────────────────────────────────────────────────────────
+mut ant_x   = WIDTH  // 2
+mut ant_y   = HEIGHT // 2
+mut ant_dir = DIR_UP
+
+# ── Colours ───────────────────────────────────────────────────────────────────
+let col_white = dx.GetColor(255, 255, 255)
+let col_black = dx.GetColor(  0,   0,   0)
+let col_ant   = dx.GetColor(255,  50,  50)
+
+const STEPS_PER_FRAME = 100
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
+mut running = True
+
+while running:
+    if dx.ProcessMessage() != 0:
+        running = False
+        continue
+
+    # ── Simulate STEPS_PER_FRAME steps ────────────────────────────────────────
+    mut step = 0
+    while step < STEPS_PER_FRAME:
+        let idx: int = ant_y * WIDTH + ant_x
+        let cell: int = flat_get_int(grid, idx)
+
+        if cell == 1:
+            ant_dir = (ant_dir + 3) % 4
+            flat_set_int(grid, idx, 0)
+        else:
+            ant_dir = (ant_dir + 1) % 4
+            flat_set_int(grid, idx, 1)
+
+        if ant_dir == DIR_UP:
+            ant_y = (ant_y - 1 + HEIGHT) % HEIGHT
+        elif ant_dir == DIR_RIGHT:
+            ant_x = (ant_x + 1) % WIDTH
+        elif ant_dir == DIR_DOWN:
+            ant_y = (ant_y + 1) % HEIGHT
+        else:
+            ant_x = (ant_x - 1 + WIDTH) % WIDTH
+
+        step += 1
+
+    # ── Draw: white background + compiled flat-path drawing kernel ────────────
+    dx.DrawFillBox(0, 0, WIDTH - 1, HEIGHT - 1, col_white)
+    render.draw_cells(grid, WIDTH, HEIGHT, dx.DrawPixel,
+                      col_black, ant_x, ant_y, col_ant)
+    dx.ScreenFlip()
+
+# ── Cleanup ───────────────────────────────────────────────────────────────────
+dx.DxLib_End()

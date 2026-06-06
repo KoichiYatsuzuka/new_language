@@ -1,0 +1,28 @@
+# ant_render.hv — native-compiled drawing kernel for Langton's Ant
+#
+# Cell.v == 0 → white,  Cell.v == 1 → black.
+# draw_cells receives a fixed_list[Cell] and uses the flat-iteration fast path:
+#   - CB_FLAT_DATA_PTR / CB_FLAT_LEN called once at loop entry
+#   - item.v loaded as a direct i64 load per element — zero per-element callbacks
+#   - CB_CALL_FN only for pixels that are actually black
+#
+# Compile:
+#   cargo run --release -- --compile examples/practical_examples/DxLib/ant_render.hv
+
+class Cell:
+    mut v: int
+
+    fn __init__(mut self, v: int) -> None:
+        self.v = v
+
+fn draw_cells(grid: fixed_list[Cell], width: int, height: int,
+              draw_pixel: function,
+              col_black: int, ant_x: int, ant_y: int, col_ant: int) -> None:
+    mut x: int = 0
+    for item in grid:
+        if item.v == 1:
+            let cx: int = x % width
+            let cy: int = x // width
+            draw_pixel(cx, cy, col_black)
+        x += 1
+    draw_pixel(ant_x, ant_y, col_ant)

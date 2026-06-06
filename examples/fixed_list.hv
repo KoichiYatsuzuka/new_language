@@ -1,7 +1,9 @@
-# fixed_list.hv — demonstrates the fixed_list type and list_like trait.
+# fixed_list.hv — demonstrates the mutable fixed_list type and list_like trait.
 #
-# fixed_list[T] is a read-only flat-memory list created by casting list[T].
-# Both list and fixed_list implement the list_like trait.
+# fixed_list[T] is a flat-memory list created by casting list[T].
+# When declared as `mut`, supports append with automatic growth (doubles capacity).
+# freeze trims unused allocation back to len.
+# Both list and fixed_list implement the list_like trait (including append).
 
 class Vec2:
     mut x: float
@@ -18,29 +20,36 @@ fn sum_x(items: list_like[Vec2]) -> float:
         total += v.x
     return total
 
-# Build a mutable list
-mut pts: list[Vec2] = [Vec2(1.0, 2.0), Vec2(3.0, 4.0), Vec2(5.0, 6.0)]
-print("sum_x(pts) =", sum_x(pts))   # 9.0
+# Build a mutable list and append to it
+mut lst: list[Vec2] = [Vec2(1.0, 2.0)]
+lst.append(Vec2(3.0, 4.0))
+lst.append(Vec2(5.0, 6.0))
+print("sum_x(lst) =", sum_x(lst))   # 9.0
 
-# Cast list => fixed_list  (uses flat conversion: fields in alpha order x, y)
-let fl: fixed_list[Vec2] = pts => fixed_list[Vec2]
-print("sum_x(fl) =", sum_x(fl))     # 9.0
+# Cast list => fixed_list (flat conversion: fields alphabetical x, y)
+mut fl: fixed_list[Vec2] = lst => fixed_list[Vec2]
+print("len(fl) =", len(fl))                    # 3
+print("allocated_size =", fl.allocated_size())  # 3
 
-# Subscript access
+# Append to mutable fixed_list (triggers capacity growth)
+fl.append(Vec2(7.0, 8.0))
+print("after append: len =", len(fl))               # 4
+print("after append: allocated_size =", fl.allocated_size())  # 6 (doubled from 3)
+print("sum_x(fl) =", sum_x(fl))     # 16.0
+
+# Subscript access works as before
 let first = fl[0]
 print("fl[0].x =", first.x)         # 1.0
+print("fl[3].y =", fl[3].y)         # 8.0
 
-# Membership check
-let v3 = Vec2(3.0, 4.0)
-# in operator works via __contains__
-print("fl[1].y =", fl[1].y)             # 4.0
+# freeze trims unused allocation to exactly len
+freeze fl
+print("after freeze: len =", len(fl))               # 4
+print("after freeze: allocated_size =", fl.allocated_size())  # 4
 
 # Cast back fixed_list => list
 let back: list[Vec2] = fl => list[Vec2]
-print("len(back) =", len(back))          # 3
-
-# Original list is unaffected
-print("len(pts) =", len(pts))       # 3
+print("len(back) =", len(back))      # 4
 
 # Iteration
 for p in fl:

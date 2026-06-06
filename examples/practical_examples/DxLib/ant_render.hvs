@@ -1,0 +1,8 @@
+class Cell->Cell:
+    mut v: int
+    fn __init__(mut self, v: int) -> None:
+        ...
+
+
+fn draw_cells(grid: fixed_list[Cell], width: int, height: int, draw_pixel: function, col_black: int, ant_x: int, ant_y: int, col_ant: int) -> None:
+    ...

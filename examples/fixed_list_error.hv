@@ -1,8 +1,17 @@
+# fixed_list_error.hv — error example for fixed_list.
+#
+# Appending an instance of the wrong class raises a TypeError.
+
 class Foo:
     mut x: float
     fn __init__(mut self, x: float) -> None:
         self.x = x
 
+class Bar:
+    mut y: float
+    fn __init__(mut self, y: float) -> None:
+        self.y = y
+
 mut pts: list[Foo] = [Foo(1.0), Foo(2.0)]
-let fl = pts => fixed_list[Foo]
-fl.append(Foo(3.0))   # TypeError: 'fixed_list' is immutable
+mut fl = pts => fixed_list[Foo]
+fl.append(Bar(3.0))   # TypeError: expected instance of 'Foo', got 'Bar'
