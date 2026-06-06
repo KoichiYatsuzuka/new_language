@@ -114,13 +114,13 @@ impl Interpreter {
     /// `let` バインドされたインスタンスに適用される。以降は `mut self` メソッド呼び出しが禁止される。
     ///
     /// - `inst_rc`: 不変化するインスタンスへの共有参照
-    /// 同一クラス・全フィールドが int/float の `Value::List` を平坦バイト配列に変換する。
+    /// 同一クラス・全フィールドが SWD 型（int/float または別の SWD クラス）の
+    /// `Value::List` を平坦バイト配列に変換する。
     /// 変換できない場合は `None` を返す。フィールドはアルファベット順で格納される。
     pub(super) fn try_flat_freeze(items: &[Value]) -> Option<Value> {
         if items.is_empty() {
             return None;
         }
-        // First item must be an Instance
         let first_rc = match &items[0] {
             Value::Instance(rc) => rc.clone(),
             _ => return None,
@@ -128,57 +128,22 @@ impl Interpreter {
         let class = first_rc.borrow().class.clone();
         let class_name = class.name.clone();
 
-        // Build sorted field list from first instance
-        let fields_sorted: Vec<(String, super::value::FlatFieldTy)> = {
+        let layout = {
             let inst = first_rc.borrow();
-            let mut flds: Vec<(String, super::value::FlatFieldTy)> = inst.fields
-                .iter()
-                .map(|(name, (val, _))| {
-                    let fty = match val {
-                        Value::Float(_) => Some(super::value::FlatFieldTy::Float),
-                        Value::Int(_)   => Some(super::value::FlatFieldTy::Int),
-                        _ => None,
-                    }?;
-                    Some((name.clone(), fty))
-                })
-                .collect::<Option<Vec<_>>>()?;
-            flds.sort_by(|a, b| a.0.cmp(&b.0));
-            flds
+            Self::build_flat_layout_from_instance(&inst, class.clone())?
         };
-        if fields_sorted.is_empty() {
-            return None;
-        }
-        let stride = fields_sorted.len() * 8;
-        let mut data: Vec<u8> = Vec::with_capacity(items.len() * stride);
 
+        let mut data: Vec<u8> = Vec::with_capacity(items.len() * layout.stride);
         for item in items {
             let inst_rc = match item {
                 Value::Instance(rc) => rc.clone(),
                 _ => return None,
             };
             let inst = inst_rc.borrow();
-            if inst.class.name != class_name {
-                return None;
-            }
-            for (field_name, field_ty) in &fields_sorted {
-                match inst.fields.get(field_name) {
-                    Some((Value::Float(f), _)) if *field_ty == super::value::FlatFieldTy::Float => {
-                        data.extend_from_slice(&f.to_le_bytes());
-                    }
-                    Some((Value::Int(n), _)) if *field_ty == super::value::FlatFieldTy::Int => {
-                        data.extend_from_slice(&n.to_le_bytes());
-                    }
-                    _ => return None,
-                }
-            }
+            if inst.class.name != class_name { return None; }
+            Self::write_flat_instance(&inst.fields, &layout.fields, &mut data)?;
         }
 
-        let layout = super::value::FlatLayout {
-            class_name,
-            fields: fields_sorted,
-            stride,
-            class,
-        };
         let len = items.len();
         Some(Value::FrozenList {
             state: Rc::new(RefCell::new(super::value::FlatListData {
@@ -188,6 +153,69 @@ impl Interpreter {
             })),
             layout: Rc::new(layout),
         })
+    }
+
+    /// インスタンスの fields から `FlatLayout` を再帰的に構築する。
+    fn build_flat_layout_from_instance(
+        inst: &InstanceData,
+        class: Rc<ClassValue>,
+    ) -> Option<super::value::FlatLayout> {
+        let mut flds: Vec<(String, super::value::FlatFieldTy)> = inst.fields
+            .iter()
+            .map(|(name, (val, _))| {
+                let fty = Self::val_to_flat_field_ty(val)?;
+                Some((name.clone(), fty))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        if flds.is_empty() { return None; }
+        flds.sort_by(|a, b| a.0.cmp(&b.0));
+        let stride: usize = flds.iter().map(|(_, ft)| ft.stride()).sum();
+        Some(super::value::FlatLayout {
+            class_name: class.name.clone(),
+            fields: flds,
+            stride,
+            class,
+        })
+    }
+
+    /// 単一の `Value` から `FlatFieldTy` を導出する（再帰的）。
+    fn val_to_flat_field_ty(val: &Value) -> Option<super::value::FlatFieldTy> {
+        match val {
+            Value::Int(_)   => Some(super::value::FlatFieldTy::Int),
+            Value::Float(_) => Some(super::value::FlatFieldTy::Float),
+            Value::Instance(rc) => {
+                let inst = rc.borrow();
+                let sub = Self::build_flat_layout_from_instance(&inst, inst.class.clone())?;
+                Some(super::value::FlatFieldTy::Struct(Rc::new(sub)))
+            }
+            _ => None,
+        }
+    }
+
+    /// `fields` マップの値を `layout_fields` の順序に従って `data` に書き出す（再帰的）。
+    fn write_flat_instance(
+        fields: &std::collections::HashMap<String, (Value, bool)>,
+        layout_fields: &[(String, super::value::FlatFieldTy)],
+        data: &mut Vec<u8>,
+    ) -> Option<()> {
+        for (field_name, field_ty) in layout_fields {
+            let (val, _) = fields.get(field_name)?;
+            match (field_ty, val) {
+                (super::value::FlatFieldTy::Int, Value::Int(n)) => {
+                    data.extend_from_slice(&n.to_le_bytes());
+                }
+                (super::value::FlatFieldTy::Float, Value::Float(f)) => {
+                    data.extend_from_slice(&f.to_le_bytes());
+                }
+                (super::value::FlatFieldTy::Struct(sub_layout), Value::Instance(rc)) => {
+                    let inst = rc.borrow();
+                    if inst.class.name != sub_layout.class_name { return None; }
+                    Self::write_flat_instance(&inst.fields, &sub_layout.fields, data)?;
+                }
+                _ => return None,
+            }
+        }
+        Some(())
     }
 
     pub(super) fn freeze_instance(inst_rc: &Rc<RefCell<InstanceData>>) {
@@ -455,27 +483,16 @@ impl Interpreter {
                                     st.data.resize(new_cap * layout.stride, 0);
                                     st.allocated_size = new_cap;
                                 }
-                                // Write each field in layout order (alphabetical)
-                                let offset = st.len * layout.stride;
-                                for (fi, (field_name, field_ty)) in layout.fields.iter().enumerate() {
-                                    let field_offset = offset + fi * 8;
-                                    match (field_ty, inst.fields.get(field_name).map(|(v, _)| v)) {
-                                        (super::value::FlatFieldTy::Int, Some(Value::Int(n))) => {
-                                            st.data[field_offset..field_offset + 8]
-                                                .copy_from_slice(&n.to_le_bytes());
-                                        }
-                                        (super::value::FlatFieldTy::Float, Some(Value::Float(f))) => {
-                                            st.data[field_offset..field_offset + 8]
-                                                .copy_from_slice(&f.to_le_bytes());
-                                        }
-                                        _ => {
-                                            return Err(format!(
-                                                "TypeError: fixed_list.append(): field '{}' type mismatch",
-                                                field_name
-                                            ));
-                                        }
-                                    }
-                                }
+                                // Write each field recursively (alphabetical order)
+                                let base_offset = st.len * layout.stride;
+                                let mut tmp = Vec::with_capacity(layout.stride);
+                                Self::write_flat_instance(&inst.fields, &layout.fields, &mut tmp)
+                                    .ok_or_else(|| format!(
+                                        "TypeError: fixed_list.append(): field type mismatch for class '{}'",
+                                        layout.class_name
+                                    ))?;
+                                st.data[base_offset..base_offset + layout.stride]
+                                    .copy_from_slice(&tmp);
                                 st.len += 1;
                                 Ok(Value::None)
                             }

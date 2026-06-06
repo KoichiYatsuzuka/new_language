@@ -421,6 +421,14 @@ pub struct HvCallbacks {
     /// Return the element count of a FrozenList.
     /// Returns 0 if the handle is not a FrozenList.
     pub flat_len: extern "C" fn(i64) -> i64,
+
+    // ── Function-object trampoline (field 37) ─────────────────────────────────
+    /// Given a function handle, return a C-callable pointer with signature
+    /// `fn(i64 fn_h, *const i64 args, i32 n) -> i64`.
+    /// Native compiled functions cache this pointer once at entry for each
+    /// `function[...]->R` parameter, then call through it in the hot path
+    /// instead of going through the HvCallbacks GEP chain at every call site.
+    pub fn_trampoline: extern "C" fn(i64) -> *const (),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
@@ -1145,6 +1153,14 @@ extern "C" fn hv_flat_len(h: i64) -> i64 {
     }
 }
 
+/// 関数ハンドルに対応するCコーラブルなトランポリン関数ポインタを返す。
+/// 返されたポインタは `fn(i64 fn_h, *const i64 args, i32 n) -> i64` として呼び出せる。
+/// コンパイル済み関数はこのポインタを関数エントリ時に一度だけキャッシュし、
+/// ホットループ内の `function[...]->R` パラメータ呼び出しを最適化する。
+extern "C" fn hv_fn_trampoline(_fn_h: i64) -> *const () {
+    hv_call_fn as *const ()
+}
+
 // ── Static callbacks instance ─────────────────────────────────────────────────
 
 static CALLBACKS: HvCallbacks = HvCallbacks {
@@ -1185,4 +1201,5 @@ static CALLBACKS: HvCallbacks = HvCallbacks {
     get_int_field: hv_get_int_field,
     flat_data_ptr: hv_flat_data_ptr,
     flat_len: hv_flat_len,
+    fn_trampoline: hv_fn_trampoline,
 };

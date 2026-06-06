@@ -26,7 +26,7 @@ use inkwell::types::{BasicType, FloatType, IntType, PointerType, StructType, Voi
 use inkwell::values::{BasicValue, BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue};
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
 
-use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Param, Stmt, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, FieldKind, MatchPattern, Param, Stmt, UnaryOp};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -77,6 +77,68 @@ struct FnSig {
     param_mutabilities: Vec<bool>,
 }
 
+/// フラット配列の末端プリミティブフィールド（SWD クラスは再帰展開済み）。
+#[derive(Clone)]
+struct FlatLeaf {
+    /// ループ変数からのドット区切りパス（例: `"v"`, `"start.x"`）。
+    path: String,
+    /// 要素先頭からのバイトオフセット。
+    byte_offset: usize,
+    /// 型（Int または Float）。
+    ty: Ty,
+}
+
+/// `let fixed_list[ClassName]` パラメータの平坦レイアウト情報。
+#[derive(Clone)]
+struct FlatListInfo {
+    leaves: Vec<FlatLeaf>,
+    stride: usize,
+}
+
+/// ネストした属性アクセス式をドット区切りパスに変換する。変換できなければ `None`。
+fn preread_path(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Ident(n) => Some(n.clone()),
+        Expr::Attr { object, attr, .. } => {
+            let base = preread_path(object)?;
+            Some(format!("{base}.{attr}"))
+        }
+        _ => None,
+    }
+}
+
+/// クラス `class_name` の全 SWD 末端フィールドを収集する（再帰的）。
+fn collect_flat_leaves(
+    all_class_fields: &HashMap<String, Vec<(String, String)>>,
+    class_name: &str,
+    path_prefix: &str,
+    byte_base: usize,
+) -> Vec<FlatLeaf> {
+    let raw = match all_class_fields.get(class_name) {
+        Some(f) if !f.is_empty() => f.clone(),
+        _ => return vec![],
+    };
+    let mut sorted = raw;
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut leaves = Vec::new();
+    let mut byte_offset = byte_base;
+    for (fname, ftype) in sorted {
+        let full_path = if path_prefix.is_empty() { fname.clone() } else { format!("{path_prefix}.{fname}") };
+        match ftype.as_str() {
+            "int" => { leaves.push(FlatLeaf { path: full_path, byte_offset, ty: Ty::Int }); byte_offset += 8; }
+            "float" => { leaves.push(FlatLeaf { path: full_path, byte_offset, ty: Ty::Float }); byte_offset += 8; }
+            nested => {
+                let sub = collect_flat_leaves(all_class_fields, nested, &full_path, byte_offset);
+                if sub.is_empty() { return vec![]; }
+                byte_offset += sub.len() * 8;
+                leaves.extend(sub);
+            }
+        }
+    }
+    leaves
+}
+
 fn ann_ty(s: Option<&str>) -> Ty {
     match s {
         Some("int")   => Ty::Int,
@@ -111,6 +173,9 @@ const CB_MAKE_STR:      u32 = 3;
 const CB_MAKE_LIST:     u32 = 4;
 const CB_MAKE_TUPLE:    u32 = 5;
 const CB_MAKE_DICT:     u32 = 6;
+const CB_FLAT_DATA_PTR:  u32 = 35;
+const CB_FLAT_LEN:       u32 = 36;
+const CB_FN_TRAMPOLINE:  u32 = 37;
 
 // ── Code generation context ───────────────────────────────────────────────────
 
@@ -125,7 +190,7 @@ struct GenCtx<'ctx> {
     f64:  FloatType<'ctx>,
     ptr:  PointerType<'ctx>,
     void: VoidType<'ctx>,
-    /// %HvCallbacks struct (27 ptr fields)
+    /// %HvCallbacks struct (38 ptr fields)
     cb_ty: StructType<'ctx>,
     /// @CB global: ptr to HvCallbacks
     cb_global: PointerValue<'ctx>,
@@ -134,20 +199,31 @@ struct GenCtx<'ctx> {
     module_fns: HashSet<String>,
     fn_sigs:    HashMap<String, FnSig>,
 
+    // All instance fields for every non-template class (for flat SWD leaf collection)
+    all_class_fields: HashMap<String, Vec<(String, String)>>,
+
     // Per-function state
     fn_val:     FunctionValue<'ctx>,
     locals:     HashMap<String, (PointerValue<'ctx>, Ty)>,
     loop_stack: Vec<(inkwell::basic_block::BasicBlock<'ctx>,
                      inkwell::basic_block::BasicBlock<'ctx>)>,
     counter:    usize,
+
+    // Flat list iteration support
+    // "param_name" → FlatListInfo for `let fixed_list[T]` params where T is SWD
+    flat_list_params: HashMap<String, FlatListInfo>,
+    // Dotted path (e.g. "item.v", "item.start.x") → (alloca holding value, Ty)
+    // Populated at flat loop body entry; used by gen_expr for zero-callback field reads
+    preread_fields: HashMap<String, (PointerValue<'ctx>, Ty)>,
 }
 
 impl<'ctx> GenCtx<'ctx> {
     fn new(
-        ctx:       &'ctx Context,
-        module:    &Module<'ctx>,
-        module_fns: HashSet<String>,
-        fn_sigs:    HashMap<String, FnSig>,
+        ctx:              &'ctx Context,
+        module:           &Module<'ctx>,
+        module_fns:       HashSet<String>,
+        fn_sigs:          HashMap<String, FnSig>,
+        all_class_fields: HashMap<String, Vec<(String, String)>>,
     ) -> Self {
         let i1   = ctx.bool_type();
         let i32  = ctx.i32_type();
@@ -156,8 +232,8 @@ impl<'ctx> GenCtx<'ctx> {
         let ptr  = ctx.ptr_type(AddressSpace::default());
         let void = ctx.void_type();
 
-        // %HvCallbacks = { ptr × 27 }
-        let fields: Vec<_> = (0..27).map(|_| ptr.as_basic_type_enum()).collect();
+        // %HvCallbacks = { ptr × 38 } (must match HvCallbacks in native_api.rs)
+        let fields: Vec<_> = (0..38).map(|_| ptr.as_basic_type_enum()).collect();
         let cb_ty = ctx.struct_type(&fields, false);
 
         // @CB = internal global ptr null
@@ -174,9 +250,11 @@ impl<'ctx> GenCtx<'ctx> {
 
         GenCtx {
             ctx, bld, i1, i32, i64, f64, ptr, void, cb_ty, cb_global,
-            module_fns, fn_sigs,
+            module_fns, fn_sigs, all_class_fields,
             fn_val, locals: HashMap::new(),
             loop_stack: Vec::new(), counter: 0,
+            flat_list_params: HashMap::new(),
+            preread_fields: HashMap::new(),
         }
     }
 
@@ -399,6 +477,13 @@ impl<'ctx> GenCtx<'ctx> {
                     }
                 }
                 (self.gen_call(module, func, args).into(), Ty::Handle)
+            }
+
+            Expr::Attr { .. } if preread_path(expr).and_then(|p| self.preread_fields.get(&p)).is_some() => {
+                let path = preread_path(expr).unwrap();
+                let (alloca, ty) = *self.preread_fields.get(&path).unwrap();
+                let v = self.load_alloca(alloca, ty);
+                (v, ty)
             }
 
             Expr::Attr { object, attr, .. } | Expr::TraitAccess { object, attr, .. } => {
@@ -964,6 +1049,104 @@ impl<'ctx> GenCtx<'ctx> {
                 let body_bb = self.ctx.append_basic_block(self.fn_val, "for_body");
                 let exit_bb = self.ctx.append_basic_block(self.fn_val, "for_exit");
 
+                // ── Flat list fast path ───────────────────────────────────────
+                let flat_info: Option<FlatListInfo> = if let Expr::Ident(n) = iter {
+                    self.flat_list_params.get(n.as_str()).cloned()
+                } else { None };
+
+                if let Some(fi) = flat_info {
+                    let (iv, it) = self.gen_expr(module, iter);
+                    let ih = self.to_handle(iv, it);
+
+                    // Get flat data pointer (returned as i64 = raw *u8) and element count.
+                    let flat_ptr_i64 = self.call_cb_i64(CB_FLAT_DATA_PTR,
+                        &[self.i64.into()], &[ih.into()], "fptr_i");
+                    let flat_len = self.call_cb_i64(CB_FLAT_LEN,
+                        &[self.i64.into()], &[ih.into()], "flen");
+
+                    // Store in allocas so they survive across basic-block boundaries.
+                    let fptr_al = self.build_entry_alloca("__fptr", Ty::Handle);
+                    let flen_al = self.build_entry_alloca("__flen", Ty::Handle);
+                    self.bld.build_store(flat_ptr_i64, fptr_al).unwrap();
+                    self.bld.build_store(flat_len, flen_al).unwrap();
+
+                    // Loop index alloca.
+                    let idx_al = self.build_entry_alloca("__fidx", Ty::Int);
+                    self.bld.build_store(self.i64.const_zero(), idx_al).unwrap();
+
+                    // Allocate per-leaf pre-read allocas and register in preread_fields.
+                    for leaf in &fi.leaves {
+                        let al = self.build_entry_alloca(
+                            &format!("_prf_{}_{}", target, leaf.path.replace('.', "_")),
+                            leaf.ty,
+                        );
+                        self.preread_fields.insert(
+                            format!("{target}.{}", leaf.path), (al, leaf.ty)
+                        );
+                    }
+
+                    // Dummy handle alloca for the loop variable (non-field use → TL_NONE).
+                    let tgt_al = self.build_entry_alloca(target, Ty::Handle);
+                    self.bld.build_store(self.i64.const_zero(), tgt_al).unwrap();
+                    self.locals.insert(target.clone(), (tgt_al, Ty::Handle));
+
+                    self.bld.build_unconditional_branch(loop_bb).unwrap();
+                    self.bld.position_at_end(loop_bb);
+
+                    // Loop condition: idx < flat_len
+                    let idx_r = self.bld.build_load(self.i64, idx_al, "idx").unwrap().into_int_value();
+                    let len_r = self.bld.build_load(self.i64, flen_al, "len").unwrap().into_int_value();
+                    let done  = self.bld.build_int_compare(IntPredicate::SGE, idx_r, len_r, "done").unwrap();
+                    self.bld.build_conditional_branch(done, exit_bb, body_bb).unwrap();
+
+                    self.bld.position_at_end(body_bb);
+
+                    // Compute element base pointer: flat_ptr + idx * stride
+                    let fptr_i64 = self.bld.build_load(self.i64, fptr_al, "fptrv").unwrap().into_int_value();
+                    let data_ptr = self.bld.build_int_to_ptr(fptr_i64, self.ptr, "dptr").unwrap();
+                    let stride   = self.i64.const_int(fi.stride as u64, false);
+                    let byte_off = self.bld.build_int_mul(idx_r, stride, "boff").unwrap();
+                    let i8_ty    = self.ctx.i8_type();
+                    let elem_ptr = self.bld.build_gep(i8_ty, data_ptr, &[byte_off], "eptr").unwrap();
+
+                    // Load each leaf field into its pre-read alloca.
+                    for leaf in &fi.leaves {
+                        let key = format!("{target}.{}", leaf.path);
+                        let (alloca, _) = *self.preread_fields.get(&key).unwrap();
+                        let field_off = self.i64.const_int(leaf.byte_offset as u64, false);
+                        let field_ptr = if leaf.byte_offset == 0 {
+                            elem_ptr
+                        } else {
+                            self.bld.build_gep(i8_ty, elem_ptr, &[field_off], "fptr2").unwrap()
+                        };
+                        let val = match leaf.ty {
+                            Ty::Int   => self.bld.build_load(self.i64, field_ptr, "fv").unwrap(),
+                            Ty::Float => self.bld.build_load(self.f64, field_ptr, "fv").unwrap(),
+                            _ => unreachable!(),
+                        };
+                        self.bld.build_store(val, alloca).unwrap();
+                    }
+
+                    self.loop_stack.push((loop_bb, exit_bb));
+                    let term = self.gen_stmts(module, body);
+                    self.loop_stack.pop();
+
+                    // Increment index and branch back.
+                    if !term {
+                        let idx_next = self.bld.build_int_add(
+                            idx_r, self.i64.const_int(1, false), "idx_next").unwrap();
+                        self.bld.build_store(idx_next, idx_al).unwrap();
+                        self.bld.build_unconditional_branch(loop_bb).unwrap();
+                    }
+                    self.bld.position_at_end(exit_bb);
+
+                    // Clean up preread_fields for this loop variable's leaves.
+                    for leaf in &fi.leaves {
+                        self.preread_fields.remove(&format!("{target}.{}", leaf.path));
+                    }
+
+                } else {
+                // ── Original CB_ITER_FROM / CB_ITER_NEXT path ────────────────
                 let (iv, it) = self.gen_expr(module, iter);
                 let ih       = self.to_handle(iv, it);
                 let iter_h   = self.call_cb_i64(CB_ITER_FROM, &[self.i64.into()],
@@ -990,6 +1173,8 @@ impl<'ctx> GenCtx<'ctx> {
                 self.loop_stack.pop();
                 if !term { self.bld.build_unconditional_branch(loop_bb).unwrap(); }
                 self.bld.position_at_end(exit_bb);
+                } // end else (original path)
+
                 false
             }
 
@@ -1050,6 +1235,20 @@ impl<'ctx> GenCtx<'ctx> {
         self.locals.clear();
         self.loop_stack.clear();
         self.counter = 0;
+        self.flat_list_params.clear();
+        self.preread_fields.clear();
+
+        // Populate flat_list_params for `let fixed_list[T]` params where T is SWD.
+        for p in params {
+            if p.mutable { continue; }
+            let Some(ann) = &p.type_ann else { continue };
+            if !ann.starts_with("fixed_list[") || !ann.ends_with(']') { continue; }
+            let class_name = &ann[11..ann.len() - 1];
+            let leaves = collect_flat_leaves(&self.all_class_fields, class_name, "", 0);
+            if leaves.is_empty() { continue; }
+            let stride = leaves.len() * 8;
+            self.flat_list_params.insert(p.name.clone(), FlatListInfo { leaves, stride });
+        }
 
         // Build _impl(i64, i64, ...) -> i64
         let param_types: Vec<_> = (0..params.len()).map(|_| self.i64.into()).collect();
@@ -1296,6 +1495,25 @@ pub fn compile_jit(stmts: &[crate::ast::Stmt])
         }
     )).collect();
 
+    // Collect all non-template class instance fields for flat SWD leaf detection.
+    let all_class_fields: HashMap<String, Vec<(String, String)>> = stmts.iter()
+        .filter_map(|s| {
+            if let Stmt::ClassDef { name, body, template_params, .. } = s {
+                if !template_params.is_empty() { return None; }
+                let fields: Vec<(String, String)> = body.iter()
+                    .filter_map(|st| {
+                        if let Stmt::Field { name: fname, type_ann, kind, .. } = st {
+                            if matches!(kind, FieldKind::Mut | FieldKind::Let) {
+                                Some((fname.clone(), type_ann.clone()))
+                            } else { None }
+                        } else { None }
+                    })
+                    .collect();
+                Some((name.clone(), fields))
+            } else { None }
+        })
+        .collect();
+
     let context = Context::create();
     let module  = context.create_module("hv_native");
 
@@ -1316,7 +1534,7 @@ pub fn compile_jit(stmts: &[crate::ast::Stmt])
         bld.build_return(None).unwrap();
     }
 
-    let mut gen = GenCtx::new(&context, &module, module_fns, fn_sigs);
+    let mut gen = GenCtx::new(&context, &module, module_fns, fn_sigs, all_class_fields);
 
     let fn_names: Vec<&str> = eligible.iter().map(|f| f.name).collect();
     eprintln!("NativeLib: compiling {} function(s): {}", fn_names.len(), fn_names.join(", "));
@@ -1392,9 +1610,27 @@ pub fn get_bitcode(stmts: &[crate::ast::Stmt]) -> Result<(Vec<u8>, Vec<crate::pa
         }
     )).collect();
 
+    let all_class_fields: HashMap<String, Vec<(String, String)>> = stmts.iter()
+        .filter_map(|s| {
+            if let Stmt::ClassDef { name, body, template_params, .. } = s {
+                if !template_params.is_empty() { return None; }
+                let fields: Vec<(String, String)> = body.iter()
+                    .filter_map(|st| {
+                        if let Stmt::Field { name: fname, type_ann, kind, .. } = st {
+                            if matches!(kind, FieldKind::Mut | FieldKind::Let) {
+                                Some((fname.clone(), type_ann.clone()))
+                            } else { None }
+                        } else { None }
+                    })
+                    .collect();
+                Some((name.clone(), fields))
+            } else { None }
+        })
+        .collect();
+
     let context = Context::create();
     let module  = context.create_module("hv_native");
-    let mut gen = GenCtx::new(&context, &module, module_fns, fn_sigs);
+    let mut gen = GenCtx::new(&context, &module, module_fns, fn_sigs, all_class_fields);
     for f in &eligible {
         gen.emit_fn(&module, f.name, f.params, f.body);
     }
