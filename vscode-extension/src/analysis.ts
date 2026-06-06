@@ -73,6 +73,7 @@ export interface FuncDef {
     defIndent: number;
     annotation: LangType | undefined;
     enclosingClass?: string;
+    sigEndLine?: number;
 }
 
 type DocModuleInfo = {
@@ -722,6 +723,33 @@ export function collectConstructorTypes(document: vscode.TextDocument): Map<stri
     return constructors;
 }
 
+export function gatherFuncDefLines(
+    document: vscode.TextDocument,
+    startLine: number
+): { fullLine: string; lastLine: number } | undefined {
+    const stripped = stripComment(document.lineAt(startLine).text);
+    if (!/^\s*(fn|gen)\s/.test(stripped)) return undefined;
+    let depth = 0;
+    let foundOpen = false;
+    for (const ch of stripped) {
+        if (ch === '(') { depth++; foundOpen = true; }
+        else if (ch === ')') depth--;
+    }
+    if (!foundOpen) return undefined;
+    if (depth === 0) return { fullLine: stripped, lastLine: startLine };
+    let combined = stripped;
+    for (let j = startLine + 1; j < document.lineCount; j++) {
+        const cont = stripComment(document.lineAt(j).text).trim();
+        for (const ch of cont) {
+            if (ch === '(') depth++;
+            else if (ch === ')') depth--;
+        }
+        combined += ' ' + cont;
+        if (depth <= 0) return { fullLine: combined, lastLine: j };
+    }
+    return undefined;
+}
+
 export function collectFuncDefs(document: vscode.TextDocument): FuncDef[] {
     const defs: FuncDef[] = [];
     const classStack: Array<{ name: string; indent: number }> = [];
@@ -734,7 +762,8 @@ export function collectFuncDefs(document: vscode.TextDocument): FuncDef[] {
         }
         const classM = stripped.match(CLASS_DEF_RE);
         if (classM) { classStack.push({ name: classM[3], indent: (classM[1] ?? '').length }); continue; }
-        const m = stripped.match(FUNC_DEF_RE);
+        const funcDef = gatherFuncDefLines(document, i);
+        const m = funcDef?.fullLine.match(FUNC_DEF_RE);
         if (!m) continue;
         const [, indentStr, kind, name, , retAnnotation] = m;
         defs.push({
@@ -744,7 +773,9 @@ export function collectFuncDefs(document: vscode.TextDocument): FuncDef[] {
             defIndent: indentStr.length,
             annotation: parseTypeAnnotation(retAnnotation),
             enclosingClass: classStack.at(-1)?.name,
+            sigEndLine: funcDef!.lastLine,
         });
+        i = funcDef!.lastLine;
     }
     return defs;
 }
@@ -864,23 +895,26 @@ function collectHoverSymbols(
             continue;
         }
 
-        const funcMatch = stripped.match(FUNC_DEF_RE);
+        const funcDefLines = gatherFuncDefLines(document, i);
+        const funcMatch = funcDefLines?.fullLine.match(FUNC_DEF_RE);
         if (funcMatch) {
             const [, indentStr, kind, name, params, retAnnotation] = funcMatch;
             const enclosingClass = classContextStack.at(-1)?.name;
             const rawReturnType = cleanTypeAnnotation(retAnnotation) ?? funcEnv.get(name) ?? 'unknown';
             const returnType = resolveSelf(rawReturnType, enclosingClass);
+            const defLine = i;
+            i = funcDefLines!.lastLine;
             symbols.push({
                 name,
                 kind: 'function',
-                line: i,
+                line: defLine,
                 type: returnType,
                 signature: `${kind} ${name}(${params}) -> ${returnType}`,
-                doc: getDocstringAfter(document, i, indentStr.length),
+                doc: getDocstringAfter(document, defLine, indentStr.length),
                 access: currentAccess,
             });
             const bodyEndLine = findBodyEndLine(document, i, indentStr.length);
-            for (const paramSym of parseParams(params, i, bodyEndLine)) {
+            for (const paramSym of parseParams(params, defLine, bodyEndLine)) {
                 const resolvedType = resolveSelf(paramSym.type ?? 'unknown', enclosingClass);
                 const resolvedSym: HoverSymbol = resolvedType !== paramSym.type ? { ...paramSym, type: resolvedType } : paramSym;
                 symbols.push(resolvedSym);

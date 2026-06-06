@@ -5,7 +5,7 @@ import {
     stripComment, splitComma, inferExprType, resolveSelf,
     cleanTypeAnnotation, extractTupleElemTypes, extractIterElemType, findBodyEndLine,
     getDocstringAfter, selectHoverSymbol,
-    collectFuncDefs, collectConstructorTypes, collectTemplateParams,
+    collectFuncDefs, collectConstructorTypes, collectTemplateParams, gatherFuncDefLines,
     DECL_RE, STATIC_DECL_RE, HOVER_DECL_RE, CLASS_DEF_RE, NEW_TYPE_RE,
     IMPORT_RE, TUPLE_DECL_RE, FOR_LOOP_RE,
     DocumentAnalysis, builtinStub, initBuiltinStub,
@@ -527,10 +527,11 @@ export async function provideInlayHints(
     for (const def of a.funcDefs) {
         if (def.annotation !== undefined) continue;
         const returnType = a.funcEnv.get(def.name)!;
-        const rawLine = document.lineAt(def.defLine).text;
+        const sigLine = def.sigEndLine ?? def.defLine;
+        const rawLine = document.lineAt(sigLine).text;
         const rparenPos = rawLine.lastIndexOf(')');
         if (rparenPos < 0) continue;
-        const pos = new vscode.Position(def.defLine, rparenPos + 1);
+        const pos = new vscode.Position(sigLine, rparenPos + 1);
         hints.push(new vscode.InlayHint(pos, ` -> ${returnType}`, vscode.InlayHintKind.Type));
     }
 
@@ -557,7 +558,8 @@ export async function provideInlayHints(
                 selfType = undefined;
                 continue;
             }
-            const funcM = line.match(FUNC_DEF_RE);
+            const funcDefLines = gatherFuncDefLines(document, lineIdx);
+            const funcM = funcDefLines?.fullLine.match(FUNC_DEF_RE);
             if (funcM) {
                 selfType = classContext?.name;
                 const params = funcM[4];
@@ -568,6 +570,7 @@ export async function provideInlayHints(
                         env.set(pm[1], pt === 'Self' && selfType ? selfType : pt);
                     }
                 }
+                lineIdx = funcDefLines!.lastLine;
                 continue;
             }
         }

@@ -500,11 +500,12 @@ async function provideInlayHints(document, _range) {
         if (def.annotation !== undefined)
             continue;
         const returnType = a.funcEnv.get(def.name);
-        const rawLine = document.lineAt(def.defLine).text;
+        const sigLine = def.sigEndLine ?? def.defLine;
+        const rawLine = document.lineAt(sigLine).text;
         const rparenPos = rawLine.lastIndexOf(')');
         if (rparenPos < 0)
             continue;
-        const pos = new vscode.Position(def.defLine, rparenPos + 1);
+        const pos = new vscode.Position(sigLine, rparenPos + 1);
         hints.push(new vscode.InlayHint(pos, ` -> ${returnType}`, vscode.InlayHintKind.Type));
     }
     // Inlay hints on variable declarations — requires a sequential per-line env
@@ -528,7 +529,8 @@ async function provideInlayHints(document, _range) {
                 selfType = undefined;
                 continue;
             }
-            const funcM = line.match(builtins_1.FUNC_DEF_RE);
+            const funcDefLines = (0, analysis_1.gatherFuncDefLines)(document, lineIdx);
+            const funcM = funcDefLines?.fullLine.match(builtins_1.FUNC_DEF_RE);
             if (funcM) {
                 selfType = classContext?.name;
                 const params = funcM[4];
@@ -539,6 +541,7 @@ async function provideInlayHints(document, _range) {
                         env.set(pm[1], pt === 'Self' && selfType ? selfType : pt);
                     }
                 }
+                lineIdx = funcDefLines.lastLine;
                 continue;
             }
         }
