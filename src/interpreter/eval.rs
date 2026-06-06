@@ -593,8 +593,9 @@ impl Interpreter {
             };
         }
         if target_is_list {
-            if let Value::FrozenList { ref data, ref layout, len } = obj {
-                let items = (0..len).map(|i| layout.reconstruct_item(data, i)).collect();
+            if let Value::FrozenList { ref state, ref layout } = obj {
+                let st = state.borrow();
+                let items = (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
                 return Ok(Value::List(Rc::new(RefCell::new(items))));
             }
         }
@@ -715,7 +716,7 @@ impl Interpreter {
                 };
                 Some(match &val {
                     Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
-                    Value::FrozenList { len, .. } => Ok(Value::Int(*len as i64)),
+                    Value::FrozenList { ref state, .. } => Ok(Value::Int(state.borrow().len as i64)),
                     Value::Str(s) => Ok(Value::Int(s.len() as i64)),
                     Value::Dict(d) => Ok(Value::Int(d.borrow().all_keys().len() as i64)),
                     Value::Set(s) => Ok(Value::Int(s.borrow().len() as i64)),
@@ -727,6 +728,75 @@ impl Interpreter {
                     )),
                 })
             }
+            // ── mutable flat-list built-ins ───────────────────────────────────
+            // create_flat_int_list(size, val) → fixed_list[Cell]
+            // Allocates a flat byte buffer directly — no Cell instance allocation.
+            // Requires 'Cell' class to be in scope (via `from ant_render import Cell`).
+            "create_flat_int_list" => {
+                if args.len() != 2 {
+                    return Some(Err("TypeError: create_flat_int_list() takes exactly 2 arguments".to_string()));
+                }
+                let size_v = match self.eval(args[0].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
+                let init_v = match self.eval(args[1].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
+                let size = match &size_v { Value::Int(n) => *n as usize, _ => return Some(Err("TypeError: create_flat_int_list: size must be int".to_string())) };
+                let init = match &init_v { Value::Int(n) => *n, _ => return Some(Err("TypeError: create_flat_int_list: val must be int".to_string())) };
+                let cell_class = match self.get_val("Cell") {
+                    Some(Value::Class(c)) => c,
+                    _ => return Some(Err("NameError: create_flat_int_list requires 'Cell' class in scope".to_string())),
+                };
+                let init_bytes = init.to_le_bytes();
+                let mut raw = vec![0u8; size * 8];
+                for chunk in raw.chunks_exact_mut(8) { chunk.copy_from_slice(&init_bytes); }
+                let flat_data = super::value::FlatListData { data: raw, len: size, allocated_size: size };
+                let layout = super::value::FlatLayout {
+                    class_name: "Cell".to_string(),
+                    fields: vec![("v".to_string(), super::value::FlatFieldTy::Int)],
+                    stride: 8,
+                    class: cell_class,
+                };
+                Some(Ok(Value::FrozenList { state: Rc::new(RefCell::new(flat_data)), layout: Rc::new(layout) }))
+            }
+            // flat_get_int(grid, idx) → int
+            "flat_get_int" => {
+                if args.len() != 2 {
+                    return Some(Err("TypeError: flat_get_int() takes exactly 2 arguments".to_string()));
+                }
+                let grid_v = match self.eval(args[0].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
+                let idx_v  = match self.eval(args[1].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
+                let idx = match &idx_v { Value::Int(n) => *n as usize, _ => return Some(Err("TypeError: flat_get_int: idx must be int".to_string())) };
+                match &grid_v {
+                    Value::FrozenList { state, .. } => {
+                        let s = state.borrow();
+                        if idx >= s.len { return Some(Err(format!("IndexError: flat_get_int index {idx} out of range (len {})", s.len))); }
+                        let off = idx * 8;
+                        let bytes: [u8; 8] = s.data[off..off + 8].try_into().unwrap();
+                        Some(Ok(Value::Int(i64::from_le_bytes(bytes))))
+                    }
+                    _ => Some(Err(format!("TypeError: flat_get_int expects fixed_list, got {}", self.type_name(&grid_v)))),
+                }
+            }
+            // flat_set_int(grid, idx, val) → None  — writes directly into the flat buffer
+            "flat_set_int" => {
+                if args.len() != 3 {
+                    return Some(Err("TypeError: flat_set_int() takes exactly 3 arguments".to_string()));
+                }
+                let grid_v = match self.eval(args[0].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
+                let idx_v  = match self.eval(args[1].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
+                let val_v  = match self.eval(args[2].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
+                let idx = match &idx_v { Value::Int(n) => *n as usize, _ => return Some(Err("TypeError: flat_set_int: idx must be int".to_string())) };
+                let val = match &val_v { Value::Int(n) => *n, _ => return Some(Err("TypeError: flat_set_int: val must be int".to_string())) };
+                match &grid_v {
+                    Value::FrozenList { state, .. } => {
+                        let mut s = state.borrow_mut();
+                        if idx >= s.len { return Some(Err(format!("IndexError: flat_set_int index {idx} out of range"))); }
+                        let off = idx * 8;
+                        s.data[off..off + 8].copy_from_slice(&val.to_le_bytes());
+                        Some(Ok(Value::None))
+                    }
+                    _ => Some(Err(format!("TypeError: flat_set_int expects fixed_list, got {}", self.type_name(&grid_v)))),
+                }
+            }
+            // ─────────────────────────────────────────────────────────────────
             "id" => {
                 if args.len() != 1 {
                     return Some(Err("TypeError: id() takes exactly one argument".to_string()));
@@ -1171,8 +1241,9 @@ impl Interpreter {
                 ref v if v.is_empty() => Ok(Value::List(Rc::new(RefCell::new(vec![])))),
                 _ if vals.len() == 1 => match vals.into_iter().next().unwrap() {
                     Value::List(lst) => Ok(Value::List(lst)),
-                    Value::FrozenList { ref data, ref layout, len } => {
-                        let items = (0..len).map(|i| layout.reconstruct_item(data, i)).collect();
+                    Value::FrozenList { state, layout } => {
+                        let st = state.borrow();
+                        let items = (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
                         Ok(Value::List(Rc::new(RefCell::new(items))))
                     }
                     Value::Set(s) => Ok(Value::List(Rc::new(RefCell::new(s.borrow().clone())))),
@@ -1310,7 +1381,7 @@ impl Interpreter {
             }
             "len" => match vals.as_slice() {
                 [Value::List(lst)] => Ok(Value::Int(lst.borrow().len() as i64)),
-                [Value::FrozenList { len, .. }] => Ok(Value::Int(*len as i64)),
+                [Value::FrozenList { state, .. }] => Ok(Value::Int(state.borrow().len as i64)),
                 [Value::Str(s)] => Ok(Value::Int(s.len() as i64)),
                 [Value::Dict(d)] => Ok(Value::Int(d.borrow().len() as i64)),
                 [Value::Set(s)] => Ok(Value::Int(s.borrow().len() as i64)),
@@ -2342,19 +2413,20 @@ impl Interpreter {
                 }
                 Ok(borrowed[actual as usize].clone())
             }
-            Value::FrozenList { ref data, ref layout, len } => {
+            Value::FrozenList { ref state, ref layout } => {
                 let idx = value_as_index(&key).ok_or_else(|| {
                     format!(
                         "TypeError: list indices must be integers or Index, not '{}'",
                         self.type_name(&key)
                     )
                 })?;
-                let n = len as i64;
+                let st = state.borrow();
+                let n = st.len as i64;
                 let actual = if idx < 0 { n + idx } else { idx };
                 if actual < 0 || actual >= n {
                     return Err(format!("IndexError: list index {} out of range", idx));
                 }
-                Ok(layout.reconstruct_item(data, actual as usize))
+                Ok(layout.reconstruct_item(&st.data, actual as usize))
             }
             Value::Str(s) => {
                 let idx = value_as_index(&key).ok_or_else(|| {
@@ -2519,8 +2591,9 @@ impl Interpreter {
     fn collect_iterable(&self, val: Value) -> Result<Vec<Value>, String> {
         match val {
             Value::List(lst) => Ok(lst.borrow().clone()),
-            Value::FrozenList { ref data, ref layout, len } => {
-                Ok((0..len).map(|i| layout.reconstruct_item(data, i)).collect())
+            Value::FrozenList { ref state, ref layout } => {
+                let st = state.borrow();
+                Ok((0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect())
             }
             Value::Tuple(td) => Ok(td.all_values().to_vec()),
             Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string())).collect()),

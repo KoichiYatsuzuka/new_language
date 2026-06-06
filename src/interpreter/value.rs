@@ -588,6 +588,18 @@ pub enum FlatFieldTy {
     Float,
 }
 
+/// FrozenList の可変状態（バイト列・長さ・確保済みサイズ）。
+/// `data` はフラット byte 列（stride バイト × allocated_size 要素分を確保、先頭 len 要素が有効）。
+#[derive(Debug, Clone)]
+pub struct FlatListData {
+    /// フラット byte 列。`allocated_size * stride` バイトを確保し、先頭 `len * stride` が有効データ。
+    pub data: Vec<u8>,
+    /// 有効要素数（論理長）。
+    pub len: usize,
+    /// 確保済み要素数（容量）。`len <= allocated_size` が常に成立する。
+    pub allocated_size: usize,
+}
+
 /// FrozenList の平坦メモリレイアウト記述。
 /// `fields` はアルファベット順。全フィールドが int または float のクラスにのみ適用される。
 #[derive(Debug, Clone)]
@@ -666,9 +678,10 @@ pub enum Value {
     None,
     /// 可変長リスト値。要素は任意の型を混在できる。`Rc<RefCell<...>>` により共有・可変参照する。
     List(Rc<RefCell<Vec<Value>>>),
-    /// `freeze` で変換されたフラット固定長リスト。全要素が同一クラスかつ全フィールドが int/float。
-    /// `data` は平坦バイト列（各要素は stride バイト、フィールドはアルファベット順 little-endian）。
-    FrozenList { data: Rc<Vec<u8>>, layout: Rc<FlatLayout>, len: usize },
+    /// フラット固定長リスト。全要素が同一クラスかつ全フィールドが int/float。
+    /// `state` は可変メタデータ（data/len/allocated_size）、`layout` はレイアウト記述（不変）。
+    /// `mut` 変数として宣言すれば `append` で要素を追加でき、`freeze` で余剰確保を解放する。
+    FrozenList { state: Rc<RefCell<FlatListData>>, layout: Rc<FlatLayout> },
     /// 通常の関数値（`fn` キーワードで定義された関数）。
     Function(Rc<FnValue>),
     /// 同スコープに同名で2つ以上のオーバーロードが定義された関数値。
@@ -828,16 +841,22 @@ impl Value {
                 let v = rc.borrow().iter().map(|x| x.deep_clone()).collect();
                 Value::List(Rc::new(RefCell::new(v)))
             }
-            Value::FrozenList { data, layout, len } => Value::FrozenList {
-                data: Rc::new((**data).clone()),
-                layout: Rc::new(FlatLayout {
-                    class_name: layout.class_name.clone(),
-                    fields: layout.fields.clone(),
-                    stride: layout.stride,
-                    class: Rc::new(layout.class.deep_clone()),
-                }),
-                len: *len,
-            },
+            Value::FrozenList { state, layout } => {
+                let old = state.borrow();
+                Value::FrozenList {
+                    state: Rc::new(RefCell::new(FlatListData {
+                        data: old.data.clone(),
+                        len: old.len,
+                        allocated_size: old.allocated_size,
+                    })),
+                    layout: Rc::new(FlatLayout {
+                        class_name: layout.class_name.clone(),
+                        fields: layout.fields.clone(),
+                        stride: layout.stride,
+                        class: Rc::new(layout.class.deep_clone()),
+                    }),
+                }
+            }
             Value::Set(rc) => {
                 let v = rc.borrow().iter().map(|x| x.deep_clone()).collect();
                 Value::Set(Rc::new(RefCell::new(v)))

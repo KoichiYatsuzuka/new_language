@@ -55,7 +55,7 @@ impl Interpreter {
             Value::Str(s) => !s.is_empty(),
             Value::None => false,
             Value::List(items) => !items.borrow().is_empty(),
-            Value::FrozenList { len, .. } => *len > 0,
+            Value::FrozenList { state, .. } => state.borrow().len > 0,
             Value::Dict(d) => !d.borrow().is_empty(),
             Value::Tuple(t) => !t.is_empty(),
             Value::Set(s) => !s.borrow().is_empty(),
@@ -371,9 +371,10 @@ impl Interpreter {
                 )
             }
             Value::AsyncStatusVal(s) => s.display_str().to_string(),
-            Value::FrozenList { data, layout, len } => {
-                let parts: Vec<String> = (0..*len)
-                    .map(|i| self.display_repr(&layout.reconstruct_item(data, i)))
+            Value::FrozenList { state, layout } => {
+                let st = state.borrow();
+                let parts: Vec<String> = (0..st.len)
+                    .map(|i| self.display_repr(&layout.reconstruct_item(&st.data, i)))
                     .collect();
                 format!("[{}]", parts.join(", "))
             }
@@ -586,9 +587,12 @@ impl Interpreter {
             (BinOp::In, item, Value::List(lst)) => Ok(Value::Bool(
                 lst.borrow().iter().any(|v| self.values_eq(v, item)),
             )),
-            (BinOp::In, item, Value::FrozenList { data, layout, len }) => Ok(Value::Bool(
-                (0..*len).map(|i| layout.reconstruct_item(data, i)).any(|v| self.values_eq(&v, item)),
-            )),
+            (BinOp::In, item, Value::FrozenList { state, layout }) => {
+                let st = state.borrow();
+                Ok(Value::Bool(
+                    (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).any(|v| self.values_eq(&v, item)),
+                ))
+            }
             (BinOp::In, item, Value::Set(s)) => Ok(Value::Bool(
                 s.borrow().iter().any(|v| self.values_eq(v, item)),
             )),
@@ -602,9 +606,12 @@ impl Interpreter {
             (BinOp::NotIn, item, Value::List(lst)) => Ok(Value::Bool(
                 !lst.borrow().iter().any(|v| self.values_eq(v, item)),
             )),
-            (BinOp::NotIn, item, Value::FrozenList { data, layout, len }) => Ok(Value::Bool(
-                !(0..*len).map(|i| layout.reconstruct_item(data, i)).any(|v| self.values_eq(&v, item)),
-            )),
+            (BinOp::NotIn, item, Value::FrozenList { state, layout }) => {
+                let st = state.borrow();
+                Ok(Value::Bool(
+                    !(0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).any(|v| self.values_eq(&v, item)),
+                ))
+            }
             (BinOp::NotIn, item, Value::Set(s)) => Ok(Value::Bool(
                 !s.borrow().iter().any(|v| self.values_eq(v, item)),
             )),

@@ -486,8 +486,9 @@ impl Interpreter {
                 values: items.borrow().clone(),
                 index: 0,
             }))),
-            Value::FrozenList { ref data, ref layout, len } => {
-                let values = (0..len).map(|i| layout.reconstruct_item(data, i)).collect();
+            Value::FrozenList { ref state, ref layout } => {
+                let st = state.borrow();
+                let values = (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
                 Value::Generator(Rc::new(RefCell::new(GeneratorState { values, index: 0 })))
             }
             Value::Str(s) => {
@@ -1170,6 +1171,15 @@ impl Interpreter {
                 for item in td.all_values() {
                     self.apply_freeze_to_value(item)?;
                 }
+                None
+            }
+            // fixed_list: trim unused allocated capacity on freeze
+            Value::FrozenList { ref state, ref layout } => {
+                let mut st = state.borrow_mut();
+                let exact = st.len * layout.stride;
+                st.data.truncate(exact);
+                st.data.shrink_to_fit();
+                st.allocated_size = st.len;
                 None
             }
             _ => None,

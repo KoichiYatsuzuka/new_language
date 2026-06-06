@@ -726,8 +726,9 @@ extern "C" fn hv_iter_from(obj_h: i64) -> i64 {
     let obj = clone_value_at(obj_h);
     let items: Vec<Value> = match obj {
         Value::List(l) => l.borrow().clone(),
-        Value::FrozenList { ref data, ref layout, len } => {
-            (0..len).map(|i| layout.reconstruct_item(data, i)).collect()
+        Value::FrozenList { ref state, ref layout } => {
+            let st = state.borrow();
+            (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect()
         }
         Value::Tuple(t) => t.all_values().to_vec(),
         Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
@@ -1129,7 +1130,7 @@ extern "C" fn hv_get_int_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -
 extern "C" fn hv_flat_data_ptr(h: i64) -> i64 {
     if has_error() { return 0; }
     match clone_value_at(h) {
-        Value::FrozenList { data, .. } => data.as_ptr() as i64,
+        Value::FrozenList { state, .. } => state.borrow().data.as_ptr() as i64,
         _ => 0,
     }
 }
@@ -1139,7 +1140,7 @@ extern "C" fn hv_flat_data_ptr(h: i64) -> i64 {
 extern "C" fn hv_flat_len(h: i64) -> i64 {
     if has_error() { return 0; }
     match clone_value_at(h) {
-        Value::FrozenList { len, .. } => len as i64,
+        Value::FrozenList { state, .. } => state.borrow().len as i64,
         _ => 0,
     }
 }

@@ -179,10 +179,14 @@ impl Interpreter {
             stride,
             class,
         };
+        let len = items.len();
         Some(Value::FrozenList {
-            data: Rc::new(data),
+            state: Rc::new(RefCell::new(super::value::FlatListData {
+                data,
+                len,
+                allocated_size: len,
+            })),
             layout: Rc::new(layout),
-            len: items.len(),
         })
     }
 
@@ -373,26 +377,39 @@ impl Interpreter {
     ) -> Result<Value, String> {
         match &obj {
             Value::List(items) => {
-                if method_name == "__iter__" {
-                    if !args.is_empty() {
-                        return Err("TypeError: list.__iter__() takes no arguments".to_string());
+                match method_name {
+                    "__iter__" => {
+                        if !args.is_empty() {
+                            return Err("TypeError: list.__iter__() takes no arguments".to_string());
+                        }
+                        return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                            values: items.borrow().clone(),
+                            index: 0,
+                        }))));
                     }
-                    return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                        values: items.borrow().clone(),
-                        index: 0,
-                    }))));
+                    "append" => {
+                        let evaled = self.eval_call_args(args)?;
+                        if evaled.len() != 1 {
+                            return Err("TypeError: list.append() takes exactly 1 argument".to_string());
+                        }
+                        let item = evaled.into_iter().next().unwrap().1;
+                        items.borrow_mut().push(item);
+                        return Ok(Value::None);
+                    }
+                    _ => {}
                 }
                 Err(format!(
                     "AttributeError: 'list' object has no method '{method_name}'"
                 ))
             }
-            Value::FrozenList { ref data, ref layout, len } => {
+            Value::FrozenList { ref state, ref layout } => {
                 match method_name {
                     "__iter__" => {
                         if !args.is_empty() {
                             return Err("TypeError: fixed_list.__iter__() takes no arguments".to_string());
                         }
-                        let values = (0..*len).map(|i| layout.reconstruct_item(data, i)).collect();
+                        let st = state.borrow();
+                        let values = (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
                         Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
                             values,
                             index: 0,
@@ -404,16 +421,70 @@ impl Interpreter {
                             return Err("TypeError: fixed_list.__contains__() takes exactly 1 argument".to_string());
                         }
                         let needle = &evaled[0].1;
-                        let found = (0..*len)
-                            .map(|i| layout.reconstruct_item(data, i))
+                        let st = state.borrow();
+                        let found = (0..st.len)
+                            .map(|i| layout.reconstruct_item(&st.data, i))
                             .any(|v| self.values_eq(&v, needle));
                         Ok(Value::Bool(found))
                     }
-                    // Mutating methods explicitly rejected
-                    "append" | "pop" | "sort" | "reverse" | "clear" | "extend"
-                    | "insert" | "remove" => Err(format!(
-                        "TypeError: 'fixed_list' is immutable — '{method_name}' is not allowed"
-                    )),
+                    "allocated_size" => {
+                        if !args.is_empty() {
+                            return Err("TypeError: fixed_list.allocated_size() takes no arguments".to_string());
+                        }
+                        Ok(Value::Int(state.borrow().allocated_size as i64))
+                    }
+                    "append" => {
+                        let evaled = self.eval_call_args(args)?;
+                        if evaled.len() != 1 {
+                            return Err("TypeError: fixed_list.append() takes exactly 1 argument".to_string());
+                        }
+                        let item = evaled.into_iter().next().unwrap().1;
+                        match item {
+                            Value::Instance(inst_rc) => {
+                                let inst = inst_rc.borrow();
+                                if inst.class.name != layout.class_name {
+                                    return Err(format!(
+                                        "TypeError: fixed_list.append(): expected instance of '{}', got '{}'",
+                                        layout.class_name, inst.class.name
+                                    ));
+                                }
+                                let mut st = state.borrow_mut();
+                                // Grow capacity when full (double, minimum 1)
+                                if st.len >= st.allocated_size {
+                                    let new_cap = (st.allocated_size * 2).max(1);
+                                    st.data.resize(new_cap * layout.stride, 0);
+                                    st.allocated_size = new_cap;
+                                }
+                                // Write each field in layout order (alphabetical)
+                                let offset = st.len * layout.stride;
+                                for (fi, (field_name, field_ty)) in layout.fields.iter().enumerate() {
+                                    let field_offset = offset + fi * 8;
+                                    match (field_ty, inst.fields.get(field_name).map(|(v, _)| v)) {
+                                        (super::value::FlatFieldTy::Int, Some(Value::Int(n))) => {
+                                            st.data[field_offset..field_offset + 8]
+                                                .copy_from_slice(&n.to_le_bytes());
+                                        }
+                                        (super::value::FlatFieldTy::Float, Some(Value::Float(f))) => {
+                                            st.data[field_offset..field_offset + 8]
+                                                .copy_from_slice(&f.to_le_bytes());
+                                        }
+                                        _ => {
+                                            return Err(format!(
+                                                "TypeError: fixed_list.append(): field '{}' type mismatch",
+                                                field_name
+                                            ));
+                                        }
+                                    }
+                                }
+                                st.len += 1;
+                                Ok(Value::None)
+                            }
+                            other => Err(format!(
+                                "TypeError: fixed_list.append(): expected class instance, got '{}'",
+                                self.type_name(&other)
+                            )),
+                        }
+                    }
                     _ => Err(format!(
                         "AttributeError: 'fixed_list' object has no method '{method_name}'"
                     )),
