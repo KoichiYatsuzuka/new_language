@@ -499,7 +499,7 @@ async function provideHover(document, position) {
 }
 exports.provideHover = provideHover;
 async function provideInlayHints(document, _range) {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const hints = [];
     const a = await analysis_1.DocumentAnalysis.for(document);
     // Inlay hints on function definition lines (only when no annotation)
@@ -585,11 +585,75 @@ async function provideInlayHints(document, _range) {
             }
             continue;
         }
+        const forLoopM = line.match(analysis_1.FOR_LOOP_RE);
+        if (forLoopM) {
+            const [, indent, rawTargets, rawIter] = forLoopM;
+            const iterExpr = rawIter.replace(/\s*(?:->[^:]+)?\s*:\s*$/, '').trim();
+            let elemType;
+            if (/^range\s*\(/.test(iterExpr)) {
+                elemType = 'int';
+            }
+            else if (/^enumerate\s*\(/.test(iterExpr)) {
+                const enumArgsM = iterExpr.match(/^enumerate\s*\((.+)\)\s*$/);
+                if (enumArgsM) {
+                    const innerType = (0, analysis_1.inferExprType)((0, analysis_1.splitComma)(enumArgsM[1])[0].trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType);
+                    elemType = `tuple[int, ${(0, analysis_1.extractIterElemType)(innerType)}]`;
+                }
+                else {
+                    elemType = 'tuple[int, unknown]';
+                }
+            }
+            else if (/^zip\s*\(/.test(iterExpr)) {
+                const zipArgsM = iterExpr.match(/^zip\s*\((.+)\)\s*$/);
+                if (zipArgsM) {
+                    const elems = (0, analysis_1.splitComma)(zipArgsM[1]).map(arg => (0, analysis_1.extractIterElemType)((0, analysis_1.inferExprType)(arg.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType)));
+                    elemType = `tuple[${elems.join(', ')}]`;
+                }
+                else {
+                    elemType = 'unknown';
+                }
+            }
+            else {
+                elemType = (0, analysis_1.extractIterElemType)((0, analysis_1.inferExprType)(iterExpr, env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType));
+            }
+            const targetList = rawTargets.split(',').map(t => t.trim()).filter(Boolean);
+            let searchFrom = (indent !== null && indent !== void 0 ? indent : '').length + 'for '.length;
+            if (targetList.length === 1) {
+                const varName = targetList[0];
+                env.set(varName, elemType);
+                if (elemType !== 'unknown') {
+                    const nameStart = rawLine.indexOf(varName, searchFrom);
+                    if (nameStart >= 0) {
+                        const hint = new vscode.InlayHint(new vscode.Position(lineIdx, nameStart + varName.length), `: ${elemType}`, vscode.InlayHintKind.Type);
+                        hint.paddingLeft = true;
+                        hints.push(hint);
+                    }
+                }
+            }
+            else {
+                const subTypes = (0, analysis_1.extractTupleElemTypes)(elemType, targetList.length);
+                for (let idx = 0; idx < targetList.length; idx++) {
+                    const varName = targetList[idx];
+                    const varType = (_g = subTypes[idx]) !== null && _g !== void 0 ? _g : 'unknown';
+                    env.set(varName, varType);
+                    if (varType !== 'unknown') {
+                        const nameStart = rawLine.indexOf(varName, searchFrom);
+                        if (nameStart >= 0) {
+                            const hint = new vscode.InlayHint(new vscode.Position(lineIdx, nameStart + varName.length), `: ${varType}`, vscode.InlayHintKind.Type);
+                            hint.paddingLeft = true;
+                            hints.push(hint);
+                            searchFrom = nameStart + varName.length;
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         const declM = line.match(analysis_1.HOVER_DECL_RE);
         if (!declM)
             continue;
         const [, indent, keyword, name, annotation, rhs] = declM;
-        const type = (_g = (0, analysis_1.cleanTypeAnnotation)(annotation)) !== null && _g !== void 0 ? _g : (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
+        const type = (_h = (0, analysis_1.cleanTypeAnnotation)(annotation)) !== null && _h !== void 0 ? _h : (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
         env.set(name, type);
         if (!annotation && rhs) {
             const nameStart = rawLine.indexOf(name, (indent !== null && indent !== void 0 ? indent : '').length + keyword.length);

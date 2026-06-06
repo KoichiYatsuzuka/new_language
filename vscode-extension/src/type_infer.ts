@@ -3,11 +3,11 @@ import { BUILTIN_RETURN_TYPES, BUILTIN_TYPE_METHODS, BUILTIN_TYPE_NAMES, LANG_KE
 import {
     type LangType, type HoverSymbol, type CppClassInfo,
     stripComment, splitComma, inferExprType, resolveSelf,
-    cleanTypeAnnotation, extractTupleElemTypes, findBodyEndLine,
+    cleanTypeAnnotation, extractTupleElemTypes, extractIterElemType, findBodyEndLine,
     getDocstringAfter, selectHoverSymbol,
     collectFuncDefs, collectConstructorTypes, collectTemplateParams,
     DECL_RE, STATIC_DECL_RE, HOVER_DECL_RE, CLASS_DEF_RE, NEW_TYPE_RE,
-    IMPORT_RE, TUPLE_DECL_RE,
+    IMPORT_RE, TUPLE_DECL_RE, FOR_LOOP_RE,
     DocumentAnalysis, builtinStub, initBuiltinStub,
 } from './analysis';
 
@@ -606,6 +606,65 @@ export async function provideInlayHints(
                     hint.paddingLeft = true;
                     hints.push(hint);
                     searchFrom = nameStart + varName.length;
+                }
+            }
+            continue;
+        }
+
+        const forLoopM = line.match(FOR_LOOP_RE);
+        if (forLoopM) {
+            const [, indent, rawTargets, rawIter] = forLoopM;
+            const iterExpr = rawIter.replace(/\s*(?:->[^:]+)?\s*:\s*$/, '').trim();
+            let elemType: LangType;
+            if (/^range\s*\(/.test(iterExpr)) {
+                elemType = 'int';
+            } else if (/^enumerate\s*\(/.test(iterExpr)) {
+                const enumArgsM = iterExpr.match(/^enumerate\s*\((.+)\)\s*$/);
+                if (enumArgsM) {
+                    const innerType = inferExprType(splitComma(enumArgsM[1])[0].trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType);
+                    elemType = `tuple[int, ${extractIterElemType(innerType)}]`;
+                } else {
+                    elemType = 'tuple[int, unknown]';
+                }
+            } else if (/^zip\s*\(/.test(iterExpr)) {
+                const zipArgsM = iterExpr.match(/^zip\s*\((.+)\)\s*$/);
+                if (zipArgsM) {
+                    const elems = splitComma(zipArgsM[1]).map(arg => extractIterElemType(inferExprType(arg.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType)));
+                    elemType = `tuple[${elems.join(', ')}]`;
+                } else {
+                    elemType = 'unknown';
+                }
+            } else {
+                elemType = extractIterElemType(inferExprType(iterExpr, env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType));
+            }
+            const targetList = rawTargets.split(',').map(t => t.trim()).filter(Boolean);
+            let searchFrom = (indent ?? '').length + 'for '.length;
+            if (targetList.length === 1) {
+                const varName = targetList[0];
+                env.set(varName, elemType);
+                if (elemType !== 'unknown') {
+                    const nameStart = rawLine.indexOf(varName, searchFrom);
+                    if (nameStart >= 0) {
+                        const hint = new vscode.InlayHint(new vscode.Position(lineIdx, nameStart + varName.length), `: ${elemType}`, vscode.InlayHintKind.Type);
+                        hint.paddingLeft = true;
+                        hints.push(hint);
+                    }
+                }
+            } else {
+                const subTypes = extractTupleElemTypes(elemType, targetList.length);
+                for (let idx = 0; idx < targetList.length; idx++) {
+                    const varName = targetList[idx];
+                    const varType = subTypes[idx] ?? 'unknown';
+                    env.set(varName, varType);
+                    if (varType !== 'unknown') {
+                        const nameStart = rawLine.indexOf(varName, searchFrom);
+                        if (nameStart >= 0) {
+                            const hint = new vscode.InlayHint(new vscode.Position(lineIdx, nameStart + varName.length), `: ${varType}`, vscode.InlayHintKind.Type);
+                            hint.paddingLeft = true;
+                            hints.push(hint);
+                            searchFrom = nameStart + varName.length;
+                        }
+                    }
                 }
             }
             continue;

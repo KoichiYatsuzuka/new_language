@@ -24,12 +24,14 @@ const NEW_TYPE_RE      = /^(\s*)new_type\s+([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\
 const FREEZE_RE        = /^\s*freeze(?:\s*\(\s*|\s+)([A-Za-z_]\w*)(?:\s*\))?/;
 const ACCESS_SECTION_RE = /^(\s*)(public|private|protected)\s*:\s*$/;
 const TUPLE_DECL_RE    = /^(\s*)(let|mut)\s+((?:[A-Za-z_]\w*\s*,\s*)+[A-Za-z_]\w*)\s*=(?!=)\s*(.*)/;
+// Groups: 1=indent, 2=targets (comma-sep idents), 3=iterable expression (including trailing ->type:)
+const FOR_LOOP_RE      = /^(\s*)for\s+((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s+in\s+(.+)$/;
 // Groups: 1=kind, 2=path, 3=version[?], 4=with-stub[?], 5=alias[?]
 const IMPORT_RE        = /^\s*(import(?:\[(?:py(?:-int)?|rs|hvc?|cpp-(?:lib|dll))\])?)\s+([\w.]+)(?:\[([^\]]*)\])?(?:\s+with\s+(\w+))?(?:\s+as\s+([A-Za-z_]\w*))?/;
 const TYPEGUARD_IS_NOT_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+not\s+([A-Za-z_]\w*)\s*:/;
 const TYPEGUARD_IS_RE     = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+([A-Za-z_]\w*)\s*:/;
 
-export { DECL_RE, STATIC_DECL_RE, HOVER_DECL_RE, CLASS_DEF_RE, NEW_TYPE_RE, IMPORT_RE, TUPLE_DECL_RE };
+export { DECL_RE, STATIC_DECL_RE, HOVER_DECL_RE, CLASS_DEF_RE, NEW_TYPE_RE, IMPORT_RE, TUPLE_DECL_RE, FOR_LOOP_RE };
 
 /** Derive the binding alias from a module path and optional explicit alias.
  *  e.g. `libm` (no explicit) → `libm`; `test_modules.physics` → `physics`. */
@@ -144,6 +146,19 @@ export function extractTupleElemTypes(tupleType: LangType, count: number): LangT
     const m = tupleType.match(/^tuple\[(.+)\]$/);
     if (!m) return Array(count).fill('unknown');
     return splitComma(m[1]).map(e => e.trim());
+}
+
+export function extractIterElemType(containerType: LangType): LangType {
+    const listSetM = containerType.match(/^(?:list|set)\[(.+)\]$/);
+    if (listSetM) return listSetM[1].trim();
+    if (containerType === 'str') return 'str';
+    if (containerType === 'range') return 'int';
+    const dictM = containerType.match(/^dict\[(.+)\]$/);
+    if (dictM) {
+        const parts = splitComma(dictM[1]);
+        return parts.length >= 1 ? parts[0].trim() : 'unknown';
+    }
+    return 'unknown';
 }
 
 export function findBlockBounds(document: vscode.TextDocument, ifLine: number, ifIndent: number): { startLine: number; endLine: number } {
@@ -928,6 +943,47 @@ function collectHoverSymbols(
                 const elemType = elemTypes[idx] ?? 'unknown';
                 symbols.push({ name: varName, kind: 'variable', line: i, mutability, type: elemType, access: currentAccess });
                 env.set(varName, elemType);
+            }
+            continue;
+        }
+
+        const forLoopM = stripped.match(FOR_LOOP_RE);
+        if (forLoopM) {
+            const [, , rawTargets, rawIter] = forLoopM;
+            const iterExpr = rawIter.replace(/\s*(?:->[^:]+)?\s*:\s*$/, '').trim();
+            let elemType: LangType;
+            if (/^range\s*\(/.test(iterExpr)) {
+                elemType = 'int';
+            } else if (/^enumerate\s*\(/.test(iterExpr)) {
+                const enumArgsM = iterExpr.match(/^enumerate\s*\((.+)\)\s*$/);
+                if (enumArgsM) {
+                    const innerType = inferExprType(splitComma(enumArgsM[1])[0].trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType);
+                    elemType = `tuple[int, ${extractIterElemType(innerType)}]`;
+                } else {
+                    elemType = 'tuple[int, unknown]';
+                }
+            } else if (/^zip\s*\(/.test(iterExpr)) {
+                const zipArgsM = iterExpr.match(/^zip\s*\((.+)\)\s*$/);
+                if (zipArgsM) {
+                    const elems = splitComma(zipArgsM[1]).map(arg => extractIterElemType(inferExprType(arg.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType)));
+                    elemType = `tuple[${elems.join(', ')}]`;
+                } else {
+                    elemType = 'unknown';
+                }
+            } else {
+                elemType = extractIterElemType(inferExprType(iterExpr, env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType));
+            }
+            const targetList = rawTargets.split(',').map(t => t.trim()).filter(Boolean);
+            if (targetList.length === 1) {
+                symbols.push({ name: targetList[0], kind: 'variable', line: i, mutability: 'let', type: elemType, access: currentAccess });
+                env.set(targetList[0], elemType);
+            } else {
+                const subTypes = extractTupleElemTypes(elemType, targetList.length);
+                for (let idx = 0; idx < targetList.length; idx++) {
+                    const varType = subTypes[idx] ?? 'unknown';
+                    symbols.push({ name: targetList[idx], kind: 'variable', line: i, mutability: 'let', type: varType, access: currentAccess });
+                    env.set(targetList[idx], varType);
+                }
             }
             continue;
         }

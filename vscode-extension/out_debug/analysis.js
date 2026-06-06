@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.initBuiltinStub = exports.builtinStub = exports.DocumentAnalysis = exports.selectHoverSymbol = exports.inferBodyReturnType = exports.collectTemplateParams = exports.collectFuncDefs = exports.collectConstructorTypes = exports.collectImportAliases = exports.inferExprType = exports.getDocstringAfter = exports.cleanTypeAnnotation = exports.parseParams = exports.findBodyEndLine = exports.findBlockBounds = exports.extractTupleElemTypes = exports.resolveSelf = exports.splitComma = exports.stripComment = exports.TUPLE_DECL_RE = exports.IMPORT_RE = exports.NEW_TYPE_RE = exports.CLASS_DEF_RE = exports.HOVER_DECL_RE = exports.STATIC_DECL_RE = exports.DECL_RE = void 0;
+exports.initBuiltinStub = exports.builtinStub = exports.DocumentAnalysis = exports.selectHoverSymbol = exports.inferBodyReturnType = exports.collectTemplateParams = exports.collectFuncDefs = exports.collectConstructorTypes = exports.collectImportAliases = exports.inferExprType = exports.getDocstringAfter = exports.cleanTypeAnnotation = exports.parseParams = exports.findBodyEndLine = exports.findBlockBounds = exports.extractIterElemType = exports.extractTupleElemTypes = exports.resolveSelf = exports.splitComma = exports.stripComment = exports.FOR_LOOP_RE = exports.TUPLE_DECL_RE = exports.IMPORT_RE = exports.NEW_TYPE_RE = exports.CLASS_DEF_RE = exports.HOVER_DECL_RE = exports.STATIC_DECL_RE = exports.DECL_RE = void 0;
 const vscode = require("vscode");
 const fs = require("fs");
 const fs_1 = require("fs");
@@ -26,6 +26,9 @@ const FREEZE_RE = /^\s*freeze(?:\s*\(\s*|\s+)([A-Za-z_]\w*)(?:\s*\))?/;
 const ACCESS_SECTION_RE = /^(\s*)(public|private|protected)\s*:\s*$/;
 const TUPLE_DECL_RE = /^(\s*)(let|mut)\s+((?:[A-Za-z_]\w*\s*,\s*)+[A-Za-z_]\w*)\s*=(?!=)\s*(.*)/;
 exports.TUPLE_DECL_RE = TUPLE_DECL_RE;
+// Groups: 1=indent, 2=targets (comma-sep idents), 3=iterable expression (including trailing ->type:)
+const FOR_LOOP_RE = /^(\s*)for\s+((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s+in\s+(.+)$/;
+exports.FOR_LOOP_RE = FOR_LOOP_RE;
 // Groups: 1=kind, 2=path, 3=version[?], 4=with-stub[?], 5=alias[?]
 const IMPORT_RE = /^\s*(import(?:\[(?:py(?:-int)?|rs|hvc?|cpp-(?:lib|dll))\])?)\s+([\w.]+)(?:\[([^\]]*)\])?(?:\s+with\s+(\w+))?(?:\s+as\s+([A-Za-z_]\w*))?/;
 exports.IMPORT_RE = IMPORT_RE;
@@ -124,6 +127,22 @@ function extractTupleElemTypes(tupleType, count) {
     return splitComma(m[1]).map(e => e.trim());
 }
 exports.extractTupleElemTypes = extractTupleElemTypes;
+function extractIterElemType(containerType) {
+    const listSetM = containerType.match(/^(?:list|set)\[(.+)\]$/);
+    if (listSetM)
+        return listSetM[1].trim();
+    if (containerType === 'str')
+        return 'str';
+    if (containerType === 'range')
+        return 'int';
+    const dictM = containerType.match(/^dict\[(.+)\]$/);
+    if (dictM) {
+        const parts = splitComma(dictM[1]);
+        return parts.length >= 1 ? parts[0].trim() : 'unknown';
+    }
+    return 'unknown';
+}
+exports.extractIterElemType = extractIterElemType;
 function findBlockBounds(document, ifLine, ifIndent) {
     var _a, _b;
     const startLine = ifLine + 1;
@@ -847,7 +866,7 @@ exports.inferBodyReturnType = inferBodyReturnType;
 // ===== Symbol collection =====
 // Accepts pre-built funcEnv from DocumentAnalysis to avoid redundant work.
 function collectHoverSymbols(document, funcEnv, importAliases, importFuncTypes, pyClassMethods, cppClasses, templateParams, classFieldTypes) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m;
     const symbols = [];
     const env = new Map();
     const classContextStack = [];
@@ -973,12 +992,58 @@ function collectHoverSymbols(document, funcEnv, importAliases, importFuncTypes, 
             }
             continue;
         }
+        const forLoopM = stripped.match(FOR_LOOP_RE);
+        if (forLoopM) {
+            const [, , rawTargets, rawIter] = forLoopM;
+            const iterExpr = rawIter.replace(/\s*(?:->[^:]+)?\s*:\s*$/, '').trim();
+            let elemType;
+            if (/^range\s*\(/.test(iterExpr)) {
+                elemType = 'int';
+            }
+            else if (/^enumerate\s*\(/.test(iterExpr)) {
+                const enumArgsM = iterExpr.match(/^enumerate\s*\((.+)\)\s*$/);
+                if (enumArgsM) {
+                    const innerType = inferExprType(splitComma(enumArgsM[1])[0].trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType);
+                    elemType = `tuple[int, ${extractIterElemType(innerType)}]`;
+                }
+                else {
+                    elemType = 'tuple[int, unknown]';
+                }
+            }
+            else if (/^zip\s*\(/.test(iterExpr)) {
+                const zipArgsM = iterExpr.match(/^zip\s*\((.+)\)\s*$/);
+                if (zipArgsM) {
+                    const elems = splitComma(zipArgsM[1]).map(arg => extractIterElemType(inferExprType(arg.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType)));
+                    elemType = `tuple[${elems.join(', ')}]`;
+                }
+                else {
+                    elemType = 'unknown';
+                }
+            }
+            else {
+                elemType = extractIterElemType(inferExprType(iterExpr, env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType));
+            }
+            const targetList = rawTargets.split(',').map(t => t.trim()).filter(Boolean);
+            if (targetList.length === 1) {
+                symbols.push({ name: targetList[0], kind: 'variable', line: i, mutability: 'let', type: elemType, access: currentAccess });
+                env.set(targetList[0], elemType);
+            }
+            else {
+                const subTypes = extractTupleElemTypes(elemType, targetList.length);
+                for (let idx = 0; idx < targetList.length; idx++) {
+                    const varType = (_k = subTypes[idx]) !== null && _k !== void 0 ? _k : 'unknown';
+                    symbols.push({ name: targetList[idx], kind: 'variable', line: i, mutability: 'let', type: varType, access: currentAccess });
+                    env.set(targetList[idx], varType);
+                }
+            }
+            continue;
+        }
         const declMatch = stripped.match(HOVER_DECL_RE);
         if (declMatch) {
             const [, , mutability, name, annotation, rhs] = declMatch;
-            const type = (_k = cleanTypeAnnotation(annotation)) !== null && _k !== void 0 ? _k : (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType) : 'unknown');
+            const type = (_l = cleanTypeAnnotation(annotation)) !== null && _l !== void 0 ? _l : (rhs ? inferExprType(rhs.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType) : 'unknown');
             symbols.push({ name, kind: 'variable', line: i, mutability, type, access: currentAccess });
-            env.set(name, (_l = parseTypeAnnotation(type)) !== null && _l !== void 0 ? _l : 'unknown');
+            env.set(name, (_m = parseTypeAnnotation(type)) !== null && _m !== void 0 ? _m : 'unknown');
         }
     }
     return symbols;
