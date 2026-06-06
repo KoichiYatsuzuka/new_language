@@ -1053,7 +1053,7 @@ async function provideDocumentSemanticTokens(document) {
                 }
             }
         }
-        for (const [alias] of a.importAliases) {
+        for (const alias of a.importAliases) {
             const re = new RegExp(`\\b${escapeRegex(alias)}\\b`, 'g');
             let m;
             while ((m = re.exec(lineText)) !== null) {

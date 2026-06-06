@@ -1089,7 +1089,7 @@ export async function provideDocumentSemanticTokens(document: vscode.TextDocumen
             }
         }
 
-        for (const [alias] of a.importAliases) {
+        for (const alias of a.importAliases) {
             const re = new RegExp(`\\b${escapeRegex(alias)}\\b`, 'g');
             let m: RegExpExecArray | null;
             while ((m = re.exec(lineText)) !== null) {

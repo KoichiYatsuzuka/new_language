@@ -234,7 +234,7 @@
       "patterns": [
         {
           "match": "\\b(enumerate|zip)\\b",
-          "name": "entity.name.type.class.hv"
+          "name": "support.function.builtin.hv"
         },
         {
           "match": "\\b(print|len|range|map|filter|abs|round|pow|divmod|max|min|sum|all|any|sorted|reversed|isinstance|issubclass|callable|getattr|setattr|hasattr|delattr|repr|input|open|chr|ord|hex|oct|bin|id|hash|dir|vars|globals|locals|iter|next|eval|exec|help|format|super|staticmethod|classmethod|property|slice)\\b",
@@ -243,7 +243,7 @@
       ]
     },
     "constructor-call": {
-      "match": "\\b([A-Z][A-Za-z_0-9]*)\\s*(?=\\()",
+      "match": "(?<!\\.)\\b([A-Z][A-Za-z_0-9]*)\\s*(?=\\()",
       "captures": {
         "1": { "name": "entity.name.type.class.hv" }
       }
