@@ -547,7 +547,10 @@ pub enum PtrParam {
 /// Two dispatch modes:
 ///   - `raw_fn_ptr != 0`: inkwell JIT — call the pointer directly (no libloading).
 ///   - `raw_fn_ptr == 0`: DLL via libloading — use `lib_path` to look up the library.
-#[derive(Debug, Clone)]
+///
+/// `cached_fn_ptr` is a lazily-populated cache for the cpp-dll case: set to the
+/// resolved symbol address on first call so subsequent calls skip `GetProcAddress`.
+#[derive(Debug)]
 pub struct NativeFnRef {
     /// Absolute path of the `.dll` / `.so` / `.dylib`.  Empty for JIT functions.
     pub lib_path: PathBuf,
@@ -565,6 +568,26 @@ pub struct NativeFnRef {
     /// Non-zero for inkwell JIT functions: address of `fname_tl` in JIT memory.
     /// Cast to `unsafe extern "C" fn(*const i64, i32) -> i64` at call time.
     pub raw_fn_ptr: usize,
+    /// Lazily cached raw function pointer for cpp-dll functions (raw_fn_ptr == 0).
+    /// Written once on first call via hv_call_fn fast path; 0 = not yet resolved.
+    pub cached_fn_ptr: std::sync::atomic::AtomicUsize,
+}
+
+impl Clone for NativeFnRef {
+    fn clone(&self) -> Self {
+        Self {
+            lib_path: self.lib_path.clone(),
+            fn_name: self.fn_name.clone(),
+            n_params: self.n_params,
+            min_params: self.min_params,
+            param_mutabilities: self.param_mutabilities.clone(),
+            ptr_params: self.ptr_params.clone(),
+            raw_fn_ptr: self.raw_fn_ptr,
+            cached_fn_ptr: std::sync::atomic::AtomicUsize::new(
+                self.cached_fn_ptr.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        }
+    }
 }
 
 /// Wrapper around `libloading::Library` that implements `Debug`.

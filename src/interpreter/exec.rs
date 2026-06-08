@@ -1560,6 +1560,7 @@ impl Interpreter {
                         param_mutabilities: vec![false; exp.n_params],
                         ptr_params: vec![crate::interpreter::PtrParam::None; exp.n_params],
                         raw_fn_ptr: fn_ptr,
+                        cached_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
                     });
                     members.insert(exp.name.clone(), Value::NativeFunction(fn_ref));
                 }
@@ -1627,6 +1628,7 @@ impl Interpreter {
                             param_mutabilities: params.iter().map(|p| p.mutable).collect(),
                             ptr_params: vec![crate::interpreter::PtrParam::None; params.len()],
                             raw_fn_ptr: 0,
+                            cached_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
                         });
                         members.insert(name.clone(), Value::NativeFunction(fn_ref));
                     }
@@ -1915,6 +1917,7 @@ impl Interpreter {
                     param_mutabilities: vec![false; sig.params.len()],
                     ptr_params,
                     raw_fn_ptr: 0,
+                    cached_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
                 });
                 members.insert(sig.name.clone(), Value::NativeFunction(fn_ref));
             }

@@ -601,13 +601,96 @@ extern "C" fn hv_unop(op: i32, a: i64) -> i64 {
     }
 }
 
-/// 関数ハンドルと引数ハンドル配列を受け取りインタープリタ経由で関数を呼び出す C コールバック。
+/// 関数ハンドルと引数ハンドル配列を受け取り関数を呼び出す C コールバック。
 /// 呼び出し結果のハンドルを返す。エラー時は `TL_NONE` を返しエラーをセットする。
+///
+/// Fast path: `Value::NativeFunction` (cpp-dll or JIT) はインタープリタを経由せず
+/// 直接 DLL 関数を呼び出す。引数ハンドルはアリーナからコピーせずそのまま渡す。
+/// cpp-dll 関数はシンボルアドレスを `cached_fn_ptr` に初回解決時にキャッシュする。
+///
+/// Slow path: クロージャ・ユーザー定義 HV 関数など他のすべての callable は
+/// 従来通りインタープリタの `call_value_with_args` に委譲する。
 extern "C" fn hv_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
+    use std::sync::atomic::Ordering;
+
     if has_error() {
         return TL_NONE;
     }
     let fn_val = clone_value_at(fn_h);
+
+    // ── Fast path: NativeFunction (cpp-dll or JIT) ────────────────────────────
+    // arg handles are already live in the arena — pass them straight through
+    // without boxing into Vec<Value> or calling deep_copy_value per arg.
+    if let Value::NativeFunction(ref fn_ref) = fn_val {
+        let ptr = get_interp_ptr();
+        if !ptr.is_null() {
+            let is_outermost = enter_native_call(ptr);
+
+            let result_h = if fn_ref.raw_fn_ptr != 0 {
+                // JIT path: fn pointer already cached in the struct
+                unsafe {
+                    let f: unsafe extern "C" fn(*const i64, i32) -> i64 =
+                        std::mem::transmute(fn_ref.raw_fn_ptr);
+                    f(args_ptr, n_args)
+                }
+            } else {
+                // cpp-dll path: use cached symbol address, resolving on first call
+                let cached = fn_ref.cached_fn_ptr.load(Ordering::Relaxed);
+                let fn_ptr = if cached != 0 {
+                    cached
+                } else {
+                    let sym_name = format!("{}_tl\0", fn_ref.fn_name);
+                    let interp = unsafe { &*ptr };
+                    match interp.native_libs.get(&fn_ref.lib_path) {
+                        Some(lib) => {
+                            match unsafe {
+                                lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(
+                                    sym_name.as_bytes(),
+                                )
+                            } {
+                                Ok(f) => {
+                                    let fp = *f as usize;
+                                    fn_ref.cached_fn_ptr.store(fp, Ordering::Relaxed);
+                                    fp
+                                }
+                                Err(e) => {
+                                    set_error(format!(
+                                        "RuntimeError: symbol '{}' not found: {e}",
+                                        fn_ref.fn_name
+                                    ));
+                                    abort_native_call(is_outermost);
+                                    return TL_NONE;
+                                }
+                            }
+                        }
+                        None => {
+                            set_error(format!(
+                                "RuntimeError: native library not loaded: {}",
+                                fn_ref.lib_path.display()
+                            ));
+                            abort_native_call(is_outermost);
+                            return TL_NONE;
+                        }
+                    }
+                };
+                unsafe {
+                    let f: unsafe extern "C" fn(*const i64, i32) -> i64 =
+                        std::mem::transmute(fn_ptr);
+                    f(args_ptr, n_args)
+                }
+            };
+
+            if let Some(err) = take_error() {
+                set_error(err);
+                abort_native_call(is_outermost);
+                return TL_NONE;
+            }
+            let result_val = exit_native_call(result_h, is_outermost);
+            return push_handle(result_val);
+        }
+    }
+
+    // ── Slow path: HV functions, closures, overloaded fns, etc. ──────────────
     let args: Vec<Value> = (0..n_args as usize)
         .map(|i| clone_value_at(unsafe { *args_ptr.add(i) }))
         .collect();
