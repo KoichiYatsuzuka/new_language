@@ -14,7 +14,7 @@
 # Run:
 #   cargo run -- examples/practical_examples/DxLib/langtons_ant.hv
 
-import ant_render as render
+import[hv] ant_render as render
 from ant_render import Cell
 import[cpp-lib] DxLib.DxLib as dx
 
@@ -87,8 +87,7 @@ while running:
 
     # ── Draw: white background + compiled flat-path drawing kernel ────────────
     dx.DrawFillBox(0, 0, WIDTH - 1, HEIGHT - 1, col_white)
-    render.draw_cells(grid, WIDTH, HEIGHT, dx.DrawPixel,
-                      col_black, ant_x, ant_y, col_ant)
+    render.draw_cells(grid, WIDTH, HEIGHT, col_black, ant_x, ant_y, col_ant)
     dx.ScreenFlip()
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────

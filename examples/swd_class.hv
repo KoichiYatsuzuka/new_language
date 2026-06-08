@@ -1,0 +1,51 @@
+# swd_class.hv — demonstrates SWD (Size-Well-Defined) class flat iteration
+#
+# Classes without template members are SWD: their size is recursively computable.
+# fixed_list[T] where T is SWD can be iterated with zero per-element callbacks
+# in native-compiled code (flat buffer GEP instead of CB_ITER_NEXT).
+#
+# Hierarchy:
+#   Point { x: int, y: int }        — SWD, stride = 16 bytes
+#   Segment { a: Point, b: Point }  — SWD, stride = 32 bytes (nested)
+
+class Point:
+    mut x: int
+    mut y: int
+
+    fn __init__(mut self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+
+class Segment:
+    mut a: Point
+    mut b: Point
+
+    fn __init__(mut self, a: Point, b: Point) -> None:
+        self.a = a
+        self.b = b
+
+# Sum all x-coordinates of all segment endpoints.
+fn sum_xs(segs: fixed_list[Segment]) -> int:
+    mut total: int = 0
+    for s in segs:
+        total += s.a.x
+        total += s.b.x
+    return total
+
+# Count segments where both endpoints have equal y-coordinates (horizontal).
+fn count_horizontal(segs: fixed_list[Segment]) -> int:
+    mut count: int = 0
+    for s in segs:
+        if s.a.y == s.b.y:
+            count += 1
+    return count
+
+mut pts: list[Segment] = [
+    Segment(Point(0, 0), Point(3, 0)),
+    Segment(Point(1, 2), Point(4, 5)),
+    Segment(Point(10, 7), Point(20, 7)),
+]
+let segs: fixed_list[Segment] = pts => fixed_list[Segment]
+
+print(sum_xs(segs))        # 0+3+1+4+10+20 = 38
+print(count_horizontal(segs))  # segments 0 and 2 are horizontal → 2
