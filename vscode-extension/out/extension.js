@@ -31,6 +31,30 @@ function findCargoRoot(dir) {
         }
     }
 }
+// ===== Cell helpers =====
+const CELL_MARKER = /^#%%/;
+/** Return the text of the #%%-delimited cell that contains the cursor line. */
+function getCellAtCursor(editor) {
+    const doc = editor.document;
+    const cursorLine = editor.selection.active.line;
+    const lineCount = doc.lineCount;
+    let startLine = 0;
+    for (let i = cursorLine; i >= 0; i--) {
+        if (CELL_MARKER.test(doc.lineAt(i).text)) {
+            startLine = i + 1; // skip the #%% marker line itself
+            break;
+        }
+    }
+    let endLine = lineCount - 1;
+    for (let i = cursorLine + 1; i < lineCount; i++) {
+        if (CELL_MARKER.test(doc.lineAt(i).text)) {
+            endLine = i - 1;
+            break;
+        }
+    }
+    const range = new vscode.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length);
+    return doc.getText(range);
+}
 // ===== Activation =====
 function activate(context) {
     (0, type_infer_1.initBuiltinStub)(path.join(context.extensionPath, 'builtins.hvs'));
@@ -50,7 +74,13 @@ function activate(context) {
             return;
         }
         const sel = editor.selection;
-        const code = editor.document.getText(sel.isEmpty ? editor.document.lineAt(sel.active).range : sel);
+        let code;
+        if (!sel.isEmpty) {
+            code = editor.document.getText(sel);
+        }
+        else {
+            code = getCellAtCursor(editor);
+        }
         if (!code.trim())
             return;
         const terminal = getReplTerminal(projectRoot);
