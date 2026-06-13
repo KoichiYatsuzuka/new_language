@@ -1,12 +1,12 @@
 # git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
-"""Build configuration loaded from hv_config.json (mirrors cpp_bridge/config.rs)."""
+"""Build configuration loaded from ar_config.json (mirrors cpp_bridge/config.rs)."""
 from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-CONFIG_FILE_NAME = "hv_config.json"
+CONFIG_FILE_NAME = "ar_config.json"
 
 DEFAULT_SYSTEM_LIBS = [
     "winmm.lib", "imm32.lib", "ws2_32.lib", "dxguid.lib",
@@ -18,7 +18,7 @@ DEFAULT_TARGET_ARCH = "amd64"
 
 @dataclass
 class CppBuildConfig:
-    """C++ build configuration loaded from hv_config.json."""
+    """C++ build configuration loaded from ar_config.json."""
     msvc: Optional[Path] = None
     msvc_search_paths: list = field(default_factory=list)      # list[str]
     precompile_macros: list = field(default_factory=list)       # list[str]
@@ -33,7 +33,7 @@ class CppBuildConfig:
 
 
 def load_cpp_config(start_dir: Path) -> CppBuildConfig:
-    """Search for hv_config.json from start_dir upwards and parse it."""
+    """Search for ar_config.json from start_dir upwards and parse it."""
     config = CppBuildConfig()
 
     # Build search path: start_dir and all parents, plus cwd
@@ -70,7 +70,7 @@ def load_cpp_config(start_dir: Path) -> CppBuildConfig:
 
 
 def _parse_config_json(text: str, config: CppBuildConfig) -> None:
-    """Apply hv_config.json contents to config in-place."""
+    """Apply ar_config.json contents to config in-place."""
     try:
         data = json.loads(text)
     except json.JSONDecodeError:

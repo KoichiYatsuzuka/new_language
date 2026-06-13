@@ -8,25 +8,25 @@ Guidelines for Claude Code when working in this repository.
 
 ```bash
 cargo build                        # Compile
-cargo run -- -src <file.hv>        # Execute a .hv file
-cargo run -- <file.hv>             # Positional argument also supported
+cargo run -- -src <file.ar>        # Execute a .ar file
+cargo run -- <file.ar>             # Positional argument also supported
 cargo run -- --repl                # Start interactive REPL
 cargo test                         # Run all tests
 cargo test <name>                  # Filter tests by partial name match
 cargo clippy                       # Lint
 cargo fmt                          # Format
-cargo run -- --compile <file.hv>   # Partially compile a module (see below)
+cargo run -- --compile <file.ar>   # Partially compile a module (see below)
 ```
 
 ### Python implementation (`impl_python/`)
 
 ```bash
 # Run from the repository root
-python -m impl_python <file.hv>
+python -m impl_python <file.ar>
 
 # Examples
-python -m impl_python examples/variable.hv
-python -m impl_python examples/control_flow.hv
+python -m impl_python examples/variable.ar
+python -m impl_python examples/control_flow.ar
 ```
 
 ## Regulations
@@ -38,17 +38,17 @@ python -m impl_python examples/control_flow.hv
 
 ## Project Overview
 
-**Havakyrie** is a custom scripting language targeting LLVM IR.  
+**Arrow** is a custom scripting language targeting LLVM IR.  
 It aims to provide a Python-based syntax with static type checking and additional custom extensions.
 
-- File extension: `.hv`
+- File extension: `.ar`
 - Implementation language: **Rust** (main) and **Python** (`impl_python/`)
 - Indentation-based block structure (Python-style)
 
 ## Directory Structure
 
 ```text
-Havakyrie/
+Arrow/
 ├── src/
 │   ├── main.rs              # Entry point / argument parsing / error formatting
 │   ├── token.rs             # Token enum / Span / Spanned definitions
@@ -102,23 +102,23 @@ Havakyrie/
 │   ├── partial_compiler/    # --compile subsystem
 │   │   ├── mod.rs           # Entry point: orchestrates compile pipeline
 │   │   ├── codegen.rs       # Rust source code generator (fn → handle-based i64 ABI)
-│   │   ├── module_compiler.rs # Writes .hvc (v0/v1) and .hvs; v1 embeds DLL inside .hvc
+│   │   ├── module_compiler.rs # Writes .arc (v0/v1) and .ars; v1 embeds DLL inside .arc
 │   │   ├── rs_loader.rs     # Loads and links compiled Rust shared libraries
-│   │   └── stub_gen.rs      # .hvs stub file generator
+│   │   └── stub_gen.rs      # .ars stub file generator
 │   └── built_in_stab/       # Built-in type stubs (used by VS Code extension)
-│       ├── built_in_const.hvs
-│       ├── built_in_type.hvs
-│       ├── basic_traits.hvs
-│       └── error.hvs
+│       ├── built_in_const.ars
+│       ├── built_in_type.ars
+│       ├── basic_traits.ars
+│       └── error.ars
 ├── spec.md                  # Language specification
 ├── examples/
-│   ├── ....hv                 # Example files
-│   ├── ..._error.hv           # Error examples 
-│   ├── test_modules/          # modules used by importation.hv
+│   ├── ....ar                 # Example files
+│   ├── ..._error.ar           # Error examples 
+│   ├── test_modules/          # modules used by importation.ar
 │   ├── geometry/              # example package
 │   └── archived/              # older examples (kept for reference)
 ├── impl_python/               # Python implementation of the interpreter
-│   ├── __main__.py            # CLI entry point: python -m impl_python <file.hv>
+│   ├── __main__.py            # CLI entry point: python -m impl_python <file.ar>
 │   ├── __init__.py
 │   ├── token.py               # Token / Span / Spanned definitions
 │   ├── ast.py                 # AST node dataclasses
@@ -146,59 +146,59 @@ Havakyrie/
 
 ## Partial Compilation
 
-A `.hv` module can be partially compiled to native machine code with `--compile`.  
+A `.ar` module can be partially compiled to native machine code with `--compile`.  
 This produces two files next to the source:
 
 | Output file | Contents |
 |-------------|----------|
-| `{stem}.hvc` | Compiled module: binary header + embedded source text, optionally with a native shared library embedded (v1 format) |
-| `{stem}.hvs` | Type stub: function/class/trait signatures with `...` bodies (used by the VS Code extension and the static type checker) |
+| `{stem}.arc` | Compiled module: binary header + embedded source text, optionally with a native shared library embedded (v1 format) |
+| `{stem}.ars` | Type stub: function/class/trait signatures with `...` bodies (used by the VS Code extension and the static type checker) |
 
 ### Canonical demo
 
-`examples/test_modules/physics.hv` is the canonical module for demonstrating native compilation.  
-`examples/importation.hv` (section 1) is the corresponding runner that shows the full workflow.
+`examples/test_modules/physics.ar` is the canonical module for demonstrating native compilation.  
+`examples/importation.ar` (section 1) is the corresponding runner that shows the full workflow.
 
 ```bash
 # Step 1 — run interpreted
-cargo run --release -- examples/importation.hv
+cargo run --release -- examples/importation.ar
 
 # Step 2 — compile the module
-cargo run --release -- --compile examples/test_modules/physics.hv
+cargo run --release -- --compile examples/test_modules/physics.ar
 # Output:
 #   NativeLib: compiling 6 function(s): potential, kinetic, vel_dot, ...
-#   NativeLib: 6 function(s) embedded in examples\test_modules\physics.hvc
-#   Compiled : examples\test_modules\physics.hvc
-#   Stub     : examples\test_modules\physics.hvs
+#   NativeLib: 6 function(s) embedded in examples\test_modules\physics.arc
+#   Compiled : examples\test_modules\physics.arc
+#   Stub     : examples\test_modules\physics.ars
 
 # Step 3 — run again with native dispatch (same command as Step 1)
-cargo run --release -- examples/importation.hv
+cargo run --release -- examples/importation.ar
 ```
 
 ### How the compiled module is used
 
-When a `.hv` file imports a module, the parser prefers `.hvc` over `.hv`.  
-If the `.hvc` is v1, the embedded DLL is extracted to a temp file at runtime and loaded via `libloading`.  
+When a `.ar` file imports a module, the parser prefers `.arc` over `.ar`.  
+If the `.arc` is v1, the embedded DLL is extracted to a temp file at runtime and loaded via `libloading`.  
 Eligible functions are dispatched natively; all other functions tree-walk as usual.
 
 ```
-import test_modules.physics                  # loads test_modules/physics.hvc (parser)
+import test_modules.physics                  # loads test_modules/physics.arc (parser)
 test_modules.physics.total_energy(a, b, N)   # calls native code
 ```
 The details for how it is implemented, refer to ./for_claude/partial_compile.md
 
-## Importation of .hv, .py, .dll (C language), .lib, and .rs
+## Importation of .ar, .py, .dll (C language), .lib, and .rs
 
 Import syntax: `import[lang] module.path as alias` / `from module import[lang] Name`.  
-The `[lang]` tag selects the source type; omitting it defaults to `hv-auto`.
+The `[lang]` tag selects the source type; omitting it defaults to `ar-auto`.
 
 | Tag | Loads |
 |-----|-------|
-| *(none)* | `.hvc` preferred, falls back to `.hv` or `__init__.hv` |
-| `hv` / `hvc` | Force `.hv` source only / force `.hvc` compiled only |
+| *(none)* | `.arc` preferred, falls back to `.ar` or `__init__.ar` |
+| `hv` / `hvc` | Force `.ar` source only / force `.arc` compiled only |
 | `py` | Python `.py` via converter |
 | `py-int` | `.pyi`→`.py` for type checking only; runtime via PyO3 |
-| `rs` | Rust crate — auto-compiles a wrapper DLL (requires `hv_config.json` with `rust.crates_path`) |
+| `rs` | Rust crate — auto-compiles a wrapper DLL (requires `ar_config.json` with `rust.crates_path`) |
 | `cpp-dll` / `cpp-lib` | C header (`Dir.Name` → `Dir/Name.h`) for type stubs; runtime via `cpp_bridge` |
 
 For implementation details see `./for_claude/importation.md`.
@@ -256,19 +256,19 @@ Tree-walk interpreter. `exec(stmt)` / `eval(expr)` dispatch on the AST recursive
 - **Exceptions**: `raise` / `try/except/finally` use a sentinel error string `"\x00__raise__:..."`; built-in classes (`ValueError`, `TypeError`, `KeyError`, …) pre-registered at startup
 - **Access control**: `public` / `private` / `protected` enforced at runtime via `current_class` tracked on `Interpreter`; violation raises `AccessError`
 - **Async**: `mng <- async->T: body` spawns an OS thread (`std::thread::spawn`); `mut` captures share Rc, `let` captures are deep-cloned before crossing the thread boundary
-- **Native modules**: values cross the ABI as `i64` handles into a thread-local `VALUE_ARENA`; `HvCallbacks` struct passed to DLLs via `hv_init()`
+- **Native modules**: values cross the ABI as `i64` handles into a thread-local `VALUE_ARENA`; `ArCallbacks` struct passed to DLLs via `ar_init()`
 - **Debugger**: `break_point` enters an interactive REPL; step mode driven by `DBG_MODE` thread-local
 
 For full details see `./for_claude/interpreter.md`.
 
 ### VS Code Extension (`vscode-extension/`)
 
-- Syntax highlighting for `.hv`
+- Syntax highlighting for `.ar`
 - Type inference inline hints
 
 #### Standalone Debug Runner
 
-A CLI tool that exercises the extension's analysis code against a `.hv` file without running VS Code. It outputs ANSI-coloured source with inlay hints inserted inline, hover balloon content for every symbol, and a diagnostics list.
+A CLI tool that exercises the extension's analysis code against a `.ar` file without running VS Code. It outputs ANSI-coloured source with inlay hints inserted inline, hover balloon content for every symbol, and a diagnostics list.
 
 **Setup (one-time after changing analysis code):**
 
@@ -277,12 +277,12 @@ cd vscode-extension
 npm run compile:debug     # compiles to out_debug/ with ES2019 target
 ```
 
-**Run against any `.hv` file:**
+**Run against any `.ar` file:**
 
 ```bash
-node run_debug.js <path/to/file.hv>
+node run_debug.js <path/to/file.ar>
 # example
-node run_debug.js ../examples/importation.hv
+node run_debug.js ../examples/importation.ar
 ```
 
 **Output sections:**
@@ -302,7 +302,7 @@ node run_debug.js ../examples/importation.hv
 
 **How `import[rs]` types are resolved:**
 
-The extension reads `hv_config.json` (walked up from the document directory) to find `rust.crates_path`, then parses the crate's `src/lib.rs` directly.  No `.hvs` stub file is needed for Rust crates — the type information is read live from the Rust source.
+The extension reads `ar_config.json` (walked up from the document directory) to find `rust.crates_path`, then parses the crate's `src/lib.rs` directly.  No `.ars` stub file is needed for Rust crates — the type information is read live from the Rust source.
 
 **Re-compile reminder:**  Run `npm run compile:debug` whenever `analysis.ts`, `type_infer.ts`, or `native_module.ts` change.  The VSIX for the real extension uses `npm run compile` (separate `out/` directory).
 

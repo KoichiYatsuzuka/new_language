@@ -1,0 +1,93 @@
+# variable.tl — let, const, mut, freeze, static mut
+
+# --- let: immutable variable ---
+print("=== let ===")
+let name = "Alice"
+let age  = 30
+let pi   = 3.14159
+let flag = True
+print(name, age, pi, flag)
+
+# --- const: named constant (signals compile-time constant) ---
+print("=== const ===")
+const MAX_ITEMS = 100
+const LANG_NAME = "Arrow"
+print(MAX_ITEMS, LANG_NAME)
+
+# --- mut: mutable variable ---
+print("=== mut ===")
+mut score = 50
+score = 85
+print("score:", score)
+
+# Compound assignment operators
+mut n = 10
+n += 5    # 15
+n -= 2    # 13
+n *= 3    # 39
+n //= 4   # 9
+n %= 5    # 4
+print("n after compound ops:", n)  # 4
+
+mut bits = 0b0011
+bits |= 0b1100   # 0b1111 = 15
+bits &= 0b1010   # 0b1010 = 10
+bits ^= 0b0110   # 0b1100 = 12
+print("bits after bitwise ops:", bits)  # 12
+
+# --- freeze: promote mut to immutable at runtime ---
+print("=== freeze ===")
+mut temp = 42
+print("before freeze:", temp)
+freeze temp
+print("after freeze:", temp)
+# temp = 0  # would be StaticTypeError after freeze
+
+# Class with __freeze__ hook
+class Config:
+    mut debug: bool
+    mut max_conn: int
+
+    fn __freeze__(mut self) -> None:
+        print("Config locked: debug =", self.debug, "max_conn =", self.max_conn)
+
+mut cfg = Config(True, 10)
+cfg.debug = False
+freeze cfg
+cfg.debug = True  # TypeError after freeze
+
+# --- static mut: single shared cell across all closure calls ---
+print("=== static mut ===")
+fn make_id_generator() -> function[]->int:
+    static mut next_id = 0
+    fn next() -> int:
+        next_id += 1
+        return next_id
+    return next
+
+let gen_a = make_id_generator()
+let gen_b = make_id_generator()  # shares the same static cell
+print(gen_a())  # 1
+print(gen_a())  # 2
+print(gen_b())  # 3  (shared with gen_a)
+
+# --- Numeric literal formats ---
+print("=== numeric literals ===")
+let decimal  = 1_000_000
+let hex_val  = 0xFF
+let oct_val  = 0o77
+let bin_val  = 0b1010_1010
+print(decimal)   # 1000000
+print(hex_val)   # 255
+print(oct_val)   # 63
+print(bin_val)   # 170
+
+# --- String literal forms ---
+print("=== strings ===")
+let s1 = "double quoted"
+let s2 = 'single quoted'
+let s3 = """triple
+quoted"""
+print(s1)
+print(s2)
+print(s3)

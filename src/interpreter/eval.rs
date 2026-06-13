@@ -967,17 +967,17 @@ impl Interpreter {
                 };
                 Some(Ok(Value::Str(std::env::var(&name).unwrap_or(default))))
             }
-            "parse_hv" => {
+            "parse_ar" => {
                 if args.is_empty() || args.len() > 2 {
                     return Some(Err(
-                        "TypeError: parse_hv() takes 1 or 2 arguments (source[, path])".to_string(),
+                        "TypeError: parse_ar() takes 1 or 2 arguments (source[, path])".to_string(),
                     ));
                 }
                 let source = match self.eval(args[0].expr()) {
                     Ok(Value::Str(s)) => s,
                     Ok(other) => {
                         return Some(Err(format!(
-                            "TypeError: parse_hv() source must be str, not '{}'",
+                            "TypeError: parse_ar() source must be str, not '{}'",
                             self.type_name(&other)
                         )))
                     }
@@ -988,7 +988,7 @@ impl Interpreter {
                         Ok(Value::Str(s)) => s,
                         Ok(other) => {
                             return Some(Err(format!(
-                                "TypeError: parse_hv() path must be str, not '{}'",
+                                "TypeError: parse_ar() path must be str, not '{}'",
                                 self.type_name(&other)
                             )))
                         }
@@ -1004,7 +1004,7 @@ impl Interpreter {
                     .map(|p| p.to_path_buf());
                 let stmts = match crate::parser::Parser::new(tokens, source_dir).parse_program() {
                     Ok(s) => s,
-                    Err(e) => return Some(Err(format!("ParseError in parse_hv: {e}"))),
+                    Err(e) => return Some(Err(format!("ParseError in parse_ar: {e}"))),
                 };
                 Some(Ok(super::ast_value::stmts_to_value(&stmts)))
             }
@@ -1654,7 +1654,7 @@ impl Interpreter {
     // --- ネイティブコールバック用ヘルパー ---
 
     /// Resolve an attribute on any `Value`.
-    /// Used by both `eval_attr` (from AST) and native callbacks (`hv_get_attr`).
+    /// Used by both `eval_attr` (from AST) and native callbacks (`ar_get_attr`).
     pub(super) fn get_attr_val(&mut self, obj: Value, attr: &str) -> Result<Value, String> {
         match &obj {
             Value::Instance(inst_rc) => {
@@ -1801,7 +1801,7 @@ impl Interpreter {
     }
 
     /// 任意の呼び出し可能な `Value` を評価済み引数リストで呼び出す。
-    /// ネイティブコールバック `hv_call_fn` から呼ばれる。
+    /// ネイティブコールバック `ar_call_fn` から呼ばれる。
     pub(super) fn call_value_with_args(
         &mut self,
         callee: Value,
@@ -1878,7 +1878,7 @@ impl Interpreter {
     }
 
     /// インスタンスの属性に値をセットする。
-    /// ネイティブコールバック `hv_set_attr` から呼ばれる。
+    /// ネイティブコールバック `ar_set_attr` から呼ばれる。
     pub(super) fn set_attr_val(
         &mut self,
         obj: Value,

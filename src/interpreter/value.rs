@@ -569,7 +569,7 @@ pub struct NativeFnRef {
     /// Cast to `unsafe extern "C" fn(*const i64, i32) -> i64` at call time.
     pub raw_fn_ptr: usize,
     /// Lazily cached raw function pointer for cpp-dll functions (raw_fn_ptr == 0).
-    /// Written once on first call via hv_call_fn fast path; 0 = not yet resolved.
+    /// Written once on first call via ar_call_fn fast path; 0 = not yet resolved.
     pub cached_fn_ptr: std::sync::atomic::AtomicUsize,
 }
 

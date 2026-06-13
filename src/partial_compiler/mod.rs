@@ -1,10 +1,10 @@
-/// Partial compiler: native code generation, .hvc/.hvs writing, and stub generation.
+/// Partial compiler: native code generation, .arc/.ars writing, and stub generation.
 ///
 /// Submodules:
 ///   llvm_codegen    — LLVM IR text generator (clang fallback path)
 ///   inkwell_codegen — inkwell JIT compiler (feature = "llvm", primary path)
-///   module_compiler — .hvc (v0/v1/v2) and .hvs writer + runtime cache
-///   stub_gen        — .hvs stub text generator
+///   module_compiler — .arc (v0/v1/v2) and .ars writer + runtime cache
+///   stub_gen        — .ars stub text generator
 pub mod llvm_codegen;
 #[cfg(feature = "llvm")]
 pub mod inkwell_codegen;

@@ -24,7 +24,7 @@ const EXEC_SENTINEL: &str = "##REPL_EXEC##";
 /// あるブロックで宣言した変数や関数は次のブロックから参照できる。
 pub fn run_repl() {
     eprintln!(
-        "\x1b[32mHavakyrie REPL\x1b[0m  — Ctrl+Enter in VS Code to run selection · Ctrl+D to exit"
+        "\x1b[32mArrow REPL\x1b[0m  — Ctrl+Enter in VS Code to run selection · Ctrl+D to exit"
     );
 
     let mut interp = Interpreter::new();

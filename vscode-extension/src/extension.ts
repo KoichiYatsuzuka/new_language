@@ -21,7 +21,7 @@ let replTerminal: vscode.Terminal | undefined;
 
 function getReplTerminal(projectRoot: string): vscode.Terminal {
     if (replTerminal && vscode.window.terminals.includes(replTerminal)) return replTerminal;
-    replTerminal = vscode.window.createTerminal({ name: 'Havakyrie REPL', cwd: projectRoot });
+    replTerminal = vscode.window.createTerminal({ name: 'Arrow REPL', cwd: projectRoot });
     replTerminal.sendText('cargo run -- --repl');
     return replTerminal;
 }
@@ -74,56 +74,56 @@ function getCellAtCursor(editor: vscode.TextEditor): string {
 // ===== Activation =====
 
 export function activate(context: vscode.ExtensionContext) {
-    initBuiltinStub(path.join(context.extensionPath, 'builtins.hvs'));
+    initBuiltinStub(path.join(context.extensionPath, 'builtins.ars'));
 
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(t => { if (t === replTerminal) replTerminal = undefined; }),
 
         vscode.languages.registerInlayHintsProvider(
-            { language: 'havakyrie' },
+            { language: 'arrow' },
             { provideInlayHints }
         ),
         vscode.languages.registerHoverProvider(
-            { language: 'havakyrie' },
+            { language: 'arrow' },
             { provideHover }
         ),
         vscode.languages.registerDocumentSemanticTokensProvider(
-            { language: 'havakyrie' },
+            { language: 'arrow' },
             { provideDocumentSemanticTokens },
             SEMANTIC_TOKENS_LEGEND
         ),
         vscode.languages.registerCompletionItemProvider(
-            { language: 'havakyrie' },
+            { language: 'arrow' },
             { provideCompletionItems },
             '.'
         ),
         vscode.languages.registerDocumentSymbolProvider(
-            { language: 'havakyrie' },
+            { language: 'arrow' },
             { provideDocumentSymbols }
         ),
         vscode.languages.registerSignatureHelpProvider(
-            { language: 'havakyrie' },
+            { language: 'arrow' },
             { provideSignatureHelp },
             '(', ','
         ),
         vscode.languages.registerDefinitionProvider(
-            { language: 'havakyrie' },
+            { language: 'arrow' },
             { provideDefinition }
         ),
     );
 
     // ---- Send-to-REPL command ----
     context.subscriptions.push(
-        vscode.commands.registerCommand('havakyrie.sendToRepl', () => {
+        vscode.commands.registerCommand('arrow.sendToRepl', () => {
             const editor = vscode.window.activeTextEditor;
-            if (!editor || editor.document.languageId !== 'havakyrie') {
-                vscode.window.showWarningMessage('Havakyrie REPL: open a .hv file first.');
+            if (!editor || editor.document.languageId !== 'arrow') {
+                vscode.window.showWarningMessage('Arrow REPL: open a .ar file first.');
                 return;
             }
             const fileDir = path.dirname(editor.document.uri.fsPath);
             const projectRoot = findCargoRoot(fileDir);
             if (!projectRoot) {
-                vscode.window.showErrorMessage('Havakyrie REPL: could not find Cargo.toml above this file.');
+                vscode.window.showErrorMessage('Arrow REPL: could not find Cargo.toml above this file.');
                 return;
             }
             const sel = editor.selection;
@@ -142,11 +142,11 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // ---- Diagnostics ----
-    const diagCollection = vscode.languages.createDiagnosticCollection('havakyrie');
+    const diagCollection = vscode.languages.createDiagnosticCollection('arrow');
     const debounceMap = new Map<string, ReturnType<typeof setTimeout>>();
 
     function scheduleDiagnostics(document: vscode.TextDocument): void {
-        if (document.languageId !== 'havakyrie') return;
+        if (document.languageId !== 'arrow') return;
         const key = document.uri.toString();
         const existing = debounceMap.get(key);
         if (existing) clearTimeout(existing);

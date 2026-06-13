@@ -1,6 +1,6 @@
-"""Minimal stdin helper for spider_solitaire.hv.
+"""Minimal stdin helper for spider_solitaire.ar.
 
-Havakyrie has no built-in input(), so we bridge via Python.
+Arrow has no built-in input(), so we bridge via Python.
 All functions take no arguments to avoid the mut-parameter constraint.
 """
 

@@ -1,4 +1,4 @@
-﻿// parser — recursive-descent parser for the Havakyrie.
+﻿// parser — recursive-descent parser for the Arrow.
 // Organized into submodules by role:
 //   stmts   — statement parsing (let/mut/const/fn/class/if/for/while/match/...)
 //   imports — import/from-import statement parsing and module loading
@@ -58,7 +58,7 @@ impl Parser {
     ///
     /// # 引数
     /// - `tokens`: レキサが生成したトークン列（`Spanned` の `Vec`）
-    /// - `source_dir`: .hv ファイルのディレクトリ（import の第一検索先）
+    /// - `source_dir`: .ar ファイルのディレクトリ（import の第一検索先）
     ///
     /// # 戻り値
     /// 初期化済みの `Parser` インスタンス

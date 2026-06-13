@@ -17,7 +17,7 @@ class Point:
 
 **パース**: `['@' decorator]* 'class' ident ['[' template_params ']'] ['(' bases ')'] ':' class_body`
 
-Havakyrie のクラスは**クラス継承をサポートしません**。  
+Arrow のクラスは**クラス継承をサポートしません**。  
 代わりに trait を使います。
 
 ---

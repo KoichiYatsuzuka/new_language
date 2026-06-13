@@ -1,6 +1,6 @@
-"""Entry point: python -m std_tools.python_stab <file.py> [output.hvs]
+"""Entry point: python -m std_tools.python_stab <file.py> [output.ars]
 
-If no output path is given, writes <file>.hvs alongside the source file.
+If no output path is given, writes <file>.ars alongside the source file.
 Pass -p / --print to print the stub to stdout instead.
 """
 
@@ -22,7 +22,7 @@ def main() -> None:
 
     if not args:
         print(
-            "Usage: python -m std_tools.python_stab <file.py> [output.hvs] [-p|--print]",
+            "Usage: python -m std_tools.python_stab <file.py> [output.ars] [-p|--print]",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -40,7 +40,7 @@ def main() -> None:
         print(stub, end="")
         return
 
-    out_path = Path(args[1]) if len(args) >= 2 else src.with_suffix(".hvs")
+    out_path = Path(args[1]) if len(args) >= 2 else src.with_suffix(".ars")
     out_path.write_text(stub, encoding="utf-8")
     print(f"Stub written to {out_path}")
 

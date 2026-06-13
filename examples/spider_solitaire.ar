@@ -1,0 +1,282 @@
+# spider_solitaire.ar — Spider Solitaire (Spades only, 6 sets to win)
+#
+# Rendering : Python pygame via spider_render.py  (pip install pygame)
+# Game logic : Arrow
+#
+# Usage:
+#   cargo run -- examples/spider_solitaire.ar
+
+import[py-int] random as random
+import spider_render as renderer
+
+# Rank labels used in error messages (index 0 = Ace, index 12 = King)
+let RANKS: list[str] = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+# ──────────────────────────────────────────────────────────────────
+# Card: rank 1=Ace … 13=King, face_up controls visibility
+# ──────────────────────────────────────────────────────────────────
+class Card:
+    mut rank: int
+    mut face_up: bool
+
+# ──────────────────────────────────────────────────────────────────
+# Game state
+# ──────────────────────────────────────────────────────────────────
+class Game:
+    mut tableau: list[list[Card]]   # 10 columns
+    mut stock: list[Card]           # remaining deck (deal 10 at a time)
+    mut foundation: int             # number of completed K-A sets removed
+    mut score: int
+    mut message: str
+
+    fn __init__(mut self) -> None:
+        self.tableau = []
+        self.stock = []
+        self.foundation = 0
+        self.score = 500
+        self.message = "Welcome!  m <col> <row> <to>  /  d: deal  /  h: help  /  q: quit"
+        self._setup()
+
+    # Build and deal 78-card deck (6 x A..K spades)
+    fn _setup(mut self) -> None:
+        mut ranks: list[int] = []
+        mut s: int = 0
+        while s < 6:
+            mut r: int = 1
+            while r <= 13:
+                ranks.append(r)
+                r += 1
+            s += 1
+
+        # Fisher-Yates shuffle
+        mut n: int = len(ranks) - 1
+        while n > 0:
+            let j: int = random.randint(0, n)
+            let tmp: int = ranks[n]
+            ranks[n] = ranks[j]
+            ranks[j] = tmp
+            n -= 1
+
+        # Initialise 10 empty columns
+        mut c: int = 0
+        while c < 10:
+            self.tableau.append([])
+            c += 1
+
+        # Deal: cols 0-3 get 6 cards, cols 4-9 get 5 cards (54 total)
+        mut idx: int = 0
+        mut col: int = 0
+        while col < 10:
+            mut num: int = 5
+            if col < 4:
+                num = 6
+            mut ri: int = 0
+            while ri < num:
+                self.tableau[col].append(Card(ranks[idx], False))
+                idx += 1
+                ri += 1
+            col += 1
+
+        # Remaining 24 cards go to stock
+        while idx < len(ranks):
+            self.stock.append(Card(ranks[idx], False))
+            idx += 1
+
+        self._flip_tops()
+
+    # Flip the topmost card of every non-empty column face up
+    fn _flip_tops(mut self) -> None:
+        mut c: int = 0
+        while c < 10:
+            let sz: int = len(self.tableau[c])
+            if sz > 0:
+                self.tableau[c][sz - 1].face_up = True
+            c += 1
+
+    # Return True if col[from_row..] is a valid face-up descending sequence
+    fn _valid_seq(self, col_idx: int, from_row: int) -> bool:
+        let col = self.tableau[col_idx]
+        if from_row < 0 or from_row >= len(col):
+            return False
+        if not col[from_row].face_up:
+            return False
+        mut r: int = from_row
+        while r < len(col) - 1:
+            if not col[r + 1].face_up:
+                return False
+            if col[r].rank != col[r + 1].rank + 1:
+                return False
+            r += 1
+        return True
+
+    # Attempt to move col[from_row..] from from_col to to_col
+    fn do_move(mut self, from_col: int, from_row: int, to_col: int) -> bool:
+        if from_col < 0 or from_col >= 10:
+            self.message = "Error: source column out of range (1-10)"
+            return False
+        if to_col < 0 or to_col >= 10:
+            self.message = "Error: destination column out of range (1-10)"
+            return False
+        if from_col == to_col:
+            self.message = "Error: source and destination are the same column"
+            return False
+        if not self._valid_seq(from_col, from_row):
+            self.message = "Error: no valid sequence at col " + str(from_col + 1) + " row " + str(from_row + 1)
+            return False
+
+        let src = self.tableau[from_col]
+        let dst = self.tableau[to_col]
+        let moving_rank: int = src[from_row].rank
+
+        # Destination must be empty or top card has rank = moving_rank + 1
+        if len(dst) > 0:
+            let top: Card = dst[len(dst) - 1]
+            if top.rank != moving_rank + 1:
+                self.message = "Error: cannot place [" + RANKS[moving_rank - 1] + "] on [" + RANKS[top.rank - 1] + "]"
+                return False
+
+        let move_count: int = len(src) - from_row
+        let end_row: int = from_row + move_count
+        mut i: int = from_row
+        while i < end_row:
+            dst.append(src[i])
+            i += 1
+        mut ri: int = 0
+        while ri < move_count:
+            src.pop()
+            ri += 1
+
+        # Reveal the new top card of the source column
+        if from_row > 0:
+            self.tableau[from_col][from_row - 1].face_up = True
+
+        self.score -= 1
+        self.message = "Moved " + str(move_count) + " card(s) col " + str(from_col + 1) + " row " + str(from_row + 1) + " -> col " + str(to_col + 1)
+
+        self._check_complete(to_col)
+        return True
+
+    # If the last 13 cards of a column form K..A, remove them (+100 pts)
+    fn _check_complete(mut self, col_idx: int) -> None:
+        let col = self.tableau[col_idx]
+        if len(col) < 13:
+            return
+        let start: int = len(col) - 13
+        if col[start].rank != 13:
+            return
+        mut ok: bool = True
+        mut i: int = 0
+        while i < 13:
+            if col[start + i].rank != 13 - i:
+                ok = False
+                break
+            i += 1
+        if not ok:
+            return
+        # Remove the 13 cards
+        mut ri: int = 0
+        while ri < 13:
+            col.pop()
+            ri += 1
+        self.foundation += 1
+        self.score += 100
+        if start > 0:
+            self.tableau[col_idx][start - 1].face_up = True
+        self.message = "Complete K to A! +100 pts (" + str(self.foundation) + "/6 done)"
+
+    # Deal one stock card to each of the first (up to 10) columns
+    fn deal(mut self) -> bool:
+        if len(self.stock) == 0:
+            self.message = "Stock is empty - no more cards to deal!"
+            return False
+        mut cnt: int = 10
+        if len(self.stock) < 10:
+            cnt = len(self.stock)
+        mut ci: int = 0
+        while ci < cnt:
+            self.stock[ci].face_up = True
+            self.tableau[ci].append(self.stock[ci])
+            ci += 1
+        self.stock = self.stock[Index(cnt):]
+        mut c: int = 0
+        while c < cnt:
+            self._check_complete(c)
+            c += 1
+        self.message = "Dealt " + str(cnt) + " card(s).  " + str(len(self.stock)) + " remaining in stock."
+        return True
+
+    fn is_won(self) -> bool:
+        return self.foundation >= 6
+
+    # Serialise game state to a string for the pygame renderer.
+    # Format: score|foundation|stock_count|message|col0;col1;...;col9
+    # Each column: comma-separated tokens — face-up rank as "n", face-down as "Xn"
+    fn to_render_str(self) -> str:
+        mut s: str = str(self.score) + "|" + str(self.foundation) + "|" + str(len(self.stock)) + "|" + self.message + "|"
+        mut c: int = 0
+        while c < 10:
+            if c > 0:
+                s = s + ";"
+            let col = self.tableau[c]
+            mut r: int = 0
+            while r < len(col):
+                if r > 0:
+                    s = s + ","
+                if col[r].face_up:
+                    s = s + str(col[r].rank)
+                else:
+                    s = s + "X" + str(col[r].rank)
+                r += 1
+            c += 1
+        return s
+
+    fn display(self) -> None:
+        let s: str = self.to_render_str()
+        renderer.draw_game(s)
+
+
+# ──────────────────────────────────────────────────────────────────
+fn main() -> None:
+    mut game: Game = Game()
+    game.display()
+
+    while not game.is_won():
+        let cmd = renderer.get_event()
+        let parts: list[str] = str(cmd).split()
+
+        if len(parts) == 0:
+            continue
+
+        let p0: str = parts[0]
+
+        if p0 == "q":
+            break
+        elif p0 == "h":
+            game.message = "HELP  m <col> <row> <to>  /  d: deal  /  q: quit  /  move=-1  complete=+100"
+            game.display()
+        elif p0 == "d":
+            game.deal()
+            game.display()
+        elif p0 == "m":
+            if len(parts) != 4:
+                game.message = "Usage: m <from_col> <from_row> <to_col>  (all 1-indexed)"
+                game.display()
+            else:
+                let fc: int = int(parts[1]) - 1
+                let fr: int = int(parts[2]) - 1
+                let tc: int = int(parts[3]) - 1
+                game.do_move(fc, fr, tc)
+                game.display()
+        else:
+            game.message = "Unknown command '" + p0 + "'.  Type h for help."
+            game.display()
+
+    if game.is_won():
+        game.message = "CONGRATULATIONS! All 6 sets complete! Final score: " + str(game.score) + "  (press any key)"
+        game.display()
+        renderer.get_event()
+
+    renderer.close_window()
+
+
+main()

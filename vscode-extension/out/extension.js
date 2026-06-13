@@ -11,7 +11,7 @@ let replTerminal;
 function getReplTerminal(projectRoot) {
     if (replTerminal && vscode.window.terminals.includes(replTerminal))
         return replTerminal;
-    replTerminal = vscode.window.createTerminal({ name: 'Havakyrie REPL', cwd: projectRoot });
+    replTerminal = vscode.window.createTerminal({ name: 'Arrow REPL', cwd: projectRoot });
     replTerminal.sendText('cargo run -- --repl');
     return replTerminal;
 }
@@ -57,20 +57,20 @@ function getCellAtCursor(editor) {
 }
 // ===== Activation =====
 function activate(context) {
-    (0, type_infer_1.initBuiltinStub)(path.join(context.extensionPath, 'builtins.hvs'));
+    (0, type_infer_1.initBuiltinStub)(path.join(context.extensionPath, 'builtins.ars'));
     context.subscriptions.push(vscode.window.onDidCloseTerminal(t => { if (t === replTerminal)
-        replTerminal = undefined; }), vscode.languages.registerInlayHintsProvider({ language: 'havakyrie' }, { provideInlayHints: type_infer_1.provideInlayHints }), vscode.languages.registerHoverProvider({ language: 'havakyrie' }, { provideHover: type_infer_1.provideHover }), vscode.languages.registerDocumentSemanticTokensProvider({ language: 'havakyrie' }, { provideDocumentSemanticTokens: type_infer_1.provideDocumentSemanticTokens }, type_infer_1.SEMANTIC_TOKENS_LEGEND), vscode.languages.registerCompletionItemProvider({ language: 'havakyrie' }, { provideCompletionItems: type_infer_1.provideCompletionItems }, '.'), vscode.languages.registerDocumentSymbolProvider({ language: 'havakyrie' }, { provideDocumentSymbols: type_infer_1.provideDocumentSymbols }), vscode.languages.registerSignatureHelpProvider({ language: 'havakyrie' }, { provideSignatureHelp: type_infer_1.provideSignatureHelp }, '(', ','), vscode.languages.registerDefinitionProvider({ language: 'havakyrie' }, { provideDefinition: type_infer_1.provideDefinition }));
+        replTerminal = undefined; }), vscode.languages.registerInlayHintsProvider({ language: 'arrow' }, { provideInlayHints: type_infer_1.provideInlayHints }), vscode.languages.registerHoverProvider({ language: 'arrow' }, { provideHover: type_infer_1.provideHover }), vscode.languages.registerDocumentSemanticTokensProvider({ language: 'arrow' }, { provideDocumentSemanticTokens: type_infer_1.provideDocumentSemanticTokens }, type_infer_1.SEMANTIC_TOKENS_LEGEND), vscode.languages.registerCompletionItemProvider({ language: 'arrow' }, { provideCompletionItems: type_infer_1.provideCompletionItems }, '.'), vscode.languages.registerDocumentSymbolProvider({ language: 'arrow' }, { provideDocumentSymbols: type_infer_1.provideDocumentSymbols }), vscode.languages.registerSignatureHelpProvider({ language: 'arrow' }, { provideSignatureHelp: type_infer_1.provideSignatureHelp }, '(', ','), vscode.languages.registerDefinitionProvider({ language: 'arrow' }, { provideDefinition: type_infer_1.provideDefinition }));
     // ---- Send-to-REPL command ----
-    context.subscriptions.push(vscode.commands.registerCommand('havakyrie.sendToRepl', () => {
+    context.subscriptions.push(vscode.commands.registerCommand('arrow.sendToRepl', () => {
         const editor = vscode.window.activeTextEditor;
-        if (!editor || editor.document.languageId !== 'havakyrie') {
-            vscode.window.showWarningMessage('Havakyrie REPL: open a .hv file first.');
+        if (!editor || editor.document.languageId !== 'arrow') {
+            vscode.window.showWarningMessage('Arrow REPL: open a .ar file first.');
             return;
         }
         const fileDir = path.dirname(editor.document.uri.fsPath);
         const projectRoot = findCargoRoot(fileDir);
         if (!projectRoot) {
-            vscode.window.showErrorMessage('Havakyrie REPL: could not find Cargo.toml above this file.');
+            vscode.window.showErrorMessage('Arrow REPL: could not find Cargo.toml above this file.');
             return;
         }
         const sel = editor.selection;
@@ -89,10 +89,10 @@ function activate(context) {
         terminal.sendText('\n' + REPL_SENTINEL);
     }));
     // ---- Diagnostics ----
-    const diagCollection = vscode.languages.createDiagnosticCollection('havakyrie');
+    const diagCollection = vscode.languages.createDiagnosticCollection('arrow');
     const debounceMap = new Map();
     function scheduleDiagnostics(document) {
-        if (document.languageId !== 'havakyrie')
+        if (document.languageId !== 'arrow')
             return;
         const key = document.uri.toString();
         const existing = debounceMap.get(key);

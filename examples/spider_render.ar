@@ -1,0 +1,410 @@
+# spider_render.ar — pygame renderer for Spider Solitaire
+#
+# Board string protocol (pipe-separated, maxsplit=4):
+#   score|foundation|stock_count|message|col_data
+#
+# col_data: 10 columns separated by semicolons.
+# Each column: comma-separated card tokens.
+# Each token: 'Xn' = face-down rank n,  'n' = face-up rank n.
+#
+# Mouse controls:
+#   Left-click face-up card  → select it (and the run below it)
+#   Left-click other column  → execute pending move
+#   Left-click STOCK button  → deal
+#   Right-click / Escape     → cancel selection
+# Keyboard: type a command and press Enter.
+
+import[py-int] pygame as pygame
+
+const WIN_W  = 1020
+const WIN_H  = 780
+const CARD_W = 72
+const CARD_H = 96
+const COL_GAP = 98
+const MARGIN_X = 12
+const HEADER_H = 90
+const OVERLAP_DOWN = 16
+const OVERLAP_UP   = 24
+
+const STOCK_X = WIN_W - 115
+const STOCK_Y = 8
+const STOCK_W = 103
+const STOCK_H = 70
+
+# SDL2 / pygame event and key constants (stable integers)
+const EVT_QUIT          = 256
+const EVT_MOUSEBTN_DOWN = 1025
+const EVT_KEYDOWN       = 768
+const KEY_RETURN        = 13
+const KEY_BACKSPACE     = 8
+const KEY_ESCAPE        = 27
+
+let RANK_STR: list[str] = ["", "A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+# ── Shared UI state (mouse selection + last rendered board) ───────────────────
+
+class UIState:
+    mut sel_col:    int
+    mut sel_row:    int
+    mut last_board: str
+
+fn _ui_state() -> UIState:
+    static mut st = UIState(-1, -1, "")
+    return st
+
+# ── Lazy pygame initialisation ────────────────────────────────────────────────
+
+fn _do_pg_init() -> None:
+    pygame.init()
+    let scr = pygame.display.set_mode((WIN_W, WIN_H))
+    pygame.display.set_caption("Spider Solitaire")
+    return scr
+
+fn _screen() -> None:
+    static mut s = _do_pg_init()
+    return s
+
+fn _font_hdr() -> None:
+    _screen()
+    static mut f = pygame.font.SysFont("consolas", 20, 1)
+    return f
+
+fn _font_card() -> None:
+    _screen()
+    static mut f = pygame.font.SysFont("consolas", 16, 1)
+    return f
+
+fn _font_sm() -> None:
+    _screen()
+    static mut f = pygame.font.SysFont("consolas", 14, 0)
+    return f
+
+fn _clock() -> None:
+    _screen()
+    static mut c = pygame.time.Clock()
+    return c
+
+# ── Board string parsing ──────────────────────────────────────────────────────
+
+fn _parse_score(bs: str) -> int:
+    let parts = bs.split("|", 4)
+    if len(parts) < 1:
+        return 0
+    return int(parts[0])
+
+fn _parse_foundation(bs: str) -> int:
+    let parts = bs.split("|", 4)
+    if len(parts) < 2:
+        return 0
+    return int(parts[1])
+
+fn _parse_stock(bs: str) -> int:
+    let parts = bs.split("|", 4)
+    if len(parts) < 3:
+        return 0
+    return int(parts[2])
+
+fn _parse_message(bs: str) -> str:
+    let parts = bs.split("|", 4)
+    if len(parts) < 4:
+        return ""
+    return parts[3]
+
+fn _col_data(bs: str) -> str:
+    let parts = bs.split("|", 4)
+    if len(parts) < 5:
+        return ""
+    return parts[4]
+
+fn _get_col_str(bs: str, ci: int) -> str:
+    let cd = _col_data(bs)
+    if len(cd) == 0:
+        return ""
+    let cols = cd.split(";")
+    if ci >= len(cols):
+        return ""
+    return cols[ci]
+
+fn _tok_face_up(tok: str) -> bool:
+    if len(tok) == 0:
+        return False
+    return tok[0] != "X"
+
+fn _tok_rank(tok: str) -> int:
+    if len(tok) == 0:
+        return 0
+    if tok[0] == "X":
+        if len(tok) <= 1:
+            return 0
+        return int(tok[1:])
+    return int(tok)
+
+fn _col_ys(col_str: str) -> list[int]:
+    if len(col_str) == 0:
+        return []
+    let toks = col_str.split(",")
+    mut ys: list[int] = []
+    mut y: int = HEADER_H
+    mut i: int = 0
+    while i < len(toks):
+        ys.append(y)
+        if i < len(toks) - 1:
+            if _tok_face_up(toks[i]):
+                y += OVERLAP_UP
+            else:
+                y += OVERLAP_DOWN
+        i += 1
+    return ys
+
+# ── Card sprite ───────────────────────────────────────────────────────────────
+
+fn _draw_card(x: int, y: int, rank: int, face_up: bool, selected: bool) -> None:
+    let scr = _screen()
+    if face_up:
+        if selected:
+            pygame.draw.rect(scr, (255, 255, 180), (x, y, CARD_W, CARD_H), 0, border_radius=4)
+            pygame.draw.rect(scr, (255, 200, 0),   (x, y, CARD_W, CARD_H), 3, border_radius=4)
+        else:
+            pygame.draw.rect(scr, (255, 255, 255), (x, y, CARD_W, CARD_H), 0, border_radius=4)
+            pygame.draw.rect(scr, (0, 0, 0),       (x, y, CARD_W, CARD_H), 2, border_radius=4)
+        mut label: str = "?"
+        if rank >= 1 and rank <= 13:
+            label = RANK_STR[rank]
+        let s1 = _font_card().render(label, True, (0, 0, 0))
+        scr.blit(s1, (x + 5, y + 4))
+        let s2 = _font_sm().render("♠", True, (0, 0, 0))
+        scr.blit(s2, (x + 5, y + 22))
+    else:
+        pygame.draw.rect(scr, (30, 30, 170), (x, y, CARD_W, CARD_H),                    0, border_radius=4)
+        pygame.draw.rect(scr, (0, 0, 0),     (x, y, CARD_W, CARD_H),                    2, border_radius=4)
+        pygame.draw.rect(scr, (60, 60, 200), (x + 5, y + 5, CARD_W - 10, CARD_H - 10), 2, border_radius=2)
+
+# ── Full board render ─────────────────────────────────────────────────────────
+
+fn _render(board_str: str) -> None:
+    if len(board_str) > 0:
+        _ui_state().last_board = board_str
+    let bs = _ui_state().last_board
+    if len(bs) == 0:
+        return
+
+    let scr = _screen()
+    scr.fill((0, 90, 30))
+
+    let score     = _parse_score(bs)
+    let found     = _parse_foundation(bs)
+    let stock_cnt = _parse_stock(bs)
+    let msg       = _parse_message(bs)
+
+    # Header row
+    let hdr_txt  = "Score: " + str(score) + "    Completed: " + str(found) + "/6"
+    let hdr_surf = _font_hdr().render(hdr_txt, True, (255, 255, 180))
+    scr.blit(hdr_surf, (10, 14))
+
+    # Stock / deal button (top-right)
+    pygame.draw.rect(scr, (30, 30, 120),   (STOCK_X, STOCK_Y, STOCK_W, STOCK_H), 0, border_radius=6)
+    pygame.draw.rect(scr, (255, 255, 180), (STOCK_X, STOCK_Y, STOCK_W, STOCK_H), 2, border_radius=6)
+    let stk_lbl = _font_sm().render("STOCK  [d]", True, (255, 255, 180))
+    scr.blit(stk_lbl, (STOCK_X + 8, STOCK_Y + 8))
+    let cnt_surf = _font_hdr().render(str(stock_cnt), True, (255, 255, 180))
+    let cnt_w    = cnt_surf.get_width()
+    scr.blit(cnt_surf, (STOCK_X + STOCK_W // 2 - cnt_w // 2, STOCK_Y + 34))
+
+    # Column number labels and empty-column outlines
+    mut i: int = 0
+    while i < 10:
+        let cx  = MARGIN_X + i * COL_GAP
+        let lbl = _font_sm().render(str(i + 1), True, (255, 255, 180))
+        scr.blit(lbl, (cx + CARD_W // 2 - 6, HEADER_H - 18))
+        pygame.draw.rect(scr, (0, 60, 10), (cx, HEADER_H, CARD_W, CARD_H), 2, border_radius=4)
+        i += 1
+
+    # Draw all cards
+    let sc       = _ui_state().sel_col
+    let sr       = _ui_state().sel_row
+    let cd       = _col_data(bs)
+    let all_cols = cd.split(";")
+    mut ci: int  = 0
+    while ci < len(all_cols):
+        let col_str = all_cols[ci]
+        if len(col_str) > 0:
+            let toks    = col_str.split(",")
+            let ys      = _col_ys(col_str)
+            let cx      = MARGIN_X + ci * COL_GAP
+            mut ri: int = 0
+            while ri < len(toks):
+                let tok     = toks[ri]
+                let rank    = _tok_rank(tok)
+                let face_up = _tok_face_up(tok)
+                let sel     = sc == ci and sr >= 0 and ri >= sr
+                _draw_card(cx, ys[ri], rank, face_up, sel)
+                ri += 1
+        ci += 1
+
+    # Selection hint
+    if sc >= 0 and sr >= 0:
+        let sel_msg  = "Selected: col " + str(sc + 1) + " row " + str(sr + 1) + " — click destination  (right-click to cancel)"
+        let sel_surf = _font_sm().render(sel_msg, True, (100, 255, 100))
+        scr.blit(sel_surf, (10, WIN_H - 82))
+
+    # Message line
+    let msg_surf = _font_hdr().render(msg, True, (255, 240, 80))
+    scr.blit(msg_surf, (10, WIN_H - 60))
+
+    # Command hint
+    let hint_txt  = "m <col> <row> <to>  |  d  |  h  |  q       [mouse: click to select & move]"
+    let hint_surf = _font_sm().render(hint_txt, True, (160, 200, 160))
+    scr.blit(hint_surf, (10, WIN_H - 36))
+
+# ── Mouse click handler ───────────────────────────────────────────────────────
+
+fn _handle_click(mx: int, my: int) -> str:
+    let bs = _ui_state().last_board
+    if len(bs) == 0:
+        return ""
+
+    # Stock button hit?
+    if mx >= STOCK_X and mx <= STOCK_X + STOCK_W and my >= STOCK_Y and my <= STOCK_Y + STOCK_H:
+        _ui_state().sel_col = -1
+        _ui_state().sel_row = -1
+        return "d"
+
+    # Determine clicked column by X coordinate
+    mut clicked_col: int = -1
+    mut ci: int = 0
+    while ci < 10:
+        let cx = MARGIN_X + ci * COL_GAP
+        if mx >= cx and mx <= cx + CARD_W:
+            clicked_col = ci
+            break
+        ci += 1
+    if clicked_col < 0 or my < HEADER_H:
+        return ""
+
+    let col_str = _get_col_str(bs, clicked_col)
+    let sc      = _ui_state().sel_col
+    let sr      = _ui_state().sel_row
+
+    if sc < 0:
+        # No selection — try to start one on a face-up card
+        if len(col_str) == 0:
+            return ""
+        let toks    = col_str.split(",")
+        let ys      = _col_ys(col_str)
+        mut hit_row: int = -1
+        mut ri: int = len(toks) - 1
+        while ri >= 0:
+            let y_top = ys[ri]
+            mut y_bot: int = y_top + CARD_H
+            if ri < len(toks) - 1:
+                y_bot = ys[ri + 1]
+            if my >= y_top and my <= y_bot:
+                hit_row = ri
+                break
+            ri -= 1
+        if hit_row < 0:
+            return ""
+        if not _tok_face_up(toks[hit_row]):
+            return ""
+        _ui_state().sel_col = clicked_col
+        _ui_state().sel_row = hit_row
+        return ""
+
+    elif clicked_col == sc:
+        # Same column — slide selection row or deselect
+        if len(col_str) == 0:
+            _ui_state().sel_col = -1
+            _ui_state().sel_row = -1
+            return ""
+        let toks2    = col_str.split(",")
+        let ys2      = _col_ys(col_str)
+        mut hit2: int = -1
+        mut ri2: int = len(toks2) - 1
+        while ri2 >= 0:
+            let y_top2 = ys2[ri2]
+            mut y_bot2: int = y_top2 + CARD_H
+            if ri2 < len(toks2) - 1:
+                y_bot2 = ys2[ri2 + 1]
+            if my >= y_top2 and my <= y_bot2:
+                hit2 = ri2
+                break
+            ri2 -= 1
+        if hit2 >= 0 and hit2 != sr and _tok_face_up(toks2[hit2]):
+            _ui_state().sel_row = hit2
+        else:
+            _ui_state().sel_col = -1
+            _ui_state().sel_row = -1
+        return ""
+
+    else:
+        # Different column — execute the pending move
+        let fc = sc
+        let fr = sr
+        _ui_state().sel_col = -1
+        _ui_state().sel_row = -1
+        return "m " + str(fc + 1) + " " + str(fr + 1) + " " + str(clicked_col + 1)
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+fn draw_game(board_str: str) -> int:
+    _ui_state().sel_col = -1
+    _ui_state().sel_row = -1
+    _render(board_str)
+    pygame.display.flip()
+    return 0
+
+fn get_event() -> str:
+    mut buf: str = ""
+    while True:
+        _clock().tick(30)
+        let events  = pygame.event.get()
+        mut ei: int = 0
+        while ei < len(events):
+            let evt      = events[ei]
+            let evt_type = int(evt.type)
+            if evt_type == EVT_QUIT:
+                return "q"
+            elif evt_type == EVT_MOUSEBTN_DOWN:
+                let btn = int(evt.button)
+                if btn == 1:
+                    let pos = evt.pos
+                    let mx  = int(pos[0])
+                    let my  = int(pos[1])
+                    let cmd = _handle_click(mx, my)
+                    if len(cmd) > 0:
+                        return cmd
+                elif btn == 3:
+                    _ui_state().sel_col = -1
+                    _ui_state().sel_row = -1
+            elif evt_type == EVT_KEYDOWN:
+                let key = int(evt.key)
+                if key == KEY_RETURN:
+                    let trimmed = buf.strip()
+                    buf = ""
+                    if len(trimmed) > 0:
+                        return trimmed
+                elif key == KEY_BACKSPACE:
+                    if len(buf) > 0:
+                        buf = buf[0:len(buf) - 1]
+                elif key == KEY_ESCAPE:
+                    if _ui_state().sel_col >= 0:
+                        _ui_state().sel_col = -1
+                        _ui_state().sel_row = -1
+                    else:
+                        return "q"
+                else:
+                    let ch = str(evt.unicode)
+                    if len(ch) > 0 and ch.isprintable():
+                        buf = buf + ch
+            ei += 1
+
+        _render("")
+        let scr = _screen()
+        pygame.draw.rect(scr, (0, 40, 0), (0, WIN_H - 20, WIN_W, 20))
+        let prompt_surf = _font_sm().render("> " + buf + "_", True, (200, 255, 200))
+        scr.blit(prompt_surf, (10, WIN_H - 18))
+        pygame.display.flip()
+
+fn close_window() -> int:
+    pygame.quit()
+    return 0

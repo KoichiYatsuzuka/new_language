@@ -1,6 +1,6 @@
 ﻿# VS Code Extension TODO
 
-VS Code extension updates for `Havakyrie` (`.hv`) files.
+VS Code extension updates for `Arrow` (`.ar`) files.
 
 ## Mouse Over
 - [x] マウスオーバーによって型と、その行でのconst/let/mut属性が表示されるようにする。

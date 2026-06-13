@@ -2,7 +2,7 @@
 /// cargo registry (or a local path), auto-discovers compatible `pub fn` and
 /// `pub struct` + `impl` blocks, and generates call-through ABI wrappers.
 ///
-/// # Config (`hv_config.json` — `rust.crates_path`)
+/// # Config (`ar_config.json` — `rust.crates_path`)
 ///
 /// ```json
 /// {
@@ -16,7 +16,7 @@
 ///
 /// **Free functions** — wrapped when ALL of the following hold:
 /// - No generic type parameters
-/// - Every parameter and return type is a Havakyrie primitive: `i*`, `u*`,
+/// - Every parameter and return type is a Arrow primitive: `i*`, `u*`,
 ///   `f32`, `f64`, `bool`, `String`, `&str`
 ///
 /// **Structs** — wrapped when ALL of the following hold:
@@ -99,7 +99,7 @@ pub fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&str>) -
     let source = find_config(module_name, version, search_dirs)?;
 
     let stem = module_name.replace(['.', '-'], "_");
-    let tmp = std::env::temp_dir().join(format!("hv_rs_{stem}"));
+    let tmp = std::env::temp_dir().join(format!("ar_rs_{stem}"));
 
     let (crate_src_dir, crate_ident) = prepare_wrapper(&source, &stem, &tmp)?;
 
@@ -151,7 +151,7 @@ pub fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&str>) -
 
     let lib_prefix = if cfg!(target_os = "windows") { "" } else { "lib" };
     let ext = native_lib_ext();
-    let dll_name = format!("{lib_prefix}hv_rs_{stem}.{ext}");
+    let dll_name = format!("{lib_prefix}ar_rs_{stem}.{ext}");
     let dll_path = tmp.join("target").join("release").join(&dll_name);
 
     let dll_bytes =
@@ -203,7 +203,7 @@ fn find_config(module_name: &str, version: Option<&str>, search_dirs: &[PathBuf]
     let cwd = std::env::current_dir().ok();
     let extra: &[PathBuf] = cwd.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
     for dir in search_dirs.iter().chain(extra.iter()) {
-        let p = dir.join("hv_config.json");
+        let p = dir.join("ar_config.json");
         if !p.exists() { continue; }
 
         let json = std::fs::read_to_string(&p)
@@ -268,7 +268,7 @@ fn find_config(module_name: &str, version: Option<&str>, search_dirs: &[PathBuf]
 
     Err(format!(
         "import[rs] '{module_name}': crate directory not found under \
-         rust.crates_path in hv_config.json (searched: {})",
+         rust.crates_path in ar_config.json (searched: {})",
         search_dirs
             .iter()
             .map(|d| format!("'{}'", d.display()))
@@ -346,7 +346,7 @@ fn prepare_wrapper(
     let (cargo_toml_content, crate_name) = match source {
         CrateSource::Registry { crate_name, version_req } => {
             let toml = format!(
-                "[package]\nname=\"hv_rs_{stem}\"\nversion=\"0.0.0\"\nedition=\"2021\"\n\
+                "[package]\nname=\"ar_rs_{stem}\"\nversion=\"0.0.0\"\nedition=\"2021\"\n\
                  [lib]\ncrate-type=[\"cdylib\"]\n[dependencies]\n{crate_name}=\"{version_req}\"\n"
             );
             (toml, crate_name.clone())
@@ -357,7 +357,7 @@ fn prepare_wrapper(
             let stripped = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
             let path_str = stripped.replace('\\', "/");
             let toml = format!(
-                "[package]\nname=\"hv_rs_{stem}\"\nversion=\"0.0.0\"\nedition=\"2021\"\n\
+                "[package]\nname=\"ar_rs_{stem}\"\nversion=\"0.0.0\"\nedition=\"2021\"\n\
                  [lib]\ncrate-type=[\"cdylib\"]\n[dependencies]\n\
                  {crate_name}={{path=\"{path_str}\"}}\n"
             );
@@ -1015,7 +1015,7 @@ fn parse_one_param(s: &str) -> Option<RsParam> {
     Some(RsParam { name, rust_type })
 }
 
-fn rust_type_to_hv(rt: &str) -> &'static str {
+fn rust_type_to_ar(rt: &str) -> &'static str {
     match rt.trim() {
         "i8" | "i16" | "i32" | "i64" | "i128"
         | "u8" | "u16" | "u32" | "u64" | "u128"
@@ -1041,7 +1041,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
             .map(|p| Param {
                 name: p.name.clone(),
                 mutable: false,
-                type_ann: Some(rust_type_to_hv(&p.rust_type).to_string()),
+                type_ann: Some(rust_type_to_ar(&p.rust_type).to_string()),
                 default: None,
             })
             .collect();
@@ -1049,7 +1049,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
             name: sig.name.clone(),
             template_params: vec![],
             params,
-            return_type: sig.return_type.as_deref().map(|r| rust_type_to_hv(r).to_string()),
+            return_type: sig.return_type.as_deref().map(|r| rust_type_to_ar(r).to_string()),
             body: vec![],
             is_abstract: true,
             is_static: false,
@@ -1077,7 +1077,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
             class_body.push(Stmt::Field {
                 name: field.name.clone(),
                 kind: FieldKind::Mut,
-                type_ann: rust_type_to_hv(&field.rust_type).to_string(),
+                type_ann: rust_type_to_ar(&field.rust_type).to_string(),
                 default: None,
                 access: Accessibility::Public,
             });
@@ -1095,7 +1095,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
                 params.push(Param {
                     name: cp.name.clone(),
                     mutable: false,
-                    type_ann: Some(rust_type_to_hv(&cp.rust_type).to_string()),
+                    type_ann: Some(rust_type_to_ar(&cp.rust_type).to_string()),
                     default: None,
                 });
             }
@@ -1134,7 +1134,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
                 name: getter_name,
                 template_params: vec![],
                 params: vec![Param { name: "self".to_string(), mutable: false, type_ann: None, default: None }],
-                return_type: Some(rust_type_to_hv(&field.rust_type).to_string()),
+                return_type: Some(rust_type_to_ar(&field.rust_type).to_string()),
                 body: vec![],
                 is_abstract: true,
                 is_static: false,
@@ -1152,7 +1152,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
                 template_params: vec![],
                 params: vec![
                     Param { name: "self".to_string(), mutable: true, type_ann: None, default: None },
-                    Param { name: "val".to_string(), mutable: false, type_ann: Some(rust_type_to_hv(&field.rust_type).to_string()), default: None },
+                    Param { name: "val".to_string(), mutable: false, type_ann: Some(rust_type_to_ar(&field.rust_type).to_string()), default: None },
                 ],
                 return_type: None,
                 body: vec![],
@@ -1176,12 +1176,12 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
                 params.push(Param {
                     name: p.name.clone(),
                     mutable: false,
-                    type_ann: Some(rust_type_to_hv(&p.rust_type).to_string()),
+                    type_ann: Some(rust_type_to_ar(&p.rust_type).to_string()),
                     default: None,
                 });
             }
             // Return type: primitive or a struct class name
-            let ret_type_str = m.return_type.as_deref().map(|r| rust_type_to_hv(r).to_string())
+            let ret_type_str = m.return_type.as_deref().map(|r| rust_type_to_ar(r).to_string())
                 .or_else(|| m.return_struct.clone());
             class_body.push(Stmt::FnDef {
                 name: m.name.clone(),
@@ -1224,7 +1224,7 @@ const TL_TRUE:  i64 = 1;
 const TL_FALSE: i64 = 2;
 
 #[repr(C)]
-struct HvCallbacks {
+struct ArCallbacks {
     make_int:      unsafe extern "C" fn(i64) -> i64,
     make_float:    unsafe extern "C" fn(f64) -> i64,
     make_bool:     unsafe extern "C" fn(i32) -> i64,
@@ -1260,10 +1260,10 @@ struct HvCallbacks {
     call_method:   unsafe extern "C" fn(i64, *const u8, i32, *const i64, i32) -> i64,
 }
 
-static mut CB: *const HvCallbacks = std::ptr::null();
+static mut CB: *const ArCallbacks = std::ptr::null();
 
 #[no_mangle]
-pub unsafe extern "C" fn hv_init(cb: *const HvCallbacks) { CB = cb; }
+pub unsafe extern "C" fn ar_init(cb: *const ArCallbacks) { CB = cb; }
 
 #[inline(always)] unsafe fn cb_make_int(n: i64) -> i64   { ((*CB).make_int)(n) }
 #[inline(always)] unsafe fn cb_make_float(f: f64) -> i64  { ((*CB).make_float)(f) }

@@ -1410,9 +1410,9 @@ impl Interpreter {
         }
 
         // tl-auto / tlc / rs: native payload in cache → try to load natively
-        if lang == "tl-auto" || lang == "hv-auto" || lang == "tlc" || lang == "hvc" || lang == "rs" {
+        if lang == "tl-auto" || lang == "ar-auto" || lang == "tlc" || lang == "arc" || lang == "rs" {
             let module_name = module.join(".");
-            // .hvc files store only the stem as their module name; fall back to last segment.
+            // .arc files store only the stem as their module name; fall back to last segment.
             let native_data = crate::partial_compiler::take_native_bytes(&module_name)
                 .or_else(|| {
                     let stem = module.last().map(|s| s.as_str()).unwrap_or("");
@@ -1459,7 +1459,7 @@ impl Interpreter {
                     // When the llvm feature is disabled, silently ignore Bitcode payloads
                     #[cfg(not(feature = "llvm"))]
                     NativePayload::Bitcode(_) => {
-                        eprintln!("NativeLoad: bitcode .hvc requires --features llvm");
+                        eprintln!("NativeLoad: bitcode .arc requires --features llvm");
                     }
                 }
             }
@@ -1522,24 +1522,24 @@ impl Interpreter {
         fn_ptrs: &[(String, usize)],
         jit_handle: crate::partial_compiler::inkwell_codegen::JitHandle,
     ) -> Result<Rc<NamespaceData>, String> {
-        use crate::interpreter::native_api::{get_callbacks, HvCallbacks};
+        use crate::interpreter::native_api::{get_callbacks, ArCallbacks};
 
-        // Call hv_init via the JIT module to set the @CB global
+        // Call ar_init via the JIT module to set the @CB global
         {
-            // Look up hv_init by address if we can, otherwise skip
+            // Look up ar_init by address if we can, otherwise skip
             // (the @CB global in the JIT module is separate from any DLL @CB)
-            let hv_init_sym = fn_ptrs.iter()
-                .find(|(n, _)| n == "hv_init")
+            let ar_init_sym = fn_ptrs.iter()
+                .find(|(n, _)| n == "ar_init")
                 .map(|(_, p)| *p);
-            if let Some(addr) = hv_init_sym {
+            if let Some(addr) = ar_init_sym {
                 let cb_ptr = get_callbacks();
                 unsafe {
-                    let hv_init: unsafe extern "C" fn(*const HvCallbacks) =
+                    let ar_init: unsafe extern "C" fn(*const ArCallbacks) =
                         std::mem::transmute(addr);
-                    hv_init(cb_ptr);
+                    ar_init(cb_ptr);
                 }
             } else {
-                // hv_init address not in fn_ptrs; get it via the engine
+                // ar_init address not in fn_ptrs; get it via the engine
                 // (we'd need to expose it — for now assume the engine was
                 //  already initialised by jit_from_bitcode which calls it)
             }
@@ -1674,12 +1674,14 @@ impl Interpreter {
 
         {
             let cb_ptr = super::native_api::get_callbacks();
-            let symbol_name = b"hv_init\0";
             let init_result = unsafe {
-                lib.get::<unsafe extern "C" fn(*const super::native_api::HvCallbacks)>(symbol_name)
-            };
-            if let Ok(hv_init) = init_result {
-                unsafe { hv_init(cb_ptr) };
+                lib.get::<unsafe extern "C" fn(*const super::native_api::ArCallbacks)>(b"ar_init\0")
+            }.or_else(|_| unsafe {
+                // backward compat: DLLs compiled before rename still export hv_init
+                lib.get::<unsafe extern "C" fn(*const super::native_api::ArCallbacks)>(b"hv_init\0")
+            });
+            if let Ok(ar_init) = init_result {
+                unsafe { ar_init(cb_ptr) };
             }
         }
 
@@ -1810,7 +1812,7 @@ impl Interpreter {
     }
 
     /// コンパイル済み C++ ラッパー DLL をロードして名前空間を構築する。
-    /// `hv_init_bridge`（あれば）でコールバックテーブルを初期化し、各関数を `NativeFunction` として登録する。
+    /// `ar_init_bridge`（あれば）でコールバックテーブルを初期化し、各関数を `NativeFunction` として登録する。
     fn load_cpp_wrapper_dll(
         &mut self,
         lib_path: &std::path::Path,
@@ -1823,18 +1825,22 @@ impl Interpreter {
 
         let lib_path_buf = lib_path.to_path_buf();
 
-        // Initialise: prefer hv_init_bridge (cpp-dll), fall back to hv_init
+        // Initialise: prefer ar_init_bridge (cpp-dll), fall back to ar_init / hv_init (compat)
         let cb_ptr = super::native_api::get_callbacks();
         let bridge_init = unsafe {
-            lib.get::<unsafe extern "C" fn(*const super::native_api::HvCallbacks)>(
-                b"hv_init_bridge\0",
+            lib.get::<unsafe extern "C" fn(*const super::native_api::ArCallbacks)>(
+                b"ar_init_bridge\0",
             )
-        };
+        }.or_else(|_| unsafe {
+            lib.get::<unsafe extern "C" fn(*const super::native_api::ArCallbacks)>(b"hv_init_bridge\0")
+        });
         if let Ok(f) = bridge_init {
             unsafe { f(cb_ptr) };
         } else if let Ok(f) = unsafe {
-            lib.get::<unsafe extern "C" fn(*const super::native_api::HvCallbacks)>(b"hv_init\0")
-        } {
+            lib.get::<unsafe extern "C" fn(*const super::native_api::ArCallbacks)>(b"ar_init\0")
+        }.or_else(|_| unsafe {
+            lib.get::<unsafe extern "C" fn(*const super::native_api::ArCallbacks)>(b"hv_init\0")
+        }) {
             unsafe { f(cb_ptr) };
         }
 

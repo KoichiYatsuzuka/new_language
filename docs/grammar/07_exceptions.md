@@ -164,9 +164,9 @@ assert condition, "エラーメッセージ"
 
 ```
 Traceback (most recent call last):
-  File "script.hv", line 15, col 5, in main
+  File "script.ar", line 15, col 5, in main
     result = compute(data)
-  File "script.hv", line 8, col 3, in compute
+  File "script.ar", line 8, col 3, in compute
     return process(x)
 ValueError: invalid input
 ```

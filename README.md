@@ -1,4 +1,4 @@
-﻿# Havakyrie
+﻿# Arrow
 名前はまだない。
 This have not been named.
 
@@ -16,7 +16,7 @@ Python, C++, Rustの影響を受けています。
 ソースコードの終わりの方になってTypeErrorが上がってきて、それまでの実行時間が無駄になった、ということがないように、そもそも実行する前に修正を強います。
 
 ### 部分コンパイルによる高速化（Accelaration by partial compile）
-構文解析時の情報を派生させ、高速化が容易な部分に関してをネイティブな機械語に落とし込む機能を備えています。仕様を決めたモジュールはコンパイルしてから読み込むことで、その部分を高速化できます、C++やRustほどの高速化は見込めませんが、同じ言語内でコンパイル済みライブラリを扱えるスクリプト言語であることが特徴です。計算やイテレーションが主な内容なら最高で10万倍以上の高速化が見込めます（./examples/importation.hvを参照）。
+構文解析時の情報を派生させ、高速化が容易な部分に関してをネイティブな機械語に落とし込む機能を備えています。仕様を決めたモジュールはコンパイルしてから読み込むことで、その部分を高速化できます、C++やRustほどの高速化は見込めませんが、同じ言語内でコンパイル済みライブラリを扱えるスクリプト言語であることが特徴です。計算やイテレーションが主な内容なら最高で10万倍以上の高速化が見込めます（./examples/importation.arを参照）。
 Pythonの高速化にはノウハウが必要ですが、この言語は標準機能ですぐ試せます。
 
 ### タダ乗り（Free ride）
@@ -64,14 +64,14 @@ cargo run -- examples/hello.tl
 cargo test
 ```
 
-`-src <file.hv>` と位置引数のどちらでも実行できます。引数がない場合は標準入力からソースを読みます。/ You can run using either `-src <file.hv>` or positional arguments. If no arguments are provided, the source is read from standard input.
+`-src <file.ar>` と位置引数のどちらでも実行できます。引数がない場合は標準入力からソースを読みます。/ You can run using either `-src <file.ar>` or positional arguments. If no arguments are provided, the source is read from standard input.
 
 ### ビルド後の実行ファイルの実行方法
 ビルドされた実行ファイルがあるディレクトリにパスを通したあとで
 ```bash
-havakirie.exe examples/variable.hv //ファイル実行
+havakirie.exe examples/variable.ar //ファイル実行
 havakirie.exe --repl //対話画面起動
-havakirie.exe --compile examples/test_modules/physics.hv //モジュールとしてコンパイル
+havakirie.exe --compile examples/test_modules/physics.ar //モジュールとしてコンパイル
 
 ```
 ---
@@ -118,7 +118,7 @@ print(describe[Point](p))
 ## プロジェクト構成（Project Structure）
 
 ```text
-Havakyrie/
+Arrow/
 ├── src/
 │   ├── main.rs          # CLI と実行フロー (CLI and execution flow)
 │   ├── token.rs         # Token / Span / Spanned
@@ -130,7 +130,7 @@ Havakyrie/
 ├── spec/                # 言語仕様メモ (Language specification notes)
 ├── examples/            # 正常系・エラー系サンプル (Success and error case samples)
 ├── stdlib/              # 標準 trait の実験置き場 (Standard trait experiment area)
-└── vscode-extension/    # .tl 用 VS Code 拡張 (VS Code extension for .hv)
+└── vscode-extension/    # .tl 用 VS Code 拡張 (VS Code extension for .ar)
 ```
 
 ---
@@ -138,7 +138,7 @@ Havakyrie/
 ## 実行フロー（Execution Flow）
 
 ```text
-source.hv
+source.ar
   -> Lexer        Vec<Spanned> を生成 (Generate Vec<Spanned>)
   -> Parser       Vec<Stmt> の AST を生成 (Generate AST (Vec<Stmt>))
   -> TypeChecker  StaticTypeError をまとめて報告 (Collect and report StaticTypeErrors)
@@ -192,17 +192,17 @@ source.hv
 
 代表的な動作確認ファイルです。/ Representative test files for verifying functionality.
 
-- `examples/showcase.hv`: 主要機能のまとめ / Summary of main features
-- `examples/type_errors.hv`: 静的型エラー例 / Static type error examples
-- `examples/fn_kwargs_success.hv` / `examples/fn_kwargs_errors.hv`: キーワード引数 / Keyword arguments
-- `examples/overload_success.hv` / `examples/overload_errors.hv`: オーバーロード / Overloading
-- `examples/trait_sample.hv` / `examples/trait_template.hv`: trait / Traits
-- `examples/template_sample.hv` / `examples/template_constraint_error.hv`: template / Templates
-- `examples/self_type.hv` / `examples/self_type__errors.hv`: `Self`
-- `examples/new_type.hv` / `examples/new_type__errors.hv`: `new_type`
-- `examples/freeze.hv`: `freeze`
-- `examples/generator.hv`: generator / Generators
-- `examples/union_option.hv` / `examples/union_option__errors.hv`: `Union` / `Option`
+- `examples/showcase.ar`: 主要機能のまとめ / Summary of main features
+- `examples/type_errors.ar`: 静的型エラー例 / Static type error examples
+- `examples/fn_kwargs_success.ar` / `examples/fn_kwargs_errors.ar`: キーワード引数 / Keyword arguments
+- `examples/overload_success.ar` / `examples/overload_errors.ar`: オーバーロード / Overloading
+- `examples/trait_sample.ar` / `examples/trait_template.ar`: trait / Traits
+- `examples/template_sample.ar` / `examples/template_constraint_error.ar`: template / Templates
+- `examples/self_type.ar` / `examples/self_type__errors.ar`: `Self`
+- `examples/new_type.ar` / `examples/new_type__errors.ar`: `new_type`
+- `examples/freeze.ar`: `freeze`
+- `examples/generator.ar`: generator / Generators
+- `examples/union_option.ar` / `examples/union_option__errors.ar`: `Union` / `Option`
 
 エラー確認用のサンプルは、ファイル名に `__errors` または `_errors` を含めています。/ Sample files for error verification are named with `__errors` or `_errors` suffix.
 

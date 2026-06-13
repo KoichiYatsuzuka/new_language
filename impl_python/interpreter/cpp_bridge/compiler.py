@@ -17,7 +17,7 @@ from typing import Optional
 
 from .types import CFnSig, CStructDef, CType, CPtr, CCharPtr, CVoid, CByValueStruct
 
-HV_DLL_PREFIX = "hv_"
+HV_DLL_PREFIX = "ar_"
 TL_SYMS_EXT = "syms"
 TL_SHIM_SUFFIX = "_shim"
 MAX_COMPILE_PASSES = 5
@@ -168,7 +168,7 @@ def _compile_msvc_shim(
 ) -> None:
     """Compile cpp_src with MSVC cl.exe into out_dll. Raises RuntimeError on failure."""
     stem = out_dll.stem
-    tmp_dir = Path(tempfile.gettempdir()) / f"hv_build_{stem}"
+    tmp_dir = Path(tempfile.gettempdir()) / f"ar_build_{stem}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     cpp_file = tmp_dir / "shim.cpp"
@@ -247,7 +247,7 @@ def _compile_gcc_shim(
     """Compile c_src with GCC/g++ into a shared library. Raises RuntimeError on failure."""
     lib_dir = header_path.parent.resolve()
     tmp_dir = Path(tempfile.gettempdir())
-    cpp_file = tmp_dir / f"hv_shim_{out_so.stem}.cpp"
+    cpp_file = tmp_dir / f"ar_shim_{out_so.stem}.cpp"
     cpp_file.write_text(c_src, encoding="utf-8")
 
     compiler = "g++"
@@ -287,7 +287,7 @@ def compile_tl_dll(
     """Full build pipeline for cpp-lib: generate shim → compile → return DLL path.
 
     Mirrors compile_tl_dll from compiler.rs. The compiled DLL is cached permanently
-    next to the header as hv_{stem}.dll so subsequent imports skip compilation.
+    next to the header as ar_{stem}.dll so subsequent imports skip compilation.
     """
     ext = native_lib_ext()
     header_abs = header_path.resolve()
@@ -318,7 +318,7 @@ def compile_tl_dll(
         if vcvarsall is None:
             raise RuntimeError(
                 "CppBridge: MSVC not found.\n"
-                "Install Visual Studio 2017/2019/2022 or set msvc path in hv_config.json."
+                "Install Visual Studio 2017/2019/2022 or set msvc path in ar_config.json."
             )
 
         # Iterative compile: remove incompatible functions and retry

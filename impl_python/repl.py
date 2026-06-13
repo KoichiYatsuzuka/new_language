@@ -11,7 +11,7 @@ REPL_EXEC_SENTINEL = "##REPL_EXEC##"
 
 
 def run_repl() -> None:
-    """Run an interactive REPL that reads Havakyrie source from stdin."""
+    """Run an interactive REPL that reads Arrow source from stdin."""
     from .parser import parse, ParseError
     from .type_check import TypeChecker, StaticTypeError
     from .interpreter import Interpreter
@@ -20,7 +20,7 @@ def run_repl() -> None:
     interp = Interpreter()
     accumulated_lines: list[str] = []
 
-    print("Havakyrie REPL (Python impl) — enter code, finish block with ##REPL_EXEC##")
+    print("Arrow REPL (Python impl) — enter code, finish block with ##REPL_EXEC##")
 
     for raw_line in sys.stdin:
         line = raw_line.rstrip("\n")

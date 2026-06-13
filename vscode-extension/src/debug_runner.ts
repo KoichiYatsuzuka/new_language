@@ -1,7 +1,7 @@
 /**
  * Standalone CLI debug runner for the VS Code extension analysis code.
  *
- * Run via:   node run_debug.js <path/to/file.hv>
+ * Run via:   node run_debug.js <path/to/file.ar>
  *
  * The run_debug.js bootstrap intercepts require('vscode') before this module
  * loads, so all extension modules (analysis.ts, type_infer.ts) receive the
@@ -60,7 +60,7 @@ const TOKEN_COLORS: Record<number, string> = {
 class MockTextDocument {
     private readonly _lines: string[];
     readonly version = 1;
-    readonly languageId = 'havakyrie';
+    readonly languageId = 'arrow';
     readonly uri: { fsPath: string; toString(): string };
     readonly fileName: string;
     readonly lineCount: number;
@@ -201,7 +201,7 @@ function wordPos(line: string, name: string): number {
 async function main(): Promise<void> {
     const filePath = process.argv[2];
     if (!filePath) {
-        console.error('Usage: node run_debug.js <path/to/file.hv>');
+        console.error('Usage: node run_debug.js <path/to/file.ar>');
         process.exit(1);
     }
 
@@ -266,7 +266,7 @@ async function main(): Promise<void> {
 
     // ── Header ──
     process.stdout.write('\n' + sep + '\n');
-    process.stdout.write(c(A.bold + A.bWhite, `  HAVAKYRIE DEBUG:  ${fileName}`) + '\n');
+    process.stdout.write(c(A.bold + A.bWhite, `  ARROW DEBUG:  ${fileName}`) + '\n');
     process.stdout.write(sep + '\n\n');
 
     // ── Legend ──

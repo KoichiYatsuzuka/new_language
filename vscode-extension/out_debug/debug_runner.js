@@ -2,7 +2,7 @@
 /**
  * Standalone CLI debug runner for the VS Code extension analysis code.
  *
- * Run via:   node run_debug.js <path/to/file.hv>
+ * Run via:   node run_debug.js <path/to/file.ar>
  *
  * The run_debug.js bootstrap intercepts require('vscode') before this module
  * loads, so all extension modules (analysis.ts, type_infer.ts) receive the
@@ -46,7 +46,7 @@ const TOKEN_COLORS = {
 class MockTextDocument {
     constructor(filePath, content) {
         this.version = 1;
-        this.languageId = 'havakyrie';
+        this.languageId = 'arrow';
         this.fileName = filePath;
         // Normalise line endings, strip single trailing blank line
         const raw = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -181,7 +181,7 @@ async function main() {
     var _a, _b, _c, _d, _e;
     const filePath = process.argv[2];
     if (!filePath) {
-        console.error('Usage: node run_debug.js <path/to/file.hv>');
+        console.error('Usage: node run_debug.js <path/to/file.ar>');
         process.exit(1);
     }
     const absPath = path.resolve(filePath);
@@ -244,7 +244,7 @@ async function main() {
     const sep = c(A.gray, '═'.repeat(70));
     // ── Header ──
     process.stdout.write('\n' + sep + '\n');
-    process.stdout.write(c(A.bold + A.bWhite, `  HAVAKYRIE DEBUG:  ${fileName}`) + '\n');
+    process.stdout.write(c(A.bold + A.bWhite, `  ARROW DEBUG:  ${fileName}`) + '\n');
     process.stdout.write(sep + '\n\n');
     // ── Legend ──
     process.stdout.write(c(A.bold, 'Legend: ') +

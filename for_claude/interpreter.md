@@ -22,7 +22,7 @@ src/interpreter/
 ├── scope.rs       — push/pop scope, get_var, declare_var, assign_var, freeze_var
 ├── exceptions.rs  — make_error_class, get_context_lines, exc_matches
 ├── async_mgr.rs   — AsyncManagerData, AsyncStatus, thread spawning via std::thread
-├── native_api.rs  — i64 handle arena, HvCallbacks struct, C callback implementations
+├── native_api.rs  — i64 handle arena, ArCallbacks struct, C callback implementations
 ├── py_interop.rs  — PyO3 runtime bridge (import[py-int] execution)
 ├── debugger.rs    — break_point REPL, step mode, DBG_MODE thread-local
 ├── msvc_errors.rs — MSVC-style error message formatting
@@ -225,8 +225,8 @@ All values crossing the ABI boundary are `i64` handles into a thread-local `VALU
 | `-2` (`TL_EXCEPTION`) | exception raised |
 | `>= 3` | index into `VALUE_ARENA` |
 
-`HvCallbacks` is a `#[repr(C)]` struct of function pointers covering `make_int`, `make_str`, `call_fn`, `get_attr`, `set_attr`, `binop`, `iter_from`, `iter_next`, `raise_exc`, etc.  
-The struct pointer is passed to each native DLL via `hv_init(cb)`.  
+`ArCallbacks` is a `#[repr(C)]` struct of function pointers covering `make_int`, `make_str`, `call_fn`, `get_attr`, `set_attr`, `binop`, `iter_from`, `iter_next`, `raise_exc`, etc.  
+The struct pointer is passed to each native DLL via `ar_init(cb)`.  
 `CURRENT_INTERP` is a thread-local `*mut Interpreter` set before calling into native code.
 
 ---
@@ -244,6 +244,6 @@ The struct pointer is passed to each native DLL via `hv_init(cb)`.
 | Lexical scope | `src/interpreter/scope.rs` | `push/pop_scope`, `assign_var` |
 | Exception machinery | `src/interpreter/exceptions.rs` | `make_error_class`, sentinel string |
 | Async task threads | `src/interpreter/async_mgr.rs` | `AsyncManagerData`, `SendableEnv` |
-| Native ABI handle table | `src/interpreter/native_api.rs` | `VALUE_ARENA`, `HvCallbacks` |
+| Native ABI handle table | `src/interpreter/native_api.rs` | `VALUE_ARENA`, `ArCallbacks` |
 | PyO3 interop | `src/interpreter/py_interop.rs` | `load_py_int_module`, value conversion |
 | Debugger | `src/interpreter/debugger.rs` | `break_point`, step mode |

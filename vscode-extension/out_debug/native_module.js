@@ -11,7 +11,7 @@ function importKindOf(keyword) {
     if (keyword === 'import[rs]')
         return 'rs';
     if (keyword === 'import' || keyword.startsWith('import[hv'))
-        return 'hv';
+        return 'ar';
     return 'py';
 }
 exports.importKindOf = importKindOf;
@@ -279,12 +279,12 @@ function parseTlStub(content) {
     return { funcs, sigs, docs, classes };
 }
 exports.parseTlStub = parseTlStub;
-/** Walk up from startDir to find the directory containing hv_config.json. */
-async function findHvConfigDir(startDir) {
+/** Walk up from startDir to find the directory containing ar_config.json. */
+async function findArConfigDir(startDir) {
     let current = startDir;
     for (;;) {
         try {
-            await fs_1.promises.access(path.join(current, 'hv_config.json'));
+            await fs_1.promises.access(path.join(current, 'ar_config.json'));
             return current;
         }
         catch {
@@ -295,18 +295,18 @@ async function findHvConfigDir(startDir) {
         }
     }
 }
-async function loadHvConfig(startDir) {
-    const dir = await findHvConfigDir(startDir);
+async function loadArConfig(startDir) {
+    const dir = await findArConfigDir(startDir);
     if (!dir)
         return undefined;
     try {
-        return JSON.parse(await fs_1.promises.readFile(path.join(dir, 'hv_config.json'), 'utf8'));
+        return JSON.parse(await fs_1.promises.readFile(path.join(dir, 'ar_config.json'), 'utf8'));
     }
     catch {
         return undefined;
     }
 }
-/** Convert a Rust type string to the equivalent Havakyrie LangType. */
+/** Convert a Rust type string to the equivalent Arrow LangType. */
 function rsTypeToTl(rs, selfName) {
     // Strip reference/mut qualifiers
     const t = rs.trim().replace(/^&\s*(?:mut\s+)?/, '').replace(/^mut\s+/, '').trim();
@@ -332,7 +332,7 @@ function rsTypeToTl(rs, selfName) {
         return t; // named struct/enum — use as-is
     return 'unknown';
 }
-/** Convert a Rust parameter list to Havakyrie parameter string. */
+/** Convert a Rust parameter list to Arrow parameter string. */
 function rsParamsToHv(params, selfName) {
     const parts = [];
     for (const raw of params.split(',')) {
@@ -469,10 +469,10 @@ async function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
         }
         return empty;
     }
-    // ── import[rs]: parse Rust source via hv_config.json crates_path ──────────
+    // ── import[rs]: parse Rust source via ar_config.json crates_path ──────────
     if (importKindOf(importKind) === 'rs') {
-        const config = await loadHvConfig(docDir);
-        const configDir = (_a = await findHvConfigDir(docDir)) !== null && _a !== void 0 ? _a : docDir;
+        const config = await loadArConfig(docDir);
+        const configDir = (_a = await findArConfigDir(docDir)) !== null && _a !== void 0 ? _a : docDir;
         const rawPaths = (_b = config === null || config === void 0 ? void 0 : config.rust) === null || _b === void 0 ? void 0 : _b.crates_path;
         const cratesPaths = Array.isArray(rawPaths) ? rawPaths : rawPaths ? [rawPaths] : [];
         for (const cratesPath of cratesPaths) {
@@ -488,13 +488,13 @@ async function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
         }
         return empty;
     }
-    // ── import[hv] / import[hvc]: look for .hvs or .hv stub ──────────────────
+    // ── import[ar] / import[arc]: look for .ars or .ar stub ──────────────────
     const filePath = path.join(docDir, ...modulePath.split('.'));
     const candidates = [
-        filePath + '.hvs',
-        filePath + '.hv',
-        path.join(filePath, '__init__.hvs'),
-        path.join(filePath, '__init__.hv'),
+        filePath + '.ars',
+        filePath + '.ar',
+        path.join(filePath, '__init__.ars'),
+        path.join(filePath, '__init__.ar'),
     ];
     for (const candidate of candidates) {
         try {

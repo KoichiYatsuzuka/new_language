@@ -2365,9 +2365,9 @@ fn test_decorator_instance_callable() {
     }
 }
 
-/// hv_to_py_dict のテスト。
+/// ar_to_py_dict のテスト。
 #[test]
-fn test_hv_to_py_dict() {
+fn test_ar_to_py_dict() {
     // Value::Dict を Python に渡せることを確認する (sum_dict はすべての int 値を合計する)
     let src = concat!(
         "import[py-int] py_calculator as calc\n",
@@ -2381,9 +2381,9 @@ fn test_hv_to_py_dict() {
     }
 }
 
-/// hv_to_py_tuple のテスト。
+/// ar_to_py_tuple のテスト。
 #[test]
-fn test_hv_to_py_tuple() {
+fn test_ar_to_py_tuple() {
     // Value::Tuple を Python に渡せることを確認する (first_of_tuple は先頭要素を返す)
     let src = concat!(
         "import[py-int] py_calculator as calc\n",

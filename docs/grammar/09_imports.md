@@ -21,9 +21,9 @@ from module import Name as Alias
 インポート時に `[lang]` タグで読み込む形式を指定します。
 
 ```hv
-import[hv]      mod          # .hv ファイルを強制読み込み
-import[hvc]     mod          # .hvc (コンパイル済み) を強制読み込み
-import          mod          # 自動選択 (.hvc 優先、なければ .hv)
+import[ar]      mod          # .ar ファイルを強制読み込み
+import[arc]     mod          # .arc (コンパイル済み) を強制読み込み
+import          mod          # 自動選択 (.arc 優先、なければ .ar)
 import[py]      os.path      # Python ファイルをコンバータで変換して読み込み
 import[py-int]  numpy as np  # Python インタープリタ (PyO3) 経由で読み込み
 import[rs]      regex        # Rust crate を直接読み込み
@@ -38,25 +38,25 @@ import[cpp-lib] MyLib.MyLib with stub as ml  # C++ 静的ライブラリを読�
 1. **`source_dir`**: 現在のソースファイルのディレクトリ
 2. **`root_dir`**: メインエントリポイントのディレクトリ
 
-`import foo.bar.baz` → `foo/bar/baz.hv` または `foo/bar/baz/` (パッケージ) を検索
+`import foo.bar.baz` → `foo/bar/baz.ar` または `foo/bar/baz/` (パッケージ) を検索
 
 ---
 
 ## パッケージ
 
-ディレクトリに `__init__.hv` を置くことでパッケージになります。
+ディレクトリに `__init__.ar` を置くことでパッケージになります。
 
 ```
 geometry/
-├── __init__.hv
-├── point.hv
-└── vector.hv
+├── __init__.ar
+├── point.ar
+└── vector.ar
 ```
 
 ```hv
-import geometry               # geometry/__init__.hv を読み込む
-import geometry.point         # geometry/point.hv を読み込む
-from geometry import Vector   # geometry/__init__.hv 内の Vector を取得
+import geometry               # geometry/__init__.ar を読み込む
+import geometry.point         # geometry/point.ar を読み込む
+from geometry import Vector   # geometry/__init__.ar 内の Vector を取得
 ```
 
 ---
@@ -73,21 +73,21 @@ loading:      HashSet<PathBuf>
 
 ---
 
-## .hv / .hvc 自動選択
+## .ar / .arc 自動選択
 
 `lang = "tl-auto"` (タグなし) のとき:
 
-1. `.hvc` ファイルが存在すれば `.hvc` を優先
-2. なければ `.hv` を読み込む
+1. `.arc` ファイルが存在すれば `.arc` を優先
+2. なければ `.ar` を読み込む
 
-`.hvc` には埋め込みソーステキストが含まれており、実行は通常どおり行われます。  
+`.arc` には埋め込みソーステキストが含まれており、実行は通常どおり行われます。  
 ネイティブコンパイル済み関数は DLL から呼び出されます。
 
 ---
 
 ## Python モジュール (`[py]`)
 
-Python ソースファイルを Havakyrie の AST に変換してインポートします。
+Python ソースファイルを Arrow の AST に変換してインポートします。
 
 ```hv
 import[py] math as m
@@ -95,7 +95,7 @@ from[py] os.path import join, exists
 ```
 
 **変換の制限**:
-- Python の `class` → `fn __init__` を持つ Havakyrie クラスに変換
+- Python の `class` → `fn __init__` を持つ Arrow クラスに変換
 - Python の `def` → `fn` に変換
 - `*args` / `**kwargs` → `AdditionalParam` dict として渡す
 
@@ -123,7 +123,7 @@ let mean = np.mean(arr)
 
 ## Rust crate (`[rs]`)
 
-`hv_config.json` で `rust.crates_path` を設定すると Rust crate を直接読み込めます。
+`ar_config.json` で `rust.crates_path` を設定すると Rust crate を直接読み込めます。
 
 ```json
 {
@@ -161,7 +161,7 @@ import[cpp-lib] MyMath.VecMath with stub as vm
 
 **制限**:
 - C++ のオーバーロード・テンプレート・名前マングリングは非対応
-- `hv_config.json` でコンパイラパス・追加フラグを設定する必要があります
+- `ar_config.json` でコンパイラパス・追加フラグを設定する必要があります
 
 ---
 

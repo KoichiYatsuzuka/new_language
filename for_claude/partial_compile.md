@@ -6,18 +6,18 @@ This document describes the partial compile subsystem (`src/partial_compiler/`) 
 
 ## Overview
 
-`--compile <file.hv>` takes a parsed Havakyrie module and produces two output files:
+`--compile <file.ar>` takes a parsed Arrow module and produces two output files:
 
 | File | Purpose |
 |------|---------|
-| `{stem}.hvc` | Compiled module — binary blob consumed by the importer at runtime |
-| `{stem}.hvs` | Type stub — text read by the type checker and VS Code extension |
+| `{stem}.arc` | Compiled module — binary blob consumed by the importer at runtime |
+| `{stem}.ars` | Type stub — text read by the type checker and VS Code extension |
 
 The compiler selects from three code paths, in priority order:
 
 1. **inkwell JIT** (requires `feature = "llvm"`) — emits LLVM bitcode; no external tools
 2. **clang fallback** — emits LLVM IR text, then shells out to `clang -O3 -shared`
-3. **Source-only** — writes a v0 `.hvc` (no native code) with a warning
+3. **Source-only** — writes a v0 `.arc` (no native code) with a warning
 
 ---
 
@@ -26,18 +26,18 @@ The compiler selects from three code paths, in priority order:
 ```
 src/partial_compiler/
 ├── mod.rs            — public re-exports: compile, load_tlc, take_native_bytes, NativePayload
-├── module_compiler.rs — .hvc file format writer/reader + thread-local native cache
+├── module_compiler.rs — .arc file format writer/reader + thread-local native cache
 ├── llvm_codegen.rs   — LLVM IR text generator (clang fallback path)
 ├── inkwell_codegen.rs — inkwell JIT compiler (feature = "llvm", primary path)
-├── stub_gen.rs       — .hvs stub text generator
+├── stub_gen.rs       — .ars stub text generator
 └── rs_loader.rs      — import[rs] native Rust crate loader
 ```
 
 ---
 
-## The `.hvc` Binary Format
+## The `.arc` Binary Format
 
-`MAGIC = b"TLC\x00"` — present at byte 0 of every valid `.hvc` file.
+`MAGIC = b"TLC\x00"` — present at byte 0 of every valid `.arc` file.
 
 ### Version 0 — source-only
 
@@ -79,7 +79,7 @@ Identical wire layout to v1 — same export table encoding — but the payload b
 
 Entry point called by `main.rs` when `--compile` is given.
 
-1. **Stub** — always runs first: calls `stub_gen::generate_stub(stmts)` and writes `{stem}.hvs`.
+1. **Stub** — always runs first: calls `stub_gen::generate_stub(stmts)` and writes `{stem}.ars`.
 2. **Native** — calls `compile_native(stmts)`:
    - If `feature = "llvm"`: tries `inkwell_codegen::get_bitcode(stmts)` → `NativePayload::Bitcode`
    - Falls back to `llvm_codegen::generate_llvm_module(stmts)` → `clang` → `NativePayload::Dll`
@@ -88,7 +88,7 @@ Entry point called by `main.rs` when `--compile` is given.
 
 ### `load_tlc(path)`
 
-Called by the parser/importer when a `.hvc` file is found.
+Called by the parser/importer when a `.arc` file is found.
 
 1. Reads and parses binary data via `parse_tlc`.
 2. If v1 or v2: inserts `(exports, NativePayload)` into `NATIVE_CACHE`.
@@ -188,11 +188,11 @@ Type annotation `"int"` maps to `Ty::Int`; `"float"` maps to `Ty::Float`; anythi
 Every generated `.ll` file begins with:
 
 ```llvm
-%HvCallbacks = type { ptr, ptr, ..., ptr }   ; 35 function-pointer fields
+%ArCallbacks = type { ptr, ptr, ..., ptr }   ; 35 function-pointer fields
 
 @CB = internal global ptr null
 
-define void @hv_init(ptr %cb) { store ptr %cb, ptr @CB; ret void }
+define void @ar_init(ptr %cb) { store ptr %cb, ptr @CB; ret void }
 
 define internal i64 @_tl_idiv(i64 %a, i64 %b) { ... }   ; Python floor-div
 define internal i64 @_tl_imod(i64 %a, i64 %b) { ... }   ; Python modulo
@@ -201,9 +201,9 @@ declare double @llvm.pow.f64(double, double)
 declare double @llvm.floor.f64(double)
 ```
 
-`hv_init` is called by the interpreter at module load time to inject the `HvCallbacks` pointer.
+`ar_init` is called by the interpreter at module load time to inject the `ArCallbacks` pointer.
 
-### HvCallbacks — Field Index Table
+### ArCallbacks — Field Index Table
 
 Each field is a function pointer; the index is used in `getelementptr` instructions.
 
@@ -348,7 +348,7 @@ or:   eval left → if truthy, skip right → store result
 
 ## Stub Generator (`stub_gen.rs`)
 
-`generate_stub(stmts)` walks top-level statements and emits valid `.hv` syntax with `...` bodies.
+`generate_stub(stmts)` walks top-level statements and emits valid `.ar` syntax with `...` bodies.
 
 ### What is preserved in stubs
 
@@ -379,33 +379,33 @@ clang -O3 -shared -o <output.dll> <input.ll>   [+ -Wno-dll-attribute-on-redeclar
 
 `clang` is located by:
 1. Calling `clang --version` — if it exits 0, use `clang` from `PATH`.
-2. Otherwise, reading `hv_config.json` → `llvm.path` → `<path>/bin/clang[.exe]`.
+2. Otherwise, reading `ar_config.json` → `llvm.path` → `<path>/bin/clang[.exe]`.
 
-If neither is found, native compilation is skipped and a v0 `.hvc` is written.
+If neither is found, native compilation is skipped and a v0 `.arc` is written.
 
 ---
 
 ## `import[rs]` — Rust Crate Loader (`rs_loader.rs`)
 
-`import[rs] some_crate` (or `import[rs "1.2"] some_crate` for version pinning) loads a native Rust crate at import time, without a pre-compiled `.hvc`.
+`import[rs] some_crate` (or `import[rs "1.2"] some_crate` for version pinning) loads a native Rust crate at import time, without a pre-compiled `.arc`.
 
 ### Steps
 
-1. **Locate source** — reads `hv_config.json` → `rust.crates_path` (string or array of strings). Finds the crate directory in the Cargo registry cache.
+1. **Locate source** — reads `ar_config.json` → `rust.crates_path` (string or array of strings). Finds the crate directory in the Cargo registry cache.
 2. **Scan signatures** — walks all `.rs` files, collecting `pub fn` and `pub struct` + `impl` blocks whose types are ABI-compatible.
 3. **ABI-compatible types** — `i*/u*`, `f32`, `f64`, `bool`, `String`, `&str`, `&[u8]`, `Vec<u8>`, `[u8; N]`.
 4. **RustCrypto Digest pattern** — if the crate re-exports `digest::Digest` and defines `pub type` aliases, synthesises one-shot hash functions (`sha256(input: str) -> str` returning lowercase hex).
-5. **Generate wrapper** — writes a temporary Cargo project (`hv_rs_{stem}/`) with a `lib.rs` containing `#[no_mangle] pub unsafe extern "C" fn {name}_tl(args, n) -> i64` wrappers for every compatible function, and struct arenas backed by `OnceLock<Mutex<HashMap<i64, T>>>`.
+5. **Generate wrapper** — writes a temporary Cargo project (`ar_rs_{stem}/`) with a `lib.rs` containing `#[no_mangle] pub unsafe extern "C" fn {name}_tl(args, n) -> i64` wrappers for every compatible function, and struct arenas backed by `OnceLock<Mutex<HashMap<i64, T>>>`.
 6. **Compile** — runs `cargo build --release`.
 7. **Cache** — reads the resulting `.dll`/`.so`/`.dylib` bytes, calls `cache_native(module_name, exports, dll_bytes)`, then cleans up the temp directory.
 8. **Return stubs** — returns synthesised `Stmt::FnDef` / `Stmt::ClassDef` nodes for the type checker and interpreter to use.
 
 ### Struct ABI
 
-Each Rust struct is exposed as a Havakyrie class with:
+Each Rust struct is exposed as a Arrow class with:
 - A `__rs_handle__: mut int` field holding the arena key
 - Public fields mirroring the Rust struct (get/set via separate `get_{field}` / `set_{field}` methods)
-- An `__init__` method that stores the instance in the arena and calls `hv_init`
+- An `__init__` method that stores the instance in the arena and calls `ar_init`
 - A `drop` method that removes it from the arena
 
 ---

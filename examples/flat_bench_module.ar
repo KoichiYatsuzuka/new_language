@@ -1,0 +1,30 @@
+# flat_bench_module.ar — compiled module for the flat list benchmark.
+# All Particle fields are float so the flat freeze applies.
+
+class Particle:
+    mut x: float
+    mut y: float
+    mut z: float
+    mut mass: float
+
+    fn __init__(mut self, x: float, y: float, z: float, mass: float) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+        self.mass = mass
+
+# Baseline: accepts a mutable list — uses CB_ITER_FROM / CB_ITER_NEXT.
+fn compute_mut(mut pts: list[Particle]) -> float:
+    mut total = 0.0
+    for p in pts:
+        let d2 = p.x * p.x + p.y * p.y + p.z * p.z
+        total += p.mass * d2
+    return total
+
+# Optimised: accepts a fixed_list — uses flat GEP loop (zero callbacks in hot path).
+fn compute_frozen(let pts: fixed_list[Particle]) -> float:
+    mut total = 0.0
+    for p in pts:
+        let d2 = p.x * p.x + p.y * p.y + p.z * p.z
+        total += p.mass * d2
+    return total

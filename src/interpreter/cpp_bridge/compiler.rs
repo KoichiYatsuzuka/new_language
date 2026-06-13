@@ -22,7 +22,7 @@ const TMP_RS_NAME: &str = "_tl_cpp_bridge.rs";
 const TMP_DLL_STEM: &str = "_tl_cpp_bridge";
 const RUSTC_EDITION: &str = "2021";
 const RUSTC_OPT_LEVEL: &str = "2";
-const HV_DLL_PREFIX: &str = "hv_";
+const HV_DLL_PREFIX: &str = "ar_";
 const TL_SYMS_EXT: &str = "syms";
 const TL_SHIM_SUFFIX: &str = "_shim";
 const MAX_COMPILE_PASSES: usize = 5;
@@ -38,7 +38,7 @@ pub struct MsvcPaths {
 }
 
 /// Built-in Visual Studio installation candidates searched when no explicit
-/// `msvc` path is given in `hv_config.json`.
+/// `msvc` path is given in `ar_config.json`.
 const MSVC_CANDIDATES: &[&str] = &[
     r"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat",
     r"C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat",
@@ -53,7 +53,7 @@ const MSVC_CANDIDATES: &[&str] = &[
 ];
 
 /// `vcvarsall.bat` を検索する。
-/// `extra_paths`（`hv_config.json` の `msvc_search_paths`）を先に確認し、見つからなければ組み込み `MSVC_CANDIDATES` リストにフォールバックする。
+/// `extra_paths`（`ar_config.json` の `msvc_search_paths`）を先に確認し、見つからなければ組み込み `MSVC_CANDIDATES` リストにフォールバックする。
 /// インストールが見つからない場合は `None` を返す。
 pub fn find_msvc_vcvarsall(extra_paths: &[String]) -> Option<MsvcPaths> {
     for p in extra_paths {
@@ -276,7 +276,7 @@ pub fn compile_tl_dll(
     let msvc = if let Some(ref p) = config.msvc {
         if !p.exists() {
             return Err(format!(
-                "CppBridge: msvc path '{}' not found (check hv_config.json)",
+                "CppBridge: msvc path '{}' not found (check ar_config.json)",
                 p.display()
             ));
         }
@@ -286,7 +286,7 @@ pub fn compile_tl_dll(
     } else {
         find_msvc_vcvarsall(&config.msvc_search_paths).ok_or_else(|| {
             "CppBridge: MSVC not found.\n\
-             Install Visual Studio 2017/2019/2022, add paths to hv_config.json:\n\
+             Install Visual Studio 2017/2019/2022, add paths to ar_config.json:\n\
              {\"cpp\": {\"msvc_search_paths\": [\"C:/path/to/vcvarsall.bat\"]}}"
                 .to_string()
         })?
@@ -388,7 +388,7 @@ fn compile_msvc_shim(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("shim");
-    let temp_dir = std::env::temp_dir().join(format!("hv_build_{stem}"));
+    let temp_dir = std::env::temp_dir().join(format!("ar_build_{stem}"));
     std::fs::create_dir_all(&temp_dir)
         .map_err(|e| format!("CppShim: cannot create temp dir: {e}"))?;
 

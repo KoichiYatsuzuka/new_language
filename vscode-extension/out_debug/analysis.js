@@ -737,7 +737,7 @@ async function collectAllPyModuleInfo(document) {
     const classMethods = new Map();
     const cppClasses = new Map();
     const docDir = path.dirname(document.uri.fsPath);
-    const pythonLibPaths = vscode.workspace.getConfiguration('havakyrie').get('pythonLibraryPaths', []);
+    const pythonLibPaths = vscode.workspace.getConfiguration('arrow').get('pythonLibraryPaths', []);
     const imports = [];
     for (let i = 0; i < document.lineCount; i++) {
         const stripped = stripComment(document.lineAt(i).text);

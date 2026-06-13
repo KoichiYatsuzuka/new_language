@@ -215,10 +215,10 @@
 |---|---|---|---|
 | Import module | `use crate::foo;` | `import foo` | `import foo` |
 | Import item | `use foo::bar;` | `from foo import bar` | `from foo import bar` |
-| Force source | — | — | `import[hv] module` |
-| Force compiled | — | — | `import[hvc] module` |
+| Force source | — | — | `import[ar] module` |
+| Force compiled | — | — | `import[arc] module` |
 | Python interop | — | native | `import[py] module` / `import[py-int]` |
-| Auto (prefer compiled) | — | — | `import module` (prefers `.hvc` if present) |
+| Auto (prefer compiled) | — | — | `import module` (prefers `.arc` if present) |
 
 ---
 
@@ -231,5 +231,5 @@
 | Newtype cast | `5.0=>Meters` | `=>` operator; reverse with `m=>float` |
 | Static shared closure state | `static mut n = 0` inside `fn` | Single cell shared across all invocations of the outer function |
 | Trait-qualified field access | `self::Trait.field` | Disambiguates when multiple traits define the same field name |
-| Partial compile to native | `cargo run -- --compile mod.hv` | Emits `.hvc` (compiled binary) + `.hvs` (type stub for IDE) |
-| Native dispatch | auto on import | `import` prefers `.hvc`; eligible fns run as native code (~100–200× faster for typed int/float) |
+| Partial compile to native | `cargo run -- --compile mod.ar` | Emits `.arc` (compiled binary) + `.ars` (type stub for IDE) |
+| Native dispatch | auto on import | `import` prefers `.arc`; eligible fns run as native code (~100–200× faster for typed int/float) |

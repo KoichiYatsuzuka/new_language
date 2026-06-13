@@ -1,6 +1,6 @@
-# life_game_ops.py — numpy/pandas helpers for life_game.hv
+# life_game_ops.py — numpy/pandas helpers for life_game.ar
 #
-# Functions exposed to Havakyrie:
+# Functions exposed to Arrow:
 #   load_initial_grid(csv_path)  — read alive cells from CSV via pandas; return numpy grid
 #   next_generation(grid)        — apply Conway's rules; return new numpy grid
 #   get_alive_xy(grid)           — return [[x, y], ...] list of alive cell positions

@@ -1,5 +1,5 @@
 ﻿# git SHA: 72d280d65fc4cfdf05891c5c08c1331617d7e194
-"""Runtime value types for the Havakyrie interpreter."""
+"""Runtime value types for the Arrow interpreter."""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING

@@ -675,7 +675,7 @@ async function collectAllPyModuleInfo(document: vscode.TextDocument): Promise<Do
     const classMethods = new Map<string, Map<string, string>>();
     const cppClasses = new Map<string, CppClassInfo>();
     const docDir = path.dirname(document.uri.fsPath);
-    const pythonLibPaths: string[] = vscode.workspace.getConfiguration('havakyrie').get('pythonLibraryPaths', []);
+    const pythonLibPaths: string[] = vscode.workspace.getConfiguration('arrow').get('pythonLibraryPaths', []);
 
     const imports: Array<[string, string, string | undefined, string]> = [];
     for (let i = 0; i < document.lineCount; i++) {

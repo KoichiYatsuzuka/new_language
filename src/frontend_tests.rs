@@ -261,7 +261,7 @@ mod lexer_tests {
     #[test]
     fn test_span_line_col() {
         let src = "let x = 1\nmut y = 2\n";
-        let spanned = Lexer::new(src, "test.hv").tokenize();
+        let spanned = Lexer::new(src, "test.ar").tokenize();
         // `let` は行1・列1
         assert_eq!(spanned[0].span.line, 1);
         assert_eq!(spanned[0].span.col, 1);
@@ -277,8 +277,8 @@ mod lexer_tests {
     /// span_filename のテスト。
     #[test]
     fn test_span_filename() {
-        let spanned = Lexer::new("x\n", "foo.hv").tokenize();
-        assert_eq!(&*spanned[0].span.file, "foo.hv");
+        let spanned = Lexer::new("x\n", "foo.ar").tokenize();
+        assert_eq!(&*spanned[0].span.file, "foo.ar");
     }
 
     // --- trait / :: ---

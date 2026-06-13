@@ -1,5 +1,5 @@
 ﻿# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
-"""Havakyrie interpreter package."""
+"""Arrow interpreter package."""
 from .interpreter import Interpreter
 from .value import Value, display, type_name
 from .exceptions import RaiseSignal, InterpreterError

@@ -1,7 +1,7 @@
-// ast_value.rs — Convert Rust AST nodes into Havakyrie Value::Namespace trees.
+// ast_value.rs — Convert Rust AST nodes into Arrow Value::Namespace trees.
 //
-// `stmts_to_value` is called by the `parse_hv()` built-in.  Every field name
-// mirrors what converter.hv and node_utils.hv expect:
+// `stmts_to_value` is called by the `parse_ar()` built-in.  Every field name
+// mirrors what converter.ar and node_utils.ar expect:
 //
 //  * __type__   — the node-type discriminator (replaces Python's __class__.__name__)
 //  * op         — BinOp as operator-string ("+", "==", …); UnaryOp as name ("NEG", …)

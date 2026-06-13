@@ -1,8 +1,8 @@
-"""Native API: handle arena and HvCallbacks for import[rs] (mirrors src/interpreter/native_api.rs).
+"""Native API: handle arena and ArCallbacks for import[rs] (mirrors src/interpreter/native_api.rs).
 
 Values cross the _tl ABI as i64 handles into _ARENA.
 The Python side implements all callback functions and passes them to the
-loaded DLL via hv_init(cb_ptr).
+loaded DLL via ar_init(cb_ptr).
 """
 from __future__ import annotations
 
@@ -50,12 +50,12 @@ def free_handle(h: int) -> None:
     _ARENA.pop(h, None)
 
 
-def _hv_to_i64(v: Any) -> int:
+def _ar_to_i64(v: Any) -> int:
     """Encode a Python value to an i64 handle."""
     return alloc_handle(v)
 
 
-def _i64_to_hv(h: int) -> Any:
+def _i64_to_ar(h: int) -> Any:
     return get_handle(h)
 
 
@@ -67,7 +67,7 @@ _GLOBAL_VARS: dict[str, Any] = {}
 
 
 # ---------------------------------------------------------------------------
-# HvCallbacks — ctypes struct matching the Rust #[repr(C)] definition
+# ArCallbacks — ctypes struct matching the Rust #[repr(C)] definition
 # ---------------------------------------------------------------------------
 
 # Function-pointer typedefs
@@ -108,7 +108,7 @@ _FP_call_method  = ctypes.CFUNCTYPE(
 )
 
 
-class HvCallbacks(ctypes.Structure):
+class ArCallbacks(ctypes.Structure):
     _fields_ = [
         ("make_int",      _FP_make_int),
         ("make_float",    _FP_make_float),
@@ -463,19 +463,19 @@ def _cb_call_method(obj_h: int, name_p: Optional[int], name_l: int,
 
 
 # ---------------------------------------------------------------------------
-# Build and cache the singleton HvCallbacks instance
+# Build and cache the singleton ArCallbacks instance
 # ---------------------------------------------------------------------------
 
-_CALLBACKS: Optional[HvCallbacks] = None
+_CALLBACKS: Optional[ArCallbacks] = None
 
 
-def make_hv_callbacks() -> HvCallbacks:
-    """Return the singleton HvCallbacks struct wired to our Python arena."""
+def make_ar_callbacks() -> ArCallbacks:
+    """Return the singleton ArCallbacks struct wired to our Python arena."""
     global _CALLBACKS
     if _CALLBACKS is not None:
         return _CALLBACKS
 
-    cb = HvCallbacks()
+    cb = ArCallbacks()
     cb.make_int      = _FP_make_int(_cb_make_int)
     cb.make_float    = _FP_make_float(_cb_make_float)
     cb.make_bool     = _FP_make_bool(_cb_make_bool)

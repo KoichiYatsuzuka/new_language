@@ -1,0 +1,96 @@
+# physics.ar — CPU-heavy benchmark using a Body class with multiple methods.
+#
+# Compile with:
+#   cargo run --release -- --compile examples/test_modules/physics.ar
+
+class Body:
+    let x:    float
+    let y:    float
+    let z:    float
+    let vx:   float
+    let vy:   float
+    let vz:   float
+    let mass: float
+
+    fn __init__(mut self, x: float, y: float, z: float,
+                vx: float, vy: float, vz: float, mass: float) -> None:
+        self.x    = x
+        self.y    = y
+        self.z    = z
+        self.vx   = vx
+        self.vy   = vy
+        self.vz   = vz
+        self.mass = mass
+
+    # Gravitational potential ∝ m₁·m₂ / r²  (softened by ε=0.001)
+    fn potential(let self, let other: Body) -> float:
+        let dx = self.x - other.x
+        let dy = self.y - other.y
+        let dz = self.z - other.z
+        let r2 = dx * dx + dy * dy + dz * dz + 0.001
+        return self.mass * other.mass / r2
+
+    # Kinetic energy ½·m·v²
+    fn kinetic(let self) -> float:
+        return 0.5 * self.mass * (self.vx * self.vx + self.vy * self.vy + self.vz * self.vz)
+
+    # Dot product of velocity vectors
+    fn vel_dot(let self, let other: Body) -> float:
+        return self.vx * other.vx + self.vy * other.vy + self.vz * other.vz
+
+    # Squared distance between positions
+    fn dist_sq(let self, let other: Body) -> float:
+        let dx = self.x - other.x
+        let dy = self.y - other.y
+        let dz = self.z - other.z
+        return dx * dx + dy * dy + dz * dz
+
+
+# Accumulate total energy (potential + kinetic) over n simulation steps.
+# Four method calls per loop iteration — representative of real physics code.
+fn total_energy(a: Body, b: Body, n: int) -> float:
+    mut E: float = 0.0
+    mut i: int = 0
+    while i < n:
+        E += a.potential(b)
+        E += a.vel_dot(b)
+        E += a.kinetic()
+        E += b.kinetic()
+        i += 1
+    return E
+
+
+# Same computation spelled out inline — no method dispatch.
+# Uses loop counter `i` to keep the body loop-variant (prevents LLVM from
+# constant-folding the entire loop).  The perturbation is negligible (1e-9 per
+# iteration) so results remain close to the method version.
+fn total_energy_inline(a: Body, b: Body, n: int) -> float:
+    let ax  = a.x
+    let ay  = a.y
+    let az  = a.z
+    let avx = a.vx
+    let avy = a.vy
+    let avz = a.vz
+    let am  = a.mass
+    let bx  = b.x
+    let by  = b.y
+    let bz  = b.z
+    let bvx = b.vx
+    let bvy = b.vy
+    let bvz = b.vz
+    let bm  = b.mass
+
+    mut E: float = 0.0
+    mut i: int = 0
+    while i < n:
+        let eps: float = i * 0.000000001   # loop-variant: prevents LLVM LICM
+        let dx = ax - bx + eps
+        let dy = ay - by
+        let dz = az - bz
+        let r2 = dx * dx + dy * dy + dz * dz + 0.001
+        E += am * bm / r2
+        E += avx * bvx + avy * bvy + avz * bvz
+        E += 0.5 * am * (avx * avx + avy * avy + avz * avz)
+        E += 0.5 * bm * (bvx * bvx + bvy * bvy + bvz * bvz)
+        i += 1
+    return E

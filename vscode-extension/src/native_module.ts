@@ -6,10 +6,10 @@ import { FUNC_DEF_RE } from './builtins';
 
 // ===== C++ / native module support =====
 
-export function importKindOf(keyword: string): 'py' | 'cpp' | 'hv' | 'rs' {
+export function importKindOf(keyword: string): 'py' | 'cpp' | 'ar' | 'rs' {
     if (keyword.includes('cpp')) return 'cpp';
     if (keyword === 'import[rs]') return 'rs';
-    if (keyword === 'import' || keyword.startsWith('import[hv')) return 'hv';
+    if (keyword === 'import' || keyword.startsWith('import[hv')) return 'ar';
     return 'py';
 }
 
@@ -287,16 +287,16 @@ export function parseTlStub(content: string): NativeModuleInfo {
 
 // ===== Rust source parser =====
 
-interface HvConfig {
+interface ArConfig {
     rust?: { crates_path?: string | string[] };
 }
 
-/** Walk up from startDir to find the directory containing hv_config.json. */
-async function findHvConfigDir(startDir: string): Promise<string | undefined> {
+/** Walk up from startDir to find the directory containing ar_config.json. */
+async function findArConfigDir(startDir: string): Promise<string | undefined> {
     let current = startDir;
     for (;;) {
         try {
-            await fsPromises.access(path.join(current, 'hv_config.json'));
+            await fsPromises.access(path.join(current, 'ar_config.json'));
             return current;
         } catch {
             const parent = path.dirname(current);
@@ -306,14 +306,14 @@ async function findHvConfigDir(startDir: string): Promise<string | undefined> {
     }
 }
 
-async function loadHvConfig(startDir: string): Promise<HvConfig | undefined> {
-    const dir = await findHvConfigDir(startDir);
+async function loadArConfig(startDir: string): Promise<ArConfig | undefined> {
+    const dir = await findArConfigDir(startDir);
     if (!dir) return undefined;
-    try { return JSON.parse(await fsPromises.readFile(path.join(dir, 'hv_config.json'), 'utf8')); }
+    try { return JSON.parse(await fsPromises.readFile(path.join(dir, 'ar_config.json'), 'utf8')); }
     catch { return undefined; }
 }
 
-/** Convert a Rust type string to the equivalent Havakyrie LangType. */
+/** Convert a Rust type string to the equivalent Arrow LangType. */
 function rsTypeToTl(rs: string, selfName?: string): LangType {
     // Strip reference/mut qualifiers
     const t = rs.trim().replace(/^&\s*(?:mut\s+)?/, '').replace(/^mut\s+/, '').trim();
@@ -331,7 +331,7 @@ function rsTypeToTl(rs: string, selfName?: string): LangType {
     return 'unknown';
 }
 
-/** Convert a Rust parameter list to Havakyrie parameter string. */
+/** Convert a Rust parameter list to Arrow parameter string. */
 function rsParamsToHv(params: string, selfName?: string): string {
     const parts: string[] = [];
     for (const raw of params.split(',')) {
@@ -468,10 +468,10 @@ export async function loadNativeModuleInfo(
         }
         return empty;
     }
-    // ── import[rs]: parse Rust source via hv_config.json crates_path ──────────
+    // ── import[rs]: parse Rust source via ar_config.json crates_path ──────────
     if (importKindOf(importKind) === 'rs') {
-        const config    = await loadHvConfig(docDir);
-        const configDir = await findHvConfigDir(docDir) ?? docDir;
+        const config    = await loadArConfig(docDir);
+        const configDir = await findArConfigDir(docDir) ?? docDir;
         const rawPaths  = config?.rust?.crates_path;
         const cratesPaths: string[] = Array.isArray(rawPaths) ? rawPaths : rawPaths ? [rawPaths] : [];
         for (const cratesPath of cratesPaths) {
@@ -486,13 +486,13 @@ export async function loadNativeModuleInfo(
         }
         return empty;
     }
-    // ── import[hv] / import[hvc]: look for .hvs or .hv stub ──────────────────
+    // ── import[ar] / import[arc]: look for .ars or .ar stub ──────────────────
     const filePath = path.join(docDir, ...modulePath.split('.'));
     const candidates = [
-        filePath + '.hvs',
-        filePath + '.hv',
-        path.join(filePath, '__init__.hvs'),
-        path.join(filePath, '__init__.hv'),
+        filePath + '.ars',
+        filePath + '.ar',
+        path.join(filePath, '__init__.ars'),
+        path.join(filePath, '__init__.ar'),
     ];
     for (const candidate of candidates) {
         try {

@@ -7,7 +7,7 @@
 //   TL_STOP_ITER (-1) = iteration exhausted sentinel
 //   h >= 3   = index into the thread-local VALUE_ARENA Vec<Value>
 //
-// The HvCallbacks struct is passed to each native DLL via `hv_init(cb)`.
+// The ArCallbacks struct is passed to each native DLL via `ar_init(cb)`.
 // All heavy operations (attribute access, function calls, binops) route through
 // the interpreter held in CURRENT_INTERP.
 
@@ -81,7 +81,7 @@ thread_local! {
     /// Set by `enter_native_call` at depth 0; cleared by `exit_native_call` / `abort_native_call`.
     static CURRENT_INTERP: Cell<*mut Interpreter> = Cell::new(std::ptr::null_mut());
 
-    /// Scratch buffers for null-terminated C strings produced by `hv_to_cstr`.
+    /// Scratch buffers for null-terminated C strings produced by `ar_to_cstr`.
     /// Cleared at the end of the outermost native call so the pointers remain valid
     /// for the duration of any single call chain.
     static CSTR_BUFS: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
@@ -201,7 +201,7 @@ pub fn push_handle(v: Value) -> i64 {
 
 /// 値をアリーナに**常に新規スロット**としてプッシュしてハンドルを返す。
 /// `push_handle` と異なり、キャッシュ済みの定数ハンドルは返さず、ネイティブ DLL が
-/// `hv_write_handle` で後から上書き可能な新しいスロットを確保する。
+/// `ar_write_handle` で後から上書き可能な新しいスロットを確保する。
 /// cpp-bridge の `MutPtr`（書き戻し）引数に使用する。
 pub fn push_handle_writeback(v: Value) -> i64 {
     VALUE_ARENA.with(|a| {
@@ -235,7 +235,7 @@ pub fn take_pending_raise() -> Option<(String, String)> {
     PENDING_RAISE.with(|p| p.borrow_mut().take())
 }
 
-/// Register a natively compiled class method so `hv_call_method` can dispatch to it.
+/// Register a natively compiled class method so `ar_call_method` can dispatch to it.
 pub fn register_native_method(class_name: &str, method_name: &str, fn_ptr: usize) {
     NATIVE_METHODS.with(|m| {
         m.borrow_mut().insert((class_name.to_string(), method_name.to_string()), fn_ptr);
@@ -304,9 +304,9 @@ pub fn try_dispatch_native_method(
     Some(Ok(exit_native_call(result_h, is_outermost)))
 }
 
-/// 静的コールバックインスタンスへの `*const HvCallbacks` ポインタを返す。
-pub fn get_callbacks() -> *const HvCallbacks {
-    &CALLBACKS as *const HvCallbacks
+/// 静的コールバックインスタンスへの `*const ArCallbacks` ポインタを返す。
+pub fn get_callbacks() -> *const ArCallbacks {
+    &CALLBACKS as *const ArCallbacks
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -355,12 +355,12 @@ fn i32_to_binop(op: i32) -> Option<crate::ast::BinOp> {
     }
 }
 
-// ── HvCallbacks struct ───────────────────────────────────────────────────────
+// ── ArCallbacks struct ───────────────────────────────────────────────────────
 
-/// ネイティブ DLL に `hv_init` 経由で渡される C 互換の関数ポインタ構造体。
-/// レイアウトは `codegen.rs` が生成する `HvCallbacks` 構造体と完全に一致しなければならない。
+/// ネイティブ DLL に `ar_init` 経由で渡される C 互換の関数ポインタ構造体。
+/// レイアウトは `codegen.rs` が生成する `ArCallbacks` 構造体と完全に一致しなければならない。
 #[repr(C)]
-pub struct HvCallbacks {
+pub struct ArCallbacks {
     pub make_int: extern "C" fn(i64) -> i64,
     pub make_float: extern "C" fn(f64) -> i64,
     pub make_bool: extern "C" fn(i32) -> i64,
@@ -427,19 +427,19 @@ pub struct HvCallbacks {
     /// `fn(i64 fn_h, *const i64 args, i32 n) -> i64`.
     /// Native compiled functions cache this pointer once at entry for each
     /// `function[...]->R` parameter, then call through it in the hot path
-    /// instead of going through the HvCallbacks GEP chain at every call site.
+    /// instead of going through the ArCallbacks GEP chain at every call site.
     pub fn_trampoline: extern "C" fn(i64) -> *const (),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
 
 /// `i64` 整数値からアリーナハンドルを生成して返す C コールバック。
-extern "C" fn hv_make_int(n: i64) -> i64 {
+extern "C" fn ar_make_int(n: i64) -> i64 {
     push_handle(Value::Int(n))
 }
 
 /// `f64` 浮動小数点値からアリーナハンドルを生成して返す C コールバック。
-extern "C" fn hv_make_float(f: f64) -> i64 {
+extern "C" fn ar_make_float(f: f64) -> i64 {
     VALUE_ARENA.with(|a| {
         let mut arena = a.borrow_mut();
         let h = arena.len() as i64;
@@ -449,7 +449,7 @@ extern "C" fn hv_make_float(f: f64) -> i64 {
 }
 
 /// `i32` の真偽値（0=false, 非0=true）から `TL_TRUE` / `TL_FALSE` ハンドルを返す C コールバック。
-extern "C" fn hv_make_bool(b: i32) -> i64 {
+extern "C" fn ar_make_bool(b: i32) -> i64 {
     if b != 0 {
         TL_TRUE
     } else {
@@ -458,7 +458,7 @@ extern "C" fn hv_make_bool(b: i32) -> i64 {
 }
 
 /// UTF-8 バイト列ポインタと長さから文字列値を生成してハンドルを返す C コールバック。
-extern "C" fn hv_make_str(ptr: *const u8, len: i32) -> i64 {
+extern "C" fn ar_make_str(ptr: *const u8, len: i32) -> i64 {
     let s = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len as usize)) }
         .to_owned();
     VALUE_ARENA.with(|a| {
@@ -470,7 +470,7 @@ extern "C" fn hv_make_str(ptr: *const u8, len: i32) -> i64 {
 }
 
 /// ハンドル配列からリスト値を生成してハンドルを返す C コールバック。
-extern "C" fn hv_make_list(items_ptr: *const i64, n: i32) -> i64 {
+extern "C" fn ar_make_list(items_ptr: *const i64, n: i32) -> i64 {
     let items: Vec<Value> = (0..n as usize)
         .map(|i| clone_value_at(unsafe { *items_ptr.add(i) }))
         .collect();
@@ -484,7 +484,7 @@ extern "C" fn hv_make_list(items_ptr: *const i64, n: i32) -> i64 {
 }
 
 /// ハンドル配列からタプル値を生成してハンドルを返す C コールバック。
-extern "C" fn hv_make_tuple(items_ptr: *const i64, n: i32) -> i64 {
+extern "C" fn ar_make_tuple(items_ptr: *const i64, n: i32) -> i64 {
     let elements: Vec<Value> = (0..n as usize)
         .map(|i| clone_value_at(unsafe { *items_ptr.add(i) }))
         .collect();
@@ -498,7 +498,7 @@ extern "C" fn hv_make_tuple(items_ptr: *const i64, n: i32) -> i64 {
 }
 
 /// キー配列と値配列からディクショナリ値を生成してハンドルを返す C コールバック。
-extern "C" fn hv_make_dict(keys_ptr: *const i64, vals_ptr: *const i64, n: i32) -> i64 {
+extern "C" fn ar_make_dict(keys_ptr: *const i64, vals_ptr: *const i64, n: i32) -> i64 {
     let mut dict = DictData::new("Any".to_string(), "Any".to_string());
     for i in 0..n as usize {
         let k = clone_value_at(unsafe { *keys_ptr.add(i) });
@@ -514,13 +514,13 @@ extern "C" fn hv_make_dict(keys_ptr: *const i64, vals_ptr: *const i64, n: i32) -
 }
 
 /// `None` 値を表すハンドル定数 `TL_NONE` を返す C コールバック。
-extern "C" fn hv_make_none() -> i64 {
+extern "C" fn ar_make_none() -> i64 {
     TL_NONE
 }
 
 /// ハンドルの値が真値かどうかを `i32`（1=true, 0=false）で返す C コールバック。
 /// インタープリタが利用可能な場合は `is_truthy` に委譲し、そうでない場合は基本型のみ判定する。
-extern "C" fn hv_is_truthy(h: i64) -> i32 {
+extern "C" fn ar_is_truthy(h: i64) -> i32 {
     let v = clone_value_at(h);
     let ptr = get_interp_ptr();
     if ptr.is_null() {
@@ -541,7 +541,7 @@ extern "C" fn hv_is_truthy(h: i64) -> i32 {
 
 /// 二項演算コードと二つのオペランドハンドルを受け取り演算結果のハンドルを返す C コールバック。
 /// エラーが既にセットされている場合や演算コードが不正な場合は `TL_NONE` を返す。
-extern "C" fn hv_binop(op: i32, a: i64, b: i64) -> i64 {
+extern "C" fn ar_binop(op: i32, a: i64, b: i64) -> i64 {
     if has_error() {
         return TL_NONE;
     }
@@ -571,7 +571,7 @@ extern "C" fn hv_binop(op: i32, a: i64, b: i64) -> i64 {
 
 /// 単項演算コードとオペランドハンドルを受け取り演算結果のハンドルを返す C コールバック。
 /// エラーが既にセットされている場合や演算コードが不正な場合は `TL_NONE` を返す。
-extern "C" fn hv_unop(op: i32, a: i64) -> i64 {
+extern "C" fn ar_unop(op: i32, a: i64) -> i64 {
     if has_error() {
         return TL_NONE;
     }
@@ -610,7 +610,7 @@ extern "C" fn hv_unop(op: i32, a: i64) -> i64 {
 ///
 /// Slow path: クロージャ・ユーザー定義 HV 関数など他のすべての callable は
 /// 従来通りインタープリタの `call_value_with_args` に委譲する。
-extern "C" fn hv_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
+extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
     use std::sync::atomic::Ordering;
 
     if has_error() {
@@ -711,7 +711,7 @@ extern "C" fn hv_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
 
 /// オブジェクトハンドルと属性名から属性値のハンドルを取得する C コールバック。
 /// インタープリタの `get_attr_val` に委譲する。エラー時は `TL_NONE` を返す。
-extern "C" fn hv_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
+extern "C" fn ar_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
     if has_error() {
         return TL_NONE;
     }
@@ -737,7 +737,7 @@ extern "C" fn hv_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64
 
 /// オブジェクトハンドル・属性名・新しい値ハンドルを受け取りオブジェクトの属性を更新する C コールバック。
 /// インタープリタの `set_attr_val` に委譲する。エラー時はエラーをセットする。
-extern "C" fn hv_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64) {
+extern "C" fn ar_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64) {
     if has_error() {
         return;
     }
@@ -760,7 +760,7 @@ extern "C" fn hv_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h:
 
 /// オブジェクトハンドルとキーハンドルを受け取りサブスクリプト演算結果のハンドルを返す C コールバック。
 /// インタープリタの `eval_subscript` に委譲する。エラー時は `TL_NONE` を返す。
-extern "C" fn hv_subscript(obj_h: i64, key_h: i64) -> i64 {
+extern "C" fn ar_subscript(obj_h: i64, key_h: i64) -> i64 {
     if has_error() {
         return TL_NONE;
     }
@@ -783,7 +783,7 @@ extern "C" fn hv_subscript(obj_h: i64, key_h: i64) -> i64 {
 
 /// グローバルスコープから変数名に対応する値ハンドルを取得する C コールバック。
 /// 変数が見つからない場合は `NameError` をセットして `TL_NONE` を返す。
-extern "C" fn hv_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
+extern "C" fn ar_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
     if has_error() {
         return TL_NONE;
     }
@@ -810,7 +810,7 @@ extern "C" fn hv_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
 
 /// イテラブルなオブジェクトハンドルからイテレータハンドルを生成する C コールバック。
 /// イテレータハンドルは `-(idx+2)` の負値でエンコードされる（`TL_STOP_ITER=-1` と区別するため）。
-extern "C" fn hv_iter_from(obj_h: i64) -> i64 {
+extern "C" fn ar_iter_from(obj_h: i64) -> i64 {
     if has_error() {
         return TL_NONE;
     }
@@ -849,7 +849,7 @@ extern "C" fn hv_iter_from(obj_h: i64) -> i64 {
 
 /// イテレータハンドルから次の要素ハンドルを取得する C コールバック。
 /// イテレーションが終了した場合は `TL_STOP_ITER` を返す。
-extern "C" fn hv_iter_next(iter_h: i64) -> i64 {
+extern "C" fn ar_iter_next(iter_h: i64) -> i64 {
     if has_error() {
         return TL_STOP_ITER;
     }
@@ -876,7 +876,7 @@ extern "C" fn hv_iter_next(iter_h: i64) -> i64 {
 
 /// オブジェクトハンドルが指定した型名に一致するか判定する C コールバック。
 /// 一致すれば `TL_TRUE`、一致しなければ `TL_FALSE` を返す。
-extern "C" fn hv_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
+extern "C" fn ar_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
     let name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
     };
@@ -920,13 +920,13 @@ extern "C" fn hv_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 
 
 /// アリーナの現在のサイズを保存点として返す C コールバック。
 /// 関数呼び出し前後でアリーナを巻き戻すために使用する。
-extern "C" fn hv_arena_save() -> u64 {
+extern "C" fn ar_arena_save() -> u64 {
     VALUE_ARENA.with(|a| a.borrow().len() as u64)
 }
 
 /// 結果ハンドルを保持しつつアリーナを保存点まで切り詰める C コールバック。
 /// 結果ハンドルが保存点より後に確保されていた場合は値をクローンして再プッシュする。
-extern "C" fn hv_arena_compact(h: i64, saved: u64) -> i64 {
+extern "C" fn ar_arena_compact(h: i64, saved: u64) -> i64 {
     let saved = saved as usize;
     // Always truncate to `saved` to discard callee's intermediates.
     if h < 3 {
@@ -964,7 +964,7 @@ extern "C" fn hv_arena_compact(h: i64, saved: u64) -> i64 {
 
 /// ループ本体終端で複数の生存変数ハンドルをまとめて保存点まで巻き戻す C コールバック。
 /// 入力ハンドル配列の値をクローンしてからアリーナを切り詰め、出力配列に再プッシュする。
-extern "C" fn hv_compact_many(handles_in: *const i64, n: i32, save: u64, handles_out: *mut i64) {
+extern "C" fn ar_compact_many(handles_in: *const i64, n: i32, save: u64, handles_out: *mut i64) {
     let n = n as usize;
     if n == 0 {
         VALUE_ARENA.with(|a| a.borrow_mut().truncate(save as usize));
@@ -989,7 +989,7 @@ extern "C" fn hv_compact_many(handles_in: *const i64, n: i32, save: u64, handles
 
 /// ハンドルの値を完全にディープコピーして新しいハンドルとして返す C コールバック。
 /// スレッド間で値を独立して渡す際などに使用する。
-extern "C" fn hv_deep_copy(h: i64) -> i64 {
+extern "C" fn ar_deep_copy(h: i64) -> i64 {
     let val = clone_value_at(h);
     let copied = super::Interpreter::deep_copy_value(val);
     push_handle(copied)
@@ -997,7 +997,7 @@ extern "C" fn hv_deep_copy(h: i64) -> i64 {
 
 /// ハンドルの値を `i64` 整数として取り出す C コールバック。
 /// 型特化コード生成で、関数エントリ時にハンドルを生の Rust 値に変換するために使用する。
-extern "C" fn hv_to_int(h: i64) -> i64 {
+extern "C" fn ar_to_int(h: i64) -> i64 {
     match h {
         TL_NONE => 0,
         TL_TRUE => 1,
@@ -1015,7 +1015,7 @@ extern "C" fn hv_to_int(h: i64) -> i64 {
 
 /// ハンドルの値を `f64` 浮動小数点数として取り出す C コールバック。
 /// 型特化コード生成で、関数エントリ時にハンドルを生の Rust 値に変換するために使用する。
-extern "C" fn hv_to_float(h: i64) -> f64 {
+extern "C" fn ar_to_float(h: i64) -> f64 {
     match h {
         TL_NONE => 0.0,
         TL_TRUE => 1.0,
@@ -1036,7 +1036,7 @@ extern "C" fn hv_to_float(h: i64) -> f64 {
 /// tl 文字列ハンドル `h` をヌル終端 C 文字列に変換する C コールバック。
 /// バイト列はスレッドローカルの `CSTR_BUFS` スクラッチバッファに格納され、最外ネイティブ呼び出しが
 /// 終了して `exit_native_call` / `abort_native_call` がバッファをクリアするまでポインタは有効。
-extern "C" fn hv_to_cstr(h: i64) -> *const u8 {
+extern "C" fn ar_to_cstr(h: i64) -> *const u8 {
     let s = match clone_value_at(h) {
         Value::Str(s) => s,
         _ => String::new(),
@@ -1052,7 +1052,7 @@ extern "C" fn hv_to_cstr(h: i64) -> *const u8 {
 
 /// `target_h` のアリーナスロットを `new_val_h` の値のクローンで上書きする C コールバック。
 /// C 呼び出し後に `T*` 出力パラメータ値を書き戻すため、生成された cpp-bridge ラッパーが使用する。
-extern "C" fn hv_write_handle(target_h: i64, new_val_h: i64) {
+extern "C" fn ar_write_handle(target_h: i64, new_val_h: i64) {
     if target_h < 3 {
         return;
     } // never overwrite fixed slots
@@ -1067,7 +1067,7 @@ extern "C" fn hv_write_handle(target_h: i64, new_val_h: i64) {
 
 // ── Feature-extension callbacks ──────────────────────────────────────────────
 
-extern "C" fn hv_list_append(list_h: i64, item_h: i64) -> i64 {
+extern "C" fn ar_list_append(list_h: i64, item_h: i64) -> i64 {
     if has_error() { return list_h; }
     let item = clone_value_at(item_h);
     VALUE_ARENA.with(|a| {
@@ -1078,7 +1078,7 @@ extern "C" fn hv_list_append(list_h: i64, item_h: i64) -> i64 {
     list_h
 }
 
-extern "C" fn hv_raise_exc(type_h: i64, msg_h: i64) -> i64 {
+extern "C" fn ar_raise_exc(type_h: i64, msg_h: i64) -> i64 {
     let type_name = match clone_value_at(type_h) {
         Value::Str(s) => s,
         Value::Class(c) => c.name.clone(),
@@ -1099,7 +1099,7 @@ extern "C" fn hv_raise_exc(type_h: i64, msg_h: i64) -> i64 {
     TL_EXCEPTION
 }
 
-extern "C" fn hv_make_cell(init_h: i64) -> i64 {
+extern "C" fn ar_make_cell(init_h: i64) -> i64 {
     let val = clone_value_at(init_h);
     let cell = Rc::new(RefCell::new(vec![val]));
     VALUE_ARENA.with(|a| {
@@ -1110,7 +1110,7 @@ extern "C" fn hv_make_cell(init_h: i64) -> i64 {
     })
 }
 
-extern "C" fn hv_get_cell(cell_h: i64) -> i64 {
+extern "C" fn ar_get_cell(cell_h: i64) -> i64 {
     VALUE_ARENA.with(|a| {
         if let Some(Value::List(list)) = a.borrow().get(cell_h as usize) {
             if let Some(v) = list.borrow().first().cloned() {
@@ -1121,7 +1121,7 @@ extern "C" fn hv_get_cell(cell_h: i64) -> i64 {
     })
 }
 
-extern "C" fn hv_call_method(obj_h: i64, name_ptr: *const u8, name_len: i32, args_ptr: *const i64, n_args: i32) -> i64 {
+extern "C" fn ar_call_method(obj_h: i64, name_ptr: *const u8, name_len: i32, args_ptr: *const i64, n_args: i32) -> i64 {
     if has_error() { return TL_NONE; }
     let name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
@@ -1163,7 +1163,7 @@ extern "C" fn hv_call_method(obj_h: i64, name_ptr: *const u8, name_len: i32, arg
     }
 }
 
-extern "C" fn hv_set_cell(cell_h: i64, val_h: i64) {
+extern "C" fn ar_set_cell(cell_h: i64, val_h: i64) {
     let val = clone_value_at(val_h);
     VALUE_ARENA.with(|a| {
         if let Some(Value::List(list)) = a.borrow().get(cell_h as usize) {
@@ -1179,7 +1179,7 @@ extern "C" fn hv_set_cell(cell_h: i64, val_h: i64) {
 /// Read a float-typed field directly from an object handle without boxing the result
 /// into an arena handle.  Equivalent to CB_GET_ATTR + CB_TO_FLOAT but with a single
 /// callback and no intermediate arena allocation.
-extern "C" fn hv_get_float_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -> f64 {
+extern "C" fn ar_get_float_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -> f64 {
     if has_error() { return 0.0; }
     let name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
@@ -1199,7 +1199,7 @@ extern "C" fn hv_get_float_field(obj_h: i64, name_ptr: *const u8, name_len: i32)
 /// Read an int-typed field directly from an object handle without boxing the result.
 /// Equivalent to CB_GET_ATTR + CB_TO_INT but with a single callback and no intermediate
 /// arena allocation.
-extern "C" fn hv_get_int_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
+extern "C" fn ar_get_int_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
     if has_error() { return 0; }
     let name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
@@ -1218,7 +1218,7 @@ extern "C" fn hv_get_int_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -
 
 /// FrozenList ハンドルのフラットデータバッファの生ポインタを i64 として返す C コールバック。
 /// FrozenList 以外のハンドルでは 0 を返す。コンパイル済みコードは `inttoptr` で ptr に変換する。
-extern "C" fn hv_flat_data_ptr(h: i64) -> i64 {
+extern "C" fn ar_flat_data_ptr(h: i64) -> i64 {
     if has_error() { return 0; }
     match clone_value_at(h) {
         Value::FrozenList { state, .. } => state.borrow().data.as_ptr() as i64,
@@ -1228,7 +1228,7 @@ extern "C" fn hv_flat_data_ptr(h: i64) -> i64 {
 
 /// FrozenList ハンドルの要素数を i64 として返す C コールバック。
 /// FrozenList 以外のハンドルでは 0 を返す。
-extern "C" fn hv_flat_len(h: i64) -> i64 {
+extern "C" fn ar_flat_len(h: i64) -> i64 {
     if has_error() { return 0; }
     match clone_value_at(h) {
         Value::FrozenList { state, .. } => state.borrow().len as i64,
@@ -1240,49 +1240,49 @@ extern "C" fn hv_flat_len(h: i64) -> i64 {
 /// 返されたポインタは `fn(i64 fn_h, *const i64 args, i32 n) -> i64` として呼び出せる。
 /// コンパイル済み関数はこのポインタを関数エントリ時に一度だけキャッシュし、
 /// ホットループ内の `function[...]->R` パラメータ呼び出しを最適化する。
-extern "C" fn hv_fn_trampoline(_fn_h: i64) -> *const () {
-    hv_call_fn as *const ()
+extern "C" fn ar_fn_trampoline(_fn_h: i64) -> *const () {
+    ar_call_fn as *const ()
 }
 
 // ── Static callbacks instance ─────────────────────────────────────────────────
 
-static CALLBACKS: HvCallbacks = HvCallbacks {
-    make_int: hv_make_int,
-    make_float: hv_make_float,
-    make_bool: hv_make_bool,
-    make_str: hv_make_str,
-    make_list: hv_make_list,
-    make_tuple: hv_make_tuple,
-    make_dict: hv_make_dict,
-    make_none: hv_make_none,
-    is_truthy: hv_is_truthy,
-    binop: hv_binop,
-    unop: hv_unop,
-    call_fn: hv_call_fn,
-    get_attr: hv_get_attr,
-    set_attr: hv_set_attr,
-    subscript: hv_subscript,
-    get_global: hv_get_global,
-    iter_from: hv_iter_from,
-    iter_next: hv_iter_next,
-    is_type: hv_is_type,
-    arena_save: hv_arena_save,
-    arena_compact: hv_arena_compact,
-    compact_many: hv_compact_many,
-    to_int: hv_to_int,
-    to_float: hv_to_float,
-    deep_copy: hv_deep_copy,
-    to_cstr: hv_to_cstr,
-    write_handle: hv_write_handle,
-    list_append: hv_list_append,
-    raise_exc: hv_raise_exc,
-    make_cell: hv_make_cell,
-    get_cell: hv_get_cell,
-    set_cell: hv_set_cell,
-    call_method: hv_call_method,
-    get_float_field: hv_get_float_field,
-    get_int_field: hv_get_int_field,
-    flat_data_ptr: hv_flat_data_ptr,
-    flat_len: hv_flat_len,
-    fn_trampoline: hv_fn_trampoline,
+static CALLBACKS: ArCallbacks = ArCallbacks {
+    make_int: ar_make_int,
+    make_float: ar_make_float,
+    make_bool: ar_make_bool,
+    make_str: ar_make_str,
+    make_list: ar_make_list,
+    make_tuple: ar_make_tuple,
+    make_dict: ar_make_dict,
+    make_none: ar_make_none,
+    is_truthy: ar_is_truthy,
+    binop: ar_binop,
+    unop: ar_unop,
+    call_fn: ar_call_fn,
+    get_attr: ar_get_attr,
+    set_attr: ar_set_attr,
+    subscript: ar_subscript,
+    get_global: ar_get_global,
+    iter_from: ar_iter_from,
+    iter_next: ar_iter_next,
+    is_type: ar_is_type,
+    arena_save: ar_arena_save,
+    arena_compact: ar_arena_compact,
+    compact_many: ar_compact_many,
+    to_int: ar_to_int,
+    to_float: ar_to_float,
+    deep_copy: ar_deep_copy,
+    to_cstr: ar_to_cstr,
+    write_handle: ar_write_handle,
+    list_append: ar_list_append,
+    raise_exc: ar_raise_exc,
+    make_cell: ar_make_cell,
+    get_cell: ar_get_cell,
+    set_cell: ar_set_cell,
+    call_method: ar_call_method,
+    get_float_field: ar_get_float_field,
+    get_int_field: ar_get_int_field,
+    flat_data_ptr: ar_flat_data_ptr,
+    flat_len: ar_flat_len,
+    fn_trampoline: ar_fn_trampoline,
 };

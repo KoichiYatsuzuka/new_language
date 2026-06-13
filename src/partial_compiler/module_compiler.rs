@@ -1,4 +1,4 @@
-﻿/// `.hvc` compiled module format — writer and reader.
+﻿/// `.arc` compiled module format — writer and reader.
 ///
 /// # File format (version 0)
 ///
@@ -52,7 +52,7 @@ const VERSION_V2: u32 = 2;
 // Populated by load_tlc(); consumed by exec.rs.
 // ---------------------------------------------------------------------------
 
-/// Payload stored in the native cache and embedded in .hvc v1/v2.
+/// Payload stored in the native cache and embedded in .arc v1/v2.
 #[derive(Clone)]
 pub enum NativePayload {
     /// v1: raw shared-library bytes, written to a temp file and loaded via libloading.
@@ -81,15 +81,15 @@ pub fn cache_native(module_name: &str, exports: Vec<codegen::FnExport>, dll_byte
 
 // ── public API ────────────────────────────────────────────────────────────────
 
-/// Compile `source` (already parsed into `stmts`) and write `.hvc` + `.hvs`
+/// Compile `source` (already parsed into `stmts`) and write `.arc` + `.ars`
 /// next to the original `source_path`.
 ///
-/// If native compilation succeeds, the `.hvc` is written as **version 1**
+/// If native compilation succeeds, the `.arc` is written as **version 1**
 /// with the DLL bytes embedded inside it.  No separate `_tl.*` file is
 /// created.  If `rustc` is unavailable or no functions are eligible, the
-/// `.hvc` is written as version 0 (source-only) and a warning is printed.
+/// `.arc` is written as version 0 (source-only) and a warning is printed.
 ///
-/// Returns the paths of the two output files (`.hvc`, `.hvs`) on success.
+/// Returns the paths of the two output files (`.arc`, `.ars`) on success.
 pub fn compile(
     source: &str,
     stmts: &[Stmt],
@@ -102,8 +102,8 @@ pub fn compile(
 
     let parent = source_path.parent().unwrap_or(Path::new("."));
 
-    let tlc_path = parent.join(format!("{stem}.hvc"));
-    let tls_path = parent.join(format!("{stem}.hvs"));
+    let tlc_path = parent.join(format!("{stem}.arc"));
+    let tls_path = parent.join(format!("{stem}.ars"));
 
     let stub = stub_gen::generate_stub(stmts);
     std::fs::write(&tls_path, &stub)?;
@@ -149,7 +149,7 @@ pub fn native_lib_ext() -> &'static str {
     }
 }
 
-/// Load a `.hvc` file and return `(module_name, source_text)`.
+/// Load a `.arc` file and return `(module_name, source_text)`.
 ///
 /// If the file is v1, the embedded native data is placed in the
 /// thread-local `NATIVE_CACHE` so that `exec.rs` can pick it up when
@@ -193,9 +193,9 @@ fn compile_native(stmts: &[Stmt]) -> Result<(NativePayload, Vec<codegen::FnExpor
     eprintln!("NativeLib(clang): compiling {} function(s): {}", fn_names.len(), fn_names.join(", "));
 
     let tmp_dir  = std::env::temp_dir();
-    let ll_path  = tmp_dir.join("hv_native_module.ll");
+    let ll_path  = tmp_dir.join("ar_native_module.ll");
     let ext      = native_lib_ext();
-    let dll_path = tmp_dir.join(format!("hv_native_module.{ext}"));
+    let dll_path = tmp_dir.join(format!("ar_native_module.{ext}"));
 
     std::fs::write(&ll_path, &llvm_ir)
         .map_err(|e| format!("cannot write LLVM IR: {e}"))?;
@@ -220,7 +220,7 @@ fn invoke_clang(ll_path: &Path, dll_path: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     args.extend_from_slice(&["-Wno-dll-attribute-on-redeclaration"]);
 
-    // Try clang from PATH first; fall back to llvm.path in hv_config.json.
+    // Try clang from PATH first; fall back to llvm.path in ar_config.json.
     let clang_exe = if Command::new("clang").arg("--version").output()
         .map_or(false, |o| o.status.success())
     {
@@ -228,7 +228,7 @@ fn invoke_clang(ll_path: &Path, dll_path: &Path) -> Result<(), String> {
     } else {
         let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
         let from_config = std::env::current_dir().ok()
-            .and_then(|d| std::fs::read_to_string(d.join("hv_config.json")).ok())
+            .and_then(|d| std::fs::read_to_string(d.join("ar_config.json")).ok())
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .and_then(|j| j.get("llvm")?.get("path")?.as_str().map(|s| s.to_string()))
             .map(|p| std::path::PathBuf::from(p).join("bin").join(format!("clang{ext}")));
@@ -240,14 +240,14 @@ fn invoke_clang(ll_path: &Path, dll_path: &Path) -> Result<(), String> {
         Ok(out) if out.status.success() => Ok(()),
         Ok(out) => Err(format!("clang failed:\n{}", String::from_utf8_lossy(&out.stderr))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound =>
-            Err("clang not found in PATH (or llvm.path in hv_config.json)".to_string()),
+            Err("clang not found in PATH (or llvm.path in ar_config.json)".to_string()),
         Err(e) => Err(format!("cannot run clang: {e}")),
     }
 }
 
 // ── writers ───────────────────────────────────────────────────────────────────
 
-/// ソーステキストのみを埋め込んだ v0 形式の `.hvc` ファイルを書き出す。
+/// ソーステキストのみを埋め込んだ v0 形式の `.arc` ファイルを書き出す。
 fn write_tlc_v0(source: &str, module_name: &str, path: &Path) -> std::io::Result<()> {
     let name_bytes = module_name.as_bytes();
     let src_bytes = source.as_bytes();
@@ -263,7 +263,7 @@ fn write_tlc_v0(source: &str, module_name: &str, path: &Path) -> std::io::Result
     std::fs::write(path, buf)
 }
 
-/// ソーステキストとネイティブ DLL バイト列を埋め込んだ v1 形式の `.hvc` ファイルを書き出す。
+/// ソーステキストとネイティブ DLL バイト列を埋め込んだ v1 形式の `.arc` ファイルを書き出す。
 fn write_tlc_v1(
     source: &str,
     module_name: &str,
@@ -334,13 +334,13 @@ fn parse_tlc(
     let mut pos = 0;
 
     if data.len() < 4 || &data[..4] != MAGIC {
-        return Err("not a valid .hvc file (bad magic)".into());
+        return Err("not a valid .arc file (bad magic)".into());
     }
     pos += 4;
 
     let version = read_u32(data, &mut pos)?;
     if version > VERSION_V2 {
-        return Err(format!("unsupported .hvc version {version}"));
+        return Err(format!("unsupported .arc version {version}"));
     }
 
     let name_len = read_u32(data, &mut pos)? as usize;
@@ -383,7 +383,7 @@ fn parse_tlc(
 /// バイト列の現在位置から u32 をリトルエンディアンで読み取り、位置を4バイト進める。
 fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, String> {
     if data.len() < *pos + 4 {
-        return Err("unexpected end of .hvc data".into());
+        return Err("unexpected end of .arc data".into());
     }
     let v = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
     *pos += 4;
@@ -393,7 +393,7 @@ fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32, String> {
 /// バイト列の現在位置から `len` バイトのスライスを返し、位置を進める。
 fn read_bytes<'a>(data: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8], String> {
     if data.len() < *pos + len {
-        return Err("unexpected end of .hvc data".into());
+        return Err("unexpected end of .arc data".into());
     }
     let slice = &data[*pos..*pos + len];
     *pos += len;

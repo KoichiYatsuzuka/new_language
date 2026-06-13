@@ -49,21 +49,21 @@ function renderHover(symbol: HoverSymbol, opts?: {
 
     if (symbol.kind === 'variable') {
         const accessPrefix = symbol.access ? `${symbol.access} ` : '';
-        md.appendCodeblock(`${accessPrefix}${mutability} ${symbol.name}: ${symbol.type ?? 'unknown'}`, 'havakyrie');
+        md.appendCodeblock(`${accessPrefix}${mutability} ${symbol.name}: ${symbol.type ?? 'unknown'}`, 'arrow');
         if (opts?.narrowedFrom) md.appendMarkdown(`\n\n*narrowed from* \`${opts.narrowedFrom}\``);
     } else if (symbol.kind === 'function') {
         const baseSig = symbol.signature ?? `fn ${symbol.name}() -> ${symbol.type ?? 'unknown'}`;
-        md.appendCodeblock(symbol.access ? `${symbol.access} ${baseSig}` : baseSig, 'havakyrie');
+        md.appendCodeblock(symbol.access ? `${symbol.access} ${baseSig}` : baseSig, 'arrow');
     } else if (symbol.kind === 'class') {
-        md.appendCodeblock(`class ${symbol.name}`, 'havakyrie');
+        md.appendCodeblock(`class ${symbol.name}`, 'arrow');
     } else if (symbol.kind === 'enum') {
-        md.appendCodeblock(`enum ${symbol.name}`, 'havakyrie');
+        md.appendCodeblock(`enum ${symbol.name}`, 'arrow');
     } else if (symbol.kind === 'trait') {
-        md.appendCodeblock(`trait ${symbol.name}`, 'havakyrie');
+        md.appendCodeblock(`trait ${symbol.name}`, 'arrow');
     } else if (symbol.kind === 'module') {
-        md.appendCodeblock(`${symbol.originalType ?? 'import[py] ?'} as ${symbol.name}`, 'havakyrie');
+        md.appendCodeblock(`${symbol.originalType ?? 'import[py] ?'} as ${symbol.name}`, 'arrow');
     } else {
-        md.appendCodeblock(`new_type ${symbol.name}: ${symbol.originalType ?? 'unknown'}`, 'havakyrie');
+        md.appendCodeblock(`new_type ${symbol.name}: ${symbol.originalType ?? 'unknown'}`, 'arrow');
     }
 
     if (symbol.traits && symbol.traits.length > 0) {
@@ -413,7 +413,7 @@ export async function provideHover(
         if (retType !== undefined) {
             const md = new vscode.MarkdownString(undefined, true);
             const sig = a.importFuncSigs.get(objName)?.get(name) ?? `fn ${name}() -> ${retType}`;
-            md.appendCodeblock(sig, 'havakyrie');
+            md.appendCodeblock(sig, 'arrow');
             return new vscode.Hover(md, range);
         }
 
@@ -424,14 +424,14 @@ export async function provideHover(
                 const fieldType = cppCls.fields.get(name);
                 if (fieldType !== undefined) {
                     const md = new vscode.MarkdownString(undefined, true);
-                    md.appendCodeblock(`${name}: ${fieldType}`, 'havakyrie');
+                    md.appendCodeblock(`${name}: ${fieldType}`, 'arrow');
                     md.appendMarkdown(`\n\n*field of* \`${objSym.type}\``);
                     return new vscode.Hover(md, range);
                 }
                 const methodInfo = cppCls.methods.get(name);
                 if (methodInfo !== undefined) {
                     const md = new vscode.MarkdownString(undefined, true);
-                    md.appendCodeblock(methodInfo.sig, 'havakyrie');
+                    md.appendCodeblock(methodInfo.sig, 'arrow');
                     md.appendMarkdown(`\n\n*method of* \`${objSym.type}\``);
                     return new vscode.Hover(md, range);
                 }
@@ -439,7 +439,7 @@ export async function provideHover(
             const builtinMethod = BUILTIN_TYPE_METHODS[objSym.type]?.[name];
             if (builtinMethod) {
                 const md = new vscode.MarkdownString(undefined, true);
-                md.appendCodeblock(builtinMethod.sig, 'havakyrie');
+                md.appendCodeblock(builtinMethod.sig, 'arrow');
                 return new vscode.Hover(md, range);
             }
         }
@@ -459,7 +459,7 @@ export async function provideHover(
         const cls = findEnclosingClass(document, position.line);
         if (cls) {
             const md = new vscode.MarkdownString(undefined, true);
-            md.appendCodeblock(`type Self = ${cls}`, 'havakyrie');
+            md.appendCodeblock(`type Self = ${cls}`, 'arrow');
             return new vscode.Hover(md, range);
         }
         return undefined;
@@ -489,7 +489,7 @@ export async function provideHover(
         const builtinSig = builtinStub.sigs.get(name);
         if (builtinSig) {
             const md = new vscode.MarkdownString(undefined, true);
-            md.appendCodeblock(builtinSig, 'havakyrie');
+            md.appendCodeblock(builtinSig, 'arrow');
             const doc = builtinStub.docs.get(name);
             if (doc) md.appendMarkdown(`\n\n${doc}`);
             return new vscode.Hover(md, range);

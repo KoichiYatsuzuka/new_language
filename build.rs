@@ -1,7 +1,7 @@
-// build.rs — auto-configures LLVM_SYS_NNN_PREFIX from hv_config.json.
+// build.rs — auto-configures LLVM_SYS_NNN_PREFIX from ar_config.json.
 //
 // When the `llvm` feature is enabled, this script:
-//   1. Reads hv_config.json from the project root.
+//   1. Reads ar_config.json from the project root.
 //   2. Extracts llvm.path and llvm.version (e.g. "22.1.6").
 //   3. Falls back to running `{path}/bin/llvm-config --version` if version is absent.
 //   4. Writes LLVM_SYS_{MAJOR}{MINOR}_PREFIX = "{path}" into .cargo/config.toml.
@@ -17,13 +17,13 @@ fn main() {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
     let root     = std::path::Path::new(&manifest);
 
-    println!("cargo:rerun-if-changed={}", root.join("hv_config.json").display());
+    println!("cargo:rerun-if-changed={}", root.join("ar_config.json").display());
     println!("cargo:rerun-if-changed={}", root.join(".cargo").join("config.toml").display());
 
-    let config_path = root.join("hv_config.json");
+    let config_path = root.join("ar_config.json");
     if !config_path.exists() {
         println!(
-            "cargo:warning=hv_config.json not found. \
+            "cargo:warning=ar_config.json not found. \
              Add {{\"llvm\":{{\"path\":\"C:/Program Files/LLVM\"}}}} or set LLVM_SYS_NNN_PREFIX manually."
         );
         return;
@@ -31,12 +31,12 @@ fn main() {
 
     let json = match std::fs::read_to_string(&config_path) {
         Ok(s)  => s,
-        Err(e) => { println!("cargo:warning=Cannot read hv_config.json: {e}"); return; }
+        Err(e) => { println!("cargo:warning=Cannot read ar_config.json: {e}"); return; }
     };
 
     let llvm_path = match json_str(&json, "llvm", "path") {
         Some(p) => p,
-        None    => { println!("cargo:warning=hv_config.json: missing llvm.path"); return; }
+        None    => { println!("cargo:warning=ar_config.json: missing llvm.path"); return; }
     };
 
     // ── Determine LLVM version ────────────────────────────────────────────────
@@ -51,7 +51,7 @@ fn main() {
             Ok(o)  => String::from_utf8_lossy(&o.stdout).trim().to_string(),
             Err(e) => {
                 println!(
-                    "cargo:warning=llvm-config not found at {} and no version in hv_config.json: {e}",
+                    "cargo:warning=llvm-config not found at {} and no version in ar_config.json: {e}",
                     llvm_config.display()
                 );
                 return;

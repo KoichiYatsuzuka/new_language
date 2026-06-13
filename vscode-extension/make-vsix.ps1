@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $root   = Split-Path $MyInvocation.MyCommand.Path
-$vsix   = Join-Path $root "havakyrie-0.0.1.vsix"
+$vsix   = Join-Path $root "arrow-0.0.1.vsix"
 $tmp    = Join-Path $root "__vsix_build"
 
 # --- clean up any previous run ---
@@ -37,10 +37,10 @@ $manifest = @'
   xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"
   xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Language="en-US" Id="havakyrie" Version="0.0.1" Publisher="havakyrie-publisher"/>
-    <DisplayName>Havakyrie</DisplayName>
-    <Description xml:space="preserve">Coding intelligence for Havakyrie (.hv files)</Description>
-    <Tags>Havakyrie,hv</Tags>
+    <Identity Language="en-US" Id="arrow" Version="0.0.1" Publisher="arrow-publisher"/>
+    <DisplayName>Arrow</DisplayName>
+    <Description xml:space="preserve">Coding intelligence for Arrow (.ar files)</Description>
+    <Tags>Arrow,hv</Tags>
     <Categories>Programming Languages</Categories>
     <GalleryFlags>Public</GalleryFlags>
     <Badges></Badges>
@@ -86,8 +86,8 @@ New-Item -ItemType Directory "$tmp\extension\syntaxes" | Out-Null
 Get-ChildItem "$root\out\*.js" | ForEach-Object {
     Copy-Item $_.FullName "$tmp\extension\out\$($_.Name)"
 }
-Copy-Item "$root\syntaxes\havakyrie.tmLanguage.json" "$tmp\extension\syntaxes\havakyrie.tmLanguage.json"
-Copy-Item "$root\builtins.hvs"       "$tmp\extension\builtins.hvs"
+Copy-Item "$root\syntaxes\arrow.tmLanguage.json" "$tmp\extension\syntaxes\arrow.tmLanguage.json"
+Copy-Item "$root\builtins.ars"       "$tmp\extension\builtins.ars"
 
 # -------------------------------------------------------
 # Zip → .vsix

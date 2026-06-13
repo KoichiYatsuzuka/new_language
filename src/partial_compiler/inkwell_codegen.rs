@@ -6,12 +6,12 @@
 // Pipeline:
 //   AST → inkwell IR builder (in-process) → ExecutionEngine (JIT)
 //       → raw fn pointers  (used immediately by the interpreter)
-//       → LLVM bitcode     (stored in .hvc v2 for cross-session reuse)
+//       → LLVM bitcode     (stored in .arc v2 for cross-session reuse)
 //
-// On `import` with a v2 .hvc:
+// On `import` with a v2 .arc:
 //   bitcode bytes → inkwell Module::parse_bitcode → ExecutionEngine → fn ptrs
 //
-// HvCallbacks ABI and handle semantics are identical to the old codegen.
+// ArCallbacks ABI and handle semantics are identical to the old codegen.
 
 #![cfg(feature = "llvm")]
 
@@ -149,7 +149,7 @@ fn ann_ty(s: Option<&str>) -> Ty {
 
 fn store_ty(t: Ty) -> Ty { if t == Ty::Bool { Ty::Handle } else { t } }
 
-// ── HvCallbacks field indices ─────────────────────────────────────────────────
+// ── ArCallbacks field indices ─────────────────────────────────────────────────
 
 const CB_MAKE_INT:      u32 = 0;
 const CB_MAKE_FLOAT:    u32 = 1;
@@ -190,9 +190,9 @@ struct GenCtx<'ctx> {
     f64:  FloatType<'ctx>,
     ptr:  PointerType<'ctx>,
     void: VoidType<'ctx>,
-    /// %HvCallbacks struct (38 ptr fields)
+    /// %ArCallbacks struct (38 ptr fields)
     cb_ty: StructType<'ctx>,
-    /// @CB global: ptr to HvCallbacks
+    /// @CB global: ptr to ArCallbacks
     cb_global: PointerValue<'ctx>,
 
     // Module-level function metadata
@@ -232,7 +232,7 @@ impl<'ctx> GenCtx<'ctx> {
         let ptr  = ctx.ptr_type(AddressSpace::default());
         let void = ctx.void_type();
 
-        // %HvCallbacks = { ptr × 38 } (must match HvCallbacks in native_api.rs)
+        // %ArCallbacks = { ptr × 38 } (must match ArCallbacks in native_api.rs)
         let fields: Vec<_> = (0..38).map(|_| ptr.as_basic_type_enum()).collect();
         let cb_ty = ctx.struct_type(&fields, false);
 
@@ -262,7 +262,7 @@ impl<'ctx> GenCtx<'ctx> {
         let n = self.counter; self.counter += 1; format!("{prefix}{n}")
     }
 
-    // ── HvCallbacks access ────────────────────────────────────────────────────
+    // ── ArCallbacks access ────────────────────────────────────────────────────
 
     /// Load @CB pointer
     fn load_cb(&self) -> PointerValue<'ctx> {
@@ -1515,18 +1515,18 @@ pub fn compile_jit(stmts: &[crate::ast::Stmt])
         .collect();
 
     let context = Context::create();
-    let module  = context.create_module("hv_native");
+    let module  = context.create_module("ar_native");
 
-    // Emit hv_init: store CB pointer into @CB global
+    // Emit ar_init: store CB pointer into @CB global
     {
         let ptr_t   = context.ptr_type(AddressSpace::default());
         let void_t  = context.void_type();
         let init_ty = void_t.fn_type(&[ptr_t.into()], false);
-        let hv_init = module.add_function("hv_init", init_ty, None);
-        let entry   = context.append_basic_block(hv_init, "entry");
+        let ar_init = module.add_function("ar_init", init_ty, None);
+        let entry   = context.append_basic_block(ar_init, "entry");
         let bld     = context.create_builder();
         bld.position_at_end(entry);
-        let cb_arg   = hv_init.get_first_param().unwrap().into_pointer_value();
+        let cb_arg   = ar_init.get_first_param().unwrap().into_pointer_value();
         let cb_global = module.get_global("CB");
         if let Some(g) = cb_global {
             bld.build_store(cb_arg, g.as_pointer_value()).unwrap();
@@ -1566,7 +1566,7 @@ pub fn compile_jit(stmts: &[crate::ast::Stmt])
 
     eprintln!("NativeLib: JIT compiled {} function(s)", exports.len());
 
-    // Produce bitcode for .hvc embedding
+    // Produce bitcode for .arc embedding
     // (bitcode is also obtainable via get_bitcode() if needed)
 
     let handle = JitHandle::new(context, engine);
@@ -1574,7 +1574,7 @@ pub fn compile_jit(stmts: &[crate::ast::Stmt])
 }
 
 /// Generate LLVM bitcode bytes for the eligible functions.
-/// The bitcode can be stored in a .hvc v2 file and later re-JIT'd via `jit_from_bitcode`.
+/// The bitcode can be stored in a .arc v2 file and later re-JIT'd via `jit_from_bitcode`.
 pub fn get_bitcode(stmts: &[crate::ast::Stmt]) -> Result<(Vec<u8>, Vec<crate::partial_compiler::llvm_codegen::FnExport>), String> {
     use crate::partial_compiler::llvm_codegen::FnExport as LegacyExport;
 
@@ -1629,7 +1629,7 @@ pub fn get_bitcode(stmts: &[crate::ast::Stmt]) -> Result<(Vec<u8>, Vec<crate::pa
         .collect();
 
     let context = Context::create();
-    let module  = context.create_module("hv_native");
+    let module  = context.create_module("ar_native");
     let mut gen = GenCtx::new(&context, &module, module_fns, fn_sigs, all_class_fields);
     for f in &eligible {
         gen.emit_fn(&module, f.name, f.params, f.body);

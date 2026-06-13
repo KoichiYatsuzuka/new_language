@@ -1,7 +1,7 @@
 ﻿# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
 """Partial compiler package stubs (mirrors src/partial_compiler/mod.rs).
 
-The Rust implementation compiles .hv modules to native machine code via LLVM/rustc.
+The Rust implementation compiles .ar modules to native machine code via LLVM/rustc.
 This package is a stub — native compilation is not implemented in Python.
 """
 

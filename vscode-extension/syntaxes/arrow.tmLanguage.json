@@ -1,0 +1,290 @@
+{
+  "name": "Arrow",
+  "scopeName": "source.ar",
+  "fileTypes": ["ar", "ars"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#modifier-member-def" },
+    { "include": "#function-def" },
+    { "include": "#class-def" },
+    { "include": "#new-type-def" },
+    { "include": "#import-decl" },
+    { "include": "#keyword" },
+    { "include": "#constant" },
+    { "include": "#builtin-type" },
+    { "include": "#builtin-func" },
+    { "include": "#constructor-call" },
+    { "include": "#function-call" },
+    { "include": "#operator" },
+    { "include": "#variable" }
+  ],
+  "repository": {
+    "modifier-member-def": {
+      "patterns": [
+        {
+          "comment": "static fn/gen or class_method fn/gen — method definition with a modifier",
+          "match": "\\b(static|class_method)\\s+(fn|gen)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.other.ar" },
+            "2": { "name": "storage.type.function.ar" },
+            "3": { "name": "entity.name.function.ar" }
+          }
+        },
+        {
+          "comment": "static mut/let/const — static field declaration",
+          "match": "\\b(static)\\s+(mut|let|const)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.other.ar" },
+            "2": { "name": "storage.modifier.ar" },
+            "3": { "name": "entity.name.field.ar" }
+          }
+        }
+      ]
+    },
+    "import-decl": {
+      "comment": "Handles all import variants: import[py], import[py-int], import[tl], import[tlc], import[cpp-lib], import[cpp-dll], and bare import",
+      "match": "\\b(import(?:\\[(?:py(?:-int)?|hvc?|cpp-(?:lib|dll))\\])?)\\s+([\\w.]+)(?:\\s+(with)\\s+(\\w+))?(?:\\s+(as)\\s+([A-Za-z_]\\w*))?",
+      "captures": {
+        "1": { "name": "keyword.control.import.ar" },
+        "2": { "name": "entity.name.namespace.ar" },
+        "3": { "name": "keyword.control.import.ar" },
+        "4": { "name": "entity.name.namespace.ar" },
+        "5": { "name": "keyword.control.import.ar" },
+        "6": { "name": "entity.name.type.class.ar" }
+      }
+    },
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.ar"
+    },
+    "string-interpolation": {
+      "name": "meta.template.expression.ar",
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": { "0": { "name": "punctuation.definition.template-expression.begin.ar" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.template-expression.end.ar" } },
+      "patterns": [
+        { "match": "[!:][^}]*", "name": "constant.other.format-spec.ar" },
+        { "include": "#keyword" },
+        { "include": "#constant" },
+        { "include": "#number" },
+        { "include": "#builtin-type" },
+        { "include": "#builtin-func" },
+        { "include": "#constructor-call" },
+        { "include": "#function-call" },
+        { "include": "#operator" },
+        { "include": "#variable" }
+      ]
+    },
+    "string": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.double.ar",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [
+            { "include": "#string-interpolation" },
+            { "include": "#string-escape" }
+          ]
+        },
+        {
+          "name": "string.quoted.triple.single.ar",
+          "begin": "'''",
+          "end": "'''",
+          "patterns": [
+            { "include": "#string-interpolation" },
+            { "include": "#string-escape" }
+          ]
+        },
+        {
+          "name": "string.quoted.double.ar",
+          "begin": "\"(?!\"\")",
+          "end": "\"",
+          "patterns": [
+            { "include": "#string-interpolation" },
+            { "include": "#string-escape" }
+          ]
+        },
+        {
+          "name": "string.quoted.single.ar",
+          "begin": "'(?!'')",
+          "end": "'",
+          "patterns": [
+            { "include": "#string-interpolation" },
+            { "include": "#string-escape" }
+          ]
+        }
+      ]
+    },
+    "string-escape": {
+      "name": "constant.character.escape.ar",
+      "match": "\\\\(\\\\|[nrtbfv'\"0]|x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\\{[^}]+\\}|[0-7]{1,3})"
+    },
+    "number": {
+      "patterns": [
+        { "match": "\\b0[xX][0-9a-fA-F_]+\\b", "name": "constant.numeric.hex.ar" },
+        { "match": "\\b0[oO][0-7_]+\\b", "name": "constant.numeric.octal.ar" },
+        { "match": "\\b0[bB][01_]+\\b", "name": "constant.numeric.binary.ar" },
+        {
+          "match": "\\b[0-9][0-9_]*\\.([0-9_]+([eE][+-]?[0-9_]+)?|[eE][+-]?[0-9_]+)\\b",
+          "name": "constant.numeric.float.ar"
+        },
+        { "match": "\\b[0-9][0-9_]*\\b", "name": "constant.numeric.integer.ar" }
+      ]
+    },
+    "function-def": {
+      "match": "\\b(fn|gen)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "storage.type.function.ar" },
+        "2": { "name": "entity.name.function.ar" }
+      }
+    },
+    "class-def": {
+      "match": "\\b(class|trait|template|dataclass|enum)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "storage.type.class.ar" },
+        "2": { "name": "entity.name.type.class.ar" }
+      }
+    },
+    "new-type-def": {
+      "match": "\\b(new_type)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "storage.type.newtype.ar" },
+        "2": { "name": "entity.name.type.ar" }
+      }
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "match": "\\b(const)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "storage.modifier.ar" },
+            "2": { "name": "variable.other.constant.ar" }
+          }
+        },
+        {
+          "match": "\\b(let|mut|freeze|frozen)\\b",
+          "name": "storage.modifier.ar"
+        },
+        {
+          "match": "\\b(yield from|yield|return|block_return|loop_yield|pass|break|continue|break_point)\\b",
+          "name": "keyword.control.flow.ar"
+        },
+        {
+          "match": "\\b(if|elif|else|match|for|while|block)\\b",
+          "name": "keyword.control.ar"
+        },
+        {
+          "match": "\\b(try|except|finally|raise)\\b",
+          "name": "keyword.control.exception.ar"
+        },
+        {
+          "match": "\\b(import|from|as)\\b",
+          "name": "keyword.control.import.ar"
+        },
+        {
+          "match": "\\b(async|await)\\b",
+          "name": "keyword.control.async.ar"
+        },
+        {
+          "match": "\\b(public|private|protected)\\b",
+          "name": "keyword.other.access.ar"
+        },
+        {
+          "match": "\\b(del|global|nonlocal|with|assert|lambda|new_type|static|class_method)\\b",
+          "name": "keyword.other.ar"
+        },
+        {
+          "match": "\\bnot in\\b",
+          "name": "keyword.control.ar"
+        },
+        {
+          "match": "\\bis not\\b",
+          "name": "keyword.control.ar"
+        },
+        {
+          "match": "\\bin\\b",
+          "name": "keyword.control.ar"
+        },
+        {
+          "match": "\\bis\\b",
+          "name": "keyword.control.ar"
+        },
+        {
+          "match": "\\bnot\\b",
+          "name": "keyword.control.ar"
+        },
+        {
+          "match": "\\b(and|or)\\b",
+          "name": "keyword.operator.logical.ar"
+        }
+      ]
+    },
+    "constant": {
+      "match": "\\b(True|False|None)\\b",
+      "name": "constant.language.ar"
+    },
+    "builtin-type": {
+      "match": "\\b(int|uint|float|str|bool|list|dict|set|tuple|bytes|bytearray|complex|frozenset|object|type|any|Self|Any|Union|Option|Optional|pointer|path|slice)\\b",
+      "name": "support.type.builtin.ar"
+    },
+    "builtin-func": {
+      "patterns": [
+        {
+          "match": "\\b(enumerate|zip)\\b",
+          "name": "support.function.builtin.ar"
+        },
+        {
+          "match": "\\b(print|len|range|map|filter|abs|round|pow|divmod|max|min|sum|all|any|sorted|reversed|isinstance|issubclass|callable|getattr|setattr|hasattr|delattr|repr|input|open|chr|ord|hex|oct|bin|id|hash|dir|vars|globals|locals|iter|next|eval|exec|help|format|super|staticmethod|classmethod|property|slice)\\b",
+          "name": "support.function.builtin.ar"
+        }
+      ]
+    },
+    "constructor-call": {
+      "match": "(?<!\\.)\\b([A-Z][A-Za-z_0-9]*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "entity.name.type.class.ar" }
+      }
+    },
+    "function-call": {
+      "match": "\\b([A-Za-z_]\\w*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.ar" }
+      }
+    },
+    "variable": {
+      "match": "\\b([A-Za-z_]\\w*)\\b",
+      "name": "variable.other.readwrite.ar"
+    },
+    "operator": {
+      "patterns": [
+        {
+          "match": "\\*\\*=|//=|<<=|>>=|[+\\-*/%@&|^]=|:=",
+          "name": "keyword.operator.assignment.augmented.ar"
+        },
+        {
+          "match": "->",
+          "name": "keyword.operator.arrow.ar"
+        },
+        {
+          "match": "=(?!=)",
+          "name": "keyword.operator.assignment.ar"
+        },
+        {
+          "match": "==|!=|<=|>=|<|>",
+          "name": "keyword.operator.comparison.ar"
+        },
+        {
+          "match": "\\*\\*|//|<<|>>",
+          "name": "keyword.operator.arithmetic.ar"
+        },
+        {
+          "match": "[+\\-*/%@&|^~]",
+          "name": "keyword.operator.arithmetic.ar"
+        }
+      ]
+    }
+  }
+}

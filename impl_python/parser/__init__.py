@@ -26,7 +26,7 @@ class ParseError(Exception):
 
 
 class Parser(_ParserStmts, _ParserExprs, _ParserClasses, _ParserImports, _ParserTypes):
-    """Recursive descent parser for Havakyrie source code."""
+    """Recursive descent parser for Arrow source code."""
 
     def __init__(self, tokens: list[Spanned], source_dir: Optional[Path] = None) -> None:
         self._tokens = tokens

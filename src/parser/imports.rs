@@ -38,7 +38,7 @@ impl Parser {
     pub(super) fn parse_import_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `import` を消費
 
-        // `[lang]` を読む。省略時は "tl-auto" (auto-select: prefer .hvc over .hv)
+        // `[lang]` を読む。省略時は "tl-auto" (auto-select: prefer .arc over .ar)
         let lang = if *self.current() == Token::LBracket {
             self.parse_lang_bracket()?
         } else {
@@ -311,12 +311,12 @@ impl Parser {
         version: Option<&str>,
     ) -> Result<Vec<Stmt>, String> {
         match lang {
-            // default (no bracket): prefer .hvc, fall back to .hv
-            "tl-auto" | "hv-auto" => self.load_tl_module(module),
-            // import[hv]: force .hv source, skip .hvc
-            "tl" | "hv" => self.load_tl_source_module(module),
-            // import[hvc]: force .hvc, error if not found
-            "tlc" | "hvc" => self.load_tlc_module(module),
+            // default (no bracket): prefer .arc, fall back to .ar
+            "tl-auto" | "ar-auto" => self.load_tl_module(module),
+            // import[ar]: force .ar source, skip .arc
+            "tl" | "ar" => self.load_tl_source_module(module),
+            // import[arc]: force .arc, error if not found
+            "tlc" | "arc" => self.load_tlc_module(module),
             "py" => self.load_python_module(module),
             // py-int: .pyi を優先し、なければ .py にフォールバック
             // body は型検査専用（実行時は PyO3 経由）
@@ -329,7 +329,7 @@ impl Parser {
 
     /// `import[rs] name[version]` — クレートバインディングをコンパイル・キャッシュし、
     /// 型チェッカ・インタプリタが使う `Stmt::FnDef` スタブを返す。
-    /// `version` が `Some` ならそれを直接使用し、`None` なら `hv_crates.json` を参照する。
+    /// `version` が `Some` ならそれを直接使用し、`None` なら `ar_crates.json` を参照する。
     fn load_rs_module(
         &mut self,
         module: &[String],
@@ -350,9 +350,9 @@ impl Parser {
         let body = crate::partial_compiler::rs_loader::load(&module_name, &search_dirs, version)
             .map_err(|e| format!("import[rs] '{}': {e}", module.join(".")))?;
 
-        // Write .hvs stub so the VS Code extension can provide hover/completion
+        // Write .ars stub so the VS Code extension can provide hover/completion
         let stub_text = crate::partial_compiler::stub_gen::generate_stub(&body);
-        let stub_path = self.source_dir.join(format!("{module_name}.hvs"));
+        let stub_path = self.source_dir.join(format!("{module_name}.ars"));
         let _ = std::fs::write(&stub_path, &stub_text);
 
         self.module_cache.insert(cache_key, body.clone());
@@ -384,17 +384,17 @@ impl Parser {
         Ok(ver)
     }
 
-    /// `.hv` / `.hvc` モジュールをロードして AST を返す。
+    /// `.ar` / `.arc` モジュールをロードして AST を返す。
     ///
     /// 各検索ディレクトリ (`source_dir` → `root_dir`) に対して以下の優先順で試す:
-    /// 1. `module.hvc`         — コンパイル済みモジュール（埋め込みソース付きバイナリ）
-    /// 2. `module.hv`          — ソースファイルモジュール
-    /// 3. `module/__init__.hv` — パッケージモジュール
+    /// 1. `module.arc`         — コンパイル済みモジュール（埋め込みソース付きバイナリ）
+    /// 2. `module.ar`          — ソースファイルモジュール
+    /// 3. `module/__init__.ar` — パッケージモジュール
     fn load_tl_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
-        let tlc_rel = module_base.with_extension("hvc");
-        let file_rel = module_base.with_extension("hv");
-        let init_rel = module_base.join("__init__.hv");
+        let tlc_rel = module_base.with_extension("arc");
+        let file_rel = module_base.with_extension("ar");
+        let init_rel = module_base.join("__init__.ar");
 
         // 検索ディレクトリリスト（source_dir と root_dir が同じなら重複させない）
         let search_dirs: Vec<PathBuf> = {
@@ -403,7 +403,7 @@ impl Parser {
             if a == b { vec![a] } else { vec![a, b] }
         };
 
-        // (パス, コンパイル済みか) の候補リスト — .hvc が .hv より先になる
+        // (パス, コンパイル済みか) の候補リスト — .arc が .ar より先になる
         let candidates: Vec<(PathBuf, bool)> = search_dirs
             .iter()
             .flat_map(|dir| {
@@ -432,7 +432,7 @@ impl Parser {
                 )
             })?;
 
-        let cache_key = ("hv-auto".to_string(), abs_path.clone());
+        let cache_key = ("ar-auto".to_string(), abs_path.clone());
 
         if let Some(body) = self.module_cache.get(&cache_key) {
             return Ok(body.clone());
@@ -445,7 +445,7 @@ impl Parser {
             ));
         }
 
-        // ソースを取得: .hvc はバイナリから埋め込みソースを抽出、.hv は直読み
+        // ソースを取得: .arc はバイナリから埋め込みソースを抽出、.ar は直読み
         let (source, filename) = if is_compiled {
             let (mod_name, src) = crate::partial_compiler::load_tlc(&abs_path)
                 .map_err(|e| format!("cannot load compiled module '{}': {e}", module.join(".")))?;
@@ -481,11 +481,11 @@ impl Parser {
         Ok(body)
     }
 
-    /// `import[hv]`: `.hv` ソースのみをロードする。`.hvc` があっても無視する。
+    /// `import[ar]`: `.ar` ソースのみをロードする。`.arc` があっても無視する。
     fn load_tl_source_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
-        let file_rel = module_base.with_extension("hv");
-        let init_rel = module_base.join("__init__.hv");
+        let file_rel = module_base.with_extension("ar");
+        let init_rel = module_base.join("__init__.ar");
 
         let search_dirs: Vec<PathBuf> = {
             let a = self.source_dir.clone();
@@ -515,7 +515,7 @@ impl Parser {
                 )
             })?;
 
-        let cache_key = ("hv".to_string(), abs_path.clone());
+        let cache_key = ("ar".to_string(), abs_path.clone());
 
         if let Some(body) = self.module_cache.get(&cache_key) {
             return Ok(body.clone());
@@ -550,10 +550,10 @@ impl Parser {
         Ok(body)
     }
 
-    /// `import[hvc]`: `.hvc` コンパイル済みモジュールのみをロードする。`.hv` があっても無視する。
+    /// `import[arc]`: `.arc` コンパイル済みモジュールのみをロードする。`.ar` があっても無視する。
     fn load_tlc_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
         let module_base: PathBuf = module.iter().collect();
-        let tlc_rel = module_base.with_extension("hvc");
+        let tlc_rel = module_base.with_extension("arc");
 
         let search_dirs: Vec<PathBuf> = {
             let a = self.source_dir.clone();
@@ -575,12 +575,12 @@ impl Parser {
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
-                    "cannot find compiled module '{}' (looked at {}; compile with: cargo run --release -- --compile <source.hv>)",
+                    "cannot find compiled module '{}' (looked at {}; compile with: cargo run --release -- --compile <source.ar>)",
                     module.join("."), paths
                 )
             })?;
 
-        let cache_key = ("hvc".to_string(), abs_path.clone());
+        let cache_key = ("arc".to_string(), abs_path.clone());
 
         if let Some(body) = self.module_cache.get(&cache_key) {
             return Ok(body.clone());

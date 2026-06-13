@@ -83,7 +83,7 @@ class CStructDef:
 
 
 def ctype_to_tl_str(ct: CType) -> str:
-    """Return the Havakyrie type string for a CType (mirrors ctype_to_tl_str in exec.rs)."""
+    """Return the Arrow type string for a CType (mirrors ctype_to_tl_str in exec.rs)."""
     match ct:
         case CInt() | CLong():
             return "int"

@@ -1,15 +1,15 @@
-﻿// config.rs — Build configuration loaded from `hv_config.json`.
+﻿// config.rs — Build configuration loaded from `ar_config.json`.
 //
 // Public API:
 //   CppBuildConfig  — struct holding all build options
-//   load_cpp_config — search for and parse hv_config.json
+//   load_cpp_config — search for and parse ar_config.json
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 // ── Default constants ─────────────────────────────────────────────────────────
 
-const CONFIG_FILE_NAME: &str = "hv_config.json";
+const CONFIG_FILE_NAME: &str = "ar_config.json";
 
 pub(crate) const DEFAULT_SYSTEM_LIBS: &[&str] = &[
     "winmm.lib",
@@ -28,7 +28,7 @@ pub(crate) const DEFAULT_TARGET_ARCH: &str = "amd64";
 
 // ── Build config ──────────────────────────────────────────────────────────────
 
-/// `hv_config.json` から読み込まれる C++ ビルド設定。
+/// `ar_config.json` から読み込まれる C++ ビルド設定。
 pub struct CppBuildConfig {
     /// `vcvarsall.bat` への明示パス。`None` の場合は自動検出を使用する。
     pub msvc: Option<PathBuf>,
@@ -76,7 +76,7 @@ impl Default for CppBuildConfig {
 
 // ── Config loader ─────────────────────────────────────────────────────────────
 
-/// `start_dir` から親ディレクトリへと遡りながら `hv_config.json` を検索してロードする。
+/// `start_dir` から親ディレクトリへと遡りながら `ar_config.json` を検索してロードする。
 /// 見つからなければ現在のワーキングディレクトリも確認する。
 pub fn load_cpp_config(start_dir: &Path) -> CppBuildConfig {
     let mut config = CppBuildConfig::default();
@@ -110,7 +110,7 @@ pub fn load_cpp_config(start_dir: &Path) -> CppBuildConfig {
     config
 }
 
-/// `hv_config.json` の内容を最小限の JSON パーサで解析し `config` に設定値を反映する。外部依存なし。
+/// `ar_config.json` の内容を最小限の JSON パーサで解析し `config` に設定値を反映する。外部依存なし。
 fn parse_tl_config_json(content: &str, config: &mut CppBuildConfig) {
     let cpp_block = match extract_json_object(content, "cpp") {
         Some(b) => b,

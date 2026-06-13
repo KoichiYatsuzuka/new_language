@@ -1,4 +1,4 @@
-# Havakyrie 文法リファレンス
+# Arrow 文法リファレンス
 
 各文法要素についての字句解析・構文解析・AST 実行の解説。
 
@@ -32,4 +32,4 @@
 | [for_claude/typing.md](../../for_claude/typing.md) | 型システム実装詳細 |
 | [for_claude/partial_compile.md](../../for_claude/partial_compile.md) | 部分コンパイル実装詳細 |
 | [spec.md](../../spec.md) | 言語仕様概要 (日本語) |
-| [docs/language_comparison.md](../language_comparison.md) | Rust/Python/Havakyrie 比較表 |
+| [docs/language_comparison.md](../language_comparison.md) | Rust/Python/Arrow 比較表 |

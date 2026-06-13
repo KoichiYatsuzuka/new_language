@@ -48,7 +48,7 @@ class TypeChecker(
     _TypeCheckerInfer,
     _TypeCheckerStmts,
 ):
-    """Static type checker for Havakyrie source code."""
+    """Static type checker for Arrow source code."""
 
     def __init__(self) -> None:
         global_scope: dict[str, _VarInfo] = {}

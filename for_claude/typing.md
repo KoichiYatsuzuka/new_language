@@ -1,4 +1,4 @@
-# Havakyrie Type System
+# Arrow Type System
 
 Reference for the static type checker (`src/type_check/`). Describes the internal type representation, annotation syntax, inference rules, compatibility rules, and all error kinds.
 

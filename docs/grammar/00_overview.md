@@ -1,12 +1,12 @@
-# Havakyrie 言語 — パイプライン全体図
+# Arrow 言語 — パイプライン全体図
 
 ## 概要
 
-Havakyrie はインデントベースの静的型付きスクリプト言語です。  
-ソースファイル (`.hv`) はつぎの 4 段階のパイプラインで実行されます。
+Arrow はインデントベースの静的型付きスクリプト言語です。  
+ソースファイル (`.ar`) はつぎの 4 段階のパイプラインで実行されます。
 
 ```
-.hv ファイル
+.ar ファイル
     ↓ ファイル読み込み
 ソーステキスト (String)
     ↓ 字句解析 (Lexer)
@@ -29,9 +29,9 @@ StaticTypeError 一覧  ← 1 件以上あれば実行せずに全件報告し�
 src/main.rs — read_file() / Mode::Run
 ```
 
-- `cargo run -- <file.hv>` または `-src <file.hv>` で起動
+- `cargo run -- <file.ar>` または `-src <file.ar>` で起動
 - `std::fs::read_to_string` でソーステキスト全体を `String` に読み込む
-- `.hvc` (コンパイル済みモジュール) の場合は先頭ヘッダを解析してソーステキストを取り出す
+- `.arc` (コンパイル済みモジュール) の場合は先頭ヘッダを解析してソーステキストを取り出す
 - 標準入力モード (`Mode::Stdin`) では `stdin.read_to_string` を使用
 - エラー時は `stderr` に出力してプロセス終了 (exit code 1)
 
@@ -102,12 +102,12 @@ src/interpreter/ — Interpreter::new() → .exec(stmt)
 ## CLI オプション
 
 ```
-cargo run -- <file.hv>             # 通常実行
-cargo run -- -src <file.hv>        # -src フラグ指定
+cargo run -- <file.ar>             # 通常実行
+cargo run -- -src <file.ar>        # -src フラグ指定
 cargo run -- --repl                # 対話型 REPL
-cargo run -- --compile <file.hv>   # .hvc / .hvs の生成
+cargo run -- --compile <file.ar>   # .arc / .ars の生成
 cargo run --                       # 標準入力から実行
-cargo run -- --key value <file.hv> # ユーザー定義 CLI パラメータ
+cargo run -- --key value <file.ar> # ユーザー定義 CLI パラメータ
 ```
 
 ユーザー定義パラメータは `args["key"]` (dict) としてスクリプト内から参照できます。

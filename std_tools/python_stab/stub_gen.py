@@ -1,6 +1,6 @@
-"""Python → Havakyrie (.hvs) stub file generator.
+"""Python → Arrow (.ars) stub file generator.
 
-Converts a Python source file into a Havakyrie type stub, including:
+Converts a Python source file into a Arrow type stub, including:
 - Free functions with let/mut parameter classification
 - Classes with member declarations and methods
 - Module-level annotated variables and constants
@@ -26,7 +26,7 @@ PRIMITIVE_MAP: dict[str, str] = {
 
 
 def convert_annotation(node: Optional[ast.expr]) -> str:
-    """Convert a Python type annotation AST node to a Havakyrie type string."""
+    """Convert a Python type annotation AST node to a Arrow type string."""
     if node is None:
         return "Any"
     if isinstance(node, ast.Constant):
@@ -79,7 +79,7 @@ def _convert_inner(node: ast.expr) -> str:
 
 
 def _convert_default(node: ast.expr) -> Optional[str]:
-    """Convert a Python default value to a Havakyrie literal. Returns None if too complex."""
+    """Convert a Python default value to a Arrow literal. Returns None if too complex."""
     if isinstance(node, ast.Constant):
         if node.value is None:
             return "None"
@@ -329,7 +329,7 @@ class Analyzer:
         return None
 
     def _param_type_map(self, func: ast.FunctionDef) -> dict[str, str]:
-        """Map param name → Havakyrie type string for all non-self params."""
+        """Map param name → Arrow type string for all non-self params."""
         result: dict[str, str] = {}
         all_params = func.args.posonlyargs + func.args.args
         for p in all_params[1:]:
@@ -539,7 +539,7 @@ class StubGenerator:
 # ─── Public entry point ───────────────────────────────────────────────────────
 
 def generate_stub(path: str) -> str:
-    """Read a Python source file and return its Havakyrie stub as a string."""
+    """Read a Python source file and return its Arrow stub as a string."""
     with open(path, "r", encoding="utf-8-sig") as f:
         source = f.read()
     return StubGenerator(source).generate()

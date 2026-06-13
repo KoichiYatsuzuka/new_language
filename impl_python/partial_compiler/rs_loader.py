@@ -1,7 +1,7 @@
 """Rust crate importer (mirrors src/partial_compiler/rs_loader.rs).
 
 Pipeline:
-  1. find_config()        – read hv_config.json → crates_path
+  1. find_config()        – read ar_config.json → crates_path
   2. find_crate_dir()     – pick versioned directory
   3. prepare_wrapper()    – create temp Cargo project, resolve crate src via `cargo metadata`
   4. scan_all_sigs()      – regex-scan .rs source for pub fn / pub struct
@@ -85,7 +85,7 @@ def is_abi_compatible(t: str) -> bool:
     return bool(_FIXED_BYTE_RE.match(t))
 
 
-def rust_type_to_hv(t: str) -> str:
+def rust_type_to_ar(t: str) -> str:
     t = t.strip()
     if t in {"i8", "i16", "i32", "i64", "i128", "isize",
              "u8", "u16", "u32", "u64", "u128", "usize"}:
@@ -106,7 +106,7 @@ def rust_type_to_hv(t: str) -> str:
 # ---------------------------------------------------------------------------
 
 def find_config(search_dirs: list[Path]) -> list[str]:
-    """Read hv_config.json from the first directory that has one.
+    """Read ar_config.json from the first directory that has one.
 
     Returns crates_path entries as absolute path strings.
     Relative paths in the JSON are resolved relative to the config file's directory.
@@ -118,7 +118,7 @@ def find_config(search_dirs: list[Path]) -> list[str]:
         dirs.append(cwd)
 
     for d in dirs:
-        cfg = d / "hv_config.json"
+        cfg = d / "ar_config.json"
         if not cfg.exists():
             continue
         try:
@@ -146,8 +146,8 @@ def find_config(search_dirs: list[Path]) -> list[str]:
         raise RuntimeError(f"import[rs]: 'rust.crates_path' must be a string or list")
 
     raise RuntimeError(
-        "import[rs]: hv_config.json not found — "
-        "add {\"rust\": {\"crates_path\": \"...\"}} next to your .hv file"
+        "import[rs]: ar_config.json not found — "
+        "add {\"rust\": {\"crates_path\": \"...\"}} next to your .ar file"
     )
 
 
@@ -218,7 +218,7 @@ def prepare_wrapper(crate_dir: Path, stem: str, tmp: Path) -> tuple[Path, str]:
     path_str = stripped.replace("\\", "/")
 
     toml_content = (
-        f'[package]\nname="hv_rs_{stem}"\nversion="0.0.0"\nedition="2021"\n'
+        f'[package]\nname="ar_rs_{stem}"\nversion="0.0.0"\nedition="2021"\n'
         f'[lib]\ncrate-type=["cdylib"]\n'
         f'[dependencies]\n{crate_name}={{path="{path_str}"}}\n'
     )
@@ -769,10 +769,10 @@ def make_stubs(
     for sig in fns:
         params = [
             Param(name=p.name, mutable=False,
-                  type_ann=rust_type_to_hv(p.rust_type), default=None)
+                  type_ann=rust_type_to_ar(p.rust_type), default=None)
             for p in sig.params
         ]
-        ret = rust_type_to_hv(sig.return_type) if sig.return_type else None
+        ret = rust_type_to_ar(sig.return_type) if sig.return_type else None
         stmts.append(StmtFnDef(
             name=sig.name,
             template_params=[],
@@ -803,14 +803,14 @@ def make_stubs(
             class_body.append(StmtField(
                 name=f.name,
                 kind=FieldKind.MUT,
-                type_ann=rust_type_to_hv(f.rust_type),
+                type_ann=rust_type_to_ar(f.rust_type),
                 default=None,
                 access=Accessibility.PUBLIC,
             ))
 
         # __init__
         init_params = [Param("self", mutable=True, type_ann=None, default=None)] + [
-            Param(p.name, mutable=False, type_ann=rust_type_to_hv(p.rust_type), default=None)
+            Param(p.name, mutable=False, type_ann=rust_type_to_ar(p.rust_type), default=None)
             for p in st.ctor_params
         ]
         class_body.append(StmtFnDef(
@@ -842,12 +842,12 @@ def make_stubs(
 
         # Field getter/setter stubs
         for f in st.fields:
-            hv_t = rust_type_to_hv(f.rust_type)
+            ar_t = rust_type_to_ar(f.rust_type)
             class_body.append(StmtFnDef(
                 name=f"get_{f.name}",
                 template_params=[],
                 params=[Param("self", mutable=False, type_ann=None, default=None)],
-                return_type=hv_t,
+                return_type=ar_t,
                 body=[],
                 is_abstract=True,
                 is_static=False,
@@ -860,7 +860,7 @@ def make_stubs(
                 template_params=[],
                 params=[
                     Param("self", mutable=True, type_ann=None, default=None),
-                    Param("value", mutable=False, type_ann=hv_t, default=None),
+                    Param("value", mutable=False, type_ann=ar_t, default=None),
                 ],
                 return_type=None,
                 body=[],
@@ -874,10 +874,10 @@ def make_stubs(
         # Method stubs
         for m in st.methods:
             m_params = [Param("self", mutable=m.self_mutable, type_ann=None, default=None)] + [
-                Param(p.name, mutable=False, type_ann=rust_type_to_hv(p.rust_type), default=None)
+                Param(p.name, mutable=False, type_ann=rust_type_to_ar(p.rust_type), default=None)
                 for p in m.params
             ]
-            ret = rust_type_to_hv(m.return_type) if m.return_type else None
+            ret = rust_type_to_ar(m.return_type) if m.return_type else None
             class_body.append(StmtFnDef(
                 name=m.name,
                 template_params=[],
@@ -919,7 +919,7 @@ const TL_TRUE:  i64 = 1;
 const TL_FALSE: i64 = 2;
 
 #[repr(C)]
-struct HvCallbacks {
+struct ArCallbacks {
     make_int:      unsafe extern "C" fn(i64) -> i64,
     make_float:    unsafe extern "C" fn(f64) -> i64,
     make_bool:     unsafe extern "C" fn(i32) -> i64,
@@ -955,10 +955,10 @@ struct HvCallbacks {
     call_method:   unsafe extern "C" fn(i64, *const u8, i32, *const i64, i32) -> i64,
 }
 
-static mut CB: *const HvCallbacks = std::ptr::null();
+static mut CB: *const ArCallbacks = std::ptr::null();
 
 #[no_mangle]
-pub unsafe extern "C" fn hv_init(cb: *const HvCallbacks) { CB = cb; }
+pub unsafe extern "C" fn ar_init(cb: *const ArCallbacks) { CB = cb; }
 
 #[inline(always)] unsafe fn cb_make_int(n: i64) -> i64   { ((*CB).make_int)(n) }
 #[inline(always)] unsafe fn cb_make_float(f: f64) -> i64  { ((*CB).make_float)(f) }
@@ -1341,7 +1341,7 @@ def compile_cdylib(
     if result.returncode != 0:
         raise RuntimeError(f"import[rs]: cargo build failed:\n{result.stderr}")
 
-    stem = tmp.name  # e.g. "hv_rs_libm"
+    stem = tmp.name  # e.g. "ar_rs_libm"
     lib_prefix = "" if sys.platform == "win32" else "lib"
     ext = native_lib_ext()
     dll_name = f"{lib_prefix}{stem}.{ext}"
@@ -1382,7 +1382,7 @@ def load(
     crate_dir = find_crate_dir(crates_paths, crate_name, version)
 
     stem = crate_name.replace(".", "_").replace("-", "_")
-    tmp = Path(tempfile.gettempdir()) / f"hv_rs_{stem}"
+    tmp = Path(tempfile.gettempdir()) / f"ar_rs_{stem}"
 
     crate_src_dir, crate_ident = prepare_wrapper(crate_dir, stem, tmp)
     fns, structs = scan_all_sigs(crate_src_dir, crate_ident)

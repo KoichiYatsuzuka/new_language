@@ -9,7 +9,7 @@ flag = True
 print(name, age, pi, flag)
 print('=== const ===')
 MAX_ITEMS: Final = 100
-LANG_NAME: Final = 'Havakyrie'
+LANG_NAME: Final = 'Arrow'
 print(MAX_ITEMS, LANG_NAME)
 print('=== mut ===')
 score = 50

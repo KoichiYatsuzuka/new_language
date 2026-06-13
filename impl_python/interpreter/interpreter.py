@@ -1,5 +1,5 @@
 ﻿# git SHA: 72d280d65fc4cfdf05891c5c08c1331617d7e194
-"""Tree-walk interpreter for Havakyrie."""
+"""Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
 import threading
@@ -1908,7 +1908,7 @@ class Interpreter:
 
         The DLL was compiled at parse time and its bytes are cached in
         rs_loader._RS_DLL_CACHE[crate_name].  We write them to a temp file,
-        load via ctypes, call hv_init() to register the Python arena callbacks,
+        load via ctypes, call ar_init() to register the Python arena callbacks,
         then wrap each _tl symbol as a native callable.
         """
         import ctypes
@@ -1916,7 +1916,7 @@ class Interpreter:
         from pathlib import Path
         from ..ast import StmtFnDef, StmtClassDef, StmtField
         from .native_api import (
-            make_hv_callbacks, HvCallbacks,
+            make_ar_callbacks, ArCallbacks,
             alloc_handle, get_handle,
         )
         from .value import TlNamespace, TlClass, TlInstance
@@ -1933,7 +1933,7 @@ class Interpreter:
         # Write DLL bytes to a temp file that persists for the process lifetime
         ext = native_lib_ext()
         stem = crate_name.replace(".", "_").replace("-", "_")
-        tmp_path = Path(tempfile.gettempdir()) / f"hv_rs_{stem}_rt.{ext}"
+        tmp_path = Path(tempfile.gettempdir()) / f"ar_rs_{stem}_rt.{ext}"
         tmp_path.write_bytes(dll_bytes)
 
         try:
@@ -1944,12 +1944,12 @@ class Interpreter:
             ) from e
 
         # Register Python arena callbacks with the DLL
-        cb = make_hv_callbacks()
+        cb = make_ar_callbacks()
         try:
-            hv_init_fn = lib.hv_init
-            hv_init_fn.argtypes = [ctypes.POINTER(HvCallbacks)]
-            hv_init_fn.restype = None
-            hv_init_fn(ctypes.byref(cb))
+            ar_init_fn = lib.ar_init
+            ar_init_fn.argtypes = [ctypes.POINTER(ArCallbacks)]
+            ar_init_fn.restype = None
+            ar_init_fn(ctypes.byref(cb))
         except AttributeError:
             pass
 

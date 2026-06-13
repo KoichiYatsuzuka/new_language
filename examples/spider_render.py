@@ -1,4 +1,4 @@
-"""pygame renderer for Spider Solitaire (spider_solitaire.hv).
+"""pygame renderer for Spider Solitaire (spider_solitaire.ar).
 
 Requires: pip install pygame
 

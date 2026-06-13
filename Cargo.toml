@@ -1,5 +1,5 @@
 [package]
-name = "havakyrie"
+name = "arrow"
 version = "0.1.0"
 edition = "2021"
 
@@ -16,7 +16,7 @@ inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", feat
 [features]
 default = []
 # Enable LLVM JIT native compilation.
-# Install LLVM 22 (winget install LLVM.LLVM), add hv_config.json with
+# Install LLVM 22 (winget install LLVM.LLVM), add ar_config.json with
 # {"llvm":{"path":"C:/Program Files/LLVM"}}, then run `cargo build --features llvm`
 # twice: first run writes .cargo/config.toml, second run compiles with LLVM.
 llvm = ["dep:inkwell"]

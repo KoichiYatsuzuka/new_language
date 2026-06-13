@@ -9,8 +9,8 @@ def main() -> None:
     args = sys.argv[1:]
 
     if not args:
-        print("Usage: python -m impl_python [-src] <file.hv>", file=sys.stderr)
-        print("       python -m impl_python --compile <file.hv>", file=sys.stderr)
+        print("Usage: python -m impl_python [-src] <file.ar>", file=sys.stderr)
+        print("       python -m impl_python --compile <file.ar>", file=sys.stderr)
         print("       python -m impl_python --repl", file=sys.stderr)
         sys.exit(1)
 

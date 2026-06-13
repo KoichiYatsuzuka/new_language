@@ -1,0 +1,294 @@
+# importation.ar — demonstrates all import styles and qualifiers.
+#
+# Import styles:
+#   import             — auto: prefers .arc if present, falls back to .ar
+#   import[ar]         — force .ar source (tree-walk, ignores .arc)
+#   import[arc]        — force .arc compiled (error if no .arc exists)
+#   import[py-int]     — Python module with integer conversion
+#   import[rs]         — Rust crate (auto-discovered from ar_config.json rust.crates_path)
+#   from … import      — selective import from a .ar module
+#   subdir.module      — subdirectory .ar module
+#
+# Prerequisites for section 1 (physics benchmark):
+#   cargo run --release -- --compile examples/test_modules/physics.ar
+
+import[py-int] time
+
+# ── 1. Physics benchmark: native class-method dispatch ─────────────────────────
+#
+# Compares three execution paths for a Body class with four method calls per
+# loop iteration (potential, vel_dot, kinetic×2):
+#   import[ar]  — always tree-walk interpreter
+#   import      — auto-selects native DLL (.arc) when available
+# Inline baseline pre-reads fields as local floats — upper speed bound.
+
+import[ar]  test_modules.physics as interp_mod
+import      test_modules.physics as native_mod
+
+const N: int = 7_000_000
+
+print("=== Physics benchmark  N =", N, " ===")
+print("  Loop body: potential(other) + vel_dot(other) + kinetic() + kinetic()")
+print("  = 4 method calls per iteration, ~40 callbacks per iteration in method bodies")
+print()
+
+let a_n = native_mod.Body(1.0,  2.0,  3.0,   0.5, -0.3, 0.7, 2.0)
+let b_n = native_mod.Body(-1.0, 0.5, -2.0,  -0.2,  0.8, 0.1, 3.0)
+let a_i = interp_mod.Body(1.0,  2.0,  3.0,   0.5, -0.3, 0.7, 2.0)
+let b_i = interp_mod.Body(-1.0, 0.5, -2.0,  -0.2,  0.8, 0.1, 3.0)
+
+print("Running NATIVE (method bodies compiled, dispatch native) ...")
+let t0: float = time.time()
+let r_native: float = native_mod.total_energy(a_n, b_n, N)
+let t1: float = time.time()
+let t_native: float = t1 - t0
+print("  result:", r_native, "  time:", t_native, "s")
+print()
+
+print("Running INTERPRETED (all method calls through tree-walker) ...")
+let t2: float = time.time()
+let r_interp: float = interp_mod.total_energy(a_i, b_i, N)
+let t3: float = time.time()
+let t_interp: float = t3 - t2
+print("  result:", r_interp, "  time:", t_interp, "s")
+print()
+
+print("Running INLINE baseline (typed float fields pre-read, native loop) ...")
+let t4: float = time.time()
+let r_inline: float = native_mod.total_energy_inline(a_n, b_n, N)
+let t5: float = time.time()
+let t_inline: float = t5 - t4
+print("  result:", r_inline, "  time:", t_inline, "s")
+print()
+
+print("=== Summary ===")
+if t_native > 0.0:
+    print("  Speedup (native methods vs interp):", t_interp / t_native, "x")
+if t_inline > 0.0:
+    print("  Speedup (inline float vs interp)  :", t_interp / t_inline, "x")
+    print("  Speedup (inline float vs native)  :", t_native / t_inline, "x")
+print()
+print("  [native]  loop compiled, method bodies run as native DLL code via CB_GET_ATTR/CB_BINOP callbacks")
+print("  [inline]  loop + all arithmetic compiled — upper bound (no callbacks for fields)")
+print()
+
+# ── 2. import[py-int] — pandas ───────────────────────────────────────────────
+
+import[py-int] warnings as w
+w.simplefilter("ignore")   # suppress pandas CoW FutureWarning
+
+import[py-int] pandas as pd
+
+mut df = pd.DataFrame({
+    "name":  ["Alice", "Bob", "Charlie", "Diana", "Eve"],
+    "age":   [25, 30, 35, 28, 22],
+    "score": [85, 92, 78, 95, 88]
+})
+
+print("=== DataFrame ===")
+print(df)
+print("shape:", df.shape)
+print("rows :", len(df))
+
+let scores = df["score"]
+print("score mean:", scores.mean())
+print("score max :", scores.max())
+print("describe  :")
+print(df.describe())
+
+let mask = scores > 88
+let high = df[mask]
+print("score > 88 rows:")
+print(high)
+
+df["pass"] = df["score"] >= 85
+print("with pass column:")
+print(df)
+
+print("score values:")
+for v in scores:
+    print(v)
+
+let sorted_df = df.sort_values("score", ascending=False)
+print("top 3 by score:")
+print(sorted_df.head(3))
+
+# ── 3. import[py-int] — PyObject operators and iteration ─────────────────────
+
+import[py-int] test_modules.py_calculator as calc
+
+# binary operators
+let c = calc.make_container([1, 2])
+let c2 = c * 3               # Container.__mul__
+print(len(c2))               # 6
+
+let c3 = 3 * c               # Container.__rmul__
+print(len(c3))               # 6
+
+let a = calc.make_container([1, 2])
+let b = calc.make_container([3, 4, 5])
+let ab = a + b               # Container.__add__
+print(len(ab))               # 5
+
+mut total = 0
+for v in ab:
+    total += v
+print(total)                 # 15
+
+# iteration
+let c_iter = calc.make_container([10, 20, 30, 40])
+mut sum_iter = 0
+for x in c_iter:
+    sum_iter += x
+print(sum_iter)              # 100
+
+let outer = calc.make_container([1, 2, 3])
+mut result = 0
+for v2 in outer:
+    result += v2 * 10
+print(result)                # 60
+
+# ── 4. import / from … import — .ar module ───────────────────────────────────
+
+import test_modules.tl_math as tm
+
+let tl_result: int = tm.add(3, 4)
+print(tl_result)
+
+let msg: str = tm.greet("World")
+print(msg)
+
+print(tm.PI)
+
+from test_modules.tl_math import add, greet
+
+let r2: int = add(10, 20)
+print(r2)
+
+let m2: str = greet("TL")
+print(m2)
+
+import geometry as geo
+
+let area_a: float = geo.area_circle(5.0)
+print(area_a)
+
+let area_b: float = geo.area_rect(3.0, 4.0)
+print(area_b)
+
+print(geo.DIMS)
+
+# subdirectory module — dot-separated path components map to filesystem subdirs
+import subdir.sub_module as sub
+
+let sub_result: int = sub.compute(10, 32)
+print(sub_result)
+print(sub.LABEL)
+
+# ── 5. import[rs] — Rust crates ──────────────────────────────────────────────
+#
+# Crates are auto-discovered from rust.crates_path in ar_config.json.
+# Only pub fn / pub struct with primitive-type signatures are wrapped.
+
+# libm — pure-Rust math library
+import[rs] libm[0.2]
+
+let pi: float = 3.141592653589793
+
+print("=== libm ===")
+print(f"sin(pi/2)   = {libm.sin(pi / 2.0)}")
+print(f"cos(0)      = {libm.cos(0.0)}")
+print(f"sqrt(2)     = {libm.sqrt(2.0)}")
+print(f"pow(2, 10)  = {libm.pow(2.0, 10.0)}")
+print(f"log(e)      = {libm.log(2.718281828459045)}")
+print(f"exp(1)      = {libm.exp(1.0)}")
+print(f"fabs(-3.14) = {libm.fabs(-3.14)}")
+print(f"floor(2.9)  = {libm.floor(2.9)}")
+print(f"ceil(2.1)   = {libm.ceil(2.1)}")
+
+# rand — random number generation (ABI-compatible subset)
+#   random_bool(p: float) -> bool  — true with probability p
+#   random_ratio(n: int, d: int)   -> bool  — true with probability n/d
+import[rs] rand
+
+print("=== rand ===")
+mut ri = 0
+while ri < 5:
+    print(f"  coin={rand.random_bool(0.5)}  one_in_six={rand.random_ratio(1, 6)}")
+    ri += 1
+
+# sha2 — SHA-256/512 hashing (Digest-trait pattern: pub type Sha256 = CoreWrapper<...>)
+import[rs] sha2
+
+let hmsg = "hello, world"
+print("=== sha2 ===")
+let h256: str = sha2.sha256(hmsg)
+print(f"SHA-256({hmsg}) = {h256}")
+let h512: str = sha2.sha512(hmsg)
+print(f"SHA-512({hmsg}) = {h512}")
+
+# ── 6. import[rs] with struct — vec2 ─────────────────────────────────────────
+#
+# `vec2` is a local crate under examples/rs_crates/vec2/.
+# Demonstrates:
+#   pub struct Vec2 { pub x: f64, pub y: f64 }  → Arrow class
+#   pub fn new(x, y) -> Self                     → __init__
+#   pub fn length(&self) -> f64                  → instance method
+#   pub fn dot(&self, ox, oy) -> f64             → instance method with extra args
+#   pub fn scale(&mut self, f)                   → mutable instance method
+#   pub fn add(&self, ox, oy) -> Vec2            → method returning a struct
+#   pub fn scaled(&self, f) -> Vec2              → method returning a struct
+#   pub x: f64                                   → field cached on the HV instance
+#   get_x / set_x                                → generated accessors
+#   pub fn distance(...)                         → free function
+
+import[rs] vec2
+
+print("=== Rust struct: Vec2 ===")
+
+let v = vec2.Vec2(3.0, 4.0)
+print("v.x =", v.x, "  v.y =", v.y)           # fields cached by __init__
+
+let L = v.length()
+print("length() =", L)                         # 5.0
+
+let lsq = v.length_sq()
+print("length_sq() =", lsq)                    # 25.0
+
+let d = v.dot(1.0, 0.0)
+print("dot((1,0)) =", d)                       # 3.0
+
+mut v2 = vec2.Vec2(1.0, 2.0)
+v2.scale(3.0)
+print("after scale(3):", v2.get_x(), v2.get_y())   # 3.0, 6.0
+
+mut v3 = vec2.Vec2(3.0, 4.0)
+v3.normalize()
+print("after normalize: (", v3.get_x(), ",", v3.get_y(), ")")  # 0.6, 0.8
+print("length after normalize =", v3.length())                  # 1.0
+
+mut v4 = vec2.Vec2(0.0, 0.0)
+v4.set_x(5.0)
+v4.set_y(12.0)
+print("after set_x(5), set_y(12): length =", v4.length())      # 13.0
+
+let dist = vec2.distance(0.0, 0.0, 3.0, 4.0)
+print("distance(0,0 → 3,4) =", dist)                           # 5.0
+
+# Methods returning a struct — the DLL extracts the result's fields, then calls
+# cb_call_fn(Vec2_class, [x, y]) which triggers Vec2.__init__ natively.
+let v5 = vec2.Vec2(1.0, 2.0)
+let v6 = v5.add(4.0, 5.0)
+print("v5.add(4,5):", v6.get_x(), v6.get_y())                  # 5.0, 7.0
+print("v6 length =", v6.length())                               # ≈ 8.602
+
+let v7 = v5.scaled(3.0)
+print("v5.scaled(3):", v7.get_x(), v7.get_y())                 # 3.0, 6.0
+
+print("v5 unchanged:", v5.get_x(), v5.get_y())                 # 1.0, 2.0
+
+let v8 = v5.add(1.0, 0.0).scaled(2.0)
+print("chain add+scaled:", v8.get_x(), v8.get_y())             # 4.0, 4.0
+
+v2.drop()
+print("v2 dropped")

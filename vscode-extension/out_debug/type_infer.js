@@ -35,28 +35,28 @@ function renderHover(symbol, opts) {
     const mutability = (opts === null || opts === void 0 ? void 0 : opts.isFrozen) ? 'frozen' : ((_a = symbol.mutability) !== null && _a !== void 0 ? _a : 'value');
     if (symbol.kind === 'variable') {
         const accessPrefix = symbol.access ? `${symbol.access} ` : '';
-        md.appendCodeblock(`${accessPrefix}${mutability} ${symbol.name}: ${(_b = symbol.type) !== null && _b !== void 0 ? _b : 'unknown'}`, 'havakyrie');
+        md.appendCodeblock(`${accessPrefix}${mutability} ${symbol.name}: ${(_b = symbol.type) !== null && _b !== void 0 ? _b : 'unknown'}`, 'arrow');
         if (opts === null || opts === void 0 ? void 0 : opts.narrowedFrom)
             md.appendMarkdown(`\n\n*narrowed from* \`${opts.narrowedFrom}\``);
     }
     else if (symbol.kind === 'function') {
         const baseSig = (_c = symbol.signature) !== null && _c !== void 0 ? _c : `fn ${symbol.name}() -> ${(_d = symbol.type) !== null && _d !== void 0 ? _d : 'unknown'}`;
-        md.appendCodeblock(symbol.access ? `${symbol.access} ${baseSig}` : baseSig, 'havakyrie');
+        md.appendCodeblock(symbol.access ? `${symbol.access} ${baseSig}` : baseSig, 'arrow');
     }
     else if (symbol.kind === 'class') {
-        md.appendCodeblock(`class ${symbol.name}`, 'havakyrie');
+        md.appendCodeblock(`class ${symbol.name}`, 'arrow');
     }
     else if (symbol.kind === 'enum') {
-        md.appendCodeblock(`enum ${symbol.name}`, 'havakyrie');
+        md.appendCodeblock(`enum ${symbol.name}`, 'arrow');
     }
     else if (symbol.kind === 'trait') {
-        md.appendCodeblock(`trait ${symbol.name}`, 'havakyrie');
+        md.appendCodeblock(`trait ${symbol.name}`, 'arrow');
     }
     else if (symbol.kind === 'module') {
-        md.appendCodeblock(`${(_e = symbol.originalType) !== null && _e !== void 0 ? _e : 'import[py] ?'} as ${symbol.name}`, 'havakyrie');
+        md.appendCodeblock(`${(_e = symbol.originalType) !== null && _e !== void 0 ? _e : 'import[py] ?'} as ${symbol.name}`, 'arrow');
     }
     else {
-        md.appendCodeblock(`new_type ${symbol.name}: ${(_f = symbol.originalType) !== null && _f !== void 0 ? _f : 'unknown'}`, 'havakyrie');
+        md.appendCodeblock(`new_type ${symbol.name}: ${(_f = symbol.originalType) !== null && _f !== void 0 ? _f : 'unknown'}`, 'arrow');
     }
     if (symbol.traits && symbol.traits.length > 0) {
         md.appendMarkdown(`\n\nImplements: ${symbol.traits.map(t => `\`${t}\``).join(', ')}`);
@@ -404,7 +404,7 @@ async function provideHover(document, position) {
         if (retType !== undefined) {
             const md = new vscode.MarkdownString(undefined, true);
             const sig = (_c = (_b = a.importFuncSigs.get(objName)) === null || _b === void 0 ? void 0 : _b.get(name)) !== null && _c !== void 0 ? _c : `fn ${name}() -> ${retType}`;
-            md.appendCodeblock(sig, 'havakyrie');
+            md.appendCodeblock(sig, 'arrow');
             return new vscode.Hover(md, range);
         }
         const objSym = (0, analysis_1.selectHoverSymbol)(a.symbols, objName, position.line);
@@ -414,14 +414,14 @@ async function provideHover(document, position) {
                 const fieldType = cppCls.fields.get(name);
                 if (fieldType !== undefined) {
                     const md = new vscode.MarkdownString(undefined, true);
-                    md.appendCodeblock(`${name}: ${fieldType}`, 'havakyrie');
+                    md.appendCodeblock(`${name}: ${fieldType}`, 'arrow');
                     md.appendMarkdown(`\n\n*field of* \`${objSym.type}\``);
                     return new vscode.Hover(md, range);
                 }
                 const methodInfo = cppCls.methods.get(name);
                 if (methodInfo !== undefined) {
                     const md = new vscode.MarkdownString(undefined, true);
-                    md.appendCodeblock(methodInfo.sig, 'havakyrie');
+                    md.appendCodeblock(methodInfo.sig, 'arrow');
                     md.appendMarkdown(`\n\n*method of* \`${objSym.type}\``);
                     return new vscode.Hover(md, range);
                 }
@@ -429,7 +429,7 @@ async function provideHover(document, position) {
             const builtinMethod = (_d = builtins_1.BUILTIN_TYPE_METHODS[objSym.type]) === null || _d === void 0 ? void 0 : _d[name];
             if (builtinMethod) {
                 const md = new vscode.MarkdownString(undefined, true);
-                md.appendCodeblock(builtinMethod.sig, 'havakyrie');
+                md.appendCodeblock(builtinMethod.sig, 'arrow');
                 return new vscode.Hover(md, range);
             }
         }
@@ -448,7 +448,7 @@ async function provideHover(document, position) {
         const cls = findEnclosingClass(document, position.line);
         if (cls) {
             const md = new vscode.MarkdownString(undefined, true);
-            md.appendCodeblock(`type Self = ${cls}`, 'havakyrie');
+            md.appendCodeblock(`type Self = ${cls}`, 'arrow');
             return new vscode.Hover(md, range);
         }
         return undefined;
@@ -476,7 +476,7 @@ async function provideHover(document, position) {
         const builtinSig = analysis_1.builtinStub.sigs.get(name);
         if (builtinSig) {
             const md = new vscode.MarkdownString(undefined, true);
-            md.appendCodeblock(builtinSig, 'havakyrie');
+            md.appendCodeblock(builtinSig, 'arrow');
             const doc = analysis_1.builtinStub.docs.get(name);
             if (doc)
                 md.appendMarkdown(`\n\n${doc}`);

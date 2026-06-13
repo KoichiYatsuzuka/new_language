@@ -1,6 +1,6 @@
 # Importation — Implementation Reference
 
-This document describes how module importation works in the Havakyrie Rust implementation, derived directly from the source code.
+This document describes how module importation works in the Arrow Rust implementation, derived directly from the source code.
 
 ---
 
@@ -19,8 +19,8 @@ Type checking (`src/type_check/stmt.rs`) reads the `body` AST directly to collec
 
 ```hv
 import module.path                    # tl-auto (default)
-import[hv]  module.path              # force .hv source
-import[hvc] module.path              # force .hvc compiled
+import[ar]  module.path              # force .ar source
+import[arc] module.path              # force .arc compiled
 import[py]  module.path              # Python source
 import[py-int] module.path           # Python type stubs (runtime via PyO3)
 import[rs]  crate_name               # Rust crate
@@ -39,7 +39,7 @@ from module import[lang] Name1, Name2 as N2
 
 ```
 Stmt::Import {
-    lang:      String,              // "tl-auto" | "hv" | "hvc" | "py" | "py-int" | "rs" | "cpp-dll" | ...
+    lang:      String,              // "tl-auto" | "ar" | "arc" | "py" | "py-int" | "rs" | "cpp-dll" | ...
     module:    Vec<String>,         // dotted path segments, e.g. ["os", "path"]
     with_file: Option<String>,      // header path for cpp-dll/cpp-lib only
     alias:     Option<String>,      // as alias
@@ -55,7 +55,7 @@ Stmt::FromImport {
 }
 ```
 
-`body` is populated during parsing by `load_module()`. By the time the interpreter sees the node, the module has already been loaded and parsed — no further I/O is needed at runtime for `.hv` / `.hvc` / `.py` modules.
+`body` is populated during parsing by `load_module()`. By the time the interpreter sees the node, the module has already been loaded and parsed — no further I/O is needed at runtime for `.ar` / `.arc` / `.py` modules.
 
 ---
 
@@ -64,12 +64,12 @@ Stmt::FromImport {
 ```
 lang         → loader
 ──────────────────────────────────────────────
-"tl-auto"    → load_tl_module        prefer .hvc, fallback to .hv
-"hv-auto"    → load_tl_module        (alias)
-"tl"         → load_tl_source_module force .hv, skip .hvc
-"hv"         → load_tl_source_module (alias)
-"tlc"        → load_tlc_module       force .hvc, error if absent
-"hvc"        → load_tlc_module       (alias)
+"tl-auto"    → load_tl_module        prefer .arc, fallback to .ar
+"ar-auto"    → load_tl_module        (alias)
+"tl"         → load_tl_source_module force .ar, skip .arc
+"ar"         → load_tl_source_module (alias)
+"tlc"        → load_tlc_module       force .arc, error if absent
+"arc"        → load_tlc_module       (alias)
 "py"         → load_python_module    Python source → converter → AST
 "py-int"     → load_python_interface_module  .pyi → .py → empty on miss
 "rs"         → load_rs_module        compile Rust crate → stub AST
@@ -79,23 +79,23 @@ lang         → loader
 
 ---
 
-## `.hv` / `.hvc` Module Resolution (`load_tl_module`, imports.rs:388)
+## `.ar` / `.arc` Module Resolution (`load_tl_module`, imports.rs:388)
 
 Search directories: `source_dir` first, then `root_dir` (deduplicated when identical).
 
 For each directory, candidates are tried in this order:
 
 ```
-1. {dir}/{module_path}.hvc    ← compiled module (preferred)
-2. {dir}/{module_path}.hv     ← plain source
-3. {dir}/{module_path}/__init__.hv  ← package
+1. {dir}/{module_path}.arc    ← compiled module (preferred)
+2. {dir}/{module_path}.ar     ← plain source
+3. {dir}/{module_path}/__init__.ar  ← package
 ```
 
 The first candidate that `exists()` wins.
 
-**If `.hvc`**: calls `partial_compiler::load_tlc()` to extract the embedded source text (and cache native bytes in a thread-local if v1/v2). The filename label becomes `<compiled:ModuleName>`.
+**If `.arc`**: calls `partial_compiler::load_tlc()` to extract the embedded source text (and cache native bytes in a thread-local if v1/v2). The filename label becomes `<compiled:ModuleName>`.
 
-**If `.hv`**: reads the file directly with `fs::read_to_string`.
+**If `.ar`**: reads the file directly with `fs::read_to_string`.
 
 Either way, the source is tokenized and a new `Parser` is created with:
 - `source_dir` = directory of the resolved file
@@ -105,9 +105,9 @@ After parsing, the child's `module_cache` is merged back into the parent.
 
 **Circular import detection**: `self.loading` is a `HashSet<PathBuf>`. Before parsing a module, its absolute path is inserted; it is removed after parsing completes. If a path is already in `loading`, an error is returned immediately.
 
-**Cache key**: `("hv-auto", abs_path)` for tl-auto, `("hv", abs_path)` for forced source, `("hvc", abs_path)` for forced compiled.
+**Cache key**: `("ar-auto", abs_path)` for tl-auto, `("ar", abs_path)` for forced source, `("arc", abs_path)` for forced compiled.
 
-`load_tl_source_module` and `load_tlc_module` are identical to `load_tl_module` but skip `.hvc` or skip `.hv` respectively.
+`load_tl_source_module` and `load_tlc_module` are identical to `load_tl_module` but skip `.arc` or skip `.ar` respectively.
 
 ---
 
@@ -152,7 +152,7 @@ import[rs] sha2           # RustCrypto hash crate (digest pattern auto-detected)
 
 #### Step 1 — Find crate source (`find_config`, rs_loader.rs:202)
 
-Looks for `hv_config.json` in `source_dir` and `root_dir`. Reads the `rust.crates_path` key, which may be a single string or an array of strings.
+Looks for `ar_config.json` in `source_dir` and `root_dir`. Reads the `rust.crates_path` key, which may be a single string or an array of strings.
 
 ```json
 {
@@ -170,10 +170,10 @@ Returns a `CrateSource::LocalPath` pointing to the resolved crate directory.
 
 #### Step 2 — Prepare wrapper project (`prepare_wrapper`, rs_loader.rs:335)
 
-Creates a temporary Cargo project in `$TMPDIR/hv_rs_{stem}/`:
+Creates a temporary Cargo project in `$TMPDIR/ar_rs_{stem}/`:
 
 ```
-hv_rs_{stem}/
+ar_rs_{stem}/
 ├── Cargo.toml   — package + [lib] crate-type=["cdylib"] + dependency on target crate
 └── src/
     └── lib.rs   — placeholder (overwritten later)
@@ -223,7 +223,7 @@ If `lib.rs` re-exports `digest::Digest`, synthesises one-shot hash functions for
 
 Writes an auto-generated `lib.rs` to the temp project. The generated code:
 
-- Declares a `HvCallbacks` struct and a `static mut CB` pointer (set via `hv_init()`).
+- Declares a `ArCallbacks` struct and a `static mut CB` pointer (set via `ar_init()`).
 - For each **free function**: exports `{fn_name}_tl(args: *const i64, n: i32) -> i64`. Decodes handles to Rust types, calls the real function, encodes the return value back to a handle.
 - For each **struct**: 
   - One static `OnceLock<Mutex<HashMap<i64, StructName>>>` arena + atomic counter.
@@ -244,9 +244,9 @@ Returns `Vec<Stmt>` stubs (`make_stubs`, rs_loader.rs:1035):
 
 These stubs are embedded in `Stmt::Import.body` and used by the type checker and runtime.
 
-### Type mapping (Rust → Havakyrie)
+### Type mapping (Rust → Arrow)
 
-| Rust type | Havakyrie type |
+| Rust type | Arrow type |
 |-----------|---------------|
 | `i*`, `u*`, `isize`, `usize` | `int` |
 | `f32`, `f64` | `float` |
@@ -264,7 +264,7 @@ States:
 - `ModuleState::Loading` — set before execution to catch circular imports at runtime
 - `ModuleState::Loaded(NamespaceData)` — cached after first execution
 
-**For `.hv` / `.hvc` / `py` imports**: runs the body AST in a fresh scope, collects all declared top-level variables as `NamespaceData.members`.
+**For `.ar` / `.arc` / `py` imports**: runs the body AST in a fresh scope, collects all declared top-level variables as `NamespaceData.members`.
 
 **For `rs` and `hvc` (v1) imports**: calls `take_native_bytes()` to dequeue the DLL bytes cached by the parser, writes them to a temp file, loads via `libloading::Library::new()`. Then for each `FnDef` in the body, looks up the symbol `{fn_name}_tl` in the loaded library and replaces the tree-walk `Value::Function` with a `Value::NativeFnRef`. For each `ClassDef`, registers methods via `register_native_method()`.
 
@@ -301,12 +301,12 @@ At runtime, `exec.rs` dispatches to the C/C++ bridge for actual calls (not via `
 | AST node definitions | `src/ast.rs` | ~688–722 |
 | Import parsing entry points | `src/parser/imports.rs` | 38–81, 215–264 |
 | Module loader dispatch | `src/parser/imports.rs` | 306–328 |
-| `.hv`/`.hvc` file resolution | `src/parser/imports.rs` | 388–611 |
+| `.ar`/`.arc` file resolution | `src/parser/imports.rs` | 388–611 |
 | Python loading | `src/parser/imports.rs` | 614–726 |
 | Rust crate loader entry | `src/partial_compiler/rs_loader.rs` | 98–198 |
 | ABI compatibility check | `src/partial_compiler/rs_loader.rs` | 946–965 |
 | Wrapper code generator | `src/partial_compiler/rs_loader.rs` | 1293–1675 |
-| `.hvc` binary format | `src/partial_compiler/module_compiler.rs` | ~1–170 |
+| `.arc` binary format | `src/partial_compiler/module_compiler.rs` | ~1–170 |
 | Runtime module execution | `src/interpreter/exec.rs` | ~1321–1627 |
 | Python interop runtime | `src/interpreter/py_interop.rs` | ~143–184 |
 | Type checker import handling | `src/type_check/stmt.rs` | ~553–576 |

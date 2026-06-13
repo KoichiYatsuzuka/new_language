@@ -2,7 +2,7 @@
 """ctypes-based DLL loader and value marshaling for cpp-dll / cpp-lib imports.
 
 Replaces the Rust 'generate wrapper DLL + compile' approach with direct ctypes
-dispatch: Python's ctypes handles Havakyrie value ↔ C type conversion natively,
+dispatch: Python's ctypes handles Arrow value ↔ C type conversion natively,
 so no intermediate Rust wrapper is needed.
 """
 from __future__ import annotations
@@ -48,7 +48,7 @@ def _to_ctypes(ct: CType):
 # ── Value → C argument conversion ────────────────────────────────────────────
 
 def _value_to_c(v: object, ct: CType) -> object:
-    """Convert a Havakyrie runtime value to a ctypes-compatible C argument."""
+    """Convert a Arrow runtime value to a ctypes-compatible C argument."""
     match ct:
         case CInt() | CBool():
             if isinstance(v, bool):
@@ -106,7 +106,7 @@ def _value_to_c(v: object, ct: CType) -> object:
 
 
 def _c_to_value(result: object, ct: CType) -> object:
-    """Convert a ctypes return value to a Havakyrie runtime value."""
+    """Convert a ctypes return value to a Arrow runtime value."""
     match ct:
         case CInt() | CLong():
             if result is None:
@@ -171,7 +171,7 @@ class _MutPtrBox:
 def _make_ctypes_wrapper(lib: ctypes.CDLL, sig: CFnSig) -> Optional[Callable]:
     """Build a Python callable that calls sig.name in lib via ctypes.
 
-    The wrapper takes (args: list, kwargs: dict) and returns a Havakyrie value.
+    The wrapper takes (args: list, kwargs: dict) and returns a Arrow value.
     Mutable pointer parameters are written back after the call by returning
     a tuple (return_value, wb1, wb2, ...) when there are writebacks.
     """
@@ -259,7 +259,7 @@ def load_cpp_dll(
 
     members: dict[str, object] = {}
 
-    # Build TlClass stubs for C structs so Havakyrie code can construct instances
+    # Build TlClass stubs for C structs so Arrow code can construct instances
     for sdef in struct_defs:
         from ...ast import Param, Stmt, Expr, Accessibility, FieldKind
         from ..value import TlClass
