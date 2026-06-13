@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::ast::{CallArg, Param};
+use crate::token::Span;
 
 use super::{
     CapturedVar, DictData, ExecResult, FnValue, GeneratorFnValue, GeneratorState, InstanceData,
@@ -39,6 +40,7 @@ impl Interpreter {
         evaled: &[(Option<String>, Value)],
         self_val: Option<Value>,
         fn_name: &str,
+        call_span: Option<Span>,
     ) -> Result<Value, String> {
         // デフォルト値を事前評価する（self パラメータは常に None）
         let mut evaluated_defaults: Vec<Option<Value>> = Vec::new();
@@ -106,9 +108,9 @@ impl Interpreter {
                     None => continue,
                 };
                 let cast_result = if overloads.len() == 1 {
-                    self.exec_fn(overloads[0].clone(), &[], Some(val), "__cast__")?
+                    self.exec_fn(overloads[0].clone(), &[], Some(val), "__cast__", None)?
                 } else {
-                    self.dispatch_overload(overloads, &[], Some(val))?
+                    self.dispatch_overload(overloads, &[], Some(val), None)?
                 };
                 bindings[idx].1 = cast_result;
             }
@@ -173,30 +175,44 @@ impl Interpreter {
         self.scopes.truncate(1);
         self.scopes.extend(outer_scopes);
 
-        // 例外が ExecResult::Raise として直接返ってきた場合: フレームを追加してセンチネルを返す
+        // Build a caller frame using the call site span (where this function was called from).
+        // The caller's name is the last entry in call_stack after we already popped fn_name.
+        let caller_frame = {
+            let caller_name = self
+                .call_stack
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "<module>".to_string());
+            match call_span.as_ref() {
+                Some(span) => StackFrame {
+                    file: span.file.to_string(),
+                    line: span.line,
+                    col: span.col,
+                    fn_name: caller_name,
+                    context: self.get_context_lines(&span.file, span.line, 5),
+                },
+                None => StackFrame {
+                    file: String::new(),
+                    line: 0,
+                    col: 0,
+                    fn_name: caller_name,
+                    context: String::new(),
+                },
+            }
+        };
+
+        // 例外が ExecResult::Raise として直接返ってきた場合: 呼び出し元フレームを追加してセンチネルを返す
         if let Ok(ExecResult::Raise(mut raised)) = result {
-            raised.frames.push(StackFrame {
-                file: String::new(),
-                line: 0,
-                col: 0,
-                fn_name: fn_name.to_string(),
-                context: String::new(),
-            });
+            raised.frames.push(caller_frame);
             self.current_exception = Some(raised);
             return Err(RAISE_SENTINEL.to_string());
         }
 
-        // 例外センチネルが Err として伝播してきた場合（ネストした関数からの raise）: フレームを追加する
+        // 例外センチネルが Err として伝播してきた場合（ネストした関数からの raise）: 呼び出し元フレームを追加する
         if let Err(ref e) = result {
             if e.as_str() == RAISE_SENTINEL {
                 if let Some(ref mut raised) = self.current_exception {
-                    raised.frames.push(StackFrame {
-                        file: String::new(),
-                        line: 0,
-                        col: 0,
-                        fn_name: fn_name.to_string(),
-                        context: String::new(),
-                    });
+                    raised.frames.push(caller_frame);
                 }
                 return Err(RAISE_SENTINEL.to_string());
             }
@@ -208,6 +224,7 @@ impl Interpreter {
             // 内部エラー文字列を RaisedError に変換してスタックフレームを付加してから伝播する
             let msg = e.clone();
             if let Some(mut raised) = self.make_internal_raised_error(&msg) {
+                // Frame[0]: the function where the error occurred (unknown line within it)
                 raised.frames.push(StackFrame {
                     file: String::new(),
                     line: 0,
@@ -215,6 +232,8 @@ impl Interpreter {
                     fn_name: fn_name.to_string(),
                     context: String::new(),
                 });
+                // Frame[1]: the caller frame (where this function was called from)
+                raised.frames.push(caller_frame);
                 self.current_exception = Some(raised);
                 return Err(RAISE_SENTINEL.to_string());
             }
@@ -246,9 +265,10 @@ impl Interpreter {
         call_args: &[CallArg],
         self_val: Option<Value>,
         fn_name: &str,
+        call_span: Option<Span>,
     ) -> Result<Value, String> {
         let evaled = self.eval_call_args(call_args)?;
-        self.exec_fn_evaled(fn_val, &evaled, self_val, fn_name)
+        self.exec_fn_evaled(fn_val, &evaled, self_val, fn_name, call_span)
     }
 
     /// ジェネレータ関数の本体を一括実行し、すべての `yield` 値を収集して `Value::Generator` を返す。
@@ -576,9 +596,10 @@ impl Interpreter {
         candidates: Vec<Rc<FnValue>>,
         args: &[CallArg],
         self_val: Option<Value>,
+        call_span: Option<Span>,
     ) -> Result<Value, String> {
         let evaled = self.eval_call_args(args)?;
-        self.dispatch_overload_evaled(candidates, evaled, self_val, "<overloaded>")
+        self.dispatch_overload_evaled(candidates, evaled, self_val, "<overloaded>", call_span)
     }
 
     /// 評価済み引数リストを用いてオーバーロード候補から適合する関数を選択して実行する。
@@ -601,6 +622,7 @@ impl Interpreter {
         evaled: Vec<(Option<String>, Value)>,
         self_val: Option<Value>,
         fn_name: &str,
+        call_span: Option<Span>,
     ) -> Result<Value, String> {
         let call_count = evaled.len();
         let has_self = self_val.is_some();
@@ -648,18 +670,18 @@ impl Interpreter {
         }
 
         if count_matching.len() == 1 {
-            return self.exec_fn_evaled(count_matching[0].clone(), &evaled, self_val, fn_name);
+            return self.exec_fn_evaled(count_matching[0].clone(), &evaled, self_val, fn_name, call_span);
         }
 
         // 引数数が複数一致: 型アノテーションと引数型を照合して候補を絞り込む
         for candidate in &count_matching {
             if Self::overload_types_match(candidate, &evaled, &self_val) {
-                return self.exec_fn_evaled(candidate.clone(), &evaled, self_val.clone(), fn_name);
+                return self.exec_fn_evaled(candidate.clone(), &evaled, self_val.clone(), fn_name, call_span.clone());
             }
         }
 
         // 型一致候補なし: 引数数一致の先頭候補にフォールバック
-        self.exec_fn_evaled(count_matching[0].clone(), &evaled, self_val, fn_name)
+        self.exec_fn_evaled(count_matching[0].clone(), &evaled, self_val, fn_name, call_span)
     }
 
     /// 関数のすべてのアノテーション付きパラメータが対応する引数値と型一致するか判定する。

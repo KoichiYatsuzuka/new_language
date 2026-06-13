@@ -861,8 +861,25 @@ impl Interpreter {
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::None, Value::None) => true,
-            // インスタンスとクラスは参照の同一性（ポインタ比較）で等値判定
-            (Value::Instance(a), Value::Instance(b)) => Rc::ptr_eq(a, b),
+            // インスタンスの等値判定:
+            // enum バリアント (class name が "enum_item_" で始まる) はフィールド値で比較する。
+            // let バインドで深いコピーが作成されるため Rc::ptr_eq は使えない。
+            // それ以外のインスタンスは参照の同一性 (Rc::ptr_eq) で比較する。
+            (Value::Instance(a), Value::Instance(b)) => {
+                let a_borrow = a.borrow();
+                let b_borrow = b.borrow();
+                if a_borrow.class.name.starts_with("enum_item_")
+                    && a_borrow.class.name == b_borrow.class.name
+                {
+                    // enum バリアントは "value" フィールドの値で等値判定
+                    match (a_borrow.fields.get("value"), b_borrow.fields.get("value")) {
+                        (Some((va, _)), Some((vb, _))) => self.values_eq(va, vb),
+                        _ => Rc::ptr_eq(a, b),
+                    }
+                } else {
+                    Rc::ptr_eq(a, b)
+                }
+            }
             (Value::Type(a), Value::Type(b)) => a == b,
             (Value::Class(a), Value::Class(b)) => Rc::ptr_eq(a, b),
             // タプルは要素数と各要素を再帰的に比較

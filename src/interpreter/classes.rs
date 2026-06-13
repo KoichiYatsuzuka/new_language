@@ -227,47 +227,28 @@ impl Interpreter {
         }
     }
 
-    /// 値に対してフリーズプロトコルを適用する。
+    /// フリーズプロトコル。
     ///
-    /// インスタンスの場合: `__freeze__` メソッドが定義されていれば呼び出し、その後 `freeze_instance` を実行する。
-    /// その他の型: 現時点では何もしない（将来の拡張用）。
-    pub(super) fn apply_freeze_to_value(&mut self, val: &Value) -> Result<(), String> {
-        match val {
-            Value::Instance(ref inst_rc) => {
-                let class = inst_rc.borrow().class.clone();
-                if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
-                    if overloads.len() == 1 {
-                        self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__")?;
-                    } else {
-                        self.dispatch_overload(overloads, &[], Some(val.clone()))?;
-                    }
+    /// `freeze_fields=true` のとき: `__freeze__` フックを呼び出し、インスタンスのフィールドを不変化する。
+    ///   `freeze` 文でコレクションを再帰的にフリーズする際に使用する。
+    ///
+    /// `freeze_fields=false` のとき: `__freeze__` フックのみ呼び出し、フィールドは不変化しない。
+    ///   `let` バインドではインスタンスの Rc 参照は共有されるため、フィールドを凍結すると
+    ///   他のすべての参照にも影響してしまう。`let` バインドは変数の再バインドを禁止するのみで、
+    ///   オブジェクトのフィールドの可変性には影響しない。
+    pub(super) fn apply_freeze_to_value(&mut self, val: &Value, freeze_fields: bool) -> Result<(), String> {
+        if let Value::Instance(ref inst_rc) = val {
+            let class = inst_rc.borrow().class.clone();
+            if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
+                if overloads.len() == 1 {
+                    self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__", None)?;
+                } else {
+                    self.dispatch_overload(overloads, &[], Some(val.clone()), None)?;
                 }
+            }
+            if freeze_fields {
                 Self::freeze_instance(inst_rc);
             }
-            Value::List(ref rc) => {
-                let items = rc.borrow().clone();
-                for item in &items {
-                    self.apply_freeze_to_value(item)?;
-                }
-            }
-            Value::Set(ref rc) => {
-                let items = rc.borrow().clone();
-                for item in &items {
-                    self.apply_freeze_to_value(item)?;
-                }
-            }
-            Value::Dict(ref rc) => {
-                let vals = rc.borrow().all_items();
-                for v in &vals {
-                    self.apply_freeze_to_value(v)?;
-                }
-            }
-            Value::Tuple(ref td) => {
-                for item in td.all_values() {
-                    self.apply_freeze_to_value(item)?;
-                }
-            }
-            _ => {}
         }
         Ok(())
     }
@@ -324,9 +305,10 @@ impl Interpreter {
                     call_args,
                     Some(inst_val.clone()),
                     "__init__",
+                    None,
                 )?;
             } else {
-                self.dispatch_overload(init_overloads, call_args, Some(inst_val.clone()))?;
+                self.dispatch_overload(init_overloads, call_args, Some(inst_val.clone()), None)?;
             }
         }
 
@@ -383,6 +365,7 @@ impl Interpreter {
                     &evaled,
                     Some(inst_val.clone()),
                     "__init__",
+                    None,
                 )?;
             } else {
                 self.dispatch_overload_evaled(
@@ -390,6 +373,7 @@ impl Interpreter {
                     evaled,
                     Some(inst_val.clone()),
                     "__init__",
+                    None,
                 )?;
             }
         }
@@ -423,6 +407,16 @@ impl Interpreter {
                         let item = evaled.into_iter().next().unwrap().1;
                         items.borrow_mut().push(item);
                         return Ok(Value::None);
+                    }
+                    "pop" => {
+                        if !args.is_empty() {
+                            return Err("TypeError: list.pop() takes no arguments".to_string());
+                        }
+                        let mut v = items.borrow_mut();
+                        if v.is_empty() {
+                            return Err("IndexError: pop from empty list".to_string());
+                        }
+                        return Ok(v.pop().unwrap());
                     }
                     _ => {}
                 }
@@ -602,9 +596,9 @@ impl Interpreter {
                 }
 
                 if callable.len() == 1 {
-                    self.exec_fn(callable[0].clone(), args, Some(obj.clone()), method_name)
+                    self.exec_fn(callable[0].clone(), args, Some(obj.clone()), method_name, None)
                 } else {
-                    self.dispatch_overload(callable, args, Some(obj.clone()))
+                    self.dispatch_overload(callable, args, Some(obj.clone()), None)
                 }
             }
             Value::Class(cls) => {
@@ -620,9 +614,9 @@ impl Interpreter {
 
                 if cls.static_method_names.contains(method_name) {
                     return if overloads.len() == 1 {
-                        self.exec_fn(overloads[0].clone(), args, None, method_name)
+                        self.exec_fn(overloads[0].clone(), args, None, method_name, None)
                     } else {
-                        self.dispatch_overload(overloads, args, None)
+                        self.dispatch_overload(overloads, args, None, None)
                     };
                 }
 
@@ -632,9 +626,9 @@ impl Interpreter {
                     let mut all_evaled = vec![(None, cls_val)];
                     all_evaled.extend(evaled);
                     return if overloads.len() == 1 {
-                        self.exec_fn_evaled(overloads[0].clone(), &all_evaled, None, method_name)
+                        self.exec_fn_evaled(overloads[0].clone(), &all_evaled, None, method_name, None)
                     } else {
-                        self.dispatch_overload_evaled(overloads, all_evaled, None, method_name)
+                        self.dispatch_overload_evaled(overloads, all_evaled, None, method_name, None)
                     };
                 }
 
@@ -910,10 +904,10 @@ impl Interpreter {
                     )
                 })?;
                 match member {
-                    Value::Function(fn_val) => self.exec_fn(fn_val, args, None, method_name),
+                    Value::Function(fn_val) => self.exec_fn(fn_val, args, None, method_name, None),
                     Value::OverloadedFn(candidates) => {
                         let evaled = self.eval_call_args(args)?;
-                        self.dispatch_overload_evaled(candidates, evaled, None, method_name)
+                        self.dispatch_overload_evaled(candidates, evaled, None, method_name, None)
                     }
                     Value::Class(cls) => self.instantiate(cls, args),
                     Value::GeneratorFn(gen_fn) => self.exec_generator(gen_fn, args, None),
@@ -1233,9 +1227,10 @@ impl Interpreter {
                         &evaled,
                         Some(obj.clone()),
                         method_name,
+                        None,
                     )
                 } else {
-                    self.dispatch_overload_evaled(callable, evaled, Some(obj.clone()), method_name)
+                    self.dispatch_overload_evaled(callable, evaled, Some(obj.clone()), method_name, None)
                 }
             }
             Value::PyObject(handle) => {

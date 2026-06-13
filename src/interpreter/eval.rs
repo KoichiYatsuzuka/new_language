@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchArm, MatchPattern};
+use crate::token::Span;
 
 use super::{
     ByteModeRust, DictData, ExecResult, FileData, FileOpenModeRust, GeneratorState, Interpreter,
@@ -334,7 +335,7 @@ impl Interpreter {
                 let result = self.value_is_type(&val, type_name);
                 Ok(Value::Bool(if *negated { !result } else { result }))
             }
-            Expr::Call { func, args, .. } => self.eval_call(func, args),
+            Expr::Call { func, args, span } => self.eval_call(func, args, span),
             Expr::Cast { object, type_name, .. } => self.eval_cast(object, type_name),
         }
     }
@@ -488,7 +489,7 @@ impl Interpreter {
     /// 関数呼び出し式 `func(args)` を評価する。
     /// テンプレート instantiate・メソッド呼び出し・組み込み関数・ユーザー定義関数・クラスコンストラクタ・
     /// ジェネレータ・ネイティブ関数・型コンストラクタなど、呼び出し先の種別に応じて適切なパスへ分岐する。
-    fn eval_call(&mut self, func: &Expr, args: &[CallArg]) -> Result<Value, String> {
+    fn eval_call(&mut self, func: &Expr, args: &[CallArg], call_span: &Span) -> Result<Value, String> {
         if let Expr::TemplateInstantiate { base, type_args } = func {
             let tmpl_val = self.eval(base)?;
             return self.instantiate_template(tmpl_val, type_args, args);
@@ -508,10 +509,10 @@ impl Interpreter {
         };
         let callee = self.eval(func)?;
         match callee {
-            Value::Function(fn_val) => self.exec_fn(fn_val, args, None, &call_name),
+            Value::Function(fn_val) => self.exec_fn(fn_val, args, None, &call_name, Some(call_span.clone())),
             Value::OverloadedFn(candidates) => {
                 let evaled_args = self.eval_call_args(args)?;
-                self.dispatch_overload_evaled(candidates, evaled_args, None, &call_name)
+                self.dispatch_overload_evaled(candidates, evaled_args, None, &call_name, Some(call_span.clone()))
             }
             Value::Class(cls) => self.instantiate(cls, args),
             Value::GeneratorFn(gen_fn) => self.exec_generator(gen_fn, args, None),
@@ -625,9 +626,9 @@ impl Interpreter {
                     )
                     })?;
                 if overloads.len() == 1 {
-                    self.exec_fn(overloads[0].clone(), &[], Some(obj), "__cast__")
+                    self.exec_fn(overloads[0].clone(), &[], Some(obj), "__cast__", None)
                 } else {
-                    self.dispatch_overload(overloads, &[], Some(obj))
+                    self.dispatch_overload(overloads, &[], Some(obj), None)
                 }
             }
             other => Err(format!(
@@ -1808,9 +1809,9 @@ impl Interpreter {
     ) -> Result<Value, String> {
         let evaled: Vec<(Option<String>, Value)> = args.into_iter().map(|v| (None, v)).collect();
         match callee {
-            Value::Function(fn_val) => self.exec_fn_evaled(fn_val, &evaled, None, "<fn>"),
+            Value::Function(fn_val) => self.exec_fn_evaled(fn_val, &evaled, None, "<fn>", None),
             Value::OverloadedFn(candidates) => {
-                self.dispatch_overload_evaled(candidates, evaled, None, "<overloaded>")
+                self.dispatch_overload_evaled(candidates, evaled, None, "<overloaded>", None)
             }
             Value::Class(cls) => {
                 // Class constructor called from native code (e.g. `Point(x, y)` via cb_call).

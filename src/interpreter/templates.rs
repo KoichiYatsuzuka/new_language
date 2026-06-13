@@ -109,7 +109,7 @@ impl Interpreter {
                     is_python: false,
                     captured_env: std::collections::HashMap::new(),
                 });
-                self.exec_fn(fn_val, call_args, None, "<template_fn>")
+                self.exec_fn(fn_val, call_args, None, "<template_fn>", None)
             }
             Value::TemplateClass(tmpl) => {
                 // テンプレートクラス: 制約を検証し、型変数を置換してクラスを構築・インスタンス化する

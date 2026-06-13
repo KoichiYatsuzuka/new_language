@@ -248,11 +248,13 @@ impl Interpreter {
     // Variable declarations & assignment
     // ---------------------------------------------------------------------------
 
-    /// `let` 宣言を実行する。ソースが `mut` 変数の場合はディープコピーとフリーズを適用する。
+    /// `let` 宣言を実行する。
     fn exec_let(&mut self, name: &str, expr: &Expr) -> Result<ExecResult, String> {
-        // mut → let: deep copy してからフリーズプロトコルを適用する。
+        // mut → let: deep copy してからフリーズする。
         // let → let: そのまま代入（コピー不要・再フリーズ不要）。
-        // 式 → let: フリーズのみ（新規値なのでコピー不要）。
+        // 式 → let: Instance の場合は deep copy してからフリーズする。
+        //   可変コレクション (list[i] など) から取り出した Instance を直接フリーズすると
+        //   共有 Rc を通じて元のオブジェクトまで不変化されてしまうため、コピーが必要。
         let source_var = if let Expr::Ident(src) = expr {
             self.get_var(src)
                 .map(|v| (v.is_mutable(), v.cell().is_some()))
@@ -262,14 +264,23 @@ impl Interpreter {
         let value = self.eval(expr)?;
         let value = match source_var {
             Some((true, _)) => {
+                // mut 変数から let へ: 深いコピーを作成してフリーズする。
                 let copied = Self::deep_copy_value(value);
-                self.apply_freeze_to_value(&copied)?;
+                self.apply_freeze_to_value(&copied, true)?;
                 copied
             }
             Some((false, _)) => value,
             None => {
-                self.apply_freeze_to_value(&value)?;
-                value
+                // 識別子以外の式 (例: list[i], SomeClass()) から let へ。
+                // Instance の場合は深いコピーを作成してからフリーズする。
+                // これにより元のオブジェクト (例: リスト内のカード) の可変性が保たれる。
+                if matches!(value, Value::Instance(_)) {
+                    let copied = Self::deep_copy_value(value);
+                    self.apply_freeze_to_value(&copied, true)?;
+                    copied
+                } else {
+                    value
+                }
             }
         };
         self.declare_var(name.to_string(), Var::new(value, false));
@@ -314,7 +325,7 @@ impl Interpreter {
                 TupleTarget::Wildcard => break,
                 TupleTarget::Let(n) | TupleTarget::Bare(n) => {
                     let v = tuple_rc.get(idx).unwrap().clone();
-                    self.apply_freeze_to_value(&v)?;
+                    self.apply_freeze_to_value(&v, false)?;
                     self.declare_var(n.clone(), Var::new(v, false));
                     idx += 1;
                 }
@@ -1138,9 +1149,9 @@ impl Interpreter {
                 let class = inst_rc.borrow().class.clone();
                 if let Some(overloads) = self.lookup_method_in_class(&class, "__freeze__") {
                     if overloads.len() == 1 {
-                        self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__")?;
+                        self.exec_fn(overloads[0].clone(), &[], Some(val.clone()), "__freeze__", None)?;
                     } else {
-                        self.dispatch_overload(overloads, &[], Some(val.clone()))?;
+                        self.dispatch_overload(overloads, &[], Some(val.clone()), None)?;
                     }
                 }
                 Self::freeze_instance(inst_rc);
@@ -1149,27 +1160,27 @@ impl Interpreter {
             Value::List(ref rc) => {
                 let items = rc.borrow().clone();
                 for item in &items {
-                    self.apply_freeze_to_value(item)?;
+                    self.apply_freeze_to_value(item, true)?;
                 }
                 None
             }
             Value::Set(ref rc) => {
                 let items = rc.borrow().clone();
                 for item in &items {
-                    self.apply_freeze_to_value(item)?;
+                    self.apply_freeze_to_value(item, true)?;
                 }
                 None
             }
             Value::Dict(ref rc) => {
                 let vals = rc.borrow().all_items();
                 for v in &vals {
-                    self.apply_freeze_to_value(v)?;
+                    self.apply_freeze_to_value(v, true)?;
                 }
                 None
             }
             Value::Tuple(ref td) => {
                 for item in td.all_values() {
-                    self.apply_freeze_to_value(item)?;
+                    self.apply_freeze_to_value(item, true)?;
                 }
                 None
             }
@@ -2029,9 +2040,9 @@ impl Interpreter {
     ) -> Result<Value, String> {
         let evaled = vec![(None, arg)];
         match callee {
-            Value::Function(fn_val) => self.exec_fn_evaled(fn_val, &evaled, None, label),
+            Value::Function(fn_val) => self.exec_fn_evaled(fn_val, &evaled, None, label, None),
             Value::OverloadedFn(candidates) => {
-                self.dispatch_overload_evaled(candidates, evaled, None, label)
+                self.dispatch_overload_evaled(candidates, evaled, None, label, None)
             }
             Value::Class(cls) => self.instantiate_evaled(cls, evaled),
             Value::Instance(ref inst_rc) => {
@@ -2045,9 +2056,9 @@ impl Interpreter {
                             )
                         })?;
                 if overloads.len() == 1 {
-                    self.exec_fn_evaled(overloads[0].clone(), &evaled, Some(callee), "__call__")
+                    self.exec_fn_evaled(overloads[0].clone(), &evaled, Some(callee), "__call__", None)
                 } else {
-                    self.dispatch_overload_evaled(overloads, evaled, Some(callee), "__call__")
+                    self.dispatch_overload_evaled(overloads, evaled, Some(callee), "__call__", None)
                 }
             }
             other => Err(format!(

@@ -4158,6 +4158,19 @@ fn test_set_remove_missing_error() {
     assert!(run("let s = {1, 2}\ns.remove(99)\n").is_err());
 }
 
+/// list_pop のテスト。
+#[test]
+fn test_list_pop() {
+    let src = "mut xs: list[int] = [10, 20, 30]\nlet v = xs.pop()\n";
+    assert!(matches!(run_get(src, "v"), Value::Int(30)));
+}
+
+/// list_pop_empty_error のテスト。
+#[test]
+fn test_list_pop_empty_error() {
+    assert!(run("mut xs: list[int] = []\nxs.pop()\n").is_err());
+}
+
 /// set_pop のテスト。
 #[test]
 fn test_set_pop() {
