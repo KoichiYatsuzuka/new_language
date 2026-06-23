@@ -526,6 +526,96 @@ impl Interpreter {
         }
     }
 
+    /// `Value::Instance` に対してダンダーメソッドを経由して単項演算子を適用する。
+    /// `__neg__`（`-`）/ `__invert__`（`~`）が定義されていれば呼び出し、なければ `apply_unary` へフォールバック。
+    /// `not` 演算子は `__bool__` を持つインスタンスに対応するため `eval_truthy` 経由で処理する。
+    pub(super) fn apply_unary_dyn(&mut self, op: &UnaryOp, val: Value) -> Result<Value, String> {
+        if let Value::Instance(ref inst_rc) = val {
+            let method_name = match op {
+                UnaryOp::Neg => Some("__neg__"),
+                UnaryOp::BitNot => Some("__invert__"),
+                UnaryOp::Not => None,
+            };
+            if let Some(m) = method_name {
+                if inst_rc.borrow().class.methods.contains_key(m) {
+                    return self.eval_method_call_evaled(val, m, vec![]);
+                }
+            }
+            if let UnaryOp::Not = op {
+                let b = self.eval_truthy(&val)?;
+                return Ok(Value::Bool(!b));
+            }
+        }
+        self.apply_unary(op, val)
+    }
+
+    /// `Value::Instance` に対してダンダーメソッドを経由して二項演算子を適用する。
+    /// 対応するダンダーメソッドが定義されていれば呼び出し、なければ `apply_binop` へフォールバック。
+    pub(super) fn apply_binop_dyn(&mut self, op: &BinOp, lv: Value, rv: Value) -> Result<Value, String> {
+        if let Value::Instance(ref inst_rc) = lv {
+            let method_name = match op {
+                BinOp::Add => Some("__add__"),
+                BinOp::Sub => Some("__sub__"),
+                BinOp::Mul => Some("__mul__"),
+                BinOp::Div => Some("__truediv__"),
+                BinOp::FloorDiv => Some("__floordiv__"),
+                BinOp::Mod => Some("__mod__"),
+                BinOp::Pow => Some("__pow__"),
+                BinOp::BitAnd => Some("__and__"),
+                BinOp::BitOr => Some("__or__"),
+                BinOp::BitXor => Some("__xor__"),
+                BinOp::LShift => Some("__lshift__"),
+                BinOp::RShift => Some("__rshift__"),
+                BinOp::Eq => Some("__eq__"),
+                BinOp::NotEq => Some("__ne__"),
+                BinOp::Lt => Some("__lt__"),
+                BinOp::Gt => Some("__gt__"),
+                BinOp::LtEq => Some("__le__"),
+                BinOp::GtEq => Some("__ge__"),
+                _ => None,
+            };
+            if let Some(m) = method_name {
+                if inst_rc.borrow().class.methods.contains_key(m) {
+                    return self.eval_method_call_evaled(lv, m, vec![(None, rv)]);
+                }
+            }
+        }
+        self.apply_binop(op, lv, rv)
+    }
+
+    /// `__bool__` を持つ `Value::Instance` に対してそのメソッドを呼び出し真偽値を返す。
+    /// 定義されていなければ `is_truthy` へフォールバック。
+    pub(super) fn eval_truthy(&mut self, val: &Value) -> Result<bool, String> {
+        if let Value::Instance(inst_rc) = val {
+            if inst_rc.borrow().class.methods.contains_key("__bool__") {
+                let result = self.eval_method_call_evaled(val.clone(), "__bool__", vec![])?;
+                return match result {
+                    Value::Bool(b) => Ok(b),
+                    other => Err(format!(
+                        "TypeError: __bool__ should return bool, not '{}'",
+                        self.type_name(&other)
+                    )),
+                };
+            }
+        }
+        Ok(self.is_truthy(val))
+    }
+
+    /// `__str__` を持つ `Value::Instance` に対してそのメソッドを呼び出し文字列表現を返す。
+    /// 定義されていなければ `display` へフォールバック。
+    pub(super) fn display_str(&mut self, val: &Value) -> Result<String, String> {
+        if let Value::Instance(inst_rc) = val {
+            if inst_rc.borrow().class.methods.contains_key("__str__") {
+                let result = self.eval_method_call_evaled(val.clone(), "__str__", vec![])?;
+                return match result {
+                    Value::Str(s) => Ok(s),
+                    other => Ok(self.display(&other)),
+                };
+            }
+        }
+        Ok(self.display(val))
+    }
+
     /// 二項演算子を適用した結果の値を返す。
     ///
     /// サポートする演算カテゴリ:

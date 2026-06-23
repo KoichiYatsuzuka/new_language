@@ -81,7 +81,7 @@ impl Interpreter {
             Stmt::AttrCompoundAssign { target, op, value } => {
                 let rhs = self.eval(value)?;
                 let lhs = self.eval(target)?;
-                let result = self.apply_binop(op, lhs, rhs)?;
+                let result = self.apply_binop_dyn(op, lhs, rhs)?;
                 self.attr_assign(target, result)?;
                 Ok(ExecResult::Normal)
             }
@@ -386,7 +386,7 @@ impl Interpreter {
             Some(v) => v.get_value(),
             None => return Err(format!("NameError: '{name}' is not defined")),
         };
-        let value = self.apply_binop(op, lhs, rhs)?;
+        let value = self.apply_binop_dyn(op, lhs, rhs)?;
         self.assign_var(name, value)?;
         Ok(ExecResult::Normal)
     }
@@ -437,7 +437,7 @@ impl Interpreter {
     ) -> Result<ExecResult, String> {
         for (cond, body) in branches {
             let val = self.eval(cond)?;
-            if self.is_truthy(&val) {
+            if self.eval_truthy(&val)? {
                 return self.exec_scoped_block(body);
             }
         }
@@ -458,7 +458,7 @@ impl Interpreter {
                     } else {
                         let pattern_val = self.eval(pattern_expr)?;
                         let result =
-                            self.apply_binop(&BinOp::Eq, subject_val.clone(), pattern_val)?;
+                            self.apply_binop_dyn(&BinOp::Eq, subject_val.clone(), pattern_val)?;
                         matches!(result, Value::Bool(true))
                     }
                 }
@@ -477,7 +477,7 @@ impl Interpreter {
         let result = (|| {
             loop {
                 let val = self.eval(cond)?;
-                if !self.is_truthy(&val) {
+                if !self.eval_truthy(&val)? {
                     break;
                 }
                 match self.exec_scoped_block(body) {

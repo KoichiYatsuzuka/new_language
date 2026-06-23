@@ -70,8 +70,12 @@ impl TypeChecker {
     }
 
     /// 2 つの型が順序比較可能な組み合わせかどうかを判定する。
+    /// `NamedInstance` は `__lt__` 等のダンダーメソッドを持つ可能性があるため常に許可する。
     fn ordered_comparable(lt: &InferredType, rt: &InferredType) -> bool {
         use InferredType::*;
+        if matches!(lt, NamedInstance(_)) || matches!(rt, NamedInstance(_)) {
+            return true;
+        }
         matches!(
             (lt, rt),
             (Unresolved, _)

@@ -303,7 +303,7 @@ impl Interpreter {
             Expr::Slice { begin, end, step } => self.eval_slice_expr(begin, end, step),
             Expr::UnaryOp { op, operand } => {
                 let val = self.eval(operand)?;
-                self.apply_unary(op, val)
+                self.apply_unary_dyn(op, val)
             }
             Expr::BinOp { op, left, right, .. } => self.eval_binop_expr(op, left, right),
             Expr::TemplateInstantiate { .. } => Err(
@@ -448,7 +448,7 @@ impl Interpreter {
         match op {
             BinOp::And => {
                 let lv = self.eval(left)?;
-                if !self.is_truthy(&lv) {
+                if !self.eval_truthy(&lv)? {
                     Ok(lv)
                 } else {
                     self.eval(right)
@@ -456,7 +456,7 @@ impl Interpreter {
             }
             BinOp::Or => {
                 let lv = self.eval(left)?;
-                if self.is_truthy(&lv) {
+                if self.eval_truthy(&lv)? {
                     Ok(lv)
                 } else {
                     self.eval(right)
@@ -465,7 +465,7 @@ impl Interpreter {
             _ => {
                 let lv = self.eval(left)?;
                 let rv = self.eval(right)?;
-                self.apply_binop(op, lv, rv)
+                self.apply_binop_dyn(op, lv, rv)
             }
         }
     }
@@ -481,7 +481,7 @@ impl Interpreter {
                     } else {
                         let pv = self.eval(pattern_expr)?;
                         matches!(
-                            self.apply_binop(&BinOp::Eq, subject_val.clone(), pv)?,
+                            self.apply_binop_dyn(&BinOp::Eq, subject_val.clone(), pv)?,
                             Value::Bool(true)
                         )
                     }
@@ -658,17 +658,39 @@ impl Interpreter {
     ) -> Option<Result<Value, String>> {
         match name {
             "print" => {
-                let parts: Result<Vec<_>, _> = args
-                    .iter()
-                    .map(|a| self.eval(a.expr()).map(|v| self.display(&v)))
-                    .collect();
-                match parts {
-                    Err(e) => Some(Err(e)),
-                    Ok(p) => {
-                        println!("{}", p.join(" "));
-                        Some(Ok(Value::None))
-                    }
+                let mut parts: Vec<String> = Vec::new();
+                for a in args {
+                    let v = match self.eval(a.expr()) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let s = match self.display_str(&v) {
+                        Ok(s) => s,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    parts.push(s);
                 }
+                println!("{}", parts.join(" "));
+                Some(Ok(Value::None))
+            }
+            "next" => {
+                if args.len() != 1 {
+                    return Some(Err(
+                        "TypeError: next() takes exactly one argument".to_string()
+                    ));
+                }
+                let val = match self.eval(args[0].expr()) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                Some(match val {
+                    v @ Value::Generator(_) => self.eval_method_call_evaled(v, "next", vec![]),
+                    v @ Value::Instance(_) => self.eval_method_call_evaled(v, "__next__", vec![]),
+                    other => Err(format!(
+                        "TypeError: '{}' object is not an iterator",
+                        self.type_name(&other)
+                    )),
+                })
             }
             "repr" => {
                 if args.len() != 1 {
@@ -724,6 +746,24 @@ impl Interpreter {
                     Ok(v) => v,
                     Err(e) => return Some(Err(e)),
                 };
+                // Instance の __len__ を優先チェック（borrow を落としてから呼び出す）
+                let has_instance_len = if let Value::Instance(inst_rc) = &val {
+                    inst_rc.borrow().class.methods.contains_key("__len__")
+                } else {
+                    false
+                };
+                if has_instance_len {
+                    return Some(
+                        self.eval_method_call_evaled(val, "__len__", vec![])
+                            .and_then(|r| match r {
+                                Value::Int(n) => Ok(Value::Int(n)),
+                                other => Err(format!(
+                                    "TypeError: __len__ must return int, not '{}'",
+                                    self.type_name(&other)
+                                )),
+                            }),
+                    );
+                }
                 Some(match &val {
                     Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
                     Value::FrozenList { ref state, .. } => Ok(Value::Int(state.borrow().len as i64)),
@@ -1194,10 +1234,25 @@ impl Interpreter {
         vals: Vec<Value>,
     ) -> Result<Value, String> {
         match type_name {
-            "str" => match vals.as_slice() {
-                [] => Ok(Value::Str(String::new())),
-                [v] => Ok(Value::Str(self.display(v))),
-                _ => Err("TypeError: str() takes at most 1 argument".to_string()),
+            "str" => {
+                let has_instance_str = if let [Value::Instance(inst_rc)] = vals.as_slice() {
+                    inst_rc.borrow().class.methods.contains_key("__str__")
+                } else {
+                    false
+                };
+                if has_instance_str {
+                    let v = vals.into_iter().next().unwrap();
+                    return self.eval_method_call_evaled(v, "__str__", vec![])
+                        .and_then(|r| match r {
+                            Value::Str(s) => Ok(Value::Str(s)),
+                            other => Ok(Value::Str(self.display(&other))),
+                        });
+                }
+                match vals.as_slice() {
+                    [] => Ok(Value::Str(String::new())),
+                    [v] => Ok(Value::Str(self.display(v))),
+                    _ => Err("TypeError: str() takes at most 1 argument".to_string()),
+                }
             },
             "int" => match vals.as_slice() {
                 [] => Ok(Value::Int(0)),
@@ -1401,18 +1456,36 @@ impl Interpreter {
                     },
                 ))))
             }
-            "len" => match vals.as_slice() {
-                [Value::List(lst)] => Ok(Value::Int(lst.borrow().len() as i64)),
-                [Value::FrozenList { state, .. }] => Ok(Value::Int(state.borrow().len as i64)),
-                [Value::Str(s)] => Ok(Value::Int(s.len() as i64)),
-                [Value::Dict(d)] => Ok(Value::Int(d.borrow().len() as i64)),
-                [Value::Set(s)] => Ok(Value::Int(s.borrow().len() as i64)),
-                [Value::Tuple(t)] => Ok(Value::Int(t.len() as i64)),
-                [other] => Err(format!(
-                    "TypeError: object of type '{}' has no len()",
-                    self.type_name(other)
-                )),
-                _ => Err("TypeError: len() takes exactly 1 argument".to_string()),
+            "len" => {
+                let has_instance_len = if let [Value::Instance(inst_rc)] = vals.as_slice() {
+                    inst_rc.borrow().class.methods.contains_key("__len__")
+                } else {
+                    false
+                };
+                if has_instance_len {
+                    let v = vals.into_iter().next().unwrap();
+                    return self.eval_method_call_evaled(v, "__len__", vec![])
+                        .and_then(|r| match r {
+                            Value::Int(n) => Ok(Value::Int(n)),
+                            other => Err(format!(
+                                "TypeError: __len__ must return int, not '{}'",
+                                self.type_name(&other)
+                            )),
+                        });
+                }
+                match vals.as_slice() {
+                    [Value::List(lst)] => Ok(Value::Int(lst.borrow().len() as i64)),
+                    [Value::FrozenList { state, .. }] => Ok(Value::Int(state.borrow().len as i64)),
+                    [Value::Str(s)] => Ok(Value::Int(s.len() as i64)),
+                    [Value::Dict(d)] => Ok(Value::Int(d.borrow().len() as i64)),
+                    [Value::Set(s)] => Ok(Value::Int(s.borrow().len() as i64)),
+                    [Value::Tuple(t)] => Ok(Value::Int(t.len() as i64)),
+                    [other] => Err(format!(
+                        "TypeError: object of type '{}' has no len()",
+                        self.type_name(other)
+                    )),
+                    _ => Err("TypeError: len() takes exactly 1 argument".to_string()),
+                }
             },
             other => Err(format!("TypeError: '{}' object is not callable", other)),
         }
@@ -2035,7 +2108,7 @@ impl Interpreter {
     ) -> Result<Value, String> {
         for (cond, body) in branches {
             let val = self.eval(cond)?;
-            if self.is_truthy(&val) {
+            if self.eval_truthy(&val)? {
                 return self.eval_capture_block_return(body);
             }
         }
@@ -2225,8 +2298,10 @@ impl Interpreter {
                     break;
                 }
             };
-            if !self.is_truthy(&cond_val) {
-                break;
+            match self.eval_truthy(&cond_val) {
+                Ok(false) => break,
+                Ok(true) => {}
+                Err(e) => { early_err = Some(e); break 'while_loop; }
             }
 
             match self.exec_scoped_block(body) {

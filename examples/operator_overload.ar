@@ -1,0 +1,134 @@
+# operator_overload.ar — 演算子オーバーロードのデモ
+
+# ── 1. 算術演算子 (__add__, __sub__, __mul__) ─────────────────────────────────
+class Vec2:
+    fn __init__(mut self, let x: int, let y: int) -> None:
+        self.x = x
+        self.y = y
+
+    fn __add__(self, let other: Vec2) -> Vec2:
+        return Vec2(self.x + other.x, self.y + other.y)
+
+    fn __sub__(self, let other: Vec2) -> Vec2:
+        return Vec2(self.x - other.x, self.y - other.y)
+
+    fn __mul__(self, let s: int) -> Vec2:
+        return Vec2(self.x * s, self.y * s)
+
+    fn __neg__(self) -> Vec2:
+        return Vec2(-self.x, -self.y)
+
+    fn __eq__(self, let other: Vec2) -> bool:
+        return self.x == other.x and self.y == other.y
+
+    fn __str__(self) -> str:
+        return "Vec2(" + str(self.x) + ", " + str(self.y) + ")"
+
+let a = Vec2(1, 2)
+let b = Vec2(3, 4)
+
+let c = a + b
+print(str(c))          # Vec2(4, 6)
+
+let d = b - a
+print(str(d))          # Vec2(2, 2)
+
+let e = a * 3
+print(str(e))          # Vec2(3, 6)
+
+let f = -a
+print(str(f))          # Vec2(-1, -2)
+
+print(a == Vec2(1, 2)) # True
+print(a == b)          # False
+
+# ── 2. 比較演算子 (__lt__, __le__) ──────────────────────────────────────────
+class Score:
+    fn __init__(mut self, let val: int) -> None:
+        self.val = val
+
+    fn __lt__(self, let other: Score) -> bool:
+        return self.val < other.val
+
+    fn __le__(self, let other: Score) -> bool:
+        return self.val <= other.val
+
+    fn __str__(self) -> str:
+        return "Score(" + str(self.val) + ")"
+
+let s1 = Score(10)
+let s2 = Score(20)
+print(s1 < s2)   # True
+print(s2 < s1)   # False
+print(s1 <= s1)  # True
+
+# ── 3. __len__ / __bool__ ────────────────────────────────────────────────────
+class Bag:
+    fn __init__(mut self, let items: list[int]) -> None:
+        self.items = items
+
+    fn __len__(self) -> int:
+        return len(self.items)
+
+    fn __bool__(self) -> bool:
+        return len(self.items) > 0
+
+    fn __str__(self) -> str:
+        return "Bag(" + str(self.items) + ")"
+
+let bag = Bag([1, 2, 3])
+print(len(bag))      # 3
+
+let empty = Bag([])
+if empty:
+    print("not empty")
+else:
+    print("empty")   # empty
+
+if bag:
+    print("has items") # has items
+
+# ── 4. __next__ (イテレータプロトコル) ───────────────────────────────────────
+class Counter:
+    fn __init__(mut self, let start: int, let stop: int) -> None:
+        self.current = start
+        self.stop = stop
+
+    fn __next__(mut self) -> int:
+        if self.current >= self.stop:
+            raise ValueError("StopIteration")
+        let val = self.current
+        self.current = self.current + 1
+        return val
+
+mut counter = Counter(0, 3)
+print(next(counter))  # 0
+print(next(counter))  # 1
+print(next(counter))  # 2
+
+# ── 5. ビット演算子 (__and__, __or__, __xor__, __invert__) ────────────────────
+class Flags:
+    fn __init__(mut self, let bits: int) -> None:
+        self.bits = bits
+
+    fn __and__(self, let other: Flags) -> Flags:
+        return Flags(self.bits & other.bits)
+
+    fn __or__(self, let other: Flags) -> Flags:
+        return Flags(self.bits | other.bits)
+
+    fn __xor__(self, let other: Flags) -> Flags:
+        return Flags(self.bits ^ other.bits)
+
+    fn __invert__(self) -> Flags:
+        return Flags(~self.bits)
+
+    fn __str__(self) -> str:
+        return "Flags(" + str(self.bits) + ")"
+
+let fa = Flags(0b1010)
+let fb = Flags(0b1100)
+print(str(fa & fb))   # Flags(8)   = 0b1000
+print(str(fa | fb))   # Flags(14)  = 0b1110
+print(str(fa ^ fb))   # Flags(6)   = 0b0110
+print(str(~fa))       # Flags(-11)
