@@ -1,4 +1,4 @@
-﻿# git SHA: 72d280d65fc4cfdf05891c5c08c1331617d7e194
+﻿# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
 """Runtime value types for the Arrow interpreter."""
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -333,6 +333,30 @@ class TlComplex:
         return f"({_fmt(re)}-{_fmt(abs(im))}j)"
 
 
+@dataclass
+class TlSignal:
+    """Runtime value for Signal[T]: holds a list of registered handlers."""
+    # Each entry: (func: Value, is_once: bool, is_async: bool)
+    handlers: list = field(default_factory=list)
+    # Values queued by emit_async(); drained by EventLoop.run()
+    async_queue: list = field(default_factory=list)
+
+    def __repr__(self) -> str:
+        return f"<Signal handlers={len(self.handlers)}>"
+
+
+@dataclass
+class TlEventLoop:
+    """Runtime value for the EventLoop singleton."""
+    # (TlSignal, value) pairs queued by emit_async()
+    signal_queue: list = field(default_factory=list)
+    # Zero-arg callables posted via EventLoop.post()
+    post_queue: list = field(default_factory=list)
+
+    def __repr__(self) -> str:
+        return "<EventLoop>"
+
+
 Value = (
     int | float | TlComplex | str | bool | type(None) |
     TlList | TlFixedList | TlDict | TlTuple | TlSet |
@@ -340,7 +364,8 @@ Value = (
     TlClass | TlInstance |
     TlType | TlTrait |
     TlTemplateFn | TlTemplateGenFn | TlTemplateClass |
-    TlNamespace | TlSlice | TlFileObject
+    TlNamespace | TlSlice | TlFileObject |
+    TlSignal | TlEventLoop
 )
 
 
@@ -435,6 +460,10 @@ def type_name(v: "Value") -> str:
         return "slice"
     if isinstance(v, TlFileObject):
         return "file"
+    if isinstance(v, TlSignal):
+        return "Signal"
+    if isinstance(v, TlEventLoop):
+        return "EventLoop"
     return "unknown"
 
 

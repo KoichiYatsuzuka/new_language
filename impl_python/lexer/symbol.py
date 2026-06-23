@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
 """Symbol and operator tokenization (mirrors src/lexer/symbol.rs)."""
 from __future__ import annotations
 from ..token import Token, TokenKind
@@ -77,7 +77,10 @@ class _LexerSymbol:
 
         if c == '=':
             if self._ch() == '=':
-                self._pos += 1; return Token(TokenKind.EQ_EQ)
+                self._pos += 1
+                if self._ch() == '=':
+                    self._pos += 1; return Token(TokenKind.EQ_EQ_EQ)
+                return Token(TokenKind.EQ_EQ)
             if self._ch() == '>':
                 self._pos += 1; return Token(TokenKind.FAT_ARROW)
             return Token(TokenKind.EQ)

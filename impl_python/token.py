@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -112,6 +112,11 @@ class TokenKind(Enum):
     # Method kind modifiers
     CLASS_METHOD = auto()  # class_method fn
 
+    # Event handler keywords
+    ON           = auto()  # on
+    OFF          = auto()  # off
+    ONCE         = auto()  # once
+
     # Special type keywords
     SELF_TYPE    = auto()  # Self
     NEW_TYPE     = auto()  # new_type
@@ -131,6 +136,7 @@ class TokenKind(Enum):
 
     # Comparison operators
     EQ_EQ        = auto()  # ==
+    EQ_EQ_EQ     = auto()  # ===
     NOT_EQ       = auto()  # !=
     LT           = auto()  # <
     GT           = auto()  # >
@@ -259,6 +265,9 @@ KEYWORDS: dict[str, TokenKind] = {
     "private":      TokenKind.PRIVATE,
     "protected":    TokenKind.PROTECTED,
     "class_method": TokenKind.CLASS_METHOD,
+    "on":           TokenKind.ON,
+    "off":          TokenKind.OFF,
+    "once":         TokenKind.ONCE,
     "Self":         TokenKind.SELF_TYPE,
     "new_type":     TokenKind.NEW_TYPE,
     "Any":          TokenKind.ANY,
@@ -278,6 +287,7 @@ _TOKEN_STR: dict[TokenKind, str] = {
     TokenKind.STAR_STAR:      "**",
     TokenKind.AT:             "@",
     TokenKind.EQ_EQ:          "==",
+    TokenKind.EQ_EQ_EQ:       "===",
     TokenKind.NOT_EQ:         "!=",
     TokenKind.LT:             "<",
     TokenKind.GT:             ">",

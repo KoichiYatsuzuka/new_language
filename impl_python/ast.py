@@ -1,4 +1,4 @@
-# git SHA: a0f66e96131f289987cf8ad1cc86e1d868e93590
+# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -20,6 +20,7 @@ class BinOp(Enum):
     MOD       = auto()   # %
     POW       = auto()   # **
     EQ        = auto()   # ==
+    REF_EQ    = auto()   # ===
     NOT_EQ    = auto()   # !=
     LT        = auto()   # <
     GT        = auto()   # >
@@ -40,7 +41,7 @@ class BinOp(Enum):
             BinOp.ADD: "+", BinOp.SUB: "-", BinOp.MUL: "*",
             BinOp.DIV: "/", BinOp.FLOOR_DIV: "//", BinOp.MOD: "%",
             BinOp.POW: "**",
-            BinOp.EQ: "==", BinOp.NOT_EQ: "!=",
+            BinOp.EQ: "==", BinOp.REF_EQ: "===", BinOp.NOT_EQ: "!=",
             BinOp.LT: "<", BinOp.GT: ">", BinOp.LT_EQ: "<=", BinOp.GT_EQ: ">=",
             BinOp.AND: "and", BinOp.OR: "or",
             BinOp.BIT_AND: "&", BinOp.BIT_OR: "|", BinOp.BIT_XOR: "^",
@@ -531,6 +532,18 @@ class StmtFromImport:
     names: list[tuple[str, Optional[str]]]
     body: list["Stmt"]
 
+@dataclass
+class StmtEventSubscribe:
+    source: "Expr"
+    handler: "Expr"
+    is_once: bool
+    is_async: bool
+
+@dataclass
+class StmtEventUnsubscribe:
+    source: "Expr"
+    handler: "Expr"
+
 
 Stmt = (
     StmtExpr | StmtLet | StmtConst | StmtMut | StmtStatic |
@@ -541,5 +554,6 @@ Stmt = (
     StmtFnDef | StmtGenDef | StmtClassDef | StmtTraitDef | StmtField |
     StmtNewTypeDef | StmtEnumDef | StmtTry | StmtRaise |
     StmtImport | StmtFromImport |
-    StmtLetTuple | StmtAsyncAssign
+    StmtLetTuple | StmtAsyncAssign |
+    StmtEventSubscribe | StmtEventUnsubscribe
 )

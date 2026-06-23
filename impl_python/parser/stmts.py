@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
 """Statement parsing (mirrors src/parser/stmts.rs)."""
 from __future__ import annotations
 from typing import Optional
@@ -16,6 +16,7 @@ from ..ast import (
     StmtBlockReturn, StmtLoopYield, StmtYield, StmtFreeze,
     StmtFnDef, StmtGenDef, StmtEnumDef, StmtNewTypeDef,
     StmtTry, StmtRaise, StmtAsyncAssign,
+    StmtEventSubscribe, StmtEventUnsubscribe,
     ExprAttr, ExprIdent, ExprTraitAccess,
 )
 
@@ -284,7 +285,10 @@ class _ParserStmts:
         if k == TokenKind.IDENT:
             return self._parse_ident_stmt()
 
-        return StmtExpr(expr=self._parse_expr())
+        expr = self._parse_expr()
+        if self._current_kind() in (TokenKind.ON, TokenKind.ONCE, TokenKind.OFF):
+            return self._try_parse_event_stmt(expr)
+        return StmtExpr(expr=expr)
 
     # ------------------------------------------------------------------
     # if / elif / else
@@ -405,7 +409,28 @@ class _ParserStmts:
         if op2 is not None:
             self._advance()
             return StmtAttrCompoundAssign(target=expr, op=op2, value=self._parse_expr())
+        if cur in (TokenKind.ON, TokenKind.ONCE, TokenKind.OFF):
+            return self._try_parse_event_stmt(expr)
         return StmtExpr(expr=expr)
+
+    def _try_parse_event_stmt(self, source: Expr) -> Stmt:
+        """Parse `source on/once/off handler` into an event stmt."""
+        cur = self._current_kind()
+        if cur in (TokenKind.ON, TokenKind.ONCE):
+            is_once = cur == TokenKind.ONCE
+            self._advance()
+            is_async = False
+            if self._current_kind() == TokenKind.ASYNC:
+                self._advance()
+                is_async = True
+            handler = self._parse_expr()
+            return StmtEventSubscribe(source=source, handler=handler,
+                                      is_once=is_once, is_async=is_async)
+        if cur == TokenKind.OFF:
+            self._advance()
+            handler = self._parse_expr()
+            return StmtEventUnsubscribe(source=source, handler=handler)
+        raise self._error(f"expected 'on', 'once', or 'off' in event statement")
 
     def _parse_compound(self, op: BinOp) -> Stmt:
         span = self._current_span()

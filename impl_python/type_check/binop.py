@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
 """Binary operator type checking mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import TYPE_CHECKING
@@ -33,10 +33,10 @@ def _infer_binop_result(op: BinOp, lt: "InferredType", rt: "InferredType") -> "I
 
     if isinstance(lt, TySet) and isinstance(rt, TySet):
         if op in (BinOp.BIT_OR, BinOp.BIT_AND, BinOp.BIT_XOR, BinOp.SUB): return TySet()
-        if op in (BinOp.EQ, BinOp.NOT_EQ):                                  return TyBool()
+        if op in (BinOp.EQ, BinOp.REF_EQ, BinOp.NOT_EQ):                    return TyBool()
         return TyUnresolved()
 
-    if op in (BinOp.EQ, BinOp.NOT_EQ, BinOp.LT, BinOp.GT, BinOp.LT_EQ, BinOp.GT_EQ,
+    if op in (BinOp.EQ, BinOp.REF_EQ, BinOp.NOT_EQ, BinOp.LT, BinOp.GT, BinOp.LT_EQ, BinOp.GT_EQ,
               BinOp.AND, BinOp.OR, BinOp.IN, BinOp.NOT_IN):
         return TyBool()
 

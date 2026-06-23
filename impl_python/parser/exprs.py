@@ -1,4 +1,4 @@
-# git SHA: 72d280d65fc4cfdf05891c5c08c1331617d7e194
+# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
 """Expression parsing (mirrors src/parser/exprs.rs)."""
 from __future__ import annotations
 from typing import Optional
@@ -67,6 +67,7 @@ class _ParserExprs:
             return ExprBinOp(op=BinOp.NOT_IN, left=left, right=right, span=span)
         _CMP = {
             TokenKind.EQ_EQ: BinOp.EQ,
+            TokenKind.EQ_EQ_EQ: BinOp.REF_EQ,
             TokenKind.NOT_EQ: BinOp.NOT_EQ,
             TokenKind.LT: BinOp.LT,
             TokenKind.GT: BinOp.GT,

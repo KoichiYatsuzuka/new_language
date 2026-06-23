@@ -1,4 +1,4 @@
-﻿# git SHA: 72d280d65fc4cfdf05891c5c08c1331617d7e194
+﻿# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
 """Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
@@ -21,6 +21,7 @@ from ..ast import (
     StmtFnDef, StmtGenDef, StmtClassDef, StmtTraitDef, StmtField,
     StmtNewTypeDef, StmtEnumDef, StmtTry, StmtRaise,
     StmtImport, StmtFromImport, StmtLetTuple, StmtAsyncAssign,
+    StmtEventSubscribe, StmtEventUnsubscribe,
     # Helpers
     BinOp, UnaryOp, Accessibility, FieldKind,
     Param, TemplateParam, CallArg, CallArgPositional, CallArgKeyword, CallArgVariadic,
@@ -34,6 +35,7 @@ from .value import (
     TlTemplateFn, TlTemplateGenFn, TlTemplateClass,
     TlClass, TlInstance, TlType, TlTrait,
     TlNamespace, TlSlice, TlFileObject, TlComplex,
+    TlSignal, TlEventLoop,
     CapturedImm, CapturedMut,
     type_name, display, is_truthy, _values_equal, deep_clone, _repr_val,
 )
@@ -110,6 +112,10 @@ class Interpreter:
             self._env.declare(name, val, mutable=False)
         # Install built-in enums
         self._install_builtin_enums()
+        # Event system: Signal type marker and EventLoop singleton
+        self._env.declare("Signal", TlType("Signal"), mutable=False)
+        self._event_loop = TlEventLoop()
+        self._env.declare("EventLoop", self._event_loop, mutable=False)
 
     # ------------------------------------------------------------------
     # Built-in enum installation
@@ -405,6 +411,25 @@ class Interpreter:
             case StmtAsyncAssign(target=target, return_type=return_type, stmts=stmts):
                 self._exec_async_assign(target, stmts)
 
+            case StmtEventSubscribe(source=source, handler=handler,
+                                    is_once=is_once, is_async=is_async):
+                sig = self.eval(source)
+                if not isinstance(sig, TlSignal):
+                    raise RuntimeError(
+                        f"TypeError: 'on'/'once' requires a Signal, got '{type_name(sig)}'"
+                    )
+                h = self.eval(handler)
+                sig.handlers.append((h, is_once, is_async))
+
+            case StmtEventUnsubscribe(source=source, handler=handler):
+                sig = self.eval(source)
+                if not isinstance(sig, TlSignal):
+                    raise RuntimeError(
+                        f"TypeError: 'off' requires a Signal, got '{type_name(sig)}'"
+                    )
+                h = self.eval(handler)
+                self._signal_unsubscribe(sig, h)
+
             case _:
                 raise InterpreterError(f"Unknown statement type: {type(stmt).__name__}")
 
@@ -601,6 +626,8 @@ class Interpreter:
                 raise RuntimeError(f"TypeError: unsupported operand types for **")
             case BinOp.EQ:
                 return self._values_eq(left, right)
+            case BinOp.REF_EQ:
+                return self._values_ref_eq(left, right)
             case BinOp.NOT_EQ:
                 return not self._values_eq(left, right)
             case BinOp.LT:
@@ -691,12 +718,26 @@ class Interpreter:
                 if not self._values_eq(v, bv): return False  # type: ignore[arg-type]
             return True
         if isinstance(a, TlInstance) and isinstance(b, TlInstance):
-            # Check for __eq__ method
             if "__eq__" in a.cls.methods:
                 result = self._call_method(a, "__eq__", [b])
                 return is_truthy(result)
-            return a is b
+            if a is b:
+                return True
+            if a.cls.name != b.cls.name:
+                return False
+            if len(a.fields) != len(b.fields):
+                return False
+            return all(
+                k in b.fields and self._values_eq(v[0], b.fields[k][0])
+                for k, v in a.fields.items()
+            )
         return a is b
+
+    def _values_ref_eq(self, a: Value, b: Value) -> bool:
+        if isinstance(a, (TlInstance, TlClass, TlList, TlDict, TlSet)) or \
+           isinstance(b, (TlInstance, TlClass, TlList, TlDict, TlSet)):
+            return a is b
+        return self._values_eq(a, b)
 
     def _cmp(self, left: Value, right: Value, op: str) -> bool:
         if isinstance(left, bool) or isinstance(right, bool):
@@ -742,6 +783,12 @@ class Interpreter:
             raise RuntimeError(f"AttributeError: module '{obj.name}' has no attribute '{attr}'")
         if isinstance(obj, TlType):
             return obj.name
+        if isinstance(obj, TlSignal):
+            if attr == "handler_count":
+                return len(obj.handlers)
+            raise RuntimeError(f"AttributeError: 'Signal' has no attribute '{attr}'")
+        if isinstance(obj, TlEventLoop):
+            raise RuntimeError(f"AttributeError: 'EventLoop' has no attribute '{attr}' (use EventLoop.run() / EventLoop.post())")
         # Built-in type attribute dispatch
         return get_attr_builtin(obj, attr, self._known_classes)
 
@@ -927,6 +974,12 @@ class Interpreter:
             args, kwargs = self._eval_args(args_ast)
             return self._call_attr(obj, attr, args, kwargs)
 
+        # Signal[T]() — template instantiation for Signal type
+        if isinstance(func_expr, ExprTemplateInstantiate):
+            base_val = self.eval(func_expr.base)
+            if isinstance(base_val, TlType) and base_val.name == "Signal":
+                return TlSignal()
+
         func = self.eval(func_expr)
         args, kwargs = self._eval_args(args_ast)
         return self._call(func, args, kwargs)
@@ -974,6 +1027,10 @@ class Interpreter:
             if attr in obj.members:
                 return self._call(obj.members[attr], args, kwargs)
             raise RuntimeError(f"AttributeError: module '{obj.name}' has no attribute '{attr}'")
+        if isinstance(obj, TlSignal):
+            return self._call_signal_method(obj, attr, args)
+        if isinstance(obj, TlEventLoop):
+            return self._call_event_loop_method(obj, attr, args)
         # Built-in type methods
         method = get_attr_builtin(obj, attr, self._known_classes)
         return self._call(method, args, kwargs)
@@ -2117,6 +2174,70 @@ class Interpreter:
 
         t = _threading.Thread(target=run_task, daemon=True)
         t.start()
+
+    # ------------------------------------------------------------------
+    # Event handler helpers
+    # ------------------------------------------------------------------
+
+    def _signal_unsubscribe(self, sig: TlSignal, handler: Value) -> None:
+        """Remove all handler entries whose function matches `handler`."""
+        if isinstance(handler, TlFunction):
+            sig.handlers = [
+                (h, once, asyn)
+                for h, once, asyn in sig.handlers
+                if not (isinstance(h, TlFunction) and h is handler)
+            ]
+        elif isinstance(handler, TlOverloadedFn):
+            sig.handlers = [
+                (h, once, asyn)
+                for h, once, asyn in sig.handlers
+                if not (isinstance(h, TlFunction) and any(h is f for f in handler.overloads))
+            ]
+
+    def _call_signal_method(self, sig: TlSignal, method: str, args: list) -> Value:
+        if method == "emit":
+            val = args[0] if args else None
+            handlers_snapshot = list(sig.handlers)
+            sig.handlers = [
+                entry for entry in sig.handlers if not entry[1]  # keep non-once
+            ]
+            for h, is_once, is_async in handlers_snapshot:
+                if is_async:
+                    self._event_loop.signal_queue.append((sig, val, h))
+                else:
+                    self._call(h, [val], {})
+            return None
+        if method == "emit_async":
+            val = args[0] if args else None
+            for h, _once, _async in sig.handlers:
+                self._event_loop.signal_queue.append((sig, val, h))
+            return None
+        raise RuntimeError(f"AttributeError: 'Signal' has no method '{method}'")
+
+    def _call_event_loop_method(self, el: TlEventLoop, method: str, args: list) -> Value:
+        if method == "run":
+            import time
+            timeout = float(args[0]) if args else None
+            deadline = (time.monotonic() + timeout) if timeout is not None else None
+            while True:
+                if not el.signal_queue and not el.post_queue:
+                    break
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
+                # Process one batch
+                sq = list(el.signal_queue); el.signal_queue.clear()
+                for _sig, val, h in sq:
+                    self._call(h, [val], {})
+                pq = list(el.post_queue); el.post_queue.clear()
+                for cb in pq:
+                    self._call(cb, [], {})
+            return None
+        if method == "post":
+            if not args:
+                raise RuntimeError("TypeError: EventLoop.post() requires a callable argument")
+            el.post_queue.append(args[0])
+            return None
+        raise RuntimeError(f"AttributeError: 'EventLoop' has no method '{method}'")
 
 
 # ---------------------------------------------------------------------------
