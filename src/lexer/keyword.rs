@@ -87,6 +87,9 @@ impl Lexer {
             "Any" => Token::Any,
             "Union" => Token::Union,
             "Option" => Token::Option,
+            "on" => Token::On,
+            "off" => Token::Off,
+            "once" => Token::Once,
             // キーワードに一致しない場合は識別子トークンを返す
             _ => Token::Ident(word),
         }

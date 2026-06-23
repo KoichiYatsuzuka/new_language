@@ -1,0 +1,50 @@
+# event_handler.ar — Signal[T] / on / once / off / emit / emit_async / EventLoop
+
+# ── 基本的な Signal と on/off ──────────────────────────────────────────────
+
+let counter = Signal[int]()
+
+fn on_count(mut n: int) -> None:
+    print("handler A:", n)
+
+fn on_once(mut n: int) -> None:
+    print("handler B (once):", n)
+
+# on: 継続購読
+counter on on_count
+
+# once: 1 回だけ購読
+counter once on_once
+
+# 1 回目の emit — A と B 両方呼ばれる
+counter.emit(1)
+
+# 2 回目の emit — B は解除済みなので A だけ呼ばれる
+counter.emit(2)
+
+# off: 購読解除
+counter off on_count
+
+# 3 回目の emit — ハンドラなし（何も出力されない）
+counter.emit(3)
+
+print("handler_count:", counter.handler_count)   # → 0
+
+# ── emit_async + EventLoop.run() ────────────────────────────────────────────
+
+let events = Signal[int]()
+
+fn async_handler(mut v: int) -> None:
+    print("async got:", v)
+
+events on async_handler
+
+# emit_async は EventLoop のキューに積む（即時呼び出しではない）
+events.emit_async(10)
+events.emit_async(20)
+events.emit_async(30)
+
+# EventLoop.run(timeout) でキューを処理する（タイムアウト付き）
+EventLoop.run(1.0)
+
+print("done")

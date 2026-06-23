@@ -787,6 +787,11 @@ pub enum Value {
     AsyncManager(Rc<RefCell<async_mgr::AsyncManagerData>>),
     /// Async 列挙型の値 (Async.Waiting / Async.Running / Async.Done)。
     AsyncStatusVal(async_mgr::AsyncStatus),
+    /// `Signal[T]()` で生成される Arrow ネイティブのイベントソース。
+    /// `.emit(val)` で全ハンドラを同期呼び出し、`.emit_async(val)` でキューに積む。
+    Signal(Rc<RefCell<super::event_loop::SignalData>>),
+    /// EventLoop シングルトン。`EventLoop.run()` / `EventLoop.post(fn)` で利用する。
+    EventLoop(Rc<RefCell<super::event_loop::EventLoopData>>),
 }
 
 // ---------------------------------------------------------------------------

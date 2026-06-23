@@ -142,6 +142,12 @@ impl Interpreter {
                 });
                 self.exec_generator(gen_fn, call_args, None)
             }
+            // Signal[T]() — 型付きシグナルを生成する（型引数は型チェックの注釈としてのみ使用）
+            Value::Type(ref t) if t == "Signal" => {
+                Ok(Value::Signal(std::rc::Rc::new(std::cell::RefCell::new(
+                    super::event_loop::SignalData::new(),
+                ))))
+            }
             // 組み込み辞書型コンストラクタ: `dict[KeyType, ItemType](...)`
             Value::Type(ref t) if t == "dict" => {
                 if type_args.len() != 2 {
@@ -793,5 +799,27 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         },
         Stmt::BreakPoint { span } => Stmt::BreakPoint { span: span.clone() },
         Stmt::DebugLet(name, e) => Stmt::DebugLet(name.clone(), subst_expr(e, type_map)),
+        Stmt::EventSubscribe {
+            source,
+            handler,
+            is_once,
+            is_async,
+            span,
+        } => Stmt::EventSubscribe {
+            source: subst_expr(source, type_map),
+            handler: subst_expr(handler, type_map),
+            is_once: *is_once,
+            is_async: *is_async,
+            span: span.clone(),
+        },
+        Stmt::EventUnsubscribe {
+            source,
+            handler,
+            span,
+        } => Stmt::EventUnsubscribe {
+            source: subst_expr(source, type_map),
+            handler: subst_expr(handler, type_map),
+            span: span.clone(),
+        },
     }
 }

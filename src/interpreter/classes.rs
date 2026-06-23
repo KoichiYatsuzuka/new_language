@@ -1012,9 +1012,157 @@ impl Interpreter {
                     )),
                 }
             }
+            Value::Signal(sig_rc) => {
+                self.exec_signal_method(sig_rc.clone(), method_name, args)
+            }
+            Value::EventLoop(el_rc) => {
+                self.exec_event_loop_method(el_rc.clone(), method_name, args)
+            }
             _ => Err(format!(
                 "AttributeError: '{}' object has no method '{method_name}'",
                 self.type_name(&obj)
+            )),
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Signal メソッド
+    // ---------------------------------------------------------------------------
+
+    /// `Signal[T]` のメソッド呼び出しを処理する。
+    fn exec_signal_method(
+        &mut self,
+        sig_rc: std::rc::Rc<std::cell::RefCell<super::event_loop::SignalData>>,
+        method_name: &str,
+        args: &[crate::ast::CallArg],
+    ) -> Result<Value, String> {
+        match method_name {
+            "emit" => {
+                let evaled = self.eval_call_args(args)?;
+                let val = match evaled.as_slice() {
+                    [(_, v)] => v.clone(),
+                    [] => Value::None,
+                    _ => return Err("TypeError: Signal.emit() takes exactly 1 argument".to_string()),
+                };
+                // 全ハンドラを取得（is_once のものはリストから除去される）。
+                let handlers = sig_rc.borrow_mut().collect_handlers_for_emit();
+                let el_rc = self.event_loop_data.clone();
+                for (func, is_async) in handlers {
+                    if is_async {
+                        // 非同期ハンドラ: EventLoop キューに積む。
+                        el_rc.borrow_mut().signal_queue.push_back((sig_rc.clone(), val.clone()));
+                    } else {
+                        // 同期ハンドラ: 即座に呼ぶ。
+                        self.call_value_with_args(func, vec![val.clone()])?;
+                    }
+                }
+                Ok(Value::None)
+            }
+            "emit_async" => {
+                let evaled = self.eval_call_args(args)?;
+                let val = match evaled.as_slice() {
+                    [(_, v)] => v.clone(),
+                    [] => Value::None,
+                    _ => return Err("TypeError: Signal.emit_async() takes exactly 1 argument".to_string()),
+                };
+                // EventLoop のキューに積むだけ。実際の呼び出しは EventLoop.run() が行う。
+                let el_rc = self.event_loop_data.clone();
+                el_rc.borrow_mut().signal_queue.push_back((sig_rc.clone(), val));
+                Ok(Value::None)
+            }
+            _ => Err(format!(
+                "AttributeError: 'Signal' object has no method '{method_name}'"
+            )),
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // EventLoop メソッド
+    // ---------------------------------------------------------------------------
+
+    /// `EventLoop` のメソッド呼び出しを処理する。
+    fn exec_event_loop_method(
+        &mut self,
+        el_rc: std::rc::Rc<std::cell::RefCell<super::event_loop::EventLoopData>>,
+        method_name: &str,
+        args: &[crate::ast::CallArg],
+    ) -> Result<Value, String> {
+        match method_name {
+            "run" => {
+                // EventLoop.run([timeout: float])
+                let evaled = self.eval_call_args(args)?;
+                let timeout_ms: Option<u64> = match evaled.as_slice() {
+                    [] => None,
+                    [(key, Value::Float(f))]
+                        if key.is_none() || key.as_deref() == Some("timeout") =>
+                    {
+                        Some((f * 1000.0) as u64)
+                    }
+                    [(key, Value::Int(n))]
+                        if key.is_none() || key.as_deref() == Some("timeout") =>
+                    {
+                        Some((*n as u64) * 1000)
+                    }
+                    _ => return Err("TypeError: EventLoop.run() takes at most 1 argument (timeout: float)".to_string()),
+                };
+
+                let deadline = timeout_ms.map(|ms| {
+                    std::time::Instant::now() + std::time::Duration::from_millis(ms)
+                });
+
+                loop {
+                    // 外部イベントキュー（C#/Go ブリッジ）を処理する。
+                    self.drain_external_events()?;
+
+                    // Signal の非同期キューと post キューを処理する。
+                    let has_work = {
+                        let b = el_rc.borrow();
+                        b.has_work()
+                    };
+                    if has_work {
+                        // signal_queue エントリを 1 つ取り出して全同期ハンドラを呼ぶ。
+                        let entry = el_rc.borrow_mut().signal_queue.pop_front();
+                        if let Some((sig_ref, val)) = entry {
+                            let handlers = sig_ref.borrow_mut().collect_handlers_for_emit();
+                            for (func, _is_async) in handlers {
+                                // EventLoop 内では全ハンドラを同期的に処理する（非同期も含む）。
+                                self.call_value_with_args(func, vec![val.clone()])?;
+                            }
+                        }
+                        // post キューのコールバックを 1 つ取り出して呼ぶ。
+                        let cb = el_rc.borrow_mut().post_queue.pop_front();
+                        if let Some(func) = cb {
+                            self.call_value_with_args(func, vec![])?;
+                        }
+                        continue;
+                    }
+
+                    // タイムアウトチェック。
+                    if let Some(dl) = deadline {
+                        if std::time::Instant::now() >= dl {
+                            break;
+                        }
+                    } else {
+                        // タイムアウトなし: 作業がなければ終了。
+                        break;
+                    }
+
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Ok(Value::None)
+            }
+            "post" => {
+                // EventLoop.post(fn) — メインスレッドへ処理を投入する。
+                let evaled = self.eval_call_args(args)?;
+                let func = match evaled.as_slice() {
+                    [(_, v)] => v.clone(),
+                    _ => return Err("TypeError: EventLoop.post() takes exactly 1 argument".to_string()),
+                };
+                el_rc.borrow_mut().post_queue.push_back(func);
+                Ok(Value::None)
+            }
+            _ => Err(format!(
+                "AttributeError: 'EventLoop' object has no method '{method_name}'"
             )),
         }
     }

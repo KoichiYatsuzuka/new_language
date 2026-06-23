@@ -25,6 +25,8 @@ use crate::ast::Accessibility;
 
 #[path = "interpreter/async_mgr.rs"]
 pub(crate) mod async_mgr;
+#[path = "interpreter/event_loop.rs"]
+pub(crate) mod event_loop;
 #[path = "interpreter/classes.rs"]
 mod classes;
 #[path = "interpreter/cpp_bridge/mod.rs"]
@@ -234,6 +236,13 @@ pub struct Interpreter {
     /// when the current statement has no extractable location (e.g. `Stmt::Mut`
     /// wrapping a bare `Expr::Call(Expr::Ident(...))`).
     pub(self) dbg_last_span: Option<crate::token::Span>,
+    /// Arrow ネイティブの EventLoop シングルトン状態。
+    /// `EventLoop.run()` が処理する非同期イベントキューと post コールバックキューを保持する。
+    pub(self) event_loop_data: Rc<RefCell<event_loop::EventLoopData>>,
+    /// C#/Go ブリッジが `ar_event_fire()` で書き込むスレッドセーフキュー。
+    pub(self) external_event_queue: event_loop::ExternalEventQueue,
+    /// 外部イベント handler_id → SignalData の逆引きマップ（C#/Go 連携時に使用）。
+    pub(self) external_handler_registry: HashMap<u64, Rc<RefCell<event_loop::SignalData>>>,
 }
 
 impl Interpreter {
@@ -248,6 +257,23 @@ impl Interpreter {
     pub fn new() -> Self {
         let mut global: HashMap<String, Var> = HashMap::new();
         built_in_types::register_builtin_globals(&mut global);
+
+        // Signal: テンプレート型コンストラクタ。Signal[T]() で Value::Signal を生成する。
+        global.insert(
+            "Signal".to_string(),
+            Var::new(Value::Type("Signal".to_string()), false),
+        );
+
+        // EventLoop シングルトンを生成してグローバルスコープに登録する。
+        let el_data = Rc::new(RefCell::new(event_loop::EventLoopData::new()));
+        global.insert(
+            "EventLoop".to_string(),
+            Var::new(Value::EventLoop(el_data.clone()), false),
+        );
+
+        // 外部イベントキューを生成してグローバルキューにも登録する（ar_event_fire から利用）。
+        let ext_q = event_loop::new_external_queue();
+        event_loop::set_global_ext_queue(ext_q.clone());
 
         Self {
             scopes: vec![global],
@@ -264,6 +290,9 @@ impl Interpreter {
             jit_handles: Vec::new(),
             dbg_vars: HashMap::new(),
             dbg_last_span: None,
+            event_loop_data: el_data,
+            external_event_queue: ext_q,
+            external_handler_registry: HashMap::new(),
         }
     }
 

@@ -748,6 +748,30 @@ pub enum Stmt {
     BreakPoint { span: Span },
     /// `let dbg::name = expr` — デバッガ REPL 内限定の一時変数宣言。再開時に削除される。
     DebugLet(String, Expr),
+    /// `source on handler` または `source once handler` — イベントハンドラを購読する。
+    ///
+    /// - `source`   : `Signal[T]`・`EventSource[T]`・`GoChannel[T]` を返す式。
+    /// - `handler`  : ハンドラ関数式（`fn(x): body` または変数名）。
+    /// - `is_once`  : `true` の場合 `once` 演算子。呼び出し後に自動解除される。
+    /// - `is_async` : `true` の場合、EventLoop 内で別スレッドで実行される非同期ハンドラ。
+    /// - `span`     : エラー報告に使用する位置情報。
+    EventSubscribe {
+        source: Expr,
+        handler: Expr,
+        is_once: bool,
+        is_async: bool,
+        span: Span,
+    },
+    /// `source off handler` — イベントハンドラの購読を解除する。
+    ///
+    /// - `source`  : `Signal[T]`・`EventSource[T]`・`GoChannel[T]` を返す式。
+    /// - `handler` : 解除するハンドラ関数値（`fn(x): ...` の変数名または式）。
+    /// - `span`    : エラー報告に使用する位置情報。
+    EventUnsubscribe {
+        source: Expr,
+        handler: Expr,
+        span: Span,
+    },
 }
 
 /// `try` 文内の単一の `except` 節を表す。

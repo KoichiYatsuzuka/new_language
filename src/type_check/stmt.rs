@@ -594,6 +594,10 @@ impl TypeChecker {
                 self.check_stmts(stmts);
                 self.pop_scope();
             }
+
+            Stmt::EventSubscribe { .. } | Stmt::EventUnsubscribe { .. } => {
+                // イベント購読/解除文: 現時点では型チェックをスキップ
+            }
         }
     }
 

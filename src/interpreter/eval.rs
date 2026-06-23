@@ -1173,6 +1173,13 @@ impl Interpreter {
         if type_name == "AsyncManager" {
             return self.make_async_manager(args);
         }
+        // Signal[T]() — Arrow ネイティブのイベントソースを生成する。
+        // テンプレート引数 T はランタイムでは無視する。
+        if type_name == "Signal" {
+            return Ok(Value::Signal(std::rc::Rc::new(std::cell::RefCell::new(
+                super::event_loop::SignalData::new(),
+            ))));
+        }
         let evaled = self.eval_call_args(args)?;
         let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
         self.call_type_by_name_evaled(type_name, vals)
@@ -1767,6 +1774,22 @@ impl Interpreter {
                 "step" => Ok(s.step.clone().unwrap_or(Value::None)),
                 _ => Err(format!("AttributeError: 'slice' has no attribute '{attr}'")),
             },
+            Value::Signal(sig_rc) => {
+                // Signal[T] には read-only プロパティのみ。メソッドは eval_method_call が処理する。
+                let sig = sig_rc.borrow();
+                match attr {
+                    "handler_count" => Ok(Value::Int(sig.handlers.len() as i64)),
+                    _ => Err(format!(
+                        "AttributeError: 'Signal' object has no attribute '{attr}'"
+                    )),
+                }
+            }
+            Value::EventLoop(_) => {
+                // EventLoop のメソッドは eval_method_call が処理する。属性アクセスのみここ。
+                Err(format!(
+                    "AttributeError: 'EventLoop' object has no attribute '{attr}' (use EventLoop.run() / EventLoop.post())"
+                ))
+            }
             Value::AsyncManager(mgr_rc) => {
                 let mgr = mgr_rc.borrow();
                 match attr {

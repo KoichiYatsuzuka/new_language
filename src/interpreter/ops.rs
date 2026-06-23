@@ -77,7 +77,9 @@ impl Interpreter {
             | Value::NativeFunction(_)
             | Value::Slice(_)
             | Value::AsyncManager(_)
-            | Value::AsyncStatusVal(_) => true,
+            | Value::AsyncStatusVal(_)
+            | Value::Signal(_)
+            | Value::EventLoop(_) => true,
         }
     }
 
@@ -114,6 +116,8 @@ impl Interpreter {
             Value::Slice(_) => "slice",
             Value::AsyncManager(_) => "AsyncManager",
             Value::AsyncStatusVal(_) => "Async",
+            Value::Signal(_) => "Signal",
+            Value::EventLoop(_) => "EventLoop",
         }
     }
 
@@ -371,6 +375,12 @@ impl Interpreter {
                 )
             }
             Value::AsyncStatusVal(s) => s.display_str().to_string(),
+            Value::Signal(sig_rc) => {
+                let sig = sig_rc.borrow();
+                let addr = std::rc::Rc::as_ptr(sig_rc) as usize;
+                format!("<Signal handlers={} at 0x{:x}>", sig.handlers.len(), addr)
+            }
+            Value::EventLoop(_) => "<EventLoop>".to_string(),
             Value::FrozenList { state, layout } => {
                 let st = state.borrow();
                 let parts: Vec<String> = (0..st.len)

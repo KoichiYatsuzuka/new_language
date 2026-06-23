@@ -257,6 +257,11 @@ pub enum Token {
     Union,
     Option,
 
+    // Event handler keywords
+    On,   // on
+    Off,  // off
+    Once, // once
+
     // Arithmetic operators
     Plus,       // +
     Minus,      // -
@@ -420,6 +425,9 @@ impl Token {
             Token::Any => Some("Any"),
             Token::Union => Some("Union"),
             Token::Option => Some("Option"),
+            Token::On => Some("on"),
+            Token::Off => Some("off"),
+            Token::Once => Some("once"),
             _ => None,
         }
     }

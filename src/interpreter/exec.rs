@@ -241,6 +241,16 @@ impl Interpreter {
                 self.dbg_vars.insert(name.clone(), Var::new(value, false));
                 Ok(ExecResult::Normal)
             }
+            Stmt::EventSubscribe {
+                source,
+                handler,
+                is_once,
+                is_async,
+                ..
+            } => self.exec_event_subscribe(source, handler, *is_once, *is_async),
+            Stmt::EventUnsubscribe {
+                source, handler, ..
+            } => self.exec_event_unsubscribe(source, handler),
         }
     }
 
@@ -1375,6 +1385,78 @@ impl Interpreter {
         let env = super::async_mgr::capture_env(self);
         mgr_rc.borrow_mut().add_task(stmts.to_vec(), env);
         Ok(ExecResult::Normal)
+    }
+
+    // ---------------------------------------------------------------------------
+    // External event queue draining (C#/Go bridge)
+    // ---------------------------------------------------------------------------
+
+    /// 外部イベントキュー（C#/Go ブリッジが ar_event_fire() で書き込んだもの）をすべて処理する。
+    pub(super) fn drain_external_events(&mut self) -> Result<(), String> {
+        let events: Vec<super::event_loop::ExternalEvent> = {
+            let mut guard = self.external_event_queue.lock().unwrap();
+            guard.drain(..).collect()
+        };
+        for ev in events {
+            let sig_rc = self.external_handler_registry.get(&ev.handler_id).cloned();
+            if let Some(sig_rc) = sig_rc {
+                // データは MessagePack でシリアライズされているが、現時点では str として渡す。
+                let val = Value::Str(String::from_utf8_lossy(&ev.data).into_owned());
+                let handlers = sig_rc.borrow_mut().collect_handlers_for_emit();
+                for (h, _) in handlers {
+                    self.call_value_with_args(h, vec![val.clone()])?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------------
+    // Event handler subscription / unsubscription
+    // ---------------------------------------------------------------------------
+
+    /// `source on handler` / `source once handler` — イベントハンドラを登録する。
+    fn exec_event_subscribe(
+        &mut self,
+        source: &crate::ast::Expr,
+        handler: &crate::ast::Expr,
+        is_once: bool,
+        is_async: bool,
+    ) -> Result<ExecResult, String> {
+        let source_val = self.eval(source)?;
+        let handler_val = self.eval(handler)?;
+        match source_val {
+            Value::Signal(sig_rc) => {
+                sig_rc
+                    .borrow_mut()
+                    .subscribe(handler_val, is_once, is_async);
+                Ok(ExecResult::Normal)
+            }
+            other => Err(format!(
+                "TypeError: 'on'/'once' operator requires a Signal, got '{}'",
+                self.type_name(&other)
+            )),
+        }
+    }
+
+    /// `source off handler` — ハンドラを解除する。
+    fn exec_event_unsubscribe(
+        &mut self,
+        source: &crate::ast::Expr,
+        handler: &crate::ast::Expr,
+    ) -> Result<ExecResult, String> {
+        let source_val = self.eval(source)?;
+        let handler_val = self.eval(handler)?;
+        match source_val {
+            Value::Signal(sig_rc) => {
+                sig_rc.borrow_mut().unsubscribe_by_value(&handler_val);
+                Ok(ExecResult::Normal)
+            }
+            other => Err(format!(
+                "TypeError: 'off' operator requires a Signal, got '{}'",
+                self.type_name(&other)
+            )),
+        }
     }
 
     // ---------------------------------------------------------------------------

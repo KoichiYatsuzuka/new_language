@@ -540,6 +540,23 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
                 ("expr", expr_to_value(expr)),
             ],
         ),
+
+        Stmt::EventSubscribe { source, handler, is_once, is_async, .. } => ns(
+            "StmtEventSubscribe",
+            vec![
+                ("source", expr_to_value(source)),
+                ("handler", expr_to_value(handler)),
+                ("is_once", Value::Bool(*is_once)),
+                ("is_async", Value::Bool(*is_async)),
+            ],
+        ),
+        Stmt::EventUnsubscribe { source, handler, .. } => ns(
+            "StmtEventUnsubscribe",
+            vec![
+                ("source", expr_to_value(source)),
+                ("handler", expr_to_value(handler)),
+            ],
+        ),
     }
 }
 

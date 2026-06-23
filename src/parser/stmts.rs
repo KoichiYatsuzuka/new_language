@@ -4,7 +4,7 @@ use super::Parser;
 use crate::ast::{
     Accessibility, BinOp, ExceptHandler, Expr, MatchArm, MatchPattern, Param, Stmt, TupleTarget,
 };
-use crate::token::Token;
+use crate::token::{Span, Token};
 
 /// 複合代入演算子トークンを対応する二項演算子（`BinOp`）に変換する。
 ///
@@ -321,7 +321,15 @@ impl Parser {
             Token::Import => self.parse_import_stmt(),
             Token::From => self.parse_from_import_stmt(),
             Token::Ident(_) => self.parse_ident_stmt(),
-            _ => Ok(Stmt::Expr(self.parse_expr()?)),
+            _ => {
+                let span = self.current_span();
+                let expr = self.parse_expr()?;
+                if let Some(event_stmt) = self.try_parse_event_stmt(expr.clone(), span)? {
+                    Ok(event_stmt)
+                } else {
+                    Ok(Stmt::Expr(expr))
+                }
+            }
         }
     }
 
@@ -534,12 +542,63 @@ impl Parser {
                             op,
                             value: self.parse_expr()?,
                         })
+                    } else if matches!(
+                        self.current(),
+                        Token::On | Token::Once | Token::Off
+                    ) {
+                        // イベントハンドラ文（on/once/off）
+                        self.try_parse_event_stmt(expr, Span::unknown())?
+                            .ok_or_else(|| "internal: expected event stmt".to_string())
                     } else {
                         // 代入でなければ式文として返す
                         Ok(Stmt::Expr(expr))
                     }
                 }
             }
+        }
+    }
+
+    /// 式 `lhs` の後に `on`/`once`/`off` キーワードが続く場合、イベントハンドラ文を返す。
+    /// 続かない場合は `None` を返す（呼び出し元が通常の式文として処理する）。
+    ///
+    /// 構文:
+    /// - `source on [async] handler`   → `Stmt::EventSubscribe { is_once: false, is_async: ? }`
+    /// - `source once [async] handler` → `Stmt::EventSubscribe { is_once: true,  is_async: ? }`
+    /// - `source off handler`          → `Stmt::EventUnsubscribe`
+    pub(super) fn try_parse_event_stmt(
+        &mut self,
+        source: Expr,
+        span: Span,
+    ) -> Result<Option<Stmt>, String> {
+        match self.current().clone() {
+            Token::On | Token::Once => {
+                let is_once = *self.current() == Token::Once;
+                self.advance(); // consume `on` or `once`
+                let is_async = if *self.current() == Token::Async {
+                    self.advance(); // consume `async`
+                    true
+                } else {
+                    false
+                };
+                let handler = self.parse_expr()?;
+                Ok(Some(Stmt::EventSubscribe {
+                    source,
+                    handler,
+                    is_once,
+                    is_async,
+                    span,
+                }))
+            }
+            Token::Off => {
+                self.advance(); // consume `off`
+                let handler = self.parse_expr()?;
+                Ok(Some(Stmt::EventUnsubscribe {
+                    source,
+                    handler,
+                    span,
+                }))
+            }
+            _ => Ok(None),
         }
     }
 

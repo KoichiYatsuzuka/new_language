@@ -1,0 +1,221 @@
+// event_loop.rs — Signal[T], EventLoop, and cross-thread event queue
+//
+// Arrow ネイティブのイベントシステムを実装する。
+//
+// 担当:
+//   SignalData       — ハンドラリストと emit_async キューを持つシグナルのランタイム状態
+//   HandlerEntry     — 個々のハンドラ（関数値・is_once・is_async フラグ・ID）
+//   EventLoopData    — emit_async で積まれたイベントと post() コールバックのキュー
+//   ExternalEvent    — C#/Go ブリッジから ar_event_fire() で積まれた外部イベント
+//   ExternalEventQueue — Arc<Mutex<VecDeque<ExternalEvent>>>: スレッドセーフキュー
+//   new_external_queue — ExternalEventQueue を生成するファクトリ
+
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+
+use super::Value;
+
+// ---------------------------------------------------------------------------
+// HandlerEntry
+// ---------------------------------------------------------------------------
+
+/// Signal に登録された 1 つのハンドラエントリ。
+#[derive(Debug, Clone)]
+pub struct HandlerEntry {
+    /// ハンドラの一意 ID（subscribe 時に発行）。
+    pub id: u64,
+    /// ハンドラ関数値（`Value::Function` / `Value::OverloadedFn` など）。
+    pub func: Value,
+    /// `true` の場合、呼び出し後に自動解除される一回限りのハンドラ。
+    pub is_once: bool,
+    /// `true` の場合、EventLoop 内で別スレッドで実行される非同期ハンドラ。
+    pub is_async: bool,
+}
+
+// ---------------------------------------------------------------------------
+// SignalData
+// ---------------------------------------------------------------------------
+
+/// `Signal[T]` のランタイム状態。
+///
+/// - `handlers`    : 登録済みハンドラのリスト（同期・非同期・一回限りを含む）
+/// - `async_queue` : `emit_async(val)` で積まれた値のキュー（EventLoop が処理）
+/// - `next_id`     : 次のハンドラ ID（単調増加）
+#[derive(Debug)]
+pub struct SignalData {
+    pub handlers: Vec<HandlerEntry>,
+    /// `emit_async()` で積まれた値。EventLoop.run() が取り出してハンドラを呼ぶ。
+    pub async_queue: VecDeque<Value>,
+    pub next_id: u64,
+}
+
+impl SignalData {
+    pub fn new() -> Self {
+        Self {
+            handlers: Vec::new(),
+            async_queue: VecDeque::new(),
+            next_id: 1,
+        }
+    }
+
+    /// ハンドラを登録して割り当てた ID を返す。
+    pub fn subscribe(&mut self, func: Value, is_once: bool, is_async: bool) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.handlers.push(HandlerEntry {
+            id,
+            func,
+            is_once,
+            is_async,
+        });
+        id
+    }
+
+    /// `func` と Rc ポインタが一致するハンドラをすべて削除する。
+    pub fn unsubscribe_by_value(&mut self, func: &Value) {
+        match func {
+            Value::Function(target) => {
+                self.handlers.retain(|h| {
+                    if let Value::Function(hf) = &h.func {
+                        !Rc::ptr_eq(hf, target)
+                    } else {
+                        true
+                    }
+                });
+            }
+            Value::OverloadedFn(targets) => {
+                self.handlers.retain(|h| {
+                    if let Value::Function(hf) = &h.func {
+                        !targets.iter().any(|t| Rc::ptr_eq(hf, t))
+                    } else {
+                        true
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// 関数名でハンドラを削除する（名前が一致するものをすべて削除）。
+    pub fn unsubscribe_by_name(&mut self, name: &str) {
+        self.handlers.retain(|h| match &h.func {
+            Value::Function(f) => f.name != name,
+            _ => true,
+        });
+    }
+
+    /// `emit(val)` の全ハンドラを `(func, is_async)` ペアとして返す。
+    /// `is_once=true` のエントリはリストから除去される。
+    pub fn collect_handlers_for_emit(&mut self) -> Vec<(Value, bool)> {
+        let mut result = Vec::new();
+        let mut to_remove = Vec::new();
+        for h in &self.handlers {
+            result.push((h.func.clone(), h.is_async));
+            if h.is_once {
+                to_remove.push(h.id);
+            }
+        }
+        self.handlers.retain(|h| !to_remove.contains(&h.id));
+        result
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EventLoopData
+// ---------------------------------------------------------------------------
+
+/// EventLoop のランタイム状態。
+///
+/// - `signal_queue` : `emit_async(val)` で積まれた `(Signal の Rc, 値)` ペア
+/// - `post_queue`   : `EventLoop.post(fn)` で積まれたコールバック関数値
+#[derive(Debug)]
+pub struct EventLoopData {
+    /// `emit_async()` で積まれた `(signal_rc, value)` ペア。
+    pub signal_queue: VecDeque<(Rc<RefCell<SignalData>>, Value)>,
+    /// `EventLoop.post(fn)` で積まれたコールバック。メインスレッドで実行される。
+    pub post_queue: VecDeque<Value>,
+}
+
+impl EventLoopData {
+    pub fn new() -> Self {
+        Self {
+            signal_queue: VecDeque::new(),
+            post_queue: VecDeque::new(),
+        }
+    }
+
+    /// キューに処理すべき項目があれば `true`。
+    pub fn has_work(&self) -> bool {
+        !self.signal_queue.is_empty() || !self.post_queue.is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// External event queue  (for C# / Go bridge)
+// ---------------------------------------------------------------------------
+
+/// C#/Go ブリッジスレッドから Arrow メインスレッドへ送るイベントデータ。
+///
+/// - `handler_id` : Arrow 側でハンドラ登録時に発行された ID（Arrow の SignalData 内の ID と対応）
+/// - `data`       : MessagePack でシリアライズされたイベント引数バイト列
+#[derive(Debug, Clone)]
+pub struct ExternalEvent {
+    pub handler_id: u64,
+    pub data: Vec<u8>,
+}
+
+/// スレッドセーフな外部イベントキュー。C#/Go ブリッジが `ar_event_fire()` で書き込み、
+/// Arrow メインスレッドが `EventLoop.run()` のティック内で読み出す。
+pub type ExternalEventQueue = Arc<Mutex<VecDeque<ExternalEvent>>>;
+
+/// ExternalEventQueue を新規生成する。Interpreter::new() から1度だけ呼ばれる。
+pub fn new_external_queue() -> ExternalEventQueue {
+    Arc::new(Mutex::new(VecDeque::new()))
+}
+
+// ---------------------------------------------------------------------------
+// Global external queue singleton  (for ar_event_fire C ABI)
+// ---------------------------------------------------------------------------
+
+/// `ar_event_fire` が書き込む静的キュー。インタープリタ初期化時に設定され、
+/// 以降は不変（同じ Arc を使い続ける）。
+static GLOBAL_EXT_QUEUE: std::sync::OnceLock<ExternalEventQueue> = std::sync::OnceLock::new();
+
+/// グローバル外部キューをセットする（Interpreter::new() から呼ぶ）。
+/// 2 回目以降は無視される（インタープリタは通常1つだけ起動する）。
+pub fn set_global_ext_queue(q: ExternalEventQueue) {
+    let _ = GLOBAL_EXT_QUEUE.set(q);
+}
+
+/// `ar_event_fire(handler_id, data_ptr, len)` C ABI 実装。
+/// 外部スレッド（C#/Go ブリッジ）から呼ばれ、グローバルキューにイベントを積む。
+///
+/// # Safety
+/// `data_ptr` は `len` バイト以上の有効なメモリを指していなければならない。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_event_fire(handler_id: u64, data_ptr: *const u8, len: usize) {
+    let data = if data_ptr.is_null() || len == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(data_ptr, len).to_vec() }
+    };
+    if let Some(q) = GLOBAL_EXT_QUEUE.get() {
+        if let Ok(mut guard) = q.lock() {
+            guard.push_back(ExternalEvent { handler_id, data });
+        }
+    }
+}
+
+/// C# チャネルへの送信（逆方向: Arrow → Go/C# チャネル）。
+/// 現時点では stub のみ（実装は C# ブリッジ側に依存）。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ar_channel_send(
+    _name_ptr: *const u8,
+    _name_len: usize,
+    _data_ptr: *const u8,
+    _data_len: usize,
+) {
+    // TODO: look up the channel write callback registered by the Go bridge and call it
+}
