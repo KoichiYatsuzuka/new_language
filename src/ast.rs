@@ -93,8 +93,10 @@ pub enum BinOp {
     Mod,
     /// べき乗 `**`（右結合）
     Pow,
-    /// 等値比較 `==`
+    /// 等値比較 `==`（値またはフィールドの構造的等値）
     Eq,
+    /// 参照等値比較 `===`（参照先が同一のときのみ真）
+    RefEq,
     /// 非等値比較 `!=`
     NotEq,
     /// 未満比較 `<`
@@ -142,6 +144,7 @@ impl BinOp {
             BinOp::Mod => "%",
             BinOp::Pow => "**",
             BinOp::Eq => "==",
+            BinOp::RefEq => "===",
             BinOp::NotEq => "!=",
             BinOp::Lt => "<",
             BinOp::Gt => ">",

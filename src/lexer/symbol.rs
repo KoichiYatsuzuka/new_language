@@ -129,11 +129,16 @@ impl Lexer {
                 }
             }
 
-            // `=` / `==` / `=>`
+            // `=` / `==` / `===` / `=>`
             '=' => {
                 if self.ch() == Some('=') {
                     self.pos += 1;
-                    Token::EqEq
+                    if self.ch() == Some('=') {
+                        self.pos += 1;
+                        Token::EqEqEq
+                    } else {
+                        Token::EqEq
+                    }
                 } else if self.ch() == Some('>') {
                     self.pos += 1;
                     Token::FatArrow

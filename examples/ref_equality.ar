@@ -1,0 +1,31 @@
+class Point:
+    mut x: int
+    mut y: int
+    fn __init__(mut self, let x: int, let y: int) -> None:
+        self.x = x
+        self.y = y
+
+let a = Point(1, 2)
+let b = Point(1, 2)
+let c = a
+
+# == は値（構造的）比較: 同じクラスかつ全フィールド等値
+print(a == b)   # True  (同じ型・フィールド値)
+print(a == c)   # True  (同じ参照)
+print(a == Point(9, 9))  # False
+
+# === は参照比較: 同一オブジェクトのみ真
+print(a === c)  # True  (同じ参照)
+print(a === b)  # False (別オブジェクト)
+
+# プリミティブは === も値比較と同じ動作
+let x = 42
+let y = 42
+print(x === y)  # True
+
+# リスト: === はポインタ比較
+let lst1 = [1, 2, 3]
+let lst2 = [1, 2, 3]
+let lst3 = lst1
+print(lst1 === lst3)  # True
+print(lst1 === lst2)  # False

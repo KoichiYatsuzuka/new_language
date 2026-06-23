@@ -129,6 +129,7 @@ impl Parser {
         }
         let op = match self.current() {
             Token::EqEq => Some(BinOp::Eq),
+            Token::EqEqEq => Some(BinOp::RefEq),
             Token::NotEq => Some(BinOp::NotEq),
             Token::Lt => Some(BinOp::Lt),
             Token::Gt => Some(BinOp::Gt),

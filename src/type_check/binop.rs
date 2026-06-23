@@ -106,6 +106,7 @@ impl TypeChecker {
         }
         match op {
             BinOp::Eq
+            | BinOp::RefEq
             | BinOp::NotEq
             | BinOp::Lt
             | BinOp::Gt

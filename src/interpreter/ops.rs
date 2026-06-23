@@ -704,6 +704,7 @@ impl Interpreter {
             (BinOp::Pow, Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powi(*b as i32))),
             // 比較演算
             (BinOp::Eq, _, _) => Ok(Value::Bool(self.values_eq(&lv, &rv))),
+            (BinOp::RefEq, _, _) => Ok(Value::Bool(self.values_ref_eq(&lv, &rv))),
             (BinOp::NotEq, _, _) => Ok(Value::Bool(!self.values_eq(&lv, &rv))),
             (BinOp::Lt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(*a < *b)),
             (BinOp::Lt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(*a < *b)),
@@ -873,21 +874,31 @@ impl Interpreter {
             (Value::None, Value::None) => true,
             // インスタンスの等値判定:
             // enum バリアント (class name が "enum_item_" で始まる) はフィールド値で比較する。
-            // let バインドで深いコピーが作成されるため Rc::ptr_eq は使えない。
-            // それ以外のインスタンスは参照の同一性 (Rc::ptr_eq) で比較する。
+            // それ以外のインスタンスは参照の同一性を先に確認し、
+            // 一致しない場合は同じクラスかつ全フィールドが等値であれば真とする。
             (Value::Instance(a), Value::Instance(b)) => {
+                if Rc::ptr_eq(a, b) {
+                    return true;
+                }
                 let a_borrow = a.borrow();
                 let b_borrow = b.borrow();
                 if a_borrow.class.name.starts_with("enum_item_")
                     && a_borrow.class.name == b_borrow.class.name
                 {
-                    // enum バリアントは "value" フィールドの値で等値判定
                     match (a_borrow.fields.get("value"), b_borrow.fields.get("value")) {
                         (Some((va, _)), Some((vb, _))) => self.values_eq(va, vb),
-                        _ => Rc::ptr_eq(a, b),
+                        _ => false,
                     }
                 } else {
-                    Rc::ptr_eq(a, b)
+                    // 構造的等値: 同じクラス名かつ全フィールドが等値
+                    a_borrow.class.name == b_borrow.class.name
+                        && a_borrow.fields.len() == b_borrow.fields.len()
+                        && a_borrow.fields.iter().all(|(k, (va, _))| {
+                            b_borrow
+                                .fields
+                                .get(k)
+                                .map_or(false, |(vb, _)| self.values_eq(va, vb))
+                        })
                 }
             }
             (Value::Type(a), Value::Type(b)) => a == b,
@@ -905,6 +916,21 @@ impl Interpreter {
                 ar.len() == br.len() && ar.iter().all(|v| br.iter().any(|w| self.values_eq(v, w)))
             }
             _ => false,
+        }
+    }
+
+    /// `===` 演算子: 参照の同一性のみで等値を判定する。
+    ///
+    /// - 参照型 (`Instance`, `Class`, `List`, `Dict`, `Set`) は `Rc::ptr_eq` でポインタを比較する。
+    /// - 値型 (`Int`, `Float`, `Str` など) は参照の概念がないため `values_eq` と同じ挙動にする。
+    pub(super) fn values_ref_eq(&self, a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Instance(a), Value::Instance(b)) => Rc::ptr_eq(a, b),
+            (Value::Class(a), Value::Class(b)) => Rc::ptr_eq(a, b),
+            (Value::List(a), Value::List(b)) => Rc::ptr_eq(a, b),
+            (Value::Dict(a), Value::Dict(b)) => Rc::ptr_eq(a, b),
+            (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
+            _ => self.values_eq(a, b),
         }
     }
 }

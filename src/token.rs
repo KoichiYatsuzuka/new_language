@@ -273,12 +273,13 @@ pub enum Token {
     At,         // @
 
     // Comparison operators
-    EqEq,  // ==
-    NotEq, // !=
-    Lt,    // <
-    Gt,    // >
-    LtEq,  // <=
-    GtEq,  // >=
+    EqEq,    // ==
+    EqEqEq,  // ===
+    NotEq,   // !=
+    Lt,      // <
+    Gt,      // >
+    LtEq,    // <=
+    GtEq,    // >=
 
     // Bitwise operators
     Amp,   // &
@@ -455,6 +456,7 @@ impl std::fmt::Display for Token {
             Token::StarStar => write!(f, "**"),
             Token::At => write!(f, "@"),
             Token::EqEq => write!(f, "=="),
+            Token::EqEqEq => write!(f, "==="),
             Token::NotEq => write!(f, "!="),
             Token::Lt => write!(f, "<"),
             Token::Gt => write!(f, ">"),

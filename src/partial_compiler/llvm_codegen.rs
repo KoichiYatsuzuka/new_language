@@ -2376,6 +2376,7 @@ fn binop_code(op: &BinOp) -> i32 {
         BinOp::Gt => 11, BinOp::GtEq => 12, BinOp::BitAnd => 13,
         BinOp::BitOr => 14, BinOp::BitXor => 15, BinOp::LShift => 16,
         BinOp::RShift => 17, BinOp::In => 18, BinOp::NotIn => 19,
+        BinOp::RefEq => 20,
         BinOp::And | BinOp::Or => unreachable!("and/or handled separately"),
     }
 }
