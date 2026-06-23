@@ -1,0 +1,54 @@
+import[cs-dll] cs_form_test.FormBridge as forms
+
+print("=== C# WinForms フォームアプリ デモ ===")
+print()
+
+# ── 1. メッセージボックス ──────────────────────────────────────────────────
+print("1) メッセージボックスを表示します...")
+let r = forms.FormApp.message_box("Arrow から起動", "C# WinForms フォームが Arrow から呼び出されました！\n\n「OK」を押して続けてください。", 0)
+print("   結果:", r)
+print()
+
+# ── 2. 入力ダイアログ ─────────────────────────────────────────────────────
+print("2) 名前入力ダイアログを表示します...")
+let name_handle = forms.FormApp.input_box("名前を入力", "あなたのお名前を入力してください:")
+if name_handle != 0:
+    let name = forms.FormApp.get_str(name_handle)
+    forms.FormApp.message_box("こんにちは！", "ようこそ、" + name + " さん！\nArrow から C# フォームへ文字列が渡されました。", 0)
+    print("   入力された名前:", name)
+else:
+    print("   キャンセルされました")
+print()
+
+# ── 3. ノート作成フォーム ─────────────────────────────────────────────────
+print("3) ノート作成フォームを表示します...")
+let note_handle = forms.FormApp.show_note("ノート作成 (Arrow → C#)")
+if note_handle != 0:
+    let title   = forms.FormApp.get_note_title(note_handle)
+    let content = forms.FormApp.get_note_content(note_handle)
+    forms.FormApp.release(note_handle)
+    print("   タイトル:", title)
+    print("   本文:", content)
+    forms.FormApp.message_box("ノート保存完了",
+        "タイトル: " + title + "\n内容: " + content + "\n\nArrow がノートを受け取りました！", 0)
+else:
+    print("   キャンセルされました")
+print()
+
+# ── 4. TODO リスト管理フォーム ────────────────────────────────────────────
+print("4) TODO マネージャーフォームを表示します...")
+print("   フォーム上でタスクを追加し「Done」を押してください")
+let todo_handle = forms.FormApp.show_todo("TODO マネージャー (Arrow から起動)")
+let count = forms.FormApp.todo_count(todo_handle)
+print("   追加されたタスク数:", count)
+if count > 0:
+    print("   タスク一覧:")
+    mut i = 0
+    while i < count:
+        let task = forms.FormApp.todo_get(todo_handle, i)
+        print("    -", task)
+        i += 1
+forms.FormApp.release(todo_handle)
+print()
+
+print("=== デモ完了 ===")
