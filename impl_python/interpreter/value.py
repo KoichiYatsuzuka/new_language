@@ -504,9 +504,6 @@ def display(v: "Value") -> str:
         return "{" + ", ".join(display(x) for x in v.items) + "}"
     if isinstance(v, TlInstance):
         cls = v.cls
-        # Check for __str__ method
-        if "__str__" in cls.methods:
-            return "<instance>"  # caller should invoke __str__
         if cls.new_type_base is not None:
             inner = v.fields.get("__value__")
             if inner:

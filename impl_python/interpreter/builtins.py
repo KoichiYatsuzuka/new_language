@@ -1,4 +1,4 @@
-# git SHA: 72d280d65fc4cfdf05891c5c08c1331617d7e194
+# git SHA: 50e5e5c504db52a6bd14efc51f25654e044702b9
 """Built-in functions and collection method dispatch."""
 from __future__ import annotations
 from typing import Optional, Callable, TYPE_CHECKING
@@ -13,7 +13,7 @@ from .value import (
 from .exceptions import RaiseSignal, StopIterationSignal
 
 if TYPE_CHECKING:
-    pass
+    from .interpreter import Interpreter
 
 
 # ---------------------------------------------------------------------------
@@ -642,7 +642,7 @@ def _make_native(name: str, fn: Callable) -> _NativeCallable:
 # Built-in function table
 # ---------------------------------------------------------------------------
 
-def make_builtins(known_classes: dict) -> dict[str, Value]:
+def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> dict[str, Value]:
     """Return the global built-in name→value map."""
 
     def builtin_print(args: list, kwargs: dict) -> None:
@@ -650,11 +650,22 @@ def make_builtins(known_classes: dict) -> dict[str, Value]:
         end = kwargs.get("end", "\n")
         if not isinstance(sep, str): sep = " "
         if not isinstance(end, str): end = "\n"
-        print(sep.join(display(a) for a in args), end=end)
+        if interp is not None:
+            parts = [interp._display_str(a) for a in args]
+        else:
+            parts = [display(a) for a in args]
+        print(sep.join(parts), end=end)
         return None
 
     def builtin_len(args: list, kwargs: dict) -> int:
         v = args[0]
+        if isinstance(v, TlInstance) and "__len__" in v.cls.methods:
+            if interp is None:
+                raise RuntimeError("TypeError: __len__ dispatch requires interpreter")
+            result = interp._call_method(v, "__len__", [])
+            if not isinstance(result, int) or isinstance(result, bool):
+                raise RuntimeError(f"TypeError: __len__ must return int, not '{type_name(result)}'")
+            return result
         if isinstance(v, (TlList, TlFixedList)): return len(v.items)
         if isinstance(v, TlDict): return len(v.keys)
         if isinstance(v, TlTuple): return len(v.values)
@@ -689,7 +700,21 @@ def make_builtins(known_classes: dict) -> dict[str, Value]:
 
     def builtin_str(args: list, kwargs: dict) -> str:
         if not args: return ""
+        if interp is not None:
+            return interp._display_str(args[0])
         return display(args[0])
+
+    def builtin_next(args: list, kwargs: dict) -> Value:
+        if not args:
+            raise RuntimeError("TypeError: next() takes exactly one argument")
+        v = args[0]
+        if isinstance(v, TlGenerator):
+            return gen_next(v)
+        if isinstance(v, TlInstance) and "__next__" in v.cls.methods:
+            if interp is None:
+                raise RuntimeError("TypeError: __next__ dispatch requires interpreter")
+            return interp._call_method(v, "__next__", [])
+        raise RuntimeError(f"TypeError: '{type_name(v)}' object is not an iterator")
 
     def builtin_repr(args: list, kwargs: dict) -> str:
         from .value import _repr_val
@@ -1009,6 +1034,7 @@ def make_builtins(known_classes: dict) -> dict[str, Value]:
     builtins: dict[str, Value] = {
         "print":     _make_native("print", builtin_print),
         "len":       _make_native("len", builtin_len),
+        "next":      _make_native("next", builtin_next),
         "range":     _make_native("range", builtin_range),
         "enumerate": _make_native("enumerate", builtin_enumerate),
         "zip":       _make_native("zip", builtin_zip),

@@ -1,4 +1,4 @@
-# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
+# git SHA: 50e5e5c504db52a6bd14efc51f25654e044702b9
 """Binary operator type checking mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import TYPE_CHECKING
@@ -7,7 +7,7 @@ from ..token import Span
 from ..ast import BinOp
 from .types import (
     TyInt, TyFloat, TyStr, TySet, TyAny, TyUnion, TyUnresolved,
-    TyBool, InferredType,
+    TyBool, TyNamedInstance, InferredType,
 )
 from .errors import ErrOperationOnAny, ErrOperationOnUnion, ErrIncompatibleComparison
 
@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 
 
 def _ordered_comparable(lt: "InferredType", rt: "InferredType") -> bool:
+    # NamedInstance は __lt__ 等のダンダーメソッドを持つ可能性があるため常に許可する
+    if isinstance(lt, TyNamedInstance) or isinstance(rt, TyNamedInstance):
+        return True
     if isinstance(lt, TyUnresolved) or isinstance(rt, TyUnresolved):
         return True
     return (

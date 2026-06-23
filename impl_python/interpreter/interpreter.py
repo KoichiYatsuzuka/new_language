@@ -1,4 +1,4 @@
-﻿# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
+﻿# git SHA: 50e5e5c504db52a6bd14efc51f25654e044702b9
 """Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
@@ -51,6 +51,30 @@ from .builtins import (
     _make_error_instance, _raise_builtin,
 )
 
+
+# ---------------------------------------------------------------------------
+# Operator → dunder method name mapping (EQ は _values_eq 内で処理するため除外)
+# ---------------------------------------------------------------------------
+
+_BINOP_DUNDER: dict = {
+    BinOp.ADD:       "__add__",
+    BinOp.SUB:       "__sub__",
+    BinOp.MUL:       "__mul__",
+    BinOp.DIV:       "__truediv__",
+    BinOp.FLOOR_DIV: "__floordiv__",
+    BinOp.MOD:       "__mod__",
+    BinOp.POW:       "__pow__",
+    BinOp.BIT_AND:   "__and__",
+    BinOp.BIT_OR:    "__or__",
+    BinOp.BIT_XOR:   "__xor__",
+    BinOp.L_SHIFT:   "__lshift__",
+    BinOp.R_SHIFT:   "__rshift__",
+    BinOp.NOT_EQ:    "__ne__",
+    BinOp.LT:        "__lt__",
+    BinOp.GT:        "__gt__",
+    BinOp.LT_EQ:     "__le__",
+    BinOp.GT_EQ:     "__ge__",
+}
 
 # ---------------------------------------------------------------------------
 # Thread-locals for control-flow expression state
@@ -108,7 +132,7 @@ class Interpreter:
         self._current_class: Optional[str] = None
         self._current_method: Optional[str] = None
         # Install built-ins into global scope
-        for name, val in make_builtins(self._known_classes).items():
+        for name, val in make_builtins(self._known_classes, self).items():
             self._env.declare(name, val, mutable=False)
         # Install built-in enums
         self._install_builtin_enums()
@@ -226,7 +250,7 @@ class Interpreter:
 
             case StmtIf(branches=branches, else_body=else_body):
                 for cond_expr, body in branches:
-                    if is_truthy(self.eval(cond_expr)):
+                    if self._eval_truthy(self.eval(cond_expr)):
                         self._env.push_scope()
                         try:
                             self.exec_stmts(body)
@@ -243,7 +267,7 @@ class Interpreter:
             case StmtWhile(cond=cond, body=body):
                 _inc_loop_depth()
                 try:
-                    while is_truthy(self.eval(cond)):
+                    while self._eval_truthy(self.eval(cond)):
                         self._env.push_scope()
                         try:
                             self.exec_stmts(body)
@@ -533,14 +557,30 @@ class Interpreter:
     # Binary / unary operators
     # ------------------------------------------------------------------
 
+    def _eval_truthy(self, val: Value) -> bool:
+        """__bool__ を持つ TlInstance に対してメソッドを呼び出し、なければ is_truthy へフォールバック。"""
+        if isinstance(val, TlInstance) and "__bool__" in val.cls.methods:
+            result = self._call_method(val, "__bool__", [])
+            if not isinstance(result, bool):
+                raise RuntimeError(f"TypeError: __bool__ should return bool, not '{type_name(result)}'")
+            return result
+        return is_truthy(val)
+
+    def _display_str(self, val: Value) -> str:
+        """__str__ を持つ TlInstance に対してメソッドを呼び出し、なければ display へフォールバック。"""
+        if isinstance(val, TlInstance) and "__str__" in val.cls.methods:
+            result = self._call_method(val, "__str__", [])
+            return result if isinstance(result, str) else display(result)
+        return display(val)
+
     def _eval_binop(self, op: BinOp, left_expr, right_expr) -> Value:
         # Short-circuit logical ops
         if op == BinOp.AND:
             lv = self.eval(left_expr)
-            return lv if not is_truthy(lv) else self.eval(right_expr)
+            return lv if not self._eval_truthy(lv) else self.eval(right_expr)
         if op == BinOp.OR:
             lv = self.eval(left_expr)
-            return lv if is_truthy(lv) else self.eval(right_expr)
+            return lv if self._eval_truthy(lv) else self.eval(right_expr)
         left = self.eval(left_expr)
         right = self.eval(right_expr)
         return self._apply_binop(op, left, right)
@@ -553,6 +593,11 @@ class Interpreter:
         raise RuntimeError(f"TypeError: cannot convert '{type_name(v)}' to complex")
 
     def _apply_binop(self, op: BinOp, left: Value, right: Value) -> Value:  # noqa: C901
+        # TlInstance dunder dispatch (__add__, __lt__, etc.)
+        if isinstance(left, TlInstance):
+            dunder = _BINOP_DUNDER.get(op)
+            if dunder and dunder in left.cls.methods:
+                return self._call_method(left, dunder, [right])
         # complex arithmetic (any operand is TlComplex)
         either_complex = isinstance(left, TlComplex) or isinstance(right, TlComplex)
         if either_complex and op in (BinOp.ADD, BinOp.SUB, BinOp.MUL, BinOp.DIV):
@@ -676,6 +721,13 @@ class Interpreter:
                 raise InterpreterError(f"Unknown binary op: {op}")
 
     def _apply_unary(self, op: UnaryOp, val: Value) -> Value:
+        if isinstance(val, TlInstance):
+            if op == UnaryOp.NEG and "__neg__" in val.cls.methods:
+                return self._call_method(val, "__neg__", [])
+            if op == UnaryOp.BIT_NOT and "__invert__" in val.cls.methods:
+                return self._call_method(val, "__invert__", [])
+            if op == UnaryOp.NOT:
+                return not self._eval_truthy(val)
         match op:
             case UnaryOp.NEG:
                 if isinstance(val, int) and not isinstance(val, bool): return -val
@@ -1622,7 +1674,7 @@ class Interpreter:
 
     def _eval_if_expr(self, branches: list, else_body: Optional[list]) -> Value:
         for cond_expr, body in branches:
-            if is_truthy(self.eval(cond_expr)):
+            if self._eval_truthy(self.eval(cond_expr)):
                 self._env.push_scope()
                 try:
                     self.exec_stmts(body)
@@ -1679,7 +1731,7 @@ class Interpreter:
         _set_block_yields([])
         _inc_loop_depth()
         try:
-            while is_truthy(self.eval(cond_expr)):
+            while self._eval_truthy(self.eval(cond_expr)):
                 self._env.push_scope()
                 try:
                     self.exec_stmts(body)
