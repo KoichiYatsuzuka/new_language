@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::ast::{CallArg, Expr};
+use crate::type_check::types::InferredType as IT;
 
 use super::errors::{StaticTypeError, TypeErrorKind};
 use super::types::{FnSig, FnTypeParam, InferredType};
@@ -27,22 +28,35 @@ impl TypeChecker {
     }
 
     fn infer_call_inner(&mut self, func: &Expr, args: &[CallArg]) -> InferredType {
+        // ── Step 1: method-call detection ──────────────────────────────────────
+        // Infer the object type exactly once here. This handles:
+        //   - NamedInstance: regular instance method calls (obj.method())
+        //   - TypeValOf(NamedInstance): class method calls (ClassName.method())
+        //   - Non-Ident objects: method chains (Builder(1).set(5))
+        // When method_call_info is Some, we skip self.infer(func) later to avoid
+        // double-evaluating the object and duplicating error reports.
         let method_call_info: Option<(String, String)> =
             if let Expr::Attr { object, attr, span } = func {
-                let obj_ty = match object.as_ref() {
-                    Expr::Ident(n) => self
-                        .lookup(n)
-                        .map(|v| v.ty.clone())
-                        .unwrap_or(InferredType::Unresolved),
-                    _ => InferredType::Unresolved,
+                let obj_ty = self.infer(object);
+                let cls_name_opt: Option<String> = match &obj_ty {
+                    InferredType::NamedInstance(cls) => Some(cls.clone()),
+                    InferredType::TypeValOf(inner) => {
+                        if let InferredType::NamedInstance(cls) = inner.as_ref() {
+                            Some(cls.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
                 };
-                if let InferredType::NamedInstance(cls_name) = obj_ty {
+                if let Some(cls_name) = cls_name_opt {
                     let is_static = self
                         .class_static_methods
                         .get(&cls_name)
                         .map(|s| s.contains(attr.as_str()))
                         .unwrap_or(false);
-                    if is_static {
+                    // StaticMethodOnInstance: only report when called on an instance
+                    if is_static && matches!(obj_ty, InferredType::NamedInstance(_)) {
                         self.report_error(StaticTypeError {
                             kind: TypeErrorKind::StaticMethodOnInstance {
                                 method_name: attr.clone(),
@@ -50,6 +64,10 @@ impl TypeChecker {
                             },
                             span: Some(span.clone()),
                         });
+                    }
+                    // Member accessibility check (same as infer(Attr) does for NamedInstance)
+                    if matches!(obj_ty, InferredType::NamedInstance(_)) {
+                        self.check_member_access_static(&cls_name, attr, Some(span.clone()));
                     }
                     Some((cls_name, attr.clone()))
                 } else {
@@ -64,7 +82,15 @@ impl TypeChecker {
             Expr::Attr { attr, .. } => Some(attr.clone()),
             _ => None,
         };
-        let func_type = self.infer(func);
+
+        // Only evaluate func type when not a method call. For method calls the object
+        // was already inferred above; re-calling self.infer(func) would re-evaluate
+        // the object expression and potentially duplicate errors.
+        let func_type = if method_call_info.is_none() {
+            self.infer(func)
+        } else {
+            InferredType::Unresolved
+        };
 
         let mut arg_data: Vec<(Option<String>, InferredType)> = Vec::new();
         for arg in args.iter() {
@@ -72,6 +98,22 @@ impl TypeChecker {
                 CallArg::Positional(e) => arg_data.push((None, self.infer(e))),
                 CallArg::Keyword { name, value } => {
                     arg_data.push((Some(name.clone()), self.infer(value)))
+                }
+                // 可変長引数: 各要素の型を推論し、リスト型として "..." キーで登録
+                CallArg::Variadic(exprs) => {
+                    let elem_types: Vec<InferredType> =
+                        exprs.iter().map(|e| self.infer(e)).collect();
+                    let list_ty = if elem_types.is_empty() {
+                        InferredType::List
+                    } else {
+                        let first = &elem_types[0];
+                        if elem_types.iter().all(|t| t == first) {
+                            InferredType::ListOf(Box::new(first.clone()))
+                        } else {
+                            InferredType::List
+                        }
+                    };
+                    arg_data.push((Some("...".to_string()), list_ty));
                 }
             }
         }
@@ -93,7 +135,9 @@ impl TypeChecker {
         }
 
         if let Some((ref cls_name, ref method_name)) = method_call_info {
-            self.check_self_type_params(cls_name, method_name, &arg_data);
+            // self/cls is passed implicitly; check_self_type_params accounts for the +1
+            let ret_ty = self.check_self_type_params(cls_name, method_name, &arg_data);
+            return ret_ty.unwrap_or(InferredType::Unresolved);
         } else if let Some(ref fname) = func_name {
             self.check_call_args(fname, &arg_data);
         }
@@ -108,7 +152,10 @@ impl TypeChecker {
             .as_deref()
             .and_then(|n| self.fn_sigs.get(n))
             .and_then(|sigs| {
-                let call_count = arg_data.len();
+                let call_count = arg_data
+                    .iter()
+                    .filter(|(k, _)| k.as_deref() != Some("..."))
+                    .count();
                 let matching: Vec<_> = sigs
                     .iter()
                     .filter(|s| call_count >= s.required_count && call_count <= s.params.len())
@@ -122,13 +169,16 @@ impl TypeChecker {
             .unwrap_or(InferredType::Unresolved)
     }
 
-    /// `Self` 型パラメータの制約を検査する。
+    /// メソッド呼び出しの引数を検査し、メソッドの戻り値型を返す。
+    ///
+    /// `self`/`cls` は呼び出し元が暗黙的に渡すため、`effective_count = arg_data.len() + 1`
+    /// で実際のパラメータ数と照合する。
     pub(super) fn check_self_type_params(
         &mut self,
         cls_name: &str,
         method_name: &str,
         arg_data: &[(Option<String>, InferredType)],
-    ) {
+    ) -> Option<InferredType> {
         let sigs = match self
             .class_method_sigs
             .get(cls_name)
@@ -136,19 +186,82 @@ impl TypeChecker {
             .cloned()
         {
             Some(s) => s,
-            None => return,
+            None => return None,
         };
-        let effective_count = arg_data.len() + 1;
+        // Static methods have no implicit receiver; instance/class methods add +1 for self/cls
+        let is_static = self
+            .class_static_methods
+            .get(cls_name)
+            .map(|s| s.contains(method_name))
+            .unwrap_or(false);
+        // 可変長引数エントリを除いた通常引数のみでカウント
+        let normal_args: Vec<_> = arg_data
+            .iter()
+            .filter(|(k, _)| k.as_deref() != Some("..."))
+            .collect();
+        let variadic_entry = arg_data.iter().find(|(k, _)| k.as_deref() == Some("..."));
+        let effective_count = if is_static {
+            normal_args.len()
+        } else {
+            normal_args.len() + 1
+        };
         let count_matching: Vec<FnSig> = sigs
             .iter()
             .filter(|s| effective_count >= s.required_count && effective_count <= s.params.len())
             .cloned()
             .collect();
+        if count_matching.is_empty() {
+            // Arg count mismatch: for instance/class methods subtract 1 to exclude implicit self/cls
+            let implicit = usize::from(!is_static);
+            if sigs.len() == 1 {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::CallArgCountMismatch {
+                        func_name: format!("{cls_name}.{method_name}"),
+                        expected_min: sigs[0].required_count.saturating_sub(implicit),
+                        expected_max: sigs[0].params.len().saturating_sub(implicit),
+                        got: normal_args.len(),
+                    },
+                    span: None,
+                });
+            } else {
+                let available = sigs
+                    .iter()
+                    .map(|s| s.params.len().saturating_sub(implicit))
+                    .collect();
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::NoMatchingOverload {
+                        func_name: format!("{cls_name}.{method_name}"),
+                        got: normal_args.len(),
+                        available,
+                    },
+                    span: None,
+                });
+            }
+            return None;
+        }
         if count_matching.len() != 1 {
-            return;
+            return None;
         }
         let sig = &count_matching[0];
-        for (arg_idx, (_, arg_ty)) in arg_data.iter().enumerate() {
+        // 可変長引数の型チェック
+        if let (Some((_, variadic_list_ty)), Some(expected_elem_ty)) =
+            (variadic_entry, &sig.variadic_type)
+        {
+            if let IT::ListOf(elem_ty) = variadic_list_ty {
+                if !self.type_matches(elem_ty, expected_elem_ty) {
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::CallArgTypeMismatch {
+                            func_name: format!("{cls_name}.{method_name}"),
+                            param_index: usize::MAX,
+                            expected: expected_elem_ty.clone(),
+                            got: *elem_ty.clone(),
+                        },
+                        span: None,
+                    });
+                }
+            }
+        }
+        for (arg_idx, (_, arg_ty)) in normal_args.iter().enumerate() {
             let param_idx = arg_idx + 1;
             if let Some((param_name, Some(InferredType::SelfType))) = sig.params.get(param_idx) {
                 if let InferredType::NamedInstance(got_cls) = arg_ty {
@@ -166,6 +279,7 @@ impl TypeChecker {
                 }
             }
         }
+        sig.return_type.clone()
     }
 
     /// 名前付き関数呼び出しの引数個数・型・キーワード引数名を検査する。
@@ -178,7 +292,15 @@ impl TypeChecker {
             Some(s) => s,
             None => return,
         };
-        let call_count = arg_data.len();
+
+        // 可変長引数エントリを分離
+        let variadic_entry = arg_data.iter().find(|(k, _)| k.as_deref() == Some("..."));
+        let normal_args: Vec<_> = arg_data
+            .iter()
+            .filter(|(k, _)| k.as_deref() != Some("..."))
+            .collect();
+        let call_count = normal_args.len();
+
         let count_matching: Vec<FnSig> = sigs
             .iter()
             .filter(|s| call_count >= s.required_count && call_count <= s.params.len())
@@ -215,7 +337,7 @@ impl TypeChecker {
 
         let sig = &count_matching[0];
         let mut positional_idx = 0usize;
-        for (key, arg_ty) in arg_data {
+        for (key, arg_ty) in &normal_args {
             match key {
                 Some(kwarg_name) => {
                     match sig.params.iter().position(|(n, _)| n == kwarg_name) {
@@ -234,7 +356,7 @@ impl TypeChecker {
                                             func_name: fname.to_string(),
                                             param_index: param_pos,
                                             expected: expected.clone(),
-                                            got: arg_ty.clone(),
+                                            got: (*arg_ty).clone(),
                                         },
                                         span: None,
                                     });
@@ -252,7 +374,7 @@ impl TypeChecker {
                                         func_name: fname.to_string(),
                                         param_index: positional_idx,
                                         expected: expected.clone(),
-                                        got: arg_ty.clone(),
+                                        got: (*arg_ty).clone(),
                                     },
                                     span: None,
                                 });
@@ -260,6 +382,25 @@ impl TypeChecker {
                         }
                     }
                     positional_idx += 1;
+                }
+            }
+        }
+
+        // 可変長引数の型チェック
+        if let (Some((_, variadic_list_ty)), Some(expected_elem_ty)) =
+            (variadic_entry, &sig.variadic_type)
+        {
+            if let IT::ListOf(elem_ty) = variadic_list_ty {
+                if !self.type_matches(elem_ty, expected_elem_ty) {
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::CallArgTypeMismatch {
+                            func_name: fname.to_string(),
+                            param_index: usize::MAX, // 可変長引数を示す特殊値
+                            expected: expected_elem_ty.clone(),
+                            got: *elem_ty.clone(),
+                        },
+                        span: None,
+                    });
                 }
             }
         }

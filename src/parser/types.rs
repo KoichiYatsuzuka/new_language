@@ -78,11 +78,11 @@ impl Parser {
 
     /// デフォルト値のないパラメータがデフォルト値ありのパラメータの後に来ていないか検証する。
     ///
-    /// `self` パラメータはデフォルト値を持たないが先頭に位置するため検査から除外する。
+    /// `self` と可変長（`variadic`）パラメータは検査から除外する。
     pub(super) fn validate_param_defaults(params: &[Param]) -> Result<(), String> {
         let mut seen_default = false;
         for p in params {
-            if p.name == "self" {
+            if p.name == "self" || p.variadic {
                 continue;
             }
             if p.default.is_some() {
@@ -99,13 +99,15 @@ impl Parser {
 
     /// 関数パラメータを1つパースして `Param` を返す。
     ///
-    /// 構文: `[mut] 識別子 [: 型] [= デフォルト式]`
+    /// 構文: `[mut|let] 識別子 [: 型] [= デフォルト式]`
+    ///       `[mut|let] ... : 型`  （可変長パラメータ）
     ///
     /// # 戻り値
-    /// `Param { name, mutable, type_ann, default }`
+    /// `Param { name, mutable, type_ann, default, variadic }`
     /// - `mutable`: `mut` キーワードが先行している場合は `true`
-    /// - `type_ann`: `: 型` がある場合は `Some(型名)`、ない場合は `None`
-    /// - `default`: `= 式` がある場合は `Some(式)`、ない場合は `None`
+    /// - `type_ann`: `: 型` がある場合は `Some(型名)`
+    /// - `default`: `= 式` がある場合は `Some(式)`
+    /// - `variadic`: `...` を名前として使用した場合は `true`
     ///
     /// # エラー
     /// 識別子または型名のパースに失敗した場合
@@ -120,26 +122,47 @@ impl Parser {
             }
             false
         };
-        let name = self.expect_ident()?;
-        // 型アノテーション `: 型` があればパース
+
+        // 可変長パラメータ: `let ...` または `mut ...`
+        let (name, variadic) = if *self.current() == Token::Ellipsis {
+            self.advance(); // consume `...`
+            ("...".to_string(), true)
+        } else {
+            (self.expect_ident()?, false)
+        };
+
+        // 型アノテーション `: 型` があればパース（可変長は必須）
         let type_ann = if *self.current() == Token::Colon {
             self.advance();
             Some(self.parse_type_expr()?)
         } else {
+            if variadic {
+                return Err(
+                    "ParseError: variadic parameter `...` requires a type annotation (e.g. `let ...: int`)".to_string()
+                );
+            }
             None
         };
-        // デフォルト値 `= 式` があればパース
+
+        // デフォルト値 `= 式` があればパース（可変長は不可）
         let default = if *self.current() == Token::Eq {
+            if variadic {
+                return Err(
+                    "ParseError: variadic parameter `...` cannot have a default value".to_string()
+                );
+            }
             self.advance();
             Some(self.parse_expr()?)
         } else {
             None
         };
+
         Ok(Param {
             name,
             mutable,
             type_ann,
             default,
+            variadic,
         })
     }
 

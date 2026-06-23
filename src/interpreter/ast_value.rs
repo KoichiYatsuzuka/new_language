@@ -165,6 +165,12 @@ fn call_args_list(args: &[CallArg]) -> Value {
                         ("value", expr_to_value(value)),
                     ],
                 ),
+                CallArg::Variadic(exprs) => ns(
+                    "CallArgVariadic",
+                    vec![("exprs", Value::List(Rc::new(RefCell::new(
+                        exprs.iter().map(|e| expr_to_value(e)).collect()
+                    ))))],
+                ),
             })
             .collect(),
     )))
@@ -688,5 +694,6 @@ fn expr_to_value(expr: &Expr) -> Value {
         ),
 
         Expr::DebugVar(name) => ns("ExprDebugVar", vec![("name", Value::Str(name.clone()))]),
+        Expr::LocalVar(name) => ns("ExprLocalVar", vec![("name", Value::Str(name.clone()))]),
     }
 }

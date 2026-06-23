@@ -364,6 +364,25 @@ impl Parser {
                     let mut args = Vec::new();
                     // 引数リストをパース。キーワード引数（`name=expr`）と位置引数を区別する
                     while *self.current() != Token::RParen && *self.current() != Token::Eof {
+                        // 可変長引数: `... = A, B, C` — 最後の引数としてのみ使用可能
+                        if *self.current() == Token::Ellipsis && *self.peek1() == Token::Eq {
+                            self.advance(); // consume `...`
+                            self.advance(); // consume `=`
+                            let mut variadic_exprs = Vec::new();
+                            while *self.current() != Token::RParen && *self.current() != Token::Eof {
+                                variadic_exprs.push(self.parse_expr()?);
+                                if *self.current() == Token::Comma {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                            if variadic_exprs.is_empty() {
+                                return Err("ParseError: variadic argument `... = ...` requires at least one expression".to_string());
+                            }
+                            args.push(CallArg::Variadic(variadic_exprs));
+                            break; // variadic は最後の引数
+                        }
                         // キーワード引数の判定: `Ident =`（`==` ではない）
                         let arg = if let Token::Ident(name) = self.current().clone() {
                             if *self.peek1() == Token::Eq {
@@ -661,6 +680,16 @@ impl Parser {
                     Ok(Expr::DebugVar(dbg_name))
                 } else {
                     Err("ParseError: 'dbg' is a reserved name for the debugger namespace (use dbg::varname)".to_string())
+                }
+            }
+            Token::Ident(name) if name == "local" => {
+                self.advance();
+                if *self.current() == Token::ColonColon {
+                    self.advance(); // consume ::
+                    let var_name = self.expect_ident()?;
+                    Ok(Expr::LocalVar(var_name))
+                } else {
+                    Err("ParseError: 'local' is reserved for the local namespace (use local::args)".to_string())
                 }
             }
             Token::Ident(name) => {

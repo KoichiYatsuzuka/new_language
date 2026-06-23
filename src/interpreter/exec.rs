@@ -784,12 +784,14 @@ impl Interpreter {
                             mutable: true,
                             type_ann: None,
                             default: None,
+                            variadic: false,
                         },
                         crate::ast::Param {
                             name: "value".to_string(),
                             mutable: false,
                             type_ann: Some(type_name.clone()),
                             default: None,
+                            variadic: false,
                         },
                     ],
                     body: init_body,
@@ -848,12 +850,14 @@ impl Interpreter {
                     mutable: true,
                     type_ann: None,
                     default: None,
+                    variadic: false,
                 },
                 crate::ast::Param {
                     name: "value".to_string(),
                     mutable: false,
                     type_ann: Some("int".to_string()),
                     default: None,
+                    variadic: false,
                 },
             ],
             body: init_body,
@@ -1859,6 +1863,7 @@ impl Interpreter {
                 mutable: true,
                 type_ann: None,
                 default: None,
+                variadic: false,
             }];
             for (fname, _) in &sdef.fields {
                 field_mutability.insert(fname.clone(), true);
@@ -1867,6 +1872,7 @@ impl Interpreter {
                     mutable: false,
                     type_ann: None,
                     default: None,
+                    variadic: false,
                 });
             }
 

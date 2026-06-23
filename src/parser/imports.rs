@@ -181,6 +181,7 @@ impl Parser {
                                 mutable,
                                 type_ann: Some(ctype_to_tl_str(&ct).to_string()),
                                 default: None,
+                                variadic: false,
                             }
                         })
                         .collect();

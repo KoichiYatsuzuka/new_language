@@ -350,6 +350,7 @@ impl Parser {
             mutable: true,
             type_ann: None,
             default: None,
+            variadic: false,
         }];
         for (_, fname, ftype) in trait_required {
             params.push(Param {
@@ -357,6 +358,7 @@ impl Parser {
                 mutable: false,
                 type_ann: Some(ftype.clone()),
                 default: None,
+                variadic: false,
             });
         }
         for (fname, ftype) in class_required {
@@ -365,6 +367,7 @@ impl Parser {
                 mutable: false,
                 type_ann: Some(ftype.clone()),
                 default: None,
+                variadic: false,
             });
         }
 

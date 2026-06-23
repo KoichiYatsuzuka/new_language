@@ -411,6 +411,8 @@ pub(crate) struct FnSig {
     pub(crate) params: Vec<(String, Option<InferredType>)>,
     pub(crate) required_count: usize,
     pub(crate) return_type: Option<InferredType>,
+    /// 可変長パラメータの要素型。`None` は可変長パラメータなし。
+    pub(crate) variadic_type: Option<InferredType>,
 }
 
 // ---------------------------------------------------------------------------

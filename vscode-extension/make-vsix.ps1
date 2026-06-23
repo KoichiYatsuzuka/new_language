@@ -23,6 +23,7 @@ $contentTypes = @'
   <Default Extension="md"           ContentType="text/markdown"/>
   <Default Extension="vsixmanifest" ContentType="text/xml"/>
   <Default Extension="png"          ContentType="image/png"/>
+  <Default Extension="ars"          ContentType="text/plain"/>
 </Types>
 '@
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
@@ -40,7 +41,7 @@ $manifest = @'
     <Identity Language="en-US" Id="arrow" Version="0.0.1" Publisher="arrow-publisher"/>
     <DisplayName>Arrow</DisplayName>
     <Description xml:space="preserve">Coding intelligence for Arrow (.ar files)</Description>
-    <Tags>Arrow,hv</Tags>
+    <Tags>Arrow,ar</Tags>
     <Categories>Programming Languages</Categories>
     <GalleryFlags>Public</GalleryFlags>
     <Badges></Badges>

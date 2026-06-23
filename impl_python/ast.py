@@ -1,4 +1,4 @@
-# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+# git SHA: a0f66e96131f289987cf8ad1cc86e1d868e93590
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -107,6 +107,7 @@ class Param:
     mutable: bool = False
     type_ann: Optional[str] = None
     default: Optional["Expr"] = None
+    variadic: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +131,15 @@ class CallArgKeyword:
         return self.value
 
 
-CallArg = CallArgPositional | CallArgKeyword
+@dataclass
+class CallArgVariadic:
+    exprs: list["Expr"]
+
+    def get_expr(self) -> "Expr":
+        return self.exprs[0] if self.exprs else ExprNone()
+
+
+CallArg = CallArgPositional | CallArgKeyword | CallArgVariadic
 
 
 # ---------------------------------------------------------------------------
@@ -304,12 +313,18 @@ class ExprCast:
     span: Span
 
 
+@dataclass
+class ExprLocalVar:
+    name: str
+
+
 Expr = (
     ExprInt | ExprFloat | ExprImaginaryLit | ExprStr | ExprBool | ExprNone | ExprIdent |
     ExprList | ExprAttr | ExprTraitAccess | ExprBinOp | ExprUnaryOp |
     ExprCall | ExprTemplateInstantiate | ExprSubscript | ExprSlice |
     ExprDict | ExprTuple | ExprSet | ExprBlock | ExprIfExpr |
-    ExprForExpr | ExprWhileExpr | ExprMatchExpr | ExprIsType | ExprCast
+    ExprForExpr | ExprWhileExpr | ExprMatchExpr | ExprIsType | ExprCast |
+    ExprLocalVar
 )
 
 

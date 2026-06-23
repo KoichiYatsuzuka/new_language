@@ -10,8 +10,8 @@ from ..ast import (
     ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
-    ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType, ExprCast,
-    CallArgPositional, CallArgKeyword, Expr,
+    ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType, ExprCast, ExprLocalVar,
+    CallArgPositional, CallArgKeyword, CallArgVariadic, Expr,
 )
 
 
@@ -180,7 +180,26 @@ class _ParserExprs:
                 self._advance()
                 args: list = []
                 while self._current_kind() not in (TokenKind.RPAREN, TokenKind.EOF):
+                    # 可変長引数: ... = expr, expr, ...
                     if (
+                        self._current_kind() == TokenKind.ELLIPSIS
+                        and self._peek1_kind() == TokenKind.EQ
+                    ):
+                        self._advance()  # consume ...
+                        self._advance()  # consume =
+                        variadic_exprs: list = []
+                        while self._current_kind() not in (TokenKind.RPAREN, TokenKind.EOF):
+                            variadic_exprs.append(self._parse_expr())
+                            if self._current_kind() == TokenKind.COMMA:
+                                self._advance()
+                            else:
+                                break
+                        if not variadic_exprs:
+                            from . import ParseError
+                            raise ParseError("ParseError: variadic argument '...' requires at least one expression")
+                        args.append(CallArgVariadic(exprs=variadic_exprs))
+                        break  # variadic must be last
+                    elif (
                         self._current_kind() == TokenKind.IDENT
                         and self._peek1_kind() == TokenKind.EQ
                     ):
@@ -329,7 +348,17 @@ class _ParserExprs:
         if k == TokenKind.OPTION:
             self._advance(); return ExprIdent(name="Option")
         if k == TokenKind.IDENT:
-            name = tok.value; self._advance(); return ExprIdent(name=name)  # type: ignore[arg-type]
+            name = tok.value
+            assert isinstance(name, str)
+            # local::name → ExprLocalVar
+            if name == "local":
+                self._advance()
+                if self._current_kind() != TokenKind.COLON_COLON:
+                    raise self._error("ParseError: 'local' must be followed by '::name'")
+                self._advance()
+                var_name = self._expect_ident()
+                return ExprLocalVar(name=var_name)
+            self._advance(); return ExprIdent(name=name)
         if k == TokenKind.SELF_TYPE:
             if self._class_or_trait_depth == 0:
                 raise self._error("ParseError: 'Self' can only be used inside class or trait definitions")

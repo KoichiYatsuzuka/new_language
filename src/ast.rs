@@ -18,27 +18,29 @@ pub struct TemplateParam {
     pub constraints: Vec<String>,
 }
 
-/// 関数呼び出しの1引数。位置引数またはキーワード引数のいずれかを表す。
+/// 関数呼び出しの1引数。位置引数・キーワード引数・可変長引数のいずれかを表す。
 ///
 /// # バリアント
 /// - `Positional(Expr)`                     : 位置引数。式の値をそのまま渡す。
 /// - `Keyword { name: String, value: Expr }`: キーワード引数。`name=value` の形式で渡す。
+/// - `Variadic(Vec<Expr>)`                  : 可変長引数。`... = A, B, C` の形式で渡す。
 #[derive(Debug, Clone)]
 pub enum CallArg {
     /// 位置引数: `f(expr)` の `expr` 部分。
     Positional(Expr),
     /// キーワード引数: `f(name=expr)` の形式。
     Keyword { name: String, value: Expr },
+    /// 可変長引数: `f(... = A, B, C)` の形式。呼び出し引数の最後にのみ使用可能。
+    Variadic(Vec<Expr>),
 }
 
 impl CallArg {
-    /// 引数の種類（位置引数・キーワード引数）を問わず、内包する式への参照を返す。
-    ///
-    /// # 戻り値
-    /// 引数として渡された式への参照。
+    /// 引数の種類を問わず、内包する式への参照を返す。
+    /// `Variadic` の場合は最初の要素への参照を返す（要素が1つ以上あることを前提とする）。
     pub fn expr(&self) -> &Expr {
         match self {
             Self::Positional(e) | Self::Keyword { value: e, .. } => e,
+            Self::Variadic(exprs) => exprs.first().expect("variadic must have at least one expression"),
         }
     }
 }
@@ -46,13 +48,14 @@ impl CallArg {
 /// 関数定義の仮引数（パラメータ）。
 ///
 /// # フィールド
-/// - `name`     : パラメータ名（例: `x`, `self`）。
+/// - `name`     : パラメータ名（例: `x`, `self`）。可変長パラメータは `"..."`。
 /// - `mutable`  : `mut` 修飾子が付いているかどうか。`true` なら呼び出し先で変更可能。
 /// - `type_ann` : 型アノテーション文字列（例: `"int"`, `"str"`）。`self` は省略可能。
 /// - `default`  : デフォルト値の式。省略時は `None`（必須パラメータ）。
+/// - `variadic` : `true` のとき可変長パラメータ（`let ...: T`）。`local::args` に格納される。
 #[derive(Debug, Clone)]
 pub struct Param {
-    /// パラメータ名（例: `x`, `self`）。
+    /// パラメータ名（例: `x`, `self`）。可変長パラメータは `"..."`。
     pub name: String,
     /// `mut` 修飾子の有無。可変パラメータなら `true`。
     pub mutable: bool,
@@ -60,6 +63,8 @@ pub struct Param {
     pub type_ann: Option<String>,
     /// デフォルト値の式。`None` は必須パラメータ。
     pub default: Option<Expr>,
+    /// `true` のとき可変長パラメータ (`let ...: T`)。関数内で `local::args` として参照する。
+    pub variadic: bool,
 }
 
 /// 二項演算子の種別。
@@ -334,6 +339,8 @@ pub enum Expr {
     },
     /// デバッガ名前空間アクセス: `dbg::name`。デバッガ REPL 内でのみ有効。
     DebugVar(String),
+    /// ローカル名前空間アクセス: `local::name`。可変長引数を持つ関数内で `local::args` として有効。
+    LocalVar(String),
 }
 
 /// `match` 文の1アームのパターン部分。
@@ -614,13 +621,15 @@ pub enum Stmt {
     },
     /// クラス本体内の型付きフィールド宣言。
     ///
-    /// 構文: `[mut|let|const] name: Type [= default]`
+    /// 構文: `[mut|let|const|static mut] name: Type [= default]`
+    ///
+    /// `= default` は `const` / `static mut` のみ許可。`mut` / `let` への初期値指定は静的型エラー。
     ///
     /// # フィールド
     /// - `name`     : フィールド名。
-    /// - `kind`     : フィールドの種別（`mut` / `let` / `const`）。
+    /// - `kind`     : フィールドの種別（`mut` / `let` / `const` / `static mut`）。
     /// - `type_ann` : 型アノテーション文字列（必須）。
-    /// - `default`  : デフォルト値の式。`const` フィールドは必須、`mut` / `let` は不可（静的型エラー）。
+    /// - `default`  : デフォルト値の式。`const` は必須、`static mut` は任意、`mut` / `let` は不可（静的型エラー）。
     /// - `access`   : アクセス可能性（`public` / `private` / `protected`、デフォルトは `public`）。
     Field {
         /// フィールド名。
@@ -787,18 +796,20 @@ impl Default for Accessibility {
 
 /// クラスフィールド宣言の種別。
 ///
-/// クラス本体での変数宣言は `mut` / `let` / `const` の3種類に限られる。
+/// クラス本体での変数宣言は `mut` / `let` / `const` / `static mut` の4種類。
+/// `mut` / `let` は初期値不可（静的型エラー）。`const` は初期値必須。`static mut` は初期値任意。
 ///
 /// # バリアント
-/// - `Mut`   : 可変インスタンス変数 (`mut name: Type [= default]`)。コンストラクタ以降も再代入可能。
-/// - `Let`   : 不変インスタンス変数 (`let name: Type [= default]`)。`__init__` 内の初回代入のみ許可。
-/// - `Const` : クラス変数 (`const name: Type = default`)。全インスタンスで共有。代入不可。
+/// - `Mut`       : 可変インスタンス変数 (`mut name: Type`)。コンストラクタで初期化必須。
+/// - `Let`       : 不変インスタンス変数 (`let name: Type`)。`__init__` 内の初回代入のみ許可。
+/// - `Const`     : クラス変数 (`const name: Type = default`)。全インスタンスで共有。代入不可。
+/// - `StaticMut` : 共有可変クラス変数 (`static mut name: Type [= default]`)。全インスタンスで共有。
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldKind {
-    /// 可変インスタンス変数 (`mut name: Type [= default]`)。
-    /// コンストラクタ以降も `self.name = value` で再代入できる。
+    /// 可変インスタンス変数 (`mut name: Type`)。初期値は持てない（静的型エラー）。
+    /// コンストラクタ（`__init__`）で必ず初期化する。以降も `self.name = value` で再代入可能。
     Mut,
-    /// 不変インスタンス変数 (`let name: Type [= default]`)。
+    /// 不変インスタンス変数 (`let name: Type`)。初期値は持てない（静的型エラー）。
     /// `__init__` 内での初回代入のみ許可。それ以降の代入は実行時 `TypeError`。
     Let,
     /// クラス変数 (`const name: Type = default`)。必ず初期値が必要。

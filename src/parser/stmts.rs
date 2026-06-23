@@ -647,6 +647,18 @@ impl Parser {
             }
         }
         self.eat(&Token::RParen)?;
+        // 可変長パラメータは1つのみ・末尾にのみ配置可能
+        let variadic_count = params.iter().filter(|p| p.variadic).count();
+        if variadic_count > 1 {
+            return Err(format!(
+                "ParseError: function `{name}` has more than one variadic parameter `...`"
+            ));
+        }
+        if variadic_count == 1 && !params.last().map(|p| p.variadic).unwrap_or(false) {
+            return Err(format!(
+                "ParseError: function `{name}` variadic parameter `...` must be the last parameter"
+            ));
+        }
         // デフォルト値なしのパラメータがデフォルト値ありのパラメータの後に来ていないか検証
         Self::validate_param_defaults(&params)?;
         // `-> 戻り値型` があればパース
@@ -725,6 +737,18 @@ impl Parser {
             }
         }
         self.eat(&Token::RParen)?;
+        // 可変長パラメータは1つのみ・末尾にのみ配置可能
+        let variadic_count_gen = params.iter().filter(|p| p.variadic).count();
+        if variadic_count_gen > 1 {
+            return Err(format!(
+                "ParseError: generator `{name}` has more than one variadic parameter `...`"
+            ));
+        }
+        if variadic_count_gen == 1 && !params.last().map(|p| p.variadic).unwrap_or(false) {
+            return Err(format!(
+                "ParseError: generator `{name}` variadic parameter `...` must be the last parameter"
+            ));
+        }
         Self::validate_param_defaults(&params)?;
         // `-> yield型` があればパース
         let yield_type = if *self.current() == Token::Arrow {

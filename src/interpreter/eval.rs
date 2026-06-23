@@ -248,6 +248,15 @@ impl Interpreter {
                 .get(name)
                 .map(|v| v.get_value())
                 .ok_or_else(|| format!("NameError: 'dbg::{name}' is not defined")),
+            Expr::LocalVar(name) => {
+                let key = format!("local::{name}");
+                self.get_val(&key).ok_or_else(|| {
+                    format!(
+                        "NameError: 'local::{name}' is not defined \
+                         (only valid inside a function with variadic parameter `...`)"
+                    )
+                })
+            }
             Expr::TraitAccess { object, trait_name, attr } => {
                 self.eval_trait_access(object, trait_name, attr)
             }
@@ -849,6 +858,11 @@ impl Interpreter {
                             return Some(Err(format!(
                                 "TypeError: enumerate() got unexpected keyword argument '{name}'"
                             )));
+                        }
+                        CallArg::Variadic(_) => {
+                            return Some(Err(
+                                "TypeError: enumerate() does not support variadic arguments".to_string()
+                            ));
                         }
                     }
                 }

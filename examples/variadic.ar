@@ -1,0 +1,34 @@
+# Test variadic arguments
+
+fn sum_all(let ...: int) -> int:
+    mut result = 0
+    if local::args is not None:
+        for x in local::args:
+            result += x
+    return result
+
+fn greet(let prefix: str, let ...: str) -> str:
+    mut msg = prefix
+    if local::args is not None:
+        for name in local::args:
+            msg = msg + " " + name
+    return msg
+
+fn no_variadic_call(let x: int, let y: int) -> int:
+    return x + y
+
+# Basic variadic call
+let total = sum_all(... = 1, 2, 3, 4, 5)
+print(total)  # 15
+
+# Mixed: normal + variadic
+let greeting = greet("Hello", ... = "Alice", "Bob", "Charlie")
+print(greeting)  # Hello Alice Bob Charlie
+
+# Call with no variadic args
+let t2 = sum_all()
+print(t2)  # 0
+
+# Single variadic arg
+let t3 = sum_all(... = 42)
+print(t3)  # 42

@@ -1043,6 +1043,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
                 mutable: false,
                 type_ann: Some(rust_type_to_ar(&p.rust_type).to_string()),
                 default: None,
+                variadic: false,
             })
             .collect();
         stmts.push(Stmt::FnDef {
@@ -1090,6 +1091,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
                 mutable: true,
                 type_ann: None,
                 default: None,
+                variadic: false,
             }];
             for cp in &st.ctor_params {
                 params.push(Param {
@@ -1097,6 +1099,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
                     mutable: false,
                     type_ann: Some(rust_type_to_ar(&cp.rust_type).to_string()),
                     default: None,
+                    variadic: false,
                 });
             }
             class_body.push(Stmt::FnDef {
@@ -1117,7 +1120,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
         class_body.push(Stmt::FnDef {
             name: "drop".to_string(),
             template_params: vec![],
-            params: vec![Param { name: "self".to_string(), mutable: true, type_ann: None, default: None }],
+            params: vec![Param { name: "self".to_string(), mutable: true, type_ann: None, default: None, variadic: false }],
             return_type: None,
             body: vec![],
             is_abstract: true,
@@ -1133,7 +1136,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
             class_body.push(Stmt::FnDef {
                 name: getter_name,
                 template_params: vec![],
-                params: vec![Param { name: "self".to_string(), mutable: false, type_ann: None, default: None }],
+                params: vec![Param { name: "self".to_string(), mutable: false, type_ann: None, default: None, variadic: false }],
                 return_type: Some(rust_type_to_ar(&field.rust_type).to_string()),
                 body: vec![],
                 is_abstract: true,
@@ -1151,8 +1154,8 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
                 name: setter_name,
                 template_params: vec![],
                 params: vec![
-                    Param { name: "self".to_string(), mutable: true, type_ann: None, default: None },
-                    Param { name: "val".to_string(), mutable: false, type_ann: Some(rust_type_to_ar(&field.rust_type).to_string()), default: None },
+                    Param { name: "self".to_string(), mutable: true, type_ann: None, default: None, variadic: false },
+                    Param { name: "val".to_string(), mutable: false, type_ann: Some(rust_type_to_ar(&field.rust_type).to_string()), default: None, variadic: false },
                 ],
                 return_type: None,
                 body: vec![],
@@ -1171,6 +1174,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
                 mutable: m.self_mutable,
                 type_ann: None,
                 default: None,
+                variadic: false,
             }];
             for p in &m.params {
                 params.push(Param {
@@ -1178,6 +1182,7 @@ fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> {
                     mutable: false,
                     type_ann: Some(rust_type_to_ar(&p.rust_type).to_string()),
                     default: None,
+                    variadic: false,
                 });
             }
             // Return type: primitive or a struct class name

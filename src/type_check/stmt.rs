@@ -310,7 +310,7 @@ impl TypeChecker {
                     self.check_decorator(dec, true, name);
                 }
                 for param in params.iter() {
-                    if param.name == "self" {
+                    if param.name == "self" || param.variadic {
                         continue;
                     }
                     if param.type_ann.is_none() {
@@ -334,6 +334,20 @@ impl TypeChecker {
                 self.declare(name.clone(), InferredType::Unresolved, false);
                 self.push_scope();
                 for param in params {
+                    if param.variadic {
+                        // 可変長パラメータ: local::args として Optional[list[T]] を宣言
+                        let elem_ty = param
+                            .type_ann
+                            .as_deref()
+                            .and_then(InferredType::from_ann)
+                            .unwrap_or(InferredType::Any);
+                        let local_args_ty = InferredType::Union(vec![
+                            InferredType::ListOf(Box::new(elem_ty)),
+                            InferredType::None,
+                        ]);
+                        self.declare("local::args".to_string(), local_args_ty, param.mutable);
+                        continue;
+                    }
                     let ty = if param.name == "self" {
                         self.current_class_name
                             .as_ref()
@@ -444,7 +458,7 @@ impl TypeChecker {
                 ..
             } => {
                 for param in params.iter() {
-                    if param.name == "self" {
+                    if param.name == "self" || param.variadic {
                         continue;
                     }
                     if param.type_ann.is_none() {

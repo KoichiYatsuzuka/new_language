@@ -385,6 +385,7 @@ fn subst_params(params: &[Param], type_map: &HashMap<String, String>) -> Vec<Par
             mutable: p.mutable,
             type_ann: p.type_ann.as_ref().map(|t| subst_type(t, type_map)),
             default: p.default.clone(),
+            variadic: p.variadic,
         })
         .collect()
 }
@@ -397,6 +398,9 @@ fn subst_call_arg(arg: &CallArg, type_map: &HashMap<String, String>) -> CallArg 
             name: name.clone(),
             value: subst_expr(value, type_map),
         },
+        CallArg::Variadic(exprs) => {
+            CallArg::Variadic(exprs.iter().map(|e| subst_expr(e, type_map)).collect())
+        }
     }
 }
 
@@ -538,6 +542,7 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             span: span.clone(),
         },
         Expr::DebugVar(name) => Expr::DebugVar(name.clone()),
+        Expr::LocalVar(name) => Expr::LocalVar(name.clone()),
     }
 }
 

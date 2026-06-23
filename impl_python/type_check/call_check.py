@@ -5,7 +5,7 @@ from typing import Optional, TYPE_CHECKING
 
 from ..ast import (
     Expr, ExprIdent, ExprAttr,
-    CallArg, CallArgPositional, CallArgKeyword,
+    CallArg, CallArgPositional, CallArgKeyword, CallArgVariadic,
 )
 from .types import (
     TyAny, TyNamedInstance, TyFunction, TyUnresolved, FnTypeParam, InferredType,
@@ -37,6 +37,11 @@ class _TypeCheckerCallCheck:
         for arg in args:
             if isinstance(arg, CallArgPositional):
                 arg_data.append((None, self._infer(arg.expr)))
+            elif isinstance(arg, CallArgVariadic):
+                from .types import TyList
+                for e in arg.exprs:
+                    self._infer(e)  # type-check each element expression
+                arg_data.append(("...", TyList()))
             else:
                 arg_data.append((arg.name, self._infer(arg.value)))
 
@@ -58,7 +63,7 @@ class _TypeCheckerCallCheck:
 
         if func_name and func_name in self._fn_sigs:
             sigs = self._fn_sigs[func_name]
-            n = len(arg_data)
+            n = sum(1 for k, _ in arg_data if k != "...")
             matching = [s for s in sigs if s.required_count <= n <= len(s.params)]
             if len(matching) == 1 and matching[0].return_type is not None:
                 return matching[0].return_type
@@ -75,12 +80,13 @@ class _TypeCheckerCallCheck:
         sigs = (self._class_method_sigs.get(cls_name) or {}).get(method_name)
         if not sigs:
             return
-        effective = len(arg_data) + 1
+        normal_args = [(k, t) for k, t in arg_data if k != "..."]
+        effective = len(normal_args) + 1
         count_ok = [s for s in sigs if s.required_count <= effective <= len(s.params)]
         if len(count_ok) != 1:
             return
         sig = count_ok[0]
-        for arg_idx, (_, arg_ty) in enumerate(arg_data):
+        for arg_idx, (_, arg_ty) in enumerate(normal_args):
             pidx = arg_idx + 1
             if pidx >= len(sig.params):
                 break
@@ -100,7 +106,8 @@ class _TypeCheckerCallCheck:
         sigs = self._fn_sigs.get(fname)
         if not sigs:
             return
-        n = len(arg_data)
+        normal_args = [(k, t) for k, t in arg_data if k != "..."]
+        n = len(normal_args)
         count_ok = [s for s in sigs if s.required_count <= n <= len(s.params)]
 
         if not count_ok:
@@ -120,7 +127,7 @@ class _TypeCheckerCallCheck:
 
         sig = count_ok[0]
         positional_idx = 0
-        for key, arg_ty in arg_data:
+        for key, arg_ty in normal_args:
             if key is not None:
                 pos = next((i for i, (n2, _) in enumerate(sig.params) if n2 == key), None)
                 if pos is None:

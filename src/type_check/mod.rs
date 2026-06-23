@@ -188,9 +188,11 @@ impl TypeChecker {
                     body,
                     ..
                 } => {
+                    let variadic_param = params.iter().find(|p| p.variadic);
                     let sig = FnSig {
                         params: params
                             .iter()
+                            .filter(|p| !p.variadic)
                             .map(|p| {
                                 (
                                     p.name.clone(),
@@ -198,8 +200,13 @@ impl TypeChecker {
                                 )
                             })
                             .collect(),
-                        required_count: params.iter().filter(|p| p.default.is_none()).count(),
+                        required_count: params
+                            .iter()
+                            .filter(|p| !p.variadic && p.default.is_none())
+                            .count(),
                         return_type: return_type.as_deref().and_then(InferredType::from_ann),
+                        variadic_type: variadic_param
+                            .and_then(|p| p.type_ann.as_deref().and_then(InferredType::from_ann)),
                     };
                     self.fn_sigs.entry(name.clone()).or_default().push(sig);
                     self.collect_fn_sigs(body);
@@ -225,9 +232,11 @@ impl TypeChecker {
                             } else {
                                 mname.clone()
                             };
+                            let variadic_param = params.iter().find(|p| p.variadic);
                             let sig = FnSig {
                                 params: params
                                     .iter()
+                                    .filter(|p| !p.variadic)
                                     .map(|p| {
                                         (
                                             p.name.clone(),
@@ -237,11 +246,14 @@ impl TypeChecker {
                                     .collect(),
                                 required_count: params
                                     .iter()
-                                    .filter(|p| p.default.is_none())
+                                    .filter(|p| !p.variadic && p.default.is_none())
                                     .count(),
                                 return_type: return_type
                                     .as_deref()
                                     .and_then(InferredType::from_ann),
+                                variadic_type: variadic_param.and_then(|p| {
+                                    p.type_ann.as_deref().and_then(InferredType::from_ann)
+                                }),
                             };
                             cls_methods.entry(storage_name).or_default().push(sig);
                         }
@@ -286,14 +298,27 @@ impl TypeChecker {
                         self.class_static_methods
                             .insert(name.clone(), static_methods);
                     }
-                    self.collect_fn_sigs(body);
+                    // Only recurse into method bodies for nested closures;
+                    // class methods themselves must NOT be added to fn_sigs.
+                    for s in body.iter() {
+                        if let Stmt::FnDef { body: method_body, .. } = s {
+                            self.collect_fn_sigs(method_body);
+                        }
+                    }
                 }
                 Stmt::EnumDef { name, .. } => {
                     self.known_class_names.insert(name.clone());
                     let item_type_name = format!("enum_item_{}", name);
                     self.known_class_names.insert(item_type_name);
                 }
-                Stmt::TraitDef { body, .. } => self.collect_fn_sigs(body),
+                Stmt::TraitDef { body, .. } => {
+                    // Trait methods must NOT be added to fn_sigs; only recurse into bodies.
+                    for s in body.iter() {
+                        if let Stmt::FnDef { body: method_body, .. } = s {
+                            self.collect_fn_sigs(method_body);
+                        }
+                    }
+                }
                 Stmt::Match { arms, .. } => {
                     for arm in arms {
                         self.collect_fn_sigs(&arm.body);

@@ -17,7 +17,7 @@ from ..ast import (
     MatchPatternCase, MatchPatternIsType,
 )
 from .types import (
-    TyInt, TyNamedInstance, TyTypeValOf, TyUnresolved, InferredType, inferred_type_from_ann,
+    TyInt, TyNamedInstance, TyTypeValOf, TyUnresolved, TyList, TyNone, InferredType, inferred_type_from_ann,
 )
 from .errors import (ErrAssignToImmutable, ErrMissingParamTypeAnn, ErrMissingReturnTypeAnn,
                      ErrIsNotOnNonUnion, ErrFieldDefaultNotAllowed)
@@ -160,15 +160,21 @@ class _TypeCheckerStmts:
                 for dec in decs:
                     self._check_decorator(dec, True, name)
                 for p in params:
-                    if p.name != "self" and p.type_ann is None:
+                    if p.name != "self" and not p.variadic and p.type_ann is None:
                         self._report(ErrMissingParamTypeAnn(func_name=name, param_name=p.name))
                 if rt is None:
                     self._report(ErrMissingReturnTypeAnn(func_name=name))
                 self._declare(name, TyUnresolved(), False)
                 self._push_scope()
                 for p in params:
-                    ty = (inferred_type_from_ann(p.type_ann) if p.type_ann else None) or TyUnresolved()
-                    self._declare(p.name, ty, p.mutable)
+                    if p.variadic:
+                        # 可変長引数は local::args として Optional[list] で宣言
+                        from .types import TyUnion
+                        args_ty = TyUnion([TyList(), TyNone()])
+                        self._declare("local::args", args_ty, p.mutable)
+                    else:
+                        ty = (inferred_type_from_ann(p.type_ann) if p.type_ann else None) or TyUnresolved()
+                        self._declare(p.name, ty, p.mutable)
                 self._check_stmts(body)
                 self._pop_scope()
 
@@ -278,8 +284,8 @@ class _TypeCheckerStmts:
                 case StmtFnDef(name=name, params=params, return_type=rt, body=body):
                     sig = _FnSig(
                         params=[(p.name, inferred_type_from_ann(p.type_ann) if p.type_ann else None)
-                                for p in params],
-                        required_count=sum(1 for p in params if p.default is None),
+                                for p in params if not p.variadic],
+                        required_count=sum(1 for p in params if not p.variadic and p.default is None),
                         return_type=inferred_type_from_ann(rt) if rt else None,
                     )
                     self._fn_sigs.setdefault(name, []).append(sig)
@@ -293,8 +299,8 @@ class _TypeCheckerStmts:
                         if isinstance(s, StmtFnDef):
                             sig = _FnSig(
                                 params=[(p.name, inferred_type_from_ann(p.type_ann) if p.type_ann else None)
-                                        for p in s.params],
-                                required_count=sum(1 for p in s.params if p.default is None),
+                                        for p in s.params if not p.variadic],
+                                required_count=sum(1 for p in s.params if not p.variadic and p.default is None),
                                 return_type=inferred_type_from_ann(s.return_type) if s.return_type else None,
                             )
                             storage_name = (f"__cast__[{s.template_params[0].name}]"

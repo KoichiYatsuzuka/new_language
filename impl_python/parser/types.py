@@ -197,6 +197,14 @@ class _ParserTypes:
             self._advance(); mutable = True
         elif self._current_kind() == TokenKind.LET:
             self._advance()
+        # 可変長引数: let ... : type
+        if self._current_kind() == TokenKind.ELLIPSIS:
+            self._advance()
+            if self._current_kind() != TokenKind.COLON:
+                raise self._error("variadic parameter '...' requires a type annotation")
+            self._advance()
+            type_ann = self._parse_type_expr()
+            return Param(name="...", mutable=mutable, type_ann=type_ann, default=None, variadic=True)
         name = self._expect_ident()
         type_ann: Optional[str] = None
         if self._current_kind() == TokenKind.COLON:
@@ -206,7 +214,7 @@ class _ParserTypes:
         if self._current_kind() == TokenKind.EQ:
             self._advance()
             default = self._parse_expr()
-        return Param(name=name, mutable=mutable, type_ann=type_ann, default=default)
+        return Param(name=name, mutable=mutable, type_ann=type_ann, default=default, variadic=False)
 
     # ------------------------------------------------------------------
     # Identifier helpers

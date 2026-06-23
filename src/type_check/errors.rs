@@ -285,8 +285,8 @@ impl StaticTypeError {
                 hl_bt("raise"), hl_q("Error"), hl_q(got)
             ),
             TypeErrorKind::FieldDefaultNotAllowed { field_name, kind } => format!(
-                "{} field {} cannot have a default value in the class declaration; only {} fields may have defaults",
-                hl_bt(kind), hl_q(field_name), hl_bt("const")
+                "{} field {} cannot have a default value in the class declaration; only {} or {} fields may have defaults",
+                hl_bt(kind), hl_q(field_name), hl_bt("const"), hl_bt("static mut")
             ),
             TypeErrorKind::DirectFreezeCall => format!(
                 "{} cannot be called directly; use the {} keyword instead",

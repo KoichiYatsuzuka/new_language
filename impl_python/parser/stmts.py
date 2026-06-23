@@ -43,7 +43,7 @@ def _token_to_compound_op(kind: TokenKind) -> Optional[BinOp]:
 def _validate_param_defaults(params: list[Param]) -> None:
     seen_default = False
     for p in params:
-        if p.name == "self":
+        if p.name == "self" or p.variadic:
             continue
         if p.default is not None:
             seen_default = True
@@ -52,6 +52,19 @@ def _validate_param_defaults(params: list[Param]) -> None:
             raise ParseError(
                 f"ParseError: non-default parameter '{p.name}' follows a parameter with a default value"
             )
+
+
+def _validate_variadic_params(fn_name: str, params: list[Param]) -> None:
+    from . import ParseError
+    variadic_indices = [i for i, p in enumerate(params) if p.variadic]
+    if len(variadic_indices) > 1:
+        raise ParseError(
+            f"ParseError: function `{fn_name}` has more than one variadic parameter `...`"
+        )
+    if variadic_indices and variadic_indices[0] != len(params) - 1:
+        raise ParseError(
+            f"ParseError: variadic parameter `...` must be the last parameter in function `{fn_name}`"
+        )
 
 
 def _body_has_return(stmts: list[Stmt]) -> bool:
@@ -439,6 +452,7 @@ class _ParserStmts:
                 break
         self._eat(TokenKind.RPAREN)
         _validate_param_defaults(params)
+        _validate_variadic_params(name, params)
         return_type: Optional[str] = None
         if self._current_kind() == TokenKind.ARROW:
             self._advance()

@@ -392,6 +392,17 @@ impl Interpreter {
                 CallArg::Keyword { name, value } => {
                     result.push((Some(name.clone()), self.eval(value)?))
                 }
+                // 可変長引数: 各要素を評価してリストに集約し、特殊キー "..." で渡す
+                CallArg::Variadic(exprs) => {
+                    let mut vals = Vec::new();
+                    for e in exprs {
+                        vals.push(self.eval(e)?);
+                    }
+                    result.push((
+                        Some("...".to_string()),
+                        Value::List(Rc::new(RefCell::new(vals))),
+                    ));
+                }
             }
         }
         Ok(result)
@@ -439,40 +450,58 @@ impl Interpreter {
                 (params, defaults)
             };
 
+        // 可変長パラメータを分離する（末尾にのみ存在する）
+        let variadic_idx = params_to_bind.iter().position(|p| p.variadic);
+        let (non_variadic_params, non_variadic_defaults) = if let Some(vi) = variadic_idx {
+            (&params_to_bind[..vi], &defaults_to_bind[..vi])
+        } else {
+            (params_to_bind, defaults_to_bind)
+        };
+
+        // evaled から可変長引数エントリを分離する
+        let variadic_value: Option<Value> = evaled
+            .iter()
+            .find(|(k, _)| k.as_deref() == Some("..."))
+            .map(|(_, v)| v.clone());
+        let non_variadic_evaled: Vec<&(Option<String>, Value)> = evaled
+            .iter()
+            .filter(|(k, _)| k.as_deref() != Some("..."))
+            .collect();
+
         // デフォルト値なしのパラメータ数（必須引数数）と最大引数数を計算する
-        let required_count = defaults_to_bind.iter().filter(|d| d.is_none()).count();
-        let max_count = params_to_bind.len();
-        if evaled.len() < required_count || evaled.len() > max_count {
+        let required_count = non_variadic_defaults.iter().filter(|d| d.is_none()).count();
+        let max_count = non_variadic_params.len();
+        if non_variadic_evaled.len() < required_count || non_variadic_evaled.len() > max_count {
             if required_count == max_count {
                 return Err(format!(
                     "TypeError: function takes {} argument(s), got {}",
                     max_count,
-                    evaled.len()
+                    non_variadic_evaled.len()
                 ));
             } else {
                 return Err(format!(
                     "TypeError: function takes {} to {} argument(s), got {}",
                     required_count,
                     max_count,
-                    evaled.len()
+                    non_variadic_evaled.len()
                 ));
             }
         }
 
         // パラメータスロットを用意して位置引数・キーワード引数を割り当てる
-        let mut slots: Vec<Option<Value>> = vec![None; params_to_bind.len()];
+        let mut slots: Vec<Option<Value>> = vec![None; non_variadic_params.len()];
         let mut positional_idx = 0usize;
 
-        for (key, val) in evaled {
+        for (key, val) in &non_variadic_evaled {
             match key {
                 None => {
                     // 位置引数: 次のスロットに順番に割り当てる
-                    slots[positional_idx] = Some(val.clone());
+                    slots[positional_idx] = Some((*val).clone());
                     positional_idx += 1;
                 }
                 Some(name) => {
                     // キーワード引数: パラメータ名でスロットを検索して割り当てる
-                    let pos = params_to_bind
+                    let pos = non_variadic_params
                         .iter()
                         .position(|p| p.name == *name)
                         .ok_or_else(|| {
@@ -481,18 +510,17 @@ impl Interpreter {
                     if slots[pos].is_some() {
                         return Err(format!("TypeError: argument '{name}' given twice"));
                     }
-                    slots[pos] = Some(val.clone());
+                    slots[pos] = Some((*val).clone());
                 }
             }
         }
 
-        // 未割り当てスロットはデフォルト値で埋める。デフォルト値もなければ missing argument エラー
-        // let パラメータ（not mut）には参照型をディープコピーして渡す
+        // 未割り当てスロットはデフォルト値で埋める。let パラメータにはディープコピーして渡す
         for (i, slot) in slots.into_iter().enumerate() {
-            let param = &params_to_bind[i];
+            let param = &non_variadic_params[i];
             let v = match slot {
                 Some(v) => v,
-                None => match &defaults_to_bind[i] {
+                None => match &non_variadic_defaults[i] {
                     Some(dv) => dv.clone(),
                     None => return Err(format!("TypeError: missing argument '{}'", param.name)),
                 },
@@ -503,6 +531,23 @@ impl Interpreter {
                 Self::deep_copy_value(v)
             };
             result.push((param.name.clone(), value, param.mutable));
+        }
+
+        // 可変長パラメータのバインド: local::args に渡す
+        if let Some(vi) = variadic_idx {
+            let variadic_param = &params_to_bind[vi];
+            let local_args_val = match variadic_value {
+                Some(list_val) => {
+                    // 可変長パラメータの可変性に応じてコピーするかどうか決める
+                    if variadic_param.mutable {
+                        list_val
+                    } else {
+                        Self::deep_copy_value(list_val)
+                    }
+                }
+                None => Value::None, // 可変長引数が渡されていない場合は None
+            };
+            result.push(("local::args".to_string(), local_args_val, variadic_param.mutable));
         }
 
         Ok(result)
@@ -533,30 +578,48 @@ impl Interpreter {
                 (params, defaults)
             };
 
-        let mut slots: Vec<Option<Value>> = vec![None; params_to_bind.len()];
+        // 可変長パラメータを分離する
+        let variadic_idx = params_to_bind.iter().position(|p| p.variadic);
+        let (non_variadic_params, non_variadic_defaults) = if let Some(vi) = variadic_idx {
+            (&params_to_bind[..vi], &defaults_to_bind[..vi])
+        } else {
+            (params_to_bind, defaults_to_bind)
+        };
+
+        // evaled から可変長引数エントリを分離する
+        let variadic_value: Option<Value> = evaled
+            .iter()
+            .find(|(k, _)| k.as_deref() == Some("..."))
+            .map(|(_, v)| v.clone());
+        let non_variadic_evaled: Vec<&(Option<String>, Value)> = evaled
+            .iter()
+            .filter(|(k, _)| k.as_deref() != Some("..."))
+            .collect();
+
+        let mut slots: Vec<Option<Value>> = vec![None; non_variadic_params.len()];
         let mut positional_idx = 0usize;
 
-        for (key, val) in evaled {
+        for (key, val) in &non_variadic_evaled {
             match key {
                 None => {
-                    if positional_idx >= params_to_bind.len() {
+                    if positional_idx >= non_variadic_params.len() {
                         return Err(format!(
                             "TypeError: function takes {} positional argument(s), got too many",
-                            params_to_bind.len()
+                            non_variadic_params.len()
                         ));
                     }
-                    slots[positional_idx] = Some(val.clone());
+                    slots[positional_idx] = Some((*val).clone());
                     positional_idx += 1;
                 }
-                Some(name) => match params_to_bind.iter().position(|p| p.name == *name) {
+                Some(name) => match non_variadic_params.iter().position(|p| p.name == *name) {
                     Some(pos) => {
                         if slots[pos].is_some() {
                             return Err(format!("TypeError: argument '{name}' given twice"));
                         }
-                        slots[pos] = Some(val.clone());
+                        slots[pos] = Some((*val).clone());
                     }
                     None => {
-                        extra_kwargs.push((name.clone(), val.clone()));
+                        extra_kwargs.push((name.clone(), (*val).clone()));
                     }
                 },
             }
@@ -565,17 +628,24 @@ impl Interpreter {
         for (i, slot) in slots.into_iter().enumerate() {
             let v = match slot {
                 Some(v) => v,
-                None => match &defaults_to_bind[i] {
+                None => match &non_variadic_defaults[i] {
                     Some(dv) => dv.clone(),
                     None => {
                         return Err(format!(
                             "TypeError: missing argument '{}'",
-                            params_to_bind[i].name
+                            non_variadic_params[i].name
                         ))
                     }
                 },
             };
-            result.push((params_to_bind[i].name.clone(), v, params_to_bind[i].mutable));
+            result.push((non_variadic_params[i].name.clone(), v, non_variadic_params[i].mutable));
+        }
+
+        // 可変長パラメータのバインド
+        if let Some(vi) = variadic_idx {
+            let variadic_param = &params_to_bind[vi];
+            let local_args_val = variadic_value.unwrap_or(Value::None);
+            result.push(("local::args".to_string(), local_args_val, variadic_param.mutable));
         }
 
         Ok((result, extra_kwargs))
@@ -624,10 +694,11 @@ impl Interpreter {
         fn_name: &str,
         call_span: Option<Span>,
     ) -> Result<Value, String> {
-        let call_count = evaled.len();
+        // 可変長引数を除いた通常引数の数
+        let call_count = evaled.iter().filter(|(k, _)| k.as_deref() != Some("...")).count();
         let has_self = self_val.is_some();
 
-        // `self` パラメータを除いた有効引数数の範囲（必須数, 最大数）を返すクロージャ
+        // `self` パラメータと可変長パラメータを除いた有効引数数の範囲（必須数, 最大数）を返すクロージャ
         let effective_param_range = |f: &FnValue| -> (usize, usize) {
             let self_offset =
                 if has_self && f.params.first().map(|p| p.name == "self").unwrap_or(false) {
@@ -636,8 +707,9 @@ impl Interpreter {
                     0
                 };
             let params = &f.params[self_offset..];
-            let required = params.iter().filter(|p| p.default.is_none()).count();
-            (required, params.len())
+            let non_variadic: Vec<_> = params.iter().filter(|p| !p.variadic).collect();
+            let required = non_variadic.iter().filter(|p| p.default.is_none()).count();
+            (required, non_variadic.len())
         };
 
         // 呼び出し引数数が有効範囲に収まる候補のみに絞り込む
@@ -700,7 +772,7 @@ impl Interpreter {
         self_val: &Option<Value>,
     ) -> bool {
         // self_val がある場合は `self` パラメータをスキップして残りを対象にする
-        let params = if self_val.is_some()
+        let all_params = if self_val.is_some()
             && fn_val
                 .params
                 .first()
@@ -711,12 +783,20 @@ impl Interpreter {
         } else {
             &fn_val.params[..]
         };
+        // 可変長パラメータを除いた通常パラメータのみを対象にする
+        let params: Vec<&Param> = all_params.iter().filter(|p| !p.variadic).collect();
+
+        // evaled から可変長引数エントリを除いた通常引数のみを対象にする
+        let non_variadic_evaled: Vec<&(Option<String>, Value)> = evaled
+            .iter()
+            .filter(|(k, _)| k.as_deref() != Some("..."))
+            .collect();
 
         // 各引数をパラメータスロットに割り当てる（bind_args と同様のロジック）
         let mut slots: Vec<Option<&Value>> = vec![None; params.len()];
         let mut positional_idx = 0usize;
 
-        for (key, val) in evaled {
+        for (key, val) in &non_variadic_evaled {
             match key {
                 None => {
                     if positional_idx >= params.len() {

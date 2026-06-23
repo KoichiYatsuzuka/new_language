@@ -1,0 +1,3 @@
+# Error: multiple variadic parameters in one function definition
+fn bad_func(let ...: int, let ...: str) -> int:
+    return 0

@@ -653,6 +653,7 @@ fn convert_params(args: &py::Arguments, _filename: &str) -> Result<Vec<Param>, S
             mutable: true,
             type_ann,
             default: None,
+            variadic: false,
         });
     }
 
@@ -662,6 +663,7 @@ fn convert_params(args: &py::Arguments, _filename: &str) -> Result<Vec<Param>, S
             mutable: true,
             type_ann: Some("list[Any]".to_string()),
             default: None,
+            variadic: false,
         });
     }
 
@@ -672,6 +674,7 @@ fn convert_params(args: &py::Arguments, _filename: &str) -> Result<Vec<Param>, S
             mutable: true,
             type_ann,
             default: None,
+            variadic: false,
         });
     }
 

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from ..ast import (
     BinOp, UnaryOp,
     Expr, ExprInt, ExprFloat, ExprStr, ExprBool, ExprNone,
-    ExprIdent, ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
+    ExprIdent, ExprLocalVar, ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
     ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType, ExprCast,
@@ -57,6 +57,11 @@ class _TypeCheckerInfer:
 
             case ExprIdent(name=name):
                 info = self._lookup(name)
+                return info.ty if info else TyUnresolved()
+
+            case ExprLocalVar(name=name):
+                key = f"local::{name}"
+                info = self._lookup(key)
                 return info.ty if info else TyUnresolved()
 
             case ExprUnaryOp(op=op, operand=operand):

@@ -95,6 +95,14 @@ impl TypeChecker {
                 .map(|v| v.ty.clone())
                 .unwrap_or(InferredType::Unresolved),
 
+            // --- local::name 変数 ---
+            Expr::LocalVar(name) => {
+                let key = format!("local::{}", name);
+                self.lookup(&key)
+                    .map(|v| v.ty.clone())
+                    .unwrap_or(InferredType::Unresolved)
+            }
+
             // --- 単項演算子 ---
             Expr::UnaryOp { op, operand } => {
                 let ty = self.infer(operand);

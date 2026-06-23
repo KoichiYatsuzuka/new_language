@@ -11,7 +11,7 @@ from ..ast import (
     ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
-    ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType, ExprCast,
+    ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType, ExprCast, ExprLocalVar,
     # Statements
     StmtExpr, StmtLet, StmtConst, StmtMut, StmtStatic,
     StmtAssign, StmtAttrAssign, StmtAttrCompoundAssign, StmtCompoundAssign,
@@ -23,7 +23,7 @@ from ..ast import (
     StmtImport, StmtFromImport, StmtLetTuple, StmtAsyncAssign,
     # Helpers
     BinOp, UnaryOp, Accessibility, FieldKind,
-    Param, TemplateParam, CallArg, CallArgPositional, CallArgKeyword,
+    Param, TemplateParam, CallArg, CallArgPositional, CallArgKeyword, CallArgVariadic,
     MatchArm, MatchPatternCase, MatchPatternIsType, ExceptHandler,
     TupleTargetLet, TupleTargetMut, TupleTargetBare, TupleTargetWildcard,
 )
@@ -423,6 +423,10 @@ class Interpreter:
 
             case ExprIdent(name=name):
                 return self._env.get(name)
+
+            case ExprLocalVar(name=name):
+                key = f"local::{name}"
+                return self._env.get(key)
 
             case ExprList(elements=elements):
                 return TlList(items=[self.eval(e) for e in elements])
@@ -936,6 +940,8 @@ class Interpreter:
                     args.append(self.eval(e))
                 case CallArgKeyword(name=name, value=e):
                     kwargs[name] = self.eval(e)
+                case CallArgVariadic(exprs=exprs):
+                    kwargs["..."] = [self.eval(e) for e in exprs]
         return args, kwargs
 
     def _call(self, func: Value, args: list, kwargs: dict) -> Value:
@@ -1072,8 +1078,12 @@ class Interpreter:
             _set_gen_yields(saved)
 
     def _bind_params(self, params: list[Param], args: list, kwargs: dict) -> None:
+        # 可変長引数パラメータを分離
+        variadic_param = next((p for p in params if p.variadic), None)
+        non_variadic_params = [p for p in params if not p.variadic]
+
         positional = list(args)
-        for i, param in enumerate(params):
+        for i, param in enumerate(non_variadic_params):
             if param.name in kwargs:
                 val = kwargs[param.name]
             elif i < len(positional):
@@ -1090,12 +1100,23 @@ class Interpreter:
                         val = self._call_method(val, cast_key, [], {})
             self._env.declare(param.name, val, mutable=param.mutable)
 
+        # 可変長引数のバインド: local::args = TlList or None
+        if variadic_param is not None:
+            variadic_list = kwargs.get("...")
+            if variadic_list is not None:
+                val = TlList(items=list(variadic_list))
+                self._env.declare("local::args", val, mutable=variadic_param.mutable)
+            else:
+                self._env.declare("local::args", None, mutable=variadic_param.mutable)
+
     def _resolve_overload(self, overloads: list, args: list, kwargs: dict) -> TlFunction:
-        provided = len(args) + len(kwargs)
+        # 可変長引数エントリを除いた通常引数のみでカウント
+        normal_kwargs = {k: v for k, v in kwargs.items() if k != "..."}
+        provided = len(args) + len(normal_kwargs)
         for fn in overloads:
-            # Exclude self/cls from param count since it's bound separately
-            effective_params = [p for p in fn.params if p.name not in ("self", "cls")]
-            n_required = sum(1 for p in effective_params if p.default is None and p.name not in kwargs)
+            # Exclude self/cls and variadic from param count
+            effective_params = [p for p in fn.params if p.name not in ("self", "cls") and not p.variadic]
+            n_required = sum(1 for p in effective_params if p.default is None and p.name not in normal_kwargs)
             n_total = len(effective_params)
             if n_required <= provided <= n_total:
                 return fn
