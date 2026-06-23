@@ -1,0 +1,12 @@
+D:\repository\new_language\examples\cs_interop_test\bin\Release\net8.0\ArrowBridge.deps.json
+D:\repository\new_language\examples\cs_interop_test\bin\Release\net8.0\ArrowBridge.dll
+D:\repository\new_language\examples\cs_interop_test\bin\Release\net8.0\ArrowBridge.pdb
+D:\repository\new_language\examples\cs_interop_test\obj\Release\net8.0\ArrowBridge.GeneratedMSBuildEditorConfig.editorconfig
+D:\repository\new_language\examples\cs_interop_test\obj\Release\net8.0\ArrowBridge.AssemblyInfoInputs.cache
+D:\repository\new_language\examples\cs_interop_test\obj\Release\net8.0\ArrowBridge.AssemblyInfo.cs
+D:\repository\new_language\examples\cs_interop_test\obj\Release\net8.0\ArrowBridge.csproj.CoreCompileInputs.cache
+D:\repository\new_language\examples\cs_interop_test\obj\Release\net8.0\ArrowBridge.sourcelink.json
+D:\repository\new_language\examples\cs_interop_test\obj\Release\net8.0\ArrowBridge.dll
+D:\repository\new_language\examples\cs_interop_test\obj\Release\net8.0\refint\ArrowBridge.dll
+D:\repository\new_language\examples\cs_interop_test\obj\Release\net8.0\ArrowBridge.pdb
+D:\repository\new_language\examples\cs_interop_test\obj\Release\net8.0\ref\ArrowBridge.dll

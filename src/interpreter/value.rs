@@ -1,4 +1,4 @@
-// value.rs — インタープリタが扱う実行時値の型定義
+﻿// value.rs — インタープリタが扱う実行時値の型定義
 //
 // 担当範囲:
 //   - StackFrame / RaisedError        — 例外トレースバック型
@@ -165,12 +165,11 @@ pub struct FnValue {
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
     /// Python モジュールから変換された関数かどうか。
-    /// `true` のとき、引数リストに存在しないキーワード引数をエラーにせず
-    /// `AdditionalParam` dict として関数スコープに注入する。
     pub is_python: bool,
     /// キャプチャした外側スコープ変数（クロージャ環境）。
-    /// 不変変数はディープコピー、可変変数は共有セルとして保持する。
     pub captured_env: HashMap<String, CapturedVar>,
+    /// 静的型アノテーションの戻り値型（文字列）。import[cs-dll] のブリッジ呼び出しで使用。
+    pub return_type: Option<String>,
 }
 
 /// クラス定義の実行時表現。インスタンス化（`instantiate`）の雛形となる。
@@ -792,6 +791,20 @@ pub enum Value {
     Signal(Rc<RefCell<super::event_loop::SignalData>>),
     /// EventLoop シングルトン。`EventLoop.run()` / `EventLoop.post(fn)` で利用する。
     EventLoop(Rc<RefCell<super::event_loop::EventLoopData>>),
+    /// import[cs-dll] で生成される C# オブジェクトのハンドル。
+    CsObject(Rc<CsObjectData>),
+}
+
+/// import[cs-dll] ブリッジが管理する C# オブジェクトのランタイム表現。
+/// `handle` は NativeAOT ブリッジ DLL の ObjectTable に格納されたオブジェクト ID。
+#[derive(Debug, Clone)]
+pub struct CsObjectData {
+    pub class_name: String,
+    pub handle: i64,
+    /// NativeAOT ブリッジ DLL へのパス（bridge lookup に使用）。
+    pub bridge_path: std::path::PathBuf,
+    /// 元の ClassValue stub（return type 解決に使用）。
+    pub class: Rc<ClassValue>,
 }
 
 // ---------------------------------------------------------------------------
@@ -831,6 +844,7 @@ impl ClassValue {
                             body: rc.body.clone(),
                             is_python: rc.is_python,
                             captured_env: deep_clone_captured_env(&rc.captured_env),
+                            return_type: rc.return_type.clone(),
                         })
                     })
                     .collect();
@@ -966,6 +980,7 @@ impl Value {
                 body: rc.body.clone(),
                 is_python: rc.is_python,
                 captured_env: deep_clone_captured_env(&rc.captured_env),
+            return_type: None,
             })),
             Value::OverloadedFn(fns) => Value::OverloadedFn(
                 fns.iter()
@@ -976,6 +991,7 @@ impl Value {
                             body: rc.body.clone(),
                             is_python: rc.is_python,
                             captured_env: deep_clone_captured_env(&rc.captured_env),
+                            return_type: rc.return_type.clone(),
                         })
                     })
                     .collect(),

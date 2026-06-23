@@ -1,0 +1,11 @@
+import[cs-dll] ArrowBridge as bridge
+
+print("=== ArrowBridge stubs ===")
+print(bridge.Calculator)
+print(bridge.TextProcessor)
+
+# Static method stubs should be accessible
+print(bridge.Calculator.Add)
+print(bridge.Calculator.Divide)
+print(bridge.TextProcessor.Repeat)
+print(bridge.TextProcessor.IsNullOrEmpty)

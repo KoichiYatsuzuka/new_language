@@ -1,0 +1,28 @@
+EXPORTS
+   DotNetRuntimeDebugHeader DATA
+   arrow_bridge_release
+   Calculator_new_0
+   Calculator_new_1
+   Calculator_Add
+   Calculator_Subtract
+   Calculator_Multiply
+   Calculator_Divide
+   Calculator_Power
+   Calculator_Sqrt
+   Calculator_getPi
+   Calculator_getE
+   Calculator_inst_Accumulate
+   Calculator_inst_GetAccumulated
+   Calculator_inst_Reset
+   TextProcessor_new
+   TextProcessor_inst_getText
+   TextProcessor_inst_getLength
+   TextProcessor_inst_ToUpper
+   TextProcessor_inst_ToLower
+   TextProcessor_inst_Trim
+   TextProcessor_inst_Contains
+   TextProcessor_inst_Replace
+   TextProcessor_inst_Append
+   TextProcessor_Repeat
+   TextProcessor_IsNullOrEmpty
+   arrow_bridge_free_str

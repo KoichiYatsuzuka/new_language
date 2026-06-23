@@ -137,8 +137,9 @@ impl Interpreter {
                 params,
                 body,
                 decorators,
+                return_type,
                 ..
-            } => self.exec_fn_def(name, template_params, params, body, decorators),
+            } => self.exec_fn_def(name, template_params, params, body, decorators, return_type.as_deref()),
             Stmt::Yield(expr) => {
                 let val = self.eval(expr)?;
                 GENERATOR_YIELDS.with(|y| {
@@ -194,6 +195,66 @@ impl Interpreter {
                             .insert(cache_key, ModuleState::Loaded(ns.clone()));
                         ns
                     }
+                } else if lang == "cs-dll" || lang == "cs-proc" {
+                    let stub_ns = self.exec_module(lang, module, body)?;
+                    // Locate the NativeAOT bridge DLL next to the managed DLL.
+                    // The managed DLL was found by the parser using source_dir, which was
+                    // registered in python_search_dirs by main.rs.
+                    // E.g. module ["cs_interop_test","ArrowBridge"] in script at examples/:
+                    //   managed → examples/cs_interop_test/ArrowBridge.dll
+                    //   bridge  → examples/cs_interop_test/ArrowBridge_native.dll
+                    let managed_name = module.last().unwrap();
+                    let native_dll_name = format!("{managed_name}_native.dll");
+                    // sub-path = module-dir segments (all but last) / ArrowBridge_native.dll
+                    let sub_dir: PathBuf = module[..module.len().saturating_sub(1)].iter().collect();
+                    let bridge_path = {
+                        let mut found: Option<PathBuf> = None;
+                        // Search in every python_search_dir (contains the script's dir)
+                        for search_dir in &self.python_search_dirs {
+                            let c = search_dir.join(&sub_dir).join(&native_dll_name);
+                            if c.exists() { found = Some(c); break; }
+                            // Also try without sub_dir
+                            let c2 = search_dir.join(&native_dll_name);
+                            if c2.exists() { found = Some(c2); break; }
+                        }
+                        // CWD fallback: sub_dir/dll
+                        if found.is_none() {
+                            let c = sub_dir.join(&native_dll_name);
+                            if c.exists() { found = Some(c); }
+                        }
+                        // CWD plain fallback
+                        if found.is_none() {
+                            let c = PathBuf::from(&native_dll_name);
+                            if c.exists() { found = Some(c); }
+                        }
+                        found.map(std::rc::Rc::new)
+                    };
+                    if let Some(ref bp) = bridge_path {
+                        if let Err(e) = super::cs_dll_runtime::load_bridge(bp.as_ref()) {
+                            eprintln!("Warning: cs-dll bridge not loaded: {e}");
+                        } else {
+                            // Tag every Class in the namespace with the bridge path so the
+                            // instantiator and method dispatcher can find it.
+                            let bp_str = bp.to_string_lossy().into_owned();
+                            let mut patched = (*stub_ns).clone();
+                            for val in patched.members.values_mut() {
+                                if let Value::Class(cls) = val {
+                                    let mut new_cls = cls.deep_clone();
+                                    new_cls.class_vars.insert(
+                                        "__cs_bridge_path__".to_string(),
+                                        Value::Str(bp_str.clone()),
+                                    );
+                                    *val = Value::Class(std::rc::Rc::new(new_cls));
+                                }
+                            }
+                            return {
+                                let bind_name = alias.clone().unwrap_or_else(|| module.last().unwrap().clone());
+                                self.declare_var(bind_name, Var::new(Value::Namespace(std::rc::Rc::new(patched)), false));
+                                Ok(ExecResult::Normal)
+                            };
+                        }
+                    }
+                    stub_ns
                 } else {
                     self.exec_module(lang, module, body)?
                 };
@@ -613,6 +674,7 @@ impl Interpreter {
         params: &[Param],
         body: &[Stmt],
         decorators: &[Expr],
+        return_type: Option<&str>,
     ) -> Result<ExecResult, String> {
         if !template_params.is_empty() {
             let tmpl = Rc::new(TemplateFnValue {
@@ -639,6 +701,7 @@ impl Interpreter {
             body: body.to_vec(),
             is_python: self.in_python_module,
             captured_env,
+            return_type: return_type.map(|s| s.to_string()),
         });
 
         if decorators.is_empty() {
@@ -807,6 +870,7 @@ impl Interpreter {
                     body: init_body,
                     is_python: false,
                     captured_env: HashMap::new(),
+                return_type: None,
                 });
                 let mut methods = HashMap::new();
                 methods.insert("__init__".to_string(), vec![init_fn]);
@@ -873,6 +937,7 @@ impl Interpreter {
             body: init_body,
             is_python: false,
             captured_env: HashMap::new(),
+        return_type: None,
         });
         let mut item_methods = HashMap::new();
         item_methods.insert("__init__".to_string(), vec![init_fn]);
@@ -993,6 +1058,7 @@ impl Interpreter {
                     access: macc,
                     is_static,
                     is_class_method,
+                    return_type: mret,
                     ..
                 } => {
                     let fn_val = Rc::new(FnValue {
@@ -1001,6 +1067,7 @@ impl Interpreter {
                         body: mbody.clone(),
                         is_python: self.in_python_module,
                         captured_env: HashMap::new(),
+                        return_type: mret.clone(),
                     });
                     // `__cast__[TypeName]` メソッドはキャスト専用のキー名で格納する。
                     // テンプレートパラメータの名前（具体型名）をキーとして使用する。
@@ -1786,6 +1853,24 @@ impl Interpreter {
 
     /// C++ ライブラリ（`cpp-lib`）または DLL（`cpp-dll`）を tl モジュールとしてロードする。
     /// ヘッダーをパースして関数シグネチャを収集し、ラッパー DLL を構築・ロードして名前空間を返す。
+    /// Look for a cs-dll bridge DLL by searching:
+    /// 1. Next to any already-loaded module that matches the dll stem
+    /// 2. Current working directory
+    fn find_cs_bridge_dll(&self, dll_name: &str) -> Option<PathBuf> {
+        // Search next to already-cached module paths
+        for ((_lang, p), _) in &self.module_cache {
+            if let Some(dir) = p.parent() {
+                let candidate = dir.join(dll_name);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+        // Fall back to cwd
+        let candidate = PathBuf::from(dll_name);
+        if candidate.exists() { Some(candidate) } else { None }
+    }
+
     fn load_cpp_module(
         &mut self,
         lang: &str,
@@ -1978,6 +2063,7 @@ impl Interpreter {
                 body: init_body,
                 is_python: false,
                 captured_env: HashMap::new(),
+            return_type: None,
             });
 
             let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();

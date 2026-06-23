@@ -1,4 +1,4 @@
-// templates.rs — テンプレート展開・AST置換
+﻿// templates.rs — テンプレート展開・AST置換
 // (check_template_constraints / type_satisfies_trait / instantiate_template / instantiate_template_class)
 // + subst_* フリー関数 (AST substitution helpers for template instantiation)
 //
@@ -108,6 +108,7 @@ impl Interpreter {
                     body: concrete_body,
                     is_python: false,
                     captured_env: std::collections::HashMap::new(),
+                return_type: None,
                 });
                 self.exec_fn(fn_val, call_args, None, "<template_fn>", None)
             }
@@ -276,6 +277,7 @@ impl Interpreter {
                             body: mbody.clone(),
                             is_python: false,
                             captured_env: std::collections::HashMap::new(),
+                        return_type: None,
                         }));
                 }
                 Stmt::GenDef {

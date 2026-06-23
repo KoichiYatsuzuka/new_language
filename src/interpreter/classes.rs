@@ -283,9 +283,26 @@ impl Interpreter {
         }));
         let inst_val = Value::Instance(inst_rc);
 
+        // cs-dll bridge dispatch: if class has __cs_bridge_path__ class_var, call the bridge.
+        let class_name = class.name.clone();
+        if let Some(Value::Str(bp)) = class.class_vars.get("__cs_bridge_path__") {
+            let bp_path = std::path::PathBuf::from(bp.clone());
+            let evaled = self.eval_call_args(call_args)?;
+            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+            if let Some(bridge) = super::cs_dll_runtime::get_bridge(&bp_path) {
+                let handle = super::cs_dll_runtime::call_constructor(&bridge, &class_name, &arg_vals)
+                    .map_err(|e| format!("CsDll: constructor for '{class_name}' failed: {e}"))?;
+                return Ok(Value::CsObject(Rc::new(super::value::CsObjectData {
+                    class_name: class_name.clone(),
+                    handle,
+                    bridge_path: bp_path,
+                    class: class.clone(),
+                })));
+            }
+        }
+
         // Native __init__ dispatch (for import[rs] structs and compiled classes).
         // Check NATIVE_METHODS before falling back to tree-walk.
-        let class_name = class.name.clone();
         if super::native_api::lookup_native_method_ptr(&class_name, "__init__").is_some() {
             let evaled = self.eval_call_args(call_args)?;
             let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
@@ -602,6 +619,25 @@ impl Interpreter {
                 }
             }
             Value::Class(cls) => {
+                // cs-dll static method dispatch
+                if let Some(Value::Str(bp)) = cls.class_vars.get("__cs_bridge_path__") {
+                    let bp_path = std::path::PathBuf::from(bp.clone());
+                    let class_name = cls.name.clone();
+                    let ret_type: Option<String> = cls
+                        .methods
+                        .get(method_name)
+                        .and_then(|overloads| overloads.first())
+                        .and_then(|f| f.return_type.clone());
+                    if let Some(bridge) = super::cs_dll_runtime::get_bridge(&bp_path) {
+                        let evaled = self.eval_call_args(args)?;
+                        let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                        return super::cs_dll_runtime::call_static(
+                            &bridge, &class_name, method_name, &arg_vals,
+                            ret_type.as_deref(),
+                        ).map_err(|e| format!("CsDll: {e}"));
+                    }
+                }
+
                 // クラスオブジェクトに対するメソッド呼び出し: static / class_method のみ許可
                 let overloads =
                     self.lookup_method_in_class(&cls, method_name)
@@ -1017,6 +1053,29 @@ impl Interpreter {
             }
             Value::EventLoop(el_rc) => {
                 self.exec_event_loop_method(el_rc.clone(), method_name, args)
+            }
+            Value::CsObject(obj_data) => {
+                let class_name = obj_data.class_name.clone();
+                let handle = obj_data.handle;
+                let bp = obj_data.bridge_path.clone();
+                let class = obj_data.class.clone();
+                // Resolve return type from stub method definition
+                let ret_type: Option<String> = class
+                    .methods
+                    .get(method_name)
+                    .and_then(|overloads| overloads.first())
+                    .and_then(|f| f.return_type.clone());
+                let evaled = self.eval_call_args(args)?;
+                let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                match super::cs_dll_runtime::get_bridge(&bp) {
+                    Some(bridge) => {
+                        super::cs_dll_runtime::call_instance(
+                            &bridge, &class_name, handle, method_name, &arg_vals,
+                            ret_type.as_deref(),
+                        ).map_err(|e| format!("CsDll: {e}"))
+                    }
+                    None => Err(format!("CsDll: bridge DLL not loaded for '{class_name}'")),
+                }
             }
             _ => Err(format!(
                 "AttributeError: '{}' object has no method '{method_name}'",

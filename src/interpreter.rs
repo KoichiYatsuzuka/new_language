@@ -31,6 +31,8 @@ pub(crate) mod event_loop;
 mod classes;
 #[path = "interpreter/cpp_bridge/mod.rs"]
 pub(crate) mod cpp_bridge;
+#[path = "interpreter/cs_dll_runtime.rs"]
+pub(crate) mod cs_dll_runtime;
 #[path = "interpreter/debugger.rs"]
 pub(self) mod debugger;
 #[path = "interpreter/eval.rs"]

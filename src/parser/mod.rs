@@ -17,6 +17,7 @@ mod imports;
 mod classes;
 mod types;
 mod exprs;
+pub(crate) mod cs_assembly;
 
 /// tl 言語の再帰降下パーサ。
 ///

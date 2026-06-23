@@ -79,7 +79,8 @@ impl Interpreter {
             | Value::AsyncManager(_)
             | Value::AsyncStatusVal(_)
             | Value::Signal(_)
-            | Value::EventLoop(_) => true,
+            | Value::EventLoop(_)
+            | Value::CsObject(_) => true,
         }
     }
 
@@ -118,6 +119,10 @@ impl Interpreter {
             Value::AsyncStatusVal(_) => "Async",
             Value::Signal(_) => "Signal",
             Value::EventLoop(_) => "EventLoop",
+            Value::CsObject(o) => {
+                let _ = o;
+                "cs_object"
+            }
         }
     }
 
@@ -381,6 +386,7 @@ impl Interpreter {
                 format!("<Signal handlers={} at 0x{:x}>", sig.handlers.len(), addr)
             }
             Value::EventLoop(_) => "<EventLoop>".to_string(),
+            Value::CsObject(o) => format!("<CsObject '{}' handle={}>", o.class_name, o.handle),
             Value::FrozenList { state, layout } => {
                 let st = state.borrow();
                 let parts: Vec<String> = (0..st.len)

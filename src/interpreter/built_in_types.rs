@@ -1,4 +1,4 @@
-// built_in_types.rs — 組み込み型・例外クラス・列挙型の初期化
+﻿// built_in_types.rs — 組み込み型・例外クラス・列挙型の初期化
 //
 // インタープリタ起動時にグローバルスコープへ登録する組み込み値を構築する。
 // Interpreter::new() から呼ばれる register_builtin_globals がエントリポイント。
@@ -63,6 +63,7 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
         body: init_body,
         is_python: false,
         captured_env: HashMap::new(),
+    return_type: None,
     });
     let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
     methods.insert("__init__".to_string(), vec![init_fn]);
@@ -132,6 +133,7 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
         body: init_body,
         is_python: false,
         captured_env: HashMap::new(),
+    return_type: None,
     });
     let mut methods = HashMap::new();
     methods.insert("__init__".to_string(), vec![init_fn]);

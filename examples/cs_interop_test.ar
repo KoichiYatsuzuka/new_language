@@ -1,0 +1,76 @@
+import[cs-dll] cs_interop_test.ArrowBridge as bridge
+
+# ── Static integer arithmetic ──────────────────────────────────────────────
+let add_result = bridge.Calculator.Add(10, 5)
+print("Calculator.Add(10, 5) =", add_result)      # expected 15
+
+let sub_result = bridge.Calculator.Subtract(10, 5)
+print("Calculator.Subtract(10, 5) =", sub_result)  # expected 5
+
+let mul_result = bridge.Calculator.Multiply(6, 7)
+print("Calculator.Multiply(6, 7) =", mul_result)   # expected 42
+
+# ── Static float arithmetic ────────────────────────────────────────────────
+let div_result = bridge.Calculator.Divide(10.0, 4.0)
+print("Calculator.Divide(10.0, 4.0) =", div_result)  # expected 2.5
+
+let pow_result = bridge.Calculator.Power(2.0, 10.0)
+print("Calculator.Power(2.0, 10.0) =", pow_result)   # expected 1024.0
+
+let sqrt_result = bridge.Calculator.Sqrt(9.0)
+print("Calculator.Sqrt(9.0) =", sqrt_result)         # expected 3.0
+
+# ── Static properties (float) ──────────────────────────────────────────────
+let pi = bridge.Calculator.getPi()
+print("Calculator.Pi =", pi)   # expected ~3.14159…
+
+let e = bridge.Calculator.getE()
+print("Calculator.E =", e)     # expected ~2.71828…
+
+# ── Calculator instance ────────────────────────────────────────────────────
+let calc0 = bridge.Calculator()
+calc0.Accumulate(5.0)
+calc0.Accumulate(3.5)
+let acc = calc0.GetAccumulated()
+print("Accumulate(5.0, 3.5) =", acc)   # expected 8.5
+
+calc0.Reset()
+let acc2 = calc0.GetAccumulated()
+print("After Reset() =", acc2)          # expected 0.0
+
+# Calculator with initial value
+let calc1 = bridge.Calculator(100.0)
+calc1.Accumulate(25.0)
+let acc3 = calc1.GetAccumulated()
+print("calc1(100.0).Accumulate(25.0) =", acc3)  # expected 125.0
+
+# ── TextProcessor instance ─────────────────────────────────────────────────
+let tp = bridge.TextProcessor("  Hello, World!  ")
+
+let upper = tp.ToUpper()
+print("ToUpper() =", upper)   # expected "  HELLO, WORLD!  "
+
+let lower = tp.ToLower()
+print("ToLower() =", lower)   # expected "  hello, world!  "
+
+let trimmed = tp.Trim()
+print("Trim() =", trimmed)    # expected "Hello, World!"
+
+let contains = tp.Contains("World")
+print("Contains('World') =", contains)   # expected True / 1
+
+tp.Append(" Extra")
+let text = tp.getText()
+print("After Append =", text)   # expected "  Hello, World!   Extra"
+
+# ── TextProcessor static methods ───────────────────────────────────────────
+let repeated = bridge.TextProcessor.Repeat("ab", 3)
+print("Repeat('ab', 3) =", repeated)   # expected "ababab"
+
+let is_empty = bridge.TextProcessor.IsNullOrEmpty("")
+print("IsNullOrEmpty('') =", is_empty)   # expected 1 (true)
+
+let not_empty = bridge.TextProcessor.IsNullOrEmpty("hello")
+print("IsNullOrEmpty('hello') =", not_empty)  # expected 0 (false)
+
+print("=== All cs-dll tests passed ===")

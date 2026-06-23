@@ -7,6 +7,27 @@ use crate::lexer;
 use crate::python_converter;
 use std::path::PathBuf;
 
+/// ar_config.json の JSON テキストから `csharp.lib_paths` を取り出す。
+/// 依存クレートなしの簡易パーサー（正規表現・serde 不使用）。
+fn parse_cs_lib_paths(json: &str, base: &std::path::Path) -> Option<Vec<std::path::PathBuf>> {
+    // "lib_paths" キーを探す
+    let key = "\"lib_paths\"";
+    let start = json.find(key)?;
+    let after_key = &json[start + key.len()..];
+    let arr_start = after_key.find('[')?;
+    let arr_end = after_key[arr_start..].find(']')?;
+    let arr = &after_key[arr_start + 1..arr_start + arr_end];
+    let mut paths = Vec::new();
+    for part in arr.split(',') {
+        let trimmed = part.trim().trim_matches('"');
+        if !trimmed.is_empty() {
+            let p = std::path::PathBuf::from(trimmed);
+            paths.push(if p.is_absolute() { p } else { base.join(p) });
+        }
+    }
+    if paths.is_empty() { None } else { Some(paths) }
+}
+
 /// C 型を対応する tl プリミティブ型名に変換する（静的型検査スタブ生成用）。
 ///
 /// `CType::Void` → `"None"`, `CType::Bool` → `"bool"`,
@@ -324,6 +345,10 @@ impl Parser {
             "py-int" => self.load_python_interface_module(module),
             // import[rs]: クレートバインディングをコンパイル・キャッシュし stubs を返す
             "rs" => self.load_rs_module(module, version),
+            // import[cs-dll]: .NET NativeAOT DLL — アセンブリから型スタブを生成
+            "cs-dll" => self.load_cs_module(module, false),
+            // import[cs-proc]: .NET IPC サブプロセス — 型情報は cs-dll と同一
+            "cs-proc" => self.load_cs_module(module, true),
             other => Err(format!("unknown import language '{other}'")),
         }
     }
@@ -712,6 +737,96 @@ impl Parser {
         self.loading.remove(abs_path);
         self.module_cache.insert(cache_key, body.clone());
         Ok(body)
+    }
+
+    /// `import[cs-dll]` / `import[cs-proc]` — .NET アセンブリから型スタブを生成する。
+    ///
+    /// DLL の検索順:
+    ///   1. source_dir / path/to/LastSegment.dll
+    ///   2. source_dir / LastSegment.dll
+    ///   3. root_dir  / LastSegment.dll
+    ///   4. ar_config.json の csharp.lib_paths に列挙されたディレクトリ
+    ///
+    /// DLL が見つからない場合は警告を出して空スタブを返す（型なし・実行時に解決）。
+    /// `is_proc` は IPC サブプロセス方式かを示すが、型スタブは両方式で共通。
+    fn load_cs_module(&mut self, module: &[String], is_proc: bool) -> Result<Vec<Stmt>, String> {
+        let last = module.last().cloned().unwrap_or_default();
+        let dll_name = format!("{last}.dll");
+
+        // キャッシュキー
+        let cache_key = (if is_proc { "cs-proc" } else { "cs-dll" }.to_string(),
+                         std::path::PathBuf::from(&dll_name));
+        if let Some(body) = self.module_cache.get(&cache_key) {
+            return Ok(body.clone());
+        }
+
+        // 候補パスを順番に試す
+        let sub_path: PathBuf = module.iter().collect::<PathBuf>().with_extension("dll");
+        let candidates: Vec<PathBuf> = vec![
+            self.source_dir.join(&sub_path),
+            self.source_dir.join(&dll_name),
+            self.root_dir.join(&dll_name),
+        ];
+
+        let mut dll_path: Option<PathBuf> = None;
+        for c in &candidates {
+            if c.exists() {
+                dll_path = Some(c.clone());
+                break;
+            }
+        }
+
+        // ar_config.json の csharp.lib_paths も検索
+        if dll_path.is_none() {
+            if let Some(extra) = self.load_cs_lib_paths() {
+                for dir in extra {
+                    let p = dir.join(&dll_name);
+                    if p.exists() {
+                        dll_path = Some(p);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let body = match dll_path {
+            Some(path) => {
+                match super::cs_assembly::load_cs_assembly(&path) {
+                    Ok(stmts) => stmts,
+                    Err(e) => {
+                        eprintln!("Warning: import[cs-*]: {e}; falling back to empty stubs");
+                        vec![]
+                    }
+                }
+            }
+            None => {
+                eprintln!(
+                    "Warning: import[cs-*]: cannot find '{dll_name}' for module '{}'; \
+                     no type stubs available (add the DLL path to ar_config.json csharp.lib_paths)",
+                    module.join(".")
+                );
+                vec![]
+            }
+        };
+
+        self.module_cache.insert(cache_key, body.clone());
+        Ok(body)
+    }
+
+    /// ar_config.json の `csharp.lib_paths` を読んでパスリストを返す。
+    fn load_cs_lib_paths(&self) -> Option<Vec<PathBuf>> {
+        // Walk up from source_dir looking for ar_config.json
+        let mut dir = self.source_dir.clone();
+        loop {
+            let cfg = dir.join("ar_config.json");
+            if cfg.exists() {
+                if let Ok(text) = std::fs::read_to_string(&cfg) {
+                    return parse_cs_lib_paths(&text, &dir);
+                }
+            }
+            if !dir.pop() { break; }
+        }
+        None
     }
 
     /// Python モジュールの検索ディレクトリリストを返す。
