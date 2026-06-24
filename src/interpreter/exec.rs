@@ -33,6 +33,66 @@ use super::{
     RAISE_SENTINEL,
 };
 
+/// `ar_config.json` の `javascript` セクションを読んで
+/// `(node_exe, bridge_script, bridge_root)` を返す。
+///
+/// 検索順: `search_dirs` 内の各ディレクトリ → カレントディレクトリ。
+fn find_js_config(search_dirs: &[PathBuf])
+    -> Result<(PathBuf, PathBuf, PathBuf), String>
+{
+    let cwd = std::env::current_dir().ok();
+    let extra: &[PathBuf] = cwd.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
+
+    for dir in search_dirs.iter().chain(extra.iter()) {
+        let cfg_path = dir.join("ar_config.json");
+        if !cfg_path.exists() { continue; }
+        let text = match std::fs::read_to_string(&cfg_path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let root: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let js = match root.get("javascript") {
+            Some(v) => v,
+            None => continue,
+        };
+
+        let node_exe = js.get("node_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("node");
+        let node_exe = PathBuf::from(node_exe);
+
+        // bridge_script: 絶対パスまたは ar_config.json からの相対パス
+        let bridge_script = js.get("bridge_script")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "ar_config.json: javascript.bridge_script is missing".to_string())?;
+        let bridge_script = {
+            let p = PathBuf::from(bridge_script);
+            if p.is_absolute() { p } else { dir.join(p) }
+        };
+        if !bridge_script.exists() {
+            return Err(format!(
+                "ar_config.json: bridge_script '{}' not found",
+                bridge_script.display()
+            ));
+        }
+
+        let bridge_root = js.get("bridge_root")
+            .and_then(|v| v.as_str())
+            .map(|s| {
+                let p = PathBuf::from(s);
+                if p.is_absolute() { p } else { dir.join(p) }
+            })
+            .unwrap_or_else(|| dir.clone());
+
+        return Ok((node_exe, bridge_script, bridge_root));
+    }
+
+    Err("ar_config.json: javascript section not found in any search directory".to_string())
+}
+
 /// `"list[T]"` からアイテム型 `"T"` を取り出す。`"list"` や他の型は `None` を返す。
 fn extract_list_elem_type(ann: &str) -> Option<&str> {
     let inner = ann.strip_prefix("list[")?.strip_suffix(']')?;
@@ -325,6 +385,64 @@ impl Interpreter {
                         }
                     }
                     stub_ns
+                } else if lang == "js-proc" {
+                    // import[js-proc]: Node.js IPC サブプロセス経由で JS モジュールを呼び出す。
+                    // 1. ar_config.json から node_path と bridge_script を読み込む
+                    // 2. ブリッジプロセスを起動（キャッシュ済みなら再利用）
+                    // 3. list 操作でモジュールのエクスポート関数名を取得
+                    // 4. 各関数を Value::JsProcFn としてネームスペースに登録
+                    let cfg = find_js_config(&self.python_search_dirs);
+                    match cfg {
+                        Err(e) => {
+                            eprintln!("Warning: js-proc: {e}");
+                            self.exec_module(lang, module, body)?
+                        }
+                        Ok((node_exe, bridge_script, bridge_root)) => {
+                            let bridge_key = bridge_script
+                                .canonicalize()
+                                .unwrap_or_else(|_| bridge_script.clone())
+                                .to_string_lossy()
+                                .into_owned();
+
+                            match super::js_proc_runtime::launch_proc(
+                                &node_exe, &bridge_script, &bridge_root,
+                            ) {
+                                Err(e) => {
+                                    eprintln!("Warning: js-proc bridge not started: {e}");
+                                    self.exec_module(lang, module, body)?
+                                }
+                                Ok(()) => {
+                                    let module_name = module.join("/");
+                                    let fn_names = super::js_proc_runtime::list_functions(
+                                        &bridge_key, &module_name,
+                                    ).unwrap_or_else(|e| {
+                                        eprintln!("Warning: js-proc list_functions: {e}");
+                                        vec![]
+                                    });
+
+                                    let mut members = std::collections::HashMap::new();
+                                    for fn_name in fn_names {
+                                        members.insert(fn_name.clone(), Value::JsProcFn {
+                                            bridge_key:  bridge_key.clone(),
+                                            module_name: module_name.clone(),
+                                            fn_name,
+                                        });
+                                    }
+                                    let ns = std::rc::Rc::new(crate::interpreter::NamespaceData {
+                                        name: module.join("."),
+                                        members,
+                                    });
+                                    let bind_name = alias.clone()
+                                        .unwrap_or_else(|| module.last().unwrap().clone());
+                                    self.declare_var(
+                                        bind_name,
+                                        Var::new(Value::Namespace(ns), false),
+                                    );
+                                    return Ok(ExecResult::Normal);
+                                }
+                            }
+                        }
+                    }
                 } else {
                     self.exec_module(lang, module, body)?
                 };

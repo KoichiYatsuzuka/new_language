@@ -1,0 +1,38 @@
+# js_proc_test.ar — import[js-proc] を使って Node.js の path モジュールと
+# VS Code 拡張の analysis.js を呼び出すテスト
+#
+# ar_config.json の設定:
+#   bridge_root: "vscode-extension"
+#   モジュール "out_debug.analysis" → vscode-extension/out_debug/analysis.js
+#   モジュール "path"               → Node.js 組み込み (bare require fallback)
+
+# ── テスト 1: Node.js 組み込み path モジュール ────────────────────────────────
+import[js-proc] path as js_path
+
+print("=== path module ===")
+let base: str = js_path.basename("C:/Users/test/file.ar")
+print("basename:", base)
+
+let ext: str = js_path.extname("file.ar")
+print("extname:", ext)
+
+let joined: str = js_path.join("examples", "test", "file.ar")
+print("join:", joined)
+
+# ── テスト 2: VS Code 拡張 analysis.js の文字列処理関数 ─────────────────────
+import[js-proc] out_debug.analysis as analysis
+
+print("")
+print("=== analysis module ===")
+
+let stripped: str = analysis.stripComment("let x: int = 42  # this is a comment")
+print("stripComment:", stripped)
+
+let cleaned: str = analysis.cleanTypeAnnotation("  List[int]  ")
+print("cleanTypeAnnotation:", cleaned)
+
+let parts: List[str] = analysis.splitComma("int, str, bool")
+print("splitComma:", parts)
+
+print("")
+print("done.")

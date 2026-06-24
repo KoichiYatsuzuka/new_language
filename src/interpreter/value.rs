@@ -798,6 +798,16 @@ pub enum Value {
     EventLoop(Rc<RefCell<super::event_loop::EventLoopData>>),
     /// import[cs-dll] で生成される C# オブジェクトのハンドル。
     CsObject(Rc<CsObjectData>),
+    /// import[js-proc] で生成される JavaScript モジュール関数のランタイム表現。
+    /// 呼び出し時に js_proc_runtime 経由で Node.js ブリッジに IPC 送信する。
+    JsProcFn {
+        /// ブリッジスクリプトのパス（ブリッジレジストリのキー）。
+        bridge_key:  String,
+        /// JS モジュール名（スラッシュ区切り、ブリッジに渡す）。
+        module_name: String,
+        /// 呼び出す関数名。
+        fn_name:     String,
+    },
     /// `Result[T, E]` 値。`Ok(value)` または `Err(error)` で生成される。
     /// `ok: true` → Ok 側の値、`ok: false` → Err 側の値。
     ResultVal { ok: bool, inner: Box<Value> },

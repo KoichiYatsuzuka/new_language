@@ -83,6 +83,7 @@ impl Interpreter {
             | Value::Signal(_)
             | Value::EventLoop(_)
             | Value::CsObject(_)
+            | Value::JsProcFn { .. }
             | Value::ResultVal { .. } => true,
         }
     }
@@ -128,6 +129,7 @@ impl Interpreter {
                 let _ = o;
                 "cs_object"
             }
+            Value::JsProcFn { .. } => "function",
             Value::ResultVal { ok, .. } => {
                 if *ok { "Ok" } else { "Err" }
             }
@@ -162,6 +164,7 @@ impl Interpreter {
                     | Value::OverloadedFn(_)
                     | Value::GeneratorFn(_)
                     | Value::NativeFunction(_)
+                    | Value::JsProcFn { .. }
             ),
             _ if ann.starts_with("list[") => matches!(val, Value::List(_)),
             _ if ann.starts_with("dict[") => matches!(val, Value::Dict(_)),
@@ -409,6 +412,9 @@ impl Interpreter {
             }
             Value::EventLoop(_) => "<EventLoop>".to_string(),
             Value::CsObject(o) => format!("<CsObject '{}' handle={}>", o.class_name, o.handle),
+            Value::JsProcFn { module_name, fn_name, .. } => {
+                format!("<js function '{module_name}.{fn_name}'>")
+            }
             Value::ResultVal { ok, inner } => {
                 if *ok {
                     format!("Ok({})", self.display(inner))

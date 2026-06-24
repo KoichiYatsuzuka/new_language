@@ -75,6 +75,8 @@ lang         → loader
 "rs"         → load_rs_module        compile Rust crate → stub AST
 "cpp-dll"    → parse_cpp_import      parse C header → stub AST
 "cpp-lib"    → parse_cpp_import      (alias)
+"js-proc"    → load_js_module        .ars stub (optional); runtime = Node.js IPC
+"cs-proc"    → load_cs_proc_module   ECMA-335 DLL → type stubs; runtime = .NET IPC
 ```
 
 ---
@@ -294,6 +296,194 @@ At runtime, `exec.rs` dispatches to the C/C++ bridge for actual calls (not via `
 
 ---
 
+## Node.js IPC サブプロセス (`import[js-proc]`)
+
+### 概要
+
+`import[js-proc]` は Node.js を子プロセスとして起動し、Windows 名前付きパイプ上の NDJSON-RPC で任意の JS モジュールを呼び出します。cs-proc の JS 版に相当します。
+
+### パーサー側 (`src/parser/imports.rs` — `load_js_module`)
+
+`lang == "js-proc"` のとき `load_js_module(module)` が呼ばれます。
+
+```rust
+fn load_js_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
+    // モジュールパスを "seg1/seg2" 形式に結合
+    let module_name = module.join("/");
+    // .ars スタブが存在すれば静的型チェックに使用
+    for dir in [&self.source_dir, &self.root_dir] {
+        let stub = dir.join(format!("{}.ars", module_name));
+        if stub.exists() {
+            // 既存の load_stub_file() パターンで .ars をパース
+            return self.parse_stub_file(&stub);
+        }
+    }
+    Ok(vec![])  // スタブなし = 型チェックなし（実行時に動的取得）
+}
+```
+
+スタブがない場合は空の body を返します。型チェックは行われず、インポート後のメンバーは全て動的型になります。
+
+### ランタイム側 (`src/interpreter/exec.rs`)
+
+#### `find_js_config`
+
+`ar_config.json` を `python_search_dirs`（source_dir・root_dir）の順でウォークアップ検索し、`javascript` キーを読みます。
+
+```rust
+fn find_js_config(search_dirs: &[PathBuf])
+    -> Result<(PathBuf, PathBuf, PathBuf), String>
+// 戻り値: (node_exe, bridge_script, bridge_root)
+```
+
+`ar_config.json` の対応フィールド:
+
+```json
+{
+  "javascript": {
+    "node_path":    "node",
+    "bridge_script": "bridge/js_bridge.cjs",
+    "bridge_root":  "vscode-extension"
+  }
+}
+```
+
+#### `exec_import` の `"js-proc"` ブランチ
+
+```
+1. find_js_config() → (node_exe, bridge_script, bridge_root)
+2. bridge_key = canonicalize(bridge_script).to_string_lossy()
+3. js_proc_runtime::launch_proc(node_exe, bridge_script, bridge_root)
+     ├─ Node.js が起動し名前付きパイプサーバーをリッスン
+     └─ "READY\n" を受信したらパイプクライアントを接続・キャッシュ
+4. js_proc_runtime::list_functions(bridge_key, module_name)
+     → ブリッジに {"op":"list","module":"out_debug/analysis"} を送信
+     → エクスポート関数名リストを受信
+5. 各関数名につき Value::JsProcFn { bridge_key, module_name, fn_name } を生成
+6. NamespaceData::new(module_name, members) を alias に束縛
+```
+
+### ブリッジランタイム (`src/interpreter/js_proc_runtime.rs`)
+
+#### `JsBridge` 構造体
+
+```rust
+pub struct JsBridge {
+    _child:        std::process::Child,    // Node.js 子プロセス
+    reader:        BufReader<std::fs::File>,
+    writer:        BufWriter<std::fs::File>,
+    next_id:       u64,
+    pub bridge_script: PathBuf,
+}
+```
+
+#### グローバルブリッジレジストリ
+
+スレッドローカルではなくグローバルな `OnceLock<Mutex<HashMap<PathBuf, JsBridge>>>` を使用します。これにより AsyncManager が生成する OS スレッドからもブリッジにアクセスできます。
+
+```rust
+fn global_bridges() -> &'static Mutex<HashMap<PathBuf, JsBridge>> {
+    static BRIDGES: OnceLock<Mutex<HashMap<PathBuf, JsBridge>>> = OnceLock::new();
+    BRIDGES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+```
+
+`cs_proc_runtime.rs` が `thread_local!` を使うのとは異なります。
+
+#### 公開 API
+
+```rust
+pub fn launch_proc(node_exe: &Path, bridge_script: &Path, bridge_root: &Path) -> Result<(), String>
+pub fn list_functions(bridge_key: &str, module_name: &str) -> Result<Vec<String>, String>
+pub fn call_function(bridge_key: &str, module_name: &str, fn_name: &str, args: &[Value])
+    -> Result<Value, String>
+```
+
+#### 名前付きパイプ接続 (Windows)
+
+`open_pipe_client` は `CreateFileW` を最大20回リトライします。`ERROR_PIPE_BUSY` の場合は `WaitNamedPipeW(5000)` でパイプが空くのを待ちます。
+
+#### 型エンコーディング
+
+**Arrow → JSON** (`encode_arg`):
+
+| Arrow 値 | JSON タグ |
+|----------|-----------|
+| `Int(n)` / `UInt(n)` | `{"t":"i","v":n}` |
+| `Float(f)` | `{"t":"f","v":f}` |
+| `Bool(b)` | `{"t":"b","v":b}` |
+| `Str(s)` | `{"t":"s","v":s}` |
+| `None` | `{"t":"n"}` |
+| `List(items)` | `{"t":"a","v":[...]}` |
+| その他 | `{"t":"n"}` |
+
+**JSON → Arrow** (`decode_result`):
+
+| JSON タグ | Arrow 値 |
+|-----------|----------|
+| `"s"` | `Value::Str` |
+| `"i"` | `Value::Int` |
+| `"f"` | `Value::Float` |
+| `"b"` | `Value::Bool` |
+| `"n"` | `Value::None` |
+| `"a"` | `Value::List` (再帰デコード) |
+| `"o"` | `Value::List` (`"k=v"` 形式の文字列リスト) |
+
+### `Value::JsProcFn`
+
+`src/interpreter/value.rs` に追加した新しい値バリアント:
+
+```rust
+Value::JsProcFn {
+    bridge_key:  String,   // canonicalize(bridge_script) の文字列
+    module_name: String,   // "out_debug/analysis" など
+    fn_name:     String,   // "stripComment" など
+}
+```
+
+#### 各ファイルでの対応
+
+| ファイル | 対応箇所 |
+|----------|----------|
+| `value.rs` | `JsProcFn` バリアント追加。`deep_clone` は catch-all `other => other.clone()` で自動対応 |
+| `ops.rs` | `is_truthy` → `true`、`type_name` → `"function"`、`value_matches_type_ann` の `"function"` アーム、`display` → `<js function 'module.name'>` |
+| `eval.rs` | `eval_call` の match アームに `Value::JsProcFn` 追加 — 直接 `js_proc_runtime::call_function` を呼ぶ |
+| `classes.rs` | `eval_method_call` の Namespace アームの match に `Value::JsProcFn` 追加 — アトリビュートメソッド呼び出し時に dispatch |
+
+`classes.rs` への追加が必要な理由: `js_path.basename(...)` のような呼び出しは `Expr::Attr { object, attr }` 形式で、`eval_call` ではなく `eval_method_call` 経由になるため。
+
+### ブリッジスクリプト (`bridge/js_bridge.cjs`)
+
+IPC サーバー本体。起動引数: `node js_bridge.cjs <pipe_name> <bridge_root>`。
+
+- **`Module._load` オーバーライド**: `require('vscode')` を `{bridge_root}/out_debug/vscode_mock` にリダイレクト（VS Code 拡張モジュールをホスト外で動かすため）
+- **`loadModule(moduleName)`**: 上記の解決順序でモジュールをロード・キャッシュ
+- **`handleRequest(req)`**: `list` / `call` / `quit` を処理。`call` は `await Promise.resolve(fn(...args))` で async 関数に透過対応
+- 起動完了時に `process.stdout.write('READY\n')` でシグナル
+
+### Promise の同期
+
+Arrow の `<-` async 構文で OS スレッドを生成し、そのスレッドがブリッジの `send_recv`（ブロッキング I/O）を呼びます。ブリッジ側では `async function` の Promise を `await` で解決してから応答します。これにより Arrow 側では `block_return` で結果を受け取るだけで、Promise 同期が自動的に行われます。
+
+```hv
+mng <- async->str:
+    block_return analysis.cleanTypeAnnotation("  List[int]  ")
+mng.wait_for_finish()
+print(mng.results[0])   # "List[int]"
+```
+
+### テストファイル
+
+| ファイル | 内容 |
+|----------|------|
+| `examples/js_proc_test.ar` | Node.js `path` モジュールと VS Code 拡張 `out_debug/analysis.js` の同期呼び出しテスト |
+| `examples/js_proc_async_test.ar` | AsyncManager と組み合わせた非同期呼び出しテスト |
+| `examples/math_render.ar` | LaTeX Workshop の MathJax を流用した TeX 数式 SVG レンダリング |
+| `bridge/js_bridge.cjs` | IPC サーバー本体 |
+| `bridge/lw_math.cjs` | LaTeX Workshop バンドル MathJax を使うカスタムブリッジモジュール |
+
+---
+
 ## Key File Locations
 
 | Subject | File | Key lines |
@@ -310,3 +500,10 @@ At runtime, `exec.rs` dispatches to the C/C++ bridge for actual calls (not via `
 | Runtime module execution | `src/interpreter/exec.rs` | ~1321–1627 |
 | Python interop runtime | `src/interpreter/py_interop.rs` | ~143–184 |
 | Type checker import handling | `src/type_check/stmt.rs` | ~553–576 |
+| JS-proc stub loader | `src/parser/imports.rs` | `load_js_module` |
+| JS-proc config reader | `src/interpreter/exec.rs` | `find_js_config` |
+| JS-proc bridge runtime | `src/interpreter/js_proc_runtime.rs` | all |
+| JS-proc value dispatch (attr call) | `src/interpreter/classes.rs` | Namespace arm in `eval_method_call` |
+| JS-proc value dispatch (direct call) | `src/interpreter/eval.rs` | `JsProcFn` arm in `eval_call` |
+| IPC サーバースクリプト | `bridge/js_bridge.cjs` | all |
+| LaTeX Workshop MathJax ブリッジ | `bridge/lw_math.cjs` | all |

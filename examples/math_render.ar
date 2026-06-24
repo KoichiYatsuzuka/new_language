@@ -1,0 +1,71 @@
+# math_render.ar — LaTeX Workshop の MathJax を流用して TeX 数式を SVG に変換する。
+#
+# LaTeX Workshop の hover preview（onmath.js → mathjax/mathjax.js）と
+# 同じ MathJax パイプラインを import[js-proc] 経由で呼び出す。
+#
+# 出力: examples/math_output/*.svg  と  gallery.html
+
+import[js-proc] lw_math as math
+
+let OUT = "examples/math_output"
+
+fn render(name: str, formula: str) -> None:
+    let path = OUT + "/" + name + ".svg"
+    let err: str = math.renderSVGToFile(formula, True, path, 1.5, "#cdd6f4")
+    if err != "":
+        print("[ERROR]", name + ":", err)
+    else:
+        print("[OK]   ", path)
+
+print("=== TeX Math Render (LaTeX Workshop MathJax) ===")
+print("")
+
+# ── 基本的な数式 ──────────────────────────────────────────────────────────────
+render("quadratic",
+       "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}")
+
+render("euler_identity",
+       "e^{i\\pi} + 1 = 0")
+
+render("gaussian",
+       "f(x) = \\frac{1}{\\sigma\\sqrt{2\\pi}}\
+        \\exp\\!\\left(-\\frac{(x-\\mu)^2}{2\\sigma^2}\\right)")
+
+render("gaussian_integral",
+       "\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}")
+
+render("euler_series",
+       "e^x = \\sum_{n=0}^{\\infty} \\frac{x^n}{n!}")
+
+render("basel_problem",
+       "\\sum_{n=1}^{\\infty} \\frac{1}{n^2} = \\frac{\\pi^2}{6}")
+
+render("fourier",
+       "\\hat{f}(\\xi) = \\int_{-\\infty}^{\\infty} f(x)\\,e^{-2\\pi i x \\xi}\\,dx")
+
+render("stokes",
+       "\\oint_{\\partial\\Omega} \\omega = \\int_{\\Omega} d\\omega")
+
+render("maxwell_em",
+       "\\nabla \\times \\mathbf{B} = \\mu_0 \\mathbf{J}\
+        + \\mu_0\\varepsilon_0 \\frac{\\partial \\mathbf{E}}{\\partial t}")
+
+render("schrodinger",
+       "i\\hbar\\frac{\\partial}{\\partial t}\\Psi = \\hat{H}\\Psi")
+
+render("matrix_2x2",
+       "\\det\\begin{pmatrix}a & b \\\\ c & d\\end{pmatrix} = ad - bc")
+
+render("binomial",
+       "\\binom{n}{k} = \\frac{n!}{k!\\,(n-k)!}")
+
+# ── HTML ギャラリー生成 ────────────────────────────────────────────────────────
+print("")
+let html_err: str = math.renderGalleryHTML(OUT)
+if html_err != "":
+    print("[ERROR] gallery:", html_err)
+else:
+    print("[OK]    " + OUT + "/gallery.html")
+
+print("")
+print("done — open gallery.html in a browser to view.")

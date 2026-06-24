@@ -1,0 +1,29 @@
+# js_proc_async_test.ar — Promise を返す JS 関数を AsyncManager 経由で呼ぶテスト
+#
+# Node.js の fs.promises.readFile は Promise を返す。
+# Arrow の <- async でラップすることで、Arrow メインスレッドをブロックせずに
+# 結果を取得できる。
+
+import[js-proc] path as js_path
+import[js-proc] out_debug.analysis as analysis
+
+print("=== AsyncManager + js-proc ===")
+
+let mng = AsyncManager(2)
+
+# タスク0: path.resolve を非同期で実行（実際は同期だが仕組みの確認）
+mng <- async->str:
+    block_return js_path.resolve("examples", "js_proc_test.ar")
+
+# タスク1: analysis.cleanTypeAnnotation を非同期で実行
+mng <- async->str:
+    block_return analysis.cleanTypeAnnotation("  Optional[int]  ")
+
+# 完了を待つ
+mng.wait_for_finish()
+
+print("resolved path:", mng.results[0])
+print("cleaned type:",  mng.results[1])
+print("status:", mng.progress_status)
+print("errors:", mng.error_list)
+print("done.")

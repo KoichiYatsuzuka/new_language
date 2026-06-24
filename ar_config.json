@@ -1,4 +1,10 @@
 {
+  "javascript": {
+    "node_path": "node",
+    "bridge_script": "bridge/js_bridge.cjs",
+    "bridge_root": "vscode-extension"
+  },
+
   "cpp": {
     "precompile_macros": ["WINDOWS_DESKTOP_OS", "_WIN64"],
     "system_headers": [

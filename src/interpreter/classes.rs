@@ -1008,6 +1008,11 @@ impl Interpreter {
                         super::py_interop::call_py_object(&handle, &evaled)
                     }
                     Value::NativeFunction(fn_ref) => self.call_native_function(&fn_ref, args),
+                    Value::JsProcFn { bridge_key, module_name, fn_name } => {
+                        let evaled_args = self.eval_call_args(args)?;
+                        let vals: Vec<Value> = evaled_args.into_iter().map(|(_, v)| v).collect();
+                        super::js_proc_runtime::call_function(&bridge_key, &module_name, &fn_name, &vals)
+                    }
                     other => Err(format!(
                         "TypeError: '{}' object is not callable",
                         self.type_name(&other)

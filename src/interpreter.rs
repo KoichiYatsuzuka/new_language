@@ -35,6 +35,8 @@ pub(crate) mod cpp_bridge;
 pub(crate) mod cs_dll_runtime;
 #[path = "interpreter/cs_proc_runtime.rs"]
 pub(crate) mod cs_proc_runtime;
+#[path = "interpreter/js_proc_runtime.rs"]
+pub(crate) mod js_proc_runtime;
 #[path = "interpreter/debugger.rs"]
 pub(self) mod debugger;
 #[path = "interpreter/eval.rs"]

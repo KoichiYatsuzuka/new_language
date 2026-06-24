@@ -539,6 +539,11 @@ impl Interpreter {
             Value::NativeFunction(fn_ref) => {
                 self.call_native_function(&fn_ref, args)
             }
+            Value::JsProcFn { bridge_key, module_name, fn_name } => {
+                let evaled_args = self.eval_call_args(args)?;
+                let vals: Vec<Value> = evaled_args.into_iter().map(|(_, v)| v).collect();
+                super::js_proc_runtime::call_function(&bridge_key, &module_name, &fn_name, &vals)
+            }
             Value::Type(type_name) => {
                 self.eval_type_constructor_call(&type_name, args)
             }

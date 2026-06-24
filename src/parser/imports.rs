@@ -349,6 +349,8 @@ impl Parser {
             "cs-dll" => self.load_cs_module(module, false),
             // import[cs-proc]: .NET IPC サブプロセス — 型情報は cs-dll と同一
             "cs-proc" => self.load_cs_module(module, true),
+            // import[js-proc]: Node.js IPC サブプロセス — .ars スタブが存在すれば読み込む
+            "js-proc" => self.load_js_module(module),
             other => Err(format!("unknown import language '{other}'")),
         }
     }
@@ -814,6 +816,43 @@ impl Parser {
                 vec![]
             }
         };
+
+        self.module_cache.insert(cache_key, body.clone());
+        Ok(body)
+    }
+
+    /// `import[js-proc]` — .ars スタブファイルが存在すれば読み込み、なければ空スタブを返す。
+    ///
+    /// スタブ検索順:
+    ///   1. source_dir / path/to/module.ars
+    ///   2. root_dir   / path/to/module.ars
+    ///
+    /// スタブが見つからない場合は空 body を返す（型なし・実行時にブリッジが関数リストを提供）。
+    fn load_js_module(&mut self, module: &[String]) -> Result<Vec<Stmt>, String> {
+        let cache_key = ("js-proc".to_string(), module.iter().collect::<PathBuf>());
+        if let Some(body) = self.module_cache.get(&cache_key) {
+            return Ok(body.clone());
+        }
+
+        let sub_path: PathBuf = module.iter().collect::<PathBuf>().with_extension("ars");
+        let candidates = [
+            self.source_dir.join(&sub_path),
+            self.root_dir.join(&sub_path),
+        ];
+
+        let body = candidates.iter().find_map(|p| -> Option<Vec<Stmt>> {
+            if !p.exists() { return None; }
+            let src = std::fs::read_to_string(p).ok()?;
+            let filename = p.to_string_lossy().to_string();
+            let module_dir = p.parent().map(|d| d.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let tokens = lexer::Lexer::new(&src, filename.as_str()).tokenize();
+            let mut sub = Parser::new(tokens, Some(module_dir));
+            sub.module_cache = self.module_cache.clone();
+            sub.loading     = self.loading.clone();
+            sub.root_dir    = self.root_dir.clone();
+            sub.parse_program().ok()
+        }).unwrap_or_default();
 
         self.module_cache.insert(cache_key, body.clone());
         Ok(body)
