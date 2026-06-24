@@ -1,4 +1,4 @@
-﻿# git SHA: 50e5e5c504db52a6bd14efc51f25654e044702b9
+﻿# git SHA: a027318e6f5a4813fdb8a64de1d25ad2115a4a8f
 """Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
@@ -37,7 +37,7 @@ from .value import (
     TlNamespace, TlSlice, TlFileObject, TlComplex,
     TlSignal, TlEventLoop,
     CapturedImm, CapturedMut,
-    type_name, display, is_truthy, _values_equal, deep_clone, _repr_val,
+    type_name, display, is_truthy, _values_equal, deep_clone, deep_clone_unfrozen, _repr_val,
 )
 from .env import Environment
 from .exceptions import (
@@ -131,6 +131,9 @@ class Interpreter:
         # current_class: name of class being executed for access-control checks
         self._current_class: Optional[str] = None
         self._current_method: Optional[str] = None
+        # Search dirs for finding DLLs (populated by __main__.py with script dir)
+        from pathlib import Path as _Path
+        self._python_search_dirs: list[_Path] = []
         # Install built-ins into global scope
         for name, val in make_builtins(self._known_classes, self).items():
             self._env.declare(name, val, mutable=False)
@@ -358,12 +361,14 @@ class Interpreter:
                                                   params=params, body=body)
                 elif is_abstract:
                     fn_val = TlFunction(name=name, params=params, body=[],
-                                        is_static=is_static, is_class_method=is_class_method)
+                                        is_static=is_static, is_class_method=is_class_method,
+                                        return_type=return_type)
                 else:
                     captured = self._env.capture_all()
                     fn_val = TlFunction(name=name, params=params, body=body,
                                         captured_env=captured,
-                                        is_static=is_static, is_class_method=is_class_method)
+                                        is_static=is_static, is_class_method=is_class_method,
+                                        return_type=return_type)
                 # Apply decorators (outermost first = bottom-up)
                 for dec_expr in reversed(decorators):
                     dec = self.eval(dec_expr)
@@ -825,10 +830,14 @@ class Interpreter:
     # ------------------------------------------------------------------
 
     def _eval_attr(self, obj: Value, attr: str) -> Value:
+        from .value import TlCsObject
         if isinstance(obj, TlInstance):
             return self._get_instance_attr(obj, attr)
         if isinstance(obj, TlClass):
             return self._get_class_attr(obj, attr)
+        if isinstance(obj, TlCsObject):
+            # Property access: dispatch as zero-arg instance method
+            return self._cs_call_instance(obj, attr, [])
         if isinstance(obj, TlNamespace):
             if attr in obj.members:
                 return obj.members[attr]
@@ -1070,11 +1079,19 @@ class Interpreter:
         raise RuntimeError(f"TypeError: '{type_name(func)}' object is not callable")
 
     def _call_attr(self, obj: Value, attr: str, args: list, kwargs: dict) -> Value:
+        from .value import TlCsObject
         if isinstance(obj, TlInstance):
             return self._call_method(obj, attr, args, kwargs)
         if isinstance(obj, TlClass):
+            # cs-dll static method dispatch
+            bridge_path = obj.class_vars.get("__cs_bridge_path__")
+            if bridge_path is not None:
+                return self._cs_call_static(obj, attr, args, bridge_path)
             cls_attr = self._get_class_attr(obj, attr)
             return self._call(cls_attr, args, kwargs)
+        if isinstance(obj, TlCsObject):
+            # cs-dll instance method dispatch
+            return self._cs_call_instance(obj, attr, args)
         if isinstance(obj, TlNamespace):
             if attr in obj.members:
                 return self._call(obj.members[attr], args, kwargs)
@@ -1087,7 +1104,66 @@ class Interpreter:
         method = get_attr_builtin(obj, attr, self._known_classes)
         return self._call(method, args, kwargs)
 
+    # ------------------------------------------------------------------
+    # cs-dll bridge dispatch helpers
+    # ------------------------------------------------------------------
+
+    def _cs_ret_type(self, methods: dict, method_name: str) -> Optional[str]:
+        """Retrieve the return_type string from a TlFunction stub in a methods dict."""
+        from .value import TlFunction
+        overloads = methods.get(method_name)
+        if overloads:
+            fn = overloads[0]
+            if isinstance(fn, TlFunction):
+                return fn.return_type
+        return None
+
+    def _cs_call_static(self, cls: "TlClass", method: str, args: list,
+                        bridge_path: str) -> Value:
+        """Dispatch a static cs-dll call via the bridge."""
+        from pathlib import Path
+        from . import cs_dll_runtime
+        bridge = cs_dll_runtime.load_bridge(Path(bridge_path))
+        ret_type = self._cs_ret_type(cls.methods, method)
+        return cs_dll_runtime.call_static(bridge, cls.name, method, args, ret_type)
+
+    def _cs_call_instance(self, obj: "TlCsObject", method: str, args: list) -> Value:
+        """Dispatch an instance cs-dll call via the bridge."""
+        from pathlib import Path
+        from .value import TlCsObject
+        from . import cs_dll_runtime
+        bridge = cs_dll_runtime.load_bridge(Path(obj.bridge_path))
+        ret_type = self._cs_ret_type(obj.cls.methods, method)
+        return cs_dll_runtime.call_instance(bridge, obj.class_name, obj.handle,
+                                            method, args, ret_type)
+
+    def _copy_value(self, val: Value) -> Value:
+        """copy() メソッドのロジック: __copy__ を優先し、なければ deep_clone_unfrozen を使用する。"""
+        if isinstance(val, TlInstance):
+            cls = val.cls
+            if "__copy__" in cls.methods:
+                overloads = cls.methods["__copy__"]
+                # 引数なし（self のみ）で呼び出せるオーバーロードを選別する
+                callable_overloads = [
+                    f for f in overloads
+                    if all(p.default is not None or p.variadic
+                           for p in f.params if p.name != "self")
+                ]
+                if callable_overloads:
+                    fn = callable_overloads[0] if len(callable_overloads) == 1 else \
+                        self._resolve_overload(callable_overloads, [], {})
+                    return self._exec_function(fn, [], {}, self_val=val)
+        try:
+            return deep_clone_unfrozen(val)
+        except MemoryError:
+            raise RuntimeError("MemoryError: insufficient memory for copy")
+
     def _call_method(self, inst: TlInstance, name: str, args: list, kwargs: dict = {}) -> Value:
+        # 組み込み copy() メソッド: __copy__ を優先し、なければ deepcopy
+        if name == "copy":
+            if args or kwargs:
+                raise RuntimeError(f"TypeError: {inst.cls.name}.copy() takes no arguments")
+            return self._copy_value(inst)
         cls = inst.cls
         if name in cls.methods:
             overloads = cls.methods[name]
@@ -1262,7 +1338,7 @@ class Interpreter:
         for stmt in body:
             match stmt:
                 case StmtFnDef(name=fname, template_params=tparams, params=params,
-                               return_type=_, body=fbody, is_abstract=is_abstract,
+                               return_type=fret_type, body=fbody, is_abstract=is_abstract,
                                is_static=is_static, is_class_method=is_cm, access=access):
                     if access != Accessibility.PUBLIC:
                         current_access = access
@@ -1273,7 +1349,8 @@ class Interpreter:
                         captured = self._env.capture_all()
                         fn = TlFunction(name=storage_name, params=params, body=fbody,
                                         captured_env=captured,
-                                        is_static=is_static, is_class_method=is_cm)
+                                        is_static=is_static, is_class_method=is_cm,
+                                        return_type=fret_type)
                     elif tparams:
                         storage_name = fname
                         fn = TlTemplateFn(name=fname, template_params=tparams, params=params, body=fbody)
@@ -1282,7 +1359,8 @@ class Interpreter:
                         captured = self._env.capture_all()
                         fn = TlFunction(name=fname, params=params, body=fbody,
                                         captured_env=captured,
-                                        is_static=is_static, is_class_method=is_cm)
+                                        is_static=is_static, is_class_method=is_cm,
+                                        return_type=fret_type)
                     if storage_name not in methods:
                         methods[storage_name] = []
                     methods[storage_name].append(fn)
@@ -1347,8 +1425,23 @@ class Interpreter:
         for k, cell in base.static_vars.items():
             if k not in static_vars: static_vars[k] = cell
 
-    def _instantiate_class(self, cls: TlClass, args: list, kwargs: dict) -> TlInstance:
+    def _instantiate_class(self, cls: TlClass, args: list, kwargs: dict) -> Value:
         PRIMITIVES = {"int", "float", "str", "bool", "None"}
+
+        # cs-dll class: call bridge constructor → TlCsObject
+        bridge_path = cls.class_vars.get("__cs_bridge_path__")
+        if bridge_path is not None:
+            from pathlib import Path
+            from .value import TlCsObject
+            from . import cs_dll_runtime
+            bridge = cs_dll_runtime.load_bridge(Path(bridge_path))
+            handle = cs_dll_runtime.call_constructor(bridge, cls.name, args)
+            return TlCsObject(
+                handle=handle,
+                class_name=cls.name,
+                bridge_path=str(Path(bridge_path).resolve()),
+                cls=cls,
+            )
 
         # Primitive new_type: single positional arg sets __value__
         if cls.new_type_base in PRIMITIVES and "__value__" in {f[0] for f in cls.field_defaults}:
@@ -1931,6 +2024,13 @@ class Interpreter:
             self._env.declare(bound_name, ns, mutable=False)
             return
 
+        # import[cs-dll] / import[cs-proc]: execute stubs, then patch with native DLL bridge
+        if lang in ("cs-dll", "cs-proc"):
+            ns = self._exec_cs_dll_import(module, body)
+            bound_name = alias if alias else module[-1]
+            self._env.declare(bound_name, ns, mutable=False)
+            return
+
         mod_name = ".".join(module)
         # Execute pre-parsed body in a sub-interpreter, collect as namespace
         sub = Interpreter()
@@ -2013,6 +2113,15 @@ class Interpreter:
                     self._env.declare(bound, val, mutable=False)
             return
 
+        if lang in ("cs-dll", "cs-proc"):
+            ns = self._exec_cs_dll_import(module, body)
+            for orig_name, alias_name in names:
+                val = ns.members.get(orig_name)
+                if val is not None:
+                    bound = alias_name if alias_name else orig_name
+                    self._env.declare(bound, val, mutable=False)
+            return
+
         mod_name = ".".join(module)
         sub = Interpreter()
         sub._known_classes = self._known_classes
@@ -2032,6 +2141,79 @@ class Interpreter:
             if orig_name in members:
                 bound = alias if alias else orig_name
                 self._env.declare(bound, members[orig_name], mutable=False)
+
+    def _exec_cs_dll_import(self, module: list[str], body: list) -> "TlNamespace":
+        """Execute cs-dll stubs and patch namespace classes with the native bridge DLL.
+
+        Mirrors src/interpreter/exec.rs cs-dll import handling:
+        1. Execute the body (class stubs) in a sub-interpreter → TlNamespace
+        2. Find the NativeAOT bridge DLL ({module_name}_native.dll)
+        3. Load the bridge via cs_dll_runtime
+        4. Patch every TlClass in the namespace with __cs_bridge_path__ class var
+        """
+        from pathlib import Path as _Path
+        from .value import TlNamespace, TlClass
+        from . import cs_dll_runtime
+
+        # Step 1: execute stubs
+        mod_name = ".".join(module)
+        sub = Interpreter()
+        sub._known_classes = self._known_classes
+        sub._known_traits = self._known_traits
+        try:
+            sub.exec_stmts(body)
+        except Exception:
+            pass
+
+        members: dict = {}
+        for scope in sub._env._scopes:
+            for name, entry in scope.items():
+                if name.startswith("_"):
+                    continue
+                val = entry[2][0] if entry[2] is not None else entry[0]
+                members[name] = val
+
+        ns = TlNamespace(name=mod_name, members=members)
+
+        # Step 2: find native DLL
+        managed_name = module[-1]
+        native_dll_name = f"{managed_name}_native.dll"
+
+        # Search dirs: source file directory and its subdirectories
+        search_dirs: list[_Path] = list(self._python_search_dirs)
+        sub_dir = _Path(*module[:-1]) if len(module) > 1 else _Path(".")
+
+        bridge_path: Optional[_Path] = None
+        for d in search_dirs:
+            c = d / sub_dir / native_dll_name
+            if c.exists():
+                bridge_path = c
+                break
+            # Also try directly in the search dir
+            c2 = d / native_dll_name
+            if c2.exists():
+                bridge_path = c2
+                break
+
+        if bridge_path is None:
+            # Not found — return stub namespace without bridge (type-check only)
+            return ns
+
+        # Step 3: load bridge
+        try:
+            bridge = cs_dll_runtime.load_bridge(bridge_path)
+        except Exception as e:
+            import warnings
+            warnings.warn(f"cs-dll: failed to load bridge '{bridge_path}': {e}")
+            return ns
+
+        # Step 4: patch all TlClass instances with __cs_bridge_path__
+        bridge_path_str = str(bridge_path.resolve())
+        for cls_val in members.values():
+            if isinstance(cls_val, TlClass):
+                cls_val.class_vars["__cs_bridge_path__"] = bridge_path_str
+
+        return ns
 
     def _exec_rs_import(self, crate_name: str, body: list) -> "TlNamespace":
         """Load the compiled Rust crate DLL and return a TlNamespace.

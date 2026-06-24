@@ -147,6 +147,7 @@ class TlFunction:
     is_static: bool = False
     is_class_method: bool = False
     is_python: bool = False
+    return_type: Optional[str] = None  # for cs-dll return_type dispatch
 
     def __repr__(self) -> str:
         return f"<function {self.name}>"
@@ -357,6 +358,18 @@ class TlEventLoop:
         return "<EventLoop>"
 
 
+@dataclass
+class TlCsObject:
+    """A C# object accessed via a NativeAOT bridge DLL (import[cs-dll])."""
+    handle: int        # i64 object handle
+    class_name: str    # C# class name (for bridge dispatch)
+    bridge_path: str   # path to the native DLL
+    cls: "TlClass"     # Arrow class stub (for return_type lookup)
+
+    def __repr__(self) -> str:
+        return f"<CsObject {self.class_name} #{self.handle}>"
+
+
 Value = (
     int | float | TlComplex | str | bool | type(None) |
     TlList | TlFixedList | TlDict | TlTuple | TlSet |
@@ -365,7 +378,7 @@ Value = (
     TlType | TlTrait |
     TlTemplateFn | TlTemplateGenFn | TlTemplateClass |
     TlNamespace | TlSlice | TlFileObject |
-    TlSignal | TlEventLoop
+    TlSignal | TlEventLoop | TlCsObject
 )
 
 
@@ -581,4 +594,47 @@ def deep_clone(v: "Value") -> "Value":
         }
         return TlInstance(cls=v.cls, fields=new_fields, immutable=v.immutable)
     # Functions, classes, namespaces, etc. are shared by identity
+    return v
+
+
+def deep_clone_unfrozen(v: "Value") -> "Value":
+    """copy() メソッド用のディープコピー。フリーズ状態をリセットして新鮮な可変インスタンスを返す。
+
+    deep_clone との違い:
+    - TlInstance: immutable=False にリセットし、フィールド可変性をクラス定義から復元する
+    - その他: deep_clone と同様
+    """
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if isinstance(v, TlComplex):
+        return TlComplex(real=v.real, imag=v.imag)
+    if isinstance(v, TlFixedList):
+        return TlFixedList(items=[deep_clone_unfrozen(x) for x in v.items])
+    if isinstance(v, TlList):
+        return TlList(items=[deep_clone_unfrozen(x) for x in v.items])
+    if isinstance(v, TlDict):
+        return TlDict(
+            key_type=v.key_type,
+            item_type=v.item_type,
+            keys=[deep_clone_unfrozen(k) for k in v.keys],
+            values=[deep_clone_unfrozen(val) for val in v.values],
+        )
+    if isinstance(v, TlTuple):
+        return TlTuple(values=[deep_clone_unfrozen(x) for x in v.values])
+    if isinstance(v, TlSet):
+        return TlSet(items=[deep_clone_unfrozen(x) for x in v.items])
+    if isinstance(v, TlSlice):
+        return TlSlice(
+            begin=deep_clone_unfrozen(v.begin) if v.begin is not None else None,
+            end=deep_clone_unfrozen(v.end) if v.end is not None else None,
+            step=deep_clone_unfrozen(v.step) if v.step is not None else None,
+        )
+    if isinstance(v, TlInstance):
+        cls = v.cls
+        new_fields = {
+            name: [deep_clone_unfrozen(fv[0]),
+                   cls.field_mutability.get(name, True)]  # クラス定義から可変性を復元
+            for name, fv in v.fields.items()
+        }
+        return TlInstance(cls=cls, fields=new_fields, immutable=False)
     return v

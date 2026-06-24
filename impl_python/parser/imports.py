@@ -227,6 +227,8 @@ class _ParserImports:
             return []  # handled by _parse_cpp_import; body already filled there
         if lang == "rs":
             return self._load_rs_module(module, version)
+        if lang in ("cs-dll", "cs-proc"):
+            return self._load_cs_module(module)
         raise self._error(f"unknown import language '{lang}'")
 
     def _load_tl_module(self, module: list[str], force_source: bool = False) -> list[Stmt]:
@@ -329,6 +331,52 @@ class _ParserImports:
             stmts, _dll_bytes = rs_load(crate_name, search_dirs, version)
         except Exception as e:
             raise self._error(str(e))
+
+        self._module_cache[cache_key] = stmts
+        return stmts
+
+    def _load_cs_module(self, module: list[str]) -> list[Stmt]:
+        """Load a .NET managed DLL and generate Arrow type stubs via ECMA-335 parsing."""
+        from ..parser.cs_assembly import load_cs_assembly
+
+        mod_path = Path(*module) if len(module) > 1 else Path(module[0])
+        managed_dll_name = f"{module[-1]}.dll"
+
+        search_dirs = [self._source_dir]
+        if self._root_dir != self._source_dir:
+            search_dirs.append(self._root_dir)
+
+        found: Optional[Path] = None
+        for d in search_dirs:
+            # First try subdirectory structure: e.g. cs_form_test/FormBridge.dll
+            sub = mod_path.parent / managed_dll_name if len(module) > 1 else None
+            candidates = []
+            if sub:
+                candidates.append(d / sub)
+            candidates.append(d / mod_path.with_suffix(".dll"))
+            candidates.append(d / managed_dll_name)
+            for c in candidates:
+                if c.exists():
+                    found = c
+                    break
+            if found:
+                break
+
+        if found is None:
+            checked = [str(d / mod_path.with_suffix(".dll")) for d in search_dirs]
+            raise self._error(
+                f"cs-dll: cannot find managed DLL for '{'.'.join(module)}' "
+                f"(looked at {checked})"
+            )
+
+        cache_key = ("cs-dll", str(found))
+        if cache_key in self._module_cache:
+            return self._module_cache[cache_key]
+
+        try:
+            stmts = load_cs_assembly(found)
+        except Exception as e:
+            raise self._error(f"cs-dll: failed to read '{found}': {e}")
 
         self._module_cache[cache_key] = stmts
         return stmts

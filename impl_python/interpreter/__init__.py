@@ -7,7 +7,15 @@ from .exceptions import RaiseSignal, InterpreterError
 
 def run(stmts: list, filename: str = "<input>") -> None:
     """Execute a parsed program."""
+    from pathlib import Path
     interp = Interpreter()
+    # Populate search dirs so cs-dll (and rs) bridge DLLs can be found
+    src_path = Path(filename)
+    if src_path.exists():
+        interp._python_search_dirs = [src_path.parent]
+    elif filename not in ("<input>", "<repl>"):
+        # Non-existent path; try parent directory anyway
+        interp._python_search_dirs = [src_path.parent]
     try:
         interp.exec_stmts(stmts)
     except RaiseSignal as exc:
