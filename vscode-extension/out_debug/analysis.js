@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.initBuiltinStub = exports.builtinStub = exports.DocumentAnalysis = exports.selectHoverSymbol = exports.inferBodyReturnType = exports.collectTemplateParams = exports.collectFuncDefs = exports.collectConstructorTypes = exports.collectImportAliases = exports.inferExprType = exports.getDocstringAfter = exports.cleanTypeAnnotation = exports.parseParams = exports.findBodyEndLine = exports.findBlockBounds = exports.extractIterElemType = exports.extractTupleElemTypes = exports.resolveSelf = exports.splitComma = exports.stripComment = exports.FOR_LOOP_RE = exports.TUPLE_DECL_RE = exports.IMPORT_RE = exports.NEW_TYPE_RE = exports.CLASS_DEF_RE = exports.HOVER_DECL_RE = exports.STATIC_DECL_RE = exports.DECL_RE = void 0;
+exports.initBuiltinStub = exports.builtinStub = exports.DocumentAnalysis = exports.selectHoverSymbol = exports.inferBodyReturnType = exports.collectTemplateParams = exports.collectFuncDefs = exports.gatherFuncDefLines = exports.collectConstructorTypes = exports.collectImportAliases = exports.inferExprType = exports.getDocstringAfter = exports.cleanTypeAnnotation = exports.parseParams = exports.findBodyEndLine = exports.findBlockBounds = exports.extractIterElemType = exports.extractTupleElemTypes = exports.resolveSelf = exports.splitComma = exports.stripComment = exports.FOR_LOOP_RE = exports.TUPLE_DECL_RE = exports.IMPORT_RE = exports.NEW_TYPE_RE = exports.CLASS_DEF_RE = exports.HOVER_DECL_RE = exports.STATIC_DECL_RE = exports.DECL_RE = void 0;
 const vscode = require("vscode");
 const fs = require("fs");
 const fs_1 = require("fs");
@@ -30,7 +30,7 @@ exports.TUPLE_DECL_RE = TUPLE_DECL_RE;
 const FOR_LOOP_RE = /^(\s*)for\s+((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s+in\s+(.+)$/;
 exports.FOR_LOOP_RE = FOR_LOOP_RE;
 // Groups: 1=kind, 2=path, 3=version[?], 4=with-stub[?], 5=alias[?]
-const IMPORT_RE = /^\s*(import(?:\[(?:py(?:-int)?|rs|hvc?|cpp-(?:lib|dll))\])?)\s+([\w.]+)(?:\[([^\]]*)\])?(?:\s+with\s+(\w+))?(?:\s+as\s+([A-Za-z_]\w*))?/;
+const IMPORT_RE = /^\s*(import(?:\[(?:py(?:-int)?|rs|hvc?|cpp-(?:lib|dll)|cs-(?:dll|proc))\])?)\s+([\w.]+)(?:\[([^\]]*)\])?(?:\s+with\s+(\w+))?(?:\s+as\s+([A-Za-z_]\w*))?/;
 exports.IMPORT_RE = IMPORT_RE;
 const TYPEGUARD_IS_NOT_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+not\s+([A-Za-z_]\w*)\s*:/;
 const TYPEGUARD_IS_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+([A-Za-z_]\w*)\s*:/;
@@ -443,7 +443,7 @@ class ExprInferrer {
         return base;
     }
     parsePrimary() {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l;
         const tok = this.cur();
         switch (tok.kind) {
             case 'INT':
@@ -467,9 +467,11 @@ class ExprInferrer {
                 this.eat();
                 let isChained = false;
                 let lastMember = '';
+                let penultimateMember = ''; // for alias.ClassName.method() 3-level chains
                 while (this.cur().kind === 'OTHER' && this.cur().value === '.') {
                     this.eat();
                     if (this.cur().kind === 'IDENT') {
+                        penultimateMember = lastMember;
                         lastMember = this.cur().value;
                         this.eat();
                     }
@@ -515,16 +517,24 @@ class ExprInferrer {
                         const builtinRet = (_c = (_b = builtins_1.BUILTIN_TYPE_METHODS[baseType]) === null || _b === void 0 ? void 0 : _b[lastMember]) === null || _c === void 0 ? void 0 : _c.ret;
                         if (builtinRet !== undefined)
                             return builtinRet;
-                        // Check user-defined / cpp / rs class methods
+                        // Check user-defined / cpp / rs / cs class methods
                         const classRet = (_d = this.pyClassMethods.get(baseType)) === null || _d === void 0 ? void 0 : _d.get(lastMember);
                         if (classRet !== undefined)
                             return classRet;
-                        return (_e = this.funcEnv.get(lastMember)) !== null && _e !== void 0 ? _e : 'unknown';
+                        // 3-level chain: alias.ClassName.method() — try penultimate as class name.
+                        // Needed for static calls like `svc.Calculator.Add(a, b)` where
+                        // baseType resolves to "unknown" because the alias is not in env.
+                        if (baseType === 'unknown' && penultimateMember) {
+                            const staticRet = (_e = this.pyClassMethods.get(penultimateMember)) === null || _e === void 0 ? void 0 : _e.get(lastMember);
+                            if (staticRet !== undefined)
+                                return staticRet;
+                        }
+                        return (_f = this.funcEnv.get(lastMember)) !== null && _f !== void 0 ? _f : 'unknown';
                     }
                     if (name === 'Self' && this.selfType)
                         return this.selfType;
                     // Resolve from builtins first, then funcEnv; apply typeArg for both
-                    const retType = (_g = (_f = (name in builtins_1.BUILTIN_RETURN_TYPES ? builtins_1.BUILTIN_RETURN_TYPES[name] : undefined)) !== null && _f !== void 0 ? _f : this.funcEnv.get(name)) !== null && _g !== void 0 ? _g : 'unknown';
+                    const retType = (_h = (_g = (name in builtins_1.BUILTIN_RETURN_TYPES ? builtins_1.BUILTIN_RETURN_TYPES[name] : undefined)) !== null && _g !== void 0 ? _g : this.funcEnv.get(name)) !== null && _h !== void 0 ? _h : 'unknown';
                     if (typeArg && retType !== 'unknown') {
                         if (retType === name)
                             return `${name}[${typeArg}]`;
@@ -536,9 +546,9 @@ class ExprInferrer {
                 }
                 if (isChained) {
                     if (lastMember) {
-                        const baseType = (_h = (name === 'self' ? this.selfType : this.env.get(name))) !== null && _h !== void 0 ? _h : 'unknown';
+                        const baseType = (_j = (name === 'self' ? this.selfType : this.env.get(name))) !== null && _j !== void 0 ? _j : 'unknown';
                         if (baseType !== 'unknown') {
-                            const fieldType = (_j = this.classFieldTypes.get(baseType)) === null || _j === void 0 ? void 0 : _j.get(lastMember);
+                            const fieldType = (_k = this.classFieldTypes.get(baseType)) === null || _k === void 0 ? void 0 : _k.get(lastMember);
                             if (fieldType !== undefined)
                                 return fieldType;
                         }
@@ -547,7 +557,7 @@ class ExprInferrer {
                 }
                 if (name === 'Self' && this.selfType)
                     return this.selfType;
-                return (_k = this.env.get(name)) !== null && _k !== void 0 ? _k : 'unknown';
+                return (_l = this.env.get(name)) !== null && _l !== void 0 ? _l : 'unknown';
             }
             case 'LPAREN': {
                 this.eat();
@@ -625,6 +635,7 @@ class ExprInferrer {
     }
 }
 function inferExprType(src, env, funcEnv = new Map(), importAliases = new Set(), importFuncTypes = new Map(), pyClassMethods = new Map(), templateParams = new Map(), classFieldTypes = new Map(), selfType = undefined) {
+    var _a;
     const trimmed = src.trim();
     // Block-expression RHS (if/for/while/match/block): extract -> ReturnType annotation
     if (/^(?:if|for|while|match|block)\b/.test(trimmed)) {
@@ -645,6 +656,16 @@ function inferExprType(src, env, funcEnv = new Map(), importAliases = new Set(),
             }
             if (/^[A-Z]/.test(memberName))
                 return memberName;
+        }
+        // 3-level chain: alias.ClassName.staticMethod(...) — no callMatch because the
+        // 2-level regex stops at ClassName before seeing the second dot.
+        const staticCallM = trimmed.match(/^[A-Za-z_]\w*\.([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*\(/);
+        if (staticCallM) {
+            const className = staticCallM[1];
+            const methodName = staticCallM[2];
+            const ret = (_a = pyClassMethods.get(className)) === null || _a === void 0 ? void 0 : _a.get(methodName);
+            if (ret !== undefined)
+                return ret;
         }
         return 'unknown';
     }
@@ -763,7 +784,7 @@ async function collectAllPyModuleInfo(document) {
                 funcSigs.set(alias, info.sigs);
             }
             const kind = (0, native_module_1.importKindOf)(importKind);
-            if (kind === 'cpp' || kind === 'rs') {
+            if (kind === 'cpp' || kind === 'rs' || kind === 'cs') {
                 for (const [className, classInfo] of info.classes) {
                     cppClasses.set(className, classInfo);
                 }
@@ -789,6 +810,40 @@ function collectConstructorTypes(document) {
     return constructors;
 }
 exports.collectConstructorTypes = collectConstructorTypes;
+function gatherFuncDefLines(document, startLine) {
+    const stripped = stripComment(document.lineAt(startLine).text);
+    if (!/^\s*(fn|gen)\s/.test(stripped))
+        return undefined;
+    let depth = 0;
+    let foundOpen = false;
+    for (const ch of stripped) {
+        if (ch === '(') {
+            depth++;
+            foundOpen = true;
+        }
+        else if (ch === ')')
+            depth--;
+    }
+    if (!foundOpen)
+        return undefined;
+    if (depth === 0)
+        return { fullLine: stripped, lastLine: startLine };
+    let combined = stripped;
+    for (let j = startLine + 1; j < document.lineCount; j++) {
+        const cont = stripComment(document.lineAt(j).text).trim();
+        for (const ch of cont) {
+            if (ch === '(')
+                depth++;
+            else if (ch === ')')
+                depth--;
+        }
+        combined += ' ' + cont;
+        if (depth <= 0)
+            return { fullLine: combined, lastLine: j };
+    }
+    return undefined;
+}
+exports.gatherFuncDefLines = gatherFuncDefLines;
 function collectFuncDefs(document) {
     var _a, _b, _c, _d;
     const defs = [];
@@ -806,7 +861,8 @@ function collectFuncDefs(document) {
             classStack.push({ name: classM[3], indent: ((_c = classM[1]) !== null && _c !== void 0 ? _c : '').length });
             continue;
         }
-        const m = stripped.match(builtins_1.FUNC_DEF_RE);
+        const funcDef = gatherFuncDefLines(document, i);
+        const m = funcDef === null || funcDef === void 0 ? void 0 : funcDef.fullLine.match(builtins_1.FUNC_DEF_RE);
         if (!m)
             continue;
         const [, indentStr, kind, name, , retAnnotation] = m;
@@ -817,7 +873,9 @@ function collectFuncDefs(document) {
             defIndent: indentStr.length,
             annotation: parseTypeAnnotation(retAnnotation),
             enclosingClass: (_d = classStack.at(-1)) === null || _d === void 0 ? void 0 : _d.name,
+            sigEndLine: funcDef.lastLine,
         });
+        i = funcDef.lastLine;
     }
     return defs;
 }
@@ -915,23 +973,26 @@ function collectHoverSymbols(document, funcEnv, importAliases, importFuncTypes, 
             });
             continue;
         }
-        const funcMatch = stripped.match(builtins_1.FUNC_DEF_RE);
+        const funcDefLines = gatherFuncDefLines(document, i);
+        const funcMatch = funcDefLines === null || funcDefLines === void 0 ? void 0 : funcDefLines.fullLine.match(builtins_1.FUNC_DEF_RE);
         if (funcMatch) {
             const [, indentStr, kind, name, params, retAnnotation] = funcMatch;
             const enclosingClass = (_c = classContextStack.at(-1)) === null || _c === void 0 ? void 0 : _c.name;
             const rawReturnType = (_e = (_d = cleanTypeAnnotation(retAnnotation)) !== null && _d !== void 0 ? _d : funcEnv.get(name)) !== null && _e !== void 0 ? _e : 'unknown';
             const returnType = resolveSelf(rawReturnType, enclosingClass);
+            const defLine = i;
+            i = funcDefLines.lastLine;
             symbols.push({
                 name,
                 kind: 'function',
-                line: i,
+                line: defLine,
                 type: returnType,
                 signature: `${kind} ${name}(${params}) -> ${returnType}`,
-                doc: getDocstringAfter(document, i, indentStr.length),
+                doc: getDocstringAfter(document, defLine, indentStr.length),
                 access: currentAccess,
             });
             const bodyEndLine = findBodyEndLine(document, i, indentStr.length);
-            for (const paramSym of parseParams(params, i, bodyEndLine)) {
+            for (const paramSym of parseParams(params, defLine, bodyEndLine)) {
                 const resolvedType = resolveSelf((_f = paramSym.type) !== null && _f !== void 0 ? _f : 'unknown', enclosingClass);
                 const resolvedSym = resolvedType !== paramSym.type ? { ...paramSym, type: resolvedType } : paramSym;
                 symbols.push(resolvedSym);

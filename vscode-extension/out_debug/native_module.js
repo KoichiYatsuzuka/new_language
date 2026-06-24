@@ -4,12 +4,15 @@ exports.loadNativeModuleInfo = exports.parseRustLib = exports.parseTlStub = expo
 const fs_1 = require("fs");
 const path = require("path");
 const builtins_1 = require("./builtins");
+const cs_assembly_1 = require("./cs_assembly");
 // ===== C++ / native module support =====
 function importKindOf(keyword) {
     if (keyword.includes('cpp'))
         return 'cpp';
     if (keyword === 'import[rs]')
         return 'rs';
+    if (keyword === 'import[cs-dll]' || keyword === 'import[cs-proc]')
+        return 'cs';
     if (keyword === 'import' || keyword.startsWith('import[hv'))
         return 'ar';
     return 'py';
@@ -450,7 +453,7 @@ function parseRustLib(source) {
 exports.parseRustLib = parseRustLib;
 // ===== loadNativeModuleInfo =====
 async function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
-    var _a, _b;
+    var _a, _b, _c, _d, _e;
     const empty = { funcs: new Map(), sigs: new Map(), docs: new Map(), classes: new Map() };
     if (importKindOf(importKind) === 'cpp') {
         const candidates = [];
@@ -485,6 +488,36 @@ async function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
                 return parseRustLib(content);
             }
             catch { /* try next candidate */ }
+        }
+        return empty;
+    }
+    // ── import[cs-dll] / import[cs-proc]: read ECMA-335 metadata from .NET DLL ─
+    if (importKindOf(importKind) === 'cs') {
+        const lastName = (_c = modulePath.split('.').pop()) !== null && _c !== void 0 ? _c : modulePath;
+        const dllName = lastName + '.dll';
+        // Search candidates: sub-path, flat, single-segment package dir, ar_config lib_paths
+        const parts = modulePath.split('.');
+        const candidates = [
+            path.join(docDir, ...parts) + '.dll',
+            path.join(docDir, dllName),
+        ];
+        if (parts.length === 1) {
+            candidates.push(path.join(docDir, lastName, dllName));
+        }
+        const config = await loadArConfig(docDir);
+        const configDir = (_d = await findArConfigDir(docDir)) !== null && _d !== void 0 ? _d : docDir;
+        const rawCsPaths = (_e = config === null || config === void 0 ? void 0 : config.csharp) === null || _e === void 0 ? void 0 : _e.lib_paths;
+        const csLibPaths = Array.isArray(rawCsPaths) ? rawCsPaths : rawCsPaths ? [rawCsPaths] : [];
+        for (const lp of csLibPaths) {
+            const resolved = path.isAbsolute(lp) ? lp : path.resolve(configDir, lp);
+            candidates.push(path.join(resolved, dllName));
+        }
+        for (const candidate of candidates) {
+            try {
+                const buf = await fs_1.promises.readFile(candidate);
+                return (0, cs_assembly_1.parseNetAssembly)(buf);
+            }
+            catch { /* try next */ }
         }
         return empty;
     }

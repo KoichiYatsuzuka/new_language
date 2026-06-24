@@ -434,9 +434,14 @@ class ExprInferrer {
                 this.eat();
                 let isChained = false;
                 let lastMember = '';
+                let penultimateMember = ''; // for alias.ClassName.method() 3-level chains
                 while (this.cur().kind === 'OTHER' && this.cur().value === '.') {
                     this.eat();
-                    if (this.cur().kind === 'IDENT') { lastMember = this.cur().value; this.eat(); }
+                    if (this.cur().kind === 'IDENT') {
+                        penultimateMember = lastMember;
+                        lastMember = this.cur().value;
+                        this.eat();
+                    }
                     isChained = true;
                 }
                 let typeArg: string | undefined;
@@ -465,9 +470,16 @@ class ExprInferrer {
                         const baseType = (name === 'self' ? this.selfType : this.env.get(name)) ?? 'unknown';
                         const builtinRet = BUILTIN_TYPE_METHODS[baseType]?.[lastMember]?.ret;
                         if (builtinRet !== undefined) return builtinRet;
-                        // Check user-defined / cpp / rs class methods
+                        // Check user-defined / cpp / rs / cs class methods
                         const classRet = this.pyClassMethods.get(baseType)?.get(lastMember);
                         if (classRet !== undefined) return classRet;
+                        // 3-level chain: alias.ClassName.method() — try penultimate as class name.
+                        // Needed for static calls like `svc.Calculator.Add(a, b)` where
+                        // baseType resolves to "unknown" because the alias is not in env.
+                        if (baseType === 'unknown' && penultimateMember) {
+                            const staticRet = this.pyClassMethods.get(penultimateMember)?.get(lastMember);
+                            if (staticRet !== undefined) return staticRet;
+                        }
                         return this.funcEnv.get(lastMember) ?? 'unknown';
                     }
                     if (name === 'Self' && this.selfType) return this.selfType;
@@ -576,6 +588,15 @@ export function inferExprType(
                 if (retType !== undefined) return retType;
             }
             if (/^[A-Z]/.test(memberName)) return memberName;
+        }
+        // 3-level chain: alias.ClassName.staticMethod(...) — no callMatch because the
+        // 2-level regex stops at ClassName before seeing the second dot.
+        const staticCallM = trimmed.match(/^[A-Za-z_]\w*\.([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*\(/);
+        if (staticCallM) {
+            const className = staticCallM[1];
+            const methodName = staticCallM[2];
+            const ret = pyClassMethods.get(className)?.get(methodName);
+            if (ret !== undefined) return ret;
         }
         return 'unknown';
     }

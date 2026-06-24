@@ -499,7 +499,7 @@ async function provideHover(document, position) {
 }
 exports.provideHover = provideHover;
 async function provideInlayHints(document, _range) {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j;
     const hints = [];
     const a = await analysis_1.DocumentAnalysis.for(document);
     // Inlay hints on function definition lines (only when no annotation)
@@ -507,11 +507,12 @@ async function provideInlayHints(document, _range) {
         if (def.annotation !== undefined)
             continue;
         const returnType = a.funcEnv.get(def.name);
-        const rawLine = document.lineAt(def.defLine).text;
+        const sigLine = (_a = def.sigEndLine) !== null && _a !== void 0 ? _a : def.defLine;
+        const rawLine = document.lineAt(sigLine).text;
         const rparenPos = rawLine.lastIndexOf(')');
         if (rparenPos < 0)
             continue;
-        const pos = new vscode.Position(def.defLine, rparenPos + 1);
+        const pos = new vscode.Position(sigLine, rparenPos + 1);
         hints.push(new vscode.InlayHint(pos, ` -> ${returnType}`, vscode.InlayHintKind.Type));
     }
     // Inlay hints on variable declarations — requires a sequential per-line env
@@ -524,35 +525,37 @@ async function provideInlayHints(document, _range) {
         if (line.match(analysis_1.IMPORT_RE))
             continue;
         if (line.trim()) {
-            const lineIndent = ((_b = (_a = rawLine.match(/^(\s*)/)) === null || _a === void 0 ? void 0 : _a[1]) !== null && _b !== void 0 ? _b : '').length;
+            const lineIndent = ((_c = (_b = rawLine.match(/^(\s*)/)) === null || _b === void 0 ? void 0 : _b[1]) !== null && _c !== void 0 ? _c : '').length;
             if (classContext && lineIndent <= classContext.indent) {
                 classContext = undefined;
                 selfType = undefined;
             }
             const classM = line.match(analysis_1.CLASS_DEF_RE);
             if (classM) {
-                classContext = { name: classM[3], indent: ((_c = classM[1]) !== null && _c !== void 0 ? _c : '').length };
+                classContext = { name: classM[3], indent: ((_d = classM[1]) !== null && _d !== void 0 ? _d : '').length };
                 selfType = undefined;
                 continue;
             }
-            const funcM = line.match(builtins_1.FUNC_DEF_RE);
+            const funcDefLines = (0, analysis_1.gatherFuncDefLines)(document, lineIdx);
+            const funcM = funcDefLines === null || funcDefLines === void 0 ? void 0 : funcDefLines.fullLine.match(builtins_1.FUNC_DEF_RE);
             if (funcM) {
                 selfType = classContext === null || classContext === void 0 ? void 0 : classContext.name;
                 const params = funcM[4];
                 for (const p of (0, analysis_1.splitComma)(params)) {
                     const pm = p.trim().match(/^(?:(?:let|mut)\s+)?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
-                    if (pm && pm[1] !== 'self' && ((_d = pm[2]) === null || _d === void 0 ? void 0 : _d.trim())) {
+                    if (pm && pm[1] !== 'self' && ((_e = pm[2]) === null || _e === void 0 ? void 0 : _e.trim())) {
                         const pt = pm[2].trim();
                         env.set(pm[1], pt === 'Self' && selfType ? selfType : pt);
                     }
                 }
+                lineIdx = funcDefLines.lastLine;
                 continue;
             }
         }
         const staticMatch = line.match(analysis_1.STATIC_DECL_RE);
         if (staticMatch) {
             const [, indent, name, annotation, rhs] = staticMatch;
-            const type = (_e = (0, analysis_1.cleanTypeAnnotation)(annotation)) !== null && _e !== void 0 ? _e : (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
+            const type = (_f = (0, analysis_1.cleanTypeAnnotation)(annotation)) !== null && _f !== void 0 ? _f : (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
             env.set(name, type);
             if (!annotation) {
                 const nameStart = rawLine.indexOf(name, indent.length + 'static mut '.length);
@@ -573,7 +576,7 @@ async function provideInlayHints(document, _range) {
             let searchFrom = indent.length + keyword.length;
             for (let idx = 0; idx < nameList.length; idx++) {
                 const varName = nameList[idx];
-                const elemType = (_f = elemTypes[idx]) !== null && _f !== void 0 ? _f : 'unknown';
+                const elemType = (_g = elemTypes[idx]) !== null && _g !== void 0 ? _g : 'unknown';
                 env.set(varName, elemType);
                 const nameStart = rawLine.indexOf(varName, searchFrom);
                 if (nameStart >= 0) {
@@ -634,7 +637,7 @@ async function provideInlayHints(document, _range) {
                 const subTypes = (0, analysis_1.extractTupleElemTypes)(elemType, targetList.length);
                 for (let idx = 0; idx < targetList.length; idx++) {
                     const varName = targetList[idx];
-                    const varType = (_g = subTypes[idx]) !== null && _g !== void 0 ? _g : 'unknown';
+                    const varType = (_h = subTypes[idx]) !== null && _h !== void 0 ? _h : 'unknown';
                     env.set(varName, varType);
                     if (varType !== 'unknown') {
                         const nameStart = rawLine.indexOf(varName, searchFrom);
@@ -653,7 +656,7 @@ async function provideInlayHints(document, _range) {
         if (!declM)
             continue;
         const [, indent, keyword, name, annotation, rhs] = declM;
-        const type = (_h = (0, analysis_1.cleanTypeAnnotation)(annotation)) !== null && _h !== void 0 ? _h : (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
+        const type = (_j = (0, analysis_1.cleanTypeAnnotation)(annotation)) !== null && _j !== void 0 ? _j : (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType) : 'unknown');
         env.set(name, type);
         if (!annotation && rhs) {
             const nameStart = rawLine.indexOf(name, (indent !== null && indent !== void 0 ? indent : '').length + keyword.length);
@@ -1057,7 +1060,7 @@ async function provideDocumentSemanticTokens(document) {
                 }
             }
         }
-        for (const [alias] of a.importAliases) {
+        for (const alias of a.importAliases) {
             const re = new RegExp(`\\b${escapeRegex(alias)}\\b`, 'g');
             let m;
             while ((m = re.exec(lineText)) !== null) {
