@@ -1,4 +1,4 @@
-# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
 """Static type error kinds and StaticTypeError (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from dataclasses import dataclass
@@ -89,13 +89,24 @@ class ErrFieldDefaultNotAllowed:
     field_name: str
     kind: str
 
+@dataclass
+class ErrProtocolConformanceFailed:
+    type_name: str
+    protocol_name: str
+    reason: str
+
+@dataclass
+class ErrAssignUndefined:
+    pass
+
 
 TypeErrorKind = (
     ErrIncompatibleComparison | ErrAssignToImmutable | ErrCallArgCountMismatch |
     ErrCallArgTypeMismatch | ErrMissingParamTypeAnn | ErrMissingReturnTypeAnn |
     ErrUnknownKeywordArg | ErrNoMatchingOverload | ErrSelfTypeMismatch |
     ErrOperationOnAny | ErrOperationOnUnion | ErrIsNotOnNonUnion |
-    ErrCallMutParamWithImmutableArg | ErrInvalidDecorator | ErrFieldDefaultNotAllowed
+    ErrCallMutParamWithImmutableArg | ErrInvalidDecorator | ErrFieldDefaultNotAllowed |
+    ErrProtocolConformanceFailed | ErrAssignUndefined
 )
 
 
@@ -139,6 +150,11 @@ def _format_kind(kind: "TypeErrorKind") -> str:
         case ErrFieldDefaultNotAllowed(field_name=fn, kind=k):
             return (f"StaticTypeError: `{k}` field '{fn}' cannot have a default value "
                     f"in the class declaration; only `const` fields may have defaults")
+        case ErrProtocolConformanceFailed(type_name=tn, protocol_name=pn, reason=r):
+            return f"StaticTypeError: type '{tn}' does not satisfy protocol '{pn}': {r}"
+        case ErrAssignUndefined():
+            return ("StaticTypeError: cannot assign `Undefined` to a variable; "
+                    "`Undefined` can only be used in conditions and type annotations")
         case _:
             return f"StaticTypeError: <unknown error {kind!r}>"
 

@@ -1,4 +1,4 @@
-# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
+# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -39,6 +39,7 @@ class TokenKind(Enum):
     TRUE         = auto()
     FALSE        = auto()
     NONE         = auto()
+    UNDEFINED    = auto()
 
     # Logical operators (keyword form)
     AND          = auto()
@@ -81,6 +82,7 @@ class TokenKind(Enum):
     CLASS        = auto()
     ENUM         = auto()
     TRAIT        = auto()
+    PROTOCOL     = auto()
     LAMBDA       = auto()
     TEMPLATE     = auto()
 
@@ -217,6 +219,7 @@ KEYWORDS: dict[str, TokenKind] = {
     "True":         TokenKind.TRUE,
     "False":        TokenKind.FALSE,
     "None":         TokenKind.NONE,
+    "Undefined":    TokenKind.UNDEFINED,
     "and":          TokenKind.AND,
     "or":           TokenKind.OR,
     "not":          TokenKind.NOT,
@@ -249,6 +252,7 @@ KEYWORDS: dict[str, TokenKind] = {
     "class":        TokenKind.CLASS,
     "enum":         TokenKind.ENUM,
     "trait":        TokenKind.TRAIT,
+    "protocol":     TokenKind.PROTOCOL,
     "lambda":       TokenKind.LAMBDA,
     "template":     TokenKind.TEMPLATE,
     "import":       TokenKind.IMPORT,

@@ -17,6 +17,16 @@ impl TypeChecker {
         if arg_ty == expected {
             return true;
         }
+        // Protocol 型パラメータ: 適合チェックは別途実施するため、ここでは基本的に受け入れる
+        if let InferredType::Protocol(proto_name) = expected {
+            return matches!(
+                arg_ty,
+                InferredType::NamedInstance(_) | InferredType::Protocol(_) | InferredType::Any
+            ) || {
+                let _ = proto_name;
+                false
+            };
+        }
         if *expected == InferredType::TypeVal {
             return matches!(arg_ty, InferredType::TypeValOf(_) | InferredType::TypeVal);
         }

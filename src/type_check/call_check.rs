@@ -143,6 +143,15 @@ impl TypeChecker {
         }
 
         if let Some(ref fname) = func_name {
+            if self.known_protocols.contains_key(fname.as_str()) {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::ProtocolInstantiation {
+                        protocol_name: fname.clone(),
+                    },
+                    span: None,
+                });
+                return InferredType::Protocol(fname.clone());
+            }
             if self.known_class_names.contains(fname.as_str()) {
                 return InferredType::NamedInstance(fname.clone());
             }
@@ -402,6 +411,23 @@ impl TypeChecker {
                         span: None,
                     });
                 }
+            }
+        }
+
+        // Protocol 型パラメータへの引数の適合チェック
+        let mut pos_idx = 0usize;
+        for (key, arg_ty) in &normal_args {
+            let param_ty_opt = match key {
+                Some(kwarg_name) => sig.params.iter().find(|(n, _)| n == kwarg_name).and_then(|(_, t)| t.clone()),
+                None => {
+                    let t = sig.params.get(pos_idx).and_then(|(_, t)| t.clone());
+                    pos_idx += 1;
+                    t
+                }
+            };
+            if let Some(InferredType::Protocol(proto_name)) = param_ty_opt {
+                let context = format!("argument to `{fname}`");
+                self.check_protocol_conformance(arg_ty, &proto_name, None, &context);
             }
         }
     }

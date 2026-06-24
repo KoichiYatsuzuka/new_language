@@ -417,7 +417,7 @@ fn subst_call_arg(arg: &CallArg, type_map: &HashMap<String, String>) -> CallArg 
 fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
-        | Expr::Str(_) | Expr::Bool(_) | Expr::None => expr.clone(),
+        | Expr::Str(_) | Expr::Bool(_) | Expr::None | Expr::Undefined => expr.clone(),
         Expr::Ident(name) => Expr::Ident(name.clone()),
         Expr::List(items) => Expr::List(items.iter().map(|e| subst_expr(e, type_map)).collect()),
         Expr::Attr { object, attr, span } => Expr::Attr {
@@ -564,9 +564,9 @@ fn subst_stmts(stmts: &[Stmt], type_map: &HashMap<String, String>) -> Vec<Stmt> 
 fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
     match stmt {
         Stmt::Expr(e) => Stmt::Expr(subst_expr(e, type_map)),
-        Stmt::Let(name, e) => Stmt::Let(name.clone(), subst_expr(e, type_map)),
-        Stmt::Const(name, e) => Stmt::Const(name.clone(), subst_expr(e, type_map)),
-        Stmt::Mut(name, e) => Stmt::Mut(name.clone(), subst_expr(e, type_map)),
+        Stmt::Let(name, ann, e) => Stmt::Let(name.clone(), ann.clone(), subst_expr(e, type_map)),
+        Stmt::Const(name, ann, e) => Stmt::Const(name.clone(), ann.clone(), subst_expr(e, type_map)),
+        Stmt::Mut(name, ann, e) => Stmt::Mut(name.clone(), ann.clone(), subst_expr(e, type_map)),
         Stmt::LetTuple {
             targets,
             value,
@@ -690,6 +690,10 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
         } => Stmt::TraitDef {
             name: name.clone(),
             template_params: template_params.clone(),
+            body: subst_stmts(body, type_map),
+        },
+        Stmt::ProtocolDef { name, body } => Stmt::ProtocolDef {
+            name: name.clone(),
             body: subst_stmts(body, type_map),
         },
         Stmt::Field {

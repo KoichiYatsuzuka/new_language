@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from ..ast import (
     BinOp, UnaryOp,
-    Expr, ExprInt, ExprFloat, ExprStr, ExprBool, ExprNone,
+    Expr, ExprInt, ExprFloat, ExprStr, ExprBool, ExprNone, ExprUndefined,
     ExprIdent, ExprLocalVar, ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
@@ -13,7 +13,7 @@ from ..ast import (
     MatchPatternCase,
 )
 from .types import (
-    TyInt, TyFloat, TyStr, TyBool, TyNone, TyList, TyDict, TySet, TyTuple,
+    TyInt, TyFloat, TyStr, TyBool, TyNone, TyUndefined, TyList, TyDict, TySet, TyTuple,
     TyAny, TyUnion, TyUnresolved, TyNamedInstance,
     InferredType, inferred_type_from_ann,
 )
@@ -33,7 +33,8 @@ class _TypeCheckerInfer:
             case ExprFloat():    return TyFloat()
             case ExprStr():      return TyStr()
             case ExprBool():     return TyBool()
-            case ExprNone():     return TyNone()
+            case ExprNone():      return TyNone()
+            case ExprUndefined(): return TyUndefined()
             case ExprList():     return TyList()
             case ExprSet():      return TySet()
 

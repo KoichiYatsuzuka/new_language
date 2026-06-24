@@ -1,4 +1,4 @@
-# git SHA: 0d9de3df5f5d8ee4fbe5c6d3f7bb1ddfea131979
+# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
 """Class and trait definition parsing (mirrors src/parser/classes.rs)."""
 from __future__ import annotations
 from typing import Optional
@@ -7,7 +7,7 @@ from ..token import TokenKind
 from ..ast import (
     Accessibility, FieldKind, Param,
     Expr, Stmt,
-    StmtFnDef, StmtGenDef, StmtField, StmtClassDef, StmtTraitDef, StmtPass,
+    StmtFnDef, StmtGenDef, StmtField, StmtClassDef, StmtTraitDef, StmtProtocolDef, StmtPass,
     StmtAttrAssign,
     ExprAttr, ExprIdent, ExprTraitAccess,
     TemplateParam,
@@ -72,6 +72,21 @@ class _ParserClasses:
         ]
         self._known_traits[name] = (template_params, fields, virtual_methods)
         return StmtTraitDef(name=name, template_params=template_params, body=body)
+
+    # ------------------------------------------------------------------
+    # protocol
+    # ------------------------------------------------------------------
+
+    def _parse_protocol_def(self) -> Stmt:
+        from ..ast import StmtProtocolDef
+        self._eat(TokenKind.PROTOCOL)
+        name = self._expect_ident()
+        self._eat(TokenKind.COLON)
+        self._class_or_trait_depth += 1
+        body = self._parse_class_body(is_trait=True)
+        self._class_or_trait_depth -= 1
+        self._known_protocols[name] = True
+        return StmtProtocolDef(name=name, body=body)
 
     # ------------------------------------------------------------------
     # class

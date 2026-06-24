@@ -591,6 +591,110 @@ impl Parser {
         }
     }
 
+    /// `protocol` 定義をパースして `Stmt::ProtocolDef` を返す。
+    ///
+    /// プロトコルはフィールド宣言と抽象メソッドシグネチャ（本体 `...`）のみを持つ。
+    /// - 継承不可（基底クラス構文 `protocol Foo(Bar):` はエラー）
+    /// - `private:` / `protected:` セクションはエラー
+    /// - メソッド本体は必ず `...` でなければならない
+    /// - 全メソッドとフィールドに型アノテーションが必須
+    pub(super) fn parse_protocol_def(&mut self) -> Result<Stmt, String> {
+        self.advance(); // `protocol` を消費
+        let name = self.expect_ident()?;
+        // プロトコルは継承不可
+        if *self.current() == Token::LParen {
+            return Err(format!(
+                "ParseError: protocol `{name}` cannot inherit from another type"
+            ));
+        }
+        self.eat(&Token::Colon)?;
+        self.class_or_trait_depth += 1;
+        let body = self.parse_protocol_body(&name)?;
+        self.class_or_trait_depth -= 1;
+        // プロトコル名を登録してインスタンス化エラー検出に使用
+        self.known_protocols.insert(name.clone());
+        Ok(Stmt::ProtocolDef { name, body })
+    }
+
+    /// プロトコル本体をパースする。
+    ///
+    /// `private:` / `protected:` セクションはエラー。
+    /// メソッドは全て抽象（本体 `...`）でなければならない。
+    fn parse_protocol_body(&mut self, proto_name: &str) -> Result<Vec<Stmt>, String> {
+        self.eat(&Token::Newline)?;
+        self.eat(&Token::Indent)?;
+        let mut stmts = Vec::new();
+        loop {
+            while matches!(self.current(), Token::Newline | Token::Semicolon) {
+                self.advance();
+            }
+            if matches!(self.current(), Token::Dedent | Token::Eof) {
+                break;
+            }
+            match self.current().clone() {
+                Token::Private | Token::Protected => {
+                    return Err(format!(
+                        "ParseError: `{}:` sections are not allowed in protocol `{proto_name}`; \
+                         all protocol members are implicitly public",
+                        self.current()
+                    ));
+                }
+                Token::Public => {
+                    self.advance();
+                    self.eat(&Token::Colon)?;
+                    while matches!(self.current(), Token::Newline | Token::Semicolon) {
+                        self.advance();
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            let stmt = self.parse_class_stmt()?;
+            // メソッドは抽象のみ許可、フィールドはデフォルト値不可
+            match &stmt {
+                Stmt::FnDef { name: mname, is_abstract, params, return_type, .. } => {
+                    if !is_abstract {
+                        return Err(format!(
+                            "ParseError: protocol method `{mname}` must have an abstract body (`...`), not a concrete implementation"
+                        ));
+                    }
+                    if return_type.is_none() {
+                        return Err(format!(
+                            "StaticTypeError: protocol method `{mname}` is missing a return type annotation"
+                        ));
+                    }
+                    for p in params {
+                        if p.name != "self" && p.type_ann.is_none() {
+                            return Err(format!(
+                                "StaticTypeError: parameter `{}` of protocol method `{mname}` is missing a type annotation",
+                                p.name
+                            ));
+                        }
+                    }
+                }
+                Stmt::Field { name: fname, default: Some(_), .. } => {
+                    return Err(format!(
+                        "ParseError: protocol field `{fname}` cannot have a default value"
+                    ));
+                }
+                Stmt::Field { name: fname, .. } => {
+                    let _ = fname; // valid
+                }
+                Stmt::Pass => {}
+                other => {
+                    return Err(format!(
+                        "ParseError: unexpected statement in protocol body: `{other:?}`"
+                    ));
+                }
+            }
+            stmts.push(stmt);
+        }
+        if *self.current() == Token::Dedent {
+            self.advance();
+        }
+        Ok(stmts)
+    }
+
     /// 既存の `__init__` のシグネチャが自動生成のシグネチャと完全一致するかを判定する。
     ///
     /// `self` を除く引数の個数と各引数の型アノテーションを比較する。

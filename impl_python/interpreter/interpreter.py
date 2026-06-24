@@ -1,4 +1,4 @@
-﻿# git SHA: a027318e6f5a4813fdb8a64de1d25ad2115a4a8f
+﻿# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
 """Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
@@ -7,7 +7,7 @@ from typing import Optional, TYPE_CHECKING
 
 from ..ast import (
     # Expressions
-    ExprInt, ExprFloat, ExprImaginaryLit, ExprStr, ExprBool, ExprNone, ExprIdent,
+    ExprInt, ExprFloat, ExprImaginaryLit, ExprStr, ExprBool, ExprNone, ExprUndefined, ExprIdent,
     ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
@@ -18,7 +18,7 @@ from ..ast import (
     StmtIf, StmtMatch, StmtWhile, StmtFor, StmtBlock,
     StmtReturn, StmtBreak, StmtContinue, StmtPass,
     StmtBlockReturn, StmtLoopYield, StmtYield, StmtFreeze,
-    StmtFnDef, StmtGenDef, StmtClassDef, StmtTraitDef, StmtField,
+    StmtFnDef, StmtGenDef, StmtClassDef, StmtTraitDef, StmtProtocolDef, StmtField,
     StmtNewTypeDef, StmtEnumDef, StmtTry, StmtRaise,
     StmtImport, StmtFromImport, StmtLetTuple, StmtAsyncAssign,
     StmtEventSubscribe, StmtEventUnsubscribe,
@@ -29,11 +29,11 @@ from ..ast import (
     TupleTargetLet, TupleTargetMut, TupleTargetBare, TupleTargetWildcard,
 )
 from .value import (
-    Value, MISSING,
+    Value, MISSING, UNDEFINED,
     TlList, TlFixedList, TlDict, TlTuple, TlSet,
     TlFunction, TlOverloadedFn, TlGeneratorFn, TlGenerator,
     TlTemplateFn, TlTemplateGenFn, TlTemplateClass,
-    TlClass, TlInstance, TlType, TlTrait,
+    TlClass, TlInstance, TlType, TlTrait, TlProtocol,
     TlNamespace, TlSlice, TlFileObject, TlComplex,
     TlSignal, TlEventLoop,
     CapturedImm, CapturedMut,
@@ -128,6 +128,7 @@ class Interpreter:
         # known_classes is shared and updated as classes are defined
         self._known_classes: dict[str, Value] = {}
         self._known_traits: dict[str, TlTrait] = {}
+        self._protocol_required_members: dict[str, list[str]] = {}
         # current_class: name of class being executed for access-control checks
         self._current_class: Optional[str] = None
         self._current_method: Optional[str] = None
@@ -405,6 +406,17 @@ class Interpreter:
                 self._env.declare(name, trait, mutable=False)
                 self._known_traits[name] = trait
 
+            case StmtProtocolDef(name=name, body=body):
+                members: list[str] = []
+                for s in body:
+                    if isinstance(s, StmtField):
+                        members.append(s.name)
+                    elif isinstance(s, (StmtFnDef,)):
+                        members.append(s.name)
+                self._protocol_required_members[name] = members
+                proto = TlProtocol(name=name)
+                self._env.declare(name, proto, mutable=False)
+
             case StmtNewTypeDef(name=name, original=original):
                 cls = self._build_new_type(name, original)
                 self._env.declare(name, cls, mutable=False)
@@ -474,6 +486,7 @@ class Interpreter:
             case ExprStr(value=v): return v
             case ExprBool(value=v): return v
             case ExprNone(): return None
+            case ExprUndefined(): return UNDEFINED
 
             case ExprIdent(name=name):
                 return self._env.get(name)
@@ -1068,6 +1081,8 @@ class Interpreter:
             return self._exec_generator(func, args, kwargs)
         if isinstance(func, TlTemplateFn):
             raise RuntimeError("TypeError: cannot call template function without type arguments")
+        if isinstance(func, TlProtocol):
+            raise RuntimeError(f"TypeError: protocol '{func.name}' cannot be instantiated")
         if isinstance(func, TlClass):
             return self._instantiate_class(func, args, kwargs)
         if isinstance(func, _NativeCallable):
@@ -1557,7 +1572,17 @@ class Interpreter:
     # ------------------------------------------------------------------
 
     def _is_type(self, val: Value, tname: str) -> bool:
+        # Protocol structural check
+        if tname in self._protocol_required_members:
+            required = self._protocol_required_members[tname]
+            if isinstance(val, TlInstance):
+                return all(
+                    m in val.fields or m in val.cls.methods
+                    for m in required
+                )
+            return False
         if tname == "None": return val is None
+        if tname == "Undefined": return val is UNDEFINED
         if tname == "int": return isinstance(val, int) and not isinstance(val, bool)
         if tname == "float": return isinstance(val, float)
         if tname == "complex": return isinstance(val, TlComplex)

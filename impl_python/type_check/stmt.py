@@ -1,4 +1,4 @@
-# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
 """Statement type checking and signature collection mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
@@ -11,16 +11,17 @@ from ..ast import (
     StmtIf, StmtMatch, StmtWhile, StmtFor, StmtBlock,
     StmtReturn, StmtBreak, StmtContinue, StmtPass,
     StmtBlockReturn, StmtLoopYield, StmtYield, StmtFreeze,
-    StmtFnDef, StmtGenDef, StmtClassDef, StmtTraitDef, StmtField,
+    StmtFnDef, StmtGenDef, StmtClassDef, StmtTraitDef, StmtProtocolDef, StmtField,
     StmtNewTypeDef, StmtEnumDef, StmtTry, StmtRaise,
     StmtImport, StmtFromImport,
     MatchPatternCase, MatchPatternIsType,
 )
 from .types import (
-    TyInt, TyNamedInstance, TyTypeValOf, TyUnresolved, TyList, TyNone, InferredType, inferred_type_from_ann,
+    TyInt, TyNamedInstance, TyProtocol, TyTypeValOf, TyUnresolved, TyList, TyNone, TyUndefined, InferredType, inferred_type_from_ann,
 )
-from .errors import (ErrAssignToImmutable, ErrMissingParamTypeAnn, ErrMissingReturnTypeAnn,
-                     ErrIsNotOnNonUnion, ErrFieldDefaultNotAllowed)
+from .errors import (ErrAssignToImmutable, ErrAssignUndefined, ErrMissingParamTypeAnn, ErrMissingReturnTypeAnn,
+                     ErrIsNotOnNonUnion, ErrFieldDefaultNotAllowed, ErrProtocolConformanceFailed,
+                     StaticTypeError)
 from .scope import _FnSig
 from .type_utils import _type_from_guard_name
 
@@ -37,14 +38,25 @@ class _TypeCheckerStmts:
 
     def _check_stmt(self, stmt: Stmt) -> None:  # noqa: C901
         match stmt:
-            case StmtLet(name=name, expr=expr):
-                self._declare(name, self._infer(expr), False)
+            case StmtLet(name=name, expr=expr, type_ann=type_ann):
+                rhs = self._infer(expr)
+                if isinstance(rhs, TyUndefined):
+                    self._report(ErrAssignUndefined(), None)
+                ty = self._resolve_decl_type(type_ann, rhs, name)
+                self._declare(name, ty, False)
 
             case StmtConst(name=name, expr=expr):
-                self._declare(name, self._infer(expr), False)
+                rhs = self._infer(expr)
+                if isinstance(rhs, TyUndefined):
+                    self._report(ErrAssignUndefined(), None)
+                self._declare(name, rhs, False)
 
-            case StmtMut(name=name, expr=expr):
-                self._declare(name, self._infer(expr), True)
+            case StmtMut(name=name, expr=expr, type_ann=type_ann):
+                rhs = self._infer(expr)
+                if isinstance(rhs, TyUndefined):
+                    self._report(ErrAssignUndefined(), None)
+                ty = self._resolve_decl_type(type_ann, rhs, name)
+                self._declare(name, ty, True)
 
             case StmtStatic(name=name, expr=expr):
                 self._declare(name, self._infer(expr), True)
@@ -53,7 +65,9 @@ class _TypeCheckerStmts:
                 info = self._lookup(name)
                 if info is not None and not info.mutable:
                     self._report(ErrAssignToImmutable(name), span)
-                self._infer(value)
+                rhs = self._infer(value)
+                if isinstance(rhs, TyUndefined):
+                    self._report(ErrAssignUndefined(), span)
 
             case StmtCompoundAssign(name=name, value=value, span=span):
                 info = self._lookup(name)
@@ -85,7 +99,8 @@ class _TypeCheckerStmts:
 
                     if guard_opt is not None:
                         var_name, type_name, negated = guard_opt
-                        guard_ty = _type_from_guard_name(type_name)
+                        guard_ty = (TyProtocol(type_name) if type_name in self._known_protocols
+                                    else _type_from_guard_name(type_name))
                         info = self._lookup(var_name)
                         var_ty: "InferredType" = info.ty if info else TyUnresolved()
                         is_mut = info.mutable if info else False
@@ -188,6 +203,13 @@ class _TypeCheckerStmts:
 
             case StmtTraitDef(name=name, body=body):
                 self._declare(name, TyTypeValOf(TyNamedInstance(name)), False)
+                self._push_scope()
+                self._check_stmts(body)
+                self._pop_scope()
+
+            case StmtProtocolDef(name=name, body=body):
+                self._known_protocols[name] = True
+                self._declare(name, TyTypeValOf(TyProtocol(name)), False)
                 self._push_scope()
                 self._check_stmts(body)
                 self._pop_scope()
@@ -317,6 +339,13 @@ class _TypeCheckerStmts:
                 case StmtTraitDef(body=body):
                     self._collect_fn_sigs(body)
 
+                case StmtProtocolDef(name=name, body=body):
+                    self._known_protocols[name] = True
+                    members = [s.name for s in body
+                                if isinstance(s, (StmtFnDef, StmtField))]
+                    self._protocol_required_members[name] = members
+                    self._collect_fn_sigs(body)
+
                 case StmtMatch(arms=arms):
                     for arm in arms:
                         self._collect_fn_sigs(arm.body)
@@ -336,3 +365,48 @@ class _TypeCheckerStmts:
                 self._new_type_originals[stmt.name] = stmt.original
                 if stmt.original in self._class_method_sigs:
                     self._class_method_sigs[stmt.name] = self._class_method_sigs[stmt.original]
+
+        # Post-process: resolve NamedInstance -> Protocol for known protocol names
+        def resolve(ty: "InferredType") -> "InferredType":
+            if isinstance(ty, TyNamedInstance) and ty.name in self._known_protocols:
+                return TyProtocol(ty.name)
+            return ty
+
+        new_sigs: dict[str, list[_FnSig]] = {}
+        for fname, sigs in self._fn_sigs.items():
+            new_sigs[fname] = [
+                _FnSig(
+                    params=[(n, resolve(t) if t is not None else None) for n, t in sig.params],
+                    required_count=sig.required_count,
+                    return_type=resolve(sig.return_type) if sig.return_type is not None else None,
+                )
+                for sig in sigs
+            ]
+        self._fn_sigs = new_sigs
+
+    def _resolve_decl_type(self, type_ann: Optional[str], rhs: "InferredType", var_name: str) -> "InferredType":
+        if type_ann is None:
+            return rhs
+        if type_ann in self._known_protocols:
+            self._check_protocol_conformance_py(rhs, type_ann, var_name)
+            return TyProtocol(type_ann)
+        return rhs
+
+    def _check_protocol_conformance_py(self, rhs: "InferredType", proto_name: str, context: str) -> None:
+        required = self._protocol_required_members.get(proto_name, [])
+        if not required:
+            return
+        if isinstance(rhs, TyNamedInstance):
+            cls_name = rhs.name
+            methods = self._class_method_sigs.get(cls_name, {})
+            missing = [m for m in required if m not in methods]
+            if missing:
+                reason = f"missing method `{missing[0]}`"
+                self.errors.append(StaticTypeError(
+                    kind=ErrProtocolConformanceFailed(
+                        type_name=cls_name,
+                        protocol_name=proto_name,
+                        reason=reason,
+                    ),
+                    span=None,
+                ))

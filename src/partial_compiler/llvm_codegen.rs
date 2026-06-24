@@ -572,6 +572,7 @@ impl<'a> GenCtx<'a> {
             Expr::Float(f)  => (fmt_float(*f), Ty::Float),
             Expr::Bool(b)   => (if *b { "1" } else { "2" }.to_string(), Ty::Handle), // TL_TRUE / TL_FALSE
             Expr::None      => ("0".to_string(), Ty::Handle),
+            Expr::Undefined => ("0".to_string(), Ty::Handle),
             Expr::Str(s) => {
                 let bytes = s.as_bytes();
                 let ptr   = self.str_const(bytes);
@@ -1469,7 +1470,7 @@ impl<'a> GenCtx<'a> {
 
     fn gen_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let(name, expr) | Stmt::Const(name, expr) => {
+            Stmt::Let(name, _, expr) | Stmt::Const(name, _, expr) => {
                 let (v, vt) = self.gen_expr(expr);
                 let st = store_ty(vt);
                 let ptr = self.alloca_var(name, st);
@@ -1480,7 +1481,7 @@ impl<'a> GenCtx<'a> {
                 };
                 self.store_val(st, &coerced, &ptr.clone());
             }
-            Stmt::Mut(name, expr) => {
+            Stmt::Mut(name, _, expr) => {
                 let (v, vt) = self.gen_expr(expr);
                 let st  = store_ty(vt);
                 let ptr = self.alloca_var(name, st);
@@ -2276,7 +2277,7 @@ fn stmt_has_loop_yield(stmt: &Stmt) -> bool {
 
 fn stmt_eligible(stmt: &Stmt) -> bool {
     match stmt {
-        Stmt::Let(_, e) | Stmt::Mut(_, e) | Stmt::Const(_, e) => expr_eligible(e),
+        Stmt::Let(_, _, e) | Stmt::Mut(_, _, e) | Stmt::Const(_, _, e) => expr_eligible(e),
         Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => expr_eligible(value),
         Stmt::AttrAssign { target, value } => expr_eligible(target) && expr_eligible(value),
         Stmt::AttrCompoundAssign { target, value, .. } => expr_eligible(target) && expr_eligible(value),
@@ -2311,7 +2312,7 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
 fn expr_eligible(expr: &Expr) -> bool {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
-        | Expr::Str(_) | Expr::Bool(_) | Expr::None => true,
+        | Expr::Str(_) | Expr::Bool(_) | Expr::None | Expr::Undefined => true,
         Expr::Ident(_) => true,
         Expr::BinOp { left, right, .. } => expr_eligible(left) && expr_eligible(right),
         Expr::UnaryOp { operand, .. } => expr_eligible(operand),

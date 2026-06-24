@@ -240,6 +240,7 @@ impl Interpreter {
             Expr::Str(s) => Ok(Value::Str(s.clone())),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::None => Ok(Value::None),
+            Expr::Undefined => Ok(Value::Undefined),
             Expr::Ident(name) => self
                 .get_val(name)
                 .ok_or_else(|| format!("NameError: '{name}' is not defined")),
@@ -540,6 +541,9 @@ impl Interpreter {
             }
             Value::Type(type_name) => {
                 self.eval_type_constructor_call(&type_name, args)
+            }
+            Value::Protocol(proto_name) => {
+                Err(format!("TypeError: protocol '{proto_name}' cannot be instantiated"))
             }
             other => Err(format!("TypeError: '{}' object is not callable", self.type_name(&other))),
         }

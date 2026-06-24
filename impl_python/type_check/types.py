@@ -1,4 +1,4 @@
-# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
 """InferredType variants and type annotation parsing (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from dataclasses import dataclass
@@ -24,6 +24,11 @@ class TyBool:
 @dataclass(frozen=True)
 class TyNone:
     def __str__(self) -> str: return "None"
+
+@dataclass(frozen=True)
+class TyUndefined:
+    """外部ライブラリのメンバが未定義の状態を表す特殊型。変数への代入は禁止。"""
+    def __str__(self) -> str: return "Undefined"
 
 @dataclass(frozen=True)
 class TyList:
@@ -54,6 +59,11 @@ class TySelfType:
 class TyNamedInstance:
     name: str
     def __str__(self) -> str: return self.name
+
+@dataclass(frozen=True)
+class TyProtocol:
+    name: str
+    def __str__(self) -> str: return f"protocol {self.name}"
 
 @dataclass(frozen=True)
 class TyAny:
@@ -114,8 +124,8 @@ class TyFunction:
 
 
 InferredType = (
-    TyInt | TyFloat | TyStr | TyBool | TyNone | TyList | TyDict | TySet |
-    TyTypeVal | TyTypeValOf | TySelfType | TyNamedInstance | TyAny |
+    TyInt | TyFloat | TyStr | TyBool | TyNone | TyUndefined | TyList | TyDict | TySet |
+    TyTypeVal | TyTypeValOf | TySelfType | TyNamedInstance | TyProtocol | TyAny |
     TyUnion | TyTuple | TyNamespace | TyUnresolved | TyFunction
 )
 
@@ -277,7 +287,7 @@ def inferred_type_from_ann(ann: str) -> Optional["InferredType"]:
 
     result = {
         "int": TyInt(), "float": TyFloat(), "str": TyStr(), "bool": TyBool(),
-        "None": TyNone(), "list": TyList(), "dict": TyDict(), "set": TySet(),
+        "None": TyNone(), "Undefined": TyUndefined(), "list": TyList(), "dict": TyDict(), "set": TySet(),
         "type": TyTypeVal(), "Self": TySelfType(), "Any": TyAny(),
     }.get(ann)
     if result is not None:

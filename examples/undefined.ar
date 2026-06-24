@@ -1,0 +1,37 @@
+# Undefined -- external library interop example
+#
+# Undefined is a special literal type used when interfacing with external
+# libraries (Python, JS, etc.) where a member may be absent or undefined.
+# It cannot be assigned to a variable, but can be used in:
+#   - conditional checks (x is Undefined / x is not Undefined)
+#   - type annotations   (Union[int, Undefined])
+#   - function arguments
+
+fn get_value(key: str) -> Union[int, Undefined]:
+    if key == "count":
+        return 42
+    return Undefined
+
+fn show(val: Union[int, Undefined]) -> None:
+    if val is Undefined:
+        print("not present")
+        return
+    if val is not Undefined:
+        print("present")
+
+let v1 = get_value("count")
+let v2 = get_value("missing")
+
+show(v1)
+show(v2)
+
+# Pass Undefined as argument directly
+show(Undefined)
+
+# is Undefined in conditional
+if v2 is Undefined:
+    print("v2 is Undefined: expected")
+
+# is not Undefined to assert presence
+if v1 is not Undefined:
+    print("v1 is not Undefined: expected")

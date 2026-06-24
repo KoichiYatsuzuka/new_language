@@ -1,4 +1,4 @@
-# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
+# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
 """Statement parsing (mirrors src/parser/stmts.rs)."""
 from __future__ import annotations
 from typing import Optional
@@ -149,10 +149,11 @@ class _ParserStmts:
             name = self._expect_ident()
             if self._current_kind() == TokenKind.COMMA:
                 return self._parse_tuple_unpack(TupleTargetLet(name))
+            type_ann: Optional[str] = None
             if self._current_kind() == TokenKind.COLON:
-                self._advance(); self._parse_type_expr()
+                self._advance(); type_ann = self._parse_type_expr()
             self._eat(TokenKind.EQ)
-            return StmtLet(name=name, expr=self._parse_expr())
+            return StmtLet(name=name, expr=self._parse_expr(), type_ann=type_ann)
 
         if k == TokenKind.CONST:
             self._advance()
@@ -167,10 +168,11 @@ class _ParserStmts:
             name = self._expect_ident()
             if self._current_kind() == TokenKind.COMMA:
                 return self._parse_tuple_unpack(TupleTargetMut(name))
+            mut_type_ann: Optional[str] = None
             if self._current_kind() == TokenKind.COLON:
-                self._advance(); self._parse_type_expr()
+                self._advance(); mut_type_ann = self._parse_type_expr()
             self._eat(TokenKind.EQ)
-            return StmtMut(name=name, expr=self._parse_expr())
+            return StmtMut(name=name, expr=self._parse_expr(), type_ann=mut_type_ann)
 
         if k == TokenKind.STATIC:
             span = self._current_span()
@@ -276,6 +278,8 @@ class _ParserStmts:
             return self._parse_enum_def()
         if k == TokenKind.TRAIT:
             return self._parse_trait_def()
+        if k == TokenKind.PROTOCOL:
+            return self._parse_protocol_def()
         if k == TokenKind.NEW_TYPE:
             return self._parse_new_type_def()
         if k == TokenKind.IMPORT:

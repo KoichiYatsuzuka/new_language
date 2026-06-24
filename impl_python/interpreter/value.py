@@ -1,4 +1,4 @@
-﻿# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
+﻿# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
 """Runtime value types for the Arrow interpreter."""
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -21,6 +21,29 @@ class _Missing:
         return "<MISSING>"
 
 MISSING: _Missing = _Missing()
+
+
+# ---------------------------------------------------------------------------
+# Undefined sentinel (external library interop)
+# ---------------------------------------------------------------------------
+
+class _TlUndefined:
+    """Singleton sentinel representing Arrow's Undefined value.
+
+    Used when interfacing with external libraries (Python, JS, etc.) where
+    a member may be absent or undefined. Cannot be assigned to variables.
+    """
+    _inst: Optional[_TlUndefined] = None
+    def __new__(cls) -> _TlUndefined:
+        if cls._inst is None:
+            cls._inst = super().__new__(cls)
+        return cls._inst
+    def __repr__(self) -> str:
+        return "Undefined"
+    def __bool__(self) -> bool:
+        return False
+
+UNDEFINED: _TlUndefined = _TlUndefined()
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +290,14 @@ class TlTrait:
 
 
 @dataclass
+class TlProtocol:
+    name: str
+
+    def __repr__(self) -> str:
+        return f"<protocol '{self.name}'>"
+
+
+@dataclass
 class TlNamespace:
     name: str
     members: dict  # dict[str, Value]
@@ -375,7 +406,7 @@ Value = (
     TlList | TlFixedList | TlDict | TlTuple | TlSet |
     TlFunction | TlOverloadedFn | TlGeneratorFn | TlGenerator |
     TlClass | TlInstance |
-    TlType | TlTrait |
+    TlType | TlTrait | TlProtocol |
     TlTemplateFn | TlTemplateGenFn | TlTemplateClass |
     TlNamespace | TlSlice | TlFileObject |
     TlSignal | TlEventLoop | TlCsObject
@@ -463,6 +494,8 @@ def type_name(v: "Value") -> str:
         return f"type({v.name})"
     if isinstance(v, TlTrait):
         return f"trait({v.name})"
+    if isinstance(v, TlProtocol):
+        return "protocol"
     if isinstance(v, TlTemplateClass):
         return v.name
     if isinstance(v, TlGenerator):
@@ -526,6 +559,8 @@ def display(v: "Value") -> str:
         return f"<class {v.name}>"
     if isinstance(v, TlType):
         return f"<type '{v.name}'>"
+    if isinstance(v, TlProtocol):
+        return f"<protocol '{v.name}'>"
     if isinstance(v, TlNamespace):
         return f"<module '{v.name}'>"
     if isinstance(v, TlSlice):

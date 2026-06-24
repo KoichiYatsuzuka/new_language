@@ -1,4 +1,4 @@
-﻿# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+﻿# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
 """Static type checker package (mirrors src/type_check.rs).
 
 Sub-modules:
@@ -18,7 +18,7 @@ from typing import Optional
 from ..ast import Stmt
 from .types import (
     TyInt, TyFloat, TyStr, TyBool, TyNone, TyList, TyDict, TySet,
-    TyTypeVal, TyTypeValOf, TySelfType, TyNamedInstance, TyAny,
+    TyTypeVal, TyTypeValOf, TySelfType, TyNamedInstance, TyProtocol, TyAny,
     TyUnion, TyTuple, TyNamespace, TyUnresolved, FnTypeParam, TyFunction,
     InferredType, inferred_type_from_ann,
 )
@@ -67,6 +67,8 @@ class TypeChecker(
         self._fn_sigs: dict[str, list[_FnSig]] = {}
         self._class_method_sigs: dict[str, dict[str, list[_FnSig]]] = {}
         self._known_class_names: set[str] = set()
+        self._known_protocols: dict[str, bool] = {}
+        self._protocol_required_members: dict[str, list[str]] = {}
         self._new_type_originals: dict[str, str] = {}
         self._class_bases: dict[str, list[str]] = {}
         self.errors: list[StaticTypeError] = []
@@ -94,7 +96,7 @@ class TypeChecker(
 __all__ = [
     "TypeChecker", "StaticTypeError", "FnTypeParam", "InferredType",
     "TyInt", "TyFloat", "TyStr", "TyBool", "TyNone", "TyList", "TyDict", "TySet",
-    "TyTypeVal", "TyTypeValOf", "TySelfType", "TyNamedInstance", "TyAny",
+    "TyTypeVal", "TyTypeValOf", "TySelfType", "TyNamedInstance", "TyProtocol", "TyAny",
     "TyUnion", "TyTuple", "TyNamespace", "TyUnresolved", "TyFunction",
     "inferred_type_from_ann",
 ]

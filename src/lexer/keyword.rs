@@ -33,6 +33,7 @@ impl Lexer {
             "True" => Token::True,
             "False" => Token::False,
             "None" => Token::None,
+            "Undefined" => Token::Undefined,
             "and" => Token::And,
             "or" => Token::Or,
             // `not` は `not in` の可能性があるため先読みする
@@ -66,6 +67,7 @@ impl Lexer {
             "class" => Token::Class,
             "enum" => Token::Enum,
             "trait" => Token::Trait,
+            "protocol" => Token::Protocol,
             "lambda" => Token::Lambda,
             "template" => Token::Template,
             "import" => Token::Import,

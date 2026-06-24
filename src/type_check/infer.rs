@@ -17,6 +17,7 @@ impl TypeChecker {
             Expr::Str(_) => InferredType::Str,
             Expr::Bool(_) => InferredType::Bool,
             Expr::None => InferredType::None,
+            Expr::Undefined => InferredType::Undefined,
             Expr::List(elems) => {
                 if elems.is_empty() {
                     InferredType::List

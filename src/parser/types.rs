@@ -236,6 +236,10 @@ impl Parser {
                 self.advance();
                 "None".to_string()
             }
+            Token::Undefined => {
+                self.advance();
+                "Undefined".to_string()
+            }
             Token::Any => {
                 self.advance();
                 "Any".to_string()
@@ -510,6 +514,10 @@ impl Parser {
             Token::None => {
                 self.advance();
                 Ok("None".to_string())
+            }
+            Token::Undefined => {
+                self.advance();
+                Ok("Undefined".to_string())
             }
             tok => Err(format!("expected type name after `is`, got `{tok}`")),
         }

@@ -13,11 +13,11 @@ mod decorator;
 #[allow(unused_imports)]
 pub use types::{FnTypeParam, InferredType};
 #[allow(unused_imports)]
-pub use errors::{StaticTypeError, TypeErrorKind};
-use types::{FnSig, VarInfo};
+pub use errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};
+use types::{FnSig, ProtocolField, ProtocolInfo, ProtocolMethod, VarInfo};
 
 use std::collections::{HashMap, HashSet};
-use crate::ast::{Accessibility, Stmt};
+use crate::ast::{Accessibility, FieldKind, Stmt};
 
 // ---------------------------------------------------------------------------
 // TypeChecker
@@ -45,6 +45,9 @@ pub struct TypeChecker {
     /// クラスフィールドの可変フラグマップ。
     /// キー: クラス名 → (フィールド名 → 可変フラグ)。`let` フィールドへの代入チェックに使用。
     class_fields: HashMap<String, HashMap<String, bool>>,
+    /// クラスフィールドの詳細（種別・型）。Protocol 適合チェックで使用する。
+    /// キー: クラス名 → (フィールド名 → (FieldKind, InferredType))。
+    class_field_details: HashMap<String, HashMap<String, (FieldKind, InferredType)>>,
     /// クラスメンバーのアクセス可能性マップ。
     /// キー: クラス名 → (メンバー名 → `Accessibility`)。`Public` 以外のみ格納。
     class_member_access: HashMap<String, HashMap<String, Accessibility>>,
@@ -63,6 +66,10 @@ pub struct TypeChecker {
     block_return_forbidden_depth: usize,
     /// 収集された静的型エラーのリスト。`check()` が返す前にここへ蓄積される。
     pub errors: Vec<StaticTypeError>,
+    /// 収集された静的型警告のリスト。
+    pub warnings: Vec<StaticTypeWarning>,
+    /// プロトコル定義の情報。プロトコル名 → ProtocolInfo。
+    pub(crate) known_protocols: HashMap<String, ProtocolInfo>,
 }
 
 impl TypeChecker {
@@ -160,12 +167,15 @@ impl TypeChecker {
             new_type_originals,
             class_bases,
             class_fields: HashMap::new(),
+            class_field_details: HashMap::new(),
             class_member_access: HashMap::new(),
             class_static_methods: HashMap::new(),
             current_fn_name: None,
             current_class_name: None,
             block_return_forbidden_depth: 0,
             errors: Vec::new(),
+            warnings: Vec::new(),
+            known_protocols: HashMap::new(),
         }
     }
 
@@ -175,6 +185,24 @@ impl TypeChecker {
         tc.collect_fn_sigs(stmts);
         tc.check_stmts(stmts);
         tc.errors
+    }
+
+    /// 文のスライスを静的型検査して、エラーと警告を両方返す。
+    pub fn check_with_warnings(stmts: &[Stmt]) -> (Vec<StaticTypeError>, Vec<StaticTypeWarning>) {
+        let mut tc = Self::new();
+        tc.collect_fn_sigs(stmts);
+        tc.check_stmts(stmts);
+        (tc.errors, tc.warnings)
+    }
+
+    /// `NamedInstance(name)` がプロトコル名であれば `Protocol(name)` に変換する。
+    pub(crate) fn resolve_protocol_type(&self, ty: InferredType) -> InferredType {
+        if let InferredType::NamedInstance(ref name) = ty {
+            if self.known_protocols.contains_key(name.as_str()) {
+                return InferredType::Protocol(name.clone());
+            }
+        }
+        ty
     }
 
     /// 文のスライスを先行スキャンして関数・クラス・trait のシグネチャ情報をキャッシュする。
@@ -194,17 +222,19 @@ impl TypeChecker {
                             .iter()
                             .filter(|p| !p.variadic)
                             .map(|p| {
-                                (
-                                    p.name.clone(),
-                                    p.type_ann.as_deref().and_then(InferredType::from_ann),
-                                )
+                                let ty = p.type_ann.as_deref()
+                                    .and_then(InferredType::from_ann)
+                                    .map(|t| self.resolve_protocol_type(t));
+                                (p.name.clone(), ty)
                             })
                             .collect(),
                         required_count: params
                             .iter()
                             .filter(|p| !p.variadic && p.default.is_none())
                             .count(),
-                        return_type: return_type.as_deref().and_then(InferredType::from_ann),
+                        return_type: return_type.as_deref()
+                            .and_then(InferredType::from_ann)
+                            .map(|t| self.resolve_protocol_type(t)),
                         variadic_type: variadic_param
                             .and_then(|p| p.type_ann.as_deref().and_then(InferredType::from_ann)),
                     };
@@ -260,6 +290,7 @@ impl TypeChecker {
                     }
                     self.class_method_sigs.insert(name.clone(), cls_methods);
                     let mut fields: HashMap<String, bool> = HashMap::new();
+                    let mut field_details: HashMap<String, (FieldKind, InferredType)> = HashMap::new();
                     let mut member_access: HashMap<String, Accessibility> = HashMap::new();
                     let mut static_methods: HashSet<String> = HashSet::new();
                     for s in body.iter() {
@@ -267,11 +298,15 @@ impl TypeChecker {
                             Stmt::Field {
                                 name: fname,
                                 kind,
+                                type_ann,
                                 access,
                                 ..
                             } => {
-                                let mutable = matches!(kind, crate::ast::FieldKind::Mut);
+                                let mutable = matches!(kind, FieldKind::Mut);
                                 fields.insert(fname.clone(), mutable);
+                                let fty = InferredType::from_ann(type_ann)
+                                    .unwrap_or(InferredType::Unresolved);
+                                field_details.insert(fname.clone(), (kind.clone(), fty));
                                 if *access != Accessibility::Public {
                                     member_access.insert(fname.clone(), access.clone());
                                 }
@@ -293,6 +328,7 @@ impl TypeChecker {
                         }
                     }
                     self.class_fields.insert(name.clone(), fields);
+                    self.class_field_details.insert(name.clone(), field_details);
                     self.class_member_access.insert(name.clone(), member_access);
                     if !static_methods.is_empty() {
                         self.class_static_methods
@@ -318,6 +354,49 @@ impl TypeChecker {
                             self.collect_fn_sigs(method_body);
                         }
                     }
+                }
+                Stmt::ProtocolDef { name, body } => {
+                    // プロトコルを known_protocols に登録する
+                    let mut fields = Vec::new();
+                    let mut methods = Vec::new();
+                    for s in body.iter() {
+                        match s {
+                            Stmt::Field { name: fname, kind, type_ann, .. } => {
+                                let ty = InferredType::from_ann(type_ann)
+                                    .unwrap_or(InferredType::Unresolved);
+                                fields.push(ProtocolField {
+                                    name: fname.clone(),
+                                    kind: kind.clone(),
+                                    ty,
+                                });
+                            }
+                            Stmt::FnDef { name: mname, params, return_type, .. } => {
+                                let ret = return_type
+                                    .as_deref()
+                                    .and_then(InferredType::from_ann)
+                                    .unwrap_or(InferredType::Unresolved);
+                                let method_params: Vec<(String, bool, InferredType)> = params
+                                    .iter()
+                                    .filter(|p| p.name != "self")
+                                    .map(|p| {
+                                        let ty = p
+                                            .type_ann
+                                            .as_deref()
+                                            .and_then(InferredType::from_ann)
+                                            .unwrap_or(InferredType::Unresolved);
+                                        (p.name.clone(), p.mutable, ty)
+                                    })
+                                    .collect();
+                                methods.push(ProtocolMethod {
+                                    name: mname.clone(),
+                                    params: method_params,
+                                    return_type: ret,
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.known_protocols.insert(name.clone(), ProtocolInfo { fields, methods });
                 }
                 Stmt::Match { arms, .. } => {
                     for arm in arms {

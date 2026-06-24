@@ -48,6 +48,8 @@ class _ParserTypes:
             self._advance()
         elif k == TokenKind.NONE:
             self._advance(); base = "None"
+        elif k == TokenKind.UNDEFINED:
+            self._advance(); base = "Undefined"
         elif k == TokenKind.ANY:
             self._advance(); base = "Any"
         elif k == TokenKind.SELF_TYPE:
@@ -237,6 +239,8 @@ class _ParserTypes:
             return name
         if k == TokenKind.NONE:
             self._advance(); return "None"
+        if k == TokenKind.UNDEFINED:
+            self._advance(); return "Undefined"
         raise self._error(f"expected type name after `is`, got `{self._current().kind.name}`")
 
     def _expect_constraint_name(self) -> str:

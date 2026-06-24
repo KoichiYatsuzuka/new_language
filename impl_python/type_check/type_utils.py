@@ -1,11 +1,11 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
 """Type utility helpers and compatibility checking mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .types import (
-    TyInt, TyFloat, TyStr, TyBool, TyNone, TyList, TyDict, TySet,
-    TyTypeVal, TyTypeValOf, TyNamedInstance, TyAny,
+    TyInt, TyFloat, TyStr, TyBool, TyNone, TyUndefined, TyList, TyDict, TySet,
+    TyTypeVal, TyTypeValOf, TyNamedInstance, TyProtocol, TyAny,
     TyUnion, TyUnresolved, TyFunction, InferredType,
 )
 
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 def _type_from_guard_name(type_name: str) -> "InferredType":
     return {
         "int": TyInt(), "float": TyFloat(), "str": TyStr(), "bool": TyBool(),
-        "None": TyNone(), "list": TyList(), "dict": TyDict(), "set": TySet(),
+        "None": TyNone(), "Undefined": TyUndefined(), "list": TyList(), "dict": TyDict(), "set": TySet(),
         "function": TyFunction(params=None, return_type=TyAny()),
     }.get(type_name, TyNamedInstance(type_name))
 
@@ -28,6 +28,9 @@ class _TypeCheckerUtils:
         if isinstance(arg_ty, TyUnresolved): return True
         if isinstance(expected, TyAny):      return True
         if arg_ty == expected:               return True
+        # Protocol typed param: accept any NamedInstance or Protocol (conformance checked separately)
+        if isinstance(expected, TyProtocol):
+            return isinstance(arg_ty, (TyNamedInstance, TyProtocol, TyAny))
         if isinstance(expected, TyTypeVal):
             return isinstance(arg_ty, (TyTypeValOf, TyTypeVal))
         if isinstance(expected, TyTypeValOf):

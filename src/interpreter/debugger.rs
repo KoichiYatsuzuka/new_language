@@ -122,9 +122,9 @@ pub(super) fn stmt_location(stmt: &Stmt) -> Option<(String, usize)> {
         | Stmt::Static(_, _, span) => from_span(span),
         Stmt::LetTuple { span, .. } => from_span(span),
         Stmt::Expr(e)
-        | Stmt::Let(_, e)
-        | Stmt::Mut(_, e)
-        | Stmt::Const(_, e)
+        | Stmt::Let(_, _, e)
+        | Stmt::Mut(_, _, e)
+        | Stmt::Const(_, _, e)
         | Stmt::DebugLet(_, e) => from_expr(e),
         _ => None,
     }
@@ -258,7 +258,7 @@ impl Interpreter {
                      (use 'let dbg::name = expr' for temporary variables)"
                 ));
             }
-            Stmt::Mut(name, _) => {
+            Stmt::Mut(name, _, _) => {
                 return Err(format!(
                     "mutation '{name}' is not allowed in the debugger \
                      (use 'let dbg::name = expr' for temporary variables)"

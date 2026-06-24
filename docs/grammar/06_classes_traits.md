@@ -155,6 +155,158 @@ trait Builder:
 
 ---
 
+## protocol 定義
+
+`protocol` は**構造的型付け**（ダックタイピング）のための型宣言です。  
+`trait` が明示的な継承（名前的型付け）を要求するのに対し、`protocol` は  
+必要なメンバーを持っていれば自動的に適合とみなします（Go のインターフェースに相当）。
+
+```hv
+protocol Drawable:
+    fn draw(self) -> None:
+        ...
+    fn area(self) -> float:
+        ...
+
+protocol Resizable:
+    fn resize(self, factor: float) -> None:
+        ...
+```
+
+`Stmt::ProtocolDef { name, body }`
+
+**パース**: `'protocol' ident ':' class_body`
+
+**制限**:
+- `protocol` はインスタンス化できません（静的型エラー `ProtocolInstantiation`）
+- `protocol` を継承ベースに指定することはできません
+- `protocol` 本体内に `private:` / `protected:` セクションを使えません（すべて `public`）
+- メソッドボディは必ず `...` (Ellipsis) にしてください
+
+---
+
+### protocol 適合（コンフォーマンス）
+
+クラスが protocol のすべてのメンバー（メソッド・フィールド）を持っている場合、  
+そのクラスは自動的に protocol に適合しているとみなされます。  
+明示的な継承宣言は不要です。
+
+```hv
+class Circle:
+    mut radius: float
+
+    fn __init__(mut self, r: float) -> None:
+        self.radius = r
+
+    fn draw(self) -> None:
+        print("Drawing circle with radius", self.radius)
+
+    fn area(self) -> float:
+        return 3.14159 * self.radius * self.radius
+
+    fn resize(mut self, factor: float) -> None:
+        self.radius = self.radius * factor
+```
+
+`Circle` は `draw`・`area`・`resize` をすべて持つため、`Drawable` と `Resizable` の両方に適合します。
+
+---
+
+### protocol 型変数への代入
+
+変数宣言時に `: ProtocolName` 型アノテーションを付けると、  
+代入時に静的型チェッカーが適合検査を行います。
+
+```hv
+mut c = Circle(5.0)
+let d: Drawable = c   # 適合検査: Circle が Drawable を満たすか確認
+```
+
+適合していない場合は静的型エラー `ProtocolConformanceFailed` が報告されます。
+
+```hv
+class Dog:
+    let name: str
+    fn __init__(self, n: str) -> None: ...
+    # print_info メソッドがない
+
+let d = Dog("Rex")
+let p: Printable = d  # StaticTypeError: type 'Dog' does not satisfy protocol 'Printable': missing method `print_info`
+```
+
+---
+
+### protocol 型パラメータ
+
+関数の引数型に `protocol` 名を指定できます。  
+呼び出し時に適合検査が行われます。
+
+```hv
+fn render(shape: Drawable) -> None:
+    shape.draw()
+    print("Area:", shape.area())
+
+fn make_bigger(mut shape: Resizable) -> None:
+    shape.resize(2.0)
+
+mut c = Circle(5.0)
+let d1: Drawable = c
+render(d1)       # OK: d1 は Drawable
+make_bigger(c)   # OK: Circle は Resizable に適合
+```
+
+**注意**: 呼び出し先でインスタンスを変更したい場合は `mut shape: ProtocolName` と宣言します。
+
+---
+
+### `is Protocol` 型ガード
+
+`is` 演算子で protocol 適合を実行時に検査できます。
+
+```hv
+if c is Drawable:
+    print("Circle satisfies Drawable")
+```
+
+**静的型チェック**: 条件分岐内で変数型を `Protocol(name)` に絞り込みます。  
+**実行時**: インスタンスが protocol の全必須メンバー名を持っているか確認します。
+
+---
+
+### trait との違い
+
+| | `trait` | `protocol` |
+|---|---|---|
+| 型付け方式 | 名前的（継承必須） | 構造的（Duck typing） |
+| 適合の宣言 | `class Foo(MyTrait):` が必要 | 不要（メンバーを持てば自動適合） |
+| インスタンス化 | 不可 | 不可 |
+| デフォルト実装 | 持てる | 持てない（`...` のみ） |
+| テンプレート境界 | `[T: MyTrait]` | `[T: MyProtocol]` |
+| 継承 | クラスが実装 | なし |
+
+```hv
+# trait → 明示的な継承が必要
+trait Printable:
+    fn print_info(self) -> None: ...
+
+class Cat(Printable):        # (Printable) の宣言が必要
+    fn print_info(self) -> None:
+        print("Cat")
+
+# protocol → 宣言不要、メンバーを持てば自動適合
+protocol Displayable:
+    fn display(self) -> None:
+        ...
+
+class Dog:                   # (Displayable) の宣言なし
+    fn display(self) -> None:
+        print("Dog")
+
+let d: Displayable = Dog()   # OK: Dog は display を持つ
+```
+
+---
+
 ## テンプレートクラス
 
 ```hv

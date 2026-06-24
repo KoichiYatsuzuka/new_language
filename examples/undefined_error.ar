@@ -1,0 +1,4 @@
+# Undefined error example — assigning Undefined to a variable is a static type error.
+# StaticTypeError: cannot assign `Undefined` to a variable
+
+let x = Undefined

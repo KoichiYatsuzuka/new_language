@@ -144,25 +144,28 @@ impl Parser {
                 if *self.current() == Token::Comma {
                     return self.parse_tuple_unpack(TupleTarget::Let(name));
                 }
-                // 型アノテーションがあれば読み飛ばす（静的型検査で使用）
-                if *self.current() == Token::Colon {
+                // 型アノテーションを保存する（Protocol 型検査で使用）
+                let type_ann = if *self.current() == Token::Colon {
                     self.advance();
-                    self.parse_type_expr()?;
-                }
+                    Some(self.parse_type_expr()?)
+                } else {
+                    None
+                };
                 self.eat(&Token::Eq)?;
-                Ok(Stmt::Let(name, self.parse_expr()?))
+                Ok(Stmt::Let(name, type_ann, self.parse_expr()?))
             }
             // `const 変数名 [: 型] = 式` — 定数宣言
             Token::Const => {
                 self.advance();
                 let name = self.expect_ident()?;
-                // 型アノテーションがあれば読み飛ばす
-                if *self.current() == Token::Colon {
+                let type_ann = if *self.current() == Token::Colon {
                     self.advance();
-                    self.parse_type_expr()?;
-                }
+                    Some(self.parse_type_expr()?)
+                } else {
+                    None
+                };
                 self.eat(&Token::Eq)?;
-                Ok(Stmt::Const(name, self.parse_expr()?))
+                Ok(Stmt::Const(name, type_ann, self.parse_expr()?))
             }
             // `mut 変数名 [: 型] = 式` — ミュータブル変数宣言
             // `mut x, let y, _ = expr` — タプルアンパック宣言
@@ -172,13 +175,14 @@ impl Parser {
                 if *self.current() == Token::Comma {
                     return self.parse_tuple_unpack(TupleTarget::Mut(name));
                 }
-                // 型アノテーションがあれば読み飛ばす
-                if *self.current() == Token::Colon {
+                let type_ann = if *self.current() == Token::Colon {
                     self.advance();
-                    self.parse_type_expr()?;
-                }
+                    Some(self.parse_type_expr()?)
+                } else {
+                    None
+                };
                 self.eat(&Token::Eq)?;
-                Ok(Stmt::Mut(name, self.parse_expr()?))
+                Ok(Stmt::Mut(name, type_ann, self.parse_expr()?))
             }
             // `static mut 変数名 [: 型] = 式` — 静的可変変数宣言（全呼び出しでセル共有）
             Token::Static => {
@@ -317,6 +321,7 @@ impl Parser {
             Token::Class => self.parse_class_def(),
             Token::Enum => self.parse_enum_def(),
             Token::Trait => self.parse_trait_def(),
+            Token::Protocol => self.parse_protocol_def(),
             Token::NewType => self.parse_new_type_def(),
             Token::Import => self.parse_import_stmt(),
             Token::From => self.parse_from_import_stmt(),

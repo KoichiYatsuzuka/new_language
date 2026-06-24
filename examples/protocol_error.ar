@@ -1,0 +1,17 @@
+# Protocol error example: conformance failures
+
+protocol Printable:
+    fn print_info(self) -> None:
+        ...
+
+class Dog:
+    let name: str
+
+    fn __init__(self, n: str) -> None:
+        self.name = n
+
+    # Missing print_info method — does not conform to Printable
+
+# This should fail: Dog doesn't implement print_info
+let d = Dog("Rex")
+let p: Printable = d

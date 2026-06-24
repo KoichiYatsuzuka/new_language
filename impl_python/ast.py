@@ -207,6 +207,11 @@ class ExprNone:
     pass
 
 @dataclass
+class ExprUndefined:
+    """Undefined literal — for external library interop where a member may be missing."""
+    pass
+
+@dataclass
 class ExprIdent:
     name: str
 
@@ -320,7 +325,7 @@ class ExprLocalVar:
 
 
 Expr = (
-    ExprInt | ExprFloat | ExprImaginaryLit | ExprStr | ExprBool | ExprNone | ExprIdent |
+    ExprInt | ExprFloat | ExprImaginaryLit | ExprStr | ExprBool | ExprNone | ExprUndefined | ExprIdent |
     ExprList | ExprAttr | ExprTraitAccess | ExprBinOp | ExprUnaryOp |
     ExprCall | ExprTemplateInstantiate | ExprSubscript | ExprSlice |
     ExprDict | ExprTuple | ExprSet | ExprBlock | ExprIfExpr |
@@ -341,6 +346,7 @@ class StmtExpr:
 class StmtLet:
     name: str
     expr: Expr
+    type_ann: Optional[str] = None
 
 @dataclass
 class StmtConst:
@@ -351,6 +357,7 @@ class StmtConst:
 class StmtMut:
     name: str
     expr: Expr
+    type_ann: Optional[str] = None
 
 @dataclass
 class StmtStatic:
@@ -490,6 +497,11 @@ class StmtTraitDef:
     body: list["Stmt"]
 
 @dataclass
+class StmtProtocolDef:
+    name: str
+    body: list["Stmt"]
+
+@dataclass
 class StmtField:
     name: str
     kind: FieldKind
@@ -551,7 +563,7 @@ Stmt = (
     StmtIf | StmtMatch | StmtWhile | StmtFor | StmtBlock |
     StmtReturn | StmtBreak | StmtContinue | StmtPass |
     StmtBlockReturn | StmtLoopYield | StmtYield | StmtFreeze |
-    StmtFnDef | StmtGenDef | StmtClassDef | StmtTraitDef | StmtField |
+    StmtFnDef | StmtGenDef | StmtClassDef | StmtTraitDef | StmtProtocolDef | StmtField |
     StmtNewTypeDef | StmtEnumDef | StmtTry | StmtRaise |
     StmtImport | StmtFromImport |
     StmtLetTuple | StmtAsyncAssign |

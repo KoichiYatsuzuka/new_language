@@ -62,7 +62,7 @@ fn convert_stmts_with_hoist(
 
     let mut result = Vec::new();
     for var in &hoisted {
-        result.push(Stmt::Mut(var.clone(), Expr::None));
+        result.push(Stmt::Mut(var.clone(), None, Expr::None));
     }
     for stmt in stmts {
         if let Some(s) = convert_stmt_in_hoist_ctx(stmt, filename, &hoisted)? {
@@ -235,7 +235,7 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
             match target {
                 py::Expr::Name(n) => {
                     let val = convert_expr(&a.value, filename)?;
-                    Ok(Some(Stmt::Mut(n.id.to_string(), val)))
+                    Ok(Some(Stmt::Mut(n.id.to_string(), None, val)))
                 }
                 py::Expr::Attribute(_) => {
                     let target_expr = convert_expr(target, filename)?;
@@ -257,7 +257,7 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
             py::Expr::Name(n) => {
                 if let Some(val_expr) = &a.value {
                     let val = convert_expr(val_expr, filename)?;
-                    Ok(Some(Stmt::Mut(n.id.to_string(), val)))
+                    Ok(Some(Stmt::Mut(n.id.to_string(), None, val)))
                 } else {
                     Ok(None)
                 }

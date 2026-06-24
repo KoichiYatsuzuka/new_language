@@ -137,6 +137,77 @@ pub enum TypeErrorKind {
     },
     /// `__freeze__` メソッドを直接呼び出した（`freeze` キーワード経由でのみ使用可能）。
     DirectFreezeCall,
+    /// プロトコルをインスタンス化しようとした（`MyProtocol()` はエラー）。
+    ProtocolInstantiation {
+        protocol_name: String,
+    },
+    /// 型がプロトコルを満たさない（フィールドまたはメソッドが存在しない・型が不一致）。
+    ProtocolConformanceFailed {
+        type_name: String,
+        protocol_name: String,
+        reason: String,
+    },
+    /// プロトコルを継承しようとした（`class Foo(MyProtocol):` はエラー）。
+    ProtocolInheritance {
+        class_name: String,
+        protocol_name: String,
+    },
+    /// `Undefined` リテラルを変数に代入しようとした。
+    /// 条件判定・型アノテーション・引数としての使用は許可される。
+    AssignUndefined,
+}
+
+// ---------------------------------------------------------------------------
+// StaticTypeWarning
+// ---------------------------------------------------------------------------
+
+/// 静的型検査で収集される警告の種別。
+#[derive(Debug, Clone)]
+pub enum TypeWarningKind {
+    /// 関数の戻り値型にプロトコルを使用した（使い勝手が悪いため推奨しない）。
+    ProtocolReturnType {
+        func_name: String,
+        protocol_name: String,
+    },
+    /// Protocol 型変数を含む関数が部分コンパイル対象になったが、スキップされた。
+    ProtocolSkippedCompile {
+        func_name: String,
+        protocol_name: String,
+    },
+}
+
+/// 静的型検査で収集される警告情報。
+#[derive(Debug, Clone)]
+pub struct StaticTypeWarning {
+    pub kind: TypeWarningKind,
+    pub span: Option<Span>,
+}
+
+impl StaticTypeWarning {
+    pub fn detail_str(&self) -> String {
+        match &self.kind {
+            TypeWarningKind::ProtocolReturnType { func_name, protocol_name } => format!(
+                "function {} returns protocol type {}; consider returning a concrete type instead",
+                hl_q(func_name), hl_q(protocol_name)
+            ),
+            TypeWarningKind::ProtocolSkippedCompile { func_name, protocol_name } => format!(
+                "function {} uses protocol type {} and cannot be compiled to native code",
+                hl_q(func_name), hl_q(protocol_name)
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for StaticTypeWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const Y: &str = "\x1b[33m";
+        const X: &str = "\x1b[0m";
+        let loc = match &self.span {
+            Some(span) => format!("{span}"),
+            None => "\x1b[33m<unknown>\x1b[0m".to_string(),
+        };
+        write!(f, "{loc}: {Y}Warning{X}: {}", self.detail_str())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +362,22 @@ impl StaticTypeError {
             TypeErrorKind::DirectFreezeCall => format!(
                 "{} cannot be called directly; use the {} keyword instead",
                 hl_bt("__freeze__"), hl_bt("freeze")
+            ),
+            TypeErrorKind::ProtocolInstantiation { protocol_name } => format!(
+                "cannot instantiate protocol {}; protocols are for type-checking only",
+                hl_q(protocol_name)
+            ),
+            TypeErrorKind::ProtocolConformanceFailed { type_name, protocol_name, reason } => format!(
+                "type {} does not satisfy protocol {}: {}",
+                hl_q(type_name), hl_q(protocol_name), reason
+            ),
+            TypeErrorKind::ProtocolInheritance { class_name, protocol_name } => format!(
+                "class {} cannot inherit from protocol {}; use protocol type annotations instead",
+                hl_q(class_name), hl_q(protocol_name)
+            ),
+            TypeErrorKind::AssignUndefined => format!(
+                "cannot assign {} to a variable; {} can only be used in conditions and type annotations",
+                hl_bt("Undefined"), hl_bt("Undefined")
             ),
         }
     }

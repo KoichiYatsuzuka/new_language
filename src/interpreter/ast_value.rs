@@ -249,21 +249,21 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
     match stmt {
         Stmt::Expr(expr) => ns("StmtExpr", vec![("expr", expr_to_value(expr))]),
 
-        Stmt::Let(name, expr) => ns(
+        Stmt::Let(name, _, expr) => ns(
             "StmtLet",
             vec![
                 ("name", Value::Str(name.clone())),
                 ("expr", expr_to_value(expr)),
             ],
         ),
-        Stmt::Const(name, expr) => ns(
+        Stmt::Const(name, _, expr) => ns(
             "StmtConst",
             vec![
                 ("name", Value::Str(name.clone())),
                 ("expr", expr_to_value(expr)),
             ],
         ),
-        Stmt::Mut(name, expr) => ns(
+        Stmt::Mut(name, _, expr) => ns(
             "StmtMut",
             vec![
                 ("name", Value::Str(name.clone())),
@@ -429,6 +429,13 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
                 ("body", stmts_list(body)),
             ],
         ),
+        Stmt::ProtocolDef { name, body } => ns(
+            "StmtProtocolDef",
+            vec![
+                ("name", Value::Str(name.clone())),
+                ("body", stmts_list(body)),
+            ],
+        ),
         Stmt::Field {
             name,
             kind,
@@ -573,6 +580,7 @@ fn expr_to_value(expr: &Expr) -> Value {
         Expr::Str(v) => ns("ExprStr", vec![("value", Value::Str(v.clone()))]),
         Expr::Bool(v) => ns("ExprBool", vec![("value", Value::Bool(*v))]),
         Expr::None => ns("ExprNone", vec![]),
+        Expr::Undefined => ns("ExprUndefined", vec![]),
         Expr::Ident(name) => ns("ExprIdent", vec![("name", Value::Str(name.clone()))]),
 
         Expr::List(elements) => ns("ExprList", vec![("elements", exprs_list(elements))]),
