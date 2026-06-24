@@ -1,0 +1,71 @@
+# copy() メソッドのテスト
+
+# --- 1. デフォルト deepcopy ---
+class Point:
+    mut x: int
+    mut y: int
+
+    fn __init__(mut self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+
+    fn show(let self) -> None:
+        print("Point(" + str(self.x) + ", " + str(self.y) + ")")
+
+mut p1 = Point(10, 20)
+mut p2 = p1.copy()   # デフォルト deepcopy
+p2.x = 99
+p1.show()   # Point(10, 20) — 変更されていない
+p2.show()   # Point(99, 20)
+
+# --- 2. __copy__ カスタム実装 ---
+class Named:
+    mut name: str
+    mut tag: int
+
+    fn __init__(mut self, name: str, tag: int) -> None:
+        self.name = name
+        self.tag = tag
+
+    fn __copy__(let self) -> Named:
+        # mut を使うことでフリーズしない新鮮なインスタンスを返す
+        mut c = Named(self.name + "_copy", self.tag + 1)
+        return c
+
+    fn show(let self) -> None:
+        print("Named(" + self.name + ", " + str(self.tag) + ")")
+
+mut n1 = Named("hello", 0)
+mut n2 = n1.copy()   # __copy__ が呼ばれる
+n1.show()   # Named(hello, 0)
+n2.show()   # Named(hello_copy, 1)
+
+n2.name = "world"
+n1.show()   # Named(hello, 0) — n1 は変更されていない
+n2.show()   # Named(world, 1)
+
+# --- 3. let パラメータへの渡し時に copy() が適用される ---
+fn read_point(let p: Point) -> None:
+    print("read: Point(" + str(p.x) + ", " + str(p.y) + ")")
+
+mut p3 = Point(5, 6)
+read_point(p3)   # read: Point(5, 6)
+p3.show()        # Point(5, 6) — 変更されていない
+
+# --- 4. let パラメータで __copy__ が使われることを確認 ---
+fn read_named(let n: Named) -> None:
+    print("read: Named(" + n.name + ", " + str(n.tag) + ")")
+
+mut n3 = Named("original", 5)
+read_named(n3)   # read: Named(original_copy, 6) — __copy__ のロジックで変換済み
+n3.show()        # Named(original, 5) — n3 は変更されていない
+
+# --- 5. mut パラメータは copy() されない (共有参照) ---
+fn mutate_point(mut p: Point) -> None:
+    p.x = 888
+
+mut p4 = Point(3, 4)
+mutate_point(p4)
+p4.show()   # Point(888, 4) — mut は共有参照なので変更が反映される
+
+print("All copy tests passed!")

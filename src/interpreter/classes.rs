@@ -1,5 +1,5 @@
 // classes.rs — クラス・インスタンス管理
-// (instantiate / eval_method_call / lookup_method_in_class / lookup_class_var / freeze_instance)
+// (instantiate / eval_method_call / lookup_method_in_class / lookup_class_var / freeze_instance / copy_value)
 //
 // クラスのインスタンス化、メソッド呼び出し、継承チェーンを辿るメソッド・クラス変数の検索を提供する。
 // List / Str / Dict / Generator などの組み込み型のメソッドディスパッチもここで行う。
@@ -547,6 +547,17 @@ impl Interpreter {
                 }
             }
             Value::Instance(inst_rc) => {
+                // 組み込み copy() メソッド: __copy__ を優先し、なければ deepcopy
+                if method_name == "copy" {
+                    if !args.is_empty() {
+                        return Err(format!(
+                            "TypeError: {}.copy() takes no arguments",
+                            inst_rc.borrow().class.name
+                        ));
+                    }
+                    return self.copy_value(obj.clone());
+                }
+
                 let class = inst_rc.borrow().class.clone();
                 let inst_immutable = inst_rc.borrow().immutable;
 
@@ -2066,5 +2077,47 @@ impl Interpreter {
     pub(super) fn lookup_class_var(class: &Rc<ClassValue>, name: &str) -> Option<Value> {
         class.class_vars.get(name).cloned()
         // 注: 基底クラスへの遡及検索にはスコープへのアクセスが必要なため、現在は未実装
+    }
+
+    /// インスタンス値をコピーする。
+    ///
+    /// 優先順位:
+    /// 1. インスタンスのクラスに `__copy__` メソッドが定義されており、引数なし（`self` のみ）で
+    ///    呼び出せるオーバーロードがあれば、それを呼び出す。
+    /// 2. `__copy__` が存在しないか引数なしで呼び出せるオーバーロードがなければ、
+    ///    `deep_copy_unfrozen` によるデフォルトのディープコピーを実行する。
+    ///    `let` バインドのフリーズを解除し、新鮮な可変インスタンスとして返す。
+    ///
+    /// インスタンス以外の値（List / Dict 等）は `deep_copy_unfrozen` を使用する。
+    ///
+    /// メモリ不足などでコピーがパニックした場合は `MemoryError` を返す。
+    pub(super) fn copy_value(&mut self, val: Value) -> Result<Value, String> {
+        if let Value::Instance(ref inst_rc) = val {
+            let class = inst_rc.borrow().class.clone();
+            if let Some(overloads) = self.lookup_method_in_class(&class, "__copy__") {
+                // 引数なし（self のみ）で呼び出せるオーバーロードを選別する
+                let callable: Vec<Rc<FnValue>> = overloads
+                    .into_iter()
+                    .filter(|f| {
+                        f.params
+                            .iter()
+                            .filter(|p| p.name != "self")
+                            .all(|p| p.default.is_some() || p.variadic)
+                    })
+                    .collect();
+                if !callable.is_empty() {
+                    return if callable.len() == 1 {
+                        self.exec_fn(callable[0].clone(), &[], Some(val), "__copy__", None)
+                    } else {
+                        self.dispatch_overload(callable, &[], Some(val), None)
+                    };
+                }
+            }
+        }
+        // デフォルト: フリーズ解除ディープコピー（パニック=メモリ不足を RuntimeError に変換）
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Interpreter::deep_copy_unfrozen(val)
+        }))
+        .map_err(|_| "MemoryError: insufficient memory for copy".to_string())
     }
 }

@@ -71,6 +71,16 @@ impl Interpreter {
             )
         };
 
+        // `let` パラメータ（self 除く）に copy() を適用する: __copy__ があればそれを、なければ deepcopy を使う
+        if !fn_val.is_python {
+            for binding in &mut bindings {
+                let (name, val, mutable) = binding;
+                if !*mutable && name != "self" {
+                    *val = self.copy_value(val.clone())?;
+                }
+            }
+        }
+
         // 自動キャスト: `let` パラメータに型アノテーションがあり、渡された値がインスタンスで
         // かつ型が異なる場合、__cast__[TypeName] メソッドが定義されていれば自動的にキャストする。
         // `mut` パラメータは自動キャストしない。
@@ -297,12 +307,20 @@ impl Interpreter {
                 evaluated_defaults.push(None);
             }
         }
-        let bindings = Self::bind_args(
+        let mut bindings = Self::bind_args(
             &gen_fn.params,
             &evaled,
             self_val.clone(),
             &evaluated_defaults,
         )?;
+
+        // `let` パラメータ（self 除く）に copy() を適用する
+        for binding in &mut bindings {
+            let (name, val, mutable) = binding;
+            if !*mutable && name != "self" {
+                *val = self.copy_value(val.clone())?;
+            }
+        }
 
         // yield 収集を有効化する（スレッドローカルに収集先を設定）
         GENERATOR_YIELDS.with(|y| {
@@ -515,7 +533,7 @@ impl Interpreter {
             }
         }
 
-        // 未割り当てスロットはデフォルト値で埋める。let パラメータにはディープコピーして渡す
+        // 未割り当てスロットはデフォルト値で埋める。コピーは呼び出し元（exec_fn_evaled / exec_generator）が行う
         for (i, slot) in slots.into_iter().enumerate() {
             let param = &non_variadic_params[i];
             let v = match slot {
@@ -525,28 +543,13 @@ impl Interpreter {
                     None => return Err(format!("TypeError: missing argument '{}'", param.name)),
                 },
             };
-            let value = if param.mutable {
-                v
-            } else {
-                Self::deep_copy_value(v)
-            };
-            result.push((param.name.clone(), value, param.mutable));
+            result.push((param.name.clone(), v, param.mutable));
         }
 
-        // 可変長パラメータのバインド: local::args に渡す
+        // 可変長パラメータのバインド: local::args に渡す。コピーは呼び出し元が行う
         if let Some(vi) = variadic_idx {
             let variadic_param = &params_to_bind[vi];
-            let local_args_val = match variadic_value {
-                Some(list_val) => {
-                    // 可変長パラメータの可変性に応じてコピーするかどうか決める
-                    if variadic_param.mutable {
-                        list_val
-                    } else {
-                        Self::deep_copy_value(list_val)
-                    }
-                }
-                None => Value::None, // 可変長引数が渡されていない場合は None
-            };
+            let local_args_val = variadic_value.unwrap_or(Value::None);
             result.push(("local::args".to_string(), local_args_val, variadic_param.mutable));
         }
 
@@ -905,6 +908,57 @@ impl Interpreter {
             ))),
             // Tuple は Rc<TupleData> だが TupleData は不変なので共有で問題なし
             // プリミティブ・関数・クラス等はそのまま返す
+            other => other,
+        }
+    }
+
+    /// `copy()` メソッド用のディープコピー。フリーズ状態をリセットして新鮮な可変インスタンスを返す。
+    ///
+    /// `deep_copy_value` との違い:
+    /// - `Instance`: `immutable = false` に設定し、フィールドの可変性をクラス定義から復元する
+    ///   （`let` バインドによるフリーズを解除した独立したコピーを生成する）
+    /// - `Dict` / `List`: `deep_copy_value` と同様に再帰コピーする
+    /// - その他: `deep_copy_value` と同様にそのまま返す
+    pub(crate) fn deep_copy_unfrozen(val: Value) -> Value {
+        match val {
+            Value::Instance(inst_rc) => {
+                let inst = inst_rc.borrow();
+                let class = inst.class.clone();
+                let new_fields = inst
+                    .fields
+                    .iter()
+                    .map(|(k, (v, _))| {
+                        // クラス定義の可変性を復元する。定義になければデフォルト true（可変）
+                        let orig_mutable = class
+                            .field_mutability
+                            .get(k.as_str())
+                            .copied()
+                            .unwrap_or(true);
+                        (k.clone(), (Self::deep_copy_unfrozen(v.clone()), orig_mutable))
+                    })
+                    .collect();
+                Value::Instance(Rc::new(RefCell::new(InstanceData {
+                    class,
+                    fields: new_fields,
+                    immutable: false, // フリーズを解除した新鮮なコピー
+                })))
+            }
+            Value::Dict(d) => {
+                let d_ref = d.borrow();
+                let mut new_dict = DictData::new(d_ref.key_type.clone(), d_ref.item_type.clone());
+                for (k, v) in d_ref.all_keys().into_iter().zip(d_ref.all_items()) {
+                    new_dict.set(Self::deep_copy_unfrozen(k), Self::deep_copy_unfrozen(v));
+                }
+                Value::Dict(Rc::new(RefCell::new(new_dict)))
+            }
+            Value::List(items) => Value::List(Rc::new(RefCell::new(
+                items
+                    .borrow()
+                    .iter()
+                    .cloned()
+                    .map(Self::deep_copy_unfrozen)
+                    .collect(),
+            ))),
             other => other,
         }
     }
