@@ -1,0 +1,12 @@
+D:\repository\new_language\examples\cs_form_test\bin\Release\net8.0-windows\win-x64\FormBridge.deps.json
+D:\repository\new_language\examples\cs_form_test\bin\Release\net8.0-windows\win-x64\FormBridge.dll
+D:\repository\new_language\examples\cs_form_test\bin\Release\net8.0-windows\win-x64\FormBridge.pdb
+D:\repository\new_language\examples\cs_form_test\obj\Release\net8.0-windows\win-x64\FormBridge.GeneratedMSBuildEditorConfig.editorconfig
+D:\repository\new_language\examples\cs_form_test\obj\Release\net8.0-windows\win-x64\FormBridge.AssemblyInfoInputs.cache
+D:\repository\new_language\examples\cs_form_test\obj\Release\net8.0-windows\win-x64\FormBridge.AssemblyInfo.cs
+D:\repository\new_language\examples\cs_form_test\obj\Release\net8.0-windows\win-x64\FormBridge.csproj.CoreCompileInputs.cache
+D:\repository\new_language\examples\cs_form_test\obj\Release\net8.0-windows\win-x64\FormBridge.sourcelink.json
+D:\repository\new_language\examples\cs_form_test\obj\Release\net8.0-windows\win-x64\FormBridge.dll
+D:\repository\new_language\examples\cs_form_test\obj\Release\net8.0-windows\win-x64\refint\FormBridge.dll
+D:\repository\new_language\examples\cs_form_test\obj\Release\net8.0-windows\win-x64\FormBridge.pdb
+D:\repository\new_language\examples\cs_form_test\obj\Release\net8.0-windows\win-x64\ref\FormBridge.dll

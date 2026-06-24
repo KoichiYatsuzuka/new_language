@@ -1,0 +1,14 @@
+EXPORTS
+   DotNetRuntimeDebugHeader DATA
+   FormApp_release
+   arrow_bridge_release
+   arrow_bridge_free_str
+   FormApp_message_box
+   FormApp_input_box
+   FormApp_show_note
+   FormApp_get_note_title
+   FormApp_get_note_content
+   FormApp_show_todo
+   FormApp_todo_count
+   FormApp_todo_get
+   FormApp_get_str
