@@ -3,12 +3,14 @@ import { promises as fsPromises } from 'fs';
 import * as path from 'path';
 import type { LangType } from './builtins';
 import { FUNC_DEF_RE } from './builtins';
+import { parseNetAssembly } from './cs_assembly';
 
 // ===== C++ / native module support =====
 
-export function importKindOf(keyword: string): 'py' | 'cpp' | 'ar' | 'rs' {
+export function importKindOf(keyword: string): 'py' | 'cpp' | 'ar' | 'rs' | 'cs' {
     if (keyword.includes('cpp')) return 'cpp';
     if (keyword === 'import[rs]') return 'rs';
+    if (keyword === 'import[cs-dll]' || keyword === 'import[cs-proc]') return 'cs';
     if (keyword === 'import' || keyword.startsWith('import[hv')) return 'ar';
     return 'py';
 }
@@ -288,7 +290,8 @@ export function parseTlStub(content: string): NativeModuleInfo {
 // ===== Rust source parser =====
 
 interface ArConfig {
-    rust?: { crates_path?: string | string[] };
+    rust?:    { crates_path?: string | string[] };
+    csharp?:  { lib_paths?: string | string[] };
 }
 
 /** Walk up from startDir to find the directory containing ar_config.json. */
@@ -483,6 +486,35 @@ export async function loadNativeModuleInfo(
                 const content = await fsPromises.readFile(libRs, 'utf8');
                 return parseRustLib(content);
             } catch { /* try next candidate */ }
+        }
+        return empty;
+    }
+    // ── import[cs-dll] / import[cs-proc]: read ECMA-335 metadata from .NET DLL ─
+    if (importKindOf(importKind) === 'cs') {
+        const lastName = modulePath.split('.').pop() ?? modulePath;
+        const dllName  = lastName + '.dll';
+        // Search candidates: sub-path, flat, single-segment package dir, ar_config lib_paths
+        const parts = modulePath.split('.');
+        const candidates: string[] = [
+            path.join(docDir, ...parts) + '.dll',
+            path.join(docDir, dllName),
+        ];
+        if (parts.length === 1) {
+            candidates.push(path.join(docDir, lastName, dllName));
+        }
+        const config = await loadArConfig(docDir);
+        const configDir = await findArConfigDir(docDir) ?? docDir;
+        const rawCsPaths = config?.csharp?.lib_paths;
+        const csLibPaths: string[] = Array.isArray(rawCsPaths) ? rawCsPaths : rawCsPaths ? [rawCsPaths] : [];
+        for (const lp of csLibPaths) {
+            const resolved = path.isAbsolute(lp) ? lp : path.resolve(configDir, lp);
+            candidates.push(path.join(resolved, dllName));
+        }
+        for (const candidate of candidates) {
+            try {
+                const buf = await fsPromises.readFile(candidate) as Buffer;
+                return parseNetAssembly(buf);
+            } catch { /* try next */ }
         }
         return empty;
     }
