@@ -1904,26 +1904,30 @@ impl Interpreter {
                 }
             }
             Value::CsObject(obj_data) => {
-                // C# property getter: dispatch as zero-arg instance method `{ClassName}_inst_{attr}`
+                // C# property getter: dispatch as zero-arg instance method.
                 let class_name = obj_data.class_name.clone();
                 let handle = obj_data.handle;
                 let bp = obj_data.bridge_path.clone();
+                let is_proc = obj_data.is_proc;
                 let class = obj_data.class.clone();
                 let ret_type: Option<String> = class
                     .methods
                     .get(attr)
                     .and_then(|ov| ov.first())
                     .and_then(|f| f.return_type.clone());
-                match super::cs_dll_runtime::get_bridge(&bp) {
-                    Some(bridge) => {
-                        super::cs_dll_runtime::call_instance(
+                if is_proc {
+                    super::cs_proc_runtime::call_instance(
+                        &bp, &class_name, handle, attr, &[],
+                        ret_type.as_deref(),
+                    ).map_err(|e| format!("CsProc: property '{attr}' on '{class_name}': {e}"))
+                } else {
+                    match super::cs_dll_runtime::get_bridge(&bp) {
+                        Some(bridge) => super::cs_dll_runtime::call_instance(
                             &bridge, &class_name, handle, attr, &[],
                             ret_type.as_deref(),
-                        ).map_err(|e| format!("CsDll: property '{attr}' on '{class_name}': {e}"))
+                        ).map_err(|e| format!("CsDll: property '{attr}' on '{class_name}': {e}")),
+                        None => Err(format!("CsDll: bridge DLL not loaded for '{class_name}'")),
                     }
-                    None => Err(format!(
-                        "CsDll: bridge DLL not loaded for '{class_name}'"
-                    )),
                 }
             }
             _ => Err(format!(

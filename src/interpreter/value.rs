@@ -795,16 +795,17 @@ pub enum Value {
     CsObject(Rc<CsObjectData>),
 }
 
-/// import[cs-dll] ブリッジが管理する C# オブジェクトのランタイム表現。
-/// `handle` は NativeAOT ブリッジ DLL の ObjectTable に格納されたオブジェクト ID。
+/// import[cs-dll] / import[cs-proc] ブリッジが管理する C# オブジェクトのランタイム表現。
 #[derive(Debug, Clone)]
 pub struct CsObjectData {
     pub class_name: String,
     pub handle: i64,
-    /// NativeAOT ブリッジ DLL へのパス（bridge lookup に使用）。
+    /// NativeAOT DLL パス (cs-dll) または proc exe パス (cs-proc)。
     pub bridge_path: std::path::PathBuf,
     /// 元の ClassValue stub（return type 解決に使用）。
     pub class: Rc<ClassValue>,
+    /// true = cs-proc (IPC サブプロセス), false = cs-dll (DLL 直接呼び出し)
+    pub is_proc: bool,
 }
 
 // ---------------------------------------------------------------------------

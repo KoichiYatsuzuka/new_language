@@ -761,12 +761,18 @@ impl Parser {
         }
 
         // 候補パスを順番に試す
+        // 単一セグメント "name" の場合は source_dir/name/name.dll も試す（パッケージディレクトリ規約）。
         let sub_path: PathBuf = module.iter().collect::<PathBuf>().with_extension("dll");
-        let candidates: Vec<PathBuf> = vec![
+        let mut candidates: Vec<PathBuf> = vec![
             self.source_dir.join(&sub_path),
             self.source_dir.join(&dll_name),
             self.root_dir.join(&dll_name),
         ];
+        if module.len() == 1 {
+            // import[cs-dll] foo → also try source_dir/foo/foo.dll
+            candidates.push(self.source_dir.join(&last).join(&dll_name));
+            candidates.push(self.root_dir.join(&last).join(&dll_name));
+        }
 
         let mut dll_path: Option<PathBuf> = None;
         for c in &candidates {

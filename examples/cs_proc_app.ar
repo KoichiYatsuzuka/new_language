@@ -1,0 +1,41 @@
+import[cs-proc] cs_proc_test as svc
+
+# ── Static methods ──────────────────────────────────────────────────────────
+let sum = svc.Calculator.add(10, 25)
+print("10 + 25 =", sum)
+
+let sq = svc.Calculator.square(7)
+print("7^2 =", sq)
+
+let rt = svc.Calculator.sqrt(2.0)
+print("sqrt(2) =", rt)
+
+let fmt = svc.TextProcessor.format_number(1000000)
+print("Formatted:", fmt)
+
+let joined = svc.TextProcessor.join(" | ", "Arrow", "C#")
+print("Joined:", joined)
+
+# ── Constructor + instance methods ─────────────────────────────────────────
+let calc = svc.Calculator(100)
+print("Initial value:", calc.get_value())
+
+let v1 = calc.increment(50)
+print("After increment(50):", v1)
+
+let v2 = calc.multiply_by(3)
+print("After multiply_by(3):", v2)
+
+print("Is positive:", calc.is_positive())
+print("Formatted:", calc.get_formatted())
+
+# ── TextProcessor ───────────────────────────────────────────────────────────
+let tp = svc.TextProcessor("  Hello, Arrow World!  ")
+print("Upper:", tp.to_upper())
+print("Trimmed:", tp.trim())
+print("Words:", tp.word_count())
+print("Length:", tp.length())
+print("Contains 'Arrow':", tp.contains("Arrow"))
+let replaced = tp.replace("Arrow", "cs-proc")
+print("Replaced:", replaced)
+print("Reversed:", tp.reverse())

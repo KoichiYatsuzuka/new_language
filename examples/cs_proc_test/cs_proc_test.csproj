@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Arrow searches for {Name}.dll (type stubs) and {Name}.exe (host) -->
+    <!-- both are produced by 'dotnet build' in bin/Debug/net8.0/ -->
+  </PropertyGroup>
+
+  <!-- Copy host exe, managed DLL and runtimeconfig to project root after build so Arrow can find them -->
+  <Target Name="CopyToProjectDir" AfterTargets="Build">
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).exe"
+          DestinationFolder="$(ProjectDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(OutputPath)$(AssemblyName).exe')" />
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll"
+          DestinationFolder="$(ProjectDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(OutputPath)$(AssemblyName).dll')" />
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).runtimeconfig.json"
+          DestinationFolder="$(ProjectDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(OutputPath)$(AssemblyName).runtimeconfig.json')" />
+  </Target>
+</Project>

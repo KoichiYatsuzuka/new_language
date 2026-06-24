@@ -360,14 +360,16 @@ class TlEventLoop:
 
 @dataclass
 class TlCsObject:
-    """A C# object accessed via a NativeAOT bridge DLL (import[cs-dll])."""
+    """A C# object accessed via a bridge DLL (cs-dll) or proc IPC (cs-proc)."""
     handle: int        # i64 object handle
-    class_name: str    # C# class name (for bridge dispatch)
-    bridge_path: str   # path to the native DLL
+    class_name: str    # C# class name
+    bridge_path: str   # path to the native DLL (cs-dll) or proc exe (cs-proc)
     cls: "TlClass"     # Arrow class stub (for return_type lookup)
+    is_proc: bool = False  # True = cs-proc IPC, False = cs-dll direct
 
     def __repr__(self) -> str:
-        return f"<CsObject {self.class_name} #{self.handle}>"
+        kind = "cs-proc" if self.is_proc else "cs-dll"
+        return f"<CsObject({kind}) {self.class_name} #{self.handle}>"
 
 
 Value = (

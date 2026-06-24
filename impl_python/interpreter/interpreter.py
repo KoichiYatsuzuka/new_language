@@ -1083,14 +1083,15 @@ class Interpreter:
         if isinstance(obj, TlInstance):
             return self._call_method(obj, attr, args, kwargs)
         if isinstance(obj, TlClass):
-            # cs-dll static method dispatch
             bridge_path = obj.class_vars.get("__cs_bridge_path__")
             if bridge_path is not None:
                 return self._cs_call_static(obj, attr, args, bridge_path)
+            proc_path = obj.class_vars.get("__cs_proc_path__")
+            if proc_path is not None:
+                return self._cs_proc_call_static(obj, attr, args, proc_path)
             cls_attr = self._get_class_attr(obj, attr)
             return self._call(cls_attr, args, kwargs)
         if isinstance(obj, TlCsObject):
-            # cs-dll instance method dispatch
             return self._cs_call_instance(obj, attr, args)
         if isinstance(obj, TlNamespace):
             if attr in obj.members:
@@ -1127,15 +1128,26 @@ class Interpreter:
         ret_type = self._cs_ret_type(cls.methods, method)
         return cs_dll_runtime.call_static(bridge, cls.name, method, args, ret_type)
 
+    def _cs_proc_call_static(self, cls: "TlClass", method: str, args: list,
+                             proc_path: str) -> Value:
+        """Dispatch a static cs-proc call via the IPC bridge."""
+        from . import cs_proc_runtime
+        ret_type = self._cs_ret_type(cls.methods, method)
+        return cs_proc_runtime.call_static(proc_path, cls.name, method, args, ret_type)
+
     def _cs_call_instance(self, obj: "TlCsObject", method: str, args: list) -> Value:
-        """Dispatch an instance cs-dll call via the bridge."""
+        """Dispatch an instance method call (cs-dll or cs-proc) via the appropriate bridge."""
+        from . import cs_dll_runtime, cs_proc_runtime
         from pathlib import Path
-        from .value import TlCsObject
-        from . import cs_dll_runtime
-        bridge = cs_dll_runtime.load_bridge(Path(obj.bridge_path))
         ret_type = self._cs_ret_type(obj.cls.methods, method)
-        return cs_dll_runtime.call_instance(bridge, obj.class_name, obj.handle,
-                                            method, args, ret_type)
+        if obj.is_proc:
+            return cs_proc_runtime.call_instance(
+                obj.bridge_path, obj.class_name, obj.handle, method, args, ret_type
+            )
+        bridge = cs_dll_runtime.load_bridge(Path(obj.bridge_path))
+        return cs_dll_runtime.call_instance(
+            bridge, obj.class_name, obj.handle, method, args, ret_type
+        )
 
     def _copy_value(self, val: Value) -> Value:
         """copy() メソッドのロジック: __copy__ を優先し、なければ deep_clone_unfrozen を使用する。"""
@@ -1441,6 +1453,22 @@ class Interpreter:
                 class_name=cls.name,
                 bridge_path=str(Path(bridge_path).resolve()),
                 cls=cls,
+                is_proc=False,
+            )
+
+        # cs-proc class: call IPC constructor → TlCsObject
+        proc_path = cls.class_vars.get("__cs_proc_path__")
+        if proc_path is not None:
+            from pathlib import Path
+            from .value import TlCsObject
+            from . import cs_proc_runtime
+            handle = cs_proc_runtime.call_constructor(proc_path, cls.name, args)
+            return TlCsObject(
+                handle=handle,
+                class_name=cls.name,
+                bridge_path=str(Path(proc_path).resolve()),
+                cls=cls,
+                is_proc=True,
             )
 
         # Primitive new_type: single positional arg sets __value__
@@ -2024,9 +2052,16 @@ class Interpreter:
             self._env.declare(bound_name, ns, mutable=False)
             return
 
-        # import[cs-dll] / import[cs-proc]: execute stubs, then patch with native DLL bridge
-        if lang in ("cs-dll", "cs-proc"):
+        # import[cs-dll]: execute stubs, then patch with native DLL bridge
+        if lang == "cs-dll":
             ns = self._exec_cs_dll_import(module, body)
+            bound_name = alias if alias else module[-1]
+            self._env.declare(bound_name, ns, mutable=False)
+            return
+
+        # import[cs-proc]: execute stubs, then launch IPC subprocess host
+        if lang == "cs-proc":
+            ns = self._exec_cs_proc_import(module, body)
             bound_name = alias if alias else module[-1]
             self._env.declare(bound_name, ns, mutable=False)
             return
@@ -2113,8 +2148,17 @@ class Interpreter:
                     self._env.declare(bound, val, mutable=False)
             return
 
-        if lang in ("cs-dll", "cs-proc"):
+        if lang == "cs-dll":
             ns = self._exec_cs_dll_import(module, body)
+            for orig_name, alias_name in names:
+                val = ns.members.get(orig_name)
+                if val is not None:
+                    bound = alias_name if alias_name else orig_name
+                    self._env.declare(bound, val, mutable=False)
+            return
+
+        if lang == "cs-proc":
+            ns = self._exec_cs_proc_import(module, body)
             for orig_name, alias_name in names:
                 val = ns.members.get(orig_name)
                 if val is not None:
@@ -2212,6 +2256,81 @@ class Interpreter:
         for cls_val in members.values():
             if isinstance(cls_val, TlClass):
                 cls_val.class_vars["__cs_bridge_path__"] = bridge_path_str
+
+        return ns
+
+    def _exec_cs_proc_import(self, module: list[str], body: list) -> "TlNamespace":
+        """Execute cs-proc stubs and launch the IPC subprocess host.
+
+        Mirrors src/interpreter/exec.rs cs-proc import handling:
+        1. Execute the body (class stubs) in a sub-interpreter → TlNamespace
+        2. Find {Name}_proc.exe or {Name}.exe in search dirs
+        3. Launch the proc bridge via cs_proc_runtime.launch_proc()
+        4. Patch every TlClass with __cs_proc_path__ class var
+        """
+        from pathlib import Path as _Path
+        from .value import TlNamespace, TlClass
+        from . import cs_proc_runtime
+
+        # Step 1: execute stubs
+        mod_name = ".".join(module)
+        sub = Interpreter()
+        sub._known_classes = self._known_classes
+        sub._known_traits = self._known_traits
+        try:
+            sub.exec_stmts(body)
+        except Exception:
+            pass
+
+        members: dict = {}
+        for scope in sub._env._scopes:
+            for name, entry in scope.items():
+                if name.startswith("_"):
+                    continue
+                val = entry[2][0] if entry[2] is not None else entry[0]
+                members[name] = val
+
+        ns = TlNamespace(name=mod_name, members=members)
+
+        # Step 2: find the proc host executable
+        managed_name = module[-1]
+        sub_dir = _Path(*module[:-1]) if len(module) > 1 else _Path(".")
+        search_dirs: list[_Path] = list(self._python_search_dirs)
+
+        proc_path: Optional[_Path] = None
+        for exe_name in (f"{managed_name}_proc.exe", f"{managed_name}.exe"):
+            for d in search_dirs:
+                for c in (d / sub_dir / exe_name, d / exe_name):
+                    if c.exists():
+                        proc_path = c
+                        break
+                if proc_path:
+                    break
+            if proc_path is None:
+                # CWD fallback
+                for c in (sub_dir / exe_name, _Path(exe_name)):
+                    if c.exists():
+                        proc_path = c
+                        break
+            if proc_path:
+                break
+
+        if proc_path is None:
+            return ns  # stub-only (type checking works, runtime won't)
+
+        # Step 3: launch the proc bridge
+        proc_path_str = str(proc_path.resolve())
+        try:
+            cs_proc_runtime.launch_proc(proc_path_str)
+        except Exception as e:
+            import warnings
+            warnings.warn(f"cs-proc: failed to start host '{proc_path}': {e}")
+            return ns
+
+        # Step 4: patch all TlClass instances with __cs_proc_path__
+        for cls_val in members.values():
+            if isinstance(cls_val, TlClass):
+                cls_val.class_vars["__cs_proc_path__"] = proc_path_str
 
         return ns
 

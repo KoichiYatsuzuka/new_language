@@ -283,7 +283,7 @@ impl Interpreter {
         }));
         let inst_val = Value::Instance(inst_rc);
 
-        // cs-dll bridge dispatch: if class has __cs_bridge_path__ class_var, call the bridge.
+        // cs-dll / cs-proc bridge dispatch: check class_vars for bridge path markers.
         let class_name = class.name.clone();
         if let Some(Value::Str(bp)) = class.class_vars.get("__cs_bridge_path__") {
             let bp_path = std::path::PathBuf::from(bp.clone());
@@ -297,8 +297,23 @@ impl Interpreter {
                     handle,
                     bridge_path: bp_path,
                     class: class.clone(),
+                    is_proc: false,
                 })));
             }
+        }
+        if let Some(Value::Str(pp)) = class.class_vars.get("__cs_proc_path__") {
+            let pp_path = std::path::PathBuf::from(pp.clone());
+            let evaled = self.eval_call_args(call_args)?;
+            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+            let handle = super::cs_proc_runtime::call_constructor(&pp_path, &class_name, &arg_vals)
+                .map_err(|e| format!("CsProc: constructor for '{class_name}' failed: {e}"))?;
+            return Ok(Value::CsObject(Rc::new(super::value::CsObjectData {
+                class_name: class_name.clone(),
+                handle,
+                bridge_path: pp_path,
+                class: class.clone(),
+                is_proc: true,
+            })));
         }
 
         // Native __init__ dispatch (for import[rs] structs and compiled classes).
@@ -647,6 +662,22 @@ impl Interpreter {
                             ret_type.as_deref(),
                         ).map_err(|e| format!("CsDll: {e}"));
                     }
+                }
+                // cs-proc static method dispatch
+                if let Some(Value::Str(pp)) = cls.class_vars.get("__cs_proc_path__") {
+                    let pp_path = std::path::PathBuf::from(pp.clone());
+                    let class_name = cls.name.clone();
+                    let ret_type: Option<String> = cls
+                        .methods
+                        .get(method_name)
+                        .and_then(|overloads| overloads.first())
+                        .and_then(|f| f.return_type.clone());
+                    let evaled = self.eval_call_args(args)?;
+                    let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                    return super::cs_proc_runtime::call_static(
+                        &pp_path, &class_name, method_name, &arg_vals,
+                        ret_type.as_deref(),
+                    ).map_err(|e| format!("CsProc: {e}"));
                 }
 
                 // クラスオブジェクトに対するメソッド呼び出し: static / class_method のみ許可
@@ -1069,8 +1100,8 @@ impl Interpreter {
                 let class_name = obj_data.class_name.clone();
                 let handle = obj_data.handle;
                 let bp = obj_data.bridge_path.clone();
+                let is_proc = obj_data.is_proc;
                 let class = obj_data.class.clone();
-                // Resolve return type from stub method definition
                 let ret_type: Option<String> = class
                     .methods
                     .get(method_name)
@@ -1078,14 +1109,19 @@ impl Interpreter {
                     .and_then(|f| f.return_type.clone());
                 let evaled = self.eval_call_args(args)?;
                 let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
-                match super::cs_dll_runtime::get_bridge(&bp) {
-                    Some(bridge) => {
-                        super::cs_dll_runtime::call_instance(
+                if is_proc {
+                    super::cs_proc_runtime::call_instance(
+                        &bp, &class_name, handle, method_name, &arg_vals,
+                        ret_type.as_deref(),
+                    ).map_err(|e| format!("CsProc: {e}"))
+                } else {
+                    match super::cs_dll_runtime::get_bridge(&bp) {
+                        Some(bridge) => super::cs_dll_runtime::call_instance(
                             &bridge, &class_name, handle, method_name, &arg_vals,
                             ret_type.as_deref(),
-                        ).map_err(|e| format!("CsDll: {e}"))
+                        ).map_err(|e| format!("CsDll: {e}")),
+                        None => Err(format!("CsDll: bridge DLL not loaded for '{class_name}'")),
                     }
-                    None => Err(format!("CsDll: bridge DLL not loaded for '{class_name}'")),
                 }
             }
             _ => Err(format!(

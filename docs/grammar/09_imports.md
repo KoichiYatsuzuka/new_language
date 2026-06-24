@@ -30,7 +30,7 @@ import[rs]      regex        # Rust crate を直接読み込み
 import[cpp-dll] DxLib.DxLib with stub as dx  # C++ DLL を読み込み
 import[cpp-lib] MyLib.MyLib with stub as ml  # C++ 静的ライブラリを読み込み
 import[cs-dll]  MyLib.MyBridge as my         # .NET NativeAOT DLL を読み込み
-import[cs-proc] MyLib.MyBridge as my         # (cs-dll の別名、将来のプロセス分離用)
+import[cs-proc] MyLib.MyService as my        # .NET IPC サブプロセス経由で呼び出し
 ```
 
 ---
@@ -356,6 +356,146 @@ while i < n:
     i += 1
 forms.FormApp.release(todo_h)
 ```
+
+---
+
+## .NET IPC サブプロセス (`[cs-proc]`)
+
+`import[cs-proc]` は通常の .NET アプリ（NativeAOT 不要）を子プロセスとして起動し、**Windows 名前付きパイプ**経由で JSON-RPC を行います。
+
+```hv
+import[cs-proc] cs_proc_test as svc
+
+# 静的メソッド
+let sum = svc.Calculator.add(10, 25)
+print(sum)                            # 35
+
+# コンストラクタ + インスタンスメソッド
+let calc = svc.Calculator(100)
+let v = calc.increment(50)
+print(v)                              # 150
+print(calc.get_formatted())          # "Value: 150"
+
+# TextProcessor
+let tp = svc.TextProcessor("Hello Arrow")
+print(tp.to_upper())                 # "HELLO ARROW"
+print(tp.word_count())               # 2
+```
+
+### cs-dll との比較
+
+| | `cs-dll` | `cs-proc` |
+|--|----------|-----------|
+| C# コンパイル | NativeAOT 必須 | 通常 .NET (net8.0 等) |
+| 呼び出しオーバーヘッド | 低 (DLL 直接) | 中 (名前付きパイプ IPC) |
+| 安全なコード | unsafe 必須 | 不要 |
+| WinForms / GUI | STA 手動管理 | 子プロセス内で自由 |
+
+### 必要なファイル
+
+| ファイル | 役割 |
+|----------|------|
+| `{Name}.dll` | 管理 DLL (ECMA-335 メタデータ → 型スタブ生成) |
+| `{Name}_proc.exe` または `{Name}.exe` | 子プロセスホスト (IPC ループ) |
+| `{Name}.runtimeconfig.json` | .NET ランタイム設定 |
+
+### プロトコル
+
+通信は**改行区切り JSON (NDJSON)**です。Arrow が要求を送り、ホストが応答します。
+
+```
+Request:  {"id":N,"op":"static"|"new"|"inst"|"quit","cls":"Name","mth":"method","hnd":handle,"args":[...]}
+Response: {"id":N,"ok":<value>} | {"id":N,"err":"message"}
+```
+
+引数タグ: `"i"` = int64、`"f"` = float64、`"b"` = bool、`"s"` = string、`"h"` = ハンドル、`"n"` = null
+
+### C# ホストの作成
+
+`ArrowPipeHost` クラスを使ってホストを実装します：
+
+```csharp
+// Services.cs — public クラスのみが Arrow に公開される
+public class Calculator
+{
+    private long _value;
+    public Calculator(long initial = 0) => _value = initial;
+
+    public static long add(long a, long b) => a + b;
+    public long increment(long n) { _value += n; return _value; }
+    public string get_formatted() => $"Value: {_value}";
+}
+
+// Program.cs — エントリポイント
+var host = new ArrowPipeHost(typeof(Calculator).Assembly);
+host.Run(args);  // args[0] = 名前付きパイプ名
+```
+
+- `ArrowPipeHost` はリフレクションでメソッドを dispatch する汎用クラス
+- `public` クラス/メソッドのみ Arrow に公開される（ECMA-335 パーサーがフィルタ）
+- `ArrowPipeHost` 自体は `internal` にしておくことを推奨
+
+### プロジェクト設定 (`.csproj`)
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- ビルド後に exe / dll / runtimeconfig.json をプロジェクトルートへコピー -->
+  <Target Name="CopyToProjectDir" AfterTargets="Build">
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).exe"       DestinationFolder="$(ProjectDir)" SkipUnchangedFiles="true" Condition="Exists('$(OutputPath)$(AssemblyName).exe')" />
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll"       DestinationFolder="$(ProjectDir)" SkipUnchangedFiles="true" Condition="Exists('$(OutputPath)$(AssemblyName).dll')" />
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).runtimeconfig.json" DestinationFolder="$(ProjectDir)" SkipUnchangedFiles="true" Condition="Exists('$(OutputPath)$(AssemblyName).runtimeconfig.json')" />
+  </Target>
+</Project>
+```
+
+ビルド:
+```bash
+dotnet build -c Debug
+# プロジェクトディレクトリに {Name}.dll / {Name}.exe / {Name}.runtimeconfig.json が生成される
+```
+
+### ファイル検索順
+
+Arrow は以下の順で proc ホストと型スタブを探します：
+
+**型スタブ DLL** (`import[cs-dll]` と共通):
+1. `source_dir / path / to / {Name}.dll`
+2. `source_dir / {Name}.dll`
+3. `source_dir / {Name} / {Name}.dll` (単一セグメント時、パッケージディレクトリ規約)
+
+**proc ホスト exe**:
+1. `{Name}_proc.exe` (専用ホスト)
+2. `{Name}.exe` (自己ホスト exe)
+上記を source_dir → CWD の順で検索
+
+### `ArrowPipeHost` の dispatch 仕組み
+
+```
+Arrow                           C# Host (ArrowPipeHost)
+  │                                   │
+  │── {"op":"new","cls":"Calc"} ──────▶│ Activator.CreateInstance(type, args)
+  │◀── {"id":1,"ok":{"t":"h","v":1}} ─│ → handle=1 を ObjTable に登録
+  │                                   │
+  │── {"op":"inst","hnd":1,"mth":"increment","args":[{"t":"i","v":50}]} ──▶│
+  │                                   │ obj = ObjTable[1]
+  │                                   │ method.Invoke(obj, [50L])
+  │◀── {"id":2,"ok":{"t":"i","v":150}} ──────────────────────────────────│
+```
+
+戻り値の型変換（EncodeResult）：
+- `string` → `{"t":"s","v":"..."}`
+- `int`/`long` → `{"t":"i","v":N}`
+- `double`/`float` → `{"t":"f","v":N}`
+- `bool` → `{"t":"b","v":true/false}`
+- `void`/`null` → `null`
+- その他（参照型）→ ObjTable に登録し `{"t":"h","v":handle}`
 
 ---
 

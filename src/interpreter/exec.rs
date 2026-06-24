@@ -195,34 +195,24 @@ impl Interpreter {
                             .insert(cache_key, ModuleState::Loaded(ns.clone()));
                         ns
                     }
-                } else if lang == "cs-dll" || lang == "cs-proc" {
+                } else if lang == "cs-dll" {
                     let stub_ns = self.exec_module(lang, module, body)?;
                     // Locate the NativeAOT bridge DLL next to the managed DLL.
-                    // The managed DLL was found by the parser using source_dir, which was
-                    // registered in python_search_dirs by main.rs.
-                    // E.g. module ["cs_interop_test","ArrowBridge"] in script at examples/:
-                    //   managed → examples/cs_interop_test/ArrowBridge.dll
-                    //   bridge  → examples/cs_interop_test/ArrowBridge_native.dll
                     let managed_name = module.last().unwrap();
                     let native_dll_name = format!("{managed_name}_native.dll");
-                    // sub-path = module-dir segments (all but last) / ArrowBridge_native.dll
                     let sub_dir: PathBuf = module[..module.len().saturating_sub(1)].iter().collect();
                     let bridge_path = {
                         let mut found: Option<PathBuf> = None;
-                        // Search in every python_search_dir (contains the script's dir)
                         for search_dir in &self.python_search_dirs {
                             let c = search_dir.join(&sub_dir).join(&native_dll_name);
                             if c.exists() { found = Some(c); break; }
-                            // Also try without sub_dir
                             let c2 = search_dir.join(&native_dll_name);
                             if c2.exists() { found = Some(c2); break; }
                         }
-                        // CWD fallback: sub_dir/dll
                         if found.is_none() {
                             let c = sub_dir.join(&native_dll_name);
                             if c.exists() { found = Some(c); }
                         }
-                        // CWD plain fallback
                         if found.is_none() {
                             let c = PathBuf::from(&native_dll_name);
                             if c.exists() { found = Some(c); }
@@ -233,8 +223,6 @@ impl Interpreter {
                         if let Err(e) = super::cs_dll_runtime::load_bridge(bp.as_ref()) {
                             eprintln!("Warning: cs-dll bridge not loaded: {e}");
                         } else {
-                            // Tag every Class in the namespace with the bridge path so the
-                            // instantiator and method dispatcher can find it.
                             let bp_str = bp.to_string_lossy().into_owned();
                             let mut patched = (*stub_ns).clone();
                             for val in patched.members.values_mut() {
@@ -252,6 +240,67 @@ impl Interpreter {
                                 self.declare_var(bind_name, Var::new(Value::Namespace(std::rc::Rc::new(patched)), false));
                                 Ok(ExecResult::Normal)
                             };
+                        }
+                    }
+                    stub_ns
+                } else if lang == "cs-proc" {
+                    let stub_ns = self.exec_module(lang, module, body)?;
+                    // Locate the cs-proc host executable.
+                    // Searches for {Name}_proc.exe first, then {Name}.exe.
+                    let managed_name = module.last().unwrap();
+                    let sub_dir: PathBuf = module[..module.len().saturating_sub(1)].iter().collect();
+                    let proc_path = {
+                        let candidates_names = [
+                            format!("{managed_name}_proc.exe"),
+                            format!("{managed_name}.exe"),
+                        ];
+                        let mut found: Option<PathBuf> = None;
+                        'outer: for name in &candidates_names {
+                            for search_dir in &self.python_search_dirs {
+                                let c = search_dir.join(&sub_dir).join(name);
+                                if c.exists() { found = Some(c); break 'outer; }
+                                let c2 = search_dir.join(name);
+                                if c2.exists() { found = Some(c2); break 'outer; }
+                                // Single-segment: also try source_dir/name_dir/exe_name
+                                if module.len() == 1 {
+                                    let c3 = search_dir.join(managed_name).join(name);
+                                    if c3.exists() { found = Some(c3); break 'outer; }
+                                }
+                            }
+                            let c = sub_dir.join(name);
+                            if c.exists() { found = Some(c); break; }
+                            // Single-segment CWD fallback: managed_name/exe_name
+                            if module.len() == 1 {
+                                let c2 = PathBuf::from(managed_name).join(name);
+                                if c2.exists() { found = Some(c2); break; }
+                            }
+                            let c = PathBuf::from(name);
+                            if c.exists() { found = Some(c); break; }
+                        }
+                        found
+                    };
+                    if let Some(ref pp) = proc_path {
+                        match super::cs_proc_runtime::launch_proc(pp.as_ref()) {
+                            Err(e) => eprintln!("Warning: cs-proc host not started: {e}"),
+                            Ok(()) => {
+                                let pp_str = pp.to_string_lossy().into_owned();
+                                let mut patched = (*stub_ns).clone();
+                                for val in patched.members.values_mut() {
+                                    if let Value::Class(cls) = val {
+                                        let mut new_cls = cls.deep_clone();
+                                        new_cls.class_vars.insert(
+                                            "__cs_proc_path__".to_string(),
+                                            Value::Str(pp_str.clone()),
+                                        );
+                                        *val = Value::Class(std::rc::Rc::new(new_cls));
+                                    }
+                                }
+                                return {
+                                    let bind_name = alias.clone().unwrap_or_else(|| module.last().unwrap().clone());
+                                    self.declare_var(bind_name, Var::new(Value::Namespace(std::rc::Rc::new(patched)), false));
+                                    Ok(ExecResult::Normal)
+                                };
+                            }
                         }
                     }
                     stub_ns
