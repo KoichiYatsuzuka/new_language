@@ -214,6 +214,9 @@ pub enum Expr {
     Bool(bool),
     /// `None` リテラル。
     None,
+    /// `Undefined` リテラル。外部ライブラリのメンバが未定義の場合に用いる特殊型。
+    /// 変数への代入は静的型エラー。条件判定・型アノテーション・引数としてのみ使用可能。
+    Undefined,
     /// 変数参照。スコープチェーンからこの名前の値をルックアップする。
     Ident(String),
     /// リストリテラル `[a, b, c]`。要素の式を順に評価して `Value::List` を生成する。
@@ -420,12 +423,12 @@ pub enum TupleTarget {
 pub enum Stmt {
     /// 式文: 副作用のために式を評価する（例: `print(x)`）。
     Expr(Expr),
-    /// 不変変数宣言: `let x = expr`。宣言後の再代入はエラー。
-    Let(String, Expr),
-    /// 不変定数宣言: `const X = expr`。`let` と同様に不変だが定数であることを明示する。
-    Const(String, Expr),
-    /// 可変変数宣言: `mut x = expr`。宣言後に再代入可能。
-    Mut(String, Expr),
+    /// 不変変数宣言: `let x [: Type] = expr`。宣言後の再代入はエラー。型アノテーションは省略可能。
+    Let(String, Option<String>, Expr),
+    /// 不変定数宣言: `const X [: Type] = expr`。`let` と同様に不変だが定数であることを明示する。
+    Const(String, Option<String>, Expr),
+    /// 可変変数宣言: `mut x [: Type] = expr`。宣言後に再代入可能。
+    Mut(String, Option<String>, Expr),
     /// タプルアンパック宣言: `let x, mut y, _ = expr`。
     /// `_` は末尾に置いて残余要素をすべて破棄する。
     LetTuple {
@@ -620,6 +623,20 @@ pub enum Stmt {
         /// テンプレート型パラメータのリスト（非テンプレートは空リスト）。
         template_params: Vec<TemplateParam>,
         /// トレイト本体の文リスト（抽象メソッドやデフォルト実装を含む）。
+        body: Vec<Stmt>,
+    },
+    /// `protocol` プロトコル定義。静的型検査のみに使用され、インスタンス化・継承は不可。
+    ///
+    /// フィールドとメソッドシグネチャ（`...` 本体）のみを宣言する。
+    /// 型がプロトコルを満たすかは構造的型付けで検査される。
+    ///
+    /// # フィールド
+    /// - `name` : プロトコル名。
+    /// - `body` : プロトコル本体（`Field` と抽象 `FnDef` のみ）。
+    ProtocolDef {
+        /// プロトコル名。
+        name: String,
+        /// プロトコル本体（フィールド宣言と抽象メソッドシグネチャ）。
         body: Vec<Stmt>,
     },
     /// クラス本体内の型付きフィールド宣言。

@@ -38,6 +38,24 @@ impl TypeChecker {
         let method_call_info: Option<(String, String)> =
             if let Expr::Attr { object, attr, span } = func {
                 let obj_ty = self.infer(object);
+
+                // Result[T, E] の is_OK() / is_ERR() は特別扱いして bool を返す。
+                // 他のメソッドやアトリビュートアクセスは OperationOnUnion エラーを発生させる。
+                if let IT::Result(_, _) = &obj_ty {
+                    if (attr == "is_OK" || attr == "is_ERR") && args.is_empty() {
+                        return InferredType::Bool;
+                    } else {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::OperationOnUnion {
+                                union_type: obj_ty.to_string(),
+                                op: format!("method/attribute `{attr}`"),
+                            },
+                            span: Some(span.clone()),
+                        });
+                        return InferredType::Unresolved;
+                    }
+                }
+
                 let cls_name_opt: Option<String> = match &obj_ty {
                     InferredType::NamedInstance(cls) => Some(cls.clone()),
                     InferredType::TypeValOf(inner) => {
@@ -143,6 +161,15 @@ impl TypeChecker {
         }
 
         if let Some(ref fname) = func_name {
+            if self.known_protocols.contains_key(fname.as_str()) {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::ProtocolInstantiation {
+                        protocol_name: fname.clone(),
+                    },
+                    span: None,
+                });
+                return InferredType::Protocol(fname.clone());
+            }
             if self.known_class_names.contains(fname.as_str()) {
                 return InferredType::NamedInstance(fname.clone());
             }
@@ -402,6 +429,23 @@ impl TypeChecker {
                         span: None,
                     });
                 }
+            }
+        }
+
+        // Protocol 型パラメータへの引数の適合チェック
+        let mut pos_idx = 0usize;
+        for (key, arg_ty) in &normal_args {
+            let param_ty_opt = match key {
+                Some(kwarg_name) => sig.params.iter().find(|(n, _)| n == kwarg_name).and_then(|(_, t)| t.clone()),
+                None => {
+                    let t = sig.params.get(pos_idx).and_then(|(_, t)| t.clone());
+                    pos_idx += 1;
+                    t
+                }
+            };
+            if let Some(InferredType::Protocol(proto_name)) = param_ty_opt {
+                let context = format!("argument to `{fname}`");
+                self.check_protocol_conformance(arg_ty, &proto_name, None, &context);
             }
         }
     }

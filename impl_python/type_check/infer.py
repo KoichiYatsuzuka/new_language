@@ -1,11 +1,11 @@
-# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+# git SHA: b614502cff33c6ad5e49427ca347db8ad90c31a5
 """Expression type inference mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..ast import (
     BinOp, UnaryOp,
-    Expr, ExprInt, ExprFloat, ExprStr, ExprBool, ExprNone,
+    Expr, ExprInt, ExprFloat, ExprStr, ExprBool, ExprNone, ExprUndefined,
     ExprIdent, ExprLocalVar, ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
@@ -13,8 +13,8 @@ from ..ast import (
     MatchPatternCase,
 )
 from .types import (
-    TyInt, TyFloat, TyStr, TyBool, TyNone, TyList, TyDict, TySet, TyTuple,
-    TyAny, TyUnion, TyUnresolved, TyNamedInstance,
+    TyInt, TyFloat, TyStr, TyBool, TyNone, TyUndefined, TyList, TyDict, TySet, TyTuple,
+    TyAny, TyUnion, TyResult, TyIntersection, TyUnresolved, TyNamedInstance,
     InferredType, inferred_type_from_ann,
 )
 from .errors import ErrOperationOnAny, ErrOperationOnUnion
@@ -33,19 +33,26 @@ class _TypeCheckerInfer:
             case ExprFloat():    return TyFloat()
             case ExprStr():      return TyStr()
             case ExprBool():     return TyBool()
-            case ExprNone():     return TyNone()
+            case ExprNone():      return TyNone()
+            case ExprUndefined(): return TyUndefined()
             case ExprList():     return TyList()
             case ExprSet():      return TySet()
 
             case ExprTuple(elements=elements):
                 return TyTuple(tuple(self._infer(e) for e in elements))
 
-            case ExprAttr(object=obj):
+            case ExprAttr(object=obj, attr=attr):
                 obj_ty = self._infer(obj)
                 if isinstance(obj_ty, TyAny):
                     self._report(ErrOperationOnAny(op="attribute access"))
+                elif isinstance(obj_ty, TyResult):
+                    # is_OK() / is_ERR() are valid methods on Result — no error
+                    if attr not in ("is_OK", "is_ERR"):
+                        self._report(ErrOperationOnUnion(union_type=str(obj_ty), op="attribute access"))
                 elif isinstance(obj_ty, TyUnion):
                     self._report(ErrOperationOnUnion(union_type=str(obj_ty), op="attribute access"))
+                elif isinstance(obj_ty, TyIntersection):
+                    pass  # intersection member access is allowed without error
                 return TyUnresolved()
 
             case ExprTraitAccess(object=obj):

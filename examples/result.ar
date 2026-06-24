@@ -1,0 +1,30 @@
+fn divide(a: int, b: int) -> Result[int, str]:
+    if b == 0:
+        return Err("division by zero")
+    return Ok(a / b)
+
+let r1: Result[int, str] = divide(10, 2)
+let r2: Result[int, str] = divide(10, 0)
+
+if r1.is_OK():
+    print("r1 OK:", r1)
+
+if r2.is_ERR():
+    print("r2 ERR:", r2)
+
+fn parse_int(s: str) -> Result[int, str]:
+    if s == "":
+        return Err("empty string")
+    return Ok(int(s))
+
+let r3: Result[int, str] = parse_int("42")
+let r4: Result[int, str] = parse_int("")
+
+if r3.is_OK():
+    print("parsed:", r3)
+
+if r4.is_ERR():
+    print("error:", r4)
+
+print("is_OK method:", r1.is_OK())
+print("is_ERR method:", r2.is_ERR())

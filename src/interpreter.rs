@@ -226,6 +226,9 @@ pub struct Interpreter {
     /// トレイト名 → (フィールド名 → アクセス可能性) のマップ（TraitDef 実行時に収集）。
     /// クラスが継承したトレイトフィールドのアクセス制御に使用する。
     pub(self) trait_field_access: HashMap<String, HashMap<String, Accessibility>>,
+    /// プロトコル名 → 必須メンバー名リスト（ProtocolDef 実行時に収集）。
+    /// `is Protocol` 実行時チェックで使用する。
+    pub(self) protocol_required_members: HashMap<String, Vec<String>>,
     /// ロード済みのネイティブ共有ライブラリ。キーは DLL の絶対パス。
     /// ライブラリはインタープリタの生存期間を通じて保持される（アンロードしない）。
     pub(self) native_libs: HashMap<PathBuf, NativeLibWrapper>,
@@ -290,6 +293,7 @@ impl Interpreter {
             static_cells: HashMap::new(),
             current_class: None,
             trait_field_access: HashMap::new(),
+            protocol_required_members: HashMap::new(),
             native_libs: HashMap::new(),
             jit_handles: Vec::new(),
             dbg_vars: HashMap::new(),

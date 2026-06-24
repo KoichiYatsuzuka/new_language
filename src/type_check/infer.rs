@@ -17,6 +17,7 @@ impl TypeChecker {
             Expr::Str(_) => InferredType::Str,
             Expr::Bool(_) => InferredType::Bool,
             Expr::None => InferredType::None,
+            Expr::Undefined => InferredType::Undefined,
             Expr::List(elems) => {
                 if elems.is_empty() {
                     InferredType::List
@@ -63,13 +64,17 @@ impl TypeChecker {
                         },
                         span: Some(span.clone()),
                     }),
-                    InferredType::Union(_) => self.report_error(StaticTypeError {
-                        kind: TypeErrorKind::OperationOnUnion {
-                            union_type: obj_ty.to_string(),
-                            op: "attribute access".to_string(),
-                        },
-                        span: Some(span.clone()),
-                    }),
+                    InferredType::Union(_) | InferredType::Result(_, _) => {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::OperationOnUnion {
+                                union_type: obj_ty.to_string(),
+                                op: "attribute access".to_string(),
+                            },
+                            span: Some(span.clone()),
+                        });
+                    }
+                    // Intersection 型のメンバーアクセスはダウンキャストなしで許可する
+                    InferredType::Intersection(_) => {}
                     _ => {}
                 }
                 if let Some(class_name) = class_name_opt {

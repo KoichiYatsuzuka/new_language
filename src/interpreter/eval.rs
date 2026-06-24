@@ -240,6 +240,7 @@ impl Interpreter {
             Expr::Str(s) => Ok(Value::Str(s.clone())),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::None => Ok(Value::None),
+            Expr::Undefined => Ok(Value::Undefined),
             Expr::Ident(name) => self
                 .get_val(name)
                 .ok_or_else(|| format!("NameError: '{name}' is not defined")),
@@ -540,6 +541,9 @@ impl Interpreter {
             }
             Value::Type(type_name) => {
                 self.eval_type_constructor_call(&type_name, args)
+            }
+            Value::Protocol(proto_name) => {
+                Err(format!("TypeError: protocol '{proto_name}' cannot be instantiated"))
             }
             other => Err(format!("TypeError: '{}' object is not callable", self.type_name(&other))),
         }
@@ -1486,6 +1490,15 @@ impl Interpreter {
                     )),
                     _ => Err("TypeError: len() takes exactly 1 argument".to_string()),
                 }
+            },
+            // Result コンストラクタ: Ok(value) / Err(error)
+            "Ok" => match vals.as_slice() {
+                [v] => Ok(Value::ResultVal { ok: true, inner: Box::new(v.clone()) }),
+                _ => Err("TypeError: Ok() takes exactly 1 argument".to_string()),
+            },
+            "Err" => match vals.as_slice() {
+                [v] => Ok(Value::ResultVal { ok: false, inner: Box::new(v.clone()) }),
+                _ => Err("TypeError: Err() takes exactly 1 argument".to_string()),
             },
             other => Err(format!("TypeError: '{}' object is not callable", other)),
         }

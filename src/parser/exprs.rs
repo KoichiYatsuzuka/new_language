@@ -661,6 +661,10 @@ impl Parser {
                 self.advance();
                 Ok(Expr::None)
             }
+            Token::Undefined => {
+                self.advance();
+                Ok(Expr::Undefined)
+            }
             Token::Any => {
                 self.advance();
                 Ok(Expr::Ident("Any".to_string()))

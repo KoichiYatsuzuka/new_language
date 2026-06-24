@@ -297,8 +297,11 @@ fn run_program(
         .parse_program()
         .map_err(|e| format!("ParseError: {e}"))?;
 
-    // --- 静的型検査: AST を走査してエラーを収集し、1件でもあれば全件報告して終了する ---
-    let type_errors = TypeChecker::check(&stmts);
+    // --- 静的型検査: AST を走査してエラー・警告を収集する ---
+    let (type_errors, type_warnings) = TypeChecker::check_with_warnings(&stmts);
+    for w in &type_warnings {
+        eprintln!("Warning: {w}");
+    }
     if !type_errors.is_empty() {
         return Err(format_static_errors(&type_errors));
     }

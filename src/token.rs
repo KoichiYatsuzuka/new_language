@@ -168,6 +168,9 @@ pub enum Token {
     True,
     False,
     None,
+    /// `Undefined` — 外部ライブラリのメンバが未定義の状態を表す特殊リテラル型。
+    /// 変数への代入は禁止（静的型エラー）。条件判定・型アノテーションのみで使用可能。
+    Undefined,
 
     // Logical operators (keyword form)
     And,
@@ -210,6 +213,7 @@ pub enum Token {
     Class,
     Enum,
     Trait,
+    Protocol,
     Lambda,
     Template,
 
@@ -256,6 +260,8 @@ pub enum Token {
     // Union[T1, T2, ...] and Option[T] type keywords
     Union,
     Option,
+    // Intersection[T1, T2, ...] type keyword
+    Intersection,
 
     // Event handler keywords
     On,   // on
@@ -372,6 +378,7 @@ impl Token {
             Token::True => Some("True"),
             Token::False => Some("False"),
             Token::None => Some("None"),
+            Token::Undefined => Some("Undefined"),
             Token::And => Some("and"),
             Token::Or => Some("or"),
             Token::Not => Some("not"),
@@ -426,6 +433,7 @@ impl Token {
             Token::Any => Some("Any"),
             Token::Union => Some("Union"),
             Token::Option => Some("Option"),
+            Token::Intersection => Some("Intersection"),
             Token::On => Some("on"),
             Token::Off => Some("off"),
             Token::Once => Some("once"),

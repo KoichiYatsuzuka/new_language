@@ -419,6 +419,20 @@ impl Interpreter {
         method_name: &str,
         args: &[CallArg],
     ) -> Result<Value, String> {
+        // Result 型のメソッド: is_OK() → bool、is_ERR() → bool
+        if let Value::ResultVal { ok, .. } = &obj {
+            if !args.is_empty() {
+                return Err(format!("TypeError: Result.{method_name}() takes no arguments"));
+            }
+            return match method_name {
+                "is_OK" => Ok(Value::Bool(*ok)),
+                "is_ERR" => Ok(Value::Bool(!ok)),
+                _ => Err(format!(
+                    "AttributeError: '{}' object has no method '{method_name}'",
+                    self.type_name(&obj)
+                )),
+            };
+        }
         match &obj {
             Value::List(items) => {
                 match method_name {
@@ -1428,6 +1442,16 @@ impl Interpreter {
         method_name: &str,
         evaled: Vec<(Option<String>, Value)>,
     ) -> Result<Value, String> {
+        // Result 型のメソッド: is_OK() → bool、is_ERR() → bool
+        if let Value::ResultVal { ok, .. } = &obj {
+            return match method_name {
+                "is_OK" => Ok(Value::Bool(*ok)),
+                "is_ERR" => Ok(Value::Bool(!ok)),
+                _ => Err(format!(
+                    "AttributeError: Result has no method '{method_name}'"
+                )),
+            };
+        }
         match &obj {
             Value::Instance(inst_rc) => {
                 let class = inst_rc.borrow().class.clone();

@@ -415,6 +415,7 @@ impl<'ctx> GenCtx<'ctx> {
                 (self.i64.const_int(h, false).into(), Ty::Handle)
             }
             Expr::None => (self.i64.const_zero().into(), Ty::Handle),
+            Expr::Undefined => (self.i64.const_zero().into(), Ty::Handle),
 
             Expr::Str(s) => {
                 let bytes = s.as_bytes();
@@ -911,7 +912,7 @@ impl<'ctx> GenCtx<'ctx> {
     /// Returns true if this statement terminates the block (ret, br).
     fn gen_stmt(&mut self, module: &Module<'ctx>, stmt: &Stmt) -> bool {
         match stmt {
-            Stmt::Let(name, expr) | Stmt::Const(name, expr) => {
+            Stmt::Let(name, _, expr) | Stmt::Const(name, _, expr) => {
                 let (v, vt) = self.gen_expr(module, expr);
                 let st  = store_ty(vt);
                 let ptr = self.build_entry_alloca(name, st);
@@ -919,7 +920,7 @@ impl<'ctx> GenCtx<'ctx> {
                 self.locals.insert(name.clone(), (ptr, st));
                 false
             }
-            Stmt::Mut(name, expr) => {
+            Stmt::Mut(name, _, expr) => {
                 let (v, vt) = self.gen_expr(module, expr);
                 let st  = store_ty(vt);
                 let ptr = self.build_entry_alloca(name, st);
@@ -1391,7 +1392,7 @@ fn body_eligible(stmts: &[Stmt]) -> bool { stmts.iter().all(stmt_eligible) }
 
 fn stmt_eligible(stmt: &Stmt) -> bool {
     match stmt {
-        Stmt::Let(_, e) | Stmt::Mut(_, e) | Stmt::Const(_, e) => expr_eligible(e),
+        Stmt::Let(_, _, e) | Stmt::Mut(_, _, e) | Stmt::Const(_, _, e) => expr_eligible(e),
         Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => expr_eligible(value),
         Stmt::AttrAssign { target, value } => expr_eligible(target) && expr_eligible(value),
         Stmt::AttrCompoundAssign { target, value, .. } => expr_eligible(target) && expr_eligible(value),
@@ -1420,7 +1421,7 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
 fn expr_eligible(expr: &Expr) -> bool {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
-        | Expr::Str(_) | Expr::Bool(_) | Expr::None => true,
+        | Expr::Str(_) | Expr::Bool(_) | Expr::None | Expr::Undefined => true,
         Expr::Ident(_) => true,
         Expr::BinOp { left, right, .. } => expr_eligible(left) && expr_eligible(right),
         Expr::UnaryOp { operand, .. } => expr_eligible(operand),
@@ -1476,6 +1477,10 @@ pub fn compile_jit(stmts: &[crate::ast::Stmt])
     let eligible: Vec<EligibleFn> = stmts.iter().filter_map(|s| {
         if let Stmt::FnDef { name, template_params, params, body, is_abstract, return_type, .. } = s {
             if !template_params.is_empty() || *is_abstract || !body_eligible(body) {
+                return None;
+            }
+            if params.iter().any(|p| p.type_ann.as_deref().map_or(false, |a| a.contains("Intersection[")))
+                || return_type.as_deref().map_or(false, |a| a.contains("Intersection[")) {
                 return None;
             }
             Some(EligibleFn { name, params, return_type: return_type.as_deref(), body })
@@ -1591,6 +1596,10 @@ pub fn get_bitcode(stmts: &[crate::ast::Stmt]) -> Result<(Vec<u8>, Vec<crate::pa
     let eligible: Vec<EligibleFn> = stmts.iter().filter_map(|s| {
         if let Stmt::FnDef { name, template_params, params, body, is_abstract, return_type, .. } = s {
             if !template_params.is_empty() || *is_abstract || !body_eligible(body) {
+                return None;
+            }
+            if params.iter().any(|p| p.type_ann.as_deref().map_or(false, |a| a.contains("Intersection[")))
+                || return_type.as_deref().map_or(false, |a| a.contains("Intersection[")) {
                 return None;
             }
             Some(EligibleFn { name, params, return_type: return_type.as_deref(), body })

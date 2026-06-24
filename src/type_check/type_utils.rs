@@ -6,6 +6,24 @@ use super::types::InferredType;
 use super::TypeChecker;
 
 impl TypeChecker {
+    /// `Result[T, E]` 型で T == E の場合に静的エラーを記録する。
+    pub(super) fn validate_result_type(
+        &mut self,
+        ok_ty: &InferredType,
+        err_ty: &InferredType,
+        span: Option<crate::token::Span>,
+    ) {
+        if ok_ty == err_ty {
+            self.report_error(super::errors::StaticTypeError {
+                kind: super::errors::TypeErrorKind::ResultSameTypes {
+                    ok_type: ok_ty.clone(),
+                    err_type: err_ty.clone(),
+                },
+                span,
+            });
+        }
+    }
+
     /// 引数型 `arg_ty` がパラメータの期待型 `expected` と互換性があるかを判定する。
     pub(super) fn type_matches(&self, arg_ty: &InferredType, expected: &InferredType) -> bool {
         if *arg_ty == InferredType::Unresolved {
@@ -16,6 +34,16 @@ impl TypeChecker {
         }
         if arg_ty == expected {
             return true;
+        }
+        // Protocol 型パラメータ: 適合チェックは別途実施するため、ここでは基本的に受け入れる
+        if let InferredType::Protocol(proto_name) = expected {
+            return matches!(
+                arg_ty,
+                InferredType::NamedInstance(_) | InferredType::Protocol(_) | InferredType::Any
+            ) || {
+                let _ = proto_name;
+                false
+            };
         }
         if *expected == InferredType::TypeVal {
             return matches!(arg_ty, InferredType::TypeValOf(_) | InferredType::TypeVal);
@@ -65,11 +93,25 @@ impl TypeChecker {
         if let InferredType::Union(union_types) = expected {
             return union_types.iter().any(|ut| self.type_matches(arg_ty, ut));
         }
+        // Intersection型: arg_ty がすべての構成型にマッチする必要がある
+        if let InferredType::Intersection(isect_types) = expected {
+            return isect_types.iter().all(|it| self.type_matches(arg_ty, it));
+        }
+        // arg_ty が Intersection の場合: arg_ty のいずれかの構成型が expected にマッチすれば可
+        if let InferredType::Intersection(isect_types) = arg_ty {
+            return isect_types.iter().any(|it| self.type_matches(it, expected));
+        }
         if let InferredType::NamedInstance(class_name) = arg_ty {
             let expected_name = expected.to_string();
             let cast_key = format!("__cast__[{}]", expected_name);
             if let Some(methods) = self.class_method_sigs.get(class_name.as_str()) {
                 if methods.contains_key(&cast_key) {
+                    return true;
+                }
+            }
+            // Check class/trait inheritance: Duck(Flyable, Swimmable) satisfies Flyable
+            if let InferredType::NamedInstance(_) = expected {
+                if self.class_implements_trait(class_name, &expected_name) {
                     return true;
                 }
             }

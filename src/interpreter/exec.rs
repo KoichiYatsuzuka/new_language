@@ -39,6 +39,26 @@ fn extract_list_elem_type(ann: &str) -> Option<&str> {
     Some(inner.trim())
 }
 
+/// `x.is_OK()` / `x.is_ERR()` の形式の式から `(変数名, is_ok_flag)` を抽出する。
+/// Result ガード節の変数バインディングに使う。
+fn extract_result_guard_call(cond: &Expr) -> Option<(String, bool)> {
+    if let Expr::Call { func, args, .. } = cond {
+        if !args.is_empty() {
+            return None;
+        }
+        if let Expr::Attr { object, attr, .. } = func.as_ref() {
+            if let Expr::Ident(var_name) = object.as_ref() {
+                match attr.as_str() {
+                    "is_OK" => return Some((var_name.clone(), true)),
+                    "is_ERR" => return Some((var_name.clone(), false)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    None
+}
+
 impl Interpreter {
     /// 文（`Stmt`）を実行して `ExecResult` を返す。各 Stmt バリアントを専用メソッドに委譲する。
     pub fn exec(&mut self, stmt: &Stmt) -> Result<ExecResult, String> {
@@ -55,13 +75,13 @@ impl Interpreter {
                 self.eval(expr)?;
                 Ok(ExecResult::Normal)
             }
-            Stmt::Let(name, expr) => self.exec_let(name, expr),
-            Stmt::Const(name, expr) => {
+            Stmt::Let(name, _, expr) => self.exec_let(name, expr),
+            Stmt::Const(name, _, expr) => {
                 let value = self.eval(expr)?;
                 self.declare_var(name.clone(), Var::new(value, false));
                 Ok(ExecResult::Normal)
             }
-            Stmt::Mut(name, expr) => {
+            Stmt::Mut(name, _, expr) => {
                 let value = Self::deep_copy_value(self.eval(expr)?);
                 self.declare_var(name.clone(), Var::new(value, true));
                 Ok(ExecResult::Normal)
@@ -157,6 +177,7 @@ impl Interpreter {
                 ..
             } => self.exec_gen_def(name, template_params, params, body),
             Stmt::TraitDef { name, body, .. } => self.exec_trait_def(name, body),
+            Stmt::ProtocolDef { name, body } => self.exec_protocol_def(name, body),
             Stmt::NewTypeDef { name, original } => self.exec_new_type_def(name, original),
             Stmt::EnumDef { name, variants } => self.exec_enum_def(name, variants),
             Stmt::ClassDef {
@@ -546,8 +567,28 @@ impl Interpreter {
         else_body: &Option<Vec<Stmt>>,
     ) -> Result<ExecResult, String> {
         for (cond, body) in branches {
+            // Result ガード検出: `x.is_OK()` / `x.is_ERR()` の形式を確認する
+            let result_rebind: Option<(String, bool)> = extract_result_guard_call(cond);
+
             let val = self.eval(cond)?;
             if self.eval_truthy(&val)? {
+                // ガード節なら x を内部値（unwrap済み）に差し替えたスコープでボディを実行する
+                if let Some((var_name, _is_ok)) = result_rebind {
+                    let rebind_info = self.get_var(&var_name).and_then(|rv| {
+                        if let Value::ResultVal { inner, .. } = rv.get_value() {
+                            Some((*inner, rv.is_mutable()))
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some((inner_val, is_mut)) = rebind_info {
+                        self.push_scope();
+                        self.declare_var(var_name, Var::new(inner_val, is_mut));
+                        let result = self.exec_block(body);
+                        self.pop_scope();
+                        return result;
+                    }
+                }
                 return self.exec_scoped_block(body);
             }
         }
@@ -860,6 +901,26 @@ impl Interpreter {
         self.declare_var(
             name.to_string(),
             Var::new(Value::Trait(name.to_string()), false),
+        );
+        Ok(ExecResult::Normal)
+    }
+
+    /// `protocol` 定義を実行してプロトコル値をスコープに登録する。
+    /// プロトコルは静的型チェック専用で、インスタンス化できない。
+    fn exec_protocol_def(&mut self, name: &str, body: &[Stmt]) -> Result<ExecResult, String> {
+        // 必須メンバー名を収集（is Protocol 実行時チェック用）
+        let mut members: Vec<String> = Vec::new();
+        for s in body {
+            match s {
+                Stmt::Field { name: fname, .. } => members.push(fname.clone()),
+                Stmt::FnDef { name: mname, .. } => members.push(mname.clone()),
+                _ => {}
+            }
+        }
+        self.protocol_required_members.insert(name.to_string(), members);
+        self.declare_var(
+            name.to_string(),
+            Var::new(Value::Protocol(name.to_string()), false),
         );
         Ok(ExecResult::Normal)
     }
@@ -2320,9 +2381,9 @@ fn simple_hash(s: &str) -> u64 {
 fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
     for stmt in stmts {
         match stmt {
-            Stmt::Let(name, _)
-            | Stmt::Const(name, _)
-            | Stmt::Mut(name, _)
+            Stmt::Let(name, _, _)
+            | Stmt::Const(name, _, _)
+            | Stmt::Mut(name, _, _)
             | Stmt::Static(name, _, _) => {
                 out.insert(name.clone());
             }
@@ -2339,7 +2400,8 @@ fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
             Stmt::FnDef { name, .. }
             | Stmt::GenDef { name, .. }
             | Stmt::ClassDef { name, .. }
-            | Stmt::TraitDef { name, .. } => {
+            | Stmt::TraitDef { name, .. }
+            | Stmt::ProtocolDef { name, .. } => {
                 out.insert(name.clone());
             }
             Stmt::For { targets, body, .. } => {
@@ -2392,7 +2454,7 @@ fn collect_referenced_names(stmts: &[Stmt], out: &mut HashSet<String>) {
 fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
     match stmt {
         Stmt::Expr(e) => collect_refs_expr(e, out),
-        Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Mut(_, e) | Stmt::Static(_, e, _) => {
+        Stmt::Let(_, _, e) | Stmt::Const(_, _, e) | Stmt::Mut(_, _, e) | Stmt::Static(_, e, _) => {
             collect_refs_expr(e, out);
         }
         Stmt::LetTuple { value, .. } => {
@@ -2438,7 +2500,7 @@ fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
         Stmt::FnDef { body, .. } | Stmt::GenDef { body, .. } => {
             collect_referenced_names(body, out);
         }
-        Stmt::ClassDef { body, .. } | Stmt::TraitDef { body, .. } => {
+        Stmt::ClassDef { body, .. } | Stmt::TraitDef { body, .. } | Stmt::ProtocolDef { body, .. } => {
             collect_referenced_names(body, out);
         }
         Stmt::Try {

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::ast::{Accessibility, Expr};
 use crate::token::Span;
 
-use super::errors::{StaticTypeError, TypeErrorKind};
+use super::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind};
 use super::types::{InferredType, VarInfo};
 use super::TypeChecker;
 
@@ -38,6 +38,11 @@ impl TypeChecker {
     /// 静的型エラーをエラーリストに追加する。
     pub(super) fn report_error(&mut self, err: StaticTypeError) {
         self.errors.push(err);
+    }
+
+    /// 静的型警告を警告リストに追加する。
+    pub(super) fn report_warning(&mut self, w: StaticTypeWarning) {
+        self.warnings.push(w);
     }
 
     /// サブスクリプトチェーン `x[i][j]...` のルート識別子名を返す。

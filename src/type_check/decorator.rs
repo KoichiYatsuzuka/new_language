@@ -142,6 +142,7 @@ impl TypeChecker {
             "str" => InferredType::Str,
             "bool" => InferredType::Bool,
             "None" => InferredType::None,
+            "Undefined" => InferredType::Undefined,
             other => InferredType::NamedInstance(other.to_string()),
         }
     }

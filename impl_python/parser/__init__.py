@@ -32,6 +32,7 @@ class Parser(_ParserStmts, _ParserExprs, _ParserClasses, _ParserImports, _Parser
         self._tokens = tokens
         self._pos = 0
         self._known_traits: dict[str, tuple[list[TemplateParam], list, list[str]]] = {}
+        self._known_protocols: dict[str, bool] = {}
         # Pre-register built-in Error trait
         self._known_traits["Error"] = (
             [],

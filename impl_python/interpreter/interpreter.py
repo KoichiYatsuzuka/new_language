@@ -1,4 +1,4 @@
-﻿# git SHA: a027318e6f5a4813fdb8a64de1d25ad2115a4a8f
+﻿# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
 """Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
@@ -7,7 +7,7 @@ from typing import Optional, TYPE_CHECKING
 
 from ..ast import (
     # Expressions
-    ExprInt, ExprFloat, ExprImaginaryLit, ExprStr, ExprBool, ExprNone, ExprIdent,
+    ExprInt, ExprFloat, ExprImaginaryLit, ExprStr, ExprBool, ExprNone, ExprUndefined, ExprIdent,
     ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
@@ -18,7 +18,7 @@ from ..ast import (
     StmtIf, StmtMatch, StmtWhile, StmtFor, StmtBlock,
     StmtReturn, StmtBreak, StmtContinue, StmtPass,
     StmtBlockReturn, StmtLoopYield, StmtYield, StmtFreeze,
-    StmtFnDef, StmtGenDef, StmtClassDef, StmtTraitDef, StmtField,
+    StmtFnDef, StmtGenDef, StmtClassDef, StmtTraitDef, StmtProtocolDef, StmtField,
     StmtNewTypeDef, StmtEnumDef, StmtTry, StmtRaise,
     StmtImport, StmtFromImport, StmtLetTuple, StmtAsyncAssign,
     StmtEventSubscribe, StmtEventUnsubscribe,
@@ -29,13 +29,13 @@ from ..ast import (
     TupleTargetLet, TupleTargetMut, TupleTargetBare, TupleTargetWildcard,
 )
 from .value import (
-    Value, MISSING,
+    Value, MISSING, UNDEFINED,
     TlList, TlFixedList, TlDict, TlTuple, TlSet,
     TlFunction, TlOverloadedFn, TlGeneratorFn, TlGenerator,
     TlTemplateFn, TlTemplateGenFn, TlTemplateClass,
-    TlClass, TlInstance, TlType, TlTrait,
+    TlClass, TlInstance, TlType, TlTrait, TlProtocol,
     TlNamespace, TlSlice, TlFileObject, TlComplex,
-    TlSignal, TlEventLoop,
+    TlSignal, TlEventLoop, TlResultVal,
     CapturedImm, CapturedMut,
     type_name, display, is_truthy, _values_equal, deep_clone, deep_clone_unfrozen, _repr_val,
 )
@@ -128,6 +128,7 @@ class Interpreter:
         # known_classes is shared and updated as classes are defined
         self._known_classes: dict[str, Value] = {}
         self._known_traits: dict[str, TlTrait] = {}
+        self._protocol_required_members: dict[str, list[str]] = {}
         # current_class: name of class being executed for access-control checks
         self._current_class: Optional[str] = None
         self._current_method: Optional[str] = None
@@ -253,9 +254,23 @@ class Interpreter:
 
             case StmtIf(branches=branches, else_body=else_body):
                 for cond_expr, body in branches:
+                    # Result guard detection: x.is_OK() / x.is_ERR()
+                    result_rebind: "Optional[tuple[str, Value, bool]]" = None
+                    if (isinstance(cond_expr, ExprCall) and not cond_expr.args
+                            and isinstance(cond_expr.func, ExprAttr)
+                            and isinstance(cond_expr.func.object, ExprIdent)
+                            and cond_expr.func.attr in ("is_OK", "is_ERR")):
+                        vname = cond_expr.func.object.name
+                        if self._env.contains(vname):
+                            rv_val, is_mut = self._env.get_info(vname)
+                            if isinstance(rv_val, TlResultVal):
+                                result_rebind = (vname, rv_val.inner, is_mut)
                     if self._eval_truthy(self.eval(cond_expr)):
                         self._env.push_scope()
                         try:
+                            if result_rebind is not None:
+                                vn, inner_val, is_mut = result_rebind
+                                self._env.declare(vn, inner_val, mutable=is_mut)
                             self.exec_stmts(body)
                         finally:
                             self._env.pop_scope()
@@ -405,6 +420,17 @@ class Interpreter:
                 self._env.declare(name, trait, mutable=False)
                 self._known_traits[name] = trait
 
+            case StmtProtocolDef(name=name, body=body):
+                members: list[str] = []
+                for s in body:
+                    if isinstance(s, StmtField):
+                        members.append(s.name)
+                    elif isinstance(s, (StmtFnDef,)):
+                        members.append(s.name)
+                self._protocol_required_members[name] = members
+                proto = TlProtocol(name=name)
+                self._env.declare(name, proto, mutable=False)
+
             case StmtNewTypeDef(name=name, original=original):
                 cls = self._build_new_type(name, original)
                 self._env.declare(name, cls, mutable=False)
@@ -474,6 +500,7 @@ class Interpreter:
             case ExprStr(value=v): return v
             case ExprBool(value=v): return v
             case ExprNone(): return None
+            case ExprUndefined(): return UNDEFINED
 
             case ExprIdent(name=name):
                 return self._env.get(name)
@@ -830,7 +857,9 @@ class Interpreter:
     # ------------------------------------------------------------------
 
     def _eval_attr(self, obj: Value, attr: str) -> Value:
-        from .value import TlCsObject
+        from .value import TlCsObject, TlResultVal
+        if isinstance(obj, TlResultVal):
+            raise RuntimeError(f"AttributeError: Result value has no attribute '{attr}'; use is_OK() or is_ERR() first")
         if isinstance(obj, TlInstance):
             return self._get_instance_attr(obj, attr)
         if isinstance(obj, TlClass):
@@ -1068,6 +1097,8 @@ class Interpreter:
             return self._exec_generator(func, args, kwargs)
         if isinstance(func, TlTemplateFn):
             raise RuntimeError("TypeError: cannot call template function without type arguments")
+        if isinstance(func, TlProtocol):
+            raise RuntimeError(f"TypeError: protocol '{func.name}' cannot be instantiated")
         if isinstance(func, TlClass):
             return self._instantiate_class(func, args, kwargs)
         if isinstance(func, _NativeCallable):
@@ -1079,7 +1110,15 @@ class Interpreter:
         raise RuntimeError(f"TypeError: '{type_name(func)}' object is not callable")
 
     def _call_attr(self, obj: Value, attr: str, args: list, kwargs: dict) -> Value:
-        from .value import TlCsObject
+        from .value import TlCsObject, TlResultVal
+        if isinstance(obj, TlResultVal):
+            if args or kwargs:
+                raise RuntimeError(f"TypeError: Result.{attr}() takes no arguments")
+            if attr == "is_OK":
+                return obj.ok
+            if attr == "is_ERR":
+                return not obj.ok
+            raise RuntimeError(f"AttributeError: Result value has no method '{attr}'")
         if isinstance(obj, TlInstance):
             return self._call_method(obj, attr, args, kwargs)
         if isinstance(obj, TlClass):
@@ -1585,7 +1624,17 @@ class Interpreter:
     # ------------------------------------------------------------------
 
     def _is_type(self, val: Value, tname: str) -> bool:
+        # Protocol structural check
+        if tname in self._protocol_required_members:
+            required = self._protocol_required_members[tname]
+            if isinstance(val, TlInstance):
+                return all(
+                    m in val.fields or m in val.cls.methods
+                    for m in required
+                )
+            return False
         if tname == "None": return val is None
+        if tname == "Undefined": return val is UNDEFINED
         if tname == "int": return isinstance(val, int) and not isinstance(val, bool)
         if tname == "float": return isinstance(val, float)
         if tname == "complex": return isinstance(val, TlComplex)

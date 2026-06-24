@@ -733,6 +733,9 @@ pub enum Value {
     Bool(bool),
     /// `None` リテラル。Python の `None` に相当する。
     None,
+    /// `Undefined` リテラル。外部ライブラリのメンバが未定義の状態を表す特殊値。
+    /// 変数への代入は静的型エラー。条件判定（`x is Undefined`）と引数としてのみ使用可能。
+    Undefined,
     /// 可変長リスト値。要素は任意の型を混在できる。`Rc<RefCell<...>>` により共有・可変参照する。
     List(Rc<RefCell<Vec<Value>>>),
     /// フラット固定長リスト。全要素が同一クラスかつ全フィールドが int/float。
@@ -752,6 +755,8 @@ pub enum Value {
     Type(String),
     /// 宣言された trait の実行時表現。
     Trait(String),
+    /// 宣言された protocol の実行時表現（型チェック専用; インスタンス化は不可）。
+    Protocol(String),
     /// 型変数でパラメータ化された未実体化のテンプレート関数。
     TemplateFn(Rc<TemplateFnValue>),
     /// 型変数でパラメータ化された未実体化のテンプレートクラス。
@@ -793,6 +798,9 @@ pub enum Value {
     EventLoop(Rc<RefCell<super::event_loop::EventLoopData>>),
     /// import[cs-dll] で生成される C# オブジェクトのハンドル。
     CsObject(Rc<CsObjectData>),
+    /// `Result[T, E]` 値。`Ok(value)` または `Err(error)` で生成される。
+    /// `ok: true` → Ok 側の値、`ok: false` → Err 側の値。
+    ResultVal { ok: bool, inner: Box<Value> },
 }
 
 /// import[cs-dll] / import[cs-proc] ブリッジが管理する C# オブジェクトのランタイム表現。
@@ -915,6 +923,7 @@ impl Value {
             Value::Str(s) => Value::Str(s.clone()),
             Value::Bool(b) => Value::Bool(*b),
             Value::None => Value::None,
+            Value::Undefined => Value::Undefined,
             Value::List(rc) => {
                 let v = rc.borrow().iter().map(|x| x.deep_clone()).collect();
                 Value::List(Rc::new(RefCell::new(v)))
@@ -1030,6 +1039,10 @@ impl Value {
             // Arc-wrapped types: atomic refcount, safe to share across threads
             Value::PyObject(arc) => Value::PyObject(Arc::clone(arc)),
             Value::NativeFunction(arc) => Value::NativeFunction(Arc::clone(arc)),
+            Value::ResultVal { ok, inner } => Value::ResultVal {
+                ok: *ok,
+                inner: Box::new(inner.deep_clone()),
+            },
             // Primitive type tags, async values — just clone
             other => other.clone(),
         }

@@ -572,6 +572,7 @@ impl<'a> GenCtx<'a> {
             Expr::Float(f)  => (fmt_float(*f), Ty::Float),
             Expr::Bool(b)   => (if *b { "1" } else { "2" }.to_string(), Ty::Handle), // TL_TRUE / TL_FALSE
             Expr::None      => ("0".to_string(), Ty::Handle),
+            Expr::Undefined => ("0".to_string(), Ty::Handle),
             Expr::Str(s) => {
                 let bytes = s.as_bytes();
                 let ptr   = self.str_const(bytes);
@@ -1469,7 +1470,7 @@ impl<'a> GenCtx<'a> {
 
     fn gen_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let(name, expr) | Stmt::Const(name, expr) => {
+            Stmt::Let(name, _, expr) | Stmt::Const(name, _, expr) => {
                 let (v, vt) = self.gen_expr(expr);
                 let st = store_ty(vt);
                 let ptr = self.alloca_var(name, st);
@@ -1480,7 +1481,7 @@ impl<'a> GenCtx<'a> {
                 };
                 self.store_val(st, &coerced, &ptr.clone());
             }
-            Stmt::Mut(name, expr) => {
+            Stmt::Mut(name, _, expr) => {
                 let (v, vt) = self.gen_expr(expr);
                 let st  = store_ty(vt);
                 let ptr = self.alloca_var(name, st);
@@ -2276,7 +2277,7 @@ fn stmt_has_loop_yield(stmt: &Stmt) -> bool {
 
 fn stmt_eligible(stmt: &Stmt) -> bool {
     match stmt {
-        Stmt::Let(_, e) | Stmt::Mut(_, e) | Stmt::Const(_, e) => expr_eligible(e),
+        Stmt::Let(_, _, e) | Stmt::Mut(_, _, e) | Stmt::Const(_, _, e) => expr_eligible(e),
         Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => expr_eligible(value),
         Stmt::AttrAssign { target, value } => expr_eligible(target) && expr_eligible(value),
         Stmt::AttrCompoundAssign { target, value, .. } => expr_eligible(target) && expr_eligible(value),
@@ -2311,7 +2312,7 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
 fn expr_eligible(expr: &Expr) -> bool {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
-        | Expr::Str(_) | Expr::Bool(_) | Expr::None => true,
+        | Expr::Str(_) | Expr::Bool(_) | Expr::None | Expr::Undefined => true,
         Expr::Ident(_) => true,
         Expr::BinOp { left, right, .. } => expr_eligible(left) && expr_eligible(right),
         Expr::UnaryOp { operand, .. } => expr_eligible(operand),
@@ -2417,6 +2418,12 @@ fn stmt_eligible_gen(stmt: &Stmt) -> bool {
     }
 }
 
+fn ann_has_intersection(params: &[crate::ast::Param], return_type: Option<&str>) -> bool {
+    params.iter().any(|p| {
+        p.type_ann.as_deref().map_or(false, |ann| ann.contains("Intersection["))
+    }) || return_type.map_or(false, |ann| ann.contains("Intersection["))
+}
+
 pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
     struct EligibleFn<'a> {
         /// Symbol prefix used in the DLL (e.g. "dot" or "Vec2D__dot").
@@ -2437,6 +2444,7 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
         match s {
             Stmt::FnDef { name, template_params, params, body, is_abstract, return_type, .. } => {
                 if !template_params.is_empty() || *is_abstract || !body_eligible(body) { continue; }
+                if ann_has_intersection(params, return_type.as_deref()) { continue; }
                 eligible.push(EligibleFn {
                     symbol: name.clone(), orig_name: name, class_name: None,
                     params, return_type: return_type.as_deref(), body, is_gen: false,
@@ -2444,6 +2452,7 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
             }
             Stmt::GenDef { name, template_params, params, body, .. } => {
                 if !template_params.is_empty() || !body_eligible_gen(body) { continue; }
+                if ann_has_intersection(params, None) { continue; }
                 eligible.push(EligibleFn {
                     symbol: name.clone(), orig_name: name, class_name: None,
                     params, return_type: None, body, is_gen: true,
@@ -2455,6 +2464,7 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
                     match method_stmt {
                         Stmt::FnDef { name: mname, template_params: mtp, params, body, is_abstract, return_type, .. } => {
                             if !mtp.is_empty() || *is_abstract || !body_eligible(body) { continue; }
+                            if ann_has_intersection(params, return_type.as_deref()) { continue; }
                             eligible.push(EligibleFn {
                                 symbol: method_symbol(class_name, mname),
                                 orig_name: mname,
@@ -2464,6 +2474,7 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
                         }
                         Stmt::GenDef { name: mname, template_params: mtp, params, body, .. } => {
                             if !mtp.is_empty() || !body_eligible_gen(body) { continue; }
+                            if ann_has_intersection(params, None) { continue; }
                             eligible.push(EligibleFn {
                                 symbol: method_symbol(class_name, mname),
                                 orig_name: mname,

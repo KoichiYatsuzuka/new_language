@@ -54,6 +54,7 @@ impl Interpreter {
             Value::Complex(re, im) => *re != 0.0 || *im != 0.0,
             Value::Str(s) => !s.is_empty(),
             Value::None => false,
+            Value::Undefined => false,
             Value::List(items) => !items.borrow().is_empty(),
             Value::FrozenList { state, .. } => state.borrow().len > 0,
             Value::Dict(d) => !d.borrow().is_empty(),
@@ -66,6 +67,7 @@ impl Interpreter {
             | Value::Instance(_)
             | Value::Type(_)
             | Value::Trait(_)
+            | Value::Protocol(_)
             | Value::TemplateFn(_)
             | Value::TemplateClass(_)
             | Value::GeneratorFn(_)
@@ -80,7 +82,8 @@ impl Interpreter {
             | Value::AsyncStatusVal(_)
             | Value::Signal(_)
             | Value::EventLoop(_)
-            | Value::CsObject(_) => true,
+            | Value::CsObject(_)
+            | Value::ResultVal { .. } => true,
         }
     }
 
@@ -98,11 +101,13 @@ impl Interpreter {
             Value::Str(_) => "str",
             Value::Bool(_) => "bool",
             Value::None => "NoneType",
+            Value::Undefined => "Undefined",
             Value::List(_) => "list",
             Value::FrozenList { .. } => "fixed_list",
             Value::Function(_) | Value::OverloadedFn(_) => "function",
             Value::Class(_) | Value::Type(_) => "type",
             Value::Trait(_) => "trait",
+            Value::Protocol(_) => "protocol",
             Value::Instance(_) => "object",
             Value::TemplateFn(_) | Value::TemplateClass(_) => "template",
             Value::GeneratorFn(_) | Value::TemplateGenFn(_) => "gen_function",
@@ -123,6 +128,9 @@ impl Interpreter {
                 let _ = o;
                 "cs_object"
             }
+            Value::ResultVal { ok, .. } => {
+                if *ok { "Ok" } else { "Err" }
+            }
         }
     }
 
@@ -137,6 +145,7 @@ impl Interpreter {
         match ann {
             "Any" => true,
             "None" => matches!(val, Value::None),
+            "Undefined" => matches!(val, Value::Undefined),
             "int" => matches!(val, Value::Int(_)),
             "uint" => matches!(val, Value::UInt(_)),
             "float" => matches!(val, Value::Float(_)),
@@ -196,6 +205,16 @@ impl Interpreter {
     /// - インスタンス: クラス名または `bases`（実装 trait・基底クラス）に含まれるか確認する。
     /// - `None` 値: `type_name == "None"` の場合のみ `true`。
     pub(super) fn value_is_type(&self, val: &Value, type_name: &str) -> bool {
+        // Protocol の実行時チェック: 必須メンバー名が全て存在するか確認する
+        if let Some(required) = self.protocol_required_members.get(type_name) {
+            if let Value::Instance(inst_rc) = val {
+                let inst = inst_rc.borrow();
+                return required
+                    .iter()
+                    .all(|m| inst.fields.contains_key(m) || inst.class.methods.contains_key(m));
+            }
+            return false;
+        }
         match val {
             Value::Int(_) => type_name == "int",
             Value::UInt(_) => type_name == "uint",
@@ -204,6 +223,7 @@ impl Interpreter {
             Value::Str(_) => type_name == "str",
             Value::Bool(_) => type_name == "bool",
             Value::None => type_name == "None",
+            Value::Undefined => type_name == "Undefined",
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
                 inst.class.name == type_name || inst.class.bases.contains(&type_name.to_string())
@@ -257,6 +277,7 @@ impl Interpreter {
             Value::Str(s) => s.clone(),
             Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
             Value::None => "None".to_string(),
+            Value::Undefined => "Undefined".to_string(),
             Value::List(items) => {
                 let parts: Vec<String> = items
                     .borrow()
@@ -288,6 +309,7 @@ impl Interpreter {
             }
             Value::Type(name) => format!("<class '{name}'>"),
             Value::Trait(name) => format!("<trait '{name}'>"),
+            Value::Protocol(name) => format!("<protocol '{name}'>"),
             Value::TemplateFn(t) => format!("<template function '{}'>", t.name),
             Value::TemplateClass(t) => format!("<template class '{}'>", t.name),
             Value::GeneratorFn(gf) => format!("<generator function '{}'>", gf.name),
@@ -387,6 +409,13 @@ impl Interpreter {
             }
             Value::EventLoop(_) => "<EventLoop>".to_string(),
             Value::CsObject(o) => format!("<CsObject '{}' handle={}>", o.class_name, o.handle),
+            Value::ResultVal { ok, inner } => {
+                if *ok {
+                    format!("Ok({})", self.display(inner))
+                } else {
+                    format!("Err({})", self.display(inner))
+                }
+            }
             Value::FrozenList { state, layout } => {
                 let st = state.borrow();
                 let parts: Vec<String> = (0..st.len)
@@ -968,6 +997,7 @@ impl Interpreter {
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::None, Value::None) => true,
+            (Value::Undefined, Value::Undefined) => true,
             // インスタンスの等値判定:
             // enum バリアント (class name が "enum_item_" で始まる) はフィールド値で比較する。
             // それ以外のインスタンスは参照の同一性を先に確認し、

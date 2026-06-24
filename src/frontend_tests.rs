@@ -352,7 +352,7 @@ mod parser_tests {
     #[test]
     fn test_freeze_stmt() {
         let stmts = parse("mut x = 5\nfreeze x\n");
-        assert!(matches!(&stmts[0], Stmt::Mut(name, ..) if name == "x"));
+        assert!(matches!(&stmts[0], Stmt::Mut(name, ..) if name == "x")); // ..: ignores type_ann field
         assert!(matches!(&stmts[1], Stmt::Freeze(name, ..) if name == "x"));
     }
 
@@ -370,14 +370,14 @@ mod parser_tests {
     #[test]
     fn test_let_decl() {
         let stmts = parse("let x = 10");
-        assert!(matches!(&stmts[0], Stmt::Let(name, Expr::Int(10)) if name == "x"));
+        assert!(matches!(&stmts[0], Stmt::Let(name, _, Expr::Int(10)) if name == "x"));
     }
 
     /// mut_decl のテスト。
     #[test]
     fn test_mut_decl() {
         let stmts = parse("mut y = 3.14");
-        assert!(matches!(&stmts[0], Stmt::Mut(name, Expr::Float(_)) if name == "y"));
+        assert!(matches!(&stmts[0], Stmt::Mut(name, _, Expr::Float(_)) if name == "y"));
     }
 
     /// assign のテスト。

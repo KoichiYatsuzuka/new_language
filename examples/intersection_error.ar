@@ -1,0 +1,31 @@
+# Intersection type error examples
+
+trait Flyable:
+    fn fly(self) -> str:
+        ...
+
+trait Swimmable:
+    fn swim(self) -> str:
+        ...
+
+trait Runnable:
+    fn run(self) -> str:
+        ...
+
+class Bird(Flyable, Runnable):
+    fn fly(self) -> str:
+        return "flying"
+
+    fn run(self) -> str:
+        return "running"
+
+# ERROR: type guard with a type that does not satisfy all intersection constraints.
+# Bird implements Flyable and Runnable but NOT Swimmable.
+let x: Intersection[Flyable, Swimmable] = Bird()
+if x is Bird:
+    print(x.fly())
+
+# ERROR: is not on Intersection is treated like is not on non-Union (static error)
+let y: Intersection[Flyable, Runnable] = Bird()
+if y is not Bird:
+    print("unreachable")

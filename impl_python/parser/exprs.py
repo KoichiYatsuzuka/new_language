@@ -6,7 +6,7 @@ from typing import Optional
 from ..token import TokenKind
 from ..ast import (
     BinOp, UnaryOp,
-    ExprInt, ExprFloat, ExprImaginaryLit, ExprStr, ExprBool, ExprNone, ExprIdent,
+    ExprInt, ExprFloat, ExprImaginaryLit, ExprStr, ExprBool, ExprNone, ExprUndefined, ExprIdent,
     ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
@@ -342,6 +342,8 @@ class _ParserExprs:
             self._advance(); return ExprBool(value=False)
         if k == TokenKind.NONE:
             self._advance(); return ExprNone()
+        if k == TokenKind.UNDEFINED:
+            self._advance(); return ExprUndefined()
         if k == TokenKind.ANY:
             self._advance(); return ExprIdent(name="Any")
         if k == TokenKind.UNION:

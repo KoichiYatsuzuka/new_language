@@ -1,0 +1,68 @@
+# Protocol example: structural typing demo
+
+protocol Drawable:
+    fn draw(self) -> None:
+        ...
+    fn area(self) -> float:
+        ...
+
+protocol Resizable:
+    fn resize(self, factor: float) -> None:
+        ...
+
+class Circle:
+    mut radius: float
+
+    fn __init__(mut self, r: float) -> None:
+        self.radius = r
+
+    fn draw(self) -> None:
+        print("Drawing circle with radius", self.radius)
+
+    fn area(self) -> float:
+        return 3.14159 * self.radius * self.radius
+
+    fn resize(mut self, factor: float) -> None:
+        self.radius = self.radius * factor
+
+class Square:
+    mut side: float
+
+    fn __init__(mut self, s: float) -> None:
+        self.side = s
+
+    fn draw(self) -> None:
+        print("Drawing square with side", self.side)
+
+    fn area(self) -> float:
+        return self.side * self.side
+
+    fn resize(mut self, factor: float) -> None:
+        self.side = self.side * factor
+
+fn render(shape: Drawable) -> None:
+    shape.draw()
+    print("Area:", shape.area())
+
+fn make_bigger(mut shape: Resizable) -> None:
+    shape.resize(2.0)
+
+# Assign instances to protocol-typed variables
+mut c = Circle(5.0)
+mut s = Square(3.0)
+
+let d1: Drawable = c
+let d2: Drawable = s
+
+render(d1)
+render(d2)
+
+# is Protocol runtime check
+if c is Drawable:
+    print("Circle satisfies Drawable")
+
+if s is Drawable:
+    print("Square satisfies Drawable")
+
+make_bigger(c)
+print("Circle after resize:", c.radius)

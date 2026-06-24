@@ -1,4 +1,4 @@
-# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+# git SHA: b614502cff33c6ad5e49427ca347db8ad90c31a5
 """Static type error kinds and StaticTypeError (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from dataclasses import dataclass
@@ -89,13 +89,43 @@ class ErrFieldDefaultNotAllowed:
     field_name: str
     kind: str
 
+@dataclass
+class ErrProtocolConformanceFailed:
+    type_name: str
+    protocol_name: str
+    reason: str
+
+@dataclass
+class ErrAssignUndefined:
+    pass
+
+@dataclass
+class ErrIntersectionMemberConflict:
+    member_name: str
+    type_a: str
+    type_b: str
+    reason: str
+
+@dataclass
+class ErrIntersectionGuardTypeFails:
+    guard_type: str
+    intersection_type: str
+    reason: str
+
+@dataclass
+class ErrResultSameTypes:
+    ok_type: "InferredType"
+    err_type: "InferredType"
+
 
 TypeErrorKind = (
     ErrIncompatibleComparison | ErrAssignToImmutable | ErrCallArgCountMismatch |
     ErrCallArgTypeMismatch | ErrMissingParamTypeAnn | ErrMissingReturnTypeAnn |
     ErrUnknownKeywordArg | ErrNoMatchingOverload | ErrSelfTypeMismatch |
     ErrOperationOnAny | ErrOperationOnUnion | ErrIsNotOnNonUnion |
-    ErrCallMutParamWithImmutableArg | ErrInvalidDecorator | ErrFieldDefaultNotAllowed
+    ErrCallMutParamWithImmutableArg | ErrInvalidDecorator | ErrFieldDefaultNotAllowed |
+    ErrProtocolConformanceFailed | ErrAssignUndefined |
+    ErrIntersectionMemberConflict | ErrIntersectionGuardTypeFails | ErrResultSameTypes
 )
 
 
@@ -139,6 +169,17 @@ def _format_kind(kind: "TypeErrorKind") -> str:
         case ErrFieldDefaultNotAllowed(field_name=fn, kind=k):
             return (f"StaticTypeError: `{k}` field '{fn}' cannot have a default value "
                     f"in the class declaration; only `const` fields may have defaults")
+        case ErrProtocolConformanceFailed(type_name=tn, protocol_name=pn, reason=r):
+            return f"StaticTypeError: type '{tn}' does not satisfy protocol '{pn}': {r}"
+        case ErrAssignUndefined():
+            return ("StaticTypeError: cannot assign `Undefined` to a variable; "
+                    "`Undefined` can only be used in conditions and type annotations")
+        case ErrIntersectionMemberConflict(member_name=mn, type_a=ta, type_b=tb, reason=r):
+            return (f"StaticTypeError: intersection member '{mn}' from '{ta}' and '{tb}' conflict: {r}")
+        case ErrIntersectionGuardTypeFails(guard_type=gt, intersection_type=it, reason=r):
+            return (f"StaticTypeError: type '{gt}' used in type guard does not satisfy '{it}': {r}")
+        case ErrResultSameTypes(ok_type=ok, err_type=err):
+            return (f"StaticTypeError: Result['{ok}', '{err}']: Ok type and Err type must be different")
         case _:
             return f"StaticTypeError: <unknown error {kind!r}>"
 

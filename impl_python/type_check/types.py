@@ -1,4 +1,4 @@
-# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+# git SHA: b614502cff33c6ad5e49427ca347db8ad90c31a5
 """InferredType variants and type annotation parsing (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from dataclasses import dataclass
@@ -24,6 +24,11 @@ class TyBool:
 @dataclass(frozen=True)
 class TyNone:
     def __str__(self) -> str: return "None"
+
+@dataclass(frozen=True)
+class TyUndefined:
+    """外部ライブラリのメンバが未定義の状態を表す特殊型。変数への代入は禁止。"""
+    def __str__(self) -> str: return "Undefined"
 
 @dataclass(frozen=True)
 class TyList:
@@ -56,6 +61,11 @@ class TyNamedInstance:
     def __str__(self) -> str: return self.name
 
 @dataclass(frozen=True)
+class TyProtocol:
+    name: str
+    def __str__(self) -> str: return f"protocol {self.name}"
+
+@dataclass(frozen=True)
 class TyAny:
     def __str__(self) -> str: return "Any"
 
@@ -67,6 +77,23 @@ class TyUnion:
         if len(self.types) == 2 and self.types[1] == TyNone():
             return f"Option[{self.types[0]}]"
         return "Union[" + ", ".join(str(t) for t in self.types) + "]"
+
+@dataclass(frozen=True)
+class TyResult:
+    """Result[T, E] — 成功時の Ok 型 T と失敗時の Err 型 E を保持する特殊な Union 型。"""
+    ok_type: "InferredType"
+    err_type: "InferredType"
+
+    def __str__(self) -> str:
+        return f"Result[{self.ok_type}, {self.err_type}]"
+
+@dataclass(frozen=True)
+class TyIntersection:
+    """Intersection[T1, T2, ...] — value satisfies all constituent types."""
+    types: tuple["InferredType", ...]
+
+    def __str__(self) -> str:
+        return "Intersection[" + ", ".join(str(t) for t in self.types) + "]"
 
 @dataclass(frozen=True)
 class TyTuple:
@@ -114,9 +141,9 @@ class TyFunction:
 
 
 InferredType = (
-    TyInt | TyFloat | TyStr | TyBool | TyNone | TyList | TyDict | TySet |
-    TyTypeVal | TyTypeValOf | TySelfType | TyNamedInstance | TyAny |
-    TyUnion | TyTuple | TyNamespace | TyUnresolved | TyFunction
+    TyInt | TyFloat | TyStr | TyBool | TyNone | TyUndefined | TyList | TyDict | TySet |
+    TyTypeVal | TyTypeValOf | TySelfType | TyNamedInstance | TyProtocol | TyAny |
+    TyUnion | TyResult | TyIntersection | TyTuple | TyNamespace | TyUnresolved | TyFunction
 )
 
 
@@ -242,6 +269,22 @@ def _parse_fn_type_ann(rest: str) -> Optional["InferredType"]:
 
 
 def inferred_type_from_ann(ann: str) -> Optional["InferredType"]:
+    if ann.startswith("Result[") and ann.endswith("]"):
+        inner = ann[7:-1]
+        parts = _split_top_level_commas(inner)
+        if len(parts) >= 2:
+            ok_ty = inferred_type_from_ann(parts[0].strip())
+            err_ty = inferred_type_from_ann(parts[1].strip())
+            if ok_ty is not None and err_ty is not None:
+                return TyResult(ok_type=ok_ty, err_type=err_ty)
+        return None
+
+    if ann.startswith("Intersection[") and ann.endswith("]"):
+        inner = ann[13:-1]
+        parts = _split_top_level_commas(inner)
+        resolved = [t for t in (inferred_type_from_ann(p.strip()) for p in parts) if t is not None]
+        return TyIntersection(tuple(resolved)) if len(resolved) >= 2 else None
+
     if ann.startswith("Union[") and ann.endswith("]"):
         inner = ann[6:-1]
         parts = _split_top_level_commas(inner)
@@ -277,7 +320,7 @@ def inferred_type_from_ann(ann: str) -> Optional["InferredType"]:
 
     result = {
         "int": TyInt(), "float": TyFloat(), "str": TyStr(), "bool": TyBool(),
-        "None": TyNone(), "list": TyList(), "dict": TyDict(), "set": TySet(),
+        "None": TyNone(), "Undefined": TyUndefined(), "list": TyList(), "dict": TyDict(), "set": TySet(),
         "type": TyTypeVal(), "Self": TySelfType(), "Any": TyAny(),
     }.get(ann)
     if result is not None:

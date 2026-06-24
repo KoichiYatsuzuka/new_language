@@ -39,6 +39,8 @@ pub struct Parser {
     class_or_trait_depth: usize,
     /// Names declared with `new_type` — any reassignment to these is a parse error.
     known_new_types: HashSet<String>,
+    /// Names declared with `protocol` — instantiation of these is a parse-time error.
+    known_protocols: HashSet<String>,
     /// 現在パース中のファイルのディレクトリ（import の第一検索先）。
     source_dir: PathBuf,
     /// メインエントリーファイルのディレクトリ（import のフォールバック検索先）。
@@ -105,6 +107,7 @@ impl Parser {
             known_traits,
             class_or_trait_depth: 0,
             known_new_types: HashSet::new(),
+            known_protocols: HashSet::new(),
             source_dir: resolved.clone(),
             root_dir: resolved,
             module_cache: HashMap::new(),

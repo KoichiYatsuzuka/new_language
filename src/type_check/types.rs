@@ -84,6 +84,9 @@ pub enum InferredType {
     Bool,
     /// `None` 型（値が存在しないことを表す）。
     None,
+    /// `Undefined` 型（外部ライブラリのメンバが未定義の状態を表す）。
+    /// 変数への代入は禁止。条件判定・型アノテーション・引数としてのみ使用可能。
+    Undefined,
     /// 要素型未知のリスト型 `list`。
     List,
     /// 要素型既知のリスト型 `list[T]`。
@@ -104,10 +107,19 @@ pub enum InferredType {
     SelfType,
     /// ユーザー定義クラスのインスタンス型。内部文字列はクラス名。
     NamedInstance(String),
+    /// プロトコル型。内部文字列はプロトコル名。静的型検査のみで使用。
+    /// 変数がこの型の場合、代入時にプロトコル適合チェックが行われる。
+    Protocol(String),
     /// 動的型エスケープ `Any`。演算子の型検査を抑制するため明示的なダウンキャストが必要。
     Any,
     /// `Union[T1, T2, ...]` 型。`Option[T]` は `Union[T, None]` の糖衣構文。
     Union(Vec<InferredType>),
+    /// `Result[T, E]` 型。成功時の Ok 型 T と失敗時の Err 型 E を保持する特殊な Union 型。
+    /// T と E は異なる型でなければならない。ガード節 (`x.is_OK()` / `x.is_ERR()`) なしでは直接使用不可。
+    Result(Box<InferredType>, Box<InferredType>),
+    /// `Intersection[T1, T2, ...]` 型。すべての構成型のサブクラスであるかプロトコルを満たすことを表す。
+    /// 構成型のすべてのメンバーにダウンキャストなしでアクセスできる。
+    Intersection(Vec<InferredType>),
     /// 要素型未知の辞書型 `dict`。
     Dict,
     /// キー型・値型既知の辞書型 `dict[K, V]`。
@@ -136,6 +148,30 @@ pub enum InferredType {
 impl InferredType {
     /// 型アノテーション文字列を [`InferredType`] に変換する。解析できない場合は `None` を返す。
     pub fn from_ann(ann: &str) -> Option<Self> {
+        if let Some(inner) = ann.strip_prefix("Intersection[").and_then(|s| s.strip_suffix(']')) {
+            let parts = split_top_level_commas(inner);
+            let types: Vec<InferredType> = parts
+                .iter()
+                .filter_map(|t| InferredType::from_ann(t.trim()))
+                .collect();
+            return if types.len() >= 2 {
+                Some(Self::Intersection(types))
+            } else {
+                None
+            };
+        }
+        if let Some(inner) = ann.strip_prefix("Result[").and_then(|s| s.strip_suffix(']')) {
+            let parts = split_top_level_commas(inner);
+            if parts.len() >= 2 {
+                if let (Some(ok), Some(err)) = (
+                    InferredType::from_ann(parts[0].trim()),
+                    InferredType::from_ann(parts[1].trim()),
+                ) {
+                    return Some(Self::Result(Box::new(ok), Box::new(err)));
+                }
+            }
+            return None;
+        }
         if let Some(inner) = ann.strip_prefix("Union[").and_then(|s| s.strip_suffix(']')) {
             let parts = split_top_level_commas(inner);
             let types: Vec<InferredType> = parts
@@ -225,6 +261,7 @@ impl InferredType {
             "str" => Some(Self::Str),
             "bool" => Some(Self::Bool),
             "None" => Some(Self::None),
+            "Undefined" => Some(Self::Undefined),
             "list" => Some(Self::List),
             "fixed_list" => Some(Self::FixedList),
             "list_like" => Some(Self::ListLike),
@@ -346,6 +383,7 @@ impl std::fmt::Display for InferredType {
             Self::Str => write!(f, "str"),
             Self::Bool => write!(f, "bool"),
             Self::None => write!(f, "None"),
+            Self::Undefined => write!(f, "Undefined"),
             Self::List => write!(f, "list"),
             Self::ListOf(t) => write!(f, "list[{t}]"),
             Self::FixedList => write!(f, "fixed_list"),
@@ -360,6 +398,7 @@ impl std::fmt::Display for InferredType {
             Self::TypeValOf(inner) => write!(f, "type[{inner}]"),
             Self::SelfType => write!(f, "Self"),
             Self::NamedInstance(name) => write!(f, "{name}"),
+            Self::Protocol(name) => write!(f, "protocol {name}"),
             Self::Any => write!(f, "Any"),
             Self::Union(types) => {
                 if types.len() == 2 && types[1] == Self::None {
@@ -368,6 +407,11 @@ impl std::fmt::Display for InferredType {
                     let parts: Vec<String> = types.iter().map(|t| t.to_string()).collect();
                     write!(f, "Union[{}]", parts.join(", "))
                 }
+            }
+            Self::Result(ok, err) => write!(f, "Result[{ok}, {err}]"),
+            Self::Intersection(types) => {
+                let parts: Vec<String> = types.iter().map(|t| t.to_string()).collect();
+                write!(f, "Intersection[{}]", parts.join(", "))
             }
             Self::Tuple(types) => {
                 let parts: Vec<String> = types.iter().map(|t| t.to_string()).collect();
@@ -402,11 +446,39 @@ impl std::fmt::Display for InferredType {
 }
 
 // ---------------------------------------------------------------------------
+// Protocol info
+// ---------------------------------------------------------------------------
+
+/// プロトコルのフィールド情報。
+#[derive(Debug, Clone)]
+pub(crate) struct ProtocolField {
+    pub(crate) name: String,
+    pub(crate) kind: crate::ast::FieldKind,
+    pub(crate) ty: InferredType,
+}
+
+/// プロトコルのメソッド情報（シグネチャのみ）。
+#[derive(Debug, Clone)]
+pub(crate) struct ProtocolMethod {
+    pub(crate) name: String,
+    /// (param_name, is_mutable, type) ─ self を含まない
+    pub(crate) params: Vec<(String, bool, InferredType)>,
+    pub(crate) return_type: InferredType,
+}
+
+/// プロトコル定義の情報。型検査器が適合チェックに使用する。
+#[derive(Debug, Clone)]
+pub(crate) struct ProtocolInfo {
+    pub(crate) fields: Vec<ProtocolField>,
+    pub(crate) methods: Vec<ProtocolMethod>,
+}
+
+// ---------------------------------------------------------------------------
 // Function signature
 // ---------------------------------------------------------------------------
 
 /// 関数シグネチャ情報。パラメータ名・型アノテーション・必須引数数・戻り値型を保持する。
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct FnSig {
     pub(crate) params: Vec<(String, Option<InferredType>)>,
     pub(crate) required_count: usize,
