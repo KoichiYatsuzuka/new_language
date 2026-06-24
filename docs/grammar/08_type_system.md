@@ -77,6 +77,79 @@ if result is int:
 Union 型の変数に対して演算子を適用すると  
 静的型エラー `OperationOnUnion` が報告されます。
 
+### `Intersection[T1, T2, ...]` — 交差型
+
+`Intersection[T1, T2, ...]` は、値が **すべての構成型を同時に満たす** ことを表す型です。  
+`Union` が「どれか一つ」であるのに対し、`Intersection` は「すべて」の型制約を要求します。
+
+```hv
+trait Flyable:
+    fn fly(self) -> str: ...
+
+trait Swimmable:
+    fn swim(self) -> str: ...
+
+class Duck(Flyable, Swimmable):
+    let name: str
+    fn __init__(mut self, n: str) -> None: self.name = n
+    fn fly(self) -> str: return self.name + " is flying"
+    fn swim(self) -> str: return self.name + " is swimming"
+
+# Flyable かつ Swimmable を同時に要求する
+fn show_abilities(creature: Intersection[Flyable, Swimmable]) -> None:
+    creature.fly()    # Flyable のメンバーに直接アクセス可能
+    creature.swim()   # Swimmable のメンバーにも直接アクセス可能
+
+let duck = Duck("Donald")
+show_abilities(duck)   # Duck は Flyable と Swimmable を両方継承するので OK
+```
+
+**ポイント**:
+- 構成型にはクラス名・trait 名・protocol 名を混在して指定できます（2 つ以上必須）
+- 変数の型が `Intersection[...]` であれば、すべての構成型のメンバーに**ダウンキャストなし**でアクセスできます
+- `Union` 型のメンバーアクセスは静的型エラーになりますが、`Intersection` はなりません
+- 関数パラメータを `Intersection[...]` で型付けすると、渡す引数はすべての構成型を継承/適合している必要があります
+
+#### 型ガードと `Intersection`
+
+```hv
+let animal: Intersection[Flyable, Swimmable] = duck
+
+# is C でガードして C 型に絞り込める（C がすべての構成型を満たす場合のみ有効）
+if animal is Duck:
+    print(animal.fly())
+```
+
+`is C` のガード型 `C` がいずれかの構成型を満たさない場合、静的型エラー `IntersectionGuardTypeFails` が報告されます。
+
+```hv
+class Bird(Flyable, Runnable):   # Swimmable を実装していない
+    ...
+
+let x: Intersection[Flyable, Swimmable] = ...
+if x is Bird:    # StaticTypeError: Bird は Swimmable を満たさない
+    ...
+```
+
+`is not` を `Intersection` 型に適用した場合は `Union`/`Option` 型と同様に  
+静的型エラー `IsNotOnNonUnion` が報告されます。
+
+#### 部分コンパイル対象外
+
+`Intersection[...]` 型を含む関数（パラメータ・戻り値いずれか）は  
+`--compile` によるネイティブコンパイルの対象外となり、警告 `IntersectionSkippedCompile` が出力されます。
+
+#### メンバー衝突の検査
+
+交差型の構成型間で同名メンバーが存在する場合、静的型検査器が衝突を検出します。
+
+| 状況 | 結果 |
+|---|---|
+| 名前・型・アクセス修飾子がすべて同一 | 警告 `IntersectionMemberDuplicate` |
+| 名前は同じだが型やシグネチャが異なる（互換性なし） | エラー `IntersectionMemberConflict` |
+
+---
+
 ### `Option[T]` — オプション型
 
 `Option[T]` は `Union[T, None]` の糖衣構文です。
@@ -88,6 +161,52 @@ fn find_user(let id: int) -> Option[User]:
 let user = find_user(42)
 if user is not None:
     user.greet()   # user は User 型として扱える
+```
+
+### `Result[T, E]` — 結果型
+
+`Result[T, E]` は成功値 `Ok(T)` または失敗値 `Err(E)` を表す特殊な合併型です。  
+エラーを例外ではなく戻り値として扱うパターンに使用します。
+
+**コンストラクタ**
+
+| 式 | 説明 |
+|---|---|
+| `Ok(value)` | 成功値を持つ Result を生成（`value` は型 `T`） |
+| `Err(error)` | 失敗値を持つ Result を生成（`error` は型 `E`） |
+
+**型ガードによる絞り込み**
+
+| 条件式 | ブロック内の変数型 |
+|---|---|
+| `if result.is_OK():` | `result` が `T`（Ok の内部値）に絞り込まれる |
+| `if result.is_ERR():` | `result` が `E`（Err の内部値）に絞り込まれる |
+
+```hv
+fn divide(a: int, b: int) -> Result[int, str]:
+    if b == 0:
+        return Err("division by zero")
+    return Ok(a / b)
+
+let r1: Result[int, str] = divide(10, 2)
+let r2: Result[int, str] = divide(10, 0)
+
+if r1.is_OK():
+    print("成功:", r1)   # r1 は int として扱える
+
+if r2.is_ERR():
+    print("失敗:", r2)   # r2 は str として扱える
+```
+
+**制約**
+
+- `T` と `E` は**異なる型**でなければなりません。同じ型を指定すると静的型エラー `ResultSameTypes` が報告されます。
+- ガード節なしで `Result` 型の変数に演算子・属性アクセスを適用すると `OperationOnUnion` が報告されます。
+- `is_OK()` / `is_ERR()` は引数なしで呼び出します。
+
+```hv
+# エラー例: Ok 型と Err 型が同じ
+let bad: Result[int, int] = Ok(1)   # StaticTypeError: ResultSameTypes
 ```
 
 ### `type[T]` — 型値型
@@ -193,6 +312,9 @@ StaticTypeError のリストを収集
 | `InvalidRaiseType` | `raise` に非インスタンス型を渡す |
 | `FieldDefaultNotAllowed` | `mut`/`let` フィールドに初期値を設定 |
 | `DirectFreezeCall` | `__freeze__` の直接呼び出し |
+| `IntersectionMemberConflict` | 交差型の構成型間でメンバーが衝突 |
+| `IntersectionGuardTypeFails` | `is` ガード型が交差型の全構成型を満たさない |
+| `ResultSameTypes` | `Result[T, E]` の `T` と `E` が同じ型 |
 
 ---
 

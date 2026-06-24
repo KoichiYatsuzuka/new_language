@@ -39,6 +39,26 @@ if x is not None:
 型検査器は `if` ブランチの条件に `is` / `is not` が含まれる場合、  
 そのブランチのスコープ内でオペランドの型を絞り込みます。
 
+#### `Result[T, E]` ガード
+
+`Result[T, E]` 型の変数は `is_OK()` / `is_ERR()` メソッドをガード条件として使うことで、  
+ブランチ内の変数が内部値の型に絞り込まれます。
+
+```hv
+let r: Result[int, str] = divide(10, 2)
+
+if r.is_OK():
+    # このブロック内で r は int（Ok の内部値）として扱える
+    print(r)
+
+if r.is_ERR():
+    # このブロック内で r は str（Err の内部値）として扱える
+    print(r)
+```
+
+ガード節なしで `Result` 変数に属性アクセス・演算を行うと  
+静的型エラー `OperationOnUnion` が報告されます。
+
 ---
 
 ## match 文

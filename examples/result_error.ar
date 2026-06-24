@@ -1,0 +1,2 @@
+# エラー例1: Ok型とErr型が同じ型 → 静的エラー
+let r: Result[int, int] = Ok(1)

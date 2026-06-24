@@ -401,6 +401,17 @@ class TlCsObject:
         return f"<CsObject {self.class_name} #{self.handle}>"
 
 
+@dataclass
+class TlResultVal:
+    """Result[T, E] 値。Ok(value) または Err(error) で生成される。"""
+    ok: bool
+    inner: "Value"
+
+    def __repr__(self) -> str:
+        label = "Ok" if self.ok else "Err"
+        return f"{label}({self.inner!r})"
+
+
 Value = (
     int | float | TlComplex | str | bool | type(None) |
     TlList | TlFixedList | TlDict | TlTuple | TlSet |
@@ -409,7 +420,7 @@ Value = (
     TlType | TlTrait | TlProtocol |
     TlTemplateFn | TlTemplateGenFn | TlTemplateClass |
     TlNamespace | TlSlice | TlFileObject |
-    TlSignal | TlEventLoop | TlCsObject
+    TlSignal | TlEventLoop | TlCsObject | TlResultVal
 )
 
 
@@ -510,6 +521,8 @@ def type_name(v: "Value") -> str:
         return "Signal"
     if isinstance(v, TlEventLoop):
         return "EventLoop"
+    if isinstance(v, TlResultVal):
+        return "Ok" if v.ok else "Err"
     return "unknown"
 
 
@@ -565,6 +578,9 @@ def display(v: "Value") -> str:
         return f"<module '{v.name}'>"
     if isinstance(v, TlSlice):
         return repr(v)
+    if isinstance(v, TlResultVal):
+        label = "Ok" if v.ok else "Err"
+        return f"{label}({display(v.inner)})"
     return repr(v)
 
 

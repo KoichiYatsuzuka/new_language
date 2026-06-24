@@ -7,7 +7,7 @@ from .value import (
     Value, MISSING,
     TlList, TlFixedList, TlDict, TlTuple, TlSet, TlFunction, TlOverloadedFn,
     TlGeneratorFn, TlGenerator, TlClass, TlInstance, TlType, TlTrait,
-    TlNamespace, TlSlice, TlFileObject, TlComplex,
+    TlNamespace, TlSlice, TlFileObject, TlComplex, TlResultVal,
     type_name, display, is_truthy, _values_equal,
 )
 from .exceptions import RaiseSignal, StopIterationSignal
@@ -1031,6 +1031,16 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
         raw = id(args[0]) if args else 0
         return TlInstance(cls=pointer_cls, fields={"__value__": [raw, False]}, immutable=False)
 
+    def builtin_Ok(args: list, kwargs: dict) -> TlResultVal:
+        if len(args) != 1:
+            raise RuntimeError("TypeError: Ok() takes exactly 1 argument")
+        return TlResultVal(ok=True, inner=args[0])
+
+    def builtin_Err(args: list, kwargs: dict) -> TlResultVal:
+        if len(args) != 1:
+            raise RuntimeError("TypeError: Err() takes exactly 1 argument")
+        return TlResultVal(ok=False, inner=args[0])
+
     builtins: dict[str, Value] = {
         "print":     _make_native("print", builtin_print),
         "len":       _make_native("len", builtin_len),
@@ -1076,6 +1086,8 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
         "Size":      _make_native("Size", builtin_Size),
         "uint":      _make_native("uint", builtin_uint),
         "pointer":   _make_native("pointer", builtin_pointer),
+        "Ok":        _make_native("Ok", builtin_Ok),
+        "Err":       _make_native("Err", builtin_Err),
         # Type values
         "int_type":  TlType("int"),
         "str_type":  TlType("str"),

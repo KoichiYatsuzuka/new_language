@@ -1,11 +1,11 @@
-# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
+# git SHA: b614502cff33c6ad5e49427ca347db8ad90c31a5
 """Statement type checking and signature collection mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
 
 from ..ast import (
     FieldKind,
-    Expr, ExprIdent, ExprIsType,
+    Expr, ExprIdent, ExprIsType, ExprCall, ExprAttr,
     Stmt, StmtExpr, StmtLet, StmtConst, StmtMut, StmtStatic,
     StmtAssign, StmtAttrAssign, StmtAttrCompoundAssign, StmtCompoundAssign,
     StmtIf, StmtMatch, StmtWhile, StmtFor, StmtBlock,
@@ -17,10 +17,12 @@ from ..ast import (
     MatchPatternCase, MatchPatternIsType,
 )
 from .types import (
-    TyInt, TyNamedInstance, TyProtocol, TyTypeValOf, TyUnresolved, TyList, TyNone, TyUndefined, InferredType, inferred_type_from_ann,
+    TyInt, TyNamedInstance, TyProtocol, TyTypeValOf, TyUnresolved, TyList, TyNone, TyUndefined,
+    TyResult, InferredType, inferred_type_from_ann,
 )
 from .errors import (ErrAssignToImmutable, ErrAssignUndefined, ErrMissingParamTypeAnn, ErrMissingReturnTypeAnn,
                      ErrIsNotOnNonUnion, ErrFieldDefaultNotAllowed, ErrProtocolConformanceFailed,
+                     ErrIntersectionGuardTypeFails, ErrResultSameTypes,
                      StaticTypeError)
 from .scope import _FnSig
 from .type_utils import _type_from_guard_name
@@ -94,6 +96,18 @@ class _TypeCheckerStmts:
                         guard_opt = (cond.expr.name, cond.type_name, cond.negated)
                         guard_span = cond.span
 
+                    # Result ガード: `x.is_OK()` / `x.is_ERR()` を検出して型を絞り込む
+                    result_guard: Optional[tuple[str, "InferredType", bool]] = None
+                    if isinstance(cond, ExprCall) and not cond.args:
+                        if isinstance(cond.func, ExprAttr) and isinstance(cond.func.object, ExprIdent):
+                            attr = cond.func.attr
+                            if attr in ("is_OK", "is_ERR"):
+                                vname = cond.func.object.name
+                                info = self._lookup(vname)
+                                if info is not None and isinstance(info.ty, TyResult):
+                                    narrowed_ty = info.ty.ok_type if attr == "is_OK" else info.ty.err_type
+                                    result_guard = (vname, narrowed_ty, info.mutable)
+
                     narrowed: Optional[tuple[str, "InferredType", bool]] = None
                     error_info = None
 
@@ -119,6 +133,10 @@ class _TypeCheckerStmts:
                             elif not isinstance(var_ty, TyUnresolved):
                                 error_info = (var_name, var_ty, guard_span)
                         else:
+                            # `is TypeName` guard: if var_ty is Intersection, validate guard type
+                            from .types import TyIntersection
+                            if isinstance(var_ty, TyIntersection):
+                                self._check_intersection_guard_type(type_name, var_ty.types, guard_span)
                             narrowed = (var_name, guard_ty, is_mut)
 
                     self._infer(cond)
@@ -128,8 +146,10 @@ class _TypeCheckerStmts:
                         self._report(ErrIsNotOnNonUnion(var_name=vn, var_type=vt), sp)
 
                     self._push_scope()
-                    if narrowed is not None:
-                        self._declare(narrowed[0], narrowed[1], narrowed[2])
+                    # Result ガードが優先、なければ通常の narrowed を使用
+                    effective = result_guard if result_guard is not None else narrowed
+                    if effective is not None:
+                        self._declare(effective[0], effective[1], effective[2])
                     self._check_stmts(body)
                     self._pop_scope()
 
@@ -390,7 +410,61 @@ class _TypeCheckerStmts:
         if type_ann in self._known_protocols:
             self._check_protocol_conformance_py(rhs, type_ann, var_name)
             return TyProtocol(type_ann)
+        from .types import TyIntersection, inferred_type_from_ann
+        parsed = inferred_type_from_ann(type_ann)
+        if isinstance(parsed, TyIntersection):
+            return parsed
+        if isinstance(parsed, TyResult):
+            if parsed.ok_type == parsed.err_type:
+                self._report(ErrResultSameTypes(ok_type=parsed.ok_type, err_type=parsed.err_type), None)
+            return parsed
         return rhs
+
+    def _check_intersection_guard_type(
+        self,
+        guard_type: str,
+        intersection_types: "tuple[InferredType, ...]",
+        span: object,
+    ) -> None:
+        """Validate that guard_type satisfies all constraints in intersection_types."""
+        from .types import TyIntersection
+        isect_str = "Intersection[" + ", ".join(str(t) for t in intersection_types) + "]"
+        for ty in intersection_types:
+            ty_name = ty.name if isinstance(ty, (TyNamedInstance, TyProtocol)) else None
+            if ty_name is None:
+                continue
+            satisfied: bool
+            if ty_name in self._known_protocols:
+                required = self._protocol_required_members.get(ty_name, [])
+                methods = self._class_method_sigs.get(guard_type, {})
+                satisfied = all(m in methods for m in required)
+            else:
+                # Check inheritance
+                satisfied = guard_type == ty_name or self._class_implements_trait_py(guard_type, ty_name)
+            if not satisfied:
+                self.errors.append(StaticTypeError(
+                    kind=ErrIntersectionGuardTypeFails(
+                        guard_type=guard_type,
+                        intersection_type=isect_str,
+                        reason=f"'{guard_type}' does not satisfy constraint '{ty_name}'",
+                    ),
+                    span=span,
+                ))
+
+    def _class_implements_trait_py(self, class_name: str, trait_name: str) -> bool:
+        """Check if class_name inherits from trait_name (transitively)."""
+        stack = [class_name]
+        seen: set[str] = set()
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            bases = self._class_bases.get(cur, [])
+            if trait_name in bases:
+                return True
+            stack.extend(bases)
+        return False
 
     def _check_protocol_conformance_py(self, rhs: "InferredType", proto_name: str, context: str) -> None:
         required = self._protocol_required_members.get(proto_name, [])

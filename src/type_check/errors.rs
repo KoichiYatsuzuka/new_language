@@ -155,6 +155,24 @@ pub enum TypeErrorKind {
     /// `Undefined` リテラルを変数に代入しようとした。
     /// 条件判定・型アノテーション・引数としての使用は許可される。
     AssignUndefined,
+    /// `Result[T, E]` の Ok 型と Err 型が同一または相互に is 判定が成立する。
+    ResultSameTypes {
+        ok_type: InferredType,
+        err_type: InferredType,
+    },
+    /// 交差型の構成型間で同名のフィールドまたはメソッドが競合している（型・アクセス属性が不一致など）。
+    IntersectionMemberConflict {
+        member_name: String,
+        type_a: String,
+        type_b: String,
+        reason: String,
+    },
+    /// 交差型の型ガード節で指定した型が、交差型の構成型制約を満たさない。
+    IntersectionGuardTypeFails {
+        guard_type: String,
+        intersection_type: String,
+        reason: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +191,16 @@ pub enum TypeWarningKind {
     ProtocolSkippedCompile {
         func_name: String,
         protocol_name: String,
+    },
+    /// 交差型の構成型間に同名の同一メンバーが存在する（重複）。
+    IntersectionMemberDuplicate {
+        member_name: String,
+        type_a: String,
+        type_b: String,
+    },
+    /// 交差型を含む関数が部分コンパイル対象になったが、スキップされた。
+    IntersectionSkippedCompile {
+        func_name: String,
     },
 }
 
@@ -193,6 +221,14 @@ impl StaticTypeWarning {
             TypeWarningKind::ProtocolSkippedCompile { func_name, protocol_name } => format!(
                 "function {} uses protocol type {} and cannot be compiled to native code",
                 hl_q(func_name), hl_q(protocol_name)
+            ),
+            TypeWarningKind::IntersectionMemberDuplicate { member_name, type_a, type_b } => format!(
+                "intersection has duplicate member {} defined in both {} and {}; only one will be used",
+                hl_q(member_name), hl_q(type_a), hl_q(type_b)
+            ),
+            TypeWarningKind::IntersectionSkippedCompile { func_name } => format!(
+                "function {} uses Intersection type and cannot be compiled to native code",
+                hl_q(func_name)
             ),
         }
     }
@@ -378,6 +414,18 @@ impl StaticTypeError {
             TypeErrorKind::AssignUndefined => format!(
                 "cannot assign {} to a variable; {} can only be used in conditions and type annotations",
                 hl_bt("Undefined"), hl_bt("Undefined")
+            ),
+            TypeErrorKind::ResultSameTypes { ok_type, err_type } => format!(
+                "Result[{}, {}]: Ok type and Err type must be different",
+                hl_q(ok_type), hl_q(err_type)
+            ),
+            TypeErrorKind::IntersectionMemberConflict { member_name, type_a, type_b, reason } => format!(
+                "intersection member {} from {} and {} conflict: {}",
+                hl_q(member_name), hl_q(type_a), hl_q(type_b), reason
+            ),
+            TypeErrorKind::IntersectionGuardTypeFails { guard_type, intersection_type, reason } => format!(
+                "type {} used in type guard does not satisfy {}: {}",
+                hl_q(guard_type), hl_q(intersection_type), reason
             ),
         }
     }

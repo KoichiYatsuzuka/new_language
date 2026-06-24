@@ -1,4 +1,4 @@
-# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
+# git SHA: b614502cff33c6ad5e49427ca347db8ad90c31a5
 """Type utility helpers and compatibility checking mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import TYPE_CHECKING
@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from .types import (
     TyInt, TyFloat, TyStr, TyBool, TyNone, TyUndefined, TyList, TyDict, TySet,
     TyTypeVal, TyTypeValOf, TyNamedInstance, TyProtocol, TyAny,
-    TyUnion, TyUnresolved, TyFunction, InferredType,
+    TyUnion, TyIntersection, TyUnresolved, TyFunction, InferredType,
 )
 
 if TYPE_CHECKING:
@@ -40,12 +40,22 @@ class _TypeCheckerUtils:
             return False
         if isinstance(expected, TyUnion):
             return any(self._type_matches(arg_ty, t) for t in expected.types)
-        # Allow instance types with __cast__[ExpectedType] methods
+        # Intersection: arg must match ALL constituent types
+        if isinstance(expected, TyIntersection):
+            return all(self._type_matches(arg_ty, t) for t in expected.types)
+        # arg_ty is Intersection: any constituent type matching expected is enough
+        if isinstance(arg_ty, TyIntersection):
+            return any(self._type_matches(t, expected) for t in arg_ty.types)
+        # Allow instance types with __cast__[ExpectedType] methods or class inheritance
         if isinstance(arg_ty, TyNamedInstance):
             cast_key = f"__cast__[{expected}]"
             methods = self._class_method_sigs.get(arg_ty.name)
             if methods and cast_key in methods:
                 return True
+            # Check class/trait inheritance: Duck(Flyable) satisfies Flyable
+            if isinstance(expected, TyNamedInstance):
+                if self._class_implements_trait_py(arg_ty.name, expected.name):
+                    return True
         return False
 
     def _type_val_compatible(self, arg_inner: "InferredType", expected_inner: "InferredType") -> bool:

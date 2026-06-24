@@ -82,7 +82,8 @@ impl Interpreter {
             | Value::AsyncStatusVal(_)
             | Value::Signal(_)
             | Value::EventLoop(_)
-            | Value::CsObject(_) => true,
+            | Value::CsObject(_)
+            | Value::ResultVal { .. } => true,
         }
     }
 
@@ -126,6 +127,9 @@ impl Interpreter {
             Value::CsObject(o) => {
                 let _ = o;
                 "cs_object"
+            }
+            Value::ResultVal { ok, .. } => {
+                if *ok { "Ok" } else { "Err" }
             }
         }
     }
@@ -405,6 +409,13 @@ impl Interpreter {
             }
             Value::EventLoop(_) => "<EventLoop>".to_string(),
             Value::CsObject(o) => format!("<CsObject '{}' handle={}>", o.class_name, o.handle),
+            Value::ResultVal { ok, inner } => {
+                if *ok {
+                    format!("Ok({})", self.display(inner))
+                } else {
+                    format!("Err({})", self.display(inner))
+                }
+            }
             Value::FrozenList { state, layout } => {
                 let st = state.borrow();
                 let parts: Vec<String> = (0..st.len)

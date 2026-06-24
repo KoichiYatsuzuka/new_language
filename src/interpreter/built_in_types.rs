@@ -344,6 +344,11 @@ pub(super) fn register_builtin_globals(global: &mut HashMap<String, Var>) {
         Var::new(Value::Type("AsyncManager".to_string()), false),
     );
 
+    // Result 型コンストラクタ: Ok(value) / Err(error)
+    for name in ["Ok", "Err"] {
+        global.insert(name.to_string(), Var::new(Value::Type(name.to_string()), false));
+    }
+
     // Async namespace: Async.Waiting / Async.Running / Async.Done
     {
         let mut members = HashMap::new();

@@ -1,4 +1,4 @@
-# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
+# git SHA: b614502cff33c6ad5e49427ca347db8ad90c31a5
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -125,6 +125,7 @@ class TokenKind(Enum):
     ANY          = auto()  # Any
     UNION        = auto()  # Union
     OPTION       = auto()  # Option
+    INTERSECTION = auto()  # Intersection
 
     # Arithmetic operators
     PLUS         = auto()  # +
@@ -277,6 +278,7 @@ KEYWORDS: dict[str, TokenKind] = {
     "Any":          TokenKind.ANY,
     "Union":        TokenKind.UNION,
     "Option":       TokenKind.OPTION,
+    "Intersection": TokenKind.INTERSECTION,
 }
 
 # Reverse mapping: TokenKind -> display string (keywords + operators + punctuation)

@@ -89,6 +89,7 @@ impl Lexer {
             "Any" => Token::Any,
             "Union" => Token::Union,
             "Option" => Token::Option,
+            "Intersection" => Token::Intersection,
             "on" => Token::On,
             "off" => Token::Off,
             "once" => Token::Once,

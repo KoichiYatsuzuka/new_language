@@ -211,6 +211,31 @@ impl Parser {
                 }
                 return Ok(format!("Union[{}]", args.join(",")));
             }
+            Token::Intersection => {
+                self.advance();
+                if *self.current() != Token::LBracket {
+                    return Err(
+                        "Intersection requires type arguments: Intersection[Type1, Type2, ...]"
+                            .to_string(),
+                    );
+                }
+                self.advance(); // consume '['
+                let mut args = Vec::new();
+                while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+                    args.push(self.parse_type_expr()?);
+                    if *self.current() == Token::Comma {
+                        self.advance();
+                    }
+                }
+                self.eat(&Token::RBracket)?;
+                if args.len() < 2 {
+                    return Err(format!(
+                        "Intersection requires at least 2 type arguments, got {}",
+                        args.len()
+                    ));
+                }
+                return Ok(format!("Intersection[{}]", args.join(",")));
+            }
             Token::Option => {
                 self.advance();
                 if *self.current() != Token::LBracket {
@@ -332,6 +357,20 @@ impl Parser {
             }
             self.eat(&Token::RBracket)?;
             return Ok(format!("dict[{key},{val}]"));
+        }
+        // Result[T, E] — preserve Ok type and Err type
+        if base == "Result" && *self.current() == Token::LBracket {
+            self.advance(); // consume '['
+            let ok_ty = self.parse_type_expr()?;
+            if *self.current() == Token::Comma {
+                self.advance();
+            }
+            let err_ty = self.parse_type_expr()?;
+            if *self.current() == Token::Comma {
+                self.advance();
+            }
+            self.eat(&Token::RBracket)?;
+            return Ok(format!("Result[{ok_ty}, {err_ty}]"));
         }
         // Skip optional generic parameters for all other types (custom classes, etc.)
         if *self.current() == Token::LBracket {

@@ -2418,6 +2418,12 @@ fn stmt_eligible_gen(stmt: &Stmt) -> bool {
     }
 }
 
+fn ann_has_intersection(params: &[crate::ast::Param], return_type: Option<&str>) -> bool {
+    params.iter().any(|p| {
+        p.type_ann.as_deref().map_or(false, |ann| ann.contains("Intersection["))
+    }) || return_type.map_or(false, |ann| ann.contains("Intersection["))
+}
+
 pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
     struct EligibleFn<'a> {
         /// Symbol prefix used in the DLL (e.g. "dot" or "Vec2D__dot").
@@ -2438,6 +2444,7 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
         match s {
             Stmt::FnDef { name, template_params, params, body, is_abstract, return_type, .. } => {
                 if !template_params.is_empty() || *is_abstract || !body_eligible(body) { continue; }
+                if ann_has_intersection(params, return_type.as_deref()) { continue; }
                 eligible.push(EligibleFn {
                     symbol: name.clone(), orig_name: name, class_name: None,
                     params, return_type: return_type.as_deref(), body, is_gen: false,
@@ -2445,6 +2452,7 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
             }
             Stmt::GenDef { name, template_params, params, body, .. } => {
                 if !template_params.is_empty() || !body_eligible_gen(body) { continue; }
+                if ann_has_intersection(params, None) { continue; }
                 eligible.push(EligibleFn {
                     symbol: name.clone(), orig_name: name, class_name: None,
                     params, return_type: None, body, is_gen: true,
@@ -2456,6 +2464,7 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
                     match method_stmt {
                         Stmt::FnDef { name: mname, template_params: mtp, params, body, is_abstract, return_type, .. } => {
                             if !mtp.is_empty() || *is_abstract || !body_eligible(body) { continue; }
+                            if ann_has_intersection(params, return_type.as_deref()) { continue; }
                             eligible.push(EligibleFn {
                                 symbol: method_symbol(class_name, mname),
                                 orig_name: mname,
@@ -2465,6 +2474,7 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
                         }
                         Stmt::GenDef { name: mname, template_params: mtp, params, body, .. } => {
                             if !mtp.is_empty() || !body_eligible_gen(body) { continue; }
+                            if ann_has_intersection(params, None) { continue; }
                             eligible.push(EligibleFn {
                                 symbol: method_symbol(class_name, mname),
                                 orig_name: mname,

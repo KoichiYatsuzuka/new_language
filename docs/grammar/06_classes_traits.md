@@ -307,6 +307,44 @@ let d: Displayable = Dog()   # OK: Dog は display を持つ
 
 ---
 
+## `Intersection` 型と trait の組み合わせ
+
+`Intersection[T1, T2, ...]` を使うと、複数の trait を**同時に**要求する型制約を表現できます。  
+詳細は [08_type_system.md](08_type_system.md) を参照してください。
+
+```hv
+trait Flyable:
+    fn fly(self) -> str: ...
+
+trait Swimmable:
+    fn swim(self) -> str: ...
+
+class Duck(Flyable, Swimmable):
+    let name: str
+    fn __init__(mut self, n: str) -> None: self.name = n
+    fn fly(self) -> str: return self.name + " flies"
+    fn swim(self) -> str: return self.name + " swims"
+
+# Flyable かつ Swimmable の両方を要求するパラメータ
+fn demo(creature: Intersection[Flyable, Swimmable]) -> None:
+    print(creature.fly())    # どちらの trait のメンバーにもアクセス可能
+    print(creature.swim())
+
+demo(Duck("Donald"))
+```
+
+**継承によって満たされる**: `Duck(Flyable, Swimmable)` と宣言されているため、  
+`Duck` インスタンスは `Intersection[Flyable, Swimmable]` として渡せます。  
+`class Foo(A, B)` の継承宣言がない場合は型チェックエラーになります。
+
+| 型 | 適合の条件 | アクセス |
+|---|---|---|
+| `trait T` | 明示的な継承 `class Foo(T):` | メンバーアクセス OK |
+| `protocol P` | 必要なメンバーを持つだけで自動適合 | メンバーアクセス OK |
+| `Intersection[A, B]` | `A` と `B` の両方の条件を満たす | A・B 双方のメンバーへ直接アクセス OK |
+
+---
+
 ## テンプレートクラス
 
 ```hv

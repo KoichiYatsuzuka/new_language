@@ -114,6 +114,12 @@ pub enum InferredType {
     Any,
     /// `Union[T1, T2, ...]` 型。`Option[T]` は `Union[T, None]` の糖衣構文。
     Union(Vec<InferredType>),
+    /// `Result[T, E]` 型。成功時の Ok 型 T と失敗時の Err 型 E を保持する特殊な Union 型。
+    /// T と E は異なる型でなければならない。ガード節 (`x.is_OK()` / `x.is_ERR()`) なしでは直接使用不可。
+    Result(Box<InferredType>, Box<InferredType>),
+    /// `Intersection[T1, T2, ...]` 型。すべての構成型のサブクラスであるかプロトコルを満たすことを表す。
+    /// 構成型のすべてのメンバーにダウンキャストなしでアクセスできる。
+    Intersection(Vec<InferredType>),
     /// 要素型未知の辞書型 `dict`。
     Dict,
     /// キー型・値型既知の辞書型 `dict[K, V]`。
@@ -142,6 +148,30 @@ pub enum InferredType {
 impl InferredType {
     /// 型アノテーション文字列を [`InferredType`] に変換する。解析できない場合は `None` を返す。
     pub fn from_ann(ann: &str) -> Option<Self> {
+        if let Some(inner) = ann.strip_prefix("Intersection[").and_then(|s| s.strip_suffix(']')) {
+            let parts = split_top_level_commas(inner);
+            let types: Vec<InferredType> = parts
+                .iter()
+                .filter_map(|t| InferredType::from_ann(t.trim()))
+                .collect();
+            return if types.len() >= 2 {
+                Some(Self::Intersection(types))
+            } else {
+                None
+            };
+        }
+        if let Some(inner) = ann.strip_prefix("Result[").and_then(|s| s.strip_suffix(']')) {
+            let parts = split_top_level_commas(inner);
+            if parts.len() >= 2 {
+                if let (Some(ok), Some(err)) = (
+                    InferredType::from_ann(parts[0].trim()),
+                    InferredType::from_ann(parts[1].trim()),
+                ) {
+                    return Some(Self::Result(Box::new(ok), Box::new(err)));
+                }
+            }
+            return None;
+        }
         if let Some(inner) = ann.strip_prefix("Union[").and_then(|s| s.strip_suffix(']')) {
             let parts = split_top_level_commas(inner);
             let types: Vec<InferredType> = parts
@@ -378,6 +408,11 @@ impl std::fmt::Display for InferredType {
                     write!(f, "Union[{}]", parts.join(", "))
                 }
             }
+            Self::Result(ok, err) => write!(f, "Result[{ok}, {err}]"),
+            Self::Intersection(types) => {
+                let parts: Vec<String> = types.iter().map(|t| t.to_string()).collect();
+                write!(f, "Intersection[{}]", parts.join(", "))
+            }
             Self::Tuple(types) => {
                 let parts: Vec<String> = types.iter().map(|t| t.to_string()).collect();
                 write!(f, "tuple[{}]", parts.join(", "))
@@ -443,7 +478,7 @@ pub(crate) struct ProtocolInfo {
 // ---------------------------------------------------------------------------
 
 /// 関数シグネチャ情報。パラメータ名・型アノテーション・必須引数数・戻り値型を保持する。
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct FnSig {
     pub(crate) params: Vec<(String, Option<InferredType>)>,
     pub(crate) required_count: usize,

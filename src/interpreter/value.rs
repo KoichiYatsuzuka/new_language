@@ -798,6 +798,9 @@ pub enum Value {
     EventLoop(Rc<RefCell<super::event_loop::EventLoopData>>),
     /// import[cs-dll] で生成される C# オブジェクトのハンドル。
     CsObject(Rc<CsObjectData>),
+    /// `Result[T, E]` 値。`Ok(value)` または `Err(error)` で生成される。
+    /// `ok: true` → Ok 側の値、`ok: false` → Err 側の値。
+    ResultVal { ok: bool, inner: Box<Value> },
 }
 
 /// import[cs-dll] ブリッジが管理する C# オブジェクトのランタイム表現。
@@ -1035,6 +1038,10 @@ impl Value {
             // Arc-wrapped types: atomic refcount, safe to share across threads
             Value::PyObject(arc) => Value::PyObject(Arc::clone(arc)),
             Value::NativeFunction(arc) => Value::NativeFunction(Arc::clone(arc)),
+            Value::ResultVal { ok, inner } => Value::ResultVal {
+                ok: *ok,
+                inner: Box::new(inner.deep_clone()),
+            },
             // Primitive type tags, async values — just clone
             other => other.clone(),
         }

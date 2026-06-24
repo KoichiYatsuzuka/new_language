@@ -8,7 +8,7 @@ from ..ast import (
     CallArg, CallArgPositional, CallArgKeyword, CallArgVariadic,
 )
 from .types import (
-    TyAny, TyNamedInstance, TyFunction, TyUnresolved, FnTypeParam, InferredType,
+    TyAny, TyBool, TyNamedInstance, TyFunction, TyUnresolved, TyResult, FnTypeParam, InferredType,
 )
 from .errors import (
     ErrCallArgCountMismatch, ErrCallArgTypeMismatch, ErrUnknownKeywordArg,
@@ -24,6 +24,13 @@ class _TypeCheckerCallCheck:
     """Mixin providing call inference and argument checking for TypeChecker."""
 
     def _infer_call(self, func: Expr, args: list[CallArg]) -> "InferredType":
+        # Result[T, E].is_OK() / is_ERR() → TyBool
+        if isinstance(func, ExprAttr) and func.attr in ("is_OK", "is_ERR") and not args:
+            if isinstance(func.object, ExprIdent):
+                obj_info = self._lookup(func.object.name)
+                if obj_info is not None and isinstance(obj_info.ty, TyResult):
+                    return TyBool()
+
         method_call_info: Optional[tuple[str, str]] = None
         if isinstance(func, ExprAttr) and isinstance(func.object, ExprIdent):
             obj_info = self._lookup(func.object.name)

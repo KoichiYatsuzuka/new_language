@@ -35,7 +35,7 @@ from .value import (
     TlTemplateFn, TlTemplateGenFn, TlTemplateClass,
     TlClass, TlInstance, TlType, TlTrait, TlProtocol,
     TlNamespace, TlSlice, TlFileObject, TlComplex,
-    TlSignal, TlEventLoop,
+    TlSignal, TlEventLoop, TlResultVal,
     CapturedImm, CapturedMut,
     type_name, display, is_truthy, _values_equal, deep_clone, deep_clone_unfrozen, _repr_val,
 )
@@ -254,9 +254,23 @@ class Interpreter:
 
             case StmtIf(branches=branches, else_body=else_body):
                 for cond_expr, body in branches:
+                    # Result guard detection: x.is_OK() / x.is_ERR()
+                    result_rebind: "Optional[tuple[str, Value, bool]]" = None
+                    if (isinstance(cond_expr, ExprCall) and not cond_expr.args
+                            and isinstance(cond_expr.func, ExprAttr)
+                            and isinstance(cond_expr.func.object, ExprIdent)
+                            and cond_expr.func.attr in ("is_OK", "is_ERR")):
+                        vname = cond_expr.func.object.name
+                        if self._env.contains(vname):
+                            rv_val, is_mut = self._env.get_info(vname)
+                            if isinstance(rv_val, TlResultVal):
+                                result_rebind = (vname, rv_val.inner, is_mut)
                     if self._eval_truthy(self.eval(cond_expr)):
                         self._env.push_scope()
                         try:
+                            if result_rebind is not None:
+                                vn, inner_val, is_mut = result_rebind
+                                self._env.declare(vn, inner_val, mutable=is_mut)
                             self.exec_stmts(body)
                         finally:
                             self._env.pop_scope()
@@ -843,7 +857,9 @@ class Interpreter:
     # ------------------------------------------------------------------
 
     def _eval_attr(self, obj: Value, attr: str) -> Value:
-        from .value import TlCsObject
+        from .value import TlCsObject, TlResultVal
+        if isinstance(obj, TlResultVal):
+            raise RuntimeError(f"AttributeError: Result value has no attribute '{attr}'; use is_OK() or is_ERR() first")
         if isinstance(obj, TlInstance):
             return self._get_instance_attr(obj, attr)
         if isinstance(obj, TlClass):
@@ -1094,7 +1110,15 @@ class Interpreter:
         raise RuntimeError(f"TypeError: '{type_name(func)}' object is not callable")
 
     def _call_attr(self, obj: Value, attr: str, args: list, kwargs: dict) -> Value:
-        from .value import TlCsObject
+        from .value import TlCsObject, TlResultVal
+        if isinstance(obj, TlResultVal):
+            if args or kwargs:
+                raise RuntimeError(f"TypeError: Result.{attr}() takes no arguments")
+            if attr == "is_OK":
+                return obj.ok
+            if attr == "is_ERR":
+                return not obj.ok
+            raise RuntimeError(f"AttributeError: Result value has no method '{attr}'")
         if isinstance(obj, TlInstance):
             return self._call_method(obj, attr, args, kwargs)
         if isinstance(obj, TlClass):

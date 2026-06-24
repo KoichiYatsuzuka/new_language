@@ -211,6 +211,32 @@ impl TypeChecker {
                         None
                     };
 
+                    // Result 型ガード: `x.is_OK()` または `x.is_ERR()` を検出して型を絞り込む
+                    let result_guard: Option<(String, InferredType, bool)> = {
+                        if let Expr::Call { func, args, .. } = cond {
+                            if args.is_empty() {
+                                if let Expr::Attr { object, attr, .. } = func.as_ref() {
+                                    if attr == "is_OK" || attr == "is_ERR" {
+                                        if let Expr::Ident(var_name) = object.as_ref() {
+                                            self.lookup(var_name).and_then(|info| {
+                                                if let InferredType::Result(ok_ty, err_ty) = &info.ty {
+                                                    let narrowed_ty = if attr == "is_OK" {
+                                                        *ok_ty.clone()
+                                                    } else {
+                                                        *err_ty.clone()
+                                                    };
+                                                    Some((var_name.clone(), narrowed_ty, info.mutable))
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                        } else { None }
+                                    } else { None }
+                                } else { None }
+                            } else { None }
+                        } else { None }
+                    };
+
                     let (narrowed, error_info): (
                         Option<(String, InferredType, bool)>,
                         Option<(String, InferredType, Span)>,
@@ -249,6 +275,15 @@ impl TypeChecker {
                                     ),
                                 }
                             } else {
+                                // `is TypeName` guard: if var_ty is Intersection, validate guard type
+                                if let InferredType::Intersection(isect_types) = &var_ty {
+                                    let isect_cloned = isect_types.clone();
+                                    self.check_intersection_guard_type(
+                                        type_name,
+                                        &isect_cloned,
+                                        Some(span.clone()),
+                                    );
+                                }
                                 (Some((var_name.clone(), guard_ty, is_mut)), None)
                             }
                         }
@@ -264,7 +299,8 @@ impl TypeChecker {
                     }
 
                     self.push_scope();
-                    if let Some((var_name, narrowed_ty, is_mut)) = narrowed {
+                    // result_guard が優先、なければ通常の narrowed を使用
+                    if let Some((var_name, narrowed_ty, is_mut)) = result_guard.or(narrowed) {
                         self.declare(var_name, narrowed_ty, is_mut);
                     }
                     self.check_stmts(body);
@@ -371,6 +407,22 @@ impl TypeChecker {
                             span: None,
                         });
                     }
+                }
+                // 交差型を含む関数は部分コンパイルできないため警告を出す
+                let has_intersection_type = params.iter().any(|p| {
+                    p.type_ann.as_deref()
+                        .and_then(InferredType::from_ann)
+                        .map_or(false, |ty| matches!(ty, InferredType::Intersection(_)))
+                }) || return_type.as_deref()
+                    .and_then(InferredType::from_ann)
+                    .map_or(false, |ty| matches!(ty, InferredType::Intersection(_)));
+                if has_intersection_type {
+                    self.report_warning(StaticTypeWarning {
+                        kind: TypeWarningKind::IntersectionSkippedCompile {
+                            func_name: name.clone(),
+                        },
+                        span: None,
+                    });
                 }
                 self.declare(name.clone(), InferredType::Unresolved, false);
                 self.push_scope();
@@ -747,6 +799,17 @@ impl TypeChecker {
             let proto_name = ann.to_string();
             self.check_protocol_conformance(&rhs_ty, &proto_name, None, var_name);
             return InferredType::Protocol(proto_name);
+        }
+        // アノテーションが交差型の場合、メンバー互換性をチェック
+        if let Some(InferredType::Intersection(types)) = InferredType::from_ann(ann) {
+            let types_cloned = types.clone();
+            self.check_intersection_members(&types_cloned, None);
+            return InferredType::Intersection(types);
+        }
+        // アノテーションが Result 型の場合、Ok 型と Err 型が同じでないかチェック
+        if let Some(InferredType::Result(ok_ty, err_ty)) = InferredType::from_ann(ann) {
+            self.validate_result_type(&ok_ty, &err_ty, None);
+            return InferredType::Result(ok_ty, err_ty);
         }
         rhs_ty
     }

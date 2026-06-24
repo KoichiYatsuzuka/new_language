@@ -38,6 +38,24 @@ impl TypeChecker {
         let method_call_info: Option<(String, String)> =
             if let Expr::Attr { object, attr, span } = func {
                 let obj_ty = self.infer(object);
+
+                // Result[T, E] の is_OK() / is_ERR() は特別扱いして bool を返す。
+                // 他のメソッドやアトリビュートアクセスは OperationOnUnion エラーを発生させる。
+                if let IT::Result(_, _) = &obj_ty {
+                    if (attr == "is_OK" || attr == "is_ERR") && args.is_empty() {
+                        return InferredType::Bool;
+                    } else {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::OperationOnUnion {
+                                union_type: obj_ty.to_string(),
+                                op: format!("method/attribute `{attr}`"),
+                            },
+                            span: Some(span.clone()),
+                        });
+                        return InferredType::Unresolved;
+                    }
+                }
+
                 let cls_name_opt: Option<String> = match &obj_ty {
                     InferredType::NamedInstance(cls) => Some(cls.clone()),
                     InferredType::TypeValOf(inner) => {

@@ -1479,6 +1479,10 @@ pub fn compile_jit(stmts: &[crate::ast::Stmt])
             if !template_params.is_empty() || *is_abstract || !body_eligible(body) {
                 return None;
             }
+            if params.iter().any(|p| p.type_ann.as_deref().map_or(false, |a| a.contains("Intersection[")))
+                || return_type.as_deref().map_or(false, |a| a.contains("Intersection[")) {
+                return None;
+            }
             Some(EligibleFn { name, params, return_type: return_type.as_deref(), body })
         } else { None }
     }).collect();
@@ -1592,6 +1596,10 @@ pub fn get_bitcode(stmts: &[crate::ast::Stmt]) -> Result<(Vec<u8>, Vec<crate::pa
     let eligible: Vec<EligibleFn> = stmts.iter().filter_map(|s| {
         if let Stmt::FnDef { name, template_params, params, body, is_abstract, return_type, .. } = s {
             if !template_params.is_empty() || *is_abstract || !body_eligible(body) {
+                return None;
+            }
+            if params.iter().any(|p| p.type_ann.as_deref().map_or(false, |a| a.contains("Intersection[")))
+                || return_type.as_deref().map_or(false, |a| a.contains("Intersection[")) {
                 return None;
             }
             Some(EligibleFn { name, params, return_type: return_type.as_deref(), body })

@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: b614502cff33c6ad5e49427ca347db8ad90c31a5
 """Type annotation and parameter parsing (mirrors src/parser/types.rs)."""
 from __future__ import annotations
 from typing import Optional
@@ -30,6 +30,21 @@ class _ParserTypes:
             if len(args) < 2:
                 raise self._error(f"Union requires at least 2 type arguments, got {len(args)}")
             return f"Union[{','.join(args)}]"
+
+        if k == TokenKind.INTERSECTION:
+            self._advance()
+            if self._current_kind() != TokenKind.LBRACKET:
+                raise self._error("Intersection requires type arguments: Intersection[Type1, Type2, ...]")
+            self._advance()
+            args: list[str] = []
+            while self._current_kind() not in (TokenKind.RBRACKET, TokenKind.EOF):
+                args.append(self._parse_type_expr())
+                if self._current_kind() == TokenKind.COMMA:
+                    self._advance()
+            self._eat(TokenKind.RBRACKET)
+            if len(args) < 2:
+                raise self._error(f"Intersection requires at least 2 type arguments, got {len(args)}")
+            return f"Intersection[{','.join(args)}]"
 
         if k == TokenKind.OPTION:
             self._advance()
@@ -79,6 +94,17 @@ class _ParserTypes:
 
         if base == "function":
             return self._parse_function_type_ann()
+
+        if base == "Result" and self._current_kind() == TokenKind.LBRACKET:
+            self._advance()
+            ok_ty = self._parse_type_expr()
+            if self._current_kind() == TokenKind.COMMA:
+                self._advance()
+            err_ty = self._parse_type_expr()
+            if self._current_kind() == TokenKind.COMMA:
+                self._advance()
+            self._eat(TokenKind.RBRACKET)
+            return f"Result[{ok_ty}, {err_ty}]"
 
         if self._current_kind() == TokenKind.LBRACKET:
             self._advance()

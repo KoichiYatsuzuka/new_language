@@ -1491,6 +1491,15 @@ impl Interpreter {
                     _ => Err("TypeError: len() takes exactly 1 argument".to_string()),
                 }
             },
+            // Result コンストラクタ: Ok(value) / Err(error)
+            "Ok" => match vals.as_slice() {
+                [v] => Ok(Value::ResultVal { ok: true, inner: Box::new(v.clone()) }),
+                _ => Err("TypeError: Ok() takes exactly 1 argument".to_string()),
+            },
+            "Err" => match vals.as_slice() {
+                [v] => Ok(Value::ResultVal { ok: false, inner: Box::new(v.clone()) }),
+                _ => Err("TypeError: Err() takes exactly 1 argument".to_string()),
+            },
             other => Err(format!("TypeError: '{}' object is not callable", other)),
         }
     }

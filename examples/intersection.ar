@@ -1,0 +1,52 @@
+# Intersection type example: a value satisfying ALL constituent types simultaneously
+
+trait Flyable:
+    fn fly(self) -> str:
+        ...
+
+trait Swimmable:
+    fn swim(self) -> str:
+        ...
+
+class Duck(Flyable, Swimmable):
+    let name: str
+
+    fn __init__(mut self, n: str) -> None:
+        self.name = n
+
+    fn fly(self) -> str:
+        return self.name + " is flying"
+
+    fn swim(self) -> str:
+        return self.name + " is swimming"
+
+class FlyingFish(Flyable, Swimmable):
+    let name: str
+
+    fn __init__(mut self, n: str) -> None:
+        self.name = n
+
+    fn fly(self) -> str:
+        return self.name + " leaps through the air"
+
+    fn swim(self) -> str:
+        return self.name + " swims fast"
+
+# A function accepting a value that must be BOTH Flyable AND Swimmable
+fn show_abilities(creature: Intersection[Flyable, Swimmable]) -> None:
+    # member access on both constituent types — no downcast needed
+    print(creature.fly())
+    print(creature.swim())
+
+let duck = Duck("Donald")
+let fish = FlyingFish("Exocoetus")
+
+show_abilities(duck)
+show_abilities(fish)
+
+# Type guard narrowing: x is C narrows to C within the branch
+let animal: Intersection[Flyable, Swimmable] = duck
+if animal is Duck:
+    print("It's a duck:", animal.fly())
+
+print("Done")

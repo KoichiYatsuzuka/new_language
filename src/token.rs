@@ -260,6 +260,8 @@ pub enum Token {
     // Union[T1, T2, ...] and Option[T] type keywords
     Union,
     Option,
+    // Intersection[T1, T2, ...] type keyword
+    Intersection,
 
     // Event handler keywords
     On,   // on
@@ -431,6 +433,7 @@ impl Token {
             Token::Any => Some("Any"),
             Token::Union => Some("Union"),
             Token::Option => Some("Option"),
+            Token::Intersection => Some("Intersection"),
             Token::On => Some("on"),
             Token::Off => Some("off"),
             Token::Once => Some("once"),

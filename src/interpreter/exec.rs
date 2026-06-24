@@ -39,6 +39,26 @@ fn extract_list_elem_type(ann: &str) -> Option<&str> {
     Some(inner.trim())
 }
 
+/// `x.is_OK()` / `x.is_ERR()` の形式の式から `(変数名, is_ok_flag)` を抽出する。
+/// Result ガード節の変数バインディングに使う。
+fn extract_result_guard_call(cond: &Expr) -> Option<(String, bool)> {
+    if let Expr::Call { func, args, .. } = cond {
+        if !args.is_empty() {
+            return None;
+        }
+        if let Expr::Attr { object, attr, .. } = func.as_ref() {
+            if let Expr::Ident(var_name) = object.as_ref() {
+                match attr.as_str() {
+                    "is_OK" => return Some((var_name.clone(), true)),
+                    "is_ERR" => return Some((var_name.clone(), false)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    None
+}
+
 impl Interpreter {
     /// 文（`Stmt`）を実行して `ExecResult` を返す。各 Stmt バリアントを専用メソッドに委譲する。
     pub fn exec(&mut self, stmt: &Stmt) -> Result<ExecResult, String> {
@@ -498,8 +518,28 @@ impl Interpreter {
         else_body: &Option<Vec<Stmt>>,
     ) -> Result<ExecResult, String> {
         for (cond, body) in branches {
+            // Result ガード検出: `x.is_OK()` / `x.is_ERR()` の形式を確認する
+            let result_rebind: Option<(String, bool)> = extract_result_guard_call(cond);
+
             let val = self.eval(cond)?;
             if self.eval_truthy(&val)? {
+                // ガード節なら x を内部値（unwrap済み）に差し替えたスコープでボディを実行する
+                if let Some((var_name, _is_ok)) = result_rebind {
+                    let rebind_info = self.get_var(&var_name).and_then(|rv| {
+                        if let Value::ResultVal { inner, .. } = rv.get_value() {
+                            Some((*inner, rv.is_mutable()))
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some((inner_val, is_mut)) = rebind_info {
+                        self.push_scope();
+                        self.declare_var(var_name, Var::new(inner_val, is_mut));
+                        let result = self.exec_block(body);
+                        self.pop_scope();
+                        return result;
+                    }
+                }
                 return self.exec_scoped_block(body);
             }
         }
