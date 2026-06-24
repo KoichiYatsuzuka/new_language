@@ -29,6 +29,8 @@ import[py-int]  numpy as np  # Python インタープリタ (PyO3) 経由で読�
 import[rs]      regex        # Rust crate を直接読み込み
 import[cpp-dll] DxLib.DxLib with stub as dx  # C++ DLL を読み込み
 import[cpp-lib] MyLib.MyLib with stub as ml  # C++ 静的ライブラリを読み込み
+import[cs-dll]  MyLib.MyBridge as my         # .NET NativeAOT DLL を読み込み
+import[cs-proc] MyLib.MyBridge as my         # (cs-dll の別名、将来のプロセス分離用)
 ```
 
 ---
@@ -162,6 +164,198 @@ import[cpp-lib] MyMath.VecMath with stub as vm
 **制限**:
 - C++ のオーバーロード・テンプレート・名前マングリングは非対応
 - `ar_config.json` でコンパイラパス・追加フラグを設定する必要があります
+
+---
+
+## .NET NativeAOT DLL (`[cs-dll]`)
+
+C# の NativeAOT でコンパイルしたネイティブ DLL を Arrow から直接呼び出します。
+
+```hv
+import[cs-dll] cs_form_test.FormBridge as forms
+
+# 静的メソッド
+let result = forms.FormApp.message_box("タイトル", "メッセージ", 0)
+
+# コンストラクタ → C# オブジェクトハンドル
+let tp = forms.TextProcessor("  Hello, World!  ")
+
+# インスタンスメソッド
+let upper = tp.ToUpper()
+
+# プロパティアクセス (ゼロ引数インスタンスメソッドとして dispatch)
+let ok = tp.Confirmed
+```
+
+### 必要なファイル
+
+| ファイル | 役割 |
+|----------|------|
+| `{Name}.dll` | 管理 DLL (ECMA-335 メタデータ、型スタブ生成用) |
+| `{Name}_native.dll` | NativeAOT ネイティブ DLL (実際の実行時呼び出し先) |
+
+管理 DLL (`{Name}.dll`) はスクリプトのディレクトリ (`source_dir`) またはモジュールサブディレクトリから検索されます。  
+ネイティブ DLL (`{Name}_native.dll`) は同じ検索パスで探されます。
+
+### ブリッジ DLL の設計パターン
+
+Arrow は管理 DLL の ECMA-335 メタデータを読んで Arrow 型スタブを生成します。このとき C# の戻り型 (`string` / `int` / `void` 等) が Arrow の `return_type` にマッピングされ、実行時の ABI dispatch を決定します。
+
+そのため **スタブクラス** と **ブリッジエクスポートクラス** を分離する設計を推奨します:
+
+```csharp
+// ── スタブクラス (Arrow 型スタブ生成用) ────────────────────────────────
+// C# の戻り型が Arrow の return_type になる。
+// このクラスのメソッドは実際には呼ばれない。
+public static class FormApp
+{
+    public static int    message_box(string title, string message, int buttons) => 0;
+    public static long   input_box(string title, string prompt) => 0;
+    public static string get_str(long handle) => "";
+    public static void   release(long handle) { }
+}
+
+// ── ブリッジエクスポートクラス (NativeAOT 生ポインタ ABI) ──────────────
+// [UnmanagedCallersOnly] で export 名を "FormApp_*" に揃える。
+public static unsafe class FormBridgeExports
+{
+    [UnmanagedCallersOnly(EntryPoint = "FormApp_message_box")]
+    public static long message_box(byte* title_ptr, int title_len,
+                                   byte* msg_ptr, int msg_len, long buttons) { ... }
+
+    [UnmanagedCallersOnly(EntryPoint = "FormApp_get_str")]
+    public static void get_str(long handle, byte** out_ptr, int* out_len) { ... }
+
+    [UnmanagedCallersOnly(EntryPoint = "FormApp_release")]
+    public static void release(long handle) => ObjTable.Release(handle);
+
+    // Arrow ランタイムが文字列バッファ解放に使う固定 export
+    [UnmanagedCallersOnly(EntryPoint = "arrow_bridge_free_str")]
+    public static void free_str(byte* ptr) { if (ptr != null) Marshal.FreeHGlobal((IntPtr)ptr); }
+}
+```
+
+### ABI 規約
+
+#### 引数
+
+| Arrow 型 | ブリッジへの渡し方 |
+|-----------|-------------------|
+| `int` / `bool` | `i64` 直値 |
+| `float` | `i64` ビットパターン (IEEE-754 reinterpret) |
+| `str` | `(byte* ptr, int len)` の 2 引数ペア (UTF-8) |
+| C# オブジェクトハンドル | `i64` ハンドル値 |
+
+#### エクスポート名の命名規則
+
+| 種別 | エクスポート名 |
+|------|----------------|
+| 静的メソッド | `{ClassName}_{method}` |
+| インスタンスメソッド | `{ClassName}_inst_{method}` |
+| コンストラクタ | `{ClassName}_new_{argc}` または `{ClassName}_new` |
+| 文字列バッファ解放 | `arrow_bridge_free_str(byte*)` (固定名) |
+| オブジェクト解放 | `arrow_bridge_release(i64)` (固定名) |
+
+#### 戻り値
+
+| C# 戻り型 → Arrow `return_type` | 変換方法 |
+|----------------------------------|----------|
+| `int` / `long` → `"int"` | `i64` 直値 |
+| `float` / `double` → `"float"` | `i64` ビットパターンを `f64` に reinterpret |
+| `bool` → `"bool"` | `raw != 0` |
+| `string` → `"str"` | `(byte** out_ptr, int* out_len)` 出力引数、`arrow_bridge_free_str` で解放 |
+| `void` → `"None"` | 無視 |
+| オブジェクト → `"int"` | `i64` ハンドル (Arrow は `CsObject` として保持) |
+
+文字列を返す関数は引数リストの末尾に `(byte** out_ptr, int* out_len)` の 2 引数を自動付加して呼び出されます。
+
+### オブジェクトライフサイクル
+
+C# 側では `Dictionary<long, object>` でオブジェクトをハンドル管理します:
+
+```csharp
+public static class ObjTable
+{
+    static readonly Dictionary<long, object> _table = new();
+    static long _next = 1;
+
+    public static long Store(object obj) { long h = _next++; _table[h] = obj; return h; }
+    public static T Get<T>(long h) => (T)_table[h];
+    public static void Release(long h) => _table.Remove(h);
+}
+```
+
+Arrow から `release(handle)` を呼ぶと `ObjTable.Release(handle)` が実行されます。
+
+### プロジェクト設定 (`.csproj`)
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+</Project>
+```
+
+ビルド:
+
+```bash
+dotnet publish -r win-x64 -c Release --self-contained
+# 出力: bin/Release/net8.0-windows/win-x64/publish/{Name}.dll  (NativeAOT)
+#        bin/Release/net8.0-windows/win-x64/{Name}.dll          (管理 DLL)
+```
+
+### パーサーでの処理
+
+`import[cs-dll]` はパース時に次の処理を行います:
+
+1. `{Name}.dll` (管理 DLL) を検索
+2. ECMA-335 メタデータを解析 (`cs_assembly.rs` / `cs_assembly.py`)
+3. 各 `TypeDef` から Arrow の `ClassDef` / `TraitDef` スタブを生成  
+   — C# の戻り型が Arrow の `return_type` にマッピングされる
+4. 生成した `Vec<Stmt>` を `Stmt::Import.body` に埋め込む
+
+### インタープリターでの処理
+
+実行時は次の手順で動作します:
+
+1. `body` の実行 → `TlClass` スタブが名前空間に登録される
+2. `{Name}_native.dll` (NativeAOT DLL) を検索・ロード
+3. 名前空間内の全 `TlClass` に `__cs_bridge_path__` クラス変数を設定
+4. メソッド呼び出し時に `__cs_bridge_path__` を検出 → cs-dll dispatch へ切り替え:
+   - `TlClass.method(args)` → `call_static(bridge, ClassName, method, args, ret_type)`
+   - `TlCsObject.method(args)` → `call_instance(bridge, ClassName, handle, method, args, ret_type)`
+   - `TlClass(args)` (コンストラクタ) → `call_constructor(bridge, ClassName, args)` → `TlCsObject`
+
+### WinForms の例
+
+```hv
+import[cs-dll] cs_form_test.FormBridge as forms
+
+# MessageBox (ブロッキング)
+let r = forms.FormApp.message_box("タイトル", "内容", 2)  # 2=YesNo
+if r == 1:
+    print("Yes が押されました")
+
+# 入力ダイアログ → 文字列ハンドル → 文字列取得
+let h = forms.FormApp.input_box("入力", "名前を入力してください:")
+if h != 0:
+    let name = forms.FormApp.get_str(h)
+    forms.FormApp.release(h)
+    print("入力:", name)
+
+# TODO マネージャー
+let todo_h = forms.FormApp.show_todo("タスク管理")
+let n = forms.FormApp.todo_count(todo_h)
+mut i = 0
+while i < n:
+    print("-", forms.FormApp.todo_get(todo_h, i))
+    i += 1
+forms.FormApp.release(todo_h)
+```
 
 ---
 
