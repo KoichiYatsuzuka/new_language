@@ -30,7 +30,7 @@ exports.TUPLE_DECL_RE = TUPLE_DECL_RE;
 const FOR_LOOP_RE = /^(\s*)for\s+((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s+in\s+(.+)$/;
 exports.FOR_LOOP_RE = FOR_LOOP_RE;
 // Groups: 1=kind, 2=path, 3=version[?], 4=with-stub[?], 5=alias[?]
-const IMPORT_RE = /^\s*(import(?:\[(?:py(?:-int)?|rs|hvc?|cpp-(?:lib|dll)|cs-(?:dll|proc))\])?)\s+([\w.]+)(?:\[([^\]]*)\])?(?:\s+with\s+(\w+))?(?:\s+as\s+([A-Za-z_]\w*))?/;
+const IMPORT_RE = /^\s*(import(?:\[(?:py(?:-int)?|rs|hvc?|cpp-(?:lib|dll)|cs-(?:dll|proc)|js-proc)\])?)\s+([\w.]+)(?:\[([^\]]*)\])?(?:\s+with\s+(\w+))?(?:\s+as\s+([A-Za-z_]\w*))?/;
 exports.IMPORT_RE = IMPORT_RE;
 const TYPEGUARD_IS_NOT_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+not\s+([A-Za-z_]\w*)\s*:/;
 const TYPEGUARD_IS_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+([A-Za-z_]\w*)\s*:/;

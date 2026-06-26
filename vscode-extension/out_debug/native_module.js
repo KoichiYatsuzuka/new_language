@@ -13,6 +13,8 @@ function importKindOf(keyword) {
         return 'rs';
     if (keyword === 'import[cs-dll]' || keyword === 'import[cs-proc]')
         return 'cs';
+    if (keyword === 'import[js-proc]')
+        return 'js';
     if (keyword === 'import' || keyword.startsWith('import[hv'))
         return 'ar';
     return 'py';
@@ -309,6 +311,26 @@ async function loadArConfig(startDir) {
         return undefined;
     }
 }
+/**
+ * Walk up from startDir to find the first ar_config.json that passes keyCheck.
+ * Returns the parsed config and the directory it was found in.
+ */
+async function findArConfigDirWithKey(startDir, keyCheck) {
+    let current = startDir;
+    for (;;) {
+        try {
+            const cfgPath = path.join(current, 'ar_config.json');
+            const cfg = JSON.parse(await fs_1.promises.readFile(cfgPath, 'utf8'));
+            if (keyCheck(cfg))
+                return { config: cfg, dir: current };
+        }
+        catch { /* not found or key absent */ }
+        const parent = path.dirname(current);
+        if (parent === current)
+            return undefined;
+        current = parent;
+    }
+}
 /** Convert a Rust type string to the equivalent Arrow LangType. */
 function rsTypeToTl(rs, selfName) {
     // Strip reference/mut qualifiers
@@ -451,9 +473,131 @@ function parseRustLib(source) {
     return { funcs, sigs, docs, classes };
 }
 exports.parseRustLib = parseRustLib;
+// ===== JS module parsing =====
+/** Map a JavaScript type string (from JSDoc) to an Arrow LangType. */
+function jsTypeToArrow(jsType) {
+    switch (jsType.toLowerCase().trim()) {
+        case 'string': return 'str';
+        case 'number': return 'float';
+        case 'boolean': return 'bool';
+        case 'null':
+        case 'undefined':
+        case 'void': return 'None';
+        case 'array': return 'List';
+        case 'object': return 'unknown';
+        default: return 'unknown';
+    }
+}
+/**
+ * Parse a JSDoc block and build an Arrow-style signature for `fnName`.
+ * Falls back to using the raw parameter list from the source if no JSDoc.
+ */
+function buildJsSig(fnName, content, jsdocRaw) {
+    // Try JSDoc @param / @returns
+    if (jsdocRaw) {
+        const params = [];
+        const paramRe = /@param\s+\{([^}]+)\}\s+(\w+)/g;
+        let pm;
+        while ((pm = paramRe.exec(jsdocRaw)) !== null) {
+            params.push(`${pm[2]}: ${jsTypeToArrow(pm[1])}`);
+        }
+        const retMatch = /@returns?\s+\{([^}]+)\}/.exec(jsdocRaw);
+        const retType = retMatch ? jsTypeToArrow(retMatch[1]) : 'unknown';
+        if (params.length > 0 || retMatch) {
+            return `fn ${fnName}(${params.join(', ')}) -> ${retType}`;
+        }
+    }
+    // Fallback: extract raw parameter list from function body
+    const fnRe = new RegExp(`(?:async\\s+)?function\\s+${fnName}\\s*\\(([^)]*)\\)`, 'g');
+    const fm = fnRe.exec(content);
+    if (fm) {
+        const params = fm[1].split(',')
+            .map(p => p.trim())
+            .filter(Boolean)
+            .map(p => `${p}: unknown`);
+        return `fn ${fnName}(${params.join(', ')}) -> unknown`;
+    }
+    return `fn ${fnName}(...) -> unknown`;
+}
+/**
+ * Extract function names and signatures from a CJS/ESM JS file.
+ *
+ * Handles:
+ *  - `module.exports = { fn1, fn2, fn3 }`
+ *  - `module.exports = { fn1: ..., fn2: ... }`
+ *  - `exports.fnName = function(...) { ... }`
+ *  - `exports.fnName = async function(...) { ... }`
+ *
+ * Also harvests JSDoc `/** ... *\/` blocks preceding each function.
+ */
+function parseJsModule(content) {
+    var _a;
+    const funcs = new Map();
+    const sigs = new Map();
+    const docs = new Map();
+    // Build name → JSDoc raw-text map
+    const jsdocMap = new Map();
+    const jsdocRe = /\/\*\*([\s\S]*?)\*\/\s*(?:async\s+)?function\s+([A-Za-z_]\w*)/g;
+    let jm;
+    while ((jm = jsdocRe.exec(content)) !== null) {
+        const raw = jm[1].replace(/^\s*\*/gm, '').trim();
+        jsdocMap.set(jm[2], raw);
+    }
+    // Helper: register a function name
+    const register = (name) => {
+        if (name === 'exports' || name === 'module')
+            return;
+        funcs.set(name, 'unknown');
+        sigs.set(name, buildJsSig(name, content, jsdocMap.get(name)));
+        const rawDoc = jsdocMap.get(name);
+        if (rawDoc) {
+            // Strip JSDoc tags to get plain description
+            const desc = rawDoc.replace(/@\w+[^\n]*/g, '').trim();
+            if (desc)
+                docs.set(name, desc);
+        }
+    };
+    // Pattern 1: module.exports = { fn1, fn2, fn3 }
+    // Handles the simple single-line pattern used in our bridge modules.
+    // For multi-line, we search for the last occurrence.
+    const modExRe = /module\.exports\s*=\s*\{([^}]+)\}/gs;
+    let em;
+    while ((em = modExRe.exec(content)) !== null) {
+        for (const part of em[1].split(',')) {
+            // "fn1" or "fn1: someRef" or whitespace
+            const name = (_a = part.trim().match(/^([A-Za-z_]\w*)(?:\s*:.*)?$/)) === null || _a === void 0 ? void 0 : _a[1];
+            if (name)
+                register(name);
+        }
+    }
+    // Pattern 2: exports.fnName = function / exports.fnName = async function
+    const exAssignRe = /^exports\.([A-Za-z_]\w*)\s*=\s*(?:async\s+)?function/gm;
+    let ea;
+    while ((ea = exAssignRe.exec(content)) !== null) {
+        if (!funcs.has(ea[1]))
+            register(ea[1]);
+    }
+    // Pattern 3: top-level named export arrow functions
+    // exports.fnName = (...) =>
+    const exArrowRe = /^exports\.([A-Za-z_]\w*)\s*=\s*(?:async\s+)?\(/gm;
+    let arr;
+    while ((arr = exArrowRe.exec(content)) !== null) {
+        if (!funcs.has(arr[1]))
+            register(arr[1]);
+    }
+    // Pattern 4: TypeScript CJS output — exports.fnName = identifier;
+    // Handles `exports.stripComment = stripComment;` (tsc --module commonjs output)
+    const exRefRe = /^exports\.([A-Za-z_]\w*)\s*=\s*[A-Za-z_]\w*\s*;/gm;
+    let er;
+    while ((er = exRefRe.exec(content)) !== null) {
+        if (!funcs.has(er[1]))
+            register(er[1]);
+    }
+    return { funcs, sigs, docs, classes: new Map() };
+}
 // ===== loadNativeModuleInfo =====
 async function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
     const empty = { funcs: new Map(), sigs: new Map(), docs: new Map(), classes: new Map() };
     if (importKindOf(importKind) === 'cpp') {
         const candidates = [];
@@ -516,6 +660,41 @@ async function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
             try {
                 const buf = await fs_1.promises.readFile(candidate);
                 return (0, cs_assembly_1.parseNetAssembly)(buf);
+            }
+            catch { /* try next */ }
+        }
+        return empty;
+    }
+    // ── import[js-proc]: find the JS/CJS file and parse its exports ──────────
+    if (importKindOf(importKind) === 'js') {
+        // 1. Check for an .ars stub file first (provides Arrow-typed signatures)
+        const arsPath = path.join(docDir, ...modulePath.split('.')) + '.ars';
+        try {
+            const arsContent = await fs_1.promises.readFile(arsPath, 'utf8');
+            return parseTlStub(arsContent);
+        }
+        catch { /* no stub — fall through to JS parsing */ }
+        // 2. Find the JS file via ar_config.json — walk up to find a config with javascript section
+        const jsResult = await findArConfigDirWithKey(docDir, cfg => !!cfg.javascript);
+        const config = jsResult === null || jsResult === void 0 ? void 0 : jsResult.config;
+        const configDir = (_f = jsResult === null || jsResult === void 0 ? void 0 : jsResult.dir) !== null && _f !== void 0 ? _f : docDir;
+        const bridgeScript = (_h = (_g = config === null || config === void 0 ? void 0 : config.javascript) === null || _g === void 0 ? void 0 : _g.bridge_script) !== null && _h !== void 0 ? _h : 'bridge/js_bridge.cjs';
+        const bridgeRoot = (_k = (_j = config === null || config === void 0 ? void 0 : config.javascript) === null || _j === void 0 ? void 0 : _j.bridge_root) !== null && _k !== void 0 ? _k : '.';
+        const bridgeDir = path.dirname(path.resolve(configDir, bridgeScript));
+        const rootDir = path.resolve(configDir, bridgeRoot);
+        const relPath = modulePath.replace(/\./g, '/');
+        const jsCandidates = [
+            path.join(bridgeDir, relPath + '.cjs'),
+            path.join(bridgeDir, relPath + '.js'),
+            path.join(rootDir, relPath + '.cjs'),
+            path.join(rootDir, relPath + '.js'),
+            path.join(rootDir, relPath, 'index.cjs'),
+            path.join(rootDir, relPath, 'index.js'),
+        ];
+        for (const jsPath of jsCandidates) {
+            try {
+                const content = await fs_1.promises.readFile(jsPath, 'utf8');
+                return parseJsModule(content);
             }
             catch { /* try next */ }
         }
