@@ -132,6 +132,9 @@ pub enum InferredType {
     Tuple(Vec<InferredType>),
     /// モジュールやパッケージを表す名前空間型。メンバー名 → 推論済み型のマップ。
     Namespace(HashMap<String, InferredType>),
+    /// Python モジュール (`import[py]` / `import[py-int]`) を表す名前空間型。
+    /// `Namespace` と異なり、未知のメンバーアクセスは `Unresolved` ではなく `Any` を返す。
+    PyNamespace(HashMap<String, InferredType>),
     /// 推論に失敗した・または未解決の型（エラーの伝播抑制のため使用する）。
     Unresolved,
     /// 関数型 `function[params]->R` または `function{params}->R`。
@@ -418,6 +421,7 @@ impl std::fmt::Display for InferredType {
                 write!(f, "tuple[{}]", parts.join(", "))
             }
             Self::Namespace(members) => write!(f, "<module({} members)>", members.len()),
+            Self::PyNamespace(members) => write!(f, "<py-module({} members)>", members.len()),
             Self::Unresolved => write!(f, "unknown"),
             Self::Function {
                 params,

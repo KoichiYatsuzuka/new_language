@@ -22,3 +22,4 @@ Log.txt
 *.pdb
 *.cache
 *.obj
+examples/cs_proc_test/obj/Debug/net8.0

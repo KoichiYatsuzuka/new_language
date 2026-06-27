@@ -667,6 +667,7 @@ impl TypeChecker {
 
             // --- import ---
             Stmt::Import {
+                lang,
                 module,
                 alias,
                 body,
@@ -676,17 +677,23 @@ impl TypeChecker {
                 let bind_name = alias
                     .clone()
                     .unwrap_or_else(|| module.last().unwrap().clone());
-                self.declare(bind_name, InferredType::Namespace(member_types), false);
+                let ns_ty = if lang == "py" || lang == "py-int" {
+                    InferredType::PyNamespace(member_types)
+                } else {
+                    InferredType::Namespace(member_types)
+                };
+                self.declare(bind_name, ns_ty, false);
             }
 
-            Stmt::FromImport { names, body, .. } => {
+            Stmt::FromImport { lang, names, body, .. } => {
                 let member_types = self.collect_module_types(body);
+                let is_py = lang == "py" || lang == "py-int";
                 for (orig_name, alias) in names {
                     let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());
                     let ty = member_types
                         .get(orig_name.as_str())
                         .cloned()
-                        .unwrap_or(InferredType::Unresolved);
+                        .unwrap_or(if is_py { InferredType::Any } else { InferredType::Unresolved });
                     self.declare(bind_name, ty, false);
                 }
             }
@@ -743,10 +750,16 @@ impl TypeChecker {
                         },
                     );
                 }
-                Stmt::Mut(name, _, _)
-                | Stmt::Let(name, _, _)
-                | Stmt::Const(name, _, _)
-                | Stmt::Static(name, _, _) => {
+                // Let/Const with a type annotation carry the type (used by Python stubs:
+                // `let dumps: function->str` → Function { params: None, return_type: Str }).
+                Stmt::Let(name, type_ann, _) | Stmt::Const(name, type_ann, _) => {
+                    let ty = type_ann
+                        .as_deref()
+                        .and_then(InferredType::from_ann)
+                        .unwrap_or(InferredType::Unresolved);
+                    map.insert(name.clone(), ty);
+                }
+                Stmt::Mut(name, _, _) | Stmt::Static(name, _, _) => {
                     map.insert(name.clone(), InferredType::Unresolved);
                 }
                 Stmt::LetTuple { targets, .. } => {
@@ -773,6 +786,7 @@ impl TypeChecker {
             "str" => InferredType::Str,
             "bool" => InferredType::Bool,
             "None" => InferredType::None,
+            "Any" => InferredType::Any,
             _ => InferredType::Unresolved,
         }
     }

@@ -100,7 +100,9 @@ function activate(context) {
             clearTimeout(existing);
         debounceMap.set(key, setTimeout(() => {
             debounceMap.delete(key);
-            (0, type_infer_1.provideDiagnostics)(document).then(diags => diagCollection.set(document.uri, diags));
+            (0, type_infer_1.provideDiagnostics)(document)
+                .then(diags => diagCollection.set(document.uri, diags))
+                .catch(_err => { });
         }, 400));
     }
     context.subscriptions.push(diagCollection, vscode.workspace.onDidOpenTextDocument(scheduleDiagnostics), vscode.workspace.onDidChangeTextDocument(e => scheduleDiagnostics(e.document)), vscode.workspace.onDidCloseTextDocument(doc => {

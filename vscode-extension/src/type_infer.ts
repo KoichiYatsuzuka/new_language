@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { promises as fsPromises } from 'fs';
+import * as path from 'path';
 import { BUILTIN_RETURN_TYPES, BUILTIN_TYPE_METHODS, BUILTIN_TYPE_NAMES, LANG_KEYWORDS, FUNC_DEF_RE } from './builtins';
 import {
     type LangType, type HoverSymbol, type CppClassInfo,
@@ -10,6 +12,7 @@ import {
     IMPORT_RE, TUPLE_DECL_RE, FOR_LOOP_RE,
     DocumentAnalysis, builtinStub, initBuiltinStub,
 } from './analysis';
+import { importKindOf, resolveImportSourceFile } from './native_module';
 
 export { initBuiltinStub };
 
@@ -37,6 +40,20 @@ function isTypeCompatible(declared: LangType, inferred: LangType): boolean {
 }
 
 // ===== Hover rendering =====
+
+function renderExternalClassHover(name: string, cppCls: CppClassInfo): vscode.MarkdownString {
+    const md = new vscode.MarkdownString(undefined, true);
+    md.isTrusted = false;
+    const basesStr = cppCls.bases.length > 0 ? `(${cppCls.bases.join(', ')})` : '';
+    const header = basesStr ? `class ${name}${basesStr}:` : `class ${name}:`;
+    const allSigs = [...cppCls.fieldSigs, ...cppCls.methodSigs];
+    const body = allSigs.length > 0
+        ? allSigs.map(s => `    ${s}`).join('\n')
+        : '    ...';
+    md.appendCodeblock(`${header}\n${body}`, 'arrow');
+    if (cppCls.classDocs) md.appendMarkdown(`\n\n${cppCls.classDocs}`);
+    return md;
+}
 
 function renderHover(symbol: HoverSymbol, opts?: {
     narrowedFrom?: string;
@@ -276,17 +293,48 @@ async function resolveMemberItems(
 
     const a = await DocumentAnalysis.for(document);
     const sym = selectHoverSymbol(a.symbols, objName, position.line);
-    if (!sym) return [];
+
+    // No local symbol — check if objName is a class from a cs/cpp/rs import (e.g. `wpf.WpfApp.`)
+    if (!sym) {
+        const cppCls = (a.cppClasses as Map<string, CppClassInfo>).get(objName);
+        if (!cppCls) return [];
+        const items: vscode.CompletionItem[] = [];
+        for (const [fieldName, fieldType] of cppCls.fields) {
+            const item = new vscode.CompletionItem(fieldName, vscode.CompletionItemKind.Field);
+            item.detail = `: ${fieldType}`;
+            items.push(item);
+        }
+        for (const [methodName, info] of cppCls.methods) {
+            const item = new vscode.CompletionItem(methodName, vscode.CompletionItemKind.Method);
+            item.detail = info.sig;
+            items.push(item);
+        }
+        return items;
+    }
 
     if (sym.kind === 'module') {
+        const items: vscode.CompletionItem[] = [];
+        // Top-level functions (py modules / cpp with exported funcs)
         const funcs = a.importFuncTypes.get(objName);
         const sigsMap = a.importFuncSigs.get(objName);
-        if (!funcs) return [];
-        return [...funcs.entries()].map(([name, retType]) => {
-            const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Function);
-            item.detail = sigsMap?.get(name) ?? `→ ${retType}`;
-            return item;
-        });
+        if (funcs) {
+            for (const [name, retType] of funcs) {
+                const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Function);
+                item.detail = sigsMap?.get(name) ?? `→ ${retType}`;
+                items.push(item);
+            }
+        }
+        // Classes exported by a cs/cpp/rs module (e.g. wpf.WpfApp, wpf.FontFinder)
+        const classes = (a.moduleClasses as Map<string, string[]>).get(objName);
+        if (classes) {
+            for (const className of classes) {
+                const item = new vscode.CompletionItem(className, vscode.CompletionItemKind.Class);
+                const cppCls = (a.cppClasses as Map<string, CppClassInfo>).get(className);
+                if (cppCls?.classDocs) item.detail = cppCls.classDocs;
+                items.push(item);
+            }
+        }
+        return items;
     }
 
     if (sym.type) {
@@ -409,14 +457,59 @@ export async function provideHover(
         const objName = dotAccess[1];
         const a = await DocumentAnalysis.for(document);
 
+        // ── 1-level: module.name ──────────────────────────────────────────────
+
+        // Top-level function in external module
         const retType = a.importFuncTypes.get(objName)?.get(name);
         if (retType !== undefined) {
             const md = new vscode.MarkdownString(undefined, true);
             const sig = a.importFuncSigs.get(objName)?.get(name) ?? `fn ${name}() -> ${retType}`;
             md.appendCodeblock(sig, 'arrow');
+            const docText = (a.importFuncDocs as Map<string, Map<string, string>>).get(objName)?.get(name);
+            if (docText) md.appendMarkdown(`\n\n${docText}`);
             return new vscode.Hover(md, range);
         }
 
+        // Class name under a module alias: `module.ClassName`
+        {
+            const objModSym = selectHoverSymbol(a.symbols, objName, position.line);
+            if (objModSym?.kind === 'module') {
+                const cppCls = (a.cppClasses as Map<string, CppClassInfo>).get(name);
+                if (cppCls) {
+                    return new vscode.Hover(renderExternalClassHover(name, cppCls), range);
+                }
+            }
+        }
+
+        // ── 2-level: module.ClassName.method (cursor is on `method`) ─────────
+        const deeperMatch = prefixStr.match(/\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\.$/);
+        if (deeperMatch) {
+            const modAlias  = deeperMatch[1];
+            const className = deeperMatch[2];
+            const modSym = selectHoverSymbol(a.symbols, modAlias, position.line);
+            if (modSym?.kind === 'module') {
+                const cppCls = (a.cppClasses as Map<string, CppClassInfo>).get(className);
+                if (cppCls) {
+                    const methodInfo = cppCls.methods.get(name);
+                    if (methodInfo) {
+                        const md = new vscode.MarkdownString(undefined, true);
+                        md.appendCodeblock(methodInfo.sig, 'arrow');
+                        md.appendMarkdown(`\n\n*method of* \`${className}\``);
+                        if (methodInfo.doc) md.appendMarkdown(`\n\n${methodInfo.doc}`);
+                        return new vscode.Hover(md, range);
+                    }
+                    const fieldType = cppCls.fields.get(name);
+                    if (fieldType !== undefined) {
+                        const md = new vscode.MarkdownString(undefined, true);
+                        md.appendCodeblock(`${name}: ${fieldType}`, 'arrow');
+                        md.appendMarkdown(`\n\n*field of* \`${className}\``);
+                        return new vscode.Hover(md, range);
+                    }
+                }
+            }
+        }
+
+        // ── Instance method/field on typed variable ────────────────────────────
         const objSym = selectHoverSymbol(a.symbols, objName, position.line);
         if (objSym?.type) {
             const cppCls = (a.cppClasses as Map<string, CppClassInfo>).get(objSym.type);
@@ -433,6 +526,7 @@ export async function provideHover(
                     const md = new vscode.MarkdownString(undefined, true);
                     md.appendCodeblock(methodInfo.sig, 'arrow');
                     md.appendMarkdown(`\n\n*method of* \`${objSym.type}\``);
+                    if (methodInfo.doc) md.appendMarkdown(`\n\n${methodInfo.doc}`);
                     return new vscode.Hover(md, range);
                 }
             }
@@ -465,21 +559,12 @@ export async function provideHover(
         return undefined;
     }
 
-    // Imported class type hover (C++/Rust)
+    // Imported class type hover (C++/Rust/C#)
     {
         const a = await DocumentAnalysis.for(document);
         const cppCls = (a.cppClasses as Map<string, CppClassInfo>).get(name);
         if (cppCls) {
-            const md = new vscode.MarkdownString(undefined, true);
-            const allSigs = [
-                ...cppCls.fieldSigs,
-                ...cppCls.methodSigs,
-            ];
-            const body = allSigs.length > 0
-                ? allSigs.map(s => `    ${s}`).join('\n')
-                : '    (no public members)';
-            md.appendCodeblock(`class ${name} {\n${body}\n}`, 'cpp');
-            return new vscode.Hover(md, range);
+            return new vscode.Hover(renderExternalClassHover(name, cppCls), range);
         }
     }
 
@@ -905,6 +990,46 @@ export async function provideSignatureHelp(
     return help;
 }
 
+// ===== Go-to-Definition helpers =====
+
+/** Parse "importKind modulePath" stored in HoverSymbol.originalType */
+function parseModuleOriginalType(originalType: string): { importKind: string; modulePath: string } | undefined {
+    const m = originalType.match(/^(import(?:\[[^\]]*\])?)\s+([\w.]+)$/);
+    if (!m) return undefined;
+    return { importKind: m[1], modulePath: m[2] };
+}
+
+/**
+ * Search for the line number of a named member inside an external source file.
+ * Uses language-specific patterns so the user lands on the right declaration.
+ */
+async function findMemberLineInExternalFile(
+    filePath: string,
+    memberName: string,
+    importKind: string
+): Promise<number> {
+    let content: string;
+    try { content = await fsPromises.readFile(filePath, 'utf8'); } catch { return 0; }
+    const lines = content.split('\n');
+    const kind = importKindOf(importKind);
+    const esc = memberName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (kind === 'rs') {
+            if (/\bpub\s+(?:fn|struct|enum|type)\b/.test(line) && new RegExp(`\\b${esc}\\b`).test(line)) return i;
+        } else if (kind === 'cpp') {
+            if (new RegExp(`\\b(?:struct|class)\\s+${esc}\\b|\\b${esc}\\s*\\(`).test(line)) return i;
+        } else if (kind === 'py') {
+            if (new RegExp(`^\\s*(?:def|class)\\s+${esc}\\b`).test(line)) return i;
+        } else {
+            // Arrow (.ar / .ars) and JS bridge stubs
+            if (new RegExp(`\\b(?:fn|gen|class|trait|enum|new_type)\\s+${esc}\\b`).test(line)) return i;
+        }
+    }
+    return 0;
+}
+
 export async function provideDefinition(
     document: vscode.TextDocument,
     position: vscode.Position
@@ -913,16 +1038,98 @@ export async function provideDefinition(
     if (!range) return undefined;
 
     const name = document.getText(range);
+    const lineText = document.lineAt(position.line).text;
+    const prefixStr = lineText.substring(0, range.start.character);
+    const dotAccess = prefixStr.match(/([A-Za-z_]\w*)\.$/);
+
     const a = await DocumentAnalysis.for(document);
+    const docDir = path.dirname(document.uri.fsPath);
+
+    /** Resolve an import to a vscode.Location, optionally seeking a specific member. */
+    async function jumpToImport(
+        importKind: string,
+        modulePath: string,
+        stubName: string | undefined,
+        memberName?: string
+    ): Promise<vscode.Location | undefined> {
+        const pyLibPaths: string[] = vscode.workspace.getConfiguration('arrow').get('pythonLibraryPaths', []);
+        const filePath = await resolveImportSourceFile(importKind, modulePath, stubName, docDir, pyLibPaths);
+        if (!filePath) return undefined;
+        const uri = vscode.Uri.file(filePath);
+        if (!memberName) return new vscode.Location(uri, new vscode.Position(0, 0));
+        const lineNum = await findMemberLineInExternalFile(filePath, memberName, importKind);
+        try {
+            const fileLines = (await fsPromises.readFile(filePath, 'utf8')).split('\n');
+            const targetLine = fileLines[lineNum] ?? '';
+            const col = Math.max(0, targetLine.indexOf(memberName));
+            return new vscode.Location(uri, new vscode.Range(lineNum, col, lineNum, col + memberName.length));
+        } catch {
+            return new vscode.Location(uri, new vscode.Position(lineNum, 0));
+        }
+    }
+
+    // ── Dot-access: `module.member`, `module.Class.method`, or `instance.method` ─
+    if (dotAccess) {
+        const objName = dotAccess[1];
+        const directSym = selectHoverSymbol(a.symbols, objName, position.line);
+
+        // Find the module symbol (direct or 2-level deeper: module.Class.method)
+        let moduleSym = directSym?.kind === 'module' ? directSym : undefined;
+        if (!moduleSym) {
+            const deeperMatch = prefixStr.match(/\b([A-Za-z_]\w*)\.[A-Za-z_]\w*\.$/);
+            if (deeperMatch) {
+                const deeperSym = selectHoverSymbol(a.symbols, deeperMatch[1], position.line);
+                if (deeperSym?.kind === 'module') moduleSym = deeperSym;
+            }
+        }
+
+        if (moduleSym?.originalType) {
+            const parsed = parseModuleOriginalType(moduleSym.originalType);
+            if (parsed) {
+                const importLine = stripComment(document.lineAt(moduleSym.line).text);
+                const importMatch = importLine.match(IMPORT_RE);
+                const stubName = importMatch?.[3];
+                const loc = await jumpToImport(parsed.importKind, parsed.modulePath, stubName, name);
+                if (loc) return loc;
+                return undefined;
+            }
+        }
+
+        // Instance method on external class: calc0.GetAccumulated where calc0: Calculator
+        const varType = directSym?.type;
+        if (varType) {
+            const src = a.classSourceMap.get(varType);
+            if (src) {
+                const loc = await jumpToImport(src.importKind, src.modulePath, src.stubName, name);
+                if (loc) return loc;
+                return undefined;
+            }
+        }
+
+        // Non-module dotAccess: fall through to same-file definition lookup
+    }
+
     const symbol = selectHoverSymbol(a.symbols, name, position.line);
     if (!symbol) return undefined;
 
+    // ── Module alias: jump to module file ───────────────────────────────────────
+    if (symbol.kind === 'module' && symbol.originalType) {
+        const parsed = parseModuleOriginalType(symbol.originalType);
+        if (parsed) {
+            const importLine = stripComment(document.lineAt(symbol.line).text);
+            const importMatch = importLine.match(IMPORT_RE);
+            const stubName = importMatch?.[3];
+            const loc = await jumpToImport(parsed.importKind, parsed.modulePath, stubName);
+            if (loc) return loc;
+        }
+    }
+
+    // ── Default: definition in current document ──────────────────────────────────
     const targetText = document.lineAt(symbol.line).text;
     const nameIdx = targetText.indexOf(symbol.name);
     const targetRange = nameIdx >= 0
         ? new vscode.Range(symbol.line, nameIdx, symbol.line, nameIdx + symbol.name.length)
         : document.lineAt(symbol.line).range;
-
     return new vscode.Location(document.uri, targetRange);
 }
 
@@ -1090,6 +1297,7 @@ export async function provideDocumentSemanticTokens(document: vscode.TextDocumen
         }
 
         for (const alias of a.importAliases) {
+            if (!alias) continue;  // guard: empty alias would create /\b\b/g infinite loop
             const re = new RegExp(`\\b${escapeRegex(alias)}\\b`, 'g');
             let m: RegExpExecArray | null;
             while ((m = re.exec(lineText)) !== null) {
@@ -1099,6 +1307,7 @@ export async function provideDocumentSemanticTokens(document: vscode.TextDocumen
         }
 
         for (const name of userTypes) {
+            if (!name) continue;
             const re = new RegExp(`\\b${escapeRegex(name)}\\b`, 'g');
             let m: RegExpExecArray | null;
             while ((m = re.exec(lineText)) !== null) {

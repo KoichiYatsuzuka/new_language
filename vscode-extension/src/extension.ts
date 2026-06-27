@@ -152,7 +152,9 @@ export function activate(context: vscode.ExtensionContext) {
         if (existing) clearTimeout(existing);
         debounceMap.set(key, setTimeout(() => {
             debounceMap.delete(key);
-            provideDiagnostics(document).then(diags => diagCollection.set(document.uri, diags));
+            provideDiagnostics(document)
+                .then(diags => diagCollection.set(document.uri, diags))
+                .catch(_err => { /* suppress unhandled rejection — extension stays alive */ });
         }, 400));
     }
 

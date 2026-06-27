@@ -24,6 +24,7 @@ import {
     provideInlayHints,
     provideDiagnostics,
     provideDocumentSemanticTokens,
+    provideCompletionItems,
     SEMANTIC_TOKENS_LEGEND,
 } from './type_infer';
 
@@ -372,6 +373,42 @@ async function main(): Promise<void> {
         const [col, label] = d.severity === 0 ? [A.red, 'error  '] : [A.yellow, 'warning'];
         const loc = c(A.gray, `L:${String(d.range.start.line + 1).padStart(4, '0')}:${String(d.range.start.character + 1).padStart(3, '0')}`);
         process.stdout.write(`  ${loc}  ${c(col, `[${label}]`)}  ${d.message}\n`);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Part 4 — Completion items test (dot-access on cs/cpp modules)
+    // ─────────────────────────────────────────────────────────────────────────
+    process.stdout.write('\n' + c(A.bold + A.yellow, '── COMPLETION TEST (dot-access) ──') + '\n\n');
+
+    // Find interesting dot-access positions: lines ending with <alias>.
+    const testPositions: Array<{ label: string; line: number; character: number }> = [];
+    for (let ln = 0; ln < (doc as unknown as MockTextDocument).lineCount; ln++) {
+        const text = (doc as unknown as MockTextDocument).lineAt(ln).text;
+        const m = text.match(/^(.+\.)(\s*)$/);
+        if (m && !text.trimStart().startsWith('#')) {
+            testPositions.push({ label: text.trimEnd(), line: ln, character: m[1].length });
+        }
+    }
+    // Also test known 2-level patterns (Alias.ClassName.)
+    for (let ln = 0; ln < (doc as unknown as MockTextDocument).lineCount; ln++) {
+        const text = (doc as unknown as MockTextDocument).lineAt(ln).text;
+        const m2 = text.match(/([A-Za-z_]\w*\.[A-Za-z_]\w*\.)/g);
+        if (m2) {
+            for (const seg of m2) {
+                testPositions.push({ label: text.trim(), line: ln, character: text.indexOf(seg) + seg.length });
+            }
+        }
+    }
+
+    for (const tp of testPositions) {
+        const items = await provideCompletionItems(doc, { line: tp.line, character: tp.character } as unknown as vscode.Position);
+        const status = items.length > 0 ? c(A.green, `✓ ${items.length} items`) : c(A.red, '✗ empty');
+        process.stdout.write(`  ${c(A.gray, `L:${String(tp.line + 1).padStart(4, '0')}`)}  ${c(A.bCyan, tp.label.padEnd(35))}  ${status}\n`);
+        for (const it of items.slice(0, 8)) {
+            const detail = (it.detail ?? '').toString().replace(/\n.*/s, '');
+            process.stdout.write(`      ${c(A.bYellow, String(it.label).padEnd(22))}  ${c(A.gray, detail)}\n`);
+        }
+        if (items.length > 8) process.stdout.write(`      ${c(A.gray, `… and ${items.length - 8} more`)}\n`);
     }
 
     process.stdout.write('\n' + sep + '\n\n');

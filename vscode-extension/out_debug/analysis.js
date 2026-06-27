@@ -30,7 +30,7 @@ exports.TUPLE_DECL_RE = TUPLE_DECL_RE;
 const FOR_LOOP_RE = /^(\s*)for\s+((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s+in\s+(.+)$/;
 exports.FOR_LOOP_RE = FOR_LOOP_RE;
 // Groups: 1=kind, 2=path, 3=version[?], 4=with-stub[?], 5=alias[?]
-const IMPORT_RE = /^\s*(import(?:\[(?:py(?:-int)?|rs|hvc?|cpp-(?:lib|dll)|cs-(?:dll|proc)|js-proc)\])?)\s+([\w.]+)(?:\[([^\]]*)\])?(?:\s+with\s+(\w+))?(?:\s+as\s+([A-Za-z_]\w*))?/;
+const IMPORT_RE = /^\s*(import(?:\[(?:arc?|py(?:-int)?|rs|hvc?|cpp-(?:lib|dll)|cs-(?:dll|proc)|js-proc)\])?)\s+([\w.]+)(?:\[([^\]]*)\])?(?:\s+with\s+(\w+))?(?:\s+as\s+([A-Za-z_]\w*))?/;
 exports.IMPORT_RE = IMPORT_RE;
 const TYPEGUARD_IS_NOT_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+not\s+([A-Za-z_]\w*)\s*:/;
 const TYPEGUARD_IS_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+([A-Za-z_]\w*)\s*:/;
@@ -39,8 +39,9 @@ const TYPEGUARD_IS_RE = /^(\s*)(?:if|elif)\s+([A-Za-z_]\w*)\s+is\s+([A-Za-z_]\w*
 function importAlias(modulePath, explicit) {
     if (explicit)
         return explicit;
-    const parts = modulePath.split('.');
-    return parts[parts.length - 1];
+    // Filter empty segments (e.g. "WpfShell." trailing dot → last segment is "").
+    const parts = modulePath.split('.').filter(Boolean);
+    return parts.length > 0 ? parts[parts.length - 1] : modulePath;
 }
 // ===== String utilities =====
 function stripComment(line) {
@@ -645,6 +646,7 @@ function inferExprType(src, env, funcEnv = new Map(), importAliases = new Set(),
     const dotMatch = trimmed.match(/^([A-Za-z_]\w*)\./);
     if (dotMatch && importAliases.has(dotMatch[1])) {
         const alias = dotMatch[1];
+        const isPyModule = importFuncTypes.has(alias);
         const callMatch = trimmed.match(/^[A-Za-z_]\w*\.([A-Za-z_]\w*)\s*\(/);
         if (callMatch) {
             const memberName = callMatch[1];
@@ -667,7 +669,7 @@ function inferExprType(src, env, funcEnv = new Map(), importAliases = new Set(),
             if (ret !== undefined)
                 return ret;
         }
-        return 'unknown';
+        return isPyModule ? 'Any' : 'unknown';
     }
     return new ExprInferrer((0, tokenizer_1.tokenize)(src), env, funcEnv, pyClassMethods, templateParams, classFieldTypes, selfType).infer();
 }
@@ -686,17 +688,159 @@ function collectImportAliases(document) {
     return aliases;
 }
 exports.collectImportAliases = collectImportAliases;
-async function collectPyModuleInfo(moduleName, docDir, extraPaths = []) {
+// ──────────────────────────────────────────────────────────────────────────────
+// Python source analysis helpers
+// ──────────────────────────────────────────────────────────────────────────────
+function pyLineIndent(line) {
     var _a, _b;
+    return ((_b = (_a = line.match(/^(\s*)/)) === null || _a === void 0 ? void 0 : _a[1]) !== null && _b !== void 0 ? _b : '').length;
+}
+function inferPyLiteralType(expr) {
+    const e = expr.trim();
+    if (!e || e === 'None')
+        return 'None';
+    if (e === 'True' || e === 'False')
+        return 'bool';
+    if (/^-?\d+$/.test(e))
+        return 'int';
+    if (/^-?\d*\.\d+([eE][+-]?\d+)?$/.test(e) || /^-?\d+[eE][+-]?\d+$/.test(e))
+        return 'float';
+    if (/^[bBfFrRuU]{0,2}["']/.test(e) || e.startsWith('"""') || e.startsWith("'''"))
+        return 'str';
+    if (e === '[]' || e.startsWith('['))
+        return 'list';
+    if (e.startsWith('('))
+        return 'tuple';
+    if (e === '{}' || (e.startsWith('{') && e.includes(':')))
+        return 'dict';
+    if (e.startsWith('{'))
+        return 'set';
+    return 'Any';
+}
+/** Parse a (possibly multi-line) Python `def` or `async def` starting at startIdx. */
+function parsePyFuncDef(lines, startIdx) {
+    var _a;
+    const startLine = lines[startIdx];
+    const defM = startLine.match(/^(\s*)(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/);
+    if (!defM)
+        return undefined;
+    const indent = defM[1].length;
+    const name = defM[2];
+    let depth = 0, combined = '', bodyLine = startIdx + 1;
+    for (let i = startIdx; i < Math.min(lines.length, startIdx + 40); i++) {
+        const raw = lines[i].replace(/#[^"']*$/, ''); // strip inline comments (simplified)
+        combined += (i === startIdx ? '' : ' ') + raw.trim();
+        for (const ch of raw) {
+            if (ch === '(')
+                depth++;
+            else if (ch === ')')
+                depth--;
+        }
+        if (depth <= 0) {
+            bodyLine = i + 1;
+            break;
+        }
+    }
+    // Find the first `(` and its matching `)` within the combined text
+    let pDepth = 0, openIdx = -1, closeIdx = -1;
+    for (let j = 0; j < combined.length; j++) {
+        if (combined[j] === '(') {
+            if (openIdx === -1)
+                openIdx = j;
+            pDepth++;
+        }
+        else if (combined[j] === ')') {
+            pDepth--;
+            if (pDepth === 0) {
+                closeIdx = j;
+                break;
+            }
+        }
+    }
+    if (openIdx === -1 || closeIdx === -1)
+        return undefined;
+    const params = combined.slice(openIdx + 1, closeIdx).trim();
+    const after = combined.slice(closeIdx + 1).trim(); // e.g. "-> str:" or ":"
+    const retM = after.match(/^->\s*(.+?)\s*:/);
+    return { name, params, retAnnot: (_a = retM === null || retM === void 0 ? void 0 : retM[1]) === null || _a === void 0 ? void 0 : _a.trim(), bodyLine, indent };
+}
+/** Scan a function body for `return` statements and infer the return type from literals. */
+function inferPyBodyReturnType(lines, bodyStart, funcIndent) {
+    var _a;
+    const types = new Set();
+    let hasReturn = false;
+    for (let i = bodyStart; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#'))
+            continue;
+        const indent = pyLineIndent(line);
+        if (indent <= funcIndent)
+            break; // left function body
+        // Skip nested def/class blocks to avoid their `return`s
+        if (trimmed.startsWith('def ') || trimmed.startsWith('async def ') || trimmed.startsWith('class ')) {
+            const nestedIndent = indent;
+            i++;
+            while (i < lines.length) {
+                const t = lines[i].trim();
+                if (t && pyLineIndent(lines[i]) <= nestedIndent)
+                    break;
+                i++;
+            }
+            i--;
+            continue;
+        }
+        if (trimmed.startsWith('yield ') || trimmed === 'yield')
+            return 'Any';
+        const retM = trimmed.match(/^return(?:\s+(.+))?$/);
+        if (retM) {
+            hasReturn = true;
+            const expr = ((_a = retM[1]) !== null && _a !== void 0 ? _a : '').trim();
+            types.add(inferPyLiteralType(expr || 'None'));
+        }
+    }
+    if (!hasReturn)
+        return 'None';
+    const all = [...types];
+    const nonNone = all.filter(t => t !== 'None');
+    if (nonNone.length === 0)
+        return 'None';
+    if (all.length === 1)
+        return all[0];
+    return 'Any';
+}
+/** Parse `__init__` body for `self.attr: type` or `self.attr = value` patterns. */
+function parsePyInitAttrs(lines, bodyStart, funcIndent, target) {
+    for (let i = bodyStart; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#'))
+            continue;
+        if (pyLineIndent(line) <= funcIndent)
+            break;
+        const annM = trimmed.match(/^self\.([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\], |.]*)/);
+        if (annM) {
+            target.set(annM[1], annM[2].trim());
+            continue;
+        }
+        const assignM = trimmed.match(/^self\.([A-Za-z_]\w*)\s*=\s*(.+)/);
+        if (assignM && !target.has(assignM[1])) {
+            target.set(assignM[1], inferPyLiteralType(assignM[2].trim()));
+        }
+    }
+}
+async function collectPyModuleInfo(moduleName, docDir, extraPaths = []) {
     const funcs = new Map();
     const sigs = new Map();
     const classes = new Map();
     let content;
     outer: for (const searchDir of [docDir, ...extraPaths]) {
         for (const ext of ['.pyi', '.py']) {
+            const segments = moduleName.split('.');
             for (const candidate of [
-                path.join(searchDir, ...moduleName.split('.')) + ext,
+                path.join(searchDir, ...segments) + ext,
                 path.join(searchDir, moduleName + ext),
+                path.join(searchDir, ...segments, '__init__' + ext),
             ]) {
                 try {
                     content = await fs_1.promises.readFile(candidate, 'utf8');
@@ -708,57 +852,90 @@ async function collectPyModuleInfo(moduleName, docDir, extraPaths = []) {
     }
     if (content === undefined)
         return { funcs, sigs, classes };
+    const lines = content.split('\n');
+    const moduleVarRe = /^([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\], |.]*)/;
+    let i = 0;
     let currentClass = null;
     let classIndent = -1;
-    const classRe = /^(\s*)class\s+([A-Za-z_]\w*)/;
-    const funcRe = /^(\s*)def\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*(?:->\s*(.+?))?\s*:/;
-    const moduleVarRe = /^([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w\[\], |.]*)/;
-    for (const line of content.split('\n')) {
-        const classM = line.match(classRe);
-        if (classM) {
-            currentClass = classM[2];
-            classIndent = classM[1].length;
-            classes.set(currentClass, new Map());
+    while (i < lines.length) {
+        const line = lines[i];
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('@')) {
+            i++;
             continue;
         }
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#'))
-            continue;
-        const lineIndent = ((_b = (_a = line.match(/^(\s*)/)) === null || _a === void 0 ? void 0 : _a[1]) !== null && _b !== void 0 ? _b : '').length;
+        const lineIndent = pyLineIndent(line);
+        // Exit class scope when indentation returns to base level
         if (currentClass !== null && lineIndent <= classIndent) {
             currentClass = null;
             classIndent = -1;
         }
-        const funcM = line.match(funcRe);
-        if (funcM) {
-            const [, , name, params, retAnnot] = funcM;
-            const retType = retAnnot ? retAnnot.trim().replace(/^['"]|['"]$/g, '') : 'None';
-            if (currentClass !== null) {
-                classes.get(currentClass).set(name, retType);
+        // Top-level class definition
+        const classM = line.match(/^(\s*)class\s+([A-Za-z_]\w*)/);
+        if (classM && classM[1].length === 0) {
+            currentClass = classM[2];
+            classIndent = 0;
+            if (!classes.has(currentClass)) {
+                classes.set(currentClass, new Map());
+                // Class name as callable → returns an instance of that class
+                funcs.set(currentClass, currentClass);
+                sigs.set(currentClass, `class[py] ${currentClass}`);
             }
-            else {
-                funcs.set(name, retType);
-                sigs.set(name, `def ${name}(${params.trim()}) -> ${retType}`);
-            }
+            i++;
             continue;
         }
+        // Function / method definition (handles multi-line signatures)
+        if (trimmed.startsWith('def ') || trimmed.startsWith('async def ')) {
+            const parsed = parsePyFuncDef(lines, i);
+            if (parsed) {
+                const { name, params, retAnnot, bodyLine, indent } = parsed;
+                const retType = retAnnot
+                    ? retAnnot.replace(/^['"]|['"]$/g, '').trim()
+                    : inferPyBodyReturnType(lines, bodyLine, indent);
+                if (currentClass !== null) {
+                    const methodMap = classes.get(currentClass);
+                    if (name === '__init__') {
+                        parsePyInitAttrs(lines, bodyLine, indent, methodMap);
+                    }
+                    else if (!name.startsWith('_')) {
+                        methodMap.set(name, retType);
+                    }
+                }
+                else if (lineIndent === 0 && !name.startsWith('_')) {
+                    funcs.set(name, retType);
+                    sigs.set(name, `fn[py] ${name}(${params}) -> ${retType}`);
+                }
+                i = bodyLine;
+                continue;
+            }
+        }
+        // Module-level typed variable annotation
         if (currentClass === null && lineIndent === 0) {
-            const varM = line.match(moduleVarRe);
+            const varM = trimmed.match(moduleVarRe);
             if (varM) {
                 funcs.set(varM[1], varM[2].trim());
                 sigs.set(varM[1], `${varM[1]}: ${varM[2].trim()}`);
             }
         }
+        i++;
     }
     return { funcs, sigs, classes };
 }
 async function collectAllPyModuleInfo(document) {
     const funcTypes = new Map();
     const funcSigs = new Map();
+    const funcDocs = new Map();
     const classMethods = new Map();
     const cppClasses = new Map();
+    const classSourceMap = new Map();
+    const moduleClasses = new Map();
     const docDir = path.dirname(document.uri.fsPath);
     const pythonLibPaths = vscode.workspace.getConfiguration('arrow').get('pythonLibraryPaths', []);
+    const [arConfigPyPaths, stdlibPaths] = await Promise.all([
+        (0, native_module_1.getPythonSearchPaths)(docDir),
+        (0, native_module_1.detectPythonLibDirs)(),
+    ]);
+    const allPyPaths = [...pythonLibPaths, ...arConfigPyPaths, ...stdlibPaths];
     const imports = [];
     for (let i = 0; i < document.lineCount; i++) {
         const stripped = stripComment(document.lineAt(i).text);
@@ -771,7 +948,7 @@ async function collectAllPyModuleInfo(document) {
     }
     await Promise.all(imports.map(async ([importKind, modulePath, stubName, alias]) => {
         if ((0, native_module_1.importKindOf)(importKind) === 'py') {
-            const info = await collectPyModuleInfo(modulePath, docDir, pythonLibPaths);
+            const info = await collectPyModuleInfo(modulePath, docDir, allPyPaths);
             funcTypes.set(alias, info.funcs);
             funcSigs.set(alias, info.sigs);
             for (const [cls, methods] of info.classes)
@@ -782,16 +959,23 @@ async function collectAllPyModuleInfo(document) {
             if (info.funcs.size > 0 || info.classes.size > 0) {
                 funcTypes.set(alias, info.funcs);
                 funcSigs.set(alias, info.sigs);
+                if (info.docs.size > 0)
+                    funcDocs.set(alias, info.docs);
             }
             const kind = (0, native_module_1.importKindOf)(importKind);
             if (kind === 'cpp' || kind === 'rs' || kind === 'cs') {
+                const classList = [];
                 for (const [className, classInfo] of info.classes) {
                     cppClasses.set(className, classInfo);
+                    classSourceMap.set(className, { importKind, modulePath, stubName });
+                    classList.push(className);
                 }
+                if (classList.length > 0)
+                    moduleClasses.set(alias, classList);
             }
         }
     }));
-    return { funcTypes, funcSigs, classMethods, cppClasses };
+    return { funcTypes, funcSigs, funcDocs, classMethods, cppClasses, classSourceMap, moduleClasses };
 }
 function collectConstructorTypes(document) {
     const constructors = new Map();
@@ -1224,12 +1408,30 @@ class DocumentAnalysis {
         const pending = DocumentAnalysis._pending.get(key);
         if ((pending === null || pending === void 0 ? void 0 : pending.version) === version)
             return pending.promise;
+        // Start a fresh build for this version (previous pending was for a different version).
         const promise = DocumentAnalysis._build(document).then(data => {
-            DocumentAnalysis._cache.set(key, { version, data });
-            DocumentAnalysis._pending.delete(key);
+            var _a;
+            // Only write the cache if it's not already holding a newer result.
+            const cur = DocumentAnalysis._cache.get(key);
+            if (!cur || cur.version <= version) {
+                DocumentAnalysis._cache.set(key, { version, data });
+            }
+            if (((_a = DocumentAnalysis._pending.get(key)) === null || _a === void 0 ? void 0 : _a.version) === version) {
+                DocumentAnalysis._pending.delete(key);
+            }
             return data;
+        }).catch(_err => {
+            var _a;
+            if (((_a = DocumentAnalysis._pending.get(key)) === null || _a === void 0 ? void 0 : _a.version) === version) {
+                DocumentAnalysis._pending.delete(key);
+            }
+            return DocumentAnalysis._empty(document);
         });
         DocumentAnalysis._pending.set(key, { version, promise });
+        // If stale cached data exists, return it immediately so providers are never
+        // blocked while the background build catches up.
+        if (cached)
+            return Promise.resolve(cached.data);
         return promise;
     }
     /** Remove cached data for a document (call when document is closed). */
@@ -1242,6 +1444,13 @@ class DocumentAnalysis {
         const moduleInfo = await collectAllPyModuleInfo(document);
         return new DocumentAnalysis(document, moduleInfo);
     }
+    static _empty(document) {
+        return new DocumentAnalysis(document, {
+            funcTypes: new Map(), funcSigs: new Map(), funcDocs: new Map(),
+            classMethods: new Map(), cppClasses: new Map(), classSourceMap: new Map(),
+            moduleClasses: new Map(),
+        });
+    }
     constructor(document, moduleInfo) {
         var _a;
         // Phase 1: import aliases
@@ -1250,7 +1459,10 @@ class DocumentAnalysis {
         // Phase 2: module info (pre-fetched asynchronously)
         this.importFuncTypes = moduleInfo.funcTypes;
         this.importFuncSigs = moduleInfo.funcSigs;
+        this.importFuncDocs = moduleInfo.funcDocs;
         this.cppClasses = moduleInfo.cppClasses;
+        this.classSourceMap = moduleInfo.classSourceMap;
+        this.moduleClasses = moduleInfo.moduleClasses;
         // Merge cpp/rs class method return types into classMethods so inferExprType
         // can resolve calls like v.length() when v: Vec2 (Rust-imported struct)
         const mergedMethods = new Map(moduleInfo.classMethods);

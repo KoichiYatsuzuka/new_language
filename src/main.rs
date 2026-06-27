@@ -27,6 +27,8 @@ enum Mode {
     Run(String, std::collections::HashMap<String, String>),
     /// コンパイルモード: `.arc` (バイナリ) と `.ars` (スタブ) を生成する。
     Compile(String),
+    /// C# スタブ生成モード: .NET DLL から `.ars` スタブファイルを生成する。
+    CompileCs(String),
     /// 標準入力モード: stdin からソースを読み込んで実行する。
     Stdin,
     /// REPL モード: stdin からブロックを受け取り、インタープリタを維持しながら実行する。
@@ -59,6 +61,15 @@ fn parse_args() -> Mode {
                     .map(|p| Mode::Compile(p.clone()))
                     .unwrap_or_else(|| {
                         eprintln!("Error: --compile requires a file path");
+                        std::process::exit(1);
+                    });
+            }
+            "--compile-cs" | "-compile-cs" => {
+                return args
+                    .get(i + 1)
+                    .map(|p| Mode::CompileCs(p.clone()))
+                    .unwrap_or_else(|| {
+                        eprintln!("Error: --compile-cs requires a .dll file path");
                         std::process::exit(1);
                     });
             }
@@ -313,6 +324,32 @@ fn run_program(
     // ソースファイルのディレクトリを import 検索パスに追加する
     if let Some(dir) = &source_dir {
         interp.add_python_search_dir(dir.clone());
+        // ar_config.json の python.search_paths を追加する（source_dir から上位へウォーク）
+        let mut walk: Option<&std::path::Path> = Some(dir.as_path());
+        while let Some(d) = walk {
+            let cfg_path = d.join("ar_config.json");
+            if cfg_path.exists() {
+                if let Ok(text) = std::fs::read_to_string(&cfg_path) {
+                    if let Ok(root) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if let Some(paths) = root
+                            .get("python")
+                            .and_then(|p| p.get("search_paths"))
+                            .and_then(|v| v.as_array())
+                        {
+                            for p in paths {
+                                if let Some(s) = p.as_str() {
+                                    let pb = std::path::PathBuf::from(s);
+                                    let abs = if pb.is_absolute() { pb } else { d.join(pb) };
+                                    interp.add_python_search_dir(abs);
+                                }
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+            walk = d.parent();
+        }
     }
     // CLIパラメータを `args` dict としてグローバルスコープに登録する
     interp.set_cli_args(cli_args);
@@ -379,6 +416,10 @@ fn main() {
             compile_module(&path);
         }
 
+        Mode::CompileCs(path) => {
+            compile_cs_stub(&path);
+        }
+
         Mode::Repl => {
             repl::run_repl();
         }
@@ -391,6 +432,31 @@ fn read_file(path: &str) -> String {
         eprintln!("Error reading {path}: {e}");
         std::process::exit(1);
     })
+}
+
+/// `--compile-cs` モード: .NET DLL を読み込んで `.ars` スタブファイルを生成する。
+///
+/// `import[cs-dll]` / `import[cs-proc]` が内部的に生成する型情報と同一の内容を、
+/// コーダーが参照できる `.ars` ファイルとして書き出す。
+/// Python の `stubgen` に相当する明示的なスタブ生成コマンド。
+fn compile_cs_stub(path: &str) {
+    let dll_path = std::path::Path::new(path);
+
+    let (_, stub_text) = match parser::cs_assembly::generate_cs_stub_text(dll_path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let ars_path = dll_path.with_extension("ars");
+    if let Err(e) = std::fs::write(&ars_path, &stub_text) {
+        eprintln!("Error writing stub '{}': {e}", ars_path.display());
+        std::process::exit(1);
+    }
+
+    println!("Stub     : {}", ars_path.display());
 }
 
 /// `--compile` モード: ソースをパース・型検査して `.arc` と `.ars` を生成する。

@@ -84,6 +84,10 @@ impl TypeChecker {
                 if let InferredType::Namespace(ref members) = obj_ty {
                     return members.get(attr.as_str()).cloned().unwrap_or(InferredType::Unresolved);
                 }
+                // PyNamespace: unknown members are dynamically typed → Any.
+                if let InferredType::PyNamespace(ref members) = obj_ty {
+                    return members.get(attr.as_str()).cloned().unwrap_or(InferredType::Any);
+                }
                 InferredType::Unresolved
             }
             Expr::TraitAccess { object, .. } => {

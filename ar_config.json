@@ -1,4 +1,8 @@
 {
+  "python": {
+    "search_paths": []
+  },
+
   "javascript": {
     "node_path": "node",
     "bridge_script": "bridge/js_bridge.cjs",

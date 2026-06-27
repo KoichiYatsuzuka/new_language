@@ -1,8 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.loadNativeModuleInfo = exports.parseRustLib = exports.parseTlStub = exports.parseCppClasses = exports.parseCHeader = exports.parseCParam = exports.cTypeToTl = exports.importKindOf = void 0;
+exports.loadNativeModuleInfo = exports.resolveImportSourceFile = exports.parseRustLib = exports.detectPythonLibDirs = exports.getPythonSearchPaths = exports.parseTlStub = exports.parseCppClasses = exports.parseCHeader = exports.parseCParam = exports.cTypeToTl = exports.importKindOf = void 0;
 const fs_1 = require("fs");
 const path = require("path");
+const child_process_1 = require("child_process");
 const builtins_1 = require("./builtins");
 const cs_assembly_1 = require("./cs_assembly");
 // ===== C++ / native module support =====
@@ -15,7 +16,8 @@ function importKindOf(keyword) {
         return 'cs';
     if (keyword === 'import[js-proc]')
         return 'js';
-    if (keyword === 'import' || keyword.startsWith('import[hv'))
+    if (keyword === 'import' || keyword.startsWith('import[hv') ||
+        keyword === 'import[ar]' || keyword === 'import[arc]')
         return 'ar';
     return 'py';
 }
@@ -51,6 +53,33 @@ exports.parseCParam = parseCParam;
 async function parseCHeader(content, dir = '', _depth = 0) {
     const funcs = new Map();
     const sigs = new Map();
+    const docs = new Map();
+    // Extract /// and /** */ doc-comments that immediately precede function declarations,
+    // before stripping all comments from the source.
+    const cHeaderLines = content.split('\n');
+    let pendingDocLines = [];
+    for (const raw of cHeaderLines) {
+        const t = raw.trim();
+        if (t.startsWith('///')) {
+            // Strip leading /// and optional single space, also handle @brief/@param/@return
+            const stripped = t.replace(/^\/\/\/\s?/, '').replace(/^@brief\s*/, '');
+            pendingDocLines.push(stripped);
+        }
+        else if (pendingDocLines.length > 0) {
+            // Next non-comment line: check if it looks like a function declaration
+            const fnNameM = raw.match(/\b([A-Za-z_]\w*)\s*\(/);
+            if (fnNameM && !raw.trimStart().startsWith('typedef') && !raw.trimStart().startsWith('//')) {
+                const fnName = fnNameM[1];
+                const docText = pendingDocLines.join('\n').trim();
+                if (docText)
+                    docs.set(fnName, docText);
+            }
+            pendingDocLines = [];
+        }
+        else {
+            pendingDocLines = [];
+        }
+    }
     const src = content.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
     const re = /\b([A-Za-z_][\w\s]*?(?:\s*\*)?)\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*;/g;
     let m;
@@ -92,7 +121,7 @@ async function parseCHeader(content, dir = '', _depth = 0) {
         }
         await Promise.all(subPromises);
     }
-    return { funcs, sigs, docs: new Map(), classes };
+    return { funcs, sigs, docs, classes };
 }
 exports.parseCHeader = parseCHeader;
 function parseCppClasses(src) {
@@ -126,7 +155,7 @@ function parseCppClasses(src) {
                     cls.name = tdName;
             }
             if (cls.name && cls.fields.size > 0) {
-                classes.set(cls.name, { fields: cls.fields, fieldSigs: cls.fieldSigs, methods: new Map(), methodSigs: [] });
+                classes.set(cls.name, { fields: cls.fields, fieldSigs: cls.fieldSigs, methods: new Map(), methodSigs: [], bases: [] });
             }
         }
         if (!line || line.startsWith('#'))
@@ -190,17 +219,54 @@ function parseCppClasses(src) {
     }
     for (const cls of classStack) {
         if (cls.name && cls.fields.size > 0) {
-            classes.set(cls.name, { fields: cls.fields, fieldSigs: cls.fieldSigs, methods: new Map(), methodSigs: [] });
+            classes.set(cls.name, { fields: cls.fields, fieldSigs: cls.fieldSigs, methods: new Map(), methodSigs: [], bases: [] });
         }
     }
     return classes;
 }
 exports.parseCppClasses = parseCppClasses;
-const HVS_CLASS_RE = /^(\s*)class\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?(?:\([^)]*\))?(?:->[A-Za-z_]\w*)?\s*:/;
+const HVS_CLASS_RE = /^(\s*)class\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?(?:\(([^)]*)\))?(?:->[A-Za-z_]\w*)?\s*:/;
 const HVS_FIELD_RE = /^(\s*)(?:let|mut|const)\s+([A-Za-z_]\w*)\s*:\s*(.+)/;
 const HVS_METHOD_RE = /^(\s*)(fn|gen)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*\(([^)]*)\)\s*(?:->\s*(.+?))?\s*:/;
+/** Extract a Python-style triple-quoted docstring starting at lines[startIdx].
+ *  Handles both single-line `"""text"""` and multi-line forms. */
+function extractDocstring(lines, startIdx) {
+    for (let j = startIdx; j < lines.length; j++) {
+        const next = lines[j].trim();
+        if (!next)
+            continue;
+        for (const q of ['"""', "'''"]) {
+            if (!next.startsWith(q))
+                continue;
+            const afterOpen = next.slice(q.length);
+            const closeIdx = afterOpen.indexOf(q);
+            if (closeIdx >= 0) {
+                // Closes on the same line: """text"""
+                return afterOpen.slice(0, closeIdx).trim() || undefined;
+            }
+            // Multi-line: collect until the closing triple-quote
+            const docLines = [];
+            if (afterOpen.trim())
+                docLines.push(afterOpen.trim());
+            for (let k = j + 1; k < lines.length; k++) {
+                const ln = lines[k].trim();
+                const ci = ln.indexOf(q);
+                if (ci >= 0) {
+                    const before = ln.slice(0, ci).trim();
+                    if (before)
+                        docLines.push(before);
+                    break;
+                }
+                docLines.push(ln);
+            }
+            return docLines.join('\n').trim() || undefined;
+        }
+        break; // non-docstring line
+    }
+    return undefined;
+}
 function parseTlStub(content) {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e;
     const funcs = new Map();
     const sigs = new Map();
     const docs = new Map();
@@ -220,13 +286,20 @@ function parseTlStub(content) {
             currentClass = null;
             bodyIndent = -1;
         }
-        // Class definition: `class Name->Name:` (stub format) or `class Name:`
+        // Class definition: `class Name(Base1, Base2):` or `class Name->Name:`
         const classM = raw.match(HVS_CLASS_RE);
         if (classM && currentClass === null) {
             currentClass = classM[2];
             classIndent = ((_c = classM[1]) !== null && _c !== void 0 ? _c : '').length;
             bodyIndent = -1;
-            classes.set(currentClass, { fields: new Map(), fieldSigs: [], methods: new Map(), methodSigs: [] });
+            const bases = classM[3]
+                ? classM[3].split(',').map(b => b.trim()).filter(Boolean)
+                : [];
+            classes.set(currentClass, { fields: new Map(), fieldSigs: [], methods: new Map(), methodSigs: [], bases });
+            // Look for class-level docstring on the next non-empty body line
+            const cDoc = extractDocstring(lines, i + 1);
+            if (cDoc)
+                classes.get(currentClass).classDocs = cDoc;
             continue;
         }
         if (currentClass !== null) {
@@ -256,7 +329,9 @@ function parseTlStub(content) {
                     .replace(/^\s*(?:let\s+|mut\s+)?self\s*,\s*/, '')
                     .replace(/^\s*(?:let\s+|mut\s+)?self\s*$/, '');
                 const msig = `${kw} ${mname}(${cleanParams.trim()}) -> ${ret}`;
-                cls.methods.set(mname, { ret, sig: msig });
+                // Look for docstring immediately after the method signature
+                const mDoc = extractDocstring(lines, i + 1);
+                cls.methods.set(mname, { ret, sig: msig, doc: mDoc });
                 cls.methodSigs.push(msig);
                 continue;
             }
@@ -270,20 +345,57 @@ function parseTlStub(content) {
             const ret = (_e = retType === null || retType === void 0 ? void 0 : retType.trim()) !== null && _e !== void 0 ? _e : 'unknown';
             funcs.set(name, ret);
             sigs.set(name, `${kw} ${name}(${params.trim()}) -> ${ret}`);
-            for (let j = i + 1; j < lines.length; j++) {
-                const next = lines[j].trim();
-                if (!next)
-                    continue;
-                const docM = next.match(/^(?:"""(.*?)"""|'''(.*?)''')$/);
-                if (docM)
-                    docs.set(name, ((_f = docM[1]) !== null && _f !== void 0 ? _f : docM[2]).trim());
-                break;
-            }
+            const fnDoc = extractDocstring(lines, i + 1);
+            if (fnDoc)
+                docs.set(name, fnDoc);
         }
     }
     return { funcs, sigs, docs, classes };
 }
 exports.parseTlStub = parseTlStub;
+/** ar_config.json の python.search_paths を読み込み、絶対パスに解決して返す。 */
+async function getPythonSearchPaths(startDir) {
+    var _a, _b;
+    const result = await findArConfigDirWithKey(startDir, cfg => { var _a, _b; return !!((_b = (_a = cfg.python) === null || _a === void 0 ? void 0 : _a.search_paths) === null || _b === void 0 ? void 0 : _b.length); });
+    if (!result)
+        return [];
+    const { config, dir } = result;
+    return ((_b = (_a = config.python) === null || _a === void 0 ? void 0 : _a.search_paths) !== null && _b !== void 0 ? _b : []).map(p => path.isAbsolute(p) ? p : path.join(dir, p));
+}
+exports.getPythonSearchPaths = getPythonSearchPaths;
+let _cachedPythonLibDirs;
+/**
+ * Python プロセスを実行して標準ライブラリと site-packages のパスを返す。
+ * 初回のみサブプロセスが起動し、以降はキャッシュを返す。
+ */
+async function detectPythonLibDirs() {
+    if (_cachedPythonLibDirs !== undefined)
+        return _cachedPythonLibDirs;
+    const script = [
+        'import sysconfig',
+        "paths = [sysconfig.get_path('stdlib'), sysconfig.get_path('purelib')]",
+        "print('\\n'.join(p for p in paths if p))",
+    ].join('; ');
+    const candidates = process.platform === 'win32'
+        ? ['py', 'python', 'python3']
+        : ['python3', 'python'];
+    for (const exe of candidates) {
+        try {
+            const stdout = await new Promise((resolve, reject) => {
+                (0, child_process_1.exec)(`${exe} -c "${script}"`, (err, out) => err ? reject(err) : resolve(out));
+            });
+            const dirs = stdout.trim().split('\n').map(s => s.trim()).filter(Boolean);
+            if (dirs.length > 0) {
+                _cachedPythonLibDirs = dirs;
+                return dirs;
+            }
+        }
+        catch { /* try next */ }
+    }
+    _cachedPythonLibDirs = [];
+    return [];
+}
+exports.detectPythonLibDirs = detectPythonLibDirs;
 /** Walk up from startDir to find the directory containing ar_config.json. */
 async function findArConfigDir(startDir) {
     let current = startDir;
@@ -399,14 +511,39 @@ function matchingBrace(src, startIdx) {
  * impl methods, and top-level free functions.
  */
 function parseRustLib(source) {
+    var _a, _b, _c;
     const funcs = new Map();
     const sigs = new Map();
     const docs = new Map();
     const classes = new Map();
-    // Strip block comments and line comments (preserving line structure)
-    const src = source
-        .replace(/\/\*[\s\S]*?\*\//g, ' ')
-        .replace(/\/\/[^\n]*/g, '');
+    // Build doc-comment map: line index → accumulated /// text (on the original source)
+    const srcLines = source.split('\n');
+    const lineDocMap = new Map(); // line index of `pub fn/struct` → doc string
+    {
+        let pending = [];
+        for (let i = 0; i < srcLines.length; i++) {
+            const lt = srcLines[i].trim();
+            if (lt.startsWith('///')) {
+                pending.push(lt.replace(/^\/\/\/ ?/, ''));
+            }
+            else {
+                if (pending.length > 0 && /\bpub\b/.test(lt)) {
+                    lineDocMap.set(i, pending.join('\n').trim());
+                }
+                pending = [];
+            }
+        }
+    }
+    // Strip block comments and line comments (preserving line structure for index math)
+    const stripped = source
+        .replace(/\/\*[\s\S]*?\*\//g, m => ' '.repeat(m.length))
+        .replace(/\/\/[^\n]*/g, m => ' '.repeat(m.length));
+    // Helper: convert character offset to 0-based line index
+    function charToLine(idx) {
+        var _a;
+        return ((_a = stripped.slice(0, idx).match(/\n/g)) !== null && _a !== void 0 ? _a : []).length;
+    }
+    const src = stripped;
     // ── pub struct Name { … } ──────────────────────────────────────────────────
     const structRe = /\bpub\s+struct\s+([A-Za-z_]\w*)\s*\{/g;
     let m;
@@ -415,7 +552,11 @@ function parseRustLib(source) {
         const openIdx = m.index + m[0].lastIndexOf('{');
         const closeIdx = matchingBrace(src, openIdx);
         const body = src.slice(openIdx + 1, closeIdx);
-        const cls = { fields: new Map(), fieldSigs: [], methods: new Map(), methodSigs: [] };
+        const clsDoc = lineDocMap.get(charToLine(m.index));
+        const cls = {
+            fields: new Map(), fieldSigs: [], methods: new Map(), methodSigs: [],
+            bases: [], classDocs: clsDoc,
+        };
         classes.set(name, cls);
         // pub fieldname: Type,
         const fieldRe = /\bpub\s+([A-Za-z_]\w*)\s*:\s*([^,\n}]+)/g;
@@ -427,6 +568,15 @@ function parseRustLib(source) {
             cls.fieldSigs.push(`${fname}: ${ftype}`);
         }
     }
+    // ── impl Trait for StructName { … } ──────────────────────────────────────
+    const implTraitRe = /\bimpl\s+([A-Za-z_][\w:<>]*)\s+for\s+([A-Za-z_]\w*)\s*\{/g;
+    while ((m = implTraitRe.exec(src)) !== null) {
+        const traitName = (_c = (_b = (_a = m[1].split(':').pop()) === null || _a === void 0 ? void 0 : _a.split('<')[0]) === null || _b === void 0 ? void 0 : _b.trim()) !== null && _c !== void 0 ? _c : m[1];
+        const structName = m[2];
+        const cls = classes.get(structName);
+        if (cls && !cls.bases.includes(traitName))
+            cls.bases.push(traitName);
+    }
     // ── impl StructName { … } ─────────────────────────────────────────────────
     const implRe = /\bimpl\s+([A-Za-z_]\w*)\s*\{/g;
     while ((m = implRe.exec(src)) !== null) {
@@ -434,6 +584,7 @@ function parseRustLib(source) {
         const openIdx = m.index + m[0].lastIndexOf('{');
         const closeIdx = matchingBrace(src, openIdx);
         const body = src.slice(openIdx + 1, closeIdx);
+        const bodyStartLine = charToLine(openIdx + 1);
         const cls = classes.get(implName);
         if (!cls)
             continue;
@@ -443,18 +594,19 @@ function parseRustLib(source) {
         while ((fm = fnRe.exec(body)) !== null) {
             const [, fname, paramsRaw, retRs] = fm;
             if (fname === 'new')
-                continue; // constructor → handled as class call
+                continue;
             const ret = retRs ? rsTypeToTl(retRs.trim(), implName) : 'None';
             const hvPrms = rsParamsToHv(paramsRaw, implName);
             const msig = `fn ${fname}(${hvPrms}) -> ${ret}`;
-            cls.methods.set(fname, { ret, sig: msig });
+            const fnLine = bodyStartLine + charToLine(fm.index);
+            const fnDoc = lineDocMap.get(fnLine);
+            cls.methods.set(fname, { ret, sig: msig, doc: fnDoc });
             cls.methodSigs.push(msig);
         }
     }
     // ── top-level pub fn (depth 0 only) ───────────────────────────────────────
     const topFnRe = /\bpub\s+fn\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*(?:->\s*([^{;,\n]+?))?\s*\{/g;
     while ((m = topFnRe.exec(src)) !== null) {
-        // Skip if inside any {} block
         let depth = 0;
         for (let i = 0; i < m.index; i++) {
             if (src[i] === '{')
@@ -469,6 +621,9 @@ function parseRustLib(source) {
         const hvPrms = rsParamsToHv(paramsRaw);
         funcs.set(fname, ret);
         sigs.set(fname, `fn ${fname}(${hvPrms}) -> ${ret}`);
+        const fnDoc = lineDocMap.get(charToLine(m.index));
+        if (fnDoc)
+            docs.set(fname, fnDoc);
     }
     return { funcs, sigs, docs, classes };
 }
@@ -595,6 +750,130 @@ function parseJsModule(content) {
     }
     return { funcs, sigs, docs, classes: new Map() };
 }
+// ===== resolveImportSourceFile =====
+/**
+ * Resolve the most useful human-readable source file for an import (for "Go to Definition").
+ * Priority: .ars stub > .ar source > language-specific source file
+ * Returns the absolute path of the file to open, or undefined if not found.
+ */
+async function resolveImportSourceFile(importKind, modulePath, stubName, docDir, extraSearchPaths = []) {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
+    const kind = importKindOf(importKind);
+    const parts = modulePath.split('.');
+    const filePath = path.join(docDir, ...parts);
+    async function exists(p) {
+        try {
+            await fs_1.promises.access(p);
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
+    if (kind === 'ar') {
+        for (const c of [
+            filePath + '.ars',
+            filePath + '.ar',
+            path.join(filePath, '__init__.ars'),
+            path.join(filePath, '__init__.ar'),
+        ]) {
+            if (await exists(c))
+                return c;
+        }
+        return undefined;
+    }
+    if (kind === 'py') {
+        for (const searchDir of [docDir, ...extraSearchPaths]) {
+            for (const ext of ['.pyi', '.py']) {
+                for (const c of [
+                    path.join(searchDir, ...modulePath.split('.')) + ext,
+                    path.join(searchDir, modulePath + ext),
+                ]) {
+                    if (await exists(c))
+                        return c;
+                }
+            }
+        }
+        return undefined;
+    }
+    if (kind === 'rs') {
+        const cfgResult = await findArConfigDirWithKey(docDir, cfg => { var _a; return !!((_a = cfg.rust) === null || _a === void 0 ? void 0 : _a.crates_path); });
+        const configDir = (_a = cfgResult === null || cfgResult === void 0 ? void 0 : cfgResult.dir) !== null && _a !== void 0 ? _a : docDir;
+        const rawPaths = (_b = cfgResult === null || cfgResult === void 0 ? void 0 : cfgResult.config.rust) === null || _b === void 0 ? void 0 : _b.crates_path;
+        const cratesPaths = Array.isArray(rawPaths) ? rawPaths : rawPaths ? [rawPaths] : [];
+        for (const cratesPath of cratesPaths) {
+            const resolved = path.isAbsolute(cratesPath) ? cratesPath : path.resolve(configDir, cratesPath);
+            const libRs = path.join(resolved, modulePath, 'src', 'lib.rs');
+            if (await exists(libRs))
+                return libRs;
+        }
+        return undefined;
+    }
+    if (kind === 'cpp') {
+        const candidates = [];
+        if (stubName)
+            candidates.push(path.join(docDir, stubName + '.h'));
+        candidates.push(filePath + '.h');
+        candidates.push(path.join(docDir, parts[parts.length - 1] + '.h'));
+        for (const c of candidates) {
+            if (await exists(c))
+                return c;
+        }
+        return undefined;
+    }
+    if (kind === 'cs') {
+        // C# DLLs are binary; prefer a generated .ars stub if available
+        // 1. Flat: docDir/WpfShell.ars
+        const arsPath = filePath + '.ars';
+        if (await exists(arsPath))
+            return arsPath;
+        // 2. Subdirectory: docDir/WpfShell/WpfShell.ars (single-segment module in same-name dir)
+        const lastName = parts[parts.length - 1];
+        const subDirArs = path.join(filePath, lastName + '.ars');
+        if (await exists(subDirArs))
+            return subDirArs;
+        // 3. ar_config.json csharp.lib_paths
+        const cfgResult = await findArConfigDirWithKey(docDir, cfg => { var _a; return !!((_a = cfg.csharp) === null || _a === void 0 ? void 0 : _a.lib_paths); });
+        if (cfgResult) {
+            const rawCsPaths = (_c = cfgResult.config.csharp) === null || _c === void 0 ? void 0 : _c.lib_paths;
+            const csPaths = Array.isArray(rawCsPaths) ? rawCsPaths : rawCsPaths ? [rawCsPaths] : [];
+            for (const lp of csPaths) {
+                const resolved = path.isAbsolute(lp) ? lp : path.resolve(cfgResult.dir, lp);
+                const candidate = path.join(resolved, lastName + '.ars');
+                if (await exists(candidate))
+                    return candidate;
+            }
+        }
+        return undefined;
+    }
+    if (kind === 'js') {
+        // Prefer .ars stub
+        const arsPath = filePath + '.ars';
+        if (await exists(arsPath))
+            return arsPath;
+        const jsResult = await findArConfigDirWithKey(docDir, cfg => !!cfg.javascript);
+        const config = jsResult === null || jsResult === void 0 ? void 0 : jsResult.config;
+        const configDir = (_d = jsResult === null || jsResult === void 0 ? void 0 : jsResult.dir) !== null && _d !== void 0 ? _d : docDir;
+        const bridgeScript = (_f = (_e = config === null || config === void 0 ? void 0 : config.javascript) === null || _e === void 0 ? void 0 : _e.bridge_script) !== null && _f !== void 0 ? _f : 'bridge/js_bridge.cjs';
+        const bridgeRoot = (_h = (_g = config === null || config === void 0 ? void 0 : config.javascript) === null || _g === void 0 ? void 0 : _g.bridge_root) !== null && _h !== void 0 ? _h : '.';
+        const bridgeDir = path.dirname(path.resolve(configDir, bridgeScript));
+        const rootDir = path.resolve(configDir, bridgeRoot);
+        const relPath = modulePath.replace(/\./g, '/');
+        for (const c of [
+            path.join(bridgeDir, relPath + '.cjs'),
+            path.join(bridgeDir, relPath + '.js'),
+            path.join(rootDir, relPath + '.cjs'),
+            path.join(rootDir, relPath + '.js'),
+        ]) {
+            if (await exists(c))
+                return c;
+        }
+        return undefined;
+    }
+    // 'ar' fallback (already handled above, but for safety)
+    return undefined;
+}
+exports.resolveImportSourceFile = resolveImportSourceFile;
 // ===== loadNativeModuleInfo =====
 async function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
@@ -605,8 +884,11 @@ async function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
             candidates.push(path.join(docDir, stubName + '.h'));
         }
         const parts = modulePath.split('.');
+        const lastName = parts[parts.length - 1];
         candidates.push(path.join(docDir, ...parts) + '.h');
-        candidates.push(path.join(docDir, parts[parts.length - 1] + '.h'));
+        candidates.push(path.join(docDir, lastName + '.h'));
+        // Also try: subdir named after the module containing a same-named header
+        candidates.push(path.join(docDir, ...parts, lastName + '.h'));
         for (const hPath of candidates) {
             try {
                 const content = await fs_1.promises.readFile(hPath, 'utf8');
@@ -614,6 +896,20 @@ async function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
             }
             catch { /* try next candidate */ }
         }
+        // Last resort: scan the module subdirectory for any .h file
+        const subDir = path.join(docDir, ...parts);
+        try {
+            const entries = await fs_1.promises.readdir(subDir);
+            const headers = entries.filter(e => e.endsWith('.h')).sort();
+            for (const h of headers) {
+                try {
+                    const content = await fs_1.promises.readFile(path.join(subDir, h), 'utf8');
+                    return parseCHeader(content, subDir);
+                }
+                catch { /* try next */ }
+            }
+        }
+        catch { /* subDir doesn't exist */ }
         return empty;
     }
     // ── import[rs]: parse Rust source via ar_config.json crates_path ──────────
@@ -639,27 +935,55 @@ async function loadNativeModuleInfo(importKind, modulePath, stubName, docDir) {
     if (importKindOf(importKind) === 'cs') {
         const lastName = (_c = modulePath.split('.').pop()) !== null && _c !== void 0 ? _c : modulePath;
         const dllName = lastName + '.dll';
-        // Search candidates: sub-path, flat, single-segment package dir, ar_config lib_paths
         const parts = modulePath.split('.');
-        const candidates = [
-            path.join(docDir, ...parts) + '.dll',
-            path.join(docDir, dllName),
-        ];
+        const filePath = path.join(docDir, ...parts);
+        // ① Check quick .ars candidates first (no config walk needed)
+        const quickArsCandidates = [filePath + '.ars'];
         if (parts.length === 1) {
-            candidates.push(path.join(docDir, lastName, dllName));
+            quickArsCandidates.push(path.join(filePath, lastName + '.ars'));
         }
-        const config = await loadArConfig(docDir);
-        const configDir = (_d = await findArConfigDir(docDir)) !== null && _d !== void 0 ? _d : docDir;
-        const rawCsPaths = (_e = config === null || config === void 0 ? void 0 : config.csharp) === null || _e === void 0 ? void 0 : _e.lib_paths;
+        for (const arsPath of quickArsCandidates) {
+            try {
+                const content = await fs_1.promises.readFile(arsPath, 'utf8');
+                return parseTlStub(content);
+            }
+            catch { /* try next */ }
+        }
+        // ② Walk ar_config for lib_paths and try those .ars stubs
+        const cfgForArs = await findArConfigDirWithKey(docDir, cfg => { var _a; return !!((_a = cfg.csharp) === null || _a === void 0 ? void 0 : _a.lib_paths); });
+        const configDir = (_d = cfgForArs === null || cfgForArs === void 0 ? void 0 : cfgForArs.dir) !== null && _d !== void 0 ? _d : docDir;
+        const rawCsPaths = (_e = cfgForArs === null || cfgForArs === void 0 ? void 0 : cfgForArs.config.csharp) === null || _e === void 0 ? void 0 : _e.lib_paths;
         const csLibPaths = Array.isArray(rawCsPaths) ? rawCsPaths : rawCsPaths ? [rawCsPaths] : [];
         for (const lp of csLibPaths) {
             const resolved = path.isAbsolute(lp) ? lp : path.resolve(configDir, lp);
-            candidates.push(path.join(resolved, dllName));
+            try {
+                const content = await fs_1.promises.readFile(path.join(resolved, lastName + '.ars'), 'utf8');
+                return parseTlStub(content);
+            }
+            catch { /* try next */ }
         }
-        for (const candidate of candidates) {
+        // ③ Fall back to parsing the DLL binary (slow path)
+        const dllCandidates = [
+            filePath + '.dll',
+            path.join(docDir, dllName),
+        ];
+        if (parts.length === 1) {
+            dllCandidates.push(path.join(filePath, dllName));
+        }
+        for (const lp of csLibPaths) {
+            const resolved = path.isAbsolute(lp) ? lp : path.resolve(configDir, lp);
+            dllCandidates.push(path.join(resolved, dllName));
+        }
+        for (const candidate of dllCandidates) {
             try {
                 const buf = await fs_1.promises.readFile(candidate);
-                return (0, cs_assembly_1.parseNetAssembly)(buf);
+                let xmlContent;
+                try {
+                    const xmlPath = candidate.replace(/\.dll$/i, '.xml');
+                    xmlContent = await fs_1.promises.readFile(xmlPath, 'utf-8');
+                }
+                catch { /* XML doc file is optional */ }
+                return (0, cs_assembly_1.parseNetAssembly)(buf, xmlContent);
             }
             catch { /* try next */ }
         }

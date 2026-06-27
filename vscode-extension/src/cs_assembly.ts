@@ -419,11 +419,100 @@ function sanitizeParam(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// XML documentation helpers
+// ---------------------------------------------------------------------------
+
+/** Strip XML tags and normalize whitespace. */
+function stripXmlTags(s: string): string {
+    return s.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Extract the text content of `<tag>...</tag>` from a block of XML. */
+function extractXmlElement(text: string, tag: string): string {
+    const open  = `<${tag}`;
+    const close = `</${tag}>`;
+    const start = text.indexOf(open);
+    if (start === -1) return '';
+    const gt = text.indexOf('>', start);
+    if (gt === -1) return '';
+    const contentStart = gt + 1;
+    const end = text.indexOf(close, contentStart);
+    if (end === -1) return '';
+    return stripXmlTags(text.slice(contentStart, end));
+}
+
+/**
+ * Convert an XML doc member ID to a simplified lookup key:
+ *   `T:Ns.ClassName`          → `T:ClassName`
+ *   `M:Ns.Class.Method(args)` → `M:ClassName.Method`
+ *   `P:Ns.Class.Prop`         → `P:ClassName.Prop`
+ */
+function simplifyMemberId(memberId: string): string | null {
+    if (memberId.length < 2) return null;
+    const prefix = memberId.slice(0, 2);
+    const rest   = memberId.slice(2);
+    if (prefix === 'T:') {
+        const simple = (rest.split('.').pop() ?? rest).split('`')[0];
+        return `T:${simple}`;
+    }
+    if (prefix === 'M:') {
+        const withoutArgs = rest.split('(')[0];
+        const parts = withoutArgs.split('.');
+        if (parts.length >= 2) {
+            const cls    = (parts[parts.length - 2]).split('`')[0];
+            const method =  parts[parts.length - 1];
+            return `M:${cls}.${method}`;
+        }
+    }
+    if (prefix === 'P:') {
+        const parts = rest.split('.');
+        if (parts.length >= 2) {
+            const cls  = (parts[parts.length - 2]).split('`')[0];
+            const prop =  parts[parts.length - 1];
+            return `P:${cls}.${prop}`;
+        }
+    }
+    return null;
+}
+
+/**
+ * Parse a .NET XML documentation file and return a map of simplified member key
+ * to summary text.  Returns an empty Map when xmlContent is undefined or unparseable.
+ */
+function parseXmlDocs(xmlContent: string): Map<string, string> {
+    const docs = new Map<string, string>();
+    let search = 0;
+    while (true) {
+        const memberIdx = xmlContent.indexOf('<member ', search);
+        if (memberIdx === -1) break;
+        const after = memberIdx + 8;
+        const nameAttr = xmlContent.indexOf('name="', after);
+        if (nameAttr === -1) { search = memberIdx + 1; continue; }
+        const nameStart = nameAttr + 6;
+        const nameEnd   = xmlContent.indexOf('"', nameStart);
+        if (nameEnd === -1) { search = memberIdx + 1; continue; }
+        const memberId = xmlContent.slice(nameStart, nameEnd);
+        const blockEnd = xmlContent.indexOf('</member>', nameEnd);
+        const block    = xmlContent.slice(nameEnd, blockEnd === -1 ? xmlContent.length : blockEnd);
+        const summary  = extractXmlElement(block, 'summary');
+        if (summary) {
+            const key = simplifyMemberId(memberId);
+            if (key && !docs.has(key)) docs.set(key, summary);
+        }
+        search = blockEnd === -1 ? xmlContent.length : blockEnd + 9;
+    }
+    return docs;
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
-export function parseNetAssembly(buf: Buffer): NativeModuleInfo {
+export function parseNetAssembly(buf: Buffer, xmlContent?: string): NativeModuleInfo {
     const empty: NativeModuleInfo = { funcs: new Map(), sigs: new Map(), docs: new Map(), classes: new Map() };
+
+    // Parse companion XML documentation file if provided
+    const xmlDocs = xmlContent ? parseXmlDocs(xmlContent) : new Map<string, string>();
 
     const root = findMetadataRoot(buf);
     if (!root) return empty;
@@ -589,7 +678,7 @@ export function parseNetAssembly(buf: Buffer): NativeModuleInfo {
             if (td.name.startsWith('<') || td.name.startsWith('_')) continue;
 
             const isInterface = (td.flags & TD_INTERFACE) !== 0;
-            const methods = new Map<string, { ret: LangType; sig: string }>();
+            const methods = new Map<string, { ret: LangType; sig: string; doc?: string }>();
             const methodSigs: string[] = [];
 
             for (let md1 = td.methodListStart; md1 < td.methodListEnd; md1++) {
@@ -634,10 +723,16 @@ export function parseNetAssembly(buf: Buffer): NativeModuleInfo {
                 const effRet  = m.role?.kind === 'setter' ? 'None' : ret;
                 const kwStatic = m.isStatic ? 'static ' : '';
                 const sig = `${kwStatic}fn ${arrowName}(${parts.join(', ')}) -> ${effRet}`;
-                methods.set(arrowName, { ret: effRet, sig }); methodSigs.push(sig);
+                // Look up method doc: try original C# name, then property key for accessors
+                const mKey = `M:${td.name}.${m.name}`;
+                const pKey = m.role?.kind === 'getter' || m.role?.kind === 'setter'
+                    ? `P:${td.name}.${m.role.name}` : undefined;
+                const methodDoc = xmlDocs.get(mKey) ?? (pKey ? xmlDocs.get(pKey) : undefined);
+                methods.set(arrowName, { ret: effRet, sig, doc: methodDoc }); methodSigs.push(sig);
             }
 
-            classes.set(td.name, { fields: new Map(), fieldSigs: [], methods, methodSigs });
+            const classDoc = xmlDocs.get(`T:${td.name}`);
+            classes.set(td.name, { fields: new Map(), fieldSigs: [], methods, methodSigs, bases: td.interfaceNames, classDocs: classDoc });
         }
 
         return { funcs: new Map(), sigs: new Map(), docs: new Map(), classes };

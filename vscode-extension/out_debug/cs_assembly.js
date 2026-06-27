@@ -447,11 +447,107 @@ function sanitizeParam(name) {
     return (_a = { type: 'type_', class: 'class_', fn: 'fn_', let: 'let_', mut: 'mut_' }[name]) !== null && _a !== void 0 ? _a : name;
 }
 // ---------------------------------------------------------------------------
+// XML documentation helpers
+// ---------------------------------------------------------------------------
+/** Strip XML tags and normalize whitespace. */
+function stripXmlTags(s) {
+    return s.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+/** Extract the text content of `<tag>...</tag>` from a block of XML. */
+function extractXmlElement(text, tag) {
+    const open = `<${tag}`;
+    const close = `</${tag}>`;
+    const start = text.indexOf(open);
+    if (start === -1)
+        return '';
+    const gt = text.indexOf('>', start);
+    if (gt === -1)
+        return '';
+    const contentStart = gt + 1;
+    const end = text.indexOf(close, contentStart);
+    if (end === -1)
+        return '';
+    return stripXmlTags(text.slice(contentStart, end));
+}
+/**
+ * Convert an XML doc member ID to a simplified lookup key:
+ *   `T:Ns.ClassName`          → `T:ClassName`
+ *   `M:Ns.Class.Method(args)` → `M:ClassName.Method`
+ *   `P:Ns.Class.Prop`         → `P:ClassName.Prop`
+ */
+function simplifyMemberId(memberId) {
+    var _a;
+    if (memberId.length < 2)
+        return null;
+    const prefix = memberId.slice(0, 2);
+    const rest = memberId.slice(2);
+    if (prefix === 'T:') {
+        const simple = ((_a = rest.split('.').pop()) !== null && _a !== void 0 ? _a : rest).split('`')[0];
+        return `T:${simple}`;
+    }
+    if (prefix === 'M:') {
+        const withoutArgs = rest.split('(')[0];
+        const parts = withoutArgs.split('.');
+        if (parts.length >= 2) {
+            const cls = (parts[parts.length - 2]).split('`')[0];
+            const method = parts[parts.length - 1];
+            return `M:${cls}.${method}`;
+        }
+    }
+    if (prefix === 'P:') {
+        const parts = rest.split('.');
+        if (parts.length >= 2) {
+            const cls = (parts[parts.length - 2]).split('`')[0];
+            const prop = parts[parts.length - 1];
+            return `P:${cls}.${prop}`;
+        }
+    }
+    return null;
+}
+/**
+ * Parse a .NET XML documentation file and return a map of simplified member key
+ * to summary text.  Returns an empty Map when xmlContent is undefined or unparseable.
+ */
+function parseXmlDocs(xmlContent) {
+    const docs = new Map();
+    let search = 0;
+    while (true) {
+        const memberIdx = xmlContent.indexOf('<member ', search);
+        if (memberIdx === -1)
+            break;
+        const after = memberIdx + 8;
+        const nameAttr = xmlContent.indexOf('name="', after);
+        if (nameAttr === -1) {
+            search = memberIdx + 1;
+            continue;
+        }
+        const nameStart = nameAttr + 6;
+        const nameEnd = xmlContent.indexOf('"', nameStart);
+        if (nameEnd === -1) {
+            search = memberIdx + 1;
+            continue;
+        }
+        const memberId = xmlContent.slice(nameStart, nameEnd);
+        const blockEnd = xmlContent.indexOf('</member>', nameEnd);
+        const block = xmlContent.slice(nameEnd, blockEnd === -1 ? xmlContent.length : blockEnd);
+        const summary = extractXmlElement(block, 'summary');
+        if (summary) {
+            const key = simplifyMemberId(memberId);
+            if (key && !docs.has(key))
+                docs.set(key, summary);
+        }
+        search = blockEnd === -1 ? xmlContent.length : blockEnd + 9;
+    }
+    return docs;
+}
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
-function parseNetAssembly(buf) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
+function parseNetAssembly(buf, xmlContent) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r;
     const empty = { funcs: new Map(), sigs: new Map(), docs: new Map(), classes: new Map() };
+    // Parse companion XML documentation file if provided
+    const xmlDocs = xmlContent ? parseXmlDocs(xmlContent) : new Map();
     const root = findMetadataRoot(buf);
     if (!root)
         return empty;
@@ -646,10 +742,16 @@ function parseNetAssembly(buf) {
                 const effRet = ((_o = m.role) === null || _o === void 0 ? void 0 : _o.kind) === 'setter' ? 'None' : ret;
                 const kwStatic = m.isStatic ? 'static ' : '';
                 const sig = `${kwStatic}fn ${arrowName}(${parts.join(', ')}) -> ${effRet}`;
-                methods.set(arrowName, { ret: effRet, sig });
+                // Look up method doc: try original C# name, then property key for accessors
+                const mKey = `M:${td.name}.${m.name}`;
+                const pKey = ((_p = m.role) === null || _p === void 0 ? void 0 : _p.kind) === 'getter' || ((_q = m.role) === null || _q === void 0 ? void 0 : _q.kind) === 'setter'
+                    ? `P:${td.name}.${m.role.name}` : undefined;
+                const methodDoc = (_r = xmlDocs.get(mKey)) !== null && _r !== void 0 ? _r : (pKey ? xmlDocs.get(pKey) : undefined);
+                methods.set(arrowName, { ret: effRet, sig, doc: methodDoc });
                 methodSigs.push(sig);
             }
-            classes.set(td.name, { fields: new Map(), fieldSigs: [], methods, methodSigs });
+            const classDoc = xmlDocs.get(`T:${td.name}`);
+            classes.set(td.name, { fields: new Map(), fieldSigs: [], methods, methodSigs, bases: td.interfaceNames, classDocs: classDoc });
         }
         return { funcs: new Map(), sigs: new Map(), docs: new Map(), classes };
     }

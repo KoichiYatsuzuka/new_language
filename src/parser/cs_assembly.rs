@@ -421,6 +421,18 @@ fn read_blob<'a>(data: &'a [u8], blob_off: usize, idx: u32) -> &'a [u8] {
 // Intermediate representation
 // ---------------------------------------------------------------------------
 
+/// All data produced by parsing a .NET assembly binary.
+/// Shared between `load_cs_assembly` (runtime stubs) and `generate_cs_stub_text` (file output).
+struct ParsedAssembly {
+    data: Vec<u8>,
+    streams: Streams,
+    layout: TildeLayout,
+    typedefs: Vec<CsTypeDef>,
+    all_methods: Vec<CsMethod>,
+    all_params: Vec<CsParam>,
+    type_names: HashMap<u32, String>,
+}
+
 #[derive(Debug, Clone)]
 struct CsMethod {
     name: String,
@@ -660,9 +672,9 @@ fn map_generic(base: &str, args: Vec<String>) -> String {
 // Main reader — parses all needed tables and builds CsTypeDef list
 // ---------------------------------------------------------------------------
 
-/// Read a .NET assembly and return a map of (type_coded_index → Arrow type name)
-/// plus all type definitions for stub generation.
-pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
+/// Parse a .NET assembly binary into intermediate tables.
+/// Shared by `load_cs_assembly` and `generate_cs_stub_text`.
+fn parse_assembly(path: &Path) -> Result<ParsedAssembly, String> {
     let data = std::fs::read(path)
         .map_err(|e| format!("CsImport: cannot read '{}': {e}", path.display()))?;
 
@@ -682,7 +694,6 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
     let res_sz = layout.coded_idx(&[T_MODULE, T_MODULEREF, T_ASSEMBLYREF, T_TYPEREF], 2);
 
     // --- Build TypeRef name table (coded-index → name string) ---
-    // TypeRef coded index: tag=1 in 2-bit field → raw_token = (row_1based << 2) | 1
     let mut type_names: HashMap<u32, String> = HashMap::new();
     let typeref_rows = layout.rows[T_TYPEREF] as usize;
     for row in 0..typeref_rows {
@@ -691,15 +702,13 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
         let ns_idx = layout.read_idx(&data, off + res_sz + s_sz, s_sz);
         let name = read_string(&data, streams.strings_off, name_idx);
         let ns = read_string(&data, streams.strings_off, ns_idx);
-        // TypeRef coded index: (row+1) << 2 | 1
         let coded = ((row as u32 + 1) << 2) | 1;
-        // Store simple name (strip arity)
         let simple = name.split('`').next().unwrap_or(name);
         let full = if ns.is_empty() { simple.to_string() } else { format!("{ns}.{simple}") };
         type_names.insert(coded, full);
     }
 
-    // --- GenericParam table: build map (TypeDef 1-based row → [param_names]) ---
+    // --- GenericParam table ---
     let gp_rows = layout.rows[T_GENERICPARAM] as usize;
     let mut type_generic_params: HashMap<u32, Vec<(u16, String)>> = HashMap::new();
     let mut method_generic_params: HashMap<u32, Vec<(u16, String)>> = HashMap::new();
@@ -723,7 +732,6 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
     // --- TypeDef table ---
     let td_rows = layout.rows[T_TYPEDEF] as usize;
     let mut typedefs: Vec<CsTypeDef> = Vec::with_capacity(td_rows);
-    // Also populate type_names for TypeDef coded indices
     for row in 0..td_rows {
         let off = layout.table_offsets[T_TYPEDEF] + row * layout.table_row_sizes[T_TYPEDEF];
         let flags = u32le(&data, off);
@@ -735,12 +743,10 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
         let name = read_string(&data, streams.strings_off, name_idx).to_string();
         let namespace = read_string(&data, streams.strings_off, ns_idx).to_string();
 
-        // Add to type_names for TypeDef coded index: (row+1) << 2 | 0
         let coded = ((row as u32 + 1) << 2) | 0;
         let simple = name.split('`').next().unwrap_or(&name);
         type_names.insert(coded, simple.to_string());
 
-        // Generic params
         let gp = type_generic_params.get(&(row as u32 + 1));
         let generic_param_names: Vec<String> = gp.map(|v| {
             let mut sorted = v.clone();
@@ -753,12 +759,11 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
             namespace: namespace.clone(),
             flags,
             method_list_start,
-            method_list_end: 0, // filled in below
+            method_list_end: 0,
             generic_param_names,
-            interface_names: Vec::new(), // filled from InterfaceImpl below
+            interface_names: Vec::new(),
         });
     }
-    // Fill method_list_end by next row's method_list_start
     let md_total = layout.rows[T_METHODDEF] as u32 + 1;
     for i in 0..typedefs.len() {
         typedefs[i].method_list_end = if i + 1 < typedefs.len() {
@@ -768,7 +773,7 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
         };
     }
 
-    // --- InterfaceImpl table (0x09): find interface names per TypeDef ---
+    // --- InterfaceImpl table ---
     let ii_rows = layout.rows[T_INTERFACEIMPL] as usize;
     let td_idx_sz = layout.tbl_idx(T_TYPEDEF);
     for row in 0..ii_rows {
@@ -777,7 +782,6 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
         let td_1 = layout.read_idx(&data, off, td_idx_sz);
         let iface_coded = layout.read_idx(&data, off + td_idx_sz, tdr_sz);
         let iface_name = type_names.get(&iface_coded).cloned().unwrap_or_default();
-        // Skip internal CLR interfaces
         let simple = iface_name.rsplit('.').next().unwrap_or(&iface_name);
         if !simple.is_empty() && simple != "IDisposable" {
             if let Some(td) = typedefs.get_mut((td_1 as usize).saturating_sub(1)) {
@@ -799,13 +803,10 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
     }
     let param_total = param_rows as u32 + 1;
 
-    // --- PropertyDef table: map (method_1_based_row → PropertyRole) ---
-    // First read PropertyMap (0x15): TypeDef → PropertyList
-    // Then MethodSemantics: links methods to properties/events
+    // --- PropertyDef / MethodSemantics ---
     let mut method_role: HashMap<u32, PropertyRole> = HashMap::new();
 
     if layout.rows[T_METHODSEMANTICS] > 0 && layout.rows[T_PROPERTY] > 0 {
-        // Build property name map: property 1-based row → name
         let mut prop_names: HashMap<u32, String> = HashMap::new();
         let pr_rows = layout.rows[T_PROPERTY] as usize;
         for row in 0..pr_rows {
@@ -816,7 +817,6 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
             prop_names.insert(row as u32 + 1, name);
         }
 
-        // MethodSemantics: Semantics(2) | Method(md_sz) | Association(has_sem_sz)
         let ms_rows = layout.rows[T_METHODSEMANTICS] as usize;
         for row in 0..ms_rows {
             let off = layout.table_offsets[T_METHODSEMANTICS]
@@ -824,10 +824,9 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
             let sem = u16le(&data, off);
             let meth_1 = layout.read_idx(&data, off + 2, md_sz);
             let assoc = layout.read_idx(&data, off + 2 + md_sz, has_sem_sz);
-            let assoc_tag = assoc & 1;  // 0=Event, 1=Property
+            let assoc_tag = assoc & 1;
             let assoc_row = assoc >> 1;
             if assoc_tag == 1 {
-                // Property
                 let prop_name = prop_names.get(&assoc_row).cloned().unwrap_or_default();
                 if !prop_name.is_empty() {
                     let role = if sem & SEM_GETTER != 0 {
@@ -838,9 +837,8 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
                     method_role.insert(meth_1, role);
                 }
             } else {
-                // Event — mark add/remove so we skip them
-                let event_name = String::new(); // event stubs not needed
-                            if sem & SEM_ADDON != 0 || sem & SEM_REMOVEON != 0 {
+                let event_name = String::new();
+                if sem & SEM_ADDON != 0 || sem & SEM_REMOVEON != 0 {
                     method_role.insert(meth_1, PropertyRole::EventAdder(event_name));
                 }
             }
@@ -859,13 +857,12 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
         let param_list_start = layout.read_idx(&data, off + 8 + s_sz + b_sz, pa_sz);
 
         let name = read_string(&data, streams.strings_off, name_idx).to_string();
-        let access = meth_flags & 0x07; // MemberAccessMask
-        let is_public = access == 6; // Public = 6
+        let access = meth_flags & 0x07;
+        let is_public = access == 6;
         let is_static = meth_flags & MD_STATIC != 0;
 
         let method_1 = row as u32 + 1;
 
-        // Generic method params
         let gp = method_generic_params.get(&method_1);
         let generic_param_names: Vec<String> = gp.map(|v| {
             let mut sorted = v.clone();
@@ -882,12 +879,11 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
             flags: meth_flags,
             sig_blob_idx: sig_idx,
             param_list_start,
-            param_list_end: 0, // filled below
+            param_list_end: 0,
             generic_param_names,
             property_role,
         });
     }
-    // Fill param_list_end
     for i in 0..all_methods.len() {
         all_methods[i].param_list_end = if i + 1 < all_methods.len() {
             all_methods[i + 1].param_list_start
@@ -896,16 +892,300 @@ pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
         };
     }
 
-    // --- Generate Arrow stubs ---
+    Ok(ParsedAssembly { data, streams, layout, typedefs, all_methods, all_params, type_names })
+}
+
+/// Read a .NET assembly and return a map of (type_coded_index → Arrow type name)
+/// plus all type definitions for stub generation.
+pub fn load_cs_assembly(path: &Path) -> Result<Vec<Stmt>, String> {
+    let pa = parse_assembly(path)?;
     generate_stubs(
-        &data,
-        &streams,
-        &layout,
-        &typedefs,
-        &all_methods,
-        &all_params,
-        &type_names,
+        &pa.data, &pa.streams, &pa.layout,
+        &pa.typedefs, &pa.all_methods, &pa.all_params, &pa.type_names,
     )
+}
+
+/// Generate a `.ars` stub text from a .NET DLL, including XML doc comments if a
+/// companion `{stem}.xml` documentation file is present alongside the DLL.
+/// Returns `(stmts, stub_text)` where `stmts` is used by the interpreter at runtime
+/// and `stub_text` is written to the `.ars` file.
+pub fn generate_cs_stub_text(path: &Path) -> Result<(Vec<Stmt>, String), String> {
+    let pa = parse_assembly(path)?;
+    let stmts = generate_stubs(
+        &pa.data, &pa.streams, &pa.layout,
+        &pa.typedefs, &pa.all_methods, &pa.all_params, &pa.type_names,
+    )?;
+    let xml_path = path.with_extension("xml");
+    let docs = parse_xml_docs(&xml_path);
+    let text = render_cs_ars_text(&pa, &docs);
+    Ok((stmts, text))
+}
+
+// ---------------------------------------------------------------------------
+// XML documentation helpers
+// ---------------------------------------------------------------------------
+
+/// Strip XML tags from a string and normalize whitespace.
+fn strip_xml_tags(s: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(c),
+            _ => {}
+        }
+    }
+    result.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Extract the text content of the first occurrence of `<tag>...</tag>` in `text`.
+fn extract_xml_element(text: &str, tag: &str) -> String {
+    let open = format!("<{}", tag);
+    let close = format!("</{}>", tag);
+    if let Some(start) = text.find(&open) {
+        if let Some(gt) = text[start..].find('>') {
+            let content_start = start + gt + 1;
+            if let Some(end) = text[content_start..].find(&close) {
+                return strip_xml_tags(&text[content_start..content_start + end]);
+            }
+        }
+    }
+    String::new()
+}
+
+/// Convert an XML doc member ID to a simplified lookup key.
+/// - `T:Namespace.ClassName`  → `T:ClassName`
+/// - `M:Namespace.Class.Method(args)` → `M:ClassName.Method`
+/// - `P:Namespace.Class.Prop`  → `P:ClassName.Prop`
+fn simplify_member_id(member_id: &str) -> Option<String> {
+    if member_id.len() < 2 { return None; }
+    let prefix = &member_id[..2];
+    let rest   = &member_id[2..];
+    match prefix {
+        "T:" => {
+            let simple = rest.rsplit('.').next().unwrap_or(rest);
+            let simple = simple.split('`').next().unwrap_or(simple);
+            Some(format!("T:{simple}"))
+        }
+        "M:" => {
+            let without_args = rest.split('(').next().unwrap_or(rest);
+            let parts: Vec<&str> = without_args.split('.').collect();
+            if parts.len() >= 2 {
+                let cls = parts[parts.len() - 2].split('`').next().unwrap_or(parts[parts.len() - 2]);
+                let method = parts[parts.len() - 1];
+                Some(format!("M:{cls}.{method}"))
+            } else { None }
+        }
+        "P:" => {
+            let parts: Vec<&str> = rest.split('.').collect();
+            if parts.len() >= 2 {
+                let cls = parts[parts.len() - 2].split('`').next().unwrap_or(parts[parts.len() - 2]);
+                let prop = parts[parts.len() - 1];
+                Some(format!("P:{cls}.{prop}"))
+            } else { None }
+        }
+        _ => None,
+    }
+}
+
+/// Parse an XML documentation file (companion to a .NET DLL) and return a map
+/// of simplified member key → summary text.
+/// Returns an empty map if the file does not exist or cannot be read.
+fn parse_xml_docs(xml_path: &Path) -> HashMap<String, String> {
+    let content = match std::fs::read_to_string(xml_path) {
+        Ok(c)  => c,
+        Err(_) => return HashMap::new(),
+    };
+    let mut docs: HashMap<String, String> = HashMap::new();
+    let mut search = 0usize;
+    while let Some(rel) = content[search..].find("<member ") {
+        let m_start = search + rel;
+        let after   = m_start + 8;
+        let name_val_start = match content[after..].find("name=\"").map(|p| after + p + 6) {
+            Some(n) => n,
+            None    => { search = m_start + 1; continue; }
+        };
+        let name_end = match content[name_val_start..].find('"').map(|p| name_val_start + p) {
+            Some(e) => e,
+            None    => { search = m_start + 1; continue; }
+        };
+        let member_id = &content[name_val_start..name_end];
+        let block_end = content[name_end..].find("</member>")
+            .map(|p| name_end + p)
+            .unwrap_or(content.len());
+        let block   = &content[name_end..block_end];
+        let summary = extract_xml_element(block, "summary");
+        if !summary.is_empty() {
+            if let Some(key) = simplify_member_id(member_id) {
+                docs.entry(key).or_insert(summary);
+            }
+        }
+        search = if block_end < content.len() { block_end + 9 } else { content.len() };
+    }
+    docs
+}
+
+// ---------------------------------------------------------------------------
+// .ars text renderer (with optional docstrings)
+// ---------------------------------------------------------------------------
+
+/// Generate `.ars` stub text from parsed assembly data, embedding XML doc comments
+/// as triple-quoted docstrings when the `docs` map is non-empty.
+///
+/// The output format mirrors `stub_gen::generate_stub` but includes
+/// `"""summary"""` on the first body line of each class/method that has a doc entry.
+fn render_cs_ars_text(pa: &ParsedAssembly, docs: &HashMap<String, String>) -> String {
+    let data       = &pa.data;
+    let streams    = &pa.streams;
+    let layout     = &pa.layout;
+    let typedefs   = &pa.typedefs;
+    let methods    = &pa.all_methods;
+    let params     = &pa.all_params;
+    let type_names = &pa.type_names;
+
+    let mut out   = String::new();
+    let mut first = true;
+
+    for td in typedefs {
+        let vis = td.flags & 0x07;
+        if vis != TD_PUBLIC && vis != TD_NESTED_PUBLIC { continue; }
+        if td.name.is_empty() || td.name == "<Module>"   { continue; }
+        if td.name.starts_with('<') || td.name.starts_with('_') { continue; }
+
+        let is_interface = td.flags & TD_INTERFACE != 0;
+
+        let tparams = if td.generic_param_names.is_empty() {
+            String::new()
+        } else {
+            format!("[{}]", td.generic_param_names.join(", "))
+        };
+        let bases_str = if td.interface_names.is_empty() {
+            String::new()
+        } else {
+            format!("({})", td.interface_names.join(", "))
+        };
+
+        if !first { out.push('\n'); }
+        first = false;
+
+        if is_interface {
+            out.push_str(&format!("trait {}{tparams}:\n", td.name));
+        } else {
+            let n = &td.name;
+            out.push_str(&format!("class {n}{tparams}{bases_str}->{n}:\n"));
+        }
+
+        // Class-level docstring
+        if let Some(doc) = docs.get(&format!("T:{}", td.name)) {
+            out.push_str(&format!("    \"\"\"{doc}\"\"\"\n"));
+        }
+
+        // __init__ stub for classes
+        if !is_interface {
+            out.push_str("    fn __init__(self: Self) -> None:\n        ...\n");
+        }
+
+        // Methods
+        let mstart = td.method_list_start as usize;
+        let mend   = td.method_list_end   as usize;
+
+        for md_1 in mstart..mend {
+            let md_idx = md_1.saturating_sub(1);
+            if md_idx >= methods.len() { continue; }
+            let m = &methods[md_idx];
+
+            if !m.is_public { continue; }
+            if let Some(PropertyRole::EventAdder(_)) = &m.property_role { continue; }
+
+            let is_accessor = matches!(&m.property_role,
+                Some(PropertyRole::Getter(_)) | Some(PropertyRole::Setter(_)));
+            if m.flags & MD_SPECIAL_NAME != 0 && !is_accessor {
+                if m.name == ".ctor" || m.name == ".cctor" { continue; }
+                if let Some(op) = operator_name(&m.name) {
+                    let (ret, sig_params) = decode_method_sig(
+                        data, streams, layout, m, params, type_names, &td.generic_param_names);
+                    let mut p_parts = vec!["self: Self".to_string()];
+                    for (i, (ty, _)) in sig_params.iter().enumerate() {
+                        p_parts.push(format!("p{i}: {ty}"));
+                    }
+                    out.push_str(&format!("    fn {op}({}) -> {ret}:\n        ...\n",
+                        p_parts.join(", ")));
+                    continue;
+                }
+                continue;
+            }
+
+            let arrow_name = match &m.property_role {
+                Some(PropertyRole::Getter(prop)) => format!("get{prop}"),
+                Some(PropertyRole::Setter(prop)) => format!("set{prop}"),
+                _ => m.name.clone(),
+            };
+
+            let (ret_type, sig_params) = decode_method_sig(
+                data, streams, layout, m, params, type_names, &td.generic_param_names);
+
+            let mut p_parts: Vec<String> = if m.is_static {
+                vec![]
+            } else {
+                vec!["self: Self".to_string()]
+            };
+
+            let pstart = m.param_list_start as usize;
+            let pend   = m.param_list_end   as usize;
+            let method_params: Vec<&CsParam> = params
+                .iter()
+                .skip(pstart.saturating_sub(1))
+                .take((pend - pstart).min(params.len()))
+                .filter(|p| p.sequence > 0)
+                .collect();
+
+            if let Some(PropertyRole::Setter(_)) = &m.property_role {
+                if let Some((ty, _)) = sig_params.first() {
+                    p_parts.push(format!("value: {ty}"));
+                }
+            } else {
+                for (i, (ty, _)) in sig_params.iter().enumerate() {
+                    let pname = method_params.get(i)
+                        .map(|p| sanitize_param_name(&p.name))
+                        .unwrap_or_else(|| format!("p{i}"));
+                    p_parts.push(format!("{pname}: {ty}"));
+                }
+            }
+
+            let eff_ret = match &m.property_role {
+                Some(PropertyRole::Setter(_)) => "None".to_string(),
+                _ => ret_type,
+            };
+
+            let tmpl = if m.generic_param_names.is_empty() {
+                String::new()
+            } else {
+                format!("[{}]", m.generic_param_names.join(", "))
+            };
+
+            out.push_str(&format!("    fn {arrow_name}{tmpl}({}) -> {eff_ret}:\n",
+                p_parts.join(", ")));
+
+            // Method docstring — look up by original C# name, fall back to property key
+            let mkey = format!("M:{}.{}", td.name, m.name);
+            let pkey = match &m.property_role {
+                Some(PropertyRole::Getter(prop)) | Some(PropertyRole::Setter(prop)) =>
+                    Some(format!("P:{}.{}", td.name, prop)),
+                _ => None,
+            };
+            let doc = docs.get(&mkey).or_else(|| pkey.as_ref().and_then(|k| docs.get(k)));
+            if let Some(d) = doc {
+                out.push_str(&format!("        \"\"\"{d}\"\"\"\n"));
+            }
+            out.push_str("        ...\n");
+        }
+
+        out.push('\n');
+    }
+
+    out
 }
 
 // ---------------------------------------------------------------------------

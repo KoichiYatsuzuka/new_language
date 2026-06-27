@@ -146,8 +146,8 @@ impl TypeChecker {
                 self.check_fn_type_call(&fname, args, &arg_data, &fn_params);
                 return ret;
             }
-            InferredType::Function { params: None, .. } => {
-                return InferredType::Any;
+            InferredType::Function { params: None, return_type } => {
+                return *return_type;
             }
             _ => {}
         }

@@ -16,6 +16,7 @@ cargo test <name>                  # Filter tests by partial name match
 cargo clippy                       # Lint
 cargo fmt                          # Format
 cargo run -- --compile <file.ar>   # Partially compile a module (see below)
+cargo run -- --compile-cs <file.dll> # Generate .ars stub from a .NET DLL (import[cs-dll]/import[cs-proc])
 ```
 
 ### Python implementation (`impl_python/`)

@@ -1,0 +1,8 @@
+import[py-int] json
+
+let data = json.dumps({"key": "value", "num": 42})
+print(data)
+
+let parsed = json.loads(data)
+print(parsed["key"])
+print(parsed["num"])
