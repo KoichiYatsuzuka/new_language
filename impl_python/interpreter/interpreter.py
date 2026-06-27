@@ -210,14 +210,20 @@ class Interpreter:
                 self.eval(expr)
 
             case StmtLet(name=name, expr=expr):
+                if name != "_" and self._env.contains(name):
+                    raise RuntimeError(f"NameError: variable '{name}' is already declared")
                 val = self.eval(expr)
                 self._env.declare(name, val, mutable=False)
 
             case StmtConst(name=name, expr=expr):
+                if name != "_" and self._env.contains(name):
+                    raise RuntimeError(f"NameError: variable '{name}' is already declared")
                 val = self.eval(expr)
                 self._env.declare(name, val, mutable=False)
 
             case StmtMut(name=name, expr=expr):
+                if name != "_" and self._env.contains(name):
+                    raise RuntimeError(f"NameError: variable '{name}' is already declared")
                 val = self.eval(expr)
                 self._env.declare(name, val, mutable=True)
 
@@ -1783,6 +1789,13 @@ class Interpreter:
         else:
             vals = [val]
 
+        for tgt in targets:
+            match tgt:
+                case TupleTargetLet(name=n) | TupleTargetMut(name=n) | TupleTargetBare(name=n):
+                    if n != "_" and self._env.contains(n):
+                        raise RuntimeError(f"NameError: variable '{n}' is already declared")
+                case _:
+                    pass
         for i, tgt in enumerate(targets):
             v = vals[i] if i < len(vals) else None
             match tgt:

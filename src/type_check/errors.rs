@@ -155,6 +155,10 @@ pub enum TypeErrorKind {
     /// `Undefined` リテラルを変数に代入しようとした。
     /// 条件判定・型アノテーション・引数としての使用は許可される。
     AssignUndefined,
+    /// 既にアクセス可能なスコープに同名の変数が存在する状態で再宣言しようとした。
+    VariableRedeclaration {
+        name: String,
+    },
     /// `Result[T, E]` の Ok 型と Err 型が同一または相互に is 判定が成立する。
     ResultSameTypes {
         ok_type: InferredType,
@@ -414,6 +418,10 @@ impl StaticTypeError {
             TypeErrorKind::AssignUndefined => format!(
                 "cannot assign {} to a variable; {} can only be used in conditions and type annotations",
                 hl_bt("Undefined"), hl_bt("Undefined")
+            ),
+            TypeErrorKind::VariableRedeclaration { name } => format!(
+                "variable {} is already declared in an accessible scope",
+                hl_q(name)
             ),
             TypeErrorKind::ResultSameTypes { ok_type, err_type } => format!(
                 "Result[{}, {}]: Ok type and Err type must be different",

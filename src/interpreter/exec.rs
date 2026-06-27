@@ -137,11 +137,17 @@ impl Interpreter {
             }
             Stmt::Let(name, _, expr) => self.exec_let(name, expr),
             Stmt::Const(name, _, expr) => {
+                if name != "_" && self.get_var(name).is_some() {
+                    return Err(format!("NameError: variable '{name}' is already declared"));
+                }
                 let value = self.eval(expr)?;
                 self.declare_var(name.clone(), Var::new(value, false));
                 Ok(ExecResult::Normal)
             }
             Stmt::Mut(name, _, expr) => {
+                if name != "_" && self.get_var(name).is_some() {
+                    return Err(format!("NameError: variable '{name}' is already declared"));
+                }
                 let value = Self::deep_copy_value(self.eval(expr)?);
                 self.declare_var(name.clone(), Var::new(value, true));
                 Ok(ExecResult::Normal)
@@ -509,6 +515,9 @@ impl Interpreter {
 
     /// `let` 宣言を実行する。
     fn exec_let(&mut self, name: &str, expr: &Expr) -> Result<ExecResult, String> {
+        if name != "_" && self.get_var(name).is_some() {
+            return Err(format!("NameError: variable '{name}' is already declared"));
+        }
         // mut → let: deep copy してからフリーズする。
         // let → let: そのまま代入（コピー不要・再フリーズ不要）。
         // 式 → let: Instance の場合は deep copy してからフリーズする。
@@ -577,6 +586,16 @@ impl Interpreter {
             return Err(format!(
                 "TypeError: not enough values to unpack (expected {named}, got {tlen})"
             ));
+        }
+        for target in targets.iter() {
+            match target {
+                TupleTarget::Let(n) | TupleTarget::Bare(n) | TupleTarget::Mut(n) => {
+                    if n != "_" && self.get_var(n).is_some() {
+                        return Err(format!("NameError: variable '{n}' is already declared"));
+                    }
+                }
+                TupleTarget::Wildcard => {}
+            }
         }
         let mut idx = 0usize;
         for target in targets.iter() {

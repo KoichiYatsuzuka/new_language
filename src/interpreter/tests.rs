@@ -123,6 +123,44 @@ fn test_let_immutable() {
     assert!(run("let x = 1\nx = 2").is_err());
 }
 
+/// let_redeclaration_same_scope のテスト。
+#[test]
+fn test_let_redeclaration_same_scope() {
+    let err = run("let a = 5\nlet a = 6\n").expect_err("redeclaration should error");
+    assert!(err.contains("already declared"), "got: {err}");
+}
+
+/// mut_redeclaration_same_scope のテスト。
+#[test]
+fn test_mut_redeclaration_same_scope() {
+    assert!(run("mut a = 5\nmut a = 6\n").is_err());
+}
+
+/// let_then_mut_redeclaration のテスト。
+#[test]
+fn test_let_then_mut_redeclaration() {
+    assert!(run("let a = 5\nmut a = 6\n").is_err());
+}
+
+/// redeclaration_in_inner_scope のテスト（外側スコープの変数と同名）。
+#[test]
+fn test_redeclaration_in_inner_scope() {
+    assert!(run("let x = 1\nif True:\n    let x = 2\n").is_err());
+}
+
+/// underscore_redeclaration_allowed のテスト（_ は再宣言を許可）。
+#[test]
+fn test_underscore_redeclaration_allowed() {
+    assert!(run("let _ = 1\nlet _ = 2\n").is_ok());
+}
+
+/// redeclaration_error_message のテスト（エラーメッセージに変数名が含まれる）。
+#[test]
+fn test_redeclaration_error_message() {
+    let err = run("let foo = 1\nlet foo = 2\n").expect_err("should error");
+    assert!(err.contains("foo"), "error should mention variable name, got: {err}");
+}
+
 /// mut_mutable のテスト。
 #[test]
 fn test_mut_mutable() {

@@ -100,6 +100,10 @@ class ErrAssignUndefined:
     pass
 
 @dataclass
+class ErrVariableRedeclaration:
+    name: str
+
+@dataclass
 class ErrIntersectionMemberConflict:
     member_name: str
     type_a: str
@@ -124,7 +128,7 @@ TypeErrorKind = (
     ErrUnknownKeywordArg | ErrNoMatchingOverload | ErrSelfTypeMismatch |
     ErrOperationOnAny | ErrOperationOnUnion | ErrIsNotOnNonUnion |
     ErrCallMutParamWithImmutableArg | ErrInvalidDecorator | ErrFieldDefaultNotAllowed |
-    ErrProtocolConformanceFailed | ErrAssignUndefined |
+    ErrProtocolConformanceFailed | ErrAssignUndefined | ErrVariableRedeclaration |
     ErrIntersectionMemberConflict | ErrIntersectionGuardTypeFails | ErrResultSameTypes
 )
 
@@ -174,6 +178,8 @@ def _format_kind(kind: "TypeErrorKind") -> str:
         case ErrAssignUndefined():
             return ("StaticTypeError: cannot assign `Undefined` to a variable; "
                     "`Undefined` can only be used in conditions and type annotations")
+        case ErrVariableRedeclaration(name=name):
+            return f"StaticTypeError: variable '{name}' is already declared in an accessible scope"
         case ErrIntersectionMemberConflict(member_name=mn, type_a=ta, type_b=tb, reason=r):
             return (f"StaticTypeError: intersection member '{mn}' from '{ta}' and '{tb}' conflict: {r}")
         case ErrIntersectionGuardTypeFails(guard_type=gt, intersection_type=it, reason=r):

@@ -27,6 +27,12 @@ impl TypeChecker {
                         span: None,
                     });
                 }
+                if name != "_" && self.lookup(name).is_some() {
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::VariableRedeclaration { name: name.clone() },
+                        span: None,
+                    });
+                }
                 let ty = self.resolve_declared_type(type_ann.as_deref(), rhs_ty, name, stmt);
                 self.declare(name.clone(), ty, false);
             }
@@ -38,6 +44,12 @@ impl TypeChecker {
                         span: None,
                     });
                 }
+                if name != "_" && self.lookup(name).is_some() {
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::VariableRedeclaration { name: name.clone() },
+                        span: None,
+                    });
+                }
                 let ty = self.resolve_declared_type(type_ann.as_deref(), rhs_ty, name, stmt);
                 self.declare(name.clone(), ty, false);
             }
@@ -46,6 +58,12 @@ impl TypeChecker {
                 if rhs_ty == InferredType::Undefined {
                     self.report_error(StaticTypeError {
                         kind: TypeErrorKind::AssignUndefined,
+                        span: None,
+                    });
+                }
+                if name != "_" && self.lookup(name).is_some() {
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::VariableRedeclaration { name: name.clone() },
                         span: None,
                     });
                 }
@@ -105,9 +123,23 @@ impl TypeChecker {
                     let ty = elem_types.get(i).cloned().unwrap_or(InferredType::Any);
                     match target {
                         TupleTarget::Let(name) | TupleTarget::Bare(name) => {
+                            if name != "_" && self.lookup(name).is_some() {
+                                self.report_error(StaticTypeError {
+                                    kind: TypeErrorKind::VariableRedeclaration { name: name.clone() },
+                                    span: Some(span.clone()),
+                                });
+                            }
                             self.declare(name.clone(), ty, false)
                         }
-                        TupleTarget::Mut(name) => self.declare(name.clone(), ty, true),
+                        TupleTarget::Mut(name) => {
+                            if name != "_" && self.lookup(name).is_some() {
+                                self.report_error(StaticTypeError {
+                                    kind: TypeErrorKind::VariableRedeclaration { name: name.clone() },
+                                    span: Some(span.clone()),
+                                });
+                            }
+                            self.declare(name.clone(), ty, true)
+                        }
                         TupleTarget::Wildcard => {}
                     }
                 }

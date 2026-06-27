@@ -22,7 +22,7 @@ from .types import (
 )
 from .errors import (ErrAssignToImmutable, ErrAssignUndefined, ErrMissingParamTypeAnn, ErrMissingReturnTypeAnn,
                      ErrIsNotOnNonUnion, ErrFieldDefaultNotAllowed, ErrProtocolConformanceFailed,
-                     ErrIntersectionGuardTypeFails, ErrResultSameTypes,
+                     ErrIntersectionGuardTypeFails, ErrResultSameTypes, ErrVariableRedeclaration,
                      StaticTypeError)
 from .scope import _FnSig
 from .type_utils import _type_from_guard_name
@@ -44,6 +44,8 @@ class _TypeCheckerStmts:
                 rhs = self._infer(expr)
                 if isinstance(rhs, TyUndefined):
                     self._report(ErrAssignUndefined(), None)
+                if name != "_" and self._lookup(name) is not None:
+                    self._report(ErrVariableRedeclaration(name=name), None)
                 ty = self._resolve_decl_type(type_ann, rhs, name)
                 self._declare(name, ty, False)
 
@@ -51,12 +53,16 @@ class _TypeCheckerStmts:
                 rhs = self._infer(expr)
                 if isinstance(rhs, TyUndefined):
                     self._report(ErrAssignUndefined(), None)
+                if name != "_" and self._lookup(name) is not None:
+                    self._report(ErrVariableRedeclaration(name=name), None)
                 self._declare(name, rhs, False)
 
             case StmtMut(name=name, expr=expr, type_ann=type_ann):
                 rhs = self._infer(expr)
                 if isinstance(rhs, TyUndefined):
                     self._report(ErrAssignUndefined(), None)
+                if name != "_" and self._lookup(name) is not None:
+                    self._report(ErrVariableRedeclaration(name=name), None)
                 ty = self._resolve_decl_type(type_ann, rhs, name)
                 self._declare(name, ty, True)
 

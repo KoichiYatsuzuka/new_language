@@ -1,0 +1,6 @@
+# 変数の再宣言はエラー（同名変数が既にアクセス可能なスコープに存在する場合）
+
+let a = 5
+print(a)
+let a = 6   # StaticTypeError / NameError: variable 'a' is already declared
+print(a)
