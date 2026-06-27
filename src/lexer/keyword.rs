@@ -93,6 +93,7 @@ impl Lexer {
             "on" => Token::On,
             "off" => Token::Off,
             "once" => Token::Once,
+            "mustbe" => Token::MustBe,
             // キーワードに一致しない場合は識別子トークンを返す
             _ => Token::Ident(word),
         }

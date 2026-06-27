@@ -23,6 +23,16 @@ fn set_insert(set: &mut Vec<Value>, item: Value, interp: &Interpreter) {
     }
 }
 
+/// `mustbe` 用: ガード型文字列から外側の型名（型パラメータを除いた部分）を返す。
+/// 例: `"list[int]"` → `"list"`,  `"function[int]->str"` → `"function"`, `"int"` → `"int"`
+fn mustbe_outer_type(guard_type: &str) -> String {
+    // `[` または `{` より前の部分を取り出す
+    let end = guard_type.find(|c| c == '[' || c == '{').unwrap_or(guard_type.len());
+    // `->` より前の部分も考慮（function->R の形式）
+    let end = end.min(guard_type.find("->").unwrap_or(guard_type.len()));
+    guard_type[..end].trim().to_string()
+}
+
 // ---------------------------------------------------------------------------
 // スライス計算ヘルパー
 // ---------------------------------------------------------------------------
@@ -344,6 +354,25 @@ impl Interpreter {
                 let val = self.eval(expr)?;
                 let result = self.value_is_type(&val, type_name);
                 Ok(Value::Bool(if *negated { !result } else { result }))
+            }
+            Expr::MustBe { expr, guard_type, span } => {
+                let val = self.eval(expr)?;
+                let outer = mustbe_outer_type(guard_type);
+                if self.value_is_type(&val, &outer) {
+                    Ok(val)
+                } else {
+                    let actual = self.type_name_of(&val);
+                    let msg = format!(
+                        "TypeError: mustbe assertion failed at {}: expected `{}`, got `{}`",
+                        span, guard_type, actual
+                    );
+                    if let Some(raised) = self.make_internal_raised_error(&msg) {
+                        self.current_exception = Some(raised);
+                        Err(RAISE_SENTINEL.to_string())
+                    } else {
+                        Err(msg)
+                    }
+                }
             }
             Expr::Call { func, args, span } => self.eval_call(func, args, span),
             Expr::Cast { object, type_name, .. } => self.eval_cast(object, type_name),

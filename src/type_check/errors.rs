@@ -206,6 +206,15 @@ pub enum TypeWarningKind {
     IntersectionSkippedCompile {
         func_name: String,
     },
+    /// `mustbe コレクション[T]` の要素型は実行時にチェックされない。
+    MustBeElemTypeUnchecked {
+        guard_type: String,
+        outer_type: String,
+    },
+    /// `mustbe function[...]->R` のシグネチャは実行時にチェックされない。
+    MustBeFunctionSignatureUnchecked {
+        guard_type: String,
+    },
 }
 
 /// 静的型検査で収集される警告情報。
@@ -233,6 +242,14 @@ impl StaticTypeWarning {
             TypeWarningKind::IntersectionSkippedCompile { func_name } => format!(
                 "function {} uses Intersection type and cannot be compiled to native code",
                 hl_q(func_name)
+            ),
+            TypeWarningKind::MustBeElemTypeUnchecked { guard_type, outer_type } => format!(
+                "`mustbe {}` only checks that the value is a `{}` at runtime; element type is not verified",
+                hl_q(guard_type), hl_q(outer_type)
+            ),
+            TypeWarningKind::MustBeFunctionSignatureUnchecked { guard_type } => format!(
+                "`mustbe {}` only checks that the value is callable at runtime; signature is not verified",
+                hl_q(guard_type)
             ),
         }
     }

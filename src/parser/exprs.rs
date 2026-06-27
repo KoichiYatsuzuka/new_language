@@ -107,6 +107,15 @@ impl Parser {
                 span,
             });
         }
+        if *self.current() == Token::MustBe {
+            self.advance();
+            let guard_type = self.parse_mustbe_type()?;
+            return Ok(Expr::MustBe {
+                expr: Box::new(left),
+                guard_type,
+                span,
+            });
+        }
         if *self.current() == Token::In {
             self.advance();
             let right = self.parse_bitor()?;

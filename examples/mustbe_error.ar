@@ -1,0 +1,5 @@
+# mustbe_error: examples of mustbe type assertion failures
+
+# Fails: value is str, not int
+let s = "hello"
+let n = s mustbe int  # TypeError: mustbe assertion failed: expected `int`, got `str`

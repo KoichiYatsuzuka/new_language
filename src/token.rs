@@ -268,6 +268,9 @@ pub enum Token {
     Off,  // off
     Once, // once
 
+    // Type assertion
+    MustBe, // must be
+
     // Arithmetic operators
     Plus,       // +
     Minus,      // -
@@ -437,6 +440,7 @@ impl Token {
             Token::On => Some("on"),
             Token::Off => Some("off"),
             Token::Once => Some("once"),
+            Token::MustBe => Some("mustbe"),
             _ => None,
         }
     }

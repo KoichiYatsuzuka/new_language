@@ -240,6 +240,73 @@ class Node:
 
 ---
 
+## `mustbe` — 動的型アサーション
+
+`mustbe` は式の実行時型を検査し、型が一致しなければ `TypeError` を raise します。  
+静的型検査では右辺の型情報を完全に保持するため、以降のコード解析もその型として扱われます。
+
+```hv
+let x: Any = compute()
+let n = x mustbe int     # 実行時に int か確認; 静的型: int
+let doubled = n * 2      # n は int なので OK
+```
+
+### 構文
+
+```
+expr mustbe TypeExpr
+```
+
+- `TypeExpr` には `int`, `str`, `list[int]`, `function[T]->R`, `MyClass`, `MyProtocol` など、  
+  `Undefined` 以外のすべての型を記述できます。
+- `mustbe` は**式**として評価され、右辺の値をそのまま返します（型が一致した場合）。
+
+### 実行時の検査対象
+
+| `TypeExpr` | 実行時チェック |
+|---|---|
+| プリミティブ型 (`int`, `float`, `str`, `bool`, `None`) | 値の型が一致するか |
+| コレクション型 (`list[T]`, `dict[K,V]`, `set[T]`, `tuple[...]`) | **外側のコンテナ型のみ**（要素型は非検査） |
+| `function` | 呼び出し可能か（Arrow 関数・`__call__` を持つクラスインスタンス） |
+| `function[T]->R` | 呼び出し可能かのみ（シグネチャは非検査） |
+| クラス名 | インスタンスのクラス名または継承 trait が一致するか |
+| `protocol` 名 | プロトコルが要求する全メンバーが存在するか |
+
+### 静的型の保持
+
+```hv
+let xs: Any = get_list()
+let typed_xs = xs mustbe list[int]   # 静的型: list[int]
+let elem = typed_xs[0]               # 静的型: int (添字型推論)
+```
+
+```hv
+fn greet() -> int: return 42
+let f: Any = greet
+let g = f mustbe function[()->int]   # 静的型: ()->int
+let r = g()                          # 静的型: int
+```
+
+### 警告
+
+要素型付きコレクション (`list[int]` 等) やシグネチャ付き `function` を `mustbe` に使用すると  
+静的型警告が発生します。型情報は静的解析に活用されますが、実行時チェックには反映されません。
+
+```hv
+let nums = vals mustbe list[int]
+# Warning: `mustbe 'list[int]'` only checks that the value is a `list` at runtime; element type is not verified
+```
+
+### 型が一致しない場合
+
+```hv
+let s = "hello"
+let n = s mustbe int
+# TypeError: mustbe assertion failed: expected `int`, got `str`
+```
+
+---
+
 ## 型ガードナロイング
 
 ### `is` による絞り込み
@@ -291,6 +358,7 @@ StaticTypeError のリストを収集
 | `IncompatibleComparison` | 型が合わない比較演算 |
 | `AssignToImmutable` | 不変変数への代入 |
 | `AssignToImmutableField` | 不変フィールドへの代入 |
+| `VariableRedeclaration` | アクセス可能なスコープに既に存在する変数名の再宣言 |
 | `CallArgCountMismatch` | 引数の数が合わない |
 | `CallArgTypeMismatch` | 引数の型が合わない |
 | `MissingParamTypeAnn` | パラメータに型アノテーションなし |
@@ -315,6 +383,13 @@ StaticTypeError のリストを収集
 | `IntersectionMemberConflict` | 交差型の構成型間でメンバーが衝突 |
 | `IntersectionGuardTypeFails` | `is` ガード型が交差型の全構成型を満たさない |
 | `ResultSameTypes` | `Result[T, E]` の `T` と `E` が同じ型 |
+
+### 型警告 (TypeWarning)
+
+| 警告名 | 説明 |
+|---|---|
+| `MustBeElemTypeUnchecked` | `mustbe list[T]` 等で要素型が実行時に検証されない |
+| `MustBeFunctionSignatureUnchecked` | `mustbe function[T]->R` 等でシグネチャが実行時に検証されない |
 
 ---
 

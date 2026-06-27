@@ -343,6 +343,17 @@ pub enum Expr {
         /// エラー報告に使用する位置情報。
         span: Span,
     },
+    /// 動的型アサーション: `expr mustbe Type`。
+    /// 実行時に型チェックを行い、一致しなければ `TypeError` を raise する。
+    /// 静的型検査では式の型を `Type` として確定する。
+    MustBe {
+        /// アサーション対象の式。実行時に一度だけ評価される。
+        expr: Box<Expr>,
+        /// ガード型の完全な文字列（例: `"int"`, `"list[int]"`, `"function[int]->str"`）。
+        guard_type: String,
+        /// エラー報告に使用する位置情報。
+        span: Span,
+    },
     /// デバッガ名前空間アクセス: `dbg::name`。デバッガ REPL 内でのみ有効。
     DebugVar(String),
     /// ローカル名前空間アクセス: `local::name`。可変長引数を持つ関数内で `local::args` として有効。

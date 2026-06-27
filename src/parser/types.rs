@@ -561,4 +561,14 @@ impl Parser {
             tok => Err(format!("expected type name after `is`, got `{tok}`")),
         }
     }
+
+    /// `mustbe` の右辺に書ける型名をパースして文字列で返す。
+    ///
+    /// `Undefined` を除くすべての型式（コレクション・Union・Intersection・function など）を受け付ける。
+    pub(super) fn parse_mustbe_type(&mut self) -> Result<String, String> {
+        if *self.current() == Token::Undefined {
+            return Err("ParseError: `Undefined` cannot be used as a `mustbe` guard type".to_string());
+        }
+        self.parse_type_expr()
+    }
 }

@@ -46,6 +46,7 @@ mod lexer_tests {
         assert_eq!(lex("not in"), vec![Token::NotIn, Token::Eof]);
         assert_eq!(lex("is not"), vec![Token::IsNot, Token::Eof]);
         assert_eq!(lex("yield from"), vec![Token::YieldFrom, Token::Eof]);
+        assert_eq!(lex("mustbe"), vec![Token::MustBe, Token::Eof]);
     }
 
     /// not_followed_by_other_word のテスト。

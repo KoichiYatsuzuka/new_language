@@ -551,6 +551,11 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
         },
         Expr::DebugVar(name) => Expr::DebugVar(name.clone()),
         Expr::LocalVar(name) => Expr::LocalVar(name.clone()),
+        Expr::MustBe { expr, guard_type, span } => Expr::MustBe {
+            expr: Box::new(subst_expr(expr, type_map)),
+            guard_type: guard_type.clone(),
+            span: span.clone(),
+        },
     }
 }
 

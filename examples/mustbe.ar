@@ -1,0 +1,48 @@
+# mustbe: dynamic type assertion with static type narrowing
+
+# Primitive narrowing
+let raw_int: Any = 42
+let a = raw_int mustbe int
+# a is statically typed as int, and was confirmed to be int at runtime
+
+# List narrowing with element-type preservation
+let items: Any = [1, 2, 3]
+let nums = items mustbe list[int]
+# nums is statically list[int]; subscript access returns int
+let first = nums[0]  # inferred as int
+
+# Function check (only callability is verified at runtime)
+fn add(let x: int, let y: int) -> int:
+    return x + y
+
+let func_val: Any = add
+let callable = func_val mustbe function
+# callable is statically Any->Any (no signature detail at runtime)
+
+# Class with __call__ passes function check
+class Adder:
+    let base: int
+    fn __init__(mut self, let b: int) -> None:
+        self.base = b
+    fn __call__(self, let x: int) -> int:
+        return self.base + x
+
+let adder = Adder(10)
+let callable_cls = adder mustbe function  # passes because __call__ exists
+
+# Protocol conformance check
+protocol Printable:
+    fn print_info(self) -> None:
+        ...
+
+class Point:
+    let x: float
+    let y: float
+    fn __init__(mut self, let px: float, let py: float) -> None:
+        self.x = px
+        self.y = py
+    fn print_info(self) -> None:
+        pass
+
+let pt = Point(1.0, 2.0)
+let printable_pt = pt mustbe Printable  # passes: has print_info method

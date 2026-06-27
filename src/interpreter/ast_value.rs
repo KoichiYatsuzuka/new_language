@@ -720,5 +720,12 @@ fn expr_to_value(expr: &Expr) -> Value {
 
         Expr::DebugVar(name) => ns("ExprDebugVar", vec![("name", Value::Str(name.clone()))]),
         Expr::LocalVar(name) => ns("ExprLocalVar", vec![("name", Value::Str(name.clone()))]),
+        Expr::MustBe { expr, guard_type, .. } => ns(
+            "ExprMustBe",
+            vec![
+                ("expr", expr_to_value(expr)),
+                ("guard_type", Value::Str(guard_type.clone())),
+            ],
+        ),
     }
 }

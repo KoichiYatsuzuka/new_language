@@ -229,17 +229,61 @@ impl Interpreter {
             Value::Undefined => type_name == "Undefined",
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
-                inst.class.name == type_name || inst.class.bases.contains(&type_name.to_string())
+                if type_name == "function" {
+                    inst.class.methods.contains_key("__call__")
+                } else {
+                    inst.class.name == type_name
+                        || inst.class.bases.contains(&type_name.to_string())
+                }
             }
-            Value::Class(cls) => cls.name == type_name,
+            Value::Class(cls) => {
+                if type_name == "function" {
+                    cls.methods.contains_key("__call__")
+                } else {
+                    cls.name == type_name
+                }
+            }
             Value::Function(_)
             | Value::OverloadedFn(_)
             | Value::GeneratorFn(_)
             | Value::NativeFunction(_) => type_name == "function",
             Value::FileObject(_) => type_name == "FileObject",
             Value::Slice(_) => type_name == "slice",
+            Value::List(_) => type_name == "list" || type_name == "list_like",
+            Value::FrozenList { .. } => {
+                type_name == "fixed_list" || type_name == "list_like"
+            }
             Value::Set(_) => type_name == "set",
+            Value::Dict(_) => type_name == "dict",
+            Value::Tuple(_) => type_name == "tuple",
             _ => false,
+        }
+    }
+
+    /// `mustbe` エラーメッセージ用: 値のランタイム型名を返す。
+    pub(super) fn type_name_of(&self, val: &Value) -> String {
+        match val {
+            Value::Int(_) => "int".to_string(),
+            Value::UInt(_) => "uint".to_string(),
+            Value::Float(_) => "float".to_string(),
+            Value::Complex(_, _) => "complex".to_string(),
+            Value::Str(_) => "str".to_string(),
+            Value::Bool(_) => "bool".to_string(),
+            Value::None => "None".to_string(),
+            Value::Undefined => "Undefined".to_string(),
+            Value::List(_) => "list".to_string(),
+            Value::FrozenList { .. } => "fixed_list".to_string(),
+            Value::Dict(_) => "dict".to_string(),
+            Value::Set(_) => "set".to_string(),
+            Value::Tuple(_) => "tuple".to_string(),
+            Value::Function(f) => format!("function({})", f.name),
+            Value::OverloadedFn(_) => "function(overloaded)".to_string(),
+            Value::GeneratorFn(g) => format!("generator_fn({})", g.name),
+            Value::NativeFunction(n) => format!("function({})", n.fn_name),
+            Value::Class(c) => format!("class({})", c.name),
+            Value::Instance(i) => i.borrow().class.name.clone(),
+            Value::Slice(_) => "slice".to_string(),
+            _ => "unknown".to_string(),
         }
     }
 

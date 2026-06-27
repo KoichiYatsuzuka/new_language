@@ -2,7 +2,7 @@
 
 use crate::ast::{Expr, MatchPattern, UnaryOp};
 
-use super::errors::{StaticTypeError, TypeErrorKind};
+use super::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};
 use super::types::InferredType;
 use super::TypeChecker;
 
@@ -196,9 +196,27 @@ impl TypeChecker {
                 }
             }
             Expr::Subscript { object, index } => {
-                self.infer(object);
-                self.infer(index);
-                InferredType::Unresolved
+                let obj_ty = self.infer(object);
+                let idx_ty = self.infer(index);
+                match obj_ty {
+                    InferredType::ListOf(elem) | InferredType::FixedListOf(elem) | InferredType::ListLikeOf(elem) => *elem,
+                    InferredType::SetOf(elem) => *elem,
+                    InferredType::DictOf(_, val) => *val,
+                    InferredType::Tuple(types) => {
+                        // リテラル整数インデックスなら対応する要素型を返す
+                        if let Expr::Int(n) = index.as_ref() {
+                            let i = *n as usize;
+                            types.into_iter().nth(i).unwrap_or(InferredType::Unresolved)
+                        } else {
+                            InferredType::Unresolved
+                        }
+                    }
+                    InferredType::Str => {
+                        // 文字列の添字は文字列を返す
+                        if matches!(idx_ty, InferredType::Int) { InferredType::Str } else { InferredType::Unresolved }
+                    }
+                    _ => InferredType::Unresolved,
+                }
             }
             Expr::Slice { begin, end, step } => {
                 if let Some(e) = begin {
@@ -217,6 +235,55 @@ impl TypeChecker {
             Expr::IsType { expr, .. } => {
                 self.infer(expr);
                 InferredType::Bool
+            }
+
+            // --- mustbe 動的型アサーション ---
+            Expr::MustBe { expr, guard_type, span } => {
+                self.infer(expr);
+                let resolved = InferredType::from_ann(guard_type).unwrap_or(InferredType::Unresolved);
+                // コレクション型パラメータ・関数シグネチャは実行時に未チェック → 警告
+                let warn_kind = match &resolved {
+                    InferredType::ListOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                        guard_type: guard_type.clone(),
+                        outer_type: "list".to_string(),
+                    }),
+                    InferredType::FixedListOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                        guard_type: guard_type.clone(),
+                        outer_type: "fixed_list".to_string(),
+                    }),
+                    InferredType::ListLikeOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                        guard_type: guard_type.clone(),
+                        outer_type: "list_like".to_string(),
+                    }),
+                    InferredType::SetOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                        guard_type: guard_type.clone(),
+                        outer_type: "set".to_string(),
+                    }),
+                    InferredType::DictOf(_, _) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                        guard_type: guard_type.clone(),
+                        outer_type: "dict".to_string(),
+                    }),
+                    InferredType::Tuple(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                        guard_type: guard_type.clone(),
+                        outer_type: "tuple".to_string(),
+                    }),
+                    InferredType::Function { params, return_type } => {
+                        let has_params = params.as_ref().map_or(false, |p| !p.is_empty());
+                        let has_ret = **return_type != InferredType::Any;
+                        if has_params || has_ret {
+                            Some(TypeWarningKind::MustBeFunctionSignatureUnchecked {
+                                guard_type: guard_type.clone(),
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(kind) = warn_kind {
+                    self.warnings.push(StaticTypeWarning { kind, span: Some(span.clone()) });
+                }
+                resolved
             }
             Expr::Block { stmts, return_type } => {
                 let saved_depth = self.block_return_forbidden_depth;
