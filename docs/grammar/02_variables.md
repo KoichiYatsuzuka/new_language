@@ -93,6 +93,51 @@ freeze data   # data を let (不変) に降格する
 
 ---
 
+## 変数の再宣言禁止
+
+`let` / `mut` / `const` / タプルアンパックで宣言する変数の名前が、  
+その時点からアクセス可能な **任意のスコープ** に既に存在する場合はエラーです。
+
+```hv
+let a = 5
+let a = 6   # StaticTypeError / NameError: variable 'a' is already declared
+```
+
+```hv
+let x = 1
+if True:
+    let x = 2   # エラー: 外側スコープの x と衝突
+```
+
+```hv
+let x = 1
+fn f() -> None:
+    let x = 2   # エラー: 外側スコープの x と衝突
+```
+
+**エラー種別**:
+- 静的型検査: `TypeErrorKind::VariableRedeclaration { name }` → `StaticTypeError`
+- ランタイム: `NameError: variable '<name>' is already declared`
+
+**例外 — `_`（捨て変数）**:  
+`_` は何度でも再宣言できます。戻り値を意図的に無視するための慣用パターンです。
+
+```hv
+let _ = f.read_letter()
+let _ = f.read_letter()   # OK: _ は例外
+```
+
+**注意**: 外側スコープの変数を **参照する**（読み取る）ことは引き続き許可されます。  
+禁止されるのはあくまで同名の **新規宣言** のみです。
+
+```hv
+let x = 5
+fn f() -> None:
+    print(x)   # OK: 参照は禁止されていない
+```
+
+---
+
 ## スコープ規則
 
 ### レキシカルスコープ
