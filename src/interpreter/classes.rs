@@ -5,7 +5,6 @@
 // List / Str / Dict / Generator などの組み込み型のメソッドディスパッチもここで行う。
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::CallArg;
@@ -141,7 +140,7 @@ impl Interpreter {
             };
             let inst = inst_rc.borrow();
             if inst.class.name != class_name { return None; }
-            Self::write_flat_instance(&inst.fields, &layout.fields, &mut data)?;
+            Self::write_flat_instance(&inst.fields, &inst.class, &layout.fields, &mut data)?;
         }
 
         let len = items.len();
@@ -160,13 +159,20 @@ impl Interpreter {
         inst: &InstanceData,
         class: Rc<ClassValue>,
     ) -> Option<super::value::FlatLayout> {
-        let mut flds: Vec<(String, super::value::FlatFieldTy)> = inst.fields
+        // Build (name, ty) pairs from the field_index map + fields Vec
+        let mut flds: Vec<(String, super::value::FlatFieldTy)> = inst.class.field_index
             .iter()
-            .map(|(name, (val, _))| {
+            .filter(|(k, _)| !k.contains("::"))  // skip qualified aliases
+            .filter_map(|(name, &idx)| {
+                let (val, _) = inst.fields.get(idx)?.as_ref()?;
                 let fty = Self::val_to_flat_field_ty(val)?;
                 Some((name.clone(), fty))
             })
-            .collect::<Option<Vec<_>>>()?;
+            .collect::<Vec<_>>();
+        // Return None if any field is not flat-convertible (already filtered via filter_map, so check emptiness)
+        if inst.class.field_count > 0 && flds.len() != inst.class.field_index.iter().filter(|(k, _)| !k.contains("::")).count() {
+            return None;
+        }
         if flds.is_empty() { return None; }
         flds.sort_by(|a, b| a.0.cmp(&b.0));
         let stride: usize = flds.iter().map(|(_, ft)| ft.stride()).sum();
@@ -192,14 +198,16 @@ impl Interpreter {
         }
     }
 
-    /// `fields` マップの値を `layout_fields` の順序に従って `data` に書き出す（再帰的）。
+    /// `fields` Vec の値を `layout_fields` の順序に従って `data` に書き出す（再帰的）。
     fn write_flat_instance(
-        fields: &std::collections::HashMap<String, (Value, bool)>,
+        fields: &[Option<(Value, bool)>],
+        class: &ClassValue,
         layout_fields: &[(String, super::value::FlatFieldTy)],
         data: &mut Vec<u8>,
     ) -> Option<()> {
         for (field_name, field_ty) in layout_fields {
-            let (val, _) = fields.get(field_name)?;
+            let &idx = class.field_index.get(field_name.as_str())?;
+            let (val, _) = fields.get(idx)?.as_ref()?;
             match (field_ty, val) {
                 (super::value::FlatFieldTy::Int, Value::Int(n)) => {
                     data.extend_from_slice(&n.to_le_bytes());
@@ -210,7 +218,7 @@ impl Interpreter {
                 (super::value::FlatFieldTy::Struct(sub_layout), Value::Instance(rc)) => {
                     let inst = rc.borrow();
                     if inst.class.name != sub_layout.class_name { return None; }
-                    Self::write_flat_instance(&inst.fields, &sub_layout.fields, data)?;
+                    Self::write_flat_instance(&inst.fields, &inst.class, &sub_layout.fields, data)?;
                 }
                 _ => return None,
             }
@@ -222,8 +230,10 @@ impl Interpreter {
         let mut inst = inst_rc.borrow_mut();
         inst.immutable = true;
         // すべてのフィールドを不変に変更する
-        for (_, mutable) in inst.fields.values_mut() {
-            *mutable = false;
+        for slot in inst.fields.iter_mut() {
+            if let Some((_, mutable)) = slot {
+                *mutable = false;
+            }
         }
     }
 
@@ -272,9 +282,11 @@ impl Interpreter {
         call_args: &[CallArg],
     ) -> Result<Value, String> {
         // デフォルト値付きフィールドをインスタンスに事前設定する
-        let mut fields = HashMap::new();
+        let mut fields: Vec<Option<(Value, bool)>> = vec![None; class.field_count];
         for (name, default_val, mutable) in &class.field_defaults {
-            fields.insert(name.clone(), (default_val.clone(), *mutable));
+            if let Some(&idx) = class.field_index.get(name.as_str()) {
+                fields[idx] = Some((default_val.clone(), *mutable));
+            }
         }
         let inst_rc = Rc::new(RefCell::new(InstanceData {
             class: class.clone(),
@@ -369,9 +381,11 @@ impl Interpreter {
         class: Rc<ClassValue>,
         evaled: Vec<(Option<String>, Value)>,
     ) -> Result<Value, String> {
-        let mut fields = HashMap::new();
+        let mut fields: Vec<Option<(Value, bool)>> = vec![None; class.field_count];
         for (name, default_val, mutable) in &class.field_defaults {
-            fields.insert(name.clone(), (default_val.clone(), *mutable));
+            if let Some(&idx) = class.field_index.get(name.as_str()) {
+                fields[idx] = Some((default_val.clone(), *mutable));
+            }
         }
         let inst_rc = Rc::new(RefCell::new(InstanceData {
             class: class.clone(),
@@ -526,7 +540,7 @@ impl Interpreter {
                                 // Write each field recursively (alphabetical order)
                                 let base_offset = st.len * layout.stride;
                                 let mut tmp = Vec::with_capacity(layout.stride);
-                                Self::write_flat_instance(&inst.fields, &layout.fields, &mut tmp)
+                                Self::write_flat_instance(&inst.fields, &inst.class, &layout.fields, &mut tmp)
                                     .ok_or_else(|| format!(
                                         "TypeError: fixed_list.append(): field type mismatch for class '{}'",
                                         layout.class_name

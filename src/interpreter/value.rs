@@ -195,6 +195,13 @@ pub struct ClassValue {
     pub class_vars: HashMap<String, Value>,
     /// フィールド名 → 可変フラグ のマップ。初期値なしフィールドを初回代入するときに参照する。
     pub field_mutability: HashMap<String, bool>,
+    /// フィールド名 → Vec インデックス のマップ。own フィールド名・trait 修飾名（`"Trait::field"`）の両方を含む。
+    /// `InstanceData.fields` Vec への O(1) アクセスに使用する。
+    pub field_index: HashMap<String, usize>,
+    /// `InstanceData.fields` Vec のスロット総数。
+    pub field_count: usize,
+    /// スロットインデックス → 元の可変フラグ（クラス定義時の宣言による）。`copy()` のフリーズ解除に使用。
+    pub field_mutability_vec: Vec<bool>,
     /// フィールド名 → アクセス可能性 のマップ。プライベート・保護フィールドのアクセス制御に使用する。
     pub field_access: HashMap<String, Accessibility>,
     /// メソッド名 → アクセス可能性 のマップ。プライベート・保護メソッドのアクセス制御に使用する。
@@ -213,13 +220,15 @@ pub struct ClassValue {
 /// クラスインスタンスの実行時データ。`Rc<RefCell<InstanceData>>` で共有・可変参照する。
 ///
 /// - `class`: このインスタンスが属するクラスの定義（メソッド解決などに使用）
-/// - `fields`: フィールド名 → (値, 可変フラグ) のマップ。trait 名前空間付きキー (`"Trait::field"`) も格納される
+/// - `fields`: フィールドスロットの Vec。`class.field_index[name]` でインデックスを引く。
+///   `None` = 未初期化スロット（`__init__` で初回代入前）。`Some((val, mutable))` = 初期化済み。
 /// - `immutable`: `let` バインドされた場合に `true`。すべてのフィールドが不変になり、`mut self` メソッド呼び出しが禁止される
 #[derive(Debug)]
 pub struct InstanceData {
     pub class: Rc<ClassValue>,
-    /// フィールド名 → (値, 可変フラグ) のマップ。
-    pub fields: HashMap<String, (Value, bool)>,
+    /// フィールドスロットの Vec。インデックスは `class.field_index` で解決する。
+    /// `None` = 未初期化。`Some((値, 可変フラグ))` = 初期化済み。
+    pub fields: Vec<Option<(Value, bool)>>,
     /// `let` バインドされたとき `true`。全フィールドが不変になり、`mut self` メソッドは呼べない。
     pub immutable: bool,
 }
@@ -666,7 +675,7 @@ impl FlatLayout {
 
     /// バイト列の `byte_base` 位置からこのレイアウトのインスタンスを再構成する。
     fn reconstruct_at(&self, data: &[u8], byte_base: usize) -> Value {
-        let mut fields: HashMap<String, (Value, bool)> = HashMap::new();
+        let mut fields: Vec<Option<(Value, bool)>> = vec![None; self.class.field_count];
         let mut offset = byte_base;
         for (field_name, field_ty) in &self.fields {
             let val = match field_ty {
@@ -686,7 +695,9 @@ impl FlatLayout {
                     v
                 }
             };
-            fields.insert(field_name.clone(), (val, false));
+            if let Some(&idx) = self.class.field_index.get(field_name.as_str()) {
+                fields[idx] = Some((val, false));
+            }
         }
         Value::Instance(Rc::new(RefCell::new(InstanceData {
             class: self.class.clone(),
@@ -911,6 +922,9 @@ impl ClassValue {
             field_defaults,
             class_vars,
             field_mutability: self.field_mutability.clone(),
+            field_index: self.field_index.clone(),
+            field_count: self.field_count,
+            field_mutability_vec: self.field_mutability_vec.clone(),
             field_access: self.field_access.clone(),
             method_access: self.method_access.clone(),
             static_method_names: self.static_method_names.clone(),
@@ -983,10 +997,10 @@ impl Value {
             })),
             Value::Instance(rc) => {
                 let b = rc.borrow();
-                let fields = b
+                let fields: Vec<Option<(Value, bool)>> = b
                     .fields
                     .iter()
-                    .map(|(k, (v, m))| (k.clone(), (v.deep_clone(), *m)))
+                    .map(|slot| slot.as_ref().map(|(v, m)| (v.deep_clone(), *m)))
                     .collect();
                 Value::Instance(Rc::new(RefCell::new(InstanceData {
                     class: Rc::new(b.class.deep_clone()),

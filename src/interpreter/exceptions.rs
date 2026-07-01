@@ -7,7 +7,6 @@
 // 注: 標準例外クラスの構築 (make_error_class) は built_in_types.rs に移動した。
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::{ClassValue, InstanceData, Interpreter, RaisedError, Value};
@@ -77,22 +76,15 @@ impl Interpreter {
             _ => return None,
         };
 
-        let mut fields = HashMap::new();
-        fields.insert("message".to_string(), (Value::Str(message), false));
-        fields.insert(
-            "code_context".to_string(),
-            (Value::Str(String::new()), false),
-        );
-        fields.insert("file".to_string(), (Value::Str(String::new()), false));
-        fields.insert("line".to_string(), (Value::Int(0), false));
-        fields.insert("col".to_string(), (Value::Int(0), false));
-        fields.insert(
-            "Error::code_context".to_string(),
-            (Value::Str(String::new()), false),
-        );
-        fields.insert("Error::file".to_string(), (Value::Str(String::new()), false));
-        fields.insert("Error::line".to_string(), (Value::Int(0), false));
-        fields.insert("Error::col".to_string(), (Value::Int(0), false));
+        // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4
+        // (make_error_class の field_index と対応)
+        let fields = vec![
+            Some((Value::Str(message), false)),       // 0: message
+            Some((Value::Str(String::new()), false)),  // 1: code_context / Error::code_context
+            Some((Value::Str(String::new()), false)),  // 2: file / Error::file
+            Some((Value::Int(0), false)),              // 3: line / Error::line
+            Some((Value::Int(0), false)),              // 4: col / Error::col
+        ];
 
         let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
             class: cls,

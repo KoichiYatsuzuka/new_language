@@ -1281,10 +1281,13 @@ fn test_raise_uncaught_reaches_caller() {
     let raised = raised.expect("expected a raised exception");
     if let Value::Instance(inst) = &raised.exception {
         assert_eq!(inst.borrow().class.name, "ValueError");
-        let msg = match inst.borrow().fields.get("message") {
-            Some((Value::Str(s), _)) => s.clone(),
-            _ => panic!("message field missing or wrong type"),
-        };
+        let b = inst.borrow();
+        let msg = b.class.field_index.get("message").and_then(|&idx| {
+            b.fields.get(idx).and_then(|s| {
+                if let Some((Value::Str(s), _)) = s { Some(s.clone()) } else { None }
+            })
+        }).expect("message field missing or wrong type");
+        drop(b);
         assert_eq!(msg, "oops");
     } else {
         panic!("expected Instance");
@@ -2363,6 +2366,7 @@ fn test_decorator_class_as_decorator_for_fn() {
     // クラスデコレータ（関数に適用）
     let src = concat!(
         "class Wrap:\n",
+        "    mut inner: function\n",
         "    fn __init__(mut self, let f: function) -> None:\n",
         "        self.inner = f\n",
         "    fn __call__(self) -> function:\n",
@@ -2389,6 +2393,7 @@ fn test_decorator_instance_callable() {
     // Value::Instance が __call__ を持つ場合に関数として呼び出せる
     let src = concat!(
         "class Adder:\n",
+        "    mut n: int\n",
         "    fn __init__(mut self, let n: int) -> None:\n",
         "        self.n = n\n",
         "    fn __call__(self) -> int:\n",
@@ -2500,6 +2505,7 @@ fn test_instance_getitem_setitem() {
     // ユーザー定義クラスの __getitem__ / __setitem__
     let src = concat!(
         "class Box:\n",
+        "    mut data: int\n",
         "    fn __init__(mut self) -> None:\n",
         "        self.data = 0\n",
         "    fn __getitem__(self, let key: int) -> int:\n",
@@ -3492,7 +3498,8 @@ fn test_enum_member_access_value() {
     if let Value::Instance(inst_rc) = val {
         let inst = inst_rc.borrow();
         assert_eq!(inst.class.name, "enum_item_Color");
-        let (v, _) = inst.fields.get("value").unwrap();
+        let &idx = inst.class.field_index.get("value").unwrap();
+        let (v, _) = inst.fields[idx].as_ref().unwrap();
         assert!(matches!(v, Value::Int(0)));
     } else {
         panic!("expected Instance");
@@ -3508,7 +3515,8 @@ fn test_enum_auto_numbering() {
         let val = run_get(src, var);
         if let Value::Instance(inst_rc) = val {
             let inst = inst_rc.borrow();
-            let (v, _) = inst.fields.get("value").unwrap();
+            let &idx = inst.class.field_index.get("value").unwrap();
+            let (v, _) = inst.fields[idx].as_ref().unwrap();
             if let Value::Int(n) = v {
                 assert_eq!(*n, expected);
             } else {
@@ -3528,7 +3536,8 @@ fn test_enum_explicit_value() {
     let c = run_get(src, "xc");
     if let Value::Instance(inst_rc) = b {
         let inst = inst_rc.borrow();
-        let (v, _) = inst.fields.get("value").unwrap();
+        let &idx = inst.class.field_index.get("value").unwrap();
+        let (v, _) = inst.fields[idx].as_ref().unwrap();
         if let Value::Int(n) = v {
             assert_eq!(*n, 5);
         } else {
@@ -3540,7 +3549,8 @@ fn test_enum_explicit_value() {
     // c は b=5 の次なので 6
     if let Value::Instance(inst_rc) = c {
         let inst = inst_rc.borrow();
-        let (v, _) = inst.fields.get("value").unwrap();
+        let &idx = inst.class.field_index.get("value").unwrap();
+        let (v, _) = inst.fields[idx].as_ref().unwrap();
         if let Value::Int(n) = v {
             assert_eq!(*n, 6);
         } else {
@@ -3999,6 +4009,7 @@ fn test_id_same_instance_same_pointer() {
     // The same instance should have the same id (same Rc allocation)
     let src = concat!(
         "class Box:\n",
+        "    mut n: int\n",
         "    fn __init__(mut self, let n: int) -> None:\n",
         "        self.n = n\n",
         "let b = Box(42)\n",
@@ -4015,6 +4026,7 @@ fn test_id_different_instances_different_pointers() {
     // Two separate instances should have different ids
     let src = concat!(
         "class Box:\n",
+        "    mut n: int\n",
         "    fn __init__(mut self, let n: int) -> None:\n",
         "        self.n = n\n",
         "let a = Box(1)\n",
@@ -4032,6 +4044,7 @@ fn test_id_mut_copy_different_from_original() {
     // mut z = x creates a deep copy, so id(z) != id(x) for reference types
     let src = concat!(
         "class Box:\n",
+        "    mut n: int\n",
         "    fn __init__(mut self, let n: int) -> None:\n",
         "        self.n = n\n",
         "let x = Box(10)\n",
@@ -4049,6 +4062,7 @@ fn test_id_let_alias_same_as_original() {
     // let y = x (both let) shares the same Rc, so id(x) == id(y)
     let src = concat!(
         "class Box:\n",
+        "    mut n: int\n",
         "    fn __init__(mut self, let n: int) -> None:\n",
         "        self.n = n\n",
         "let x = Box(5)\n",
@@ -5106,9 +5120,12 @@ fn test_cast_primitive_to_new_type_int() {
     let src = "new_type MyInt: int\nlet x = 4=>MyInt\n";
     let val = run_get(src, "x");
     if let Value::Instance(rc) = val {
-        let inner = rc.borrow().fields.get("value").map(|(v, _)| v.clone());
+        let b = rc.borrow();
+        let inner = b.class.field_index.get("value").and_then(|&idx| {
+            b.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
+        });
         assert!(matches!(inner, Some(Value::Int(4))));
-        assert_eq!(rc.borrow().class.name, "MyInt");
+        assert_eq!(b.class.name, "MyInt");
     } else {
         panic!("expected Instance, got {:?}", val);
     }
@@ -5120,9 +5137,12 @@ fn test_cast_primitive_to_new_type_float() {
     let src = "new_type Meters: float\nlet m = 2.5=>Meters\n";
     let val = run_get(src, "m");
     if let Value::Instance(rc) = val {
-        let inner = rc.borrow().fields.get("value").map(|(v, _)| v.clone());
+        let b = rc.borrow();
+        let inner = b.class.field_index.get("value").and_then(|&idx| {
+            b.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
+        });
         assert!(matches!(inner, Some(Value::Float(f)) if (f - 2.5).abs() < 1e-10));
-        assert_eq!(rc.borrow().class.name, "Meters");
+        assert_eq!(b.class.name, "Meters");
     } else {
         panic!("expected Instance");
     }
@@ -5152,8 +5172,11 @@ fn test_cast_cross_new_type_same_base() {
     let src = "new_type MyInt: int\nnew_type YourInt: int\nlet a = MyInt(9)=>YourInt\n";
     let val = run_get(src, "a");
     if let Value::Instance(rc) = val {
-        assert_eq!(rc.borrow().class.name, "YourInt");
-        let inner = rc.borrow().fields.get("value").map(|(v, _)| v.clone());
+        let b = rc.borrow();
+        assert_eq!(b.class.name, "YourInt");
+        let inner = b.class.field_index.get("value").and_then(|&idx| {
+            b.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
+        });
         assert!(
             matches!(inner, Some(Value::Int(9))),
             "inner value should be 9, not a nested instance"

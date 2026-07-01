@@ -228,6 +228,9 @@ pub struct Interpreter {
     /// トレイト名 → (フィールド名 → アクセス可能性) のマップ（TraitDef 実行時に収集）。
     /// クラスが継承したトレイトフィールドのアクセス制御に使用する。
     pub(self) trait_field_access: HashMap<String, HashMap<String, Accessibility>>,
+    /// トレイト名 → (フィールド名, 可変フラグ) の宣言順リスト（TraitDef 実行時に収集）。
+    /// exec_class_def で field_index を構築する際に trait フィールドの順序を決定する。
+    pub(self) trait_field_order: HashMap<String, Vec<(String, bool)>>,
     /// プロトコル名 → 必須メンバー名リスト（ProtocolDef 実行時に収集）。
     /// `is Protocol` 実行時チェックで使用する。
     pub(self) protocol_required_members: HashMap<String, Vec<String>>,
@@ -295,6 +298,18 @@ impl Interpreter {
             static_cells: HashMap::new(),
             current_class: None,
             trait_field_access: HashMap::new(),
+            trait_field_order: {
+                // Error trait のフィールド順序を登録: サブクラス定義時に build_field_index が参照する
+                let mut m = HashMap::new();
+                m.insert("Error".to_string(), vec![
+                    ("message".to_string(), false),
+                    ("code_context".to_string(), false),
+                    ("file".to_string(), false),
+                    ("line".to_string(), false),
+                    ("col".to_string(), false),
+                ]);
+                m
+            },
             protocol_required_members: HashMap::new(),
             native_libs: HashMap::new(),
             jit_handles: Vec::new(),
@@ -322,6 +337,53 @@ impl Interpreter {
             "args".to_string(),
             Var::new(Value::Dict(Rc::new(RefCell::new(dict))), false),
         );
+    }
+
+    /// クラスのフィールド宣言からオフセットインデックスを構築する。
+    ///
+    /// - `own_fields`: クラス本体で宣言された instance フィールドの (name, is_mutable) リスト（宣言順）
+    /// - `bases`: 基底トレイト名リスト
+    ///
+    /// 戻り値: `(field_index, field_mutability_vec, field_count)`
+    /// - `field_index`: フィールド名 → Vec インデックス（own フィールド名 + trait 修飾名 + unqualified alias）
+    /// - `field_mutability_vec`: スロットインデックス → 元の可変フラグ
+    /// - `field_count`: スロット総数
+    pub(crate) fn build_field_index(
+        &self,
+        own_fields: &[(String, bool)],
+        bases: &[String],
+    ) -> (HashMap<String, usize>, Vec<bool>, usize) {
+        let mut field_index: HashMap<String, usize> = HashMap::new();
+        let mut field_mutability_vec: Vec<bool> = Vec::new();
+        let mut idx = 0usize;
+
+        // Step 1: own class fields in declaration order
+        for (fname, is_mutable) in own_fields {
+            field_index.insert(fname.clone(), idx);
+            field_mutability_vec.push(*is_mutable);
+            idx += 1;
+        }
+
+        // Step 2: trait fields in bases declaration order
+        for base in bases {
+            if let Some(trait_fields) = self.trait_field_order.get(base) {
+                for (fname, is_mutable) in trait_fields {
+                    let qualified = format!("{}::{}", base, fname);
+                    if let Some(&existing_idx) = field_index.get(fname.as_str()) {
+                        // class redeclares this field → qualified alias points to same slot
+                        field_index.insert(qualified, existing_idx);
+                    } else {
+                        // trait-only field → new slot + unqualified alias (parser prevents ambiguity)
+                        field_index.insert(qualified, idx);
+                        field_index.entry(fname.clone()).or_insert(idx);
+                        field_mutability_vec.push(*is_mutable);
+                        idx += 1;
+                    }
+                }
+            }
+        }
+
+        (field_index, field_mutability_vec, idx)
     }
 
     /// ソーステキストをファイル名と対応付けて登録する。
@@ -373,18 +435,16 @@ impl Interpreter {
         match &raised.exception {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
-                let class_name = &inst.class.name;
-                let message = inst
-                    .fields
-                    .get("message")
-                    .map(|(v, _)| match v {
+                let class_name = inst.class.name.clone();
+                let message = inst.class.field_index.get("message").and_then(|&idx| {
+                    inst.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| match v {
                         Value::Str(s) => s.clone(),
                         Value::Int(n) => n.to_string(),
                         Value::Float(f) => f.to_string(),
                         Value::Bool(b) => b.to_string(),
                         _ => "<value>".to_string(),
-                    })
-                    .unwrap_or_default();
+                    }))
+                }).unwrap_or_default();
                 out.push_str(&format!("{}: {}", class_name, message));
             }
             Value::Str(s) => out.push_str(s),

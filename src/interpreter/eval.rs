@@ -71,8 +71,10 @@ fn value_as_index(val: &Value) -> Option<i64> {
         Value::Instance(inst) => {
             let b = inst.borrow();
             if b.class.name == "Index" {
-                if let Some((Value::Int(n), _)) = b.fields.get("value") {
-                    return Some(*n);
+                if let Some(&idx) = b.class.field_index.get("value") {
+                    if let Some(Some((Value::Int(n), _))) = b.fields.get(idx) {
+                        return Some(*n);
+                    }
                 }
             }
             None
@@ -140,8 +142,10 @@ fn extract_path_str(val: &Value) -> Result<String, String> {
         Value::Instance(inst_rc) => {
             let inst = inst_rc.borrow();
             if inst.class.name == "path" {
-                if let Some((Value::Str(s), _)) = inst.fields.get("value") {
-                    return Ok(s.clone());
+                if let Some(&idx) = inst.class.field_index.get("value") {
+                    if let Some(Some((Value::Str(s), _))) = inst.fields.get(idx) {
+                        return Ok(s.clone());
+                    }
                 }
             }
             Err(format!(
@@ -167,8 +171,10 @@ fn extract_enum_int(val: &Value, expected_class: &str) -> Result<i64, String> {
     if let Value::Instance(inst_rc) = val {
         let inst = inst_rc.borrow();
         if inst.class.name == expected_class {
-            if let Some((Value::Int(n), _)) = inst.fields.get("value") {
-                return Ok(*n);
+            if let Some(&idx) = inst.class.field_index.get("value") {
+                if let Some(Some((Value::Int(n), _))) = inst.fields.get(idx) {
+                    return Ok(*n);
+                }
             }
         }
         return Err(format!(
@@ -394,8 +400,10 @@ impl Interpreter {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
                 let key = format!("{}::{}", trait_name, attr);
-                if let Some((v, _)) = inst.fields.get(&key) {
-                    return Ok(v.clone());
+                if let Some(&idx) = inst.class.field_index.get(&key) {
+                    if let Some(Some((v, _))) = inst.fields.get(idx) {
+                        return Ok(v.clone());
+                    }
                 }
                 Err(format!(
                     "AttributeError: trait field '{trait_name}::{attr}' not found on '{}'",
@@ -596,9 +604,11 @@ impl Interpreter {
 
         // new_type インスタンスなら内部値を先に取り出しておく
         let inner_val = if let Value::Instance(ref inst_rc) = obj {
-            let cls = inst_rc.borrow().class.clone();
-            if cls.new_type_base.is_some() {
-                inst_rc.borrow().fields.get("value").map(|(v, _)| v.clone())
+            let b = inst_rc.borrow();
+            if b.class.new_type_base.is_some() {
+                b.class.field_index.get("value").and_then(|&idx| {
+                    b.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
+                })
             } else {
                 None
             }
@@ -656,7 +666,10 @@ impl Interpreter {
                 // new_type インスタンスをそのベース型にキャスト: .value を返す
                 if let Some(ref base) = class.new_type_base {
                     if base == type_name {
-                        let val = inst_rc.borrow().fields.get("value").map(|(v, _)| v.clone());
+                        let b = inst_rc.borrow();
+                        let val = b.class.field_index.get("value").and_then(|&idx| {
+                            b.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
+                        });
                         return val.ok_or_else(|| {
                             format!("TypeError: '{}' has no 'value' field", class.name)
                         });
@@ -1484,8 +1497,7 @@ impl Interpreter {
                     Some(Value::Class(cls)) => cls,
                     _ => return Err("RuntimeError: 'pointer' type is not defined".to_string()),
                 };
-                let mut fields = std::collections::HashMap::new();
-                fields.insert("value".to_string(), (Value::UInt(raw), true));
+                let fields = vec![Some((Value::UInt(raw), true))];
                 Ok(Value::Instance(Rc::new(RefCell::new(
                     crate::interpreter::InstanceData {
                         class: pointer_cls,
@@ -1801,23 +1813,42 @@ impl Interpreter {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
                 let cls = inst.class.clone();
-                if let Some((v, _)) = inst.fields.get(attr) {
-                    let v = v.clone();
-                    drop(inst);
-                    self.check_member_access(&cls, attr, attr)?;
-                    return Ok(v);
+                if let Some(&idx) = cls.field_index.get(attr) {
+                    if let Some(Some((v, _))) = inst.fields.get(idx) {
+                        let v = v.clone();
+                        // アクセスキーの決定: trait 由来フィールドは修飾名で検索する
+                        let suffix = format!("::{attr}");
+                        let access_key = cls.field_index.iter()
+                            .find(|(k, &i)| k.ends_with(suffix.as_str()) && i == idx)
+                            .map(|(k, _)| k.as_str())
+                            .unwrap_or(attr);
+                        drop(inst);
+                        self.check_member_access(&cls, access_key, attr)?;
+                        return Ok(v);
+                    }
                 }
                 let suffix = format!("::{attr}");
-                if let Some((full_key, (v, _))) = inst
-                    .fields
-                    .iter()
-                    .find(|(k, _)| k.ends_with(suffix.as_str()))
                 {
-                    let v = v.clone();
-                    let full_key = full_key.clone();
-                    drop(inst);
-                    self.check_member_access(&cls, &full_key, attr)?;
-                    return Ok(v);
+                    let mut trait_matches = cls.field_index.iter()
+                        .filter(|(k, _)| k.ends_with(suffix.as_str()));
+                    if let Some((full_key, &idx)) = trait_matches.next() {
+                        if trait_matches.next().is_some() {
+                            // パーサーが静的に検出するはずだが、念のためランタイムでも検出する
+                            return Err(format!(
+                                "AttributeError: unqualified access to field '{attr}' on '{}' is \
+                                 ambiguous (inherited from multiple traits); \
+                                 use explicit trait access e.g. `obj:TraitName::{attr}`",
+                                cls.name
+                            ));
+                        }
+                        if let Some(Some((v, _))) = inst.fields.get(idx) {
+                            let v = v.clone();
+                            let full_key = full_key.clone();
+                            drop(inst);
+                            self.check_member_access(&cls, &full_key, attr)?;
+                            return Ok(v);
+                        }
+                    }
                 }
                 if let Some(v) = Self::lookup_class_var(&cls, attr) {
                     drop(inst);
@@ -2078,8 +2109,15 @@ impl Interpreter {
                     ));
                 }
                 self.check_member_access(&inst_class, attr, attr)?;
+                let Some(&idx) = inst_class.field_index.get(attr) else {
+                    return Err(format!(
+                        "AttributeError: '{}' has no field '{attr}'; \
+                         all fields must be declared in the class body",
+                        inst_class.name
+                    ));
+                };
                 let mut inst = inst_rc.borrow_mut();
-                if let Some((_, false)) = inst.fields.get(attr) {
+                if let Some(Some((_, false))) = inst.fields.get(idx) {
                     return Err(format!(
                         "TypeError: cannot assign to immutable field '{attr}'"
                     ));
@@ -2089,13 +2127,8 @@ impl Interpreter {
                         "TypeError: cannot assign field '{attr}' on immutable instance"
                     ));
                 }
-                let is_mutable = inst
-                    .class
-                    .field_mutability
-                    .get(attr)
-                    .copied()
-                    .unwrap_or(true);
-                inst.fields.insert(attr.to_string(), (val, is_mutable));
+                let is_mutable = inst_class.field_mutability.get(attr).copied().unwrap_or(true);
+                inst.fields[idx] = Some((val, is_mutable));
                 Ok(())
             }
             _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
@@ -2456,28 +2489,26 @@ impl Interpreter {
                     }
                     // アクセス制御チェック
                     self.check_member_access(&inst_class, attr, attr)?;
+                    let Some(&idx) = inst_class.field_index.get(attr.as_str()) else {
+                        return Err(format!(
+                            "AttributeError: '{}' has no field '{attr}'; \
+                             all fields must be declared in the class body",
+                            inst_class.name
+                        ));
+                    };
                     let mut inst = inst_rc.borrow_mut();
-                    if let Some((_, mutable)) = inst.fields.get(attr.as_str()) {
-                        if !mutable {
-                            return Err(format!(
-                                "TypeError: cannot assign to immutable field '{attr}'"
-                            ));
-                        }
-                        inst.fields.insert(attr.clone(), (rhs, true));
-                    } else {
-                        if inst.immutable {
-                            return Err(format!(
-                                "TypeError: cannot assign field '{attr}' on immutable instance"
-                            ));
-                        }
-                        let is_mutable = inst
-                            .class
-                            .field_mutability
-                            .get(attr.as_str())
-                            .copied()
-                            .unwrap_or(true);
-                        inst.fields.insert(attr.clone(), (rhs, is_mutable));
+                    if let Some(Some((_, false))) = inst.fields.get(idx) {
+                        return Err(format!(
+                            "TypeError: cannot assign to immutable field '{attr}'"
+                        ));
                     }
+                    if inst.fields[idx].is_none() && inst.immutable {
+                        return Err(format!(
+                            "TypeError: cannot assign field '{attr}' on immutable instance"
+                        ));
+                    }
+                    let is_mutable = inst.class.field_mutability.get(attr.as_str()).copied().unwrap_or(true);
+                    inst.fields[idx] = Some((rhs, is_mutable));
                     Ok(())
                 }
                 Value::Class(cls) => {
@@ -2512,8 +2543,14 @@ impl Interpreter {
                     let inst_class = inst_rc.borrow().class.clone();
                     // アクセス制御チェック（トレイトフィールドのキーで検索）
                     self.check_member_access(&inst_class, &key, attr)?;
+                    let Some(&idx) = inst_class.field_index.get(&key) else {
+                        return Err(format!(
+                            "AttributeError: trait field '{trait_name}::{attr}' not found on '{}'",
+                            inst_class.name
+                        ));
+                    };
                     let mut inst = inst_rc.borrow_mut();
-                    if let Some((_, false)) = inst.fields.get(&key) {
+                    if let Some(Some((_, false))) = inst.fields.get(idx) {
                         return Err(format!(
                             "TypeError: cannot assign to immutable trait field '{attr}'"
                         ));
@@ -2523,7 +2560,8 @@ impl Interpreter {
                             "TypeError: cannot assign field '{attr}' on immutable instance"
                         ));
                     }
-                    inst.fields.insert(key, (rhs, true));
+                    let is_mutable = inst_class.field_mutability.get(&key).copied().unwrap_or(true);
+                    inst.fields[idx] = Some((rhs, is_mutable));
                     Ok(())
                 }
                 _ => Err("AttributeError: cannot set trait field on non-instance".to_string()),

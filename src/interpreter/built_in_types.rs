@@ -76,13 +76,30 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
         ("col".to_string(), Value::Int(0), false),
     ];
 
-    // フィールドの可変フラグ: `message` は `let`（__init__ 後は不変）、他は `mut`（可変）
+    // フィールドの可変フラグ: すべて `let`（不変）
+    // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4
     let mut field_mutability: HashMap<String, bool> = HashMap::new();
     field_mutability.insert("message".to_string(), false);
     field_mutability.insert("code_context".to_string(), false);
     field_mutability.insert("file".to_string(), false);
     field_mutability.insert("line".to_string(), false);
     field_mutability.insert("col".to_string(), false);
+
+    // field_index: own フィールド + Error:: trait エイリアス
+    let field_index: HashMap<String, usize> = [
+        ("message", 0usize),
+        ("code_context", 1),
+        ("file", 2),
+        ("line", 3),
+        ("col", 4),
+        ("Error::code_context", 1),
+        ("Error::file", 2),
+        ("Error::line", 3),
+        ("Error::col", 4),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), *v))
+    .collect();
 
     Rc::new(ClassValue {
         name: class_name.to_string(),
@@ -92,6 +109,9 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
         field_defaults,
         class_vars: HashMap::new(),
         field_mutability,
+        field_index,
+        field_count: 5,
+        field_mutability_vec: vec![false, false, false, false, false],
         field_access: HashMap::new(),
         method_access: HashMap::new(),
         static_method_names: HashSet::new(),
@@ -145,6 +165,9 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
         field_defaults: vec![],
         class_vars: HashMap::new(),
         field_mutability: HashMap::from([("value".to_string(), true)]),
+        field_index: HashMap::from([("value".to_string(), 0usize)]),
+        field_count: 1,
+        field_mutability_vec: vec![true],
         field_access: HashMap::new(),
         method_access: HashMap::new(),
         static_method_names: HashSet::new(),
@@ -174,6 +197,9 @@ pub(super) fn make_builtin_enum_class(
         field_defaults: vec![],
         class_vars: HashMap::new(),
         field_mutability: HashMap::from([("value".to_string(), true)]),
+        field_index: HashMap::from([("value".to_string(), 0usize)]),
+        field_count: 1,
+        field_mutability_vec: vec![true],
         field_access: HashMap::new(),
         method_access: HashMap::new(),
         static_method_names: HashSet::new(),
@@ -184,11 +210,9 @@ pub(super) fn make_builtin_enum_class(
     // 各バリアントをインスタンスとして生成し class_vars に登録
     let mut class_vars: HashMap<String, Value> = HashMap::new();
     for (variant_name, int_val) in variants {
-        let mut fields = HashMap::new();
-        fields.insert("value".to_string(), (Value::Int(*int_val), true));
         let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
             class: item_cls.clone(),
-            fields,
+            fields: vec![Some((Value::Int(*int_val), true))],
             immutable: false,
         })));
         class_vars.insert(variant_name.to_string(), inst);
@@ -202,6 +226,9 @@ pub(super) fn make_builtin_enum_class(
         field_defaults: vec![],
         class_vars,
         field_mutability: HashMap::new(),
+        field_index: HashMap::new(),
+        field_count: 0,
+        field_mutability_vec: vec![],
         field_access: HashMap::new(),
         method_access: HashMap::new(),
         static_method_names: HashSet::new(),
@@ -296,11 +323,9 @@ pub(super) fn register_builtin_globals(global: &mut HashMap<String, Var>) {
 
     // 組み込み定数: begin = Index(0)、last = Index(-1)
     for (const_name, int_val) in [("begin", 0i64), ("last", -1i64)] {
-        let mut fields = HashMap::new();
-        fields.insert("value".to_string(), (Value::Int(int_val), true));
         let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
             class: index_cls.clone(),
-            fields,
+            fields: vec![Some((Value::Int(int_val), true))],
             immutable: false,
         })));
         global.insert(const_name.to_string(), Var::new(inst, false));

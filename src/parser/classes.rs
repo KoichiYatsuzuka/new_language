@@ -259,6 +259,8 @@ impl Parser {
         body: &[Stmt],
     ) -> Result<Vec<(String, String, String)>, String> {
         let mut trait_required = Vec::new();
+        // フィールド名 → 最初に宣言したトレイト名（複数トレイト間の名前衝突を検出するため）
+        let mut seen_field_origins: HashMap<String, String> = HashMap::new();
         for (base, concrete_args) in bases_with_args {
             if let Some((trait_tparams, trait_fields, virtual_methods)) =
                 self.known_traits.get(base).cloned()
@@ -284,6 +286,16 @@ impl Parser {
                 // デフォルト値なしのフィールドを必須フィールドとして収集
                 // 型変数が含まれる場合は具体型に解決する
                 for (fname, _kind, ftype, has_default) in &trait_fields {
+                    // 複数のトレイトが同名フィールドを持つ場合、無修飾アクセスが曖昧になるため静的エラー
+                    if let Some(prev_trait) = seen_field_origins.get(fname) {
+                        return Err(format!(
+                            "StaticTypeError: class `{class_name}` inherits field `{fname}` \
+                             from both `{prev_trait}` and `{base}`; \
+                             unqualified access `obj.{fname}` would be ambiguous — \
+                             use explicit trait access `obj:{prev_trait}::{fname}` or `obj:{base}::{fname}`"
+                        ));
+                    }
+                    seen_field_origins.insert(fname.clone(), base.clone());
                     if !has_default {
                         let resolved = type_map
                             .get(ftype)

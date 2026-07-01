@@ -214,7 +214,7 @@ impl Interpreter {
                 let inst = inst_rc.borrow();
                 return required
                     .iter()
-                    .all(|m| inst.fields.contains_key(m) || inst.class.methods.contains_key(m));
+                    .all(|m| inst.class.field_index.contains_key(m.as_str()) || inst.class.methods.contains_key(m));
             }
             return false;
         }
@@ -556,8 +556,12 @@ impl Interpreter {
                 // new_type でプリミティブを基底とする場合: ClassName(repr_of_value)
                 if let Some(ref base) = class.new_type_base {
                     if matches!(base.as_str(), "int" | "float" | "str" | "bool" | "uint") {
-                        let inner_val =
-                            inst_rc.borrow().fields.get("value").map(|(v, _)| v.clone());
+                        let inner_val = {
+                            let b = inst_rc.borrow();
+                            b.class.field_index.get("value").and_then(|&idx| {
+                                b.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
+                            })
+                        };
                         if let Some(v) = inner_val {
                             let inner = self.repr_val(&v)?;
                             return Ok(format!("{}({})", class.name, inner));
@@ -1061,19 +1065,25 @@ impl Interpreter {
                 if a_borrow.class.name.starts_with("enum_item_")
                     && a_borrow.class.name == b_borrow.class.name
                 {
-                    match (a_borrow.fields.get("value"), b_borrow.fields.get("value")) {
-                        (Some((va, _)), Some((vb, _))) => self.values_eq(va, vb),
+                    let get_value = |inst: &super::InstanceData| {
+                        inst.class.field_index.get("value").and_then(|&idx| {
+                            inst.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
+                        })
+                    };
+                    match (get_value(&a_borrow), get_value(&b_borrow)) {
+                        (Some(va), Some(vb)) => self.values_eq(&va, &vb),
                         _ => false,
                     }
                 } else {
-                    // 構造的等値: 同じクラス名かつ全フィールドが等値
+                    // 構造的等値: 同じクラス名かつ全スロットが等値
                     a_borrow.class.name == b_borrow.class.name
                         && a_borrow.fields.len() == b_borrow.fields.len()
-                        && a_borrow.fields.iter().all(|(k, (va, _))| {
-                            b_borrow
-                                .fields
-                                .get(k)
-                                .map_or(false, |(vb, _)| self.values_eq(va, vb))
+                        && a_borrow.fields.iter().zip(b_borrow.fields.iter()).all(|(sa, sb)| {
+                            match (sa, sb) {
+                                (Some((va, _)), Some((vb, _))) => self.values_eq(va, vb),
+                                (None, None) => true,
+                                _ => false,
+                            }
                         })
                 }
             }

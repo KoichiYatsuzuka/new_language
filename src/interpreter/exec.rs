@@ -1006,16 +1006,19 @@ impl Interpreter {
     // Type definitions
     // ---------------------------------------------------------------------------
 
-    /// `trait` 定義を実行してトレイト値をスコープに登録する。アクセス制御情報も収集する。
+    /// `trait` 定義を実行してトレイト値をスコープに登録する。アクセス制御情報とフィールド順序も収集する。
     fn exec_trait_def(&mut self, name: &str, body: &[Stmt]) -> Result<ExecResult, String> {
         let mut trait_access: HashMap<String, Accessibility> = HashMap::new();
+        let mut field_order: Vec<(String, bool)> = Vec::new();
         for stmt in body {
             if let Stmt::Field {
                 name: fname,
+                kind,
                 access,
                 ..
             } = stmt
             {
+                field_order.push((fname.clone(), *kind == FieldKind::Mut));
                 if *access != Accessibility::Public {
                     trait_access.insert(fname.clone(), access.clone());
                 }
@@ -1030,6 +1033,9 @@ impl Interpreter {
                     trait_access.insert(mname.clone(), access.clone());
                 }
             }
+        }
+        if !field_order.is_empty() {
+            self.trait_field_order.insert(name.to_string(), field_order);
         }
         if !trait_access.is_empty() {
             self.trait_field_access
@@ -1077,6 +1083,9 @@ impl Interpreter {
                     field_defaults: orig_cls.field_defaults.clone(),
                     class_vars: orig_cls.class_vars.clone(),
                     field_mutability: orig_cls.field_mutability.clone(),
+                    field_index: orig_cls.field_index.clone(),
+                    field_count: orig_cls.field_count,
+                    field_mutability_vec: orig_cls.field_mutability_vec.clone(),
                     field_access: orig_cls.field_access.clone(),
                     method_access: orig_cls.method_access.clone(),
                     static_method_names: orig_cls.static_method_names.clone(),
@@ -1129,6 +1138,9 @@ impl Interpreter {
                     field_defaults: vec![],
                     class_vars: HashMap::new(),
                     field_mutability: HashMap::from([("value".to_string(), true)]),
+                    field_index: HashMap::from([("value".to_string(), 0usize)]),
+                    field_count: 1,
+                    field_mutability_vec: vec![true],
                     field_access: HashMap::new(),
                     method_access: HashMap::new(),
                     static_method_names: HashSet::new(),
@@ -1196,6 +1208,9 @@ impl Interpreter {
             field_defaults: vec![],
             class_vars: HashMap::new(),
             field_mutability: HashMap::from([("value".to_string(), true)]),
+            field_index: HashMap::from([("value".to_string(), 0usize)]),
+            field_count: 1,
+            field_mutability_vec: vec![true],
             field_access: HashMap::new(),
             method_access: HashMap::new(),
             static_method_names: HashSet::new(),
@@ -1240,6 +1255,9 @@ impl Interpreter {
             field_defaults: vec![],
             class_vars,
             field_mutability: HashMap::new(),
+            field_index: HashMap::new(),
+            field_count: 0,
+            field_mutability_vec: vec![],
             field_access: HashMap::new(),
             method_access: HashMap::new(),
             static_method_names: HashSet::new(),
@@ -1279,6 +1297,7 @@ impl Interpreter {
         let mut field_defaults = Vec::new();
         let mut class_vars: HashMap<String, Value> = HashMap::new();
         let mut field_mutability: HashMap<String, bool> = HashMap::new();
+        let mut own_field_order: Vec<(String, bool)> = Vec::new();
         let mut field_access: HashMap<String, Accessibility> = HashMap::new();
         let mut method_access: HashMap<String, Accessibility> = HashMap::new();
         let mut static_method_names: HashSet<String> = HashSet::new();
@@ -1413,6 +1432,7 @@ impl Interpreter {
                         field_access.insert(fname.clone(), facc.clone());
                     }
                     let mutable = *kind == FieldKind::Mut;
+                    own_field_order.push((fname.clone(), mutable));
                     field_mutability.insert(fname.clone(), mutable);
                     if let Some(init) = default {
                         let val = self.eval(init)?;
@@ -1423,6 +1443,9 @@ impl Interpreter {
             }
         }
 
+        let (field_index, field_mutability_vec, field_count) =
+            self.build_field_index(&own_field_order, bases);
+
         let cls = Rc::new(super::ClassValue {
             name: name.to_string(),
             bases: bases.to_vec(),
@@ -1431,6 +1454,9 @@ impl Interpreter {
             field_defaults,
             class_vars,
             field_mutability,
+            field_index,
+            field_count,
+            field_mutability_vec,
             field_access,
             method_access,
             static_method_names,
@@ -1550,35 +1576,22 @@ impl Interpreter {
         // 例外インスタンスに file / line / col / code_context を直接書き込む
         if let Value::Instance(ref inst_rc) = exc_val {
             let context = self.get_context_lines(&span.file, span.line, 5);
+            let cls = inst_rc.borrow().class.clone();
             let mut inst = inst_rc.borrow_mut();
-            inst.fields.insert(
-                "file".to_string(),
-                (Value::Str(span.file.to_string()), false),
-            );
-            inst.fields
-                .insert("line".to_string(), (Value::Int(span.line as i64), false));
-            inst.fields
-                .insert("col".to_string(), (Value::Int(span.col as i64), false));
-            inst.fields.insert(
-                "code_context".to_string(),
-                (Value::Str(context.clone()), false),
-            );
-            inst.fields.insert(
-                "Error::file".to_string(),
-                (Value::Str(span.file.to_string()), false),
-            );
-            inst.fields.insert(
-                "Error::line".to_string(),
-                (Value::Int(span.line as i64), false),
-            );
-            inst.fields.insert(
-                "Error::col".to_string(),
-                (Value::Int(span.col as i64), false),
-            );
-            inst.fields.insert(
-                "Error::code_context".to_string(),
-                (Value::Str(context), false),
-            );
+            for (key, val) in [
+                ("file", Value::Str(span.file.to_string())),
+                ("line", Value::Int(span.line as i64)),
+                ("col", Value::Int(span.col as i64)),
+                ("code_context", Value::Str(context.clone())),
+                ("Error::file", Value::Str(span.file.to_string())),
+                ("Error::line", Value::Int(span.line as i64)),
+                ("Error::col", Value::Int(span.col as i64)),
+                ("Error::code_context", Value::Str(context)),
+            ] {
+                if let Some(&idx) = cls.field_index.get(key) {
+                    inst.fields[idx] = Some((val, false));
+                }
+            }
         }
 
         let fn_name = self
@@ -2272,6 +2285,8 @@ impl Interpreter {
             use crate::token::Span;
 
             let mut field_mutability: HashMap<String, bool> = HashMap::new();
+            let mut field_index: HashMap<String, usize> = HashMap::new();
+            let mut field_mutability_vec: Vec<bool> = Vec::new();
             let mut init_params: Vec<Param> = vec![Param {
                 name: "self".to_string(),
                 mutable: true,
@@ -2279,8 +2294,10 @@ impl Interpreter {
                 default: None,
                 variadic: false,
             }];
-            for (fname, _) in &sdef.fields {
+            for (i, (fname, _)) in sdef.fields.iter().enumerate() {
                 field_mutability.insert(fname.clone(), true);
+                field_index.insert(fname.clone(), i);
+                field_mutability_vec.push(true);
                 init_params.push(Param {
                     name: fname.clone(),
                     mutable: false,
@@ -2289,6 +2306,7 @@ impl Interpreter {
                     variadic: false,
                 });
             }
+            let field_count = sdef.fields.len();
 
             // __init__ body: `self.field = field` for each field
             let init_body: Vec<crate::ast::Stmt> = sdef
@@ -2324,6 +2342,9 @@ impl Interpreter {
                 class_vars: HashMap::new(),
                 field_defaults: vec![],
                 field_mutability,
+                field_index,
+                field_count,
+                field_mutability_vec,
                 field_access: HashMap::new(),
                 method_access: HashMap::new(),
                 static_method_names: std::collections::HashSet::new(),

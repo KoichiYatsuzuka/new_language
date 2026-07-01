@@ -1089,9 +1089,12 @@ extern "C" fn ar_raise_exc(type_h: i64, msg_h: i64) -> i64 {
         Value::Str(s) => s,
         Value::None => String::new(),
         Value::Instance(inst) => {
-            inst.borrow().fields.get("message")
-                .and_then(|(v, _)| if let Value::Str(s) = v { Some(s.clone()) } else { None })
-                .unwrap_or_default()
+            let b = inst.borrow();
+            b.class.field_index.get("message").and_then(|&idx| {
+                b.fields.get(idx).and_then(|s| {
+                    if let Some((Value::Str(s), _)) = s { Some(s.clone()) } else { None }
+                })
+            }).unwrap_or_default()
         }
         other => format!("{other:?}"),
     };

@@ -882,7 +882,7 @@ impl Interpreter {
                 let new_fields = inst
                     .fields
                     .iter()
-                    .map(|(k, (v, m))| (k.clone(), (Self::deep_copy_value(v.clone()), *m)))
+                    .map(|slot| slot.as_ref().map(|(v, m)| (Self::deep_copy_value(v.clone()), *m)))
                     .collect();
                 Value::Instance(Rc::new(RefCell::new(InstanceData {
                     class: inst.class.clone(),
@@ -927,14 +927,16 @@ impl Interpreter {
                 let new_fields = inst
                     .fields
                     .iter()
-                    .map(|(k, (v, _))| {
-                        // クラス定義の可変性を復元する。定義になければデフォルト true（可変）
-                        let orig_mutable = class
-                            .field_mutability
-                            .get(k.as_str())
-                            .copied()
-                            .unwrap_or(true);
-                        (k.clone(), (Self::deep_copy_unfrozen(v.clone()), orig_mutable))
+                    .enumerate()
+                    .map(|(idx, slot)| {
+                        slot.as_ref().map(|(v, _)| {
+                            // クラス定義の可変性を復元する: field_mutability_vec の元の値を使う
+                            let orig_mutable = class.field_mutability_vec
+                                .get(idx)
+                                .copied()
+                                .unwrap_or(true);
+                            (Self::deep_copy_unfrozen(v.clone()), orig_mutable)
+                        })
                     })
                     .collect();
                 Value::Instance(Rc::new(RefCell::new(InstanceData {
