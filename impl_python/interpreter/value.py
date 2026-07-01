@@ -1,7 +1,7 @@
-﻿# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
+﻿# git SHA: 2862f12d2d09337d845b6a760697181a1ff9aec5
 """Runtime value types for the Arrow interpreter."""
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dc_field
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -88,8 +88,8 @@ class TlFixedList:
 class TlDict:
     key_type: str = "Any"
     item_type: str = "Any"
-    keys: list = field(default_factory=list)   # list[Value]
-    values: list = field(default_factory=list) # list[Value]
+    keys: list = dc_field(default_factory=list)   # list[Value]
+    values: list = dc_field(default_factory=list) # list[Value]
 
     def get(self, key: "Value") -> "Value | _Missing":
         for i, k in enumerate(self.keys):
@@ -166,7 +166,7 @@ class TlFunction:
     name: str
     params: list         # list[Param]
     body: list           # list[Stmt]
-    captured_env: dict = field(default_factory=dict)  # dict[str, CapturedVar]
+    captured_env: dict = dc_field(default_factory=dict)  # dict[str, CapturedVar]
     is_static: bool = False
     is_class_method: bool = False
     is_python: bool = False
@@ -189,7 +189,7 @@ class TlGeneratorFn:
     name: str
     params: list   # list[Param]
     body: list     # list[Stmt]
-    captured_env: dict = field(default_factory=dict)
+    captured_env: dict = dc_field(default_factory=dict)
 
     def __repr__(self) -> str:
         return f"<generator function {self.name}>"
@@ -252,6 +252,10 @@ class TlClass:
     class_method_names: set   # set[str]
     static_vars: dict      # dict[str, list]  — mutable cells [value]
     new_type_base: Optional[str] = None
+    # Offset-based field access (mirrors Rust ClassValue)
+    field_index: dict = dc_field(default_factory=dict)    # dict[str, int] — name → Vec slot index
+    field_count: int = 0                                   # total Vec slot count per instance
+    field_mutability_vec: list = dc_field(default_factory=list)  # list[bool] — per-slot original mutability
 
     def __repr__(self) -> str:
         return f"<class {self.name}>"
@@ -260,16 +264,16 @@ class TlClass:
 @dataclass
 class TlInstance:
     cls: TlClass
-    fields: dict   # dict[str, [Value, bool]]  — {name: [value, is_mutable]}
+    fields: list   # list[Optional[list]] — each slot: None or [value, is_mutable]
     immutable: bool = False
 
     def __repr__(self) -> str:
         cls_name = self.cls.name
         if self.cls.new_type_base is not None:
             # new_type: show as ClassName(inner_value)
-            inner = self.fields.get("__value__")
-            if inner:
-                return f"{cls_name}({_repr_val(inner[0])})"
+            idx = self.cls.field_index.get("__value__")
+            if idx is not None and idx < len(self.fields) and self.fields[idx] is not None:
+                return f"{cls_name}({_repr_val(self.fields[idx][0])})"
         return f"<{cls_name} object>"
 
 
@@ -325,7 +329,7 @@ class TlSlice:
 class TlFileObject:
     path: str
     mode: str       # "r", "w", "rw", "rw_new", "rw_trunc"
-    content: bytearray = field(default_factory=bytearray)
+    content: bytearray = dc_field(default_factory=bytearray)
     pointer: int = 0
     is_closed: bool = False
     text_mode: bool = True
@@ -369,9 +373,9 @@ class TlComplex:
 class TlSignal:
     """Runtime value for Signal[T]: holds a list of registered handlers."""
     # Each entry: (func: Value, is_once: bool, is_async: bool)
-    handlers: list = field(default_factory=list)
+    handlers: list = dc_field(default_factory=list)
     # Values queued by emit_async(); drained by EventLoop.run()
-    async_queue: list = field(default_factory=list)
+    async_queue: list = dc_field(default_factory=list)
 
     def __repr__(self) -> str:
         return f"<Signal handlers={len(self.handlers)}>"
@@ -381,9 +385,9 @@ class TlSignal:
 class TlEventLoop:
     """Runtime value for the EventLoop singleton."""
     # (TlSignal, value) pairs queued by emit_async()
-    signal_queue: list = field(default_factory=list)
+    signal_queue: list = dc_field(default_factory=list)
     # Zero-arg callables posted via EventLoop.post()
-    post_queue: list = field(default_factory=list)
+    post_queue: list = dc_field(default_factory=list)
 
     def __repr__(self) -> str:
         return "<EventLoop>"
@@ -566,9 +570,9 @@ def display(v: "Value") -> str:
     if isinstance(v, TlInstance):
         cls = v.cls
         if cls.new_type_base is not None:
-            inner = v.fields.get("__value__")
-            if inner:
-                return f"{cls.name}({display(inner[0])})"
+            idx = cls.field_index.get("__value__")
+            if idx is not None and idx < len(v.fields) and v.fields[idx] is not None:
+                return f"{cls.name}({display(v.fields[idx][0])})"
         return f"<{cls.name} object>"
     if isinstance(v, TlClass):
         return f"<class {v.name}>"
@@ -641,10 +645,10 @@ def deep_clone(v: "Value") -> "Value":
             step=deep_clone(v.step) if v.step is not None else None,
         )
     if isinstance(v, TlInstance):
-        new_fields = {
-            name: [deep_clone(fv[0]), fv[1]]
-            for name, fv in v.fields.items()
-        }
+        new_fields = [
+            [deep_clone(slot[0]), slot[1]] if slot is not None else None
+            for slot in v.fields
+        ]
         return TlInstance(cls=v.cls, fields=new_fields, immutable=v.immutable)
     # Functions, classes, namespaces, etc. are shared by identity
     return v
@@ -684,10 +688,11 @@ def deep_clone_unfrozen(v: "Value") -> "Value":
         )
     if isinstance(v, TlInstance):
         cls = v.cls
-        new_fields = {
-            name: [deep_clone_unfrozen(fv[0]),
-                   cls.field_mutability.get(name, True)]  # クラス定義から可変性を復元
-            for name, fv in v.fields.items()
-        }
+        new_fields = [
+            [deep_clone_unfrozen(slot[0]),
+             cls.field_mutability_vec[i] if i < len(cls.field_mutability_vec) else True]
+            if slot is not None else None
+            for i, slot in enumerate(v.fields)
+        ]
         return TlInstance(cls=cls, fields=new_fields, immutable=False)
     return v

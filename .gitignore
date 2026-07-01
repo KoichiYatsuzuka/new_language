@@ -24,3 +24,4 @@ Log.txt
 *.obj
 examples/cs_proc_test/obj/Debug/net8.0
 vscode-extension-archived
+.claude/worktrees

@@ -1,4 +1,4 @@
-﻿# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
+﻿# git SHA: 2862f12d2d09337d845b6a760697181a1ff9aec5
 """Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
@@ -129,6 +129,17 @@ class Interpreter:
         self._known_classes: dict[str, Value] = {}
         self._known_traits: dict[str, TlTrait] = {}
         self._protocol_required_members: dict[str, list[str]] = {}
+        # trait_field_order: tracks field declarations for each named trait (for offset-based access)
+        # Pre-register the built-in Error trait with its 5 fields
+        self._trait_field_order: dict[str, list] = {
+            "Error": [
+                ("message", False),
+                ("code_context", False),
+                ("file", False),
+                ("line", False),
+                ("col", False),
+            ]
+        }
         # current_class: name of class being executed for access-control checks
         self._current_class: Optional[str] = None
         self._current_method: Optional[str] = None
@@ -140,6 +151,8 @@ class Interpreter:
             self._env.declare(name, val, mutable=False)
         # Install built-in enums
         self._install_builtin_enums()
+        # Install built-in error classes (ValueError, TypeError, etc.)
+        self._install_builtin_error_classes()
         # Event system: Signal type marker and EventLoop singleton
         self._env.declare("Signal", TlType("Signal"), mutable=False)
         self._event_loop = TlEventLoop()
@@ -159,14 +172,16 @@ class Interpreter:
                 field_access={}, method_access={},
                 static_method_names=set(), class_method_names=set(),
                 static_vars={}, new_type_base=None,
+                field_index={"value": 0, "name": 1}, field_count=2,
+                field_mutability_vec=[False, False],
             )
             self._known_classes[cls_name] = enum_cls
             members: dict = {cls_name: enum_cls}
             for vname, vval in variants:
-                inst = TlInstance(cls=enum_cls, fields={
-                    "value": [vval, False],
-                    "name":  [vname, False],
-                }, immutable=True)
+                inst = TlInstance(cls=enum_cls, fields=[
+                    [vval, False],
+                    [vname, False],
+                ], immutable=True)
                 members[vname] = inst
             return TlNamespace(name=name, members=members)
 
@@ -191,6 +206,57 @@ class Interpreter:
             ("Encoding", encoding),
         ]:
             self._env.declare(ns_name, ns_val, mutable=False)
+
+    def _install_builtin_error_classes(self) -> None:
+        """Register built-in error classes (ValueError, TypeError, etc.) into known_classes and env."""
+        # field layout mirrors Rust: message=0, code_context=1, file=2, line=3, col=4
+        ERROR_FIELD_INDEX = {
+            "message": 0, "code_context": 1, "file": 2, "line": 3, "col": 4,
+            "Error::message": 0, "Error::code_context": 1, "Error::file": 2,
+            "Error::line": 3, "Error::col": 4,
+        }
+
+        def _make_error_class(cls_name: str) -> TlClass:
+            # Native __init__: sets self.message = message
+            def _init(args, kwargs, _cls_name=cls_name):
+                # args = [self_inst, message]
+                if len(args) >= 2:
+                    inst = args[0]
+                    msg = args[1]
+                    if isinstance(inst, TlInstance):
+                        inst.fields[0] = [msg, False]
+                return None
+            init_fn = _make_native("__init__", _init)
+
+            cls = TlClass(
+                name=cls_name, bases=["Error"], methods={"__init__": [init_fn]},
+                gen_methods={},
+                field_defaults=[
+                    ("message", None, False), ("code_context", "", False),
+                    ("file", "", False), ("line", 0, False), ("col", 0, False),
+                ],
+                class_vars={}, field_mutability={
+                    "message": False, "code_context": False,
+                    "file": False, "line": False, "col": False,
+                },
+                field_access={}, method_access={},
+                static_method_names=set(), class_method_names=set(),
+                static_vars={}, new_type_base=None,
+                field_index=dict(ERROR_FIELD_INDEX),
+                field_count=5, field_mutability_vec=[False, False, False, False, False],
+            )
+            return cls
+
+        ERROR_CLASSES = [
+            "Exception", "ValueError", "TypeError", "NameError", "AttributeError",
+            "IndexError", "KeyError", "ZeroDivisionError", "RuntimeError",
+            "StopIteration", "NotImplementedError", "OverflowError",
+            "IOError", "OSError", "AssertionError", "ArithmeticError", "AccessError",
+        ]
+        for cname in ERROR_CLASSES:
+            cls = _make_error_class(cname)
+            self._known_classes[cname] = cls
+            self._env.declare(cname, cls, mutable=False)
 
     # ------------------------------------------------------------------
     # Public entry points
@@ -425,6 +491,14 @@ class Interpreter:
                 trait = TlTrait(name=name)
                 self._env.declare(name, trait, mutable=False)
                 self._known_traits[name] = trait
+                # Extract field declarations for offset-based access
+                trait_fields = []
+                for s in body:
+                    if isinstance(s, StmtField):
+                        is_mut = s.kind in (FieldKind.MUT, FieldKind.STATIC_MUT)
+                        trait_fields.append((s.name, is_mut))
+                if trait_fields:
+                    self._trait_field_order[name] = trait_fields
 
             case StmtProtocolDef(name=name, body=body):
                 members: list[str] = []
@@ -818,8 +892,9 @@ class Interpreter:
             if len(a.fields) != len(b.fields):
                 return False
             return all(
-                k in b.fields and self._values_eq(v[0], b.fields[k][0])
-                for k, v in a.fields.items()
+                (sa is None and sb is None) or
+                (sa is not None and sb is not None and self._values_eq(sa[0], sb[0]))
+                for sa, sb in zip(a.fields, b.fields)
             )
         return a is b
 
@@ -891,24 +966,27 @@ class Interpreter:
     def _eval_trait_attr(self, obj: Value, trait_name: str, attr: str) -> Value:
         if isinstance(obj, TlInstance):
             key = f"{trait_name}::{attr}"
-            if key in obj.fields:
-                return obj.fields[key][0]
-            # Try plain attr
-            if attr in obj.fields:
-                return obj.fields[attr][0]
+            idx = obj.cls.field_index.get(key)
+            if idx is None:
+                idx = obj.cls.field_index.get(attr)
+            if idx is not None and idx < len(obj.fields) and obj.fields[idx] is not None:
+                return obj.fields[idx][0]
         raise RuntimeError(f"AttributeError: trait '{trait_name}' has no attribute '{attr}' on '{type_name(obj)}'")
 
     def _get_instance_attr(self, inst: TlInstance, attr: str) -> Value:
         cls = inst.cls
         # new_type `.value` is an alias for `__value__`
-        if attr == "value" and cls.new_type_base is not None and "__value__" in inst.fields:
-            return inst.fields["__value__"][0]
+        if attr == "value" and cls.new_type_base is not None:
+            idx = cls.field_index.get("__value__")
+            if idx is not None and idx < len(inst.fields) and inst.fields[idx] is not None:
+                return inst.fields[idx][0]
         # Access control check
         self._check_access(cls.name, attr, cls.method_access.get(attr), cls.field_access.get(attr))
 
         # Check fields
-        if attr in inst.fields:
-            return inst.fields[attr][0]
+        idx = cls.field_index.get(attr)
+        if idx is not None and idx < len(inst.fields) and inst.fields[idx] is not None:
+            return inst.fields[idx][0]
 
         # Check class vars
         if attr in cls.class_vars:
@@ -1041,13 +1119,24 @@ class Interpreter:
                 raise RuntimeError(f"TypeError: cannot modify immutable '{cls.name}' instance")
             # Access control
             self._check_access(cls.name, attr, cls.method_access.get(attr), cls.field_access.get(attr))
-            if attr in obj.fields:
-                entry = obj.fields[attr]
-                if not entry[1] and self._current_method != "__init__":
-                    raise RuntimeError(f"TypeError: cannot assign to immutable field '{attr}'")
-                entry[0] = val
+            idx = cls.field_index.get(attr)
+            if idx is not None:
+                if idx >= len(obj.fields):
+                    obj.fields.extend([None] * (idx + 1 - len(obj.fields)))
+                entry = obj.fields[idx]
+                if entry is not None:
+                    if not entry[1] and self._current_method != "__init__":
+                        raise RuntimeError(f"TypeError: cannot assign to immutable field '{attr}'")
+                    entry[0] = val
+                else:
+                    is_mut = cls.field_mutability_vec[idx] if idx < len(cls.field_mutability_vec) else True
+                    obj.fields[idx] = [val, is_mut]
             else:
-                obj.fields[attr] = [val, True]
+                # Dynamic attribute (not in field_index) — store as a new slot appended
+                # This handles cases like __init__ setting fields not declared statically
+                # Use a temporary dict via class_vars as fallback? No — just allocate a new slot.
+                # For now, raise a helpful error to catch unexpected cases.
+                raise RuntimeError(f"AttributeError: '{cls.name}' has no field '{attr}'")
             return
         if isinstance(obj, TlClass):
             if attr in obj.class_vars:
@@ -1368,6 +1457,42 @@ class Interpreter:
     # Class building
     # ------------------------------------------------------------------
 
+    def _build_field_index(self, own_fields: list, bases: list) -> tuple:
+        """Build (field_index, field_count, field_mutability_vec) for a class.
+
+        Mirrors Rust's Interpreter::build_field_index:
+        - Step 1: own fields in declaration order get the first slots
+        - Step 2: trait fields from bases fill remaining slots (with qualified aliases)
+        """
+        field_index: dict[str, int] = {}
+        field_mutability_vec: list[bool] = []
+
+        # Step 1: own fields
+        for fname, is_mut in own_fields:
+            idx = len(field_mutability_vec)
+            field_index[fname] = idx
+            field_mutability_vec.append(is_mut)
+
+        # Step 2: trait fields from bases
+        for base_name in bases:
+            trait_fields = self._trait_field_order.get(base_name)
+            if trait_fields is None:
+                continue
+            for fname, is_mut in trait_fields:
+                qualified = f"{base_name}::{fname}"
+                if fname in field_index:
+                    # class redeclares this field → qualified alias points to same slot
+                    field_index[qualified] = field_index[fname]
+                else:
+                    # trait-only field → new slot + unqualified alias
+                    idx = len(field_mutability_vec)
+                    field_index[qualified] = idx
+                    if fname not in field_index:
+                        field_index[fname] = idx
+                    field_mutability_vec.append(is_mut)
+
+        return field_index, len(field_mutability_vec), field_mutability_vec
+
     def _build_class(self, name: str, bases: list[str], body: list) -> TlClass:
         methods: dict[str, list] = {}
         gen_methods: dict[str, TlGeneratorFn] = {}
@@ -1379,8 +1504,9 @@ class Interpreter:
         static_method_names: set = set()
         class_method_names: set = set()
         static_vars: dict[str, list] = {}
+        own_field_order: list = []  # (name, is_mutable) for field_index
 
-        # Inherit from bases
+        # Inherit methods from trait bases (fields are handled via _build_field_index)
         for base_name in bases:
             if base_name in self._known_classes:
                 base = self._known_classes[base_name]
@@ -1439,6 +1565,7 @@ class Interpreter:
                         static_vars[fname] = [default_val]
                     else:
                         field_defaults.append((fname, default_val, is_mut))
+                        own_field_order.append((fname, is_mut))
                     field_mutability[fname] = is_mut
                     field_access[fname] = access
 
@@ -1451,12 +1578,16 @@ class Interpreter:
                 case _:
                     pass  # access markers handled by parser into StmtFnDef.access
 
+        field_index, field_count, field_mutability_vec = self._build_field_index(own_field_order, bases)
+
         return TlClass(
             name=name, bases=bases, methods=methods, gen_methods=gen_methods,
             field_defaults=field_defaults, class_vars=class_vars,
             field_mutability=field_mutability, field_access=field_access,
             method_access=method_access, static_method_names=static_method_names,
             class_method_names=class_method_names, static_vars=static_vars,
+            field_index=field_index, field_count=field_count,
+            field_mutability_vec=field_mutability_vec,
         )
 
     def _inherit_class(self, base: TlClass, methods, gen_methods, field_defaults,
@@ -1519,12 +1650,17 @@ class Interpreter:
         # Primitive new_type: single positional arg sets __value__
         if cls.new_type_base in PRIMITIVES and "__value__" in {f[0] for f in cls.field_defaults}:
             val = args[0] if args else None
-            return TlInstance(cls=cls, fields={"__value__": [val, True]}, immutable=False)
+            fields: list = [None] * cls.field_count
+            idx = cls.field_index.get("__value__", 0)
+            fields[idx] = [val, True]
+            return TlInstance(cls=cls, fields=fields, immutable=False)
 
-        # Initialize fields
-        fields: dict[str, list] = {}
+        # Initialize fields using Vec-based layout
+        fields = [None] * cls.field_count
         for fname, default_val, is_mut in cls.field_defaults:
-            fields[fname] = [deep_clone(default_val) if default_val is not None else None, is_mut]
+            idx = cls.field_index.get(fname)
+            if idx is not None:
+                fields[idx] = [deep_clone(default_val) if default_val is not None else None, is_mut]
 
         inst = TlInstance(cls=cls, fields=fields, immutable=False)
 
@@ -1553,6 +1689,9 @@ class Interpreter:
                     class_method_names=set(base.class_method_names),
                     static_vars=dict(base.static_vars),
                     new_type_base=original,
+                    field_index=dict(base.field_index),
+                    field_count=base.field_count,
+                    field_mutability_vec=list(base.field_mutability_vec),
                 )
                 return cls
         # Primitive new_type: wrap a single __value__
@@ -1564,6 +1703,8 @@ class Interpreter:
             field_access={}, method_access={},
             static_method_names=set(), class_method_names=set(),
             static_vars={}, new_type_base=original,
+            field_index={"__value__": 0}, field_count=1,
+            field_mutability_vec=[True],
         )
         return cls
 
@@ -1576,6 +1717,8 @@ class Interpreter:
             field_access={}, method_access={},
             static_method_names=set(), class_method_names=set(),
             static_vars={}, new_type_base=None,
+            field_index={"value": 0, "name": 1}, field_count=2,
+            field_mutability_vec=[False, False],
         )
         self._known_classes[f"enum_item_{name}"] = enum_cls
 
@@ -1587,10 +1730,10 @@ class Interpreter:
                 if isinstance(val, int): auto_val = val
             else:
                 val = auto_val
-            inst = TlInstance(cls=enum_cls, fields={
-                "value": [val, False],
-                "name":  [variant_name, False],
-            }, immutable=True)
+            inst = TlInstance(cls=enum_cls, fields=[
+                [val, False],
+                [variant_name, False],
+            ], immutable=True)
             members[variant_name] = inst
             auto_val += 1
 
@@ -1635,7 +1778,7 @@ class Interpreter:
             required = self._protocol_required_members[tname]
             if isinstance(val, TlInstance):
                 return all(
-                    m in val.fields or m in val.cls.methods
+                    m in val.cls.field_index or m in val.cls.methods
                     for m in required
                 )
             return False
@@ -1690,8 +1833,13 @@ class Interpreter:
 
         def _get_new_type_inner(inst: TlInstance):
             """Extract the inner value from a new_type instance (handles both 'value' and '__value__')."""
-            raw = inst.fields.get("value") or inst.fields.get("__value__")
-            return raw[0] if raw is not None else None
+            fi = inst.cls.field_index
+            idx = fi.get("value") if fi.get("value") is not None else fi.get("__value__")
+            if idx is None:
+                idx = fi.get("__value__")
+            if idx is not None and idx < len(inst.fields) and inst.fields[idx] is not None:
+                return inst.fields[idx][0]
+            return None
 
         # If obj is a new_type instance, extract inner value to avoid nesting
         inner_val = None
@@ -2547,9 +2695,15 @@ class Interpreter:
 
         # Submit task as a thread
         import threading as _threading
-        results = mgr_val.fields.get("results")
-        progress = mgr_val.fields.get("progress_status")
-        error_list = mgr_val.fields.get("error_list")
+        def _mgr_field(fname):
+            idx = mgr_val.cls.field_index.get(fname)
+            if idx is not None and idx < len(mgr_val.fields) and mgr_val.fields[idx] is not None:
+                return mgr_val.fields[idx]
+            return None
+
+        results = _mgr_field("results")
+        progress = _mgr_field("progress_status")
+        error_list = _mgr_field("error_list")
         task_idx = len(results[0].items) if results else 0
 
         if results:
@@ -2578,7 +2732,7 @@ class Interpreter:
                     error_list[0].items[task_idx] = display(e.exception_value)
                 if progress and task_idx < len(progress[0].items):
                     progress[0].items[task_idx] = "Done"
-                raise_imm = mgr_val.fields.get("raise_immediately")
+                raise_imm = _mgr_field("raise_immediately")
                 if raise_imm and is_truthy(raise_imm[0]):
                     pass  # error stored, wait_for_finish re-raises
             except Exception as ex:

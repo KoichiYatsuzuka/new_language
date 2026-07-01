@@ -1,4 +1,4 @@
-# git SHA: 50e5e5c504db52a6bd14efc51f25654e044702b9
+# git SHA: 2862f12d2d09337d845b6a760697181a1ff9aec5
 """Built-in functions and collection method dispatch."""
 from __future__ import annotations
 from typing import Optional, Callable, TYPE_CHECKING
@@ -25,13 +25,18 @@ def _make_error_instance(cls_name: str, message: str, known_classes: dict) -> "V
     if cls_name in known_classes:
         cls = known_classes[cls_name]
         if isinstance(cls, TlClass):
-            inst = TlInstance(cls=cls, fields={}, immutable=False)
-            inst.fields["message"] = [message, False]
-            inst.fields["code_context"] = ["", True]
-            inst.fields["file"] = ["", True]
-            inst.fields["line"] = [0, True]
-            inst.fields["col"] = [0, True]
-            return inst
+            fields: list = [None] * cls.field_count
+            for fname, val, is_mut in [
+                ("message", message, False),
+                ("code_context", "", True),
+                ("file", "", True),
+                ("line", 0, True),
+                ("col", 0, True),
+            ]:
+                idx = cls.field_index.get(fname)
+                if idx is not None:
+                    fields[idx] = [val, is_mut]
+            return TlInstance(cls=cls, fields=fields, immutable=False)
     # Fallback: plain string
     return message
 
@@ -88,9 +93,9 @@ def apply_slice(obj: Value, sl: TlSlice, known_classes: dict) -> Value:
         if isinstance(v, int) and not isinstance(v, bool):
             return v
         if isinstance(v, TlInstance) and v.cls.name in ("Index", "Size"):
-            inner = v.fields.get("__value__")
-            if inner:
-                return int(inner[0])
+            idx = v.cls.field_index.get("__value__")
+            if idx is not None and idx < len(v.fields) and v.fields[idx] is not None:
+                return int(v.fields[idx][0])
         raise RuntimeError(f"TypeError: slice bounds must be int or Index, got '{type_name(v)}'")
 
     def to_step(v: Optional[Value]) -> int:
@@ -199,8 +204,9 @@ def subscript_set(obj: Value, index: Value, value: Value, known_classes: dict) -
                 if v is None: return default
                 if isinstance(v, int) and not isinstance(v, bool): return v
                 if isinstance(v, TlInstance) and v.cls.name in ("Index", "Size"):
-                    inner = v.fields.get("__value__")
-                    if inner: return int(inner[0])
+                    idx = v.cls.field_index.get("__value__")
+                    if idx is not None and idx < len(v.fields) and v.fields[idx] is not None:
+                        return int(v.fields[idx][0])
                 return default
             begin = to_int_s(index.begin, 0)
             end = to_int_s(index.end, n)
@@ -236,9 +242,9 @@ def _to_index(index: Value, length: int, known_classes: dict) -> int:
             )
         return i
     if isinstance(index, TlInstance) and index.cls.name in ("Index", "Size"):
-        inner = index.fields.get("__value__")
-        if inner:
-            return _to_index(inner[0], length, known_classes)
+        idx = index.cls.field_index.get("__value__")
+        if idx is not None and idx < len(index.fields) and index.fields[idx] is not None:
+            return _to_index(index.fields[idx][0], length, known_classes)
     raise RuntimeError(f"TypeError: indices must be integers, got '{type_name(index)}'")
 
 
@@ -858,15 +864,16 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
         obj, name = args[0], args[1]
         if not isinstance(name, str): return False
         if isinstance(obj, TlInstance):
-            return name in obj.fields or name in obj.cls.methods
+            return name in obj.cls.field_index or name in obj.cls.methods
         return False
 
     def builtin_getattr(args: list, kwargs: dict) -> Value:
         obj, name = args[0], args[1]
         default = args[2] if len(args) > 2 else MISSING
         if isinstance(obj, TlInstance):
-            if name in obj.fields:
-                return obj.fields[name][0]
+            idx = obj.cls.field_index.get(name)
+            if idx is not None and idx < len(obj.fields) and obj.fields[idx] is not None:
+                return obj.fields[idx][0]
             if name in obj.cls.methods:
                 return obj.cls.methods[name][0]
         if default is not MISSING:
@@ -877,11 +884,19 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
         prompt = display(args[0]) if args else ""
         return input(prompt)
 
+    def _get_field_val(inst: TlInstance, fname: str):
+        idx = inst.cls.field_index.get(fname)
+        if idx is not None and idx < len(inst.fields) and inst.fields[idx] is not None:
+            return inst.fields[idx][0]
+        return None
+
     def builtin_open(args: list, kwargs: dict) -> TlFileObject:
         import os
         fpath = args[0]
         if isinstance(fpath, TlInstance) and fpath.cls.new_type_base == "str":
-            fpath = fpath.fields.get("__value__", [fpath])[0]
+            v = _get_field_val(fpath, "__value__")
+            if v is not None:
+                fpath = v
         if not isinstance(fpath, str):
             raise RuntimeError("TypeError: open() path must be str or path")
 
@@ -891,8 +906,8 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
         # Map FileOpenMode enum value to internal mode string
         _enum_to_mode = {0: "w", 1: "rw_trunc", 2: "r", 3: "rw_new", 4: "rw"}
         if isinstance(raw_mode, TlInstance):
-            vf = raw_mode.fields.get("value")
-            iv = vf[0] if vf else 2
+            iv = _get_field_val(raw_mode, "value")
+            iv = iv if iv is not None else 2
             mode_name = _enum_to_mode.get(iv, "r")
         elif isinstance(raw_mode, str):
             mode_name = raw_mode
@@ -902,14 +917,14 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
         # StartPoint: 3rd arg
         start_val = 0
         if len(args) > 2 and isinstance(args[2], TlInstance):
-            vf = args[2].fields.get("value")
-            start_val = vf[0] if vf else 0
+            v = _get_field_val(args[2], "value")
+            start_val = v if v is not None else 0
 
         # ByteRecognizingMode: 4th arg
         text_mode = True
         if len(args) > 3 and isinstance(args[3], TlInstance):
-            vf = args[3].fields.get("value")
-            bm = vf[0] if vf else 1
+            bm = _get_field_val(args[3], "value")
+            bm = bm if bm is not None else 1
             text_mode = (bm == 1)
 
         if mode_name == "r":
@@ -936,7 +951,7 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
         """path('some/path') → new_type path instance wrapping a string."""
         s = args[0] if args else ""
         if not isinstance(s, str): s = display(s)
-        return TlInstance(cls=path_cls, fields={"__value__": [s, False]}, immutable=False)
+        return TlInstance(cls=path_cls, fields=[[s, False]], immutable=False)
 
     def builtin_chr(args: list, kwargs: dict) -> str:
         return chr(int(args[0]))
@@ -997,6 +1012,7 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
             field_access={}, method_access={},
             static_method_names=set(), class_method_names=set(),
             static_vars={}, new_type_base=base,
+            field_index={"__value__": 0}, field_count=1, field_mutability_vec=[False],
         )
         known_classes[name] = cls
         return cls
@@ -1010,8 +1026,7 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
     def _make_index_instance(cls: TlClass, args, kwargs):
         val = args[0] if args else 0
         if isinstance(val, bool): val = int(val)
-        inst = TlInstance(cls=cls, fields={"__value__": [val, False]}, immutable=False)
-        return inst
+        return TlInstance(cls=cls, fields=[[val, False]], immutable=False)
 
     def builtin_Index(args, kwargs):
         return _make_index_instance(index_cls, args, kwargs)
@@ -1021,15 +1036,15 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
 
     def builtin_uint(args, kwargs):
         val = int(args[0]) if args else 0
-        return TlInstance(cls=uint_cls, fields={"__value__": [val, False]}, immutable=False)
+        return TlInstance(cls=uint_cls, fields=[[val, False]], immutable=False)
 
     def builtin_pointer(args, kwargs):
         val = int(args[0]) if args else 0
-        return TlInstance(cls=pointer_cls, fields={"__value__": [val, False]}, immutable=False)
+        return TlInstance(cls=pointer_cls, fields=[[val, False]], immutable=False)
 
     def builtin_id(args, kwargs):
         raw = id(args[0]) if args else 0
-        return TlInstance(cls=pointer_cls, fields={"__value__": [raw, False]}, immutable=False)
+        return TlInstance(cls=pointer_cls, fields=[[raw, False]], immutable=False)
 
     def builtin_Ok(args: list, kwargs: dict) -> TlResultVal:
         if len(args) != 1:
