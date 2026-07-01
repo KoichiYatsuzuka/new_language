@@ -665,7 +665,7 @@ impl Interpreter {
             };
             if let Some(m) = method_name {
                 if inst_rc.borrow().class.methods.contains_key(m) {
-                    return self.eval_method_call_evaled(lv, m, vec![(None, rv)]);
+                    return self.eval_method_call_evaled(lv, m, vec![(None, rv, true)]);
                 }
             }
         }

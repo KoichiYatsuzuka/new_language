@@ -176,7 +176,7 @@ for v in Countdown(3):
 print("=== match: value comparison ===")
 
 let score = 85
-let grade = block:
+let block_grade = block:
     match (score // 10):
         case 10:
             block_return "A+"
@@ -189,7 +189,7 @@ let grade = block:
         case _:
             block_return "F"
     block_return "F"
-print(grade)   # B
+print(block_grade)   # B
 
 let s = "hello"
 match (s):
@@ -380,9 +380,9 @@ print("=== if scope ===")
 mut scope_result = 0
 
 if True:
-    mut local = 5
-    scope_result = local * 2
-    print("inside if: local =", local)  # 5
+    mut local_var = 5
+    scope_result = local_var * 2
+    print("inside if: local_var =", local_var)  # 5
 
 print("result after if:", scope_result)  # 10
 

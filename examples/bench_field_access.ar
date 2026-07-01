@@ -1,0 +1,81 @@
+# bench_field_access.ar
+#
+# E2E benchmark: measures interpreter overhead of field access in a tight loop.
+# Run: cargo run --release -- examples/bench_field_access.ar
+#
+# This is the CURRENT (HashMap-based) baseline.
+# After the HashMap→Vec optimization, re-run to compare.
+
+import[py-int] time
+
+# -------------------------------------------------------------------------
+# Case 1: concrete class, direct field access (obj.field)
+# -------------------------------------------------------------------------
+class Particle:
+    mut x: float
+    mut y: float
+    mut z: float
+    mut mass: float
+    fn __init__(mut self, let x: float, let y: float,
+                let z: float, let mass: float) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+        self.mass = mass
+
+fn kinetic(let p: Particle) -> float:
+    return p.mass * (p.x * p.x + p.y * p.y + p.z * p.z)
+
+let N    = 2000
+let REPS = 500
+
+mut pts = for i in range(N) -> list[Particle]:
+    let f = float(i) * 0.001
+    loop_yield Particle(f, f * 2.0, f * 3.0, 1.0 + f)
+
+let t0 = time.time()
+mut total = 0.0
+mut rep = 0
+while rep < REPS:
+    mut i = 0
+    while i < N:
+        total += kinetic(pts[i])
+        i += 1
+    rep += 1
+let t1 = time.time()
+print("concrete class  field access: " + str(t1 - t0) + " s  (N=" + str(N) + " x REPS=" + str(REPS) + ")")
+
+# -------------------------------------------------------------------------
+# Case 2: trait-typed access (unqualified .field on trait param)
+# -------------------------------------------------------------------------
+trait HasEnergy:
+    mut mass: float
+    mut speed: float
+
+class Ball(HasEnergy):
+    mut mass: float
+    mut speed: float
+    fn __init__(mut self, let mass: float, let speed: float) -> None:
+        self.mass = mass
+        self.speed = speed
+
+fn energy(let obj: Ball) -> float:
+    return obj.mass * obj.speed * obj.speed * 0.5
+
+mut balls = for i in range(N) -> list[Ball]:
+    let f = float(i) * 0.001
+    loop_yield Ball(1.0 + f, f * 2.0)
+
+let t2 = time.time()
+mut total2 = 0.0
+mut rep2 = 0
+while rep2 < REPS:
+    mut j = 0
+    while j < N:
+        total2 += energy(balls[j])
+        j += 1
+    rep2 += 1
+let t3 = time.time()
+print("trait-backed    field access: " + str(t3 - t2) + " s  (N=" + str(N) + " x REPS=" + str(REPS) + ")")
+
+print("result check: " + str(total) + " / " + str(total2))

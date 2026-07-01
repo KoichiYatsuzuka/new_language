@@ -1159,7 +1159,7 @@ extern "C" fn ar_call_method(obj_h: i64, name_ptr: *const u8, name_len: i32, arg
     let ptr = get_interp_ptr();
     if ptr.is_null() { set_error(format!("NativeError: interpreter not set for call_method '{name}'")); return TL_NONE; }
     let interp = unsafe { &mut *ptr };
-    let evaled: Vec<(Option<String>, Value)> = args.into_iter().map(|v| (None, v)).collect();
+    let evaled: Vec<(Option<String>, Value, bool)> = args.into_iter().map(|v| (None, v, true)).collect();
     match interp.eval_method_call_evaled(obj, &name, evaled) {
         Ok(v) => push_handle(v),
         Err(e) => { set_error(e); TL_NONE }

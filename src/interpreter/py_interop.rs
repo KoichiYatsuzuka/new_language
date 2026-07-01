@@ -190,7 +190,7 @@ pub fn load_py_int_module(
 /// Python callable を引数付きで呼び出す。
 pub fn call_py_object(
     handle: &PyObjHandle,
-    evaled: &[(Option<String>, Value)],
+    evaled: &[(Option<String>, Value, bool)],
 ) -> Result<Value, String> {
     Python::with_gil(|py| -> PyResult<Value> {
         let callable = handle.inner.bind(py);
@@ -205,7 +205,7 @@ pub fn call_py_object(
 pub fn call_py_method(
     handle: &PyObjHandle,
     method_name: &str,
-    evaled: &[(Option<String>, Value)],
+    evaled: &[(Option<String>, Value, bool)],
 ) -> Result<Value, String> {
     Python::with_gil(|py| -> PyResult<Value> {
         let obj = handle.inner.bind(py);
@@ -377,11 +377,11 @@ pub fn py_rbinop(handle: &PyObjHandle, op: &BinOp, lhs: &Value) -> Result<Value,
 /// 評価済み引数リストから PyTuple（位置引数）と PyDict（キーワード引数）を構築する。
 fn build_py_args<'py>(
     py: Python<'py>,
-    evaled: &[(Option<String>, Value)],
+    evaled: &[(Option<String>, Value, bool)],
 ) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
     let mut positional: Vec<PyObject> = Vec::new();
     let kwargs = PyDict::new_bound(py);
-    for (name, val) in evaled {
+    for (name, val, _) in evaled {
         let py_val = ar_to_py(py, val)?;
         match name {
             None => positional.push(py_val),

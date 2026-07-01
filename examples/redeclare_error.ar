@@ -4,3 +4,12 @@ let a = 5
 print(a)
 let a = 6   # StaticTypeError / NameError: variable 'a' is already declared
 print(a)
+
+# 外側スコープの変数と同名での再宣言もエラー
+let x = 1
+if True:
+    let x = 2   # エラー: 外側スコープの x と衝突
+
+# _ は捨て変数として例外扱い（再宣言可能）
+let _ = 10
+let _ = 20   # OK

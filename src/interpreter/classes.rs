@@ -23,13 +23,13 @@ use super::{
 
 /// `(backward: bool = default)` 形式の単一引数を解析する。
 fn file_bool_arg(
-    evaled: &[(Option<String>, Value)],
+    evaled: &[(Option<String>, Value, bool)],
     name: &str,
     default: bool,
 ) -> Result<bool, String> {
     match evaled {
         [] => Ok(default),
-        [(kw_opt, val)] => {
+        [(kw_opt, val, _)] => {
             if let Some(k) = kw_opt {
                 if k != name {
                     return Err(format!("TypeError: unexpected keyword argument '{k}'"));
@@ -46,11 +46,11 @@ fn file_bool_arg(
 
 /// `(content)` 形式の単一引数を解析して値への参照を返す。
 fn file_content_arg<'a>(
-    evaled: &'a [(Option<String>, Value)],
+    evaled: &'a [(Option<String>, Value, bool)],
     name: &str,
 ) -> Result<&'a Value, String> {
     match evaled {
-        [(kw_opt, val)] => {
+        [(kw_opt, val, _)] => {
             if let Some(k) = kw_opt {
                 if k != name {
                     return Err(format!("TypeError: unexpected keyword argument '{k}'"));
@@ -300,7 +300,7 @@ impl Interpreter {
         if let Some(Value::Str(bp)) = class.class_vars.get("__cs_bridge_path__") {
             let bp_path = std::path::PathBuf::from(bp.clone());
             let evaled = self.eval_call_args(call_args)?;
-            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
             if let Some(bridge) = super::cs_dll_runtime::get_bridge(&bp_path) {
                 let handle = super::cs_dll_runtime::call_constructor(&bridge, &class_name, &arg_vals)
                     .map_err(|e| format!("CsDll: constructor for '{class_name}' failed: {e}"))?;
@@ -316,7 +316,7 @@ impl Interpreter {
         if let Some(Value::Str(pp)) = class.class_vars.get("__cs_proc_path__") {
             let pp_path = std::path::PathBuf::from(pp.clone());
             let evaled = self.eval_call_args(call_args)?;
-            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
             let handle = super::cs_proc_runtime::call_constructor(&pp_path, &class_name, &arg_vals)
                 .map_err(|e| format!("CsProc: constructor for '{class_name}' failed: {e}"))?;
             return Ok(Value::CsObject(Rc::new(super::value::CsObjectData {
@@ -332,7 +332,7 @@ impl Interpreter {
         // Check NATIVE_METHODS before falling back to tree-walk.
         if super::native_api::lookup_native_method_ptr(&class_name, "__init__").is_some() {
             let evaled = self.eval_call_args(call_args)?;
-            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
             if let Some(result) = super::native_api::try_dispatch_native_method(
                 self, inst_val.clone(), "__init__", arg_vals,
             ) {
@@ -379,7 +379,7 @@ impl Interpreter {
     pub(super) fn instantiate_evaled(
         &mut self,
         class: Rc<ClassValue>,
-        evaled: Vec<(Option<String>, Value)>,
+        evaled: Vec<(Option<String>, Value, bool)>,
     ) -> Result<Value, String> {
         let mut fields: Vec<Option<(Value, bool)>> = vec![None; class.field_count];
         for (name, default_val, mutable) in &class.field_defaults {
@@ -396,7 +396,7 @@ impl Interpreter {
         // Native __init__ dispatch
         let class_name = class.name.clone();
         if super::native_api::lookup_native_method_ptr(&class_name, "__init__").is_some() {
-            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
             if let Some(result) = super::native_api::try_dispatch_native_method(
                 self, inst_val.clone(), "__init__", arg_vals,
             ) {
@@ -612,7 +612,7 @@ impl Interpreter {
                 // Native method dispatch — check NATIVE_METHODS before tree-walk.
                 if super::native_api::lookup_native_method_ptr(&class.name, method_name).is_some() {
                     let evaled = self.eval_call_args(args)?;
-                    let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                    let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                     if let Some(result) = super::native_api::try_dispatch_native_method(
                         self, obj.clone(), method_name, arg_vals,
                     ) {
@@ -684,7 +684,7 @@ impl Interpreter {
                         .and_then(|f| f.return_type.clone());
                     if let Some(bridge) = super::cs_dll_runtime::get_bridge(&bp_path) {
                         let evaled = self.eval_call_args(args)?;
-                        let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                        let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                         return super::cs_dll_runtime::call_static(
                             &bridge, &class_name, method_name, &arg_vals,
                             ret_type.as_deref(),
@@ -701,7 +701,7 @@ impl Interpreter {
                         .and_then(|overloads| overloads.first())
                         .and_then(|f| f.return_type.clone());
                     let evaled = self.eval_call_args(args)?;
-                    let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                    let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                     return super::cs_proc_runtime::call_static(
                         &pp_path, &class_name, method_name, &arg_vals,
                         ret_type.as_deref(),
@@ -729,7 +729,7 @@ impl Interpreter {
                 if cls.class_method_names.contains(method_name) {
                     let cls_val = Value::Class(cls.clone());
                     let evaled = self.eval_call_args(args)?;
-                    let mut all_evaled = vec![(None, cls_val)];
+                    let mut all_evaled: Vec<(Option<String>, Value, bool)> = vec![(None, cls_val, true)];
                     all_evaled.extend(evaled);
                     return if overloads.len() == 1 {
                         self.exec_fn_evaled(overloads[0].clone(), &all_evaled, None, method_name, None)
@@ -1024,7 +1024,7 @@ impl Interpreter {
                     Value::NativeFunction(fn_ref) => self.call_native_function(&fn_ref, args),
                     Value::JsProcFn { bridge_key, module_name, fn_name } => {
                         let evaled_args = self.eval_call_args(args)?;
-                        let vals: Vec<Value> = evaled_args.into_iter().map(|(_, v)| v).collect();
+                        let vals: Vec<Value> = evaled_args.into_iter().map(|(_, v, _)| v).collect();
                         super::js_proc_runtime::call_function(&bridge_key, &module_name, &fn_name, &vals)
                     }
                     other => Err(format!(
@@ -1059,7 +1059,7 @@ impl Interpreter {
                         let evaled = self.eval_call_args(args)?;
                         let interval_ms: u64 = match evaled.as_slice() {
                             [] => 100,
-                            [(key, Value::Int(n))] if key.is_none() || key.as_deref() == Some("await_interval_msec") => (*n).max(1) as u64,
+                            [(key, Value::Int(n), _)] if key.is_none() || key.as_deref() == Some("await_interval_msec") => (*n).max(1) as u64,
                             _ => return Err("TypeError: wait_for_finish() takes at most 1 argument (await_interval_msec)".to_string()),
                         };
 
@@ -1141,7 +1141,7 @@ impl Interpreter {
                     .and_then(|overloads| overloads.first())
                     .and_then(|f| f.return_type.clone());
                 let evaled = self.eval_call_args(args)?;
-                let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                 if is_proc {
                     super::cs_proc_runtime::call_instance(
                         &bp, &class_name, handle, method_name, &arg_vals,
@@ -1179,7 +1179,7 @@ impl Interpreter {
             "emit" => {
                 let evaled = self.eval_call_args(args)?;
                 let val = match evaled.as_slice() {
-                    [(_, v)] => v.clone(),
+                    [(_, v, _)] => v.clone(),
                     [] => Value::None,
                     _ => return Err("TypeError: Signal.emit() takes exactly 1 argument".to_string()),
                 };
@@ -1200,7 +1200,7 @@ impl Interpreter {
             "emit_async" => {
                 let evaled = self.eval_call_args(args)?;
                 let val = match evaled.as_slice() {
-                    [(_, v)] => v.clone(),
+                    [(_, v, _)] => v.clone(),
                     [] => Value::None,
                     _ => return Err("TypeError: Signal.emit_async() takes exactly 1 argument".to_string()),
                 };
@@ -1232,12 +1232,12 @@ impl Interpreter {
                 let evaled = self.eval_call_args(args)?;
                 let timeout_ms: Option<u64> = match evaled.as_slice() {
                     [] => None,
-                    [(key, Value::Float(f))]
+                    [(key, Value::Float(f), _)]
                         if key.is_none() || key.as_deref() == Some("timeout") =>
                     {
                         Some((f * 1000.0) as u64)
                     }
-                    [(key, Value::Int(n))]
+                    [(key, Value::Int(n), _)]
                         if key.is_none() || key.as_deref() == Some("timeout") =>
                     {
                         Some((*n as u64) * 1000)
@@ -1294,7 +1294,7 @@ impl Interpreter {
                 // EventLoop.post(fn) — メインスレッドへ処理を投入する。
                 let evaled = self.eval_call_args(args)?;
                 let func = match evaled.as_slice() {
-                    [(_, v)] => v.clone(),
+                    [(_, v, _)] => v.clone(),
                     _ => return Err("TypeError: EventLoop.post() takes exactly 1 argument".to_string()),
                 };
                 el_rc.borrow_mut().post_queue.push_back(func);
@@ -1315,7 +1315,7 @@ impl Interpreter {
         &mut self,
         fd_rc: Rc<RefCell<super::FileData>>,
         method_name: &str,
-        evaled: &[(Option<String>, Value)],
+        evaled: &[(Option<String>, Value, bool)],
     ) -> Result<Value, String> {
         match method_name {
             "read" => {
@@ -1459,7 +1459,7 @@ impl Interpreter {
         &mut self,
         obj: Value,
         method_name: &str,
-        evaled: Vec<(Option<String>, Value)>,
+        evaled: Vec<(Option<String>, Value, bool)>,
     ) -> Result<Value, String> {
         // Result 型のメソッド: is_OK() → bool、is_ERR() → bool
         if let Value::ResultVal { ok, .. } = &obj {
@@ -1479,7 +1479,7 @@ impl Interpreter {
                 // Native method dispatch — check NATIVE_METHODS before tree-walk.
                 // When a native ptr is registered we always dispatch natively (no fallback).
                 if super::native_api::lookup_native_method_ptr(&class.name, method_name).is_some() {
-                    let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                    let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                     return super::native_api::try_dispatch_native_method(
                         self, obj.clone(), method_name, arg_vals,
                     ).unwrap_or_else(|| {
@@ -1551,7 +1551,7 @@ impl Interpreter {
         args: &[CallArg],
     ) -> Result<Value, String> {
         let evaled = self.eval_call_args(args)?;
-        let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+        let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
 
         // Helper: extract str from first positional arg
         macro_rules! arg_str {
@@ -1863,7 +1863,7 @@ impl Interpreter {
             "format" => {
                 let mut pos_args: Vec<Value> = Vec::new();
                 let mut kw_args: Vec<(String, Value)> = Vec::new();
-                for (kw, v) in self.eval_call_args(args)? {
+                for (kw, v, _) in self.eval_call_args(args)? {
                     if let Some(k) = kw {
                         kw_args.push((k, v));
                     } else {

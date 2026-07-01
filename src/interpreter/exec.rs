@@ -1243,7 +1243,7 @@ impl Interpreter {
             };
             next_value = int_val + 1;
             let inst =
-                self.instantiate_evaled(item_cls.clone(), vec![(None, Value::Int(int_val))])?;
+                self.instantiate_evaled(item_cls.clone(), vec![(None, Value::Int(int_val), true)])?;
             class_vars.insert(variant_name.clone(), inst);
         }
 
@@ -2486,7 +2486,7 @@ impl Interpreter {
         arg: Value,
         label: &str,
     ) -> Result<Value, String> {
-        let evaled = vec![(None, arg)];
+        let evaled: Vec<(Option<String>, Value, bool)> = vec![(None, arg, true)];
         match callee {
             Value::Function(fn_val) => self.exec_fn_evaled(fn_val, &evaled, None, label, None),
             Value::OverloadedFn(candidates) => {

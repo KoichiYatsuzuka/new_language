@@ -37,7 +37,7 @@ impl Interpreter {
     pub(super) fn exec_fn_evaled(
         &mut self,
         fn_val: Rc<FnValue>,
-        evaled: &[(Option<String>, Value)],
+        evaled: &[(Option<String>, Value, bool)],
         self_val: Option<Value>,
         fn_name: &str,
         call_span: Option<Span>,
@@ -71,11 +71,14 @@ impl Interpreter {
             )
         };
 
-        // `let` パラメータ（self 除く）に copy() を適用する: __copy__ があればそれを、なければ deepcopy を使う
+        // `let` パラメータ（self 除く）に copy() を適用する。
+        // - let param + mutable arg → deepcopy（呼び出し元の mut 変数を保護）
+        // - let param + let arg   → コピー不要（呼び出し元が不変ならエイリアス共有で安全）
+        // - mut param             → コピー不要（参照共有が意図された動作）
         if !fn_val.is_python {
             for binding in &mut bindings {
-                let (name, val, mutable) = binding;
-                if !*mutable && name != "self" {
+                let (name, val, param_mutable, arg_is_mutable) = binding;
+                if !*param_mutable && name != "self" && *arg_is_mutable {
                     *val = self.copy_value(val.clone())?;
                 }
             }
@@ -88,7 +91,7 @@ impl Interpreter {
             let params_ref = fn_val.params.clone();
             // 第1パス: キャスト対象を特定する（self は除外）
             let mut cast_targets: Vec<(usize, String, Value)> = Vec::new();
-            for (idx, (name, val, mutable)) in bindings.iter().enumerate() {
+            for (idx, (name, val, mutable, _)) in bindings.iter().enumerate() {
                 if *mutable || name == "self" {
                     continue;
                 }
@@ -139,7 +142,7 @@ impl Interpreter {
             self.declare_var(name.clone(), var);
         }
 
-        for (name, val, mutable) in bindings {
+        for (name, val, mutable, _) in bindings {
             self.declare_var(name, Var::new(val, mutable));
         }
         // Python 関数: 引数リストにない余分なキーワード引数を kwargs dict に注入する
@@ -315,9 +318,10 @@ impl Interpreter {
         )?;
 
         // `let` パラメータ（self 除く）に copy() を適用する
+        // let param + mutable arg → deepcopy、let param + let arg → スキップ
         for binding in &mut bindings {
-            let (name, val, mutable) = binding;
-            if !*mutable && name != "self" {
+            let (name, val, param_mutable, arg_is_mutable) = binding;
+            if !*param_mutable && name != "self" && *arg_is_mutable {
                 *val = self.copy_value(val.clone())?;
             }
         }
@@ -340,7 +344,7 @@ impl Interpreter {
             self.declare_var(name.clone(), var);
         }
 
-        for (name, val, mutable) in bindings {
+        for (name, val, mutable, _) in bindings {
             self.declare_var(name, Var::new(val, mutable));
         }
         // ジェネレータメソッド実行時: `Self` をレシーバインスタンスのクラスにバインドする
@@ -391,24 +395,42 @@ impl Interpreter {
         }))))
     }
 
-    /// 呼び出し引数リスト（AST の `CallArg`）を評価して `(name, value)` ペアのリストを返す。
+    /// 呼び出し引数リスト（AST の `CallArg`）を評価して `(name, value, is_mutable)` トリプルのリストを返す。
     ///
-    /// - 位置引数: `(None, value)` として格納
-    /// - キーワード引数: `(Some(name), value)` として格納
+    /// - 位置引数: `(None, value, is_mutable)` として格納
+    /// - キーワード引数: `(Some(name), value, is_mutable)` として格納
+    /// - `is_mutable`: 引数が `mut` 変数（または式）から来ている場合は `true`。
+    ///   `let` 変数の識別子なら `false`。それ以外（リテラル・式・コンストラクタ等）は保守的に `true`。
     ///
     /// - `call_args`: 評価前の呼び出し引数リスト
     ///
-    /// 戻り値: `Ok(Vec<(Option<String>, Value)>)` — 評価済み引数リスト。`Err` — 評価エラー
+    /// 戻り値: `Ok(Vec<(Option<String>, Value, bool)>)` — 評価済み引数リスト。`Err` — 評価エラー
     pub(super) fn eval_call_args(
         &mut self,
         call_args: &[CallArg],
-    ) -> Result<Vec<(Option<String>, Value)>, String> {
+    ) -> Result<Vec<(Option<String>, Value, bool)>, String> {
+        use crate::ast::Expr;
         let mut result = Vec::new();
         for arg in call_args {
             match arg {
-                CallArg::Positional(e) => result.push((None, self.eval(e)?)),
+                CallArg::Positional(e) => {
+                    // Ident が let 変数を指す場合のみ is_mutable = false（コピー省略可）
+                    let is_mutable = match e {
+                        Expr::Ident(name) => self.get_var(name)
+                            .map(|v| v.is_mutable())
+                            .unwrap_or(true),
+                        _ => true,
+                    };
+                    result.push((None, self.eval(e)?, is_mutable));
+                }
                 CallArg::Keyword { name, value } => {
-                    result.push((Some(name.clone()), self.eval(value)?))
+                    let is_mutable = match value {
+                        Expr::Ident(vname) => self.get_var(vname)
+                            .map(|v| v.is_mutable())
+                            .unwrap_or(true),
+                        _ => true,
+                    };
+                    result.push((Some(name.clone()), self.eval(value)?, is_mutable));
                 }
                 // 可変長引数: 各要素を評価してリストに集約し、特殊キー "..." で渡す
                 CallArg::Variadic(exprs) => {
@@ -419,6 +441,7 @@ impl Interpreter {
                     result.push((
                         Some("...".to_string()),
                         Value::List(Rc::new(RefCell::new(vals))),
+                        true, // variadic は保守的に mutable 扱い
                     ));
                 }
             }
@@ -426,7 +449,11 @@ impl Interpreter {
         Ok(result)
     }
 
-    /// 評価済み引数リストを仮引数リストにバインドして `(name, value, mutable)` トリプルのリストを返す。
+    /// 評価済み引数リストを仮引数リストにバインドして `(name, value, param_mutable, arg_is_mutable)` の
+    /// 4要素タプルのリストを返す。
+    ///
+    /// - `param_mutable`: パラメータが `mut` 宣言されているか
+    /// - `arg_is_mutable`: 引数が `mut` 変数から来ているか（デフォルト値は保守的に `true`）
     ///
     /// バインドルール:
     /// - `self_val` が `Some` かつ先頭パラメータが `self` の場合: `self` を先にバインド
@@ -434,19 +461,12 @@ impl Interpreter {
     /// - キーワード引数: パラメータ名で検索してスロットに割り当てる
     /// - 未割り当てスロットでデフォルト値がある場合はデフォルト値を使用する
     /// - 引数数が範囲外の場合や重複キーワードは `TypeError` を返す
-    ///
-    /// - `params`: 仮引数リスト
-    /// - `evaled`: 評価済み引数リスト
-    /// - `self_val`: レシーバインスタンス（`None` の場合は通常の引数バインド）
-    /// - `defaults`: `params` と並行な事前評価済みデフォルト値リスト（`self` を含む全パラメータ分）
-    ///
-    /// 戻り値: `Ok(Vec<(name, value, mutable)>)` — バインド済みリスト。`Err` — 引数エラー
     pub(super) fn bind_args(
         params: &[Param],
-        evaled: &[(Option<String>, Value)],
+        evaled: &[(Option<String>, Value, bool)],
         self_val: Option<Value>,
         defaults: &[Option<Value>],
-    ) -> Result<Vec<(String, Value, bool)>, String> {
+    ) -> Result<Vec<(String, Value, bool, bool)>, String> {
         let mut result = Vec::new();
 
         // self_val が Some かつ先頭パラメータが "self" なら先にバインドして残りのパラメータを取得する
@@ -459,7 +479,8 @@ impl Interpreter {
                     } else {
                         Self::deep_copy_value(sv.clone())
                     };
-                    result.push(("self".to_string(), self_to_bind, p.mutable));
+                    // self の arg_is_mutable は特別扱い（常にコピー済みなので false でよい）
+                    result.push(("self".to_string(), self_to_bind, p.mutable, false));
                     (&params[1..], &defaults[1..])
                 } else {
                     (params, defaults)
@@ -479,11 +500,11 @@ impl Interpreter {
         // evaled から可変長引数エントリを分離する
         let variadic_value: Option<Value> = evaled
             .iter()
-            .find(|(k, _)| k.as_deref() == Some("..."))
-            .map(|(_, v)| v.clone());
-        let non_variadic_evaled: Vec<&(Option<String>, Value)> = evaled
+            .find(|(k, _, _)| k.as_deref() == Some("..."))
+            .map(|(_, v, _)| v.clone());
+        let non_variadic_evaled: Vec<&(Option<String>, Value, bool)> = evaled
             .iter()
-            .filter(|(k, _)| k.as_deref() != Some("..."))
+            .filter(|(k, _, _)| k.as_deref() != Some("..."))
             .collect();
 
         // デフォルト値なしのパラメータ数（必須引数数）と最大引数数を計算する
@@ -508,13 +529,16 @@ impl Interpreter {
 
         // パラメータスロットを用意して位置引数・キーワード引数を割り当てる
         let mut slots: Vec<Option<Value>> = vec![None; non_variadic_params.len()];
+        // 各スロットに対応する引数の is_mutable。デフォルト値埋めは保守的に true
+        let mut slot_is_mutable: Vec<bool> = vec![true; non_variadic_params.len()];
         let mut positional_idx = 0usize;
 
-        for (key, val) in &non_variadic_evaled {
+        for (key, val, is_mut) in &non_variadic_evaled {
             match key {
                 None => {
                     // 位置引数: 次のスロットに順番に割り当てる
                     slots[positional_idx] = Some((*val).clone());
+                    slot_is_mutable[positional_idx] = *is_mut;
                     positional_idx += 1;
                 }
                 Some(name) => {
@@ -529,11 +553,12 @@ impl Interpreter {
                         return Err(format!("TypeError: argument '{name}' given twice"));
                     }
                     slots[pos] = Some((*val).clone());
+                    slot_is_mutable[pos] = *is_mut;
                 }
             }
         }
 
-        // 未割り当てスロットはデフォルト値で埋める。コピーは呼び出し元（exec_fn_evaled / exec_generator）が行う
+        // 未割り当てスロットはデフォルト値で埋める。デフォルト値は保守的に mutable 扱い
         for (i, slot) in slots.into_iter().enumerate() {
             let param = &non_variadic_params[i];
             let v = match slot {
@@ -543,14 +568,14 @@ impl Interpreter {
                     None => return Err(format!("TypeError: missing argument '{}'", param.name)),
                 },
             };
-            result.push((param.name.clone(), v, param.mutable));
+            result.push((param.name.clone(), v, param.mutable, slot_is_mutable[i]));
         }
 
-        // 可変長パラメータのバインド: local::args に渡す。コピーは呼び出し元が行う
+        // 可変長パラメータのバインド: local::args に渡す。保守的に mutable 扱い
         if let Some(vi) = variadic_idx {
             let variadic_param = &params_to_bind[vi];
             let local_args_val = variadic_value.unwrap_or(Value::None);
-            result.push(("local::args".to_string(), local_args_val, variadic_param.mutable));
+            result.push(("local::args".to_string(), local_args_val, variadic_param.mutable, true));
         }
 
         Ok(result)
@@ -562,17 +587,17 @@ impl Interpreter {
     /// 戻り値: `Ok((bindings, extra_kwargs))` — `bindings` は通常通り、`extra_kwargs` は余分な kwarg の (名前, 値) リスト
     pub(super) fn bind_args_relaxed(
         params: &[Param],
-        evaled: &[(Option<String>, Value)],
+        evaled: &[(Option<String>, Value, bool)],
         self_val: Option<Value>,
         defaults: &[Option<Value>],
-    ) -> Result<(Vec<(String, Value, bool)>, Vec<(String, Value)>), String> {
+    ) -> Result<(Vec<(String, Value, bool, bool)>, Vec<(String, Value)>), String> {
         let mut result = Vec::new();
         let mut extra_kwargs = Vec::new();
 
         let (params_to_bind, defaults_to_bind) =
             if let (Some(sv), Some(p)) = (&self_val, params.first()) {
                 if p.name == "self" {
-                    result.push(("self".to_string(), sv.clone(), p.mutable));
+                    result.push(("self".to_string(), sv.clone(), p.mutable, false));
                     (&params[1..], &defaults[1..])
                 } else {
                     (params, defaults)
@@ -592,17 +617,18 @@ impl Interpreter {
         // evaled から可変長引数エントリを分離する
         let variadic_value: Option<Value> = evaled
             .iter()
-            .find(|(k, _)| k.as_deref() == Some("..."))
-            .map(|(_, v)| v.clone());
-        let non_variadic_evaled: Vec<&(Option<String>, Value)> = evaled
+            .find(|(k, _, _)| k.as_deref() == Some("..."))
+            .map(|(_, v, _)| v.clone());
+        let non_variadic_evaled: Vec<&(Option<String>, Value, bool)> = evaled
             .iter()
-            .filter(|(k, _)| k.as_deref() != Some("..."))
+            .filter(|(k, _, _)| k.as_deref() != Some("..."))
             .collect();
 
         let mut slots: Vec<Option<Value>> = vec![None; non_variadic_params.len()];
+        let mut slot_is_mutable: Vec<bool> = vec![true; non_variadic_params.len()];
         let mut positional_idx = 0usize;
 
-        for (key, val) in &non_variadic_evaled {
+        for (key, val, is_mut) in &non_variadic_evaled {
             match key {
                 None => {
                     if positional_idx >= non_variadic_params.len() {
@@ -612,6 +638,7 @@ impl Interpreter {
                         ));
                     }
                     slots[positional_idx] = Some((*val).clone());
+                    slot_is_mutable[positional_idx] = *is_mut;
                     positional_idx += 1;
                 }
                 Some(name) => match non_variadic_params.iter().position(|p| p.name == *name) {
@@ -620,6 +647,7 @@ impl Interpreter {
                             return Err(format!("TypeError: argument '{name}' given twice"));
                         }
                         slots[pos] = Some((*val).clone());
+                        slot_is_mutable[pos] = *is_mut;
                     }
                     None => {
                         extra_kwargs.push((name.clone(), (*val).clone()));
@@ -641,14 +669,14 @@ impl Interpreter {
                     }
                 },
             };
-            result.push((non_variadic_params[i].name.clone(), v, non_variadic_params[i].mutable));
+            result.push((non_variadic_params[i].name.clone(), v, non_variadic_params[i].mutable, slot_is_mutable[i]));
         }
 
         // 可変長パラメータのバインド
         if let Some(vi) = variadic_idx {
             let variadic_param = &params_to_bind[vi];
             let local_args_val = variadic_value.unwrap_or(Value::None);
-            result.push(("local::args".to_string(), local_args_val, variadic_param.mutable));
+            result.push(("local::args".to_string(), local_args_val, variadic_param.mutable, true));
         }
 
         Ok((result, extra_kwargs))
@@ -692,13 +720,13 @@ impl Interpreter {
     pub(super) fn dispatch_overload_evaled(
         &mut self,
         candidates: Vec<Rc<FnValue>>,
-        evaled: Vec<(Option<String>, Value)>,
+        evaled: Vec<(Option<String>, Value, bool)>,
         self_val: Option<Value>,
         fn_name: &str,
         call_span: Option<Span>,
     ) -> Result<Value, String> {
         // 可変長引数を除いた通常引数の数
-        let call_count = evaled.iter().filter(|(k, _)| k.as_deref() != Some("...")).count();
+        let call_count = evaled.iter().filter(|(k, _, _)| k.as_deref() != Some("...")).count();
         let has_self = self_val.is_some();
 
         // `self` パラメータと可変長パラメータを除いた有効引数数の範囲（必須数, 最大数）を返すクロージャ
@@ -771,7 +799,7 @@ impl Interpreter {
     /// 戻り値: `true` — すべてのアノテーション付きパラメータが一致
     pub(super) fn overload_types_match(
         fn_val: &FnValue,
-        evaled: &[(Option<String>, Value)],
+        evaled: &[(Option<String>, Value, bool)],
         self_val: &Option<Value>,
     ) -> bool {
         // self_val がある場合は `self` パラメータをスキップして残りを対象にする
@@ -790,16 +818,16 @@ impl Interpreter {
         let params: Vec<&Param> = all_params.iter().filter(|p| !p.variadic).collect();
 
         // evaled から可変長引数エントリを除いた通常引数のみを対象にする
-        let non_variadic_evaled: Vec<&(Option<String>, Value)> = evaled
+        let non_variadic_evaled: Vec<&(Option<String>, Value, bool)> = evaled
             .iter()
-            .filter(|(k, _)| k.as_deref() != Some("..."))
+            .filter(|(k, _, _)| k.as_deref() != Some("..."))
             .collect();
 
         // 各引数をパラメータスロットに割り当てる（bind_args と同様のロジック）
         let mut slots: Vec<Option<&Value>> = vec![None; params.len()];
         let mut positional_idx = 0usize;
 
-        for (key, val) in &non_variadic_evaled {
+        for (key, val, _) in &non_variadic_evaled {
             match key {
                 None => {
                     if positional_idx >= params.len() {

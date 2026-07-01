@@ -2,6 +2,8 @@
 
 # ── 1. 算術演算子 (__add__, __sub__, __mul__) ─────────────────────────────────
 class Vec2:
+    mut x: int
+    mut y: int
     fn __init__(mut self, let x: int, let y: int) -> None:
         self.x = x
         self.y = y
@@ -44,6 +46,7 @@ print(a == b)          # False
 
 # ── 2. 比較演算子 (__lt__, __le__) ──────────────────────────────────────────
 class Score:
+    mut val: int
     fn __init__(mut self, let val: int) -> None:
         self.val = val
 
@@ -64,6 +67,7 @@ print(s1 <= s1)  # True
 
 # ── 3. __len__ / __bool__ ────────────────────────────────────────────────────
 class Bag:
+    mut items: list[int]
     fn __init__(mut self, let items: list[int]) -> None:
         self.items = items
 
@@ -90,6 +94,8 @@ if bag:
 
 # ── 4. __next__ (イテレータプロトコル) ───────────────────────────────────────
 class Counter:
+    mut current: int
+    mut stop: int
     fn __init__(mut self, let start: int, let stop: int) -> None:
         self.current = start
         self.stop = stop
@@ -108,6 +114,7 @@ print(next(counter))  # 2
 
 # ── 5. ビット演算子 (__and__, __or__, __xor__, __invert__) ────────────────────
 class Flags:
+    mut bits: int
     fn __init__(mut self, let bits: int) -> None:
         self.bits = bits
 

@@ -578,7 +578,7 @@ impl Interpreter {
             }
             Value::JsProcFn { bridge_key, module_name, fn_name } => {
                 let evaled_args = self.eval_call_args(args)?;
-                let vals: Vec<Value> = evaled_args.into_iter().map(|(_, v)| v).collect();
+                let vals: Vec<Value> = evaled_args.into_iter().map(|(_, v, _)| v).collect();
                 super::js_proc_runtime::call_function(&bridge_key, &module_name, &fn_name, &vals)
             }
             Value::Type(type_name) => {
@@ -623,7 +623,7 @@ impl Interpreter {
                 if cls.new_type_base.is_some() {
                     let cls_rc = cls.clone();
                     let arg = inner_val.unwrap_or(obj);
-                    return self.instantiate_evaled(cls_rc, vec![(None, arg)]);
+                    return self.instantiate_evaled(cls_rc, vec![(None, arg, true)]);
                 }
             }
         }
@@ -1127,7 +1127,7 @@ impl Interpreter {
         let evaled = self.eval_call_args(args)?;
         let mut kw: HMap<String, Value> = HMap::new();
         let mut pos: Vec<Value> = Vec::new();
-        for (k, v) in evaled {
+        for (k, v, _) in evaled {
             match k {
                 Some(n) => {
                     kw.insert(n, v);
@@ -1272,7 +1272,7 @@ impl Interpreter {
             ))));
         }
         let evaled = self.eval_call_args(args)?;
-        let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+        let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
         self.call_type_by_name_evaled(type_name, vals)
     }
 
@@ -1569,7 +1569,7 @@ impl Interpreter {
         let has_writeback = fn_ref.ptr_params.iter().any(|p| *p == PtrParam::MutPtr);
         if !has_writeback {
             let evaled = self.eval_call_args(args)?;
-            let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+            let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
             return self.dispatch_native_evaled(fn_ref, vals);
         }
 
@@ -1591,7 +1591,7 @@ impl Interpreter {
         }
 
         let evaled = self.eval_call_args(args)?;
-        let mut vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+        let mut vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
 
         if vals.len() < fn_ref.min_params || vals.len() > fn_ref.n_params {
             let expected = if fn_ref.min_params == fn_ref.n_params {
@@ -2022,7 +2022,7 @@ impl Interpreter {
         callee: Value,
         args: Vec<Value>,
     ) -> Result<Value, String> {
-        let evaled: Vec<(Option<String>, Value)> = args.into_iter().map(|v| (None, v)).collect();
+        let evaled: Vec<(Option<String>, Value, bool)> = args.into_iter().map(|v| (None, v, true)).collect();
         match callee {
             Value::Function(fn_val) => self.exec_fn_evaled(fn_val, &evaled, None, "<fn>", None),
             Value::OverloadedFn(candidates) => {
@@ -2033,11 +2033,11 @@ impl Interpreter {
                 self.instantiate_evaled(cls, evaled)
             }
             Value::NativeFunction(fn_ref) => {
-                let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                 self.dispatch_native_evaled(&fn_ref, vals)
             }
             Value::Type(type_name) => {
-                let vals: Vec<Value> = evaled.into_iter().map(|(_, v)| v).collect();
+                let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                 self.call_type_by_name_evaled(&type_name, vals)
             }
             Value::Instance(_) => self.eval_method_call_evaled(callee, "__call__", evaled),
@@ -2059,7 +2059,7 @@ impl Interpreter {
         match evaled.as_slice() {
             [] => {}
             _ => {
-                for (kw, val) in &evaled {
+                for (kw, val, _) in &evaled {
                     match kw.as_deref() {
                         Some("num_thread") | None => {
                             match val {
@@ -2688,7 +2688,7 @@ impl Interpreter {
                 .get(&key)
                 .ok_or_else(|| format!("KeyError: {}", self.display(&key))),
             Value::Instance(_) => {
-                self.eval_method_call_evaled(obj, "__getitem__", vec![(None, key)])
+                self.eval_method_call_evaled(obj, "__getitem__", vec![(None, key, true)])
             }
             Value::PyObject(ref handle) => super::py_interop::py_getitem(handle, &key),
             _ => Err(format!(
@@ -2739,7 +2739,7 @@ impl Interpreter {
             }
             // カスタムクラス: __getitem__ にスライスオブジェクトを渡して委譲する
             Value::Instance(_) => {
-                self.eval_method_call_evaled(obj, "__getitem__", vec![(None, Value::Slice(s))])
+                self.eval_method_call_evaled(obj, "__getitem__", vec![(None, Value::Slice(s), true)])
             }
             _ => Err(format!(
                 "TypeError: '{}' object does not support slicing",
@@ -2801,7 +2801,7 @@ impl Interpreter {
                 self.eval_method_call_evaled(
                     obj,
                     "__setitem__",
-                    vec![(None, Value::Slice(s)), (None, rhs)],
+                    vec![(None, Value::Slice(s), true), (None, rhs, true)],
                 )?;
                 Ok(())
             }
@@ -2888,7 +2888,7 @@ impl Interpreter {
                 Ok(())
             }
             Value::Instance(_) => {
-                self.eval_method_call_evaled(obj, "__setitem__", vec![(None, key), (None, rhs)])?;
+                self.eval_method_call_evaled(obj, "__setitem__", vec![(None, key, true), (None, rhs, true)])?;
                 Ok(())
             }
             Value::PyObject(ref handle) => super::py_interop::py_setitem(handle, &key, &rhs),

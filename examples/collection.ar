@@ -358,10 +358,10 @@ print(sl_c)                      # ['a', 'b', 'c', 4, 5]
 print("=== typed generics ===")
 
 fn sum_ints(items: list[int]) -> int:
-    mut total = 0
+    mut acc = 0
     for x in items:
-        total += x
-    return total
+        acc += x
+    return acc
 
 let typed_nums: list[int] = [1, 2, 3, 4, 5]
 print("sum:", sum_ints(typed_nums))   # 15
@@ -378,9 +378,9 @@ print("joined:", join_strs(words))   # hello world
 fn lookup(d: dict[str,int], key: str) -> int:
     return d[key]
 
-let scores: dict[str,int] = {"alice": 90, "bob": 85}
-print("alice:", lookup(scores, "alice"))   # 90
-print("bob:", lookup(scores, "bob"))       # 85
+let score_dict: dict[str,int] = {"alice": 90, "bob": 85}
+print("alice:", lookup(score_dict, "alice"))   # 90
+print("bob:", lookup(score_dict, "bob"))       # 85
 
 fn count_unique(items: set[int]) -> int:
     return len(items)
