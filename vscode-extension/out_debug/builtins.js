@@ -1,4 +1,18 @@
 "use strict";
+/**
+ * builtins.ts — Static tables of Arrow built-in types, functions, and keywords.
+ *
+ * This module is intentionally pure (no imports, no I/O) so it can be used from
+ * both the VS Code extension runtime and the standalone debug runner without side effects.
+ *
+ * Exports:
+ *  - `LangType` / `BuiltinMethodInfo` — shared type aliases
+ *  - `FUNC_DEF_RE` — regex for `fn`/`gen` definitions (shared with analysis.ts)
+ *  - `BUILTIN_RETURN_TYPES` — return types for built-in functions (print, len, …)
+ *  - `BUILTIN_TYPE_METHODS` — method signatures for str / list / dict / set
+ *  - `LANG_KEYWORDS` — keyword list for completion
+ *  - `BUILTIN_TYPE_NAMES` — type names for semantic token highlighting
+ */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BUILTIN_TYPE_NAMES = exports.LANG_KEYWORDS = exports.BUILTIN_TYPE_METHODS = exports.BUILTIN_RETURN_TYPES = exports.FUNC_DEF_RE = void 0;
 // Used by both analysis.ts (collectFuncDefs) and native_module.ts (parseTlStub).
@@ -114,7 +128,7 @@ exports.LANG_KEYWORDS = [
     'and', 'or', 'not', 'in', 'is', 'True', 'False', 'None',
     'self', 'Self', 'static', 'freeze', 'block',
     'block_return', 'loop_yield', 'break', 'continue', 'yield', 'pass',
-    'import', 'enumerate', 'zip',
+    'import', 'enumerate', 'zip', 'mustbe',
     'public', 'private', 'protected',
     'uint',
 ];

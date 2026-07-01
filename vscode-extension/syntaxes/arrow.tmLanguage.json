@@ -11,6 +11,7 @@
     { "include": "#class-def" },
     { "include": "#new-type-def" },
     { "include": "#import-decl" },
+    { "include": "#mustbe-assertion" },
     { "include": "#keyword" },
     { "include": "#constant" },
     { "include": "#builtin-type" },
@@ -152,6 +153,14 @@
       "match": "\\b(new_type)\\s+([A-Za-z_]\\w*)",
       "captures": {
         "1": { "name": "storage.type.newtype.ar" },
+        "2": { "name": "entity.name.type.ar" }
+      }
+    },
+    "mustbe-assertion": {
+      "comment": "mustbe type assertion — expr mustbe TypeExpr",
+      "match": "\\b(mustbe)\\s+([A-Za-z_][\\w\\[\\], ->]*)",
+      "captures": {
+        "1": { "name": "storage.modifier.ar" },
         "2": { "name": "entity.name.type.ar" }
       }
     },

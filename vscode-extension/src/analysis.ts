@@ -1,3 +1,21 @@
+/**
+ * analysis.ts — Document analysis engine for the Arrow VS Code extension.
+ *
+ * Responsibilities:
+ * - Parse Arrow source files line-by-line to collect symbols (variables, functions,
+ *   classes, imports, …) stored as `HoverSymbol[]`
+ * - Infer expression types (`inferExprType` / `ExprInferrer`) for hover hints and
+ *   diagnostics
+ * - Load external module type information (Python, C++, Rust, C#) via `native_module.ts`
+ * - Cache analysis results per document version (`DocumentAnalysis`)
+ *
+ * Key exports used by `type_infer.ts`:
+ *   - `DocumentAnalysis` — single cached analysis object per document
+ *   - `inferExprType` / `inferForLoopElemType` — type inference helpers
+ *   - `HoverSymbol`, `ScopeOverride`, `FuncDef` — data types
+ *   - `stripComment`, `splitComma`, etc. — shared string utilities
+ */
+
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import { promises as fsPromises } from 'fs';
@@ -47,34 +65,50 @@ function importAlias(modulePath: string, explicit: string | undefined): string {
 
 export type HoverKind = 'variable' | 'function' | 'class' | 'trait' | 'enum' | 'new_type' | 'module';
 
+/** A named symbol collected from the Arrow source (variable, function, class, …). */
 export interface HoverSymbol {
     name: string;
     kind: HoverKind;
+    /** 0-based line number of the declaration. */
     line: number;
+    /** Line after which this symbol is no longer visible (function param scope). */
     scopeEndLine?: number;
+    /** `let` | `mut` | `const` | `static` */
     mutability?: string;
+    /** Inferred or annotated type string. */
     type?: string;
+    /** Full function signature, e.g. `fn foo(x: int) -> str`. */
     signature?: string;
+    /** Docstring extracted from the triple-quoted string following the declaration. */
     doc?: string;
+    /** Implemented traits (for class symbols). */
     traits?: string[];
+    /** For module symbols: `"import[py] some.module"`. For new_type: the aliased type. */
     originalType?: string;
     access?: 'public' | 'private' | 'protected';
 }
 
+/** A type narrowing produced by an `if x is T` / `if x is not T` guard. */
 export interface ScopeOverride {
     varName: string;
     narrowedType: LangType;
+    /** First line of the narrowed scope (line after the `if`). */
     startLine: number;
+    /** First line after the narrowed scope ends. */
     endLine: number;
 }
 
+/** Metadata about a `fn`/`gen` definition collected during analysis. */
 export interface FuncDef {
     name: string;
     kind: 'fn' | 'gen';
+    /** 0-based line of the `fn` keyword. */
     defLine: number;
     defIndent: number;
+    /** Return-type annotation from source, or `undefined` when absent. */
     annotation: LangType | undefined;
     enclosingClass?: string;
+    /** Last line of the (possibly multi-line) signature, used for inlay hint placement. */
     sigEndLine?: number;
 }
 
@@ -332,7 +366,50 @@ class ExprInferrer {
         const left = this.parseBitOr();
         const cmpOps: TK[] = ['EQEQ', 'NOTEQ', 'LT', 'GT', 'LTEQ', 'GTEQ'];
         if (cmpOps.includes(this.cur().kind)) { this.eat(); this.parseBitOr(); return 'bool'; }
+        if (this.cur().kind === 'IDENT' && this.cur().value === 'mustbe') {
+            this.eat();
+            return this.parseMustbeType();
+        }
         return left;
+    }
+
+    private parseMustbeType(): LangType {
+        if (this.cur().kind !== 'IDENT') return 'unknown';
+        let typeName = this.eat().value;
+        if (this.cur().kind === 'LBRACKET') {
+            this.eat();
+            const parts: string[] = [];
+            let depth = 1;
+            let prevKind: TK | '' = '';
+            while (depth > 0 && this.cur().kind !== 'EOF') {
+                const tok = this.eat();
+                if (tok.kind === 'LBRACKET') { depth++; parts.push('['); }
+                else if (tok.kind === 'RBRACKET') { depth--; if (depth > 0) parts.push(']'); }
+                else if (tok.kind === 'COMMA') { parts.push(', '); }
+                else {
+                    if (prevKind === 'IDENT' && tok.kind === 'IDENT') parts.push(' ');
+                    parts.push(tok.value);
+                }
+                prevKind = tok.kind;
+            }
+            typeName = `${typeName}[${parts.join('')}]`;
+        }
+        if (this.cur().kind === 'OTHER' && this.cur().value === '->') {
+            this.eat();
+            if (this.cur().kind === 'IDENT') typeName = `${typeName}->${this.eat().value}`;
+        }
+        return typeName;
+    }
+
+    private subscriptElemType(containerType: LangType): LangType {
+        const listM = containerType.match(/^(?:list|fixed_list|list_like)\[(.+)\]$/);
+        if (listM) return listM[1];
+        const dictM = containerType.match(/^dict\[([^,]+),\s*(.+)\]$/);
+        if (dictM) return dictM[2].trim();
+        const setM = containerType.match(/^set\[(.+)\]$/);
+        if (setM) return setM[1];
+        if (containerType === 'str') return 'str';
+        return 'unknown';
     }
 
     private parseBitOr(): LangType {
@@ -420,7 +497,18 @@ class ExprInferrer {
     }
 
     private parsePower(): LangType {
-        const base = this.parsePrimary();
+        let base = this.parsePrimary();
+        // Consume chained subscripts after parsePrimary (e.g. dict["a"]["b"] mustbe T)
+        while (this.cur().kind === 'LBRACKET') {
+            this.eat();
+            let depth = 1;
+            while (depth > 0 && this.cur().kind !== 'EOF') {
+                const t = this.eat();
+                if (t.kind === 'LBRACKET') depth++;
+                else if (t.kind === 'RBRACKET') depth--;
+            }
+            base = this.subscriptElemType(base);
+        }
         if (this.cur().kind === 'STARSTAR') { this.eat(); return this.applyBinaryOp(base, this.parseUnary(), 'STARSTAR'); }
         return base;
     }
@@ -468,6 +556,11 @@ class ExprInferrer {
                     this.eat();
                     while (this.cur().kind !== 'RPAREN' && this.cur().kind !== 'EOF') {
                         this.parseOr();
+                        // Handle keyword=value arguments (e.g. encoding="utf-8")
+                        if (this.cur().kind === 'OTHER' && this.cur().value === '=') {
+                            this.eat();
+                            this.parseOr();
+                        }
                         if (this.cur().kind === 'COMMA') this.eat(); else break;
                     }
                     if (this.cur().kind === 'RPAREN') this.eat();
@@ -510,6 +603,14 @@ class ExprInferrer {
                     return this.funcEnv.has(name) ? name : 'unknown';
                 }
                 if (name === 'Self' && this.selfType) return this.selfType;
+                // Subscript access: varName[index] → element type of the container
+                if (typeArg !== undefined) {
+                    const containerType = this.env.get(name);
+                    if (containerType) {
+                        const elemType = this.subscriptElemType(containerType);
+                        if (elemType !== 'unknown') return elemType;
+                    }
+                }
                 return this.env.get(name) ?? 'unknown';
             }
             case 'LPAREN': {
@@ -583,6 +684,10 @@ export function inferExprType(
     }
     const dotMatch = trimmed.match(/^([A-Za-z_]\w*)\./);
     if (dotMatch && importAliases.has(dotMatch[1])) {
+        // If a mustbe assertion follows, use ExprInferrer to honour the narrowed type
+        if (/\bmustbe\b/.test(trimmed)) {
+            return new ExprInferrer(tokenize(src), env, funcEnv, pyClassMethods, templateParams, classFieldTypes, selfType).infer();
+        }
         const alias = dotMatch[1];
         const isPyModule = importFuncTypes.has(alias);
         const callMatch = trimmed.match(/^[A-Za-z_]\w*\.([A-Za-z_]\w*)\s*\(/);
@@ -607,6 +712,47 @@ export function inferExprType(
         return isPyModule ? 'Any' : 'unknown';
     }
     return new ExprInferrer(tokenize(src), env, funcEnv, pyClassMethods, templateParams, classFieldTypes, selfType).infer();
+}
+
+/**
+ * Infer the element type produced by a for-loop iterator expression.
+ * Handles `range()`, `enumerate()`, `zip()`, and generic iterables.
+ *
+ * Extracted to eliminate duplication between `collectHoverSymbols` (analysis.ts)
+ * and `provideInlayHints` (type_infer.ts).
+ *
+ * @param iterExpr  The iterator expression with any trailing `->T:` already stripped.
+ */
+export function inferForLoopElemType(
+    iterExpr: string,
+    env: Map<string, LangType>,
+    funcEnv: ReadonlyMap<string, LangType>,
+    importAliases: ReadonlySet<string>,
+    importFuncTypes: ReadonlyMap<string, ReadonlyMap<string, string>>,
+    classMethods: ReadonlyMap<string, ReadonlyMap<string, string>>,
+    templateParams: ReadonlyMap<string, string>,
+    classFieldTypes: ReadonlyMap<string, ReadonlyMap<string, LangType>>,
+    selfType: LangType | undefined
+): LangType {
+    if (/^range\s*\(/.test(iterExpr)) return 'int';
+
+    if (/^enumerate\s*\(/.test(iterExpr)) {
+        const m = iterExpr.match(/^enumerate\s*\((.+)\)\s*$/);
+        if (!m) return 'tuple[int, unknown]';
+        const inner = inferExprType(splitComma(m[1])[0].trim(), env, funcEnv, importAliases, importFuncTypes, classMethods, templateParams, classFieldTypes, selfType);
+        return `tuple[int, ${extractIterElemType(inner)}]`;
+    }
+
+    if (/^zip\s*\(/.test(iterExpr)) {
+        const m = iterExpr.match(/^zip\s*\((.+)\)\s*$/);
+        if (!m) return 'unknown';
+        const elems = splitComma(m[1]).map(arg =>
+            extractIterElemType(inferExprType(arg.trim(), env, funcEnv, importAliases, importFuncTypes, classMethods, templateParams, classFieldTypes, selfType))
+        );
+        return `tuple[${elems.join(', ')}]`;
+    }
+
+    return extractIterElemType(inferExprType(iterExpr, env, funcEnv, importAliases, importFuncTypes, classMethods, templateParams, classFieldTypes, selfType));
 }
 
 // ===== Collection functions =====
@@ -1183,28 +1329,7 @@ function collectHoverSymbols(
         if (forLoopM) {
             const [, , rawTargets, rawIter] = forLoopM;
             const iterExpr = rawIter.replace(/\s*(?:->[^:]+)?\s*:\s*$/, '').trim();
-            let elemType: LangType;
-            if (/^range\s*\(/.test(iterExpr)) {
-                elemType = 'int';
-            } else if (/^enumerate\s*\(/.test(iterExpr)) {
-                const enumArgsM = iterExpr.match(/^enumerate\s*\((.+)\)\s*$/);
-                if (enumArgsM) {
-                    const innerType = inferExprType(splitComma(enumArgsM[1])[0].trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType);
-                    elemType = `tuple[int, ${extractIterElemType(innerType)}]`;
-                } else {
-                    elemType = 'tuple[int, unknown]';
-                }
-            } else if (/^zip\s*\(/.test(iterExpr)) {
-                const zipArgsM = iterExpr.match(/^zip\s*\((.+)\)\s*$/);
-                if (zipArgsM) {
-                    const elems = splitComma(zipArgsM[1]).map(arg => extractIterElemType(inferExprType(arg.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType)));
-                    elemType = `tuple[${elems.join(', ')}]`;
-                } else {
-                    elemType = 'unknown';
-                }
-            } else {
-                elemType = extractIterElemType(inferExprType(iterExpr, env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType));
-            }
+            const elemType = inferForLoopElemType(iterExpr, env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType);
             const targetList = rawTargets.split(',').map(t => t.trim()).filter(Boolean);
             if (targetList.length === 1) {
                 symbols.push({ name: targetList[0], kind: 'variable', line: i, mutability: 'let', type: elemType, access: currentAccess });

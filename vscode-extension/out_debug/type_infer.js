@@ -1,4 +1,18 @@
 "use strict";
+/**
+ * type_infer.ts — VS Code language-feature providers for the Arrow language.
+ *
+ * Responsibilities:
+ * - Register and implement VS Code providers (hover, inlay hints, semantic tokens,
+ *   completions, document symbols, signature help, go-to-definition, diagnostics)
+ * - Drive `DocumentAnalysis` (from analysis.ts) to get symbol/type information
+ * - Render type information into VS Code UI objects (MarkdownString, InlayHint, …)
+ *
+ * Provider functions exported to `extension.ts`:
+ *   provideHover, provideInlayHints, provideDocumentSemanticTokens,
+ *   provideCompletionItems, provideDocumentSymbols, provideSignatureHelp,
+ *   provideDefinition, provideDiagnostics
+ */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.provideDocumentSemanticTokens = exports.provideDiagnostics = exports.provideDefinition = exports.provideSignatureHelp = exports.provideDocumentSymbols = exports.provideCompletionItems = exports.provideInlayHints = exports.provideHover = exports.SEMANTIC_TOKENS_LEGEND = exports.initBuiltinStub = void 0;
 const vscode = require("vscode");
@@ -10,6 +24,16 @@ Object.defineProperty(exports, "initBuiltinStub", { enumerable: true, get: funct
 const native_module_1 = require("./native_module");
 // ===== Semantic token legend =====
 exports.SEMANTIC_TOKENS_LEGEND = new vscode.SemanticTokensLegend(['class', 'type', 'variable'], []);
+// ===== Shared rendering helpers =====
+/**
+ * Build an inlay type-hint with left padding.
+ * Used for variable declarations, for-loop targets, and tuple unpacking.
+ */
+function makeInlayHint(line, col, type) {
+    const hint = new vscode.InlayHint(new vscode.Position(line, col), `: ${type}`, vscode.InlayHintKind.Type);
+    hint.paddingLeft = true;
+    return hint;
+}
 // ===== Diagnostics helpers =====
 const REASSIGN_RE = /^(\s*)([A-Za-z_]\w*)\s*(?:[+\-*\/%&|^]?=(?!=))/;
 const PRIMITIVE_TYPES = new Set(['int', 'uint', 'float', 'str', 'bool', 'None']);
@@ -435,6 +459,16 @@ function typeAnnotationPositions(rawLine, strRanges) {
     return out;
 }
 // ===== Providers =====
+/**
+ * Hover provider — show type/signature information for the symbol under the cursor.
+ *
+ * Resolution order:
+ *  1. Dot-access: `module.name`, `module.Class.method`, `instance.field`
+ *  2. `Self` keyword → resolves to the enclosing class name
+ *  3. Imported external class (C++/Rust/C#)
+ *  4. Local symbol from `DocumentAnalysis`
+ *  5. Built-in stub (builtins.ars)
+ */
 async function provideHover(document, position) {
     var _a, _b, _c, _d, _e, _f;
     const range = document.getWordRangeAtPosition(position, /[A-Za-z_]\w*/);
@@ -582,6 +616,15 @@ async function provideHover(document, position) {
     }), range);
 }
 exports.provideHover = provideHover;
+/**
+ * Inlay hints provider — insert inferred type labels next to variable names.
+ *
+ * Two passes:
+ *  1. Function return types: insert `-> T` after the closing `)` of each `fn`/`gen`
+ *     that has no explicit return-type annotation.
+ *  2. Variable declarations: walk lines sequentially, updating a local `env` map,
+ *     and emit `: T` after the variable name when no annotation is present.
+ */
 async function provideInlayHints(document, _range) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _j;
     const hints = [];
@@ -643,11 +686,8 @@ async function provideInlayHints(document, _range) {
             env.set(name, type);
             if (!annotation) {
                 const nameStart = rawLine.indexOf(name, indent.length + 'static mut '.length);
-                if (nameStart >= 0) {
-                    const hint = new vscode.InlayHint(new vscode.Position(lineIdx, nameStart + name.length), `: ${type}`, vscode.InlayHintKind.Type);
-                    hint.paddingLeft = true;
-                    hints.push(hint);
-                }
+                if (nameStart >= 0)
+                    hints.push(makeInlayHint(lineIdx, nameStart + name.length, type));
             }
             continue;
         }
@@ -664,9 +704,7 @@ async function provideInlayHints(document, _range) {
                 env.set(varName, elemType);
                 const nameStart = rawLine.indexOf(varName, searchFrom);
                 if (nameStart >= 0) {
-                    const hint = new vscode.InlayHint(new vscode.Position(lineIdx, nameStart + varName.length), `: ${elemType}`, vscode.InlayHintKind.Type);
-                    hint.paddingLeft = true;
-                    hints.push(hint);
+                    hints.push(makeInlayHint(lineIdx, nameStart + varName.length, elemType));
                     searchFrom = nameStart + varName.length;
                 }
             }
@@ -676,33 +714,7 @@ async function provideInlayHints(document, _range) {
         if (forLoopM) {
             const [, indent, rawTargets, rawIter] = forLoopM;
             const iterExpr = rawIter.replace(/\s*(?:->[^:]+)?\s*:\s*$/, '').trim();
-            let elemType;
-            if (/^range\s*\(/.test(iterExpr)) {
-                elemType = 'int';
-            }
-            else if (/^enumerate\s*\(/.test(iterExpr)) {
-                const enumArgsM = iterExpr.match(/^enumerate\s*\((.+)\)\s*$/);
-                if (enumArgsM) {
-                    const innerType = (0, analysis_1.inferExprType)((0, analysis_1.splitComma)(enumArgsM[1])[0].trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType);
-                    elemType = `tuple[int, ${(0, analysis_1.extractIterElemType)(innerType)}]`;
-                }
-                else {
-                    elemType = 'tuple[int, unknown]';
-                }
-            }
-            else if (/^zip\s*\(/.test(iterExpr)) {
-                const zipArgsM = iterExpr.match(/^zip\s*\((.+)\)\s*$/);
-                if (zipArgsM) {
-                    const elems = (0, analysis_1.splitComma)(zipArgsM[1]).map(arg => (0, analysis_1.extractIterElemType)((0, analysis_1.inferExprType)(arg.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType)));
-                    elemType = `tuple[${elems.join(', ')}]`;
-                }
-                else {
-                    elemType = 'unknown';
-                }
-            }
-            else {
-                elemType = (0, analysis_1.extractIterElemType)((0, analysis_1.inferExprType)(iterExpr, env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType));
-            }
+            const elemType = (0, analysis_1.inferForLoopElemType)(iterExpr, env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams, a.classFieldTypes, selfType);
             const targetList = rawTargets.split(',').map(t => t.trim()).filter(Boolean);
             let searchFrom = (indent !== null && indent !== void 0 ? indent : '').length + 'for '.length;
             if (targetList.length === 1) {
@@ -710,11 +722,8 @@ async function provideInlayHints(document, _range) {
                 env.set(varName, elemType);
                 if (elemType !== 'unknown') {
                     const nameStart = rawLine.indexOf(varName, searchFrom);
-                    if (nameStart >= 0) {
-                        const hint = new vscode.InlayHint(new vscode.Position(lineIdx, nameStart + varName.length), `: ${elemType}`, vscode.InlayHintKind.Type);
-                        hint.paddingLeft = true;
-                        hints.push(hint);
-                    }
+                    if (nameStart >= 0)
+                        hints.push(makeInlayHint(lineIdx, nameStart + varName.length, elemType));
                 }
             }
             else {
@@ -726,9 +735,7 @@ async function provideInlayHints(document, _range) {
                     if (varType !== 'unknown') {
                         const nameStart = rawLine.indexOf(varName, searchFrom);
                         if (nameStart >= 0) {
-                            const hint = new vscode.InlayHint(new vscode.Position(lineIdx, nameStart + varName.length), `: ${varType}`, vscode.InlayHintKind.Type);
-                            hint.paddingLeft = true;
-                            hints.push(hint);
+                            hints.push(makeInlayHint(lineIdx, nameStart + varName.length, varType));
                             searchFrom = nameStart + varName.length;
                         }
                     }
@@ -744,16 +751,20 @@ async function provideInlayHints(document, _range) {
         env.set(name, type);
         if (!annotation && rhs) {
             const nameStart = rawLine.indexOf(name, (indent !== null && indent !== void 0 ? indent : '').length + keyword.length);
-            if (nameStart >= 0) {
-                const hint = new vscode.InlayHint(new vscode.Position(lineIdx, nameStart + name.length), `: ${type}`, vscode.InlayHintKind.Type);
-                hint.paddingLeft = true;
-                hints.push(hint);
-            }
+            if (nameStart >= 0)
+                hints.push(makeInlayHint(lineIdx, nameStart + name.length, type));
         }
     }
     return hints;
 }
 exports.provideInlayHints = provideInlayHints;
+/**
+ * Completion provider — suggest symbols, built-ins, and keywords.
+ *
+ * When the cursor follows a `.`, delegate to `resolveMemberItems` to offer
+ * fields/methods of the preceding object.  Otherwise suggest all in-scope
+ * symbols, built-in stubs, built-in functions, and language keywords.
+ */
 async function provideCompletionItems(document, position) {
     const prefix = document.lineAt(position.line).text.substring(0, position.character);
     const dotMatch = prefix.match(/([A-Za-z_]\w*)\.([A-Za-z_]\w*)?$/);
@@ -825,8 +836,57 @@ async function provideCompletionItems(document, position) {
     return items;
 }
 exports.provideCompletionItems = provideCompletionItems;
+/**
+ * Try to extract a symbol from one (already comment-stripped) source line.
+ * Returns `undefined` when the line contains no documentable symbol.
+ * Using early-return keeps nesting flat instead of chaining else-if blocks.
+ */
+function matchDocumentSymbol(stripped, indent) {
+    var _a, _b, _c, _d;
+    const funcMatch = stripped.match(/^(\s*)(fn|gen)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*\(([^)]*)\)\s*(?:->\s*(.+?))?\s*:\s*$/);
+    if (funcMatch) {
+        const [, , , funcName, , retType] = funcMatch;
+        return { name: funcName, detail: (_a = retType === null || retType === void 0 ? void 0 : retType.trim()) !== null && _a !== void 0 ? _a : '', kind: vscode.SymbolKind.Function, isContainer: true };
+    }
+    const classMatch = stripped.match(analysis_1.CLASS_DEF_RE);
+    if (classMatch) {
+        const [, , kw, className, bases] = classMatch;
+        return {
+            name: className,
+            detail: bases ? `(${bases})` : '',
+            kind: kw === 'trait' ? vscode.SymbolKind.Interface : vscode.SymbolKind.Class,
+            isContainer: true,
+        };
+    }
+    const newTypeMatch = stripped.match(analysis_1.NEW_TYPE_RE);
+    if (newTypeMatch) {
+        const [, , ntName, ntType] = newTypeMatch;
+        return { name: ntName, detail: ntType.trim(), kind: vscode.SymbolKind.TypeParameter, isContainer: false };
+    }
+    const importMatch = stripped.match(analysis_1.IMPORT_RE);
+    if (importMatch) {
+        const [, importKind, modulePath, , , explicitAlias] = importMatch;
+        const alias = explicitAlias !== null && explicitAlias !== void 0 ? explicitAlias : ((_b = modulePath.split('.').pop()) !== null && _b !== void 0 ? _b : modulePath);
+        return { name: alias, detail: `${importKind} ${modulePath}`, kind: vscode.SymbolKind.Module, isContainer: false };
+    }
+    const staticMatch = stripped.match(analysis_1.STATIC_DECL_RE);
+    if (staticMatch) {
+        const [, , varName, annot] = staticMatch;
+        return { name: varName, detail: (_c = annot === null || annot === void 0 ? void 0 : annot.trim()) !== null && _c !== void 0 ? _c : '', kind: vscode.SymbolKind.Variable, isContainer: false };
+    }
+    // Only surface top-level `let`/`mut`/`const` declarations in the outline
+    if (indent === 0) {
+        const declMatch = stripped.match(analysis_1.HOVER_DECL_RE);
+        if (declMatch) {
+            const [, , , varName, annot] = declMatch;
+            return { name: varName, detail: (_d = annot === null || annot === void 0 ? void 0 : annot.trim()) !== null && _d !== void 0 ? _d : '', kind: vscode.SymbolKind.Variable, isContainer: false };
+        }
+    }
+    return undefined;
+}
+/** Provide the document outline (breadcrumbs, Outline view) for an Arrow file. */
 function provideDocumentSymbols(document) {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b;
     const result = [];
     const stack = [];
     for (let i = 0; i < document.lineCount; i++) {
@@ -835,70 +895,13 @@ function provideDocumentSymbols(document) {
         if (!stripped.trim())
             continue;
         const indent = ((_b = (_a = rawLine.match(/^(\s*)/)) === null || _a === void 0 ? void 0 : _a[1]) !== null && _b !== void 0 ? _b : '').length;
-        while (stack.length > 0 && indent <= stack[stack.length - 1].indent) {
+        // Pop containers that ended before this indentation level
+        while (stack.length > 0 && indent <= stack[stack.length - 1].indent)
             stack.pop();
-        }
-        let name = '';
-        let detail = '';
-        let kind = vscode.SymbolKind.Variable;
-        let isContainer = false;
-        const funcMatch = stripped.match(/^(\s*)(fn|gen)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*\(([^)]*)\)\s*(?:->\s*(.+?))?\s*:\s*$/);
-        if (funcMatch) {
-            const [, , , funcName, , retType] = funcMatch;
-            name = funcName;
-            kind = vscode.SymbolKind.Function;
-            detail = (_c = retType === null || retType === void 0 ? void 0 : retType.trim()) !== null && _c !== void 0 ? _c : '';
-            isContainer = true;
-        }
-        else {
-            const classMatch = stripped.match(analysis_1.CLASS_DEF_RE);
-            if (classMatch) {
-                const [, , kw, className, bases] = classMatch;
-                name = className;
-                kind = kw === 'trait' ? vscode.SymbolKind.Interface : vscode.SymbolKind.Class;
-                detail = bases ? `(${bases})` : '';
-                isContainer = true;
-            }
-            else {
-                const newTypeMatch = stripped.match(analysis_1.NEW_TYPE_RE);
-                if (newTypeMatch) {
-                    const [, , ntName, ntType] = newTypeMatch;
-                    name = ntName;
-                    kind = vscode.SymbolKind.TypeParameter;
-                    detail = ntType.trim();
-                }
-                else {
-                    const importMatch = stripped.match(analysis_1.IMPORT_RE);
-                    if (importMatch) {
-                        const [, importKind, modulePath, , , explicitAlias] = importMatch;
-                        const alias = explicitAlias !== null && explicitAlias !== void 0 ? explicitAlias : ((_d = modulePath.split('.').pop()) !== null && _d !== void 0 ? _d : modulePath);
-                        name = alias;
-                        kind = vscode.SymbolKind.Module;
-                        detail = `${importKind} ${modulePath}`;
-                    }
-                    else {
-                        const staticMatch = stripped.match(analysis_1.STATIC_DECL_RE);
-                        if (staticMatch) {
-                            const [, , varName, annot] = staticMatch;
-                            name = varName;
-                            kind = vscode.SymbolKind.Variable;
-                            detail = (_e = annot === null || annot === void 0 ? void 0 : annot.trim()) !== null && _e !== void 0 ? _e : '';
-                        }
-                        else if (indent === 0) {
-                            const declMatch = stripped.match(analysis_1.HOVER_DECL_RE);
-                            if (declMatch) {
-                                const [, , , varName, annot] = declMatch;
-                                name = varName;
-                                kind = vscode.SymbolKind.Variable;
-                                detail = (_f = annot === null || annot === void 0 ? void 0 : annot.trim()) !== null && _f !== void 0 ? _f : '';
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if (!name)
+        const info = matchDocumentSymbol(stripped, indent);
+        if (!info)
             continue;
+        const { name, detail, kind, isContainer } = info;
         const nameIdx = rawLine.indexOf(name, indent);
         const selRange = nameIdx >= 0
             ? new vscode.Range(i, nameIdx, i, nameIdx + name.length)
@@ -907,18 +910,23 @@ function provideDocumentSymbols(document) {
         const lastLine = Math.min(bodyEnd - 1, document.lineCount - 1);
         const bodyRange = new vscode.Range(i, 0, lastLine, document.lineAt(lastLine).text.length);
         const sym = new vscode.DocumentSymbol(name, detail, kind, bodyRange, selRange);
-        if (stack.length === 0) {
+        if (stack.length === 0)
             result.push(sym);
-        }
-        else {
+        else
             stack[stack.length - 1].sym.children.push(sym);
-        }
         if (isContainer)
             stack.push({ sym, indent });
     }
     return result;
 }
 exports.provideDocumentSymbols = provideDocumentSymbols;
+/**
+ * Signature help provider — show parameter list while the user types inside `(`.
+ *
+ * Scans backwards from the cursor to find the nearest unclosed `(` and the
+ * function name that precedes it.  Resolves the signature from local symbols
+ * or the built-in stub, then highlights the active parameter.
+ */
 async function provideSignatureHelp(document, position) {
     var _a, _b;
     const prefix = document.lineAt(position.line).text.substring(0, position.character);
@@ -1027,6 +1035,15 @@ async function findMemberLineInExternalFile(filePath, memberName, importKind) {
     }
     return 0;
 }
+/**
+ * Go-to-definition provider — jump to the declaration of the symbol under the cursor.
+ *
+ * Resolution order:
+ *  1. Dot-access on a module alias → jump to the module source file
+ *  2. Dot-access on an instance → jump to the member in the external source
+ *  3. Module alias itself → jump to the module file
+ *  4. Any other symbol → jump to its declaration line in the current document
+ */
 async function provideDefinition(document, position) {
     const range = document.getWordRangeAtPosition(position, /[A-Za-z_]\w*/);
     if (!range)
@@ -1121,39 +1138,99 @@ async function provideDefinition(document, position) {
     return new vscode.Location(document.uri, targetRange);
 }
 exports.provideDefinition = provideDefinition;
+/**
+ * Diagnostics provider — report errors without running the Arrow compiler.
+ *
+ * Checks performed:
+ *  - Re-declaration of a variable within the same scope (indent-based scope stack)
+ *  - Assignment to `let` or `const` variables
+ *  - Assignment to a `freeze`d variable
+ *  - Type mismatch between a declared primitive type and the inferred RHS type
+ *  - `is not` guard applied to a non-Union/Option variable
+ */
 async function provideDiagnostics(document) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d, _e;
     const diagnostics = [];
     const a = await analysis_1.DocumentAnalysis.for(document);
     const env = new Map();
+    const scopeStack = [{ indent: -1, vars: new Map() }]; // index 0 = global
+    let prevIndent = -1; // indent of the most recent non-empty line
+    /** Search all frames (inner → outer) for name. Returns declaration line or undefined. */
+    function findInScope(name) {
+        for (let fi = scopeStack.length - 1; fi >= 0; fi--) {
+            const found = scopeStack[fi].vars.get(name);
+            if (found !== undefined)
+                return found;
+        }
+        return undefined;
+    }
     for (let i = 0; i < document.lineCount; i++) {
         const raw = document.lineAt(i).text;
         const stripped = (0, analysis_1.stripComment)(raw);
         if (!stripped.trim())
             continue;
+        const lineIndent = ((_b = (_a = raw.match(/^(\s*)/)) === null || _a === void 0 ? void 0 : _a[1]) !== null && _b !== void 0 ? _b : '').length;
+        // Adjust scope stack based on indentation change
+        if (prevIndent >= 0 && lineIndent > prevIndent) {
+            scopeStack.push({ indent: lineIndent, vars: new Map() });
+        }
+        else if (lineIndent < prevIndent) {
+            while (scopeStack.length > 1 && scopeStack[scopeStack.length - 1].indent >= lineIndent) {
+                scopeStack.pop();
+            }
+        }
+        prevIndent = lineIndent;
         if (stripped.match(/^(\s*)(fn|gen)\s+/) || stripped.match(analysis_1.CLASS_DEF_RE) || stripped.match(analysis_1.IMPORT_RE))
             continue;
         const staticM = stripped.match(analysis_1.STATIC_DECL_RE);
         if (staticM) {
             const [, , name, annotation, rhs] = staticM;
-            const type = (_a = (0, analysis_1.cleanTypeAnnotation)(annotation)) !== null && _a !== void 0 ? _a : (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams) : 'unknown');
+            const type = (_c = (0, analysis_1.cleanTypeAnnotation)(annotation)) !== null && _c !== void 0 ? _c : (rhs ? (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams) : 'unknown');
             env.set(name, type);
             continue;
         }
         const tupleM = stripped.match(analysis_1.TUPLE_DECL_RE);
         if (tupleM) {
-            const [, , , names, rhs] = tupleM;
+            const [, indentStr, , names, rhs] = tupleM;
             const rhsType = (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams);
             const nameList = names.split(',').map(n => n.trim()).filter(Boolean);
             const elemTypes = (0, analysis_1.extractTupleElemTypes)(rhsType, nameList.length);
-            for (let idx = 0; idx < nameList.length; idx++)
-                env.set(nameList[idx], (_b = elemTypes[idx]) !== null && _b !== void 0 ? _b : 'unknown');
+            let searchFrom = (indentStr !== null && indentStr !== void 0 ? indentStr : '').length;
+            for (let idx = 0; idx < nameList.length; idx++) {
+                const varName = nameList[idx];
+                env.set(varName, (_d = elemTypes[idx]) !== null && _d !== void 0 ? _d : 'unknown');
+                if (varName !== '_') {
+                    const existingLine = findInScope(varName);
+                    const nameStart = raw.indexOf(varName, searchFrom);
+                    if (existingLine !== undefined && nameStart >= 0) {
+                        diagnostics.push(new vscode.Diagnostic(new vscode.Range(i, nameStart, i, nameStart + varName.length), `Variable '${varName}' is already declared (line ${existingLine + 1})`, vscode.DiagnosticSeverity.Error));
+                    }
+                    else {
+                        scopeStack[scopeStack.length - 1].vars.set(varName, i);
+                    }
+                    if (nameStart >= 0)
+                        searchFrom = nameStart + varName.length;
+                }
+            }
             continue;
         }
         const declM = stripped.match(analysis_1.HOVER_DECL_RE);
         if (declM) {
             const [, indent, keyword, name, annotation, rhs] = declM;
             const declaredType = (0, analysis_1.cleanTypeAnnotation)(annotation);
+            // Redeclaration check
+            if (name !== '_') {
+                const existingLine = findInScope(name);
+                if (existingLine !== undefined) {
+                    const nameStart = raw.indexOf(name, (indent !== null && indent !== void 0 ? indent : '').length + (keyword !== null && keyword !== void 0 ? keyword : '').length);
+                    if (nameStart >= 0) {
+                        diagnostics.push(new vscode.Diagnostic(new vscode.Range(i, nameStart, i, nameStart + name.length), `Variable '${name}' is already declared (line ${existingLine + 1})`, vscode.DiagnosticSeverity.Error));
+                    }
+                }
+                else {
+                    scopeStack[scopeStack.length - 1].vars.set(name, i);
+                }
+            }
             if (declaredType && rhs) {
                 const inferredType = (0, analysis_1.inferExprType)(rhs.trim(), env, a.funcEnv, a.importAliases, a.importFuncTypes, a.classMethods, a.templateParams);
                 env.set(name, declaredType);
@@ -1214,7 +1291,7 @@ async function provideDiagnostics(document) {
         if (t === 'unknown' || t === 'Any' ||
             t.startsWith('Union[') || t.startsWith('Option[') || t.startsWith('Optional['))
             continue;
-        const indent = ((_c = m[1]) !== null && _c !== void 0 ? _c : '').length;
+        const indent = ((_e = m[1]) !== null && _e !== void 0 ? _e : '').length;
         const keywordLen = stripped.slice(indent).startsWith('elif') ? 4 : 2;
         const nameStart = raw.indexOf(varName, indent + keywordLen);
         if (nameStart < 0)
@@ -1224,6 +1301,14 @@ async function provideDiagnostics(document) {
     return diagnostics;
 }
 exports.provideDiagnostics = provideDiagnostics;
+/**
+ * Semantic tokens provider — colour class names, imported identifiers, and built-in types.
+ *
+ * Token types (indices match `SEMANTIC_TOKENS_LEGEND`):
+ *  0 = 'class'    — user-defined class/trait/enum names and import aliases
+ *  1 = 'type'     — built-in type names in type-annotation positions
+ *  2 = 'variable' — built-in type names used as values (e.g. `int(x)`)
+ */
 async function provideDocumentSemanticTokens(document) {
     const builder = new vscode.SemanticTokensBuilder(exports.SEMANTIC_TOKENS_LEGEND);
     const a = await analysis_1.DocumentAnalysis.for(document);

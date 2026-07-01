@@ -1,4 +1,14 @@
 "use strict";
+/**
+ * extension.ts — VS Code extension entry point for the Arrow language.
+ *
+ * Responsibilities:
+ * - Initialize the extension on activation (`activate`)
+ * - Register all language-feature providers (hover, inlay hints, completions, …)
+ *   defined in `type_infer.ts`
+ * - Implement the "Send to REPL" command and REPL terminal management
+ * - Schedule debounced diagnostics on document open/change events
+ */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.deactivate = exports.activate = void 0;
 const vscode = require("vscode");
@@ -15,7 +25,10 @@ function getReplTerminal(projectRoot) {
     replTerminal.sendText('cargo run -- --repl');
     return replTerminal;
 }
-/** Walk up from `dir` to find the folder containing Cargo.toml. */
+/**
+ * Walk up from `dir` until a directory containing `Cargo.toml` is found.
+ * Returns `undefined` when no Cargo project root exists above the given path.
+ */
 function findCargoRoot(dir) {
     const { root } = path.parse(dir);
     let current = dir;
@@ -33,7 +46,10 @@ function findCargoRoot(dir) {
 }
 // ===== Cell helpers =====
 const CELL_MARKER = /^#%%/;
-/** Return the text of the #%%-delimited cell that contains the cursor line. */
+/**
+ * Return the text of the `#%%`-delimited cell that contains the cursor line.
+ * If no `#%%` marker surrounds the cursor, the entire document is treated as one cell.
+ */
 function getCellAtCursor(editor) {
     const doc = editor.document;
     const cursorLine = editor.selection.active.line;
@@ -91,6 +107,7 @@ function activate(context) {
     // ---- Diagnostics ----
     const diagCollection = vscode.languages.createDiagnosticCollection('arrow');
     const debounceMap = new Map();
+    /** Debounce diagnostics so rapid edits don't trigger a rebuild on every keystroke. */
     function scheduleDiagnostics(document) {
         if (document.languageId !== 'arrow')
             return;

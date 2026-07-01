@@ -1,6 +1,23 @@
 "use strict";
+/**
+ * analysis.ts — Document analysis engine for the Arrow VS Code extension.
+ *
+ * Responsibilities:
+ * - Parse Arrow source files line-by-line to collect symbols (variables, functions,
+ *   classes, imports, …) stored as `HoverSymbol[]`
+ * - Infer expression types (`inferExprType` / `ExprInferrer`) for hover hints and
+ *   diagnostics
+ * - Load external module type information (Python, C++, Rust, C#) via `native_module.ts`
+ * - Cache analysis results per document version (`DocumentAnalysis`)
+ *
+ * Key exports used by `type_infer.ts`:
+ *   - `DocumentAnalysis` — single cached analysis object per document
+ *   - `inferExprType` / `inferForLoopElemType` — type inference helpers
+ *   - `HoverSymbol`, `ScopeOverride`, `FuncDef` — data types
+ *   - `stripComment`, `splitComma`, etc. — shared string utilities
+ */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.initBuiltinStub = exports.builtinStub = exports.DocumentAnalysis = exports.selectHoverSymbol = exports.inferBodyReturnType = exports.collectTemplateParams = exports.collectFuncDefs = exports.gatherFuncDefLines = exports.collectConstructorTypes = exports.collectImportAliases = exports.inferExprType = exports.getDocstringAfter = exports.cleanTypeAnnotation = exports.parseParams = exports.findBodyEndLine = exports.findBlockBounds = exports.extractIterElemType = exports.extractTupleElemTypes = exports.resolveSelf = exports.splitComma = exports.stripComment = exports.FOR_LOOP_RE = exports.TUPLE_DECL_RE = exports.IMPORT_RE = exports.NEW_TYPE_RE = exports.CLASS_DEF_RE = exports.HOVER_DECL_RE = exports.STATIC_DECL_RE = exports.DECL_RE = void 0;
+exports.initBuiltinStub = exports.builtinStub = exports.DocumentAnalysis = exports.selectHoverSymbol = exports.inferBodyReturnType = exports.collectTemplateParams = exports.collectFuncDefs = exports.gatherFuncDefLines = exports.collectConstructorTypes = exports.collectImportAliases = exports.inferForLoopElemType = exports.inferExprType = exports.getDocstringAfter = exports.cleanTypeAnnotation = exports.parseParams = exports.findBodyEndLine = exports.findBlockBounds = exports.extractIterElemType = exports.extractTupleElemTypes = exports.resolveSelf = exports.splitComma = exports.stripComment = exports.FOR_LOOP_RE = exports.TUPLE_DECL_RE = exports.IMPORT_RE = exports.NEW_TYPE_RE = exports.CLASS_DEF_RE = exports.HOVER_DECL_RE = exports.STATIC_DECL_RE = exports.DECL_RE = void 0;
 const vscode = require("vscode");
 const fs = require("fs");
 const fs_1 = require("fs");
@@ -333,7 +350,64 @@ class ExprInferrer {
             this.parseBitOr();
             return 'bool';
         }
+        if (this.cur().kind === 'IDENT' && this.cur().value === 'mustbe') {
+            this.eat();
+            return this.parseMustbeType();
+        }
         return left;
+    }
+    parseMustbeType() {
+        if (this.cur().kind !== 'IDENT')
+            return 'unknown';
+        let typeName = this.eat().value;
+        if (this.cur().kind === 'LBRACKET') {
+            this.eat();
+            const parts = [];
+            let depth = 1;
+            let prevKind = '';
+            while (depth > 0 && this.cur().kind !== 'EOF') {
+                const tok = this.eat();
+                if (tok.kind === 'LBRACKET') {
+                    depth++;
+                    parts.push('[');
+                }
+                else if (tok.kind === 'RBRACKET') {
+                    depth--;
+                    if (depth > 0)
+                        parts.push(']');
+                }
+                else if (tok.kind === 'COMMA') {
+                    parts.push(', ');
+                }
+                else {
+                    if (prevKind === 'IDENT' && tok.kind === 'IDENT')
+                        parts.push(' ');
+                    parts.push(tok.value);
+                }
+                prevKind = tok.kind;
+            }
+            typeName = `${typeName}[${parts.join('')}]`;
+        }
+        if (this.cur().kind === 'OTHER' && this.cur().value === '->') {
+            this.eat();
+            if (this.cur().kind === 'IDENT')
+                typeName = `${typeName}->${this.eat().value}`;
+        }
+        return typeName;
+    }
+    subscriptElemType(containerType) {
+        const listM = containerType.match(/^(?:list|fixed_list|list_like)\[(.+)\]$/);
+        if (listM)
+            return listM[1];
+        const dictM = containerType.match(/^dict\[([^,]+),\s*(.+)\]$/);
+        if (dictM)
+            return dictM[2].trim();
+        const setM = containerType.match(/^set\[(.+)\]$/);
+        if (setM)
+            return setM[1];
+        if (containerType === 'str')
+            return 'str';
+        return 'unknown';
     }
     parseBitOr() {
         let t = this.parseBitXor();
@@ -436,7 +510,20 @@ class ExprInferrer {
         return this.parseCast();
     }
     parsePower() {
-        const base = this.parsePrimary();
+        let base = this.parsePrimary();
+        // Consume chained subscripts after parsePrimary (e.g. dict["a"]["b"] mustbe T)
+        while (this.cur().kind === 'LBRACKET') {
+            this.eat();
+            let depth = 1;
+            while (depth > 0 && this.cur().kind !== 'EOF') {
+                const t = this.eat();
+                if (t.kind === 'LBRACKET')
+                    depth++;
+                else if (t.kind === 'RBRACKET')
+                    depth--;
+            }
+            base = this.subscriptElemType(base);
+        }
         if (this.cur().kind === 'STARSTAR') {
             this.eat();
             return this.applyBinaryOp(base, this.parseUnary(), 'STARSTAR');
@@ -506,6 +593,11 @@ class ExprInferrer {
                     this.eat();
                     while (this.cur().kind !== 'RPAREN' && this.cur().kind !== 'EOF') {
                         this.parseOr();
+                        // Handle keyword=value arguments (e.g. encoding="utf-8")
+                        if (this.cur().kind === 'OTHER' && this.cur().value === '=') {
+                            this.eat();
+                            this.parseOr();
+                        }
                         if (this.cur().kind === 'COMMA')
                             this.eat();
                         else
@@ -558,6 +650,15 @@ class ExprInferrer {
                 }
                 if (name === 'Self' && this.selfType)
                     return this.selfType;
+                // Subscript access: varName[index] → element type of the container
+                if (typeArg !== undefined) {
+                    const containerType = this.env.get(name);
+                    if (containerType) {
+                        const elemType = this.subscriptElemType(containerType);
+                        if (elemType !== 'unknown')
+                            return elemType;
+                    }
+                }
                 return (_l = this.env.get(name)) !== null && _l !== void 0 ? _l : 'unknown';
             }
             case 'LPAREN': {
@@ -645,6 +746,10 @@ function inferExprType(src, env, funcEnv = new Map(), importAliases = new Set(),
     }
     const dotMatch = trimmed.match(/^([A-Za-z_]\w*)\./);
     if (dotMatch && importAliases.has(dotMatch[1])) {
+        // If a mustbe assertion follows, use ExprInferrer to honour the narrowed type
+        if (/\bmustbe\b/.test(trimmed)) {
+            return new ExprInferrer((0, tokenizer_1.tokenize)(src), env, funcEnv, pyClassMethods, templateParams, classFieldTypes, selfType).infer();
+        }
         const alias = dotMatch[1];
         const isPyModule = importFuncTypes.has(alias);
         const callMatch = trimmed.match(/^[A-Za-z_]\w*\.([A-Za-z_]\w*)\s*\(/);
@@ -674,6 +779,35 @@ function inferExprType(src, env, funcEnv = new Map(), importAliases = new Set(),
     return new ExprInferrer((0, tokenizer_1.tokenize)(src), env, funcEnv, pyClassMethods, templateParams, classFieldTypes, selfType).infer();
 }
 exports.inferExprType = inferExprType;
+/**
+ * Infer the element type produced by a for-loop iterator expression.
+ * Handles `range()`, `enumerate()`, `zip()`, and generic iterables.
+ *
+ * Extracted to eliminate duplication between `collectHoverSymbols` (analysis.ts)
+ * and `provideInlayHints` (type_infer.ts).
+ *
+ * @param iterExpr  The iterator expression with any trailing `->T:` already stripped.
+ */
+function inferForLoopElemType(iterExpr, env, funcEnv, importAliases, importFuncTypes, classMethods, templateParams, classFieldTypes, selfType) {
+    if (/^range\s*\(/.test(iterExpr))
+        return 'int';
+    if (/^enumerate\s*\(/.test(iterExpr)) {
+        const m = iterExpr.match(/^enumerate\s*\((.+)\)\s*$/);
+        if (!m)
+            return 'tuple[int, unknown]';
+        const inner = inferExprType(splitComma(m[1])[0].trim(), env, funcEnv, importAliases, importFuncTypes, classMethods, templateParams, classFieldTypes, selfType);
+        return `tuple[int, ${extractIterElemType(inner)}]`;
+    }
+    if (/^zip\s*\(/.test(iterExpr)) {
+        const m = iterExpr.match(/^zip\s*\((.+)\)\s*$/);
+        if (!m)
+            return 'unknown';
+        const elems = splitComma(m[1]).map(arg => extractIterElemType(inferExprType(arg.trim(), env, funcEnv, importAliases, importFuncTypes, classMethods, templateParams, classFieldTypes, selfType)));
+        return `tuple[${elems.join(', ')}]`;
+    }
+    return extractIterElemType(inferExprType(iterExpr, env, funcEnv, importAliases, importFuncTypes, classMethods, templateParams, classFieldTypes, selfType));
+}
+exports.inferForLoopElemType = inferForLoopElemType;
 // ===== Collection functions =====
 function collectImportAliases(document) {
     const aliases = new Map();
@@ -1241,33 +1375,7 @@ function collectHoverSymbols(document, funcEnv, importAliases, importFuncTypes, 
         if (forLoopM) {
             const [, , rawTargets, rawIter] = forLoopM;
             const iterExpr = rawIter.replace(/\s*(?:->[^:]+)?\s*:\s*$/, '').trim();
-            let elemType;
-            if (/^range\s*\(/.test(iterExpr)) {
-                elemType = 'int';
-            }
-            else if (/^enumerate\s*\(/.test(iterExpr)) {
-                const enumArgsM = iterExpr.match(/^enumerate\s*\((.+)\)\s*$/);
-                if (enumArgsM) {
-                    const innerType = inferExprType(splitComma(enumArgsM[1])[0].trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType);
-                    elemType = `tuple[int, ${extractIterElemType(innerType)}]`;
-                }
-                else {
-                    elemType = 'tuple[int, unknown]';
-                }
-            }
-            else if (/^zip\s*\(/.test(iterExpr)) {
-                const zipArgsM = iterExpr.match(/^zip\s*\((.+)\)\s*$/);
-                if (zipArgsM) {
-                    const elems = splitComma(zipArgsM[1]).map(arg => extractIterElemType(inferExprType(arg.trim(), env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType)));
-                    elemType = `tuple[${elems.join(', ')}]`;
-                }
-                else {
-                    elemType = 'unknown';
-                }
-            }
-            else {
-                elemType = extractIterElemType(inferExprType(iterExpr, env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType));
-            }
+            const elemType = inferForLoopElemType(iterExpr, env, funcEnv, importAliases, importFuncTypes, pyClassMethods, templateParams, classFieldTypes, selfType);
             const targetList = rawTargets.split(',').map(t => t.trim()).filter(Boolean);
             if (targetList.length === 1) {
                 symbols.push({ name: targetList[0], kind: 'variable', line: i, mutability: 'let', type: elemType, access: currentAccess });

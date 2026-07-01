@@ -13,6 +13,13 @@ indexmap = "2"
 serde_json = "1"
 inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm22-1"], optional = true }
 
+[[bench]]
+name = "field_access"
+harness = false
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
 [features]
 default = []
 # Enable LLVM JIT native compilation.
