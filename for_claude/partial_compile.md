@@ -322,6 +322,25 @@ define [dllexport] i32 @f_typed(ptr %_args, ptr %_ret, ptr %_err) {
 直接呼び出し、status != 0 なら `ErrSlot::to_error_string()`（`"TypeName: msg"` 形式）で
 既存の raise 経路へ合流する。実行時型が合わなければハンドル経路へフォールバック。
 
+**AST インラインキャッシュ（関数ポインタ焼き込み）**:
+`Expr::Call` は `cache: NativeCallCache`（`ast.rs`、`RefCell<Option<Arc<dyn Any>>>`）を持つ。
+`eval_call`（`eval.rs`）は呼び出し先が以下を満たすと初回実行時に `Arc<NativeFnRef>` を
+このスロットへ焼き込む:
+
+- `Expr::Ident` 呼び出しで、バインディングが**不変**（`let` / import 束縛）
+- `typed_sig` あり + `typed_fn_ptr != 0`
+- 全引数が位置引数、引数数一致（≤16）
+
+以後の実行は `dispatch_native_typed_exprs` へ直行し、スコープ検索・Value マッチ・
+組み込み名チェックをすべて跳ばす。不変バインディングは再代入・再宣言とも禁止のため
+キャッシュ無効化は不要。`NativeCallCache::clone()` は**空キャッシュ**を返す
+（FnValue へのボディ複製・async の deep_clone ごとに再解決させ、DLL 生存期間の問題を防ぐ）。
+型不一致時は評価済みスロットを Value に復元してハンドル経路へフォールバックする
+（引数式の副作用は二重実行されない）。
+
+**計測**（partial_call_overhead.ar / `sink += noop0()`）:
+ハンドル経路 461ns → typed ABI 204ns → インラインキャッシュ **~93ns**/call。
+
 **検証例**: `examples/typed_abi.ar` + `examples/test_modules/typed_abi_module.ar`
 
 ### Approach-1 Pre-reads

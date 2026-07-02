@@ -422,6 +422,7 @@ impl Parser {
                         func: Box::new(expr),
                         args,
                         span: call_span,
+                        cache: Default::default(),
                     };
                 }
                 Token::Dot => {
@@ -607,6 +608,7 @@ impl Parser {
                         func: Box::new(Expr::Ident("str".to_string())),
                         args: vec![crate::ast::CallArg::Positional(expr)],
                         span: span.clone(),
+                        cache: Default::default(),
                     });
                 }
             }

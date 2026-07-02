@@ -380,7 +380,7 @@ impl Interpreter {
                     }
                 }
             }
-            Expr::Call { func, args, span } => self.eval_call(func, args, span),
+            Expr::Call { func, args, span, cache } => self.eval_call(func, args, span, cache),
             Expr::Cast { object, type_name, .. } => self.eval_cast(object, type_name),
         }
     }
@@ -536,7 +536,23 @@ impl Interpreter {
     /// 関数呼び出し式 `func(args)` を評価する。
     /// テンプレート instantiate・メソッド呼び出し・組み込み関数・ユーザー定義関数・クラスコンストラクタ・
     /// ジェネレータ・ネイティブ関数・型コンストラクタなど、呼び出し先の種別に応じて適切なパスへ分岐する。
-    fn eval_call(&mut self, func: &Expr, args: &[CallArg], call_span: &Span) -> Result<Value, String> {
+    fn eval_call(
+        &mut self,
+        func: &Expr,
+        args: &[CallArg],
+        call_span: &Span,
+        cache: &crate::ast::NativeCallCache,
+    ) -> Result<Value, String> {
+        // ── インラインキャッシュ命中: AST に焼き込まれた typed ネイティブ関数 ──
+        // スコープ検索・Value マッチ・組み込みチェックをすべて跳ばして直接ディスパッチ。
+        // （充填条件: 不変バインディング + typed ABI あり — 下の NativeFunction アーム参照）
+        let cached = cache.0.borrow().clone();
+        if let Some(any_arc) = cached {
+            if let Some(fn_ref) = any_arc.downcast_ref::<NativeFnRef>() {
+                return self.dispatch_native_typed_exprs(fn_ref, &any_arc, args);
+            }
+        }
+
         if let Expr::TemplateInstantiate { base, type_args } = func {
             let tmpl_val = self.eval(base)?;
             return self.instantiate_template(tmpl_val, type_args, args);
@@ -574,6 +590,27 @@ impl Interpreter {
                 self.eval_method_call(callee, "__call__", args)
             }
             Value::NativeFunction(fn_ref) => {
+                // ── キャッシュ充填（AST への焼き込み） ──
+                // 条件: Ident 呼び出し + 不変バインディング + typed ABI あり +
+                //       全引数が位置引数 + 引数数一致（≤16）。
+                // 不変バインディングは再代入・再宣言とも禁止のため無効化は不要。
+                if fn_ref.typed_sig.is_some()
+                    && fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed) != 0
+                    && fn_ref.n_params <= 16
+                    && args.len() == fn_ref.n_params
+                    && args.iter().all(|a| matches!(a, CallArg::Positional(_)))
+                {
+                    if let Expr::Ident(name) = func {
+                        let immutable_binding =
+                            self.get_var(name).map(|v| !v.is_mutable()).unwrap_or(false);
+                        if immutable_binding {
+                            *cache.0.borrow_mut() = Some(
+                                fn_ref.clone()
+                                    as Arc<dyn std::any::Any + Send + Sync>,
+                            );
+                        }
+                    }
+                }
                 self.call_native_function(&fn_ref, args)
             }
             Value::JsProcFn { bridge_key, module_name, fn_name } => {
@@ -1768,6 +1805,74 @@ impl Interpreter {
     /// `{fn_name}_tl` either via a raw JIT pointer or via libloading.
     /// Used by both `call_native_function` (called
     /// from AST) and `call_value_with_args` (called from native callbacks).
+    /// インラインキャッシュ命中時の typed ディスパッチ（AST 焼き込み経路）。
+    ///
+    /// 引数式を直接 u64 スロット配列（スタック上）へ評価し、スコープ検索・TLS・
+    /// アリーナ・ハンドルを一切通らずに `{name}_typed` を呼び出す。
+    /// raise は ErrSlot（スタック上）経由で status=1 とともに届く。
+    /// 実行時の引数型がシグネチャと合わない場合はハンドル経路へフォールバックする
+    /// （評価済みの値はスロットから復元するため副作用の二重実行はない）。
+    fn dispatch_native_typed_exprs(
+        &mut self,
+        fn_ref: &NativeFnRef,
+        any_arc: &Arc<dyn std::any::Any + Send + Sync>,
+        args: &[CallArg],
+    ) -> Result<Value, String> {
+        use crate::interpreter::value::AbiTy;
+        let sig = fn_ref.typed_sig.as_ref().expect("cache guarantees typed_sig");
+        let mut slots = [0u64; 16];
+        let mut spill: Option<Vec<Value>> = None;
+        for (i, arg) in args.iter().enumerate() {
+            let v = self.eval(arg.expr())?;
+            if let Some(vec) = spill.as_mut() {
+                vec.push(v);
+                continue;
+            }
+            match (&v, sig.params[i]) {
+                (Value::Int(n), AbiTy::I64) => slots[i] = *n as u64,
+                (Value::Float(f), AbiTy::F64) => slots[i] = f.to_bits(),
+                // int → float 引数の自動昇格
+                (Value::Int(n), AbiTy::F64) => slots[i] = (*n as f64).to_bits(),
+                _ => {
+                    // 型不一致 → 評価済みスロットを Value に復元してハンドル経路へ
+                    let mut vec: Vec<Value> = (0..i)
+                        .map(|j| match sig.params[j] {
+                            AbiTy::I64 => Value::Int(slots[j] as i64),
+                            AbiTy::F64 => Value::Float(f64::from_bits(slots[j])),
+                        })
+                        .collect();
+                    vec.push(v);
+                    spill = Some(vec);
+                }
+            }
+        }
+        if let Some(vals) = spill {
+            let arc = any_arc
+                .clone()
+                .downcast::<NativeFnRef>()
+                .expect("cache holds NativeFnRef");
+            return self.dispatch_native_evaled(&arc, vals);
+        }
+        let typed_ptr = fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed);
+        let mut ret: u64 = 0;
+        let mut err = super::native_api::ErrSlot::default();
+        let status = unsafe {
+            let f: unsafe extern "C" fn(
+                *const u64,
+                *mut u64,
+                *mut super::native_api::ErrSlot,
+            ) -> u32 = std::mem::transmute(typed_ptr);
+            f(slots.as_ptr(), &mut ret, &mut err)
+        };
+        if status != 0 {
+            return Err(err.to_error_string());
+        }
+        Ok(match sig.ret {
+            AbiTy::I64 => Value::Int(ret as i64),
+            AbiTy::F64 => Value::Float(f64::from_bits(ret)),
+        })
+    }
+
     pub(super) fn dispatch_native_evaled(
         &mut self,
         fn_ref: &Arc<NativeFnRef>,

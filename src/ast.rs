@@ -18,6 +18,32 @@ pub struct TemplateParam {
     pub constraints: Vec<String>,
 }
 
+/// ネイティブ typed 呼び出しのインラインキャッシュ（AST への関数ポインタ焼き込み）。
+///
+/// `Expr::Call` ノードごとに1つ持ち、呼び出し先が「不変バインディングの
+/// ネイティブ関数 + typed ABI あり」と初回解決されたときに
+/// `Arc<NativeFnRef>`（type-erased）を格納する。以後の実行はスコープ検索・
+/// Value マッチを跳ばして直接 typed ディスパッチに入る。
+///
+/// - `Clone` は空キャッシュを返す（AST コピー・スレッド間 deep_clone ごとに再解決）
+/// - 不変バインディングは再代入・再宣言ともに禁止のため、キャッシュは無効化不要
+#[derive(Default)]
+pub struct NativeCallCache(
+    pub std::cell::RefCell<Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>>,
+);
+
+impl Clone for NativeCallCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for NativeCallCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NativeCallCache(..)")
+    }
+}
+
 /// 関数呼び出しの1引数。位置引数・キーワード引数・可変長引数のいずれかを表す。
 ///
 /// # バリアント
@@ -243,10 +269,12 @@ pub enum Expr {
     /// 単項演算 `op operand`（例: `-x`, `not x`, `~x`）。
     UnaryOp { op: UnaryOp, operand: Box<Expr> },
     /// 関数呼び出し `func(args)`。`func` が `TemplateInstantiate` の場合はテンプレート呼び出しになる。
+    /// `cache` は typed ネイティブ呼び出しのインラインキャッシュ（初回解決時に焼き込み）。
     Call {
         func: Box<Expr>,
         args: Vec<CallArg>,
         span: Span,
+        cache: NativeCallCache,
     },
     /// テンプレート型引数適用: `expr[T1, T2]` — テンプレート値に具体的な型引数を与える。
     /// `Call` 式の `func` として使用する。単独の値としては無効。

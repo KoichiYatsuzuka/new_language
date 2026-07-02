@@ -792,6 +792,7 @@ fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
                 func: Box::new(func),
                 args,
                 span: crate::token::Span::unknown(),
+                cache: Default::default(),
             })
         }
 

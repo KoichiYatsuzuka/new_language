@@ -458,10 +458,11 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             op: op.clone(),
             operand: Box::new(subst_expr(operand, type_map)),
         },
-        Expr::Call { func, args, span } => Expr::Call {
+        Expr::Call { func, args, span, .. } => Expr::Call {
             func: Box::new(subst_expr(func, type_map)),
             args: args.iter().map(|a| subst_call_arg(a, type_map)).collect(),
             span: span.clone(),
+            cache: Default::default(),
         },
         Expr::TemplateInstantiate { base, type_args } => Expr::TemplateInstantiate {
             base: Box::new(subst_expr(base, type_map)),
