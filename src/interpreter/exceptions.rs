@@ -87,9 +87,10 @@ impl Interpreter {
         ];
 
         let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
+            class_id: cls.class_id,
+            flags: crate::interpreter::value::INST_IS_EXCEPTION,
             class: cls,
             fields,
-            immutable: false,
         })));
 
         Some(RaisedError {

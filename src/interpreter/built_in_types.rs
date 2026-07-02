@@ -103,6 +103,7 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
 
     Rc::new(ClassValue {
         name: class_name.to_string(),
+        class_id: crate::interpreter::value::alloc_class_id(),
         bases: vec!["Error".to_string()],
         methods,
         gen_methods: HashMap::new(),
@@ -118,6 +119,7 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
         class_method_names: HashSet::new(),
         static_vars: HashMap::new(),
         new_type_base: None,
+        is_exception: true,
     })
 }
 
@@ -159,6 +161,7 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
     methods.insert("__init__".to_string(), vec![init_fn]);
     Rc::new(ClassValue {
         name: name.to_string(),
+        class_id: crate::interpreter::value::alloc_class_id(),
         bases: vec![],
         methods,
         gen_methods: HashMap::new(),
@@ -174,6 +177,7 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
         class_method_names: HashSet::new(),
         static_vars: HashMap::new(),
         new_type_base: None,
+        is_exception: false,
     })
 }
 
@@ -189,8 +193,10 @@ pub(super) fn make_builtin_enum_class(
 ) -> (String, Rc<ClassValue>, Rc<ClassValue>) {
     let item_cls_name = format!("enum_item_{name}");
     // バリアントのインスタンス型（`enum_item_X`）: value フィールドを持つだけ
+    let item_cls_id = crate::interpreter::value::alloc_class_id();
     let item_cls = Rc::new(ClassValue {
         name: item_cls_name.clone(),
+        class_id: item_cls_id,
         bases: vec![],
         methods: HashMap::new(),
         gen_methods: HashMap::new(),
@@ -206,20 +212,23 @@ pub(super) fn make_builtin_enum_class(
         class_method_names: HashSet::new(),
         static_vars: HashMap::new(),
         new_type_base: None,
+        is_exception: false,
     });
     // 各バリアントをインスタンスとして生成し class_vars に登録
     let mut class_vars: HashMap<String, Value> = HashMap::new();
     for (variant_name, int_val) in variants {
         let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
+            class_id: item_cls_id,
+            flags: 0,
             class: item_cls.clone(),
             fields: vec![Some((Value::Int(*int_val), true))],
-            immutable: false,
         })));
         class_vars.insert(variant_name.to_string(), inst);
     }
     // enum クラス本体（バリアントのみ保持、インスタンス化不可）
     let enum_cls = Rc::new(ClassValue {
         name: name.to_string(),
+        class_id: crate::interpreter::value::alloc_class_id(),
         bases: vec![],
         methods: HashMap::new(),
         gen_methods: HashMap::new(),
@@ -235,6 +244,7 @@ pub(super) fn make_builtin_enum_class(
         class_method_names: HashSet::new(),
         static_vars: HashMap::new(),
         new_type_base: None,
+        is_exception: false,
     });
     (item_cls_name, item_cls, enum_cls)
 }
@@ -324,9 +334,10 @@ pub(super) fn register_builtin_globals(global: &mut HashMap<String, Var>) {
     // 組み込み定数: begin = Index(0)、last = Index(-1)
     for (const_name, int_val) in [("begin", 0i64), ("last", -1i64)] {
         let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
+            class_id: index_cls.class_id,
+            flags: 0,
             class: index_cls.clone(),
             fields: vec![Some((Value::Int(int_val), true))],
-            immutable: false,
         })));
         global.insert(const_name.to_string(), Var::new(inst, false));
     }

@@ -1,0 +1,71 @@
+# Native microbenchmarks for partial compilation call overhead.
+#
+# Compile with:
+#   cargo run --release -- --compile examples/partial_call_overhead_module.ar
+
+fn noop0() -> int:
+    return 1
+
+fn id1(let x: int) -> int:
+    return x
+
+fn loop_assign(let n: int) -> int:
+    mut i = 0
+    mut x = 0
+    while i < n:
+        x = i
+        i += 1
+    return x
+
+fn loop_add(let n: int) -> int:
+    mut i = 0
+    mut x = 0
+    while i < n:
+        x += i
+        i += 1
+    return x
+
+fn loop_direct_call(let n: int) -> int:
+    mut i = 0
+    mut x = 0
+    while i < n:
+        x += id1(i)
+        i += 1
+    return x
+
+fn loop_function_param(let f: function{let x: int}->int, let n: int) -> int:
+    mut i = 0
+    mut x = 0
+    while i < n:
+        x += f(i)
+        i += 1
+    return x
+
+class Item:
+    mut v: int
+    fn __init__(mut self, let v: int) -> None:
+        self.v = v
+
+fn assign_fixed(let xs: fixed_list[Item]) -> int:
+    mut seen_value = 0
+    for x in xs:
+        seen_value = x.v
+    return seen_value
+
+fn sum_fixed(let xs: fixed_list[Item]) -> int:
+    mut total = 0
+    for x in xs:
+        total += x.v
+    return total
+
+fn direct_call_fixed(let xs: fixed_list[Item]) -> int:
+    mut total = 0
+    for x in xs:
+        total += id1(x.v)
+    return total
+
+fn function_param_fixed(let f: function{let x: int}->int, let xs: fixed_list[Item]) -> int:
+    mut total = 0
+    for x in xs:
+        total += f(x.v)
+    return total

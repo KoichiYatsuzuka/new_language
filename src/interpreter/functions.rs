@@ -913,9 +913,10 @@ impl Interpreter {
                     .map(|slot| slot.as_ref().map(|(v, m)| (Self::deep_copy_value(v.clone()), *m)))
                     .collect();
                 Value::Instance(Rc::new(RefCell::new(InstanceData {
+                    class_id: inst.class_id,
+                    flags: inst.flags,
                     class: inst.class.clone(),
                     fields: new_fields,
-                    immutable: inst.immutable,
                 })))
             }
             Value::Dict(d) => {
@@ -968,9 +969,11 @@ impl Interpreter {
                     })
                     .collect();
                 Value::Instance(Rc::new(RefCell::new(InstanceData {
+                    class_id: class.class_id,
+                    // フリーズを解除した新鮮なコピー: INST_IMMUTABLE を除いた既存フラグを継承
+                    flags: inst.flags & !crate::interpreter::value::INST_IMMUTABLE,
                     class,
                     fields: new_fields,
-                    immutable: false, // フリーズを解除した新鮮なコピー
                 })))
             }
             Value::Dict(d) => {

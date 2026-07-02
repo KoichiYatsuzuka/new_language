@@ -1,0 +1,167 @@
+# bottleneck_bench.ar — ツリーウォークインタープリタのボトルネック計測
+#
+# 各操作のコストを個別に分離して測定する。
+# Run: cargo run --release -- examples/bottleneck_bench.ar
+
+import[py-int] time
+
+let N = 1_000_000
+
+# ──────────────────────────────────────────────────────────────
+# 0. ベースライン: 空の while ループ (AST ディスパッチのみ)
+# ──────────────────────────────────────────────────────────────
+let t0 = time.time()
+mut i0 = 0
+while i0 < N:
+    i0 += 1
+let baseline_s = time.time() - t0
+print("baseline (empty while):        " + str(baseline_s * 1e6 / float(N)) + " µs/iter")
+
+# ──────────────────────────────────────────────────────────────
+# 1. 関数呼び出しオーバーヘッド (引数なし・ボディほぼ空)
+# ──────────────────────────────────────────────────────────────
+fn noop() -> int:
+    return 0
+
+let t1 = time.time()
+mut i1 = 0
+while i1 < N:
+    noop()
+    i1 += 1
+let call_s = time.time() - t1
+print("fn call (no args):             " + str((call_s - baseline_s) * 1e6 / float(N)) + " µs/call overhead")
+
+# ──────────────────────────────────────────────────────────────
+# 2. let→let 渡し (整数 — プリミティブ)
+# ──────────────────────────────────────────────────────────────
+fn identity_int(let x: int) -> int:
+    return x
+
+let immut_int = 42
+let t2 = time.time()
+mut i2 = 0
+while i2 < N:
+    identity_int(immut_int)
+    i2 += 1
+let let_int_s = time.time() - t2
+print("let→let int (no copy):         " + str((let_int_s - baseline_s) * 1e6 / float(N)) + " µs/call overhead")
+
+# ──────────────────────────────────────────────────────────────
+# 3. mut→let 渡し (整数 — プリミティブ, deep_clone だが即返る)
+# ──────────────────────────────────────────────────────────────
+mut mut_int = 42
+let t3 = time.time()
+mut i3 = 0
+while i3 < N:
+    identity_int(mut_int)
+    i3 += 1
+let mut_int_s = time.time() - t3
+print("mut→let int (clone prim):      " + str((mut_int_s - baseline_s) * 1e6 / float(N)) + " µs/call overhead")
+
+# ──────────────────────────────────────────────────────────────
+# 4. インスタンス: let→let 渡し (コピーなし)
+# ──────────────────────────────────────────────────────────────
+class Small:
+    mut x: float
+    mut y: float
+    fn __init__(mut self, let x: float, let y: float) -> None:
+        self.x = x
+        self.y = y
+
+fn use_small(let s: Small) -> float:
+    return s.x + s.y
+
+let immut_small = Small(1.0, 2.0)
+let t4 = time.time()
+mut i4 = 0
+while i4 < N:
+    use_small(immut_small)
+    i4 += 1
+let let_inst_s = time.time() - t4
+print("let→let instance (no copy):    " + str((let_inst_s - baseline_s) * 1e6 / float(N)) + " µs/call overhead")
+
+# ──────────────────────────────────────────────────────────────
+# 5. インスタンス: mut→let 渡し (deep_clone = コピーあり)
+# ──────────────────────────────────────────────────────────────
+mut mut_small = Small(1.0, 2.0)
+let t5 = time.time()
+mut i5 = 0
+while i5 < N:
+    use_small(mut_small)
+    i5 += 1
+let mut_inst_s = time.time() - t5
+print("mut→let instance (deep copy):  " + str((mut_inst_s - baseline_s) * 1e6 / float(N)) + " µs/call overhead")
+
+let copy_cost = (mut_inst_s - let_inst_s) * 1e6 / float(N)
+print("  → deep_clone overhead alone: " + str(copy_cost) + " µs/copy")
+
+# ──────────────────────────────────────────────────────────────
+# 6. フィールドアクセス (borrow/RefCell): 4 フィールド読み取り
+# ──────────────────────────────────────────────────────────────
+class Quad:
+    mut a: float
+    mut b: float
+    mut c: float
+    mut d: float
+    fn __init__(mut self, let va: float, let vb: float,
+                let vc: float, let vd: float) -> None:
+        self.a = va
+        self.b = vb
+        self.c = vc
+        self.d = vd
+
+fn read4(let q: Quad) -> float:
+    return q.a + q.b + q.c + q.d
+
+let immut_quad = Quad(1.0, 2.0, 3.0, 4.0)
+let t6 = time.time()
+mut i6 = 0
+while i6 < N:
+    read4(immut_quad)
+    i6 += 1
+let field4_s = time.time() - t6
+print("4-field read (let→let):        " + str((field4_s - baseline_s) * 1e6 / float(N)) + " µs/call overhead")
+
+let field_cost = ((field4_s - let_inst_s) * 1e6 / float(N)) / 2.0
+print("  → per field read (estimate): " + str(field_cost) + " µs/field")
+
+# ──────────────────────────────────────────────────────────────
+# 7. 変数ルックアップ: ローカル変数 vs ネストスコープ
+# ──────────────────────────────────────────────────────────────
+fn scope_lookup() -> int:
+    let a = 1
+    let b = 2
+    let c = 3
+    let d = 4
+    return a + b + c + d
+
+let t7 = time.time()
+mut i7 = 0
+while i7 < N:
+    scope_lookup()
+    i7 += 1
+let scope_s = time.time() - t7
+print("4-var declare+lookup:          " + str((scope_s - baseline_s) * 1e6 / float(N)) + " µs/call overhead")
+
+# ──────────────────────────────────────────────────────────────
+# 8. リストサブスクリプト (subscript = mut→let deep copy)
+# ──────────────────────────────────────────────────────────────
+mut lst = for _k in range(10) -> list[Small]:
+    loop_yield Small(1.0, 2.0)
+
+let t8 = time.time()
+mut i8 = 0
+while i8 < N:
+    use_small(lst[0])
+    i8 += 1
+let subscript_s = time.time() - t8
+print("subscript[0] + let param:      " + str((subscript_s - baseline_s) * 1e6 / float(N)) + " µs/call overhead")
+print("  → subscript overhead alone:  " + str((subscript_s - mut_inst_s) * 1e6 / float(N)) + " µs/subscript")
+
+# ──────────────────────────────────────────────────────────────
+# 9. まとめ表示
+# ──────────────────────────────────────────────────────────────
+print("")
+print("=== 参考: bench_field_access の結果を確認 ===")
+print("  kinetic() コール (N=2000 x REPS=500): ~3.45 µs/call")
+print("  内訳: subscript + deep_copy(4field) + fn_call + 4 reads + arith")

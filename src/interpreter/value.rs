@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -25,6 +26,34 @@ use indexmap::IndexMap;
 use crate::ast::{Accessibility, Param, Stmt};
 
 use super::async_mgr;
+
+// ---------------------------------------------------------------------------
+// InstanceData flags (u32 in InstanceData.flags)
+// ---------------------------------------------------------------------------
+
+/// `let` バインドされたインスタンス: 全フィールドが不変、`mut self` メソッド呼び出し禁止。
+pub const INST_IMMUTABLE: u32 = 0x80000000;
+/// `raw_fields: Vec<u8>` による int/float フラット バッファが有効。
+pub const INST_HAS_RAW_LAYOUT: u32 = 0x40000000;
+/// 例外クラスのインスタンス（高速例外型チェック用）。
+pub const INST_IS_EXCEPTION: u32 = 0x20000000;
+/// `new_type` ラッパーのインスタンス（高速 new_type 判定用）。
+pub const INST_IS_NEW_TYPE: u32 = 0x10000000;
+/// bits 23-0: `raw_fields` の初期化済みスロットを示すビットマップ（最大 24 スロット）。
+pub const INST_FIELD_INIT_MASK: u32 = 0x00FF_FFFF;
+
+// ---------------------------------------------------------------------------
+// Class ID registry
+// ---------------------------------------------------------------------------
+
+/// 次に割り当てるクラス ID（グローバルアトミックカウンタ）。
+static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(1); // 0 = 未割り当て
+
+/// 新しい一意なクラス ID を発行する。クラス定義時に一度だけ呼ぶ。
+#[inline]
+pub fn alloc_class_id() -> u32 {
+    NEXT_CLASS_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 // ---------------------------------------------------------------------------
 // Exception / traceback types
@@ -184,6 +213,9 @@ pub struct FnValue {
 #[derive(Debug)]
 pub struct ClassValue {
     pub name: String,
+    /// クラスに割り当てられた一意な ID（`alloc_class_id()` で発行）。
+    /// コンパイル済みコードからの class_id ベースのフィールド GEP に使用する。
+    pub class_id: u32,
     pub bases: Vec<String>,
     /// メソッド名 → オーバーロード候補リスト のマップ。
     pub methods: HashMap<String, Vec<Rc<FnValue>>>,
@@ -215,22 +247,27 @@ pub struct ClassValue {
     /// `new_type Name: PrimType` で生成されたクラスの場合、元のプリミティブ型名を保持する。
     /// `repr()` でプリミティブ風の表示 (`Name(value)`) に使う。`None` は通常クラス。
     pub new_type_base: Option<String>,
+    /// 例外クラスのとき `true`。インスタンス生成時に `INST_IS_EXCEPTION` フラグを立てる。
+    pub is_exception: bool,
 }
 
 /// クラスインスタンスの実行時データ。`Rc<RefCell<InstanceData>>` で共有・可変参照する。
 ///
+/// - `class_id`: クラスの一意 ID（コンパイル済みコードでの型判定・GEP に使用）
+/// - `flags`: インスタンス状態フラグ（`INST_*` 定数を参照）
 /// - `class`: このインスタンスが属するクラスの定義（メソッド解決などに使用）
 /// - `fields`: フィールドスロットの Vec。`class.field_index[name]` でインデックスを引く。
 ///   `None` = 未初期化スロット（`__init__` で初回代入前）。`Some((val, mutable))` = 初期化済み。
-/// - `immutable`: `let` バインドされた場合に `true`。すべてのフィールドが不変になり、`mut self` メソッド呼び出しが禁止される
 #[derive(Debug)]
 pub struct InstanceData {
+    /// クラスの一意 ID。ヘッダ先頭 4 バイトとしてコンパイル済みコードから読める（Case C レイアウト）。
+    pub class_id: u32,
+    /// インスタンス状態フラグ。`INST_IMMUTABLE`・`INST_IS_EXCEPTION` 等のビット。
+    pub flags: u32,
     pub class: Rc<ClassValue>,
     /// フィールドスロットの Vec。インデックスは `class.field_index` で解決する。
     /// `None` = 未初期化。`Some((値, 可変フラグ))` = 初期化済み。
     pub fields: Vec<Option<(Value, bool)>>,
-    /// `let` バインドされたとき `true`。全フィールドが不変になり、`mut self` メソッドは呼べない。
-    pub immutable: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -699,10 +736,14 @@ impl FlatLayout {
                 fields[idx] = Some((val, false));
             }
         }
+        let flags = INST_IMMUTABLE
+            | if self.class.is_exception { INST_IS_EXCEPTION } else { 0 }
+            | if self.class.new_type_base.is_some() { INST_IS_NEW_TYPE } else { 0 };
         Value::Instance(Rc::new(RefCell::new(InstanceData {
+            class_id: self.class.class_id,
+            flags,
             class: self.class.clone(),
             fields,
-            immutable: true,
         })))
     }
 }
@@ -916,6 +957,7 @@ impl ClassValue {
 
         ClassValue {
             name: self.name.clone(),
+            class_id: self.class_id,
             bases: self.bases.clone(),
             methods,
             gen_methods,
@@ -931,6 +973,7 @@ impl ClassValue {
             class_method_names: self.class_method_names.clone(),
             static_vars,
             new_type_base: self.new_type_base.clone(),
+            is_exception: self.is_exception,
         }
     }
 }
@@ -1003,9 +1046,10 @@ impl Value {
                     .map(|slot| slot.as_ref().map(|(v, m)| (v.deep_clone(), *m)))
                     .collect();
                 Value::Instance(Rc::new(RefCell::new(InstanceData {
+                    class_id: b.class_id,
+                    flags: b.flags,
                     class: Rc::new(b.class.deep_clone()),
                     fields,
-                    immutable: b.immutable,
                 })))
             }
             Value::Function(rc) => Value::Function(Rc::new(FnValue {

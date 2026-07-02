@@ -228,7 +228,7 @@ impl Interpreter {
 
     pub(super) fn freeze_instance(inst_rc: &Rc<RefCell<InstanceData>>) {
         let mut inst = inst_rc.borrow_mut();
-        inst.immutable = true;
+        inst.flags |= crate::interpreter::value::INST_IMMUTABLE;
         // すべてのフィールドを不変に変更する
         for slot in inst.fields.iter_mut() {
             if let Some((_, mutable)) = slot {
@@ -288,10 +288,13 @@ impl Interpreter {
                 fields[idx] = Some((default_val.clone(), *mutable));
             }
         }
+        let flags = if class.is_exception { crate::interpreter::value::INST_IS_EXCEPTION } else { 0 }
+            | if class.new_type_base.is_some() { crate::interpreter::value::INST_IS_NEW_TYPE } else { 0 };
         let inst_rc = Rc::new(RefCell::new(InstanceData {
+            class_id: class.class_id,
+            flags,
             class: class.clone(),
             fields,
-            immutable: false,
         }));
         let inst_val = Value::Instance(inst_rc);
 
@@ -387,10 +390,13 @@ impl Interpreter {
                 fields[idx] = Some((default_val.clone(), *mutable));
             }
         }
+        let flags = if class.is_exception { crate::interpreter::value::INST_IS_EXCEPTION } else { 0 }
+            | if class.new_type_base.is_some() { crate::interpreter::value::INST_IS_NEW_TYPE } else { 0 };
         let inst_rc = Rc::new(RefCell::new(InstanceData {
+            class_id: class.class_id,
+            flags,
             class: class.clone(),
             fields,
-            immutable: false,
         }));
         let inst_val = Value::Instance(inst_rc);
         // Native __init__ dispatch
@@ -602,7 +608,7 @@ impl Interpreter {
                 }
 
                 let class = inst_rc.borrow().class.clone();
-                let inst_immutable = inst_rc.borrow().immutable;
+                let inst_immutable = inst_rc.borrow().flags & crate::interpreter::value::INST_IMMUTABLE != 0;
 
                 // gen_methods（`gen` キーワードで定義されたメソッド、例: `__iter__`）を優先的にチェック
                 if let Some(gen_fn) = class.gen_methods.get(method_name).cloned() {
@@ -1474,7 +1480,7 @@ impl Interpreter {
         match &obj {
             Value::Instance(inst_rc) => {
                 let class = inst_rc.borrow().class.clone();
-                let inst_immutable = inst_rc.borrow().immutable;
+                let inst_immutable = inst_rc.borrow().flags & crate::interpreter::value::INST_IMMUTABLE != 0;
 
                 // Native method dispatch — check NATIVE_METHODS before tree-walk.
                 // When a native ptr is registered we always dispatch natively (no fallback).

@@ -1077,6 +1077,7 @@ impl Interpreter {
             Value::Class(orig_cls) => {
                 let new_cls = Rc::new(super::ClassValue {
                     name: name.to_string(),
+                    class_id: crate::interpreter::value::alloc_class_id(),
                     bases: orig_cls.bases.clone(),
                     methods: orig_cls.methods.clone(),
                     gen_methods: orig_cls.gen_methods.clone(),
@@ -1092,6 +1093,7 @@ impl Interpreter {
                     class_method_names: orig_cls.class_method_names.clone(),
                     static_vars: orig_cls.static_vars.clone(),
                     new_type_base: orig_cls.new_type_base.clone(),
+                    is_exception: orig_cls.is_exception,
                 });
                 self.declare_var(name.to_string(), Var::new(Value::Class(new_cls), false));
             }
@@ -1132,6 +1134,7 @@ impl Interpreter {
                 methods.insert("__init__".to_string(), vec![init_fn]);
                 let new_cls = Rc::new(super::ClassValue {
                     name: name.to_string(),
+                    class_id: crate::interpreter::value::alloc_class_id(),
                     bases: vec![],
                     methods,
                     gen_methods: HashMap::new(),
@@ -1147,6 +1150,7 @@ impl Interpreter {
                     class_method_names: HashSet::new(),
                     static_vars: HashMap::new(),
                     new_type_base: Some(type_name.clone()),
+                    is_exception: false,
                 });
                 self.declare_var(name.to_string(), Var::new(Value::Class(new_cls), false));
             }
@@ -1200,8 +1204,10 @@ impl Interpreter {
         });
         let mut item_methods = HashMap::new();
         item_methods.insert("__init__".to_string(), vec![init_fn]);
+        let item_cls_id = crate::interpreter::value::alloc_class_id();
         let item_cls = Rc::new(super::ClassValue {
             name: item_type_name.clone(),
+            class_id: item_cls_id,
             bases: vec![],
             methods: item_methods,
             gen_methods: HashMap::new(),
@@ -1217,6 +1223,7 @@ impl Interpreter {
             class_method_names: HashSet::new(),
             static_vars: HashMap::new(),
             new_type_base: None,
+            is_exception: false,
         });
         self.declare_var(
             item_type_name.clone(),
@@ -1249,6 +1256,7 @@ impl Interpreter {
 
         let enum_cls = Rc::new(super::ClassValue {
             name: name.to_string(),
+            class_id: crate::interpreter::value::alloc_class_id(),
             bases: vec![],
             methods: HashMap::new(),
             gen_methods: HashMap::new(),
@@ -1264,6 +1272,7 @@ impl Interpreter {
             class_method_names: HashSet::new(),
             static_vars: HashMap::new(),
             new_type_base: None,
+            is_exception: false,
         });
         self.declare_var(name.to_string(), Var::new(Value::Class(enum_cls), false));
         Ok(ExecResult::Normal)
@@ -1448,6 +1457,7 @@ impl Interpreter {
 
         let cls = Rc::new(super::ClassValue {
             name: name.to_string(),
+            class_id: crate::interpreter::value::alloc_class_id(),
             bases: bases.to_vec(),
             methods,
             gen_methods,
@@ -1463,6 +1473,7 @@ impl Interpreter {
             class_method_names,
             static_vars,
             new_type_base: None,
+            is_exception: false,
         });
         if decorators.is_empty() {
             self.declare_var(name.to_string(), Var::new(Value::Class(cls), false));
@@ -2040,10 +2051,10 @@ impl Interpreter {
             match stmt {
                 Stmt::FnDef { name, params, .. } | Stmt::GenDef { name, params, .. } => {
                     let symbol_name = format!("{name}_tl\0");
-                    let has_symbol = unsafe {
-                        lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes()).is_ok()
-                    };
-                    if has_symbol {
+                    if let Ok(func) = unsafe {
+                        lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
+                    } {
+                        let initial_ptr = unsafe { *func } as usize;
                         let fn_ref = Arc::new(NativeFnRef {
                             lib_path: lib_path_buf.clone(),
                             fn_name: name.clone(),
@@ -2052,7 +2063,7 @@ impl Interpreter {
                             param_mutabilities: params.iter().map(|p| p.mutable).collect(),
                             ptr_params: vec![crate::interpreter::PtrParam::None; params.len()],
                             raw_fn_ptr: 0,
-                            cached_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
+                            cached_fn_ptr: std::sync::atomic::AtomicUsize::new(initial_ptr),
                         });
                         members.insert(name.clone(), Value::NativeFunction(fn_ref));
                     }
@@ -2336,6 +2347,7 @@ impl Interpreter {
 
             let cls = Rc::new(ClassValue {
                 name: sdef.name.clone(),
+                class_id: crate::interpreter::value::alloc_class_id(),
                 bases: vec![],
                 methods,
                 gen_methods: HashMap::new(),
@@ -2351,6 +2363,7 @@ impl Interpreter {
                 class_method_names: std::collections::HashSet::new(),
                 static_vars: HashMap::new(),
                 new_type_base: None,
+                is_exception: false,
             });
 
             members.insert(sdef.name.clone(), Value::Class(cls));

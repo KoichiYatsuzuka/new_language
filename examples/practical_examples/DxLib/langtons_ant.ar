@@ -14,7 +14,7 @@
 # Run:
 #   cargo run -- examples/practical_examples/DxLib/langtons_ant.ar
 
-import[ar] ant_render as render
+import ant_render as render
 from ant_render import Cell
 import[cpp-lib] DxLib.DxLib as dx
 

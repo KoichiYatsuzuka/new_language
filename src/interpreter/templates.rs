@@ -356,6 +356,7 @@ impl Interpreter {
             self.build_field_index(&own_field_order, &tmpl.bases);
         let cls = Rc::new(ClassValue {
             name: tmpl.name.clone(),
+            class_id: crate::interpreter::value::alloc_class_id(),
             bases: tmpl.bases.clone(),
             methods,
             gen_methods,
@@ -371,6 +372,7 @@ impl Interpreter {
             class_method_names,
             static_vars,
             new_type_base: None,
+            is_exception: false,
         });
         self.instantiate(cls, call_args)
     }

@@ -1500,9 +1500,10 @@ impl Interpreter {
                 let fields = vec![Some((Value::UInt(raw), true))];
                 Ok(Value::Instance(Rc::new(RefCell::new(
                     crate::interpreter::InstanceData {
+                        class_id: pointer_cls.class_id,
+                        flags: 0,
                         class: pointer_cls,
                         fields,
-                        immutable: false,
                     },
                 ))))
             }
@@ -1650,28 +1651,39 @@ impl Interpreter {
                 Ok(func(handles.as_ptr(), handles.len() as i32))
             }
         } else {
-            let lib = match self.native_libs.get(&fn_ref.lib_path) {
-                Some(l) => l,
-                None => {
-                    super::native_api::abort_native_call(is_outermost);
-                    return Err(format!(
-                        "RuntimeError: native library not loaded: {}",
-                        fn_ref.lib_path.display()
-                    ));
+            use std::sync::atomic::Ordering;
+            let cached = fn_ref.cached_fn_ptr.load(Ordering::Relaxed);
+            let fn_ptr = if cached != 0 {
+                cached
+            } else {
+                let lib = match self.native_libs.get(&fn_ref.lib_path) {
+                    Some(l) => l,
+                    None => {
+                        super::native_api::abort_native_call(is_outermost);
+                        return Err(format!(
+                            "RuntimeError: native library not loaded: {}",
+                            fn_ref.lib_path.display()
+                        ));
+                    }
+                };
+                let symbol_name = format!("{}_tl\0", fn_ref.fn_name);
+                match unsafe {
+                    lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
+                } {
+                    Ok(func) => {
+                        let fp = unsafe { *func } as usize;
+                        fn_ref.cached_fn_ptr.store(fp, Ordering::Relaxed);
+                        fp
+                    }
+                    Err(e) => {
+                        super::native_api::abort_native_call(is_outermost);
+                        return Err(format!("RuntimeError: symbol '{}' not found: {e}", fn_ref.fn_name));
+                    }
                 }
             };
-            let symbol_name = format!("{}_tl\0", fn_ref.fn_name);
             unsafe {
-                match lib
-                    .0
-                    .get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
-                {
-                    Ok(func) => Ok(func(handles.as_ptr(), handles.len() as i32)),
-                    Err(e) => Err(format!(
-                        "RuntimeError: symbol '{}' not found: {e}",
-                        fn_ref.fn_name
-                    )),
-                }
+                let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(fn_ptr);
+                Ok(func(handles.as_ptr(), handles.len() as i32))
             }
         };
 
@@ -1757,28 +1769,39 @@ impl Interpreter {
                 Ok(func(handles.as_ptr(), handles.len() as i32))
             }
         } else {
-            let lib = match self.native_libs.get(&fn_ref.lib_path) {
-                Some(l) => l,
-                None => {
-                    super::native_api::abort_native_call(is_outermost);
-                    return Err(format!(
-                        "RuntimeError: native library not loaded: {}",
-                        fn_ref.lib_path.display()
-                    ));
+            use std::sync::atomic::Ordering;
+            let cached = fn_ref.cached_fn_ptr.load(Ordering::Relaxed);
+            let fn_ptr = if cached != 0 {
+                cached
+            } else {
+                let lib = match self.native_libs.get(&fn_ref.lib_path) {
+                    Some(l) => l,
+                    None => {
+                        super::native_api::abort_native_call(is_outermost);
+                        return Err(format!(
+                            "RuntimeError: native library not loaded: {}",
+                            fn_ref.lib_path.display()
+                        ));
+                    }
+                };
+                let symbol_name = format!("{}_tl\0", fn_ref.fn_name);
+                match unsafe {
+                    lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
+                } {
+                    Ok(func) => {
+                        let fp = unsafe { *func } as usize;
+                        fn_ref.cached_fn_ptr.store(fp, Ordering::Relaxed);
+                        fp
+                    }
+                    Err(e) => {
+                        super::native_api::abort_native_call(is_outermost);
+                        return Err(format!("RuntimeError: symbol '{}' not found: {e}", fn_ref.fn_name));
+                    }
                 }
             };
-            let symbol_name = format!("{}_tl\0", fn_ref.fn_name);
             unsafe {
-                match lib
-                    .0
-                    .get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
-                {
-                    Ok(func) => Ok(func(handles.as_ptr(), handles.len() as i32)),
-                    Err(e) => Err(format!(
-                        "RuntimeError: symbol '{}' not found: {e}",
-                        fn_ref.fn_name
-                    )),
-                }
+                let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(fn_ptr);
+                Ok(func(handles.as_ptr(), handles.len() as i32))
             }
         };
 
@@ -2122,7 +2145,7 @@ impl Interpreter {
                         "TypeError: cannot assign to immutable field '{attr}'"
                     ));
                 }
-                if inst.immutable {
+                if inst.flags & crate::interpreter::value::INST_IMMUTABLE != 0 {
                     return Err(format!(
                         "TypeError: cannot assign field '{attr}' on immutable instance"
                     ));
@@ -2502,7 +2525,7 @@ impl Interpreter {
                             "TypeError: cannot assign to immutable field '{attr}'"
                         ));
                     }
-                    if inst.fields[idx].is_none() && inst.immutable {
+                    if inst.fields[idx].is_none() && inst.flags & crate::interpreter::value::INST_IMMUTABLE != 0 {
                         return Err(format!(
                             "TypeError: cannot assign field '{attr}' on immutable instance"
                         ));
@@ -2555,7 +2578,7 @@ impl Interpreter {
                             "TypeError: cannot assign to immutable trait field '{attr}'"
                         ));
                     }
-                    if inst.immutable {
+                    if inst.flags & crate::interpreter::value::INST_IMMUTABLE != 0 {
                         return Err(format!(
                             "TypeError: cannot assign field '{attr}' on immutable instance"
                         ));

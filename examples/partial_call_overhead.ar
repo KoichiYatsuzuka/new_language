@@ -1,0 +1,104 @@
+# Runner for partial_call_overhead_module.ar.
+#
+# 1. cargo run --release -- --compile examples/partial_call_overhead_module.ar
+# 2. cargo run --release -- examples/partial_call_overhead.ar
+
+import[py-int] time
+
+from partial_call_overhead_module import noop0
+from partial_call_overhead_module import id1
+from partial_call_overhead_module import loop_assign
+from partial_call_overhead_module import loop_add
+from partial_call_overhead_module import loop_direct_call
+from partial_call_overhead_module import loop_function_param
+from partial_call_overhead_module import Item
+from partial_call_overhead_module import assign_fixed
+from partial_call_overhead_module import sum_fixed
+from partial_call_overhead_module import direct_call_fixed
+from partial_call_overhead_module import function_param_fixed
+
+let OUTER = 1000000
+let INNER = 10000000
+let CB_INNER = 1000000
+let LIST_N = 1000000
+let FIXED_REPS = 50
+let FIXED_CB_REPS = 5
+
+let t0 = time.time()
+mut i0 = 0
+while i0 < OUTER:
+    i0 += 1
+let top_empty = time.time() - t0
+
+let t1 = time.time()
+mut i1 = 0
+mut sink1 = 0
+while i1 < OUTER:
+    sink1 += noop0()
+    i1 += 1
+let top_native_call = time.time() - t1
+
+let t2 = time.time()
+let r_assign = loop_assign(INNER)
+let loop_assign_s = time.time() - t2
+
+let t3 = time.time()
+let r_add = loop_add(INNER)
+let loop_add_s = time.time() - t3
+
+let t4 = time.time()
+let r_direct = loop_direct_call(INNER)
+let loop_direct_s = time.time() - t4
+
+let t5 = time.time()
+let r_param = loop_function_param(id1, CB_INNER)
+let loop_param_s = time.time() - t5
+
+mut raw = for j in range(LIST_N)->list[Item]:
+    loop_yield Item(j)
+let xs = raw => fixed_list[Item]
+
+let t6 = time.time()
+mut r_assign_fixed = 0
+mut f0 = 0
+while f0 < FIXED_REPS:
+    r_assign_fixed = assign_fixed(xs)
+    f0 += 1
+let assign_fixed_s = time.time() - t6
+
+let t7 = time.time()
+mut r_sum_fixed = 0
+mut f1 = 0
+while f1 < FIXED_REPS:
+    r_sum_fixed = sum_fixed(xs)
+    f1 += 1
+let sum_fixed_s = time.time() - t7
+
+let t8 = time.time()
+mut r_direct_fixed = 0
+mut f2 = 0
+while f2 < FIXED_REPS:
+    r_direct_fixed = direct_call_fixed(xs)
+    f2 += 1
+let direct_fixed_s = time.time() - t8
+
+let t9 = time.time()
+mut r_param_fixed = 0
+mut f3 = 0
+while f3 < FIXED_CB_REPS:
+    r_param_fixed = function_param_fixed(id1, xs)
+    f3 += 1
+let param_fixed_s = time.time() - t9
+
+print("outer_empty_s=" + str(top_empty))
+print("outer_native_call_s=" + str(top_native_call))
+print("outer_native_dispatch_ns=" + str((top_native_call - top_empty) * 1000000000.0 / float(OUTER)))
+print("synthetic_assign_loop_ns=" + str(loop_assign_s * 1000000000.0 / float(INNER)) + " result=" + str(r_assign))
+print("synthetic_add_loop_ns=" + str(loop_add_s * 1000000000.0 / float(INNER)) + " result=" + str(r_add))
+print("synthetic_direct_call_extra_ns=" + str((loop_direct_s - loop_add_s) * 1000000000.0 / float(INNER)) + " result=" + str(r_direct))
+print("synthetic_function_param_extra_ns=" + str((loop_param_s - loop_add_s * float(CB_INNER) / float(INNER)) * 1000000000.0 / float(CB_INNER)) + " result=" + str(r_param))
+print("fixed_assign_iter_ns=" + str(assign_fixed_s * 1000000000.0 / (float(LIST_N) * float(FIXED_REPS))) + " result=" + str(r_assign_fixed))
+print("fixed_sum_iter_ns=" + str(sum_fixed_s * 1000000000.0 / (float(LIST_N) * float(FIXED_REPS))) + " result=" + str(r_sum_fixed))
+print("fixed_direct_call_extra_ns=" + str((direct_fixed_s - sum_fixed_s) * 1000000000.0 / (float(LIST_N) * float(FIXED_REPS))) + " result=" + str(r_direct_fixed))
+print("fixed_function_param_extra_ns=" + str((param_fixed_s - sum_fixed_s * float(FIXED_CB_REPS) / float(FIXED_REPS)) * 1000000000.0 / (float(LIST_N) * float(FIXED_CB_REPS))) + " result=" + str(r_param_fixed))
+print("sink=" + str(sink1))

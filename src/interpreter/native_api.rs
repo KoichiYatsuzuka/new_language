@@ -1,4 +1,4 @@
-﻿// native_api.rs — Interpreter-mediated value table and C callbacks for native compiled modules.
+// native_api.rs — Interpreter-mediated value table and C callbacks for native compiled modules.
 //
 // All values crossing the native ABI boundary are represented as `i64` handles:
 //   TL_NONE  (0) = None
@@ -11,7 +11,8 @@
 // All heavy operations (attribute access, function calls, binops) route through
 // the interpreter held in CURRENT_INTERP.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::{DictData, Interpreter, TupleData, Value};
@@ -54,160 +55,203 @@ pub const UOP_NEG: i32 = 0;
 pub const UOP_NOT: i32 = 1;
 pub const UOP_BIT_NOT: i32 = 2;
 
-// ── Thread-local state ───────────────────────────────────────────────────────
-
 // ── Integer handle cache ─────────────────────────────────────────────────────
 //
-// Integers 0..INT_CACHE_END are pre-populated at fixed arena indices so that
-// cb_make_int(n) for small n returns a permanent handle without any arena push.
-//   arena[0]                   = None placeholder  (TL_NONE=0 accessed directly)
-//   arena[1]                   = Bool(true)         (TL_TRUE=1 accessed directly)
-//   arena[2]                   = Bool(false)        (TL_FALSE=2 accessed directly)
-//   arena[3 + n]  (0 ≤ n < 256) = Int(n)           → handle (3 + n)
-//
-// So INT_CACHE_BASE = 3 + 256 = 259 = the first dynamic slot.
+// arena[0]                    = None placeholder  (TL_NONE=0 accessed directly)
+// arena[1]                    = Bool(true)         (TL_TRUE=1 accessed directly)
+// arena[2]                    = Bool(false)        (TL_FALSE=2 accessed directly)
+// arena[3 + n]  (0 ≤ n < 256) = Int(n)            → handle (3 + n)
+// INT_CACHE_BASE = 3 + 256 = 259 = the first dynamic slot.
 
 const INT_CACHE_END: i64 = 256;
 const INT_CACHE_BASE: usize = 3 + INT_CACHE_END as usize; // 259
 
-/// 整数キャッシュ領域内の整数 `n`（0 以上 INT_CACHE_END 未満）に対応するアリーナハンドルを返す。
 #[inline(always)]
 fn int_cache_handle(n: i64) -> i64 {
     3 + n
 }
 
-thread_local! {
+// ── Consolidated thread-local state ─────────────────────────────────────────
+//
+// All previously separate thread_local! variables are combined here so that
+// functions needing multiple TLS fields can open a single borrow instead of
+// doing one TLS lookup per field.
+//
+// Borrow discipline: never hold a borrow on STATE across a call that might
+// also borrow STATE.  The pattern used throughout this file is:
+//   1. Extract needed values in one borrow — then release.
+//   2. Call interpreter (which is not STATE-aware).
+//   3. Store result in a new, non-overlapping borrow.
+
+struct NativeCallState {
     /// Raw pointer to the currently executing Interpreter.
-    /// Set by `enter_native_call` at depth 0; cleared by `exit_native_call` / `abort_native_call`.
-    static CURRENT_INTERP: Cell<*mut Interpreter> = Cell::new(std::ptr::null_mut());
-
-    /// Scratch buffers for null-terminated C strings produced by `ar_to_cstr`.
-    /// Cleared at the end of the outermost native call so the pointers remain valid
-    /// for the duration of any single call chain.
-    static CSTR_BUFS: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
-
-    /// Value arena.
-    /// indices 0-2: placeholder None/True/False (accessed via TL_* constants)
-    /// indices 3 .. INT_CACHE_BASE-1: pre-cached Int(0)..Int(255) — permanent, never freed
-    /// indices INT_CACHE_BASE+: dynamic values pushed at runtime
-    static VALUE_ARENA: RefCell<Vec<Value>> = RefCell::new({
-        let mut v = Vec::with_capacity(INT_CACHE_BASE + 64);
-        v.push(Value::None);          // index 0
-        v.push(Value::Bool(true));    // index 1
-        v.push(Value::Bool(false));   // index 2
-        for i in 0..INT_CACHE_END {   // indices 3..258
-            v.push(Value::Int(i));
-        }
-        v
-    });
-
-    /// Iterator table: each entry is (collected_items, current_position).
-    /// Iter handles are negative: -(idx+2), so they're all <= -2.
-    static ITER_TABLE: RefCell<Vec<(Vec<Value>, usize)>> = RefCell::new(Vec::new());
-
-    /// Error set by a callback on failure; checked after each native call.
-    static NATIVE_ERROR: RefCell<Option<String>> = RefCell::new(None);
-
-    /// Exception raised by CB_RAISE; (type_name, message) pair.
-    static PENDING_RAISE: RefCell<Option<(String, String)>> = RefCell::new(None);
-
-    /// Native method dispatch table: (class_name, method_name) → fn_ptr.
-    /// Populated by `register_native_method` when a DLL is loaded.
-    static NATIVE_METHODS: RefCell<std::collections::HashMap<(String, String), usize>> =
-        RefCell::new(std::collections::HashMap::new());
-
-    // ── Call-frame tracking for arena cleanup ────────────────────────────────
+    interp_ptr: *mut Interpreter,
+    /// Value arena (see handle encoding above).
+    arena: Vec<Value>,
+    /// Iterator table: (collected_items, current_position).
+    /// Iter handles are encoded as -(idx+2) so they are all ≤ -2.
+    iter_table: Vec<(Vec<Value>, usize)>,
     /// Nesting depth of native calls (0 = not inside any native call).
-    static CALL_DEPTH: Cell<usize> = Cell::new(0);
+    call_depth: usize,
     /// Arena size saved at the outermost native call entry.
-    static ARENA_SAVE: Cell<usize> = Cell::new(INT_CACHE_BASE);
+    arena_save: usize,
     /// Iter table size saved at the outermost native call entry.
-    static ITER_SAVE: Cell<usize> = Cell::new(0);
+    iter_save: usize,
+    /// Error set by a callback on failure; checked after each native call.
+    error: Option<String>,
+    /// Exception raised by CB_RAISE; (type_name, message) pair.
+    pending_raise: Option<(String, String)>,
+    /// Scratch C-string buffers produced by `ar_to_cstr`; cleared at outermost exit.
+    cstr_bufs: Vec<Vec<u8>>,
+    /// Native method dispatch table: (class_name, method_name) → fn_ptr.
+    native_methods: HashMap<(String, String), usize>,
+}
+
+impl NativeCallState {
+    /// Clone a value out of the arena by handle.
+    #[inline]
+    fn clone_value(&self, h: i64) -> Value {
+        match h {
+            TL_NONE => Value::None,
+            TL_TRUE => Value::Bool(true),
+            TL_FALSE => Value::Bool(false),
+            n if n >= 3 => self.arena.get(n as usize).cloned().unwrap_or(Value::None),
+            _ => Value::None,
+        }
+    }
+
+    /// Push a value into the arena and return its handle.
+    /// Small integers (0..256), booleans and None return cached handles without arena push.
+    #[inline]
+    fn push_value(&mut self, v: Value) -> i64 {
+        match &v {
+            Value::None => TL_NONE,
+            Value::Bool(true) => TL_TRUE,
+            Value::Bool(false) => TL_FALSE,
+            Value::Int(n) if *n >= 0 && *n < INT_CACHE_END => int_cache_handle(*n),
+            _ => {
+                let h = self.arena.len() as i64;
+                self.arena.push(v);
+                h
+            }
+        }
+    }
+
+    /// Like push_value but always allocates a new arena slot (no cached handle).
+    /// Used for write-back (MutPtr) parameters that must be addressable.
+    #[inline]
+    fn push_value_writeback(&mut self, v: Value) -> i64 {
+        let h = self.arena.len() as i64;
+        self.arena.push(v);
+        h
+    }
+}
+
+thread_local! {
+    static STATE: RefCell<NativeCallState> = RefCell::new({
+        let mut arena = Vec::with_capacity(INT_CACHE_BASE + 64);
+        arena.push(Value::None);         // index 0
+        arena.push(Value::Bool(true));   // index 1
+        arena.push(Value::Bool(false));  // index 2
+        for i in 0..INT_CACHE_END {     // indices 3..258
+            arena.push(Value::Int(i));
+        }
+        NativeCallState {
+            interp_ptr: std::ptr::null_mut(),
+            arena,
+            iter_table: Vec::new(),
+            call_depth: 0,
+            arena_save: INT_CACHE_BASE,
+            iter_save: 0,
+            error: None,
+            pending_raise: None,
+            cstr_bufs: Vec::new(),
+            native_methods: HashMap::new(),
+        }
+    });
 }
 
 // ── Public API for the interpreter ──────────────────────────────────────────
 
-/// ネイティブ関数呼び出しを開始する。`exit_native_call` または `abort_native_call` と対で使用する。
-/// 最外呼び出し（深さが 0）のとき `true`、再入呼び出しのとき `false` を返す。
-/// 最外レベルでは、アリーナとイテレータテーブルの保存点を記録し `CURRENT_INTERP` をセットする。
+/// ネイティブ関数呼び出しを開始する。最外呼び出し（深さ0）のとき `true` を返す。
+/// 最外レベルではアリーナとイテレータテーブルの保存点を記録し `interp_ptr` をセットする。
 pub fn enter_native_call(interp: *mut Interpreter) -> bool {
-    let prev = CALL_DEPTH.with(|c| {
-        let v = c.get();
-        c.set(v + 1);
-        v
-    });
-    if prev == 0 {
-        CURRENT_INTERP.with(|c| c.set(interp));
-        VALUE_ARENA.with(|a| ARENA_SAVE.with(|s| s.set(a.borrow().len())));
-        ITER_TABLE.with(|t| ITER_SAVE.with(|s| s.set(t.borrow().len())));
-        true
-    } else {
-        false
-    }
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let prev = st.call_depth;
+        st.call_depth = prev + 1;
+        if prev == 0 {
+            st.interp_ptr = interp;
+            st.arena_save = st.arena.len();
+            st.iter_save = st.iter_table.len();
+            true
+        } else {
+            false
+        }
+    })
 }
 
-/// ネイティブ関数呼び出しを正常終了する（成功パス）。
-/// `result_h` から結果値をクローンし、最外呼び出しであればアリーナ・イテレータテーブルを保存点まで巻き戻し `CURRENT_INTERP` をクリアする。
+/// ネイティブ関数呼び出しを正常終了する。
+/// `result_h` から結果値をクローンし、最外呼び出しであればアリーナ等を保存点まで巻き戻す。
 pub fn exit_native_call(result_h: i64, is_outermost: bool) -> Value {
-    let result = clone_value_at(result_h);
-    CALL_DEPTH.with(|c| {
-        let v = c.get();
-        if v > 0 {
-            c.set(v - 1);
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let result = st.clone_value(result_h);
+        if st.call_depth > 0 {
+            st.call_depth -= 1;
         }
-    });
-    if is_outermost {
-        CURRENT_INTERP.with(|c| c.set(std::ptr::null_mut()));
-        VALUE_ARENA.with(|a| a.borrow_mut().truncate(ARENA_SAVE.with(|s| s.get())));
-        ITER_TABLE.with(|t| t.borrow_mut().truncate(ITER_SAVE.with(|s| s.get())));
-        CSTR_BUFS.with(|b| b.borrow_mut().clear());
-    }
-    result
+        if is_outermost {
+            st.interp_ptr = std::ptr::null_mut();
+            let arena_save = st.arena_save;
+            let iter_save = st.iter_save;
+            st.arena.truncate(arena_save);
+            st.iter_table.truncate(iter_save);
+            st.cstr_bufs.clear();
+        }
+        result
+    })
 }
 
-/// ネイティブ関数呼び出しをエラー終了する（エラーパス）。
-/// `exit_native_call` と同じクリーンアップを行うが値を返さない。
+/// ネイティブ関数呼び出しをエラー終了する（値を返さずクリーンアップのみ）。
 pub fn abort_native_call(is_outermost: bool) {
-    CALL_DEPTH.with(|c| {
-        let v = c.get();
-        if v > 0 {
-            c.set(v - 1);
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if st.call_depth > 0 {
+            st.call_depth -= 1;
         }
-    });
-    if is_outermost {
-        CURRENT_INTERP.with(|c| c.set(std::ptr::null_mut()));
-        VALUE_ARENA.with(|a| a.borrow_mut().truncate(ARENA_SAVE.with(|s| s.get())));
-        ITER_TABLE.with(|t| t.borrow_mut().truncate(ITER_SAVE.with(|s| s.get())));
-        CSTR_BUFS.with(|b| b.borrow_mut().clear());
-    }
+        if is_outermost {
+            st.interp_ptr = std::ptr::null_mut();
+            let arena_save = st.arena_save;
+            let iter_save = st.iter_save;
+            st.arena.truncate(arena_save);
+            st.iter_table.truncate(iter_save);
+            st.cstr_bufs.clear();
+        }
+    })
 }
 
-/// 値をアリーナにプッシュしてハンドルを返す。
-/// 小整数（0..INT_CACHE_END）と真偽値は事前キャッシュ済みハンドルを返す。
+/// 値をアリーナにプッシュしてハンドルを返す（小整数・真偽値はキャッシュ済みハンドルを返す）。
 pub fn push_handle(v: Value) -> i64 {
     match &v {
         Value::None => TL_NONE,
         Value::Bool(true) => TL_TRUE,
         Value::Bool(false) => TL_FALSE,
         Value::Int(n) if *n >= 0 && *n < INT_CACHE_END => int_cache_handle(*n),
-        _ => VALUE_ARENA.with(|a| {
-            let mut arena = a.borrow_mut();
-            let h = arena.len() as i64;
-            arena.push(v);
+        _ => STATE.with(|s| {
+            let mut st = s.borrow_mut();
+            let h = st.arena.len() as i64;
+            st.arena.push(v);
             h
         }),
     }
 }
 
-/// 値をアリーナに**常に新規スロット**としてプッシュしてハンドルを返す。
-/// `push_handle` と異なり、キャッシュ済みの定数ハンドルは返さず、ネイティブ DLL が
-/// `ar_write_handle` で後から上書き可能な新しいスロットを確保する。
-/// cpp-bridge の `MutPtr`（書き戻し）引数に使用する。
+/// 値をアリーナに**常に新規スロット**としてプッシュしてハンドルを返す（cpp-bridge write-back 用）。
 pub fn push_handle_writeback(v: Value) -> i64 {
-    VALUE_ARENA.with(|a| {
-        let mut arena = a.borrow_mut();
-        let h = arena.len() as i64;
-        arena.push(v);
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let h = st.arena.len() as i64;
+        st.arena.push(v);
         h
     })
 }
@@ -219,51 +263,47 @@ pub fn clone_value_at(h: i64) -> Value {
         TL_TRUE => Value::Bool(true),
         TL_FALSE => Value::Bool(false),
         n if n >= 3 => {
-            VALUE_ARENA.with(|a| a.borrow().get(n as usize).cloned().unwrap_or(Value::None))
+            STATE.with(|s| s.borrow().arena.get(n as usize).cloned().unwrap_or(Value::None))
         }
-        _ => Value::None, // TL_STOP_ITER or invalid
+        _ => Value::None,
     }
 }
 
 /// 直前のネイティブ呼び出しチェーンでセットされたエラーを取り出して返す。
 pub fn take_error() -> Option<String> {
-    NATIVE_ERROR.with(|e| e.borrow_mut().take())
+    STATE.with(|s| s.borrow_mut().error.take())
 }
 
 /// Take any exception raised by CB_RAISE. Returns (type_name, message) if set.
 pub fn take_pending_raise() -> Option<(String, String)> {
-    PENDING_RAISE.with(|p| p.borrow_mut().take())
+    STATE.with(|s| s.borrow_mut().pending_raise.take())
 }
 
 /// Register a natively compiled class method so `ar_call_method` can dispatch to it.
 pub fn register_native_method(class_name: &str, method_name: &str, fn_ptr: usize) {
-    NATIVE_METHODS.with(|m| {
-        m.borrow_mut().insert((class_name.to_string(), method_name.to_string()), fn_ptr);
+    STATE.with(|s| {
+        s.borrow_mut()
+            .native_methods
+            .insert((class_name.to_string(), method_name.to_string()), fn_ptr);
     });
 }
 
 /// Clear all registered native methods (call on unload / hot-reload).
 pub fn clear_native_methods() {
-    NATIVE_METHODS.with(|m| m.borrow_mut().clear());
+    STATE.with(|s| s.borrow_mut().native_methods.clear());
 }
 
 /// Look up the raw function pointer for a native class method.
-/// Returns `Some(ptr)` if registered, `None` otherwise.
 pub fn lookup_native_method_ptr(class_name: &str, method_name: &str) -> Option<usize> {
-    NATIVE_METHODS.with(|m| {
-        m.borrow().get(&(class_name.to_string(), method_name.to_string())).copied()
+    STATE.with(|s| {
+        s.borrow()
+            .native_methods
+            .get(&(class_name.to_string(), method_name.to_string()))
+            .copied()
     })
 }
 
 /// Dispatch a native class method from interpreter code (not from within a native call).
-///
-/// - `obj`: the `Value::Instance` on which the method is called (self)
-/// - `method_name`: name of the method
-/// - `arg_vals`: already-evaluated argument values (excluding self)
-///
-/// Returns `Some(Ok(value))` when a native method was registered and ran successfully,
-/// `Some(Err(msg))` on native error, or `None` if no native method is registered for
-/// `(class_name, method_name)`.
 pub fn try_dispatch_native_method(
     interp: &mut Interpreter,
     obj: Value,
@@ -311,23 +351,6 @@ pub fn get_callbacks() -> *const ArCallbacks {
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
-/// スレッドローカルに保持している現在の `Interpreter` への生ポインタを返す。
-fn get_interp_ptr() -> *mut Interpreter {
-    CURRENT_INTERP.with(|c| c.get())
-}
-
-/// ネイティブコールバックがエラーをセット済みかどうかを返す。
-fn has_error() -> bool {
-    NATIVE_ERROR.with(|e| e.borrow().is_some())
-}
-
-/// ネイティブコールバックのエラーメッセージをスレッドローカル変数にセットする。
-fn set_error(msg: String) {
-    NATIVE_ERROR.with(|e| *e.borrow_mut() = Some(msg));
-}
-
-/// `i32` の二項演算コードを AST の `BinOp` 列挙型に変換する。
-/// 未知のコードの場合は `None` を返す。
 fn i32_to_binop(op: i32) -> Option<crate::ast::BinOp> {
     use crate::ast::BinOp;
     match op {
@@ -392,255 +415,202 @@ pub struct ArCallbacks {
     pub write_handle: extern "C" fn(i64, i64),
 
     // ── Feature-extension callbacks (fields 27-31) ──────────────────────────
-    /// Append `item_h` to the list at `list_h`; returns the same list handle.
     pub list_append: extern "C" fn(i64, i64) -> i64,
-    /// Raise an exception: (type_handle, msg_handle) → stores in PENDING_RAISE, returns TL_EXCEPTION.
     pub raise_exc: extern "C" fn(i64, i64) -> i64,
-    /// Allocate a mutable cell initialised to `init_h`; returns a cell handle.
     pub make_cell: extern "C" fn(i64) -> i64,
-    /// Read the current value stored in a cell; returns a value handle.
     pub get_cell: extern "C" fn(i64) -> i64,
-    /// Write a new value into a cell (no return value).
     pub set_cell: extern "C" fn(i64, i64),
-    /// Call a named method on an object, binding `self` automatically.
-    /// Equivalent to `eval_method_call(obj, method_name, args)`.
     pub call_method: extern "C" fn(i64, *const u8, i32, *const i64, i32) -> i64,
 
     // ── Typed field-read callbacks (fields 33-34) ────────────────────────────
-    /// Read a float-typed field from an object; returns the raw f64 without allocating
-    /// an arena handle.  Faster than CB_GET_ATTR + CB_TO_FLOAT for typed class fields.
     pub get_float_field: extern "C" fn(i64, *const u8, i32) -> f64,
-    /// Read an int-typed field from an object; returns the raw i64 without allocating
-    /// an arena handle.  Faster than CB_GET_ATTR + CB_TO_INT for typed class fields.
     pub get_int_field: extern "C" fn(i64, *const u8, i32) -> i64,
 
     // ── Flat frozen-list access callbacks (fields 35-36) ─────────────────────
-    /// Return the raw data pointer of a FrozenList as i64 (cast via `inttoptr` in LLVM).
-    /// Returns 0 if the handle is not a FrozenList.
     pub flat_data_ptr: extern "C" fn(i64) -> i64,
-    /// Return the element count of a FrozenList.
-    /// Returns 0 if the handle is not a FrozenList.
     pub flat_len: extern "C" fn(i64) -> i64,
 
     // ── Function-object trampoline (field 37) ─────────────────────────────────
-    /// Given a function handle, return a C-callable pointer with signature
-    /// `fn(i64 fn_h, *const i64 args, i32 n) -> i64`.
-    /// Native compiled functions cache this pointer once at entry for each
-    /// `function[...]->R` parameter, then call through it in the hot path
-    /// instead of going through the ArCallbacks GEP chain at every call site.
     pub fn_trampoline: extern "C" fn(i64) -> *const (),
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
 
-/// `i64` 整数値からアリーナハンドルを生成して返す C コールバック。
 extern "C" fn ar_make_int(n: i64) -> i64 {
     push_handle(Value::Int(n))
 }
 
-/// `f64` 浮動小数点値からアリーナハンドルを生成して返す C コールバック。
 extern "C" fn ar_make_float(f: f64) -> i64 {
-    VALUE_ARENA.with(|a| {
-        let mut arena = a.borrow_mut();
-        let h = arena.len() as i64;
-        arena.push(Value::Float(f));
-        h
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        st.push_value(Value::Float(f))
     })
 }
 
-/// `i32` の真偽値（0=false, 非0=true）から `TL_TRUE` / `TL_FALSE` ハンドルを返す C コールバック。
 extern "C" fn ar_make_bool(b: i32) -> i64 {
-    if b != 0 {
-        TL_TRUE
-    } else {
-        TL_FALSE
-    }
+    if b != 0 { TL_TRUE } else { TL_FALSE }
 }
 
-/// UTF-8 バイト列ポインタと長さから文字列値を生成してハンドルを返す C コールバック。
 extern "C" fn ar_make_str(ptr: *const u8, len: i32) -> i64 {
-    let s = unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len as usize)) }
-        .to_owned();
-    VALUE_ARENA.with(|a| {
-        let mut arena = a.borrow_mut();
-        let h = arena.len() as i64;
-        arena.push(Value::Str(s));
-        h
-    })
-}
-
-/// ハンドル配列からリスト値を生成してハンドルを返す C コールバック。
-extern "C" fn ar_make_list(items_ptr: *const i64, n: i32) -> i64 {
-    let items: Vec<Value> = (0..n as usize)
-        .map(|i| clone_value_at(unsafe { *items_ptr.add(i) }))
-        .collect();
-    let list = Rc::new(RefCell::new(items));
-    VALUE_ARENA.with(|a| {
-        let mut arena = a.borrow_mut();
-        let h = arena.len() as i64;
-        arena.push(Value::List(list));
-        h
-    })
-}
-
-/// ハンドル配列からタプル値を生成してハンドルを返す C コールバック。
-extern "C" fn ar_make_tuple(items_ptr: *const i64, n: i32) -> i64 {
-    let elements: Vec<Value> = (0..n as usize)
-        .map(|i| clone_value_at(unsafe { *items_ptr.add(i) }))
-        .collect();
-    let tuple = Rc::new(TupleData::new(elements, vec![]));
-    VALUE_ARENA.with(|a| {
-        let mut arena = a.borrow_mut();
-        let h = arena.len() as i64;
-        arena.push(Value::Tuple(tuple));
-        h
-    })
-}
-
-/// キー配列と値配列からディクショナリ値を生成してハンドルを返す C コールバック。
-extern "C" fn ar_make_dict(keys_ptr: *const i64, vals_ptr: *const i64, n: i32) -> i64 {
-    let mut dict = DictData::new("Any".to_string(), "Any".to_string());
-    for i in 0..n as usize {
-        let k = clone_value_at(unsafe { *keys_ptr.add(i) });
-        let v = clone_value_at(unsafe { *vals_ptr.add(i) });
-        dict.set(k, v);
+    let text = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len as usize))
     }
-    VALUE_ARENA.with(|a| {
-        let mut arena = a.borrow_mut();
-        let h = arena.len() as i64;
-        arena.push(Value::Dict(Rc::new(RefCell::new(dict))));
-        h
+    .to_owned();
+    STATE.with(|s| s.borrow_mut().push_value(Value::Str(text)))
+}
+
+// Build list/tuple/dict in one borrow: clone all items then push the container.
+extern "C" fn ar_make_list(items_ptr: *const i64, n: i32) -> i64 {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let items: Vec<Value> = (0..n as usize)
+            .map(|i| st.clone_value(unsafe { *items_ptr.add(i) }))
+            .collect();
+        let list = Rc::new(RefCell::new(items));
+        st.push_value(Value::List(list))
     })
 }
 
-/// `None` 値を表すハンドル定数 `TL_NONE` を返す C コールバック。
+extern "C" fn ar_make_tuple(items_ptr: *const i64, n: i32) -> i64 {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let elements: Vec<Value> = (0..n as usize)
+            .map(|i| st.clone_value(unsafe { *items_ptr.add(i) }))
+            .collect();
+        let tuple = Rc::new(TupleData::new(elements, vec![]));
+        st.push_value(Value::Tuple(tuple))
+    })
+}
+
+extern "C" fn ar_make_dict(keys_ptr: *const i64, vals_ptr: *const i64, n: i32) -> i64 {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let mut dict = DictData::new("Any".to_string(), "Any".to_string());
+        for i in 0..n as usize {
+            let k = st.clone_value(unsafe { *keys_ptr.add(i) });
+            let v = st.clone_value(unsafe { *vals_ptr.add(i) });
+            dict.set(k, v);
+        }
+        st.push_value(Value::Dict(Rc::new(RefCell::new(dict))))
+    })
+}
+
 extern "C" fn ar_make_none() -> i64 {
     TL_NONE
 }
 
-/// ハンドルの値が真値かどうかを `i32`（1=true, 0=false）で返す C コールバック。
-/// インタープリタが利用可能な場合は `is_truthy` に委譲し、そうでない場合は基本型のみ判定する。
 extern "C" fn ar_is_truthy(h: i64) -> i32 {
-    let v = clone_value_at(h);
-    let ptr = get_interp_ptr();
-    if ptr.is_null() {
-        // Fallback without interpreter
-        match &v {
+    // Phase 1: extract value and interp_ptr.
+    let (v, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.clone_value(h), st.interp_ptr)
+    });
+    if interp_ptr.is_null() {
+        return match &v {
             Value::None => 0,
             Value::Bool(b) => i32::from(*b),
             Value::Int(n) => i32::from(*n != 0),
             Value::Float(f) => i32::from(*f != 0.0),
             Value::Str(s) => i32::from(!s.is_empty()),
             _ => 1,
-        }
-    } else {
-        let interp = unsafe { &mut *ptr };
-        i32::from(interp.is_truthy(&v))
+        };
     }
+    let interp = unsafe { &mut *interp_ptr };
+    i32::from(interp.is_truthy(&v))
 }
 
-/// 二項演算コードと二つのオペランドハンドルを受け取り演算結果のハンドルを返す C コールバック。
-/// エラーが既にセットされている場合や演算コードが不正な場合は `TL_NONE` を返す。
 extern "C" fn ar_binop(op: i32, a: i64, b: i64) -> i64 {
-    if has_error() {
-        return TL_NONE;
-    }
+    let (has_err, lhs, rhs, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(a), st.clone_value(b), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
     let ast_op = match i32_to_binop(op) {
         Some(o) => o,
         None => {
-            set_error(format!("NativeError: invalid binop code {op}"));
+            STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: invalid binop code {op}")));
             return TL_NONE;
         }
     };
-    let lhs = clone_value_at(a);
-    let rhs = clone_value_at(b);
-    let ptr = get_interp_ptr();
-    if ptr.is_null() {
-        set_error("NativeError: interpreter not set for binop".to_string());
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for binop".to_string()));
         return TL_NONE;
     }
-    let interp = unsafe { &*ptr };
+    let interp = unsafe { &*interp_ptr };
     match interp.apply_binop(&ast_op, lhs, rhs) {
         Ok(v) => push_handle(v),
         Err(e) => {
-            set_error(e);
+            STATE.with(|s| s.borrow_mut().error = Some(e));
             TL_NONE
         }
     }
 }
 
-/// 単項演算コードとオペランドハンドルを受け取り演算結果のハンドルを返す C コールバック。
-/// エラーが既にセットされている場合や演算コードが不正な場合は `TL_NONE` を返す。
 extern "C" fn ar_unop(op: i32, a: i64) -> i64 {
-    if has_error() {
-        return TL_NONE;
-    }
+    let (has_err, operand, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(a), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
     use crate::ast::UnaryOp;
     let ast_op = match op {
         UOP_NEG => UnaryOp::Neg,
         UOP_NOT => UnaryOp::Not,
         UOP_BIT_NOT => UnaryOp::BitNot,
         _ => {
-            set_error(format!("NativeError: invalid unop code {op}"));
+            STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: invalid unop code {op}")));
             return TL_NONE;
         }
     };
-    let operand = clone_value_at(a);
-    let ptr = get_interp_ptr();
-    if ptr.is_null() {
-        set_error("NativeError: interpreter not set for unop".to_string());
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for unop".to_string()));
         return TL_NONE;
     }
-    let interp = unsafe { &*ptr };
+    let interp = unsafe { &*interp_ptr };
     match interp.apply_unary(&ast_op, operand) {
         Ok(v) => push_handle(v),
         Err(e) => {
-            set_error(e);
+            STATE.with(|s| s.borrow_mut().error = Some(e));
             TL_NONE
         }
     }
 }
 
 /// 関数ハンドルと引数ハンドル配列を受け取り関数を呼び出す C コールバック。
-/// 呼び出し結果のハンドルを返す。エラー時は `TL_NONE` を返しエラーをセットする。
 ///
-/// Fast path: `Value::NativeFunction` (cpp-dll or JIT) はインタープリタを経由せず
-/// 直接 DLL 関数を呼び出す。引数ハンドルはアリーナからコピーせずそのまま渡す。
-/// cpp-dll 関数はシンボルアドレスを `cached_fn_ptr` に初回解決時にキャッシュする。
-///
-/// Slow path: クロージャ・ユーザー定義 HV 関数など他のすべての callable は
-/// 従来通りインタープリタの `call_value_with_args` に委譲する。
+/// Fast path: `Value::NativeFunction` はインタープリタを経由せず直接 DLL 関数を呼び出す。
+/// Slow path: クロージャ・ユーザー定義関数などは `call_value_with_args` に委譲する。
 extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
     use std::sync::atomic::Ordering;
 
-    if has_error() {
-        return TL_NONE;
-    }
-    let fn_val = clone_value_at(fn_h);
+    // Phase 1: extract fn_val and interp_ptr, check for pending error.
+    let (has_err, fn_val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(fn_h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
 
-    // ── Fast path: NativeFunction (cpp-dll or JIT) ────────────────────────────
-    // arg handles are already live in the arena — pass them straight through
-    // without boxing into Vec<Value> or calling deep_copy_value per arg.
+    // Fast path: NativeFunction (cpp-dll or JIT).
+    // Arg handles are already live in the arena — pass them straight through.
     if let Value::NativeFunction(ref fn_ref) = fn_val {
-        let ptr = get_interp_ptr();
-        if !ptr.is_null() {
-            let is_outermost = enter_native_call(ptr);
+        if !interp_ptr.is_null() {
+            let is_outermost = enter_native_call(interp_ptr);
 
             let result_h = if fn_ref.raw_fn_ptr != 0 {
-                // JIT path: fn pointer already cached in the struct
+                // JIT: pointer is embedded directly.
                 unsafe {
                     let f: unsafe extern "C" fn(*const i64, i32) -> i64 =
                         std::mem::transmute(fn_ref.raw_fn_ptr);
                     f(args_ptr, n_args)
                 }
             } else {
-                // cpp-dll path: use cached symbol address, resolving on first call
+                // cpp-dll: use cached_fn_ptr; resolve on first call.
                 let cached = fn_ref.cached_fn_ptr.load(Ordering::Relaxed);
                 let fn_ptr = if cached != 0 {
                     cached
                 } else {
                     let sym_name = format!("{}_tl\0", fn_ref.fn_name);
-                    let interp = unsafe { &*ptr };
+                    let interp = unsafe { &*interp_ptr };
                     match interp.native_libs.get(&fn_ref.lib_path) {
                         Some(lib) => {
                             match unsafe {
@@ -654,20 +624,20 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
                                     fp
                                 }
                                 Err(e) => {
-                                    set_error(format!(
+                                    STATE.with(|s| s.borrow_mut().error = Some(format!(
                                         "RuntimeError: symbol '{}' not found: {e}",
                                         fn_ref.fn_name
-                                    ));
+                                    )));
                                     abort_native_call(is_outermost);
                                     return TL_NONE;
                                 }
                             }
                         }
                         None => {
-                            set_error(format!(
+                            STATE.with(|s| s.borrow_mut().error = Some(format!(
                                 "RuntimeError: native library not loaded: {}",
                                 fn_ref.lib_path.display()
-                            ));
+                            )));
                             abort_native_call(is_outermost);
                             return TL_NONE;
                         }
@@ -680,8 +650,7 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
                 }
             };
 
-            if let Some(err) = take_error() {
-                set_error(err);
+            if STATE.with(|s| s.borrow().error.is_some()) {
                 abort_native_call(is_outermost);
                 return TL_NONE;
             }
@@ -690,203 +659,190 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
         }
     }
 
-    // ── Slow path: HV functions, closures, overloaded fns, etc. ──────────────
+    // Slow path: HV functions, closures, overloaded fns, etc.
     let args: Vec<Value> = (0..n_args as usize)
         .map(|i| clone_value_at(unsafe { *args_ptr.add(i) }))
         .collect();
-    let ptr = get_interp_ptr();
-    if ptr.is_null() {
-        set_error("NativeError: interpreter not set for call_fn".to_string());
-        return TL_NONE;
-    }
-    let interp = unsafe { &mut *ptr };
-    match interp.call_value_with_args(fn_val, args) {
-        Ok(v) => push_handle(v),
-        Err(e) => {
-            set_error(e);
-            TL_NONE
-        }
-    }
-}
-
-/// オブジェクトハンドルと属性名から属性値のハンドルを取得する C コールバック。
-/// インタープリタの `get_attr_val` に委譲する。エラー時は `TL_NONE` を返す。
-extern "C" fn ar_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
-    if has_error() {
-        return TL_NONE;
-    }
-    let name = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
-    }
-    .to_owned();
-    let obj = clone_value_at(obj_h);
-    let ptr = get_interp_ptr();
-    if ptr.is_null() {
-        set_error("NativeError: interpreter not set for get_attr".to_string());
-        return TL_NONE;
-    }
-    let interp = unsafe { &mut *ptr };
-    match interp.get_attr_val(obj, &name) {
-        Ok(v) => push_handle(v),
-        Err(e) => {
-            set_error(e);
-            TL_NONE
-        }
-    }
-}
-
-/// オブジェクトハンドル・属性名・新しい値ハンドルを受け取りオブジェクトの属性を更新する C コールバック。
-/// インタープリタの `set_attr_val` に委譲する。エラー時はエラーをセットする。
-extern "C" fn ar_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64) {
-    if has_error() {
-        return;
-    }
-    let name = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
-    }
-    .to_owned();
-    let obj = clone_value_at(obj_h);
-    let val = clone_value_at(val_h);
-    let ptr = get_interp_ptr();
-    if ptr.is_null() {
-        set_error("NativeError: interpreter not set for set_attr".to_string());
-        return;
-    }
-    let interp = unsafe { &mut *ptr };
-    if let Err(e) = interp.set_attr_val(obj, &name, val) {
-        set_error(e);
-    }
-}
-
-/// オブジェクトハンドルとキーハンドルを受け取りサブスクリプト演算結果のハンドルを返す C コールバック。
-/// インタープリタの `eval_subscript` に委譲する。エラー時は `TL_NONE` を返す。
-extern "C" fn ar_subscript(obj_h: i64, key_h: i64) -> i64 {
-    if has_error() {
-        return TL_NONE;
-    }
-    let obj = clone_value_at(obj_h);
-    let key = clone_value_at(key_h);
-    let ptr = get_interp_ptr();
-    if ptr.is_null() {
-        set_error("NativeError: interpreter not set for subscript".to_string());
-        return TL_NONE;
-    }
-    let interp = unsafe { &mut *ptr };
-    match interp.eval_subscript(obj, key) {
-        Ok(v) => push_handle(v),
-        Err(e) => {
-            set_error(e);
-            TL_NONE
-        }
-    }
-}
-
-/// グローバルスコープから変数名に対応する値ハンドルを取得する C コールバック。
-/// 変数が見つからない場合は `NameError` をセットして `TL_NONE` を返す。
-extern "C" fn ar_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
-    if has_error() {
-        return TL_NONE;
-    }
-    let name = unsafe {
-        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
-    }
-    .to_owned();
-    let ptr = get_interp_ptr();
-    if ptr.is_null() {
-        set_error(format!(
-            "NativeError: interpreter not set (looking up '{name}')"
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(
+            "NativeError: interpreter not set for call_fn".to_string()
         ));
         return TL_NONE;
     }
-    let interp = unsafe { &mut *ptr };
-    match interp.get_val(&name) {
-        Some(v) => push_handle(v),
-        None => {
-            set_error(format!("NameError: '{name}' is not defined"));
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.call_value_with_args(fn_val, args) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
             TL_NONE
         }
     }
 }
 
-/// イテラブルなオブジェクトハンドルからイテレータハンドルを生成する C コールバック。
-/// イテレータハンドルは `-(idx+2)` の負値でエンコードされる（`TL_STOP_ITER=-1` と区別するため）。
-extern "C" fn ar_iter_from(obj_h: i64) -> i64 {
-    if has_error() {
+extern "C" fn ar_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
+    let name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    }
+    .to_owned();
+    let (has_err, obj, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for get_attr".to_string()));
         return TL_NONE;
     }
-    let obj = clone_value_at(obj_h);
-    let items: Vec<Value> = match obj {
-        Value::List(l) => l.borrow().clone(),
-        Value::FrozenList { ref state, ref layout } => {
-            let st = state.borrow();
-            (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect()
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.get_attr_val(obj, &name) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
         }
-        Value::Tuple(t) => t.all_values().to_vec(),
-        Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
-        Value::Dict(d) => d.borrow().all_keys(),
-        other => {
-            set_error(format!(
-                "TypeError: value of type '{}' is not iterable in native context",
-                match &other {
-                    Value::Int(_) => "int",
-                    Value::Float(_) => "float",
-                    Value::Bool(_) => "bool",
-                    Value::None => "NoneType",
-                    _ => "object",
-                }
-            ));
-            return TL_NONE;
+    }
+}
+
+extern "C" fn ar_set_attr(obj_h: i64, name_ptr: *const u8, name_len: i32, val_h: i64) {
+    let name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    }
+    .to_owned();
+    let (has_err, obj, val, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.clone_value(val_h), st.interp_ptr)
+    });
+    if has_err { return; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for set_attr".to_string()));
+        return;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    if let Err(e) = interp.set_attr_val(obj, &name, val) {
+        STATE.with(|s| s.borrow_mut().error = Some(e));
+    }
+}
+
+extern "C" fn ar_subscript(obj_h: i64, key_h: i64) -> i64 {
+    let (has_err, obj, key, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.clone_value(key_h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for subscript".to_string()));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.eval_subscript(obj, key) {
+        Ok(v) => push_handle(v),
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
         }
-    };
-    ITER_TABLE.with(|t| {
-        let mut tbl = t.borrow_mut();
-        let idx = tbl.len();
-        tbl.push((items, 0));
-        // Encode as negative: -(idx+2), so ≤ -2 (distinguishable from TL_STOP_ITER = -1)
+    }
+}
+
+extern "C" fn ar_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
+    let name = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
+    }
+    .to_owned();
+    let (has_err, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set (looking up '{name}')")));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.get_val(&name) {
+        Some(v) => push_handle(v),
+        None => {
+            STATE.with(|s| s.borrow_mut().error = Some(format!("NameError: '{name}' is not defined")));
+            TL_NONE
+        }
+    }
+}
+
+/// イテラブルなオブジェクトハンドルからイテレータハンドルを生成する。
+/// イテレータハンドルは `-(idx+2)` の負値でエンコードされる。
+extern "C" fn ar_iter_from(obj_h: i64) -> i64 {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if st.error.is_some() { return TL_NONE; }
+        let obj = st.clone_value(obj_h);
+        let items: Vec<Value> = match obj {
+            Value::List(l) => l.borrow().clone(),
+            Value::FrozenList { ref state, ref layout } => {
+                let fst = state.borrow();
+                (0..fst.len).map(|i| layout.reconstruct_item(&fst.data, i)).collect()
+            }
+            Value::Tuple(t) => t.all_values().to_vec(),
+            Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+            Value::Dict(d) => d.borrow().all_keys(),
+            other => {
+                st.error = Some(format!(
+                    "TypeError: value of type '{}' is not iterable in native context",
+                    match &other {
+                        Value::Int(_) => "int",
+                        Value::Float(_) => "float",
+                        Value::Bool(_) => "bool",
+                        Value::None => "NoneType",
+                        _ => "object",
+                    }
+                ));
+                return TL_NONE;
+            }
+        };
+        let idx = st.iter_table.len();
+        st.iter_table.push((items, 0));
         -((idx as i64) + 2)
     })
 }
 
-/// イテレータハンドルから次の要素ハンドルを取得する C コールバック。
-/// イテレーションが終了した場合は `TL_STOP_ITER` を返す。
+/// イテレータハンドルから次の要素ハンドルを取得する。
 extern "C" fn ar_iter_next(iter_h: i64) -> i64 {
-    if has_error() {
-        return TL_STOP_ITER;
-    }
-    if iter_h > -2 {
-        set_error(format!("NativeError: invalid iter handle {iter_h}"));
-        return TL_STOP_ITER;
-    }
-    let idx = (-(iter_h + 2)) as usize;
-    ITER_TABLE.with(|t| {
-        let mut tbl = t.borrow_mut();
-        if let Some((items, pos)) = tbl.get_mut(idx) {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if st.error.is_some() { return TL_STOP_ITER; }
+        if iter_h > -2 {
+            st.error = Some(format!("NativeError: invalid iter handle {iter_h}"));
+            return TL_STOP_ITER;
+        }
+        let idx = (-(iter_h + 2)) as usize;
+        // Extract the next value from iter_table, then push to arena separately
+        // to avoid simultaneous mutable access to two fields via a method call.
+        let maybe_v: Option<Value> = st.iter_table.get_mut(idx).and_then(|(items, pos)| {
             if *pos < items.len() {
                 let v = items[*pos].clone();
                 *pos += 1;
-                push_handle(v)
+                Some(v)
             } else {
-                TL_STOP_ITER
+                None
             }
-        } else {
-            TL_STOP_ITER
+        });
+        match maybe_v {
+            Some(v) => st.push_value(v),
+            None => TL_STOP_ITER,
         }
     })
 }
 
-/// オブジェクトハンドルが指定した型名に一致するか判定する C コールバック。
-/// 一致すれば `TL_TRUE`、一致しなければ `TL_FALSE` を返す。
 extern "C" fn ar_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
     let name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
     };
-    let obj = clone_value_at(obj_h);
-    let ptr = get_interp_ptr();
-    let result = if !ptr.is_null() {
-        let interp = unsafe { &*ptr };
+    let (obj, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.clone_value(obj_h), st.interp_ptr)
+    });
+    let result = if !interp_ptr.is_null() {
+        let interp = unsafe { &*interp_ptr };
         interp.value_is_type(&obj, name)
     } else {
-        // Fallback: basic type checks only
         match &obj {
             Value::Int(_) => name == "int",
             Value::Float(_) => name == "float",
@@ -900,11 +856,7 @@ extern "C" fn ar_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 
             _ => false,
         }
     };
-    if result {
-        TL_TRUE
-    } else {
-        TL_FALSE
-    }
+    if result { TL_TRUE } else { TL_FALSE }
 }
 
 // ── Arena save / compact helpers ────────────────────────────────────────────
@@ -912,98 +864,67 @@ extern "C" fn ar_is_type(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 
 // Called around every intra-module function call in generated code to prevent
 // arena blowup.  Without these, each call leaves ~N×ops intermediate handles
 // in the arena for the entire duration of the outermost native call.
-//
-// Usage in generated code:
-//   let _s = cb_arena_save();
-//   let _r = some_fn_impl(args...);
-//   let _r = cb_arena_compact(_r, _s);  // truncates callee's intermediates
 
-/// アリーナの現在のサイズを保存点として返す C コールバック。
-/// 関数呼び出し前後でアリーナを巻き戻すために使用する。
 extern "C" fn ar_arena_save() -> u64 {
-    VALUE_ARENA.with(|a| a.borrow().len() as u64)
+    STATE.with(|s| s.borrow().arena.len() as u64)
 }
 
-/// 結果ハンドルを保持しつつアリーナを保存点まで切り詰める C コールバック。
-/// 結果ハンドルが保存点より後に確保されていた場合は値をクローンして再プッシュする。
 extern "C" fn ar_arena_compact(h: i64, saved: u64) -> i64 {
     let saved = saved as usize;
-    // Always truncate to `saved` to discard callee's intermediates.
+    // Special handles (None/True/False): just truncate — no arena slot.
     if h < 3 {
-        // Special handle (None/True/False): no arena slot — just truncate.
-        VALUE_ARENA.with(|a| a.borrow_mut().truncate(saved));
+        STATE.with(|s| s.borrow_mut().arena.truncate(saved));
         return h;
     }
-    let h_idx = h as usize;
-    if h_idx < saved {
+    if (h as usize) < saved {
         // Handle lives before the save point — still valid after truncation.
-        VALUE_ARENA.with(|a| a.borrow_mut().truncate(saved));
+        STATE.with(|s| s.borrow_mut().arena.truncate(saved));
         return h;
     }
-    // Handle was allocated inside the callee: clone, truncate, re-push.
-    let val = clone_value_at(h);
-    VALUE_ARENA.with(|a| a.borrow_mut().truncate(saved));
-    push_handle(val)
+    // Handle was allocated inside the callee: clone, truncate, re-push — all in one borrow.
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let val = st.clone_value(h);
+        st.arena.truncate(saved);
+        st.push_value(val)
+    })
 }
 
-// ── Loop-level arena compaction ─────────────────────────────────────────────
-//
-// Called at the end of every while/for loop body to keep the arena bounded.
-// Clones all live variable handles, truncates to the loop-frame save point,
-// then re-pushes — so the arena stays O(n_live_vars) instead of O(n_iters).
-//
-// Usage in generated code:
-//   let _lf: u64 = cb_arena_save();             // once before the loop
-//   loop {
-//       // body
-//       let _cin: [i64; N] = [_v_x, _v_y, ...];
-//       let mut _cout: [i64; N] = [0i64; N];
-//       cb_compact_many(_cin.as_ptr(), N, _lf, _cout.as_mut_ptr());
-//       _v_x = _cout[0]; _v_y = _cout[1]; ...
-//   }
-
-/// ループ本体終端で複数の生存変数ハンドルをまとめて保存点まで巻き戻す C コールバック。
-/// 入力ハンドル配列の値をクローンしてからアリーナを切り詰め、出力配列に再プッシュする。
+/// ループ本体終端で複数の生存変数ハンドルをまとめて保存点まで巻き戻す。
+/// 全クローン・truncate・再プッシュを1回の STATE borrow 内で完了する。
 extern "C" fn ar_compact_many(handles_in: *const i64, n: i32, save: u64, handles_out: *mut i64) {
     let n = n as usize;
-    if n == 0 {
-        VALUE_ARENA.with(|a| a.borrow_mut().truncate(save as usize));
-        return;
-    }
     let ins = unsafe { std::slice::from_raw_parts(handles_in, n) };
     let outs = unsafe { std::slice::from_raw_parts_mut(handles_out, n) };
-    // Clone all values to Rust stack BEFORE truncation.
-    let vals: Vec<Value> = ins.iter().map(|&h| clone_value_at(h)).collect();
-    // Truncate arena: discards all temporaries from this iteration.
-    VALUE_ARENA.with(|a| a.borrow_mut().truncate(save as usize));
-    // Re-push; cached handles (small ints, bool, None) return their fixed handle.
-    for (i, val) in vals.into_iter().enumerate() {
-        outs[i] = push_handle(val);
-    }
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if n == 0 {
+            st.arena.truncate(save as usize);
+            return;
+        }
+        let vals: Vec<Value> = ins.iter().map(|&h| st.clone_value(h)).collect();
+        st.arena.truncate(save as usize);
+        for (i, val) in vals.into_iter().enumerate() {
+            outs[i] = st.push_value(val);
+        }
+    });
 }
 
 // ── Typed value extraction ───────────────────────────────────────────────────
-//
-// Used by type-specialized generated functions to unwrap handle parameters to
-// raw Rust values at function entry, eliminating per-operation cb_binop calls.
 
-/// ハンドルの値を完全にディープコピーして新しいハンドルとして返す C コールバック。
-/// スレッド間で値を独立して渡す際などに使用する。
 extern "C" fn ar_deep_copy(h: i64) -> i64 {
     let val = clone_value_at(h);
     let copied = super::Interpreter::deep_copy_value(val);
     push_handle(copied)
 }
 
-/// ハンドルの値を `i64` 整数として取り出す C コールバック。
-/// 型特化コード生成で、関数エントリ時にハンドルを生の Rust 値に変換するために使用する。
 extern "C" fn ar_to_int(h: i64) -> i64 {
     match h {
         TL_NONE => 0,
         TL_TRUE => 1,
         TL_FALSE => 0,
         n if n >= 3 && (n as usize) < INT_CACHE_BASE => n - 3,
-        n => VALUE_ARENA.with(|a| match a.borrow().get(n as usize) {
+        n => STATE.with(|s| match s.borrow().arena.get(n as usize) {
             Some(Value::Int(v)) => *v,
             Some(Value::UInt(v)) => *v as i64,
             Some(Value::Float(f)) => *f as i64,
@@ -1013,15 +934,13 @@ extern "C" fn ar_to_int(h: i64) -> i64 {
     }
 }
 
-/// ハンドルの値を `f64` 浮動小数点数として取り出す C コールバック。
-/// 型特化コード生成で、関数エントリ時にハンドルを生の Rust 値に変換するために使用する。
 extern "C" fn ar_to_float(h: i64) -> f64 {
     match h {
         TL_NONE => 0.0,
         TL_TRUE => 1.0,
         TL_FALSE => 0.0,
         n if n >= 3 && (n as usize) < INT_CACHE_BASE => (n - 3) as f64,
-        n => VALUE_ARENA.with(|a| match a.borrow().get(n as usize) {
+        n => STATE.with(|s| match s.borrow().arena.get(n as usize) {
             Some(Value::Int(v)) => *v as f64,
             Some(Value::UInt(v)) => *v as f64,
             Some(Value::Float(f)) => *f,
@@ -1033,33 +952,26 @@ extern "C" fn ar_to_float(h: i64) -> f64 {
 
 // ── cpp-bridge helpers ───────────────────────────────────────────────────────
 
-/// tl 文字列ハンドル `h` をヌル終端 C 文字列に変換する C コールバック。
-/// バイト列はスレッドローカルの `CSTR_BUFS` スクラッチバッファに格納され、最外ネイティブ呼び出しが
-/// 終了して `exit_native_call` / `abort_native_call` がバッファをクリアするまでポインタは有効。
 extern "C" fn ar_to_cstr(h: i64) -> *const u8 {
     let s = match clone_value_at(h) {
         Value::Str(s) => s,
         _ => String::new(),
     };
-    CSTR_BUFS.with(|bufs| {
-        let mut bufs = bufs.borrow_mut();
+    STATE.with(|s_tls| {
+        let mut st = s_tls.borrow_mut();
         let mut bytes = s.into_bytes();
-        bytes.push(0u8); // null terminator
-        bufs.push(bytes);
-        bufs.last().unwrap().as_ptr()
+        bytes.push(0u8);
+        st.cstr_bufs.push(bytes);
+        st.cstr_bufs.last().unwrap().as_ptr()
     })
 }
 
-/// `target_h` のアリーナスロットを `new_val_h` の値のクローンで上書きする C コールバック。
-/// C 呼び出し後に `T*` 出力パラメータ値を書き戻すため、生成された cpp-bridge ラッパーが使用する。
 extern "C" fn ar_write_handle(target_h: i64, new_val_h: i64) {
-    if target_h < 3 {
-        return;
-    } // never overwrite fixed slots
-    let new_val = clone_value_at(new_val_h);
-    VALUE_ARENA.with(|a| {
-        let mut arena = a.borrow_mut();
-        if let Some(slot) = arena.get_mut(target_h as usize) {
+    if target_h < 3 { return; }
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let new_val = st.clone_value(new_val_h);
+        if let Some(slot) = st.arena.get_mut(target_h as usize) {
             *slot = new_val;
         }
     });
@@ -1068,181 +980,215 @@ extern "C" fn ar_write_handle(target_h: i64, new_val_h: i64) {
 // ── Feature-extension callbacks ──────────────────────────────────────────────
 
 extern "C" fn ar_list_append(list_h: i64, item_h: i64) -> i64 {
-    if has_error() { return list_h; }
-    let item = clone_value_at(item_h);
-    VALUE_ARENA.with(|a| {
-        if let Some(Value::List(list)) = a.borrow().get(list_h as usize) {
-            list.borrow_mut().push(item);
-        }
+    // Clone the Rc (cheap) while holding the borrow, then mutate outside.
+    let (has_err, item, maybe_list) = STATE.with(|s| {
+        let st = s.borrow();
+        let item = st.clone_value(item_h);
+        let maybe_list = if let Some(Value::List(list)) = st.arena.get(list_h as usize) {
+            Some(list.clone())
+        } else {
+            None
+        };
+        (st.error.is_some(), item, maybe_list)
     });
+    if has_err { return list_h; }
+    if let Some(list_rc) = maybe_list {
+        list_rc.borrow_mut().push(item);
+    }
     list_h
 }
 
 extern "C" fn ar_raise_exc(type_h: i64, msg_h: i64) -> i64 {
-    let type_name = match clone_value_at(type_h) {
-        Value::Str(s) => s,
-        Value::Class(c) => c.name.clone(),
-        Value::Instance(inst) => inst.borrow().class.name.clone(),
-        _ => "Exception".to_string(),
-    };
-    let msg = match clone_value_at(msg_h) {
-        Value::Str(s) => s,
-        Value::None => String::new(),
-        Value::Instance(inst) => {
-            let b = inst.borrow();
-            b.class.field_index.get("message").and_then(|&idx| {
-                b.fields.get(idx).and_then(|s| {
-                    if let Some((Value::Str(s), _)) = s { Some(s.clone()) } else { None }
-                })
-            }).unwrap_or_default()
-        }
-        other => format!("{other:?}"),
-    };
-    PENDING_RAISE.with(|p| *p.borrow_mut() = Some((type_name, msg)));
+    let (type_name, msg) = STATE.with(|s| {
+        let st = s.borrow();
+        let tn = match st.clone_value(type_h) {
+            Value::Str(s) => s,
+            Value::Class(c) => c.name.clone(),
+            Value::Instance(inst) => inst.borrow().class.name.clone(),
+            _ => "Exception".to_string(),
+        };
+        let m = match st.clone_value(msg_h) {
+            Value::Str(s) => s,
+            Value::None => String::new(),
+            Value::Instance(inst) => {
+                let b = inst.borrow();
+                b.class.field_index.get("message").and_then(|&idx| {
+                    b.fields.get(idx).and_then(|s| {
+                        if let Some((Value::Str(s), _)) = s { Some(s.clone()) } else { None }
+                    })
+                }).unwrap_or_default()
+            }
+            other => format!("{other:?}"),
+        };
+        (tn, m)
+    });
+    STATE.with(|s| s.borrow_mut().pending_raise = Some((type_name, msg)));
     TL_EXCEPTION
 }
 
 extern "C" fn ar_make_cell(init_h: i64) -> i64 {
-    let val = clone_value_at(init_h);
-    let cell = Rc::new(RefCell::new(vec![val]));
-    VALUE_ARENA.with(|a| {
-        let mut arena = a.borrow_mut();
-        let h = arena.len() as i64;
-        arena.push(Value::List(cell));
-        h
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let val = st.clone_value(init_h);
+        let cell = Rc::new(RefCell::new(vec![val]));
+        st.push_value(Value::List(cell))
     })
 }
 
 extern "C" fn ar_get_cell(cell_h: i64) -> i64 {
-    VALUE_ARENA.with(|a| {
-        if let Some(Value::List(list)) = a.borrow().get(cell_h as usize) {
-            if let Some(v) = list.borrow().first().cloned() {
-                return push_handle(v);
-            }
+    // Clone the Rc, release borrow, then access cell outside STATE lock.
+    let maybe_list = STATE.with(|s| {
+        if let Some(Value::List(list)) = s.borrow().arena.get(cell_h as usize) {
+            Some(list.clone())
+        } else {
+            None
         }
-        TL_NONE
-    })
+    });
+    if let Some(list_rc) = maybe_list {
+        if let Some(v) = list_rc.borrow().first().cloned() {
+            return push_handle(v);
+        }
+    }
+    TL_NONE
 }
 
-extern "C" fn ar_call_method(obj_h: i64, name_ptr: *const u8, name_len: i32, args_ptr: *const i64, n_args: i32) -> i64 {
-    if has_error() { return TL_NONE; }
+extern "C" fn ar_set_cell(cell_h: i64, val_h: i64) {
+    let (val, maybe_list) = STATE.with(|s| {
+        let st = s.borrow();
+        let val = st.clone_value(val_h);
+        let maybe_list = if let Some(Value::List(list)) = st.arena.get(cell_h as usize) {
+            Some(list.clone())
+        } else {
+            None
+        };
+        (val, maybe_list)
+    });
+    if let Some(list_rc) = maybe_list {
+        if let Some(slot) = list_rc.borrow_mut().first_mut() {
+            *slot = val;
+        }
+    }
+}
+
+extern "C" fn ar_call_method(
+    obj_h: i64,
+    name_ptr: *const u8,
+    name_len: i32,
+    args_ptr: *const i64,
+    n_args: i32,
+) -> i64 {
     let name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
-    }.to_owned();
-    let obj = clone_value_at(obj_h);
+    }
+    .to_owned();
 
-    // ── Native dispatch: check NATIVE_METHODS table first ─────────────────────
+    let (has_err, obj, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
+    });
+    if has_err { return TL_NONE; }
+
+    // Native dispatch: check NATIVE_METHODS table first.
     if let Value::Instance(ref inst_rc) = obj {
         let class_name = inst_rc.borrow().class.name.clone();
-        let fn_ptr = NATIVE_METHODS.with(|m| {
-            m.borrow().get(&(class_name.clone(), name.clone())).copied()
+        let fn_ptr = STATE.with(|s| {
+            s.borrow().native_methods.get(&(class_name.clone(), name.clone())).copied()
         });
         if let Some(ptr) = fn_ptr {
-            // Build [self_h, arg0, arg1, ...] and call native function directly.
             let mut all_args = Vec::with_capacity(1 + n_args as usize);
             all_args.push(obj_h);
             for i in 0..n_args as usize {
                 all_args.push(unsafe { *args_ptr.add(i) });
             }
             unsafe {
-                let func: unsafe extern "C" fn(*const i64, i32) -> i64 =
-                    std::mem::transmute(ptr);
+                let func: unsafe extern "C" fn(*const i64, i32) -> i64 = std::mem::transmute(ptr);
                 return func(all_args.as_ptr(), all_args.len() as i32);
             }
         }
     }
 
-    // ── Interpreter fallback ──────────────────────────────────────────────────
+    // Interpreter fallback.
     let args: Vec<Value> = (0..n_args as usize)
         .map(|i| clone_value_at(unsafe { *args_ptr.add(i) }))
         .collect();
-    let ptr = get_interp_ptr();
-    if ptr.is_null() { set_error(format!("NativeError: interpreter not set for call_method '{name}'")); return TL_NONE; }
-    let interp = unsafe { &mut *ptr };
-    let evaled: Vec<(Option<String>, Value, bool)> = args.into_iter().map(|v| (None, v, true)).collect();
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set for call_method '{name}'")));
+        return TL_NONE;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    let evaled: Vec<(Option<String>, Value, bool)> =
+        args.into_iter().map(|v| (None, v, true)).collect();
     match interp.eval_method_call_evaled(obj, &name, evaled) {
         Ok(v) => push_handle(v),
-        Err(e) => { set_error(e); TL_NONE }
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            TL_NONE
+        }
     }
 }
 
-extern "C" fn ar_set_cell(cell_h: i64, val_h: i64) {
-    let val = clone_value_at(val_h);
-    VALUE_ARENA.with(|a| {
-        if let Some(Value::List(list)) = a.borrow().get(cell_h as usize) {
-            if let Some(slot) = list.borrow_mut().first_mut() {
-                *slot = val;
-            }
-        }
-    });
-}
+// ── Typed field-read callbacks ─────────────────────────────────────────────
 
-// ── Typed field-read callbacks ────────────────────────────────────────────────
-
-/// Read a float-typed field directly from an object handle without boxing the result
-/// into an arena handle.  Equivalent to CB_GET_ATTR + CB_TO_FLOAT but with a single
-/// callback and no intermediate arena allocation.
 extern "C" fn ar_get_float_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -> f64 {
-    if has_error() { return 0.0; }
     let name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
     };
-    let obj = clone_value_at(obj_h);
-    let ptr = get_interp_ptr();
-    if ptr.is_null() { set_error(format!("NativeError: interpreter not set (get_float_field '{name}')")); return 0.0; }
-    let interp = unsafe { &mut *ptr };
+    let (has_err, obj, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
+    });
+    if has_err { return 0.0; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set (get_float_field '{name}')")));
+        return 0.0;
+    }
+    let interp = unsafe { &mut *interp_ptr };
     match interp.get_attr_val(obj, name) {
         Ok(Value::Float(f)) => f,
-        Ok(Value::Int(n))   => n as f64,
-        Ok(Value::Bool(b))  => b as u8 as f64,
-        Ok(_) | Err(_)      => 0.0,
+        Ok(Value::Int(n)) => n as f64,
+        Ok(Value::Bool(b)) => b as u8 as f64,
+        Ok(_) | Err(_) => 0.0,
     }
 }
 
-/// Read an int-typed field directly from an object handle without boxing the result.
-/// Equivalent to CB_GET_ATTR + CB_TO_INT but with a single callback and no intermediate
-/// arena allocation.
 extern "C" fn ar_get_int_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64 {
-    if has_error() { return 0; }
     let name = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len as usize))
     };
-    let obj = clone_value_at(obj_h);
-    let ptr = get_interp_ptr();
-    if ptr.is_null() { set_error(format!("NativeError: interpreter not set (get_int_field '{name}')")); return 0; }
-    let interp = unsafe { &mut *ptr };
+    let (has_err, obj, interp_ptr) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
+    });
+    if has_err { return 0; }
+    if interp_ptr.is_null() {
+        STATE.with(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set (get_int_field '{name}')")));
+        return 0;
+    }
+    let interp = unsafe { &mut *interp_ptr };
     match interp.get_attr_val(obj, name) {
-        Ok(Value::Int(n))   => n,
+        Ok(Value::Int(n)) => n,
         Ok(Value::Float(f)) => f as i64,
-        Ok(Value::Bool(b))  => b as i64,
-        Ok(_) | Err(_)      => 0,
+        Ok(Value::Bool(b)) => b as i64,
+        Ok(_) | Err(_) => 0,
     }
 }
 
-/// FrozenList ハンドルのフラットデータバッファの生ポインタを i64 として返す C コールバック。
-/// FrozenList 以外のハンドルでは 0 を返す。コンパイル済みコードは `inttoptr` で ptr に変換する。
 extern "C" fn ar_flat_data_ptr(h: i64) -> i64 {
-    if has_error() { return 0; }
+    if STATE.with(|s| s.borrow().error.is_some()) { return 0; }
     match clone_value_at(h) {
         Value::FrozenList { state, .. } => state.borrow().data.as_ptr() as i64,
         _ => 0,
     }
 }
 
-/// FrozenList ハンドルの要素数を i64 として返す C コールバック。
-/// FrozenList 以外のハンドルでは 0 を返す。
 extern "C" fn ar_flat_len(h: i64) -> i64 {
-    if has_error() { return 0; }
+    if STATE.with(|s| s.borrow().error.is_some()) { return 0; }
     match clone_value_at(h) {
         Value::FrozenList { state, .. } => state.borrow().len as i64,
         _ => 0,
     }
 }
 
-/// 関数ハンドルに対応するCコーラブルなトランポリン関数ポインタを返す。
-/// 返されたポインタは `fn(i64 fn_h, *const i64 args, i32 n) -> i64` として呼び出せる。
-/// コンパイル済み関数はこのポインタを関数エントリ時に一度だけキャッシュし、
-/// ホットループ内の `function[...]->R` パラメータ呼び出しを最適化する。
 extern "C" fn ar_fn_trampoline(_fn_h: i64) -> *const () {
     ar_call_fn as *const ()
 }

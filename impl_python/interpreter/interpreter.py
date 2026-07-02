@@ -1,4 +1,4 @@
-﻿# git SHA: 2862f12d2d09337d845b6a760697181a1ff9aec5
+﻿# git SHA: 51d243b973b185d725d633a7f42b178ed30bee52
 """Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
@@ -1156,8 +1156,8 @@ class Interpreter:
         if isinstance(func_expr, ExprAttr):
             obj = self.eval(func_expr.object)
             attr = func_expr.attr
-            args, kwargs = self._eval_args(args_ast)
-            return self._call_attr(obj, attr, args, kwargs)
+            args, kwargs, arg_mut, kwarg_mut = self._eval_args(args_ast)
+            return self._call_attr(obj, attr, args, kwargs, arg_mut, kwarg_mut)
 
         # Signal[T]() — template instantiation for Signal type
         if isinstance(func_expr, ExprTemplateInstantiate):
@@ -1166,30 +1166,53 @@ class Interpreter:
                 return TlSignal()
 
         func = self.eval(func_expr)
-        args, kwargs = self._eval_args(args_ast)
-        return self._call(func, args, kwargs)
+        args, kwargs, arg_mut, kwarg_mut = self._eval_args(args_ast)
+        return self._call(func, args, kwargs, arg_mut, kwarg_mut)
 
-    def _eval_args(self, args_ast: list[CallArg]) -> tuple[list, dict]:
+    def _eval_args(self, args_ast: list[CallArg]) -> tuple[list, dict, list, dict]:
         args: list = []
         kwargs: dict = {}
+        arg_mut: list[bool] = []
+        kwarg_mut: dict[str, bool] = {}
         for arg in args_ast:
             match arg:
                 case CallArgPositional(expr=e):
-                    args.append(self.eval(e))
+                    val, is_mut = self._eval_arg_with_mut(e)
+                    args.append(val)
+                    arg_mut.append(is_mut)
                 case CallArgKeyword(name=name, value=e):
-                    kwargs[name] = self.eval(e)
+                    val, is_mut = self._eval_arg_with_mut(e)
+                    kwargs[name] = val
+                    kwarg_mut[name] = is_mut
                 case CallArgVariadic(exprs=exprs):
                     kwargs["..."] = [self.eval(e) for e in exprs]
-        return args, kwargs
+                    kwarg_mut["..."] = True
+        return args, kwargs, arg_mut, kwarg_mut
 
-    def _call(self, func: Value, args: list, kwargs: dict) -> Value:
+    def _eval_arg_with_mut(self, expr) -> tuple:
+        """Evaluate an expression and return (value, is_mutable).
+
+        For Ident expressions, look up the variable's mutability in the environment.
+        All other expressions default to is_mutable=True (conservative: will deep-copy
+        when bound to a let parameter).
+        """
+        if isinstance(expr, ExprIdent):
+            try:
+                val, is_mut = self._env.get_info(expr.name)
+                return val, is_mut
+            except RuntimeError:
+                pass
+        return self.eval(expr), True
+
+    def _call(self, func: Value, args: list, kwargs: dict,
+              arg_mut: list | None = None, kwarg_mut: dict | None = None) -> Value:
         if isinstance(func, TlFunction):
-            return self._exec_function(func, args, kwargs)
+            return self._exec_function(func, args, kwargs, arg_mut=arg_mut, kwarg_mut=kwarg_mut)
         if isinstance(func, TlOverloadedFn):
             fn = self._resolve_overload(func.overloads, args, kwargs)
-            return self._exec_function(fn, args, kwargs)
+            return self._exec_function(fn, args, kwargs, arg_mut=arg_mut, kwarg_mut=kwarg_mut)
         if isinstance(func, TlGeneratorFn):
-            return self._exec_generator(func, args, kwargs)
+            return self._exec_generator(func, args, kwargs, arg_mut=arg_mut, kwarg_mut=kwarg_mut)
         if isinstance(func, TlTemplateFn):
             raise RuntimeError("TypeError: cannot call template function without type arguments")
         if isinstance(func, TlProtocol):
@@ -1204,7 +1227,8 @@ class Interpreter:
                 return self._call_method(func, "__call__", args)
         raise RuntimeError(f"TypeError: '{type_name(func)}' object is not callable")
 
-    def _call_attr(self, obj: Value, attr: str, args: list, kwargs: dict) -> Value:
+    def _call_attr(self, obj: Value, attr: str, args: list, kwargs: dict,
+                   arg_mut: list | None = None, kwarg_mut: dict | None = None) -> Value:
         from .value import TlCsObject, TlResultVal
         if isinstance(obj, TlResultVal):
             if args or kwargs:
@@ -1215,7 +1239,7 @@ class Interpreter:
                 return not obj.ok
             raise RuntimeError(f"AttributeError: Result value has no method '{attr}'")
         if isinstance(obj, TlInstance):
-            return self._call_method(obj, attr, args, kwargs)
+            return self._call_method(obj, attr, args, kwargs, arg_mut=arg_mut, kwarg_mut=kwarg_mut)
         if isinstance(obj, TlClass):
             bridge_path = obj.class_vars.get("__cs_bridge_path__")
             if bridge_path is not None:
@@ -1224,12 +1248,12 @@ class Interpreter:
             if proc_path is not None:
                 return self._cs_proc_call_static(obj, attr, args, proc_path)
             cls_attr = self._get_class_attr(obj, attr)
-            return self._call(cls_attr, args, kwargs)
+            return self._call(cls_attr, args, kwargs, arg_mut, kwarg_mut)
         if isinstance(obj, TlCsObject):
             return self._cs_call_instance(obj, attr, args)
         if isinstance(obj, TlNamespace):
             if attr in obj.members:
-                return self._call(obj.members[attr], args, kwargs)
+                return self._call(obj.members[attr], args, kwargs, arg_mut, kwarg_mut)
             raise RuntimeError(f"AttributeError: module '{obj.name}' has no attribute '{attr}'")
         if isinstance(obj, TlSignal):
             return self._call_signal_method(obj, attr, args)
@@ -1237,7 +1261,7 @@ class Interpreter:
             return self._call_event_loop_method(obj, attr, args)
         # Built-in type methods
         method = get_attr_builtin(obj, attr, self._known_classes)
-        return self._call(method, args, kwargs)
+        return self._call(method, args, kwargs, arg_mut, kwarg_mut)
 
     # ------------------------------------------------------------------
     # cs-dll bridge dispatch helpers
@@ -1304,7 +1328,8 @@ class Interpreter:
         except MemoryError:
             raise RuntimeError("MemoryError: insufficient memory for copy")
 
-    def _call_method(self, inst: TlInstance, name: str, args: list, kwargs: dict = {}) -> Value:
+    def _call_method(self, inst: TlInstance, name: str, args: list, kwargs: dict = {},
+                    arg_mut: list | None = None, kwarg_mut: dict | None = None) -> Value:
         # 組み込み copy() メソッド: __copy__ を優先し、なければ deepcopy
         if name == "copy":
             if args or kwargs:
@@ -1317,11 +1342,14 @@ class Interpreter:
                 fn = overloads[0]
                 if isinstance(fn, _NativeCallable):
                     return fn.call([inst] + list(args), kwargs)
-                return self._exec_function(fn, args, kwargs, self_val=inst)
+                return self._exec_function(fn, args, kwargs, self_val=inst,
+                                           arg_mut=arg_mut, kwarg_mut=kwarg_mut)
             fn = self._resolve_overload(overloads, args, kwargs)
-            return self._exec_function(fn, args, kwargs, self_val=inst)
+            return self._exec_function(fn, args, kwargs, self_val=inst,
+                                       arg_mut=arg_mut, kwarg_mut=kwarg_mut)
         if name in cls.gen_methods:
-            return self._exec_generator(cls.gen_methods[name], args, kwargs, self_val=inst)
+            return self._exec_generator(cls.gen_methods[name], args, kwargs, self_val=inst,
+                                        arg_mut=arg_mut, kwarg_mut=kwarg_mut)
         raise RuntimeError(f"AttributeError: '{cls.name}' object has no method '{name}'")
 
     # ------------------------------------------------------------------
@@ -1329,7 +1357,9 @@ class Interpreter:
     # ------------------------------------------------------------------
 
     def _exec_function(self, fn: TlFunction, args: list, kwargs: dict,
-                       self_val: Value = None) -> Value:
+                       self_val: Value = None,
+                       arg_mut: list | None = None,
+                       kwarg_mut: dict | None = None) -> Value:
         saved_class = self._current_class
         saved_method = self._current_method
         if isinstance(self_val, TlInstance):
@@ -1359,7 +1389,7 @@ class Interpreter:
                     params_to_bind = params_to_bind[1:]
 
             # Bind parameters
-            self._bind_params(params_to_bind, args, kwargs)
+            self._bind_params(params_to_bind, args, kwargs, arg_mut, kwarg_mut)
 
             # Execute body
             self.exec_stmts(fn.body)
@@ -1372,7 +1402,9 @@ class Interpreter:
             self._current_method = saved_method
 
     def _exec_generator(self, gfn: TlGeneratorFn, args: list, kwargs: dict,
-                        self_val: Value = None) -> TlGenerator:
+                        self_val: Value = None,
+                        arg_mut: list | None = None,
+                        kwarg_mut: dict | None = None) -> TlGenerator:
         yields: list = []
 
         saved_class = self._current_class
@@ -1388,7 +1420,7 @@ class Interpreter:
                 self._env.declare("self", self_val, mutable=False)
                 if gen_params and gen_params[0].name in ("self", "cls"):
                     gen_params = gen_params[1:]
-            self._bind_params(gen_params, args, kwargs)
+            self._bind_params(gen_params, args, kwargs, arg_mut, kwarg_mut)
             self._exec_gen_body(gfn.body, yields)
         except ReturnSignal:
             pass
@@ -1408,7 +1440,8 @@ class Interpreter:
         finally:
             _set_gen_yields(saved)
 
-    def _bind_params(self, params: list[Param], args: list, kwargs: dict) -> None:
+    def _bind_params(self, params: list[Param], args: list, kwargs: dict,
+                    arg_mut: list | None = None, kwarg_mut: dict | None = None) -> None:
         # 可変長引数パラメータを分離
         variadic_param = next((p for p in params if p.variadic), None)
         non_variadic_params = [p for p in params if not p.variadic]
@@ -1417,12 +1450,18 @@ class Interpreter:
         for i, param in enumerate(non_variadic_params):
             if param.name in kwargs:
                 val = kwargs[param.name]
+                is_arg_mut = kwarg_mut.get(param.name, True) if kwarg_mut is not None else True
             elif i < len(positional):
                 val = positional[i]
+                is_arg_mut = arg_mut[i] if arg_mut is not None and i < len(arg_mut) else True
             elif param.default is not None:
                 val = self.eval(param.default)
+                is_arg_mut = True
             else:
                 raise RuntimeError(f"TypeError: missing argument '{param.name}'")
+            # mut→let: deep-copy so the let parameter is isolated from the caller's mut variable
+            if not param.mutable and is_arg_mut:
+                val = deep_clone(val)
             # Auto-cast: let parameters with type annotation — call __cast__[T] if needed
             if not param.mutable and param.type_ann is not None:
                 if isinstance(val, TlInstance) and val.cls.name != param.type_ann:
