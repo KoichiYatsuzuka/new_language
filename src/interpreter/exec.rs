@@ -1996,6 +1996,8 @@ impl Interpreter {
                         ptr_params: vec![crate::interpreter::PtrParam::None; exp.n_params],
                         raw_fn_ptr: fn_ptr,
                         cached_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
+                        typed_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
+                        typed_sig: None,
                     });
                     members.insert(exp.name.clone(), Value::NativeFunction(fn_ref));
                 }
@@ -2010,6 +2012,33 @@ impl Interpreter {
             name: module.join("."),
             members,
         }))
+    }
+
+    /// 関数シグネチャから typed ABI のシグネチャを構築する。
+    /// 全パラメータが `let` かつ int/float 注釈、戻り値も int/float のときのみ Some。
+    /// codegen 側の typed 候補条件（llvm_codegen.rs）と一致させること。
+    fn build_typed_sig(
+        params: &[crate::ast::Param],
+        return_type: Option<&str>,
+    ) -> Option<crate::interpreter::value::TypedSig> {
+        use crate::interpreter::value::{AbiTy, TypedSig};
+        let ret = match return_type {
+            Some("int") => AbiTy::I64,
+            Some("float") => AbiTy::F64,
+            _ => return None,
+        };
+        let mut ptys = Vec::with_capacity(params.len());
+        for p in params {
+            if p.mutable || p.default.is_some() {
+                return None;
+            }
+            match p.type_ann.as_deref() {
+                Some("int") => ptys.push(AbiTy::I64),
+                Some("float") => ptys.push(AbiTy::F64),
+                _ => return None,
+            }
+        }
+        Some(TypedSig { params: ptys, ret })
     }
 
     /// ネイティブ共有ライブラリをロードして、そのモジュールの `Namespace` を構築する。
@@ -2049,7 +2078,46 @@ impl Interpreter {
 
         for stmt in body {
             match stmt {
-                Stmt::FnDef { name, params, .. } | Stmt::GenDef { name, params, .. } => {
+                Stmt::FnDef { name, params, return_type, .. } => {
+                    let symbol_name = format!("{name}_tl\0");
+                    if let Ok(func) = unsafe {
+                        lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
+                    } {
+                        let initial_ptr = unsafe { *func } as usize;
+                        // typed エントリ ({name}_typed): 統一 typed ABI。
+                        // シグネチャが全プリミティブの場合のみシンボルを探す。
+                        let typed_sig = Self::build_typed_sig(params, return_type.as_deref());
+                        let typed_ptr = if typed_sig.is_some() {
+                            let typed_symbol = format!("{name}_typed\0");
+                            match unsafe {
+                                lib.get::<unsafe extern "C" fn(
+                                    *const u64,
+                                    *mut u64,
+                                    *mut crate::interpreter::native_api::ErrSlot,
+                                ) -> u32>(typed_symbol.as_bytes())
+                            } {
+                                Ok(f) => (unsafe { *f }) as usize,
+                                Err(_) => 0,
+                            }
+                        } else {
+                            0
+                        };
+                        let fn_ref = Arc::new(NativeFnRef {
+                            lib_path: lib_path_buf.clone(),
+                            fn_name: name.clone(),
+                            n_params: params.len(),
+                            min_params: params.len(),
+                            param_mutabilities: params.iter().map(|p| p.mutable).collect(),
+                            ptr_params: vec![crate::interpreter::PtrParam::None; params.len()],
+                            raw_fn_ptr: 0,
+                            cached_fn_ptr: std::sync::atomic::AtomicUsize::new(initial_ptr),
+                            typed_fn_ptr: std::sync::atomic::AtomicUsize::new(typed_ptr),
+                            typed_sig: if typed_ptr != 0 { typed_sig } else { None },
+                        });
+                        members.insert(name.clone(), Value::NativeFunction(fn_ref));
+                    }
+                }
+                Stmt::GenDef { name, params, .. } => {
                     let symbol_name = format!("{name}_tl\0");
                     if let Ok(func) = unsafe {
                         lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
@@ -2064,6 +2132,8 @@ impl Interpreter {
                             ptr_params: vec![crate::interpreter::PtrParam::None; params.len()],
                             raw_fn_ptr: 0,
                             cached_fn_ptr: std::sync::atomic::AtomicUsize::new(initial_ptr),
+                            typed_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
+                            typed_sig: None,
                         });
                         members.insert(name.clone(), Value::NativeFunction(fn_ref));
                     }
@@ -2390,6 +2460,8 @@ impl Interpreter {
                     ptr_params,
                     raw_fn_ptr: 0,
                     cached_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
+                    typed_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
+                    typed_sig: None,
                 });
                 members.insert(sig.name.clone(), Value::NativeFunction(fn_ref));
             }

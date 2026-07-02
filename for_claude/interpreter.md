@@ -152,12 +152,44 @@ If a `let` parameter has a type annotation and the argument is an instance of a 
 
 ## Classes (`classes.rs`)
 
+### InstanceData layout
+
+```rust
+pub struct InstanceData {
+    pub class_id: u32,   // クラスの一意 ID（宣言時に alloc_class_id() で発行）
+    pub flags:    u32,   // INST_IMMUTABLE | INST_IS_EXCEPTION | INST_IS_NEW_TYPE …
+    pub class:    Rc<ClassValue>,
+    pub fields:   Vec<Option<(Value, bool)>>,  // (値, 可変フラグ)
+}
+```
+
+**flags ビット定数** (`src/interpreter/value.rs`):
+
+| 定数 | ビット | 意味 |
+|---|---|---|
+| `INST_IMMUTABLE` | 31 | `let` バインド / `freeze` でフリーズ済み |
+| `INST_HAS_RAW_LAYOUT` | 30 | raw int/float フラットバッファが有効（将来）|
+| `INST_IS_EXCEPTION` | 29 | 例外クラスのインスタンス |
+| `INST_IS_NEW_TYPE` | 28 | `new_type` ラッパー |
+| `INST_FIELD_INIT_MASK` | 23–0 | raw_fields 初期化ビットマップ（将来）|
+
+**ポインタレイアウト（外部ライブラリ向け）**:  
+- Arrow コンパイル済みコード → `ptr + 0` で `class_id` 読み取り  
+- 外部 C/Rust ライブラリ → `ptr + 8` をフィールド先頭として渡す（8 バイトヘッダスキップ）
+
+### ClassValue の class_id
+
+`ClassValue` も `class_id: u32` と `is_exception: bool` を持ちます。  
+`alloc_class_id()` はグローバル `AtomicU32` カウンタで、クラス宣言・テンプレート実体化・  
+`new_type` 宣言のたびに一意な ID を発行します。`deep_clone` 時は ID を引き継ぎます。
+
 ### Instantiation (`instantiate`)
 
-1. Create `InstanceData { class, fields: HashMap, field_access: HashMap }`.
-2. Initialise fields from `ClassDef` field declarations (evaluate defaults).
-3. Copy `field_access` map from class + inherited traits (namespaced as `"TraitName::field"`).
-4. Call `__init__` if defined.
+1. `class_val.field_defaults` の初期値を評価してフィールド Vec を構築
+2. 初期 `flags` を計算（`is_exception` → `INST_IS_EXCEPTION`、`new_type_base.is_some()` → `INST_IS_NEW_TYPE`）
+3. `InstanceData { class_id: class.class_id, flags, class, fields }` を `Rc<RefCell<...>>` で生成
+4. `__init__` を検索して実行
+5. `Value::Instance(...)` を返す
 
 ### Method lookup (`lookup_method_in_class`)
 
@@ -166,7 +198,7 @@ Searches: own class methods → base class methods → trait methods (breadth-fi
 
 ### Access control
 
-`field_access: HashMap<String, Accessibility>` on `InstanceData`. At read/write time, the accessor checks whether the current `current_class` is permitted:
+`field_access: HashMap<String, Accessibility>` on `ClassValue`. At read/write time, the accessor checks whether the current `current_class` is permitted:
 
 - `Public` → always allowed
 - `Private` → only the owning class name matches

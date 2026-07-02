@@ -1,0 +1,21 @@
+# typed_abi_module.ar — 統一 typed ABI（{name}_typed エントリ）の検証用モジュール
+#
+# 全パラメータ・戻り値が int/float の関数は、ハンドル ABI（_tl）に加えて
+# typed ABI（_typed: TLS・アリーナを通らない直接 C ABI）でもエクスポートされる。
+# raise は ErrSlot 経由で status=1 とともに呼び出し元へ伝播する。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/test_modules/typed_abi_module.ar
+
+fn safe_div(let a: int, let b: int) -> int:
+    if b == 0:
+        raise ValueError("division by zero in safe_div")
+    return a // b
+
+fn chain_call(let x: int) -> int:
+    # typed→typed 呼び出し: 内側の raise は status 伝播で外へ届く
+    return safe_div(100, x)
+
+fn hypot_sq(let x: float, let y: float) -> float:
+    # float の u64 スロット渡し（ビットキャスト）の検証
+    return x * x + y * y

@@ -1,0 +1,30 @@
+# typed_abi.ar — 統一 typed ABI の動作検証ランナー
+#
+# 1. cargo run --release -- --compile examples/test_modules/typed_abi_module.ar
+# 2. cargo run --release -- examples/typed_abi.ar
+
+from test_modules.typed_abi_module import safe_div
+from test_modules.typed_abi_module import chain_call
+from test_modules.typed_abi_module import hypot_sq
+
+# 正常経路（typed ABI 直接呼び出し）
+print(safe_div(10, 2))       # 5
+print(hypot_sq(3.0, 4.0))    # 25.0
+
+# ネイティブコード内の raise が ErrSlot 経由で言語例外として届く
+try:
+    let bad = safe_div(1, 0)
+    print("NOT REACHED")
+except ValueError as e:
+    print("caught direct: " + e.message)
+
+# typed→typed 呼び出しチェーンを通る raise の status 伝播
+try:
+    let bad2 = chain_call(0)
+    print("NOT REACHED")
+except ValueError as e:
+    print("caught chained: " + e.message)
+
+# raise 後も正常呼び出しが機能する
+print(chain_call(4))         # 25
+print("done")

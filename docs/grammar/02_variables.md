@@ -166,6 +166,49 @@ if condition:
 
 **実装**: 制御構文の実行前後に `push_scope()` / `pop_scope()` を呼びます。
 
+---
+
+## インスタンスのメモリ表現
+
+`Value::Instance` の中身 (`InstanceData`) は以下のフィールドを持ちます:
+
+```rust
+pub struct InstanceData {
+    pub class_id: u32,   // クラスの一意 ID（インスタンス先頭 4 バイト）
+    pub flags:    u32,   // 状態フラグ（以下参照）
+    pub class:    Rc<ClassValue>,
+    pub fields:   Vec<Option<(Value, bool)>>,  // (値, 可変フラグ)
+}
+```
+
+### flags ビットレイアウト
+
+| ビット | 定数名 | 意味 |
+|---|---|---|
+| 31 | `INST_IMMUTABLE` | `let` バインド / `freeze` でフリーズされている |
+| 30 | `INST_HAS_RAW_LAYOUT` | int/float フラットバッファ (`raw_fields`) が有効 |
+| 29 | `INST_IS_EXCEPTION` | 例外クラスのインスタンス（高速型チェック用） |
+| 28 | `INST_IS_NEW_TYPE` | `new_type` ラッパーのインスタンス |
+| 27–24 | — | 予約済み |
+| 23–0 | `INST_FIELD_INIT_MASK` | `raw_fields` の初期化済みスロットビットマップ |
+
+### class_id
+
+クラスは宣言時に `alloc_class_id()`（グローバルアトミックカウンタ）で一意な `u32` ID を取得します。  
+この ID は `InstanceData` の先頭 4 バイトに格納されており、コンパイル済みコードから直接読めます（Case C レイアウト）。
+
+- **Arrow コンパイル済みコード**: `instance_ptr + 0` で `class_id` を読む
+- **外部ライブラリ（C/Rust など）**: `instance_ptr + 8` をフィールド先頭として扱う  
+  （8 バイトヘッダをスキップ）
+
+### freeze との関係
+
+`freeze x` を実行すると:
+1. `InstanceData.flags |= INST_IMMUTABLE` がセットされる
+2. `fields` の全スロットの可変フラグ (`bool`) が `false` になる
+
+フリーズ後にフィールドへ代入しようとすると `TypeError` が送出されます。
+
 ### 関数スコープ
 
 関数呼び出し時:
@@ -244,7 +287,7 @@ print(p1.x)   # 10 — p1 は変更されない
 ### デフォルト動作
 
 - すべてのフィールドを再帰的にディープコピーした新しいインスタンスを生成します
-- 戻り値は **フリーズなし** (`immutable = false`) の新鮮なインスタンスです。  
+- 戻り値は **フリーズなし** (`flags & INST_IMMUTABLE == 0`) の新鮮なインスタンスです。  
   `let` バインドによるフリーズは解除されるため、コピー先での変更が可能です
 - メモリ不足の場合は `MemoryError` を raise します
 

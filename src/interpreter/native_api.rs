@@ -26,6 +26,56 @@ pub const TL_STOP_ITER: i64 = -1;
 /// Sentinel returned by CB_RAISE: native code raised an exception stored in PENDING_RAISE.
 pub const TL_EXCEPTION: i64 = -2;
 
+// ── Typed ABI error slot ─────────────────────────────────────────────────────
+
+/// `{name}_typed` エントリのエラー出力スロット。呼び出し側がスタックに確保して渡す。
+/// ネイティブコードは raise 時にここへ書き込み、status 1 を返す。
+/// 文字列ポインタは DLL 内の静的領域を指す（DLL がロードされている限り有効）。
+///
+/// LLVM 側レイアウト（オフセット固定・8 バイト境界）:
+///   +0:  type_ptr (ptr)   — 例外クラス名（例: "ValueError"）
+///   +8:  type_len (i64)
+///   +16: msg_ptr  (ptr)   — メッセージ文字列
+///   +24: msg_len  (i64)
+#[repr(C)]
+pub struct ErrSlot {
+    pub type_ptr: *const u8,
+    pub type_len: u64,
+    pub msg_ptr: *const u8,
+    pub msg_len: u64,
+}
+
+impl Default for ErrSlot {
+    fn default() -> Self {
+        ErrSlot {
+            type_ptr: std::ptr::null(),
+            type_len: 0,
+            msg_ptr: std::ptr::null(),
+            msg_len: 0,
+        }
+    }
+}
+
+impl ErrSlot {
+    /// スロットの内容を `"TypeName: message"` 形式のエラー文字列に変換する。
+    /// 既存の raise 経路（`take_pending_raise` 後のフォーマット）と同じ形式。
+    pub fn to_error_string(&self) -> String {
+        let read = |p: *const u8, n: u64| -> String {
+            if p.is_null() || n == 0 {
+                return String::new();
+            }
+            let bytes = unsafe { std::slice::from_raw_parts(p, n as usize) };
+            String::from_utf8_lossy(bytes).into_owned()
+        };
+        let type_name = {
+            let t = read(self.type_ptr, self.type_len);
+            if t.is_empty() { "RuntimeError".to_string() } else { t }
+        };
+        let msg = read(self.msg_ptr, self.msg_len);
+        format!("{type_name}: {msg}")
+    }
+}
+
 // ── BinOp codes (must mirror codegen.rs constants) ──────────────────────────
 
 pub const OP_ADD: i32 = 0;

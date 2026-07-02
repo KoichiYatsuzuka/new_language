@@ -350,6 +350,16 @@ struct GenCtx<'a> {
     // `function[...]->R` typed params: param_name → alloca ptr holding the trampoline fn ptr.
     // Populated at function entry; used by gen_call to avoid the ArCallbacks GEP chain.
     fn_param_trampolines: HashMap<String, String>,
+
+    // ── Typed ABI (`{name}_typed`) emission mode ──────────────────────────────
+    // typed_mode: emitting a typed entry (raw-value ABI, ErrSlot error path, no CB).
+    // typed_failed: set when the body needed any ArCallbacks call (→ discard variant).
+    typed_mode: bool,
+    typed_failed: bool,
+    // Symbols currently assumed to have a _typed variant (fixpoint set).
+    typed_ok: HashSet<String>,
+    // symbol → (param Tys, ret Ty) for typed candidates (Int/Float only).
+    typed_sigs: HashMap<String, (Vec<Ty>, Ty)>,
 }
 
 impl<'a> GenCtx<'a> {
@@ -384,6 +394,10 @@ impl<'a> GenCtx<'a> {
             preread_fields:        HashMap::new(),
             flat_list_params:      HashMap::new(),
             fn_param_trampolines:  HashMap::new(),
+            typed_mode:            false,
+            typed_failed:          false,
+            typed_ok:              HashSet::new(),
+            typed_sigs:            HashMap::new(),
         }
     }
 
@@ -445,6 +459,126 @@ impl<'a> GenCtx<'a> {
         }
     }
 
+    // ── Typed ABI helpers ─────────────────────────────────────────────────────
+
+    /// typed モードの return: 値を関数の戻り値型に合わせて `%_ret` に格納し status 0 を返す。
+    /// Handle 値の強制変換はコールバックを要するため typed_failed が立つ（自動検出）。
+    fn emit_typed_return(&mut self, v: &str, vt: Ty) {
+        if self.terminated { return; }
+        match self.current_fn_ret {
+            Ty::Float => {
+                let f = self.to_f64(v, vt);
+                self.ec(&format!("store double {f}, ptr %_ret"));
+            }
+            _ => {
+                let iv = self.to_i64(v, vt);
+                self.ec(&format!("store i64 {iv}, ptr %_ret"));
+            }
+        }
+        self.ec("ret i32 0");
+        self.terminated = true;
+    }
+
+    /// typed モードの raise: `raise Name("literal")` / `raise Name()` パターンを
+    /// ErrSlot への静的文字列書き込み + `ret i32 1` に展開する。
+    /// それ以外のパターン（動的メッセージなど）は typed_failed を立てる。
+    fn emit_typed_raise(&mut self, exc_expr: &Expr) {
+        let (type_name, msg): (String, String) = match exc_expr {
+            Expr::Call { func, args, .. } => {
+                let Expr::Ident(name) = func.as_ref() else {
+                    self.typed_failed = true;
+                    return;
+                };
+                let msg = match args.first() {
+                    None => String::new(),
+                    Some(CallArg::Positional(Expr::Str(s))) => s.clone(),
+                    _ => {
+                        self.typed_failed = true;
+                        return;
+                    }
+                };
+                (name.clone(), msg)
+            }
+            Expr::Ident(name) => (name.clone(), String::new()),
+            _ => {
+                self.typed_failed = true;
+                return;
+            }
+        };
+        if self.terminated { return; }
+        let tp = self.str_const(type_name.as_bytes());
+        let mp = self.str_const(msg.as_bytes());
+        let tlen = type_name.len();
+        let mlen = msg.len();
+        // ErrSlot layout: +0 type_ptr, +8 type_len, +16 msg_ptr, +24 msg_len
+        let e1 = self.fresh_reg();
+        let e2 = self.fresh_reg();
+        let e3 = self.fresh_reg();
+        self.ec(&format!("store {tp}, ptr %_err"));
+        self.ec(&format!("{e1} = getelementptr inbounds i8, ptr %_err, i64 8"));
+        self.ec(&format!("store i64 {tlen}, ptr {e1}"));
+        self.ec(&format!("{e2} = getelementptr inbounds i8, ptr %_err, i64 16"));
+        self.ec(&format!("store {mp}, ptr {e2}"));
+        self.ec(&format!("{e3} = getelementptr inbounds i8, ptr %_err, i64 24"));
+        self.ec(&format!("store i64 {mlen}, ptr {e3}"));
+        self.ec("ret i32 1");
+        self.terminated = true;
+    }
+
+    /// typed モードのモジュール内呼び出し: `@{name}_typed(args*, ret*, err*)` を発行し、
+    /// status != 0 なら即 return で呼び出し元へ伝播する（C のエラー伝播と同型）。
+    /// `%_err` ポインタは横流しなので、最内の raise 情報がそのまま最外へ届く。
+    fn gen_typed_call(&mut self, name: &str, args: &[CallArg], ptys: &[Ty], rty: Ty) -> (String, Ty) {
+        let n = ptys.len();
+        // 呼び出しサイトごとの引数バッファ・戻り値スロット（entry ブロックに alloca）
+        let args_al = if n > 0 {
+            let a = format!("%_tca{}", self.reg);
+            self.reg += 1;
+            self.ea(&format!("{a} = alloca [{n} x i64], align 8"));
+            a
+        } else {
+            String::new()
+        };
+        let ret_al = format!("%_tcr{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{ret_al} = alloca i64, align 8"));
+
+        for (i, (arg, pty)) in args.iter().zip(ptys).enumerate() {
+            let (v, vt) = self.gen_expr(arg.expr());
+            let slot = self.fresh_reg();
+            self.ec(&format!(
+                "{slot} = getelementptr inbounds [{n} x i64], ptr {args_al}, i32 0, i32 {i}"
+            ));
+            match pty {
+                Ty::Float => {
+                    let f = self.to_f64(&v, vt);
+                    self.ec(&format!("store double {f}, ptr {slot}"));
+                }
+                _ => {
+                    let iv = self.to_i64(&v, vt);
+                    self.ec(&format!("store i64 {iv}, ptr {slot}"));
+                }
+            }
+        }
+        let args_ref = if n > 0 { format!("ptr {args_al}") } else { "ptr null".to_string() };
+        let st = self.fresh_reg();
+        self.ec(&format!(
+            "{st} = call i32 @{name}_typed({args_ref}, ptr {ret_al}, ptr %_err)"
+        ));
+        let ok = self.fresh_reg();
+        let cont = self.fresh_blk();
+        let eprop = self.fresh_blk();
+        self.ec(&format!("{ok} = icmp eq i32 {st}, 0"));
+        self.br_cond(&ok, &cont, &eprop);
+        self.start_block(&eprop);
+        self.ec(&format!("ret i32 {st}"));
+        self.terminated = true;
+        self.start_block(&cont);
+        let r = self.fresh_reg();
+        self.ec(&format!("{r} = load {}, ptr {ret_al}", llvm_ty(rty)));
+        (r, rty)
+    }
+
     // ── Alloca helpers ────────────────────────────────────────────────────────
 
     fn alloca_var(&mut self, name: &str, ty: Ty) -> String {
@@ -490,6 +624,11 @@ impl<'a> GenCtx<'a> {
 
     /// Load @CB, GEP to field, load fn ptr, call it. Returns result register (or "void").
     fn call_cb(&mut self, field: usize, args: &[String]) -> String {
+        // typed モード中はコールバック禁止 — 必要になった時点で typed 変種を破棄する。
+        // （typed エントリは TLS・アリーナに一切触れないことが保証されるため）
+        if self.typed_mode {
+            self.typed_failed = true;
+        }
         let (ret_ty, param_tys) = cb_sig(field);
         let cb  = self.fresh_reg();
         let fp  = self.fresh_reg();
@@ -640,6 +779,24 @@ impl<'a> GenCtx<'a> {
                             }
                         };
                     }
+                }
+                // ── typed モード: _typed 同士の直接呼び出し（status 伝播） ─────
+                if self.typed_mode {
+                    if let Expr::Ident(name) = func.as_ref() {
+                        if self.typed_ok.contains(name.as_str())
+                            && !self.locals.contains_key(name.as_str())
+                        {
+                            if let Some((ptys, rty)) = self.typed_sigs.get(name.as_str()).cloned() {
+                                if args.len() == ptys.len() {
+                                    let name = name.clone();
+                                    return self.gen_typed_call(&name, args, &ptys, rty);
+                                }
+                            }
+                        }
+                    }
+                    // typed 変種のない呼び出し先 → ハンドル経路が必要 → typed 破棄
+                    self.typed_failed = true;
+                    return ("0".to_string(), Ty::Handle);
                 }
                 // ── Typed intra-module direct function calls ──────────────────
                 if let Expr::Ident(name) = func.as_ref() {
@@ -1544,7 +1701,10 @@ impl<'a> GenCtx<'a> {
             }
             Stmt::Return(Some(expr)) => {
                 let (v, vt) = self.gen_expr(expr);
-                if self.current_fn_ret == Ty::Float {
+                if self.typed_mode {
+                    // typed ABI: 生値を %_ret スロットへ格納して status 0 を返す。
+                    self.emit_typed_return(&v, vt);
+                } else if self.current_fn_ret == Ty::Float {
                     // Float-returning _impl: return raw double, no boxing.
                     let f = self.to_f64(&v, vt);
                     if !self.terminated {
@@ -1557,7 +1717,15 @@ impl<'a> GenCtx<'a> {
                 }
             }
             Stmt::Return(None) => {
-                if self.current_fn_ret == Ty::Float {
+                if self.typed_mode {
+                    if !self.terminated {
+                        let t = llvm_ty(self.current_fn_ret);
+                        let zero = if self.current_fn_ret == Ty::Float { "0.0" } else { "0" };
+                        self.ec(&format!("store {t} {zero}, ptr %_ret"));
+                        self.ec("ret i32 0");
+                        self.terminated = true;
+                    }
+                } else if self.current_fn_ret == Ty::Float {
                     if !self.terminated { self.ec("ret double 0.0"); self.terminated = true; }
                 } else {
                     self.ret_handle("0");
@@ -1616,6 +1784,12 @@ impl<'a> GenCtx<'a> {
             }
 
             Stmt::Raise { exc: Some(exc_expr), .. } => {
+                if self.typed_mode {
+                    // typed ABI: ErrSlot に静的文字列を書き込み status 1 を返す。
+                    // 対応パターンは `raise Name("literal")` / `raise Name()` のみ。
+                    self.emit_typed_raise(exc_expr);
+                    return;
+                }
                 // CB_RAISE(type_handle, msg_handle) → returns TL_EXCEPTION
                 let (type_h, msg_h) = match exc_expr {
                     Expr::Call { func, args, .. } => {
@@ -2184,6 +2358,77 @@ impl<'a> GenCtx<'a> {
         self.preread_fields.clear();
     }
 
+    /// `@{name}_typed(ptr %_args, ptr %_ret, ptr %_err) -> i32` — 統一 typed ABI。
+    ///
+    /// - 引数は u64 スロット列から生値（i64 / double ビットパターン）を直接ロード
+    /// - 戻り値は `%_ret` に生値で格納、status 0 を返す
+    /// - raise は `%_err`（ErrSlot）へ静的文字列を書いて status 1 を返す
+    /// - コールバック（TLS・アリーナ）を一切使わない。使用が必要になった時点で破棄
+    ///
+    /// 戻り値: 生成に成功したら関数定義テキスト、コールバックが必要なら `None`。
+    fn emit_fn_typed(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        ret_ann: Option<&str>,
+        body: &[Stmt],
+    ) -> Option<String> {
+        let ret_ty = ann_ty(ret_ann);
+
+        // Reset per-function state
+        self.alloca_buf.clear();
+        self.code_buf.clear();
+        self.reg = 0;
+        self.blk = 0;
+        self.terminated = false;
+        self.locals.clear();
+        self.loop_stack.clear();
+        self.block_stack.clear();
+        self.preread_fields.clear();
+        self.fn_param_trampolines.clear();
+        self.param_classes.clear();
+        self.flat_list_params.clear();
+        self.current_fn_ret = ret_ty;
+        self.typed_mode = true;
+        self.typed_failed = false;
+
+        // 引数展開: u64 スロットから生値をロード（コールバックなし）。
+        // float は同じ 8 バイトを double としてロードするだけ（ビット再解釈）。
+        for (i, p) in params.iter().enumerate() {
+            let pt = ann_ty(p.type_ann.as_deref()); // 候補選別済みなので Int | Float
+            let ptr = self.alloca_var(&p.name, pt);
+            let slot = self.fresh_reg();
+            self.ec(&format!("{slot} = getelementptr inbounds i64, ptr %_args, i32 {i}"));
+            let r = self.fresh_reg();
+            self.ec(&format!("{r} = load {}, ptr {slot}", llvm_ty(pt)));
+            self.store_val(pt, &r, &ptr.clone());
+        }
+
+        self.gen_stmts(body);
+
+        // Fallback terminator（到達不能だが LLVM 上必須）
+        if !self.terminated {
+            let t = llvm_ty(ret_ty);
+            let zero = if ret_ty == Ty::Float { "0.0" } else { "0" };
+            self.ec(&format!("store {t} {zero}, ptr %_ret"));
+            self.ec("ret i32 0");
+            self.terminated = true;
+        }
+
+        self.typed_mode = false;
+        self.current_fn_ret = Ty::Handle;
+        if self.typed_failed {
+            return None;
+        }
+
+        let attr = export_attr();
+        let vis = if attr.is_empty() { "" } else { attr };
+        Some(format!(
+            "\ndefine {vis}i32 @{name}_typed(ptr %_args, ptr %_ret, ptr %_err) {{\nentry:\n{}{}}}\n",
+            self.alloca_buf, self.code_buf
+        ))
+    }
+
     fn emit_gen_fn(&mut self, name: &str, params: &[Param], body: &[Stmt]) {
         // Reset per-function state
         self.alloca_buf.clear();
@@ -2564,6 +2809,64 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
             ctx.emit_fn(&f.symbol, f.params, f.return_type, f.body);
         }
         ctx.current_class = None;
+    }
+
+    // ── 統一 typed ABI 変種（{name}_typed）の生成 ──────────────────────────────
+    // 候補: トップレベル関数で、全パラメータが `let` かつ int/float 注釈、
+    //       戻り値も int/float のもの。
+    // 本体がコールバックを要した場合は生成を破棄し、その関数を typed 集合から外して
+    // 呼び出し元も含め再コンパイルする（fixpoint）。
+    let typed_candidates: Vec<&EligibleFn> = eligible.iter()
+        .filter(|f| {
+            f.class_name.is_none()
+                && !f.is_gen
+                && matches!(ann_ty(f.return_type), Ty::Int | Ty::Float)
+                && f.params.iter().all(|p| {
+                    !p.mutable && matches!(ann_ty(p.type_ann.as_deref()), Ty::Int | Ty::Float)
+                })
+        })
+        .collect();
+
+    ctx.typed_sigs = typed_candidates.iter()
+        .map(|f| {
+            (
+                f.symbol.clone(),
+                (
+                    f.params.iter().map(|p| ann_ty(p.type_ann.as_deref())).collect::<Vec<Ty>>(),
+                    ann_ty(f.return_type),
+                ),
+            )
+        })
+        .collect();
+    ctx.typed_ok = typed_candidates.iter().map(|f| f.symbol.clone()).collect();
+
+    let mut typed_defs: Vec<String> = Vec::new();
+    loop {
+        typed_defs.clear();
+        let mut evicted: Vec<String> = Vec::new();
+        for f in &typed_candidates {
+            if !ctx.typed_ok.contains(&f.symbol) {
+                continue;
+            }
+            match ctx.emit_fn_typed(&f.symbol, f.params, f.return_type, f.body) {
+                Some(def) => typed_defs.push(def),
+                None => evicted.push(f.symbol.clone()),
+            }
+        }
+        if evicted.is_empty() {
+            break;
+        }
+        // 破棄されたシンボルを呼んでいた typed 関数も無効になるため再コンパイル
+        for s in evicted {
+            ctx.typed_ok.remove(&s);
+        }
+    }
+    let typed_count = typed_defs.len();
+    for def in &typed_defs {
+        ctx.fn_defs.push_str(def);
+    }
+    if typed_count > 0 {
+        eprintln!("NativeLib: {typed_count} typed entry point(s) (zero-TLS ABI)");
     }
 
     let header = if cfg!(target_os = "windows") {

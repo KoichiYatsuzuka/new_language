@@ -1612,6 +1612,51 @@ impl Interpreter {
             vals.push(Value::None);
         }
 
+        // ── 統一 typed ABI 高速パス ──────────────────────────────────────────
+        // `status = fn(args*, ret*, err*)` の直接 C ABI 呼び出し。
+        // TLS・アリーナ・ハンドルを一切通らない。raise は ErrSlot 経由で伝播する。
+        // 引数の実行時型がシグネチャと合わない場合はハンドル経路へフォールバック。
+        if let Some(sig) = &fn_ref.typed_sig {
+            use crate::interpreter::value::AbiTy;
+            let typed_ptr = fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed);
+            if typed_ptr != 0 && vals.len() == sig.params.len() && vals.len() <= 16 {
+                let mut slots = [0u64; 16];
+                let mut ok = true;
+                for (i, (v, ty)) in vals.iter().zip(&sig.params).enumerate() {
+                    slots[i] = match (v, ty) {
+                        (Value::Int(n), AbiTy::I64) => *n as u64,
+                        (Value::Float(f), AbiTy::F64) => f.to_bits(),
+                        // int → float 引数の自動昇格（ハンドル経路の ar_to_float と同義）
+                        (Value::Int(n), AbiTy::F64) => (*n as f64).to_bits(),
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    };
+                }
+                if ok {
+                    let mut ret: u64 = 0;
+                    let mut err = super::native_api::ErrSlot::default();
+                    let status = unsafe {
+                        let f: unsafe extern "C" fn(
+                            *const u64,
+                            *mut u64,
+                            *mut super::native_api::ErrSlot,
+                        ) -> u32 = std::mem::transmute(typed_ptr);
+                        f(slots.as_ptr(), &mut ret, &mut err)
+                    };
+                    if status != 0 {
+                        // 既存の raise 経路と同じ "TypeName: msg" 形式で伝播
+                        return Err(err.to_error_string());
+                    }
+                    return Ok(match sig.ret {
+                        AbiTy::I64 => Value::Int(ret as i64),
+                        AbiTy::F64 => Value::Float(f64::from_bits(ret)),
+                    });
+                }
+            }
+        }
+
         let is_outermost = super::native_api::enter_native_call(self as *mut Interpreter);
 
         // Push handles; MutPtr params get writable arena slots
@@ -1743,6 +1788,51 @@ impl Interpreter {
         }
         while vals.len() < fn_ref.n_params {
             vals.push(Value::None);
+        }
+
+        // ── 統一 typed ABI 高速パス ──────────────────────────────────────────
+        // `status = fn(args*, ret*, err*)` の直接 C ABI 呼び出し。
+        // TLS・アリーナ・ハンドルを一切通らない。raise は ErrSlot 経由で伝播する。
+        // 引数の実行時型がシグネチャと合わない場合はハンドル経路へフォールバック。
+        if let Some(sig) = &fn_ref.typed_sig {
+            use crate::interpreter::value::AbiTy;
+            let typed_ptr = fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed);
+            if typed_ptr != 0 && vals.len() == sig.params.len() && vals.len() <= 16 {
+                let mut slots = [0u64; 16];
+                let mut ok = true;
+                for (i, (v, ty)) in vals.iter().zip(&sig.params).enumerate() {
+                    slots[i] = match (v, ty) {
+                        (Value::Int(n), AbiTy::I64) => *n as u64,
+                        (Value::Float(f), AbiTy::F64) => f.to_bits(),
+                        // int → float 引数の自動昇格（ハンドル経路の ar_to_float と同義）
+                        (Value::Int(n), AbiTy::F64) => (*n as f64).to_bits(),
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    };
+                }
+                if ok {
+                    let mut ret: u64 = 0;
+                    let mut err = super::native_api::ErrSlot::default();
+                    let status = unsafe {
+                        let f: unsafe extern "C" fn(
+                            *const u64,
+                            *mut u64,
+                            *mut super::native_api::ErrSlot,
+                        ) -> u32 = std::mem::transmute(typed_ptr);
+                        f(slots.as_ptr(), &mut ret, &mut err)
+                    };
+                    if status != 0 {
+                        // 既存の raise 経路と同じ "TypeName: msg" 形式で伝播
+                        return Err(err.to_error_string());
+                    }
+                    return Ok(match sig.ret {
+                        AbiTy::I64 => Value::Int(ret as i64),
+                        AbiTy::F64 => Value::Float(f64::from_bits(ret)),
+                    });
+                }
+            }
         }
 
         let is_outermost = super::native_api::enter_native_call(self as *mut Interpreter);

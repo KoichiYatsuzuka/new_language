@@ -587,6 +587,25 @@ pub enum PtrParam {
     MutPtr,
 }
 
+/// 統一 typed ABI の引数・戻り値のマシン型。C ABI の u64 スロットと一対一対応する。
+///
+/// - `I64`: Arrow `int` — スロットに `i64` をそのまま格納
+/// - `F64`: Arrow `float` — スロットに `f64::to_bits()` のビットパターンを格納
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AbiTy {
+    I64,
+    F64,
+}
+
+/// `{name}_typed` エントリポイントの型シグネチャ。
+/// C ABI: `extern "C" fn(args: *const u64, ret: *mut u64, err: *mut ErrSlot) -> u32`
+/// （戻り値 0 = 正常、1 = raise 発生。err に例外情報が書き込まれる）
+#[derive(Debug, Clone)]
+pub struct TypedSig {
+    pub params: Vec<AbiTy>,
+    pub ret: AbiTy,
+}
+
 /// Reference to a native (natively compiled) function.
 ///
 /// Two dispatch modes:
@@ -616,6 +635,11 @@ pub struct NativeFnRef {
     /// Lazily cached raw function pointer for cpp-dll functions (raw_fn_ptr == 0).
     /// Written once on first call via ar_call_fn fast path; 0 = not yet resolved.
     pub cached_fn_ptr: std::sync::atomic::AtomicUsize,
+    /// `{fn_name}_typed` エントリのアドレス（0 = typed 変種なし）。
+    /// TLS・アリーナを一切通らない直接 C ABI 呼び出しに使う。
+    pub typed_fn_ptr: std::sync::atomic::AtomicUsize,
+    /// typed エントリのシグネチャ。`typed_fn_ptr != 0` のときのみ Some。
+    pub typed_sig: Option<TypedSig>,
 }
 
 impl Clone for NativeFnRef {
@@ -631,6 +655,10 @@ impl Clone for NativeFnRef {
             cached_fn_ptr: std::sync::atomic::AtomicUsize::new(
                 self.cached_fn_ptr.load(std::sync::atomic::Ordering::Relaxed),
             ),
+            typed_fn_ptr: std::sync::atomic::AtomicUsize::new(
+                self.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            typed_sig: self.typed_sig.clone(),
         }
     }
 }

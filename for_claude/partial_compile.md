@@ -242,7 +242,7 @@ Each field is a function pointer; the index is used in `getelementptr` instructi
 
 ### Generated Function Variants
 
-For each eligible function `f`, the codegen emits up to three LLVM functions:
+For each eligible function `f`, the codegen emits up to four LLVM functions:
 
 #### `@f_impl` (internal)
 
@@ -279,6 +279,50 @@ Receives class instance fields as raw scalars instead of arena handles. This eli
 A `_fast` variant is only emitted if:
 - At least one parameter is a class instance with typed (`int`/`float`) fields
 - That parameter is never written in the function body (purity analysis via `body_writes_param`)
+
+#### `@f_typed` (public — 統一 typed ABI、zero-TLS)
+
+```llvm
+define [dllexport] i32 @f_typed(ptr %_args, ptr %_ret, ptr %_err) {
+  ; %_args: u64 スロット列（int は i64、float は f64 ビットパターンを同スロットに格納）
+  ; %_ret:  戻り値スロット（生値を書き込む）
+  ; %_err:  ErrSlot（raise 時に例外情報を書き込む）
+  ; 戻り値: 0 = 正常、1 = raise 発生
+}
+```
+
+**ErrSlot レイアウト**（`native_api.rs` の `#[repr(C)] ErrSlot` と一致必須）:
+
+| offset | field | contents |
+|--------|-------|----------|
+| +0  | `type_ptr: ptr` | 例外クラス名（DLL 内静的文字列） |
+| +8  | `type_len: i64` | |
+| +16 | `msg_ptr: ptr`  | メッセージ（DLL 内静的文字列） |
+| +24 | `msg_len: i64`  | |
+
+**特性**:
+- TLS・アリーナ・ハンドルを一切通らない。`GenCtx.typed_mode` 中に `call_cb` が呼ばれたら
+  `typed_failed` が立ち、その関数の typed 変種は破棄される（自動検出）
+- `raise Name("literal")` は ErrSlot への静的文字列書き込み + `ret i32 1` に展開される
+- typed 同士のモジュール内呼び出しは `@callee_typed(args*, ret*, %_err)` を直接発行し、
+  `status != 0` なら即 `ret i32 %st` で伝播する（C のエラー伝播と同型）。
+  `%_err` ポインタを横流しするため最内の raise 情報がそのまま最外へ届く
+- LLVM が typed 関数同士をインライン化できる（ネイティブ間呼び出しコストは実測 0ns）
+
+**適格条件**（`generate_llvm_module` の `typed_candidates` — インタープリタ側
+`exec.rs::build_typed_sig` と一致必須）:
+- トップレベル関数（メソッド・ジェネレータは対象外）
+- 全パラメータが `let` かつ `int`/`float` 注釈、デフォルト値なし
+- 戻り値が `int`/`float`
+- 本体がコールバック不要（fixpoint: 破棄された typed 関数を呼ぶ関数も連鎖的に破棄）
+
+**インタープリタ側ディスパッチ**（`eval.rs dispatch_native_evaled` 冒頭）:
+モジュールロード時に `{name}_typed` シンボルを解決して `NativeFnRef.typed_fn_ptr` に
+キャッシュ。呼び出し時は引数を u64 スロット配列（スタック上 `[0u64; 16]`）に詰めて
+直接呼び出し、status != 0 なら `ErrSlot::to_error_string()`（`"TypeName: msg"` 形式）で
+既存の raise 経路へ合流する。実行時型が合わなければハンドル経路へフォールバック。
+
+**検証例**: `examples/typed_abi.ar` + `examples/test_modules/typed_abi_module.ar`
 
 ### Approach-1 Pre-reads
 

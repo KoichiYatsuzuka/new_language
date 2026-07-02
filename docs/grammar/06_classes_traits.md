@@ -20,6 +20,25 @@ class Point:
 Arrow のクラスは**クラス継承をサポートしません**。  
 代わりに trait を使います。
 
+### クラスの実行時表現
+
+クラス定義を実行すると `ClassValue` が生成されます:
+
+```rust
+pub struct ClassValue {
+    pub name:       String,
+    pub class_id:   u32,          // 宣言時に alloc_class_id() で発行した一意 ID
+    pub is_exception: bool,       // 例外クラス（make_error_class 経由）なら true
+    pub field_index: HashMap<String, usize>,  // フィールド名 → Vec インデックス
+    pub field_count: usize,       // フィールドスロット総数
+    // ... methods, field_defaults, class_vars, static_vars 等
+}
+```
+
+`class_id` はインスタンスの `InstanceData.class_id` にコピーされ、コンパイル済みコードからの  
+型判定・フィールド GEP（オフセット計算）に使用されます。  
+詳細なメモリレイアウトは [02_variables.md](02_variables.md) の「インスタンスのメモリ表現」を参照してください。
+
 ---
 
 ## フィールド宣言
@@ -447,10 +466,13 @@ match c:
 `instantiate(class_val, evaled_args)`:
 
 1. `class_val.field_defaults` の初期値を評価してフィールドマップを構築
-2. `InstanceData { class, fields, immutable: false }` を `Rc<RefCell<...>>` で生成
-3. `__init__` メソッドを検索してバインド
-4. `exec_fn_evaled` で `__init__` を実行
-5. `Value::Instance(...)` を返す
+2. 初期 `flags` を計算（`is_exception` → `INST_IS_EXCEPTION`、`new_type_base.is_some()` → `INST_IS_NEW_TYPE`）
+3. `InstanceData { class_id, flags, class, fields }` を `Rc<RefCell<...>>` で生成
+4. `__init__` メソッドを検索してバインド
+5. `exec_fn_evaled` で `__init__` を実行
+6. `Value::Instance(...)` を返す
+
+`class_id` は `ClassValue.class_id` から引き継がれます（`alloc_class_id()` で宣言時に発行済み）。
 
 ---
 
