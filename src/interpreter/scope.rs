@@ -12,7 +12,7 @@ impl Interpreter {
     /// 新しいローカルスコープをスタックに積む。
     /// ブロック・関数・if/while/for の実行開始時に呼ぶ。
     pub(super) fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(Default::default());
     }
 
     /// 最内部のローカルスコープをスタックから取り除く。
@@ -79,14 +79,28 @@ impl Interpreter {
 
     /// 変数を不変（`Immutable`）に変更する（`freeze` 文で使用）。
     /// `Cell` 変数（クロージャにキャプチャ済み）は freeze できない。
+    /// `SlotCell`（スロットキャッシュ昇格済み）は値スナップショットで `Immutable` に戻し、
+    /// `slot_epoch` を進めて全 AST スロットキャッシュを無効化する。
     pub(super) fn make_var_immutable(&mut self, name: &str) {
+        let mut freeze_slot = false;
         for scope in self.scopes.iter_mut().rev() {
             if let Some(v) = scope.get_mut(name) {
-                if let Var::Mutable(val) = v {
-                    *v = Var::Immutable(std::mem::replace(val, Value::None));
+                match v {
+                    Var::Mutable(val) => {
+                        *v = Var::Immutable(std::mem::replace(val, Value::None));
+                    }
+                    Var::SlotCell(rc) => {
+                        let snapshot = rc.borrow().clone();
+                        *v = Var::Immutable(snapshot);
+                        freeze_slot = true;
+                    }
+                    _ => {}
                 }
-                return;
+                break;
             }
+        }
+        if freeze_slot {
+            self.slot_epoch += 1;
         }
     }
 }

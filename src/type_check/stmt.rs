@@ -146,7 +146,7 @@ impl TypeChecker {
             }
 
             // --- 代入 ---
-            Stmt::Assign { name, value, span } => {
+            Stmt::Assign { name, value, span, .. } => {
                 if let Some(info) = self.lookup(name) {
                     if !info.mutable {
                         self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
@@ -165,6 +165,7 @@ impl TypeChecker {
                 op: _,
                 value,
                 span,
+                ..
             } => {
                 if let Some(info) = self.lookup(name) {
                     if !info.mutable {

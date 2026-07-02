@@ -1,0 +1,151 @@
+# langtons_ant_profile.ar — langtons_ant.ar のフェーズ別実行時間プロファイル版
+#
+# 1フレームを5つのフェーズに分けて µs 単位で計測し、5秒ごとに集計を出力する:
+#   msg  = dx.ProcessMessage()            (Windows メッセージポンプ / C DLL)
+#   sim  = シミュレーション 100 ステップ   (インタープリタ + flat_get/set_int)
+#   fill = dx.DrawFillBox()               (背景塗り / C DLL)
+#   draw = render.draw_cells()            (ネイティブコンパイル済み描画カーネル)
+#   flip = dx.ScreenFlip()                (画面転送 / C DLL)
+#
+# black = 現在の黒セル数（draw_cells 内の DrawPixel コールバック回数に比例）
+#
+# 時刻源: time.perf_counter()（py-int、ns 分解能）。
+# ※ DxLib の GetNowHiPerformanceCount は LONGLONG 戻り値が cpp ブリッジ未対応のため不使用。
+# 70 秒経過で自動終了する。
+#
+# 事前コンパイル:
+#   cargo run --release -- --compile examples/practical_examples/DxLib/ant_render.ar
+# 実行:
+#   cargo run --release -- examples/practical_examples/DxLib/langtons_ant_profile.ar
+
+import[py-int] time
+import ant_render as render
+from ant_render import Cell
+import[cpp-lib] DxLib.DxLib as dx
+
+# ── Window setup ──────────────────────────────────────────────────────────────
+dx.ChangeWindowMode(1)
+dx.SetGraphMode(640, 480, 32, 60)
+dx.SetWaitVSyncFlag(0)
+
+if dx.DxLib_Init() == -1:
+    raise RuntimeError("DxLib_Init failed")
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+const WIDTH  = 640
+const HEIGHT = 480
+
+const DIR_UP    = 0
+const DIR_RIGHT = 1
+const DIR_DOWN  = 2
+const DIR_LEFT  = 3
+
+let grid: fixed_list[Cell] = create_flat_int_list(WIDTH * HEIGHT, 0)
+
+mut ant_x   = WIDTH  // 2
+mut ant_y   = HEIGHT // 2
+mut ant_dir = DIR_UP
+
+let col_white = dx.GetColor(255, 255, 255)
+let col_black = dx.GetColor(  0,   0,   0)
+let col_ant   = dx.GetColor(255,  50,  50)
+
+const STEPS_PER_FRAME = 100
+
+# ── Profiling state ───────────────────────────────────────────────────────────
+const WINDOW_S = 5.0     # 集計ウィンドウ: 5 秒
+const RUN_S    = 70.0    # 自動終了: 70 秒
+
+let t_start = time.perf_counter()
+mut win_start = t_start
+mut t_msg  = 0.0
+mut t_sim  = 0.0
+mut t_fill = 0.0
+mut t_draw = 0.0
+mut t_flip = 0.0
+mut frames = 0
+mut black_count = 0
+
+print("t[s] | fps | black | per-frame us: msg / sim / fill / draw / flip / total")
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
+mut running = True
+
+while running:
+    let f0 = time.perf_counter()
+    if dx.ProcessMessage() != 0:
+        running = False
+        continue
+    let f1 = time.perf_counter()
+
+    # ── Simulate STEPS_PER_FRAME steps ────────────────────────────────────────
+    mut step = 0
+    while step < STEPS_PER_FRAME:
+        let idx: int = ant_y * WIDTH + ant_x
+        let cell: int = flat_get_int(grid, idx)
+
+        if cell == 1:
+            ant_dir = (ant_dir + 3) % 4
+            flat_set_int(grid, idx, 0)
+            black_count -= 1
+        else:
+            ant_dir = (ant_dir + 1) % 4
+            flat_set_int(grid, idx, 1)
+            black_count += 1
+
+        if ant_dir == DIR_UP:
+            ant_y = (ant_y - 1 + HEIGHT) % HEIGHT
+        elif ant_dir == DIR_RIGHT:
+            ant_x = (ant_x + 1) % WIDTH
+        elif ant_dir == DIR_DOWN:
+            ant_y = (ant_y + 1) % HEIGHT
+        else:
+            ant_x = (ant_x - 1 + WIDTH) % WIDTH
+
+        step += 1
+    let f2 = time.perf_counter()
+
+    dx.DrawFillBox(0, 0, WIDTH - 1, HEIGHT - 1, col_white)
+    let f3 = time.perf_counter()
+
+    render.draw_cells(grid, WIDTH, HEIGHT, col_black, ant_x, ant_y, col_ant)
+    let f4 = time.perf_counter()
+
+    dx.ScreenFlip()
+    let f5 = time.perf_counter()
+
+    # ── Accumulate ────────────────────────────────────────────────────────────
+    t_msg  += f1 - f0
+    t_sim  += f2 - f1
+    t_fill += f3 - f2
+    t_draw += f4 - f3
+    t_flip += f5 - f4
+    frames += 1
+
+    # ── Report every WINDOW_S ─────────────────────────────────────────────────
+    let elapsed = f5 - t_start
+    if f5 - win_start >= WINDOW_S:
+        let wdur = f5 - win_start
+        let fr = float(frames)
+        print(str(int(elapsed))
+              + " | " + str(int(fr / wdur))
+              + " | " + str(black_count)
+              + " | " + str(int(t_msg * 1000000.0 / fr))
+              + " / " + str(int(t_sim * 1000000.0 / fr))
+              + " / " + str(int(t_fill * 1000000.0 / fr))
+              + " / " + str(int(t_draw * 1000000.0 / fr))
+              + " / " + str(int(t_flip * 1000000.0 / fr))
+              + " / " + str(int(wdur * 1000000.0 / fr)))
+        win_start = f5
+        t_msg  = 0.0
+        t_sim  = 0.0
+        t_fill = 0.0
+        t_draw = 0.0
+        t_flip = 0.0
+        frames = 0
+
+    if elapsed >= RUN_S:
+        running = False
+
+dx.DxLib_End()
+print("profile done")

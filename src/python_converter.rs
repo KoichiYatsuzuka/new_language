@@ -89,6 +89,7 @@ fn convert_stmt_in_hoist_ctx(
                             name,
                             value: val,
                             span: make_span(filename),
+                            slot: Default::default(),
                         }));
                     }
                 }
@@ -289,6 +290,7 @@ fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stmt>, String>
                         op,
                         value: val,
                         span,
+                        slot: Default::default(),
                     }))
                 }
                 py::Expr::Attribute(_) => {

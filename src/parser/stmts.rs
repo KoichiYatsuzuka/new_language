@@ -521,6 +521,7 @@ impl Parser {
                     name,
                     value: self.parse_expr()?,
                     span,
+                    slot: Default::default(),
                 })
             }
             tok => {
@@ -633,6 +634,7 @@ impl Parser {
             op,
             value: self.parse_expr()?,
             span,
+            slot: Default::default(),
         })
     }
 

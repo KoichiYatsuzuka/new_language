@@ -44,6 +44,49 @@ impl std::fmt::Debug for NativeCallCache {
     }
 }
 
+/// 変数スロットキャッシュ（代入文の AST 焼き込み）。
+///
+/// `Stmt::Assign` / `Stmt::CompoundAssign` の対象がグローバル可変変数と初回解決されたとき、
+/// インタープリタの `global_slot_cells` レジストリへのインデックスを焼き込む。
+/// 以後の実行はスコープ検索（ハッシュ + 多段プローブ）なしの直接 Vec アクセスになる。
+///
+/// パック形式: 上位 32bit = slot_epoch、下位 32bit = レジストリインデックス + 1。0 = 未解決。
+/// `freeze` で対象変数が不変化されると epoch が進み、全キャッシュが自動失効する。
+/// `Clone` は空キャッシュを返す（AST コピー・別インタープリタへの持ち出しごとに再解決）。
+#[derive(Default)]
+pub struct SlotCache(pub std::cell::Cell<u64>);
+
+impl SlotCache {
+    /// (epoch, index) をパックして格納する。
+    #[inline]
+    pub fn fill(&self, epoch: u32, index: u32) {
+        self.0.set(((epoch as u64) << 32) | (index as u64 + 1));
+    }
+
+    /// キャッシュが `epoch` 世代で有効ならインデックスを返す。
+    #[inline]
+    pub fn get(&self, epoch: u32) -> Option<usize> {
+        let packed = self.0.get();
+        if packed != 0 && (packed >> 32) as u32 == epoch {
+            Some((packed as u32 - 1) as usize)
+        } else {
+            None
+        }
+    }
+}
+
+impl Clone for SlotCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for SlotCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SlotCache(..)")
+    }
+}
+
 /// 関数呼び出しの1引数。位置引数・キーワード引数・可変長引数のいずれかを表す。
 ///
 /// # バリアント
@@ -479,10 +522,12 @@ pub enum Stmt {
     /// `span` はセルの一意キー（初回評価判定）として使用する。
     Static(String, Expr, Span),
     /// 変数への代入: `x = expr`。`span` は型検査・エラー報告に使用する位置情報。
+    /// `slot` はグローバル可変変数への直接アクセス用スロットキャッシュ（初回解決時に焼き込み）。
     Assign {
         name: String,
         value: Expr,
         span: Span,
+        slot: SlotCache,
     },
     /// 属性（フィールド）への代入: `obj.attr = expr`。
     AttrAssign { target: Expr, value: Expr },
@@ -493,11 +538,13 @@ pub enum Stmt {
         value: Expr,
     },
     /// 変数への複合代入: `x += expr` など。`span` は型検査・エラー報告に使用する位置情報。
+    /// `slot` はグローバル可変変数への直接アクセス用スロットキャッシュ（初回解決時に焼き込み）。
     CompoundAssign {
         name: String,
         op: BinOp,
         value: Expr,
         span: Span,
+        slot: SlotCache,
     },
     /// `if` / `elif` / `else` 条件分岐。
     ///

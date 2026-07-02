@@ -137,15 +137,65 @@ thread_local! {
 // Interpreter internals
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// FxHash — スコープ変数名用の高速ハッシュ
+// ---------------------------------------------------------------------------
+
+/// FxHash（rustc-hash 由来のアルゴリズム）。変数名のような短い文字列に対して
+/// std デフォルトの SipHash より大幅に速い（~10ns → ~2ns）。
+/// スコープのキーは攻撃者制御の入力ではないため DoS 耐性（SipHash の目的）は不要。
+#[derive(Default, Clone, Copy)]
+pub(self) struct FxHasher {
+    hash: u64,
+}
+
+const FX_SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+
+impl std::hash::Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            let v = u64::from_le_bytes(c.try_into().unwrap());
+            self.hash = (self.hash.rotate_left(5) ^ v).wrapping_mul(FX_SEED);
+        }
+        for &b in chunks.remainder() {
+            self.hash = (self.hash.rotate_left(5) ^ b as u64).wrapping_mul(FX_SEED);
+        }
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+}
+
+/// `FxHasher` の BuildHasher。`ScopeMap::default()` で使用する。
+#[derive(Default, Clone, Copy)]
+pub(self) struct FxBuildHasher;
+
+impl std::hash::BuildHasher for FxBuildHasher {
+    type Hasher = FxHasher;
+    #[inline]
+    fn build_hasher(&self) -> FxHasher {
+        FxHasher::default()
+    }
+}
+
+/// スコープ1段分の変数マップ（FxHash キー）。
+pub(self) type ScopeMap = HashMap<String, Var, FxBuildHasher>;
+
 /// スコープ内の1つの変数エントリ。
 ///
 /// - `Immutable(Value)`: 不変変数（`let` / `const`）
 /// - `Mutable(Value)`: 可変変数（`mut`）。クロージャにキャプチャされるまでは値を直接保持する。
 /// - `Cell(Rc<RefCell<Value>>)`: クロージャにキャプチャされた可変変数。外側スコープと共有セルを通じて読み書きする。
+/// - `SlotCell(Rc<RefCell<Value>>)`: スロットキャッシュ（AST 焼き込み）に昇格したグローバル可変変数。
+///   `freeze` されると `Immutable` に戻り `slot_epoch` が進む（キャッシュ一括無効化）。
 pub(self) enum Var {
     Immutable(Value),
     Mutable(Value),
     Cell(Rc<RefCell<Value>>),
+    SlotCell(Rc<RefCell<Value>>),
 }
 
 impl Var {
@@ -167,7 +217,7 @@ impl Var {
     pub(self) fn get_value(&self) -> Value {
         match self {
             Var::Immutable(v) | Var::Mutable(v) => v.clone(),
-            Var::Cell(rc) => rc.borrow().clone(),
+            Var::Cell(rc) | Var::SlotCell(rc) => rc.borrow().clone(),
         }
     }
 
@@ -175,21 +225,27 @@ impl Var {
     pub(self) fn set_value(&mut self, val: Value) {
         match self {
             Var::Immutable(v) | Var::Mutable(v) => *v = val,
-            Var::Cell(rc) => *rc.borrow_mut() = val,
+            Var::Cell(rc) | Var::SlotCell(rc) => *rc.borrow_mut() = val,
         }
     }
 
     /// 変数が再代入可能かどうかを返す。
     pub(self) fn is_mutable(&self) -> bool {
-        matches!(self, Var::Mutable(_) | Var::Cell(_))
+        matches!(self, Var::Mutable(_) | Var::Cell(_) | Var::SlotCell(_))
     }
 
-    /// クロージャ共有セルを返す。`Cell` でない場合は `None`。
+    /// クロージャ共有セルを返す。`Cell` / `SlotCell` でない場合は `None`。
     pub(self) fn cell(&self) -> Option<Rc<RefCell<Value>>> {
         match self {
-            Var::Cell(rc) => Some(rc.clone()),
+            Var::Cell(rc) | Var::SlotCell(rc) => Some(rc.clone()),
             _ => None,
         }
+    }
+
+    /// クロージャに捕捉されたセル（`Cell`）かどうか。
+    /// `SlotCell`（スロットキャッシュ昇格）は含まない — freeze 可能なため。
+    pub(self) fn is_closure_cell(&self) -> bool {
+        matches!(self, Var::Cell(_))
     }
 }
 
@@ -204,7 +260,13 @@ impl Var {
 /// - `current_exception`: `except` ブロック内で処理中の例外（裸の `raise` 文で再 raise するため）
 /// - `static_cells`: `static mut` 変数の共有セル。キーは (ファイル名, 行, 列)。
 pub struct Interpreter {
-    pub(self) scopes: Vec<HashMap<String, Var>>,
+    pub(self) scopes: Vec<ScopeMap>,
+    /// スロットキャッシュに昇格したグローバル変数のセルレジストリ（append-only、インデックス安定）。
+    /// `Stmt::Assign` / `Stmt::CompoundAssign` の `SlotCache` がここへのインデックスを保持する。
+    pub(self) global_slot_cells: Vec<Rc<RefCell<Value>>>,
+    /// スロットキャッシュの世代番号。`freeze`（SlotCell → Immutable 降格）時にインクリメントされ、
+    /// 全 AST スロットキャッシュを一括無効化する。
+    pub(self) slot_epoch: u32,
     /// ファイル名 → ソース行リスト のマップ（トレースバックのコンテキスト抽出用）。
     pub(self) source_map: HashMap<String, Vec<String>>,
     /// 関数名のコールスタック。関数実行前後で push / pop される。
@@ -267,7 +329,7 @@ impl Interpreter {
     ///
     /// 戻り値: 初期化済みの `Interpreter` インスタンス
     pub fn new() -> Self {
-        let mut global: HashMap<String, Var> = HashMap::new();
+        let mut global: ScopeMap = ScopeMap::default();
         built_in_types::register_builtin_globals(&mut global);
 
         // Signal: テンプレート型コンストラクタ。Signal[T]() で Value::Signal を生成する。
@@ -289,6 +351,8 @@ impl Interpreter {
 
         Self {
             scopes: vec![global],
+            global_slot_cells: Vec::new(),
+            slot_epoch: 0,
             source_map: HashMap::new(),
             call_stack: Vec::new(),
             current_exception: None,

@@ -154,9 +154,16 @@ impl Interpreter {
             }
             Stmt::LetTuple { targets, value, .. } => self.exec_let_tuple(targets, value),
             Stmt::Static(name, expr, span) => self.exec_static_var(name, expr, span),
-            Stmt::Assign { name, value, .. } => {
+            Stmt::Assign { name, value, slot, .. } => {
+                // スロットキャッシュ命中: スコープ検索なしの直接セル書き込み
+                if let Some(idx) = slot.get(self.slot_epoch) {
+                    let value = self.eval(value)?;
+                    *self.global_slot_cells[idx].borrow_mut() = value;
+                    return Ok(ExecResult::Normal);
+                }
                 let value = self.eval(value)?;
                 self.assign_var(name, value)?;
+                self.try_fill_slot(name, slot);
                 Ok(ExecResult::Normal)
             }
             Stmt::AttrAssign { target, value } => {
@@ -172,8 +179,8 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::CompoundAssign {
-                name, op, value, ..
-            } => self.exec_compound_assign(name, op, value),
+                name, op, value, slot, ..
+            } => self.exec_compound_assign(name, op, value, slot),
             Stmt::Pass => Ok(ExecResult::Normal),
             Stmt::Field { .. } => Ok(ExecResult::Normal),
             Stmt::Break => {
@@ -643,7 +650,17 @@ impl Interpreter {
         name: &str,
         op: &BinOp,
         value: &Expr,
+        slot: &crate::ast::SlotCache,
     ) -> Result<ExecResult, String> {
+        // スロットキャッシュ命中: 読み・書きともスコープ検索なしの直接セルアクセス
+        if let Some(idx) = slot.get(self.slot_epoch) {
+            let rhs = self.eval(value)?;
+            let cell = self.global_slot_cells[idx].clone();
+            let lhs = cell.borrow().clone();
+            let result = self.apply_binop_dyn(op, lhs, rhs)?;
+            *cell.borrow_mut() = result;
+            return Ok(ExecResult::Normal);
+        }
         let rhs = self.eval(value)?;
         let lhs = match self.get_var(name) {
             Some(v) if !v.is_mutable() => {
@@ -656,7 +673,42 @@ impl Interpreter {
         };
         let value = self.apply_binop_dyn(op, lhs, rhs)?;
         self.assign_var(name, value)?;
+        self.try_fill_slot(name, slot);
         Ok(ExecResult::Normal)
+    }
+
+    /// 代入文のスロットキャッシュ充填を試みる（変数のスロット化）。
+    ///
+    /// 条件: `name` がローカルスコープ（1..）に存在せず、グローバルスコープ（0）の
+    /// 可変変数として解決されること。`Var::Mutable` は `Var::SlotCell` に昇格し、
+    /// セルを `global_slot_cells` レジストリに登録してインデックスを AST に焼き込む。
+    ///
+    /// 健全性: グローバルは再宣言禁止のためバインディングは固定。`freeze` は
+    /// `make_var_immutable` が `SlotCell` を `Immutable` に降格させ `slot_epoch` を
+    /// 進めるので、全キャッシュが自動失効する。
+    fn try_fill_slot(&mut self, name: &str, slot: &crate::ast::SlotCache) {
+        // ローカルスコープに同名があればグローバル解決ではない
+        if self.scopes[1..].iter().any(|s| s.contains_key(name)) {
+            return;
+        }
+        let Some(var) = self.scopes[0].get_mut(name) else {
+            return;
+        };
+        let cell = match var {
+            Var::SlotCell(rc) | Var::Cell(rc) => rc.clone(),
+            Var::Mutable(v) => {
+                let rc = Rc::new(RefCell::new(std::mem::replace(v, Value::None)));
+                *var = Var::SlotCell(rc.clone());
+                rc
+            }
+            Var::Immutable(_) => return,
+        };
+        let idx = self.global_slot_cells.len();
+        if idx >= (u32::MAX - 1) as usize {
+            return;
+        }
+        self.global_slot_cells.push(cell);
+        slot.fill(self.slot_epoch, idx as u32);
     }
 
     // ---------------------------------------------------------------------------
@@ -1502,7 +1554,7 @@ impl Interpreter {
                 "{span}: TypeError: cannot freeze immutable variable '{name}'"
             ));
         }
-        if var.cell().is_some() {
+        if var.is_closure_cell() {
             return Err(format!(
                 "{span}: TypeError: cannot freeze '{name}' because it is captured by a closure"
             ));

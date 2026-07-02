@@ -262,13 +262,29 @@ increment()   # counter == 2
 
 ```rust
 pub(self) enum Var {
-    Immutable(Value),         // let / const — 不変
-    Mutable(Value),           // mut — 可変 (セル化前)
-    Cell(Rc<RefCell<Value>>), // クロージャにキャプチャされた mut 変数
+    Immutable(Value),             // let / const — 不変
+    Mutable(Value),               // mut — 可変 (セル化前)
+    Cell(Rc<RefCell<Value>>),     // クロージャにキャプチャされた mut 変数
+    SlotCell(Rc<RefCell<Value>>), // スロットキャッシュに昇格したグローバル mut 変数
 }
 ```
 
 `Var::Mutable` はクロージャにキャプチャされた時点で `Var::Cell` に昇格します。
+
+### 変数のスロット化（AST 焼き込み）
+
+`x = expr` / `x += expr` の対象が**グローバルの可変変数**と初回解決されたとき、
+変数は `Var::SlotCell` に昇格し、セルへのインデックスが代入文の AST
+（`Stmt::Assign` / `Stmt::CompoundAssign` の `SlotCache`）に焼き込まれます。
+以後の実行は変数名のハッシュ計算・スコープ検索なしの直接セルアクセスになります。
+
+- `freeze` された `SlotCell` は `Immutable` に降格し、世代番号（`slot_epoch`）が進んで
+  全スロットキャッシュが自動失効します（凍結後の代入は正しく `TypeError`）
+- `Cell`（クロージャ捕捉）と異なり、`SlotCell` は `freeze` 可能です
+- ローカル変数は呼び出しごとにセルが作り直されるためスロット化されません
+
+またスコープマップのハッシュ関数は SipHash から FxHash に変更されており、
+スロット化されない変数アクセス（式内の読み取り等）も高速化されています。
 
 ---
 

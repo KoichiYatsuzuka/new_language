@@ -35,7 +35,9 @@ src/interpreter/
 
 ```rust
 pub struct Interpreter {
-    scopes:         Vec<HashMap<String, Var>>,   // lexical scope stack
+    scopes:         Vec<ScopeMap>,               // lexical scope stack (FxHash keys)
+    global_slot_cells: Vec<Rc<RefCell<Value>>>,  // slot registry for AST-burned assignments
+    slot_epoch:     u32,                         // bumped on freeze → invalidates all SlotCaches
     module_cache:   HashMap<(String, PathBuf), ModuleState>,
     static_cells:   HashMap<(String, u32, u32), Rc<RefCell<Value>>>, // static mut keyed by Span
     current_class:  Option<String>,              // set/restored around method calls
@@ -54,7 +56,17 @@ pub struct Interpreter {
 
 ## Scope (`scope.rs`)
 
-`scopes` is a `Vec<HashMap<String, Var>>`. Index 0 is global; the tail is the innermost local scope.
+`scopes` is a `Vec<ScopeMap>` (`HashMap<String, Var, FxBuildHasher>` — FxHash は短い変数名で
+SipHash より ~5 倍速い)。Index 0 is global; the tail is the innermost local scope.
+
+**変数スロット化（AST 焼き込み）**: `Stmt::Assign` / `Stmt::CompoundAssign` は
+`SlotCache`（`ast.rs`、`Cell<u64>` = epoch<<32 | idx+1）を持つ。対象がグローバル可変変数と
+初回解決されたとき `Var::Mutable` → `Var::SlotCell(Rc<RefCell<Value>>)` に昇格し、セルを
+`global_slot_cells` に登録してインデックスを焼き込む。以後はハッシュ・スコープ検索なしの
+直接 Vec アクセス。`freeze`（`make_var_immutable`）は SlotCell を `Immutable` に降格させ
+`slot_epoch` をインクリメント → 全キャッシュ一括失効。`SlotCache::clone()` は空を返す
+（AST コピー・別インタープリタへの持ち出しごとに再解決）。ローカル変数は呼び出しごとに
+セルが変わるため対象外。
 
 | Op | Behaviour |
 |----|-----------|

@@ -591,10 +591,11 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             value: subst_expr(value, type_map),
             span: span.clone(),
         },
-        Stmt::Assign { name, value, span } => Stmt::Assign {
+        Stmt::Assign { name, value, span, .. } => Stmt::Assign {
             name: name.clone(),
             value: subst_expr(value, type_map),
             span: span.clone(),
+            slot: Default::default(),
         },
         Stmt::AttrAssign { target, value } => Stmt::AttrAssign {
             target: subst_expr(target, type_map),
@@ -610,11 +611,13 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             op,
             value,
             span,
+            ..
         } => Stmt::CompoundAssign {
             name: name.clone(),
             op: op.clone(),
             value: subst_expr(value, type_map),
             span: span.clone(),
+            slot: Default::default(),
         },
         Stmt::If {
             branches,

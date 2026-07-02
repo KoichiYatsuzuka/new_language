@@ -251,7 +251,7 @@ pub(super) fn make_builtin_enum_class(
 
 /// インタープリタのグローバルスコープに全組み込み値を登録する。
 /// `Interpreter::new()` から呼ばれる。
-pub(super) fn register_builtin_globals(global: &mut HashMap<String, Var>) {
+pub(super) fn register_builtin_globals(global: &mut super::ScopeMap) {
     // 組み込み型値を事前定義: `int`, `str`, `float`, `bool`, `dict`, `function`, `slice` を型式として使えるようにする
     // `len` も `Value::Type` として登録しておく — ネイティブコードが cb_get_global("len") で取得して
     // call_value_with_args 経由で呼べるようにするため。
