@@ -373,6 +373,7 @@ impl Interpreter {
             static_vars,
             new_type_base: None,
             is_exception: false,
+            raw_layout: None,
         });
         self.instantiate(cls, call_args)
     }

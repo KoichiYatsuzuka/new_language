@@ -140,7 +140,7 @@ impl Interpreter {
             };
             let inst = inst_rc.borrow();
             if inst.class.name != class_name { return None; }
-            Self::write_flat_instance(&inst.fields, &inst.class, &layout.fields, &mut data)?;
+            Self::write_flat_instance(&inst, &layout.fields, &mut data)?;
         }
 
         let len = items.len();
@@ -159,22 +159,25 @@ impl Interpreter {
         inst: &InstanceData,
         class: Rc<ClassValue>,
     ) -> Option<super::value::FlatLayout> {
-        // Build (name, ty) pairs from the field_index map + fields Vec
-        let mut flds: Vec<(String, super::value::FlatFieldTy)> = inst.class.field_index
+        // Build (slot_idx, name, ty) triples from the field_index map + field slots
+        let mut flds_idx: Vec<(usize, String, super::value::FlatFieldTy)> = inst.class.field_index
             .iter()
             .filter(|(k, _)| !k.contains("::"))  // skip qualified aliases
             .filter_map(|(name, &idx)| {
-                let (val, _) = inst.fields.get(idx)?.as_ref()?;
-                let fty = Self::val_to_flat_field_ty(val)?;
-                Some((name.clone(), fty))
+                let val = inst.field_value(idx)?;
+                let fty = Self::val_to_flat_field_ty(&val)?;
+                Some((idx, name.clone(), fty))
             })
             .collect::<Vec<_>>();
         // Return None if any field is not flat-convertible (already filtered via filter_map, so check emptiness)
-        if inst.class.field_count > 0 && flds.len() != inst.class.field_index.iter().filter(|(k, _)| !k.contains("::")).count() {
+        if inst.class.field_count > 0 && flds_idx.len() != inst.class.field_index.iter().filter(|(k, _)| !k.contains("::")).count() {
             return None;
         }
-        if flds.is_empty() { return None; }
-        flds.sort_by(|a, b| a.0.cmp(&b.0));
+        if flds_idx.is_empty() { return None; }
+        // 宣言順 = スロットインデックス順（C ABI 準拠 — for_claude/c_abi_interop.md P0c）
+        flds_idx.sort_by_key(|(idx, _, _)| *idx);
+        let flds: Vec<(String, super::value::FlatFieldTy)> =
+            flds_idx.into_iter().map(|(_, n, t)| (n, t)).collect();
         let stride: usize = flds.iter().map(|(_, ft)| ft.stride()).sum();
         Some(super::value::FlatLayout {
             class_name: class.name.clone(),
@@ -198,17 +201,16 @@ impl Interpreter {
         }
     }
 
-    /// `fields` Vec の値を `layout_fields` の順序に従って `data` に書き出す（再帰的）。
+    /// インスタンスのフィールド値を `layout_fields` の順序に従って `data` に書き出す（再帰的）。
     fn write_flat_instance(
-        fields: &[Option<(Value, bool)>],
-        class: &ClassValue,
+        inst: &InstanceData,
         layout_fields: &[(String, super::value::FlatFieldTy)],
         data: &mut Vec<u8>,
     ) -> Option<()> {
         for (field_name, field_ty) in layout_fields {
-            let &idx = class.field_index.get(field_name.as_str())?;
-            let (val, _) = fields.get(idx)?.as_ref()?;
-            match (field_ty, val) {
+            let &idx = inst.class.field_index.get(field_name.as_str())?;
+            let val = inst.field_value(idx)?;
+            match (field_ty, &val) {
                 (super::value::FlatFieldTy::Int, Value::Int(n)) => {
                     data.extend_from_slice(&n.to_le_bytes());
                 }
@@ -216,9 +218,9 @@ impl Interpreter {
                     data.extend_from_slice(&f.to_le_bytes());
                 }
                 (super::value::FlatFieldTy::Struct(sub_layout), Value::Instance(rc)) => {
-                    let inst = rc.borrow();
-                    if inst.class.name != sub_layout.class_name { return None; }
-                    Self::write_flat_instance(&inst.fields, &inst.class, &sub_layout.fields, data)?;
+                    let sub = rc.borrow();
+                    if sub.class.name != sub_layout.class_name { return None; }
+                    Self::write_flat_instance(&sub, &sub_layout.fields, data)?;
                 }
                 _ => return None,
             }
@@ -228,9 +230,9 @@ impl Interpreter {
 
     pub(super) fn freeze_instance(inst_rc: &Rc<RefCell<InstanceData>>) {
         let mut inst = inst_rc.borrow_mut();
-        inst.flags |= crate::interpreter::value::INST_IMMUTABLE;
-        // すべてのフィールドを不変に変更する
-        for slot in inst.fields.iter_mut() {
+        inst.flags_or(crate::interpreter::value::INST_IMMUTABLE);
+        // すべてのフィールドを不変に変更する（raw クラスは INST_IMMUTABLE フラグのみで足りる）
+        for slot in inst.boxed_fields.iter_mut() {
             if let Some((_, mutable)) = slot {
                 *mutable = false;
             }
@@ -282,20 +284,13 @@ impl Interpreter {
         call_args: &[CallArg],
     ) -> Result<Value, String> {
         // デフォルト値付きフィールドをインスタンスに事前設定する
-        let mut fields: Vec<Option<(Value, bool)>> = vec![None; class.field_count];
+        let mut inst = InstanceData::new_empty(class.clone(), 0);
         for (name, default_val, mutable) in &class.field_defaults {
             if let Some(&idx) = class.field_index.get(name.as_str()) {
-                fields[idx] = Some((default_val.clone(), *mutable));
+                inst.store_field(idx, default_val.clone(), *mutable);
             }
         }
-        let flags = if class.is_exception { crate::interpreter::value::INST_IS_EXCEPTION } else { 0 }
-            | if class.new_type_base.is_some() { crate::interpreter::value::INST_IS_NEW_TYPE } else { 0 };
-        let inst_rc = Rc::new(RefCell::new(InstanceData {
-            class_id: class.class_id,
-            flags,
-            class: class.clone(),
-            fields,
-        }));
+        let inst_rc = Rc::new(RefCell::new(inst));
         let inst_val = Value::Instance(inst_rc);
 
         // cs-dll / cs-proc bridge dispatch: check class_vars for bridge path markers.
@@ -384,20 +379,13 @@ impl Interpreter {
         class: Rc<ClassValue>,
         evaled: Vec<(Option<String>, Value, bool)>,
     ) -> Result<Value, String> {
-        let mut fields: Vec<Option<(Value, bool)>> = vec![None; class.field_count];
+        let mut inst = InstanceData::new_empty(class.clone(), 0);
         for (name, default_val, mutable) in &class.field_defaults {
             if let Some(&idx) = class.field_index.get(name.as_str()) {
-                fields[idx] = Some((default_val.clone(), *mutable));
+                inst.store_field(idx, default_val.clone(), *mutable);
             }
         }
-        let flags = if class.is_exception { crate::interpreter::value::INST_IS_EXCEPTION } else { 0 }
-            | if class.new_type_base.is_some() { crate::interpreter::value::INST_IS_NEW_TYPE } else { 0 };
-        let inst_rc = Rc::new(RefCell::new(InstanceData {
-            class_id: class.class_id,
-            flags,
-            class: class.clone(),
-            fields,
-        }));
+        let inst_rc = Rc::new(RefCell::new(inst));
         let inst_val = Value::Instance(inst_rc);
         // Native __init__ dispatch
         let class_name = class.name.clone();
@@ -546,7 +534,7 @@ impl Interpreter {
                                 // Write each field recursively (alphabetical order)
                                 let base_offset = st.len * layout.stride;
                                 let mut tmp = Vec::with_capacity(layout.stride);
-                                Self::write_flat_instance(&inst.fields, &inst.class, &layout.fields, &mut tmp)
+                                Self::write_flat_instance(&inst, &layout.fields, &mut tmp)
                                     .ok_or_else(|| format!(
                                         "TypeError: fixed_list.append(): field type mismatch for class '{}'",
                                         layout.class_name
@@ -608,7 +596,7 @@ impl Interpreter {
                 }
 
                 let class = inst_rc.borrow().class.clone();
-                let inst_immutable = inst_rc.borrow().flags & crate::interpreter::value::INST_IMMUTABLE != 0;
+                let inst_immutable = inst_rc.borrow().flags() & crate::interpreter::value::INST_IMMUTABLE != 0;
 
                 // gen_methods（`gen` キーワードで定義されたメソッド、例: `__iter__`）を優先的にチェック
                 if let Some(gen_fn) = class.gen_methods.get(method_name).cloned() {
@@ -1480,7 +1468,7 @@ impl Interpreter {
         match &obj {
             Value::Instance(inst_rc) => {
                 let class = inst_rc.borrow().class.clone();
-                let inst_immutable = inst_rc.borrow().flags & crate::interpreter::value::INST_IMMUTABLE != 0;
+                let inst_immutable = inst_rc.borrow().flags() & crate::interpreter::value::INST_IMMUTABLE != 0;
 
                 // Native method dispatch — check NATIVE_METHODS before tree-walk.
                 // When a native ptr is registered we always dispatch natively (no fallback).

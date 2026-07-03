@@ -80,17 +80,16 @@ fn collect_flat_leaves(
     path_prefix: &str,
     byte_base: usize,
 ) -> Vec<FlatLeaf> {
+    // フィールドは宣言順（C ABI 準拠 — for_claude/c_abi_interop.md P0c）
     let raw_fields = match all_class_fields.get(class_name) {
         Some(f) if !f.is_empty() => f.clone(),
         _ => return vec![],
     };
-    let mut sorted = raw_fields;
-    sorted.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut leaves = Vec::new();
     let mut byte_offset = byte_base;
 
-    for (fname, ftype) in sorted {
+    for (fname, ftype) in raw_fields {
         let full_path = if path_prefix.is_empty() {
             fname.clone()
         } else {
@@ -131,7 +130,9 @@ fn preread_path(expr: &Expr) -> Option<String> {
 
 /// 型アノテーション文字列を内部型区分 `Ty` に変換する。
 /// `"int"` → `Ty::Int`、`"float"` → `Ty::Float`、その他は `Ty::Handle`。
+/// C ABI 型（int32 等）は基底型（int/float）として扱う（Arrow 内部は幅変換しない）。
 fn ann_ty(s: Option<&str>) -> Ty {
+    let s = s.map(|a| crate::ast::c_abi_base_type(a).unwrap_or(a));
     match s {
         Some("int")   => Ty::Int,
         Some("float") => Ty::Float,

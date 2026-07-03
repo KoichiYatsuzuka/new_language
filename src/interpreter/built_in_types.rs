@@ -120,6 +120,7 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
         static_vars: HashMap::new(),
         new_type_base: None,
         is_exception: true,
+        raw_layout: None,
     })
 }
 
@@ -178,6 +179,7 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
         static_vars: HashMap::new(),
         new_type_base: None,
         is_exception: false,
+        raw_layout: None,
     })
 }
 
@@ -213,17 +215,15 @@ pub(super) fn make_builtin_enum_class(
         static_vars: HashMap::new(),
         new_type_base: None,
         is_exception: false,
+        raw_layout: None,
     });
     // 各バリアントをインスタンスとして生成し class_vars に登録
     let mut class_vars: HashMap<String, Value> = HashMap::new();
+    let _ = item_cls_id;
     for (variant_name, int_val) in variants {
-        let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
-            class_id: item_cls_id,
-            flags: 0,
-            class: item_cls.clone(),
-            fields: vec![Some((Value::Int(*int_val), true))],
-        })));
-        class_vars.insert(variant_name.to_string(), inst);
+        let mut data = InstanceData::new_empty(item_cls.clone(), 0);
+        data.store_field(0, Value::Int(*int_val), true);
+        class_vars.insert(variant_name.to_string(), Value::Instance(Rc::new(RefCell::new(data))));
     }
     // enum クラス本体（バリアントのみ保持、インスタンス化不可）
     let enum_cls = Rc::new(ClassValue {
@@ -245,6 +245,7 @@ pub(super) fn make_builtin_enum_class(
         static_vars: HashMap::new(),
         new_type_base: None,
         is_exception: false,
+        raw_layout: None,
     });
     (item_cls_name, item_cls, enum_cls)
 }
@@ -333,12 +334,9 @@ pub(super) fn register_builtin_globals(global: &mut super::ScopeMap) {
 
     // 組み込み定数: begin = Index(0)、last = Index(-1)
     for (const_name, int_val) in [("begin", 0i64), ("last", -1i64)] {
-        let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
-            class_id: index_cls.class_id,
-            flags: 0,
-            class: index_cls.clone(),
-            fields: vec![Some((Value::Int(int_val), true))],
-        })));
+        let mut data = InstanceData::new_empty(index_cls.clone(), 0);
+        data.store_field(0, Value::Int(int_val), true);
+        let inst = Value::Instance(Rc::new(RefCell::new(data)));
         global.insert(const_name.to_string(), Var::new(inst, false));
     }
 

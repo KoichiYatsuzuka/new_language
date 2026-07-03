@@ -351,5 +351,88 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
         s.push_str("    _ret\n");
     }
     s.push_str("}\n");
+
+    // 統一 typed ABI 変種を追加生成（全プリミティブシグネチャの場合のみ）
+    if cpp_typed_eligible(sig) {
+        s.push_str(&gen_dll_fn_typed(sig));
+    }
+    s
+}
+
+/// C 関数が typed ABI（`{name}_typed`）でエクスポート可能か。
+/// 全パラメータが int/long/float/double、戻り値が void/int/long/float/double であること。
+/// （ポインタ・構造体・文字列・bool はハンドル ABI のみ）
+/// exec.rs 側の `build_cpp_typed_sig` と条件を一致させること。
+pub(crate) fn cpp_typed_eligible(sig: &CFnSig) -> bool {
+    matches!(
+        sig.ret,
+        CType::Void | CType::Int | CType::Long | CType::Float | CType::Double
+    ) && sig.params.iter().all(|(_, t)| {
+        matches!(t, CType::Int | CType::Long | CType::Float | CType::Double)
+    })
+}
+
+/// `{name}_typed(args: *const u64, ret: *mut u64, err: *mut ErrSlot) -> u32` を生成する。
+///
+/// - シンボルは初回呼び出し時に1度だけ解決して static にキャッシュする
+/// - 引数は u64 スロットから直接変換（int はキャスト、float はビット再解釈）— CB コールバックなし
+/// - C 関数は Arrow 例外を投げないため、シンボル欠落時（status 1）以外は常に status 0
+fn gen_dll_fn_typed(sig: &CFnSig) -> String {
+    let n = &sig.name;
+
+    let param_types: Vec<String> = sig.params.iter().map(|(_, t)| t.rust_extern_type()).collect();
+    let fn_type = if sig.ret == CType::Void {
+        format!("unsafe extern \"C\" fn({})", param_types.join(", "))
+    } else {
+        format!(
+            "unsafe extern \"C\" fn({}) -> {}",
+            param_types.join(", "),
+            sig.ret.rust_extern_type()
+        )
+    };
+
+    let mut s = format!(
+        r#"
+static mut _FPT_{n}: usize = 0;
+#[no_mangle]
+pub unsafe extern "C" fn {n}_typed(_args: *const u64, _ret: *mut u64, _err: *mut u8) -> u32 {{
+    if _FPT_{n} == 0 {{
+        let p = _loader::sym(_dll(), "{n}");
+        _FPT_{n} = if p == 0 {{ usize::MAX }} else {{ p }};
+    }}
+    if _FPT_{n} == usize::MAX {{ return 1; }}
+    type _F = {fn_type};
+    let _fp: _F = std::mem::transmute(_FPT_{n});
+"#
+    );
+
+    // 引数変換: u64 スロット → C 型（コールバックなしの純キャスト）
+    for (i, (pname, ptype)) in sig.params.iter().enumerate() {
+        let conv = match ptype {
+            CType::Int => format!("(*_args.offset({i})) as i64 as i32"),
+            CType::Long => format!("(*_args.offset({i})) as i64"),
+            CType::Float => format!("f64::from_bits(*_args.offset({i})) as f32"),
+            CType::Double => format!("f64::from_bits(*_args.offset({i}))"),
+            _ => unreachable!("cpp_typed_eligible guarantees primitive params"),
+        };
+        s.push_str(&format!("    let _{pname}: {} = {conv};\n", ptype.rust_extern_type()));
+    }
+
+    let call_args: Vec<String> = sig.params.iter().map(|(p, _)| format!("_{p}")).collect();
+    let call = format!("_fp({})", call_args.join(", "));
+
+    match sig.ret {
+        CType::Void => {
+            s.push_str(&format!("    {call};\n    *_ret = 0;\n"));
+        }
+        CType::Int | CType::Long => {
+            s.push_str(&format!("    *_ret = ({call} as i64) as u64;\n"));
+        }
+        CType::Float | CType::Double => {
+            s.push_str(&format!("    *_ret = ({call} as f64).to_bits();\n"));
+        }
+        _ => unreachable!(),
+    }
+    s.push_str("    0\n}\n");
     s
 }

@@ -257,6 +257,8 @@ impl InferredType {
         if let Some(rest) = ann.strip_prefix("function") {
             return Self::parse_fn_type_ann(rest);
         }
+        // C ABI 型（int32 等）は基底型（int/float）の別名として扱う
+        let ann = crate::ast::c_abi_base_type(ann).unwrap_or(ann);
         match ann {
             "int" => Some(Self::Int),
             "float" => Some(Self::Float),

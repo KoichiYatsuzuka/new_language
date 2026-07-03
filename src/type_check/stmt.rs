@@ -813,6 +813,8 @@ impl TypeChecker {
 
     /// プリミティブ型アノテーション文字列を対応する [`InferredType`] に変換する。未知の場合は `Unresolved`。
     pub(super) fn type_ann_to_inferred(s: &str) -> InferredType {
+        // C ABI 型（int32 等）は基底型（int/float）の別名として扱う
+        let s = crate::ast::c_abi_base_type(s).unwrap_or(s);
         match s {
             "int" => InferredType::Int,
             "float" => InferredType::Float,

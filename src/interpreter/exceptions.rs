@@ -78,20 +78,13 @@ impl Interpreter {
 
         // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4
         // (make_error_class の field_index と対応)
-        let fields = vec![
-            Some((Value::Str(message), false)),       // 0: message
-            Some((Value::Str(String::new()), false)),  // 1: code_context / Error::code_context
-            Some((Value::Str(String::new()), false)),  // 2: file / Error::file
-            Some((Value::Int(0), false)),              // 3: line / Error::line
-            Some((Value::Int(0), false)),              // 4: col / Error::col
-        ];
-
-        let inst = Value::Instance(Rc::new(RefCell::new(InstanceData {
-            class_id: cls.class_id,
-            flags: crate::interpreter::value::INST_IS_EXCEPTION,
-            class: cls,
-            fields,
-        })));
+        let mut data = InstanceData::new_empty(cls, 0);
+        data.store_field(0, Value::Str(message), false); // message
+        data.store_field(1, Value::Str(String::new()), false); // code_context
+        data.store_field(2, Value::Str(String::new()), false); // file
+        data.store_field(3, Value::Int(0), false); // line
+        data.store_field(4, Value::Int(0), false); // col
+        let inst = Value::Instance(Rc::new(RefCell::new(data)));
 
         Some(RaisedError {
             exception: inst,

@@ -421,30 +421,36 @@ impl Interpreter {
         let mut field_mutability_vec: Vec<bool> = Vec::new();
         let mut idx = 0usize;
 
-        // Step 1: own class fields in declaration order
-        for (fname, is_mutable) in own_fields {
-            field_index.insert(fname.clone(), idx);
-            field_mutability_vec.push(*is_mutable);
-            idx += 1;
-        }
-
-        // Step 2: trait fields in bases declaration order
+        // C ABI 準拠レイアウト（for_claude/c_abi_interop.md P0b）:
+        // Step 1: 継承 trait のフィールドを継承順で先頭に配置する。
+        // これにより「基底部分が先頭」という C/C++ の継承レイアウト慣行と一致する。
         for base in bases {
             if let Some(trait_fields) = self.trait_field_order.get(base) {
                 for (fname, is_mutable) in trait_fields {
                     let qualified = format!("{}::{}", base, fname);
                     if let Some(&existing_idx) = field_index.get(fname.as_str()) {
-                        // class redeclares this field → qualified alias points to same slot
+                        // 複数 trait が同名フィールドを持つ場合は同一スロットを共有する
                         field_index.insert(qualified, existing_idx);
                     } else {
-                        // trait-only field → new slot + unqualified alias (parser prevents ambiguity)
                         field_index.insert(qualified, idx);
-                        field_index.entry(fname.clone()).or_insert(idx);
+                        field_index.insert(fname.clone(), idx);
                         field_mutability_vec.push(*is_mutable);
                         idx += 1;
                     }
                 }
             }
+        }
+
+        // Step 2: own フィールドを宣言順で後続に配置する。
+        // trait フィールドを再宣言した場合は既存スロットを共有し、own 宣言の可変性を優先する。
+        for (fname, is_mutable) in own_fields {
+            if let Some(&existing_idx) = field_index.get(fname.as_str()) {
+                field_mutability_vec[existing_idx] = *is_mutable;
+                continue;
+            }
+            field_index.insert(fname.clone(), idx);
+            field_mutability_vec.push(*is_mutable);
+            idx += 1;
         }
 
         (field_index, field_mutability_vec, idx)
@@ -501,13 +507,13 @@ impl Interpreter {
                 let inst = inst_rc.borrow();
                 let class_name = inst.class.name.clone();
                 let message = inst.class.field_index.get("message").and_then(|&idx| {
-                    inst.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| match v {
-                        Value::Str(s) => s.clone(),
+                    inst.field_value(idx).map(|v| match v {
+                        Value::Str(s) => s,
                         Value::Int(n) => n.to_string(),
                         Value::Float(f) => f.to_string(),
                         Value::Bool(b) => b.to_string(),
                         _ => "<value>".to_string(),
-                    }))
+                    })
                 }).unwrap_or_default();
                 out.push_str(&format!("{}: {}", class_name, message));
             }

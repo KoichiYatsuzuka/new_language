@@ -343,6 +343,26 @@ define [dllexport] i32 @f_typed(ptr %_args, ptr %_ret, ptr %_err) {
 
 **検証例**: `examples/typed_abi.ar` + `examples/test_modules/typed_abi_module.ar`
 
+**cpp ブリッジ（import[cpp-lib] / cpp-dll）への適用**:
+`cpp_bridge/codegen.rs` の `gen_dll_fn` は、全プリミティブシグネチャ
+（params ∈ {int, long, float, double}、ret ∈ {void, int, long, float, double}）の C 関数に
+`{name}_typed` ラッパーも生成する（`cpp_typed_eligible` — インタープリタ側
+`exec.rs::build_cpp_typed_sig` と条件一致必須）。
+
+- シンボルは初回呼び出し時に static へキャッシュ（従来は毎呼び出し GetProcAddress）
+- 引数は u64 スロットからの純キャストで、CB コールバック（TLS）を一切通らない
+- C 関数は raise しないため status は常に 0（シンボル欠落時のみ 1）
+- `void` 戻り値は `AbiTy::Void` → Arrow 側 `None`
+
+**ネイティブ→C の高速パス（`ar_call_fn`）**: コンパイル済み Arrow コードが
+CB_CALL_FN 経由で C 関数を呼ぶ場合、`ar_call_fn` は typed シグネチャがあれば
+引数ハンドルを**1回の STATE ボロー**で u64 スロットにデコードして `{name}_typed` を
+直接呼ぶ。enter/exit_native_call・per-arg unmarshal CB・結果 marshal CB が消え、
+STATE アクセスは ~8回 → 1–2回になる（実測: DrawPixel 1回あたり 0.83µs → 0.42µs）。
+
+**キャッシュ注意**: ラッパー DLL（`ar_{stem}.dll`）は存在チェックのみの永続キャッシュ。
+codegen 変更後は削除して再生成させること（shim はソース比較で自動再利用される）。
+
 ### Approach-1 Pre-reads
 
 At function entry, for each class-instance parameter that satisfies the purity condition, the codegen reads all typed fields once via a single callback per field, stores the values into stack allocas, and inserts them into `preread_fields`. Subsequent `Expr::Attr` accesses on those params emit plain `load` instructions instead of callback calls.

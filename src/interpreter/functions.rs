@@ -907,16 +907,16 @@ impl Interpreter {
         match val {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
-                let new_fields = inst
-                    .fields
+                let new_boxed = inst
+                    .boxed_fields
                     .iter()
                     .map(|slot| slot.as_ref().map(|(v, m)| (Self::deep_copy_value(v.clone()), *m)))
                     .collect();
+                // raw ブロックは POD なので clone = memcpy（flags・raw フィールドすべて保持）
                 Value::Instance(Rc::new(RefCell::new(InstanceData {
-                    class_id: inst.class_id,
-                    flags: inst.flags,
+                    raw: inst.raw.clone(),
                     class: inst.class.clone(),
-                    fields: new_fields,
+                    boxed_fields: new_boxed,
                 })))
             }
             Value::Dict(d) => {
@@ -953,8 +953,8 @@ impl Interpreter {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
                 let class = inst.class.clone();
-                let new_fields = inst
-                    .fields
+                let new_boxed: Vec<Option<(Value, bool)>> = inst
+                    .boxed_fields
                     .iter()
                     .enumerate()
                     .map(|(idx, slot)| {
@@ -968,13 +968,17 @@ impl Interpreter {
                         })
                     })
                     .collect();
-                Value::Instance(Rc::new(RefCell::new(InstanceData {
-                    class_id: class.class_id,
-                    // フリーズを解除した新鮮なコピー: INST_IMMUTABLE を除いた既存フラグを継承
-                    flags: inst.flags & !crate::interpreter::value::INST_IMMUTABLE,
+                // フリーズを解除した新鮮なコピー: INST_IMMUTABLE を除いた既存フラグを継承。
+                // raw クラスの可変性は field_mutability_vec + フラグで表現されるため
+                // ブロックの memcpy + フラグ操作だけで復元される。
+                let mut new_inst = InstanceData {
+                    raw: inst.raw.clone(),
                     class,
-                    fields: new_fields,
-                })))
+                    boxed_fields: new_boxed,
+                };
+                let unfrozen = new_inst.flags() & !crate::interpreter::value::INST_IMMUTABLE;
+                new_inst.set_flags(unfrozen);
+                Value::Instance(Rc::new(RefCell::new(new_inst)))
             }
             Value::Dict(d) => {
                 let d_ref = d.borrow();

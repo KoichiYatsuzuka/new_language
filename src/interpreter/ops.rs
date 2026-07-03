@@ -144,6 +144,8 @@ impl Interpreter {
     /// - `Union[T,U,...]` は各候補のいずれかにマッチすれば true。
     /// - クラス名・トレイト名は `value_is_type` に委譲する。
     pub(super) fn value_matches_type_ann(&self, val: &Value, ann: &str) -> bool {
+        // C ABI 型（int32 等）は基底型（int/float）の別名として扱う
+        let ann = crate::ast::c_abi_base_type(ann).unwrap_or(ann);
         match ann {
             "Any" => true,
             "None" => matches!(val, Value::None),
@@ -558,9 +560,7 @@ impl Interpreter {
                     if matches!(base.as_str(), "int" | "float" | "str" | "bool" | "uint") {
                         let inner_val = {
                             let b = inst_rc.borrow();
-                            b.class.field_index.get("value").and_then(|&idx| {
-                                b.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
-                            })
+                            b.class.field_index.get("value").and_then(|&idx| b.field_value(idx))
                         };
                         if let Some(v) = inner_val {
                             let inner = self.repr_val(&v)?;
@@ -1066,9 +1066,7 @@ impl Interpreter {
                     && a_borrow.class.name == b_borrow.class.name
                 {
                     let get_value = |inst: &super::InstanceData| {
-                        inst.class.field_index.get("value").and_then(|&idx| {
-                            inst.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
-                        })
+                        inst.class.field_index.get("value").and_then(|&idx| inst.field_value(idx))
                     };
                     match (get_value(&a_borrow), get_value(&b_borrow)) {
                         (Some(va), Some(vb)) => self.values_eq(&va, &vb),
@@ -1077,10 +1075,10 @@ impl Interpreter {
                 } else {
                     // 構造的等値: 同じクラス名かつ全スロットが等値
                     a_borrow.class.name == b_borrow.class.name
-                        && a_borrow.fields.len() == b_borrow.fields.len()
-                        && a_borrow.fields.iter().zip(b_borrow.fields.iter()).all(|(sa, sb)| {
-                            match (sa, sb) {
-                                (Some((va, _)), Some((vb, _))) => self.values_eq(va, vb),
+                        && a_borrow.field_count() == b_borrow.field_count()
+                        && (0..a_borrow.field_count()).all(|i| {
+                            match (a_borrow.field_value(i), b_borrow.field_value(i)) {
+                                (Some(va), Some(vb)) => self.values_eq(&va, &vb),
                                 (None, None) => true,
                                 _ => false,
                             }

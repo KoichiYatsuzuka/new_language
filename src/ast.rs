@@ -44,6 +44,36 @@ impl std::fmt::Debug for NativeCallCache {
     }
 }
 
+/// C ABI 準拠のプリミティブ型注釈を Arrow の基底型名に解決する。
+///
+/// C ABI 型は独立した実行時値型ではなく **storage 型**（クラスフィールドの格納幅・
+/// 外部言語境界での変換幅を規定する注釈）。Arrow 内部の実行時値は常に
+/// `int`(i64) / `float`(f64) のままで、型検査・codegen 上は基底型の別名として扱う。
+/// 詳細は for_claude/c_abi_interop.md を参照。
+///
+/// 戻り値: 基底型名（`"int"` / `"float"`）。C ABI 型でなければ `None`。
+pub fn c_abi_base_type(ann: &str) -> Option<&'static str> {
+    match ann {
+        "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64" => {
+            Some("int")
+        }
+        "float32" | "float64" => Some("float"),
+        _ => None,
+    }
+}
+
+/// C ABI 型注釈のバイト幅を返す（raw ブロックレイアウト計算用）。
+/// C ABI 型でない場合は `None`。
+pub fn c_abi_byte_width(ann: &str) -> Option<usize> {
+    match ann {
+        "int8" | "uint8" => Some(1),
+        "int16" | "uint16" => Some(2),
+        "int32" | "uint32" | "float32" => Some(4),
+        "int64" | "uint64" | "float64" => Some(8),
+        _ => None,
+    }
+}
+
 /// 変数スロットキャッシュ（代入文の AST 焼き込み）。
 ///
 /// `Stmt::Assign` / `Stmt::CompoundAssign` の対象がグローバル可変変数と初回解決されたとき、

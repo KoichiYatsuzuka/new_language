@@ -1,0 +1,42 @@
+# c_abi_types.ar — C ABI 準拠型注釈（int32 / float64 など）の動作例
+#
+# C ABI 型は storage 型: クラスフィールドの格納幅・外部言語境界での変換幅を
+# 規定する注釈で、Arrow 内部の実行時値は従来どおり int(i64) / float(f64) のまま。
+# 詳細: for_claude/c_abi_interop.md
+
+# ── 変数・パラメータ注釈として使用可能（基底型 int/float として検査される） ──
+let a: int32 = 100
+let b: int64 = 9_000_000_000
+let c: float32 = 1.5
+let d: float64 = 3.141592653589793
+mut e: uint8 = 255
+
+print(a + 1)        # 101   — 実行時値は通常の int
+print(b)            # 9000000000
+print(c * 2.0)      # 3.0   — 実行時値は通常の float
+print(d)
+e = 128
+print(e)
+
+# ── 関数シグネチャでも使用可能 ────────────────────────────────────────────────
+fn scale(let v: int32, let factor: float64) -> float64:
+    return float(v) * factor
+
+print(scale(10, 1.5))    # 15.0
+
+# ── クラスフィールド注釈（C 構造体対応レイアウトの記述） ──────────────────────
+# フィールドは宣言順に配置される（C ABI 準拠）
+class CPoint:
+    mut x: int32
+    mut y: int32
+    mut weight: float64
+
+    fn __init__(mut self, let x: int32, let y: int32, let w: float64) -> None:
+        self.x = x
+        self.y = y
+        self.weight = w
+
+let p = CPoint(3, 4, 2.5)
+print(p.x + p.y)         # 7
+print(p.weight)          # 2.5
+print("done")

@@ -1146,6 +1146,7 @@ impl Interpreter {
                     static_vars: orig_cls.static_vars.clone(),
                     new_type_base: orig_cls.new_type_base.clone(),
                     is_exception: orig_cls.is_exception,
+                    raw_layout: orig_cls.raw_layout.clone(),
                 });
                 self.declare_var(name.to_string(), Var::new(Value::Class(new_cls), false));
             }
@@ -1203,6 +1204,7 @@ impl Interpreter {
                     static_vars: HashMap::new(),
                     new_type_base: Some(type_name.clone()),
                     is_exception: false,
+                    raw_layout: None,
                 });
                 self.declare_var(name.to_string(), Var::new(Value::Class(new_cls), false));
             }
@@ -1276,6 +1278,7 @@ impl Interpreter {
             static_vars: HashMap::new(),
             new_type_base: None,
             is_exception: false,
+            raw_layout: None,
         });
         self.declare_var(
             item_type_name.clone(),
@@ -1325,6 +1328,7 @@ impl Interpreter {
             static_vars: HashMap::new(),
             new_type_base: None,
             is_exception: false,
+            raw_layout: None,
         });
         self.declare_var(name.to_string(), Var::new(Value::Class(enum_cls), false));
         Ok(ExecResult::Normal)
@@ -1359,6 +1363,7 @@ impl Interpreter {
         let mut class_vars: HashMap<String, Value> = HashMap::new();
         let mut field_mutability: HashMap<String, bool> = HashMap::new();
         let mut own_field_order: Vec<(String, bool)> = Vec::new();
+        let mut own_field_types: Vec<(String, String)> = Vec::new();
         let mut field_access: HashMap<String, Accessibility> = HashMap::new();
         let mut method_access: HashMap<String, Accessibility> = HashMap::new();
         let mut static_method_names: HashSet<String> = HashSet::new();
@@ -1485,6 +1490,7 @@ impl Interpreter {
                 Stmt::Field {
                     name: fname,
                     kind,
+                    type_ann,
                     default,
                     access: facc,
                     ..
@@ -1494,6 +1500,7 @@ impl Interpreter {
                     }
                     let mutable = *kind == FieldKind::Mut;
                     own_field_order.push((fname.clone(), mutable));
+                    own_field_types.push((fname.clone(), type_ann.clone()));
                     field_mutability.insert(fname.clone(), mutable);
                     if let Some(init) = default {
                         let val = self.eval(init)?;
@@ -1506,6 +1513,15 @@ impl Interpreter {
 
         let (field_index, field_mutability_vec, field_count) =
             self.build_field_index(&own_field_order, bases);
+
+        // raw ブロックレイアウト（for_claude/c_abi_interop.md P1）:
+        // trait 継承なし・全フィールドがプリミティブ（int/float/C ABI 型）・24 フィールド以下の
+        // クラスはフィールドを InstanceData.raw の C ABI レイアウト領域に格納する。
+        let raw_layout = if bases.is_empty() && own_field_types.len() == field_count {
+            crate::interpreter::value::RawLayout::from_fields(&own_field_types).map(Rc::new)
+        } else {
+            None
+        };
 
         let cls = Rc::new(super::ClassValue {
             name: name.to_string(),
@@ -1526,6 +1542,7 @@ impl Interpreter {
             static_vars,
             new_type_base: None,
             is_exception: false,
+            raw_layout,
         });
         if decorators.is_empty() {
             self.declare_var(name.to_string(), Var::new(Value::Class(cls), false));
@@ -1652,7 +1669,7 @@ impl Interpreter {
                 ("Error::code_context", Value::Str(context)),
             ] {
                 if let Some(&idx) = cls.field_index.get(key) {
-                    inst.fields[idx] = Some((val, false));
+                    inst.store_field(idx, val, false);
                 }
             }
         }
@@ -2093,6 +2110,31 @@ impl Interpreter {
         Some(TypedSig { params: ptys, ret })
     }
 
+    /// C 関数シグネチャ（cpp ブリッジ）から typed ABI のシグネチャを構築する。
+    /// 全パラメータが int/long/float/double、戻り値が void/int/long/float/double のときのみ Some。
+    /// codegen 側の `cpp_typed_eligible`（cpp_bridge/codegen.rs）と条件を一致させること。
+    fn build_cpp_typed_sig(
+        sig: &crate::interpreter::cpp_bridge::CFnSig,
+    ) -> Option<crate::interpreter::value::TypedSig> {
+        use crate::interpreter::cpp_bridge::CType;
+        use crate::interpreter::value::{AbiTy, TypedSig};
+        let ret = match sig.ret {
+            CType::Void => AbiTy::Void,
+            CType::Int | CType::Long => AbiTy::I64,
+            CType::Float | CType::Double => AbiTy::F64,
+            _ => return None,
+        };
+        let mut ptys = Vec::with_capacity(sig.params.len());
+        for (_, ct) in &sig.params {
+            match ct {
+                CType::Int | CType::Long => ptys.push(AbiTy::I64),
+                CType::Float | CType::Double => ptys.push(AbiTy::F64),
+                _ => return None,
+            }
+        }
+        Some(TypedSig { params: ptys, ret })
+    }
+
     /// ネイティブ共有ライブラリをロードして、そのモジュールの `Namespace` を構築する。
     fn try_load_native_module(
         &mut self,
@@ -2486,6 +2528,7 @@ impl Interpreter {
                 static_vars: HashMap::new(),
                 new_type_base: None,
                 is_exception: false,
+                raw_layout: None,
             });
 
             members.insert(sdef.name.clone(), Value::Class(cls));
@@ -2503,6 +2546,23 @@ impl Interpreter {
                     .iter()
                     .map(|(_, ct)| Self::sig_to_ptr_param_fn(ct))
                     .collect();
+                // typed ABI: 全プリミティブシグネチャなら {name}_typed を解決する
+                let typed_sig = Self::build_cpp_typed_sig(sig);
+                let typed_ptr = if typed_sig.is_some() {
+                    let tsym = format!("{}_typed\0", sig.name);
+                    match unsafe {
+                        lib.get::<unsafe extern "C" fn(
+                            *const u64,
+                            *mut u64,
+                            *mut crate::interpreter::native_api::ErrSlot,
+                        ) -> u32>(tsym.as_bytes())
+                    } {
+                        Ok(f) => (unsafe { *f }) as usize,
+                        Err(_) => 0,
+                    }
+                } else {
+                    0
+                };
                 let fn_ref = Arc::new(NativeFnRef {
                     lib_path: lib_path_buf.clone(),
                     fn_name: sig.name.clone(),
@@ -2512,8 +2572,8 @@ impl Interpreter {
                     ptr_params,
                     raw_fn_ptr: 0,
                     cached_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
-                    typed_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
-                    typed_sig: None,
+                    typed_fn_ptr: std::sync::atomic::AtomicUsize::new(typed_ptr),
+                    typed_sig: if typed_ptr != 0 { typed_sig } else { None },
                 });
                 members.insert(sig.name.clone(), Value::NativeFunction(fn_ref));
             }

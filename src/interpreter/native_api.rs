@@ -640,6 +640,66 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
     });
     if has_err { return TL_NONE; }
 
+    // ── 統一 typed ABI 最速パス（ネイティブ→C DLL） ─────────────────────────
+    // 引数ハンドルを1回の STATE ボローで u64 スロットに展開し、{name}_typed を
+    // 直接呼ぶ。enter/exit_native_call・per-arg unmarshal コールバック・
+    // 結果 marshal コールバックがすべて消える（STATE アクセス ~8回 → 1-2回）。
+    if let Value::NativeFunction(ref fn_ref) = fn_val {
+        if let Some(sig) = &fn_ref.typed_sig {
+            let typed_ptr = fn_ref.typed_fn_ptr.load(Ordering::Relaxed);
+            let n = n_args as usize;
+            if typed_ptr != 0 && n == sig.params.len() && n <= 16 {
+                use crate::interpreter::value::AbiTy;
+                let mut slots = [0u64; 16];
+                let ok = STATE.with(|s| {
+                    let st = s.borrow();
+                    for i in 0..n {
+                        let h = unsafe { *args_ptr.add(i) };
+                        // ハンドルを直接デコード（Value クローンなし）
+                        let (iv, fv): (Option<i64>, Option<f64>) = match h {
+                            x if (3..INT_CACHE_BASE as i64).contains(&x) => (Some(x - 3), None),
+                            x if x >= INT_CACHE_BASE as i64 => {
+                                match st.arena.get(x as usize) {
+                                    Some(Value::Int(v)) => (Some(*v), None),
+                                    Some(Value::Float(f)) => (None, Some(*f)),
+                                    _ => return false,
+                                }
+                            }
+                            _ => return false, // None/Bool/sentinel → ハンドル経路へ
+                        };
+                        slots[i] = match (iv, fv, sig.params[i]) {
+                            (Some(v), _, AbiTy::I64) => v as u64,
+                            (Some(v), _, AbiTy::F64) => (v as f64).to_bits(),
+                            (_, Some(f), AbiTy::F64) => f.to_bits(),
+                            _ => return false,
+                        };
+                    }
+                    true
+                });
+                if ok {
+                    let mut ret: u64 = 0;
+                    let mut err = ErrSlot::default();
+                    let status = unsafe {
+                        let f: unsafe extern "C" fn(*const u64, *mut u64, *mut ErrSlot) -> u32 =
+                            std::mem::transmute(typed_ptr);
+                        f(slots.as_ptr(), &mut ret, &mut err)
+                    };
+                    if status != 0 {
+                        STATE.with(|s| s.borrow_mut().error = Some(err.to_error_string()));
+                        return TL_NONE;
+                    }
+                    return match sig.ret {
+                        // 小整数はキャッシュ済みハンドル（STATE アクセスなし）
+                        AbiTy::I64 => push_handle(Value::Int(ret as i64)),
+                        AbiTy::F64 => push_handle(Value::Float(f64::from_bits(ret))),
+                        AbiTy::Void => TL_NONE,
+                    };
+                }
+                // 型不一致 → 既存のハンドル経路にフォールバック
+            }
+        }
+    }
+
     // Fast path: NativeFunction (cpp-dll or JIT).
     // Arg handles are already live in the arena — pass them straight through.
     if let Value::NativeFunction(ref fn_ref) = fn_val {
@@ -1063,9 +1123,10 @@ extern "C" fn ar_raise_exc(type_h: i64, msg_h: i64) -> i64 {
             Value::Instance(inst) => {
                 let b = inst.borrow();
                 b.class.field_index.get("message").and_then(|&idx| {
-                    b.fields.get(idx).and_then(|s| {
-                        if let Some((Value::Str(s), _)) = s { Some(s.clone()) } else { None }
-                    })
+                    match b.field_value(idx) {
+                        Some(Value::Str(s)) => Some(s),
+                        _ => None,
+                    }
                 }).unwrap_or_default()
             }
             other => format!("{other:?}"),

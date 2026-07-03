@@ -1283,9 +1283,10 @@ fn test_raise_uncaught_reaches_caller() {
         assert_eq!(inst.borrow().class.name, "ValueError");
         let b = inst.borrow();
         let msg = b.class.field_index.get("message").and_then(|&idx| {
-            b.fields.get(idx).and_then(|s| {
-                if let Some((Value::Str(s), _)) = s { Some(s.clone()) } else { None }
-            })
+            match b.field_value(idx) {
+                Some(Value::Str(s)) => Some(s),
+                _ => None,
+            }
         }).expect("message field missing or wrong type");
         drop(b);
         assert_eq!(msg, "oops");
@@ -3499,7 +3500,7 @@ fn test_enum_member_access_value() {
         let inst = inst_rc.borrow();
         assert_eq!(inst.class.name, "enum_item_Color");
         let &idx = inst.class.field_index.get("value").unwrap();
-        let (v, _) = inst.fields[idx].as_ref().unwrap();
+        let v = inst.field_value(idx).unwrap();
         assert!(matches!(v, Value::Int(0)));
     } else {
         panic!("expected Instance");
@@ -3516,9 +3517,9 @@ fn test_enum_auto_numbering() {
         if let Value::Instance(inst_rc) = val {
             let inst = inst_rc.borrow();
             let &idx = inst.class.field_index.get("value").unwrap();
-            let (v, _) = inst.fields[idx].as_ref().unwrap();
+            let v = inst.field_value(idx).unwrap();
             if let Value::Int(n) = v {
-                assert_eq!(*n, expected);
+                assert_eq!(n, expected);
             } else {
                 panic!("expected Int");
             }
@@ -3537,9 +3538,9 @@ fn test_enum_explicit_value() {
     if let Value::Instance(inst_rc) = b {
         let inst = inst_rc.borrow();
         let &idx = inst.class.field_index.get("value").unwrap();
-        let (v, _) = inst.fields[idx].as_ref().unwrap();
+        let v = inst.field_value(idx).unwrap();
         if let Value::Int(n) = v {
-            assert_eq!(*n, 5);
+            assert_eq!(n, 5);
         } else {
             panic!("expected Int 5");
         }
@@ -3550,9 +3551,9 @@ fn test_enum_explicit_value() {
     if let Value::Instance(inst_rc) = c {
         let inst = inst_rc.borrow();
         let &idx = inst.class.field_index.get("value").unwrap();
-        let (v, _) = inst.fields[idx].as_ref().unwrap();
+        let v = inst.field_value(idx).unwrap();
         if let Value::Int(n) = v {
-            assert_eq!(*n, 6);
+            assert_eq!(n, 6);
         } else {
             panic!("expected Int 6");
         }
@@ -5122,7 +5123,7 @@ fn test_cast_primitive_to_new_type_int() {
     if let Value::Instance(rc) = val {
         let b = rc.borrow();
         let inner = b.class.field_index.get("value").and_then(|&idx| {
-            b.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
+            b.field_value(idx)
         });
         assert!(matches!(inner, Some(Value::Int(4))));
         assert_eq!(b.class.name, "MyInt");
@@ -5139,7 +5140,7 @@ fn test_cast_primitive_to_new_type_float() {
     if let Value::Instance(rc) = val {
         let b = rc.borrow();
         let inner = b.class.field_index.get("value").and_then(|&idx| {
-            b.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
+            b.field_value(idx)
         });
         assert!(matches!(inner, Some(Value::Float(f)) if (f - 2.5).abs() < 1e-10));
         assert_eq!(b.class.name, "Meters");
@@ -5175,7 +5176,7 @@ fn test_cast_cross_new_type_same_base() {
         let b = rc.borrow();
         assert_eq!(b.class.name, "YourInt");
         let inner = b.class.field_index.get("value").and_then(|&idx| {
-            b.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
+            b.field_value(idx)
         });
         assert!(
             matches!(inner, Some(Value::Int(9))),

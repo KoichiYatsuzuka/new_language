@@ -72,8 +72,8 @@ fn value_as_index(val: &Value) -> Option<i64> {
             let b = inst.borrow();
             if b.class.name == "Index" {
                 if let Some(&idx) = b.class.field_index.get("value") {
-                    if let Some(Some((Value::Int(n), _))) = b.fields.get(idx) {
-                        return Some(*n);
+                    if let Some(Value::Int(n)) = b.field_value(idx) {
+                        return Some(n);
                     }
                 }
             }
@@ -143,8 +143,8 @@ fn extract_path_str(val: &Value) -> Result<String, String> {
             let inst = inst_rc.borrow();
             if inst.class.name == "path" {
                 if let Some(&idx) = inst.class.field_index.get("value") {
-                    if let Some(Some((Value::Str(s), _))) = inst.fields.get(idx) {
-                        return Ok(s.clone());
+                    if let Some(Value::Str(s)) = inst.field_value(idx) {
+                        return Ok(s);
                     }
                 }
             }
@@ -172,8 +172,8 @@ fn extract_enum_int(val: &Value, expected_class: &str) -> Result<i64, String> {
         let inst = inst_rc.borrow();
         if inst.class.name == expected_class {
             if let Some(&idx) = inst.class.field_index.get("value") {
-                if let Some(Some((Value::Int(n), _))) = inst.fields.get(idx) {
-                    return Ok(*n);
+                if let Some(Value::Int(n)) = inst.field_value(idx) {
+                    return Ok(n);
                 }
             }
         }
@@ -401,8 +401,8 @@ impl Interpreter {
                 let inst = inst_rc.borrow();
                 let key = format!("{}::{}", trait_name, attr);
                 if let Some(&idx) = inst.class.field_index.get(&key) {
-                    if let Some(Some((v, _))) = inst.fields.get(idx) {
-                        return Ok(v.clone());
+                    if let Some(v) = inst.field_value(idx) {
+                        return Ok(v);
                     }
                 }
                 Err(format!(
@@ -643,9 +643,7 @@ impl Interpreter {
         let inner_val = if let Value::Instance(ref inst_rc) = obj {
             let b = inst_rc.borrow();
             if b.class.new_type_base.is_some() {
-                b.class.field_index.get("value").and_then(|&idx| {
-                    b.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
-                })
+                b.class.field_index.get("value").and_then(|&idx| b.field_value(idx))
             } else {
                 None
             }
@@ -704,9 +702,7 @@ impl Interpreter {
                 if let Some(ref base) = class.new_type_base {
                     if base == type_name {
                         let b = inst_rc.borrow();
-                        let val = b.class.field_index.get("value").and_then(|&idx| {
-                            b.fields.get(idx).and_then(|s| s.as_ref().map(|(v, _)| v.clone()))
-                        });
+                        let val = b.class.field_index.get("value").and_then(|&idx| b.field_value(idx));
                         return val.ok_or_else(|| {
                             format!("TypeError: '{}' has no 'value' field", class.name)
                         });
@@ -1534,15 +1530,9 @@ impl Interpreter {
                     Some(Value::Class(cls)) => cls,
                     _ => return Err("RuntimeError: 'pointer' type is not defined".to_string()),
                 };
-                let fields = vec![Some((Value::UInt(raw), true))];
-                Ok(Value::Instance(Rc::new(RefCell::new(
-                    crate::interpreter::InstanceData {
-                        class_id: pointer_cls.class_id,
-                        flags: 0,
-                        class: pointer_cls,
-                        fields,
-                    },
-                ))))
+                let mut inst = crate::interpreter::InstanceData::new_empty(pointer_cls, 0);
+                inst.store_field(0, Value::UInt(raw), true);
+                Ok(Value::Instance(Rc::new(RefCell::new(inst))))
             }
             "len" => {
                 let has_instance_len = if let [Value::Instance(inst_rc)] = vals.as_slice() {
@@ -1689,6 +1679,7 @@ impl Interpreter {
                     return Ok(match sig.ret {
                         AbiTy::I64 => Value::Int(ret as i64),
                         AbiTy::F64 => Value::Float(f64::from_bits(ret)),
+                        AbiTy::Void => Value::None,
                     });
                 }
             }
@@ -1839,6 +1830,7 @@ impl Interpreter {
                         .map(|j| match sig.params[j] {
                             AbiTy::I64 => Value::Int(slots[j] as i64),
                             AbiTy::F64 => Value::Float(f64::from_bits(slots[j])),
+                            AbiTy::Void => Value::None, // params に Void は入らない
                         })
                         .collect();
                     vec.push(v);
@@ -1870,6 +1862,7 @@ impl Interpreter {
         Ok(match sig.ret {
             AbiTy::I64 => Value::Int(ret as i64),
             AbiTy::F64 => Value::Float(f64::from_bits(ret)),
+            AbiTy::Void => Value::None,
         })
     }
 
@@ -1935,6 +1928,7 @@ impl Interpreter {
                     return Ok(match sig.ret {
                         AbiTy::I64 => Value::Int(ret as i64),
                         AbiTy::F64 => Value::Float(f64::from_bits(ret)),
+                        AbiTy::Void => Value::None,
                     });
                 }
             }
@@ -2032,8 +2026,7 @@ impl Interpreter {
                 let inst = inst_rc.borrow();
                 let cls = inst.class.clone();
                 if let Some(&idx) = cls.field_index.get(attr) {
-                    if let Some(Some((v, _))) = inst.fields.get(idx) {
-                        let v = v.clone();
+                    if let Some(v) = inst.field_value(idx) {
                         // アクセスキーの決定: trait 由来フィールドは修飾名で検索する
                         let suffix = format!("::{attr}");
                         let access_key = cls.field_index.iter()
@@ -2059,8 +2052,7 @@ impl Interpreter {
                                 cls.name
                             ));
                         }
-                        if let Some(Some((v, _))) = inst.fields.get(idx) {
-                            let v = v.clone();
+                        if let Some(v) = inst.field_value(idx) {
                             let full_key = full_key.clone();
                             drop(inst);
                             self.check_member_access(&cls, &full_key, attr)?;
@@ -2335,18 +2327,22 @@ impl Interpreter {
                     ));
                 };
                 let mut inst = inst_rc.borrow_mut();
-                if let Some(Some((_, false))) = inst.fields.get(idx) {
+                if inst.field_mutable(idx) == Some(false) {
                     return Err(format!(
                         "TypeError: cannot assign to immutable field '{attr}'"
                     ));
                 }
-                if inst.flags & crate::interpreter::value::INST_IMMUTABLE != 0 {
+                if inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0 {
                     return Err(format!(
                         "TypeError: cannot assign field '{attr}' on immutable instance"
                     ));
                 }
                 let is_mutable = inst_class.field_mutability.get(attr).copied().unwrap_or(true);
-                inst.fields[idx] = Some((val, is_mutable));
+                if !inst.store_field(idx, val, is_mutable) {
+                    return Err(format!(
+                        "TypeError: value does not match declared type of field '{attr}'"
+                    ));
+                }
                 Ok(())
             }
             _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
@@ -2715,18 +2711,24 @@ impl Interpreter {
                         ));
                     };
                     let mut inst = inst_rc.borrow_mut();
-                    if let Some(Some((_, false))) = inst.fields.get(idx) {
+                    if inst.field_mutable(idx) == Some(false) {
                         return Err(format!(
                             "TypeError: cannot assign to immutable field '{attr}'"
                         ));
                     }
-                    if inst.fields[idx].is_none() && inst.flags & crate::interpreter::value::INST_IMMUTABLE != 0 {
+                    if !inst.slot_initialized(idx)
+                        && inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0
+                    {
                         return Err(format!(
                             "TypeError: cannot assign field '{attr}' on immutable instance"
                         ));
                     }
                     let is_mutable = inst.class.field_mutability.get(attr.as_str()).copied().unwrap_or(true);
-                    inst.fields[idx] = Some((rhs, is_mutable));
+                    if !inst.store_field(idx, rhs, is_mutable) {
+                        return Err(format!(
+                            "TypeError: value does not match declared type of field '{attr}'"
+                        ));
+                    }
                     Ok(())
                 }
                 Value::Class(cls) => {
@@ -2768,18 +2770,22 @@ impl Interpreter {
                         ));
                     };
                     let mut inst = inst_rc.borrow_mut();
-                    if let Some(Some((_, false))) = inst.fields.get(idx) {
+                    if inst.field_mutable(idx) == Some(false) {
                         return Err(format!(
                             "TypeError: cannot assign to immutable trait field '{attr}'"
                         ));
                     }
-                    if inst.flags & crate::interpreter::value::INST_IMMUTABLE != 0 {
+                    if inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0 {
                         return Err(format!(
                             "TypeError: cannot assign field '{attr}' on immutable instance"
                         ));
                     }
                     let is_mutable = inst_class.field_mutability.get(&key).copied().unwrap_or(true);
-                    inst.fields[idx] = Some((rhs, is_mutable));
+                    if !inst.store_field(idx, rhs, is_mutable) {
+                        return Err(format!(
+                            "TypeError: value does not match declared type of field '{attr}'"
+                        ));
+                    }
                     Ok(())
                 }
                 _ => Err("AttributeError: cannot set trait field on non-instance".to_string()),
