@@ -81,6 +81,28 @@ slot 1..    : フィールド（C ABI レイアウト: 宣言順 + C アライ�
   （boxed のスロット別 bool と同義）。初期化追跡は `field_init_bitmap`
 - deep_copy / copy(): raw ブロックは **memcpy 1回**（bench_field_access 4.6s → 3.2s）
 
+### P2 実装詳細（cpp ヘッダ → RawLayout 付き Arrow クラス）
+
+- `CStructDef.complete: bool`（`cpp_bridge/types.rs`）: フィールドリストが C/C++ 側の
+  レイアウトメンバを**すべて**含むときのみ `true`。配列・ビットフィールド・ネスト構造体・
+  未解決型のスキップ、union、継承付きクラスは `false`
+- `CStructDef::raw_layout()`: `complete` かつ全フィールドが幅確定プリミティブ
+  （`int`→i32 / `float`→f32 / `double`→f64）のとき `RawLayout` を返す。
+  C の `long`（環境依存幅）と `bool`（1B だが既存ミラーは i32 仮定）は対象外
+- `header_parser.rs` の simple class 判定（`classify_member_segment`）:
+  - `virtual` / `friend` を含むクラスは**構造体リストから除外**（vtable / 非 simple）
+  - メソッド宣言・`static`・`typedef`/`using`・ネスト型定義はレイアウト非寄与として無視
+  - ビットフィールドは `complete=false`
+- **既存バグ修正**: `parse_struct_bodies` が `namespace X { … }` / `extern "C" { … }` を
+  不透明ブロックとしてスキップしていた（DxLib.h は全体が `namespace DxLib` のため
+  構造体抽出が常に 0 件だった）。スコープブロックには降下するよう修正 →
+  DxLib から VECTOR 等 63+ 構造体が Arrow クラス（raw f32/f64/i32 レイアウト付き）として
+  登録されるようになった
+- 格納は書き込み時変換（blittable モデル）: `VECTOR.x = 0.1` は f32 に縮小されて格納され、
+  読み出しは f32 丸め済みの値を返す（C から見える値と常に一致）
+- 単体テスト: `header_parser.rs::tests`（13本 — virtual/friend 除外、ビットフィールド、
+  継承、union、アラインメント、実 DxLib.h スニペット + 実ファイル）
+
 ### Windows LLP64 の注意
 C `long` は Windows で 4B、Linux で 8B。現行 `CType::Long → i64` マッピングは
 LP64 前提。`long` 戻り値は x64 で上位 32bit がゼロ埋めされるため負値が壊れる —
@@ -94,7 +116,7 @@ LP64 前提。`long` 戻り値は x64 で上位 32bit がゼロ埋めされる�
 | **P0b** | フィールド順序: trait 継承順先頭 + own 宣言順（`build_field_index`） | ✅ 実装済み |
 | **P0c** | フラットレイアウトの宣言順統一（`collect_flat_leaves` / `FlatLayout` のアルファベット順ソート除去）。**既存 .arc は要再コンパイル** | ✅ 実装済み |
 | **P1** | InstanceData raw ブロック化（`Box<[u64]>` + RawLayout 記述子 + アクセサ書き換え） | ✅ 実装済み |
-| P2 | cpp ヘッダパーサの C++ simple class 対応 + CStructDef → Arrow クラス生成（RawLayout 付き） | 未着手 |
+| **P2** | cpp ヘッダパーサの C++ simple class 対応 + CStructDef → Arrow クラス生成（RawLayout 付き） | ✅ 実装済み |
 | P3 | codegen: 準拠クラスの直接ポインタ渡し / by-value 防御コピー / シャドウクラス変換 + write-back の AST 展開 | 未着手 |
 | P4 | typed ABI スロットへのポインタ型追加（AbiTy::Ptr）+ dispatch / ar_call_fn 対応 | 未着手 |
 | P5 | `T*` + let の静的拒否（型チェッカー） / checked 変換オプション | 未着手 |

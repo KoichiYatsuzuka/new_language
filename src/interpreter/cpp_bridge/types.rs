@@ -126,14 +126,43 @@ impl CType {
 
 // ── Struct definition ─────────────────────────────────────────────────────────
 
-/// `typedef struct { … } Name;` 形式から抽出した C 構造体/共用体の定義。
-/// すべてのフィールドがプリミティブ `CType` に解決できる構造体のみ出力される。
+/// `typedef struct { … } Name;` / `struct Name { … };` / `class Name { … };` 形式から
+/// 抽出した C/C++ 構造体・クラスの定義。
 #[derive(Debug, Clone)]
 pub struct CStructDef {
-    /// typedef エイリアス名（例: `"VECTOR"`）。
+    /// 型名（typedef エイリアスまたは struct/class 名。例: `"VECTOR"`）。
     pub name: String,
     /// 宣言順のフィールド一覧: `(フィールド名, CType)`。
     pub fields: Vec<(String, CType)>,
+    /// `fields` が C/C++ 側のレイアウトメンバを**すべて**含むとき `true`。
+    /// 配列・ビットフィールド・ネスト構造体・未解決型のフィールドをスキップした場合や、
+    /// union・継承付きクラスの場合は `false`（raw レイアウトは付与できない）。
+    pub complete: bool,
+}
+
+impl CStructDef {
+    /// この C/C++ 構造体の raw ブロックレイアウト（`InstanceData.raw` の C ABI 領域）を構築する。
+    ///
+    /// 条件: フィールドリストが完全（`complete`）で、全フィールドが幅の確定した
+    /// プリミティブであること。C の `int`→i32 / `float`→f32 / `double`→f64。
+    /// C の `long` は環境依存幅（Windows LLP64=4B / Linux LP64=8B）のため対象外。
+    /// `bool` は C++ で 1 バイトだが既存ミラーが i32 を仮定しており曖昧なため対象外。
+    pub fn raw_layout(&self) -> Option<crate::interpreter::value::RawLayout> {
+        if !self.complete {
+            return None;
+        }
+        let mut anns: Vec<(String, String)> = Vec::with_capacity(self.fields.len());
+        for (name, ct) in &self.fields {
+            let ann = match ct {
+                CType::Int => "int32",
+                CType::Float => "float32",
+                CType::Double => "float64",
+                _ => return None,
+            };
+            anns.push((name.clone(), ann.to_string()));
+        }
+        crate::interpreter::value::RawLayout::from_fields(&anns)
+    }
 }
 
 // ── Function signature ───────────────────────────────────────────────────────

@@ -2509,6 +2509,10 @@ impl Interpreter {
             let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
             methods.insert("__init__".to_string(), vec![init_fn]);
 
+            // C/C++ 構造体のレイアウトが完全に判明している場合、インスタンスを
+            // C ABI 準拠の raw ブロックで生成する（フィールド幅・オフセットが C と一致
+            // するため、将来 `raw.as_ptr()+8` をそのまま構造体ポインタとして渡せる）。
+            let raw_layout = sdef.raw_layout().map(Rc::new);
             let cls = Rc::new(ClassValue {
                 name: sdef.name.clone(),
                 class_id: crate::interpreter::value::alloc_class_id(),
@@ -2528,7 +2532,7 @@ impl Interpreter {
                 static_vars: HashMap::new(),
                 new_type_base: None,
                 is_exception: false,
-                raw_layout: None,
+                raw_layout,
             });
 
             members.insert(sdef.name.clone(), Value::Class(cls));

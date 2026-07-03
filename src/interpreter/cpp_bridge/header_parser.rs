@@ -337,24 +337,44 @@ pub(crate) fn parse_struct_bodies(
 
     while i < stripped.len() {
         if stripped[i..].starts_with('{') {
+            // `namespace X { … }` / `extern "C" { … }` はスコープブロックなので
+            // スキップせず内部に降下する（DxLib.h は全体が namespace DxLib で包まれている）。
+            {
+                let seg_before = stripped[seg_start..i].trim();
+                let w: Vec<&str> = seg_before.split_whitespace().collect();
+                let is_scope_block = matches!(w.first().copied(), Some("namespace"))
+                    || (w.contains(&"extern") && seg_before.contains("\"C\""));
+                if is_scope_block {
+                    i += 1;
+                    seg_start = i;
+                    continue;
+                }
+            }
             if let Some(brace_end) = find_matching_brace(&stripped[i..]) {
                 let seg_before = stripped[seg_start..i].trim_start();
+                let is_union = seg_before.starts_with("typedef") && seg_before.contains(" union ");
                 let is_struct_typedef = seg_before.starts_with("typedef")
-                    && (seg_before.contains(" struct ") || seg_before.contains(" union "));
+                    && (seg_before.contains(" struct ") || is_union);
 
                 // `class Name { … }` or `struct Name { … }` (not typedef)
-                let class_name = if !is_struct_typedef {
+                // 継承（`class D : public B`）はレイアウトに基底部分が含まれるため complete=false。
+                let (class_name, has_inheritance) = if !is_struct_typedef {
                     let w: Vec<&str> = seg_before.split_whitespace().collect();
                     if matches!(w.first().copied(), Some("class") | Some("struct"))
                         && w.len() >= 2
-                        && w[1].chars().all(|c| c.is_alphanumeric() || c == '_')
+                        && w[1]
+                            .trim_end_matches(':')
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '_')
+                        && !w[1].trim_end_matches(':').is_empty()
                     {
-                        Some(w[1].to_string())
+                        let inherits = seg_before.contains(':');
+                        (Some(w[1].trim_end_matches(':').to_string()), inherits)
                     } else {
-                        None
+                        (None, false)
                     }
                 } else {
-                    None
+                    (None, false)
                 };
 
                 if is_struct_typedef {
@@ -363,14 +383,20 @@ pub(crate) fn parse_struct_bodies(
                     if let Some(semi_pos) = rest.find(';') {
                         let aliases_str = rest[..semi_pos].trim();
                         if !aliases_str.is_empty() {
-                            let fields = parse_struct_field_decls(body, custom, typedefs);
-                            if !fields.is_empty() {
-                                for (alias, ptr_suffix) in parse_alias_list(aliases_str, "") {
-                                    if !ptr_suffix.contains('*') {
-                                        result.push(CStructDef {
-                                            name: alias,
-                                            fields: fields.clone(),
-                                        });
+                            if let Some((fields, fields_complete)) =
+                                parse_struct_field_decls(body, custom, typedefs)
+                            {
+                                if !fields.is_empty() {
+                                    // union はフィールドが重なるためレイアウト不完全扱い
+                                    let complete = fields_complete && !is_union;
+                                    for (alias, ptr_suffix) in parse_alias_list(aliases_str, "") {
+                                        if !ptr_suffix.contains('*') {
+                                            result.push(CStructDef {
+                                                name: alias,
+                                                fields: fields.clone(),
+                                                complete,
+                                            });
+                                        }
                                     }
                                 }
                             }
@@ -378,9 +404,16 @@ pub(crate) fn parse_struct_bodies(
                     }
                 } else if let Some(name) = class_name {
                     let body = &stripped[i + 1..i + brace_end];
-                    let fields = parse_struct_field_decls(body, custom, typedefs);
-                    if !fields.is_empty() {
-                        result.push(CStructDef { name, fields });
+                    if let Some((fields, fields_complete)) =
+                        parse_struct_field_decls(body, custom, typedefs)
+                    {
+                        if !fields.is_empty() {
+                            result.push(CStructDef {
+                                name,
+                                fields,
+                                complete: fields_complete && !has_inheritance,
+                            });
+                        }
                     }
                 }
                 i += brace_end + 1;
@@ -397,19 +430,28 @@ pub(crate) fn parse_struct_bodies(
     result
 }
 
-/// 構造体本体のフィールド宣言をパースする。`float x, y, z;` → 3 フィールド、配列宣言やネスト構造体はスキップ。プリミティブ `CType` に解決できるフィールドのみ返す。
+/// 構造体本体のフィールド宣言をパースする。`float x, y, z;` → 3 フィールド。
+///
+/// 戻り値:
+/// - `None` — 本体に `virtual` / `friend` が含まれる（simple class ではない — 構造体自体を除外）
+/// - `Some((fields, complete))` — `complete` は全レイアウトメンバをフィールドとして
+///   取り込めたとき `true`（配列・ビットフィールド・ネスト構造体・未解決型を
+///   スキップした場合は `false` — raw レイアウトは付与できない）
 fn parse_struct_field_decls(
     body: &str,
     custom: &HashMap<String, String>,
     typedefs: &HashMap<String, String>,
-) -> Vec<(String, CType)> {
+) -> Option<(Vec<(String, CType)>, bool)> {
     let mut fields = Vec::new();
+    let mut complete = true;
     let mut i = 0;
     let mut seg_start = 0;
 
     while i < body.len() {
         if body[i..].starts_with('{') {
             if let Some(end) = find_matching_brace(&body[i..]) {
+                // ネストした型定義（enum / struct / union / メソッド定義本体）。
+                // レイアウトメンバではないためスキップ（complete は維持）。
                 i += end + 1;
                 seg_start = i;
                 continue;
@@ -418,7 +460,19 @@ fn parse_struct_field_decls(
         if body[i..].starts_with(';') {
             let seg = body[seg_start..i].trim();
             if !seg.is_empty() {
-                parse_field_segment(seg, custom, typedefs, &mut fields);
+                match classify_member_segment(seg) {
+                    MemberKind::Reject => return None, // virtual / friend
+                    MemberKind::Ignore => {}           // メソッド・static・型定義等（レイアウト非寄与）
+                    MemberKind::Bitfield => complete = false,
+                    MemberKind::Field => {
+                        let before = fields.len();
+                        parse_field_segment(seg, custom, typedefs, &mut fields);
+                        if fields.len() == before {
+                            // フィールドのはずがパースできなかった（配列・未解決型など）
+                            complete = false;
+                        }
+                    }
+                }
             }
             i += 1;
             seg_start = i;
@@ -426,7 +480,59 @@ fn parse_struct_field_decls(
         }
         i += 1;
     }
-    fields
+    Some((fields, complete))
+}
+
+/// 構造体本体の1メンバセグメントの種別。
+enum MemberKind {
+    /// virtual（vtable ポインタでレイアウトが変わる）/ friend — simple class ではない
+    Reject,
+    /// レイアウトに寄与しないメンバ（メソッド宣言・static・ネスト型定義・using 等）
+    Ignore,
+    /// ビットフィールド — レイアウト計算不能（complete=false）
+    Bitfield,
+    /// データフィールド候補
+    Field,
+}
+
+/// メンバセグメントを分類する。先頭のアクセス指定子（`public:` 等）は除いて判定する。
+fn classify_member_segment(seg: &str) -> MemberKind {
+    let words: Vec<&str> = seg.split_whitespace().collect();
+    // 先頭のアクセス指定子ラベルを除去
+    let start = if words
+        .first()
+        .map(|w| matches!(w.trim_end_matches(':'), "public" | "private" | "protected"))
+        .unwrap_or(false)
+    {
+        1
+    } else {
+        0
+    };
+    let words = &words[start..];
+    let Some(&first) = words.first() else {
+        return MemberKind::Ignore;
+    };
+    // virtual メンバ関数 → vtable が挿入されるため simple class ではない
+    if first == "virtual" || words.contains(&"virtual") {
+        return MemberKind::Reject;
+    }
+    if first == "friend" {
+        return MemberKind::Reject;
+    }
+    // レイアウトに寄与しないメンバ
+    if matches!(first, "static" | "typedef" | "using" | "enum" | "struct" | "class" | "union") {
+        return MemberKind::Ignore;
+    }
+    // メソッド宣言（括弧を含む）
+    if seg.contains('(') {
+        return MemberKind::Ignore;
+    }
+    // ビットフィールド: `int flags : 3`
+    // （先頭のアクセス指定子 `public:` 等は除去済みの words で判定する）
+    if words.iter().any(|w| w.contains(':')) {
+        return MemberKind::Bitfield;
+    }
+    MemberKind::Field
 }
 
 /// `;` 区切りの 1 フィールドセグメント（`float x, y, z` や `int flags` など）をパースし、解決済みの `(name, CType)` ペアを `out` に追加する。
@@ -929,5 +1035,154 @@ pub(crate) fn parse_c_type_str(
             );
             Err(format!("unknown C type '{}'", type_name))
         }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(src: &str) -> Vec<CStructDef> {
+        let custom = HashMap::new();
+        let typedefs = HashMap::new();
+        parse_header_full(src, &custom, &typedefs).1
+    }
+
+    /// typedef struct（C スタイル）: 完全 + raw レイアウト（float×3 = オフセット 0,4,8）
+    #[test]
+    fn test_c_typedef_struct_raw_layout() {
+        let defs = parse("typedef struct tagVEC { float x; float y; float z; } VEC;");
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "VEC");
+        assert!(defs[0].complete);
+        let layout = defs[0].raw_layout().expect("raw layout expected");
+        let offs: Vec<usize> = layout.fields.iter().map(|d| d.byte_offset).collect();
+        assert_eq!(offs, vec![0, 4, 8]);
+        assert_eq!(layout.total_bytes, 16); // 12 → 8 の倍数へ切り上げ
+    }
+
+    /// C++ class（メソッド・アクセス指定子つき）: フィールドのみ抽出、完全
+    #[test]
+    fn test_cpp_simple_class() {
+        let src = "class Point {\npublic:\n    int x;\n    int y;\n    double w;\n    int sum();\nprivate:\n    void helper(int a);\n};";
+        let defs = parse(src);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "Point");
+        assert!(defs[0].complete);
+        assert_eq!(defs[0].fields.len(), 3);
+        let layout = defs[0].raw_layout().expect("raw layout expected");
+        // int(4) int(4) double(8, アラインメント 8) → 0,4,8
+        let offs: Vec<usize> = layout.fields.iter().map(|d| d.byte_offset).collect();
+        assert_eq!(offs, vec![0, 4, 8]);
+        assert_eq!(layout.total_bytes, 16);
+    }
+
+    /// C アラインメント: int(4) + double(8) → double は 8 境界へパディング
+    #[test]
+    fn test_c_alignment_padding() {
+        let defs = parse("struct Mixed { int a; double b; int c; };");
+        assert_eq!(defs.len(), 1);
+        let layout = defs[0].raw_layout().expect("raw layout expected");
+        let offs: Vec<usize> = layout.fields.iter().map(|d| d.byte_offset).collect();
+        assert_eq!(offs, vec![0, 8, 16]); // a=0, (pad 4), b=8, c=16
+        assert_eq!(layout.total_bytes, 24);
+    }
+
+    /// virtual メンバ関数を持つクラスは除外される（vtable でレイアウトが変わる）
+    #[test]
+    fn test_virtual_class_rejected() {
+        let defs = parse("class Shape {\npublic:\n    int kind;\n    virtual void draw();\n};");
+        assert!(defs.is_empty(), "virtual class must be rejected");
+    }
+
+    /// friend を持つクラスは除外される
+    #[test]
+    fn test_friend_class_rejected() {
+        let defs = parse("class Secret {\npublic:\n    int v;\n    friend class Admin;\n};");
+        assert!(defs.is_empty(), "friend class must be rejected");
+    }
+
+    /// ビットフィールド → complete=false → raw レイアウトなし
+    #[test]
+    fn test_bitfield_incomplete() {
+        let defs = parse("struct Flags { int a; int b : 3; };");
+        assert_eq!(defs.len(), 1);
+        assert!(!defs[0].complete);
+        assert!(defs[0].raw_layout().is_none());
+    }
+
+    /// 配列フィールド → complete=false（フィールドがスキップされた）
+    #[test]
+    fn test_array_field_incomplete() {
+        let defs = parse("struct Mat { float m[16]; float scale; };");
+        assert_eq!(defs.len(), 1);
+        assert!(!defs[0].complete);
+        assert!(defs[0].raw_layout().is_none());
+    }
+
+    /// 継承つきクラス → complete=false（基底部分のレイアウトが不明）
+    #[test]
+    fn test_inheritance_incomplete() {
+        let defs = parse("class Derived : public Base {\npublic:\n    int extra;\n};");
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "Derived");
+        assert!(!defs[0].complete);
+    }
+
+    /// union → complete=false（フィールドが重なる）
+    #[test]
+    fn test_union_incomplete() {
+        let defs = parse("typedef union { int i; float f; } Num;");
+        assert_eq!(defs.len(), 1);
+        assert!(!defs[0].complete);
+    }
+
+    /// static メンバ・ネスト enum はレイアウトに寄与しない（complete のまま）
+    #[test]
+    fn test_static_and_nested_enum_ignored() {
+        let src = "class Cfg {\npublic:\n    static int counter;\n    enum Mode { A, B };\n    int width;\n    int height;\n};";
+        let defs = parse(src);
+        assert_eq!(defs.len(), 1);
+        assert!(defs[0].complete);
+        assert_eq!(defs[0].fields.len(), 2);
+        let layout = defs[0].raw_layout().expect("raw layout expected");
+        assert_eq!(layout.fields[0].byte_offset, 0);
+        assert_eq!(layout.fields[1].byte_offset, 4);
+    }
+
+    /// C の long は環境依存幅のため raw レイアウト対象外（構造体自体は保持）
+    #[test]
+    fn test_long_field_no_raw_layout() {
+        let defs = parse("struct L { long v; };");
+        assert_eq!(defs.len(), 1);
+        assert!(defs[0].raw_layout().is_none());
+    }
+
+    /// DxLib.h の実フォーマット（タブ・複数エイリアス・改行ブレース）での VECTOR パース
+    #[test]
+    fn test_dxlib_vector_snippet() {
+        let src = "typedef struct tagVECTOR
+{
+	float					x, y, z ;
+} VECTOR, *LPVECTOR, FLOAT3, *LPFLOAT3 ;
+";
+        let defs = parse(src);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"VECTOR"), "got: {names:?}");
+        let v = defs.iter().find(|d| d.name == "VECTOR").unwrap();
+        assert!(v.complete, "VECTOR should be complete");
+        assert!(v.raw_layout().is_some());
+    }
+
+    /// 実 DxLib.h からの構造体抽出（回帰デバッグ用）
+    #[test]
+    fn test_real_dxlib_header_structs() {
+        let raw = std::fs::read("examples/DxLib/DxLib.h").expect("header");
+        let content = String::from_utf8_lossy(&raw);
+        let defs = parse(&content);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"VECTOR"), "structs found: {} — {:?}", defs.len(), &names[..names.len().min(20)]);
     }
 }
