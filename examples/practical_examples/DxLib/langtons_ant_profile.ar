@@ -19,7 +19,7 @@
 #   cargo run --release -- examples/practical_examples/DxLib/langtons_ant_profile.ar
 
 import[py-int] time
-import ant_render as render
+import[ar] ant_render as render
 from ant_render import Cell
 import[cpp-lib] DxLib.DxLib as dx
 
@@ -144,8 +144,8 @@ while running:
         t_flip = 0.0
         frames = 0
 
-    if elapsed >= RUN_S:
-        running = False
+    # if elapsed >= RUN_S:
+    #     running = False
 
 dx.DxLib_End()
 print("profile done")

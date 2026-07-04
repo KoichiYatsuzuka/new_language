@@ -27,7 +27,7 @@ use crate::ast::Accessibility;
 pub(crate) mod async_mgr;
 #[path = "interpreter/event_loop.rs"]
 pub(crate) mod event_loop;
-#[path = "interpreter/classes.rs"]
+#[path = "interpreter/classes/mod.rs"]
 mod classes;
 #[path = "interpreter/cpp_bridge/mod.rs"]
 pub(crate) mod cpp_bridge;
@@ -39,19 +39,19 @@ pub(crate) mod cs_proc_runtime;
 pub(crate) mod js_proc_runtime;
 #[path = "interpreter/debugger.rs"]
 pub(self) mod debugger;
-#[path = "interpreter/eval.rs"]
+#[path = "interpreter/eval/mod.rs"]
 mod eval;
 #[path = "interpreter/exceptions.rs"]
 mod exceptions;
-#[path = "interpreter/exec.rs"]
+#[path = "interpreter/exec/mod.rs"]
 mod exec;
-#[path = "interpreter/functions.rs"]
+#[path = "interpreter/functions/mod.rs"]
 mod functions;
 #[path = "interpreter/msvc_errors.rs"]
 pub(self) mod msvc_errors;
-#[path = "interpreter/native_api.rs"]
+#[path = "interpreter/native_api/mod.rs"]
 pub(self) mod native_api;
-#[path = "interpreter/ops.rs"]
+#[path = "interpreter/ops/mod.rs"]
 mod ops;
 #[path = "interpreter/py_interop.rs"]
 pub(self) mod py_interop;
@@ -63,7 +63,7 @@ pub(super) mod str_methods;
 mod templates;
 
 #[cfg(test)]
-#[path = "interpreter/tests.rs"]
+#[path = "interpreter/tests/mod.rs"]
 mod tests;
 
 #[path = "interpreter/ast_value.rs"]

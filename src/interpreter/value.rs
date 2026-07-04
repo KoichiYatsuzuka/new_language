@@ -544,6 +544,94 @@ impl InstanceData {
 }
 
 // ---------------------------------------------------------------------------
+// C ABI 構造体ポインタ引数のシャドウ変換（for_claude/c_abi_interop.md P3）
+// ---------------------------------------------------------------------------
+
+/// 2つの raw レイアウトが構造的に完全一致するか（フィールド数・各オフセット・幅・総バイト数）。
+/// 一致すればインスタンスの raw ブロックをそのまま C 構造体ポインタとしてゼロコピーで渡せる。
+pub fn raw_layouts_compatible(a: &RawLayout, b: &RawLayout) -> bool {
+    a.total_bytes == b.total_bytes
+        && a.fields.len() == b.fields.len()
+        && a.fields
+            .iter()
+            .zip(b.fields.iter())
+            .all(|(x, y)| x.byte_offset == y.byte_offset && x.width == y.width)
+}
+
+/// バイト列の `desc` 位置へ `Value` を書き込む（`InstanceData::store_field` と同じ幅変換規則、
+/// int→float 昇格あり）。スロット形式に値の型が合わなければ `false`。
+fn write_raw_field_bytes(bytes: &mut [u8], desc: RawFieldDesc, val: &Value) -> bool {
+    let o = desc.byte_offset;
+    match (desc.width, val) {
+        (RawWidth::I8 | RawWidth::U8, Value::Int(n)) => bytes[o] = *n as u8,
+        (RawWidth::I16 | RawWidth::U16, Value::Int(n)) => {
+            bytes[o..o + 2].copy_from_slice(&(*n as u16).to_le_bytes())
+        }
+        (RawWidth::I32 | RawWidth::U32, Value::Int(n)) => {
+            bytes[o..o + 4].copy_from_slice(&(*n as u32).to_le_bytes())
+        }
+        (RawWidth::I64 | RawWidth::U64, Value::Int(n)) => {
+            bytes[o..o + 8].copy_from_slice(&n.to_le_bytes())
+        }
+        (RawWidth::F32, Value::Float(f)) => {
+            bytes[o..o + 4].copy_from_slice(&(*f as f32).to_le_bytes())
+        }
+        (RawWidth::F64, Value::Float(f)) => bytes[o..o + 8].copy_from_slice(&f.to_le_bytes()),
+        (RawWidth::F32, Value::Int(n)) => {
+            bytes[o..o + 4].copy_from_slice(&(*n as f32).to_le_bytes())
+        }
+        (RawWidth::F64, Value::Int(n)) => {
+            bytes[o..o + 8].copy_from_slice(&(*n as f64).to_le_bytes())
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// バイト列の `desc` 位置から `Value` を読み出す（`InstanceData::field_value` と同じ幅変換規則）。
+fn read_raw_field_bytes(bytes: &[u8], desc: RawFieldDesc) -> Value {
+    let o = desc.byte_offset;
+    match desc.width {
+        RawWidth::I8 => Value::Int(bytes[o] as i8 as i64),
+        RawWidth::U8 => Value::Int(bytes[o] as i64),
+        RawWidth::I16 => Value::Int(i16::from_le_bytes([bytes[o], bytes[o + 1]]) as i64),
+        RawWidth::U16 => Value::Int(u16::from_le_bytes([bytes[o], bytes[o + 1]]) as i64),
+        RawWidth::I32 => Value::Int(i32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()) as i64),
+        RawWidth::U32 => Value::Int(u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()) as i64),
+        RawWidth::I64 | RawWidth::U64 => {
+            Value::Int(i64::from_le_bytes(bytes[o..o + 8].try_into().unwrap()))
+        }
+        RawWidth::F32 => Value::Float(f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()) as f64),
+        RawWidth::F64 => Value::Float(f64::from_le_bytes(bytes[o..o + 8].try_into().unwrap())),
+    }
+}
+
+/// インスタンスの各フィールドを**宣言順の位置**で `layout` のフィールド位置へ写した
+/// 一時バイト列を構築する。未初期化・型不一致のフィールドがあれば `None`。
+pub fn build_shadow_raw(inst: &InstanceData, layout: &RawLayout) -> Option<Vec<u8>> {
+    let mut bytes = vec![0u8; layout.total_bytes];
+    for (i, desc) in layout.fields.iter().enumerate() {
+        let val = inst.field_value(i)?;
+        if !write_raw_field_bytes(&mut bytes, *desc, &val) {
+            return None;
+        }
+    }
+    Some(bytes)
+}
+
+/// C 呼び出し後のバイト列を、インスタンスの各フィールドへ**宣言順**で読み戻す。
+/// 型不一致で書き込めないフィールドがあれば `false`。
+pub fn apply_shadow_raw(inst: &mut InstanceData, layout: &RawLayout, bytes: &[u8]) -> bool {
+    for (i, desc) in layout.fields.iter().enumerate() {
+        let val = read_raw_field_bytes(bytes, *desc);
+        if !inst.store_field(i, val, true) {
+            return false;
+        }
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
 // Value storage types
 // ---------------------------------------------------------------------------
 
@@ -865,11 +953,23 @@ pub enum PtrParam {
 /// - `I64`: Arrow `int` — スロットに `i64` をそのまま格納
 /// - `F64`: Arrow `float` — スロットに `f64::to_bits()` のビットパターンを格納
 /// - `Void`: 戻り値専用（C の `void` 関数）。Arrow 側では `None` になる
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// - `Ptr`: C 構造体ポインタ引数（`T*` / `const T*` / by-value 構造体）。
+///   `layout` を持つため `Copy`/`PartialEq` は導出しない。
+#[derive(Debug, Clone)]
 pub enum AbiTy {
     I64,
     F64,
     Void,
+    /// C 構造体ポインタ引数。`layout` は対象 C 構造体の raw レイアウト。
+    /// `NativeFnRef` が `NativeCallCache`（`Arc<dyn Any + Send + Sync>`）へ格納されるため
+    /// `Rc` ではなく `Arc` を用いる。
+    Ptr {
+        /// C 側が `T*`（非 const）で書き込みうるか。`by_value` が真のときは無関係。
+        mutable: bool,
+        /// by-value 構造体引数。値渡し意味論のため決して write-back の対象にならない。
+        by_value: bool,
+        layout: Arc<RawLayout>,
+    },
 }
 
 /// `{name}_typed` エントリポイントの型シグネチャ。
@@ -879,6 +979,104 @@ pub enum AbiTy {
 pub struct TypedSig {
     pub params: Vec<AbiTy>,
     pub ret: AbiTy,
+}
+
+// ---------------------------------------------------------------------------
+// typed ABI ポインタ引数の解決（for_claude/c_abi_interop.md P3/P4）
+// ---------------------------------------------------------------------------
+
+/// `resolve_typed_ptr_arg` が返す、C 呼び出し後に実行すべき後処理。
+///
+/// シャドウ変換のバッファは C 呼び出し中ポインタが指す先として生存し続ける必要があるため、
+/// 書き戻し不要な場合も `KeepAlive` としてバッファを保持する。
+pub enum PtrArgCleanup {
+    /// 後処理不要（ゼロコピー直接渡し — インスタンスのメモリを直接指している）。
+    None,
+    /// シャドウバッファを呼び出し終了まで生存させるだけ（書き戻しなし: const / by-value /
+    /// 非名前付き引数）。
+    KeepAlive(Vec<u8>),
+    /// 呼び出し後、シャドウバッファの内容をインスタンスへ読み戻す（mutable かつ名前付き
+    /// `mut` 変数）。
+    WriteBack {
+        inst: Rc<RefCell<InstanceData>>,
+        layout: Arc<RawLayout>,
+        shadow: Vec<u8>,
+    },
+}
+
+/// typed ABI のポインタ引数（`AbiTy::Ptr`）を u64 スロット値へ解決する。全呼び出し経路で共有。
+///
+/// - `Ok(Some((slot, cleanup)))`: `slot` を u64 スロットへ格納し、呼び出し後に
+///   `finish_ptr_arg_cleanup(cleanup)` を必ず呼ぶ（`cleanup` がバッファ生存・書き戻しを担う）。
+/// - `Ok(None)`: typed 経路を諦めハンドル経路へフォールバックする（値がインスタンスでない）。
+/// - `Err(msg)`: 呼び出しを中止すべきエラー（`let` 変数を書き込みポインタへ渡した等）。
+///
+/// `named_mut`: 呼び出し元の実引数が名前付き変数のとき `Some(可変か)`、判定できない経路では
+/// `None`（`None` のときは常に安全側＝書き戻ししない）。
+pub fn resolve_typed_ptr_arg(
+    v: &Value,
+    mutable: bool,
+    by_value: bool,
+    layout: &Arc<RawLayout>,
+    named_mut: Option<bool>,
+) -> Result<Option<(u64, PtrArgCleanup)>, String> {
+    // 1. インスタンス以外は typed 経路を諦める（ハンドル経路へ）。
+    let Value::Instance(rc) = v else {
+        return Ok(None);
+    };
+    // 2. 書き込み用ポインタ（mutable かつ非 by-value）へ `let` 変数を渡す誤りを拒否
+    //    （ハンドルベース `PtrParam::MutPtr` と同じ規則）。
+    if mutable && !by_value && named_mut == Some(false) {
+        return Err(
+            "TypeError: cannot pass an immutable (let) variable as a mutable pointer argument"
+                .to_string(),
+        );
+    }
+    // 書き戻しは mutable・非 by-value かつ名前付き `mut` 変数のときだけ。
+    let needs_writeback = mutable && !by_value && named_mut == Some(true);
+
+    let inst = rc.borrow();
+    // 3. インスタンスの raw レイアウトが対象 `layout` と構造的に完全一致 → ゼロコピー。
+    //    `raw.as_ptr() + 8`（8 バイトの class_id/flags ヘッダの後ろ）が C 構造体先頭。
+    if inst.has_raw_layout() {
+        if let Some(inst_layout) = inst.class.raw_layout.as_ref() {
+            if raw_layouts_compatible(inst_layout, layout) {
+                let ptr = unsafe { inst.raw_bytes().as_ptr().add(8) } as u64;
+                return Ok(Some((ptr, PtrArgCleanup::None)));
+            }
+        }
+    }
+    // 4. 一致しなければシャドウ変換（フィールドを宣言順の位置で対応付け）。
+    let shadow = build_shadow_raw(&inst, layout).ok_or_else(|| {
+        "TypeError: cannot marshal instance to the expected C struct layout".to_string()
+    })?;
+    drop(inst);
+    let ptr = shadow.as_ptr() as u64;
+    let cleanup = if needs_writeback {
+        PtrArgCleanup::WriteBack {
+            inst: rc.clone(),
+            layout: layout.clone(),
+            shadow,
+        }
+    } else {
+        PtrArgCleanup::KeepAlive(shadow)
+    };
+    Ok(Some((ptr, cleanup)))
+}
+
+/// `resolve_typed_ptr_arg` が返した後処理を実行する（シャドウバッファの解放・書き戻し）。
+pub fn finish_ptr_arg_cleanup(cleanup: PtrArgCleanup) {
+    match cleanup {
+        PtrArgCleanup::None | PtrArgCleanup::KeepAlive(_) => {}
+        PtrArgCleanup::WriteBack {
+            inst,
+            layout,
+            shadow,
+        } => {
+            let mut inst_mut = inst.borrow_mut();
+            apply_shadow_raw(&mut inst_mut, &layout, &shadow);
+        }
+    }
 }
 
 /// Reference to a native (natively compiled) function.

@@ -1,0 +1,21 @@
+# cpp_struct_ptr_error.ar — P5: 静的な `T*` + let 拒否
+#
+# C 側の `v3_add(V3* out, const V3* a, const V3* b)` の第1引数 `out` は
+# 書き込み用ポインタ（V3*）。ここへ不変（`let`）変数を渡すのは意味的に誤り
+# （C 側の書き込みが呼び出し元に反映されない）なので、型チェッカーが
+# 実行前に静的に拒否する。
+#
+# 期待される出力（実行はされず、型検査で停止する）:
+#   StaticTypeError: parameter 'out' of 'v3_add' expects a mutable argument, ...
+#
+# 参照: for_claude/c_abi_interop.md（P5）
+
+import[cpp-lib] test_modules.vec_math as vm
+
+let result = V3(0.0, 0.0, 0.0)   # let → 不変バインディング
+let a = V3(1.0, 2.0, 3.0)
+let b = V3(4.0, 5.0, 6.0)
+
+# `out` は V3*（書き込み用）。不変な `result` を渡すと静的型エラー。
+# （`mut result = ...` にすれば通る）
+vm.v3_add(result, a, b)

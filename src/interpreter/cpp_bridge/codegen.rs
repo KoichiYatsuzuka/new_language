@@ -352,35 +352,65 @@ pub unsafe extern "C" fn {n}_tl(argv: *const i64, _argc: i32) -> i64 {{
     }
     s.push_str("}\n");
 
-    // 統一 typed ABI 変種を追加生成（全プリミティブシグネチャの場合のみ）
-    if cpp_typed_eligible(sig) {
-        s.push_str(&gen_dll_fn_typed(sig));
+    // 統一 typed ABI 変種を追加生成（全プリミティブ + raw レイアウト既知の構造体ポインタ／
+    // by-value 構造体のシグネチャの場合のみ）
+    if cpp_typed_eligible(sig, struct_defs) {
+        s.push_str(&gen_dll_fn_typed(sig, struct_defs));
     }
     s
 }
 
+/// `CType` が「raw レイアウト既知の構造体」を指す（ポインタ or by-value）場合、
+/// その構造体名を返す。typed ABI 適格性判定・引数コード生成の両方で使う。
+fn typed_struct_name(ct: &CType) -> Option<&str> {
+    match ct {
+        CType::OpaqueStructPtr { type_name, .. } | CType::ByValueStruct { type_name } => {
+            Some(type_name.as_str())
+        }
+        _ => None,
+    }
+}
+
 /// C 関数が typed ABI（`{name}_typed`）でエクスポート可能か。
-/// 全パラメータが int/long/float/double、戻り値が void/int/long/float/double であること。
-/// （ポインタ・構造体・文字列・bool はハンドル ABI のみ）
+///
+/// - 戻り値: void/int/long/float/double のみ（構造体戻り値は非対応 — ハンドル経路のまま）
+/// - パラメータ: int/long/float/double に加え、`raw_layout()` が既知の構造体への
+///   ポインタ（`OpaqueStructPtr`）・by-value 構造体（`ByValueStruct`）も可
 /// exec.rs 側の `build_cpp_typed_sig` と条件を一致させること。
-pub(crate) fn cpp_typed_eligible(sig: &CFnSig) -> bool {
+pub(crate) fn cpp_typed_eligible(sig: &CFnSig, struct_defs: &HashMap<String, &CStructDef>) -> bool {
     matches!(
         sig.ret,
         CType::Void | CType::Int | CType::Long | CType::Float | CType::Double
     ) && sig.params.iter().all(|(_, t)| {
         matches!(t, CType::Int | CType::Long | CType::Float | CType::Double)
+            || typed_struct_name(t)
+                .and_then(|name| struct_defs.get(name))
+                .map_or(false, |d| d.raw_layout().is_some())
     })
 }
 
 /// `{name}_typed(args: *const u64, ret: *mut u64, err: *mut ErrSlot) -> u32` を生成する。
 ///
 /// - シンボルは初回呼び出し時に1度だけ解決して static にキャッシュする
-/// - 引数は u64 スロットから直接変換（int はキャスト、float はビット再解釈）— CB コールバックなし
-/// - C 関数は Arrow 例外を投げないため、シンボル欠落時（status 1）以外は常に status 0
-fn gen_dll_fn_typed(sig: &CFnSig) -> String {
+/// - スカラー引数は u64 スロットから直接変換（int はキャスト、float はビット再解釈）
+/// - 構造体ポインタ引数（`OpaqueStructPtr`）は u64 スロットの値をそのまま
+///   `*mut/*const _Struct_{name}` にキャストする（インタープリタ側が
+///   `InstanceData.raw` のフィールド領域アドレスを渡す — ゼロコピー）
+/// - by-value 構造体引数（`ByValueStruct`）は同じアドレスから `*_Struct_{name}` として
+///   デリファレンス・コピーしてから値渡しする（Rust の Copy セマンティクスにより
+///   呼び出し先はこの関数のスタック上のコピーのみを見る — Arrow 側の原本は不変）
+/// - CB コールバックは一切使わない。C 関数は Arrow 例外を投げないため、
+///   シンボル欠落時（status 1）以外は常に status 0
+fn gen_dll_fn_typed(sig: &CFnSig, struct_defs: &HashMap<String, &CStructDef>) -> String {
     let n = &sig.name;
 
-    let param_types: Vec<String> = sig.params.iter().map(|(_, t)| t.rust_extern_type()).collect();
+    let param_types: Vec<String> = sig.params.iter().map(|(_, t)| match t {
+        CType::OpaqueStructPtr { type_name, mutable } => {
+            if *mutable { format!("*mut _Struct_{type_name}") } else { format!("*const _Struct_{type_name}") }
+        }
+        CType::ByValueStruct { type_name } => format!("_Struct_{type_name}"),
+        other => other.rust_extern_type(),
+    }).collect();
     let fn_type = if sig.ret == CType::Void {
         format!("unsafe extern \"C\" fn({})", param_types.join(", "))
     } else {
@@ -406,17 +436,37 @@ pub unsafe extern "C" fn {n}_typed(_args: *const u64, _ret: *mut u64, _err: *mut
 "#
     );
 
-    // 引数変換: u64 スロット → C 型（コールバックなしの純キャスト）
+    // 引数変換: u64 スロット → C 型（コールバックなしの純キャスト／ポインタキャスト）
     for (i, (pname, ptype)) in sig.params.iter().enumerate() {
-        let conv = match ptype {
-            CType::Int => format!("(*_args.offset({i})) as i64 as i32"),
-            CType::Long => format!("(*_args.offset({i})) as i64"),
-            CType::Float => format!("f64::from_bits(*_args.offset({i})) as f32"),
-            CType::Double => format!("f64::from_bits(*_args.offset({i}))"),
-            _ => unreachable!("cpp_typed_eligible guarantees primitive params"),
-        };
-        s.push_str(&format!("    let _{pname}: {} = {conv};\n", ptype.rust_extern_type()));
+        match ptype {
+            CType::Int => {
+                s.push_str(&format!("    let _{pname}: i32 = (*_args.offset({i})) as i64 as i32;\n"));
+            }
+            CType::Long => {
+                s.push_str(&format!("    let _{pname}: i64 = (*_args.offset({i})) as i64;\n"));
+            }
+            CType::Float => {
+                s.push_str(&format!("    let _{pname}: f32 = f64::from_bits(*_args.offset({i})) as f32;\n"));
+            }
+            CType::Double => {
+                s.push_str(&format!("    let _{pname}: f64 = f64::from_bits(*_args.offset({i}));\n"));
+            }
+            CType::OpaqueStructPtr { type_name, mutable } => {
+                let kw = if *mutable { "mut" } else { "const" };
+                s.push_str(&format!(
+                    "    let _{pname} = (*_args.offset({i})) as usize as *{kw} _Struct_{type_name};\n"
+                ));
+            }
+            CType::ByValueStruct { type_name } => {
+                // アドレスから直接コピー（呼び出し元の raw メモリには一切触れない）
+                s.push_str(&format!(
+                    "    let _{pname} = *((*_args.offset({i})) as usize as *const _Struct_{type_name});\n"
+                ));
+            }
+            _ => unreachable!("cpp_typed_eligible guarantees supported params"),
+        }
     }
+    let _ = struct_defs; // 適格性は呼び出し元で確認済み（この関数は生成のみ）
 
     let call_args: Vec<String> = sig.params.iter().map(|(p, _)| format!("_{p}")).collect();
     let call = format!("_fp({})", call_args.join(", "));
