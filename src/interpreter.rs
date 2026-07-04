@@ -71,7 +71,7 @@ pub(self) mod ast_value;
 #[path = "interpreter/built_in_types.rs"]
 mod built_in_types;
 
-#[path = "interpreter/value.rs"]
+#[path = "interpreter/value/mod.rs"]
 pub mod value;
 pub use value::*;
 
