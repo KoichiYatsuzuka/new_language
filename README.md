@@ -1,6 +1,10 @@
 ﻿# Arrow
-名前はまだない。
-This have not been named.
+僕の考えた最強のプログラミング言語。
+The best language what I imagine.
+
+## 名前の由来（Origin of the name）
+ギリシャ神話で蛇の怪物を倒したのが矢による射撃だったから。
+Because the monster of python was beaten by a shoot of an arrow in the Greek mythos.
 
 ## 概要（Overview）
 Pythonのとっつきやすさ・汎用性と型安全の両立を目指したスクリプト言語です。
