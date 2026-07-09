@@ -49,7 +49,7 @@ impl std::fmt::Debug for NativeCallCache {
 /// C ABI 型は独立した実行時値型ではなく **storage 型**（クラスフィールドの格納幅・
 /// 外部言語境界での変換幅を規定する注釈）。Arrow 内部の実行時値は常に
 /// `int`(i64) / `float`(f64) のままで、型検査・codegen 上は基底型の別名として扱う。
-/// 詳細は for_claude/c_abi_interop.md を参照。
+/// 詳細は .claude/skills/c-abi-interop/SKILL.md を参照。
 ///
 /// 戻り値: 基底型名（`"int"` / `"float"`）。C ABI 型でなければ `None`。
 pub fn c_abi_base_type(ann: &str) -> Option<&'static str> {

@@ -65,7 +65,7 @@ pub struct TypedSig {
 
 
 // ---------------------------------------------------------------------------
-// typed ABI ポインタ引数の解決（for_claude/c_abi_interop.md P3/P4）
+// typed ABI ポインタ引数の解決（.claude/skills/c-abi-interop/SKILL.md P3/P4）
 // ---------------------------------------------------------------------------
 
 /// `resolve_typed_ptr_arg` が返す、C 呼び出し後に実行すべき後処理。

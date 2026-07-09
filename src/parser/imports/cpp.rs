@@ -115,7 +115,7 @@ impl Parser {
                             // 書き込み用ポインタ引数（`T*` / `VECTOR*` 等）は `mut` 扱いにする。
                             // これにより型チェッカーの `CallMutParamWithImmutableArg` 検査が
                             // 「不変（`let`）変数を出力ポインタへ渡す」誤りを静的に捕捉する
-                            // （P5 — for_claude/c_abi_interop.md。従来は実行時 TypeError のみ）。
+                            // （P5 — .claude/skills/c-abi-interop/SKILL.md。従来は実行時 TypeError のみ）。
                             let mutable = matches!(
                                 &ct,
                                 CType::Ptr { mutable: true, .. }

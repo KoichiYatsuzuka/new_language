@@ -1,3 +1,8 @@
+---
+name: type-checking
+description: Use when modifying src/type_check/ (the static type checker) — internal type representation (InferredType), annotation syntax, inference rules, type compatibility/coercion, type-guard narrowing, access control, overload resolution, or any StaticTypeError/TypeErrorKind variant. Also use when deciding what the checker currently does NOT verify.
+---
+
 # Arrow Type System
 
 Reference for the static type checker (`src/type_check/`). Describes the internal type representation, annotation syntax, inference rules, compatibility rules, and all error kinds.

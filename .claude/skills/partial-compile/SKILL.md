@@ -1,6 +1,57 @@
+---
+name: partial-compile
+description: Use when running `cargo run -- --compile`, working with .arc/.ars partial-compilation output, modifying src/partial_compiler/ (LLVM codegen, eligibility rules, the typed ABI, or the Rust-crate import[rs] loader), or explaining/demoing how an Arrow (.ar) module gets compiled to native machine code and dispatched natively on import. Includes the canonical physics.ar demo workflow and full codegen implementation reference.
+---
+
+# Partial Compilation
+
+A `.ar` module can be partially compiled to native machine code with `--compile`.
+This produces two files next to the source:
+
+| Output file | Contents |
+|-------------|----------|
+| `{stem}.arc` | Compiled module: binary header + embedded source text, optionally with a native shared library embedded (v1 format) |
+| `{stem}.ars` | Type stub: function/class/trait signatures with `...` bodies (used by the VS Code extension and the static type checker) |
+
+## Canonical demo
+
+`examples/test_modules/physics.ar` is the canonical module for demonstrating native compilation.
+`examples/importation.ar` (section 1) is the corresponding runner that shows the full workflow.
+
+```bash
+# Step 1 — run interpreted
+cargo run --release -- examples/importation.ar
+
+# Step 2 — compile the module
+cargo run --release -- --compile examples/test_modules/physics.ar
+# Output:
+#   NativeLib: compiling 6 function(s): potential, kinetic, vel_dot, ...
+#   NativeLib: 6 function(s) embedded in examples\test_modules\physics.arc
+#   Compiled : examples\test_modules\physics.arc
+#   Stub     : examples\test_modules\physics.ars
+
+# Step 3 — run again with native dispatch (same command as Step 1)
+cargo run --release -- examples/importation.ar
+```
+
+## How the compiled module is used
+
+When a `.ar` file imports a module, the parser prefers `.arc` over `.ar`.
+If the `.arc` is v1, the embedded DLL is extracted to a temp file at runtime and loaded via `libloading`.
+Eligible functions are dispatched natively; all other functions tree-walk as usual.
+
+```
+import test_modules.physics                  # loads test_modules/physics.arc (parser)
+test_modules.physics.total_energy(a, b, N)   # calls native code
+```
+
+For how the resulting module is *imported* (search order, cache keys, `import[rs]` vs `.arc`), see the `importation` skill.
+
+---
+
 # Partial Compile — Implementation Reference
 
-This document describes the partial compile subsystem (`src/partial_compiler/`) in detail, derived from the actual source code.
+This section describes the partial compile subsystem (`src/partial_compiler/`) in detail, derived from the actual source code.
 
 ---
 
@@ -102,7 +153,7 @@ thread_local! {
 }
 ```
 
-`take_native_bytes(module_name)` — consumed by `exec.rs` when a module is imported, to attach native dispatch to eligible functions.  
+`take_native_bytes(module_name)` — consumed by `exec.rs` when a module is imported, to attach native dispatch to eligible functions.
 `cache_native(module_name, exports, dll_bytes)` — used by `rs_loader` to pre-populate the cache for `import[rs]` modules.
 
 ---
@@ -246,8 +297,8 @@ For each eligible function `f`, the codegen emits up to four LLVM functions:
 
 #### `@f_impl` (internal)
 
-The actual implementation. Receives parameters as `i64` handles (one per declared param).  
-If the return type annotation is `float`, the ABI is `double` (no boxing/unboxing in the hot path).  
+The actual implementation. Receives parameters as `i64` handles (one per declared param).
+If the return type annotation is `float`, the ABI is `double` (no boxing/unboxing in the hot path).
 All other return types use `i64` handle ABI.
 
 ```llvm
@@ -470,7 +521,7 @@ If neither is found, native compilation is skipped and a v0 `.arc` is written.
 
 ## `import[rs]` — Rust Crate Loader (`rs_loader.rs`)
 
-`import[rs] some_crate` (or `import[rs "1.2"] some_crate` for version pinning) loads a native Rust crate at import time, without a pre-compiled `.arc`.
+`import[rs] some_crate` (or `import[rs "1.2"] some_crate` for version pinning) loads a native Rust crate at import time, without a pre-compiled `.arc`. For the module-loading side of this (`load_rs_module`, cache keys, dispatch table), see the `importation` skill.
 
 ### Steps
 

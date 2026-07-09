@@ -77,7 +77,7 @@ impl Interpreter {
         // TLS・アリーナ・ハンドルを一切通らない。raise は ErrSlot 経由で伝播する。
         // 引数の実行時型がシグネチャと合わない場合はハンドル経路へフォールバック。
         // 構造体ポインタ引数（AbiTy::Ptr）は resolve_typed_ptr_arg でゼロコピー／
-        // シャドウ変換のどちらかを解決する（P3/P4 — for_claude/c_abi_interop.md）。
+        // シャドウ変換のどちらかを解決する（P3/P4 — .claude/skills/c-abi-interop/SKILL.md）。
         if let Some(sig) = &fn_ref.typed_sig {
             use crate::interpreter::value::{AbiTy, PtrArgCleanup};
             let typed_ptr = fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed);

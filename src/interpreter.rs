@@ -421,7 +421,7 @@ impl Interpreter {
         let mut field_mutability_vec: Vec<bool> = Vec::new();
         let mut idx = 0usize;
 
-        // C ABI 準拠レイアウト（for_claude/c_abi_interop.md P0b）:
+        // C ABI 準拠レイアウト（.claude/skills/c-abi-interop/SKILL.md P0b）:
         // Step 1: 継承 trait のフィールドを継承順で先頭に配置する。
         // これにより「基底部分が先頭」という C/C++ の継承レイアウト慣行と一致する。
         for base in bases {

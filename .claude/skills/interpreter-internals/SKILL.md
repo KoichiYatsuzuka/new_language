@@ -1,7 +1,12 @@
+---
+name: interpreter-internals
+description: Use when modifying src/interpreter/ — the tree-walk interpreter (statement exec, expression eval, function/closure calls, class instantiation, operators, exceptions, async task threads, or the native ABI handle arena). Gives the module map, Interpreter/Value struct layout, exec/eval dispatch tables, closure capture rules, and the native ABI handle table.
+---
+
 # Interpreter — Implementation Reference
 
-`src/interpreter/` is a tree-walk interpreter.  
-**Input**: `Vec<Stmt>` AST  
+`src/interpreter/` is a tree-walk interpreter.
+**Input**: `Vec<Stmt>` AST
 **Output**: side effects + final `Value`
 
 Execution is split across two entry points: `exec(stmt)` for statements and `eval(expr)` for expressions.
@@ -96,7 +101,7 @@ SipHash より ~5 倍速い)。Index 0 is global; the tail is the innermost loca
 | `Raise` | `exec_raise` | Formats error, sets `code_context/file/line/col` on instance |
 | `FnDef` / `GenDef` | `exec_fn_def` / `exec_gen_def` | Captures closure env at definition time |
 | `ClassDef` / `TraitDef` | `exec_class_def` / `exec_trait_def` | Builds `ClassValue` / registers trait |
-| `Import` / `FromImport` | `exec_module` | See module execution below |
+| `Import` / `FromImport` | `exec_module` | See module execution in the `importation` skill |
 | `AsyncAssign` | `exec_async_assign` | Submits task to `AsyncManagerData` |
 | `BreakPoint` | `exec_breakpoint` | Enters debugger REPL |
 | `BlockReturn` | returns `RAISE_SENTINEL` signal | Caught by enclosing block/if/for/while/match expression handler |
@@ -180,19 +185,21 @@ pub struct InstanceData {
 | 定数 | ビット | 意味 |
 |---|---|---|
 | `INST_IMMUTABLE` | 31 | `let` バインド / `freeze` でフリーズ済み |
-| `INST_HAS_RAW_LAYOUT` | 30 | raw int/float フラットバッファが有効（将来）|
+| `INST_HAS_RAW_LAYOUT` | 30 | raw int/float フラットバッファが有効（C ABI 準拠レイアウト — 詳細は `c-abi-interop` skill）|
 | `INST_IS_EXCEPTION` | 29 | 例外クラスのインスタンス |
 | `INST_IS_NEW_TYPE` | 28 | `new_type` ラッパー |
-| `INST_FIELD_INIT_MASK` | 23–0 | raw_fields 初期化ビットマップ（将来）|
+| `INST_FIELD_INIT_MASK` | 23–0 | raw_fields 初期化ビットマップ |
 
-**ポインタレイアウト（外部ライブラリ向け）**:  
-- Arrow コンパイル済みコード → `ptr + 0` で `class_id` 読み取り  
+**ポインタレイアウト（外部ライブラリ向け）**:
+- Arrow コンパイル済みコード → `ptr + 0` で `class_id` 読み取り
 - 外部 C/Rust ライブラリ → `ptr + 8` をフィールド先頭として渡す（8 バイトヘッダスキップ）
+
+For the full raw-block / C ABI layout design, see the `c-abi-interop` skill.
 
 ### ClassValue の class_id
 
-`ClassValue` も `class_id: u32` と `is_exception: bool` を持ちます。  
-`alloc_class_id()` はグローバル `AtomicU32` カウンタで、クラス宣言・テンプレート実体化・  
+`ClassValue` も `class_id: u32` と `is_exception: bool` を持ちます。
+`alloc_class_id()` はグローバル `AtomicU32` カウンタで、クラス宣言・テンプレート実体化・
 `new_type` 宣言のたびに一意な ID を発行します。`deep_clone` 時は ID を引き継ぎます。
 
 ### Instantiation (`instantiate`)
@@ -205,7 +212,7 @@ pub struct InstanceData {
 
 ### Method lookup (`lookup_method_in_class`)
 
-Searches: own class methods → base class methods → trait methods (breadth-first through `bases`).  
+Searches: own class methods → base class methods → trait methods (breadth-first through `bases`).
 `current_class` on `Interpreter` is set before and restored after each method call for access-control checks.
 
 ### Access control
@@ -269,9 +276,11 @@ All values crossing the ABI boundary are `i64` handles into a thread-local `VALU
 | `-2` (`TL_EXCEPTION`) | exception raised |
 | `>= 3` | index into `VALUE_ARENA` |
 
-`ArCallbacks` is a `#[repr(C)]` struct of function pointers covering `make_int`, `make_str`, `call_fn`, `get_attr`, `set_attr`, `binop`, `iter_from`, `iter_next`, `raise_exc`, etc.  
-The struct pointer is passed to each native DLL via `ar_init(cb)`.  
+`ArCallbacks` is a `#[repr(C)]` struct of function pointers covering `make_int`, `make_str`, `call_fn`, `get_attr`, `set_attr`, `binop`, `iter_from`, `iter_next`, `raise_exc`, etc.
+The struct pointer is passed to each native DLL via `ar_init(cb)`.
 `CURRENT_INTERP` is a thread-local `*mut Interpreter` set before calling into native code.
+
+For the typed-ABI pointer-argument extension used by `import[cpp-dll]`/`import[cpp-lib]` (`resolve_typed_ptr_arg`, zero-copy vs. shadow-conversion, write-back), see the `c-abi-interop` skill.
 
 ---
 

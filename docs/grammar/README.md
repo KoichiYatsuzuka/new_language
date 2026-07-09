@@ -26,10 +26,11 @@
 
 | ファイル | 内容 |
 |---|---|
-| [for_claude/parser.md](../../for_claude/parser.md) | パーサー実装リファレンス |
-| [for_claude/interpreter.md](../../for_claude/interpreter.md) | インタープリタ実装リファレンス |
-| [for_claude/importation.md](../../for_claude/importation.md) | インポートシステム実装詳細 |
-| [for_claude/typing.md](../../for_claude/typing.md) | 型システム実装詳細 |
-| [for_claude/partial_compile.md](../../for_claude/partial_compile.md) | 部分コンパイル実装詳細 |
+| [.claude/skills/parser-internals/SKILL.md](../../.claude/skills/parser-internals/SKILL.md) | パーサー実装リファレンス |
+| [.claude/skills/interpreter-internals/SKILL.md](../../.claude/skills/interpreter-internals/SKILL.md) | インタープリタ実装リファレンス |
+| [.claude/skills/importation/SKILL.md](../../.claude/skills/importation/SKILL.md) | インポートシステム実装詳細 |
+| [.claude/skills/type-checking/SKILL.md](../../.claude/skills/type-checking/SKILL.md) | 型システム実装詳細 |
+| [.claude/skills/partial-compile/SKILL.md](../../.claude/skills/partial-compile/SKILL.md) | 部分コンパイル実装詳細 |
+| [.claude/skills/c-abi-interop/SKILL.md](../../.claude/skills/c-abi-interop/SKILL.md) | C ABI 相互運用設計仕様 |
 | [spec.md](../../spec.md) | 言語仕様概要 (日本語) |
 | [docs/language_comparison.md](../language_comparison.md) | Rust/Python/Arrow 比較表 |

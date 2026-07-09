@@ -114,7 +114,7 @@ fn collect_flat_leaves(
     path_prefix: &str,
     byte_base: usize,
 ) -> Vec<FlatLeaf> {
-    // フィールドは宣言順（C ABI 準拠 — for_claude/c_abi_interop.md P0c）
+    // フィールドは宣言順（C ABI 準拠 — .claude/skills/c-abi-interop/SKILL.md P0c）
     let fields = match all_class_fields.get(class_name) {
         Some(f) if !f.is_empty() => f.clone(),
         _ => return vec![],

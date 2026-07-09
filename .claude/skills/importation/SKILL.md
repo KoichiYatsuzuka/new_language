@@ -1,6 +1,33 @@
+---
+name: importation
+description: Use when writing, reading, or extending Arrow (.ar) import statements — `import[lang] module.path as alias` / `from module import[lang] Name` — including .py, .dll/.lib (C), .rs, C#, or Node.js interop. Explains what each `[lang]` tag loads and how src/parser/imports.rs and src/interpreter/exec.rs implement it, down to key line numbers.
+---
+
+# Importation of .ar, .py, .dll (C language), .lib, .rs, and more
+
+Import syntax: `import[lang] module.path as alias` / `from module import[lang] Name`.
+The `[lang]` tag selects the source type; omitting it defaults to `ar-auto`.
+
+## Quick reference
+
+| Tag | Loads |
+|-----|-------|
+| *(none)* | `.arc` preferred, falls back to `.ar` or `__init__.ar` |
+| `ar` / `arc` | Force `.ar` source only / force `.arc` compiled only |
+| `py` | Python `.py` via converter |
+| `py-int` | `.pyi`→`.py` for type checking only; runtime via PyO3 |
+| `rs` | Rust crate — auto-compiles a wrapper DLL (requires `ar_config.json` with `rust.crates_path`) |
+| `cpp-dll` / `cpp-lib` | C header (`Dir.Name` → `Dir/Name.h`) for type stubs; runtime via `cpp_bridge` |
+| `js-proc` | Node.js subprocess via named-pipe NDJSON-RPC (see below) |
+| `cs-proc` | .NET assembly via IPC (ECMA-335 metadata reader) |
+
+For parser internals in general (not import-specific), see the `parser-internals` skill. For interpreter internals in general, see `interpreter-internals`.
+
+---
+
 # Importation — Implementation Reference
 
-This document describes how module importation works in the Arrow Rust implementation, derived directly from the source code.
+This section describes how module importation works in the Arrow Rust implementation, derived directly from the source code.
 
 ---
 
@@ -17,7 +44,7 @@ Type checking (`src/type_check/stmt.rs`) reads the `body` AST directly to collec
 
 ## Syntax and Language Tags
 
-```hv
+```ar
 import module.path                    # tl-auto (default)
 import[ar]  module.path              # force .ar source
 import[arc] module.path              # force .arc compiled
@@ -138,7 +165,7 @@ Parsing errors in `.pyi` / `.py` files are silently ignored (best-effort via `un
 
 ### Syntax
 
-```hv
+```ar
 import[rs] libm           # latest version in registry
 import[rs] libm[0.2]      # specific version
 import[rs] sha2           # RustCrypto hash crate (digest pattern auto-detected)
@@ -227,7 +254,7 @@ Writes an auto-generated `lib.rs` to the temp project. The generated code:
 
 - Declares a `ArCallbacks` struct and a `static mut CB` pointer (set via `ar_init()`).
 - For each **free function**: exports `{fn_name}_tl(args: *const i64, n: i32) -> i64`. Decodes handles to Rust types, calls the real function, encodes the return value back to a handle.
-- For each **struct**: 
+- For each **struct**:
   - One static `OnceLock<Mutex<HashMap<i64, StructName>>>` arena + atomic counter.
   - `{StructName}____init___tl` — constructs the struct, stores it in the arena keyed by a fresh integer, writes the key back into the HV instance as `__rs_handle__`.
   - `{StructName}__drop_tl` — removes the key from the arena.
@@ -268,9 +295,9 @@ States:
 
 **For `.ar` / `.arc` / `py` imports**: runs the body AST in a fresh scope, collects all declared top-level variables as `NamespaceData.members`.
 
-**For `rs` and `hvc` (v1) imports**: calls `take_native_bytes()` to dequeue the DLL bytes cached by the parser, writes them to a temp file, loads via `libloading::Library::new()`. Then for each `FnDef` in the body, looks up the symbol `{fn_name}_tl` in the loaded library and replaces the tree-walk `Value::Function` with a `Value::NativeFnRef`. For each `ClassDef`, registers methods via `register_native_method()`.
+**For `rs` and `arc` (v1) imports**: calls `take_native_bytes()` to dequeue the DLL bytes cached by the parser, writes them to a temp file, loads via `libloading::Library::new()`. Then for each `FnDef` in the body, looks up the symbol `{fn_name}_tl` in the loaded library and replaces the tree-walk `Value::Function` with a `Value::NativeFnRef`. For each `ClassDef`, registers methods via `register_native_method()`.
 
-**For `hvc` (v2 / LLVM bitcode)**: uses the Inkwell JIT path (`jit_from_bitcode`, `load_jit_module`). The JIT engine handle is kept alive in `self.jit_handles`.
+**For `arc` (v2 / LLVM bitcode)**: uses the Inkwell JIT path (`jit_from_bitcode`, `load_jit_module`). The JIT engine handle is kept alive in `self.jit_handles`.
 
 **For `py-int` imports**: calls `py_interop::load_py_int_module()` which uses PyO3 to import the Python module directly and wraps all non-private attributes as `Value::PyObject`.
 
@@ -293,6 +320,8 @@ Not covered by `rs_loader`. Parsed by `parse_cpp_import` (imports.rs:91):
 3. Generates `Stmt::FnDef` and `Stmt::ClassDef` stubs for the type checker.
 
 At runtime, `exec.rs` dispatches to the C/C++ bridge for actual calls (not via `exec_module`).
+
+For the C ABI value/struct-passing design behind this bridge (raw layout, zero-copy vs. shadow conversion, write-back), see the `c-abi-interop` skill.
 
 ---
 
@@ -465,7 +494,7 @@ IPC サーバー本体。起動引数: `node js_bridge.cjs <pipe_name> <bridge_r
 
 Arrow の `<-` async 構文で OS スレッドを生成し、そのスレッドがブリッジの `send_recv`（ブロッキング I/O）を呼びます。ブリッジ側では `async function` の Promise を `await` で解決してから応答します。これにより Arrow 側では `block_return` で結果を受け取るだけで、Promise 同期が自動的に行われます。
 
-```hv
+```ar
 mng <- async->str:
     block_return analysis.cleanTypeAnnotation("  List[int]  ")
 mng.wait_for_finish()

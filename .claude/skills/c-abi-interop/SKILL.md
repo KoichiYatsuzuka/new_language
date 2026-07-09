@@ -1,7 +1,14 @@
+---
+name: c-abi-interop
+description: Use when working on C/C++ ABI interop — passing values/structs to/from external C/C++ DLLs (import[cpp-dll]/import[cpp-lib]), C ABI type annotations (int8/int32/float32/...), InstanceData raw-block layout, zero-copy vs. shadow-conversion struct passing, or write-back for mutable pointer arguments. This is a design spec + implementation-phase log (P0–P5, all marked done) referenced from many src/ comments.
+---
+
 # C ABI 相互運用 — 設計仕様と実装フェーズ
 
 外部言語（C/C++ DLL）との値・構造体受け渡しを、AST 作成時の型解決に基づいて
 ゼロコピー（または最小コピー）で行うための確定仕様。
+
+This document is referenced directly from source comments across the codebase (`src/interpreter/value/instance.rs`, `src/ast.rs`, `src/interpreter.rs`, `src/interpreter/value/native.rs`, `src/interpreter/native_api/callbacks.rs`, `src/partial_compiler/{inkwell_codegen,llvm_codegen}/mod.rs`, `src/interpreter/classes/freeze.rs`, `src/interpreter/exec/definitions.rs`, `src/interpreter/eval/native.rs`, `src/parser/imports/cpp.rs`, and example files) via the path `.claude/skills/c-abi-interop/SKILL.md`.
 
 ## 確定仕様（ユーザー決定事項）
 

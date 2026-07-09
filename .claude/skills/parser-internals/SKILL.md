@@ -1,10 +1,15 @@
+---
+name: parser-internals
+description: Use when modifying src/parser/ — the recursive-descent parser (statement/expression precedence chain, class/trait parsing, type/param parsing, or import/module loading during parsing). Gives the module map, Parser struct fields, parse_stmt dispatch table, expression precedence chain, and the full list of parse-time validations.
+---
+
 # Parser — Implementation Reference
 
-`src/parser/` is a hand-written recursive-descent parser.  
-**Input**: `Vec<Spanned>` (token stream from the lexer)  
+`src/parser/` is a hand-written recursive-descent parser.
+**Input**: `Vec<Spanned>` (token stream from the lexer)
 **Output**: `Vec<Stmt>` (the full program AST)
 
-Module loading also happens here — imported modules are parsed recursively and their ASTs are embedded inside `Stmt::Import.body` before the interpreter ever runs.
+Module loading also happens here — imported modules are parsed recursively and their ASTs are embedded inside `Stmt::Import.body` before the interpreter ever runs. For the module-loading dispatch itself (by `[lang]` tag), see the `importation` skill.
 
 ---
 
@@ -17,7 +22,7 @@ src/parser/
 ├── exprs.rs    — expression precedence chain (parse_expr → ... → parse_primary)
 ├── types.rs    — type annotations, template params, function params
 ├── classes.rs  — class / trait / access-section body parsing
-└── imports.rs  — import / from-import parsing and module loading (see importation.md)
+└── imports.rs  — import / from-import parsing and module loading (see importation skill)
 ```
 
 ---
@@ -69,7 +74,7 @@ The built-in `Error` trait is pre-registered in `Parser::new()` so user classes 
 
 ### Entry points
 
-`parse_program()` — loops `parse_stmt()` until `Eof`.  
+`parse_program()` — loops `parse_stmt()` until `Eof`.
 `parse_block()` — consumes `Newline Indent … Dedent` and collects statements inside.
 
 ### `parse_stmt()` dispatch table
@@ -144,7 +149,7 @@ parse_expr
 
 Set vs. dict disambiguation in `{...}`: after parsing the first expression, lookahead at the next token — `:` means dict entry, `,` or `}` means set.
 
-`is` / `is not` are parsed in `parse_comparison` as `Expr::IsType { negated }`.  
+`is` / `is not` are parsed in `parse_comparison` as `Expr::IsType { negated }`.
 `in` / `not in` are parsed as `BinOp::In / BinOp::NotIn`.
 
 ---

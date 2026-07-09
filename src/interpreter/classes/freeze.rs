@@ -82,7 +82,7 @@ impl Interpreter {
             return None;
         }
         if flds_idx.is_empty() { return None; }
-        // 宣言順 = スロットインデックス順（C ABI 準拠 — for_claude/c_abi_interop.md P0c）
+        // 宣言順 = スロットインデックス順（C ABI 準拠 — .claude/skills/c-abi-interop/SKILL.md P0c）
         flds_idx.sort_by_key(|(idx, _, _)| *idx);
         let flds: Vec<(String, crate::interpreter::value::FlatFieldTy)> =
             flds_idx.into_iter().map(|(_, n, t)| (n, t)).collect();

@@ -168,7 +168,7 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
     // 直接呼ぶ。enter/exit_native_call・per-arg unmarshal コールバック・
     // 結果 marshal コールバックがすべて消える（STATE アクセス ~8回 → 1-2回）。
     // 構造体ポインタ引数（AbiTy::Ptr）を含む場合はゼロコピー／シャドウ変換を解決する
-    // 別経路を通る（P3/P4 — for_claude/c_abi_interop.md）。この層は named-variable の
+    // 別経路を通る（P3/P4 — .claude/skills/c-abi-interop/SKILL.md）。この層は named-variable の
     // 概念がない（アリーナハンドル止まり）ため let/mut 判定は常に `None` で渡す。
     if let Value::NativeFunction(ref fn_ref) = fn_val {
         if let Some(sig) = &fn_ref.typed_sig {

@@ -2,7 +2,7 @@
 #
 # C ABI 型は storage 型: クラスフィールドの格納幅・外部言語境界での変換幅を
 # 規定する注釈で、Arrow 内部の実行時値は従来どおり int(i64) / float(f64) のまま。
-# 詳細: for_claude/c_abi_interop.md
+# 詳細: .claude/skills/c-abi-interop/SKILL.md
 
 # ── 変数・パラメータ注釈として使用可能（基底型 int/float として検査される） ──
 let a: int32 = 100

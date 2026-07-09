@@ -8,7 +8,7 @@
 # 期待される出力（実行はされず、型検査で停止する）:
 #   StaticTypeError: parameter 'out' of 'v3_add' expects a mutable argument, ...
 #
-# 参照: for_claude/c_abi_interop.md（P5）
+# 参照: .claude/skills/c-abi-interop/SKILL.md（P5）
 
 import[cpp-lib] test_modules.vec_math as vm
 

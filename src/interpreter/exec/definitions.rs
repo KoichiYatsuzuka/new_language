@@ -590,7 +590,7 @@ impl Interpreter {
         let (field_index, field_mutability_vec, field_count) =
             self.build_field_index(&own_field_order, bases);
 
-        // raw ブロックレイアウト（for_claude/c_abi_interop.md P1）:
+        // raw ブロックレイアウト（.claude/skills/c-abi-interop/SKILL.md P1）:
         // trait 継承なし・全フィールドがプリミティブ（int/float/C ABI 型）・24 フィールド以下の
         // クラスはフィールドを InstanceData.raw の C ABI レイアウト領域に格納する。
         let raw_layout = if bases.is_empty() && own_field_types.len() == field_count {

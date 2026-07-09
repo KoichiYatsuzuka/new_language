@@ -2,7 +2,7 @@
 //
 // V3 is a plain (standard-layout) struct: all fields are `float`, so the
 // cpp bridge auto-generates an Arrow class with a C ABI raw layout
-// (offsets 0, 4, 8).  See for_claude/c_abi_interop.md (P2/P3/P5).
+// (offsets 0, 4, 8).  See .claude/skills/c-abi-interop/SKILL.md (P2/P3/P5).
 #pragma once
 
 typedef struct { float x, y, z; } V3;
