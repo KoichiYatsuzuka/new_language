@@ -19,7 +19,7 @@ import * as path from 'path';
 import { BUILTIN_RETURN_TYPES, BUILTIN_TYPE_METHODS, BUILTIN_TYPE_NAMES, LANG_KEYWORDS, FUNC_DEF_RE } from './builtins';
 import {
     type LangType, type HoverSymbol, type CppClassInfo,
-    stripComment, splitComma, inferExprType, inferForLoopElemType, resolveSelf,
+    stripComment, splitComma, stripParamDefault, inferExprType, inferForLoopElemType, resolveSelf,
     cleanTypeAnnotation, extractTupleElemTypes, extractIterElemType, findBodyEndLine,
     getDocstringAfter, selectHoverSymbol,
     collectFuncDefs, collectConstructorTypes, collectTemplateParams, gatherFuncDefLines,
@@ -695,7 +695,7 @@ export async function provideInlayHints(
                 selfType = classContext?.name;
                 const params = funcM[4];
                 for (const p of splitComma(params)) {
-                    const pm = p.trim().match(/^(?:(?:let|mut)\s+)?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
+                    const pm = stripParamDefault(p).trim().match(/^(?:(?:let|mut)\s+)?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
                     if (pm && pm[1] !== 'self' && pm[2]?.trim()) {
                         const pt = pm[2].trim();
                         env.set(pm[1], pt === 'Self' && selfType ? selfType : pt);
@@ -1401,8 +1401,17 @@ export async function provideDocumentSemanticTokens(document: vscode.TextDocumen
         const lineText = document.lineAt(lineIdx).text;
         const commentStart = stripComment(lineText).length;
         const strRanges = stringLiteralRanges(lineText, commentStart);
+        // The `[tag]` of an `import[tag]` is part of the import keyword, not an
+        // expression — never emit semantic tokens inside it (e.g. the `int` in
+        // `import[py-int]` must not be re-colored as the `int` cast/type).
+        const importTagM = lineText.match(/\bimport\[[^\]]*\]/);
+        const importTagRange: [number, number] | null = importTagM
+            ? [importTagM.index!, importTagM.index! + importTagM[0].length]
+            : null;
         const isLiveCode = (col: number): boolean =>
-            col < commentStart && !strRanges.some(([s, e]) => col >= s && col < e);
+            col < commentStart
+            && !strRanges.some(([s, e]) => col >= s && col < e)
+            && !(importTagRange !== null && col >= importTagRange[0] && col < importTagRange[1]);
 
         const typePositions = typeAnnotationPositions(lineText, strRanges);
 

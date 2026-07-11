@@ -714,7 +714,7 @@ function parseNetAssembly(buf, xmlContent) {
                         continue;
                     const blob = readBlob(buf, blobOff, m.sigBlobIdx);
                     const { ret, params } = new SigReader(blob, typeNames, td.genericParams, m.genericParams).parseMethodSig();
-                    const sig = `fn ${opName}(self: Self${params.map((p, i) => `, p${i}: ${p.type}`).join('')}) -> ${ret}`;
+                    const sig = `fn ${opName}(self: Self${params.map((p, i) => `, ${p.isByRef ? 'mut' : 'let'} p${i}: ${p.type}`).join('')}) -> ${ret}`;
                     methods.set(opName, { ret, sig });
                     methodSigs.push(sig);
                     continue;
@@ -731,12 +731,14 @@ function parseNetAssembly(buf, xmlContent) {
                 if (!m.isStatic)
                     parts.push('self: Self');
                 if (((_k = m.role) === null || _k === void 0 ? void 0 : _k.kind) === 'setter') {
-                    parts.push(`value: ${(_m = (_l = params[0]) === null || _l === void 0 ? void 0 : _l.type) !== null && _m !== void 0 ? _m : 'Any'}`);
+                    parts.push(`let value: ${(_m = (_l = params[0]) === null || _l === void 0 ? void 0 : _l.type) !== null && _m !== void 0 ? _m : 'Any'}`);
                 }
                 else {
                     for (let i = 0; i < params.length; i++) {
                         const pname = mParams[i] ? sanitizeParam(mParams[i].name) : `p${i}`;
-                        parts.push(`${pname}: ${params[i].type}`);
+                        // A C# `ref`/`out` parameter (ELEMENT_TYPE_BYREF) is writable → `mut`; else `let`.
+                        const mut = params[i].isByRef ? 'mut' : 'let';
+                        parts.push(`${mut} ${pname}: ${params[i].type}`);
                     }
                 }
                 const effRet = ((_o = m.role) === null || _o === void 0 ? void 0 : _o.kind) === 'setter' ? 'None' : ret;

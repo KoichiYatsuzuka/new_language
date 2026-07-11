@@ -29,8 +29,13 @@ export function cTypeToTl(cType: string): LangType {
 }
 
 export function parseCParam(param: string, idx: number): string {
-    const isPointer = param.includes('*');
-    const clean = param.replace(/\bconst\b/g, '').replace(/\*/g, '').replace(/\s+/g, ' ').trim();
+    const isPointer = /[*&]/.test(param);
+    const isConst = /\bconst\b/.test(param);
+    // A non-const pointer/reference param can be written back through, so it maps to
+    // a mutable Arrow param; a by-value or const pointer/reference is read-only → `let`.
+    // (`int* y` → `mut y: int`, `const int* y` / `int x` → `let ...`.)
+    const mutability = isPointer && !isConst ? 'mut' : 'let';
+    const clean = param.replace(/\bconst\b/g, '').replace(/[*&]/g, '').replace(/\s+/g, ' ').trim();
     const parts = clean.split(/\s+/);
     const rawName = parts.length > 1 ? parts[parts.length - 1] : '';
     const finalName = /^[A-Za-z_]\w*$/.test(rawName) ? rawName : `p${idx}`;
@@ -38,7 +43,7 @@ export function parseCParam(param: string, idx: number): string {
     const tlType: LangType = isPointer
         ? (/\bchar\b/.test(baseType) ? 'str' : 'int')
         : cTypeToTl(baseType);
-    return `${finalName}: ${tlType}`;
+    return `${mutability} ${finalName}: ${tlType}`;
 }
 
 export interface CppClassInfo {
@@ -476,8 +481,11 @@ function rsParamsToHv(params: string, selfName?: string): string {
         const colon = withoutRef.indexOf(':');
         if (colon < 0) continue;
         const pName = withoutRef.slice(0, colon).trim().replace(/^mut\s+/, '');
-        const pType = rsTypeToTl(withoutRef.slice(colon + 1).trim(), selfName);
-        if (pName && pName !== 'self') parts.push(`${pName}: ${pType}`);
+        const typeStr = withoutRef.slice(colon + 1).trim();
+        // `&mut T` is writable through the reference → `mut`; `T` / `&T` → `let`.
+        const mutability = /^&\s*mut\b/.test(typeStr) ? 'mut' : 'let';
+        const pType = rsTypeToTl(typeStr, selfName);
+        if (pName && pName !== 'self') parts.push(`${mutability} ${pName}: ${pType}`);
     }
     return parts.join(', ');
 }

@@ -17,7 +17,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.BUILTIN_TYPE_NAMES = exports.LANG_KEYWORDS = exports.BUILTIN_TYPE_METHODS = exports.BUILTIN_RETURN_TYPES = exports.FUNC_DEF_RE = void 0;
 // Used by both analysis.ts (collectFuncDefs) and native_module.ts (parseTlStub).
 // RetType can be complex: function[T]->R, function{name:T}->R, etc.
-exports.FUNC_DEF_RE = /^(\s*)(fn|gen)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*\(([^)]*)\)\s*(?:->\s*(.+?))?\s*:\s*$/;
+// The param group uses a greedy `.*` (not `[^)]*`) so a parameter list that itself
+// contains parentheses — e.g. a call-expression default value `let x: int = make()` —
+// is captured up to the LAST `)` rather than being truncated at the first inner `)`.
+// Arrow return types never contain `()` (function types use `[]`/`{}`), so greedy is safe.
+exports.FUNC_DEF_RE = /^(\s*)(fn|gen)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*\((.*)\)\s*(?:->\s*(.+?))?\s*:\s*$/;
 exports.BUILTIN_RETURN_TYPES = {
     print: 'None', exec: 'None',
     len: 'int', id: 'int', hash: 'int', ord: 'int', round: 'int',

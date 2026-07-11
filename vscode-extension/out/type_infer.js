@@ -662,7 +662,7 @@ async function provideInlayHints(document, _range) {
                 selfType = classContext?.name;
                 const params = funcM[4];
                 for (const p of (0, analysis_1.splitComma)(params)) {
-                    const pm = p.trim().match(/^(?:(?:let|mut)\s+)?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
+                    const pm = (0, analysis_1.stripParamDefault)(p).trim().match(/^(?:(?:let|mut)\s+)?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
                     if (pm && pm[1] !== 'self' && pm[2]?.trim()) {
                         const pt = pm[2].trim();
                         env.set(pm[1], pt === 'Self' && selfType ? selfType : pt);
@@ -1319,7 +1319,16 @@ async function provideDocumentSemanticTokens(document) {
         const lineText = document.lineAt(lineIdx).text;
         const commentStart = (0, analysis_1.stripComment)(lineText).length;
         const strRanges = stringLiteralRanges(lineText, commentStart);
-        const isLiveCode = (col) => col < commentStart && !strRanges.some(([s, e]) => col >= s && col < e);
+        // The `[tag]` of an `import[tag]` is part of the import keyword, not an
+        // expression — never emit semantic tokens inside it (e.g. the `int` in
+        // `import[py-int]` must not be re-colored as the `int` cast/type).
+        const importTagM = lineText.match(/\bimport\[[^\]]*\]/);
+        const importTagRange = importTagM
+            ? [importTagM.index, importTagM.index + importTagM[0].length]
+            : null;
+        const isLiveCode = (col) => col < commentStart
+            && !strRanges.some(([s, e]) => col >= s && col < e)
+            && !(importTagRange !== null && col >= importTagRange[0] && col < importTagRange[1]);
         const typePositions = typeAnnotationPositions(lineText, strRanges);
         const hits = [];
         for (const name of builtins_1.BUILTIN_TYPE_NAMES) {

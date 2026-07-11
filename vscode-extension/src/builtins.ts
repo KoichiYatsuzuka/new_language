@@ -19,7 +19,11 @@ export type BuiltinMethodInfo = { ret: LangType; sig: string };
 
 // Used by both analysis.ts (collectFuncDefs) and native_module.ts (parseTlStub).
 // RetType can be complex: function[T]->R, function{name:T}->R, etc.
-export const FUNC_DEF_RE = /^(\s*)(fn|gen)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*\(([^)]*)\)\s*(?:->\s*(.+?))?\s*:\s*$/;
+// The param group uses a greedy `.*` (not `[^)]*`) so a parameter list that itself
+// contains parentheses — e.g. a call-expression default value `let x: int = make()` —
+// is captured up to the LAST `)` rather than being truncated at the first inner `)`.
+// Arrow return types never contain `()` (function types use `[]`/`{}`), so greedy is safe.
+export const FUNC_DEF_RE = /^(\s*)(fn|gen)\s+([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*\((.*)\)\s*(?:->\s*(.+?))?\s*:\s*$/;
 
 export const BUILTIN_RETURN_TYPES: Record<string, LangType> = {
     print: 'None', exec: 'None',

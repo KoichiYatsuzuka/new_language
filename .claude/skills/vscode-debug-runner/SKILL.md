@@ -37,6 +37,8 @@ node run_debug.js ../examples/importation.ar
 - Bright-cyan `■` — inlay hint (type inserted by inference)
 - Red `■` / Yellow `■` — diagnostic error / warning
 
+**Gotcha — `HOVER REFERENCE` hides symbols not declared on their own line.** The runner only prints a symbol if its name appears textually on `sym.line` (the declaration line it recorded). A parameter of a *multi-line* `fn(` signature has `sym.line` = the `fn` line, where its name doesn't appear, so it is silently skipped in HOVER REFERENCE even though it exists in the symbol table and hovers correctly in the real editor. Don't conclude "the symbol is missing" from HOVER REFERENCE alone — write a tiny harness that calls `provideHover(doc, {line, character})` at the real position instead. (If that harness loads `out_debug/analysis.js` directly, first install an `Array.prototype.at` polyfill like `run_debug.js` does — without it `DocumentAnalysis` throws, is caught, and returns an *empty* analysis, making every symbol look absent.)
+
 **How `import[rs]` types are resolved:**
 
 The extension reads `ar_config.json` (walked up from the document directory) to find `rust.crates_path`, then parses the crate's `src/lib.rs` directly. No `.ars` stub file is needed for Rust crates — the type information is read live from the Rust source.

@@ -669,7 +669,7 @@ async function provideInlayHints(document, _range) {
                 selfType = classContext === null || classContext === void 0 ? void 0 : classContext.name;
                 const params = funcM[4];
                 for (const p of (0, analysis_1.splitComma)(params)) {
-                    const pm = p.trim().match(/^(?:(?:let|mut)\s+)?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
+                    const pm = (0, analysis_1.stripParamDefault)(p).trim().match(/^(?:(?:let|mut)\s+)?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
                     if (pm && pm[1] !== 'self' && ((_e = pm[2]) === null || _e === void 0 ? void 0 : _e.trim())) {
                         const pt = pm[2].trim();
                         env.set(pm[1], pt === 'Self' && selfType ? selfType : pt);

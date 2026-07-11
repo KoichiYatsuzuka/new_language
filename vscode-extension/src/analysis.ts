@@ -223,10 +223,44 @@ export function findBodyEndLine(document: vscode.TextDocument, defLine: number, 
     return document.lineCount;
 }
 
+/** Strip a parameter's default value (`= expr`) so it doesn't leak into the type.
+ *  Cuts at the first top-level `=` (bracket/paren depth 0) that is a plain assignment,
+ *  not part of `==`/`<=`/`>=`/`!=`. A type annotation never contains a top-level `=`,
+ *  so whatever precedes it is `[let|mut] name [: type]`. */
+export function stripParamDefault(part: string): string {
+    let depth = 0;
+    for (let i = 0; i < part.length; i++) {
+        const ch = part[i];
+        if ('[({'.includes(ch)) depth++;
+        else if ('])}'.includes(ch)) depth--;
+        else if (ch === '=' && depth === 0) {
+            if (part[i + 1] === '=') { i++; continue; }           // ==
+            const prev = part[i - 1];
+            if (prev === '!' || prev === '<' || prev === '>') continue; // != <= >=
+            return part.slice(0, i);
+        }
+    }
+    return part;
+}
+
+/** Make every parameter's mutability explicit in a signature string: a parameter
+ *  with no `let`/`mut`/`const` qualifier gets the implicit `let` prepended, so a hover
+ *  shows `fn f(let x: int, let y: int)` for a source `fn f(x: int, y: int)`.
+ *  The `self` receiver, and types/default values, are preserved verbatim. */
+export function normalizeParamMutability(paramsStr: string): string {
+    return splitComma(paramsStr).map(part => {
+        const trimmed = part.trim();
+        if (!trimmed) return trimmed;
+        if (/^(?:let|mut|const)\s/.test(trimmed)) return trimmed;
+        if (/^self\b/.test(trimmed)) return trimmed;
+        return `let ${trimmed}`;
+    }).filter(Boolean).join(', ');
+}
+
 export function parseParams(paramsStr: string, defLine: number, bodyEndLine: number): HoverSymbol[] {
     const symbols: HoverSymbol[] = [];
     for (const part of splitComma(paramsStr)) {
-        const trimmed = part.trim();
+        const trimmed = stripParamDefault(part).trim();
         if (!trimmed) continue;
         const m = trimmed.match(/^(?:(let|mut)\s+)?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
         if (!m) continue;
@@ -1253,7 +1287,7 @@ function collectHoverSymbols(
                 kind: 'function',
                 line: defLine,
                 type: returnType,
-                signature: `${kind} ${name}(${params}) -> ${returnType}`,
+                signature: `${kind} ${name}(${normalizeParamMutability(params)}) -> ${returnType}`,
                 doc: getDocstringAfter(document, defLine, indentStr.length),
                 access: currentAccess,
             });

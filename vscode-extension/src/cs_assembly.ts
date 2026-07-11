@@ -693,7 +693,7 @@ export function parseNetAssembly(buf: Buffer, xmlContent?: string): NativeModule
                     if (!opName) continue;
                     const blob = readBlob(buf, blobOff, m.sigBlobIdx);
                     const { ret, params } = new SigReader(blob, typeNames, td.genericParams, m.genericParams).parseMethodSig();
-                    const sig = `fn ${opName}(self: Self${params.map((p, i) => `, p${i}: ${p.type}`).join('')}) -> ${ret}`;
+                    const sig = `fn ${opName}(self: Self${params.map((p, i) => `, ${p.isByRef ? 'mut' : 'let'} p${i}: ${p.type}`).join('')}) -> ${ret}`;
                     methods.set(opName, { ret, sig }); methodSigs.push(sig);
                     continue;
                 }
@@ -712,11 +712,13 @@ export function parseNetAssembly(buf: Buffer, xmlContent?: string): NativeModule
                 const parts: string[] = [];
                 if (!m.isStatic) parts.push('self: Self');
                 if (m.role?.kind === 'setter') {
-                    parts.push(`value: ${params[0]?.type ?? 'Any'}`);
+                    parts.push(`let value: ${params[0]?.type ?? 'Any'}`);
                 } else {
                     for (let i = 0; i < params.length; i++) {
                         const pname = mParams[i] ? sanitizeParam(mParams[i].name) : `p${i}`;
-                        parts.push(`${pname}: ${params[i].type}`);
+                        // A C# `ref`/`out` parameter (ELEMENT_TYPE_BYREF) is writable → `mut`; else `let`.
+                        const mut = params[i].isByRef ? 'mut' : 'let';
+                        parts.push(`${mut} ${pname}: ${params[i].type}`);
                     }
                 }
 

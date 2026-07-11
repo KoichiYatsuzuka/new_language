@@ -45,8 +45,8 @@
       ]
     },
     "import-decl": {
-      "comment": "Handles all import variants: import[py], import[py-int], import[tl], import[tlc], import[cpp-lib], import[cpp-dll], and bare import",
-      "match": "\\b(import(?:\\[(?:py(?:-int)?|hvc?|cpp-(?:lib|dll))\\])?)\\s+([\\w.]+)(?:\\s+(with)\\s+(\\w+))?(?:\\s+(as)\\s+([A-Za-z_]\\w*))?",
+      "comment": "Handles all import variants: bare import plus any bracketed tag (import[py], import[py-int], import[ar], import[arc], import[rs], import[hv], import[hvc], import[cpp-lib], import[cpp-dll], import[cs-dll], import[cs-proc], import[js-proc], ...). The whole `import[tag]` — brackets and tag included — is scoped as the import keyword so it renders in the keyword color.",
+      "match": "\\b(import(?:\\[[\\w-]+\\])?)\\s+([\\w.]+)(?:\\s+(with)\\s+(\\w+))?(?:\\s+(as)\\s+([A-Za-z_]\\w*))?",
       "captures": {
         "1": { "name": "keyword.control.import.ar" },
         "2": { "name": "entity.name.namespace.ar" },

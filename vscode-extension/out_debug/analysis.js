@@ -17,7 +17,7 @@
  *   - `stripComment`, `splitComma`, etc. — shared string utilities
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.initBuiltinStub = exports.builtinStub = exports.DocumentAnalysis = exports.selectHoverSymbol = exports.inferBodyReturnType = exports.collectTemplateParams = exports.collectFuncDefs = exports.gatherFuncDefLines = exports.collectConstructorTypes = exports.collectImportAliases = exports.inferForLoopElemType = exports.inferExprType = exports.getDocstringAfter = exports.cleanTypeAnnotation = exports.parseParams = exports.findBodyEndLine = exports.findBlockBounds = exports.extractIterElemType = exports.extractTupleElemTypes = exports.resolveSelf = exports.splitComma = exports.stripComment = exports.FOR_LOOP_RE = exports.TUPLE_DECL_RE = exports.IMPORT_RE = exports.NEW_TYPE_RE = exports.CLASS_DEF_RE = exports.HOVER_DECL_RE = exports.STATIC_DECL_RE = exports.DECL_RE = void 0;
+exports.initBuiltinStub = exports.builtinStub = exports.DocumentAnalysis = exports.selectHoverSymbol = exports.inferBodyReturnType = exports.collectTemplateParams = exports.collectFuncDefs = exports.gatherFuncDefLines = exports.collectConstructorTypes = exports.collectImportAliases = exports.inferForLoopElemType = exports.inferExprType = exports.getDocstringAfter = exports.cleanTypeAnnotation = exports.parseParams = exports.normalizeParamMutability = exports.stripParamDefault = exports.findBodyEndLine = exports.findBlockBounds = exports.extractIterElemType = exports.extractTupleElemTypes = exports.resolveSelf = exports.splitComma = exports.stripComment = exports.FOR_LOOP_RE = exports.TUPLE_DECL_RE = exports.IMPORT_RE = exports.NEW_TYPE_RE = exports.CLASS_DEF_RE = exports.HOVER_DECL_RE = exports.STATIC_DECL_RE = exports.DECL_RE = void 0;
 const vscode = require("vscode");
 const fs = require("fs");
 const fs_1 = require("fs");
@@ -191,11 +191,54 @@ function findBodyEndLine(document, defLine, defIndent) {
     return document.lineCount;
 }
 exports.findBodyEndLine = findBodyEndLine;
+/** Strip a parameter's default value (`= expr`) so it doesn't leak into the type.
+ *  Cuts at the first top-level `=` (bracket/paren depth 0) that is a plain assignment,
+ *  not part of `==`/`<=`/`>=`/`!=`. A type annotation never contains a top-level `=`,
+ *  so whatever precedes it is `[let|mut] name [: type]`. */
+function stripParamDefault(part) {
+    let depth = 0;
+    for (let i = 0; i < part.length; i++) {
+        const ch = part[i];
+        if ('[({'.includes(ch))
+            depth++;
+        else if ('])}'.includes(ch))
+            depth--;
+        else if (ch === '=' && depth === 0) {
+            if (part[i + 1] === '=') {
+                i++;
+                continue;
+            } // ==
+            const prev = part[i - 1];
+            if (prev === '!' || prev === '<' || prev === '>')
+                continue; // != <= >=
+            return part.slice(0, i);
+        }
+    }
+    return part;
+}
+exports.stripParamDefault = stripParamDefault;
+/** Make every parameter's mutability explicit in a signature string: a parameter
+ *  with no `let`/`mut`/`const` qualifier gets the implicit `let` prepended, so a hover
+ *  shows `fn f(let x: int, let y: int)` for a source `fn f(x: int, y: int)`.
+ *  The `self` receiver, and types/default values, are preserved verbatim. */
+function normalizeParamMutability(paramsStr) {
+    return splitComma(paramsStr).map(part => {
+        const trimmed = part.trim();
+        if (!trimmed)
+            return trimmed;
+        if (/^(?:let|mut|const)\s/.test(trimmed))
+            return trimmed;
+        if (/^self\b/.test(trimmed))
+            return trimmed;
+        return `let ${trimmed}`;
+    }).filter(Boolean).join(', ');
+}
+exports.normalizeParamMutability = normalizeParamMutability;
 function parseParams(paramsStr, defLine, bodyEndLine) {
     var _a;
     const symbols = [];
     for (const part of splitComma(paramsStr)) {
-        const trimmed = part.trim();
+        const trimmed = stripParamDefault(part).trim();
         if (!trimmed)
             continue;
         const m = trimmed.match(/^(?:(let|mut)\s+)?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
@@ -1305,7 +1348,7 @@ function collectHoverSymbols(document, funcEnv, importAliases, importFuncTypes, 
                 kind: 'function',
                 line: defLine,
                 type: returnType,
-                signature: `${kind} ${name}(${params}) -> ${returnType}`,
+                signature: `${kind} ${name}(${normalizeParamMutability(params)}) -> ${returnType}`,
                 doc: getDocstringAfter(document, defLine, indentStr.length),
                 access: currentAccess,
             });

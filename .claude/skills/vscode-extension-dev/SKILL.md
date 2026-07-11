@@ -21,6 +21,18 @@ The extension lives entirely under `vscode-extension/`. It provides syntax highl
 | `debug_runner.ts` / `vscode_mock.ts` | Standalone CLI harness (see `vscode-debug-runner` skill) — `vscode_mock.ts` is used exclusively by `debug_runner.ts`, never by extension code |
 | `test_goto_def.ts` | Standalone test runner for "Go to Definition" (`node run_goto_def.js <file.ar>`) |
 
+## Convention — explicit `let`/`mut` in every rendered signature
+
+Function/param hovers show each parameter's mutability explicitly, and this must stay consistent across all sources. A param with no qualifier renders as `let`; a writable one as `mut`. Keep this invariant when adding an import language or touching signature display:
+
+- **Arrow** (`analysis.ts`): `normalizeParamMutability()` prepends the implicit `let` to unqualified params when building a function's `signature:` string (`self` and explicit `let`/`mut`/`const` are left as-is). `parseParams()` strips a param's default value (`stripParamDefault()`) so `= expr` never leaks into the shown type.
+- **C++** (`native_module.ts` `parseCParam`): non-const `*`/`&` → `mut` (write-back), value or `const` → `let`.
+- **Rust** (`native_module.ts` `rsParamsToHv`): `&mut T` → `mut`, `T`/`&T` → `let`.
+- **C#** (`cs_assembly.ts`): `ELEMENT_TYPE_BYREF` (`ref`/`out`) → `mut`, else `let`.
+- **Python/JS**: left unqualified — no value-vs-reference distinction to derive from.
+
+Note `FUNC_DEF_RE` (`builtins.ts`) captures the param list with a greedy `\((.*)\)` (not `[^)]*`) so a param list containing parentheses — e.g. a call-expression default `let x: int = make()` — isn't truncated at the first inner `)`. Safe because Arrow return types never contain `()`.
+
 ## Non-TypeScript pieces
 
 - `syntaxes/arrow.tmLanguage.json` — TextMate grammar for syntax highlighting. Update this when adding/renaming keywords; `TODO.md` keeps a checklist of keywords that must be reflected here.
