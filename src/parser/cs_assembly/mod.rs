@@ -91,10 +91,6 @@ const SEM_ADDON: u16 = 0x08;
 const SEM_REMOVEON: u16 = 0x10;
 
 
-// Param flags
-const PARAM_OUT: u16 = 0x0002;
-
-
 // Element types (ECMA-335 §II.23.1.16)
 const ET_VOID: u8 = 0x01;
 
@@ -237,7 +233,6 @@ pub(crate) enum PropertyRole {
 pub(crate) struct CsParam {
     sequence: u16,
     name: String,
-    flags: u16,
 }
 
 

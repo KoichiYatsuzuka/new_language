@@ -551,6 +551,10 @@ pub(crate) fn parse_self_params(params: &str) -> Option<(bool, bool, &str)> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// 注意: `&mut T` は**意図的に**非対応（この関数が拒否 → 該当関数/メソッドは
+/// スタブ生成ごと除外される）。将来対応する場合は、stubs.rs 側で該当パラメータを
+/// `Param::bridge(…, writable_ref=true)` で `mut` マーキングし、cpp/C# ブリッジと
+/// 同じ静的可変性検査（CallMutParamWithImmutableArg）を維持すること。
 pub(crate) fn is_abi_compatible(t: &str) -> bool {
     let t = t.trim();
     if matches!(

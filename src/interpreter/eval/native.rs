@@ -83,6 +83,11 @@ impl Interpreter {
             let typed_ptr = fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed);
             if typed_ptr != 0 && vals.len() == sig.params.len() && vals.len() <= 16 {
                 let mut slots = [0u64; 16];
+                // OutPtr（プリミティブ書き込みポインタ）用のローカル領域。
+                // スロットにはこの要素のアドレスが入るため、呼び出しが終わるまで生存する。
+                let mut out_locals = [0u64; 16];
+                let mut out_wb: Vec<(usize, crate::interpreter::value::RawWidth, String)> =
+                    Vec::new();
                 let mut cleanups: Vec<PtrArgCleanup> = Vec::new();
                 let mut ptr_err: Option<String> = None;
                 let mut ok = true;
@@ -117,6 +122,26 @@ impl Interpreter {
                                 }
                             }
                         }
+                        // プリミティブ書き込みポインタ（`double*` 等）: 初期値を width 幅で
+                        // エンコードしたローカルのアドレスを渡し、呼び出し後に名前付き
+                        // `mut` 変数へ書き戻す（let 拒否は冒頭の MutPtr 事前チェック済み）。
+                        (_, AbiTy::OutPtr { width }) => {
+                            match crate::interpreter::value::encode_out_ptr_init(v, *width) {
+                                Some(enc) => {
+                                    out_locals[i] = enc;
+                                    slots[i] = std::ptr::addr_of_mut!(out_locals[i]) as u64;
+                                    if let Some(crate::ast::Expr::Ident(name)) =
+                                        args.get(i).map(|a| a.expr())
+                                    {
+                                        out_wb.push((i, *width, name.clone()));
+                                    }
+                                }
+                                None => {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
                         _ => {
                             ok = false;
                             break;
@@ -144,12 +169,19 @@ impl Interpreter {
                         // 既存の raise 経路と同じ "TypeName: msg" 形式で伝播
                         return Err(err.to_error_string());
                     }
+                    // OutPtr の書き戻し（C が書いた値を named mut 変数へ反映 — 成功時のみ）
+                    for (i, width, name) in out_wb {
+                        let val = crate::interpreter::value::decode_out_ptr(out_locals[i], width);
+                        self.assign_var(&name, val)?;
+                    }
                     return Ok(match sig.ret {
                         AbiTy::I64 => Value::Int(ret as i64),
                         AbiTy::F64 => Value::Float(f64::from_bits(ret)),
                         AbiTy::Void => Value::None,
-                        // typed ABI の戻り値に Ptr は使わない（build_cpp_typed_sig が除外する）。
-                        AbiTy::Ptr { .. } => unreachable!("typed ABI ret excludes Ptr"),
+                        // typed ABI の戻り値に Ptr/OutPtr は使わない（build_cpp_typed_sig が除外する）。
+                        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
+                            unreachable!("typed ABI ret excludes Ptr/OutPtr")
+                        }
                     });
                 }
             }
@@ -282,6 +314,9 @@ impl Interpreter {
         use crate::interpreter::value::{AbiTy, PtrArgCleanup};
         let sig = fn_ref.typed_sig.as_ref().expect("cache guarantees typed_sig");
         let mut slots = [0u64; 16];
+        // OutPtr（プリミティブ書き込みポインタ）用のローカル領域（呼び出し終了まで生存）。
+        let mut out_locals = [0u64; 16];
+        let mut out_wb: Vec<(usize, crate::interpreter::value::RawWidth, String)> = Vec::new();
         // 評価済みの値を常に保持しておく（フォールバック時にスロットから復元する必要がなくなる）。
         let mut evaled: Vec<Value> = Vec::with_capacity(args.len());
         let mut cleanups: Vec<PtrArgCleanup> = Vec::new();
@@ -320,6 +355,29 @@ impl Interpreter {
                         Err(e) => return Err(e),
                     }
                 }
+                // プリミティブ書き込みポインタ（`double*` 等）: ローカルのアドレスを渡し、
+                // 呼び出し後に名前付き `mut` 変数へ書き戻す。let 変数はエラー
+                // （ハンドル経路 call_native_function の事前チェックと同じ規則）。
+                (_, AbiTy::OutPtr { width }) => {
+                    match crate::interpreter::value::encode_out_ptr_init(&v, *width) {
+                        Some(enc) => {
+                            out_locals[i] = enc;
+                            slots[i] = std::ptr::addr_of_mut!(out_locals[i]) as u64;
+                            if let crate::ast::Expr::Ident(name) = arg.expr() {
+                                let is_mut =
+                                    self.get_var(name).map(|v| v.is_mutable()).unwrap_or(false);
+                                if !is_mut {
+                                    return Err(format!(
+                                        "TypeError: pointer parameter {i} requires a `mut` variable, '{name}' is not mutable"
+                                    ));
+                                }
+                                out_wb.push((i, *width, name.clone()));
+                            }
+                            true
+                        }
+                        None => false,
+                    }
+                }
                 _ => false,
             };
             evaled.push(v);
@@ -350,11 +408,18 @@ impl Interpreter {
         if status != 0 {
             return Err(err.to_error_string());
         }
+        // OutPtr の書き戻し（C が書いた値を named mut 変数へ反映 — 成功時のみ）
+        for (i, width, name) in out_wb {
+            let val = crate::interpreter::value::decode_out_ptr(out_locals[i], width);
+            self.assign_var(&name, val)?;
+        }
         Ok(match sig.ret {
             AbiTy::I64 => Value::Int(ret as i64),
             AbiTy::F64 => Value::Float(f64::from_bits(ret)),
             AbiTy::Void => Value::None,
-            AbiTy::Ptr { .. } => unreachable!("typed ABI ret excludes Ptr"),
+            AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
+                unreachable!("typed ABI ret excludes Ptr/OutPtr")
+            }
         })
     }
 
@@ -398,6 +463,9 @@ impl Interpreter {
             let typed_ptr = fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed);
             if typed_ptr != 0 && vals.len() == sig.params.len() && vals.len() <= 16 {
                 let mut slots = [0u64; 16];
+                // OutPtr 用ローカル領域。この経路は CallArg 情報がなく named-mut 判定が
+                // できないため書き戻しは行わない（Ptr の named_mut=None と同じ安全側）。
+                let mut out_locals = [0u64; 16];
                 let mut cleanups: Vec<PtrArgCleanup> = Vec::new();
                 let mut ptr_err: Option<String> = None;
                 let mut ok = true;
@@ -421,6 +489,18 @@ impl Interpreter {
                                 }
                                 Err(e) => {
                                     ptr_err = Some(e);
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        (_, AbiTy::OutPtr { width }) => {
+                            match crate::interpreter::value::encode_out_ptr_init(v, *width) {
+                                Some(enc) => {
+                                    out_locals[i] = enc;
+                                    slots[i] = std::ptr::addr_of_mut!(out_locals[i]) as u64;
+                                }
+                                None => {
                                     ok = false;
                                     break;
                                 }
@@ -457,9 +537,9 @@ impl Interpreter {
                         AbiTy::I64 => Value::Int(ret as i64),
                         AbiTy::F64 => Value::Float(f64::from_bits(ret)),
                         AbiTy::Void => Value::None,
-                        // このパスは CallArg 情報がなく named-mut 判定ができないため、Ptr 引数は
-                        // スロット構築時点で ok=false となり既にハンドル経路に落ちている。
-                        AbiTy::Ptr { .. } => unreachable!("typed ABI ret excludes Ptr"),
+                        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
+                            unreachable!("typed ABI ret excludes Ptr/OutPtr")
+                        }
                     });
                 }
             }

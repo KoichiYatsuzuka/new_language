@@ -215,10 +215,33 @@ pub fn gen_cpp_shim_source(
         // Undefine Windows macros that might shadow the function name
         src.push_str(&format!("#undef {}\n", sig.name));
 
+        // Wrapper name and export mechanism.
+        //
+        // Namespaced functions (DxLib-style): the real function lives in a C++
+        // namespace, so a global-scope extern "C" wrapper with the same name does
+        // not collide — plain `__declspec(dllexport)` works.
+        //
+        // Namespace-less functions (plain C headers, `extern "C" int f(V3*);`):
+        // the header already declares `f` at global scope with C linkage. Defining
+        // an extern "C" wrapper `f(void*)` alongside it is an illegal overload
+        // (C2733), and defining it with identical parameter types would shadow the
+        // library symbol and recurse into itself. Instead, define the wrapper under
+        // a unique internal name and export it under the real name via the linker
+        // (`/EXPORT:f=ar_shim_f` — extern "C" symbols are undecorated on x64).
+        let (def_name, dllexport, export_pragma) = if sig.namespace.is_some() {
+            (sig.name.clone(), "__declspec(dllexport) ", None)
+        } else {
+            let shim_name = format!("ar_shim_{}", sig.name);
+            let pragma = format!(
+                "#pragma comment(linker, \"/EXPORT:{}={shim_name}\")\n",
+                sig.name
+            );
+            (shim_name, "", Some(pragma))
+        };
+
         if sig.ret == CType::Void {
             src.push_str(&format!(
-                "__declspec(dllexport) {ret_c} {}({params_str}) {{ {callee}; }}\n",
-                sig.name
+                "{dllexport}{ret_c} {def_name}({params_str}) {{ {callee}; }}\n"
             ));
         } else if let CType::ByValueStruct { type_name } = &sig.ret {
             // By-value struct return: write result into a per-function static buffer
@@ -227,13 +250,15 @@ pub fn gen_cpp_shim_source(
             let name = &sig.name;
             src.push_str(&format!(
                 "static {type_name} _ret_buf_{name};\n\
-                 __declspec(dllexport) void* {name}({params_str}) {{ _ret_buf_{name} = {callee}; return (void*)&_ret_buf_{name}; }}\n"
+                 {dllexport}void* {def_name}({params_str}) {{ _ret_buf_{name} = {callee}; return (void*)&_ret_buf_{name}; }}\n"
             ));
         } else {
             src.push_str(&format!(
-                "__declspec(dllexport) {ret_c} {}({params_str}) {{ return ({ret_c}){callee}; }}\n",
-                sig.name
+                "{dllexport}{ret_c} {def_name}({params_str}) {{ return ({ret_c}){callee}; }}\n"
             ));
+        }
+        if let Some(pragma) = export_pragma {
+            src.push_str(&pragma);
         }
     }
 

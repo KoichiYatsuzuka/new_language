@@ -166,6 +166,30 @@ pub struct Param {
     pub variadic: bool,
 }
 
+impl Param {
+    /// 外部言語ブリッジ（`import[cpp-*]` / `import[cs-*]` / `import[rs]`）の
+    /// 型検査スタブ用パラメータを構築する共通コンストラクタ。
+    ///
+    /// `writable_ref` は外部言語側の「書き込み可能参照」を表す:
+    /// - C/C++ : 非 const ポインタ（`T*` / `VECTOR*`）
+    /// - C#    : `ref` / `out`（ELEMENT_TYPE_BYREF）
+    /// - Rust  : `&mut self`（`&mut T` 値引数は ABI 非対応で関数ごと除外される）
+    ///
+    /// `true` のとき Arrow の `mut` パラメータとして扱われ、型チェッカーの
+    /// `CallMutParamWithImmutableArg` 検査（Arrow ネイティブ関数と同一規則）が
+    /// 「不変（`let`）変数を書き込み参照へ渡す」誤りを全ブリッジで一様に
+    /// 静的検出する（.claude/skills/c-abi-interop/SKILL.md P5 参照）。
+    pub fn bridge(name: impl Into<String>, type_ann: Option<String>, writable_ref: bool) -> Param {
+        Param {
+            name: name.into(),
+            mutable: writable_ref,
+            type_ann,
+            default: None,
+            variadic: false,
+        }
+    }
+}
+
 /// 二項演算子の種別。
 ///
 /// 算術・比較・論理・ビット演算の全演算子を網羅する。

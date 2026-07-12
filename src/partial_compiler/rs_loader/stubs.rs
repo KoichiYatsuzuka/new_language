@@ -16,15 +16,11 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
     let mut stmts: Vec<Stmt> = Vec::new();
 
     // Free function stubs
+    // 値引数は常に不変（`&mut T` 引数を持つ関数は is_abi_compatible で除外済み —
+    // もし将来対応する場合は writable_ref=true で `mut` マーキングすること。Param::bridge 参照）。
     for sig in fns {
         let params: Vec<Param> = sig.params.iter()
-            .map(|p| Param {
-                name: p.name.clone(),
-                mutable: false,
-                type_ann: Some(rust_type_to_ar(&p.rust_type).to_string()),
-                default: None,
-                variadic: false,
-            })
+            .map(|p| Param::bridge(&p.name, Some(rust_type_to_ar(&p.rust_type).to_string()), false))
             .collect();
         stmts.push(Stmt::FnDef {
             name: sig.name.clone(),
@@ -148,22 +144,16 @@ pub(crate) fn make_stubs(fns: &[RsFnSig], structs: &[RsStructSig]) -> Vec<Stmt> 
         }
 
         // Method stubs
+        // `&mut self` レシーバは Arrow の `mut self` として型検査される（Param::bridge）。
+        // 値引数の `&mut T` は is_abi_compatible が拒否するため常に不変。
         for m in &st.methods {
-            let mut params = vec![Param {
-                name: "self".to_string(),
-                mutable: m.self_mutable,
-                type_ann: None,
-                default: None,
-                variadic: false,
-            }];
+            let mut params = vec![Param::bridge("self", None, m.self_mutable)];
             for p in &m.params {
-                params.push(Param {
-                    name: p.name.clone(),
-                    mutable: false,
-                    type_ann: Some(rust_type_to_ar(&p.rust_type).to_string()),
-                    default: None,
-                    variadic: false,
-                });
+                params.push(Param::bridge(
+                    &p.name,
+                    Some(rust_type_to_ar(&p.rust_type).to_string()),
+                    false,
+                ));
             }
             // Return type: primitive or a struct class name
             let ret_type_str = m.return_type.as_deref().map(|r| rust_type_to_ar(r).to_string())

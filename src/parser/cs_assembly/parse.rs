@@ -136,11 +136,10 @@ pub(crate) fn parse_assembly(path: &Path) -> Result<ParsedAssembly, String> {
     let mut all_params: Vec<CsParam> = Vec::with_capacity(param_rows);
     for row in 0..param_rows {
         let off = layout.table_offsets[T_PARAM] + row * layout.table_row_sizes[T_PARAM];
-        let flags = u16le(&data, off);
         let seq = u16le(&data, off + 2);
         let name_idx = layout.read_idx(&data, off + 4, s_sz);
         let name = read_string(&data, streams.strings_off, name_idx).to_string();
-        all_params.push(CsParam { sequence: seq, name, flags });
+        all_params.push(CsParam { sequence: seq, name });
     }
     let param_total = param_rows as u32 + 1;
 

@@ -176,8 +176,13 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
             let n = n_args as usize;
             if typed_ptr != 0 && n == sig.params.len() && n <= 16 {
                 use crate::interpreter::value::{AbiTy, PtrArgCleanup};
-                let has_ptr = sig.params.iter().any(|p| matches!(p, AbiTy::Ptr { .. }));
+                let has_ptr = sig
+                    .params
+                    .iter()
+                    .any(|p| matches!(p, AbiTy::Ptr { .. } | AbiTy::OutPtr { .. }));
                 let mut slots = [0u64; 16];
+                // OutPtr（プリミティブ書き込みポインタ）用ローカル領域（呼び出し終了まで生存）。
+                let mut out_locals = [0u64; 16];
                 let mut cleanups: Vec<PtrArgCleanup> = Vec::new();
                 let mut call_err: Option<String> = None;
                 let ok = if !has_ptr {
@@ -237,6 +242,17 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
                                     Err(e) => { call_err = Some(e); all_ok = false; break; }
                                 }
                             }
+                            // OutPtr: この経路（コンパイル済み Arrow → C）には named-variable の
+                            // 概念がないため書き戻しなし（安全側）。ローカルのアドレスを渡すのみ。
+                            AbiTy::OutPtr { width } => {
+                                match crate::interpreter::value::encode_out_ptr_init(v, *width) {
+                                    Some(enc) => {
+                                        out_locals[i] = enc;
+                                        slots[i] = std::ptr::addr_of_mut!(out_locals[i]) as u64;
+                                    }
+                                    None => { all_ok = false; break; }
+                                }
+                            }
                             AbiTy::Void => { all_ok = false; break; } // params に Void は入らない
                         }
                     }
@@ -266,7 +282,9 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
                         AbiTy::I64 => push_handle(Value::Int(ret as i64)),
                         AbiTy::F64 => push_handle(Value::Float(f64::from_bits(ret))),
                         AbiTy::Void => TL_NONE,
-                        AbiTy::Ptr { .. } => unreachable!("typed ABI ret excludes Ptr"),
+                        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
+                            unreachable!("typed ABI ret excludes Ptr/OutPtr")
+                        }
                     };
                 }
                 // 型不一致 → 既存のハンドル経路にフォールバック

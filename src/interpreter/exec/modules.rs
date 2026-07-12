@@ -292,6 +292,21 @@ impl Interpreter {
                     let layout = raw_layouts.get(type_name)?.clone();
                     ptys.push(AbiTy::Ptr { mutable: false, by_value: true, layout });
                 }
+                // プリミティブ書き込みポインタ（`int*` / `double*`）: OutPtr スロット。
+                // 構造体ポインタと混在する関数（例: v3_norm(const V3*, double*)）を
+                // typed 経路の対象にする — ハンドル経路は構造体ポインタ引数を扱えない。
+                // 幅は rust_extern_type と同じ規約（Int→i32, Long→i64 — LLP64 既知課題）。
+                CType::Ptr { inner, mutable: true } => {
+                    use crate::interpreter::value::RawWidth;
+                    let width = match **inner {
+                        CType::Int => RawWidth::I32,
+                        CType::Long => RawWidth::I64,
+                        CType::Float => RawWidth::F32,
+                        CType::Double => RawWidth::F64,
+                        _ => return None,
+                    };
+                    ptys.push(AbiTy::OutPtr { width });
+                }
                 _ => return None,
             }
         }

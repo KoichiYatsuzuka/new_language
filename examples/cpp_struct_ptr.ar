@@ -1,0 +1,38 @@
+# cpp_struct_ptr.ar — 書き込み用ポインタ引数（`V3*` / `double*`）へ可変値を渡す正例
+#
+# C 側の非 const ポインタパラメータは Arrow の `mut` パラメータとして型検査される。
+# 可変な値の渡し方はどれも静的検査を通り、C 側の書き込みが呼び出し元へ反映される:
+#   (1) `mut` ローカル変数（レイアウト一致 → ゼロコピー write-back）
+#   (2) 呼び出し元関数の `mut` パラメータの参照引き渡し
+#   (3) プリミティブポインタ（`double*`）への `mut float` 変数
+#
+# 実行には examples/test_modules/vec_math_x64.lib が必要:
+#   powershell -File examples/test_modules/build_vec_math.ps1
+# （ar_config.json の cpp.msvc に vcvarsall.bat を設定しておくこと）
+#
+# 対になる負例: examples/cpp_struct_ptr_error.ar（`let` を渡して静的エラー）
+# 参照: .claude/skills/c-abi-interop/SKILL.md（P5/P6）
+
+import[cpp-lib] test_modules.vec_math as vm
+
+# (1) mut ローカル変数を書き込みポインタ（V3* out）へ渡す
+mut r = V3(0.0, 0.0, 0.0)
+let a = V3(1.0, 2.0, 3.0)
+let b = V3(4.0, 5.0, 6.0)
+vm.v3_add(r, a, b)
+print(r.x, r.y, r.z)          # 5 7 9
+
+# (2) `mut` パラメータ out をそのまま C の書き込みポインタへ引き渡す
+#     （型解決済み V3 の可変参照 — P6 で偽の型エラーが修正されたケース）
+fn add_into(mut out: V3, x: V3, y: V3) -> None:
+    vm.v3_add(out, x, y)
+
+mut r2 = V3(0.0, 0.0, 0.0)
+add_into(r2, a, b)
+print(r2.x, r2.y, r2.z)       # 5 7 9
+
+# (3) プリミティブポインタ（double* out_len）へ mut float 変数を渡す
+let v = V3(3.0, 4.0, 0.0)
+mut n: float = 0.0
+vm.v3_norm(v, n)
+print(n)                      # 5.0

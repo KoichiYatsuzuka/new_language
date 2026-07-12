@@ -51,6 +51,46 @@ pub enum AbiTy {
         by_value: bool,
         layout: Arc<RawLayout>,
     },
+    /// プリミティブ書き込みポインタ引数（`int*` / `double*` 等、非 const）。
+    /// 呼び出し側がローカル u64 スロットに初期値を width 幅でエンコードして
+    /// そのアドレスを渡し、呼び出し後にデコードして名前付き `mut` 変数へ書き戻す
+    /// （名前情報のない経路では書き戻しなし = 安全側）。
+    /// 構造体ポインタと混在する関数（例: `v3_norm(const V3*, double*)`）を
+    /// typed 経路の対象にするために必要 — ハンドル経路は構造体ポインタ引数を
+    /// 扱えない（アリーナハンドルをポインタとしてビットキャストしてしまう）。
+    OutPtr { width: RawWidth },
+}
+
+/// `AbiTy::OutPtr` のローカルスロットへ初期値を width 幅でエンコードする。
+/// 値の型がスロット形式に合わなければ `None`（typed 経路を諦める）。
+pub fn encode_out_ptr_init(v: &Value, width: RawWidth) -> Option<u64> {
+    Some(match (width, v) {
+        (RawWidth::I8 | RawWidth::U8, Value::Int(n)) => *n as u8 as u64,
+        (RawWidth::I16 | RawWidth::U16, Value::Int(n)) => *n as u16 as u64,
+        (RawWidth::I32 | RawWidth::U32, Value::Int(n)) => *n as u32 as u64,
+        (RawWidth::I64 | RawWidth::U64, Value::Int(n)) => *n as u64,
+        (RawWidth::F32, Value::Float(f)) => (*f as f32).to_bits() as u64,
+        (RawWidth::F64, Value::Float(f)) => f.to_bits(),
+        (RawWidth::F32, Value::Int(n)) => (*n as f32).to_bits() as u64,
+        (RawWidth::F64, Value::Int(n)) => (*n as f64).to_bits(),
+        _ => return None,
+    })
+}
+
+/// C 呼び出し後の `AbiTy::OutPtr` ローカルスロットから値をデコードする
+/// （幅変換規則は raw フィールド読み出しと同一: 符号拡張 / f32→f64 拡張）。
+pub fn decode_out_ptr(local: u64, width: RawWidth) -> Value {
+    match width {
+        RawWidth::I8 => Value::Int(local as u8 as i8 as i64),
+        RawWidth::U8 => Value::Int(local as u8 as i64),
+        RawWidth::I16 => Value::Int(local as u16 as i16 as i64),
+        RawWidth::U16 => Value::Int(local as u16 as i64),
+        RawWidth::I32 => Value::Int(local as u32 as i32 as i64),
+        RawWidth::U32 => Value::Int(local as u32 as i64),
+        RawWidth::I64 | RawWidth::U64 => Value::Int(local as i64),
+        RawWidth::F32 => Value::Float(f32::from_bits(local as u32) as f64),
+        RawWidth::F64 => Value::Float(f64::from_bits(local)),
+    }
 }
 
 
@@ -125,7 +165,11 @@ pub fn resolve_typed_ptr_arg(
     if inst.has_raw_layout() {
         if let Some(inst_layout) = inst.class.raw_layout.as_ref() {
             if raw_layouts_compatible(inst_layout, layout) {
-                let ptr = unsafe { inst.raw_bytes().as_ptr().add(8) } as u64;
+                // raw_bytes() は 8 バイトの class_id/flags ヘッダを既にスキップ済み
+                // （= C 構造体先頭）。ここでさらに +8 すると 1 フィールド分ずれた
+                // 領域を C に渡してしまう（過去の実バグ: v3_add が隣接フィールド
+                // へ読み書きし "0 0 9" になった）。
+                let ptr = inst.raw_bytes().as_ptr() as u64;
                 return Ok(Some((ptr, PtrArgCleanup::None)));
             }
         }
@@ -232,5 +276,36 @@ impl fmt::Debug for NativeLibWrapper {
     /// `NativeLibWrapper` のデバッグ表示。常に `"<NativeLib>"` を出力する。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "<NativeLib>")
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AbiTy::OutPtr のエンコード（初期値 → width 幅）とデコード（C 書き込み後 → Value）の
+    /// 幅変換規則（切り詰め・符号拡張・f32↔f64）を検証する。
+    #[test]
+    fn out_ptr_encode_decode_roundtrip() {
+        use RawWidth::*;
+        // f64: ビットパターンそのまま
+        let enc = encode_out_ptr_init(&Value::Float(5.0), F64).unwrap();
+        assert!(matches!(decode_out_ptr(enc, F64), Value::Float(f) if f == 5.0));
+        // f32: 縮小格納 → 拡張読み出し（f32 で表現可能な値は往復不変）
+        let enc = encode_out_ptr_init(&Value::Float(2.5), F32).unwrap();
+        assert!(matches!(decode_out_ptr(enc, F32), Value::Float(f) if f == 2.5));
+        // i32: 切り詰め格納・符号拡張読み出し
+        let enc = encode_out_ptr_init(&Value::Int(-7), I32).unwrap();
+        assert!(matches!(decode_out_ptr(enc, I32), Value::Int(-7)));
+        // i64
+        let enc = encode_out_ptr_init(&Value::Int(1 << 40), I64).unwrap();
+        assert!(matches!(decode_out_ptr(enc, I64), Value::Int(n) if n == 1 << 40));
+        // int → float 昇格（ハンドル経路の ar_to_float と同義）
+        let enc = encode_out_ptr_init(&Value::Int(3), F64).unwrap();
+        assert!(matches!(decode_out_ptr(enc, F64), Value::Float(f) if f == 3.0));
+        // 型不一致（float を int* へ / 非数値）→ None（typed 経路を諦める）
+        assert!(encode_out_ptr_init(&Value::Float(1.5), I32).is_none());
+        assert!(encode_out_ptr_init(&Value::Bool(true), F64).is_none());
     }
 }

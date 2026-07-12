@@ -28,12 +28,26 @@ export function cTypeToTl(cType: string): LangType {
     return 'int'; // int, long, DWORD, HWND, size_t, etc.
 }
 
+// Pointee type for a non-char pointer param, or null if the pointee is not a
+// C primitive (i.e. a struct pointer). Mirrors the compiler's type-check stub
+// (src/parser/imports/mod.rs ctype_to_tl_str): `double*` → float, `void*` → int
+// (opaque handle), struct pointers → Any — nominal typing would break
+// structurally-compatible shadow classes (c-abi-interop SKILL.md P3).
+function pointeePrimType(baseType: string): LangType | null {
+    if (/\bvoid\b/.test(baseType)) return 'int'; // void* → opaque handle
+    if (/\b(?:double|float)\b/.test(baseType)) return 'float';
+    if (/\bbool\b/.test(baseType)) return 'bool';
+    if (/\b(?:short|int|long|unsigned|signed|size_t|u?int(?:8|16|32|64)_t|DWORD|WORD|BYTE)\b/.test(baseType)) return 'int';
+    return null; // struct pointee
+}
+
 export function parseCParam(param: string, idx: number): string {
     const isPointer = /[*&]/.test(param);
     const isConst = /\bconst\b/.test(param);
     // A non-const pointer/reference param can be written back through, so it maps to
     // a mutable Arrow param; a by-value or const pointer/reference is read-only → `let`.
     // (`int* y` → `mut y: int`, `const int* y` / `int x` → `let ...`.)
+    // Same rule as the compiler stub (src/parser/imports/cpp.rs → Param::bridge).
     const mutability = isPointer && !isConst ? 'mut' : 'let';
     const clean = param.replace(/\bconst\b/g, '').replace(/[*&]/g, '').replace(/\s+/g, ' ').trim();
     const parts = clean.split(/\s+/);
@@ -41,7 +55,7 @@ export function parseCParam(param: string, idx: number): string {
     const finalName = /^[A-Za-z_]\w*$/.test(rawName) ? rawName : `p${idx}`;
     const baseType = (parts.length > 1 ? parts.slice(0, -1).join(' ') : parts[0]).trim();
     const tlType: LangType = isPointer
-        ? (/\bchar\b/.test(baseType) ? 'str' : 'int')
+        ? (/\bchar\b/.test(baseType) ? 'str' : (pointeePrimType(baseType) ?? 'Any'))
         : cTypeToTl(baseType);
     return `${mutability} ${finalName}: ${tlType}`;
 }

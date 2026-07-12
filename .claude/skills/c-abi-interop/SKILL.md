@@ -1,6 +1,6 @@
 ---
 name: c-abi-interop
-description: Use when working on C/C++ ABI interop — passing values/structs to/from external C/C++ DLLs (import[cpp-dll]/import[cpp-lib]), C ABI type annotations (int8/int32/float32/...), InstanceData raw-block layout, zero-copy vs. shadow-conversion struct passing, or write-back for mutable pointer arguments. This is a design spec + implementation-phase log (P0–P5, all marked done) referenced from many src/ comments.
+description: Use when working on C/C++ ABI interop — passing values/structs to/from external C/C++ DLLs (import[cpp-dll]/import[cpp-lib]), C ABI type annotations (int8/int32/float32/...), InstanceData raw-block layout, zero-copy vs. shadow-conversion struct passing, or write-back for mutable pointer arguments. This is a design spec + implementation-phase log (P0–P7, all marked done) referenced from many src/ comments.
 ---
 
 # C ABI 相互運用 — 設計仕様と実装フェーズ
@@ -234,6 +234,98 @@ libloading で解決）ため、スタブの mutability 変更は実行時挙動
 — `let` インスタンスを `v3_add(V3* out, ...)` へ渡して静的エラーになる自己完結例
 （静的検査で停止するため DLL コンパイル不要、MSVC/clang なしで再現可能）。
 
+### P6 実装詳細（ブリッジ間の可変性検査統一 + スタブ型注釈の修正）
+
+全外部言語ブリッジの「書き込み可能参照」を Arrow の `mut` パラメータとして統一的に
+型検査するようにした（Arrow ネイティブ関数の `CallMutParamWithImmutableArg` と同一規則）。
+
+**共通コンストラクタ `Param::bridge(name, type_ann, writable_ref)`**（`src/ast.rs`）:
+各ブリッジのスタブ生成はこれを経由する。`writable_ref` の対応:
+| 言語 | writable_ref = true | 実装箇所 |
+|---|---|---|
+| C/C++ | 非 const `T*` / `VECTOR*` | `src/parser/imports/cpp.rs`（P5 から継続） |
+| C# | `ref`/`out`（ELEMENT_TYPE_BYREF） | `src/parser/cs_assembly/stub_gen.rs`（従来は byref 情報を破棄し常に不変扱いだった） |
+| Rust | `&mut self` レシーバのみ | `src/partial_compiler/rs_loader/stubs.rs`。`&mut T` 値引数は `is_abi_compatible` が関数ごと除外するため対象なし（将来対応時は writable_ref=true 必須） |
+
+**C# の制限**: `in`（読み取り専用参照）もシグネチャ上 BYREF のため `mut` 扱い
+（過剰に厳しい側 — `mut` 変数を渡せば通る）。VS Code 拡張 `cs_assembly.ts` の
+`isByRef → mut` 表示と初めて一致した。
+
+**cpp スタブ型注釈の修正（`src/parser/imports/mod.rs::ctype_to_tl_str`）**:
+従来は構造体ポインタ・by-value 構造体・全ポインタを一律 `"int"` と注釈しており、
+**型解決済みの `mut` パラメータ**（`fn f(mut out: V3): vm.v3_add(out,…)`）を渡すと
+`expects 'int' but got 'V3'` の偽エラーになっていた（型未解決変数は Unresolved が
+何にでもマッチするため既存例では顕在化しなかった）。修正後:
+- プリミティブポインタ → **ポインティ型**（`double*` → `"float"`、`int*` → `"int"`）
+  — write-back が書き戻す値型と一致。int 変数を `double*` へ渡すのは静的エラーになる
+  （`type_matches` に int→float 暗黙変換はない）
+- 構造体ポインタ・by-value 構造体 → **`"Any"`** — 名義型（構造体名）で縛ると
+  構造互換な別名クラスのシャドウ変換（P3 の `MyVec` → `VECTOR*`）と int ハンドル
+  経路の両方を壊すため。可変性検査は型注釈と独立に機能する。
+  構造的互換性の静的検査（named 型で縛りつつシャドウ互換を許す）は将来課題
+
+**VS Code 拡張の追随**（`native_module.ts::parseCParam` / `pointeePrimType`）:
+ホバー表示のポインタ引数型をコンパイラ規則と一致させた（`double*` → float、
+構造体ポインタ → Any、`void*` → int）。可変性表示（非 const ポインタ → `mut`）は
+従来から一致済み。VSIX 再生成済み。
+
+**テスト**: `src/frontend_tests/type_check_tests/bridge_mutability.rs`
+（vec_math.h を用いた統合テスト 6 本 — let 拒否 / mut 変数 / mut パラメータ引き渡し /
+`double*` の float・let・int 各ケース）+ `src/parser/cs_assembly/signature.rs::tests`
+（BYREF 検出 3 本）。`v3_norm(const V3*, double*)` を vec_math.h に追加。
+
+### P7 実装詳細（プレーン C ヘッダの実行時サポート — vec_math E2E で発覚した 4 バグ修正）
+
+`examples/cpp_struct_ptr.ar` を実際に MSVC でビルド・実行して検証した際に発覚した、
+**プレーン C ヘッダ（名前空間なし・extern "C"）** の実行時経路の問題群。
+DxLib は「全関数が `namespace DxLib` 内 + 構造体ポインタのみ」だったため
+いずれも顕在化していなかった。
+
+1. **ar_config.json のレイヤーマージ**（`cpp_bridge/config.rs::load_cpp_config`）:
+   従来は start_dir から遡って**最初に見つかった 1 ファイルで探索を打ち切り**、
+   `examples/ar_config.json`（rust 設定のみ）がリポジトリルートの `cpp.msvc` を
+   丸ごと隠していた。全祖先ディレクトリの設定を遠い方から順に適用し、近い方が
+   キー単位で上書きするよう修正（`tests::layered_config_merges_ancestors`）。
+
+2. **シムの同名衝突（C2733）**（`cpp_bridge/compiler.rs::gen_cpp_shim_source`）:
+   名前空間なしの C 関数では、ヘッダの宣言（`int v3_add(V3*, ...)`）と同名の
+   extern "C" ラッパー（`int v3_add(void*, ...)`）が**不正なオーバーロード**になり、
+   全関数がリトライループで除去され空モジュールになっていた。ラッパーを
+   `ar_shim_{name}` で定義し `#pragma comment(linker, "/EXPORT:{name}=ar_shim_{name}")`
+   で本名エクスポートする方式に変更（x64 の extern "C" シンボルは無装飾）。
+   名前空間ありの関数（DxLib）は従来どおり `__declspec(dllexport)` + 同名定義。
+
+3. **ゼロコピー渡しの二重オフセット**（`value/native.rs::resolve_typed_ptr_arg`）:
+   `raw_bytes()` が既にヘッダ 8 バイトをスキップ済みなのに、さらに `.add(8)` して
+   **raw+16** を C へ渡していた（1 フィールドずれた読み書き — v3_add の結果が
+   "0 0 9" になる）。`raw_bytes().as_ptr()` をそのまま渡すよう修正。
+   ※ この経路を通る DxLib のゼロコピー構造体渡しも同様にずれていたはず
+   （P3/P4 検証後の raw_bytes リファクタで混入した退行とみられる）。
+
+4. **`AbiTy::OutPtr` — プリミティブ書き込みポインタの typed 経路対応**:
+   `v3_norm(const V3*, double*)` のような**構造体ポインタ + プリミティブ書き込み
+   ポインタ混在**の関数は typed 非適格 → ハンドル経路 → 構造体引数のハンドルを
+   ポインタとしてビットキャスト → segfault だった。`Ptr{inner: Int|Long|Float|Double,
+   mutable: true}` を `AbiTy::OutPtr { width: RawWidth }` として typed 適格にした:
+   - 呼び出し側がローカル u64 に初期値を width 幅でエンコードし、そのアドレスを渡す
+   - 呼び出し成功後、named `mut` 変数へデコードして書き戻す
+     （`call_native_function` / `dispatch_native_typed_exprs`。named 情報のない
+     `dispatch_native_evaled` / `ar_call_fn` は書き戻しなし = 安全側、P4 の表と同じ）
+   - 変更箇所: `value/native.rs`（AbiTy + encode_out_ptr_init/decode_out_ptr）、
+     `exec/modules.rs::build_cpp_typed_sig`、`cpp_bridge/codegen.rs`
+     （cpp_typed_eligible / gen_dll_fn_typed — 両者一致必須）、
+     全 4 dispatch 経路、`native_api/callbacks.rs` の `has_ptr` 判定
+
+**E2E 検証**（`examples/cpp_struct_ptr.ar` + `examples/test_modules/vec_math.c` /
+`build_vec_math.ps1` → `vec_math_x64.lib`）: mut ローカル→ゼロコピー write-back
+（5 7 9）、mut パラメータ参照引き渡し（5 7 9）、`double*` OutPtr write-back（5.0）。
+実装ライブラリは **`_x64.lib` サフィックス必須**（`lib_patterns` 既定値）かつ
+**`/MD` でビルド**（シムが `/MD /NODEFAULTLIB:LIBCMT` でリンクするため）。
+
+**既知の残課題**: 引数型が typed 経路に合わない場合のフォールバック先（ハンドル経路）は
+依然として構造体ポインタ引数を扱えない（誤った型の引数で segfault しうる）。
+構造体ポインタを含む関数はハンドル経路へ落とさず明示エラーにするのが将来課題。
+
 ## 実装フェーズ
 
 | フェーズ | 内容 | 状態 |
@@ -246,3 +338,5 @@ libloading で解決）ため、スタブの mutability 変更は実行時挙動
 | **P3** | codegen: 準拠クラスの直接ポインタ渡し / by-value 防御コピー / シャドウクラス変換 + write-back（インタープリタ側で実装、LLVM codegen 変更は不要） | ✅ 実装済み |
 | **P4** | typed ABI スロットへのポインタ型追加（`AbiTy::Ptr`）+ 全 dispatch 経路（`call_native_function` / `dispatch_native_typed_exprs` / `dispatch_native_evaled` / `ar_call_fn`）対応 | ✅ 実装済み |
 | **P5** | `T*` + let の静的拒否を型チェッカーへ前倒し（`OpaqueStructPtr` mutability マーキング + 非 UTF-8 ヘッダの lossy 読み込み修正）。checked 変換オプションは将来検討（現状は暗黙 truncate を維持） | ✅ 実装済み |
+| **P6** | ブリッジ間の可変性検査統一（`Param::bridge` + C# byref → mut + rs 不変条件文書化）+ cpp スタブ型注釈修正（プリミティブポインタ → ポインティ型、構造体ポインタ → Any）+ VS Code 拡張の型表示追随 | ✅ 実装済み |
+| **P7** | プレーン C ヘッダの実行時サポート: ar_config.json レイヤーマージ / シム同名衝突の /EXPORT リネーム / ゼロコピー二重オフセット修正 / `AbiTy::OutPtr`（プリミティブ書き込みポインタの typed 経路対応 + named mut 書き戻し） | ✅ 実装済み |

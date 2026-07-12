@@ -78,6 +78,12 @@ impl Default for CppBuildConfig {
 
 /// `start_dir` から親ディレクトリへと遡りながら `ar_config.json` を検索してロードする。
 /// 見つからなければ現在のワーキングディレクトリも確認する。
+///
+/// 途中の全ディレクトリの設定を**レイヤーマージ**する（遠い方から順に適用し、
+/// 近い方がキー単位で上書き）。例: リポジトリルートの `cpp.msvc` は
+/// `examples/ar_config.json`（rust 設定のみ）があっても有効なまま —
+/// 以前は最初に見つかった 1 ファイルで探索を打ち切っており、中間ディレクトリの
+/// 部分的な設定ファイルがルートの cpp 設定を丸ごと隠してしまっていた。
 pub fn load_cpp_config(start_dir: &Path) -> CppBuildConfig {
     let mut config = CppBuildConfig::default();
 
@@ -97,13 +103,14 @@ pub fn load_cpp_config(start_dir: &Path) -> CppBuildConfig {
         }
     }
 
-    for dir in &search {
+    // 遠い方（ルート/cwd）から近い方（start_dir）の順に適用 — 近い設定がキー単位で勝つ。
+    // parse_tl_config_json はファイルに存在するキーだけを上書きする。
+    for dir in search.iter().rev() {
         let cfg_path = dir.join(CONFIG_FILE_NAME);
         if cfg_path.exists() {
             if let Ok(text) = std::fs::read_to_string(&cfg_path) {
                 parse_tl_config_json(&text, &mut config);
             }
-            break;
         }
     }
 
@@ -274,4 +281,50 @@ fn extract_json_object(json: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 中間ディレクトリの部分的な ar_config.json（rust 設定のみ等）が、
+    /// ルートの cpp 設定（msvc 等）を隠さないこと（レイヤーマージの回帰テスト）。
+    #[test]
+    fn layered_config_merges_ancestors() {
+        let root = std::env::temp_dir().join(format!("ar_cfg_test_{}", std::process::id()));
+        let mid = root.join("examples");
+        let leaf = mid.join("test_modules");
+        std::fs::create_dir_all(&leaf).unwrap();
+
+        std::fs::write(
+            root.join(CONFIG_FILE_NAME),
+            r#"{ "cpp": { "msvc": "C:/vs/vcvarsall.bat", "target_arch": "amd64" } }"#,
+        )
+        .unwrap();
+        // 中間: cpp キーなし（以前はここで探索が打ち切られ msvc が失われていた）
+        std::fs::write(
+            mid.join(CONFIG_FILE_NAME),
+            r#"{ "rust": { "crates_path": "rs_crates" } }"#,
+        )
+        .unwrap();
+
+        let config = load_cpp_config(&leaf);
+        assert_eq!(
+            config.msvc.as_deref(),
+            Some(std::path::Path::new("C:/vs/vcvarsall.bat"))
+        );
+
+        // 近い方の cpp キーはルートをキー単位で上書きする
+        std::fs::write(
+            mid.join(CONFIG_FILE_NAME),
+            r#"{ "cpp": { "target_arch": "x86" } }"#,
+        )
+        .unwrap();
+        let config = load_cpp_config(&leaf);
+        assert_eq!(config.target_arch, "x86"); // 近い方が勝つ
+        assert!(config.msvc.is_some()); // ルートの msvc は残る
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

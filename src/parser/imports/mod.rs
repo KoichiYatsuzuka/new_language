@@ -377,26 +377,29 @@ fn py_type_to_arrow(ann: &str) -> String {
 
 // ─── C 型スタブ ───────────────────────────────────────────────────────────────
 
-/// C 型を対応する tl プリミティブ型名に変換する（静的型検査スタブ生成用）。
+/// C 型を対応する tl 型名に変換する（静的型検査スタブ生成専用 — 実行時の
+/// マーシャリングは `NativeFnRef` 解決時に C シグネチャから別途決まる）。
 ///
-/// `CType::Void` → `"None"`, `CType::Bool` → `"bool"`,
-/// `CType::Float` / `CType::Double` → `"float"`, `CType::CharPtr` → `"str"`,
-/// その他の整数・ポインタ型 → `"int"`, `CType::FnPtr` → `"function"` として扱う。
-fn ctype_to_tl_str(ct: &crate::interpreter::cpp_bridge::CType) -> &'static str {
+/// - `CType::Void` → `"None"`, `CType::Bool` → `"bool"`,
+///   `CType::Float` / `CType::Double` → `"float"`, `CType::CharPtr` → `"str"`,
+///   整数・`void*` → `"int"`, `CType::FnPtr` → `"function"`。
+/// - プリミティブポインタ（`int*` / `double*` 等）は**ポインティ型**で注釈する
+///   （`double*` → `"float"`）。実行時の write-back が書き戻す値型と一致させるため。
+/// - 構造体ポインタ・by-value 構造体は `"Any"` とする。名義型（構造体名）で縛ると
+///   構造互換な別名クラスのシャドウ変換（`MyVec` → `VECTOR*`、SKILL.md P3）と
+///   int ハンドル経路の両方を静的に壊すため。可変性検査（`mut`）は型注釈と
+///   独立に `Param::mutable` で機能する。
+pub(crate) fn ctype_to_tl_str(ct: &crate::interpreter::cpp_bridge::CType) -> String {
     use crate::interpreter::cpp_bridge::CType;
     match ct {
-        CType::Void => "None",
-        CType::Bool => "bool",
-        CType::Float | CType::Double => "float",
-        CType::CharPtr => "str",
-        // int / long / opaque pointer / mutable pointer → すべて int として扱う
-        CType::Int
-        | CType::Long
-        | CType::VoidPtr
-        | CType::OpaqueStructPtr { .. }
-        | CType::ByValueStruct { .. }
-        | CType::Ptr { .. } => "int",
-        CType::FnPtr => "function",
+        CType::Void => "None".to_string(),
+        CType::Bool => "bool".to_string(),
+        CType::Float | CType::Double => "float".to_string(),
+        CType::CharPtr => "str".to_string(),
+        CType::Int | CType::Long | CType::VoidPtr => "int".to_string(),
+        CType::Ptr { inner, .. } => ctype_to_tl_str(inner),
+        CType::OpaqueStructPtr { .. } | CType::ByValueStruct { .. } => "Any".to_string(),
+        CType::FnPtr => "function".to_string(),
     }
 }
 

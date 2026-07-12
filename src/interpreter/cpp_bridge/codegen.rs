@@ -375,7 +375,8 @@ fn typed_struct_name(ct: &CType) -> Option<&str> {
 ///
 /// - 戻り値: void/int/long/float/double のみ（構造体戻り値は非対応 — ハンドル経路のまま）
 /// - パラメータ: int/long/float/double に加え、`raw_layout()` が既知の構造体への
-///   ポインタ（`OpaqueStructPtr`）・by-value 構造体（`ByValueStruct`）も可
+///   ポインタ（`OpaqueStructPtr`）・by-value 構造体（`ByValueStruct`）、および
+///   プリミティブ書き込みポインタ（`int*` / `double*` 等 — `AbiTy::OutPtr`）も可
 /// exec.rs 側の `build_cpp_typed_sig` と条件を一致させること。
 pub(crate) fn cpp_typed_eligible(sig: &CFnSig, struct_defs: &HashMap<String, &CStructDef>) -> bool {
     matches!(
@@ -383,6 +384,8 @@ pub(crate) fn cpp_typed_eligible(sig: &CFnSig, struct_defs: &HashMap<String, &CS
         CType::Void | CType::Int | CType::Long | CType::Float | CType::Double
     ) && sig.params.iter().all(|(_, t)| {
         matches!(t, CType::Int | CType::Long | CType::Float | CType::Double)
+            || matches!(t, CType::Ptr { inner, mutable: true }
+                if matches!(**inner, CType::Int | CType::Long | CType::Float | CType::Double))
             || typed_struct_name(t)
                 .and_then(|name| struct_defs.get(name))
                 .map_or(false, |d| d.raw_layout().is_some())
@@ -461,6 +464,14 @@ pub unsafe extern "C" fn {n}_typed(_args: *const u64, _ret: *mut u64, _err: *mut
                 // アドレスから直接コピー（呼び出し元の raw メモリには一切触れない）
                 s.push_str(&format!(
                     "    let _{pname} = *((*_args.offset({i})) as usize as *const _Struct_{type_name});\n"
+                ));
+            }
+            // プリミティブ書き込みポインタ（AbiTy::OutPtr）: スロット値は
+            // インタープリタが用意したローカル u64 のアドレス — C 幅のポインタにキャスト。
+            CType::Ptr { inner, mutable: true } => {
+                let rt = inner.rust_extern_type();
+                s.push_str(&format!(
+                    "    let _{pname} = (*_args.offset({i})) as usize as *mut {rt};\n"
                 ));
             }
             _ => unreachable!("cpp_typed_eligible guarantees supported params"),

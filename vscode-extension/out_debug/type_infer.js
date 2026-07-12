@@ -1328,7 +1328,16 @@ async function provideDocumentSemanticTokens(document) {
         const lineText = document.lineAt(lineIdx).text;
         const commentStart = (0, analysis_1.stripComment)(lineText).length;
         const strRanges = stringLiteralRanges(lineText, commentStart);
-        const isLiveCode = (col) => col < commentStart && !strRanges.some(([s, e]) => col >= s && col < e);
+        // The `[tag]` of an `import[tag]` is part of the import keyword, not an
+        // expression — never emit semantic tokens inside it (e.g. the `int` in
+        // `import[py-int]` must not be re-colored as the `int` cast/type).
+        const importTagM = lineText.match(/\bimport\[[^\]]*\]/);
+        const importTagRange = importTagM
+            ? [importTagM.index, importTagM.index + importTagM[0].length]
+            : null;
+        const isLiveCode = (col) => col < commentStart
+            && !strRanges.some(([s, e]) => col >= s && col < e)
+            && !(importTagRange !== null && col >= importTagRange[0] && col < importTagRange[1]);
         const typePositions = typeAnnotationPositions(lineText, strRanges);
         const hits = [];
         for (const name of builtins_1.BUILTIN_TYPE_NAMES) {

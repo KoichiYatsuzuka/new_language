@@ -15,6 +15,11 @@ extern "C" {
 // so callers must pass a `mut` variable.  `a` / `b` are read-only (const V3*).
 int v3_add(V3* out, const V3* a, const V3* b);
 
+// `out_len` is a mutable primitive pointer (double*) — the type-check stub
+// annotates it with the pointee type (`float`), so callers must pass a
+// `mut` float variable (not an int, not a `let`).
+int v3_norm(const V3* v, double* out_len);
+
 #ifdef __cplusplus
 }
 #endif

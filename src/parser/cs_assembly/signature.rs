@@ -192,3 +192,52 @@ pub(crate) fn map_generic(base: &str, args: Vec<String>) -> String {
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_sig(data: &[u8]) -> (String, Vec<(String, bool)>) {
+        let type_names = HashMap::new();
+        let mut r = SigReader {
+            data,
+            pos: 0,
+            type_names: &type_names,
+            type_params: &[],
+            method_params: &[],
+        };
+        r.parse_method_sig(&[])
+    }
+
+    /// `static void M(ref int a, int b)` — BYREF パラメータは is_byref=true。
+    #[test]
+    fn method_sig_byref_param_detected() {
+        // calling=DEFAULT(0x00), count=2, ret=VOID, [BYREF I4], [I4]
+        let (ret, params) = read_sig(&[0x00, 0x02, ET_VOID, ET_BYREF, ET_I4, ET_I4]);
+        assert_eq!(ret, "None");
+        assert_eq!(
+            params,
+            vec![("int".to_string(), true), ("int".to_string(), false)]
+        );
+    }
+
+    /// `void M(out double d)`（インスタンスメソッド）— out も BYREF として検出。
+    #[test]
+    fn method_sig_out_double_detected() {
+        // calling=HASTHIS(0x20), count=1, ret=VOID, [BYREF R8]
+        let (ret, params) = read_sig(&[0x20, 0x01, ET_VOID, ET_BYREF, ET_R8]);
+        assert_eq!(ret, "None");
+        assert_eq!(params, vec![("float".to_string(), true)]);
+    }
+
+    /// BYREF フラグが `make_param` の `mutable`（Arrow の `mut` パラメータ）へ伝播する。
+    #[test]
+    fn make_param_propagates_byref_as_mut() {
+        let p = crate::parser::cs_assembly::stub_gen::make_param("x", "int", true);
+        assert!(p.mutable);
+        assert_eq!(p.type_ann.as_deref(), Some("int"));
+        let q = crate::parser::cs_assembly::stub_gen::make_param("y", "int", false);
+        assert!(!q.mutable);
+    }
+}

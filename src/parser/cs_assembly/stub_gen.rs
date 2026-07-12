@@ -175,14 +175,13 @@ pub(crate) fn render_cs_ars_text(pa: &ParsedAssembly, docs: &HashMap<String, Str
 // Stub generation
 // ---------------------------------------------------------------------------
 
+/// C# の `ref`/`out`（ELEMENT_TYPE_BYREF）パラメータは `mutable=true` で渡すこと。
+/// Arrow の `mut` パラメータとして型検査され、`let` 変数を渡す誤りを静的に捕捉する
+/// （`Param::bridge` 参照 — VS Code 拡張の cs_assembly.ts `isByRef → mut` と同じ規則）。
+/// 制限: C# の `in`（読み取り専用参照）もシグネチャ上は BYREF のため `mut` 扱いになる
+/// （過剰に厳しい側へ倒れる — `mut` 変数を渡せば通る）。
 pub(crate) fn make_param(name: &str, type_ann: &str, mutable: bool) -> Param {
-    Param {
-        name: name.to_string(),
-        mutable,
-        type_ann: Some(type_ann.to_string()),
-        default: None,
-        variadic: false,
-    }
+    Param::bridge(name, Some(type_ann.to_string()), mutable)
 }
 
 
@@ -291,9 +290,9 @@ pub(crate) fn generate_stubs(
                         data, streams, layout, m, params, type_names, &td.generic_param_names,
                     );
                     let mut arrow_params = vec![make_param("self", "Self", false)];
-                    for (i, (ty, _is_byref)) in sig_params.iter().enumerate() {
+                    for (i, (ty, is_byref)) in sig_params.iter().enumerate() {
                         let pname = format!("p{i}");
-                        arrow_params.push(make_param(&pname, ty, false));
+                        arrow_params.push(make_param(&pname, ty, *is_byref));
                     }
                     body_stmts.push(make_fn_stub(op, arrow_params, &ret, false, is_interface, vec![]));
                     continue;
@@ -324,8 +323,8 @@ pub(crate) fn generate_stubs(
             let mut param_iter = sig_params.iter().enumerate();
             if let Some(PropertyRole::Setter(_prop)) = &m.property_role {
                 // setter: (self, value: T) → setX(self, value: T)
-                if let Some((_, (ty, _))) = param_iter.next() {
-                    arrow_params.push(make_param("value", ty, false));
+                if let Some((_, (ty, is_byref))) = param_iter.next() {
+                    arrow_params.push(make_param("value", ty, *is_byref));
                 }
             } else {
                 // Get actual param names from Param table
@@ -338,14 +337,11 @@ pub(crate) fn generate_stubs(
                     .filter(|p| p.sequence > 0)
                     .collect();
 
-                for (i, (ty, _is_byref)) in sig_params.iter().enumerate() {
+                for (i, (ty, is_byref)) in sig_params.iter().enumerate() {
                     let pname = method_params.get(i)
                         .map(|p| sanitize_param_name(&p.name))
                         .unwrap_or_else(|| format!("p{i}"));
-                    let _is_out = method_params.get(i)
-                        .map(|p| p.flags & PARAM_OUT != 0)
-                        .unwrap_or(false);
-                    arrow_params.push(make_param(&pname, ty, false));
+                    arrow_params.push(make_param(&pname, ty, *is_byref));
                 }
             }
 

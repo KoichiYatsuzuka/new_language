@@ -93,7 +93,7 @@ impl Parser {
                         .map(|(fname, fct)| Stmt::Field {
                             name: fname.clone(),
                             kind: FieldKind::Mut,
-                            type_ann: ctype_to_tl_str(fct).to_string(),
+                            type_ann: ctype_to_tl_str(fct),
                             default: None,
                             access: Accessibility::Public,
                         })
@@ -107,7 +107,7 @@ impl Parser {
                     });
                 }
                 for sig in sigs {
-                    let ret_str = ctype_to_tl_str(&sig.ret).to_string();
+                    let ret_str = ctype_to_tl_str(&sig.ret);
                     let params: Vec<Param> = sig
                         .params
                         .into_iter()
@@ -116,18 +116,12 @@ impl Parser {
                             // これにより型チェッカーの `CallMutParamWithImmutableArg` 検査が
                             // 「不変（`let`）変数を出力ポインタへ渡す」誤りを静的に捕捉する
                             // （P5 — .claude/skills/c-abi-interop/SKILL.md。従来は実行時 TypeError のみ）。
-                            let mutable = matches!(
+                            let writable_ref = matches!(
                                 &ct,
                                 CType::Ptr { mutable: true, .. }
                                     | CType::OpaqueStructPtr { mutable: true, .. }
                             );
-                            Param {
-                                name: pname,
-                                mutable,
-                                type_ann: Some(ctype_to_tl_str(&ct).to_string()),
-                                default: None,
-                                variadic: false,
-                            }
+                            Param::bridge(pname, Some(ctype_to_tl_str(&ct)), writable_ref)
                         })
                         .collect();
                     stmts.push(Stmt::FnDef {
