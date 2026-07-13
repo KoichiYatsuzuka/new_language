@@ -73,6 +73,10 @@ impl Parser {
         let name = self.expect_ident()?;
         // テンプレートパラメータ `[T: Trait, ...]` をパース（なければ空 Vec）
         let template_params = self.parse_template_params()?;
+        // テンプレート関数は alias RHS の `base[Args]` をテンプレート具体化として解釈するため記録する。
+        if !template_params.is_empty() {
+            self.known_templates.insert(name.clone());
+        }
         self.eat(&Token::LParen)?;
         let mut params: Vec<Param> = Vec::new();
         // 引数リストをカンマ区切りでパース

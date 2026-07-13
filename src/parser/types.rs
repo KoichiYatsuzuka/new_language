@@ -255,6 +255,11 @@ impl Parser {
         let base = match self.current().clone() {
             Token::Ident(name) => {
                 self.advance();
+                // 別名（alias）は型位置では保存トークンを型として再パースして展開する。
+                // 右辺が型式でない（例: `block` 式）場合はここでエラーになる。
+                if let Some(toks) = self.aliases.get(&name).map(|e| e.tokens.clone()) {
+                    return self.expand_alias_as_type(&name, toks);
+                }
                 name
             }
             Token::None => {
@@ -386,6 +391,46 @@ impl Parser {
             }
         }
         Ok(base)
+    }
+
+    /// 別名（alias）を型注釈位置で展開する。保存済みの右辺トークン列を一時的に
+    /// 現在のトークンストリームに差し替え、`parse_type_expr` で型として再パースする。
+    ///
+    /// ネストした別名参照も（`self.aliases` は差し替え中も保持されるため）再帰的に展開される。
+    /// 別名は前方参照のみ許すため循環は発生しない。
+    ///
+    /// # 引数
+    /// - `name` — 展開対象の別名（エラーメッセージ用）
+    /// - `toks` — 右辺の生トークン列（末尾 `Eof` 終端）
+    ///
+    /// # 戻り値
+    /// 右辺を型として解釈した型文字列
+    ///
+    /// # エラー
+    /// 右辺が単一の型式として解釈できない場合（型でないトークンを含む・末尾に余りがある）
+    fn expand_alias_as_type(
+        &mut self,
+        name: &str,
+        toks: std::rc::Rc<Vec<crate::token::Spanned>>,
+    ) -> Result<String, String> {
+        let saved_tokens = std::mem::replace(&mut self.tokens, (*toks).clone());
+        let saved_pos = self.pos;
+        self.pos = 0;
+        let parsed = self.parse_type_expr();
+        let leftover = !matches!(self.current(), Token::Eof);
+        // 元のトークンストリームへ復帰する。
+        self.tokens = saved_tokens;
+        self.pos = saved_pos;
+        let ty = parsed.map_err(|e| {
+            format!("alias `{name}` cannot be used as a type: {e}")
+        })?;
+        if leftover {
+            return Err(format!(
+                "alias `{name}` cannot be used as a type \
+                 (its right-hand side is not a single type expression)"
+            ));
+        }
+        Ok(ty)
     }
 
     /// `function` キーワードを消費済みの状態で呼び出し、関数型アノテーション文字列を返す。
@@ -548,6 +593,10 @@ impl Parser {
         match self.current().clone() {
             Token::Ident(name) => {
                 self.advance();
+                // 別名（alias）は型ガード位置でも型として展開する（式・型注釈位置と一貫）。
+                if let Some(toks) = self.aliases.get(&name).map(|e| e.tokens.clone()) {
+                    return self.expand_alias_as_type(&name, toks);
+                }
                 Ok(name)
             }
             Token::None => {

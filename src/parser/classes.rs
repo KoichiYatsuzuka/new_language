@@ -165,6 +165,10 @@ impl Parser {
         let name = self.expect_ident()?;
         // テンプレートパラメータをパース（`[T: Trait, ...]` 形式）
         let template_params = self.parse_template_params()?;
+        // テンプレートクラスは alias RHS の `Base[Args]` をテンプレート具体化として解釈するため記録する。
+        if !template_params.is_empty() {
+            self.known_templates.insert(name.clone());
+        }
         // 基底トレイトリストとそれぞれの型引数を収集する
         // bases_with_args: (トレイト名, 具体型引数リスト)
         let mut bases_with_args: Vec<(String, Vec<String>)> = Vec::new();

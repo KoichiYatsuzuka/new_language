@@ -86,6 +86,7 @@ impl Lexer {
             "class_method" => Token::ClassMethod,
             "Self" => Token::SelfType,
             "new_type" => Token::NewType,
+            "alias" => Token::Alias,
             "Any" => Token::Any,
             "Union" => Token::Union,
             "Option" => Token::Option,

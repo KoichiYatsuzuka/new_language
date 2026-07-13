@@ -41,6 +41,9 @@ impl Parser {
     pub(crate) fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
         self.eat(&Token::Newline)?;
         self.eat(&Token::Indent)?;
+        // ブロックはエイリアスのスコープ境界。開始時にスナップショットを取り、
+        // 終了時に復元することで、ブロック内で宣言した alias をブロック外に漏らさない。
+        let saved_aliases = self.aliases.clone();
         let mut stmts = Vec::new();
         loop {
             while matches!(self.current(), Token::Newline | Token::Semicolon) {
@@ -54,6 +57,7 @@ impl Parser {
         if *self.current() == Token::Dedent {
             self.advance();
         }
+        self.aliases = saved_aliases;
         Ok(stmts)
     }
 
@@ -304,6 +308,7 @@ impl Parser {
             Token::Trait => self.parse_trait_def(),
             Token::Protocol => self.parse_protocol_def(),
             Token::NewType => self.parse_new_type_def(),
+            Token::Alias => self.parse_alias_def(),
             Token::Import => self.parse_import_stmt(),
             Token::From => self.parse_from_import_stmt(),
             Token::Ident(_) => self.parse_ident_stmt(),

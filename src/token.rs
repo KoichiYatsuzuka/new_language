@@ -254,6 +254,9 @@ pub enum Token {
     // new_type declaration keyword
     NewType,
 
+    // alias declaration keyword (`alias Name: rhs` — compile-time AST substitution)
+    Alias,
+
     // Any type keyword (dynamic escape hatch; requires explicit downcast to use)
     Any,
 
@@ -433,6 +436,7 @@ impl Token {
             Token::ClassMethod => Some("class_method"),
             Token::SelfType => Some("Self"),
             Token::NewType => Some("new_type"),
+            Token::Alias => Some("alias"),
             Token::Any => Some("Any"),
             Token::Union => Some("Union"),
             Token::Option => Some("Option"),

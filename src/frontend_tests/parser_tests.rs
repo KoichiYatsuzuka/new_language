@@ -849,3 +849,105 @@
             panic!("expected ClassDef");
         }
     }
+
+    // ---- alias (compile-time AST substitution) ----
+
+    /// alias 名が型注釈位置で右辺の型に展開される。
+    #[test]
+    fn test_alias_expands_in_type_position() {
+        let stmts = parse("alias handle: int\nlet x: handle = 5\n");
+        // alias 定義は Pass に消去され、let の型注釈は "int" に展開される。
+        assert!(matches!(&stmts[0], Stmt::Pass));
+        assert!(
+            matches!(&stmts[1], Stmt::Let(name, Some(ty), Expr::Int(5)) if name == "x" && ty == "int"),
+            "got: {:?}",
+            stmts[1]
+        );
+    }
+
+    /// alias 名が式位置で右辺の式に展開される。
+    #[test]
+    fn test_alias_expands_in_expr_position() {
+        let stmts = parse("alias handle: int\nlet y = handle\n");
+        assert!(
+            matches!(&stmts[1], Stmt::Let(name, None, Expr::Ident(id)) if name == "y" && id == "int"),
+            "got: {:?}",
+            stmts[1]
+        );
+    }
+
+    /// lvalue への alias は代入対象として透過的に展開される（AttrAssign へのルーティング）。
+    #[test]
+    fn test_alias_lvalue_transparent_assignment() {
+        let stmts = parse(concat!(
+            "mut d: dict[str, int] = {\"k\": 1}\n",
+            "alias item: d[\"k\"]\n",
+            "item = 5\n",
+        ));
+        // `item = 5` は `d["k"] = 5`（Subscript を target とする AttrAssign）になる。
+        match &stmts[2] {
+            Stmt::AttrAssign { target, value } => {
+                assert!(matches!(target, Expr::Subscript { .. }), "target: {:?}", target);
+                assert!(matches!(value, Expr::Int(5)));
+            }
+            other => panic!("expected AttrAssign, got {:?}", other),
+        }
+    }
+
+    /// 既知テンプレートの `Base[Arg]` alias はテンプレート具体化として解釈される。
+    #[test]
+    fn test_alias_template_instantiation() {
+        let stmts = parse(concat!(
+            "class Box[T]:\n",
+            "    mut item: T\n",
+            "alias IntBox: Box[int]\n",
+            "let b = IntBox(1)\n",
+        ));
+        // stmts: [0] ClassDef, [1] Pass(alias), [2] Let("b", ...)
+        // `IntBox(1)` → `Box[int](1)`（func が TemplateInstantiate の Call）。
+        match &stmts[2] {
+            Stmt::Let(name, _, Expr::Call { func, .. }) if name == "b" => {
+                assert!(
+                    matches!(func.as_ref(), Expr::TemplateInstantiate { .. }),
+                    "func: {:?}",
+                    func
+                );
+            }
+            other => panic!("expected Let with Call, got {:?}", other),
+        }
+    }
+
+    /// block 式（値専用）の alias を型注釈に使うとパースエラー。
+    #[test]
+    fn test_alias_block_expr_not_usable_as_type() {
+        let err = parse_fails(concat!(
+            "alias f: block->function:\n",
+            "    block_return 1\n",
+            "let x: f = 1\n",
+        ));
+        assert!(err.contains("cannot be used as a type"), "got: {err}");
+    }
+
+    /// 同一スコープでの alias 再定義はパースエラー。
+    #[test]
+    fn test_alias_redefinition_is_error() {
+        let err = parse_fails("alias a: int\nalias a: str\n");
+        assert!(err.contains("already defined"), "got: {err}");
+    }
+
+    /// alias はブロックスコープ: 宣言したブロックを抜けると不可視になる。
+    #[test]
+    fn test_alias_is_block_scoped() {
+        let stmts = parse(concat!(
+            "fn f() -> int:\n",
+            "    alias k: 1\n",
+            "    return k\n",
+            "let y = k\n",
+        ));
+        // stmts: [0] FnDef, [1] Let("y", ...) — 関数外の `k` は alias 展開されず素の識別子。
+        assert!(
+            matches!(&stmts[1], Stmt::Let(name, None, Expr::Ident(id)) if name == "y" && id == "k"),
+            "got: {:?}",
+            stmts[1]
+        );
+    }
