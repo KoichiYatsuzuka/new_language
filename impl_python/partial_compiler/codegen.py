@@ -1,4 +1,4 @@
-# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Code generation stub (mirrors src/partial_compiler/codegen.rs).
 
 Rust source code generator for native compilation. Not implemented in Python.

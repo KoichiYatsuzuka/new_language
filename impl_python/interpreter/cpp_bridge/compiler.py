@@ -1,4 +1,4 @@
-# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """C++ shim compiler: generate and compile the extern-C wrapper DLL (mirrors compiler.rs).
 
 For cpp-lib: generates a C++ shim that re-exports static-lib symbols as
@@ -113,24 +113,50 @@ def gen_cpp_shim_source(
         # Undefine any Windows macro that might shadow the name
         src.append(f"#undef {sig.name}\n")
 
+        # Wrapper name and export mechanism (mirrors compiler.rs).
+        #
+        # Namespaced functions (DxLib-style): the real function lives in a C++
+        # namespace, so a global-scope extern "C" wrapper with the same name does
+        # not collide — plain `__declspec(dllexport)` works.
+        #
+        # Namespace-less functions (plain C headers, `extern "C" int f(V3*);`):
+        # the header already declares `f` at global scope with C linkage. Defining
+        # an extern "C" wrapper `f(void*)` alongside it is an illegal overload
+        # (C2733), and defining it with identical parameter types would shadow the
+        # library symbol and recurse into itself. Instead, define the wrapper under
+        # a unique internal name and export it under the real name via the linker
+        # (`/EXPORT:f=ar_shim_f` — extern "C" symbols are undecorated on x64).
+        if sig.namespace:
+            def_name = sig.name
+            dllexport = "__declspec(dllexport) "
+            export_pragma = None
+        else:
+            def_name = f"ar_shim_{sig.name}"
+            dllexport = ""
+            export_pragma = (
+                f'#pragma comment(linker, "/EXPORT:{sig.name}={def_name}")\n'
+            )
+
         if isinstance(sig.ret, CVoid):
             src.append(
-                f'__declspec(dllexport) {ret_c} {sig.name}({params_str}) '
+                f'{dllexport}{ret_c} {def_name}({params_str}) '
                 f'{{ {callee}; }}\n'
             )
         elif isinstance(sig.ret, CByValueStruct):
             tn = sig.ret.type_name
             src.append(
                 f"static {tn} _ret_buf_{sig.name};\n"
-                f"__declspec(dllexport) void* {sig.name}({params_str}) "
+                f"{dllexport}void* {def_name}({params_str}) "
                 f"{{ _ret_buf_{sig.name} = {callee}; "
                 f"return (void*)&_ret_buf_{sig.name}; }}\n"
             )
         else:
             src.append(
-                f"__declspec(dllexport) {ret_c} {sig.name}({params_str}) "
+                f"{dllexport}{ret_c} {def_name}({params_str}) "
                 f"{{ return ({ret_c}){callee}; }}\n"
             )
+        if export_pragma is not None:
+            src.append(export_pragma)
 
     src.append("\n} // extern \"C\"\n")
     return "".join(src)

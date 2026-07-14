@@ -1,8 +1,35 @@
-﻿# git SHA: d4bdc21ea237938cb9213f731fd60a3fe6046b78
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Command-line entry point for the Python implementation (mirrors src/main.rs)."""
 from __future__ import annotations
 import sys
 import pathlib
+
+
+def _add_python_search_paths(source_dir: pathlib.Path) -> None:
+    """Walk up from source_dir looking for ar_config.json and add its
+    python.search_paths entries to sys.path (mirrors src/main.rs)."""
+    import json
+    try:
+        d = source_dir.resolve()
+    except OSError:
+        d = source_dir
+    while True:
+        cfg_path = d / "ar_config.json"
+        if cfg_path.exists():
+            try:
+                root = json.loads(cfg_path.read_text(encoding="utf-8"))
+                paths = root.get("python", {}).get("search_paths", [])
+                for p in paths:
+                    pb = pathlib.Path(p)
+                    abs_p = pb if pb.is_absolute() else d / pb
+                    sys.path.insert(0, str(abs_p))
+            except (OSError, json.JSONDecodeError, AttributeError):
+                pass
+            break
+        parent = d.parent
+        if parent == d:
+            break
+        d = parent
 
 
 def main() -> None:
@@ -37,6 +64,10 @@ def main() -> None:
 
     source = source_path.read_text(encoding="utf-8")
     source_dir = source_path.parent
+
+    # ar_config.json の python.search_paths を sys.path に追加する
+    # （source_dir から上位へウォーク — mirrors src/main.rs）
+    _add_python_search_paths(source_dir)
 
     from .parser import parse, ParseError
     from .type_check import TypeChecker

@@ -1,4 +1,4 @@
-# git SHA: 72d280d65fc4cfdf05891c5c08c1331617d7e194
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """String and number literal parsing (mirrors src/lexer/literal.rs)."""
 from __future__ import annotations
 from ..token import Token, TokenKind

@@ -716,6 +716,11 @@ def load_cs_assembly(path: Path) -> list:
         )
 
     # --- Stub generation ---
+    # C# `ref`/`out` (ELEMENT_TYPE_BYREF) parameters are passed with mutable=True.
+    # They are type-checked as Arrow `mut` parameters, so passing a `let`
+    # variable is caught statically (same rule as the cpp/rs bridges).
+    # Limitation: C# `in` (read-only reference) is also BYREF in the signature,
+    # so it is treated as `mut` (errs on the strict side).
     def make_param(name: str, ty: str, mutable: bool = False) -> AstParam:
         return AstParam(name=name, mutable=mutable, type_ann=ty)
 
@@ -783,7 +788,8 @@ def load_cs_assembly(path: Path) -> list:
                 if op:
                     ret, sig_ps = decode_sig(m, td.generic_param_names)
                     ps = [make_param("self", "Self")] + [
-                        make_param(f"p{i}", ty) for i, (ty, _) in enumerate(sig_ps)
+                        make_param(f"p{i}", ty, is_byref)
+                        for i, (ty, is_byref) in enumerate(sig_ps)
                     ]
                     body.append(make_fn_stub(op, ps, ret, False, is_iface, []))
                 continue
@@ -801,14 +807,14 @@ def load_cs_assembly(path: Path) -> list:
 
             if role and role.kind == "setter":
                 if sig_ps:
-                    arrow_params.append(make_param("value", sig_ps[0][0]))
+                    arrow_params.append(make_param("value", sig_ps[0][0], sig_ps[0][1]))
             else:
                 pstart = m.param_list_start - 1
                 pend   = m.param_list_end - 1
                 mparams = [p for p in all_params[pstart:pend] if p.sequence > 0]
-                for i, (ty, _byref) in enumerate(sig_ps):
+                for i, (ty, is_byref) in enumerate(sig_ps):
                     pname = _sanitize(mparams[i].name) if i < len(mparams) else f"p{i}"
-                    arrow_params.append(make_param(pname, ty))
+                    arrow_params.append(make_param(pname, ty, is_byref))
 
             tmpl_m = [TemplateParam(name=n) for n in m.generic_param_names]
             eff_ret = "None" if (role and role.kind == "setter") else ret

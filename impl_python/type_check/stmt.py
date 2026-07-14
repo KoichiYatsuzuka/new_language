@@ -1,4 +1,4 @@
-# git SHA: b614502cff33c6ad5e49427ca347db8ad90c31a5
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Statement type checking and signature collection mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
@@ -313,13 +313,27 @@ class _TypeCheckerStmts:
                     self._declare(bind_name, member_types.get(orig_name, TyUnresolved()), False)
 
     def _collect_module_types(self, body: list[Stmt]) -> dict[str, "InferredType"]:
+        from .types import TyAny, TyFunction, FnTypeParam
         result: dict[str, "InferredType"] = {}
         for stmt in body:
             match stmt:
                 case StmtClassDef(name=name):
                     result[name] = TyTypeValOf(TyNamedInstance(name))
-                case StmtFnDef(name=name):
-                    result[name] = TyUnresolved()
+                case StmtFnDef(name=name, params=params, return_type=rt):
+                    # Bridge stubs (cpp/cs/rs imports) carry parameter
+                    # mutability — expose them as full function types so the
+                    # CallMutParamWithImmutableArg check fires on namespace
+                    # member calls (mirrors the Rust checker).
+                    fn_params = tuple(
+                        FnTypeParam(
+                            name=p.name,
+                            mutable=p.mutable,
+                            ty=(inferred_type_from_ann(p.type_ann) if p.type_ann else None) or TyAny(),
+                        )
+                        for p in params if not p.variadic
+                    )
+                    ret_ty = (inferred_type_from_ann(rt) if rt else None) or TyAny()
+                    result[name] = TyFunction(params=fn_params, return_type=ret_ty)
                 case StmtMut(name=name) | StmtLet(name=name) | StmtConst(name=name):
                     result[name] = TyUnresolved()
                 case StmtStatic(name=name):

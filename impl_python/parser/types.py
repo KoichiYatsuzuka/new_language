@@ -1,4 +1,4 @@
-# git SHA: b614502cff33c6ad5e49427ca347db8ad90c31a5
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Type annotation and parameter parsing (mirrors src/parser/types.rs)."""
 from __future__ import annotations
 from typing import Optional
@@ -268,6 +268,18 @@ class _ParserTypes:
         if k == TokenKind.UNDEFINED:
             self._advance(); return "Undefined"
         raise self._error(f"expected type name after `is`, got `{self._current().kind.name}`")
+
+    def _parse_mustbe_type(self) -> str:
+        """Parse the type name allowed on the right of `mustbe`.
+
+        Accepts every type expression (collections, Union, Intersection,
+        function, ...) except `Undefined`.
+        """
+        if self._current_kind() == TokenKind.UNDEFINED:
+            raise self._error(
+                "ParseError: `Undefined` cannot be used as a `mustbe` guard type"
+            )
+        return self._parse_type_expr()
 
     def _expect_constraint_name(self) -> str:
         k = self._current_kind()

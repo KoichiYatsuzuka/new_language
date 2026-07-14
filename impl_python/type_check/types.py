@@ -1,4 +1,4 @@
-# git SHA: b614502cff33c6ad5e49427ca347db8ad90c31a5
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """InferredType variants and type annotation parsing (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from dataclasses import dataclass
@@ -317,6 +317,10 @@ def inferred_type_from_ann(ann: str) -> Optional["InferredType"]:
 
     if ann.startswith("function"):
         return _parse_fn_type_ann(ann[8:])
+
+    # C ABI type annotations (int32 etc.) are aliases of their base type (int/float)
+    from ..ast import c_abi_base_type
+    ann = c_abi_base_type(ann) or ann
 
     result = {
         "int": TyInt(), "float": TyFloat(), "str": TyStr(), "bool": TyBool(),

@@ -1,4 +1,4 @@
-# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -54,6 +54,32 @@ class UnaryOp(Enum):
     NEG     = auto()   # -x
     NOT     = auto()   # not x
     BIT_NOT = auto()   # ~x
+
+
+def c_abi_base_type(ann: str) -> Optional[str]:
+    """Return the Arrow base type (int/float) that a C ABI type annotation aliases.
+
+    Mirrors src/ast.rs c_abi_base_type. Returns None for non-C-ABI annotations.
+    """
+    if ann in ("int8", "int16", "int32", "int64",
+               "uint8", "uint16", "uint32", "uint64"):
+        return "int"
+    if ann in ("float32", "float64"):
+        return "float"
+    return None
+
+
+def c_abi_byte_width(ann: str) -> Optional[int]:
+    """Return the byte width of a C ABI type annotation (for raw block layout).
+
+    Mirrors src/ast.rs c_abi_byte_width. Returns None for non-C-ABI annotations.
+    """
+    return {
+        "int8": 1, "uint8": 1,
+        "int16": 2, "uint16": 2,
+        "int32": 4, "uint32": 4, "float32": 4,
+        "int64": 8, "uint64": 8, "float64": 8,
+    }.get(ann)
 
 
 class Accessibility(Enum):
@@ -313,6 +339,17 @@ class ExprIsType:
     span: Span
 
 @dataclass
+class ExprMustBe:
+    """Dynamic type assertion: `expr mustbe Type`.
+
+    Checks the type at runtime and raises TypeError on mismatch.
+    Static type checking narrows the expression's type to `Type`.
+    """
+    expr: "Expr"
+    guard_type: str   # full guard type string, e.g. "int", "list[int]", "function[int]->str"
+    span: Span
+
+@dataclass
 class ExprCast:
     object: "Expr"
     type_name: str
@@ -329,8 +366,8 @@ Expr = (
     ExprList | ExprAttr | ExprTraitAccess | ExprBinOp | ExprUnaryOp |
     ExprCall | ExprTemplateInstantiate | ExprSubscript | ExprSlice |
     ExprDict | ExprTuple | ExprSet | ExprBlock | ExprIfExpr |
-    ExprForExpr | ExprWhileExpr | ExprMatchExpr | ExprIsType | ExprCast |
-    ExprLocalVar
+    ExprForExpr | ExprWhileExpr | ExprMatchExpr | ExprIsType | ExprMustBe |
+    ExprCast | ExprLocalVar
 )
 
 

@@ -1,4 +1,4 @@
-# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """C/C++ header parser (mirrors cpp_bridge/header_parser.rs).
 
 Extracts function signatures and struct definitions from C/C++ headers using
@@ -174,48 +174,274 @@ def _parse_type_str(
 
 
 # ── Struct definition parsing ─────────────────────────────────────────────────
+# Mirrors src/interpreter/cpp_bridge/header_parser/structs.rs (brace-walking
+# parser with namespace descent, C++ classes, member classification and the
+# `complete` layout flag).
+
+def _find_matching_brace(s: str) -> Optional[int]:
+    """`s` starts at a '{'; return the index of its matching '}' (or None)."""
+    depth = 0
+    for i, ch in enumerate(s):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _parse_alias_list(aliases_str: str) -> list[tuple[str, str]]:
+    """Parse `A, *PA` after a typedef body into (alias, pointer_suffix) pairs."""
+    out: list[tuple[str, str]] = []
+    for part in aliases_str.split(","):
+        part = part.strip()
+        stars = part.count("*")
+        name = part.replace("*", "").strip()
+        if name and re.fullmatch(r"[A-Za-z_]\w*", name):
+            out.append((name, "*" * stars))
+    return out
+
+
+def _classify_member_segment(seg: str) -> str:
+    """Classify one struct-body member segment (leading access label stripped).
+
+    Returns:
+    - "reject"   — virtual (vtable changes the layout) / friend: not a simple class
+    - "ignore"   — members that don't contribute to the layout (methods, static,
+                   nested type definitions, using, ...)
+    - "bitfield" — bitfield: layout cannot be computed (complete=False)
+    - "field"    — data field candidate
+    """
+    words = seg.split()
+    start = 1 if (words and words[0].rstrip(":") in ("public", "private", "protected")) else 0
+    words = words[start:]
+    if not words:
+        return "ignore"
+    first = words[0]
+    # virtual member function → vtable is inserted, not a simple class
+    if first == "virtual" or "virtual" in words:
+        return "reject"
+    if first == "friend":
+        return "reject"
+    if first in ("static", "typedef", "using", "enum", "struct", "class", "union"):
+        return "ignore"
+    # Method declaration (contains parentheses)
+    if "(" in seg:
+        return "ignore"
+    # Bitfield: `int flags : 3`
+    if any(":" in w for w in words):
+        return "bitfield"
+    return "field"
+
+
+def _parse_field_segment(
+    seg: str,
+    custom: dict[str, str],
+    typedefs: dict[str, str],
+    out: list,
+) -> None:
+    """Parse one `;`-separated field segment (`float x, y, z` etc.) and append
+    resolved (name, CType) pairs to `out`."""
+    if "(" in seg:
+        return
+    all_words = seg.split()
+    start = 1 if (all_words and all_words[0].rstrip(":") in
+                  ("public", "private", "protected", "virtual")) else 0
+    words = all_words[start:]
+    if len(words) < 2:
+        return
+
+    joined = " ".join(words)
+    parts = joined.split(",")
+    first_words = parts[0].split()
+    if len(first_words) < 2:
+        return
+
+    raw_last = first_words[-1]
+    # Skip array fields like `m[4][4]`
+    if "[" in raw_last or "(" in raw_last:
+        return
+    first_stars = 0
+    name = raw_last
+    while name.startswith("*"):
+        first_stars += 1
+        name = name[1:]
+    if not name or not re.fullmatch(r"[A-Za-z_]\w*", name):
+        return
+
+    type_words = [w for w in first_words[:-1] if w != "*"]
+    standalone_stars = sum(1 for w in first_words[:-1] if w == "*")
+    base_str = " ".join(type_words)
+    total_stars = first_stars + standalone_stars
+    type_str = base_str + "*" * total_stars
+
+    ctype = _parse_type_str(type_str, custom, typedefs, set())
+    if ctype is None:
+        return
+    out.append((name, ctype))
+    for part in parts[1:]:
+        pw = part.split()
+        extra_stars = sum(1 for w in pw if w == "*")
+        raw_name = next((w for w in pw if w != "*"), None)
+        if raw_name is None or "[" in raw_name or "(" in raw_name:
+            continue
+        alias_stars = 0
+        alias = raw_name
+        while alias.startswith("*"):
+            alias_stars += 1
+            alias = alias[1:]
+        if not alias or not re.fullmatch(r"[A-Za-z_]\w*", alias):
+            continue
+        stars = alias_stars + extra_stars
+        if stars == 0:
+            out.append((alias, ctype))
+        else:
+            ptr_ct = _parse_type_str(base_str + "*" * stars, custom, typedefs, set())
+            if ptr_ct is not None:
+                out.append((alias, ptr_ct))
+
+
+def _parse_struct_field_decls(
+    body: str,
+    custom: dict[str, str],
+    typedefs: dict[str, str],
+) -> Optional[tuple[list, bool]]:
+    """Parse field declarations inside a struct body. `float x, y, z;` → 3 fields.
+
+    Returns:
+    - None — the body contains `virtual` / `friend` (not a simple class:
+      the whole struct is excluded)
+    - (fields, complete) — `complete` is True when every layout member was
+      captured as a field (skipped array/bitfield/nested-struct/unresolved
+      fields make it False — no raw layout can be attached)
+    """
+    fields: list = []
+    complete = True
+    i = 0
+    seg_start = 0
+    n = len(body)
+    while i < n:
+        if body[i] == "{":
+            end = _find_matching_brace(body[i:])
+            if end is not None:
+                # Nested type definition (enum/struct/union/method body):
+                # not a layout member — skip (complete is kept)
+                i += end + 1
+                seg_start = i
+                continue
+        if body[i] == ";":
+            seg = body[seg_start:i].strip()
+            if seg:
+                kind = _classify_member_segment(seg)
+                if kind == "reject":
+                    return None  # virtual / friend
+                if kind == "bitfield":
+                    complete = False
+                elif kind == "field":
+                    before = len(fields)
+                    _parse_field_segment(seg, custom, typedefs, fields)
+                    if len(fields) == before:
+                        # Should have been a field but couldn't be parsed
+                        # (array / unresolved type etc.)
+                        complete = False
+            i += 1
+            seg_start = i
+            continue
+        i += 1
+    return fields, complete
+
 
 def _parse_structs(
     text: str,
     custom: dict[str, str],
     typedefs: dict[str, str],
 ) -> list[CStructDef]:
-    """Extract typedef struct { ... } Name; definitions from a header."""
-    structs: list[CStructDef] = []
-    # Match: typedef struct { ... } Name;  or  typedef struct Tag { ... } Name;
-    pat = re.compile(
-        r"typedef\s+struct\s*\w*\s*\{([^}]*)\}\s*(\w+)\s*;",
-        re.DOTALL,
-    )
-    for m in pat.finditer(text):
-        body_text, alias = m.group(1), m.group(2)
-        fields: list[tuple[str, CType]] = []
-        # Split on semicolons — each declaration ends with ;
-        for decl in body_text.split(";"):
-            decl = decl.strip()
-            if not decl:
+    """Scan stripped source for struct/class definitions.
+
+    Handles `typedef struct/union Tag { … } Alias;`, `struct Name { … };`
+    and `class Name { … };`, descending into `namespace X { … }` and
+    `extern "C" { … }` scope blocks.
+    """
+    result: list[CStructDef] = []
+    i = 0
+    seg_start = 0
+    n = len(text)
+
+    while i < n:
+        if text[i] == "{":
+            # `namespace X { … }` / `extern "C" { … }` are scope blocks:
+            # descend into them instead of skipping (DxLib.h wraps everything
+            # in namespace DxLib).
+            seg_before = text[seg_start:i].strip()
+            w = seg_before.split()
+            is_scope_block = (bool(w) and w[0] == "namespace") or \
+                ("extern" in w and '"C"' in seg_before)
+            if is_scope_block:
+                i += 1
+                seg_start = i
                 continue
-            # Skip arrays and function pointers
-            if "[" in decl or "(*)" in decl:
+
+            brace_end = _find_matching_brace(text[i:])
+            if brace_end is not None:
+                seg_before = text[seg_start:i].lstrip()
+                is_union = seg_before.startswith("typedef") and " union " in seg_before
+                is_struct_typedef = seg_before.startswith("typedef") and \
+                    (" struct " in seg_before or is_union)
+
+                # `class Name { … }` or `struct Name { … }` (not typedef).
+                # Inheritance (`class D : public B`) makes the layout include
+                # the base part → complete=False.
+                class_name: Optional[str] = None
+                has_inheritance = False
+                if not is_struct_typedef:
+                    w = seg_before.split()
+                    if len(w) >= 2 and w[0] in ("class", "struct"):
+                        cand = w[1].rstrip(":")
+                        if cand and re.fullmatch(r"[A-Za-z_]\w*", cand):
+                            class_name = cand
+                            has_inheritance = ":" in seg_before
+
+                if is_struct_typedef:
+                    body = text[i + 1:i + brace_end]
+                    rest = text[i + brace_end + 1:]
+                    semi_pos = rest.find(";")
+                    if semi_pos != -1:
+                        aliases_str = rest[:semi_pos].strip()
+                        if aliases_str:
+                            parsed = _parse_struct_field_decls(body, custom, typedefs)
+                            if parsed is not None:
+                                fields, fields_complete = parsed
+                                if fields:
+                                    # union fields overlap → layout incomplete
+                                    complete = fields_complete and not is_union
+                                    for alias, ptr_suffix in _parse_alias_list(aliases_str):
+                                        if "*" not in ptr_suffix:
+                                            result.append(CStructDef(
+                                                name=alias,
+                                                fields=list(fields),
+                                                complete=complete,
+                                            ))
+                elif class_name is not None:
+                    body = text[i + 1:i + brace_end]
+                    parsed = _parse_struct_field_decls(body, custom, typedefs)
+                    if parsed is not None:
+                        fields, fields_complete = parsed
+                        if fields:
+                            result.append(CStructDef(
+                                name=class_name,
+                                fields=fields,
+                                complete=fields_complete and not has_inheritance,
+                            ))
+
+                i += brace_end + 1
+                seg_start = i
                 continue
-            # rsplit on whitespace to separate type from field name
-            parts = decl.rsplit(None, 1)
-            if len(parts) != 2:
-                continue
-            type_s, field_name = parts
-            # Move leading * from field_name to type_s
-            while field_name.startswith("*"):
-                type_s += "*"
-                field_name = field_name[1:]
-            field_name = field_name.strip()
-            if not re.fullmatch(r"[A-Za-z_]\w*", field_name):
-                continue
-            ct = _parse_type_str(type_s, custom, typedefs, set())
-            if ct is not None and not isinstance(ct, (CVoid, CFnPtr)):
-                fields.append((field_name, ct))
-        if fields:
-            structs.append(CStructDef(name=alias, fields=fields))
-    return structs
+
+        if text[i] == ";":
+            seg_start = i + 1
+        i += 1
+    return result
 
 
 # ── Function declaration parsing ──────────────────────────────────────────────
@@ -475,6 +701,24 @@ def _scan_scope(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _strip_preprocessor(text: str) -> str:
+    """Remove preprocessor directive lines (`#include`, `#pragma`, ...) including
+    backslash continuations (mirrors the Rust preprocess step)."""
+    out_lines: list[str] = []
+    in_directive = False
+    for line in text.splitlines():
+        if in_directive:
+            in_directive = line.rstrip().endswith("\\")
+            out_lines.append("")
+            continue
+        if line.lstrip().startswith("#"):
+            in_directive = line.rstrip().endswith("\\")
+            out_lines.append("")
+            continue
+        out_lines.append(line)
+    return "\n".join(out_lines)
+
+
 def parse_header_full(
     content: str,
     custom: dict[str, str],
@@ -482,6 +726,7 @@ def parse_header_full(
 ) -> tuple[list[CFnSig], list[CStructDef]]:
     """Parse a C/C++ header string. Returns (functions, structs)."""
     stripped = _strip_comments(content)
+    stripped = _strip_preprocessor(stripped)
 
     struct_defs = _parse_structs(stripped, custom, typedefs)
     struct_names: set[str] = {s.name for s in struct_defs}

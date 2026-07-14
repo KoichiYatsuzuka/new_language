@@ -1,6 +1,7 @@
-﻿# git SHA: 2862f12d2d09337d845b6a760697181a1ff9aec5
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Runtime value types for the Arrow interpreter."""
 from __future__ import annotations
+import struct as _struct
 from dataclasses import dataclass, field as dc_field
 from typing import Optional, TYPE_CHECKING
 
@@ -237,6 +238,91 @@ class TlTemplateClass:
         return f"<template class {self.name}>"
 
 
+# ---------------------------------------------------------------------------
+# C ABI raw field layout (mirrors src/interpreter/value/instance.rs)
+# ---------------------------------------------------------------------------
+
+# annotation → (signed struct fmt, unsigned struct fmt, byte width, is_float)
+# Arrow `int`/`float` are 8 bytes; C ABI types (int32 etc.) use their declared width.
+_RAW_WIDTH_TABLE: dict[str, tuple[str, str, int, bool]] = {
+    "int":     ("<q", "<Q", 8, False),
+    "float":   ("<d", "<d", 8, True),
+    "int8":    ("<b", "<B", 1, False),
+    "int16":   ("<h", "<H", 2, False),
+    "int32":   ("<i", "<I", 4, False),
+    "int64":   ("<q", "<Q", 8, False),
+    "uint8":   ("<B", "<B", 1, False),
+    "uint16":  ("<H", "<H", 2, False),
+    "uint32":  ("<I", "<I", 4, False),
+    "uint64":  ("<Q", "<Q", 8, False),
+    "float32": ("<f", "<f", 4, True),
+    "float64": ("<d", "<d", 8, True),
+}
+
+
+@dataclass(frozen=True)
+class RawFieldDesc:
+    """Position and storage format of one field inside the raw block."""
+    byte_offset: int
+    fmt: str        # struct format for decoding (sign-aware)
+    fmt_store: str  # struct format for encoding (unsigned for ints — wraps like Rust `as` casts)
+    width: int      # byte width
+    is_float: bool
+
+
+@dataclass
+class RawLayout:
+    """Raw-block layout descriptor of a class.
+
+    Attached only to classes whose own fields are all primitive
+    (int/float/C ABI types), with no trait inheritance and at most
+    24 fields (init-bitmap constraint).
+    """
+    fields: list        # list[RawFieldDesc], slot index order (= declaration order)
+    total_bytes: int    # total field area bytes (incl. tail padding, multiple of 8)
+
+    @staticmethod
+    def from_fields(fields: list) -> Optional["RawLayout"]:
+        """Build a layout from a declaration-order list of (name, type_ann).
+
+        Returns None if any field is non-primitive or there are more than 24.
+        """
+        if not fields or len(fields) > 24:
+            return None
+        descs: list[RawFieldDesc] = []
+        offset = 0
+        for _, ann in fields:
+            entry = _RAW_WIDTH_TABLE.get(ann)
+            if entry is None:
+                return None
+            fmt, fmt_store, w, is_float = entry
+            # C alignment rule: round offset up to the type width
+            offset = (offset + w - 1) // w * w
+            descs.append(RawFieldDesc(
+                byte_offset=offset, fmt=fmt, fmt_store=fmt_store,
+                width=w, is_float=is_float,
+            ))
+            offset += w
+        total_bytes = (offset + 7) // 8 * 8
+        return RawLayout(fields=descs, total_bytes=total_bytes)
+
+
+def raw_layouts_compatible(a: "RawLayout", b: "RawLayout") -> bool:
+    """True if two raw layouts match structurally (field count, offsets, widths).
+
+    A match means an instance's raw block can be passed zero-copy as a
+    C struct pointer.
+    """
+    return (
+        a.total_bytes == b.total_bytes
+        and len(a.fields) == len(b.fields)
+        and all(
+            x.byte_offset == y.byte_offset and x.fmt == y.fmt
+            for x, y in zip(a.fields, b.fields)
+        )
+    )
+
+
 @dataclass
 class TlClass:
     name: str
@@ -256,6 +342,8 @@ class TlClass:
     field_index: dict = dc_field(default_factory=dict)    # dict[str, int] — name → Vec slot index
     field_count: int = 0                                   # total Vec slot count per instance
     field_mutability_vec: list = dc_field(default_factory=list)  # list[bool] — per-slot original mutability
+    # C ABI raw block layout (only for all-primitive classes with no bases)
+    raw_layout: Optional[RawLayout] = None
 
     def __repr__(self) -> str:
         return f"<class {self.name}>"
@@ -266,14 +354,92 @@ class TlInstance:
     cls: TlClass
     fields: list   # list[Optional[list]] — each slot: None or [value, is_mutable]
     immutable: bool = False
+    # Raw block (classes with raw_layout): C ABI-laid-out field bytes.
+    # `fields` stays empty for such instances.
+    raw: Optional[bytearray] = None
+    raw_init_mask: int = 0   # init bitmap for raw slots (max 24)
+
+    @staticmethod
+    def new_empty(cls: "TlClass", immutable: bool = False) -> "TlInstance":
+        """Create an instance with all slots uninitialized (mirrors InstanceData::new_empty)."""
+        if cls.raw_layout is not None:
+            return TlInstance(cls=cls, fields=[], immutable=immutable,
+                              raw=bytearray(cls.raw_layout.total_bytes))
+        return TlInstance(cls=cls, fields=[None] * cls.field_count, immutable=immutable)
+
+    def has_raw_layout(self) -> bool:
+        return self.raw is not None
+
+    def slot_initialized(self, idx: int) -> bool:
+        """Whether slot idx has been written (raw: init bitmap, boxed: non-None slot)."""
+        if self.raw is not None:
+            return (self.raw_init_mask >> idx) & 1 != 0
+        return idx < len(self.fields) and self.fields[idx] is not None
+
+    def field_value(self, idx: int):
+        """Read slot idx. Returns MISSING when the slot is uninitialized.
+
+        Raw classes decode with width conversion (sign extension / f32→f64).
+        """
+        if self.raw is not None:
+            if not self.slot_initialized(idx):
+                return MISSING
+            layout = self.cls.raw_layout
+            if layout is None or idx >= len(layout.fields):
+                return MISSING
+            desc = layout.fields[idx]
+            v = _struct.unpack_from(desc.fmt, self.raw, desc.byte_offset)[0]
+            return float(v) if desc.is_float else int(v)
+        entry = self.fields[idx] if idx < len(self.fields) else None
+        return entry[0] if entry is not None else MISSING
+
+    def field_mutable(self, idx: int) -> Optional[bool]:
+        """Mutability flag of slot idx (None when uninitialized)."""
+        if self.raw is not None:
+            if not self.slot_initialized(idx):
+                return None
+            if self.immutable:
+                return False
+            fm = self.cls.field_mutability_vec
+            return fm[idx] if idx < len(fm) else True
+        entry = self.fields[idx] if idx < len(self.fields) else None
+        return entry[1] if entry is not None else None
+
+    def store_field(self, idx: int, val, mutable: bool) -> bool:
+        """Raw store to slot idx (no mutability check).
+
+        Returns False when a raw class slot's format doesn't match the value type.
+        """
+        if self.raw is not None:
+            layout = self.cls.raw_layout
+            if layout is None or idx >= len(layout.fields):
+                return False
+            desc = layout.fields[idx]
+            if desc.is_float:
+                # int → float field auto-promotion (like Rust)
+                if isinstance(val, bool) or not isinstance(val, (int, float)):
+                    return False
+                _struct.pack_into(desc.fmt, self.raw, desc.byte_offset, float(val))
+            else:
+                if isinstance(val, bool) or not isinstance(val, int):
+                    return False
+                # width truncation with wraparound (mirror Rust `as` casts)
+                masked = val & ((1 << (desc.width * 8)) - 1)
+                _struct.pack_into(desc.fmt_store, self.raw, desc.byte_offset, masked)
+            self.raw_init_mask |= 1 << idx
+            return True
+        if idx >= len(self.fields):
+            return False
+        self.fields[idx] = [val, mutable]
+        return True
 
     def __repr__(self) -> str:
         cls_name = self.cls.name
         if self.cls.new_type_base is not None:
             # new_type: show as ClassName(inner_value)
             idx = self.cls.field_index.get("__value__")
-            if idx is not None and idx < len(self.fields) and self.fields[idx] is not None:
-                return f"{cls_name}({_repr_val(self.fields[idx][0])})"
+            if idx is not None and self.slot_initialized(idx):
+                return f"{cls_name}({_repr_val(self.field_value(idx))})"
         return f"<{cls_name} object>"
 
 
@@ -571,8 +737,8 @@ def display(v: "Value") -> str:
         cls = v.cls
         if cls.new_type_base is not None:
             idx = cls.field_index.get("__value__")
-            if idx is not None and idx < len(v.fields) and v.fields[idx] is not None:
-                return f"{cls.name}({display(v.fields[idx][0])})"
+            if idx is not None and v.slot_initialized(idx):
+                return f"{cls.name}({display(v.field_value(idx))})"
         return f"<{cls.name} object>"
     if isinstance(v, TlClass):
         return f"<class {v.name}>"
@@ -645,6 +811,10 @@ def deep_clone(v: "Value") -> "Value":
             step=deep_clone(v.step) if v.step is not None else None,
         )
     if isinstance(v, TlInstance):
+        if v.raw is not None:
+            # Raw block is POD: clone = memcpy (flags and raw fields all kept)
+            return TlInstance(cls=v.cls, fields=[], immutable=v.immutable,
+                              raw=bytearray(v.raw), raw_init_mask=v.raw_init_mask)
         new_fields = [
             [deep_clone(slot[0]), slot[1]] if slot is not None else None
             for slot in v.fields
@@ -688,6 +858,10 @@ def deep_clone_unfrozen(v: "Value") -> "Value":
         )
     if isinstance(v, TlInstance):
         cls = v.cls
+        if v.raw is not None:
+            # Raw fields carry no per-slot mutability; resetting immutable suffices
+            return TlInstance(cls=cls, fields=[], immutable=False,
+                              raw=bytearray(v.raw), raw_init_mask=v.raw_init_mask)
         new_fields = [
             [deep_clone_unfrozen(slot[0]),
              cls.field_mutability_vec[i] if i < len(cls.field_mutability_vec) else True]

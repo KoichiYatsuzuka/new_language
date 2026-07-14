@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Call inference and argument checking mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
@@ -54,7 +54,7 @@ class _TypeCheckerCallCheck:
 
         if isinstance(func_type, TyFunction):
             if func_type.params is not None:
-                fname = func_name or "<function>"
+                fname = func_name or (func.attr if isinstance(func, ExprAttr) else "<function>")
                 self._check_fn_type_call(fname, args, arg_data, list(func_type.params))
                 return func_type.return_type
             return TyAny()

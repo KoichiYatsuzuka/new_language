@@ -1,4 +1,4 @@
-# git SHA: b614502cff33c6ad5e49427ca347db8ad90c31a5
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -118,6 +118,9 @@ class TokenKind(Enum):
     ON           = auto()  # on
     OFF          = auto()  # off
     ONCE         = auto()  # once
+
+    # Type assertion
+    MUSTBE       = auto()  # mustbe
 
     # Special type keywords
     SELF_TYPE    = auto()  # Self
@@ -273,6 +276,7 @@ KEYWORDS: dict[str, TokenKind] = {
     "on":           TokenKind.ON,
     "off":          TokenKind.OFF,
     "once":         TokenKind.ONCE,
+    "mustbe":       TokenKind.MUSTBE,
     "Self":         TokenKind.SELF_TYPE,
     "new_type":     TokenKind.NEW_TYPE,
     "Any":          TokenKind.ANY,

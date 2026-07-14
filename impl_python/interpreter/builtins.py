@@ -1,4 +1,4 @@
-# git SHA: 2862f12d2d09337d845b6a760697181a1ff9aec5
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Built-in functions and collection method dispatch."""
 from __future__ import annotations
 from typing import Optional, Callable, TYPE_CHECKING
@@ -94,8 +94,8 @@ def apply_slice(obj: Value, sl: TlSlice, known_classes: dict) -> Value:
             return v
         if isinstance(v, TlInstance) and v.cls.name in ("Index", "Size"):
             idx = v.cls.field_index.get("__value__")
-            if idx is not None and idx < len(v.fields) and v.fields[idx] is not None:
-                return int(v.fields[idx][0])
+            if idx is not None and v.slot_initialized(idx):
+                return int(v.field_value(idx))
         raise RuntimeError(f"TypeError: slice bounds must be int or Index, got '{type_name(v)}'")
 
     def to_step(v: Optional[Value]) -> int:
@@ -205,8 +205,8 @@ def subscript_set(obj: Value, index: Value, value: Value, known_classes: dict) -
                 if isinstance(v, int) and not isinstance(v, bool): return v
                 if isinstance(v, TlInstance) and v.cls.name in ("Index", "Size"):
                     idx = v.cls.field_index.get("__value__")
-                    if idx is not None and idx < len(v.fields) and v.fields[idx] is not None:
-                        return int(v.fields[idx][0])
+                    if idx is not None and v.slot_initialized(idx):
+                        return int(v.field_value(idx))
                 return default
             begin = to_int_s(index.begin, 0)
             end = to_int_s(index.end, n)
@@ -243,8 +243,8 @@ def _to_index(index: Value, length: int, known_classes: dict) -> int:
         return i
     if isinstance(index, TlInstance) and index.cls.name in ("Index", "Size"):
         idx = index.cls.field_index.get("__value__")
-        if idx is not None and idx < len(index.fields) and index.fields[idx] is not None:
-            return _to_index(index.fields[idx][0], length, known_classes)
+        if idx is not None and index.slot_initialized(idx):
+            return _to_index(index.field_value(idx), length, known_classes)
     raise RuntimeError(f"TypeError: indices must be integers, got '{type_name(index)}'")
 
 
@@ -872,8 +872,8 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
         default = args[2] if len(args) > 2 else MISSING
         if isinstance(obj, TlInstance):
             idx = obj.cls.field_index.get(name)
-            if idx is not None and idx < len(obj.fields) and obj.fields[idx] is not None:
-                return obj.fields[idx][0]
+            if idx is not None and obj.slot_initialized(idx):
+                return obj.field_value(idx)
             if name in obj.cls.methods:
                 return obj.cls.methods[name][0]
         if default is not MISSING:
@@ -886,8 +886,8 @@ def make_builtins(known_classes: dict, interp: "Interpreter | None" = None) -> d
 
     def _get_field_val(inst: TlInstance, fname: str):
         idx = inst.cls.field_index.get(fname)
-        if idx is not None and idx < len(inst.fields) and inst.fields[idx] is not None:
-            return inst.fields[idx][0]
+        if idx is not None and inst.slot_initialized(idx):
+            return inst.field_value(idx)
         return None
 
     def builtin_open(args: list, kwargs: dict) -> TlFileObject:

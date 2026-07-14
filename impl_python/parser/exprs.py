@@ -1,4 +1,4 @@
-# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Expression parsing (mirrors src/parser/exprs.rs)."""
 from __future__ import annotations
 from typing import Optional
@@ -10,7 +10,7 @@ from ..ast import (
     ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
-    ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType, ExprCast, ExprLocalVar,
+    ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType, ExprMustBe, ExprCast, ExprLocalVar,
     CallArgPositional, CallArgKeyword, CallArgVariadic, Expr,
 )
 
@@ -57,6 +57,10 @@ class _ParserExprs:
             self._advance()
             type_name = self._expect_guard_type_name()
             return ExprIsType(expr=left, negated=True, type_name=type_name, span=span)
+        if k == TokenKind.MUSTBE:
+            self._advance()
+            guard_type = self._parse_mustbe_type()
+            return ExprMustBe(expr=left, guard_type=guard_type, span=span)
         if k == TokenKind.IN:
             self._advance()
             right = self._parse_bitor()

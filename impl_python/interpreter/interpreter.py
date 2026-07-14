@@ -1,4 +1,4 @@
-﻿# git SHA: 51d243b973b185d725d633a7f42b178ed30bee52
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Tree-walk interpreter for Arrow."""
 from __future__ import annotations
 import copy
@@ -11,7 +11,7 @@ from ..ast import (
     ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
-    ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType, ExprCast, ExprLocalVar,
+    ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType, ExprMustBe, ExprCast, ExprLocalVar,
     # Statements
     StmtExpr, StmtLet, StmtConst, StmtMut, StmtStatic,
     StmtAssign, StmtAttrAssign, StmtAttrCompoundAssign, StmtCompoundAssign,
@@ -50,6 +50,22 @@ from .builtins import (
     apply_slice, iterate, gen_next, _NativeCallable, _make_native,
     _make_error_instance, _raise_builtin,
 )
+
+
+def _mustbe_outer_type(guard_type: str) -> str:
+    """Return the outer type name of a mustbe guard (type parameters stripped).
+
+    e.g. "list[int]" -> "list", "function[int]->str" -> "function", "int" -> "int"
+    """
+    end = len(guard_type)
+    for i, c in enumerate(guard_type):
+        if c in "[{":
+            end = i
+            break
+    arrow = guard_type.find("->")
+    if arrow != -1:
+        end = min(end, arrow)
+    return guard_type[:end].strip()
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +240,7 @@ class Interpreter:
                     inst = args[0]
                     msg = args[1]
                     if isinstance(inst, TlInstance):
-                        inst.fields[0] = [msg, False]
+                        inst.store_field(0, msg, False)
                 return None
             init_fn = _make_native("__init__", _init)
 
@@ -659,6 +675,19 @@ class Interpreter:
                 result = self._is_type(val, tname)
                 return result if not negated else not result
 
+            case ExprMustBe(expr=inner, guard_type=guard_type, span=span):
+                val = self.eval(inner)
+                outer = _mustbe_outer_type(guard_type)
+                if self._is_type(val, outer):
+                    return val
+                actual = self._type_name_of(val)
+                _raise_builtin(
+                    "TypeError",
+                    f"mustbe assertion failed at {span}: "
+                    f"expected `{guard_type}`, got `{actual}`",
+                    self._known_classes,
+                )
+
             case ExprCast(object=obj_expr, type_name=tname):
                 return self._eval_cast(obj_expr, tname)
 
@@ -889,6 +918,14 @@ class Interpreter:
                 return True
             if a.cls.name != b.cls.name:
                 return False
+            if a.has_raw_layout() or b.has_raw_layout():
+                n = a.cls.field_count
+                return a.has_raw_layout() == b.has_raw_layout() and all(
+                    a.slot_initialized(i) == b.slot_initialized(i)
+                    and (not a.slot_initialized(i)
+                         or self._values_eq(a.field_value(i), b.field_value(i)))
+                    for i in range(n)
+                )
             if len(a.fields) != len(b.fields):
                 return False
             return all(
@@ -969,8 +1006,8 @@ class Interpreter:
             idx = obj.cls.field_index.get(key)
             if idx is None:
                 idx = obj.cls.field_index.get(attr)
-            if idx is not None and idx < len(obj.fields) and obj.fields[idx] is not None:
-                return obj.fields[idx][0]
+            if idx is not None and obj.slot_initialized(idx):
+                return obj.field_value(idx)
         raise RuntimeError(f"AttributeError: trait '{trait_name}' has no attribute '{attr}' on '{type_name(obj)}'")
 
     def _get_instance_attr(self, inst: TlInstance, attr: str) -> Value:
@@ -978,15 +1015,15 @@ class Interpreter:
         # new_type `.value` is an alias for `__value__`
         if attr == "value" and cls.new_type_base is not None:
             idx = cls.field_index.get("__value__")
-            if idx is not None and idx < len(inst.fields) and inst.fields[idx] is not None:
-                return inst.fields[idx][0]
+            if idx is not None and inst.slot_initialized(idx):
+                return inst.field_value(idx)
         # Access control check
         self._check_access(cls.name, attr, cls.method_access.get(attr), cls.field_access.get(attr))
 
         # Check fields
         idx = cls.field_index.get(attr)
-        if idx is not None and idx < len(inst.fields) and inst.fields[idx] is not None:
-            return inst.fields[idx][0]
+        if idx is not None and inst.slot_initialized(idx):
+            return inst.field_value(idx)
 
         # Check class vars
         if attr in cls.class_vars:
@@ -1121,16 +1158,22 @@ class Interpreter:
             self._check_access(cls.name, attr, cls.method_access.get(attr), cls.field_access.get(attr))
             idx = cls.field_index.get(attr)
             if idx is not None:
-                if idx >= len(obj.fields):
+                if not obj.has_raw_layout() and idx >= len(obj.fields):
                     obj.fields.extend([None] * (idx + 1 - len(obj.fields)))
-                entry = obj.fields[idx]
-                if entry is not None:
-                    if not entry[1] and self._current_method != "__init__":
+                if obj.slot_initialized(idx):
+                    if obj.field_mutable(idx) is False and self._current_method != "__init__":
                         raise RuntimeError(f"TypeError: cannot assign to immutable field '{attr}'")
-                    entry[0] = val
+                    prev_mut = obj.field_mutable(idx)
+                    if not obj.store_field(idx, val, prev_mut if prev_mut is not None else True):
+                        raise RuntimeError(
+                            f"TypeError: value does not match declared type of field '{attr}'"
+                        )
                 else:
                     is_mut = cls.field_mutability_vec[idx] if idx < len(cls.field_mutability_vec) else True
-                    obj.fields[idx] = [val, is_mut]
+                    if not obj.store_field(idx, val, is_mut):
+                        raise RuntimeError(
+                            f"TypeError: value does not match declared type of field '{attr}'"
+                        )
             else:
                 # Dynamic attribute (not in field_index) — store as a new slot appended
                 # This handles cases like __init__ setting fields not declared statically
@@ -1156,6 +1199,12 @@ class Interpreter:
         if isinstance(func_expr, ExprAttr):
             obj = self.eval(func_expr.object)
             attr = func_expr.attr
+            # cpp native function called through its module namespace:
+            # dispatch through the write-back-aware path
+            if isinstance(obj, TlNamespace):
+                member = obj.members.get(attr)
+                if isinstance(member, _NativeCallable) and getattr(member, "cpp_sig", None) is not None:
+                    return self._call_cpp_native(member, args_ast)
             args, kwargs, arg_mut, kwarg_mut = self._eval_args(args_ast)
             return self._call_attr(obj, attr, args, kwargs, arg_mut, kwarg_mut)
 
@@ -1166,8 +1215,60 @@ class Interpreter:
                 return TlSignal()
 
         func = self.eval(func_expr)
+        # cpp native function called by bare name (global registration)
+        if isinstance(func, _NativeCallable) and getattr(func, "cpp_sig", None) is not None:
+            return self._call_cpp_native(func, args_ast)
         args, kwargs, arg_mut, kwarg_mut = self._eval_args(args_ast)
         return self._call(func, args, kwargs, arg_mut, kwarg_mut)
+
+    def _call_cpp_native(self, nc: "_NativeCallable", args_ast: list[CallArg]) -> Value:
+        """Call a cpp-bridge native function with mut checks and write-back.
+
+        Mirrors call_native_function in src/interpreter/eval/native.rs:
+        - writable pointer parameters given a NAMED variable require it to be
+          `mut` (runtime TypeError otherwise);
+        - after a successful call, primitive out-ptr values are assigned back
+          to those named `mut` variables. Struct-pointer write-back happens
+          inside the ctypes wrapper (zero-copy / shadow conversion).
+        """
+        from .cpp_bridge.types import CPtr, COpaqueStructPtr
+        sig = nc.cpp_sig
+
+        def _arg_name(i: int) -> Optional[str]:
+            if i < len(args_ast) and isinstance(args_ast[i], CallArgPositional):
+                e = args_ast[i].expr
+                if isinstance(e, ExprIdent):
+                    return e.name
+            return None
+
+        # Pre-check: named variables passed to writable pointer params must be mut
+        for i, (_pname, ct) in enumerate(sig.params):
+            writable = (isinstance(ct, CPtr) and ct.mutable) or \
+                       (isinstance(ct, COpaqueStructPtr) and ct.mutable)
+            if not writable:
+                continue
+            name = _arg_name(i)
+            if name is None:
+                continue
+            try:
+                _val, is_mut = self._env.get_info(name)
+            except RuntimeError:
+                continue
+            if not is_mut:
+                raise RuntimeError(
+                    f"TypeError: pointer parameter {i} requires a `mut` variable, "
+                    f"'{name}' is not mutable"
+                )
+
+        args, kwargs, _arg_mut, _kwarg_mut = self._eval_args(args_ast)
+        ret, writebacks = nc.cpp_call(args, kwargs)
+
+        # Primitive out-ptr write-back (named mut variables only — safe side)
+        for i, val in writebacks:
+            name = _arg_name(i)
+            if name is not None:
+                self._env.assign(name, val)
+        return ret
 
     def _eval_args(self, args_ast: list[CallArg]) -> tuple[list, dict, list, dict]:
         args: list = []
@@ -1544,6 +1645,7 @@ class Interpreter:
         class_method_names: set = set()
         static_vars: dict[str, list] = {}
         own_field_order: list = []  # (name, is_mutable) for field_index
+        own_field_types: list = []  # (name, type_ann) for raw layout
 
         # Inherit methods from trait bases (fields are handled via _build_field_index)
         for base_name in bases:
@@ -1597,7 +1699,7 @@ class Interpreter:
                     gen_methods[fname] = gfn
                     method_access[fname] = access
 
-                case StmtField(name=fname, kind=kind, type_ann=_, default=default, access=access):
+                case StmtField(name=fname, kind=kind, type_ann=type_ann, default=default, access=access):
                     is_mut = kind in (FieldKind.MUT, FieldKind.STATIC_MUT)
                     default_val = self.eval(default) if default is not None else None
                     if kind == FieldKind.STATIC_MUT:
@@ -1605,6 +1707,7 @@ class Interpreter:
                     else:
                         field_defaults.append((fname, default_val, is_mut))
                         own_field_order.append((fname, is_mut))
+                        own_field_types.append((fname, type_ann))
                     field_mutability[fname] = is_mut
                     field_access[fname] = access
 
@@ -1619,6 +1722,14 @@ class Interpreter:
 
         field_index, field_count, field_mutability_vec = self._build_field_index(own_field_order, bases)
 
+        # Raw block layout (c-abi-interop P1): classes with no bases whose fields
+        # are all primitive (int/float/C ABI types) store fields in a C-ABI-laid-out
+        # raw block (max 24 fields).
+        raw_layout = None
+        if not bases and len(own_field_types) == field_count:
+            from .value import RawLayout
+            raw_layout = RawLayout.from_fields(own_field_types)
+
         return TlClass(
             name=name, bases=bases, methods=methods, gen_methods=gen_methods,
             field_defaults=field_defaults, class_vars=class_vars,
@@ -1627,6 +1738,7 @@ class Interpreter:
             class_method_names=class_method_names, static_vars=static_vars,
             field_index=field_index, field_count=field_count,
             field_mutability_vec=field_mutability_vec,
+            raw_layout=raw_layout,
         )
 
     def _inherit_class(self, base: TlClass, methods, gen_methods, field_defaults,
@@ -1694,14 +1806,17 @@ class Interpreter:
             fields[idx] = [val, True]
             return TlInstance(cls=cls, fields=fields, immutable=False)
 
-        # Initialize fields using Vec-based layout
-        fields = [None] * cls.field_count
+        # Initialize fields using Vec-based layout (raw block for raw-layout classes)
+        inst = TlInstance.new_empty(cls)
         for fname, default_val, is_mut in cls.field_defaults:
             idx = cls.field_index.get(fname)
             if idx is not None:
-                fields[idx] = [deep_clone(default_val) if default_val is not None else None, is_mut]
-
-        inst = TlInstance(cls=cls, fields=fields, immutable=False)
+                if inst.has_raw_layout():
+                    # Raw slots hold only int/float; skip absent defaults
+                    if default_val is not None:
+                        inst.store_field(idx, deep_clone(default_val), is_mut)
+                else:
+                    inst.fields[idx] = [deep_clone(default_val) if default_val is not None else None, is_mut]
 
         # Call __init__ if present
         if "__init__" in cls.methods:
@@ -1835,7 +1950,14 @@ class Interpreter:
         if tname == "tuple": return isinstance(val, TlTuple)
         if tname == "set": return isinstance(val, TlSet)
         if tname == "function":
-            return isinstance(val, (TlFunction, TlOverloadedFn, TlGeneratorFn, _NativeCallable))
+            if isinstance(val, (TlFunction, TlOverloadedFn, TlGeneratorFn, _NativeCallable)):
+                return True
+            # Instances and classes with __call__ count as callable
+            if isinstance(val, TlInstance):
+                return "__call__" in val.cls.methods
+            if isinstance(val, TlClass):
+                return "__call__" in val.methods
+            return False
         if isinstance(val, TlInstance):
             cls = val.cls
             # Check class name
@@ -1846,6 +1968,29 @@ class Interpreter:
         if isinstance(val, TlClass):
             return val.name == tname
         return False
+
+    def _type_name_of(self, val: Value) -> str:
+        """Return the runtime type name of a value (for mustbe error messages)."""
+        if isinstance(val, bool): return "bool"
+        if isinstance(val, int): return "int"
+        if isinstance(val, float): return "float"
+        if isinstance(val, TlComplex): return "complex"
+        if isinstance(val, str): return "str"
+        if val is None: return "None"
+        if val is UNDEFINED: return "Undefined"
+        if isinstance(val, TlList): return "list"
+        if isinstance(val, TlFixedList): return "fixed_list"
+        if isinstance(val, TlDict): return "dict"
+        if isinstance(val, TlSet): return "set"
+        if isinstance(val, TlTuple): return "tuple"
+        if isinstance(val, TlFunction): return f"function({val.name})"
+        if isinstance(val, TlOverloadedFn): return "function(overloaded)"
+        if isinstance(val, TlGeneratorFn): return f"generator_fn({val.name})"
+        if isinstance(val, _NativeCallable): return f"function({val.name})"
+        if isinstance(val, TlClass): return f"class({val.name})"
+        if isinstance(val, TlInstance): return val.cls.name
+        if isinstance(val, TlSlice): return "slice"
+        return "unknown"
 
     # ------------------------------------------------------------------
     # Cast operator (=>)
@@ -1876,8 +2021,8 @@ class Interpreter:
             idx = fi.get("value") if fi.get("value") is not None else fi.get("__value__")
             if idx is None:
                 idx = fi.get("__value__")
-            if idx is not None and idx < len(inst.fields) and inst.fields[idx] is not None:
-                return inst.fields[idx][0]
+            if idx is not None and inst.slot_initialized(idx):
+                return inst.field_value(idx)
             return None
 
         # If obj is a new_type instance, extract inner value to avoid nesting
@@ -2286,6 +2431,13 @@ class Interpreter:
             from pathlib import Path
             bound_name = alias if alias else Path(header_path_str).stem
             self._env.declare(bound_name, ns, mutable=False)
+            # Register members into the global scope so module-level calls and
+            # bare struct-class names (e.g. `V3(...)`) resolve
+            # (mirrors load_cpp_wrapper_dll in exec/modules.rs)
+            scope0 = self._env._scopes[0]
+            for mname, mval in ns.members.items():
+                if mname not in scope0:
+                    scope0[mname] = [mval, False, None]
             return
 
         # import[rs]: load pre-compiled DLL via ctypes, wire through handle arena
@@ -2380,6 +2532,11 @@ class Interpreter:
                 if val is not None:
                     bound = alias_name if alias_name else orig_name
                     self._env.declare(bound, val, mutable=False)
+            # Register remaining members globally (struct classes etc.)
+            scope0 = self._env._scopes[0]
+            for mname, mval in ns.members.items():
+                if mname not in scope0:
+                    scope0[mname] = [mval, False, None]
             return
 
         if lang == "rs":

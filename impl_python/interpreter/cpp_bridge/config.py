@@ -1,4 +1,4 @@
-# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Build configuration loaded from ar_config.json (mirrors cpp_bridge/config.rs)."""
 from __future__ import annotations
 import json
@@ -33,7 +33,15 @@ class CppBuildConfig:
 
 
 def load_cpp_config(start_dir: Path) -> CppBuildConfig:
-    """Search for ar_config.json from start_dir upwards and parse it."""
+    """Search for ar_config.json from start_dir upwards and parse it.
+
+    All configs along the way are LAYER-MERGED (applied from the farthest
+    directory first, closer ones overriding per key). Example: the repo
+    root's `cpp.msvc` stays effective even when `examples/ar_config.json`
+    (rust settings only) exists — previously the search stopped at the
+    first file found, so a partial intermediate config hid the root's cpp
+    settings entirely.
+    """
     config = CppBuildConfig()
 
     # Build search path: start_dir and all parents, plus cwd
@@ -56,7 +64,10 @@ def load_cpp_config(start_dir: Path) -> CppBuildConfig:
     except Exception:
         pass
 
-    for directory in search:
+    # Apply from farthest (root/cwd) to nearest (start_dir) — the nearer
+    # config wins per key. _parse_config_json only overrides keys that are
+    # present in the file.
+    for directory in reversed(search):
         cfg_path = directory / CONFIG_FILE_NAME
         if cfg_path.exists():
             try:
@@ -64,7 +75,6 @@ def load_cpp_config(start_dir: Path) -> CppBuildConfig:
                 _parse_config_json(text, config)
             except Exception:
                 pass
-            break
 
     return config
 

@@ -1,4 +1,4 @@
-# git SHA: 50e5e5c504db52a6bd14efc51f25654e044702b9
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Binary operator type checking mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import TYPE_CHECKING

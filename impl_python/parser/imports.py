@@ -1,4 +1,4 @@
-﻿# git SHA: c4e3615a36e8f7183b626dacab73bfc500682e96
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Import statement parsing (mirrors src/parser/imports.rs)."""
 from __future__ import annotations
 import struct
@@ -172,12 +172,16 @@ class _ParserImports:
                         body=field_stmts,
                     ))
 
-                from ..interpreter.cpp_bridge.types import CPtr
+                from ..interpreter.cpp_bridge.types import CPtr, COpaqueStructPtr
                 for sig in sigs:
+                    # Non-const pointers (T* / VECTOR*) become Arrow `mut`
+                    # parameters so the type checker's
+                    # CallMutParamWithImmutableArg check statically rejects
+                    # passing a `let` variable to a write pointer.
                     params = [
                         AstParam(
                             name=pname or f"p{i}",
-                            mutable=isinstance(ct, CPtr) and ct.mutable,
+                            mutable=isinstance(ct, (CPtr, COpaqueStructPtr)) and ct.mutable,
                             type_ann=ctype_to_tl_str(ct),
                             default=None,
                         )

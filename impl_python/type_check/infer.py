@@ -1,4 +1,4 @@
-# git SHA: b614502cff33c6ad5e49427ca347db8ad90c31a5
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Expression type inference mixin (mirrors src/type_check.rs)."""
 from __future__ import annotations
 from typing import TYPE_CHECKING
@@ -9,7 +9,7 @@ from ..ast import (
     ExprIdent, ExprLocalVar, ExprList, ExprAttr, ExprTraitAccess, ExprBinOp, ExprUnaryOp,
     ExprCall, ExprTemplateInstantiate, ExprSubscript, ExprSlice,
     ExprDict, ExprTuple, ExprSet, ExprBlock, ExprIfExpr,
-    ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType, ExprCast,
+    ExprForExpr, ExprWhileExpr, ExprMatchExpr, ExprIsType, ExprMustBe, ExprCast,
     MatchPatternCase,
 )
 from .types import (
@@ -43,6 +43,12 @@ class _TypeCheckerInfer:
 
             case ExprAttr(object=obj, attr=attr):
                 obj_ty = self._infer(obj)
+                from .types import TyNamespace
+                if isinstance(obj_ty, TyNamespace):
+                    member = obj_ty.as_dict().get(attr)
+                    if member is not None:
+                        return member
+                    return TyUnresolved()
                 if isinstance(obj_ty, TyAny):
                     self._report(ErrOperationOnAny(op="attribute access"))
                 elif isinstance(obj_ty, TyResult):
@@ -101,8 +107,17 @@ class _TypeCheckerInfer:
                 return TyDict()
 
             case ExprSubscript(object=obj, index=idx):
-                self._infer(obj)
-                self._infer(idx)
+                obj_ty = self._infer(obj)
+                idx_ty = self._infer(idx)
+                # Tuple with literal int index → corresponding element type
+                if isinstance(obj_ty, TyTuple) and isinstance(idx, ExprInt):
+                    i = idx.value
+                    if 0 <= i < len(obj_ty.types):
+                        return obj_ty.types[i]
+                    return TyUnresolved()
+                # String subscript yields a string
+                if isinstance(obj_ty, TyStr) and isinstance(idx_ty, TyInt):
+                    return TyStr()
                 return TyUnresolved()
 
             case ExprSlice(begin=begin, end=end, step=step):
@@ -114,6 +129,15 @@ class _TypeCheckerInfer:
             case ExprIsType(expr=e):
                 self._infer(e)
                 return TyBool()
+
+            case ExprMustBe(expr=e, guard_type=guard_type):
+                # Dynamic type assertion: statically narrow to the guard type.
+                # (Rust also emits MustBeElemTypeUnchecked /
+                # MustBeFunctionSignatureUnchecked warnings; the Python
+                # implementation has no warning infrastructure.)
+                self._infer(e)
+                resolved = inferred_type_from_ann(guard_type)
+                return resolved if resolved is not None else TyUnresolved()
 
             case ExprCast(object=obj, type_name=tname):
                 self._infer(obj)

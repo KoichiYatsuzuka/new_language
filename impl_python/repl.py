@@ -1,4 +1,4 @@
-﻿# git SHA: 4a937ed4f6e246e10a462c337360a817357c060c
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """REPL support (mirrors src/repl.rs).
 
 Reads blocks from stdin, executes on the ##REPL_EXEC## sentinel,

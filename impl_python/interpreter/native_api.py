@@ -289,8 +289,8 @@ def _cb_get_attr(obj_h: int, name_p: Optional[int], name_l: int) -> int:
         from .value import TlInstance
         if isinstance(obj, TlInstance):
             idx = obj.cls.field_index.get(name)
-            if idx is not None and idx < len(obj.fields) and obj.fields[idx] is not None:
-                return alloc_handle(obj.fields[idx][0])
+            if idx is not None and obj.slot_initialized(idx):
+                return alloc_handle(obj.field_value(idx))
             return TL_NONE
     except Exception:
         pass
@@ -313,11 +313,12 @@ def _cb_set_attr(obj_h: int, name_p: Optional[int], name_l: int, val_h: int) -> 
         from .value import TlInstance
         if isinstance(obj, TlInstance):
             idx = obj.cls.field_index.get(name)
-            if idx is not None and idx < len(obj.fields):
-                if obj.fields[idx] is not None:
-                    obj.fields[idx][0] = val
+            if idx is not None:
+                if obj.slot_initialized(idx):
+                    prev_mut = obj.field_mutable(idx)
+                    obj.store_field(idx, val, prev_mut if prev_mut is not None else True)
                 else:
-                    obj.fields[idx] = [val, True]
+                    obj.store_field(idx, val, True)
             return
     except Exception:
         pass

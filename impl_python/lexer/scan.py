@@ -1,4 +1,4 @@
-# git SHA: 08f19f554735e8588bc1f4bd2e2b300b43e4a31a
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Main lexer scan implementation with indentation handling (mirrors src/lexer/scan.rs)."""
 from __future__ import annotations
 from typing import Optional

@@ -1,4 +1,4 @@
-# git SHA: aea2e1fe6909a7aed9643a2e7184f19fd0195ccc
+# git SHA: 33ef765a635dee99b50fccb937129e07ae6bdefb
 """Symbol and operator tokenization (mirrors src/lexer/symbol.rs)."""
 from __future__ import annotations
 from ..token import Token, TokenKind
