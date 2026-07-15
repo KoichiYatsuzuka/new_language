@@ -23,13 +23,14 @@
       "Bash(npm --version)",
       "Bash(where node *)",
       "Bash(nvm list *)",
-      "PowerShell(cmd /c \"`\"C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\2019\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat`\" && cd /d `\"d:\\\\repository\\\\new_language\\\\examples\\\\test_modules`\" && cl /LD /EHsc /nologo point.cpp\" 2>&1)",
+      "PowerShell(cmd /c \"`\"C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\2019\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat`\" && cd /d `\"d:\\\\repository\\\\new_language\\\\examples\\\\interop\\\\test_modules`\" && cl /LD /EHsc /nologo point.cpp\" 2>&1)",
       "PowerShell(.\\\\vscode-extension\\\\make-vsix.ps1)",
+      "PowerShell(.\\\\generate-codebase-map.ps1)",
       "Bash(npm run compile)",
       "Bash(grep \"src\\\\\\\\\")",
-      "PowerShell(cd d:\\\\repository\\\\new_language; $proc = Start-Process -FilePath \".\\\\target\\\\release\\\\arrow.exe\" -ArgumentList \"examples/spider_solitaire.ar\" -PassThru -NoNewWindow; Start-Sleep -Seconds 5; if \\(-not $proc.HasExited\\) { $proc.Kill\\(\\); \"Process started OK \\(window opened, killed after 5s\\)\" } else { \"Process exited with: \" + $proc.ExitCode })",
-      "PowerShell(cd d:\\\\repository\\\\new_language; $proc = Start-Process -FilePath \".\\\\target\\\\release\\\\arrow.exe\" -ArgumentList \"examples/spider_solitaire.ar\" -PassThru -NoNewWindow; Start-Sleep -Seconds 4; if \\(-not $proc.HasExited\\) { $proc.Kill\\(\\); \"OK — window opened, no startup crash\" } else { \"Exited with code: \" + $proc.ExitCode })",
-      "PowerShell(cd d:\\\\repository\\\\new_language; $proc = Start-Process -FilePath \".\\\\target\\\\release\\\\arrow.exe\" -ArgumentList \"examples/spider_solitaire.ar\" -PassThru -NoNewWindow; Start-Sleep -Seconds 4; if \\(-not $proc.HasExited\\) { $proc.Kill\\(\\); \"OK\" } else { \"Exited: \" + $proc.ExitCode })"
+      "PowerShell(cd d:\\\\repository\\\\new_language; $proc = Start-Process -FilePath \".\\\\target\\\\release\\\\arrow.exe\" -ArgumentList \"examples/apps/spider_solitaire.ar\" -PassThru -NoNewWindow; Start-Sleep -Seconds 5; if \\(-not $proc.HasExited\\) { $proc.Kill\\(\\); \"Process started OK \\(window opened, killed after 5s\\)\" } else { \"Process exited with: \" + $proc.ExitCode })",
+      "PowerShell(cd d:\\\\repository\\\\new_language; $proc = Start-Process -FilePath \".\\\\target\\\\release\\\\arrow.exe\" -ArgumentList \"examples/apps/spider_solitaire.ar\" -PassThru -NoNewWindow; Start-Sleep -Seconds 4; if \\(-not $proc.HasExited\\) { $proc.Kill\\(\\); \"OK — window opened, no startup crash\" } else { \"Exited with code: \" + $proc.ExitCode })",
+      "PowerShell(cd d:\\\\repository\\\\new_language; $proc = Start-Process -FilePath \".\\\\target\\\\release\\\\arrow.exe\" -ArgumentList \"examples/apps/spider_solitaire.ar\" -PassThru -NoNewWindow; Start-Sleep -Seconds 4; if \\(-not $proc.HasExited\\) { $proc.Kill\\(\\); \"OK\" } else { \"Exited: \" + $proc.ExitCode })"
     ]
   }
 }

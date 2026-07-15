@@ -505,9 +505,9 @@ print(mng.results[0])   # "List[int]"
 
 | ファイル | 内容 |
 |----------|------|
-| `examples/js_proc_test.ar` | Node.js `path` モジュールと VS Code 拡張 `out_debug/analysis.js` の同期呼び出しテスト |
-| `examples/js_proc_async_test.ar` | AsyncManager と組み合わせた非同期呼び出しテスト |
-| `examples/math_render.ar` | LaTeX Workshop の MathJax を流用した TeX 数式 SVG レンダリング |
+| `examples/interop/js_proc_test.ar` | Node.js `path` モジュールと VS Code 拡張 `out_debug/analysis.js` の同期呼び出しテスト |
+| `examples/interop/js_proc_async_test.ar` | AsyncManager と組み合わせた非同期呼び出しテスト |
+| `examples/interop/math_render.ar` | LaTeX Workshop の MathJax を流用した TeX 数式 SVG レンダリング |
 | `bridge/js_bridge.cjs` | IPC サーバー本体 |
 | `bridge/lw_math.cjs` | LaTeX Workshop バンドル MathJax を使うカスタムブリッジモジュール |
 

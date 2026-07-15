@@ -230,7 +230,7 @@ libloading で解決）ため、スタブの mutability 変更は実行時挙動
 挙動であり、出力ポインタへ一時式を渡すのは無意味（結果が破棄される）なため
 静的拒否はむしろ有益。
 
-**例**: `examples/cpp_struct_ptr_error.ar`（+ `examples/test_modules/vec_math.h`）
+**例**: `examples/interop/cpp_struct_ptr_error.ar`（+ `examples/interop/test_modules/vec_math.h`）
 — `let` インスタンスを `v3_add(V3* out, ...)` へ渡して静的エラーになる自己完結例
 （静的検査で停止するため DLL コンパイル不要、MSVC/clang なしで再現可能）。
 
@@ -276,14 +276,14 @@ libloading で解決）ため、スタブの mutability 変更は実行時挙動
 
 ### P7 実装詳細（プレーン C ヘッダの実行時サポート — vec_math E2E で発覚した 4 バグ修正）
 
-`examples/cpp_struct_ptr.ar` を実際に MSVC でビルド・実行して検証した際に発覚した、
+`examples/interop/cpp_struct_ptr.ar` を実際に MSVC でビルド・実行して検証した際に発覚した、
 **プレーン C ヘッダ（名前空間なし・extern "C"）** の実行時経路の問題群。
 DxLib は「全関数が `namespace DxLib` 内 + 構造体ポインタのみ」だったため
 いずれも顕在化していなかった。
 
 1. **ar_config.json のレイヤーマージ**（`cpp_bridge/config.rs::load_cpp_config`）:
    従来は start_dir から遡って**最初に見つかった 1 ファイルで探索を打ち切り**、
-   `examples/ar_config.json`（rust 設定のみ）がリポジトリルートの `cpp.msvc` を
+   `examples/interop/ar_config.json`（rust 設定のみ）がリポジトリルートの `cpp.msvc` を
    丸ごと隠していた。全祖先ディレクトリの設定を遠い方から順に適用し、近い方が
    キー単位で上書きするよう修正（`tests::layered_config_merges_ancestors`）。
 
@@ -316,7 +316,7 @@ DxLib は「全関数が `namespace DxLib` 内 + 構造体ポインタのみ」�
      （cpp_typed_eligible / gen_dll_fn_typed — 両者一致必須）、
      全 4 dispatch 経路、`native_api/callbacks.rs` の `has_ptr` 判定
 
-**E2E 検証**（`examples/cpp_struct_ptr.ar` + `examples/test_modules/vec_math.c` /
+**E2E 検証**（`examples/interop/cpp_struct_ptr.ar` + `examples/interop/test_modules/vec_math.c` /
 `build_vec_math.ps1` → `vec_math_x64.lib`）: mut ローカル→ゼロコピー write-back
 （5 7 9）、mut パラメータ参照引き渡し（5 7 9）、`double*` OutPtr write-back（5.0）。
 実装ライブラリは **`_x64.lib` サフィックス必須**（`lib_patterns` 既定値）かつ

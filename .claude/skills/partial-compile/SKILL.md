@@ -15,23 +15,23 @@ This produces two files next to the source:
 
 ## Canonical demo
 
-`examples/test_modules/physics.ar` is the canonical module for demonstrating native compilation.
-`examples/importation.ar` (section 1) is the corresponding runner that shows the full workflow.
+`examples/interop/test_modules/physics.ar` is the canonical module for demonstrating native compilation.
+`examples/interop/importation.ar` (section 1) is the corresponding runner that shows the full workflow.
 
 ```bash
 # Step 1 — run interpreted
-cargo run --release -- examples/importation.ar
+cargo run --release -- examples/interop/importation.ar
 
 # Step 2 — compile the module
-cargo run --release -- --compile examples/test_modules/physics.ar
+cargo run --release -- --compile examples/interop/test_modules/physics.ar
 # Output:
 #   NativeLib: compiling 6 function(s): potential, kinetic, vel_dot, ...
-#   NativeLib: 6 function(s) embedded in examples\test_modules\physics.arc
-#   Compiled : examples\test_modules\physics.arc
-#   Stub     : examples\test_modules\physics.ars
+#   NativeLib: 6 function(s) embedded in examples\interop\test_modules\physics.arc
+#   Compiled : examples\interop\test_modules\physics.arc
+#   Stub     : examples\interop\test_modules\physics.ars
 
 # Step 3 — run again with native dispatch (same command as Step 1)
-cargo run --release -- examples/importation.ar
+cargo run --release -- examples/interop/importation.ar
 ```
 
 ## How the compiled module is used
@@ -392,7 +392,7 @@ define [dllexport] i32 @f_typed(ptr %_args, ptr %_ret, ptr %_err) {
 **計測**（partial_call_overhead.ar / `sink += noop0()`）:
 ハンドル経路 461ns → typed ABI 204ns → インラインキャッシュ **~93ns**/call。
 
-**検証例**: `examples/typed_abi.ar` + `examples/test_modules/typed_abi_module.ar`
+**検証例**: `examples/interop/typed_abi.ar` + `examples/interop/test_modules/typed_abi_module.ar`
 
 **cpp ブリッジ（import[cpp-lib] / cpp-dll）への適用**:
 `cpp_bridge/codegen.rs` の `gen_dll_fn` は、全プリミティブシグネチャ

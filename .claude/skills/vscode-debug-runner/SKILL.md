@@ -19,7 +19,7 @@ npm run compile:debug     # compiles to out_debug/ with ES2019 target
 ```bash
 node run_debug.js <path/to/file.ar>
 # example
-node run_debug.js ../examples/importation.ar
+node run_debug.js ../examples/interop/importation.ar
 ```
 
 **Output sections:**
