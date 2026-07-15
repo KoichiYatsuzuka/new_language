@@ -38,8 +38,8 @@ cargo run -- --compile-cs <file.dll> # Generate .ars stub from a .NET DLL (impor
 python -m impl_python <file.ar>
 
 # Examples
-python -m impl_python examples/variable.ar
-python -m impl_python examples/control_flow.ar
+python -m impl_python examples/basics/variable.ar
+python -m impl_python examples/basics/control_flow.ar
 ```
 
 ## Rules
@@ -52,8 +52,9 @@ python -m impl_python examples/control_flow.ar
 
 Detailed, situational reference material lives in `.claude/skills/` and is loaded on demand — invoke by name or let it trigger automatically when relevant:
 
-- `codebase-map` — full repository directory tree with per-file responsibilities
+- `codebase-map` — directory-level module roles + auto-generated file tree with line counts (regenerate with `./generate-codebase-map.ps1` after file create/move/delete)
 - `architecture-overview` — what the lexer/parser/type-checker/interpreter/VS Code extension currently support, with pointers into the deep-dive skills below
+- `add-syntax` — layer-by-layer touchpoint checklist for adding a new keyword/statement/expression (read this FIRST for new language features, instead of the subsystem references below)
 - `parser-internals` — full `src/parser/` implementation reference (module map, precedence chain, parse-time validations)
 - `interpreter-internals` — full `src/interpreter/` implementation reference (exec/eval dispatch, closures, classes, native ABI handle table)
 - `type-checking` — full `src/type_check/` implementation reference (`InferredType`, inference/compatibility rules, every `TypeErrorKind`)

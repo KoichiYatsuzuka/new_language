@@ -6,11 +6,11 @@
 #   (2) 呼び出し元関数の `mut` パラメータの参照引き渡し
 #   (3) プリミティブポインタ（`double*`）への `mut float` 変数
 #
-# 実行には examples/test_modules/vec_math_x64.lib が必要:
-#   powershell -File examples/test_modules/build_vec_math.ps1
+# 実行には examples/interop/test_modules/vec_math_x64.lib が必要:
+#   powershell -File examples/interop/test_modules/build_vec_math.ps1
 # （ar_config.json の cpp.msvc に vcvarsall.bat を設定しておくこと）
 #
-# 対になる負例: examples/cpp_struct_ptr_error.ar（`let` を渡して静的エラー）
+# 対になる負例: examples/interop/cpp_struct_ptr_error.ar（`let` を渡して静的エラー）
 # 参照: .claude/skills/c-abi-interop/SKILL.md（P5/P6）
 
 import[cpp-lib] test_modules.vec_math as vm

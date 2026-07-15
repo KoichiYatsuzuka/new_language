@@ -1,7 +1,7 @@
 # rs_struct.ar — demonstrate Rust struct support via import[rs].
 #
-# `vec2` is a local crate under examples/rs_crates/vec2/.
-# ar_config.json must list "examples/rs_crates" in rust.crates_path.
+# `vec2` is a local crate under examples/interop/rs_crates/vec2/.
+# ar_config.json must list "examples/interop/rs_crates" in rust.crates_path.
 #
 # What is proved here:
 #   - `pub struct Vec2 { pub x: f64, pub y: f64 }` becomes a Arrow class

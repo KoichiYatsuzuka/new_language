@@ -3,15 +3,15 @@
 //
 // C の書き込み用ポインタ（`T*` / `V3*`）パラメータは Arrow の `mut` パラメータとして
 // 型検査される（.claude/skills/c-abi-interop/SKILL.md P5）。ヘッダは
-// examples/test_modules/vec_math.h（cargo test はリポジトリルートで実行される前提）。
+// examples/interop/test_modules/vec_math.h（cargo test はリポジトリルートで実行される前提）。
 
 use super::*;
 use std::path::PathBuf;
 
-/// cpp import 用: source_dir を examples/ に向けて字句解析・構文解析・型検査する。
+/// cpp import 用: source_dir を examples/interop/ に向けて字句解析・構文解析・型検査する。
 fn check_cpp(source: &str) -> Vec<StaticTypeError> {
     let tokens = Lexer::new(source, "").tokenize();
-    let stmts = Parser::new(tokens, Some(PathBuf::from("examples")))
+    let stmts = Parser::new(tokens, Some(PathBuf::from("examples/interop")))
         .parse_program()
         .expect("parse error");
     TypeChecker::check(&stmts)

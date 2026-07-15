@@ -17,7 +17,10 @@ $skip = @(
     "flat_bench_module"
 )
 
-$examples = Get-ChildItem "examples\*.ar" | Where-Object {
+# Category subdirectories under examples/ (module dirs like interop/test_modules are not enumerated)
+$categoryDirs = @("basics", "collections", "classes", "typing", "exceptions", "async", "bench", "apps", "interop")
+
+$examples = $categoryDirs | ForEach-Object { Get-ChildItem "examples\$_\*.ar" } | Where-Object {
     $name = $_.BaseName
     -not ($name -match "_error" -or $name -match "__errors" -or $skip -contains $name)
 } | Sort-Object Name

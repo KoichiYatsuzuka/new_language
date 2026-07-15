@@ -10,7 +10,7 @@
 #   subdir.module      — subdirectory .ar module
 #
 # Prerequisites for section 1 (physics benchmark):
-#   cargo run --release -- --compile examples/test_modules/physics.ar
+#   cargo run --release -- --compile examples/interop/test_modules/physics.ar
 
 import[py-int] time
 
@@ -229,7 +229,7 @@ print(f"SHA-512({hmsg}) = {h512}")
 
 # ── 6. import[rs] with struct — vec2 ─────────────────────────────────────────
 #
-# `vec2` is a local crate under examples/rs_crates/vec2/.
+# `vec2` is a local crate under examples/interop/rs_crates/vec2/.
 # Demonstrates:
 #   pub struct Vec2 { pub x: f64, pub y: f64 }  → Arrow class
 #   pub fn new(x, y) -> Self                     → __init__

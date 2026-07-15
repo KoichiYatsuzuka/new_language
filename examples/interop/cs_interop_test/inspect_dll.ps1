@@ -1,4 +1,4 @@
-$path = "D:\repository\new_language\examples\cs_interop_test\ArrowBridge.dll"
+$path = "D:\repository\new_language\examples\interop\cs_interop_test\ArrowBridge.dll"
 $data = [System.IO.File]::ReadAllBytes($path)
 
 $peOff = [System.BitConverter]::ToUInt32($data, 0x3C)

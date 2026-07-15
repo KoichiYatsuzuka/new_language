@@ -4,7 +4,7 @@
 # Game logic : Arrow
 #
 # Usage:
-#   cargo run -- examples/spider_solitaire.ar
+#   cargo run -- examples/apps/spider_solitaire.ar
 
 import[py-int] random as random
 import spider_render as renderer

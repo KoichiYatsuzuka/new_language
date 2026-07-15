@@ -1,7 +1,7 @@
 # flat_bench_interp.ar — same benchmark run through the INTERPRETER (no compiled module).
 # Compares mutable list vs frozen list iteration in the tree-walk interpreter.
 #
-# Run: cargo run --release -- examples/flat_bench_interp.ar
+# Run: cargo run --release -- examples/bench/flat_bench_interp.ar
 
 import[py-int] time
 

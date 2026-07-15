@@ -1,7 +1,7 @@
 # flat_bench.ar — benchmark: list[Particle] vs fixed_list[Particle] iteration.
 #
-# 1. cargo run --release -- --compile examples/flat_bench_module.ar
-# 2. cargo run --release -- examples/flat_bench.ar
+# 1. cargo run --release -- --compile examples/bench/flat_bench_module.ar
+# 2. cargo run --release -- examples/bench/flat_bench.ar
 
 import[py-int] time
 from flat_bench_module import Particle

@@ -1,7 +1,7 @@
 # Native microbenchmarks for partial compilation call overhead.
 #
 # Compile with:
-#   cargo run --release -- --compile examples/partial_call_overhead_module.ar
+#   cargo run --release -- --compile examples/bench/partial_call_overhead_module.ar
 
 fn noop0() -> int:
     return 1

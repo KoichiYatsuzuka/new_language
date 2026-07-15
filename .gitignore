@@ -13,7 +13,7 @@ impl_python/type_check/__pycache__
 impl_python/lexer/__pycache__
 impl_python/interpreter/__pycache__
 impl_python/parser/__pycache__
-examples/test_modules/__pycache__
+examples/interop/test_modules/__pycache__
 impl_python/interpreter/cpp_bridge/__pycache__
 *.pyc
 examples/practical_examples/DxLib/DxLib
@@ -22,6 +22,6 @@ Log.txt
 *.pdb
 *.cache
 *.obj
-examples/cs_proc_test/obj/Debug/net8.0
+examples/interop/cs_proc_test/obj/Debug/net8.0
 vscode-extension-archived
 .claude/worktrees

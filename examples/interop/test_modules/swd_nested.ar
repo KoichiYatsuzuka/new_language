@@ -1,5 +1,5 @@
 # swd_nested.ar — SWD nested class module for native compilation test
-# Compile with: cargo run --release -- --compile examples/test_modules/swd_nested.ar
+# Compile with: cargo run --release -- --compile examples/interop/test_modules/swd_nested.ar
 
 class Vec2:
     mut x: int

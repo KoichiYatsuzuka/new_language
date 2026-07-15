@@ -1,7 +1,7 @@
 # physics.ar — CPU-heavy benchmark using a Body class with multiple methods.
 #
 # Compile with:
-#   cargo run --release -- --compile examples/test_modules/physics.ar
+#   cargo run --release -- --compile examples/interop/test_modules/physics.ar
 
 class Body:
     let x:    float

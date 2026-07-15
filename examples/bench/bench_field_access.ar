@@ -1,7 +1,7 @@
 # bench_field_access.ar
 #
 # E2E benchmark: measures interpreter overhead of field access in a tight loop.
-# Run: cargo run --release -- examples/bench_field_access.ar
+# Run: cargo run --release -- examples/bench/bench_field_access.ar
 #
 # This is the CURRENT (HashMap-based) baseline.
 # After the HashMap→Vec optimization, re-run to compare.

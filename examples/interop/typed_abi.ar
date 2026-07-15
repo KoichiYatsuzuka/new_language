@@ -1,7 +1,7 @@
 # typed_abi.ar — 統一 typed ABI の動作検証ランナー
 #
-# 1. cargo run --release -- --compile examples/test_modules/typed_abi_module.ar
-# 2. cargo run --release -- examples/typed_abi.ar
+# 1. cargo run --release -- --compile examples/interop/test_modules/typed_abi_module.ar
+# 2. cargo run --release -- examples/interop/typed_abi.ar
 
 from test_modules.typed_abi_module import safe_div
 from test_modules.typed_abi_module import chain_call

@@ -1,7 +1,7 @@
 # bottleneck_bench.ar — ツリーウォークインタープリタのボトルネック計測
 #
 # 各操作のコストを個別に分離して測定する。
-# Run: cargo run --release -- examples/bottleneck_bench.ar
+# Run: cargo run --release -- examples/bench/bottleneck_bench.ar
 
 import[py-int] time
 

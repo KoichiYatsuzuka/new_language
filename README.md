@@ -22,7 +22,7 @@ ASTの展開にすべての情熱を注いています。
 ソースコードの終わりの方になってTypeErrorが上がってきて、それまでの実行時間が無駄になった、ということがないように、そもそも実行する前に修正を強います。
 
 ### 部分コンパイルによる高速化（Accelaration by partial compile）
-構文解析時の情報を派生させ、高速化が容易な部分に関してをネイティブな機械語に落とし込む機能を備えています。仕様を決めたモジュールはコンパイルしてから読み込むことで、その部分を高速化できます。最適化されていないC言語くらいの速度です（関数呼び出しオーバーヘッドが10 nsくらい）。同じ言語内でコンパイル済みライブラリを扱えるスクリプト言語であることが特徴です。計算やイテレーションが主な内容なら最高で10万倍以上の高速化が見込めます（./examples/importation.arを参照）。
+構文解析時の情報を派生させ、高速化が容易な部分に関してをネイティブな機械語に落とし込む機能を備えています。仕様を決めたモジュールはコンパイルしてから読み込むことで、その部分を高速化できます。最適化されていないC言語くらいの速度です（関数呼び出しオーバーヘッドが10 nsくらい）。同じ言語内でコンパイル済みライブラリを扱えるスクリプト言語であることが特徴です。計算やイテレーションが主な内容なら最高で10万倍以上の高速化が見込めます（./examples/interop/importation.arを参照）。
 Pythonの高速化にはノウハウが必要ですが、この言語は標準機能ですぐ試せます。
 
 C ABIに対応する内容でASTを展開し、メンバアクセスはクラス先頭からのポインタオフセット参照、関数は関数ポインタへのアクセスへと置き換えることで、それをネイティブコードに落とし込むときにC言語並みの速度になるようにしました。また、テンプレートクラスやテンプレート関数はAST展開の時に候補となる型で新しく定義を複製することで、AST展開時に挙動を確定させ、ネイティブコードへのコンパイルを実現しています。
@@ -67,8 +67,8 @@ overloadを実装しています。型注釈用のものではなく、インス
 
 ```bash
 cargo build
-cargo run -- -src examples/showcase.tl
-cargo run -- examples/hello.tl
+cargo run -- -src examples/archived/showcase.ar
+cargo run -- examples/archived/hello.ar
 cargo test
 ```
 
@@ -77,9 +77,9 @@ cargo test
 ### ビルド後の実行ファイルの実行方法
 ビルドされた実行ファイルがあるディレクトリにパスを通したあとで
 ```bash
-havakirie.exe examples/variable.ar //ファイル実行
+havakirie.exe examples/basics/variable.ar //ファイル実行
 havakirie.exe --repl //対話画面起動
-havakirie.exe --compile examples/test_modules/physics.ar //モジュールとしてコンパイル
+havakirie.exe --compile examples/interop/test_modules/physics.ar //モジュールとしてコンパイル
 
 ```
 ---
@@ -200,17 +200,17 @@ source.ar
 
 代表的な動作確認ファイルです。/ Representative test files for verifying functionality.
 
-- `examples/showcase.ar`: 主要機能のまとめ / Summary of main features
-- `examples/type_errors.ar`: 静的型エラー例 / Static type error examples
-- `examples/fn_kwargs_success.ar` / `examples/fn_kwargs_errors.ar`: キーワード引数 / Keyword arguments
-- `examples/overload_success.ar` / `examples/overload_errors.ar`: オーバーロード / Overloading
-- `examples/trait_sample.ar` / `examples/trait_template.ar`: trait / Traits
-- `examples/template_sample.ar` / `examples/template_constraint_error.ar`: template / Templates
-- `examples/self_type.ar` / `examples/self_type__errors.ar`: `Self`
-- `examples/new_type.ar` / `examples/new_type__errors.ar`: `new_type`
-- `examples/freeze.ar`: `freeze`
-- `examples/generator.ar`: generator / Generators
-- `examples/union_option.ar` / `examples/union_option__errors.ar`: `Union` / `Option`
+- `examples/archived/showcase.ar`: 主要機能のまとめ / Summary of main features
+- `examples/archived/type_errors.ar`: 静的型エラー例 / Static type error examples
+- `examples/archived/fn_kwargs_success.ar` / `examples/archived/fn_kwargs_errors.ar`: キーワード引数 / Keyword arguments
+- `examples/archived/overload_success.ar` / `examples/archived/overload_errors.ar`: オーバーロード / Overloading
+- `examples/archived/trait_sample.ar` / `examples/archived/trait_template.ar`: trait / Traits
+- `examples/archived/template_sample.ar` / `examples/archived/template_constraint_error.ar`: template / Templates
+- `examples/archived/self_type.ar` / `examples/archived/self_type__errors.ar`: `Self`
+- `examples/archived/new_type.ar` / `examples/archived/new_type__errors.ar`: `new_type`
+- `examples/archived/freeze.ar`: `freeze`
+- `examples/archived/generator.ar`: generator / Generators
+- `examples/archived/union_option.ar` / `examples/archived/union_option__errors.ar`: `Union` / `Option`
 
 エラー確認用のサンプルは、ファイル名に `__errors` または `_errors` を含めています。/ Sample files for error verification are named with `__errors` or `_errors` suffix.
 
@@ -220,7 +220,7 @@ source.ar
 
 ```bash
 cargo build
-cargo run -- -src examples/showcase.tl
+cargo run -- -src examples/archived/showcase.ar
 cargo test
 cargo test <name>
 cargo clippy

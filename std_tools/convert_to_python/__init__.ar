@@ -5,16 +5,16 @@
 # Usage:
 #   cargo run -- std_tools/convert_to_python/__init__.ar
 #
-# Reads HV_INPUT (default: examples/functions.ar) and writes to HV_OUTPUT
+# Reads HV_INPUT (default: examples/basics/functions.ar) and writes to HV_OUTPUT
 # (default: <input stem>.py).  Set these environment variables before running:
 #
-#   $env:HV_INPUT  = "examples/class_trait.ar"
-#   $env:HV_OUTPUT = "examples/class_trait.py"
+#   $env:HV_INPUT  = "examples/classes/class_trait.ar"
+#   $env:HV_OUTPUT = "examples/classes/class_trait.py"
 #   cargo run -- std_tools/convert_to_python/__init__.ar
 
 import converter as conv_mod
 
-let default_input: str = "examples/functions.ar"
+let default_input: str = "examples/basics/functions.ar"
 let input_path: str = getenv("HV_INPUT", default_input)
 
 let stem_end: int = len(input_path) - 3   # strip ".ar"

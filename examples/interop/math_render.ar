@@ -3,11 +3,11 @@
 # LaTeX Workshop の hover preview（onmath.js → mathjax/mathjax.js）と
 # 同じ MathJax パイプラインを import[js-proc] 経由で呼び出す。
 #
-# 出力: examples/math_output/*.svg  と  gallery.html
+# 出力: examples/interop/math_output/*.svg  と  gallery.html
 
 import[js-proc] lw_math as math
 
-let OUT = "examples/math_output"
+let OUT = "examples/interop/math_output"
 
 fn render(name: str, formula: str) -> None:
     let path = OUT + "/" + name + ".svg"

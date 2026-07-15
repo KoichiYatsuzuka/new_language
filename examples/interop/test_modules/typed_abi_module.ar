@@ -5,7 +5,7 @@
 # raise は ErrSlot 経由で status=1 とともに呼び出し元へ伝播する。
 #
 # Compile with:
-#   cargo run --release -- --compile examples/test_modules/typed_abi_module.ar
+#   cargo run --release -- --compile examples/interop/test_modules/typed_abi_module.ar
 
 fn safe_div(let a: int, let b: int) -> int:
     if b == 0:

@@ -1,7 +1,7 @@
 # Runner for partial_call_overhead_module.ar.
 #
-# 1. cargo run --release -- --compile examples/partial_call_overhead_module.ar
-# 2. cargo run --release -- examples/partial_call_overhead.ar
+# 1. cargo run --release -- --compile examples/bench/partial_call_overhead_module.ar
+# 2. cargo run --release -- examples/bench/partial_call_overhead.ar
 
 import[py-int] time
 
