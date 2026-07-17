@@ -1,0 +1,56 @@
+# event_cs_handler.ar — C# メソッドを Signal 発火で実行する例
+#
+# C# (import[cs-dll] / import[cs-proc]) は Python (Value::PyObject) や
+# Rust (Value::NativeFunction) と異なり、メソッドが first-class の関数値にならない。
+# `bridge.Calculator.Sqrt` を値として取り出すと「空ボディの型スタブ関数」になり、
+# 購読しても発火時に C# へは届かない (黙って None を返すだけ)。
+# C# ブリッジへのディスパッチは `obj.Method(args)` という呼び出しの現場でのみ
+# 行われる (classes/method_call.rs の __cs_bridge_path__ / __cs_proc_path__ 判定)。
+#
+# → C# メソッドを発火で実行するには、Arrow のラッパー関数を購読し、
+#   その中で C# メソッドを呼ぶ。
+
+import[cs-dll] cs_interop_test.ArrowBridge as bridge
+
+# ── 1. 静的メソッド: ラッパー関数経由で発火 ─────────────────────────────────
+
+let sqrt_requests = Signal[float]()
+
+fn on_sqrt(mut x: float) -> None:
+    let r = bridge.Calculator.Sqrt(x)
+    print("[cs] Sqrt(", x, ") =", r)
+
+sqrt_requests on on_sqrt
+sqrt_requests.emit(9.0)        # → [cs] Sqrt( 9.0 ) = 3.0
+sqrt_requests.emit(1024.0)     # → [cs] Sqrt( 1024.0 ) = 32.0
+
+# ── 2. インスタンスメソッド: CsObject をラッパーから参照 ────────────────────
+
+let acc = bridge.Calculator()
+let deposits = Signal[float]()
+
+fn on_deposit(mut v: float) -> None:
+    acc.Accumulate(v)
+    print("[cs] accumulated:", acc.GetAccumulated())
+
+deposits on on_deposit
+deposits.emit(5.0)             # → 5.0
+deposits.emit(3.5)             # → 8.5
+
+# ── 3. emit_async + EventLoop 経由の遅延実行 ────────────────────────────────
+
+deposits.emit_async(100.0)     # キューに積むだけ
+print("before EventLoop.run()")
+EventLoop.run()                # ここで on_deposit(100.0) が実行される
+print("[cs] final:", acc.GetAccumulated())     # → 108.5
+
+# ── 4. (反例) C# メソッドの直接購読は黙って無効 ─────────────────────────────
+# 属性アクセスで得られるのは型チェック用の空スタブ。エラーにはならないが
+# C# は呼ばれない。この形は使わないこと。
+
+let direct = Signal[float]()
+direct on bridge.Calculator.Sqrt
+direct.emit(49.0)              # 何も起きない (空ボディが実行されるだけ)
+print("direct subscription: silent no-op (C# not called)")
+
+print("done")

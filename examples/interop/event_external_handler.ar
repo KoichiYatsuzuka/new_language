@@ -1,0 +1,43 @@
+# event_external_handler.ar — 外部関数を Signal ハンドラとして発火する例
+#
+# emit のハンドラ呼び出しは call_value_with_args 経由なので、Arrow 関数に限らず
+#   - import[py-int] した Python 関数 (Value::PyObject)
+#   - import[rs]     した Rust ネイティブ関数 (Value::NativeFunction)
+# もそのまま on / once で購読でき、emit / emit_async で実行される。
+#
+# 注意: off による解除は Arrow 関数値の Rc ポインタ一致でのみ動作するため、
+#       外部関数ハンドラには効かない(何も削除されない)。
+
+# ── 1. Python 関数をハンドラとして購読 ──────────────────────────────────────
+
+import[py-int] test_modules.py_events as pyev
+
+let messages = Signal[str]()
+
+messages on pyev.on_message            # 継続購読
+messages once pyev.on_message_once     # 1 回だけ購読
+
+messages.emit("first")                 # 両方のハンドラが呼ばれる
+messages.emit("second")                # on_message だけ呼ばれる
+
+print("py handler_count:", messages.handler_count)   # → 1
+print("py log:", pyev.get_log())                      # → [first, once:first, second]
+
+# ── 2. emit_async + EventLoop 経由の遅延実行 ────────────────────────────────
+
+messages.emit_async("delayed")         # キューに積むだけ(この時点では呼ばれない)
+print("before EventLoop.run()")
+EventLoop.run()                        # ここで on_message("delayed") が実行される
+print("py log after run:", pyev.get_log())            # → [..., delayed]
+
+# ── 3. Rust ネイティブ関数をハンドラとして購読 ──────────────────────────────
+
+import[rs] libm[0.2]
+
+let angles = Signal[float]()
+angles on libm.sin                     # NativeFunction を直接購読
+
+angles.emit(1.5707963267948966)        # sin(π/2) がネイティブ実行される(戻り値は破棄)
+print("native handler_count:", angles.handler_count)   # → 1
+
+print("done")
