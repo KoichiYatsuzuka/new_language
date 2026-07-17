@@ -1,0 +1,19 @@
+# alias のエラーパターン確認サンプル
+#
+# 式（値）専用の alias を型注釈位置で使うと、右辺が型式として解釈できずパースエラーになる。
+# 期待されるエラー:
+#   ParseError: alias `sub_function` cannot be used as a type ...
+
+fn general_function(let a: int, let b: int) -> int:
+    return a + b
+
+# 右辺は block 式（実行して関数値を返す）。型としては使えない。
+alias sub_function: block->function:
+    fn specialized_function(let x: int) -> int:
+        return general_function(x, 3)
+    block_return specialized_function
+
+# ここでエラー: 値専用の alias を型注釈に使用している。
+let bad: sub_function = general_function(1, 2)
+
+print(bad)

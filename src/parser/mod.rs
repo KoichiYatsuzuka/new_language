@@ -8,9 +8,27 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 
-use crate::ast::{FieldKind, Stmt, TemplateParam};
+use crate::ast::{Expr, FieldKind, Stmt, TemplateParam};
 use crate::token::{Span, Spanned, Token};
+
+/// `alias Name: rhs` で導入される別名の実体（コンパイル時 AST 置換のペイロード）。
+///
+/// 別名は純粋な構文置換として振る舞う。使用箇所ごとに右辺の AST/トークンを
+/// そのまま挿入するため、`let` と違い評価は毎回行われ、代入対象（lvalue）にもなれる。
+///
+/// # フィールド
+/// - `expr`   : 右辺を式としてパースした AST。式コンテキストでの展開に使う（毎回 clone して差し込む）。
+/// - `tokens` : 右辺の生トークン列（末尾に `Eof` 番兵付き）。型注釈コンテキストで
+///              `parse_type_expr` により型文字列へ再パースするために使う。
+#[derive(Clone)]
+pub(crate) struct AliasEntry {
+    /// 右辺の式 AST。式位置での置換に用いる。
+    pub expr: Rc<Expr>,
+    /// 右辺の生トークン列（`Eof` 終端）。型位置での置換（型文字列への再パース）に用いる。
+    pub tokens: Rc<Vec<Spanned>>,
+}
 
 mod stmts;
 mod imports;
@@ -39,6 +57,14 @@ pub struct Parser {
     class_or_trait_depth: usize,
     /// Names declared with `new_type` — any reassignment to these is a parse error.
     known_new_types: HashSet<String>,
+    /// Names declared with `alias` → substitution payload. Resolved at parse time.
+    /// Block-scoped: `parse_block` snapshots and restores this map so an alias declared
+    /// inside a block is not visible after the block ends (see `parse_block`).
+    aliases: HashMap<String, AliasEntry>,
+    /// Names of classes / functions declared with template parameters (`Foo[T: ...]`).
+    /// Used to interpret a standalone `Base[Args]` alias RHS as a template instantiation
+    /// (rather than a subscript), so `alias X: Base[Arg]` then `X(...)` constructs correctly.
+    known_templates: HashSet<String>,
     /// Names declared with `protocol` — instantiation of these is a parse-time error.
     known_protocols: HashSet<String>,
     /// 現在パース中のファイルのディレクトリ（import の第一検索先）。
@@ -107,6 +133,8 @@ impl Parser {
             known_traits,
             class_or_trait_depth: 0,
             known_new_types: HashSet::new(),
+            aliases: HashMap::new(),
+            known_templates: HashSet::new(),
             known_protocols: HashSet::new(),
             source_dir: resolved.clone(),
             root_dir: resolved,

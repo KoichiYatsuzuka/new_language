@@ -710,7 +710,12 @@ impl Parser {
             }
             Token::Ident(name) => {
                 self.advance();
-                Ok(Expr::Ident(name))
+                // 別名（alias）は式位置では保存済みの右辺 AST に置換する（純粋な構文置換）。
+                // 後続の postfix（`(...)` / `[...]` / `.attr`）は展開後の式に適用される。
+                match self.aliases.get(&name).map(|e| (*e.expr).clone()) {
+                    Some(expanded) => Ok(expanded),
+                    None => Ok(Expr::Ident(name)),
+                }
             }
             Token::SelfType => {
                 if self.class_or_trait_depth == 0 {

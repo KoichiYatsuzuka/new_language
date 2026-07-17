@@ -1,0 +1,81 @@
+# alias の動作確認サンプル
+#
+# `alias 名前: 右辺` は「コンパイル時 AST 置換」。参照箇所ごとに右辺がそのまま
+# 差し込まれる（純粋な構文置換）。new_type が準サブタイプを作るのに対し、
+# alias は元の対象と完全に等価（別名）。スコープは宣言以降・同一ブロック内のみ。
+
+# === 1. 型への別名 ===
+# 右辺が型: 型注釈・コンストラクタ式・型ガードのいずれでも使える。
+print("=== alias to a type ===")
+
+alias object_handle: int
+
+let h: object_handle = object_handle(42)
+print(h)              # 42
+print(h is object_handle)  # True  （int と完全に等価）
+print(h is int)       # True
+
+# === 2. lvalue への別名（参照ごとに再評価） ===
+# 右辺が式: 参照のたびに data_dict["often_used_key"] が再評価され、
+# 代入対象（lvalue）としても透過的に振る舞う。
+print("=== alias to an lvalue (re-evaluated each use) ===")
+
+mut data_dict: dict[str, int] = {"often_used_key": 1, "other": 99}
+
+alias often_accessed_item: data_dict["often_used_key"]
+
+print(often_accessed_item)          # 1
+often_accessed_item = 5             # → data_dict["often_used_key"] = 5
+print(often_accessed_item)          # 5
+often_accessed_item += 10           # → data_dict["often_used_key"] += 10
+print(often_accessed_item)          # 15
+print(data_dict["often_used_key"])  # 15
+
+# === 3. テンプレート適用への別名 ===
+# 右辺がテンプレート具体化: 型としてもコンストラクタとしても使える。
+print("=== alias to a template instantiation ===")
+
+trait Valued:
+    fn get(self) -> int:
+        ...
+
+class MyInt(Valued):
+    mut value: int
+    fn get(self) -> int:
+        return self.value
+
+class Box[T: Valued]:
+    mut item: T
+    fn unwrap(self) -> int:
+        return self.item.get()
+
+alias IntBox: Box[MyInt]
+
+let b: IntBox = IntBox(MyInt(7))
+print(b.unwrap())     # 7
+
+# === 4. 関数を生む block 式への別名 ===
+# 右辺が block 式: 参照のたびにブロックが実行され、特殊化した関数値を返す。
+print("=== alias to a block expression producing a function ===")
+
+fn general_function(let a: int, let b: int) -> int:
+    return a + b
+
+alias sub_function: block->function:
+    fn specialized_function(let x: int) -> int:
+        return general_function(x, 3)
+    block_return specialized_function
+
+let f = sub_function
+print(f(10))          # 13
+print(sub_function(20))  # 23  （参照ごとに新しい関数値を生成）
+
+# === 5. ブロックスコープ（宣言したブロック内のみ有効） ===
+print("=== block scope ===")
+
+fn use_local_alias() -> int:
+    alias local_shortcut: 100 + 1
+    return local_shortcut   # 101
+
+print(use_local_alias())  # 101
+# ここでは local_shortcut は不可視（関数ブロックを抜けると消える）

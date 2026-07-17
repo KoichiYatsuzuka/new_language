@@ -126,3 +126,4 @@ mod set_type;
 mod async_tests;
 mod unpacking;
 mod mustbe;
+mod alias;

@@ -23,6 +23,16 @@ impl Parser {
     /// `new_type` で宣言された名前への代入・複合代入はパースエラーとなる。
     /// 式または右辺のパースに失敗した場合もエラーを返す。
     pub(crate) fn parse_ident_stmt(&mut self) -> Result<Stmt, String> {
+        // 先頭の識別子が別名（alias）なら、式として展開してから代入等を判定する。
+        // これにより lvalue 透過性が保たれる（例: `item = 5` → `data_dict["k"] = 5`）。
+        // ただし `name <- async` の非同期代入は別名対象にしない。
+        let leading_alias = matches!(self.current(), Token::Ident(n) if self.aliases.contains_key(n))
+            && *self.peek1() != Token::LeftArrow;
+        if leading_alias {
+            let span = self.current_span();
+            let expr = self.parse_expr()?;
+            return self.finish_expr_stmt(expr, span);
+        }
         match self.peek1().clone() {
             // `target <- async [->Type]: body` — 非同期タスクを AsyncManager に追加する
             Token::LeftArrow => {
@@ -64,35 +74,45 @@ impl Parser {
                     // 式文・属性代入・属性複合代入の判定
                     // まず式全体をパースしてから後続トークンで分岐する
                     let expr = self.parse_expr()?;
-                    let cur = self.current().clone();
-                    if cur == Token::Eq {
-                        // `expr = 値` — 属性代入（self.x = v など）
-                        self.advance();
-                        Ok(Stmt::AttrAssign {
-                            target: expr,
-                            value: self.parse_expr()?,
-                        })
-                    } else if let Some(op) = token_to_compound_op(&cur) {
-                        // `expr += 値` など — 属性複合代入
-                        self.advance();
-                        Ok(Stmt::AttrCompoundAssign {
-                            target: expr,
-                            op,
-                            value: self.parse_expr()?,
-                        })
-                    } else if matches!(
-                        self.current(),
-                        Token::On | Token::Once | Token::Off
-                    ) {
-                        // イベントハンドラ文（on/once/off）
-                        self.try_parse_event_stmt(expr, Span::unknown())?
-                            .ok_or_else(|| "internal: expected event stmt".to_string())
-                    } else {
-                        // 代入でなければ式文として返す
-                        Ok(Stmt::Expr(expr))
-                    }
+                    self.finish_expr_stmt(expr, Span::unknown())
                 }
             }
+        }
+    }
+
+    /// 既にパース済みの先頭式 `expr` の後続トークンを見て、代入・複合代入・
+    /// イベント文・式文のいずれかへ確定する。
+    ///
+    /// 属性アクセス・添字・別名展開後の式など、単純変数名でない代入対象を
+    /// `AttrAssign` / `AttrCompoundAssign` として扱うための共通処理。
+    ///
+    /// # 引数
+    /// - `expr` — 文の先頭でパース済みの式（代入対象になり得る）
+    /// - `span` — イベント文で用いる位置情報
+    fn finish_expr_stmt(&mut self, expr: Expr, span: Span) -> Result<Stmt, String> {
+        let cur = self.current().clone();
+        if cur == Token::Eq {
+            // `expr = 値` — 属性/添字代入（self.x = v, d["k"] = v など）
+            self.advance();
+            Ok(Stmt::AttrAssign {
+                target: expr,
+                value: self.parse_expr()?,
+            })
+        } else if let Some(op) = token_to_compound_op(&cur) {
+            // `expr += 値` など — 属性/添字複合代入
+            self.advance();
+            Ok(Stmt::AttrCompoundAssign {
+                target: expr,
+                op,
+                value: self.parse_expr()?,
+            })
+        } else if matches!(self.current(), Token::On | Token::Once | Token::Off) {
+            // イベントハンドラ文（on/once/off）
+            self.try_parse_event_stmt(expr, span)?
+                .ok_or_else(|| "internal: expected event stmt".to_string())
+        } else {
+            // 代入でなければ式文として返す
+            Ok(Stmt::Expr(expr))
         }
     }
 
