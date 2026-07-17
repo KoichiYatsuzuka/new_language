@@ -25,4 +25,7 @@ EXPORTS
    TextProcessor_inst_Append
    TextProcessor_Repeat
    TextProcessor_IsNullOrEmpty
+   EventSource_StartTimer
+   EventSource_FireOnce
    arrow_bridge_free_str
+   arrow_bridge_set_event_fire

@@ -8,7 +8,7 @@
 //   EventLoopData    — emit_async で積まれたイベントと post() コールバックのキュー
 //   ExternalEvent    — C#/Go ブリッジから ar_event_fire() で積まれた外部イベント
 //   ExternalEventQueue — Arc<Mutex<VecDeque<ExternalEvent>>>: スレッドセーフキュー
-//   new_external_queue — ExternalEventQueue を生成するファクトリ
+//   global_ext_queue   — プロセス全体で共有するグローバルキューの取得（遅延生成）
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -43,12 +43,15 @@ pub struct HandlerEntry {
 /// - `handlers`    : 登録済みハンドラのリスト（同期・非同期・一回限りを含む）
 /// - `async_queue` : `emit_async(val)` で積まれた値のキュー（EventLoop が処理）
 /// - `next_id`     : 次のハンドラ ID（単調増加）
+/// - `external_id` : 外部発火用に発番されたプロセス全体で一意な ID（未発番なら None）
 #[derive(Debug)]
 pub struct SignalData {
     pub handlers: Vec<HandlerEntry>,
     /// `emit_async()` で積まれた値。EventLoop.run() が取り出してハンドラを呼ぶ。
     pub async_queue: VecDeque<Value>,
     pub next_id: u64,
+    /// `sig.external_id` 初回アクセス時に発番され、external_handler_registry に登録される。
+    pub external_id: Option<u64>,
 }
 
 impl SignalData {
@@ -57,6 +60,7 @@ impl SignalData {
             handlers: Vec::new(),
             async_queue: VecDeque::new(),
             next_id: 1,
+            external_id: None,
         }
     }
 
@@ -158,8 +162,9 @@ impl EventLoopData {
 
 /// C#/Go ブリッジスレッドから Arrow メインスレッドへ送るイベントデータ。
 ///
-/// - `handler_id` : Arrow 側でハンドラ登録時に発行された ID（Arrow の SignalData 内の ID と対応）
-/// - `data`       : MessagePack でシリアライズされたイベント引数バイト列
+/// - `handler_id` : `sig.external_id` で発番されたシグナル単位の ID
+///   （external_handler_registry のキー。該当シグナルの全ハンドラが呼ばれる）
+/// - `data`       : イベント引数バイト列（現状は UTF-8 文字列として復号される）
 #[derive(Debug, Clone)]
 pub struct ExternalEvent {
     pub handler_id: u64,
@@ -170,8 +175,8 @@ pub struct ExternalEvent {
 /// Arrow メインスレッドが `EventLoop.run()` のティック内で読み出す。
 pub type ExternalEventQueue = Arc<Mutex<VecDeque<ExternalEvent>>>;
 
-/// ExternalEventQueue を新規生成する。Interpreter::new() から1度だけ呼ばれる。
-pub fn new_external_queue() -> ExternalEventQueue {
+/// ExternalEventQueue を新規生成する（global_ext_queue の遅延初期化用）。
+fn new_external_queue() -> ExternalEventQueue {
     Arc::new(Mutex::new(VecDeque::new()))
 }
 
@@ -179,14 +184,16 @@ pub fn new_external_queue() -> ExternalEventQueue {
 // Global external queue singleton  (for ar_event_fire C ABI)
 // ---------------------------------------------------------------------------
 
-/// `ar_event_fire` が書き込む静的キュー。インタープリタ初期化時に設定され、
+/// `ar_event_fire` が書き込む静的キュー。初回アクセス時に生成され、
 /// 以降は不変（同じ Arc を使い続ける）。
 static GLOBAL_EXT_QUEUE: std::sync::OnceLock<ExternalEventQueue> = std::sync::OnceLock::new();
 
-/// グローバル外部キューをセットする（Interpreter::new() から呼ぶ）。
-/// 2 回目以降は無視される（インタープリタは通常1つだけ起動する）。
-pub fn set_global_ext_queue(q: ExternalEventQueue) {
-    let _ = GLOBAL_EXT_QUEUE.set(q);
+/// グローバル外部キューを取得する（未生成なら生成する）。
+/// `Interpreter::new()` はこれを自分の `external_event_queue` として保持するため、
+/// プロセス内の全インタープリタが同一キューを共有する
+/// （2 個目以降のインタープリタでも `ar_event_fire` の書き込みが届く）。
+pub fn global_ext_queue() -> ExternalEventQueue {
+    GLOBAL_EXT_QUEUE.get_or_init(new_external_queue).clone()
 }
 
 /// `ar_event_fire(handler_id, data_ptr, len)` C ABI 実装。

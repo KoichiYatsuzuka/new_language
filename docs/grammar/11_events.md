@@ -30,7 +30,7 @@ let anything = Signal()        # 型引数なしも可
 型引数 `T` はランタイムでは無視されます (型注釈としてのみ使用)。
 
 `SignalData` はハンドラリスト (`Vec<HandlerEntry>`)・`emit_async` 用キュー・
-単調増加のハンドラ ID カウンタを持ちます。
+単調増加のハンドラ ID カウンタ・外部発火用 ID (`external_id`、未発番なら None) を持ちます。
 
 ---
 
@@ -117,6 +117,7 @@ counter.emit_async(2)   # 遅延発火: EventLoop のキューに積むだけ
 | プロパティ | 型 | 内容 |
 |---|---|---|
 | `sig.handler_count` | `int` | 現在登録されているハンドラ数 |
+| `sig.external_id` | `int` | 外部発火用のシグナル ID (読み取り専用)。初回アクセス時に発番+registry 登録され、以後は同じ値を返す (詳細は「外部イベント」節) |
 
 ---
 
@@ -157,11 +158,46 @@ EventLoop.run()             # キューが空になったら即終了
 外部スレッドからは C ABI 関数 `ar_event_fire(handler_id, data_ptr, len)` で
 スレッドセーフなグローバルキューにイベントを積めます。
 
-- `handler_id` : Arrow 側でハンドラ登録時に発行された ID
-- データは MessagePack バイト列を想定 (現時点では `str` としてハンドラに渡されます)
+- `handler_id` : **シグナル単位の ID**。Arrow 側で `sig.external_id` を読むと
+  プロセス全体で一意な ID (1 始まり) が発番され、`external_handler_registry` に
+  登録されます。発火時は該当シグナルの**全ハンドラ**が呼ばれます。
+- データは UTF-8 バイト列として `str` でハンドラに渡されます
+  (MessagePack 復号は将来課題)
 
 積まれたイベントは `EventLoop.run()` のティック冒頭で
 `drain_external_events()` が取り出し、対応する Signal の全ハンドラを呼び出します。
+
+### C# (cs-dll) からの発火
+
+`ar_event_fire` は arrow.exe 内のシンボルのため、DLL 側からは直接解決できません。
+ブリッジ DLL が `arrow_bridge_set_event_fire(ptr)` をエクスポートしていれば、
+DLL ロード直後に Rust 側から `ar_event_fire` の関数ポインタが注入されます
+(`src/interpreter/cs_dll_runtime.rs` の `load_bridge`。シンボルが無い旧 DLL では何もしない)。
+
+```hv
+import[cs-dll] cs_interop_test.ArrowBridge as bridge
+
+let ticks = Signal[str]()
+fn on_tick(mut msg: str) -> None:
+    print("[ar] received:", msg)
+ticks on on_tick
+
+let sig_id = ticks.external_id             # 発番 + registry 登録
+bridge.EventSource.StartTimer(sig_id, 3, 50)  # C# 背景スレッドが 3 回発火
+EventLoop.run(1.0)                         # タイムアウト付きで発火を処理
+```
+
+動作確認例: [examples/interop/event_cs_fire.ar](../../examples/interop/event_cs_fire.ar)
+(C# 側の実装は `examples/interop/cs_interop_test/EventSource.cs`、
+再ビルドは `build_bridge.ps1`)
+
+**注意**: タイムアウトなしの `EventLoop.run()` は `signal_queue` / `post_queue` しか
+見ないため、外部スレッドがまだ発火していない段階で即終了します。
+外部イベントを受ける場合は必ず `EventLoop.run(timeout)` を使ってください。
+
+**将来課題**: cs-proc (IPC サブプロセス) 対応 / MessagePack 復号 /
+`external_id` の解除 API (registry は Signal の Rc を保持し続けるため、
+大量に発番すると解放されないままになる)。
 
 ---
 

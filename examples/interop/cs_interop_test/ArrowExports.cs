@@ -211,6 +211,19 @@ public static unsafe class ArrowExports
         return TextProcessor.IsNullOrEmpty(s) ? 1L : 0L;
     }
 
+    // ── EventSource — static methods ─────────────────────────────────────────
+
+    [UnmanagedCallersOnly(EntryPoint = "EventSource_StartTimer")]
+    public static void EventSource_StartTimer(long signalId, long count, long intervalMs)
+        => EventSource.StartTimer(signalId, (int)count, (int)intervalMs);
+
+    [UnmanagedCallersOnly(EntryPoint = "EventSource_FireOnce")]
+    public static void EventSource_FireOnce(long signalId, byte* payload, int payloadLen)
+    {
+        string s = Marshal.PtrToStringUTF8((IntPtr)payload, payloadLen);
+        EventSource.FireOnce(signalId, s);
+    }
+
     // ── String helpers ───────────────────────────────────────────────────────
     // Arrow calls arrow_bridge_free_str to release strings returned here.
 

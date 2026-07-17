@@ -1,0 +1,32 @@
+# event_cs_fire.ar — C# 側から Arrow のイベントハンドラを発火させる例
+#
+# 仕組み:
+#   1. `sig.external_id` でプロセス全体で一意なシグナル ID を発番し、
+#      external_handler_registry に登録する
+#   2. ブリッジ DLL ロード時に arrow.exe が ar_event_fire の関数ポインタを
+#      arrow_bridge_set_event_fire 経由で C# 側に注入している
+#   3. C# の背景スレッドが ar_event_fire(id, payload, len) を呼ぶと
+#      スレッドセーフなグローバルキューに積まれる
+#   4. EventLoop.run(timeout) のティック冒頭でキューが drain され、
+#      該当シグナルの全ハンドラが呼ばれる (ペイロードは str)
+#
+# 注意: タイムアウトなしの EventLoop.run() は外部イベントを待たずに
+#       即終了するため、必ず run(timeout) を使うこと。
+
+import[cs-dll] cs_interop_test.ArrowBridge as bridge
+
+let ticks = Signal[str]()
+
+fn on_tick(mut msg: str) -> None:
+    print("[ar] received:", msg)
+
+ticks on on_tick
+
+let sig_id = ticks.external_id        # 発番 + registry 登録 (以後同じ値を返す)
+print("[ar] external_id =", sig_id)
+
+# C# 背景スレッドから 3 回、50ms 間隔で "tick N" を発火する
+bridge.EventSource.StartTimer(sig_id, 3, 50)
+
+EventLoop.run(1.0)                    # C# スレッドからの発火を処理
+print("done")

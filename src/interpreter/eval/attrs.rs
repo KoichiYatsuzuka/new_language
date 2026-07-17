@@ -183,9 +183,21 @@ impl Interpreter {
             },
             Value::Signal(sig_rc) => {
                 // Signal[T] には read-only プロパティのみ。メソッドは eval_method_call が処理する。
-                let sig = sig_rc.borrow();
                 match attr {
-                    "handler_count" => Ok(Value::Int(sig.handlers.len() as i64)),
+                    "handler_count" => Ok(Value::Int(sig_rc.borrow().handlers.len() as i64)),
+                    "external_id" => {
+                        // 初回アクセス時に発番して external_handler_registry に登録する。
+                        // 以後は同じ ID を返す（外部スレッドは ar_event_fire(id, ...) で発火できる）。
+                        let existing = sig_rc.borrow().external_id;
+                        if let Some(id) = existing {
+                            return Ok(Value::Int(id as i64));
+                        }
+                        let id = self.next_external_signal_id;
+                        self.next_external_signal_id += 1;
+                        sig_rc.borrow_mut().external_id = Some(id);
+                        self.external_handler_registry.insert(id, sig_rc.clone());
+                        Ok(Value::Int(id as i64))
+                    }
                     _ => Err(format!(
                         "AttributeError: 'Signal' object has no attribute '{attr}'"
                     )),

@@ -1,6 +1,12 @@
 # 実装計画: C# から Arrow のイベントハンドラを発火させる仕組み
 
-状態: **計画のみ（未実装）** / 作成日: 2026-07-17
+状態: **実装済み（Phase 1〜3 完了、cs-proc / MessagePack は将来課題のまま）** / 作成日: 2026-07-17 / 実装日: 2026-07-17
+
+実装時の計画からの逸脱:
+- `GLOBAL_EXT_QUEUE` は「Interpreter::new() が set」ではなく `get_or_init` 共有方式に変更
+  (2 個目以降の Interpreter で `ar_event_fire` の書き込み先と drain 元が別キューになる不整合を修正)
+- C# 側に `EventSource.FireOnce(signalId, payload)` を追加 (単発発火デモ用)
+- ビルドスクリプトは `examples/interop/cs_interop_test/build_bridge.ps1`
 
 ## 背景と現状
 

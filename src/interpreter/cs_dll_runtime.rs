@@ -74,6 +74,13 @@ pub fn load_bridge(path: &Path) -> Result<Arc<BridgeLib>, String> {
             return Ok(Arc::clone(existing));
         }
         let bridge = BridgeLib::load(path)?;
+        // ar_event_fire は arrow.exe 内のシンボルで DLL 側からは解決できないため、
+        // ブリッジが `arrow_bridge_set_event_fire` をエクスポートしていれば
+        // 関数ポインタを注入する (シンボルが無い旧 DLL では何もしない)。
+        if let Some(p) = bridge.sym_ptr("arrow_bridge_set_event_fire") {
+            let setter: unsafe extern "C" fn(usize) = unsafe { std::mem::transmute(p) };
+            unsafe { setter(crate::interpreter::event_loop::ar_event_fire as *const () as usize) };
+        }
         map.insert(canon.clone(), Arc::clone(&bridge));
         Ok(bridge)
     })

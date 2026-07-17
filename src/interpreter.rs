@@ -317,6 +317,8 @@ pub struct Interpreter {
     pub(self) external_event_queue: event_loop::ExternalEventQueue,
     /// 外部イベント handler_id → SignalData の逆引きマップ（C#/Go 連携時に使用）。
     pub(self) external_handler_registry: HashMap<u64, Rc<RefCell<event_loop::SignalData>>>,
+    /// `sig.external_id` の発番カウンタ（プロセス内の Interpreter 単位で単調増加、1 始まり）。
+    pub(self) next_external_signal_id: u64,
 }
 
 impl Interpreter {
@@ -345,9 +347,8 @@ impl Interpreter {
             Var::new(Value::EventLoop(el_data.clone()), false),
         );
 
-        // 外部イベントキューを生成してグローバルキューにも登録する（ar_event_fire から利用）。
-        let ext_q = event_loop::new_external_queue();
-        event_loop::set_global_ext_queue(ext_q.clone());
+        // グローバル外部イベントキューを共有する（ar_event_fire が書き込む先と同一）。
+        let ext_q = event_loop::global_ext_queue();
 
         Self {
             scopes: vec![global],
@@ -382,6 +383,7 @@ impl Interpreter {
             event_loop_data: el_data,
             external_event_queue: ext_q,
             external_handler_registry: HashMap::new(),
+            next_external_signal_id: 1,
         }
     }
 

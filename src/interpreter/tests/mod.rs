@@ -124,6 +124,7 @@ mod file_io;
 mod primitives;
 mod set_type;
 mod async_tests;
+mod events_external;
 mod unpacking;
 mod mustbe;
 mod alias;
