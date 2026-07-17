@@ -19,6 +19,7 @@
 | [08_type_system.md](08_type_system.md) | 型アノテーション・静的型検査・型推論・型ガードナロイング |
 | [09_imports.md](09_imports.md) | import・from import・言語タグ・モジュールキャッシュ |
 | [10_special_features.md](10_special_features.md) | block_return/loop_yield/yield・async・break_point・数学文字列 |
+| [11_events.md](11_events.md) | Signal[T]・on/once/off 購読・emit/emit_async・EventLoop・外部イベント |
 
 ---
 
