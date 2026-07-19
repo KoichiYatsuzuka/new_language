@@ -41,27 +41,19 @@ impl Interpreter {
             Value::List(items) => {
                 match method_name {
                     "__iter__" => {
-                        if !args.is_empty() {
-                            return Err("TypeError: list.__iter__() takes no arguments".to_string());
-                        }
+                        Self::expect_no_args(args, "list", "__iter__")?;
                         return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
                             values: items.borrow().clone(),
                             index: 0,
                         }))));
                     }
                     "append" => {
-                        let evaled = self.eval_call_args(args)?;
-                        if evaled.len() != 1 {
-                            return Err("TypeError: list.append() takes exactly 1 argument".to_string());
-                        }
-                        let item = evaled.into_iter().next().unwrap().1;
+                        let item = self.eval_one_arg(args, "list", "append")?;
                         items.borrow_mut().push(item);
                         return Ok(Value::None);
                     }
                     "pop" => {
-                        if !args.is_empty() {
-                            return Err("TypeError: list.pop() takes no arguments".to_string());
-                        }
+                        Self::expect_no_args(args, "list", "pop")?;
                         let mut v = items.borrow_mut();
                         if v.is_empty() {
                             return Err("IndexError: pop from empty list".to_string());
@@ -77,9 +69,7 @@ impl Interpreter {
             Value::FrozenList { ref state, ref layout } => {
                 match method_name {
                     "__iter__" => {
-                        if !args.is_empty() {
-                            return Err("TypeError: fixed_list.__iter__() takes no arguments".to_string());
-                        }
+                        Self::expect_no_args(args, "fixed_list", "__iter__")?;
                         let st = state.borrow();
                         let values = (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
                         Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
@@ -88,29 +78,19 @@ impl Interpreter {
                         }))))
                     }
                     "__contains__" => {
-                        let evaled = self.eval_call_args(args)?;
-                        if evaled.len() != 1 {
-                            return Err("TypeError: fixed_list.__contains__() takes exactly 1 argument".to_string());
-                        }
-                        let needle = &evaled[0].1;
+                        let needle = self.eval_one_arg(args, "fixed_list", "__contains__")?;
                         let st = state.borrow();
                         let found = (0..st.len)
                             .map(|i| layout.reconstruct_item(&st.data, i))
-                            .any(|v| self.values_eq(&v, needle));
+                            .any(|v| self.values_eq(&v, &needle));
                         Ok(Value::Bool(found))
                     }
                     "allocated_size" => {
-                        if !args.is_empty() {
-                            return Err("TypeError: fixed_list.allocated_size() takes no arguments".to_string());
-                        }
+                        Self::expect_no_args(args, "fixed_list", "allocated_size")?;
                         Ok(Value::Int(state.borrow().allocated_size as i64))
                     }
                     "append" => {
-                        let evaled = self.eval_call_args(args)?;
-                        if evaled.len() != 1 {
-                            return Err("TypeError: fixed_list.append() takes exactly 1 argument".to_string());
-                        }
-                        let item = evaled.into_iter().next().unwrap().1;
+                        let item = self.eval_one_arg(args, "fixed_list", "append")?;
                         match item {
                             Value::Instance(inst_rc) => {
                                 let inst = inst_rc.borrow();
@@ -157,21 +137,15 @@ impl Interpreter {
                 let im = *im;
                 match method_name {
                     "real" => {
-                        if !args.is_empty() {
-                            return Err("TypeError: complex.real() takes no arguments".to_string());
-                        }
+                        Self::expect_no_args(args, "complex", "real")?;
                         Ok(Value::Float(re))
                     }
                     "imag" => {
-                        if !args.is_empty() {
-                            return Err("TypeError: complex.imag() takes no arguments".to_string());
-                        }
+                        Self::expect_no_args(args, "complex", "imag")?;
                         Ok(Value::Float(im))
                     }
                     "angle" => {
-                        if !args.is_empty() {
-                            return Err("TypeError: complex.angle() takes no arguments".to_string());
-                        }
+                        Self::expect_no_args(args, "complex", "angle")?;
                         Ok(Value::Float(im.atan2(re)))
                     }
                     _ => Err(format!(
@@ -337,20 +311,12 @@ impl Interpreter {
                 match method_name {
                     // `d.key()` / `d.keys()` — キーのリストを返す
                     "key" | "keys" => {
-                        if !args.is_empty() {
-                            return Err(format!(
-                                "TypeError: dict.{method_name}() takes no arguments"
-                            ));
-                        }
+                        Self::expect_no_args(args, "dict", method_name)?;
                         Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_keys()))))
                     }
                     // `d.item()` / `d.values()` — 値のリストを返す
                     "item" | "values" => {
-                        if !args.is_empty() {
-                            return Err(format!(
-                                "TypeError: dict.{method_name}() takes no arguments"
-                            ));
-                        }
+                        Self::expect_no_args(args, "dict", method_name)?;
                         Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_items()))))
                     }
                     _ => Err(format!(
@@ -361,9 +327,7 @@ impl Interpreter {
             Value::Set(s) => {
                 match method_name {
                     "__iter__" => {
-                        if !args.is_empty() {
-                            return Err("TypeError: set.__iter__() takes no arguments".to_string());
-                        }
+                        Self::expect_no_args(args, "set", "__iter__")?;
                         let items = s.borrow().clone();
                         Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
                             values: items,
@@ -371,11 +335,7 @@ impl Interpreter {
                         }))))
                     }
                     "add" => {
-                        let evaled = self.eval_call_args(args)?;
-                        if evaled.len() != 1 {
-                            return Err("TypeError: set.add() takes exactly 1 argument".to_string());
-                        }
-                        let item = evaled.into_iter().next().unwrap().1;
+                        let item = self.eval_one_arg(args, "set", "add")?;
                         let mut s_mut = s.borrow_mut();
                         if !s_mut.iter().any(|v| self.values_eq(v, &item)) {
                             s_mut.push(item);
@@ -383,39 +343,25 @@ impl Interpreter {
                         Ok(Value::None)
                     }
                     "discard" => {
-                        let evaled = self.eval_call_args(args)?;
-                        if evaled.len() != 1 {
-                            return Err(
-                                "TypeError: set.discard() takes exactly 1 argument".to_string()
-                            );
-                        }
-                        let item = &evaled[0].1;
+                        let item = self.eval_one_arg(args, "set", "discard")?;
                         let mut s_mut = s.borrow_mut();
-                        if let Some(pos) = s_mut.iter().position(|v| self.values_eq(v, item)) {
+                        if let Some(pos) = s_mut.iter().position(|v| self.values_eq(v, &item)) {
                             s_mut.remove(pos);
                         }
                         Ok(Value::None)
                     }
                     "remove" => {
-                        let evaled = self.eval_call_args(args)?;
-                        if evaled.len() != 1 {
-                            return Err(
-                                "TypeError: set.remove() takes exactly 1 argument".to_string()
-                            );
-                        }
-                        let item = &evaled[0].1;
+                        let item = self.eval_one_arg(args, "set", "remove")?;
                         let mut s_mut = s.borrow_mut();
-                        if let Some(pos) = s_mut.iter().position(|v| self.values_eq(v, item)) {
+                        if let Some(pos) = s_mut.iter().position(|v| self.values_eq(v, &item)) {
                             s_mut.remove(pos);
                             Ok(Value::None)
                         } else {
-                            Err(format!("KeyError: {} is not in set", self.display(item)))
+                            Err(format!("KeyError: {} is not in set", self.display(&item)))
                         }
                     }
                     "pop" => {
-                        if !args.is_empty() {
-                            return Err("TypeError: set.pop() takes no arguments".to_string());
-                        }
+                        Self::expect_no_args(args, "set", "pop")?;
                         let mut s_mut = s.borrow_mut();
                         if s_mut.is_empty() {
                             Err("KeyError: pop from an empty set".to_string())
@@ -424,34 +370,17 @@ impl Interpreter {
                         }
                     }
                     "clear" => {
-                        if !args.is_empty() {
-                            return Err("TypeError: set.clear() takes no arguments".to_string());
-                        }
+                        Self::expect_no_args(args, "set", "clear")?;
                         s.borrow_mut().clear();
                         Ok(Value::None)
                     }
                     "copy" => {
-                        if !args.is_empty() {
-                            return Err("TypeError: set.copy() takes no arguments".to_string());
-                        }
+                        Self::expect_no_args(args, "set", "copy")?;
                         Ok(Value::Set(Rc::new(RefCell::new(s.borrow().clone()))))
                     }
                     "union" => {
-                        let evaled = self.eval_call_args(args)?;
-                        if evaled.len() != 1 {
-                            return Err(
-                                "TypeError: set.union() takes exactly 1 argument".to_string()
-                            );
-                        }
-                        let other = &evaled[0].1;
-                        let other_items: Vec<Value> = match other {
-                            Value::Set(o) => o.borrow().clone(),
-                            Value::List(l) => l.borrow().clone(),
-                            _ => return Err(format!(
-                                "TypeError: set.union() argument must be a set or list, not '{}'",
-                                self.type_name(other)
-                            )),
-                        };
+                        let other = self.eval_one_arg(args, "set", "union")?;
+                        let other_items = self.set_other_items(&other, "union")?;
                         let mut result = s.borrow().clone();
                         for v in other_items {
                             if !result.iter().any(|x| self.values_eq(x, &v)) {
@@ -461,17 +390,8 @@ impl Interpreter {
                         Ok(Value::Set(Rc::new(RefCell::new(result))))
                     }
                     "intersection" => {
-                        let evaled = self.eval_call_args(args)?;
-                        if evaled.len() != 1 {
-                            return Err("TypeError: set.intersection() takes exactly 1 argument"
-                                .to_string());
-                        }
-                        let other = &evaled[0].1;
-                        let other_items: Vec<Value> = match other {
-                            Value::Set(o) => o.borrow().clone(),
-                            Value::List(l) => l.borrow().clone(),
-                            _ => return Err(format!("TypeError: set.intersection() argument must be a set or list, not '{}'", self.type_name(other))),
-                        };
+                        let other = self.eval_one_arg(args, "set", "intersection")?;
+                        let other_items = self.set_other_items(&other, "intersection")?;
                         let result: Vec<Value> = s
                             .borrow()
                             .iter()
@@ -481,18 +401,8 @@ impl Interpreter {
                         Ok(Value::Set(Rc::new(RefCell::new(result))))
                     }
                     "difference" => {
-                        let evaled = self.eval_call_args(args)?;
-                        if evaled.len() != 1 {
-                            return Err(
-                                "TypeError: set.difference() takes exactly 1 argument".to_string()
-                            );
-                        }
-                        let other = &evaled[0].1;
-                        let other_items: Vec<Value> = match other {
-                            Value::Set(o) => o.borrow().clone(),
-                            Value::List(l) => l.borrow().clone(),
-                            _ => return Err(format!("TypeError: set.difference() argument must be a set or list, not '{}'", self.type_name(other))),
-                        };
+                        let other = self.eval_one_arg(args, "set", "difference")?;
+                        let other_items = self.set_other_items(&other, "difference")?;
                         let result: Vec<Value> = s
                             .borrow()
                             .iter()
@@ -502,19 +412,8 @@ impl Interpreter {
                         Ok(Value::Set(Rc::new(RefCell::new(result))))
                     }
                     "symmetric_difference" => {
-                        let evaled = self.eval_call_args(args)?;
-                        if evaled.len() != 1 {
-                            return Err(
-                                "TypeError: set.symmetric_difference() takes exactly 1 argument"
-                                    .to_string(),
-                            );
-                        }
-                        let other = &evaled[0].1;
-                        let other_items: Vec<Value> = match other {
-                            Value::Set(o) => o.borrow().clone(),
-                            Value::List(l) => l.borrow().clone(),
-                            _ => return Err(format!("TypeError: set.symmetric_difference() argument must be a set or list, not '{}'", self.type_name(other))),
-                        };
+                        let other = self.eval_one_arg(args, "set", "symmetric_difference")?;
+                        let other_items = self.set_other_items(&other, "symmetric_difference")?;
                         let s_ref = s.borrow();
                         let mut result: Vec<Value> = s_ref
                             .iter()
@@ -529,18 +428,8 @@ impl Interpreter {
                         Ok(Value::Set(Rc::new(RefCell::new(result))))
                     }
                     "issubset" => {
-                        let evaled = self.eval_call_args(args)?;
-                        if evaled.len() != 1 {
-                            return Err(
-                                "TypeError: set.issubset() takes exactly 1 argument".to_string()
-                            );
-                        }
-                        let other = &evaled[0].1;
-                        let other_items: Vec<Value> = match other {
-                            Value::Set(o) => o.borrow().clone(),
-                            Value::List(l) => l.borrow().clone(),
-                            _ => return Err(format!("TypeError: set.issubset() argument must be a set or list, not '{}'", self.type_name(other))),
-                        };
+                        let other = self.eval_one_arg(args, "set", "issubset")?;
+                        let other_items = self.set_other_items(&other, "issubset")?;
                         let result = s
                             .borrow()
                             .iter()
@@ -548,18 +437,8 @@ impl Interpreter {
                         Ok(Value::Bool(result))
                     }
                     "issuperset" => {
-                        let evaled = self.eval_call_args(args)?;
-                        if evaled.len() != 1 {
-                            return Err(
-                                "TypeError: set.issuperset() takes exactly 1 argument".to_string()
-                            );
-                        }
-                        let other = &evaled[0].1;
-                        let other_items: Vec<Value> = match other {
-                            Value::Set(o) => o.borrow().clone(),
-                            Value::List(l) => l.borrow().clone(),
-                            _ => return Err(format!("TypeError: set.issuperset() argument must be a set or list, not '{}'", self.type_name(other))),
-                        };
+                        let other = self.eval_one_arg(args, "set", "issuperset")?;
+                        let other_items = self.set_other_items(&other, "issuperset")?;
                         let s_ref = s.borrow();
                         let result = other_items
                             .iter()
@@ -577,9 +456,7 @@ impl Interpreter {
                         "AttributeError: Generator object has no method '{method_name}'"
                     ));
                 }
-                if !args.is_empty() {
-                    return Err("TypeError: Generator.next() takes no arguments".to_string());
-                }
+                Self::expect_no_args(args, "Generator", "next")?;
                 let mut s = state.borrow_mut();
                 if s.index < s.values.len() {
                     // 次の yield 値を返してインデックスを進める
@@ -636,11 +513,7 @@ impl Interpreter {
             Value::AsyncManager(mgr_rc) => {
                 match method_name {
                     "all_done" => {
-                        if !args.is_empty() {
-                            return Err(
-                                "TypeError: AsyncManager.all_done() takes no arguments".to_string()
-                            );
-                        }
+                        Self::expect_no_args(args, "AsyncManager", "all_done")?;
                         let all = mgr_rc.borrow().all_done();
                         Ok(Value::Bool(all))
                     }
@@ -750,6 +623,40 @@ impl Interpreter {
             _ => Err(format!(
                 "AttributeError: '{}' object has no method '{method_name}'",
                 self.type_name(&obj)
+            )),
+        }
+    }
+
+    // ── メソッド引数検証ヘルパ ──────────────────────────────────────────────
+
+    /// 引数なしメソッドを検証する（引数があれば TypeError）。
+    fn expect_no_args(args: &[CallArg], type_name: &str, method: &str) -> Result<(), String> {
+        if args.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("TypeError: {type_name}.{method}() takes no arguments"))
+        }
+    }
+
+    /// 引数を評価し、ちょうど 1 個であることを検証してその値を返す。
+    fn eval_one_arg(&mut self, args: &[CallArg], type_name: &str, method: &str)
+        -> Result<Value, String>
+    {
+        let evaled = self.eval_call_args(args)?;
+        if evaled.len() != 1 {
+            return Err(format!("TypeError: {type_name}.{method}() takes exactly 1 argument"));
+        }
+        Ok(evaled.into_iter().next().unwrap().1)
+    }
+
+    /// set 演算の引数（`set` または `list`）を `Vec<Value>` に変換する。
+    fn set_other_items(&self, other: &Value, method: &str) -> Result<Vec<Value>, String> {
+        match other {
+            Value::Set(o) => Ok(o.borrow().clone()),
+            Value::List(l) => Ok(l.borrow().clone()),
+            _ => Err(format!(
+                "TypeError: set.{method}() argument must be a set or list, not '{}'",
+                self.type_name(other)
             )),
         }
     }

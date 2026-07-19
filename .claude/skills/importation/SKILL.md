@@ -392,32 +392,42 @@ fn find_js_config(search_dirs: &[PathBuf])
 6. NamespaceData::new(module_name, members) を alias に束縛
 ```
 
-### ブリッジランタイム (`src/interpreter/js_proc_runtime.rs`)
+### ブリッジランタイム
 
-#### `JsBridge` 構造体
+パイプの下回り（起動ハンドシェイク・`send_recv`・名前付きパイプ接続・`Drop` での `quit` 送信）は
+cs-proc と共通で、`src/interpreter/proc_bridge.rs` の `PipeConn` に集約されています。
+`js_proc_runtime.rs` は js-proc 固有のリクエスト op・値エンコード・レジストリだけを持ちます。
+
+#### 共有 `PipeConn` 構造体 (`src/interpreter/proc_bridge.rs`)
 
 ```rust
-pub struct JsBridge {
-    _child:        std::process::Child,    // Node.js 子プロセス
-    reader:        BufReader<std::fs::File>,
-    writer:        BufWriter<std::fs::File>,
-    next_id:       u64,
-    pub bridge_script: PathBuf,
+pub struct PipeConn {
+    _child:  std::process::Child,   // 子プロセス（Node.js / C# host）を生存させる
+    reader:  BufReader<std::fs::File>,
+    writer:  BufWriter<std::fs::File>,
+    next_id: u64,
 }
+
+// 起動済みの child を受け取り "READY" を読んでからパイプへ接続する
+pub fn connect(child: Child, pipe_name: &str, tag: &str) -> Result<PipeConn, String>
+// JSON を 1 行送って 1 行受け取る（id は自動付与、`err` は Err に変換）
+pub fn send_recv(&mut self, req: Value, tag: &str) -> Result<Value, String>
 ```
 
-#### グローバルブリッジレジストリ
+`tag`（`"cs-proc"` / `"js-proc"`）はエラーメッセージの接頭辞に使われます。
 
-スレッドローカルではなくグローバルな `OnceLock<Mutex<HashMap<PathBuf, JsBridge>>>` を使用します。これにより AsyncManager が生成する OS スレッドからもブリッジにアクセスできます。
+#### グローバルブリッジレジストリ (`src/interpreter/js_proc_runtime.rs`)
+
+スレッドローカルではなくグローバルな `OnceLock<Mutex<HashMap<PathBuf, PipeConn>>>` を使用します。これにより AsyncManager が生成する OS スレッドからもブリッジにアクセスできます。
 
 ```rust
-fn global_bridges() -> &'static Mutex<HashMap<PathBuf, JsBridge>> {
-    static BRIDGES: OnceLock<Mutex<HashMap<PathBuf, JsBridge>>> = OnceLock::new();
+fn global_bridges() -> &'static Mutex<HashMap<PathBuf, PipeConn>> {
+    static BRIDGES: OnceLock<Mutex<HashMap<PathBuf, PipeConn>>> = OnceLock::new();
     BRIDGES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 ```
 
-`cs_proc_runtime.rs` が `thread_local!` を使うのとは異なります。
+`cs_proc_runtime.rs` が `thread_local!` を使うのとは異なります（どちらも中身は共有 `PipeConn`）。
 
 #### 公開 API
 
@@ -430,7 +440,7 @@ pub fn call_function(bridge_key: &str, module_name: &str, fn_name: &str, args: &
 
 #### 名前付きパイプ接続 (Windows)
 
-`open_pipe_client` は `CreateFileW` を最大20回リトライします。`ERROR_PIPE_BUSY` の場合は `WaitNamedPipeW(5000)` でパイプが空くのを待ちます。
+`proc_bridge::open_pipe_client` は `CreateFileW` を最大20回リトライします。`ERROR_PIPE_BUSY` の場合は `WaitNamedPipeW(5000)` でパイプが空くのを待ち、それ以外は 8 回まで 150ms スリープして再試行します（cs/js で統一）。
 
 #### 型エンコーディング
 

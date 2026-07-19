@@ -188,7 +188,6 @@ pub struct InstanceData {
 | `INST_HAS_RAW_LAYOUT` | 30 | raw int/float フラットバッファが有効（C ABI 準拠レイアウト — 詳細は `c-abi-interop` skill）|
 | `INST_IS_EXCEPTION` | 29 | 例外クラスのインスタンス |
 | `INST_IS_NEW_TYPE` | 28 | `new_type` ラッパー |
-| `INST_FIELD_INIT_MASK` | 23–0 | raw_fields 初期化ビットマップ |
 
 **ポインタレイアウト（外部ライブラリ向け）**:
 - Arrow コンパイル済みコード → `ptr + 0` で `class_id` 読み取り

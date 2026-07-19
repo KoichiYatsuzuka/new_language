@@ -134,7 +134,7 @@ Entry point called by `main.rs` when `--compile` is given.
 2. **Native** — calls `compile_native(stmts)`:
    - If `feature = "llvm"`: tries `inkwell_codegen::get_bitcode(stmts)` → `NativePayload::Bitcode`
    - Falls back to `llvm_codegen::generate_llvm_module(stmts)` → `clang` → `NativePayload::Dll`
-3. **Write** — calls `write_tlc_v2` / `write_tlc_v1` / `write_tlc_v0` depending on outcome.
+3. **Write** — calls `write_tlc_native(…, version)` (v1=DLL / v2=bitcode share one layout) or `write_tlc_v0` (source-only) depending on outcome.
 4. Returns `(hvc_path, hvs_path)`.
 
 ### `load_tlc(path)`
