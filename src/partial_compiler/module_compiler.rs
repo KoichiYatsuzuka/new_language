@@ -113,14 +113,14 @@ pub fn compile(
         Ok((payload, exports)) => {
             match &payload {
                 NativePayload::Bitcode(bytes) => {
-                    write_tlc_v2(source, stem, &exports, bytes, &tlc_path)?;
+                    write_tlc_native(source, stem, &exports, bytes, VERSION_V2, &tlc_path)?;
                     println!(
                         "NativeLib: {} function(s) (LLVM bitcode) embedded in {}",
                         exports.len(), tlc_path.display()
                     );
                 }
                 NativePayload::Dll(bytes) => {
-                    write_tlc_v1(source, stem, &exports, bytes, &tlc_path)?;
+                    write_tlc_native(source, stem, &exports, bytes, VERSION_V1, &tlc_path)?;
                     println!(
                         "NativeLib: {} function(s) (DLL) embedded in {}",
                         exports.len(), tlc_path.display()
@@ -247,81 +247,45 @@ fn invoke_clang(ll_path: &Path, dll_path: &Path) -> Result<(), String> {
 
 // ── writers ───────────────────────────────────────────────────────────────────
 
+/// `[u32 LE length][bytes]` を書き出す。
+fn write_len_prefixed(buf: &mut Vec<u8>, bytes: &[u8]) {
+    buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(bytes);
+}
+
 /// ソーステキストのみを埋め込んだ v0 形式の `.arc` ファイルを書き出す。
 fn write_tlc_v0(source: &str, module_name: &str, path: &Path) -> std::io::Result<()> {
-    let name_bytes = module_name.as_bytes();
-    let src_bytes = source.as_bytes();
-
-    let mut buf = Vec::with_capacity(4 + 4 + 4 + name_bytes.len() + 4 + src_bytes.len());
-    buf.extend_from_slice(MAGIC);
-    buf.extend_from_slice(&VERSION_V0.to_le_bytes());
-    buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
-    buf.extend_from_slice(name_bytes);
-    buf.extend_from_slice(&(src_bytes.len() as u32).to_le_bytes());
-    buf.extend_from_slice(src_bytes);
-
-    std::fs::write(path, buf)
-}
-
-/// ソーステキストとネイティブ DLL バイト列を埋め込んだ v1 形式の `.arc` ファイルを書き出す。
-fn write_tlc_v1(
-    source: &str,
-    module_name: &str,
-    exports: &[codegen::FnExport],
-    dll_bytes: &[u8],
-    path: &Path,
-) -> std::io::Result<()> {
-    let name_bytes = module_name.as_bytes();
-    let src_bytes = source.as_bytes();
-
     let mut buf = Vec::new();
     buf.extend_from_slice(MAGIC);
-    buf.extend_from_slice(&VERSION_V1.to_le_bytes());
-    buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
-    buf.extend_from_slice(name_bytes);
-    buf.extend_from_slice(&(src_bytes.len() as u32).to_le_bytes());
-    buf.extend_from_slice(src_bytes);
-
-    buf.extend_from_slice(&(exports.len() as u32).to_le_bytes());
-    for exp in exports {
-        let fn_name_bytes = exp.name.as_bytes();
-        buf.extend_from_slice(&(fn_name_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(fn_name_bytes);
-        buf.extend_from_slice(&(exp.n_params as u32).to_le_bytes());
-    }
-
-    buf.extend_from_slice(&(dll_bytes.len() as u32).to_le_bytes());
-    buf.extend_from_slice(dll_bytes);
-
+    buf.extend_from_slice(&VERSION_V0.to_le_bytes());
+    write_len_prefixed(&mut buf, module_name.as_bytes());
+    write_len_prefixed(&mut buf, source.as_bytes());
     std::fs::write(path, buf)
 }
 
-/// v2: identical layout to v1 but uses LLVM bitcode bytes instead of DLL bytes.
-fn write_tlc_v2(
+/// ネイティブペイロード付きの `.arc` を書き出す。
+///
+/// v1(DLL バイト列)と v2(LLVM ビットコード)はレイアウトが完全に同一で、
+/// `version` タグと末尾ペイロードの内容だけが異なる。
+fn write_tlc_native(
     source: &str,
     module_name: &str,
     exports: &[codegen::FnExport],
-    bitcode: &[u8],
+    payload: &[u8],
+    version: u32,
     path: &Path,
 ) -> std::io::Result<()> {
-    let name_bytes = module_name.as_bytes();
-    let src_bytes  = source.as_bytes();
-    let mut buf    = Vec::new();
+    let mut buf = Vec::new();
     buf.extend_from_slice(MAGIC);
-    buf.extend_from_slice(&VERSION_V2.to_le_bytes());
-    buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
-    buf.extend_from_slice(name_bytes);
-    buf.extend_from_slice(&(src_bytes.len() as u32).to_le_bytes());
-    buf.extend_from_slice(src_bytes);
+    buf.extend_from_slice(&version.to_le_bytes());
+    write_len_prefixed(&mut buf, module_name.as_bytes());
+    write_len_prefixed(&mut buf, source.as_bytes());
     buf.extend_from_slice(&(exports.len() as u32).to_le_bytes());
     for exp in exports {
-        let nb = exp.name.as_bytes();
-        buf.extend_from_slice(&(nb.len() as u32).to_le_bytes());
-        buf.extend_from_slice(nb);
+        write_len_prefixed(&mut buf, exp.name.as_bytes());
         buf.extend_from_slice(&(exp.n_params as u32).to_le_bytes());
     }
-    buf.extend_from_slice(&(bitcode.len() as u32).to_le_bytes());
-    buf.extend_from_slice(bitcode);
+    write_len_prefixed(&mut buf, payload);
     std::fs::write(path, buf)
 }
 
@@ -343,15 +307,8 @@ fn parse_tlc(
         return Err(format!("unsupported .arc version {version}"));
     }
 
-    let name_len = read_u32(data, &mut pos)? as usize;
-    let name_bytes = read_bytes(data, &mut pos, name_len)?;
-    let module_name = String::from_utf8(name_bytes.to_vec())
-        .map_err(|_| "module name is not valid UTF-8".to_string())?;
-
-    let src_len = read_u32(data, &mut pos)? as usize;
-    let src_bytes = read_bytes(data, &mut pos, src_len)?;
-    let source = String::from_utf8(src_bytes.to_vec())
-        .map_err(|_| "source is not valid UTF-8".to_string())?;
+    let module_name = read_string(data, &mut pos)?;
+    let source = read_string(data, &mut pos)?;
 
     if version == VERSION_V0 {
         return Ok((module_name, source, None));
@@ -361,16 +318,12 @@ fn parse_tlc(
     let n_fns = read_u32(data, &mut pos)? as usize;
     let mut exports = Vec::with_capacity(n_fns);
     for _ in 0..n_fns {
-        let fn_name_len   = read_u32(data, &mut pos)? as usize;
-        let fn_name_bytes = read_bytes(data, &mut pos, fn_name_len)?;
-        let fn_name       = String::from_utf8(fn_name_bytes.to_vec())
-            .map_err(|_| "function name is not valid UTF-8".to_string())?;
+        let fn_name = read_string(data, &mut pos)?;
         let n_params = read_u32(data, &mut pos)? as usize;
         exports.push(codegen::FnExport { name: fn_name, n_params, class_name: None });
     }
 
-    let payload_len   = read_u32(data, &mut pos)? as usize;
-    let payload_bytes = read_bytes(data, &mut pos, payload_len)?.to_vec();
+    let payload_bytes = read_len_prefixed(data, &mut pos)?.to_vec();
     let payload = if version == VERSION_V1 {
         NativePayload::Dll(payload_bytes)
     } else {
@@ -398,4 +351,16 @@ fn read_bytes<'a>(data: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8
     let slice = &data[*pos..*pos + len];
     *pos += len;
     Ok(slice)
+}
+
+/// `[u32 LE length][bytes]` を読み取りスライスを返す。
+fn read_len_prefixed<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8], String> {
+    let len = read_u32(data, pos)? as usize;
+    read_bytes(data, pos, len)
+}
+
+/// `[u32 LE length][UTF-8 bytes]` を読み取り String を返す。
+fn read_string(data: &[u8], pos: &mut usize) -> Result<String, String> {
+    let bytes = read_len_prefixed(data, pos)?;
+    String::from_utf8(bytes.to_vec()).map_err(|_| "invalid UTF-8 in .arc data".to_string())
 }
