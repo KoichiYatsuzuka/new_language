@@ -232,7 +232,7 @@ fn class_or_trait_body_stubs(body: &[Stmt], indent_level: usize) -> String {
 
     for (acc, text) in &items {
         if !all_public {
-            let changed = current_access.map_or(true, |ca| ca != acc);
+            let changed = current_access != Some(acc);
             if changed {
                 let header = match acc {
                     Accessibility::Public => format!("{sec_indent}public:\n"),

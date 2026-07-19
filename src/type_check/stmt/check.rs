@@ -449,10 +449,10 @@ impl TypeChecker {
                 let has_intersection_type = params.iter().any(|p| {
                     p.type_ann.as_deref()
                         .and_then(InferredType::from_ann)
-                        .map_or(false, |ty| matches!(ty, InferredType::Intersection(_)))
+                        .is_some_and(|ty| matches!(ty, InferredType::Intersection(_)))
                 }) || return_type.as_deref()
                     .and_then(InferredType::from_ann)
-                    .map_or(false, |ty| matches!(ty, InferredType::Intersection(_)));
+                    .is_some_and(|ty| matches!(ty, InferredType::Intersection(_)));
                 if has_intersection_type {
                     self.report_warning(StaticTypeWarning {
                         kind: TypeWarningKind::IntersectionSkippedCompile {

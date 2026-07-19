@@ -766,12 +766,12 @@ impl TypeChecker {
         let class_fields = self.class_field_details.get(class_name);
         let class_methods = self.class_method_sigs.get(class_name);
         for f in &proto.fields {
-            if class_fields.map_or(true, |m| !m.contains_key(&f.name)) {
+            if class_fields.is_none_or(|m| !m.contains_key(&f.name)) {
                 return false;
             }
         }
         for m in &proto.methods {
-            if class_methods.map_or(true, |ms| !ms.contains_key(&m.name)) {
+            if class_methods.is_none_or(|ms| !ms.contains_key(&m.name)) {
                 return false;
             }
         }

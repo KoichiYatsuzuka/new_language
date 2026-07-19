@@ -36,7 +36,7 @@ pub fn convert_annotation(expr: &py::Expr) -> String {
         }
         py::Expr::Constant(c) if matches!(c.value, py::Constant::None) => "None".to_string(),
         py::Expr::Tuple(t) => {
-            let parts: Vec<String> = t.elts.iter().map(|e| convert_annotation(e)).collect();
+            let parts: Vec<String> = t.elts.iter().map(convert_annotation).collect();
             parts.join(", ")
         }
         _ => "Any".to_string(),
@@ -47,7 +47,7 @@ pub fn convert_annotation(expr: &py::Expr) -> String {
 pub(crate) fn convert_annotation_subscript_slice(expr: &py::Expr) -> String {
     match expr {
         py::Expr::Tuple(t) => {
-            let parts: Vec<String> = t.elts.iter().map(|e| convert_annotation(e)).collect();
+            let parts: Vec<String> = t.elts.iter().map(convert_annotation).collect();
             parts.join(", ")
         }
         _ => convert_annotation(expr),

@@ -17,7 +17,7 @@ fn set_insert(set: &mut Vec<Value>, item: Value, interp: &Interpreter) {
 /// 例: `"list[int]"` → `"list"`,  `"function[int]->str"` → `"function"`, `"int"` → `"int"`
 fn mustbe_outer_type(guard_type: &str) -> String {
     // `[` または `{` より前の部分を取り出す
-    let end = guard_type.find(|c| c == '[' || c == '{').unwrap_or(guard_type.len());
+    let end = guard_type.find(['[', '{']).unwrap_or(guard_type.len());
     // `->` より前の部分も考慮（function->R の形式）
     let end = end.min(guard_type.find("->").unwrap_or(guard_type.len()));
     guard_type[..end].trim().to_string()

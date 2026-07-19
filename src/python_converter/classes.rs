@@ -17,7 +17,7 @@ use super::*;
 /// フィールドは `__init__` からの `self.x = ...` 代入と型アノテーションを元に収集する。
 pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt, String> {
     let class_name = c.name.to_string();
-    let bases: Vec<String> = c.bases.iter().map(|b| expr_to_name(b)).collect();
+    let bases: Vec<String> = c.bases.iter().map(expr_to_name).collect();
 
     let mut fields: Vec<Stmt> = Vec::new();
     let mut methods: Vec<Stmt> = Vec::new();
@@ -102,7 +102,7 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                     ));
                 }
                 let params = convert_params(&f.args, filename)?;
-                let return_type = f.returns.as_deref().map(|e| convert_annotation(e));
+                let return_type = f.returns.as_deref().map(convert_annotation);
                 let body = convert_stmts_fn_body(&f.body, filename)?;
                 methods.push(Stmt::FnDef {
                     name: f.name.to_string(),
@@ -205,7 +205,7 @@ pub(crate) fn convert_params(args: &py::Arguments, _filename: &str) -> Result<Ve
     let mut params: Vec<Param> = Vec::new();
 
     for arg in args.posonlyargs.iter().chain(args.args.iter()) {
-        let type_ann = arg.def.annotation.as_deref().map(|e| convert_annotation(e));
+        let type_ann = arg.def.annotation.as_deref().map(convert_annotation);
         params.push(Param {
             name: arg.def.arg.to_string(),
             mutable: true,
@@ -226,7 +226,7 @@ pub(crate) fn convert_params(args: &py::Arguments, _filename: &str) -> Result<Ve
     }
 
     for arg in &args.kwonlyargs {
-        let type_ann = arg.def.annotation.as_deref().map(|e| convert_annotation(e));
+        let type_ann = arg.def.annotation.as_deref().map(convert_annotation);
         params.push(Param {
             name: arg.def.arg.to_string(),
             mutable: true,

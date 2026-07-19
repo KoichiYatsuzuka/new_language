@@ -138,7 +138,7 @@ fn ansi_display_len(s: &str) -> usize {
 /// ANSI コード付き文字列を視覚的幅 `width` に右パディングする。
 fn ansi_pad(s: &str, width: usize) -> String {
     let visible = ansi_display_len(s);
-    let pad = if width > visible { width - visible } else { 0 };
+    let pad = width.saturating_sub(visible);
     format!("{}{}", s, " ".repeat(pad))
 }
 

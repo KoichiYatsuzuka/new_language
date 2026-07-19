@@ -108,7 +108,7 @@ pub(crate) fn collect_sigs(
         let path = entry.path();
         if path.is_dir() {
             collect_sigs(&path, fns, structs, seen_fns, seen_structs);
-        } else if path.extension().map_or(false, |e| e == "rs") {
+        } else if path.extension().is_some_and(|e| e == "rs") {
             if let Ok(text) = std::fs::read_to_string(&path) {
                 for sig in parse_fn_sigs(&text) {
                     if seen_fns.insert(sig.name.clone()) {
@@ -191,7 +191,7 @@ pub(crate) fn parse_single_line_sig(line: &str) -> Option<RsFnSig> {
     let return_type = if rest.starts_with("->") {
         let ret = rest[2..].trim_start();
         let end = ret
-            .find(|c: char| c == '{' || c == ';' || c == 'w')
+            .find(['{', ';', 'w'])
             .unwrap_or(ret.len());
         let t = ret[..end].trim().to_string();
         if t.is_empty() { None } else { Some(t) }
@@ -504,7 +504,7 @@ pub(crate) fn parse_method_line(line: &str, known_structs: &[String]) -> Option<
     // Parse return type — primitive or known struct
     let (return_type, return_struct) = if rest.starts_with("->") {
         let ret = rest[2..].trim_start();
-        let end = ret.find(|c: char| c == '{' || c == ';').unwrap_or(ret.len());
+        let end = ret.find(['{', ';']).unwrap_or(ret.len());
         let t = ret[..end].trim().to_string();
         if t == "Self" { return None; }
         if t.is_empty() {

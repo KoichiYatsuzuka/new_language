@@ -268,7 +268,7 @@ impl TypeChecker {
                         outer_type: "tuple".to_string(),
                     }),
                     InferredType::Function { params, return_type } => {
-                        let has_params = params.as_ref().map_or(false, |p| !p.is_empty());
+                        let has_params = params.as_ref().is_some_and(|p| !p.is_empty());
                         let has_ret = **return_type != InferredType::Any;
                         if has_params || has_ret {
                             Some(TypeWarningKind::MustBeFunctionSignatureUnchecked {

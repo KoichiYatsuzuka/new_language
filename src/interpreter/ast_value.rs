@@ -168,7 +168,7 @@ fn call_args_list(args: &[CallArg]) -> Value {
                 CallArg::Variadic(exprs) => ns(
                     "CallArgVariadic",
                     vec![("exprs", Value::List(Rc::new(RefCell::new(
-                        exprs.iter().map(|e| expr_to_value(e)).collect()
+                        exprs.iter().map(expr_to_value).collect()
                     ))))],
                 ),
             })

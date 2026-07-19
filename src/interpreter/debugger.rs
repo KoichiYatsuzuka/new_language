@@ -43,14 +43,14 @@ pub(super) enum DbgMode {
 }
 
 thread_local! {
-    pub(super) static DBG_MODE: RefCell<DbgMode> = RefCell::new(DbgMode::Inactive);
+    pub(super) static DBG_MODE: RefCell<DbgMode> = const { RefCell::new(DbgMode::Inactive) };
     /// The call-stack depth at the moment the debugger was last entered.
-    pub(super) static DBG_ENTRY_DEPTH: RefCell<usize> = RefCell::new(0);
+    pub(super) static DBG_ENTRY_DEPTH: RefCell<usize> = const { RefCell::new(0) };
     /// Number of same-depth exec() calls to skip before pausing in StepInto mode.
     /// Set to 1 when StepInto is activated so the statement-with-the-call runs first.
-    pub(super) static DBG_STEP_INTO_SKIP: RefCell<usize> = RefCell::new(0);
+    pub(super) static DBG_STEP_INTO_SKIP: RefCell<usize> = const { RefCell::new(0) };
     /// Whether we are currently inside the REPL (to avoid re-entering).
-    static IN_REPL: RefCell<bool> = RefCell::new(false);
+    static IN_REPL: RefCell<bool> = const { RefCell::new(false) };
 }
 
 // ---------------------------------------------------------------------------
@@ -277,11 +277,10 @@ impl Interpreter {
 
         match self.exec(&stmt)? {
             ExecResult::Normal => {}
-            ExecResult::Return(v) => {
-                if !matches!(v, Value::None) {
+            ExecResult::Return(v)
+                if !matches!(v, Value::None) => {
                     println!("{}", self.display(&v));
                 }
-            }
             _ => {}
         }
         Ok(())

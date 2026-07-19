@@ -140,10 +140,8 @@ impl Interpreter {
         let mut inst = inst_rc.borrow_mut();
         inst.flags_or(crate::interpreter::value::INST_IMMUTABLE);
         // すべてのフィールドを不変に変更する（raw クラスは INST_IMMUTABLE フラグのみで足りる）
-        for slot in inst.boxed_fields.iter_mut() {
-            if let Some((_, mutable)) = slot {
-                *mutable = false;
-            }
+        for (_, mutable) in inst.boxed_fields.iter_mut().flatten() {
+            *mutable = false;
         }
     }
 

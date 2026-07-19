@@ -1,7 +1,6 @@
 // tests/collections.rs — 辞書(dict)とタプルのテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // ---------------------------------------------------------------------------
 // Dict tests

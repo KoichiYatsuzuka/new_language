@@ -16,7 +16,7 @@ pub(crate) fn typedef_contains_fn_ptr(seg: &str) -> bool {
     for c in seg.chars() {
         match c {
             '(' => depth += 1,
-            ')' => { if depth > 0 { depth -= 1; } }
+            ')' if depth > 0 => { depth -= 1; }
             '*' if depth > 0 => return true,
             _ => {}
         }
@@ -30,7 +30,7 @@ pub(crate) fn extract_alias_token(raw: &str) -> (&str, usize) {
     let without_leading = &raw[leading..];
     let alias = without_leading.trim_end_matches('*');
     let trailing = without_leading.len() - alias.len();
-    if alias.is_empty() || !alias.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_') {
+    if alias.is_empty() || !alias.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') {
         return ("", 0);
     }
     (alias, leading + trailing)

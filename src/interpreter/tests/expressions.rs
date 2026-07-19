@@ -1,7 +1,6 @@
 // tests/expressions.rs — 式としての block/match/if/for/while、および break の入れ子制御フロー式伝播のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // ---------------------------------------------------------------------------
 // match statement tests

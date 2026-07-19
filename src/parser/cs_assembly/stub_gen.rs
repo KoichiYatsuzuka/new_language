@@ -219,7 +219,7 @@ pub(crate) fn generate_stubs(
 ) -> Result<Vec<Stmt>, String> {
     let mut stmts: Vec<Stmt> = Vec::new();
 
-    for (_td_idx, td) in typedefs.iter().enumerate() {
+    for td in typedefs.iter() {
         // Skip non-public types (top-level: Public=1; nested: NestedPublic=2)
         let vis = td.flags & 0x07;
         if vis != TD_PUBLIC && vis != TD_NESTED_PUBLIC {
@@ -391,9 +391,9 @@ pub(crate) fn generate_stubs(
 pub(crate) fn decode_method_sig(
     data: &[u8],
     streams: &Streams,
-    layout: &TildeLayout,
+    _layout: &TildeLayout,
     m: &CsMethod,
-    params: &[CsParam],
+    _params: &[CsParam],
     type_names: &HashMap<u32, String>,
     type_params: &[String],
 ) -> (String, Vec<(String, bool)>) {

@@ -1,7 +1,6 @@
 // tests/basics.rs — 算術・比較・論理演算、変数宣言(let/mut)、複合代入、print、ゼロ除算の基本テスト。
 
 use super::*;
-use crate::interpreter::*;
 
 #[test]
 fn test_arithmetic() {

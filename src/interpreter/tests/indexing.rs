@@ -1,7 +1,6 @@
 // tests/indexing.rs — __getitem__ / __setitem__ (list/str/dict/instance/PyObject) のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // ---------------------------------------------------------------------------
 // __getitem__ / __setitem__ — list, str, dict, instance, PyObject

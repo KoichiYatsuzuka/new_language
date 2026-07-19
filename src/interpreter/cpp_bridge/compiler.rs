@@ -567,7 +567,7 @@ fn dedup_by_pattern_priority(libs: Vec<String>, patterns: &[String]) -> Vec<Stri
 
     libs.into_iter()
         .filter(|lib| match match_info(lib) {
-            Some((pri, base)) => best.get(&base).map_or(true, |&best_pri| pri <= best_pri),
+            Some((pri, base)) => best.get(&base).is_none_or(|&best_pri| pri <= best_pri),
             None => true,
         })
         .collect()

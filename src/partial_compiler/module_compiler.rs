@@ -222,7 +222,7 @@ fn invoke_clang(ll_path: &Path, dll_path: &Path) -> Result<(), String> {
 
     // Try clang from PATH first; fall back to llvm.path in ar_config.json.
     let clang_exe = if Command::new("clang").arg("--version").output()
-        .map_or(false, |o| o.status.success())
+        .is_ok_and(|o| o.status.success())
     {
         std::path::PathBuf::from("clang")
     } else {

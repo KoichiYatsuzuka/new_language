@@ -300,7 +300,7 @@ impl Interpreter {
 
                 // クラスオブジェクトに対するメソッド呼び出し: static / class_method のみ許可
                 let overloads =
-                    self.lookup_method_in_class(&cls, method_name)
+                    self.lookup_method_in_class(cls, method_name)
                         .ok_or_else(|| {
                             format!(
                                 "AttributeError: class '{}' has no method '{method_name}'",
@@ -626,7 +626,7 @@ impl Interpreter {
             Value::PyObject(handle) => {
                 // Python オブジェクトのメソッドを PyO3 経由で呼び出す
                 let evaled = self.eval_call_args(args)?;
-                crate::interpreter::py_interop::call_py_method(&handle, method_name, &evaled)
+                crate::interpreter::py_interop::call_py_method(handle, method_name, &evaled)
             }
             Value::FileObject(fd_rc) => {
                 let fd_rc = fd_rc.clone();

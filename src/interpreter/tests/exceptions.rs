@@ -1,7 +1,6 @@
 // tests/exceptions.rs — 例外処理(try/except/finally/raise)と内部エラーの捕捉可能性のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // --- Exception handling tests ---
 

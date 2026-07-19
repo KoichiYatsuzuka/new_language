@@ -388,7 +388,7 @@ pub(crate) fn cpp_typed_eligible(sig: &CFnSig, struct_defs: &HashMap<String, &CS
                 if matches!(**inner, CType::Int | CType::Long | CType::Float | CType::Double))
             || typed_struct_name(t)
                 .and_then(|name| struct_defs.get(name))
-                .map_or(false, |d| d.raw_layout().is_some())
+                .is_some_and(|d| d.raw_layout().is_some())
     })
 }
 

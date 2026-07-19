@@ -237,15 +237,14 @@ impl Parser {
                     if branches.iter().any(|(_, b)| Self::body_has_return(b)) {
                         return true;
                     }
-                    if else_body.as_deref().map_or(false, Self::body_has_return) {
+                    if else_body.as_deref().is_some_and(Self::body_has_return) {
                         return true;
                     }
                 }
-                Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::Block(body) => {
-                    if Self::body_has_return(body) {
+                Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::Block(body)
+                    if Self::body_has_return(body) => {
                         return true;
                     }
-                }
                 // Do not descend into nested fn/gen — they have their own return scope.
                 _ => {}
             }

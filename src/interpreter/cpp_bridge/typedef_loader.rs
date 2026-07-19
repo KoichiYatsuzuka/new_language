@@ -66,11 +66,9 @@ fn collect_typedef_includes(raw_content: &str, header_dir: &Path) -> Vec<PathBuf
             continue;
         }
         let after = trimmed["#include".len()..].trim_start();
-        let (fname, require_exists) = if after.starts_with('"') {
-            let inner = &after[1..];
+        let (fname, require_exists) = if let Some(inner) = after.strip_prefix('"') {
             (inner.find('"').map(|e| inner[..e].to_string()), false)
-        } else if after.starts_with('<') {
-            let inner = &after[1..];
+        } else if let Some(inner) = after.strip_prefix('<') {
             // Only plain filenames — skip paths with slashes (e.g. <sys/types.h>)
             (inner.find('>').map(|e| inner[..e].to_string()), true)
         } else {
@@ -113,8 +111,7 @@ fn collect_declare_handles(stripped: &str, out: &mut HashMap<String, String>) {
     while let Some(pos) = rest.find("DECLARE_HANDLE") {
         rest = &rest[pos + "DECLARE_HANDLE".len()..];
         let after = rest.trim_start();
-        if after.starts_with('(') {
-            let inner = &after[1..];
+        if let Some(inner) = after.strip_prefix('(') {
             if let Some(close) = inner.find(')') {
                 let name = inner[..close].trim();
                 if !name.is_empty()
@@ -217,7 +214,7 @@ fn parse_typedef_segments(seg: &str) -> Vec<(String, String)> {
             .iter()
             .skip(1) // skip "typedef"
             .skip_while(|&&w| w == "struct" || w == "union" || w == "enum")
-            .find(|&&w| w.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_'))
+            .find(|&&w| w.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_'))
             .copied();
         let base_type = match tag {
             Some(t) => t.to_string(),

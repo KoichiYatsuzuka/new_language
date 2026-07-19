@@ -42,11 +42,11 @@ impl Parser {
                 let return_type = self.parse_opt_return_type()?;
                 self.eat(&Token::Colon)?;
                 let stmts = self.parse_block()?;
-                return Ok(Stmt::AsyncAssign {
+                Ok(Stmt::AsyncAssign {
                     target,
                     return_type,
                     stmts,
-                });
+                })
             }
             // 次のトークンが `=` なら変数への単純代入
             Token::Eq => {

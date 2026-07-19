@@ -1,7 +1,6 @@
 // tests/unpacking.rs — タプルアンパックと enumerate / zip のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // ---------------------------------------------------------------------------
 // Tuple unpack tests

@@ -78,7 +78,7 @@ impl TypeChecker {
                     InferredType::ListOf(i) | InferredType::FixedListOf(i) => Some(i.as_ref()),
                     _ => None,
                 };
-                return a_inner.map_or(true, |ai| self.type_matches(ai, e));
+                return a_inner.is_none_or(|ai| self.type_matches(ai, e));
             }
             (InferredType::SetOf(_), InferredType::Set) => return true,
             (InferredType::Set, InferredType::SetOf(_)) => return true,

@@ -254,9 +254,9 @@ impl Interpreter {
                 if has_instance_str {
                     let v = vals.into_iter().next().unwrap();
                     return self.eval_method_call_evaled(v, "__str__", vec![])
-                        .and_then(|r| match r {
-                            Value::Str(s) => Ok(Value::Str(s)),
-                            other => Ok(Value::Str(self.display(&other))),
+                        .map(|r| match r {
+                            Value::Str(s) => Value::Str(s),
+                            other => Value::Str(self.display(&other)),
                         });
                 }
                 match vals.as_slice() {

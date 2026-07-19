@@ -1,7 +1,6 @@
 // tests/control_flow.rs — if/while/for/block 文の制御フローとスコープ隔離のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // --- if ---
 

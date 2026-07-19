@@ -365,7 +365,7 @@ fn py_type_to_arrow(ann: &str) -> String {
         // Union[...] はそのまま（from_ann で処理）
         _ if a.starts_with("Union[") => a.to_string(),
         // 大文字始まりのクラス名はそのまま（NamedInstance として解釈される）
-        _ if a.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+        _ if a.chars().next().is_some_and(|c| c.is_ascii_uppercase())
             && a.chars().all(|c| c.is_alphanumeric() || c == '_') =>
         {
             a.to_string()

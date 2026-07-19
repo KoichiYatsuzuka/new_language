@@ -1,7 +1,6 @@
 // tests/instances.rs — インスタンスの不変性(let束縛)、freeze文、Self型、new_type のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // --- let-binding immutability for instances ---
 

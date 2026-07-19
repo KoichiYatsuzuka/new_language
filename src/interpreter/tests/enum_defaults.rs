@@ -1,7 +1,6 @@
 // tests/enum_defaults.rs — enum とデフォルト引数のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // --- enum ---
 

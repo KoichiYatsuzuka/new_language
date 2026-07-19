@@ -47,7 +47,7 @@ impl Interpreter {
 
         if lang == "py-int" {
             let search_dirs = self.python_search_dirs.clone();
-            let ns = crate::interpreter::py_interop::load_py_int_module(module, &search_dirs).map_err(|e| e)?;
+            let ns = crate::interpreter::py_interop::load_py_int_module(module, &search_dirs)?;
             self.module_cache
                 .insert(cache_key, ModuleState::Loaded(ns.clone()));
             return Ok(ns);
@@ -466,24 +466,6 @@ impl Interpreter {
 
     /// C++ ライブラリ（`cpp-lib`）または DLL（`cpp-dll`）を tl モジュールとしてロードする。
     /// ヘッダーをパースして関数シグネチャを収集し、ラッパー DLL を構築・ロードして名前空間を返す。
-    /// Look for a cs-dll bridge DLL by searching:
-    /// 1. Next to any already-loaded module that matches the dll stem
-    /// 2. Current working directory
-    pub(crate) fn find_cs_bridge_dll(&self, dll_name: &str) -> Option<PathBuf> {
-        // Search next to already-cached module paths
-        for ((_lang, p), _) in &self.module_cache {
-            if let Some(dir) = p.parent() {
-                let candidate = dir.join(dll_name);
-                if candidate.exists() {
-                    return Some(candidate);
-                }
-            }
-        }
-        // Fall back to cwd
-        let candidate = PathBuf::from(dll_name);
-        if candidate.exists() { Some(candidate) } else { None }
-    }
-
     pub(crate) fn load_cpp_module(
         &mut self,
         lang: &str,

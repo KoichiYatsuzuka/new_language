@@ -1,7 +1,6 @@
 // tests/callables.rs — 関数型(function type)、クロージャ、デコレータのテスト。
 
 use super::*;
-use crate::interpreter::*;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 

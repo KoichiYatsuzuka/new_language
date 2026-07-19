@@ -378,7 +378,7 @@ fn stmt_has_loop_yield(stmt: &Stmt) -> bool {
         Stmt::Block(ss) => body_has_loop_yield(ss),
         Stmt::If { branches, else_body } =>
             branches.iter().any(|(_, b)| body_has_loop_yield(b))
-            || else_body.as_ref().map_or(false, |b| body_has_loop_yield(b)),
+            || else_body.as_ref().is_some_and(|b| body_has_loop_yield(b)),
         // Do NOT descend into nested For/While — loop_yield there belongs to that inner loop
         _ => false,
     }
@@ -403,7 +403,7 @@ fn stmt_eligible(stmt: &Stmt) -> bool {
             if args.iter().all(|a| matches!(a, CallArg::Positional(e) if expr_eligible(e)))),
         Stmt::If { branches, else_body } =>
             branches.iter().all(|(c, b)| expr_eligible(c) && body_eligible(b))
-            && else_body.as_ref().map_or(true, |b| body_eligible(b)),
+            && else_body.as_ref().is_none_or(|b| body_eligible(b)),
         Stmt::While { cond, body } => expr_eligible(cond) && body_eligible(body),
         Stmt::For { targets, iter, body } =>
             targets.len() == 1 && expr_eligible(iter) && body_eligible(body),
@@ -437,7 +437,7 @@ fn expr_eligible(expr: &Expr) -> bool {
         Expr::Block { stmts, .. } => body_eligible(stmts),
         Expr::IfExpr { branches, else_body, .. } =>
             branches.iter().all(|(c, b)| expr_eligible(c) && body_eligible(b))
-            && else_body.as_ref().map_or(true, |b| body_eligible(b)),
+            && else_body.as_ref().is_none_or(|b| body_eligible(b)),
         Expr::ForExpr { iter, body, .. } => expr_eligible(iter) && body_eligible(body),
         Expr::WhileExpr { cond, body, .. } => expr_eligible(cond) && body_eligible(body),
         Expr::MatchExpr { subject, arms, .. } =>
@@ -468,7 +468,7 @@ fn stmt_writes_param(stmt: &Stmt, param: &str) -> bool {
         }
         Stmt::If { branches, else_body } =>
             branches.iter().any(|(_, b)| body_writes_param(b, param))
-            || else_body.as_ref().map_or(false, |b| body_writes_param(b, param)),
+            || else_body.as_ref().is_some_and(|b| body_writes_param(b, param)),
         Stmt::While { body, .. } | Stmt::For { body, .. } => body_writes_param(body, param),
         Stmt::Block(ss) => body_writes_param(ss, param),
         Stmt::Match { arms, .. } => arms.iter().any(|a| body_writes_param(&a.body, param)),
@@ -516,7 +516,7 @@ fn escape_for_llvm(bytes: &[u8]) -> String {
 
 /// Generator body is eligible if it uses only yield, not block_return/loop_yield
 fn body_eligible_gen(stmts: &[Stmt]) -> bool {
-    stmts.iter().all(|s| stmt_eligible_gen(s))
+    stmts.iter().all(stmt_eligible_gen)
 }
 
 fn stmt_eligible_gen(stmt: &Stmt) -> bool {
@@ -529,8 +529,8 @@ fn stmt_eligible_gen(stmt: &Stmt) -> bool {
 
 fn ann_has_intersection(params: &[crate::ast::Param], return_type: Option<&str>) -> bool {
     params.iter().any(|p| {
-        p.type_ann.as_deref().map_or(false, |ann| ann.contains("Intersection["))
-    }) || return_type.map_or(false, |ann| ann.contains("Intersection["))
+        p.type_ann.as_deref().is_some_and(|ann| ann.contains("Intersection["))
+    }) || return_type.is_some_and(|ann| ann.contains("Intersection["))
 }
 
 pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {

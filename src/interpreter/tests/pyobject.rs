@@ -1,7 +1,6 @@
 // tests/pyobject.rs — PyObject を対象とした for ループ反復と二項演算子のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // ---------------------------------------------------------------------------
 // for ループ: PyObject の反復

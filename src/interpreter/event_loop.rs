@@ -41,14 +41,11 @@ pub struct HandlerEntry {
 /// `Signal[T]` のランタイム状態。
 ///
 /// - `handlers`    : 登録済みハンドラのリスト（同期・非同期・一回限りを含む）
-/// - `async_queue` : `emit_async(val)` で積まれた値のキュー（EventLoop が処理）
 /// - `next_id`     : 次のハンドラ ID（単調増加）
 /// - `external_id` : 外部発火用に発番されたプロセス全体で一意な ID（未発番なら None）
 #[derive(Debug)]
 pub struct SignalData {
     pub handlers: Vec<HandlerEntry>,
-    /// `emit_async()` で積まれた値。EventLoop.run() が取り出してハンドラを呼ぶ。
-    pub async_queue: VecDeque<Value>,
     pub next_id: u64,
     /// `sig.external_id` 初回アクセス時に発番され、external_handler_registry に登録される。
     pub external_id: Option<u64>,
@@ -58,7 +55,6 @@ impl SignalData {
     pub fn new() -> Self {
         Self {
             handlers: Vec::new(),
-            async_queue: VecDeque::new(),
             next_id: 1,
             external_id: None,
         }
@@ -100,14 +96,6 @@ impl SignalData {
             }
             _ => {}
         }
-    }
-
-    /// 関数名でハンドラを削除する（名前が一致するものをすべて削除）。
-    pub fn unsubscribe_by_name(&mut self, name: &str) {
-        self.handlers.retain(|h| match &h.func {
-            Value::Function(f) => f.name != name,
-            _ => true,
-        });
     }
 
     /// `emit(val)` の全ハンドラを `(func, is_async)` ペアとして返す。

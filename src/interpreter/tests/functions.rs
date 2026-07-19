@@ -1,7 +1,6 @@
 // tests/functions.rs — 組み込み関数、関数定義・再帰、および関数オーバーロードのテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // --- builtins ---
 

@@ -1,7 +1,6 @@
 // tests/classes.rs — クラス定義・継承・メソッド、およびトレイトのテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // --- classes ---
 

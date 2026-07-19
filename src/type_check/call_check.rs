@@ -24,7 +24,7 @@ impl TypeChecker {
             kind: TypeErrorKind::DirectFreezeCall,
             span: freeze_span,
         });
-        return InferredType::Unresolved;
+        InferredType::Unresolved
     }
 
     fn infer_call_inner(&mut self, func: &Expr, args: &[CallArg]) -> InferredType {
@@ -206,15 +206,11 @@ impl TypeChecker {
         method_name: &str,
         arg_data: &[(Option<String>, InferredType)],
     ) -> Option<InferredType> {
-        let sigs = match self
+        let sigs = self
             .class_method_sigs
             .get(cls_name)
             .and_then(|m| m.get(method_name))
-            .cloned()
-        {
-            Some(s) => s,
-            None => return None,
-        };
+            .cloned()?;
         // Static methods have no implicit receiver; instance/class methods add +1 for self/cls
         let is_static = self
             .class_static_methods

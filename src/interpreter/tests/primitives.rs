@@ -1,7 +1,6 @@
 // tests/primitives.rs — uint プリミティブ型と id() 組み込み関数のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // ---------------------------------------------------------------------------
 // uint primitive type

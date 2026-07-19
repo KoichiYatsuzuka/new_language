@@ -4,7 +4,6 @@
 // 他のテストとの干渉を避けるため、外部キューに触るテストはこの 1 本にまとめる。
 
 use super::*;
-use crate::interpreter::*;
 
 /// `sig.external_id` で発番 → 別スレッドから `ar_event_fire` → `EventLoop.run(timeout)` で
 /// ハンドラがペイロードを受け取る一連の経路を検証する。

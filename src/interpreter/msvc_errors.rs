@@ -61,7 +61,7 @@ fn extract_from_line(line: &str, names: &mut HashSet<String>) {
                     let fn_name = before_paren
                         .split("::")
                         .last()
-                        .and_then(|s| s.trim().split_whitespace().last())
+                        .and_then(|s| s.split_whitespace().last())
                         .unwrap_or("");
                     if is_valid_c_ident(fn_name) {
                         names.insert(fn_name.to_string());
@@ -107,6 +107,6 @@ fn is_valid_c_ident(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .next()
-            .map_or(false, |c| c.is_alphabetic() || c == '_')
+            .is_some_and(|c| c.is_alphabetic() || c == '_')
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }

@@ -1,7 +1,6 @@
 // tests/mustbe.rs — mustbe 表明のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // ============================================================================
 // mustbe テスト

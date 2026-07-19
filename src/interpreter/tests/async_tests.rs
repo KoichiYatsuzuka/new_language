@@ -1,7 +1,6 @@
 // tests/async_tests.rs — 非同期(async)処理のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // ---------------------------------------------------------------------------
 // Async tests

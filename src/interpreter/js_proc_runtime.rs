@@ -39,7 +39,6 @@ pub struct JsBridge {
     reader:  BufReader<std::fs::File>,
     writer:  BufWriter<std::fs::File>,
     next_id: u64,
-    pub bridge_script: PathBuf,
 }
 
 impl JsBridge {
@@ -88,7 +87,6 @@ impl JsBridge {
             reader,
             writer,
             next_id: 1,
-            bridge_script: bridge_script.to_path_buf(),
         })
     }
 

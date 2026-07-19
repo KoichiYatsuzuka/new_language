@@ -176,7 +176,7 @@ pub(crate) fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stm
                 ));
             }
             let params = convert_params(&f.args, filename)?;
-            let return_type = f.returns.as_deref().map(|e| convert_annotation(e));
+            let return_type = f.returns.as_deref().map(convert_annotation);
             let body = convert_stmts_fn_body(&f.body, filename)?;
             Ok(Some(Stmt::FnDef {
                 name: f.name.to_string(),

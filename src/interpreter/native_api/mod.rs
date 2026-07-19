@@ -186,14 +186,6 @@ impl NativeCallState {
         }
     }
 
-    /// Like push_value but always allocates a new arena slot (no cached handle).
-    /// Used for write-back (MutPtr) parameters that must be addressable.
-    #[inline]
-    fn push_value_writeback(&mut self, v: Value) -> i64 {
-        let h = self.arena.len() as i64;
-        self.arena.push(v);
-        h
-    }
 }
 
 thread_local! {
@@ -335,11 +327,6 @@ pub fn register_native_method(class_name: &str, method_name: &str, fn_ptr: usize
             .native_methods
             .insert((class_name.to_string(), method_name.to_string()), fn_ptr);
     });
-}
-
-/// Clear all registered native methods (call on unload / hot-reload).
-pub fn clear_native_methods() {
-    STATE.with(|s| s.borrow_mut().native_methods.clear());
 }
 
 /// Look up the raw function pointer for a native class method.

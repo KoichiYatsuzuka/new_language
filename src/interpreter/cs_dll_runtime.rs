@@ -37,8 +37,6 @@ thread_local! {
 
 pub struct BridgeLib {
     lib: libloading::Library,
-    /// Canonical path (used as map key).
-    pub path: PathBuf,
 }
 
 impl BridgeLib {
@@ -47,7 +45,7 @@ impl BridgeLib {
             libloading::Library::new(path)
                 .map_err(|e| format!("CsDll: cannot load bridge '{}': {e}", path.display()))?
         };
-        Ok(Arc::new(BridgeLib { lib, path: path.to_path_buf() }))
+        Ok(Arc::new(BridgeLib { lib }))
     }
 
     // Look up an exported symbol by name.
@@ -177,16 +175,6 @@ pub fn call_instance(
     Ok(raw_to_value(raw, ret_type))
 }
 
-/// Release a C# object handle.
-pub fn release_handle(bridge: &BridgeLib, handle: i64) {
-    if let Some(ptr) = bridge.sym_ptr("arrow_bridge_release") {
-        unsafe {
-            let f: unsafe extern "C" fn(i64) = std::mem::transmute(ptr);
-            f(handle);
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -297,7 +285,7 @@ unsafe fn call_bridge_fn(
 /// Returns the i64 result (for void functions the result is undefined/zero).
 unsafe fn call_variadic(ptr: usize, args: &[i64]) -> i64 {
     // Pad to at least 4 args (Windows ABI requires shadow space for 4 regs).
-    let a0 = args.get(0).copied().unwrap_or(0);
+    let a0 = args.first().copied().unwrap_or(0);
     let a1 = args.get(1).copied().unwrap_or(0);
     let a2 = args.get(2).copied().unwrap_or(0);
     let a3 = args.get(3).copied().unwrap_or(0);

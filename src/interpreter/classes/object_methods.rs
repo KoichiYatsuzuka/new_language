@@ -263,7 +263,7 @@ impl Interpreter {
                         } else {
                             let s = std::str::from_utf8(&fd.content[..fd.pointer])
                                 .map_err(|_| "IOError: invalid UTF-8 in file".to_string())?;
-                            let ch = s.chars().rev().next().unwrap();
+                            let ch = s.chars().next_back().unwrap();
                             let ch_len = ch.len_utf8();
                             fd.pointer -= ch_len;
                             Ok(Value::Str(ch.to_string()))

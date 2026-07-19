@@ -38,7 +38,7 @@ pub(crate) mod cs_proc_runtime;
 #[path = "interpreter/js_proc_runtime.rs"]
 pub(crate) mod js_proc_runtime;
 #[path = "interpreter/debugger.rs"]
-pub(self) mod debugger;
+ mod debugger;
 #[path = "interpreter/eval/mod.rs"]
 mod eval;
 #[path = "interpreter/exceptions.rs"]
@@ -48,13 +48,13 @@ mod exec;
 #[path = "interpreter/functions/mod.rs"]
 mod functions;
 #[path = "interpreter/msvc_errors.rs"]
-pub(self) mod msvc_errors;
+ mod msvc_errors;
 #[path = "interpreter/native_api/mod.rs"]
-pub(self) mod native_api;
+ mod native_api;
 #[path = "interpreter/ops/mod.rs"]
 mod ops;
 #[path = "interpreter/py_interop.rs"]
-pub(self) mod py_interop;
+ mod py_interop;
 #[path = "interpreter/scope.rs"]
 mod scope;
 #[path = "interpreter/str_methods.rs"]
@@ -67,7 +67,7 @@ mod templates;
 mod tests;
 
 #[path = "interpreter/ast_value.rs"]
-pub(self) mod ast_value;
+ mod ast_value;
 #[path = "interpreter/built_in_types.rs"]
 mod built_in_types;
 
@@ -105,32 +105,32 @@ pub use value::*;
 /// * Internal bugs should return a plain, non-sentinel `Err(message)`.  A caller
 ///   that sees an `Err` string not equal to `RAISE_SENTINEL` knows it is an
 ///   interpreter bug rather than a user `raise`.
-pub(self) const RAISE_SENTINEL: &str = "\x00__raise__";
+ const RAISE_SENTINEL: &str = "\x00__raise__";
 
 /// Sentinel error string used to propagate a `break` signal through `eval()` return channels.
 /// Produced when `break` is executed inside a control-flow expression body (e.g., an `if` or
 /// `block:` expression) and needs to bubble up to the enclosing `for`/`while` loop.
-pub(self) const BREAK_SENTINEL: &str = "\x00__break__";
+ const BREAK_SENTINEL: &str = "\x00__break__";
 
 thread_local! {
     /// ジェネレータ本体の一括評価中に `yield` された値を収集するスレッドローカル変数。
     /// `None` の場合はジェネレータ実行コンテキスト外であることを意味する。
     /// `exec_generator` が開始時に `Some(Vec::new())` をセットし、終了時に `take()` で回収する。
-    pub(self) static GENERATOR_YIELDS: RefCell<Option<Vec<Value>>> = RefCell::new(None);
+    pub(self) static GENERATOR_YIELDS: RefCell<Option<Vec<Value>>> = const { RefCell::new(None) };
 
     /// `for`/`while` 式の評価中に `loop_yield` された値を収集するスレッドローカル変数。
     /// `None` の場合は for/while 式の外であることを意味する（loop_yield はここで実行時エラー）。
     /// ネストした for/while 式を正しく扱うため、外側の式の値を退避して評価後に復元する。
-    pub(self) static BLOCK_YIELDS: RefCell<Option<Vec<Value>>> = RefCell::new(None);
+    pub(self) static BLOCK_YIELDS: RefCell<Option<Vec<Value>>> = const { RefCell::new(None) };
 
     /// 現在の for/while ループ（文・式両形式）のネスト深さ。
     /// `break` はこれが 0 のときに実行時エラーを返す。
-    pub(self) static LOOP_DEPTH: RefCell<usize> = RefCell::new(0);
+    pub(self) static LOOP_DEPTH: RefCell<usize> = const { RefCell::new(0) };
 
     /// block_return / loop_yield のランタイム型チェック用。
     /// block:/if/for/while/match 式へ入るときに期待型アノテーション文字列を push し、
     /// 抜けるときに pop する。None は型注釈なし（任意の型を受け入れる）を意味する。
-    pub(self) static BLOCK_RETURN_EXPECTED_TYPE: RefCell<Vec<Option<String>>> = RefCell::new(Vec::new());
+    pub(self) static BLOCK_RETURN_EXPECTED_TYPE: RefCell<Vec<Option<String>>> = const { RefCell::new(Vec::new()) };
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ thread_local! {
 /// std デフォルトの SipHash より大幅に速い（~10ns → ~2ns）。
 /// スコープのキーは攻撃者制御の入力ではないため DoS 耐性（SipHash の目的）は不要。
 #[derive(Default, Clone, Copy)]
-pub(self) struct FxHasher {
+ struct FxHasher {
     hash: u64,
 }
 
@@ -171,7 +171,7 @@ impl std::hash::Hasher for FxHasher {
 
 /// `FxHasher` の BuildHasher。`ScopeMap::default()` で使用する。
 #[derive(Default, Clone, Copy)]
-pub(self) struct FxBuildHasher;
+ struct FxBuildHasher;
 
 impl std::hash::BuildHasher for FxBuildHasher {
     type Hasher = FxHasher;
@@ -182,7 +182,7 @@ impl std::hash::BuildHasher for FxBuildHasher {
 }
 
 /// スコープ1段分の変数マップ（FxHash キー）。
-pub(self) type ScopeMap = HashMap<String, Var, FxBuildHasher>;
+ type ScopeMap = HashMap<String, Var, FxBuildHasher>;
 
 /// スコープ内の1つの変数エントリ。
 ///
@@ -191,7 +191,7 @@ pub(self) type ScopeMap = HashMap<String, Var, FxBuildHasher>;
 /// - `Cell(Rc<RefCell<Value>>)`: クロージャにキャプチャされた可変変数。外側スコープと共有セルを通じて読み書きする。
 /// - `SlotCell(Rc<RefCell<Value>>)`: スロットキャッシュ（AST 焼き込み）に昇格したグローバル可変変数。
 ///   `freeze` されると `Immutable` に戻り `slot_epoch` が進む（キャッシュ一括無効化）。
-pub(self) enum Var {
+ enum Var {
     Immutable(Value),
     Mutable(Value),
     Cell(Rc<RefCell<Value>>),

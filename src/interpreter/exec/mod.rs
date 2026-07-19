@@ -16,7 +16,7 @@ fn find_js_config(search_dirs: &[PathBuf])
     -> Result<(PathBuf, PathBuf, PathBuf), String>
 {
     let cwd = std::env::current_dir().ok();
-    let extra: &[PathBuf] = cwd.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
+    let extra: &[PathBuf] = cwd.as_slice();
 
     for dir in search_dirs.iter().chain(extra.iter()) {
         let cfg_path = dir.join("ar_config.json");

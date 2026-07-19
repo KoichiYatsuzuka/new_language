@@ -35,7 +35,6 @@ pub struct ProcBridge {
     reader: BufReader<std::fs::File>,
     writer: BufWriter<std::fs::File>,
     next_id: u64,
-    pub path: PathBuf,
 }
 
 impl ProcBridge {
@@ -81,7 +80,6 @@ impl ProcBridge {
             reader,
             writer,
             next_id: 1,
-            path: proc_path.to_path_buf(),
         })
     }
 

@@ -120,7 +120,7 @@ pub(crate) fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&
 
 pub(crate) fn find_config(module_name: &str, version: Option<&str>, search_dirs: &[PathBuf]) -> Result<CrateSource, String> {
     let cwd = std::env::current_dir().ok();
-    let extra: &[PathBuf] = cwd.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
+    let extra: &[PathBuf] = cwd.as_slice();
     for dir in search_dirs.iter().chain(extra.iter()) {
         let p = dir.join("ar_config.json");
         if !p.exists() { continue; }
@@ -150,7 +150,7 @@ pub(crate) fn find_config(module_name: &str, version: Option<&str>, search_dirs:
         let crates_root = base.join(crates_path_str);
         let prefix = format!("{module_name}-");
 
-        let mut candidates: Vec<_> = std::fs::read_dir(&crates_root)
+        let candidates: Vec<_> = std::fs::read_dir(&crates_root)
             .into_iter()
             .flatten()
             .filter_map(|e| e.ok())
@@ -219,7 +219,7 @@ pub(crate) fn detect_digest_version(crate_src_dir: &Path) -> String {
                 if let Some(ver_str) = t.strip_prefix("version") {
                     // `version = "0.10.7"` → extract the string value
                     if let Some(v) = ver_str
-                        .trim_start_matches(|c: char| c == ' ' || c == '=')
+                        .trim_start_matches([' ', '='])
                         .trim()
                         .strip_prefix('"')
                         .and_then(|s| s.strip_suffix('"'))

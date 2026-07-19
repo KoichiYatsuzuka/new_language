@@ -27,9 +27,6 @@ pub const INST_IS_EXCEPTION: u32 = 0x20000000;
 /// `new_type` ラッパーのインスタンス（高速 new_type 判定用）。
 pub const INST_IS_NEW_TYPE: u32 = 0x10000000;
 
-/// bits 23-0: `raw_fields` の初期化済みスロットを示すビットマップ（最大 24 スロット）。
-pub const INST_FIELD_INIT_MASK: u32 = 0x00FF_FFFF;
-
 
 // ---------------------------------------------------------------------------
 // Raw field layout (C ABI 準拠のフラット格納 — .claude/skills/c-abi-interop/SKILL.md P1)
@@ -60,9 +57,6 @@ impl RawWidth {
             RawWidth::I32 | RawWidth::U32 | RawWidth::F32 => 4,
             RawWidth::I64 | RawWidth::U64 | RawWidth::F64 => 8,
         }
-    }
-    pub fn is_float(self) -> bool {
-        matches!(self, RawWidth::F32 | RawWidth::F64)
     }
     /// 型注釈文字列から格納形式を導出する。プリミティブでない場合は `None`。
     pub fn from_ann(ann: &str) -> Option<RawWidth> {
@@ -119,11 +113,11 @@ impl RawLayout {
             let width = RawWidth::from_ann(ann)?;
             let w = width.byte_width();
             // C のアラインメント規則: オフセットを型幅に切り上げ
-            offset = (offset + w - 1) / w * w;
+            offset = offset.div_ceil(w) * w;
             descs.push(RawFieldDesc { byte_offset: offset, width });
             offset += w;
         }
-        let total_bytes = (offset + 7) / 8 * 8;
+        let total_bytes = offset.div_ceil(8) * 8;
         Some(RawLayout { fields: descs, total_bytes })
     }
 }
@@ -177,11 +171,6 @@ impl InstanceData {
         let mut v = vec![0u64; 1 + extra_bytes.div_ceil(8)];
         v[0] = (class_id as u64) | ((flags as u64) << 32);
         v.into_boxed_slice()
-    }
-
-    #[inline]
-    pub fn class_id(&self) -> u32 {
-        self.raw[0] as u32
     }
 
     #[inline]

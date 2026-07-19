@@ -148,6 +148,7 @@
 
     /// float_literals のテスト。
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 は円周率ではなく float リテラル字句解析の検証値
     fn test_float_literals() {
         let tokens = lex("3.14 1.0e10 2.5E-3");
         assert_eq!(tokens[0], Token::Float(3.14));

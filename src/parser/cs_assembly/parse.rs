@@ -84,7 +84,7 @@ pub(crate) fn parse_assembly(path: &Path) -> Result<ParsedAssembly, String> {
         let name = read_string(&data, streams.strings_off, name_idx).to_string();
         let namespace = read_string(&data, streams.strings_off, ns_idx).to_string();
 
-        let coded = ((row as u32 + 1) << 2) | 0;
+        let coded = (row as u32 + 1) << 2;
         let simple = name.split('`').next().unwrap_or(&name);
         type_names.insert(coded, simple.to_string());
 

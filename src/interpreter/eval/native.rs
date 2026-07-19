@@ -27,7 +27,7 @@ impl Interpreter {
         use crate::interpreter::PtrParam;
 
         // Fast path: no write-back parameters
-        let has_writeback = fn_ref.ptr_params.iter().any(|p| *p == PtrParam::MutPtr);
+        let has_writeback = fn_ref.ptr_params.contains(&PtrParam::MutPtr);
         if !has_writeback {
             let evaled = self.eval_call_args(args)?;
             let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();

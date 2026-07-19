@@ -112,7 +112,7 @@ fn apply_format_spec(
     // fill + align: optional 1-char fill followed by < > ^ =
     let (fill, align) = if chars.len() >= 2 && matches!(chars[1], '<' | '>' | '^' | '=') {
         (chars[0], Some(chars[1]))
-    } else if matches!(chars.get(0), Some('<') | Some('>') | Some('^') | Some('=')) {
+    } else if matches!(chars.first(), Some('<') | Some('>') | Some('^') | Some('=')) {
         (' ', Some(chars[0]))
     } else {
         (' ', None)

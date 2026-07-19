@@ -202,7 +202,7 @@ impl<'a> GenCtx<'a> {
             Stmt::Raise { exc: None, .. } => {
                 // bare re-raise: signal exception with empty type
                 let empty = self.str_const(b"");
-                self.call_cb(CB_RAISE, &[format!("i64 0"), format!("i64 0")]);
+                self.call_cb(CB_RAISE, &["i64 0".to_string(), "i64 0".to_string()]);
                 let _ = empty;
                 self.ret_handle("-2");
             }
@@ -405,7 +405,7 @@ impl<'a> GenCtx<'a> {
                         MatchPattern::Case(pat_expr) => {
                             let (pv, pt) = self.gen_expr(pat_expr);
                             let ph  = self.to_handle(&pv, pt);
-                            let eq  = self.call_cb(CB_BINOP, &[format!("i32 7"), format!("i64 {subj_r}"), format!("i64 {ph}")]);
+                            let eq  = self.call_cb(CB_BINOP, &["i32 7".to_string(), format!("i64 {subj_r}"), format!("i64 {ph}")]);
                             let cnd = self.to_cond(&eq, Ty::Handle);
                             self.br_cond(&cnd, &body_blk, &next_blk);
                         }

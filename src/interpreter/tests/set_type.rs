@@ -1,7 +1,6 @@
 // tests/set_type.rs — set 型のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // ---------------------------------------------------------------------------
 // set type

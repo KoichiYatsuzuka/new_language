@@ -1,7 +1,6 @@
 // tests/iterator.rs — イテレータ・反復処理のテスト。
 
 use super::*;
-use crate::interpreter::*;
 
 // --- iterator ---
 
@@ -51,12 +50,9 @@ fn test_generator_exhausted_raises_end_of_iteration() {
     let mut interp = Interpreter::new();
     let mut err_msg = String::new();
     for stmt in &stmts {
-        match interp.exec(stmt) {
-            Err(e) => {
-                err_msg = e;
-                break;
-            }
-            _ => {}
+        if let Err(e) = interp.exec(stmt) {
+            err_msg = e;
+            break;
         }
     }
     assert!(

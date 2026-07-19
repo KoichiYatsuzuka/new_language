@@ -87,10 +87,10 @@ impl Interpreter {
                     return Err("TypeError: str.__iter__() takes no arguments".to_string());
                 }
                 let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
-                return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
                     values: chars,
                     index: 0,
-                }))));
+                }))))
             }
 
             // ── 大文字・小文字変換 ──────────────────────────────────────────

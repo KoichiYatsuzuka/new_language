@@ -4,7 +4,6 @@
 // インデックス 0 がグローバルスコープ、末尾がローカルスコープ（最内部）。
 // 変数の検索は末尾（最内部）から先頭（グローバル）へ向かって行われる（レキシカルスコープ規則）。
 
-use std::collections::HashMap;
 
 use super::{Interpreter, Value, Var};
 

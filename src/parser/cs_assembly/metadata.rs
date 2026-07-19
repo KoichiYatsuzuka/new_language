@@ -114,7 +114,7 @@ pub(crate) fn find_streams(data: &[u8], meta: usize) -> Result<Streams, String> 
 
     for _ in 0..num_streams {
         let offset = u32le(data, pos) as usize;
-        let size = u32le(data, pos + 4) as usize;
+        let _size = u32le(data, pos + 4) as usize;
         pos += 8;
         // read null-terminated name, 4-byte aligned
         let name_start = pos;
@@ -295,7 +295,7 @@ pub(crate) fn read_string(data: &[u8], strings_off: usize, idx: u32) -> &str {
 }
 
 
-pub(crate) fn read_blob<'a>(data: &'a [u8], blob_off: usize, idx: u32) -> &'a [u8] {
+pub(crate) fn read_blob(data: &[u8], blob_off: usize, idx: u32) -> &[u8] {
     let start = blob_off + idx as usize;
     let (len, hdr) = decompress_uint(data, start);
     &data[start + hdr..start + hdr + len as usize]
