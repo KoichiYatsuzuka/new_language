@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod types;
 mod errors;
 mod scope;
@@ -478,7 +476,6 @@ pub(crate) enum MemberKind {
     },
     Method {
         sigs: Vec<FnSig>,
-        access: Accessibility,
     },
 }
 
@@ -506,14 +503,8 @@ impl TypeChecker {
                 // Class methods
                 if let Some(methods) = self.class_method_sigs.get(name.as_str()) {
                     for (mname, sigs) in methods {
-                        let access = self.class_member_access
-                            .get(name.as_str())
-                            .and_then(|m| m.get(mname))
-                            .cloned()
-                            .unwrap_or(Accessibility::Public);
                         members.insert(mname.clone(), MemberKind::Method {
                             sigs: sigs.clone(),
-                            access,
                         });
                     }
                 }
@@ -532,7 +523,6 @@ impl TypeChecker {
                     for (mname, sigs) in methods {
                         members.entry(mname.clone()).or_insert(MemberKind::Method {
                             sigs: sigs.clone(),
-                            access: Accessibility::Public,
                         });
                     }
                 }
@@ -557,7 +547,6 @@ impl TypeChecker {
                         };
                         members.insert(m.name.clone(), MemberKind::Method {
                             sigs: vec![sig],
-                            access: Accessibility::Public,
                         });
                     }
                 }

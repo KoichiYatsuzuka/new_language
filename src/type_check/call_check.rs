@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::ast::{CallArg, Expr};
 use crate::type_check::types::InferredType as IT;
 

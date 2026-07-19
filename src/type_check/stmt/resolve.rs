@@ -1,12 +1,7 @@
 // stmt/resolve.rs — モジュール型収集と型注釈の解決: collect_module_types / type_ann_to_inferred / resolve_declared_type。
 
-#![allow(dead_code)]
-
-#[allow(unused_imports)]
 use {
-    crate::ast::{Expr, FieldKind, MatchPattern, Stmt, TupleTarget},
-    crate::token::Span,
-    crate::type_check::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind},
+    crate::ast::{Stmt, TupleTarget},
     crate::type_check::types::{FnTypeParam, InferredType},
     crate::type_check::TypeChecker,
 };

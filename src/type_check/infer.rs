@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::ast::{Expr, MatchPattern, UnaryOp};
 
 use super::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};

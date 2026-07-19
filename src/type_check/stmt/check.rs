@@ -1,13 +1,10 @@
 // stmt/check.rs — 文の静的型検査の中核: check_stmts / check_stmt。
 
-#![allow(dead_code)]
-
-#[allow(unused_imports)]
 use {
     crate::ast::{Expr, FieldKind, MatchPattern, Stmt, TupleTarget},
     crate::token::Span,
     crate::type_check::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind},
-    crate::type_check::types::{FnTypeParam, InferredType},
+    crate::type_check::types::InferredType,
     crate::type_check::TypeChecker,
 };
 

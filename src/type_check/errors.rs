@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::types::InferredType;
 use crate::token::Span;
 
@@ -148,6 +146,8 @@ pub enum TypeErrorKind {
         reason: String,
     },
     /// プロトコルを継承しようとした（`class Foo(MyProtocol):` はエラー）。
+    // TODO(reserved): 未発火の診断（Protocol 継承チェック未配線）。実装時に allow を外す。
+    #[allow(dead_code)]
     ProtocolInheritance {
         class_name: String,
         protocol_name: String,
@@ -192,6 +192,8 @@ pub enum TypeWarningKind {
         protocol_name: String,
     },
     /// Protocol 型変数を含む関数が部分コンパイル対象になったが、スキップされた。
+    // TODO(reserved): 未発火の診断（部分コンパイルスキップ警告未配線）。実装時に allow を外す。
+    #[allow(dead_code)]
     ProtocolSkippedCompile {
         func_name: String,
         protocol_name: String,

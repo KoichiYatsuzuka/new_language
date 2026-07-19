@@ -1,13 +1,9 @@
 // stmt/protocol.rs — プロトコル適合性検査: check_protocol_conformance とクラスのフィールド/メソッドシグネチャ収集・照合。
 
-#![allow(dead_code)]
-
-#[allow(unused_imports)]
 use {
-    crate::ast::{Expr, FieldKind, MatchPattern, Stmt, TupleTarget},
     crate::token::Span,
-    crate::type_check::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind},
-    crate::type_check::types::{FnTypeParam, InferredType},
+    crate::type_check::errors::{StaticTypeError, TypeErrorKind},
+    crate::type_check::types::InferredType,
     crate::type_check::TypeChecker,
 };
 

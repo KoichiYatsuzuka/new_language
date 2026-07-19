@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::ast::Expr;
 
 use super::errors::{StaticTypeError, TypeErrorKind};

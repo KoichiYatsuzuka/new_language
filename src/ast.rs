@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::token::Span;
 
 /// テンプレート型パラメータ（型変数とそのトレイト制約）。
@@ -58,18 +56,6 @@ pub fn c_abi_base_type(ann: &str) -> Option<&'static str> {
             Some("int")
         }
         "float32" | "float64" => Some("float"),
-        _ => None,
-    }
-}
-
-/// C ABI 型注釈のバイト幅を返す（raw ブロックレイアウト計算用）。
-/// C ABI 型でない場合は `None`。
-pub fn c_abi_byte_width(ann: &str) -> Option<usize> {
-    match ann {
-        "int8" | "uint8" => Some(1),
-        "int16" | "uint16" => Some(2),
-        "int32" | "uint32" | "float32" => Some(4),
-        "int64" | "uint64" | "float64" => Some(8),
         _ => None,
     }
 }
