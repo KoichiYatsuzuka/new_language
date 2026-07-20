@@ -1,19 +1,13 @@
 // classes/method_call.rs — メソッド呼び出し評価の中核: eval_method_call。
 
-#[allow(unused_imports)]
 use {
     std::cell::RefCell, std::rc::Rc,
     crate::ast::CallArg,
-    crate::interpreter::str_methods::{
-        regex_findall, regex_match, regex_search, regex_split, regex_sub, str_format,
-    },
     crate::interpreter::{
-        ByteModeRust, ClassValue, FileOpenModeRust, FnValue, GeneratorState, InstanceData,
+        FnValue, GeneratorState,
         Interpreter, RaisedError, Value, RAISE_SENTINEL,
     },
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Interpreter {
     /// オブジェクトのメソッドを呼び出して結果を返す。List / Str / Instance / Dict / Generator 等の各値型へディスパッチする。

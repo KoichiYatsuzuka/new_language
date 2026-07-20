@@ -1,9 +1,6 @@
 // llvm_codegen/expr.rs — 式の LLVM IR 生成: gen_expr とその補助(二項演算・特殊化・高速呼び出し引数・呼び出し生成)。
 
-#[allow(unused_imports)]
-use std::collections::{HashMap, HashSet};
-#[allow(unused_imports)]
-use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Param, Stmt, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, MatchPattern, UnaryOp};
 use super::*;
 
 impl<'a> GenCtx<'a> {

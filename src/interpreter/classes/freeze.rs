@@ -1,19 +1,12 @@
 // classes/freeze.rs — インスタンスの freeze とフラットレイアウト化: try_flat_freeze、build_flat_layout_from_instance、write_flat_instance、freeze_instance、apply_freeze_to_value。
 
-#[allow(unused_imports)]
 use {
     std::cell::RefCell, std::rc::Rc,
-    crate::ast::CallArg,
-    crate::interpreter::str_methods::{
-        regex_findall, regex_match, regex_search, regex_split, regex_sub, str_format,
-    },
     crate::interpreter::{
-        ByteModeRust, ClassValue, FileOpenModeRust, FnValue, GeneratorState, InstanceData,
-        Interpreter, RaisedError, Value, RAISE_SENTINEL,
+        ClassValue, InstanceData,
+        Interpreter, Value,
     },
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Interpreter {
     /// インスタンスを不変化する: `immutable = true` にセットし、すべての `mut` フィールドを不変にする。

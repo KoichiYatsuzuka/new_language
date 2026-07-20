@@ -1,14 +1,12 @@
 // eval/core.rs — 式評価のコア: eval 本体のディスパッチと、トレイトアクセス・属性・スライス・二項演算・match 式の評価。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::rc::Rc, std::sync::Arc,
-    crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchArm, MatchPattern},
-    crate::token::Span,
+    std::cell::RefCell, std::rc::Rc,
+    crate::ast::{BinOp, Expr, MatchArm, MatchPattern},
     crate::interpreter::{
-        ByteModeRust, DictData, ExecResult, FileData, FileOpenModeRust, GeneratorState,
-        Interpreter, NativeFnRef, SliceValue, TupleData, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, LOOP_DEPTH, RAISE_SENTINEL,
+        DictData,
+        Interpreter, SliceValue, TupleData, Value,
+        BLOCK_RETURN_EXPECTED_TYPE, RAISE_SENTINEL,
     },
 };
 use super::*;

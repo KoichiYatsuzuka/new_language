@@ -1,11 +1,5 @@
 // cs_assembly/metadata.rs — PE/CLI メタデータの低レベル読み取り関数: バイトヘルパー、PE セクション/メタデータルート/ストリーム解決、#~ テーブルレイアウト計算、文字列/blob 読み取り。
 
-#[allow(unused_imports)]
-use {
-    std::collections::HashMap, std::path::Path,
-    crate::ast::{Accessibility, Param, Stmt, TemplateParam},
-};
-#[allow(unused_imports)]
 use super::*;
 
 

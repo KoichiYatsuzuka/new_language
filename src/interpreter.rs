@@ -301,10 +301,6 @@ pub struct Interpreter {
     /// ロード済みのネイティブ共有ライブラリ。キーは DLL の絶対パス。
     /// ライブラリはインタープリタの生存期間を通じて保持される（アンロードしない）。
     pub(self) native_libs: HashMap<PathBuf, NativeLibWrapper>,
-    /// Keeps inkwell JIT modules alive for the interpreter's lifetime.
-    /// Each entry owns the `ExecutionEngine` whose function pointers are in use.
-    #[allow(dead_code)]
-    pub(self) jit_handles: Vec<Box<dyn std::any::Any>>,
     /// デバッガ REPL 内で `let dbg::name = expr` として宣言された一時変数。
     /// `q`（再開）または `break_point` のスコープ終了時にクリアされる。
     pub(self) dbg_vars: HashMap<String, Var>,
@@ -379,7 +375,6 @@ impl Interpreter {
             },
             protocol_required_members: HashMap::new(),
             native_libs: HashMap::new(),
-            jit_handles: Vec::new(),
             dbg_vars: HashMap::new(),
             dbg_last_span: None,
             event_loop_data: el_data,

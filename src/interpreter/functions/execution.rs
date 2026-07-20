@@ -1,12 +1,11 @@
 // functions/execution.rs — 関数・ジェネレータの実行: exec_fn_evaled / exec_fn / exec_generator。
 
-#[allow(unused_imports)]
 use {
     std::cell::RefCell, std::rc::Rc,
-    crate::ast::{CallArg, Param},
+    crate::ast::CallArg,
     crate::token::Span,
     crate::interpreter::{
-        CapturedVar, DictData, ExecResult, FnValue, GeneratorFnValue, GeneratorState, InstanceData,
+        CapturedVar, DictData, ExecResult, FnValue, GeneratorFnValue, GeneratorState,
         Interpreter, StackFrame, Value, Var, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
         RAISE_SENTINEL,
     },

@@ -1,13 +1,6 @@
 // python_converter/annotations.rs — 型注釈の変換: convert_annotation / subscript スライス / map_type_name。
 
-#[allow(unused_imports)]
-use {
-    rustpython_parser::{ast as py, Parse},
-    crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, UnaryOp},
-    crate::token::Span,
-};
-#[allow(unused_imports)]
-use super::*;
+use rustpython_parser::ast as py;
 
 // ---------------------------------------------------------------------------
 // 型アノテーション変換

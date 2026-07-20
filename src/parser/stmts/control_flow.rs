@@ -1,13 +1,10 @@
 // stmts/control_flow.rs — 制御構造の解析: 戻り型注釈 / if / match。
 
-#[allow(unused_imports)]
 use {
     crate::parser::Parser,
-    crate::ast::{Accessibility, BinOp, ExceptHandler, Expr, MatchArm, MatchPattern, Param, Stmt, TupleTarget},
-    crate::token::{Span, Token},
+    crate::ast::{Expr, MatchArm, MatchPattern, Stmt},
+    crate::token::Token,
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Parser {
     /// `->Type` アノテーションを省略可能な形でパースして返す。

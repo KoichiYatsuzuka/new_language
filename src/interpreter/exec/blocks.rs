@@ -1,23 +1,14 @@
 // exec/blocks.rs — ブロック実行とクロージャ補助: exec_block / exec_scoped_block / capture_env / apply_value_call。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::path::PathBuf,
-    std::rc::Rc, std::sync::Arc,
-    crate::ast::{
-        Accessibility, BinOp, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param,
-        Stmt, TemplateParam, TupleTarget,
-    },
-    crate::token::Span,
+    std::cell::RefCell, std::collections::{HashMap, HashSet},
+    std::rc::Rc,
+    crate::ast::Stmt,
     crate::interpreter::{
-        debugger::DbgMode, CapturedVar, ExecResult, FnValue, GeneratorFnValue, GeneratorState,
-        Interpreter, ModuleState, NamespaceData, NativeFnRef, NativeLibWrapper, RaisedError,
-        StackFrame, TemplateClassValue, TemplateFnValue, TemplateGenFnValue, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
-        RAISE_SENTINEL,
+        CapturedVar, ExecResult,
+        Interpreter, Value, Var,
     },
 };
-#[allow(unused_imports)]
 use super::*;
 
 impl Interpreter {

@@ -1,23 +1,14 @@
-// exec/modules.rs — モジュール読み込みの実行: import 文、JIT モジュール、ネイティブ/C++/C# ブリッジ DLL のロードと型シグネチャ構築。
+// exec/modules.rs — モジュール読み込みの実行: import 文、ネイティブ/C++/C# ブリッジ DLL のロードと型シグネチャ構築。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::path::PathBuf,
+    std::collections::HashMap, std::path::PathBuf,
     std::rc::Rc, std::sync::Arc,
-    crate::ast::{
-        Accessibility, BinOp, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param,
-        Stmt, TemplateParam, TupleTarget,
-    },
-    crate::token::Span,
+    crate::ast::Stmt,
     crate::interpreter::{
-        debugger::DbgMode, CapturedVar, ExecResult, FnValue, GeneratorFnValue, GeneratorState,
-        Interpreter, ModuleState, NamespaceData, NativeFnRef, NativeLibWrapper, RaisedError,
-        StackFrame, TemplateClassValue, TemplateFnValue, TemplateGenFnValue, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
-        RAISE_SENTINEL,
+        ExecResult,
+        Interpreter, ModuleState, NamespaceData, NativeFnRef, NativeLibWrapper, Value, Var,
     },
 };
-#[allow(unused_imports)]
 use super::*;
 
 impl Interpreter {
@@ -65,46 +56,20 @@ impl Interpreter {
             if let Some((_exports, payload)) = native_data
             {
                 use crate::partial_compiler::NativePayload;
-                match payload {
-                    // ── inkwell JIT path (v2 bitcode) ─────────────────────────
-                    #[cfg(feature = "llvm")]
-                    NativePayload::Bitcode(bitcode) => {
-                        match crate::partial_compiler::inkwell_codegen::jit_from_bitcode(
-                            &bitcode, &exports,
-                        ) {
-                            Ok((jit_handle, fn_ptrs)) => {
-                                match self.load_jit_module(module, body, &exports, &fn_ptrs, jit_handle) {
-                                    Ok(ns) => {
-                                        self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
-                                        return Ok(ns);
-                                    }
-                                    Err(e) => eprintln!("NativeLoad(JIT): {e}"),
-                                }
-                            }
-                            Err(e) => eprintln!("NativeLoad(JIT): bitcode re-JIT failed: {e}"),
+                // ── DLL path (v1) ─────────────────────────────────────────────
+                let NativePayload::Dll(dll_bytes) = payload;
+                let ext = crate::partial_compiler::native_lib_ext();
+                let stem = module.last().cloned().unwrap_or_default();
+                let tmp_path = std::env::temp_dir().join(format!("{stem}_tl.{ext}"));
+                match std::fs::write(&tmp_path, &dll_bytes) {
+                    Ok(()) => match self.try_load_native_module(module, body, &tmp_path) {
+                        Ok(ns) => {
+                            self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
+                            return Ok(ns);
                         }
-                    }
-                    // ── DLL path (v1) ─────────────────────────────────────────
-                    NativePayload::Dll(dll_bytes) => {
-                        let ext = crate::partial_compiler::native_lib_ext();
-                        let stem = module.last().cloned().unwrap_or_default();
-                        let tmp_path = std::env::temp_dir().join(format!("{stem}_tl.{ext}"));
-                        match std::fs::write(&tmp_path, &dll_bytes) {
-                            Ok(()) => match self.try_load_native_module(module, body, &tmp_path) {
-                                Ok(ns) => {
-                                    self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
-                                    return Ok(ns);
-                                }
-                                Err(e) => eprintln!("NativeLoad(DLL): {e}"),
-                            },
-                            Err(e) => eprintln!("NativeLoad(DLL): cannot write temp DLL: {e}"),
-                        }
-                    }
-                    // When the llvm feature is disabled, silently ignore Bitcode payloads
-                    #[cfg(not(feature = "llvm"))]
-                    NativePayload::Bitcode(_) => {
-                        eprintln!("NativeLoad: bitcode .arc requires --features llvm");
-                    }
+                        Err(e) => eprintln!("NativeLoad(DLL): {e}"),
+                    },
+                    Err(e) => eprintln!("NativeLoad(DLL): cannot write temp DLL: {e}"),
                 }
             }
         }
@@ -152,86 +117,6 @@ impl Interpreter {
         self.module_cache
             .insert(cache_key, ModuleState::Loaded(ns.clone()));
         Ok(ns)
-    }
-
-    /// inkwell JIT モジュールから `Namespace` を構築する。
-    /// `fn_ptrs` は `(fn_name, raw_address)` のリスト。
-    /// `jit_handle` は JIT エンジンの所有権を保持するボックスで、インタープリタに格納される。
-    #[cfg(feature = "llvm")]
-    pub(crate) fn load_jit_module(
-        &mut self,
-        module: &[String],
-        body:   &[Stmt],
-        exports: &[crate::partial_compiler::llvm_codegen::FnExport],
-        fn_ptrs: &[(String, usize)],
-        jit_handle: crate::partial_compiler::inkwell_codegen::JitHandle,
-    ) -> Result<Rc<NamespaceData>, String> {
-        use crate::interpreter::native_api::{get_callbacks, ArCallbacks};
-
-        // Call ar_init via the JIT module to set the @CB global
-        {
-            // Look up ar_init by address if we can, otherwise skip
-            // (the @CB global in the JIT module is separate from any DLL @CB)
-            let ar_init_sym = fn_ptrs.iter()
-                .find(|(n, _)| n == "ar_init")
-                .map(|(_, p)| *p);
-            if let Some(addr) = ar_init_sym {
-                let cb_ptr = get_callbacks();
-                unsafe {
-                    let ar_init: unsafe extern "C" fn(*const ArCallbacks) =
-                        std::mem::transmute(addr);
-                    ar_init(cb_ptr);
-                }
-            } else {
-                // ar_init address not in fn_ptrs; get it via the engine
-                // (we'd need to expose it — for now assume the engine was
-                //  already initialised by jit_from_bitcode which calls it)
-            }
-        }
-
-        // Build the namespace: for each body statement that is a FnDef
-        // and has a raw fn_ptr, create a NativeFnRef with raw_fn_ptr set.
-        let mut members: HashMap<String, Value> = HashMap::new();
-        self.push_scope();
-        for stmt in body {
-            self.exec(stmt)?;
-        }
-        members = self.scopes.last()
-            .map(|s| s.iter().map(|(k, v)| (k.clone(), v.value.clone())).collect())
-            .unwrap_or_default();
-        self.pop_scope();
-
-        // Override tree-walk functions with JIT versions
-        let ptr_map: HashMap<&str, usize> =
-            fn_ptrs.iter().map(|(n, p)| (n.as_str(), *p)).collect();
-        for exp in exports {
-            if let Some(&fn_ptr) = ptr_map.get(exp.name.as_str()) {
-                if fn_ptr != 0 {
-                    let fn_ref = Arc::new(NativeFnRef {
-                        lib_path: PathBuf::new(), // not used for JIT
-                        fn_name: exp.name.clone(),
-                        n_params: exp.n_params,
-                        min_params: exp.n_params,
-                        param_mutabilities: vec![false; exp.n_params],
-                        ptr_params: vec![crate::interpreter::PtrParam::None; exp.n_params],
-                        raw_fn_ptr: fn_ptr,
-                        cached_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
-                        typed_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
-                        typed_sig: None,
-                    });
-                    members.insert(exp.name.clone(), Value::NativeFunction(fn_ref));
-                }
-            }
-        }
-
-        // Keep the JIT engine alive
-        self.jit_handles.push(Box::new(jit_handle));
-
-        eprintln!("NativeLoad(JIT): {} function(s) loaded", exports.len());
-        Ok(Rc::new(NamespaceData {
-            name: module.join("."),
-            members,
-        }))
     }
 
     /// 関数シグネチャから typed ABI のシグネチャを構築する。
@@ -355,7 +240,7 @@ impl Interpreter {
                     if let Ok(func) = unsafe {
                         lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
                     } {
-                        let initial_ptr = unsafe { *func } as usize;
+                        let initial_ptr = *func as usize;
                         // typed エントリ ({name}_typed): 統一 typed ABI。
                         // シグネチャが全プリミティブの場合のみシンボルを探す。
                         let typed_sig = Self::build_typed_sig(params, return_type.as_deref());
@@ -368,7 +253,7 @@ impl Interpreter {
                                     *mut crate::interpreter::native_api::ErrSlot,
                                 ) -> u32>(typed_symbol.as_bytes())
                             } {
-                                Ok(f) => (unsafe { *f }) as usize,
+                                Ok(f) => *f as usize,
                                 Err(_) => 0,
                             }
                         } else {
@@ -381,7 +266,6 @@ impl Interpreter {
                             min_params: params.len(),
                             param_mutabilities: params.iter().map(|p| p.mutable).collect(),
                             ptr_params: vec![crate::interpreter::PtrParam::None; params.len()],
-                            raw_fn_ptr: 0,
                             cached_fn_ptr: std::sync::atomic::AtomicUsize::new(initial_ptr),
                             typed_fn_ptr: std::sync::atomic::AtomicUsize::new(typed_ptr),
                             typed_sig: if typed_ptr != 0 { typed_sig } else { None },
@@ -394,7 +278,7 @@ impl Interpreter {
                     if let Ok(func) = unsafe {
                         lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
                     } {
-                        let initial_ptr = unsafe { *func } as usize;
+                        let initial_ptr = *func as usize;
                         let fn_ref = Arc::new(NativeFnRef {
                             lib_path: lib_path_buf.clone(),
                             fn_name: name.clone(),
@@ -402,7 +286,6 @@ impl Interpreter {
                             min_params: params.len(),
                             param_mutabilities: params.iter().map(|p| p.mutable).collect(),
                             ptr_params: vec![crate::interpreter::PtrParam::None; params.len()],
-                            raw_fn_ptr: 0,
                             cached_fn_ptr: std::sync::atomic::AtomicUsize::new(initial_ptr),
                             typed_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
                             typed_sig: None,
@@ -422,7 +305,7 @@ impl Interpreter {
                         if let Ok(func) = unsafe {
                             lib.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
                         } {
-                            let fn_ptr = unsafe { *func } as usize;
+                            let fn_ptr = *func as usize;
                             crate::interpreter::native_api::register_native_method(class_name, mname, fn_ptr);
                             eprintln!("NativeMethod: {class_name}.{mname} ({} param(s)) → native", params.len());
                         }
@@ -740,7 +623,7 @@ impl Interpreter {
                             *mut crate::interpreter::native_api::ErrSlot,
                         ) -> u32>(tsym.as_bytes())
                     } {
-                        Ok(f) => (unsafe { *f }) as usize,
+                        Ok(f) => *f as usize,
                         Err(_) => 0,
                     }
                 } else {
@@ -753,7 +636,6 @@ impl Interpreter {
                     min_params: sig.n_required,
                     param_mutabilities: vec![false; sig.params.len()],
                     ptr_params,
-                    raw_fn_ptr: 0,
                     cached_fn_ptr: std::sync::atomic::AtomicUsize::new(0),
                     typed_fn_ptr: std::sync::atomic::AtomicUsize::new(typed_ptr),
                     typed_sig: if typed_ptr != 0 { typed_sig } else { None },

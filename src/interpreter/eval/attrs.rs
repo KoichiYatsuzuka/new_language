@@ -1,14 +1,10 @@
 // eval/attrs.rs — 属性アクセス・代入: メンバーアクセス可能性の検査、get_attr_val / set_attr_val / attr_assign。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::rc::Rc, std::sync::Arc,
-    crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchArm, MatchPattern},
-    crate::token::Span,
+    std::cell::RefCell, std::rc::Rc,
+    crate::ast::{Accessibility, Expr},
     crate::interpreter::{
-        ByteModeRust, DictData, ExecResult, FileData, FileOpenModeRust, GeneratorState,
-        Interpreter, NativeFnRef, SliceValue, TupleData, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, LOOP_DEPTH, RAISE_SENTINEL,
+        Interpreter, Value,
     },
 };
 

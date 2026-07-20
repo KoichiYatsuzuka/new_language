@@ -1,14 +1,6 @@
 // ops/typecheck.rs — 型・真偽値の判定: is_truthy / type_name / value_matches_type_ann / check_block_return_type / value_is_type / type_name_of。
 
-#[allow(unused_imports)]
-use {
-    std::cell::RefCell, std::rc::Rc,
-    crate::ast::{BinOp, Param, UnaryOp},
-    crate::interpreter::str_methods::percent_format,
-    crate::interpreter::{Interpreter, Value},
-};
-#[allow(unused_imports)]
-use super::*;
+use crate::interpreter::{Interpreter, Value};
 
 impl Interpreter {
     /// 値の真偽判定を行う。

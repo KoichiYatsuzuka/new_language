@@ -1,14 +1,10 @@
 // imports/dispatch.rs — import 文の解析とモジュール読み込みの振り分け: parse_import_stmt / lang・version ブラケット / module パス / load_module / load_rs_module。
 
-#[allow(unused_imports)]
 use {
     crate::parser::Parser,
-    crate::ast::{Accessibility, FieldKind, Param, Stmt},
-    crate::token::Token, crate::lexer, crate::python_converter,
-    std::path::PathBuf,
+    crate::ast::Stmt,
+    crate::token::Token,
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Parser {
     /// `import[lang] module.sub as alias` をパースして `Stmt::Import` を返す。

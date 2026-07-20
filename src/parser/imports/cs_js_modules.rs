@@ -1,13 +1,10 @@
 // imports/cs_js_modules.rs — C# / JS モジュールの読み込みとパス解決: load_cs_module / load_js_module / load_cs_lib_paths / python_search_dirs。
 
-#[allow(unused_imports)]
 use {
     crate::parser::Parser,
-    crate::ast::{Accessibility, FieldKind, Param, Stmt},
-    crate::token::Token, crate::lexer, crate::python_converter,
+    crate::ast::Stmt, crate::lexer,
     std::path::PathBuf,
 };
-#[allow(unused_imports)]
 use super::*;
 
 impl Parser {

@@ -1,12 +1,10 @@
 // native_api/callbacks.rs — ネイティブ DLL へ渡す C ABI コールバック(`extern "C" fn ar_*`)群と
 // それらを束ねる `CALLBACKS` テーブル。全ての重い操作はインタープリタ経由でルーティングする。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::HashMap, std::rc::Rc,
-    crate::interpreter::{DictData, Interpreter, TupleData, Value},
+    std::cell::RefCell, std::rc::Rc,
+    crate::interpreter::{DictData, TupleData, Value},
 };
-#[allow(unused_imports)]
 use super::*;
 
 extern "C" fn ar_make_int(n: i64) -> i64 {
@@ -292,64 +290,55 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
         }
     }
 
-    // Fast path: NativeFunction (cpp-dll or JIT).
+    // Fast path: NativeFunction (native DLL).
     // Arg handles are already live in the arena — pass them straight through.
     if let Value::NativeFunction(ref fn_ref) = fn_val {
         if !interp_ptr.is_null() {
             let is_outermost = enter_native_call(interp_ptr);
 
-            let result_h = if fn_ref.raw_fn_ptr != 0 {
-                // JIT: pointer is embedded directly.
-                unsafe {
-                    let f: unsafe extern "C" fn(*const i64, i32) -> i64 =
-                        std::mem::transmute(fn_ref.raw_fn_ptr);
-                    f(args_ptr, n_args)
-                }
+            // DLL: use cached_fn_ptr; resolve on first call.
+            let cached = fn_ref.cached_fn_ptr.load(Ordering::Relaxed);
+            let fn_ptr = if cached != 0 {
+                cached
             } else {
-                // cpp-dll: use cached_fn_ptr; resolve on first call.
-                let cached = fn_ref.cached_fn_ptr.load(Ordering::Relaxed);
-                let fn_ptr = if cached != 0 {
-                    cached
-                } else {
-                    let sym_name = format!("{}_tl\0", fn_ref.fn_name);
-                    let interp = unsafe { &*interp_ptr };
-                    match interp.native_libs.get(&fn_ref.lib_path) {
-                        Some(lib) => {
-                            match unsafe {
-                                lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(
-                                    sym_name.as_bytes(),
-                                )
-                            } {
-                                Ok(f) => {
-                                    let fp = *f as usize;
-                                    fn_ref.cached_fn_ptr.store(fp, Ordering::Relaxed);
-                                    fp
-                                }
-                                Err(e) => {
-                                    STATE.with(|s| s.borrow_mut().error = Some(format!(
-                                        "RuntimeError: symbol '{}' not found: {e}",
-                                        fn_ref.fn_name
-                                    )));
-                                    abort_native_call(is_outermost);
-                                    return TL_NONE;
-                                }
+                let sym_name = format!("{}_tl\0", fn_ref.fn_name);
+                let interp = unsafe { &*interp_ptr };
+                match interp.native_libs.get(&fn_ref.lib_path) {
+                    Some(lib) => {
+                        match unsafe {
+                            lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(
+                                sym_name.as_bytes(),
+                            )
+                        } {
+                            Ok(f) => {
+                                let fp = *f as usize;
+                                fn_ref.cached_fn_ptr.store(fp, Ordering::Relaxed);
+                                fp
+                            }
+                            Err(e) => {
+                                STATE.with(|s| s.borrow_mut().error = Some(format!(
+                                    "RuntimeError: symbol '{}' not found: {e}",
+                                    fn_ref.fn_name
+                                )));
+                                abort_native_call(is_outermost);
+                                return TL_NONE;
                             }
                         }
-                        None => {
-                            STATE.with(|s| s.borrow_mut().error = Some(format!(
-                                "RuntimeError: native library not loaded: {}",
-                                fn_ref.lib_path.display()
-                            )));
-                            abort_native_call(is_outermost);
-                            return TL_NONE;
-                        }
                     }
-                };
-                unsafe {
-                    let f: unsafe extern "C" fn(*const i64, i32) -> i64 =
-                        std::mem::transmute(fn_ptr);
-                    f(args_ptr, n_args)
+                    None => {
+                        STATE.with(|s| s.borrow_mut().error = Some(format!(
+                            "RuntimeError: native library not loaded: {}",
+                            fn_ref.lib_path.display()
+                        )));
+                        abort_native_call(is_outermost);
+                        return TL_NONE;
+                    }
                 }
+            };
+            let result_h = unsafe {
+                let f: unsafe extern "C" fn(*const i64, i32) -> i64 =
+                    std::mem::transmute(fn_ptr);
+                f(args_ptr, n_args)
             };
 
             if STATE.with(|s| s.borrow().error.is_some()) {

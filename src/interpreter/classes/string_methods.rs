@@ -1,6 +1,5 @@
 // classes/string_methods.rs — 文字列(str)メソッドのディスパッチ: eval_str_method。
 
-#[allow(unused_imports)]
 use {
     std::cell::RefCell, std::rc::Rc,
     crate::ast::CallArg,
@@ -8,12 +7,10 @@ use {
         regex_findall, regex_match, regex_search, regex_split, regex_sub, str_format,
     },
     crate::interpreter::{
-        ByteModeRust, ClassValue, FileOpenModeRust, FnValue, GeneratorState, InstanceData,
-        Interpreter, RaisedError, Value, RAISE_SENTINEL,
+        GeneratorState,
+        Interpreter, Value,
     },
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Interpreter {
     /// 文字列値のメソッド（`split` / `strip` / `replace` / `startswith` 等）を評価して結果を返す。

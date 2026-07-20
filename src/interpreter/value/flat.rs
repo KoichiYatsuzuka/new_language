@@ -1,14 +1,8 @@
 // value/flat.rs — フラット凍結リストのレイアウト: FlatFieldTy / FlatListData / FlatLayout。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::fmt,
-    std::path::PathBuf, std::rc::Rc, std::sync::atomic::{AtomicU32, Ordering}, std::sync::Arc,
-    indexmap::IndexMap,
-    crate::ast::{Accessibility, Param, Stmt},
-    crate::interpreter::async_mgr,
+    std::cell::RefCell, std::rc::Rc,
 };
-#[allow(unused_imports)]
 use super::*;
 
 

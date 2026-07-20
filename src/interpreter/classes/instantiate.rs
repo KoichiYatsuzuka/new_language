@@ -1,19 +1,13 @@
 // classes/instantiate.rs — クラスのインスタンス化: instantiate / instantiate_evaled。
 
-#[allow(unused_imports)]
 use {
     std::cell::RefCell, std::rc::Rc,
     crate::ast::CallArg,
-    crate::interpreter::str_methods::{
-        regex_findall, regex_match, regex_search, regex_split, regex_sub, str_format,
-    },
     crate::interpreter::{
-        ByteModeRust, ClassValue, FileOpenModeRust, FnValue, GeneratorState, InstanceData,
-        Interpreter, RaisedError, Value, RAISE_SENTINEL,
+        ClassValue, InstanceData,
+        Interpreter, Value,
     },
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Interpreter {
     /// クラスを引数付きでインスタンス化して `Value::Instance` を返す。

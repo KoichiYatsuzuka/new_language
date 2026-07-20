@@ -1,13 +1,10 @@
 // stmts/definitions.rs — try / enum / new_type 定義の解析。
 
-#[allow(unused_imports)]
 use {
     crate::parser::Parser,
-    crate::ast::{Accessibility, BinOp, ExceptHandler, Expr, MatchArm, MatchPattern, Param, Stmt, TupleTarget},
-    crate::token::{Span, Spanned, Token},
+    crate::ast::{ExceptHandler, Expr, Stmt},
+    crate::token::{Spanned, Token},
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Parser {
     /// `try / except / finally` 文をパースして `Stmt::Try` を返す。

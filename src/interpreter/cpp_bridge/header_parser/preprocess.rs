@@ -1,11 +1,9 @@
 // header_parser/preprocess.rs — ヘッダ前処理: コメント除去・マクロ展開、typedef/エイリアス解析、括弧マッチング。
 
-#[allow(unused_imports)]
 use {
     std::collections::HashMap, std::path::{Path, PathBuf},
     crate::interpreter::cpp_bridge::types::{CStructDef, CFnSig, CType},
 };
-#[allow(unused_imports)]
 use super::*;
 
 // ── Shared text-parsing utilities (pub(crate) for typedef_loader) ─────────────

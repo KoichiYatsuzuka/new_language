@@ -225,7 +225,7 @@ pub(crate) struct CsMethod {
 pub(crate) enum PropertyRole {
     Getter(String),
     Setter(String),
-    EventAdder(String),
+    EventAdder,
 }
 
 

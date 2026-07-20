@@ -21,8 +21,6 @@ pub struct FnExport {
     pub name:       String,
     /// 関数が受け取るパラメータ数（`self` を含む）。
     pub n_params:   usize,
-    /// クラスメソッドの場合は所有クラス名、通常関数は `None`。
-    pub class_name: Option<String>,
 }
 
 // ── Internal type system ──────────────────────────────────────────────────────
@@ -64,8 +62,6 @@ struct FlatLeaf {
 /// クラスの数値フィールドを連続メモリに展開した flat-array 形式でネイティブコードに渡す。
 #[derive(Clone)]
 struct FlatListInfo {
-    /// 要素クラス名。
-    class_name: String,
     /// 全末端プリミティブフィールドのリスト（深さ優先アルファベット順）。
     leaves: Vec<FlatLeaf>,
     /// 要素あたりのバイト数 = `leaves.len() * 8`。
@@ -748,7 +744,6 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
         .map(|f| FnExport {
             name:       f.orig_name.to_string(),
             n_params:   f.params.len(),
-            class_name: f.class_name.clone(),
         })
         .collect();
 

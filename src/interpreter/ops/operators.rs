@@ -1,14 +1,11 @@
 // ops/operators.rs — 単項・二項演算子の適用と真偽値/文字列評価: apply_unary(_dyn) / apply_binop(_dyn) / eval_truthy / display_str。
 
-#[allow(unused_imports)]
 use {
     std::cell::RefCell, std::rc::Rc,
-    crate::ast::{BinOp, Param, UnaryOp},
+    crate::ast::{BinOp, UnaryOp},
     crate::interpreter::str_methods::percent_format,
     crate::interpreter::{Interpreter, Value},
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Interpreter {
     /// 単項演算子を適用した結果の値を返す。

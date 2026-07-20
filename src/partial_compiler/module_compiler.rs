@@ -44,21 +44,17 @@ use crate::ast::Stmt;
 const MAGIC: &[u8; 4] = b"TLC\x00";
 const VERSION_V0: u32 = 0;
 const VERSION_V1: u32 = 1;
-/// v2: LLVM bitcode embedded instead of a native DLL.
-const VERSION_V2: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // Thread-local cache: module_name → (exports, NativePayload)
 // Populated by load_tlc(); consumed by exec.rs.
 // ---------------------------------------------------------------------------
 
-/// Payload stored in the native cache and embedded in .arc v1/v2.
+/// Payload stored in the native cache and embedded in .arc v1.
 #[derive(Clone)]
 pub enum NativePayload {
     /// v1: raw shared-library bytes, written to a temp file and loaded via libloading.
     Dll(Vec<u8>),
-    /// v2: LLVM bitcode, re-JIT'd in-process via inkwell (no temp file needed).
-    Bitcode(Vec<u8>),
 }
 
 thread_local! {
@@ -111,22 +107,12 @@ pub fn compile(
     // Attempt native compilation.
     match compile_native(stmts) {
         Ok((payload, exports)) => {
-            match &payload {
-                NativePayload::Bitcode(bytes) => {
-                    write_tlc_native(source, stem, &exports, bytes, VERSION_V2, &tlc_path)?;
-                    println!(
-                        "NativeLib: {} function(s) (LLVM bitcode) embedded in {}",
-                        exports.len(), tlc_path.display()
-                    );
-                }
-                NativePayload::Dll(bytes) => {
-                    write_tlc_native(source, stem, &exports, bytes, VERSION_V1, &tlc_path)?;
-                    println!(
-                        "NativeLib: {} function(s) (DLL) embedded in {}",
-                        exports.len(), tlc_path.display()
-                    );
-                }
-            }
+            let NativePayload::Dll(bytes) = &payload;
+            write_tlc_native(source, stem, &exports, bytes, VERSION_V1, &tlc_path)?;
+            println!(
+                "NativeLib: {} function(s) (DLL) embedded in {}",
+                exports.len(), tlc_path.display()
+            );
         }
         Err(e) => {
             eprintln!("NativeLib: skipped ({e})");
@@ -172,20 +158,9 @@ pub fn load_tlc(path: &Path) -> std::io::Result<(String, String)> {
 
 /// Compile eligible functions to a `NativePayload`.
 ///
-/// Priority:
-///   1. inkwell JIT (feature = "llvm"): produces LLVM bitcode, no external tools.
-///   2. clang fallback: produces a DLL via the old text-IR pipeline.
+/// Emits LLVM IR text via `llvm_codegen`, then compiles it to a shared library
+/// with the external `clang` driver.
 fn compile_native(stmts: &[Stmt]) -> Result<(NativePayload, Vec<codegen::FnExport>), String> {
-    // ── inkwell path (preferred) ──────────────────────────────────────────────
-    #[cfg(feature = "llvm")]
-    {
-        match super::inkwell_codegen::get_bitcode(stmts) {
-            Ok((bitcode, exports)) => return Ok((NativePayload::Bitcode(bitcode), exports)),
-            Err(e) => eprintln!("NativeLib(inkwell): {e}"),
-        }
-    }
-
-    // ── clang fallback ────────────────────────────────────────────────────────
     let (llvm_ir, exports) = codegen::generate_llvm_module(stmts)
         .ok_or_else(|| "no codegen-eligible functions".to_string())?;
 
@@ -210,7 +185,7 @@ fn compile_native(stmts: &[Stmt]) -> Result<(NativePayload, Vec<codegen::FnExpor
     Ok((NativePayload::Dll(dll_bytes), exports))
 }
 
-/// Invoke `clang -O3 -shared` to compile `ll_path` → `dll_path` (fallback path).
+/// Invoke `clang -O3 -shared` to compile `ll_path` → `dll_path`.
 fn invoke_clang(ll_path: &Path, dll_path: &Path) -> Result<(), String> {
     let out_str = dll_path.to_str().unwrap_or("output");
     let in_str  = ll_path.to_str().unwrap_or("");
@@ -263,10 +238,7 @@ fn write_tlc_v0(source: &str, module_name: &str, path: &Path) -> std::io::Result
     std::fs::write(path, buf)
 }
 
-/// ネイティブペイロード付きの `.arc` を書き出す。
-///
-/// v1(DLL バイト列)と v2(LLVM ビットコード)はレイアウトが完全に同一で、
-/// `version` タグと末尾ペイロードの内容だけが異なる。
+/// ネイティブペイロード(DLL バイト列)付きの `.arc` を書き出す。
 fn write_tlc_native(
     source: &str,
     module_name: &str,
@@ -303,7 +275,7 @@ fn parse_tlc(
     pos += 4;
 
     let version = read_u32(data, &mut pos)?;
-    if version > VERSION_V2 {
+    if version > VERSION_V1 {
         return Err(format!("unsupported .arc version {version}"));
     }
 
@@ -314,21 +286,16 @@ fn parse_tlc(
         return Ok((module_name, source, None));
     }
 
-    // version 1 or 2: parse fn export table (identical layout)
+    // version 1: parse fn export table
     let n_fns = read_u32(data, &mut pos)? as usize;
     let mut exports = Vec::with_capacity(n_fns);
     for _ in 0..n_fns {
         let fn_name = read_string(data, &mut pos)?;
         let n_params = read_u32(data, &mut pos)? as usize;
-        exports.push(codegen::FnExport { name: fn_name, n_params, class_name: None });
+        exports.push(codegen::FnExport { name: fn_name, n_params });
     }
 
-    let payload_bytes = read_len_prefixed(data, &mut pos)?.to_vec();
-    let payload = if version == VERSION_V1 {
-        NativePayload::Dll(payload_bytes)
-    } else {
-        NativePayload::Bitcode(payload_bytes)
-    };
+    let payload = NativePayload::Dll(read_len_prefixed(data, &mut pos)?.to_vec());
 
     Ok((module_name, source, Some((exports, payload))))
 }

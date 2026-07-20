@@ -1,15 +1,12 @@
 // eval/calls.rs — 呼び出し評価: 関数呼び出し・キャスト・型コンストラクタ呼び出し・値呼び出し・AsyncManager 生成。
 
 
-#[allow(unused_imports)]
 use {
     std::cell::RefCell, std::rc::Rc, std::sync::Arc,
-    crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchArm, MatchPattern},
+    crate::ast::{CallArg, Expr},
     crate::token::Span,
     crate::interpreter::{
-        ByteModeRust, DictData, ExecResult, FileData, FileOpenModeRust, GeneratorState,
-        Interpreter, NativeFnRef, SliceValue, TupleData, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, LOOP_DEPTH, RAISE_SENTINEL,
+        Interpreter, NativeFnRef, SliceValue, Value,
     },
 };
 use super::*;

@@ -1,13 +1,10 @@
 // imports/py_modules.rs — Python モジュール(.py/.pyi)の読み込み: load_python_module / load_python_interface_module / load_py_type_body。
 
-#[allow(unused_imports)]
 use {
     crate::parser::Parser,
-    crate::ast::{Accessibility, FieldKind, Param, Stmt},
-    crate::token::Token, crate::lexer, crate::python_converter,
+    crate::ast::Stmt, crate::python_converter,
     std::path::PathBuf,
 };
-#[allow(unused_imports)]
 use super::*;
 
 impl Parser {

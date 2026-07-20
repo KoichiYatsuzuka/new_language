@@ -1,11 +1,5 @@
 // cs_assembly/signature.rs — CIL 型シグネチャ blob のデコード関数: SigReader のメソッドと C#→Arrow 型マッピング。
 
-#[allow(unused_imports)]
-use {
-    std::collections::HashMap, std::path::Path,
-    crate::ast::{Accessibility, Param, Stmt, TemplateParam},
-};
-#[allow(unused_imports)]
 use super::*;
 
 

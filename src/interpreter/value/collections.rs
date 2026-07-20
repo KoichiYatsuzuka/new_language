@@ -1,14 +1,6 @@
 // value/collections.rs — コレクション値型: SliceValue / TupleData / DictData / DictKey。
 
-#[allow(unused_imports)]
-use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::fmt,
-    std::path::PathBuf, std::rc::Rc, std::sync::atomic::{AtomicU32, Ordering}, std::sync::Arc,
-    indexmap::IndexMap,
-    crate::ast::{Accessibility, Param, Stmt},
-    crate::interpreter::async_mgr,
-};
-#[allow(unused_imports)]
+use indexmap::IndexMap;
 use super::*;
 
 

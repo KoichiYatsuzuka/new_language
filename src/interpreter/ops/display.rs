@@ -1,13 +1,9 @@
 // ops/display.rs — 値の表示・repr 生成: display / display_repr / repr_val。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::rc::Rc,
-    crate::ast::{BinOp, Param, UnaryOp},
-    crate::interpreter::str_methods::percent_format,
+    std::rc::Rc,
     crate::interpreter::{Interpreter, Value},
 };
-#[allow(unused_imports)]
 use super::*;
 
 impl Interpreter {

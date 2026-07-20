@@ -1,14 +1,9 @@
 // eval/subscript.rs — 添字アクセス・代入: value_matches_type、subscript 取得(スライス含む)、setitem、反復対象の収集。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::rc::Rc, std::sync::Arc,
-    crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchArm, MatchPattern},
-    crate::token::Span,
+    std::cell::RefCell, std::rc::Rc,
     crate::interpreter::{
-        ByteModeRust, DictData, ExecResult, FileData, FileOpenModeRust, GeneratorState,
-        Interpreter, NativeFnRef, SliceValue, TupleData, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, LOOP_DEPTH, RAISE_SENTINEL,
+        Interpreter, SliceValue, TupleData, Value,
     },
 };
 use super::*;

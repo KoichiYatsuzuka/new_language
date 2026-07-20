@@ -1,9 +1,7 @@
 // llvm_codegen/context.rs — GenCtx の低レベル IR 出力補助: コンストラクタ、レジスタ/ブロック採番、命令/alloca 出力、型変換(handle/i64/f64/cond)、CB 呼び出し、文字列定数など。
 
-#[allow(unused_imports)]
 use std::collections::{HashMap, HashSet};
-#[allow(unused_imports)]
-use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Param, Stmt, UnaryOp};
+use crate::ast::{CallArg, Expr};
 use super::*;
 
 impl<'a> GenCtx<'a> {

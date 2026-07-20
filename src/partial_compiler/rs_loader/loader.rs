@@ -1,13 +1,11 @@
 // rs_loader/loader.rs — import[rs] のロード統括: load 本体、crate 設定探索、digest バージョン検出、Cargo.toml パッチ、ラッパー生成準備。
 
-#[allow(unused_imports)]
 use {
-    std::collections::HashMap, std::path::{Path, PathBuf},
-    crate::ast::{Accessibility, Expr, FieldKind, Param, Stmt},
+    std::path::{Path, PathBuf},
+    crate::ast::Stmt,
     crate::partial_compiler::llvm_codegen::FnExport,
     crate::partial_compiler::module_compiler::{cache_native, native_lib_ext},
 };
-#[allow(unused_imports)]
 use super::*;
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -80,35 +78,26 @@ pub(crate) fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&
     // Build FnExport list: free functions + struct method exports
     let mut exports: Vec<FnExport> = fns
         .iter()
-        .map(|s| FnExport { name: s.name.clone(), n_params: s.params.len(), class_name: None })
+        .map(|s| FnExport { name: s.name.clone(), n_params: s.params.len() })
         .collect();
     for st in &structs {
         // __init__: self + ctor params
         exports.push(FnExport {
             name: "__init__".to_string(),
             n_params: 1 + st.ctor_params.len(),
-            class_name: Some(st.name.clone()),
         });
         // drop: self only
-        exports.push(FnExport {
-            name: "drop".to_string(),
-            n_params: 1,
-            class_name: Some(st.name.clone()),
-        });
+        exports.push(FnExport { name: "drop".to_string(), n_params: 1 });
         // field getters/setters
         for field in &st.fields {
             let getter = format!("get_{}", field.name);
-            exports.push(FnExport { name: getter, n_params: 1, class_name: Some(st.name.clone()) });
+            exports.push(FnExport { name: getter, n_params: 1 });
             let setter = format!("set_{}", field.name);
-            exports.push(FnExport { name: setter, n_params: 2, class_name: Some(st.name.clone()) });
+            exports.push(FnExport { name: setter, n_params: 2 });
         }
         // methods: self + params
         for m in &st.methods {
-            exports.push(FnExport {
-                name: m.name.clone(),
-                n_params: 1 + m.params.len(),
-                class_name: Some(st.name.clone()),
-            });
+            exports.push(FnExport { name: m.name.clone(), n_params: 1 + m.params.len() });
         }
     }
 

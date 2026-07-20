@@ -8,6 +8,8 @@ mod call_check;
 mod binop;
 mod decorator;
 
+// 型チェッカの公開 API 面。`FnTypeParam` / `TypeErrorKind` / `TypeWarningKind` は
+// bin からは未使用だが frontend_tests が使うため、narrowing しないこと。
 #[allow(unused_imports)]
 pub use types::{FnTypeParam, InferredType};
 #[allow(unused_imports)]

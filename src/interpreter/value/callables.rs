@@ -1,14 +1,9 @@
 // value/callables.rs — 関数・クラス・インスタンス値型: CapturedVar / FnValue / Generator/Template 各種 / ClassValue(+impl)。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::fmt,
-    std::path::PathBuf, std::rc::Rc, std::sync::atomic::{AtomicU32, Ordering}, std::sync::Arc,
-    indexmap::IndexMap,
+    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::rc::Rc,
     crate::ast::{Accessibility, Param, Stmt},
-    crate::interpreter::async_mgr,
 };
-#[allow(unused_imports)]
 use super::*;
 
 

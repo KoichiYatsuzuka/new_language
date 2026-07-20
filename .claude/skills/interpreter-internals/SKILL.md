@@ -47,7 +47,6 @@ pub struct Interpreter {
     static_cells:   HashMap<(String, u32, u32), Rc<RefCell<Value>>>, // static mut keyed by Span
     current_class:  Option<String>,              // set/restored around method calls
     call_stack:     Vec<StackFrame>,             // traceback
-    jit_handles:    Vec<...>,                    // keeps JIT engines alive
     python_search_dirs: Vec<PathBuf>,
     ...
 }

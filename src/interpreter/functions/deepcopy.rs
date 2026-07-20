@@ -1,14 +1,10 @@
 // functions/deepcopy.rs — 値のディープコピー: deep_copy_value / deep_copy_unfrozen。
 
-#[allow(unused_imports)]
 use {
     std::cell::RefCell, std::rc::Rc,
-    crate::ast::{CallArg, Param},
-    crate::token::Span,
     crate::interpreter::{
-        CapturedVar, DictData, ExecResult, FnValue, GeneratorFnValue, GeneratorState, InstanceData,
-        Interpreter, StackFrame, Value, Var, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
-        RAISE_SENTINEL,
+        DictData, InstanceData,
+        Interpreter, Value,
     },
 };
 

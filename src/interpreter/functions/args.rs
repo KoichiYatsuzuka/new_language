@@ -1,14 +1,10 @@
 // functions/args.rs — 呼び出し引数の評価と束縛: eval_call_args / bind_args / bind_args_relaxed。
 
-#[allow(unused_imports)]
 use {
     std::cell::RefCell, std::rc::Rc,
     crate::ast::{CallArg, Param},
-    crate::token::Span,
     crate::interpreter::{
-        CapturedVar, DictData, ExecResult, FnValue, GeneratorFnValue, GeneratorState, InstanceData,
-        Interpreter, StackFrame, Value, Var, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
-        RAISE_SENTINEL,
+        Interpreter, Value,
     },
 };
 

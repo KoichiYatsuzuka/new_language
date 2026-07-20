@@ -64,11 +64,14 @@ This section describes the partial compile subsystem (`src/partial_compiler/`) i
 | `{stem}.arc` | Compiled module — binary blob consumed by the importer at runtime |
 | `{stem}.ars` | Type stub — text read by the type checker and VS Code extension |
 
-The compiler selects from three code paths, in priority order:
+There is a single native backend, with a source-only fallback:
 
-1. **inkwell JIT** (requires `feature = "llvm"`) — emits LLVM bitcode; no external tools
-2. **clang fallback** — emits LLVM IR text, then shells out to `clang -O3 -shared`
-3. **Source-only** — writes a v0 `.arc` (no native code) with a warning
+1. **clang** — emits LLVM IR text, then shells out to `clang -O3 -shared` → v1 `.arc` (DLL embedded)
+2. **Source-only** — writes a v0 `.arc` (no native code) with a warning
+
+(An inkwell/JIT backend existed behind `feature = "llvm"`; it was removed — building it
+requires MSVC-built LLVM dev libraries, which are not obtainable in this environment.
+`clang.exe` alone is enough for the path above.)
 
 ---
 
@@ -78,8 +81,7 @@ The compiler selects from three code paths, in priority order:
 src/partial_compiler/
 ├── mod.rs            — public re-exports: compile, load_tlc, take_native_bytes, NativePayload
 ├── module_compiler.rs — .arc file format writer/reader + thread-local native cache
-├── llvm_codegen.rs   — LLVM IR text generator (clang fallback path)
-├── inkwell_codegen.rs — inkwell JIT compiler (feature = "llvm", primary path)
+├── llvm_codegen.rs   — LLVM IR text generator (compiled to a DLL by clang)
 ├── stub_gen.rs       — .ars stub text generator
 └── rs_loader.rs      — import[rs] native Rust crate loader
 ```
@@ -118,9 +120,8 @@ for each fn:
 [dll_len]  dll_bytes: raw shared-library bytes
 ```
 
-### Version 2 — LLVM bitcode embedded
-
-Identical wire layout to v1 — same export table encoding — but the payload bytes are LLVM bitcode instead of a native DLL. The inkwell path re-JITs them in-process at import time (no temp file needed).
+v1 is the highest version `parse_tlc` accepts. (A v2 format carrying LLVM bitcode existed
+for the removed inkwell JIT backend; it is no longer written or read.)
 
 ---
 
@@ -131,10 +132,8 @@ Identical wire layout to v1 — same export table encoding — but the payload b
 Entry point called by `main.rs` when `--compile` is given.
 
 1. **Stub** — always runs first: calls `stub_gen::generate_stub(stmts)` and writes `{stem}.ars`.
-2. **Native** — calls `compile_native(stmts)`:
-   - If `feature = "llvm"`: tries `inkwell_codegen::get_bitcode(stmts)` → `NativePayload::Bitcode`
-   - Falls back to `llvm_codegen::generate_llvm_module(stmts)` → `clang` → `NativePayload::Dll`
-3. **Write** — calls `write_tlc_native(…, version)` (v1=DLL / v2=bitcode share one layout) or `write_tlc_v0` (source-only) depending on outcome.
+2. **Native** — calls `compile_native(stmts)`: `llvm_codegen::generate_llvm_module(stmts)` → `clang` → `NativePayload::Dll`
+3. **Write** — calls `write_tlc_native(…)` (v1) or `write_tlc_v0` (source-only) depending on outcome.
 4. Returns `(hvc_path, hvs_path)`.
 
 ### `load_tlc(path)`

@@ -1,14 +1,10 @@
 // imports/ar_modules.rs — Arrow モジュール(.ar/.arc)の読み込み: load_tl_module / load_tl_source_module / load_tlc_module。
 
-#[allow(unused_imports)]
 use {
     crate::parser::Parser,
-    crate::ast::{Accessibility, FieldKind, Param, Stmt},
-    crate::token::Token, crate::lexer, crate::python_converter,
+    crate::ast::Stmt, crate::lexer,
     std::path::PathBuf,
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Parser {
     /// `.ar` / `.arc` モジュールをロードして AST を返す。

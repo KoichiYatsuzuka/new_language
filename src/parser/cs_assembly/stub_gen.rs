@@ -1,11 +1,9 @@
 // cs_assembly/stub_gen.rs — Arrow スタブ生成関数: .ars テキスト描画、スタブ構築、シグネチャ復号、演算子名/パラメータ名処理。
 
-#[allow(unused_imports)]
 use {
-    std::collections::HashMap, std::path::Path,
+    std::collections::HashMap,
     crate::ast::{Accessibility, Param, Stmt, TemplateParam},
 };
-#[allow(unused_imports)]
 use super::*;
 
 
@@ -79,7 +77,7 @@ pub(crate) fn render_cs_ars_text(pa: &ParsedAssembly, docs: &HashMap<String, Str
             let m = &methods[md_idx];
 
             if !m.is_public { continue; }
-            if let Some(PropertyRole::EventAdder(_)) = &m.property_role { continue; }
+            if let Some(PropertyRole::EventAdder) = &m.property_role { continue; }
 
             let is_accessor = matches!(&m.property_role,
                 Some(PropertyRole::Getter(_)) | Some(PropertyRole::Setter(_)));
@@ -272,7 +270,7 @@ pub(crate) fn generate_stubs(
             if !m.is_public { continue; }
 
             // Skip event add/remove
-            if let Some(PropertyRole::EventAdder(_)) = &m.property_role {
+            if let Some(PropertyRole::EventAdder) = &m.property_role {
                 continue;
             }
 

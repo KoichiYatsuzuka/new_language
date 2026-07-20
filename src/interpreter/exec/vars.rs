@@ -1,23 +1,18 @@
 // exec/vars.rs — 変数宣言・代入の実行: let / タプル束縛 / static / 複合代入 / loop_yield とスロットキャッシュ。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::path::PathBuf,
-    std::rc::Rc, std::sync::Arc,
+    std::cell::RefCell,
+    std::rc::Rc,
     crate::ast::{
-        Accessibility, BinOp, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param,
-        Stmt, TemplateParam, TupleTarget,
+        BinOp, Expr, TupleTarget,
     },
     crate::token::Span,
     crate::interpreter::{
-        debugger::DbgMode, CapturedVar, ExecResult, FnValue, GeneratorFnValue, GeneratorState,
-        Interpreter, ModuleState, NamespaceData, NativeFnRef, NativeLibWrapper, RaisedError,
-        StackFrame, TemplateClassValue, TemplateFnValue, TemplateGenFnValue, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
-        RAISE_SENTINEL,
+        ExecResult,
+        Interpreter, Value, Var,
+        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS,
     },
 };
-#[allow(unused_imports)]
 use super::*;
 
 impl Interpreter {

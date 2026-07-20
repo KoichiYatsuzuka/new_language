@@ -1,12 +1,9 @@
 // python_converter/classes.rs — クラス・パラメータの変換: convert_class / self フィールド収集 / パラメータ型抽出 / convert_params。
 
-#[allow(unused_imports)]
 use {
-    rustpython_parser::{ast as py, Parse},
-    crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, UnaryOp},
-    crate::token::Span,
+    rustpython_parser::ast as py,
+    crate::ast::{FieldKind, Param, Stmt},
 };
-#[allow(unused_imports)]
 use super::*;
 
 // ---------------------------------------------------------------------------

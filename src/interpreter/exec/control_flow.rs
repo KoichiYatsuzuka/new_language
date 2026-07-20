@@ -1,23 +1,17 @@
 // exec/control_flow.rs — 制御構造の実行: if / match / while / for / block 文。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::path::PathBuf,
-    std::rc::Rc, std::sync::Arc,
+    std::cell::RefCell,
+    std::rc::Rc,
     crate::ast::{
-        Accessibility, BinOp, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param,
-        Stmt, TemplateParam, TupleTarget,
+        BinOp, Expr, MatchArm, MatchPattern,
+        Stmt,
     },
-    crate::token::Span,
     crate::interpreter::{
-        debugger::DbgMode, CapturedVar, ExecResult, FnValue, GeneratorFnValue, GeneratorState,
-        Interpreter, ModuleState, NamespaceData, NativeFnRef, NativeLibWrapper, RaisedError,
-        StackFrame, TemplateClassValue, TemplateFnValue, TemplateGenFnValue, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
-        RAISE_SENTINEL,
+        ExecResult, GeneratorState,
+        Interpreter, Value, Var, BREAK_SENTINEL, LOOP_DEPTH,
     },
 };
-#[allow(unused_imports)]
 use super::*;
 
 impl Interpreter {

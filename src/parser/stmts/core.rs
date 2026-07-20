@@ -1,13 +1,10 @@
 // stmts/core.rs — 文パースの中核: parse_program / parse_block / parse_tuple_unpack / parse_stmt。
 
-#[allow(unused_imports)]
 use {
     crate::parser::Parser,
-    crate::ast::{Accessibility, BinOp, ExceptHandler, Expr, MatchArm, MatchPattern, Param, Stmt, TupleTarget},
-    crate::token::{Span, Token},
+    crate::ast::{Stmt, TupleTarget},
+    crate::token::Token,
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Parser {
     /// プログラム全体をパースして文のリストを返す。

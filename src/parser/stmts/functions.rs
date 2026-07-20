@@ -1,13 +1,10 @@
 // stmts/functions.rs — 関数/ジェネレータ定義の解析: デコレータ / fn / gen / 抽象ボディ・return 検査。
 
-#[allow(unused_imports)]
 use {
     crate::parser::Parser,
-    crate::ast::{Accessibility, BinOp, ExceptHandler, Expr, MatchArm, MatchPattern, Param, Stmt, TupleTarget},
-    crate::token::{Span, Token},
+    crate::ast::{Accessibility, Expr, Param, Stmt},
+    crate::token::Token,
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Parser {
     /// `@decorator` 構文のリストをパースして式のリストを返す。

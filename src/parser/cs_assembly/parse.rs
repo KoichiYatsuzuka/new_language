@@ -1,11 +1,9 @@
 // cs_assembly/parse.rs — アセンブリ解析の中核と公開 API: parse_assembly、load_cs_assembly、generate_cs_stub_text。
 
-#[allow(unused_imports)]
 use {
     std::collections::HashMap, std::path::Path,
-    crate::ast::{Accessibility, Param, Stmt, TemplateParam},
+    crate::ast::Stmt,
 };
-#[allow(unused_imports)]
 use super::*;
 
 
@@ -177,9 +175,8 @@ pub(crate) fn parse_assembly(path: &Path) -> Result<ParsedAssembly, String> {
                     method_role.insert(meth_1, role);
                 }
             } else {
-                let event_name = String::new();
                 if sem & SEM_ADDON != 0 || sem & SEM_REMOVEON != 0 {
-                    method_role.insert(meth_1, PropertyRole::EventAdder(event_name));
+                    method_role.insert(meth_1, PropertyRole::EventAdder);
                 }
             }
         }

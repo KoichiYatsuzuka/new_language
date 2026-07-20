@@ -1,24 +1,18 @@
 // exec/exceptions_async.rs — 例外処理・非同期・イベントの実行: freeze / raise / try、async 代入、イベント購読・解除、外部イベントの排出。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::path::PathBuf,
-    std::rc::Rc, std::sync::Arc,
     crate::ast::{
-        Accessibility, BinOp, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param,
-        Stmt, TemplateParam, TupleTarget,
+        ExceptHandler, Expr,
+        Stmt,
     },
     crate::token::Span,
     crate::interpreter::{
-        debugger::DbgMode, CapturedVar, ExecResult, FnValue, GeneratorFnValue, GeneratorState,
-        Interpreter, ModuleState, NamespaceData, NativeFnRef, NativeLibWrapper, RaisedError,
-        StackFrame, TemplateClassValue, TemplateFnValue, TemplateGenFnValue, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
+        ExecResult,
+        Interpreter, RaisedError,
+        StackFrame, Value, Var,
         RAISE_SENTINEL,
     },
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Interpreter {
     /// `freeze name` 文を実行する。変数を不変化し、インスタンスフィールドも再帰的にフリーズする。

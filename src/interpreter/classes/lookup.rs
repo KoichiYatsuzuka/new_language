@@ -1,19 +1,12 @@
 // classes/lookup.rs — 継承チェーン探索と値コピー: lookup_method_in_class / lookup_class_var / copy_value。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::rc::Rc,
-    crate::ast::CallArg,
-    crate::interpreter::str_methods::{
-        regex_findall, regex_match, regex_search, regex_split, regex_sub, str_format,
-    },
+    std::rc::Rc,
     crate::interpreter::{
-        ByteModeRust, ClassValue, FileOpenModeRust, FnValue, GeneratorState, InstanceData,
-        Interpreter, RaisedError, Value, RAISE_SENTINEL,
+        ClassValue, FnValue,
+        Interpreter, Value,
     },
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Interpreter {
     /// メソッドをクラスから検索する。クラス本体の `methods` マップのみを参照する。

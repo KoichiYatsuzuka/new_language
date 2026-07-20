@@ -1,11 +1,9 @@
 // header_parser/structs.rs — C/C++ struct/class 定義の解析: struct 本体・フィールド宣言・メンバ分類(MemberKind)・raw レイアウト判定。
 
-#[allow(unused_imports)]
 use {
     std::collections::HashMap, std::path::{Path, PathBuf},
     crate::interpreter::cpp_bridge::types::{CStructDef, CFnSig, CType},
 };
-#[allow(unused_imports)]
 use super::*;
 
 // ── Struct body parsing ───────────────────────────────────────────────────────

@@ -1,14 +1,9 @@
 // value/native.rs — ネイティブ関数サポートと typed ABI ポインタ引数解決: PtrParam / AbiTy / TypedSig / PtrArgCleanup / resolve_typed_ptr_arg / finish_ptr_arg_cleanup / NativeFnRef / NativeLibWrapper。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::fmt,
-    std::path::PathBuf, std::rc::Rc, std::sync::atomic::{AtomicU32, Ordering}, std::sync::Arc,
-    indexmap::IndexMap,
-    crate::ast::{Accessibility, Param, Stmt},
-    crate::interpreter::async_mgr,
+    std::cell::RefCell, std::fmt,
+    std::path::PathBuf, std::rc::Rc, std::sync::Arc,
 };
-#[allow(unused_imports)]
 use super::*;
 
 
@@ -117,7 +112,9 @@ pub enum PtrArgCleanup {
     None,
     /// シャドウバッファを呼び出し終了まで生存させるだけ（書き戻しなし: const / by-value /
     /// 非名前付き引数）。
-    KeepAlive(Vec<u8>),
+    /// バッファは「読まれない」が、C 呼び出し中ポインタの参照先として生存させるために
+    /// 保持する（drop されると dangling pointer になる）。dead_code 警告は意図的に抑制。
+    KeepAlive(#[allow(dead_code)] Vec<u8>),
     /// 呼び出し後、シャドウバッファの内容をインスタンスへ読み戻す（mutable かつ名前付き
     /// `mut` 変数）。
     WriteBack {
@@ -211,15 +208,14 @@ pub fn finish_ptr_arg_cleanup(cleanup: PtrArgCleanup) {
 
 /// Reference to a native (natively compiled) function.
 ///
-/// Two dispatch modes:
-///   - `raw_fn_ptr != 0`: inkwell JIT — call the pointer directly (no libloading).
-///   - `raw_fn_ptr == 0`: DLL via libloading — use `lib_path` to look up the library.
+/// Dispatch is always through a DLL loaded with `libloading`: `lib_path` names
+/// the library and `fn_name` the exported symbol.
 ///
-/// `cached_fn_ptr` is a lazily-populated cache for the cpp-dll case: set to the
-/// resolved symbol address on first call so subsequent calls skip `GetProcAddress`.
+/// `cached_fn_ptr` is a lazily-populated cache: set to the resolved symbol
+/// address on first call so subsequent calls skip `GetProcAddress`.
 #[derive(Debug)]
 pub struct NativeFnRef {
-    /// Absolute path of the `.dll` / `.so` / `.dylib`.  Empty for JIT functions.
+    /// Absolute path of the `.dll` / `.so` / `.dylib`.
     pub lib_path: PathBuf,
     /// Base name of the tl function (e.g. `"is_prime"`).
     /// The actual exported symbol is `"{fn_name}_tl"`.
@@ -232,10 +228,7 @@ pub struct NativeFnRef {
     pub param_mutabilities: Vec<bool>,
     /// Per-parameter pointer kind (cpp-bridge only).
     pub ptr_params: Vec<PtrParam>,
-    /// Non-zero for inkwell JIT functions: address of `fname_tl` in JIT memory.
-    /// Cast to `unsafe extern "C" fn(*const i64, i32) -> i64` at call time.
-    pub raw_fn_ptr: usize,
-    /// Lazily cached raw function pointer for cpp-dll functions (raw_fn_ptr == 0).
+    /// Lazily cached address of the `{fn_name}_tl` symbol.
     /// Written once on first call via ar_call_fn fast path; 0 = not yet resolved.
     pub cached_fn_ptr: std::sync::atomic::AtomicUsize,
     /// `{fn_name}_typed` エントリのアドレス（0 = typed 変種なし）。
@@ -255,7 +248,6 @@ impl Clone for NativeFnRef {
             min_params: self.min_params,
             param_mutabilities: self.param_mutabilities.clone(),
             ptr_params: self.ptr_params.clone(),
-            raw_fn_ptr: self.raw_fn_ptr,
             cached_fn_ptr: std::sync::atomic::AtomicUsize::new(
                 self.cached_fn_ptr.load(std::sync::atomic::Ordering::Relaxed),
             ),

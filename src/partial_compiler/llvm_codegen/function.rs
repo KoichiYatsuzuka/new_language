@@ -1,9 +1,6 @@
 // llvm_codegen/function.rs — 関数単位の LLVM IR 出力: emit_fn / emit_fn_fast / emit_fn_typed / emit_gen_fn。
 
-#[allow(unused_imports)]
-use std::collections::{HashMap, HashSet};
-#[allow(unused_imports)]
-use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Param, Stmt, UnaryOp};
+use crate::ast::{Param, Stmt};
 use super::*;
 
 impl<'a> GenCtx<'a> {
@@ -45,11 +42,7 @@ impl<'a> GenCtx<'a> {
             let leaves = collect_flat_leaves(self.all_class_fields, class_name, "", 0);
             if leaves.is_empty() { continue; }
             let stride = leaves.len() * 8;
-            self.flat_list_params.insert(p.name.clone(), FlatListInfo {
-                class_name: class_name.to_string(),
-                leaves,
-                stride,
-            });
+            self.flat_list_params.insert(p.name.clone(), FlatListInfo { leaves, stride });
         }
 
         let param_sigs: Vec<String> = params.iter().enumerate()

@@ -1,12 +1,10 @@
 // python_converter/statements.rs — 文の変換: make_span、文リスト変換・巻き上げ処理・個別文変換。
 
-#[allow(unused_imports)]
 use {
-    rustpython_parser::{ast as py, Parse},
-    crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, UnaryOp},
+    rustpython_parser::ast as py,
+    crate::ast::{Expr, Stmt},
     crate::token::Span,
 };
-#[allow(unused_imports)]
 use super::*;
 
 // ---------------------------------------------------------------------------

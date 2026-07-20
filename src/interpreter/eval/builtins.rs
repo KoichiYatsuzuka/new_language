@@ -1,15 +1,12 @@
 // eval/builtins.rs — 組み込み関数呼び出しの評価: eval_builtin_ident_call / eval_builtin_open。
 
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::rc::Rc, std::sync::Arc,
-    crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchArm, MatchPattern},
-    crate::token::Span,
+    std::cell::RefCell, std::rc::Rc,
+    crate::ast::CallArg,
     crate::interpreter::{
-        ByteModeRust, DictData, ExecResult, FileData, FileOpenModeRust, GeneratorState,
-        Interpreter, NativeFnRef, SliceValue, TupleData, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, LOOP_DEPTH, RAISE_SENTINEL,
+        ByteModeRust, FileData, FileOpenModeRust, GeneratorState,
+        Interpreter, TupleData, Value,
     },
 };
 use super::*;

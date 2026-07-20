@@ -1,24 +1,17 @@
 // exec/definitions.rs — 定義文の実行: 関数/ジェネレータ定義、トレイト/プロトコル/new_type/enum/クラス定義。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::path::PathBuf,
-    std::rc::Rc, std::sync::Arc,
+    std::cell::RefCell, std::collections::{HashMap, HashSet},
+    std::rc::Rc,
     crate::ast::{
-        Accessibility, BinOp, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param,
-        Stmt, TemplateParam, TupleTarget,
+        Accessibility, Expr, FieldKind, Param,
+        Stmt, TemplateParam,
     },
-    crate::token::Span,
     crate::interpreter::{
-        debugger::DbgMode, CapturedVar, ExecResult, FnValue, GeneratorFnValue, GeneratorState,
-        Interpreter, ModuleState, NamespaceData, NativeFnRef, NativeLibWrapper, RaisedError,
-        StackFrame, TemplateClassValue, TemplateFnValue, TemplateGenFnValue, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
-        RAISE_SENTINEL,
+        ExecResult, FnValue, GeneratorFnValue,
+        Interpreter, TemplateClassValue, TemplateFnValue, TemplateGenFnValue, Value, Var,
     },
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Interpreter {
     /// `fn` 定義を実行して関数値をスコープに登録する。テンプレート関数はテンプレート値として格納する。

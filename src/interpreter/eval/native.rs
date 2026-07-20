@@ -1,14 +1,10 @@
 // eval/native.rs — ネイティブ(コンパイル済みモジュール)関数のディスパッチと呼び出し。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::rc::Rc, std::sync::Arc,
-    crate::ast::{Accessibility, BinOp, CallArg, Expr, MatchArm, MatchPattern},
-    crate::token::Span,
+    std::sync::Arc,
+    crate::ast::CallArg,
     crate::interpreter::{
-        ByteModeRust, DictData, ExecResult, FileData, FileOpenModeRust, GeneratorState,
-        Interpreter, NativeFnRef, SliceValue, TupleData, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, LOOP_DEPTH, RAISE_SENTINEL,
+        Interpreter, NativeFnRef, Value,
     },
 };
 
@@ -218,14 +214,7 @@ impl Interpreter {
             })
             .collect();
 
-        let call_result = if fn_ref.raw_fn_ptr != 0 {
-            // inkwell JIT path: fn pointer stored directly, no libloading needed
-            unsafe {
-                let func: unsafe extern "C" fn(*const i64, i32) -> i64 =
-                    std::mem::transmute(fn_ref.raw_fn_ptr);
-                Ok(func(handles.as_ptr(), handles.len() as i32))
-            }
-        } else {
+        let call_result = {
             use std::sync::atomic::Ordering;
             let cached = fn_ref.cached_fn_ptr.load(Ordering::Relaxed);
             let fn_ptr = if cached != 0 {
@@ -246,7 +235,7 @@ impl Interpreter {
                     lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
                 } {
                     Ok(func) => {
-                        let fp = unsafe { *func } as usize;
+                        let fp = *func as usize;
                         fn_ref.cached_fn_ptr.store(fp, Ordering::Relaxed);
                         fp
                     }
@@ -295,7 +284,7 @@ impl Interpreter {
     }
 
     /// Core native-dispatch path: push already-evaluated args into the arena and invoke
-    /// `{fn_name}_tl` either via a raw JIT pointer or via libloading.
+    /// `{fn_name}_tl` via libloading (シンボルは初回解決後キャッシュされる)。
     /// Used by both `call_native_function` (called
     /// from AST) and `call_value_with_args` (called from native callbacks).
     /// インラインキャッシュ命中時の typed ディスパッチ（AST 焼き込み経路）。
@@ -561,14 +550,7 @@ impl Interpreter {
             })
             .collect();
 
-        let call_result = if fn_ref.raw_fn_ptr != 0 {
-            // inkwell JIT path: fn pointer stored directly, no libloading needed
-            unsafe {
-                let func: unsafe extern "C" fn(*const i64, i32) -> i64 =
-                    std::mem::transmute(fn_ref.raw_fn_ptr);
-                Ok(func(handles.as_ptr(), handles.len() as i32))
-            }
-        } else {
+        let call_result = {
             use std::sync::atomic::Ordering;
             let cached = fn_ref.cached_fn_ptr.load(Ordering::Relaxed);
             let fn_ptr = if cached != 0 {
@@ -589,7 +571,7 @@ impl Interpreter {
                     lib.0.get::<unsafe extern "C" fn(*const i64, i32) -> i64>(symbol_name.as_bytes())
                 } {
                     Ok(func) => {
-                        let fp = unsafe { *func } as usize;
+                        let fp = *func as usize;
                         fn_ref.cached_fn_ptr.store(fp, Ordering::Relaxed);
                         fp
                     }

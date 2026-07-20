@@ -1,13 +1,8 @@
 // rs_loader/parse.rs — Rust ソースからのシグネチャ抽出: 再エクスポート追跡、free fn / struct / impl メソッド解析、ABI 互換判定、型変換、パラメータ解析。
 
-#[allow(unused_imports)]
 use {
-    std::collections::HashMap, std::path::{Path, PathBuf},
-    crate::ast::{Accessibility, Expr, FieldKind, Param, Stmt},
-    crate::partial_compiler::llvm_codegen::FnExport,
-    crate::partial_compiler::module_compiler::{cache_native, native_lib_ext},
+    std::collections::HashMap, std::path::Path,
 };
-#[allow(unused_imports)]
 use super::*;
 
 // ── Source scanning ───────────────────────────────────────────────────────────

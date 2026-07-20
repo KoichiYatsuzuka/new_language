@@ -1,18 +1,12 @@
 // classes/object_methods.rs — 特殊オブジェクトのメソッド実行: Signal / EventLoop / File のメソッド、および evaled 版メソッド呼び出し。
 
-#[allow(unused_imports)]
 use {
     std::cell::RefCell, std::rc::Rc,
-    crate::ast::CallArg,
-    crate::interpreter::str_methods::{
-        regex_findall, regex_match, regex_search, regex_split, regex_sub, str_format,
-    },
     crate::interpreter::{
-        ByteModeRust, ClassValue, FileOpenModeRust, FnValue, GeneratorState, InstanceData,
-        Interpreter, RaisedError, Value, RAISE_SENTINEL,
+        ByteModeRust, FileOpenModeRust, FnValue,
+        Interpreter, Value,
     },
 };
-#[allow(unused_imports)]
 use super::*;
 
 impl Interpreter {

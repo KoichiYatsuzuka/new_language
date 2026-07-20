@@ -1,13 +1,5 @@
 // rs_loader/codegen.rs — ラッパー Rust ソース生成: ABI_HEADER 定数、lib_rs、struct/method ラッパー、arena、param/return 変換、fn/digest ラッパー。
 
-#[allow(unused_imports)]
-use {
-    std::collections::HashMap, std::path::{Path, PathBuf},
-    crate::ast::{Accessibility, Expr, FieldKind, Param, Stmt},
-    crate::partial_compiler::llvm_codegen::FnExport,
-    crate::partial_compiler::module_compiler::{cache_native, native_lib_ext},
-};
-#[allow(unused_imports)]
 use super::*;
 
 // ── Call-through lib.rs generation ───────────────────────────────────────────

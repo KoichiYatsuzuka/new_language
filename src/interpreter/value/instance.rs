@@ -1,14 +1,6 @@
 // value/instance.rs — インスタンスデータと C ABI raw レイアウト: InstanceData(オフセット参照アクセサ)、RawWidth/RawFieldDesc/RawLayout、シャドウ変換ヘルパー、InstanceData フラグ定数。
 
-#[allow(unused_imports)]
-use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::fmt,
-    std::path::PathBuf, std::rc::Rc, std::sync::atomic::{AtomicU32, Ordering}, std::sync::Arc,
-    indexmap::IndexMap,
-    crate::ast::{Accessibility, Param, Stmt},
-    crate::interpreter::async_mgr,
-};
-#[allow(unused_imports)]
+use std::rc::Rc;
 use super::*;
 
 // ---------------------------------------------------------------------------

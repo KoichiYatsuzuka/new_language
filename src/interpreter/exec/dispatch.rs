@@ -1,23 +1,14 @@
 // exec/dispatch.rs — exec のメインディスパッチャ: 文の種類に応じて各専用メソッドへ委譲する。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::path::PathBuf,
-    std::rc::Rc, std::sync::Arc,
-    crate::ast::{
-        Accessibility, BinOp, ExceptHandler, Expr, FieldKind, MatchArm, MatchPattern, Param,
-        Stmt, TemplateParam, TupleTarget,
-    },
-    crate::token::Span,
+    std::path::PathBuf,
+    crate::ast::Stmt,
     crate::interpreter::{
-        debugger::DbgMode, CapturedVar, ExecResult, FnValue, GeneratorFnValue, GeneratorState,
-        Interpreter, ModuleState, NamespaceData, NativeFnRef, NativeLibWrapper, RaisedError,
-        StackFrame, TemplateClassValue, TemplateFnValue, TemplateGenFnValue, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
-        RAISE_SENTINEL,
+        debugger::DbgMode, ExecResult,
+        Interpreter, ModuleState, Value, Var,
+        BLOCK_RETURN_EXPECTED_TYPE, GENERATOR_YIELDS, LOOP_DEPTH,
     },
 };
-#[allow(unused_imports)]
 use super::*;
 
 impl Interpreter {

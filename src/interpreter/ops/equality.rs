@@ -1,14 +1,9 @@
 // ops/equality.rs — 値の等価判定: values_eq / values_ref_eq。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::rc::Rc,
-    crate::ast::{BinOp, Param, UnaryOp},
-    crate::interpreter::str_methods::percent_format,
+    std::rc::Rc,
     crate::interpreter::{Interpreter, Value},
 };
-#[allow(unused_imports)]
-use super::*;
 
 impl Interpreter {
     /// 2つの値が等値かどうかを判定する（`==` / `!=` 演算子および `values_eq` で使用）。

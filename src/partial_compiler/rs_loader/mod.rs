@@ -81,6 +81,9 @@ pub(crate) struct RsMethodSig {
 
 /// Where the crate source lives.
 pub(crate) enum CrateSource {
+    /// TODO(reserved): crates.io 依存としてのロード。`prepare_wrapper` 側の生成は
+    /// 実装済みだが、`find_config` はまだ `LocalPath` しか返さないため未構築。
+    #[allow(dead_code)]
     Registry { crate_name: String, version_req: String },
     LocalPath { crate_name: String, path: PathBuf },
 }

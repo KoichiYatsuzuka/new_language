@@ -1,11 +1,9 @@
 // header_parser/decls.rs — 関数宣言とスコープ走査: 名前空間スコープ走査、関数宣言解析、パラメータ分割、C 型文字列の解析。
 
-#[allow(unused_imports)]
 use {
     std::collections::HashMap, std::path::{Path, PathBuf},
     crate::interpreter::cpp_bridge::types::{CStructDef, CFnSig, CType},
 };
-#[allow(unused_imports)]
 use super::*;
 
 // ── Scope scanner ─────────────────────────────────────────────────────────────

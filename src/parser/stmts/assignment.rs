@@ -1,12 +1,10 @@
 // stmts/assignment.rs — 識別子始まりの文・代入・イベント文・複合代入の解析。
 
-#[allow(unused_imports)]
 use {
     crate::parser::Parser,
-    crate::ast::{Accessibility, BinOp, ExceptHandler, Expr, MatchArm, MatchPattern, Param, Stmt, TupleTarget},
+    crate::ast::{BinOp, Expr, Stmt},
     crate::token::{Span, Token},
 };
-#[allow(unused_imports)]
 use super::*;
 
 impl Parser {

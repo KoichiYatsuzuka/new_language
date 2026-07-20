@@ -1,14 +1,9 @@
 // value/core.rs — Value 列挙型(全実行時値のユニオン)・CsObjectData・deep_clone ヘルパー・impl Value・ExecResult(制御フロー信号)・クラスID採番。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::fmt,
-    std::path::PathBuf, std::rc::Rc, std::sync::atomic::{AtomicU32, Ordering}, std::sync::Arc,
-    indexmap::IndexMap,
-    crate::ast::{Accessibility, Param, Stmt},
+    std::cell::RefCell, std::collections::HashMap, std::rc::Rc, std::sync::atomic::{AtomicU32, Ordering}, std::sync::Arc,
     crate::interpreter::async_mgr,
 };
-#[allow(unused_imports)]
 use super::*;
 
 

@@ -1,13 +1,10 @@
 // imports/cpp.rs — cpp-dll / cpp-lib import の解析: ヘッダ解決と型スタブ(Stmt::FnDef)生成。
 
-#[allow(unused_imports)]
 use {
     crate::parser::Parser,
     crate::ast::{Accessibility, FieldKind, Param, Stmt},
-    crate::token::Token, crate::lexer, crate::python_converter,
-    std::path::PathBuf,
+    crate::token::Token,
 };
-#[allow(unused_imports)]
 use super::*;
 
 impl Parser {

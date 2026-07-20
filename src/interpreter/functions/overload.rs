@@ -1,14 +1,12 @@
 // functions/overload.rs — オーバーロードのディスパッチと型照合: dispatch_overload(_evaled) / overload_types_match / value_matches_ann。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::rc::Rc,
+    std::rc::Rc,
     crate::ast::{CallArg, Param},
     crate::token::Span,
     crate::interpreter::{
-        CapturedVar, DictData, ExecResult, FnValue, GeneratorFnValue, GeneratorState, InstanceData,
-        Interpreter, StackFrame, Value, Var, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
-        RAISE_SENTINEL,
+        FnValue,
+        Interpreter, Value,
     },
 };
 

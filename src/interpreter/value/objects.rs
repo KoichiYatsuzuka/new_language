@@ -1,14 +1,8 @@
 // value/objects.rs — モジュール・Python 相互運用・ファイル I/O 型: PyObjHandle / NamespaceData / ModuleState / FileOpenModeRust / ByteModeRust / FileData。
 
-#[allow(unused_imports)]
 use {
-    std::cell::RefCell, std::collections::{HashMap, HashSet}, std::fmt,
-    std::path::PathBuf, std::rc::Rc, std::sync::atomic::{AtomicU32, Ordering}, std::sync::Arc,
-    indexmap::IndexMap,
-    crate::ast::{Accessibility, Param, Stmt},
-    crate::interpreter::async_mgr,
+    std::collections::HashMap, std::rc::Rc,
 };
-#[allow(unused_imports)]
 use super::*;
 
 

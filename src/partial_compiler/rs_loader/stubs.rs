@@ -1,13 +1,6 @@
 // rs_loader/stubs.rs — 型スタブ生成: 解析したシグネチャから Arrow の Stmt(スタブ)を組み立てる make_stubs。
 
-#[allow(unused_imports)]
-use {
-    std::collections::HashMap, std::path::{Path, PathBuf},
-    crate::ast::{Accessibility, Expr, FieldKind, Param, Stmt},
-    crate::partial_compiler::llvm_codegen::FnExport,
-    crate::partial_compiler::module_compiler::{cache_native, native_lib_ext},
-};
-#[allow(unused_imports)]
+use crate::ast::{Accessibility, Expr, FieldKind, Param, Stmt};
 use super::*;
 
 // ── Stub generation ───────────────────────────────────────────────────────────

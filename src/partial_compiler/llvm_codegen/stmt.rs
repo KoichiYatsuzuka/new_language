@@ -1,9 +1,6 @@
 // llvm_codegen/stmt.rs — 文の LLVM IR 生成: gen_stmts / gen_stmt。
 
-#[allow(unused_imports)]
-use std::collections::{HashMap, HashSet};
-#[allow(unused_imports)]
-use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Param, Stmt, UnaryOp};
+use crate::ast::{Expr, MatchPattern, Stmt};
 use super::*;
 
 impl<'a> GenCtx<'a> {

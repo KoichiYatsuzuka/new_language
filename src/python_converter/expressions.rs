@@ -1,12 +1,10 @@
 // python_converter/expressions.rs — 式・定数・演算子の変換: convert_expr / convert_constant / convert_binop / convert_augop / convert_cmpop。
 
-#[allow(unused_imports)]
 use {
-    rustpython_parser::{ast as py, Parse},
-    crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, UnaryOp},
+    rustpython_parser::ast as py,
+    crate::ast::{BinOp, CallArg, Expr, UnaryOp},
     crate::token::Span,
 };
-#[allow(unused_imports)]
 use super::*;
 
 // ---------------------------------------------------------------------------

@@ -11,7 +11,6 @@ libloading = "0.8"
 regex = "1"
 indexmap = "2"
 serde_json = "1"
-inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "master", features = ["llvm22-1"], optional = true }
 
 [[bench]]
 name = "field_access"
@@ -19,11 +18,3 @@ harness = false
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-
-[features]
-default = []
-# Enable LLVM JIT native compilation.
-# Install LLVM 22 (winget install LLVM.LLVM), add ar_config.json with
-# {"llvm":{"path":"C:/Program Files/LLVM"}}, then run `cargo build --features llvm`
-# twice: first run writes .cargo/config.toml, second run compiles with LLVM.
-llvm = ["dep:inkwell"]

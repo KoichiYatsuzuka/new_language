@@ -1,13 +1,6 @@
 // python_converter/utils.rs — ユーティリティ: is_self / is_main_guard / expr_to_name。
 
-#[allow(unused_imports)]
-use {
-    rustpython_parser::{ast as py, Parse},
-    crate::ast::{BinOp, CallArg, Expr, FieldKind, Param, Stmt, UnaryOp},
-    crate::token::Span,
-};
-#[allow(unused_imports)]
-use super::*;
+use rustpython_parser::ast as py;
 
 // ---------------------------------------------------------------------------
 // ユーティリティ

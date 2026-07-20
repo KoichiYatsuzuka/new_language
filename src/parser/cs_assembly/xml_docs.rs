@@ -1,12 +1,8 @@
 // cs_assembly/xml_docs.rs — XML ドキュメントコメントの解析関数。
 
-#[allow(unused_imports)]
 use {
     std::collections::HashMap, std::path::Path,
-    crate::ast::{Accessibility, Param, Stmt, TemplateParam},
 };
-#[allow(unused_imports)]
-use super::*;
 
 
 // ---------------------------------------------------------------------------
