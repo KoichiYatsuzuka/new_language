@@ -35,8 +35,14 @@ Two layers, maintained differently:
   - `imports/` — `import[lang]` parsing + module resolution
   - `cs_assembly/` — .NET DLL inspection for `--compile-cs` stub generation
 - `type_check/` — static type checker (runs between parse and exec)
-  - `mod.rs` — entry point + pre-passes (e.g. `new_type` registration)
+  - `mod.rs` — ファサードのみ: `TypeChecker::check` / `check_with_warnings` + 組み込み登録。
+    状態は3つのサブ構造体に分割され、相互依存はない
+  - `registry/` — 宣言索引 `TypeRegistry`（クラス/trait/protocol/関数）。`builder.rs` の
+    収集パスだけが書き込め、検査中は読み取り専用
+  - `state.rs` — `CheckState`（スコープスタック・現在の関数/クラス・`block_return` 禁止深さ）
+  - `diagnostics.rs` — `Diagnostics`（収集されたエラー・警告）
   - `stmt/` — statement checking (`check.rs` holds `check_stmt()`)
+  - `members.rs` — 型のメンバー解決と Intersection 適合検査
   - `infer.rs` / `types.rs` / `call_check.rs` / `binop.rs` — inference, `InferredType`,
     call-site checking, operator typing
 - `interpreter/` — tree-walk interpreter
@@ -80,7 +86,7 @@ Refresh with `./generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (173 files, 53106 lines)
+src/  (178 files, 53423 lines)
   ast.rs (992)
   interpreter.rs (563)
   main.rs (494)
@@ -266,16 +272,22 @@ src/  (173 files, 53106 lines)
     utils.rs (42)
   type_check/
     binop.rs (154)
-    call_check.rs (541)
+    call_check.rs (533)
     decorator.rs (146)
+    diagnostics.rs (32)
     errors.rs (482)
-    infer.rs (388)
-    mod.rs (771)
-    scope.rs (150)
-    type_utils.rs (187)
+    infer.rs (385)
+    members.rs (316)
+    mod.rs (131)
+    scope.rs (134)
+    state.rs (127)
+    type_utils.rs (188)
     types.rs (498)
+    registry/
+      builder.rs (369)
+      mod.rs (142)
     stmt/
-      check.rs (747)
+      check.rs (744)
       mod.rs (6)
       protocol.rs (242)
       resolve.rs (130)
@@ -369,12 +381,14 @@ examples/  (recursive .ar counts per category)
 
 (repo root)
   ar_config.json (32)
+  BYTECODE_VM_PLAN.md (375)
   CLAUDE.md (70)
   generate-codebase-map.ps1 (100)
+  PHASE5_PLAN.md (285)
   README.md (255)
-  REFACTORING_HANDOFF.md (105)
+  REFACTORING_HANDOFF.md (114)
   run_examples.ps1 (50)
   spec.md (570)
 ```
-_Generated 2026-07-20 by generate-codebase-map.ps1_
+_Generated 2026-07-21 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->

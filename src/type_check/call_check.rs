@@ -66,11 +66,7 @@ impl TypeChecker {
                     _ => None,
                 };
                 if let Some(cls_name) = cls_name_opt {
-                    let is_static = self
-                        .class_static_methods
-                        .get(&cls_name)
-                        .map(|s| s.contains(attr.as_str()))
-                        .unwrap_or(false);
+                    let is_static = self.registry.is_static_method(&cls_name, attr.as_str());
                     // StaticMethodOnInstance: only report when called on an instance
                     if is_static && matches!(obj_ty, InferredType::NamedInstance(_)) {
                         self.report_error(StaticTypeError {
@@ -159,7 +155,7 @@ impl TypeChecker {
         }
 
         if let Some(ref fname) = func_name {
-            if self.known_protocols.contains_key(fname.as_str()) {
+            if self.registry.is_protocol(fname.as_str()) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::ProtocolInstantiation {
                         protocol_name: fname.clone(),
@@ -168,14 +164,14 @@ impl TypeChecker {
                 });
                 return InferredType::Protocol(fname.clone());
             }
-            if self.known_class_names.contains(fname.as_str()) {
+            if self.registry.is_known_class(fname.as_str()) {
                 return InferredType::NamedInstance(fname.clone());
             }
         }
 
         func_name
             .as_deref()
-            .and_then(|n| self.fn_sigs.get(n))
+            .and_then(|n| self.registry.fn_sigs(n))
             .and_then(|sigs| {
                 let call_count = arg_data
                     .iter()
@@ -205,16 +201,12 @@ impl TypeChecker {
         arg_data: &[(Option<String>, InferredType)],
     ) -> Option<InferredType> {
         let sigs = self
-            .class_method_sigs
-            .get(cls_name)
+            .registry
+            .class_methods(cls_name)
             .and_then(|m| m.get(method_name))
             .cloned()?;
         // Static methods have no implicit receiver; instance/class methods add +1 for self/cls
-        let is_static = self
-            .class_static_methods
-            .get(cls_name)
-            .map(|s| s.contains(method_name))
-            .unwrap_or(false);
+        let is_static = self.registry.is_static_method(cls_name, method_name);
         // 可変長引数エントリを除いた通常引数のみでカウント
         let normal_args: Vec<_> = arg_data
             .iter()
@@ -309,7 +301,7 @@ impl TypeChecker {
         fname: &str,
         arg_data: &[(Option<String>, InferredType)],
     ) {
-        let sigs = match self.fn_sigs.get(fname).cloned() {
+        let sigs = match self.registry.fn_sigs(fname).cloned() {
             Some(s) => s,
             None => return,
         };

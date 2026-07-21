@@ -17,7 +17,7 @@ impl TypeChecker {
         span: Option<Span>,
         context: &str,
     ) {
-        let proto = match self.known_protocols.get(proto_name).cloned() {
+        let proto = match self.registry.protocol(proto_name).cloned() {
             Some(p) => p,
             None => return, // 未知のプロトコルは無視
         };
@@ -27,7 +27,7 @@ impl TypeChecker {
             InferredType::Any => return, // Any は全プロトコルを満たす
             InferredType::Protocol(p) => {
                 // 別プロトコル型 — そのプロトコルがすべての要件を満たすか確認
-                let other_proto = match self.known_protocols.get(p.as_str()).cloned() {
+                let other_proto = match self.registry.protocol(p.as_str()).cloned() {
                     Some(op) => op,
                     None => return,
                 };
@@ -175,14 +175,14 @@ impl TypeChecker {
     ) -> std::collections::HashMap<String, (crate::ast::FieldKind, InferredType)> {
         let mut result = std::collections::HashMap::new();
         // 基底クラスのフィールドを先に収集（上書きされる）
-        if let Some(bases) = self.class_bases.get(class_name) {
-            for base in bases.clone() {
-                let base_fields = self.collect_class_field_details(&base);
+        if let Some(bases) = self.registry.class_bases(class_name) {
+            for base in bases {
+                let base_fields = self.collect_class_field_details(base);
                 result.extend(base_fields);
             }
         }
         // 自クラスのフィールドで上書き
-        if let Some(details) = self.class_field_details.get(class_name) {
+        if let Some(details) = self.registry.class_field_details(class_name) {
             result.extend(details.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
         result
@@ -194,13 +194,13 @@ impl TypeChecker {
         class_name: &str,
     ) -> std::collections::HashMap<String, Vec<crate::type_check::types::FnSig>> {
         let mut result = std::collections::HashMap::new();
-        if let Some(bases) = self.class_bases.get(class_name) {
-            for base in bases.clone() {
-                let base_methods = self.collect_class_method_sigs(&base);
+        if let Some(bases) = self.registry.class_bases(class_name) {
+            for base in bases {
+                let base_methods = self.collect_class_method_sigs(base);
                 result.extend(base_methods);
             }
         }
-        if let Some(methods) = self.class_method_sigs.get(class_name) {
+        if let Some(methods) = self.registry.class_methods(class_name) {
             result.extend(methods.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
         result

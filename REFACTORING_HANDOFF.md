@@ -84,9 +84,23 @@ Arrow(LLVM IR ターゲットのスクリプト言語)Rust実装のリファク�
 
 > ⚠️ **PowerShell 5.1 の落とし穴(この作業で実際に踏んだ)**: `Get-Content`/`Set-Content` は既定で ANSI(cp932)。UTF-8 の .rs を読み書きすると**日本語コメントが全滅する**。一括書き換えは `[System.IO.File]::ReadAllLines/WriteAllLines` + `UTF8Encoding($false)` を使うこと。srcを事前バックアップしていたので復旧できた。
 
-## Phase 5 — TypeChecker 神クラス分割【これから】
-- Phase 3 Item2 から昇格。`TypeChecker`(~15個の `HashMap` フィールド)の状態を関心事(クラスレジストリ/シグネチャ表/スコープ 等)のサブ構造体へ分割し、[type_check/mod.rs](src/type_check/mod.rs) の深ネストを関数抽出で平坦化。
-- **高churn・高リスク・低機能価値**(純内部再編、`self.field`→`self.sub.field` が数百箇所に波及)。挙動不変。Phase 4 の作業で状態の一部を切り出す必要が生じたら、それを駆動要因に実施するのが安全。
+## Phase 5 — TypeChecker 神クラス分割【5A 完了 / 5B・5C 未着手】
+→ **詳細計画と 5A 実施記録は [PHASE5_PLAN.md](PHASE5_PLAN.md)。着手前に必ずそちらを読むこと。**
+
+**5A(状態の3分割) 完了(2026-07-21)**: `TypeChecker` のフィールド **18 → 3**(`state` / `registry` / `diags`)、[type_check/mod.rs](src/type_check/mod.rs) **753行 → 121行**。`cargo test` 672 緑・ビルド警告0・clippy 69(着手前と同数)を維持。公開API無変更。
+- 新設: [diagnostics.rs](src/type_check/diagnostics.rs) / [state.rs](src/type_check/state.rs) / [registry/](src/type_check/registry/)(mod.rs + builder.rs) / [members.rs](src/type_check/members.rs)。
+- レジストリへの**書き込みは `registry/builder.rs` だけ**に封じ込め済み(`build()` 後は `&self` ゲッターのみ)。検査中の誤書き換えが型レベルで不可能になった。
+- 5C 予定だった `block_return_forbidden_depth` のAPI化は前倒しで実施済み(`enter_barrier`/`exit_barrier`・`enter_loop_expr`/`exit_loop_expr`)。**5C の残りは RAII ガード化のみ**。
+
+**次は 5B(巨大関数の平坦化)**: `check_stmt`(715行・深度14)、`infer`(373行)。5A により
+抽出関数が `&mut self` を取らず `(&TypeRegistry, &mut CheckState, &mut Diagnostics)` を
+受け取れるようになったので、借用競合なしで切り出せる状態になっている。
+
+要点のみ:
+- `TypeChecker`(**18フィールド**)を `TypeRegistry`(12) / `CheckState`(4) / `Diagnostics`(2) の3構造体へ**合成**で分割。Rust に継承はないので「子クラス」は不可、サブ構造体**相互の依存はゼロ**(スター型DAG)。
+- **リスク評価を下方修正**: 実測で `self.<field>` 直接アクセスは **94箇所のみ**(旧想定「数百箇所」は誤り)。状態は既にアクセサ越しに使われており、外部からのフィールド参照はゼロ。
+- **決定的な発見**: 宣言レジストリ系12フィールドの書き込みは **`collect_fn_sigs`(mod.rs:217–484)の1関数に完全に閉じている** = 検査中は read-only。ビルダーで組み立てて凍結する型にできる。
+- **状態分割では `check_stmt`(728行・深度14)は1行も短くならない**。神クラス感の主因はこちらなので 5B として別建て。順序は **5A(状態分割) → 5B(関数抽出)** 必須(5A により抽出関数が `&mut self` を取らずに済み、借用競合が消えるため)。
 
 ---
 

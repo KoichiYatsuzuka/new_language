@@ -102,7 +102,7 @@ impl TypeChecker {
         if let InferredType::NamedInstance(class_name) = arg_ty {
             let expected_name = expected.to_string();
             let cast_key = format!("__cast__[{}]", expected_name);
-            if let Some(methods) = self.class_method_sigs.get(class_name.as_str()) {
+            if let Some(methods) = self.registry.class_methods(class_name.as_str()) {
                 if methods.contains_key(&cast_key) {
                     return true;
                 }
@@ -136,7 +136,8 @@ impl TypeChecker {
         let mut current = arg_name.clone();
         let mut seen = std::collections::HashSet::new();
         loop {
-            let Some(orig_name) = self.new_type_originals.get(&current).cloned() else {
+            let Some(orig_name) = self.registry.new_type_original(&current).map(str::to_string)
+            else {
                 break;
             };
             if !seen.insert(orig_name.clone()) {
@@ -148,7 +149,7 @@ impl TypeChecker {
             current = orig_name;
         }
 
-        if let Some(bases) = self.class_bases.get(arg_name.as_str()) {
+        if let Some(bases) = self.registry.class_bases(arg_name.as_str()) {
             return bases.contains(&expected_name);
         }
 
@@ -174,7 +175,7 @@ impl TypeChecker {
             if !seen.insert(cur.clone()) {
                 continue;
             }
-            let Some(bases) = self.class_bases.get(cur.as_str()) else {
+            let Some(bases) = self.registry.class_bases(cur.as_str()) else {
                 continue;
             };
             if bases.iter().any(|base| base == trait_name) {

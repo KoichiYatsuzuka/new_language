@@ -108,7 +108,7 @@ impl TypeChecker {
             Some(a) => a,
         };
         // アノテーションがプロトコル名かチェック
-        if self.known_protocols.contains_key(ann) {
+        if self.registry.is_protocol(ann) {
             let proto_name = ann.to_string();
             self.check_protocol_conformance(&rhs_ty, &proto_name, None, var_name);
             return InferredType::Protocol(proto_name);

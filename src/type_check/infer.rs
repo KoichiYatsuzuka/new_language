@@ -279,17 +279,16 @@ impl TypeChecker {
                     _ => None,
                 };
                 if let Some(kind) = warn_kind {
-                    self.warnings.push(StaticTypeWarning { kind, span: Some(span.clone()) });
+                    self.report_warning(StaticTypeWarning { kind, span: Some(span.clone()) });
                 }
                 resolved
             }
             Expr::Block { stmts, return_type } => {
-                let saved_depth = self.block_return_forbidden_depth;
-                self.block_return_forbidden_depth = 0;
+                let saved_depth = self.state.enter_barrier();
                 self.push_scope();
                 self.check_stmts(stmts);
                 self.pop_scope();
-                self.block_return_forbidden_depth = saved_depth;
+                self.state.exit_barrier(saved_depth);
                 if let Some(t) = return_type {
                     InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
                 } else {
@@ -301,8 +300,7 @@ impl TypeChecker {
                 else_body,
                 return_type,
             } => {
-                let saved_depth = self.block_return_forbidden_depth;
-                self.block_return_forbidden_depth = 0;
+                let saved_depth = self.state.enter_barrier();
                 for (cond, body) in branches {
                     self.infer(cond);
                     self.push_scope();
@@ -314,7 +312,7 @@ impl TypeChecker {
                     self.check_stmts(body);
                     self.pop_scope();
                 }
-                self.block_return_forbidden_depth = saved_depth;
+                self.state.exit_barrier(saved_depth);
                 if let Some(t) = return_type {
                     InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
                 } else {
@@ -328,11 +326,11 @@ impl TypeChecker {
                 ..
             } => {
                 self.infer(iter);
-                self.block_return_forbidden_depth += 1;
+                self.state.enter_loop_expr();
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
-                self.block_return_forbidden_depth -= 1;
+                self.state.exit_loop_expr();
                 if let Some(t) = return_type {
                     InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
                 } else {
@@ -345,11 +343,11 @@ impl TypeChecker {
                 return_type,
             } => {
                 self.infer(cond);
-                self.block_return_forbidden_depth += 1;
+                self.state.enter_loop_expr();
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
-                self.block_return_forbidden_depth -= 1;
+                self.state.exit_loop_expr();
                 if let Some(t) = return_type {
                     InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
                 } else {
@@ -361,8 +359,7 @@ impl TypeChecker {
                 arms,
                 return_type,
             } => {
-                let saved_depth = self.block_return_forbidden_depth;
-                self.block_return_forbidden_depth = 0;
+                let saved_depth = self.state.enter_barrier();
                 self.infer(subject);
                 for arm in arms {
                     if let MatchPattern::Case(e) = &arm.pattern {
@@ -372,7 +369,7 @@ impl TypeChecker {
                     self.check_stmts(&arm.body);
                     self.pop_scope();
                 }
-                self.block_return_forbidden_depth = saved_depth;
+                self.state.exit_barrier(saved_depth);
                 if let Some(t) = return_type {
                     InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
                 } else {

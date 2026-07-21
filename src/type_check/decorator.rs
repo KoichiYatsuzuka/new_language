@@ -34,7 +34,7 @@ impl TypeChecker {
         };
 
         // --- Case 1: 関数デコレータ ---
-        if let Some(sigs) = self.fn_sigs.get(&dec_name).cloned() {
+        if let Some(sigs) = self.registry.fn_sigs(&dec_name).cloned() {
             if sigs.len() != 1 {
                 return;
             }
@@ -85,8 +85,8 @@ impl TypeChecker {
         }
 
         // --- Case 2: クラスデコレータ ---
-        if self.known_class_names.contains(dec_name.as_str()) {
-            let cls_methods = match self.class_method_sigs.get(&dec_name).cloned() {
+        if self.registry.is_known_class(dec_name.as_str()) {
+            let cls_methods = match self.registry.class_methods(&dec_name).cloned() {
                 Some(m) => m,
                 None => return,
             };

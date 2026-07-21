@@ -277,7 +277,7 @@ impl TypeChecker {
                     ) = match &guard_opt {
                         None => (None, None),
                         Some((var_name, type_name, negated, span)) => {
-                            let guard_ty = if self.known_protocols.contains_key(type_name.as_str()) {
+                            let guard_ty = if self.registry.is_protocol(type_name.as_str()) {
                                 InferredType::Protocol(type_name.clone())
                             } else {
                                 Self::type_from_guard_name(type_name)
@@ -432,7 +432,7 @@ impl TypeChecker {
                         span: None,
                     });
                 } else if let Some(rt) = return_type {
-                    if self.known_protocols.contains_key(rt.as_str()) {
+                    if self.registry.is_protocol(rt.as_str()) {
                         self.report_warning(StaticTypeWarning {
                             kind: TypeWarningKind::ProtocolReturnType {
                                 func_name: name.clone(),
@@ -476,9 +476,9 @@ impl TypeChecker {
                         continue;
                     }
                     let ty = if param.name == "self" {
-                        self.current_class_name
-                            .as_ref()
-                            .map(|c| InferredType::NamedInstance(c.clone()))
+                        self.state
+                            .current_class()
+                            .map(|c| InferredType::NamedInstance(c.to_string()))
                             .unwrap_or(InferredType::Unresolved)
                     } else {
                         param
@@ -489,13 +489,11 @@ impl TypeChecker {
                     };
                     self.declare(param.name.clone(), ty, param.mutable);
                 }
-                let prev_fn = self.current_fn_name.take();
-                self.current_fn_name = Some(name.clone());
-                let saved_depth = self.block_return_forbidden_depth;
-                self.block_return_forbidden_depth = 0;
+                let prev_fn = self.state.enter_fn(name.clone());
+                let saved_depth = self.state.enter_barrier();
                 self.check_stmts(body);
-                self.block_return_forbidden_depth = saved_depth;
-                self.current_fn_name = prev_fn;
+                self.state.exit_barrier(saved_depth);
+                self.state.exit_fn(prev_fn);
                 self.pop_scope();
             }
 
@@ -515,9 +513,9 @@ impl TypeChecker {
                     false,
                 );
                 self.push_scope();
-                let prev_class = self.current_class_name.replace(name.clone());
+                let prev_class = self.state.enter_class(name.clone());
                 self.check_stmts(body);
-                self.current_class_name = prev_class;
+                self.state.exit_class(prev_class);
                 self.pop_scope();
             }
             Stmt::TraitDef { name, body, .. } => {
@@ -547,7 +545,7 @@ impl TypeChecker {
                 }
             }
             Stmt::BlockReturn(expr, span) => {
-                if self.block_return_forbidden_depth > 0 {
+                if self.state.block_return_forbidden() {
                     self.report_error(StaticTypeError {
                         kind: TypeErrorKind::BlockReturnInLoopExpr,
                         span: Some(span.clone()),
@@ -625,10 +623,9 @@ impl TypeChecker {
                         .unwrap_or(InferredType::Unresolved);
                     self.declare(param.name.clone(), ty, param.mutable);
                 }
-                let saved_depth = self.block_return_forbidden_depth;
-                self.block_return_forbidden_depth = 0;
+                let saved_depth = self.state.enter_barrier();
                 self.check_stmts(body);
-                self.block_return_forbidden_depth = saved_depth;
+                self.state.exit_barrier(saved_depth);
                 self.pop_scope();
             }
 

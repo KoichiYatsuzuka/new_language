@@ -275,7 +275,8 @@ Generator functions (`gen`) are subject to the same requirement; the missing ann
 
 ### Signature collection (pre-pass)
 
-Before checking, `collect_fn_sigs` scans all `FnDef`, `ClassDef`, `EnumDef`, `TraitDef`, and `NewTypeDef` statements recursively. It populates:
+Before checking, `TypeRegistryBuilder::collect` (`registry/builder.rs`) scans all `FnDef`,
+`ClassDef`, `EnumDef`, `TraitDef`, and `NewTypeDef` statements recursively. It populates:
 
 - `fn_sigs`: `name → Vec<FnSig>` for overloaded resolution.
 - `class_method_sigs`: `class → method → Vec<FnSig>`.
@@ -285,6 +286,13 @@ Before checking, `collect_fn_sigs` scans all `FnDef`, `ClassDef`, `EnumDef`, `Tr
 - `class_member_access`: `class → (member_name → Accessibility)` (only non-Public members stored).
 - `class_static_methods`: `class → {static method names}`.
 - `new_type_originals`: `newtype_name → original_name`.
+- `known_protocols`: `protocol → ProtocolInfo`.
+
+**These are the only writes.** `build()` then freezes the map set into a `TypeRegistry`
+that exposes `&self` getters only (`is_known_class` / `class_methods` / `class_bases` /
+`member_access` / `is_static_method` / `protocol` / …), so checking can never mutate it.
+The checker's other state lives in `CheckState` (scopes + current fn/class cursor) and
+`Diagnostics` (collected errors/warnings); the three never reference each other.
 
 ### Field declarations
 
@@ -342,7 +350,9 @@ Built-in new types pre-registered: `path` (original `str`), `Index` (original `i
 
 ## Built-in Types and Values
 
-Registered at `TypeChecker::new()` in the global scope:
+Registered at `TypeChecker::new()` in the global scope (the matching class-name side is
+seeded by `TypeRegistryBuilder::with_builtins`; the exception-class list lives there as
+`EXCEPTION_CLASS_NAMES`):
 
 | Name | Scope type |
 |------|-----------|
