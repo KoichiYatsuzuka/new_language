@@ -613,9 +613,7 @@ impl TypeChecker {
             self.declare_param(param);
         }
         let prev_fn = self.state.enter_fn(name.to_string());
-        let saved_depth = self.state.enter_barrier();
-        self.check_stmts(body);
-        self.state.exit_barrier(saved_depth);
+        self.with_barrier(|c| c.check_stmts(body));
         self.state.exit_fn(prev_fn);
         self.pop_scope();
     }
@@ -658,9 +656,7 @@ impl TypeChecker {
                 .unwrap_or(InferredType::Unresolved);
             self.declare(param.name.clone(), ty, param.mutable);
         }
-        let saved_depth = self.state.enter_barrier();
-        self.check_stmts(body);
-        self.state.exit_barrier(saved_depth);
+        self.with_barrier(|c| c.check_stmts(body));
         self.pop_scope();
     }
 

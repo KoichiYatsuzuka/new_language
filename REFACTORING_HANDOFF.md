@@ -84,8 +84,13 @@ Arrow(LLVM IR ターゲットのスクリプト言語)Rust実装のリファク�
 
 > ⚠️ **PowerShell 5.1 の落とし穴(この作業で実際に踏んだ)**: `Get-Content`/`Set-Content` は既定で ANSI(cp932)。UTF-8 の .rs を読み書きすると**日本語コメントが全滅する**。一括書き換えは `[System.IO.File]::ReadAllLines/WriteAllLines` + `UTF8Encoding($false)` を使うこと。srcを事前バックアップしていたので復旧できた。
 
-## Phase 5 — TypeChecker 神クラス分割【5A・5B 完了 / 5C の一部のみ残】
-→ **詳細計画と 5A/5B 実施記録は [PHASE5_PLAN.md](PHASE5_PLAN.md)。着手前に必ずそちらを読むこと。**
+## Phase 5 — TypeChecker 神クラス分割【✅ 全完了 5A/5B/5C】
+→ **詳細計画と 5A/5B/5C 実施記録は [PHASE5_PLAN.md](PHASE5_PLAN.md)。**
+
+**5C(仕上げ) 完了(2026-07-21)**: `cargo test` 672 緑・ビルド警告0・clippy **63**(5B の 68 から5件減)。
+- `block_return` 深さの enter/exit 生呼び出し(barrier 5対 + loop 2対)を `with_barrier`/`with_loop_expr` の**クロージャスコープ方式**ヘルパに集約 → 復元漏れが構造的に不可能に(生呼び出しは scope.rs の2ヘルパ内のみに封じ込め)。RAII は `check_stmts` が self 全体を借用するため不可と判明。
+- 式アーム末尾の重複(`return_type` → 型)を `ann_or_unresolved` に集約(5箇所→1)。
+- type_check 由来の clippy 警告5件(while-let 化・入れ子 if-let 畳み込み)を全回収。
 
 **5B(巨大関数の平坦化) 完了(2026-07-21)**: `cargo test` 672 緑・ビルド警告0・clippy 68 を維持。挙動・公開API無変更。
 - `check_stmt`(stmt/check.rs): **728行・深度14 → 307行・深度8**。巨大アームを `check_if`/`check_match`/`check_fn_def`/`check_gen_def`/`check_let_tuple` へ抽出。深度14の主因だった result_guard の7段ネストを早期return方式の `detect_type_guard`/`detect_result_guard`/`narrow_by_type_guard` に分解。重複3アーム(Let/Const/Mut)を `check_var_decl` に集約。
@@ -97,7 +102,9 @@ Arrow(LLVM IR ターゲットのスクリプト言語)Rust実装のリファク�
 - レジストリへの**書き込みは `registry/builder.rs` だけ**に封じ込め済み(`build()` 後は `&self` ゲッターのみ)。検査中の誤書き換えが型レベルで不可能になった。
 - 5C 予定だった `block_return_forbidden_depth` のAPI化は前倒しで実施済み(`enter_barrier`/`exit_barrier`・`enter_loop_expr`/`exit_loop_expr`)。**5C の残りは RAII ガード化のみ**。
 
-**残るは 5C の一部のみ**: `block_return_forbidden_depth` の save/restore を RAII ガード化する小改善(API化は 5A で前倒し済み)、および type_check 由来の様式 clippy 警告の回収。いずれも任意・低優先。
+**Phase 5 は 5A/5B/5C すべて完了。** TypeChecker 神クラス分割は当初計画の全項目を達成:
+フィールド 18→3、mod.rs 753→121行、check_stmt 728→307行(深度14→8)、infer 373→252行、
+block_return 深さのガード化、clippy 69→63。`cargo test` 672 緑・ビルド警告0 を全工程で維持。
 
 要点のみ:
 - `TypeChecker`(**18フィールド**)を `TypeRegistry`(12) / `CheckState`(4) / `Diagnostics`(2) の3構造体へ**合成**で分割。Rust に継承はないので「子クラス」は不可、サブ構造体**相互の依存はゼロ**(スター型DAG)。

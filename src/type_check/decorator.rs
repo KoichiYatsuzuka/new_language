@@ -93,19 +93,17 @@ impl TypeChecker {
 
             if let Some(init_sigs) = cls_methods.get("__init__").cloned() {
                 if init_sigs.len() == 1 {
-                    if let Some((_, second_ty_opt)) = init_sigs[0].params.get(1) {
-                        if let Some(second_ty) = second_ty_opt {
-                            if !kind_matches(second_ty) {
-                                self.report_error(StaticTypeError {
-                                    kind: TypeErrorKind::InvalidDecorator {
-                                        reason: format!(
-                                            "class decorator '{dec_name}' applied to {target_kind} '{target_name}': \
-                                             '__init__' second parameter must be '{expected_what}' type, got '{second_ty}'"
-                                        ),
-                                    },
-                                    span: None,
-                                });
-                            }
+                    if let Some((_, Some(second_ty))) = init_sigs[0].params.get(1) {
+                        if !kind_matches(second_ty) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::InvalidDecorator {
+                                    reason: format!(
+                                        "class decorator '{dec_name}' applied to {target_kind} '{target_name}': \
+                                         '__init__' second parameter must be '{expected_what}' type, got '{second_ty}'"
+                                    ),
+                                },
+                                span: None,
+                            });
                         }
                     }
                 }

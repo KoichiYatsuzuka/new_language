@@ -161,40 +161,32 @@ impl TypeChecker {
             // --- mustbe 動的型アサーション ---
             Expr::MustBe { expr, guard_type, span } => self.infer_mustbe(expr, guard_type, span),
             Expr::Block { stmts, return_type } => {
-                let saved_depth = self.state.enter_barrier();
-                self.push_scope();
-                self.check_stmts(stmts);
-                self.pop_scope();
-                self.state.exit_barrier(saved_depth);
-                if let Some(t) = return_type {
-                    InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
-                } else {
-                    InferredType::Unresolved
-                }
+                self.with_barrier(|c| {
+                    c.push_scope();
+                    c.check_stmts(stmts);
+                    c.pop_scope();
+                });
+                Self::ann_or_unresolved(return_type)
             }
             Expr::IfExpr {
                 branches,
                 else_body,
                 return_type,
             } => {
-                let saved_depth = self.state.enter_barrier();
-                for (cond, body) in branches {
-                    self.infer(cond);
-                    self.push_scope();
-                    self.check_stmts(body);
-                    self.pop_scope();
-                }
-                if let Some(body) = else_body {
-                    self.push_scope();
-                    self.check_stmts(body);
-                    self.pop_scope();
-                }
-                self.state.exit_barrier(saved_depth);
-                if let Some(t) = return_type {
-                    InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
-                } else {
-                    InferredType::Unresolved
-                }
+                self.with_barrier(|c| {
+                    for (cond, body) in branches {
+                        c.infer(cond);
+                        c.push_scope();
+                        c.check_stmts(body);
+                        c.pop_scope();
+                    }
+                    if let Some(body) = else_body {
+                        c.push_scope();
+                        c.check_stmts(body);
+                        c.pop_scope();
+                    }
+                });
+                Self::ann_or_unresolved(return_type)
             }
             Expr::ForExpr {
                 iter,
@@ -203,16 +195,12 @@ impl TypeChecker {
                 ..
             } => {
                 self.infer(iter);
-                self.state.enter_loop_expr();
-                self.push_scope();
-                self.check_stmts(body);
-                self.pop_scope();
-                self.state.exit_loop_expr();
-                if let Some(t) = return_type {
-                    InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
-                } else {
-                    InferredType::Unresolved
-                }
+                self.with_loop_expr(|c| {
+                    c.push_scope();
+                    c.check_stmts(body);
+                    c.pop_scope();
+                });
+                Self::ann_or_unresolved(return_type)
             }
             Expr::WhileExpr {
                 cond,
@@ -220,44 +208,45 @@ impl TypeChecker {
                 return_type,
             } => {
                 self.infer(cond);
-                self.state.enter_loop_expr();
-                self.push_scope();
-                self.check_stmts(body);
-                self.pop_scope();
-                self.state.exit_loop_expr();
-                if let Some(t) = return_type {
-                    InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
-                } else {
-                    InferredType::Unresolved
-                }
+                self.with_loop_expr(|c| {
+                    c.push_scope();
+                    c.check_stmts(body);
+                    c.pop_scope();
+                });
+                Self::ann_or_unresolved(return_type)
             }
             Expr::MatchExpr {
                 subject,
                 arms,
                 return_type,
             } => {
-                let saved_depth = self.state.enter_barrier();
-                self.infer(subject);
-                for arm in arms {
-                    if let MatchPattern::Case(e) = &arm.pattern {
-                        self.infer(e);
+                self.with_barrier(|c| {
+                    c.infer(subject);
+                    for arm in arms {
+                        if let MatchPattern::Case(e) = &arm.pattern {
+                            c.infer(e);
+                        }
+                        c.push_scope();
+                        c.check_stmts(&arm.body);
+                        c.pop_scope();
                     }
-                    self.push_scope();
-                    self.check_stmts(&arm.body);
-                    self.pop_scope();
-                }
-                self.state.exit_barrier(saved_depth);
-                if let Some(t) = return_type {
-                    InferredType::from_ann(t).unwrap_or(InferredType::Unresolved)
-                } else {
-                    InferredType::Unresolved
-                }
+                });
+                Self::ann_or_unresolved(return_type)
             }
             Expr::Cast { type_name, .. } => {
                 InferredType::from_ann(type_name).unwrap_or(InferredType::Unresolved)
             }
             Expr::DebugVar(_) => InferredType::Unresolved,
         }
+    }
+
+    /// `->Type` 注釈があれば解決した型を、なければ `Unresolved` を返す。
+    /// `block`/`if`/`for`/`while`/`match` 式の結果型計算で共通に使う。
+    fn ann_or_unresolved(return_type: &Option<String>) -> InferredType {
+        return_type
+            .as_deref()
+            .and_then(InferredType::from_ann)
+            .unwrap_or(InferredType::Unresolved)
     }
 
     /// 属性アクセス `obj.attr` の型を推論する。`Any`/`Union`/`Result` への

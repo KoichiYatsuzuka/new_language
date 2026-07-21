@@ -250,9 +250,11 @@ src/type_check/
 | `collect_fn_sigs`（mod.rs:217） | 267行 | 5A-3b で builder へ移設済み。さらに `collect_class` / `collect_trait` / `collect_protocol` に分割 |
 | `check_intersection_members`（mod.rs:562） | 153行 | 5A-4 で members.rs へ移設済み。必要なら分割 |
 
-### 5C. 仕上げ（小粒・任意）
+### 5C. 仕上げ（小粒・任意）【✅ 完了 — 2026-07-21】
 
-- `block_return_forbidden_depth` の save/restore 10対（infer.rs）を
+実施結果は §10「5C 実施記録」を参照。
+
+- `block_return_forbidden_depth` の save/restore を
   RAII ガードまたは `with_loop_expr(|st| …)` ヘルパに集約 → 復元漏れバグを構造的に排除
 - 残 clippy 警告のうち type_check 由来のもの（`collapsible_match` 等）を回収
 
@@ -378,3 +380,48 @@ VS Code 拡張・Python 実装にも変更が及ばないため VSIX 再生成�
    **編集前に `grep` で当該シンボルの実在を確認したところ「無し」と出て食い違いに気づき**、
    実ファイルを読み直して事なきを得た。教訓: **大きなブロックを差し替える前に、対象シンボルが
    実在するか grep で裏取りする**。とくに同一ファイルを何度も読み書きした後は Read 結果を鵜呑みにしない。
+
+---
+
+## 10. 5C 実施記録（2026-07-21 完了）
+
+`block_return` 深さ操作のガード化と、type_check 由来の clippy 警告回収。**672 緑を維持**。
+
+### block_return 深さ操作のガード化
+
+`enter_barrier`/`exit_barrier`（5対）と `enter_loop_expr`/`exit_loop_expr`（2対）の
+生の呼び出しを、**クロージャスコープ方式**の2ヘルパに集約:
+
+```rust
+fn with_barrier<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R { … }   // block/if/match 式・関数本体
+fn with_loop_expr<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R { … } // for/while 式
+```
+
+- 呼び出し側は `self.with_barrier(|c| { c.push_scope(); c.check_stmts(body); c.pop_scope(); })` の形になり、
+  enter と exit が1メソッド内で必ず対になるため**復元漏れが構造的に不可能**。
+- 検証: `enter_barrier` 等の生呼び出しは scope.rs のヘルパ内2箇所のみに封じ込め済み（他ファイルから消滅）。
+
+**RAII（Drop）ガードを採用しなかった理由**: `f` が `self.check_stmts()` 等で `TypeChecker` 全体を
+可変借用するため、`CheckState` を借用し続ける Drop ガードだと借用が衝突する。クロージャ方式なら
+`f` に `&mut self` を丸ごと渡せて衝突しない。パニック時の復元保証はないが、型検査はハッピーパスで
+巻き戻らず、パニック時は検査全体が中断するので復元は不要。
+
+**副次的整理**: 5式アーム（block/if/for/while/match）末尾に重複していた
+`if let Some(t) = return_type { InferredType::from_ann(t)… } else { Unresolved }` を
+`ann_or_unresolved(return_type)` ヘルパに集約（5箇所 → 1定義）。
+
+### clippy 警告の回収（type_check 由来 5件）
+
+- `type_utils.rs`: `loop { let Some(..) = .. else { break }; … }` → `while let Some(..) = .. { … }`
+- `call_check.rs`（3件）・`decorator.rs`（1件）: 入れ子 `if let` をタプルパターンに畳み込み
+  （例: `if let Some((_, ty)) = … { if let Some(x) = ty {` → `if let Some((_, Some(x))) = … {`）
+
+**結果**: clippy 総数 **68 → 63**（type_check 由来はゼロに）。残 63 は他モジュールの様式系
+（benches の `irrefutable let...else` 12件・`type_complexity` 等）で、Phase 5 の対象外。
+
+### 計画から変えた点
+
+- 計画は「RAII ガードまたは `with_loop_expr` ヘルパ」と両論併記だったが、上記の借用制約により
+  **RAII は不可**と判明。クロージャスコープ方式で確定した。
+- `ann_or_unresolved` の集約は計画に無かったが、ガード化で式アームを書き換える際に目に付いた
+  明白な重複（5箇所同一）だったため同時に回収した。

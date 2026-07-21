@@ -30,6 +30,28 @@ impl TypeChecker {
         self.state.lookup(name)
     }
 
+    /// `block_return` 障壁の内側で `f` を実行する（`block`/`if`/`match` 式・関数本体用）。
+    /// 進入時に深さを 0 にし、`f` の実行後に必ず元の深さへ戻す。enter/exit を1つの
+    /// メソッドに閉じ込めることで復元漏れを構造的に防ぐ。
+    ///
+    /// Drop ガードではなくクロージャで包むのは、`f` が `self.check_stmts()` 等で
+    /// `TypeChecker` 全体を可変借用するため、`CheckState` を借用し続ける RAII ガードだと
+    /// 借用が衝突するため。
+    pub(super) fn with_barrier<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let saved = self.state.enter_barrier();
+        let r = f(self);
+        self.state.exit_barrier(saved);
+        r
+    }
+
+    /// `for`/`while` 式の本体として `f` を実行する（進入時に深さ +1、終了時に -1）。
+    pub(super) fn with_loop_expr<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.state.enter_loop_expr();
+        let r = f(self);
+        self.state.exit_loop_expr();
+        r
+    }
+
     /// 静的型エラーをエラーリストに追加する。
     pub(super) fn report_error(&mut self, err: StaticTypeError) {
         self.diags.report_error(err);

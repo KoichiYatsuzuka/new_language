@@ -135,11 +135,7 @@ impl TypeChecker {
 
         let mut current = arg_name.clone();
         let mut seen = std::collections::HashSet::new();
-        loop {
-            let Some(orig_name) = self.registry.new_type_original(&current).map(str::to_string)
-            else {
-                break;
-            };
+        while let Some(orig_name) = self.registry.new_type_original(&current).map(str::to_string) {
             if !seen.insert(orig_name.clone()) {
                 break;
             }

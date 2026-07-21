@@ -257,21 +257,19 @@ impl TypeChecker {
         }
         let sig = &count_matching[0];
         // 可変長引数の型チェック
-        if let (Some((_, variadic_list_ty)), Some(expected_elem_ty)) =
+        if let (Some((_, IT::ListOf(elem_ty))), Some(expected_elem_ty)) =
             (variadic_entry, &sig.variadic_type)
         {
-            if let IT::ListOf(elem_ty) = variadic_list_ty {
-                if !self.type_matches(elem_ty, expected_elem_ty) {
-                    self.report_error(StaticTypeError {
-                        kind: TypeErrorKind::CallArgTypeMismatch {
-                            func_name: format!("{cls_name}.{method_name}"),
-                            param_index: usize::MAX,
-                            expected: expected_elem_ty.clone(),
-                            got: *elem_ty.clone(),
-                        },
-                        span: None,
-                    });
-                }
+            if !self.type_matches(elem_ty, expected_elem_ty) {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::CallArgTypeMismatch {
+                        func_name: format!("{cls_name}.{method_name}"),
+                        param_index: usize::MAX,
+                        expected: expected_elem_ty.clone(),
+                        got: *elem_ty.clone(),
+                    },
+                    span: None,
+                });
             }
         }
         for (arg_idx, (_, arg_ty)) in normal_args.iter().enumerate() {
@@ -379,19 +377,17 @@ impl TypeChecker {
                     }
                 }
                 None => {
-                    if let Some((_, param_ty)) = sig.params.get(positional_idx) {
-                        if let Some(expected) = param_ty {
-                            if !self.type_matches(arg_ty, expected) {
-                                self.report_error(StaticTypeError {
-                                    kind: TypeErrorKind::CallArgTypeMismatch {
-                                        func_name: fname.to_string(),
-                                        param_index: positional_idx,
-                                        expected: expected.clone(),
-                                        got: (*arg_ty).clone(),
-                                    },
-                                    span: None,
-                                });
-                            }
+                    if let Some((_, Some(expected))) = sig.params.get(positional_idx) {
+                        if !self.type_matches(arg_ty, expected) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::CallArgTypeMismatch {
+                                    func_name: fname.to_string(),
+                                    param_index: positional_idx,
+                                    expected: expected.clone(),
+                                    got: (*arg_ty).clone(),
+                                },
+                                span: None,
+                            });
                         }
                     }
                     positional_idx += 1;
@@ -400,21 +396,19 @@ impl TypeChecker {
         }
 
         // 可変長引数の型チェック
-        if let (Some((_, variadic_list_ty)), Some(expected_elem_ty)) =
+        if let (Some((_, IT::ListOf(elem_ty))), Some(expected_elem_ty)) =
             (variadic_entry, &sig.variadic_type)
         {
-            if let IT::ListOf(elem_ty) = variadic_list_ty {
-                if !self.type_matches(elem_ty, expected_elem_ty) {
-                    self.report_error(StaticTypeError {
-                        kind: TypeErrorKind::CallArgTypeMismatch {
-                            func_name: fname.to_string(),
-                            param_index: usize::MAX, // 可変長引数を示す特殊値
-                            expected: expected_elem_ty.clone(),
-                            got: *elem_ty.clone(),
-                        },
-                        span: None,
-                    });
-                }
+            if !self.type_matches(elem_ty, expected_elem_ty) {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::CallArgTypeMismatch {
+                        func_name: fname.to_string(),
+                        param_index: usize::MAX, // 可変長引数を示す特殊値
+                        expected: expected_elem_ty.clone(),
+                        got: *elem_ty.clone(),
+                    },
+                    span: None,
+                });
             }
         }
 
