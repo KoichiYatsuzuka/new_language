@@ -235,7 +235,9 @@ src/type_check/
 挙動不変なので**エラーメッセージの文言が1文字も変わらないこと**が合格条件
 （Phase 3 Item1 と同じ基準）。
 
-### 5B. 巨大関数の平坦化（判断を要する・本命）
+### 5B. 巨大関数の平坦化（判断を要する・本命）【✅ 完了 — 2026-07-21】
+
+実施結果は §9「5B 実施記録」を参照。以下は当初計画。
 
 5A を終えてから着手する。理由は §1 の通り、`&mut self` を丸ごと渡す代わりに
 `(reg: &TypeRegistry, st: &mut CheckState, diags: &mut Diagnostics)` を渡せるようになり、
@@ -329,3 +331,50 @@ VS Code 拡張・Python 実装にも変更が及ばないため VSIX 再生成�
 （`class_static_methods` を「1箇所」と数えたが実際は call_check.rs に2つの読み取りがあった）。
 桁は合っていたので設計判断に影響はなかったが、**次に同種の集計をするときは
 複数行チェーンを考慮すること**。
+
+---
+
+## 9. 5B 実施記録（2026-07-21 完了）
+
+`check_stmt` と `infer` を関数抽出で平坦化。**各抽出ごとに `cargo test` 672 緑を確認**。
+
+### 成果（実測 before → after）
+
+| 関数 | 行数 | 最大ネスト深度 |
+|---|---|---|
+| `check_stmt`（stmt/check.rs） | **728 → 307** | **14 → 8** |
+| `infer`（infer.rs） | **373 → 252** | 8 → 7 |
+
+- ビルド警告 **0件** / `cargo test` **672 passed** / clippy **68件**（5A の 69 から1件減）
+- 公開 API・挙動ともに無変更（エラー種別・順序を保存）
+
+### 抽出した関数
+
+**stmt/check.rs**（`check_stmt` は純粋なディスパッチ表になった）:
+- 巨大アーム → 専用メソッド: `check_if` / `check_match` / `check_fn_def` / `check_gen_def` / `check_let_tuple`
+- `check_if` 内の深いネスト（深度14の主因だった result_guard の7段 `if let`）を
+  早期return方式の3つのサブ関数へ分解: `detect_type_guard`（静的）/ `detect_result_guard` /
+  `narrow_by_type_guard`
+- 重複集約: `Let`/`Const`/`Mut` の3アーム → `check_var_decl`（`mutable` フラグのみ差）、
+  `AttrAssign`/`AttrCompoundAssign` の同一2アーム → `check_attr_assign`、
+  FnDef の可変長/self/通常パラメータ束縛 → `declare_param`
+
+**infer.rs**（`infer` から最大の3アームを抽出）:
+- `infer_attr`（属性アクセス 40行）/ `infer_unaryop`（単項演算 40行）/ `infer_mustbe`（`mustbe` 47行）
+
+### 計画から変えた点・報告事項
+
+1. **状態を部分借用で渡す方式（`(&TypeRegistry, &mut CheckState, &mut Diagnostics)`）は使わなかった。**
+   抽出先が `self.infer` / `self.check_stmts` / `self.report_error` 等の self メソッドを
+   多数呼ぶため、素直に `&mut self` を取るメソッドに切り出すのが最小コストで、これでも
+   借用競合は起きない（self 全体を1回可変借用するだけ）。§1 で想定した部分借用方式は、
+   このコードでは呼び出し箇所が多すぎて逆に煩雑になると判明した。
+2. **`collect_fn_sigs` / `check_intersection_members` の追加分割は不要と判断。** 前者は
+   5A-3 で既に5関数へ分割済み、後者は members.rs で独立関数になっており、それ以上刻む
+   価値が薄かった。
+3. **⚠️ ツール起因のヒヤリハット（記録）**: infer.rs を編集する直前、Read が返した内容が
+   **実ファイルと食い違う偽の内容**（`Expr::IntLit`/`resolve_protocol_type` 等、存在しない
+   バリアント名）だった。危うくその偽内容を `old_string` にした破壊的 Edit をしかけたが、
+   **編集前に `grep` で当該シンボルの実在を確認したところ「無し」と出て食い違いに気づき**、
+   実ファイルを読み直して事なきを得た。教訓: **大きなブロックを差し替える前に、対象シンボルが
+   実在するか grep で裏取りする**。とくに同一ファイルを何度も読み書きした後は Read 結果を鵜呑みにしない。

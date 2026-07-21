@@ -1,4 +1,5 @@
 use crate::ast::{Expr, MatchPattern, UnaryOp};
+use crate::token::Span;
 
 use super::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};
 use super::types::InferredType;
@@ -48,46 +49,7 @@ impl TypeChecker {
             }
 
             // --- 属性アクセス ---
-            Expr::Attr { object, attr, span } => {
-                let obj_ty = self.infer(object);
-                let class_name_opt = if let InferredType::NamedInstance(cls) = &obj_ty {
-                    Some(cls.clone())
-                } else {
-                    None
-                };
-                match &obj_ty {
-                    InferredType::Any => self.report_error(StaticTypeError {
-                        kind: TypeErrorKind::OperationOnAny {
-                            op: "attribute access".to_string(),
-                        },
-                        span: Some(span.clone()),
-                    }),
-                    InferredType::Union(_) | InferredType::Result(_, _) => {
-                        self.report_error(StaticTypeError {
-                            kind: TypeErrorKind::OperationOnUnion {
-                                union_type: obj_ty.to_string(),
-                                op: "attribute access".to_string(),
-                            },
-                            span: Some(span.clone()),
-                        });
-                    }
-                    // Intersection 型のメンバーアクセスはダウンキャストなしで許可する
-                    InferredType::Intersection(_) => {}
-                    _ => {}
-                }
-                if let Some(class_name) = class_name_opt {
-                    self.check_member_access_static(&class_name, attr, Some(span.clone()));
-                }
-                // Namespace (imported module) — return the member's type directly.
-                if let InferredType::Namespace(ref members) = obj_ty {
-                    return members.get(attr.as_str()).cloned().unwrap_or(InferredType::Unresolved);
-                }
-                // PyNamespace: unknown members are dynamically typed → Any.
-                if let InferredType::PyNamespace(ref members) = obj_ty {
-                    return members.get(attr.as_str()).cloned().unwrap_or(InferredType::Any);
-                }
-                InferredType::Unresolved
-            }
+            Expr::Attr { object, attr, span } => self.infer_attr(object, attr, span),
             Expr::TraitAccess { object, .. } => {
                 self.infer(object);
                 InferredType::Unresolved
@@ -111,46 +73,7 @@ impl TypeChecker {
             }
 
             // --- 単項演算子 ---
-            Expr::UnaryOp { op, operand } => {
-                let ty = self.infer(operand);
-                let op_str = match op {
-                    UnaryOp::Neg => "-",
-                    UnaryOp::Not => "not",
-                    UnaryOp::BitNot => "~",
-                };
-                match &ty {
-                    InferredType::Any => {
-                        self.report_error(StaticTypeError {
-                            kind: TypeErrorKind::OperationOnAny {
-                                op: op_str.to_string(),
-                            },
-                            span: None,
-                        });
-                        return InferredType::Unresolved;
-                    }
-                    InferredType::Union(_) => {
-                        self.report_error(StaticTypeError {
-                            kind: TypeErrorKind::OperationOnUnion {
-                                union_type: ty.to_string(),
-                                op: op_str.to_string(),
-                            },
-                            span: None,
-                        });
-                        return InferredType::Unresolved;
-                    }
-                    _ => {}
-                }
-                match op {
-                    UnaryOp::Not => InferredType::Bool,
-                    UnaryOp::Neg => match ty {
-                        InferredType::Int => InferredType::Int,
-                        InferredType::Float => InferredType::Float,
-                        InferredType::Complex => InferredType::Complex,
-                        _ => InferredType::Unresolved,
-                    },
-                    UnaryOp::BitNot => InferredType::Int,
-                }
-            }
+            Expr::UnaryOp { op, operand } => self.infer_unaryop(op, operand),
 
             // --- 二項演算子 ---
             Expr::BinOp {
@@ -236,53 +159,7 @@ impl TypeChecker {
             }
 
             // --- mustbe 動的型アサーション ---
-            Expr::MustBe { expr, guard_type, span } => {
-                self.infer(expr);
-                let resolved = InferredType::from_ann(guard_type).unwrap_or(InferredType::Unresolved);
-                // コレクション型パラメータ・関数シグネチャは実行時に未チェック → 警告
-                let warn_kind = match &resolved {
-                    InferredType::ListOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
-                        guard_type: guard_type.clone(),
-                        outer_type: "list".to_string(),
-                    }),
-                    InferredType::FixedListOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
-                        guard_type: guard_type.clone(),
-                        outer_type: "fixed_list".to_string(),
-                    }),
-                    InferredType::ListLikeOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
-                        guard_type: guard_type.clone(),
-                        outer_type: "list_like".to_string(),
-                    }),
-                    InferredType::SetOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
-                        guard_type: guard_type.clone(),
-                        outer_type: "set".to_string(),
-                    }),
-                    InferredType::DictOf(_, _) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
-                        guard_type: guard_type.clone(),
-                        outer_type: "dict".to_string(),
-                    }),
-                    InferredType::Tuple(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
-                        guard_type: guard_type.clone(),
-                        outer_type: "tuple".to_string(),
-                    }),
-                    InferredType::Function { params, return_type } => {
-                        let has_params = params.as_ref().is_some_and(|p| !p.is_empty());
-                        let has_ret = **return_type != InferredType::Any;
-                        if has_params || has_ret {
-                            Some(TypeWarningKind::MustBeFunctionSignatureUnchecked {
-                                guard_type: guard_type.clone(),
-                            })
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
-                if let Some(kind) = warn_kind {
-                    self.report_warning(StaticTypeWarning { kind, span: Some(span.clone()) });
-                }
-                resolved
-            }
+            Expr::MustBe { expr, guard_type, span } => self.infer_mustbe(expr, guard_type, span),
             Expr::Block { stmts, return_type } => {
                 let saved_depth = self.state.enter_barrier();
                 self.push_scope();
@@ -381,5 +258,140 @@ impl TypeChecker {
             }
             Expr::DebugVar(_) => InferredType::Unresolved,
         }
+    }
+
+    /// 属性アクセス `obj.attr` の型を推論する。`Any`/`Union`/`Result` への
+    /// アクセスは診断し、名前空間メンバーはその型を直接返す。
+    fn infer_attr(&mut self, object: &Expr, attr: &str, span: &Span) -> InferredType {
+        let obj_ty = self.infer(object);
+        let class_name_opt = if let InferredType::NamedInstance(cls) = &obj_ty {
+            Some(cls.clone())
+        } else {
+            None
+        };
+        match &obj_ty {
+            InferredType::Any => self.report_error(StaticTypeError {
+                kind: TypeErrorKind::OperationOnAny {
+                    op: "attribute access".to_string(),
+                },
+                span: Some(span.clone()),
+            }),
+            InferredType::Union(_) | InferredType::Result(_, _) => {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::OperationOnUnion {
+                        union_type: obj_ty.to_string(),
+                        op: "attribute access".to_string(),
+                    },
+                    span: Some(span.clone()),
+                });
+            }
+            // Intersection 型のメンバーアクセスはダウンキャストなしで許可する
+            InferredType::Intersection(_) => {}
+            _ => {}
+        }
+        if let Some(class_name) = class_name_opt {
+            self.check_member_access_static(&class_name, attr, Some(span.clone()));
+        }
+        // Namespace (imported module) — return the member's type directly.
+        if let InferredType::Namespace(ref members) = obj_ty {
+            return members.get(attr).cloned().unwrap_or(InferredType::Unresolved);
+        }
+        // PyNamespace: unknown members are dynamically typed → Any.
+        if let InferredType::PyNamespace(ref members) = obj_ty {
+            return members.get(attr).cloned().unwrap_or(InferredType::Any);
+        }
+        InferredType::Unresolved
+    }
+
+    /// 単項演算子の結果型を推論する。`Any`/`Union` オペランドは診断する。
+    fn infer_unaryop(&mut self, op: &UnaryOp, operand: &Expr) -> InferredType {
+        let ty = self.infer(operand);
+        let op_str = match op {
+            UnaryOp::Neg => "-",
+            UnaryOp::Not => "not",
+            UnaryOp::BitNot => "~",
+        };
+        match &ty {
+            InferredType::Any => {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::OperationOnAny {
+                        op: op_str.to_string(),
+                    },
+                    span: None,
+                });
+                return InferredType::Unresolved;
+            }
+            InferredType::Union(_) => {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::OperationOnUnion {
+                        union_type: ty.to_string(),
+                        op: op_str.to_string(),
+                    },
+                    span: None,
+                });
+                return InferredType::Unresolved;
+            }
+            _ => {}
+        }
+        match op {
+            UnaryOp::Not => InferredType::Bool,
+            UnaryOp::Neg => match ty {
+                InferredType::Int => InferredType::Int,
+                InferredType::Float => InferredType::Float,
+                InferredType::Complex => InferredType::Complex,
+                _ => InferredType::Unresolved,
+            },
+            UnaryOp::BitNot => InferredType::Int,
+        }
+    }
+
+    /// `expr mustbe Type` の型を推論する。解決した型を返し、コレクション要素型や
+    /// 関数シグネチャは実行時に検査されないため警告する。
+    fn infer_mustbe(&mut self, expr: &Expr, guard_type: &str, span: &Span) -> InferredType {
+        self.infer(expr);
+        let resolved = InferredType::from_ann(guard_type).unwrap_or(InferredType::Unresolved);
+        // コレクション型パラメータ・関数シグネチャは実行時に未チェック → 警告
+        let warn_kind = match &resolved {
+            InferredType::ListOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                guard_type: guard_type.to_string(),
+                outer_type: "list".to_string(),
+            }),
+            InferredType::FixedListOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                guard_type: guard_type.to_string(),
+                outer_type: "fixed_list".to_string(),
+            }),
+            InferredType::ListLikeOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                guard_type: guard_type.to_string(),
+                outer_type: "list_like".to_string(),
+            }),
+            InferredType::SetOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                guard_type: guard_type.to_string(),
+                outer_type: "set".to_string(),
+            }),
+            InferredType::DictOf(_, _) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                guard_type: guard_type.to_string(),
+                outer_type: "dict".to_string(),
+            }),
+            InferredType::Tuple(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {
+                guard_type: guard_type.to_string(),
+                outer_type: "tuple".to_string(),
+            }),
+            InferredType::Function { params, return_type } => {
+                let has_params = params.as_ref().is_some_and(|p| !p.is_empty());
+                let has_ret = **return_type != InferredType::Any;
+                if has_params || has_ret {
+                    Some(TypeWarningKind::MustBeFunctionSignatureUnchecked {
+                        guard_type: guard_type.to_string(),
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some(kind) = warn_kind {
+            self.report_warning(StaticTypeWarning { kind, span: Some(span.clone()) });
+        }
+        resolved
     }
 }

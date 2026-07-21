@@ -84,17 +84,20 @@ Arrow(LLVM IR ターゲットのスクリプト言語)Rust実装のリファク�
 
 > ⚠️ **PowerShell 5.1 の落とし穴(この作業で実際に踏んだ)**: `Get-Content`/`Set-Content` は既定で ANSI(cp932)。UTF-8 の .rs を読み書きすると**日本語コメントが全滅する**。一括書き換えは `[System.IO.File]::ReadAllLines/WriteAllLines` + `UTF8Encoding($false)` を使うこと。srcを事前バックアップしていたので復旧できた。
 
-## Phase 5 — TypeChecker 神クラス分割【5A 完了 / 5B・5C 未着手】
-→ **詳細計画と 5A 実施記録は [PHASE5_PLAN.md](PHASE5_PLAN.md)。着手前に必ずそちらを読むこと。**
+## Phase 5 — TypeChecker 神クラス分割【5A・5B 完了 / 5C の一部のみ残】
+→ **詳細計画と 5A/5B 実施記録は [PHASE5_PLAN.md](PHASE5_PLAN.md)。着手前に必ずそちらを読むこと。**
+
+**5B(巨大関数の平坦化) 完了(2026-07-21)**: `cargo test` 672 緑・ビルド警告0・clippy 68 を維持。挙動・公開API無変更。
+- `check_stmt`(stmt/check.rs): **728行・深度14 → 307行・深度8**。巨大アームを `check_if`/`check_match`/`check_fn_def`/`check_gen_def`/`check_let_tuple` へ抽出。深度14の主因だった result_guard の7段ネストを早期return方式の `detect_type_guard`/`detect_result_guard`/`narrow_by_type_guard` に分解。重複3アーム(Let/Const/Mut)を `check_var_decl` に集約。
+- `infer`(infer.rs): **373行 → 252行**。`infer_attr`/`infer_unaryop`/`infer_mustbe` を抽出。
+- ⚠️ **ツール起因のヒヤリハット**: infer.rs 編集直前に Read が実ファイルと食い違う偽内容(存在しないバリアント名)を返した。破壊的 Edit の直前に grep でシンボル実在を裏取りして気づき回避。詳細は PHASE5_PLAN §9。
 
 **5A(状態の3分割) 完了(2026-07-21)**: `TypeChecker` のフィールド **18 → 3**(`state` / `registry` / `diags`)、[type_check/mod.rs](src/type_check/mod.rs) **753行 → 121行**。`cargo test` 672 緑・ビルド警告0・clippy 69(着手前と同数)を維持。公開API無変更。
 - 新設: [diagnostics.rs](src/type_check/diagnostics.rs) / [state.rs](src/type_check/state.rs) / [registry/](src/type_check/registry/)(mod.rs + builder.rs) / [members.rs](src/type_check/members.rs)。
 - レジストリへの**書き込みは `registry/builder.rs` だけ**に封じ込め済み(`build()` 後は `&self` ゲッターのみ)。検査中の誤書き換えが型レベルで不可能になった。
 - 5C 予定だった `block_return_forbidden_depth` のAPI化は前倒しで実施済み(`enter_barrier`/`exit_barrier`・`enter_loop_expr`/`exit_loop_expr`)。**5C の残りは RAII ガード化のみ**。
 
-**次は 5B(巨大関数の平坦化)**: `check_stmt`(715行・深度14)、`infer`(373行)。5A により
-抽出関数が `&mut self` を取らず `(&TypeRegistry, &mut CheckState, &mut Diagnostics)` を
-受け取れるようになったので、借用競合なしで切り出せる状態になっている。
+**残るは 5C の一部のみ**: `block_return_forbidden_depth` の save/restore を RAII ガード化する小改善(API化は 5A で前倒し済み)、および type_check 由来の様式 clippy 警告の回収。いずれも任意・低優先。
 
 要点のみ:
 - `TypeChecker`(**18フィールド**)を `TypeRegistry`(12) / `CheckState`(4) / `Diagnostics`(2) の3構造体へ**合成**で分割。Rust に継承はないので「子クラス」は不可、サブ構造体**相互の依存はゼロ**(スター型DAG)。
