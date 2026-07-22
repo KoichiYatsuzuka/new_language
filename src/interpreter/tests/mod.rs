@@ -9,7 +9,8 @@ use crate::parser::Parser;
 /// テストソースを字句解析・構文解析・実行する。エラーがあれば `Err` を返す。
 fn run(src: &str) -> Result<(), String> {
     let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens, None).parse_program()?;
+    let mut stmts = Parser::new(tokens, None).parse_program()?;
+    super::resolver::resolve_program(&mut stmts);
     let mut interp = Interpreter::new();
     for stmt in &stmts {
         let _ = interp.exec(stmt)?;
@@ -33,7 +34,8 @@ fn eval_expr(src: &str) -> Value {
 /// テストソースを実行して変数 `var` の値を返すテストヘルパー。
 fn run_get(src: &str, var: &str) -> Value {
     let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens, None).parse_program().unwrap();
+    let mut stmts = Parser::new(tokens, None).parse_program().unwrap();
+    super::resolver::resolve_program(&mut stmts);
     let mut interp = Interpreter::new();
     for stmt in &stmts {
         let _ = interp.exec(stmt).unwrap();
@@ -44,7 +46,8 @@ fn run_get(src: &str, var: &str) -> Value {
 /// py-int テスト用: examples/ ディレクトリを Python 検索パスに追加して実行する
 fn run_py_get(src: &str, var: &str) -> Value {
     let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens, None).parse_program().unwrap();
+    let mut stmts = Parser::new(tokens, None).parse_program().unwrap();
+    super::resolver::resolve_program(&mut stmts);
     let mut interp = Interpreter::new();
     interp.add_python_search_dir(std::path::PathBuf::from("examples"));
     interp.add_python_search_dir(std::path::PathBuf::from("examples/interop/test_modules"));
@@ -57,7 +60,8 @@ fn run_py_get(src: &str, var: &str) -> Value {
 /// テストソースを実行し、最初の `raise` で発生した例外を返すテストヘルパー。例外がなければ `Ok(None)`。
 fn run_exc(src: &str) -> Result<Option<RaisedError>, String> {
     let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens, None).parse_program()?;
+    let mut stmts = Parser::new(tokens, None).parse_program()?;
+    super::resolver::resolve_program(&mut stmts);
     let mut interp = Interpreter::new();
     for stmt in &stmts {
         match interp.exec(stmt) {

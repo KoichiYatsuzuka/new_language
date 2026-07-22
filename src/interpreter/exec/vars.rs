@@ -183,8 +183,8 @@ impl Interpreter {
     /// `make_var_immutable` が `SlotCell` を `Immutable` に降格させ `slot_epoch` を
     /// 進めるので、全キャッシュが自動失効する。
     pub(crate) fn try_fill_slot(&mut self, name: &str, slot: &crate::ast::SlotCache) {
-        // ローカルスコープに同名があればグローバル解決ではない
-        if self.scopes[1..].iter().any(|s| s.contains_key(name)) {
+        // 現関数のローカル（frame_floor..）に同名があればグローバル解決ではない
+        if self.scopes[self.frame_floor..].iter().any(|s| s.contains_key(name)) {
             return;
         }
         let Some(var) = self.scopes[0].get_mut(name) else {

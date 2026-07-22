@@ -28,13 +28,14 @@ impl Interpreter {
     ///
     /// 戻り値: 見つかった `Var` への参照、存在しない場合は `None`
     pub(super) fn get_var(&self, name: &str) -> Option<&Var> {
-        // 末尾（最内部スコープ）から先頭（グローバル）へ向けて順に検索する
-        for scope in self.scopes.iter().rev() {
+        // 現関数のローカル（frame_floor..）を最内部から外側へ検索し、なければグローバル（0）を見る。
+        // 呼び出し元のローカル（1..frame_floor）はレキシカル隔離のため走査しない。
+        for scope in self.scopes[self.frame_floor..].iter().rev() {
             if let Some(v) = scope.get(name) {
                 return Some(v);
             }
         }
-        None
+        self.scopes[0].get(name)
     }
 
     /// 指定名の変数の値だけをクローンして返す。
@@ -62,7 +63,9 @@ impl Interpreter {
     ///
     /// 戻り値: `Ok(())` — 成功。`Err(message)` — 変数未定義 (`NameError`) または不変変数 (`TypeError`)
     pub(super) fn assign_var(&mut self, name: &str, value: Value) -> Result<(), String> {
-        for scope in self.scopes.iter_mut().rev() {
+        // 現関数のローカル（frame_floor..）を内側から検索し、なければグローバル（0）。
+        let floor = self.frame_floor;
+        for scope in self.scopes[floor..].iter_mut().rev() {
             if let Some(v) = scope.get_mut(name) {
                 if !v.is_mutable() {
                     return Err(format!(
@@ -73,6 +76,15 @@ impl Interpreter {
                 return Ok(());
             }
         }
+        if let Some(v) = self.scopes[0].get_mut(name) {
+            if !v.is_mutable() {
+                return Err(format!(
+                    "TypeError: cannot assign to immutable variable '{name}'"
+                ));
+            }
+            v.set_value(value);
+            return Ok(());
+        }
         Err(format!("NameError: '{name}' is not defined"))
     }
 
@@ -81,21 +93,32 @@ impl Interpreter {
     /// `SlotCell`（スロットキャッシュ昇格済み）は値スナップショットで `Immutable` に戻し、
     /// `slot_epoch` を進めて全 AST スロットキャッシュを無効化する。
     pub(super) fn make_var_immutable(&mut self, name: &str) {
-        let mut freeze_slot = false;
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(v) = scope.get_mut(name) {
-                match v {
-                    Var::Mutable(val) => {
-                        *v = Var::Immutable(std::mem::replace(val, Value::None));
-                    }
-                    Var::SlotCell(rc) => {
-                        let snapshot = rc.borrow().clone();
-                        *v = Var::Immutable(snapshot);
-                        freeze_slot = true;
-                    }
-                    _ => {}
-                }
+        // 対象スコープの index を先に確定する（現関数のローカル frame_floor.. を内側から、なければグローバル 0）。
+        let floor = self.frame_floor;
+        let mut idx: Option<usize> = None;
+        for i in (floor..self.scopes.len()).rev() {
+            if self.scopes[i].contains_key(name) {
+                idx = Some(i);
                 break;
+            }
+        }
+        let idx = match idx {
+            Some(i) => i,
+            None if self.scopes[0].contains_key(name) => 0,
+            None => return,
+        };
+        let mut freeze_slot = false;
+        if let Some(v) = self.scopes[idx].get_mut(name) {
+            match v {
+                Var::Mutable(val) => {
+                    *v = Var::Immutable(std::mem::replace(val, Value::None));
+                }
+                Var::SlotCell(rc) => {
+                    let snapshot = rc.borrow().clone();
+                    *v = Var::Immutable(snapshot);
+                    freeze_slot = true;
+                }
+                _ => {}
             }
         }
         if freeze_slot {

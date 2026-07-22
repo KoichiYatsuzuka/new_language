@@ -57,6 +57,8 @@ mod functions;
 mod ops;
 #[path = "interpreter/py_interop.rs"]
  mod py_interop;
+#[path = "interpreter/resolver.rs"]
+pub(crate) mod resolver;
 #[path = "interpreter/scope.rs"]
 mod scope;
 #[path = "interpreter/str_methods.rs"]
@@ -183,8 +185,104 @@ impl std::hash::BuildHasher for FxBuildHasher {
     }
 }
 
-/// スコープ1段分の変数マップ（FxHash キー）。
- type ScopeMap = HashMap<String, Var, FxBuildHasher>;
+/// スコープ1段分の変数ストレージ（Phase R / R0）。
+///
+/// 従来の `HashMap<String, Var>` を **slot 配列（宣言順）** に置き換えたもの。
+/// - `names` / `slots`: 平行配列。`slots[i]` が名前 `names[i]` の `Var`。
+///   `Expr::LocalRef{slot}` は `slots[i]` を index 1回で読む（スコープ遡り・ハッシュなしの高速経路）。
+/// - `index`: 名前 → slot の遅延ハッシュ索引。**大きいスコープ（=グローバル）でのみ**構築する。
+///
+/// 関数/ブロックのローカルスコープは通常ごく少数の変数しか持たないため、宣言は単純な `push`
+/// （ハッシュ計算なし）、未解決名の引きは**線形走査**の方が `HashMap` より速い。
+/// 変数数が `INDEX_THRESHOLD` を超えたスコープ（実質グローバルのみ）だけ索引を構築して O(1) 化する。
+/// 宣言順（= slot 番号）は決定的なので、リゾルバが静的に付けた slot 番号と実行時の slot が一致する。
+/// 既存呼び出し側との互換のため `HashMap` 互換の `get`/`get_mut`/`insert`/`contains_key`/`iter` を提供する。
+#[derive(Default)]
+ struct Scope {
+    /// (名前, Var) を宣言順に持つ単一配列（allocation 1本）。`slots[i]` が slot i。
+    slots: Vec<(String, Var)>,
+    /// 大きいスコープでのみ構築される名前索引（`None` = 線形走査）。
+    index: Option<HashMap<String, usize, FxBuildHasher>>,
+}
+
+/// このサイズを超えたスコープはハッシュ索引を構築する（グローバルスコープ想定）。
+/// 関数/ブロックローカルは通常これ未満で、索引なしの線形走査で済む。
+const INDEX_THRESHOLD: usize = 16;
+
+impl Scope {
+    /// 名前 → slot 番号を引く（索引があれば O(1)、なければ末尾からの線形走査）。
+    #[inline]
+    fn find(&self, name: &str) -> Option<usize> {
+        if let Some(idx) = &self.index {
+            idx.get(name).copied()
+        } else {
+            // 末尾（最後に宣言されたもの）から走査する。小さいスコープでは十分速い。
+            self.slots.iter().rposition(|(n, _)| n == name)
+        }
+    }
+
+    /// 名前で `Var` を引く。
+    #[inline]
+    pub(self) fn get(&self, name: &str) -> Option<&Var> {
+        self.find(name).map(|i| &self.slots[i].1)
+    }
+
+    /// 名前で `Var` を可変参照で引く。
+    #[inline]
+    pub(self) fn get_mut(&mut self, name: &str) -> Option<&mut Var> {
+        let i = self.find(name)?;
+        Some(&mut self.slots[i].1)
+    }
+
+    /// 変数を宣言/上書きする。既存名は同じ slot を保持したまま値を差し替え、
+    /// 新規名は配列末尾に slot を確保する。戻り値は上書き前の `Var`（新規なら `None`）。
+    #[inline]
+    pub(self) fn insert(&mut self, name: String, var: Var) -> Option<Var> {
+        if let Some(i) = self.find(&name) {
+            return Some(std::mem::replace(&mut self.slots[i].1, var));
+        }
+        let i = self.slots.len();
+        if let Some(idx) = &mut self.index {
+            idx.insert(name.clone(), i);
+        }
+        self.slots.push((name, var));
+        // しきい値を超えたら索引を構築して以降 O(1) 化する（グローバル想定）。
+        if self.index.is_none() && self.slots.len() > INDEX_THRESHOLD {
+            let mut idx: HashMap<String, usize, FxBuildHasher> = Default::default();
+            for (j, (n, _)) in self.slots.iter().enumerate() {
+                idx.insert(n.clone(), j);
+            }
+            self.index = Some(idx);
+        }
+        None
+    }
+
+    /// 指定名が宣言済みか。
+    #[inline]
+    pub(self) fn contains_key(&self, name: &str) -> bool {
+        self.find(name).is_some()
+    }
+
+    /// (名前, Var) を走査する（宣言順）。
+    pub(self) fn iter(&self) -> impl Iterator<Item = (&String, &Var)> {
+        self.slots.iter().map(|(n, v)| (n, v))
+    }
+
+    /// slot 番号で直接 `Var` を引く高速経路（`Expr::LocalRef` 用）。
+    #[inline]
+    pub(self) fn slot(&self, i: usize) -> Option<&Var> {
+        self.slots.get(i).map(|(_, v)| v)
+    }
+
+    /// デバッグ検証用: 名前 → slot 番号。
+    #[inline]
+    pub(self) fn slot_of(&self, name: &str) -> Option<usize> {
+        self.find(name)
+    }
+}
+
+/// スコープ1段分の変数ストレージ（互換エイリアス）。
+ type ScopeMap = Scope;
 
 /// スコープ内の1つの変数エントリ。
 ///
@@ -269,6 +367,14 @@ pub struct Interpreter {
     /// スロットキャッシュの世代番号。`freeze`（SlotCell → Immutable 降格）時にインクリメントされ、
     /// 全 AST スロットキャッシュを一括無効化する。
     pub(self) slot_epoch: u32,
+    /// 現在の関数フレームの base スコープの `scopes` 内インデックス（Phase R / R0）。
+    ///
+    /// 関数に入ると呼び出し前の `scopes.len()` を新しい floor として記録し、base スコープを push する。
+    /// 名前引き（get_var/assign_var/…）は `scopes[0]`（グローバル）+ `scopes[frame_floor..]`
+    /// （現関数のローカル）のみを走査し、**呼び出し元のローカルは走査しない**（レキシカル隔離）。
+    /// これにより「呼び出しごとに外側スコープを drain/退避/復元する」Vec 確保を排除する。
+    /// モジュールトップレベルでは 1（グローバルのみ可視）。
+    pub(self) frame_floor: usize,
     /// ファイル名 → ソース行リスト のマップ（トレースバックのコンテキスト抽出用）。
     pub(self) source_map: HashMap<String, Vec<String>>,
     /// 関数名のコールスタック。関数実行前後で push / pop される。
@@ -352,6 +458,7 @@ impl Interpreter {
             scopes: vec![global],
             global_slot_cells: Vec::new(),
             slot_epoch: 0,
+            frame_floor: 1,
             source_map: HashMap::new(),
             call_stack: Vec::new(),
             current_exception: None,

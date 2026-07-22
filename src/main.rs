@@ -304,7 +304,7 @@ fn run_program(
         .map(|p| p.to_path_buf());
 
     // --- 構文解析: トークン列を AST（Vec<Stmt>）に変換する ---
-    let stmts = Parser::new(tokens, source_dir.clone())
+    let mut stmts = Parser::new(tokens, source_dir.clone())
         .parse_program()
         .map_err(|e| format!("ParseError: {e}"))?;
 
@@ -316,6 +316,9 @@ fn run_program(
     if !type_errors.is_empty() {
         return Err(format_static_errors(&type_errors));
     }
+
+    // --- Phase R / R1: ローカル読み取りの slot 解決（トップレベル関数を書き換える） ---
+    interpreter::resolver::resolve_program(&mut stmts);
 
     // --- インタープリタの初期化とソーステキストの登録 ---
     // ソーステキストはエラー報告時のスタックトレース表示に使用される

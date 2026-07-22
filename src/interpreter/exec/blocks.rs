@@ -56,7 +56,9 @@ impl Interpreter {
         let n_scopes = self.scopes.len();
 
         for name in &free_vars {
-            for scope_idx in (1..n_scopes).rev() {
+            // 現関数のローカルスコープ（frame_floor..）からのみキャプチャする。
+            // 呼び出し元のローカルは隔離されているため対象外（自由変数はグローバルへ解決）。
+            for scope_idx in (self.frame_floor..n_scopes).rev() {
                 let found = self.scopes[scope_idx]
                     .get(name.as_str())
                     .map(|var| (var.is_mutable(), var.cell(), var.get_value()));

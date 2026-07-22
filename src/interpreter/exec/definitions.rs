@@ -38,7 +38,7 @@ impl Interpreter {
             return Ok(ExecResult::Normal);
         }
 
-        let captured_env = if self.scopes.len() > 1 {
+        let captured_env = if self.scopes.len() > self.frame_floor {
             self.capture_env(body, params)
         } else {
             HashMap::new()

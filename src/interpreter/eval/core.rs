@@ -25,6 +25,7 @@ impl Interpreter {
             Expr::Ident(name) => self
                 .get_val(name)
                 .ok_or_else(|| format!("NameError: '{name}' is not defined")),
+            Expr::LocalRef { name, slot } => self.eval_local_ref(name, *slot),
             Expr::DebugVar(name) => self
                 .dbg_vars
                 .get(name)
@@ -148,6 +149,32 @@ impl Interpreter {
             Expr::Call { func, args, span, cache } => self.eval_call(func, args, span, cache),
             Expr::Cast { object, type_name, .. } => self.eval_cast(object, type_name),
         }
+    }
+
+    /// 解決済みローカル参照（`Expr::LocalRef`）の高速読み取り（Phase R / R1）。
+    ///
+    /// リゾルバは、トップレベル関数の base スコープに確実に解決できる読み取りだけを書き換える。
+    /// base スコープは実行時 `scopes[frame_floor]`（関数フレームの底）に来るので、
+    /// `scopes[frame_floor].slot(slot)` を index 1回で読める（スコープ遡り・文字列ハッシュなし）。
+    /// デバッグビルドでは slot と名前の一致を検証し、リゾルバのずれを即座に露見させる。
+    /// 想定外（境界外など）の場合のみ名前引きへフォールバックして正しさを保つ。
+    #[inline]
+    pub(crate) fn eval_local_ref(&self, name: &str, slot: u32) -> Result<Value, String> {
+        let s = slot as usize;
+        if let Some(scope) = self.scopes.get(self.frame_floor) {
+            if let Some(var) = scope.slot(s) {
+                debug_assert_eq!(
+                    scope.slot_of(name),
+                    Some(s),
+                    "LocalRef slot mismatch for '{name}': resolver said slot {s}, \
+                     runtime index says {:?}",
+                    scope.slot_of(name)
+                );
+                return Ok(var.get_value());
+            }
+        }
+        self.get_val(name)
+            .ok_or_else(|| format!("NameError: '{name}' is not defined"))
     }
 
     // --- eval() から抽出したメソッド群 ---

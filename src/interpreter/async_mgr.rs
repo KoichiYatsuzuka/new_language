@@ -317,8 +317,15 @@ impl AsyncStatus {
 pub(super) fn capture_env(interp: &Interpreter) -> Vec<(String, Value, bool)> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut env: Vec<(String, Value, bool)> = Vec::new();
-    for scope in interp.scopes.iter().rev() {
-        for (name, var) in scope {
+    // 可視スコープ = 現関数のローカル（frame_floor..、内側優先）+ グローバル（0）。
+    // 呼び出し元のローカルは隔離されているため対象外。
+    let floor = interp.frame_floor;
+    let visible = interp.scopes[floor..]
+        .iter()
+        .rev()
+        .chain(std::iter::once(&interp.scopes[0]));
+    for scope in visible {
+        for (name, var) in scope.iter() {
             if seen.insert(name.clone()) {
                 let value = if var.is_mutable() {
                     var.get_value().clone()

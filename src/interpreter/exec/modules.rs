@@ -105,9 +105,9 @@ impl Interpreter {
         // Python モジュールのメソッドが同モジュール内の他の関数を呼び出せるように
         // モジュールメンバをグローバルスコープに登録する（既存エントリは上書きしない）。
         for (name, value) in &members {
-            self.scopes[0]
-                .entry(name.clone())
-                .or_insert_with(|| Var::new(value.clone(), false));
+            if !self.scopes[0].contains_key(name) {
+                self.scopes[0].insert(name.clone(), Var::new(value.clone(), false));
+            }
         }
 
         let ns = Rc::new(NamespaceData {
@@ -316,9 +316,9 @@ impl Interpreter {
         }
 
         for (name, value) in &members {
-            self.scopes[0]
-                .entry(name.clone())
-                .or_insert_with(|| Var::new(value.clone(), false));
+            if !self.scopes[0].contains_key(name) {
+                self.scopes[0].insert(name.clone(), Var::new(value.clone(), false));
+            }
         }
 
         {
@@ -648,9 +648,9 @@ impl Interpreter {
         // native code resolve. Struct classes are registered so native wrappers can
         // call get_global("VECTOR") then call_fn to construct instances.
         for (name, value) in &members {
-            self.scopes[0]
-                .entry(name.clone())
-                .or_insert_with(|| Var::new(value.clone(), false));
+            if !self.scopes[0].contains_key(name) {
+                self.scopes[0].insert(name.clone(), Var::new(value.clone(), false));
+            }
         }
 
         self.native_libs.insert(lib_path_buf, NativeLibWrapper(lib));

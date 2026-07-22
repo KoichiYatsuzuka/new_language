@@ -123,8 +123,11 @@ impl Interpreter {
             }
         }
 
-        // グローバルスコープ（インデックス 0）以外を一時退避して関数専用スコープを構築する
-        let outer_scopes: Vec<_> = self.scopes.drain(1..).collect();
+        // 関数フレームへ切り替える: frame_floor を現在の scopes 長に進め（＝これから push する
+        // base スコープの index）、呼び出し元のローカルを隔離する。drain/退避/復元の Vec 確保は不要。
+        let saved_floor = self.frame_floor;
+        let saved_len = self.scopes.len();
+        self.frame_floor = saved_len;
         self.push_scope();
 
         // クロージャキャプチャ環境を先に注入する（パラメータより低い優先度になるよう先にセット）
@@ -178,9 +181,9 @@ impl Interpreter {
         // アクセス制御コンテキストを復元する
         self.current_class = prev_class;
 
-        // スコープを復元する（グローバルのみ残してから退避分を追記）
-        self.scopes.truncate(1);
-        self.scopes.extend(outer_scopes);
+        // フレームを復元する: base とブロックを切り捨てて呼び出し元の状態に戻す（Vec 確保なし）。
+        self.scopes.truncate(saved_len);
+        self.frame_floor = saved_floor;
 
         // Build a caller frame using the call site span (where this function was called from).
         // The caller's name is the last entry in call_stack after we already popped fn_name.
@@ -325,8 +328,10 @@ impl Interpreter {
             *y.borrow_mut() = Some(Vec::new());
         });
 
-        // exec_fn_evaled と同様にグローバルスコープ以外を退避して独立したスコープで実行する
-        let outer_scopes: Vec<_> = self.scopes.drain(1..).collect();
+        // exec_fn_evaled と同様に frame_floor を進めて呼び出し元ローカルを隔離する（Vec 確保なし）
+        let saved_floor = self.frame_floor;
+        let saved_len = self.scopes.len();
+        self.frame_floor = saved_len;
         self.push_scope();
 
         // クロージャキャプチャ環境を注入する
@@ -353,8 +358,8 @@ impl Interpreter {
         });
         let exec_result = self.exec_block(&gen_fn.body);
         LOOP_DEPTH.with(|d| *d.borrow_mut() = prev_loop_depth);
-        self.scopes.truncate(1);
-        self.scopes.extend(outer_scopes);
+        self.scopes.truncate(saved_len);
+        self.frame_floor = saved_floor;
 
         // エラー時も含めて必ずスレッドローカルをクリーンアップして yield 値を回収する
         let yields = GENERATOR_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());

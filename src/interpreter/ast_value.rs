@@ -581,7 +581,10 @@ fn expr_to_value(expr: &Expr) -> Value {
         Expr::Bool(v) => ns("ExprBool", vec![("value", Value::Bool(*v))]),
         Expr::None => ns("ExprNone", vec![]),
         Expr::Undefined => ns("ExprUndefined", vec![]),
-        Expr::Ident(name) => ns("ExprIdent", vec![("name", Value::Str(name.clone()))]),
+        // parse_ar は実行時に新規パースするため LocalRef は現れないが、網羅性のため Ident と同一に扱う。
+        Expr::Ident(name) | Expr::LocalRef { name, .. } => {
+            ns("ExprIdent", vec![("name", Value::Str(name.clone()))])
+        }
 
         Expr::List(elements) => ns("ExprList", vec![("elements", exprs_list(elements))]),
         Expr::Dict(pairs) => {
