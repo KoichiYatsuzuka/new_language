@@ -36,15 +36,20 @@ impl Interpreter {
         fn_name: &str,
         call_span: Option<Span>,
     ) -> Result<Value, String> {
-        // デフォルト値を事前評価する（self パラメータは常に None）
-        let mut evaluated_defaults: Vec<Option<Value>> = Vec::new();
-        for p in &fn_val.params {
-            if let Some(ref expr) = p.default {
-                evaluated_defaults.push(Some(self.eval(expr)?));
-            } else {
-                evaluated_defaults.push(None);
+        // デフォルト値を事前評価する（self パラメータは常に None）。
+        // デフォルトを持つ仮引数が1つもなければ Vec 確保を省く（bind_args は空 defaults を許容する）。
+        let evaluated_defaults: Vec<Option<Value>> = if fn_val.params.iter().any(|p| p.default.is_some()) {
+            let mut v = Vec::with_capacity(fn_val.params.len());
+            for p in &fn_val.params {
+                v.push(match &p.default {
+                    Some(expr) => Some(self.eval(expr)?),
+                    None => None,
+                });
             }
-        }
+            v
+        } else {
+            Vec::new()
+        };
 
         let (mut bindings, extra_kwargs) = if fn_val.is_python {
             Self::bind_args_relaxed(
@@ -299,14 +304,18 @@ impl Interpreter {
         self_val: Option<Value>,
     ) -> Result<Value, String> {
         let evaled = self.eval_call_args(call_args)?;
-        let mut evaluated_defaults: Vec<Option<Value>> = Vec::new();
-        for p in &gen_fn.params {
-            if let Some(ref expr) = p.default {
-                evaluated_defaults.push(Some(self.eval(expr)?));
-            } else {
-                evaluated_defaults.push(None);
+        let evaluated_defaults: Vec<Option<Value>> = if gen_fn.params.iter().any(|p| p.default.is_some()) {
+            let mut v = Vec::with_capacity(gen_fn.params.len());
+            for p in &gen_fn.params {
+                v.push(match &p.default {
+                    Some(expr) => Some(self.eval(expr)?),
+                    None => None,
+                });
             }
-        }
+            v
+        } else {
+            Vec::new()
+        };
         let mut bindings = Self::bind_args(
             &gen_fn.params,
             &evaled,
