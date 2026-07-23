@@ -327,11 +327,13 @@ impl Interpreter {
 
                                     let mut members = std::collections::HashMap::new();
                                     for fn_name in fn_names {
-                                        members.insert(fn_name.clone(), Value::JsProcFn {
-                                            bridge_key:  bridge_key.clone(),
-                                            module_name: module_name.clone(),
-                                            fn_name,
-                                        });
+                                        members.insert(fn_name.clone(), Value::JsProcFn(Box::new(
+                                            crate::interpreter::JsProcData {
+                                                bridge_key:  bridge_key.clone(),
+                                                module_name: module_name.clone(),
+                                                fn_name,
+                                            },
+                                        )));
                                     }
                                     let ns = std::rc::Rc::new(crate::interpreter::NamespaceData {
                                         name: module.join("."),

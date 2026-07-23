@@ -125,19 +125,25 @@ pub enum Value {
     CsObject(Rc<CsObjectData>),
     /// import[js-proc] で生成される JavaScript モジュール関数のランタイム表現。
     /// 呼び出し時に js_proc_runtime 経由で Node.js ブリッジに IPC 送信する。
-    JsProcFn {
-        /// ブリッジスクリプトのパス（ブリッジレジストリのキー）。
-        bridge_key:  String,
-        /// JS モジュール名（スラッシュ区切り、ブリッジに渡す）。
-        module_name: String,
-        /// 呼び出す関数名。
-        fn_name:     String,
-    },
+    /// フィールドは `Box` 化して `size_of::<Value>()` を縮める（§7.4）。稀な値なので
+    /// clone の深いコピー（Box::clone = 中身複製）コストは支配的でない。
+    JsProcFn(Box<JsProcData>),
     /// `Result[T, E]` 値。`Ok(value)` または `Err(error)` で生成される。
     /// `ok: true` → Ok 側の値、`ok: false` → Err 側の値。
     ResultVal { ok: bool, inner: Box<Value> },
 }
 
+
+/// `Value::JsProcFn` の中身（`Box` 化して `Value` サイズを縮小; §7.4）。
+#[derive(Debug, Clone)]
+pub struct JsProcData {
+    /// ブリッジスクリプトのパス（ブリッジレジストリのキー）。
+    pub bridge_key: String,
+    /// JS モジュール名（スラッシュ区切り、ブリッジに渡す）。
+    pub module_name: String,
+    /// 呼び出す関数名。
+    pub fn_name: String,
+}
 
 /// import[cs-dll] / import[cs-proc] ブリッジが管理する C# オブジェクトのランタイム表現。
 #[derive(Debug, Clone)]

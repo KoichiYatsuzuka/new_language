@@ -176,8 +176,8 @@ impl Interpreter {
             }
             Value::EventLoop(_) => "<EventLoop>".to_string(),
             Value::CsObject(o) => format!("<CsObject '{}' handle={}>", o.class_name, o.handle),
-            Value::JsProcFn { module_name, fn_name, .. } => {
-                format!("<js function '{module_name}.{fn_name}'>")
+            Value::JsProcFn(data) => {
+                format!("<js function '{}.{}'>", data.module_name, data.fn_name)
             }
             Value::ResultVal { ok, inner } => {
                 if *ok {

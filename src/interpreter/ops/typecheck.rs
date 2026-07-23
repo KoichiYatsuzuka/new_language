@@ -57,7 +57,7 @@ impl Interpreter {
             | Value::Signal(_)
             | Value::EventLoop(_)
             | Value::CsObject(_)
-            | Value::JsProcFn { .. }
+            | Value::JsProcFn(_)
             | Value::ResultVal { .. } => true,
         }
     }
@@ -103,7 +103,7 @@ impl Interpreter {
                 let _ = o;
                 "cs_object"
             }
-            Value::JsProcFn { .. } => "function",
+            Value::JsProcFn(_) => "function",
             Value::ResultVal { ok, .. } => {
                 if *ok { "Ok" } else { "Err" }
             }
@@ -140,7 +140,7 @@ impl Interpreter {
                     | Value::OverloadedFn(_)
                     | Value::GeneratorFn(_)
                     | Value::NativeFunction(_)
-                    | Value::JsProcFn { .. }
+                    | Value::JsProcFn(_)
             ),
             _ if ann.starts_with("list[") => matches!(val, Value::List(_)),
             _ if ann.starts_with("dict[") => matches!(val, Value::Dict(_)),

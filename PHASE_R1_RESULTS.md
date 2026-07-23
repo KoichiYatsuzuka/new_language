@@ -14,6 +14,8 @@ BYTECODE_VM_PLAN.md の **Phase R**（R0 ランタイムモデル ＋ R1 slot �
   **builtin 判定・名前引き・`name.clone()` を跳ばして直接ディスパッチ**（呼び出しコスト自体を削減）。
 - **メソッド呼び出し IC**: `obj.method(args)` を `class_id` でキャッシュ。ヒット時は
   **gen_methods/native/static/class_method 判定と不変性フィルタ（計 ~4 の SipHash 引き）を省略**。
+- **§7.4 `Value` サイズ削減**: 72B の `JsProcFn`（String×3）を `Box` 化し、**`size_of::<Value>()` を 72→32B**
+  に縮小。フィールド読み・引数受け渡し・`deep_clone`・スタック操作の**全 Value コピーが 2.25x 軽く**なる。
 
 ## 実装したもの
 
@@ -29,6 +31,7 @@ BYTECODE_VM_PLAN.md の **Phase R**（R0 ランタイムモデル ＋ R1 slot �
 | **R3 属性 IC** | [ast.rs](src/ast.rs), [eval/attrs.rs](src/interpreter/eval/attrs.rs), [eval/core.rs](src/interpreter/eval/core.rs) | `Expr::Attr` に `AttrCache`（`Cell<u64>` に `class_id`/slot/アクセスレベルをパック）を追加。`eval_attr` は `class_id` 一致で `field_value(slot)` を直接読み、`field_index.get`・アクセスキー走査・`format!("::{attr}")` 確保・`check_member_access` の辞書引きをすべて省略。ミス時は `get_attr_val` が解決してキャッシュを更新（単相 IC・多相点は毎回再解決）。アクセス制御は `check_access_level` でヒット時も**毎回ライブ判定**（`current_class` 依存のため）。デバッグビルドで slot 一致を検証 |
 | **R4 呼び先解決** | [ast.rs](src/ast.rs), [eval/calls.rs](src/interpreter/eval/calls.rs) | `NativeCallCache` に `SlotCache`（`Cell<u64>`・Send 安全）を追加。`f(args)` が不変グローバル関数（`fn` 定義）と解決されたとき `(slot_epoch, global_slot)` を焼き込む。ヒット時は `eval_builtin_ident_call` の全 builtin 名照合・`get_val` 名前引き・`name.clone()` を跳ばし `scopes[0].slot(idx)` から直接 `exec_fn`。ローカル束縛・オーバーロード・可変束縛は対象外（通常経路）。`freeze` で epoch が進めば自動失効。デバッグビルドで呼び先一致を検証。あわせて slow path の `call_name` を `String`→`&str` 化（毎コールの確保も除去） |
 | **メソッド呼び出し IC** | [ast.rs](src/ast.rs), [classes/method_call.rs](src/interpreter/classes/method_call.rs), [eval/calls.rs](src/interpreter/eval/calls.rs) | `NativeCallCache` に 3本目 `AttrCache`（`Cell<u64>`・Send 安全）を追加し、`eval_method_call` に `Option<&cache>` 引数を追加。呼び先が **plain 非 mut-self 単一オーバーロードのインスタンスメソッド**（gen/native/static/class_method でない）と解決されたとき `class_id` を焼き込む。ヒット時は `gen_methods.get`/native 登録引き/`static_method_names.contains`/`class_method_names.contains` と不変性フィルタ Vec 確保を省略。非 mut-self に限定するのでインスタンス可変性に非依存。for ループ内部の `next`/`__iter__` 呼びは `None`（対象外）。デバッグビルドで高速経路の前提（gen/native/static/class_method でない・非 mut-self）を検証 |
+| **§7.4 `Value` サイズ削減** | [value/core.rs](src/interpreter/value/core.rs) ほか計6ファイル | `Value::JsProcFn { bridge_key, module_name, fn_name }`（String×3=72B）を `Value::JsProcFn(Box<JsProcData>)`（8B）に変更。`size_of::<Value>()` が **72→32B**、`Var` が 80→40B に縮小。`Box::clone` は中身を複製するので `deep_clone` の「スレッド跨ぎで Rc を共有しない」不変条件も維持（js-proc 値は稀なので複製コストは非支配的）。構築1箇所・マッチ8箇所を更新 |
 
 ### なぜ安全に slot 解決できるか（保守的解決）
 - `exec_fn_evaled` は呼び出しごとに `scopes.drain(1..)` → `push_scope()` するため、**関数 base スコープは常に実行時 `scopes[1]`**。`up`（深さ）計算が不要で、リゾルバの最大の脆弱点が消える。
@@ -49,21 +52,22 @@ BYTECODE_VM_PLAN.md の **Phase R**（R0 ランタイムモデル ＋ R1 slot �
 ### 要因分離（bottleneck_bench.ar, N=100万）
 | 指標 | base (µs) | 実装後 (µs) | 倍率 |
 |---|---|---|---|
-| fn call（引数なし） | 0.522 | 0.390 | **1.34x** |
-| let→let int（引数1・読み1） | 1.156 | 0.770 | **1.50x** |
-| let→let instance | 1.480 | 0.900 | **1.64x** |
-| **4-field read** | 1.773 | 1.030 | **1.72x** |
-| 4-var declare+lookup（ローカル4読み） | 1.221 | 0.959 | **1.27x** |
-| subscript[0] | 1.668 | 1.075 | **1.55x** |
+| fn call（引数なし） | 0.535 | 0.370 | **1.44x** |
+| let→let int（引数1・読み1） | 1.189 | 0.759 | **1.57x** |
+| let→let instance | 1.522 | 0.900 | **1.69x** |
+| **4-field read** | 1.828 | 1.000 | **1.83x** |
+| 4-var declare+lookup（ローカル4読み） | 1.237 | 0.943 | **1.31x** |
+| subscript[0] | 1.701 | 1.081 | **1.57x** |
 
 ### E2E（bench_field_access.ar / bench_method_call.ar, 各100万コール）
 | 指標 | base | 実装後 | 倍率 |
 |---|---|---|---|
-| concrete class field access（7 field read/call） | 2.842 s | 1.679 s | **1.69x** |
+| concrete class field access（7 field read/call） | 2.861 s | 1.697 s | **1.69x** |
 | trait-backed field access（3 field read/call） | 2.467 s | 1.523 s | **1.62x** |
-| **method call**（`p.sum()`, メソッド呼び + 2 field read/call） | 1.664 s | 1.028 s | **1.62x** |
+| **method call**（`p.sum()`, メソッド呼び + 2 field read/call） | 1.656 s | 1.049 s | **1.58x** |
 
-> メソッド呼び出し IC の寄与: 上記 method call は IC なし（R4 まで）で 1.272s → IC ありで 1.028s（**1.24x** 上乗せ）。
+> メソッド呼び出し IC の寄与: method call は IC なし（R4 まで）で 1.272s → IC ありで 1.028s（**1.24x** 上乗せ）。
+> §7.4 サイズ削減の寄与: 全ワークロードに ~1-7%（fn call/let→let int で r5→r6 各 1.07x）。
 
 ### 各レバーの寄与（累積、E2E concrete field access）
 | 段階 | E2E 倍率 | 効いた理由 |
@@ -76,7 +80,7 @@ BYTECODE_VM_PLAN.md の **Phase R**（R0 ランタイムモデル ＋ R1 slot �
 
 ## 結論
 
-- **解釈経路が全面的に 1.27〜1.72x 高速化**（E2E フィールド/メソッド 1.62〜1.69x、微ベンチ最大 1.72x、全テスト緑、回帰0）。
+- **解釈経路が全面的に 1.31〜1.83x 高速化**（E2E フィールド/メソッド 1.58〜1.69x、微ベンチ最大 1.83x、全テスト緑、回帰0）。
 - 段階ごとの主因:
   - **R0 `frame_floor` ＋ 引数束縛 ＋ R4**: 関数呼び出しの per-call コスト（アロケーション＋名前引き）を削減（呼び出し 1.34x・引数1で 1.50x）。
   - **R3 属性 IC**: フィールドアクセスの per-read オーバーヘッド（`format!`＋走査＋辞書引き）を除去。フィールド支配コードで最大効果（4-field read 1.72x）。
@@ -86,7 +90,8 @@ BYTECODE_VM_PLAN.md の **Phase R**（R0 ランタイムモデル ＋ R1 slot �
 - **まだツリーウォークのまま**の支配項: `Value` clone・命令ディスパッチ・算術・`class.methods.get` 本体の1回引き。
 
 ## 次に効くレバー（このスライスが土台）
-1. **`Value` clone 削減（§7.4）** — `Value::Str(Rc<str>)` 等。文字列ワークロードに効く。
+1. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
+   文字列多用ワークロード専用の効果（数値/インスタンス中心の現ベンチには乗らない）。波及大につき別途。
 2. **Phase V バイトコード VM** — 命令ディスパッチ・制御フロー・算術をまとめて潰す本命。
 3. **メソッド IC の完全化** — `class.methods` を FxHash 化 or slot 索引化し、ヒット時の残り 1 辞書引きも除去。
 
