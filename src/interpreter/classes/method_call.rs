@@ -11,11 +11,15 @@ use {
 
 impl Interpreter {
     /// オブジェクトのメソッドを呼び出して結果を返す。List / Str / Instance / Dict / Generator 等の各値型へディスパッチする。
+    ///
+    /// `cache` が `Some` の場合、インスタンスメソッド解決を method IC（`cache.2`）で高速化する。
+    /// 内部呼び出し（for ループの `next`/`__iter__` 等）は `None` を渡す。
     pub(crate) fn eval_method_call(
         &mut self,
         obj: Value,
         method_name: &str,
         args: &[CallArg],
+        cache: Option<&crate::ast::NativeCallCache>,
     ) -> Result<Value, String> {
         // Result 型のメソッド: is_OK() → bool、is_ERR() → bool
         if let Value::ResultVal { ok, .. } = &obj {
@@ -159,6 +163,46 @@ impl Interpreter {
                     return self.copy_value(obj.clone());
                 }
 
+                // ── method IC 命中: plain 非 mut-self 単一メソッドを直接ディスパッチ ──
+                // gen/native/static/class_method 判定と不変性フィルタを跳ばす（すべて class_id で
+                // 決まる class レベルの事実。非 mut-self なのでインスタンス可変性にも非依存）。
+                if let Some(c) = cache {
+                    let class_id = inst_rc.borrow().class.class_id;
+                    if c.2.get(class_id).is_some() {
+                        let class = inst_rc.borrow().class.clone();
+                        #[cfg(debug_assertions)]
+                        {
+                            // 高速経路が跳ばす判定の前提が実際に成立していることを検証する。
+                            debug_assert!(
+                                !class.gen_methods.contains_key(method_name)
+                                    && !class.static_method_names.contains(method_name)
+                                    && !class.class_method_names.contains(method_name)
+                                    && crate::interpreter::native_api::lookup_native_method_ptr(
+                                        &class.name,
+                                        method_name,
+                                    )
+                                    .is_none(),
+                                "method IC fast-path invariant violated for '{method_name}'"
+                            );
+                        }
+                        if let Some(overloads) = class.methods.get(method_name) {
+                            if overloads.len() == 1 {
+                                debug_assert!(
+                                    overloads[0]
+                                        .params
+                                        .first()
+                                        .map(|p| p.name != "self" || !p.mutable)
+                                        .unwrap_or(true),
+                                    "method IC cached a mut-self method for '{method_name}'"
+                                );
+                                let f = overloads[0].clone();
+                                return self.exec_fn(f, args, Some(obj.clone()), method_name, None);
+                            }
+                        }
+                        // 想定外はスロー経路へ委譲する。
+                    }
+                }
+
                 let class = inst_rc.borrow().class.clone();
                 let inst_immutable = inst_rc.borrow().flags() & crate::interpreter::value::INST_IMMUTABLE != 0;
 
@@ -186,6 +230,7 @@ impl Interpreter {
                             class.name
                         )
                     })?;
+                let n_overloads = overloads.len();
 
                 // static / class_method はインスタンスからは呼び出せない
                 if class.static_method_names.contains(method_name) {
@@ -225,6 +270,26 @@ impl Interpreter {
                 }
 
                 if callable.len() == 1 {
+                    // ── method IC 充填 ──
+                    // 条件: 単一オーバーロード + 非 mut-self + native なし
+                    // （static/class_method/gen はこの地点に到達しない = 上で early return / 除外済み）。
+                    if let Some(c) = cache {
+                        let self_is_mut = callable[0]
+                            .params
+                            .first()
+                            .map(|p| p.name == "self" && p.mutable)
+                            .unwrap_or(false);
+                        if n_overloads == 1
+                            && !self_is_mut
+                            && crate::interpreter::native_api::lookup_native_method_ptr(
+                                &class.name,
+                                method_name,
+                            )
+                            .is_none()
+                        {
+                            c.2.fill(class.class_id, 0, 0);
+                        }
+                    }
                     self.exec_fn(callable[0].clone(), args, Some(obj.clone()), method_name, None)
                 } else {
                     self.dispatch_overload(callable, args, Some(obj.clone()), None)

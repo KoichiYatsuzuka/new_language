@@ -38,7 +38,7 @@ impl Interpreter {
         }
         if let Expr::Attr { object, attr, .. } = func {
             let obj_val = self.eval(object)?;
-            return self.eval_method_call(obj_val, attr, args);
+            return self.eval_method_call(obj_val, attr, args, Some(cache));
         }
         // ── R4: Arrow 関数呼び先キャッシュ命中（Ident のみ） ──
         // 不変グローバル関数と初回解決済みなら、builtin 判定・名前引き・name.clone を跳ばして
@@ -103,7 +103,7 @@ impl Interpreter {
                 crate::interpreter::py_interop::call_py_object(&handle, &evaled_args)
             }
             Value::Instance(_) => {
-                self.eval_method_call(callee, "__call__", args)
+                self.eval_method_call(callee, "__call__", args, None)
             }
             Value::NativeFunction(fn_ref) => {
                 // ── キャッシュ充填（AST への焼き込み） ──

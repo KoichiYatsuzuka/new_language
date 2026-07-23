@@ -134,7 +134,7 @@ impl Interpreter {
                 index: 0,
             }))),
             Value::Generator(_) => iter_val,
-            Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[])?,
+            Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[], None)?,
             Value::PyObject(ref handle) => {
                 let items = crate::interpreter::py_interop::py_collect_iter(handle)?;
                 Value::Generator(Rc::new(RefCell::new(GeneratorState {
@@ -148,7 +148,7 @@ impl Interpreter {
         let result =
             (|| {
                 loop {
-                    match self.eval_method_call(generator.clone(), "next", &[]) {
+                    match self.eval_method_call(generator.clone(), "next", &[], None) {
                         Ok(item) => {
                             self.push_scope();
                             if targets.len() == 1 {

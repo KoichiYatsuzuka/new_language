@@ -33,6 +33,13 @@ pub struct NativeCallCache(
     /// `(slot_epoch, index)` で焼き込む。以後の同一呼び出しは builtin 判定・名前引き・`name.clone()`
     /// を跳ばして `scopes[0].slot(idx)` から直接ディスパッチする。`Cell<u64>` なので Send 安全。
     pub SlotCache,
+    /// メソッド呼び出し（`obj.method(args)`）のインラインキャッシュ（method IC）。
+    /// 呼び先が「plain な非 mut-self・単一オーバーロードのインスタンスメソッド
+    /// （gen/native/static/class_method でない）」と解決されたとき `class_id` を焼き込む
+    /// （`AttrCache` の class_id パッキングを流用、slot/access は未使用）。以後の同一 `class_id`
+    /// は gen_methods/native/static/class_method 判定と不変性フィルタを跳ばして直接ディスパッチする。
+    /// 非 mut-self に限定するのでインスタンス可変性に依存しない。`Cell<u64>` なので Send 安全。
+    pub AttrCache,
 );
 
 impl Clone for NativeCallCache {

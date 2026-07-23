@@ -1,0 +1,27 @@
+# bench_method_call.ar — instance-method dispatch in a hot loop (R3/method-IC target)
+import[py-int] time
+
+class Point:
+    mut x: float
+    mut y: float
+    fn __init__(mut self, let x: float, let y: float) -> None:
+        self.x = x
+        self.y = y
+    fn sum(self) -> float:
+        return self.x + self.y
+
+let N = 2000
+let REPS = 500
+let p = Point(1.0, 2.0)
+
+let t0 = time.time()
+mut total = 0.0
+mut rep = 0
+while rep < REPS:
+    mut i = 0
+    while i < N:
+        total += p.sum()
+        i += 1
+    rep += 1
+let t1 = time.time()
+print("method call (p.sum): " + str(t1 - t0) + " s  (N=" + str(N) + " x REPS=" + str(REPS) + ")  result=" + str(total))
