@@ -38,6 +38,26 @@ pub fn run(
                 let v = buf.pop().unwrap();
                 buf[base + *s as usize] = v;
             }
+            Op::StoreLocalDeepCopy(s) => {
+                let v = Interpreter::deep_copy_value(buf.pop().unwrap());
+                buf[base + *s as usize] = v;
+            }
+            Op::StoreLocalCopyFreeze(s) => {
+                let v = Interpreter::deep_copy_value(buf.pop().unwrap());
+                interp.apply_freeze_to_value(&v, true)?;
+                buf[base + *s as usize] = v;
+            }
+            Op::StoreLocalFreezeInstance(s) => {
+                let v = buf.pop().unwrap();
+                let v = if matches!(v, Value::Instance(_)) {
+                    let copied = Interpreter::deep_copy_value(v);
+                    interp.apply_freeze_to_value(&copied, true)?;
+                    copied
+                } else {
+                    v
+                };
+                buf[base + *s as usize] = v;
+            }
             Op::Pop => {
                 buf.pop();
             }

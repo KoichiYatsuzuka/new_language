@@ -23,8 +23,11 @@ struct Compiler {
     consts: Vec<Value>,
     names: Vec<String>,
     attr_caches: Vec<crate::ast::AttrCache>,
-    /// パラメータ名 → slot（V-A ではローカル宣言なしなので base = パラメータのみ）。
+    /// 名前 → slot（base スコープ: パラメータ + トップレベル let/mut/const、宣言順）。
+    /// リゾルバの base slot 採番と同順（パラメータ→宣言）なので `LocalRef` と一致する。
     slots: HashMap<String, u16>,
+    /// slot → 可変フラグ（`let x = <mut ソース>` の freeze 判定に使う）。
+    slot_mut: Vec<bool>,
     n_locals: usize,
 }
 
@@ -33,15 +36,50 @@ struct Compiler {
 /// - `params`: 仮引数（可変長があれば非対応）。
 /// - `body`: 解決済み関数本体（リゾルバが `LocalRef` を付与済み）。
 pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
-    // パラメータを slot 0.. に割り当てる（可変長・重複は非対応）。
+    // base slot をリゾルバと同順で採番する: パラメータ → トップレベル let/mut/const。
     let mut slots: HashMap<String, u16> = HashMap::new();
+    let mut slot_mut: Vec<bool> = Vec::new();
     let mut n: u16 = 0;
     for p in params {
         if p.variadic {
             return None;
         }
         slots.insert(p.name.clone(), n);
+        slot_mut.push(p.mutable);
         n = n.checked_add(1)?;
+    }
+    // トップレベル宣言を事前採番。LetTuple/Static/入れ子定義など slot をずらす形は非対応。
+    for stmt in body {
+        match stmt {
+            Stmt::Let(name, ..) | Stmt::Const(name, ..)
+                if name != "_" && !slots.contains_key(name) =>
+            {
+                slots.insert(name.clone(), n);
+                slot_mut.push(false);
+                n = n.checked_add(1)?;
+            }
+            Stmt::Mut(name, ..) if name != "_" && !slots.contains_key(name) => {
+                slots.insert(name.clone(), n);
+                slot_mut.push(true);
+                n = n.checked_add(1)?;
+            }
+            // `_` 名・既出名の宣言は base slot を増やさない（no-op）。
+            Stmt::Let(..) | Stmt::Const(..) | Stmt::Mut(..) => {}
+            // slot を採番する可能性のある未対応の宣言的文があれば、番号ずれを避けて丸ごと諦める。
+            Stmt::LetTuple { .. }
+            | Stmt::Static(..)
+            | Stmt::FnDef { .. }
+            | Stmt::GenDef { .. }
+            | Stmt::ClassDef { .. }
+            | Stmt::TraitDef { .. }
+            | Stmt::ProtocolDef { .. }
+            | Stmt::NewTypeDef { .. }
+            | Stmt::EnumDef { .. }
+            | Stmt::Import { .. }
+            | Stmt::FromImport { .. }
+            | Stmt::AsyncAssign { .. } => return None,
+            _ => {}
+        }
     }
 
     let mut c = Compiler {
@@ -50,6 +88,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         names: Vec::new(),
         attr_caches: Vec::new(),
         slots,
+        slot_mut,
         n_locals: n as usize,
     };
 
@@ -164,7 +203,60 @@ impl Compiler {
                 let end = self.here();
                 self.patch_jump(jf, end);
             }
-            // それ以外（ローカル宣言・break/continue・for/match/block・例外・定義・import 等）は非対応。
+            // ── ローカル宣言（exec_let / exec の const・mut と同一セマンティクス） ──
+            Stmt::Const(name, _, e) => {
+                self.compile_expr(e)?;
+                if name == "_" {
+                    self.emit(Op::Pop);
+                } else {
+                    let slot = *self.slots.get(name)?;
+                    self.emit(Op::StoreLocal(slot)); // const は copy/freeze しない
+                }
+            }
+            Stmt::Mut(name, _, e) => {
+                self.compile_expr(e)?;
+                if name == "_" {
+                    self.emit(Op::Pop);
+                } else {
+                    let slot = *self.slots.get(name)?;
+                    self.emit(Op::StoreLocalDeepCopy(slot)); // mut は常に deep_copy
+                }
+            }
+            Stmt::Let(name, _, e) => {
+                if name == "_" {
+                    self.compile_expr(e)?;
+                    self.emit(Op::Pop);
+                } else {
+                    let slot = *self.slots.get(name)?;
+                    // ソースの種類で store op を選ぶ（exec_let のセマンティクスに一致）。
+                    let store = match e {
+                        // ident/localref ソース: 可変なら copy+freeze、不変ならそのまま。
+                        Expr::LocalRef { slot: s, .. } => {
+                            if self.slot_mut.get(*s as usize).copied().unwrap_or(false) {
+                                Op::StoreLocalCopyFreeze(slot)
+                            } else {
+                                Op::StoreLocal(slot)
+                            }
+                        }
+                        Expr::Ident(nm) => {
+                            let s = *self.slots.get(nm)?; // base slot 以外（グローバル）は非対応
+                            if self.slot_mut.get(s as usize).copied().unwrap_or(false) {
+                                Op::StoreLocalCopyFreeze(slot)
+                            } else {
+                                Op::StoreLocal(slot)
+                            }
+                        }
+                        // リテラル（プリミティブ）は freeze 不要。
+                        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_)
+                        | Expr::None => Op::StoreLocal(slot),
+                        // 非識別子式: Instance のときのみ copy+freeze（exec_let 非 ident 分岐）。
+                        _ => Op::StoreLocalFreezeInstance(slot),
+                    };
+                    self.compile_expr(e)?;
+                    self.emit(store);
+                }
+            }
+            // それ以外（break/continue・for/match/block・例外・定義・import 等）は非対応。
             _ => return None,
         }
         Some(())

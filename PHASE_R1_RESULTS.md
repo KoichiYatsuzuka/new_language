@@ -102,7 +102,7 @@ BYTECODE_VM_PLAN §5 の Phase V の第一段（V-A）。解決済み AST をリ
 |---|---|
 | `op.rs` | オペコード列挙（Const/LoadLocal/StoreLocal/Bin/Un/GetAttr/Jump 系/Return …） |
 | `chunk.rs` | `Chunk { code, consts, names, attr_caches, n_locals }` |
-| `compiler.rs` | 解決済み AST → Chunk。**トップレベルのリーフ関数**（呼び出し・メソッド・クロージャ・ローカル宣言・for/match/例外・可変長を含まない）だけをコンパイル、他は `None`（フォールバック） |
+| `compiler.rs` | 解決済み AST → Chunk。**トップレベルのリーフ関数**（呼び出し・メソッド・クロージャ・for/match/例外・可変長を含まない）をコンパイル、他は `None`（フォールバック）。**ローカル宣言（let/mut/const）対応済み**（下記） |
 | `run.rs` | ディスパッチループ。値スタックは Interpreter の**使い回しバッファ**（per-call 確保なし）。int/float 算術・順序比較・public フィールド読み（R3 IC）を**ループ内インライン**、他は既存 `apply_binop_dyn`/`get_attr_val`/`eval_truthy` へ委譲（＝意味論一致） |
 | `disasm.rs` | 逆アセンブラ（開発用） |
 | `mod.rs` | `VmMode`（Off/Auto/Force）・公開 API |
@@ -116,15 +116,31 @@ BYTECODE_VM_PLAN §5 の Phase V の第一段（V-A）。解決済み AST をリ
 - 例題回帰: 24 の決定的例で `--vm=off` と `--vm=auto` の**終了コード・stdout・エラー出力が完全一致**。
 - `cargo build`/clippy 警告 0。
 
-## 速度計測（同一 binary の `--vm=off` vs `--vm=auto`、best-of-8）
+### ローカル宣言（let/mut/const）対応
+V-A に続き、ローカル宣言を VM に追加。exec_let / exec の const・mut と**完全に同一のセマンティクス**を
+4種の store op で表現する（すべて既存 `deep_copy_value`/`apply_freeze_to_value` へ委譲＝結果一致）:
+- **const** → `StoreLocal`（copy/freeze なし・全型）
+- **mut** → `StoreLocalDeepCopy`（常に deep_copy・全型）
+- **let（不変ソース / リテラル）** → `StoreLocal`（そのまま）
+- **let（可変ソース）** → `StoreLocalCopyFreeze`（deep_copy + freeze）
+- **let（非識別子式）** → `StoreLocalFreezeInstance`（Instance のときのみ deep_copy + freeze）
+
+slot 採番はリゾルバと同順（パラメータ→トップレベル宣言）で `LocalRef` と一致。LetTuple/Static/入れ子定義など
+slot をずらす形は丸ごとフォールバック。これでローカル変数を持つ数値関数が VM に載る。
+
+## 速度計測（同一 binary の `--vm=off` vs `--vm=auto`、best-of-6〜8）
 | 指標（VM がコンパイルする関数） | vm=off (µs) | vm=auto (µs) | VM 倍率 |
 |---|---|---|---|
-| let→let int | 0.761 | 0.712 | **1.07x** |
+| **4-var declare+lookup**（`scope_lookup`: ローカル4宣言+読み） | 1.127 | 0.677 | **1.66x** |
 | let→let instance | 0.904 | 0.816 | **1.11x** |
-| 4-field read | 1.035 | 0.934 | **1.11x** |
+| 4-field read | 1.035 | 0.891 | **1.11x** |
+| let→let int | 0.761 | 0.682 | **1.08x** |
 | subscript[0]（引数 use_small） | 1.075 | 1.004 | **1.07x** |
 | fn call（`noop` 本体ほぼ空） | 0.369 | 0.388 | 0.95x |
 | **E2E field access** | 1.727 s | 1.579 s | **1.09x** |
+
+- ローカル宣言対応で `scope_lookup`（let 4本 + 算術）が VM に載り **1.66x**（プリミティブ局所変数＋型特化算術＝VM の得意領域）。
+  ツリーウォークの 4× exec_let（宣言チェック）+ 再帰 eval を線形バイトコードが置き換える。
 
 - **Phase R で高度に最適化されたツリーウォークに対しても VM が 1.07〜1.11x 上回る**（コンパイル対象の関数）。
   本体がほぼ空の `noop` だけは per-call オーバーヘッド（chunk キャッシュ引き・バッファ確保）で微減。

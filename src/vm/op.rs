@@ -15,8 +15,15 @@ pub enum Op {
     Nil,
     /// locals[slot] を push する（LocalRef / パラメータ / base ローカル読み）。
     LoadLocal(u16),
-    /// pop して locals[slot] へ書き込む（let / mut / 代入）。
+    /// pop して locals[slot] へそのまま書き込む（const / 代入 / let-from-immutable / リテラル let）。
     StoreLocal(u16),
+    /// pop して deep_copy してから locals[slot] へ（`mut` 宣言: exec は常に deep_copy_value）。
+    StoreLocalDeepCopy(u16),
+    /// pop して deep_copy + freeze してから locals[slot] へ（`let` = mut ソースからの束縛）。
+    StoreLocalCopyFreeze(u16),
+    /// pop し、Instance のときのみ deep_copy + freeze してから locals[slot] へ
+    /// （`let` = 非識別子式からの束縛。exec_let の非 ident 分岐に一致）。
+    StoreLocalFreezeInstance(u16),
     /// スタックトップを1つ捨てる。
     Pop,
     /// 二項演算: pop b, pop a, push apply_binop_dyn(op, a, b)。
