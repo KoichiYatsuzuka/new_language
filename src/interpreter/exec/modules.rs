@@ -552,6 +552,7 @@ impl Interpreter {
                         object: Box::new(crate::ast::Expr::Ident("self".to_string())),
                         attr: fname.clone(),
                         span: Span::unknown(),
+                        cache: Default::default(),
                     },
                     value: crate::ast::Expr::Ident(fname.clone()),
                 })

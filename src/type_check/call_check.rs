@@ -34,7 +34,7 @@ impl TypeChecker {
         // When method_call_info is Some, we skip self.infer(func) later to avoid
         // double-evaluating the object and duplicating error reports.
         let method_call_info: Option<(String, String)> =
-            if let Expr::Attr { object, attr, span } = func {
+            if let Expr::Attr { object, attr, span, .. } = func {
                 let obj_ty = self.infer(object);
 
                 // Result[T, E] の is_OK() / is_ERR() は特別扱いして bool を返す。

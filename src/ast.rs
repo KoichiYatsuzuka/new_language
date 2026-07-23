@@ -103,6 +103,59 @@ impl std::fmt::Debug for SlotCache {
     }
 }
 
+/// 属性アクセスのインラインキャッシュ（Phase R / R3）。
+///
+/// `Expr::Attr`（`obj.attr`）が具象クラスのインスタンスフィールドに解決されたとき、
+/// `(class_id, フィールド slot, アクセスレベル)` を焼き込む。次回同じ `class_id` の
+/// インスタンスなら、`field_index` の辞書引き・アクセスキーの走査・`format!` 確保を
+/// すべて省いて slot を直接読める（[eval/attrs.rs] `eval_attr`）。
+/// 多相な呼び出し点（毎回別クラス）では `class_id` 不一致でミスし、その都度再解決＋更新する
+/// （単相 IC）。
+///
+/// パック形式: 上位 32bit = class_id（1 始まり・0=未解決）、bit 30-31 = アクセスレベル
+/// （0=Public / 1=Private / 2=Protected）、下位 30bit = slot インデックス。
+/// `Clone` は空キャッシュを返す（AST コピーごとに再解決）。
+#[derive(Default)]
+pub struct AttrCache(pub std::cell::Cell<u64>);
+
+impl AttrCache {
+    /// アクセスレベル定数。
+    pub const PUBLIC: u8 = 0;
+
+    /// (class_id, slot, access) をパックして格納する。
+    #[inline]
+    pub fn fill(&self, class_id: u32, idx: usize, access: u8) {
+        let packed =
+            ((class_id as u64) << 32) | (((access & 0x3) as u64) << 30) | (idx as u64 & 0x3FFF_FFFF);
+        self.0.set(packed);
+    }
+
+    /// `class_id` が一致すれば `(slot, access)` を返す。
+    #[inline]
+    pub fn get(&self, class_id: u32) -> Option<(usize, u8)> {
+        let packed = self.0.get();
+        if packed != 0 && (packed >> 32) as u32 == class_id {
+            let access = ((packed >> 30) & 0x3) as u8;
+            let idx = (packed & 0x3FFF_FFFF) as usize;
+            Some((idx, access))
+        } else {
+            None
+        }
+    }
+}
+
+impl Clone for AttrCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for AttrCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AttrCache(..)")
+    }
+}
+
 /// 関数呼び出しの1引数。位置引数・キーワード引数・可変長引数のいずれかを表す。
 ///
 /// # バリアント
@@ -342,10 +395,12 @@ pub enum Expr {
     /// リストリテラル `[a, b, c]`。要素の式を順に評価して `Value::List` を生成する。
     List(Vec<Expr>),
     /// 属性アクセス `object.attr`。インスタンスフィールドやクラス変数の読み取りに使用する。
+    /// `cache` はインスタンスフィールド解決のインラインキャッシュ（R3・初回解決時に焼き込み）。
     Attr {
         object: Box<Expr>,
         attr: String,
         span: Span,
+        cache: AttrCache,
     },
     /// トレイト修飾アクセス `object::Trait.attr`。特定のトレイト実装のメソッドを明示的に呼び出す。
     TraitAccess {

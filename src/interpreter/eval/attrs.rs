@@ -29,9 +29,31 @@ impl Interpreter {
             .or_else(|| class.method_access.get(member_key))
             .cloned()
             .unwrap_or(Accessibility::Public);
+        self.check_access_level(class, Self::access_level(&access), display_name)
+    }
+
+    /// `Accessibility` を IC 用のレベル定数（0=Public / 1=Private / 2=Protected）へ変換する。
+    #[inline]
+    pub(crate) fn access_level(access: &Accessibility) -> u8 {
         match access {
-            Accessibility::Public => Ok(()),
-            Accessibility::Private => {
+            Accessibility::Public => crate::ast::AttrCache::PUBLIC,
+            Accessibility::Private => 1,
+            Accessibility::Protected => 2,
+        }
+    }
+
+    /// アクセスレベル（`access_level` で得た u8）だけを使ってアクセス可否を判定する。
+    /// R3 インラインキャッシュのヒット経路が `field_access` の辞書引きを飛ばして直接呼ぶ。
+    pub(crate) fn check_access_level(
+        &self,
+        class: &crate::interpreter::ClassValue,
+        access: u8,
+        display_name: &str,
+    ) -> Result<(), String> {
+        match access {
+            crate::ast::AttrCache::PUBLIC => Ok(()),
+            1 => {
+                // Private
                 if let Some(cur) = &self.current_class {
                     if cur.name == class.name {
                         return Ok(());
@@ -42,7 +64,8 @@ impl Interpreter {
                     display_name, class.name
                 ))
             }
-            Accessibility::Protected => {
+            _ => {
+                // Protected (2)
                 if let Some(cur) = &self.current_class {
                     if cur.name == class.name {
                         return Ok(());
@@ -62,7 +85,15 @@ impl Interpreter {
 
     /// Resolve an attribute on any `Value`.
     /// Used by both `eval_attr` (from AST) and native callbacks (`ar_get_attr`).
-    pub(crate) fn get_attr_val(&mut self, obj: Value, attr: &str) -> Result<Value, String> {
+    ///
+    /// `cache` が `Some` かつインスタンスの own/unqualified フィールドに解決できた場合、
+    /// `(class_id, slot, アクセスレベル)` を焼き込む（R3・以後は `eval_attr` の高速経路が使う）。
+    pub(crate) fn get_attr_val(
+        &mut self,
+        obj: Value,
+        attr: &str,
+        cache: Option<&crate::ast::AttrCache>,
+    ) -> Result<Value, String> {
         match &obj {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
@@ -75,8 +106,19 @@ impl Interpreter {
                             .find(|(k, &i)| k.ends_with(suffix.as_str()) && i == idx)
                             .map(|(k, _)| k.as_str())
                             .unwrap_or(attr);
+                        // アクセスレベルを確定して IC に焼く（R3）。
+                        let level = {
+                            let acc = cls.field_access.get(access_key)
+                                .or_else(|| cls.method_access.get(access_key))
+                                .cloned()
+                                .unwrap_or(Accessibility::Public);
+                            Self::access_level(&acc)
+                        };
+                        if let Some(c) = cache {
+                            c.fill(cls.class_id, idx, level);
+                        }
                         drop(inst);
-                        self.check_member_access(&cls, access_key, attr)?;
+                        self.check_access_level(&cls, level, attr)?;
                         return Ok(v);
                     }
                 }

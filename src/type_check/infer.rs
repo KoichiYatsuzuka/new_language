@@ -49,7 +49,7 @@ impl TypeChecker {
             }
 
             // --- 属性アクセス ---
-            Expr::Attr { object, attr, span } => self.infer_attr(object, attr, span),
+            Expr::Attr { object, attr, span, .. } => self.infer_attr(object, attr, span),
             Expr::TraitAccess { object, .. } => {
                 self.infer(object);
                 InferredType::Unresolved

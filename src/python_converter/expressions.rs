@@ -24,6 +24,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 object: Box::new(obj),
                 attr: a.attr.to_string(),
                 span: make_span(filename),
+                cache: Default::default(),
             })
         }
 

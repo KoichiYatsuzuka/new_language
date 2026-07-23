@@ -385,7 +385,7 @@ extern "C" fn ar_get_attr(obj_h: i64, name_ptr: *const u8, name_len: i32) -> i64
         return TL_NONE;
     }
     let interp = unsafe { &mut *interp_ptr };
-    match interp.get_attr_val(obj, &name) {
+    match interp.get_attr_val(obj, &name, None) {
         Ok(v) => push_handle(v),
         Err(e) => {
             STATE.with(|s| s.borrow_mut().error = Some(e));
@@ -835,7 +835,7 @@ extern "C" fn ar_get_float_field(obj_h: i64, name_ptr: *const u8, name_len: i32)
         return 0.0;
     }
     let interp = unsafe { &mut *interp_ptr };
-    match interp.get_attr_val(obj, name) {
+    match interp.get_attr_val(obj, name, None) {
         Ok(Value::Float(f)) => f,
         Ok(Value::Int(n)) => n as f64,
         Ok(Value::Bool(b)) => b as u8 as f64,
@@ -857,7 +857,7 @@ extern "C" fn ar_get_int_field(obj_h: i64, name_ptr: *const u8, name_len: i32) -
         return 0;
     }
     let interp = unsafe { &mut *interp_ptr };
-    match interp.get_attr_val(obj, name) {
+    match interp.get_attr_val(obj, name, None) {
         Ok(Value::Int(n)) => n,
         Ok(Value::Float(f)) => f as i64,
         Ok(Value::Bool(b)) => b as i64,

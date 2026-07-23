@@ -433,6 +433,7 @@ impl Parser {
                         object: Box::new(expr),
                         attr,
                         span: dot_span,
+                        cache: Default::default(),
                     };
                 }
                 Token::ColonColon => {

@@ -432,10 +432,11 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
         // テンプレート関数はリゾルバの対象外なので LocalRef は現れないが、網羅性のため保持する。
         Expr::LocalRef { name, slot } => Expr::LocalRef { name: name.clone(), slot: *slot },
         Expr::List(items) => Expr::List(items.iter().map(|e| subst_expr(e, type_map)).collect()),
-        Expr::Attr { object, attr, span } => Expr::Attr {
+        Expr::Attr { object, attr, span, .. } => Expr::Attr {
             object: Box::new(subst_expr(object, type_map)),
             attr: attr.clone(),
             span: span.clone(),
+            cache: Default::default(),
         },
         Expr::TraitAccess {
             object,

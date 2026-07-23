@@ -39,6 +39,7 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
             object: Box::new(E::Ident("self".to_string())),
             attr: "message".to_string(),
             span: Span::unknown(),
+            cache: Default::default(),
         },
         value: E::Ident("message".to_string()),
     }];
@@ -132,6 +133,7 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
             object: Box::new(Expr::Ident("self".to_string())),
             attr: "value".to_string(),
             span: Span::unknown(),
+            cache: Default::default(),
         },
         value: Expr::Ident("value".to_string()),
     }];

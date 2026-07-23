@@ -408,6 +408,7 @@ impl Parser {
                     object: Box::new(Expr::Ident("self".to_string())),
                     attr: fname.clone(),
                     span: Span::unknown(),
+                    cache: Default::default(),
                 },
                 value: Expr::Ident(fname.clone()),
             });

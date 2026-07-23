@@ -226,6 +226,7 @@ impl Interpreter {
                         object: Box::new(Expr::Ident("self".to_string())),
                         attr: "value".to_string(),
                         span: crate::token::Span::unknown(),
+                        cache: Default::default(),
                     },
                     value: Expr::Ident("value".to_string()),
                 }];
@@ -299,6 +300,7 @@ impl Interpreter {
                 object: Box::new(Expr::Ident("self".to_string())),
                 attr: "value".to_string(),
                 span: crate::token::Span::unknown(),
+                cache: Default::default(),
             },
             value: Expr::Ident("value".to_string()),
         }];

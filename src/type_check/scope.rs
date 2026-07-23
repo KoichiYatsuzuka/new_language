@@ -123,7 +123,7 @@ impl TypeChecker {
 
     /// `obj.attr = val` のとき `attr` が `let` フィールドであれば `AssignToImmutableField` エラーを記録する。
     pub(super) fn check_immutable_field_assign(&mut self, target: &Expr) {
-        if let Expr::Attr { object, attr, span } = target {
+        if let Expr::Attr { object, attr, span, .. } = target {
             let is_self_in_init = matches!(object.as_ref(), Expr::Ident(n) if n == "self")
                 && self.state.current_fn() == Some("__init__");
             if is_self_in_init {

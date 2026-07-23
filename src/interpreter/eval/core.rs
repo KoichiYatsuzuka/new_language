@@ -43,7 +43,7 @@ impl Interpreter {
             Expr::TraitAccess { object, trait_name, attr } => {
                 self.eval_trait_access(object, trait_name, attr)
             }
-            Expr::Attr { object, attr, .. } => self.eval_attr(object, attr),
+            Expr::Attr { object, attr, cache, .. } => self.eval_attr(object, attr, cache),
             Expr::List(items) => {
                 let mut vals = Vec::new();
                 for item in items {
@@ -206,10 +206,40 @@ impl Interpreter {
         }
     }
 
-    /// 属性アクセス式 `obj.attr` を評価する。`get_attr_val` に委譲するシンラッパー。
-    pub(crate) fn eval_attr(&mut self, object: &Expr, attr: &str) -> Result<Value, String> {
+    /// 属性アクセス式 `obj.attr` を評価する。
+    ///
+    /// R3 インラインキャッシュ: インスタンスの own/unqualified フィールドで `class_id` が
+    /// キャッシュと一致すれば、`field_index` の辞書引き・アクセスキー走査・`format!` 確保を
+    /// 飛ばして slot を直接読む。ミス時は `get_attr_val` で解決してキャッシュを更新する。
+    pub(crate) fn eval_attr(
+        &mut self,
+        object: &Expr,
+        attr: &str,
+        cache: &crate::ast::AttrCache,
+    ) -> Result<Value, String> {
         let obj_val = self.eval(object)?;
-        self.get_attr_val(obj_val, attr)
+        if let Value::Instance(inst_rc) = &obj_val {
+            let class_id = inst_rc.borrow().class.class_id;
+            if let Some((idx, access)) = cache.get(class_id) {
+                let inst = inst_rc.borrow();
+                debug_assert_eq!(
+                    inst.class.field_index.get(attr).copied(),
+                    Some(idx),
+                    "AttrCache slot mismatch for '{attr}' on class_id {class_id}"
+                );
+                if let Some(v) = inst.field_value(idx) {
+                    if access == crate::ast::AttrCache::PUBLIC {
+                        return Ok(v);
+                    }
+                    let cls = inst.class.clone();
+                    drop(inst);
+                    self.check_access_level(&cls, access, attr)?;
+                    return Ok(v);
+                }
+                // 未初期化 slot 等の想定外ケースは通常経路へ委譲する。
+            }
+        }
+        self.get_attr_val(obj_val, attr, Some(cache))
     }
 
     /// スライス式 `begin:end:step` を評価して `Value::Slice` を生成する。
