@@ -86,10 +86,10 @@ Refresh with `./generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (179 files, 54234 lines)
+src/  (185 files, 54875 lines)
   ast.rs (1070)
-  interpreter.rs (670)
-  main.rs (497)
+  interpreter.rs (687)
+  main.rs (522)
   repl.rs (85)
   token.rs (531)
   built_in_stab/
@@ -161,7 +161,7 @@ src/  (179 files, 54234 lines)
       blocks.rs (129)
       control_flow.rs (214)
       definitions.rs (635)
-      dispatch.rs (415)
+      dispatch.rs (417)
       exceptions_async.rs (327)
       mod.rs (318)
       modules.rs (669)
@@ -169,7 +169,7 @@ src/  (179 files, 54234 lines)
     functions/
       args.rs (319)
       deepcopy.rs (118)
-      execution.rs (406)
+      execution.rs (471)
       mod.rs (7)
       overload.rs (223)
     native_api/
@@ -184,7 +184,7 @@ src/  (179 files, 54234 lines)
     tests/
       alias.rs (109)
       async_tests.rs (183)
-      basics.rs (123)
+      basics.rs (124)
       callables.rs (419)
       classes.rs (357)
       collections.rs (304)
@@ -207,7 +207,7 @@ src/  (179 files, 54234 lines)
     value/
       callables.rs (260)
       collections.rs (190)
-      core.rs (348)
+      core.rs (354)
       exceptions.rs (41)
       flat.rs (107)
       instance.rs (400)
@@ -292,6 +292,13 @@ src/  (179 files, 54234 lines)
       mod.rs (6)
       protocol.rs (242)
       resolve.rs (130)
+  vm/
+    chunk.rs (23)
+    compiler.rs (239)
+    disasm.rs (34)
+    mod.rs (29)
+    op.rs (40)
+    run.rs (160)
 
 impl_python/  (49 files, 16410 lines)
   __init__.py (0)
@@ -387,12 +394,12 @@ examples/  (recursive .ar counts per category)
   BYTECODE_VM_PLAN.md (514)
   CLAUDE.md (70)
   generate-codebase-map.ps1 (100)
-  PHASE_R1_RESULTS.md (93)
+  PHASE_R1_RESULTS.md (98)
   PHASE5_PLAN.md (427)
   README.md (255)
   REFACTORING_HANDOFF.md (133)
   run_examples.ps1 (50)
   spec.md (570)
 ```
-_Generated 2026-07-23 by generate-codebase-map.ps1_
+_Generated 2026-07-24 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->

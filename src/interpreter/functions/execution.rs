@@ -12,6 +12,32 @@ use {
 };
 
 impl Interpreter {
+    /// 呼び出し元スタックフレーム（トレースバック用）を構築する。
+    /// `call_stack` から呼び出し元名を、`call_span` から位置とコンテキスト行を取る。
+    pub(crate) fn build_caller_frame(&self, call_span: Option<&Span>) -> StackFrame {
+        let caller_name = self
+            .call_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "<module>".to_string());
+        match call_span {
+            Some(span) => StackFrame {
+                file: span.file.to_string(),
+                line: span.line,
+                col: span.col,
+                fn_name: caller_name,
+                context: self.get_context_lines(&span.file, span.line, 5),
+            },
+            None => StackFrame {
+                file: String::new(),
+                line: 0,
+                col: 0,
+                fn_name: caller_name,
+                context: String::new(),
+            },
+        }
+    }
+
     /// 評価済み引数リストを用いて関数を実行する。
     ///
     /// 実行フロー:
@@ -128,6 +154,68 @@ impl Interpreter {
             }
         }
 
+        // ── Phase V: バイトコード VM 経路（デュアルモード, D2） ──
+        // フリー関数（self なし・クロージャなし・非 Python）だけを対象に、初回にコンパイルして
+        // Chunk をキャッシュする。コンパイルできなければ None を焼き込みツリーウォークへ。
+        if self_val.is_none()
+            && fn_val.captured_env.is_empty()
+            && !fn_val.is_python
+            && self.vm_mode != crate::vm::VmMode::Off
+        {
+            let key = Rc::as_ptr(&fn_val) as usize;
+            let chunk_opt = match self.vm_chunks.get(&key) {
+                Some(c) => c.clone(),
+                None => {
+                    let compiled =
+                        crate::vm::compile_fn(&fn_val.params, &fn_val.body).map(Rc::new);
+                    self.vm_chunks.insert(key, compiled.clone());
+                    compiled
+                }
+            };
+            if let Some(chunk) = chunk_opt {
+                // 共有バッファを借り出し、base.. に locals を確保（per-call 確保なし）。
+                let mut buf = std::mem::take(&mut self.vm_stack);
+                let base = buf.len();
+                buf.resize(base + chunk.n_locals, Value::None);
+                for (i, (_, val, _, _)) in bindings.iter().enumerate() {
+                    if i < chunk.n_locals {
+                        buf[base + i] = val.clone();
+                    }
+                }
+                self.call_stack.push(fn_name.to_string());
+                let result = crate::vm::run(self, &chunk, &mut buf, base);
+                self.call_stack.pop();
+                buf.truncate(base);
+                self.vm_stack = buf;
+                let caller_frame = self.build_caller_frame(call_span.as_ref());
+                return match result {
+                    Ok(v) => Ok(v),
+                    Err(e) if e.as_str() == RAISE_SENTINEL => {
+                        if let Some(raised) = self.current_exception.as_mut() {
+                            raised.frames.push(caller_frame);
+                        }
+                        Err(RAISE_SENTINEL.to_string())
+                    }
+                    Err(msg) => {
+                        if let Some(mut raised) = self.make_internal_raised_error(&msg) {
+                            raised.frames.push(StackFrame {
+                                file: String::new(),
+                                line: 0,
+                                col: 0,
+                                fn_name: fn_name.to_string(),
+                                context: String::new(),
+                            });
+                            raised.frames.push(caller_frame);
+                            self.current_exception = Some(raised);
+                            Err(RAISE_SENTINEL.to_string())
+                        } else {
+                            Err(msg)
+                        }
+                    }
+                };
+            }
+        }
+
         // 関数フレームへ切り替える: frame_floor を現在の scopes 長に進め（＝これから push する
         // base スコープの index）、呼び出し元のローカルを隔離する。drain/退避/復元の Vec 確保は不要。
         let saved_floor = self.frame_floor;
@@ -191,30 +279,7 @@ impl Interpreter {
         self.frame_floor = saved_floor;
 
         // Build a caller frame using the call site span (where this function was called from).
-        // The caller's name is the last entry in call_stack after we already popped fn_name.
-        let caller_frame = {
-            let caller_name = self
-                .call_stack
-                .last()
-                .cloned()
-                .unwrap_or_else(|| "<module>".to_string());
-            match call_span.as_ref() {
-                Some(span) => StackFrame {
-                    file: span.file.to_string(),
-                    line: span.line,
-                    col: span.col,
-                    fn_name: caller_name,
-                    context: self.get_context_lines(&span.file, span.line, 5),
-                },
-                None => StackFrame {
-                    file: String::new(),
-                    line: 0,
-                    col: 0,
-                    fn_name: caller_name,
-                    context: String::new(),
-                },
-            }
-        };
+        let caller_frame = self.build_caller_frame(call_span.as_ref());
 
         // 例外が ExecResult::Raise として直接返ってきた場合: 呼び出し元フレームを追加してセンチネルを返す
         if let Ok(ExecResult::Raise(mut raised)) = result {

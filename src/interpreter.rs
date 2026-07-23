@@ -367,6 +367,15 @@ pub struct Interpreter {
     /// スロットキャッシュの世代番号。`freeze`（SlotCell → Immutable 降格）時にインクリメントされ、
     /// 全 AST スロットキャッシュを一括無効化する。
     pub(self) slot_epoch: u32,
+    /// バイトコード VM の実行モード（Off/Auto/Force）。CLI `--vm` で設定。既定 Auto（Phase V）。
+    pub(crate) vm_mode: crate::vm::VmMode,
+    /// 関数ごとのコンパイル済み Chunk キャッシュ。キー = `Rc::as_ptr(fn_val)`。
+    /// `Some(chunk)` = VM 実行、`None` = 非対応（ツリーウォーク）。VM 対象は寿命の長い
+    /// トップレベル関数（captured_env 空）のみなのでポインタ再利用の危険はない（Phase V）。
+    pub(self) vm_chunks: HashMap<usize, Option<Rc<crate::vm::Chunk>>>,
+    /// VM の値スタックバッファ（per-call 確保を避けるため使い回す）。
+    /// 実行中は `std::mem::take` で借り出し、復帰時に容量ごと戻す（Phase V）。
+    pub(crate) vm_stack: Vec<Value>,
     /// 現在の関数フレームの base スコープの `scopes` 内インデックス（Phase R / R0）。
     ///
     /// 関数に入ると呼び出し前の `scopes.len()` を新しい floor として記録し、base スコープを push する。
@@ -458,6 +467,9 @@ impl Interpreter {
             scopes: vec![global],
             global_slot_cells: Vec::new(),
             slot_epoch: 0,
+            vm_mode: crate::vm::VmMode::default(),
+            vm_chunks: HashMap::new(),
+            vm_stack: Vec::new(),
             frame_floor: 1,
             source_map: HashMap::new(),
             call_stack: Vec::new(),
@@ -494,6 +506,11 @@ impl Interpreter {
     /// `import[py-int]` 時に Python の `sys.path` に追加するディレクトリを登録する。
     pub fn add_python_search_dir(&mut self, dir: PathBuf) {
         self.python_search_dirs.push(dir);
+    }
+
+    /// バイトコード VM の実行モードを設定する（CLI `--vm` から）。
+    pub fn set_vm_mode(&mut self, mode: crate::vm::VmMode) {
+        self.vm_mode = mode;
     }
 
     /// CLIパラメータをグローバルスコープの `args` dict として登録する。

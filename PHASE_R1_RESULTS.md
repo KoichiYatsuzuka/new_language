@@ -89,10 +89,62 @@ BYTECODE_VM_PLAN.md の **Phase R**（R0 ランタイムモデル ＋ R1 slot �
 - BYTECODE_VM_PLAN 投影の **Phase R 1.3〜2x を達成**（フィールド/呼び出し/メソッド支配で ~1.6-1.7x）。
 - **まだツリーウォークのまま**の支配項: `Value` clone・命令ディスパッチ・算術・`class.methods.get` 本体の1回引き。
 
-## 次に効くレバー（このスライスが土台）
-1. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
-   文字列多用ワークロード専用の効果（数値/インスタンス中心の現ベンチには乗らない）。波及大につき別途。
-2. **Phase V バイトコード VM** — 命令ディスパッチ・制御フロー・算術をまとめて潰す本命。
+---
+
+# Phase V-A — バイトコード VM スケルトン（デュアルモード）
+
+BYTECODE_VM_PLAN §5 の Phase V の第一段（V-A）。解決済み AST をリーフ関数単位で Chunk に
+コンパイルし専用スタックマシンで実行する。非対応構文はコンパイル時に弾いてツリーウォークへ
+フォールバックする（D2 デュアルモード）。CLI `--vm=off|auto|force`（既定 auto）。
+
+## 実装（[src/vm/](src/vm/)）
+| ファイル | 役割 |
+|---|---|
+| `op.rs` | オペコード列挙（Const/LoadLocal/StoreLocal/Bin/Un/GetAttr/Jump 系/Return …） |
+| `chunk.rs` | `Chunk { code, consts, names, attr_caches, n_locals }` |
+| `compiler.rs` | 解決済み AST → Chunk。**トップレベルのリーフ関数**（呼び出し・メソッド・クロージャ・ローカル宣言・for/match/例外・可変長を含まない）だけをコンパイル、他は `None`（フォールバック） |
+| `run.rs` | ディスパッチループ。値スタックは Interpreter の**使い回しバッファ**（per-call 確保なし）。int/float 算術・順序比較・public フィールド読み（R3 IC）を**ループ内インライン**、他は既存 `apply_binop_dyn`/`get_attr_val`/`eval_truthy` へ委譲（＝意味論一致） |
+| `disasm.rs` | 逆アセンブラ（開発用） |
+| `mod.rs` | `VmMode`（Off/Auto/Force）・公開 API |
+
+統合: [functions/execution.rs](src/interpreter/functions/execution.rs) の `exec_fn_evaled` で、フリー関数
+（self なし・クロージャなし・非 Python）を初回にコンパイルして `vm_chunks` にキャッシュ、以後 VM 実行。
+
+## 検証
+- `cargo test`（既定 `--vm=auto`）→ **672 passed / 0 failed**。VM がコンパイルした関数を全テストで実行し、
+  期待結果と一致（＝ツリーウォークと同値）。デバッグビルドで VM GetAttr の slot 一致も検証。
+- 例題回帰: 24 の決定的例で `--vm=off` と `--vm=auto` の**終了コード・stdout・エラー出力が完全一致**。
+- `cargo build`/clippy 警告 0。
+
+## 速度計測（同一 binary の `--vm=off` vs `--vm=auto`、best-of-8）
+| 指標（VM がコンパイルする関数） | vm=off (µs) | vm=auto (µs) | VM 倍率 |
+|---|---|---|---|
+| let→let int | 0.761 | 0.712 | **1.07x** |
+| let→let instance | 0.904 | 0.816 | **1.11x** |
+| 4-field read | 1.035 | 0.934 | **1.11x** |
+| subscript[0]（引数 use_small） | 1.075 | 1.004 | **1.07x** |
+| fn call（`noop` 本体ほぼ空） | 0.369 | 0.388 | 0.95x |
+| **E2E field access** | 1.727 s | 1.579 s | **1.09x** |
+
+- **Phase R で高度に最適化されたツリーウォークに対しても VM が 1.07〜1.11x 上回る**（コンパイル対象の関数）。
+  本体がほぼ空の `noop` だけは per-call オーバーヘッド（chunk キャッシュ引き・バッファ確保）で微減。
+- 効いた要因: (1) 再帰 `eval()` 呼び出しの排除（線形ディスパッチ）、(2) int/float 算術と public フィールド読みの
+  ループ内インライン（`apply_binop_dyn`/`get_attr_val` の関数呼び出し回避）、(3) 値スタックの使い回し。
+- **累積効果**: E2E field は ツリーウォーク 1.69x（対 baseline）にさらに VM 1.09x で **~1.84x**。
+
+## V-A の限界と次段（V-B〜V-F）
+- コンパイル対象は「呼び出しを含まないリーフ関数」に限定。呼び出し・メソッド・ローカル宣言・for/match/
+  例外・クロージャは未対応（フォールバック）。多くの実関数はまだツリーウォーク。
+- 大きな伸びは V-F（superinstruction・型特化命令の全面化）と V-B/V-C（メソッド・クラス・例外テーブル・
+  ブロック式）で、より多くの関数を VM に載せてから出る。V-A は**その土台が動作する実証**。
+
+---
+
+## 次に効くレバー
+1. **Phase V-B/V-C** — 呼び出し（CALL op）・メソッド・ローカル宣言・制御フロー式・例外テーブルを VM に追加し、
+   対象関数を拡大（V-A の骨格が土台）。
+2. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
+   文字列多用ワークロード専用の効果。波及大につき別途。
 3. **メソッド IC の完全化** — `class.methods` を FxHash 化 or slot 索引化し、ヒット時の残り 1 辞書引きも除去。
 
 `LocalRef` / slot 化 `Scope` / `frame_floor` フレームモデル / bind_args 高速経路 / `AttrCache` / R4 呼び先キャッシュ / method IC / リゾルバは上記すべての土台として再利用される。

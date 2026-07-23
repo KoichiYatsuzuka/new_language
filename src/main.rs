@@ -13,6 +13,7 @@ mod python_converter;
 mod repl;
 mod token;
 mod type_check;
+mod vm;
 
 use interpreter::{ExecResult, Interpreter};
 use lexer::Lexer;
@@ -84,6 +85,19 @@ fn parse_args() -> Mode {
                 }
             }
             "--repl" => return Mode::Repl,
+            // バイトコード VM モード: `--vm=off|auto|force` または `--vm off` 形式（Phase V）。
+            arg if arg == "--vm" || arg.starts_with("--vm=") => {
+                let mode_str = if let Some(eq) = arg.strip_prefix("--vm=") {
+                    eq.to_string()
+                } else {
+                    let m = args.get(i + 1).cloned().unwrap_or_default();
+                    i += 1;
+                    m
+                };
+                cli_params.insert("__vm__".to_string(), mode_str);
+                i += 1;
+                continue;
+            }
             arg if arg.starts_with("--") => {
                 // User-defined parameter: --key [value]
                 let key = arg[2..].to_string();
@@ -293,8 +307,18 @@ fn format_static_errors(errors: &[type_check::StaticTypeError]) -> String {
 fn run_program(
     source: &str,
     filename: &str,
-    cli_args: std::collections::HashMap<String, String>,
+    mut cli_args: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
+    // `--vm` フラグを取り出す（スクリプトの `args` には渡さない）。
+    let vm_mode = match cli_args.remove("__vm__").as_deref() {
+        Some("off") => vm::VmMode::Off,
+        Some("force") => vm::VmMode::Force,
+        Some("auto") | None => vm::VmMode::Auto,
+        Some(other) => {
+            eprintln!("Warning: unknown --vm mode '{other}', using 'auto'");
+            vm::VmMode::Auto
+        }
+    };
     // --- 字句解析: ソースをトークン列（Vec<Spanned>）に変換する ---
     let tokens = Lexer::new(source, filename).tokenize();
 
@@ -323,6 +347,7 @@ fn run_program(
     // --- インタープリタの初期化とソーステキストの登録 ---
     // ソーステキストはエラー報告時のスタックトレース表示に使用される
     let mut interp = Interpreter::new();
+    interp.set_vm_mode(vm_mode);
     interp.add_source_text(filename, source);
     // ソースファイルのディレクトリを import 検索パスに追加する
     if let Some(dir) = &source_dir {
