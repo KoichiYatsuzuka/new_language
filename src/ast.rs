@@ -28,6 +28,11 @@ pub struct TemplateParam {
 #[derive(Default)]
 pub struct NativeCallCache(
     pub std::cell::RefCell<Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>>,
+    /// Arrow 関数呼び先のグローバル slot キャッシュ（R4）。
+    /// 呼び先が不変グローバル関数（`fn` 定義）と解決されたとき、`scopes[0]` 内の slot 番号を
+    /// `(slot_epoch, index)` で焼き込む。以後の同一呼び出しは builtin 判定・名前引き・`name.clone()`
+    /// を跳ばして `scopes[0].slot(idx)` から直接ディスパッチする。`Cell<u64>` なので Send 安全。
+    pub SlotCache,
 );
 
 impl Clone for NativeCallCache {

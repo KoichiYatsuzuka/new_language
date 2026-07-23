@@ -6,7 +6,7 @@ use {
     crate::ast::{CallArg, Expr},
     crate::token::Span,
     crate::interpreter::{
-        Interpreter, NativeFnRef, SliceValue, Value,
+        Interpreter, NativeFnRef, SliceValue, Value, Var,
     },
 };
 use super::*;
@@ -40,21 +40,58 @@ impl Interpreter {
             let obj_val = self.eval(object)?;
             return self.eval_method_call(obj_val, attr, args);
         }
+        // ── R4: Arrow 関数呼び先キャッシュ命中（Ident のみ） ──
+        // 不変グローバル関数と初回解決済みなら、builtin 判定・名前引き・name.clone を跳ばして
+        // `scopes[0]` の slot から直接ディスパッチする。
+        if let Expr::Ident(name) = func {
+            if let Some(idx) = cache.1.get(self.slot_epoch) {
+                let cached_fn = match self.scopes[0].slot(idx) {
+                    Some(Var::Immutable(Value::Function(f))) => Some(f.clone()),
+                    _ => None,
+                };
+                if let Some(f) = cached_fn {
+                    #[cfg(debug_assertions)]
+                    {
+                        // キャッシュした呼び先が、名前引き解決と一致することを検証する。
+                        let live = self.get_val(name);
+                        debug_assert!(
+                            matches!(&live, Some(Value::Function(lf)) if Rc::ptr_eq(lf, &f)),
+                            "R4 callee cache mismatch for '{name}'"
+                        );
+                    }
+                    return self.exec_fn(f, args, None, name, Some(call_span.clone()));
+                }
+                // 想定外（束縛が変わった等）は通常経路へ委譲する。
+            }
+        }
+
         if let Expr::Ident(name) = func {
             if let Some(result) = self.eval_builtin_ident_call(name, args) {
                 return result;
             }
         }
-        let call_name = match func {
-            Expr::Ident(n) => n.clone(),
-            _ => "<anonymous>".to_string(),
+        let call_name: &str = match func {
+            Expr::Ident(n) => n,
+            _ => "<anonymous>",
         };
         let callee = self.eval(func)?;
         match callee {
-            Value::Function(fn_val) => self.exec_fn(fn_val, args, None, &call_name, Some(call_span.clone())),
+            Value::Function(fn_val) => {
+                // R4: 不変グローバル関数への Ident 呼び出しなら global slot を焼き込む。
+                if let Expr::Ident(name) = func {
+                    if !self.scopes[self.frame_floor..].iter().any(|s| s.contains_key(name)) {
+                        if let Some(idx) = self.scopes[0].slot_of(name) {
+                            if matches!(self.scopes[0].slot(idx), Some(Var::Immutable(_))) {
+                                cache.1.fill(self.slot_epoch, idx as u32);
+                            }
+                        }
+                    }
+                }
+                self.exec_fn(fn_val, args, None, call_name, Some(call_span.clone()))
+            }
             Value::OverloadedFn(candidates) => {
                 let evaled_args = self.eval_call_args(args)?;
-                self.dispatch_overload_evaled(candidates, evaled_args, None, &call_name, Some(call_span.clone()))
+                self.dispatch_overload_evaled(candidates, evaled_args, None, call_name, Some(call_span.clone()))
             }
             Value::Class(cls) => self.instantiate(cls, args),
             Value::GeneratorFn(gen_fn) => self.exec_generator(gen_fn, args, None),
