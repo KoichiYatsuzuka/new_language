@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{BinOp, CallArg, Expr, Param, Stmt};
+use crate::ast::{BinOp, CallArg, Expr, MatchArm, MatchPattern, Param, Stmt};
 use crate::interpreter::Value;
 
 use super::chunk::Chunk;
@@ -48,7 +48,25 @@ struct Compiler {
     /// `self` パラメータの slot（メソッド本体をコンパイルするとき Some）。
     /// `self` は型注釈を持たないが常に Instance なので、レシーバ判定で特別扱いする。
     self_slot: Option<u16>,
+    /// ネストしたループのコンテキストスタック（break/continue のジャンプ先解決用）。
+    loops: Vec<LoopCtx>,
+    /// 名前付き slot 数（パラメータ + 全ローカル宣言）。temp slot はこの上に積む。
+    named_locals: u16,
+    /// 現在使用中の temp slot 数（match サブジェクト等のスタック規律の一時領域）。
+    temps_in_use: u16,
+    /// フレームに必要な総 slot 数（名前付き + temp の最大同時数）。
     n_locals: usize,
+}
+
+/// ループ1つ分の break/continue ジャンプ先。`continue` は `continue_target` へ、
+/// `break` はループ末尾（コンパイル完了時にバックパッチ）へジャンプする。
+/// Arrow の「break/continue が入れ子の if/match/block を貫通して外側ループへ届く」規則は、
+/// これらが単なる絶対ジャンプなので自然に成立する（スタックは文境界で平衡）。
+struct LoopCtx {
+    /// `continue` のジャンプ先（while の条件先頭）。
+    continue_target: u32,
+    /// `break` 命令の位置（ループ末尾へバックパッチする）。
+    break_jumps: Vec<usize>,
 }
 
 /// 型注釈がユーザークラス/trait/protocol（＝実行時 Instance）であることを保守的に判定する。
@@ -137,6 +155,12 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
             _ => {}
         }
     }
+    // ネストしたブロック（if/while/match のボディ）内の Let/Const/Mut にも
+    // フレーム内固定 slot を割り当てる（R0-B: 関数内の全ローカルが平坦 slot）。
+    // トップレベル decl は上で採番済みなのでスキップされる。順序は問わない
+    // （compile は slots 引きで参照する）。シャドウイング禁止＝同名は非同時生存なので
+    // slot 再利用は健全。リゾルバは nested 名を解決しない（Ident のまま）ので衝突しない。
+    collect_nested_decls(body, &mut slots, &mut slot_mut, &mut slot_type, &mut n)?;
 
     let mut c = Compiler {
         code: Vec::new(),
@@ -147,6 +171,9 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         slot_mut,
         slot_type,
         self_slot,
+        loops: Vec::new(),
+        named_locals: n,
+        temps_in_use: 0,
         n_locals: n as usize,
     };
 
@@ -165,11 +192,81 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
     })
 }
 
+/// ネストしたブロック内の `let`/`const`/`mut` 宣言に平坦 slot を割り当てる（再帰）。
+/// コンパイラが本体をコンパイルできる構文（if/while/match）にのみ踏み込む。
+/// 既出名（トップレベル decl・別ブロックの同名）はスキップ（slot 再利用）。
+fn collect_nested_decls(
+    body: &[Stmt],
+    slots: &mut HashMap<String, u16>,
+    slot_mut: &mut Vec<bool>,
+    slot_type: &mut Vec<Option<String>>,
+    n: &mut u16,
+) -> Option<()> {
+    fn add(
+        name: &str,
+        ty: &Option<String>,
+        mutable: bool,
+        slots: &mut HashMap<String, u16>,
+        slot_mut: &mut Vec<bool>,
+        slot_type: &mut Vec<Option<String>>,
+        n: &mut u16,
+    ) -> Option<()> {
+        if name != "_" && !slots.contains_key(name) {
+            slots.insert(name.to_string(), *n);
+            slot_mut.push(mutable);
+            slot_type.push(ty.clone());
+            *n = n.checked_add(1)?;
+        }
+        Some(())
+    }
+    for stmt in body {
+        match stmt {
+            Stmt::Let(name, ty, _) | Stmt::Const(name, ty, _) => {
+                add(name, ty, false, slots, slot_mut, slot_type, n)?
+            }
+            Stmt::Mut(name, ty, _) => add(name, ty, true, slots, slot_mut, slot_type, n)?,
+            Stmt::If { branches, else_body } => {
+                for (_, b) in branches {
+                    collect_nested_decls(b, slots, slot_mut, slot_type, n)?;
+                }
+                if let Some(eb) = else_body {
+                    collect_nested_decls(eb, slots, slot_mut, slot_type, n)?;
+                }
+            }
+            Stmt::While { body, .. } => collect_nested_decls(body, slots, slot_mut, slot_type, n)?,
+            Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    collect_nested_decls(&arm.body, slots, slot_mut, slot_type, n)?;
+                }
+            }
+            // その他（未対応構文）には踏み込まない。compile_stmt が到達時に bail する。
+            _ => {}
+        }
+    }
+    Some(())
+}
+
 impl Compiler {
     #[inline]
     fn emit(&mut self, op: Op) -> usize {
         self.code.push(op);
         self.code.len() - 1
+    }
+
+    /// スタック規律の一時 slot を確保する（match サブジェクト等）。名前付き slot の上に積む。
+    /// `free_temp` と対で使う。フレーム総 slot 数（`n_locals`）を必要に応じて拡張する。
+    fn alloc_temp(&mut self) -> Option<u16> {
+        let slot = self.named_locals.checked_add(self.temps_in_use)?;
+        self.temps_in_use = self.temps_in_use.checked_add(1)?;
+        let total = self.named_locals as usize + self.temps_in_use as usize;
+        if total > self.n_locals {
+            self.n_locals = total;
+        }
+        Some(slot)
+    }
+
+    fn free_temp(&mut self) {
+        self.temps_in_use -= 1;
     }
 
     fn add_const(&mut self, v: Value) -> u32 {
@@ -313,12 +410,34 @@ impl Compiler {
                 let start = self.here();
                 self.compile_expr(cond)?;
                 let jf = self.emit(Op::JumpIfFalse(0));
+                // ループコンテキストを積む: continue はここ（条件先頭）へ戻る。
+                self.loops.push(LoopCtx {
+                    continue_target: start,
+                    break_jumps: Vec::new(),
+                });
                 for s in body {
                     self.compile_stmt(s)?;
                 }
                 self.emit(Op::Jump(start));
                 let end = self.here();
                 self.patch_jump(jf, end);
+                // break はループ末尾（end）へバックパッチ。
+                let ctx = self.loops.pop().unwrap();
+                for j in ctx.break_jumps {
+                    self.patch_jump(j, end);
+                }
+            }
+            Stmt::Match { subject, arms, .. } => {
+                self.compile_match(subject, arms)?;
+            }
+            Stmt::Break => {
+                // 最内ループの break_jumps に登録し、末尾へジャンプ（バックパッチ）。
+                let j = self.emit(Op::Jump(0));
+                self.loops.last_mut()?.break_jumps.push(j);
+            }
+            Stmt::Continue => {
+                let target = self.loops.last()?.continue_target;
+                self.emit(Op::Jump(target));
             }
             // ── ローカル宣言（exec_let / exec の const・mut と同一セマンティクス） ──
             Stmt::Const(name, _, e) => {
@@ -411,6 +530,59 @@ impl Compiler {
             // それ以外（break/continue・for/match/block・例外・定義・import 等）は非対応。
             _ => return None,
         }
+        Some(())
+    }
+
+    /// `match` 文を temp slot + ジャンプ列にコンパイルする（`exec_match_stmt` と同一意味論）。
+    /// サブジェクトを一度だけ評価して temp に格納し、各アームを順に照合する。
+    fn compile_match(&mut self, subject: &Expr, arms: &[MatchArm]) -> Option<()> {
+        // サブジェクトを一度評価して temp に退避（各アームの照合で使い回す）。
+        let temp = self.alloc_temp()?;
+        self.compile_expr(subject)?;
+        self.emit(Op::StoreLocal(temp));
+
+        let mut end_jumps: Vec<usize> = Vec::new();
+        for arm in arms {
+            match &arm.pattern {
+                // ワイルドカード `case _:` は無条件マッチ。
+                MatchPattern::Case(Expr::Ident(n)) if n == "_" => {
+                    for s in &arm.body {
+                        self.compile_stmt(s)?;
+                    }
+                    end_jumps.push(self.emit(Op::Jump(0)));
+                    // 以降のアームは到達不能だが害はない（emit を続けても正しさは保たれる）。
+                }
+                MatchPattern::Case(pattern_expr) => {
+                    self.emit(Op::LoadLocal(temp));
+                    self.compile_expr(pattern_expr)?;
+                    self.emit(Op::Bin(BinOp::Eq)); // subject == pattern（apply_binop_dyn 委譲）
+                    let jf = self.emit(Op::JumpIfFalse(0));
+                    for s in &arm.body {
+                        self.compile_stmt(s)?;
+                    }
+                    end_jumps.push(self.emit(Op::Jump(0)));
+                    let next = self.here();
+                    self.patch_jump(jf, next);
+                }
+                MatchPattern::IsType(type_name) => {
+                    self.emit(Op::LoadLocal(temp));
+                    let ni = self.add_name(type_name);
+                    self.emit(Op::IsType(ni));
+                    let jf = self.emit(Op::JumpIfFalse(0));
+                    for s in &arm.body {
+                        self.compile_stmt(s)?;
+                    }
+                    end_jumps.push(self.emit(Op::Jump(0)));
+                    let next = self.here();
+                    self.patch_jump(jf, next);
+                }
+            }
+        }
+        let end = self.here();
+        for j in end_jumps {
+            self.patch_jump(j, end);
+        }
+        self.free_temp();
         Some(())
     }
 

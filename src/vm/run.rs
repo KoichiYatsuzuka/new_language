@@ -114,6 +114,11 @@ pub fn run(
                 let n = buf.len();
                 buf.swap(n - 1, n - 2);
             }
+            Op::IsType(name_idx) => {
+                let v = buf.pop().unwrap();
+                let r = interp.value_is_type(&v, &chunk.names[*name_idx as usize]);
+                buf.push(Value::Bool(r));
+            }
             Op::Jump(t) => {
                 ip = *t as usize;
                 continue;

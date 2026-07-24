@@ -40,6 +40,8 @@ pub enum Op {
     SetAttr(u32),
     /// スタックトップ2つを入れ替える（複合属性代入で rhs を先に評価しつつ演算順を保つため）。
     Swap,
+    /// 型判定: pop v, push Bool(value_is_type(v, names[name_idx]))（match の `is TypeName` パターン）。
+    IsType(u32),
     /// 無条件ジャンプ（絶対 index）。
     Jump(u32),
     /// pop した値が偽ならジャンプ（if/while の条件分岐）。

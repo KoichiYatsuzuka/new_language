@@ -242,12 +242,60 @@ slot 採番（`self`, params, body-decls…）と実行時レイアウト（`sel
 
 ---
 
+# Phase V-C（第1増分）— 制御フローのジャンプ化 ＋ ネスト局所変数の平坦 slot 化 ＋ match 文
+
+BYTECODE_VM_PLAN §5.3/§5.4 の V-C。制御フローを実行時センチネル／スレッドローカルから
+**コンパイル時ジャンプ**へ移す第一歩。本増分では **break/continue のジャンプ化**、
+**ネストしたブロック内ローカル宣言の平坦 slot 割り当て（R0-B の全ローカル slot 化）**、**match 文**を実装。
+例外テーブル（try/except/finally・raise）とブロック式（block_return/loop_yield）は次増分（下記「残り」）。
+
+## 実装
+| 変更 | ファイル | 内容 |
+|---|---|---|
+| **break/continue のジャンプ化** | [vm/compiler.rs](src/vm/compiler.rs) | Compiler に `loops: Vec<LoopCtx>`（continue 先＝while 条件先頭 / break 命令位置）を追加。`while` 進入時に push、`break`→末尾へバックパッチする `Jump`、`continue`→条件先頭への `Jump`。**Arrow の「break/continue が入れ子の if/match を貫通して外側ループへ届く」規則は絶対ジャンプで自然に成立**（スタックは文境界で平衡）。ループ外の break/continue は bail。**`LOOP_DEPTH` スレッドローカルは VM 経路では不要に** |
+| **ネスト局所の平坦 slot 化（R0-B）** | [vm/compiler.rs](src/vm/compiler.rs) | `collect_nested_decls` を追加し、if/while/match のボディ内 `let`/`const`/`mut` にもフレーム内固定 slot を割り当て（再帰）。**トップレベル decl はリゾルバと同順で先に採番**し、ネスト decl はその上に積む（リゾルバはネスト名を解決しない＝Ident のまま・衝突しない）。シャドウ禁止＝同名は非同時生存なので slot 再利用は健全。**これまで「if/while 内で `let` する関数」は丸ごとフォールバックしていた** のが VM に載る（適用範囲が大幅拡大） |
+| **match 文** | [vm/compiler.rs](src/vm/compiler.rs), [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | サブジェクトを temp slot に一度だけ評価し（`alloc_temp`/`free_temp` のスタック規律割り当て）、各アームを順に照合。`case v`→`LoadLocal(temp); <pat>; Bin(Eq); JumpIfFalse(next)`、`is T`→新 `IsType(name_idx)` op（`value_is_type` 委譲）。ワイルドカード `case _` は無条件。`exec_match_stmt` と同一意味論（`apply_binop_dyn(Eq)` 委譲・最初のマッチのみ・非マッチは fall-through） |
+| temp slot 割り当て | [vm/compiler.rs](src/vm/compiler.rs) | `named_locals`/`temps_in_use` を追加。名前付き slot の上にスタック規律で temp を確保し、`n_locals`（フレーム総 slot 数）を高水位で拡張 |
+
+## 検証
+- `cargo test`（既定 `--vm=auto`）→ **672 passed / 0 failed**。break/continue・ネスト局所・match を
+  含む関数を VM 実行して期待結果と一致（デバッグ assert も無発火）。
+- 例題回帰: classes/exceptions/basics/typing/collections/practical の決定的例 **27 件** ＋ `_error` 例
+  **18 件** で `--vm=off` と `--vm=auto` の出力・終了コードが一致。
+  - **既知の非一致 1 件**（`exceptions/runtime_error.ar`）: 未捕捉例外のトレースバックで VM 経路が
+    行番号・コンテキストを欠く（`File "", in compute`）。**これは V-A/V-B からの既存挙動**（stash で確認済み）で、
+    VM の**行テーブル未実装**（§2.3・V-E の課題）に起因。V-C の回帰ではない。
+- `cargo build` / 追加 clippy 警告 0。
+
+## 速度計測（`--vm=off` vs `--vm=auto`、best-of-3、release）
+| ベンチ | 内容 | off | auto | VM 倍率 |
+|---|---|---|---|---|
+| **control_flow** | `collatz_steps`（while + ネスト if/else 内 `let` + break）＋ `bucket`（match 4分岐）を 30万回 | 15.64s | 8.19s | **1.91x** |
+
+- **1.91x**。これらの関数は **V-B まで丸ごとフォールバック**（ネスト内 `let`・match で bail）していたため
+  off/auto ともツリーウォークだった。V-C で VM に載り、ほぼ 2倍。制御フロー支配コードは VM の得意領域
+  （ジャンプ1命令・型特化算術・slot 直読み）で §7.2 投影（制御フロー 2〜5x）とも整合。
+
+## V-C 第1増分の到達点と残り
+- **到達**: ループ（break/continue 含む）・ネストした if/while/match とその中のローカル宣言を持つ関数が VM に載る。
+  `LOOP_DEPTH` スレッドローカルは VM 経路で不要化。
+- **残り（次増分）**:
+  - **例外テーブル**（try/except/finally・raise）— VM ディスパッチループを Err 捕捉可能に再構成し
+    ハンドラスタック（SETUP_TRY/POP_TRY）を導入。`RAISE_SENTINEL`／`current_exception`・finally・
+    トレースバックフレーム蓄積をツリーウォークと byte-identical にするのが要（慎重に別増分で実施）。
+  - **ブロック式**（`block:`/if/while 式 + `block_return`/`loop_yield`）— 値を産む式形。
+    `BLOCK_YIELDS`/`BLOCK_RETURN_EXPECTED_TYPE` スレッドローカルの除去はここで。
+  - スレッドローカル4本＋センチネル2種の**実削除**は、上記完了＋強制バイトコード（D2）時。
+
+---
+
 ## 次に効くレバー
-1. **Phase V-C** — 例外テーブル・match 式・ブロック式（block_return/loop_yield）を VM に追加し、
-   **スレッドローカル4本＋センチネル2種を構造的に削除**（§1.4/§5.3。速度以前の設計大整理）。
+1. **V-C 例外テーブル + ブロック式**（上記「残り」）— スレッドローカル／センチネル除去の本丸。
 2. **Phase V-D** — for ループ（GET_ITER/FOR_ITER）を追加し、実プログラムで VM 化できる関数を大きく増やす。
 3. **メソッド呼び出し機構の軽量化** — `call_instance_method_evaled` の bind_args/copy/`current_class` を
    VM フレーム上で直接行い、per-call オーバーヘッドを削減（V-B の method_hot がここで伸びる）。
-4. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
+4. **VM 行テーブル（V-E の前倒し）** — 未捕捉例外のトレースバック行番号を回復し、`off`/`auto` の
+   出力差（`runtime_error.ar`）を解消。
+5. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
 
-`LocalRef` / slot 化 `Scope` / `frame_floor` フレームモデル / bind_args 高速経路 / `AttrCache` / R4 呼び先キャッシュ / method IC / リゾルバ / VM 骨格（op/chunk/run）は上記すべての土台として再利用される。
+`LocalRef` / slot 化 `Scope` / `frame_floor` フレームモデル / bind_args 高速経路 / `AttrCache` / R4 呼び先キャッシュ / method IC / リゾルバ / VM 骨格（op/chunk/run）/ break-continue ジャンプ / 平坦 slot 割り当て / match は上記すべての土台として再利用される。

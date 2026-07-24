@@ -1,0 +1,39 @@
+# V-C ベンチ: ネストしたブロック内ローカル宣言 + break/continue + match。
+# これらは V-B までフォールバック（丸ごとツリーウォーク）していた。
+
+fn collatz_steps(start: int) -> int:
+    mut n: int = start
+    mut steps: int = 0
+    while n > 1:
+        let half: int = n // 2
+        if n % 2 == 0:
+            n = half
+        else:
+            let triple: int = n * 3
+            n = triple + 1
+        steps += 1
+        if steps > 1000:
+            break
+    return steps
+
+fn bucket(x: int) -> int:
+    match (x % 4):
+        case 0:
+            return 10
+        case 1:
+            return 20
+        case 2:
+            return 30
+        case _:
+            return 40
+
+fn main() -> None:
+    mut total: int = 0
+    mut i: int = 1
+    while i < 300000:
+        total += collatz_steps(i % 500 + 1)
+        total += bucket(i)
+        i += 1
+    print(total)
+
+main()
