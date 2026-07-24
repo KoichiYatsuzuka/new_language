@@ -15,6 +15,8 @@ pub enum Op {
     Nil,
     /// locals[slot] を push する（LocalRef / パラメータ / base ローカル読み）。
     LoadLocal(u16),
+    /// グローバル `names[name_idx]` の値を push する（呼び先の解決）。未定義なら NameError。
+    LoadGlobal(u32),
     /// pop して locals[slot] へそのまま書き込む（const / 代入 / let-from-immutable / リテラル let）。
     StoreLocal(u16),
     /// pop して deep_copy してから locals[slot] へ（`mut` 宣言: exec は常に deep_copy_value）。
@@ -40,6 +42,9 @@ pub enum Op {
     JumpIfFalseOrPop(u32),
     /// スタックトップが真ならジャンプ（値を残す）、偽なら pop して継続（`or` 短絡）。
     JumpIfTrueOrPop(u32),
+    /// 関数呼び出し: スタックは `[callee, arg0, .., argN-1]`。args を argc 個・callee を pop し、
+    /// `mut_mask`（bit i = arg i の is_mutable）付きでディスパッチして結果を push する。
+    Call(u16, u32),
     /// スタックトップを関数戻り値として返す。
     Return,
     /// `None` を関数戻り値として返す（本体末尾のフォールオフ）。

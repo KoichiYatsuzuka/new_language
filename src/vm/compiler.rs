@@ -12,11 +12,26 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{BinOp, Expr, Param, Stmt};
+use crate::ast::{BinOp, CallArg, Expr, Param, Stmt};
 use crate::interpreter::Value;
 
 use super::chunk::Chunk;
 use super::op::Op;
+
+/// VM の `Call` op で解決できない呼び先名（純粋 builtin・型コンストラクタ）。
+/// これらは `eval_builtin_ident_call` で特別扱いされるか、グローバル `Value::Type` として
+/// 別セマンティクスで呼ばれるため、コンパイル時に弾いてツリーウォークへフォールバックする。
+fn is_builtin_callee(name: &str) -> bool {
+    matches!(
+        name,
+        // eval_builtin_ident_call の各アーム（グローバルに存在しない純粋 builtin）
+        "print" | "next" | "repr" | "range" | "len" | "create_flat_int_list" | "flat_get_int"
+            | "flat_set_int" | "id" | "open" | "close" | "enumerate" | "zip" | "getenv" | "parse_ar"
+            // 型コンストラクタ（Value::Type グローバル・別経路）
+            | "int" | "uint" | "str" | "float" | "complex" | "bool" | "dict" | "set" | "tuple"
+            | "list" | "function" | "slice" | "type" | "byte"
+    )
+}
 
 struct Compiler {
     code: Vec<Op>,
@@ -141,6 +156,22 @@ impl Compiler {
             Op::JumpIfTrueOrPop(_) => Op::JumpIfTrueOrPop(target),
             _ => unreachable!("patch_jump on non-jump op"),
         };
+    }
+
+    /// 呼び出し引数の `is_mutable`（`eval_call_args` と同じ判定: 変数 ident は変数の可変性、
+    /// それ以外の式は保守的に true）。VM は base ローカルしか読まないので slot_mut で判定できる。
+    fn arg_is_mutable(&self, e: &Expr) -> bool {
+        match e {
+            Expr::LocalRef { slot, .. } => {
+                self.slot_mut.get(*slot as usize).copied().unwrap_or(true)
+            }
+            Expr::Ident(name) => self
+                .slots
+                .get(name)
+                .and_then(|&s| self.slot_mut.get(s as usize).copied())
+                .unwrap_or(true),
+            _ => true,
+        }
     }
 
     fn compile_stmt(&mut self, stmt: &Stmt) -> Option<()> {
@@ -323,7 +354,44 @@ impl Compiler {
                 let name_idx = self.add_name(attr);
                 self.emit(Op::GetAttr(name_idx, name_idx));
             }
-            // それ以外（呼び出し・添字・コレクション・キャスト・式ブロック等）は非対応。
+            // 関数呼び出し `func(args)`（メソッド呼び=Attr func は非対応）。
+            Expr::Call { func, args, .. } => {
+                // 呼び先をスタックに載せる。
+                match func.as_ref() {
+                    Expr::Ident(name) => {
+                        if is_builtin_callee(name) {
+                            return None;
+                        }
+                        let ni = self.add_name(name);
+                        self.emit(Op::LoadGlobal(ni));
+                    }
+                    Expr::LocalRef { slot, .. } => {
+                        let s = u16::try_from(*slot).ok()?;
+                        self.emit(Op::LoadLocal(s));
+                    }
+                    // メソッド呼び出し(Attr)・テンプレート・入れ子 func は非対応。
+                    _ => return None,
+                }
+                // 位置引数のみ・最大32個。各引数の is_mutable をコンパイル時に算出する。
+                if args.len() > 32 {
+                    return None;
+                }
+                let mut mask: u32 = 0;
+                for (i, arg) in args.iter().enumerate() {
+                    match arg {
+                        CallArg::Positional(e) => {
+                            if self.arg_is_mutable(e) {
+                                mask |= 1 << i;
+                            }
+                            self.compile_expr(e)?;
+                        }
+                        // キーワード・可変長引数は非対応。
+                        _ => return None,
+                    }
+                }
+                self.emit(Op::Call(args.len() as u16, mask));
+            }
+            // それ以外（添字・コレクション・キャスト・式ブロック等）は非対応。
             _ => return None,
         }
         Some(())

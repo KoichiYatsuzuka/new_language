@@ -34,6 +34,13 @@ pub fn run(
                 let v = buf[base + *s as usize].clone();
                 buf.push(v);
             }
+            Op::LoadGlobal(ni) => {
+                let name = &chunk.names[*ni as usize];
+                match interp.vm_get_global(name) {
+                    Some(v) => buf.push(v),
+                    None => return Err(format!("NameError: '{name}' is not defined")),
+                }
+            }
             Op::StoreLocal(s) => {
                 let v = buf.pop().unwrap();
                 buf[base + *s as usize] = v;
@@ -124,6 +131,19 @@ pub fn run(
                     continue;
                 }
                 buf.pop();
+            }
+            Op::Call(argc, mut_mask) => {
+                let n = *argc as usize;
+                let split = buf.len() - n;
+                let arg_vals = buf.split_off(split); // arg0..argN-1（順序保持）
+                let callee = buf.pop().unwrap();
+                let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
+                    .collect();
+                let r = interp.call_value_evaled(callee, evaled)?;
+                buf.push(r);
             }
             Op::Return => return Ok(buf.pop().unwrap()),
             Op::ReturnNil => return Ok(Value::None),

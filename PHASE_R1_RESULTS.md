@@ -102,7 +102,7 @@ BYTECODE_VM_PLAN §5 の Phase V の第一段（V-A）。解決済み AST をリ
 |---|---|
 | `op.rs` | オペコード列挙（Const/LoadLocal/StoreLocal/Bin/Un/GetAttr/Jump 系/Return …） |
 | `chunk.rs` | `Chunk { code, consts, names, attr_caches, n_locals }` |
-| `compiler.rs` | 解決済み AST → Chunk。**トップレベルのリーフ関数**（呼び出し・メソッド・クロージャ・for/match/例外・可変長を含まない）をコンパイル、他は `None`（フォールバック）。**ローカル宣言（let/mut/const）対応済み**（下記） |
+| `compiler.rs` | 解決済み AST → Chunk。トップレベル関数を対象に、算術・フィールド読み・制御フロー・**ローカル宣言（let/mut/const）**・**関数呼び出し**を対応。メソッド呼び(Attr func)・for/match/例外・クロージャ・可変長・keyword 引数は `None`（フォールバック） |
 | `run.rs` | ディスパッチループ。値スタックは Interpreter の**使い回しバッファ**（per-call 確保なし）。int/float 算術・順序比較・public フィールド読み（R3 IC）を**ループ内インライン**、他は既存 `apply_binop_dyn`/`get_attr_val`/`eval_truthy` へ委譲（＝意味論一致） |
 | `disasm.rs` | 逆アセンブラ（開発用） |
 | `mod.rs` | `VmMode`（Off/Auto/Force）・公開 API |
@@ -141,6 +141,19 @@ slot をずらす形は丸ごとフォールバック。これでローカル変
 
 - ローカル宣言対応で `scope_lookup`（let 4本 + 算術）が VM に載り **1.66x**（プリミティブ局所変数＋型特化算術＝VM の得意領域）。
   ツリーウォークの 4× exec_let（宣言チェック）+ 再帰 eval を線形バイトコードが置き換える。
+
+### 関数呼び出し（CALL）対応
+`func(args)` を VM に追加し、**非リーフ関数**（他の関数を呼ぶ関数）も VM に載るようにした。
+- 呼び先: グローバル Ident → `LoadGlobal`（`scopes[0]` 解決＝呼び出し元スコープを跨がない）、ローカル関数値 → `LoadLocal`。
+  純粋 builtin（print/len/range 等 15 個）と型コンストラクタ（int/str 等）は**コンパイル時に blocklist で弾く**（フォールバック）。
+- 引数: 各引数の `is_mutable` を**コンパイル時に算出**（`eval_call_args` と同じ判定: LocalRef→slot 可変性、他 true）して
+  `Op::Call(argc, mut_mask)` に載せる。ランタイムは正しいフラグ付きの評価済み引数で `call_value_evaled` へディスパッチ。
+  → let 引数 → let パラメータの `===`（参照等値）まで含めツリーウォークと一致。
+- 例外は `?` で伝播し、`exec_fn_evaled` の VM 経路が呼び出し元フレームを付加（トレースバック一致）。
+
+**計測（非リーフベンチ: `compute`= helper 2回 + let 2本 + 算術）**: `--vm=off` 2.89 → `--vm=auto` 2.22 µs/iter = **1.30x**
+（呼び先 `helper` も VM コンパイルされ両段バイトコード実行）。totals 一致・例外伝播一致・関数呼び中心の 23 例で
+`off`/`auto` 出力完全一致。
 
 - **Phase R で高度に最適化されたツリーウォークに対しても VM が 1.07〜1.11x 上回る**（コンパイル対象の関数）。
   本体がほぼ空の `noop` だけは per-call オーバーヘッド（chunk キャッシュ引き・バッファ確保）で微減。

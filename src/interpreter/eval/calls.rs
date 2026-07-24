@@ -548,16 +548,26 @@ impl Interpreter {
         callee: Value,
         args: Vec<Value>,
     ) -> Result<Value, String> {
-        let evaled: Vec<(Option<String>, Value, bool)> = args.into_iter().map(|v| (None, v, true)).collect();
+        // ネイティブ呼び出しは引数を保守的に mutable 扱い（従来動作）。
+        let evaled: Vec<(Option<String>, Value, bool)> =
+            args.into_iter().map(|v| (None, v, true)).collect();
+        self.call_value_evaled(callee, evaled)
+    }
+
+    /// 評価済み引数（`is_mutable` フラグ込み）で任意の呼び出し可能値をディスパッチする。
+    /// VM の `Call` op（正しい `is_mutable` フラグをコンパイル時に算出）と `call_value_with_args`
+    /// の共通実装。
+    pub(crate) fn call_value_evaled(
+        &mut self,
+        callee: Value,
+        evaled: Vec<(Option<String>, Value, bool)>,
+    ) -> Result<Value, String> {
         match callee {
             Value::Function(fn_val) => self.exec_fn_evaled(fn_val, &evaled, None, "<fn>", None),
             Value::OverloadedFn(candidates) => {
                 self.dispatch_overload_evaled(candidates, evaled, None, "<overloaded>", None)
             }
-            Value::Class(cls) => {
-                // Class constructor called from native code (e.g. `Point(x, y)` via cb_call).
-                self.instantiate_evaled(cls, evaled)
-            }
+            Value::Class(cls) => self.instantiate_evaled(cls, evaled),
             Value::NativeFunction(fn_ref) => {
                 let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                 self.dispatch_native_evaled(&fn_ref, vals)
@@ -567,12 +577,20 @@ impl Interpreter {
                 self.call_type_by_name_evaled(&type_name, vals)
             }
             Value::Instance(_) => self.eval_method_call_evaled(callee, "__call__", evaled),
-            Value::PyObject(ref handle) => crate::interpreter::py_interop::call_py_object(handle, &evaled),
+            Value::PyObject(ref handle) => {
+                crate::interpreter::py_interop::call_py_object(handle, &evaled)
+            }
             other => Err(format!(
                 "TypeError: '{}' object is not callable",
                 self.type_name(&other)
             )),
         }
+    }
+
+    /// VM 用: グローバルスコープ（`scopes[0]`）から名前の値を引く。呼び先解決に使う。
+    /// 呼び出し元スコープを跨がず、トップレベル関数の自由名＝グローバルという規則に一致する。
+    pub(crate) fn vm_get_global(&self, name: &str) -> Option<Value> {
+        self.scopes[0].get(name).map(|v| v.get_value())
     }
 
     /// AsyncManager(num_thread=N [, raise_immediately=bool]) コンストラクタ

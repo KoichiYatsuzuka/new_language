@@ -19,6 +19,8 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::Const(i) => format!("CONST {i} = {:?}", chunk.consts.get(*i as usize)),
         Op::Nil => "NIL".to_string(),
         Op::LoadLocal(s) => format!("LOAD_LOCAL {s}"),
+        Op::LoadGlobal(n) => format!("LOAD_GLOBAL {:?}", chunk.names.get(*n as usize)),
+        Op::Call(argc, mask) => format!("CALL argc={argc} mut_mask={mask:#x}"),
         Op::StoreLocal(s) => format!("STORE_LOCAL {s}"),
         Op::StoreLocalDeepCopy(s) => format!("STORE_LOCAL_DEEPCOPY {s}"),
         Op::StoreLocalCopyFreeze(s) => format!("STORE_LOCAL_COPYFREEZE {s}"),
