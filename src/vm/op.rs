@@ -42,6 +42,15 @@ pub enum Op {
     Swap,
     /// 型判定: pop v, push Bool(value_is_type(v, names[name_idx]))（match の `is TypeName` パターン）。
     IsType(u32),
+    /// 純粋・共通な組み込み呼び出し（print/range/len）: argc 個の評価済み引数を pop し、
+    /// `eval_builtin_evaled(names[name_idx], args)` で実行して結果を push する。
+    CallBuiltin(u32, u16),
+    /// イテレータ取得: pop iterable, push make_for_iterator(iterable)（`for` ループの入口）。
+    GetIter,
+    /// イテレータ前進: `locals[iter_slot]` の `.next()` を呼ぶ。
+    /// `EndOfIteration` なら `exit_ip` へジャンプ、要素があれば `locals[target_slot]` へ束縛して継続。
+    /// フィールドは (iter_slot, target_slot, exit_ip)。
+    ForIter(u16, u16, u32),
     /// 無条件ジャンプ（絶対 index）。
     Jump(u32),
     /// pop した値が偽ならジャンプ（if/while の条件分岐）。

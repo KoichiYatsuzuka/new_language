@@ -370,9 +370,12 @@ pub struct Interpreter {
     /// バイトコード VM の実行モード（Off/Auto/Force）。CLI `--vm` で設定。既定 Auto（Phase V）。
     pub(crate) vm_mode: crate::vm::VmMode,
     /// 関数ごとのコンパイル済み Chunk キャッシュ。キー = `Rc::as_ptr(fn_val)`。
-    /// `Some(chunk)` = VM 実行、`None` = 非対応（ツリーウォーク）。VM 対象は寿命の長い
-    /// トップレベル関数（captured_env 空）のみなのでポインタ再利用の危険はない（Phase V）。
-    pub(self) vm_chunks: HashMap<usize, Option<Rc<crate::vm::Chunk>>>,
+    /// 値 = `(Weak<FnValue>, Some(chunk)=VM 実行 / None=非対応)`。
+    /// テンプレート実体化は呼び出しごとに一時的な `Rc<FnValue>` を作って破棄するため、
+    /// 解放されたアドレスが後続の別 fn_val に再利用され得る（キー衝突）。`Weak` を保持し、
+    /// ヒット時に `upgrade()` が失敗したら「アドレス再利用＝別関数」と判定して再コンパイルする
+    /// （リークなし・古い Chunk の誤用を防ぐ, Phase V-D）。
+    pub(self) vm_chunks: HashMap<usize, (std::rc::Weak<FnValue>, Option<Rc<crate::vm::Chunk>>)>,
     /// VM の値スタックバッファ（per-call 確保を避けるため使い回す）。
     /// 実行中は `std::mem::take` で借り出し、復帰時に容量ごと戻す（Phase V）。
     pub(crate) vm_stack: Vec<Value>,

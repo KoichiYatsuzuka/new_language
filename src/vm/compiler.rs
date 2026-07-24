@@ -21,6 +21,12 @@ use super::op::Op;
 /// VM の `Call` op で解決できない呼び先名（純粋 builtin・型コンストラクタ）。
 /// これらは `eval_builtin_ident_call` で特別扱いされるか、グローバル `Value::Type` として
 /// 別セマンティクスで呼ばれるため、コンパイル時に弾いてツリーウォークへフォールバックする。
+/// VM 内で評価済み引数から直接呼べる組み込み（`eval_builtin_evaled` が扱う集合）。
+/// `for x in range(n)` や `print(...)` を含む関数を VM に載せられるようにする。
+fn is_vm_builtin(name: &str) -> bool {
+    matches!(name, "print" | "range" | "len")
+}
+
 fn is_builtin_callee(name: &str) -> bool {
     matches!(
         name,
@@ -239,6 +245,13 @@ fn collect_nested_decls(
                     collect_nested_decls(&arm.body, slots, slot_mut, slot_type, n)?;
                 }
             }
+            Stmt::For { targets, body, .. } => {
+                // ループ変数は可変（tree-walk は Var::new(item, true)）。型注釈なし。
+                for t in targets {
+                    add(t, &None, true, slots, slot_mut, slot_type, n)?;
+                }
+                collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
+            }
             // その他（未対応構文）には踏み込まない。compile_stmt が到達時に bail する。
             _ => {}
         }
@@ -429,6 +442,37 @@ impl Compiler {
             }
             Stmt::Match { subject, arms, .. } => {
                 self.compile_match(subject, arms)?;
+            }
+            Stmt::For { targets, iter, body } => {
+                // 単一ターゲットのみ対応（タプルアンパックは非対応 → bail）。
+                if targets.len() != 1 {
+                    return None;
+                }
+                let target_slot = *self.slots.get(&targets[0])?;
+                // イテレータを取得して temp slot に格納。
+                let iter_temp = self.alloc_temp()?;
+                self.compile_expr(iter)?;
+                self.emit(Op::GetIter);
+                self.emit(Op::StoreLocal(iter_temp));
+                // loop_start: ForIter で next。EndOfIteration なら exit へ、要素なら target へ束縛。
+                let loop_start = self.here();
+                let fi = self.emit(Op::ForIter(iter_temp, target_slot, 0)); // exit は後でパッチ
+                self.loops.push(LoopCtx {
+                    continue_target: loop_start, // continue は次の ForIter へ戻る
+                    break_jumps: Vec::new(),
+                });
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
+                self.emit(Op::Jump(loop_start));
+                let exit = self.here();
+                // ForIter の exit_ip をバックパッチ（patch_jump は Jump 系専用なので手動）。
+                self.code[fi] = Op::ForIter(iter_temp, target_slot, exit);
+                let ctx = self.loops.pop().unwrap();
+                for j in ctx.break_jumps {
+                    self.patch_jump(j, exit);
+                }
+                self.free_temp();
             }
             Stmt::Break => {
                 // 最内ループの break_jumps に登録し、末尾へジャンプ（バックパッチ）。
@@ -659,31 +703,37 @@ impl Compiler {
                     let mask = self.compile_call_args(args)?;
                     let ni = self.add_name(attr);
                     self.emit(Op::CallMethod(ni, args.len() as u16, mask));
-                } else {
-                    // ── 通常の関数呼び出し ── 呼び先をスタックに載せる。
-                    match func.as_ref() {
-                        Expr::Ident(name) => {
-                            // ローカル/パラメータが関数値を保持している場合は slot 読み。
-                            // （解決済み関数は LocalRef になるが、未解決メソッド本体では Ident のまま）。
-                            if let Some(&slot) = self.slots.get(name) {
-                                self.emit(Op::LoadLocal(slot));
-                            } else if is_builtin_callee(name) || name == "Self" {
-                                // 純粋 builtin・型コンストラクタ・`Self`（メソッドの base 束縛で
-                                // VM には無い）は非対応。
-                                return None;
-                            } else {
-                                let ni = self.add_name(name);
-                                self.emit(Op::LoadGlobal(ni));
-                            }
-                        }
-                        Expr::LocalRef { slot, .. } => {
-                            let s = u16::try_from(*slot).ok()?;
-                            self.emit(Op::LoadLocal(s));
-                        }
-                        _ => return None,
+                } else if let Expr::Ident(name) = func.as_ref() {
+                    // ── VM 対応組み込み（print/range/len）── 評価済み引数で直接呼ぶ。
+                    // ローカル slot に同名（シャドウ）がなければ組み込みとして扱う。
+                    if is_vm_builtin(name) && !self.slots.contains_key(name) {
+                        self.compile_call_args(args)?; // 組み込みは mut_mask 不要
+                        let ni = self.add_name(name);
+                        self.emit(Op::CallBuiltin(ni, args.len() as u16));
+                    } else if let Some(&slot) = self.slots.get(name) {
+                        // ローカル/パラメータが関数値を保持している場合は slot 読み。
+                        self.emit(Op::LoadLocal(slot));
+                        let mask = self.compile_call_args(args)?;
+                        self.emit(Op::Call(args.len() as u16, mask));
+                    } else if is_builtin_callee(name) || name == "Self" {
+                        // その他の純粋 builtin・型コンストラクタ・`Self` は非対応。
+                        return None;
+                    } else {
+                        // グローバル関数呼び出し。
+                        let ni = self.add_name(name);
+                        self.emit(Op::LoadGlobal(ni));
+                        let mask = self.compile_call_args(args)?;
+                        self.emit(Op::Call(args.len() as u16, mask));
                     }
+                } else if let Expr::LocalRef { slot, .. } = func.as_ref() {
+                    // 解決済みローカル関数値の呼び出し。
+                    let s = u16::try_from(*slot).ok()?;
+                    self.emit(Op::LoadLocal(s));
                     let mask = self.compile_call_args(args)?;
                     self.emit(Op::Call(args.len() as u16, mask));
+                } else {
+                    // その他の呼び先式（添字結果など）は非対応。
+                    return None;
                 }
             }
             // それ以外（添字・コレクション・キャスト・式ブロック等）は非対応。

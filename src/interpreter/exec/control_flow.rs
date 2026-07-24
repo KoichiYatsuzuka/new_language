@@ -100,14 +100,9 @@ impl Interpreter {
         result
     }
 
-    /// `for target in iter: body` 文を実行する。イテラブルを展開して各要素でボディを繰り返す。
-    pub(crate) fn exec_for_stmt(
-        &mut self,
-        targets: &[String],
-        iter: &Expr,
-        body: &[Stmt],
-    ) -> Result<ExecResult, String> {
-        let iter_val = self.eval(iter)?;
+    /// イテラブルな値を `for` 反復用のイテレータ（多くは `Value::Generator`）へ変換する。
+    /// `exec_for_stmt`（ツリーウォーク）と VM の `GetIter` op が共有する（意味論一致）。
+    pub(crate) fn make_for_iterator(&mut self, iter_val: Value) -> Result<Value, String> {
         let generator = match iter_val {
             Value::List(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState {
                 values: items.borrow().clone(),
@@ -144,6 +139,18 @@ impl Interpreter {
             }
             _ => return Err("TypeError: object is not iterable".to_string()),
         };
+        Ok(generator)
+    }
+
+    /// `for target in iter: body` 文を実行する。イテラブルを展開して各要素でボディを繰り返す。
+    pub(crate) fn exec_for_stmt(
+        &mut self,
+        targets: &[String],
+        iter: &Expr,
+        body: &[Stmt],
+    ) -> Result<ExecResult, String> {
+        let iter_val = self.eval(iter)?;
+        let generator = self.make_for_iterator(iter_val)?;
         LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
         let result =
             (|| {

@@ -14,6 +14,90 @@ use super::*;
 impl Interpreter {
     /// 組み込み関数名を受け取り、該当する組み込みを実行して結果を返す。
     /// 未知の名前には `None` を返してユーザー定義関数の探索にフォールスルーする。
+    /// 評価済み引数で「純粋・共通」な組み込みを呼ぶ（VM の `CallBuiltin` op 用）。
+    /// `eval_builtin_ident_call` の対応アームと**同一意味論**（引数は VM がスタックで評価済み）。
+    /// ここで扱わない名前は `None`（コンパイラは扱う名前だけ `CallBuiltin` を発行する）。
+    pub(crate) fn eval_builtin_evaled(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+    ) -> Option<Result<Value, String>> {
+        match name {
+            "print" => {
+                let mut parts: Vec<String> = Vec::with_capacity(args.len());
+                for v in &args {
+                    match self.display_str(v) {
+                        Ok(s) => parts.push(s),
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
+                println!("{}", parts.join(" "));
+                Some(Ok(Value::None))
+            }
+            "range" => Some(match args.as_slice() {
+                [Value::Int(stop)] => Ok(Value::List(Rc::new(RefCell::new(
+                    (0..*stop).map(Value::Int).collect(),
+                )))),
+                [Value::Int(start), Value::Int(stop)] => Ok(Value::List(Rc::new(RefCell::new(
+                    (*start..*stop).map(Value::Int).collect(),
+                )))),
+                [Value::Int(start), Value::Int(stop), Value::Int(step)] => {
+                    let mut items = Vec::new();
+                    let mut i = *start;
+                    if *step > 0 {
+                        while i < *stop {
+                            items.push(Value::Int(i));
+                            i += step;
+                        }
+                    } else if *step < 0 {
+                        while i > *stop {
+                            items.push(Value::Int(i));
+                            i += step;
+                        }
+                    }
+                    Ok(Value::List(Rc::new(RefCell::new(items))))
+                }
+                _ => Err("TypeError: range() takes 1\u{2013}3 integer arguments".to_string()),
+            }),
+            "len" => {
+                if args.len() != 1 {
+                    return Some(Err("TypeError: len() takes exactly one argument".to_string()));
+                }
+                let val = args.into_iter().next().unwrap();
+                let has_instance_len = if let Value::Instance(inst_rc) = &val {
+                    inst_rc.borrow().class.methods.contains_key("__len__")
+                } else {
+                    false
+                };
+                if has_instance_len {
+                    return Some(self.eval_method_call_evaled(val, "__len__", vec![]).and_then(
+                        |r| match r {
+                            Value::Int(n) => Ok(Value::Int(n)),
+                            other => Err(format!(
+                                "TypeError: __len__ must return int, not '{}'",
+                                self.type_name(&other)
+                            )),
+                        },
+                    ));
+                }
+                Some(match &val {
+                    Value::List(items) => Ok(Value::Int(items.borrow().len() as i64)),
+                    Value::FrozenList { ref state, .. } => Ok(Value::Int(state.borrow().len as i64)),
+                    Value::Str(s) => Ok(Value::Int(s.len() as i64)),
+                    Value::Dict(d) => Ok(Value::Int(d.borrow().all_keys().len() as i64)),
+                    Value::Set(s) => Ok(Value::Int(s.borrow().len() as i64)),
+                    Value::Tuple(t) => Ok(Value::Int(t.len() as i64)),
+                    Value::PyObject(handle) => crate::interpreter::py_interop::py_len(handle),
+                    _ => Err(format!(
+                        "TypeError: object of type '{}' has no len()",
+                        self.type_name(&val)
+                    )),
+                })
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn eval_builtin_ident_call(
         &mut self,
         name: &str,

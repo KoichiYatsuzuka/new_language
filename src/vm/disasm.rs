@@ -35,6 +35,11 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::SetAttr(n) => format!("SET_ATTR {:?}", chunk.names.get(*n as usize)),
         Op::Swap => "SWAP".to_string(),
         Op::IsType(n) => format!("IS_TYPE {:?}", chunk.names.get(*n as usize)),
+        Op::CallBuiltin(n, argc) => {
+            format!("CALL_BUILTIN {:?} argc={argc}", chunk.names.get(*n as usize))
+        }
+        Op::GetIter => "GET_ITER".to_string(),
+        Op::ForIter(it, tgt, exit) => format!("FOR_ITER iter={it} target={tgt} exit={exit}"),
         Op::Jump(t) => format!("JUMP {t}"),
         Op::JumpIfFalse(t) => format!("JUMP_IF_FALSE {t}"),
         Op::JumpIfFalseOrPop(t) => format!("JUMP_IF_FALSE_OR_POP {t}"),

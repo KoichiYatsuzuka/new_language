@@ -289,13 +289,61 @@ BYTECODE_VM_PLAN §5.3/§5.4 の V-C。制御フローを実行時センチネ�
 
 ---
 
+# Phase V-D — for ループ（GET_ITER/FOR_ITER）＋ 組み込み呼び出し（print/range/len）＋ Chunk キャッシュの健全化
+
+BYTECODE_VM_PLAN §5.4 の V-D。for ループを VM に載せ、あわせて **for/print を含む関数を VM 化できるよう
+共通組み込み（print/range/len）を VM 呼び出し可能に**した。実装中に **Chunk キャッシュのポインタ再利用
+バグ（V-A からの潜在）を発見・修正**（テンプレートで顕在化）。
+
+## 実装
+| 変更 | ファイル | 内容 |
+|---|---|---|
+| **for ループ** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs), [vm/compiler.rs](src/vm/compiler.rs) | `GetIter`（iterable→イテレータ）＋ `ForIter(iter_slot, target_slot, exit_ip)`（`.next()` 呼び・`EndOfIteration` で exit へ・要素は target へ束縛）。イテレータは temp slot に保持。ループ変数は `collect_nested_decls` で平坦 slot 割り当て（可変）。break/continue は既存 LoopCtx で自然対応（continue→ForIter へ戻る／break→exit）。単一ターゲットのみ（タプルアンパックは bail） |
+| イテレータ変換の共有 | [exec/control_flow.rs](src/interpreter/exec/control_flow.rs) | `exec_for_stmt` から `make_for_iterator`（List/FrozenList/Str/Set/Tuple/Generator/Instance(`__iter__`)/PyObject → イテレータ）を抽出し、ツリーウォークと VM `GetIter` で共有（意味論一致） |
+| **Generator 高速パス** | [vm/run.rs](src/vm/run.rs) | `ForIter` は iterator が `Value::Generator`（range/list/str/…/`gen __iter__` の実体）なら index を**直接前進**（`eval_method_call` のディスパッチを丸ごと回避）。カスタム Instance イテレータのみ `.next()` フォールバック。**この高速パスが for の速度差の主因** |
+| **共通組み込みの VM 呼び出し** | [eval/builtins.rs](src/interpreter/eval/builtins.rs), [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs), [vm/compiler.rs](src/vm/compiler.rs) | `print`/`range`/`len` を評価済み引数で呼ぶ `eval_builtin_evaled` を追加（`eval_builtin_ident_call` の対応アームと同一意味論）＋ `CallBuiltin(name_idx, argc)` op。コンパイラは `is_vm_builtin` かつローカル未シャドウのとき発行。**これまで `print` や `range` を含む関数（＝多数）が丸ごとフォールバックしていた** のを解消 |
+| **Chunk キャッシュの健全化（バグ修正）** | [interpreter.rs](src/interpreter.rs), [functions/execution.rs](src/interpreter/functions/execution.rs) | `vm_chunks` の値を `(Weak<FnValue>, Option<Rc<Chunk>>)` に変更。ヒット時に `Weak::upgrade()` が失敗したら「そのアドレスが別 fn_val に再利用された」と判定して**再コンパイル**する。**テンプレート実体化（`instantiate_template*`）は呼び出しごとに一時 `Rc<FnValue>` を生成・破棄するため、`Rc::as_ptr` キーが再利用されて古い Chunk を誤用する潜在バグ（V-A 由来）を修正**。リークなし |
+
+### 発見したバグ（重要）
+`polymorphism.ar` で `--vm=off`/`auto` が相違（`AttributeError: 'NoneType' ... to_str`）。原因は
+**テンプレート実体化が毎回一時的な `Rc<FnValue>` を作って捨てる**ため、解放アドレスが後続の別関数
+（別テンプレート実体化やクラスメソッド）に再利用され、`Rc::as_ptr` キーの `vm_chunks` が**別関数の
+Chunk を返して誤実行**していた。V-A から潜在していたが、V-D で対象関数が増え顕在化。`Weak` 検証で修正。
+
+## 検証
+- `cargo test`（`--vm=auto`）→ **672 passed / 0 failed**。
+- 例題回帰: basics/collections/classes/typing/exceptions/practical/control_flow/functions の決定的例
+  **43 件** ＋ `_error` 例 **18 件** で `--vm=off`/`--vm=auto` 一致。for（range/list/str/`gen __iter__`・
+  ネスト・break/continue・early return）・print・テンプレート（`polymorphism.ar` 修正確認）を含む。
+  - **既知の非一致 1 件**は `runtime_error.ar`（未捕捉例外トレースバックの行番号欠落＝VM 行テーブル未実装, V-E）。V-A 由来で V-D の回帰ではない。
+- `cargo build` / 追加 clippy 警告 0。
+
+## 速度計測（`--vm=off` vs `--vm=auto`、best-of-3〜4、release）
+| ベンチ | 内容 | off | auto | VM 倍率 |
+|---|---|---|---|---|
+| **for** | `range` + ネスト for + break/continue + print を回す | 0.635s | 0.294s | **2.16x** |
+| for-over-list | list パラメータを for 反復（`total += x*2-1`）600万回 | 2.054s | 0.915s | **2.24x** |
+| **control_flow**（再測定） | V-C の bench。print/main も VM 化され更に伸びた | 11.14s | 4.58s | **2.43x** |
+
+- **for ループは ~2.2x**。Generator 高速パス（index 直進）＋ ループ制御のジャンプ化＋型特化算術が効く。
+- 当初 `range`/`print` が blocklist で bail し 0.99x だったが、`CallBuiltin` で解消 → 2.16x。
+- **組み込みの VM 化で `main`/多くの実関数が VM に載る**ようになり、既存 bench も更に伸びた（control_flow 1.91→2.43x）。
+
+## V-D の到達点と残り
+- **到達**: for ループ（range/list/str/set/tuple/カスタム `__iter__`・break/continue・ネスト）と、
+  print/range/len を含む関数が VM に載る。Chunk キャッシュがテンプレートでも健全。
+- **残り（V-D 続き・別テーマ）**: テンプレート実体化の Chunk メモ化（現状は毎回再コンパイル、§2.2）・
+  ジェネレータ本体の VM 化・async・import モジュール Chunk は未着手（大半は §5.4 V-D の別項で独立）。
+
+---
+
 ## 次に効くレバー
-1. **V-C 例外テーブル + ブロック式**（上記「残り」）— スレッドローカル／センチネル除去の本丸。
-2. **Phase V-D** — for ループ（GET_ITER/FOR_ITER）を追加し、実プログラムで VM 化できる関数を大きく増やす。
+1. **V-C 例外テーブル + ブロック式** — スレッドローカル／センチネル除去の本丸（try/except/finally・raise、
+   block式）。VM ディスパッチループを Err 捕捉可能に再構成しハンドラスタックを導入。
+2. **VM 行テーブル（V-E 前倒し）** — 未捕捉例外トレースバックの行番号を回復し `runtime_error.ar` の差を解消。
 3. **メソッド呼び出し機構の軽量化** — `call_instance_method_evaled` の bind_args/copy/`current_class` を
-   VM フレーム上で直接行い、per-call オーバーヘッドを削減（V-B の method_hot がここで伸びる）。
-4. **VM 行テーブル（V-E の前倒し）** — 未捕捉例外のトレースバック行番号を回復し、`off`/`auto` の
-   出力差（`runtime_error.ar`）を解消。
+   VM フレーム上で直接行い per-call オーバーヘッド削減。
+4. **添字・コレクションリテラル・その他組み込み**（`enumerate`/`zip`/`str`/`int` 等）の VM 化で更に対象拡大。
 5. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
 
-`LocalRef` / slot 化 `Scope` / `frame_floor` フレームモデル / bind_args 高速経路 / `AttrCache` / R4 呼び先キャッシュ / method IC / リゾルバ / VM 骨格（op/chunk/run）/ break-continue ジャンプ / 平坦 slot 割り当て / match は上記すべての土台として再利用される。
+`LocalRef` / slot 化 `Scope` / `frame_floor` / bind_args 高速経路 / `AttrCache` / R4 呼び先 / method IC / リゾルバ / VM 骨格（op/chunk/run）/ break-continue ジャンプ / 平坦 slot / match / for（GetIter/ForIter）/ CallBuiltin / Weak 検証 Chunk キャッシュ は上記すべての土台として再利用される。

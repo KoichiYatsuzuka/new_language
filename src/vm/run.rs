@@ -119,6 +119,60 @@ pub fn run(
                 let r = interp.value_is_type(&v, &chunk.names[*name_idx as usize]);
                 buf.push(Value::Bool(r));
             }
+            Op::CallBuiltin(name_idx, argc) => {
+                let n = *argc as usize;
+                let split = buf.len() - n;
+                let args = buf.split_off(split); // arg0..argN-1（順序保持）
+                let name = &chunk.names[*name_idx as usize];
+                match interp.eval_builtin_evaled(name, args) {
+                    Some(r) => buf.push(r?),
+                    // コンパイラは eval_builtin_evaled が扱う名前だけ発行するので到達しない。
+                    None => return Err(format!("NameError: '{name}' is not defined")),
+                }
+            }
+            Op::GetIter => {
+                let iterable = buf.pop().unwrap();
+                let iter = interp.make_for_iterator(iterable)?;
+                buf.push(iter);
+            }
+            Op::ForIter(iter_slot, target_slot, exit_ip) => {
+                let iter_idx = base + *iter_slot as usize;
+                // 高速パス: Generator（range/list/str/set/tuple/gen __iter__ の実体）は
+                // index を直接進める（eval_method_call のディスパッチを丸ごと回避）。
+                // メソッド呼び出しの Generator "next" アームと同一意味論。
+                let next: Option<Option<Value>> =
+                    if let Value::Generator(state) = &buf[iter_idx] {
+                        let mut s = state.borrow_mut();
+                        if s.index < s.values.len() {
+                            let val = s.values[s.index].clone();
+                            s.index += 1;
+                            Some(Some(val))
+                        } else {
+                            Some(None) // 枯渇
+                        }
+                    } else {
+                        None // 非 Generator（カスタムイテレータ）はフォールバック
+                    };
+                match next {
+                    Some(Some(val)) => buf[base + *target_slot as usize] = val,
+                    Some(None) => {
+                        ip = *exit_ip as usize;
+                        continue;
+                    }
+                    None => {
+                        // フォールバック: カスタムイテレータ等は .next() を呼ぶ。
+                        let iter = buf[iter_idx].clone();
+                        match interp.eval_method_call(iter, "next", &[], None) {
+                            Ok(item) => buf[base + *target_slot as usize] = item,
+                            Err(ref e) if e.starts_with("EndOfIteration") => {
+                                ip = *exit_ip as usize;
+                                continue;
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+            }
             Op::Jump(t) => {
                 ip = *t as usize;
                 continue;

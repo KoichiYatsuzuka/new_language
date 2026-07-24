@@ -166,11 +166,14 @@ impl Interpreter {
         {
             let key = Rc::as_ptr(&fn_val) as usize;
             let chunk_opt = match self.vm_chunks.get(&key) {
-                Some(c) => c.clone(),
-                None => {
+                // ヒット: 保持した Weak が生きている＝同一 fn_val（同一アドレス・生存）なので Chunk 有効。
+                Some((weak, cached)) if weak.upgrade().is_some() => cached.clone(),
+                // ミス、または Weak が死んでいる（＝そのアドレスが別 fn_val に再利用された）→ 再コンパイル。
+                _ => {
                     let compiled =
                         crate::vm::compile_fn(&fn_val.params, &fn_val.body).map(Rc::new);
-                    self.vm_chunks.insert(key, compiled.clone());
+                    self.vm_chunks
+                        .insert(key, (Rc::downgrade(&fn_val), compiled.clone()));
                     compiled
                 }
             };
