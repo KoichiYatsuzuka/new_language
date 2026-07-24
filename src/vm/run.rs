@@ -105,6 +105,15 @@ pub fn run(
                 };
                 buf.push(v);
             }
+            Op::SetAttr(name_idx) => {
+                let value = buf.pop().unwrap();
+                let obj = buf.pop().unwrap();
+                interp.attr_assign_evaled(obj, &chunk.names[*name_idx as usize], value)?;
+            }
+            Op::Swap => {
+                let n = buf.len();
+                buf.swap(n - 1, n - 2);
+            }
             Op::Jump(t) => {
                 ip = *t as usize;
                 continue;

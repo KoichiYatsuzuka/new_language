@@ -34,6 +34,12 @@ pub enum Op {
     Un(UnaryOp),
     /// 属性（フィールド）読み: pop obj, push get_attr_val(obj, names[name_idx], attr_caches[cache_idx])。
     GetAttr(u32, u32),
+    /// 属性（フィールド）書き: スタックは `[obj, value]`。value・obj を pop し、
+    /// `attr_assign_evaled(obj, names[name_idx], value)` で代入する（値は push しない）。
+    /// obj が Instance であることはコンパイル時に保証済み（`self` または instance 型注釈）。
+    SetAttr(u32),
+    /// スタックトップ2つを入れ替える（複合属性代入で rhs を先に評価しつつ演算順を保つため）。
+    Swap,
     /// 無条件ジャンプ（絶対 index）。
     Jump(u32),
     /// pop した値が偽ならジャンプ（if/while の条件分岐）。

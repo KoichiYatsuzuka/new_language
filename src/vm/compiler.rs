@@ -45,6 +45,9 @@ struct Compiler {
     slot_mut: Vec<bool>,
     /// slot → 型注釈（メソッド呼び出しの「obj は Instance」判定に使う）。
     slot_type: Vec<Option<String>>,
+    /// `self` パラメータの slot（メソッド本体をコンパイルするとき Some）。
+    /// `self` は型注釈を持たないが常に Instance なので、レシーバ判定で特別扱いする。
+    self_slot: Option<u16>,
     n_locals: usize,
 }
 
@@ -85,10 +88,14 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
     let mut slots: HashMap<String, u16> = HashMap::new();
     let mut slot_mut: Vec<bool> = Vec::new();
     let mut slot_type: Vec<Option<String>> = Vec::new();
+    let mut self_slot: Option<u16> = None;
     let mut n: u16 = 0;
     for p in params {
         if p.variadic {
             return None;
+        }
+        if p.name == "self" {
+            self_slot = Some(n);
         }
         slots.insert(p.name.clone(), n);
         slot_mut.push(p.mutable);
@@ -139,6 +146,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         slots,
         slot_mut,
         slot_type,
+        self_slot,
         n_locals: n as usize,
     };
 
@@ -191,6 +199,28 @@ impl Compiler {
             Op::JumpIfTrueOrPop(_) => Op::JumpIfTrueOrPop(target),
             _ => unreachable!("patch_jump on non-jump op"),
         };
+    }
+
+    /// 式 `e` が実行時に **確実に Instance** の base ローカルを指すかを保守的に判定する。
+    /// `self` パラメータ（型注釈なしだが常に Instance）と、ユーザークラス型注釈の
+    /// LocalRef/Ident を true とする。メソッド呼び出し・属性代入のレシーバ判定に使う。
+    fn object_is_instance(&self, e: &Expr) -> bool {
+        let slot = match e {
+            Expr::LocalRef { slot, .. } => *slot as usize,
+            Expr::Ident(name) => match self.slots.get(name) {
+                Some(&s) => s as usize,
+                None => return false,
+            },
+            _ => return false,
+        };
+        if Some(slot as u16) == self.self_slot {
+            return true;
+        }
+        self.slot_type
+            .get(slot)
+            .and_then(|o| o.as_deref())
+            .map(is_user_instance_type)
+            .unwrap_or(false)
     }
 
     /// 呼び出し引数の `is_mutable`（`eval_call_args` と同じ判定: 変数 ident は変数の可変性、
@@ -343,6 +373,41 @@ impl Compiler {
                     self.emit(store);
                 }
             }
+            // 属性代入 `obj.attr = value`（obj が `self`/instance で side-effect-free のときのみ）。
+            Stmt::AttrAssign { target, value } => {
+                let (object, attr) = match target {
+                    Expr::Attr { object, attr, .. } if self.object_is_instance(object) => {
+                        (object, attr)
+                    }
+                    _ => return None, // Subscript/TraitAccess/非 instance は非対応
+                };
+                // obj（SetAttr のベース）を push → value を push → SetAttr。
+                // object は side-effect-free（self/base ローカル）なので先に push してよい。
+                self.compile_expr(object)?;
+                self.compile_expr(value)?;
+                let ni = self.add_name(attr);
+                self.emit(Op::SetAttr(ni));
+            }
+            // 属性複合代入 `obj.attr op= value`（obj が `self`/instance のときのみ）。
+            Stmt::AttrCompoundAssign { target, op, value } => {
+                let (object, attr) = match target {
+                    Expr::Attr { object, attr, .. } if self.object_is_instance(object) => {
+                        (object, attr)
+                    }
+                    _ => return None,
+                };
+                let ni = self.add_name(attr);
+                // ツリーウォークの評価順（value を先に評価 → 現在値を get → op）に一致させる。
+                // stack: [obj(set base), value, obj(get base)] → GetAttr → [obj, value, cur]
+                //   → Swap → [obj, cur, value] → Bin(op) → [obj, new] → SetAttr。
+                self.compile_expr(object)?; // SetAttr のベース
+                self.compile_expr(value)?; // rhs を先に評価
+                self.compile_expr(object)?; // GetAttr のベース
+                self.emit(Op::GetAttr(ni, ni));
+                self.emit(Op::Swap);
+                self.emit(Op::Bin(op.clone()));
+                self.emit(Op::SetAttr(ni));
+            }
             // それ以外（break/continue・for/match/block・例外・定義・import 等）は非対応。
             _ => return None,
         }
@@ -413,17 +478,9 @@ impl Compiler {
             // 関数呼び出し `func(args)` / メソッド呼び出し `obj.method(args)`。
             Expr::Call { func, args, .. } => {
                 if let Expr::Attr { object, attr, .. } = func.as_ref() {
-                    // ── メソッド呼び出し ── object が Instance と保証できる LocalRef のときのみ対応。
-                    let obj_instance = match object.as_ref() {
-                        Expr::LocalRef { slot, .. } => self
-                            .slot_type
-                            .get(*slot as usize)
-                            .and_then(|o| o.as_deref())
-                            .map(is_user_instance_type)
-                            .unwrap_or(false),
-                        _ => false,
-                    };
-                    if !obj_instance {
+                    // ── メソッド呼び出し ── object が Instance と保証できる（`self` または
+                    // ユーザークラス型注釈の）LocalRef/Ident のときのみ対応。
+                    if !self.object_is_instance(object) {
                         return None;
                     }
                     self.compile_expr(object)?; // receiver を push
@@ -434,11 +491,18 @@ impl Compiler {
                     // ── 通常の関数呼び出し ── 呼び先をスタックに載せる。
                     match func.as_ref() {
                         Expr::Ident(name) => {
-                            if is_builtin_callee(name) {
+                            // ローカル/パラメータが関数値を保持している場合は slot 読み。
+                            // （解決済み関数は LocalRef になるが、未解決メソッド本体では Ident のまま）。
+                            if let Some(&slot) = self.slots.get(name) {
+                                self.emit(Op::LoadLocal(slot));
+                            } else if is_builtin_callee(name) || name == "Self" {
+                                // 純粋 builtin・型コンストラクタ・`Self`（メソッドの base 束縛で
+                                // VM には無い）は非対応。
                                 return None;
+                            } else {
+                                let ni = self.add_name(name);
+                                self.emit(Op::LoadGlobal(ni));
                             }
-                            let ni = self.add_name(name);
-                            self.emit(Op::LoadGlobal(ni));
                         }
                         Expr::LocalRef { slot, .. } => {
                             let s = u16::try_from(*slot).ok()?;

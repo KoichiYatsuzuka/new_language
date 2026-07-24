@@ -155,9 +155,11 @@ impl Interpreter {
         }
 
         // ── Phase V: バイトコード VM 経路（デュアルモード, D2） ──
-        // フリー関数（self なし・クロージャなし・非 Python）だけを対象に、初回にコンパイルして
-        // Chunk をキャッシュする。コンパイルできなければ None を焼き込みツリーウォークへ。
-        if self_val.is_none()
+        // フリー関数（self なし）と **インスタンスメソッド**（self=Instance）を対象に、初回に
+        // コンパイルして Chunk をキャッシュする。クロージャ・Python 関数・非 Instance レシーバ
+        // （クラスメソッド等）は対象外。コンパイルできなければ None を焼き込みツリーウォークへ。
+        let vm_eligible_self = matches!(self_val, None | Some(Value::Instance(_)));
+        if vm_eligible_self
             && fn_val.captured_env.is_empty()
             && !fn_val.is_python
             && self.vm_mode != crate::vm::VmMode::Off
@@ -174,6 +176,8 @@ impl Interpreter {
             };
             if let Some(chunk) = chunk_opt {
                 // 共有バッファを借り出し、base.. に locals を確保（per-call 確保なし）。
+                // メソッドの場合 bindings[0]=self が slot 0 に入る（`self` は compiler の
+                // slot 0・resolver も base 先頭）。`Self` は VM では使わない（compiler が bail）。
                 let mut buf = std::mem::take(&mut self.vm_stack);
                 let base = buf.len();
                 buf.resize(base + chunk.n_locals, Value::None);
@@ -182,9 +186,15 @@ impl Interpreter {
                         buf[base + i] = val.clone();
                     }
                 }
+                // メソッド実行: アクセス制御・Self 依存ディスパッチのため current_class を張る。
+                let prev_class = self.current_class.take();
+                if let Some(Value::Instance(inst_rc)) = &self_val {
+                    self.current_class = Some(inst_rc.borrow().class.clone());
+                }
                 self.call_stack.push(fn_name.to_string());
                 let result = crate::vm::run(self, &chunk, &mut buf, base);
                 self.call_stack.pop();
+                self.current_class = prev_class;
                 buf.truncate(base);
                 self.vm_stack = buf;
                 let caller_frame = self.build_caller_frame(call_span.as_ref());

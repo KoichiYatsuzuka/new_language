@@ -181,11 +181,73 @@ slot をずらす形は丸ごとフォールバック。これでローカル変
 
 ---
 
-## 次に効くレバー
-1. **Phase V-B/V-C** — 呼び出し（CALL op）・メソッド・ローカル宣言・制御フロー式・例外テーブルを VM に追加し、
-   対象関数を拡大（V-A の骨格が土台）。
-2. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
-   文字列多用ワークロード専用の効果。波及大につき別途。
-3. **メソッド IC の完全化** — `class.methods` を FxHash 化 or slot 索引化し、ヒット時の残り 1 辞書引きも除去。
+# Phase V-B — メソッド本体の VM 化（self 対応）＋ 属性書き込み（SET_ATTR）
 
-`LocalRef` / slot 化 `Scope` / `frame_floor` フレームモデル / bind_args 高速経路 / `AttrCache` / R4 呼び先キャッシュ / method IC / リゾルバは上記すべての土台として再利用される。
+BYTECODE_VM_PLAN §5.4 の V-B。**メソッド本体そのものを VM にコンパイル**し、`self` フィールド読み・
+`self` 変異・`self.method()` 間接呼び出しをバイトコードで実行する。V-A では呼び出し**側**の本体だけが
+VM 化され、メソッド本体（`self` 付き関数）はツリーウォークだった（1.03x）ため、その最後の穴を塞ぐ。
+
+## 設計の要点 — リゾルバを変えずに `Self` スロット問題を回避
+メソッド本体をリゾルバで解決（`Ident`→`LocalRef`）しようとすると、ツリーウォークの base スコープに
+`self` / params の後で宣言される `Self`（レシーバのクラス）が **base slot を1つ占める**ため、リゾルバの
+slot 採番（`self`, params, body-decls…）と実行時レイアウト（`self`, params, **Self**, body-decls…）が
+ずれる（`Self` が実行時に self_val の型で条件宣言されるため、コンパイル時に確定できない）。
+
+→ **リゾルバはトップレベル関数のみのまま据え置き**、メソッド本体は**コンパイラの `Ident`→slot 機構**で
+直接コンパイルする。コンパイラは `slots`（params + body 直下宣言）を自前で持ち、`Expr::Ident` を
+`LoadLocal(slot)` に落とせる。`Self` はコンパイラ `slots` に無い（params/宣言ではない）ので、`Self`
+参照は自動的に bail（フォールバック）。**VM モデルには `Self` slot が存在しない**ので不整合が起きない。
+ツリーウォーク経路は未解決（名前引き）のまま＝正しさ不変。
+
+## 実装
+| 変更 | ファイル | 内容 |
+|---|---|---|
+| VM 経路をメソッドに開く | [functions/execution.rs](src/interpreter/functions/execution.rs) | `exec_fn_evaled` の VM ガードを `self_val.is_none()` から **`None` または `Some(Instance)`** に拡大（クラスメソッド等の非 Instance レシーバは除外）。`self` は `bind_args` で slot 0・compiler slot 0 に一致。実行前に **`current_class` を張り**（アクセス制御・`Self` 依存ディスパッチ）実行後に復元 |
+| `self` をレシーバ判定 | [vm/compiler.rs](src/vm/compiler.rs) | `self_slot`（`self` パラメータの slot）を記録。`object_is_instance` が「`self` slot」または「ユーザークラス型注釈の LocalRef/Ident」を Instance と判定。`self.method()` / `self.field = …` のコンパイルを許可 |
+| 呼び先 Ident の slot 優先 | [vm/compiler.rs](src/vm/compiler.rs) | 未解決メソッド本体では呼び先が `Ident` のまま来る。call 分岐を **slots 優先**（ローカル/param が関数値を保持）→ builtin/`Self` は bail → それ以外 `LoadGlobal` に修正（`Self(...)` コンストラクタ呼びが誤って `LoadGlobal` されるバグを解消） |
+| `SetAttr` op | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | `[obj, value]` を pop し `attr_assign_evaled(obj, name, value)` で代入。コンパイラは `self`/instance 受け手の side-effect-free 対象にのみ発行 |
+| `Swap` op | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | 複合属性代入で **rhs を先に評価**（ツリーウォークの評価順）しつつ演算オペランド順を保つためスタックトップ2つを入れ替える |
+| `attr_assign_evaled` | [eval/attrs.rs](src/interpreter/eval/attrs.rs) | `attr_assign` の `Value::Instance` アーム（class-var 検査・static mut・アクセス制御・field_index・可変性・`INST_IMMUTABLE`＋`slot_initialized`・`store_field` 型検査）と**同一セマンティクス**を評価済み値で実行 |
+| `AttrAssign`/`AttrCompoundAssign` | [vm/compiler.rs](src/vm/compiler.rs) | `self.x = v` → `[obj, value, SetAttr]`。`self.x op= v` → `[obj, value, obj, GetAttr, Swap, Bin, SetAttr]`（value 先行評価＝ツリーウォーク一致） |
+
+## 検証
+- `cargo test`（既定 `--vm=auto`）→ **672 passed / 0 failed**。全 OOP テスト（メソッド・アクセス制御・
+  演算子オーバーロード・`__init__`・`Self(...)` コンストラクタ・NewType）が**メソッド本体を VM 実行**して
+  期待結果と一致。デバッグビルドの GetAttr slot assert も発火せず。
+  - 初回 2 件失敗（`Self(...)` を `LoadGlobal("Self")` にコンパイル → NameError）→ call 分岐の slots 優先化で解消。
+- 例題回帰: classes / exceptions / basics / typing / collections / practical の決定的例で `--vm=off` と
+  `--vm=auto` の**出力・終了コードが完全一致**（35+ 例、差分 0）。private/protected を実行時に読む例も一致
+  ＝VM メソッド経路のアクセス制御（`current_class`）も無破壊。
+- `cargo build` / 追加 clippy 警告 0。
+
+## 速度計測（同一 binary の `--vm=off` vs `--vm=auto`、best-of-3、release）
+| ベンチ | 内容 | off | auto | VM 倍率 |
+|---|---|---|---|---|
+| **method_hot** | オブジェクト固定・`v.norm_sq()`（→`self.dot(self)`：self 経由メソッド呼び + フィールド読み）を 400万回 | 11.37s | 10.02s | **1.13x** |
+| **method_body** | 毎回 `Vec3()` 生成 + `scale`(SET_ATTR) + `bump`(複合代入) + `norm_sq` を 80万回 | 8.12s | 6.66s | **1.22x** |
+
+- **V-A（1.03x）→ V-B で 1.13〜1.22x**。差分はメソッド本体の VM 化（GET_ATTR/SET_ATTR/算術のループ内インライン）。
+- **変異多め（SET_ATTR + 複合代入）ワークロードで効果大**（1.22x）: V-A では `self.x = …` を含むメソッドは
+  丸ごとフォールバックしていたが、V-B で本体が VM 化。
+- 上げ幅が中程度なのは、メソッド**呼び出し機構**（`call_instance_method_evaled` の bind_args・copy 意味論・
+  `current_class` 設定・バッファ確保）がまだツリーウォークのままで、小さいメソッド本体ではそこが支配的なため。
+  これは §7.2 の投影どおり（メソッド支配＝呼び出し機構ボトルネック）で、V-F の superinstruction と
+  呼び出しオーバーヘッド削減が次の伸びしろ。
+
+## V-B の到達点
+- **クラス/メソッドを含む実プログラムがバイトコード実行される**: メソッド本体（`self` フィールド読み・
+  変異・`self.method()`）・`Self(...)` 以外のフリー関数呼び・ローカル宣言・制御フローが VM に載る。
+- 未対応（フォールバック）: `Self` 参照（コンストラクタ/静的呼び）・クラスメソッド/静的メソッド本体・
+  for/match/ブロック式・例外・クロージャ・可変長・添字・コレクションリテラル。
+
+---
+
+## 次に効くレバー
+1. **Phase V-C** — 例外テーブル・match 式・ブロック式（block_return/loop_yield）を VM に追加し、
+   **スレッドローカル4本＋センチネル2種を構造的に削除**（§1.4/§5.3。速度以前の設計大整理）。
+2. **Phase V-D** — for ループ（GET_ITER/FOR_ITER）を追加し、実プログラムで VM 化できる関数を大きく増やす。
+3. **メソッド呼び出し機構の軽量化** — `call_instance_method_evaled` の bind_args/copy/`current_class` を
+   VM フレーム上で直接行い、per-call オーバーヘッドを削減（V-B の method_hot がここで伸びる）。
+4. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
+
+`LocalRef` / slot 化 `Scope` / `frame_floor` フレームモデル / bind_args 高速経路 / `AttrCache` / R4 呼び先キャッシュ / method IC / リゾルバ / VM 骨格（op/chunk/run）は上記すべての土台として再利用される。

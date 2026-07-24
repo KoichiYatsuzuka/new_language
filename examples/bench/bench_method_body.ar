@@ -1,0 +1,46 @@
+# V-B ベンチ: メソッド本体の VM 化（self フィールド読み・self 変異・メソッド間呼び出し）。
+# Vec3 の各メソッドは self.x/y/z を読み、`scale` は self を変異（SET_ATTR）、
+# `norm_sq` は他メソッド `dot` を self 経由で呼ぶ。ループでこれらを回す。
+
+class Vec3:
+    mut x: float
+    mut y: float
+    mut z: float
+
+    fn __init__(mut self, x: float, y: float, z: float) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+
+    # self フィールド読み + 算術（GET_ATTR + 算術インライン）
+    fn dot(self, o: Vec3) -> float:
+        return self.x * o.x + self.y * o.y + self.z * o.z
+
+    # self.method() 呼び出し（CallMethod on self）
+    fn norm_sq(self) -> float:
+        return self.dot(self)
+
+    # self 変異（SET_ATTR）+ 複合代入なし
+    fn scale(mut self, k: float) -> None:
+        self.x = self.x * k
+        self.y = self.y * k
+        self.z = self.z * k
+
+    # 複合代入（SET_ATTR + Swap 経路）
+    fn bump(mut self, d: float) -> None:
+        self.x += d
+        self.y += d
+        self.z += d
+
+fn main() -> None:
+    mut acc: float = 0.0
+    mut i: int = 0
+    while i < 800000:
+        mut v: Vec3 = Vec3(1.0, 2.0, 3.0)
+        v.scale(2.0)
+        v.bump(1.0)
+        acc += v.norm_sq()
+        i += 1
+    print(acc)
+
+main()

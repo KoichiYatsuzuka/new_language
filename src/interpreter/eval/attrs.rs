@@ -368,6 +368,63 @@ impl Interpreter {
         }
     }
 
+    /// 評価済みのオブジェクトと値でインスタンスフィールドに代入する（VM の `SetAttr` op 用）。
+    /// `attr_assign` の `Value::Instance` アーム（class-var 検査・static mut・アクセス制御・
+    /// field_index・可変性・INST_IMMUTABLE・store_field 型検査）と**同一のセマンティクス**。
+    /// コンパイラは `self` または instance 型注釈の受け手にのみ `SetAttr` を発行する。
+    pub(crate) fn attr_assign_evaled(
+        &mut self,
+        obj: Value,
+        attr: &str,
+        rhs: Value,
+    ) -> Result<(), String> {
+        match obj {
+            Value::Instance(inst_rc) => {
+                let inst_class = inst_rc.borrow().class.clone();
+                if Self::lookup_class_var(&inst_class, attr).is_some() {
+                    return Err(format!(
+                        "TypeError: cannot assign to class variable '{attr}' (declared const)"
+                    ));
+                }
+                // static mut 変数への代入: 共有セルを更新する
+                if let Some(cell) = inst_class.static_vars.get(attr).cloned() {
+                    self.check_member_access(&inst_class, attr, attr)?;
+                    *cell.borrow_mut() = rhs;
+                    return Ok(());
+                }
+                self.check_member_access(&inst_class, attr, attr)?;
+                let Some(&idx) = inst_class.field_index.get(attr) else {
+                    return Err(format!(
+                        "AttributeError: '{}' has no field '{attr}'; \
+                         all fields must be declared in the class body",
+                        inst_class.name
+                    ));
+                };
+                let mut inst = inst_rc.borrow_mut();
+                if inst.field_mutable(idx) == Some(false) {
+                    return Err(format!(
+                        "TypeError: cannot assign to immutable field '{attr}'"
+                    ));
+                }
+                if !inst.slot_initialized(idx)
+                    && inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0
+                {
+                    return Err(format!(
+                        "TypeError: cannot assign field '{attr}' on immutable instance"
+                    ));
+                }
+                let is_mutable = inst.class.field_mutability.get(attr).copied().unwrap_or(true);
+                if !inst.store_field(idx, rhs, is_mutable) {
+                    return Err(format!(
+                        "TypeError: value does not match declared type of field '{attr}'"
+                    ));
+                }
+                Ok(())
+            }
+            _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
+        }
+    }
+
     // --- 属性代入ヘルパー ---
 
     /// 属性・添字に値を代入する。`AttrAssign` 文と `AttrCompoundAssign` 文から呼ばれる。

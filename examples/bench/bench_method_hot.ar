@@ -1,0 +1,30 @@
+# V-B ベンチ（メソッド本体隔離）: オブジェクトはループ外で一度だけ生成し、
+# 読み取りメソッドをタイトループで叩く。メソッド本体の VM 化のみを測る
+# （割り当てコストを除外）。norm_sq -> dot(self)（self 経由メソッド呼び + フィールド読み）。
+
+class Vec3:
+    let x: float
+    let y: float
+    let z: float
+
+    fn __init__(mut self, x: float, y: float, z: float) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+
+    fn dot(self, o: Vec3) -> float:
+        return self.x * o.x + self.y * o.y + self.z * o.z
+
+    fn norm_sq(self) -> float:
+        return self.dot(self)
+
+fn main() -> None:
+    let v: Vec3 = Vec3(1.0, 2.0, 3.0)
+    mut acc: float = 0.0
+    mut i: int = 0
+    while i < 4000000:
+        acc += v.norm_sq()
+        i += 1
+    print(acc)
+
+main()
