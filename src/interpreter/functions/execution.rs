@@ -369,6 +369,16 @@ impl Interpreter {
         self_val: Option<Value>,
     ) -> Result<Value, String> {
         let evaled = self.eval_call_args(call_args)?;
+        self.exec_generator_evaled(gen_fn, evaled, self_val)
+    }
+
+    /// 評価済み引数でジェネレータメソッドを実行する（VM の CallMethod 用）。`exec_generator` の本体。
+    pub(crate) fn exec_generator_evaled(
+        &mut self,
+        gen_fn: Rc<GeneratorFnValue>,
+        evaled: Vec<(Option<String>, Value, bool)>,
+        self_val: Option<Value>,
+    ) -> Result<Value, String> {
         let evaluated_defaults: Vec<Option<Value>> = if gen_fn.params.iter().any(|p| p.default.is_some()) {
             let mut v = Vec::with_capacity(gen_fn.params.len());
             for p in &gen_fn.params {

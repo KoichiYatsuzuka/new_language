@@ -10,6 +10,132 @@ use {
 };
 
 impl Interpreter {
+    /// 評価済み引数で **インスタンスメソッド** を呼び出す（VM の `CallMethod` 用）。
+    /// `eval_method_call` の `Value::Instance` アームと同一のディスパッチ
+    /// （copy / gen / native / static・class 判定 / 不変性フィルタ / オーバーロード）を、
+    /// 評価済み引数（`is_mutable` フラグ込み）で行う。呼び出し側は obj が Instance であることを
+    /// 型注釈で保証してから使う（型検査が健全性を担保）。
+    pub(crate) fn call_instance_method_evaled(
+        &mut self,
+        obj: Value,
+        method_name: &str,
+        evaled: Vec<(Option<String>, Value, bool)>,
+        cache: Option<&crate::ast::AttrCache>,
+    ) -> Result<Value, String> {
+        let inst_rc = match &obj {
+            Value::Instance(rc) => rc.clone(),
+            _ => {
+                return Err(format!(
+                    "TypeError: '{}' object has no method '{method_name}'",
+                    self.type_name(&obj)
+                ))
+            }
+        };
+        if method_name == "copy" {
+            if !evaled.is_empty() {
+                return Err(format!(
+                    "TypeError: {}.copy() takes no arguments",
+                    inst_rc.borrow().class.name
+                ));
+            }
+            return self.copy_value(obj);
+        }
+
+        // method IC 命中: plain 非 mut-self 単一メソッドを直接ディスパッチ（eval_method_call と同一）。
+        if let Some(c) = cache {
+            let class_id = inst_rc.borrow().class.class_id;
+            if c.get(class_id).is_some() {
+                let class = inst_rc.borrow().class.clone();
+                if let Some(overloads) = class.methods.get(method_name) {
+                    if overloads.len() == 1 {
+                        let f = overloads[0].clone();
+                        return self.exec_fn_evaled(f, &evaled, Some(obj), method_name, None);
+                    }
+                }
+            }
+        }
+
+        let class = inst_rc.borrow().class.clone();
+        let inst_immutable =
+            inst_rc.borrow().flags() & crate::interpreter::value::INST_IMMUTABLE != 0;
+
+        if let Some(gen_fn) = class.gen_methods.get(method_name).cloned() {
+            return self.exec_generator_evaled(gen_fn, evaled, Some(obj));
+        }
+        if crate::interpreter::native_api::lookup_native_method_ptr(&class.name, method_name)
+            .is_some()
+        {
+            let arg_vals: Vec<Value> = evaled.iter().map(|(_, v, _)| v.clone()).collect();
+            if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method(
+                self,
+                obj.clone(),
+                method_name,
+                arg_vals,
+            ) {
+                return result;
+            }
+        }
+        let overloads = self.lookup_method_in_class(&class, method_name).ok_or_else(|| {
+            format!("AttributeError: '{}' has no method '{method_name}'", class.name)
+        })?;
+        let n_overloads = overloads.len();
+        if class.static_method_names.contains(method_name) {
+            return Err(format!(
+                "AttributeError: static method '{}' must be called on the class, not an instance; use '{}.{}(...)'",
+                method_name, class.name, method_name
+            ));
+        }
+        if class.class_method_names.contains(method_name) {
+            return Err(format!(
+                "AttributeError: class method '{}' must be called on the class, not an instance; use '{}.{}(...)'",
+                method_name, class.name, method_name
+            ));
+        }
+        let callable: Vec<Rc<FnValue>> = if inst_immutable {
+            overloads
+                .iter()
+                .filter(|f| {
+                    f.params
+                        .first()
+                        .map(|p| p.name != "self" || !p.mutable)
+                        .unwrap_or(true)
+                })
+                .cloned()
+                .collect()
+        } else {
+            overloads
+        };
+        if callable.is_empty() {
+            return Err(format!(
+                "TypeError: cannot call mutable method '{method_name}' on immutable instance of '{}'",
+                class.name
+            ));
+        }
+        if callable.len() == 1 {
+            // method IC 充填（eval_method_call と同一条件: 単一 overload・非 mut-self・native なし）。
+            if let Some(c) = cache {
+                let self_is_mut = callable[0]
+                    .params
+                    .first()
+                    .map(|p| p.name == "self" && p.mutable)
+                    .unwrap_or(false);
+                if n_overloads == 1
+                    && !self_is_mut
+                    && crate::interpreter::native_api::lookup_native_method_ptr(
+                        &class.name,
+                        method_name,
+                    )
+                    .is_none()
+                {
+                    c.fill(class.class_id, 0, 0);
+                }
+            }
+            self.exec_fn_evaled(callable[0].clone(), &evaled, Some(obj), method_name, None)
+        } else {
+            self.dispatch_overload_evaled(callable, evaled, Some(obj), method_name, None)
+        }
+    }
+
     /// オブジェクトのメソッドを呼び出して結果を返す。List / Str / Instance / Dict / Generator 等の各値型へディスパッチする。
     ///
     /// `cache` が `Some` の場合、インスタンスメソッド解決を method IC（`cache.2`）で高速化する。

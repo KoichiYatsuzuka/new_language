@@ -155,6 +155,18 @@ slot をずらす形は丸ごとフォールバック。これでローカル変
 （呼び先 `helper` も VM コンパイルされ両段バイトコード実行）。totals 一致・例外伝播一致・関数呼び中心の 23 例で
 `off`/`auto` 出力完全一致。
 
+### メソッド呼び出し（CallMethod）対応
+`obj.method(args)` を VM に追加。`obj` が**型注釈でインスタンスと保証できる LocalRef** のときだけコンパイルする
+（`is_user_instance_type`: 組み込み型・ジェネリック・Optional/union は除外。型検査が Instance を担保）。
+- ランタイムは `call_instance_method_evaled`（`eval_method_call` の Instance アームと同一ディスパッチ:
+  copy / gen（`exec_generator_evaled`）/ native / static・class 判定 / 不変性フィルタ / オーバーロード）を
+  評価済み引数で実行。**method IC（class_id キャッシュ）も VM 内で使う**（chunk の `attr_caches` を流用）。
+- 引数の `is_mutable` は CALL と同じくコンパイル時算出。gen メソッドのため `exec_generator` を
+  `exec_generator_evaled` に薄くリファクタ。
+- **計測（`work`= p.sum() 2回 + 算術）**: off 2.55 → auto 2.47 µs/iter = **1.03x**（メソッド本体はまだツリーウォーク
+  ＝self 付き関数は未コンパイルなので上げ幅は小。呼び出し側 `work` の本体が VM 化）。OOP 例で off/auto 出力一致・
+  全 672 テスト緑。メソッド本体自体の VM 化（self 対応）は次段。
+
 - **Phase R で高度に最適化されたツリーウォークに対しても VM が 1.07〜1.11x 上回る**（コンパイル対象の関数）。
   本体がほぼ空の `noop` だけは per-call オーバーヘッド（chunk キャッシュ引き・バッファ確保）で微減。
 - 効いた要因: (1) 再帰 `eval()` 呼び出しの排除（線形ディスパッチ）、(2) int/float 算術と public フィールド読みの

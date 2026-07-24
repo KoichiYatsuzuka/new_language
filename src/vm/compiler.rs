@@ -43,7 +43,37 @@ struct Compiler {
     slots: HashMap<String, u16>,
     /// slot → 可変フラグ（`let x = <mut ソース>` の freeze 判定に使う）。
     slot_mut: Vec<bool>,
+    /// slot → 型注釈（メソッド呼び出しの「obj は Instance」判定に使う）。
+    slot_type: Vec<Option<String>>,
     n_locals: usize,
+}
+
+/// 型注釈がユーザークラス/trait/protocol（＝実行時 Instance）であることを保守的に判定する。
+/// 組み込み型・ジェネリック・Optional/union は false（フォールバック）。健全性優先で、
+/// 少しでも Instance でない可能性があれば false を返す（型検査が Instance を保証する範囲のみ true）。
+fn is_user_instance_type(ann: &str) -> bool {
+    let t = ann.trim();
+    // ジェネリック・union・optional・nullable は非対応。
+    if t.is_empty()
+        || t.contains('[')
+        || t.contains('|')
+        || t.contains('?')
+        || t.contains(' ')
+        || t.starts_with("Optional")
+    {
+        return false;
+    }
+    // 識別子として妥当か（英数字と `_` のみ）。
+    if !t.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return false;
+    }
+    // 組み込み型（メソッドを別経路で持つ／プリミティブ）は除外。
+    !matches!(
+        t,
+        "int" | "uint" | "str" | "float" | "bool" | "complex" | "list" | "dict" | "set"
+            | "tuple" | "byte" | "bytes" | "char" | "Any" | "None" | "void" | "object"
+            | "function" | "type" | "slice" | "range" | "Self"
+    )
 }
 
 /// トップレベル関数本体を Chunk へコンパイルする。非対応構文があれば `None`。
@@ -54,6 +84,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
     // base slot をリゾルバと同順で採番する: パラメータ → トップレベル let/mut/const。
     let mut slots: HashMap<String, u16> = HashMap::new();
     let mut slot_mut: Vec<bool> = Vec::new();
+    let mut slot_type: Vec<Option<String>> = Vec::new();
     let mut n: u16 = 0;
     for p in params {
         if p.variadic {
@@ -61,21 +92,24 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         }
         slots.insert(p.name.clone(), n);
         slot_mut.push(p.mutable);
+        slot_type.push(p.type_ann.clone());
         n = n.checked_add(1)?;
     }
     // トップレベル宣言を事前採番。LetTuple/Static/入れ子定義など slot をずらす形は非対応。
     for stmt in body {
         match stmt {
-            Stmt::Let(name, ..) | Stmt::Const(name, ..)
+            Stmt::Let(name, ty, _) | Stmt::Const(name, ty, _)
                 if name != "_" && !slots.contains_key(name) =>
             {
                 slots.insert(name.clone(), n);
                 slot_mut.push(false);
+                slot_type.push(ty.clone());
                 n = n.checked_add(1)?;
             }
-            Stmt::Mut(name, ..) if name != "_" && !slots.contains_key(name) => {
+            Stmt::Mut(name, ty, _) if name != "_" && !slots.contains_key(name) => {
                 slots.insert(name.clone(), n);
                 slot_mut.push(true);
+                slot_type.push(ty.clone());
                 n = n.checked_add(1)?;
             }
             // `_` 名・既出名の宣言は base slot を増やさない（no-op）。
@@ -104,6 +138,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         attr_caches: Vec::new(),
         slots,
         slot_mut,
+        slot_type,
         n_locals: n as usize,
     };
 
@@ -172,6 +207,27 @@ impl Compiler {
                 .unwrap_or(true),
             _ => true,
         }
+    }
+
+    /// 位置引数をスタックへ push し、各引数の is_mutable を bit にした mask を返す。
+    /// keyword/可変長引数・33個以上は非対応（`None`）。
+    fn compile_call_args(&mut self, args: &[CallArg]) -> Option<u32> {
+        if args.len() > 32 {
+            return None;
+        }
+        let mut mask: u32 = 0;
+        for (i, arg) in args.iter().enumerate() {
+            match arg {
+                CallArg::Positional(e) => {
+                    if self.arg_is_mutable(e) {
+                        mask |= 1 << i;
+                    }
+                    self.compile_expr(e)?;
+                }
+                _ => return None,
+            }
+        }
+        Some(mask)
     }
 
     fn compile_stmt(&mut self, stmt: &Stmt) -> Option<()> {
@@ -354,42 +410,45 @@ impl Compiler {
                 let name_idx = self.add_name(attr);
                 self.emit(Op::GetAttr(name_idx, name_idx));
             }
-            // 関数呼び出し `func(args)`（メソッド呼び=Attr func は非対応）。
+            // 関数呼び出し `func(args)` / メソッド呼び出し `obj.method(args)`。
             Expr::Call { func, args, .. } => {
-                // 呼び先をスタックに載せる。
-                match func.as_ref() {
-                    Expr::Ident(name) => {
-                        if is_builtin_callee(name) {
-                            return None;
-                        }
-                        let ni = self.add_name(name);
-                        self.emit(Op::LoadGlobal(ni));
+                if let Expr::Attr { object, attr, .. } = func.as_ref() {
+                    // ── メソッド呼び出し ── object が Instance と保証できる LocalRef のときのみ対応。
+                    let obj_instance = match object.as_ref() {
+                        Expr::LocalRef { slot, .. } => self
+                            .slot_type
+                            .get(*slot as usize)
+                            .and_then(|o| o.as_deref())
+                            .map(is_user_instance_type)
+                            .unwrap_or(false),
+                        _ => false,
+                    };
+                    if !obj_instance {
+                        return None;
                     }
-                    Expr::LocalRef { slot, .. } => {
-                        let s = u16::try_from(*slot).ok()?;
-                        self.emit(Op::LoadLocal(s));
-                    }
-                    // メソッド呼び出し(Attr)・テンプレート・入れ子 func は非対応。
-                    _ => return None,
-                }
-                // 位置引数のみ・最大32個。各引数の is_mutable をコンパイル時に算出する。
-                if args.len() > 32 {
-                    return None;
-                }
-                let mut mask: u32 = 0;
-                for (i, arg) in args.iter().enumerate() {
-                    match arg {
-                        CallArg::Positional(e) => {
-                            if self.arg_is_mutable(e) {
-                                mask |= 1 << i;
+                    self.compile_expr(object)?; // receiver を push
+                    let mask = self.compile_call_args(args)?;
+                    let ni = self.add_name(attr);
+                    self.emit(Op::CallMethod(ni, args.len() as u16, mask));
+                } else {
+                    // ── 通常の関数呼び出し ── 呼び先をスタックに載せる。
+                    match func.as_ref() {
+                        Expr::Ident(name) => {
+                            if is_builtin_callee(name) {
+                                return None;
                             }
-                            self.compile_expr(e)?;
+                            let ni = self.add_name(name);
+                            self.emit(Op::LoadGlobal(ni));
                         }
-                        // キーワード・可変長引数は非対応。
+                        Expr::LocalRef { slot, .. } => {
+                            let s = u16::try_from(*slot).ok()?;
+                            self.emit(Op::LoadLocal(s));
+                        }
                         _ => return None,
                     }
+                    let mask = self.compile_call_args(args)?;
+                    self.emit(Op::Call(args.len() as u16, mask));
                 }
-                self.emit(Op::Call(args.len() as u16, mask));
             }
             // それ以外（添字・コレクション・キャスト・式ブロック等）は非対応。
             _ => return None,

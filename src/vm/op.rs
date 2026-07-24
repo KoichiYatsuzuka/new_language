@@ -45,6 +45,10 @@ pub enum Op {
     /// 関数呼び出し: スタックは `[callee, arg0, .., argN-1]`。args を argc 個・callee を pop し、
     /// `mut_mask`（bit i = arg i の is_mutable）付きでディスパッチして結果を push する。
     Call(u16, u32),
+    /// インスタンスメソッド呼び出し: スタックは `[obj, arg0, .., argN-1]`。args を argc 個・obj を pop し、
+    /// `names[name_idx]` のメソッドを `mut_mask` 付きでディスパッチして結果を push する。
+    /// obj が Instance であることはコンパイル時の型注釈で保証済み。
+    CallMethod(u32, u16, u32),
     /// スタックトップを関数戻り値として返す。
     Return,
     /// `None` を関数戻り値として返す（本体末尾のフォールオフ）。

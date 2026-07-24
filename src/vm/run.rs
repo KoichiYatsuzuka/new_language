@@ -145,6 +145,24 @@ pub fn run(
                 let r = interp.call_value_evaled(callee, evaled)?;
                 buf.push(r);
             }
+            Op::CallMethod(name_idx, argc, mut_mask) => {
+                let n = *argc as usize;
+                let split = buf.len() - n;
+                let arg_vals = buf.split_off(split);
+                let obj = buf.pop().unwrap();
+                let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
+                    .collect();
+                let r = interp.call_instance_method_evaled(
+                    obj,
+                    &chunk.names[*name_idx as usize],
+                    evaled,
+                    Some(&chunk.attr_caches[*name_idx as usize]),
+                )?;
+                buf.push(r);
+            }
             Op::Return => return Ok(buf.pop().unwrap()),
             Op::ReturnNil => return Ok(Value::None),
         }
