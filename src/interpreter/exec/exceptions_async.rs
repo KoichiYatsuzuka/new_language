@@ -146,6 +146,88 @@ impl Interpreter {
         }))
     }
 
+    // ── VM 例外サポート（vm/run.rs のハンドラスタックが使う。current_exception 等は
+    //     interpreter モジュール private なのでここにヘルパを置く） ──
+
+    /// VM: `raise expr`。`exec_raise`（bare でない側）と同一意味論。
+    /// 例外インスタンスに span フィールドを書き込み、フレーム付き RaisedError を
+    /// `current_exception` に設定して RAISE_SENTINEL を返す（呼び出し側が Err で伝播）。
+    pub(crate) fn vm_raise(&mut self, exc_val: Value, span: &Span) -> String {
+        if let Value::Instance(ref inst_rc) = exc_val {
+            let context = self.get_context_lines(&span.file, span.line, 5);
+            let cls = inst_rc.borrow().class.clone();
+            let mut inst = inst_rc.borrow_mut();
+            for (key, val) in [
+                ("file", Value::Str(span.file.to_string())),
+                ("line", Value::Int(span.line as i64)),
+                ("col", Value::Int(span.col as i64)),
+                ("code_context", Value::Str(context.clone())),
+                ("Error::file", Value::Str(span.file.to_string())),
+                ("Error::line", Value::Int(span.line as i64)),
+                ("Error::col", Value::Int(span.col as i64)),
+                ("Error::code_context", Value::Str(context)),
+            ] {
+                if let Some(&idx) = cls.field_index.get(key) {
+                    inst.store_field(idx, val, false);
+                }
+            }
+        }
+        let fn_name = self
+            .call_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "<module>".to_string());
+        let frame = StackFrame {
+            file: span.file.to_string(),
+            line: span.line,
+            col: span.col,
+            fn_name,
+            context: self.get_context_lines(&span.file, span.line, 5),
+        };
+        self.current_exception = Some(RaisedError {
+            exception: exc_val,
+            frames: vec![frame],
+        });
+        RAISE_SENTINEL.to_string()
+    }
+
+    /// VM: bare `raise`（再送出）。`current_exception` があれば RAISE_SENTINEL、なければエラー文字列。
+    pub(crate) fn vm_reraise(&mut self) -> String {
+        if self.current_exception.is_some() {
+            RAISE_SENTINEL.to_string()
+        } else {
+            "RuntimeError: no active exception to re-raise".to_string()
+        }
+    }
+
+    /// VM: 捕捉すべき例外 Value を取り出す。`err` が RAISE_SENTINEL なら `current_exception`、
+    /// それ以外は内部エラーを RaisedError へ変換する（`exec_try` と同じ）。`current_exception` を
+    /// 設定して例外 Value を返す。変換できなければ `None`（＝伝播）。
+    pub(crate) fn vm_take_raised(&mut self, err: &str) -> Option<Value> {
+        let raised = if err == RAISE_SENTINEL {
+            self.current_exception.clone()
+        } else {
+            self.make_internal_raised_error(err)
+        };
+        match raised {
+            Some(r) => {
+                let v = r.exception.clone();
+                self.current_exception = Some(r);
+                Some(v)
+            }
+            None => None,
+        }
+    }
+
+    /// VM: `except TypeName` の型マッチ（`exc_matches` と同一）。
+    pub(crate) fn vm_exc_matches(&self, exc: &Value, type_name: &str) -> bool {
+        if let Value::Instance(inst_rc) = exc {
+            Self::exc_matches(&inst_rc.borrow().class, type_name)
+        } else {
+            false
+        }
+    }
+
     /// `try / except / finally` 文を実行する。例外を捕捉してハンドラを実行し、finally ブロックは常に実行する。
     pub(crate) fn exec_try(
         &mut self,

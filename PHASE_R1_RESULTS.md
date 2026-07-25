@@ -337,13 +337,59 @@ Chunk を返して誤実行**していた。V-A から潜在していたが、V-
 
 ---
 
+# Phase V-C（第2増分）— 例外テーブル（try/except/finally・raise）
+
+BYTECODE_VM_PLAN §5.3/§5.4 の V-C の本丸。**例外処理を VM のハンドラスタックで実装**し、
+try/except・try/finally・raise・bare raise（再送出）を VM で実行できるようにした。
+これに伴い **VM ディスパッチループを「1 命令実行 → 制御フロー enum を返す」形に再構成**し、
+命令が返す `Err` をループ側で捕捉してハンドラへ回せるようにした。
+
+## 実装
+| 変更 | ファイル | 内容 |
+|---|---|---|
+| **ディスパッチループの再構成** | [vm/run.rs](src/vm/run.rs) | `run` の巨大 match を `exec_op(...) -> Result<Flow, String>`（`Flow = Next/Jump/Return`）へ分離。`run` は `exec_op` を呼び、`Ok(Flow)` は ip 制御、**`Err(e)` は VM のハンドラスタックへ回す**。既存 op のロジックは不変（`?` はそのまま `exec_op` から伝播）。 |
+| **ハンドラスタック** | [vm/run.rs](src/vm/run.rs) | `run` が `Vec<Handler{ handler_ip, stack_len }>` を持つ。`Err` 時に最内ハンドラを pop → オペランドを try 進入時の深さへ巻き戻し → 例外値を push → landing pad へジャンプ。ハンドラ無し/変換不可なら伝播。ネストした関数呼び出しはそれぞれ独立の run/ハンドラスタックを持ち、callee の未捕捉例外は caller の Call op（`?`）→ caller のハンドラへ届く |
+| **例外 op** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | `SetupTry(handler_ip)`/`PopTry`（ハンドラ push/pop）・`Raise(span_idx)`（`raise expr`）・`Reraise`（bare raise・no-match 再送出）・`Dup`（例外値を型照合で残す）・`ExcMatch(name_idx)`（`exc_matches` 委譲） |
+| **例外ヘルパ（interpreter 側）** | [exec/exceptions_async.rs](src/interpreter/exec/exceptions_async.rs) | `vm_raise`（`exec_raise` と同一: span フィールド書込み＋フレーム＋current_exception 設定）・`vm_reraise`・`vm_take_raised`（RAISE_SENTINEL or 内部エラー→RaisedError、`exec_try` と同じ変換）・`vm_exc_matches`。`current_exception`/`RAISE_SENTINEL` は interpreter private なのでここに集約 |
+| **Chunk に span 表** | [vm/chunk.rs](src/vm/chunk.rs) | `spans: Vec<Span>`（`Raise` が例外に file/line/col を焼くため） |
+| **try/except・try/finally コンパイル** | [vm/compiler.rs](src/vm/compiler.rs) | `compile_try_except`（SetupTry→body→PopTry→正常 Jump／landing pad で各 except 節を `Dup;ExcMatch;JumpIfFalse` で照合・別名 slot 束縛・no-match は `Pop;Reraise`）。`compile_try_finally`（正常経路・例外経路の両方で finally を走らせ、例外経路は `Reraise` で再伝播）。`try/except/finally` 併用は bail |
+| **脱出制御の bail 判定** | [vm/compiler.rs](src/vm/compiler.rs) | `has_escape`: try/handler 本体に「try を飛び越える」`break`/`continue`（本体内の while/for に囲まれない）・`block_return`/`loop_yield`（finally では `return` も）があれば bail（ハンドラ残り・finally スキップを防ぐ）。`return` は try/except（finally なし）では run から即復帰しハンドラ破棄されるので許容 |
+| **別名 slot の事前採番** | [vm/compiler.rs](src/vm/compiler.rs) | `collect_nested_decls` を `Try` に対応（body/handler/finally へ再帰＋`except E as e` の別名を不変 slot として採番） |
+
+## 検証
+- `cargo test`（`--vm=auto`）→ **672 passed / 0 failed**。
+- 手動 A/B（`--vm=off` vs `--vm=auto`）で以下が**完全一致**:
+  try/except（ZeroDivisionError 捕捉）・`raise ValueError`＋`except ... as e`＋`e.message`・複数 except 節の
+  順次照合・try/finally（正常経路 finally 実行）・ネスト try＋bare `raise` 再送出→外側捕捉・内部型エラーの捕捉。
+  finally-on-exception（finally 実行後に外側が捕捉）・未捕捉例外の伝播も**結果一致**。
+- 例題回帰: 決定的例 43 件で off/auto 一致（唯一の差は既知の `runtime_error.ar` トレースバック行番号）。
+- `cargo build` / 追加 clippy 警告 0。
+
+## 到達点と既知の制限
+- **到達**: try/except・try/finally・raise・bare raise（再送出）を VM で実行。`RAISE_SENTINEL` センチネルは
+  interpreter 境界の規約として残るが、**VM 内の例外制御はハンドラスタックのジャンプ**で行う（`LOOP_DEPTH` は
+  既に不要化済み）。
+- **未捕捉例外のトレースバック行番号**は依然として欠落（`File "", in <fn>`）。VM が op→span の**行テーブル**を
+  持たないため（§2.3・V-E 課題）。**捕捉される例外（通常の try/except）では差は出ない**（トレースバック非表示）。
+  V-A 由来の既存制限で、例外コンパイルにより顕在化する関数が増えた。
+- **bail（ツリーウォークへ）**: `try/except/finally` 併用・try を飛び越える break/continue/block_return/
+  loop_yield を含む try・finally 内 return。
+
+## V-C の残り（ブロック式）
+- **ブロック式**（`block:`/`if`/`while`/`for`/`match` の式形 ＋ `block_return`/`loop_yield`）は次増分。
+  値を産む 5 形＋`block_return`/`loop_yield` の二値意味論（block_return 値 vs loop_yield 蓄積リスト）＋
+  **式の中の宣言（`let x = block: let a=…`）への slot 割り当て**（`collect_nested_decls` の式ウォーカ拡張）が要る。
+  `BLOCK_YIELDS`/`BLOCK_RETURN_EXPECTED_TYPE` スレッドローカルの VM 経路除去はここで完了する。
+
+---
+
 ## 次に効くレバー
-1. **V-C 例外テーブル + ブロック式** — スレッドローカル／センチネル除去の本丸（try/except/finally・raise、
-   block式）。VM ディスパッチループを Err 捕捉可能に再構成しハンドラスタックを導入。
-2. **VM 行テーブル（V-E 前倒し）** — 未捕捉例外トレースバックの行番号を回復し `runtime_error.ar` の差を解消。
+1. **V-C ブロック式**（上記残り）— block/if/while/for/match 式 ＋ block_return/loop_yield。
+2. **VM 行テーブル（V-E 前倒し）** — 未捕捉例外トレースバックの行番号を回復し `runtime_error.ar` の差を解消
+   （例外コンパイルで影響関数が増えたため優先度上昇）。
 3. **メソッド呼び出し機構の軽量化** — `call_instance_method_evaled` の bind_args/copy/`current_class` を
    VM フレーム上で直接行い per-call オーバーヘッド削減。
-4. **添字・コレクションリテラル・その他組み込み**（`enumerate`/`zip`/`str`/`int` 等）の VM 化で更に対象拡大。
+4. **添字・コレクションリテラル・その他組み込み** の VM 化で更に対象拡大。
 5. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
 
-`LocalRef` / slot 化 `Scope` / `frame_floor` / bind_args 高速経路 / `AttrCache` / R4 呼び先 / method IC / リゾルバ / VM 骨格（op/chunk/run）/ break-continue ジャンプ / 平坦 slot / match / for（GetIter/ForIter）/ CallBuiltin / Weak 検証 Chunk キャッシュ は上記すべての土台として再利用される。
+`LocalRef` / slot 化 `Scope` / `frame_floor` / bind_args 高速経路 / `AttrCache` / R4 呼び先 / method IC / リゾルバ / VM 骨格（op/chunk/run）/ break-continue ジャンプ / 平坦 slot / match / for（GetIter/ForIter）/ CallBuiltin / Weak 検証 Chunk キャッシュ / 例外ハンドラスタック は上記すべての土台として再利用される。

@@ -70,4 +70,19 @@ pub enum Op {
     Return,
     /// `None` を関数戻り値として返す（本体末尾のフォールオフ）。
     ReturnNil,
+    // ── 例外処理（Phase V-C） ──
+    /// try 本体の入口: 例外ハンドラ（handler_ip）と現在のオペランドスタック深さを
+    /// VM のハンドラスタックに push する。
+    SetupTry(u32),
+    /// try 本体が正常終了したときにハンドラを1つ pop する。
+    PopTry,
+    /// `raise expr`: pop した例外値に `spans[idx]` を焼き、current_exception を設定して伝播する。
+    Raise(u32),
+    /// bare `raise`（再送出）／どの except にもマッチしなかったときの再伝播。
+    /// current_exception を用いて伝播する（スタックには触れない）。
+    Reraise,
+    /// スタックトップを複製する（except 節の型照合で例外値を残すため）。
+    Dup,
+    /// pop した例外値が `names[name_idx]` 型にマッチするか（`exc_matches`）を Bool で push する。
+    ExcMatch(u32),
 }

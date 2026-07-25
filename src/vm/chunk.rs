@@ -2,6 +2,7 @@
 
 use crate::ast::AttrCache;
 use crate::interpreter::Value;
+use crate::token::Span;
 
 use super::op::Op;
 
@@ -18,6 +19,8 @@ pub struct Chunk {
     pub names: Vec<String>,
     /// 属性アクセスのインラインキャッシュ（R3 と同じ機構を VM 内でも使う）。
     pub attr_caches: Vec<AttrCache>,
+    /// `raise expr` の位置情報プール（`Raise(idx)` が参照。例外に file/line/col を焼く）。
+    pub spans: Vec<Span>,
     /// フレームのローカル slot 総数（パラメータ + base ローカル）。
     pub n_locals: usize,
 }

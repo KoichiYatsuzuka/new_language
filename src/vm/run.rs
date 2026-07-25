@@ -14,6 +14,24 @@ use crate::interpreter::{Interpreter, Value};
 use super::chunk::Chunk;
 use super::op::Op;
 
+/// 1 命令実行後の制御フロー。
+enum Flow {
+    /// 次の命令へ（ip += 1）。
+    Next,
+    /// 絶対 index へジャンプ。
+    Jump(usize),
+    /// 関数から値を返す。
+    Return(Value),
+}
+
+/// アクティブな例外ハンドラ（try 節ごとに VM のハンドラスタックに積む）。
+struct Handler {
+    /// 例外発生時に飛ぶ landing pad の ip。
+    handler_ip: usize,
+    /// try 進入時のオペランドスタック深さ（例外時にここまで巻き戻す）。
+    stack_len: usize,
+}
+
 /// Chunk を実行して戻り値を返す。
 /// `buf` の `base..base+n_locals` にパラメータが束縛済み。実行後 `buf` は base+n_locals..（オペランド）
 /// を空にして返る（呼び出し側が `truncate(base)` する）。
@@ -23,219 +41,271 @@ pub fn run(
     buf: &mut Vec<Value>,
     base: usize,
 ) -> Result<Value, String> {
-    let code = &chunk.code;
     let mut ip: usize = 0;
+    let mut handlers: Vec<Handler> = Vec::new();
 
     loop {
-        match &code[ip] {
-            Op::Const(i) => buf.push(chunk.consts[*i as usize].clone()),
-            Op::Nil => buf.push(Value::None),
-            Op::LoadLocal(s) => {
-                let v = buf[base + *s as usize].clone();
-                buf.push(v);
-            }
-            Op::LoadGlobal(ni) => {
-                let name = &chunk.names[*ni as usize];
-                match interp.vm_get_global(name) {
-                    Some(v) => buf.push(v),
-                    None => return Err(format!("NameError: '{name}' is not defined")),
-                }
-            }
-            Op::StoreLocal(s) => {
-                let v = buf.pop().unwrap();
-                buf[base + *s as usize] = v;
-            }
-            Op::StoreLocalDeepCopy(s) => {
-                let v = Interpreter::deep_copy_value(buf.pop().unwrap());
-                buf[base + *s as usize] = v;
-            }
-            Op::StoreLocalCopyFreeze(s) => {
-                let v = Interpreter::deep_copy_value(buf.pop().unwrap());
-                interp.apply_freeze_to_value(&v, true)?;
-                buf[base + *s as usize] = v;
-            }
-            Op::StoreLocalFreezeInstance(s) => {
-                let v = buf.pop().unwrap();
-                let v = if matches!(v, Value::Instance(_)) {
-                    let copied = Interpreter::deep_copy_value(v);
-                    interp.apply_freeze_to_value(&copied, true)?;
-                    copied
-                } else {
-                    v
-                };
-                buf[base + *s as usize] = v;
-            }
-            Op::Pop => {
-                buf.pop();
-            }
-            Op::Bin(op) => {
-                let b = buf.pop().unwrap();
-                let a = buf.pop().unwrap();
-                let r = apply_bin_fast(interp, op, a, b)?;
-                buf.push(r);
-            }
-            Op::Un(op) => {
-                let a = buf.pop().unwrap();
-                let r = interp.apply_unary_dyn(op, a)?;
-                buf.push(r);
-            }
-            Op::GetAttr(name_idx, cache_idx) => {
-                let obj = buf.pop().unwrap();
-                let cache = &chunk.attr_caches[*cache_idx as usize];
-                // R3 インラインキャッシュのヒット（public フィールド）を VM ループ内で直接処理し、
-                // get_attr_val の関数呼び出しを避ける。ミス・非 public・非インスタンスはフルパスへ。
-                let v = 'get: {
-                    if let Value::Instance(inst_rc) = &obj {
-                        let class_id = inst_rc.borrow().class.class_id;
-                        if let Some((idx, access)) = cache.get(class_id) {
-                            if access == crate::ast::AttrCache::PUBLIC {
-                                let inst = inst_rc.borrow();
-                                debug_assert_eq!(
-                                    inst.class.field_index.get(&chunk.names[*name_idx as usize]).copied(),
-                                    Some(idx),
-                                    "VM GetAttr cache slot mismatch"
-                                );
-                                if let Some(fv) = inst.field_value(idx) {
-                                    break 'get fv;
-                                }
+        match exec_op(interp, chunk, buf, base, ip, &mut handlers) {
+            Ok(Flow::Next) => ip += 1,
+            Ok(Flow::Jump(t)) => ip = t,
+            Ok(Flow::Return(v)) => return Ok(v),
+            Err(e) => {
+                // 例外: 最内ハンドラがあればオペランドを巻き戻して例外値を積み landing pad へ。
+                // 変換できない（active exception なし等）・ハンドラなしなら伝播（Err を返す）。
+                match handlers.pop() {
+                    Some(h) => {
+                        buf.truncate(h.stack_len);
+                        match interp.vm_take_raised(&e) {
+                            Some(exc_val) => {
+                                buf.push(exc_val);
+                                ip = h.handler_ip;
                             }
+                            None => return Err(e),
                         }
                     }
-                    interp.get_attr_val(obj, &chunk.names[*name_idx as usize], Some(cache))?
-                };
-                buf.push(v);
-            }
-            Op::SetAttr(name_idx) => {
-                let value = buf.pop().unwrap();
-                let obj = buf.pop().unwrap();
-                interp.attr_assign_evaled(obj, &chunk.names[*name_idx as usize], value)?;
-            }
-            Op::Swap => {
-                let n = buf.len();
-                buf.swap(n - 1, n - 2);
-            }
-            Op::IsType(name_idx) => {
-                let v = buf.pop().unwrap();
-                let r = interp.value_is_type(&v, &chunk.names[*name_idx as usize]);
-                buf.push(Value::Bool(r));
-            }
-            Op::CallBuiltin(name_idx, argc) => {
-                let n = *argc as usize;
-                let split = buf.len() - n;
-                let args = buf.split_off(split); // arg0..argN-1（順序保持）
-                let name = &chunk.names[*name_idx as usize];
-                match interp.eval_builtin_evaled(name, args) {
-                    Some(r) => buf.push(r?),
-                    // コンパイラは eval_builtin_evaled が扱う名前だけ発行するので到達しない。
-                    None => return Err(format!("NameError: '{name}' is not defined")),
+                    None => return Err(e),
                 }
             }
-            Op::GetIter => {
-                let iterable = buf.pop().unwrap();
-                let iter = interp.make_for_iterator(iterable)?;
-                buf.push(iter);
-            }
-            Op::ForIter(iter_slot, target_slot, exit_ip) => {
-                let iter_idx = base + *iter_slot as usize;
-                // 高速パス: Generator（range/list/str/set/tuple/gen __iter__ の実体）は
-                // index を直接進める（eval_method_call のディスパッチを丸ごと回避）。
-                // メソッド呼び出しの Generator "next" アームと同一意味論。
-                let next: Option<Option<Value>> =
-                    if let Value::Generator(state) = &buf[iter_idx] {
-                        let mut s = state.borrow_mut();
-                        if s.index < s.values.len() {
-                            let val = s.values[s.index].clone();
-                            s.index += 1;
-                            Some(Some(val))
-                        } else {
-                            Some(None) // 枯渇
-                        }
-                    } else {
-                        None // 非 Generator（カスタムイテレータ）はフォールバック
-                    };
-                match next {
-                    Some(Some(val)) => buf[base + *target_slot as usize] = val,
-                    Some(None) => {
-                        ip = *exit_ip as usize;
-                        continue;
-                    }
-                    None => {
-                        // フォールバック: カスタムイテレータ等は .next() を呼ぶ。
-                        let iter = buf[iter_idx].clone();
-                        match interp.eval_method_call(iter, "next", &[], None) {
-                            Ok(item) => buf[base + *target_slot as usize] = item,
-                            Err(ref e) if e.starts_with("EndOfIteration") => {
-                                ip = *exit_ip as usize;
-                                continue;
-                            }
-                            Err(e) => return Err(e),
-                        }
-                    }
-                }
-            }
-            Op::Jump(t) => {
-                ip = *t as usize;
-                continue;
-            }
-            Op::JumpIfFalse(t) => {
-                let c = buf.pop().unwrap();
-                if !truthy_fast(interp, &c)? {
-                    ip = *t as usize;
-                    continue;
-                }
-            }
-            Op::JumpIfFalseOrPop(t) => {
-                let truthy = truthy_fast(interp, buf.last().unwrap())?;
-                if !truthy {
-                    ip = *t as usize;
-                    continue;
-                }
-                buf.pop();
-            }
-            Op::JumpIfTrueOrPop(t) => {
-                let truthy = truthy_fast(interp, buf.last().unwrap())?;
-                if truthy {
-                    ip = *t as usize;
-                    continue;
-                }
-                buf.pop();
-            }
-            Op::Call(argc, mut_mask) => {
-                let n = *argc as usize;
-                let split = buf.len() - n;
-                let arg_vals = buf.split_off(split); // arg0..argN-1（順序保持）
-                let callee = buf.pop().unwrap();
-                let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
-                    .collect();
-                let r = interp.call_value_evaled(callee, evaled)?;
-                buf.push(r);
-            }
-            Op::CallMethod(name_idx, argc, mut_mask) => {
-                let n = *argc as usize;
-                let split = buf.len() - n;
-                let arg_vals = buf.split_off(split);
-                let obj = buf.pop().unwrap();
-                let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
-                    .collect();
-                let r = interp.call_instance_method_evaled(
-                    obj,
-                    &chunk.names[*name_idx as usize],
-                    evaled,
-                    Some(&chunk.attr_caches[*name_idx as usize]),
-                )?;
-                buf.push(r);
-            }
-            Op::Return => return Ok(buf.pop().unwrap()),
-            Op::ReturnNil => return Ok(Value::None),
         }
-        ip += 1;
     }
+}
+
+/// 単一命令を実行し、制御フローを返す。エラーは `Err` で返し、`run` がハンドラスタックへ回す。
+#[inline]
+fn exec_op(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &mut Vec<Value>,
+    base: usize,
+    ip: usize,
+    handlers: &mut Vec<Handler>,
+) -> Result<Flow, String> {
+    match &chunk.code[ip] {
+        Op::Const(i) => buf.push(chunk.consts[*i as usize].clone()),
+        Op::Nil => buf.push(Value::None),
+        Op::LoadLocal(s) => {
+            let v = buf[base + *s as usize].clone();
+            buf.push(v);
+        }
+        Op::LoadGlobal(ni) => {
+            let name = &chunk.names[*ni as usize];
+            match interp.vm_get_global(name) {
+                Some(v) => buf.push(v),
+                None => return Err(format!("NameError: '{name}' is not defined")),
+            }
+        }
+        Op::StoreLocal(s) => {
+            let v = buf.pop().unwrap();
+            buf[base + *s as usize] = v;
+        }
+        Op::StoreLocalDeepCopy(s) => {
+            let v = Interpreter::deep_copy_value(buf.pop().unwrap());
+            buf[base + *s as usize] = v;
+        }
+        Op::StoreLocalCopyFreeze(s) => {
+            let v = Interpreter::deep_copy_value(buf.pop().unwrap());
+            interp.apply_freeze_to_value(&v, true)?;
+            buf[base + *s as usize] = v;
+        }
+        Op::StoreLocalFreezeInstance(s) => {
+            let v = buf.pop().unwrap();
+            let v = if matches!(v, Value::Instance(_)) {
+                let copied = Interpreter::deep_copy_value(v);
+                interp.apply_freeze_to_value(&copied, true)?;
+                copied
+            } else {
+                v
+            };
+            buf[base + *s as usize] = v;
+        }
+        Op::Pop => {
+            buf.pop();
+        }
+        Op::Bin(op) => {
+            let b = buf.pop().unwrap();
+            let a = buf.pop().unwrap();
+            let r = apply_bin_fast(interp, op, a, b)?;
+            buf.push(r);
+        }
+        Op::Un(op) => {
+            let a = buf.pop().unwrap();
+            let r = interp.apply_unary_dyn(op, a)?;
+            buf.push(r);
+        }
+        Op::GetAttr(name_idx, cache_idx) => {
+            let obj = buf.pop().unwrap();
+            let cache = &chunk.attr_caches[*cache_idx as usize];
+            // R3 インラインキャッシュのヒット（public フィールド）を VM ループ内で直接処理し、
+            // get_attr_val の関数呼び出しを避ける。ミス・非 public・非インスタンスはフルパスへ。
+            let v = 'get: {
+                if let Value::Instance(inst_rc) = &obj {
+                    let class_id = inst_rc.borrow().class.class_id;
+                    if let Some((idx, access)) = cache.get(class_id) {
+                        if access == crate::ast::AttrCache::PUBLIC {
+                            let inst = inst_rc.borrow();
+                            debug_assert_eq!(
+                                inst.class.field_index.get(&chunk.names[*name_idx as usize]).copied(),
+                                Some(idx),
+                                "VM GetAttr cache slot mismatch"
+                            );
+                            if let Some(fv) = inst.field_value(idx) {
+                                break 'get fv;
+                            }
+                        }
+                    }
+                }
+                interp.get_attr_val(obj, &chunk.names[*name_idx as usize], Some(cache))?
+            };
+            buf.push(v);
+        }
+        Op::SetAttr(name_idx) => {
+            let value = buf.pop().unwrap();
+            let obj = buf.pop().unwrap();
+            interp.attr_assign_evaled(obj, &chunk.names[*name_idx as usize], value)?;
+        }
+        Op::Swap => {
+            let n = buf.len();
+            buf.swap(n - 1, n - 2);
+        }
+        Op::IsType(name_idx) => {
+            let v = buf.pop().unwrap();
+            let r = interp.value_is_type(&v, &chunk.names[*name_idx as usize]);
+            buf.push(Value::Bool(r));
+        }
+        Op::CallBuiltin(name_idx, argc) => {
+            let n = *argc as usize;
+            let split = buf.len() - n;
+            let args = buf.split_off(split); // arg0..argN-1（順序保持）
+            let name = &chunk.names[*name_idx as usize];
+            match interp.eval_builtin_evaled(name, args) {
+                Some(r) => buf.push(r?),
+                // コンパイラは eval_builtin_evaled が扱う名前だけ発行するので到達しない。
+                None => return Err(format!("NameError: '{name}' is not defined")),
+            }
+        }
+        Op::GetIter => {
+            let iterable = buf.pop().unwrap();
+            let iter = interp.make_for_iterator(iterable)?;
+            buf.push(iter);
+        }
+        Op::ForIter(iter_slot, target_slot, exit_ip) => {
+            let iter_idx = base + *iter_slot as usize;
+            // 高速パス: Generator（range/list/str/set/tuple/gen __iter__ の実体）は
+            // index を直接進める（eval_method_call のディスパッチを丸ごと回避）。
+            // メソッド呼び出しの Generator "next" アームと同一意味論。
+            let next: Option<Option<Value>> =
+                if let Value::Generator(state) = &buf[iter_idx] {
+                    let mut s = state.borrow_mut();
+                    if s.index < s.values.len() {
+                        let val = s.values[s.index].clone();
+                        s.index += 1;
+                        Some(Some(val))
+                    } else {
+                        Some(None) // 枯渇
+                    }
+                } else {
+                    None // 非 Generator（カスタムイテレータ）はフォールバック
+                };
+            match next {
+                Some(Some(val)) => buf[base + *target_slot as usize] = val,
+                Some(None) => return Ok(Flow::Jump(*exit_ip as usize)),
+                None => {
+                    // フォールバック: カスタムイテレータ等は .next() を呼ぶ。
+                    let iter = buf[iter_idx].clone();
+                    match interp.eval_method_call(iter, "next", &[], None) {
+                        Ok(item) => buf[base + *target_slot as usize] = item,
+                        Err(ref e) if e.starts_with("EndOfIteration") => {
+                            return Ok(Flow::Jump(*exit_ip as usize))
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
+        Op::Jump(t) => return Ok(Flow::Jump(*t as usize)),
+        Op::JumpIfFalse(t) => {
+            let c = buf.pop().unwrap();
+            if !truthy_fast(interp, &c)? {
+                return Ok(Flow::Jump(*t as usize));
+            }
+        }
+        Op::JumpIfFalseOrPop(t) => {
+            let truthy = truthy_fast(interp, buf.last().unwrap())?;
+            if !truthy {
+                return Ok(Flow::Jump(*t as usize));
+            }
+            buf.pop();
+        }
+        Op::JumpIfTrueOrPop(t) => {
+            let truthy = truthy_fast(interp, buf.last().unwrap())?;
+            if truthy {
+                return Ok(Flow::Jump(*t as usize));
+            }
+            buf.pop();
+        }
+        Op::Call(argc, mut_mask) => {
+            let n = *argc as usize;
+            let split = buf.len() - n;
+            let arg_vals = buf.split_off(split); // arg0..argN-1（順序保持）
+            let callee = buf.pop().unwrap();
+            let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
+                .collect();
+            let r = interp.call_value_evaled(callee, evaled)?;
+            buf.push(r);
+        }
+        Op::CallMethod(name_idx, argc, mut_mask) => {
+            let n = *argc as usize;
+            let split = buf.len() - n;
+            let arg_vals = buf.split_off(split);
+            let obj = buf.pop().unwrap();
+            let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
+                .collect();
+            let r = interp.call_instance_method_evaled(
+                obj,
+                &chunk.names[*name_idx as usize],
+                evaled,
+                Some(&chunk.attr_caches[*name_idx as usize]),
+            )?;
+            buf.push(r);
+        }
+        Op::Return => return Ok(Flow::Return(buf.pop().unwrap())),
+        Op::ReturnNil => return Ok(Flow::Return(Value::None)),
+        // ── 例外処理（Phase V-C） ──
+        Op::SetupTry(handler_ip) => {
+            handlers.push(Handler {
+                handler_ip: *handler_ip as usize,
+                stack_len: buf.len(),
+            });
+        }
+        Op::PopTry => {
+            handlers.pop();
+        }
+        Op::Raise(span_idx) => {
+            let exc = buf.pop().unwrap();
+            let sentinel = interp.vm_raise(exc, &chunk.spans[*span_idx as usize]);
+            return Err(sentinel);
+        }
+        Op::Reraise => {
+            let sentinel = interp.vm_reraise();
+            return Err(sentinel);
+        }
+        Op::Dup => {
+            let v = buf.last().unwrap().clone();
+            buf.push(v);
+        }
+        Op::ExcMatch(name_idx) => {
+            let v = buf.pop().unwrap();
+            let r = interp.vm_exc_matches(&v, &chunk.names[*name_idx as usize]);
+            buf.push(Value::Bool(r));
+        }
+    }
+    Ok(Flow::Next)
 }
 
 /// int/float の算術・順序比較を高速パスで処理し、それ以外は `apply_binop_dyn` へ委譲する。

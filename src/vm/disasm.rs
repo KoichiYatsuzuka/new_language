@@ -46,5 +46,11 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::JumpIfTrueOrPop(t) => format!("JUMP_IF_TRUE_OR_POP {t}"),
         Op::Return => "RETURN".to_string(),
         Op::ReturnNil => "RETURN_NIL".to_string(),
+        Op::SetupTry(h) => format!("SETUP_TRY {h}"),
+        Op::PopTry => "POP_TRY".to_string(),
+        Op::Raise(s) => format!("RAISE span={s}"),
+        Op::Reraise => "RERAISE".to_string(),
+        Op::Dup => "DUP".to_string(),
+        Op::ExcMatch(n) => format!("EXC_MATCH {:?}", chunk.names.get(*n as usize)),
     }
 }

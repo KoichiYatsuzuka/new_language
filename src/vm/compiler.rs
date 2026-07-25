@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{BinOp, CallArg, Expr, MatchArm, MatchPattern, Param, Stmt};
+use crate::ast::{BinOp, CallArg, ExceptHandler, Expr, MatchArm, MatchPattern, Param, Stmt};
 use crate::interpreter::Value;
 
 use super::chunk::Chunk;
@@ -44,6 +44,7 @@ struct Compiler {
     consts: Vec<Value>,
     names: Vec<String>,
     attr_caches: Vec<crate::ast::AttrCache>,
+    spans: Vec<crate::token::Span>,
     /// 名前 → slot（base スコープ: パラメータ + トップレベル let/mut/const、宣言順）。
     /// リゾルバの base slot 採番と同順（パラメータ→宣言）なので `LocalRef` と一致する。
     slots: HashMap<String, u16>,
@@ -173,6 +174,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         consts: Vec::new(),
         names: Vec::new(),
         attr_caches: Vec::new(),
+        spans: Vec::new(),
         slots,
         slot_mut,
         slot_type,
@@ -194,6 +196,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         consts: c.consts,
         names: c.names,
         attr_caches: c.attr_caches,
+        spans: c.spans,
         n_locals: c.n_locals,
     })
 }
@@ -252,11 +255,61 @@ fn collect_nested_decls(
                 }
                 collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
             }
+            Stmt::Try { body, handlers, finally_body } => {
+                collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
+                for h in handlers {
+                    // `except E as e:` の別名は不変束縛（tree-walk は Var::new(exc, false)）。
+                    if let Some(alias) = &h.name {
+                        add(alias, &None, false, slots, slot_mut, slot_type, n)?;
+                    }
+                    collect_nested_decls(&h.body, slots, slot_mut, slot_type, n)?;
+                }
+                if let Some(fb) = finally_body {
+                    collect_nested_decls(fb, slots, slot_mut, slot_type, n)?;
+                }
+            }
             // その他（未対応構文）には踏み込まない。compile_stmt が到達時に bail する。
             _ => {}
         }
     }
     Some(())
+}
+
+/// `stmts` に「囲む try を飛び越える」制御フローがあるかを保守的に判定する。
+/// `include_return` が真なら `return` も脱出とみなす（finally は return でも走る必要があるため）。
+/// `break`/`continue` は `stmts` 内の while/for（loop_depth>0）に囲まれていなければ脱出。
+/// `block_return`/`loop_yield` は常に脱出とみなす。
+fn has_escape(stmts: &[Stmt], include_return: bool, loop_depth: usize) -> bool {
+    stmts.iter().any(|s| match s {
+        Stmt::Return(_) => include_return,
+        Stmt::Break | Stmt::Continue => loop_depth == 0,
+        Stmt::BlockReturn(..) | Stmt::LoopYield(_) => true,
+        Stmt::While { body, .. } | Stmt::For { body, .. } => {
+            has_escape(body, include_return, loop_depth + 1)
+        }
+        Stmt::If { branches, else_body } => {
+            branches
+                .iter()
+                .any(|(_, b)| has_escape(b, include_return, loop_depth))
+                || else_body
+                    .as_ref()
+                    .is_some_and(|eb| has_escape(eb, include_return, loop_depth))
+        }
+        Stmt::Match { arms, .. } => arms
+            .iter()
+            .any(|a| has_escape(&a.body, include_return, loop_depth)),
+        Stmt::Block(b) => has_escape(b, include_return, loop_depth),
+        Stmt::Try { body, handlers, finally_body } => {
+            has_escape(body, include_return, loop_depth)
+                || handlers
+                    .iter()
+                    .any(|h| has_escape(&h.body, include_return, loop_depth))
+                || finally_body
+                    .as_ref()
+                    .is_some_and(|fb| has_escape(fb, include_return, loop_depth))
+        }
+        _ => false,
+    })
 }
 
 impl Compiler {
@@ -292,6 +345,12 @@ impl Compiler {
         let idx = self.names.len() as u32;
         self.names.push(name.to_string());
         self.attr_caches.push(crate::ast::AttrCache::default());
+        idx
+    }
+
+    fn add_span(&mut self, span: &crate::token::Span) -> u32 {
+        let idx = self.spans.len() as u32;
+        self.spans.push(span.clone());
         idx
     }
 
@@ -571,8 +630,135 @@ impl Compiler {
                 self.emit(Op::Bin(op.clone()));
                 self.emit(Op::SetAttr(ni));
             }
-            // それ以外（break/continue・for/match/block・例外・定義・import 等）は非対応。
+            Stmt::Raise { exc, span } => match exc {
+                Some(e) => {
+                    self.compile_expr(e)?;
+                    let si = self.add_span(span);
+                    self.emit(Op::Raise(si));
+                }
+                None => {
+                    self.emit(Op::Reraise); // bare raise（再送出）
+                }
+            },
+            Stmt::Try { body, handlers, finally_body } => {
+                self.compile_try(body, handlers, finally_body)?;
+            }
+            // それ以外（block:・定義・import 等）は非対応。
             _ => return None,
+        }
+        Some(())
+    }
+
+    /// `try/except`（finally なし）と `try/finally`（except なし）をコンパイルする。
+    /// 両方揃う `try/except/finally` は現状 bail（finally とハンドラの相互作用が複雑なため）。
+    fn compile_try(
+        &mut self,
+        body: &[Stmt],
+        handlers: &[ExceptHandler],
+        finally_body: &Option<Vec<Stmt>>,
+    ) -> Option<()> {
+        match finally_body {
+            None => self.compile_try_except(body, handlers),
+            Some(fin) if handlers.is_empty() => self.compile_try_finally(body, fin),
+            Some(_) => None, // try/except/finally 併用は非対応
+        }
+    }
+
+    /// `try: <body> except ...:` をハンドラスタック（SetupTry/PopTry）＋ landing pad にコンパイルする。
+    fn compile_try_except(&mut self, body: &[Stmt], handlers: &[ExceptHandler]) -> Option<()> {
+        // try を飛び越える制御フロー（break/continue/block_return/loop_yield）があると
+        // SetupTry ハンドラが残るため bail。return は run から即復帰しハンドラは破棄されるので OK。
+        if has_escape(body, false, 0) {
+            return None;
+        }
+        for h in handlers {
+            if has_escape(&h.body, false, 0) {
+                return None;
+            }
+        }
+
+        let setup = self.emit(Op::SetupTry(0)); // handler_ip は後でパッチ
+        for s in body {
+            self.compile_stmt(s)?;
+        }
+        self.emit(Op::PopTry);
+        let mut end_jumps = vec![self.emit(Op::Jump(0))]; // 正常終了 → END
+        // landing pad: 例外時にここへ来る（スタック = [exc]）。
+        let land = self.here();
+        self.code[setup] = Op::SetupTry(land);
+        for h in handlers {
+            match &h.exc_type {
+                // bare `except:` — 無条件マッチ。
+                None => {
+                    self.bind_or_pop_exc(h)?;
+                    for s in &h.body {
+                        self.compile_stmt(s)?;
+                    }
+                    end_jumps.push(self.emit(Op::Jump(0)));
+                    // bare except 以降のハンドラは到達不能（パーサが末尾を保証）。
+                }
+                // `except E [as e]:` — 型マッチ。
+                Some(type_name) => {
+                    self.emit(Op::Dup); // [exc, exc]
+                    let ni = self.add_name(type_name);
+                    self.emit(Op::ExcMatch(ni)); // [exc, bool]
+                    let jf = self.emit(Op::JumpIfFalse(0)); // bool を pop・不一致は next へ
+                    self.bind_or_pop_exc(h)?; // 一致: [exc] を束縛 or 破棄
+                    for s in &h.body {
+                        self.compile_stmt(s)?;
+                    }
+                    end_jumps.push(self.emit(Op::Jump(0)));
+                    let next = self.here();
+                    self.patch_jump(jf, next);
+                }
+            }
+        }
+        // どのハンドラにもマッチしなかった: [exc] を捨てて再送出。
+        self.emit(Op::Pop);
+        self.emit(Op::Reraise);
+        let end = self.here();
+        for j in end_jumps {
+            self.patch_jump(j, end);
+        }
+        Some(())
+    }
+
+    /// `try: <body> finally: <fin>`（except なし）。正常経路・例外経路の両方で finally を走らせる。
+    fn compile_try_finally(&mut self, body: &[Stmt], fin: &[Stmt]) -> Option<()> {
+        // finally は全出口で走る必要があるので、脱出制御フロー（return 含む）があれば bail。
+        if has_escape(body, true, 0) || has_escape(fin, true, 0) {
+            return None;
+        }
+        let setup = self.emit(Op::SetupTry(0));
+        for s in body {
+            self.compile_stmt(s)?;
+        }
+        self.emit(Op::PopTry);
+        // 正常経路の finally。
+        for s in fin {
+            self.compile_stmt(s)?;
+        }
+        let normal_jump = self.emit(Op::Jump(0)); // END
+        // 例外 landing pad: スタック = [exc]。finally はスタック中立なので [exc] は底に残る。
+        let land = self.here();
+        self.code[setup] = Op::SetupTry(land);
+        for s in fin {
+            self.compile_stmt(s)?;
+        }
+        self.emit(Op::Pop); // [exc] を捨てる
+        self.emit(Op::Reraise); // 再伝播（current_exception は設定済み）
+        let end = self.here();
+        self.patch_jump(normal_jump, end);
+        Some(())
+    }
+
+    /// except ハンドラ landing の [exc] を、別名があれば slot へ束縛、なければ捨てる。
+    fn bind_or_pop_exc(&mut self, h: &ExceptHandler) -> Option<()> {
+        if let Some(alias) = &h.name {
+            let slot = *self.slots.get(alias)?;
+            self.emit(Op::StoreLocal(slot)); // exc を束縛（消費）
+        } else {
+            self.emit(Op::Pop); // exc を破棄
         }
         Some(())
     }
