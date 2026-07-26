@@ -53,6 +53,13 @@ thread_local! {
     static IN_REPL: RefCell<bool> = const { RefCell::new(false) };
 }
 
+/// デバッガがアクティブ（ステップ実行中）かを返す。VM 経路の判定に使う（タスク #1 の暫定対応）。
+/// VM 関数はステートメント境界で `should_pause_at` を呼ばないため、デバッグ中は VM を無効化して
+/// ツリーウォーク（文単位で停止判定する参照経路）に委ねることで、`--vm=auto` でも正しくステップできる。
+pub(crate) fn dbg_active() -> bool {
+    DBG_MODE.with(|m| *m.borrow() != DbgMode::Inactive)
+}
+
 // ---------------------------------------------------------------------------
 // Source context helpers
 // ---------------------------------------------------------------------------

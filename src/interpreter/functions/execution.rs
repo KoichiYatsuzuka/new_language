@@ -267,7 +267,9 @@ impl Interpreter {
     ) -> Result<Value, String> {
         // ── VM チャンクを1回だけ取得（fast/general 両経路で共有） ──
         // 対象: フリー関数（self なし）＋ インスタンスメソッド（self=Instance）。非 Python・クロージャなし。
+        // デバッグ中（ステップ実行）は VM を無効化しツリーウォークに委ねる（文単位停止・#1 暫定）。
         let vm_eligible = self.vm_mode != crate::vm::VmMode::Off
+            && !crate::interpreter::debugger::dbg_active()
             && !fn_val.is_python
             && fn_val.captured_env.is_empty()
             && matches!(self_val, None | Some(Value::Instance(_)));
@@ -585,6 +587,7 @@ impl Interpreter {
         // 対象: フリージェネレータ（self なし）＋ Instance レシーバのジェネレータメソッド。
         // クロージャキャプチャあり・非対応構文（`Self` 参照等）はツリーウォークへフォールバック。
         let vm_eligible = self.vm_mode != crate::vm::VmMode::Off
+            && !crate::interpreter::debugger::dbg_active()
             && gen_fn.captured_env.is_empty()
             && matches!(self_val, None | Some(Value::Instance(_)));
         if vm_eligible {
