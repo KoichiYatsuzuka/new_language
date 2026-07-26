@@ -97,4 +97,9 @@ pub enum Op {
     /// pop したリストが空なら `None`、非空ならそのリストを push する
     /// （for/while/block 式の値: 蓄積が空なら None）。
     ListOrNone,
+    // ── デバッガ REPL（V-E。停止スコープの生変数へ名前でアクセス） ──
+    /// 現在のスコープから `names[name_idx]` の値を名前引きで push する（`get_val`）。未定義なら NameError。
+    LoadName(u32),
+    /// pop した値を `let dbg::name` として現在のスコープへ宣言する（不変・`let` 意味論）。
+    DeclareName(u32),
 }

@@ -59,6 +59,9 @@ struct Compiler {
     loops: Vec<LoopCtx>,
     /// ネストしたブロック式のコンテキストスタック（block_return/loop_yield 用）。
     block_ctxs: Vec<BlockCtx>,
+    /// デバッガ REPL モード: 変数参照は slot ではなく名前引き（`LoadName`）へ落とす。
+    /// 停止スコープの生変数へアクセスし、`let dbg::x` を宣言できるようにする（V-E）。
+    debug_mode: bool,
     /// 名前付き slot 数（パラメータ + 全ローカル宣言）。temp slot はこの上に積む。
     named_locals: u16,
     /// 現在使用中の temp slot 数（match サブジェクト等のスタック規律の一時領域）。
@@ -204,6 +207,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         self_slot,
         loops: Vec::new(),
         block_ctxs: Vec::new(),
+        debug_mode: false,
         named_locals: n,
         temps_in_use: 0,
         n_locals: n as usize,
@@ -222,6 +226,51 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         attr_caches: c.attr_caches,
         spans: c.spans,
         local_names,
+        n_locals: c.n_locals,
+    })
+}
+
+/// デバッガ REPL の 1 文をデバッグモード（名前引きアクセス）でコンパイルする。
+/// 対応: 式文（値を `Return`）・`let/const dbg::name = 式`（`DeclareName`）。
+/// メソッド呼び出し・添字・制御フロー等は `None`（呼び出し側がツリーウォークへフォールバック）。
+pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
+    let mut c = Compiler {
+        code: Vec::new(),
+        consts: Vec::new(),
+        names: Vec::new(),
+        attr_caches: Vec::new(),
+        spans: Vec::new(),
+        slots: HashMap::new(),
+        slot_mut: Vec::new(),
+        slot_type: Vec::new(),
+        self_slot: None,
+        loops: Vec::new(),
+        block_ctxs: Vec::new(),
+        debug_mode: true,
+        named_locals: 0,
+        temps_in_use: 0,
+        n_locals: 0,
+    };
+    match stmt {
+        Stmt::Expr(e) => {
+            c.compile_expr(e)?;
+            c.emit(Op::Return); // 式の値を返す（呼び出し側が表示）
+        }
+        Stmt::Let(name, _, e) | Stmt::Const(name, _, e) if name != "_" => {
+            c.compile_expr(e)?;
+            let ni = c.add_name(name);
+            c.emit(Op::DeclareName(ni));
+            c.emit(Op::ReturnNil);
+        }
+        _ => return None,
+    }
+    Some(Chunk {
+        code: c.code,
+        consts: c.consts,
+        names: c.names,
+        attr_caches: c.attr_caches,
+        spans: c.spans,
+        local_names: Vec::new(),
         n_locals: c.n_locals,
     })
 }
@@ -1034,9 +1083,15 @@ impl Compiler {
                 self.emit(Op::LoadLocal(s));
             }
             // Ident はパラメータ名のときのみローカル読み（それ以外＝グローバル/組み込みは非対応）。
+            // デバッグモードでは停止スコープからの名前引き（LoadName）。
             Expr::Ident(name) => {
-                let slot = *self.slots.get(name)?;
-                self.emit(Op::LoadLocal(slot));
+                if self.debug_mode {
+                    let ni = self.add_name(name);
+                    self.emit(Op::LoadName(ni));
+                } else {
+                    let slot = *self.slots.get(name)?;
+                    self.emit(Op::LoadLocal(slot));
+                }
             }
             Expr::UnaryOp { op, operand } => {
                 self.compile_expr(operand)?;
@@ -1091,6 +1146,12 @@ impl Compiler {
                         self.compile_call_args(args)?; // 組み込みは mut_mask 不要
                         let ni = self.add_name(name);
                         self.emit(Op::CallBuiltin(ni, args.len() as u16));
+                    } else if self.debug_mode {
+                        // デバッグモード: 呼び先を名前引きで取得（局所・グローバル両対応）。
+                        let cn = self.add_name(name);
+                        self.emit(Op::LoadName(cn));
+                        let mask = self.compile_call_args(args)?;
+                        self.emit(Op::Call(args.len() as u16, mask, cn, site));
                     } else if let Some(&slot) = self.slots.get(name) {
                         // ローカル/パラメータが関数値を保持している場合は slot 読み。
                         self.emit(Op::LoadLocal(slot));

@@ -45,6 +45,25 @@ impl Interpreter {
         self.get_var(name).map(|v| v.get_value())
     }
 
+    /// VM デバッガ: 停止スコープから名前引きで値を取る（`LoadName` op）。
+    pub(crate) fn vm_load_name(&self, name: &str) -> Option<Value> {
+        self.get_val(name)
+    }
+
+    /// VM デバッガ: `let dbg::name = expr` を停止スコープへ宣言する（`DeclareName` op）。
+    /// 非識別子ソースの `let` 意味論に合わせ、Instance は deep_copy + freeze する。
+    pub(crate) fn vm_declare_debug(&mut self, name: &str, value: Value) -> Result<(), String> {
+        let v = if matches!(value, Value::Instance(_)) {
+            let copied = Self::deep_copy_value(value);
+            self.apply_freeze_to_value(&copied, true)?;
+            copied
+        } else {
+            value
+        };
+        self.declare_var(name.to_string(), Var::new(v, false));
+        Ok(())
+    }
+
     /// 最内部スコープに新しい変数を宣言する。
     /// 同名の変数が同スコープ内に既に存在する場合は上書きされる。
     ///

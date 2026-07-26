@@ -57,5 +57,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::BuildEmptyList => "BUILD_EMPTY_LIST".to_string(),
         Op::ListAppendLocal(s) => format!("LIST_APPEND_LOCAL {s}"),
         Op::ListOrNone => "LIST_OR_NONE".to_string(),
+        Op::LoadName(n) => format!("LOAD_NAME {:?}", chunk.names.get(*n as usize)),
+        Op::DeclareName(n) => format!("DECLARE_NAME {:?}", chunk.names.get(*n as usize)),
     }
 }

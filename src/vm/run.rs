@@ -327,6 +327,17 @@ fn exec_op(
             let empty = matches!(&list, Value::List(l) if l.borrow().is_empty());
             buf.push(if empty { Value::None } else { list });
         }
+        Op::LoadName(name_idx) => {
+            let name = &chunk.names[*name_idx as usize];
+            match interp.vm_load_name(name) {
+                Some(v) => buf.push(v),
+                None => return Err(format!("NameError: '{name}' is not defined")),
+            }
+        }
+        Op::DeclareName(name_idx) => {
+            let v = buf.pop().unwrap();
+            interp.vm_declare_debug(&chunk.names[*name_idx as usize], v)?;
+        }
     }
     Ok(Flow::Next)
 }

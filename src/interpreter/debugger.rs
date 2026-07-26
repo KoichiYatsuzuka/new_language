@@ -275,15 +275,37 @@ impl Interpreter {
             _ => {}
         }
 
-        match self.exec(&stmt)? {
-            ExecResult::Normal => {}
-            ExecResult::Return(v)
-                if !matches!(v, Value::None) => {
-                    println!("{}", self.display(&v));
+        // バイトコード経路（V-E）: 停止スコープの視点でコンパイル・実行する。
+        // 式は値を返して表示、`let dbg::x` は宣言のみ。コンパイル不能な構文（メソッド呼び出し・
+        // 添字・制御フロー等）はツリーウォークへフォールバックする。
+        let value: Value = if let Some(chunk) = crate::vm::compile_debug(&stmt) {
+            self.run_debug_chunk(&chunk)?
+        } else {
+            match &stmt {
+                // 式文はフォールバックでも値を取り出して表示する（バイトコード経路と一致）。
+                Stmt::Expr(e) => self.eval(e)?,
+                _ => {
+                    self.exec(&stmt)?;
+                    Value::None
                 }
-            _ => {}
+            }
+        };
+        if !matches!(value, Value::None) {
+            println!("{}", self.display(&value));
         }
         Ok(())
+    }
+
+    /// デバッグ用 Chunk を停止スコープ上で実行する（名前引きアクセス。共有バッファを使い回す）。
+    /// `LoadName`/`DeclareName` は現在の `scopes`（停止フレーム）に対して名前解決・宣言する。
+    fn run_debug_chunk(&mut self, chunk: &crate::vm::Chunk) -> Result<Value, String> {
+        let mut buf = std::mem::take(&mut self.vm_stack);
+        let base = buf.len();
+        buf.resize(base + chunk.n_locals, Value::None);
+        let result = crate::vm::run(self, chunk, &mut buf, base);
+        buf.truncate(base);
+        self.vm_stack = buf;
+        result
     }
 
     /// 文の実行前に一時停止すべきかを判定する。`exec()` 冒頭で毎回呼ばれ、停止する場合は表示スパンを返す。

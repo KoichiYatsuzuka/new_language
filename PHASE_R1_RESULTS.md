@@ -454,9 +454,37 @@ byte-identical を優先し、VM のメソッド呼び出しも `call_span=None`
 ## V-E の到達点と残り
 - **到達**: VM 関数の**未捕捉例外トレースバックがツリーウォークと byte-identical**。呼び出し位置の
   行番号・コンテキスト行が復元される。デバッグ名テーブルを Chunk に保持。
-- **残り（V-E 本体）**: op→Span の**汎用行テーブル**（デバッガのステートメント単位ブレークポイント用）と
-  **デバッガ REPL の VM 統合**（現状は §2.3 通りデバッガ／`parse_ar`／対話 REPL はツリーウォーク据置）。
-  トレースバック用途は本増分で満たされたので、残りはデバッガ機能追加時に実施。
+- **残り（V-E 本体）**: op→Span の**汎用行テーブル**（デバッガのステートメント単位ブレークポイント用）。
+  トレースバック用途は本増分で満たされたので、残りはステップ実行の精密化時に実施。
+
+---
+
+# Phase V-E（続き）— デバッガ REPL のバイトコード実行（停止スコープ視点）
+
+停止スコープの**生変数を名前で参照**しながら、デバッガ REPL 入力をバイトコードにコンパイルして
+実行する経路を追加した（§2.5/§3.4-C の「動的名エスケープハッチ」を VM で実現）。
+
+## 実装
+| 変更 | ファイル | 内容 |
+|---|---|---|
+| **名前引き op** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | `LoadName(name_idx)`（`get_val` で停止スコープから名前解決）・`DeclareName(name_idx)`（`let dbg::x` を停止スコープへ宣言・`let` 意味論で Instance は deep_copy+freeze） |
+| **VM 側ヘルパ** | [interpreter/scope.rs](src/interpreter/scope.rs) | `vm_load_name`（`get_val` 委譲）・`vm_declare_debug`。`get_val`/`declare_var` は module private なので pub(crate) 経由 |
+| **デバッグモードコンパイラ** | [vm/compiler.rs](src/vm/compiler.rs) | `Compiler.debug_mode` を追加。true のとき `Expr::Ident`→`LoadName`、関数呼び先も名前引き。`compile_debug(stmt)`: 式文（値を `Return`）・`let/const dbg::name`（`DeclareName`）を対応。メソッド呼び出し・添字・制御フロー等は `None` |
+| **REPL 統合** | [interpreter/debugger.rs](src/interpreter/debugger.rs) | `exec_debug_input` が `compile_debug` を試し、`run_debug_chunk`（共有バッファ・`base` からローカル確保）で VM 実行。**式の値を表示**（従来は Return のみ表示だったのを改善し `access: dbg::x` が機能）。コンパイル不能な入力はツリーウォーク（`eval`/`exec`）へフォールバック |
+
+## 検証（対話デバッガに stdin パイプ）
+- **停止スコープ視点**: 関数フレーム内で停止し、局所変数（`total`・引数 `p`/`nums`）を名前で参照して
+  バイトコード評価（`frame_floor` 準拠の名前解決）。
+- `x + y`→30・`p.x`→3・`dbg::t`→20 等、**式がバイトコード実行され値が表示**される。
+- `let dbg::m = p.x + total` 宣言 → 後続 `dbg::m`→10 で参照。関数呼び出し `add(x, y)`→30 もバイトコード実行。
+- **フォールバック**: メソッド呼び出し `p.sum()`→7・添字 `nums[1]`→200 はツリーウォークで正しく評価。
+- `q`（resume）後、停止プログラムが正しい状態で継続（`r=107`）。
+- `cargo test` → **672 passed / 0 failed**、通常実行の回帰なし（debug 経路は隔離）、clippy 0・build 警告 0。
+
+## 到達点
+- デバッガ REPL が**停止フレームの生変数を名前で参照しつつバイトコード実行**。式・`let dbg::`・
+  関数呼び出しは VM、メソッド/添字/制御フローはツリーウォークへフォールバック。**§2.3 が求める
+  slot→名前デバッグメタデータ（`Chunk.local_names`）と名前引きエスケープハッチが揃った**。
 
 ---
 

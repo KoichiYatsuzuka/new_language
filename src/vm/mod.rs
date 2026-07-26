@@ -12,7 +12,7 @@ pub mod op;
 pub mod run;
 
 pub use chunk::Chunk;
-pub use compiler::compile_fn;
+pub use compiler::{compile_debug, compile_fn};
 pub use run::run;
 
 /// VM 実行モード（CLI `--vm=off|auto|force`）。
