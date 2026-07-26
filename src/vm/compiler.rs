@@ -10,9 +10,11 @@
 //   関数・メソッド呼び出し、クロージャ、for/match/block、例外、可変長引数、
 //   グローバル/組み込み参照、添字、コレクションリテラル 等。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, CallArg, ExceptHandler, Expr, MatchArm, MatchPattern, Param, Stmt};
+use crate::ast::{
+    BinOp, CallArg, ExceptHandler, Expr, MatchArm, MatchPattern, Param, Stmt, TupleTarget,
+};
 use crate::interpreter::Value;
 
 use super::chunk::Chunk;
@@ -127,6 +129,10 @@ fn is_user_instance_type(ann: &str) -> bool {
 /// - `params`: 仮引数（可変長があれば非対応）。
 /// - `body`: 解決済み関数本体（リゾルバが `LocalRef` を付与済み）。
 pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
+    // `for` ループ変数が外側変数をシャドウする関数は flat-slot モデルで表現できないため諦める。
+    if has_for_target_shadow(params, body) {
+        return None;
+    }
     // base slot をリゾルバと同順で採番する: パラメータ → トップレベル let/mut/const。
     let mut slots: HashMap<String, u16> = HashMap::new();
     let mut slot_mut: Vec<bool> = Vec::new();
@@ -273,6 +279,179 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         local_names: Vec::new(),
         n_locals: c.n_locals,
     })
+}
+
+/// `for` ループ変数（式形含む）が param または非 `for` 宣言と名前衝突するか（＝ブロックスコープの
+/// シャドウ）を判定する。Arrow の `for` 変数はブロックスコープ（ループ後に外側へ戻る）だが、
+/// flat-slot VM モデルは同名 slot を再利用するため、シャドウ時に外側変数を上書きしてツリーウォークと
+/// 挙動が食い違う。該当関数はコンパイルを諦める（ツリーウォークへフォールバック）。
+fn has_for_target_shadow(params: &[Param], body: &[Stmt]) -> bool {
+    let mut for_names: HashSet<String> = HashSet::new();
+    let mut decl_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+    scan_shadow_stmts(body, &mut for_names, &mut decl_names);
+    for_names.iter().any(|n| decl_names.contains(n))
+}
+
+fn scan_shadow_stmts(
+    stmts: &[Stmt],
+    for_names: &mut HashSet<String>,
+    decl_names: &mut HashSet<String>,
+) {
+    for s in stmts {
+        match s {
+            Stmt::Let(n, _, e) | Stmt::Const(n, _, e) | Stmt::Mut(n, _, e) => {
+                decl_names.insert(n.clone());
+                scan_shadow_expr(e, for_names, decl_names);
+            }
+            Stmt::LetTuple { targets, value, .. } => {
+                for t in targets {
+                    match t {
+                        TupleTarget::Let(n) | TupleTarget::Bare(n) | TupleTarget::Mut(n) => {
+                            decl_names.insert(n.clone());
+                        }
+                        TupleTarget::Wildcard => {}
+                    }
+                }
+                scan_shadow_expr(value, for_names, decl_names);
+            }
+            Stmt::Static(n, e, _) => {
+                decl_names.insert(n.clone());
+                scan_shadow_expr(e, for_names, decl_names);
+            }
+            Stmt::For { targets, iter, body } => {
+                for t in targets {
+                    for_names.insert(t.clone());
+                }
+                scan_shadow_expr(iter, for_names, decl_names);
+                scan_shadow_stmts(body, for_names, decl_names);
+            }
+            Stmt::Expr(e)
+            | Stmt::BlockReturn(e, _)
+            | Stmt::LoopYield(e)
+            | Stmt::Return(Some(e))
+            | Stmt::Assign { value: e, .. }
+            | Stmt::CompoundAssign { value: e, .. } => scan_shadow_expr(e, for_names, decl_names),
+            Stmt::AttrAssign { target, value } | Stmt::AttrCompoundAssign { target, value, .. } => {
+                scan_shadow_expr(target, for_names, decl_names);
+                scan_shadow_expr(value, for_names, decl_names);
+            }
+            Stmt::If { branches, else_body } => {
+                for (c, b) in branches {
+                    scan_shadow_expr(c, for_names, decl_names);
+                    scan_shadow_stmts(b, for_names, decl_names);
+                }
+                if let Some(eb) = else_body {
+                    scan_shadow_stmts(eb, for_names, decl_names);
+                }
+            }
+            Stmt::While { cond, body } => {
+                scan_shadow_expr(cond, for_names, decl_names);
+                scan_shadow_stmts(body, for_names, decl_names);
+            }
+            Stmt::Match { subject, arms, .. } => {
+                scan_shadow_expr(subject, for_names, decl_names);
+                for a in arms {
+                    scan_shadow_stmts(&a.body, for_names, decl_names);
+                }
+            }
+            Stmt::Block(b) => scan_shadow_stmts(b, for_names, decl_names),
+            Stmt::Try { body, handlers, finally_body } => {
+                scan_shadow_stmts(body, for_names, decl_names);
+                for h in handlers {
+                    if let Some(alias) = &h.name {
+                        decl_names.insert(alias.clone());
+                    }
+                    scan_shadow_stmts(&h.body, for_names, decl_names);
+                }
+                if let Some(fb) = finally_body {
+                    scan_shadow_stmts(fb, for_names, decl_names);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn scan_shadow_expr(
+    e: &Expr,
+    for_names: &mut HashSet<String>,
+    decl_names: &mut HashSet<String>,
+) {
+    macro_rules! rec {
+        ($x:expr) => {
+            scan_shadow_expr($x, for_names, decl_names)
+        };
+    }
+    match e {
+        Expr::Block { stmts, .. } => scan_shadow_stmts(stmts, for_names, decl_names),
+        Expr::IfExpr { branches, else_body, .. } => {
+            for (c, b) in branches {
+                rec!(c);
+                scan_shadow_stmts(b, for_names, decl_names);
+            }
+            if let Some(eb) = else_body {
+                scan_shadow_stmts(eb, for_names, decl_names);
+            }
+        }
+        Expr::MatchExpr { subject, arms, .. } => {
+            rec!(subject);
+            for a in arms {
+                scan_shadow_stmts(&a.body, for_names, decl_names);
+            }
+        }
+        Expr::ForExpr { target, iter, body, .. } => {
+            for_names.insert(target.clone());
+            rec!(iter);
+            scan_shadow_stmts(body, for_names, decl_names);
+        }
+        Expr::WhileExpr { cond, body, .. } => {
+            rec!(cond);
+            scan_shadow_stmts(body, for_names, decl_names);
+        }
+        Expr::BinOp { left, right, .. } => {
+            rec!(left);
+            rec!(right);
+        }
+        Expr::UnaryOp { operand, .. } => rec!(operand),
+        Expr::Call { func, args, .. } => {
+            rec!(func);
+            for a in args {
+                match a {
+                    CallArg::Positional(x) | CallArg::Keyword { value: x, .. } => rec!(x),
+                    CallArg::Variadic(xs) => {
+                        for x in xs {
+                            rec!(x);
+                        }
+                    }
+                }
+            }
+        }
+        Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => rec!(object),
+        Expr::Subscript { object, index } => {
+            rec!(object);
+            rec!(index);
+        }
+        Expr::Slice { begin, end, step } => {
+            for x in [begin, end, step].into_iter().flatten() {
+                rec!(x);
+            }
+        }
+        Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
+            for x in items {
+                rec!(x);
+            }
+        }
+        Expr::Dict(pairs) => {
+            for (k, v) in pairs {
+                rec!(k);
+                rec!(v);
+            }
+        }
+        Expr::TemplateInstantiate { base, .. } => rec!(base),
+        Expr::IsType { expr, .. } | Expr::MustBe { expr, .. } => rec!(expr),
+        Expr::Cast { object, .. } => rec!(object),
+        _ => {}
+    }
 }
 
 /// slot テーブルへ1つ宣言を追加する（既出名・`_` はスキップ）。
@@ -821,21 +1000,29 @@ impl Compiler {
                     self.emit(store);
                 }
             }
-            // 属性代入 `obj.attr = value`（obj が `self`/instance で side-effect-free のときのみ）。
-            Stmt::AttrAssign { target, value } => {
-                let (object, attr) = match target {
-                    Expr::Attr { object, attr, .. } if self.object_is_instance(object) => {
-                        (object, attr)
-                    }
-                    _ => return None, // Subscript/TraitAccess/非 instance は非対応
-                };
-                // obj（SetAttr のベース）を push → value を push → SetAttr。
-                // object は side-effect-free（self/base ローカル）なので先に push してよい。
-                self.compile_expr(object)?;
-                self.compile_expr(value)?;
-                let ni = self.add_name(attr);
-                self.emit(Op::SetAttr(ni));
-            }
+            // 属性代入 `obj.attr = value` / 添字代入 `obj[i] = value`。
+            Stmt::AttrAssign { target, value } => match target {
+                Expr::Attr { object, attr, .. } if self.object_is_instance(object) => {
+                    // obj（SetAttr のベース）を push → value を push → SetAttr。
+                    // object は side-effect-free（self/base ローカル）なので先に push してよい。
+                    self.compile_expr(object)?;
+                    self.compile_expr(value)?;
+                    let ni = self.add_name(attr);
+                    self.emit(Op::SetAttr(ni));
+                }
+                // `obj[i] = value` — tree-walk は value(rhs) を先に評価するので temp に退避して順序を合わせる。
+                Expr::Subscript { object, index } => {
+                    let vtmp = self.alloc_temp()?;
+                    self.compile_expr(value)?; // value を先に評価
+                    self.emit(Op::StoreLocal(vtmp));
+                    self.compile_expr(object)?; // obj
+                    self.compile_expr(index)?; // key
+                    self.emit(Op::LoadLocal(vtmp)); // value
+                    self.emit(Op::SetIndex);
+                    self.free_temp();
+                }
+                _ => return None, // TraitAccess・非 instance 属性は非対応
+            },
             // 属性複合代入 `obj.attr op= value`（obj が `self`/instance のときのみ）。
             Stmt::AttrCompoundAssign { target, op, value } => {
                 let (object, attr) = match target {
@@ -1179,6 +1366,41 @@ impl Compiler {
                     // その他の呼び先式（添字結果など）は非対応。
                     return None;
                 }
+            }
+            // ── 添字・コレクションリテラル（タスク #5） ──
+            Expr::Subscript { object, index } => {
+                self.compile_expr(object)?;
+                self.compile_expr(index)?;
+                self.emit(Op::Subscript);
+            }
+            Expr::List(items) => {
+                let n = u16::try_from(items.len()).ok()?;
+                for it in items {
+                    self.compile_expr(it)?;
+                }
+                self.emit(Op::BuildList(n));
+            }
+            Expr::Tuple(items) => {
+                let n = u16::try_from(items.len()).ok()?;
+                for it in items {
+                    self.compile_expr(it)?;
+                }
+                self.emit(Op::BuildTuple(n));
+            }
+            Expr::Set(items) => {
+                let n = u16::try_from(items.len()).ok()?;
+                for it in items {
+                    self.compile_expr(it)?;
+                }
+                self.emit(Op::BuildSet(n));
+            }
+            Expr::Dict(pairs) => {
+                let n = u16::try_from(pairs.len()).ok()?;
+                for (k, v) in pairs {
+                    self.compile_expr(k)?;
+                    self.compile_expr(v)?;
+                }
+                self.emit(Op::BuildDict(n));
             }
             // ── ブロック式（値を産む制御構文, Phase V-C） ──
             Expr::Block { stmts, .. } => self.compile_block_expr(stmts)?,

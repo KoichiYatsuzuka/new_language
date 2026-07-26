@@ -102,4 +102,17 @@ pub enum Op {
     LoadName(u32),
     /// pop した値を `let dbg::name` として現在のスコープへ宣言する（不変・`let` 意味論）。
     DeclareName(u32),
+    // ── 添字・コレクションリテラル（タスク #5） ──
+    /// 添字読み: pop key, pop obj, push `eval_subscript(obj, key)`（`obj[key]`）。
+    Subscript,
+    /// 添字書き: pop value, pop key, pop obj, `eval_setitem(obj, key, value)`（`obj[key] = value`）。
+    SetIndex,
+    /// リテラルリスト構築: 末尾 N 要素を pop して `Value::List` を push（`[a, b, ..]`）。
+    BuildList(u16),
+    /// リテラルタプル構築: 末尾 N 要素を pop して `Value::Tuple`（要素型名収集）を push（`(a, b, ..)`）。
+    BuildTuple(u16),
+    /// リテラル集合構築: 末尾 N 要素を pop して `Value::Set`（`set_insert` で重複排除）を push（`{a, b, ..}`）。
+    BuildSet(u16),
+    /// リテラル辞書構築: 末尾 2N 要素（k0,v0,k1,v1,..）を pop して `Value::Dict` を push（`{k: v, ..}`）。
+    BuildDict(u16),
 }

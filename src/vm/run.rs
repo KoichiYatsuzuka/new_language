@@ -338,6 +338,38 @@ fn exec_op(
             let v = buf.pop().unwrap();
             interp.vm_declare_debug(&chunk.names[*name_idx as usize], v)?;
         }
+        Op::Subscript => {
+            let key = buf.pop().unwrap();
+            let obj = buf.pop().unwrap();
+            let v = interp.eval_subscript(obj, key)?;
+            buf.push(v);
+        }
+        Op::SetIndex => {
+            let value = buf.pop().unwrap();
+            let key = buf.pop().unwrap();
+            let obj = buf.pop().unwrap();
+            interp.eval_setitem(obj, key, value)?;
+        }
+        Op::BuildList(n) => {
+            let split = buf.len() - *n as usize;
+            let vals = buf.split_off(split);
+            buf.push(interp.vm_build_list(vals));
+        }
+        Op::BuildTuple(n) => {
+            let split = buf.len() - *n as usize;
+            let vals = buf.split_off(split);
+            buf.push(interp.vm_build_tuple(vals));
+        }
+        Op::BuildSet(n) => {
+            let split = buf.len() - *n as usize;
+            let vals = buf.split_off(split);
+            buf.push(interp.vm_build_set(vals));
+        }
+        Op::BuildDict(n) => {
+            let split = buf.len() - 2 * *n as usize;
+            let flat = buf.split_off(split);
+            buf.push(interp.vm_build_dict(flat));
+        }
     }
     Ok(Flow::Next)
 }

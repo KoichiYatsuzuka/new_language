@@ -59,5 +59,11 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::ListOrNone => "LIST_OR_NONE".to_string(),
         Op::LoadName(n) => format!("LOAD_NAME {:?}", chunk.names.get(*n as usize)),
         Op::DeclareName(n) => format!("DECLARE_NAME {:?}", chunk.names.get(*n as usize)),
+        Op::Subscript => "SUBSCRIPT".to_string(),
+        Op::SetIndex => "SET_INDEX".to_string(),
+        Op::BuildList(n) => format!("BUILD_LIST {n}"),
+        Op::BuildTuple(n) => format!("BUILD_TUPLE {n}"),
+        Op::BuildSet(n) => format!("BUILD_SET {n}"),
+        Op::BuildDict(n) => format!("BUILD_DICT {n}"),
     }
 }

@@ -4,7 +4,69 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 現状の「AST ツリーウォーク」を、`AST → 解決層 → バイトコード VM` に置き換える。
 
 > **この文書は単独で実装再開できることを目的とする**（`REFACTORING_HANDOFF.md` / `PHASE5_PLAN.md` と同じ引き継ぎ文書）。
-> 実装は別スレッド（まっさらなコンテキスト）で行う前提。記述の精度を最優先する。
+>
+> **読み方（トークン節約）**: 「実装状況」→ §0 → §2 → §4/§5/§6 → §10 までが**実装再開に必要**。
+> ページ後半の `═══ 参照・根拠 ═══` 以降（§3 アーキテクチャ決定・§1 背景実測・§7 投影・§8 非目標・§9 未決）は
+> **決定済みの根拠／履歴**であり、通常は**読まなくてよい**。進捗の一次資料は [PHASE_R1_RESULTS.md](PHASE_R1_RESULTS.md)。
+
+---
+
+## 実装状況（2026-07-26 時点）
+
+各段の実装詳細・実測は [PHASE_R1_RESULTS.md](PHASE_R1_RESULTS.md)。off/auto の byte-identical を常時維持。
+
+### 完了 ✅
+1. **Phase R** — R0 フレーム隔離（`frame_floor`）／ R1 ローカル slot 化（`LocalRef`）／ R3 属性 IC（`AttrCache`）／
+   R4 呼び先解決 ／ メソッド IC ／ §7.4-2 `Value` サイズ削減（`JsProcFn` を Box 化・72→32B）。
+2. **Phase V-A** — VM 骨格（op/chunk/run/disasm）・算術・ローカル slot・制御フロー（if/while）・関数呼び出し・ローカル宣言。
+3. **Phase V-B** — メソッド本体の VM 化（`self` 対応）・属性書き込み `SET_ATTR`。
+4. **Phase V-C** — break/continue ジャンプ ／ ネスト局所の平坦 slot 化 ／ match 文 ／
+   **例外テーブル**（try/except/finally・raise・ハンドラスタック）／ **ブロック式**（block:/if/while/for/match 式 + block_return/loop_yield）。
+5. **Phase V-D** — for ループ（GET_ITER/FOR_ITER）／ 組み込み print/range/len（`CallBuiltin`）／ **Chunk キャッシュ健全化**（`Weak<FnValue>` キー）。
+6. **Phase V-E（実利部分）** — 呼び出し位置 span 伝搬でトレースバック行番号を復元（**全決定的例が off/auto byte-identical**）／
+   デバッグ名テーブル（`Chunk.local_names`）／ **デバッガ REPL のバイトコード実行**（停止スコープ名前引き `LoadName`/`DeclareName`・フォールバック付き）。
+7. **#5 添字・コレクションリテラル** — `obj[i]` 読み書き（`Subscript`/`SetIndex`）・list/tuple/set/dict リテラル
+   （`BuildList`/`BuildTuple`/`BuildSet`/`BuildDict`）を VM 化。`for` 変数が外側をシャドウする関数は bail（flat-slot 非対応）。
+
+### 残り（番号付き）
+**Phase V の残り**
+1. **V-E 本体** — op→Span の**汎用行テーブル**（VM 関数内のステートメント単位ブレークポイント）。トレースバック・REPL 用途は達成済み。
+2. **V-F 最適化** — peephole・superinstruction・単型算術命令・R0-A エスケープ解析（非エスケープフレームのフラット確保）。
+3. **強制バイトコード（D2）** — 全構文カバー後にフォールバック撤去 → **スレッドローカル4本＋センチネル2種を実削除**（現在はデュアルモードのため保持）。
+
+**VM カバレッジ拡大（独立）**
+4. **メソッド呼び出し機構の軽量化** — `call_instance_method_evaled` の bind_args/copy/`current_class` を VM フレーム上で直接処理。
+5. ~~添字 `obj[i]`・コレクションリテラル（list/dict/set/tuple）の VM 化~~ 【✅ 完了】（デバッガ REPL のフォールバックも減った）。
+6. **その他組み込み**（enumerate/zip/str/int 等）の `CallBuiltin` 拡張。
+7. **テンプレート実体化の Chunk メモ化**（現状は毎回再コンパイル, §2.2）。
+8. **ジェネレータ本体の VM 化**（eager 据置のまま §2.7）。
+9. **async の VM 対応**（D5 share-nothing 維持）。
+10. **import モジュール Chunk**（モジュール本体の一括生成）。
+
+**Phase R の残り**
+11. **R2 グローバル slot の前倒し**（`SlotCache` 実行時キャッシュ → AST 展開時解決, §4.3）。
+12. **R0-A 明示フレームスタック**（`Rc<Frame>`・深い再帰のスタックオーバーフロー解消・クロージャ Rc 寿命管理, §3.4-A）。
+13. **R4 ネイティブ codegen 側の消費**（§4.4・`llvm_codegen` の自前解決を Phase R 結果へ置換）。
+
+**その他（§6・§7.4）**
+14. **§6 モジュール動的リンク**（ディスクリプタシンボル＋ABI ハッシュ照合）。
+15. **§7.4-1 `Value::Str(String)` → `Rc<str>`** ／ **§7.4-3 文字列インターン**。
+
+### 実装メモ（プラン記述からの差分・追記）
+- **例外は「静的例外テーブル」ではなく実行時ハンドラスタック**: `run` が `Vec<Handler{handler_ip, stack_len}>` を持ち、
+  ディスパッチループが `Err` を捕捉してオペランドを巻き戻し landing pad へ跳ぶ。§5.2 の SETUP_TRY/POP_TRY 通りだが
+  Chunk に exception_table は持たない。`RAISE_SENTINEL` は interpreter 境界の規約として残置（VM 内制御はジャンプ）。
+- **Chunk 実体**: `Chunk { code, consts, names, attr_caches, spans, local_names, n_locals }`。§5.1 の compiler/ サブ分割
+  （stmt/expr/control）は行わず単一 `compiler.rs`。`spans` が行テーブル（Raise/Call の位置）を兼ねる。frame.rs も未分離
+  （フレームは共有バッファ `vm_stack` の `base..base+n_locals`）。
+- **組み込み呼び出し**: print/range/len を評価済み引数で呼ぶ `CallBuiltin` + `eval_builtin_evaled`（§5.2 の CALL_NATIVE とは別に純粋組み込みを VM 化）。
+- **Chunk キャッシュのキー**: `Rc::as_ptr(fn_val)` は**テンプレート実体化の一時 fn_val でアドレス再利用**して古い Chunk を誤用する潜在バグがあった。
+  `(Weak<FnValue>, Chunk)` にして `upgrade()` 失敗＝別関数を検出し再コンパイル（リークなし）。
+- **V-E メソッドトレースバック**: ツリーウォーク（`eval_method_call`）がメソッド呼び出しの call_span を渡さず degraded なので、
+  VM も `call_span=None` に合わせて byte-identical を優先（関数呼び出しは span を渡す）。
+- **デバッガ REPL**: §2.3/§3.4-C の「名前引きエスケープハッチ」を `LoadName`/`DeclareName` op ＋ `compile_debug`（`debug_mode`）で実装。
+  停止スコープの生変数を名前で参照。メソッド/添字/制御フローはツリーウォークへフォールバック。
+- **強制バイトコード未達**: デュアルモード継続中のため、§1.4 のスレッドローカル4本＋センチネル2種はツリーウォークがまだ使用（実削除は D2 時）。
 
 ---
 
@@ -49,118 +111,55 @@ source → lexer → parser ┤                              ↓ その上に
 
 ---
 
-## 1. 背景 — 現在の実行モデルと実測ベースライン（実コード確認済み）
-
-### 1.1 実行パイプライン
-
-```
-source → lexer → parser → type_check → Interpreter::exec(&Stmt) / eval(&Expr) を再帰呼び出し
-```
-
-- `exec()` = [exec/dispatch.rs:16](src/interpreter/exec/dispatch.rs#L16) の巨大 match。`Stmt` バリアントごとに専用メソッドへ委譲。
-- `eval()` = [eval/core.rs:16](src/interpreter/eval/core.rs#L16) の match。同様。
-- 関数呼び出しは **Rust の再帰**。`exec_fn_evaled`（[functions/execution.rs:31](src/interpreter/functions/execution.rs#L31)）が
-  スコープ退避 → 新スコープ構築 → `exec_block` → 復元。
-
-### 1.2 変数アクセスのコスト構造
-
-```rust
-type ScopeMap = HashMap<String, Var, FxBuildHasher>;   // interpreter.rs:187
-scopes: Vec<ScopeMap>                                   // 0=グローバル, 末尾=最内
-```
-
-- `get_var` は**末尾→先頭へ線形にスコープを遡り、各段で文字列ハッシュ**（[scope.rs:30](src/interpreter/scope.rs#L30)）。
-- `get_val` は `Var::get_value()` = **`v.clone()`**（[interpreter.rs:219](src/interpreter.rs#L219)）。
-  → **変数を1回読むたびに `Value` が1つクローンされる**。`Value::Str(String)` なら毎回ヒープ確保。
-
-### 1.3 既存の場当たり最適化（Phase R/V で不要になる = 置換・撤去対象）
-
-| 既存最適化 | 場所 | 目的 | 置換後 |
-|---|---|---|---|
-| `FxHasher` | interpreter.rs:150 | 変数名ハッシュ高速化 | **撤去**（名前引きが消える） |
-| `SlotCache`（epoch 付き） | [ast.rs:73](src/ast.rs#L73) | グローバル代入のスコープ検索回避 | **撤去**（グローバル索引化, R2） |
-| `global_slot_cells` / `slot_epoch` | interpreter.rs:268 | 同上 + `freeze` 時の一括無効化 | **撤去** |
-| `Expr::Call { cache }` | [ast.rs:356](src/ast.rs#L356) | 呼び先解決キャッシュ | R4 の解決 + 多相 IC へ発展 |
-
-> `SlotCache` を AST に埋め込んでいる時点で、既に「AST を可変な実行表現として使う」方向にある。Phase R/V はその延長線上。
-
-### 1.4 制御フローの3系統（Phase V で構造的に消える）
-
-1. `ExecResult` enum の戻り値伝播 — `Normal`/`Break`/`Continue`/`Return`/`BlockReturn`/`BlockYield`/`Raise`
-2. **スレッドローカル 4本**（[interpreter.rs:117-136](src/interpreter.rs#L117)）
-   - `LOOP_DEPTH`（break/continue 妥当性）/ `GENERATOR_YIELDS`（yield 収集）/
-     `BLOCK_YIELDS`（loop_yield 収集）/ `BLOCK_RETURN_EXPECTED_TYPE`（block_return 実行時型検査; 式ごと push/pop）
-3. **文字列センチネル** — `RAISE_SENTINEL` / `BREAK_SENTINEL` を `Result<Value,String>` の `Err` に載せ、
-   実体は `self.current_exception` に置く（`eval()` が `RaisedError` を返せない回避策）
-
-→ Phase V ではジャンプ命令 + 例外テーブルに解消。**速度以前に設計上の大整理**。
-
-### 1.5 フェーズ0 実測（支配項の切り分け・ゲート）【完了 2026-07-21, 詳細 [bench_baseline.md](bench_baseline.md)】
-
-`examples/bench/bottleneck_bench.ar`（要因分離, N=100万）+ `bench_field_access.ar`（E2E）, release, 各3回・安定。
-
-| 要因 | コスト | 誰が潰すか |
-|---|---|---|
-| **関数呼び出し機構**（scope HashMap 構築 + ExecResult 伝播） | **0.53 µs/call** | Phase V（フレーム）+ R0 |
-| **引数束縛**（1個: eval + HashMap insert + clone） | **~0.7 µs/arg** | Phase V + R |
-| **ローカル変数アクセス**（HashMap 引き・**SlotCache 無し**） | **~0.09 µs/access** | Phase R（slot 索引） |
-| AST ノードディスパッチ（enum match + `Box<Expr>` 追跡） | baseline 0.13µs に内包 | Phase V（線形走査） |
-| Value deep_clone（複合値） | ~0.13 µs | §7 のみ（バイトコードでは不変） |
-| フィールド読み | ~0.15 µs | Phase R（offset/IC） |
-
-- **決定的な発見**: グローバルは `SlotCache` で索引化済みだが、**関数内ローカルは毎回 HashMap 引き**。slot 化の伸びしろ最大。
-- **§7（`Value::Str(Rc<str>)` 等）は数値コードでは支配項でない**（deep_clone ~0.13µs）。文字列多用時のみ効く二次テーマ。
-  ※ 本ベンチは int/float 中心で String クローンを踏んでいない点に留意。
-
----
-
 ## 2. 設計制約 — naïve なバイトコード化を阻む既存機能（**着手前に必読**）
 
 「AST を捨ててバイトコードにする」を**不可能にする**要素。把握していないと途中で詰まる。
+（✅=対応済 / 🔶=部分 / ❌=未着手 を各項目に付記）
 
-### 2.1 AST は実行時の第一級の値 — `ast_value.rs`
+### 2.1 AST は実行時の第一級の値 — `ast_value.rs` 【✅ AST 保持】
 [ast_value.rs](src/interpreter/ast_value.rs) は `parse_ar()` 組み込みの実装で、**AST ノードを `Value::Namespace` ツリーに変換**して
 Arrow へ渡す（`__type__` 等）。`python_converter` / converter.ar が依存。
 → **AST は破棄不可。バイトコードは「置き換え」でなく「追加の実行表現」**。Chunk は AST から生成、AST は保持し続ける。
 
-### 2.2 テンプレートは実行時 AST 置換 — `templates.rs`
+### 2.2 テンプレートは実行時 AST 置換 — `templates.rs` 【🔶 実体化ごとに再コンパイル・メモ化は残 #7】
 [templates.rs](src/interpreter/templates.rs) の `subst_stmt`/`subst_expr` が、呼び出し時に型変数を具体型へ置換した
 **新 AST を clone-walk で生成**してから実行。
 → **テンプレートは実体化時オンデマンドコンパイル**。`(テンプレート名, 型引数リスト)` をキーに Chunk キャッシュ。解決も実体化ごと。
 
-### 2.3 デバッガが文単位 Span に依存 — `debugger.rs`
+### 2.3 デバッガが文単位 Span に依存 — `debugger.rs` 【✅ 行テーブル(トレースバック)・デバッグ名テーブル・REPL バイトコード実行】
 `exec()` 冒頭で `should_pause_at(stmt)` を Span で判定（[dispatch.rs:19-23](src/interpreter/exec/dispatch.rs#L19)）。
 デバッガ REPL は**生スコープに対して式を評価**し `let dbg::name = …` で一時変数宣言。
 → **必須成果物**: ① バイトコードオフセット→Span の**行テーブル**、② slot→変数名の**デバッグ名テーブル**。
-   **後付け不可。Chunk の初期設計に入れる**。
+   **後付け不可。Chunk の初期設計に入れる**。（V-E で ①②とも実装・REPL は `LoadName`/`compile_debug` で名前引きバイトコード実行。
+   VM 関数内のステートメント単位ブレークは残 #1。）
 
-### 2.4 クロージャは定義時に名前でキャプチャ — `capture_env`
+### 2.4 クロージャは定義時に名前でキャプチャ — `capture_env` 【❌ クロージャは現状 bail】
 [blocks.rs:39](src/interpreter/exec/blocks.rs#L39) が本体の自由変数を走査、外側から拾って `HashMap<String, CapturedVar>` を作る。
 可変変数は `Var::Mutable` → `Var::Cell(Rc<RefCell<Value>>)` に**その場で昇格**して共有。
 → **バイトコード化と相性が良い**。自由変数解析をコンパイル時に前倒しすれば R0-A のフレーム参照になる。`Rc<RefCell>` 表現は流用。
 
-### 2.5 名前が実行時に計算される代入
+### 2.5 名前が実行時に計算される代入 【✅ 通常は静的解決・デバッガは名前引き】
 - `local::{name}`（可変長引数）— [eval/core.rs:34](src/interpreter/eval/core.rs#L34)。ただし `name` は AST 内リテラル＝静的解決可（§3.4-C）
 - `Self` / `kwargs` — メソッド/Python 呼び出しで動的に `declare_var`。ただし名前は既知＝slot/型index に解決可
 - `import` バインド名 — パース時に一意確定＝静的解決可
 
-→ 大半は静的解決可能（§3.4-C）。**真に動的なのは実行後パースされるコード（デバッガ/対話 REPL）のみ**。そこだけ動的名エスケープハッチ。
+→ 大半は静的解決可能（§3.4-C）。**真に動的なのは実行後パースされるコード（デバッガ/対話 REPL）のみ**。そこだけ動的名エスケープハッチ（`LoadName`/`DeclareName`）。
 
-### 2.6 `freeze` が実行時に可変性を変える
+### 2.6 `freeze` が実行時に可変性を変える 【✅ 保守的に扱う】
 `make_var_immutable`（[scope.rs:83](src/interpreter/scope.rs#L83)）が `Mutable`→`Immutable` に降格。
 → **「不変だから定数畳み込み」を仮定してはいけない**。freeze 対象になりうる変数は保守的に扱う。
 
-### 2.7 ジェネレータが eager（先行収集）
+### 2.7 ジェネレータが eager（先行収集）【🔶 eager 据置・呼び出しは対応・本体 VM 化は残 #8】
 `exec_generator`（[functions/execution.rs:292](src/interpreter/functions/execution.rs#L292)）は**本体を最後まで実行し全 yield 値を Vec 収集**
 してから `Value::Generator` を返す。遅延評価ではない。
 → **Phase V では eager のまま移植**。lazy 化（frame 中断・再開＝新機能）は §8 非目標。
 
-### 2.8 その他（影響小・意味論変更なし）
+### 2.8 その他（影響小・意味論変更なし）【🔶 FFI/overload は実行時委譲・import VM は残 #10】
 - **FFI 経路**（DLL / cpp_bridge / cs-dll / cs-proc / js-proc / PyO3）は全て `eval_call` の先。`CALL_NATIVE` 系に集約されるだけ。
 - **オーバーロード解決**は評価済み引数への実行時ディスパッチ（`dispatch_overload`）。当面そのまま実行時。
 - **import は実行時にモジュールを実行**して名前空間を作る。モジュール単位 Chunk、初回 import 時コンパイル。
 
-### 2.9 オフセットアクセスの記憶域は既に存在する（重要な追い風）
+### 2.9 オフセットアクセスの記憶域は既に存在する（重要な追い風）【✅ R3 IC が field_value offset を利用】
 インスタンス先頭ポインタからのオフセットアクセスは、**コンパイルと無関係に解釈実行でも既に全インスタンスの実行時表現**:
 - `InstanceData { raw: Box<[u64]>, class, boxed_fields }`（[value/instance.rs:129](src/interpreter/value/instance.rs#L129)）。
   slot 0=`[class_id][flags]`、適格クラス（全プリミティブ・trait 継承なし・≤24 フィールド）は C-ABI レイアウトで raw に格納。
@@ -173,6 +172,185 @@ Arrow へ渡す（`__type__` 等）。`python_converter` / converter.ar が依�
    「AST 作成時に解決済みなら直接オフセット、できねば辞書」を、**解釈経路そのものに広げる**もの。
 
 ---
+
+## 4. Phase R — AST 解決層 ＋ フレーム/slot ランタイム（**共有基盤・本命**）　【✅ R1/R3/R4 完了・R2/R0-A/codegen 消費は残 #11/#12/#13】
+
+「AST 展開時に、静的に決まる参照を slot / オフセット / 解決済みターゲットへ落とし、決まらない所は `Dynamic` 印」。
+解釈経路・ネイティブ codegen の**両方**がこの解決結果を消費する。
+
+### 4.1 成果物の表現
+AST を破壊的に書き換えず、**ノードに解決結果を持たせる**（既存 `SlotCache`（[ast.rs:73](src/ast.rs#L73)）と同じ
+「ノード埋め込み `Cell` / 付随フィールド」方式。§9-1 で最終確認）。決まらなければ `Dynamic` を保持し実行時に従来経路。
+
+### 4.2 R0 ランタイムモデルの導入（解釈器ストレージ改修）— **Phase R の主作業**
+Phase R で解釈経路の速度が上がるには、**解釈器の変数ストレージを `scopes: Vec<HashMap>` から §3.4 の
+フレーム/slot モデルへ改修する必要がある**（注釈を付けるだけでは不十分）。この改修が Phase R の実質的な主作業。
+- フレームスタック（`Vec<Rc<Frame>>` 相当）を `Interpreter` に導入。`Frame` はサイズ既知のローカル領域。
+- `get_var`/`declare_var`/`assign_var`（[scope.rs](src/interpreter/scope.rs)）を slot 索引アクセスに置換。
+- ネイティブ codegen はストレージ改修不要（自前 alloca 保持）。**解決注釈だけを消費**。
+- この R0 ストレージは **Phase V のバイトコード VM がそのまま再利用**する（フレーム/slot は共通）。
+- 現状: `frame_floor` によるスコープ隔離＋ `Scope` の slot 配列化までは実装（明示 `Rc<Frame>` スタックは残 #12）。
+
+### 4.3 解決ステップ R1〜R4（各々独立コミット可）
+
+| ステップ | 内容 | 消す辞書引き |
+|---|---|---|
+| **R1. ローカル/引数の slot 化** 【✅】 | 関数本体の変数を宣言順に slot 番号付け（B: フレーム内固定 slot）。`Expr::Ident` に `Resolved::Local{frame_level, slot}` を付与。決まらなければ `Dynamic`（§2.5） | scope HashMap 引き（~0.09µs/access） |
+| **R2. グローバルの slot 化** 【❌ #11】 | 既存 `SlotCache` を「実行時遅延」から「AST 展開時解決」へ前倒し。各 .ar ファイルは固有のグローバル配列を持ち index アクセス（§6 のモジュールモデルと接続） | epoch 検証つき実行時キャッシュ |
+| **R3. フィールドのオフセット化** 【✅】 | 呼び出し点でオブジェクトの具象クラスが型チェッカから判れば `Expr::Attr` に `(class_id, idx)` を焼く（記憶域は §2.9 の通り既存）。判らなければ **多相 IC**: `InstanceData.class_id`（[value/core.rs:19](src/interpreter/value/core.rs#L19) `alloc_class_id`）で「前回と同じ class_id ならオフセット再利用、違えば `field_index` 引き直してキャッシュ更新」 | `field_index.get(attr)`（[eval/attrs.rs:70](src/interpreter/eval/attrs.rs#L70)） |
+| **R4. 呼び先の解決** 【✅】 | Arrow 関数呼び出しを名前引きから解決済みターゲット（グローバル関数 index / 関数ポインタ）へ。`Expr::Call.cache`（[ast.rs:356](src/ast.rs#L356)）を Arrow 関数にも拡張。関数オブジェクトを変数に代入した場合は slot 内 Value の CALL ディスパッチ（名前引きなし） | 呼び先名前引き |
+
+- **protocol 引数・template**: 原型 AST は `templates.rs` が保持（§2.2）。解決可能な呼び出し点は固定オフセットに焼き（monomorphize 相当）、
+  真に多相な protocol 引数は R3 の多相 IC に倒す（＝「できねば辞書アクセス」の実体）。
+
+### 4.4 ネイティブ codegen 側の消費 【❌ #13】
+`llvm_codegen` の自前再導出（`locals`/`param_classes`/`field_ty`）を Phase R の解決結果に置換し、**codegen を簡素化 + 適用範囲拡大**
+（今まで解決できず native 非適格だったケースが解決情報で救える）。
+
+### 4.5 検証 + Phase V ゲート
+- **検証**: `cargo test` 672 緑 + `run_examples.ps1` 回帰 + `bench.ps1` 再測定（**R1/R3 で名前引きコストが消えるはず**）
+  + `--compile examples/interop/test_modules/physics.ar` が従来と数値一致。
+- **中断可能性**: R1〜R4 は各々独立コミット・単体で価値あり。R1（ローカル slot）だけでも支配項の一角に効く。
+- **ゲート**: Phase R 完了時に `bench.ps1` を再測定。呼び出し機構(0.53µs)・ノードディスパッチがなお支配的なら Phase V の
+  効果（§7 の投影）が裏付けられる。強制バイトコード（D2）が最終目標なので Phase V は実施前提だが、この測定で設計を確認する。
+
+---
+
+## 5. Phase V — バイトコード VM（解釈経路の最終実行形）　【✅ V-A〜V-E・V-F/強制バイトコードは残 #2/#3】
+
+入力は Phase R で解決済みの AST。バイトコード生成は解決ロジックを持たず軽い（起動バジェットは §7.3）。
+
+### 5.1 モジュール構成（`src/vm/`）
+> **実装差分**: compiler/ サブ分割（stmt/expr/control）・frame.rs は未分離。単一 `compiler.rs` ＋ 共有バッファ方式（実装メモ参照）。
+
+`src/partial_compiler/` の構成に倣う:
+```
+src/vm/
+  mod.rs          公開 API: compile_fn / compile_debug / run
+  op.rs           Op 列挙型（オペコード定義）
+  chunk.rs        Chunk { code, consts, names, attr_caches, spans(行テーブル), local_names(デバッグ名テーブル), n_locals }
+  compiler.rs     Compiler 本体・関数単位のコンパイル（Phase R の解決注釈を読む）／ compile_debug（デバッガ）
+  run.rs          ディスパッチループ本体（exec_op + ハンドラスタック）
+  disasm.rs       逆アセンブラ（開発に必須・後回し厳禁）
+```
+- **`Value` は変更しない**（§7 の Value 表現改善は別テーマ）。値スタックは `Vec<Value>`（共有バッファ `vm_stack`）。
+- **行テーブル・デバッグ名テーブルを Chunk の初期設計に入れる**（§2.3, 後付け不可）。
+
+### 5.2 オペコード素案
+> **実装差分**: 例外はハンドラスタック（SETUP_TRY/POP_TRY を `run` の Vec が持つ）で exception_table は不使用。
+> 純粋組み込みは `CALL_BUILTIN`（print/range/len）。デバッガは `LOAD_NAME`/`DECLARE_NAME`。
+
+```
+定数/変数   CONST(idx) NIL TRUE FALSE
+            LOAD_LOCAL(slot) STORE_LOCAL(slot)
+            LOAD_UPVAL(frame_level, slot) STORE_UPVAL(frame_level, slot)   ← R0-A のフレーム参照
+            LOAD_GLOBAL(idx) STORE_GLOBAL(idx)                             ← .ar ファイル固有グローバル配列
+            LOAD_DYN(name_idx)          ← §2.5 の動的名前用エスケープハッチ（デバッガ/REPL のみ）
+演算        ADD SUB MUL DIV ... CMP_EQ CMP_LT ...   （Int/Float 高速パス + 汎用フォールバック） NEG NOT
+ジャンプ    JUMP(off) JUMP_IF_FALSE(off) JUMP_IF_TRUE(off) POP
+呼び出し    CALL(argc) CALL_METHOD(ic_slot, argc) CALL_NATIVE(...) RETURN
+コレクション BUILD_LIST(n) BUILD_DICT(n) BUILD_TUPLE(n) BUILD_SET(n)
+            GET_INDEX SET_INDEX GET_ATTR(class_id, idx | ic) SET_ATTR(class_id, idx | ic)   ← R3
+反復        GET_ITER FOR_ITER(off)
+例外        SETUP_TRY(handler_off) POP_TRY RAISE RERAISE
+式ブロック  BLOCK_RETURN(depth)  LOOP_YIELD
+クロージャ  MAKE_CLOSURE(fn_idx, captured_frames)   ← R0-A: 掴むフレームを Rc で保持
+```
+
+### 5.3 制御フローのジャンプ化（TLS/センチネル除去がこのフェーズの成果物）
+`block_return`/`loop_yield`/`break`/`continue` は**「どのブロックまで抜けるか」をコンパイル時に決定できる**ので、
+`ExecResult` 伝播と `LOOP_DEPTH`/`BLOCK_YIELDS` スレッドローカル（§1.4）が**丸ごと消える**。
+Arrow 特有の「`break` が入れ子の if/match/block を貫通して外側ループへ届く」規則も、コンパイル時のジャンプ先計算で自然に表現でき、
+**実行時センチネル（`RAISE_SENTINEL`/`BREAK_SENTINEL`）が不要**になる。例外はフレームアンワインド + 例外テーブルで表現。
+（VM 経路では達成済み。実削除はデュアルモード撤去＝強制バイトコード D2 時 #3。）
+
+### 5.4 段階（V-A 〜 V-F, 各段で 672 緑 + `--vm=force` で穴可視化 + ベンチ再測定）
+- **V-A** 【✅】: VM 骨格（op/chunk/frame/run/disasm）+ 算術・ローカル slot・制御フロー・呼び出し・クロージャ（R0-A フレーム）。※クロージャは残。
+- **V-B** 【✅】: クラス・メソッド・属性（R3 の解決/多相 IC を `GET_ATTR`/`CALL_METHOD` へ）。
+- **V-C** 【✅】: 例外テーブル・match・ブロック式 → **スレッドローカル4本 + センチネル2種を削除**（§1.4 / §5.3）。※VM 経路で不使用化。実削除は D2。
+- **V-D** 【✅】: for ループ・組み込み（print/range/len）・Chunk キャッシュ健全化。※テンプレート #7 / ジェネレータ本体 #8 / async #9 / import #10 は残。
+- **V-E** 【✅ 実利部分】: デバッガ統合（行テーブル＝トレースバック・デバッグ名テーブル・REPL バイトコード実行）。※汎用行テーブル #1 は残。
+- **V-F** 【❌ #2】: 最適化（peephole・superinstruction・単型算術命令）+ **R0-A エスケープ解析**（非エスケープフレームのフラット確保, §3.4-A）。
+- **完了時** 【❌ #3】: デュアルモードのフォールバックを撤去し**強制バイトコード**へ（D2）。
+
+---
+
+## 6. モジュール動的リンク仕様（D6 詳細）　【❌ 未実装 #14】
+
+ネイティブ経路（`.arc`）の安全な動的リンク。現状は `try_load_native_module` が **関数ごとに `GetProcAddress`**
+（`{fn_name}_tl` シンボル）を引く。これを**モジュールにつき1回**へ改める。`.arc` フォーマットは
+`partial_compiler/module_compiler.rs`（`write_tlc_native`, v1）を拡張。
+
+### 6.1 各モジュール DLL がエクスポートするもの
+- **単一ディスクリプタシンボル**（例 `__ar_module_descriptor`）— `GetProcAddress` はこれ1回だけ。ディスクリプタは:
+  1. **エクスポート表**: グローバル変数/関数/型それぞれの `index → { name, kind, 型 or シグネチャ, 実体ポインタ or グローバル slot }`
+  2. **モジュール ABI ハッシュ**: エクスポート表の（名前 + index + シグネチャ + 型レイアウト）の内容ハッシュ（u64/u128）
+- 型も同様に**型エクスポート表**（型 index → { 名前, レイアウト/フィールド, kind }）+ 型 ABI ハッシュ。
+
+### 6.2 各 import 側（`.arc`）ヘッダが保持するもの
+- 自身のエクスポート表 + 自身の ABI ハッシュ。
+- **呼び出す外部モジュールごと**に: モジュール識別子 + **コンパイル時に見た相手の ABI ハッシュ** + 焼いた
+  「名前 → 期待 index」対応（照合・再解決用）。
+- 呼び出す外部の型についても同様のリスト。
+
+### 6.3 ロード時のリンク手順
+```
+for each import 辺 (自分 → B):
+    desc_B = GetProcAddress(B.dll, "__ar_module_descriptor")   # モジュールにつき1回
+    if desc_B.abi_hash == 自ヘッダに焼いた B の abi_hash:        # ハッシュ1個の比較 = O(1)
+        安全確定。焼いた index をそのまま使用（B のグローバル/関数/型配列へ index アクセス）
+    else:
+        フォールバック:
+          - 名前で再解決（B のエクスポート表の name→index）+ シグネチャ/型レイアウト照合
+          - 一致すれば relink（新 index に差し替え）、不一致なら明示エラー（何が変わったか diff 報告）
+```
+- **関数オブジェクトを変数へ代入**した場合は index 直解決の限りではないが、**関数自体を関数ポインタで管理（変数として）**
+  すれば実質的に名前参照は消える（呼び出しは slot/Value の CALL ディスパッチ）。
+
+### 6.4 コスト概算（一度きりのロード時）
+支配項は Arrow の表照合ではなく **OS の `GetProcAddress`**:
+
+| 規模 | 素朴（関数ごと GetProcAddress + 文字列比較） | 本方式（ディスクリプタ1回 + ABI ハッシュ照合） |
+|---|---|---|
+| 小（数モジュール, ~50 sym） | ~0.1ms | **~10µs** |
+| 中（~500 sym, 数十モジュール） | ~1ms | **~50µs** |
+| 大（~5000 sym） | ~10ms | **<1ms** |
+
+→ 安全検査つきでもリンクは実用上ほぼ無視できる。バイトコード生成コスト（§7.3）と同オーダー。
+
+---
+
+## 10. 検証コマンド / 規約
+
+```
+cargo test                          # 672 passed を維持（各ステップ/各段ごと）
+cargo build                         # 警告0 を維持
+cargo clippy --all-targets          # exit 0
+./run_examples.ps1                  # 例題スイートの回帰確認
+./bench.ps1                         # Phase R の各ステップ / Phase V の各段で再測定（フェーズ0基準 = bench_baseline.md）
+cargo run -- --compile examples/interop/test_modules/physics.ar  # Phase R: native 経路の数値一致確認
+cargo run -- --vm=force <file.ar>   # Phase V 移行中: 未対応構文を可視化（フォールバック禁止）
+./generate-codebase-map.ps1         # src/vm/ 等の新設後に必須
+```
+
+規約（`.claude/rules/regulations.md`）:
+- 新文法の追加はないため example / `_error` example 追加は非該当。
+- VS Code 拡張・Python 実装に変更が及ばないため VSIX 再生成・git SHA 同期は非該当。
+- 同じスクリプトを繰り返し実行する場合は .ps1 化（`bench.ps1` は作成済み）。
+
+### 参照資料
+- [PHASE_R1_RESULTS.md](PHASE_R1_RESULTS.md) — Phase R / Phase V-A〜V-E の実装詳細と実測（進捗の一次資料）。
+- [bench_baseline.md](bench_baseline.md) — フェーズ0の全実測値と支配項の切り分け（各ステップの比較基準）。
+- [.claude/skills/c-abi-interop](.claude/skills/c-abi-interop/SKILL.md) — オフセットアクセス記憶域（`InstanceData` raw ブロック）の設計仕様。
+- `codebase-map` スキル — `src/` のディレクトリ別役割 + ファイル別行数。
+
+<br>
+
+═══════════════════════════════════════════════════════════════════════════════
+## 以降は「参照・根拠」（決定済み・履歴）— 実装再開には**読まなくてよい**
+§3 アーキテクチャ決定 / §1 背景実測 / §7 速度投影 / §8 非目標 / §9 未決事項。
+番号は初版のまま（本文中の相互参照 §3.4 等を保つため物理位置のみ末尾へ移動）。
+═══════════════════════════════════════════════════════════════════════════════
 
 ## 3. アーキテクチャ決定（確定事項と根拠）
 
@@ -266,148 +444,68 @@ Phase R/V の**ランタイム表現の土台**。解釈のフレーム/slot ス
 
 ---
 
-## 4. Phase R — AST 解決層 ＋ フレーム/slot ランタイム（**共有基盤・本命**）
+## 1. 背景 — 現在の実行モデルと実測ベースライン（実コード確認済み）
 
-「AST 展開時に、静的に決まる参照を slot / オフセット / 解決済みターゲットへ落とし、決まらない所は `Dynamic` 印」。
-解釈経路・ネイティブ codegen の**両方**がこの解決結果を消費する。
+### 1.1 実行パイプライン
 
-### 4.1 成果物の表現
-AST を破壊的に書き換えず、**ノードに解決結果を持たせる**（既存 `SlotCache`（[ast.rs:73](src/ast.rs#L73)）と同じ
-「ノード埋め込み `Cell` / 付随フィールド」方式。§9-1 で最終確認）。決まらなければ `Dynamic` を保持し実行時に従来経路。
+```
+source → lexer → parser → type_check → Interpreter::exec(&Stmt) / eval(&Expr) を再帰呼び出し
+```
 
-### 4.2 R0 ランタイムモデルの導入（解釈器ストレージ改修）— **Phase R の主作業**
-Phase R で解釈経路の速度が上がるには、**解釈器の変数ストレージを `scopes: Vec<HashMap>` から §3.4 の
-フレーム/slot モデルへ改修する必要がある**（注釈を付けるだけでは不十分）。この改修が Phase R の実質的な主作業。
-- フレームスタック（`Vec<Rc<Frame>>` 相当）を `Interpreter` に導入。`Frame` はサイズ既知のローカル領域。
-- `get_var`/`declare_var`/`assign_var`（[scope.rs](src/interpreter/scope.rs)）を slot 索引アクセスに置換。
-- ネイティブ codegen はストレージ改修不要（自前 alloca 保持）。**解決注釈だけを消費**。
-- この R0 ストレージは **Phase V のバイトコード VM がそのまま再利用**する（フレーム/slot は共通）。
+- `exec()` = [exec/dispatch.rs:16](src/interpreter/exec/dispatch.rs#L16) の巨大 match。`Stmt` バリアントごとに専用メソッドへ委譲。
+- `eval()` = [eval/core.rs:16](src/interpreter/eval/core.rs#L16) の match。同様。
+- 関数呼び出しは **Rust の再帰**。`exec_fn_evaled`（[functions/execution.rs:31](src/interpreter/functions/execution.rs#L31)）が
+  スコープ退避 → 新スコープ構築 → `exec_block` → 復元。
 
-### 4.3 解決ステップ R1〜R4（各々独立コミット可）
+### 1.2 変数アクセスのコスト構造
 
-| ステップ | 内容 | 消す辞書引き |
+```rust
+type ScopeMap = HashMap<String, Var, FxBuildHasher>;   // interpreter.rs:187
+scopes: Vec<ScopeMap>                                   // 0=グローバル, 末尾=最内
+```
+
+- `get_var` は**末尾→先頭へ線形にスコープを遡り、各段で文字列ハッシュ**（[scope.rs:30](src/interpreter/scope.rs#L30)）。
+- `get_val` は `Var::get_value()` = **`v.clone()`**（[interpreter.rs:219](src/interpreter.rs#L219)）。
+  → **変数を1回読むたびに `Value` が1つクローンされる**。`Value::Str(String)` なら毎回ヒープ確保。
+
+### 1.3 既存の場当たり最適化（Phase R/V で不要になる = 置換・撤去対象）
+
+| 既存最適化 | 場所 | 目的 | 置換後 |
+|---|---|---|---|
+| `FxHasher` | interpreter.rs:150 | 変数名ハッシュ高速化 | **撤去**（名前引きが消える） |
+| `SlotCache`（epoch 付き） | [ast.rs:73](src/ast.rs#L73) | グローバル代入のスコープ検索回避 | **撤去**（グローバル索引化, R2） |
+| `global_slot_cells` / `slot_epoch` | interpreter.rs:268 | 同上 + `freeze` 時の一括無効化 | **撤去** |
+| `Expr::Call { cache }` | [ast.rs:356](src/ast.rs#L356) | 呼び先解決キャッシュ | R4 の解決 + 多相 IC へ発展 |
+
+> `SlotCache` を AST に埋め込んでいる時点で、既に「AST を可変な実行表現として使う」方向にある。Phase R/V はその延長線上。
+
+### 1.4 制御フローの3系統（Phase V で構造的に消える）
+
+1. `ExecResult` enum の戻り値伝播 — `Normal`/`Break`/`Continue`/`Return`/`BlockReturn`/`BlockYield`/`Raise`
+2. **スレッドローカル 4本**（[interpreter.rs:117-136](src/interpreter.rs#L117)）
+   - `LOOP_DEPTH`（break/continue 妥当性）/ `GENERATOR_YIELDS`（yield 収集）/
+     `BLOCK_YIELDS`（loop_yield 収集）/ `BLOCK_RETURN_EXPECTED_TYPE`（block_return 実行時型検査; 式ごと push/pop）
+3. **文字列センチネル** — `RAISE_SENTINEL` / `BREAK_SENTINEL` を `Result<Value,String>` の `Err` に載せ、
+   実体は `self.current_exception` に置く（`eval()` が `RaisedError` を返せない回避策）
+
+→ Phase V ではジャンプ命令 + 例外テーブルに解消。**速度以前に設計上の大整理**。（VM 経路では不使用化済み・実削除は D2。）
+
+### 1.5 フェーズ0 実測（支配項の切り分け・ゲート）【完了 2026-07-21, 詳細 [bench_baseline.md](bench_baseline.md)】
+
+`examples/bench/bottleneck_bench.ar`（要因分離, N=100万）+ `bench_field_access.ar`（E2E）, release, 各3回・安定。
+
+| 要因 | コスト | 誰が潰すか |
 |---|---|---|
-| **R1. ローカル/引数の slot 化** | 関数本体の変数を宣言順に slot 番号付け（B: フレーム内固定 slot）。`Expr::Ident` に `Resolved::Local{frame_level, slot}` を付与。決まらなければ `Dynamic`（§2.5） | scope HashMap 引き（~0.09µs/access） |
-| **R2. グローバルの slot 化** | 既存 `SlotCache` を「実行時遅延」から「AST 展開時解決」へ前倒し。各 .ar ファイルは固有のグローバル配列を持ち index アクセス（§6 のモジュールモデルと接続） | epoch 検証つき実行時キャッシュ |
-| **R3. フィールドのオフセット化** | 呼び出し点でオブジェクトの具象クラスが型チェッカから判れば `Expr::Attr` に `(class_id, idx)` を焼く（記憶域は §2.9 の通り既存）。判らなければ **多相 IC**: `InstanceData.class_id`（[value/core.rs:19](src/interpreter/value/core.rs#L19) `alloc_class_id`）で「前回と同じ class_id ならオフセット再利用、違えば `field_index` 引き直してキャッシュ更新」 | `field_index.get(attr)`（[eval/attrs.rs:70](src/interpreter/eval/attrs.rs#L70)） |
-| **R4. 呼び先の解決** | Arrow 関数呼び出しを名前引きから解決済みターゲット（グローバル関数 index / 関数ポインタ）へ。`Expr::Call.cache`（[ast.rs:356](src/ast.rs#L356)）を Arrow 関数にも拡張。関数オブジェクトを変数に代入した場合は slot 内 Value の CALL ディスパッチ（名前引きなし） | 呼び先名前引き |
+| **関数呼び出し機構**（scope HashMap 構築 + ExecResult 伝播） | **0.53 µs/call** | Phase V（フレーム）+ R0 |
+| **引数束縛**（1個: eval + HashMap insert + clone） | **~0.7 µs/arg** | Phase V + R |
+| **ローカル変数アクセス**（HashMap 引き・**SlotCache 無し**） | **~0.09 µs/access** | Phase R（slot 索引） |
+| AST ノードディスパッチ（enum match + `Box<Expr>` 追跡） | baseline 0.13µs に内包 | Phase V（線形走査） |
+| Value deep_clone（複合値） | ~0.13 µs | §7 のみ（バイトコードでは不変） |
+| フィールド読み | ~0.15 µs | Phase R（offset/IC） |
 
-- **protocol 引数・template**: 原型 AST は `templates.rs` が保持（§2.2）。解決可能な呼び出し点は固定オフセットに焼き（monomorphize 相当）、
-  真に多相な protocol 引数は R3 の多相 IC に倒す（＝「できねば辞書アクセス」の実体）。
-
-### 4.4 ネイティブ codegen 側の消費
-`llvm_codegen` の自前再導出（`locals`/`param_classes`/`field_ty`）を Phase R の解決結果に置換し、**codegen を簡素化 + 適用範囲拡大**
-（今まで解決できず native 非適格だったケースが解決情報で救える）。
-
-### 4.5 検証 + Phase V ゲート
-- **検証**: `cargo test` 672 緑 + `run_examples.ps1` 回帰 + `bench.ps1` 再測定（**R1/R3 で名前引きコストが消えるはず**）
-  + `--compile examples/interop/test_modules/physics.ar` が従来と数値一致。
-- **中断可能性**: R1〜R4 は各々独立コミット・単体で価値あり。R1（ローカル slot）だけでも支配項の一角に効く。
-- **ゲート**: Phase R 完了時に `bench.ps1` を再測定。呼び出し機構(0.53µs)・ノードディスパッチがなお支配的なら Phase V の
-  効果（§7 の投影）が裏付けられる。強制バイトコード（D2）が最終目標なので Phase V は実施前提だが、この測定で設計を確認する。
-
----
-
-## 5. Phase V — バイトコード VM（解釈経路の最終実行形）
-
-入力は Phase R で解決済みの AST。バイトコード生成は解決ロジックを持たず軽い（起動バジェットは §7.3）。
-
-### 5.1 モジュール構成（`src/vm/`）
-`src/partial_compiler/` の構成に倣う:
-```
-src/vm/
-  mod.rs          公開 API: compile_fn / run
-  op.rs           Op 列挙型（オペコード定義）
-  chunk.rs        Chunk { code, consts, spans(行テーブル), exception_table, local_names(デバッグ名テーブル) }
-  compiler/
-    mod.rs        Compiler 本体・関数単位のコンパイル（Phase R の解決注釈を読む）
-    stmt.rs       Stmt → Op 列（exec/ と対応）
-    expr.rs       Expr → Op 列（eval/ と対応）
-    control.rs    if/while/for/match/block 式、break/continue/block_return/loop_yield
-  frame.rs        CallFrame { chunk: Rc<Chunk>, ip, base, upvalues }（R0-A のフレームと統合）
-  run.rs          ディスパッチループ本体
-  disasm.rs       逆アセンブラ（開発に必須・後回し厳禁）
-```
-- **`Value` は変更しない**（§7 の Value 表現改善は別テーマ）。値スタックは `Vec<Value>`。
-- **行テーブル・デバッグ名テーブルを Chunk の初期設計に入れる**（§2.3, 後付け不可）。
-
-### 5.2 オペコード素案
-```
-定数/変数   CONST(idx) NIL TRUE FALSE
-            LOAD_LOCAL(slot) STORE_LOCAL(slot)
-            LOAD_UPVAL(frame_level, slot) STORE_UPVAL(frame_level, slot)   ← R0-A のフレーム参照
-            LOAD_GLOBAL(idx) STORE_GLOBAL(idx)                             ← .ar ファイル固有グローバル配列
-            LOAD_DYN(name_idx)          ← §2.5 の動的名前用エスケープハッチ（デバッガ/REPL のみ）
-演算        ADD SUB MUL DIV ... CMP_EQ CMP_LT ...   （Int/Float 高速パス + 汎用フォールバック） NEG NOT
-ジャンプ    JUMP(off) JUMP_IF_FALSE(off) JUMP_IF_TRUE(off) POP
-呼び出し    CALL(argc) CALL_METHOD(ic_slot, argc) CALL_NATIVE(...) RETURN
-コレクション BUILD_LIST(n) BUILD_DICT(n) BUILD_TUPLE(n) BUILD_SET(n)
-            GET_INDEX SET_INDEX GET_ATTR(class_id, idx | ic) SET_ATTR(class_id, idx | ic)   ← R3
-反復        GET_ITER FOR_ITER(off)
-例外        SETUP_TRY(handler_off) POP_TRY RAISE RERAISE
-式ブロック  BLOCK_RETURN(depth)  LOOP_YIELD
-クロージャ  MAKE_CLOSURE(fn_idx, captured_frames)   ← R0-A: 掴むフレームを Rc で保持
-```
-
-### 5.3 制御フローのジャンプ化（TLS/センチネル除去がこのフェーズの成果物）
-`block_return`/`loop_yield`/`break`/`continue` は**「どのブロックまで抜けるか」をコンパイル時に決定できる**ので、
-`ExecResult` 伝播と `LOOP_DEPTH`/`BLOCK_YIELDS` スレッドローカル（§1.4）が**丸ごと消える**。
-Arrow 特有の「`break` が入れ子の if/match/block を貫通して外側ループへ届く」規則も、コンパイル時のジャンプ先計算で自然に表現でき、
-**実行時センチネル（`RAISE_SENTINEL`/`BREAK_SENTINEL`）が不要**になる。例外はフレームアンワインド + 例外テーブルで表現。
-
-### 5.4 段階（V-A 〜 V-F, 各段で 672 緑 + `--vm=force` で穴可視化 + ベンチ再測定）
-- **V-A**: VM 骨格（op/chunk/frame/run/disasm）+ 算術・ローカル slot・制御フロー・呼び出し・クロージャ（R0-A フレーム）。
-- **V-B**: クラス・メソッド・属性（R3 の解決/多相 IC を `GET_ATTR`/`CALL_METHOD` へ）。
-- **V-C**: 例外テーブル・match・ブロック式 → **スレッドローカル4本 + センチネル2種を削除**（§1.4 / §5.3）。
-- **V-D**: テンプレート（§2.2 オンデマンド）・ジェネレータ（eager 据置 §2.7）・async（D5 share-nothing）・import（モジュール Chunk）。
-- **V-E**: デバッガ統合（行テーブル・デバッグ名テーブル。`parse_ar`/デバッガ REPL/対話 REPL はツリーウォーク据置 §2.1/§2.3）。
-- **V-F**: 最適化（peephole・superinstruction・単型算術命令）+ **R0-A エスケープ解析**（非エスケープフレームのフラット確保, §3.4-A）。
-- **完了時**: デュアルモードのフォールバックを撤去し**強制バイトコード**へ（D2）。
-
----
-
-## 6. モジュール動的リンク仕様（D6 詳細）
-
-ネイティブ経路（`.arc`）の安全な動的リンク。現状は `try_load_native_module` が **関数ごとに `GetProcAddress`**
-（`{fn_name}_tl` シンボル）を引く。これを**モジュールにつき1回**へ改める。`.arc` フォーマットは
-`partial_compiler/module_compiler.rs`（`write_tlc_native`, v1）を拡張。
-
-### 6.1 各モジュール DLL がエクスポートするもの
-- **単一ディスクリプタシンボル**（例 `__ar_module_descriptor`）— `GetProcAddress` はこれ1回だけ。ディスクリプタは:
-  1. **エクスポート表**: グローバル変数/関数/型それぞれの `index → { name, kind, 型 or シグネチャ, 実体ポインタ or グローバル slot }`
-  2. **モジュール ABI ハッシュ**: エクスポート表の（名前 + index + シグネチャ + 型レイアウト）の内容ハッシュ（u64/u128）
-- 型も同様に**型エクスポート表**（型 index → { 名前, レイアウト/フィールド, kind }）+ 型 ABI ハッシュ。
-
-### 6.2 各 import 側（`.arc`）ヘッダが保持するもの
-- 自身のエクスポート表 + 自身の ABI ハッシュ。
-- **呼び出す外部モジュールごと**に: モジュール識別子 + **コンパイル時に見た相手の ABI ハッシュ** + 焼いた
-  「名前 → 期待 index」対応（照合・再解決用）。
-- 呼び出す外部の型についても同様のリスト。
-
-### 6.3 ロード時のリンク手順
-```
-for each import 辺 (自分 → B):
-    desc_B = GetProcAddress(B.dll, "__ar_module_descriptor")   # モジュールにつき1回
-    if desc_B.abi_hash == 自ヘッダに焼いた B の abi_hash:        # ハッシュ1個の比較 = O(1)
-        安全確定。焼いた index をそのまま使用（B のグローバル/関数/型配列へ index アクセス）
-    else:
-        フォールバック:
-          - 名前で再解決（B のエクスポート表の name→index）+ シグネチャ/型レイアウト照合
-          - 一致すれば relink（新 index に差し替え）、不一致なら明示エラー（何が変わったか diff 報告）
-```
-- **関数オブジェクトを変数へ代入**した場合は index 直解決の限りではないが、**関数自体を関数ポインタで管理（変数として）**
-  すれば実質的に名前参照は消える（呼び出しは slot/Value の CALL ディスパッチ）。
-
-### 6.4 コスト概算（一度きりのロード時）
-支配項は Arrow の表照合ではなく **OS の `GetProcAddress`**:
-
-| 規模 | 素朴（関数ごと GetProcAddress + 文字列比較） | 本方式（ディスクリプタ1回 + ABI ハッシュ照合） |
-|---|---|---|
-| 小（数モジュール, ~50 sym） | ~0.1ms | **~10µs** |
-| 中（~500 sym, 数十モジュール） | ~1ms | **~50µs** |
-| 大（~5000 sym） | ~10ms | **<1ms** |
-
-→ 安全検査つきでもリンクは実用上ほぼ無視できる。バイトコード生成コスト（§7.3）と同オーダー。
+- **決定的な発見**: グローバルは `SlotCache` で索引化済みだが、**関数内ローカルは毎回 HashMap 引き**。slot 化の伸びしろ最大。
+- **§7（`Value::Str(Rc<str>)` 等）は数値コードでは支配項でない**（deep_clone ~0.13µs）。文字列多用時のみ効く二次テーマ。
+  ※ 本ベンチは int/float 中心で String クローンを踏んでいない点に留意。
 
 ---
 
@@ -441,7 +539,7 @@ for each import 辺 (自分 → B):
   clone・コレクション・文字列支配 = **1.3〜2x** / FFI 支配 = **~1x**。
 - **Phase R と V の切り分け**: Phase R 単独（注釈付きツリーウォーク + R0 ストレージ）で **~1.3–2x**、Phase V 上乗せで **さらに ~1.5–2.5x**。
 - **上限を抑える要因**: `Value` は約80バイト（`JsProcFn` が String×3=72B 内包）。スタック push/move/clone で毎回 ~80B コピー。
-  §7.4 の一部（大 variant の Box 化）を並行すると呼び出し/引数束縛の高速化上限が上がる。
+  §7.4 の一部（大 variant の Box 化）を並行すると呼び出し/引数束縛の高速化上限が上がる。（§7.4-2 は実施済み・72→32B。）
 
 ### 7.3 起動コストのバジェット（強制バイトコード＝全プログラムが生成を通る）
 `scratchpad/gen_*.ar`（規模違いのパース支配プログラム）で実測代理:
@@ -459,9 +557,9 @@ for each import 辺 (自分 → B):
 規模フラット。ホット関数は初回 ~数µs のみ（呼び出し1回 0.53µs＝生成 ~3µs は ~6回で回収）。モジュール本体は一括生成でよい。
 
 ### 7.4 併走を検討すべき別テーマ（本計画と独立）
-1. **`Value` クローンコスト削減** — `Value::Str(String)` → `Value::Str(Rc<str>)`。変数を読むたび String ヒープ確保（§1.2）。
-2. **`Value` サイズ削減** — `JsProcFn`（String×3=72B）等の大 variant を `Box` 化して `size_of::<Value>()` を縮小。スタック操作が軽くなる。
-3. **文字列インターン** — 属性名・メソッド名を `Rc<str>` + ポインタ比較。
+1. **`Value` クローンコスト削減** — `Value::Str(String)` → `Value::Str(Rc<str>)`。変数を読むたび String ヒープ確保（§1.2）。【❌ #15】
+2. **`Value` サイズ削減** — `JsProcFn`（String×3=72B）等の大 variant を `Box` 化して `size_of::<Value>()` を縮小。スタック操作が軽くなる。【✅ 72→32B】
+3. **文字列インターン** — 属性名・メソッド名を `Rc<str>` + ポインタ比較。【❌ #15】
 
 ---
 
@@ -485,30 +583,5 @@ for each import 辺 (自分 → B):
 3. **R0-A フレームの内部表現**: `Rc<RefCell<Vec<Value>>>` か `Rc<Frame>`（`Frame` に inline 配列 + 借用管理）か。RefCell borrow の
    パニック表面とコストを見て決定。まず素直な `Rc<RefCell<...>>` で正しさ優先、V-F で最適化。
 4. **ブロック跨ぎ同名の slot 再利用**（B）: ブロックを抜けた後の同名変数の slot 寿命解析の正確な規則。Arrow のブロックスコープ意味論を
-   リゾルバ構築時に確認（可視名再宣言禁止＝シャドウなしは追い風）。
+   リゾルバ構築時に確認（可視名再宣言禁止＝シャドウなしは追い風）。※現状は「既出名はスキップ＝slot 再利用」で実装済み。
 5. **循環 import のリンク**（§6）: A⇄B の相互参照は「全シンボル宣言（index 採番）→本体解決」の2フェーズで解く。
-
----
-
-## 10. 検証コマンド / 規約
-
-```
-cargo test                          # 672 passed を維持（各ステップ/各段ごと）
-cargo build                         # 警告0 を維持
-cargo clippy --all-targets          # exit 0
-./run_examples.ps1                  # 例題スイートの回帰確認
-./bench.ps1                         # Phase R の各ステップ / Phase V の各段で再測定（フェーズ0基準 = bench_baseline.md）
-cargo run -- --compile examples/interop/test_modules/physics.ar  # Phase R: native 経路の数値一致確認
-cargo run -- --vm=force <file.ar>   # Phase V 移行中: 未対応構文を可視化（フォールバック禁止）
-./generate-codebase-map.ps1         # src/vm/ 等の新設後に必須
-```
-
-規約（`.claude/rules/regulations.md`）:
-- 新文法の追加はないため example / `_error` example 追加は非該当。
-- VS Code 拡張・Python 実装に変更が及ばないため VSIX 再生成・git SHA 同期は非該当。
-- 同じスクリプトを繰り返し実行する場合は .ps1 化（`bench.ps1` は作成済み）。
-
-### 参照資料
-- [bench_baseline.md](bench_baseline.md) — フェーズ0の全実測値と支配項の切り分け（各ステップの比較基準）。
-- [.claude/skills/c-abi-interop](.claude/skills/c-abi-interop/SKILL.md) — オフセットアクセス記憶域（`InstanceData` raw ブロック）の設計仕様。
-- `codebase-map` スキル — `src/` のディレクトリ別役割 + ファイル別行数。

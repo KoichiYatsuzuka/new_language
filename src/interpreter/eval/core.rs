@@ -12,6 +12,36 @@ use {
 use super::*;
 
 impl Interpreter {
+    /// VM: リテラルから List を構築する（`Expr::List` と同一意味論）。
+    pub(crate) fn vm_build_list(&self, vals: Vec<Value>) -> Value {
+        Value::List(Rc::new(RefCell::new(vals)))
+    }
+
+    /// VM: リテラルから Tuple を構築する（`Expr::Tuple` と同一・要素型名を収集）。
+    pub(crate) fn vm_build_tuple(&self, vals: Vec<Value>) -> Value {
+        let types: Vec<String> = vals.iter().map(|v| self.type_name(v).to_string()).collect();
+        Value::Tuple(Rc::new(TupleData::new(vals, types)))
+    }
+
+    /// VM: リテラルから Set を構築する（`Expr::Set` と同一・`set_insert` で重複排除）。
+    pub(crate) fn vm_build_set(&self, vals: Vec<Value>) -> Value {
+        let mut out: Vec<Value> = Vec::new();
+        for v in vals {
+            set_insert(&mut out, v, self);
+        }
+        Value::Set(Rc::new(RefCell::new(out)))
+    }
+
+    /// VM: リテラルから Dict を構築する（`Expr::Dict` と同一）。`flat` は `[k0,v0,k1,v1,..]`。
+    pub(crate) fn vm_build_dict(&self, flat: Vec<Value>) -> Value {
+        let mut d = DictData::new("Any".to_string(), "Any".to_string());
+        let mut it = flat.into_iter();
+        while let (Some(k), Some(v)) = (it.next(), it.next()) {
+            d.set(k, v);
+        }
+        Value::Dict(Rc::new(RefCell::new(d)))
+    }
+
     /// 式（`Expr`）を評価して `Value` を返す。各バリアントを専用メソッドに委譲する薄いディスパッチャ。
     pub fn eval(&mut self, expr: &Expr) -> Result<Value, String> {
         match expr {

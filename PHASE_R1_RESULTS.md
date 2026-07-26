@@ -485,13 +485,49 @@ byte-identical を優先し、VM のメソッド呼び出しも `call_span=None`
 - デバッガ REPL が**停止フレームの生変数を名前で参照しつつバイトコード実行**。式・`let dbg::`・
   関数呼び出しは VM、メソッド/添字/制御フローはツリーウォークへフォールバック。**§2.3 が求める
   slot→名前デバッグメタデータ（`Chunk.local_names`）と名前引きエスケープハッチが揃った**。
+  （タスク #5 後は添字・コレクションリテラルもデバッガ REPL でバイトコード実行される。）
+
+---
+
+# タスク #5 — 添字 `obj[i]`・コレクションリテラル（list/tuple/set/dict）の VM 化
+
+`obj[i]` の読み書きと list/tuple/set/dict リテラルを VM にコンパイルする。実プログラムで頻出のため
+VM 化率が上がり、デバッガ REPL のフォールバックも減る。
+
+## 実装
+| 変更 | ファイル | 内容 |
+|---|---|---|
+| **op** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | `Subscript`（pop key/obj → `eval_subscript`）・`SetIndex`（pop value/key/obj → `eval_setitem`）・`BuildList/BuildTuple/BuildSet/BuildDict(N)`（末尾 N（辞書は 2N）要素を pop して構築） |
+| **構築ヘルパ** | [eval/core.rs](src/interpreter/eval/core.rs) | `vm_build_list/tuple/set/dict`（`Expr::List/Tuple/Set/Dict` と同一意味論・tuple は要素型名収集・set は `set_insert` 重複排除・dict は `[k0,v0,..]` フラット列） |
+| **コンパイラ** | [vm/compiler.rs](src/vm/compiler.rs) | `Expr::Subscript/List/Tuple/Set/Dict` を対応。`obj[i] = value` は `Stmt::AttrAssign` の Subscript 分岐で対応（**value を temp に先評価**しツリーウォークの評価順に一致） |
+| **シャドウ検出 bail** | [vm/compiler.rs](src/vm/compiler.rs) | `has_for_target_shadow`: `for` 変数が param/非 for 宣言をシャドウする関数は bail（下記） |
+
+## `for` 変数シャドウの扱い（重要な健全性判断）
+Arrow の `for` 変数は**ブロックスコープ**（ループ後に外側の同名変数へ戻る）だが、flat-slot VM は同名 slot を
+再利用するため、`mut i = 0; for i in ...: nums[i] = i*i` のような**シャドウ**でツリーウォークと挙動が食い違う
+（ツリーウォークはリゾルバが外側 slot を読み `nums[i]` が古い `i` を使う；VM は slot 再利用でループ値を使う）。
+→ タスク #5 で添字代入がコンパイル可能になり、この既存の不整合が顕在化。**`for` 変数が param/非 for 宣言と
+名前衝突する関数は丸ごと bail**（`has_for_target_shadow` で検出）してツリーウォークへ委譲し byte-identical を維持。
+`for j`（新規名）や兄弟 `for i; for i`（外側シャドウなし）は対象外＝コンパイルされる。
+
+## 検証
+- `cargo test` → **672 passed / 0 failed**。
+- 例題回帰: **決定的例 44 件 ＋ `_error` 例 19 件 = 全 63 例で off/auto 完全一致**。
+  添字読み書き・多次元（`grid[1][0]=100`）・dict 更新・set 重複排除・for 式内 loop_yield・シャドウ bail を含む。
+- デバッガ REPL でも `nums[1]`→200・`[total, total*2]`→`[7,14]` がバイトコード実行される。
+- `cargo build` / 追加 clippy 警告 0。
+
+## 速度（`--vm=off` vs `--vm=auto`、best-of-3、release）
+| ベンチ | 内容 | off | auto | VM 倍率 |
+|---|---|---|---|---|
+| **collections** | `dot`（list 添字読み）＋ `build_pairs`（tuple リテラル + 添字）を 100万回 | 12.80s | 8.51s | **1.50x** |
 
 ---
 
 ## 次に効くレバー
 1. **メソッド呼び出し機構の軽量化** — `call_instance_method_evaled` の bind_args/copy/`current_class` を
    VM フレーム上で直接行い per-call オーバーヘッド削減（V-B の method_hot がここで伸びる）。
-2. **添字・コレクションリテラル・その他組み込み**（`enumerate`/`zip`/`str`/`int` 等）の VM 化で更に対象拡大。
+2. **その他組み込み**（`enumerate`/`zip`/`str`/`int` 等）の VM 化で更に対象拡大。
 3. **V-F 最適化** — peephole・superinstruction・単型算術命令・R0-A エスケープ解析。
 4. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
 5. **強制バイトコード（D2）への移行** — 全構文カバー後にツリーウォークのフォールバックを撤去し
