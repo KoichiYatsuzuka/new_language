@@ -73,8 +73,19 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
     ＋全定義文オペコード化」の大規模拡張が要る点を織り込むこと。
 
 **Phase R の残り**
-11. **R2 グローバル slot の前倒し**（`SlotCache` 実行時キャッシュ → AST 展開時解決, §4.3）。
+11. **R2 グローバル slot の前倒し**（`SlotCache` 実行時キャッシュ → AST 展開時解決, §4.3）。**【保留 2026-07-27】**
+    実装には (a) resolve 時のグローバルシンボル表（固定 index 採番・現リゾルバは関数本体のみ対象なので新設が要る）、
+    (b) グローバル記憶域の index 配列化（§4.3「各 .ar ファイル固有のグローバル配列」）、(c) `freeze` の epoch 整合、
+    (d) §6 モジュールモデルとの接続、が必要で**中〜大規模かつ delicate**（グローバル代入は全域に波及）。一方、既存
+    `SlotCache` が warm-cache で実行時コストを既に潰しているため**限界的な速度メリットは小さい**。§6（保留中）と
+    連動するため、モジュールモデル着手時に併せて実施する。（VM の `LoadGlobal` はなお名前ハッシュ引きだが、そこは
+    別途 op レベルの runtime cache でも対処可能＝R2 本体とは別テーマ。）
 12. **R0-A 明示フレームスタック**（`Rc<Frame>`・深い再帰のスタックオーバーフロー解消・クロージャ Rc 寿命管理, §3.4-A）。
+    **【保留 2026-07-27】** 本計画の**最大のアーキテクチャ変更**。`scopes: Vec<HashMap>` ／ `frame_floor` モデルを
+    `Rc<Frame>` スタックへ置換し、`get_var`/`declare_var`/`assign_var`/クロージャ捕捉/async キャプチャ/デバッガ/
+    VM フレームバッファの全経路に波及する。深い再帰のスタックオーバーフロー解消という価値はあるが、672 テスト＋
+    off/auto byte-identical を維持したままの一括置換は**単独セッションでは高リスク**。専用の設計・段階移行が必要な
+    ため保留（着手時は §3.4-A / §9-3 の内部表現決定＝`Rc<RefCell<Vec<Value>>>` か `Rc<Frame>` かから確定する）。
 13. **R4 ネイティブ codegen 側の消費**（§4.4・`llvm_codegen` の自前解決を Phase R 結果へ置換）。
 
 **その他（§6・§7.4）**
@@ -225,7 +236,7 @@ Phase R で解釈経路の速度が上がるには、**解釈器の変数スト�
 | ステップ | 内容 | 消す辞書引き |
 |---|---|---|
 | **R1. ローカル/引数の slot 化** 【✅】 | 関数本体の変数を宣言順に slot 番号付け（B: フレーム内固定 slot）。`Expr::Ident` に `Resolved::Local{frame_level, slot}` を付与。決まらなければ `Dynamic`（§2.5） | scope HashMap 引き（~0.09µs/access） |
-| **R2. グローバルの slot 化** 【❌ #11】 | 既存 `SlotCache` を「実行時遅延」から「AST 展開時解決」へ前倒し。各 .ar ファイルは固有のグローバル配列を持ち index アクセス（§6 のモジュールモデルと接続） | epoch 検証つき実行時キャッシュ |
+| **R2. グローバルの slot 化** 【保留 #11・§6 と連動】 | 既存 `SlotCache` を「実行時遅延」から「AST 展開時解決」へ前倒し。各 .ar ファイルは固有のグローバル配列を持ち index アクセス（§6 のモジュールモデルと接続） | epoch 検証つき実行時キャッシュ |
 | **R3. フィールドのオフセット化** 【✅】 | 呼び出し点でオブジェクトの具象クラスが型チェッカから判れば `Expr::Attr` に `(class_id, idx)` を焼く（記憶域は §2.9 の通り既存）。判らなければ **多相 IC**: `InstanceData.class_id`（[value/core.rs:19](src/interpreter/value/core.rs#L19) `alloc_class_id`）で「前回と同じ class_id ならオフセット再利用、違えば `field_index` 引き直してキャッシュ更新」 | `field_index.get(attr)`（[eval/attrs.rs:70](src/interpreter/eval/attrs.rs#L70)） |
 | **R4. 呼び先の解決** 【✅】 | Arrow 関数呼び出しを名前引きから解決済みターゲット（グローバル関数 index / 関数ポインタ）へ。`Expr::Call.cache`（[ast.rs:356](src/ast.rs#L356)）を Arrow 関数にも拡張。関数オブジェクトを変数に代入した場合は slot 内 Value の CALL ディスパッチ（名前引きなし） | 呼び先名前引き |
 
