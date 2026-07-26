@@ -685,13 +685,57 @@ clone-walk で生成し、一時 `Rc<FnValue>` を作って捨てていた（§2
 
 ---
 
+# タスク #9 — async の VM 対応（`target <- async->T: body`）
+
+`mng <- async->T: body` を含む関数は VM コンパイラが**丸ごと bail** していた（`AsyncAssign` を slot 採番
+パスで弾いていた）。本タスクで **VM フレーム上から非同期タスクを投入**できるようにした（D5 share-nothing 維持）。
+最大の壁は「VM フレームのローカルは `scopes` ではなく flat buffer にある」ため、ツリーウォークの
+`capture_env`（`scopes` を読む）がそのままでは VM ローカルを捕捉できないこと。
+
+## 実装
+| 変更 | ファイル | 内容 |
+|---|---|---|
+| **`AsyncSubmit` op** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs), [vm/disasm.rs](src/vm/disasm.rs) | pop した AsyncManager に `chunk.async_blocks[idx]` を投入。捕捉変数を frame slot から読み `vm_async_submit` へ渡す |
+| **`AsyncBlock` を Chunk に** | [vm/chunk.rs](src/vm/chunk.rs) | `async_blocks: Vec<AsyncBlock{ body: Vec<Stmt>, captures: Vec<(name, slot, is_mut)> }>` |
+| **`AsyncAssign` のコンパイル** | [vm/compiler.rs](src/vm/compiler.rs) | slot 採番パスの bail から `AsyncAssign` を除外。`compile_async_assign`: 本体の参照名（`collect_referenced_names`）∩ enclosing frame の slot を捕捉対象に記録し、マネージャを `LoadLocal`/`LoadGlobal` で積んで `AsyncSubmit(idx)` を発行 |
+| **`vm_async_submit` ヘルパ** | [exec/exceptions_async.rs](src/interpreter/exec/exceptions_async.rs) | frame から読んだ捕捉ローカルを**一時スコープに積み**（`frame_floor` を進める）、既存 `capture_env` を呼んで env（捕捉ローカル + グローバル・deep_clone 規則込み）を組み `add_task`。ツリーウォークの `exec_async_assign` と同一の env 構築を再利用 |
+| **`collect_referenced_names` を再利用可能に** | [exec/mod.rs](src/interpreter/exec/mod.rs), [interpreter.rs](src/interpreter.rs) | `pub(crate)` 化 + 再エクスポート（VM コンパイラの捕捉解析で使う） |
+
+## 健全性（capture の正しさ）
+- **捕捉集合 = 本体の参照名 ∩ frame slot**。Arrow は「可視名の再宣言禁止」（`get_var` チェック）＋静的型検査の
+  「宣言前・スコープ外参照の拒否」により、**async 本体が参照する名前は必ず submit 時点で in-scope な slot**。
+  よって frame slot からの捕捉は常に実値（未初期化 None や別ブロックの残値を誤捕捉しない）。
+- **未参照ローカルは載せない**（capture_env が全 in-scope ローカルを載せるのに対し部分集合）。task は参照名しか
+  使わないので**出力は byte-identical**。かつ未使用 PyObject ローカルの誤 GIL 警告（stderr）も避けられる。
+- **mutable/immutable の共有規則**は `Var::new(value, is_mut)` を積んで `capture_env` に委ねるため一致
+  （mut → Rc 共有クローン、immut → deep_clone）。**タスク本体は別スレッドでツリーウォーク実行**（D5 維持）。
+- マネージャ参照は slot 優先→グローバル（`LoadLocal`/`LoadGlobal`）。async 本体内の宣言は task スコープなので
+  `collect_nested_decls` は `AsyncAssign` に降りない（frame slot を消費しない）。
+
+## 検証
+- `cargo test`（`--vm=auto`）→ **672 passed / 0 failed**。
+- 手動 A/B（off/auto）で**完全一致**: 関数内 async（`while` ループ内で 4 タスク投入・`let` 捕捉・
+  グローバル関数呼び出し `square(k)`・`mng.wait_for_finish()`＋`mng.results[j]` 集計）→ 両モード `534`。
+  `--vm=force` で `run_tasks` が実 VM コンパイルされることを確認。
+- 例題回帰: async/basics/classes/collections/typing/exceptions の決定的例で off/auto 一致（async_demo/
+  async_bench/event_handler はモジュール top-level のため元々ツリーウォークだが auto でも不変）。
+- `cargo build` / 追加 clippy 警告 0。
+
+## 到達点
+- **VM コンパイル済み関数の中で `mng <- async` が使える**（従来は関数丸ごと bail）。capture は frame slot から
+  再構成し、env 構築・タスク実行はツリーウォークと同一経路。モジュール top-level の async は #10（未了）で
+  VM 化されるまでツリーウォークのまま（本タスクは関数内 async の穴を塞ぐもの）。
+
+---
+
 ## 次に効くレバー
 1. ~~その他組み込み（enumerate/zip/str/int 等）の VM 化~~ 【✅ 完了】（純粋6種＋型コンストラクタを LoadGlobal+Call/CallBuiltin で対象化, 1.49x）。
 2. ~~テンプレート実体化の Chunk メモ化~~ 【✅ 完了】（`(テンプレート, 型引数)` キーで具体 FnValue をメモ・auto 5.9x）。
 3. ~~ジェネレータ本体の VM 化~~ 【✅ 完了】（`Yield` op・eager 収集維持・`GeneratorFn` 呼び出しギャップも修正・~3.2x）。
-4. **V-F 最適化** — peephole・superinstruction・単型算術命令・R0-A エスケープ解析。
-5. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
-6. **強制バイトコード（D2）への移行** — 全構文カバー後にツリーウォークのフォールバックを撤去し
+4. ~~async の VM 対応（関数内）~~ 【✅ 完了】（`AsyncSubmit` op・frame から capture 再構成・D5 維持）。
+5. **V-F 最適化** — peephole・superinstruction・単型算術命令・R0-A エスケープ解析。
+6. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
+7. **強制バイトコード（D2）への移行** — 全構文カバー後にツリーウォークのフォールバックを撤去し
    スレッドローカル4本＋センチネル2種を実削除。
 
-`LocalRef` / slot 化 `Scope` / `frame_floor` / bind_args 高速経路 / `AttrCache` / R4 呼び先 / method IC / リゾルバ / VM 骨格（op/chunk/run）/ break-continue ジャンプ / 平坦 slot / match / for（GetIter/ForIter）/ CallBuiltin / Weak 検証 Chunk キャッシュ / 例外ハンドラスタック / ブロック式 BlockCtx / 呼び出し位置 span / Yield（ジェネレータ本体）は上記すべての土台として再利用される。
+`LocalRef` / slot 化 `Scope` / `frame_floor` / bind_args 高速経路 / `AttrCache` / R4 呼び先 / method IC / リゾルバ / VM 骨格（op/chunk/run）/ break-continue ジャンプ / 平坦 slot / match / for（GetIter/ForIter）/ CallBuiltin / Weak 検証 Chunk キャッシュ / 例外ハンドラスタック / ブロック式 BlockCtx / 呼び出し位置 span / Yield（ジェネレータ本体）/ AsyncSubmit（関数内 async）は上記すべての土台として再利用される。

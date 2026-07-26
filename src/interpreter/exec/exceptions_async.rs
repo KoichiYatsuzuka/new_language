@@ -330,6 +330,41 @@ impl Interpreter {
         Ok(ExecResult::Normal)
     }
 
+    /// VM の `AsyncSubmit` op 用（タスク #9）。VM フレームには `scopes` が無いため、frame から読み出した
+    /// 捕捉ローカル `captured` を一時スコープに積んでから `capture_env` を呼び、ツリーウォークの
+    /// `exec_async_assign` と**同一の env**（捕捉ローカル + グローバル・mutable/immutable の deep_clone 規則込み）
+    /// を組んで AsyncManager にタスクを投入する。捕捉は本体が参照する slot に限定済み（未参照ローカルは載せない）。
+    pub(crate) fn vm_async_submit(
+        &mut self,
+        mgr: Value,
+        body: &[Stmt],
+        captured: Vec<(String, Value, bool)>,
+    ) -> Result<(), String> {
+        let mgr_rc = match mgr {
+            Value::AsyncManager(rc) => rc,
+            other => {
+                return Err(format!(
+                    "TypeError: '<-' operator requires an AsyncManager, got '{}'",
+                    self.type_name(&other)
+                ))
+            }
+        };
+        // 捕捉ローカルだけを可視にする一時スコープを積み、capture_env に globals と合成させる。
+        // frame_floor を進めることで capture_env が「現関数ローカル = この一時スコープ」とみなす。
+        let saved_floor = self.frame_floor;
+        let saved_len = self.scopes.len();
+        self.frame_floor = saved_len;
+        self.push_scope();
+        for (name, value, is_mut) in captured {
+            self.declare_var(name, Var::new(value, is_mut));
+        }
+        let env = crate::interpreter::async_mgr::capture_env(self);
+        self.scopes.truncate(saved_len);
+        self.frame_floor = saved_floor;
+        mgr_rc.borrow_mut().add_task(body.to_vec(), env);
+        Ok(())
+    }
+
     // ---------------------------------------------------------------------------
     // External event queue draining (C#/Go bridge)
     // ---------------------------------------------------------------------------

@@ -83,6 +83,8 @@ struct Compiler {
     temps_in_use: u16,
     /// フレームに必要な総 slot 数（名前付き + temp の最大同時数）。
     n_locals: usize,
+    /// 非同期タスクブロック（`AsyncSubmit(idx)` が index で参照, タスク #9）。
+    async_blocks: Vec<crate::vm::chunk::AsyncBlock>,
 }
 
 /// ループ1つ分の break/continue ジャンプ先。`continue` は `continue_target` へ、
@@ -194,8 +196,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
             | Stmt::NewTypeDef { .. }
             | Stmt::EnumDef { .. }
             | Stmt::Import { .. }
-            | Stmt::FromImport { .. }
-            | Stmt::AsyncAssign { .. } => return None,
+            | Stmt::FromImport { .. } => return None,
             _ => {}
         }
     }
@@ -230,6 +231,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         named_locals: n,
         temps_in_use: 0,
         n_locals: n as usize,
+        async_blocks: Vec::new(),
     };
 
     for stmt in body {
@@ -246,6 +248,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         spans: c.spans,
         local_names,
         n_locals: c.n_locals,
+        async_blocks: c.async_blocks,
     })
 }
 
@@ -269,6 +272,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         named_locals: 0,
         temps_in_use: 0,
         n_locals: 0,
+        async_blocks: Vec::new(),
     };
     match stmt {
         Stmt::Expr(e) => {
@@ -291,6 +295,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         spans: c.spans,
         local_names: Vec::new(),
         n_locals: c.n_locals,
+        async_blocks: Vec::new(),
     })
 }
 
@@ -849,6 +854,42 @@ impl Compiler {
         Some(mask)
     }
 
+    /// `target <- async->T: body` をコンパイルする（タスク #9）。
+    /// 本体が参照する enclosing フレームの slot（`collect_referenced_names ∩ slots`）を捕捉対象に記録し、
+    /// マネージャをスタックへロードして `AsyncSubmit(idx)` を発行する。実行時は frame から捕捉値を読み、
+    /// グローバルと合わせて `capture_env` で env を組む（ツリーウォークの `exec_async_assign` と同一）。
+    /// 捕捉は「本体が参照する slot」に限定（未参照ローカルは env に載せない）＝task 挙動は byte-identical。
+    fn compile_async_assign(&mut self, target: &str, stmts: &[Stmt]) -> Option<()> {
+        // 本体の参照名を収集し、enclosing frame の slot と交差したものを捕捉する。
+        let mut refs: HashSet<String> = HashSet::new();
+        crate::interpreter::collect_referenced_names(stmts, &mut refs);
+        let mut captures: Vec<(String, u16, bool)> = refs
+            .iter()
+            .filter_map(|name| {
+                let slot = *self.slots.get(name)?;
+                let is_mut = self.slot_mut.get(slot as usize).copied().unwrap_or(false);
+                Some((name.clone(), slot, is_mut))
+            })
+            .collect();
+        // 決定的順序（HashSet は非決定）: slot 昇順。env の順序は task 挙動に影響しないが再現性のため固定。
+        captures.sort_by_key(|(_, slot, _)| *slot);
+
+        let idx = u32::try_from(self.async_blocks.len()).ok()?;
+        self.async_blocks.push(crate::vm::chunk::AsyncBlock {
+            body: stmts.to_vec(),
+            captures,
+        });
+        // マネージャ値をスタックへ（ローカル slot 優先、なければグローバル名引き）。
+        if let Some(&slot) = self.slots.get(target) {
+            self.emit(Op::LoadLocal(slot));
+        } else {
+            let ni = self.add_name(target);
+            self.emit(Op::LoadGlobal(ni));
+        }
+        self.emit(Op::AsyncSubmit(idx));
+        Some(())
+    }
+
     fn compile_stmt(&mut self, stmt: &Stmt) -> Option<()> {
         match stmt {
             Stmt::Expr(e) => {
@@ -1091,6 +1132,10 @@ impl Compiler {
             Stmt::Yield(e) => {
                 self.compile_expr(e)?;
                 self.emit(Op::Yield);
+            }
+            // `target <- async->T: body`（タスク #9）。AsyncManager にタスクを投入する。
+            Stmt::AsyncAssign { target, stmts, .. } => {
+                self.compile_async_assign(target, stmts)?;
             }
             // それ以外（定義・import 等）は非対応。
             _ => return None,

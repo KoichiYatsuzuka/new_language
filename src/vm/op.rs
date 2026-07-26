@@ -119,4 +119,8 @@ pub enum Op {
     /// `yield expr`: pop した値をジェネレータの yield 収集バッファ（`GENERATOR_YIELDS`）へ追加する
     /// （eager 収集・ツリーウォークの `Stmt::Yield` と同一意味論。値は産出するだけで制御は継続）。
     Yield,
+    // ── async（タスク #9） ──
+    /// `target <- async->T: body`: pop した AsyncManager に `chunk.async_blocks[idx]` のタスクを投入する。
+    /// 捕捉変数は frame から読み、`vm_async_submit`（capture_env 経由）で env を組む（ツリーウォーク一致）。
+    AsyncSubmit(u32),
 }

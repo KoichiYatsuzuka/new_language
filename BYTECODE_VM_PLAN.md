@@ -39,6 +39,9 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 11. **#8 ジェネレータ本体の VM 化** — `Yield` op で本体をバイトコード実行し `yield` を `GENERATOR_YIELDS` へ
     eager 収集（意味論不変）。`vm_gen_chunks` キャッシュ。付随して `call_value_evaled` の `GeneratorFn` 呼び出し
     ギャップ（VM 関数から `gen()` を呼ぶと "not callable")も修正。generator 支配で ~3.2x。`Self`/クロージャは bail。
+12. **#9 async の VM 対応（関数内）** — `AsyncSubmit` op ＋ `Chunk.async_blocks`。捕捉集合を「本体の参照名 ∩
+    frame slot」に限定し、frame から値を読んで**一時スコープ経由で既存 `capture_env` を再利用**して env を組む
+    （ツリーウォークと同一・D5 share-nothing 維持）。VM コンパイル済み関数内で `mng <- async` が使える。
 
 ### 残り（番号付き）
 **Phase V の残り**
@@ -52,8 +55,13 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 6. ~~その他組み込み（enumerate/zip/str/int 等）の `CallBuiltin` 拡張~~ 【✅ 完了】（純粋6種＝`CallBuiltin`・型コンストラクタ＝`LoadGlobal`+`Call` 委譲。enumerate/zip 支配 1.49x）。
 7. ~~テンプレート実体化の Chunk メモ化~~ 【✅ 完了】（`(テンプレート, 型引数)` キーで具体 FnValue をメモ・関数/ジェネレータのみ・auto 5.9x）。
 8. ~~ジェネレータ本体の VM 化~~ 【✅ 完了】（`Yield` op・eager 収集維持・`GeneratorFn` 呼び出しギャップ修正・~3.2x）。
-9. **async の VM 対応**（D5 share-nothing 維持）。
-10. **import モジュール Chunk**（モジュール本体の一括生成）。
+9. ~~async の VM 対応~~ 【✅ 完了（関数内）】（`AsyncSubmit` op・frame から capture 再構成・既存 `capture_env` 再利用・D5 維持。モジュール top-level の async は #10 依存）。
+10. **import モジュール Chunk**（モジュール本体の一括生成）。**【保留 2026-07-27】** 調査の結果、高コスト・低効果と判明:
+    (a) モジュール本体は定義文（fn/class/gen/import）が支配的で VM コンパイラが全て bail →「本体一括 Chunk」には
+    **定義文の VM オペコード化**が必要。(b) top-level 変数はグローバルだが VM に **`StoreGlobal` op が無い**（slot ベース）。
+    名前ベース（`LoadName`）で回避すると**ツリーウォークと同コスト＝速度向上ゼロ**。(c) ホットコードは関数内で既に
+    VM 化済み、モジュール top-level は一回きりの初期化＋定義が主で実効メリット小。着手時は「グローバル変数実行モード
+    ＋全定義文オペコード化」の大規模拡張が要る点を織り込むこと。
 
 **Phase R の残り**
 11. **R2 グローバル slot の前倒し**（`SlotCache` 実行時キャッシュ → AST 展開時解決, §4.3）。
@@ -439,7 +447,7 @@ Phase R/V の**ランタイム表現の土台**。解釈のフレーム/slot ス
 - テンプレートは実体化ごとに解決（名前は既知＝静的解決の範疇, §2.2）。
 - 補足: 属性/メソッドの**多相**ディスパッチは slot ではなく `class_id` インラインキャッシュ（§4.3 R3）。動的名とは別機構。
 
-### 3.5 【D5】async は share-nothing 維持
+### 3.5 【D5】async は share-nothing 維持 【✅ #9 で関数内 async を VM 化（capture を frame から再構成し `capture_env` 再利用）。share-nothing 不変】
 現行 async（`mng <- async->T: body`）は**投入時 deep-clone = 共有可変状態なし**。これを維持。
 - 過剰 deepcopy 削減: **読み取りのみキャプチャは不変 Arc 共有** / **書込み要は COW** / **投入後に main が使わない変数は move**。
 - 「async が main の mut 変数を編集」したい場合は**明示的 Mutex 系プリミティブ**（CLAUDE.md 記載の将来機能・別テーマ）。

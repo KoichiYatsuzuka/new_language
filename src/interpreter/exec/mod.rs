@@ -180,7 +180,7 @@ fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
     }
 }
 
-fn collect_referenced_names(stmts: &[Stmt], out: &mut HashSet<String>) {
+pub(crate) fn collect_referenced_names(stmts: &[Stmt], out: &mut HashSet<String>) {
     for stmt in stmts {
         collect_referenced_names_stmt(stmt, out);
     }

@@ -1,10 +1,19 @@
 // vm/chunk.rs — コンパイル済み関数の実行表現（Phase V, V-A）。
 
 use crate::ast::AttrCache;
+use crate::ast::Stmt;
 use crate::interpreter::Value;
 use crate::token::Span;
 
 use super::op::Op;
+
+/// `target <- async->T: body` の VM 表現（タスク #9）。`AsyncSubmit(idx)` op が参照する。
+/// `body` は非同期タスクの AST（別スレッドでツリーウォーク実行される）。`captures` は本体が参照する
+/// enclosing フレームの `(変数名, slot, is_mutable)`（実行時に frame から値を読んで env を組む）。
+pub struct AsyncBlock {
+    pub body: Vec<Stmt>,
+    pub captures: Vec<(String, u16, bool)>,
+}
 
 /// 1 関数分のコンパイル結果。`Rc<Chunk>` で関数ごとにキャッシュされる。
 ///
@@ -27,4 +36,6 @@ pub struct Chunk {
     pub local_names: Vec<String>,
     /// フレームのローカル slot 総数（パラメータ + base ローカル）。
     pub n_locals: usize,
+    /// 非同期タスクブロック（`AsyncSubmit(idx)` が参照, タスク #9）。async を含まない関数では空。
+    pub async_blocks: Vec<AsyncBlock>,
 }

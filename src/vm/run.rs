@@ -374,6 +374,18 @@ fn exec_op(
             let v = buf.pop().unwrap();
             interp.vm_yield_push(v);
         }
+        Op::AsyncSubmit(idx) => {
+            let mgr = buf.pop().unwrap();
+            let block = &chunk.async_blocks[*idx as usize];
+            // 捕捉変数を frame の slot から読み出す（capture_env と同じ mutable/immutable 規則は
+            // vm_async_submit 内で Var 経由に適用する）。
+            let captured: Vec<(String, Value, bool)> = block
+                .captures
+                .iter()
+                .map(|(name, slot, is_mut)| (name.clone(), buf[base + *slot as usize].clone(), *is_mut))
+                .collect();
+            interp.vm_async_submit(mgr, &block.body, captured)?;
+        }
     }
     Ok(Flow::Next)
 }
