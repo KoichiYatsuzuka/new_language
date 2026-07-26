@@ -551,7 +551,7 @@ impl Interpreter {
         // ネイティブ呼び出しは引数を保守的に mutable 扱い（従来動作）。
         let evaled: Vec<(Option<String>, Value, bool)> =
             args.into_iter().map(|v| (None, v, true)).collect();
-        self.call_value_evaled(callee, evaled)
+        self.call_value_evaled(callee, evaled, "<fn>", None)
     }
 
     /// 評価済み引数（`is_mutable` フラグ込み）で任意の呼び出し可能値をディスパッチする。
@@ -561,11 +561,15 @@ impl Interpreter {
         &mut self,
         callee: Value,
         evaled: Vec<(Option<String>, Value, bool)>,
+        fn_name: &str,
+        call_span: Option<Span>,
     ) -> Result<Value, String> {
         match callee {
-            Value::Function(fn_val) => self.exec_fn_evaled(fn_val, &evaled, None, "<fn>", None),
+            Value::Function(fn_val) => {
+                self.exec_fn_evaled(fn_val, &evaled, None, fn_name, call_span)
+            }
             Value::OverloadedFn(candidates) => {
-                self.dispatch_overload_evaled(candidates, evaled, None, "<overloaded>", None)
+                self.dispatch_overload_evaled(candidates, evaled, None, fn_name, call_span)
             }
             Value::Class(cls) => self.instantiate_evaled(cls, evaled),
             Value::NativeFunction(fn_ref) => {

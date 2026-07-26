@@ -21,6 +21,7 @@ impl Interpreter {
         method_name: &str,
         evaled: Vec<(Option<String>, Value, bool)>,
         cache: Option<&crate::ast::AttrCache>,
+        call_span: Option<crate::token::Span>,
     ) -> Result<Value, String> {
         let inst_rc = match &obj {
             Value::Instance(rc) => rc.clone(),
@@ -49,7 +50,7 @@ impl Interpreter {
                 if let Some(overloads) = class.methods.get(method_name) {
                     if overloads.len() == 1 {
                         let f = overloads[0].clone();
-                        return self.exec_fn_evaled(f, &evaled, Some(obj), method_name, None);
+                        return self.exec_fn_evaled(f, &evaled, Some(obj), method_name, call_span);
                     }
                 }
             }
@@ -130,9 +131,9 @@ impl Interpreter {
                     c.fill(class.class_id, 0, 0);
                 }
             }
-            self.exec_fn_evaled(callable[0].clone(), &evaled, Some(obj), method_name, None)
+            self.exec_fn_evaled(callable[0].clone(), &evaled, Some(obj), method_name, call_span)
         } else {
-            self.dispatch_overload_evaled(callable, evaled, Some(obj), method_name, None)
+            self.dispatch_overload_evaled(callable, evaled, Some(obj), method_name, call_span)
         }
     }
 

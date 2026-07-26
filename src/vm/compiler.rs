@@ -57,6 +57,8 @@ struct Compiler {
     self_slot: Option<u16>,
     /// ネストしたループのコンテキストスタック（break/continue のジャンプ先解決用）。
     loops: Vec<LoopCtx>,
+    /// ネストしたブロック式のコンテキストスタック（block_return/loop_yield 用）。
+    block_ctxs: Vec<BlockCtx>,
     /// 名前付き slot 数（パラメータ + 全ローカル宣言）。temp slot はこの上に積む。
     named_locals: u16,
     /// 現在使用中の temp slot 数（match サブジェクト等のスタック規律の一時領域）。
@@ -74,6 +76,19 @@ struct LoopCtx {
     continue_target: u32,
     /// `break` 命令の位置（ループ末尾へバックパッチする）。
     break_jumps: Vec<usize>,
+}
+
+/// ブロック式1つ分のコンテキスト（block:/if/while/for/match 式）。
+/// `block_return` は `result_slot` に値を格納して `end_jumps`（block_return 出口へバックパッチ）へ跳ぶ。
+/// `loop_yield` は `yield_slot`（Some のブロック式＝block:/for/while）のリストへ追加する。
+/// if/match 式は yield に対して透過（`yield_slot=None`）＝外側の for/while/block へ届く。
+struct BlockCtx {
+    /// `block_return` の値の格納先 slot。
+    result_slot: u16,
+    /// `block_return` の `Jump` 命令位置（block_return 出口へバックパッチ）。
+    end_jumps: Vec<usize>,
+    /// `loop_yield` の蓄積リスト slot（block:/for/while 式は Some、if/match 式は None＝透過）。
+    yield_slot: Option<u16>,
 }
 
 /// 型注釈がユーザークラス/trait/protocol（＝実行時 Instance）であることを保守的に判定する。
@@ -169,6 +184,14 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
     // slot 再利用は健全。リゾルバは nested 名を解決しない（Ident のまま）ので衝突しない。
     collect_nested_decls(body, &mut slots, &mut slot_mut, &mut slot_type, &mut n)?;
 
+    // V-E: slot → 変数名 のデバッグ名テーブル（named slot のみ。temp は無名）。
+    let mut local_names = vec![String::new(); n as usize];
+    for (name, &slot) in &slots {
+        if let Some(entry) = local_names.get_mut(slot as usize) {
+            *entry = name.clone();
+        }
+    }
+
     let mut c = Compiler {
         code: Vec::new(),
         consts: Vec::new(),
@@ -180,6 +203,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         slot_type,
         self_slot,
         loops: Vec::new(),
+        block_ctxs: Vec::new(),
         named_locals: n,
         temps_in_use: 0,
         n_locals: n as usize,
@@ -197,12 +221,33 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         names: c.names,
         attr_caches: c.attr_caches,
         spans: c.spans,
+        local_names,
         n_locals: c.n_locals,
     })
 }
 
+/// slot テーブルへ1つ宣言を追加する（既出名・`_` はスキップ）。
+fn add_decl(
+    name: &str,
+    ty: &Option<String>,
+    mutable: bool,
+    slots: &mut HashMap<String, u16>,
+    slot_mut: &mut Vec<bool>,
+    slot_type: &mut Vec<Option<String>>,
+    n: &mut u16,
+) -> Option<()> {
+    if name != "_" && !slots.contains_key(name) {
+        slots.insert(name.to_string(), *n);
+        slot_mut.push(mutable);
+        slot_type.push(ty.clone());
+        *n = n.checked_add(1)?;
+    }
+    Some(())
+}
+
 /// ネストしたブロック内の `let`/`const`/`mut` 宣言に平坦 slot を割り当てる（再帰）。
-/// コンパイラが本体をコンパイルできる構文（if/while/match）にのみ踏み込む。
+/// コンパイラが本体をコンパイルできる構文（if/while/match/for/try）と、**ブロック式**
+/// （式の中の `block:`/if/while/for/match 式の本体宣言）にも踏み込む。
 /// 既出名（トップレベル decl・別ブロックの同名）はスキップ（slot 再利用）。
 fn collect_nested_decls(
     body: &[Stmt],
@@ -211,48 +256,53 @@ fn collect_nested_decls(
     slot_type: &mut Vec<Option<String>>,
     n: &mut u16,
 ) -> Option<()> {
-    fn add(
-        name: &str,
-        ty: &Option<String>,
-        mutable: bool,
-        slots: &mut HashMap<String, u16>,
-        slot_mut: &mut Vec<bool>,
-        slot_type: &mut Vec<Option<String>>,
-        n: &mut u16,
-    ) -> Option<()> {
-        if name != "_" && !slots.contains_key(name) {
-            slots.insert(name.to_string(), *n);
-            slot_mut.push(mutable);
-            slot_type.push(ty.clone());
-            *n = n.checked_add(1)?;
-        }
-        Some(())
-    }
     for stmt in body {
         match stmt {
-            Stmt::Let(name, ty, _) | Stmt::Const(name, ty, _) => {
-                add(name, ty, false, slots, slot_mut, slot_type, n)?
+            Stmt::Let(name, ty, e) | Stmt::Const(name, ty, e) => {
+                add_decl(name, ty, false, slots, slot_mut, slot_type, n)?;
+                collect_expr_decls(e, slots, slot_mut, slot_type, n)?;
             }
-            Stmt::Mut(name, ty, _) => add(name, ty, true, slots, slot_mut, slot_type, n)?,
+            Stmt::Mut(name, ty, e) => {
+                add_decl(name, ty, true, slots, slot_mut, slot_type, n)?;
+                collect_expr_decls(e, slots, slot_mut, slot_type, n)?;
+            }
+            Stmt::Expr(e)
+            | Stmt::BlockReturn(e, _)
+            | Stmt::LoopYield(e)
+            | Stmt::Return(Some(e)) => collect_expr_decls(e, slots, slot_mut, slot_type, n)?,
+            Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => {
+                collect_expr_decls(value, slots, slot_mut, slot_type, n)?
+            }
+            Stmt::AttrAssign { target, value }
+            | Stmt::AttrCompoundAssign { target, value, .. } => {
+                collect_expr_decls(target, slots, slot_mut, slot_type, n)?;
+                collect_expr_decls(value, slots, slot_mut, slot_type, n)?;
+            }
             Stmt::If { branches, else_body } => {
-                for (_, b) in branches {
+                for (c, b) in branches {
+                    collect_expr_decls(c, slots, slot_mut, slot_type, n)?;
                     collect_nested_decls(b, slots, slot_mut, slot_type, n)?;
                 }
                 if let Some(eb) = else_body {
                     collect_nested_decls(eb, slots, slot_mut, slot_type, n)?;
                 }
             }
-            Stmt::While { body, .. } => collect_nested_decls(body, slots, slot_mut, slot_type, n)?,
-            Stmt::Match { arms, .. } => {
+            Stmt::While { cond, body } => {
+                collect_expr_decls(cond, slots, slot_mut, slot_type, n)?;
+                collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
+            }
+            Stmt::Match { subject, arms, .. } => {
+                collect_expr_decls(subject, slots, slot_mut, slot_type, n)?;
                 for arm in arms {
                     collect_nested_decls(&arm.body, slots, slot_mut, slot_type, n)?;
                 }
             }
-            Stmt::For { targets, body, .. } => {
+            Stmt::For { targets, iter, body } => {
                 // ループ変数は可変（tree-walk は Var::new(item, true)）。型注釈なし。
                 for t in targets {
-                    add(t, &None, true, slots, slot_mut, slot_type, n)?;
+                    add_decl(t, &None, true, slots, slot_mut, slot_type, n)?;
                 }
+                collect_expr_decls(iter, slots, slot_mut, slot_type, n)?;
                 collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
             }
             Stmt::Try { body, handlers, finally_body } => {
@@ -260,7 +310,7 @@ fn collect_nested_decls(
                 for h in handlers {
                     // `except E as e:` の別名は不変束縛（tree-walk は Var::new(exc, false)）。
                     if let Some(alias) = &h.name {
-                        add(alias, &None, false, slots, slot_mut, slot_type, n)?;
+                        add_decl(alias, &None, false, slots, slot_mut, slot_type, n)?;
                     }
                     collect_nested_decls(&h.body, slots, slot_mut, slot_type, n)?;
                 }
@@ -275,10 +325,137 @@ fn collect_nested_decls(
     Some(())
 }
 
+/// 式の中の**ブロック式**（`block:`/if/while/for/match 式）の本体宣言に slot を割り当てる（再帰）。
+/// ブロック式でない部分式も辿り、入れ子のブロック式を漏れなく採番する。
+fn collect_expr_decls(
+    e: &Expr,
+    slots: &mut HashMap<String, u16>,
+    slot_mut: &mut Vec<bool>,
+    slot_type: &mut Vec<Option<String>>,
+    n: &mut u16,
+) -> Option<()> {
+    macro_rules! rec {
+        ($x:expr) => {
+            collect_expr_decls($x, slots, slot_mut, slot_type, n)?
+        };
+    }
+    match e {
+        // ── ブロック式（本体に宣言を持つ） ──
+        Expr::Block { stmts, .. } => collect_nested_decls(stmts, slots, slot_mut, slot_type, n)?,
+        Expr::IfExpr { branches, else_body, .. } => {
+            for (c, b) in branches {
+                rec!(c);
+                collect_nested_decls(b, slots, slot_mut, slot_type, n)?;
+            }
+            if let Some(eb) = else_body {
+                collect_nested_decls(eb, slots, slot_mut, slot_type, n)?;
+            }
+        }
+        Expr::MatchExpr { subject, arms, .. } => {
+            rec!(subject);
+            for arm in arms {
+                collect_nested_decls(&arm.body, slots, slot_mut, slot_type, n)?;
+            }
+        }
+        Expr::ForExpr { target, iter, body, .. } => {
+            add_decl(target, &None, true, slots, slot_mut, slot_type, n)?;
+            rec!(iter);
+            collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
+        }
+        Expr::WhileExpr { cond, body, .. } => {
+            rec!(cond);
+            collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
+        }
+        // ── 部分式を辿る（入れ子のブロック式を探す） ──
+        Expr::BinOp { left, right, .. } => {
+            rec!(left);
+            rec!(right);
+        }
+        Expr::UnaryOp { operand, .. } => rec!(operand),
+        Expr::Call { func, args, .. } => {
+            rec!(func);
+            for a in args {
+                match a {
+                    CallArg::Positional(x) | CallArg::Keyword { value: x, .. } => rec!(x),
+                    CallArg::Variadic(xs) => {
+                        for x in xs {
+                            rec!(x);
+                        }
+                    }
+                }
+            }
+        }
+        Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => rec!(object),
+        Expr::Subscript { object, index } => {
+            rec!(object);
+            rec!(index);
+        }
+        Expr::Slice { begin, end, step } => {
+            for x in [begin, end, step].into_iter().flatten() {
+                rec!(x);
+            }
+        }
+        Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
+            for x in items {
+                rec!(x);
+            }
+        }
+        Expr::Dict(pairs) => {
+            for (k, v) in pairs {
+                rec!(k);
+                rec!(v);
+            }
+        }
+        Expr::TemplateInstantiate { base, .. } => rec!(base),
+        Expr::IsType { expr, .. } | Expr::MustBe { expr, .. } => rec!(expr),
+        Expr::Cast { object, .. } => rec!(object),
+        // リテラル・Ident・LocalRef 等は宣言を含まない。
+        _ => {}
+    }
+    Some(())
+}
+
 /// `stmts` に「囲む try を飛び越える」制御フローがあるかを保守的に判定する。
 /// `include_return` が真なら `return` も脱出とみなす（finally は return でも走る必要があるため）。
 /// `break`/`continue` は `stmts` 内の while/for（loop_depth>0）に囲まれていなければ脱出。
 /// `block_return`/`loop_yield` は常に脱出とみなす。
+/// ブロック式の本体が VM コンパイル不能な脱出を含むかを判定する。
+/// `return` は常に不可（ブロック式内 return は構文エラー）。`break`/`continue` は、
+/// 非ループ式（block:/if/match）では本体内 while/for に囲まれなければ脱出＝不可、
+/// ループ式（for/while 式）では自身が最内ループなので loop_depth 0 のものは許容。
+/// `block_return`/`loop_yield` は当該ブロック式が扱うので許容。
+fn block_body_bails(stmts: &[Stmt], is_loop_expr: bool, loop_depth: usize) -> bool {
+    stmts.iter().any(|s| match s {
+        Stmt::Return(_) => true,
+        Stmt::Break | Stmt::Continue => loop_depth == 0 && !is_loop_expr,
+        Stmt::While { body, .. } | Stmt::For { body, .. } => {
+            block_body_bails(body, is_loop_expr, loop_depth + 1)
+        }
+        Stmt::If { branches, else_body } => {
+            branches
+                .iter()
+                .any(|(_, b)| block_body_bails(b, is_loop_expr, loop_depth))
+                || else_body
+                    .as_ref()
+                    .is_some_and(|eb| block_body_bails(eb, is_loop_expr, loop_depth))
+        }
+        Stmt::Match { arms, .. } => arms
+            .iter()
+            .any(|a| block_body_bails(&a.body, is_loop_expr, loop_depth)),
+        Stmt::Block(b) => block_body_bails(b, is_loop_expr, loop_depth),
+        Stmt::Try { body, handlers, finally_body } => {
+            block_body_bails(body, is_loop_expr, loop_depth)
+                || handlers
+                    .iter()
+                    .any(|h| block_body_bails(&h.body, is_loop_expr, loop_depth))
+                || finally_body
+                    .as_ref()
+                    .is_some_and(|fb| block_body_bails(fb, is_loop_expr, loop_depth))
+        }
+        _ => false,
+    })
+}
+
 fn has_escape(stmts: &[Stmt], include_return: bool, loop_depth: usize) -> bool {
     stmts.iter().any(|s| match s {
         Stmt::Return(_) => include_return,
@@ -643,7 +820,22 @@ impl Compiler {
             Stmt::Try { body, handlers, finally_body } => {
                 self.compile_try(body, handlers, finally_body)?;
             }
-            // それ以外（block:・定義・import 等）は非対応。
+            // ブロック式内: block_return は最内ブロック式の result_slot へ格納して出口へ跳ぶ。
+            Stmt::BlockReturn(e, _) => {
+                let result_slot = self.block_ctxs.last()?.result_slot;
+                self.compile_expr(e)?;
+                self.emit(Op::StoreLocal(result_slot));
+                let j = self.emit(Op::Jump(0));
+                self.block_ctxs.last_mut().unwrap().end_jumps.push(j);
+            }
+            // loop_yield は最内の「yield 先を持つ」ブロック式（block:/for/while 式）の蓄積リストへ追加。
+            // if/match 式は透過（yield_slot=None）なので飛ばして外側へ届く。
+            Stmt::LoopYield(e) => {
+                let yield_slot = self.block_ctxs.iter().rev().find_map(|c| c.yield_slot)?;
+                self.compile_expr(e)?;
+                self.emit(Op::ListAppendLocal(yield_slot));
+            }
+            // それ以外（定義・import 等）は非対応。
             _ => return None,
         }
         Some(())
@@ -878,7 +1070,7 @@ impl Compiler {
                 self.emit(Op::GetAttr(name_idx, name_idx));
             }
             // 関数呼び出し `func(args)` / メソッド呼び出し `obj.method(args)`。
-            Expr::Call { func, args, .. } => {
+            Expr::Call { func, args, span, .. } => {
                 if let Expr::Attr { object, attr, .. } = func.as_ref() {
                     // ── メソッド呼び出し ── object が Instance と保証できる（`self` または
                     // ユーザークラス型注釈の）LocalRef/Ident のときのみ対応。
@@ -889,7 +1081,10 @@ impl Compiler {
                     let mask = self.compile_call_args(args)?;
                     let ni = self.add_name(attr);
                     self.emit(Op::CallMethod(ni, args.len() as u16, mask));
-                } else if let Expr::Ident(name) = func.as_ref() {
+                    return Some(()); // メソッド呼び出しは span 不要
+                }
+                let site = self.add_span(span); // 関数呼び出しはトレースバック用の呼び出し位置を記録
+                if let Expr::Ident(name) = func.as_ref() {
                     // ── VM 対応組み込み（print/range/len）── 評価済み引数で直接呼ぶ。
                     // ローカル slot に同名（シャドウ）がなければ組み込みとして扱う。
                     if is_vm_builtin(name) && !self.slots.contains_key(name) {
@@ -900,7 +1095,8 @@ impl Compiler {
                         // ローカル/パラメータが関数値を保持している場合は slot 読み。
                         self.emit(Op::LoadLocal(slot));
                         let mask = self.compile_call_args(args)?;
-                        self.emit(Op::Call(args.len() as u16, mask));
+                        let ni = self.add_name(name);
+                        self.emit(Op::Call(args.len() as u16, mask, ni, site));
                     } else if is_builtin_callee(name) || name == "Self" {
                         // その他の純粋 builtin・型コンストラクタ・`Self` は非対応。
                         return None;
@@ -909,22 +1105,290 @@ impl Compiler {
                         let ni = self.add_name(name);
                         self.emit(Op::LoadGlobal(ni));
                         let mask = self.compile_call_args(args)?;
-                        self.emit(Op::Call(args.len() as u16, mask));
+                        self.emit(Op::Call(args.len() as u16, mask, ni, site));
                     }
-                } else if let Expr::LocalRef { slot, .. } = func.as_ref() {
+                } else if let Expr::LocalRef { slot, name } = func.as_ref() {
                     // 解決済みローカル関数値の呼び出し。
                     let s = u16::try_from(*slot).ok()?;
                     self.emit(Op::LoadLocal(s));
                     let mask = self.compile_call_args(args)?;
-                    self.emit(Op::Call(args.len() as u16, mask));
+                    let ni = self.add_name(name);
+                    self.emit(Op::Call(args.len() as u16, mask, ni, site));
                 } else {
                     // その他の呼び先式（添字結果など）は非対応。
                     return None;
                 }
             }
-            // それ以外（添字・コレクション・キャスト・式ブロック等）は非対応。
+            // ── ブロック式（値を産む制御構文, Phase V-C） ──
+            Expr::Block { stmts, .. } => self.compile_block_expr(stmts)?,
+            Expr::IfExpr { branches, else_body, .. } => {
+                self.compile_if_expr(branches, else_body)?
+            }
+            Expr::MatchExpr { subject, arms, .. } => self.compile_match_expr(subject, arms)?,
+            Expr::ForExpr { target, iter, body, .. } => {
+                self.compile_for_expr(target, iter, body)?
+            }
+            Expr::WhileExpr { cond, body, .. } => self.compile_while_expr(cond, body)?,
+            // それ以外（添字・コレクション・キャスト等）は非対応。
             _ => return None,
         }
+        Some(())
+    }
+
+    /// `block: <stmts>` 式。block_return 値、なければ loop_yield 蓄積リスト、どちらもなければ None。
+    fn compile_block_expr(&mut self, stmts: &[Stmt]) -> Option<()> {
+        if block_body_bails(stmts, false, 0) {
+            return None;
+        }
+        let yield_slot = self.alloc_temp()?;
+        self.emit(Op::BuildEmptyList);
+        self.emit(Op::StoreLocal(yield_slot));
+        let result_slot = self.alloc_temp()?;
+        self.block_ctxs.push(BlockCtx {
+            result_slot,
+            end_jumps: Vec::new(),
+            yield_slot: Some(yield_slot),
+        });
+        for s in stmts {
+            self.compile_stmt(s)?;
+        }
+        let ctx = self.block_ctxs.pop().unwrap();
+        // 正常フォールスルー: 値 = 蓄積リスト or None。
+        self.emit(Op::LoadLocal(yield_slot));
+        self.emit(Op::ListOrNone);
+        let after_normal = self.emit(Op::Jump(0)); // → EXPR_END
+        // block_return 出口: 値 = result_slot。
+        let br_end = self.here();
+        for j in ctx.end_jumps {
+            self.patch_jump(j, br_end);
+        }
+        self.emit(Op::LoadLocal(result_slot));
+        let expr_end = self.here();
+        self.patch_jump(after_normal, expr_end);
+        self.free_temp(); // result_slot
+        self.free_temp(); // yield_slot
+        Some(())
+    }
+
+    /// `if cond -> T: ... [elif][else]` 式。マッチした分岐の block_return 値、なければ None。
+    /// yield に対しては透過（yield_slot=None）。
+    fn compile_if_expr(
+        &mut self,
+        branches: &[(Expr, Vec<Stmt>)],
+        else_body: &Option<Vec<Stmt>>,
+    ) -> Option<()> {
+        for (_, b) in branches {
+            if block_body_bails(b, false, 0) {
+                return None;
+            }
+        }
+        if let Some(eb) = else_body {
+            if block_body_bails(eb, false, 0) {
+                return None;
+            }
+        }
+        let result_slot = self.alloc_temp()?;
+        self.emit(Op::Nil);
+        self.emit(Op::StoreLocal(result_slot)); // 既定 None
+        self.block_ctxs.push(BlockCtx {
+            result_slot,
+            end_jumps: Vec::new(),
+            yield_slot: None,
+        });
+        let mut branch_ends: Vec<usize> = Vec::new();
+        for (cond, body) in branches {
+            self.compile_expr(cond)?;
+            let jf = self.emit(Op::JumpIfFalse(0));
+            for s in body {
+                self.compile_stmt(s)?;
+            }
+            branch_ends.push(self.emit(Op::Jump(0)));
+            let next = self.here();
+            self.patch_jump(jf, next);
+        }
+        if let Some(eb) = else_body {
+            for s in eb {
+                self.compile_stmt(s)?;
+            }
+        }
+        let ctx = self.block_ctxs.pop().unwrap();
+        let end = self.here();
+        for j in branch_ends {
+            self.patch_jump(j, end);
+        }
+        for j in ctx.end_jumps {
+            self.patch_jump(j, end);
+        }
+        self.emit(Op::LoadLocal(result_slot)); // block_return 値 or None
+        self.free_temp();
+        Some(())
+    }
+
+    /// `match subj -> T: arms` 式。マッチしたアームの block_return 値、なければ None。
+    fn compile_match_expr(&mut self, subject: &Expr, arms: &[MatchArm]) -> Option<()> {
+        for arm in arms {
+            if block_body_bails(&arm.body, false, 0) {
+                return None;
+            }
+        }
+        let subj_temp = self.alloc_temp()?;
+        self.compile_expr(subject)?;
+        self.emit(Op::StoreLocal(subj_temp));
+        let result_slot = self.alloc_temp()?;
+        self.emit(Op::Nil);
+        self.emit(Op::StoreLocal(result_slot));
+        self.block_ctxs.push(BlockCtx {
+            result_slot,
+            end_jumps: Vec::new(),
+            yield_slot: None,
+        });
+        let mut arm_ends: Vec<usize> = Vec::new();
+        for arm in arms {
+            match &arm.pattern {
+                MatchPattern::Case(Expr::Ident(n)) if n == "_" => {
+                    for s in &arm.body {
+                        self.compile_stmt(s)?;
+                    }
+                    arm_ends.push(self.emit(Op::Jump(0)));
+                }
+                MatchPattern::Case(pat) => {
+                    self.emit(Op::LoadLocal(subj_temp));
+                    self.compile_expr(pat)?;
+                    self.emit(Op::Bin(BinOp::Eq));
+                    let jf = self.emit(Op::JumpIfFalse(0));
+                    for s in &arm.body {
+                        self.compile_stmt(s)?;
+                    }
+                    arm_ends.push(self.emit(Op::Jump(0)));
+                    let next = self.here();
+                    self.patch_jump(jf, next);
+                }
+                MatchPattern::IsType(type_name) => {
+                    self.emit(Op::LoadLocal(subj_temp));
+                    let ni = self.add_name(type_name);
+                    self.emit(Op::IsType(ni));
+                    let jf = self.emit(Op::JumpIfFalse(0));
+                    for s in &arm.body {
+                        self.compile_stmt(s)?;
+                    }
+                    arm_ends.push(self.emit(Op::Jump(0)));
+                    let next = self.here();
+                    self.patch_jump(jf, next);
+                }
+            }
+        }
+        let ctx = self.block_ctxs.pop().unwrap();
+        let end = self.here();
+        for j in arm_ends {
+            self.patch_jump(j, end);
+        }
+        for j in ctx.end_jumps {
+            self.patch_jump(j, end);
+        }
+        self.emit(Op::LoadLocal(result_slot));
+        self.free_temp(); // result_slot
+        self.free_temp(); // subj_temp
+        Some(())
+    }
+
+    /// `for target in iter -> T: body` 式。block_return 値、なければ loop_yield 蓄積リスト（空なら None）。
+    fn compile_for_expr(&mut self, target: &str, iter: &Expr, body: &[Stmt]) -> Option<()> {
+        if block_body_bails(body, true, 0) {
+            return None;
+        }
+        let target_slot = *self.slots.get(target)?;
+        let yield_slot = self.alloc_temp()?;
+        self.emit(Op::BuildEmptyList);
+        self.emit(Op::StoreLocal(yield_slot));
+        let result_slot = self.alloc_temp()?;
+        let iter_temp = self.alloc_temp()?;
+        self.compile_expr(iter)?;
+        self.emit(Op::GetIter);
+        self.emit(Op::StoreLocal(iter_temp));
+        let loop_start = self.here();
+        let fi = self.emit(Op::ForIter(iter_temp, target_slot, 0)); // exit → NORMAL_END
+        self.loops.push(LoopCtx {
+            continue_target: loop_start,
+            break_jumps: Vec::new(),
+        });
+        self.block_ctxs.push(BlockCtx {
+            result_slot,
+            end_jumps: Vec::new(),
+            yield_slot: Some(yield_slot),
+        });
+        for s in body {
+            self.compile_stmt(s)?;
+        }
+        self.emit(Op::Jump(loop_start));
+        // NORMAL_END: 反復終了 or break → 蓄積リスト or None。
+        let normal_end = self.here();
+        self.code[fi] = Op::ForIter(iter_temp, target_slot, normal_end);
+        let loop_ctx = self.loops.pop().unwrap();
+        for j in loop_ctx.break_jumps {
+            self.patch_jump(j, normal_end);
+        }
+        let block_ctx = self.block_ctxs.pop().unwrap();
+        self.emit(Op::LoadLocal(yield_slot));
+        self.emit(Op::ListOrNone);
+        let after_normal = self.emit(Op::Jump(0)); // → EXPR_END
+        // BR_END: block_return → result_slot。
+        let br_end = self.here();
+        for j in block_ctx.end_jumps {
+            self.patch_jump(j, br_end);
+        }
+        self.emit(Op::LoadLocal(result_slot));
+        let expr_end = self.here();
+        self.patch_jump(after_normal, expr_end);
+        self.free_temp(); // iter_temp
+        self.free_temp(); // result_slot
+        self.free_temp(); // yield_slot
+        Some(())
+    }
+
+    /// `while cond -> T: body` 式。block_return 値、なければ loop_yield 蓄積リスト（空なら None）。
+    fn compile_while_expr(&mut self, cond: &Expr, body: &[Stmt]) -> Option<()> {
+        if block_body_bails(body, true, 0) {
+            return None;
+        }
+        let yield_slot = self.alloc_temp()?;
+        self.emit(Op::BuildEmptyList);
+        self.emit(Op::StoreLocal(yield_slot));
+        let result_slot = self.alloc_temp()?;
+        let loop_start = self.here();
+        self.compile_expr(cond)?;
+        let jf = self.emit(Op::JumpIfFalse(0)); // false → NORMAL_END
+        self.loops.push(LoopCtx {
+            continue_target: loop_start,
+            break_jumps: Vec::new(),
+        });
+        self.block_ctxs.push(BlockCtx {
+            result_slot,
+            end_jumps: Vec::new(),
+            yield_slot: Some(yield_slot),
+        });
+        for s in body {
+            self.compile_stmt(s)?;
+        }
+        self.emit(Op::Jump(loop_start));
+        let normal_end = self.here();
+        self.patch_jump(jf, normal_end);
+        let loop_ctx = self.loops.pop().unwrap();
+        for j in loop_ctx.break_jumps {
+            self.patch_jump(j, normal_end);
+        }
+        let block_ctx = self.block_ctxs.pop().unwrap();
+        self.emit(Op::LoadLocal(yield_slot));
+        self.emit(Op::ListOrNone);
+        let after_normal = self.emit(Op::Jump(0));
+        let br_end = self.here();
+        for j in block_ctx.end_jumps {
+            self.patch_jump(j, br_end);
+        }
+        self.emit(Op::LoadLocal(result_slot));
+        let expr_end = self.here();
+        self.patch_jump(after_normal, expr_end);
+        self.free_temp(); // result_slot
+        self.free_temp(); // yield_slot
         Some(())
     }
 }

@@ -375,21 +375,98 @@ try/except・try/finally・raise・bare raise（再送出）を VM で実行で�
 - **bail（ツリーウォークへ）**: `try/except/finally` 併用・try を飛び越える break/continue/block_return/
   loop_yield を含む try・finally 内 return。
 
-## V-C の残り（ブロック式）
-- **ブロック式**（`block:`/`if`/`while`/`for`/`match` の式形 ＋ `block_return`/`loop_yield`）は次増分。
-  値を産む 5 形＋`block_return`/`loop_yield` の二値意味論（block_return 値 vs loop_yield 蓄積リスト）＋
-  **式の中の宣言（`let x = block: let a=…`）への slot 割り当て**（`collect_nested_decls` の式ウォーカ拡張）が要る。
-  `BLOCK_YIELDS`/`BLOCK_RETURN_EXPECTED_TYPE` スレッドローカルの VM 経路除去はここで完了する。
+- **bail（ツリーウォークへ）**: `try/except/finally` 併用・try を飛び越える break/continue/block_return/
+  loop_yield を含む try・finally 内 return。
+
+---
+
+# Phase V-C（第3増分）— ブロック式（block:/if/while/for/match 式 ＋ block_return/loop_yield）
+
+BYTECODE_VM_PLAN §5.4 の V-C 最後のピース。**値を産む制御構文（ブロック式）5 形**を VM にコンパイルし、
+`block_return`（単一値で脱出）・`loop_yield`（for/while 式でリスト蓄積）を実装した。これで V-C が完了。
+
+## 実装
+| 変更 | ファイル | 内容 |
+|---|---|---|
+| **ブロック式コンテキスト** | [vm/compiler.rs](src/vm/compiler.rs) | `BlockCtx{ result_slot, end_jumps, yield_slot }` のスタック。`block_return` は最内 BlockCtx の `result_slot` に格納して出口へ跳ぶ。`loop_yield` は最内の「yield 先を持つ」BlockCtx（block:/for/while 式）の蓄積リストへ追加。**if/match 式は yield 透過**（`yield_slot=None`）＝外側の for/while/block へ届く（`eval_capture_block_return` の透過性に一致） |
+| **5 つの式形** | [vm/compiler.rs](src/vm/compiler.rs) | `Expr::Block`（block_return 値／loop_yield リスト／None）・`IfExpr`・`MatchExpr`（分岐/アームの block_return 値・既定 None）・`ForExpr`・`WhileExpr`（loop_yield 蓄積・break で蓄積リスト・block_return で単一値・二出口）。for/while 式は LoopCtx（break→NORMAL_END/continue→先頭）と BlockCtx（block_return→BR_END）を併用 |
+| **loop_yield 用 op** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | `BuildEmptyList`（蓄積リスト初期化）・`ListAppendLocal(slot)`（`loop_yield` 追加）・`ListOrNone`（蓄積が空なら None・非空ならリスト＝`eval` の `yields.is_empty()` 分岐に一致） |
+| **式内宣言の slot 採番** | [vm/compiler.rs](src/vm/compiler.rs) | `collect_nested_decls` に**式ウォーカ `collect_expr_decls`** を追加。`let x = block: let a=…` のような**式の中のブロック式本体の宣言**へ再帰的に slot を割り当てる（全部分式を辿り入れ子ブロック式を漏れなく採番）。`add_decl` を自由関数へ抽出 |
+| **脱出 bail 判定** | [vm/compiler.rs](src/vm/compiler.rs) | `block_body_bails`: ブロック式本体の `return`（常に不可）・非ループ式（block:/if/match）の脱出 break/continue を検出して bail。for/while 式は自身が最内ループなので直下 break/continue は許容（LoopCtx が処理） |
+
+## 検証
+- `cargo test`（`--vm=auto`）→ **672 passed / 0 failed**。
+- 手動 A/B（`--vm=off` vs `--vm=auto`）で**完全一致**:
+  `block:`＋block_return・block:＋if/elif/else 分岐 block_return（FizzBuzz）・if 式・match 式・
+  for 式＋loop_yield（`[0,1,4,9,16]`）・while 式＋loop_yield・block_return なし block:（None）・
+  **条件付き loop_yield**（if 内 yield）・**break で蓄積リスト返却**・**入れ子ブロック式**・
+  **for 式内のネスト for 文**。型検査が弾く不正形（for 式直下の block_return 等）も両モードで同一エラー。
+- 例題回帰: 決定的例 43 件で off/auto 一致（唯一の差は既知の `runtime_error.ar` トレースバック行番号）。
+- `cargo build` / 追加 clippy 警告 0。
+
+## 速度（`--vm=off` vs `--vm=auto`、best-of-3、release）
+| ベンチ | 内容 | off | auto | VM 倍率 |
+|---|---|---|---|---|
+| **block_expr** | `classify`（block:+if 式 block_return）＋ `sum_squares`（for 式 loop_yield）を 20万回 | 2.90s | 1.06s | **2.72x** |
+
+- **2.72x**。これらの関数は第2増分まで丸ごとフォールバックしていた。block_return/loop_yield のジャンプ化＋
+  蓄積リストのインライン＋型特化算術で VM の得意領域。
+
+## V-C 完了
+- **到達**: 制御フロー（break/continue/match/例外/ブロック式）がすべて VM のジャンプ／ハンドラスタックで実行される。
+  `LOOP_DEPTH` は VM 経路で不要化、`BLOCK_YIELDS`/`BLOCK_RETURN_EXPECTED_TYPE` は VM コンパイルされたブロック式では
+  不使用（蓄積は `ListAppendLocal`、block_return は slot＋ジャンプ）。**スレッドローカル4本＋センチネル2種の
+  “実削除”は強制バイトコード（D2）時**（デュアルモード中はツリーウォークが使い続けるため保持）。
+- **bail（ツリーウォーク）**: 式内 return・非ループブロック式の脱出 break/continue・（既出の）try/except/finally 併用等。
+- **トレースバック行番号**: V-E（下記）で解消済み。
+
+---
+
+# Phase V-E（部分）— VM 行テーブル（トレースバック行番号）＋ デバッグ名テーブル
+
+BYTECODE_VM_PLAN §5.4 V-E の実利部分。**VM 関数のトレースバックの行番号欠落を解消**し、
+`--vm=off` と `--vm=auto` の**全決定的例が byte-identical** になった（例外・ブロック式のコンパイルで
+VM 化される関数が増え、未捕捉例外の degraded トレースバックが唯一の差として残っていた）。
+
+## 実装
+| 変更 | ファイル | 内容 |
+|---|---|---|
+| **呼び出し位置 span の伝搬** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs), [vm/compiler.rs](src/vm/compiler.rs) | `Op::Call(argc, mut_mask, **name_idx, span_idx**)` に呼び出し元名（`names`）と位置（`spans`）を追加。`Expr::Call.span` をコンパイル時に記録し、実行時に `call_value_evaled` へ渡す |
+| **`call_value_evaled` の署名拡張** | [eval/calls.rs](src/interpreter/eval/calls.rs) | `fn_name: &str`・`call_span: Option<Span>` を受け取り `exec_fn_evaled` へ渡す（従来は `"<fn>"`/`None` 固定で degraded だった）。ネイティブ経路 `call_value_with_args` は `"<fn>"`/`None` 維持 |
+| **`call_instance_method_evaled` の署名拡張** | [classes/method_call.rs](src/interpreter/classes/method_call.rs) | `call_span` を受け取れるように（内部 `exec_fn_evaled` へ伝搬）。**ただし VM は `None` を渡す** — ツリーウォークのメソッド呼び出し（`eval_method_call`）が call_span を渡さず degraded なので、**それに一致**させる（byte-identical 優先） |
+| **デバッグ名テーブル** | [vm/chunk.rs](src/vm/chunk.rs), [vm/compiler.rs](src/vm/compiler.rs) | `Chunk.local_names: Vec<String>`（slot→変数名）を追加。デバッガ VM 統合（将来）用メタデータ。現状は保持のみ |
+
+### 設計判断: メソッド呼び出しは “あえて degraded に一致”
+関数呼び出しはツリーウォークが `call_span` を渡す（フレームに行番号あり）ので VM も渡す。
+一方**メソッド呼び出しはツリーウォークが `call_span` を渡さない**（`eval_method_call` の設計）ため、
+VM が span を渡すと**ツリーウォークより詳細なトレースバック**になり `off`≠`auto` になる。
+byte-identical を優先し、VM のメソッド呼び出しも `call_span=None`（degraded）に合わせた
+（ツリーウォーク自体の改善は別テーマ）。
+
+## 検証
+- `cargo test`（`--vm=auto`）→ **672 passed / 0 failed**。
+- 例題回帰: **決定的例 44 件 ＋ `_error` 例 19 件 = 全 63 例で `--vm=off`/`--vm=auto` が完全一致**
+  （V-E 前に唯一残っていた `runtime_error.ar` のトレースバック行番号差が解消）。
+- 深いトレースバック（関数チェーン `run→use_widget→area`・ゼロ除算）でも関数フレームの行番号・
+  コンテキスト・メソッドフレームの degraded 表示までツリーウォークと一致。
+- `cargo build` / 追加 clippy 警告 0。
+
+## V-E の到達点と残り
+- **到達**: VM 関数の**未捕捉例外トレースバックがツリーウォークと byte-identical**。呼び出し位置の
+  行番号・コンテキスト行が復元される。デバッグ名テーブルを Chunk に保持。
+- **残り（V-E 本体）**: op→Span の**汎用行テーブル**（デバッガのステートメント単位ブレークポイント用）と
+  **デバッガ REPL の VM 統合**（現状は §2.3 通りデバッガ／`parse_ar`／対話 REPL はツリーウォーク据置）。
+  トレースバック用途は本増分で満たされたので、残りはデバッガ機能追加時に実施。
 
 ---
 
 ## 次に効くレバー
-1. **V-C ブロック式**（上記残り）— block/if/while/for/match 式 ＋ block_return/loop_yield。
-2. **VM 行テーブル（V-E 前倒し）** — 未捕捉例外トレースバックの行番号を回復し `runtime_error.ar` の差を解消
-   （例外コンパイルで影響関数が増えたため優先度上昇）。
-3. **メソッド呼び出し機構の軽量化** — `call_instance_method_evaled` の bind_args/copy/`current_class` を
-   VM フレーム上で直接行い per-call オーバーヘッド削減。
-4. **添字・コレクションリテラル・その他組み込み** の VM 化で更に対象拡大。
-5. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
+1. **メソッド呼び出し機構の軽量化** — `call_instance_method_evaled` の bind_args/copy/`current_class` を
+   VM フレーム上で直接行い per-call オーバーヘッド削減（V-B の method_hot がここで伸びる）。
+2. **添字・コレクションリテラル・その他組み込み**（`enumerate`/`zip`/`str`/`int` 等）の VM 化で更に対象拡大。
+3. **V-F 最適化** — peephole・superinstruction・単型算術命令・R0-A エスケープ解析。
+4. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
+5. **強制バイトコード（D2）への移行** — 全構文カバー後にツリーウォークのフォールバックを撤去し
+   スレッドローカル4本＋センチネル2種を実削除。
 
-`LocalRef` / slot 化 `Scope` / `frame_floor` / bind_args 高速経路 / `AttrCache` / R4 呼び先 / method IC / リゾルバ / VM 骨格（op/chunk/run）/ break-continue ジャンプ / 平坦 slot / match / for（GetIter/ForIter）/ CallBuiltin / Weak 検証 Chunk キャッシュ / 例外ハンドラスタック は上記すべての土台として再利用される。
+`LocalRef` / slot 化 `Scope` / `frame_floor` / bind_args 高速経路 / `AttrCache` / R4 呼び先 / method IC / リゾルバ / VM 骨格（op/chunk/run）/ break-continue ジャンプ / 平坦 slot / match / for（GetIter/ForIter）/ CallBuiltin / Weak 検証 Chunk キャッシュ / 例外ハンドラスタック / ブロック式 BlockCtx / 呼び出し位置 span は上記すべての土台として再利用される。

@@ -19,8 +19,12 @@ pub struct Chunk {
     pub names: Vec<String>,
     /// 属性アクセスのインラインキャッシュ（R3 と同じ機構を VM 内でも使う）。
     pub attr_caches: Vec<AttrCache>,
-    /// `raise expr` の位置情報プール（`Raise(idx)` が参照。例外に file/line/col を焼く）。
+    /// 位置情報プール（`Raise`/`Call`/`CallMethod` が参照。例外・トレースバックの file/line/col）。
     pub spans: Vec<Span>,
+    /// slot → 変数名 のデバッグ名テーブル（V-E。デバッガ REPL 用メタデータ。実行では未使用なので
+    /// 現状は保持のみ — デバッガ VM 統合で消費予定）。
+    #[allow(dead_code)]
+    pub local_names: Vec<String>,
     /// フレームのローカル slot 総数（パラメータ + base ローカル）。
     pub n_locals: usize,
 }

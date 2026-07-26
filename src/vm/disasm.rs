@@ -20,7 +20,9 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::Nil => "NIL".to_string(),
         Op::LoadLocal(s) => format!("LOAD_LOCAL {s}"),
         Op::LoadGlobal(n) => format!("LOAD_GLOBAL {:?}", chunk.names.get(*n as usize)),
-        Op::Call(argc, mask) => format!("CALL argc={argc} mut_mask={mask:#x}"),
+        Op::Call(argc, mask, n, _) => {
+            format!("CALL {:?} argc={argc} mut_mask={mask:#x}", chunk.names.get(*n as usize))
+        }
         Op::CallMethod(n, argc, mask) => {
             format!("CALL_METHOD {:?} argc={argc} mut_mask={mask:#x}", chunk.names.get(*n as usize))
         }
@@ -52,5 +54,8 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::Reraise => "RERAISE".to_string(),
         Op::Dup => "DUP".to_string(),
         Op::ExcMatch(n) => format!("EXC_MATCH {:?}", chunk.names.get(*n as usize)),
+        Op::BuildEmptyList => "BUILD_EMPTY_LIST".to_string(),
+        Op::ListAppendLocal(s) => format!("LIST_APPEND_LOCAL {s}"),
+        Op::ListOrNone => "LIST_OR_NONE".to_string(),
     }
 }

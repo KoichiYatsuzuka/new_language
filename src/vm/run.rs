@@ -8,6 +8,9 @@
 // 高速パスは `apply_binop` の該当アームと**同一のセマンティクス**（`a + b` 等、オーバーフロー
 // 挙動も含め）で書く。属性読み・真偽判定・単項も既存実装へ委譲するので結果はツリーウォークと一致する。
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::ast::BinOp;
 use crate::interpreter::{Interpreter, Value};
 
@@ -243,7 +246,7 @@ fn exec_op(
             }
             buf.pop();
         }
-        Op::Call(argc, mut_mask) => {
+        Op::Call(argc, mut_mask, name_idx, span_idx) => {
             let n = *argc as usize;
             let split = buf.len() - n;
             let arg_vals = buf.split_off(split); // arg0..argN-1（順序保持）
@@ -253,7 +256,13 @@ fn exec_op(
                 .enumerate()
                 .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
                 .collect();
-            let r = interp.call_value_evaled(callee, evaled)?;
+            // 呼び出し元名・位置をトレースバック用に渡す（V-E）。
+            let r = interp.call_value_evaled(
+                callee,
+                evaled,
+                &chunk.names[*name_idx as usize],
+                Some(chunk.spans[*span_idx as usize].clone()),
+            )?;
             buf.push(r);
         }
         Op::CallMethod(name_idx, argc, mut_mask) => {
@@ -266,11 +275,13 @@ fn exec_op(
                 .enumerate()
                 .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
                 .collect();
+            // メソッドはツリーウォークと同じく call_span=None（degraded フレームで一致）。
             let r = interp.call_instance_method_evaled(
                 obj,
                 &chunk.names[*name_idx as usize],
                 evaled,
                 Some(&chunk.attr_caches[*name_idx as usize]),
+                None,
             )?;
             buf.push(r);
         }
@@ -303,6 +314,18 @@ fn exec_op(
             let v = buf.pop().unwrap();
             let r = interp.vm_exc_matches(&v, &chunk.names[*name_idx as usize]);
             buf.push(Value::Bool(r));
+        }
+        Op::BuildEmptyList => buf.push(Value::List(Rc::new(RefCell::new(Vec::new())))),
+        Op::ListAppendLocal(slot) => {
+            let v = buf.pop().unwrap();
+            if let Value::List(list) = &buf[base + *slot as usize] {
+                list.borrow_mut().push(v);
+            }
+        }
+        Op::ListOrNone => {
+            let list = buf.pop().unwrap();
+            let empty = matches!(&list, Value::List(l) if l.borrow().is_empty());
+            buf.push(if empty { Value::None } else { list });
         }
     }
     Ok(Flow::Next)

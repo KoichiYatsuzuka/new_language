@@ -61,10 +61,14 @@ pub enum Op {
     JumpIfTrueOrPop(u32),
     /// 関数呼び出し: スタックは `[callee, arg0, .., argN-1]`。args を argc 個・callee を pop し、
     /// `mut_mask`（bit i = arg i の is_mutable）付きでディスパッチして結果を push する。
-    Call(u16, u32),
+    /// フィールド: (argc, mut_mask, name_idx, span_idx)。name_idx=呼び出し元名（トレースバック用・
+    /// `names`）、span_idx=呼び出し位置（`spans`）。
+    Call(u16, u32, u32, u32),
     /// インスタンスメソッド呼び出し: スタックは `[obj, arg0, .., argN-1]`。args を argc 個・obj を pop し、
     /// `names[name_idx]` のメソッドを `mut_mask` 付きでディスパッチして結果を push する。
-    /// obj が Instance であることはコンパイル時の型注釈で保証済み。
+    /// obj が Instance であることはコンパイル時の型注釈で保証済み。フィールド: (name_idx, argc, mut_mask)。
+    /// メソッド呼び出しはツリーウォークが呼び出し位置 span を渡さない（フレームが degraded）ため、
+    /// VM も call_span=None で一致させる（byte-identical）。
     CallMethod(u32, u16, u32),
     /// スタックトップを関数戻り値として返す。
     Return,
@@ -85,4 +89,12 @@ pub enum Op {
     Dup,
     /// pop した例外値が `names[name_idx]` 型にマッチするか（`exc_matches`）を Bool で push する。
     ExcMatch(u32),
+    // ── ブロック式（Phase V-C） ──
+    /// 空の `Value::List` を push する（loop_yield の蓄積先の初期化）。
+    BuildEmptyList,
+    /// pop した値を `locals[slot]` のリスト（accumulator）へ追加する（`loop_yield`）。
+    ListAppendLocal(u16),
+    /// pop したリストが空なら `None`、非空ならそのリストを push する
+    /// （for/while/block 式の値: 蓄積が空なら None）。
+    ListOrNone,
 }
