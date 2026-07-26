@@ -130,6 +130,19 @@ fn exec_op(
             let r = apply_bin_fast(interp, op, a, b)?;
             buf.push(r);
         }
+        // 超命令（#2）: オペランドを frame/const から直接読み、push/pop とディスパッチを省く。
+        Op::BinLocalLocal(a, b, op) => {
+            let lhs = buf[base + *a as usize].clone();
+            let rhs = buf[base + *b as usize].clone();
+            let r = apply_bin_fast(interp, op, lhs, rhs)?;
+            buf.push(r);
+        }
+        Op::BinLocalConst(a, ci, op) => {
+            let lhs = buf[base + *a as usize].clone();
+            let rhs = chunk.consts[*ci as usize].clone();
+            let r = apply_bin_fast(interp, op, lhs, rhs)?;
+            buf.push(r);
+        }
         Op::Un(op) => {
             let a = buf.pop().unwrap();
             let r = interp.apply_unary_dyn(op, a)?;

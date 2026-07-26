@@ -30,6 +30,11 @@ pub enum Op {
     Pop,
     /// 二項演算: pop b, pop a, push apply_binop_dyn(op, a, b)。
     Bin(BinOp),
+    /// 超命令（タスク #2）: `local[a] <op> local[b]` を融合。`LoadLocal(a); LoadLocal(b); Bin(op)` と
+    /// 同一意味論（apply_bin_fast 委譲）でディスパッチ2回分＋スタック push/pop を削減する。
+    BinLocalLocal(u16, u16, BinOp),
+    /// 超命令: `local[a] <op> consts[idx]` を融合。`LoadLocal(a); Const(idx); Bin(op)` と同一。
+    BinLocalConst(u16, u32, BinOp),
     /// 単項演算: pop a, push apply_unary_dyn(op, a)。
     Un(UnaryOp),
     /// 属性（フィールド）読み: pop obj, push get_attr_val(obj, names[name_idx], attr_caches[cache_idx])。

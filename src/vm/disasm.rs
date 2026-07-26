@@ -32,6 +32,8 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::StoreLocalFreezeInstance(s) => format!("STORE_LOCAL_FREEZE_INST {s}"),
         Op::Pop => "POP".to_string(),
         Op::Bin(o) => format!("BIN {o:?}"),
+        Op::BinLocalLocal(a, b, o) => format!("BIN_LL {a} {b} {o:?}"),
+        Op::BinLocalConst(a, c, o) => format!("BIN_LC {a} const[{c}] {o:?}"),
         Op::Un(o) => format!("UN {o:?}"),
         Op::GetAttr(n, _) => format!("GET_ATTR {:?}", chunk.names.get(*n as usize)),
         Op::SetAttr(n) => format!("SET_ATTR {:?}", chunk.names.get(*n as usize)),

@@ -766,6 +766,49 @@ impl Compiler {
         idx
     }
 
+    /// 式が「単純なローカル読み」なら slot を返す（超命令の融合判定, #2）。
+    /// `LoadLocal` に落ちる形（`LocalRef` / slot 済み `Ident`）のみ。debug_mode では融合しない
+    /// （`Ident` は `LoadName` に落ちるため）。
+    fn as_local(&self, e: &Expr) -> Option<u16> {
+        if self.debug_mode {
+            return None;
+        }
+        match e {
+            Expr::LocalRef { slot, .. } => u16::try_from(*slot).ok(),
+            Expr::Ident(name) => self.slots.get(name).copied(),
+            _ => None,
+        }
+    }
+
+    /// 式が数値/真偽リテラルなら定数値を返す（超命令の融合判定, #2）。
+    fn as_const_lit(e: &Expr) -> Option<Value> {
+        match e {
+            Expr::Int(n) => Some(Value::Int(*n)),
+            Expr::Float(f) => Some(Value::Float(*f)),
+            Expr::Bool(b) => Some(Value::Bool(*b)),
+            _ => None,
+        }
+    }
+
+    /// 二項演算 `left <op> right` を超命令へ融合できれば emit して `true`（#2）。
+    /// `local <op> local` → `BinLocalLocal`、`local <op> リテラル` → `BinLocalConst`。
+    /// 融合できなければ `false`（呼び出し側が通常経路 `LoadLocal…; Bin` を出す）。意味論は不変。
+    fn try_emit_bin_fused(&mut self, left: &Expr, right: &Expr, op: &BinOp) -> bool {
+        let Some(a) = self.as_local(left) else {
+            return false;
+        };
+        if let Some(b) = self.as_local(right) {
+            self.emit(Op::BinLocalLocal(a, b, op.clone()));
+            true
+        } else if let Some(cv) = Self::as_const_lit(right) {
+            let ci = self.add_const(cv);
+            self.emit(Op::BinLocalConst(a, ci, op.clone()));
+            true
+        } else {
+            false
+        }
+    }
+
     fn add_name(&mut self, name: &str) -> u32 {
         let idx = self.names.len() as u32;
         self.names.push(name.to_string());
@@ -1367,9 +1410,12 @@ impl Compiler {
                     self.patch_jump(j, end);
                 }
                 _ => {
-                    self.compile_expr(left)?;
-                    self.compile_expr(right)?;
-                    self.emit(Op::Bin(op.clone()));
+                    // 超命令融合（#2）: 単純オペランドなら LoadLocal…+Bin を1命令に。
+                    if !self.try_emit_bin_fused(left, right, op) {
+                        self.compile_expr(left)?;
+                        self.compile_expr(right)?;
+                        self.emit(Op::Bin(op.clone()));
+                    }
                 }
             },
             Expr::Attr { object, attr, .. } => {
