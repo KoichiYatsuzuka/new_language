@@ -376,6 +376,15 @@ pub struct Interpreter {
     /// ヒット時に `upgrade()` が失敗したら「アドレス再利用＝別関数」と判定して再コンパイルする
     /// （リークなし・古い Chunk の誤用を防ぐ, Phase V-D）。
     pub(self) vm_chunks: HashMap<usize, (std::rc::Weak<FnValue>, Option<Rc<crate::vm::Chunk>>)>,
+    /// テンプレート関数/ジェネレータ関数の実体化メモ（タスク #7）。
+    /// キー = `(Rc::as_ptr(template) as usize, 具体型引数リスト)`。値 = 置換済み具体 `FnValue`。
+    /// 同一 `(テンプレート, 型引数)` の再実体化で **AST 置換（`subst_stmts` の clone-walk）を省略**し、
+    /// かつ **安定した `Rc<FnValue>` アドレスにより `vm_chunks` の Chunk が再利用**される
+    /// （従来は呼び出しごとに一時 fn_val を作って捨てるため毎回再コンパイルしていた, §2.2）。
+    /// テンプレートは寿命が長い（グローバル束縛）ので実体化数は有限＝メモリは有界。
+    pub(self) template_fn_cache: HashMap<(usize, Vec<String>), Rc<FnValue>>,
+    /// テンプレートジェネレータ関数の実体化メモ（タスク #7）。`template_fn_cache` と同様。
+    pub(self) template_gen_cache: HashMap<(usize, Vec<String>), Rc<GeneratorFnValue>>,
     /// VM の値スタックバッファ（per-call 確保を避けるため使い回す）。
     /// 実行中は `std::mem::take` で借り出し、復帰時に容量ごと戻す（Phase V）。
     pub(crate) vm_stack: Vec<Value>,
@@ -472,6 +481,8 @@ impl Interpreter {
             slot_epoch: 0,
             vm_mode: crate::vm::VmMode::default(),
             vm_chunks: HashMap::new(),
+            template_fn_cache: HashMap::new(),
+            template_gen_cache: HashMap::new(),
             vm_stack: Vec::new(),
             frame_floor: 1,
             source_map: HashMap::new(),

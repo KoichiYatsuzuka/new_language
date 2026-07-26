@@ -601,8 +601,50 @@ VM 経路に載せ、対象関数を大幅に拡大した。
 
 ---
 
+# タスク #7 — テンプレート実体化の Chunk メモ化
+
+テンプレート関数 `f[T](...)` は**呼び出しごとに**型変数を具体型へ置換した新 AST を `subst_stmts` の
+clone-walk で生成し、一時 `Rc<FnValue>` を作って捨てていた（§2.2）。この一時 fn_val はすぐ解放されるため
+`vm_chunks`（キー＝`Rc::as_ptr`）の `Weak` が毎回失効し、**呼び出しのたびに Chunk を再コンパイル**していた。
+本タスクで `(テンプレート, 型引数)` をキーに**具体 `FnValue` をメモ化**し、置換と Chunk 再コンパイルの
+両方を初回のみに抑えた。
+
+## 実装
+| 変更 | ファイル | 内容 |
+|---|---|---|
+| **実体化メモ** | [interpreter.rs](src/interpreter.rs) | `template_fn_cache: HashMap<(usize, Vec<String>), Rc<FnValue>>` と `template_gen_cache`（ジェネレータ用）を追加。キー = `(Rc::as_ptr(template), 具体型引数リスト)` |
+| **TemplateFn/TemplateGenFn の実体化** | [templates.rs](src/interpreter/templates.rs) | `instantiate_template` の両アームで、制約検証（`check_template_constraints`）は**毎回**行いエラー意味論を保ちつつ、`subst_params`/`subst_stmts` と `FnValue`/`GeneratorFnValue` 構築を**キャッシュヒットで丸ごと省略**。安定した `Rc` を保持するので `vm_chunks` の `Weak` が生き続け、**Chunk が再利用**される |
+
+## なぜ意味論が変わらないか
+- 具体 AST は `(テンプレート, 型引数)` に対し決定的＝同キーなら常に同一。再利用しても実行結果は不変。
+- AST 埋め込みキャッシュ（`SlotCache`/`AttrCache` の `Cell`）が実体間で温まるのは**通常関数と同じ**挙動
+  （毎回新 AST を作っていた従来はキャッシュが毎回コールド）。単相 IC はミスで自己修正するので多相でも健全。
+- テンプレートクラスは**対象外**（`alloc_class_id`・`static mut`・フィールド初期化の副作用があり、キャッシュは
+  意味論を変えるため）。関数・ジェネレータ関数の純粋実体化のみをメモ化。
+- テンプレートはグローバル束縛で寿命が長く `Rc::as_ptr` は安定・再利用されない（V-D の一時 fn_val アドレス
+  再利用問題はメモ化で**消滅**。`Weak` 検証はセーフティネットとして残置）。
+
+## 検証
+- `cargo test`（`--vm=auto`）→ **672 passed / 0 failed**。
+- 例題回帰: `polymorphism.ar`（V-D の Chunk 誤用バグを露見させた例）ほかテンプレート例
+  （`template_sample.ar`/`template_and_constraint.ar`/`other_typing.ar`）で `--vm=off`/`--vm=auto` 完全一致。
+- `cargo build` / 追加 clippy 警告 0。
+
+## 速度（`bench7.ar`: `add_pair[int]` を 200万回・release、#7 有無を同一2ファイルの stash で A/B）
+| モード | #7 なし | #7 あり | 改善 |
+|---|---|---|---|
+| **`--vm=auto`** | 11.3s | 1.90s | **~5.9x** |
+| `--vm=off` | 5.3s | 2.80s | **~1.9x** |
+
+- **auto は ~5.9x**。従来は毎コール Chunk 再コンパイル（200万回）で、**VM の方がツリーウォーク（5.3s）より遅い**
+  （11.3s）という病理的ケースだった。メモ化で初回のみコンパイルとなり、auto(1.90s) が off(2.80s) を正しく上回る。
+- **off も ~1.9x**: ツリーウォークでも毎コールの `subst_stmts` clone-walk が消えるため。
+
+---
+
 ## 次に効くレバー
 1. ~~その他組み込み（enumerate/zip/str/int 等）の VM 化~~ 【✅ 完了】（純粋6種＋型コンストラクタを LoadGlobal+Call/CallBuiltin で対象化, 1.49x）。
+2. ~~テンプレート実体化の Chunk メモ化~~ 【✅ 完了】（`(テンプレート, 型引数)` キーで具体 FnValue をメモ・auto 5.9x）。
 3. **V-F 最適化** — peephole・superinstruction・単型算術命令・R0-A エスケープ解析。
 4. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
 5. **強制バイトコード（D2）への移行** — 全構文カバー後にツリーウォークのフォールバックを撤去し

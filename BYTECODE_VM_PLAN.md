@@ -33,6 +33,9 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 9. **#6 その他組み込みの VM 化** — 純粋組み込み `next`/`repr`/`id`/`enumerate`/`zip`/`getenv` を `CallBuiltin`
    （`eval_builtin_evaled`・enumerate/zip はコア共有）、登録済み型コンストラクタ（int/str/…）を通常の
    `LoadGlobal`+`Call`（`call_type_by_name_evaled` へ委譲・グローバル shadow に健全）で対象化。enumerate/zip 支配 1.49x。
+10. **#7 テンプレート実体化の Chunk メモ化** — `(テンプレート, 型引数)` をキーに具体 `FnValue`/`GeneratorFnValue`
+    をメモ化（`subst_stmts` の clone-walk と Chunk 再コンパイルを初回のみに）。テンプレート関数支配で auto 5.9x
+    （従来は毎コール再コンパイルで VM がツリーウォークより遅い病理ケースだった）。テンプレートクラスは対象外（副作用）。
 
 ### 残り（番号付き）
 **Phase V の残り**
@@ -44,7 +47,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 4. ~~メソッド呼び出し機構の軽量化~~ 【✅ 完了】（高速バインド経路で method_hot 1.61x・method_body 1.64x）。
 5. ~~添字 `obj[i]`・コレクションリテラル（list/dict/set/tuple）の VM 化~~ 【✅ 完了】（デバッガ REPL のフォールバックも減った）。
 6. ~~その他組み込み（enumerate/zip/str/int 等）の `CallBuiltin` 拡張~~ 【✅ 完了】（純粋6種＝`CallBuiltin`・型コンストラクタ＝`LoadGlobal`+`Call` 委譲。enumerate/zip 支配 1.49x）。
-7. **テンプレート実体化の Chunk メモ化**（現状は毎回再コンパイル, §2.2）。
+7. ~~テンプレート実体化の Chunk メモ化~~ 【✅ 完了】（`(テンプレート, 型引数)` キーで具体 FnValue をメモ・関数/ジェネレータのみ・auto 5.9x）。
 8. **ジェネレータ本体の VM 化**（eager 据置のまま §2.7）。
 9. **async の VM 対応**（D5 share-nothing 維持）。
 10. **import モジュール Chunk**（モジュール本体の一括生成）。
@@ -127,7 +130,7 @@ source → lexer → parser ┤                              ↓ その上に
 Arrow へ渡す（`__type__` 等）。`python_converter` / converter.ar が依存。
 → **AST は破棄不可。バイトコードは「置き換え」でなく「追加の実行表現」**。Chunk は AST から生成、AST は保持し続ける。
 
-### 2.2 テンプレートは実行時 AST 置換 — `templates.rs` 【🔶 実体化ごとに再コンパイル・メモ化は残 #7】
+### 2.2 テンプレートは実行時 AST 置換 — `templates.rs` 【✅ #7 で `(テンプレート,型引数)` キーの実体化メモ化・関数/ジェネレータ。クラスは副作用のため対象外】
 [templates.rs](src/interpreter/templates.rs) の `subst_stmt`/`subst_expr` が、呼び出し時に型変数を具体型へ置換した
 **新 AST を clone-walk で生成**してから実行。
 → **テンプレートは実体化時オンデマンドコンパイル**。`(テンプレート名, 型引数リスト)` をキーに Chunk キャッシュ。解決も実体化ごと。

@@ -92,24 +92,34 @@ impl Interpreter {
     ) -> Result<Value, String> {
         match tmpl_val {
             Value::TemplateFn(tmpl) => {
-                // テンプレート関数: 制約を検証し、型変数を具体型に置換して通常関数として実行する
+                // テンプレート関数: 制約を検証し、型変数を具体型に置換して通常関数として実行する。
+                // 制約検証は毎回行う（安価・エラー意味論を保つ）。AST 置換と FnValue 構築は
+                // `(テンプレート, 型引数)` でメモ化し、再実体化で clone-walk と Chunk 再コンパイルを省く（#7）。
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
-                let type_map: HashMap<String, String> = tmpl
-                    .template_params
-                    .iter()
-                    .zip(type_args.iter())
-                    .map(|(p, t)| (p.name.clone(), t.clone()))
-                    .collect();
-                let concrete_params = subst_params(&tmpl.params, &type_map);
-                let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                let fn_val = Rc::new(FnValue {
-                    name: tmpl.name.clone(),
-                    params: concrete_params,
-                    body: concrete_body,
-                    is_python: false,
-                    captured_env: std::collections::HashMap::new(),
-                return_type: None,
-                });
+                let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
+                let fn_val = match self.template_fn_cache.get(&key) {
+                    Some(cached) => cached.clone(),
+                    None => {
+                        let type_map: HashMap<String, String> = tmpl
+                            .template_params
+                            .iter()
+                            .zip(type_args.iter())
+                            .map(|(p, t)| (p.name.clone(), t.clone()))
+                            .collect();
+                        let concrete_params = subst_params(&tmpl.params, &type_map);
+                        let concrete_body = subst_stmts(&tmpl.body, &type_map);
+                        let fn_val = Rc::new(FnValue {
+                            name: tmpl.name.clone(),
+                            params: concrete_params,
+                            body: concrete_body,
+                            is_python: false,
+                            captured_env: std::collections::HashMap::new(),
+                            return_type: None,
+                        });
+                        self.template_fn_cache.insert(key, fn_val.clone());
+                        fn_val
+                    }
+                };
                 self.exec_fn(fn_val, call_args, None, "<template_fn>", None)
             }
             Value::TemplateClass(tmpl) => {
@@ -125,22 +135,31 @@ impl Interpreter {
                 self.instantiate_template_class(&tmpl, concrete_body, call_args)
             }
             Value::TemplateGenFn(tmpl) => {
-                // テンプレートジェネレータ関数: 型変数を置換してジェネレータとして実行する
+                // テンプレートジェネレータ関数: 型変数を置換してジェネレータとして実行する。
+                // TemplateFn と同様に `(テンプレート, 型引数)` でメモ化（#7）。
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
-                let type_map: HashMap<String, String> = tmpl
-                    .template_params
-                    .iter()
-                    .zip(type_args.iter())
-                    .map(|(p, t)| (p.name.clone(), t.clone()))
-                    .collect();
-                let concrete_params = subst_params(&tmpl.params, &type_map);
-                let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                let gen_fn = Rc::new(GeneratorFnValue {
-                    name: tmpl.name.clone(),
-                    params: concrete_params,
-                    body: concrete_body,
-                    captured_env: std::collections::HashMap::new(),
-                });
+                let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
+                let gen_fn = match self.template_gen_cache.get(&key) {
+                    Some(cached) => cached.clone(),
+                    None => {
+                        let type_map: HashMap<String, String> = tmpl
+                            .template_params
+                            .iter()
+                            .zip(type_args.iter())
+                            .map(|(p, t)| (p.name.clone(), t.clone()))
+                            .collect();
+                        let concrete_params = subst_params(&tmpl.params, &type_map);
+                        let concrete_body = subst_stmts(&tmpl.body, &type_map);
+                        let gen_fn = Rc::new(GeneratorFnValue {
+                            name: tmpl.name.clone(),
+                            params: concrete_params,
+                            body: concrete_body,
+                            captured_env: std::collections::HashMap::new(),
+                        });
+                        self.template_gen_cache.insert(key, gen_fn.clone());
+                        gen_fn
+                    }
+                };
                 self.exec_generator(gen_fn, call_args, None)
             }
             // Signal[T]() — 型付きシグナルを生成する（型引数は型チェックの注釈としてのみ使用）
