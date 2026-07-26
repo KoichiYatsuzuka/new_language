@@ -38,6 +38,142 @@ impl Interpreter {
         }
     }
 
+    /// fn_val に対応する VM Chunk を取得（なければコンパイルしてキャッシュ）。
+    /// キャッシュキーは `Rc::as_ptr`。`Weak` 検証でアドレス再利用（テンプレート一時 fn_val）を弾く。
+    fn get_or_compile_chunk(&mut self, fn_val: &Rc<FnValue>) -> Option<Rc<crate::vm::Chunk>> {
+        let key = Rc::as_ptr(fn_val) as usize;
+        match self.vm_chunks.get(&key) {
+            Some((weak, cached)) if weak.upgrade().is_some() => cached.clone(),
+            _ => {
+                let compiled = crate::vm::compile_fn(&fn_val.params, &fn_val.body).map(Rc::new);
+                self.vm_chunks
+                    .insert(key, (Rc::downgrade(fn_val), compiled.clone()));
+                compiled
+            }
+        }
+    }
+
+    /// バインド済みバッファで VM Chunk を実行し、戻り値／例外フレームを組み立てる（fast/general 共通）。
+    /// `buf[base..base+n_locals]` にパラメータが束縛済み。`current_class` はメソッド実行のため一時設定する。
+    fn run_vm_method(
+        &mut self,
+        chunk: &crate::vm::Chunk,
+        mut buf: Vec<Value>,
+        base: usize,
+        self_val: &Option<Value>,
+        fn_name: &str,
+        call_span: Option<Span>,
+    ) -> Result<Value, String> {
+        let prev_class = self.current_class.take();
+        if let Some(Value::Instance(inst_rc)) = self_val {
+            self.current_class = Some(inst_rc.borrow().class.clone());
+        }
+        self.call_stack.push(fn_name.to_string());
+        let result = crate::vm::run(self, chunk, &mut buf, base);
+        self.call_stack.pop();
+        self.current_class = prev_class;
+        buf.truncate(base);
+        self.vm_stack = buf;
+        let caller_frame = self.build_caller_frame(call_span.as_ref());
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) if e.as_str() == RAISE_SENTINEL => {
+                if let Some(raised) = self.current_exception.as_mut() {
+                    raised.frames.push(caller_frame);
+                }
+                Err(RAISE_SENTINEL.to_string())
+            }
+            Err(msg) => {
+                if let Some(mut raised) = self.make_internal_raised_error(&msg) {
+                    raised.frames.push(StackFrame {
+                        file: String::new(),
+                        line: 0,
+                        col: 0,
+                        fn_name: fn_name.to_string(),
+                        context: String::new(),
+                    });
+                    raised.frames.push(caller_frame);
+                    self.current_exception = Some(raised);
+                    Err(RAISE_SENTINEL.to_string())
+                } else {
+                    Err(msg)
+                }
+            }
+        }
+    }
+
+    /// 高速バインド（タスク #4）: 単純シグネチャの VM 呼び出しで `bind_args` の Vec 確保・名前 clone・
+    /// copy/cast の各パスを飛ばし、引数を直接バッファへ束縛する。コピー意味論は `bind_args` ＋ copy ループ
+    /// と同一（self 非 mut → deep_copy、let パラメータ + mut 引数 → copy_value）。
+    ///
+    /// 対応条件（いずれか外れれば `Ok(None)` で一般経路へ）: 可変長なし・デフォルトなし・キーワード引数なし・
+    /// 実引数数が仮引数数（self 除く）と完全一致・キャスト不要（let パラメータの型注釈と Instance 引数の
+    /// クラス名が一致 or 非 Instance）。
+    fn try_fast_bind(
+        &mut self,
+        fn_val: &Rc<FnValue>,
+        chunk: &crate::vm::Chunk,
+        evaled: &[(Option<String>, Value, bool)],
+        self_val: &Option<Value>,
+    ) -> Result<Option<(Vec<Value>, usize)>, String> {
+        let params = &fn_val.params;
+        let has_self = self_val.is_some() && params.first().is_some_and(|p| p.name == "self");
+        let bind_params = if has_self { &params[1..] } else { &params[..] };
+
+        // 単純シグネチャの判定。
+        if params.iter().any(|p| p.variadic || p.default.is_some()) {
+            return Ok(None);
+        }
+        if evaled.len() != bind_params.len() {
+            return Ok(None);
+        }
+        if evaled.iter().any(|(k, _, _)| k.is_some()) {
+            return Ok(None);
+        }
+        // キャストの可能性（let パラメータ + 型注釈 + クラス名不一致の Instance 引数）があれば一般経路へ。
+        for (p, (_, val, _)) in bind_params.iter().zip(evaled.iter()) {
+            if !p.mutable {
+                if let (Some(ta), Value::Instance(rc)) = (&p.type_ann, val) {
+                    if &rc.borrow().class.name != ta {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+
+        // 直接バインド。
+        let mut buf = std::mem::take(&mut self.vm_stack);
+        let base = buf.len();
+        buf.resize(base + chunk.n_locals, Value::None);
+        let mut slot = 0usize;
+        if has_self {
+            let sv = self_val.as_ref().unwrap();
+            // 非 mut self は deep_copy（bind_args と同一。エイリアス／変異から呼び出し元を保護）。
+            let self_bound = if params[0].mutable {
+                sv.clone()
+            } else {
+                Self::deep_copy_value(sv.clone())
+            };
+            if slot < chunk.n_locals {
+                buf[base + slot] = self_bound;
+            }
+            slot += 1;
+        }
+        for (p, (_, val, arg_mut)) in bind_params.iter().zip(evaled.iter()) {
+            // let パラメータ + mut 引数 → copy_value（copy ループと同一）。それ以外は共有。
+            let v = if !p.mutable && *arg_mut {
+                self.copy_value(val.clone())?
+            } else {
+                val.clone()
+            };
+            if slot < chunk.n_locals {
+                buf[base + slot] = v;
+            }
+            slot += 1;
+        }
+        Ok(Some((buf, base)))
+    }
+
     /// 評価済み引数リストを用いて関数を実行する。
     ///
     /// 実行フロー:
@@ -62,6 +198,24 @@ impl Interpreter {
         fn_name: &str,
         call_span: Option<Span>,
     ) -> Result<Value, String> {
+        // ── VM チャンクを1回だけ取得（fast/general 両経路で共有） ──
+        // 対象: フリー関数（self なし）＋ インスタンスメソッド（self=Instance）。非 Python・クロージャなし。
+        let vm_eligible = self.vm_mode != crate::vm::VmMode::Off
+            && !fn_val.is_python
+            && fn_val.captured_env.is_empty()
+            && matches!(self_val, None | Some(Value::Instance(_)));
+        let chunk_opt: Option<Rc<crate::vm::Chunk>> = if vm_eligible {
+            self.get_or_compile_chunk(&fn_val)
+        } else {
+            None
+        };
+        // ── 高速バインド（タスク #4）: 単純シグネチャ + キャスト不要なら bind_args を介さず直接実行 ──
+        if let Some(chunk) = &chunk_opt {
+            if let Some((buf, base)) = self.try_fast_bind(&fn_val, chunk, evaled, &self_val)? {
+                return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span);
+            }
+        }
+
         // デフォルト値を事前評価する（self パラメータは常に None）。
         // デフォルトを持つ仮引数が1つもなければ Vec 確保を省く（bind_args は空 defaults を許容する）。
         let evaluated_defaults: Vec<Option<Value>> = if fn_val.params.iter().any(|p| p.default.is_some()) {
@@ -113,14 +267,14 @@ impl Interpreter {
         // かつ型が異なる場合、__cast__[TypeName] メソッドが定義されていれば自動的にキャストする。
         // `mut` パラメータは自動キャストしない。
         {
-            let params_ref = fn_val.params.clone();
-            // 第1パス: キャスト対象を特定する（self は除外）
+            // 第1パス: キャスト対象を特定する（self は除外）。params は借用のみ（clone しない）。
             let mut cast_targets: Vec<(usize, String, Value)> = Vec::new();
             for (idx, (name, val, mutable, _)) in bindings.iter().enumerate() {
                 if *mutable || name == "self" {
                     continue;
                 }
-                let type_ann = params_ref
+                let type_ann = fn_val
+                    .params
                     .iter()
                     .find(|p| &p.name == name)
                     .and_then(|p| p.type_ann.as_deref());
@@ -154,79 +308,19 @@ impl Interpreter {
             }
         }
 
-        // ── Phase V: バイトコード VM 経路（デュアルモード, D2） ──
-        // フリー関数（self なし）と **インスタンスメソッド**（self=Instance）を対象に、初回に
-        // コンパイルして Chunk をキャッシュする。クロージャ・Python 関数・非 Instance レシーバ
-        // （クラスメソッド等）は対象外。コンパイルできなければ None を焼き込みツリーウォークへ。
-        let vm_eligible_self = matches!(self_val, None | Some(Value::Instance(_)));
-        if vm_eligible_self
-            && fn_val.captured_env.is_empty()
-            && !fn_val.is_python
-            && self.vm_mode != crate::vm::VmMode::Off
-        {
-            let key = Rc::as_ptr(&fn_val) as usize;
-            let chunk_opt = match self.vm_chunks.get(&key) {
-                // ヒット: 保持した Weak が生きている＝同一 fn_val（同一アドレス・生存）なので Chunk 有効。
-                Some((weak, cached)) if weak.upgrade().is_some() => cached.clone(),
-                // ミス、または Weak が死んでいる（＝そのアドレスが別 fn_val に再利用された）→ 再コンパイル。
-                _ => {
-                    let compiled =
-                        crate::vm::compile_fn(&fn_val.params, &fn_val.body).map(Rc::new);
-                    self.vm_chunks
-                        .insert(key, (Rc::downgrade(&fn_val), compiled.clone()));
-                    compiled
+        // ── Phase V: バイトコード VM 経路（一般バインド）── 上で取得済みの chunk_opt を再利用。
+        // fast-bind に載らなかった呼び出し（キャスト・キーワード引数・デフォルト等）はここで
+        // bindings（bind_args + copy + cast 済み）から buffer を埋めて実行する。
+        if let Some(chunk) = &chunk_opt {
+            let mut buf = std::mem::take(&mut self.vm_stack);
+            let base = buf.len();
+            buf.resize(base + chunk.n_locals, Value::None);
+            for (i, (_, val, _, _)) in bindings.iter().enumerate() {
+                if i < chunk.n_locals {
+                    buf[base + i] = val.clone();
                 }
-            };
-            if let Some(chunk) = chunk_opt {
-                // 共有バッファを借り出し、base.. に locals を確保（per-call 確保なし）。
-                // メソッドの場合 bindings[0]=self が slot 0 に入る（`self` は compiler の
-                // slot 0・resolver も base 先頭）。`Self` は VM では使わない（compiler が bail）。
-                let mut buf = std::mem::take(&mut self.vm_stack);
-                let base = buf.len();
-                buf.resize(base + chunk.n_locals, Value::None);
-                for (i, (_, val, _, _)) in bindings.iter().enumerate() {
-                    if i < chunk.n_locals {
-                        buf[base + i] = val.clone();
-                    }
-                }
-                // メソッド実行: アクセス制御・Self 依存ディスパッチのため current_class を張る。
-                let prev_class = self.current_class.take();
-                if let Some(Value::Instance(inst_rc)) = &self_val {
-                    self.current_class = Some(inst_rc.borrow().class.clone());
-                }
-                self.call_stack.push(fn_name.to_string());
-                let result = crate::vm::run(self, &chunk, &mut buf, base);
-                self.call_stack.pop();
-                self.current_class = prev_class;
-                buf.truncate(base);
-                self.vm_stack = buf;
-                let caller_frame = self.build_caller_frame(call_span.as_ref());
-                return match result {
-                    Ok(v) => Ok(v),
-                    Err(e) if e.as_str() == RAISE_SENTINEL => {
-                        if let Some(raised) = self.current_exception.as_mut() {
-                            raised.frames.push(caller_frame);
-                        }
-                        Err(RAISE_SENTINEL.to_string())
-                    }
-                    Err(msg) => {
-                        if let Some(mut raised) = self.make_internal_raised_error(&msg) {
-                            raised.frames.push(StackFrame {
-                                file: String::new(),
-                                line: 0,
-                                col: 0,
-                                fn_name: fn_name.to_string(),
-                                context: String::new(),
-                            });
-                            raised.frames.push(caller_frame);
-                            self.current_exception = Some(raised);
-                            Err(RAISE_SENTINEL.to_string())
-                        } else {
-                            Err(msg)
-                        }
-                    }
-                };
             }
+            return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span);
         }
 
         // 関数フレームへ切り替える: frame_floor を現在の scopes 長に進め（＝これから push する

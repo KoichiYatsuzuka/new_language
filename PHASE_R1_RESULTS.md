@@ -524,10 +524,44 @@ Arrow の `for` 変数は**ブロックスコープ**（ループ後に外側の
 
 ---
 
+# タスク #4 — メソッド呼び出し機構の軽量化（高速バインド経路）
+
+V-B のメソッド呼び出しは `exec_fn_evaled` の一般経路（`bind_args` で Vec 確保・パラメータ名 clone・
+`fn_val.params.clone()`・copy/cast の複数パス）を毎回通り、小さいメソッド本体では per-call オーバーヘッドが
+支配的だった（method_hot 1.13x 止まり）。**単純シグネチャの VM 呼び出しに高速バインド経路**を追加。
+
+## 実装（[functions/execution.rs](src/interpreter/functions/execution.rs)）
+| ヘルパ | 内容 |
+|---|---|
+| `get_or_compile_chunk` | Chunk 取得/コンパイルを抽出（`exec_fn_evaled` の先頭で1回。fast/general 両経路で共有） |
+| `try_fast_bind` | **単純シグネチャ**（可変長・デフォルト・キーワード引数なし／実引数数一致／キャスト不要）なら `bind_args` を介さず引数を**直接バッファへ束縛**。self 非 mut → deep_copy、let パラメータ + mut 引数 → copy_value（**コピー意味論は bind_args + copy ループと完全一致**）。外れたら `Ok(None)` で一般経路へ |
+| `run_vm_method` | バインド済みバッファで `run` を実行し `current_class` 設定・例外フレーム組み立てを共通化（fast/general 共有） |
+| 一般経路の軽量化 | cast パスの `fn_val.params.clone()` を借用に変更（毎コールの Param Vec clone を除去） |
+
+## 健全性判断: self deep_copy は省略しない
+「self を変異しない本体（SetAttr/Call/CallMethod なし）なら deep_copy を省いて Rc 共有」を検討したが、
+**deep_copy は変異だけでなく“self（や self の可変フィールド）を戻り値としてエイリアスさせない”役割も持つ**
+（例 `fn get(self)->list: return self.x`）。escape 解析が要り健全に省けないため**不採用**（self は従来どおり deep_copy）。
+
+## 検証
+- `cargo test` → **672 passed / 0 failed**。
+- 例題回帰: **全 63 例で off/auto 完全一致**。デフォルト引数・`__cast__` 自動キャスト・キーワード引数・
+  mut パラメータ・オーバーロードが fast-bind を正しく bail して一般経路で処理されることを確認。
+- `cargo build` / 追加 clippy 警告 0。
+
+## 速度（`--vm=off` vs `--vm=auto`、best-of-3〜4、release）
+| ベンチ | V-B | 本タスク後 |
+|---|---|---|
+| **method_hot**（`v.norm_sq()`→`self.dot(self)`） | 1.13x | **1.61x** |
+| **method_body**（`Vec3()` 生成 + scale/bump/norm_sq） | 1.22x | **1.64x** |
+
+- bind_args の Vec 確保・パラメータ名 String clone・`params.clone()`・copy/cast の各パスを飛ばしたことで
+  小さいメソッド本体の per-call オーバーヘッドが縮小。self deep_copy（意味論上必須）は残る。
+
+---
+
 ## 次に効くレバー
-1. **メソッド呼び出し機構の軽量化** — `call_instance_method_evaled` の bind_args/copy/`current_class` を
-   VM フレーム上で直接行い per-call オーバーヘッド削減（V-B の method_hot がここで伸びる）。
-2. **その他組み込み**（`enumerate`/`zip`/`str`/`int` 等）の VM 化で更に対象拡大。
+1. **その他組み込み**（`enumerate`/`zip`/`str`/`int` 等）の VM 化で更に対象拡大（#6）。
 3. **V-F 最適化** — peephole・superinstruction・単型算術命令・R0-A エスケープ解析。
 4. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
 5. **強制バイトコード（D2）への移行** — 全構文カバー後にツリーウォークのフォールバックを撤去し

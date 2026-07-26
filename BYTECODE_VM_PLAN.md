@@ -27,6 +27,9 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
    デバッグ名テーブル（`Chunk.local_names`）／ **デバッガ REPL のバイトコード実行**（停止スコープ名前引き `LoadName`/`DeclareName`・フォールバック付き）。
 7. **#5 添字・コレクションリテラル** — `obj[i]` 読み書き（`Subscript`/`SetIndex`）・list/tuple/set/dict リテラル
    （`BuildList`/`BuildTuple`/`BuildSet`/`BuildDict`）を VM 化。`for` 変数が外側をシャドウする関数は bail（flat-slot 非対応）。
+8. **#4 メソッド呼び出し機構の軽量化** — VM 呼び出しの高速バインド経路（単純シグネチャは `bind_args` の
+   Vec 確保・名前 clone・`params.clone()`・copy/cast パスを飛ばし直接バッファへ束縛）。method_hot 1.13→1.61x・
+   method_body 1.22→1.64x。コピー意味論は不変（self deep_copy 省略は escape 健全性のため不採用）。
 
 ### 残り（番号付き）
 **Phase V の残り**
@@ -35,7 +38,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 3. **強制バイトコード（D2）** — 全構文カバー後にフォールバック撤去 → **スレッドローカル4本＋センチネル2種を実削除**（現在はデュアルモードのため保持）。
 
 **VM カバレッジ拡大（独立）**
-4. **メソッド呼び出し機構の軽量化** — `call_instance_method_evaled` の bind_args/copy/`current_class` を VM フレーム上で直接処理。
+4. ~~メソッド呼び出し機構の軽量化~~ 【✅ 完了】（高速バインド経路で method_hot 1.61x・method_body 1.64x）。
 5. ~~添字 `obj[i]`・コレクションリテラル（list/dict/set/tuple）の VM 化~~ 【✅ 完了】（デバッガ REPL のフォールバックも減った）。
 6. **その他組み込み**（enumerate/zip/str/int 等）の `CallBuiltin` 拡張。
 7. **テンプレート実体化の Chunk メモ化**（現状は毎回再コンパイル, §2.2）。
