@@ -370,6 +370,10 @@ fn exec_op(
             let flat = buf.split_off(split);
             buf.push(interp.vm_build_dict(flat));
         }
+        Op::Yield => {
+            let v = buf.pop().unwrap();
+            interp.vm_yield_push(v);
+        }
     }
     Ok(Flow::Next)
 }

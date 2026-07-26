@@ -341,6 +341,7 @@ fn scan_shadow_stmts(
             Stmt::Expr(e)
             | Stmt::BlockReturn(e, _)
             | Stmt::LoopYield(e)
+            | Stmt::Yield(e)
             | Stmt::Return(Some(e))
             | Stmt::Assign { value: e, .. }
             | Stmt::CompoundAssign { value: e, .. } => scan_shadow_expr(e, for_names, decl_names),
@@ -510,6 +511,7 @@ fn collect_nested_decls(
             Stmt::Expr(e)
             | Stmt::BlockReturn(e, _)
             | Stmt::LoopYield(e)
+            | Stmt::Yield(e)
             | Stmt::Return(Some(e)) => collect_expr_decls(e, slots, slot_mut, slot_type, n)?,
             Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => {
                 collect_expr_decls(value, slots, slot_mut, slot_type, n)?
@@ -1083,6 +1085,12 @@ impl Compiler {
                 let yield_slot = self.block_ctxs.iter().rev().find_map(|c| c.yield_slot)?;
                 self.compile_expr(e)?;
                 self.emit(Op::ListAppendLocal(yield_slot));
+            }
+            // ジェネレータ本体の `yield expr`（タスク #8）。値を評価して yield 収集バッファへ産出する。
+            // eager 収集なので制御は継続（ツリーウォークの `Stmt::Yield` と同一）。
+            Stmt::Yield(e) => {
+                self.compile_expr(e)?;
+                self.emit(Op::Yield);
             }
             // それ以外（定義・import 等）は非対応。
             _ => return None,

@@ -115,4 +115,8 @@ pub enum Op {
     BuildSet(u16),
     /// リテラル辞書構築: 末尾 2N 要素（k0,v0,k1,v1,..）を pop して `Value::Dict` を push（`{k: v, ..}`）。
     BuildDict(u16),
+    // ── ジェネレータ（タスク #8） ──
+    /// `yield expr`: pop した値をジェネレータの yield 収集バッファ（`GENERATOR_YIELDS`）へ追加する
+    /// （eager 収集・ツリーウォークの `Stmt::Yield` と同一意味論。値は産出するだけで制御は継続）。
+    Yield,
 }

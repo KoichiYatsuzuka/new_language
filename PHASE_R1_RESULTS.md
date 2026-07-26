@@ -642,12 +642,56 @@ clone-walk で生成し、一時 `Rc<FnValue>` を作って捨てていた（§2
 
 ---
 
+# タスク #8 — ジェネレータ本体の VM 化（eager 収集のまま）
+
+ジェネレータ関数の本体は `exec_generator_evaled` が**ツリーウォーク**（`exec_block`）で実行し、`yield` を
+`GENERATOR_YIELDS` スレッドローカルへ eager 収集していた（§2.7）。本タスクで**本体をバイトコードに
+コンパイル**し、`yield` を VM の `Yield` op で同じバッファへ収集する。eager 意味論は不変（lazy 化は §8 非目標）。
+
+## 実装
+| 変更 | ファイル | 内容 |
+|---|---|---|
+| **`Yield` op** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs), [vm/disasm.rs](src/vm/disasm.rs) | `Op::Yield`: pop した値を `interp.vm_yield_push` で `GENERATOR_YIELDS` へ追加（ツリーウォークの `Stmt::Yield` と同一・値を産出し制御は継続） |
+| **`Stmt::Yield` のコンパイル** | [vm/compiler.rs](src/vm/compiler.rs) | `compile_stmt` に `Stmt::Yield(e)` → `compile_expr; Yield` を追加。`collect_nested_decls`／シャドウ検出（`scan_shadow`）にも `Stmt::Yield` の式を追加し、`yield block:…` のような式内宣言・for 式を漏れなく処理 |
+| **ジェネレータ本体の VM 実行** | [functions/execution.rs](src/interpreter/functions/execution.rs) | `get_or_compile_gen_chunk`（`GeneratorFnValue` 版 Chunk キャッシュ）・`vm_yield_push`・`run_vm_generator`（バインド済みバッファで `run`・`current_class` 設定・yield 回収→`GeneratorState`）を追加。`exec_generator_evaled` に VM 分岐を挿入（フリー gen ＋ Instance レシーバの gen メソッド・キャプチャなし・コンパイル可能時） |
+| **Chunk キャッシュ（gen 用）** | [interpreter.rs](src/interpreter.rs) | `vm_gen_chunks: HashMap<usize,(Weak<GeneratorFnValue>, Option<Rc<Chunk>>)>` を追加（`vm_chunks` の gen 版・別型のため別テーブル） |
+| **VM から gen 関数を呼べるように（付随バグ修正）** | [eval/calls.rs](src/interpreter/eval/calls.rs) | `call_value_evaled`（VM の `Call` op ハンドラ）に **`Value::GeneratorFn` アームが欠落**しており、VM コンパイル済み関数から `gen(...)` を呼ぶと `TypeError: 'gen_function' object is not callable` になっていた（#8 以前からの潜在ギャップ）。ツリーウォークの `eval_call` に合わせ `exec_generator_evaled` へ委譲するアームを追加 |
+
+## 設計と健全性
+- **eager 収集を維持**: `run_vm_generator` は本体を最後まで走らせ、`GENERATOR_YIELDS`（ツリーウォークと共有の
+  スレッドローカル）に貯めた yield 値から `GeneratorState` を作る。lazy 化（フレーム中断・再開）は §8 非目標。
+- **`Self` 参照・クロージャキャプチャ・可変長**は VM コンパイラが bail → ツリーウォーク（意味論不変）。
+- **ネストジェネレータ**（gen が gen を呼んで後続で yield）は単一スレッドローカルを共有するため、VM でも
+  ツリーウォークと**同一挙動**（既存の制約をそのまま再現＝byte-identical。改善は別テーマ）。
+- エラーは生の `Err` を伝播（`exec_generator_evaled` のツリーウォーク経路と同じ・RAISE_SENTINEL は
+  `current_exception` を設定済み）。
+
+## 検証
+- `cargo test`（`--vm=auto`）→ **672 passed / 0 failed**。
+- 手動 A/B（off/auto）で**完全一致**: while/for/if 内 yield・gen メソッド（`self` 経由 `self.items`）・
+  複数ジェネレータ・**例外パス**（gen 本体のゼロ除算がトレースバック含め一致）。付随バグ修正で
+  「VM 関数から gen を呼ぶ」ケースが正しく動作。
+- 例題回帰: generator/iterator/basics/classes の決定的例 **15 件**で off/auto 一致。`--vm=force` で gen 本体が
+  実際に VM コンパイルされることを確認。
+- `cargo build` / 追加 clippy 警告 0。
+
+## 速度（`--vm=off` vs `--vm=auto`、best-of-2、release）
+| ベンチ | 内容 | off | auto | VM 倍率 |
+|---|---|---|---|---|
+| **generator**（`sum_gen(20)`＝`gen_squares` を for 集計、を 30万回） | while+yield gen 本体 + for 集計 | 5.68s | 1.77s | **~3.2x** |
+
+- **~3.2x**。gen 本体（while+yield）と呼び出し側 for 集計が両方 VM 化。**#8 以前はこのワークロードが auto で
+  そもそも動かなかった**（`GeneratorFn` 呼び出しギャップ）ので、正しさと速度を同時に獲得。
+
+---
+
 ## 次に効くレバー
 1. ~~その他組み込み（enumerate/zip/str/int 等）の VM 化~~ 【✅ 完了】（純粋6種＋型コンストラクタを LoadGlobal+Call/CallBuiltin で対象化, 1.49x）。
 2. ~~テンプレート実体化の Chunk メモ化~~ 【✅ 完了】（`(テンプレート, 型引数)` キーで具体 FnValue をメモ・auto 5.9x）。
-3. **V-F 最適化** — peephole・superinstruction・単型算術命令・R0-A エスケープ解析。
-4. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
-5. **強制バイトコード（D2）への移行** — 全構文カバー後にツリーウォークのフォールバックを撤去し
+3. ~~ジェネレータ本体の VM 化~~ 【✅ 完了】（`Yield` op・eager 収集維持・`GeneratorFn` 呼び出しギャップも修正・~3.2x）。
+4. **V-F 最適化** — peephole・superinstruction・単型算術命令・R0-A エスケープ解析。
+5. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
+6. **強制バイトコード（D2）への移行** — 全構文カバー後にツリーウォークのフォールバックを撤去し
    スレッドローカル4本＋センチネル2種を実削除。
 
-`LocalRef` / slot 化 `Scope` / `frame_floor` / bind_args 高速経路 / `AttrCache` / R4 呼び先 / method IC / リゾルバ / VM 骨格（op/chunk/run）/ break-continue ジャンプ / 平坦 slot / match / for（GetIter/ForIter）/ CallBuiltin / Weak 検証 Chunk キャッシュ / 例外ハンドラスタック / ブロック式 BlockCtx / 呼び出し位置 span は上記すべての土台として再利用される。
+`LocalRef` / slot 化 `Scope` / `frame_floor` / bind_args 高速経路 / `AttrCache` / R4 呼び先 / method IC / リゾルバ / VM 骨格（op/chunk/run）/ break-continue ジャンプ / 平坦 slot / match / for（GetIter/ForIter）/ CallBuiltin / Weak 検証 Chunk キャッシュ / 例外ハンドラスタック / ブロック式 BlockCtx / 呼び出し位置 span / Yield（ジェネレータ本体）は上記すべての土台として再利用される。

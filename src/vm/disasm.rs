@@ -40,6 +40,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::CallBuiltin(n, argc) => {
             format!("CALL_BUILTIN {:?} argc={argc}", chunk.names.get(*n as usize))
         }
+        Op::Yield => "YIELD".to_string(),
         Op::GetIter => "GET_ITER".to_string(),
         Op::ForIter(it, tgt, exit) => format!("FOR_ITER iter={it} target={tgt} exit={exit}"),
         Op::Jump(t) => format!("JUMP {t}"),

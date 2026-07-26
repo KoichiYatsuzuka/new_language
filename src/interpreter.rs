@@ -376,6 +376,10 @@ pub struct Interpreter {
     /// ヒット時に `upgrade()` が失敗したら「アドレス再利用＝別関数」と判定して再コンパイルする
     /// （リークなし・古い Chunk の誤用を防ぐ, Phase V-D）。
     pub(self) vm_chunks: HashMap<usize, (std::rc::Weak<FnValue>, Option<Rc<crate::vm::Chunk>>)>,
+    /// ジェネレータ関数本体の Chunk キャッシュ（タスク #8）。キー = `Rc::as_ptr(gen_fn)`。
+    /// `vm_chunks` と同型だが `GeneratorFnValue` を指すため別テーブル。`Weak` でアドレス再利用を弾く。
+    pub(self) vm_gen_chunks:
+        HashMap<usize, (std::rc::Weak<GeneratorFnValue>, Option<Rc<crate::vm::Chunk>>)>,
     /// テンプレート関数/ジェネレータ関数の実体化メモ（タスク #7）。
     /// キー = `(Rc::as_ptr(template) as usize, 具体型引数リスト)`。値 = 置換済み具体 `FnValue`。
     /// 同一 `(テンプレート, 型引数)` の再実体化で **AST 置換（`subst_stmts` の clone-walk）を省略**し、
@@ -481,6 +485,7 @@ impl Interpreter {
             slot_epoch: 0,
             vm_mode: crate::vm::VmMode::default(),
             vm_chunks: HashMap::new(),
+            vm_gen_chunks: HashMap::new(),
             template_fn_cache: HashMap::new(),
             template_gen_cache: HashMap::new(),
             vm_stack: Vec::new(),

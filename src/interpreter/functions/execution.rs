@@ -53,6 +53,73 @@ impl Interpreter {
         }
     }
 
+    /// ジェネレータ本体に対応する VM Chunk を取得（なければコンパイルしてキャッシュ, タスク #8）。
+    /// `get_or_compile_chunk` の `GeneratorFnValue` 版。`Weak` でアドレス再利用を弾く。
+    fn get_or_compile_gen_chunk(
+        &mut self,
+        gen_fn: &Rc<GeneratorFnValue>,
+    ) -> Option<Rc<crate::vm::Chunk>> {
+        let key = Rc::as_ptr(gen_fn) as usize;
+        match self.vm_gen_chunks.get(&key) {
+            Some((weak, cached)) if weak.upgrade().is_some() => cached.clone(),
+            _ => {
+                let compiled = crate::vm::compile_fn(&gen_fn.params, &gen_fn.body).map(Rc::new);
+                self.vm_gen_chunks
+                    .insert(key, (Rc::downgrade(gen_fn), compiled.clone()));
+                compiled
+            }
+        }
+    }
+
+    /// VM の `Yield` op 用: 値をジェネレータの yield 収集バッファ（`GENERATOR_YIELDS`）へ追加する。
+    /// ツリーウォークの `Stmt::Yield`（dispatch.rs）と同一意味論。収集が無効（`None`）なら何もしない。
+    pub(crate) fn vm_yield_push(&self, val: Value) {
+        GENERATOR_YIELDS.with(|y| {
+            if let Some(yields) = y.borrow_mut().as_mut() {
+                yields.push(val);
+            }
+        });
+    }
+
+    /// バインド済みのジェネレータ本体を VM で実行し、eager 収集した yield 値から `Value::Generator` を作る。
+    /// yield 収集は `GENERATOR_YIELDS`（ツリーウォークと共有）を使うので意味論一致。エラーは生の `Err` を
+    /// 伝播（`exec_generator_evaled` のツリーウォーク経路と同じ・RAISE_SENTINEL は `current_exception` 設定済み）。
+    fn run_vm_generator(
+        &mut self,
+        chunk: &crate::vm::Chunk,
+        bindings: Vec<(String, Value, bool, bool)>,
+        self_val: &Option<Value>,
+    ) -> Result<Value, String> {
+        GENERATOR_YIELDS.with(|y| *y.borrow_mut() = Some(Vec::new()));
+        // 共有バッファへ locals を確保し、バインディングを slot へ詰める（self は slot 0）。
+        let mut buf = std::mem::take(&mut self.vm_stack);
+        let base = buf.len();
+        buf.resize(base + chunk.n_locals, Value::None);
+        for (i, (_, val, _, _)) in bindings.into_iter().enumerate() {
+            if i < chunk.n_locals {
+                buf[base + i] = val;
+            }
+        }
+        // ジェネレータメソッド: アクセス制御・Self 依存ディスパッチのため current_class を張る。
+        let prev_class = self.current_class.take();
+        if let Some(Value::Instance(inst_rc)) = self_val {
+            self.current_class = Some(inst_rc.borrow().class.clone());
+        }
+        let result = crate::vm::run(self, chunk, &mut buf, base);
+        self.current_class = prev_class;
+        buf.truncate(base);
+        self.vm_stack = buf;
+        // エラー時も含めて必ず yield 値を回収してクリーンアップする。
+        let yields = GENERATOR_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
+        match result {
+            Ok(_) => Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                values: yields,
+                index: 0,
+            })))),
+            Err(e) => Err(e),
+        }
+    }
+
     /// バインド済みバッファで VM Chunk を実行し、戻り値／例外フレームを組み立てる（fast/general 共通）。
     /// `buf[base..base+n_locals]` にパラメータが束縛済み。`current_class` はメソッド実行のため一時設定する。
     fn run_vm_method(
@@ -511,6 +578,18 @@ impl Interpreter {
             let (name, val, param_mutable, arg_is_mutable) = binding;
             if !*param_mutable && name != "self" && *arg_is_mutable {
                 *val = self.copy_value(val.clone())?;
+            }
+        }
+
+        // ── VM 経路（タスク #8）: 本体をバイトコードで実行し yield を eager 収集する ──
+        // 対象: フリージェネレータ（self なし）＋ Instance レシーバのジェネレータメソッド。
+        // クロージャキャプチャあり・非対応構文（`Self` 参照等）はツリーウォークへフォールバック。
+        let vm_eligible = self.vm_mode != crate::vm::VmMode::Off
+            && gen_fn.captured_env.is_empty()
+            && matches!(self_val, None | Some(Value::Instance(_)));
+        if vm_eligible {
+            if let Some(chunk) = self.get_or_compile_gen_chunk(&gen_fn) {
+                return self.run_vm_generator(&chunk, bindings, &self_val);
             }
         }
 

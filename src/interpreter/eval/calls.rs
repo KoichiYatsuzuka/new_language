@@ -572,6 +572,9 @@ impl Interpreter {
                 self.dispatch_overload_evaled(candidates, evaled, None, fn_name, call_span)
             }
             Value::Class(cls) => self.instantiate_evaled(cls, evaled),
+            // ジェネレータ関数呼び出し（VM の Call op 用）。ツリーウォークの `eval_call` の
+            // `GeneratorFn => exec_generator` に対応。本体は eager 実行し `Value::Generator` を返す。
+            Value::GeneratorFn(gen_fn) => self.exec_generator_evaled(gen_fn, evaled, None),
             Value::NativeFunction(fn_ref) => {
                 let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                 self.dispatch_native_evaled(&fn_ref, vals)
