@@ -94,8 +94,128 @@ impl Interpreter {
                     )),
                 })
             }
+            "next" => {
+                if args.len() != 1 {
+                    return Some(Err("TypeError: next() takes exactly one argument".to_string()));
+                }
+                let val = args.into_iter().next().unwrap();
+                Some(match val {
+                    v @ Value::Generator(_) => self.eval_method_call_evaled(v, "next", vec![]),
+                    v @ Value::Instance(_) => self.eval_method_call_evaled(v, "__next__", vec![]),
+                    other => Err(format!(
+                        "TypeError: '{}' object is not an iterator",
+                        self.type_name(&other)
+                    )),
+                })
+            }
+            "repr" => {
+                if args.len() != 1 {
+                    return Some(Err("TypeError: repr() takes exactly one argument".to_string()));
+                }
+                let val = args.into_iter().next().unwrap();
+                Some(self.repr_val(&val).map(Value::Str))
+            }
+            "id" => {
+                if args.len() != 1 {
+                    return Some(Err("TypeError: id() takes exactly one argument".to_string()));
+                }
+                let val = args.into_iter().next().unwrap();
+                Some(self.call_type_by_name_evaled("id", vec![val]))
+            }
+            "enumerate" => {
+                // VM は位置引数のみ渡す（`start=` キーワードは compile_call_args が bail）。
+                // ツリーウォークの位置引数 1 個・start=0 の経路と一致。
+                if args.len() != 1 {
+                    return Some(Err(format!(
+                        "TypeError: enumerate() expected 1 positional argument, got {}",
+                        args.len()
+                    )));
+                }
+                let iterable = args.into_iter().next().unwrap();
+                Some(self.enumerate_core(iterable, 0))
+            }
+            "zip" => Some(self.zip_core(args)),
+            "getenv" => {
+                if args.is_empty() || args.len() > 2 {
+                    return Some(Err(
+                        "TypeError: getenv() takes 1 or 2 arguments (name[, default])".to_string(),
+                    ));
+                }
+                let mut it = args.into_iter();
+                let name = match it.next().unwrap() {
+                    Value::Str(s) => s,
+                    other => {
+                        return Some(Err(format!(
+                            "TypeError: getenv() name must be str, not '{}'",
+                            self.type_name(&other)
+                        )))
+                    }
+                };
+                let default = match it.next() {
+                    Some(Value::Str(s)) => s,
+                    Some(other) => {
+                        return Some(Err(format!(
+                            "TypeError: getenv() default must be str, not '{}'",
+                            self.type_name(&other)
+                        )))
+                    }
+                    None => String::new(),
+                };
+                Some(Ok(Value::Str(std::env::var(&name).unwrap_or(default))))
+            }
             _ => None,
         }
+    }
+
+    /// enumerate のコア: 評価済みの反復対象と開始値からタプル列（`(index, value)`）の
+    /// Generator を作る。CallArg 版（`eval_builtin_ident_call`）と評価済み版（VM の
+    /// `eval_builtin_evaled`）で共有し、意味論の分岐を防ぐ。
+    pub(crate) fn enumerate_core(&mut self, iterable: Value, start: i64) -> Result<Value, String> {
+        let items = self.collect_iterable(iterable)?;
+        let tuples: Vec<Value> = items
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let idx = start + i as i64;
+                let type_str = self.type_name(&v).to_string();
+                Value::Tuple(Rc::new(TupleData::new(
+                    vec![Value::Int(idx), v],
+                    vec!["int".to_string(), type_str],
+                )))
+            })
+            .collect();
+        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+            values: tuples,
+            index: 0,
+        }))))
+    }
+
+    /// zip のコア: 評価済みの反復対象群から、最短長ぶんのタプル列の Generator を作る。
+    /// CallArg 版と評価済み版で共有する。
+    pub(crate) fn zip_core(&mut self, iters_vals: Vec<Value>) -> Result<Value, String> {
+        let mut iters: Vec<Vec<Value>> = Vec::new();
+        for v in iters_vals {
+            iters.push(self.collect_iterable(v)?);
+        }
+        if iters.is_empty() {
+            return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                values: vec![],
+                index: 0,
+            }))));
+        }
+        let min_len = iters.iter().map(|it| it.len()).min().unwrap_or(0);
+        let tuples: Vec<Value> = (0..min_len)
+            .map(|i| {
+                let vals: Vec<Value> = iters.iter().map(|it| it[i].clone()).collect();
+                let types: Vec<String> =
+                    vals.iter().map(|v| self.type_name(v).to_string()).collect();
+                Value::Tuple(Rc::new(TupleData::new(vals, types)))
+            })
+            .collect();
+        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+            values: tuples,
+            index: 0,
+        }))))
     }
 
     pub(crate) fn eval_builtin_ident_call(
@@ -369,28 +489,8 @@ impl Interpreter {
                     }
                     None => 0i64,
                 };
-                let items = match self.collect_iterable(positional.into_iter().next().unwrap()) {
-                    Ok(v) => v,
-                    Err(e) => return Some(Err(e)),
-                };
-                let tuples: Vec<Value> = items
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, v)| {
-                        let idx = start + i as i64;
-                        let type_str = self.type_name(&v).to_string();
-                        Value::Tuple(Rc::new(TupleData::new(
-                            vec![Value::Int(idx), v],
-                            vec!["int".to_string(), type_str],
-                        )))
-                    })
-                    .collect();
-                Some(Ok(Value::Generator(Rc::new(RefCell::new(
-                    GeneratorState {
-                        values: tuples,
-                        index: 0,
-                    },
-                )))))
+                let iterable = positional.into_iter().next().unwrap();
+                Some(self.enumerate_core(iterable, start))
             }
             "zip" => {
                 for arg in args.iter() {
@@ -400,41 +500,14 @@ impl Interpreter {
                         ));
                     }
                 }
-                let mut iters: Vec<Vec<Value>> = Vec::new();
+                let mut iters_vals: Vec<Value> = Vec::new();
                 for arg in args.iter() {
-                    let v = match self.eval(arg.expr()) {
-                        Ok(v) => v,
+                    match self.eval(arg.expr()) {
+                        Ok(v) => iters_vals.push(v),
                         Err(e) => return Some(Err(e)),
-                    };
-                    let items = match self.collect_iterable(v) {
-                        Ok(v) => v,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    iters.push(items);
+                    }
                 }
-                if iters.is_empty() {
-                    return Some(Ok(Value::Generator(Rc::new(RefCell::new(
-                        GeneratorState {
-                            values: vec![],
-                            index: 0,
-                        },
-                    )))));
-                }
-                let min_len = iters.iter().map(|it| it.len()).min().unwrap_or(0);
-                let tuples: Vec<Value> = (0..min_len)
-                    .map(|i| {
-                        let vals: Vec<Value> = iters.iter().map(|it| it[i].clone()).collect();
-                        let types: Vec<String> =
-                            vals.iter().map(|v| self.type_name(v).to_string()).collect();
-                        Value::Tuple(Rc::new(TupleData::new(vals, types)))
-                    })
-                    .collect();
-                Some(Ok(Value::Generator(Rc::new(RefCell::new(
-                    GeneratorState {
-                        values: tuples,
-                        index: 0,
-                    },
-                )))))
+                Some(self.zip_core(iters_vals))
             }
             "getenv" => {
                 if args.is_empty() || args.len() > 2 {

@@ -30,6 +30,9 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 8. **#4 メソッド呼び出し機構の軽量化** — VM 呼び出しの高速バインド経路（単純シグネチャは `bind_args` の
    Vec 確保・名前 clone・`params.clone()`・copy/cast パスを飛ばし直接バッファへ束縛）。method_hot 1.13→1.61x・
    method_body 1.22→1.64x。コピー意味論は不変（self deep_copy 省略は escape 健全性のため不採用）。
+9. **#6 その他組み込みの VM 化** — 純粋組み込み `next`/`repr`/`id`/`enumerate`/`zip`/`getenv` を `CallBuiltin`
+   （`eval_builtin_evaled`・enumerate/zip はコア共有）、登録済み型コンストラクタ（int/str/…）を通常の
+   `LoadGlobal`+`Call`（`call_type_by_name_evaled` へ委譲・グローバル shadow に健全）で対象化。enumerate/zip 支配 1.49x。
 
 ### 残り（番号付き）
 **Phase V の残り**
@@ -40,7 +43,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 **VM カバレッジ拡大（独立）**
 4. ~~メソッド呼び出し機構の軽量化~~ 【✅ 完了】（高速バインド経路で method_hot 1.61x・method_body 1.64x）。
 5. ~~添字 `obj[i]`・コレクションリテラル（list/dict/set/tuple）の VM 化~~ 【✅ 完了】（デバッガ REPL のフォールバックも減った）。
-6. **その他組み込み**（enumerate/zip/str/int 等）の `CallBuiltin` 拡張。
+6. ~~その他組み込み（enumerate/zip/str/int 等）の `CallBuiltin` 拡張~~ 【✅ 完了】（純粋6種＝`CallBuiltin`・型コンストラクタ＝`LoadGlobal`+`Call` 委譲。enumerate/zip 支配 1.49x）。
 7. **テンプレート実体化の Chunk メモ化**（現状は毎回再コンパイル, §2.2）。
 8. **ジェネレータ本体の VM 化**（eager 据置のまま §2.7）。
 9. **async の VM 対応**（D5 share-nothing 維持）。

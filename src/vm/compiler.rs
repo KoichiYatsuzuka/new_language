@@ -23,21 +23,34 @@ use super::op::Op;
 /// VM の `Call` op で解決できない呼び先名（純粋 builtin・型コンストラクタ）。
 /// これらは `eval_builtin_ident_call` で特別扱いされるか、グローバル `Value::Type` として
 /// 別セマンティクスで呼ばれるため、コンパイル時に弾いてツリーウォークへフォールバックする。
-/// VM 内で評価済み引数から直接呼べる組み込み（`eval_builtin_evaled` が扱う集合）。
+/// VM 内で評価済み引数から直接呼べる純粋組み込み（`eval_builtin_evaled` が扱う集合）。
 /// `for x in range(n)` や `print(...)` を含む関数を VM に載せられるようにする。
+/// キーワード/可変長引数を伴う呼び出しは `compile_call_args` が bail するので、ここに
+/// 挙げた名前でも純粋な位置引数の呼び出しだけが `CallBuiltin` になる（＝評価済み引数で
+/// 意味論が一致する形のみ）。
+///
+/// 型コンストラクタ（int/str/… は `Value::Type` グローバル）は**ここに含めない**。
+/// 通常のグローバル呼び出し（`LoadGlobal`+`Call`）に流し、`call_value_evaled` の
+/// `Value::Type` アーム＝`call_type_by_name_evaled` へ委譲する（ツリーウォークと同一経路・
+/// ユーザーが同名をグローバル shadow しても `LoadGlobal` が拾うので健全）。
 fn is_vm_builtin(name: &str) -> bool {
-    matches!(name, "print" | "range" | "len")
+    matches!(
+        name,
+        "print" | "range" | "len" | "next" | "repr" | "id" | "enumerate" | "zip" | "getenv"
+    )
 }
 
+/// VM が呼び先として扱えず、ツリーウォークへ bail すべき組み込み名。
+/// - `eval_builtin_ident_call` 専用の builtin のうち **`eval_builtin_evaled` が扱わない**もの
+///   （IO・flat リスト・parse_ar 等）。`is_vm_builtin` の集合はここより先に判定されるので重複不要。
+/// - `Value::Type` グローバルとして**登録されていない**型名（`tuple`/`list`/`type`/`byte`）。
+///   これらはツリーウォークでも `NameError`（呼び出し不可）なので、bail して同じ挙動にする。
+///   登録済みの型コンストラクタ（int/str/… は `LoadGlobal`+`Call` で解決）はここに含めない。
 fn is_builtin_callee(name: &str) -> bool {
     matches!(
         name,
-        // eval_builtin_ident_call の各アーム（グローバルに存在しない純粋 builtin）
-        "print" | "next" | "repr" | "range" | "len" | "create_flat_int_list" | "flat_get_int"
-            | "flat_set_int" | "id" | "open" | "close" | "enumerate" | "zip" | "getenv" | "parse_ar"
-            // 型コンストラクタ（Value::Type グローバル・別経路）
-            | "int" | "uint" | "str" | "float" | "complex" | "bool" | "dict" | "set" | "tuple"
-            | "list" | "function" | "slice" | "type" | "byte"
+        "create_flat_int_list" | "flat_get_int" | "flat_set_int" | "open" | "close" | "parse_ar"
+            | "tuple" | "list" | "type" | "byte"
     )
 }
 

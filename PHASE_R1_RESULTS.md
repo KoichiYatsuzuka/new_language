@@ -560,8 +560,49 @@ V-B のメソッド呼び出しは `exec_fn_evaled` の一般経路（`bind_args
 
 ---
 
+# タスク #6 — その他組み込み（enumerate/zip/next/repr/id/getenv ＋ 型コンストラクタ）の VM 化
+
+V-D では `print`/`range`/`len` のみが `CallBuiltin` で VM 実行され、それ以外の組み込み・型コンストラクタを
+含む関数は丸ごとフォールバックしていた。本タスクで **純粋組み込み6種**と**登録済み型コンストラクタ**を
+VM 経路に載せ、対象関数を大幅に拡大した。
+
+## 実装
+| 変更 | ファイル | 内容 |
+|---|---|---|
+| **純粋組み込みの拡張** | [eval/builtins.rs](src/interpreter/eval/builtins.rs) | `eval_builtin_evaled` に `next`/`repr`/`id`/`enumerate`/`zip`/`getenv` を追加（`eval_builtin_ident_call` の対応アームと**同一意味論**）。`enumerate`/`zip` は**コアを共有ヘルパ `enumerate_core`/`zip_core` に抽出**し、CallArg 版（ツリーウォーク）と評価済み版（VM）が同一実装を呼ぶ形にして意味論の分岐を封じた |
+| **is_vm_builtin 拡張** | [vm/compiler.rs](src/vm/compiler.rs) | `CallBuiltin` を発行する純粋組み込み集合を `print`/`range`/`len` から6種追加。キーワード/可変長引数は `compile_call_args` が bail するので、位置引数の形だけが `CallBuiltin` になる |
+| **型コンストラクタは LoadGlobal+Call に開放** | [vm/compiler.rs](src/vm/compiler.rs) | `is_builtin_callee`（bail 集合）から**登録済み型コンストラクタ**（int/uint/str/float/complex/bool/dict/set/function/slice）を除外。これらは通常のグローバル呼び出し（`LoadGlobal`+`Call`）に流れ、`call_value_evaled` の `Value::Type` アーム＝`call_type_by_name_evaled` へ委譲される（ツリーウォークの `eval_type_constructor_call` と同一経路）。**`CallBuiltin` を使わない**理由: ユーザーが同名をグローバル shadow した場合も `LoadGlobal` が実バインディングを拾うので健全（`CallBuiltin` だと組み込みが常に勝ってしまう） |
+
+## 健全性判断: 型コンストラクタは `CallBuiltin` にしない
+当初 int/str 等を `is_vm_builtin` に入れて `CallBuiltin`→`call_type_by_name_evaled` へ委譲したが、
+**`list`/`tuple`/`type`/`byte` は `Value::Type` グローバルとして未登録**（ツリーウォークでは `list("abc")` が
+`NameError`）なのに VM だけ成功して**分岐**が生じた。修正: 型コンストラクタは `LoadGlobal`+`Call` に流す。
+- 登録済み（int/str/…）→ `LoadGlobal` が `Value::Type` を解決 → `call_type_by_name_evaled`（ツリーウォーク一致）。
+- 未登録（list/tuple/type/byte）→ `is_builtin_callee` に残して bail。`LoadGlobal` の欠落名は `NameError: '{name}' is not defined`
+  でツリーウォークと同一だが、確実性のため bail してツリーウォークに委ねる。
+- ローカル shadow（`let str = …`）はコンパイラの `slots` 判定が `LoadLocal` を優先＝ツリーウォーク一致。
+
+## 検証
+- `cargo test`（`--vm=auto`）→ **672 passed / 0 failed**。
+- 手動 A/B（`--vm=off` vs `--vm=auto`）で**完全一致**: enumerate/zip の for 反復・`str(42)`/`int("7")`/`float("3.5")`/
+  `bool(0)`/`complex(2,3)` 型コンストラクタ・`repr`・`set([...])` 重複排除・`next(custom_iter)`・`getenv` フォールバック・
+  **エラーパス一致**（`int("xyz")`→ValueError・`list("abc")`→NameError がトレースバック含め両モード同一）。
+- 例題回帰: basics/collections/typing/exceptions の決定的例 **35 件**＋組み込み利用例で off/auto 一致。`--vm=force` で
+  対象関数が実際に VM コンパイルされる（bail していない）ことを確認。
+- `cargo build` / 追加 clippy 警告 0。
+
+## 速度（`--vm=off` vs `--vm=auto`、best-of-2、release）
+| ベンチ | 内容 | off | auto | VM 倍率 |
+|---|---|---|---|---|
+| **builtins**（enumerate+zip 反復の `work` を 40万回） | for enumerate/zip + 算術 | 5.79s | 3.88s | **1.49x** |
+
+- **1.49x**。enumerate/zip を含む `work` は V-D まで丸ごとフォールバックしていたのが VM に載り、for の Generator 高速パス＋
+  型特化算術＋ループ制御ジャンプ化が効く。
+
+---
+
 ## 次に効くレバー
-1. **その他組み込み**（`enumerate`/`zip`/`str`/`int` 等）の VM 化で更に対象拡大（#6）。
+1. ~~その他組み込み（enumerate/zip/str/int 等）の VM 化~~ 【✅ 完了】（純粋6種＋型コンストラクタを LoadGlobal+Call/CallBuiltin で対象化, 1.49x）。
 3. **V-F 最適化** — peephole・superinstruction・単型算術命令・R0-A エスケープ解析。
 4. **`Value::Str(String)` → `Rc<str>`（§7.4 その2）** — 文字列読みごとのヒープ確保を refcount bump に。
 5. **強制バイトコード（D2）への移行** — 全構文カバー後にツリーウォークのフォールバックを撤去し
