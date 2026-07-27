@@ -38,4 +38,6 @@ pub struct Chunk {
     pub n_locals: usize,
     /// 非同期タスクブロック（`AsyncSubmit(idx)` が参照, タスク #9）。async を含まない関数では空。
     pub async_blocks: Vec<AsyncBlock>,
+    /// `LoadGlobal` のグローバル索引キャッシュ（#11）。`(slot_epoch, scopes[0] index)` を焼く。
+    pub global_caches: Vec<crate::ast::SlotCache>,
 }

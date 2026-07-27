@@ -90,10 +90,27 @@ fn exec_op(
             let v = buf[base + *s as usize].clone();
             buf.push(v);
         }
-        Op::LoadGlobal(ni) => {
+        Op::LoadGlobal(ni, ci) => {
+            // #11: グローバル索引キャッシュ。ヒット時は名前ハッシュ引きを飛ばし slot 直読み。
+            let cache = &chunk.global_caches[*ci as usize];
+            let epoch = interp.vm_slot_epoch();
+            if let Some(idx) = cache.get(epoch) {
+                if let Some(v) = interp.vm_global_by_slot(idx) {
+                    buf.push(v);
+                    return Ok(Flow::Next);
+                }
+                // 想定外（index 失効）は名前引きへフォールバック。
+            }
             let name = &chunk.names[*ni as usize];
-            match interp.vm_get_global(name) {
-                Some(v) => buf.push(v),
+            match interp.vm_global_slot_of(name) {
+                Some(idx) => {
+                    cache.fill(epoch, idx as u32);
+                    // 直前に解決した index からそのまま読む（None は理論上起きない）。
+                    match interp.vm_global_by_slot(idx) {
+                        Some(v) => buf.push(v),
+                        None => return Err(format!("NameError: '{name}' is not defined")),
+                    }
+                }
                 None => return Err(format!("NameError: '{name}' is not defined")),
             }
         }

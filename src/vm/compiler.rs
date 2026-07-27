@@ -85,6 +85,8 @@ struct Compiler {
     n_locals: usize,
     /// 非同期タスクブロック（`AsyncSubmit(idx)` が index で参照, タスク #9）。
     async_blocks: Vec<crate::vm::chunk::AsyncBlock>,
+    /// `LoadGlobal` のグローバル索引キャッシュ（#11）。emit ごとに1本割り当てる。
+    global_caches: Vec<crate::ast::SlotCache>,
 }
 
 /// ループ1つ分の break/continue ジャンプ先。`continue` は `continue_target` へ、
@@ -232,6 +234,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         temps_in_use: 0,
         n_locals: n as usize,
         async_blocks: Vec::new(),
+        global_caches: Vec::new(),
     };
 
     for stmt in body {
@@ -249,6 +252,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         local_names,
         n_locals: c.n_locals,
         async_blocks: c.async_blocks,
+        global_caches: c.global_caches,
     })
 }
 
@@ -273,6 +277,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         temps_in_use: 0,
         n_locals: 0,
         async_blocks: Vec::new(),
+        global_caches: Vec::new(),
     };
     match stmt {
         Stmt::Expr(e) => {
@@ -296,6 +301,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         local_names: Vec::new(),
         n_locals: c.n_locals,
         async_blocks: Vec::new(),
+        global_caches: c.global_caches,
     })
 }
 
@@ -809,6 +815,14 @@ impl Compiler {
         }
     }
 
+    /// `LoadGlobal` を index キャッシュ付きで emit する（#11）。name プールとキャッシュ枠を確保。
+    fn emit_load_global(&mut self, name: &str) {
+        let ni = self.add_name(name);
+        let ci = self.global_caches.len() as u32;
+        self.global_caches.push(crate::ast::SlotCache::default());
+        self.emit(Op::LoadGlobal(ni, ci));
+    }
+
     fn add_name(&mut self, name: &str) -> u32 {
         let idx = self.names.len() as u32;
         self.names.push(name.to_string());
@@ -926,8 +940,7 @@ impl Compiler {
         if let Some(&slot) = self.slots.get(target) {
             self.emit(Op::LoadLocal(slot));
         } else {
-            let ni = self.add_name(target);
-            self.emit(Op::LoadGlobal(ni));
+            self.emit_load_global(target);
         }
         self.emit(Op::AsyncSubmit(idx));
         Some(())
@@ -1461,9 +1474,11 @@ impl Compiler {
                         // その他の純粋 builtin・型コンストラクタ・`Self` は非対応。
                         return None;
                     } else {
-                        // グローバル関数呼び出し。
+                        // グローバル関数呼び出し（#11: 索引キャッシュ付き LoadGlobal）。
                         let ni = self.add_name(name);
-                        self.emit(Op::LoadGlobal(ni));
+                        let ci = self.global_caches.len() as u32;
+                        self.global_caches.push(crate::ast::SlotCache::default());
+                        self.emit(Op::LoadGlobal(ni, ci));
                         let mask = self.compile_call_args(args)?;
                         self.emit(Op::Call(args.len() as u16, mask, ni, site));
                     }

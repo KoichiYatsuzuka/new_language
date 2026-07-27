@@ -594,10 +594,21 @@ impl Interpreter {
         }
     }
 
-    /// VM 用: グローバルスコープ（`scopes[0]`）から名前の値を引く。呼び先解決に使う。
+    /// グローバルスコープ（`scopes[0]`）での名前 → slot 番号（#11: VM の LoadGlobal 索引化）。
     /// 呼び出し元スコープを跨がず、トップレベル関数の自由名＝グローバルという規則に一致する。
-    pub(crate) fn vm_get_global(&self, name: &str) -> Option<Value> {
-        self.scopes[0].get(name).map(|v| v.get_value())
+    /// グローバルは追記のみで index は安定。`LoadGlobal` の runtime index cache 充填に使う。
+    pub(crate) fn vm_global_slot_of(&self, name: &str) -> Option<usize> {
+        self.scopes[0].slot_of(name)
+    }
+
+    /// グローバル slot 番号から値を読む（`vm_global_slot_of` で解決した index の再利用）。
+    pub(crate) fn vm_global_by_slot(&self, idx: usize) -> Option<Value> {
+        self.scopes[0].slot(idx).map(|v| v.get_value())
+    }
+
+    /// `slot_epoch`（`freeze` で進む）。VM の LoadGlobal cache の世代検証に使う。
+    pub(crate) fn vm_slot_epoch(&self) -> u32 {
+        self.slot_epoch
     }
 
     /// AsyncManager(num_thread=N [, raise_immediately=bool]) コンストラクタ

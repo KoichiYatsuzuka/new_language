@@ -15,8 +15,10 @@ pub enum Op {
     Nil,
     /// locals[slot] を push する（LocalRef / パラメータ / base ローカル読み）。
     LoadLocal(u16),
-    /// グローバル `names[name_idx]` の値を push する（呼び先の解決）。未定義なら NameError。
-    LoadGlobal(u32),
+    /// グローバル変数/関数の読み出し（呼び先の解決・#11 索引化）。未定義なら NameError。フィールド (name_idx, cache_idx)。
+    /// `chunk.global_caches[cache_idx]` に `(slot_epoch, scopes[0] index)` を焼き、以後は名前ハッシュ
+    /// 引きを飛ばして `scopes[0].slot(idx)` へ直接アクセスする（`freeze` で epoch が進めば自動再解決）。
+    LoadGlobal(u32, u32),
     /// pop して locals[slot] へそのまま書き込む（const / 代入 / let-from-immutable / リテラル let）。
     StoreLocal(u16),
     /// pop して deep_copy してから locals[slot] へ（`mut` 宣言: exec は常に deep_copy_value）。
