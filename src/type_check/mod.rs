@@ -11,11 +11,14 @@ mod type_utils;
 mod call_check;
 mod binop;
 mod decorator;
+pub mod annotations;
 
 // 型チェッカの公開 API 面。`FnTypeParam` / `TypeErrorKind` / `TypeWarningKind` は
 // bin からは未使用だが frontend_tests が使うため、narrowing しないこと。
 #[allow(unused_imports)]
 pub use types::{FnTypeParam, InferredType};
+#[allow(unused_imports)]
+pub use annotations::{AstAnnotations, Directive, TypeId};
 #[allow(unused_imports)]
 pub use errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};
 use types::VarInfo;
@@ -41,6 +44,9 @@ pub struct TypeChecker {
     /// 収集された静的型エラー・警告。`check()` が返す前にここへ蓄積される。
     /// 追加は `report_error` / `report_warning`（scope.rs）経由で行う。
     diags: Diagnostics,
+    /// AST 型解決層の注釈（タスク #16・段階(a)）。検査走査中に `infer`/`check` が node-id 索引で
+    /// 型・検査指示を焼く。`check_and_annotate` で取り出す（既存 `check`/`check_with_warnings` は不変）。
+    annotations: annotations::AstAnnotations,
 }
 
 impl TypeChecker {
@@ -111,6 +117,7 @@ impl TypeChecker {
             state: CheckState::new(global),
             registry: builder.build(),
             diags: Diagnostics::default(),
+            annotations: annotations::AstAnnotations::default(),
         }
     }
 
@@ -126,6 +133,20 @@ impl TypeChecker {
         let mut tc = Self::new(stmts);
         tc.check_stmts(stmts);
         tc.diags.into_parts()
+    }
+
+    /// 静的型検査に加えて **AST 型解決層の注釈**（タスク #16・段階(a)）を生成して返す。
+    /// 検査走査中に `infer`/`check` が node-id 索引で型・検査指示を焼いた結果。
+    /// 既存 `check`/`check_with_warnings` は注釈を捨てるため挙動不変（この経路のみ注釈を取り出す）。
+    // 段階(a): 現状はテストで消費。ランタイム経路への配線は段階(b)。
+    #[allow(dead_code)]
+    pub fn check_and_annotate(
+        stmts: &[Stmt],
+    ) -> (Vec<StaticTypeError>, annotations::AstAnnotations) {
+        let mut tc = Self::new(stmts);
+        tc.check_stmts(stmts);
+        let annotations = std::mem::take(&mut tc.annotations);
+        (tc.diags.into_parts().0, annotations)
     }
 }
 

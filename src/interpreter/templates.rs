@@ -584,10 +584,12 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
         },
         Expr::DebugVar(name) => Expr::DebugVar(name.clone()),
         Expr::LocalVar(name) => Expr::LocalVar(name.clone()),
-        Expr::MustBe { expr, guard_type, span } => Expr::MustBe {
+        Expr::MustBe { expr, guard_type, span, node_id } => Expr::MustBe {
             expr: Box::new(subst_expr(expr, type_map)),
             guard_type: guard_type.clone(),
             span: span.clone(),
+            // テンプレ実体化のクローン: node_id を引き継ぐ（テンプレ対応は #16 次段）。
+            node_id: *node_id,
         },
     }
 }

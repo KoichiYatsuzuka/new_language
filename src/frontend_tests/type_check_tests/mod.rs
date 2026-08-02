@@ -27,6 +27,7 @@
 
 mod variables;
 mod access;
+mod annotations;
 mod bridge_mutability;
 mod comparison;
 mod calls;

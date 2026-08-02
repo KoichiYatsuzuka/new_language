@@ -161,7 +161,9 @@ impl TypeChecker {
             }
 
             // --- mustbe 動的型アサーション ---
-            Expr::MustBe { expr, guard_type, span } => self.infer_mustbe(expr, guard_type, span),
+            Expr::MustBe { expr, guard_type, span, node_id } => {
+                self.infer_mustbe(expr, guard_type, span, *node_id)
+            }
             Expr::Block { stmts, return_type } => {
                 self.with_barrier(|c| {
                     c.push_scope();
@@ -338,9 +340,22 @@ impl TypeChecker {
 
     /// `expr mustbe Type` の型を推論する。解決した型を返し、コレクション要素型や
     /// 関数シグネチャは実行時に検査されないため警告する。
-    fn infer_mustbe(&mut self, expr: &Expr, guard_type: &str, span: &Span) -> InferredType {
+    fn infer_mustbe(
+        &mut self,
+        expr: &Expr,
+        guard_type: &str,
+        span: &Span,
+        node_id: u32,
+    ) -> InferredType {
         self.infer(expr);
         let resolved = InferredType::from_ann(guard_type).unwrap_or(InferredType::Unresolved);
+        // ── AST 型解決層（#16・段階(a)）──
+        // `mustbe` は実行時に対象型で動的検査する（不一致で raise）。よって:
+        //   解決型テーブル = 確定後の型（guard_type）／ 検査指示 = CheckBefore(その型)。
+        let tid = self.annotations.intern(resolved.clone());
+        self.annotations.set_resolved(node_id, resolved.clone());
+        self.annotations
+            .set_directive(node_id, super::annotations::Directive::CheckBefore(tid));
         // コレクション型パラメータ・関数シグネチャは実行時に未チェック → 警告
         let warn_kind = match &resolved {
             InferredType::ListOf(_) => Some(TypeWarningKind::MustBeElemTypeUnchecked {

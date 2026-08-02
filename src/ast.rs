@@ -542,6 +542,9 @@ pub enum Expr {
         guard_type: String,
         /// エラー報告に使用する位置情報。
         span: Span,
+        /// AST 型解決層の node-id（タスク #16）。パーサが per-module 採番。0 = 未採番。
+        /// 型検査が `annotations` へ型・検査指示を焼く際のキー。
+        node_id: u32,
     },
     /// デバッガ名前空間アクセス: `dbg::name`。デバッガ REPL 内でのみ有効。
     DebugVar(String),

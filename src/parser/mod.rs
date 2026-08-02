@@ -77,6 +77,9 @@ pub struct Parser {
     module_cache: HashMap<(String, PathBuf), Vec<Stmt>>,
     /// 循環 import 検出用: 現在読み込み中のモジュールパスのセット。
     loading: HashSet<PathBuf>,
+    /// AST 型解決層の node-id 採番カウンタ（タスク #16・段階(a)）。annotatable な Expr を
+    /// 構築するたびに `next_node_id()` で採番する。per-module（このパーサ）ローカルで 1 始まり。
+    node_counter: u32,
 }
 
 impl Parser {
@@ -140,7 +143,14 @@ impl Parser {
             root_dir: resolved,
             module_cache: HashMap::new(),
             loading: HashSet::new(),
+            node_counter: 0,
         }
+    }
+
+    /// AST 型解決層の node-id を1つ採番する（タスク #16）。1 始まり（0 = 未採番）。
+    fn next_node_id(&mut self) -> u32 {
+        self.node_counter += 1;
+        self.node_counter
     }
 
     /// 現在位置のトークンへの参照を返す。

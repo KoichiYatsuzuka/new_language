@@ -110,10 +110,12 @@ impl Parser {
         if *self.current() == Token::MustBe {
             self.advance();
             let guard_type = self.parse_mustbe_type()?;
+            let node_id = self.next_node_id();
             return Ok(Expr::MustBe {
                 expr: Box::new(left),
                 guard_type,
                 span,
+                node_id,
             });
         }
         if *self.current() == Token::In {

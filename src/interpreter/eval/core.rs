@@ -157,7 +157,7 @@ impl Interpreter {
                 let result = self.value_is_type(&val, type_name);
                 Ok(Value::Bool(if *negated { !result } else { result }))
             }
-            Expr::MustBe { expr, guard_type, span } => {
+            Expr::MustBe { expr, guard_type, span, .. } => {
                 let val = self.eval(expr)?;
                 let outer = mustbe_outer_type(guard_type);
                 if self.value_is_type(&val, &outer) {
