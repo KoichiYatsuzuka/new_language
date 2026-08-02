@@ -638,7 +638,7 @@ fn expr_to_value(expr: &Expr) -> Value {
                 ("attr", Value::Str(attr.clone())),
             ],
         ),
-        Expr::Subscript { object, index } => ns(
+        Expr::Subscript { object, index, .. } => ns(
             "ExprSubscript",
             vec![
                 ("object", expr_to_value(object)),

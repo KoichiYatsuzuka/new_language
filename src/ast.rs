@@ -413,6 +413,8 @@ pub enum Expr {
         attr: String,
         span: Span,
         cache: AttrCache,
+        /// AST 型解決層の node-id（タスク #16）。パーサが per-module 採番。0 = 未採番。
+        node_id: u32,
     },
     /// トレイト修飾アクセス `object::Trait.attr`。特定のトレイト実装のメソッドを明示的に呼び出す。
     TraitAccess {
@@ -426,6 +428,8 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
         span: Span,
+        /// AST 型解決層の node-id（タスク #16）。パーサが per-module 採番。0 = 未採番。
+        node_id: u32,
     },
     /// 単項演算 `op operand`（例: `-x`, `not x`, `~x`）。
     UnaryOp { op: UnaryOp, operand: Box<Expr> },
@@ -436,6 +440,8 @@ pub enum Expr {
         args: Vec<CallArg>,
         span: Span,
         cache: NativeCallCache,
+        /// AST 型解決層の node-id（タスク #16）。0 = 未採番。
+        node_id: u32,
     },
     /// テンプレート型引数適用: `expr[T1, T2]` — テンプレート値に具体的な型引数を与える。
     /// `Call` 式の `func` として使用する。単独の値としては無効。
@@ -444,7 +450,7 @@ pub enum Expr {
         type_args: Vec<String>,
     },
     /// 添字アクセス: `expr[index]` — 辞書やリストなどのインデックスルックアップ。
-    Subscript { object: Box<Expr>, index: Box<Expr> },
+    Subscript { object: Box<Expr>, index: Box<Expr>, node_id: u32 },
     /// スライス式: `begin:end` または `begin:end:step`。
     /// 添字 `expr[begin:end:step]` の中でのみ生成される。
     /// begin/end は Optional[Index]、step は Optional[int]。
@@ -517,6 +523,8 @@ pub enum Expr {
         type_name: String,
         /// エラー報告に使用する位置情報。
         span: Span,
+        /// AST 型解決層の node-id（タスク #16）。0 = 未採番。
+        node_id: u32,
     },
     /// 型ガード式: `expr is TypeName` または `expr is not TypeName`。
     /// ランタイムでは `Bool` を返す。型検査器は直後の `if` 分岐内でオペランドの型を絞り込む。
@@ -531,6 +539,8 @@ pub enum Expr {
         type_name: String,
         /// エラー報告に使用する位置情報。
         span: Span,
+        /// AST 型解決層の node-id（タスク #16）。0 = 未採番。
+        node_id: u32,
     },
     /// 動的型アサーション: `expr mustbe Type`。
     /// 実行時に型チェックを行い、一致しなければ `TypeError` を raise する。

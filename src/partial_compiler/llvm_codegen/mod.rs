@@ -426,7 +426,7 @@ fn expr_eligible(expr: &Expr) -> bool {
         Expr::Call { func, args, .. } =>
             expr_eligible(func) && args.iter().all(|a| matches!(a, CallArg::Positional(e) if expr_eligible(e))),
         Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => expr_eligible(object),
-        Expr::Subscript { object, index } => expr_eligible(object) && expr_eligible(index),
+        Expr::Subscript { object, index, .. } => expr_eligible(object) && expr_eligible(index),
         Expr::IsType { expr, .. } => expr_eligible(expr),
         Expr::TemplateInstantiate { base, .. } => expr_eligible(base),
         // Control-flow expressions (block_return / loop_yield inside these is also handled)

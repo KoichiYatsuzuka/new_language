@@ -25,6 +25,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 attr: a.attr.to_string(),
                 span: make_span(filename),
                 cache: Default::default(),
+                node_id: 0, // #16: 合成/変換コード（注釈対象外）
             })
         }
 
@@ -38,6 +39,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: 0, // #16: py-converter は未採番（0=注釈対象外）
             })
         }
 
@@ -73,6 +75,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                     left: Box::new(result),
                     right: Box::new(right),
                     span,
+                    node_id: 0, // #16: py-converter は未採番
                 };
             }
             Ok(result)
@@ -91,6 +94,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: 0, // #16: py-converter は未採番（0=注釈対象外）
             })
         }
 
@@ -117,6 +121,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 args,
                 span: crate::token::Span::unknown(),
                 cache: Default::default(),
+                node_id: 0, // #16: py-converter は未採番
             })
         }
 
@@ -126,6 +131,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             Ok(Expr::Subscript {
                 object: Box::new(obj),
                 index: Box::new(idx),
+                node_id: 0, // #16: py-converter は未採番
             })
         }
 

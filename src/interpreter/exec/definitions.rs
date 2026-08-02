@@ -227,6 +227,7 @@ impl Interpreter {
                         attr: "value".to_string(),
                         span: crate::token::Span::unknown(),
                         cache: Default::default(),
+                        node_id: 0, // #16: 合成/変換コード（注釈対象外）
                     },
                     value: Expr::Ident("value".to_string()),
                 }];
@@ -301,6 +302,7 @@ impl Interpreter {
                 attr: "value".to_string(),
                 span: crate::token::Span::unknown(),
                 cache: Default::default(),
+                node_id: 0, // #16: 合成/変換コード（注釈対象外）
             },
             value: Expr::Ident("value".to_string()),
         }];

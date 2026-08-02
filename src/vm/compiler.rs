@@ -452,7 +452,7 @@ fn scan_shadow_expr(
             }
         }
         Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => rec!(object),
-        Expr::Subscript { object, index } => {
+        Expr::Subscript { object, index, .. } => {
             rec!(object);
             rec!(index);
         }
@@ -640,7 +640,7 @@ fn collect_expr_decls(
             }
         }
         Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => rec!(object),
-        Expr::Subscript { object, index } => {
+        Expr::Subscript { object, index, .. } => {
             rec!(object);
             rec!(index);
         }
@@ -1123,7 +1123,7 @@ impl Compiler {
                     self.emit(Op::SetAttr(ni));
                 }
                 // `obj[i] = value` — tree-walk は value(rhs) を先に評価するので temp に退避して順序を合わせる。
-                Expr::Subscript { object, index } => {
+                Expr::Subscript { object, index, .. } => {
                     let vtmp = self.alloc_temp()?;
                     self.compile_expr(value)?; // value を先に評価
                     self.emit(Op::StoreLocal(vtmp));
@@ -1495,7 +1495,7 @@ impl Compiler {
                 }
             }
             // ── 添字・コレクションリテラル（タスク #5） ──
-            Expr::Subscript { object, index } => {
+            Expr::Subscript { object, index, .. } => {
                 self.compile_expr(object)?;
                 self.compile_expr(index)?;
                 self.emit(Op::Subscript);

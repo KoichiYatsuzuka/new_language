@@ -409,6 +409,7 @@ impl Parser {
                     attr: fname.clone(),
                     span: Span::unknown(),
                     cache: Default::default(),
+                    node_id: 0, // #16: 合成 __init__ の代入先（注釈対象外）
                 },
                 value: Expr::Ident(fname.clone()),
             });

@@ -37,6 +37,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             };
         }
         Ok(left)
@@ -57,6 +58,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             };
         }
         Ok(left)
@@ -95,6 +97,7 @@ impl Parser {
                 negated: false,
                 type_name,
                 span,
+                node_id: self.next_node_id(),
             });
         }
         if *self.current() == Token::IsNot {
@@ -105,6 +108,7 @@ impl Parser {
                 negated: true,
                 type_name,
                 span,
+                node_id: self.next_node_id(),
             });
         }
         if *self.current() == Token::MustBe {
@@ -126,6 +130,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             });
         }
         if *self.current() == Token::NotIn {
@@ -136,6 +141,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             });
         }
         let op = match self.current() {
@@ -156,6 +162,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             });
         }
         Ok(left)
@@ -176,6 +183,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             };
         }
         Ok(left)
@@ -195,6 +203,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             };
         }
         Ok(left)
@@ -214,6 +223,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             };
         }
         Ok(left)
@@ -239,6 +249,7 @@ impl Parser {
                     left: Box::new(left),
                     right: Box::new(right),
                     span,
+                    node_id: self.next_node_id(),
                 };
             } else {
                 break;
@@ -268,6 +279,7 @@ impl Parser {
                     left: Box::new(left),
                     right: Box::new(right),
                     span,
+                    node_id: self.next_node_id(),
                 };
             } else {
                 break;
@@ -298,6 +310,7 @@ impl Parser {
                     left: Box::new(left),
                     right: Box::new(right),
                     span,
+                    node_id: self.next_node_id(),
                 };
             } else {
                 break;
@@ -353,6 +366,7 @@ impl Parser {
                 left: Box::new(base),
                 right: Box::new(exp),
                 span,
+                node_id: self.next_node_id(),
             })
         } else {
             Ok(base)
@@ -425,6 +439,7 @@ impl Parser {
                         args,
                         span: call_span,
                         cache: Default::default(),
+                        node_id: self.next_node_id(),
                     };
                 }
                 Token::Dot => {
@@ -436,6 +451,7 @@ impl Parser {
                         attr,
                         span: dot_span,
                         cache: Default::default(),
+                        node_id: self.next_node_id(),
                     };
                 }
                 Token::ColonColon => {
@@ -463,6 +479,7 @@ impl Parser {
                         object: Box::new(expr),
                         type_name,
                         span,
+                        node_id: self.next_node_id(),
                     };
                     // ループを継続して `.method()` などをチェーン可能にする
                 }
@@ -558,6 +575,7 @@ impl Parser {
             Ok(Expr::Subscript {
                 object: Box::new(expr),
                 index: Box::new(index),
+                node_id: self.next_node_id(),
             })
         }
     }
@@ -612,6 +630,7 @@ impl Parser {
                         args: vec![crate::ast::CallArg::Positional(expr)],
                         span: span.clone(),
                         cache: Default::default(),
+                        node_id: self.next_node_id(),
                     });
                 }
             }
@@ -624,6 +643,8 @@ impl Parser {
             left: Box::new(acc),
             right: Box::new(e),
             span: span.clone(),
+            // クロージャ内で self 不可＝node-id 未採番（合成連結。#16 注釈対象外で可）。
+            node_id: 0,
         });
         Ok(result)
     }

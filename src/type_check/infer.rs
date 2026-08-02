@@ -49,14 +49,22 @@ impl TypeChecker {
             }
 
             // --- 属性アクセス ---
-            Expr::Attr { object, attr, span, .. } => self.infer_attr(object, attr, span),
+            Expr::Attr { object, attr, span, node_id, .. } => {
+                self.infer_attr(object, attr, span, *node_id)
+            }
             Expr::TraitAccess { object, .. } => {
                 self.infer(object);
                 InferredType::Unresolved
             }
 
             // --- 関数呼び出し ---
-            Expr::Call { func, args, .. } => self.infer_call(func, args),
+            Expr::Call { func, args, node_id, .. } => {
+                let result = self.infer_call(func, args);
+                // ── AST 型解決層（#16）── 呼び出しの**結果型**を焼く。
+                // 呼び先シンボル参照＋引数ごとの (型, 検査指示) の構造化注釈は次段（スキーマ拡張）。
+                self.annotations.set_resolved(*node_id, result.clone());
+                result
+            }
 
             // --- 識別子 ---
             // LocalRef はリゾルバ（型検査後に走る）が付ける解決済みローカル参照。
@@ -83,11 +91,17 @@ impl TypeChecker {
                 left,
                 right,
                 span,
+                node_id,
             } => {
                 let lt = self.infer(left);
                 let rt = self.infer(right);
                 self.check_binop(op, &lt, &rt, span.clone());
-                Self::infer_binop_result(op, &lt, &rt)
+                let result = Self::infer_binop_result(op, &lt, &rt);
+                // ── AST 型解決層（#16）── 二項演算の**結果型**を焼く（plan A: 特化 op 判定用）。
+                // オペランド型は各オペランド node の解決型として別途参照できる。検査指示は無し
+                // （動的なら実行時 apply_bin_fast が緩衝。overload 呼び出しは Call 側で扱う）。
+                self.annotations.set_resolved(*node_id, result.clone());
+                result
             }
 
             // --- テンプレート実体化 ---
@@ -118,10 +132,10 @@ impl TypeChecker {
                     }
                 }
             }
-            Expr::Subscript { object, index } => {
+            Expr::Subscript { object, index, node_id } => {
                 let obj_ty = self.infer(object);
                 let idx_ty = self.infer(index);
-                match obj_ty {
+                let result = match obj_ty {
                     InferredType::ListOf(elem) | InferredType::FixedListOf(elem) | InferredType::ListLikeOf(elem) => *elem,
                     InferredType::SetOf(elem) => *elem,
                     InferredType::DictOf(_, val) => *val,
@@ -139,7 +153,10 @@ impl TypeChecker {
                         if matches!(idx_ty, InferredType::Int) { InferredType::Str } else { InferredType::Unresolved }
                     }
                     _ => InferredType::Unresolved,
-                }
+                };
+                // ── AST 型解決層（#16）── 添字アクセスの**要素結果型**を焼く。
+                self.annotations.set_resolved(*node_id, result.clone());
+                result
             }
             Expr::Slice { begin, end, step } => {
                 if let Some(e) = begin {
@@ -155,8 +172,10 @@ impl TypeChecker {
             }
 
             // --- 型ガード式 ---
-            Expr::IsType { expr, .. } => {
+            Expr::IsType { expr, node_id, .. } => {
                 self.infer(expr);
+                // `is` は Bool を返す（検査自体なので指示は不要・narrowing は直後 if 分岐で反映）。
+                self.annotations.set_resolved(*node_id, InferredType::Bool);
                 InferredType::Bool
             }
 
@@ -237,8 +256,17 @@ impl TypeChecker {
                 });
                 Self::ann_or_unresolved(return_type)
             }
-            Expr::Cast { type_name, .. } => {
-                InferredType::from_ann(type_name).unwrap_or(InferredType::Unresolved)
+            Expr::Cast { type_name, node_id, .. } => {
+                // 挙動不変: object は従来通り infer しない（この arm は type_name のみ使う）。
+                let resolved =
+                    InferredType::from_ann(type_name).unwrap_or(InferredType::Unresolved);
+                // ── AST 型解決層（#16）── cast は動的ディスパッチ（__cast__/変換）を伴うので
+                // 解決型＝ターゲット型、検査指示＝CheckBefore(ターゲット型)。
+                let tid = self.annotations.intern(resolved.clone());
+                self.annotations.set_resolved(*node_id, resolved.clone());
+                self.annotations
+                    .set_directive(*node_id, super::annotations::Directive::CheckBefore(tid));
+                resolved
             }
             Expr::DebugVar(_) => InferredType::Unresolved,
         }
@@ -255,7 +283,13 @@ impl TypeChecker {
 
     /// 属性アクセス `obj.attr` の型を推論する。`Any`/`Union`/`Result` への
     /// アクセスは診断し、名前空間メンバーはその型を直接返す。
-    fn infer_attr(&mut self, object: &Expr, attr: &str, span: &Span) -> InferredType {
+    fn infer_attr(
+        &mut self,
+        object: &Expr,
+        attr: &str,
+        span: &Span,
+        node_id: u32,
+    ) -> InferredType {
         let obj_ty = self.infer(object);
         let class_name_opt = if let InferredType::NamedInstance(cls) = &obj_ty {
             Some(cls.clone())
@@ -282,18 +316,31 @@ impl TypeChecker {
             InferredType::Intersection(_) => {}
             _ => {}
         }
-        if let Some(class_name) = class_name_opt {
-            self.check_member_access_static(&class_name, attr, Some(span.clone()));
+        if let Some(class_name) = &class_name_opt {
+            self.check_member_access_static(class_name, attr, Some(span.clone()));
         }
-        // Namespace (imported module) — return the member's type directly.
-        if let InferredType::Namespace(ref members) = obj_ty {
-            return members.get(attr).cloned().unwrap_or(InferredType::Unresolved);
-        }
-        // PyNamespace: unknown members are dynamically typed → Any.
-        if let InferredType::PyNamespace(ref members) = obj_ty {
-            return members.get(attr).cloned().unwrap_or(InferredType::Any);
-        }
-        InferredType::Unresolved
+        // 戻り値（従来通り）: Namespace/PyNamespace はメンバ型、それ以外は Unresolved。
+        let ret = if let InferredType::Namespace(ref members) = obj_ty {
+            members.get(attr).cloned().unwrap_or(InferredType::Unresolved)
+        } else if let InferredType::PyNamespace(ref members) = obj_ty {
+            members.get(attr).cloned().unwrap_or(InferredType::Any)
+        } else {
+            InferredType::Unresolved
+        };
+        // ── AST 型解決層（#16）── 属性アクセスの型を焼く。**戻り値は不変**（下流の型検査に影響しない）。
+        // NamedInstance のフィールドは checker が Unresolved を返すが、registry から実型を引いて注釈に載せる
+        // （backend が具象フィールド型＋(class,field)→byte-offset を導出できる）。
+        let annot_ty = match &class_name_opt {
+            Some(class) => self
+                .registry
+                .class_field_details(class)
+                .and_then(|m| m.get(attr))
+                .map(|(_, ty)| ty.clone())
+                .unwrap_or_else(|| ret.clone()),
+            None => ret.clone(),
+        };
+        self.annotations.set_resolved(node_id, annot_ty);
+        ret
     }
 
     /// 単項演算子の結果型を推論する。`Any`/`Union` オペランドは診断する。

@@ -108,7 +108,7 @@ impl Interpreter {
                 }
                 Ok(Value::Set(Rc::new(RefCell::new(vals))))
             }
-            Expr::Subscript { object, index } => {
+            Expr::Subscript { object, index, .. } => {
                 let obj = self.eval(object)?;
                 let key = self.eval(index)?;
                 self.eval_subscript(obj, key)
@@ -176,7 +176,7 @@ impl Interpreter {
                     }
                 }
             }
-            Expr::Call { func, args, span, cache } => self.eval_call(func, args, span, cache),
+            Expr::Call { func, args, span, cache, .. } => self.eval_call(func, args, span, cache),
             Expr::Cast { object, type_name, .. } => self.eval_cast(object, type_name),
         }
     }

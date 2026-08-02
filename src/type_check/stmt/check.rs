@@ -388,7 +388,7 @@ impl TypeChecker {
 
     /// 条件式が `is Type` ガードなら `(変数名, 型名, 否定か, span)` を返す。
     fn detect_type_guard(cond: &Expr) -> Option<(String, String, bool, Span)> {
-        let Expr::IsType { expr, type_name, negated, span } = cond else {
+        let Expr::IsType { expr, type_name, negated, span, .. } = cond else {
             return None;
         };
         let Expr::Ident(var_name) = expr.as_ref() else {

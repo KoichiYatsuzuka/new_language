@@ -451,11 +451,12 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
         // テンプレート関数はリゾルバの対象外なので LocalRef は現れないが、網羅性のため保持する。
         Expr::LocalRef { name, slot } => Expr::LocalRef { name: name.clone(), slot: *slot },
         Expr::List(items) => Expr::List(items.iter().map(|e| subst_expr(e, type_map)).collect()),
-        Expr::Attr { object, attr, span, .. } => Expr::Attr {
+        Expr::Attr { object, attr, span, node_id, .. } => Expr::Attr {
             object: Box::new(subst_expr(object, type_map)),
             attr: attr.clone(),
             span: span.clone(),
             cache: Default::default(),
+            node_id: *node_id,
         },
         Expr::TraitAccess {
             object,
@@ -471,29 +472,33 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             left,
             right,
             span,
+            node_id,
         } => Expr::BinOp {
             op: op.clone(),
             left: Box::new(subst_expr(left, type_map)),
             right: Box::new(subst_expr(right, type_map)),
             span: span.clone(),
+            node_id: *node_id,
         },
         Expr::UnaryOp { op, operand } => Expr::UnaryOp {
             op: op.clone(),
             operand: Box::new(subst_expr(operand, type_map)),
         },
-        Expr::Call { func, args, span, .. } => Expr::Call {
+        Expr::Call { func, args, span, node_id, .. } => Expr::Call {
             func: Box::new(subst_expr(func, type_map)),
             args: args.iter().map(|a| subst_call_arg(a, type_map)).collect(),
             span: span.clone(),
             cache: Default::default(),
+            node_id: *node_id,
         },
         Expr::TemplateInstantiate { base, type_args } => Expr::TemplateInstantiate {
             base: Box::new(subst_expr(base, type_map)),
             type_args: type_args.iter().map(|t| subst_type(t, type_map)).collect(),
         },
-        Expr::Subscript { object, index } => Expr::Subscript {
+        Expr::Subscript { object, index, node_id } => Expr::Subscript {
             object: Box::new(subst_expr(object, type_map)),
             index: Box::new(subst_expr(index, type_map)),
+            node_id: *node_id,
         },
         Expr::Slice { begin, end, step } => Expr::Slice {
             begin: begin.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
@@ -512,11 +517,13 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             negated,
             type_name,
             span,
+            node_id,
         } => Expr::IsType {
             expr: Box::new(subst_expr(expr, type_map)),
             negated: *negated,
             type_name: subst_type(type_name, type_map),
             span: span.clone(),
+            node_id: *node_id,
         },
         Expr::Block { stmts, return_type } => Expr::Block {
             stmts: subst_stmts(stmts, type_map),
@@ -577,10 +584,12 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             object,
             type_name,
             span,
+            node_id,
         } => Expr::Cast {
             object: Box::new(subst_expr(object, type_map)),
             type_name: subst_type(type_name, type_map),
             span: span.clone(),
+            node_id: *node_id,
         },
         Expr::DebugVar(name) => Expr::DebugVar(name.clone()),
         Expr::LocalVar(name) => Expr::LocalVar(name.clone()),

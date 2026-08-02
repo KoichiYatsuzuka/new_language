@@ -40,6 +40,7 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
             attr: "message".to_string(),
             span: Span::unknown(),
             cache: Default::default(),
+            node_id: 0, // #16: 合成コード（注釈対象外）
         },
         value: E::Ident("message".to_string()),
     }];
@@ -134,6 +135,7 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
             attr: "value".to_string(),
             span: Span::unknown(),
             cache: Default::default(),
+            node_id: 0, // #16: 合成コード（注釈対象外）
         },
         value: Expr::Ident("value".to_string()),
     }];

@@ -287,7 +287,7 @@ fn rewrite_expr(expr: &mut Expr, base: &HashMap<String, u32>) {
             }
         }
         Expr::TemplateInstantiate { base: b, .. } => rewrite_expr(b, base),
-        Expr::Subscript { object, index } => {
+        Expr::Subscript { object, index, .. } => {
             rewrite_expr(object, base);
             rewrite_expr(index, base);
         }

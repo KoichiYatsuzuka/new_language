@@ -251,7 +251,7 @@ impl<'a> GenCtx<'a> {
                 (r, Ty::Handle)
             }
 
-            Expr::Subscript { object, index } => {
+            Expr::Subscript { object, index, .. } => {
                 let (obj, ot) = self.gen_expr(object);
                 let (idx, it) = self.gen_expr(index);
                 let h1 = self.to_handle(&obj, ot);

@@ -288,7 +288,7 @@ fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
                 collect_refs_expr(v, out);
             }
         }
-        Expr::Subscript { object, index } => {
+        Expr::Subscript { object, index, .. } => {
             collect_refs_expr(object, out);
             collect_refs_expr(index, out);
         }

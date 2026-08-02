@@ -436,7 +436,7 @@ impl Interpreter {
     /// 対応する代入ターゲット:
     /// - `Expr::Attr { object, attr }`: インスタンスフィールドへの代入（可変性・const チェック付き）
     /// - `Expr::TraitAccess { object, trait_name, attr }`: トレイトフィールドへの代入
-    /// - `Expr::Subscript { object, index }`: 辞書への添字代入（型制約チェック付き）
+    /// - `Expr::Subscript { object, index, .. }`: 辞書への添字代入（型制約チェック付き）
     ///
     /// - `target`: 代入先の式（`Attr` / `TraitAccess` / `Subscript`）
     /// - `rhs`: 代入する値（評価済み）
@@ -548,7 +548,7 @@ impl Interpreter {
                 }
                 _ => Err("AttributeError: cannot set trait field on non-instance".to_string()),
             }
-        } else if let Expr::Subscript { object, index } = target {
+        } else if let Expr::Subscript { object, index, .. } = target {
             let obj_val = self.eval(object)?;
             let key = self.eval(index)?;
             self.eval_setitem(obj_val, key, rhs)
