@@ -128,17 +128,10 @@ impl TypeChecker {
         tc.diags.into_parts().0
     }
 
-    /// 文のスライスを静的型検査して、エラーと警告を両方返す。
-    pub fn check_with_warnings(stmts: &[Stmt]) -> (Vec<StaticTypeError>, Vec<StaticTypeWarning>) {
-        let mut tc = Self::new(stmts);
-        tc.check_stmts(stmts);
-        tc.diags.into_parts()
-    }
 
     /// 静的型検査に加えて **AST 型解決層の注釈**（タスク #16・段階(a)）を生成して返す。
     /// 検査走査中に `infer`/`check` が node-id 索引で型・検査指示を焼いた結果。
     /// 既存 `check`/`check_with_warnings` は注釈を捨てるため挙動不変（この経路のみ注釈を取り出す）。
-    // 段階(a): 現状はテストで消費。ランタイム経路への配線は段階(b)。
     #[allow(dead_code)]
     pub fn check_and_annotate(
         stmts: &[Stmt],
@@ -147,6 +140,22 @@ impl TypeChecker {
         tc.check_stmts(stmts);
         let annotations = std::mem::take(&mut tc.annotations);
         (tc.diags.into_parts().0, annotations)
+    }
+
+    /// エラー・警告・**AST 型解決層の注釈**をまとめて返す（ランタイム配線用・main.rs が使う）。
+    /// `check_with_warnings` と同じ検査に注釈生成を加えたもの（同一走査・追加コストは注釈の充填のみ）。
+    pub fn check_program(
+        stmts: &[Stmt],
+    ) -> (
+        Vec<StaticTypeError>,
+        Vec<StaticTypeWarning>,
+        annotations::AstAnnotations,
+    ) {
+        let mut tc = Self::new(stmts);
+        tc.check_stmts(stmts);
+        let annotations = std::mem::take(&mut tc.annotations);
+        let (errors, warnings) = tc.diags.into_parts();
+        (errors, warnings, annotations)
     }
 }
 

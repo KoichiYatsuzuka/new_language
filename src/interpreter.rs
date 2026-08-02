@@ -370,6 +370,10 @@ pub struct Interpreter {
     pub(self) slot_epoch: u32,
     /// バイトコード VM の実行モード（Off/Auto/Force）。CLI `--vm` で設定。既定 Auto（Phase V）。
     pub(crate) vm_mode: crate::vm::VmMode,
+    /// AST 型解決層の注釈（タスク #16）。型検査（`check_program`）が生成し main.rs が注入する。
+    /// メインプログラムの node-id 索引で型・検査指示・CallInfo を引ける。段階(b)/(c) の消費側が参照。
+    /// 既定は空（`Interpreter::new` 直後は注釈なし＝挙動不変。注入されるまで消費側はフォールバック）。
+    pub(crate) annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     /// 関数ごとのコンパイル済み Chunk キャッシュ。キー = `Rc::as_ptr(fn_val)`。
     /// 値 = `(Weak<FnValue>, Some(chunk)=VM 実行 / None=非対応)`。
     /// テンプレート実体化は呼び出しごとに一時的な `Rc<FnValue>` を作って破棄するため、
@@ -485,6 +489,7 @@ impl Interpreter {
             global_slot_cells: Vec::new(),
             slot_epoch: 0,
             vm_mode: crate::vm::VmMode::default(),
+            annotations: std::rc::Rc::new(crate::type_check::AstAnnotations::default()),
             vm_chunks: HashMap::new(),
             vm_gen_chunks: HashMap::new(),
             template_fn_cache: HashMap::new(),
@@ -531,6 +536,12 @@ impl Interpreter {
     /// バイトコード VM の実行モードを設定する（CLI `--vm` から）。
     pub fn set_vm_mode(&mut self, mode: crate::vm::VmMode) {
         self.vm_mode = mode;
+    }
+
+    /// AST 型解決層の注釈（タスク #16）を注入する。`check_program` が生成したものを main.rs が渡す。
+    /// メインプログラムの node-id 索引。段階(b)/(c) の消費側（VM コンパイラ/eval/codegen）が参照する。
+    pub fn set_annotations(&mut self, annotations: std::rc::Rc<crate::type_check::AstAnnotations>) {
+        self.annotations = annotations;
     }
 
     /// CLIパラメータをグローバルスコープの `args` dict として登録する。

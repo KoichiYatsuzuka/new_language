@@ -332,8 +332,8 @@ fn run_program(
         .parse_program()
         .map_err(|e| format!("ParseError: {e}"))?;
 
-    // --- 静的型検査: AST を走査してエラー・警告を収集する ---
-    let (type_errors, type_warnings) = TypeChecker::check_with_warnings(&stmts);
+    // --- 静的型検査: AST を走査してエラー・警告を収集し、AST 型解決層の注釈を生成する（#16 段階(a)） ---
+    let (type_errors, type_warnings, annotations) = TypeChecker::check_program(&stmts);
     for w in &type_warnings {
         eprintln!("Warning: {w}");
     }
@@ -348,6 +348,8 @@ fn run_program(
     // ソーステキストはエラー報告時のスタックトレース表示に使用される
     let mut interp = Interpreter::new();
     interp.set_vm_mode(vm_mode);
+    // AST 型解決層の注釈を注入する（#16）。段階(b)/(c) の消費側が node-id で参照する。
+    interp.set_annotations(std::rc::Rc::new(annotations));
     interp.add_source_text(filename, source);
     // ソースファイルのディレクトリを import 検索パスに追加する
     if let Some(dir) = &source_dir {

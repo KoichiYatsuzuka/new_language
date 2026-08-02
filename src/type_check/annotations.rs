@@ -102,6 +102,11 @@ impl AstAnnotations {
         self.resolved.get(&node_id).copied()
     }
 
+    /// node の解決型を `InferredType` で引く（`resolved`＋`type_of` の合成・消費側の利便用）。
+    pub fn resolved_type(&self, node_id: u32) -> Option<&InferredType> {
+        self.resolved(node_id).and_then(|tid| self.type_of(tid))
+    }
+
     /// node の検査指示を引く（未登録は `Directive::None`）。
     pub fn directive(&self, node_id: u32) -> Directive {
         self.directives.get(&node_id).cloned().unwrap_or(Directive::None)

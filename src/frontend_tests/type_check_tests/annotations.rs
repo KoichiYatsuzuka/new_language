@@ -226,6 +226,88 @@ fn call_info_records_callee_and_arg_types() {
     }
 }
 
+/// 関数本体へ再帰して最初の `let ... = Call(...)` の node_id を返す。
+fn find_call_node_id(stmts: &[Stmt]) -> Option<u32> {
+    for s in stmts {
+        match s {
+            Stmt::Let(_, _, Expr::Call { node_id, .. })
+            | Stmt::Return(Some(Expr::Call { node_id, .. })) => return Some(*node_id),
+            Stmt::FnDef { body, .. } => {
+                if let Some(id) = find_call_node_id(body) {
+                    return Some(id);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+#[test]
+fn call_arg_dynamic_gets_check_before_directive() {
+    // f(a: int) を Any 引数 x で呼ぶ → 引数0に CheckBefore(int)（境界検査）。
+    let src = concat!(
+        "fn f(a: int) -> int:\n",
+        "    return a\n",
+        "fn g(x: Any) -> int:\n",
+        "    let y = f(x)\n",
+        "    return y\n",
+    );
+    let tokens = Lexer::new(src, "").tokenize();
+    let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+    let node_id = find_call_node_id(&stmts).expect("Call node not found");
+    let (_errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let info = ann.call_info(node_id).expect("CallInfo recorded");
+    assert_eq!(info.callee.as_deref(), Some("f"));
+    assert_eq!(info.args.len(), 1);
+    match &info.args[0].directive {
+        Directive::CheckBefore(t) => {
+            assert_eq!(ann.type_of(*t), Some(&InferredType::Int));
+        }
+        other => panic!("expected CheckBefore(int), got {other:?}"),
+    }
+}
+
+#[test]
+fn method_call_arg_dynamic_gets_check_directive() {
+    // c.m(x): m(self, a: int) を Any 引数で呼ぶ → 引数0（self を除いた対応）に CheckBefore(int)。
+    let src = concat!(
+        "class C:\n",
+        "    public:\n",
+        "    fn m(self, a: int) -> int:\n",
+        "        return a\n",
+        "fn g(c: C, x: Any) -> int:\n",
+        "    let y = c.m(x)\n",
+        "    return y\n",
+    );
+    let tokens = Lexer::new(src, "").tokenize();
+    let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+    let node_id = find_call_node_id(&stmts).expect("Call node not found");
+    let (_errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let info = ann.call_info(node_id).expect("CallInfo recorded");
+    assert_eq!(info.callee.as_deref(), Some("m"));
+    assert_eq!(info.args.len(), 1);
+    match &info.args[0].directive {
+        Directive::CheckBefore(t) => assert_eq!(ann.type_of(*t), Some(&InferredType::Int)),
+        other => panic!("expected CheckBefore(int) for method arg, got {other:?}"),
+    }
+}
+
+#[test]
+fn call_arg_static_has_no_check_directive() {
+    // 静的に int を渡す → 検査不要（None）。
+    let src = "fn f(a: int) -> int:\n    return a\nlet y = f(5)\n";
+    let tokens = Lexer::new(src, "").tokenize();
+    let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+    let node_id = match &stmts[1] {
+        Stmt::Let(_, _, Expr::Call { node_id, .. }) => *node_id,
+        other => panic!("expected Call, got {other:?}"),
+    };
+    let (_errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let info = ann.call_info(node_id).expect("CallInfo recorded");
+    assert_eq!(info.args[0].directive, Directive::None);
+}
+
 #[test]
 fn unannotated_node_has_no_directive() {
     // node_id 0（未採番）や注釈のない node は None 相当。
