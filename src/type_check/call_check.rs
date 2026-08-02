@@ -7,7 +7,12 @@ use super::TypeChecker;
 
 impl TypeChecker {
     /// 関数呼び出し式の型を推論し、引数の型・個数・Self 型パラメータを検査する。
-    pub(super) fn infer_call(&mut self, func: &Expr, args: &[CallArg]) -> InferredType {
+    pub(super) fn infer_call(
+        &mut self,
+        func: &Expr,
+        args: &[CallArg],
+        node_id: u32,
+    ) -> InferredType {
         // __freeze__ may only be invoked via the `freeze` keyword, never as a direct call.
         let freeze_span = match func {
             Expr::Attr { attr, span, .. } if attr == "__freeze__" => Some(span.clone()),
@@ -15,7 +20,7 @@ impl TypeChecker {
             _ => {
                 // Not a __freeze__ call — proceed normally.
                 #[allow(clippy::needless_return)]
-                return self.infer_call_inner(func, args);
+                return self.infer_call_inner(func, args, node_id);
             }
         };
         self.report_error(StaticTypeError {
@@ -25,7 +30,7 @@ impl TypeChecker {
         InferredType::Unresolved
     }
 
-    fn infer_call_inner(&mut self, func: &Expr, args: &[CallArg]) -> InferredType {
+    fn infer_call_inner(&mut self, func: &Expr, args: &[CallArg], node_id: u32) -> InferredType {
         // ── Step 1: method-call detection ──────────────────────────────────────
         // Infer the object type exactly once here. This handles:
         //   - NamedInstance: regular instance method calls (obj.method())
@@ -128,6 +133,27 @@ impl TypeChecker {
                     arg_data.push((Some("...".to_string()), list_ty));
                 }
             }
+        }
+
+        // ── AST 型解決層（#16）── Call 構造化注釈を焼く（arg_data・func_name はここで確定済み）。
+        // 呼び先＝シンボル参照（名前）、引数＝(型, 検査指示)。検査指示は現段階 None
+        // （パラメータ型との比較による境界検査判定は次段の精緻化）。
+        {
+            let mut args_ann = Vec::with_capacity(arg_data.len());
+            for (_, ty) in &arg_data {
+                let tid = self.annotations.intern(ty.clone());
+                args_ann.push(super::annotations::ArgAnnotation {
+                    ty: tid,
+                    directive: super::annotations::Directive::None,
+                });
+            }
+            self.annotations.set_call(
+                node_id,
+                super::annotations::CallInfo {
+                    callee: func_name.clone(),
+                    args: args_ann,
+                },
+            );
         }
 
         match func_type {

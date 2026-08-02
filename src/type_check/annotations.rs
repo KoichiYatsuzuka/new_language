@@ -27,7 +27,27 @@ pub enum Directive {
     CheckBefore(TypeId),
 }
 
-/// AST 型解決層の注釈（#16）。node-id 索引の 2 直交テーブル ＋ 型インターン表。
+/// 呼び出し1引数ぶんの注釈（#16・CallInfo の要素）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArgAnnotation {
+    /// 引数式の解決型（型インターン表 index）。
+    pub ty: TypeId,
+    /// この引数を呼び出し前に動的検査するか（境界検査。現段階は既定 `None`・パラメータ型比較は次段）。
+    pub directive: Directive,
+}
+
+/// 呼び出し(Call)の構造化注釈（#16）。`{ 呼び先シンボル参照, 各引数=(型, 検査指示) }`。
+/// 「解決済み CALL 注釈が引数検査指示を持つ」設計に対応（点4 の境界検査をここに畳む）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallInfo {
+    /// 呼び先のシンボル参照。直接 `Ident` 呼び先／メソッド名。動的・複雑式の呼び先は `None`。
+    /// **生ポインタは持たない**（各バックエンドが R4/シンボルで自前解決する）。
+    pub callee: Option<String>,
+    /// 引数ごとの (型, 検査指示)。
+    pub args: Vec<ArgAnnotation>,
+}
+
+/// AST 型解決層の注釈（#16）。node-id 索引の 2 直交テーブル ＋ 型インターン表 ＋ Call 構造化表。
 /// 型検査の走査中に充填し、検査後は**読み取り専用**として各バックエンドが消費する。
 #[derive(Debug, Default)]
 pub struct AstAnnotations {
@@ -37,6 +57,8 @@ pub struct AstAnnotations {
     resolved: HashMap<u32, TypeId>,
     /// 検査指示テーブル: node_id → `Directive`。載っていない node は `Directive::None` 相当。
     directives: HashMap<u32, Directive>,
+    /// Call 構造化表: node_id → `CallInfo`（呼び先シンボル参照＋引数注釈）。
+    calls: HashMap<u32, CallInfo>,
 }
 
 // 段階(a): reader（type_of/resolved/directive/intern_len）はテストで消費。段階(b)/(c) で
@@ -83,6 +105,19 @@ impl AstAnnotations {
     /// node の検査指示を引く（未登録は `Directive::None`）。
     pub fn directive(&self, node_id: u32) -> Directive {
         self.directives.get(&node_id).cloned().unwrap_or(Directive::None)
+    }
+
+    /// node の Call 構造化注釈を記録する（node_id==0 は無視）。
+    pub fn set_call(&mut self, node_id: u32, info: CallInfo) {
+        if node_id == 0 {
+            return;
+        }
+        self.calls.insert(node_id, info);
+    }
+
+    /// node の Call 構造化注釈を引く。
+    pub fn call_info(&self, node_id: u32) -> Option<&CallInfo> {
+        self.calls.get(&node_id)
     }
 
     /// 型インターン表の長さ（テスト・デバッグ用）。

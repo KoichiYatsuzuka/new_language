@@ -59,9 +59,8 @@ impl TypeChecker {
 
             // --- 関数呼び出し ---
             Expr::Call { func, args, node_id, .. } => {
-                let result = self.infer_call(func, args);
-                // ── AST 型解決層（#16）── 呼び出しの**結果型**を焼く。
-                // 呼び先シンボル参照＋引数ごとの (型, 検査指示) の構造化注釈は次段（スキーマ拡張）。
+                let result = self.infer_call(func, args, *node_id);
+                // ── AST 型解決層（#16）── 呼び出しの**結果型**を焼く（CallInfo は infer_call_inner が充填）。
                 self.annotations.set_resolved(*node_id, result.clone());
                 result
             }

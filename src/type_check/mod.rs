@@ -18,7 +18,7 @@ pub mod annotations;
 #[allow(unused_imports)]
 pub use types::{FnTypeParam, InferredType};
 #[allow(unused_imports)]
-pub use annotations::{AstAnnotations, Directive, TypeId};
+pub use annotations::{ArgAnnotation, AstAnnotations, CallInfo, Directive, TypeId};
 #[allow(unused_imports)]
 pub use errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};
 use types::VarInfo;

@@ -205,6 +205,28 @@ fn call_result_type_recorded() {
 }
 
 #[test]
+fn call_info_records_callee_and_arg_types() {
+    let src = "fn f(a: int, b: int) -> int:\n    return a + b\nlet y = f(3, 4)\n";
+    let tokens = Lexer::new(src, "").tokenize();
+    let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
+    let node_id = match &stmts[1] {
+        Stmt::Let(_, _, Expr::Call { node_id, .. }) => *node_id,
+        other => panic!("expected Call, got {other:?}"),
+    };
+    let (errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    let info = ann.call_info(node_id).expect("CallInfo recorded");
+    // 呼び先シンボル参照 = "f"
+    assert_eq!(info.callee.as_deref(), Some("f"));
+    // 引数 2つ・ともに int
+    assert_eq!(info.args.len(), 2);
+    for a in &info.args {
+        assert_eq!(ann.type_of(a.ty), Some(&InferredType::Int));
+        assert_eq!(a.directive, Directive::None);
+    }
+}
+
+#[test]
 fn unannotated_node_has_no_directive() {
     // node_id 0（未採番）や注釈のない node は None 相当。
     let src = "let x: Any = 5\nlet y = x mustbe int\n";
