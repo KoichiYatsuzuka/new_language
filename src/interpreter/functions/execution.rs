@@ -45,7 +45,12 @@ impl Interpreter {
         match self.vm_chunks.get(&key) {
             Some((weak, cached)) if weak.upgrade().is_some() => cached.clone(),
             _ => {
-                let compiled = crate::vm::compile_fn(&fn_val.params, &fn_val.body).map(Rc::new);
+                let compiled = crate::vm::compile_fn(
+                    &fn_val.params,
+                    &fn_val.body,
+                    self.annotations.clone(),
+                )
+                .map(Rc::new);
                 self.vm_chunks
                     .insert(key, (Rc::downgrade(fn_val), compiled.clone()));
                 compiled
@@ -63,7 +68,12 @@ impl Interpreter {
         match self.vm_gen_chunks.get(&key) {
             Some((weak, cached)) if weak.upgrade().is_some() => cached.clone(),
             _ => {
-                let compiled = crate::vm::compile_fn(&gen_fn.params, &gen_fn.body).map(Rc::new);
+                let compiled = crate::vm::compile_fn(
+                    &gen_fn.params,
+                    &gen_fn.body,
+                    self.annotations.clone(),
+                )
+                .map(Rc::new);
                 self.vm_gen_chunks
                     .insert(key, (Rc::downgrade(gen_fn), compiled.clone()));
                 compiled

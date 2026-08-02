@@ -15,6 +15,16 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeId(pub u32);
 
+/// 二項演算のオペランド種別（#16 段階(b)/plan A）。両オペランドが同一プリミティブと静的に確定した
+/// ときのみ記録し、VM が型特化 op（タグ検査・op ディスパッチ省略）を emit する判断に使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOperandKind {
+    /// 両オペランドが `int`。
+    Int,
+    /// 両オペランドが `float`。
+    Float,
+}
+
 /// 実行時型検査の指示（#16・検査指示テーブルの値）。
 // 段階(a): 現状は生成＋テストで消費。ランタイム/codegen での消費は段階(b)/(c)。
 #[allow(dead_code)]
@@ -59,6 +69,8 @@ pub struct AstAnnotations {
     directives: HashMap<u32, Directive>,
     /// Call 構造化表: node_id → `CallInfo`（呼び先シンボル参照＋引数注釈）。
     calls: HashMap<u32, CallInfo>,
+    /// 二項演算のオペランド種別表: node_id → `BinOperandKind`（両オペランド同一プリミティブのときのみ）。
+    binop_kind: HashMap<u32, BinOperandKind>,
 }
 
 // 段階(a): reader（type_of/resolved/directive/intern_len）はテストで消費。段階(b)/(c) で
@@ -123,6 +135,19 @@ impl AstAnnotations {
     /// node の Call 構造化注釈を引く。
     pub fn call_info(&self, node_id: u32) -> Option<&CallInfo> {
         self.calls.get(&node_id)
+    }
+
+    /// 二項演算のオペランド種別を記録する（node_id==0 は無視）。
+    pub fn set_binop_kind(&mut self, node_id: u32, kind: BinOperandKind) {
+        if node_id == 0 {
+            return;
+        }
+        self.binop_kind.insert(node_id, kind);
+    }
+
+    /// 二項演算のオペランド種別を引く（未登録＝両プリミティブ確定でない）。
+    pub fn binop_kind(&self, node_id: u32) -> Option<BinOperandKind> {
+        self.binop_kind.get(&node_id).copied()
     }
 
     /// 型インターン表の長さ（テスト・デバッグ用）。

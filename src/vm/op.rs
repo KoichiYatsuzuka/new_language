@@ -37,6 +37,18 @@ pub enum Op {
     BinLocalLocal(u16, u16, BinOp),
     /// 超命令: `local[a] <op> consts[idx]` を融合。`LoadLocal(a); Const(idx); Bin(op)` と同一。
     BinLocalConst(u16, u32, BinOp),
+    // ── 型特化二項演算（#16 段階(b)/plan A）──
+    // 型検査が両オペランド int/float と確定した箇所で emit。オペランドを **clone せず参照で読み**、
+    // op ディスパッチと汎用フォールバックを畳んだ直接算術を行う（意味論は apply_bin_fast と同一）。
+    // 対応 op は Add/Sub/Mul と比較（Div/Mod/Pow/bit は汎用へ）。想定外の実行時型は保守的に汎用へ委譲。
+    /// `local[a] <op> local[b]`（両 int 確定）。
+    IntBinLL(u16, u16, BinOp),
+    /// `local[a] <op> consts[idx]`（両 int 確定）。
+    IntBinLC(u16, u32, BinOp),
+    /// `local[a] <op> local[b]`（両 float 確定）。
+    FloatBinLL(u16, u16, BinOp),
+    /// `local[a] <op> consts[idx]`（両 float 確定）。
+    FloatBinLC(u16, u32, BinOp),
     /// 単項演算: pop a, push apply_unary_dyn(op, a)。
     Un(UnaryOp),
     /// 属性（フィールド）読み: pop obj, push get_attr_val(obj, names[name_idx], attr_caches[cache_idx])。

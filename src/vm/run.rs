@@ -160,6 +160,67 @@ fn exec_op(
             let r = apply_bin_fast(interp, op, lhs, rhs)?;
             buf.push(r);
         }
+        // 型特化（plan A）: オペランドを参照で読み、int/float 直接算術。想定外型は汎用へ委譲。
+        Op::IntBinLL(a, b, op) => {
+            let r = match (&buf[base + *a as usize], &buf[base + *b as usize]) {
+                (Value::Int(x), Value::Int(y)) => int_binop_specialized(*x, *y, op),
+                _ => None,
+            };
+            match r {
+                Some(v) => buf.push(v),
+                None => {
+                    let l = buf[base + *a as usize].clone();
+                    let rr = buf[base + *b as usize].clone();
+                    let v = apply_bin_fast(interp, op, l, rr)?;
+                    buf.push(v);
+                }
+            }
+        }
+        Op::IntBinLC(a, ci, op) => {
+            let r = match (&buf[base + *a as usize], &chunk.consts[*ci as usize]) {
+                (Value::Int(x), Value::Int(y)) => int_binop_specialized(*x, *y, op),
+                _ => None,
+            };
+            match r {
+                Some(v) => buf.push(v),
+                None => {
+                    let l = buf[base + *a as usize].clone();
+                    let rr = chunk.consts[*ci as usize].clone();
+                    let v = apply_bin_fast(interp, op, l, rr)?;
+                    buf.push(v);
+                }
+            }
+        }
+        Op::FloatBinLL(a, b, op) => {
+            let r = match (&buf[base + *a as usize], &buf[base + *b as usize]) {
+                (Value::Float(x), Value::Float(y)) => float_binop_specialized(*x, *y, op),
+                _ => None,
+            };
+            match r {
+                Some(v) => buf.push(v),
+                None => {
+                    let l = buf[base + *a as usize].clone();
+                    let rr = buf[base + *b as usize].clone();
+                    let v = apply_bin_fast(interp, op, l, rr)?;
+                    buf.push(v);
+                }
+            }
+        }
+        Op::FloatBinLC(a, ci, op) => {
+            let r = match (&buf[base + *a as usize], &chunk.consts[*ci as usize]) {
+                (Value::Float(x), Value::Float(y)) => float_binop_specialized(*x, *y, op),
+                _ => None,
+            };
+            match r {
+                Some(v) => buf.push(v),
+                None => {
+                    let l = buf[base + *a as usize].clone();
+                    let rr = chunk.consts[*ci as usize].clone();
+                    let v = apply_bin_fast(interp, op, l, rr)?;
+                    buf.push(v);
+                }
+            }
+        }
         Op::Un(op) => {
             let a = buf.pop().unwrap();
             let r = interp.apply_unary_dyn(op, a)?;
@@ -418,6 +479,41 @@ fn exec_op(
         }
     }
     Ok(Flow::Next)
+}
+
+/// int 型特化二項演算（plan A）。`apply_bin_fast` の (Int,Int) アームと同一意味論。
+/// Add/Sub/Mul と比較のみ対応（Div/Mod/Pow/bit・ゼロ除算しうる op は `None`＝汎用へ委譲）。
+#[inline]
+fn int_binop_specialized(x: i64, y: i64, op: &BinOp) -> Option<Value> {
+    Some(match op {
+        BinOp::Add => Value::Int(x + y),
+        BinOp::Sub => Value::Int(x - y),
+        BinOp::Mul => Value::Int(x * y),
+        BinOp::Lt => Value::Bool(x < y),
+        BinOp::Gt => Value::Bool(x > y),
+        BinOp::LtEq => Value::Bool(x <= y),
+        BinOp::GtEq => Value::Bool(x >= y),
+        BinOp::Eq => Value::Bool(x == y),
+        BinOp::NotEq => Value::Bool(x != y),
+        _ => return None,
+    })
+}
+
+/// float 型特化二項演算（plan A）。`apply_bin_fast` の (Float,Float) アームと同一意味論。
+#[inline]
+fn float_binop_specialized(x: f64, y: f64, op: &BinOp) -> Option<Value> {
+    Some(match op {
+        BinOp::Add => Value::Float(x + y),
+        BinOp::Sub => Value::Float(x - y),
+        BinOp::Mul => Value::Float(x * y),
+        BinOp::Lt => Value::Bool(x < y),
+        BinOp::Gt => Value::Bool(x > y),
+        BinOp::LtEq => Value::Bool(x <= y),
+        BinOp::GtEq => Value::Bool(x >= y),
+        BinOp::Eq => Value::Bool(x == y),
+        BinOp::NotEq => Value::Bool(x != y),
+        _ => return None,
+    })
 }
 
 /// int/float の算術・順序比較を高速パスで処理し、それ以外は `apply_binop_dyn` へ委譲する。

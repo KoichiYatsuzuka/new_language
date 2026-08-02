@@ -96,10 +96,22 @@ impl TypeChecker {
                 let rt = self.infer(right);
                 self.check_binop(op, &lt, &rt, span.clone());
                 let result = Self::infer_binop_result(op, &lt, &rt);
-                // ── AST 型解決層（#16）── 二項演算の**結果型**を焼く（plan A: 特化 op 判定用）。
-                // オペランド型は各オペランド node の解決型として別途参照できる。検査指示は無し
-                // （動的なら実行時 apply_bin_fast が緩衝。overload 呼び出しは Call 側で扱う）。
+                // ── AST 型解決層（#16）── 二項演算の**結果型**を焼く。
                 self.annotations.set_resolved(*node_id, result.clone());
+                // 両オペランドが同一プリミティブ（int/int・float/float）なら**オペランド種別**も焼く
+                // （plan A: VM が型特化 op でタグ検査・op ディスパッチを省く判断に使う）。
+                let kind = match (&lt, &rt) {
+                    (InferredType::Int, InferredType::Int) => {
+                        Some(super::annotations::BinOperandKind::Int)
+                    }
+                    (InferredType::Float, InferredType::Float) => {
+                        Some(super::annotations::BinOperandKind::Float)
+                    }
+                    _ => None,
+                };
+                if let Some(k) = kind {
+                    self.annotations.set_binop_kind(*node_id, k);
+                }
                 result
             }
 

@@ -60,6 +60,8 @@ struct Compiler {
     names: Vec<String>,
     attr_caches: Vec<crate::ast::AttrCache>,
     spans: Vec<crate::token::Span>,
+    /// AST 型解決層の注釈（#16 段階(b)/plan A）。node-id で型特化 op の判断に使う。空なら特化しない。
+    annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     /// 名前 → slot（base スコープ: パラメータ + トップレベル let/mut/const、宣言順）。
     /// リゾルバの base slot 採番と同順（パラメータ→宣言）なので `LocalRef` と一致する。
     slots: HashMap<String, u16>,
@@ -145,7 +147,11 @@ fn is_user_instance_type(ann: &str) -> bool {
 ///
 /// - `params`: 仮引数（可変長があれば非対応）。
 /// - `body`: 解決済み関数本体（リゾルバが `LocalRef` を付与済み）。
-pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
+pub fn compile_fn(
+    params: &[Param],
+    body: &[Stmt],
+    annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
+) -> Option<Chunk> {
     // `for` ループ変数が外側変数をシャドウする関数は flat-slot モデルで表現できないため諦める。
     if has_for_target_shadow(params, body) {
         return None;
@@ -223,6 +229,7 @@ pub fn compile_fn(params: &[Param], body: &[Stmt]) -> Option<Chunk> {
         names: Vec::new(),
         attr_caches: Vec::new(),
         spans: Vec::new(),
+        annotations,
         slots,
         slot_mut,
         slot_type,
@@ -266,6 +273,8 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         names: Vec::new(),
         attr_caches: Vec::new(),
         spans: Vec::new(),
+        // デバッグ経路は注釈を持たない（空＝型特化しない）。
+        annotations: std::rc::Rc::new(crate::type_check::AstAnnotations::default()),
         slots: HashMap::new(),
         slot_mut: Vec::new(),
         slot_type: Vec::new(),
@@ -796,19 +805,49 @@ impl Compiler {
         }
     }
 
-    /// 二項演算 `left <op> right` を超命令へ融合できれば emit して `true`（#2）。
+    /// 二項演算 `left <op> right` を超命令へ融合できれば emit して `true`（#2 ＋ plan A 型特化）。
     /// `local <op> local` → `BinLocalLocal`、`local <op> リテラル` → `BinLocalConst`。
+    /// さらに注釈が「両オペランド int/float 確定」かつ対応 op（Add/Sub/Mul・比較）なら**型特化 op**
+    /// （`IntBinLL`/`FloatBinLC` 等）を emit（タグ検査・op ディスパッチ・clone を削減）。
+    /// 型特化 op は実行時型が想定外なら**汎用へフォールバック**するので、注釈が古くても健全。
     /// 融合できなければ `false`（呼び出し側が通常経路 `LoadLocal…; Bin` を出す）。意味論は不変。
-    fn try_emit_bin_fused(&mut self, left: &Expr, right: &Expr, op: &BinOp) -> bool {
+    fn try_emit_bin_fused(&mut self, left: &Expr, right: &Expr, op: &BinOp, node_id: u32) -> bool {
+        use crate::type_check::BinOperandKind as K;
         let Some(a) = self.as_local(left) else {
             return false;
         };
+        // 型特化の対象 op（ゼロ除算しうる/ビット演算は汎用のまま）。
+        let specializable = matches!(
+            op,
+            BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::LtEq
+                | BinOp::GtEq
+                | BinOp::Eq
+                | BinOp::NotEq
+        );
+        let kind = if specializable {
+            self.annotations.binop_kind(node_id)
+        } else {
+            None
+        };
         if let Some(b) = self.as_local(right) {
-            self.emit(Op::BinLocalLocal(a, b, op.clone()));
+            match kind {
+                Some(K::Int) => self.emit(Op::IntBinLL(a, b, op.clone())),
+                Some(K::Float) => self.emit(Op::FloatBinLL(a, b, op.clone())),
+                None => self.emit(Op::BinLocalLocal(a, b, op.clone())),
+            };
             true
         } else if let Some(cv) = Self::as_const_lit(right) {
             let ci = self.add_const(cv);
-            self.emit(Op::BinLocalConst(a, ci, op.clone()));
+            match kind {
+                Some(K::Int) => self.emit(Op::IntBinLC(a, ci, op.clone())),
+                Some(K::Float) => self.emit(Op::FloatBinLC(a, ci, op.clone())),
+                None => self.emit(Op::BinLocalConst(a, ci, op.clone())),
+            };
             true
         } else {
             false
@@ -1406,7 +1445,7 @@ impl Compiler {
                 self.compile_expr(operand)?;
                 self.emit(Op::Un(op.clone()));
             }
-            Expr::BinOp { op, left, right, .. } => match op {
+            Expr::BinOp { op, left, right, node_id, .. } => match op {
                 // 短絡評価: `a and b` / `a or b` は Python 意味論（値を返す）で書き下す。
                 BinOp::And => {
                     self.compile_expr(left)?;
@@ -1423,8 +1462,8 @@ impl Compiler {
                     self.patch_jump(j, end);
                 }
                 _ => {
-                    // 超命令融合（#2）: 単純オペランドなら LoadLocal…+Bin を1命令に。
-                    if !self.try_emit_bin_fused(left, right, op) {
+                    // 超命令融合（#2）＋型特化（plan A）: 単純オペランドなら LoadLocal…+Bin を1命令に。
+                    if !self.try_emit_bin_fused(left, right, op, *node_id) {
                         self.compile_expr(left)?;
                         self.compile_expr(right)?;
                         self.emit(Op::Bin(op.clone()));
