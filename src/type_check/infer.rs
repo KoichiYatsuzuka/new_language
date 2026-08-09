@@ -330,28 +330,30 @@ impl TypeChecker {
         if let Some(class_name) = &class_name_opt {
             self.check_member_access_static(class_name, attr, Some(span.clone()));
         }
-        // 戻り値（従来通り）: Namespace/PyNamespace はメンバ型、それ以外は Unresolved。
-        let ret = if let InferredType::Namespace(ref members) = obj_ty {
+        // Namespace/PyNamespace はメンバ型、それ以外は解決不能。
+        let fallback = if let InferredType::Namespace(ref members) = obj_ty {
             members.get(attr).cloned().unwrap_or(InferredType::Unresolved)
         } else if let InferredType::PyNamespace(ref members) = obj_ty {
             members.get(attr).cloned().unwrap_or(InferredType::Any)
         } else {
             InferredType::Unresolved
         };
-        // ── AST 型解決層（#16）── 属性アクセスの型を焼く。**戻り値は不変**（下流の型検査に影響しない）。
-        // NamedInstance のフィールドは checker が Unresolved を返すが、registry から実型を引いて注釈に載せる
-        // （backend が具象フィールド型＋(class,field)→byte-offset を導出できる）。
-        let annot_ty = match &class_name_opt {
+        // ── AST 型解決層（#16）── 属性アクセスの型。`NamedInstance` のフィールドは registry から実型を引く。
+        // **この実型をそのまま戻り値にする**（2026-08-10）。以前は注釈にだけ焼いて戻り値は `Unresolved` に
+        // していたが、それだと `p.x * p.x` が `Unresolved` 同士の `BinOp` になり `binop_kind` が付かず、
+        // VM の型特化 op もネイティブの型付き生成も効かなかった（#16 c-2 の結論「律速は型検査の解像度」）。
+        // フィールドでない属性（メソッド名など）は registry に無いので従来どおり `fallback`。
+        let resolved = match &class_name_opt {
             Some(class) => self
                 .registry
                 .class_field_details(class)
                 .and_then(|m| m.get(attr))
                 .map(|(_, ty)| ty.clone())
-                .unwrap_or_else(|| ret.clone()),
-            None => ret.clone(),
+                .unwrap_or(fallback),
+            None => fallback,
         };
-        self.annotations.set_resolved(node_id, annot_ty);
-        ret
+        self.annotations.set_resolved(node_id, resolved.clone());
+        resolved
     }
 
     /// 単項演算子の結果型を推論する。`Any`/`Union` オペランドは診断する。
