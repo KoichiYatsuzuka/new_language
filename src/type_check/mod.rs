@@ -124,6 +124,9 @@ impl TypeChecker {
     }
 
     /// 文のスライスを静的型検査して、収集されたすべての [`StaticTypeError`] を返す。
+    // バイナリの実行経路は `check_program`（実行）/ `check_and_annotate`（`--compile`）を使うため、
+    // 現在この最小版はテストからのみ呼ばれる。
+    #[allow(dead_code)]
     pub fn check(stmts: &[Stmt]) -> Vec<StaticTypeError> {
         let mut tc = Self::new(stmts);
         tc.check_stmts(stmts);
@@ -133,8 +136,10 @@ impl TypeChecker {
 
     /// 静的型検査に加えて **AST 型解決層の注釈**（タスク #16・段階(a)）を生成して返す。
     /// 検査走査中に `infer`/`check` が node-id 索引で型・検査指示を焼いた結果。
-    /// 既存 `check`/`check_with_warnings` は注釈を捨てるため挙動不変（この経路のみ注釈を取り出す）。
-    #[allow(dead_code)]
+    /// 既存 `check` は注釈を捨てるため挙動不変（この経路のみ注釈を取り出す）。
+    ///
+    /// `--compile`（ネイティブ部分コンパイル・#16 段階(c)）が使う。警告は出さない
+    /// （`--compile` は従来 `check` を呼んでおり警告非表示だったため、その挙動を維持する）。
     pub fn check_and_annotate(
         stmts: &[Stmt],
     ) -> (Vec<StaticTypeError>, annotations::AstAnnotations) {

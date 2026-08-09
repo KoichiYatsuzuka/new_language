@@ -11,6 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Param, Stmt};
+use crate::type_check::AstAnnotations;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -357,6 +358,64 @@ struct GenCtx<'a> {
     typed_ok: HashSet<String>,
     // symbol → (param Tys, ret Ty) for typed candidates (Int/Float only).
     typed_sigs: HashMap<String, (Vec<Ty>, Ty)>,
+
+    // ── AST 型解決層の注釈（#16 段階(c)） ─────────────────────────────────────
+    // 型検査が node-id 索引で焼いた解決型テーブル。`field_ty` などの自前型再導出を
+    // これに置き換えていく。
+    annotations: &'a AstAnnotations,
+    // 属性アクセスの型解決について、自前導出と注釈の一致状況（段階 c-2 の検証用）。
+    attr_stats: AttrResolutionStats,
+    // `Ty::Handle` へ落ちた式のうち注釈が具象型を持つものの内訳（段階 c-2 の検証用）。
+    expr_stats: HandleFallbackStats,
+}
+
+/// `Expr` が annotatable（パーサが node-id を採番する変種）なら node-id を返す。
+/// 0（未採番＝合成 AST・テンプレート置換由来）も含めてそのまま返す。
+fn annotatable_node_id(expr: &Expr) -> Option<u32> {
+    match expr {
+        Expr::Attr { node_id, .. }
+        | Expr::Subscript { node_id, .. }
+        | Expr::Call { node_id, .. }
+        | Expr::BinOp { node_id, .. }
+        | Expr::Cast { node_id, .. }
+        | Expr::MustBe { node_id, .. }
+        | Expr::IsType { node_id, .. } => Some(*node_id),
+        _ => None,
+    }
+}
+
+/// 属性アクセスの型解決における「自前導出 vs 注釈」の一致状況（#16 段階 c-2）。
+/// `AR_ANNOT_DIFF=1` で内訳を出力し、注釈へ完全移行（c-3）してよいかを判断するために使う。
+#[derive(Default)]
+pub(super) struct AttrResolutionStats {
+    /// 双方が同じ `Ty` を返した。
+    pub agree: usize,
+    /// 双方が `Some` だが型が食い違った（**要調査**・0 であるべき）。
+    pub conflict: usize,
+    /// 自前導出のみ解決できた（注釈が受け手のクラスを解決できていない）。
+    pub legacy_only: usize,
+    /// 注釈のみ解決できた（＝注釈へ移行すると**新たに型特化できる**箇所）。
+    pub annot_only: usize,
+    /// どちらも解決できなかった（汎用 `CB_GET_ATTR` 経路）。
+    pub neither: usize,
+}
+
+/// ノード種別ごとの int/float 件数（`HandleFallbackStats` の要素）。
+#[derive(Default)]
+pub(super) struct IntFloatCount {
+    pub int: usize,
+    pub float: usize,
+}
+
+/// codegen が `Ty::Handle`（ボックス化ハンドル）へ落としたが、AST 型解決層の注釈は
+/// 具象プリミティブ型を持っていた式の内訳（#16 段階 c-2 の実測用）。
+/// これが 段階 c-3 で「注釈消費により型特化できる」上限を表す。
+#[derive(Default)]
+pub(super) struct HandleFallbackStats {
+    pub attr: IntFloatCount,
+    pub subscript: IntFloatCount,
+    pub call: IntFloatCount,
+    pub other: IntFloatCount,
 }
 
 
@@ -529,7 +588,15 @@ fn ann_has_intersection(params: &[crate::ast::Param], return_type: Option<&str>)
     }) || return_type.is_some_and(|ann| ann.contains("Intersection["))
 }
 
-pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
+/// モジュールの LLVM IR テキストとエクスポート関数一覧を生成する。
+///
+/// `annotations` は型検査が生成した AST 型解決層の注釈（#16 段階(c)）。node-id は
+/// `stmts` を作ったパーサの採番であり、ここで扱うのも同じトップレベル定義のみ
+/// （import 済みモジュール body は `Stmt::Import` に入れ子で対象外）＝ node-id 空間が一致する。
+pub fn generate_llvm_module(
+    stmts: &[Stmt],
+    annotations: &AstAnnotations,
+) -> Option<(String, Vec<FnExport>)> {
     struct EligibleFn<'a> {
         /// Symbol prefix used in the DLL (e.g. "dot" or "Vec2D__dot").
         symbol:      String,
@@ -658,7 +725,7 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
         .map(|f| f.symbol.clone())
         .collect();
 
-    let mut ctx = GenCtx::new(&module_fns, &fn_sigs, &class_fields, &class_fields_ord, &all_class_fields, &fast_fns);
+    let mut ctx = GenCtx::new(&module_fns, &fn_sigs, &class_fields, &class_fields_ord, &all_class_fields, &fast_fns, annotations);
 
     for f in &eligible {
         // Set current_class so field reads on 'self' are type-specialised.
@@ -727,6 +794,27 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
     }
     if typed_count > 0 {
         eprintln!("NativeLib: {typed_count} typed entry point(s) (zero-TLS ABI)");
+    }
+
+    // 属性型解決の「自前導出 vs 注釈」内訳（#16 段階 c-2 の検証用・既定では無出力）。
+    if std::env::var("AR_ANNOT_DIFF").is_ok_and(|v| !v.is_empty()) {
+        eprintln!(
+            "AnnotDiff(table): resolved={} interned={}",
+            annotations.resolved_len(), annotations.intern_len()
+        );
+        let s = &ctx.attr_stats;
+        eprintln!(
+            "AnnotDiff(attr): agree={} conflict={} legacy_only={} annot_only={} neither={}",
+            s.agree, s.conflict, s.legacy_only, s.annot_only, s.neither
+        );
+        let e = &ctx.expr_stats;
+        eprintln!(
+            "AnnotDiff(handle-fallback with concrete annotation): attr={}i/{}f subscript={}i/{}f call={}i/{}f other={}i/{}f",
+            e.attr.int, e.attr.float,
+            e.subscript.int, e.subscript.float,
+            e.call.int, e.call.float,
+            e.other.int, e.other.float
+        );
     }
 
     let header = if cfg!(target_os = "windows") {

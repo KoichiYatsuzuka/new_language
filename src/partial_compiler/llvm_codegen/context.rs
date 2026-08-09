@@ -12,6 +12,7 @@ impl<'a> GenCtx<'a> {
         class_fields_ord:  &'a HashMap<String, Vec<(String, Ty)>>,
         all_class_fields:  &'a HashMap<String, Vec<(String, String)>>,
         fast_fns:          &'a HashSet<String>,
+        annotations:       &'a crate::type_check::AstAnnotations,
     ) -> Self {
         Self {
             str_globals: String::new(),
@@ -40,11 +41,17 @@ impl<'a> GenCtx<'a> {
             typed_failed:          false,
             typed_ok:              HashSet::new(),
             typed_sigs:            HashMap::new(),
+            annotations,
+            attr_stats:            AttrResolutionStats::default(),
+            expr_stats:            HandleFallbackStats::default(),
         }
     }
 
     /// Look up the native type of a field access on a known class instance.
     /// Returns Some(Ty) only if the field is typed int/float in the class definition.
+    ///
+    /// **自前の型再導出**（#16 段階(c) で置換対象）。受け手が `self` か、型注釈から
+    /// クラスが判るパラメータのときしか解決できない。
     pub(super) fn field_ty(&self, object: &Expr, attr: &str) -> Option<Ty> {
         let class_name = match object {
             Expr::Ident(n) if n == "self" => self.current_class.as_deref(),
@@ -52,6 +59,42 @@ impl<'a> GenCtx<'a> {
             _ => None,
         }?;
         self.class_fields.get(class_name)?.get(attr).copied()
+    }
+
+    /// AST 型解決層の注釈（#16）から属性アクセスの型を引く。
+    ///
+    /// 型検査は `Expr::Attr` の node-id に**フィールドの宣言型**を焼いている
+    /// （受け手が `NamedInstance` と解決できたとき・`infer_attr`）。`field_ty` と違い
+    /// 受け手の式の形を問わないため、局所変数や入れ子属性（`a.b.c`）でも解決できる。
+    ///
+    /// `Ty::Int` / `Ty::Float` に対応する型のみ返す（`field_ty` と同じ判定粒度に揃える）。
+    /// node_id==0（未採番＝合成 AST・テンプレート置換）や未注釈は `None`。
+    pub(super) fn field_ty_annotated(&self, node_id: u32) -> Option<Ty> {
+        use crate::type_check::InferredType;
+        match self.annotations.resolved_type(node_id)? {
+            InferredType::Int => Some(Ty::Int),
+            InferredType::Float => Some(Ty::Float),
+            _ => None,
+        }
+    }
+
+    /// 属性アクセスの型を決める（#16 段階 c-2）。
+    ///
+    /// 現段階は**既存の自前導出（`field_ty`）を優先**して IR を不変に保ちつつ、
+    /// 注釈由来（`field_ty_annotated`）との一致状況を集計する。集計は
+    /// `AR_ANNOT_DIFF=1` で標準エラーへ出す（既定では何も出力しない）。
+    /// 注釈へ完全移行するのは差分の内訳を確認した後（段階 c-3）。
+    pub(super) fn field_ty_resolved(&mut self, object: &Expr, attr: &str, node_id: u32) -> Option<Ty> {
+        let legacy = self.field_ty(object, attr);
+        let annotated = self.field_ty_annotated(node_id);
+        match (legacy, annotated) {
+            (Some(a), Some(b)) if a == b => self.attr_stats.agree += 1,
+            (Some(_), Some(_)) => self.attr_stats.conflict += 1,
+            (Some(_), None) => self.attr_stats.legacy_only += 1,
+            (None, Some(_)) => self.attr_stats.annot_only += 1,
+            (None, None) => self.attr_stats.neither += 1,
+        }
+        legacy
     }
 
     pub(super) fn fresh_reg(&mut self) -> String { let r = self.reg; self.reg += 1; format!("%_r{r}") }

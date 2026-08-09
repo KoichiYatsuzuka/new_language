@@ -503,7 +503,12 @@ fn compile_module(path: &str) {
             std::process::exit(1);
         });
 
-    let type_errors = TypeChecker::check(&stmts);
+    // 型検査と同時に AST 型解決層の注釈を生成する（#16 段階(c)）。
+    // ネイティブ codegen はこの注釈を消費して自前の型再導出を置き換える。
+    // node-id はこのモジュールのパーサが採番したもので、codegen が扱うのも同じ
+    // トップレベル定義のみ（import 済みモジュールの body は `Stmt::Import` に入れ子で
+    // 型検査も codegen も踏み込まない）＝ node-id 空間が一致する。
+    let (type_errors, annotations) = TypeChecker::check_and_annotate(&stmts);
     if !type_errors.is_empty() {
         for e in &type_errors {
             eprintln!("{e}");
@@ -511,7 +516,7 @@ fn compile_module(path: &str) {
         std::process::exit(1);
     }
 
-    match partial_compiler::compile(&source, &stmts, std::path::Path::new(path)) {
+    match partial_compiler::compile(&source, &stmts, std::path::Path::new(path), &annotations) {
         Ok((tlc, tls)) => {
             println!("Compiled : {}", tlc.display());
             println!("Stub     : {}", tls.display());

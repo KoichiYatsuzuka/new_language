@@ -42,6 +42,14 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 12. **#9 async の VM 対応（関数内）** — `AsyncSubmit` op ＋ `Chunk.async_blocks`。捕捉集合を「本体の参照名 ∩
     frame slot」に限定し、frame から値を読んで**一時スコープ経由で既存 `capture_env` を再利用**して env を組む
     （ツリーウォークと同一・D5 share-nothing 維持）。VM コンパイル済み関数内で `mng <- async` が使える。
+13. **#16 AST 型解決層 — 段階(a)＋(b)第1増分**（2026-08-03〜05・コミット `#13-1`〜`#13-5`）— 型検査が全式の型を **node-id 索引の
+    注釈テーブル**（解決型/検査指示/型インターン/CallInfo/binop_kind）に永続化（MustBe/BinOp/Attr/Subscript/Cast/IsType/Call。
+    Ident はスキップ）。`check_program`→`interp.set_annotations` でランタイム配線。**plan A 第1増分**として VM が `binop_kind` を消費し
+    **型特化二項演算 op**（IntBinLL 等・参照読み＋ディスパッチ省略・想定外型はフォールバックで健全）を emit → **int 1.30x / float 1.36x**。
+    さらに **段階(c-1)/(c-2)**（2026-08-10・未コミット）でネイティブ codegen へ注釈を配線し実測した結果、
+    **§4.4 が置換対象に挙げた `field_ty` は実質デッドコード**・**注釈は codegen の適用範囲を広げられない**ことが判明。
+    ボトルネックは**型検査が for ループのターゲットを `Unresolved` で宣言していること**だった。
+    詳細と残り・git 状態は **#16 の「段階と実装状況」節**（本文後半）に集約。
 
 ### 残り（番号付き）
 **Phase V の残り**
@@ -155,11 +163,104 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
     **「型検査の走査中に node-id テーブルへ型＋検査指示を書き込む」**（narrowing はスコープ再宣言で `infer` に既に反映済み＝
     検査走査中に書くのが最適）。型推論の再実装は不要＝中規模。
 
-    #### 段階
-    - **(a) 注釈永続化層**: パース時 node-id 採番 → 型検査器を拡張して走査中に 2 テーブル＋型インターン表を充填（非テンプレ関数）。
-    - **(b) ツリーウォーク/VM が消費**（plan A・byte-identical 維持）。
-    - **(c) ネイティブ codegen が消費**（#13・点4 の境界検査もここに畳む）。
-    - 関係: R1/R3/R4 の解決注釈を**型情報まで拡張・一本化**。#13 を包含し、plan A と #11 resolve-time R2 はこの層の**消費側**。
+    #### 段階と実装状況（2026-08-05 更新・**コンテクストなし再開用ハンドオフ**）
+    段階: **(a) 注釈永続化層** → **(b) ツリーウォーク/VM が消費（plan A）** → **(c) ネイティブ codegen が消費（#13）**。
+    関係: R1/R3/R4 の解決注釈を**型情報まで拡張・一本化**。#13 を包含し、plan A と #11 resolve-time R2 はこの層の**消費側**。
+
+    ##### ✅ 段階(a) 完了（注釈生成＋ランタイム配線）
+    - **注釈基盤**: [src/type_check/annotations.rs](src/type_check/annotations.rs)（新規）。`AstAnnotations` が
+      node-id 索引の **① 解決型テーブル（`resolved`）・② 検査指示テーブル（`directives`: `None`/`CheckBefore(TypeId)`）**
+      ＋ **③ 型インターン表（`intern`: `TypeId`→`InferredType`）** ＋ **④ Call 構造化表（`calls`: `CallInfo{callee, args:[ArgAnnotation{ty,directive}]}`）**
+      ＋ **⑤ 二項演算オペランド種別（`binop_kind`: `BinOperandKind::Int/Float`）** を持つ。公開型: `AstAnnotations`/`TypeId`/
+      `Directive`/`CallInfo`/`ArgAnnotation`/`BinOperandKind`（[mod.rs](src/type_check/mod.rs) で re-export）。
+    - **node-id**: パーサ（[src/parser/mod.rs](src/parser/mod.rs) の `node_counter`＋`next_node_id()`）が **per-module で 1 始まり採番**。
+      annotatable な Expr 構造体変種に `node_id: u32` フィールドを追加済み: **`MustBe`/`BinOp`/`Attr`/`Subscript`/`Cast`/`IsType`/`Call`**
+      （[src/ast.rs](src/ast.rs)）。テンプレ subst はコピー・py-converter/合成コードは `0`（＝未採番・注釈対象外）。
+      **`Ident`/`LocalRef` は node-id を付けない**（下記「別途再検討事項」参照。型は消費側で捕捉）。
+    - **型検査での充填**: [src/type_check/infer.rs](src/type_check/infer.rs) の各 arm と
+      [src/type_check/call_check.rs](src/type_check/call_check.rs) の `infer_call`/`infer_call_inner`（`node_id` を通した）が
+      走査中に焼く。ノード別: MustBe/Cast=解決型＋`CheckBefore`／BinOp=結果型＋（int/int・float/float なら）`binop_kind`／
+      Attr=フィールド型（**registry の `class_field_details` から実型を引く**・infer 戻り値は不変で下流無影響）／Subscript=要素型／
+      IsType=`Bool`／Call=結果型＋`CallInfo`。**Call の引数検査指示**: 直接関数(単一sig)・関数型変数・インスタンスメソッド(単一sig・非static)で、
+      param 具象×arg 動的(`Any`/`Unresolved`)のとき `CheckBefore(param型)`。overload/static/キーワード可変長は保守的 `None`。
+    - **ランタイム配線**: `TypeChecker::check_program(stmts) -> (errors, warnings, AstAnnotations)`（[mod.rs](src/type_check/mod.rs)・
+      旧 `check_with_warnings` は削除）。[src/main.rs](src/main.rs) が生成 → `interp.set_annotations(Rc::new(ann))`。
+      [Interpreter](src/interpreter.rs) が `pub(crate) annotations: Rc<AstAnnotations>`（既定空）を保持。crate 全体から
+      `self.annotations.resolved_type(node_id)`/`.directive(node_id)`/`.call_info(node_id)`/`.binop_kind(node_id)` で参照可。
+    - **テスト**: [src/frontend_tests/type_check_tests/annotations.rs](src/frontend_tests/type_check_tests/annotations.rs)（14件・パイプライン検証）。
+    - **不変条件**: 注釈生成はランタイム挙動に無影響（`infer` の戻り値・エラー出力を変えない）＝**off/auto byte-identical 維持**。
+
+    ##### ✅ 段階(b) 第1増分 完了（plan A: 型特化二項演算）
+    - **注釈駆動の型特化 op**: `binop_kind` が int/int・float/float の二項演算（Add/Sub/Mul・比較のみ・Div/Mod/Pow/bit は汎用）を
+      **`IntBinLL`/`IntBinLC`/`FloatBinLL`/`FloatBinLC`**（[src/vm/op.rs](src/vm/op.rs)・[run.rs](src/vm/run.rs)・[disasm.rs](src/vm/disasm.rs)）へ落とす。
+      **オペランドを clone せず参照読み**＋op ディスパッチ省略。`Value` は **boxed 維持**（内省保持・unbox=解釈B は不採用）。
+    - **配線**: `compile_fn(params, body, annotations: Rc<AstAnnotations>)`（[src/vm/compiler.rs](src/vm/compiler.rs)・`Compiler.annotations`）。
+      呼び元 `get_or_compile_chunk`/`get_or_compile_gen_chunk`（[execution.rs](src/interpreter/functions/execution.rs)）が `self.annotations.clone()` を渡す。
+      `try_emit_bin_fused(.., node_id)` が `binop_kind` を見て特化 op を emit（#2 の superinstruction を拡張）。
+    - **健全性**: 特化 op は**実行時型が想定外なら汎用 `apply_bin_fast` へフォールバック**。よって注釈が古く/衝突していても**結果不変**
+      （モジュール横断の node-id 衝突は perf の無駄フォールバックのみ・正しさは保たれる）。
+    - **実測（release・best-of-3・同一ビルドで特化 on/off を A/B）**: int 算術ループ **1.30x**（5994→4613ms）／pure float **1.36x**（5661→4148ms）／
+      呼び出し支配の float は 1.04x（希釈）。効いた主因: **32B `Value` クローン2回の参照読み回避** ＋ op ディスパッチ省略。
+
+    ##### ✅ 段階(c-1)/(c-2) 完了（ネイティブ codegen への注釈配線＋実測）— 2026-08-10
+    - **c-1 配線**: `--compile` が `TypeChecker::check_and_annotate` を使い、注釈を
+      `partial_compiler::compile` → `compile_native` → `generate_llvm_module` → `GenCtx.annotations`
+      （[mod.rs](src/partial_compiler/llvm_codegen/mod.rs)・[context.rs](src/partial_compiler/llvm_codegen/context.rs)）へ渡す。
+      **node-id 空間の一致を確認済み**: import 済みモジュール body は `Stmt::Import{body}` に入れ子で、
+      型検査の注釈充填（`collect_module_types` は署名のみ読む）も codegen（トップレベル定義のみ走査）も踏み込まない
+      ＝ `--compile` 対象モジュールのパーサ採番と 1:1。テンプレートは `llvm_codegen` が非対応なので
+      「subst が node_id を複製する」問題の影響外（**ネイティブは VM と違いフォールバックが無い**ため、この確認が前提条件）。
+    - **c-2 実測（注釈は消費せず、自前導出と突き合わせるだけ）**: `AR_ANNOT_DIFF=1` で内訳を出力
+      （[annot_diff.ps1](annot_diff.ps1)）。対象 6 モジュール（physics / swd_nested / typed_abi_module /
+      geometry / flat_bench_module / partial_call_overhead_module）で **IR は全て byte-identical**
+      （[dump_native_ir.ps1](dump_native_ir.ps1) ＋ `AR_DUMP_LL` フック）。
+
+    ##### 🔍 c-2 の結論（**プランの前提が実測で覆った・要判断**）
+    1. **`GenCtx::field_ty` は実質デッドコードだった**。属性読みの大半は関数入口の **preread 高速パス**
+       （[function.rs:72-112](src/partial_compiler/llvm_codegen/function.rs#L72)）が処理し、`field_ty` に到達するのは
+       「**本体が書き換えるクラス param 上の読み**」だけ。実測 6 モジュールで到達は 7 件のみ（うち解決成功 0 件）。
+       → §4.4 が名指しした置換対象（`field_ty`/`param_classes` の自前再導出）を注釈へ置き換えても**得るものがない**。
+    2. **注釈テーブル自体は充填されている**（physics: `resolved=117` / `interned=4`）。空ではない。
+    3. **codegen が `Ty::Handle` へ落ちた式のうち、注釈が具象型を持つものは実測ほぼ 0**
+       （6 モジュール合計で `call=2` のみ）。＝ 現状の注釈は codegen の適用範囲を広げられない。
+    4. **根本原因は型検査側の解像度不足**（codegen 側ではない）。決定的な例が `flat_bench_module.compute_mut`:
+       `for p in pts:` の `p.x` 7 箇所が**自前導出・注釈ともに未解決**。理由は
+       **型検査が for ループのターゲットを `InferredType::Unresolved` で宣言している**こと
+       （[check.rs:99-101](src/type_check/stmt/check.rs#L99)・`let` 局所は `check_var_decl` で推論済みなのに for だけ落ちている）。
+       受け手が `NamedInstance` に解決されないため `infer_attr` がフィールド型を焼けない。
+    → **段階(c-3)「自前再導出を撤去して注釈へ移行」は、現状のまま実施しても効果ゼロ**。
+      先に **for ターゲットの要素型推論**（`ListOf/FixedListOf/SetOf/DictOf/Tuple` の要素型で宣言）を入れるのが前提。
+      これは型検査の**意味論変更**（今まで `Unresolved` で素通りしていた箇所に新規の静的エラーが出うる）なので、
+      独立タスクとして判断を要する。VM 経路（`binop_kind`）にも同時に効く。
+
+    ##### ⬜ 残り（次スレッドの着手候補）
+    - **段階(b) 続き**: (i) 属性/メソッドの静的ディスパッチ化（静的クラス確定時に R3/メソッド IC のチェックを省く）、
+      (ii) `CheckBefore` 指示の消費（境界での明示的動的検査 op 挿入・現状は生成のみで未消費）、(iii) 比較以外・混在 int/float の特化。
+    - **【新規・段階(c) の前提】for ループターゲットの要素型推論**（上記 c-2 結論 4）。これ無しに c-3 を進めても効果ゼロ。
+    - **段階(c-3)**: 自前再導出の撤去＋`CallInfo` の引数検査指示を境界インライン検査へ。**上記の前提を満たしてから**。
+    - **テンプレート対応**: 現状 templates は注釈が型変数のまま＝実体化時 subst が要る（非テンプレ関数のみ充填済み）。
+    - **モジュール横断**: node-id は per-module 採番。現配線は**メインプログラムの注釈のみ**注入（import モジュール関数は各自の
+      node-id 空間＝未注入＝安全にフォールバック）。段階(b)/(c) でモジュール横断の注釈管理が要るならここで対応。
+
+    ##### ⚠️ 別途の再検討事項（本タスク範囲外）
+    - **`Ident` 表現の再設計**: `Ident` は葉の名前参照だが**タプル変種 `Ident(String)`・97 サイト**で node-id 化は極めて侵襲的。
+      現状は「Ident に注釈せず型は消費側（BinOp/Call/Attr）で捕捉」で回避。将来「Ident を構造体変種化して node-id/解決情報を
+      持たせる」等の AST 再設計は独立に評価する。
+
+    ##### 🔧 検証スクリプト（本タスク用に追加）
+    - [dump_native_ir.ps1](dump_native_ir.ps1) — 代表 6 モジュールを `--compile` して生成 LLVM IR を保存
+      （`AR_DUMP_LL` フック・[module_compiler.rs](src/partial_compiler/module_compiler.rs)）。codegen 変更の前後で
+      ハッシュ比較し **IR byte-identical** を確認する。`.arc`/`.ars` は退避・復元するので作業ツリーは汚れない。
+    - [annot_diff.ps1](annot_diff.ps1) — `AR_ANNOT_DIFF=1` で「自前導出 vs 注釈」の一致内訳と、
+      `Ty::Handle` へ落ちた式のうち注釈が具象型を持つ件数を出力する。
+    - [compare_vm_modes.ps1](compare_vm_modes.ps1) — 例題を `--vm=off` / `--vm=auto` で走らせ **stdout byte-identical** を検証。
+      `examples/bench` は経過時間を出力するため既定で除外（`-IncludeBench` で含める）。1 例題ごとに `-TimeoutSec`。
+
+    ##### 🔧 現在の git 状態（**重要**）
+    - 段階(a)/(b) の実装コードは**コミット済み**（ブランチ `byte-code`・コミット **`#13-1`〜`#13-5`**＝
+      `4034f62`/`f35a0d2`/`04be005`/`086ec6c`/`9261855`）。`cargo test` **686 緑**・**警告0**・off/auto byte-identical を確認済み。
+    - **段階(c-1)/(c-2) は未コミット**（2026-08-10・ユーザー許可待ち）。`cargo test` **686 緑**・**警告 0**・
+      代表 6 モジュールの **IR byte-identical**・off/auto **33 例題すべて byte-identical**（differing 0）を確認済み。
 
 ### 実装メモ（プラン記述からの差分・追記）
 - **例外は「静的例外テーブル」ではなく実行時ハンドラスタック**: `run` が `Vec<Handler{handler_ip, stack_len}>` を持ち、

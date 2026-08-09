@@ -4,7 +4,33 @@ use crate::ast::{BinOp, CallArg, Expr, MatchPattern, UnaryOp};
 use super::*;
 
 impl<'a> GenCtx<'a> {
+    /// 式の IR を生成し `(値, 型区分)` を返す。
+    ///
+    /// #16 段階 c-2: 生成結果が `Ty::Handle`（＝型が判らずボックス化ハンドルのまま）に
+    /// 落ちた式のうち、AST 型解決層の注釈が具象型を持っているものを集計する。
+    /// これが「注釈へ移行すると新たに型特化できる箇所」の実測値になる（`AR_ANNOT_DIFF=1`）。
     pub fn gen_expr(&mut self, expr: &Expr) -> (String, Ty) {
+        let out = self.gen_expr_inner(expr);
+        if out.1 == Ty::Handle {
+            if let Some(node_id) = annotatable_node_id(expr) {
+                if let Some(t) = self.field_ty_annotated(node_id) {
+                    let slot = match expr {
+                        Expr::Attr { .. }      => &mut self.expr_stats.attr,
+                        Expr::Subscript { .. } => &mut self.expr_stats.subscript,
+                        Expr::Call { .. }      => &mut self.expr_stats.call,
+                        _                      => &mut self.expr_stats.other,
+                    };
+                    match t {
+                        Ty::Int => slot.int += 1,
+                        _       => slot.float += 1,
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn gen_expr_inner(&mut self, expr: &Expr) -> (String, Ty) {
         match expr {
             Expr::Int(n)    => (format!("{n}"), Ty::Int),
             Expr::Float(f)  => (fmt_float(*f), Ty::Float),
@@ -189,7 +215,7 @@ impl<'a> GenCtx<'a> {
                 (self.gen_call(func, args), Ty::Handle)
             }
 
-            Expr::Attr { object, attr, .. } => {
+            Expr::Attr { object, attr, node_id, .. } => {
                 // Fast path: check preread_fields using the full dotted path.
                 // Covers class params ("self.x", "p.x"), flat list loop vars ("item.v"),
                 // and nested flat fields ("item.start.x").
@@ -220,7 +246,7 @@ impl<'a> GenCtx<'a> {
 
                 // Callback path: typed single-callback read (CB_GET_FLOAT_FIELD /
                 // CB_GET_INT_FIELD) for known typed fields, plain CB_GET_ATTR otherwise.
-                let known_ty = self.field_ty(object, attr);
+                let known_ty = self.field_ty_resolved(object, attr, *node_id);
                 let (obj, ot) = self.gen_expr(object);
                 let h   = self.to_handle(&obj, ot);
                 let ptr = self.str_const(attr.as_bytes());

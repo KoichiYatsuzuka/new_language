@@ -154,4 +154,9 @@ impl AstAnnotations {
     pub fn intern_len(&self) -> usize {
         self.intern.len()
     }
+
+    /// 解決型テーブルの登録件数（テスト・デバッグ用）。
+    pub fn resolved_len(&self) -> usize {
+        self.resolved.len()
+    }
 }
