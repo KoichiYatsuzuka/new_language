@@ -25,7 +25,9 @@ $skip = @(
     'debug_demo', 'async_bench', 'async_demo', 'spider_render', 'spider_solitaire',
     'rs_struct', 'flat_bench', 'flat_bench_interp', 'flat_bench_module',
     # GUI ウィンドウ / 外部プロセス（Node・描画）を開いたままになるため比較不能
-    'cs_form_app', 'cs_proc_app', 'js_proc_test', 'js_proc_async_test', 'math_render'
+    'cs_form_app', 'cs_proc_app', 'js_proc_test', 'js_proc_async_test', 'math_render',
+    # import[rs] sha2 のクレートが rust.crates_path に無い環境では実行できない
+    'importation'
 )
 
 $categoryDirs = @('basics', 'collections', 'classes', 'typing', 'exceptions', 'async', 'apps', 'interop')
@@ -63,6 +65,17 @@ function Invoke-Example {
     return $out
 }
 
+# 実行ごとに変わる値（ヒープアドレス）を伏せる。`id()` の pointer.value や
+# `<Index object at 0x...>` は off/auto に関係なくプロセスごとに変わるため、
+# これを残すと VM モード差と区別できない。
+function Get-Normalized {
+    param([string]$Text)
+    $t = $Text -replace '0x[0-9a-fA-F]+', '0xADDR'
+    # 10 桁以上の連続数字はアドレス（通常の例題が出す整数はこれより短い）
+    $t = $t -replace '\b\d{10,}\b', 'ADDR'
+    return $t
+}
+
 $same = 0
 $diff = 0
 $timeout = 0
@@ -75,7 +88,7 @@ foreach ($f in $examples) {
     if ($null -eq $off -or $null -eq $auto) {
         $timeout++
         Write-Host "[TIMEOUT] $($f.Name)" -ForegroundColor Yellow
-    } elseif ($off -ceq $auto) {
+    } elseif ((Get-Normalized $off) -ceq (Get-Normalized $auto)) {
         $same++
     } else {
         $diff++

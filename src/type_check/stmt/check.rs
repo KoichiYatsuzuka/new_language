@@ -94,10 +94,17 @@ impl TypeChecker {
                 iter,
                 body,
             } => {
-                self.infer(iter);
+                let iter_ty = self.infer(iter);
+                let elem_ty = Self::for_element_type(&iter_ty);
                 self.push_scope();
-                for t in targets {
-                    self.declare(t.clone(), InferredType::Unresolved, true);
+                // 分割代入（`for k, v in pairs`）は要素がタプルのときだけ各要素型へ割り当てる。
+                let target_tys: Vec<InferredType> = match (&elem_ty, targets.len()) {
+                    (_, 1) => vec![elem_ty.clone()],
+                    (InferredType::Tuple(ts), n) if ts.len() == n => ts.clone(),
+                    (_, n) => vec![InferredType::Unresolved; n],
+                };
+                for (t, ty) in targets.iter().zip(target_tys) {
+                    self.declare(t.clone(), ty, true);
                 }
                 self.check_stmts(body);
                 self.pop_scope();

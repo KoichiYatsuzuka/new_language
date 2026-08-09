@@ -242,6 +242,32 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
     - **モジュール横断**: node-id は per-module 採番。現配線は**メインプログラムの注釈のみ**注入（import モジュール関数は各自の
       node-id 空間＝未注入＝安全にフォールバック）。段階(b)/(c) でモジュール横断の注釈管理が要るならここで対応。
 
+    ##### ✅ for ループターゲットの要素型推論（c-2 結論 4 の前提・2026-08-10）
+    - **実装**: `TypeChecker::for_element_type`（[stmt/resolve.rs](src/type_check/stmt/resolve.rs)）＋
+      `Stmt::For` の検査（[stmt/check.rs](src/type_check/stmt/check.rs)）。`ListOf`/`FixedListOf`/`ListLikeOf`/`SetOf` は要素型、
+      `Str` は 1 文字ずつの `Str`、**全要素同型のタプル**はその型、それ以外は従来どおり `Unresolved`。
+      分割代入（`for k, v in pairs`）は要素型が要素数一致の `Tuple` のときのみ各要素型を割り当てる。
+      **`dict` は Arrow では反復不可**（`make_for_iterator` が `TypeError`）なので対象外。
+    - **効果（実測）**: `flat_bench_module.compute_mut` の `p.x` 等 7 箇所が `neither=7` → **`annot_only=7`**
+      （＝注釈のみが解決＝ネイティブ codegen が新たに型特化できる箇所）。全モジュールで `conflict=0`。
+    - **意味論の変化（小さい）**: 欠落フィールドは元々静的検査対象外（`check_member_access_static` は
+      `has_field` が false なら早期 return）なので**エラーは増えない**。増えるのは
+      **ループ変数経由の private/protected アクセス**が `StaticTypeError` として捕捉されるケース（動作確認済み）。
+    - **検証**: `cargo test` **686 緑**・警告 0・off/auto **32 例題 byte-identical**・例題スキャン **FAIL 0**。
+      FAIL 0 は本変更前（HEAD）でも同じ 5 件が失敗しており**回帰ではない**ことを、変更を退避して HEAD をビルドし直し
+      同一スキャンで確認済み（下記「例題の修正」参照）。
+
+    ##### 🧹 例題の修正（上記の検証で判明した既存不具合・2026-08-10）
+    for 推論とは無関係に前から失敗していた 5 例題を修正した（言語仕様どおりのエラーで、例題側が古かったもの）。
+    - `built_in.ar` — `class Box` にフィールド宣言が無い（`mut val: int` を追加）。さらに
+      `make_and_write` が**コミット済みの生成物 `_tmp_new.txt`** に阻まれるため、`import[py-int] os` ＋
+      `try: os.remove(...)` で先に後始末する（`import[py-int] os.path` は**組み込みの `path` 型を隠す**ので不可）。
+    - `collection.ar` — `class Stack` にフィールド宣言が無い（`mut items: list[int]` を追加）。
+    - `functions.ar` — `mut count: int = 0` は仕様違反（`const`/`static mut` のみ既定値可）。`__init__` で初期化へ。
+    - `variable.ar` — freeze 後の書き込み TypeError が未捕捉でスクリプトが中断し、以降の約 6 割が未実行だった。try/except で捕捉。
+    - `importation.ar` — `import[rs] sha2` のクレートが `rust.crates_path` に無い**環境要因**。ソースは正しいので
+      [run_examples.ps1](run_examples.ps1) / [compare_vm_modes.ps1](compare_vm_modes.ps1) の skip へ追加した。
+
     ##### ⚠️ 別途の再検討事項（本タスク範囲外）
     - **`Ident` 表現の再設計**: `Ident` は葉の名前参照だが**タプル変種 `Ident(String)`・97 サイト**で node-id 化は極めて侵襲的。
       現状は「Ident に注釈せず型は消費側（BinOp/Call/Attr）で捕捉」で回避。将来「Ident を構造体変種化して node-id/解決情報を
@@ -255,12 +281,16 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
       `Ty::Handle` へ落ちた式のうち注釈が具象型を持つ件数を出力する。
     - [compare_vm_modes.ps1](compare_vm_modes.ps1) — 例題を `--vm=off` / `--vm=auto` で走らせ **stdout byte-identical** を検証。
       `examples/bench` は経過時間を出力するため既定で除外（`-IncludeBench` で含める）。1 例題ごとに `-TimeoutSec`。
+      **ヒープアドレスは正規化する**（`id()` の `pointer.value`・`<Index object at 0x…>` は同一モードの 2 回実行でも
+      変わるため、伏せないと VM モード差と区別できない）。
 
     ##### 🔧 現在の git 状態（**重要**）
     - 段階(a)/(b) の実装コードは**コミット済み**（ブランチ `byte-code`・コミット **`#13-1`〜`#13-5`**＝
       `4034f62`/`f35a0d2`/`04be005`/`086ec6c`/`9261855`）。`cargo test` **686 緑**・**警告0**・off/auto byte-identical を確認済み。
-    - **段階(c-1)/(c-2) は未コミット**（2026-08-10・ユーザー許可待ち）。`cargo test` **686 緑**・**警告 0**・
-      代表 6 モジュールの **IR byte-identical**・off/auto **33 例題すべて byte-identical**（differing 0）を確認済み。
+    - **段階(c-1)/(c-2) はコミット済み**（`22bfa31 "#16"`・ユーザーが作成）。`cargo test` **686 緑**・**警告 0**・
+      代表 6 モジュールの **IR byte-identical**・off/auto byte-identical を確認済み。
+    - **未コミット**（2026-08-10 時点）: for ループ要素型推論（`stmt/check.rs`・`stmt/resolve.rs`）＋
+      例題 4 件の修正＋`run_examples.ps1`/`compare_vm_modes.ps1` の skip・正規化追加。
 
 ### 実装メモ（プラン記述からの差分・追記）
 - **例外は「静的例外テーブル」ではなく実行時ハンドラスタック**: `run` が `Vec<Handler{handler_ip, stack_len}>` を持ち、

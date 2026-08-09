@@ -7,6 +7,32 @@ use {
 };
 
 impl TypeChecker {
+    /// `for target in iter:` のターゲットに与える**要素型**を、イテラブルの型から求める。
+    ///
+    /// 反復の意味論は `Interpreter::make_for_iterator`
+    /// （[control_flow.rs](../../interpreter/exec/control_flow.rs)）に合わせる:
+    /// list / fixed_list / set は要素を、`str` は 1 文字ずつ（＝`str`）、タプルは各要素を返す。
+    /// **`dict` は Arrow では反復不可**（実行時 `TypeError: object is not iterable`）なので扱わない。
+    /// ジェネレータ・`__iter__` を持つインスタンス・Python オブジェクトは静的に要素型を決められない。
+    ///
+    /// 決められない場合は従来どおり `Unresolved`（＝下流の検査を抑制する）を返す。
+    pub(crate) fn for_element_type(iter_ty: &InferredType) -> InferredType {
+        match iter_ty {
+            InferredType::ListOf(elem)
+            | InferredType::FixedListOf(elem)
+            | InferredType::ListLikeOf(elem)
+            | InferredType::SetOf(elem) => (**elem).clone(),
+            // タプルの反復は各要素を順に返すので、全要素が同型のときだけ確定できる。
+            // 異種タプルは反復ごとに型が変わるため `Unresolved`。
+            InferredType::Tuple(types) if !types.is_empty() && types.iter().all(|t| *t == types[0]) => {
+                types[0].clone()
+            }
+            // 文字列の反復は 1 文字ずつの `str` を返す。
+            InferredType::Str => InferredType::Str,
+            _ => InferredType::Unresolved,
+        }
+    }
+
     /// モジュールの tl AST を浅くスキャンして「名前 → 型」マップを返す。
     pub(crate) fn collect_module_types(
         &self,

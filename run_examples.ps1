@@ -14,7 +14,10 @@ $skip = @(
     "rs_struct",
     "flat_bench",
     "flat_bench_interp",
-    "flat_bench_module"
+    "flat_bench_module",
+    # import[rs] sha2 を使うが sha2 クレートが ar_config.json の rust.crates_path に無い
+    # （ソースは正しく、クレートを用意できる環境でのみ実行可能）
+    "importation"
 )
 
 # Category subdirectories under examples/ (module dirs like interop/test_modules are not enumerated)

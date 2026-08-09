@@ -105,7 +105,10 @@ print(scale(3, 4))  # 304
 
 # Default in method
 class Counter:
-    mut count: int = 0
+    mut count: int
+
+    fn __init__(mut self) -> None:
+        self.count = 0
 
     fn increment(mut self, let by: int = 1) -> None:
         self.count = self.count + by
