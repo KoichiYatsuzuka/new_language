@@ -292,6 +292,32 @@ fn exec_op(
             };
             buf.push(v);
         }
+        // 超命令（#16 段階(b)(i)）: レシーバを frame から**参照で**読む。`GetAttr` と同一意味論だが
+        // `LoadLocal` の `Value` clone（＝`Rc` refcount 増減）と push/pop が消える。
+        // IC ミス・非 public・非インスタンスのときだけ clone してフルパスへ回す。
+        Op::GetAttrLocal(slot, name_idx, cache_idx) => {
+            let cache = &chunk.attr_caches[*cache_idx as usize];
+            let v = 'get: {
+                if let Value::Instance(inst_rc) = &buf[base + *slot as usize] {
+                    let inst = inst_rc.borrow();
+                    if let Some((idx, access)) = cache.get(inst.class.class_id) {
+                        if access == crate::ast::AttrCache::PUBLIC {
+                            debug_assert_eq!(
+                                inst.class.field_index.get(&chunk.names[*name_idx as usize]).copied(),
+                                Some(idx),
+                                "VM GetAttrLocal cache slot mismatch"
+                            );
+                            if let Some(fv) = inst.field_value(idx) {
+                                break 'get fv;
+                            }
+                        }
+                    }
+                }
+                let obj = buf[base + *slot as usize].clone();
+                interp.get_attr_val(obj, &chunk.names[*name_idx as usize], Some(cache))?
+            };
+            buf.push(v);
+        }
         Op::SetAttr(name_idx) => {
             let value = buf.pop().unwrap();
             let obj = buf.pop().unwrap();

@@ -1543,9 +1543,15 @@ impl Compiler {
                 }
             },
             Expr::Attr { object, attr, .. } => {
-                self.compile_expr(object)?;
                 let name_idx = self.add_name(attr);
-                self.emit(Op::GetAttr(name_idx, name_idx));
+                // 超命令融合（#16 段階(b)(i)）: レシーバが局所変数なら frame から参照読みする
+                // 専用 op に落とし、`Value` clone（Rc refcount 増減）と push/pop を省く。
+                if let Some(slot) = self.as_local(object) {
+                    self.emit(Op::GetAttrLocal(slot, name_idx, name_idx));
+                } else {
+                    self.compile_expr(object)?;
+                    self.emit(Op::GetAttr(name_idx, name_idx));
+                }
             }
             // 関数呼び出し `func(args)` / メソッド呼び出し `obj.method(args)`。
             Expr::Call { func, args, span, .. } => {

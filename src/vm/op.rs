@@ -66,6 +66,10 @@ pub enum Op {
     /// スタックトップ2つを入れ替える（複合属性代入で rhs を先に評価しつつ演算順を保つため）。
     Swap,
     /// 型判定: pop v, push Bool(value_is_type(v, names[name_idx]))（match の `is TypeName` パターン）。
+    /// 超命令（#16 段階(b)(i)）: `local[slot].attr` を融合。`LoadLocal(slot); GetAttr(..)` と同一意味論。
+    /// **レシーバをスタックへ clone せず frame から参照で読む**ので `Rc` の refcount 増減が消える。
+    /// 引数は `(slot, name_idx, cache_idx)`。
+    GetAttrLocal(u16, u32, u32),
     IsType(u32),
     // ── 動的型検査（#16 段階(b)(ii)・`CheckBefore` 指示の消費）──
     // 型検査が「使用前に動的検査が要る」と印を付けたノードに対応する op。

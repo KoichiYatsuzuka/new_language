@@ -296,8 +296,28 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
       今まで通っていたコードが実行時エラーになりうる＝ off/auto byte-identical を壊す**言語の挙動変更**。
       段階(c) で境界検査をネイティブへインライン生成する設計と併せて判断すべきなので据え置いた。
 
+    ##### ✅ 段階(b)(i) 属性アクセスの高速化（2026-08-10）
+    - **当初の想定は外れた**: 「静的にクラスが確定していれば R3 IC のチェックを省く」つもりだったが、
+      `GetAttr` のヒット経路（[run.rs](src/vm/run.rs)）を読むと IC ヒットは既に
+      `class_id` の整数比較＋アクセス種別チェックだけで、**静的化しても削れるのはこの 2 つの比較のみ**。
+      実際の支配項は別で、`local.attr` が `LoadLocal(slot); GetAttr(..)` に展開されるため
+      **`LoadLocal` が `Value` を clone する＝`Rc` の refcount 増減が属性読みごとに発生**していた。
+    - **実装**: 二項演算の超命令と同じ手を属性へ適用。`Op::GetAttrLocal(slot, name_idx, cache_idx)` を追加し、
+      レシーバを **frame から参照で読む**（clone・push/pop なし）。IC ミス・非 public・非インスタンスのときだけ
+      clone してフルパス（`get_attr_val`）へ回すので意味論は `GetAttr` と同一。
+    - **実測**: 属性オペランドの二項演算ループ **1.1446s → 0.8298s = 1.379x**、
+      `bench_field_access.ar`（呼び出し支配）**1.2217s → 1.1061s = 1.105x**。
+      (b)(iii) までの積み上げと合わせ、属性読みが多いコードで効く。
+    - **検証**: [examples/classes/attr_access_paths.ar](examples/classes/attr_access_paths.ar) を追加。
+      局所変数レシーバ／ネスト属性（外側は非局所）／public・private／テンプレート経由で同じ命令に
+      別クラスが流れる場合（**IC ミス→再解決**）／存在しない属性（AttributeError）を網羅し off/auto 一致。
+    - **メソッドの静的ディスパッチは未実施**: `Op::CallMethod` はレシーバをスタックへ積む形のままで、
+      同じ融合（`CallMethodLocal`）が適用できる余地がある。呼び出し機構自体のコストが支配的なので
+      効果の見積もりが要る（§4.3 の「残る速度余地は呼び出し機構」）。
+
     ##### ⬜ 残り（次スレッドの着手候補）
-    - **段階(b) 続き**: (i) 属性/メソッドの静的ディスパッチ化（静的クラス確定時に R3/メソッド IC のチェックを省く）、
+    - **段階(b) 続き**: ~~(i) 属性の静的ディスパッチ化~~ 【✅ 完了・`GetAttrLocal`】
+      （**残り**: メソッド呼び出しの `CallMethodLocal` 融合）、
       ~~(ii) `CheckBefore` 指示の消費~~ 【✅ 完了】、
       ~~(iii) 融合できない形への型特化~~ 【✅ 完了・`IntBinSS`/`FloatBinSS` ＋ Div/Mod/Pow/bit ＋ 混在】。
       **(ii) の残り**: Call 引数の境界検査（上記のとおり挙動変更なので要判断）。
