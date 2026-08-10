@@ -38,6 +38,8 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::IntBinLC(a, c, o) => format!("IBIN_LC {a} const[{c}] {o:?}"),
         Op::FloatBinLL(a, b, o) => format!("FBIN_LL {a} {b} {o:?}"),
         Op::FloatBinLC(a, c, o) => format!("FBIN_LC {a} const[{c}] {o:?}"),
+        Op::MustBe(t, s) => format!("MUSTBE name[{t}] span[{s}]"),
+        Op::Cast(t) => format!("CAST name[{t}]"),
         Op::IntBinSS(o) => format!("IBIN_SS {o:?}"),
         Op::FloatBinSS(o) => format!("FBIN_SS {o:?}"),
         Op::Un(o) => format!("UN {o:?}"),

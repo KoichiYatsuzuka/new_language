@@ -154,6 +154,12 @@ impl Interpreter {
     /// 4. それ以外 → TypeError
     pub(crate) fn eval_cast(&mut self, object: &crate::ast::Expr, type_name: &str) -> Result<Value, String> {
         let obj = self.eval(object)?;
+        self.eval_cast_evaled(obj, type_name)
+    }
+
+    /// 評価済みの値に対するキャスト `obj => TypeName`（VM の `Op::Cast` から使う）。
+    /// `eval_cast` は被演算子を評価してからこれを呼ぶだけなので、両経路の意味論は同一。
+    pub(crate) fn eval_cast_evaled(&mut self, obj: Value, type_name: &str) -> Result<Value, String> {
 
         // new_type インスタンスなら内部値を先に取り出しておく
         let inner_val = if let Value::Instance(ref inst_rc) = obj {

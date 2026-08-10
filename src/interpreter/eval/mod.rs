@@ -15,7 +15,9 @@ fn set_insert(set: &mut Vec<Value>, item: Value, interp: &Interpreter) {
 
 /// `mustbe` 用: ガード型文字列から外側の型名（型パラメータを除いた部分）を返す。
 /// 例: `"list[int]"` → `"list"`,  `"function[int]->str"` → `"function"`, `"int"` → `"int"`
-fn mustbe_outer_type(guard_type: &str) -> String {
+///
+/// ツリーウォーク（`eval`）と VM（`Op::MustBe`）の双方が使うので crate 公開。
+pub(crate) fn mustbe_outer_type(guard_type: &str) -> String {
     // `[` または `{` より前の部分を取り出す
     let end = guard_type.find(['[', '{']).unwrap_or(guard_type.len());
     // `->` より前の部分も考慮（function->R の形式）

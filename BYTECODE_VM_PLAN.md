@@ -272,11 +272,35 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
       (b)(iii) の実装中に混在アームを足したところ VM だけ成功して off/auto が割れたため発覚した。
       非対称で不具合に見えるが、**修正は言語の挙動変更**なので本タスクの範囲外として据え置いた。
 
+    ##### ✅ 段階(b)(ii) `CheckBefore` 指示の消費（2026-08-10）
+    - **判明していた実態**: `Expr::MustBe` / `Expr::Cast` / `Expr::IsType` は `compile_expr` に arm が無く
+      `_ => return None` に落ちていた。つまり **`mustbe` / `=>` / `is` を 1 つでも含む関数は丸ごと
+      ツリーウォークへ bail** していた（検査が遅いのではなく、関数全体が VM 化されない）。
+    - **実装**: `Op::MustBe(name_idx, span_idx)` / `Op::Cast(name_idx)` を追加（`IsType` は既存 op を再利用、
+      `negated` は `Op::Un(Not)` で表現）。コンパイラは `check_required(node_id)` で
+      **`Directive::CheckBefore` を消費**して検査 op を出す。指示が無いノード（未採番・合成 AST・
+      モジュール横断で注釈なし）は「検査が要るか判らない」ので**その関数の VM 化を諦める**
+      ＝ 検査を省く方向へは決して倒さない。
+    - **意味論の一致は構造で担保**: 検査本体をコピーせず、ツリーウォークと VM が**同一メソッドを共有**する。
+      `Interpreter::mustbe_check`（[eval/core.rs](src/interpreter/eval/core.rs)）を新設し `Expr::MustBe` アームと
+      `Op::MustBe` の双方から呼ぶ。キャストも `eval_cast` を `eval_cast_evaled`（値を受ける版）へ分割し共有
+      （[eval/calls.rs](src/interpreter/eval/calls.rs)）。`mustbe_outer_type` を `pub(crate)` 化。
+    - **実測**: `mustbe` を含むホット関数で **2.04x**（off 0.956s → auto 0.468s）。
+      変更前はこの関数が bail していたので `auto` は `off` と同値だった＝**丸ごとの改善**。
+    - **注意（適用範囲）**: 既存例題（`mustbe.ar` / `polymorphism.ar` / `fixed_list.ar`）はこれらを
+      **モジュール top-level** で使っており、VM は関数本体しかコンパイルしないため新 op は 0 個。
+      効果が出るのは**関数内で使った場合**のみ。確認用に
+      [examples/typing/runtime_checks_in_function.ar](examples/typing/runtime_checks_in_function.ar) を追加した。
+    - **未実施（意図的）**: `CallInfo` の**引数境界検査**（`call_check.rs` が param 具象 × arg 動的で付ける
+      `CheckBefore`）。これは**現在どこでも実行されていない検査を新設する**ことになり、
+      今まで通っていたコードが実行時エラーになりうる＝ off/auto byte-identical を壊す**言語の挙動変更**。
+      段階(c) で境界検査をネイティブへインライン生成する設計と併せて判断すべきなので据え置いた。
+
     ##### ⬜ 残り（次スレッドの着手候補）
     - **段階(b) 続き**: (i) 属性/メソッドの静的ディスパッチ化（静的クラス確定時に R3/メソッド IC のチェックを省く）、
-      (ii) `CheckBefore` 指示の消費（境界での明示的動的検査 op 挿入・現状は生成のみで未消費）、
-      ~~(iii) 融合できない形への型特化~~ 【✅ 完了・`IntBinSS`/`FloatBinSS`】。
-      **残る (iii) 派生**: Div/Mod/Pow/bit の特化（ゼロ除算の意味論に注意）・**int/float 混在**の特化。
+      ~~(ii) `CheckBefore` 指示の消費~~ 【✅ 完了】、
+      ~~(iii) 融合できない形への型特化~~ 【✅ 完了・`IntBinSS`/`FloatBinSS` ＋ Div/Mod/Pow/bit ＋ 混在】。
+      **(ii) の残り**: Call 引数の境界検査（上記のとおり挙動変更なので要判断）。
     - ~~for ループターゲットの要素型推論~~ 【✅ 完了 2026-08-10】（下記参照）。
     - **【推奨・次の本命】`infer_attr` の戻り値をフィールド実型にする**（型検査の解像度・第2弾）。
       現状 `infer_attr` は `NamedInstance` のフィールドに対し**戻り値は `Unresolved` のまま**で、実型は注釈にだけ焼いている

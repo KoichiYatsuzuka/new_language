@@ -918,6 +918,22 @@ impl Compiler {
         idx
     }
 
+    /// AST 型解決層の**検査指示**（`CheckBefore`）を消費する（#16 段階(b)(ii)）。
+    ///
+    /// `mustbe` / `=>` は型検査が常に `CheckBefore` を付けるので、現状これは実質いつも `true` を返す。
+    /// それでも指示を経由するのは、将来チェッカが「この検査は静的に冗長」と証明できるようになったとき、
+    /// **この一点を変えるだけで VM とネイティブの双方が検査を落とせる**ようにするため（＝解決の一元化）。
+    ///
+    /// 指示が `None`（未採番ノード・合成 AST・モジュール横断で注釈が無い）の場合は
+    /// **検査が要るのか判らない**ので、その関数の VM 化自体を諦める（`false`）。
+    /// 検査を省く方向へは決して倒さない。
+    fn check_required(&self, node_id: u32) -> bool {
+        matches!(
+            self.annotations.directive(node_id),
+            crate::type_check::Directive::CheckBefore(_)
+        )
+    }
+
     fn add_span(&mut self, span: &crate::token::Span) -> u32 {
         let idx = self.spans.len() as u32;
         self.spans.push(span.clone());
@@ -1634,7 +1650,38 @@ impl Compiler {
                 self.compile_for_expr(target, iter, body)?
             }
             Expr::WhileExpr { cond, body, .. } => self.compile_while_expr(cond, body)?,
-            // それ以外（添字・コレクション・キャスト等）は非対応。
+
+            // ── 動的型検査（#16 段階(b)(ii)）──
+            // 型検査が付けた `CheckBefore` 指示を消費して検査 op を出す。
+            // 指示が無い（＝未採番ノード等）場合も**保守的に検査を出す**: 検査を落とす方向へは倒さない。
+            Expr::IsType { expr, negated, type_name, .. } => {
+                self.compile_expr(expr)?;
+                let ni = self.add_name(type_name);
+                self.emit(Op::IsType(ni));
+                if *negated {
+                    // `Op::Un(Not)` は Bool に対し `!b` を返す（eval の negated 分岐と同一）。
+                    self.emit(Op::Un(crate::ast::UnaryOp::Not));
+                }
+            }
+            Expr::MustBe { expr, guard_type, span, node_id } => {
+                if !self.check_required(*node_id) {
+                    return None;
+                }
+                self.compile_expr(expr)?;
+                let ni = self.add_name(guard_type);
+                let si = self.add_span(span);
+                self.emit(Op::MustBe(ni, si));
+            }
+            Expr::Cast { object, type_name, node_id, .. } => {
+                if !self.check_required(*node_id) {
+                    return None;
+                }
+                self.compile_expr(object)?;
+                let ni = self.add_name(type_name);
+                self.emit(Op::Cast(ni));
+            }
+
+            // それ以外は非対応。
             _ => return None,
         }
         Some(())

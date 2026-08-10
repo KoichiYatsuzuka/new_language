@@ -67,6 +67,14 @@ pub enum Op {
     Swap,
     /// 型判定: pop v, push Bool(value_is_type(v, names[name_idx]))（match の `is TypeName` パターン）。
     IsType(u32),
+    // ── 動的型検査（#16 段階(b)(ii)・`CheckBefore` 指示の消費）──
+    // 型検査が「使用前に動的検査が要る」と印を付けたノードに対応する op。
+    // これらが無い間は `mustbe`/`=>` を含む関数が**丸ごとツリーウォークへ bail** していた。
+    /// `expr mustbe T`: pop v。`names[type_idx]` の外側型に一致すれば push し直し、
+    /// 不一致なら `spans[span_idx]` 付きの TypeError を送出（`eval` の MustBe と同一）。
+    MustBe(u32, u32),
+    /// `expr => T`: pop v, push eval_cast_evaled(v, names[type_idx])。
+    Cast(u32),
     /// 純粋・共通な組み込み呼び出し（print/range/len）: argc 個の評価済み引数を pop し、
     /// `eval_builtin_evaled(names[name_idx], args)` で実行して結果を push する。
     CallBuiltin(u32, u16),

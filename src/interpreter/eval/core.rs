@@ -12,6 +12,34 @@ use {
 use super::*;
 
 impl Interpreter {
+    /// `expr mustbe T` の動的型検査本体（#16 段階(b)(ii)）。
+    ///
+    /// 一致すれば値をそのまま返し、不一致なら位置付きの TypeError を送出する。
+    /// **ツリーウォーク（`Expr::MustBe` アーム）と VM（`Op::MustBe`）が共有する**ので、
+    /// 両経路の意味論が構造的に一致する（コピーではなく同一コード）。
+    pub(crate) fn mustbe_check(
+        &mut self,
+        val: Value,
+        guard_type: &str,
+        span: &crate::token::Span,
+    ) -> Result<Value, String> {
+        let outer = mustbe_outer_type(guard_type);
+        if self.value_is_type(&val, &outer) {
+            return Ok(val);
+        }
+        let actual = self.type_name_of(&val);
+        let msg = format!(
+            "TypeError: mustbe assertion failed at {}: expected `{}`, got `{}`",
+            span, guard_type, actual
+        );
+        if let Some(raised) = self.make_internal_raised_error(&msg) {
+            self.current_exception = Some(raised);
+            Err(RAISE_SENTINEL.to_string())
+        } else {
+            Err(msg)
+        }
+    }
+
     /// VM: リテラルから List を構築する（`Expr::List` と同一意味論）。
     pub(crate) fn vm_build_list(&self, vals: Vec<Value>) -> Value {
         Value::List(Rc::new(RefCell::new(vals)))
@@ -159,22 +187,7 @@ impl Interpreter {
             }
             Expr::MustBe { expr, guard_type, span, .. } => {
                 let val = self.eval(expr)?;
-                let outer = mustbe_outer_type(guard_type);
-                if self.value_is_type(&val, &outer) {
-                    Ok(val)
-                } else {
-                    let actual = self.type_name_of(&val);
-                    let msg = format!(
-                        "TypeError: mustbe assertion failed at {}: expected `{}`, got `{}`",
-                        span, guard_type, actual
-                    );
-                    if let Some(raised) = self.make_internal_raised_error(&msg) {
-                        self.current_exception = Some(raised);
-                        Err(RAISE_SENTINEL.to_string())
-                    } else {
-                        Err(msg)
-                    }
-                }
+                self.mustbe_check(val, guard_type, span)
             }
             Expr::Call { func, args, span, cache, .. } => self.eval_call(func, args, span, cache),
             Expr::Cast { object, type_name, .. } => self.eval_cast(object, type_name),

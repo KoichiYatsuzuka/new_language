@@ -306,6 +306,22 @@ fn exec_op(
             let r = interp.value_is_type(&v, &chunk.names[*name_idx as usize]);
             buf.push(Value::Bool(r));
         }
+        // `CheckBefore` 指示の消費（#16 段階(b)(ii)）。
+        // 検査本体はツリーウォークと**同一メソッド**（`mustbe_check`）を呼ぶので意味論が構造的に一致する。
+        Op::MustBe(type_idx, span_idx) => {
+            let v = buf.pop().unwrap();
+            let r = interp.mustbe_check(
+                v,
+                &chunk.names[*type_idx as usize],
+                &chunk.spans[*span_idx as usize],
+            )?;
+            buf.push(r);
+        }
+        Op::Cast(type_idx) => {
+            let v = buf.pop().unwrap();
+            let r = interp.eval_cast_evaled(v, &chunk.names[*type_idx as usize])?;
+            buf.push(r);
+        }
         Op::CallBuiltin(name_idx, argc) => {
             let n = *argc as usize;
             let split = buf.len() - n;
