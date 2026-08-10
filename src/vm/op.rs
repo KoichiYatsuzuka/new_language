@@ -49,6 +49,12 @@ pub enum Op {
     FloatBinLL(u16, u16, BinOp),
     /// `local[a] <op> consts[idx]`（両 float 確定）。
     FloatBinLC(u16, u32, BinOp),
+    /// スタック上の2値（両 int 確定）: pop b, pop a, push a <op> b。
+    /// `LL`/`LC` と違いオペランドの形を問わないので、属性・添字・呼び出し結果など
+    /// **局所変数以外を含む任意の式**に型特化が乗る（#16 段階(b)(iii)）。
+    IntBinSS(BinOp),
+    /// スタック上の2値（両 float 確定）。`IntBinSS` の float 版。
+    FloatBinSS(BinOp),
     /// 単項演算: pop a, push apply_unary_dyn(op, a)。
     Un(UnaryOp),
     /// 属性（フィールド）読み: pop obj, push get_attr_val(obj, names[name_idx], attr_caches[cache_idx])。

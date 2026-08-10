@@ -250,7 +250,7 @@ pub fn compile_fn(
     // 本体末尾までフォールオフしたら None を返す。
     c.emit(Op::ReturnNil);
 
-    Some(Chunk {
+    let chunk = Chunk {
         code: c.code,
         consts: c.consts,
         names: c.names,
@@ -260,7 +260,15 @@ pub fn compile_fn(
         n_locals: c.n_locals,
         async_blocks: c.async_blocks,
         global_caches: c.global_caches,
-    })
+    };
+
+    // 開発用フック: `AR_VM_DUMP=1` で生成バイトコードを標準エラーへ逆アセンブルする。
+    // どの式に型特化 op が乗ったかを目視で確認するために使う（disasm.rs の唯一の呼び元）。
+    if std::env::var("AR_VM_DUMP").is_ok_and(|v| !v.is_empty()) {
+        eprintln!("{}", super::disasm::disassemble(&chunk, "<fn>"));
+    }
+
+    Some(chunk)
 }
 
 /// デバッガ REPL の 1 文をデバッグモード（名前引きアクセス）でコンパイルする。
@@ -805,18 +813,13 @@ impl Compiler {
         }
     }
 
-    /// 二項演算 `left <op> right` を超命令へ融合できれば emit して `true`（#2 ＋ plan A 型特化）。
-    /// `local <op> local` → `BinLocalLocal`、`local <op> リテラル` → `BinLocalConst`。
-    /// さらに注釈が「両オペランド int/float 確定」かつ対応 op（Add/Sub/Mul・比較）なら**型特化 op**
-    /// （`IntBinLL`/`FloatBinLC` 等）を emit（タグ検査・op ディスパッチ・clone を削減）。
-    /// 型特化 op は実行時型が想定外なら**汎用へフォールバック**するので、注釈が古くても健全。
-    /// 融合できなければ `false`（呼び出し側が通常経路 `LoadLocal…; Bin` を出す）。意味論は不変。
-    fn try_emit_bin_fused(&mut self, left: &Expr, right: &Expr, op: &BinOp, node_id: u32) -> bool {
-        use crate::type_check::BinOperandKind as K;
-        let Some(a) = self.as_local(left) else {
-            return false;
-        };
-        // 型特化の対象 op（ゼロ除算しうる/ビット演算は汎用のまま）。
+    /// 注釈が「両オペランド int/float 確定」かつ型特化してよい op なら、その種別を返す（#16 段階(b)）。
+    /// ゼロ除算しうる op（Div/Mod）・Pow・ビット演算は意味論が込み入るため汎用のままにする。
+    fn specialized_bin_kind(
+        &self,
+        op: &BinOp,
+        node_id: u32,
+    ) -> Option<crate::type_check::BinOperandKind> {
         let specializable = matches!(
             op,
             BinOp::Add
@@ -829,11 +832,25 @@ impl Compiler {
                 | BinOp::Eq
                 | BinOp::NotEq
         );
-        let kind = if specializable {
+        if specializable {
             self.annotations.binop_kind(node_id)
         } else {
             None
+        }
+    }
+
+    /// 二項演算 `left <op> right` を超命令へ融合できれば emit して `true`（#2 ＋ plan A 型特化）。
+    /// `local <op> local` → `BinLocalLocal`、`local <op> リテラル` → `BinLocalConst`。
+    /// さらに注釈が「両オペランド int/float 確定」かつ対応 op（Add/Sub/Mul・比較）なら**型特化 op**
+    /// （`IntBinLL`/`FloatBinLC` 等）を emit（タグ検査・op ディスパッチ・clone を削減）。
+    /// 型特化 op は実行時型が想定外なら**汎用へフォールバック**するので、注釈が古くても健全。
+    /// 融合できなければ `false`（呼び出し側が通常経路 `LoadLocal…; Bin` を出す）。意味論は不変。
+    fn try_emit_bin_fused(&mut self, left: &Expr, right: &Expr, op: &BinOp, node_id: u32) -> bool {
+        use crate::type_check::BinOperandKind as K;
+        let Some(a) = self.as_local(left) else {
+            return false;
         };
+        let kind = self.specialized_bin_kind(op, node_id);
         if let Some(b) = self.as_local(right) {
             match kind {
                 Some(K::Int) => self.emit(Op::IntBinLL(a, b, op.clone())),
@@ -1464,9 +1481,16 @@ impl Compiler {
                 _ => {
                     // 超命令融合（#2）＋型特化（plan A）: 単純オペランドなら LoadLocal…+Bin を1命令に。
                     if !self.try_emit_bin_fused(left, right, op, *node_id) {
+                        use crate::type_check::BinOperandKind as K;
                         self.compile_expr(left)?;
                         self.compile_expr(right)?;
-                        self.emit(Op::Bin(op.clone()));
+                        // 融合できない形（属性・添字・呼び出し結果など）でも、注釈が型を確定して
+                        // いればスタック版の型特化 op に落とす（#16 段階(b)(iii)）。
+                        match self.specialized_bin_kind(op, *node_id) {
+                            Some(K::Int) => self.emit(Op::IntBinSS(op.clone())),
+                            Some(K::Float) => self.emit(Op::FloatBinSS(op.clone())),
+                            None => self.emit(Op::Bin(op.clone())),
+                        };
                     }
                 }
             },

@@ -221,6 +221,46 @@ fn exec_op(
                 }
             }
         }
+        // 型特化（#16 段階(b)(iii)）: オペランドの形を問わずスタック上の2値を参照で見る。
+        // 属性・添字・呼び出し結果など `LL`/`LC` では拾えなかった式にも特化が乗る。
+        Op::IntBinSS(op) => {
+            let n = buf.len();
+            let r = match (&buf[n - 2], &buf[n - 1]) {
+                (Value::Int(x), Value::Int(y)) => int_binop_specialized(*x, *y, op),
+                _ => None,
+            };
+            match r {
+                Some(v) => {
+                    buf.truncate(n - 2);
+                    buf.push(v);
+                }
+                None => {
+                    let b = buf.pop().unwrap();
+                    let a = buf.pop().unwrap();
+                    let v = apply_bin_fast(interp, op, a, b)?;
+                    buf.push(v);
+                }
+            }
+        }
+        Op::FloatBinSS(op) => {
+            let n = buf.len();
+            let r = match (&buf[n - 2], &buf[n - 1]) {
+                (Value::Float(x), Value::Float(y)) => float_binop_specialized(*x, *y, op),
+                _ => None,
+            };
+            match r {
+                Some(v) => {
+                    buf.truncate(n - 2);
+                    buf.push(v);
+                }
+                None => {
+                    let b = buf.pop().unwrap();
+                    let a = buf.pop().unwrap();
+                    let v = apply_bin_fast(interp, op, a, b)?;
+                    buf.push(v);
+                }
+            }
+        }
         Op::Un(op) => {
             let a = buf.pop().unwrap();
             let r = interp.apply_unary_dyn(op, a)?;

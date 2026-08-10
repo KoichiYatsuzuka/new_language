@@ -38,6 +38,8 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::IntBinLC(a, c, o) => format!("IBIN_LC {a} const[{c}] {o:?}"),
         Op::FloatBinLL(a, b, o) => format!("FBIN_LL {a} {b} {o:?}"),
         Op::FloatBinLC(a, c, o) => format!("FBIN_LC {a} const[{c}] {o:?}"),
+        Op::IntBinSS(o) => format!("IBIN_SS {o:?}"),
+        Op::FloatBinSS(o) => format!("FBIN_SS {o:?}"),
         Op::Un(o) => format!("UN {o:?}"),
         Op::GetAttr(n, _) => format!("GET_ATTR {:?}", chunk.names.get(*n as usize)),
         Op::SetAttr(n) => format!("SET_ATTR {:?}", chunk.names.get(*n as usize)),

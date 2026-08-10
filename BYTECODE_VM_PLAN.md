@@ -233,9 +233,31 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
       これは型検査の**意味論変更**（今まで `Unresolved` で素通りしていた箇所に新規の静的エラーが出うる）なので、
       独立タスクとして判断を要する。VM 経路（`binop_kind`）にも同時に効く。
 
+    ##### ✅ `infer_attr` 戻り値の実型化 ＋ 段階(b)(iii) スタック版型特化 op（2026-08-10）
+    - **`infer_attr` 戻り値の実型化**（[infer.rs:333-355](src/type_check/infer.rs#L333)）: `NamedInstance` のフィールドは
+      registry から引いた実型を**戻り値としても返す**（従来は注釈にだけ焼き戻り値は `Unresolved`）。
+      これで `p.x * p.x` が Float×Float と判定され `binop_kind` が付く。
+      **単体では速度効果ゼロ**（bench_field_access 0.98x＝誤差）。理由は下記。
+    - **段階(b)(iii)**（[op.rs](src/vm/op.rs)・[run.rs](src/vm/run.rs)・[compiler.rs](src/vm/compiler.rs)）:
+      従来の型特化 op は `IntBinLL`/`FloatBinLC` など**超命令融合（`local <op> local` / `local <op> const`）専用**で、
+      `try_emit_bin_fused` が `as_local(left)` に失敗すると即 `false` を返すため、
+      **属性・添字・呼び出し結果をオペランドに持つ式には特化が乗らなかった**。
+      → スタック上の2値を参照で見る **`IntBinSS`/`FloatBinSS`** を追加し、融合できない形でも
+      `binop_kind` があれば特化 op に落とす。判定は `specialized_bin_kind` に共通化（Div/Mod/Pow/bit は従来どおり汎用）。
+      想定外の実行時型は既存同様 `apply_bin_fast` へフォールバックするので健全。
+    - **実測**: 属性オペランドの二項演算を切り出したループ（呼び出し・`GET_ATTR` の希釈を抑えたもの）で
+      **1.069x**（1.224s → 1.145s・同一ビルドで emit のみ A/B・best-of-3）。
+      一方 `bench_field_access.ar` は 1.015x にとどまる（1 ケースあたり 100 万回の関数呼び出し＋7 回の `GET_ATTR` が支配的で、
+      二項演算の占める割合が小さい）。**この2つの数字の差が「残る速度余地は呼び出し機構と属性読み」という §4.3 の知見と一致する**。
+    - **開発フック追加**: `AR_VM_DUMP=1` で `compile_fn` が生成 Chunk を逆アセンブルして stderr へ出す
+      （[compiler.rs](src/vm/compiler.rs)）。`disasm.rs` はこれまで**呼び元ゼロ**だった。
+      `kinetic` の本体が `FBIN_SS` ×6 になることを目視確認済み。
+
     ##### ⬜ 残り（次スレッドの着手候補）
     - **段階(b) 続き**: (i) 属性/メソッドの静的ディスパッチ化（静的クラス確定時に R3/メソッド IC のチェックを省く）、
-      (ii) `CheckBefore` 指示の消費（境界での明示的動的検査 op 挿入・現状は生成のみで未消費）、(iii) 比較以外・混在 int/float の特化。
+      (ii) `CheckBefore` 指示の消費（境界での明示的動的検査 op 挿入・現状は生成のみで未消費）、
+      ~~(iii) 融合できない形への型特化~~ 【✅ 完了・`IntBinSS`/`FloatBinSS`】。
+      **残る (iii) 派生**: Div/Mod/Pow/bit の特化（ゼロ除算の意味論に注意）・**int/float 混在**の特化。
     - ~~for ループターゲットの要素型推論~~ 【✅ 完了 2026-08-10】（下記参照）。
     - **【推奨・次の本命】`infer_attr` の戻り値をフィールド実型にする**（型検査の解像度・第2弾）。
       現状 `infer_attr` は `NamedInstance` のフィールドに対し**戻り値は `Unresolved` のまま**で、実型は注釈にだけ焼いている
