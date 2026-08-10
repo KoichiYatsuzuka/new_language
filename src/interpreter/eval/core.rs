@@ -189,7 +189,10 @@ impl Interpreter {
                 let val = self.eval(expr)?;
                 self.mustbe_check(val, guard_type, span)
             }
-            Expr::Call { func, args, span, cache, .. } => self.eval_call(func, args, span, cache),
+            // node_id は FFI 境界検査（`ffi_boundary`）が宣言型を引くために要る。
+            Expr::Call { func, args, span, cache, node_id } => {
+                self.eval_call(func, args, span, cache, *node_id)
+            }
             Expr::Cast { object, type_name, .. } => self.eval_cast(object, type_name),
         }
     }

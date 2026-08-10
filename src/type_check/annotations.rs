@@ -159,4 +159,17 @@ impl AstAnnotations {
     pub fn resolved_len(&self) -> usize {
         self.resolved.len()
     }
+
+    /// Call 注釈の総数と、そのうち引数に `CheckBefore` が付いた引数の総数（テスト・デバッグ用）。
+    /// 「境界検査がどれだけ生成されているか」を測るために使う（#16 段階(b)(ii) の診断）。
+    pub fn call_check_stats(&self) -> (usize, usize) {
+        let calls = self.calls.len();
+        let checked_args = self
+            .calls
+            .values()
+            .flat_map(|c| c.args.iter())
+            .filter(|a| matches!(a.directive, Directive::CheckBefore(_)))
+            .count();
+        (calls, checked_args)
+    }
 }

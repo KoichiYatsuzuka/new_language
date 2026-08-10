@@ -12,15 +12,84 @@ use {
 use super::*;
 
 impl Interpreter {
+    /// `obj.attr(...)` の呼び先が外部言語なら、その言語タグを返す（FFI 境界検査用）。
+    ///
+    /// 名前空間のメンバを読むだけで副作用は無いので、実際の呼び出し前に安全に判定できる。
+    /// 新しい言語を足すときは、その言語の関数を表す `Value` 変種をここに 1 行足す。
+    fn foreign_call_lang(obj: &Value, attr: &str) -> Option<&'static str> {
+        match obj {
+            // Python オブジェクトのメソッド呼び出し。
+            Value::PyObject(_) => Some("py"),
+            // モジュール名前空間経由（`mod.func()`）。メンバの種別で言語が決まる。
+            Value::Namespace(ns) => match ns.members.get(attr) {
+                Some(Value::PyObject(_)) => Some("py"),
+                Some(Value::JsProcFn(_)) => Some("js-proc"),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// FFI 境界検査（#16）: 外部言語の呼び出し結果が Arrow へ入る直前に、
+    /// **スタブが宣言した戻り値型**（＝型検査がこの Call ノードへ焼いた解決型）と突き合わせる。
+    ///
+    /// 検査器は言語ごと（[`ffi_boundary::checker_for`]）。未対応言語・未採番ノード・
+    /// 宣言型が無い（`Any`/`Unresolved`）場合は**素通し**なので、スタブが無い箇所の挙動は変わらない。
+    /// 逆にスタブが型を宣言しているほど検査が効く。
+    fn check_ffi_return(
+        &mut self,
+        lang: &str,
+        value: Value,
+        node_id: u32,
+        func: &Expr,
+        call_span: &Span,
+    ) -> Result<Value, String> {
+        use crate::interpreter::ffi_boundary::{checker_for, Verdict};
+
+        let Some(checker) = checker_for(lang) else {
+            return Ok(value);
+        };
+        let Some(declared) = self.annotations.resolved_type(node_id).cloned() else {
+            return Ok(value);
+        };
+
+        match checker.check(&value, &declared) {
+            Verdict::Ok | Verdict::Unverifiable => Ok(value),
+            Verdict::Coerce(v) => Ok(v),
+            Verdict::Mismatch { actual } => {
+                let name = callee_display_name(func);
+                let msg = format!(
+                    "FfiTypeError: {} function `{}` is declared to return `{}` but returned `{}` at {}",
+                    checker.lang(),
+                    name,
+                    declared,
+                    actual,
+                    call_span
+                );
+                match self.make_internal_raised_error(&msg) {
+                    Some(raised) => {
+                        self.current_exception = Some(raised);
+                        Err(crate::interpreter::RAISE_SENTINEL.to_string())
+                    }
+                    None => Err(msg),
+                }
+            }
+        }
+    }
+
     /// 関数呼び出し式 `func(args)` を評価する。
     /// テンプレート instantiate・メソッド呼び出し・組み込み関数・ユーザー定義関数・クラスコンストラクタ・
     /// ジェネレータ・ネイティブ関数・型コンストラクタなど、呼び出し先の種別に応じて適切なパスへ分岐する。
+    ///
+    /// `node_id` は AST 型解決層の注釈を引くキー（#16）。FFI 境界検査が
+    /// 「スタブがこの呼び出しの戻り値をどう宣言しているか」を知るために使う。0 = 未採番。
     pub(crate) fn eval_call(
         &mut self,
         func: &Expr,
         args: &[CallArg],
         call_span: &Span,
         cache: &crate::ast::NativeCallCache,
+        node_id: u32,
     ) -> Result<Value, String> {
         // ── インラインキャッシュ命中: AST に焼き込まれた typed ネイティブ関数 ──
         // スコープ検索・Value マッチ・組み込みチェックをすべて跳ばして直接ディスパッチ。
@@ -38,7 +107,14 @@ impl Interpreter {
         }
         if let Expr::Attr { object, attr, .. } = func {
             let obj_val = self.eval(object)?;
-            return self.eval_method_call(obj_val, attr, args, Some(cache));
+            // `mod.func()` 形式の外部言語呼び出しはここを通る（`eval_method_call` へ委譲される）。
+            // 委譲先の署名を増やさずに済むよう、**呼ぶ前に**呼び先の言語を覗いておく。
+            let lang = Self::foreign_call_lang(&obj_val, attr);
+            let r = self.eval_method_call(obj_val, attr, args, Some(cache))?;
+            return match lang {
+                Some(l) => self.check_ffi_return(l, r, node_id, func, call_span),
+                None => Ok(r),
+            };
         }
         // ── R4: Arrow 関数呼び先キャッシュ命中（Ident のみ） ──
         // 不変グローバル関数と初回解決済みなら、builtin 判定・名前引き・name.clone を跳ばして
@@ -100,7 +176,9 @@ impl Interpreter {
             ),
             Value::PyObject(handle) => {
                 let evaled_args = self.eval_call_args(args)?;
-                crate::interpreter::py_interop::call_py_object(&handle, &evaled_args)
+                let r = crate::interpreter::py_interop::call_py_object(&handle, &evaled_args)?;
+                // FFI 境界検査: Python が返した値をスタブの宣言型と突き合わせる。
+                self.check_ffi_return("py", r, node_id, func, call_span)
             }
             Value::Instance(_) => {
                 self.eval_method_call(callee, "__call__", args, None)
@@ -132,7 +210,9 @@ impl Interpreter {
             Value::JsProcFn(data) => {
                 let evaled_args = self.eval_call_args(args)?;
                 let vals: Vec<Value> = evaled_args.into_iter().map(|(_, v, _)| v).collect();
-                crate::interpreter::js_proc_runtime::call_function(&data.bridge_key, &data.module_name, &data.fn_name, &vals)
+                let r = crate::interpreter::js_proc_runtime::call_function(&data.bridge_key, &data.module_name, &data.fn_name, &vals)?;
+                // FFI 境界検査: JS の数値は常に f64 で届くので、`int` 宣言は整数値なら Int へ寄せる。
+                self.check_ffi_return("js-proc", r, node_id, func, call_span)
             }
             Value::Type(type_name) => {
                 self.eval_type_constructor_call(&type_name, args)
@@ -658,5 +738,17 @@ impl Interpreter {
 
         let mgr = crate::interpreter::async_mgr::AsyncManagerData::new(num_thread, raise_immediately);
         Ok(Value::AsyncManager(Rc::new(RefCell::new(mgr))))
+    }
+}
+
+/// 呼び先の表示名（FFI 境界検査のエラーメッセージ用）。`mod.fn` 形式を優先する。
+fn callee_display_name(func: &Expr) -> String {
+    match func {
+        Expr::Ident(n) => n.clone(),
+        Expr::Attr { object, attr, .. } => match object.as_ref() {
+            Expr::Ident(base) => format!("{base}.{attr}"),
+            _ => attr.clone(),
+        },
+        _ => "<callee>".to_string(),
     }
 }

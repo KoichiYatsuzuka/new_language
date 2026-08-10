@@ -341,6 +341,13 @@ fn run_program(
         return Err(format_static_errors(&type_errors));
     }
 
+    // 診断フック（#16 段階(b)(ii)）: `AR_ANNOT_DIFF=1` で境界検査指示の生成状況を出す。
+    // 「Call 注釈のうち引数に CheckBefore が付いたものが何件か」を全例題で測るために使う。
+    if std::env::var("AR_ANNOT_DIFF").is_ok_and(|v| !v.is_empty()) {
+        let (calls, checked) = annotations.call_check_stats();
+        eprintln!("AnnotCalls: calls={calls} args_with_CheckBefore={checked}");
+    }
+
     // --- Phase R / R1: ローカル読み取りの slot 解決（トップレベル関数を書き換える） ---
     interpreter::resolver::resolve_program(&mut stmts);
 

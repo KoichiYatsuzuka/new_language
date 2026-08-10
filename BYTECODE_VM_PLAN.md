@@ -296,6 +296,72 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
       今まで通っていたコードが実行時エラーになりうる＝ off/auto byte-identical を壊す**言語の挙動変更**。
       段階(c) で境界検査をネイティブへインライン生成する設計と併せて判断すべきなので据え置いた。
 
+    ##### 🔬 引数境界検査の診断（2026-08-10・「設計が誤りか / 前提が未実装か」の切り分け）
+    **結論: 設計は誤っていない。生成側は意図どおり動いており、欠けているのは消費側だけ。**
+    - **計測手段**: `AstAnnotations::call_check_stats()`（[annotations.rs](src/type_check/annotations.rs)）＋
+      `AR_ANNOT_DIFF=1` 時に [main.rs](src/main.rs) が `AnnotCalls: calls=N args_with_CheckBefore=M` を出す。
+    - **実測（例題全件）**: `calls=1650` に対し `args_with_CheckBefore=5`（`functions.ar` 2 件・`cpp_struct_ptr.ar` 3 件）。
+    - **なぜ少ないか（設計の穴ではなく前提の重複）**: 生成条件は
+      「param 具象 × arg 動的（`Any` **または** `Unresolved`）」だが、**`Any` 側は静的型検査が既にハードエラーにする**
+      （`argument 0 of 'f' expects 'int' but got 'Any'`）。したがって実行時まで到達しうるのは
+      **`Unresolved` 側だけ**であり、件数が絞られるのは当然の帰結。
+    - **境界で本当に効くケースは存在する（実証済み）**:
+      ```
+      import[py-int] math as m
+      fn takes_int(let x: int) -> str: ...
+      let from_py = m.fabs(-3.5)   # 実体は float 3.5
+      print(takes_int(from_py))    # → "got 3.5 / doubled 7.0" が**エラーなしで**出る
+      ```
+      型検査はこの引数に `CheckBefore(int)` を正しく生成している。にもかかわらず**誰も実行しない**ため、
+      `x: int` と宣言したパラメータが実行時に float を保持したまま素通りする。
+      ＝「外部言語ライブラリ境界を超えるのに必要」という当初の判断は妥当で、**未実装なのは消費側だけ**。
+    - **付随して判明した非一貫性**: 同じ py 呼び出しでも、`json.loads(...)` は `Any` を返すと**スタブが宣言している**ため
+      静的エラーになり、`math.fabs(...)` はメンバ未知で呼び出し結果が `Unresolved` になるため無検査で通る。
+      **スタブが当該メンバを宣言しているかどうかで「静的拒否」と「無検査素通り」が分かれる**。
+      境界検査を実装する際はこの差を設計に織り込む必要がある（`Unresolved` を単に許すのではなく検査へ倒す）。
+
+    ##### 🔬 「スタブで潰しきれるか」の検証（2026-08-10）
+    **結論: 潰しきれない。しかも現行ルールは“スタブを整備するほど発火しなくなる”という逆向きの性質を持つ。**
+
+    **(A) スタブでは捕捉できず、動的境界検査なら捕捉できるケース — 存在する（実証済み）**
+    Python スタブは `.py` の型注釈をそのまま信用して `let f: function->int` を作る
+    （`extract_py_type_stubs`・[imports/mod.rs:112](src/parser/imports/mod.rs#L112)）。
+    **Python は注釈を実行時に強制しない**ので、注釈が嘘なら静的検査は素通りする。
+    ```python
+    def get_int() -> int:  return "I am a string"    # 注釈は int、実体は str
+    ```
+    ```
+    let a = L.get_int()
+    print(takes_int(a))     # fn takes_int(let x: int)
+    ```
+    → 実測: `x=I am a string doubled=I am a stringI am a string`。
+    **エラーも警告も出ず、`x * 2` が文字列反復として実行され“静かに誤った答え”が出る**（最悪の失敗形）。
+    `-> int` が `None` を返す版は `TypeError: unsupported operand types for Mul: NoneType and int` と、
+    **境界ではなく使用箇所を責める分かりにくいエラー**になる。
+    コンテナ要素型も同様: `-> list` が `[1, "two", 3.0]` を返し `list[int]` で受けると、
+    ループ内部で `Add: int and str` として初めて露見する（`mustbe list[int]` が要素型を検査しない旨の
+    既存警告 `MustBeElemTypeUnchecked` と同じ構造の穴）。
+
+    **⚠️ 最重要: これらのケースで `args_with_CheckBefore = 0`。**
+    現行ルールは「param 具象 × arg 動的」で発火するが、スタブが整うと arg 型が具象（`int`）になるため
+    **検査指示が生成されなくなる**。＝ **スタブを整備するほど保護が消える**という逆向きの依存。
+    危険なのは「引数の静的型が動的なとき」ではなく「**静的型は具象に見えるが値が外部由来のとき**」。
+
+    **(B) スタブでも動的検査でも救えないケース — こちらも存在する**
+    C/C++ の `void*` は Arrow の **`int`** に落ちる（[imports/mod.rs:399](src/parser/imports/mod.rs#L399)）。
+    型タグは「int である」以上の情報を持たないので、動的型検査を入れても静的型と同じことしか言えず**無意味**。
+    ここを守るには型検査ではなく**ハンドルの出所・生存期間の追跡**が要る（別軸の課題）。
+
+    **(C) スタブが既に対処できているケース**
+    `OpaqueStructPtr`（`FILE*`/`HWND` 等）と `ByValueStruct` は Arrow の **`Any`** に落ちる。
+    `Any` を具象パラメータへ渡すのは現状ハードな静的エラーなので、ここは既に塞がっている
+    （やや過剰で、利用側に cast/`mustbe` を強制する）。
+
+    **→ 設計上の含意**: 境界検査は**引数の静的型ではなく「値が FFI 境界を越えてきた」という出所**を鍵にすべき。
+    具体的には「Arrow 呼び出しの引数を検査する」のではなく、
+    **外部呼び出しの戻り値をスタブ宣言型と突き合わせて Arrow へ入る瞬間に検査する**方が、
+    (A) を正面から捕まえられ、スタブ整備と矛盾しない（スタブが宣言した型が検査の根拠になる）。
+
     ##### ✅ 段階(b)(i) 属性アクセスの高速化（2026-08-10）
     - **当初の想定は外れた**: 「静的にクラスが確定していれば R3 IC のチェックを省く」つもりだったが、
       `GetAttr` のヒット経路（[run.rs](src/vm/run.rs)）を読むと IC ヒットは既に
@@ -314,6 +380,59 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
     - **メソッドの静的ディスパッチは未実施**: `Op::CallMethod` はレシーバをスタックへ積む形のままで、
       同じ融合（`CallMethodLocal`）が適用できる余地がある。呼び出し機構自体のコストが支配的なので
       効果の見積もりが要る（§4.3 の「残る速度余地は呼び出し機構」）。
+
+    ##### ✅ FFI 境界検査 — (A) への対応（2026-08-10）
+    **設計方針**: 検査の鍵を「引数の静的型が動的か」から「**値が FFI 境界を越えてきたか**」へ移した。
+    従来の `CheckBefore`（param 具象 × arg 動的）は**スタブが整うほど発火しなくなる**逆向きの性質を持つが、
+    本機構は**スタブが宣言した型を検査の根拠にする**ので、スタブ整備の方針と同じ向きに強くなる。
+
+    - **検査点**: 外部関数呼び出しの**戻り値**が Arrow へ入る瞬間。
+      `Interpreter::check_ffi_return`（[eval/calls.rs](src/interpreter/eval/calls.rs)）。
+      宣言型は **型検査が Call ノードへ焼いた解決型**（＝ #16 の注釈テーブル）から引く。段階(a) の基盤がそのまま効いた。
+    - **経路**: `mod.func()`（`Expr::Attr` → `eval_method_call` へ委譲）と、PyObject/JsProcFn を直接呼ぶ形の両方。
+      前者は委譲先の署名を増やさぬよう、呼ぶ前に `foreign_call_lang` で呼び先の言語だけ覗く。
+    - **言語ごとの検査器**: [src/interpreter/ffi_boundary.rs](src/interpreter/ffi_boundary.rs)（新規）。
+      `trait BoundaryChecker` ＋ 言語非依存の共通判定 `check_common`、言語登録は `checker_for` の 1 行。
+      **言語を足すときの変更は「impl を書く」「`checker_for` に 1 行」の 2 箇所だけ**（呼び出し側・エラー生成・
+      値の差し替えは共通実装）。
+      - `PythonChecker`: 共通判定そのまま（Python は int/float を区別して届く）。
+      - `JavaScriptChecker`: **JS は数値がすべて f64** で届く（`decode_result` の `"f"`）。
+        素朴に「int か」を見ると正しいコードが落ちるので、**整数値の Float は `int` 宣言に適合として `Int` へ寄せる**
+        （`Verdict::Coerce`）。小数を持つ値は本物の不一致。要素が int のリストも同じ緩和を適用。
+      - 静的型付け言語（C/C++・C#・Rust）は登録しない＝無検査（向こう側が型を守るため）。
+    - **判定は 4 値**: `Ok` / `Coerce(値)` / `Mismatch` / `Unverifiable`。
+      **判定できない宣言型（`Any`/`Unresolved`/関数型/`NamedInstance` 等）は `Unverifiable` で素通し**。
+      誤検知で正しいコードを落とすより取りこぼす方に倒した。＝ スタブが無い箇所の挙動は変わらない。
+    - **コンテナは要素型まで検査する**（`list[int]` と宣言して `[1, "two", 3.0]` が返る、が実際の失敗例）。
+      走査コストは `py_to_tl` が既に全要素を歩いているのと同オーダー。
+
+    ##### ✅ スタブ側の穴埋め（`Unresolved`/`Any` を減らす）
+    - **PEP 585 の小文字ジェネリクスに未対応だった**: `py_type_to_arrow`（[imports/mod.rs](src/parser/imports/mod.rs)）は
+      `typing.List[T]` は見ていたが **`list[int]`（Python 3.9+ の標準表記）を catch-all で `Any` に落としていた**。
+      その結果スタブが要素型を失い、境界検査も `Any` は検査不能として素通しするため機構が成立しなかった。
+      `list[T]` / `set[T]` / `Set[T]` / `dict[...]` / `tuple[...]` を追加。
+    - **PEP 604 の `X | None` / `X | Y`** も `Option[T]` / `Union[T, U]` へ変換するようにした
+      （角括弧を含む場合は入れ子の区切りと紛れるので対象外＝保守的）。
+    - これで **スタブを書けば書くほど静的にも動的にも締まる**（`Unresolved` はスタブで潰し、
+      潰しきれない「スタブが嘘をつく」ケースは境界検査が動的に捕まえる）という二段構えが成立する。
+
+    ##### 🧪 検証
+    - `cargo test` **696 緑**（`ffi_boundary` の言語別ポリシー単体テスト 10 件を追加）。警告 0。
+    - 例題: [ffi_boundary_check.ar](examples/interop/ffi_boundary_check.ar)（正例・スタブどおりなら無干渉）／
+      [ffi_boundary_check_error.ar](examples/interop/ffi_boundary_check_error.ar)（負例）
+      ＋素材 [ffi_probe/](examples/interop/ffi_probe/)。
+    - 実測（`lying_py.py`）: `-> int` が str/None を返す、`-> list[int]` が `[1,"two",3.0]` を返す、の 3 例とも
+      **境界の行を指す `FfiTypeError`** になった。以前は 1 つ目が `doubled=...` を静かに誤答し、
+      2 つ目は使用箇所で `Mul: NoneType and int` という分かりにくいエラーになっていた。
+    - 例題スキャン FAIL 0・off/auto 35 例題 byte-identical（検査は解釈経路の共通部分に入るため両モード同一）。
+
+    ##### ⚠️ この機構でも救えない範囲（明示）
+    - **C/C++ の `void*`** は Arrow の `int` に落ちる。型タグは「int である」以上を語らないので、
+      動的検査を入れても静的型と同じことしか言えない。**出所・生存期間の追跡**という別軸が要る。
+    - **引数方向**（Arrow → 外部）は対象外。向こう側の引数型が分からない場合が多く、
+      分かる場合は静的検査で足りるため。
+    - **JS はスタブ（`.ars`）に型が書かれていて初めて効く**。`import[js-proc]` は `.ars` があれば読むので
+      機構としては成立しているが、現状の例題は型を持たないため実質無検査。`.d.ts` からの `.ars` 生成は別タスク。
 
     ##### ⬜ 残り（次スレッドの着手候補）
     - **段階(b) 続き**: ~~(i) 属性の静的ディスパッチ化~~ 【✅ 完了・`GetAttrLocal`】
