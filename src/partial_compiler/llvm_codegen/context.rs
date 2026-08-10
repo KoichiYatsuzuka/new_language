@@ -78,12 +78,15 @@ impl<'a> GenCtx<'a> {
         }
     }
 
-    /// 属性アクセスの型を決める（#16 段階 c-2）。
+    /// 属性アクセスの型を決める（#16 段階 c-3）。
     ///
-    /// 現段階は**既存の自前導出（`field_ty`）を優先**して IR を不変に保ちつつ、
-    /// 注釈由来（`field_ty_annotated`）との一致状況を集計する。集計は
-    /// `AR_ANNOT_DIFF=1` で標準エラーへ出す（既定では何も出力しない）。
-    /// 注釈へ完全移行するのは差分の内訳を確認した後（段階 c-3）。
+    /// **AST 型解決層の注釈を第一の根拠にする**（＝ツリーウォーク／VM／ネイティブが同じ解決を共有する）。
+    /// 自前導出 `field_ty` は注釈が無いときのフォールバックとしてのみ残す。
+    ///
+    /// 実測（代表 6 モジュール）では `legacy_only = 0`・`conflict = 0` で、
+    /// **自前導出が注釈より広く解けるケースは 1 件も無い**。それでも撤去せず残しているのは、
+    /// node-id が付かない合成 AST 等でゼロコストの保険になるため。
+    /// 一致状況は `AR_ANNOT_DIFF=1` で引き続き観測できる。
     pub(super) fn field_ty_resolved(&mut self, object: &Expr, attr: &str, node_id: u32) -> Option<Ty> {
         let legacy = self.field_ty(object, attr);
         let annotated = self.field_ty_annotated(node_id);
@@ -94,7 +97,7 @@ impl<'a> GenCtx<'a> {
             (None, Some(_)) => self.attr_stats.annot_only += 1,
             (None, None) => self.attr_stats.neither += 1,
         }
-        legacy
+        annotated.or(legacy)
     }
 
     pub(super) fn fresh_reg(&mut self) -> String { let r = self.reg; self.reg += 1; format!("%_r{r}") }
