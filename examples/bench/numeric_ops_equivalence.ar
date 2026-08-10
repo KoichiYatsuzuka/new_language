@@ -1,0 +1,91 @@
+# numeric_ops_equivalence.ar — 数値二項演算の網羅チェック（#16 段階(b)(iii)）
+#
+# VM は型検査の注釈（binop_kind）が int/int・float/float を確定した二項演算を
+# 型特化 op（IBIN_LL / FBIN_SS など）へ落とす。この例題はその特化パスと
+# ツリーウォークの汎用パスが**完全に同じ結果を出す**ことを確認するためのもの。
+#
+#   .\compare_vm_modes.ps1 -Filter numeric_ops_equivalence
+#   （または arrow --vm=off / --vm=auto で実行して出力を diff する）
+#
+# 網羅対象: int の + - * / // % ** & | ^ << >> と比較、float の + - * / ** と比較、
+#           int/float 混在、ゼロ除算の 3 種のエラー、float のゼロ除算（inf/NaN）。
+# 負値・ゼロ・負の指数など境界ケースを含む。
+#
+# NOTE: 混在の `<=` `>=` は現状の言語仕様では TypeError（`<` `>` は通る）。
+#       apply_binop に混在アームが無いため。この例題では扱わない。
+
+fn int_ops(let a: int, let b: int) -> None:
+    print(a + b)
+    print(a - b)
+    print(a * b)
+    print(a / b)
+    print(a // b)
+    print(a % b)
+    print(a ** b)
+    print(a & b)
+    print(a | b)
+    print(a ^ b)
+    print(a < b, a > b, a <= b, a >= b, a == b, a != b)
+
+fn int_shift(let a: int, let s: int) -> None:
+    print(a << s)
+    print(a >> s)
+
+fn float_ops(let a: float, let b: float) -> None:
+    print(a + b)
+    print(a - b)
+    print(a * b)
+    print(a / b)
+    print(a ** b)
+    print(a < b, a > b, a <= b, a >= b, a == b, a != b)
+
+fn mixed_ops(let i: int, let f: float) -> None:
+    print(i + f, f + i)
+    print(i - f, f - i)
+    print(i * f, f * i)
+    print(i / f, f / i)
+    print(i ** f, f ** i)
+    print(i < f, f < i, i > f, f > i)
+    # NOTE: i <= f / i >= f は現状の言語仕様では TypeError（apply_binop に混在アームが無い）
+
+fn div_zero_int(let a: int) -> None:
+    try:
+        print(a / 0)
+    except ZeroDivisionError as e:
+        print("div:", e.message)
+    try:
+        print(a // 0)
+    except ZeroDivisionError as e:
+        print("floordiv:", e.message)
+    try:
+        print(a % 0)
+    except ZeroDivisionError as e:
+        print("mod:", e.message)
+
+fn float_div_zero(let a: float) -> None:
+    print(a / 0.0)
+
+print("=== int ===")
+int_ops(7, 3)
+int_ops(-7, 3)
+int_ops(7, -3)
+int_ops(-7, -3)
+int_ops(0, 5)
+print("=== int shift ===")
+int_shift(1, 10)
+int_shift(-16, 2)
+print("=== int pow negative exponent ===")
+int_ops(2, -2)
+print("=== float ===")
+float_ops(7.5, 2.5)
+float_ops(-7.5, 2.5)
+float_ops(2.0, 0.5)
+print("=== mixed ===")
+mixed_ops(3, 1.5)
+mixed_ops(-3, 1.5)
+mixed_ops(2, -0.5)
+print("=== zero division ===")
+div_zero_int(5)
+print("=== float div by zero ===")
+float_div_zero(1.0)
+float_div_zero(-1.0)

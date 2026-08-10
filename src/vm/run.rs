@@ -529,6 +529,39 @@ fn int_binop_specialized(x: i64, y: i64, op: &BinOp) -> Option<Value> {
         BinOp::Add => Value::Int(x + y),
         BinOp::Sub => Value::Int(x - y),
         BinOp::Mul => Value::Int(x * y),
+        // ゼロ除算は `None` を返して汎用パスへ委ねる。エラーメッセージ（`ZeroDivisionError: …` の
+        // 3 種の文言）を `apply_binop` の一箇所に保つため、ここでは複製しない。
+        BinOp::Div => {
+            if y == 0 {
+                return None;
+            }
+            Value::Float(x as f64 / y as f64)
+        }
+        BinOp::FloorDiv => {
+            if y == 0 {
+                return None;
+            }
+            Value::Int(x.div_euclid(y))
+        }
+        BinOp::Mod => {
+            if y == 0 {
+                return None;
+            }
+            Value::Int(x.rem_euclid(y))
+        }
+        // 指数が非負なら整数冪、負なら float（`apply_binop` の Int/Int アームと同一）。
+        BinOp::Pow => {
+            if y >= 0 {
+                Value::Int(x.pow(y as u32))
+            } else {
+                Value::Float((x as f64).powi(y as i32))
+            }
+        }
+        BinOp::BitAnd => Value::Int(x & y),
+        BinOp::BitOr => Value::Int(x | y),
+        BinOp::BitXor => Value::Int(x ^ y),
+        BinOp::LShift => Value::Int(x << y),
+        BinOp::RShift => Value::Int(x >> y),
         BinOp::Lt => Value::Bool(x < y),
         BinOp::Gt => Value::Bool(x > y),
         BinOp::LtEq => Value::Bool(x <= y),
@@ -546,6 +579,10 @@ fn float_binop_specialized(x: f64, y: f64, op: &BinOp) -> Option<Value> {
         BinOp::Add => Value::Float(x + y),
         BinOp::Sub => Value::Float(x - y),
         BinOp::Mul => Value::Float(x * y),
+        // float の除算はゼロ検査なし（inf/NaN を返す）＝ `apply_binop` の Float/Float アームと同一。
+        // `//` と `%` は Float/Float のアームが存在しない（＝エラー）ため特化しない。
+        BinOp::Div => Value::Float(x / y),
+        BinOp::Pow => Value::Float(x.powf(y)),
         BinOp::Lt => Value::Bool(x < y),
         BinOp::Gt => Value::Bool(x > y),
         BinOp::LtEq => Value::Bool(x <= y),
@@ -587,7 +624,23 @@ fn apply_bin_fast(
         (BinOp::LtEq, Float(x), Float(y)) => Value::Bool(*x <= *y),
         (BinOp::GtEq, Int(x), Int(y)) => Value::Bool(*x >= *y),
         (BinOp::GtEq, Float(x), Float(y)) => Value::Bool(*x >= *y),
-        // 混在比較・その他の型・ゼロ除算あり演算子はフルパスへ。
+        // int/float 混在の順序比較（#16 段階(b)(iii)）。`apply_binop` の混在アームと同一意味論。
+        // 以前はここが無く `apply_binop_dyn` → 巨大 match まで降りていた。
+        // **`LtEq`/`GtEq` の混在アームは `apply_binop` に存在しない**（`i < f` は通るが `i <= f` は
+        // TypeError になるのが現状の言語仕様）。ここで足すと意味論が変わるので追加しない。
+        // Eq/NotEq は `apply_binop` が `values_eq` の catch-all で処理するため特化しない。
+        (BinOp::Lt, Int(x), Float(y)) => Value::Bool((*x as f64) < *y),
+        (BinOp::Lt, Float(x), Int(y)) => Value::Bool(*x < *y as f64),
+        (BinOp::Gt, Int(x), Float(y)) => Value::Bool((*x as f64) > *y),
+        (BinOp::Gt, Float(x), Int(y)) => Value::Bool(*x > *y as f64),
+        // int/float 混在の除算・冪（ゼロ検査不要なアームのみ）。
+        (BinOp::Div, Int(x), Float(y)) => Float(*x as f64 / *y),
+        (BinOp::Div, Float(x), Int(y)) => Float(*x / *y as f64),
+        (BinOp::Div, Float(x), Float(y)) => Float(*x / *y),
+        (BinOp::Pow, Float(x), Float(y)) => Float(x.powf(*y)),
+        (BinOp::Pow, Int(x), Float(y)) => Float((*x as f64).powf(*y)),
+        (BinOp::Pow, Float(x), Int(y)) => Float(x.powi(*y as i32)),
+        // その他の型・ゼロ除算しうる int 演算はフルパスへ。
         _ => return interp.apply_binop_dyn(op, a, b),
     };
     Ok(r)

@@ -252,6 +252,25 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
     - **開発フック追加**: `AR_VM_DUMP=1` で `compile_fn` が生成 Chunk を逆アセンブルして stderr へ出す
       （[compiler.rs](src/vm/compiler.rs)）。`disasm.rs` はこれまで**呼び元ゼロ**だった。
       `kinetic` の本体が `FBIN_SS` ×6 になることを目視確認済み。
+    - **特化対象 op の拡大（(iii) 完遂・2026-08-10）**: `specialized_bin_kind` を「種別ごとに許可 op を持つ」形へ変更。
+      - **int/int**: `Div`/`FloorDiv`/`Mod`/`Pow`/`BitAnd`/`BitOr`/`BitXor`/`LShift`/`RShift` を追加（従来は Add/Sub/Mul と比較のみ）。
+        **ゼロ除算は特化側が `None` を返して汎用パスへ落とす**ので、`ZeroDivisionError` の 3 種の文言は
+        `apply_binop` の一箇所に保たれる。`Pow` は指数非負なら整数冪・負なら float（既存アームと同一）。
+      - **float/float**: `Div`/`Pow` を追加。**`//` と `%` は `apply_binop` に Float/Float アームが無い**（＝エラー）ため特化しない。
+      - **int/float 混在**: op を6つ増やす代わりに **`apply_bin_fast` に混在アームを追加**（`Lt`/`Gt`/`Div`/`Pow`）。
+        これで注釈の有無に関わらず `Bin`/`BinLocalLocal`/`BinLocalConst` の全経路が `apply_binop_dyn` への
+        降下を避けられる。**`LtEq`/`GtEq` の混在は追加していない**（下記の言語仕様の穴を参照）。
+      - **実測**: `(i % 7) + (i // 3) + (i & 255) + (i ^ 9) + (i | 4)` のループで **1.478x**（0.984s → 0.666s・
+        同一ビルドで許可 op のみ A/B・best-of-3）。Add/Sub/Mul しか特化できなかった従来との差。
+      - **同値性検証**: [examples/bench/numeric_ops_equivalence.ar](examples/bench/numeric_ops_equivalence.ar) を追加。
+        int/float/混在の全演算＋境界値（負値・ゼロ・負の指数）＋ゼロ除算 3 種＋float の inf/NaN を網羅し、
+        `--vm=off` と `--vm=auto` が **119 行 byte-identical** であることを確認する。
+
+    ##### ⚠️ 発見した言語仕様の穴（本タスクでは修正せず）
+    - **`apply_binop` に int/float 混在の `<=` `>=` アームが無い**（[operators.rs:310-321](src/interpreter/ops/operators.rs#L310)）。
+      `i < f` と `i > f` は通るのに **`i <= f` は `TypeError: unsupported operand types for LtEq: int and float`** になる。
+      (b)(iii) の実装中に混在アームを足したところ VM だけ成功して off/auto が割れたため発覚した。
+      非対称で不具合に見えるが、**修正は言語の挙動変更**なので本タスクの範囲外として据え置いた。
 
     ##### ⬜ 残り（次スレッドの着手候補）
     - **段階(b) 続き**: (i) 属性/メソッドの静的ディスパッチ化（静的クラス確定時に R3/メソッド IC のチェックを省く）、

@@ -814,26 +814,58 @@ impl Compiler {
     }
 
     /// 注釈が「両オペランド int/float 確定」かつ型特化してよい op なら、その種別を返す（#16 段階(b)）。
-    /// ゼロ除算しうる op（Div/Mod）・Pow・ビット演算は意味論が込み入るため汎用のままにする。
+    ///
+    /// 許可する op は種別ごとに違う。`apply_binop` に対応するアームが存在するものだけを特化し、
+    /// それ以外（float の `//`・`%` など）は汎用パスに委ねてエラー処理を一箇所に保つ。
+    /// ゼロ除算は特化側が `None` を返して汎用へ落ちるので、op としては許可してよい。
     fn specialized_bin_kind(
         &self,
         op: &BinOp,
         node_id: u32,
     ) -> Option<crate::type_check::BinOperandKind> {
-        let specializable = matches!(
-            op,
-            BinOp::Add
-                | BinOp::Sub
-                | BinOp::Mul
-                | BinOp::Lt
-                | BinOp::Gt
-                | BinOp::LtEq
-                | BinOp::GtEq
-                | BinOp::Eq
-                | BinOp::NotEq
-        );
-        if specializable {
-            self.annotations.binop_kind(node_id)
+        use crate::type_check::BinOperandKind as K;
+        let kind = self.annotations.binop_kind(node_id)?;
+        let allowed = match kind {
+            // int/int は `apply_binop` の Int/Int アームを全て特化できる。
+            K::Int => matches!(
+                op,
+                BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::FloorDiv
+                    | BinOp::Mod
+                    | BinOp::Pow
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor
+                    | BinOp::LShift
+                    | BinOp::RShift
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::LtEq
+                    | BinOp::GtEq
+                    | BinOp::Eq
+                    | BinOp::NotEq
+            ),
+            // float は `//`・`%`・ビット演算のアームが無いので算術と比較のみ。
+            K::Float => matches!(
+                op,
+                BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::Pow
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::LtEq
+                    | BinOp::GtEq
+                    | BinOp::Eq
+                    | BinOp::NotEq
+            ),
+        };
+        if allowed {
+            Some(kind)
         } else {
             None
         }
