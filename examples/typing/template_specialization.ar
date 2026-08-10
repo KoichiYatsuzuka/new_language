@@ -34,7 +34,7 @@ print(add_all[str]("ab", "cd"))
 
 print(compare[int](1, 2))
 print(compare[float](2.5, 1.5))
-# NOTE: `str < str` は apply_binop 未対応（テンプレートとは無関係の既存制約）
+print(compare[str]("a", "b"))
 
 print(mixed_ops[int](2, 3))
 print(mixed_ops[float](0.5, 4))

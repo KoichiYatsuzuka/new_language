@@ -1,0 +1,56 @@
+# comparison_matrix.ar — 順序比較 `<` `>` `<=` `>=` の網羅チェック（タスク #18）
+#
+# 型検査の `ordered_comparable` は 4 演算子すべてについて
+# `(int,int)` / `(float,float)` / `(int,float)` / `(float,int)` / `(str,str)` を許可している。
+# しかし実行時 `apply_binop` は `<` `>` の混在と int/float 同士しか実装しておらず、
+# **検査は通るのに実行時 TypeError** になる組み合わせがあった:
+#   - `i <= f` / `i >= f`（int/float 混在）
+#   - `"a" < "b"` など str 同士のすべて
+#
+# #18 で実行時を検査器の許可リストに合わせた。この例題は 5 つの型組み合わせ × 4 演算子を
+# 全部通し、`--vm=off` と `--vm=auto` で同じ結果になることを確認する。
+# 各ブロックの 3 行目（等しい値）はどれも `False False True True` になるはず。
+#
+# 検証: .\compare_vm_modes.ps1 -Filter comparison_matrix
+
+fn ii(let a: int, let b: int) -> None:
+    print(a < b, a > b, a <= b, a >= b)
+
+fn ff(let a: float, let b: float) -> None:
+    print(a < b, a > b, a <= b, a >= b)
+
+fn ifm(let a: int, let b: float) -> None:
+    print(a < b, a > b, a <= b, a >= b)
+
+fn fim(let a: float, let b: int) -> None:
+    print(a < b, a > b, a <= b, a >= b)
+
+fn ss(let a: str, let b: str) -> None:
+    print(a < b, a > b, a <= b, a >= b)
+
+print("=== int/int ===")
+ii(1, 2)
+ii(2, 1)
+ii(2, 2)
+
+print("=== float/float ===")
+ff(1.5, 2.5)
+ff(2.5, 1.5)
+ff(2.5, 2.5)
+
+print("=== int/float ===")
+ifm(2, 2.5)
+ifm(3, 2.5)
+ifm(2, 2.0)
+
+print("=== float/int ===")
+fim(2.5, 3)
+fim(2.5, 2)
+fim(2.0, 2)
+
+print("=== str/str ===")
+ss("a", "b")
+ss("b", "a")
+ss("a", "a")
+ss("abc", "abd")
+ss("Z", "a")

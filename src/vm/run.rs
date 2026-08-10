@@ -690,13 +690,16 @@ fn apply_bin_fast(
         (BinOp::GtEq, Float(x), Float(y)) => Value::Bool(*x >= *y),
         // int/float 混在の順序比較（#16 段階(b)(iii)）。`apply_binop` の混在アームと同一意味論。
         // 以前はここが無く `apply_binop_dyn` → 巨大 match まで降りていた。
-        // **`LtEq`/`GtEq` の混在アームは `apply_binop` に存在しない**（`i < f` は通るが `i <= f` は
-        // TypeError になるのが現状の言語仕様）。ここで足すと意味論が変わるので追加しない。
+        // `LtEq`/`GtEq` は #18 で `apply_binop` 側にアームが入ったので、ここでも高速パスに載せる。
         // Eq/NotEq は `apply_binop` が `values_eq` の catch-all で処理するため特化しない。
         (BinOp::Lt, Int(x), Float(y)) => Value::Bool((*x as f64) < *y),
         (BinOp::Lt, Float(x), Int(y)) => Value::Bool(*x < *y as f64),
         (BinOp::Gt, Int(x), Float(y)) => Value::Bool((*x as f64) > *y),
         (BinOp::Gt, Float(x), Int(y)) => Value::Bool(*x > *y as f64),
+        (BinOp::LtEq, Int(x), Float(y)) => Value::Bool((*x as f64) <= *y),
+        (BinOp::LtEq, Float(x), Int(y)) => Value::Bool(*x <= *y as f64),
+        (BinOp::GtEq, Int(x), Float(y)) => Value::Bool((*x as f64) >= *y),
+        (BinOp::GtEq, Float(x), Int(y)) => Value::Bool(*x >= *y as f64),
         // int/float 混在の除算・冪（ゼロ検査不要なアームのみ）。
         (BinOp::Div, Int(x), Float(y)) => Float(*x as f64 / *y),
         (BinOp::Div, Float(x), Int(y)) => Float(*x / *y as f64),

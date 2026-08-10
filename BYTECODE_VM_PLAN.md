@@ -128,13 +128,22 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
       `Any` は検査不能として素通しされるので、`.d.ts` がある分だけ静的にも動的にも締まる。
 
 **実装ミス（新規・2026-08-10 昇格）**
-18. **`apply_binop` に int/float 混在の `<=` `>=` アームが無い**
-    （[operators.rs:310-321](src/interpreter/ops/operators.rs#L310)）。
-    `i < f` と `i > f` は通るのに **`i <= f` は `TypeError: unsupported operand types for LtEq: int and float`** になる。
-    #16 段階(b)(iii) で VM 側に混在アームを足したところ off/auto が割れて発覚した（VM だけ成功していた）。
-    非対称で明らかな実装ミスだが、修正は言語の挙動変更（今までエラーだったコードが通る）になるため独立タスク化した。
-    修正時は `apply_binop` に 4 アーム（`LtEq`/`GtEq` × `Int,Float`/`Float,Int`）を足し、
-    VM 側 `apply_bin_fast` の対応アーム（現在は意図的に外してある）も同時に有効化すること。
+18. ~~**順序比較で静的型検査と実行時が食い違う**~~ 【✅ 完了 2026-08-10】
+    型検査の `ordered_comparable`（[type_check/binop.rs](src/type_check/binop.rs)）は
+    `<` `>` `<=` `>=` の**すべて**について `(Int,Float)` / `(Float,Int)` / `(Str,Str)` を許可していたが、
+    実行時 `apply_binop`（[operators.rs](src/interpreter/ops/operators.rs)）は
+    `<` `>` の混在と int/float 同士しか実装しておらず、**検査は通るのに実行時 TypeError** になっていた:
+    - `i <= f` / `i >= f`（混在）— #16 段階(b)(iii) で VM 側に混在アームを足したところ
+      off/auto が割れて発覚（VM だけ成功していた）。
+    - `"a" < "b"` など **str 同士の 4 演算子すべて** — #16 段階 E の検証中に発覚。同じ食い違いの別の面。
+
+    **修正方針**: 型検査の許可リストを仕様とみなし、実行時をそれに合わせた（逆にせず）。
+    `apply_binop` へ 8 アーム（混在 `LtEq`/`GtEq` × 2 向き ＋ str × 4 演算子）を追加し、
+    VM 側 `apply_bin_fast` の混在 `LtEq`/`GtEq`（#16 で意図的に外していたもの）も有効化。
+    - **例題**: [examples/basics/comparison_matrix.ar](examples/basics/comparison_matrix.ar)
+      （5 つの型組み合わせ × 4 演算子を全通し・off/auto 一致）。
+    - 副次: `examples/typing/template_specialization.ar` の `compare[str]` を復元できた
+      （E の実装時は str 比較が動かず外していた）。
 
 **統一基盤（新規・2026-08-02 昇格 / 2026-08-03 具体化）**
 16. **AST 型解決層 — コンパイル/ツリーウォーク/バイトコードの挙動統一**（#13 を包含・plan A の土台）。
@@ -289,11 +298,10 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
         int/float/混在の全演算＋境界値（負値・ゼロ・負の指数）＋ゼロ除算 3 種＋float の inf/NaN を網羅し、
         `--vm=off` と `--vm=auto` が **119 行 byte-identical** であることを確認する。
 
-    ##### ⚠️ 発見した言語仕様の穴（本タスクでは修正せず）
-    - **`apply_binop` に int/float 混在の `<=` `>=` アームが無い**（[operators.rs:310-321](src/interpreter/ops/operators.rs#L310)）。
-      `i < f` と `i > f` は通るのに **`i <= f` は `TypeError: unsupported operand types for LtEq: int and float`** になる。
-      (b)(iii) の実装中に混在アームを足したところ VM だけ成功して off/auto が割れたため発覚した。
-      非対称で不具合に見えるが、**修正は言語の挙動変更**なので本タスクの範囲外として据え置いた。
+    ##### ⚠️ 発見した言語仕様の穴 → **#18 として修正済み（2026-08-10）**
+    - `apply_binop` に int/float 混在の `<=` `>=` アームが無く、`i < f` は通るのに `i <= f` が TypeError だった。
+      (b)(iii) の実装中に混在アームを足したところ VM だけ成功して off/auto が割れたため発覚。
+      当時は「修正＝言語の挙動変更」として据え置き、後に **#18** へ昇格して修正した（str 比較の欠落も同時に）。
 
     ##### ✅ 段階(b)(ii) `CheckBefore` 指示の消費（2026-08-10）
     - **判明していた実態**: `Expr::MustBe` / `Expr::Cast` / `Expr::IsType` は `compile_expr` に arm が無く

@@ -319,6 +319,21 @@ impl Interpreter {
             (BinOp::LtEq, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(*a <= *b)),
             (BinOp::GtEq, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(*a >= *b)),
             (BinOp::GtEq, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(*a >= *b)),
+            // ── タスク #18: 静的型検査と実行時の食い違いを解消する ──
+            // 型検査の `ordered_comparable`（[type_check/binop.rs]）は `<` `>` `<=` `>=` の
+            // **すべて**について `(Int,Float)` / `(Float,Int)` / `(Str,Str)` を許可している。
+            // ところが実行時は `<` `>` の混在アームと int/float 同士しか実装しておらず、
+            // `i <= f` や `"a" < "b"` が「検査は通るのに実行時 TypeError」になっていた。
+            // 検査器側の許可リストを仕様とみなし、実行時をそれに合わせる。
+            (BinOp::LtEq, Value::Int(a), Value::Float(b)) => Ok(Value::Bool((*a as f64) <= *b)),
+            (BinOp::LtEq, Value::Float(a), Value::Int(b)) => Ok(Value::Bool(*a <= (*b as f64))),
+            (BinOp::GtEq, Value::Int(a), Value::Float(b)) => Ok(Value::Bool((*a as f64) >= *b)),
+            (BinOp::GtEq, Value::Float(a), Value::Int(b)) => Ok(Value::Bool(*a >= (*b as f64))),
+            // 文字列同士の順序比較（辞書順）。
+            (BinOp::Lt, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a < b)),
+            (BinOp::Gt, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a > b)),
+            (BinOp::LtEq, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a <= b)),
+            (BinOp::GtEq, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a >= b)),
             // uint 算術・比較
             (BinOp::Add, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_add(*b))),
             (BinOp::Sub, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_sub(*b))),
