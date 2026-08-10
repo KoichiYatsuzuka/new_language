@@ -109,8 +109,21 @@ impl TypeChecker {
                     }
                     _ => None,
                 };
-                if let Some(k) = kind {
-                    self.annotations.set_binop_kind(*node_id, k);
+                match kind {
+                    Some(k) => self.annotations.set_binop_kind(*node_id, k),
+                    // 特化できなかった理由を数える（#16 段階 D の診断）。
+                    None => {
+                        let lu = matches!(lt, InferredType::Unresolved);
+                        let ru = matches!(rt, InferredType::Unresolved);
+                        self.annotations.note_binop_miss(lu, ru);
+                        // `Unresolved` を生んだ式の種類を記録する（どこを直すと効くかの特定用）。
+                        if lu {
+                            self.annotations.note_unresolved_source(expr_kind_name(left));
+                        }
+                        if ru {
+                            self.annotations.note_unresolved_source(expr_kind_name(right));
+                        }
+                    }
                 }
                 result
             }
@@ -223,14 +236,19 @@ impl TypeChecker {
                 Self::ann_or_unresolved(return_type)
             }
             Expr::ForExpr {
+                target,
                 iter,
                 body,
                 return_type,
-                ..
             } => {
-                self.infer(iter);
+                let iter_ty = self.infer(iter);
+                // ループ変数を要素型で宣言する（`Stmt::For` と同じ扱い）。
+                // ここが抜けていたため、for **式**の本体では変数が未宣言＝`Unresolved` になり、
+                // 本体の演算に型特化が効かなかった。
+                let elem_ty = Self::for_element_type(&iter_ty);
                 self.with_loop_expr(|c| {
                     c.push_scope();
+                    c.declare(target.clone(), elem_ty, true);
                     c.check_stmts(body);
                     c.pop_scope();
                 });
@@ -459,5 +477,29 @@ impl TypeChecker {
             self.report_warning(StaticTypeWarning { kind, span: Some(span.clone()) });
         }
         resolved
+    }
+}
+
+/// 式の種類名（#16 段階 D の診断用）。`Unresolved` を生んだ式の分布を取るために使う。
+fn expr_kind_name(e: &Expr) -> &'static str {
+    match e {
+        Expr::Ident(_) | Expr::LocalRef { .. } => "Ident",
+        Expr::LocalVar(_) => "LocalVar",
+        Expr::Call { .. } => "Call",
+        Expr::Attr { .. } => "Attr",
+        Expr::TraitAccess { .. } => "TraitAccess",
+        Expr::Subscript { .. } => "Subscript",
+        Expr::BinOp { .. } => "BinOp",
+        Expr::UnaryOp { .. } => "UnaryOp",
+        Expr::Cast { .. } => "Cast",
+        Expr::MustBe { .. } => "MustBe",
+        Expr::TemplateInstantiate { .. } => "TemplateInstantiate",
+        Expr::Block { .. } => "BlockExpr",
+        Expr::IfExpr { .. } => "IfExpr",
+        Expr::MatchExpr { .. } => "MatchExpr",
+        Expr::ForExpr { .. } => "ForExpr",
+        Expr::WhileExpr { .. } => "WhileExpr",
+        Expr::Slice { .. } => "Slice",
+        _ => "other",
     }
 }

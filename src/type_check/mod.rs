@@ -80,6 +80,33 @@ impl TypeChecker {
                 },
             );
         }
+        // 組み込み**関数**の戻り値型（#16 段階 D）。
+        //
+        // これが無いと `range` は未知の識別子扱いで `range(n)` が `Unresolved` になり、
+        // **`for i in range(n)` のループ変数が型無し**になる。最頻出のループ形なのに
+        // 本体の演算が一切型特化されず、そこから `Unresolved` が式全体へ伝播していた。
+        // シグネチャは `params: None`（引数の検査はしない）で戻り値型だけ与える。
+        //
+        // **`range` に絞っている**。ここへ登録した名前はグローバルスコープを占めるため
+        // `let <name> = ...` が「already declared」の静的エラーになる（`int`/`str` と同じ扱い）。
+        // `len` も試したが、`let len = ...` は今まで通っていた書き方なので**新たなエラーを増やす**割に
+        // 特化件数の伸びが小さく、割に合わないと判断して外した。
+        // `range` はループ形 `for i in range(n)` の頻度が圧倒的で、変数名として使われることは稀。
+        let builtin_fns: &[(&str, InferredType)] = &[
+            ("range", InferredType::ListOf(Box::new(InferredType::Int))),
+        ];
+        for (name, ret) in builtin_fns {
+            global.insert(
+                name.to_string(),
+                VarInfo {
+                    ty: InferredType::Function {
+                        params: None,
+                        return_type: Box::new(ret.clone()),
+                    },
+                    mutable: false,
+                },
+            );
+        }
         for name in ["begin", "last"] {
             global.insert(
                 name.to_string(),

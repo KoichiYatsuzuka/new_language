@@ -416,6 +416,34 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
         VM が一切コンパイルしないため、この融合の測定には使えない（当初これで測って誤った数字を出した）。
         関数内のループで測ること。
 
+    ##### ✅ 段階 D — 型検査の解像度・第3弾（2026-08-10）
+    **推測せず計測から入った**。`binop_kind` が付かなかった二項演算を理由別に数える診断を追加
+    （`AstAnnotations::note_binop_miss` / `note_unresolved_source`・`AR_ANNOT_DIFF=1` で出力）。
+    - **初期値（例題全件）**: binop 559 件中 **specialized=214 / miss=345**。
+      miss の内訳は `both_unresolved=101` / `one_unresolved=150` / `resolved_but_mixed=94`
+      ＝ **miss の 73%（251/345）が `Unresolved` 絡み**で、「律速は型検査の解像度」という仮説を数字で確認。
+    - **`Unresolved` の発生源**（式の種類別）: `BinOp` 123 / `Call` 118 / `Ident` 95 / `Attr` 14 / `TraitAccess` 2。
+      `BinOp` と `Ident` は**伝播**であり、**根は `Call`**（＝戻り値型が判らない呼び出し）と特定。
+    - **修正 1: `Expr::ForExpr` がループ変数を宣言していなかった**（[infer.rs](src/type_check/infer.rs)）。
+      `Stmt::For` は先に直していたが**式の for が漏れていた**。本体では変数が未宣言＝`Unresolved` だった。
+      なお修正直後は特化件数が**減った**。原因は、未宣言だったせいで**外側スコープの同名変数を拾って
+      偶然型が付いていた**ケースがあったため。これが次の修正の必要性を露わにした。
+    - **修正 2: `range()` に戻り値型 `list[int]` を与えた**（[type_check/mod.rs](src/type_check/mod.rs)）。
+      `range` は型検査のグローバルに登録が無く未知の識別子扱いで、`range(n)` が `Unresolved`
+      → **`for i in range(n)` のループ変数が型無し**になっていた。最頻出のループ形なのに本体が一切特化されない。
+    - **結果**: specialized **214 → 231**（miss 345 → 328）。
+      `for i in range(n)` のループで **1.153x**（0.460s → 0.399s・同一ビルドで A/B・best-of-3）。
+    - **`len`/`repr` は意図的に外した**: ここへ登録した名前はグローバルスコープを占めるため
+      `let len = ...` が「already declared」の静的エラーになる（`int`/`str` と同じ扱い）。
+      `let len = ...` は今まで通っていた書き方で**新たなエラーを増やす**割に、特化件数の伸びは **+1** しかなかった。
+      `range` は変数名として使われることが稀なので残した。
+    - **例題**: [examples/basics/for_range_typing.ar](examples/basics/for_range_typing.ar)
+      （文の for・入れ子・for 式・`len` 利用・外側と同名のループ変数）。
+    - **残る miss の主因**: `partial_call_overhead.ar`(69) と `bottleneck_bench.ar`(68) が突出しており、
+      いずれも **`time.time()` など py 組み込みモジュールの呼び出しが `Unresolved`** を生んでいる。
+      `time` は C 実装で `.py` ソースが無くスタブを抽出できないため、**型検査の推論規則ではこれ以上詰められない**。
+      次に効くのは**組み込み py モジュール向けのスタブ整備**（#17-b と同じ「スタブで潰す」方向）。
+
     ##### ✅ FFI 境界検査 — (A) への対応（2026-08-10）
     **設計方針**: 検査の鍵を「引数の静的型が動的か」から「**値が FFI 境界を越えてきたか**」へ移した。
     従来の `CheckBefore`（param 具象 × arg 動的）は**スタブが整うほど発火しなくなる**逆向きの性質を持つが、
@@ -491,9 +519,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
       **(ii) の残り**: Call 引数の境界検査（上記のとおり挙動変更なので要判断）。
     - ~~for ループターゲットの要素型推論~~ 【✅ 完了 2026-08-10】（下記参照）。
     - ~~`infer_attr` の戻り値をフィールド実型にする~~ 【✅ 完了 2026-08-10】（型検査の解像度・第2弾）。
-    - **型検査の解像度・第3弾（候補）**: `infer_attr`/for 推論と同じ構図で `Unresolved` を返している他の箇所
-      （`TraitAccess`・`TemplateInstantiate`・`LetTuple` 要素・`collect_module_types` の `Mut`/`Static` など）。
-      解像度が上がるほど VM の型特化とネイティブ codegen の双方に効くことは実証済み。
+    - ~~型検査の解像度・第3弾~~ 【✅ 完了 2026-08-10】（下記「段階 D」節）。
     - **段階(c-3)**: 自前再導出の撤去＋`CallInfo` の引数検査指示を境界インライン検査へ。
       **注意**: for 推論後の実測でも注釈が codegen を上回るのは `annot_only=7`（flat_bench_module）＋`call=2` のみ。
       ネイティブ適格関数は param/return に明示注釈が必須なので codegen が元々型を知っており、**c-3 単体の効果は小さい**。

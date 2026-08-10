@@ -71,6 +71,22 @@ pub struct AstAnnotations {
     calls: HashMap<u32, CallInfo>,
     /// 二項演算のオペランド種別表: node_id → `BinOperandKind`（両オペランド同一プリミティブのときのみ）。
     binop_kind: HashMap<u32, BinOperandKind>,
+    /// 型特化できなかった二項演算の内訳（診断用・#16 段階 D）。
+    binop_miss: BinopMissStats,
+    /// `Unresolved` オペランドを生んだ式の種類別件数（診断用・#16 段階 D）。
+    unresolved_sources: HashMap<&'static str, usize>,
+}
+
+/// `binop_kind` が付かなかった二項演算の理由別件数（診断用）。
+/// 「型検査の解像度が律速」という仮説を数字で確かめ、どこを直すと効くかを決めるために使う。
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BinopMissStats {
+    /// 両オペランドとも `Unresolved`（推論そのものが届いていない）。
+    pub both_unresolved: usize,
+    /// 片方だけ `Unresolved`。
+    pub one_unresolved: usize,
+    /// どちらも解決済みだが同一プリミティブではない（int×float 混在・str 連結など）。
+    pub resolved_but_mixed: usize,
 }
 
 // 段階(a): reader（type_of/resolved/directive/intern_len）はテストで消費。段階(b)/(c) で
@@ -148,6 +164,38 @@ impl AstAnnotations {
     /// 二項演算のオペランド種別を引く（未登録＝両プリミティブ確定でない）。
     pub fn binop_kind(&self, node_id: u32) -> Option<BinOperandKind> {
         self.binop_kind.get(&node_id).copied()
+    }
+
+    /// 型特化できなかった二項演算を理由別に数える（診断用・#16 段階 D）。
+    pub fn note_binop_miss(&mut self, left_unresolved: bool, right_unresolved: bool) {
+        match (left_unresolved, right_unresolved) {
+            (true, true) => self.binop_miss.both_unresolved += 1,
+            (true, false) | (false, true) => self.binop_miss.one_unresolved += 1,
+            (false, false) => self.binop_miss.resolved_but_mixed += 1,
+        }
+    }
+
+    /// 型特化できなかった二項演算の内訳（診断用）。
+    pub fn binop_miss(&self) -> BinopMissStats {
+        self.binop_miss
+    }
+
+    /// 型特化できた二項演算の件数（診断用）。
+    pub fn binop_kind_len(&self) -> usize {
+        self.binop_kind.len()
+    }
+
+    /// `Unresolved` オペランドを生んだ式の種類を数える（診断用・#16 段階 D）。
+    pub fn note_unresolved_source(&mut self, kind: &'static str) {
+        *self.unresolved_sources.entry(kind).or_insert(0) += 1;
+    }
+
+    /// `Unresolved` の発生源を件数の多い順に返す（診断用）。
+    pub fn unresolved_sources(&self) -> Vec<(&'static str, usize)> {
+        let mut v: Vec<(&'static str, usize)> =
+            self.unresolved_sources.iter().map(|(k, n)| (*k, *n)).collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        v
     }
 
     /// 型インターン表の長さ（テスト・デバッグ用）。

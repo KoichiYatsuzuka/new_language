@@ -1,0 +1,48 @@
+# for_range_typing.ar — `range()` の戻り値型とループ変数の型付け（#16 段階 D）
+#
+# 型検査は `range(n)` を `list[int]` として扱うため、`for i in range(n)` の
+# ループ変数 `i` に `int` が付く。これが無いと `i` は `Unresolved` になり、
+# 本体の演算に VM の型特化 op が一切出なかった（最頻出のループ形なのに）。
+#
+# `for` **式**（`for i in range(n) -> list[int]:`）のループ変数も同じく型が付く
+# （以前は文の for だけ対応していて、式の for は変数を宣言していなかった）。
+#
+# 検証: .\compare_vm_modes.ps1 -Filter for_range_typing
+
+fn basic(let n: int) -> int:
+    mut s = 0
+    for i in range(n):
+        s += i
+    return s
+
+fn nested(let n: int) -> int:
+    mut s = 0
+    for i in range(n):
+        for j in range(i):
+            s += i * j
+    return s
+
+fn for_expr(let n: int) -> int:
+    let xs = for i in range(n) -> list[int]:
+        loop_yield i * 3
+    mut s = 0
+    for v in xs:
+        s += v
+    return s
+
+fn uses_len(let xs: list[int]) -> int:
+    return len(xs) * 2
+
+# 外側変数と同名のループ変数
+fn shadow_loop_var(let n: int) -> int:
+    mut i = 100
+    mut s = 0
+    for i in range(n):
+        s += i
+    return s + i
+
+print(basic(5))
+print(nested(5))
+print(for_expr(4))
+print(uses_len([1, 2, 3]))
+print(shadow_loop_var(4))

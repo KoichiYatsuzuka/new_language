@@ -346,6 +346,20 @@ fn run_program(
     if std::env::var("AR_ANNOT_DIFF").is_ok_and(|v| !v.is_empty()) {
         let (calls, checked) = annotations.call_check_stats();
         eprintln!("AnnotCalls: calls={calls} args_with_CheckBefore={checked}");
+        let m = annotations.binop_miss();
+        eprintln!(
+            "AnnotBinop: specialized={} miss_both_unresolved={} miss_one_unresolved={} miss_resolved_mixed={}",
+            annotations.binop_kind_len(),
+            m.both_unresolved,
+            m.one_unresolved,
+            m.resolved_but_mixed
+        );
+        let srcs: Vec<String> = annotations
+            .unresolved_sources()
+            .into_iter()
+            .map(|(k, n)| format!("{k}={n}"))
+            .collect();
+        eprintln!("AnnotUnresolvedSrc: {}", srcs.join(" "));
     }
 
     // --- Phase R / R1: ローカル読み取りの slot 解決（トップレベル関数を書き換える） ---
