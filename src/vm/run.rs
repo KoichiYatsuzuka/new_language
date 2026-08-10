@@ -438,6 +438,28 @@ fn exec_op(
             )?;
             buf.push(r);
         }
+        // 超命令（#16 段階(b)(i)）: レシーバを frame から直接取る。`CallMethod` と同一意味論。
+        Op::CallMethodLocal(slot, name_idx, argc, mut_mask) => {
+            let n = *argc as usize;
+            let split = buf.len() - n;
+            let arg_vals = buf.split_off(split);
+            // レシーバは呼び先の `self` として所有権が要るので clone は避けられないが、
+            // `LoadLocal` の op ディスパッチと push/pop は省ける。
+            let obj = buf[base + *slot as usize].clone();
+            let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
+                .collect();
+            let r = interp.call_instance_method_evaled(
+                obj,
+                &chunk.names[*name_idx as usize],
+                evaled,
+                Some(&chunk.attr_caches[*name_idx as usize]),
+                None,
+            )?;
+            buf.push(r);
+        }
         Op::CallMethod(name_idx, argc, mut_mask) => {
             let n = *argc as usize;
             let split = buf.len() - n;

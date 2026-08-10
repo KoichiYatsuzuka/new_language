@@ -66,6 +66,16 @@ pub enum Op {
     /// スタックトップ2つを入れ替える（複合属性代入で rhs を先に評価しつつ演算順を保つため）。
     Swap,
     /// 型判定: pop v, push Bool(value_is_type(v, names[name_idx]))（match の `is TypeName` パターン）。
+    /// 超命令（#16 段階(b)(i)）: `local[slot].method(args)` を融合。
+    /// `LoadLocal(slot); ...args...; CallMethod(..)` と同一意味論だが、レシーバをスタックへ
+    /// 積まず frame から直接取るので op ディスパッチ 1 回と push/pop 1 組が消える。
+    /// 引数は `(slot, name_idx, argc, mut_mask)`。
+    ///
+    /// **評価順について**: 融合前はレシーバ→引数の順に評価していたが、この op は引数評価後に
+    /// frame を読む。VM がコンパイルするコードでは**式の評価中に自フレームの slot が再束縛されることはない**
+    /// （再束縛は文＝`StoreLocal` でしか起きず、クロージャによる捕捉は VM 非対応で bail する）ため、
+    /// 観測されるレシーバは同一。
+    CallMethodLocal(u16, u32, u16, u32),
     /// 超命令（#16 段階(b)(i)）: `local[slot].attr` を融合。`LoadLocal(slot); GetAttr(..)` と同一意味論。
     /// **レシーバをスタックへ clone せず frame から参照で読む**ので `Rc` の refcount 増減が消える。
     /// 引数は `(slot, name_idx, cache_idx)`。

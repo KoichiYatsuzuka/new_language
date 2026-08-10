@@ -39,6 +39,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::FloatBinLL(a, b, o) => format!("FBIN_LL {a} {b} {o:?}"),
         Op::FloatBinLC(a, c, o) => format!("FBIN_LC {a} const[{c}] {o:?}"),
         Op::GetAttrLocal(s, n, c) => format!("GET_ATTR_L {s} name[{n}] cache[{c}]"),
+        Op::CallMethodLocal(s, n, a, m) => format!("CALL_METHOD_L {s} name[{n}] argc={a} mut={m:b}"),
         Op::MustBe(t, s) => format!("MUSTBE name[{t}] span[{s}]"),
         Op::Cast(t) => format!("CAST name[{t}]"),
         Op::IntBinSS(o) => format!("IBIN_SS {o:?}"),

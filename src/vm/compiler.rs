@@ -1561,10 +1561,18 @@ impl Compiler {
                     if !self.object_is_instance(object) {
                         return None;
                     }
-                    self.compile_expr(object)?; // receiver を push
-                    let mask = self.compile_call_args(args)?;
-                    let ni = self.add_name(attr);
-                    self.emit(Op::CallMethod(ni, args.len() as u16, mask));
+                    // 超命令融合（#16 段階(b)(i)）: レシーバが局所変数なら push せず
+                    // frame から直接読む op に落とす（属性読みの `GetAttrLocal` と同じ手）。
+                    if let Some(slot) = self.as_local(object) {
+                        let mask = self.compile_call_args(args)?;
+                        let ni = self.add_name(attr);
+                        self.emit(Op::CallMethodLocal(slot, ni, args.len() as u16, mask));
+                    } else {
+                        self.compile_expr(object)?; // receiver を push
+                        let mask = self.compile_call_args(args)?;
+                        let ni = self.add_name(attr);
+                        self.emit(Op::CallMethod(ni, args.len() as u16, mask));
+                    }
                     return Some(()); // メソッド呼び出しは span 不要
                 }
                 let site = self.add_span(span); // 関数呼び出しはトレースバック用の呼び出し位置を記録
