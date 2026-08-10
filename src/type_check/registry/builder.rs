@@ -42,6 +42,12 @@ const BUILTIN_NEW_TYPES: [(&str, &str); 3] = [("path", "str"), ("Index", "int"),
 /// `TypeRegistry` の構築器。`collect` で AST を走査し、`build` で凍結する。
 pub(in crate::type_check) struct TypeRegistryBuilder {
     reg: TypeRegistry,
+    /// 収集済み import モジュールの `(lang, モジュールパス)`（#16 段階 F）。
+    ///
+    /// `fn_sigs` は `push` で積むため、同じモジュールを二度収集すると**偽のオーバーロード**が
+    /// できてしまう（単一シグネチャ前提の高速パスが崩れる）。同じモジュールが複数箇所から
+    /// import される・入れ子 import で再訪する、のどちらも起こるのでここで弾く。
+    seen_modules: HashSet<(String, Vec<String>)>,
 }
 
 impl TypeRegistryBuilder {
@@ -76,6 +82,7 @@ impl TypeRegistryBuilder {
                 class_static_methods: HashMap::new(),
                 known_protocols: HashMap::new(),
             },
+            seen_modules: HashSet::new(),
         }
     }
 
@@ -176,6 +183,18 @@ impl TypeRegistryBuilder {
                 }
                 Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::Block(body) => {
                     self.collect(body);
+                }
+                // import 先モジュールの定義も収集する（#16 段階 F）。
+                //
+                // これが無いと import したクラスが `known_class_names` に載らず、
+                // **メインプログラム側でも** `v.x`（`v: Vec2` が import 由来）の型が引けない。
+                // 実測では import クラスを使う算術が 1 件も型特化されていなかった。
+                // 同一モジュールの二重収集は `fn_sigs` の偽オーバーロードを生むので弾く。
+                Stmt::Import { lang, module, body, .. }
+                | Stmt::FromImport { lang, module, body, .. } => {
+                    if self.seen_modules.insert((lang.clone(), module.clone())) {
+                        self.collect(body);
+                    }
                 }
                 _ => {}
             }

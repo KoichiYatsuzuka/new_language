@@ -49,6 +49,9 @@ pub struct TypeChecker {
     /// AST 型解決層の注釈（タスク #16・段階(a)）。検査走査中に `infer`/`check` が node-id 索引で
     /// 型・検査指示を焼く。`check_and_annotate` で取り出す（既存 `check`/`check_with_warnings` は不変）。
     annotations: annotations::AstAnnotations,
+    /// 注釈採取済みの import モジュール `(lang, モジュールパス)`（#16 段階 F）。
+    /// 同じモジュールが複数箇所から import される・入れ子 import で再訪する場合の重複走査を防ぐ。
+    annotated_modules: std::collections::HashSet<(String, Vec<String>)>,
 }
 
 impl TypeChecker {
@@ -147,6 +150,7 @@ impl TypeChecker {
             registry: builder.build(),
             diags: Diagnostics::default(),
             annotations: annotations::AstAnnotations::default(),
+            annotated_modules: std::collections::HashSet::new(),
         }
     }
 

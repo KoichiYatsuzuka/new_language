@@ -7,6 +7,39 @@ use {
 };
 
 impl TypeChecker {
+    /// import 先モジュールの本体を検査して**注釈だけ**を採取する（#16 段階 F）。
+    ///
+    /// 型検査は従来メインプログラムの文だけを走査しており、`Stmt::Import` の `body` は
+    /// `collect_module_types`（署名を読むだけ）しか通らなかった。そのため
+    /// **import 先の関数本体には注釈が付かず**、同じコードでもメイン側より最適化が効かなかった
+    /// （実測: メインの `v.x*v.x+v.y*v.y` は `FBIN_SS` になるのに、import 先の同じ式は `BIN` のまま）。
+    ///
+    /// **診断は捨てる**。モジュール自身の型エラーは、そのモジュールを直接実行/`--compile` した
+    /// ときに報告されるべきもので、ここで出すと import 側に二重に出てしまう。
+    /// 採取したいのは注釈テーブルへの書き込み（副作用）だけ。
+    ///
+    /// スコープは push/pop で隔離する。万一 import 先がメイン側の名前を拾っても、
+    /// 影響は注釈が不正確になることだけで、VM の特化 op は実行時型が想定外なら汎用へ
+    /// フォールバックするため結果は変わらない。
+    pub(crate) fn annotate_module_body(
+        &mut self,
+        lang: &str,
+        module: &[String],
+        body: &[Stmt],
+    ) {
+        if !self
+            .annotated_modules
+            .insert((lang.to_string(), module.to_vec()))
+        {
+            return; // 収集済み（複数箇所からの import・入れ子 import）
+        }
+        let saved = std::mem::take(&mut self.diags);
+        self.push_scope();
+        self.check_stmts(body);
+        self.pop_scope();
+        self.diags = saved;
+    }
+
     /// `for target in iter:` のターゲットに与える**要素型**を、イテラブルの型から求める。
     ///
     /// 反復の意味論は `Interpreter::make_for_iterator`

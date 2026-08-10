@@ -1,0 +1,22 @@
+# cross_module_annotation.ar — import 先モジュールにも型解決注釈が届くこと（#16 段階 F）
+#
+# 以前は次の 2 段階で注釈が欠けていた:
+#   1. 型検査のレジストリが `Stmt::Import` の body を収集しておらず、import したクラスが
+#      未知だった。そのため**メイン側でも** `v.x`（v は import 由来クラス）の型が引けなかった。
+#   2. import 先モジュールの**関数本体そのもの**が型検査の走査対象外で、注釈が付かなかった。
+#
+# 現在はどちらも解消され、同じ式ならメイン側でも import 先でも同じ型特化が効く
+# （`AR_VM_DUMP=1` で両方の関数が `FBIN_SS` になることを確認できる）。
+#
+# 検証: .\compare_vm_modes.ps1 -Filter cross_module_annotation
+
+from xmod_annot.geom import Vec2
+from xmod_annot.geom import norm_sq
+
+# メイン側で import したクラスのフィールドを使う
+fn local_norm(let v: Vec2) -> float:
+    return v.x * v.x + v.y * v.y
+
+let v = Vec2(3.0, 4.0)
+print(local_norm(v))   # メイン側で定義
+print(norm_sq(v))      # import 先で定義（同じ式）

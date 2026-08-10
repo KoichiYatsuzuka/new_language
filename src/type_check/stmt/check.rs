@@ -295,6 +295,7 @@ impl TypeChecker {
                 body,
                 ..
             } => {
+                self.annotate_module_body(lang, module, body);
                 let member_types = self.collect_module_types(body);
                 let bind_name = alias
                     .clone()
@@ -307,7 +308,8 @@ impl TypeChecker {
                 self.declare(bind_name, ns_ty, false);
             }
 
-            Stmt::FromImport { lang, names, body, .. } => {
+            Stmt::FromImport { lang, module, names, body, .. } => {
+                self.annotate_module_body(lang, module, body);
                 let member_types = self.collect_module_types(body);
                 let is_py = lang == "py" || lang == "py-int";
                 for (orig_name, alias) in names {
