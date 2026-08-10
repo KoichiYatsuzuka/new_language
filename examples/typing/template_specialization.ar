@@ -1,0 +1,47 @@
+# template_specialization.ar — テンプレート実体化と型特化（#16 段階 E）
+#
+# テンプレートは実体化時に AST を複製し型変数を具体型へ置換するが、**node-id は原型から
+# コピーされる**ため、AST 型解決層の注釈テーブルは「型変数のままの原型」を指したままになる。
+# そのため注釈からは `T` の実体が判らず、VM の型特化 op が出せなかった。
+#
+# 現在は注釈が無いとき **実体化後の AST に書かれている型注釈**（`subst` が `a: T` を
+# `a: int` へ置換済み）から特化種別を導出する。特化 op は実行時型が想定外なら汎用へ
+# フォールバックするので、導出が外れても結果は変わらない。
+#
+# ここでは同じテンプレートを int / float / str で実体化し（node-id は共有される）、
+# どの実体でも結果が正しいことを確認する。
+#
+# 検証: .\compare_vm_modes.ps1 -Filter template_specialization
+
+fn add_all[T](let a: T, let b: T) -> T:
+    return a + b
+
+fn compare[T](let a: T, let b: T) -> bool:
+    return a < b
+
+fn mixed_ops[T](let a: T, let n: int) -> T:
+    mut acc = a
+    mut i = 0
+    while i < n:
+        acc = acc + a
+        i += 1
+    return acc
+
+# 同じテンプレートを別々の型で実体化する（node-id は共有される）
+print(add_all[int](3, 4))
+print(add_all[float](1.5, 2.25))
+print(add_all[str]("ab", "cd"))
+
+print(compare[int](1, 2))
+print(compare[float](2.5, 1.5))
+# NOTE: `str < str` は apply_binop 未対応（テンプレートとは無関係の既存制約）
+
+print(mixed_ops[int](2, 3))
+print(mixed_ops[float](0.5, 4))
+
+# 非テンプレート側の int/float 混在（特化対象外の確認）
+fn mix(let i: int, let f: float) -> bool:
+    return i < f
+
+print(mix(1, 2.5))
+print(mix(3, 2.5))

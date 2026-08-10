@@ -813,6 +813,52 @@ impl Compiler {
         }
     }
 
+    /// 局所変数の型注釈から二項演算の特化種別を導出する（#16 段階 E）。
+    ///
+    /// 両オペランドが**同一プリミティブの型注釈を持つ局所変数**のときだけ種別を返す。
+    /// リテラル（`Expr::Int`/`Expr::Float`）は型が自明なので相方に合わせて認める。
+    /// テンプレート実体化後の関数のように「AST には具体型が書かれているが注釈テーブルは
+    /// 原型を指している」ケースを拾うのが目的。
+    fn local_operand_kind(
+        &self,
+        left: &Expr,
+        right: &Expr,
+    ) -> Option<crate::type_check::BinOperandKind> {
+        use crate::type_check::BinOperandKind as K;
+
+        // 式のプリミティブ型名を返す。局所変数は型注釈から、数値リテラルは自明な型から。
+        let prim = |e: &Expr| -> Option<&'static str> {
+            match e {
+                Expr::Int(_) => Some("int"),
+                Expr::Float(_) => Some("float"),
+                _ => {
+                    let slot = self.as_local(e)? as usize;
+                    match self.slot_type.get(slot)?.as_deref()? {
+                        "int" => Some("int"),
+                        "float" => Some("float"),
+                        _ => None,
+                    }
+                }
+            }
+        };
+
+        let (l, r) = (prim(left)?, prim(right)?);
+        if l != r {
+            return None;
+        }
+        // 両方がリテラルなら特化しても意味が無い（定数同士）。
+        if matches!(left, Expr::Int(_) | Expr::Float(_))
+            && matches!(right, Expr::Int(_) | Expr::Float(_))
+        {
+            return None;
+        }
+        match l {
+            "int" => Some(K::Int),
+            "float" => Some(K::Float),
+            _ => None,
+        }
+    }
+
     /// 注釈が「両オペランド int/float 確定」かつ型特化してよい op なら、その種別を返す（#16 段階(b)）。
     ///
     /// 許可する op は種別ごとに違う。`apply_binop` に対応するアームが存在するものだけを特化し、
@@ -822,9 +868,24 @@ impl Compiler {
         &self,
         op: &BinOp,
         node_id: u32,
+        left: &Expr,
+        right: &Expr,
     ) -> Option<crate::type_check::BinOperandKind> {
         use crate::type_check::BinOperandKind as K;
-        let kind = self.annotations.binop_kind(node_id)?;
+        let kind = match self.annotations.binop_kind(node_id) {
+            Some(k) => k,
+            // 注釈が無いときは**局所変数の型注釈**から導出する（#16 段階 E）。
+            //
+            // テンプレート実体化では `subst` が param の型注釈を具体型へ置き換える
+            // （`fn add[T](a: T, b: T)` → `add[int]` なら `a: int, b: int`）が、
+            // node-id は原型からコピーされるため注釈テーブルは**型変数のままの原型**を指す。
+            // そこで実体化後の AST に書かれている型注釈を直接見る。
+            // 注釈テーブルが届かない箇所（import 先モジュール等）にも同じ理由で効く。
+            //
+            // 特化 op は実行時型が想定外なら汎用へフォールバックするので、
+            // この導出が外れていても**結果は変わらない**（速度の無駄が出るだけ）。
+            None => self.local_operand_kind(left, right)?,
+        };
         let allowed = match kind {
             // int/int は `apply_binop` の Int/Int アームを全て特化できる。
             K::Int => matches!(
@@ -882,7 +943,7 @@ impl Compiler {
         let Some(a) = self.as_local(left) else {
             return false;
         };
-        let kind = self.specialized_bin_kind(op, node_id);
+        let kind = self.specialized_bin_kind(op, node_id, left, right);
         if let Some(b) = self.as_local(right) {
             match kind {
                 Some(K::Int) => self.emit(Op::IntBinLL(a, b, op.clone())),
@@ -1534,7 +1595,7 @@ impl Compiler {
                         self.compile_expr(right)?;
                         // 融合できない形（属性・添字・呼び出し結果など）でも、注釈が型を確定して
                         // いればスタック版の型特化 op に落とす（#16 段階(b)(iii)）。
-                        match self.specialized_bin_kind(op, *node_id) {
+                        match self.specialized_bin_kind(op, *node_id, left, right) {
                             Some(K::Int) => self.emit(Op::IntBinSS(op.clone())),
                             Some(K::Float) => self.emit(Op::FloatBinSS(op.clone())),
                             None => self.emit(Op::Bin(op.clone())),
