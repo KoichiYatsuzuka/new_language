@@ -59,7 +59,7 @@ fn file_content_arg<'a>(
 /// - Byte モード: バイト値のリスト `Value::List[Value::Int]` に変換
 fn bytes_to_value(data: &[u8], byte_mode: &ByteModeRust) -> Value {
     match byte_mode {
-        ByteModeRust::Text => Value::Str(String::from_utf8_lossy(data).into_owned()),
+        ByteModeRust::Text => Value::str(String::from_utf8_lossy(data).into_owned()),
         ByteModeRust::Byte => Value::List(Rc::new(RefCell::new(
             data.iter().map(|&b| Value::Int(b as i64)).collect(),
         ))),

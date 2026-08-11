@@ -17,7 +17,7 @@ impl Interpreter {
     #[allow(clippy::too_many_lines)]
     pub(crate) fn eval_str_method(
         &mut self,
-        s: String,
+        s: Rc<str>,
         method_name: &str,
         args: &[CallArg],
     ) -> Result<Value, String> {
@@ -28,7 +28,7 @@ impl Interpreter {
         macro_rules! arg_str {
             ($idx:expr, $name:literal) => {
                 match vals.get($idx) {
-                    Some(Value::Str(s)) => s.clone(),
+                    Some(Value::Str(s)) => s.to_string(),
                     Some(other) => {
                         return Err(format!(
                             "TypeError: {}.{}() argument {} must be str, not '{}'",
@@ -50,7 +50,7 @@ impl Interpreter {
         macro_rules! arg_opt_str {
             ($idx:expr) => {
                 match vals.get($idx) {
-                    Some(Value::Str(s)) => Some(s.clone()),
+                    Some(Value::Str(s)) => Some(s.to_string()),
                     Some(Value::None) | None => None,
                     Some(other) => {
                         return Err(format!(
@@ -83,7 +83,7 @@ impl Interpreter {
                 if !vals.is_empty() {
                     return Err("TypeError: str.__iter__() takes no arguments".to_string());
                 }
-                let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
+                let chars: Vec<Value> = s.chars().map(|c| Value::str(c.to_string())).collect();
                 Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
                     values: chars,
                     index: 0,
@@ -91,9 +91,9 @@ impl Interpreter {
             }
 
             // ── 大文字・小文字変換 ──────────────────────────────────────────
-            "upper" => Ok(Value::Str(s.to_uppercase())),
-            "lower" => Ok(Value::Str(s.to_lowercase())),
-            "swapcase" => Ok(Value::Str(
+            "upper" => Ok(Value::str(s.to_uppercase())),
+            "lower" => Ok(Value::str(s.to_lowercase())),
+            "swapcase" => Ok(Value::str(
                 s.chars()
                     .map(|c| {
                         if c.is_uppercase() {
@@ -102,16 +102,16 @@ impl Interpreter {
                             c.to_uppercase().next().unwrap_or(c)
                         }
                     })
-                    .collect(),
+                    .collect::<String>(),
             )),
-            "capitalize" => Ok(Value::Str({
+            "capitalize" => Ok(Value::str({
                 let mut cs = s.chars();
                 match cs.next() {
                     None => String::new(),
                     Some(c) => c.to_uppercase().collect::<String>() + &cs.as_str().to_lowercase(),
                 }
             })),
-            "title" => Ok(Value::Str({
+            "title" => Ok(Value::str({
                 let mut result = String::new();
                 let mut capitalize_next = true;
                 for c in s.chars() {
@@ -131,21 +131,21 @@ impl Interpreter {
             // ── 空白除去 ────────────────────────────────────────────────────
             "strip" => {
                 let chars_arg = arg_opt_str!(0);
-                Ok(Value::Str(match chars_arg {
+                Ok(Value::str(match chars_arg {
                     None => s.trim().to_string(),
                     Some(ref ch) => s.trim_matches(|c: char| ch.contains(c)).to_string(),
                 }))
             }
             "lstrip" => {
                 let chars_arg = arg_opt_str!(0);
-                Ok(Value::Str(match chars_arg {
+                Ok(Value::str(match chars_arg {
                     None => s.trim_start().to_string(),
                     Some(ref ch) => s.trim_start_matches(|c: char| ch.contains(c)).to_string(),
                 }))
             }
             "rstrip" => {
                 let chars_arg = arg_opt_str!(0);
-                Ok(Value::Str(match chars_arg {
+                Ok(Value::str(match chars_arg {
                     None => s.trim_end().to_string(),
                     Some(ref ch) => s.trim_end_matches(|c: char| ch.contains(c)).to_string(),
                 }))
@@ -159,24 +159,24 @@ impl Interpreter {
                     None => {
                         if maxsplit < 0 {
                             s.split_whitespace()
-                                .map(|p| Value::Str(p.to_string()))
+                                .map(|p| Value::str(p.to_string()))
                                 .collect()
                         } else {
                             let mut result: Vec<&str> = s
                                 .splitn(maxsplit as usize + 1, |c: char| c.is_whitespace())
                                 .collect();
                             result.retain(|p| !p.is_empty());
-                            result.iter().map(|p| Value::Str(p.to_string())).collect()
+                            result.iter().map(|p| Value::str(p.to_string())).collect()
                         }
                     }
                     Some(ref sep) => {
                         if maxsplit < 0 {
                             s.split(sep.as_str())
-                                .map(|p| Value::Str(p.to_string()))
+                                .map(|p| Value::str(p.to_string()))
                                 .collect()
                         } else {
                             s.splitn(maxsplit as usize + 1, sep.as_str())
-                                .map(|p| Value::Str(p.to_string()))
+                                .map(|p| Value::str(p.to_string()))
                                 .collect()
                         }
                     }
@@ -190,33 +190,33 @@ impl Interpreter {
                     None => {
                         if maxsplit < 0 {
                             s.split_whitespace()
-                                .map(|p| Value::Str(p.to_string()))
+                                .map(|p| Value::str(p.to_string()))
                                 .collect()
                         } else {
                             let mut result: Vec<&str> = s
                                 .rsplitn(maxsplit as usize + 1, |c: char| c.is_whitespace())
                                 .collect();
                             result.reverse();
-                            result.iter().map(|p| Value::Str(p.to_string())).collect()
+                            result.iter().map(|p| Value::str(p.to_string())).collect()
                         }
                     }
                     Some(ref sep) => {
                         if maxsplit < 0 {
                             s.split(sep.as_str())
-                                .map(|p| Value::Str(p.to_string()))
+                                .map(|p| Value::str(p.to_string()))
                                 .collect()
                         } else {
                             let mut v: Vec<&str> =
                                 s.rsplitn(maxsplit as usize + 1, sep.as_str()).collect();
                             v.reverse();
-                            v.iter().map(|p| Value::Str(p.to_string())).collect()
+                            v.iter().map(|p| Value::str(p.to_string())).collect()
                         }
                     }
                 };
                 Ok(Value::List(Rc::new(RefCell::new(parts))))
             }
             "splitlines" => {
-                let parts: Vec<Value> = s.lines().map(|p| Value::Str(p.to_string())).collect();
+                let parts: Vec<Value> = s.lines().map(|p| Value::str(p.to_string())).collect();
                 Ok(Value::List(Rc::new(RefCell::new(parts))))
             }
 
@@ -237,7 +237,7 @@ impl Interpreter {
                     }
                 };
                 let parts: Vec<String> = items.iter().map(|v| self.display(v)).collect();
-                Ok(Value::Str(parts.join(&s)))
+                Ok(Value::str(parts.join(&s)))
             }
 
             // ── 検索 ────────────────────────────────────────────────────────
@@ -311,7 +311,7 @@ impl Interpreter {
                 let old = arg_str!(0, "old");
                 let new = arg_str!(1, "new");
                 let count = arg_int!(2, -1);
-                Ok(Value::Str(if count < 0 {
+                Ok(Value::str(if count < 0 {
                     s.replace(old.as_str(), new.as_str())
                 } else {
                     s.replacen(old.as_str(), new.as_str(), count as usize)
@@ -319,13 +319,13 @@ impl Interpreter {
             }
             "removeprefix" => {
                 let prefix = arg_str!(0, "prefix");
-                Ok(Value::Str(
+                Ok(Value::str(
                     s.strip_prefix(prefix.as_str()).unwrap_or(&s).to_string(),
                 ))
             }
             "removesuffix" => {
                 let suffix = arg_str!(0, "suffix");
-                Ok(Value::Str(
+                Ok(Value::str(
                     s.strip_suffix(suffix.as_str()).unwrap_or(&s).to_string(),
                 ))
             }
@@ -343,7 +343,7 @@ impl Interpreter {
                 }
                 let display_fn = |v: &Value| self.display(v);
                 let result = str_format(&s, &pos_args, &kw_args, &display_fn)?;
-                Ok(Value::Str(result))
+                Ok(Value::str(result))
             }
 
             // ── 文字判定 ────────────────────────────────────────────────────
@@ -378,11 +378,12 @@ impl Interpreter {
             // ── 幅揃え・ゼロ埋め ────────────────────────────────────────────
             "zfill" => {
                 let width = arg_int!(0, 0).max(0) as usize;
-                Ok(Value::Str(if s.len() >= width {
-                    s.clone()
+                // 幅を満たしていればレシーバの Rc を使い回す（確保なし）
+                if s.len() >= width {
+                    Ok(Value::Str(s.clone()))
                 } else {
-                    format!("{:0>width$}", s)
-                }))
+                    Ok(Value::str(format!("{:0>width$}", s)))
+                }
             }
             "ljust" => {
                 let width = arg_int!(0, 0).max(0) as usize;
@@ -395,7 +396,7 @@ impl Interpreter {
                         )
                     }
                 };
-                Ok(Value::Str(
+                Ok(Value::str(
                     format!("{:<width$}", s, width = width)
                         .replace(' ', &fill.to_string())
                         .replacen(&fill.to_string(), &fill.to_string(), width),
@@ -413,10 +414,10 @@ impl Interpreter {
                     }
                 };
                 if s.len() >= width {
-                    return Ok(Value::Str(s.clone()));
+                    return Ok(Value::str(s.clone()));
                 }
                 let pad = width - s.len();
-                Ok(Value::Str(format!("{}{}", fill.to_string().repeat(pad), s)))
+                Ok(Value::str(format!("{}{}", fill.to_string().repeat(pad), s)))
             }
             "center" => {
                 let width = arg_int!(0, 0).max(0) as usize;
@@ -430,12 +431,12 @@ impl Interpreter {
                     }
                 };
                 if s.len() >= width {
-                    return Ok(Value::Str(s.clone()));
+                    return Ok(Value::str(s.clone()));
                 }
                 let pad = width - s.len();
                 let left = pad / 2;
                 let right = pad - left;
-                Ok(Value::Str(format!(
+                Ok(Value::str(format!(
                     "{}{}{}",
                     fill.to_string().repeat(left),
                     s,
@@ -448,13 +449,13 @@ impl Interpreter {
                 let sep = arg_str!(0, "sep");
                 let (a, b, c) = match s.find(sep.as_str()) {
                     Some(i) => (&s[..i], sep.as_str(), &s[i + sep.len()..]),
-                    None => (s.as_str(), "", ""),
+                    None => (&*s, "", ""),
                 };
                 Ok(Value::Tuple(Rc::new(crate::interpreter::TupleData::new(
                     vec![
-                        Value::Str(a.to_string()),
-                        Value::Str(b.to_string()),
-                        Value::Str(c.to_string()),
+                        Value::str(a.to_string()),
+                        Value::str(b.to_string()),
+                        Value::str(c.to_string()),
                     ],
                     vec!["str".to_string(), "str".to_string(), "str".to_string()],
                 ))))
@@ -463,13 +464,13 @@ impl Interpreter {
                 let sep = arg_str!(0, "sep");
                 let (a, b, c) = match s.rfind(sep.as_str()) {
                     Some(i) => (&s[..i], sep.as_str(), &s[i + sep.len()..]),
-                    None => ("", "", s.as_str()),
+                    None => ("", "", &*s),
                 };
                 Ok(Value::Tuple(Rc::new(crate::interpreter::TupleData::new(
                     vec![
-                        Value::Str(a.to_string()),
-                        Value::Str(b.to_string()),
-                        Value::Str(c.to_string()),
+                        Value::str(a.to_string()),
+                        Value::str(b.to_string()),
+                        Value::str(c.to_string()),
                     ],
                     vec!["str".to_string(), "str".to_string(), "str".to_string()],
                 ))))
@@ -478,7 +479,7 @@ impl Interpreter {
             // ── その他変換 ───────────────────────────────────────────────────
             "expandtabs" => {
                 let tabsize = arg_int!(0, 8).max(0) as usize;
-                Ok(Value::Str(s.replace('\t', &" ".repeat(tabsize))))
+                Ok(Value::str(s.replace('\t', &" ".repeat(tabsize))))
             }
             "encode" => {
                 // 簡易実装: UTF-8 バイト列を int のリストで返す
@@ -488,7 +489,7 @@ impl Interpreter {
             }
             "chars" => {
                 // 文字リストを返す
-                let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
+                let chars: Vec<Value> = s.chars().map(|c| Value::str(c.to_string())).collect();
                 Ok(Value::List(Rc::new(RefCell::new(chars))))
             }
             "ord" => {
@@ -507,7 +508,7 @@ impl Interpreter {
             "match" => {
                 let pattern = arg_str!(0, "pattern");
                 let flags = match vals.get(1) {
-                    Some(Value::Str(f)) => f.clone(),
+                    Some(Value::Str(f)) => f.to_string(),
                     None => String::new(),
                     Some(other) => {
                         return Err(format!(
@@ -517,14 +518,14 @@ impl Interpreter {
                     }
                 };
                 match regex_match(&s, &pattern, &flags)? {
-                    Some(m) => Ok(Value::Str(m)),
+                    Some(m) => Ok(Value::str(m)),
                     None => Ok(Value::None),
                 }
             }
             "search" => {
                 let pattern = arg_str!(0, "pattern");
                 let flags = match vals.get(1) {
-                    Some(Value::Str(f)) => f.clone(),
+                    Some(Value::Str(f)) => f.to_string(),
                     None => String::new(),
                     Some(other) => {
                         return Err(format!(
@@ -534,14 +535,14 @@ impl Interpreter {
                     }
                 };
                 match regex_search(&s, &pattern, &flags)? {
-                    Some(m) => Ok(Value::Str(m)),
+                    Some(m) => Ok(Value::str(m)),
                     None => Ok(Value::None),
                 }
             }
             "findall" => {
                 let pattern = arg_str!(0, "pattern");
                 let flags = match vals.get(1) {
-                    Some(Value::Str(f)) => f.clone(),
+                    Some(Value::Str(f)) => f.to_string(),
                     None => String::new(),
                     Some(other) => {
                         return Err(format!(
@@ -552,7 +553,7 @@ impl Interpreter {
                 };
                 let matches = regex_findall(&s, &pattern, &flags)?;
                 Ok(Value::List(Rc::new(RefCell::new(
-                    matches.into_iter().map(Value::Str).collect(),
+                    matches.into_iter().map(Value::str).collect(),
                 ))))
             }
             "sub" => {
@@ -560,7 +561,7 @@ impl Interpreter {
                 let repl = arg_str!(1, "repl");
                 let count = arg_int!(2, 0).max(0) as usize;
                 let flags = match vals.get(3) {
-                    Some(Value::Str(f)) => f.clone(),
+                    Some(Value::Str(f)) => f.to_string(),
                     None => String::new(),
                     Some(other) => {
                         return Err(format!(
@@ -569,13 +570,13 @@ impl Interpreter {
                         ))
                     }
                 };
-                Ok(Value::Str(regex_sub(&s, &pattern, &repl, count, &flags)?))
+                Ok(Value::str(regex_sub(&s, &pattern, &repl, count, &flags)?))
             }
             "regex_split" => {
                 let pattern = arg_str!(0, "pattern");
                 let maxsplit = arg_int!(1, 0).max(0) as usize;
                 let flags = match vals.get(2) {
-                    Some(Value::Str(f)) => f.clone(),
+                    Some(Value::Str(f)) => f.to_string(),
                     None => String::new(),
                     Some(other) => {
                         return Err(format!(
@@ -586,7 +587,7 @@ impl Interpreter {
                 };
                 let parts = regex_split(&s, &pattern, maxsplit, &flags)?;
                 Ok(Value::List(Rc::new(RefCell::new(
-                    parts.into_iter().map(Value::Str).collect(),
+                    parts.into_iter().map(Value::str).collect(),
                 ))))
             }
 

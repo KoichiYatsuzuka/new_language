@@ -3,16 +3,26 @@
 # バイトコード VM / AST 型解決層（#16）の変更は「解釈経路の観測可能な挙動を変えない」ことが
 # 不変条件なので、各変更後にこれを実行して回帰を確認する。
 #
+# **stdout と stderr の両方**を比較する（#20）。
+# 以前は stderr をリダイレクトしながら読み捨てていたため、トレースバックや例外メッセージの
+# モード差が検出できなかった（#15d-2 の `<anonymous>` 不一致が 45 例題を素通りした）。
+# 併せて `*_error.ar` も比較対象に含める（#20-b）— 実行時エラー系 9 件が
+# **トレースバックを実際に踏む唯一の例題群**で、ここが最も差の出やすい経路だから。
+# 静的エラー系は型検査が実行前に走るので両モードで自明に一致し、含めても誤検出しない。
+#
 # 使い方:
-#   .\compare_vm_modes.ps1              # 非エラー例題を全件比較
-#   .\compare_vm_modes.ps1 -Filter phys # ファイル名部分一致で絞り込み
+#   .\compare_vm_modes.ps1                    # 全例題（_error 含む）を比較
+#   .\compare_vm_modes.ps1 -Filter phys       # ファイル名部分一致で絞り込み
+#   .\compare_vm_modes.ps1 -SkipErrorExamples # `_error` 例題を除外（旧挙動）
 
 param(
     [string]$Filter = '',
     # examples/bench は経過時間を出力するため off/auto で一致しない（比較対象外が既定）
     [switch]$IncludeBench,
     # 1 例題あたりの上限秒数（超えたら kill して TIMEOUT 扱い）
-    [int]$TimeoutSec = 60
+    [int]$TimeoutSec = 60,
+    # `*_error.ar` を比較対象から外す（#20-b の追加分を無効化する退避用）
+    [switch]$SkipErrorExamples
 )
 
 $ErrorActionPreference = 'Continue'
@@ -35,11 +45,14 @@ if ($IncludeBench) { $categoryDirs += 'bench' }
 
 $examples = $categoryDirs | ForEach-Object { Get-ChildItem "$PSScriptRoot\examples\$_\*.ar" -ErrorAction SilentlyContinue } | Where-Object {
     $name = $_.BaseName
-    (-not ($name -match '_error' -or $name -match '__errors' -or $skip -contains $name)) -and
+    $isError = ($name -match '_error' -or $name -match '__errors')
+    (-not ($skip -contains $name)) -and
+    (-not ($isError -and $SkipErrorExamples)) -and
     ($Filter -eq '' -or $name -like "*$Filter*")
 } | Sort-Object Name
 
-# 1 例題を指定 VM モードで実行し、stdout を返す。制限時間超過は $null。
+# 1 例題を指定 VM モードで実行し、stdout と stderr を返す。制限時間超過は $null。
+# 終了コードは見ない（`_error` 例題は非 0 で終わるのが正常）。
 function Invoke-Example {
     param([string]$Exe, [string]$Mode, [string]$Path, [int]$Limit)
 
@@ -56,13 +69,19 @@ function Invoke-Example {
         Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
         return $null
     }
+    # プロセス終了後もハンドル解放にラグがあるため、読めるまで数回リトライする。
     $out = ''
     foreach ($attempt in 1..10) {
         try { $out = [System.IO.File]::ReadAllText($tmpOut); break }
         catch { Start-Sleep -Milliseconds 200 }
     }
+    $err = ''
+    foreach ($attempt in 1..10) {
+        try { $err = [System.IO.File]::ReadAllText($tmpErr); break }
+        catch { Start-Sleep -Milliseconds 200 }
+    }
     Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
-    return $out
+    return [PSCustomObject]@{ Out = $out; Err = $err }
 }
 
 # 実行ごとに変わる値（ヒープアドレス）を伏せる。`id()` の pointer.value や
@@ -80,6 +99,9 @@ $same = 0
 $diff = 0
 $timeout = 0
 $diffs = @()
+# stderr を実際に出した例題数。0 なら「stderr 比較が 1 度も発火していない」＝
+# 検査に歯が無い状態なので、件数を出して気づけるようにする（#20）。
+$withStderr = 0
 
 foreach ($f in $examples) {
     $off  = Invoke-Example $exe 'off'  $f.FullName $TimeoutSec
@@ -88,23 +110,50 @@ foreach ($f in $examples) {
     if ($null -eq $off -or $null -eq $auto) {
         $timeout++
         Write-Host "[TIMEOUT] $($f.Name)" -ForegroundColor Yellow
-    } elseif ((Get-Normalized $off) -ceq (Get-Normalized $auto)) {
+        continue
+    }
+
+    if ($off.Err -ne '' -or $auto.Err -ne '') { $withStderr++ }
+
+    $outSame = (Get-Normalized $off.Out) -ceq (Get-Normalized $auto.Out)
+    $errSame = (Get-Normalized $off.Err) -ceq (Get-Normalized $auto.Err)
+
+    if ($outSame -and $errSame) {
         $same++
     } else {
         $diff++
-        $diffs += [PSCustomObject]@{ File = $f.Name; Off = $off; Auto = $auto }
-        Write-Host "[DIFF] $($f.Name)" -ForegroundColor Red
+        # どちらのストリームが食い違ったかを出す（traceback 差は stderr にしか出ない）
+        $streams = @()
+        if (-not $outSame) { $streams += 'stdout' }
+        if (-not $errSame) { $streams += 'stderr' }
+        $streamLabel = $streams -join '+'
+        $diffs += [PSCustomObject]@{
+            File = $f.Name; Stream = $streamLabel
+            OffOut = $off.Out; AutoOut = $auto.Out
+            OffErr = $off.Err; AutoErr = $auto.Err
+            OutSame = $outSame; ErrSame = $errSame
+        }
+        Write-Host "[DIFF:$streamLabel] $($f.Name)" -ForegroundColor Red
     }
 }
 
 Write-Host ""
 Write-Host "identical: $same   differing: $diff   timeout: $timeout" -ForegroundColor $(if ($diff -eq 0) { 'Green' } else { 'Red' })
+Write-Host "examples that produced stderr: $withStderr" -ForegroundColor $(if ($withStderr -eq 0) { 'Yellow' } else { 'DarkGray' })
 
 foreach ($d in $diffs) {
-    Write-Host "`n--- $($d.File) : off ---"
-    Write-Host $d.Off
-    Write-Host "--- $($d.File) : auto ---"
-    Write-Host $d.Auto
+    if (-not $d.OutSame) {
+        Write-Host "`n--- $($d.File) : stdout off ---"
+        Write-Host $d.OffOut
+        Write-Host "--- $($d.File) : stdout auto ---"
+        Write-Host $d.AutoOut
+    }
+    if (-not $d.ErrSame) {
+        Write-Host "`n--- $($d.File) : stderr off ---"
+        Write-Host $d.OffErr
+        Write-Host "--- $($d.File) : stderr auto ---"
+        Write-Host $d.AutoErr
+    }
 }
 
 if ($diff -ne 0) { exit 1 }

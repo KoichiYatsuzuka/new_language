@@ -353,10 +353,23 @@ fn exec_op(
             let split = buf.len() - n;
             let args = buf.split_off(split); // arg0..argN-1（順序保持）
             let name = &chunk.names[*name_idx as usize];
-            match interp.eval_builtin_evaled(name, args) {
-                Some(r) => buf.push(r?),
-                // コンパイラは eval_builtin_evaled が扱う名前だけ発行するので到達しない。
-                None => return Err(format!("NameError: '{name}' is not defined")),
+            // #15d: グローバルに同名のユーザー束縛があれば組み込みではなくそちらを呼ぶ。
+            // ローカルのシャドウはコンパイル時に `slots.contains_key` で除外済みなので、
+            // 実行時に見るのはグローバルだけでよい。ツリーウォーク側の
+            // `builtin_is_shadowed` と同じ規則（`Value::Type` の自己名は組み込み登録なので除外）。
+            if interp.builtin_is_shadowed_global(name) {
+                let callee = interp
+                    .vm_load_name(name)
+                    .ok_or_else(|| format!("NameError: '{name}' is not defined"))?;
+                let evaled = args.into_iter().map(|v| (None, v, false)).collect();
+                let name = name.clone(); // interp の可変借用のため名前を退避する
+                buf.push(interp.call_value_evaled(callee, evaled, &name, None)?);
+            } else {
+                match interp.eval_builtin_evaled(name, args) {
+                    Some(r) => buf.push(r?),
+                    // コンパイラは eval_builtin_evaled が扱う名前だけ発行するので到達しない。
+                    None => return Err(format!("NameError: '{name}' is not defined")),
+                }
             }
         }
         Op::GetIter => {

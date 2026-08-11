@@ -1,4 +1,4 @@
-use crate::token::Span;
+use {crate::token::Span, std::rc::Rc};
 
 /// テンプレート型パラメータ（型変数とそのトレイト制約）。
 ///
@@ -394,7 +394,7 @@ pub enum UnaryOp {
 /// # バリアント
 /// - `Int(i64)`       : 整数リテラル。
 /// - `Float(f64)`     : 浮動小数点リテラル。
-/// - `Str(String)`    : 文字列リテラル。
+/// - `Str(Rc<str>)`   : 文字列リテラル。
 /// - `Bool(bool)`     : 真偽値リテラル (`True` / `False`)。
 /// - `None`           : `None` リテラル。
 /// - `Ident(String)`  : 変数名・識別子。スコープから値をルックアップする。
@@ -417,7 +417,11 @@ pub enum Expr {
     /// 虚数リテラル（例: `2j` → 係数 `2.0`）。評価結果は `Value::Complex(0.0, coeff)`。
     ImaginaryLit(f64),
     /// 文字列リテラル（シングル・ダブル・トリプルクォート対応）。
-    Str(String),
+    ///
+    /// `Rc<str>` なのは、ツリーウォークが評価のたびに `Value::Str(s.clone())` で
+    /// ヒープ確保するのを避けるため（#15 / §7.4-1）。リテラルのバッファは AST に 1 本だけ持ち、
+    /// 評価は参照カウント加算で済む。
+    Str(Rc<str>),
     /// 真偽値リテラル (`True` / `False`)。
     Bool(bool),
     /// `None` リテラル。

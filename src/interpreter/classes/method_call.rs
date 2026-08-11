@@ -425,7 +425,7 @@ impl Interpreter {
             Value::Class(cls) => {
                 // cs-dll static method dispatch
                 if let Some(Value::Str(bp)) = cls.class_vars.get("__cs_bridge_path__") {
-                    let bp_path = std::path::PathBuf::from(bp.clone());
+                    let bp_path = std::path::PathBuf::from(&**bp);
                     let class_name = cls.name.clone();
                     let ret_type: Option<String> = cls
                         .methods
@@ -443,7 +443,7 @@ impl Interpreter {
                 }
                 // cs-proc static method dispatch
                 if let Some(Value::Str(pp)) = cls.class_vars.get("__cs_proc_path__") {
-                    let pp_path = std::path::PathBuf::from(pp.clone());
+                    let pp_path = std::path::PathBuf::from(&**pp);
                     let class_name = cls.name.clone();
                     let ret_type: Option<String> = cls
                         .methods
@@ -759,7 +759,7 @@ impl Interpreter {
                         };
                         if let Some(e) = first_err {
                             self.current_exception = Some(RaisedError {
-                                exception: Value::Str(e),
+                                exception: Value::str(e),
                                 frames: vec![],
                             });
                             return Err(RAISE_SENTINEL.to_string());

@@ -72,8 +72,8 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
 
     // raise 時にインタープリタが自動上書きするフィールドのデフォルト値（空文字・0で初期化）
     let field_defaults = vec![
-        ("code_context".to_string(), Value::Str("".to_string()), false),
-        ("file".to_string(), Value::Str("".to_string()), false),
+        ("code_context".to_string(), Value::str("".to_string()), false),
+        ("file".to_string(), Value::str("".to_string()), false),
         ("line".to_string(), Value::Int(0), false),
         ("col".to_string(), Value::Int(0), false),
     ];

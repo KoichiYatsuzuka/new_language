@@ -187,7 +187,7 @@ impl<'a> GenCtx<'a> {
                 };
                 let msg = match args.first() {
                     None => String::new(),
-                    Some(CallArg::Positional(Expr::Str(s))) => s.clone(),
+                    Some(CallArg::Positional(Expr::Str(s))) => s.to_string(),
                     _ => {
                         self.typed_failed = true;
                         return;

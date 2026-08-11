@@ -79,7 +79,7 @@ fn run_exc(src: &str) -> Result<Option<RaisedError>, String> {
 /// `val` が `Str(expected)` であることを表明するテストヘルパー。
 fn assert_str(val: Value, expected: &str) {
     if let Value::Str(s) = val {
-        assert_eq!(s, expected);
+        assert_eq!(&*s, expected);
     } else {
         panic!("expected Str({:?}), got {:?}", expected, val);
     }

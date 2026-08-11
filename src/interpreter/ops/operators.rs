@@ -119,7 +119,7 @@ impl Interpreter {
             if inst_rc.borrow().class.methods.contains_key("__str__") {
                 let result = self.eval_method_call_evaled(val.clone(), "__str__", vec![])?;
                 return match result {
-                    Value::Str(s) => Ok(s),
+                    Value::Str(s) => Ok(s.to_string()),
                     other => Ok(self.display(&other)),
                 };
             }
@@ -208,7 +208,7 @@ impl Interpreter {
                 s.borrow().iter().any(|v| self.values_eq(v, item)),
             )),
             (BinOp::In, Value::Str(sub), Value::Str(s)) => {
-                Ok(Value::Bool(s.contains(sub.as_str())))
+                Ok(Value::Bool(s.contains(&**sub)))
             }
             (BinOp::In, item, Value::Dict(d)) => Ok(Value::Bool(d.borrow().get(item).is_some())),
             (BinOp::In, item, Value::Tuple(t)) => Ok(Value::Bool(
@@ -227,7 +227,7 @@ impl Interpreter {
                 !s.borrow().iter().any(|v| self.values_eq(v, item)),
             )),
             (BinOp::NotIn, Value::Str(sub), Value::Str(s)) => {
-                Ok(Value::Bool(!s.contains(sub.as_str())))
+                Ok(Value::Bool(!s.contains(&**sub)))
             }
             (BinOp::NotIn, item, Value::Dict(d)) => Ok(Value::Bool(d.borrow().get(item).is_none())),
             (BinOp::NotIn, item, Value::Tuple(t)) => Ok(Value::Bool(
@@ -246,13 +246,13 @@ impl Interpreter {
             (BinOp::Add, Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a + *b)),
             (BinOp::Add, Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + *b)),
             (BinOp::Add, Value::Float(a), Value::Int(b)) => Ok(Value::Float(*a + *b as f64)),
-            (BinOp::Add, Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{a}{b}"))),
+            (BinOp::Add, Value::Str(a), Value::Str(b)) => Ok(Value::str(format!("{a}{b}"))),
             // str * int / int * str → repeat
             (BinOp::Mul, Value::Str(s), Value::Int(n)) => {
-                Ok(Value::Str(s.repeat((*n).max(0) as usize)))
+                Ok(Value::str(s.repeat((*n).max(0) as usize)))
             }
             (BinOp::Mul, Value::Int(n), Value::Str(s)) => {
-                Ok(Value::Str(s.repeat((*n).max(0) as usize)))
+                Ok(Value::str(s.repeat((*n).max(0) as usize)))
             }
             // str % args → printf-style format
             (BinOp::Mod, Value::Str(fmt), rv) => {
@@ -262,7 +262,7 @@ impl Interpreter {
                     other => vec![other.clone()],
                 };
                 let result = percent_format(fmt, &args, &display_fn)?;
-                Ok(Value::Str(result))
+                Ok(Value::str(result))
             }
             (BinOp::Sub, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a - *b)),
             (BinOp::Sub, Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a - *b)),

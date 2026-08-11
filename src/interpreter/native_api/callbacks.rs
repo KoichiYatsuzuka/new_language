@@ -27,7 +27,7 @@ extern "C" fn ar_make_str(ptr: *const u8, len: i32) -> i64 {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(ptr, len as usize))
     }
     .to_owned();
-    STATE.with(|s| s.borrow_mut().push_value(Value::Str(text)))
+    STATE.with(|s| s.borrow_mut().push_value(Value::str(text)))
 }
 
 // Build list/tuple/dict in one borrow: clone all items then push the container.
@@ -472,7 +472,7 @@ extern "C" fn ar_iter_from(obj_h: i64) -> i64 {
                 (0..fst.len).map(|i| layout.reconstruct_item(&fst.data, i)).collect()
             }
             Value::Tuple(t) => t.all_values().to_vec(),
-            Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+            Value::Str(s) => s.chars().map(|c| Value::str(c.to_string())).collect(),
             Value::Dict(d) => d.borrow().all_keys(),
             other => {
                 st.error = Some(format!(
@@ -645,7 +645,7 @@ extern "C" fn ar_to_float(h: i64) -> f64 {
 
 extern "C" fn ar_to_cstr(h: i64) -> *const u8 {
     let s = match clone_value_at(h) {
-        Value::Str(s) => s,
+        Value::Str(s) => s.to_string(),
         _ => String::new(),
     };
     STATE.with(|s_tls| {
@@ -693,19 +693,19 @@ extern "C" fn ar_raise_exc(type_h: i64, msg_h: i64) -> i64 {
     let (type_name, msg) = STATE.with(|s| {
         let st = s.borrow();
         let tn = match st.clone_value(type_h) {
-            Value::Str(s) => s,
+            Value::Str(s) => s.to_string(),
             Value::Class(c) => c.name.clone(),
             Value::Instance(inst) => inst.borrow().class.name.clone(),
             _ => "Exception".to_string(),
         };
         let m = match st.clone_value(msg_h) {
-            Value::Str(s) => s,
+            Value::Str(s) => s.to_string(),
             Value::None => String::new(),
             Value::Instance(inst) => {
                 let b = inst.borrow();
                 b.class.field_index.get("message").and_then(|&idx| {
                     match b.field_value(idx) {
-                        Some(Value::Str(s)) => Some(s),
+                        Some(Value::Str(s)) => Some(s.to_string()),
                         _ => None,
                     }
                 }).unwrap_or_default()

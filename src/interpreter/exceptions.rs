@@ -79,9 +79,9 @@ impl Interpreter {
         // フィールドレイアウト: message=0, code_context=1, file=2, line=3, col=4
         // (make_error_class の field_index と対応)
         let mut data = InstanceData::new_empty(cls, 0);
-        data.store_field(0, Value::Str(message), false); // message
-        data.store_field(1, Value::Str(String::new()), false); // code_context
-        data.store_field(2, Value::Str(String::new()), false); // file
+        data.store_field(0, Value::str(message), false); // message
+        data.store_field(1, Value::str(String::new()), false); // code_context
+        data.store_field(2, Value::str(String::new()), false); // file
         data.store_field(3, Value::Int(0), false); // line
         data.store_field(4, Value::Int(0), false); // col
         let inst = Value::Instance(Rc::new(RefCell::new(data)));

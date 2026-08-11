@@ -4,6 +4,7 @@ use super::Parser;
 use crate::ast::{BinOp, CallArg, Expr, UnaryOp, Resolution};
 use crate::token::{FStrPart, Span, Token};
 use crate::lexer;
+use std::rc::Rc;
 
 impl Parser {
     // --- 式のパース（優先順位昇順）---
@@ -612,13 +613,13 @@ impl Parser {
     /// `f"Hello {name}!"` → `"Hello " + str(name) + "!"`
     fn desugar_fstring(&mut self, parts: Vec<FStrPart>) -> Result<Expr, String> {
         if parts.is_empty() {
-            return Ok(Expr::Str(String::new()));
+            return Ok(Expr::Str(Rc::from("")));
         }
         let span = Span::unknown();
         let mut exprs: Vec<Expr> = Vec::new();
         for part in parts {
             match part {
-                FStrPart::Lit(s) => exprs.push(Expr::Str(s)),
+                FStrPart::Lit(s) => exprs.push(Expr::Str(Rc::from(s.as_str()))),
                 FStrPart::Expr(src) => {
                     // Re-lex and re-parse the expression source
                     let tokens = lexer::Lexer::new(&src, "<fstring>").tokenize();
@@ -678,7 +679,7 @@ impl Parser {
             }
             Token::Str(s) => {
                 self.advance();
-                Ok(Expr::Str(s))
+                Ok(Expr::Str(Rc::from(s.as_str())))
             }
             Token::FStr(parts) => {
                 self.advance();

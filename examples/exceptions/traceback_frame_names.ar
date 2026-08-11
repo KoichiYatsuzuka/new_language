@@ -1,0 +1,27 @@
+# traceback_frame_names.ar — トレースバックが関数名を出すこと（#15d）
+#
+# 例外のトレースバックは、各フレームの呼び先を名前で表示する。
+# 以前は「リゾルバが解決していない呼び出し」だけ名前を出し、解決済み（＝関数本体からの
+# 呼び出し）はすべて `<anonymous>` になっていた。VM 経路は名前を出していたため、
+# 同じプログラムで `--vm=off` と `--vm=auto` の**出力が食い違っていた**。
+#
+# 期待: どのモードでも最深フレームが `in inner` と表示される。
+#       （`compare_vm_modes.ps1` は stdout しか比較しないため、この食い違いは
+#         検出されていなかった。トレースバックは stderr に出る。）
+
+fn inner(let n: int) -> int:
+    return n / 0
+
+fn middle(let n: int) -> int:
+    return inner(n)          # 関数本体からの呼び出し = リゾルバ解決済み
+
+fn outer(let n: int) -> int:
+    return middle(n)
+
+try:
+    let v = outer(3)
+    print("unreachable:", v)
+except ZeroDivisionError as e:
+    print("caught:", e)
+
+print("done")

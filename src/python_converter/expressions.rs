@@ -1,6 +1,7 @@
 // python_converter/expressions.rs — 式・定数・演算子の変換: convert_expr / convert_constant / convert_binop / convert_augop / convert_cmpop。
 
 use crate::ast::Resolution;
+use std::rc::Rc;
 use {
     rustpython_parser::ast as py,
     crate::ast::{BinOp, CallArg, Expr, UnaryOp},
@@ -207,7 +208,7 @@ pub(crate) fn convert_constant(c: &py::ExprConstant, filename: &str) -> Result<E
             Ok(Expr::Int(v))
         }
         py::Constant::Float(f) => Ok(Expr::Float(*f)),
-        py::Constant::Str(s) => Ok(Expr::Str(s.to_string())),
+        py::Constant::Str(s) => Ok(Expr::Str(Rc::from(s.as_str()))),
         py::Constant::Bool(b) => Ok(Expr::Bool(*b)),
         py::Constant::None => Ok(Expr::None),
         py::Constant::Bytes(_) => Err(format!("{filename}: bytes literals are not supported")),

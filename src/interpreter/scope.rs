@@ -38,6 +38,39 @@ impl Interpreter {
         self.scopes[0].get(name)
     }
 
+    /// 組み込み名がユーザーの束縛でシャドウされているか（#15d）。
+    ///
+    /// 呼び先の振り分けが「名前が組み込みと一致するか」だけを見ていると、
+    /// `let repr = my_fn` としても組み込みが横取りする。`Resolution` は使えない —
+    /// リゾルバが処理するのはトップレベル関数の本体だけで、**モジュール最上位・
+    /// テンプレート本体・合成 AST は常に `Unresolved`** だからである
+    /// （`Unresolved` は「シャドウが無い」を意味しない）。よって実際の束縛を見る。
+    ///
+    /// ⚠ `Value::Type(name)` は**組み込み登録そのもの**なのでシャドウとみなさない。
+    /// `register_builtin_globals` が `len` を型値としてグローバルに置いており
+    /// （ネイティブの `cb_get_global("len")` 用）、これを除かないと `len()` が
+    /// 組み込み経路から `call_type_by_name_evaled` へ逸れる。そちらには
+    /// `Value::PyObject` のアームが無いので **`len(py_obj)` が壊れ**、
+    /// 組み込み経路を保つ VM 側とも食い違う。
+    pub(crate) fn builtin_is_shadowed(&self, name: &str) -> bool {
+        match self.get_var(name) {
+            None => false,
+            Some(Var::Immutable(Value::Type(t)) | Var::Mutable(Value::Type(t))) => t != name,
+            Some(_) => true,
+        }
+    }
+
+    /// グローバルスコープ側だけを見た同判定（VM 用・#15d）。
+    /// VM はローカルのシャドウをコンパイル時に `slots.contains_key` で除外済みなので、
+    /// 実行時に見る必要があるのはグローバルだけ。
+    pub(crate) fn builtin_is_shadowed_global(&self, name: &str) -> bool {
+        match self.scopes[0].get(name) {
+            None => false,
+            Some(Var::Immutable(Value::Type(t)) | Var::Mutable(Value::Type(t))) => t != name,
+            Some(_) => true,
+        }
+    }
+
     /// 指定名の変数の値だけをクローンして返す。
     /// セル（クロージャキャプチャ）がある場合はセルの値を返す。
     /// 変数が存在しない場合は `None`。

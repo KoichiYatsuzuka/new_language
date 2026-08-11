@@ -1,4 +1,4 @@
-# bench.ps1 — ツリーウォークインタープリタのベースライン計測（バイトコードVM移行フェーズ0）
+﻿# bench.ps1 — ツリーウォークインタープリタのベースライン計測（バイトコードVM移行フェーズ0）
 #
 # Usage: ./bench.ps1            # 全ベンチ実行
 #        ./bench.ps1 -Reps 3    # 各ベンチを3回実行して安定性を見る
@@ -29,6 +29,8 @@ function Run-Bench($label, $script) {
 
 Run-Bench "bottleneck (要因分離)" "examples/bench/bottleneck_bench.ar"
 Run-Bench "field access (E2E)"    "examples/bench/bench_field_access.ar"
+Run-Bench "string (#15 A/B)"      "examples/bench/bench_string.ar"
+Run-Bench "name hash probe (#15-3)" "examples/bench/bench_name_hash.ar"
 
 Write-Host ""
 Write-Host "done." -ForegroundColor Green

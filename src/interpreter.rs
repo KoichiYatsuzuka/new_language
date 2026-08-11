@@ -552,7 +552,7 @@ impl Interpreter {
     pub fn set_cli_args(&mut self, params: HashMap<String, String>) {
         let mut dict = DictData::new("str".to_string(), "str".to_string());
         for (k, v) in params {
-            dict.set(Value::Str(k), Value::Str(v));
+            dict.set(Value::str(k), Value::str(v));
         }
         self.scopes[0].insert(
             "args".to_string(),
@@ -665,7 +665,7 @@ impl Interpreter {
                 let class_name = inst.class.name.clone();
                 let message = inst.class.field_index.get("message").and_then(|&idx| {
                     inst.field_value(idx).map(|v| match v {
-                        Value::Str(s) => s,
+                        Value::Str(s) => s.to_string(),
                         Value::Int(n) => n.to_string(),
                         Value::Float(f) => f.to_string(),
                         Value::Bool(b) => b.to_string(),

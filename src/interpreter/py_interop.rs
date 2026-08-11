@@ -97,7 +97,7 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
         return Value::Float(f);
     }
     if let Ok(s) = obj.extract::<String>() {
-        return Value::Str(s);
+        return Value::str(s);
     }
     if obj.is_none() {
         return Value::None;

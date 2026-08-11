@@ -114,7 +114,7 @@ impl Interpreter {
                 Value::Generator(Rc::new(RefCell::new(GeneratorState { values, index: 0 })))
             }
             Value::Str(s) => {
-                let chars: Vec<Value> = s.chars().map(|c| Value::Str(c.to_string())).collect();
+                let chars: Vec<Value> = s.chars().map(|c| Value::str(c.to_string())).collect();
                 Value::Generator(Rc::new(RefCell::new(GeneratorState {
                     values: chars,
                     index: 0,

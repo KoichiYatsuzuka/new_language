@@ -186,7 +186,7 @@ impl Interpreter {
             }
             Value::Class(cls) => {
                 if attr == "name" {
-                    return Ok(Value::Str(cls.name.clone()));
+                    return Ok(Value::str(cls.name.as_str()));
                 }
                 if let Some(v) = Self::lookup_class_var(cls, attr) {
                     return Ok(v);
@@ -276,7 +276,7 @@ impl Interpreter {
                             .error_list
                             .iter()
                             .map(|e| match e {
-                                Some(s) => Value::Str(s.clone()),
+                                Some(s) => Value::str(s.as_str()),
                                 None => Value::None,
                             })
                             .collect();

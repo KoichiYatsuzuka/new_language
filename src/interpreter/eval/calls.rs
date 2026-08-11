@@ -142,13 +142,30 @@ impl Interpreter {
             }
         }
 
+        // ── 組み込みへの振り分け（#15d）──
+        // `Resolution::Local`/`Global` は「リゾルバがユーザー変数と解決済み」＝組み込みではないので、
+        // ここへは来ない（`Unresolved` に限定してある）。
+        //
+        // ただし **`Unresolved` は「シャドウが無い」ことを意味しない**。リゾルバが処理するのは
+        // トップレベル関数の本体だけで、**モジュール最上位・テンプレート本体・合成 AST は常に
+        // `Unresolved`** になる。そこで `let repr = my_fn` としても、名前だけで振り分けていた
+        // 従来コードは組み込みを呼んでしまっていた（実測: print/next/zip/enumerate/getenv/repr の 6 件）。
+        //
+        // よってスコープに束縛があるかを見てから振り分ける。VM の
+        // `is_vm_builtin(name) && !slots.contains_key(name)`（[vm/compiler.rs](../../vm/compiler.rs)）と同じ規則で、
+        // これでツリーウォークと VM の健全性が揃う。
         if let Expr::Ident { name, res: Resolution::Unresolved, .. } = func {
-            if let Some(result) = self.eval_builtin_ident_call(name, args) {
-                return result;
+            if !self.builtin_is_shadowed(name) {
+                if let Some(result) = self.eval_builtin_ident_call(name, args) {
+                    return result;
+                }
             }
         }
+        // トレースバック表示名（#15d）。`res` を問わず識別子の名前を使う。
+        // 以前は `Unresolved` に限っていたため、**リゾルバが解決した呼び先＝関数本体からの呼び出しが
+        // すべて `<anonymous>` になっていた**（VM 経路は名前を出すので off/auto で出力が食い違っていた）。
         let call_name: &str = match func {
-            Expr::Ident { name: n, res: Resolution::Unresolved, .. } => n,
+            Expr::Ident { name: n, .. } => n,
             _ => "<anonymous>",
         };
         let callee = self.eval(func)?;
@@ -377,12 +394,12 @@ impl Interpreter {
                     return self.eval_method_call_evaled(v, "__str__", vec![])
                         .map(|r| match r {
                             Value::Str(s) => Value::Str(s),
-                            other => Value::Str(self.display(&other)),
+                            other => Value::str(self.display(&other)),
                         });
                 }
                 match vals.as_slice() {
-                    [] => Ok(Value::Str(String::new())),
-                    [v] => Ok(Value::Str(self.display(v))),
+                    [] => Ok(Value::str("")),
+                    [v] => Ok(Value::str(self.display(v))),
                     _ => Err("TypeError: str() takes at most 1 argument".to_string()),
                 }
             },
@@ -457,7 +474,7 @@ impl Interpreter {
                     }
                     Value::Set(s) => Ok(Value::List(Rc::new(RefCell::new(s.borrow().clone())))),
                     Value::Str(s) => {
-                        let chars = s.chars().map(|c| Value::Str(c.to_string())).collect();
+                        let chars = s.chars().map(|c| Value::str(c.to_string())).collect();
                         Ok(Value::List(Rc::new(RefCell::new(chars))))
                     }
                     other => Err(format!(
@@ -474,7 +491,7 @@ impl Interpreter {
                     let items: Vec<Value> = match arg {
                         Value::Set(s) => s.borrow().clone(),
                         Value::List(lst) => lst.borrow().clone(),
-                        Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+                        Value::Str(s) => s.chars().map(|c| Value::str(c.to_string())).collect(),
                         Value::Tuple(t) => t.all_values().to_vec(),
                         other => {
                             return Err(format!(

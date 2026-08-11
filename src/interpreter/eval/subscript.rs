@@ -100,7 +100,7 @@ impl Interpreter {
                 if actual < 0 || actual >= len {
                     return Err(format!("IndexError: string index {} out of range", idx));
                 }
-                Ok(Value::Str(chars[actual as usize].to_string()))
+                Ok(Value::str(chars[actual as usize].to_string()))
             }
             Value::Tuple(td) => {
                 let idx = value_as_index(&key).ok_or_else(|| {
@@ -159,7 +159,7 @@ impl Interpreter {
                 let chars: Vec<char> = s_val.chars().collect();
                 let len = chars.len() as i64;
                 let indices = compute_slice_indices(len, begin, end, step);
-                Ok(Value::Str(indices.into_iter().map(|i| chars[i]).collect()))
+                Ok(Value::str(indices.into_iter().map(|i| chars[i]).collect::<String>()))
             }
             Value::Tuple(td) => {
                 let vals = td.all_values();
@@ -255,7 +255,7 @@ impl Interpreter {
                 Ok((0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect())
             }
             Value::Tuple(td) => Ok(td.all_values().to_vec()),
-            Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string())).collect()),
+            Value::Str(s) => Ok(s.chars().map(|c| Value::str(c.to_string())).collect()),
             Value::Set(items) => Ok(items.borrow().clone()),
             Value::Generator(gen) => {
                 let g = gen.borrow();

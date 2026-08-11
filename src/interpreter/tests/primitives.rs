@@ -81,7 +81,7 @@ fn test_uint_is_type() {
 fn test_uint_str_display() {
     // uint should display as its decimal value
     let val = run_get("let r = str(uint(255))\n", "r");
-    assert!(matches!(val, Value::Str(s) if s == "255"));
+    assert!(matches!(val, Value::Str(s) if &*s == "255"));
 }
 
 // ---------------------------------------------------------------------------

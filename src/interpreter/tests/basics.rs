@@ -26,7 +26,7 @@ fn test_float_arithmetic() {
 #[test]
 fn test_string_concat() {
     if let Value::Str(s) = eval_expr(r#""hello" + " " + "world""#) {
-        assert_eq!(s, "hello world");
+        assert_eq!(&*s, "hello world");
     } else {
         panic!();
     }

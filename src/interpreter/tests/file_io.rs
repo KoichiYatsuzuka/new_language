@@ -46,7 +46,7 @@ fn test_file_path_type() {
     let src = "let p = path(\"foo.txt\")\nlet v = p.value\n";
     let val = run_get(src, "v");
     assert!(
-        matches!(val, Value::Str(s) if s == "foo.txt"),
+        matches!(val, Value::Str(s) if &*s == "foo.txt"),
         "path.value should be 'foo.txt'"
     );
 }
@@ -65,7 +65,7 @@ fn test_file_rewrite_and_read() {
     let val = run_get(&src2, "r");
     cleanup(&p);
     assert!(
-        matches!(val, Value::Str(s) if s == "hello"),
+        matches!(val, Value::Str(s) if &*s == "hello"),
         "read() should return written text"
     );
 }
@@ -84,7 +84,7 @@ fn test_file_write_line() {
     let val = run_get(&src2, "r");
     cleanup(&p);
     assert!(
-        matches!(val, Value::Str(s) if s == "line1\nline2\n"),
+        matches!(val, Value::Str(s) if &*s == "line1\nline2\n"),
         "write_line should append newline"
     );
 }
@@ -111,11 +111,11 @@ fn test_file_read_line_forward() {
     let b = interp.get_val("b").unwrap();
     cleanup(&p);
     assert!(
-        matches!(a, Value::Str(s) if s == "alpha\n"),
+        matches!(a, Value::Str(s) if &*s == "alpha\n"),
         "first read_line should be 'alpha\\n'"
     );
     assert!(
-        matches!(b, Value::Str(s) if s == "beta\n"),
+        matches!(b, Value::Str(s) if &*s == "beta\n"),
         "second read_line should be 'beta\\n'"
     );
 }
@@ -142,11 +142,11 @@ fn test_file_read_letter() {
     let b = interp.get_val("b").unwrap();
     cleanup(&p);
     assert!(
-        matches!(a, Value::Str(s) if s == "A"),
+        matches!(a, Value::Str(s) if &*s == "A"),
         "first letter should be 'A'"
     );
     assert!(
-        matches!(b, Value::Str(s) if s == "B"),
+        matches!(b, Value::Str(s) if &*s == "B"),
         "second letter should be 'B'"
     );
 }

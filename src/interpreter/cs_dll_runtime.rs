@@ -253,7 +253,7 @@ unsafe fn call_returning_str(
         let free_fn: unsafe extern "C" fn(*mut u8) = std::mem::transmute(free_ptr);
         free_fn(out_ptr);
     }
-    Ok(Value::Str(s))
+    Ok(Value::str(s))
 }
 
 /// Low-level bridge call: passes i64 args (possibly with a leading self handle)

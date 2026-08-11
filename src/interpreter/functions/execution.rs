@@ -425,7 +425,7 @@ impl Interpreter {
         if fn_val.is_python && !extra_kwargs.is_empty() {
             let mut dict = DictData::new("str".to_string(), "Any".to_string());
             for (k, v) in extra_kwargs {
-                dict.set(Value::Str(k), v);
+                dict.set(Value::str(k), v);
             }
             self.declare_var(
                 "kwargs".to_string(),

@@ -130,13 +130,13 @@ fn compute_slice_indices(len: i64, begin: Option<i64>, end: Option<i64>, step: i
 /// str または path インスタンスからファイルパス文字列を取り出す。
 fn extract_path_str(val: &Value) -> Result<String, String> {
     match val {
-        Value::Str(s) => Ok(s.clone()),
+        Value::Str(s) => Ok(s.to_string()),
         Value::Instance(inst_rc) => {
             let inst = inst_rc.borrow();
             if inst.class.name == "path" {
                 if let Some(&idx) = inst.class.field_index.get("value") {
                     if let Some(Value::Str(s)) = inst.field_value(idx) {
-                        return Ok(s);
+                        return Ok(s.to_string());
                     }
                 }
             }

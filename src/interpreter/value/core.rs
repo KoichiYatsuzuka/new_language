@@ -53,7 +53,13 @@ pub enum Value {
     /// 複素数プリミティブ値（実部・虚部はそれぞれ f64）。
     Complex(f64, f64),
     /// 文字列プリミティブ値（Unicode UTF-8）。
-    Str(String),
+    ///
+    /// `Rc<str>` なので `Value::clone`（変数読み・引数束縛・スタック push）は
+    /// **参照カウント加算のみ**でヒープ確保しない（#15 / §7.4-1）。
+    /// 文字列は不変なので共有しても意味論は変わらない。
+    /// ただし **`deep_clone` は必ず独立バッファを作ること**（async のスレッド間 share-nothing。
+    /// `Rc` の参照カウントは非アトミックなので共有したまま送ると壊れる）。
+    Str(Rc<str>),
     /// 真偽値プリミティブ値（`true` / `false`）。
     Bool(bool),
     /// `None` リテラル。Python の `None` に相当する。
@@ -182,6 +188,15 @@ pub fn deep_clone_captured_env(
 
 
 impl Value {
+    /// 文字列値を作る。`&str` / `String` / `Rc<str>` のいずれからでも書ける（#15）。
+    ///
+    /// `Rc<str>` を渡した場合は参照カウント加算のみで**確保しない**ので、
+    /// 既にある文字列値を使い回す経路（属性名・辞書キー・リテラル）はこれを通すこと。
+    #[inline]
+    pub fn str(s: impl Into<Rc<str>>) -> Value {
+        Value::Str(s.into())
+    }
+
     /// Create a fully independent deep copy with no shared Rc pointers.
     /// Used before sending values across thread boundaries for async tasks.
     pub fn deep_clone(&self) -> Value {
@@ -190,7 +205,8 @@ impl Value {
             Value::UInt(n) => Value::UInt(*n),
             Value::Float(f) => Value::Float(*f),
             Value::Complex(re, im) => Value::Complex(*re, *im),
-            Value::Str(s) => Value::Str(s.clone()),
+            // Rc の参照カウントは非アトミック。スレッド間送出では共有せず必ず複製する（#15）。
+            Value::Str(s) => Value::Str(Rc::from(&**s)),
             Value::Bool(b) => Value::Bool(*b),
             Value::None => Value::None,
             Value::Undefined => Value::Undefined,
@@ -224,7 +240,7 @@ impl Value {
                 for (k, v) in b.iter() {
                     let key_val = match k {
                         DictKey::Int(n) => Value::Int(*n),
-                        DictKey::Str(s) => Value::Str(s.clone()),
+                        DictKey::Str(s) => Value::Str(Rc::from(&**s)),
                         DictKey::Bool(b) => Value::Bool(*b),
                         DictKey::None => Value::None,
                     };
@@ -351,4 +367,16 @@ pub enum ExecResult {
     BlockYield(Value),
     /// コールスタックを遡って伝播中の言語レベル例外。`try/except` で捕捉される。
     Raise(RaisedError),
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::Value;
+
+    /// `Value` は 32 バイトに収まっていること（§7.4-2 で 72→32B に縮めた成果を守る）。
+    /// #15 で `Str` を `String`(24B) → `Rc<str>`(16B) にしたが、最大変種は別なので不変。
+    #[test]
+    fn value_stays_32_bytes() {
+        assert_eq!(std::mem::size_of::<Value>(), 32);
+    }
 }

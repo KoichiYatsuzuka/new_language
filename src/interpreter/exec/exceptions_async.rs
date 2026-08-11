@@ -113,14 +113,14 @@ impl Interpreter {
             let cls = inst_rc.borrow().class.clone();
             let mut inst = inst_rc.borrow_mut();
             for (key, val) in [
-                ("file", Value::Str(span.file.to_string())),
+                ("file", Value::str(span.file.to_string())),
                 ("line", Value::Int(span.line as i64)),
                 ("col", Value::Int(span.col as i64)),
-                ("code_context", Value::Str(context.clone())),
-                ("Error::file", Value::Str(span.file.to_string())),
+                ("code_context", Value::str(context.clone())),
+                ("Error::file", Value::str(span.file.to_string())),
                 ("Error::line", Value::Int(span.line as i64)),
                 ("Error::col", Value::Int(span.col as i64)),
-                ("Error::code_context", Value::Str(context)),
+                ("Error::code_context", Value::str(context)),
             ] {
                 if let Some(&idx) = cls.field_index.get(key) {
                     inst.store_field(idx, val, false);
@@ -158,14 +158,14 @@ impl Interpreter {
             let cls = inst_rc.borrow().class.clone();
             let mut inst = inst_rc.borrow_mut();
             for (key, val) in [
-                ("file", Value::Str(span.file.to_string())),
+                ("file", Value::str(span.file.to_string())),
                 ("line", Value::Int(span.line as i64)),
                 ("col", Value::Int(span.col as i64)),
-                ("code_context", Value::Str(context.clone())),
-                ("Error::file", Value::Str(span.file.to_string())),
+                ("code_context", Value::str(context.clone())),
+                ("Error::file", Value::str(span.file.to_string())),
                 ("Error::line", Value::Int(span.line as i64)),
                 ("Error::col", Value::Int(span.col as i64)),
-                ("Error::code_context", Value::Str(context)),
+                ("Error::code_context", Value::str(context)),
             ] {
                 if let Some(&idx) = cls.field_index.get(key) {
                     inst.store_field(idx, val, false);
@@ -379,7 +379,7 @@ impl Interpreter {
             let sig_rc = self.external_handler_registry.get(&ev.handler_id).cloned();
             if let Some(sig_rc) = sig_rc {
                 // データは MessagePack でシリアライズされているが、現時点では str として渡す。
-                let val = Value::Str(String::from_utf8_lossy(&ev.data).into_owned());
+                let val = Value::str(String::from_utf8_lossy(&ev.data).into_owned());
                 let handlers = sig_rc.borrow_mut().collect_handlers_for_emit();
                 for (h, _) in handlers {
                     self.call_value_with_args(h, vec![val.clone()])?;

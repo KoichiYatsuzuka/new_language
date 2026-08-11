@@ -664,6 +664,322 @@ pub enum Resolution {
 
 ---
 
+## #15 `Value::Str` → `Rc<str>`（§7.4-1 完了・§7.4-3 は消費者不在で保留 2026-08-11）
+
+### やったこと
+`String` を持っていた 3 つの文字列表現を**まとめて** `Rc<str>` にした。1 つだけ変えても
+境界で確保が復活するので効果が出ない（例: `Value` だけ変えると `d["k"]` が `DictKey` 生成で確保する）。
+
+| 変更 | 効果 |
+|---|---|
+| `Value::Str(String)` → `Value::Str(Rc<str>)`（[value/core.rs](src/interpreter/value/core.rs)） | 変数読み・引数束縛・スタック push の `Value::clone` が参照カウント加算だけになる |
+| `DictKey::Str(String)` → `Rc<str>`（[value/collections.rs](src/interpreter/value/collections.rs)） | `d["key"]` の索引でキーを作るたびの String 確保が消える |
+| `Expr::Str(String)` → `Rc<str>`（[ast.rs](src/ast.rs)） | ツリーウォークのリテラル評価 `Value::Str(s.clone())` が確保しなくなる（リテラルの実体は AST に 1 本） |
+
+- **`Value::str(impl Into<Rc<str>>)` に構築を集約**（[value/core.rs](src/interpreter/value/core.rs)）。
+  `&str` / `String` / `Rc<str>` のどれからでも書け、`Rc<str>` を渡した場合は確保しない。
+  304 サイトのうち構築側はほぼ全てこれ 1 本に寄った。
+- `eval_str_method` は**レシーバを `Rc<str>` で受ける**ようにし（[classes/string_methods.rs](src/interpreter/classes/string_methods.rs)）、
+  引数抽出マクロ（`arg_str!` / `arg_opt_str!`）は `String` を返すままにした。
+  こうすると下流の `sep.as_str()` 等 23 箇所を触らずに済む（`Rc<str>` への `.as_str()` は unstable な `str_as_str`）。
+
+### ⚠ この変更で唯一壊れうる所: `deep_clone`
+`deep_clone` は **async のスレッド間送出**（[async_mgr.rs](src/interpreter/async_mgr.rs) `var.get_value().deep_clone()`）で使う。
+`Rc` の参照カウントは**非アトミック**なので、素直に `s.clone()` にすると
+**バッファを 2 スレッドで共有したまま送り出してカウンタが壊れる**。
+`Value::Str(s) => Value::Str(Rc::from(&**s))` と書いて必ず独立バッファを作ること
+（`DictKey::Str` 経由の復元も同様）。share-nothing（D5）はこの 1 行に依存している。
+
+**負の対照で実在を確認した**（推測ではない）。この 1 行を `s.clone()`（＝共有）に戻すと
+[async_string_share.ar](examples/async/async_string_share.ar) が **`Illegal instruction`（exit 132）で落ちる**。
+正しい実装では 10 回連続で `results` が全て同値・exit 0。
+
+⚠ ただし**接触回数を上げないと再現しない**。最初に書いた版（各タスクが捕捉文字列を 1 回だけ読む）は
+壊れたビルドでも 6 回中 6 回とも正常終了した。`wait_for_finish()` 中の main は当該 `Rc` を触らないので、
+競合するのは**ワーカースレッド同士**であり、各スレッドが捕捉文字列を**ループ内で繰り返し clone** して
+初めてカウンタの取り合いが起きる。例題は 8 スレッド × 40000 回読みにしてある。
+将来この例題を軽量化すると**検知力を失う**（落ちなくなるだけで、バグは残る）ので縮めないこと。
+
+### 実測（同一マシン・release・best-of-3・[bench_string.ar](examples/bench/bench_string.ar)）
+| ケース | HEAD | #15 | 倍率 |
+|---|---:|---:|---:|
+| 1. 文字列変数の読み | 0.2093 s | 0.1609 s | **1.30x** |
+| 2. 文字列の引数束縛 | 0.1627 s | 0.1323 s | **1.23x** |
+| 3. 文字列連結（対照群） | 0.1253 s | 0.1098 s | 1.14x |
+| 4. 属性/メソッド経由 | 0.2125 s | 0.1745 s | **1.22x** |
+| 5. dict の文字列キー | 0.1528 s | 0.1012 s | **1.51x** |
+
+- **対照群（3. 連結）も 1.14x 速くなった**のは想定外。連結自体は `Rc<str>` で 1 回余分に
+  コピーするので不利なはずだが、同じループ内のリテラル読み・`len()` 引数束縛の利得が上回った。
+  ＝「文字列を作る」より「文字列を運ぶ」方が多いというワークロードの性質が出ている。
+- **dict キーが最大（1.51x）**。`DictKey` を一緒に変えなければここは伸びなかった。
+- 数値ベンチ（[bench_field_access.ar](examples/bench/bench_field_access.ar)）は HEAD 1.021s → 1.075s で
+  ノイズ水準（§7.2 の投影どおり Value 操作以外には効かない）。
+- `size_of::<Value>()` は **32 バイトのまま**（`String` 24B → `Rc<str>` 16B と縮んだが最大変種は別）。
+  回帰防止に単体テスト `value_stays_32_bytes` を追加した。
+
+### 🔬 §7.4-3 文字列インターンは**消費者 0 件**（実測して保留）
+§7.4-3 は「属性名・メソッド名を `Rc<str>` + ポインタ比較」だが、**比較する相手が居ない**。
+
+- **属性読み**: R3 の `AttrCache` 命中時は `idx` 直読みで、名前引きは既に無い
+  （[eval/core.rs](src/interpreter/eval/core.rs) `eval_attr`。`field_index.get(attr)` は `debug_assert_eq!` の中だけ＝release では消える）。
+- **メソッド呼び出し**: IC 命中時も `class.methods.get(method_name)` が残るが、これは
+  `HashMap` 引きであってポインタ比較に置き換わる形ではない（潰すなら IC に解決済みメソッドを載せる別施策）。
+
+**判定に使った実測**（[bench_name_hash.ar](examples/bench/bench_name_hash.ar)）:
+名前の**長さだけ**を変えた同形状のコードを比べた。文字列ハッシュはキー長に比例するので、
+名前引きが効いているなら長い名前が遅くなるはず。
+
+| | 8 文字名 | 60 文字名 | 差 |
+|---|---:|---:|---:|
+| 属性読み | 0.0717 s | 0.0726 s | +1.3%（ノイズ） |
+| メソッド呼び出し | 0.1709 s | 0.1714 s | +0.3%（ノイズ） |
+
+**差が出ない ＝ 名前引きは支配項に含まれていない。** #11 R2-c・#14・#15b と同じ
+「消費者が居るか」の基準で保留とした。メソッド呼び出しの残コストは名前ではなく
+呼び出し機構（#12・~630ns/call）側にある。
+
+### 検証
+- `cargo build` 警告 0 ／ `cargo test` **697 緑**（`value_stays_32_bytes` を 1 件追加）／
+  clippy **増分 0**（50 件で HEAD と同数・内訳も同一）／
+  `compare_vm_modes.ps1` **identical 42 / differing 0** ／ `scan_examples.ps1` **FAIL 0** ／
+  `dump_native_ir.ps1` 代表 6 モジュール **IR byte-identical**。
+- 変更規模: 47 ファイル。`Value::Str` 参照 304 サイト。
+- 追加した例題: [bench_string.ar](examples/bench/bench_string.ar)（A/B 基準）／
+  [bench_name_hash.ar](examples/bench/bench_name_hash.ar)（#15-3 の判定プローブ）／
+  [async_string_share.ar](examples/async/async_string_share.ar)（`deep_clone` の回帰検知）。
+  前 2 つは [bench.ps1](bench.ps1) に登録済み。
+
+### 次にここを触るなら
+- `Value::Type(String)` / `Value::Trait(String)` / `Value::Protocol(String)` も同じ形で `Rc<str>` にできるが、
+  これらは**生成頻度も clone 頻度も低い**（型値・trait 値を変数に入れて回すコードは稀）。着手前に件数を測ること。
+- 文字列連結が支配的なワークロードでは `Rc<str>` は 1 回余分にコピーする。
+  もし将来そこが問題になるなら、対象は §7.4-3 ではなく「連結結果を `String` のまま持てる表現」の検討になる。
+
+---
+
+## #15d 実行経路で「解決済み」判定を活かす（完了 2026-08-11）
+
+### 着手前に再現した「実際の誤り」
+計画書の指示どおり**先に例題で再現**してから直した。結果、**想定より重い欠陥**だった。
+
+**(1) 組み込みがユーザーの束縛を横取りする** — モジュール最上位で `let repr = my_fn` としても
+組み込みが呼ばれる。実測で **6 件**（`print` / `next` / `zip` / `enumerate` / `getenv` / `repr`）。
+`len` / `id` はグローバル登録済みで `let` 自体が弾かれるため対象外。
+
+**(2) トレースバックが `<anonymous>`** — しかも **`--vm=off` と `--vm=auto` で出力が食い違っていた**
+（off=`in <anonymous>` / auto=`in boom`）。単なる不親切ではなく**モード間の不一致**。
+
+### ⚠ 根本原因は「`res` を見れば済む」ではなかった
+計画書は「`res` で組み込み振り分けを判定できる」と書いていたが、**`res` だけでは判定できない**。
+
+`Resolution::Unresolved` は「**シャドウが無い**」を意味しない。リゾルバが処理するのは
+**トップレベル関数の本体だけ**で、モジュール最上位・テンプレート本体・合成 AST は常に `Unresolved`。
+（#15 の調査で「最上位は丸ごと `Unresolved`」と実測済み。）
+つまり `Unresolved` へ限定する既存のゲートは、**最も壊れている場所を素通しする**構造だった。
+実際、関数本体（`Resolution::Local`）でのシャドウは修正前から正しく動いていた。
+
+→ 判定は `res` ではなく**実際の束縛**を見る。VM の
+`is_vm_builtin(name) && !slots.contains_key(name)` と同じ規則に揃えた。
+
+### 実装
+- `Interpreter::builtin_is_shadowed` / `builtin_is_shadowed_global` を新設（[scope.rs](src/interpreter/scope.rs)）。
+  `get_var` はクローンしないので判定は参照だけで済む。
+- ツリーウォーク: 組み込み振り分けの前に `builtin_is_shadowed` を見る（[eval/calls.rs](src/interpreter/eval/calls.rs)）。
+- トレースバック名: `call_name` を `res` 非依存にした（同ファイル）。
+- VM: `Op::CallBuiltin` がグローバル側のシャドウを実行時に見る（[vm/run.rs](src/vm/run.rs)）。
+  ローカルはコンパイル時に `slots.contains_key` で除外済みなので、実行時はグローバルだけでよい。
+
+### ⚠ `Value::Type` を除外しないと `len(py_obj)` が壊れる（途中で踏んだ罠）
+`register_builtin_globals`（[built_in_types.rs](src/interpreter/built_in_types.rs)）は
+**`len` を `Value::Type("len")` としてグローバルに置いている**（ネイティブの `cb_get_global("len")` 用）。
+素直に「グローバルに束縛があればシャドウ」と判定すると、`len()` が組み込み経路から
+`call_type_by_name_evaled` へ逸れる。そちらには **`Value::PyObject` のアームが無い**ので
+`len(py_obj)` が `TypeError` になり、組み込み経路を保つ VM 側とも食い違う
+（エラー文言も `takes exactly one argument` vs `takes exactly 1 argument` で違う）。
+→ **`Value::Type(t)` で `t == name` のものはシャドウとみなさない**（＝組み込み登録そのもの）。
+
+### 🐛 VM 側にも鏡像のバグがあった（例題を書いて初めて出た）
+ツリーウォークだけ直した時点で `nested -> user:from-fn`(off) / `'from-fn'`(auto) と食い違った。
+VM の `slots.contains_key(name)` は**コンパイル中の関数のローカル slot しか見ない**ため、
+**グローバルのシャドウを取りこぼす**。上記の `Op::CallBuiltin` 側の検査で解消。
+
+### 実測（シャドウ検査のコスト・best-of-3）
+組み込み呼び出しだけのループ（`len(s)` ×3／400k 回・他に何もしない極端な形）:
+
+| 経路 | 修正前 | #15d | 差 |
+|---|---:|---:|---:|
+| 最上位（ツリーウォーク） | 0.1573 s | 0.1728 s | **+9.8%** |
+| 関数内（VM `CallBuiltin`） | 0.1373 s | 0.1507 s | **+9.8%** |
+
+標準ベンチ（field_access・bench_string）は誤差水準で変化なし。
+**この 10% は「組み込み呼び出しが実行時間のほぼ全て」という人工的な条件でのみ出る。**
+
+### 💭 フラグでコストを消す案は採らなかった
+「どこかで組み込み名が束縛されたか」を `bool` で持てば検査をほぼ無料にできるが、
+**束縛を作る全経路（`declare_var`・`insert`・import・デバッガ宣言…）でフラグを立てる不変条件**が生まれ、
+1 箇所の漏れが**沈黙する正しさのバグ**になる。標準ベンチで差が出ない以上リターンが小さく、
+「高リスク低リターンは保留」の基準に従って見送った。組み込み呼び出し支配のワークロードが
+実際に問題化したときに再評価する。
+
+### 🔍 副産物: `compare_vm_modes.ps1` は stderr を比較していない
+[compare_vm_modes.ps1](compare_vm_modes.ps1) は stderr を `$tmpErr` にリダイレクトしているが
+**読み出して比較しているのは stdout だけ**。トレースバックは stderr に出るため、
+(2) のモード不一致は 45 例題を回しても検出されなかった。
+→ 新タスク候補: **stderr も byte-identical 比較の対象に含める**（既存の差分がどれだけ出るかは未調査）。
+
+### 検証
+- `cargo build` 警告 0 ／ `cargo test` **697 緑** ／ clippy **50 件で増分 0** ／
+  `compare_vm_modes.ps1` **identical 45 / differing 0** ／ `scan_examples.ps1` **FAIL 0** ／
+  `dump_native_ir.ps1` 代表 6 モジュール **IR byte-identical**（codegen は非変更）。
+- 例題: [builtin_shadow.ar](examples/basics/builtin_shadow.ar)（最上位・関数本体・非シャドウの 3 系統）／
+  [traceback_frame_names.ar](examples/exceptions/traceback_frame_names.ar)。
+  ⚠ 同じ名前を外側と内側の両方で宣言することはできない（`already declared in an accessible scope`）ので、
+  例題は名前を分けてある。
+
+---
+
+## #20 off/auto 比較に stderr と `_error` 例題を追加（完了 2026-08-11）
+
+### 動機
+[compare_vm_modes.ps1](compare_vm_modes.ps1) は stderr を `$tmpErr` へリダイレクトしながら
+**読み出していたのは stdout だけ**だった。トレースバックは stderr に出るので、
+#15d-2 の「off=`<anonymous>` / auto=`boom`」というモード不一致が **45 例題を素通り**した。
+この系列の不変条件（off/auto byte-identical）を検査するはずの仕組みに穴が開いていた。
+
+### 2 段に分けた理由（着手前の実測）
+| 測定 | 結果 |
+|---|---|
+| 45 例題の stderr は既に一致しているか | **45 一致 / 0 不一致**（＝スクリプト改修だけなら即通る） |
+| そのうち stderr が**空でない**もの | **4 件のみ**（intersection / mustbe / cpp_struct_ptr / swd_nested_runner） |
+| 除外されていた `_error` 例題 20 件の内訳 | 静的エラー 11 ／ **実行時トレースバック 9** |
+
+→ **stderr 比較を足すだけ（20-a）では歯が立たない**（4 例題しか発火しない）。
+トレースバックを実際に踏むのは `_error` の実行時系 9 件で、そこが除外されていたのが本質。
+よって `_error` の取り込み（20-b）まで含めて 1 タスクとした。
+
+### 実装
+- `Invoke-Example` が `[PSCustomObject]@{ Out; Err }` を返すようにし、**両ストリームを個別に比較**。
+  差分表示は食い違ったストリームだけ出す（`[DIFF:stderr] runtime_error.ar` の形）。
+- 例題選択から `_error` / `__errors` の除外を外した。**静的エラー系も含めてよい** —
+  型検査は実行前に走るので両モードで自明に一致し、誤検出しない。名前リストの保守も不要になる。
+- 旧挙動へ戻す `-SkipErrorExamples` を用意（45 例題・stderr 4 件で従来どおり動作を確認）。
+- **`examples that produced stderr: N` を常時表示**。0 なら stderr 比較が一度も発火していない＝
+  検査に歯が無い状態なので、気づけるようにした（今回まさにそれを見落としていたため）。
+
+### 効果
+| | 変更前 | #20 |
+|---|---:|---:|
+| 比較例題数 | 45 | **68** |
+| stderr を出した例題 | 4 | **27** |
+
+### 🧪 負の対照で検知力を確認した（推測ではない）
+修正を 1 つずつ戻して、**実際に落ちること**を確かめた:
+
+| 戻した修正 | 検知結果 |
+|---|---|
+| #15d-2（traceback 名） | **`[DIFF:stderr] runtime_error.ar`** で検出 |
+| #15d-1（組み込み横取り） | **`[DIFF:stdout] builtin_shadow.ar`** で検出 |
+
+変更前のスクリプトは #15d-2 を検出できなかったので、**この 2 件はいずれも新規に獲得した検知力**。
+
+### 検証
+- `cargo build` 警告 0 ／ `cargo test` **697 緑** ／
+  `compare_vm_modes.ps1` **identical 68 / differing 0** ／ `-SkipErrorExamples` で **45 / 0**（旧挙動）／
+  `scan_examples.ps1` **FAIL 0**。
+- PS 5.1 のため BOM 付き UTF-8 で保存（日本語コメントあり）。構文は `PSParser::Tokenize` で確認。
+
+### 次にここを触るなら
+`examples that produced stderr` が減ったら、**エラー経路の例題が減った＝検知力が落ちた**サイン。
+#22（呼び出しディスパッチ再構成）はエラー文言とトレースバックを最も壊しやすいので、
+この数字を着手前後で比べること。
+
+---
+
+## 保留・未着手タスクの調査記録（計画書から移設）
+
+計画書側は「事実＋手法」を 1 行で持ち、判断の根拠となる調査結果はここに置く。
+
+### V-E 本体（op→Span の汎用行テーブル）— 一部対応 2026-07-27／完全版は保留
+**【一部対応 2026-07-27／完全版は保留】** 完全版（op→span 行テーブル＋VM ディスパッチループの停止判定＋停止フレームの
+buffer ローカルを REPL から名前参照する経路）は大規模のため保留。代わりに**デバッグ中（`DBG_MODE != Inactive`）は
+VM を無効化しツリーウォークに委ねる暫定対応**を実施（`dbg_active()` を `vm_eligible` に追加）。これにより
+`--vm=auto` でも would-be-VM 関数へステップイン（文単位停止・変数参照）が `--vm=off` と byte-identical に動作する。
+完全な VM ネイティブ行テーブルは、対話デバッグの実効速度が問題化した場合にのみ着手する（現状は不要）。
+
+### V-F 最適化 — superinstruction のみ実施 2026-07-27
+**【一部対応 2026-07-27】superinstruction を実施**: `local <op> local` → `BinLocalLocal`、`local <op> リテラル`
+→ `BinLocalConst`（コンパイラが融合 emit・意味論不変=`apply_bin_fast` 委譲）。算術支配ループで auto ~1.15x。
+**残り（保留）**: peephole（Jump 除去等はジャンプ先再マップが要り中規模）・単型算術命令（型注釈依存で要検討）・
+**R0-A エスケープ解析は #12 のフレームモデル前提のため #12 とセットで保留**。
+
+### #10 import モジュール Chunk — 保留 2026-07-27（高コスト・低効果）
+(a) モジュール本体は定義文（fn/class/gen/import）が支配的で VM コンパイラが全て bail →「本体一括 Chunk」には
+**定義文の VM オペコード化**が必要。(b) top-level 変数はグローバルだが VM に **`StoreGlobal` op が無い**（slot ベース）。
+名前ベース（`LoadName`）で回避すると**ツリーウォークと同コスト＝速度向上ゼロ**。(c) ホットコードは関数内で既に
+VM 化済み、モジュール top-level は一回きりの初期化＋定義が主で実効メリット小。着手時は「グローバル変数実行モード
+＋全定義文オペコード化」の大規模拡張が要る点を織り込むこと。
+
+### #12 R0-A 明示フレームスタック — 保留（ただし残る最大の速度余地）
+**【保留。ただし 2026-08-11 時点で「残る最大の速度余地」はここ】**
+呼び出し機構（bind／フレーム構築・~630ns/call）が支配項として残っており、#2 の R0-A エスケープ解析もこれが前提。
+一方**統一目的には寄与しない**（ランタイムの記憶域の変更であって AST 解決注釈の追加ではなく、
+ネイティブ経路はインタプリタのフレームを使わない）。速度を追う判断をしたときに着手する。
+
+### #15d 実行経路で「解決済み」判定を活かす — 未着手（#15c から派生）
+#15c ではインタプリタ実行経路の **18 サイトを `res: Resolution::Unresolved` に限定**して
+旧挙動を保存した。だが本来は解決済みも受けたほうが正しい箇所がある:
+- `eval_builtin_ident_call`（[builtins.rs](src/interpreter/eval/builtins.rs)）は
+**名前だけで組み込みへ振り分けシャドウ検査が無い**。`res` を見れば
+「ローカル/グローバルに解決済み＝組み込みではない」と静的に判定でき、
+VM 側の `is_vm_builtin(name) && !slots.contains_key(name)` と同じ健全性が
+ツリーウォークにも入る（現在は名前引きの結果に依存している）。
+- トレースバック表示名（`call_name`）は解決済み呼び先を `"<anonymous>"` にしている。
+解決済みも名前を出したほうが親切だが、**stdout が変わるので
+`compare_vm_modes.ps1` の期待値と例題の出力を洗い直す必要がある**。
+いずれも**意味論の変更**なので、着手時は「現状のどれが実際に誤っているか」を
+先に例題で再現してから直すこと（#15b で使った計測優先の型）。
+
+### #17 FFI 境界の型表現 — 未着手
+「スタブが宣言した型」を根拠に動くため、**スタブが型を持たない/持てない箇所には効かない**。その 2 つを本タスクで扱う。
+- **(17-a) C/C++ の `void*` に専用型を用意する**。現状 `void*` は Arrow の `int` へ落ちる
+（[imports/mod.rs](src/parser/imports/mod.rs) の `ctype_to_tl_str`）。型タグが「int である」以上を語らないため
+**静的にも動的にも守れない**（動的検査を足しても静的型と同じことしか言えない）。
+不透明ハンドル専用の型を導入して、任意の整数との相互代入を静的に禁じる。
+さらに踏み込むなら出所・生存期間の追跡だが、まずは型の分離まで。
+- **(17-b) JS スタブの型付け**。`import[js-proc]` は `.ars` スタブがあれば読むが、現状は型を持たないため
+境界検査が実質無効。**基本はすべて `Any`** とし、**`.d.ts` があればそれを使って `.ars` を生成**する。
+`Any` は検査不能として素通しされるので、`.d.ts` がある分だけ静的にも動的にも締まる。
+
+### #18 順序比較の食い違い — 完了 2026-08-10
+型検査の `ordered_comparable` は 4 演算子すべてで `(int,float)` 混在と `(str,str)` を許可していたのに、
+実行時 `apply_binop` は `<`/`>` の混在と int/float 同士しか実装しておらず、
+**検査は通るのに実行時 TypeError** になっていた。実行時を検査器の仕様に合わせて 8 アーム追加。
+例題 [comparison_matrix.ar](examples/basics/comparison_matrix.ar)。
+
+---
+
+## 実装メモ（プラン記述からの差分・追記）
+- **例外は「静的例外テーブル」ではなく実行時ハンドラスタック**: `run` が `Vec<Handler{handler_ip, stack_len}>` を持ち、
+  ディスパッチループが `Err` を捕捉してオペランドを巻き戻し landing pad へ跳ぶ。§5.2 の SETUP_TRY/POP_TRY 通りだが
+  Chunk に exception_table は持たない。`RAISE_SENTINEL` は interpreter 境界の規約として残置（VM 内制御はジャンプ）。
+- **Chunk 実体**: `Chunk { code, consts, names, attr_caches, spans, local_names, n_locals }`。§5.1 の compiler/ サブ分割
+  （stmt/expr/control）は行わず単一 `compiler.rs`。`spans` が行テーブル（Raise/Call の位置）を兼ねる。frame.rs も未分離
+  （フレームは共有バッファ `vm_stack` の `base..base+n_locals`）。
+- **組み込み呼び出し**: print/range/len を評価済み引数で呼ぶ `CallBuiltin` + `eval_builtin_evaled`（§5.2 の CALL_NATIVE とは別に純粋組み込みを VM 化）。
+- **Chunk キャッシュのキー**: `Rc::as_ptr(fn_val)` は**テンプレート実体化の一時 fn_val でアドレス再利用**して古い Chunk を誤用する潜在バグがあった。
+  `(Weak<FnValue>, Chunk)` にして `upgrade()` 失敗＝別関数を検出し再コンパイル（リークなし）。
+- **V-E メソッドトレースバック**: ツリーウォーク（`eval_method_call`）がメソッド呼び出しの call_span を渡さず degraded なので、
+  VM も `call_span=None` に合わせて byte-identical を優先（関数呼び出しは span を渡す）。
+- **デバッガ REPL**: §2.3/§3.4-C の「名前引きエスケープハッチ」を `LoadName`/`DeclareName` op ＋ `compile_debug`（`debug_mode`）で実装。
+  停止スコープの生変数を名前で参照。メソッド/添字/制御フローはツリーウォークへフォールバック。
+- **強制バイトコード未達**: デュアルモード継続中のため、§1.4 のスレッドローカル4本＋センチネル2種はツリーウォークがまだ使用（実削除は D2 時）。
+
+---
+
+
+---
+
 ## この記録の使いどころ
 
 **見積もりが外れた事例**が最も価値がある。同じ判断ミスを繰り返さないために残してある。

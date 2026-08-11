@@ -129,9 +129,9 @@ let a = classify(5)
 let b = classify(-3)
 let c = classify(0)
 ";
-    assert!(matches!(run_get(src, "a"), Value::Str(ref s) if s == "positive"));
-    assert!(matches!(run_get(src, "b"), Value::Str(ref s) if s == "negative"));
-    assert!(matches!(run_get(src, "c"), Value::Str(ref s) if s == "zero"));
+    assert!(matches!(run_get(src, "a"), Value::Str(ref s) if &**s == "positive"));
+    assert!(matches!(run_get(src, "b"), Value::Str(ref s) if &**s == "negative"));
+    assert!(matches!(run_get(src, "c"), Value::Str(ref s) if &**s == "zero"));
 }
 
 /// loop_yield_list_from_for_expr のテスト。

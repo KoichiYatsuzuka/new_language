@@ -39,7 +39,7 @@ impl Interpreter {
         // cs-dll / cs-proc bridge dispatch: check class_vars for bridge path markers.
         let class_name = class.name.clone();
         if let Some(Value::Str(bp)) = class.class_vars.get("__cs_bridge_path__") {
-            let bp_path = std::path::PathBuf::from(bp.clone());
+            let bp_path = std::path::PathBuf::from(&**bp);
             let evaled = self.eval_call_args(call_args)?;
             let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
             if let Some(bridge) = crate::interpreter::cs_dll_runtime::get_bridge(&bp_path) {
@@ -55,7 +55,7 @@ impl Interpreter {
             }
         }
         if let Some(Value::Str(pp)) = class.class_vars.get("__cs_proc_path__") {
-            let pp_path = std::path::PathBuf::from(pp.clone());
+            let pp_path = std::path::PathBuf::from(&**pp);
             let evaled = self.eval_call_args(call_args)?;
             let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
             let handle = crate::interpreter::cs_proc_runtime::call_constructor(&pp_path, &class_name, &arg_vals)

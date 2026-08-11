@@ -113,7 +113,7 @@ impl Interpreter {
                     return Some(Err("TypeError: repr() takes exactly one argument".to_string()));
                 }
                 let val = args.into_iter().next().unwrap();
-                Some(self.repr_val(&val).map(Value::Str))
+                Some(self.repr_val(&val).map(Value::str))
             }
             "id" => {
                 if args.len() != 1 {
@@ -159,9 +159,11 @@ impl Interpreter {
                             self.type_name(&other)
                         )))
                     }
-                    None => String::new(),
+                    None => Rc::from(""),
                 };
-                Some(Ok(Value::Str(std::env::var(&name).unwrap_or(default))))
+                Some(Ok(Value::str(
+                    std::env::var(&*name).unwrap_or_else(|_| default.to_string()),
+                )))
             }
             _ => None,
         }
@@ -269,7 +271,7 @@ impl Interpreter {
                     Ok(v) => v,
                     Err(e) => return Some(Err(e)),
                 };
-                Some(self.repr_val(&val).map(Value::Str))
+                Some(self.repr_val(&val).map(Value::str))
             }
             "range" => {
                 let evaled: Result<Vec<_>, _> = args.iter().map(|a| self.eval(a.expr())).collect();
@@ -537,9 +539,11 @@ impl Interpreter {
                         Err(e) => return Some(Err(e)),
                     }
                 } else {
-                    String::new()
+                    Rc::from("")
                 };
-                Some(Ok(Value::Str(std::env::var(&name).unwrap_or(default))))
+                Some(Ok(Value::str(
+                    std::env::var(&*name).unwrap_or_else(|_| default.to_string()),
+                )))
             }
             "parse_ar" => {
                 if args.is_empty() || args.len() > 2 {
@@ -569,11 +573,12 @@ impl Interpreter {
                         Err(e) => return Some(Err(e)),
                     }
                 } else {
-                    String::new()
+                    Rc::from("")
                 };
-                let source = source.strip_prefix('\u{FEFF}').map(str::to_string).unwrap_or(source);
-                let tokens = crate::lexer::Lexer::new(&source, &*path).tokenize();
-                let source_dir = std::path::Path::new(&path)
+                let source: &str = source.strip_prefix('\u{FEFF}').unwrap_or(&source);
+                let path: &str = &path;
+                let tokens = crate::lexer::Lexer::new(source, path).tokenize();
+                let source_dir = std::path::Path::new(path)
                     .parent()
                     .map(|p| p.to_path_buf());
                 let stmts = match crate::parser::Parser::new(tokens, source_dir).parse_program() {

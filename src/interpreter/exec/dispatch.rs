@@ -216,7 +216,7 @@ impl Interpreter {
                                     let mut new_cls = cls.deep_clone();
                                     new_cls.class_vars.insert(
                                         "__cs_bridge_path__".to_string(),
-                                        Value::Str(bp_str.clone()),
+                                        Value::str(bp_str.clone()),
                                     );
                                     *val = Value::Class(std::rc::Rc::new(new_cls));
                                 }
@@ -276,7 +276,7 @@ impl Interpreter {
                                         let mut new_cls = cls.deep_clone();
                                         new_cls.class_vars.insert(
                                             "__cs_proc_path__".to_string(),
-                                            Value::Str(pp_str.clone()),
+                                            Value::str(pp_str.clone()),
                                         );
                                         *val = Value::Class(std::rc::Rc::new(new_cls));
                                     }

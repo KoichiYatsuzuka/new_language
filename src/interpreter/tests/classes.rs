@@ -32,7 +32,7 @@ fn test_class_init_sets_field() {
 fn test_class_method_call() {
     let src = "class Greeter:\n    fn greet(self) -> str:\n        return \"hello\"\nlet g = Greeter()\nlet r = g.greet()\n";
     if let Value::Str(s) = run_get(src, "r") {
-        assert_eq!(s, "hello");
+        assert_eq!(&*s, "hello");
     } else {
         panic!();
     }
@@ -307,7 +307,7 @@ fn test_trait_field_read_via_class_method() {
         panic!("expected int for v");
     }
     if let Value::Str(s) = run_get(src, "t") {
-        assert_eq!(s, "hi");
+        assert_eq!(&*s, "hi");
     } else {
         panic!("expected str for t");
     }
@@ -349,7 +349,7 @@ fn test_trait_only_required_fields_no_class_fields() {
         "let n = w.get_name()\n",
     );
     if let Value::Str(s) = run_get(src, "n") {
-        assert_eq!(s, "button");
+        assert_eq!(&*s, "button");
     } else {
         panic!("expected str for n");
     }
