@@ -45,10 +45,20 @@ impl<'a> GenCtx<'a> {
                 (r, Ty::Handle)
             }
 
-            Expr::Ident(name) => {
-                if self.locals.contains_key(name.as_str()) {
+            e if ident_name(e).is_some() => {
+                let name = ident_name(e).unwrap();
+                // 解決済みローカル参照は slot 索引で引く（#11 R2-a′）。
+                // **slot 表に載っているときだけ**この経路に入る。未登録なら以降の
+                // 従来分岐（名前引き → module_fn → グローバル）へそのまま落とす。
+                if let Expr::LocalRef { slot, .. } = e {
+                    if matches!(self.locals_by_slot.get(*slot as usize), Some(Some(_))) {
+                        let slot = *slot;
+                        return self.load_var_by_slot(slot, "");
+                    }
+                }
+                if self.locals.contains_key(name) {
                     self.load_var(name)
-                } else if self.module_fns.contains(name.as_str()) {
+                } else if self.module_fns.contains(name) {
                     // Intra-module fn reference: fetch as global
                     let bytes  = name.as_bytes();
                     let ptr    = self.str_const(bytes);
@@ -56,6 +66,12 @@ impl<'a> GenCtx<'a> {
                     let r      = self.call_cb(CB_GET_GLOBAL, &[ptr, format!("i32 {len}")]);
                     (r, Ty::Handle)
                 } else {
+                    // `_fast` 生成中に、平坦化したパラメータの値そのものを要求された。
+                    // このまま出すと「存在しないグローバル」を引く不正コードになるので
+                    // 変種を破棄する（`typed_failed` と同じ扱い）。
+                    if self.fast_mode && self.fast_flattened.contains(name) {
+                        self.fast_failed = true;
+                    }
                     let bytes = name.as_bytes();
                     let ptr   = self.str_const(bytes);
                     let len   = bytes.len() as i32;
@@ -76,7 +92,7 @@ impl<'a> GenCtx<'a> {
 
             Expr::Call { func, args, .. } => {
                 // Cell built-ins: __make_cell / __get_cell / __set_cell
-                if let Expr::Ident(n) = func.as_ref() {
+                if let Some(n) = ident_name(func.as_ref()) {
                     if n == "__make_cell" || n == "__get_cell" || n == "__set_cell" {
                         let arg_vals: Vec<(String, Ty)> = args.iter()
                             .map(|a| self.gen_expr(a.expr()))
@@ -84,7 +100,7 @@ impl<'a> GenCtx<'a> {
                         let handles: Vec<String> = arg_vals.iter()
                             .map(|(v, vt)| { let h = self.to_handle(v, *vt); format!("i64 {h}") })
                             .collect();
-                        return match n.as_str() {
+                        return match n {
                             "__make_cell" => {
                                 let init = handles.first().cloned().unwrap_or("i64 0".to_string());
                                 let r = self.call_cb(CB_MAKE_CELL, &[init]);
@@ -107,13 +123,13 @@ impl<'a> GenCtx<'a> {
                 }
                 // ── typed モード: _typed 同士の直接呼び出し（status 伝播） ─────
                 if self.typed_mode {
-                    if let Expr::Ident(name) = func.as_ref() {
-                        if self.typed_ok.contains(name.as_str())
-                            && !self.locals.contains_key(name.as_str())
+                    if let Some(name) = ident_name(func.as_ref()) {
+                        if self.typed_ok.contains(name)
+                            && !self.locals.contains_key(name)
                         {
-                            if let Some((ptys, rty)) = self.typed_sigs.get(name.as_str()).cloned() {
+                            if let Some((ptys, rty)) = self.typed_sigs.get(name).cloned() {
                                 if args.len() == ptys.len() {
-                                    let name = name.clone();
+                                    let name = name.to_string();
                                     return self.gen_typed_call(&name, args, &ptys, rty);
                                 }
                             }
@@ -124,16 +140,16 @@ impl<'a> GenCtx<'a> {
                     return ("0".to_string(), Ty::Handle);
                 }
                 // ── Typed intra-module direct function calls ──────────────────
-                if let Expr::Ident(name) = func.as_ref() {
-                    if self.module_fns.contains(name.as_str())
-                        && !self.locals.contains_key(name.as_str())
+                if let Some(name) = ident_name(func.as_ref()) {
+                    if self.module_fns.contains(name)
+                        && !self.locals.contains_key(name)
                     {
-                        let ret_ty = self.fn_sigs.get(name.as_str())
+                        let ret_ty = self.fn_sigs.get(name)
                             .map(|s| s.ret).unwrap_or(Ty::Handle);
 
                         if ret_ty == Ty::Float {
                             // Fast path: _impl returns double — no arena save/compact/boxing.
-                            let mutabilities = self.fn_sigs.get(name.as_str())
+                            let mutabilities = self.fn_sigs.get(name)
                                 .map(|s| s.param_mutabilities.clone());
                             let arg_exprs: Vec<(String, Ty)> = args.iter()
                                 .map(|a| self.gen_expr(a.expr())).collect();
@@ -169,8 +185,10 @@ impl<'a> GenCtx<'a> {
                 // ── Typed intra-module method calls on known class instances ──
                 if let Expr::Attr { object, attr, .. } = func.as_ref() {
                     let class_name = match object.as_ref() {
-                        Expr::Ident(n) if n == "self" => self.current_class.clone(),
-                        Expr::Ident(n) => self.param_classes.get(n.as_str()).cloned(),
+                        e if ident_name(e) == Some("self") => self.current_class.clone(),
+                        e if ident_name(e).is_some() => {
+                            self.param_classes.get(ident_name(e).unwrap()).cloned()
+                        }
                         _ => None,
                     };
                     if let Some(cls) = &class_name {
@@ -181,7 +199,10 @@ impl<'a> GenCtx<'a> {
                             if ret_ty == Ty::Float {
                                 // Preferred: _fast variant — passes pre-read field values as
                                 // scalars; zero callbacks and LLVM-inlineable pure arithmetic.
-                                if self.fast_fns.contains(&sym) {
+                                // 破棄された `_fast` 変種は選ばない（生成側と条件を揃える）。
+                                if self.fast_fns.contains(&sym)
+                                    && !self.discarded_fast.contains(&sym)
+                                {
                                     if let Some(fast_args) = self.build_fast_call_args(object, args) {
                                         let r = self.fresh_reg();
                                         self.ec(&format!("{r} = call double @{sym}_fast({fast_args})"));
@@ -228,11 +249,11 @@ impl<'a> GenCtx<'a> {
                 }
                 // Also check single-level preread for "self.attr" and param class attrs.
                 let preread_key = match object.as_ref() {
-                    Expr::Ident(n) if n == "self" && self.current_class.is_some() => {
+                    e if ident_name(e) == Some("self") && self.current_class.is_some() => {
                         Some(format!("self.{attr}"))
                     }
-                    Expr::Ident(n) if self.param_classes.contains_key(n.as_str()) => {
-                        Some(format!("{n}.{attr}"))
+                    e if ident_name(e).is_some_and(|n| self.param_classes.contains_key(n)) => {
+                        Some(format!("{}.{attr}", ident_name(e).unwrap()))
                     }
                     _ => None,
                 };
@@ -535,7 +556,7 @@ impl<'a> GenCtx<'a> {
                     let subj_r = self.fresh_reg();
                     self.ec(&format!("{subj_r} = load i64, ptr {subj_al}"));
                     match &arm.pattern {
-                        MatchPattern::Case(Expr::Ident(w)) if w == "_" => { self.br(&body_blk); }
+                        MatchPattern::Case(e) if ident_name(e) == Some("_") => { self.br(&body_blk); }
                         MatchPattern::Case(pat) => {
                             let (pv, pt) = self.gen_expr(pat);
                             let ph = self.to_handle(&pv, pt);
@@ -737,8 +758,8 @@ impl<'a> GenCtx<'a> {
     pub(super) fn build_fast_call_args(&mut self, object: &Expr, args: &[CallArg]) -> Option<String> {
         // Determine receiver param name
         let recv_name: &str = match object {
-            Expr::Ident(n) if n == "self" => "self",
-            Expr::Ident(n) => n.as_str(),
+            e if ident_name(e) == Some("self") => "self",
+            e if ident_name(e).is_some() => ident_name(e).unwrap(),
             _ => return None,
         };
 
@@ -764,12 +785,16 @@ impl<'a> GenCtx<'a> {
         for call_arg in args {
             let expr = call_arg.expr();
             let arg_class = match expr {
-                Expr::Ident(n) if n == "self" => self.current_class.as_deref().map(|s| s.to_string()),
-                Expr::Ident(n) => self.param_classes.get(n.as_str()).cloned(),
+                e if ident_name(e) == Some("self") => {
+                    self.current_class.as_deref().map(|s| s.to_string())
+                }
+                e if ident_name(e).is_some() => {
+                    self.param_classes.get(ident_name(e).unwrap()).cloned()
+                }
                 _ => None,
             };
             if let Some(ac) = arg_class {
-                let arg_name = match expr { Expr::Ident(n) => n.as_str(), _ => return None };
+                let arg_name = match ident_name(expr) { Some(n) => n, None => return None };
                 let afields = self.class_fields_ord.get(&ac)?.clone();
                 for (field_name, field_ty) in &afields {
                     let key = format!("{arg_name}.{field_name}");
@@ -808,8 +833,10 @@ impl<'a> GenCtx<'a> {
             // If the method was compiled in this module, call its _impl directly —
             // no CB_CALL_METHOD overhead, no NATIVE_METHODS table lookup.
             let class_name = match object.as_ref() {
-                Expr::Ident(n) if n == "self" => self.current_class.clone(),
-                Expr::Ident(n) => self.param_classes.get(n.as_str()).cloned(),
+                e if ident_name(e) == Some("self") => self.current_class.clone(),
+                e if ident_name(e).is_some() => {
+                    self.param_classes.get(ident_name(e).unwrap()).cloned()
+                }
                 _ => None,
             };
             if let Some(cls) = &class_name {
@@ -863,9 +890,9 @@ impl<'a> GenCtx<'a> {
         }
 
         // Intra-module direct call
-        if let Expr::Ident(name) = func {
-            if self.module_fns.contains(name.as_str()) && !self.locals.contains_key(name.as_str()) {
-                let mutabilities = self.fn_sigs.get(name.as_str())
+        if let Some(name) = ident_name(func) {
+            if self.module_fns.contains(name) && !self.locals.contains_key(name) {
+                let mutabilities = self.fn_sigs.get(name)
                     .map(|s| s.param_mutabilities.clone());
                 let call_args: Vec<String> = arg_exprs.iter().enumerate()
                     .map(|(i, (v, vt))| {
@@ -894,8 +921,8 @@ impl<'a> GenCtx<'a> {
         // Fast path: function-typed param with a cached trampoline pointer.
         // Loads one local ptr instead of the three-instruction ArCallbacks GEP chain,
         // letting LLVM hoist the load out of loops and keep it in a register.
-        if let Expr::Ident(name) = func {
-            if let Some(tp_al) = self.fn_param_trampolines.get(name.as_str()).cloned() {
+        if let Some(name) = ident_name(func) {
+            if let Some(tp_al) = self.fn_param_trampolines.get(name).cloned() {
                 let (fn_h_val, fn_h_ty) = self.gen_expr(func);
                 let fn_h = self.to_handle(&fn_h_val, fn_h_ty);
                 let handles: Vec<String> = arg_exprs.iter()

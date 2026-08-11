@@ -1556,6 +1556,11 @@ impl Compiler {
                 let s = u16::try_from(*slot).ok()?;
                 self.emit(Op::LoadLocal(s));
             }
+            // 解決済みグローバル参照（R2-b）。リゾルバが「最上位宣言かつ非シャドウ」と
+            // 確定した読み取りなので、slots 走査も builtin 判定も要らず直接 LoadGlobal。
+            Expr::GlobalRef { name, .. } => {
+                self.emit_load_global(name);
+            }
             // Ident はパラメータ名のときのみローカル読み（それ以外＝グローバル/組み込みは非対応）。
             // デバッグモードでは停止スコープからの名前引き（LoadName）。
             Expr::Ident(name) => {
@@ -1668,6 +1673,18 @@ impl Compiler {
                         let mask = self.compile_call_args(args)?;
                         self.emit(Op::Call(args.len() as u16, mask, ni, site));
                     }
+                } else if let Expr::GlobalRef { name, .. } = func.as_ref() {
+                    // 解決済みグローバル関数呼び出し（R2-b）。
+                    // 分類はリゾルバ済みなので builtin/slots の判定は不要。
+                    // ただしデバッグモードは停止スコープの名前引きに合わせる。
+                    let ni = self.add_name(name);
+                    if self.debug_mode {
+                        self.emit(Op::LoadName(ni));
+                    } else {
+                        self.emit_load_global(name);
+                    }
+                    let mask = self.compile_call_args(args)?;
+                    self.emit(Op::Call(args.len() as u16, mask, ni, site));
                 } else if let Expr::LocalRef { slot, name } = func.as_ref() {
                     // 解決済みローカル関数値の呼び出し。
                     let s = u16::try_from(*slot).ok()?;

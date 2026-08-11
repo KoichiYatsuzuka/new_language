@@ -84,6 +84,7 @@ impl Interpreter {
                 .get_val(name)
                 .ok_or_else(|| format!("NameError: '{name}' is not defined")),
             Expr::LocalRef { name, slot } => self.eval_local_ref(name, *slot),
+            Expr::GlobalRef { name, cache } => self.eval_global_ref(name, cache),
             Expr::DebugVar(name) => self
                 .dbg_vars
                 .get(name)
@@ -216,6 +217,46 @@ impl Interpreter {
                      runtime index says {:?}",
                     scope.slot_of(name)
                 );
+                return Ok(var.get_value());
+            }
+        }
+        self.get_val(name)
+            .ok_or_else(|| format!("NameError: '{name}' is not defined"))
+    }
+
+    /// 解決済みグローバル参照（`Expr::GlobalRef`）の読み取り（Phase R / R2-b）。
+    ///
+    /// リゾルバが「プログラム最上位で宣言され、この関数内でシャドウされない名前」と
+    /// 確定したノードにだけ付く。`scopes[0]` の slot index を AST ノードのキャッシュへ
+    /// `(slot_epoch, index)` で焼き、以後はスコープ鎖の名前走査を配列 1 回に置き換える。
+    ///
+    /// **解決結果を AST に置く**のが要点で、VM は同じノードを見て `LoadGlobal` を出す。
+    /// `slot_epoch` は `freeze` による降格などで進むので、失効時は名前引きへ戻る。
+    pub(crate) fn eval_global_ref(
+        &self,
+        name: &str,
+        cache: &crate::ast::SlotCache,
+    ) -> Result<Value, String> {
+        if let Some(idx) = cache.get(self.slot_epoch) {
+            if let Some(var) = self.scopes[0].slot(idx) {
+                debug_assert_eq!(
+                    self.scopes[0].slot_of(name),
+                    Some(idx),
+                    "GlobalRef slot mismatch for '{name}'"
+                );
+                return Ok(var.get_value());
+            }
+        }
+        // 未充填・失効時は名前で引き直してキャッシュを更新する。
+        if let Some(idx) = self.scopes[0].slot_of(name) {
+            // ローカル側にシャドウが無いことはリゾルバが保証しているが、
+            // 保証が崩れた場合に誤読しないよう、デバッグビルドで通常解決と突き合わせる。
+            debug_assert!(
+                self.scopes[self.frame_floor..].iter().all(|sc| !sc.contains_key(name)),
+                "GlobalRef '{name}' is shadowed by a local at runtime"
+            );
+            if let Some(var) = self.scopes[0].slot(idx) {
+                cache.fill(self.slot_epoch, idx as u32);
                 return Ok(var.get_value());
             }
         }

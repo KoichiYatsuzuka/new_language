@@ -38,7 +38,7 @@ impl Parser {
             })
             .collect();
 
-        let (abs_path, is_compiled) = candidates
+        let (mut abs_path, mut is_compiled) = candidates
             .iter()
             .find(|(p, _)| p.exists())
             .cloned()
@@ -54,6 +54,34 @@ impl Parser {
                     paths
                 )
             })?;
+
+        // ── `.arc` の陳腐化検査（#14 の「ABI ハッシュ照合」を、実際に起きる食い違いへ適用）──
+        //
+        // `.arc` は**ソースを埋め込んで**おり、存在すると `.ar` より優先される。
+        // そのため `.ar` を編集しても再コンパイルするまで一切反映されず、しかも
+        // **警告も出ずに古い答えを返す**（実測: `offset` を 100→999 に直しても古い 101.0 が出た）。
+        //
+        // 埋め込みソースと隣の `.ar` を突き合わせ、食い違ったら**ソース側を正**として `.ar` を使う。
+        // §6.3 の「不一致ならフォールバック（再解決できなければ明示エラー）」を、
+        // 回復手段（＝ソースがそこにある）が常にある本ケースへ当てはめたもの。
+        if is_compiled {
+            let src_sibling = abs_path.with_extension("ar");
+            if let (Ok((_, embedded)), Ok(on_disk)) = (
+                crate::partial_compiler::read_tlc_source(&abs_path),
+                std::fs::read_to_string(&src_sibling),
+            ) {
+                if embedded != on_disk {
+                    eprintln!(
+                        "Warning: compiled module '{}' is out of date with '{}'; \
+                         using the source (re-run `--compile` to refresh the .arc)",
+                        abs_path.display(),
+                        src_sibling.display()
+                    );
+                    abs_path = src_sibling;
+                    is_compiled = false;
+                }
+            }
+        }
 
         let cache_key = ("ar-auto".to_string(), abs_path.clone());
 

@@ -517,7 +517,7 @@ fn compile_module(path: &str) {
     let tokens = Lexer::new(&source, path).tokenize();
     let source_dir = std::path::Path::new(path).parent().map(|p| p.to_path_buf());
 
-    let stmts = Parser::new(tokens, source_dir)
+    let mut stmts = Parser::new(tokens, source_dir)
         .parse_program()
         .unwrap_or_else(|e| {
             eprintln!("ParseError: {e}");
@@ -536,6 +536,12 @@ fn compile_module(path: &str) {
         }
         std::process::exit(1);
     }
+
+    // Phase R / R1 のローカル slot 解決を**コンパイル経路でも**走らせる（#11 R2-a）。
+    // 実行経路（run_file）は以前から通していたが `--compile` は通しておらず、
+    // ネイティブ codegen だけが「名前で自前解決した AST」を見ていた。
+    // ここを揃えることで、三経路が同じ解決済み AST（`Expr::LocalRef`）を消費する。
+    interpreter::resolver::resolve_program(&mut stmts);
 
     match partial_compiler::compile(&source, &stmts, std::path::Path::new(path), &annotations) {
         Ok((tlc, tls)) => {

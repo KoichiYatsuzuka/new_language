@@ -450,6 +450,10 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
         Expr::Ident(name) => Expr::Ident(name.clone()),
         // テンプレート関数はリゾルバの対象外なので LocalRef は現れないが、網羅性のため保持する。
         Expr::LocalRef { name, slot } => Expr::LocalRef { name: name.clone(), slot: *slot },
+        // cache は `SlotCache::clone` が空を返すので、実体化ごとに解決し直される。
+        Expr::GlobalRef { name, cache } => {
+            Expr::GlobalRef { name: name.clone(), cache: cache.clone() }
+        }
         Expr::List(items) => Expr::List(items.iter().map(|e| subst_expr(e, type_map)).collect()),
         Expr::Attr { object, attr, span, node_id, .. } => Expr::Attr {
             object: Box::new(subst_expr(object, type_map)),

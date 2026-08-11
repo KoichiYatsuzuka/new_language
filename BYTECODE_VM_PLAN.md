@@ -82,6 +82,108 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 **Phase R の残り**
 11. **R2 グローバル slot の前倒し**（`SlotCache` 実行時キャッシュ → AST 展開時解決, §4.3）。
+    **【2026-08-11 R2-a 完了 / R2-b・R2-c は残り】**
+
+    速度ではなく**「AST 展開の共通化」の観点で評価**した結果、グローバル解決は
+    **同じ問いに 4 つの独立した機構**が並んでいると判明した:
+    | 経路 | 機構 | 解決の置き場所 |
+    |---|---|---|
+    | ツリーウォーク（変数読み） | `get_val(name)` でスコープを名前走査 | **どこにも無い**（毎回引き直し） |
+    | ツリーウォーク（呼び先） | `NativeCallCache.1: SlotCache`（R4） | AST ノード。ただし**呼び出し専用** |
+    | VM | `Op::LoadGlobal` ＋ `Chunk.global_caches` | **Chunk 側**の別 SlotCache |
+    | ネイティブ | `CB_GET_GLOBAL(name_ptr, len)` | **持たない**（文字列でコールバック） |
+
+    さらに調査で、**ネイティブは R1（ローカル解決）すら消費していない**ことが判明
+    （`grep -rn "LocalRef" src/partial_compiler/` が 0 件・自前の `locals` HashMap で再導出）。
+    到達度は「型＝3/3（#16 c-3 で達成）／ローカル＝2/3／グローバル＝0/3」だった。
+
+    **✅ R2-a（完了）— ネイティブが R1 の解決済み AST を消費する**
+    - `--compile` 経路が `resolver::resolve_program` を通っていなかった（実行経路のみ）。
+      そのため codegen が見る AST には `LocalRef` が無く、**通すと `expr_eligible` が
+      `Expr::LocalRef` を非適格と判定してネイティブ化が黙って止まる**状態だった。
+    - `ident_name(&Expr) -> Option<&str>`（[mod.rs](src/partial_compiler/llvm_codegen/mod.rs)）を追加し、
+      `partial_compiler` 内の **`Expr::Ident` パターンマッチ 28 箇所を全て両変種対応**へ置換。
+      そのうえで `--compile` にリゾルバを追加（[main.rs](src/main.rs)）。
+    - **検証**: 代表 6 モジュールの生成 IR が **byte-identical**。
+      1 箇所でも取りこぼせば関数が非適格になって IR が変わる（＝関数が消える）ため、
+      これが「28 箇所に漏れが無い」ことの強い証拠になる。
+    - **注意**: リゾルバは関数単位で解決を諦める（可変長引数・未対応の宣言文・メソッド/入れ子/
+      テンプレートは対象外）ので、**「`Ident` だからローカルでない」とは言えない**。
+      分類は従来の `locals` 表と併用のまま（c-3 の `annotated.or(legacy)` と同じ形）。
+
+    **✅ R2-b（完了 2026-08-11）— グローバル解決を AST へ置き、ツリーウォークと VM が共有**
+    - **`Expr::GlobalRef { name, cache: SlotCache }`** を追加（`LocalRef` のグローバル版・[ast.rs](src/ast.rs)）。
+      リゾルバが「プログラム最上位で宣言され、その関数内で一度も束縛されない」名前を書き換える。
+    - **固定 index 化は避けた**。`slot_epoch` の一括無効化モデルと衝突するため、
+      **解決結果の置き場所を AST に移す**ことだけを行い、キャッシュは従来どおり epoch 検証つき。
+      これで `freeze` による `SlotCell` → `Immutable` 降格も安全（epoch が進み失効する）。
+    - **消費側**: ツリーウォークは `eval_global_ref`（キャッシュ→`scopes[0]` slot 直読み、
+      失効時は名前引きへフォールバック）。VM は `GlobalRef` を見て `emit_load_global` を出す
+      （builtin 判定・`slots` 走査が不要になる）。ネイティブは `ident_name` 経由で受理。
+    - **⚠️ 安全条件の落とし穴（実際に踏んだ）**: 型検査は `let`/`mut` によるグローバルの再宣言を
+      入れ子ブロックでも禁じるが、**`for` ループのターゲットは同名で束縛できる**。
+      `base`（引数＋本体直下宣言）には for ターゲットが入らないため、最初の実装では
+      `collection.ar` の `let x = {1,2,3}`（最上位・set）を `fn sum_ints` の `for x in items:` が
+      覆っているケースを取りこぼし、set を読んで `TypeError: Add: int and set` で落ちた。
+      → `collect_bound_names`（入れ子ブロック・ブロック式まで降りて**束縛されうる名前を全て収集**）を
+      追加し、1 つでも該当する名前は書き換えない保守的な規則にした。
+    - **検証**: `cargo test` 696 緑・例題スキャン FAIL 0・off/auto 41 例題一致・
+      代表 6 モジュールの IR byte-identical。
+      例題 [examples/basics/global_resolution.ar](examples/basics/global_resolution.ar)
+      （素直なグローバル読み／グローバル関数呼び出し／for ターゲットによるシャドウ 2 種／mut グローバル）。
+
+    **✅ R2-a′（完了 2026-08-11）— ネイティブが slot 索引でローカルを管理する**
+    R2-a はネイティブに `LocalRef` を**受理**させただけで、内部は名前引き
+    （`locals: HashMap<String, (alloca_reg, Ty)>`）のままだった。ここを slot 索引にする。
+    - **採番は共有し、型は共有しない**。検討の結果、VM の `slot_type` は
+      `Stmt::Let(name, ty, _)` の**型注釈文字列**を持つのに対し、ネイティブは
+      **型注釈を捨てて式の生成型を採用**している（[stmt.rs:13-22](src/partial_compiler/llvm_codegen/stmt.rs#L13)）。
+      `let d2 = p.x * p.x` は VM 側 `None` / ネイティブ側 `Ty::Float` で、
+      **ネイティブの方が情報量が多い**（c-3 の 1.73x はこの伝播が効いた結果）。
+      よって型テーブルの流用は後退になるため、**共有するのは slot 同一性のみ**とした。
+    - **codegen は slot を採番しない**。`harvest_local_slots`
+      （[mod.rs](src/partial_compiler/llvm_codegen/mod.rs)）が関数本体の `Expr::LocalRef` を走査して
+      **リゾルバの割り当てを収穫**する。再導出しないので番号がずれようがない。
+    - `alloca_var` が slot 表（`locals_by_slot: Vec<Option<(reg, Ty)>>`）にも登録し、
+      `LocalRef` 読みは `load_var_by_slot` で index 直引き。
+      slot 表に無い場合（リゾルバが諦めた関数・codegen の合成ローカル＝
+      preread の `%_prf_*`・flat-list 一時変数）は従来の名前引きへ落ちる。
+    - **検証**: 代表 6 モジュールの IR **byte-identical**（slot 経路が名前引きと同一結果である証拠）。
+      `AR_ANNOT_DIFF=1` の `AnnotLocals: slot_indexed_reads` で実際に使われていることも確認
+      （physics 70 / partial_call_overhead 40 / typed_abi 16 …）。
+      `cargo test` 696 緑・例題スキャン FAIL 0・off/auto 42 例題一致。
+
+    **⏸ R2-c（保留・2026-08-11 調査）— ネイティブのグローバル参照は実質存在しなかった**
+    着手前に、生成 IR 中の `CB_GET_GLOBAL`（ArCallbacks field 15）を代表 6 モジュールで数えたところ
+    **合計 3 箇所**しかなかった（physics / flat_bench_module / partial_call_overhead_module /
+    geometry は **0 件**）。理由はモジュール内関数呼び出しが LLVM の直接呼び出しに落ちているため
+    （`module_fns` の typed 直呼び）で、**グローバル参照そのものがホットパスに出てこない**。
+    しかも中身を調べると:
+    - `typed_abi_module` の 1 件 = `ValueError`（**例外クラス名の解決**でありユーザーグローバルではない）
+    - `swd_nested` の 2 件 = **下記の codegen 不具合**（パラメータをグローバルと誤認）
+
+    → 「グローバル記憶域の index 配列化」は**消費者が居ない**ため保留。
+      #14 と同じ構図（機構の前提が現状のコード形では成立していない）。
+      モジュール間ネイティブ直リンク（#14 本体）を入れる時に併せて再評価する。
+
+    **🐛 R2-c の調査で見つけた codegen 不具合（修正済み）**
+    `_fast` ABI はクラス型パラメータを**フィールド単位のスカラ**へ平坦化するため、
+    本体がそのパラメータを**値そのもの**として使うと alloca が無い。
+    codegen の変数読みは「`locals` に無い → グローバル」と分類するので、
+    `Particle.__init__` の `self.pos = pos` が **存在しないグローバル `pos` を
+    `CB_GET_GLOBAL` で引く不正コード**になっていた（`_impl` は正しく、`_fast` のみ誤り。
+    当該モジュールでは `_fast` の呼び元が無く潜在化していた）。
+    - **最初の対策（撤回）**: 「値そのものとして使うパラメータがあれば `_fast` を作らない」
+      という事前判定を入れたが、**正当なケースまで潰した**。
+      `total_energy` の `a.potential(b)` は呼び先も `_fast` を持つので
+      **平坦なまま転送できる**（`Body__potential_fast(...)` を直接呼ぶ）。
+      physics の IR が 12KB 縮んだことで気づいた。
+    - **採った対策**: `typed_failed` と同じ**生成時検出**。`_fast` 生成中に
+      平坦化済みパラメータの値読みがグローバル経路へ落ちたら `fast_failed` を立てて
+      **その変種を破棄**し、呼び出し側も `discarded_fast` で選択から外す。
+    - **検証**: `swd_nested` の不正な `_fast` だけが消え（CB_GET_GLOBAL 2 → 0）、
+      **physics を含む他 5 モジュールの IR は byte-identical**。
+      `swd_nested_runner.ar` の出力（34 / 2）も不変。
     **【一部対応 2026-07-27／本体は保留】** VM の `LoadGlobal` に **op レベルの runtime index cache**
     （`Chunk.global_caches` の `SlotCache`・`(slot_epoch, scopes[0] index)` を焼く）を追加し、グローバル変数読み・
     グローバル関数呼び出しの名前ハッシュ引きを索引直読みへ置換した。ただし**実測は ~2-3%**（グローバル名の
@@ -110,9 +212,38 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
     共有」が実現する。#12 ではなくこれが「AST 解決を低レベルへ押し込む」目的に直結する。
 
 **その他（§6・§7.4）**
-14. **§6 モジュール動的リンク**（ディスクリプタシンボル＋ABI ハッシュ照合）。**【保留 2026-07-27】** ネイティブ
-    `.arc` の動的リンク方式であり、「AST 解決の低レベル化・両経路統一」という当面の目的とは別軸（リンク時 ABI 照合）。
-    統一レバー #13 とは独立のため、モジュールモデル（#10/R2/#11 本体）着手時にまとめて扱う。
+14. **§6 モジュール動的リンク**（ディスクリプタシンボル＋ABI ハッシュ照合）。
+    **【2026-08-11 調査 → 大部分を保留・「照合」だけ別形で実装】**
+
+    着手前に §6 の 2 つの根拠を実測で確認したところ、**どちらも現時点では成立しない**と判明した。
+    - **性能根拠**: 現行 `.arc` のエクスポートは 1 モジュールあたり 3〜11 シンボル。
+      関数ごと `GetProcAddress` の総コストは §6.4 の表でも「小規模 ~0.1ms」であり、
+      ディスクリプタ機構を作って削るような支配項ではない。
+    - **ABI 照合の根拠**: **モジュール間のネイティブ直リンクが存在しない**。
+      `llvm_codegen` が直接呼ぶのは `module_fns`（＝自モジュール内の関数）だけで、
+      他モジュールの参照は `CB_GET_GLOBAL` などインタプリタのコールバック経由
+      （[expr.rs](src/partial_compiler/llvm_codegen/expr.rs)）。
+      したがって「モジュール A の .arc が見た B の ABI が変わる」という照合対象の辺がまだ無い。
+    → **ディスクリプタ＋エクスポート表＋ABI ハッシュの機構は、モジュール間ネイティブリンクを
+      実際に導入するときまで保留**（それが #10 のモジュール Chunk / 将来の直リンク設計と同時期になる）。
+
+    **一方で「照合」が本当に要る食い違いは実在した（実装済み）**:
+    `.arc` は**ソースを埋め込んで**おり、存在すると `.ar` より優先される。両者の一致を
+    確認していなかったため、`.ar` を編集しても再コンパイルするまで反映されず、
+    **警告なしに古い答えを返していた**（実測: `offset` の定数を 100→999 に直しても古い `101.0` が出た。
+    新規に足した関数は `AttributeError`）。
+    → import 時に「`.arc` の埋め込みソース」と「隣の `.ar`」を突き合わせ、
+      食い違えば**警告してソース側を使う**（[ar_modules.rs](src/parser/imports/ar_modules.rs)、
+      判定用に `read_tlc_source`＝ネイティブキャッシュを汚さない読み出しを追加）。
+      §6.3 の「不一致ならフォールバック、駄目なら明示エラー」を、
+      回復手段（ソースが隣にある）が常に存在する本ケースへ当てはめたもの。
+    - **照合の粒度はソース全文**。エクスポート表のハッシュでは**本体だけの変更を取りこぼす**
+      （上記 100→999 はシグネチャ不変）ため、意図的に全文比較にしてある。
+    - **リポジトリの `.arc` が実際に陳腐化していた**: 検査を入れたところ
+      `partial_call_overhead_module` / `swd_nested` / `typed_abi_module` の 3 件が古く、
+      ずっと古いコードを実行していた（examples 再編時のコメント差分）。再生成済み。
+      `examples/archived/` の 5 件は実行対象外なので放置。
+    - **例題**: [examples/interop/stale_arc_check.ar](examples/interop/stale_arc_check.ar)＋素材 `stale_arc/`。
 15. **§7.4-1 `Value::Str(String)` → `Rc<str>`** ／ **§7.4-3 文字列インターン**。
 
 **FFI 境界の型表現（新規・2026-08-10 昇格。#16 の境界検査の調査で「型検査では守れない」と判明した残り）**

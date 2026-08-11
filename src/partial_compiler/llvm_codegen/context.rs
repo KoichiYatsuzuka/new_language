@@ -42,6 +42,13 @@ impl<'a> GenCtx<'a> {
             typed_ok:              HashSet::new(),
             typed_sigs:            HashMap::new(),
             annotations,
+            name_to_slot:          HashMap::new(),
+            locals_by_slot:        Vec::new(),
+            slot_reads:            0,
+            fast_mode:             false,
+            fast_failed:           false,
+            fast_flattened:        HashSet::new(),
+            discarded_fast:        HashSet::new(),
             attr_stats:            AttrResolutionStats::default(),
             expr_stats:            HandleFallbackStats::default(),
         }
@@ -53,10 +60,10 @@ impl<'a> GenCtx<'a> {
     /// **自前の型再導出**（#16 段階(c) で置換対象）。受け手が `self` か、型注釈から
     /// クラスが判るパラメータのときしか解決できない。
     pub(super) fn field_ty(&self, object: &Expr, attr: &str) -> Option<Ty> {
-        let class_name = match object {
-            Expr::Ident(n) if n == "self" => self.current_class.as_deref(),
-            Expr::Ident(n) => self.param_classes.get(n.as_str()).map(|s| s.as_str()),
-            _ => None,
+        let class_name = match ident_name(object) {
+            Some("self") => self.current_class.as_deref(),
+            Some(n) => self.param_classes.get(n).map(|s| s.as_str()),
+            None => None,
         }?;
         self.class_fields.get(class_name)?.get(attr).copied()
     }
@@ -173,7 +180,7 @@ impl<'a> GenCtx<'a> {
     pub(super) fn emit_typed_raise(&mut self, exc_expr: &Expr) {
         let (type_name, msg): (String, String) = match exc_expr {
             Expr::Call { func, args, .. } => {
-                let Expr::Ident(name) = func.as_ref() else {
+                let Some(name) = ident_name(func.as_ref()) else {
                     self.typed_failed = true;
                     return;
                 };
@@ -185,9 +192,11 @@ impl<'a> GenCtx<'a> {
                         return;
                     }
                 };
-                (name.clone(), msg)
+                (name.to_string(), msg)
             }
-            Expr::Ident(name) => (name.clone(), String::new()),
+            e if ident_name(e).is_some() => {
+                (ident_name(e).unwrap().to_string(), String::new())
+            }
             _ => {
                 self.typed_failed = true;
                 return;
@@ -274,7 +283,28 @@ impl<'a> GenCtx<'a> {
         let t = llvm_ty(ty);
         self.ea(&format!("{reg} = alloca {t}, align 8"));
         self.locals.insert(name.to_string(), (reg.clone(), ty));
+        // リゾルバが slot を割り当てている名前なら slot 索引側にも載せる（#11 R2-a′）。
+        // 合成ローカル（preread の一時変数など）は slot を持たないので名前引きのみ。
+        if let Some(&slot) = self.name_to_slot.get(name) {
+            if let Some(e) = self.locals_by_slot.get_mut(slot as usize) {
+                *e = Some((reg.clone(), ty));
+            }
+        }
         reg
+    }
+
+    /// `Expr::LocalRef { slot }` の読み取り（#11 R2-a′）。
+    /// リゾルバの割り当てた slot で直接引き、未登録なら名前引きへフォールバックする
+    /// （リゾルバが解決を諦めた関数・合成ローカル）。
+    pub(super) fn load_var_by_slot(&mut self, slot: u32, name: &str) -> (String, Ty) {
+        if let Some(Some((ptr, ty))) = self.locals_by_slot.get(slot as usize).cloned() {
+            self.slot_reads += 1;
+            let t = llvm_ty(ty);
+            let r = self.fresh_reg();
+            self.ec(&format!("{r} = load {t}, ptr {ptr}"));
+            return (r, ty);
+        }
+        self.load_var(name)
     }
 
     pub(super) fn store_val(&mut self, ty: Ty, val: &str, ptr: &str) {

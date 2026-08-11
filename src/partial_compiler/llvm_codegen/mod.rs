@@ -112,11 +112,174 @@ fn collect_flat_leaves(
     leaves
 }
 
+/// 関数本体に現れる `Expr::LocalRef` から「名前 → slot」を収穫する（#11 R2-a′）。
+///
+/// **codegen は slot を採番しない**。Phase R/R1 のリゾルバが AST に書き込んだ割り当てを
+/// そのまま読み取るだけなので、VM・ツリーウォークと同一の slot 同一性を共有できる。
+/// リゾルバが解決を諦めた関数では収穫結果が空になり、従来の名前引きにフォールバックする。
+fn harvest_local_slots(body: &[Stmt]) -> HashMap<String, u16> {
+    fn walk_expr(e: &Expr, out: &mut HashMap<String, u16>) {
+        match e {
+            Expr::LocalRef { name, slot } => {
+                if let Ok(s) = u16::try_from(*slot) {
+                    out.insert(name.clone(), s);
+                }
+            }
+            Expr::BinOp { left, right, .. } => {
+                walk_expr(left, out);
+                walk_expr(right, out);
+            }
+            Expr::UnaryOp { operand, .. } => walk_expr(operand, out),
+            Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => walk_expr(object, out),
+            Expr::Cast { object, .. } => walk_expr(object, out),
+            Expr::MustBe { expr, .. } | Expr::IsType { expr, .. } => walk_expr(expr, out),
+            Expr::Subscript { object, index, .. } => {
+                walk_expr(object, out);
+                walk_expr(index, out);
+            }
+            Expr::Call { func, args, .. } => {
+                walk_expr(func, out);
+                for a in args {
+                    match a {
+                        CallArg::Positional(x) | CallArg::Keyword { value: x, .. } => {
+                            walk_expr(x, out)
+                        }
+                        CallArg::Variadic(xs) => {
+                            for x in xs {
+                                walk_expr(x, out);
+                            }
+                        }
+                    }
+                }
+            }
+            Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
+                for x in items {
+                    walk_expr(x, out);
+                }
+            }
+            Expr::Dict(pairs) => {
+                for (k, v) in pairs {
+                    walk_expr(k, out);
+                    walk_expr(v, out);
+                }
+            }
+            Expr::Block { stmts, .. } => walk_stmts(stmts, out),
+            Expr::IfExpr { branches, else_body, .. } => {
+                for (c, b) in branches {
+                    walk_expr(c, out);
+                    walk_stmts(b, out);
+                }
+                if let Some(b) = else_body {
+                    walk_stmts(b, out);
+                }
+            }
+            Expr::ForExpr { iter, body, .. } => {
+                walk_expr(iter, out);
+                walk_stmts(body, out);
+            }
+            Expr::WhileExpr { cond, body, .. } => {
+                walk_expr(cond, out);
+                walk_stmts(body, out);
+            }
+            Expr::MatchExpr { subject, arms, .. } => {
+                walk_expr(subject, out);
+                for a in arms {
+                    walk_stmts(&a.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_stmts(body: &[Stmt], out: &mut HashMap<String, u16>) {
+        for stmt in body {
+            match stmt {
+                Stmt::Let(_, _, e)
+                | Stmt::Const(_, _, e)
+                | Stmt::Mut(_, _, e)
+                | Stmt::Static(_, e, _)
+                | Stmt::Expr(e)
+                | Stmt::LoopYield(e)
+                | Stmt::Yield(e)
+                | Stmt::BlockReturn(e, _)
+                | Stmt::Return(Some(e)) => walk_expr(e, out),
+                Stmt::LetTuple { value, .. } => walk_expr(value, out),
+                Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => {
+                    walk_expr(value, out)
+                }
+                Stmt::AttrAssign { target, value }
+                | Stmt::AttrCompoundAssign { target, value, .. } => {
+                    walk_expr(target, out);
+                    walk_expr(value, out);
+                }
+                Stmt::If { branches, else_body } => {
+                    for (c, b) in branches {
+                        walk_expr(c, out);
+                        walk_stmts(b, out);
+                    }
+                    if let Some(b) = else_body {
+                        walk_stmts(b, out);
+                    }
+                }
+                Stmt::While { cond, body } => {
+                    walk_expr(cond, out);
+                    walk_stmts(body, out);
+                }
+                Stmt::For { iter, body, .. } => {
+                    walk_expr(iter, out);
+                    walk_stmts(body, out);
+                }
+                Stmt::Block(b) => walk_stmts(b, out),
+                Stmt::Match { subject, arms, .. } => {
+                    walk_expr(subject, out);
+                    for a in arms {
+                        walk_stmts(&a.body, out);
+                    }
+                }
+                Stmt::Try { body, handlers, finally_body } => {
+                    walk_stmts(body, out);
+                    for h in handlers {
+                        walk_stmts(&h.body, out);
+                    }
+                    if let Some(f) = finally_body {
+                        walk_stmts(f, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut out = HashMap::new();
+    walk_stmts(body, &mut out);
+    out
+}
+
+/// 変数参照式から名前を取り出す（#11 R2-a）。
+///
+/// Phase R/R1 のリゾルバは解決できたローカル読みを `Expr::Ident` → `Expr::LocalRef { name, slot }`
+/// へ書き換える。codegen はこれまで `Expr::Ident` しか見ておらず、リゾルバを通した AST では
+/// **式が非適格になってネイティブ化が黙って止まる**。両変種をここで吸収し、
+/// codegen が「リゾルバの出した解決済み AST」をそのまま受け取れるようにする。
+///
+/// なお `LocalRef` は「確実にローカル」というリゾルバの判定を意味するが、
+/// リゾルバは関数単位で解決を諦める（可変長引数・未対応の宣言文・メソッド/入れ子/テンプレート）ので、
+/// **`Ident` だからローカルでない、とは言えない**。分類は従来どおり `locals` 表も併用する。
+pub(super) fn ident_name(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Ident(n) => Some(n.as_str()),
+        Expr::LocalRef { name, .. } | Expr::GlobalRef { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
 /// ネストした属性アクセス式をドット区切りパス文字列に変換する。
 /// 例: `item.start.x` → `"item.start.x"`。変換できない場合は `None`。
 fn preread_path(expr: &Expr) -> Option<String> {
+    if let Some(n) = ident_name(expr) {
+        return Some(n.to_string());
+    }
     match expr {
-        Expr::Ident(n) => Some(n.clone()),
         Expr::Attr { object, attr, .. } => {
             let base = preread_path(object)?;
             Some(format!("{base}.{attr}"))
@@ -363,6 +526,29 @@ struct GenCtx<'a> {
     // 型検査が node-id 索引で焼いた解決型テーブル。`field_ty` などの自前型再導出を
     // これに置き換えていく。
     annotations: &'a AstAnnotations,
+    // ── ローカルの slot 索引（#11 R2-a′） ────────────────────────────────────
+    // `Expr::LocalRef { name, slot }` から**リゾルバの割り当てを収穫**した表。
+    // codegen が自前で採番し直すことはせず、AST に書かれた slot をそのまま権威とする。
+    // `locals`（名前引き）は残す: リゾルバが解決を諦めた関数と、codegen が作る
+    // 合成ローカル（preread の `%_prf_*`・flat-list 反復の一時変数など）は slot を持たない。
+    name_to_slot: HashMap<String, u16>,
+    locals_by_slot: Vec<Option<(String, Ty)>>,
+    /// slot 索引で解決したローカル読みの件数（診断用・`AR_ANNOT_DIFF=1`）。
+    slot_reads: usize,
+    // ── `_fast` 変種の生成状態（#11 R2-c の調査で見つかった不具合の対策）──
+    // `_fast` ABI はクラス型パラメータを**フィールド単位のスカラ**へ平坦化するので、
+    // 本体がそのパラメータを**値そのもの**として要求すると表現できない。
+    // 事前判定は誤って正当なケース（呼び先も `_fast` なので平坦なまま転送できる
+    // `a.potential(b)` など）まで潰してしまったため、`typed_failed` と同じく
+    // **生成中に検出して変種を破棄する**方式にした。
+    /// `_fast` 変種を生成中か。
+    fast_mode: bool,
+    /// `_fast` 生成中に平坦化済みパラメータの値そのものが要求された（＝変種を破棄する）。
+    fast_failed: bool,
+    /// このパラメータ名は `_fast` で平坦化されている（値としての読みは表現不能）。
+    fast_flattened: HashSet<String>,
+    /// 破棄した `_fast` 変種のシンボル（呼び出し側が選ばないようにする）。
+    discarded_fast: HashSet<String>,
     // 属性アクセスの型解決について、自前導出と注釈の一致状況（段階 c-2 の検証用）。
     attr_stats: AttrResolutionStats,
     // `Ty::Handle` へ落ちた式のうち注釈が具象型を持つものの内訳（段階 c-2 の検証用）。
@@ -477,7 +663,7 @@ fn expr_eligible(expr: &Expr) -> bool {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
         | Expr::Str(_) | Expr::Bool(_) | Expr::None | Expr::Undefined => true,
-        Expr::Ident(_) => true,
+        Expr::Ident(_) | Expr::LocalRef { .. } | Expr::GlobalRef { .. } => true,
         Expr::BinOp { left, right, .. } => expr_eligible(left) && expr_eligible(right),
         Expr::UnaryOp { operand, .. } => expr_eligible(operand),
         Expr::List(items) | Expr::Tuple(items) => items.iter().all(expr_eligible),
@@ -518,7 +704,7 @@ fn stmt_writes_param(stmt: &Stmt, param: &str) -> bool {
     match stmt {
         Stmt::AttrAssign { target, .. } | Stmt::AttrCompoundAssign { target, .. } => {
             if let Expr::Attr { object, .. } = target {
-                matches!(object.as_ref(), Expr::Ident(n) if n == param)
+                ident_name(object.as_ref()) == Some(param)
             } else { false }
         }
         Stmt::If { branches, else_body } =>
@@ -807,6 +993,7 @@ pub fn generate_llvm_module(
             "AnnotDiff(attr): agree={} conflict={} legacy_only={} annot_only={} neither={}",
             s.agree, s.conflict, s.legacy_only, s.annot_only, s.neither
         );
+        eprintln!("AnnotLocals: slot_indexed_reads={}", ctx.slot_reads);
         let e = &ctx.expr_stats;
         eprintln!(
             "AnnotDiff(handle-fallback with concrete annotation): attr={}i/{}f subscript={}i/{}f call={}i/{}f other={}i/{}f",

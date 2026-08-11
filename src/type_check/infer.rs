@@ -68,7 +68,9 @@ impl TypeChecker {
             // --- 識別子 ---
             // LocalRef はリゾルバ（型検査後に走る）が付ける解決済みローカル参照。
             // 型検査中に現れることはないが、網羅性のため Ident と同じく名前で引く。
-            Expr::Ident(name) | Expr::LocalRef { name, .. } => self
+            Expr::Ident(name)
+            | Expr::LocalRef { name, .. }
+            | Expr::GlobalRef { name, .. } => self
                 .lookup(name)
                 .map(|v| v.ty.clone())
                 .unwrap_or(InferredType::Unresolved),

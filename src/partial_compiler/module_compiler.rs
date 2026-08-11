@@ -140,6 +140,18 @@ pub fn native_lib_ext() -> &'static str {
     }
 }
 
+/// `.arc` に埋め込まれたソースだけを読む（**ネイティブキャッシュを汚さない**）。
+///
+/// `load_tlc` は埋め込み DLL を `NATIVE_CACHE` へ載せてしまうため、
+/// 「`.arc` が古いかどうか」を判定する目的には使えない（古いと判った後にキャッシュが残る＝
+/// 新しいソース × 古い DLL という最悪の組み合わせになる）。判定用にはこちらを使う。
+pub fn read_tlc_source(path: &Path) -> std::io::Result<(String, String)> {
+    let data = std::fs::read(path)?;
+    let (name, source, _native) = parse_tlc(&data)
+        .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidData, msg))?;
+    Ok((name, source))
+}
+
 /// Load a `.arc` file and return `(module_name, source_text)`.
 ///
 /// If the file is v1, the embedded native data is placed in the
