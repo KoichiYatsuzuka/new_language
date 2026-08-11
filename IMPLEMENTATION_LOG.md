@@ -896,6 +896,76 @@ VM の `slots.contains_key(name)` は**コンパイル中の関数のローカ�
 
 ---
 
+## #15e 実行経路の `res` ゲート一掃（完了 2026-08-11）
+
+### 判定に使った原則
+#15d で得た教訓を一文にすると:
+
+> **`res` は「どの記憶域から読むか」の最適化ヒントであって、「それが何を意味するか」の根拠ではない。**
+
+`Resolution::Unresolved` は「未解決」ではなく実質「**リゾルバの対象外＝どこに書かれたか**」を表す
+（対象はトップレベル関数の本体のみ。最上位・テンプレート本体・合成 AST は常に `Unresolved`）。
+これを意味論の判定に使うと、**同じコードが書かれた場所で挙動を変える**。
+
+この原則で 18 サイトを 2 分類し、**意味論側 13 サイトから `res` 条件を外した**。
+
+| 分類 | サイト | 対処 |
+|---|---|---|
+| **最適化ヒント（残す）** | R4 呼び先キャッシュ（[eval/calls.rs](src/interpreter/eval/calls.rs) 2 箇所） | そのまま。解決済みなら別経路で速く引けるので、条件付きで正しい |
+| **意味論（`res` を外す）** | [eval/native.rs](src/interpreter/eval/native.rs) 6 ／ [exec/mod.rs](src/interpreter/exec/mod.rs) 2 ／ [exec/vars.rs](src/interpreter/exec/vars.rs) 1 ／ [functions/args.rs](src/interpreter/functions/args.rs) 2 ／ `callee_display_name` 2 | 名前が欲しいだけなので `res` を問わない |
+
+### 🐛 実バグ 2 件（着手前に例題で再現・修正後に解消を確認）
+
+**(1) `mut → let` がコピーされない**（[exec/vars.rs](src/interpreter/exec/vars.rs)）
+```
+top    a = [1,2,3,4]  b = [1,2,3]      ← 最上位: 正しい
+in-fn  a = [1,2,3,4]  b = [1,2,3,4]    ← 関数内: b が a を共有（誤り）
+```
+`let b = a` は深いコピー＋freeze のはずが、関数本体では元変数の可変性を調べずに素通ししていた。
+off/auto 両方で同じ誤りなので `compare_vm_modes` では捕まらず、例題スキャンも通っていた。
+
+**(2) C/C++ の OutPtr 書き戻しが関数内で起きない**（[eval/native.rs](src/interpreter/eval/native.rs)）
+```
+top   n = 5.0      ← 最上位: 正しい
+in-fn n = 0.0      ← 関数内: 書き戻しされない（誤り）
+```
+`double* out` へ渡した `mut` 変数が、**関数本体からだと書き戻し登録（`out_wb`）に積まれない**。
+既存例題 [cpp_struct_ptr.ar](examples/interop/cpp_struct_ptr.ar) は (3) が最上位だったため通っていた。
+FFI の out パラメータが黙って機能しないという、外から見えにくい種類の欠陥。
+
+### 調べて「バグではなかった」もの（記録）
+- **`let` を書き込みポインタへ渡す拒否**（native.rs:40）: 関数内でも
+  **静的型検査が先に捕まえる**（`parameter 'out_len' of 'v3_norm' expects a mutable argument`）。
+  実行時チェックは二重の網であり、`res` で飛んでいても表に出なかった。
+- **クロージャ／async のキャプチャ**（`collect_refs_expr`）: `collect_referenced_names` は
+  `capture_env`（[exec/blocks.rs](src/interpreter/exec/blocks.rs)）と VM の async ブロックが使う。
+  `res` で名前を落とすとキャプチャ漏れになるが、**リゾルバが入れ子定義の本体と
+  `Stmt::AsyncAssign` に踏み込まない**ので現状は安全だった（resolver.rs に明記あり）。
+  ただしこれは**隠れた結合**で、#21 でリゾルバを広げると黙って壊れる。今回 `res` 条件を外して解いた。
+- **引数の可変性判定**（[functions/args.rs](src/interpreter/functions/args.rs)）: 既定が
+  `is_mutable = true`（＝保守的にコピー）なので取りこぼしても正しい。**最適化の取りこぼしのみ**。
+  ついでに条件を外したので、解決済みでもコピー省略が効くようになった。
+
+### 実測
+- `bench_field_access`: 1.045〜1.083 s（#15d 時点 1.014〜1.055 s）。**ノイズ〜微減**。
+  `res` を外したぶん名前引きが増えるのは「native 呼び出し・`mut→let` 代入・FFI エラー生成」に
+  限られ、いずれもホットループの本体ではない。
+- IR は **byte-identical**（codegen 非変更）。
+
+### 検証
+- `cargo build` 警告 0 ／ `cargo test` **697 緑** ／ clippy **50 件で増分 0** ／
+  `compare_vm_modes.ps1` **identical 69 / differing 0**（stderr 発火 27）／ `scan_examples.ps1` **FAIL 0**。
+- 例題: [mut_to_let_copy.ar](examples/basics/mut_to_let_copy.ar)（新規・list/dict・最上位と関数内）／
+  [cpp_struct_ptr.ar](examples/interop/cpp_struct_ptr.ar) にケース (4)「関数本体での OutPtr 書き戻し」を追加。
+- 不要になった `use crate::ast::Resolution;` を 4 ファイルから削除。
+
+### 次にここを触るなら
+残した 2 サイト（R4 呼び先キャッシュ）は**最適化なので `res` に依存してよい**が、
+「解決済みなら別経路で正しく処理される」という前提の上に立っている。#22-d で呼び先の同定を
+1 段に括るときに、この前提ごと構造で表現するのが本筋。
+
+---
+
 ## 保留・未着手タスクの調査記録（計画書から移設）
 
 計画書側は「事実＋手法」を 1 行で持ち、判断の根拠となる調査結果はここに置く。

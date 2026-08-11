@@ -1,6 +1,5 @@
 // eval/native.rs — ネイティブ(コンパイル済みモジュール)関数のディスパッチと呼び出し。
 
-use crate::ast::Resolution;
 use {
     std::sync::Arc,
     crate::ast::CallArg,
@@ -37,7 +36,7 @@ impl Interpreter {
             if *pp != PtrParam::MutPtr {
                 continue;
             }
-            if let Some(crate::ast::Expr::Ident { name, res: Resolution::Unresolved, .. }) = args.get(i).map(|a| a.expr()) {
+            if let Some(crate::ast::Expr::Ident { name, .. }) = args.get(i).map(|a| a.expr()) {
                 let is_mut = self.get_var(name).map(|v| v.is_mutable()).unwrap_or(false);
                 if !is_mut {
                     return Err(format!(
@@ -96,7 +95,7 @@ impl Interpreter {
                         (Value::Int(n), AbiTy::F64) => slots[i] = (*n as f64).to_bits(),
                         (_, AbiTy::Ptr { mutable, by_value, layout }) => {
                             let named_mut = match args.get(i).map(|a| a.expr()) {
-                                Some(crate::ast::Expr::Ident { name, res: Resolution::Unresolved, .. }) => {
+                                Some(crate::ast::Expr::Ident { name, .. }) => {
                                     self.get_var(name).map(|v| v.is_mutable())
                                 }
                                 _ => None,
@@ -127,7 +126,7 @@ impl Interpreter {
                                 Some(enc) => {
                                     out_locals[i] = enc;
                                     slots[i] = std::ptr::addr_of_mut!(out_locals[i]) as u64;
-                                    if let Some(crate::ast::Expr::Ident { name, res: Resolution::Unresolved, .. }) =
+                                    if let Some(crate::ast::Expr::Ident { name, .. }) =
                                         args.get(i).map(|a| a.expr())
                                     {
                                         out_wb.push((i, *width, name.clone()));
@@ -196,7 +195,7 @@ impl Interpreter {
                 if pp == PtrParam::MutPtr {
                     // Only do write-back when the argument is a named mut variable.
                     // Literals / expressions are passed read-only (no write-back needed).
-                    if let Some(crate::ast::Expr::Ident { name: n, res: Resolution::Unresolved, .. }) = args.get(i).map(|a| a.expr()) {
+                    if let Some(crate::ast::Expr::Ident { name: n, .. }) = args.get(i).map(|a| a.expr()) {
                         let h = crate::interpreter::native_api::push_handle_writeback(v.clone());
                         writebacks.push((n.clone(), h));
                         h
@@ -328,7 +327,7 @@ impl Interpreter {
                 }
                 (_, AbiTy::Ptr { mutable, by_value, layout }) => {
                     let named_mut = match arg.expr() {
-                        crate::ast::Expr::Ident { name, res: Resolution::Unresolved, .. } => {
+                        crate::ast::Expr::Ident { name, .. } => {
                             self.get_var(name).map(|v| v.is_mutable())
                         }
                         _ => None,
@@ -353,7 +352,7 @@ impl Interpreter {
                         Some(enc) => {
                             out_locals[i] = enc;
                             slots[i] = std::ptr::addr_of_mut!(out_locals[i]) as u64;
-                            if let crate::ast::Expr::Ident { name, res: Resolution::Unresolved, .. } = arg.expr() {
+                            if let crate::ast::Expr::Ident { name, .. } = arg.expr() {
                                 let is_mut =
                                     self.get_var(name).map(|v| v.is_mutable()).unwrap_or(false);
                                 if !is_mut {

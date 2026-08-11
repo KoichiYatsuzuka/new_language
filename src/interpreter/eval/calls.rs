@@ -762,9 +762,9 @@ impl Interpreter {
 /// 呼び先の表示名（FFI 境界検査のエラーメッセージ用）。`mod.fn` 形式を優先する。
 fn callee_display_name(func: &Expr) -> String {
     match func {
-        Expr::Ident { name: n, res: Resolution::Unresolved, .. } => n.clone(),
+        Expr::Ident { name: n, .. } => n.clone(),
         Expr::Attr { object, attr, .. } => match object.as_ref() {
-            Expr::Ident { name: base, res: Resolution::Unresolved, .. } => format!("{base}.{attr}"),
+            Expr::Ident { name: base, .. } => format!("{base}.{attr}"),
             _ => attr.clone(),
         },
         _ => "<callee>".to_string(),

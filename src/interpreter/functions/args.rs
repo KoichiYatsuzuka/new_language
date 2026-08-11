@@ -1,6 +1,5 @@
 // functions/args.rs — 呼び出し引数の評価と束縛: eval_call_args / bind_args / bind_args_relaxed。
 
-use crate::ast::Resolution;
 use {
     std::cell::RefCell, std::rc::Rc,
     crate::ast::{CallArg, Param},
@@ -31,7 +30,7 @@ impl Interpreter {
                 CallArg::Positional(e) => {
                     // Ident が let 変数を指す場合のみ is_mutable = false（コピー省略可）
                     let is_mutable = match e {
-                        Expr::Ident { name, res: Resolution::Unresolved, .. } => self.get_var(name)
+                        Expr::Ident { name, .. } => self.get_var(name)
                             .map(|v| v.is_mutable())
                             .unwrap_or(true),
                         _ => true,
@@ -40,7 +39,7 @@ impl Interpreter {
                 }
                 CallArg::Keyword { name, value } => {
                     let is_mutable = match value {
-                        Expr::Ident { name: vname, res: Resolution::Unresolved, .. } => self.get_var(vname)
+                        Expr::Ident { name: vname, .. } => self.get_var(vname)
                             .map(|v| v.is_mutable())
                             .unwrap_or(true),
                         _ => true,

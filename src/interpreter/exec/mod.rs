@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use crate::ast::{Expr, Stmt, TupleTarget, Resolution};
+use crate::ast::{Expr, Stmt, TupleTarget};
 
 /// `ar_config.json` の `javascript` セクションを読んで
 /// `(node_exe, bridge_script, bridge_root)` を返す。
@@ -82,7 +82,7 @@ fn extract_result_guard_call(cond: &Expr) -> Option<(String, bool)> {
             return None;
         }
         if let Expr::Attr { object, attr, .. } = func.as_ref() {
-            if let Expr::Ident { name: var_name, res: Resolution::Unresolved, .. } = object.as_ref() {
+            if let Expr::Ident { name: var_name, .. } = object.as_ref() {
                 match attr.as_str() {
                     "is_OK" => return Some((var_name.clone(), true)),
                     "is_ERR" => return Some((var_name.clone(), false)),
@@ -260,7 +260,7 @@ fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
 
 fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
     match expr {
-        Expr::Ident { name, res: Resolution::Unresolved, .. } => {
+        Expr::Ident { name, .. } => {
             out.insert(name.clone());
         }
         Expr::BinOp { left, right, .. } => {
