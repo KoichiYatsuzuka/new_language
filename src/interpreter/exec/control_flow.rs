@@ -59,7 +59,7 @@ impl Interpreter {
         for arm in arms {
             let matched = match &arm.pattern {
                 MatchPattern::Case(pattern_expr) => {
-                    if matches!(pattern_expr, Expr::Ident(n) if n == "_") {
+                    if matches!(pattern_expr, Expr::Ident { name: n, .. } if n == "_") {
                         true
                     } else {
                         let pattern_val = self.eval(pattern_expr)?;

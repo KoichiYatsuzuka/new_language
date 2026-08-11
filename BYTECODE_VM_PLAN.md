@@ -5,51 +5,107 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 > **この文書は単独で実装再開できることを目的とする**（`REFACTORING_HANDOFF.md` / `PHASE5_PLAN.md` と同じ引き継ぎ文書）。
 >
-> **読み方（トークン節約）**: 「実装状況」→ §0 → §2 → §4/§5/§6 → §10 までが**実装再開に必要**。
+> **読み方（トークン節約）**: まず冒頭の **🚩 次スレッドへの引き継ぎ**（現在地・次の候補・検証手順・落とし穴）。
+> それだけで再開できる。背景が要るときのみ「実装状況」→ §0 → §2 → §4/§5/§6 → §10。
 > ページ後半の `═══ 参照・根拠 ═══` 以降（§3 アーキテクチャ決定・§1 背景実測・§7 投影・§8 非目標・§9 未決）は
 > **決定済みの根拠／履歴**であり、通常は**読まなくてよい**。進捗の一次資料は [PHASE_R1_RESULTS.md](PHASE_R1_RESULTS.md)。
 
 ---
 
-## 実装状況（2026-07-26 時点）
+## 🚩 次スレッドへの引き継ぎ（2026-08-11・**ここだけ読めば再開できる**）
+
+### 現在地
+**#16（AST 型解決層）は完了**。三経路（ツリーウォーク／VM／ネイティブ）が同一の型解決注釈を消費する。
+続けて **#18**（順序比較の食い違い）、**#11 の R2-a/R2-a′/R2-b**（名前→記憶域の解決の共通化）、
+**#14 の一部**（`.arc` 陳腐化検査）、**#15b**（`Ident` の AST 表現再設計）まで完了。
+git の HEAD は `3bbfca9 "#11/14/18"`。**#15b と文書再編は未コミット**（ユーザー許可待ち）。
+
+**#15b の結論を先に**: 実装は完了し検証も全て緑だが、**消費者が 0 件**であることが実測で確定した
+（識別子読み 232 件中、型を落としているのは 40 件・その全件がハンドル表現の正しい型）。
+消費側への配線は行っていない。速度目的で再訪する価値は無い — 詳細は下記 #15b の項。
+
+### 統一の到達度（この系列の本来の目的）
+```
+                  ツリーウォーク   VM      ネイティブ
+型の解決               ✅          ✅        ✅   ← #16 c-3
+ローカルの解決         ✅          ✅        ✅   ← #11 R2-a / R2-a′
+グローバルの解決       ✅          ✅        —    ← #11 R2-b（ネイティブは参照自体がほぼ無く保留）
+```
+
+### 次にやる候補（推奨順）
+1. **py 組み込みモジュールのスタブ整備**（`time`/`math` 等）。
+   全例題 103 本の実測で `Unresolved` の発生源は BinOp 34% / Call 33% / **Ident 27%** / Attr 4%
+   （[annot_unresolved.ps1](annot_unresolved.ps1)）。**#15b で確定したとおり Ident の 27% は表現ではなく
+   検査器の解像度の問題**なので、効くのはスタブ整備の側。`time` は例題中で最頻出の py import。
+   `.pyi` 検索経路は既存（`load_python_interface_module`）だが `time` は stdlib に `.pyi` が無いため、
+   **同梱スタブ置き場を `python_search_dirs()` に足す**小前提がある。
+2. **#17-b JS スタブの型付け**（`Any` 基本・`.d.ts` があればスタブ生成）。
+   FFI 境界検査の機構は完成済みで、**型が入れば即座に効く**。独立・低リスク。ただし例題は 3 本のみ。
+3. **#17-a C/C++ `void*` の専用型**。現状 Arrow の `int` に落ち、静的にも動的にも守れない。
+4. **#12 R0-A 明示フレームスタック**。**残る最大の速度余地**（呼び出し機構 ~630ns/call）。
+   ただし統一目的には寄与しない。#2 のエスケープ解析の前提でもある。
+
+### 作業の進め方（この系列で有効だった型）
+- **推測せず先に計測する**。本系列では見積もりが何度も外れた
+  （c-2「効果あり」→実質デッドコード／c-3「効果小」→ 1.73x／(b)(i)「IC 削減」→ 真因は `Value` clone）。
+  診断フックを足して数字を見てから設計を決めること。
+- **検証は 4 点セット**: `cargo test`（696 緑）・`cargo clippy` 相当の警告 0・
+  [compare_vm_modes.ps1](compare_vm_modes.ps1)（off/auto byte-identical）・
+  [dump_native_ir.ps1](dump_native_ir.ps1)（代表 6 モジュールの IR 比較）。
+  **codegen を触るときは IR byte-identical が最強の検査**（1 箇所の取りこぼしで関数が非適格になり IR が変わる）。
+- **例題スキャン**も回す（[scan_examples.ps1](scan_examples.ps1)・タイムアウト付きで全例題を実行し失敗のみ列挙）。
+- 大きな変更の前後で **A/B 実測**する（同一ビルドで emit のみを切り替える）。
+- 速度効果が大きくなくても、コードやロジックの簡素化が見込めるのであれば、それをメリットとして認識する。
+
+### 検証・計測スクリプト（リポジトリ直下）
+| スクリプト | 用途 |
+|---|---|
+| [scan_examples.ps1](scan_examples.ps1) | 全例題をタイムアウト付きで実行し、失敗のみ理由付きで列挙 |
+| [compare_vm_modes.ps1](compare_vm_modes.ps1) | `--vm=off` / `--vm=auto` の stdout byte-identical 検証（ヒープアドレスは正規化） |
+| [dump_native_ir.ps1](dump_native_ir.ps1) | 代表 6 モジュールの生成 LLVM IR を保存（`.arc`/`.ars` は退避・復元） |
+| [annot_diff.ps1](annot_diff.ps1) | 注釈の充填状況・binop 特化の内訳・`Unresolved` の発生源を出力 |
+| [annot_unresolved.ps1](annot_unresolved.ps1) | 全例題を `AR_ANNOT_DIFF=1` で実行し `Unresolved` の発生源を式種別ごとに集計 |
+| [run_examples.ps1](run_examples.ps1) | 既存の素朴な例題ランナー（タイムアウトなし） |
+| [bench.ps1](bench.ps1) | ベンチ一式 |
+
+### 診断フック（環境変数）
+| 変数 | 効果 |
+|---|---|
+| `AR_DUMP_LL=<path>` | `--compile` 時に生成 LLVM IR を保存 |
+| `AR_ANNOT_DIFF=1` | 注釈の充填状況・binop 特化の内訳・`Unresolved` の発生源・slot 索引読みの件数・`AnnotIdent`（識別子読みの型落ち内訳・#15b） |
+| `AR_VM_DUMP=1` | VM の生成バイトコードを逆アセンブルして stderr へ |
+
+### 落とし穴（既知）
+- **PowerShell 5.1 は BOM 無し `.ps1` を ANSI として読む**。日本語コメント入りスクリプトは
+  UTF-8 **BOM 付き**で保存しないと構文エラーになる。`Set-Content` での Rust ソース書き換えも文字化けの原因
+  （`.NET` の `File.WriteAllText` + UTF8Encoding(false) を使う）。
+- **native exe の stderr を `2>&1` で受けると PS5.1 が ErrorRecord 化**して exit 0 でも失敗扱いになる。
+- `Start-Process -PassThru` の `ExitCode` は当てにならない。`System.Diagnostics.Process` を直接使う。
+
+---
+
+## 実装状況（2026-08-11 時点）
 
 各段の実装詳細・実測は [PHASE_R1_RESULTS.md](PHASE_R1_RESULTS.md)。off/auto の byte-identical を常時維持。
 
-### 完了 ✅
-1. **Phase R** — R0 フレーム隔離（`frame_floor`）／ R1 ローカル slot 化（`LocalRef`）／ R3 属性 IC（`AttrCache`）／
-   R4 呼び先解決 ／ メソッド IC ／ §7.4-2 `Value` サイズ削減（`JsProcFn` を Box 化・72→32B）。
-2. **Phase V-A** — VM 骨格（op/chunk/run/disasm）・算術・ローカル slot・制御フロー（if/while）・関数呼び出し・ローカル宣言。
-3. **Phase V-B** — メソッド本体の VM 化（`self` 対応）・属性書き込み `SET_ATTR`。
-4. **Phase V-C** — break/continue ジャンプ ／ ネスト局所の平坦 slot 化 ／ match 文 ／
-   **例外テーブル**（try/except/finally・raise・ハンドラスタック）／ **ブロック式**（block:/if/while/for/match 式 + block_return/loop_yield）。
-5. **Phase V-D** — for ループ（GET_ITER/FOR_ITER）／ 組み込み print/range/len（`CallBuiltin`）／ **Chunk キャッシュ健全化**（`Weak<FnValue>` キー）。
-6. **Phase V-E（実利部分）** — 呼び出し位置 span 伝搬でトレースバック行番号を復元（**全決定的例が off/auto byte-identical**）／
-   デバッグ名テーブル（`Chunk.local_names`）／ **デバッガ REPL のバイトコード実行**（停止スコープ名前引き `LoadName`/`DeclareName`・フォールバック付き）。
-7. **#5 添字・コレクションリテラル** — `obj[i]` 読み書き（`Subscript`/`SetIndex`）・list/tuple/set/dict リテラル
-   （`BuildList`/`BuildTuple`/`BuildSet`/`BuildDict`）を VM 化。`for` 変数が外側をシャドウする関数は bail（flat-slot 非対応）。
-8. **#4 メソッド呼び出し機構の軽量化** — VM 呼び出しの高速バインド経路（単純シグネチャは `bind_args` の
-   Vec 確保・名前 clone・`params.clone()`・copy/cast パスを飛ばし直接バッファへ束縛）。method_hot 1.13→1.61x・
-   method_body 1.22→1.64x。コピー意味論は不変（self deep_copy 省略は escape 健全性のため不採用）。
-9. **#6 その他組み込みの VM 化** — 純粋組み込み `next`/`repr`/`id`/`enumerate`/`zip`/`getenv` を `CallBuiltin`
-   （`eval_builtin_evaled`・enumerate/zip はコア共有）、登録済み型コンストラクタ（int/str/…）を通常の
-   `LoadGlobal`+`Call`（`call_type_by_name_evaled` へ委譲・グローバル shadow に健全）で対象化。enumerate/zip 支配 1.49x。
-10. **#7 テンプレート実体化の Chunk メモ化** — `(テンプレート, 型引数)` をキーに具体 `FnValue`/`GeneratorFnValue`
-    をメモ化（`subst_stmts` の clone-walk と Chunk 再コンパイルを初回のみに）。テンプレート関数支配で auto 5.9x
-    （従来は毎コール再コンパイルで VM がツリーウォークより遅い病理ケースだった）。テンプレートクラスは対象外（副作用）。
-11. **#8 ジェネレータ本体の VM 化** — `Yield` op で本体をバイトコード実行し `yield` を `GENERATOR_YIELDS` へ
-    eager 収集（意味論不変）。`vm_gen_chunks` キャッシュ。付随して `call_value_evaled` の `GeneratorFn` 呼び出し
-    ギャップ（VM 関数から `gen()` を呼ぶと "not callable")も修正。generator 支配で ~3.2x。`Self`/クロージャは bail。
-12. **#9 async の VM 対応（関数内）** — `AsyncSubmit` op ＋ `Chunk.async_blocks`。捕捉集合を「本体の参照名 ∩
-    frame slot」に限定し、frame から値を読んで**一時スコープ経由で既存 `capture_env` を再利用**して env を組む
-    （ツリーウォークと同一・D5 share-nothing 維持）。VM コンパイル済み関数内で `mng <- async` が使える。
-13. **#16 AST 型解決層 — 段階(a)＋(b)第1増分**（2026-08-03〜05・コミット `#13-1`〜`#13-5`）— 型検査が全式の型を **node-id 索引の
-    注釈テーブル**（解決型/検査指示/型インターン/CallInfo/binop_kind）に永続化（MustBe/BinOp/Attr/Subscript/Cast/IsType/Call。
-    Ident はスキップ）。`check_program`→`interp.set_annotations` でランタイム配線。**plan A 第1増分**として VM が `binop_kind` を消費し
-    **型特化二項演算 op**（IntBinLL 等・参照読み＋ディスパッチ省略・想定外型はフォールバックで健全）を emit → **int 1.30x / float 1.36x**。
-    さらに **段階(c-1)/(c-2)**（2026-08-10・未コミット）でネイティブ codegen へ注釈を配線し実測した結果、
-    **§4.4 が置換対象に挙げた `field_ty` は実質デッドコード**・**注釈は codegen の適用範囲を広げられない**ことが判明。
-    ボトルネックは**型検査が for ループのターゲットを `Unresolved` で宣言していること**だった。
-    詳細と残り・git 状態は **#16 の「段階と実装状況」節**（本文後半）に集約。
+### 完了 ✅（詳細は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md)）
+
+1. **Phase R** — R0 フレーム隔離 / R1 ローカル slot 化（`LocalRef`）/ R3 属性 IC / R4 呼び先解決 / メソッド IC / `Value` 32B 化。
+2. **Phase V-A〜V-E** — VM 骨格・制御フロー・メソッド・例外テーブル・ブロック式・for/組み込み・トレースバック行番号・デバッガ REPL。
+3. **#4〜#9** — メソッド呼び出し高速バインド（1.6x）/ 添字・コレクションリテラル / 組み込み拡張（1.49x）/
+   テンプレート Chunk メモ化（5.9x）/ ジェネレータ VM 化（3.2x）/ 関数内 async。
+4. **#16 AST 型解決層**（2026-08-03〜10・**本系列の主目的**）— 型検査の結果を node-id 索引の注釈テーブルへ永続化し、
+   **ツリーウォーク／VM／ネイティブの三経路が同一の型解決を消費する**状態に到達。
+   実測: ネイティブ `flat_bench` **1.73x** / 属性オペランドの二項演算 **1.379x** / int div/mod/bit **1.478x** /
+   `mustbe` を含む関数 **2.04x** / `for i in range(n)` **1.153x**。FFI 境界検査（動的型付け言語からの戻り値検証）も含む。
+5. **#18 順序比較の食い違い解消**（2026-08-10）— 型検査が許可していた int/float 混在の `<=`/`>=` と str 同士の比較が
+   実行時に未実装だったのを解消（実行時を検査器の仕様に合わせた）。
+6. **#11 R2-a / R2-a′ / R2-b**（2026-08-11）— 「AST 展開の共通化」の観点で、ネイティブが R1 の解決済み AST を消費し
+   **slot 索引でローカルを管理**するようにした（codegen は採番せずリゾルバの割り当てを収穫）。
+   グローバルは `Expr::GlobalRef` を新設しツリーウォークと VM が同一ノードを共有。
+7. **#14 の一部**（2026-08-11）— `.arc` の陳腐化検査。**リポジトリの `.arc` が実際に 3 件古く、
+   ずっと古いコードを実行していた**ことが判明し再生成。
+
 
 ### 残り（番号付き）
 **Phase V の残り**
@@ -67,12 +123,9 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 3. **強制バイトコード（D2）** — 全構文カバー後にフォールバック撤去 → **スレッドローカル4本＋センチネル2種を実削除**（現在はデュアルモードのため保持）。
 
 **VM カバレッジ拡大（独立）**
-4. ~~メソッド呼び出し機構の軽量化~~ 【✅ 完了】（高速バインド経路で method_hot 1.61x・method_body 1.64x）。
-5. ~~添字 `obj[i]`・コレクションリテラル（list/dict/set/tuple）の VM 化~~ 【✅ 完了】（デバッガ REPL のフォールバックも減った）。
-6. ~~その他組み込み（enumerate/zip/str/int 等）の `CallBuiltin` 拡張~~ 【✅ 完了】（純粋6種＝`CallBuiltin`・型コンストラクタ＝`LoadGlobal`+`Call` 委譲。enumerate/zip 支配 1.49x）。
-7. ~~テンプレート実体化の Chunk メモ化~~ 【✅ 完了】（`(テンプレート, 型引数)` キーで具体 FnValue をメモ・関数/ジェネレータのみ・auto 5.9x）。
-8. ~~ジェネレータ本体の VM 化~~ 【✅ 完了】（`Yield` op・eager 収集維持・`GeneratorFn` 呼び出しギャップ修正・~3.2x）。
-9. ~~async の VM 対応~~ 【✅ 完了（関数内）】（`AsyncSubmit` op・frame から capture 再構成・既存 `capture_env` 再利用・D5 維持。モジュール top-level の async は #10 依存）。
+4〜9. ~~VM カバレッジ拡大（メソッド高速バインド／添字・コレクション／組み込み拡張／テンプレート Chunk メモ化／
+   ジェネレータ VM 化／関数内 async）~~ 【✅ すべて完了】 → 実測値は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md)。
+
 10. **import モジュール Chunk**（モジュール本体の一括生成）。**【保留 2026-07-27】** 調査の結果、高コスト・低効果と判明:
     (a) モジュール本体は定義文（fn/class/gen/import）が支配的で VM コンパイラが全て bail →「本体一括 Chunk」には
     **定義文の VM オペコード化**が必要。(b) top-level 変数はグローバルだが VM に **`StoreGlobal` op が無い**（slot ベース）。
@@ -82,169 +135,54 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 **Phase R の残り**
 11. **R2 グローバル slot の前倒し**（`SlotCache` 実行時キャッシュ → AST 展開時解決, §4.3）。
-    **【2026-08-11 R2-a 完了 / R2-b・R2-c は残り】**
+    **【R2-a / R2-a′ / R2-b 完了 2026-08-11・R2-c は保留】**
+    速度ではなく「AST 展開の共通化」の観点で実施し、**ローカルの解決は三経路で共有**に到達。
+    グローバルはツリーウォークと VM が `Expr::GlobalRef` を共有。
+    **R2-c（グローバル記憶域の index 配列化＋ネイティブの index 参照）は保留** —
+    代表 6 モジュールの生成 IR 中で `CB_GET_GLOBAL` は**合計 3 箇所**しかなく（うち 1 件は例外クラス名、
+    2 件は調査で見つけた codegen 不具合）、**消費者が居ない**ため。#14 本体と同時に再評価する。
+    → 詳細は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md)。
 
-    速度ではなく**「AST 展開の共通化」の観点で評価**した結果、グローバル解決は
-    **同じ問いに 4 つの独立した機構**が並んでいると判明した:
-    | 経路 | 機構 | 解決の置き場所 |
-    |---|---|---|
-    | ツリーウォーク（変数読み） | `get_val(name)` でスコープを名前走査 | **どこにも無い**（毎回引き直し） |
-    | ツリーウォーク（呼び先） | `NativeCallCache.1: SlotCache`（R4） | AST ノード。ただし**呼び出し専用** |
-    | VM | `Op::LoadGlobal` ＋ `Chunk.global_caches` | **Chunk 側**の別 SlotCache |
-    | ネイティブ | `CB_GET_GLOBAL(name_ptr, len)` | **持たない**（文字列でコールバック） |
+12. **R0-A 明示フレームスタック**（`Rc<Frame>`・深い再帰のスタックオーバーフロー解消, §3.4-A）。
+    **【保留。ただし 2026-08-11 時点で「残る最大の速度余地」はここ】**
+    呼び出し機構（bind／フレーム構築・~630ns/call）が支配項として残っており、#2 の R0-A エスケープ解析もこれが前提。
+    一方**統一目的には寄与しない**（ランタイムの記憶域の変更であって AST 解決注釈の追加ではなく、
+    ネイティブ経路はインタプリタのフレームを使わない）。速度を追う判断をしたときに着手する。
 
-    さらに調査で、**ネイティブは R1（ローカル解決）すら消費していない**ことが判明
-    （`grep -rn "LocalRef" src/partial_compiler/` が 0 件・自前の `locals` HashMap で再導出）。
-    到達度は「型＝3/3（#16 c-3 で達成）／ローカル＝2/3／グローバル＝0/3」だった。
-
-    **✅ R2-a（完了）— ネイティブが R1 の解決済み AST を消費する**
-    - `--compile` 経路が `resolver::resolve_program` を通っていなかった（実行経路のみ）。
-      そのため codegen が見る AST には `LocalRef` が無く、**通すと `expr_eligible` が
-      `Expr::LocalRef` を非適格と判定してネイティブ化が黙って止まる**状態だった。
-    - `ident_name(&Expr) -> Option<&str>`（[mod.rs](src/partial_compiler/llvm_codegen/mod.rs)）を追加し、
-      `partial_compiler` 内の **`Expr::Ident` パターンマッチ 28 箇所を全て両変種対応**へ置換。
-      そのうえで `--compile` にリゾルバを追加（[main.rs](src/main.rs)）。
-    - **検証**: 代表 6 モジュールの生成 IR が **byte-identical**。
-      1 箇所でも取りこぼせば関数が非適格になって IR が変わる（＝関数が消える）ため、
-      これが「28 箇所に漏れが無い」ことの強い証拠になる。
-    - **注意**: リゾルバは関数単位で解決を諦める（可変長引数・未対応の宣言文・メソッド/入れ子/
-      テンプレートは対象外）ので、**「`Ident` だからローカルでない」とは言えない**。
-      分類は従来の `locals` 表と併用のまま（c-3 の `annotated.or(legacy)` と同じ形）。
-
-    **✅ R2-b（完了 2026-08-11）— グローバル解決を AST へ置き、ツリーウォークと VM が共有**
-    - **`Expr::GlobalRef { name, cache: SlotCache }`** を追加（`LocalRef` のグローバル版・[ast.rs](src/ast.rs)）。
-      リゾルバが「プログラム最上位で宣言され、その関数内で一度も束縛されない」名前を書き換える。
-    - **固定 index 化は避けた**。`slot_epoch` の一括無効化モデルと衝突するため、
-      **解決結果の置き場所を AST に移す**ことだけを行い、キャッシュは従来どおり epoch 検証つき。
-      これで `freeze` による `SlotCell` → `Immutable` 降格も安全（epoch が進み失効する）。
-    - **消費側**: ツリーウォークは `eval_global_ref`（キャッシュ→`scopes[0]` slot 直読み、
-      失効時は名前引きへフォールバック）。VM は `GlobalRef` を見て `emit_load_global` を出す
-      （builtin 判定・`slots` 走査が不要になる）。ネイティブは `ident_name` 経由で受理。
-    - **⚠️ 安全条件の落とし穴（実際に踏んだ）**: 型検査は `let`/`mut` によるグローバルの再宣言を
-      入れ子ブロックでも禁じるが、**`for` ループのターゲットは同名で束縛できる**。
-      `base`（引数＋本体直下宣言）には for ターゲットが入らないため、最初の実装では
-      `collection.ar` の `let x = {1,2,3}`（最上位・set）を `fn sum_ints` の `for x in items:` が
-      覆っているケースを取りこぼし、set を読んで `TypeError: Add: int and set` で落ちた。
-      → `collect_bound_names`（入れ子ブロック・ブロック式まで降りて**束縛されうる名前を全て収集**）を
-      追加し、1 つでも該当する名前は書き換えない保守的な規則にした。
-    - **検証**: `cargo test` 696 緑・例題スキャン FAIL 0・off/auto 41 例題一致・
-      代表 6 モジュールの IR byte-identical。
-      例題 [examples/basics/global_resolution.ar](examples/basics/global_resolution.ar)
-      （素直なグローバル読み／グローバル関数呼び出し／for ターゲットによるシャドウ 2 種／mut グローバル）。
-
-    **✅ R2-a′（完了 2026-08-11）— ネイティブが slot 索引でローカルを管理する**
-    R2-a はネイティブに `LocalRef` を**受理**させただけで、内部は名前引き
-    （`locals: HashMap<String, (alloca_reg, Ty)>`）のままだった。ここを slot 索引にする。
-    - **採番は共有し、型は共有しない**。検討の結果、VM の `slot_type` は
-      `Stmt::Let(name, ty, _)` の**型注釈文字列**を持つのに対し、ネイティブは
-      **型注釈を捨てて式の生成型を採用**している（[stmt.rs:13-22](src/partial_compiler/llvm_codegen/stmt.rs#L13)）。
-      `let d2 = p.x * p.x` は VM 側 `None` / ネイティブ側 `Ty::Float` で、
-      **ネイティブの方が情報量が多い**（c-3 の 1.73x はこの伝播が効いた結果）。
-      よって型テーブルの流用は後退になるため、**共有するのは slot 同一性のみ**とした。
-    - **codegen は slot を採番しない**。`harvest_local_slots`
-      （[mod.rs](src/partial_compiler/llvm_codegen/mod.rs)）が関数本体の `Expr::LocalRef` を走査して
-      **リゾルバの割り当てを収穫**する。再導出しないので番号がずれようがない。
-    - `alloca_var` が slot 表（`locals_by_slot: Vec<Option<(reg, Ty)>>`）にも登録し、
-      `LocalRef` 読みは `load_var_by_slot` で index 直引き。
-      slot 表に無い場合（リゾルバが諦めた関数・codegen の合成ローカル＝
-      preread の `%_prf_*`・flat-list 一時変数）は従来の名前引きへ落ちる。
-    - **検証**: 代表 6 モジュールの IR **byte-identical**（slot 経路が名前引きと同一結果である証拠）。
-      `AR_ANNOT_DIFF=1` の `AnnotLocals: slot_indexed_reads` で実際に使われていることも確認
-      （physics 70 / partial_call_overhead 40 / typed_abi 16 …）。
-      `cargo test` 696 緑・例題スキャン FAIL 0・off/auto 42 例題一致。
-
-    **⏸ R2-c（保留・2026-08-11 調査）— ネイティブのグローバル参照は実質存在しなかった**
-    着手前に、生成 IR 中の `CB_GET_GLOBAL`（ArCallbacks field 15）を代表 6 モジュールで数えたところ
-    **合計 3 箇所**しかなかった（physics / flat_bench_module / partial_call_overhead_module /
-    geometry は **0 件**）。理由はモジュール内関数呼び出しが LLVM の直接呼び出しに落ちているため
-    （`module_fns` の typed 直呼び）で、**グローバル参照そのものがホットパスに出てこない**。
-    しかも中身を調べると:
-    - `typed_abi_module` の 1 件 = `ValueError`（**例外クラス名の解決**でありユーザーグローバルではない）
-    - `swd_nested` の 2 件 = **下記の codegen 不具合**（パラメータをグローバルと誤認）
-
-    → 「グローバル記憶域の index 配列化」は**消費者が居ない**ため保留。
-      #14 と同じ構図（機構の前提が現状のコード形では成立していない）。
-      モジュール間ネイティブ直リンク（#14 本体）を入れる時に併せて再評価する。
-
-    **🐛 R2-c の調査で見つけた codegen 不具合（修正済み）**
-    `_fast` ABI はクラス型パラメータを**フィールド単位のスカラ**へ平坦化するため、
-    本体がそのパラメータを**値そのもの**として使うと alloca が無い。
-    codegen の変数読みは「`locals` に無い → グローバル」と分類するので、
-    `Particle.__init__` の `self.pos = pos` が **存在しないグローバル `pos` を
-    `CB_GET_GLOBAL` で引く不正コード**になっていた（`_impl` は正しく、`_fast` のみ誤り。
-    当該モジュールでは `_fast` の呼び元が無く潜在化していた）。
-    - **最初の対策（撤回）**: 「値そのものとして使うパラメータがあれば `_fast` を作らない」
-      という事前判定を入れたが、**正当なケースまで潰した**。
-      `total_energy` の `a.potential(b)` は呼び先も `_fast` を持つので
-      **平坦なまま転送できる**（`Body__potential_fast(...)` を直接呼ぶ）。
-      physics の IR が 12KB 縮んだことで気づいた。
-    - **採った対策**: `typed_failed` と同じ**生成時検出**。`_fast` 生成中に
-      平坦化済みパラメータの値読みがグローバル経路へ落ちたら `fast_failed` を立てて
-      **その変種を破棄**し、呼び出し側も `discarded_fast` で選択から外す。
-    - **検証**: `swd_nested` の不正な `_fast` だけが消え（CB_GET_GLOBAL 2 → 0）、
-      **physics を含む他 5 モジュールの IR は byte-identical**。
-      `swd_nested_runner.ar` の出力（34 / 2）も不変。
-    **【一部対応 2026-07-27／本体は保留】** VM の `LoadGlobal` に **op レベルの runtime index cache**
-    （`Chunk.global_caches` の `SlotCache`・`(slot_epoch, scopes[0] index)` を焼く）を追加し、グローバル変数読み・
-    グローバル関数呼び出しの名前ハッシュ引きを索引直読みへ置換した。ただし**実測は ~2-3%**（グローバル名の
-    FxHash 引きは元々安価で、呼び出しコストは `bind_args`/フレーム構築が支配的）。**resolve-time R2 本体**
-    （固定 index 採番のグローバルシンボル表＋グローバル記憶域の index 配列化＋§6 モジュールモデル接続）は
-    中〜大規模かつ限界的メリットが小さいため保留。§6（#14）着手時に併せて実施する。
-    → **知見: 変数・関数スロットのアクセス最適化は R1（ローカル=flat buffer）/R3（フィールド IC）/R4（呼び先）/
-    #2（superinstruction）/#11（グローバル索引）で概ね頭打ち。残る速度余地は「呼び出し機構」（bind/フレーム構築、
-    ~630ns/call）にあり、これは #12 のフレームモデルが対象。**
-12. **R0-A 明示フレームスタック**（`Rc<Frame>`・深い再帰のスタックオーバーフロー解消・クロージャ Rc 寿命管理, §3.4-A）。
-    **【保留 2026-07-27・統一目的に照らして価値薄と判断】**
-    ユーザー確認により、本系列の真の目的は**「バイトコード化とプリコンパイル（ネイティブ codegen）の動作統一」＝
-    AST 解決を可能な限り低レベルへ押し込み、両経路が同一の解決済み AST を消費すること**（速度は主目的でない）と判明。
-    この基準で評価すると R0-A は**該当しない**:
-    - R0-A は**ランタイムのフレーム記憶域**（`Rc<Frame>`）の変更であって **AST 解決注釈の追加ではない**。解決
-      （名前→slot）は R1 で済んでおり、R0-A はその slot の実行時格納方法を変えるだけ＝「解決を低レベルへ押し込む」
-      には非該当。
-    - ネイティブ経路（`partial_compiler/llvm_codegen`）はインタプリタのランタイムフレームを一切使わない（LLVM
-      alloca へコンパイル）ため、**R0-A は統一目的に寄与ゼロ**。R0-A の価値（深い再帰の堅牢性）は統一目的と無関係。
-    - 現状すでにネイティブは独自解決で typed ABI 出力を生成可能（統一の「機能面」は達成済み・共有していないだけ）。
-    → 深い再帰の堅牢性が独立の要件として浮上した場合にのみ、非再帰ループ（トランポリン）とセットで別途着手する。
-13. **R4 ネイティブ codegen 側の消費**（§4.4・`llvm_codegen` の自前解決を Phase R 結果へ置換）。
-    **← 統一目的（バイトコード↔プリコンパイル）の本命レバー。** ネイティブ codegen は現状 Phase R 注釈
-    （`LocalRef`/`AttrCache`/`SlotCache`）を**一切消費せず** `locals`/`param_classes`/`field_ty`（[context.rs](src/partial_compiler/llvm_codegen/context.rs)）
-    で独自再導出している（確認済み・grep 0 件）。ここを Phase R の解決済み AST 消費に置換すれば「両経路が同一解決を
-    共有」が実現する。#12 ではなくこれが「AST 解決を低レベルへ押し込む」目的に直結する。
+13. ~~**R4 ネイティブ codegen 側の消費**~~ 【✅ 完了 2026-08-10・#16 段階(c-3)】
+    `llvm_codegen` の自前型導出を注釈の消費へ置換（`flat_bench` 1.73x）。統一目的の本命レバーだった。
 
 **その他（§6・§7.4）**
 14. **§6 モジュール動的リンク**（ディスクリプタシンボル＋ABI ハッシュ照合）。
-    **【2026-08-11 調査 → 大部分を保留・「照合」だけ別形で実装】**
+    **【大部分を保留・「照合」だけ別形で実装済み 2026-08-11】**
+    着手前の実測で §6 の 2 つの根拠がどちらも現時点では成立しないと判明した:
+    (a) エクスポートは 1 モジュール 3〜11 シンボルで `GetProcAddress` は支配項でない、
+    (b) **モジュール間のネイティブ直リンクが存在しない**（他モジュール参照は全てインタプリタのコールバック経由）ため
+    照合対象の辺がまだ無い。→ ディスクリプタ機構はモジュール間直リンク導入時まで保留。
+    一方**実在した食い違い**＝「`.arc` の埋め込みソースと隣の `.ar` のズレ」は検査を実装済み（完了 ✅ 7)。
+    → 詳細は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md)。
 
-    着手前に §6 の 2 つの根拠を実測で確認したところ、**どちらも現時点では成立しない**と判明した。
-    - **性能根拠**: 現行 `.arc` のエクスポートは 1 モジュールあたり 3〜11 シンボル。
-      関数ごと `GetProcAddress` の総コストは §6.4 の表でも「小規模 ~0.1ms」であり、
-      ディスクリプタ機構を作って削るような支配項ではない。
-    - **ABI 照合の根拠**: **モジュール間のネイティブ直リンクが存在しない**。
-      `llvm_codegen` が直接呼ぶのは `module_fns`（＝自モジュール内の関数）だけで、
-      他モジュールの参照は `CB_GET_GLOBAL` などインタプリタのコールバック経由
-      （[expr.rs](src/partial_compiler/llvm_codegen/expr.rs)）。
-      したがって「モジュール A の .arc が見た B の ABI が変わる」という照合対象の辺がまだ無い。
-    → **ディスクリプタ＋エクスポート表＋ABI ハッシュの機構は、モジュール間ネイティブリンクを
-      実際に導入するときまで保留**（それが #10 のモジュール Chunk / 将来の直リンク設計と同時期になる）。
-
-    **一方で「照合」が本当に要る食い違いは実在した（実装済み）**:
-    `.arc` は**ソースを埋め込んで**おり、存在すると `.ar` より優先される。両者の一致を
-    確認していなかったため、`.ar` を編集しても再コンパイルするまで反映されず、
-    **警告なしに古い答えを返していた**（実測: `offset` の定数を 100→999 に直しても古い `101.0` が出た。
-    新規に足した関数は `AttributeError`）。
-    → import 時に「`.arc` の埋め込みソース」と「隣の `.ar`」を突き合わせ、
-      食い違えば**警告してソース側を使う**（[ar_modules.rs](src/parser/imports/ar_modules.rs)、
-      判定用に `read_tlc_source`＝ネイティブキャッシュを汚さない読み出しを追加）。
-      §6.3 の「不一致ならフォールバック、駄目なら明示エラー」を、
-      回復手段（ソースが隣にある）が常に存在する本ケースへ当てはめたもの。
-    - **照合の粒度はソース全文**。エクスポート表のハッシュでは**本体だけの変更を取りこぼす**
-      （上記 100→999 はシグネチャ不変）ため、意図的に全文比較にしてある。
-    - **リポジトリの `.arc` が実際に陳腐化していた**: 検査を入れたところ
-      `partial_call_overhead_module` / `swd_nested` / `typed_abi_module` の 3 件が古く、
-      ずっと古いコードを実行していた（examples 再編時のコメント差分）。再生成済み。
-      `examples/archived/` の 5 件は実行対象外なので放置。
-    - **例題**: [examples/interop/stale_arc_check.ar](examples/interop/stale_arc_check.ar)＋素材 `stale_arc/`。
 15. **§7.4-1 `Value::Str(String)` → `Rc<str>`** ／ **§7.4-3 文字列インターン**。
+15b. ~~**`Ident` の AST 表現再設計**~~ 【✅ 実装完了・**ただし消費者は不在と実測で確定** 2026-08-11】
+    `Expr::Ident(String)` → `Expr::Ident { name, node_id }` へ変更し、`LocalRef`/`GlobalRef` へも
+    node-id を伝播（リゾルバは型検査の**後**に走るため、伝播しないと解決済み参照から注釈を引けない）。
+    型検査は参照サイトごとの型を注釈テーブルへ焼く。注釈テーブルは**約2倍**に増えた（physics 117→234）。
+    **参照サイト単位が必要な理由**: 型ガード絞り込みは分岐スコープでの再 `declare` 実装なので、
+    同じ変数でも参照位置で `lookup` の答えが変わる。変数単位（`(関数, 名前)` キー）の表では表現できない。
+
+    **⚠️ しかし消費者は 0 件だった（実測）**。診断 `AnnotIdent`（`AR_ANNOT_DIFF=1`）で代表 6 モジュールを測ると、
+    識別子読み 232 件のうち **192 件は codegen の自前導出が既に具象型を得ており**、`Ty::Handle` に落ちた 40 件は
+    **全件が `annot_boxed`**＝注釈も「クラス／リスト／str 等のハンドル表現が正しい型」だった。
+    **`annot_only = 0`／`annot_none = 0`**。つまり識別子読みで型情報を落としている箇所は**1 件も存在しない**。
+    （`annot_none = 0` は注釈が全件解決している証拠でもあり、配線が正しいことの裏取りになっている。）
+
+    **判断**: 実装は残すが**消費側への配線は行わない**（#11 R2-c・#14 と同じ「消費者不在」の判定）。
+    入口コストは A/B 実測で median **+1.9%**（parse+typecheck 支配のワークロード・ノイズ水準）。
+    IR は代表 6 モジュールで **byte-identical**。
+    → 詳細は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の「#15b」節。
+
+    **なお当初の記述「97 サイト」は陳腐化していた**（実際は 79 サイト・うち約 11 はドキュメントコメント）。
+    #11 が `LocalRef`/`GlobalRef` へ切り出した分だけ減っていた。
 
 **FFI 境界の型表現（新規・2026-08-10 昇格。#16 の境界検査の調査で「型検査では守れない」と判明した残り）**
 17. **FFI 境界の型表現を埋める**。#16 の FFI 境界検査（戻り値方向・[ffi_boundary.rs](src/interpreter/ffi_boundary.rs)）は
@@ -260,538 +198,21 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 **実装ミス（新規・2026-08-10 昇格）**
 18. ~~**順序比較で静的型検査と実行時が食い違う**~~ 【✅ 完了 2026-08-10】
-    型検査の `ordered_comparable`（[type_check/binop.rs](src/type_check/binop.rs)）は
-    `<` `>` `<=` `>=` の**すべて**について `(Int,Float)` / `(Float,Int)` / `(Str,Str)` を許可していたが、
-    実行時 `apply_binop`（[operators.rs](src/interpreter/ops/operators.rs)）は
-    `<` `>` の混在と int/float 同士しか実装しておらず、**検査は通るのに実行時 TypeError** になっていた:
-    - `i <= f` / `i >= f`（混在）— #16 段階(b)(iii) で VM 側に混在アームを足したところ
-      off/auto が割れて発覚（VM だけ成功していた）。
-    - `"a" < "b"` など **str 同士の 4 演算子すべて** — #16 段階 E の検証中に発覚。同じ食い違いの別の面。
-
-    **修正方針**: 型検査の許可リストを仕様とみなし、実行時をそれに合わせた（逆にせず）。
-    `apply_binop` へ 8 アーム（混在 `LtEq`/`GtEq` × 2 向き ＋ str × 4 演算子）を追加し、
-    VM 側 `apply_bin_fast` の混在 `LtEq`/`GtEq`（#16 で意図的に外していたもの）も有効化。
-    - **例題**: [examples/basics/comparison_matrix.ar](examples/basics/comparison_matrix.ar)
-      （5 つの型組み合わせ × 4 演算子を全通し・off/auto 一致）。
-    - 副次: `examples/typing/template_specialization.ar` の `compare[str]` を復元できた
-      （E の実装時は str 比較が動かず外していた）。
+    型検査の `ordered_comparable` は 4 演算子すべてで `(int,float)` 混在と `(str,str)` を許可していたのに、
+    実行時 `apply_binop` は `<`/`>` の混在と int/float 同士しか実装しておらず、
+    **検査は通るのに実行時 TypeError** になっていた。実行時を検査器の仕様に合わせて 8 アーム追加。
+    例題 [comparison_matrix.ar](examples/basics/comparison_matrix.ar)。
 
 **統一基盤（新規・2026-08-02 昇格 / 2026-08-03 具体化）**
-16. **AST 型解決層 — コンパイル/ツリーウォーク/バイトコードの挙動統一**（#13 を包含・plan A の土台）。
-    **【2026-08-10 ひと段落】** 段階(a) 注釈永続化／(b)(i)(ii)(iii) VM 消費／(c-1)(c-2) ネイティブ配線＋実測／
-    型検査の解像度向上（for 要素型・`infer_attr`）／FFI 境界検査まで完了。残りは下記「⬜ 残り」節。
-    型検査器が既に全式ぶん計算している型（`infer(&Expr)->InferredType`・[infer.rs:10](src/type_check/infer.rs#L10)）を
-    **node-id 別テーブルへ焼き込み**、可能な限り低レベルまで解決する（具象型・メソッド/フィールドのバイトオフセット・
-    呼び出しシグネチャ・検査要否）。解決点は決め打ち（直接オフセット/直接ディスパッチ・検査なし）、未解決点のみ検査指示を付す。
+16. ~~**AST 型解決層 — コンパイル/ツリーウォーク/バイトコードの挙動統一**~~
+    【✅ 完了 2026-08-10】**本系列の主目的だった項目。** 型検査が全式ぶん計算している型を
+    node-id 索引の注釈テーブルへ焼き込み、**三経路が同一の解決を消費する**状態を達成した。
+    #13（ネイティブ codegen の消費）を包含して完了。
+    → **詳細・実測値・判断の経緯は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の「#16」節**。
 
-    #### 目的（速度ではない・承知の上）
-    (1) コンパイル時とツリーウォーク時の**挙動統一**。(2) バイトコード化・各最適化で生じがちな「型が確定しているか/どの経路か」
-    等の**例外的な条件分岐を AST 段階で解消**（各経路が単純化）。速度貢献は現段階で限定的（VM は R3/メソッド IC が緩衝。#3 実測:
-    overloaded 演算は「探索」~2-3% のみ解決可能・残りは呼び出し機構＋確保で不可避。**ネイティブは IC が無いぶん効果が桁違い**）。
+    この過程で #17（FFI 境界の型表現）と #18（順序比較の実装ミス）が切り出され、
+    #18 は完了、#17 は未着手（下記）。
 
-    #### 注釈モデル（採用: node-id ＋ 2直交側テーブル ＋ 型インターン表）
-    - **node-id**: annotatable な Expr（`Call`/`Attr`/`BinOp`/`Cast`/`MustBe`/`IsType`/`Subscript`）にパース時
-      `node_id: u32` を採番（**C1: グローバル採番**）。**非テンプレ関数から着手**（R1 と同じ段階戦略）。テンプレは注釈が型変数 `T`
-      型のまま＝実体化時に型 subst が要るため**次段へ分離**。async はクローン AST だが注釈は**読み取り専用**なので同一 node-id 参照で安全。
-    - **`Ident`/`LocalRef` は node-id を付けない（採用 2026-08-03）**。理由: `Ident` は葉の名前参照だが、その**型は必ず消費側
-      ノード（`BinOp`/`Call`/`Attr` 等）が推論過程で既に保持**する（narrowing 済み）ので個別注釈は冗長。加えて `Ident` は
-      **タプル変種で 97 箇所**に及び node-id 化は極めて侵襲的。→ 型は消費側で捕捉する。
-      **⚠️ 別途の再検討事項**: `Ident` の使用箇所が多いこと自体（タプル変種 `Ident(String)`・97 サイト）は、将来「Ident を
-      構造体変種化して node-id/解決情報を持たせる」等の**AST 表現の再設計**の検討対象。本タスク #16 の範囲では扱わず、独立に評価する。
-    - **2直交テーブル（node-id 索引）**:
-      1. **解決型テーブル** `node_id → 型idx`（具象 or `Dynamic`）。**型は per-module「型インターン表」への index**（`InferredType` を
-         インライン展開せず index 化 ＝ AST 軽量・比較高速・**ネイティブの型記述子テーブル生成と直結**）。
-      2. **検査指示テーブル** `node_id → 指示`（`None` / `CheckBefore(型idx)`）。境界・`mustbe`・`cast` の動的検査を表す。
-    - **呼び出し(Call)注釈**（点1・「解決済み CALL 注釈が引数検査指示を持つ」に**統合**）: `{ 呼び先=シンボル参照(名前＋解決index＋
-      シグネチャ型idx), 各引数=(引数node_id, 型idx, 検査指示) }`。**生ポインタは持たず**「シンボル参照」（R4 の呼び先解決機構を再利用。
-      各バックエンドが自前の関数ポインタ/シンボルへ写像）。
-    - 属性/メソッド: 解決時 `(クラス型idx, フィールド byte-offset / メソッド slot)`、未解決時 `Dynamic`。BinOp: `(左型idx, 右型idx, 結果型idx)`。
-
-    #### 検査要否の決定（点2/3・調査で確定）
-    - **要検査 → `CheckBefore`**: `Expr::MustBe`（不一致で raise・[ast.rs:538](src/ast.rs#L538)）／`Expr::Cast`（`__cast__`/コンストラクタ
-      ディスパッチ・[ast.rs:513](src/ast.rs#L513)）／他言語 FFI 境界／**非コンパイル Arrow ライブラリ境界**（コンパイル済みは typed ABI 保証で無検査）／
-      型が `Any`/`Protocol`/`Union`/`Unresolved` の消費点。
-    - **無検査（点3）は自動的に満たされる**: 型ガードは [check.rs:376](src/type_check/stmt/check.rs#L376) が**絞り込んだ型で変数を分岐スコープに
-      再宣言**して実現。したがって**分岐内の各出現で `infer` は絞り込み済み具象型を返す**＝そこへ焼けば自然に無タグ。**別途 narrowing 抽出は不要**。
-
-    #### 消費者（三経路が同一注釈を消費）
-    - **ツリーウォーク**（`eval`）: 注釈があれば直接オフセット/直接ディスパッチ、`CheckBefore` があれば動的検査。
-    - **バイトコード**（plan A）: 解決点は特化 op、`CheckBefore` は検査 op。**`Value` は boxed 維持**（内省保持・unbox=解釈B は非採用）。
-    - **ネイティブ codegen**（#13）: `context.rs` の独自再導出を**この注釈の消費に置換**。typed 機械語を生成し**不要な型情報は消去**。
-      **境界の動的検査は CALL 注釈の引数検査指示＋型インターン表から呼び出し前にインライン生成**
-      （＝点4「ライブラリ内テーブルで呼び出し前に検査」を**この機構に畳み込み・別機構は不要＝削除**）。
-
-    #### 入口コスト（調査済み・#1）
-    型は既に `infer` で計算済みだが `&Expr` を取り**破棄**、`check` はエラーのみ返す（書き戻し 0 件）。第一歩は
-    **「型検査の走査中に node-id テーブルへ型＋検査指示を書き込む」**（narrowing はスコープ再宣言で `infer` に既に反映済み＝
-    検査走査中に書くのが最適）。型推論の再実装は不要＝中規模。
-
-    #### 段階と実装状況（2026-08-05 更新・**コンテクストなし再開用ハンドオフ**）
-    段階: **(a) 注釈永続化層** → **(b) ツリーウォーク/VM が消費（plan A）** → **(c) ネイティブ codegen が消費（#13）**。
-    関係: R1/R3/R4 の解決注釈を**型情報まで拡張・一本化**。#13 を包含し、plan A と #11 resolve-time R2 はこの層の**消費側**。
-
-    ##### ✅ 段階(a) 完了（注釈生成＋ランタイム配線）
-    - **注釈基盤**: [src/type_check/annotations.rs](src/type_check/annotations.rs)（新規）。`AstAnnotations` が
-      node-id 索引の **① 解決型テーブル（`resolved`）・② 検査指示テーブル（`directives`: `None`/`CheckBefore(TypeId)`）**
-      ＋ **③ 型インターン表（`intern`: `TypeId`→`InferredType`）** ＋ **④ Call 構造化表（`calls`: `CallInfo{callee, args:[ArgAnnotation{ty,directive}]}`）**
-      ＋ **⑤ 二項演算オペランド種別（`binop_kind`: `BinOperandKind::Int/Float`）** を持つ。公開型: `AstAnnotations`/`TypeId`/
-      `Directive`/`CallInfo`/`ArgAnnotation`/`BinOperandKind`（[mod.rs](src/type_check/mod.rs) で re-export）。
-    - **node-id**: パーサ（[src/parser/mod.rs](src/parser/mod.rs) の `node_counter`＋`next_node_id()`）が **per-module で 1 始まり採番**。
-      annotatable な Expr 構造体変種に `node_id: u32` フィールドを追加済み: **`MustBe`/`BinOp`/`Attr`/`Subscript`/`Cast`/`IsType`/`Call`**
-      （[src/ast.rs](src/ast.rs)）。テンプレ subst はコピー・py-converter/合成コードは `0`（＝未採番・注釈対象外）。
-      **`Ident`/`LocalRef` は node-id を付けない**（下記「別途再検討事項」参照。型は消費側で捕捉）。
-    - **型検査での充填**: [src/type_check/infer.rs](src/type_check/infer.rs) の各 arm と
-      [src/type_check/call_check.rs](src/type_check/call_check.rs) の `infer_call`/`infer_call_inner`（`node_id` を通した）が
-      走査中に焼く。ノード別: MustBe/Cast=解決型＋`CheckBefore`／BinOp=結果型＋（int/int・float/float なら）`binop_kind`／
-      Attr=フィールド型（**registry の `class_field_details` から実型を引く**・infer 戻り値は不変で下流無影響）／Subscript=要素型／
-      IsType=`Bool`／Call=結果型＋`CallInfo`。**Call の引数検査指示**: 直接関数(単一sig)・関数型変数・インスタンスメソッド(単一sig・非static)で、
-      param 具象×arg 動的(`Any`/`Unresolved`)のとき `CheckBefore(param型)`。overload/static/キーワード可変長は保守的 `None`。
-    - **ランタイム配線**: `TypeChecker::check_program(stmts) -> (errors, warnings, AstAnnotations)`（[mod.rs](src/type_check/mod.rs)・
-      旧 `check_with_warnings` は削除）。[src/main.rs](src/main.rs) が生成 → `interp.set_annotations(Rc::new(ann))`。
-      [Interpreter](src/interpreter.rs) が `pub(crate) annotations: Rc<AstAnnotations>`（既定空）を保持。crate 全体から
-      `self.annotations.resolved_type(node_id)`/`.directive(node_id)`/`.call_info(node_id)`/`.binop_kind(node_id)` で参照可。
-    - **テスト**: [src/frontend_tests/type_check_tests/annotations.rs](src/frontend_tests/type_check_tests/annotations.rs)（14件・パイプライン検証）。
-    - **不変条件**: 注釈生成はランタイム挙動に無影響（`infer` の戻り値・エラー出力を変えない）＝**off/auto byte-identical 維持**。
-
-    ##### ✅ 段階(b) 第1増分 完了（plan A: 型特化二項演算）
-    - **注釈駆動の型特化 op**: `binop_kind` が int/int・float/float の二項演算（Add/Sub/Mul・比較のみ・Div/Mod/Pow/bit は汎用）を
-      **`IntBinLL`/`IntBinLC`/`FloatBinLL`/`FloatBinLC`**（[src/vm/op.rs](src/vm/op.rs)・[run.rs](src/vm/run.rs)・[disasm.rs](src/vm/disasm.rs)）へ落とす。
-      **オペランドを clone せず参照読み**＋op ディスパッチ省略。`Value` は **boxed 維持**（内省保持・unbox=解釈B は不採用）。
-    - **配線**: `compile_fn(params, body, annotations: Rc<AstAnnotations>)`（[src/vm/compiler.rs](src/vm/compiler.rs)・`Compiler.annotations`）。
-      呼び元 `get_or_compile_chunk`/`get_or_compile_gen_chunk`（[execution.rs](src/interpreter/functions/execution.rs)）が `self.annotations.clone()` を渡す。
-      `try_emit_bin_fused(.., node_id)` が `binop_kind` を見て特化 op を emit（#2 の superinstruction を拡張）。
-    - **健全性**: 特化 op は**実行時型が想定外なら汎用 `apply_bin_fast` へフォールバック**。よって注釈が古く/衝突していても**結果不変**
-      （モジュール横断の node-id 衝突は perf の無駄フォールバックのみ・正しさは保たれる）。
-    - **実測（release・best-of-3・同一ビルドで特化 on/off を A/B）**: int 算術ループ **1.30x**（5994→4613ms）／pure float **1.36x**（5661→4148ms）／
-      呼び出し支配の float は 1.04x（希釈）。効いた主因: **32B `Value` クローン2回の参照読み回避** ＋ op ディスパッチ省略。
-
-    ##### ✅ 段階(c-1)/(c-2) 完了（ネイティブ codegen への注釈配線＋実測）— 2026-08-10
-    - **c-1 配線**: `--compile` が `TypeChecker::check_and_annotate` を使い、注釈を
-      `partial_compiler::compile` → `compile_native` → `generate_llvm_module` → `GenCtx.annotations`
-      （[mod.rs](src/partial_compiler/llvm_codegen/mod.rs)・[context.rs](src/partial_compiler/llvm_codegen/context.rs)）へ渡す。
-      **node-id 空間の一致を確認済み**: import 済みモジュール body は `Stmt::Import{body}` に入れ子で、
-      型検査の注釈充填（`collect_module_types` は署名のみ読む）も codegen（トップレベル定義のみ走査）も踏み込まない
-      ＝ `--compile` 対象モジュールのパーサ採番と 1:1。テンプレートは `llvm_codegen` が非対応なので
-      「subst が node_id を複製する」問題の影響外（**ネイティブは VM と違いフォールバックが無い**ため、この確認が前提条件）。
-    - **c-2 実測（注釈は消費せず、自前導出と突き合わせるだけ）**: `AR_ANNOT_DIFF=1` で内訳を出力
-      （[annot_diff.ps1](annot_diff.ps1)）。対象 6 モジュール（physics / swd_nested / typed_abi_module /
-      geometry / flat_bench_module / partial_call_overhead_module）で **IR は全て byte-identical**
-      （[dump_native_ir.ps1](dump_native_ir.ps1) ＋ `AR_DUMP_LL` フック）。
-
-    ##### 🔍 c-2 の結論（**プランの前提が実測で覆った・要判断**）
-    1. **`GenCtx::field_ty` は実質デッドコードだった**。属性読みの大半は関数入口の **preread 高速パス**
-       （[function.rs:72-112](src/partial_compiler/llvm_codegen/function.rs#L72)）が処理し、`field_ty` に到達するのは
-       「**本体が書き換えるクラス param 上の読み**」だけ。実測 6 モジュールで到達は 7 件のみ（うち解決成功 0 件）。
-       → §4.4 が名指しした置換対象（`field_ty`/`param_classes` の自前再導出）を注釈へ置き換えても**得るものがない**。
-    2. **注釈テーブル自体は充填されている**（physics: `resolved=117` / `interned=4`）。空ではない。
-    3. **codegen が `Ty::Handle` へ落ちた式のうち、注釈が具象型を持つものは実測ほぼ 0**
-       （6 モジュール合計で `call=2` のみ）。＝ 現状の注釈は codegen の適用範囲を広げられない。
-    4. **根本原因は型検査側の解像度不足**（codegen 側ではない）。決定的な例が `flat_bench_module.compute_mut`:
-       `for p in pts:` の `p.x` 7 箇所が**自前導出・注釈ともに未解決**。理由は
-       **型検査が for ループのターゲットを `InferredType::Unresolved` で宣言している**こと
-       （[check.rs:99-101](src/type_check/stmt/check.rs#L99)・`let` 局所は `check_var_decl` で推論済みなのに for だけ落ちている）。
-       受け手が `NamedInstance` に解決されないため `infer_attr` がフィールド型を焼けない。
-    → **段階(c-3)「自前再導出を撤去して注釈へ移行」は、現状のまま実施しても効果ゼロ**。
-      先に **for ターゲットの要素型推論**（`ListOf/FixedListOf/SetOf/DictOf/Tuple` の要素型で宣言）を入れるのが前提。
-      これは型検査の**意味論変更**（今まで `Unresolved` で素通りしていた箇所に新規の静的エラーが出うる）なので、
-      独立タスクとして判断を要する。VM 経路（`binop_kind`）にも同時に効く。
-
-    ##### ✅ `infer_attr` 戻り値の実型化 ＋ 段階(b)(iii) スタック版型特化 op（2026-08-10）
-    - **`infer_attr` 戻り値の実型化**（[infer.rs:333-355](src/type_check/infer.rs#L333)）: `NamedInstance` のフィールドは
-      registry から引いた実型を**戻り値としても返す**（従来は注釈にだけ焼き戻り値は `Unresolved`）。
-      これで `p.x * p.x` が Float×Float と判定され `binop_kind` が付く。
-      **単体では速度効果ゼロ**（bench_field_access 0.98x＝誤差）。理由は下記。
-    - **段階(b)(iii)**（[op.rs](src/vm/op.rs)・[run.rs](src/vm/run.rs)・[compiler.rs](src/vm/compiler.rs)）:
-      従来の型特化 op は `IntBinLL`/`FloatBinLC` など**超命令融合（`local <op> local` / `local <op> const`）専用**で、
-      `try_emit_bin_fused` が `as_local(left)` に失敗すると即 `false` を返すため、
-      **属性・添字・呼び出し結果をオペランドに持つ式には特化が乗らなかった**。
-      → スタック上の2値を参照で見る **`IntBinSS`/`FloatBinSS`** を追加し、融合できない形でも
-      `binop_kind` があれば特化 op に落とす。判定は `specialized_bin_kind` に共通化（Div/Mod/Pow/bit は従来どおり汎用）。
-      想定外の実行時型は既存同様 `apply_bin_fast` へフォールバックするので健全。
-    - **実測**: 属性オペランドの二項演算を切り出したループ（呼び出し・`GET_ATTR` の希釈を抑えたもの）で
-      **1.069x**（1.224s → 1.145s・同一ビルドで emit のみ A/B・best-of-3）。
-      一方 `bench_field_access.ar` は 1.015x にとどまる（1 ケースあたり 100 万回の関数呼び出し＋7 回の `GET_ATTR` が支配的で、
-      二項演算の占める割合が小さい）。**この2つの数字の差が「残る速度余地は呼び出し機構と属性読み」という §4.3 の知見と一致する**。
-    - **開発フック追加**: `AR_VM_DUMP=1` で `compile_fn` が生成 Chunk を逆アセンブルして stderr へ出す
-      （[compiler.rs](src/vm/compiler.rs)）。`disasm.rs` はこれまで**呼び元ゼロ**だった。
-      `kinetic` の本体が `FBIN_SS` ×6 になることを目視確認済み。
-    - **特化対象 op の拡大（(iii) 完遂・2026-08-10）**: `specialized_bin_kind` を「種別ごとに許可 op を持つ」形へ変更。
-      - **int/int**: `Div`/`FloorDiv`/`Mod`/`Pow`/`BitAnd`/`BitOr`/`BitXor`/`LShift`/`RShift` を追加（従来は Add/Sub/Mul と比較のみ）。
-        **ゼロ除算は特化側が `None` を返して汎用パスへ落とす**ので、`ZeroDivisionError` の 3 種の文言は
-        `apply_binop` の一箇所に保たれる。`Pow` は指数非負なら整数冪・負なら float（既存アームと同一）。
-      - **float/float**: `Div`/`Pow` を追加。**`//` と `%` は `apply_binop` に Float/Float アームが無い**（＝エラー）ため特化しない。
-      - **int/float 混在**: op を6つ増やす代わりに **`apply_bin_fast` に混在アームを追加**（`Lt`/`Gt`/`Div`/`Pow`）。
-        これで注釈の有無に関わらず `Bin`/`BinLocalLocal`/`BinLocalConst` の全経路が `apply_binop_dyn` への
-        降下を避けられる。**`LtEq`/`GtEq` の混在は追加していない**（下記の言語仕様の穴を参照）。
-      - **実測**: `(i % 7) + (i // 3) + (i & 255) + (i ^ 9) + (i | 4)` のループで **1.478x**（0.984s → 0.666s・
-        同一ビルドで許可 op のみ A/B・best-of-3）。Add/Sub/Mul しか特化できなかった従来との差。
-      - **同値性検証**: [examples/bench/numeric_ops_equivalence.ar](examples/bench/numeric_ops_equivalence.ar) を追加。
-        int/float/混在の全演算＋境界値（負値・ゼロ・負の指数）＋ゼロ除算 3 種＋float の inf/NaN を網羅し、
-        `--vm=off` と `--vm=auto` が **119 行 byte-identical** であることを確認する。
-
-    ##### ⚠️ 発見した言語仕様の穴 → **#18 として修正済み（2026-08-10）**
-    - `apply_binop` に int/float 混在の `<=` `>=` アームが無く、`i < f` は通るのに `i <= f` が TypeError だった。
-      (b)(iii) の実装中に混在アームを足したところ VM だけ成功して off/auto が割れたため発覚。
-      当時は「修正＝言語の挙動変更」として据え置き、後に **#18** へ昇格して修正した（str 比較の欠落も同時に）。
-
-    ##### ✅ 段階(b)(ii) `CheckBefore` 指示の消費（2026-08-10）
-    - **判明していた実態**: `Expr::MustBe` / `Expr::Cast` / `Expr::IsType` は `compile_expr` に arm が無く
-      `_ => return None` に落ちていた。つまり **`mustbe` / `=>` / `is` を 1 つでも含む関数は丸ごと
-      ツリーウォークへ bail** していた（検査が遅いのではなく、関数全体が VM 化されない）。
-    - **実装**: `Op::MustBe(name_idx, span_idx)` / `Op::Cast(name_idx)` を追加（`IsType` は既存 op を再利用、
-      `negated` は `Op::Un(Not)` で表現）。コンパイラは `check_required(node_id)` で
-      **`Directive::CheckBefore` を消費**して検査 op を出す。指示が無いノード（未採番・合成 AST・
-      モジュール横断で注釈なし）は「検査が要るか判らない」ので**その関数の VM 化を諦める**
-      ＝ 検査を省く方向へは決して倒さない。
-    - **意味論の一致は構造で担保**: 検査本体をコピーせず、ツリーウォークと VM が**同一メソッドを共有**する。
-      `Interpreter::mustbe_check`（[eval/core.rs](src/interpreter/eval/core.rs)）を新設し `Expr::MustBe` アームと
-      `Op::MustBe` の双方から呼ぶ。キャストも `eval_cast` を `eval_cast_evaled`（値を受ける版）へ分割し共有
-      （[eval/calls.rs](src/interpreter/eval/calls.rs)）。`mustbe_outer_type` を `pub(crate)` 化。
-    - **実測**: `mustbe` を含むホット関数で **2.04x**（off 0.956s → auto 0.468s）。
-      変更前はこの関数が bail していたので `auto` は `off` と同値だった＝**丸ごとの改善**。
-    - **注意（適用範囲）**: 既存例題（`mustbe.ar` / `polymorphism.ar` / `fixed_list.ar`）はこれらを
-      **モジュール top-level** で使っており、VM は関数本体しかコンパイルしないため新 op は 0 個。
-      効果が出るのは**関数内で使った場合**のみ。確認用に
-      [examples/typing/runtime_checks_in_function.ar](examples/typing/runtime_checks_in_function.ar) を追加した。
-    - **未実施（意図的）**: `CallInfo` の**引数境界検査**（`call_check.rs` が param 具象 × arg 動的で付ける
-      `CheckBefore`）。これは**現在どこでも実行されていない検査を新設する**ことになり、
-      今まで通っていたコードが実行時エラーになりうる＝ off/auto byte-identical を壊す**言語の挙動変更**。
-      段階(c) で境界検査をネイティブへインライン生成する設計と併せて判断すべきなので据え置いた。
-
-    ##### 🔬 引数境界検査の診断（2026-08-10・「設計が誤りか / 前提が未実装か」の切り分け）
-    **結論: 設計は誤っていない。生成側は意図どおり動いており、欠けているのは消費側だけ。**
-    - **計測手段**: `AstAnnotations::call_check_stats()`（[annotations.rs](src/type_check/annotations.rs)）＋
-      `AR_ANNOT_DIFF=1` 時に [main.rs](src/main.rs) が `AnnotCalls: calls=N args_with_CheckBefore=M` を出す。
-    - **実測（例題全件）**: `calls=1650` に対し `args_with_CheckBefore=5`（`functions.ar` 2 件・`cpp_struct_ptr.ar` 3 件）。
-    - **なぜ少ないか（設計の穴ではなく前提の重複）**: 生成条件は
-      「param 具象 × arg 動的（`Any` **または** `Unresolved`）」だが、**`Any` 側は静的型検査が既にハードエラーにする**
-      （`argument 0 of 'f' expects 'int' but got 'Any'`）。したがって実行時まで到達しうるのは
-      **`Unresolved` 側だけ**であり、件数が絞られるのは当然の帰結。
-    - **境界で本当に効くケースは存在する（実証済み）**:
-      ```
-      import[py-int] math as m
-      fn takes_int(let x: int) -> str: ...
-      let from_py = m.fabs(-3.5)   # 実体は float 3.5
-      print(takes_int(from_py))    # → "got 3.5 / doubled 7.0" が**エラーなしで**出る
-      ```
-      型検査はこの引数に `CheckBefore(int)` を正しく生成している。にもかかわらず**誰も実行しない**ため、
-      `x: int` と宣言したパラメータが実行時に float を保持したまま素通りする。
-      ＝「外部言語ライブラリ境界を超えるのに必要」という当初の判断は妥当で、**未実装なのは消費側だけ**。
-    - **付随して判明した非一貫性**: 同じ py 呼び出しでも、`json.loads(...)` は `Any` を返すと**スタブが宣言している**ため
-      静的エラーになり、`math.fabs(...)` はメンバ未知で呼び出し結果が `Unresolved` になるため無検査で通る。
-      **スタブが当該メンバを宣言しているかどうかで「静的拒否」と「無検査素通り」が分かれる**。
-      境界検査を実装する際はこの差を設計に織り込む必要がある（`Unresolved` を単に許すのではなく検査へ倒す）。
-
-    ##### 🔬 「スタブで潰しきれるか」の検証（2026-08-10）
-    **結論: 潰しきれない。しかも現行ルールは“スタブを整備するほど発火しなくなる”という逆向きの性質を持つ。**
-
-    **(A) スタブでは捕捉できず、動的境界検査なら捕捉できるケース — 存在する（実証済み）**
-    Python スタブは `.py` の型注釈をそのまま信用して `let f: function->int` を作る
-    （`extract_py_type_stubs`・[imports/mod.rs:112](src/parser/imports/mod.rs#L112)）。
-    **Python は注釈を実行時に強制しない**ので、注釈が嘘なら静的検査は素通りする。
-    ```python
-    def get_int() -> int:  return "I am a string"    # 注釈は int、実体は str
-    ```
-    ```
-    let a = L.get_int()
-    print(takes_int(a))     # fn takes_int(let x: int)
-    ```
-    → 実測: `x=I am a string doubled=I am a stringI am a string`。
-    **エラーも警告も出ず、`x * 2` が文字列反復として実行され“静かに誤った答え”が出る**（最悪の失敗形）。
-    `-> int` が `None` を返す版は `TypeError: unsupported operand types for Mul: NoneType and int` と、
-    **境界ではなく使用箇所を責める分かりにくいエラー**になる。
-    コンテナ要素型も同様: `-> list` が `[1, "two", 3.0]` を返し `list[int]` で受けると、
-    ループ内部で `Add: int and str` として初めて露見する（`mustbe list[int]` が要素型を検査しない旨の
-    既存警告 `MustBeElemTypeUnchecked` と同じ構造の穴）。
-
-    **⚠️ 最重要: これらのケースで `args_with_CheckBefore = 0`。**
-    現行ルールは「param 具象 × arg 動的」で発火するが、スタブが整うと arg 型が具象（`int`）になるため
-    **検査指示が生成されなくなる**。＝ **スタブを整備するほど保護が消える**という逆向きの依存。
-    危険なのは「引数の静的型が動的なとき」ではなく「**静的型は具象に見えるが値が外部由来のとき**」。
-
-    **(B) スタブでも動的検査でも救えないケース — こちらも存在する**
-    C/C++ の `void*` は Arrow の **`int`** に落ちる（[imports/mod.rs:399](src/parser/imports/mod.rs#L399)）。
-    型タグは「int である」以上の情報を持たないので、動的型検査を入れても静的型と同じことしか言えず**無意味**。
-    ここを守るには型検査ではなく**ハンドルの出所・生存期間の追跡**が要る（別軸の課題）。
-
-    **(C) スタブが既に対処できているケース**
-    `OpaqueStructPtr`（`FILE*`/`HWND` 等）と `ByValueStruct` は Arrow の **`Any`** に落ちる。
-    `Any` を具象パラメータへ渡すのは現状ハードな静的エラーなので、ここは既に塞がっている
-    （やや過剰で、利用側に cast/`mustbe` を強制する）。
-
-    **→ 設計上の含意**: 境界検査は**引数の静的型ではなく「値が FFI 境界を越えてきた」という出所**を鍵にすべき。
-    具体的には「Arrow 呼び出しの引数を検査する」のではなく、
-    **外部呼び出しの戻り値をスタブ宣言型と突き合わせて Arrow へ入る瞬間に検査する**方が、
-    (A) を正面から捕まえられ、スタブ整備と矛盾しない（スタブが宣言した型が検査の根拠になる）。
-
-    ##### ✅ 段階(b)(i) 属性アクセスの高速化（2026-08-10）
-    - **当初の想定は外れた**: 「静的にクラスが確定していれば R3 IC のチェックを省く」つもりだったが、
-      `GetAttr` のヒット経路（[run.rs](src/vm/run.rs)）を読むと IC ヒットは既に
-      `class_id` の整数比較＋アクセス種別チェックだけで、**静的化しても削れるのはこの 2 つの比較のみ**。
-      実際の支配項は別で、`local.attr` が `LoadLocal(slot); GetAttr(..)` に展開されるため
-      **`LoadLocal` が `Value` を clone する＝`Rc` の refcount 増減が属性読みごとに発生**していた。
-    - **実装**: 二項演算の超命令と同じ手を属性へ適用。`Op::GetAttrLocal(slot, name_idx, cache_idx)` を追加し、
-      レシーバを **frame から参照で読む**（clone・push/pop なし）。IC ミス・非 public・非インスタンスのときだけ
-      clone してフルパス（`get_attr_val`）へ回すので意味論は `GetAttr` と同一。
-    - **実測**: 属性オペランドの二項演算ループ **1.1446s → 0.8298s = 1.379x**、
-      `bench_field_access.ar`（呼び出し支配）**1.2217s → 1.1061s = 1.105x**。
-      (b)(iii) までの積み上げと合わせ、属性読みが多いコードで効く。
-    - **検証**: [examples/classes/attr_access_paths.ar](examples/classes/attr_access_paths.ar) を追加。
-      局所変数レシーバ／ネスト属性（外側は非局所）／public・private／テンプレート経由で同じ命令に
-      別クラスが流れる場合（**IC ミス→再解決**）／存在しない属性（AttributeError）を網羅し off/auto 一致。
-    - **メソッド呼び出しの融合（`CallMethodLocal`）も実施 2026-08-10**:
-      `local.method(args)` を `Op::CallMethodLocal(slot, name_idx, argc, mut_mask)` へ融合し、
-      レシーバをスタックへ積まず frame から読む。**ただし属性読みと違い clone は消せない**
-      （レシーバは呼び先の `self` として所有権が要る）。消えるのは `LoadLocal` の op ディスパッチと
-      push/pop 1 組だけなので、**実測 1.042x**（1.375s → 1.320s・同一ビルドで emit のみ A/B・best-of-3）と小さい。
-      §4.3 の「残る速度余地は呼び出し機構（bind/フレーム構築）」という知見どおりで、
-      **レシーバの受け渡しは支配項ではなかった**。
-      - **評価順の注意**: 融合版は引数評価後に frame を読む（融合前はレシーバが先）。
-        VM がコンパイルするコードでは式の評価中に自フレームの slot が再束縛されない
-        （再束縛は文＝`StoreLocal` のみ・クロージャ捕捉は VM 非対応で bail）ため観測は同一。
-        [examples/classes/method_call_paths.ar](examples/classes/method_call_paths.ar) で
-        引数自体がメソッド呼び出し／`mut self`／ネストしたレシーバ／非局所レシーバを網羅し off/auto 一致を確認。
-      - **測定上の落とし穴**: `bench_method_call.ar` の hot loop は**モジュール top-level** にあり
-        VM が一切コンパイルしないため、この融合の測定には使えない（当初これで測って誤った数字を出した）。
-        関数内のループで測ること。
-
-    ##### ✅ 段階 F — モジュール横断の注釈（2026-08-10・**#16 完了**）
-    調べたところ欠けは **2 段階**あり、当初想定（「import 先の本体に注釈が付かない」）より広かった。
-
-    **(F-1) 型検査のレジストリが import 先の定義を収集していなかった**
-    （[registry/builder.rs](src/type_check/registry/builder.rs) の `collect` に Import アームが無かった）。
-    そのため import したクラスが `known_class_names` に載らず、**メインプログラム側でも**
-    `v.x`（`v: Vec2` が import 由来）の型が引けなかった。
-    実測: import クラスを使う算術 3 件が**すべて特化されず**（`Attr` 由来の `Unresolved` が 4 件）。
-    → `Stmt::Import` / `Stmt::FromImport` の `body` へ再帰するようにした。
-    **`fn_sigs` は `push` で積むため二重収集すると偽のオーバーロードになる**（単一シグネチャ前提の
-    高速パスが崩れる）ので、`(lang, モジュールパス)` で重複を弾く。
-
-    **(F-2) import 先モジュールの関数本体が型検査の走査対象外だった**
-    （`Stmt::Import` は `collect_module_types`＝署名読みしか通らなかった）。
-    実測: 同じ式でもメイン側は `FBIN_SS`、import 先は `BIN` のままという非対称が起きていた。
-    → `TypeChecker::annotate_module_body`（[stmt/resolve.rs](src/type_check/stmt/resolve.rs)）を追加し、
-    本体を**隔離スコープで検査して注釈だけ採取**する。
-    - **診断は捨てる**: モジュール自身の型エラーは、そのモジュールを直接実行/`--compile` した
-      ときに報告されるべきもの。ここで出すと import 側に二重に出る（動作確認済み: 型エラーを含む
-      モジュールを import しても import 側は正常終了する）。
-    - 重複走査は `annotated_modules` で防ぐ。
-
-    **結果**: 例題全件の特化 binop **235 → 248**。合成テストでは import クラスを使う算術が 0/3 → 3/3。
-    **FFI 境界検査も import 先で有効になった**（`lib2.ar` 内の py 呼び出しが `FfiTypeError` を出す）。
-    node-id の一意化（C1 の実装漏れ修正）と合わせ、**注釈がプログラム全体へ行き渡った**。
-    例題: [examples/interop/cross_module_annotation.ar](examples/interop/cross_module_annotation.ar)。
-
-    ##### ✅ 段階 E — テンプレート実体化での型特化（2026-08-10）
-    **問題**: テンプレートは実体化時に AST を複製して型変数を具体型へ置換するが、**node-id は原型から
-    コピーされる**ため、注釈テーブルは「型変数のままの原型」を指したままになる。
-    型検査は `x: T` を `NamedInstance("T")`（実在しないクラス扱い）として通すので、
-    注釈は**間違ってはいないが常に `Unresolved` 相当**で、`Foo[int]` でも型特化 op が一切出なかった。
-
-    **採らなかった案**: 実体化ごとに node-id を再採番して型検査を再実行する。
-    テンプレート実体化は**実行時**（`templates.rs` の `subst`）に起きるため、
-    型検査器（プログラム全体のレジストリを要する）を実行時に走らせる必要があり、
-    得られる効果に対して構造変更が大きすぎる。
-
-    **採った案**: 注釈が無いとき **実体化後の AST に書かれている型注釈から特化種別を導出する**
-    （`Compiler::local_operand_kind`・[compiler.rs](src/vm/compiler.rs)）。
-    `subst` は param の型注釈を具体型へ置換済み（`a: T` → `a: int`）で、VM コンパイラは
-    それを `slot_type` に持っている。両オペランドが同一プリミティブ注釈の局所変数
-    （数値リテラルは相方に合わせる）のときだけ種別を返す。
-    - **健全性**: 特化 op は実行時型が想定外なら汎用へフォールバックするので、
-      導出が外れても**結果は変わらない**（速度の無駄が出るだけ）。
-    - **副次効果**: 同じ理由で**注釈テーブルが届かない箇所（import 先モジュール等）にも効く**
-      ＝ 段階 F の一部を実質的に前倒しできている。
-    - **実測**: テンプレート実体化ループで **int 1.059x / float 1.086x**
-      （同一ビルドで導出のみ A/B）。例題全件の特化件数は 231 → 235。
-    - **例題**: [examples/typing/template_specialization.ar](examples/typing/template_specialization.ar)
-      （同一テンプレートを int/float/str で実体化＝ node-id 共有下での正しさを確認）。
-    - **付随して見つけた既存制約**: `str < str` は `apply_binop` が未対応で
-      `TypeError: unsupported operand types for Lt: str and str` になる（テンプレートとは無関係・off/auto 同一挙動）。
-      #18 の「混在 `<=`/`>=` が無い」と同じ系統の穴。
-
-    ##### ✅ 段階(c-3) — ネイティブ codegen が注釈を第一の根拠にする（2026-08-10・**#16 の目的達成**）
-    `field_ty_resolved` を `legacy` 返しから **`annotated.or(legacy)`** へ変更
-    （[context.rs](src/partial_compiler/llvm_codegen/context.rs)）。これで
-    **ツリーウォーク／VM／ネイティブの三経路が同じ AST 型解決注釈を根拠に動く**＝ #16 の当初目的。
-    自前導出 `field_ty` はフォールバックとして残す（実測で `legacy_only=0`・`conflict=0`＝
-    自前導出が注釈より広く解けるケースは 1 件も無いが、node-id が付かない合成 AST 用のゼロコストな保険）。
-
-    - **効果は c-2 時点の見積もり（`annot_only=7`）を大きく超えた**。属性が typed になると
-      **その先の演算まで連鎖して typed になる**ため。`flat_bench_module.compute_mut` の IR で:
-      - 変更前: `p.x` が `CB_GET_ATTR`（**ハンドル**を返す）→ 算術も `CB_BINOP`（ボックス化）→ 最後に `CB_TO_FLOAT`
-      - 変更後: `p.x` が `CB_GET_FLOAT_FIELD`（**`double` を直返し**）→ **ボックス化二項演算コールバックが全て消滅**し
-        ネイティブ float 演算に。関数内の `call` 命令が 25 → 13、IR 全体 12783 → 11313 バイト。
-    - **実測**: `flat_bench.ar` の mutable-list 経路（25M 要素アクセス）が
-      **43.90s → 25.36s = 1.73x**（同一ビルドで `annotated.or(legacy)` ⇄ `legacy` を A/B）。
-    - **数値の一致を確認**: 同じ入力に対しツリーウォーク（`.arc` 無し）とネイティブ（`--compile` 後）が
-      ともに `5008.9693499999985` を返す。
-    - **他 5 モジュールの IR は byte-identical**（注釈が自前導出を上回るのが flat_bench_module だけだったため）。
-    - **`CallInfo` の引数検査指示を境界インライン生成する話は取り下げ**: この役割は
-      FFI 境界検査（戻り値方向・`ffi_boundary`）が担い、そちらの方が本質的だと判明したため
-      （スタブ整備と同じ向きに強くなる／引数方向は向こうの型が不明なことが多い）。
-
-    ##### ✅ 段階 D — 型検査の解像度・第3弾（2026-08-10）
-    **推測せず計測から入った**。`binop_kind` が付かなかった二項演算を理由別に数える診断を追加
-    （`AstAnnotations::note_binop_miss` / `note_unresolved_source`・`AR_ANNOT_DIFF=1` で出力）。
-    - **初期値（例題全件）**: binop 559 件中 **specialized=214 / miss=345**。
-      miss の内訳は `both_unresolved=101` / `one_unresolved=150` / `resolved_but_mixed=94`
-      ＝ **miss の 73%（251/345）が `Unresolved` 絡み**で、「律速は型検査の解像度」という仮説を数字で確認。
-    - **`Unresolved` の発生源**（式の種類別）: `BinOp` 123 / `Call` 118 / `Ident` 95 / `Attr` 14 / `TraitAccess` 2。
-      `BinOp` と `Ident` は**伝播**であり、**根は `Call`**（＝戻り値型が判らない呼び出し）と特定。
-    - **修正 1: `Expr::ForExpr` がループ変数を宣言していなかった**（[infer.rs](src/type_check/infer.rs)）。
-      `Stmt::For` は先に直していたが**式の for が漏れていた**。本体では変数が未宣言＝`Unresolved` だった。
-      なお修正直後は特化件数が**減った**。原因は、未宣言だったせいで**外側スコープの同名変数を拾って
-      偶然型が付いていた**ケースがあったため。これが次の修正の必要性を露わにした。
-    - **修正 2: `range()` に戻り値型 `list[int]` を与えた**（[type_check/mod.rs](src/type_check/mod.rs)）。
-      `range` は型検査のグローバルに登録が無く未知の識別子扱いで、`range(n)` が `Unresolved`
-      → **`for i in range(n)` のループ変数が型無し**になっていた。最頻出のループ形なのに本体が一切特化されない。
-    - **結果**: specialized **214 → 231**（miss 345 → 328）。
-      `for i in range(n)` のループで **1.153x**（0.460s → 0.399s・同一ビルドで A/B・best-of-3）。
-    - **`len`/`repr` は意図的に外した**: ここへ登録した名前はグローバルスコープを占めるため
-      `let len = ...` が「already declared」の静的エラーになる（`int`/`str` と同じ扱い）。
-      `let len = ...` は今まで通っていた書き方で**新たなエラーを増やす**割に、特化件数の伸びは **+1** しかなかった。
-      `range` は変数名として使われることが稀なので残した。
-    - **例題**: [examples/basics/for_range_typing.ar](examples/basics/for_range_typing.ar)
-      （文の for・入れ子・for 式・`len` 利用・外側と同名のループ変数）。
-    - **残る miss の主因**: `partial_call_overhead.ar`(69) と `bottleneck_bench.ar`(68) が突出しており、
-      いずれも **`time.time()` など py 組み込みモジュールの呼び出しが `Unresolved`** を生んでいる。
-      `time` は C 実装で `.py` ソースが無くスタブを抽出できないため、**型検査の推論規則ではこれ以上詰められない**。
-      次に効くのは**組み込み py モジュール向けのスタブ整備**（#17-b と同じ「スタブで潰す」方向）。
-
-    ##### ✅ FFI 境界検査 — (A) への対応（2026-08-10）
-    **設計方針**: 検査の鍵を「引数の静的型が動的か」から「**値が FFI 境界を越えてきたか**」へ移した。
-    従来の `CheckBefore`（param 具象 × arg 動的）は**スタブが整うほど発火しなくなる**逆向きの性質を持つが、
-    本機構は**スタブが宣言した型を検査の根拠にする**ので、スタブ整備の方針と同じ向きに強くなる。
-
-    - **検査点**: 外部関数呼び出しの**戻り値**が Arrow へ入る瞬間。
-      `Interpreter::check_ffi_return`（[eval/calls.rs](src/interpreter/eval/calls.rs)）。
-      宣言型は **型検査が Call ノードへ焼いた解決型**（＝ #16 の注釈テーブル）から引く。段階(a) の基盤がそのまま効いた。
-    - **経路**: `mod.func()`（`Expr::Attr` → `eval_method_call` へ委譲）と、PyObject/JsProcFn を直接呼ぶ形の両方。
-      前者は委譲先の署名を増やさぬよう、呼ぶ前に `foreign_call_lang` で呼び先の言語だけ覗く。
-    - **言語ごとの検査器**: [src/interpreter/ffi_boundary.rs](src/interpreter/ffi_boundary.rs)（新規）。
-      `trait BoundaryChecker` ＋ 言語非依存の共通判定 `check_common`、言語登録は `checker_for` の 1 行。
-      **言語を足すときの変更は「impl を書く」「`checker_for` に 1 行」の 2 箇所だけ**（呼び出し側・エラー生成・
-      値の差し替えは共通実装）。
-      - `PythonChecker`: 共通判定そのまま（Python は int/float を区別して届く）。
-      - `JavaScriptChecker`: **JS は数値がすべて f64** で届く（`decode_result` の `"f"`）。
-        素朴に「int か」を見ると正しいコードが落ちるので、**整数値の Float は `int` 宣言に適合として `Int` へ寄せる**
-        （`Verdict::Coerce`）。小数を持つ値は本物の不一致。要素が int のリストも同じ緩和を適用。
-      - 静的型付け言語（C/C++・C#・Rust）は登録しない＝無検査（向こう側が型を守るため）。
-    - **判定は 4 値**: `Ok` / `Coerce(値)` / `Mismatch` / `Unverifiable`。
-      **判定できない宣言型（`Any`/`Unresolved`/関数型/`NamedInstance` 等）は `Unverifiable` で素通し**。
-      誤検知で正しいコードを落とすより取りこぼす方に倒した。＝ スタブが無い箇所の挙動は変わらない。
-    - **コンテナは要素型まで検査する**（`list[int]` と宣言して `[1, "two", 3.0]` が返る、が実際の失敗例）。
-      走査コストは `py_to_tl` が既に全要素を歩いているのと同オーダー。
-
-    ##### ✅ スタブ側の穴埋め（`Unresolved`/`Any` を減らす）
-    - **PEP 585 の小文字ジェネリクスに未対応だった**: `py_type_to_arrow`（[imports/mod.rs](src/parser/imports/mod.rs)）は
-      `typing.List[T]` は見ていたが **`list[int]`（Python 3.9+ の標準表記）を catch-all で `Any` に落としていた**。
-      その結果スタブが要素型を失い、境界検査も `Any` は検査不能として素通しするため機構が成立しなかった。
-      `list[T]` / `set[T]` / `Set[T]` / `dict[...]` / `tuple[...]` を追加。
-    - **PEP 604 の `X | None` / `X | Y`** も `Option[T]` / `Union[T, U]` へ変換するようにした
-      （角括弧を含む場合は入れ子の区切りと紛れるので対象外＝保守的）。
-    - これで **スタブを書けば書くほど静的にも動的にも締まる**（`Unresolved` はスタブで潰し、
-      潰しきれない「スタブが嘘をつく」ケースは境界検査が動的に捕まえる）という二段構えが成立する。
-
-    ##### 🧪 検証
-    - `cargo test` **696 緑**（`ffi_boundary` の言語別ポリシー単体テスト 10 件を追加）。警告 0。
-    - 例題: [ffi_boundary_check.ar](examples/interop/ffi_boundary_check.ar)（正例・スタブどおりなら無干渉）／
-      [ffi_boundary_check_error.ar](examples/interop/ffi_boundary_check_error.ar)（負例）
-      ＋素材 [ffi_probe/](examples/interop/ffi_probe/)。
-    - 実測（`lying_py.py`）: `-> int` が str/None を返す、`-> list[int]` が `[1,"two",3.0]` を返す、の 3 例とも
-      **境界の行を指す `FfiTypeError`** になった。以前は 1 つ目が `doubled=...` を静かに誤答し、
-      2 つ目は使用箇所で `Mul: NoneType and int` という分かりにくいエラーになっていた。
-    - 例題スキャン FAIL 0・off/auto 35 例題 byte-identical（検査は解釈経路の共通部分に入るため両モード同一）。
-
-    ##### 🐛 node-id のモジュール横断衝突を修正（2026-08-10・境界検査導入で顕在化）
-    設計判断は **C1「グローバル採番」** だったが、実装は **per-module で 1 始まり**になっていた
-    （サブパーサが `node_counter: 0` から採番）。import 先モジュールの node-id がメインと衝突し、
-    **消費側が別モジュールの注釈を読む**状態だった。
-    VM の型特化のように実行時フォールバックを持つ消費者は結果が変わらないので今まで露見しなかったが、
-    **注釈を信頼する FFI 境界検査では誤検知**になる。実際に再現した:
-    別モジュール内の `P.give_int()`（正しく int を返す）が
-    `declared to return 'str' but returned 'int'` と報告された。
-    → `Parser.node_counter` を `Rc<Cell<u32>>` にしてサブパーサへ共有し、プログラム全体で一意にした
-    （[parser/mod.rs](src/parser/mod.rs)・[imports/ar_modules.rs](src/parser/imports/ar_modules.rs)・
-    [imports/cs_js_modules.rs](src/parser/imports/cs_js_modules.rs)）。
-    import 先モジュールの関数本体は型検査の対象外なので**注釈が付かない＝検査がスキップされる**（安全側）。
-    そこまで検査を効かせるには下記「モジュール横断の注釈管理」が要る。
-
-    ##### ⚠️ この機構でも救えない範囲（→ #17 へ昇格）
-    - **C/C++ の `void*`** は Arrow の `int` に落ちる。型タグは「int である」以上を語らないので、
-      動的検査を入れても静的型と同じことしか言えない → **#17-a（専用型の導入）**。
-    - **JS はスタブ（`.ars`）に型が書かれていて初めて効く**。現状の `.ars` は型を持たないため実質無検査
-      → **#17-b（基本は `Any`・`.d.ts` があればそれを使ってスタブ生成）**。
-    - **引数方向**（Arrow → 外部）は対象外。向こう側の引数型が分からない場合が多く、
-      分かる場合は静的検査で足りるため。
-
-    ##### ⬜ 残り（次スレッドの着手候補）
-    - ~~**段階(b)**~~ 【✅ (i)(ii)(iii) すべて完了】
-      （(i) `GetAttrLocal` ＋ `CallMethodLocal`、
-      ~~(ii) `CheckBefore` 指示の消費~~ 【✅ 完了】、
-      ~~(iii) 融合できない形への型特化~~ 【✅ 完了・`IntBinSS`/`FloatBinSS` ＋ Div/Mod/Pow/bit ＋ 混在】。
-      **(ii) の残り**: Call 引数の境界検査（上記のとおり挙動変更なので要判断）。
-    - ~~for ループターゲットの要素型推論~~ 【✅ 完了 2026-08-10】（下記参照）。
-    - ~~`infer_attr` の戻り値をフィールド実型にする~~ 【✅ 完了 2026-08-10】（型検査の解像度・第2弾）。
-    - ~~型検査の解像度・第3弾~~ 【✅ 完了 2026-08-10】（下記「段階 D」節）。
-    - ~~**段階(c-3)**~~ 【✅ 完了 2026-08-10】（上記「段階(c-3)」節）。
-      c-2 時点では「注釈が codegen を上回るのは 7 箇所だけ＝効果は小さい」と見積もっていたが、
-      **属性が typed になると演算まで連鎖する**ため実際は 1.73x だった。見積もりが外れた理由も記録済み。
-    - ~~**テンプレート対応**~~ 【✅ 完了 2026-08-10・段階 E】（実体化後の型注釈から特化種別を導出）。
-    - ~~**モジュール横断（段階 F）**~~ 【✅ 完了 2026-08-10】（レジストリの import 収集＋本体の注釈採取）。
-
-    **→ #16 はこれで完了。以降に残るのは下記の「⚠️ 別途の再検討事項」と、番号付きリストの #17/#18。**
-
-    ##### ✅ for ループターゲットの要素型推論（c-2 結論 4 の前提・2026-08-10）
-    - **実装**: `TypeChecker::for_element_type`（[stmt/resolve.rs](src/type_check/stmt/resolve.rs)）＋
-      `Stmt::For` の検査（[stmt/check.rs](src/type_check/stmt/check.rs)）。`ListOf`/`FixedListOf`/`ListLikeOf`/`SetOf` は要素型、
-      `Str` は 1 文字ずつの `Str`、**全要素同型のタプル**はその型、それ以外は従来どおり `Unresolved`。
-      分割代入（`for k, v in pairs`）は要素型が要素数一致の `Tuple` のときのみ各要素型を割り当てる。
-      **`dict` は Arrow では反復不可**（`make_for_iterator` が `TypeError`）なので対象外。
-    - **効果（実測）**: `flat_bench_module.compute_mut` の `p.x` 等 7 箇所が `neither=7` → **`annot_only=7`**
-      （＝注釈のみが解決＝ネイティブ codegen が新たに型特化できる箇所）。全モジュールで `conflict=0`。
-    - **意味論の変化（小さい）**: 欠落フィールドは元々静的検査対象外（`check_member_access_static` は
-      `has_field` が false なら早期 return）なので**エラーは増えない**。増えるのは
-      **ループ変数経由の private/protected アクセス**が `StaticTypeError` として捕捉されるケース（動作確認済み）。
-    - **検証**: `cargo test` **686 緑**・警告 0・off/auto **32 例題 byte-identical**・例題スキャン **FAIL 0**。
-      FAIL 0 は本変更前（HEAD）でも同じ 5 件が失敗しており**回帰ではない**ことを、変更を退避して HEAD をビルドし直し
-      同一スキャンで確認済み（下記「例題の修正」参照）。
-
-    ##### 🧹 例題の修正（上記の検証で判明した既存不具合・2026-08-10）
-    for 推論とは無関係に前から失敗していた 5 例題を修正した（言語仕様どおりのエラーで、例題側が古かったもの）。
-    - `built_in.ar` — `class Box` にフィールド宣言が無い（`mut val: int` を追加）。さらに
-      `make_and_write` が**コミット済みの生成物 `_tmp_new.txt`** に阻まれるため、`import[py-int] os` ＋
-      `try: os.remove(...)` で先に後始末する（`import[py-int] os.path` は**組み込みの `path` 型を隠す**ので不可）。
-    - `collection.ar` — `class Stack` にフィールド宣言が無い（`mut items: list[int]` を追加）。
-    - `functions.ar` — `mut count: int = 0` は仕様違反（`const`/`static mut` のみ既定値可）。`__init__` で初期化へ。
-    - `variable.ar` — freeze 後の書き込み TypeError が未捕捉でスクリプトが中断し、以降の約 6 割が未実行だった。try/except で捕捉。
-    - `importation.ar` — `import[rs] sha2` のクレートが `rust.crates_path` に無い**環境要因**。ソースは正しいので
-      [run_examples.ps1](run_examples.ps1) / [compare_vm_modes.ps1](compare_vm_modes.ps1) の skip へ追加した。
-
-    ##### ⚠️ 別途の再検討事項（本タスク範囲外）
-    - **`Ident` 表現の再設計**: `Ident` は葉の名前参照だが**タプル変種 `Ident(String)`・97 サイト**で node-id 化は極めて侵襲的。
-      現状は「Ident に注釈せず型は消費側（BinOp/Call/Attr）で捕捉」で回避。将来「Ident を構造体変種化して node-id/解決情報を
-      持たせる」等の AST 再設計は独立に評価する。
-
-    ##### 🔧 検証スクリプト（本タスク用に追加）
-    - [dump_native_ir.ps1](dump_native_ir.ps1) — 代表 6 モジュールを `--compile` して生成 LLVM IR を保存
-      （`AR_DUMP_LL` フック・[module_compiler.rs](src/partial_compiler/module_compiler.rs)）。codegen 変更の前後で
-      ハッシュ比較し **IR byte-identical** を確認する。`.arc`/`.ars` は退避・復元するので作業ツリーは汚れない。
-    - [annot_diff.ps1](annot_diff.ps1) — `AR_ANNOT_DIFF=1` で「自前導出 vs 注釈」の一致内訳と、
-      `Ty::Handle` へ落ちた式のうち注釈が具象型を持つ件数を出力する。
-    - [compare_vm_modes.ps1](compare_vm_modes.ps1) — 例題を `--vm=off` / `--vm=auto` で走らせ **stdout byte-identical** を検証。
-      `examples/bench` は経過時間を出力するため既定で除外（`-IncludeBench` で含める）。1 例題ごとに `-TimeoutSec`。
-      **ヒープアドレスは正規化する**（`id()` の `pointer.value`・`<Index object at 0x…>` は同一モードの 2 回実行でも
-      変わるため、伏せないと VM モード差と区別できない）。
-
-    ##### 🔧 現在の git 状態（**重要**）
-    - 段階(a)/(b) の実装コードは**コミット済み**（ブランチ `byte-code`・コミット **`#13-1`〜`#13-5`**＝
-      `4034f62`/`f35a0d2`/`04be005`/`086ec6c`/`9261855`）。`cargo test` **686 緑**・**警告0**・off/auto byte-identical を確認済み。
-    - **段階(c-1)/(c-2) はコミット済み**（`22bfa31 "#16"`・ユーザーが作成）。`cargo test` **686 緑**・**警告 0**・
-      代表 6 モジュールの **IR byte-identical**・off/auto byte-identical を確認済み。
-    - **未コミット**（2026-08-10 時点）: for ループ要素型推論（`stmt/check.rs`・`stmt/resolve.rs`）＋
-      例題 4 件の修正＋`run_examples.ps1`/`compare_vm_modes.ps1` の skip・正規化追加。
 
 ### 実装メモ（プラン記述からの差分・追記）
 - **例外は「静的例外テーブル」ではなく実行時ハンドラスタック**: `run` が `Vec<Handler{handler_ip, stack_len}>` を持ち、

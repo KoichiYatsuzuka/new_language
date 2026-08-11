@@ -870,7 +870,7 @@
     fn test_alias_expands_in_expr_position() {
         let stmts = parse("alias handle: int\nlet y = handle\n");
         assert!(
-            matches!(&stmts[1], Stmt::Let(name, None, Expr::Ident(id)) if name == "y" && id == "int"),
+            matches!(&stmts[1], Stmt::Let(name, None, Expr::Ident { name: id, .. }) if name == "y" && id == "int"),
             "got: {:?}",
             stmts[1]
         );
@@ -946,7 +946,7 @@
         ));
         // stmts: [0] FnDef, [1] Let("y", ...) — 関数外の `k` は alias 展開されず素の識別子。
         assert!(
-            matches!(&stmts[1], Stmt::Let(name, None, Expr::Ident(id)) if name == "y" && id == "k"),
+            matches!(&stmts[1], Stmt::Let(name, None, Expr::Ident { name: id, .. }) if name == "y" && id == "k"),
             "got: {:?}",
             stmts[1]
         );

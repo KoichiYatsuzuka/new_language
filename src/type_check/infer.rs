@@ -68,12 +68,20 @@ impl TypeChecker {
             // --- 識別子 ---
             // LocalRef はリゾルバ（型検査後に走る）が付ける解決済みローカル参照。
             // 型検査中に現れることはないが、網羅性のため Ident と同じく名前で引く。
-            Expr::Ident(name)
-            | Expr::LocalRef { name, .. }
-            | Expr::GlobalRef { name, .. } => self
-                .lookup(name)
-                .map(|v| v.ty.clone())
-                .unwrap_or(InferredType::Unresolved),
+            Expr::Ident { name, node_id }
+            | Expr::LocalRef { name, node_id, .. }
+            | Expr::GlobalRef { name, node_id, .. } => {
+                let result = self
+                    .lookup(name)
+                    .map(|v| v.ty.clone())
+                    .unwrap_or(InferredType::Unresolved);
+                // ── AST 型解決層（#15b）── 参照サイトごとの型を焼く。
+                // 変数単位ではなく**参照位置単位**なのが要点で、型ガード絞り込みは
+                // 分岐スコープでの再 `declare` として実装されているため、同じ変数でも
+                // 参照位置によって `lookup` の答えが変わる。
+                self.annotations.set_resolved(*node_id, result.clone());
+                result
+            }
 
             // --- local::name 変数 ---
             Expr::LocalVar(name) => {
@@ -485,7 +493,7 @@ impl TypeChecker {
 /// 式の種類名（#16 段階 D の診断用）。`Unresolved` を生んだ式の分布を取るために使う。
 fn expr_kind_name(e: &Expr) -> &'static str {
     match e {
-        Expr::Ident(_) | Expr::LocalRef { .. } => "Ident",
+        Expr::Ident { name: _, .. } | Expr::LocalRef { .. } => "Ident",
         Expr::LocalVar(_) => "LocalVar",
         Expr::Call { .. } => "Call",
         Expr::Attr { .. } => "Attr",

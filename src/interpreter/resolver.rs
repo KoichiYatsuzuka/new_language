@@ -498,11 +498,15 @@ fn rewrite_call_arg(arg: &mut CallArg, base: &HashMap<String, u32>,
 fn rewrite_expr(expr: &mut Expr, base: &HashMap<String, u32>,
     globals: &HashSet<String>) {
     match expr {
-        Expr::Ident(name) => {
+        Expr::Ident { name, node_id } => {
+            // node_id は書き換え先へ引き継ぐ（#15b）。型検査はリゾルバより前に走るので、
+            // ここで落とすと解決済み参照から注釈を引けなくなる。
+            let node_id = *node_id;
             if let Some(&slot) = base.get(name) {
                 *expr = Expr::LocalRef {
                     name: name.clone(),
                     slot,
+                    node_id,
                 };
             } else if globals.contains(name) {
                 // base（引数＋本体直下宣言）に無く、最上位で宣言された名前 → グローバル確定。
@@ -510,6 +514,7 @@ fn rewrite_expr(expr: &mut Expr, base: &HashMap<String, u32>,
                 *expr = Expr::GlobalRef {
                     name: name.clone(),
                     cache: crate::ast::SlotCache::default(),
+                    node_id,
                 };
             }
         }

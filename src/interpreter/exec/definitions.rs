@@ -223,13 +223,13 @@ impl Interpreter {
                 // `new_type Meters: int` → `class Meters: mut value: int` と等価
                 let init_body = vec![Stmt::AttrAssign {
                     target: Expr::Attr {
-                        object: Box::new(Expr::Ident("self".to_string())),
+                        object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0 }),
                         attr: "value".to_string(),
                         span: crate::token::Span::unknown(),
                         cache: Default::default(),
                         node_id: 0, // #16: 合成/変換コード（注釈対象外）
                     },
-                    value: Expr::Ident("value".to_string()),
+                    value: Expr::Ident { name: "value".to_string(), node_id: 0 },
                 }];
                 let init_fn = Rc::new(FnValue {
                     name: "__init__".to_string(),
@@ -298,13 +298,13 @@ impl Interpreter {
         let item_type_name = format!("enum_item_{}", name);
         let init_body = vec![Stmt::AttrAssign {
             target: Expr::Attr {
-                object: Box::new(Expr::Ident("self".to_string())),
+                object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0 }),
                 attr: "value".to_string(),
                 span: crate::token::Span::unknown(),
                 cache: Default::default(),
                 node_id: 0, // #16: 合成/変換コード（注釈対象外）
             },
-            value: Expr::Ident("value".to_string()),
+            value: Expr::Ident { name: "value".to_string(), node_id: 0 },
         }];
         let init_fn = Rc::new(FnValue {
             name: "__init__".to_string(),

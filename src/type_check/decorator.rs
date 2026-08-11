@@ -15,7 +15,7 @@ impl TypeChecker {
         self.infer(decorator);
 
         let dec_name = match decorator {
-            Expr::Ident(name) => name.clone(),
+            Expr::Ident { name, .. } => name.clone(),
             _ => return,
         };
 

@@ -337,7 +337,7 @@ impl TypeChecker {
     /// `match` 文を型検査する。`is Type` パターンでは対象変数を各腕スコープ内で絞り込む。
     fn check_match(&mut self, subject: &Expr, arms: &[MatchArm]) {
         let subject_ty = self.infer(subject);
-        let subject_name: Option<String> = if let Expr::Ident(n) = subject {
+        let subject_name: Option<String> = if let Expr::Ident { name: n, .. } = subject {
             Some(n.clone())
         } else {
             None
@@ -400,7 +400,7 @@ impl TypeChecker {
         let Expr::IsType { expr, type_name, negated, span, .. } = cond else {
             return None;
         };
-        let Expr::Ident(var_name) = expr.as_ref() else {
+        let Expr::Ident { name: var_name, .. } = expr.as_ref() else {
             return None;
         };
         Some((var_name.clone(), type_name.clone(), *negated, span.clone()))
@@ -421,7 +421,7 @@ impl TypeChecker {
         if attr != "is_OK" && attr != "is_ERR" {
             return None;
         }
-        let Expr::Ident(var_name) = object.as_ref() else {
+        let Expr::Ident { name: var_name, .. } = object.as_ref() else {
             return None;
         };
         let info = self.lookup(var_name)?;

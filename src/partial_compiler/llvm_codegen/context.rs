@@ -51,6 +51,7 @@ impl<'a> GenCtx<'a> {
             discarded_fast:        HashSet::new(),
             attr_stats:            AttrResolutionStats::default(),
             expr_stats:            HandleFallbackStats::default(),
+            ident_stats:           IdentHandleStats::default(),
         }
     }
 

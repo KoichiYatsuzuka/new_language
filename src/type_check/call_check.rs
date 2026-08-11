@@ -16,7 +16,7 @@ impl TypeChecker {
         // __freeze__ may only be invoked via the `freeze` keyword, never as a direct call.
         let freeze_span = match func {
             Expr::Attr { attr, span, .. } if attr == "__freeze__" => Some(span.clone()),
-            Expr::Ident(name) if name == "__freeze__" => None,
+            Expr::Ident { name, .. } if name == "__freeze__" => None,
             _ => {
                 // Not a __freeze__ call — proceed normally.
                 #[allow(clippy::needless_return)]
@@ -95,7 +95,7 @@ impl TypeChecker {
             };
 
         let func_name = match func {
-            Expr::Ident(name) => Some(name.clone()),
+            Expr::Ident { name, .. } => Some(name.clone()),
             Expr::Attr { attr, .. } => Some(attr.clone()),
             _ => None,
         };
@@ -160,7 +160,7 @@ impl TypeChecker {
             } else if let IT::Function { params: Some(fn_params), .. } = &func_type {
                 // 関数型変数/パラメータ: シグネチャの各 param 型を使う。
                 Some(fn_params.iter().map(|p| Some(p.ty.clone())).collect())
-            } else if let Expr::Ident(name) = func {
+            } else if let Expr::Ident { name, .. } = func {
                 // 直接グローバル関数呼び出し（単一シグネチャ）。
                 self.registry.fn_sigs(name).and_then(|sigs| {
                     (sigs.len() == 1)
@@ -581,7 +581,7 @@ impl TypeChecker {
 
     /// 式が可変変数の参照かどうかを判定する。
     pub(super) fn is_mutable_expr(&self, expr: &Expr) -> bool {
-        if let Expr::Ident(name) = expr {
+        if let Expr::Ident { name, .. } = expr {
             self.lookup(name).map(|v| v.mutable).unwrap_or(false)
         } else {
             false

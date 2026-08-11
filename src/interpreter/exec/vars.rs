@@ -26,7 +26,7 @@ impl Interpreter {
         // 式 → let: Instance の場合は deep copy してからフリーズする。
         //   可変コレクション (list[i] など) から取り出した Instance を直接フリーズすると
         //   共有 Rc を通じて元のオブジェクトまで不変化されてしまうため、コピーが必要。
-        let source_var = if let Expr::Ident(src) = expr {
+        let source_var = if let Expr::Ident { name: src, .. } = expr {
             self.get_var(src)
                 .map(|v| (v.is_mutable(), v.cell().is_some()))
         } else {

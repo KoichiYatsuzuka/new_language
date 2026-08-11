@@ -178,7 +178,7 @@ impl Parser {
             let base = self.expect_ident()?;
             let type_args = self.parse_type_args()?;
             return Ok(Expr::TemplateInstantiate {
-                base: Box::new(Expr::Ident(base)),
+                base: Box::new(Expr::Ident { name: base, node_id: self.next_node_id() }),
                 type_args,
             });
         }

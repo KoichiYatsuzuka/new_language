@@ -80,11 +80,11 @@ impl Interpreter {
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::None => Ok(Value::None),
             Expr::Undefined => Ok(Value::Undefined),
-            Expr::Ident(name) => self
+            Expr::Ident { name, .. } => self
                 .get_val(name)
                 .ok_or_else(|| format!("NameError: '{name}' is not defined")),
-            Expr::LocalRef { name, slot } => self.eval_local_ref(name, *slot),
-            Expr::GlobalRef { name, cache } => self.eval_global_ref(name, cache),
+            Expr::LocalRef { name, slot, .. } => self.eval_local_ref(name, *slot),
+            Expr::GlobalRef { name, cache, .. } => self.eval_global_ref(name, cache),
             Expr::DebugVar(name) => self
                 .dbg_vars
                 .get(name)
@@ -423,7 +423,7 @@ impl Interpreter {
         for arm in arms {
             let matched = match &arm.pattern {
                 MatchPattern::Case(pattern_expr) => {
-                    if matches!(pattern_expr, Expr::Ident(n) if n == "_") {
+                    if matches!(pattern_expr, Expr::Ident { name: n, .. } if n == "_") {
                         true
                     } else {
                         let pv = self.eval(pattern_expr)?;

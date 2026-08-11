@@ -11,6 +11,40 @@ impl<'a> GenCtx<'a> {
     /// これが「注釈へ移行すると新たに型特化できる箇所」の実測値になる（`AR_ANNOT_DIFF=1`）。
     pub fn gen_expr(&mut self, expr: &Expr) -> (String, Ty) {
         let out = self.gen_expr_inner(expr);
+        // #15b の消費者判定: 識別子読みが実際に型を落としているか。
+        // 下の `expr_stats` 集計は `annotatable_node_id` でゲートされており、同関数は
+        // 識別子系に `None` を返すので構造上ここを数えられない。だから別に数える。
+        if ident_name(expr).is_some() {
+            let typed = out.1 != Ty::Handle;
+            // 型を落とした識別子読みについて「注釈なら答えられたか」を分ける。
+            // annot_only > 0 が #15b を消費側へ配線する根拠になる。
+            if !typed {
+                use crate::type_check::InferredType as IT;
+                let annot = annotatable_node_id(expr)
+                    .and_then(|nid| self.annotations.resolved_type(nid));
+                match annot {
+                    // 注釈が int/float ＝ codegen は特化できたはず（#15b で取り込める箇所）。
+                    Some(IT::Int) | Some(IT::Float) => self.ident_stats.annot_only += 1,
+                    // 注釈が「具象だがハンドル表現が正しい型」＝ 取りこぼしではない。
+                    Some(t) if !matches!(t, IT::Unresolved | IT::Any) =>
+                        self.ident_stats.annot_boxed += 1,
+                    // 注釈が無い or Unresolved/Any ＝ 律速は型検査の解像度。
+                    _ => self.ident_stats.annot_none += 1,
+                }
+            }
+            let s = &mut self.ident_stats;
+            match expr {
+                Expr::LocalRef { slot, .. }
+                    if matches!(self.locals_by_slot.get(*slot as usize), Some(Some(_))) =>
+                {
+                    if typed { s.slot_typed += 1 } else { s.slot_handle += 1 }
+                }
+                _ if self.locals.contains_key(ident_name(expr).unwrap()) => {
+                    if typed { s.name_typed += 1 } else { s.name_handle += 1 }
+                }
+                _ => s.global_ref += 1,
+            }
+        }
         if out.1 == Ty::Handle {
             if let Some(node_id) = annotatable_node_id(expr) {
                 if let Some(t) = self.field_ty_annotated(node_id) {

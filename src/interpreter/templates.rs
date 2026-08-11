@@ -447,12 +447,13 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
         | Expr::Str(_) | Expr::Bool(_) | Expr::None | Expr::Undefined => expr.clone(),
-        Expr::Ident(name) => Expr::Ident(name.clone()),
+        Expr::Ident { name, node_id } => Expr::Ident { name: name.clone(), node_id: *node_id },
         // テンプレート関数はリゾルバの対象外なので LocalRef は現れないが、網羅性のため保持する。
-        Expr::LocalRef { name, slot } => Expr::LocalRef { name: name.clone(), slot: *slot },
+        Expr::LocalRef { name, slot, node_id } =>
+            Expr::LocalRef { name: name.clone(), slot: *slot, node_id: *node_id },
         // cache は `SlotCache::clone` が空を返すので、実体化ごとに解決し直される。
-        Expr::GlobalRef { name, cache } => {
-            Expr::GlobalRef { name: name.clone(), cache: cache.clone() }
+        Expr::GlobalRef { name, cache, node_id } => {
+            Expr::GlobalRef { name: name.clone(), cache: cache.clone(), node_id: *node_id }
         }
         Expr::List(items) => Expr::List(items.iter().map(|e| subst_expr(e, type_map)).collect()),
         Expr::Attr { object, attr, span, node_id, .. } => Expr::Attr {

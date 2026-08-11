@@ -798,7 +798,7 @@ impl Compiler {
         }
         match e {
             Expr::LocalRef { slot, .. } => u16::try_from(*slot).ok(),
-            Expr::Ident(name) => self.slots.get(name).copied(),
+            Expr::Ident { name, .. } => self.slots.get(name).copied(),
             _ => None,
         }
     }
@@ -1023,7 +1023,7 @@ impl Compiler {
     fn object_is_instance(&self, e: &Expr) -> bool {
         let slot = match e {
             Expr::LocalRef { slot, .. } => *slot as usize,
-            Expr::Ident(name) => match self.slots.get(name) {
+            Expr::Ident { name, .. } => match self.slots.get(name) {
                 Some(&s) => s as usize,
                 None => return false,
             },
@@ -1046,7 +1046,7 @@ impl Compiler {
             Expr::LocalRef { slot, .. } => {
                 self.slot_mut.get(*slot as usize).copied().unwrap_or(true)
             }
-            Expr::Ident(name) => self
+            Expr::Ident { name, .. } => self
                 .slots
                 .get(name)
                 .and_then(|&s| self.slot_mut.get(s as usize).copied())
@@ -1259,7 +1259,7 @@ impl Compiler {
                                 Op::StoreLocal(slot)
                             }
                         }
-                        Expr::Ident(nm) => {
+                        Expr::Ident { name: nm, .. } => {
                             let s = *self.slots.get(nm)?; // base slot 以外（グローバル）は非対応
                             if self.slot_mut.get(s as usize).copied().unwrap_or(false) {
                                 Op::StoreLocalCopyFreeze(slot)
@@ -1490,7 +1490,7 @@ impl Compiler {
         for arm in arms {
             match &arm.pattern {
                 // ワイルドカード `case _:` は無条件マッチ。
-                MatchPattern::Case(Expr::Ident(n)) if n == "_" => {
+                MatchPattern::Case(Expr::Ident { name: n, .. }) if n == "_" => {
                     for s in &arm.body {
                         self.compile_stmt(s)?;
                     }
@@ -1563,7 +1563,7 @@ impl Compiler {
             }
             // Ident はパラメータ名のときのみローカル読み（それ以外＝グローバル/組み込みは非対応）。
             // デバッグモードでは停止スコープからの名前引き（LoadName）。
-            Expr::Ident(name) => {
+            Expr::Ident { name, .. } => {
                 if self.debug_mode {
                     let ni = self.add_name(name);
                     self.emit(Op::LoadName(ni));
@@ -1642,7 +1642,7 @@ impl Compiler {
                     return Some(()); // メソッド呼び出しは span 不要
                 }
                 let site = self.add_span(span); // 関数呼び出しはトレースバック用の呼び出し位置を記録
-                if let Expr::Ident(name) = func.as_ref() {
+                if let Expr::Ident { name, .. } = func.as_ref() {
                     // ── VM 対応組み込み（print/range/len）── 評価済み引数で直接呼ぶ。
                     // ローカル slot に同名（シャドウ）がなければ組み込みとして扱う。
                     if is_vm_builtin(name) && !self.slots.contains_key(name) {
@@ -1685,7 +1685,7 @@ impl Compiler {
                     }
                     let mask = self.compile_call_args(args)?;
                     self.emit(Op::Call(args.len() as u16, mask, ni, site));
-                } else if let Expr::LocalRef { slot, name } = func.as_ref() {
+                } else if let Expr::LocalRef { slot, name, .. } = func.as_ref() {
                     // 解決済みローカル関数値の呼び出し。
                     let s = u16::try_from(*slot).ok()?;
                     self.emit(Op::LoadLocal(s));
@@ -1889,7 +1889,7 @@ impl Compiler {
         let mut arm_ends: Vec<usize> = Vec::new();
         for arm in arms {
             match &arm.pattern {
-                MatchPattern::Case(Expr::Ident(n)) if n == "_" => {
+                MatchPattern::Case(Expr::Ident { name: n, .. }) if n == "_" => {
                     for s in &arm.body {
                         self.compile_stmt(s)?;
                     }

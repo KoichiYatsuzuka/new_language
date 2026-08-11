@@ -120,7 +120,7 @@ fn collect_flat_leaves(
 fn harvest_local_slots(body: &[Stmt]) -> HashMap<String, u16> {
     fn walk_expr(e: &Expr, out: &mut HashMap<String, u16>) {
         match e {
-            Expr::LocalRef { name, slot } => {
+            Expr::LocalRef { name, slot, .. } => {
                 if let Ok(s) = u16::try_from(*slot) {
                     out.insert(name.clone(), s);
                 }
@@ -267,7 +267,7 @@ fn harvest_local_slots(body: &[Stmt]) -> HashMap<String, u16> {
 /// **`Ident` だからローカルでない、とは言えない**。分類は従来どおり `locals` 表も併用する。
 pub(super) fn ident_name(e: &Expr) -> Option<&str> {
     match e {
-        Expr::Ident(n) => Some(n.as_str()),
+        Expr::Ident { name: n, .. } => Some(n.as_str()),
         Expr::LocalRef { name, .. } | Expr::GlobalRef { name, .. } => Some(name.as_str()),
         _ => None,
     }
@@ -553,6 +553,8 @@ struct GenCtx<'a> {
     attr_stats: AttrResolutionStats,
     // `Ty::Handle` へ落ちた式のうち注釈が具象型を持つものの内訳（段階 c-2 の検証用）。
     expr_stats: HandleFallbackStats,
+    // 識別子読みが型を落としている件数の内訳（#15b の消費者判定用）。
+    ident_stats: IdentHandleStats,
 }
 
 /// `Expr` が annotatable（パーサが node-id を採番する変種）なら node-id を返す。
@@ -566,6 +568,10 @@ fn annotatable_node_id(expr: &Expr) -> Option<u32> {
         | Expr::Cast { node_id, .. }
         | Expr::MustBe { node_id, .. }
         | Expr::IsType { node_id, .. } => Some(*node_id),
+        // 識別子も #15b で node-id を持つ。参照サイトごとに型検査の答えが焼かれている。
+        Expr::Ident { node_id, .. }
+        | Expr::LocalRef { node_id, .. }
+        | Expr::GlobalRef { node_id, .. } => Some(*node_id),
         _ => None,
     }
 }
@@ -602,6 +608,36 @@ pub(super) struct HandleFallbackStats {
     pub subscript: IntFloatCount,
     pub call: IntFloatCount,
     pub other: IntFloatCount,
+}
+
+/// 識別子読み（`Ident`/`LocalRef`/`GlobalRef`）が `Ty::Handle` へ落ちた件数の内訳（#15b の実測用）。
+///
+/// `HandleFallbackStats` はこれを数えられない — 集計が `annotatable_node_id` でゲートされており、
+/// 同関数は識別子系に `None` を返すため**構造上ゼロになる**。「#15b（Ident への node-id 付与）に
+/// 消費者が居るか」は、識別子読みが実際に型を落としている件数でしか判定できないので別途数える。
+///
+/// `slot_typed` / `name_typed` が大きいほど「codegen は自前導出で型を得られている」＝
+/// 注釈を足しても新規に特化できる余地は無い、と読む。
+#[derive(Default)]
+pub(super) struct IdentHandleStats {
+    /// slot 表に載っており具象型で読めた（＝自前導出が成功・#15b の余地なし）。
+    pub slot_typed: usize,
+    /// slot 表に載っているが `Ty::Handle`（＝型が判っていない・**#15b の候補**）。
+    pub slot_handle: usize,
+    /// 名前引きで具象型が取れた（自前導出が成功）。
+    pub name_typed: usize,
+    /// 名前引きしたが `Ty::Handle`（**#15b の候補**）。
+    pub name_handle: usize,
+    /// モジュール内関数参照・グローバル参照（本質的にハンドル。#15b では解消しない）。
+    pub global_ref: usize,
+    /// `Ty::Handle` へ落ちた識別子読みのうち、**注釈は具象プリミティブ型を持っていた**件数。
+    /// これが #15b で新たに型特化できる箇所の実測上限（`AttrResolutionStats::annot_only` の識別子版）。
+    pub annot_only: usize,
+    /// 注釈が具象だが**ハンドル表現が正しい**型だった件数（class/list/str 等）。取りこぼしではない。
+    pub annot_boxed: usize,
+    /// 注釈が無い or `Unresolved`/`Any` だった件数。
+    /// 大きければ律速は表現ではなく**型検査の解像度**（→ スタブ整備などの別タスク）。
+    pub annot_none: usize,
 }
 
 
@@ -663,7 +699,7 @@ fn expr_eligible(expr: &Expr) -> bool {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
         | Expr::Str(_) | Expr::Bool(_) | Expr::None | Expr::Undefined => true,
-        Expr::Ident(_) | Expr::LocalRef { .. } | Expr::GlobalRef { .. } => true,
+        Expr::Ident { name: _, .. } | Expr::LocalRef { .. } | Expr::GlobalRef { .. } => true,
         Expr::BinOp { left, right, .. } => expr_eligible(left) && expr_eligible(right),
         Expr::UnaryOp { operand, .. } => expr_eligible(operand),
         Expr::List(items) | Expr::Tuple(items) => items.iter().all(expr_eligible),
@@ -1001,6 +1037,12 @@ pub fn generate_llvm_module(
             e.subscript.int, e.subscript.float,
             e.call.int, e.call.float,
             e.other.int, e.other.float
+        );
+        let i = &ctx.ident_stats;
+        eprintln!(
+            "AnnotIdent(handle-fallback of identifier reads): slot_typed={} slot_handle={} name_typed={} name_handle={} global_ref={} | annot_only={} annot_boxed={} annot_none={}",
+            i.slot_typed, i.slot_handle, i.name_typed, i.name_handle, i.global_ref,
+            i.annot_only, i.annot_boxed, i.annot_none
         );
     }
 

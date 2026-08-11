@@ -392,7 +392,13 @@ pub enum Expr {
     /// 変数への代入は静的型エラー。条件判定・型アノテーション・引数としてのみ使用可能。
     Undefined,
     /// 変数参照。スコープチェーンからこの名前の値をルックアップする。
-    Ident(String),
+    ///
+    /// `node_id` は AST 型解決層のキー（タスク #15b）。パーサが per-program 採番し、
+    /// **0 = 未採番**（実行時に合成した AST・テンプレート置換由来）を意味する。
+    /// 型検査は参照サイトごとの型をここへ焼く。参照サイト単位なのが要点で、
+    /// 型ガード絞り込み（`if x is int:` は分岐スコープで再 `declare` する実装）により
+    /// **同じ変数でも参照位置で型が変わる**ため、変数単位の表では表現できない。
+    Ident { name: String, node_id: u32 },
     /// 解決済みローカル変数参照（Phase R / R1）。
     ///
     /// リゾルバ（`interpreter/resolver.rs`）が、トップレベル関数本体の中で
@@ -403,7 +409,9 @@ pub enum Expr {
     /// 型検査/コード生成/変換の各パスが `Ident` と同等に扱うために保持する。
     /// リゾルバはインタープリタ実行経路でのみ動くため、他パスがこのバリアントを
     /// 実際に評価することはない（網羅マッチのために各パスへアームだけ追加する）。
-    LocalRef { name: String, slot: u32 },
+    /// `node_id` は書き換え元 `Ident` から**引き継ぐ**（#15b）。リゾルバは型検査の後に走るため、
+    /// 引き継がないと解決済み参照から注釈を引けなくなる（消費者は解決済み AST しか見ない）。
+    LocalRef { name: String, slot: u32, node_id: u32 },
     /// 解決済みグローバル参照（Phase R / R2-b）。
     ///
     /// リゾルバが、トップレベル関数本体の中で **プログラム最上位で宣言された名前**
@@ -417,7 +425,8 @@ pub enum Expr {
     ///
     /// `slot_epoch` による一括無効化はそのまま使うので、`freeze` による
     /// `SlotCell` → `Immutable` 降格でも安全（epoch が進みキャッシュが失効する）。
-    GlobalRef { name: String, cache: SlotCache },
+    /// `node_id` は書き換え元 `Ident` から引き継ぐ（#15b・`LocalRef` と同じ理由）。
+    GlobalRef { name: String, cache: SlotCache, node_id: u32 },
     /// リストリテラル `[a, b, c]`。要素の式を順に評価して `Value::List` を生成する。
     List(Vec<Expr>),
     /// 属性アクセス `object.attr`。インスタンスフィールドやクラス変数の読み取りに使用する。

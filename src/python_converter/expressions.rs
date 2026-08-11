@@ -16,7 +16,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
     match expr {
         py::Expr::Constant(c) => convert_constant(c, filename),
 
-        py::Expr::Name(n) => Ok(Expr::Ident(n.id.to_string())),
+        py::Expr::Name(n) => Ok(Expr::Ident { name: n.id.to_string(), node_id: 0 }),
 
         py::Expr::Attribute(a) => {
             let obj = convert_expr(&a.value, filename)?;
