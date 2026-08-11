@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::ast::{Expr, Param, Stmt};
+use crate::ast::{Expr, Param, Stmt, Resolution};
 use crate::token::Span;
 
 use super::{
@@ -36,13 +36,13 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
     // __init__ 本体: `self.message = message` を表す AST ノード
     let init_body = vec![Stmt::AttrAssign {
         target: E::Attr {
-            object: Box::new(E::Ident { name: "self".to_string(), node_id: 0 }),
+            object: Box::new(E::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
             attr: "message".to_string(),
             span: Span::unknown(),
             cache: Default::default(),
             node_id: 0, // #16: 合成コード（注釈対象外）
         },
-        value: E::Ident { name: "message".to_string(), node_id: 0 },
+        value: E::Ident { name: "message".to_string(), node_id: 0, res: Resolution::Unresolved },
     }];
     let init_fn = Rc::new(FnValue {
         name: "__init__".to_string(),
@@ -131,13 +131,13 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
 pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<ClassValue> {
     let init_body = vec![Stmt::AttrAssign {
         target: Expr::Attr {
-            object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0 }),
+            object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
             attr: "value".to_string(),
             span: Span::unknown(),
             cache: Default::default(),
             node_id: 0, // #16: 合成コード（注釈対象外）
         },
-        value: Expr::Ident { name: "value".to_string(), node_id: 0 },
+        value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
     }];
     let init_fn = Rc::new(FnValue {
         name: "__init__".to_string(),

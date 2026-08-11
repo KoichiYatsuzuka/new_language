@@ -5,7 +5,7 @@
 //
 // V-A の対応範囲（トップレベル関数のリーフ計算に限定）:
 // - 文: `return` / `if` / `while` / 式文 / パラメータへの代入・複合代入。
-// - 式: リテラル / `LocalRef`（パラメータ読み）/ 二項・単項演算 / 属性（フィールド）読み。
+// - 式: リテラル / `Resolution::Local`（パラメータ読み）/ 二項・単項演算 / 属性（フィールド）読み。
 // - **非対応（=フォールバック）**: ローカル宣言（let/mut/const の freeze 意味論を避けるため）、
 //   関数・メソッド呼び出し、クロージャ、for/match/block、例外、可変長引数、
 //   グローバル/組み込み参照、添字、コレクションリテラル 等。
@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, CallArg, ExceptHandler, Expr, MatchArm, MatchPattern, Param, Stmt, TupleTarget,
+    BinOp, CallArg, ExceptHandler, Expr, MatchArm, MatchPattern, Param, Stmt, TupleTarget, Resolution,
 };
 use crate::interpreter::Value;
 
@@ -63,7 +63,7 @@ struct Compiler {
     /// AST 型解決層の注釈（#16 段階(b)/plan A）。node-id で型特化 op の判断に使う。空なら特化しない。
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     /// 名前 → slot（base スコープ: パラメータ + トップレベル let/mut/const、宣言順）。
-    /// リゾルバの base slot 採番と同順（パラメータ→宣言）なので `LocalRef` と一致する。
+    /// リゾルバの base slot 採番と同順（パラメータ→宣言）なので `Resolution::Local` と一致する。
     slots: HashMap<String, u16>,
     /// slot → 可変フラグ（`let x = <mut ソース>` の freeze 判定に使う）。
     slot_mut: Vec<bool>,
@@ -146,7 +146,7 @@ fn is_user_instance_type(ann: &str) -> bool {
 /// トップレベル関数本体を Chunk へコンパイルする。非対応構文があれば `None`。
 ///
 /// - `params`: 仮引数（可変長があれば非対応）。
-/// - `body`: 解決済み関数本体（リゾルバが `LocalRef` を付与済み）。
+/// - `body`: 解決済み関数本体（リゾルバが `res` を付与済み）。
 pub fn compile_fn(
     params: &[Param],
     body: &[Stmt],
@@ -680,7 +680,7 @@ fn collect_expr_decls(
         Expr::TemplateInstantiate { base, .. } => rec!(base),
         Expr::IsType { expr, .. } | Expr::MustBe { expr, .. } => rec!(expr),
         Expr::Cast { object, .. } => rec!(object),
-        // リテラル・Ident・LocalRef 等は宣言を含まない。
+        // リテラル・Ident 等は宣言を含まない。
         _ => {}
     }
     Some(())
@@ -790,15 +790,16 @@ impl Compiler {
     }
 
     /// 式が「単純なローカル読み」なら slot を返す（超命令の融合判定, #2）。
-    /// `LoadLocal` に落ちる形（`LocalRef` / slot 済み `Ident`）のみ。debug_mode では融合しない
-    /// （`Ident` は `LoadName` に落ちるため）。
+    /// `LoadLocal` に落ちる形（`Resolution::Local` / slot 表に載る未解決 `Ident`）のみ。
+    /// debug_mode では融合しない（未解決 `Ident` は `LoadName` に落ちるため）。
+    /// `Resolution::Global` は対象外（`_` に落ちる）。
     fn as_local(&self, e: &Expr) -> Option<u16> {
         if self.debug_mode {
             return None;
         }
         match e {
-            Expr::LocalRef { slot, .. } => u16::try_from(*slot).ok(),
-            Expr::Ident { name, .. } => self.slots.get(name).copied(),
+            Expr::Ident { res: Resolution::Local(slot), .. } => u16::try_from(*slot).ok(),
+            Expr::Ident { name, res: Resolution::Unresolved, .. } => self.slots.get(name).copied(),
             _ => None,
         }
     }
@@ -1019,11 +1020,11 @@ impl Compiler {
 
     /// 式 `e` が実行時に **確実に Instance** の base ローカルを指すかを保守的に判定する。
     /// `self` パラメータ（型注釈なしだが常に Instance）と、ユーザークラス型注釈の
-    /// LocalRef/Ident を true とする。メソッド呼び出し・属性代入のレシーバ判定に使う。
+    /// 識別子（解決済み・未解決とも）を true とする。メソッド呼び出し・属性代入のレシーバ判定に使う。
     fn object_is_instance(&self, e: &Expr) -> bool {
         let slot = match e {
-            Expr::LocalRef { slot, .. } => *slot as usize,
-            Expr::Ident { name, .. } => match self.slots.get(name) {
+            Expr::Ident { res: Resolution::Local(slot), .. } => *slot as usize,
+            Expr::Ident { name, res: Resolution::Unresolved, .. } => match self.slots.get(name) {
                 Some(&s) => s as usize,
                 None => return false,
             },
@@ -1043,10 +1044,10 @@ impl Compiler {
     /// それ以外の式は保守的に true）。VM は base ローカルしか読まないので slot_mut で判定できる。
     fn arg_is_mutable(&self, e: &Expr) -> bool {
         match e {
-            Expr::LocalRef { slot, .. } => {
+            Expr::Ident { res: Resolution::Local(slot), .. } => {
                 self.slot_mut.get(*slot as usize).copied().unwrap_or(true)
             }
-            Expr::Ident { name, .. } => self
+            Expr::Ident { name, res: Resolution::Unresolved, .. } => self
                 .slots
                 .get(name)
                 .and_then(|&s| self.slot_mut.get(s as usize).copied())
@@ -1252,14 +1253,14 @@ impl Compiler {
                     // ソースの種類で store op を選ぶ（exec_let のセマンティクスに一致）。
                     let store = match e {
                         // ident/localref ソース: 可変なら copy+freeze、不変ならそのまま。
-                        Expr::LocalRef { slot: s, .. } => {
+                        Expr::Ident { res: Resolution::Local(s), .. } => {
                             if self.slot_mut.get(*s as usize).copied().unwrap_or(false) {
                                 Op::StoreLocalCopyFreeze(slot)
                             } else {
                                 Op::StoreLocal(slot)
                             }
                         }
-                        Expr::Ident { name: nm, .. } => {
+                        Expr::Ident { name: nm, res: Resolution::Unresolved, .. } => {
                             let s = *self.slots.get(nm)?; // base slot 以外（グローバル）は非対応
                             if self.slot_mut.get(s as usize).copied().unwrap_or(false) {
                                 Op::StoreLocalCopyFreeze(slot)
@@ -1552,16 +1553,16 @@ impl Compiler {
             Expr::None => {
                 self.emit(Op::Nil);
             }
-            Expr::LocalRef { slot, .. } => {
+            Expr::Ident { res: Resolution::Local(slot), .. } => {
                 let s = u16::try_from(*slot).ok()?;
                 self.emit(Op::LoadLocal(s));
             }
             // 解決済みグローバル参照（R2-b）。リゾルバが「最上位宣言かつ非シャドウ」と
             // 確定した読み取りなので、slots 走査も builtin 判定も要らず直接 LoadGlobal。
-            Expr::GlobalRef { name, .. } => {
+            Expr::Ident { name, res: Resolution::Global(_), .. } => {
                 self.emit_load_global(name);
             }
-            // Ident はパラメータ名のときのみローカル読み（それ以外＝グローバル/組み込みは非対応）。
+            // 未解決 Ident はパラメータ名のときのみローカル読み（それ以外＝グローバル/組み込みは非対応）。
             // デバッグモードでは停止スコープからの名前引き（LoadName）。
             Expr::Ident { name, .. } => {
                 if self.debug_mode {
@@ -1623,7 +1624,7 @@ impl Compiler {
             Expr::Call { func, args, span, .. } => {
                 if let Expr::Attr { object, attr, .. } = func.as_ref() {
                     // ── メソッド呼び出し ── object が Instance と保証できる（`self` または
-                    // ユーザークラス型注釈の）LocalRef/Ident のときのみ対応。
+                    // ユーザークラス型注釈の）識別子のときのみ対応。
                     if !self.object_is_instance(object) {
                         return None;
                     }
@@ -1642,7 +1643,7 @@ impl Compiler {
                     return Some(()); // メソッド呼び出しは span 不要
                 }
                 let site = self.add_span(span); // 関数呼び出しはトレースバック用の呼び出し位置を記録
-                if let Expr::Ident { name, .. } = func.as_ref() {
+                if let Expr::Ident { name, res: Resolution::Unresolved, .. } = func.as_ref() {
                     // ── VM 対応組み込み（print/range/len）── 評価済み引数で直接呼ぶ。
                     // ローカル slot に同名（シャドウ）がなければ組み込みとして扱う。
                     if is_vm_builtin(name) && !self.slots.contains_key(name) {
@@ -1673,7 +1674,7 @@ impl Compiler {
                         let mask = self.compile_call_args(args)?;
                         self.emit(Op::Call(args.len() as u16, mask, ni, site));
                     }
-                } else if let Expr::GlobalRef { name, .. } = func.as_ref() {
+                } else if let Expr::Ident { name, res: Resolution::Global(_), .. } = func.as_ref() {
                     // 解決済みグローバル関数呼び出し（R2-b）。
                     // 分類はリゾルバ済みなので builtin/slots の判定は不要。
                     // ただしデバッグモードは停止スコープの名前引きに合わせる。
@@ -1685,7 +1686,7 @@ impl Compiler {
                     }
                     let mask = self.compile_call_args(args)?;
                     self.emit(Op::Call(args.len() as u16, mask, ni, site));
-                } else if let Expr::LocalRef { slot, name, .. } = func.as_ref() {
+                } else if let Expr::Ident { name, res: Resolution::Local(slot), .. } = func.as_ref() {
                     // 解決済みローカル関数値の呼び出し。
                     let s = u16::try_from(*slot).ok()?;
                     self.emit(Op::LoadLocal(s));

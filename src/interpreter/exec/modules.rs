@@ -1,5 +1,6 @@
 // exec/modules.rs — モジュール読み込みの実行: import 文、ネイティブ/C++/C# ブリッジ DLL のロードと型シグネチャ構築。
 
+use crate::ast::Resolution;
 use {
     std::collections::HashMap, std::path::PathBuf,
     std::rc::Rc, std::sync::Arc,
@@ -549,13 +550,13 @@ impl Interpreter {
                 .iter()
                 .map(|(fname, _)| crate::ast::Stmt::AttrAssign {
                     target: crate::ast::Expr::Attr {
-                        object: Box::new(crate::ast::Expr::Ident { name: "self".to_string(), node_id: 0 }),
+                        object: Box::new(crate::ast::Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
                         attr: fname.clone(),
                         span: Span::unknown(),
                         cache: Default::default(),
                         node_id: 0, // #16: 合成/変換コード（注釈対象外）
                     },
-                    value: crate::ast::Expr::Ident { name: fname.clone(), node_id: 0 },
+                    value: crate::ast::Expr::Ident { name: fname.clone(), node_id: 0, res: Resolution::Unresolved },
                 })
                 .collect();
 

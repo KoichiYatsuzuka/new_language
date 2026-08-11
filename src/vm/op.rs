@@ -13,7 +13,7 @@ pub enum Op {
     Const(u32),
     /// `None` を push する。
     Nil,
-    /// locals[slot] を push する（LocalRef / パラメータ / base ローカル読み）。
+    /// locals[slot] を push する（Resolution::Local / パラメータ / base ローカル読み）。
     LoadLocal(u16),
     /// グローバル変数/関数の読み出し（呼び先の解決・#11 索引化）。未定義なら NameError。フィールド (name_idx, cache_idx)。
     /// `chunk.global_caches[cache_idx]` に `(slot_epoch, scopes[0] index)` を焼き、以後は名前ハッシュ

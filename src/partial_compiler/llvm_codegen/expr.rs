@@ -1,6 +1,6 @@
 // llvm_codegen/expr.rs — 式の LLVM IR 生成: gen_expr とその補助(二項演算・特殊化・高速呼び出し引数・呼び出し生成)。
 
-use crate::ast::{BinOp, CallArg, Expr, MatchPattern, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Resolution, UnaryOp};
 use super::*;
 
 impl<'a> GenCtx<'a> {
@@ -34,7 +34,7 @@ impl<'a> GenCtx<'a> {
             }
             let s = &mut self.ident_stats;
             match expr {
-                Expr::LocalRef { slot, .. }
+                Expr::Ident { res: Resolution::Local(slot), .. }
                     if matches!(self.locals_by_slot.get(*slot as usize), Some(Some(_))) =>
                 {
                     if typed { s.slot_typed += 1 } else { s.slot_handle += 1 }
@@ -84,7 +84,7 @@ impl<'a> GenCtx<'a> {
                 // 解決済みローカル参照は slot 索引で引く（#11 R2-a′）。
                 // **slot 表に載っているときだけ**この経路に入る。未登録なら以降の
                 // 従来分岐（名前引き → module_fn → グローバル）へそのまま落とす。
-                if let Expr::LocalRef { slot, .. } = e {
+                if let Expr::Ident { res: Resolution::Local(slot), .. } = e {
                     if matches!(self.locals_by_slot.get(*slot as usize), Some(Some(_))) {
                         let slot = *slot;
                         return self.load_var_by_slot(slot, "");

@@ -1,6 +1,7 @@
 // eval/calls.rs — 呼び出し評価: 関数呼び出し・キャスト・型コンストラクタ呼び出し・値呼び出し・AsyncManager 生成。
 
 
+use crate::ast::Resolution;
 use {
     std::cell::RefCell, std::rc::Rc, std::sync::Arc,
     crate::ast::{CallArg, Expr},
@@ -119,7 +120,7 @@ impl Interpreter {
         // ── R4: Arrow 関数呼び先キャッシュ命中（Ident のみ） ──
         // 不変グローバル関数と初回解決済みなら、builtin 判定・名前引き・name.clone を跳ばして
         // `scopes[0]` の slot から直接ディスパッチする。
-        if let Expr::Ident { name, .. } = func {
+        if let Expr::Ident { name, res: Resolution::Unresolved, .. } = func {
             if let Some(idx) = cache.1.get(self.slot_epoch) {
                 let cached_fn = match self.scopes[0].slot(idx) {
                     Some(Var::Immutable(Value::Function(f))) => Some(f.clone()),
@@ -141,20 +142,20 @@ impl Interpreter {
             }
         }
 
-        if let Expr::Ident { name, .. } = func {
+        if let Expr::Ident { name, res: Resolution::Unresolved, .. } = func {
             if let Some(result) = self.eval_builtin_ident_call(name, args) {
                 return result;
             }
         }
         let call_name: &str = match func {
-            Expr::Ident { name: n, .. } => n,
+            Expr::Ident { name: n, res: Resolution::Unresolved, .. } => n,
             _ => "<anonymous>",
         };
         let callee = self.eval(func)?;
         match callee {
             Value::Function(fn_val) => {
                 // R4: 不変グローバル関数への Ident 呼び出しなら global slot を焼き込む。
-                if let Expr::Ident { name, .. } = func {
+                if let Expr::Ident { name, res: Resolution::Unresolved, .. } = func {
                     if !self.scopes[self.frame_floor..].iter().any(|s| s.contains_key(name)) {
                         if let Some(idx) = self.scopes[0].slot_of(name) {
                             if matches!(self.scopes[0].slot(idx), Some(Var::Immutable(_))) {
@@ -194,7 +195,7 @@ impl Interpreter {
                     && args.len() == fn_ref.n_params
                     && args.iter().all(|a| matches!(a, CallArg::Positional(_)))
                 {
-                    if let Expr::Ident { name, .. } = func {
+                    if let Expr::Ident { name, res: Resolution::Unresolved, .. } = func {
                         let immutable_binding =
                             self.get_var(name).map(|v| !v.is_mutable()).unwrap_or(false);
                         if immutable_binding {
@@ -744,9 +745,9 @@ impl Interpreter {
 /// 呼び先の表示名（FFI 境界検査のエラーメッセージ用）。`mod.fn` 形式を優先する。
 fn callee_display_name(func: &Expr) -> String {
     match func {
-        Expr::Ident { name: n, .. } => n.clone(),
+        Expr::Ident { name: n, res: Resolution::Unresolved, .. } => n.clone(),
         Expr::Attr { object, attr, .. } => match object.as_ref() {
-            Expr::Ident { name: base, .. } => format!("{base}.{attr}"),
+            Expr::Ident { name: base, res: Resolution::Unresolved, .. } => format!("{base}.{attr}"),
             _ => attr.clone(),
         },
         _ => "<callee>".to_string(),

@@ -1,5 +1,6 @@
 // exec/vars.rs — 変数宣言・代入の実行: let / タプル束縛 / static / 複合代入 / loop_yield とスロットキャッシュ。
 
+use crate::ast::Resolution;
 use {
     std::cell::RefCell,
     std::rc::Rc,
@@ -26,7 +27,7 @@ impl Interpreter {
         // 式 → let: Instance の場合は deep copy してからフリーズする。
         //   可変コレクション (list[i] など) から取り出した Instance を直接フリーズすると
         //   共有 Rc を通じて元のオブジェクトまで不変化されてしまうため、コピーが必要。
-        let source_var = if let Expr::Ident { name: src, .. } = expr {
+        let source_var = if let Expr::Ident { name: src, res: Resolution::Unresolved, .. } = expr {
             self.get_var(src)
                 .map(|v| (v.is_mutable(), v.cell().is_some()))
         } else {

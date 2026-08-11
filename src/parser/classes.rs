@@ -1,7 +1,7 @@
 // classes.rs — class and trait definition parsing for the tl parser.
 
 use super::Parser;
-use crate::ast::{Accessibility, Expr, FieldKind, Param, Stmt};
+use crate::ast::{Accessibility, Expr, FieldKind, Param, Stmt, Resolution};
 use crate::token::{Span, Token};
 use std::collections::HashMap;
 
@@ -394,24 +394,24 @@ impl Parser {
             // `self::TraitName.field = field` の形式で代入
             init_body.push(Stmt::AttrAssign {
                 target: Expr::TraitAccess {
-                    object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0 }),
+                    object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
                     trait_name: tname.clone(),
                     attr: fname.clone(),
                 },
-                value: Expr::Ident { name: fname.clone(), node_id: 0 },
+                value: Expr::Ident { name: fname.clone(), node_id: 0, res: Resolution::Unresolved },
             });
         }
         for (fname, _) in class_required {
             // `self.field = field` の形式で代入
             init_body.push(Stmt::AttrAssign {
                 target: Expr::Attr {
-                    object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0 }),
+                    object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
                     attr: fname.clone(),
                     span: Span::unknown(),
                     cache: Default::default(),
                     node_id: 0, // #16: 合成 __init__ の代入先（注釈対象外）
                 },
-                value: Expr::Ident { name: fname.clone(), node_id: 0 },
+                value: Expr::Ident { name: fname.clone(), node_id: 0, res: Resolution::Unresolved },
             });
         }
 

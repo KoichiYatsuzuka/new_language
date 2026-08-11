@@ -1,7 +1,7 @@
 // exprs.rs — expression parsing (precedence chain, literals, subscript, f-strings).
 
 use super::Parser;
-use crate::ast::{BinOp, CallArg, Expr, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, UnaryOp, Resolution};
 use crate::token::{FStrPart, Span, Token};
 use crate::lexer;
 
@@ -626,7 +626,7 @@ impl Parser {
                     let expr = sub_parser.parse_expr()?;
                     // Wrap in str() call to convert to string
                     exprs.push(Expr::Call {
-                        func: Box::new(Expr::Ident { name: "str".to_string(), node_id: self.next_node_id() }),
+                        func: Box::new(Expr::Ident { name: "str".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved }),
                         args: vec![crate::ast::CallArg::Positional(expr)],
                         span: span.clone(),
                         cache: Default::default(),
@@ -702,15 +702,15 @@ impl Parser {
             }
             Token::Any => {
                 self.advance();
-                Ok(Expr::Ident { name: "Any".to_string(), node_id: self.next_node_id() })
+                Ok(Expr::Ident { name: "Any".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
             }
             Token::Union => {
                 self.advance();
-                Ok(Expr::Ident { name: "Union".to_string(), node_id: self.next_node_id() })
+                Ok(Expr::Ident { name: "Union".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
             }
             Token::Option => {
                 self.advance();
-                Ok(Expr::Ident { name: "Option".to_string(), node_id: self.next_node_id() })
+                Ok(Expr::Ident { name: "Option".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
             }
             Token::Ident(name) if name == "dbg" => {
                 self.advance();
@@ -738,7 +738,7 @@ impl Parser {
                 // 後続の postfix（`(...)` / `[...]` / `.attr`）は展開後の式に適用される。
                 match self.aliases.get(&name).map(|e| (*e.expr).clone()) {
                     Some(expanded) => Ok(expanded),
-                    None => Ok(Expr::Ident { name, node_id: self.next_node_id() }),
+                    None => Ok(Expr::Ident { name, node_id: self.next_node_id(), res: Resolution::Unresolved }),
                 }
             }
             Token::SelfType => {
@@ -749,7 +749,7 @@ impl Parser {
                     );
                 }
                 self.advance();
-                Ok(Expr::Ident { name: "Self".to_string(), node_id: self.next_node_id() })
+                Ok(Expr::Ident { name: "Self".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
             }
             Token::LParen => self.parse_paren_expr(),
             Token::LBracket => self.parse_list_literal(),

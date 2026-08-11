@@ -1,5 +1,6 @@
 // exec/definitions.rs — 定義文の実行: 関数/ジェネレータ定義、トレイト/プロトコル/new_type/enum/クラス定義。
 
+use crate::ast::Resolution;
 use {
     std::cell::RefCell, std::collections::{HashMap, HashSet},
     std::rc::Rc,
@@ -223,13 +224,13 @@ impl Interpreter {
                 // `new_type Meters: int` → `class Meters: mut value: int` と等価
                 let init_body = vec![Stmt::AttrAssign {
                     target: Expr::Attr {
-                        object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0 }),
+                        object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
                         attr: "value".to_string(),
                         span: crate::token::Span::unknown(),
                         cache: Default::default(),
                         node_id: 0, // #16: 合成/変換コード（注釈対象外）
                     },
-                    value: Expr::Ident { name: "value".to_string(), node_id: 0 },
+                    value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
                 }];
                 let init_fn = Rc::new(FnValue {
                     name: "__init__".to_string(),
@@ -298,13 +299,13 @@ impl Interpreter {
         let item_type_name = format!("enum_item_{}", name);
         let init_body = vec![Stmt::AttrAssign {
             target: Expr::Attr {
-                object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0 }),
+                object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
                 attr: "value".to_string(),
                 span: crate::token::Span::unknown(),
                 cache: Default::default(),
                 node_id: 0, // #16: 合成/変換コード（注釈対象外）
             },
-            value: Expr::Ident { name: "value".to_string(), node_id: 0 },
+            value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
         }];
         let init_fn = Rc::new(FnValue {
             name: "__init__".to_string(),

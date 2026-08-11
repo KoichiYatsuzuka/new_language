@@ -66,11 +66,9 @@ impl TypeChecker {
             }
 
             // --- 識別子 ---
-            // LocalRef はリゾルバ（型検査後に走る）が付ける解決済みローカル参照。
-            // 型検査中に現れることはないが、網羅性のため Ident と同じく名前で引く。
-            Expr::Ident { name, node_id }
-            | Expr::LocalRef { name, node_id, .. }
-            | Expr::GlobalRef { name, node_id, .. } => {
+            // 記憶域の解決（`res`）はリゾルバが型検査の後に書くので、ここでは常に未解決。
+            // 型検査は名前でスコープを引くだけで `res` を見ない。
+            Expr::Ident { name, node_id, .. } => {
                 let result = self
                     .lookup(name)
                     .map(|v| v.ty.clone())
@@ -493,7 +491,7 @@ impl TypeChecker {
 /// 式の種類名（#16 段階 D の診断用）。`Unresolved` を生んだ式の分布を取るために使う。
 fn expr_kind_name(e: &Expr) -> &'static str {
     match e {
-        Expr::Ident { name: _, .. } | Expr::LocalRef { .. } => "Ident",
+        Expr::Ident { .. } => "Ident",
         Expr::LocalVar(_) => "LocalVar",
         Expr::Call { .. } => "Call",
         Expr::Attr { .. } => "Attr",

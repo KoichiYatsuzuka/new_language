@@ -294,7 +294,7 @@ impl<'a> GenCtx<'a> {
         reg
     }
 
-    /// `Expr::LocalRef { slot }` の読み取り（#11 R2-a′）。
+    /// `Resolution::Local(slot)` の読み取り（#11 R2-a′）。
     /// リゾルバの割り当てた slot で直接引き、未登録なら名前引きへフォールバックする
     /// （リゾルバが解決を諦めた関数・合成ローカル）。
     pub(super) fn load_var_by_slot(&mut self, slot: u32, name: &str) -> (String, Ty) {

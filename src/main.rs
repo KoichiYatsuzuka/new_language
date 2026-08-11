@@ -540,7 +540,7 @@ fn compile_module(path: &str) {
     // Phase R / R1 のローカル slot 解決を**コンパイル経路でも**走らせる（#11 R2-a）。
     // 実行経路（run_file）は以前から通していたが `--compile` は通しておらず、
     // ネイティブ codegen だけが「名前で自前解決した AST」を見ていた。
-    // ここを揃えることで、三経路が同じ解決済み AST（`Expr::LocalRef`）を消費する。
+    // ここを揃えることで、三経路が同じ解決済み AST（`Resolution::Local`）を消費する。
     interpreter::resolver::resolve_program(&mut stmts);
 
     match partial_compiler::compile(&source, &stmts, std::path::Path::new(path), &annotations) {

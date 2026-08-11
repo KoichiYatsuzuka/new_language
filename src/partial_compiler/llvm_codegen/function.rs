@@ -15,7 +15,7 @@ impl<'a> GenCtx<'a> {
         self.terminated = false;
         self.locals.clear();
         // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
-        // codegen は採番せず、この表を権威として `LocalRef` 読みを slot 索引で解決する。
+        // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
         self.name_to_slot = harvest_local_slots(body);
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
@@ -243,7 +243,7 @@ impl<'a> GenCtx<'a> {
         self.terminated = false;
         self.locals.clear();
         // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
-        // codegen は採番せず、この表を権威として `LocalRef` 読みを slot 索引で解決する。
+        // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
         self.name_to_slot = harvest_local_slots(body);
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
@@ -357,7 +357,7 @@ impl<'a> GenCtx<'a> {
         self.terminated = false;
         self.locals.clear();
         // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
-        // codegen は採番せず、この表を権威として `LocalRef` 読みを slot 索引で解決する。
+        // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
         self.name_to_slot = harvest_local_slots(body);
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];
@@ -415,7 +415,7 @@ impl<'a> GenCtx<'a> {
         self.reg = 0; self.blk = 0; self.terminated = false;
         self.locals.clear();
         // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
-        // codegen は採番せず、この表を権威として `LocalRef` 読みを slot 索引で解決する。
+        // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
         self.name_to_slot = harvest_local_slots(body);
         let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
         self.locals_by_slot = vec![None; max_slot];

@@ -10,7 +10,7 @@
 // Eligibility rules are identical to the old codegen.
 
 use std::collections::{HashMap, HashSet};
-use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Param, Stmt};
+use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Param, Stmt, Resolution};
 use crate::type_check::AstAnnotations;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ fn collect_flat_leaves(
     leaves
 }
 
-/// 関数本体に現れる `Expr::LocalRef` から「名前 → slot」を収穫する（#11 R2-a′）。
+/// 関数本体に現れる `Resolution::Local` から「名前 → slot」を収穫する（#11 R2-a′）。
 ///
 /// **codegen は slot を採番しない**。Phase R/R1 のリゾルバが AST に書き込んだ割り当てを
 /// そのまま読み取るだけなので、VM・ツリーウォークと同一の slot 同一性を共有できる。
@@ -120,7 +120,7 @@ fn collect_flat_leaves(
 fn harvest_local_slots(body: &[Stmt]) -> HashMap<String, u16> {
     fn walk_expr(e: &Expr, out: &mut HashMap<String, u16>) {
         match e {
-            Expr::LocalRef { name, slot, .. } => {
+            Expr::Ident { name, res: Resolution::Local(slot), .. } => {
                 if let Ok(s) = u16::try_from(*slot) {
                     out.insert(name.clone(), s);
                 }
@@ -257,18 +257,13 @@ fn harvest_local_slots(body: &[Stmt]) -> HashMap<String, u16> {
 
 /// 変数参照式から名前を取り出す（#11 R2-a）。
 ///
-/// Phase R/R1 のリゾルバは解決できたローカル読みを `Expr::Ident` → `Expr::LocalRef { name, slot }`
-/// へ書き換える。codegen はこれまで `Expr::Ident` しか見ておらず、リゾルバを通した AST では
-/// **式が非適格になってネイティブ化が黙って止まる**。両変種をここで吸収し、
-/// codegen が「リゾルバの出した解決済み AST」をそのまま受け取れるようにする。
-///
-/// なお `LocalRef` は「確実にローカル」というリゾルバの判定を意味するが、
-/// リゾルバは関数単位で解決を諦める（可変長引数・未対応の宣言文・メソッド/入れ子/テンプレート）ので、
-/// **`Ident` だからローカルでない、とは言えない**。分類は従来どおり `locals` 表も併用する。
+/// 解決状態（`res`）に関わらず名前を返す。`Resolution::Local` は「確実にローカル」という
+/// リゾルバの判定を意味するが、リゾルバは関数単位で解決を諦める（可変長引数・未対応の宣言文・
+/// メソッド/入れ子/テンプレート）ので、**`Unresolved` だからローカルでない、とは言えない**。
+/// 分類は従来どおり `locals` 表も併用する。
 pub(super) fn ident_name(e: &Expr) -> Option<&str> {
     match e {
-        Expr::Ident { name: n, .. } => Some(n.as_str()),
-        Expr::LocalRef { name, .. } | Expr::GlobalRef { name, .. } => Some(name.as_str()),
+        Expr::Ident { name, .. } => Some(name.as_str()),
         _ => None,
     }
 }
@@ -527,7 +522,7 @@ struct GenCtx<'a> {
     // これに置き換えていく。
     annotations: &'a AstAnnotations,
     // ── ローカルの slot 索引（#11 R2-a′） ────────────────────────────────────
-    // `Expr::LocalRef { name, slot }` から**リゾルバの割り当てを収穫**した表。
+    // `Resolution::Local(slot)` から**リゾルバの割り当てを収穫**した表。
     // codegen が自前で採番し直すことはせず、AST に書かれた slot をそのまま権威とする。
     // `locals`（名前引き）は残す: リゾルバが解決を諦めた関数と、codegen が作る
     // 合成ローカル（preread の `%_prf_*`・flat-list 反復の一時変数など）は slot を持たない。
@@ -569,9 +564,7 @@ fn annotatable_node_id(expr: &Expr) -> Option<u32> {
         | Expr::MustBe { node_id, .. }
         | Expr::IsType { node_id, .. } => Some(*node_id),
         // 識別子も #15b で node-id を持つ。参照サイトごとに型検査の答えが焼かれている。
-        Expr::Ident { node_id, .. }
-        | Expr::LocalRef { node_id, .. }
-        | Expr::GlobalRef { node_id, .. } => Some(*node_id),
+        Expr::Ident { node_id, .. } => Some(*node_id),
         _ => None,
     }
 }
@@ -610,7 +603,7 @@ pub(super) struct HandleFallbackStats {
     pub other: IntFloatCount,
 }
 
-/// 識別子読み（`Ident`/`LocalRef`/`GlobalRef`）が `Ty::Handle` へ落ちた件数の内訳（#15b の実測用）。
+/// 識別子読み（`Expr::Ident`）が `Ty::Handle` へ落ちた件数の内訳（#15b の実測用）。
 ///
 /// `HandleFallbackStats` はこれを数えられない — 集計が `annotatable_node_id` でゲートされており、
 /// 同関数は識別子系に `None` を返すため**構造上ゼロになる**。「#15b（Ident への node-id 付与）に
@@ -699,7 +692,7 @@ fn expr_eligible(expr: &Expr) -> bool {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
         | Expr::Str(_) | Expr::Bool(_) | Expr::None | Expr::Undefined => true,
-        Expr::Ident { name: _, .. } | Expr::LocalRef { .. } | Expr::GlobalRef { .. } => true,
+        Expr::Ident { .. } => true,
         Expr::BinOp { left, right, .. } => expr_eligible(left) && expr_eligible(right),
         Expr::UnaryOp { operand, .. } => expr_eligible(operand),
         Expr::List(items) | Expr::Tuple(items) => items.iter().all(expr_eligible),

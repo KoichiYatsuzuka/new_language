@@ -611,6 +611,59 @@ node-id 追加とは別物で、速度ではなく**コードの簡素化**が�
 
 ---
 
+## #15c 識別子 3 変種の統合（完了 2026-08-11）
+
+### 動機
+`Expr::Ident` / `Expr::LocalRef` / `Expr::GlobalRef` は**1 つの概念（識別子参照）に 3 変種**で、
+各パスが同じ 3 アームを書かされていた。一方、名前だけ欲しい大多数のサイトはその区別を使っていない。
+速度ではなく**コードの簡素化**が動機（#15b から切り出した項目）。
+
+### 形
+```rust
+Expr::Ident { name: String, node_id: u32, res: Resolution }
+
+pub enum Resolution {
+    Unresolved,          // 名前でスコープを引く
+    Local(u32),          // 関数 base スコープの slot 索引（R1）
+    Global(SlotCache),   // 最上位スコープ＋実行時 index キャッシュ（R2-b）
+}
+```
+**リゾルバは変種を差し替えるのではなく `res` を書く**（[resolver.rs](src/interpreter/resolver.rs)）。
+`name` / `node_id` がそのまま残るので、書き換えで注釈やフォールバックを失わない。
+`Resolution::Global` の `SlotCache::clone` は空を返すため、テンプレート実体化での再解決は自動的に働く。
+
+### ⚠️ 機械的に統合すると壊れる（この作業の要点）
+統合前に `Expr::Ident` **だけ**にマッチしていた箇所は「**未解決の**識別子」しか見ていなかった。
+素直に 1 変種へ統合すると、これらが解決済みも拾う。実害の具体例:
+
+- [builtins.rs](src/interpreter/eval/builtins.rs) の `eval_builtin_ident_call` は
+  **名前だけで組み込みへ振り分け、シャドウ検査が無い**。
+  → `len` / `print` という名のローカル変数が関数値を保持していると、**組み込みに横取りされる**。
+- [calls.rs](src/interpreter/eval/calls.rs) の `call_name`（トレースバック表示名）は
+  従来 `LocalRef`/`GlobalRef` を `"<anonymous>"` にしていた。広げると**出力が変わり byte-identical が壊れる**。
+- [vm/compiler.rs](src/vm/compiler.rs) の呼び出し経路は `Ident` → `GlobalRef` → `LocalRef` の
+  if-chain で、先頭を無条件 `Ident` にすると**後続 2 分岐が dead になる**。
+
+対処: インタプリタ実行経路（`eval/`・`exec/`・`functions/`）の **18 サイトを
+`res: Resolution::Unresolved` に限定**して旧挙動を保存。VM はアーム順（Unresolved → Global → Local）で
+旧 if-chain と同一に保った。**広げる（解決済みも受ける）のは意味論の変更**なので別途判断とする。
+
+型検査・パーサのサイトは限定していない — **リゾルバは型検査の後に走る**ので `res` は常に `Unresolved` であり、
+限定しても意味論は同じだから。
+
+### 効果と検証
+- 3 変種 → 1 変種。3-way or-pattern を全廃（`ident_name` / `expr_eligible` / `annotatable_node_id` /
+  `ast_value` / `infer` などが 1 アームに）。
+- **`Expr` のサイズは 112 バイトで不変**（HEAD で実測して確認）。`Resolution` は 16 バイトで
+  既存の最大変種に収まった。インタプリタ全体への波及なし。
+- 差分 **28 ファイル・+177/−176 行**。
+- `cargo build` 警告 0 ／ `cargo test` **696 緑** ／ clippy **増分 0**（HEAD と同じ 50 件）／
+  `compare_vm_modes.ps1` **identical 42 / differing 0** ／ `scan_examples.ps1` **FAIL 0** ／
+  `dump_native_ir.ps1` 代表 6 モジュール **IR byte-identical**。
+- 旧変種名を指す doc コメント 35 箇所も `Resolution::*` へ更新済み（残存 0）。
+
+---
+
 ## この記録の使いどころ
 
 **見積もりが外れた事例**が最も価値がある。同じ判断ミスを繰り返さないために残してある。

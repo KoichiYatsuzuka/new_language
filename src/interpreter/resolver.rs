@@ -2,7 +2,7 @@
 //
 // 型検査後・実行前に **メインプログラムのトップレベル関数** を走査し、確実に
 // 「関数 base スコープ（実行時は `scopes[frame_floor]`）」へ解決できる `Expr::Ident` を
-// `Expr::LocalRef { name, slot }` に書き換える。実行時はスコープ遡り＋文字列ハッシュが
+// `Expr::Ident` の `res` へ `Resolution::Local(slot)` を書く。実行時はスコープ遡り＋文字列ハッシュが
 // 配列 index 1回に置き換わる（[eval/core.rs] の `eval_local_ref`）。
 //
 // ## なぜ base スコープが `scopes[frame_floor]` に決まるのか
@@ -28,7 +28,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{CallArg, Expr, ExceptHandler, MatchArm, MatchPattern, Param, Stmt, TupleTarget};
+use crate::ast::{CallArg, Expr, ExceptHandler, MatchArm, MatchPattern, Param, Stmt, TupleTarget, Resolution};
 
 /// メインプログラムのトップレベル文列を走査し、解決可能な関数本体を書き換える。
 pub(crate) fn resolve_program(stmts: &mut [Stmt]) {
@@ -59,7 +59,7 @@ pub(crate) fn resolve_program(stmts: &mut [Stmt]) {
     }
 }
 
-/// プログラム最上位で宣言される名前を集める（R2-b の `GlobalRef` 判定用）。
+/// プログラム最上位で宣言される名前を集める（R2-b の `Resolution::Global` 判定用）。
 fn collect_program_globals(stmts: &[Stmt]) -> HashSet<String> {
     let mut out = HashSet::new();
     for stmt in stmts {
@@ -110,10 +110,10 @@ fn collect_program_globals(stmts: &[Stmt]) -> HashSet<String> {
 /// `base` に入らないのにグローバルをシャドウできる**（型検査は `let`/`mut` の再宣言は
 /// 禁じるが、for ターゲットは許す）。実際 `collection.ar` の
 /// `let x = {1,2,3}`（最上位・set）を `fn sum_ints` の `for x in items:` が覆っており、
-/// これを見落として `GlobalRef` に書き換えたところ set を読んで落ちた。
+/// これを見落として `Resolution::Global` にしたところ set を読んで落ちた。
 ///
 /// そこで入れ子ブロック・ブロック式の中まで含め、束縛の可能性がある名前を保守的に集め、
-/// **1 つでも該当したらその名前は `GlobalRef` にしない**。
+/// **1 つでも該当したらその名前は `Resolution::Global` にしない**。
 fn collect_bound_names(body: &[Stmt], out: &mut HashSet<String>) {
     for stmt in body {
         match stmt {
@@ -382,7 +382,7 @@ fn collect_base_decls(body: &[Stmt], order: &mut Vec<String>) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Rewrite: Ident → LocalRef（base 名のみ）。入れ子定義には踏み込まない。
+// Rewrite: Ident の res → Resolution::Local（base 名のみ）。入れ子定義には踏み込まない。
 // ---------------------------------------------------------------------------
 
 fn rewrite_stmts(body: &mut [Stmt], base: &HashMap<String, u32>,
@@ -498,24 +498,15 @@ fn rewrite_call_arg(arg: &mut CallArg, base: &HashMap<String, u32>,
 fn rewrite_expr(expr: &mut Expr, base: &HashMap<String, u32>,
     globals: &HashSet<String>) {
     match expr {
-        Expr::Ident { name, node_id } => {
-            // node_id は書き換え先へ引き継ぐ（#15b）。型検査はリゾルバより前に走るので、
-            // ここで落とすと解決済み参照から注釈を引けなくなる。
-            let node_id = *node_id;
+        // 解決結果は `res` フィールドへ書く（変種の差し替えではない）。
+        // `name` / `node_id` はそのまま残るので、書き換えで注釈やフォールバックを失わない。
+        Expr::Ident { name, res, .. } => {
             if let Some(&slot) = base.get(name) {
-                *expr = Expr::LocalRef {
-                    name: name.clone(),
-                    slot,
-                    node_id,
-                };
+                *res = Resolution::Local(slot);
             } else if globals.contains(name) {
                 // base（引数＋本体直下宣言）に無く、最上位で宣言された名前 → グローバル確定。
                 // 型検査がグローバル名の再宣言を禁じているのでシャドウの心配はない。
-                *expr = Expr::GlobalRef {
-                    name: name.clone(),
-                    cache: crate::ast::SlotCache::default(),
-                    node_id,
-                };
+                *res = Resolution::Global(crate::ast::SlotCache::default());
             }
         }
 
@@ -593,7 +584,7 @@ fn rewrite_expr(expr: &mut Expr, base: &HashMap<String, u32>,
         | Expr::Cast { object: e, .. } => rewrite_expr(e, base, globals),
 
         // リテラル・leaf（Int/Float/Str/Bool/None/Undefined/DebugVar/LocalVar/
-        // LocalRef/ImaginaryLit）は書き換え不要。
+        // ImaginaryLit）は書き換え不要。
         _ => {}
     }
 }

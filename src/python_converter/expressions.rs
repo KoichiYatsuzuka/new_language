@@ -1,5 +1,6 @@
 // python_converter/expressions.rs — 式・定数・演算子の変換: convert_expr / convert_constant / convert_binop / convert_augop / convert_cmpop。
 
+use crate::ast::Resolution;
 use {
     rustpython_parser::ast as py,
     crate::ast::{BinOp, CallArg, Expr, UnaryOp},
@@ -16,7 +17,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
     match expr {
         py::Expr::Constant(c) => convert_constant(c, filename),
 
-        py::Expr::Name(n) => Ok(Expr::Ident { name: n.id.to_string(), node_id: 0 }),
+        py::Expr::Name(n) => Ok(Expr::Ident { name: n.id.to_string(), node_id: 0, res: Resolution::Unresolved }),
 
         py::Expr::Attribute(a) => {
             let obj = convert_expr(&a.value, filename)?;

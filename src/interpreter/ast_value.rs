@@ -581,8 +581,8 @@ fn expr_to_value(expr: &Expr) -> Value {
         Expr::Bool(v) => ns("ExprBool", vec![("value", Value::Bool(*v))]),
         Expr::None => ns("ExprNone", vec![]),
         Expr::Undefined => ns("ExprUndefined", vec![]),
-        // parse_ar は実行時に新規パースするため LocalRef は現れないが、網羅性のため Ident と同一に扱う。
-        Expr::Ident { name, .. } | Expr::LocalRef { name, .. } | Expr::GlobalRef { name, .. } => {
+        // 解決状態（`res`）は AST 値としては見せない（parse_ar は実行時に新規パースするので常に未解決）。
+        Expr::Ident { name, .. } => {
             ns("ExprIdent", vec![("name", Value::Str(name.clone()))])
         }
 

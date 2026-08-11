@@ -1,5 +1,6 @@
 // eval/core.rs — 式評価のコア: eval 本体のディスパッチと、トレイトアクセス・属性・スライス・二項演算・match 式の評価。
 
+use crate::ast::Resolution;
 use {
     std::cell::RefCell, std::rc::Rc,
     crate::ast::{BinOp, Expr, MatchArm, MatchPattern},
@@ -80,11 +81,13 @@ impl Interpreter {
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::None => Ok(Value::None),
             Expr::Undefined => Ok(Value::Undefined),
-            Expr::Ident { name, .. } => self
-                .get_val(name)
-                .ok_or_else(|| format!("NameError: '{name}' is not defined")),
-            Expr::LocalRef { name, slot, .. } => self.eval_local_ref(name, *slot),
-            Expr::GlobalRef { name, cache, .. } => self.eval_global_ref(name, cache),
+            Expr::Ident { name, res, .. } => match res {
+                Resolution::Local(slot) => self.eval_local_ref(name, *slot),
+                Resolution::Global(cache) => self.eval_global_ref(name, cache),
+                Resolution::Unresolved => self
+                    .get_val(name)
+                    .ok_or_else(|| format!("NameError: '{name}' is not defined")),
+            },
             Expr::DebugVar(name) => self
                 .dbg_vars
                 .get(name)
@@ -198,7 +201,7 @@ impl Interpreter {
         }
     }
 
-    /// 解決済みローカル参照（`Expr::LocalRef`）の高速読み取り（Phase R / R1）。
+    /// 解決済みローカル参照（`Resolution::Local`）の高速読み取り（Phase R / R1）。
     ///
     /// リゾルバは、トップレベル関数の base スコープに確実に解決できる読み取りだけを書き換える。
     /// base スコープは実行時 `scopes[frame_floor]`（関数フレームの底）に来るので、
@@ -213,7 +216,7 @@ impl Interpreter {
                 debug_assert_eq!(
                     scope.slot_of(name),
                     Some(s),
-                    "LocalRef slot mismatch for '{name}': resolver said slot {s}, \
+                    "Resolution::Local slot mismatch for '{name}': resolver said slot {s}, \
                      runtime index says {:?}",
                     scope.slot_of(name)
                 );
@@ -224,7 +227,7 @@ impl Interpreter {
             .ok_or_else(|| format!("NameError: '{name}' is not defined"))
     }
 
-    /// 解決済みグローバル参照（`Expr::GlobalRef`）の読み取り（Phase R / R2-b）。
+    /// 解決済みグローバル参照（`Resolution::Global`）の読み取り（Phase R / R2-b）。
     ///
     /// リゾルバが「プログラム最上位で宣言され、この関数内でシャドウされない名前」と
     /// 確定したノードにだけ付く。`scopes[0]` の slot index を AST ノードのキャッシュへ
@@ -242,7 +245,7 @@ impl Interpreter {
                 debug_assert_eq!(
                     self.scopes[0].slot_of(name),
                     Some(idx),
-                    "GlobalRef slot mismatch for '{name}'"
+                    "Resolution::Global slot mismatch for '{name}'"
                 );
                 return Ok(var.get_value());
             }
@@ -253,7 +256,7 @@ impl Interpreter {
             // 保証が崩れた場合に誤読しないよう、デバッグビルドで通常解決と突き合わせる。
             debug_assert!(
                 self.scopes[self.frame_floor..].iter().all(|sc| !sc.contains_key(name)),
-                "GlobalRef '{name}' is shadowed by a local at runtime"
+                "Resolution::Global '{name}' is shadowed by a local at runtime"
             );
             if let Some(var) = self.scopes[0].slot(idx) {
                 cache.fill(self.slot_epoch, idx as u32);

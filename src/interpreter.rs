@@ -193,7 +193,7 @@ impl std::hash::BuildHasher for FxBuildHasher {
 ///
 /// 従来の `HashMap<String, Var>` を **slot 配列（宣言順）** に置き換えたもの。
 /// - `names` / `slots`: 平行配列。`slots[i]` が名前 `names[i]` の `Var`。
-///   `Expr::LocalRef{slot}` は `slots[i]` を index 1回で読む（スコープ遡り・ハッシュなしの高速経路）。
+///   `Resolution::Local(slot)` は `slots[i]` を index 1回で読む（スコープ遡り・ハッシュなしの高速経路）。
 /// - `index`: 名前 → slot の遅延ハッシュ索引。**大きいスコープ（=グローバル）でのみ**構築する。
 ///
 /// 関数/ブロックのローカルスコープは通常ごく少数の変数しか持たないため、宣言は単純な `push`
@@ -272,7 +272,7 @@ impl Scope {
         self.slots.iter().map(|(n, v)| (n, v))
     }
 
-    /// slot 番号で直接 `Var` を引く高速経路（`Expr::LocalRef` 用）。
+    /// slot 番号で直接 `Var` を引く高速経路（`Resolution::Local` 用）。
     #[inline]
     pub(self) fn slot(&self, i: usize) -> Option<&Var> {
         self.slots.get(i).map(|(_, v)| v)
