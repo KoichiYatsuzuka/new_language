@@ -12,6 +12,28 @@ use {
 };
 
 impl Interpreter {
+    /// 呼び出し名スタックへ push する（#12）。
+    /// プールに空きバッファがあれば確保せず詰め直す。
+    #[inline]
+    fn push_call_name(&mut self, fn_name: &str) {
+        match self.call_name_pool.pop() {
+            Some(mut buf) => {
+                buf.clear();
+                buf.push_str(fn_name);
+                self.call_stack.push(buf);
+            }
+            None => self.call_stack.push(fn_name.to_string()),
+        }
+    }
+
+    /// 呼び出し名スタックから pop し、バッファをプールへ返す（#12）。
+    #[inline]
+    fn pop_call_name(&mut self) {
+        if let Some(buf) = self.call_stack.pop() {
+            self.call_name_pool.push(buf);
+        }
+    }
+
     /// 呼び出し元スタックフレーム（トレースバック用）を構築する。
     /// `call_stack` から呼び出し元名を、`call_span` から位置とコンテキスト行を取る。
     pub(crate) fn build_caller_frame(&self, call_span: Option<&Span>) -> StackFrame {
@@ -145,18 +167,24 @@ impl Interpreter {
         if let Some(Value::Instance(inst_rc)) = self_val {
             self.current_class = Some(inst_rc.borrow().class.clone());
         }
-        self.call_stack.push(fn_name.to_string());
+        self.push_call_name(fn_name);
         let result = crate::vm::run(self, chunk, &mut buf, base);
-        self.call_stack.pop();
+        self.pop_call_name();
         self.current_class = prev_class;
         buf.truncate(base);
         self.vm_stack = buf;
-        let caller_frame = self.build_caller_frame(call_span.as_ref());
+        // ⚠ `build_caller_frame` は**エラー経路でしか使わない**ので遅延させる（#12）。
+        // 以前は成功時にも毎回作っており、その中で `get_context_lines` が
+        // **ソース 5 行を `join` して String を確保**していた（＋呼び出し元名の String clone、
+        // ＋`span.file.to_string()`）。呼び出しごとに 3 回のヒープ確保を無駄に払っていた。
         match result {
             Ok(v) => Ok(v),
             Err(e) if e.as_str() == RAISE_SENTINEL => {
-                if let Some(raised) = self.current_exception.as_mut() {
-                    raised.frames.push(caller_frame);
+                if self.current_exception.is_some() {
+                    let caller_frame = self.build_caller_frame(call_span.as_ref());
+                    if let Some(raised) = self.current_exception.as_mut() {
+                        raised.frames.push(caller_frame);
+                    }
                 }
                 Err(RAISE_SENTINEL.to_string())
             }
@@ -169,7 +197,7 @@ impl Interpreter {
                         fn_name: fn_name.to_string(),
                         context: String::new(),
                     });
-                    raised.frames.push(caller_frame);
+                    raised.frames.push(self.build_caller_frame(call_span.as_ref()));
                     self.current_exception = Some(raised);
                     Err(RAISE_SENTINEL.to_string())
                 } else {
@@ -451,9 +479,9 @@ impl Interpreter {
             prev
         });
 
-        self.call_stack.push(fn_name.to_string());
+        self.push_call_name(fn_name);
         let result = self.exec_block(&fn_val.body);
-        self.call_stack.pop();
+        self.pop_call_name();
 
         LOOP_DEPTH.with(|d| *d.borrow_mut() = prev_loop_depth);
 
@@ -464,11 +492,12 @@ impl Interpreter {
         self.scopes.truncate(saved_len);
         self.frame_floor = saved_floor;
 
-        // Build a caller frame using the call site span (where this function was called from).
-        let caller_frame = self.build_caller_frame(call_span.as_ref());
+        // 呼び出し元フレームは**エラー経路でしか使わない**ので、ここでは作らない（#12）。
+        // 作ると `get_context_lines` がソース 5 行を join して String を確保する。
 
         // 例外が ExecResult::Raise として直接返ってきた場合: 呼び出し元フレームを追加してセンチネルを返す
         if let Ok(ExecResult::Raise(mut raised)) = result {
+            let caller_frame = self.build_caller_frame(call_span.as_ref());
             raised.frames.push(caller_frame);
             self.current_exception = Some(raised);
             return Err(RAISE_SENTINEL.to_string());
@@ -477,8 +506,11 @@ impl Interpreter {
         // 例外センチネルが Err として伝播してきた場合（ネストした関数からの raise）: 呼び出し元フレームを追加する
         if let Err(ref e) = result {
             if e.as_str() == RAISE_SENTINEL {
-                if let Some(ref mut raised) = self.current_exception {
-                    raised.frames.push(caller_frame);
+                if self.current_exception.is_some() {
+                    let caller_frame = self.build_caller_frame(call_span.as_ref());
+                    if let Some(ref mut raised) = self.current_exception {
+                        raised.frames.push(caller_frame);
+                    }
                 }
                 return Err(RAISE_SENTINEL.to_string());
             }
@@ -499,7 +531,7 @@ impl Interpreter {
                     context: String::new(),
                 });
                 // Frame[1]: the caller frame (where this function was called from)
-                raised.frames.push(caller_frame);
+                raised.frames.push(self.build_caller_frame(call_span.as_ref()));
                 self.current_exception = Some(raised);
                 return Err(RAISE_SENTINEL.to_string());
             }

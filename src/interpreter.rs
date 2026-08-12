@@ -412,6 +412,14 @@ pub struct Interpreter {
     pub(self) source_map: HashMap<String, Vec<String>>,
     /// 関数名のコールスタック。関数実行前後で push / pop される。
     pub(self) call_stack: Vec<String>,
+    /// `call_stack` から pop した `String` バッファの再利用プール（#12）。
+    ///
+    /// 関数名の push は**呼び出しごとに 1 回のヒープ確保**になっていた（実測 ~43ns/call）。
+    /// 名前は毎回同じものが並ぶので、pop したバッファを取っておいて
+    /// `clear()` + `push_str()` で詰め直せば定常状態で確保が 0 になる。
+    /// `call_stack` 自体の型と `len()` の意味は変えないので、深さを見ている
+    /// デバッガ（`debugger.rs`）や例外フレーム生成には影響しない。
+    pub(self) call_name_pool: Vec<String>,
     /// `except` ブロック内で処理中の例外（裸の `raise` で再 raise するために保持）。
     pub(self) current_exception: Option<RaisedError>,
     /// モジュールキャッシュ: (lang, 解決済みパス) → ロード状態。
@@ -501,6 +509,7 @@ impl Interpreter {
             frame_floor: 1,
             source_map: HashMap::new(),
             call_stack: Vec::new(),
+            call_name_pool: Vec::new(),
             current_exception: None,
             module_cache: HashMap::new(),
             in_python_module: false,
