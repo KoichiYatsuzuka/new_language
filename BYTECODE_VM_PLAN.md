@@ -27,11 +27,16 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 ### 現在地
 **#16（AST 型解決層）＝本系列の主目的は完了**。三経路（ツリーウォーク／VM／ネイティブ）が同一の型解決注釈を消費する。
-続けて #18・#11 R2-a/R2-a′/R2-b・#14 の一部・#15b・#15c・#15・#15d・#20・#15e・#21-a・#22-a・#22-b・#22-c・#22-d・#21-b・#12・#2b・**#2a** まで完了（**#22 系列・#2 系列とも完了**）。
-git の HEAD は `674fc34 "2-b"`（#2b までコミット済）。
-**#2a は未コミット**（ユーザー許可待ち）。
+続けて #18・#11 R2-a/R2-a′/R2-b・#14 の一部・#15b・#15c・#15・#15d・#20・#15e・#21-a・#22-a・#22-b・#22-c・#22-d・#21-b・#12・#2b・#2a・**#1-a/#1-b** まで完了（**#22 系列・#2 系列とも完了**）。
+git の HEAD は `06e973a "#2-a"`（#2a までコミット済）。
+**#1-a/#1-b は未コミット**（ユーザー許可待ち）。
 
-直近 5 件の要点だけ先に:
+直近 6 件の要点だけ先に:
+- **#1 は「本体着手前に安全網が要る」と判明**。デバッガには**自動テストが 1 件も無かった**
+  （`compare_vm_modes.ps1` は stdin を与えないので `break_point` 例題を skip していた）。
+  [compare_debug_modes.ps1](compare_debug_modes.ps1) を新設し、**負の対照で検知力を確認済み**。
+  その上で `dbg_active()` → **`dbg_blocks_vm()`**（StepInto のときだけ VM 無効）へ絞り、
+  step-over が跨ぐ重い呼び出しで **1.97x**。**#1 本体（VM 内文単位ブレーク）はまだ未着手**。
 - **#2a で「V-F は速度より基盤」と確定**。peephole は静的には **JUMP の 14.3% を除去**するが
   **総命令数では 0.31%** で、E2E は**分岐支配コードで +4.4%・それ以外はほぼ 0**。
   ⚠ 一方 `src/vm/peephole.rs` は**索引再マップを解決済みの土台**なので、今後の op 除去系はここに足せる。
@@ -98,6 +103,8 @@ git の HEAD は `674fc34 "2-b"`（#2b までコミット済）。
 - **検証は 4 点セット**: `cargo build`（**警告 0**）・`cargo test`（**703 緑**）・
   [compare_vm_modes.ps1](compare_vm_modes.ps1)（off/auto byte-identical）・
   [scan_examples.ps1](scan_examples.ps1)（例題 **FAIL 0**）。
+  **デバッガ／`vm_eligible` に触るときは追加で [compare_debug_modes.ps1](compare_debug_modes.ps1)**
+  （ステッピングの off/auto 一致。4 点セットのどれもこの経路を覆えない）。
   **codegen を触るときは追加で [dump_native_ir.ps1](dump_native_ir.ps1) の IR byte-identical を必ず確認**
   （1 箇所の取りこぼしで関数が非適格になり IR が変わるので、最強の検査になる）。
   `cargo clippy` は **HEAD 時点で既存警告が 50 件ある**。総数で判断せず**増分 0** を確認すること
@@ -118,6 +125,7 @@ git の HEAD は `674fc34 "2-b"`（#2b までコミット済）。
 | [annot_diff.ps1](annot_diff.ps1) | 注釈の充填状況・binop 特化の内訳・`Unresolved` の発生源を出力 |
 | [annot_unresolved.ps1](annot_unresolved.ps1) | 全例題を `AR_ANNOT_DIFF=1` で実行し `Unresolved` の発生源を式種別ごとに集計 |
 | [ab_bench.ps1](ab_bench.ps1) | 2 つの `arrow.exe` を**交互実行**して経過時間を比較（`-A head.exe -B new.exe`）。#2b で新設 |
+| [compare_debug_modes.ps1](compare_debug_modes.ps1) | **対話デバッガのステッピング**が off/auto で byte-identical か検証（`examples/debugger/<name>.ar` ＋ `<name>.in`）。#1 で新設 — `compare_vm_modes.ps1` は stdin を与えないのでこの経路を覆えない |
 | [run_examples.ps1](run_examples.ps1) | 既存の素朴な例題ランナー（タイムアウトなし） |
 | [bench.ps1](bench.ps1) | ベンチ一式 |
 
@@ -181,6 +189,8 @@ git の HEAD は `674fc34 "2-b"`（#2b までコミット済）。
 | 12 | 呼び出し機構の高速化 | `build_caller_frame` の遅延化＋関数名バッファのプール化で **per-call のヒープ確保 2 件を除去**。呼び出しオーバーヘッド **0.360→0.138 µs（2.61x）**・E2E 1.36x。**フレームスタック改修は不要だった** |
 | 2b | V-F 単型算術命令 | 型検査が `Stmt::CompoundAssign` にも `binop_kind` を焼き、VM が `Expr::BinOp` と同じ融合＋特化経路へ委譲（**新 op ゼロ**）。`x += e` **1.9x**・カウントループ **1.60x**・E2E 1.00〜1.33x。命令列の再構成は #2a へ申し送り |
 | 2a | V-F peephole | `src/vm/peephole.rs` を新設（Jump 連鎖畳み込み＋次命令 Jump 除去＋**コード索引の一括再マップ**）。併せて `obj.x += e` を 7→最短 5 命令へ（`GetAttrLocal` 化＋`Swap` 除去）。属性複合代入は変数版と**同速に到達**。peephole 単体は JUMP の 14.3% 除去だが総命令の 0.31%・E2E 分岐支配で **+4.4%**・他はほぼ 0 |
+| 1-a | デバッガの自動検証を新設 | `compare_debug_modes.ps1` ＋ `examples/debugger/<name>.ar`+`.in` の 4 シナリオ。off/auto のステッピング transcript を比較。**負の対照（`dbg_active()` ゲート除去）で 4/4 検知を確認** |
+| 1-b | デバッグ中の VM 無効化を最小化 | `should_pause_at` を読み「**停止し得るのは StepInto だけ**」と確定し `dbg_blocks_vm()` へ置換。step-over が跨ぐ重い呼び出しで **1.97x**・通常経路のコストはゼロ |
 
 ### 残り — 依存関係つき一覧
 
@@ -193,7 +203,7 @@ git の HEAD は `674fc34 "2-b"`（#2b までコミット済）。
 | 15-3 | 文字列インターン（§7.4-3） | 属性名・メソッド名を `Rc<str>` + ポインタ比較 | — | 保留（**消費者 0 件と実測**・R3 IC が名前引きを既に潰済） |
 | 2c | V-F R0-A エスケープ解析 | 非エスケープフレームのフラット確保 | **← 12b** | **保留**（12b が作るコストを取り消すだけのタスク。VM 経路は既にフラット） |
 | 10 | import モジュール Chunk | 定義文のオペコード化＋`StoreGlobal` op | — （ただし高コスト・低効果と実測済） | 保留 |
-| 1 | V-E 本体（汎用行テーブル） | op→span 行テーブル＋停止判定。⚠ **`peephole.rs` と同時に直すこと**（per-op テーブルは命令削除でずれる） | — | 保留（暫定対応で実用上不要） |
+| 1 | V-E 本体（VM 内の文単位ブレーク） | op→span 行テーブル＋ディスパッチループの停止判定＋停止 VM フレームのローカルを REPL から参照。⚠ **`peephole.rs` と同時に直すこと**（per-op テーブルは命令削除でずれる）。⚠ **停止判定はホットループに入るので本系列の速度目的と相反する**（根拠は実装ログ） | **← #1-a（安全網・完了）** | 保留（残る代償は StepInto 時のみ・#1-b で step-over は解消） |
 | 24 | peephole パターンの追加 | `peephole.rs` へ足す（到達不能コード除去・`Const;Pop` 消去等）。**#2a の実測では JUMP 除去だけで総命令の 0.31%**なので、追加は「効く形を実測してから」 | — | 未着手（低優先・効果は要実測） |
 | 3 | 強制バイトコード（D2） | フォールバック撤去＋TLS4本/センチネル2種の実削除 | **← 10, 1** | ブロック中（本系列の最終段） |
 | 11 R2-c | グローバル記憶域の index 配列化 | ネイティブの index 参照 | **← 消費者の出現（14 と同時に再評価）** | ブロック中（消費者不在） |

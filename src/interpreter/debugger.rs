@@ -53,11 +53,29 @@ thread_local! {
     static IN_REPL: RefCell<bool> = const { RefCell::new(false) };
 }
 
-/// デバッガがアクティブ（ステップ実行中）かを返す。VM 経路の判定に使う（タスク #1 の暫定対応）。
-/// VM 関数はステートメント境界で `should_pause_at` を呼ばないため、デバッグ中は VM を無効化して
-/// ツリーウォーク（文単位で停止判定する参照経路）に委ねることで、`--vm=auto` でも正しくステップできる。
-pub(crate) fn dbg_active() -> bool {
-    DBG_MODE.with(|m| *m.borrow() != DbgMode::Inactive)
+/// **これから入る関数フレーム**が VM で実行できないかを返す（タスク #1 の暫定対応・改良版）。
+///
+/// VM 関数はステートメント境界で `should_pause_at` を呼ばないので、
+/// 「そのフレームで停止し得る」なら文単位で停止判定するツリーウォークに委ねる必要がある。
+/// ただし `should_pause_at` を読むと、**停止し得るのは StepInto のときだけ**である:
+///
+/// | モード | 停止条件 | 呼び出し先（深さ > 現在）で停止し得るか |
+/// |---|---|---|
+/// | `StepOver` | `call_stack.len() == entry` | **しない**（呼び出し先は常に `entry` より深い） |
+/// | `StepOut { target }` | `call_stack.len() <= target` | **しない**（呼び出し先は常に `target` より深い） |
+/// | `StepInto` | `depth > entry` で停止 | **する**（次に入るフレームの先頭で止まる） |
+///
+/// したがって **step-over / step-out で跨ぐ呼び出しは VM で全速実行してよい**。
+/// これが効くのは「重い関数を step-over で飛ばす」ケースで、そこが実測で最も待たされる
+/// （ツリーウォークは VM の 2.0〜4.2x 遅い）。
+///
+/// ⚠ `break_point` を含む関数は VM コンパイラが未対応で bail するため、
+/// ネストした `break_point` は VM 経路でも従来どおり発火する。
+///
+/// ⚠ 変更したら [compare_debug_modes.ps1](../../compare_debug_modes.ps1) を必ず回すこと
+/// （off/auto のステッピング一致は他のどのスクリプトでも検証できない）。
+pub(crate) fn dbg_blocks_vm() -> bool {
+    DBG_MODE.with(|m| *m.borrow() == DbgMode::StepInto)
 }
 
 // ---------------------------------------------------------------------------
