@@ -9,6 +9,7 @@ pub mod chunk;
 pub mod compiler;
 pub mod disasm;
 pub mod op;
+pub mod peephole;
 pub mod run;
 
 pub use chunk::Chunk;

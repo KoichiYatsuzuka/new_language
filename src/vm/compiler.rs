@@ -256,6 +256,10 @@ pub fn compile_fn(
     // 本体末尾までフォールオフしたら None を返す。
     c.emit(Op::ReturnNil);
 
+    // 覗き穴最適化（#2a）。コード生成は「素直に出す」ままにして、構造的に出る無駄
+    // （`else` 無し `if` の次命令への `Jump` 等）はここで回収する。意味論は不変。
+    super::peephole::optimize(&mut c.code);
+
     let chunk = Chunk {
         code: c.code,
         consts: c.consts,
@@ -1405,9 +1409,6 @@ impl Compiler {
                 let ni = self.add_name(attr);
                 // 型特化（#2b）: フィールドの型は注釈テーブルが `Expr::Attr` の node_id に焼いている。
                 // 右辺は `expr_prim`（リテラル / 型注釈つき局所変数）で見る。
-                // ⚠ 命令列そのもの（`GetAttr`＋`Swap`＋余分な `LoadLocal`）は変えていない。
-                //   計測では変数版との差 ~30ns のうち大半がこの命令列側で、その再構成は
-                //   peephole（#2a）の領分。ここでは op ディスパッチだけを特化する。
                 let kind = match target {
                     Expr::Attr { node_id, .. } => self
                         .annot_prim(*node_id)
@@ -1416,14 +1417,41 @@ impl Compiler {
                         .and_then(|k| Self::gate_bin_kind(k, op)),
                     _ => None,
                 };
-                // ツリーウォークの評価順（value を先に評価 → 現在値を get → op）に一致させる。
-                // stack: [obj(set base), value, obj(get base)] → GetAttr → [obj, value, cur]
-                //   → Swap → [obj, cur, value] → Bin(op) → [obj, new] → SetAttr。
-                self.compile_expr(object)?; // SetAttr のベース
-                self.compile_expr(value)?; // rhs を先に評価
-                self.compile_expr(object)?; // GetAttr のベース
-                self.emit(Op::GetAttr(ni, ni));
-                self.emit(Op::Swap);
+                // `object_is_instance` が通った時点でレシーバは局所 slot（`self` か instance 型の
+                // ローカル）と確定している。`as_local` は debug_mode でだけ `None` を返す。
+                let obj_slot = self.as_local(object);
+                self.compile_expr(object)?; // SetAttr のベース（ここは常に必要）
+
+                // 評価順（#2a）。ツリーウォークは **value を先に評価してから**現在値を読むので、
+                // 素直に組むと [value, cur] の順にスタックへ乗り `Swap` が要る。
+                // ただし value が**副作用を持たない**（局所変数読み or 定数リテラル）なら、
+                // 先に現在値を読んでも観測結果は同じなので `Swap` を丸ごと落とせる。
+                // レシーバ slot が value の評価中に再束縛されないことは `CallMethodLocal` と同じ根拠
+                // （再束縛は文＝`StoreLocal` でしか起きず、クロージャ捕捉は VM 非対応で bail する）。
+                //
+                // 現在値の読み出しは、レシーバが局所 slot なら `LoadLocal; GetAttr` の 2 命令を
+                // `GetAttrLocal` 1 命令へ畳む（レシーバを **clone せず frame から参照で読む**ので
+                // `Rc` の refcount 増減も消える）。`Expr::Attr` の compile と同じ融合。
+                let value_pure =
+                    self.as_local(value).is_some() || Self::as_const_lit(value).is_some();
+                if !value_pure {
+                    self.compile_expr(value)?; // rhs を先に評価（順序保存）
+                }
+                match obj_slot {
+                    Some(s) => self.emit(Op::GetAttrLocal(s, ni, ni)),
+                    None => {
+                        // `debug_mode` では `as_local` が常に `None`。従来どおり 2 命令で組む。
+                        self.compile_expr(object)?;
+                        self.emit(Op::GetAttr(ni, ni))
+                    }
+                };
+                if value_pure {
+                    // [obj, cur, value] → Bin → [obj, new]（Swap 不要）
+                    self.compile_expr(value)?;
+                } else {
+                    // [obj, value, cur] → Swap → [obj, cur, value] → Bin → [obj, new]
+                    self.emit(Op::Swap);
+                }
                 match kind {
                     Some(crate::type_check::BinOperandKind::Int) => {
                         self.emit(Op::IntBinSS(op.clone()))
