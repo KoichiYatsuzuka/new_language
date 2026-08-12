@@ -33,11 +33,17 @@ use super::op::Op;
 /// 通常のグローバル呼び出し（`LoadGlobal`+`Call`）に流し、`call_value_evaled` の
 /// `Value::Type` アーム＝`call_type_by_name_evaled` へ委譲する（ツリーウォークと同一経路・
 /// ユーザーが同名をグローバル shadow しても `LoadGlobal` が拾うので健全）。
+/// VM が `CallBuiltin` を発行する組み込み名。
+///
+/// ⚠ **この集合は `Interpreter::eval_builtin_evaled` が扱う名前の部分集合でなければならない**
+/// （`run.rs` の `CallBuiltin` は `eval_builtin_evaled` が `None` を返すと `NameError` になる）。
+/// 2 ファイルに跨る不変条件なので、`vm_builtin_names_are_all_handled` テストで固定してある（#22-d）。
+pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
+    "print", "range", "len", "next", "repr", "id", "enumerate", "zip", "getenv",
+];
+
 fn is_vm_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "print" | "range" | "len" | "next" | "repr" | "id" | "enumerate" | "zip" | "getenv"
-    )
+    VM_BUILTIN_NAMES.contains(&name)
 }
 
 /// VM が呼び先として扱えず、ツリーウォークへ bail すべき組み込み名。
@@ -1621,7 +1627,7 @@ impl Compiler {
                 }
             }
             // 関数呼び出し `func(args)` / メソッド呼び出し `obj.method(args)`。
-            Expr::Call { func, args, span, .. } => {
+            Expr::Call { func, args, span, node_id, .. } => {
                 if let Expr::Attr { object, attr, .. } = func.as_ref() {
                     // ── メソッド呼び出し ── object が Instance と保証できる（`self` または
                     // ユーザークラス型注釈の）識別子のときのみ対応。
@@ -1655,13 +1661,13 @@ impl Compiler {
                         let cn = self.add_name(name);
                         self.emit(Op::LoadName(cn));
                         let mask = self.compile_call_args(args)?;
-                        self.emit(Op::Call(args.len() as u16, mask, cn, site));
+                        self.emit(Op::Call(args.len() as u16, mask, cn, site, *node_id));
                     } else if let Some(&slot) = self.slots.get(name) {
                         // ローカル/パラメータが関数値を保持している場合は slot 読み。
                         self.emit(Op::LoadLocal(slot));
                         let mask = self.compile_call_args(args)?;
                         let ni = self.add_name(name);
-                        self.emit(Op::Call(args.len() as u16, mask, ni, site));
+                        self.emit(Op::Call(args.len() as u16, mask, ni, site, *node_id));
                     } else if is_builtin_callee(name) || name == "Self" {
                         // その他の純粋 builtin・型コンストラクタ・`Self` は非対応。
                         return None;
@@ -1672,7 +1678,7 @@ impl Compiler {
                         self.global_caches.push(crate::ast::SlotCache::default());
                         self.emit(Op::LoadGlobal(ni, ci));
                         let mask = self.compile_call_args(args)?;
-                        self.emit(Op::Call(args.len() as u16, mask, ni, site));
+                        self.emit(Op::Call(args.len() as u16, mask, ni, site, *node_id));
                     }
                 } else if let Expr::Ident { name, res: Resolution::Global(_), .. } = func.as_ref() {
                     // 解決済みグローバル関数呼び出し（R2-b）。
@@ -1685,14 +1691,14 @@ impl Compiler {
                         self.emit_load_global(name);
                     }
                     let mask = self.compile_call_args(args)?;
-                    self.emit(Op::Call(args.len() as u16, mask, ni, site));
+                    self.emit(Op::Call(args.len() as u16, mask, ni, site, *node_id));
                 } else if let Expr::Ident { name, res: Resolution::Local(slot), .. } = func.as_ref() {
                     // 解決済みローカル関数値の呼び出し。
                     let s = u16::try_from(*slot).ok()?;
                     self.emit(Op::LoadLocal(s));
                     let mask = self.compile_call_args(args)?;
                     let ni = self.add_name(name);
-                    self.emit(Op::Call(args.len() as u16, mask, ni, site));
+                    self.emit(Op::Call(args.len() as u16, mask, ni, site, *node_id));
                 } else {
                     // その他の呼び先式（添字結果など）は非対応。
                     return None;

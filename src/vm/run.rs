@@ -363,7 +363,7 @@ fn exec_op(
                     .ok_or_else(|| format!("NameError: '{name}' is not defined"))?;
                 let evaled = args.into_iter().map(|v| (None, v, false)).collect();
                 let name = name.clone(); // interp の可変借用のため名前を退避する
-                buf.push(interp.call_value_evaled(callee, evaled, &name, None)?);
+                buf.push(interp.call_value_evaled(callee, evaled, &name, None, 0)?);
             } else {
                 match interp.eval_builtin_evaled(name, args) {
                     Some(r) => buf.push(r?),
@@ -432,7 +432,7 @@ fn exec_op(
             }
             buf.pop();
         }
-        Op::Call(argc, mut_mask, name_idx, span_idx) => {
+        Op::Call(argc, mut_mask, name_idx, span_idx, node_id) => {
             let n = *argc as usize;
             let split = buf.len() - n;
             let arg_vals = buf.split_off(split); // arg0..argN-1（順序保持）
@@ -443,11 +443,13 @@ fn exec_op(
                 .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
                 .collect();
             // 呼び出し元名・位置をトレースバック用に渡す（V-E）。
+            // `node_id` は FFI 境界検査の宣言型キー（#22-b）。
             let r = interp.call_value_evaled(
                 callee,
                 evaled,
                 &chunk.names[*name_idx as usize],
                 Some(chunk.spans[*span_idx as usize].clone()),
+                *node_id,
             )?;
             buf.push(r);
         }

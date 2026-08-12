@@ -108,9 +108,12 @@ pub enum Op {
     JumpIfTrueOrPop(u32),
     /// 関数呼び出し: スタックは `[callee, arg0, .., argN-1]`。args を argc 個・callee を pop し、
     /// `mut_mask`（bit i = arg i の is_mutable）付きでディスパッチして結果を push する。
-    /// フィールド: (argc, mut_mask, name_idx, span_idx)。name_idx=呼び出し元名（トレースバック用・
-    /// `names`）、span_idx=呼び出し位置（`spans`）。
-    Call(u16, u32, u32, u32),
+    /// フィールド: (argc, mut_mask, name_idx, span_idx, node_id)。name_idx=呼び出し元名（トレースバック用・
+    /// `names`）、span_idx=呼び出し位置（`spans`）、node_id=AST 型解決層の注釈キー（#22-b）。
+    ///
+    /// `node_id` は **FFI 境界検査（#16）が宣言型を引くために要る**。以前は運んでいなかったため、
+    /// 値経由で py/js 関数を呼ぶと VM 経路だけ検査が素通りしていた（#22-a 発見 2）。0 = 未採番。
+    Call(u16, u32, u32, u32, u32),
     /// インスタンスメソッド呼び出し: スタックは `[obj, arg0, .., argN-1]`。args を argc 個・obj を pop し、
     /// `names[name_idx]` のメソッドを `mut_mask` 付きでディスパッチして結果を push する。
     /// obj が Instance であることはコンパイル時の型注釈で保証済み。フィールド: (name_idx, argc, mut_mask)。

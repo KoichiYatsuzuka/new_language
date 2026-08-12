@@ -1027,6 +1027,287 @@ FFI の out パラメータが黙って機能しないという、外から見�
 
 ---
 
+## #22-a 呼び出しディスパッチの分類（完了 2026-08-11）
+
+### 分類の枠組み（3 つの直交軸）
+現在 [eval_call](src/interpreter/eval/calls.rs) は性質の違う 3 つの判断を 1 本の if-chain に潰している。
+
+| 軸 | 内容 | 実装箇所 | 重複 |
+|---|---|---|---|
+| **A. 呼び先の同定** | AST の形（`Ident`/`Attr`/`TemplateInstantiate`）＋記憶域＋各種キャッシュ | ツリーウォーク `eval_call` 前段 5 ゲート ／ VM コンパイラの `res` 3 分岐×`Unresolved` 内 5 分岐 | **2 実装** |
+| **B. 呼び先の正規化** | テンプレート実体化・オーバーロード選択・`Class`→`__init__`・`Instance`→`__call__` | A と C の間に散在 | — |
+| **C. 実行方式** | ← ユーザー提案の分類 | **3 実装**（下記） | **3 実装** |
+
+### C 軸は 3 箇所に別々のアーム集合で実装されている
+| `Value` 変種 | `eval_call` | `call_value_evaled`（**VM が使う**） | `Namespace` アーム |
+|---|:---:|:---:|:---:|
+| `Function` / `OverloadedFn` / `Class` / `GeneratorFn` / `NativeFunction` / `PyObject` | ✅ | ✅ | ✅ |
+| `Type`（型コンストラクタ） | ✅ | ✅ | ❌ |
+| `Instance`（`__call__`） | ✅ | ✅ | ❌ |
+| **`JsProcFn`** | ✅ | **❌→修正** | ✅ |
+| `Protocol` / `TemplateFn`（エラー文言） | ✅ | ❌ | ❌ |
+| `Namespace` | ❌ | ❌ | ✅ |
+
+### 🐛 発見 1: `JsProcFn` 欠落による off/auto 不一致（修正済）
+`call_value_evaled` に `Value::JsProcFn` アームが無く、**VM の `Op::Call` はこの関数を使う**ため:
+```
+let f = js_mod.func        # 関数値に束縛
+fn g() -> str: return f(x) # VM 化された関数内から呼ぶ
+```
+が `--vm=off` では通り、`--vm=auto` では **`TypeError: 'function' object is not callable`**。
+アームを追加して解消（実測で両モード `z.ar` 一致を確認）。
+
+`compare_vm_modes.ps1` が検出できなかったのは、js-proc 例題が**スキップリストにある**ため
+（Node ブリッジが常駐して終了しない）。#20 の強化でも届かない領域。
+
+### 🐛 発見 2: VM 経路では FFI 境界検査が丸ごと効いていない（未修正）
+`check_ffi_return`（#16 の成果）の呼び出しは **`eval_call` の 3 箇所だけ**で、
+`call_value_evaled` からは一度も呼ばれない。検査は**型検査が Call ノードへ焼いた宣言型**を
+`node_id` 索引で引くため、`node_id` を持たない `call_value_evaled` では**原理的に行えない**。
+→ `PyObject` / `JsProcFn` を値経由で VM から呼ぶと、**スタブが宣言した型との突き合わせが働かない**。
+C 軸を 1 本化し `node_id` を実行方式ディスパッチまで運ぶ #22-b で解消する。
+
+### ユーザー提案の 5 分類への写像 — **4 分岐で閉じる**
+| 提案分類 | 現在の `Value` 変種 | 判定 |
+|---|---|---|
+| 1. 組み込み | `Value::Type`（型コンストラクタ）＋ `eval_builtin_ident_call` | **2 箇所に分裂**。統合対象 |
+| 2. 非コンパイルの Arrow 関数・メソッド | `Function` / `OverloadedFn` / `Class` / `GeneratorFn` / `Instance` | B 軸で 1 つへ正規化できる |
+| 3. コンパイル済み Arrow | `NativeFunction` | **4 と同一表現** |
+| 4. 直接読める外部ライブラリ | `NativeFunction` | **3 と統合済**（[NativeFnRef](src/interpreter/value/native.rs) が C ABI シンボル呼びを一本化） |
+| 5. 翻訳機経由 | `PyObject` / `JsProcFn` / `CsObject` | 言語別だが「ブリッジを挟む」で 1 分岐 |
+
+**結論: C 軸は 4 分岐（1/2/3+4/5）で閉じる。** 提案の 3 と 4 を分ける必要はない
+（差は出自であって呼び出し経路ではない）。C# DLL は形式が DLL でも**ブリッジ経由なので 5**。
+
+### 閉じない残余（C の下のサブ種別として持つ）
+分類 2 の中に「**到達方法ではなく起きることが違う**」ものが残る。分岐は減らないが A/B から切り離せる:
+- 通常関数: 本体を実行して戻り値
+- ジェネレータ関数: 本体を eager 実行して `Value::Generator` を返す
+- コンストラクタ: インスタンス確保 ＋ `__init__`
+
+`Protocol` / `TemplateFn` のアームは**実行方式ではなく「B 軸が未実施」を検出しているだけ**なので、
+B を独立段にすればここから消える。
+
+### 22-b 以降への含意
+- **C の 3 実装を 1 本化**すれば、発見 1（アーム集合のずれ）は構造的に起きなくなる。
+- **`node_id` を C まで運ぶ**設計にすれば、発見 2（FFI 境界検査の欠落）も同時に解消する。
+- VM は C 軸を**自前で持たず `call_value_evaled` に委譲済み**なので、統合先はそこで良い。
+  VM が重複を持っているのは **A 軸だけ**。
+
+---
+
+## #22-b C 軸（実行方式）の統合（完了 2026-08-11）
+
+### やったこと
+実行方式ディスパッチの**3 重実装を 1 本化**した。統合先は `call_value_evaled`
+（[eval/calls.rs](src/interpreter/eval/calls.rs)）— VM の `Op::Call` が既にここへ委譲していたため。
+
+- `eval_call` の 11 アーム match を**委譲 1 行**へ置換。
+- `check_ffi_return` を `&Expr` ではなく**表示名 `&str`** を取る形に変え、C 軸から呼べるようにした。
+- `call_value_evaled` に `node_id` を追加し、`PyObject` / `JsProcFn` で FFI 境界検査を実行。
+- **`Op::Call` に `node_id` フィールドを追加**（`(argc, mut_mask, name_idx, span_idx, node_id)`）。
+  これが無いと VM 経路に宣言型が届かない。
+
+### C 軸へ渡せない呼び先 — 3 つだけ残した（理由つき）
+統合の要点は「**何が本当に C 軸ではないか**」を見極めること。以下は `eval_call` に残す:
+
+| 呼び先 | 残す理由 |
+|---|---|
+| `Function` | **A 軸**の後処理（R4 グローバル slot の焼き込み）が「どこから呼ばれたか」を要する |
+| `NativeFunction` | `mut` ポインタの **write-back に引数の式が要る**（評価済みの値では書き戻し先が判らない）。typed IC の焼き込みも引数が全て位置引数かを式で見る |
+| `Type` | `AsyncManager(num_thread=3)` が**キーワード引数**、`Signal[T]()` がテンプレート形。評価済み値ベクタではキーワード名が落ちる |
+
+### 🐛 統合中に 2 つの回帰を検出した（どちらも直した）
+- **`Value::Type` を委譲したら壊れた**。`call_type_by_name_evaled` には `AsyncManager`/`Signal` のアームが無く、
+  コンパイラが「**`Value::AsyncManager` is never constructed**」と警告して露見した。
+  デッドコード警告が意味論の回帰を捕まえた形。
+- **`TemplateFn` のエラー文言が 2 種類あった**。統合時に片方へ揃えた
+  （`TemplateError: template must be called with explicit type arguments ...` を採用）。
+
+### 🧪 負の対照で「VM 経路の FFI 境界検査欠落」を確認した
+`Op::Call` が渡す `node_id` を一時的に `0` に戻すと:
+
+| モード | 結果 |
+|---|---|
+| `--vm=off` | `FfiTypeError: ... declared to return int but returned str` |
+| `--vm=auto` | **`I am a string` を素通しして継続** |
+
+＝ **モードによって静かに誤った値が Arrow へ流れ込む**状態だった（例題の言う「最悪の失敗形」）。
+修正後は両モードとも `FfiTypeError`。
+
+### 検証
+- `cargo build` 警告 0 ／ `cargo test` **697 緑** ／ clippy **50 件で増分 0** ／
+  `compare_vm_modes.ps1` **identical 70 / differing 0**（stderr 発火 28）／ `scan_examples.ps1` **FAIL 0**。
+- 例題: [ffi_boundary_value_call_error.ar](examples/interop/ffi_boundary_value_call_error.ar)（新規・
+  関数値経由の py 呼び出しで両モードとも境界検査が効くこと）。
+
+### 22-c / 22-d への申し送り
+- 残した 3 例外のうち **`NativeFunction` と `Type` は「引数を式のまま渡す必要がある」**という同じ理由。
+  22-c（B 軸の分離）で「引数の正規化」を独立段にすれば、この 2 つも C 軸へ寄せられる可能性がある。
+- `Function` の例外は純粋に A 軸（キャッシュ焼き込み）なので、22-d で A 軸を括れば解消する。
+- `eval_method_call` の `Namespace` アームは**まだ独自のアーム集合を持っている**（未統合）。
+  ここも `call_value_evaled` へ寄せるのが 22-c の一部。
+
+---
+
+## #22-c B 軸の分離 — C 軸の統合を完了（2026-08-12）
+
+### やったこと
+22-b で残っていた **C 軸の 3 例外のうち 2 つを解消**し、3 つ目の重複実装も畳んだ。
+
+| 対象 | 変更 |
+|---|---|
+| `eval_method_call` の `Namespace` アーム | **C 軸へ委譲**（22-a が数えた 3 つ目の実行方式ディスパッチを解消） |
+| `Value::Type` | `call_type_constructor_evaled` を新設して**キーワード引数を保持したまま**渡し、C 軸へ移動 |
+| `instantiate` / `instantiate_evaled` | 2 実装 → **`instantiate` は引数を評価して `instantiate_evaled` へ委譲**する 1 実装へ |
+
+`eval_type_constructor_call` / `make_async_manager`（CallArg 版）は**消費者が消えて削除**できた
+＝ C 軸へ寄せられたことの機械的な裏付け。
+
+### 🐛 委譲で回帰を 1 件出し、検査が捕まえた
+`Namespace` アームを委譲した直後、`scan_examples.ps1` が
+**`FAIL cs_interop_test.ar: TypeError: function takes 0 argument(s), got 1`** を検出。
+
+原因は 22-b の `Value::Type` と**まったく同じ形**だった:
+`instantiate`（CallArg 版）だけが **cs-dll / cs-proc ブリッジのコンストラクタ分岐**を持ち、
+`instantiate_evaled` には無かった。委譲した結果、C# のコンストラクタ呼び出しが
+引数を取らない Arrow 側 stub `__init__` へ流れて落ちた。
+→ ブリッジ分岐を `instantiate_evaled` へ移植し、`instantiate` はその委譲に一本化。
+
+**「同じ処理の CallArg 版と evaled 版がずれている」がこの系列の反復パターン**である
+（#22-a の `JsProcFn`、22-b の `AsyncManager`、22-c の cs ブリッジ）。
+片方を他方への委譲にして**実装を 1 つに畳む**のが唯一の恒久策。
+
+### 残る唯一の例外: `NativeFunction`（意図的に据え置き）
+`mut` ポインタの write-back が **引数の「元の変数名」**を要る
+（[eval/native.rs](src/interpreter/eval/native.rs) の `writebacks.push((n.clone(), h))`）。
+評価済み引数は `(Option<String> /*キーワード名*/, Value, bool /*可変か*/)` の 3 つ組で、
+**元の変数名を持っていない**。
+
+- **解くには**: この 3 つ組へ `source_name: Option<String>` を足す（B 軸の引数正規化）。
+- **コスト**: この型は **27 箇所**の署名に現れる。
+- **リターン**: 例外が 1 つ減るだけで速度効果は無い。しかも触るのは
+  **#15e で実バグ（OutPtr 書き戻し漏れ）が出たまさにその経路**。
+- → 「高リスク低リターンは保留」の基準で見送り。着手するなら**引数の 3 つ組を
+  名前付き struct にする独立タスク**として切り出すこと。
+
+### 検証
+- `cargo build` 警告 0 ／ `cargo test` **697 緑** ／ clippy **50 件で増分 0** ／
+  `compare_vm_modes.ps1` **identical 70 / differing 0** ／ `scan_examples.ps1` **FAIL 0** ／
+  IR **byte-identical**（codegen 非変更）。
+
+---
+
+## #22-d A 軸の整理（完了 2026-08-12）— #22 系列の締め
+
+### やったこと 1: 組み込み振り分けから `res` を外した
+```rust
+// before
+if let Expr::Ident { name, res: Resolution::Unresolved, .. } = func {
+    if !self.builtin_is_shadowed(name) { ... }
+// after
+if let Expr::Ident { name, .. } = func {
+    if !self.builtin_is_shadowed(name) { ... }
+```
+**この `res` 条件は実質無条件だった。** 組み込み名（`print`/`len`/…）は AST で宣言される名前ではないので
+リゾルバの `globals` に載らず、`res` は常に `Unresolved` になる。にもかかわらず条件に書かれていたため
+「`res` を見て組み込みか判定している」と読めてしまう — #15d でまさにその誤読をした箇所。
+判定の根拠は `builtin_is_shadowed`（実際の束縛）だけで足りる。
+
+なお `let repr = f` を最上位で宣言した場合、関数本体からの参照は `res == Global` になるが、
+`builtin_is_shadowed` が束縛を見つけるので結果は同じ（[builtin_shadow.ar](examples/basics/builtin_shadow.ar) で確認）。
+
+### やったこと 2: 畳めない A 軸の重複を**テストで固定**した
+組み込み呼び出しの判断は VM コンパイラ（`is_vm_builtin`）とインタプリタ（`eval_builtin_evaled`）の
+**2 箇所**にあり、コンパイル時と実行時なので**畳めない**。しかし集合がずれると
+`CallBuiltin` を発行したのに実行側が `None` を返し **`NameError` で落ちる**（VM 経路だけ＝off/auto 不一致）。
+
+→ 名前集合を `VM_BUILTIN_NAMES` 定数に切り出し、
+`vm_builtin_names_are_all_handled`（[tests/mod.rs](src/interpreter/tests/mod.rs)）で
+「VM が発行する全名前を `eval_builtin_evaled` が扱う」ことを検査する。
+
+**負の対照で検知力を確認**: `VM_BUILTIN_NAMES` に `"open"`（`eval_builtin_ident_call` にはあるが
+`eval_builtin_evaled` には無い名前）を足すとテストが落ち、修正方法まで示すメッセージが出た。
+
+### この系列の結論 — 重複への対処は 2 通りしかない
+| 状況 | 対処 | 本系列での適用 |
+|---|---|---|
+| 同じ入力から同じ判断をする 2 実装 | **片方を他方への委譲にして畳む** | 22-b（`eval_call`）/ 22-c（`Namespace`・`instantiate`）/ `Type` |
+| 前提が違って畳めない（コンパイル時 vs 実行時） | **不変条件をテストで固定する** | 22-d（`VM_BUILTIN_NAMES`） |
+
+「同じ処理の CallArg 版と evaled 版がずれている」は #22-a/-b/-c で **3 回**実バグを生んだ。
+新しく `*_evaled` 版を足すときは、**必ず片方をもう片方の委譲にすること**。
+
+### 残る `res` 参照（7 箇所）— すべて最適化ヒント
+実行経路に残る `res: Resolution::Unresolved` は 7 箇所で、**意味論を決めているものは無い**:
+- `eval/calls.rs` 2 箇所: R4 呼び先キャッシュの命中判定と充填（解決済みなら別経路で速く引ける）
+- `vm/compiler.rs` 5 箇所: コンパイル時の slot 索引（`self.slots.get(name)`）。
+  `res` は「リゾルバが slot を割り当てたか」の問い合わせそのもので、**A 軸の内部**に閉じている。
+
+### 検証
+- `cargo build` 警告 0 ／ `cargo test` **698 緑**（不変条件テスト +1）／ clippy **50 件で増分 0** ／
+  `compare_vm_modes.ps1` **identical 70 / differing 0** ／ `scan_examples.ps1` **FAIL 0** ／
+  IR **byte-identical**。
+
+---
+
+## #21-b リゾルバを最上位文列へ広げる（完了 2026-08-12）
+
+### 実装
+`resolve_program` に `resolve_toplevel` を追加（[resolver.rs](src/interpreter/resolver.rs)）。
+最上位の `Expr::Ident` に `Resolution::Global` を付ける。
+
+**関数側（`resolve_function`）との決定的な違いは 2 つ**:
+1. **base slot が無い**。最上位の宣言は `scopes[0]` へ入るので `Local` は決して付かない。
+2. **直下宣言を差し引いてはいけない**。関数では「本体の宣言はグローバルを覆う」が、
+   最上位では**直下宣言こそがグローバル**。`collect_bound_names` をそのまま使うと
+   直下宣言まで拾って差集合が空になり、**何も解決されない**。
+
+そこで `collect_toplevel_shadowing` を新設し、覆いうる名前だけを集める:
+- 直下宣言（`Let`/`Mut`/`Const`/`Static`/`LetTuple`）→ **名前は拾わない**が初期化式の中は見る
+- 入れ子定義（`FnDef`/`ClassDef`/…）→ 本体は**別フレーム**なので無視
+- それ以外（for ターゲット・if/while/block/match の中）→ `collect_bound_names` で保守的に全部
+
+### 効果（`--vm=off`・best-of-3・[toplevel_gap.ar]）
+| | 21-a 測定 | #21-b |
+|---|---:|---:|
+| 最上位ループ | 0.262 s | **0.223 s** |
+
+**1.19x** — 21-a が予測した上限（1.18x）どおり。
+最上位の書き込みは `Stmt::Assign` の `SlotCache`（R2）で既に索引化済みだったので、
+残っていた差は「読みが名前引きであること」だけ、という 21-a の分析が裏付けられた。
+
+### 併せて入れた高速パス（純粋な無駄取り）
+最上位が `Global` になると、呼び出しのたびに `builtin_is_shadowed` のスコープ走査が走る。
+**`res` が解決済み ⟹ 必ずユーザーの束縛がある**（リゾルバが `Local`/`Global` を付けるのは
+AST で宣言された名前だけで、組み込み名は宣言できない＝`let len = ...` は弾かれる）ので、
+`builtin_is_shadowed(name) == true` と**同値**。よって解決済みなら検査を飛ばす。
+意味論の判定ではなく `res` の最適化ヒントとしての正しい使い方（#15e の原則に適合）。
+
+### ⚠ 退行の誤帰属を切り分けた（記録）
+`bench_field_access` が #15e 時点の 1.045〜1.083 s から 1.10〜1.16 s に見えたため
+21-b の退行を疑ったが、**`resolve_toplevel` の呼び出しをコメントアウトしても同じ値**だった
+（1.103〜1.138 s）。＝ 21-b 由来ではない（#22 系列かマシン変動）。
+一度コメントに「21-b が 1.05→1.16 に退行させたので直した」と書いたが、**事実に反するので訂正済み**。
+**A/B は必ず当該変更だけを切り替えて取ること。**
+
+### 受益者について（正直な範囲）
+効果が出るのは**最上位に重いループがある場合のみ**。
+`bench_string` / `bench_field_access` は誤差水準で変化なし（名前引きが支配項ではないため）。
+リポジトリの実プログラムは全て 150ms 未満（起動支配）で、現状の受益者はベンチ群だけ。
+ただしスクリプト言語として最上位にループを書くのは典型的で、プロジェクト自身のベンチも
+自然にそう書かれている。
+
+### 検証
+- `cargo build` 警告 0 ／ `cargo test` **698 緑** ／ clippy **50 件で増分 0** ／
+  `compare_vm_modes.ps1` **identical 71 / differing 0** ／ `scan_examples.ps1` **FAIL 0** ／
+  IR **byte-identical**。
+- 例題: [toplevel_global_shadow.ar](examples/basics/toplevel_global_shadow.ar)（新規）—
+  for ターゲット・if・while・ブロック式で**覆われた名前が内側の束縛を読む**ことを確認。
+  ここを取り違えると「グローバルを読むべきでない位置でグローバルを読む」バグになる。
+
+---
+
 ## 保留・未着手タスクの調査記録（計画書から移設）
 
 計画書側は「事実＋手法」を 1 行で持ち、判断の根拠となる調査結果はここに置く。

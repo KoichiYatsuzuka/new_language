@@ -132,3 +132,33 @@ mod events_external;
 mod unpacking;
 mod mustbe;
 mod alias;
+
+/// A 軸（呼び先の同定）の跨ファイル不変条件を固定するテスト（#22-d）。
+///
+/// 組み込み呼び出しの判断は **VM コンパイラ（`is_vm_builtin`）と
+/// インタプリタ（`eval_builtin_evaled`）の 2 箇所**に分かれている。
+/// 集合がずれると `CallBuiltin` を発行したのに実行側が `None` を返し、
+/// **`NameError` で落ちる**（しかも VM 経路だけ＝off/auto 不一致になる）。
+///
+/// この系列では「同じ判断が 2 箇所にある」ことが繰り返し実バグを生んだ
+/// （#22-a `JsProcFn` / #22-b `AsyncManager` / #22-c cs ブリッジ）。
+/// 畳めない重複はテストで固定する。
+mod a_axis_invariants {
+    use crate::interpreter::Interpreter;
+
+    #[test]
+    fn vm_builtin_names_are_all_handled() {
+        let mut interp = Interpreter::new();
+        for name in crate::vm::compiler::VM_BUILTIN_NAMES {
+            // 引数は空でよい。ここで見たいのは「その名前を知っているか」だけで、
+            // 引数不一致は `Some(Err(..))` になる（`None` は「知らない名前」を意味する）。
+            let handled = interp.eval_builtin_evaled(name, Vec::new()).is_some();
+            assert!(
+                handled,
+                "is_vm_builtin に '{name}' があるが eval_builtin_evaled が扱っていない。\n\
+                 VM が CallBuiltin を発行して実行時 NameError になる（off/auto 不一致）。\n\
+                 eval_builtin_evaled にアームを足すか、VM_BUILTIN_NAMES から外すこと。"
+            );
+        }
+    }
+}

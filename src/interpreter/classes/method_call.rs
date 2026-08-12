@@ -662,28 +662,25 @@ impl Interpreter {
                         ns.name
                     )
                 })?;
+                // ── C 軸（実行方式）へ委譲する（#22-c）──
+                // ここは 22-a 時点で `eval_call` / `call_value_evaled` と並ぶ **3 つ目の**
+                // 実行方式ディスパッチだった。アーム集合が微妙にずれており
+                // （`Type`/`Instance` が無い一方 `Namespace` だけ有る）、
+                // その種のずれが実バグになった（#22-a の `JsProcFn` 欠落）。
+                //
+                // ⚠ `NativeFunction` だけは委譲できない。`mut` ポインタの write-back に
+                // **引数の式**が要るため（評価済みの値からは書き戻し先の変数が判らない）。
+                // これは `eval_call` 側に残した例外と同じ理由で、引数メタデータを
+                // 運べるようにする改修（B 軸）が済めば解消できる。
+                //
+                // FFI 境界検査の `node_id` に 0 を渡すのは意図的。`mod.func()` の戻り値検査は
+                // 呼び出し元の `eval_call`（`Expr::Attr` 分岐）が行うので、ここで検査すると二重になる。
                 match member {
-                    Value::Function(fn_val) => self.exec_fn(fn_val, args, None, method_name, None),
-                    Value::OverloadedFn(candidates) => {
-                        let evaled = self.eval_call_args(args)?;
-                        self.dispatch_overload_evaled(candidates, evaled, None, method_name, None)
-                    }
-                    Value::Class(cls) => self.instantiate(cls, args),
-                    Value::GeneratorFn(gen_fn) => self.exec_generator(gen_fn, args, None),
-                    Value::PyObject(handle) => {
-                        let evaled = self.eval_call_args(args)?;
-                        crate::interpreter::py_interop::call_py_object(&handle, &evaled)
-                    }
                     Value::NativeFunction(fn_ref) => self.call_native_function(&fn_ref, args),
-                    Value::JsProcFn(data) => {
-                        let evaled_args = self.eval_call_args(args)?;
-                        let vals: Vec<Value> = evaled_args.into_iter().map(|(_, v, _)| v).collect();
-                        crate::interpreter::js_proc_runtime::call_function(&data.bridge_key, &data.module_name, &data.fn_name, &vals)
+                    other => {
+                        let evaled = self.eval_call_args(args)?;
+                        self.call_value_evaled(other, evaled, method_name, None, 0)
                     }
-                    other => Err(format!(
-                        "TypeError: '{}' object is not callable",
-                        self.type_name(&other)
-                    )),
                 }
             }
             Value::PyObject(handle) => {

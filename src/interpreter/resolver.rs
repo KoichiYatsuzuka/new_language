@@ -37,6 +37,15 @@ pub(crate) fn resolve_program(stmts: &mut [Stmt]) {
     // `variable 'x' is already declared in an accessible scope`）ため、
     // ここに載った名前は関数内でシャドウされないと保証できる。
     let globals = collect_program_globals(stmts);
+
+    // ── 最上位文列そのものを解決する（#21-b）──
+    // 最上位のローカルは存在せず、宣言はそのままグローバル（`scopes[0]`）になるので、
+    // 付けられるのは `Resolution::Global` だけ。それでも意味がある — 実測で
+    // **`Global(SlotCache)` 読みは `Local(slot)` 読みと同速**であり（#21-a）、
+    // 最上位の書き込みは `Stmt::Assign` の `SlotCache`（R2）で既に索引化済みなので、
+    // 残っていた差は「読みが名前引きであること」だけだった。
+    resolve_toplevel(stmts, &globals);
+
     for stmt in stmts.iter_mut() {
         match stmt {
             Stmt::FnDef {
@@ -55,6 +64,56 @@ pub(crate) fn resolve_program(stmts: &mut [Stmt]) {
             }
             // クラスのメソッド・入れ子定義・モジュール本体は対象外（別途拡張予定）。
             _ => {}
+        }
+    }
+}
+
+/// 最上位文列の `Expr::Ident` を解決する（#21-b）。
+///
+/// 関数側（`resolve_function`）との決定的な違い:
+/// - **base slot が無い**。最上位の宣言は `scopes[0]`（グローバル）に入るので `Local` は付かない。
+/// - **直下宣言を差し引いてはいけない**。関数では「本体の宣言はグローバルを覆う」が、
+///   最上位では**直下宣言こそがグローバル**。ここを取り違えると解決対象が空になる。
+///
+/// 覆うのは**入れ子ブロック（if/for/while/block/match/try）の束縛と for ターゲット**だけ。
+/// これらは push されたスコープに入るので `scopes[0]` には居ない
+/// （関数側で `collection.ar` の set を for ターゲットが覆って落ちた実例がある）。
+fn resolve_toplevel(stmts: &mut [Stmt], globals: &HashSet<String>) {
+    let mut shadowing: HashSet<String> = HashSet::new();
+    collect_toplevel_shadowing(stmts, &mut shadowing);
+
+    let visible: HashSet<String> = globals.difference(&shadowing).cloned().collect();
+    if visible.is_empty() {
+        return;
+    }
+    // base は空 = `Local` は決して付かない。`rewrite_expr` の `globals` 経路だけが働く。
+    let base: HashMap<String, u32> = HashMap::new();
+    rewrite_stmts(stmts, &base, &visible);
+}
+
+/// 最上位でグローバルを覆いうる名前を集める（#21-b）。
+///
+/// `collect_bound_names` をそのまま使うと**直下宣言まで拾ってしまい**、
+/// 差し引いた結果が空になる（＝何も解決されない）。そこで直下宣言だけを除いて集める。
+fn collect_toplevel_shadowing(stmts: &[Stmt], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        match stmt {
+            // 直下宣言 = グローバルそのもの。名前は覆わないが、初期化式の中は見る
+            // （ブロック式が内部で束縛を作りうる）。
+            Stmt::Let(_, _, e) | Stmt::Const(_, _, e) | Stmt::Mut(_, _, e) => {
+                collect_bound_in_expr(e, out);
+            }
+            Stmt::Static(_, e, _) => collect_bound_in_expr(e, out),
+            Stmt::LetTuple { value, .. } => collect_bound_in_expr(value, out),
+            // 入れ子定義の本体は**別フレーム**なので最上位のスコープを覆わない
+            // （`rewrite_stmts` もこれらには踏み込まない）。
+            Stmt::FnDef { .. }
+            | Stmt::GenDef { .. }
+            | Stmt::ClassDef { .. }
+            | Stmt::TraitDef { .. }
+            | Stmt::ProtocolDef { .. } => {}
+            // それ以外（for ターゲット・入れ子ブロック・async ブロック等）は保守的に全部集める。
+            other => collect_bound_names(std::slice::from_ref(other), out),
         }
     }
 }
