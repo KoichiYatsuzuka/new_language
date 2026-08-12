@@ -707,12 +707,16 @@ pub enum Stmt {
     },
     /// 変数への複合代入: `x += expr` など。`span` は型検査・エラー報告に使用する位置情報。
     /// `slot` はグローバル可変変数への直接アクセス用スロットキャッシュ（初回解決時に焼き込み）。
+    /// `node_id` は AST 型解決層（#16）の注釈キー。`x <op>= e` は `x <op> e` と同じ二項演算なので、
+    /// 型検査が `Expr::BinOp` と同様に `binop_kind`（両オペランドの種別）を焼き、VM が型特化 op を
+    /// 選ぶのに使う（#2b）。0 = 未採番（合成 AST など）。
     CompoundAssign {
         name: String,
         op: BinOp,
         value: Expr,
         span: Span,
         slot: SlotCache,
+        node_id: u32,
     },
     /// `if` / `elif` / `else` 条件分岐。
     ///

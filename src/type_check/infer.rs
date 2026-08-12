@@ -108,15 +108,8 @@ impl TypeChecker {
                 self.annotations.set_resolved(*node_id, result.clone());
                 // 両オペランドが同一プリミティブ（int/int・float/float）なら**オペランド種別**も焼く
                 // （plan A: VM が型特化 op でタグ検査・op ディスパッチを省く判断に使う）。
-                let kind = match (&lt, &rt) {
-                    (InferredType::Int, InferredType::Int) => {
-                        Some(super::annotations::BinOperandKind::Int)
-                    }
-                    (InferredType::Float, InferredType::Float) => {
-                        Some(super::annotations::BinOperandKind::Float)
-                    }
-                    _ => None,
-                };
+                // 判断は `BinOperandKind::of` に集約（`CompoundAssign` と共有）。
+                let kind = super::annotations::BinOperandKind::of(&lt, &rt);
                 match kind {
                     Some(k) => self.annotations.set_binop_kind(*node_id, k),
                     // 特化できなかった理由を数える（#16 段階 D の診断）。

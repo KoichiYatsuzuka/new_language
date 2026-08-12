@@ -25,6 +25,22 @@ pub enum BinOperandKind {
     Float,
 }
 
+impl BinOperandKind {
+    /// 二項演算のオペランド型の組から特化種別を決める（同一プリミティブのときのみ `Some`）。
+    ///
+    /// `Expr::BinOp`（[infer.rs]）と `Stmt::CompoundAssign`（[stmt/check.rs]）は
+    /// **同じ判断**をするので、判断はここ 1 箇所に置いて両者から呼ぶ。
+    /// `x <op>= e` は `x <op> e` と同じ演算であり、片方だけ基準がずれると
+    /// 「同じ演算なのに書き方で特化されたりされなかったりする」ことになる。
+    pub fn of(lt: &InferredType, rt: &InferredType) -> Option<Self> {
+        match (lt, rt) {
+            (InferredType::Int, InferredType::Int) => Some(Self::Int),
+            (InferredType::Float, InferredType::Float) => Some(Self::Float),
+            _ => None,
+        }
+    }
+}
+
 /// 実行時型検査の指示（#16・検査指示テーブルの値）。
 // 段階(a): 現状は生成＋テストで消費。ランタイム/codegen での消費は段階(b)/(c)。
 #[allow(dead_code)]
@@ -181,6 +197,11 @@ impl AstAnnotations {
     }
 
     /// 型特化できた二項演算の件数（診断用）。
+    ///
+    /// ⚠ **`binop_miss` とは母集団が違う**。ここは `Expr::BinOp` に加えて
+    /// `Stmt::CompoundAssign`（#2b）も数えるが、`binop_miss` は `Expr::BinOp` の失敗しか
+    /// 数えない（複合代入は失敗理由を分類できる情報を持たない）。
+    /// `specialized / (specialized + miss)` を成功率として読まないこと。
     pub fn binop_kind_len(&self) -> usize {
         self.binop_kind.len()
     }

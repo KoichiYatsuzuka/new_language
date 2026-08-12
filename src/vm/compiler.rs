@@ -831,32 +831,58 @@ impl Compiler {
         left: &Expr,
         right: &Expr,
     ) -> Option<crate::type_check::BinOperandKind> {
-        use crate::type_check::BinOperandKind as K;
-
-        // 式のプリミティブ型名を返す。局所変数は型注釈から、数値リテラルは自明な型から。
-        let prim = |e: &Expr| -> Option<&'static str> {
-            match e {
-                Expr::Int(_) => Some("int"),
-                Expr::Float(_) => Some("float"),
-                _ => {
-                    let slot = self.as_local(e)? as usize;
-                    match self.slot_type.get(slot)?.as_deref()? {
-                        "int" => Some("int"),
-                        "float" => Some("float"),
-                        _ => None,
-                    }
-                }
-            }
-        };
-
-        let (l, r) = (prim(left)?, prim(right)?);
-        if l != r {
-            return None;
-        }
+        let (l, r) = (self.expr_prim(left)?, self.expr_prim(right)?);
         // 両方がリテラルなら特化しても意味が無い（定数同士）。
         if matches!(left, Expr::Int(_) | Expr::Float(_))
             && matches!(right, Expr::Int(_) | Expr::Float(_))
         {
+            return None;
+        }
+        Self::pair_kind(l, r)
+    }
+
+    /// 左辺が **slot 番号で与えられる** 場合の特化種別（複合代入 `x <op>= e` 用・#2b）。
+    /// `local_operand_kind` の左辺を「式」から「slot」に替えただけで、判断基準は同一。
+    fn slot_operand_kind(
+        &self,
+        slot: u16,
+        right: &Expr,
+    ) -> Option<crate::type_check::BinOperandKind> {
+        Self::pair_kind(self.slot_prim(slot)?, self.expr_prim(right)?)
+    }
+
+    /// 式のプリミティブ型名。局所変数は型注釈から、数値リテラルは自明な型から。
+    fn expr_prim(&self, e: &Expr) -> Option<&'static str> {
+        match e {
+            Expr::Int(_) => Some("int"),
+            Expr::Float(_) => Some("float"),
+            _ => self.slot_prim(self.as_local(e)?),
+        }
+    }
+
+    /// 局所 slot のプリミティブ型名（型注釈が int/float のときのみ）。
+    fn slot_prim(&self, slot: u16) -> Option<&'static str> {
+        match self.slot_type.get(slot as usize)?.as_deref()? {
+            "int" => Some("int"),
+            "float" => Some("float"),
+            _ => None,
+        }
+    }
+
+    /// 注釈テーブルが焼いた**結果型**からプリミティブ型名を引く（#2b）。
+    /// `slot_type`（AST に書かれた型注釈）では届かないノード（属性読みなど）用。
+    fn annot_prim(&self, node_id: u32) -> Option<&'static str> {
+        match self.annotations.resolved_type(node_id)? {
+            crate::type_check::InferredType::Int => Some("int"),
+            crate::type_check::InferredType::Float => Some("float"),
+            _ => None,
+        }
+    }
+
+    /// 両オペランドのプリミティブ型名が一致していれば特化種別に落とす。
+    fn pair_kind(l: &str, r: &str) -> Option<crate::type_check::BinOperandKind> {
+        use crate::type_check::BinOperandKind as K;
+        if l != r {
             return None;
         }
         match l {
@@ -878,7 +904,6 @@ impl Compiler {
         left: &Expr,
         right: &Expr,
     ) -> Option<crate::type_check::BinOperandKind> {
-        use crate::type_check::BinOperandKind as K;
         let kind = match self.annotations.binop_kind(node_id) {
             Some(k) => k,
             // 注釈が無いときは**局所変数の型注釈**から導出する（#16 段階 E）。
@@ -893,6 +918,33 @@ impl Compiler {
             // この導出が外れていても**結果は変わらない**（速度の無駄が出るだけ）。
             None => self.local_operand_kind(left, right)?,
         };
+        Self::gate_bin_kind(kind, op)
+    }
+
+    /// 左辺が **slot 番号で与えられる** 場合の特化種別（複合代入 `x <op>= e` 用・#2b）。
+    /// 注釈の引き方・op の許可判定は `specialized_bin_kind` と同一で、
+    /// 型導出のフォールバックだけが slot 版になる。
+    fn specialized_bin_kind_slot(
+        &self,
+        op: &BinOp,
+        node_id: u32,
+        slot: u16,
+        right: &Expr,
+    ) -> Option<crate::type_check::BinOperandKind> {
+        let kind = match self.annotations.binop_kind(node_id) {
+            Some(k) => k,
+            None => self.slot_operand_kind(slot, right)?,
+        };
+        Self::gate_bin_kind(kind, op)
+    }
+
+    /// 特化してよい op かを判定する（種別ごとの許可リスト）。
+    /// `specialized_bin_kind` / `specialized_bin_kind_slot` の共通判断。
+    fn gate_bin_kind(
+        kind: crate::type_check::BinOperandKind,
+        op: &BinOp,
+    ) -> Option<crate::type_check::BinOperandKind> {
+        use crate::type_check::BinOperandKind as K;
         let allowed = match kind {
             // int/int は `apply_binop` の Int/Int アームを全て特化できる。
             K::Int => matches!(
@@ -946,11 +998,28 @@ impl Compiler {
     /// 型特化 op は実行時型が想定外なら**汎用へフォールバック**するので、注釈が古くても健全。
     /// 融合できなければ `false`（呼び出し側が通常経路 `LoadLocal…; Bin` を出す）。意味論は不変。
     fn try_emit_bin_fused(&mut self, left: &Expr, right: &Expr, op: &BinOp, node_id: u32) -> bool {
-        use crate::type_check::BinOperandKind as K;
         let Some(a) = self.as_local(left) else {
             return false;
         };
         let kind = self.specialized_bin_kind(op, node_id, left, right);
+        self.emit_bin_fused_slot(a, kind, right, op)
+    }
+
+    /// 左辺が slot と確定している二項演算を 1 命令へ融合 emit する（`try_emit_bin_fused` の中核）。
+    /// 右辺が局所変数なら `*BinLL`、定数リテラルなら `*BinLC`。どちらでもなければ `false` を返し、
+    /// 呼び出し側が通常経路（オペランドを積んでから `Bin`/`*BinSS`）を出す。
+    ///
+    /// **評価順について**: 融合後はスタックへ積まず frame から左辺を読むので、形の上では
+    /// 「右辺を用意してから左辺を読む」順になる。ただし融合する右辺は局所変数読みか定数
+    /// リテラルのみで**副作用が無い**ため、観測される値は融合前と同一（`CallMethodLocal` と同じ理由）。
+    fn emit_bin_fused_slot(
+        &mut self,
+        a: u16,
+        kind: Option<crate::type_check::BinOperandKind>,
+        right: &Expr,
+        op: &BinOp,
+    ) -> bool {
+        use crate::type_check::BinOperandKind as K;
         if let Some(b) = self.as_local(right) {
             match kind {
                 Some(K::Int) => self.emit(Op::IntBinLL(a, b, op.clone())),
@@ -1137,11 +1206,29 @@ impl Compiler {
                 self.compile_expr(value)?;
                 self.emit(Op::StoreLocal(slot));
             }
-            Stmt::CompoundAssign { name, op, value, .. } => {
+            // `x <op>= e` は `x = x <op> e` と同じ命令列になる（`StoreLocal` は deep_copy しない）ので、
+            // `Expr::BinOp` と同じ融合＋型特化を通す（#2b）。通さないと複合代入だけが
+            // `LoadLocal; <e>; Bin; StoreLocal` の 4 命令＋汎用ディスパッチに落ちていた（実測 1.9x 遅い）。
+            Stmt::CompoundAssign {
+                name,
+                op,
+                value,
+                node_id,
+                ..
+            } => {
+                use crate::type_check::BinOperandKind as K;
                 let slot = *self.slots.get(name)?;
-                self.emit(Op::LoadLocal(slot));
-                self.compile_expr(value)?;
-                self.emit(Op::Bin(op.clone()));
+                let kind = self.specialized_bin_kind_slot(op, *node_id, slot, value);
+                if !self.emit_bin_fused_slot(slot, kind, value, op) {
+                    // 融合できない右辺（属性・添字・呼び出し結果など）でもスタック版の型特化には乗る。
+                    self.emit(Op::LoadLocal(slot));
+                    self.compile_expr(value)?;
+                    match kind {
+                        Some(K::Int) => self.emit(Op::IntBinSS(op.clone())),
+                        Some(K::Float) => self.emit(Op::FloatBinSS(op.clone())),
+                        None => self.emit(Op::Bin(op.clone())),
+                    };
+                }
                 self.emit(Op::StoreLocal(slot));
             }
             Stmt::If { branches, else_body } => {
@@ -1316,6 +1403,19 @@ impl Compiler {
                     _ => return None,
                 };
                 let ni = self.add_name(attr);
+                // 型特化（#2b）: フィールドの型は注釈テーブルが `Expr::Attr` の node_id に焼いている。
+                // 右辺は `expr_prim`（リテラル / 型注釈つき局所変数）で見る。
+                // ⚠ 命令列そのもの（`GetAttr`＋`Swap`＋余分な `LoadLocal`）は変えていない。
+                //   計測では変数版との差 ~30ns のうち大半がこの命令列側で、その再構成は
+                //   peephole（#2a）の領分。ここでは op ディスパッチだけを特化する。
+                let kind = match target {
+                    Expr::Attr { node_id, .. } => self
+                        .annot_prim(*node_id)
+                        .zip(self.expr_prim(value))
+                        .and_then(|(l, r)| Self::pair_kind(l, r))
+                        .and_then(|k| Self::gate_bin_kind(k, op)),
+                    _ => None,
+                };
                 // ツリーウォークの評価順（value を先に評価 → 現在値を get → op）に一致させる。
                 // stack: [obj(set base), value, obj(get base)] → GetAttr → [obj, value, cur]
                 //   → Swap → [obj, cur, value] → Bin(op) → [obj, new] → SetAttr。
@@ -1324,7 +1424,15 @@ impl Compiler {
                 self.compile_expr(object)?; // GetAttr のベース
                 self.emit(Op::GetAttr(ni, ni));
                 self.emit(Op::Swap);
-                self.emit(Op::Bin(op.clone()));
+                match kind {
+                    Some(crate::type_check::BinOperandKind::Int) => {
+                        self.emit(Op::IntBinSS(op.clone()))
+                    }
+                    Some(crate::type_check::BinOperandKind::Float) => {
+                        self.emit(Op::FloatBinSS(op.clone()))
+                    }
+                    None => self.emit(Op::Bin(op.clone())),
+                };
                 self.emit(Op::SetAttr(ni));
             }
             Stmt::Raise { exc, span } => match exc {

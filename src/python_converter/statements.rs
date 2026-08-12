@@ -283,6 +283,7 @@ pub(crate) fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stm
                         value: val,
                         span,
                         slot: Default::default(),
+                        node_id: 0, // #16: py-converter は未採番（0=注釈対象外）
                     }))
                 }
                 py::Expr::Attribute(_) => {

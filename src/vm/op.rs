@@ -40,7 +40,11 @@ pub enum Op {
     // ── 型特化二項演算（#16 段階(b)/plan A）──
     // 型検査が両オペランド int/float と確定した箇所で emit。オペランドを **clone せず参照で読み**、
     // op ディスパッチと汎用フォールバックを畳んだ直接算術を行う（意味論は apply_bin_fast と同一）。
-    // 対応 op は Add/Sub/Mul と比較（Div/Mod/Pow/bit は汎用へ）。想定外の実行時型は保守的に汎用へ委譲。
+    // 対応 op は種別ごとに違い、判定は compiler.rs の `gate_bin_kind` が一元管理する
+    // （int は Int/Int アーム全部、float は `//`・`%`・ビット演算を除く）。
+    // 想定外の実行時型・ゼロ除算は保守的に汎用へ委譲する。
+    //
+    // emit 元は `Expr::BinOp` と、同じ演算である `Stmt::CompoundAssign` / `Stmt::AttrCompoundAssign`（#2b）。
     /// `local[a] <op> local[b]`（両 int 確定）。
     IntBinLL(u16, u16, BinOp),
     /// `local[a] <op> consts[idx]`（両 int 確定）。

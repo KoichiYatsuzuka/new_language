@@ -5,6 +5,7 @@ use {
     crate::token::Span,
     crate::type_check::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind},
     crate::type_check::types::InferredType,
+    crate::type_check::BinOperandKind,
     crate::type_check::TypeChecker,
 };
 
@@ -57,6 +58,7 @@ impl TypeChecker {
                 op: _,
                 value,
                 span,
+                node_id,
                 ..
             } => {
                 if let Some(info) = self.lookup(name) {
@@ -64,7 +66,14 @@ impl TypeChecker {
                         self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
                     }
                 }
-                self.infer(value);
+                let lt = self.lookup(name).map(|i| i.ty.clone());
+                let rt = self.infer(value);
+                // ── AST 型解決層（#16 / #2b）── `x <op>= e` は `x <op> e` と同じ二項演算なので、
+                // `Expr::BinOp` と同じ基準でオペランド種別を焼き、VM が型特化 op を選べるようにする。
+                // 焼かないと複合代入だけが汎用 `Bin` に落ちる（実測 1.9x 遅い）。
+                if let Some(k) = lt.as_ref().and_then(|lt| BinOperandKind::of(lt, &rt)) {
+                    self.annotations.set_binop_kind(*node_id, k);
+                }
             }
             // 通常・複合いずれの属性/添字代入も検査内容は同一（複合の op は型に影響しない）。
             Stmt::AttrAssign { target, value }

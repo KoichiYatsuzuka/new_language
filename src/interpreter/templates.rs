@@ -647,6 +647,7 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             op,
             value,
             span,
+            node_id,
             ..
         } => Stmt::CompoundAssign {
             name: name.clone(),
@@ -654,6 +655,9 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             value: subst_expr(value, type_map),
             span: span.clone(),
             slot: Default::default(),
+            // node_id は原型から引き継ぐ（他ノードと同じ規約）。実体化後は型変数が具体型に
+            // 置き換わるため注釈は原型のものを指すが、VM 側は slot 型からの導出で補う。
+            node_id: *node_id,
         },
         Stmt::If {
             branches,

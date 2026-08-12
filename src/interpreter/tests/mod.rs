@@ -162,3 +162,99 @@ mod a_axis_invariants {
         }
     }
 }
+
+/// 「同じ演算は**書き方**で特化が変わらない」を固定するテスト（#2b）。
+///
+/// `x <op>= e` と `x = x <op> e` は同じ二項演算だが、型特化の判断は
+/// **`Expr::BinOp`（infer.rs）と `Stmt::CompoundAssign`（stmt/check.rs）の 2 箇所**にある。
+/// 片方が注釈を焼き忘れると複合代入だけが汎用 `Op::Bin` に落ちる（実測 1.9x 遅い）。
+/// 実際 #2b 着手時点ではその状態だった。
+///
+/// 挙動は変わらない（特化 op は想定外型なら汎用へフォールバックする）ため
+/// `compare_vm_modes.ps1` では検知できない。命令列を直接見て固定する。
+mod bin_specialization_invariants {
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+    use crate::type_check::TypeChecker;
+    use crate::vm::op::Op;
+
+    /// ソース中の関数 `name` をコンパイルして op 列を返す。
+    fn compile(src: &str, name: &str) -> Vec<Op> {
+        let tokens = Lexer::new(src, "").tokenize();
+        let mut stmts = Parser::new(tokens, None).parse_program().unwrap();
+        crate::interpreter::resolver::resolve_program(&mut stmts);
+        let (_errs, annots) = TypeChecker::check_and_annotate(&stmts);
+        let annots = std::rc::Rc::new(annots);
+        for s in &stmts {
+            if let crate::ast::Stmt::FnDef { name: n, params, body, .. } = s {
+                if n == name {
+                    return crate::vm::compile_fn(params, body, annots)
+                        .unwrap_or_else(|| panic!("`{name}` が VM コンパイルできなかった"))
+                        .code;
+                }
+            }
+        }
+        panic!("`{name}` が見つからない");
+    }
+
+    /// 型特化に乗らなかった二項演算 op の数。
+    ///
+    /// ⚠ `Op::Bin` だけを数えるのでは**不十分**（負の対照で確認済み）。融合だけ効いて特化が
+    /// 落ちると `BinLocalConst`/`BinLocalLocal` になり、`Op::Bin` は 0 のまま通ってしまう。
+    fn unspecialized_bins(code: &[Op]) -> usize {
+        code.iter()
+            .filter(|o| {
+                matches!(
+                    o,
+                    Op::Bin(_) | Op::BinLocalLocal(..) | Op::BinLocalConst(..)
+                )
+            })
+            .count()
+    }
+
+    #[test]
+    fn compound_assign_is_specialized_like_plain_assign() {
+        // int / float それぞれで、明示形と複合代入形が同じ特化状態になることを見る。
+        let src = "\
+fn plain_i(let n: int) -> int:
+    mut acc = 0
+    acc = acc + 3
+    return acc
+
+fn comp_i(let n: int) -> int:
+    mut acc = 0
+    acc += 3
+    return acc
+
+fn plain_f(let n: int) -> float:
+    mut acc = 0.0
+    acc = acc + 1.5
+    return acc
+
+fn comp_f(let n: int) -> float:
+    mut acc = 0.0
+    acc += 1.5
+    return acc
+";
+        for (plain, comp) in [("plain_i", "comp_i"), ("plain_f", "comp_f")] {
+            let pc = compile(src, plain);
+            let cc = compile(src, comp);
+            assert_eq!(
+                unspecialized_bins(&pc),
+                0,
+                "{plain} が特化に乗っていない（テストの前提が崩れている）: {pc:?}"
+            );
+            // 本命: 両者は同じ演算なので**命令列が完全に一致**するはず。
+            // 特化が落ちれば op 種別が、融合が落ちれば命令数が食い違って検知できる。
+            // `Op` は `PartialEq` を導出していないので Debug 表現で比較する。
+            assert_eq!(
+                format!("{pc:?}"),
+                format!("{cc:?}"),
+                "`{comp}`（`x <op>= e`）と `{plain}`（`x = x <op> e`）の命令列が違う。\n\
+                 同じ演算なので同じ命令列になるべき。型検査（stmt/check.rs の CompoundAssign）が\n\
+                 binop_kind を焼いているか、VM コンパイラが specialized_bin_kind_slot と\n\
+                 emit_bin_fused_slot を通しているかを確認すること。"
+            );
+        }
+    }
+}

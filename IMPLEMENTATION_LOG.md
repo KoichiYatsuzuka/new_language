@@ -1428,6 +1428,129 @@ model A が影響するのは**ツリーウォーク側だけ**で、そこは D
 
 ---
 
+## #2b V-F 単型算術命令（完了 2026-08-12）— **新 op ゼロ・穴は文の側にあった**
+
+### 計測が着手先を変えた（2 回目）
+
+計画書は #2b を「型注釈から**専用 op を emit**」と定義していた。着手前に `src/vm/op.rs` を読むと、
+**型特化 op は #16 段階(b) で既に出揃っていた**（`IntBinLL`/`IntBinLC`/`FloatBinLL`/`FloatBinLC`/
+`IntBinSS`/`FloatBinSS`）。しかも `int_binop_specialized` は Div/FloorDiv/Mod/Pow/bit まで対応済みで、
+`op.rs` の doc コメント（「Add/Sub/Mul と比較のみ」）の方が陳腐化していた。
+
+そこで「専用 op を足す」ではなく「**既にある特化 op に乗っていない経路はどれか**」を探した。
+`AR_VM_DUMP=1` で算術ループを逆アセンブルしたところ、一目で出た:
+
+```
+   8  IBIN_LL 2 3 Add        ← acc = acc + k は特化済み
+   9  STORE_LOCAL 2
+  10  LOAD_LOCAL 1           ┐
+  11  CONST 3 = Some(Int(1)) │ i += 1 だけが 4 命令＋汎用 Bin
+  12  BIN Add                │
+  13  STORE_LOCAL 1          ┘
+```
+
+### 原因: `Stmt::CompoundAssign` が型検査の注釈対象から漏れていた
+
+- `Expr::BinOp` は `node_id` を持ち、型検査（[infer.rs](src/type_check/infer.rs)）が `binop_kind` を焼く。
+- `Stmt::CompoundAssign` は **`node_id` を持っていなかった**ため注釈が焼けず、
+  VM コンパイラ（[compiler.rs](src/vm/compiler.rs)）も融合を試みずに `LoadLocal; e; Bin; StoreLocal` を直に emit していた。
+- 型検査の `CompoundAssign` アームは**左辺型（`lookup(name)`）と右辺型（`infer(value)`）を両方持っていた**のに、
+  それを捨てていた。
+
+⚠ この形は #22 系列で繰り返し出た「同じ判断が 2 箇所にあってずれる」の**変種**。
+今回は「片方が判断を**そもそもしていない**」パターンで、off/auto 比較にも例題スイートにも映らない
+（挙動は同じで速度だけが違うため）。
+
+### 実装（新 op ゼロ）
+
+| 層 | 変更 |
+|---|---|
+| `ast.rs` | `Stmt::CompoundAssign` に `node_id: u32` を追加 |
+| `parser/stmts/assignment.rs` | `parse_compound` で `next_node_id()` を採番 |
+| `templates.rs` / `python_converter` | 原型から引き継ぎ／`0`（未採番）で追従 |
+| `type_check/annotations.rs` | 判断を **`BinOperandKind::of(lt, rt)` に集約**し `Expr::BinOp` 側もそこへ委譲 |
+| `type_check/stmt/check.rs` | `CompoundAssign` で `binop_kind` を焼く |
+| `vm/compiler.rs` | `emit_bin_fused_slot` / `specialized_bin_kind_slot` / `gate_bin_kind` を切り出し、`CompoundAssign` から**同じ経路へ委譲** |
+
+`x <op>= e` は VM 上では `x = x <op> e` と**同じ命令列になる**（`StoreLocal` は deep_copy しない）ので、
+`Expr::BinOp` 用の融合＋特化をそのまま通せた。**新しいオペコードは 1 つも要らなかった。**
+
+⚠ 評価順: 融合後は「右辺を用意してから左辺 slot を読む」形になるが、融合対象の右辺は
+局所変数読みか定数リテラルのみで副作用が無いため観測値は同一（`CallMethodLocal` と同じ根拠）。
+
+### 実測
+
+`x += e` と `x = x + e` は**意味論同一**なので、同一バイナリ内の A/B で切り分けた（マシン変動が入らない）。
+
+| 指標 | 前 | #2b | 倍率 |
+|---|---:|---:|---:|
+| `int   x += e`（ns/assign） | 52.3 | **28.5** | **1.84x** |
+| `float x += e`（ns/assign） | 54.2 | **28.9** | **1.88x** |
+| `while i < n: i += 1`（ns/iter） | 64.4 | **39.0** | **1.60x** |
+| `binop_kind` 特化件数（bench_arith） | 15 | 21 | +6 |
+
+E2E は HEAD バイナリと**交互実行**で取った（[ab_bench.ps1](ab_bench.ps1) を新設）。best-of-3:
+
+| ベンチ | A/B |
+|---|---:|
+| bench_arith | 1.333x |
+| bench_control_flow | 1.167x |
+| bench_block_expr | 1.148x |
+| bench_for | 1.120x |
+| bench_collections | 1.088x |
+| bench_method_hot | 1.045x |
+| bench_method_body | 1.002x |
+
+⚠ `bench_field_access` / `bottleneck_bench` は **0% 変化**。ホットループが
+**モジュール最上位**にあり VM 経路に乗らないため（VM は関数本体のみ）。
+「VM の変更が既存ベンチに出ない」ときはまずループが関数の中にあるか確認すること。
+
+### 属性複合代入 `obj.x += e` — 型特化だけ実施、命令列は #2a へ
+
+同じ穴が `Stmt::AttrCompoundAssign` にもあった（汎用 `Bin`）。ただし変数版との差 ~30ns/assign を
+分解すると、**大半は命令列側**だった:
+
+```
+self.fx = self.fx + 1.5 : LoadLocal, GetAttrLocal, Const, FloatBinSS, SetAttr        (5 命令)
+self.fx += 1.5          : LoadLocal, Const, LoadLocal, GetAttr, Swap, Bin, SetAttr   (7 命令)
+```
+
+型特化（`Bin` → `*BinSS`）だけ入れた結果は **152.7〜164.2 → 145.6〜149.0 ns（約 4〜5%）**。
+残差 ~22ns は `GetAttr`（スタックからレシーバを clone）→ `GetAttrLocal`（frame から参照読み）化と
+`Swap` 除去で取れるが、これは **op 除去＝peephole（#2a）の領分**なので手を出さず申し送りにした。
+型の入手経路は `annot_prim(attr_node_id)`（注釈テーブルの結果型）＋`expr_prim(value)`。
+
+### 回帰テスト — 負の対照で検知力を確認した
+
+「同じ演算が**書き方**で特化を失わない」を [tests/mod.rs](src/interpreter/tests/mod.rs) の
+`bin_specialization_invariants` で固定した（`x += e` と `x = x + e` の**命令列が完全一致**すること）。
+
+⚠ **最初のテストは検知力が無かった**。`Op::Bin` の出現数だけを見ていたため、
+融合だけ効いて特化が落ちた状態（`BinLocalConst`）を素通りした。負の対照
+（型検査の注釈記録を外す）を実際に走らせて初めて判った。
+`BinLocalLocal`/`BinLocalConst` も数える形に直し、再度負の対照で FAIL を確認:
+
+```
+left:  "[..., IntBinLC(1, 1, Add), ...]"      ← 期待
+right: "[..., BinLocalConst(1, 1, Add), ...]" ← 注釈を外すとこうなる
+```
+
+### 診断の母集団が変わった点（注意）
+
+`AnnotBinop: specialized=N` は `binop_kind` の件数なので **`CompoundAssign` の分も含む**が、
+`miss_*` は `Expr::BinOp` の失敗しか数えない（複合代入は失敗理由を分類できる情報を持たない）。
+`specialized / (specialized + miss)` を成功率として読まないこと（`annotations.rs` にも明記）。
+
+### 検証
+- `cargo build` 警告 0 ／ `cargo test` **699 緑**（+1 = 新規不変条件テスト）／
+  `cargo clippy --all-targets` **HEAD と byte-identical（62 件・増分 0）**／
+  `compare_vm_modes.ps1` **identical 71 / differing 0**（stderr 込み）／
+  `scan_examples.ps1` **FAIL 0 / TIMEOUT 0**／
+  `dump_native_ir.ps1` **6 モジュール byte-identical**（`binop_kind` の消費者は VM のみで
+  ネイティブ codegen・インタプリタは非消費であることを grep で確認した上での裏取り）。
+
+---
+
 ## 保留・未着手タスクの調査記録（計画書から移設）
 
 計画書側は「事実＋手法」を 1 行で持ち、判断の根拠となる調査結果はここに置く。

@@ -179,12 +179,14 @@ impl Parser {
             ));
         }
         self.advance(); // 複合代入演算子トークンを消費
+        let node_id = self.next_node_id();
         Ok(Stmt::CompoundAssign {
             name,
             op,
             value: self.parse_expr()?,
             span,
             slot: Default::default(),
+            node_id,
         })
     }
 
