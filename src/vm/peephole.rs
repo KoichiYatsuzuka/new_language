@@ -26,8 +26,9 @@
 // 新しくコード索引を持つ op を足したら `remap_targets` にも足すこと（`code_target_mut` が唯一の窓口）。
 //
 // ⚠ `Chunk::spans` は**プール**（op が索引を持つ）であって per-op の行テーブルではないので、
-// 命令の削除でずれない。将来 per-op の行テーブル（#1）を入れるときは、ここで一緒に
-// 詰め直す必要がある。
+// 命令の削除でずれない。一方 `Chunk::stmt_spans`（文境界の行テーブル・#1）は code と 1:1 なので、
+// `optimize` が**同じ写像で一緒に詰め直す**。さらに **文の先頭 op は除去対象から外す**
+// （理由は `remove_jumps_to_next` の中のコメント）。
 
 use super::op::Op;
 
@@ -54,10 +55,17 @@ fn code_target_mut(op: &mut Op) -> Option<&mut u32> {
 }
 
 /// `code` を覗き穴最適化する（意味論不変）。
-pub fn optimize(code: &mut Vec<Op>) {
+///
+/// `stmt_spans` は `code` と 1:1 の**文境界行テーブル**（#1）。命令を消すとずれるので
+/// **同じ写像で一緒に詰め直す**。呼び出し側が行テーブルを持たない場合は空スライスでよい。
+pub fn optimize(code: &mut Vec<Op>, stmt_spans: &mut Vec<u32>) {
+    debug_assert!(
+        stmt_spans.is_empty() || stmt_spans.len() == code.len(),
+        "stmt_spans は code と 1:1 か空のいずれかであること"
+    );
     for _ in 0..MAX_PASSES {
         let collapsed = collapse_jump_chains(code);
-        let removed = remove_jumps_to_next(code);
+        let removed = remove_jumps_to_next(code, stmt_spans);
         if !collapsed && !removed {
             break;
         }
@@ -101,13 +109,23 @@ fn collapse_jump_chains(code: &mut [Op]) -> bool {
     changed
 }
 
-/// `i: JUMP i+1`（次命令へ跳ぶだけ）を除去し、全てのコード索引を詰め直す。
-fn remove_jumps_to_next(code: &mut Vec<Op>) -> bool {
+/// `i: JUMP i+1`（次命令へ跳ぶだけ）を除去し、全てのコード索引と行テーブルを詰め直す。
+fn remove_jumps_to_next(code: &mut Vec<Op>, stmt_spans: &mut Vec<u32>) -> bool {
     let n = code.len();
     let remove: Vec<bool> = code
         .iter()
         .enumerate()
-        .map(|(i, op)| matches!(op, Op::Jump(t) if *t as usize == i + 1))
+        .map(|(i, op)| {
+            // ⚠ **文の先頭 op は消さない**（#1）。`break` のように「1 個の `Jump` だけ」に
+            // コンパイルされる文があり、それを消すとデバッガの停止位置が 1 文ぶん失われる。
+            // 消した boundary を次の生存 op へ寄せる案もあるが、次の op も boundary だと
+            // 「2 文が同じ ip から始まる」を表現できず off/auto の transcript がずれる。
+            // 除去できる Jump は全体の 0.31% しかない（#2a 実測）ので、確実さを取る。
+            if stmt_spans.get(i).is_some_and(|&s| s != super::chunk::NOT_STMT) {
+                return false;
+            }
+            matches!(op, Op::Jump(t) if *t as usize == i + 1)
+        })
         .collect();
     if !remove.iter().any(|&r| r) {
         return false;
@@ -131,6 +149,16 @@ fn remove_jumps_to_next(code: &mut Vec<Op>) -> bool {
         if !remove[i] {
             out.push(op);
         }
+    }
+    // 行テーブルも同じ写像で詰め直す（#1）。空なら呼び出し側が持っていないだけなので何もしない。
+    if !stmt_spans.is_empty() {
+        let mut spans_out = Vec::with_capacity(k as usize);
+        for (i, s) in stmt_spans.drain(..).enumerate() {
+            if !remove[i] {
+                spans_out.push(s);
+            }
+        }
+        *stmt_spans = spans_out;
     }
     for op in out.iter_mut() {
         if let Some(t) = code_target_mut(op) {
@@ -158,7 +186,7 @@ mod tests {
             Op::Jump(3),        // 2 ← 次命令へ跳ぶだけ
             Op::Return,         // 3
         ];
-        optimize(&mut code);
+        optimize(&mut code, &mut Vec::new());
         assert_eq!(code.len(), 3);
         // 飛び先 3 は詰め直しで 2 になる。
         assert!(matches!(code[0], Op::JumpIfFalse(2)));
@@ -175,7 +203,7 @@ mod tests {
             Op::Jump(0),        // 3
             Op::Return,         // 4
         ];
-        optimize(&mut code);
+        optimize(&mut code, &mut Vec::new());
         // 2 は「次命令(3)への JUMP」ではなく 0 へ向くので、連鎖畳み込みが先に効く。
         assert!(matches!(code[1], Op::JumpIfFalse(0)));
         assert!(matches!(code[2], Op::Jump(0)));
@@ -193,7 +221,7 @@ mod tests {
             Op::Jump(5),           // 4 ← 除去対象（次命令へ）
             Op::Return,            // 5 ← 除去後は索引 3
         ];
-        optimize(&mut code);
+        optimize(&mut code, &mut Vec::new());
         assert_eq!(code.len(), 4);
         assert!(matches!(code[0], Op::SetupTry(3)), "{code:?}");
         assert!(matches!(code[1], Op::ForIter(0, 1, 3)), "{code:?}");
@@ -204,7 +232,38 @@ mod tests {
     #[test]
     fn self_jump_terminates() {
         let mut code = vec![Op::Jump(0), Op::Return];
-        optimize(&mut code);
+        optimize(&mut code, &mut Vec::new());
         assert!(matches!(code[0], Op::Jump(0)));
+    }
+
+    /// 行テーブル（#1）が code と 1:1 のまま詰め直されること。
+    #[test]
+    fn compacts_stmt_spans_with_code() {
+        use super::super::chunk::NOT_STMT;
+        let mut code = vec![
+            Op::Nil,     // 0  文の先頭（span 7）
+            Op::Jump(2), // 1  ← 除去対象（文の先頭ではない）
+            Op::Return,  // 2  文の先頭（span 9）
+        ];
+        let mut spans = vec![7, NOT_STMT, 9];
+        optimize(&mut code, &mut spans);
+        assert_eq!(code.len(), 2);
+        assert_eq!(spans, vec![7, 9], "行テーブルが code と一緒に詰まっていない");
+    }
+
+    /// **文の先頭 op は除去しない**こと（`break` のように Jump 1 個だけの文がある）。
+    /// 消すとデバッガの停止位置が 1 文ぶん失われる。
+    #[test]
+    fn keeps_jump_that_starts_a_statement() {
+        use super::super::chunk::NOT_STMT;
+        let mut code = vec![
+            Op::Nil,     // 0
+            Op::Jump(2), // 1 ← 次命令への JUMP だが **文の先頭**
+            Op::Return,  // 2
+        ];
+        let mut spans = vec![NOT_STMT, 3, NOT_STMT];
+        optimize(&mut code, &mut spans);
+        assert_eq!(code.len(), 3, "文の先頭 Jump が消えている: {code:?}");
+        assert_eq!(spans, vec![NOT_STMT, 3, NOT_STMT]);
     }
 }

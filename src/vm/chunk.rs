@@ -15,10 +15,18 @@ pub struct AsyncBlock {
     pub captures: Vec<(String, u16, bool)>,
 }
 
-/// 1 関数分のコンパイル結果。`Rc<Chunk>` で関数ごとにキャッシュされる。
+/// 文境界の行テーブル（`Chunk::stmt_spans`）の番兵。
 ///
-/// 注: V-E（デバッガ統合）で行テーブル（op→Span）を追加予定。V-A では未実装
-/// （関数内のエラー位置はトレースバックの呼び出し元フレームで代替）。
+/// - `NOT_STMT`: その ip は**文の先頭ではない**（大多数の op）。
+/// - `STMT_NO_SPAN`: 文の先頭だが、その文は位置情報を持たない
+///   （`stmt_location` が `None` を返す種類 — `if`/`while`/`return` 等）。
+///   ツリーウォークの `best_span_for` はこの場合 `dbg_last_span` へフォールバックするので、
+///   VM も同じ扱いにする（そうしないと transcript が食い違う）。
+pub const NOT_STMT: u32 = u32::MAX;
+/// 文の先頭だが位置情報なし（`best_span_for` のフォールバックに委ねる）。
+pub const STMT_NO_SPAN: u32 = u32::MAX - 1;
+
+/// 1 関数分のコンパイル結果。`Rc<Chunk>` で関数ごとにキャッシュされる。
 pub struct Chunk {
     /// 命令列。
     pub code: Vec<Op>,
@@ -30,12 +38,25 @@ pub struct Chunk {
     pub attr_caches: Vec<AttrCache>,
     /// 位置情報プール（`Raise`/`Call`/`CallMethod` が参照。例外・トレースバックの file/line/col）。
     pub spans: Vec<Span>,
+    /// **文境界の行テーブル**（#1）。`code` と同じ長さで、`stmt_spans[ip]` は
+    /// `NOT_STMT` / `STMT_NO_SPAN` / `spans` への index のいずれか。
+    ///
+    /// デバッガの文単位ブレークが「この ip は文の先頭か・その位置はどこか」を O(1) で引くために使う。
+    /// **通常の実行ループは一切参照しない**（デバッグセッション中の専用ループだけが読む）。
+    ///
+    /// ⚠ 命令を削除・移動する最適化（[peephole](super::peephole)）は**この表も同時に詰め直す**こと。
+    /// ずれると停止位置が別の文にずれる。
+    pub stmt_spans: Vec<u32>,
     /// slot → 変数名 のデバッグ名テーブル（V-E。デバッガ REPL 用メタデータ。実行では未使用なので
     /// 現状は保持のみ — デバッガ VM 統合で消費予定）。
     #[allow(dead_code)]
     pub local_names: Vec<String>,
     /// フレームのローカル slot 総数（パラメータ + base ローカル）。
     pub n_locals: usize,
+    /// 先頭から何 slot がパラメータか（`self` を含む）。
+    /// デバッガが「停止時点で**まだ宣言されていない**ローカル」を隠すのに使う（#1）:
+    /// パラメータは入口で束縛済みなので最初から可視、それ以外は Store されるまで不可視。
+    pub n_params: usize,
     /// 非同期タスクブロック（`AsyncSubmit(idx)` が参照, タスク #9）。async を含まない関数では空。
     pub async_blocks: Vec<AsyncBlock>,
     /// `LoadGlobal` のグローバル索引キャッシュ（#11）。`(slot_epoch, scopes[0] index)` を焼く。

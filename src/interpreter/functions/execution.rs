@@ -305,10 +305,9 @@ impl Interpreter {
     ) -> Result<Value, String> {
         // ── VM チャンクを1回だけ取得（fast/general 両経路で共有） ──
         // 対象: フリー関数（self なし）＋ インスタンスメソッド（self=Instance）。非 Python・クロージャなし。
-        // デバッグ中でも **そのフレームで停止し得るときだけ** ツリーウォークに委ねる（#1）。
-        // step-over / step-out が跨ぐ呼び出しは停止し得ないので VM で全速実行してよい（`dbg_blocks_vm`）。
+        // #1 完了により **デバッグ中でも VM を使う**（`vm/run.rs` の `run_stepping` が
+        // 文境界で停止判定する）。以前はここでデバッグ中の VM を丸ごと無効化していた。
         let vm_eligible = self.vm_mode != crate::vm::VmMode::Off
-            && !crate::interpreter::debugger::dbg_blocks_vm()
             && !fn_val.is_python
             && fn_val.captured_env.is_empty()
             && matches!(self_val, None | Some(Value::Instance(_)));
@@ -630,7 +629,6 @@ impl Interpreter {
         // 対象: フリージェネレータ（self なし）＋ Instance レシーバのジェネレータメソッド。
         // クロージャキャプチャあり・非対応構文（`Self` 参照等）はツリーウォークへフォールバック。
         let vm_eligible = self.vm_mode != crate::vm::VmMode::Off
-            && !crate::interpreter::debugger::dbg_blocks_vm()
             && gen_fn.captured_env.is_empty()
             && matches!(self_val, None | Some(Value::Instance(_)));
         if vm_eligible {

@@ -1,0 +1,24 @@
+# step_out_to_vm_caller.ar — step-out の戻り先が **VM フレーム**になるシナリオ。
+#
+# `probe` は `break_point` を含むので VM コンパイラが bail してツリーウォークで走る。
+# 一方 `caller` は `break_point` を含まないので、デバッグセッション開始前に
+# **VM フレームとして既に走り始めている**。
+#
+# ここから step-out すると停止先は `caller` の深さになるが、VM フレームは
+# ステートメント境界で `should_pause_at` を呼ばない。#1 本体（VM 内の文単位ブレーク）が
+# 無い間、この停止が起きるかどうかが off/auto で食い違う可能性がある。
+#
+# 対応する stdin は step_out_to_vm_caller.in（step-out → 変数確認 → resume）。
+
+fn probe(let a: int) -> int:
+    let inside = a * 3
+    break_point
+    return inside
+
+fn caller(let a: int) -> int:
+    let before = a + 1
+    let got = probe(before)
+    let after = got + 100
+    return after
+
+print(caller(5))

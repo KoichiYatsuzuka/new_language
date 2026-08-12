@@ -21,6 +21,14 @@ use super::op::Op;
 enum Flow {
     /// 次の命令へ（ip += 1）。
     Next,
+    /// 次の命令へ（ip += 1）。**ただし直前に他のコードを実行した**（呼び出し系 op）。
+    ///
+    /// `Next` と分けているのは、呼び出しの中で `break_point` が発火して
+    /// **デバッグセッションが始まっている可能性がある**のがここだけだから（#1）。
+    /// このフレームは既に走り始めているので `run` 入口の判定を通過済みで、
+    /// ここで拾わないと停止判定を持たないまま最後まで走ってしまう。
+    /// 呼び出しは元々数百 ns かかるので、この再判定のコストは無視できる。
+    NextAfterCall,
     /// 絶対 index へジャンプ。
     Jump(usize),
     /// 関数から値を返す。
@@ -47,11 +55,28 @@ pub fn run(
     let mut ip: usize = 0;
     let mut handlers: Vec<Handler> = Vec::new();
 
+    // デバッグセッション中はステップ判定つきのループへ（#1）。
+    // ⚠ **通常経路には何も足さない**のがこの分岐の目的。文境界ごとの停止判定を
+    // このループに入れると、#12/#2b/#2a で削ったコストを毎命令ぶん戻すことになる。
+    if crate::interpreter::debugger::dbg_active() {
+        return run_stepping(interp, chunk, buf, base, ip, handlers);
+    }
+
     loop {
         match exec_op(interp, chunk, buf, base, ip, &mut handlers) {
             Ok(Flow::Next) => ip += 1,
             Ok(Flow::Jump(t)) => ip = t,
             Ok(Flow::Return(v)) => return Ok(v),
+            // 呼び出しから戻った直後にデバッグセッションが始まっていることがある
+            // （ネストした `break_point`）。**この再判定が無いと、既に走っている VM フレームが
+            // 停止判定を持たないまま最後まで走り抜ける**（step-out が効かない実バグだった）。
+            // 検査は「呼び出しから戻った直後」だけなので、通常のホット命令には影響しない。
+            Ok(Flow::NextAfterCall) => {
+                ip += 1;
+                if crate::interpreter::debugger::dbg_active() {
+                    return run_stepping(interp, chunk, buf, base, ip, handlers);
+                }
+            }
             Err(e) => {
                 // 例外: 最内ハンドラがあればオペランドを巻き戻して例外値を積み landing pad へ。
                 // 変換できない（active exception なし等）・ハンドラなしなら伝播（Err を返す）。
@@ -73,8 +98,101 @@ pub fn run(
     }
 }
 
+/// **文単位のステップ判定つき**ディスパッチループ（#1）。
+///
+/// 通常の `run` と同じ `exec_op` を回し、各命令の実行前に
+/// 「その ip が文の先頭なら停止判定」を挟むだけ。位置は**ツリーウォークの `exec()` 冒頭と同じ**
+/// （文を実行する前）なので、`--vm=off` と同じ順序で止まる。
+///
+/// このループへ入るのは 2 経路:
+/// - `run` の入口でデバッグセッション中だったとき
+/// - 呼び出しから戻ったらセッションが始まっていたとき（`Flow::NextAfterCall`）
+///
+/// ⚠ 通常経路（`run` のループ）には停止判定を**一切入れない**。入れると全命令に
+/// 分岐が乗り、#12/#2b/#2a で削ったコストが戻る。
+fn run_stepping(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &mut Vec<Value>,
+    base: usize,
+    mut ip: usize,
+    mut handlers: Vec<Handler>,
+) -> Result<Value, String> {
+    loop {
+        // 文の先頭か？（行テーブルは code と 1:1 なので O(1)）
+        if let Some(&span_idx) = chunk.stmt_spans.get(ip) {
+            if span_idx != super::chunk::NOT_STMT {
+                if let Some(span) = interp.vm_should_pause(chunk, span_idx) {
+                    let declared = declared_slots(chunk, ip);
+                    interp.vm_debug_pause(chunk, buf, base, &span, &declared)?;
+                }
+            }
+        }
+        match exec_op(interp, chunk, buf, base, ip, &mut handlers) {
+            Ok(Flow::Next) | Ok(Flow::NextAfterCall) => ip += 1,
+            Ok(Flow::Jump(t)) => ip = t,
+            Ok(Flow::Return(v)) => return Ok(v),
+            Err(e) => match handlers.pop() {
+                Some(h) => {
+                    buf.truncate(h.stack_len);
+                    match interp.vm_take_raised(&e) {
+                        Some(exc_val) => {
+                            buf.push(exc_val);
+                            ip = h.handler_ip;
+                        }
+                        None => return Err(e),
+                    }
+                }
+                None => return Err(e),
+            },
+        }
+    }
+}
+
+/// 停止位置 `ip` の時点で「もう宣言されている」ローカル slot を返す（#1・デバッガ表示用）。
+///
+/// VM の flat buffer は**全 slot を `None` で初期化する**ので、値だけでは
+/// 「未宣言」と「`None` を代入済み」を区別できない。ツリーウォークは宣言文を実行して初めて
+/// 変数がスコープに入るので、合わせないと「まだ宣言していない変数が REPL から引ける」ことになり
+/// off/auto がずれる。
+///
+/// **`code[..ip]` を静的に走査**して「そこまでに書き込み得た slot」を集める。
+/// 実行時に追跡しないのは 2 つの理由から:
+/// - 通常ループにも stepping ループにも per-op の仕事を足さずに済む。
+/// - **セッション開始前から走っていたフレーム**（`Flow::NextAfterCall` で途中から stepping へ
+///   切り替わったフレーム）では、それまでの代入を実行時には知りようがない。
+///
+/// 分岐で実行されなかった宣言も「宣言済み」と見なす過大近似だが、これは
+/// 「このソース位置より前に宣言文がある」と同義で、ツリーウォークの見え方に十分近い。
+/// 停止時にしか呼ばれないので O(ip) のコストは問題にならない。
+fn declared_slots(chunk: &Chunk, ip: usize) -> Vec<bool> {
+    let mut declared = vec![false; chunk.n_locals];
+    for d in declared.iter_mut().take(chunk.n_params) {
+        *d = true; // パラメータは呼び出し側が束縛済み
+    }
+    for op in chunk.code.iter().take(ip) {
+        let slot = match op {
+            Op::StoreLocal(s)
+            | Op::StoreLocalDeepCopy(s)
+            | Op::StoreLocalCopyFreeze(s)
+            | Op::StoreLocalFreezeInstance(s)
+            | Op::ListAppendLocal(s) => *s as usize,
+            Op::ForIter(_, target, _) => *target as usize,
+            _ => continue,
+        };
+        if let Some(d) = declared.get_mut(slot) {
+            *d = true;
+        }
+    }
+    declared
+}
+
 /// 単一命令を実行し、制御フローを返す。エラーは `Err` で返し、`run` がハンドラスタックへ回す。
-#[inline]
+///
+/// ⚠ `#[inline(always)]`: 呼び出し元が `run` と `run_stepping` の **2 つ**になった時点で
+/// `#[inline]` だけではインライン展開されなくなり、**通常経路が 3〜5% 退行した**（#1 で実測）。
+/// バイトコードは byte-identical だったので、原因は生成コードではなくインライン判断だと特定できた。
+#[inline(always)]
 fn exec_op(
     interp: &mut Interpreter,
     chunk: &Chunk,
@@ -452,6 +570,7 @@ fn exec_op(
                 *node_id,
             )?;
             buf.push(r);
+            return Ok(Flow::NextAfterCall); // #1: 呼び出し中に debug が始まった可能性を拾う
         }
         // 超命令（#16 段階(b)(i)）: レシーバを frame から直接取る。`CallMethod` と同一意味論。
         Op::CallMethodLocal(slot, name_idx, argc, mut_mask) => {
@@ -474,6 +593,7 @@ fn exec_op(
                 None,
             )?;
             buf.push(r);
+            return Ok(Flow::NextAfterCall); // #1
         }
         Op::CallMethod(name_idx, argc, mut_mask) => {
             let n = *argc as usize;
@@ -494,6 +614,7 @@ fn exec_op(
                 None,
             )?;
             buf.push(r);
+            return Ok(Flow::NextAfterCall); // #1
         }
         Op::Return => return Ok(Flow::Return(buf.pop().unwrap())),
         Op::ReturnNil => return Ok(Flow::Return(Value::None)),

@@ -43,7 +43,8 @@ pub(crate) mod js_proc_runtime;
 /// FFI 境界検査（#16）: 動的型付け言語から Arrow へ入る値をスタブ宣言型と突き合わせる。
 pub(crate) mod ffi_boundary;
 #[path = "interpreter/debugger.rs"]
- mod debugger;
+// `pub(crate)`: VM コンパイラが行テーブル構築で `stmt_span_of` を使う（#1）。
+pub(crate) mod debugger;
 #[path = "interpreter/eval/mod.rs"]
 mod eval;
 #[path = "interpreter/exceptions.rs"]

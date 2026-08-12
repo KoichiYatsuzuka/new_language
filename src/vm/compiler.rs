@@ -66,6 +66,11 @@ struct Compiler {
     names: Vec<String>,
     attr_caches: Vec<crate::ast::AttrCache>,
     spans: Vec<crate::token::Span>,
+    /// 文境界の行テーブル（#1）。`code` と 1:1。詳細は [`Chunk::stmt_spans`](super::chunk::Chunk).
+    stmt_spans: Vec<u32>,
+    /// 「次に emit する op が文の先頭」を表す予約（#1）。`compile_stmt` が設定し `emit` が消費する。
+    /// 文の先頭 op は `compile_stmt` の中で任意の深さから emit されるので、位置ではなく予約で持つ。
+    pending_stmt: Option<u32>,
     /// AST 型解決層の注釈（#16 段階(b)/plan A）。node-id で型特化 op の判断に使う。空なら特化しない。
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     /// 名前 → slot（base スコープ: パラメータ + トップレベル let/mut/const、宣言順）。
@@ -180,6 +185,8 @@ pub fn compile_fn(
         slot_type.push(p.type_ann.clone());
         n = n.checked_add(1)?;
     }
+    // パラメータ数（`self` 含む）。デバッガが「まだ宣言されていないローカル」を隠すのに使う（#1）。
+    let n_params = n as usize;
     // トップレベル宣言を事前採番。LetTuple/Static/入れ子定義など slot をずらす形は非対応。
     for stmt in body {
         match stmt {
@@ -235,6 +242,8 @@ pub fn compile_fn(
         names: Vec::new(),
         attr_caches: Vec::new(),
         spans: Vec::new(),
+        stmt_spans: Vec::new(),
+        pending_stmt: None,
         annotations,
         slots,
         slot_mut,
@@ -258,7 +267,7 @@ pub fn compile_fn(
 
     // 覗き穴最適化（#2a）。コード生成は「素直に出す」ままにして、構造的に出る無駄
     // （`else` 無し `if` の次命令への `Jump` 等）はここで回収する。意味論は不変。
-    super::peephole::optimize(&mut c.code);
+    super::peephole::optimize(&mut c.code, &mut c.stmt_spans);
 
     let chunk = Chunk {
         code: c.code,
@@ -266,8 +275,10 @@ pub fn compile_fn(
         names: c.names,
         attr_caches: c.attr_caches,
         spans: c.spans,
+        stmt_spans: c.stmt_spans,
         local_names,
         n_locals: c.n_locals,
+        n_params,
         async_blocks: c.async_blocks,
         global_caches: c.global_caches,
     };
@@ -291,6 +302,8 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         names: Vec::new(),
         attr_caches: Vec::new(),
         spans: Vec::new(),
+        stmt_spans: Vec::new(),
+        pending_stmt: None,
         // デバッグ経路は注釈を持たない（空＝型特化しない）。
         annotations: std::rc::Rc::new(crate::type_check::AstAnnotations::default()),
         slots: HashMap::new(),
@@ -325,8 +338,11 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         names: c.names,
         attr_caches: c.attr_caches,
         spans: c.spans,
+        stmt_spans: c.stmt_spans,
         local_names: Vec::new(),
         n_locals: c.n_locals,
+        // デバッグ REPL 用 Chunk は停止対象ではないので 0 でよい。
+        n_params: 0,
         async_blocks: Vec::new(),
         global_caches: c.global_caches,
     })
@@ -774,6 +790,10 @@ impl Compiler {
     #[inline]
     fn emit(&mut self, op: Op) -> usize {
         self.code.push(op);
+        // 行テーブルを code と 1:1 に保つ（#1）。`compile_stmt` が予約していれば
+        // **この op が文の先頭**なので、そこに文の位置を記録する。
+        self.stmt_spans
+            .push(self.pending_stmt.take().unwrap_or(super::chunk::NOT_STMT));
         self.code.len() - 1
     }
 
@@ -1081,6 +1101,26 @@ impl Compiler {
         idx
     }
 
+    /// 次に emit する op を「文の先頭」として予約する（#1・行テーブル）。
+    ///
+    /// ツリーウォークは `exec()` の冒頭で**すべての文**について `should_pause_at` を呼ぶので、
+    /// VM も**すべての文**の先頭を記録しないと停止位置が食い違う。
+    /// 位置情報を持たない種類の文（`if`/`while`/`return` 等）は `STMT_NO_SPAN` を記録し、
+    /// 表示スパンは `best_span_for` のフォールバック（`dbg_last_span`）に委ねる。
+    ///
+    /// ⚠ `debug_mode`（デバッガ REPL 用の `compile_debug`）では記録しない。
+    /// あちらは停止対象ではなく、REPL 入力を評価するだけの Chunk。
+    fn mark_stmt_start(&mut self, stmt: &Stmt) {
+        if self.debug_mode {
+            return;
+        }
+        let idx = match crate::interpreter::debugger::stmt_span_of(stmt) {
+            Some(span) => self.add_span(&span),
+            None => super::chunk::STMT_NO_SPAN,
+        };
+        self.pending_stmt = Some(idx);
+    }
+
     /// バックパッチ用: 直後に置く命令の index を現在位置として返す。
     #[inline]
     fn here(&self) -> u32 {
@@ -1192,6 +1232,7 @@ impl Compiler {
     }
 
     fn compile_stmt(&mut self, stmt: &Stmt) -> Option<()> {
+        self.mark_stmt_start(stmt);
         match stmt {
             Stmt::Expr(e) => {
                 self.compile_expr(e)?;
