@@ -369,6 +369,9 @@ fn run_program(
     // ソーステキストはエラー報告時のスタックトレース表示に使用される
     let mut interp = Interpreter::new();
     interp.set_vm_mode(vm_mode);
+    // 最上位ループの VM 化（#10-b）に使う「確実に scopes[0] を指す名前」の集合。
+    // リゾルバが `Resolution::Global` を付ける判定と同一関数から得る（判定は 1 実装）。
+    interp.set_toplevel_globals(interpreter::resolver::toplevel_visible_globals(&stmts));
     // AST 型解決層の注釈を注入する（#16）。段階(b)/(c) の消費側が node-id で参照する。
     interp.set_annotations(std::rc::Rc::new(annotations));
     interp.add_source_text(filename, source);
@@ -404,6 +407,17 @@ fn run_program(
     }
     // CLIパラメータを `args` dict としてグローバルスコープに登録する
     interp.set_cli_args(cli_args);
+
+    // 診断フック（#10）: 実行終了時にツリーウォークの実行内訳を出す。
+    struct TwStatsDump;
+    impl Drop for TwStatsDump {
+        fn drop(&mut self) {
+            if interpreter::tw_stats::enabled() {
+                interpreter::tw_stats::dump();
+            }
+        }
+    }
+    let _tw_dump = TwStatsDump;
 
     // --- 各トップレベル文を順番に実行する ---
     for stmt in &stmts {

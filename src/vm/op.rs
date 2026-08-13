@@ -19,6 +19,19 @@ pub enum Op {
     /// `chunk.global_caches[cache_idx]` に `(slot_epoch, scopes[0] index)` を焼き、以後は名前ハッシュ
     /// 引きを飛ばして `scopes[0].slot(idx)` へ直接アクセスする（`freeze` で epoch が進めば自動再解決）。
     LoadGlobal(u32, u32),
+    /// pop して**既存のグローバル変数**へ代入する（#10-b: 最上位 Chunk の `x = e` / `x <op>= e`）。
+    /// フィールド (name_idx, cache_idx)。
+    ///
+    /// ツリーウォークの `Stmt::Assign` と**同じ機構**を使う: 初回は `assign_var`（可変性検査・
+    /// `Var::Cell`/`SlotCell` の扱い・`NameError`）を通し、`try_fill_slot` が対象を
+    /// `Var::SlotCell` へ昇格して `global_slot_cells` の index を焼く。2 回目以降は
+    /// そのセルへ直接書き込む（`freeze` が `slot_epoch` を進めれば自動失効）。
+    ///
+    /// ⚠ **`chunk.global_caches` の index 空間は op ごとに意味が違う**。`LoadGlobal` は
+    /// `scopes[0]` の slot 番号を、`StoreGlobal` は `global_slot_cells` の index を焼く。
+    /// 1 本のキャッシュ枠は必ず 1 つの op 実体だけが読み書きするので混ざらないが、
+    /// **枠を共有・再利用する最適化を足すときはここで壊れる**。
+    StoreGlobal(u32, u32),
     /// pop して locals[slot] へそのまま書き込む（const / 代入 / let-from-immutable / リテラル let）。
     StoreLocal(u16),
     /// pop して deep_copy してから locals[slot] へ（`mut` 宣言: exec は常に deep_copy_value）。

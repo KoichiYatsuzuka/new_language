@@ -73,6 +73,9 @@ impl Interpreter {
                     self.annotations.clone(),
                 )
                 .map(Rc::new);
+                if crate::interpreter::tw_stats::enabled() {
+                    crate::interpreter::tw_stats::record_compile("fn", compiled.is_some());
+                }
                 self.vm_chunks
                     .insert(key, (Rc::downgrade(fn_val), compiled.clone()));
                 compiled
@@ -96,6 +99,9 @@ impl Interpreter {
                     self.annotations.clone(),
                 )
                 .map(Rc::new);
+                if crate::interpreter::tw_stats::enabled() {
+                    crate::interpreter::tw_stats::record_compile("gen", compiled.is_some());
+                }
                 self.vm_gen_chunks
                     .insert(key, (Rc::downgrade(gen_fn), compiled.clone()));
                 compiled
@@ -480,7 +486,11 @@ impl Interpreter {
         });
 
         self.push_call_name(fn_name);
+        // 診断フック（#10）: ここから先はツリーウォークの関数本体（最上位と区別して計上する）。
+        let _tw_guard = crate::interpreter::tw_stats::enabled()
+            .then(crate::interpreter::tw_stats::FnBodyGuard::new);
         let result = self.exec_block(&fn_val.body);
+        drop(_tw_guard);
         self.pop_call_name();
 
         LOOP_DEPTH.with(|d| *d.borrow_mut() = prev_loop_depth);
@@ -670,7 +680,11 @@ impl Interpreter {
             *d.borrow_mut() = 0;
             prev
         });
+        // 診断フック（#10）: ジェネレータ本体もツリーウォークの「関数本体内」として計上する。
+        let _tw_guard = crate::interpreter::tw_stats::enabled()
+            .then(crate::interpreter::tw_stats::FnBodyGuard::new);
         let exec_result = self.exec_block(&gen_fn.body);
+        drop(_tw_guard);
         LOOP_DEPTH.with(|d| *d.borrow_mut() = prev_loop_depth);
         self.scopes.truncate(saved_len);
         self.frame_floor = saved_floor;

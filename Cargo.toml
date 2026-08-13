@@ -12,6 +12,13 @@ regex = "1"
 indexmap = "2"
 serde_json = "1"
 
+[features]
+# 診断フック `AR_TW_STATS=1`（#10）。**既定では無効＝コード自体が消える。**
+# 環境変数だけの分岐にすると `exec()` の 1 文ごとに OnceLock の atomic 読みが入り、
+# 文ディスパッチ支配のワークロードで **11% 退行した**（partial_call_overhead.ar で実測）。
+# 計測時は `cargo build --features tw_stats`（tw_stats.ps1 が自動で行う）。
+tw_stats = []
+
 [[bench]]
 name = "field_access"
 harness = false

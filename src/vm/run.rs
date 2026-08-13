@@ -192,6 +192,30 @@ fn declared_slots(chunk: &Chunk, ip: usize) -> Vec<bool> {
 /// ⚠ `#[inline(always)]`: 呼び出し元が `run` と `run_stepping` の **2 つ**になった時点で
 /// `#[inline]` だけではインライン展開されなくなり、**通常経路が 3〜5% 退行した**（#1 で実測）。
 /// バイトコードは byte-identical だったので、原因は生成コードではなくインライン判断だと特定できた。
+/// `Op::StoreGlobal` の**ミス経路**（#10-b）。初回・キャッシュ失効時だけ通る。
+///
+/// ツリーウォークの `Stmt::Assign` と同じ機構: `assign_var`（可変性検査・Cell 種別・
+/// `NameError`）を通し、`try_fill_slot` が対象を `Var::SlotCell` へ昇格して
+/// `global_slot_cells` の index を焼く。以後は `exec_op` 側のヒット経路が直接書き込む。
+///
+/// ⚠ **`#[inline(never)]` を外さないこと。** `exec_op` は `#[inline(always)]` なので、
+/// ここを展開すると `StoreGlobal` を含まない Chunk のホットループまで巻き添えで遅くなる
+/// （実測 4〜6%）。逆に**ヒット経路まで外へ出すと**、最上位ループが毎ストアで
+/// 呼び出しを払って別のベンチが 7〜10% 落ちた。**分割する**のが両立点。
+#[inline(never)]
+fn store_global_miss(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    ni: u32,
+    cache: &crate::ast::SlotCache,
+    v: Value,
+) -> Result<(), String> {
+    let name = &chunk.names[ni as usize];
+    interp.vm_assign_global(name, v)?;
+    interp.vm_fill_global_store_cache(name, cache);
+    Ok(())
+}
+
 #[inline(always)]
 fn exec_op(
     interp: &mut Interpreter,
@@ -230,6 +254,23 @@ fn exec_op(
                     }
                 }
                 None => return Err(format!("NameError: '{name}' is not defined")),
+            }
+        }
+        Op::StoreGlobal(ni, ci) => {
+            // インラインキャッシュ（`LoadGlobal` と同じ形）。**ヒット経路だけをここに置き**、
+            // 初回・失効時は `#[inline(never)]` の `store_global_miss` へ落とす。
+            // `exec_op` は `#[inline(always)]` なので、ミス経路まで展開すると
+            // この op を使わない Chunk のホットループを巻き添えにする（同関数のコメント参照）。
+            let v = buf.pop().unwrap();
+            let cache = &chunk.global_caches[*ci as usize];
+            match cache.get(interp.vm_slot_epoch()) {
+                Some(idx) => {
+                    if let Some(v) = interp.vm_store_global_by_cell(idx, v) {
+                        // 想定外（index 失効）は名前引きへフォールバック。
+                        store_global_miss(interp, chunk, *ni, cache, v)?;
+                    }
+                }
+                None => store_global_miss(interp, chunk, *ni, cache, v)?,
             }
         }
         Op::StoreLocal(s) => {

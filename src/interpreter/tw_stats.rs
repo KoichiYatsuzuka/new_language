@@ -1,0 +1,175 @@
+// interpreter/tw_stats.rs — 診断フック `AR_TW_STATS=1`（#10 のスコープ計測用）。
+//
+// **ツリーウォークが `--vm=auto` の実行中に実際に何をしているか**を数える。
+// #3（強制バイトコード）へ残る距離は「top-level に何が書かれているか」ではなく
+// 「実行時にツリーウォークへ落ちる文が何か」でしか測れないため、実測用に置く。
+//
+// 計上するもの:
+//   - `Stmt` バリアント別の `exec()` ディスパッチ回数を **モジュール最上位 / 関数本体内**に分けて
+//   - VM チャンクのコンパイル成否（関数／ジェネレータ）
+//
+// **既定ではコンパイルされない**。`cargo build --features tw_stats` + `AR_TW_STATS=1` で有効。
+// feature を切る理由は `enabled()` のコメント参照（env 判定だけだと 11% 退行する）。
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+use crate::ast::Stmt;
+
+/// 収集先。async のワーカースレッドからも計上されるため TLS ではなく共有ロックにする。
+static COUNTS: OnceLock<Mutex<HashMap<(&'static str, String), u64>>> = OnceLock::new();
+
+// ツリーウォークの関数本体に入っている深さ。0 ならモジュール最上位。
+// 診断専用なので TLS で十分（スレッドごとに最上位から始まる）。
+thread_local! {
+    static TW_FN_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// 計測が有効か。
+///
+/// ⚠ **`cfg!` の判定を先に置くこと。** feature 無しビルドでは定数 `false` になり、
+/// 呼び出し側の `if enabled() { ... }` ごと消える。ここを環境変数だけの判定にすると
+/// `exec()` の 1 文ごとに `OnceLock` の atomic 読みが残り、**11% 退行する**
+/// （`partial_call_overhead.ar` = 5000 万回の文ディスパッチで実測）。
+#[inline(always)]
+pub(crate) fn enabled() -> bool {
+    if !cfg!(feature = "tw_stats") {
+        return false;
+    }
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("AR_TW_STATS").is_ok_and(|v| !v.is_empty()))
+}
+
+fn bump(cat: &'static str, key: &str) {
+    let m = COUNTS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut g) = m.lock() {
+        *g.entry((cat, key.to_string())).or_insert(0) += 1;
+    }
+}
+
+/// ツリーウォークの関数本体実行を囲むガード（深さを 1 増やす）。
+pub(crate) struct FnBodyGuard;
+
+impl FnBodyGuard {
+    pub(crate) fn new() -> Self {
+        TW_FN_DEPTH.with(|d| d.set(d.get() + 1));
+        FnBodyGuard
+    }
+}
+
+impl Drop for FnBodyGuard {
+    fn drop(&mut self) {
+        TW_FN_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// `exec()` のディスパッチを 1 件計上する。
+pub(crate) fn record_stmt(stmt: &Stmt) {
+    let cat = if TW_FN_DEPTH.with(|d| d.get()) == 0 {
+        "toplevel"
+    } else {
+        "in_fn"
+    };
+    bump(cat, stmt_kind(stmt));
+}
+
+/// VM コンパイルが諦めた地点を計上する（`vm/compiler.rs` の bail サイトから呼ぶ）。
+/// `label` は「どの bail サイトか」、`detail` は「どの構文で諦めたか」。
+pub(crate) fn record_bail(label: &str, detail: &str) {
+    BAIL_COUNT.with(|c| c.set(c.get() + 1));
+    bump("vm_bail", &format!("{label}:{detail}"));
+}
+
+// これまでに記録した bail 件数（`compile_fn` が「未帰属の失敗」を検出するのに使う）。
+thread_local! {
+    static BAIL_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// これまでに記録した bail 件数を返す。
+pub(crate) fn bail_count() -> u64 {
+    BAIL_COUNT.with(|c| c.get())
+}
+
+/// `Stmt` バリアント名を公開する（VM コンパイラの bail 計上用）。
+pub(crate) fn stmt_kind_of(stmt: &Stmt) -> &'static str {
+    stmt_kind(stmt)
+}
+
+/// VM チャンクのコンパイル成否を計上する。
+pub(crate) fn record_compile(kind: &'static str, ok: bool) {
+    if ok {
+        bump("vm_compile", kind);
+    } else {
+        bump("vm_compile", &format!("{kind}_FAILED"));
+    }
+}
+
+/// 収集結果を stderr へ出す（`run_program` の末尾から呼ぶ）。
+pub(crate) fn dump() {
+    let Some(m) = COUNTS.get() else { return };
+    let Ok(g) = m.lock() else { return };
+    let mut rows: Vec<_> = g
+        .iter()
+        .map(|((c, k), &v)| (*c, k.as_str(), v))
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(b.0).then(b.2.cmp(&a.2)));
+    for cat in ["toplevel", "in_fn", "vm_compile", "vm_bail"] {
+        let sub: Vec<_> = rows.iter().filter(|r| r.0 == cat).collect();
+        if sub.is_empty() {
+            continue;
+        }
+        let total: u64 = sub.iter().map(|r| r.2).sum();
+        let body = sub
+            .iter()
+            .map(|r| format!("{}={}", r.1, r.2))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!("TwStats[{cat}] total={total} {body}");
+    }
+}
+
+/// `Stmt` バリアント名（計上キー）。
+fn stmt_kind(stmt: &Stmt) -> &'static str {
+    match stmt {
+        Stmt::Expr(_) => "Expr",
+        Stmt::Let(..) => "Let",
+        Stmt::Const(..) => "Const",
+        Stmt::Mut(..) => "Mut",
+        Stmt::LetTuple { .. } => "LetTuple",
+        Stmt::Static(..) => "Static",
+        Stmt::Assign { .. } => "Assign",
+        Stmt::AttrAssign { .. } => "AttrAssign",
+        Stmt::AttrCompoundAssign { .. } => "AttrCompoundAssign",
+        Stmt::CompoundAssign { .. } => "CompoundAssign",
+        Stmt::If { .. } => "If",
+        Stmt::Match { .. } => "Match",
+        Stmt::While { .. } => "While",
+        Stmt::For { .. } => "For",
+        Stmt::Block(_) => "Block",
+        Stmt::Return(_) => "Return",
+        Stmt::Break => "Break",
+        Stmt::Continue => "Continue",
+        Stmt::Pass => "Pass",
+        Stmt::BlockReturn(..) => "BlockReturn",
+        Stmt::LoopYield(_) => "LoopYield",
+        Stmt::Yield(_) => "Yield",
+        Stmt::Freeze(..) => "Freeze",
+        Stmt::FnDef { .. } => "FnDef",
+        Stmt::GenDef { .. } => "GenDef",
+        Stmt::ClassDef { .. } => "ClassDef",
+        Stmt::TraitDef { .. } => "TraitDef",
+        Stmt::ProtocolDef { .. } => "ProtocolDef",
+        Stmt::Field { .. } => "Field",
+        Stmt::NewTypeDef { .. } => "NewTypeDef",
+        Stmt::EnumDef { .. } => "EnumDef",
+        Stmt::Try { .. } => "Try",
+        Stmt::Raise { .. } => "Raise",
+        Stmt::Import { .. } => "Import",
+        Stmt::FromImport { .. } => "FromImport",
+        Stmt::AsyncAssign { .. } => "AsyncAssign",
+        Stmt::BreakPoint { .. } => "BreakPoint",
+        Stmt::DebugLet { .. } => "DebugLet",
+        Stmt::EventSubscribe { .. } => "EventSubscribe",
+        Stmt::EventUnsubscribe { .. } => "EventUnsubscribe",
+    }
+}

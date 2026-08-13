@@ -20,6 +20,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::Nil => "NIL".to_string(),
         Op::LoadLocal(s) => format!("LOAD_LOCAL {s}"),
         Op::LoadGlobal(n, _) => format!("LOAD_GLOBAL {:?}", chunk.names.get(*n as usize)),
+        Op::StoreGlobal(n, _) => format!("STORE_GLOBAL {:?}", chunk.names.get(*n as usize)),
         Op::Call(argc, mask, n, _, _) => {
             format!("CALL {:?} argc={argc} mut_mask={mask:#x}", chunk.names.get(*n as usize))
         }

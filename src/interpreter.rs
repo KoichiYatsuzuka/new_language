@@ -70,6 +70,12 @@ mod scope;
 pub(super) mod str_methods;
 #[path = "interpreter/templates.rs"]
 mod templates;
+/// 診断フック `AR_TW_STATS=1`（#10 のスコープ計測）。既定では完全に無効。
+#[path = "interpreter/tw_stats.rs"]
+pub(crate) mod tw_stats;
+/// 最上位文の VM 実行経路（#10-b）。**`functions/execution.rs` へ移してはいけない**（同ファイル冒頭参照）。
+#[path = "interpreter/vm_toplevel.rs"]
+mod vm_toplevel;
 
 #[cfg(test)]
 #[path = "interpreter/tests/mod.rs"]
@@ -465,6 +471,15 @@ pub struct Interpreter {
     pub(self) external_handler_registry: HashMap<u64, Rc<RefCell<event_loop::SignalData>>>,
     /// `sig.external_id` の発番カウンタ（プロセス内の Interpreter 単位で単調増加、1 始まり）。
     pub(self) next_external_signal_id: u64,
+    // ── #10-b で追加。既存フィールドのオフセットを動かさないよう末尾に置く。
+    /// 最上位ループの Chunk キャッシュ（#10-b）。キー = `Stmt` のアドレス。
+    ///
+    /// AST は `run_program` / `exec_module` が実行中ずっと保持しているのでアドレスは安定
+    /// （`vm_chunks` のような `Weak` による再利用検査は不要）。`None` = コンパイル不能と判明済み。
+    pub(self) vm_toplevel_chunks: HashMap<usize, Option<Rc<crate::vm::Chunk>>>,
+    /// 最上位から見て `scopes[0]` を確実に指す名前の集合（#10-b, `resolver::toplevel_visible_globals`）。
+    /// 最上位ループ Chunk の**書き込み先**判定に使う。空 = 最上位 VM 化を行わない。
+    pub(self) toplevel_globals: std::collections::HashSet<String>,
 }
 
 impl Interpreter {
@@ -504,6 +519,8 @@ impl Interpreter {
             annotations: std::rc::Rc::new(crate::type_check::AstAnnotations::default()),
             vm_chunks: HashMap::new(),
             vm_gen_chunks: HashMap::new(),
+            vm_toplevel_chunks: HashMap::new(),
+            toplevel_globals: std::collections::HashSet::new(),
             template_fn_cache: HashMap::new(),
             template_gen_cache: HashMap::new(),
             vm_stack: Vec::new(),
@@ -549,6 +566,12 @@ impl Interpreter {
     /// バイトコード VM の実行モードを設定する（CLI `--vm` から）。
     pub fn set_vm_mode(&mut self, mode: crate::vm::VmMode) {
         self.vm_mode = mode;
+    }
+
+    /// 最上位ループの VM 化（#10-b）で「書き込み先はグローバル」と断定してよい名前を注入する。
+    /// `resolver::toplevel_visible_globals` の結果をそのまま渡すこと（判定を複製しない）。
+    pub fn set_toplevel_globals(&mut self, names: std::collections::HashSet<String>) {
+        self.toplevel_globals = names;
     }
 
     /// AST 型解決層の注釈（タスク #16）を注入する。`check_program` が生成したものを main.rs が渡す。

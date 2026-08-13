@@ -20,6 +20,62 @@ use crate::interpreter::Value;
 use super::chunk::Chunk;
 use super::op::Op;
 
+/// 診断フック（#10）: コンパイルを諦めた地点と構文種別を計上する。
+/// `AR_TW_STATS=1` のときだけ働く（既定は enabled() の分岐 1 つで終わる）。
+fn bail(site: &'static str, stmt: Option<&Stmt>) {
+    if !crate::interpreter::tw_stats::enabled() {
+        return;
+    }
+    let detail = stmt
+        .map(crate::interpreter::tw_stats::stmt_kind_of)
+        .unwrap_or("-");
+    crate::interpreter::tw_stats::record_bail(site, detail);
+}
+
+/// `bail` の式版（`Expr` のバリアント名を採る）。
+fn bail_expr(site: &'static str, expr: &Expr) {
+    if !crate::interpreter::tw_stats::enabled() {
+        return;
+    }
+    crate::interpreter::tw_stats::record_bail(site, expr_kind(expr));
+}
+
+/// `Expr` バリアント名（診断フック用）。
+fn expr_kind(expr: &Expr) -> &'static str {
+    match expr {
+        Expr::Int(..) => "Int",
+        Expr::Float(..) => "Float",
+        Expr::ImaginaryLit(..) => "ImaginaryLit",
+        Expr::Str(..) => "Str",
+        Expr::Bool(..) => "Bool",
+        Expr::None => "None",
+        Expr::Undefined => "Undefined",
+        Expr::Ident { .. } => "Ident",
+        Expr::LocalVar { .. } => "LocalVar",
+        Expr::DebugVar { .. } => "DebugVar",
+        Expr::BinOp { .. } => "BinOp",
+        Expr::UnaryOp { .. } => "UnaryOp",
+        Expr::Call { .. } => "Call",
+        Expr::Attr { .. } => "Attr",
+        Expr::TraitAccess { .. } => "TraitAccess",
+        Expr::Subscript { .. } => "Subscript",
+        Expr::Slice { .. } => "Slice",
+        Expr::List(..) => "List",
+        Expr::Tuple(..) => "Tuple",
+        Expr::Dict(..) => "Dict",
+        Expr::Set(..) => "Set",
+        Expr::IfExpr { .. } => "IfExpr",
+        Expr::MatchExpr { .. } => "MatchExpr",
+        Expr::ForExpr { .. } => "ForExpr",
+        Expr::WhileExpr { .. } => "WhileExpr",
+        Expr::Block { .. } => "Block",
+        Expr::Cast { .. } => "Cast",
+        Expr::IsType { .. } => "IsType",
+        Expr::MustBe { .. } => "MustBe",
+        Expr::TemplateInstantiate { .. } => "TemplateInstantiate",
+    }
+}
+
 /// VM の `Call` op で解決できない呼び先名（純粋 builtin・型コンストラクタ）。
 /// これらは `eval_builtin_ident_call` で特別扱いされるか、グローバル `Value::Type` として
 /// 別セマンティクスで呼ばれるため、コンパイル時に弾いてツリーウォークへフォールバックする。
@@ -100,6 +156,20 @@ struct Compiler {
     async_blocks: Vec<crate::vm::chunk::AsyncBlock>,
     /// `LoadGlobal` のグローバル索引キャッシュ（#11）。emit ごとに1本割り当てる。
     global_caches: Vec<crate::ast::SlotCache>,
+    /// 最上位モード（#10-b）で「`scopes[0]` の同名を確実に指す」と言える名前の集合。
+    /// 空 = 関数本体のコンパイル（従来どおり `slots` に無い書き込み先は bail）。
+    ///
+    /// ⚠ **書き込み専用の判定材料**。読み取りは AST の `Resolution::Global` に従う（そちらが正）。
+    /// リゾルバの `toplevel_visible_globals` がそのまま入るので、判定は 1 実装で共有される。
+    toplevel_globals: HashSet<String>,
+}
+
+/// 変数への書き込み先（#10-b）。`store_target` が決める。
+enum StoreTarget {
+    /// VM フレームの slot（`StoreLocal`）。
+    Local(u16),
+    /// `scopes[0]` のグローバル（`StoreGlobal`）。値は (name プール index, キャッシュ枠 index)。
+    Global(u32, u32),
 }
 
 /// ループ1つ分の break/continue ジャンプ先。`continue` は `continue_target` へ、
@@ -163,8 +233,136 @@ pub fn compile_fn(
     body: &[Stmt],
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
 ) -> Option<Chunk> {
+    // 診断フック（#10）: 失敗したのに bail 地点が 1 件も記録されなかったら「未帰属」として計上する。
+    // 個々の `?` を全て計装する代わりに、取りこぼしを総量で可視化する。
+    if !crate::interpreter::tw_stats::enabled() {
+        return compile_fn_inner(params, body, annotations);
+    }
+    let before = crate::interpreter::tw_stats::bail_count();
+    let out = compile_fn_inner(params, body, annotations);
+    if out.is_none() && crate::interpreter::tw_stats::bail_count() == before {
+        bail("unattributed", None);
+    }
+    out
+}
+
+/// モジュール最上位の**単一文**を Chunk へコンパイルする（#10-b）。
+///
+/// `compile_fn` との違いは 2 点だけ:
+/// - **パラメータも base ローカルも無い**。slot は文の内側（ループ本体・for ターゲット等）の
+///   宣言にだけ割り当てる（`collect_nested_decls`）。最上位の宣言は slot ではなくグローバル。
+/// - **書き込み先にグローバルを許す**（`toplevel_globals`）。読み取りは従来どおり AST の
+///   `Resolution::Global`（#21-b）に従うので、ここで渡すのは書き込み判定のためだけ。
+///
+/// 対象は**ループ文（`while` / `for`）に限る**。最上位で 2 回以上実行される文はループだけで、
+/// それ以外を Chunk 化しても「1 回実行するためにコンパイルする」ぶん損になる。
+/// （最上位の全文カバーは #10-c 以降。#3 に必要なのはそちら。）
+pub fn compile_toplevel_stmt(
+    stmt: &Stmt,
+    annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
+    toplevel_globals: &HashSet<String>,
+) -> Option<Chunk> {
+    if !matches!(stmt, Stmt::While { .. } | Stmt::For { .. }) {
+        return None;
+    }
+    // 診断フック（#10）: `compile_fn` と同じく取りこぼしを「未帰属」として可視化する。
+    if !crate::interpreter::tw_stats::enabled() {
+        return compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals);
+    }
+    let before = crate::interpreter::tw_stats::bail_count();
+    let out = compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals);
+    if out.is_none() && crate::interpreter::tw_stats::bail_count() == before {
+        bail("unattributed-toplevel", None);
+    }
+    out
+}
+
+fn compile_toplevel_stmt_inner(
+    stmt: &Stmt,
+    annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
+    toplevel_globals: &HashSet<String>,
+) -> Option<Chunk> {
+    let body = std::slice::from_ref(stmt);
+    // for ターゲットが同名の宣言を覆う形は flat-slot で表現できない（関数側と同じ制約）。
+    if has_for_target_shadow(&[], body) {
+        bail("for-target-shadow", None);
+        return None;
+    }
+
+    let mut slots: HashMap<String, u16> = HashMap::new();
+    let mut slot_mut: Vec<bool> = Vec::new();
+    let mut slot_type: Vec<Option<String>> = Vec::new();
+    let mut n: u16 = 0;
+    if collect_nested_decls(body, &mut slots, &mut slot_mut, &mut slot_type, &mut n).is_none() {
+        bail("nested-decls", None);
+        return None;
+    }
+
+    let mut local_names = vec![String::new(); n as usize];
+    for (name, &slot) in &slots {
+        if let Some(entry) = local_names.get_mut(slot as usize) {
+            *entry = name.clone();
+        }
+    }
+
+    let mut c = Compiler {
+        code: Vec::new(),
+        consts: Vec::new(),
+        names: Vec::new(),
+        attr_caches: Vec::new(),
+        spans: Vec::new(),
+        stmt_spans: Vec::new(),
+        pending_stmt: None,
+        annotations,
+        slots,
+        slot_mut,
+        slot_type,
+        self_slot: None,
+        loops: Vec::new(),
+        block_ctxs: Vec::new(),
+        debug_mode: false,
+        named_locals: n,
+        temps_in_use: 0,
+        n_locals: n as usize,
+        async_blocks: Vec::new(),
+        global_caches: Vec::new(),
+        toplevel_globals: toplevel_globals.clone(),
+    };
+
+    c.compile_stmt(stmt)?;
+    // 最上位文は値を返さない（`Return` は型検査が最上位で禁じる）。
+    c.emit(Op::ReturnNil);
+    super::peephole::optimize(&mut c.code, &mut c.stmt_spans);
+
+    let chunk = Chunk {
+        code: c.code,
+        consts: c.consts,
+        names: c.names,
+        attr_caches: c.attr_caches,
+        spans: c.spans,
+        stmt_spans: c.stmt_spans,
+        local_names,
+        n_locals: c.n_locals,
+        n_params: 0,
+        async_blocks: c.async_blocks,
+        global_caches: c.global_caches,
+    };
+
+    if std::env::var("AR_VM_DUMP").is_ok_and(|v| !v.is_empty()) {
+        eprintln!("{}", super::disasm::disassemble(&chunk, "<toplevel>"));
+    }
+
+    Some(chunk)
+}
+
+fn compile_fn_inner(
+    params: &[Param],
+    body: &[Stmt],
+    annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
+) -> Option<Chunk> {
     // `for` ループ変数が外側変数をシャドウする関数は flat-slot モデルで表現できないため諦める。
     if has_for_target_shadow(params, body) {
+        bail("for-target-shadow", None);
         return None;
     }
     // base slot をリゾルバと同順で採番する: パラメータ → トップレベル let/mut/const。
@@ -175,6 +373,7 @@ pub fn compile_fn(
     let mut n: u16 = 0;
     for p in params {
         if p.variadic {
+            bail("variadic-param", None);
             return None;
         }
         if p.name == "self" {
@@ -217,7 +416,10 @@ pub fn compile_fn(
             | Stmt::NewTypeDef { .. }
             | Stmt::EnumDef { .. }
             | Stmt::Import { .. }
-            | Stmt::FromImport { .. } => return None,
+            | Stmt::FromImport { .. } => {
+                bail("decl-prepass", Some(stmt));
+                return None;
+            }
             _ => {}
         }
     }
@@ -226,7 +428,10 @@ pub fn compile_fn(
     // トップレベル decl は上で採番済みなのでスキップされる。順序は問わない
     // （compile は slots 引きで参照する）。シャドウイング禁止＝同名は非同時生存なので
     // slot 再利用は健全。リゾルバは nested 名を解決しない（Ident のまま）ので衝突しない。
-    collect_nested_decls(body, &mut slots, &mut slot_mut, &mut slot_type, &mut n)?;
+    if collect_nested_decls(body, &mut slots, &mut slot_mut, &mut slot_type, &mut n).is_none() {
+        bail("nested-decls", None);
+        return None;
+    }
 
     // V-E: slot → 変数名 のデバッグ名テーブル（named slot のみ。temp は無名）。
     let mut local_names = vec![String::new(); n as usize];
@@ -257,6 +462,7 @@ pub fn compile_fn(
         n_locals: n as usize,
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
+        toplevel_globals: HashSet::new(),
     };
 
     for stmt in body {
@@ -318,6 +524,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         n_locals: 0,
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
+        toplevel_globals: HashSet::new(),
     };
     match stmt {
         Stmt::Expr(e) => {
@@ -948,6 +1155,38 @@ impl Compiler {
     /// 左辺が **slot 番号で与えられる** 場合の特化種別（複合代入 `x <op>= e` 用・#2b）。
     /// 注釈の引き方・op の許可判定は `specialized_bin_kind` と同一で、
     /// 型導出のフォールバックだけが slot 版になる。
+    /// 注釈テーブルだけから二項演算の種別を引く（#10-b のグローバル複合代入用）。
+    /// slot 版（`specialized_bin_kind_slot`）の「slot の型注釈から推す」経路はグローバルには
+    /// 使えないので、型検査が焼いた `binop_kind` のみを見る。
+    fn annot_binop_kind(&self, node_id: u32) -> Option<crate::type_check::BinOperandKind> {
+        // op のゲートは呼び出し側が渡す op で行う（`gate_bin_kind`）。ここでは種別だけ返す。
+        self.annotations.binop_kind(node_id)
+    }
+
+    /// 変数への書き込み先を決める（#10-b）。
+    ///
+    /// 1. VM の slot にある名前 → `Local`（関数本体でもブロック内宣言でもここに来る）
+    /// 2. 最上位モードで可視グローバルと確定できる名前 → `Global`
+    /// 3. どちらでもない → `None`（＝ツリーウォークへフォールバック）
+    ///
+    /// ⚠ 順序が重要。ループ本体の `let` は毎回スコープに入る**ローカル**なので、
+    /// 同名グローバルより先に slot を見なければならない。
+    fn store_target(&mut self, name: &str) -> Option<StoreTarget> {
+        if let Some(&slot) = self.slots.get(name) {
+            return Some(StoreTarget::Local(slot));
+        }
+        if self.toplevel_globals.contains(name) {
+            let ni = self.add_name(name);
+            // `LoadGlobal` と同じく emit 1 回につきキャッシュ枠を 1 本割り当てる
+            // （枠は共有しない。op ごとに焼く index の意味が違うため — `Op::StoreGlobal` 参照）。
+            let ci = self.global_caches.len() as u32;
+            self.global_caches.push(crate::ast::SlotCache::default());
+            return Some(StoreTarget::Global(ni, ci));
+        }
+        bail("store-target", None);
+        None
+    }
+
     fn specialized_bin_kind_slot(
         &self,
         op: &BinOp,
@@ -1190,7 +1429,11 @@ impl Compiler {
                     }
                     self.compile_expr(e)?;
                 }
-                _ => return None,
+                // キーワード引数・可変長展開は非対応。
+                _ => {
+                    bail("call-arg", None);
+                    return None;
+                }
             }
         }
         Some(mask)
@@ -1246,11 +1489,17 @@ impl Compiler {
                 self.emit(Op::ReturnNil);
             }
             // パラメータ（mut）への代入。let への代入は型検査で弾かれるので健全。
-            Stmt::Assign { name, value, .. } => {
-                let slot = *self.slots.get(name)?;
-                self.compile_expr(value)?;
-                self.emit(Op::StoreLocal(slot));
-            }
+            // 最上位モード（#10-b）では slot に無い名前は可視グローバルへの代入になる。
+            Stmt::Assign { name, value, .. } => match self.store_target(name)? {
+                StoreTarget::Local(slot) => {
+                    self.compile_expr(value)?;
+                    self.emit(Op::StoreLocal(slot));
+                }
+                StoreTarget::Global(ni, ci) => {
+                    self.compile_expr(value)?;
+                    self.emit(Op::StoreGlobal(ni, ci));
+                }
+            },
             // `x <op>= e` は `x = x <op> e` と同じ命令列になる（`StoreLocal` は deep_copy しない）ので、
             // `Expr::BinOp` と同じ融合＋型特化を通す（#2b）。通さないと複合代入だけが
             // `LoadLocal; <e>; Bin; StoreLocal` の 4 命令＋汎用ディスパッチに落ちていた（実測 1.9x 遅い）。
@@ -1262,19 +1511,36 @@ impl Compiler {
                 ..
             } => {
                 use crate::type_check::BinOperandKind as K;
-                let slot = *self.slots.get(name)?;
-                let kind = self.specialized_bin_kind_slot(op, *node_id, slot, value);
-                if !self.emit_bin_fused_slot(slot, kind, value, op) {
-                    // 融合できない右辺（属性・添字・呼び出し結果など）でもスタック版の型特化には乗る。
-                    self.emit(Op::LoadLocal(slot));
-                    self.compile_expr(value)?;
-                    match kind {
-                        Some(K::Int) => self.emit(Op::IntBinSS(op.clone())),
-                        Some(K::Float) => self.emit(Op::FloatBinSS(op.clone())),
-                        None => self.emit(Op::Bin(op.clone())),
-                    };
+                match self.store_target(name)? {
+                    StoreTarget::Local(slot) => {
+                        let kind = self.specialized_bin_kind_slot(op, *node_id, slot, value);
+                        if !self.emit_bin_fused_slot(slot, kind, value, op) {
+                            // 融合できない右辺（属性・添字・呼び出し結果など）でもスタック版の型特化には乗る。
+                            self.emit(Op::LoadLocal(slot));
+                            self.compile_expr(value)?;
+                            match kind {
+                                Some(K::Int) => self.emit(Op::IntBinSS(op.clone())),
+                                Some(K::Float) => self.emit(Op::FloatBinSS(op.clone())),
+                                None => self.emit(Op::Bin(op.clone())),
+                            };
+                        }
+                        self.emit(Op::StoreLocal(slot));
+                    }
+                    // 最上位のグローバルへの複合代入（#10-b）。`x = x <op> e` と同じ命令列。
+                    // 融合 op（`BinLocalLocal` 等）は slot 前提なので使えないが、注釈由来の
+                    // スタック版型特化（`IntBinSS`/`FloatBinSS`）はそのまま乗る（#2b と同じ扱い）。
+                    StoreTarget::Global(ni, ci) => {
+                        let kind = self.annot_binop_kind(*node_id);
+                        self.emit_load_global(name);
+                        self.compile_expr(value)?;
+                        match kind {
+                            Some(K::Int) => self.emit(Op::IntBinSS(op.clone())),
+                            Some(K::Float) => self.emit(Op::FloatBinSS(op.clone())),
+                            None => self.emit(Op::Bin(op.clone())),
+                        };
+                        self.emit(Op::StoreGlobal(ni, ci));
+                    }
                 }
-                self.emit(Op::StoreLocal(slot));
             }
             Stmt::If { branches, else_body } => {
                 // 各分岐: cond, JumpIfFalse(next), body, Jump(end); next: ...
@@ -1437,7 +1703,11 @@ impl Compiler {
                     self.emit(Op::SetIndex);
                     self.free_temp();
                 }
-                _ => return None, // TraitAccess・非 instance 属性は非対応
+                // TraitAccess・非 instance 属性は非対応
+                other => {
+                    bail_expr("assign-target", other);
+                    return None;
+                }
             },
             // 属性複合代入 `obj.attr op= value`（obj が `self`/instance のときのみ）。
             Stmt::AttrCompoundAssign { target, op, value } => {
@@ -1445,7 +1715,10 @@ impl Compiler {
                     Expr::Attr { object, attr, .. } if self.object_is_instance(object) => {
                         (object, attr)
                     }
-                    _ => return None,
+                    other => {
+                        bail_expr("attr-compound-target", other);
+                        return None;
+                    }
                 };
                 let ni = self.add_name(attr);
                 // 型特化（#2b）: フィールドの型は注釈テーブルが `Expr::Attr` の node_id に焼いている。
@@ -1543,7 +1816,10 @@ impl Compiler {
                 self.compile_async_assign(target, stmts)?;
             }
             // それ以外（定義・import 等）は非対応。
-            _ => return None,
+            _ => {
+                bail("stmt", Some(stmt));
+                return None;
+            }
         }
         Some(())
     }
@@ -1809,6 +2085,8 @@ impl Compiler {
                     // ── メソッド呼び出し ── object が Instance と保証できる（`self` または
                     // ユーザークラス型注釈の）識別子のときのみ対応。
                     if !self.object_is_instance(object) {
+                        // レシーバが Instance と保証できない（グローバル受信者はここに来る）。
+                        bail_expr("method-receiver", object);
                         return None;
                     }
                     // 超命令融合（#16 段階(b)(i)）: レシーバが局所変数なら push せず
@@ -1958,7 +2236,10 @@ impl Compiler {
             }
 
             // それ以外は非対応。
-            _ => return None,
+            _ => {
+                bail_expr("expr", expr);
+                return None;
+            }
         }
         Some(())
     }

@@ -79,16 +79,33 @@ pub(crate) fn resolve_program(stmts: &mut [Stmt]) {
 /// これらは push されたスコープに入るので `scopes[0]` には居ない
 /// （関数側で `collection.ar` の set を for ターゲットが覆って落ちた実例がある）。
 fn resolve_toplevel(stmts: &mut [Stmt], globals: &HashSet<String>) {
-    let mut shadowing: HashSet<String> = HashSet::new();
-    collect_toplevel_shadowing(stmts, &mut shadowing);
-
-    let visible: HashSet<String> = globals.difference(&shadowing).cloned().collect();
+    let visible = toplevel_visible_globals_with(stmts, globals);
     if visible.is_empty() {
         return;
     }
     // base は空 = `Local` は決して付かない。`rewrite_expr` の `globals` 経路だけが働く。
     let base: HashMap<String, u32> = HashMap::new();
     rewrite_stmts(stmts, &base, &visible);
+}
+
+/// 最上位から見て「`scopes[0]` の同名変数を確実に指す」と言える名前の集合（#21-b / #10-b）。
+///
+/// `resolve_toplevel` が `Resolution::Global` を付ける判定そのもの。VM の最上位コンパイラ（#10-b）が
+/// **書き込み先**（`Assign`/`CompoundAssign`）をグローバルと断定してよいかの判定にも使うため、
+/// 判定を 2 箇所に書かず**この 1 関数へ委譲する**（#22 系列の「同じ判断をする 2 実装は畳む」）。
+///
+/// ⚠ 読み取り（`Expr::Ident`）は AST の `res` に焼かれるが、`Stmt::Assign`/`Stmt::CompoundAssign` は
+/// `res` を持たない。そのため書き込み側はこの集合を実行前に引き直す必要がある。
+pub(crate) fn toplevel_visible_globals(stmts: &[Stmt]) -> HashSet<String> {
+    let globals = collect_program_globals(stmts);
+    toplevel_visible_globals_with(stmts, &globals)
+}
+
+/// `toplevel_visible_globals` の内部版（最上位グローバル集合を渡す形）。
+fn toplevel_visible_globals_with(stmts: &[Stmt], globals: &HashSet<String>) -> HashSet<String> {
+    let mut shadowing: HashSet<String> = HashSet::new();
+    collect_toplevel_shadowing(stmts, &mut shadowing);
+    globals.difference(&shadowing).cloned().collect()
 }
 
 /// 最上位でグローバルを覆いうる名前を集める（#21-b）。

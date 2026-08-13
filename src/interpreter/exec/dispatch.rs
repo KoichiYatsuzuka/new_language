@@ -22,6 +22,11 @@ impl Interpreter {
             }
         }
 
+        // 診断フック（#10）: ツリーウォークが実際に実行している文を数える。
+        if crate::interpreter::tw_stats::enabled() {
+            crate::interpreter::tw_stats::record_stmt(stmt);
+        }
+
         match stmt {
             Stmt::Expr(expr) => {
                 self.eval(expr)?;
@@ -109,12 +114,29 @@ impl Interpreter {
                 else_body,
             } => self.exec_if_stmt(branches, else_body),
             Stmt::Match { subject, arms, .. } => self.exec_match_stmt(subject, arms),
-            Stmt::While { cond, body } => self.exec_while_stmt(cond, body),
+            // 最上位のループは VM で回せることがある（#10-b）。適格でなければツリーウォーク。
+            // ⚠ `toplevel_vm_candidate`（インライン・比較3本）で先に切ること。この文は
+            // **関数内ループの実行でも通る**ので、いきなり非インライン呼び出しにすると数 % 損する。
+            Stmt::While { cond, body } => {
+                if self.toplevel_vm_candidate() {
+                    if let Some(r) = self.try_run_toplevel_loop(stmt)? {
+                        return Ok(r);
+                    }
+                }
+                self.exec_while_stmt(cond, body)
+            }
             Stmt::For {
                 targets,
                 iter,
                 body,
-            } => self.exec_for_stmt(targets, iter, body),
+            } => {
+                if self.toplevel_vm_candidate() {
+                    if let Some(r) = self.try_run_toplevel_loop(stmt)? {
+                        return Ok(r);
+                    }
+                }
+                self.exec_for_stmt(targets, iter, body)
+            }
             Stmt::Block(body) => self.exec_block_stmt(body),
             Stmt::FnDef {
                 name,
