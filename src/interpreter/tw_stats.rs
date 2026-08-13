@@ -75,14 +75,40 @@ pub(crate) fn record_stmt(stmt: &Stmt) {
 
 /// VM コンパイルが諦めた地点を計上する（`vm/compiler.rs` の bail サイトから呼ぶ）。
 /// `label` は「どの bail サイトか」、`detail` は「どの構文で諦めたか」。
+///
+/// **今どちらのコンパイルの最中かで分類先を分ける**（#27）。関数本体（`vm_bail_fn`）と
+/// 最上位文（`vm_bail_toplevel`）は残タスクが別物なので、混ぜると内訳が読めない。
 pub(crate) fn record_bail(label: &str, detail: &str) {
     BAIL_COUNT.with(|c| c.set(c.get() + 1));
-    bump("vm_bail", &format!("{label}:{detail}"));
+    let cat = if COMPILING_TOPLEVEL.with(|c| c.get()) {
+        "vm_bail_toplevel"
+    } else {
+        "vm_bail_fn"
+    };
+    bump(cat, &format!("{label}:{detail}"));
 }
 
 // これまでに記録した bail 件数（`compile_fn` が「未帰属の失敗」を検出するのに使う）。
 thread_local! {
     static BAIL_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    // 最上位文のコンパイル中か（bail の分類に使う）。
+    static COMPILING_TOPLEVEL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 最上位文のコンパイル区間を囲むガード（#27）。bail の分類先を切り替える。
+pub(crate) struct ToplevelCompileGuard(bool);
+
+impl ToplevelCompileGuard {
+    pub(crate) fn new() -> Self {
+        let prev = COMPILING_TOPLEVEL.with(|c| c.replace(true));
+        ToplevelCompileGuard(prev)
+    }
+}
+
+impl Drop for ToplevelCompileGuard {
+    fn drop(&mut self) {
+        COMPILING_TOPLEVEL.with(|c| c.set(self.0));
+    }
 }
 
 /// これまでに記録した bail 件数を返す。
@@ -113,7 +139,7 @@ pub(crate) fn dump() {
         .map(|((c, k), &v)| (*c, k.as_str(), v))
         .collect();
     rows.sort_by(|a, b| a.0.cmp(b.0).then(b.2.cmp(&a.2)));
-    for cat in ["toplevel", "in_fn", "vm_compile", "vm_bail"] {
+    for cat in ["toplevel", "in_fn", "vm_compile", "vm_bail_fn", "vm_bail_toplevel"] {
         let sub: Vec<_> = rows.iter().filter(|r| r.0 == cat).collect();
         if sub.is_empty() {
             continue;

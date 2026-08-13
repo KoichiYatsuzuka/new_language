@@ -514,7 +514,31 @@ impl Interpreter {
         } = target
         {
             let obj_val = self.eval(object)?;
-            match obj_val {
+            self.trait_assign_evaled(obj_val, trait_name, attr, rhs)
+        } else if let Expr::Subscript { object, index, .. } = target {
+            let obj_val = self.eval(object)?;
+            let key = self.eval(index)?;
+            self.eval_setitem(obj_val, key, rhs)
+        } else {
+            Err("SyntaxError: invalid assignment target".to_string())
+        }
+    }
+
+    /// `obj::Trait.attr = value` の代入（評価済みレシーバ版・#27）。
+    ///
+    /// VM の `Op::SetTraitAttr` とツリーウォークの `attr_assign` の**唯一の実装**。
+    /// 可変性検査・不変インスタンス検査・宣言型検査はすべてここに集約する
+    /// （`*_evaled` 版とずれた実装を作らない — #22 系列）。
+    /// ⚠ `#[inline(never)]`: トレイトフィールド代入は稀なので `attr_assign` へ展開させない。
+    #[inline(never)]
+    pub(crate) fn trait_assign_evaled(
+        &mut self,
+        obj_val: Value,
+        trait_name: &str,
+        attr: &str,
+        rhs: Value,
+    ) -> Result<(), String> {
+        match obj_val {
                 Value::Instance(inst_rc) => {
                     // Trait fields are stored with a namespaced key "TraitName::field"
                     let key = format!("{}::{}", trait_name, attr);
@@ -548,13 +572,6 @@ impl Interpreter {
                 }
                 _ => Err("AttributeError: cannot set trait field on non-instance".to_string()),
             }
-        } else if let Expr::Subscript { object, index, .. } = target {
-            let obj_val = self.eval(object)?;
-            let key = self.eval(index)?;
-            self.eval_setitem(obj_val, key, rhs)
-        } else {
-            Err("SyntaxError: invalid assignment target".to_string())
-        }
     }
 
 }

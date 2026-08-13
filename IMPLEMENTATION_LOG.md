@@ -1955,10 +1955,68 @@ E2E も method_call 1.38x・name_hash 1.30x まで伸びた。
 CallArg 版と同じだけ扱えるようにする**（C 軸の畳み込み）ことが先。その上で
 `object_is_instance` を拡張する。順序を逆にすると必ず off/auto 不一致になる。
 
+### #27 fn の VM コンパイル失敗の解消 — 進行中（49 → 31）2026-08-13
+
+`AR_TW_STATS` の bail 計上を **fn 由来 / 最上位由来に分離**（`vm_bail_fn` / `vm_bail_toplevel`）し、
+未帰属を 6 → 2 まで潰してから着手した。分離前は合計 64 の内訳に fn 49 と最上位 15 が混ざっており、
+どれが #27 の対象か読めなかった。
+
+| 実施 | 解消 | 手法 |
+|---|---|---|
+| `pass` | 3 | `compile_stmt` に `Stmt::Pass => {}`（命令ゼロ。文境界の予約は入口で済むので停止位置はずれない） |
+| `break_point` | 5 | `Op::BreakPoint(span_idx)`。**`vm_debug_pause` へ委譲**し `Flow::NextAfterCall` を返す |
+| `undefined` | 1 | `Expr::Undefined` → `Op::Const(Value::Undefined)` |
+| `obj::Trait.attr` の読み書き | 5 | `Op::GetTraitAttr`/`SetTraitAttr`。`trait_access_evaled`/`trait_assign_evaled` を切り出しツリーウォークが委譲 |
+| メソッド本体の `Self` | 4 | `Op::LoadSelfClass`。値は `current_class`（`run_vm_method` が設定済み＝ツリーウォークの `Self` 束縛と同じ出どころ） |
+
+**結果**: `fn_FAILED` **49 → 31**、関数本体内のツリーウォーク・ディスパッチ **204 → 161**。
+
+⚠ **`break_point` で 1 度落とし穴を踏んだ**: `exec_breakpoint` を直接呼ぶと REPL から
+そのフレームのローカルが見えず `NameError` になる（`dbg_vars.ar` が off/auto 不一致で検出）。
+VM フレームのローカルは flat buffer にあるので、**必ず #1 の `vm_debug_pause` を通す**
+（`local_names` から一時スコープへ移す処理がそこにある）。
+
+**残り 31 の内訳と見通し**:
+- `decl-prepass:FnDef` 8 — 入れ子 `fn`（クロージャ）。§2.4 の既知の穴。**残る最大の単一項目**。
+- `method-receiver:Attr` 7 / `method-receiver:Ident` 6 / `assign-target:Attr` 2 /
+  `attr-compound-target:Attr` 1 = **16 件が「レシーバを Instance と証明できない」1 つの原因**。
+  → #26（#27-a が前提）。ここを直すと半分が一度に片付く。
+- `variadic-param` 2 / `decl-prepass:Static` 2 / `for-target-shadow` 1 / 未帰属 2。
+
+### ⚠ コード配置ノイズの正しい測り方（#27 で確立・#10-b の記述を上書きする）
+
+**opcode を足すと、その op を一切実行しなくてもベンチが 5〜12% 動く。**
+
+#27 の A/B は当初こう見えた: `partial_call_overhead` 0.882x・`bench_branch` 0.948x・
+`bench_arith` 0.973x・`bench_for` 0.967x。しかし **`--vm=off` でも同じ幅**で出た
+（＝ #27 のコードは 1 命令も実行されていない）。そこで **HEAD 側に「#27 と同じ規模の、
+決して実行されない」摂動**（Op に 4 variant ＋ `#[inline(never)]` ヘルパ 3 本＋メソッド 3 本）を
+入れて測ると:
+
+| ベンチ | #27 | 摂動のみ（**実行されない**） |
+|---|---|---|
+| partial_call_overhead | 0.882x | **0.884x** |
+| bench_branch | 0.948x | **0.944x** |
+| bench_arith | 0.973x | **0.956x** |
+| bench_for | 0.967x | **0.953x** |
+| flat_bench_interp | 0.978x | **0.957x** |
+
+**結論**: #27 のベンチ差はロジックのコストではなくコード配置。
+
+**手順の教訓**:
+- **ノイズ床のプローブは「変更と同規模」でなければ意味が無い**。#10-b では小関数 1 本で測って
+  0.993x を得て「このベンチは配置に鈍感」と結論したが、**それは規模不足だった**。
+  同規模で測ると同じベンチが 0.884x 動く。
+- したがって **opcode を足す変更では、E2E ベンチの ±5〜12% を良し悪しの根拠にできない**。
+  判断材料は「`--vm=off` でも同じ差が出るか」と「同規模プローブとの比較」の 2 つ。
+- 逆に **#10-b で見つけた 4 件の罠（索引キャッシュ・診断フック・`exec_op` の展開・
+  関数内ループの巻き添え）は本物**だった。それらは `--vm=off` で消える／プローブで再現しない、
+  という形で区別できる。
+
 ### #10 import モジュール Chunk — 保留 2026-07-27（高コスト・低効果）
 > ⚠ **この節は 2026-07-27 時点の判断。(a) と (c) は #10-a の実測で部分的に否定された**（上記参照）。
 > (b)「`StoreGlobal` op が無い」は正しく、#10-b でそれを新設して解決した。
-### #10 import モジュール Chunk — 保留 2026-07-27（高コスト・低効果）
+
 (a) モジュール本体は定義文（fn/class/gen/import）が支配的で VM コンパイラが全て bail →「本体一括 Chunk」には
 **定義文の VM オペコード化**が必要。(b) top-level 変数はグローバルだが VM に **`StoreGlobal` op が無い**（slot ベース）。
 名前ベース（`LoadName`）で回避すると**ツリーウォークと同コスト＝速度向上ゼロ**。(c) ホットコードは関数内で既に

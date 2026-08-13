@@ -269,10 +269,12 @@ pub fn compile_toplevel_stmt(
     if !crate::interpreter::tw_stats::enabled() {
         return compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals);
     }
+    // bail の分類先を「最上位」へ切り替える（#27。関数側と残タスクが別物なので混ぜない）。
+    let _g = crate::interpreter::tw_stats::ToplevelCompileGuard::new();
     let before = crate::interpreter::tw_stats::bail_count();
     let out = compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals);
     if out.is_none() && crate::interpreter::tw_stats::bail_count() == before {
-        bail("unattributed-toplevel", None);
+        bail("unattributed", None);
     }
     out
 }
@@ -1592,6 +1594,7 @@ impl Compiler {
             Stmt::For { targets, iter, body } => {
                 // 単一ターゲットのみ対応（タプルアンパックは非対応 → bail）。
                 if targets.len() != 1 {
+                    bail("for-tuple-target", None);
                     return None;
                 }
                 let target_slot = *self.slots.get(&targets[0])?;
@@ -1703,7 +1706,15 @@ impl Compiler {
                     self.emit(Op::SetIndex);
                     self.free_temp();
                 }
-                // TraitAccess・非 instance 属性は非対応
+                // `obj::Trait.attr = value`（#27）。`SetAttr` と同じく `[obj, value]` の順で積む。
+                Expr::TraitAccess { object, trait_name, attr } => {
+                    self.compile_expr(object)?;
+                    self.compile_expr(value)?;
+                    let ti = self.add_name(trait_name);
+                    let ai = self.add_name(attr);
+                    self.emit(Op::SetTraitAttr(ti, ai));
+                }
+                // 非 instance 属性は非対応。
                 other => {
                     bail_expr("assign-target", other);
                     return None;
@@ -1815,6 +1826,15 @@ impl Compiler {
             Stmt::AsyncAssign { target, stmts, .. } => {
                 self.compile_async_assign(target, stmts)?;
             }
+            // `pass` は何も出さない（#27）。ツリーウォークも `ExecResult::Normal` を返すだけ。
+            // 文境界の予約（`mark_stmt_start`）は入口で済んでいるので、
+            // 命令を 1 つも出さなくてもデバッガの停止位置はずれない。
+            Stmt::Pass => {}
+            // `break_point`（#27）: デバッガ REPL へ入る。ツリーウォークと同じ `exec_breakpoint`。
+            Stmt::BreakPoint { span } => {
+                let si = self.add_span(span);
+                self.emit(Op::BreakPoint(si));
+            }
             // それ以外（定義・import 等）は非対応。
             _ => {
                 bail("stmt", Some(stmt));
@@ -1844,10 +1864,12 @@ impl Compiler {
         // try を飛び越える制御フロー（break/continue/block_return/loop_yield）があると
         // SetupTry ハンドラが残るため bail。return は run から即復帰しハンドラは破棄されるので OK。
         if has_escape(body, false, 0) {
+            bail("try-escape", None);
             return None;
         }
         for h in handlers {
             if has_escape(&h.body, false, 0) {
+                bail("try-handler-escape", None);
                 return None;
             }
         }
@@ -1902,6 +1924,7 @@ impl Compiler {
     fn compile_try_finally(&mut self, body: &[Stmt], fin: &[Stmt]) -> Option<()> {
         // finally は全出口で走る必要があるので、脱出制御フロー（return 含む）があれば bail。
         if has_escape(body, true, 0) || has_escape(fin, true, 0) {
+            bail("finally-escape", None);
             return None;
         }
         let setup = self.emit(Op::SetupTry(0));
@@ -2012,6 +2035,19 @@ impl Compiler {
             Expr::None => {
                 self.emit(Op::Nil);
             }
+            // `obj::Trait.attr` の読み（#27）。レシーバの種別はコンパイル時に保証せず、
+            // `trait_access_evaled` が実行時に検査する（ツリーウォークと同じ 1 実装）。
+            Expr::TraitAccess { object, trait_name, attr } => {
+                self.compile_expr(object)?;
+                let ti = self.add_name(trait_name);
+                let ai = self.add_name(attr);
+                self.emit(Op::GetTraitAttr(ti, ai));
+            }
+            // `undefined` リテラル（#27）。`eval` の `Expr::Undefined => Value::Undefined` と同じ。
+            Expr::Undefined => {
+                let ci = self.add_const(Value::Undefined);
+                self.emit(Op::Const(ci));
+            }
             Expr::Ident { res: Resolution::Local(slot), .. } => {
                 let s = u16::try_from(*slot).ok()?;
                 self.emit(Op::LoadLocal(s));
@@ -2020,6 +2056,12 @@ impl Compiler {
             // 確定した読み取りなので、slots 走査も builtin 判定も要らず直接 LoadGlobal。
             Expr::Ident { name, res: Resolution::Global(_), .. } => {
                 self.emit_load_global(name);
+            }
+            // メソッド本体の `Self` を値として読む（#27）。呼び出し以外の位置でも使える。
+            Expr::Ident { name, .. }
+                if name == "Self" && self.self_slot.is_some() && !self.slots.contains_key(name) =>
+            {
+                self.emit(Op::LoadSelfClass);
             }
             // 未解決 Ident はパラメータ名のときのみローカル読み（それ以外＝グローバル/組み込みは非対応）。
             // デバッグモードでは停止スコープからの名前引き（LoadName）。
@@ -2123,8 +2165,20 @@ impl Compiler {
                         let mask = self.compile_call_args(args)?;
                         let ni = self.add_name(name);
                         self.emit(Op::Call(args.len() as u16, mask, ni, site, *node_id));
+                    } else if name == "Self" && self.self_slot.is_some() {
+                        // メソッド本体の `Self(...)`（#27）: レシーバのクラスを積んで通常の
+                        // `Call` へ流す（`call_value_evaled` の `Value::Class` アーム＝
+                        // ツリーウォークと同一のインスタンス化経路）。
+                        self.emit(Op::LoadSelfClass);
+                        let mask = self.compile_call_args(args)?;
+                        let ni = self.add_name(name);
+                        self.emit(Op::Call(args.len() as u16, mask, ni, site, *node_id));
                     } else if is_builtin_callee(name) || name == "Self" {
                         // その他の純粋 builtin・型コンストラクタ・`Self` は非対応。
+                        // 呼び先名まで記録する（どれを `eval_builtin_evaled` へ足せば効くかを測るため・#27）。
+                        if crate::interpreter::tw_stats::enabled() {
+                            crate::interpreter::tw_stats::record_bail("callee-builtin", name);
+                        }
                         return None;
                     } else {
                         // グローバル関数呼び出し（#11: 索引キャッシュ付き LoadGlobal）。
@@ -2156,6 +2210,7 @@ impl Compiler {
                     self.emit(Op::Call(args.len() as u16, mask, ni, site, *node_id));
                 } else {
                     // その他の呼び先式（添字結果など）は非対応。
+                    bail_expr("callee-expr", func);
                     return None;
                 }
             }
@@ -2219,6 +2274,7 @@ impl Compiler {
             }
             Expr::MustBe { expr, guard_type, span, node_id } => {
                 if !self.check_required(*node_id) {
+                    bail("check-required-mustbe", None);
                     return None;
                 }
                 self.compile_expr(expr)?;
@@ -2228,6 +2284,7 @@ impl Compiler {
             }
             Expr::Cast { object, type_name, node_id, .. } => {
                 if !self.check_required(*node_id) {
+                    bail("check-required-cast", None);
                     return None;
                 }
                 self.compile_expr(object)?;

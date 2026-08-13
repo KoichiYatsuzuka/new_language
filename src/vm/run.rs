@@ -187,11 +187,6 @@ fn declared_slots(chunk: &Chunk, ip: usize) -> Vec<bool> {
     declared
 }
 
-/// 単一命令を実行し、制御フローを返す。エラーは `Err` で返し、`run` がハンドラスタックへ回す。
-///
-/// ⚠ `#[inline(always)]`: 呼び出し元が `run` と `run_stepping` の **2 つ**になった時点で
-/// `#[inline]` だけではインライン展開されなくなり、**通常経路が 3〜5% 退行した**（#1 で実測）。
-/// バイトコードは byte-identical だったので、原因は生成コードではなくインライン判断だと特定できた。
 /// `Op::StoreGlobal` の**ミス経路**（#10-b）。初回・キャッシュ失効時だけ通る。
 ///
 /// ツリーウォークの `Stmt::Assign` と同じ機構: `assign_var`（可変性検査・Cell 種別・
@@ -216,6 +211,65 @@ fn store_global_miss(
     Ok(())
 }
 
+/// `Op::GetTraitAttr` の本体（#27）。ツリーウォークと同じ `trait_access_evaled` へ委譲する。
+/// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
+#[inline(never)]
+fn get_trait_attr(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    ti: u32,
+    ai: u32,
+    obj: Value,
+) -> Result<Value, String> {
+    let trait_name = &chunk.names[ti as usize];
+    let attr = &chunk.names[ai as usize];
+    interp.trait_access_evaled(obj, trait_name, attr)
+}
+
+/// `Op::SetTraitAttr` の本体（#27）。ツリーウォークと同じ `trait_assign_evaled` へ委譲する。
+/// ⚠ `#[inline(never)]`（同上）。
+#[inline(never)]
+fn set_trait_attr(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    ti: u32,
+    ai: u32,
+    obj: Value,
+    v: Value,
+) -> Result<(), String> {
+    let trait_name = &chunk.names[ti as usize];
+    let attr = &chunk.names[ai as usize];
+    interp.trait_assign_evaled(obj, trait_name, attr, v)
+}
+
+/// `Op::BreakPoint` の本体（#27）。デバッガ REPL へ入る。
+///
+/// ⚠ **`#[inline(never)]`**。`exec_op` は `#[inline(always)]` なので、
+/// デバッガを使わない Chunk のホットループを巻き添えにしないため外へ出す（#10-b の教訓）。
+#[inline(never)]
+fn breakpoint_op(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &[Value],
+    base: usize,
+    ip: usize,
+    si: u32,
+) -> Result<(), String> {
+    let span = chunk.spans[si as usize].clone();
+    // `run_stepping` の停止と同じ経路（#1）。`declared_slots` は「この ip までに
+    // 書き込み得た slot」＝ツリーウォークで宣言済みの変数に対応する。
+    let declared = declared_slots(chunk, ip);
+    interp.vm_debug_pause(chunk, buf, base, &span, &declared)
+}
+
+/// 単一命令を実行し、制御フローを返す。エラーは `Err` で返し、`run` がハンドラスタックへ回す。
+///
+/// ⚠ `#[inline(always)]`: 呼び出し元が `run` と `run_stepping` の **2 つ**になった時点で
+/// `#[inline]` だけではインライン展開されなくなり、**通常経路が 3〜5% 退行した**（#1 で実測）。
+/// バイトコードは byte-identical だったので、原因は生成コードではなくインライン判断だと特定できた。
+///
+/// ⚠ **重い op の本体はここに書かず `#[inline(never)]` の関数へ出す**（#10-b で実測）。
+/// この関数は全呼び出し元へ展開されるので、その op を使わない Chunk まで巻き添えで遅くなる。
 #[inline(always)]
 fn exec_op(
     interp: &mut Interpreter,
@@ -709,6 +763,37 @@ fn exec_op(
         Op::DeclareName(name_idx) => {
             let v = buf.pop().unwrap();
             interp.vm_declare_debug(&chunk.names[*name_idx as usize], v)?;
+        }
+        Op::LoadSelfClass => {
+            // #27: メソッド本体の `Self`。ツリーウォークが宣言する `Self` と同じ値
+            // （`run_vm_method` が設定した `current_class`）。
+            match interp.vm_self_class() {
+                Some(v) => buf.push(v),
+                None => return Err("NameError: 'Self' is not defined".to_string()),
+            }
+        }
+        Op::GetTraitAttr(ti, ai) => {
+            // #27: `obj::Trait.attr`。本体は `#[inline(never)]`（`exec_op` を太らせない）。
+            let obj = buf.pop().unwrap();
+            let v = get_trait_attr(interp, chunk, *ti, *ai, obj)?;
+            buf.push(v);
+        }
+        Op::SetTraitAttr(ti, ai) => {
+            // #27: `obj::Trait.attr = v`。スタックは `[obj, value]`（`SetAttr` と同順）。
+            let v = buf.pop().unwrap();
+            let obj = buf.pop().unwrap();
+            set_trait_attr(interp, chunk, *ti, *ai, obj, v)?;
+        }
+        Op::BreakPoint(si) => {
+            // #27: VM 内の `break_point`。
+            // ⚠ **`exec_breakpoint` を直接呼んではいけない**。それだと REPL から
+            //    このフレームのローカルが見えず `NameError` になる（off/auto 不一致・実際に踏んだ）。
+            //    #1 の `vm_debug_pause` が「flat buffer の slot を一時スコープへ移す」処理を
+            //    持っているので、停止は必ずそこを通す。
+            // ⚠ `NextAfterCall` を返すこと。ここでデバッグセッションが始まるので、
+            //    `Next` だとこのフレームが停止判定を持たないまま走り抜ける（#1 の既存バグと同型）。
+            breakpoint_op(interp, chunk, buf, base, ip, *si)?;
+            return Ok(Flow::NextAfterCall);
         }
         Op::Subscript => {
             let key = buf.pop().unwrap();

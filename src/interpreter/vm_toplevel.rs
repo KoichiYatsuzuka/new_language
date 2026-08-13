@@ -1,4 +1,7 @@
-// interpreter/vm_toplevel.rs — モジュール最上位の文を VM で実行する経路（#10-b）。
+// interpreter/vm_toplevel.rs — VM から呼ぶインタプリタ側の入口。
+//
+// - モジュール最上位の文を VM で実行する経路（#10-b）
+// - 一部 op の実体（`StoreGlobal` #10-b / `LoadSelfClass` #27）
 //
 // ⚠ **この関数を `functions/execution.rs` に置いてはいけない。**
 // 同じ `impl Interpreter` でもファイルが違えば済む話ではなく、`exec_fn_evaled` と同居させると
@@ -75,6 +78,16 @@ impl Interpreter {
         self.vm_stack = buf;
         // 最上位ループは値を返さない（`ReturnNil`）。制御は必ず次の文へ進む。
         result.map(|_| Some(ExecResult::Normal))
+    }
+
+    /// `Op::LoadSelfClass` の実体（#27）: メソッド本体の `Self` の値。
+    ///
+    /// ツリーウォークは `exec_fn_evaled` が `Self` をスコープへ宣言し、VM は
+    /// `run_vm_method` が同じクラスを `current_class` に入れる。**同じ出どころ**なので
+    /// 値は一致する。メソッド外（`current_class` が `None`）では `None` を返し、
+    /// 呼び出し側が `NameError` にする（ツリーウォークの名前引き失敗と同じ）。
+    pub(crate) fn vm_self_class(&self) -> Option<Value> {
+        self.current_class.clone().map(Value::Class)
     }
 
     /// `Op::StoreGlobal` の実体（#10-b）: 既存グローバルへの代入。

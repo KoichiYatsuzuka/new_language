@@ -278,6 +278,23 @@ impl Interpreter {
         attr: &str,
     ) -> Result<Value, String> {
         let obj_val = self.eval(object)?;
+        self.trait_access_evaled(obj_val, trait_name, attr)
+    }
+
+    /// `obj::Trait.attr` の読み出し（評価済みレシーバ版・#27）。
+    ///
+    /// VM の `Op::GetTraitAttr` とツリーウォークの `eval_trait_access` の**唯一の実装**。
+    /// 違うのはレシーバの評価だけなので、そこから先をここに集約する
+    /// （`*_evaled` 版とずれた実装を作らない — #22 系列）。
+    /// ⚠ `#[inline(never)]`: トレイト修飾アクセスは稀な構文なので、`eval` のような
+    /// ホット関数へ展開させない（#10-b で確立した「稀な経路は外へ出す」）。
+    #[inline(never)]
+    pub(crate) fn trait_access_evaled(
+        &mut self,
+        obj_val: Value,
+        trait_name: &str,
+        attr: &str,
+    ) -> Result<Value, String> {
         match obj_val {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();

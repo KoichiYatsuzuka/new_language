@@ -169,6 +169,25 @@ pub enum Op {
     LoadName(u32),
     /// pop した値を `let dbg::name` として現在のスコープへ宣言する（不変・`let` 意味論）。
     DeclareName(u32),
+    /// メソッド本体の `Self`（#27）: レシーバのクラスを `Value::Class` として push する。
+    ///
+    /// ツリーウォークは `exec_fn_evaled` が `Self` をスコープへ宣言するが、VM のフレームは
+    /// フラットバッファでスコープを持たない。値の出どころは同じ `current_class`
+    /// （`run_vm_method` がレシーバから設定済み）なので意味論は一致する。
+    /// コンパイラは `self` パラメータを持つ本体でのみ emit する。
+    LoadSelfClass,
+    /// `obj::Trait.attr` の読み（#27）: pop obj, push `trait_access_evaled(obj, names[t], names[a])`。
+    /// フィールドは (trait_name_idx, attr_idx)。
+    GetTraitAttr(u32, u32),
+    /// `obj::Trait.attr = v` の書き（#27）: スタックは `[obj, value]`。
+    /// value・obj を pop して `trait_assign_evaled` で代入する（値は push しない）。
+    /// フィールドは (trait_name_idx, attr_idx)。
+    SetTraitAttr(u32, u32),
+    /// `break_point`（#27）: `spans[idx]` でデバッガ REPL に入る（`exec_breakpoint` へ委譲）。
+    ///
+    /// ⚠ 実行後は **`Flow::NextAfterCall` を返す**こと。ここでデバッグセッションが始まるので、
+    /// `Flow::Next` だと現フレームが停止判定を持たないまま走り抜ける（#1 で直した既存バグと同じ形）。
+    BreakPoint(u32),
     // ── 添字・コレクションリテラル（タスク #5） ──
     /// 添字読み: pop key, pop obj, push `eval_subscript(obj, key)`（`obj[key]`）。
     Subscript,
