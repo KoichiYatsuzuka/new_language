@@ -92,7 +92,8 @@ pub enum Op {
     /// frame を読む。VM がコンパイルするコードでは**式の評価中に自フレームの slot が再束縛されることはない**
     /// （再束縛は文＝`StoreLocal` でしか起きず、クロージャによる捕捉は VM 非対応で bail する）ため、
     /// 観測されるレシーバは同一。
-    CallMethodLocal(u16, u32, u16, u32),
+    /// (slot, name_idx, argc, mut_mask, node_id)。`node_id` は FFI 境界検査のキー（#27-b）。
+    CallMethodLocal(u16, u32, u16, u32, u32),
     /// 超命令（#16 段階(b)(i)）: `local[slot].attr` を融合。`LoadLocal(slot); GetAttr(..)` と同一意味論。
     /// **レシーバをスタックへ clone せず frame から参照で読む**ので `Rc` の refcount 増減が消える。
     /// 引数は `(slot, name_idx, cache_idx)`。
@@ -136,7 +137,9 @@ pub enum Op {
     /// obj が Instance であることはコンパイル時の型注釈で保証済み。フィールド: (name_idx, argc, mut_mask)。
     /// メソッド呼び出しはツリーウォークが呼び出し位置 span を渡さない（フレームが degraded）ため、
     /// VM も call_span=None で一致させる（byte-identical）。
-    CallMethod(u32, u16, u32),
+    /// (name_idx, argc, mut_mask, node_id)。`node_id` は FFI 境界検査のキー（#27-b）。
+    /// これが無いと `mod.func()` 等の戻り値検査が **VM 経路だけ素通り**する（#22-a と同型の穴）。
+    CallMethod(u32, u16, u32, u32),
     /// スタックトップを関数戻り値として返す。
     Return,
     /// `None` を関数戻り値として返す（本体末尾のフォールオフ）。

@@ -3,7 +3,7 @@
 use {
     std::cell::RefCell, std::rc::Rc,
     crate::interpreter::{
-        ByteModeRust, FileOpenModeRust, FnValue,
+        ByteModeRust, FileOpenModeRust,
         Interpreter, Value,
     },
 };
@@ -15,11 +15,10 @@ impl Interpreter {
         &mut self,
         sig_rc: std::rc::Rc<std::cell::RefCell<crate::interpreter::event_loop::SignalData>>,
         method_name: &str,
-        args: &[crate::ast::CallArg],
+        evaled: Vec<(Option<String>, Value, bool)>,
     ) -> Result<Value, String> {
         match method_name {
             "emit" => {
-                let evaled = self.eval_call_args(args)?;
                 let val = match evaled.as_slice() {
                     [(_, v, _)] => v.clone(),
                     [] => Value::None,
@@ -40,7 +39,6 @@ impl Interpreter {
                 Ok(Value::None)
             }
             "emit_async" => {
-                let evaled = self.eval_call_args(args)?;
                 let val = match evaled.as_slice() {
                     [(_, v, _)] => v.clone(),
                     [] => Value::None,
@@ -66,12 +64,11 @@ impl Interpreter {
         &mut self,
         el_rc: std::rc::Rc<std::cell::RefCell<crate::interpreter::event_loop::EventLoopData>>,
         method_name: &str,
-        args: &[crate::ast::CallArg],
+        evaled: Vec<(Option<String>, Value, bool)>,
     ) -> Result<Value, String> {
         match method_name {
             "run" => {
                 // EventLoop.run([timeout: float])
-                let evaled = self.eval_call_args(args)?;
                 let timeout_ms: Option<u64> = match evaled.as_slice() {
                     [] => None,
                     [(key, Value::Float(f), _)]
@@ -134,7 +131,6 @@ impl Interpreter {
             }
             "post" => {
                 // EventLoop.post(fn) — メインスレッドへ処理を投入する。
-                let evaled = self.eval_call_args(args)?;
                 let func = match evaled.as_slice() {
                     [(_, v, _)] => v.clone(),
                     _ => return Err("TypeError: EventLoop.post() takes exactly 1 argument".to_string()),
@@ -296,90 +292,19 @@ impl Interpreter {
     }
 
     /// 評価済み引数でメソッドを呼び出す。`__getitem__` / `__setitem__` などの
-    /// subscript ディスパッチ用。Instance と PyObject のみ対応する。
+    /// 評価済み引数でメソッドを呼び出す（#27-b で**統一実装への委譲**になった）。
+    ///
+    /// 以前はここに `Instance`/`PyObject` だけの独自ディスパッチがあり、CallArg 版
+    /// （16 レシーバ）と**ずれていた**。VM はこちらしか呼べないため
+    /// 「`--vm=off` では動くが `--vm=auto` で落ちる」が繰り返し起きた（#22-a/-b/-c・#10-b′）。
+    /// 実装は `eval_method_call_full` 1 箇所だけにする。
     pub(crate) fn eval_method_call_evaled(
         &mut self,
         obj: Value,
         method_name: &str,
         evaled: Vec<(Option<String>, Value, bool)>,
     ) -> Result<Value, String> {
-        // Result 型のメソッド: is_OK() → bool、is_ERR() → bool
-        if let Value::ResultVal { ok, .. } = &obj {
-            return match method_name {
-                "is_OK" => Ok(Value::Bool(*ok)),
-                "is_ERR" => Ok(Value::Bool(!ok)),
-                _ => Err(format!(
-                    "AttributeError: Result has no method '{method_name}'"
-                )),
-            };
-        }
-        match &obj {
-            Value::Instance(inst_rc) => {
-                let class = inst_rc.borrow().class.clone();
-                let inst_immutable = inst_rc.borrow().flags() & crate::interpreter::value::INST_IMMUTABLE != 0;
-
-                // Native method dispatch — check NATIVE_METHODS before tree-walk.
-                // When a native ptr is registered we always dispatch natively (no fallback).
-                if crate::interpreter::native_api::lookup_native_method_ptr(&class.name, method_name).is_some() {
-                    let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
-                    return crate::interpreter::native_api::try_dispatch_native_method(
-                        self, obj.clone(), method_name, arg_vals,
-                    ).unwrap_or_else(|| {
-                        Err(format!("NativeError: dispatch failed for {}.{method_name}", class.name))
-                    });
-                }
-
-                let overloads = self
-                    .lookup_method_in_class(&class, method_name)
-                    .ok_or_else(|| {
-                        format!(
-                            "AttributeError: '{}' has no method '{method_name}'",
-                            class.name
-                        )
-                    })?;
-
-                let callable: Vec<Rc<FnValue>> = if inst_immutable {
-                    overloads
-                        .iter()
-                        .filter(|f| {
-                            f.params
-                                .first()
-                                .map(|p| p.name != "self" || !p.mutable)
-                                .unwrap_or(true)
-                        })
-                        .cloned()
-                        .collect()
-                } else {
-                    overloads
-                };
-
-                if callable.is_empty() {
-                    return Err(format!(
-                        "TypeError: cannot call mutable method '{method_name}' on immutable instance of '{}'",
-                        class.name
-                    ));
-                }
-
-                if callable.len() == 1 {
-                    self.exec_fn_evaled(
-                        callable[0].clone(),
-                        &evaled,
-                        Some(obj.clone()),
-                        method_name,
-                        None,
-                    )
-                } else {
-                    self.dispatch_overload_evaled(callable, evaled, Some(obj.clone()), method_name, None)
-                }
-            }
-            Value::PyObject(handle) => {
-                crate::interpreter::py_interop::call_py_method(handle, method_name, &evaled)
-            }
-            _ => Err(format!(
-                "AttributeError: '{}' object has no method '{method_name}'",
-                self.type_name(&obj)
-            )),
-        }
+        self.eval_method_call_full(obj, method_name, evaled, None)
     }
 
     // ── str メソッドディスパッチ ──────────────────────────────────────────────

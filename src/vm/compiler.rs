@@ -2230,24 +2230,25 @@ impl Compiler {
             // 関数呼び出し `func(args)` / メソッド呼び出し `obj.method(args)`。
             Expr::Call { func, args, span, node_id, .. } => {
                 if let Expr::Attr { object, attr, .. } = func.as_ref() {
-                    // ── メソッド呼び出し ── object が Instance と保証できる（`self` または
-                    // ユーザークラス型注釈の）識別子のときのみ対応。
-                    if !self.object_is_instance(object) {
-                        // レシーバが Instance と保証できない（グローバル受信者はここに来る）。
-                        bail_expr("method-receiver", object);
-                        return None;
-                    }
-                    // 超命令融合（#16 段階(b)(i)）: レシーバが局所変数なら push せず
-                    // frame から直接読む op に落とす（属性読みの `GetAttrLocal` と同じ手）。
+                    // ── メソッド呼び出し ──
+                    // #27-b: **レシーバの型を問わない**。実行時の `vm_method_call` が
+                    // ツリーウォークと同じ統一実装（`eval_method_call_full`）へ委ねるので、
+                    // list/str/dict/CsObject/Signal… どれでも同じ結果になる。
+                    // 以前は `Value::Instance` 専用経路しか無く `object_is_instance` で
+                    // 弾いていた（最上位・関数あわせて 110 件が bail していた）。
+                    //
+                    // ⚠ `node_id` を必ず渡すこと。FFI 戻り値検査のキーで、落とすと
+                    // 外部言語メソッドの検査が VM 経路だけ素通りする。
                     if let Some(slot) = self.as_local(object) {
+                        // 超命令融合（#16 段階(b)(i)）: レシーバが局所変数なら push せず frame 直読み。
                         let mask = self.compile_call_args(args)?;
                         let ni = self.add_name(attr);
-                        self.emit(Op::CallMethodLocal(slot, ni, args.len() as u16, mask));
+                        self.emit(Op::CallMethodLocal(slot, ni, args.len() as u16, mask, *node_id));
                     } else {
                         self.compile_expr(object)?; // receiver を push
                         let mask = self.compile_call_args(args)?;
                         let ni = self.add_name(attr);
-                        self.emit(Op::CallMethod(ni, args.len() as u16, mask));
+                        self.emit(Op::CallMethod(ni, args.len() as u16, mask, *node_id));
                     }
                     return Some(()); // メソッド呼び出しは span 不要
                 }

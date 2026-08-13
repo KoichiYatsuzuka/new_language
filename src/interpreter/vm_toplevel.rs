@@ -81,6 +81,33 @@ impl Interpreter {
         result.map(|_| Some(ExecResult::Normal))
     }
 
+    /// VM のメソッド呼び出しのうち **非 Instance レシーバ**の経路（#27-b）。
+    /// list/str/dict/set/CsObject/Signal/Namespace… を統一実装へ流す。
+    ///
+    /// ツリーウォークの `eval_call` の `Expr::Attr` 分岐と**同じ 3 手順**を踏む:
+    /// ①呼ぶ前にレシーバから外部言語を覗く ②ディスパッチ ③外部言語なら戻り値を宣言型と照合。
+    /// ⚠ **③ を落とすと FFI 境界検査が VM 経路だけ素通りする**（`Op::Call` で #22-a が踏んだ穴と同型）。
+    /// そのために `node_id` を op で運んでいる。
+    ///
+    /// ⚠ **Instance はここへ来ない**。`exec_op` 側で先に `call_instance_method_evaled` へ直行する
+    /// （method IC を効かせるため＋最頻路に判定を足さないため。実測でここを経由させると 3% 落ちた）。
+    /// ⚠ **`#[inline(never)]` を外さないこと**（`exec_op` は `#[inline(always)]`）。
+    #[inline(never)]
+    pub(crate) fn vm_method_call_other(
+        &mut self,
+        obj: Value,
+        method_name: &str,
+        evaled: Vec<(Option<String>, Value, bool)>,
+        node_id: u32,
+    ) -> Result<Value, String> {
+        let lang = Self::foreign_call_lang(&obj, method_name);
+        let r = self.eval_method_call_evaled(obj, method_name, evaled)?;
+        match lang {
+            Some(l) => self.check_ffi_return(l, r, node_id, method_name, None),
+            None => Ok(r),
+        }
+    }
+
     /// `Op::DeclareGlobal` の実体（#10-c）: 最上位の `let`/`mut`/`const` を宣言する。
     ///
     /// ツリーウォークの `exec_let` / `exec` の `Const`・`Mut` アームと**同じ判断を同じ順序で**行う。

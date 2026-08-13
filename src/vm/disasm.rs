@@ -24,7 +24,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::Call(argc, mask, n, _, _) => {
             format!("CALL {:?} argc={argc} mut_mask={mask:#x}", chunk.names.get(*n as usize))
         }
-        Op::CallMethod(n, argc, mask) => {
+        Op::CallMethod(n, argc, mask, _) => {
             format!("CALL_METHOD {:?} argc={argc} mut_mask={mask:#x}", chunk.names.get(*n as usize))
         }
         Op::StoreLocal(s) => format!("STORE_LOCAL {s}"),
@@ -40,7 +40,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::FloatBinLL(a, b, o) => format!("FBIN_LL {a} {b} {o:?}"),
         Op::FloatBinLC(a, c, o) => format!("FBIN_LC {a} const[{c}] {o:?}"),
         Op::GetAttrLocal(s, n, c) => format!("GET_ATTR_L {s} name[{n}] cache[{c}]"),
-        Op::CallMethodLocal(s, n, a, m) => format!("CALL_METHOD_L {s} name[{n}] argc={a} mut={m:b}"),
+        Op::CallMethodLocal(s, n, a, m, _) => format!("CALL_METHOD_L {s} name[{n}] argc={a} mut={m:b}"),
         Op::MustBe(t, s) => format!("MUSTBE name[{t}] span[{s}]"),
         Op::Cast(t) => format!("CAST name[{t}]"),
         Op::IntBinSS(o) => format!("IBIN_SS {o:?}"),

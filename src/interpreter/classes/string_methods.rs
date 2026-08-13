@@ -2,7 +2,6 @@
 
 use {
     std::cell::RefCell, std::rc::Rc,
-    crate::ast::CallArg,
     crate::interpreter::str_methods::{
         regex_findall, regex_match, regex_search, regex_split, regex_sub, str_format,
     },
@@ -15,13 +14,30 @@ use {
 impl Interpreter {
     /// 文字列値のメソッド（`split` / `strip` / `replace` / `startswith` 等）を評価して結果を返す。
     #[allow(clippy::too_many_lines)]
+    /// `str` のメソッドを評価済み引数で呼ぶ（#27-b で CallArg 版から変換）。
+    /// 呼び出し元は `eval_method_call_full` のみ。
     pub(crate) fn eval_str_method(
         &mut self,
         s: Rc<str>,
         method_name: &str,
-        args: &[CallArg],
+        evaled: Vec<(Option<String>, Value, bool)>,
     ) -> Result<Value, String> {
-        let evaled = self.eval_call_args(args)?;
+        // ⚠ `format` だけがキーワード引数を使う（#27-b）。値だけに落とす前に処理すること。
+        // ここで `vals` を先に作ると `k=v` の名前が失われ、他メソッドの arity 検査の
+        // 見え方も変わってしまう（従来は名前つきの値も `vals` に入っていた）。
+        if method_name == "format" {
+            let mut pos_args: Vec<Value> = Vec::new();
+            let mut kw_args: Vec<(String, Value)> = Vec::new();
+            for (kw, v, _) in evaled {
+                match kw {
+                    Some(k) => kw_args.push((k, v)),
+                    None => pos_args.push(v),
+                }
+            }
+            let display_fn = |v: &Value| self.display(v);
+            let result = str_format(&s, &pos_args, &kw_args, &display_fn)?;
+            return Ok(Value::str(result));
+        }
         let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
 
         // Helper: extract str from first positional arg
@@ -330,21 +346,6 @@ impl Interpreter {
                 ))
             }
 
-            // ── 書式変換 ────────────────────────────────────────────────────
-            "format" => {
-                let mut pos_args: Vec<Value> = Vec::new();
-                let mut kw_args: Vec<(String, Value)> = Vec::new();
-                for (kw, v, _) in self.eval_call_args(args)? {
-                    if let Some(k) = kw {
-                        kw_args.push((k, v));
-                    } else {
-                        pos_args.push(v);
-                    }
-                }
-                let display_fn = |v: &Value| self.display(v);
-                let result = str_format(&s, &pos_args, &kw_args, &display_fn)?;
-                Ok(Value::str(result))
-            }
 
             // ── 文字判定 ────────────────────────────────────────────────────
             "isdigit" => Ok(Value::Bool(

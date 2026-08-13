@@ -682,7 +682,7 @@ fn exec_op(
             return Ok(Flow::NextAfterCall); // #1: 呼び出し中に debug が始まった可能性を拾う
         }
         // 超命令（#16 段階(b)(i)）: レシーバを frame から直接取る。`CallMethod` と同一意味論。
-        Op::CallMethodLocal(slot, name_idx, argc, mut_mask) => {
+        Op::CallMethodLocal(slot, name_idx, argc, mut_mask, node_id) => {
             let n = *argc as usize;
             let split = buf.len() - n;
             let arg_vals = buf.split_off(split);
@@ -694,17 +694,19 @@ fn exec_op(
                 .enumerate()
                 .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
                 .collect();
-            let r = interp.call_instance_method_evaled(
-                obj,
-                &chunk.names[*name_idx as usize],
-                evaled,
-                Some(&chunk.attr_caches[*name_idx as usize]),
-                None,
-            )?;
+            let name = &chunk.names[*name_idx as usize];
+            let r = if matches!(obj, Value::Instance(_)) {
+                interp.call_instance_method_evaled(
+                    obj, name, evaled,
+                    Some(&chunk.attr_caches[*name_idx as usize]), None,
+                )?
+            } else {
+                interp.vm_method_call_other(obj, name, evaled, *node_id)?
+            };
             buf.push(r);
             return Ok(Flow::NextAfterCall); // #1
         }
-        Op::CallMethod(name_idx, argc, mut_mask) => {
+        Op::CallMethod(name_idx, argc, mut_mask, node_id) => {
             let n = *argc as usize;
             let split = buf.len() - n;
             let arg_vals = buf.split_off(split);
@@ -715,13 +717,15 @@ fn exec_op(
                 .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
                 .collect();
             // メソッドはツリーウォークと同じく call_span=None（degraded フレームで一致）。
-            let r = interp.call_instance_method_evaled(
-                obj,
-                &chunk.names[*name_idx as usize],
-                evaled,
-                Some(&chunk.attr_caches[*name_idx as usize]),
-                None,
-            )?;
+            let name = &chunk.names[*name_idx as usize];
+            let r = if matches!(obj, Value::Instance(_)) {
+                interp.call_instance_method_evaled(
+                    obj, name, evaled,
+                    Some(&chunk.attr_caches[*name_idx as usize]), None,
+                )?
+            } else {
+                interp.vm_method_call_other(obj, name, evaled, *node_id)?
+            };
             buf.push(r);
             return Ok(Flow::NextAfterCall); // #1
         }

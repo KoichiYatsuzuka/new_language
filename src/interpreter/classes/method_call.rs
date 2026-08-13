@@ -148,9 +148,32 @@ impl Interpreter {
         args: &[CallArg],
         cache: Option<&crate::ast::NativeCallCache>,
     ) -> Result<Value, String> {
+        // #27-b: **引数を評価してから評価済み版へ委譲するだけ**にした。
+        // 実装は `eval_method_call_full` に 1 つだけ置く（VM も同じものを通る）。
+        //
+        // ⚠ 評価順が 1 点だけ変わる: 以前は `expect_no_args` が**引数を評価せずに**
+        // arity エラーを返していた（15 箇所）。今は先に評価する。正常系（0 引数）では
+        // 差が無く、差が出るのは「no-arg メソッドに副作用つき引数を渡す」= どのみち
+        // エラーになるコードだけ。`eval_one_arg` は元から全評価後に検査していたので不変。
+        let evaled = self.eval_call_args(args)?;
+        self.eval_method_call_full(obj, method_name, evaled, cache)
+    }
+
+    /// メソッド呼び出しの**唯一の実装**（#27-b）。評価済み引数を受ける。
+    ///
+    /// ツリーウォーク（`eval_method_call`）も VM（`Op::CallMethod` → `call_instance_method_evaled`
+    /// の非 Instance フォールバック）も、レシーバ種別のディスパッチはすべてここを通る。
+    /// **`*_evaled` 版とずれた実装を作らない**（#22 系列で実バグを 4 回出した形）。
+    pub(crate) fn eval_method_call_full(
+        &mut self,
+        obj: Value,
+        method_name: &str,
+        evaled: Vec<(Option<String>, Value, bool)>,
+        cache: Option<&crate::ast::NativeCallCache>,
+    ) -> Result<Value, String> {
         // Result 型のメソッド: is_OK() → bool、is_ERR() → bool
         if let Value::ResultVal { ok, .. } = &obj {
-            if !args.is_empty() {
+            if !evaled.is_empty() {
                 return Err(format!("TypeError: Result.{method_name}() takes no arguments"));
             }
             return match method_name {
@@ -166,19 +189,19 @@ impl Interpreter {
             Value::List(items) => {
                 match method_name {
                     "__iter__" => {
-                        Self::expect_no_args(args, "list", "__iter__")?;
+                        Self::expect_no_args_evaled(&evaled, "list", "__iter__")?;
                         return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
                             values: items.borrow().clone(),
                             index: 0,
                         }))));
                     }
                     "append" => {
-                        let item = self.eval_one_arg(args, "list", "append")?;
+                        let item = Self::one_arg_evaled(evaled, "list", "append")?;
                         items.borrow_mut().push(item);
                         return Ok(Value::None);
                     }
                     "pop" => {
-                        Self::expect_no_args(args, "list", "pop")?;
+                        Self::expect_no_args_evaled(&evaled, "list", "pop")?;
                         let mut v = items.borrow_mut();
                         if v.is_empty() {
                             return Err("IndexError: pop from empty list".to_string());
@@ -194,7 +217,7 @@ impl Interpreter {
             Value::FrozenList { ref state, ref layout } => {
                 match method_name {
                     "__iter__" => {
-                        Self::expect_no_args(args, "fixed_list", "__iter__")?;
+                        Self::expect_no_args_evaled(&evaled, "fixed_list", "__iter__")?;
                         let st = state.borrow();
                         let values = (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
                         Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
@@ -203,7 +226,7 @@ impl Interpreter {
                         }))))
                     }
                     "__contains__" => {
-                        let needle = self.eval_one_arg(args, "fixed_list", "__contains__")?;
+                        let needle = Self::one_arg_evaled(evaled, "fixed_list", "__contains__")?;
                         let st = state.borrow();
                         let found = (0..st.len)
                             .map(|i| layout.reconstruct_item(&st.data, i))
@@ -211,11 +234,11 @@ impl Interpreter {
                         Ok(Value::Bool(found))
                     }
                     "allocated_size" => {
-                        Self::expect_no_args(args, "fixed_list", "allocated_size")?;
+                        Self::expect_no_args_evaled(&evaled, "fixed_list", "allocated_size")?;
                         Ok(Value::Int(state.borrow().allocated_size as i64))
                     }
                     "append" => {
-                        let item = self.eval_one_arg(args, "fixed_list", "append")?;
+                        let item = Self::one_arg_evaled(evaled, "fixed_list", "append")?;
                         match item {
                             Value::Instance(inst_rc) => {
                                 let inst = inst_rc.borrow();
@@ -256,21 +279,21 @@ impl Interpreter {
                     )),
                 }
             }
-            Value::Str(s) => self.eval_str_method(s.clone(), method_name, args),
+            Value::Str(s) => self.eval_str_method(s.clone(), method_name, evaled),
             Value::Complex(re, im) => {
                 let re = *re;
                 let im = *im;
                 match method_name {
                     "real" => {
-                        Self::expect_no_args(args, "complex", "real")?;
+                        Self::expect_no_args_evaled(&evaled, "complex", "real")?;
                         Ok(Value::Float(re))
                     }
                     "imag" => {
-                        Self::expect_no_args(args, "complex", "imag")?;
+                        Self::expect_no_args_evaled(&evaled, "complex", "imag")?;
                         Ok(Value::Float(im))
                     }
                     "angle" => {
-                        Self::expect_no_args(args, "complex", "angle")?;
+                        Self::expect_no_args_evaled(&evaled, "complex", "angle")?;
                         Ok(Value::Float(im.atan2(re)))
                     }
                     _ => Err(format!(
@@ -278,149 +301,11 @@ impl Interpreter {
                     )),
                 }
             }
-            Value::Instance(inst_rc) => {
-                // 組み込み copy() メソッド: __copy__ を優先し、なければ deepcopy
-                if method_name == "copy" {
-                    if !args.is_empty() {
-                        return Err(format!(
-                            "TypeError: {}.copy() takes no arguments",
-                            inst_rc.borrow().class.name
-                        ));
-                    }
-                    return self.copy_value(obj.clone());
-                }
-
-                // ── method IC 命中: plain 非 mut-self 単一メソッドを直接ディスパッチ ──
-                // gen/native/static/class_method 判定と不変性フィルタを跳ばす（すべて class_id で
-                // 決まる class レベルの事実。非 mut-self なのでインスタンス可変性にも非依存）。
-                if let Some(c) = cache {
-                    let class_id = inst_rc.borrow().class.class_id;
-                    if c.2.get(class_id).is_some() {
-                        let class = inst_rc.borrow().class.clone();
-                        #[cfg(debug_assertions)]
-                        {
-                            // 高速経路が跳ばす判定の前提が実際に成立していることを検証する。
-                            debug_assert!(
-                                !class.gen_methods.contains_key(method_name)
-                                    && !class.static_method_names.contains(method_name)
-                                    && !class.class_method_names.contains(method_name)
-                                    && crate::interpreter::native_api::lookup_native_method_ptr(
-                                        &class.name,
-                                        method_name,
-                                    )
-                                    .is_none(),
-                                "method IC fast-path invariant violated for '{method_name}'"
-                            );
-                        }
-                        if let Some(overloads) = class.methods.get(method_name) {
-                            if overloads.len() == 1 {
-                                debug_assert!(
-                                    overloads[0]
-                                        .params
-                                        .first()
-                                        .map(|p| p.name != "self" || !p.mutable)
-                                        .unwrap_or(true),
-                                    "method IC cached a mut-self method for '{method_name}'"
-                                );
-                                let f = overloads[0].clone();
-                                return self.exec_fn(f, args, Some(obj.clone()), method_name, None);
-                            }
-                        }
-                        // 想定外はスロー経路へ委譲する。
-                    }
-                }
-
-                let class = inst_rc.borrow().class.clone();
-                let inst_immutable = inst_rc.borrow().flags() & crate::interpreter::value::INST_IMMUTABLE != 0;
-
-                // gen_methods（`gen` キーワードで定義されたメソッド、例: `__iter__`）を優先的にチェック
-                if let Some(gen_fn) = class.gen_methods.get(method_name).cloned() {
-                    return self.exec_generator(gen_fn, args, Some(obj.clone()));
-                }
-
-                // Native method dispatch — check NATIVE_METHODS before tree-walk.
-                if crate::interpreter::native_api::lookup_native_method_ptr(&class.name, method_name).is_some() {
-                    let evaled = self.eval_call_args(args)?;
-                    let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
-                    if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method(
-                        self, obj.clone(), method_name, arg_vals,
-                    ) {
-                        return result;
-                    }
-                }
-
-                let overloads = self
-                    .lookup_method_in_class(&class, method_name)
-                    .ok_or_else(|| {
-                        format!(
-                            "AttributeError: '{}' has no method '{method_name}'",
-                            class.name
-                        )
-                    })?;
-                let n_overloads = overloads.len();
-
-                // static / class_method はインスタンスからは呼び出せない
-                if class.static_method_names.contains(method_name) {
-                    return Err(format!(
-                        "AttributeError: static method '{}' must be called on the class, not an instance; use '{}.{}(...)'",
-                        method_name, class.name, method_name
-                    ));
-                }
-                if class.class_method_names.contains(method_name) {
-                    return Err(format!(
-                        "AttributeError: class method '{}' must be called on the class, not an instance; use '{}.{}(...)'",
-                        method_name, class.name, method_name
-                    ));
-                }
-
-                // 不変インスタンスは `mut self` を要求するオーバーロードを除外する
-                let callable: Vec<Rc<FnValue>> = if inst_immutable {
-                    overloads
-                        .iter()
-                        .filter(|f| {
-                            f.params
-                                .first()
-                                .map(|p| p.name != "self" || !p.mutable)
-                                .unwrap_or(true)
-                        })
-                        .cloned()
-                        .collect()
-                } else {
-                    overloads
-                };
-
-                if callable.is_empty() {
-                    return Err(format!(
-                        "TypeError: cannot call mutable method '{method_name}' on immutable instance of '{}'",
-                        class.name
-                    ));
-                }
-
-                if callable.len() == 1 {
-                    // ── method IC 充填 ──
-                    // 条件: 単一オーバーロード + 非 mut-self + native なし
-                    // （static/class_method/gen はこの地点に到達しない = 上で early return / 除外済み）。
-                    if let Some(c) = cache {
-                        let self_is_mut = callable[0]
-                            .params
-                            .first()
-                            .map(|p| p.name == "self" && p.mutable)
-                            .unwrap_or(false);
-                        if n_overloads == 1
-                            && !self_is_mut
-                            && crate::interpreter::native_api::lookup_native_method_ptr(
-                                &class.name,
-                                method_name,
-                            )
-                            .is_none()
-                        {
-                            c.2.fill(class.class_id, 0, 0);
-                        }
-                    }
-                    self.exec_fn(callable[0].clone(), args, Some(obj.clone()), method_name, None)
-                } else {
-                    self.dispatch_overload(callable, args, Some(obj.clone()), None)
-                }
+            // #27-b: Instance のディスパッチは `call_instance_method_evaled` に 1 本化した。
+            // 以前はこのアームが同じ判断（copy／method IC／gen／native／static・class 判定／
+            // 不変性フィルタ／オーバーロード）を**二重に実装**しており、VM 経路と食い違う余地があった。
+            Value::Instance(_) => {
+                self.call_instance_method_evaled(obj, method_name, evaled, cache.map(|c| &c.2), None)
             }
             Value::Class(cls) => {
                 // cs-dll static method dispatch
@@ -433,7 +318,7 @@ impl Interpreter {
                         .and_then(|overloads| overloads.first())
                         .and_then(|f| f.return_type.clone());
                     if let Some(bridge) = crate::interpreter::cs_dll_runtime::get_bridge(&bp_path) {
-                        let evaled = self.eval_call_args(args)?;
+                        let evaled = evaled;
                         let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                         return crate::interpreter::cs_dll_runtime::call_static(
                             &bridge, &class_name, method_name, &arg_vals,
@@ -450,7 +335,7 @@ impl Interpreter {
                         .get(method_name)
                         .and_then(|overloads| overloads.first())
                         .and_then(|f| f.return_type.clone());
-                    let evaled = self.eval_call_args(args)?;
+                    let evaled = evaled;
                     let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                     return crate::interpreter::cs_proc_runtime::call_static(
                         &pp_path, &class_name, method_name, &arg_vals,
@@ -470,15 +355,15 @@ impl Interpreter {
 
                 if cls.static_method_names.contains(method_name) {
                     return if overloads.len() == 1 {
-                        self.exec_fn(overloads[0].clone(), args, None, method_name, None)
+                        self.exec_fn_evaled(overloads[0].clone(), &evaled, None, method_name, None)
                     } else {
-                        self.dispatch_overload(overloads, args, None, None)
+                        self.dispatch_overload_evaled(overloads, evaled, None, method_name, None)
                     };
                 }
 
                 if cls.class_method_names.contains(method_name) {
                     let cls_val = Value::Class(cls.clone());
-                    let evaled = self.eval_call_args(args)?;
+                    let evaled = evaled;
                     let mut all_evaled: Vec<(Option<String>, Value, bool)> = vec![(None, cls_val, true)];
                     all_evaled.extend(evaled);
                     return if overloads.len() == 1 {
@@ -497,12 +382,12 @@ impl Interpreter {
                 match method_name {
                     // `d.key()` / `d.keys()` — キーのリストを返す
                     "key" | "keys" => {
-                        Self::expect_no_args(args, "dict", method_name)?;
+                        Self::expect_no_args_evaled(&evaled, "dict", method_name)?;
                         Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_keys()))))
                     }
                     // `d.item()` / `d.values()` — 値のリストを返す
                     "item" | "values" => {
-                        Self::expect_no_args(args, "dict", method_name)?;
+                        Self::expect_no_args_evaled(&evaled, "dict", method_name)?;
                         Ok(Value::List(Rc::new(RefCell::new(d.borrow().all_items()))))
                     }
                     _ => Err(format!(
@@ -513,7 +398,7 @@ impl Interpreter {
             Value::Set(s) => {
                 match method_name {
                     "__iter__" => {
-                        Self::expect_no_args(args, "set", "__iter__")?;
+                        Self::expect_no_args_evaled(&evaled, "set", "__iter__")?;
                         let items = s.borrow().clone();
                         Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
                             values: items,
@@ -521,7 +406,7 @@ impl Interpreter {
                         }))))
                     }
                     "add" => {
-                        let item = self.eval_one_arg(args, "set", "add")?;
+                        let item = Self::one_arg_evaled(evaled, "set", "add")?;
                         let mut s_mut = s.borrow_mut();
                         if !s_mut.iter().any(|v| self.values_eq(v, &item)) {
                             s_mut.push(item);
@@ -529,7 +414,7 @@ impl Interpreter {
                         Ok(Value::None)
                     }
                     "discard" => {
-                        let item = self.eval_one_arg(args, "set", "discard")?;
+                        let item = Self::one_arg_evaled(evaled, "set", "discard")?;
                         let mut s_mut = s.borrow_mut();
                         if let Some(pos) = s_mut.iter().position(|v| self.values_eq(v, &item)) {
                             s_mut.remove(pos);
@@ -537,7 +422,7 @@ impl Interpreter {
                         Ok(Value::None)
                     }
                     "remove" => {
-                        let item = self.eval_one_arg(args, "set", "remove")?;
+                        let item = Self::one_arg_evaled(evaled, "set", "remove")?;
                         let mut s_mut = s.borrow_mut();
                         if let Some(pos) = s_mut.iter().position(|v| self.values_eq(v, &item)) {
                             s_mut.remove(pos);
@@ -547,7 +432,7 @@ impl Interpreter {
                         }
                     }
                     "pop" => {
-                        Self::expect_no_args(args, "set", "pop")?;
+                        Self::expect_no_args_evaled(&evaled, "set", "pop")?;
                         let mut s_mut = s.borrow_mut();
                         if s_mut.is_empty() {
                             Err("KeyError: pop from an empty set".to_string())
@@ -556,16 +441,16 @@ impl Interpreter {
                         }
                     }
                     "clear" => {
-                        Self::expect_no_args(args, "set", "clear")?;
+                        Self::expect_no_args_evaled(&evaled, "set", "clear")?;
                         s.borrow_mut().clear();
                         Ok(Value::None)
                     }
                     "copy" => {
-                        Self::expect_no_args(args, "set", "copy")?;
+                        Self::expect_no_args_evaled(&evaled, "set", "copy")?;
                         Ok(Value::Set(Rc::new(RefCell::new(s.borrow().clone()))))
                     }
                     "union" => {
-                        let other = self.eval_one_arg(args, "set", "union")?;
+                        let other = Self::one_arg_evaled(evaled, "set", "union")?;
                         let other_items = self.set_other_items(&other, "union")?;
                         let mut result = s.borrow().clone();
                         for v in other_items {
@@ -576,7 +461,7 @@ impl Interpreter {
                         Ok(Value::Set(Rc::new(RefCell::new(result))))
                     }
                     "intersection" => {
-                        let other = self.eval_one_arg(args, "set", "intersection")?;
+                        let other = Self::one_arg_evaled(evaled, "set", "intersection")?;
                         let other_items = self.set_other_items(&other, "intersection")?;
                         let result: Vec<Value> = s
                             .borrow()
@@ -587,7 +472,7 @@ impl Interpreter {
                         Ok(Value::Set(Rc::new(RefCell::new(result))))
                     }
                     "difference" => {
-                        let other = self.eval_one_arg(args, "set", "difference")?;
+                        let other = Self::one_arg_evaled(evaled, "set", "difference")?;
                         let other_items = self.set_other_items(&other, "difference")?;
                         let result: Vec<Value> = s
                             .borrow()
@@ -598,7 +483,7 @@ impl Interpreter {
                         Ok(Value::Set(Rc::new(RefCell::new(result))))
                     }
                     "symmetric_difference" => {
-                        let other = self.eval_one_arg(args, "set", "symmetric_difference")?;
+                        let other = Self::one_arg_evaled(evaled, "set", "symmetric_difference")?;
                         let other_items = self.set_other_items(&other, "symmetric_difference")?;
                         let s_ref = s.borrow();
                         let mut result: Vec<Value> = s_ref
@@ -614,7 +499,7 @@ impl Interpreter {
                         Ok(Value::Set(Rc::new(RefCell::new(result))))
                     }
                     "issubset" => {
-                        let other = self.eval_one_arg(args, "set", "issubset")?;
+                        let other = Self::one_arg_evaled(evaled, "set", "issubset")?;
                         let other_items = self.set_other_items(&other, "issubset")?;
                         let result = s
                             .borrow()
@@ -623,7 +508,7 @@ impl Interpreter {
                         Ok(Value::Bool(result))
                     }
                     "issuperset" => {
-                        let other = self.eval_one_arg(args, "set", "issuperset")?;
+                        let other = Self::one_arg_evaled(evaled, "set", "issuperset")?;
                         let other_items = self.set_other_items(&other, "issuperset")?;
                         let s_ref = s.borrow();
                         let result = other_items
@@ -642,7 +527,7 @@ impl Interpreter {
                         "AttributeError: Generator object has no method '{method_name}'"
                     ));
                 }
-                Self::expect_no_args(args, "Generator", "next")?;
+                Self::expect_no_args_evaled(&evaled, "Generator", "next")?;
                 let mut s = state.borrow_mut();
                 if s.index < s.values.len() {
                     // 次の yield 値を返してインデックスを進める
@@ -676,33 +561,33 @@ impl Interpreter {
                 // FFI 境界検査の `node_id` に 0 を渡すのは意図的。`mod.func()` の戻り値検査は
                 // 呼び出し元の `eval_call`（`Expr::Attr` 分岐）が行うので、ここで検査すると二重になる。
                 match member {
-                    Value::NativeFunction(fn_ref) => self.call_native_function(&fn_ref, args),
+                    Value::NativeFunction(fn_ref) => self.dispatch_native_evaled(&fn_ref, evaled.into_iter().map(|(_, v, _)| v).collect()),
                     other => {
-                        let evaled = self.eval_call_args(args)?;
+                        let evaled = evaled;
                         self.call_value_evaled(other, evaled, method_name, None, 0)
                     }
                 }
             }
             Value::PyObject(handle) => {
                 // Python オブジェクトのメソッドを PyO3 経由で呼び出す
-                let evaled = self.eval_call_args(args)?;
+                let evaled = evaled;
                 crate::interpreter::py_interop::call_py_method(handle, method_name, &evaled)
             }
             Value::FileObject(fd_rc) => {
                 let fd_rc = fd_rc.clone();
-                let evaled = self.eval_call_args(args)?;
+                let evaled = evaled;
                 self.exec_file_method(fd_rc, method_name, &evaled)
             }
             Value::AsyncManager(mgr_rc) => {
                 match method_name {
                     "all_done" => {
-                        Self::expect_no_args(args, "AsyncManager", "all_done")?;
+                        Self::expect_no_args_evaled(&evaled, "AsyncManager", "all_done")?;
                         let all = mgr_rc.borrow().all_done();
                         Ok(Value::Bool(all))
                     }
                     "wait_for_finish" => {
                         // wait_for_finish(await_interval_msec = 100)
-                        let evaled = self.eval_call_args(args)?;
+                        let evaled = evaled;
                         let interval_ms: u64 = match evaled.as_slice() {
                             [] => 100,
                             [(key, Value::Int(n), _)] if key.is_none() || key.as_deref() == Some("await_interval_msec") => (*n).max(1) as u64,
@@ -770,10 +655,10 @@ impl Interpreter {
                 }
             }
             Value::Signal(sig_rc) => {
-                self.exec_signal_method(sig_rc.clone(), method_name, args)
+                self.exec_signal_method(sig_rc.clone(), method_name, evaled)
             }
             Value::EventLoop(el_rc) => {
-                self.exec_event_loop_method(el_rc.clone(), method_name, args)
+                self.exec_event_loop_method(el_rc.clone(), method_name, evaled)
             }
             Value::CsObject(obj_data) => {
                 let class_name = obj_data.class_name.clone();
@@ -786,7 +671,7 @@ impl Interpreter {
                     .get(method_name)
                     .and_then(|overloads| overloads.first())
                     .and_then(|f| f.return_type.clone());
-                let evaled = self.eval_call_args(args)?;
+                let evaled = evaled;
                 let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
                 if is_proc {
                     crate::interpreter::cs_proc_runtime::call_instance(
@@ -812,20 +697,30 @@ impl Interpreter {
 
     // ── メソッド引数検証ヘルパ ──────────────────────────────────────────────
 
-    /// 引数なしメソッドを検証する（引数があれば TypeError）。
-    fn expect_no_args(args: &[CallArg], type_name: &str, method: &str) -> Result<(), String> {
-        if args.is_empty() {
+    /// 引数が 0 個であることを検証する（評価済み版・#27-b）。
+    ///
+    /// ⚠ 旧 CallArg 版は**引数を評価せずに** arity エラーを返していた。今は先に評価される。
+    /// エラーメッセージは同一なので、差が出るのは「no-arg メソッドに副作用つき引数を渡したとき、
+    /// その副作用が起きるか」だけ（どのみちエラーになるコード）。
+    fn expect_no_args_evaled(
+        evaled: &[(Option<String>, Value, bool)],
+        type_name: &str,
+        method: &str,
+    ) -> Result<(), String> {
+        if evaled.is_empty() {
             Ok(())
         } else {
             Err(format!("TypeError: {type_name}.{method}() takes no arguments"))
         }
     }
 
-    /// 引数を評価し、ちょうど 1 個であることを検証してその値を返す。
-    fn eval_one_arg(&mut self, args: &[CallArg], type_name: &str, method: &str)
-        -> Result<Value, String>
-    {
-        let evaled = self.eval_call_args(args)?;
+    /// ちょうど 1 個であることを検証してその値を返す（評価済み版・#27-b）。
+    /// 旧 CallArg 版（`eval_one_arg`）も**元から全評価後に検査**していたので意味論は完全に同じ。
+    fn one_arg_evaled(
+        evaled: Vec<(Option<String>, Value, bool)>,
+        type_name: &str,
+        method: &str,
+    ) -> Result<Value, String> {
         if evaled.len() != 1 {
             return Err(format!("TypeError: {type_name}.{method}() takes exactly 1 argument"));
         }

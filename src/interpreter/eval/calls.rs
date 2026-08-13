@@ -17,7 +17,7 @@ impl Interpreter {
     ///
     /// 名前空間のメンバを読むだけで副作用は無いので、実際の呼び出し前に安全に判定できる。
     /// 新しい言語を足すときは、その言語の関数を表す `Value` 変種をここに 1 行足す。
-    fn foreign_call_lang(obj: &Value, attr: &str) -> Option<&'static str> {
+    pub(crate) fn foreign_call_lang(obj: &Value, attr: &str) -> Option<&'static str> {
         match obj {
             // Python オブジェクトのメソッド呼び出し。
             Value::PyObject(_) => Some("py"),

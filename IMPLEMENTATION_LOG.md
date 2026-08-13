@@ -2148,6 +2148,72 @@ E2E の伸びが小さいのは当然で、残っていたのは数万回のデ�
 残るツリーウォークは `Expr`（式文 `print(...)` 等）909 が最大で、これは**まだ試行していない**
 （`compile_toplevel_stmt` が受け付けていない）。#3 にはこれと定義文・`import` が要る。
 
+### #27-b メソッド dispatcher の 1 本化 — 完了 2026-08-13
+
+**「644 行を移植する」と見積もっていたが、実際に書き換えが要ったのは 4 パターンだけだった。**
+着手前に `eval_method_call` 本体の `args` 参照 48 件を分類したところ:
+`expect_no_args` 15／`eval_one_arg` 12／`eval_call_args` 9／既に `_evaled` 版がある委譲 5。
+つまり**引数の扱いはこの 4 種に閉じており**、残りは受け取った値を使うだけだった。
+
+#### 実装
+
+- `eval_method_call`（CallArg 版）を **引数を評価して委譲するだけ**にし、16 レシーバの
+  ディスパッチを `eval_method_call_full`（評価済み引数）へ移した。
+- `object_methods.rs` の `eval_method_call_evaled`（`Instance`/`PyObject` の 2 アームだけを
+  持つ独自実装・85 行）を **統一実装への委譲 1 行**に置換。
+- **`Value::Instance` アーム 144 行を `call_instance_method_evaled` への委譲に畳んだ**。
+  同じ判断（copy／method IC／gen／native／static・class 判定／不変性フィルタ／オーバーロード）が
+  二重実装されていた。
+- `eval_str_method` / `exec_signal_method` / `exec_event_loop_method` を評価済み引数版へ
+  （いずれも冒頭で `eval_call_args` を呼んでいただけ・呼び出し元は各 1 箇所）。
+- **コンパイラのレシーバ制限を撤廃**し、`Op::CallMethod`/`CallMethodLocal` に **`node_id` を追加**。
+
+⚠ **`node_id` の追加が要点**。ツリーウォークは `eval_call` の `Expr::Attr` 分岐で
+①外部言語の判定 ②ディスパッチ ③`check_ffi_return` の 3 手順を踏む。制限を外して
+`Namespace`/`PyObject` レシーバを VM に流すと、**③ が VM 経路だけ素通り**する
+（`Op::Call` で #22-a が踏んだ穴と同型）。op で `node_id` を運んで同じ 3 手順を再現した。
+
+⚠ **評価順が 1 点だけ変わる**: 旧 `expect_no_args` は**引数を評価せずに** arity エラーを返していた
+（15 箇所）。今は先に評価する。正常系（0 引数）では差が無く、差が出るのは
+「no-arg メソッドに副作用つき引数を渡す」＝どのみちエラーになるコードだけ。
+`eval_one_arg` は元から全評価後に検査していたので不変。
+**確保は増えない**（`Vec::new()` は 0 引数で確保しない／1 引数以上は元から確保していた）。
+
+⚠ `str.format` **だけ**がキーワード引数を使う。値だけに落とす前に処理しないと `k=v` の名前が失われ、
+他メソッドの arity 検査の見え方まで変わる（従来は名前つきの値も `vals` に入っていた）。
+
+#### 結果
+
+| 指標 | before | after |
+|---|---|---|
+| `fn_FAILED` | 29 | **17** |
+| `toplevel_FAILED` | 163 | **65** |
+| `method-receiver:*` の bail | 110 | **0** |
+| 関数本体内のツリーウォーク | 158 | **127** |
+| コード | — | 実質 **-230 行**（Instance 144＋旧 evaled 85） |
+
+#### 性能（3 段階で詰めた）
+
+初回は `bench_method_hot` **0.943x**。`--vm=off` では **1.001x** だったので
+**ツリーウォークの畳み込みは中立**、VM のディスパッチ側と特定できた。
+
+1. `foreign_call_lang` を Instance 経路より前に呼んでいた → 非 Instance 側へ追い出す（0.943→0.971x）
+2. `vm_method_call` という関数レイヤーを 1 枚挟んでいた → `exec_op` の arm で
+   `matches!(obj, Value::Instance(_))` を直接見て `call_instance_method_evaled` へ直行
+   （0.971→**0.981x**、`bench_method_body` は 1.009x）
+3. 非 Instance 経路は `#[inline(never)]`（`exec_op` は `#[inline(always)]`）
+
+残る ~2% はこの種の変更のレイアウト帯（±5%）の内側。**最頻路に判定を 1 つ足すだけで 3% 動く**
+のがこの経路の性質で、`vm_method_call` のような「きれいな 1 枚のラッパ」は
+ここでは実測で不利だった。
+
+#### 残り（#3 に必要）
+
+- `fn_FAILED` 17: 入れ子 `fn`（クロージャ）8・`static` 2・可変長 2・未帰属 2・その他 3。
+- `toplevel_FAILED` 65: 虚数リテラル 13・`let x = <識別子>` 13・テンプレート実体化呼び出し 13・
+  キーワード/可変長引数 8・`for` タプル分解 7・未帰属 7・その他 4。
+- 最上位のツリーウォーク 2,071 件は**式文 909 が最大で、まだ試行すらしていない**（#10-c2）。
+
 ### #10 import モジュール Chunk — 保留 2026-07-27（高コスト・低効果）
 > ⚠ **この節は 2026-07-27 時点の判断。(a) と (c) は #10-a の実測で部分的に否定された**（上記参照）。
 > (b)「`StoreGlobal` op が無い」は正しく、#10-b でそれを新設して解決した。
