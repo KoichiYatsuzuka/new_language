@@ -64,13 +64,41 @@ impl Drop for FnBodyGuard {
 }
 
 /// `exec()` のディスパッチを 1 件計上する。
+///
+/// 3 分類する（#10-d）: **メインプログラム最上位 / import モジュール本体 / 関数本体内**。
+/// モジュール本体は `exec_module` が `push_scope` してから回すので `toplevel_vm_candidate`
+/// （`scopes.len() == 1`）が偽になり、**現状まるごとツリーウォーク**。メイン最上位と
+/// 混ぜて数えると「最上位に何が残っているか」を読み違える。
 pub(crate) fn record_stmt(stmt: &Stmt) {
-    let cat = if TW_FN_DEPTH.with(|d| d.get()) == 0 {
-        "toplevel"
-    } else {
+    let cat = if TW_FN_DEPTH.with(|d| d.get()) > 0 {
         "in_fn"
+    } else if TW_MODULE_DEPTH.with(|d| d.get()) > 0 {
+        "module_body"
+    } else {
+        "toplevel"
     };
     bump(cat, stmt_kind(stmt));
+}
+
+// import モジュール本体を実行中の深さ（#10-d）。
+thread_local! {
+    static TW_MODULE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// import モジュール本体の実行を囲むガード（#10-d）。
+pub(crate) struct ModuleBodyGuard;
+
+impl ModuleBodyGuard {
+    pub(crate) fn new() -> Self {
+        TW_MODULE_DEPTH.with(|d| d.set(d.get() + 1));
+        ModuleBodyGuard
+    }
+}
+
+impl Drop for ModuleBodyGuard {
+    fn drop(&mut self) {
+        TW_MODULE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
 }
 
 /// VM コンパイルが諦めた地点を計上する（`vm/compiler.rs` の bail サイトから呼ぶ）。
@@ -139,7 +167,7 @@ pub(crate) fn dump() {
         .map(|((c, k), &v)| (*c, k.as_str(), v))
         .collect();
     rows.sort_by(|a, b| a.0.cmp(b.0).then(b.2.cmp(&a.2)));
-    for cat in ["toplevel", "in_fn", "vm_compile", "vm_bail_fn", "vm_bail_toplevel"] {
+    for cat in ["toplevel", "module_body", "in_fn", "vm_compile", "vm_bail_fn", "vm_bail_toplevel"] {
         let sub: Vec<_> = rows.iter().filter(|r| r.0 == cat).collect();
         if sub.is_empty() {
             continue;

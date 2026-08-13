@@ -30,7 +30,7 @@ if (-not (Test-Path $exe)) { throw "not built: $exe" }
 $files = Get-ChildItem -Path (Join-Path $PSScriptRoot 'examples') -Filter *.ar -Recurse |
          Where-Object { $_.FullName -notmatch '\\archived\\' }
 
-$toplevel = @{}; $infn = @{}; $vmc = @{}; $bailFn = @{}; $bailTop = @{}
+$toplevel = @{}; $modbody = @{}; $infn = @{}; $vmc = @{}; $bailFn = @{}; $bailTop = @{}
 $ran = 0; $failed = 0
 
 foreach ($f in $files) {
@@ -57,7 +57,8 @@ foreach ($f in $files) {
         if ($line -match '^TwStats\[(\w+)\] total=\d+ (.*)$') {
             $cat = $Matches[1]
             $tbl = switch ($cat) {
-                'toplevel'   { $toplevel }
+                'toplevel'    { $toplevel }
+                'module_body' { $modbody }
                 'in_fn'      { $infn }
                 'vm_compile' { $vmc }
                 'vm_bail_fn'       { $bailFn }
@@ -88,6 +89,7 @@ function Show-Table($name, $tbl) {
 
 Write-Host "examples run: $ran (timeout/failed: $failed)"
 Show-Table 'toplevel (module level tree-walk)' $toplevel
+Show-Table 'module_body (import module bodies - all tree-walk today)' $modbody
 Show-Table 'in_fn (tree-walk function bodies)' $infn
 Show-Table 'vm_compile (chunk compile outcome)' $vmc
 Show-Table 'vm_bail_fn (why a FUNCTION body failed to compile)' $bailFn

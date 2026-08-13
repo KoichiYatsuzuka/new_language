@@ -80,6 +80,9 @@ impl Interpreter {
             self.in_python_module = true;
         }
         self.push_scope();
+        // 診断フック（#10-d）: ここから先は import モジュール本体（メイン最上位と区別して計上）。
+        let _mod_guard = crate::interpreter::tw_stats::enabled()
+            .then(crate::interpreter::tw_stats::ModuleBodyGuard::new);
         for stmt in body {
             match self.exec(stmt)? {
                 ExecResult::Normal => {}
