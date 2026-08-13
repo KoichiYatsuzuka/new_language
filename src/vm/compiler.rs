@@ -40,6 +40,19 @@ fn bail_expr(site: &'static str, expr: &Expr) {
     crate::interpreter::tw_stats::record_bail(site, expr_kind(expr));
 }
 
+/// 注釈テーブルを引くための node-id（#26）。持たないバリアントは `None`。
+/// 0 は「未採番」（合成 AST・テンプレート本体など）なので同じく `None` にする。
+fn expr_node_id(e: &Expr) -> Option<u32> {
+    let id = match e {
+        Expr::Ident { node_id, .. }
+        | Expr::Attr { node_id, .. }
+        | Expr::Call { node_id, .. }
+        | Expr::Subscript { node_id, .. } => *node_id,
+        _ => return None,
+    };
+    (id != 0).then_some(id)
+}
+
 /// `Expr` バリアント名（診断フック用）。
 fn expr_kind(expr: &Expr) -> &'static str {
     match expr {
@@ -1388,7 +1401,10 @@ impl Compiler {
                 Some(&s) => s as usize,
                 None => return false,
             },
-            _ => return false,
+            // slot を持たないレシーバ（グローバル変数・属性・呼び出し結果など）は
+            // **型検査の注釈**で判定する（#26）。`slot_type` 経路と同じ 2 段の条件
+            // （形＋出自）を通すので健全性は同じ。
+            other => return self.annot_is_arrow_instance(other),
         };
         if Some(slot as u16) == self.self_slot {
             return true;
@@ -1396,8 +1412,41 @@ impl Compiler {
         self.slot_type
             .get(slot)
             .and_then(|o| o.as_deref())
-            .map(is_user_instance_type)
+            .map(|t| self.is_arrow_instance_type(t))
             .unwrap_or(false)
+    }
+
+    /// 型注釈名が「実行時 `Value::Instance` になるユーザークラス」か（#27-a）。
+    ///
+    /// **2 段構え**である点が要点:
+    /// 1. `is_user_instance_type` — 形（ジェネリック・union・組み込み型名を除く）
+    /// 2. `annotations.is_arrow_class` — **出自**（外部言語スタブ由来のクラスを除く）
+    ///
+    /// 2 が無いと C# スタブのクラス（`import[cs-dll]`）が同じ `NamedInstance` 注釈で通り、
+    /// 実行時の `Value::CsObject` を `Value::Instance` 前提の op へ流して落ちる
+    /// （`event_cs_handler.ar` の off/auto 不一致で実際に踏んだ）。
+    fn is_arrow_instance_type(&self, t: &str) -> bool {
+        is_user_instance_type(t) && self.annotations.is_arrow_class(t)
+    }
+
+    /// 注釈テーブルが当該式を「Arrow クラスのインスタンス」と確定しているか（#26）。
+    ///
+    /// `slot_type` を持たないレシーバ（グローバル・属性・呼び出し結果）に対する
+    /// `is_arrow_instance_type` の等価物。`NamedInstance` 以外（`Protocol`/`Union`/`Any`/
+    /// 組み込み型）は保守的に false。
+    ///
+    /// ⚠ **`NamedInstance` だけで true にしてはいけない**。外部言語スタブのクラスも
+    /// 同じ注釈になるので、`is_arrow_class`（出自）まで見る（#27-a）。
+    fn annot_is_arrow_instance(&self, e: &Expr) -> bool {
+        let Some(node_id) = expr_node_id(e) else {
+            return false;
+        };
+        match self.annotations.resolved_type(node_id) {
+            Some(crate::type_check::InferredType::NamedInstance(name)) => {
+                self.is_arrow_instance_type(name)
+            }
+            _ => false,
+        }
     }
 
     /// 呼び出し引数の `is_mutable`（`eval_call_args` と同じ判定: 変数 ident は変数の可変性、

@@ -48,6 +48,26 @@ pub(in crate::type_check) struct TypeRegistryBuilder {
     /// できてしまう（単一シグネチャ前提の高速パスが崩れる）。同じモジュールが複数箇所から
     /// import される・入れ子 import で再訪する、のどちらも起こるのでここで弾く。
     seen_modules: HashSet<(String, Vec<String>)>,
+    /// 外部言語 import の本体を収集中の深さ（#27-a）。
+    ///
+    /// 0 のときに見た `ClassDef` だけを `arrow_class_names` に載せる。外部言語スタブは
+    /// パース時に `Stmt::ClassDef` へ変換されるため、これが無いと C# クラスも
+    /// 「Arrow のクラス」に見えてしまう（実際 `event_cs_handler.ar` で
+    /// `Value::CsObject` を `Value::Instance` 前提の op に流して落ちた）。
+    foreign_depth: u32,
+}
+
+/// `import[lang]` のうち、**モジュール本体が Arrow ソース**であるものか（#27-a）。
+///
+/// これが true の import で宣言されたクラスは、実行時も Arrow の `Value::Instance` になる。
+/// false（`py`/`cs-*`/`js-*`/`cpp-*`/`rs`）のクラスは `Value::PyObject`/`CsObject` 等になるので、
+/// `Value::Instance` を前提とする最適化に載せてはいけない。
+///
+/// ⚠ **未知のタグは false（保守的）**。新しい言語を足したときに黙って
+/// 「Arrow のクラス扱い」になって壊れるより、最適化が効かない方が安全。
+/// 現行のタグは `parser/imports/dispatch.rs` の `match lang` が唯一の一覧。
+fn is_arrow_source_lang(lang: &str) -> bool {
+    matches!(lang, "ar" | "tl" | "ar-auto" | "tl-auto" | "arc" | "tlc")
 }
 
 impl TypeRegistryBuilder {
@@ -74,6 +94,7 @@ impl TypeRegistryBuilder {
                 trait_method_sigs: HashMap::new(),
                 trait_field_details: HashMap::new(),
                 known_class_names,
+                arrow_class_names: HashSet::new(),
                 new_type_originals,
                 class_bases,
                 class_fields: HashMap::new(),
@@ -83,6 +104,7 @@ impl TypeRegistryBuilder {
                 known_protocols: HashMap::new(),
             },
             seen_modules: HashSet::new(),
+            foreign_depth: 0,
         }
     }
 
@@ -143,6 +165,10 @@ impl TypeRegistryBuilder {
                     name, bases, body, ..
                 } => {
                     self.reg.known_class_names.insert(name.clone());
+                    // 外部言語スタブ由来でなければ「Arrow のクラス」（#27-a）。
+                    if self.foreign_depth == 0 {
+                        self.reg.arrow_class_names.insert(name.clone());
+                    }
                     self.reg.class_bases.insert(name.clone(), bases.clone());
                     self.collect_class_methods(name, body);
                     self.collect_class_members(name, body);
@@ -193,7 +219,15 @@ impl TypeRegistryBuilder {
                 Stmt::Import { lang, module, body, .. }
                 | Stmt::FromImport { lang, module, body, .. } => {
                     if self.seen_modules.insert((lang.clone(), module.clone())) {
+                        // 外部言語のスタブ本体に入る間は `arrow_class_names` へ載せない（#27-a）。
+                        let foreign = !is_arrow_source_lang(lang);
+                        if foreign {
+                            self.foreign_depth += 1;
+                        }
                         self.collect(body);
+                        if foreign {
+                            self.foreign_depth -= 1;
+                        }
                     }
                 }
                 _ => {}

@@ -176,6 +176,10 @@ impl TypeChecker {
     ) -> (Vec<StaticTypeError>, annotations::AstAnnotations) {
         let mut tc = Self::new(stmts);
         tc.check_stmts(stmts);
+        // Arrow ソース由来のクラス名を注釈へ移す（#27-a）。VM コンパイラが
+        // 「このレシーバは `Value::Instance` だ」と断定してよいかの唯一の根拠。
+        tc.annotations
+            .set_arrow_classes(tc.registry.arrow_class_names().clone());
         let annotations = std::mem::take(&mut tc.annotations);
         (tc.diags.into_parts().0, annotations)
     }
@@ -191,6 +195,10 @@ impl TypeChecker {
     ) {
         let mut tc = Self::new(stmts);
         tc.check_stmts(stmts);
+        // Arrow ソース由来のクラス名を注釈へ移す（#27-a）。VM コンパイラが
+        // 「このレシーバは `Value::Instance` だ」と断定してよいかの唯一の根拠。
+        tc.annotations
+            .set_arrow_classes(tc.registry.arrow_class_names().clone());
         let annotations = std::mem::take(&mut tc.annotations);
         let (errors, warnings) = tc.diags.into_parts();
         (errors, warnings, annotations)

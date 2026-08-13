@@ -91,6 +91,14 @@ pub struct AstAnnotations {
     binop_miss: BinopMissStats,
     /// `Unresolved` オペランドを生んだ式の種類別件数（診断用・#16 段階 D）。
     unresolved_sources: HashMap<&'static str, usize>,
+    /// **Arrow ソースで `class` 宣言された**クラス名（#27-a）。
+    ///
+    /// 実行時表現が `Value::Instance` だと断定してよい型名の集合。外部言語スタブ由来の
+    /// クラス（`import[cs-dll]` 等）は**含まない** — それらは `Value::CsObject` などになる。
+    /// `InferredType::NamedInstance(名前)` は両方を同じ形で表すので、
+    /// **`NamedInstance` だけを根拠に `Value::Instance` 前提の最適化へ落としてはいけない**
+    /// （#15e の「注釈は最適化ヒントであって意味論の根拠ではない」の具体例）。
+    arrow_classes: std::collections::HashSet<String>,
 }
 
 /// `binop_kind` が付かなかった二項演算の理由別件数（診断用）。
@@ -178,6 +186,17 @@ impl AstAnnotations {
     }
 
     /// 二項演算のオペランド種別を引く（未登録＝両プリミティブ確定でない）。
+    /// **Arrow ソース由来のクラス名か**（#27-a）。true のときだけ、その型の値は
+    /// 実行時 `Value::Instance` だと仮定してよい。
+    pub fn is_arrow_class(&self, name: &str) -> bool {
+        self.arrow_classes.contains(name)
+    }
+
+    /// Arrow ソース由来クラス名の集合を設定する（型検査のレジストリから 1 回だけ渡す）。
+    pub fn set_arrow_classes(&mut self, names: std::collections::HashSet<String>) {
+        self.arrow_classes = names;
+    }
+
     pub fn binop_kind(&self, node_id: u32) -> Option<BinOperandKind> {
         self.binop_kind.get(&node_id).copied()
     }

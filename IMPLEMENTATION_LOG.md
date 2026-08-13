@@ -2013,6 +2013,73 @@ VM フレームのローカルは flat buffer にあるので、**必ず #1 の 
   関数内ループの巻き添え）は本物**だった。それらは `--vm=off` で消える／プローブで再現しない、
   という形で区別できる。
 
+### #27-a / #26 レシーバの健全な判定 — 完了 2026-08-13
+
+**当初の #27-a の定義（`eval_method_call_evaled` に FFI レシーバを畳む）は、#26 を安全にする目的には
+過剰だった**。実測すると `eval_method_call`（CallArg 版）は **16 種のレシーバ・644 行**を扱い、
+評価済み版は 2 種（`Instance`/`PyObject`）しか扱っていない。全部を畳むのは #3 には要るが、
+**#26 が必要としているのは「レシーバが `Value::Instance` である証明」だけ**である。
+
+そこで**証明する側**を実装した（約 50 行）。
+
+#### 何が問題だったか
+
+`InferredType::NamedInstance(名前)` は **Arrow のクラスと外部言語スタブのクラスを区別しない**。
+`import[cs-dll]` 等はパース時に `Stmt::ClassDef` へ変換されるため、型検査の
+`known_class_names` には両方が載る。実行時表現は前者が `Value::Instance`、後者が
+`Value::CsObject`。**注釈だけを根拠に `Value::Instance` 前提の op へ落とすと落ちる**
+（#10-b′ で `event_cs_handler.ar` の off/auto 不一致として実際に踏んだ）。
+＝ #15e の「注釈は最適化ヒントであって意味論の根拠ではない」の具体例。
+
+#### 実装
+
+- **`TypeRegistry.arrow_class_names`**（#27-a）: `Stmt::ClassDef` のうち
+  **外部言語 import の本体でないもの**だけを集める。ビルダに `foreign_depth` を持たせ、
+  `is_arrow_source_lang(lang)`（`ar|tl|ar-auto|tl-auto|arc|tlc`）でない import に入る間だけ加算する。
+  ⚠ **未知の lang タグは false（保守的）**。新言語を足したとき黙って Arrow 扱いになるより、
+  最適化が効かない方が安全。lang の一覧は `parser/imports/dispatch.rs` の `match lang` が唯一の出所。
+- **`AstAnnotations::is_arrow_class`**: 上の集合を VM コンパイラへ渡す窓口。
+- **`Compiler::is_arrow_instance_type`**: 判定を **2 段**にした。
+  1. `is_user_instance_type` — **形**（ジェネリック・union・組み込み型名を除く）
+  2. `annotations.is_arrow_class` — **出自**（外部言語スタブ由来を除く）
+- **`Compiler::annot_is_arrow_instance`**（#26）: slot を持たないレシーバ
+  （グローバル変数・属性・呼び出し結果）を注釈の `resolved_type` から同じ 2 段で判定する。
+  `expr_node_id` は `Ident`/`Attr`/`Call`/`Subscript` の node-id を返す（0＝未採番は None）。
+
+#### 結果
+
+| 指標 | before | after |
+|---|---|---|
+| 最上位ツリーウォークのディスパッチ | 3,631,623 | **30,123（120x 減）** |
+| `fn_FAILED` | 31 | **29** |
+| `toplevel_FAILED` | 15 | **11** |
+| E2E | — | `bench_method_call` **1.45x**・`bench_name_hash` 1.10x |
+
+⚠ **健全化のコストも実測した**: 2 段目を足した時点で `fn` の成功が 323 → 321 に減った。
+これは**従来 unsound にコンパイルしていた 2 件**（非 Arrow クラスをレシーバとする関数）で、
+`is_arrow_class` が正しく弾いた。**カバレッジが下がる方向の変化が「正しい」ことがある**。
+
+#### 残った本来の #27-a（#3 に必要）
+
+`method-receiver:Ident` 8 ＋ `method-receiver:Attr` 4 ＝ **12 件は非 Arrow レシーバ**
+（`CsObject`/`Signal`/`EventLoop` など）で、これらを VM に載せるには
+**`eval_method_call_evaled` を CallArg 版と同じ 16 種まで広げる**必要がある（残 14 アーム・644 行のうち
+`Instance`/`PyObject` を除く分）。#3（強制バイトコード）には必須。#26 とは切り離せたので、
+着手時は「畳む」作業に専念できる。
+
+### ⚠ opcode を 1 つ足すごとに VM 支配ベンチが ~1〜1.5% 落ちる（#27/#27-a で確認）
+
+`exec_op` は `#[inline(always)]`（#1-x で必須と確定）なので、**アームを足すとディスパッチループ全体が
+太る**。#27 で 4 op 足した結果、`--vm=off` でも `--vm=auto` でも、そして
+**決して実行されないダミー 4 op でも**同じ幅の差が出た（`bench_branch` 0.93〜0.94x・
+`partial_call_overhead` 0.88x）。**どの op かではなく、何個足したかで決まる**。
+
+**#3 に向けた含意**: 残タスク（#10-c の `DeclareGlobal`、#27 の残り、#27-a の 14 アーム）は
+いずれも op を増やす。素直に足すと積み上がる。
+**提案（未実施）**: 稀な op を `Op::Rare(RareOp)` の 1 アームに畳み、
+`#[inline(never)]` な関数の中で二段目の match を回す。`exec_op` のアーム数を増やさずに
+op を増やせる。効果は要実測（この文書の規約どおり、着手前に A/B すること）。
+
 ### #10 import モジュール Chunk — 保留 2026-07-27（高コスト・低効果）
 > ⚠ **この節は 2026-07-27 時点の判断。(a) と (c) は #10-a の実測で部分的に否定された**（上記参照）。
 > (b)「`StoreGlobal` op が無い」は正しく、#10-b でそれを新設して解決した。
