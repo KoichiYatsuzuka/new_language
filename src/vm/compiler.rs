@@ -169,6 +169,9 @@ struct Compiler {
     async_blocks: Vec<crate::vm::chunk::AsyncBlock>,
     /// `LoadGlobal` のグローバル索引キャッシュ（#11）。emit ごとに1本割り当てる。
     global_caches: Vec<crate::ast::SlotCache>,
+    /// メソッド呼び出しの FFI 境界検査用の表示情報（#27-b）。node_id → (表示名 index, span index)。
+    /// 詳細は [`Chunk::ffi_call_info`](super::chunk::Chunk)。
+    ffi_call_info: HashMap<u32, (u32, u32)>,
     /// 最上位モード（#10-b）で「`scopes[0]` の同名を確実に指す」と言える名前の集合。
     /// 空 = 関数本体のコンパイル（従来どおり `slots` に無い書き込み先は bail）。
     ///
@@ -267,26 +270,35 @@ pub fn compile_fn(
 /// - **書き込み先にグローバルを許す**（`toplevel_globals`）。読み取りは従来どおり AST の
 ///   `Resolution::Global`（#21-b）に従うので、ここで渡すのは書き込み判定のためだけ。
 ///
-/// 対象は**ループ文（`while`/`for`）と宣言文（`let`/`mut`/`const`）**（#10-b/#10-c）。
+/// 対象は**定義文以外のすべて**（#10-b/#10-c/#10-c2）。
 ///
-/// 宣言文を入れる理由は「宣言が多いから」ではない。**初期化子がループ式**のとき
-/// （`mut xs = for i in range(N) -> list[T]: ... loop_yield ...`）本体が N 回まわるからで、
-/// 実測では最上位に残っていたツリーウォークの **93% がこの形**だった。
-/// 素朴に「1 回しか実行されない文はコンパイル損」と考えると取り逃す。
+/// 許可リストではなく**定義文の除外リスト**にしてある。新しい文種別が増えたとき、
+/// 許可リストだと黙って取りこぼす（#10-c2 の着手時、式文 909 件が
+/// 「まだ試行すらしていない」状態で残っていた）。`compile_stmt` が対応していない文は
+/// そこで bail するので、除外リストは「試すだけ無駄と分かっているもの」だけでよい。
 ///
-/// 残り（式文・`if`/`try`・定義文・`import`）は未対応。#3 にはそれらも要る。
+/// 宣言文（`let`/`mut`/`const`）を含む理由は「宣言が多いから」ではない。
+/// **初期化子がループ式**のとき（`mut xs = for i in range(N) -> list[T]: ... loop_yield ...`）
+/// 本体が N 回まわるからで、実測では最上位のツリーウォークの **93% がこの形**だった。
+/// 「1 回しか実行されない文はコンパイル損」と素朴に考えると取り逃す。
 pub fn compile_toplevel_stmt(
     stmt: &Stmt,
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     toplevel_globals: &HashSet<String>,
 ) -> Option<Chunk> {
-    if !matches!(
+    // 定義文（＝インタプリタ状態への登録）は #10-d の担当。試しても必ず bail するので入口で切る。
+    if matches!(
         stmt,
-        Stmt::While { .. }
-            | Stmt::For { .. }
-            | Stmt::Let(..)
-            | Stmt::Mut(..)
-            | Stmt::Const(..)
+        Stmt::FnDef { .. }
+            | Stmt::GenDef { .. }
+            | Stmt::ClassDef { .. }
+            | Stmt::TraitDef { .. }
+            | Stmt::ProtocolDef { .. }
+            | Stmt::NewTypeDef { .. }
+            | Stmt::EnumDef { .. }
+            | Stmt::Import { .. }
+            | Stmt::FromImport { .. }
+            | Stmt::Field { .. }
     ) {
         return None;
     }
@@ -363,6 +375,7 @@ fn compile_toplevel_stmt_inner(
         n_locals: n as usize,
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
+        ffi_call_info: HashMap::new(),
         toplevel_globals: toplevel_globals.clone(),
     };
 
@@ -383,6 +396,7 @@ fn compile_toplevel_stmt_inner(
         n_params: 0,
         async_blocks: c.async_blocks,
         global_caches: c.global_caches,
+        ffi_call_info: c.ffi_call_info,
     };
 
     if std::env::var("AR_VM_DUMP").is_ok_and(|v| !v.is_empty()) {
@@ -499,6 +513,7 @@ fn compile_fn_inner(
         n_locals: n as usize,
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
+        ffi_call_info: HashMap::new(),
         toplevel_globals: HashSet::new(),
     };
 
@@ -524,6 +539,7 @@ fn compile_fn_inner(
         n_params,
         async_blocks: c.async_blocks,
         global_caches: c.global_caches,
+        ffi_call_info: c.ffi_call_info,
     };
 
     // 開発用フック: `AR_VM_DUMP=1` で生成バイトコードを標準エラーへ逆アセンブルする。
@@ -561,6 +577,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         n_locals: 0,
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
+        ffi_call_info: HashMap::new(),
         toplevel_globals: HashSet::new(),
     };
     match stmt {
@@ -589,6 +606,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         n_params: 0,
         async_blocks: Vec::new(),
         global_caches: c.global_caches,
+        ffi_call_info: c.ffi_call_info,
     })
 }
 
@@ -1198,6 +1216,30 @@ impl Compiler {
     fn annot_binop_kind(&self, node_id: u32) -> Option<crate::type_check::BinOperandKind> {
         // op のゲートは呼び出し側が渡す op で行う（`gate_bin_kind`）。ここでは種別だけ返す。
         self.annotations.binop_kind(node_id)
+    }
+
+    /// メソッド呼び出しの表示名と位置を副表へ記録する（#27-b・FFI 境界検査のメッセージ用）。
+    ///
+    /// ツリーウォークの `callee_display_name` と**同じ規則**で作ること
+    /// （`obj.attr` 形は `base.attr`、それ以外は `attr`）。ずれると off/auto で
+    /// エラーメッセージが食い違う（`ffi_boundary_check_error.ar` が検出した）。
+    fn record_ffi_call_info(
+        &mut self,
+        node_id: u32,
+        object: &Expr,
+        attr: &str,
+        span: &crate::token::Span,
+    ) {
+        if node_id == 0 {
+            return; // 未採番（合成 AST 等）は検査キーが引けない
+        }
+        let display = match object {
+            Expr::Ident { name, .. } => format!("{name}.{attr}"),
+            _ => attr.to_string(),
+        };
+        let ni = self.add_name(&display);
+        let si = self.add_span(span);
+        self.ffi_call_info.insert(node_id, (ni, si));
     }
 
     /// 最上位宣言の名前なら name プールの index を返す（#10-c）。
@@ -2239,6 +2281,10 @@ impl Compiler {
                     //
                     // ⚠ `node_id` を必ず渡すこと。FFI 戻り値検査のキーで、落とすと
                     // 外部言語メソッドの検査が VM 経路だけ素通りする。
+                    // FFI 境界検査のエラーメッセージ用（#27-b）。ツリーウォークは
+                    // `callee_display_name(func)`（= `L.get_int`）と呼び出し位置を渡すので、
+                    // 同じものをコンパイル時に作って副表へ置く（op は太らせない）。
+                    self.record_ffi_call_info(*node_id, object, attr, span);
                     if let Some(slot) = self.as_local(object) {
                         // 超命令融合（#16 段階(b)(i)）: レシーバが局所変数なら push せず frame 直読み。
                         let mask = self.compile_call_args(args)?;

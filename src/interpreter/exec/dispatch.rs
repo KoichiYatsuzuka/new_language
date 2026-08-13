@@ -22,7 +22,23 @@ impl Interpreter {
             }
         }
 
+        // 最上位の文は VM で回せることがある（#10-b/#10-c/#10-c2）。
+        //
+        // ⚠ **各アームに分散させず、ここ 1 箇所に置くこと。** 対象の文種別が増えるたびに
+        // アームへ足していくと同じ 3 行が 10 箇所以上に散る。
+        // ⚠ **デバッガの `should_pause_at` より後**であること（#1 で直した既存バグと同じ形で、
+        // 先に置くと off/auto でステッピングが食い違う）。
+        // ⚠ `toplevel_vm_candidate` は**フィールド 3 本の比較だけ**（`#[inline(always)]`）。
+        // `exec()` は全文で呼ばれるので、ここに重い判定を足すと全体が遅くなる（#10-a で 11% 実測）。
+        if self.toplevel_vm_candidate() {
+            if let Some(r) = self.try_run_toplevel_stmt(stmt)? {
+                return Ok(r);
+            }
+        }
+
         // 診断フック（#10）: ツリーウォークが実際に実行している文を数える。
+        // ⚠ **VM 試行より後に置くこと。** 前に置くと「VM へ渡した文」まで数えてしまい、
+        // 「ツリーウォークの負荷」という指標の意味が崩れる（#10-c2 で 1,368 件を過大計上した）。
         if crate::interpreter::tw_stats::enabled() {
             crate::interpreter::tw_stats::record_stmt(stmt);
         }
@@ -32,22 +48,8 @@ impl Interpreter {
                 self.eval(expr)?;
                 Ok(ExecResult::Normal)
             }
-            // 最上位の宣言は VM で回せることがある（#10-c）。**初期化子がループ式**のとき
-            // 本体が N 回まわるので、1 回しか実行されない文でも Chunk 化する価値がある。
-            Stmt::Let(name, _, expr) => {
-                if self.toplevel_vm_candidate() {
-                    if let Some(r) = self.try_run_toplevel_stmt(stmt)? {
-                        return Ok(r);
-                    }
-                }
-                self.exec_let(name, expr)
-            }
+            Stmt::Let(name, _, expr) => self.exec_let(name, expr),
             Stmt::Const(name, _, expr) => {
-                if self.toplevel_vm_candidate() {
-                    if let Some(r) = self.try_run_toplevel_stmt(stmt)? {
-                        return Ok(r);
-                    }
-                }
                 if name != "_" && self.get_var(name).is_some() {
                     return Err(format!("NameError: variable '{name}' is already declared"));
                 }
@@ -56,11 +58,6 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::Mut(name, _, expr) => {
-                if self.toplevel_vm_candidate() {
-                    if let Some(r) = self.try_run_toplevel_stmt(stmt)? {
-                        return Ok(r);
-                    }
-                }
                 if name != "_" && self.get_var(name).is_some() {
                     return Err(format!("NameError: variable '{name}' is already declared"));
                 }
@@ -133,29 +130,12 @@ impl Interpreter {
                 else_body,
             } => self.exec_if_stmt(branches, else_body),
             Stmt::Match { subject, arms, .. } => self.exec_match_stmt(subject, arms),
-            // 最上位のループは VM で回せることがある（#10-b）。適格でなければツリーウォーク。
-            // ⚠ `toplevel_vm_candidate`（インライン・比較3本）で先に切ること。この文は
-            // **関数内ループの実行でも通る**ので、いきなり非インライン呼び出しにすると数 % 損する。
-            Stmt::While { cond, body } => {
-                if self.toplevel_vm_candidate() {
-                    if let Some(r) = self.try_run_toplevel_stmt(stmt)? {
-                        return Ok(r);
-                    }
-                }
-                self.exec_while_stmt(cond, body)
-            }
+            Stmt::While { cond, body } => self.exec_while_stmt(cond, body),
             Stmt::For {
                 targets,
                 iter,
                 body,
-            } => {
-                if self.toplevel_vm_candidate() {
-                    if let Some(r) = self.try_run_toplevel_stmt(stmt)? {
-                        return Ok(r);
-                    }
-                }
-                self.exec_for_stmt(targets, iter, body)
-            }
+            } => self.exec_for_stmt(targets, iter, body),
             Stmt::Block(body) => self.exec_block_stmt(body),
             Stmt::FnDef {
                 name,

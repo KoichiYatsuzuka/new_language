@@ -701,7 +701,7 @@ fn exec_op(
                     Some(&chunk.attr_caches[*name_idx as usize]), None,
                 )?
             } else {
-                interp.vm_method_call_other(obj, name, evaled, *node_id)?
+                interp.vm_method_call_other(obj, name, evaled, *node_id, chunk)?
             };
             buf.push(r);
             return Ok(Flow::NextAfterCall); // #1
@@ -724,7 +724,7 @@ fn exec_op(
                     Some(&chunk.attr_caches[*name_idx as usize]), None,
                 )?
             } else {
-                interp.vm_method_call_other(obj, name, evaled, *node_id)?
+                interp.vm_method_call_other(obj, name, evaled, *node_id, chunk)?
             };
             buf.push(r);
             return Ok(Flow::NextAfterCall); // #1

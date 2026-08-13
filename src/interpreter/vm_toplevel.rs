@@ -99,13 +99,22 @@ impl Interpreter {
         method_name: &str,
         evaled: Vec<(Option<String>, Value, bool)>,
         node_id: u32,
+        chunk: &crate::vm::Chunk,
     ) -> Result<Value, String> {
         let lang = Self::foreign_call_lang(&obj, method_name);
         let r = self.eval_method_call_evaled(obj, method_name, evaled)?;
-        match lang {
-            Some(l) => self.check_ffi_return(l, r, node_id, method_name, None),
-            None => Ok(r),
-        }
+        let Some(l) = lang else { return Ok(r) };
+        // ⚠ 表示名と位置はツリーウォークと**同じもの**を使う（`L.get_int` / `file:line:col`）。
+        // `method_name` と `None` で済ませると `get_int` / `<unknown>` になり
+        // off/auto でエラーメッセージが食い違う（`ffi_boundary_check_error.ar` が検出）。
+        let (name, span) = match chunk.ffi_call_info.get(&node_id) {
+            Some(&(ni, si)) => (
+                chunk.names[ni as usize].as_str(),
+                chunk.spans.get(si as usize),
+            ),
+            None => (method_name, None),
+        };
+        self.check_ffi_return(l, r, node_id, name, span)
     }
 
     /// `Op::DeclareGlobal` の実体（#10-c）: 最上位の `let`/`mut`/`const` を宣言する。

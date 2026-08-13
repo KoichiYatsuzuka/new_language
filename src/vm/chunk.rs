@@ -61,4 +61,11 @@ pub struct Chunk {
     pub async_blocks: Vec<AsyncBlock>,
     /// `LoadGlobal` のグローバル索引キャッシュ（#11）。`(slot_epoch, scopes[0] index)` を焼く。
     pub global_caches: Vec<crate::ast::SlotCache>,
+    /// メソッド呼び出しの FFI 境界検査用の表示情報（#27-b）。node_id → (表示名 index, span index)。
+    ///
+    /// **エラーメッセージのためだけ**に要る（`check_ffi_return` の `callee_name` / `call_span`）。
+    /// op のオペランドに足すと `Op` のサイズが `Call` を超えて全命令が太るので、
+    /// **参照されるのが外部言語レシーバのときだけ**という性質を使って副表に逃がしてある。
+    /// これが無いと `L.get_int` が `get_int`、位置が `<unknown>` になり off/auto が食い違う。
+    pub ffi_call_info: std::collections::HashMap<u32, (u32, u32)>,
 }
