@@ -169,6 +169,16 @@ pub enum Op {
     LoadName(u32),
     /// pop した値を `let dbg::name` として現在のスコープへ宣言する（不変・`let` 意味論）。
     DeclareName(u32),
+    /// pop した値で**グローバルを新規宣言**する（#10-c: 最上位の `let`/`mut`/`const`）。
+    /// フィールドは (name_idx, 宣言の種類)。
+    ///
+    /// コピー・フリーズ・可変性の扱いは `DeclKind` が担う。ツリーウォークの
+    /// `exec_let` / `exec` の `Const`/`Mut` アームと**同じ判断を同じ順序で**行う
+    /// （実体は `Interpreter::vm_declare_global`）。
+    ///
+    /// ⚠ **4 つの op に分けない**。`exec_op` は `#[inline(always)]` なので op を 1 つ足すごとに
+    /// VM 支配ベンチが ~1〜1.5% 落ちる（#27/#27-a で実測）。種類はオペランドで持つ。
+    DeclareGlobal(u32, DeclKind),
     /// メソッド本体の `Self`（#27）: レシーバのクラスを `Value::Class` として push する。
     ///
     /// ツリーウォークは `exec_fn_evaled` が `Self` をスコープへ宣言するが、VM のフレームは
@@ -209,4 +219,27 @@ pub enum Op {
     /// `target <- async->T: body`: pop した AsyncManager に `chunk.async_blocks[idx]` のタスクを投入する。
     /// 捕捉変数は frame から読み、`vm_async_submit`（capture_env 経由）で env を組む（ツリーウォーク一致）。
     AsyncSubmit(u32),
+}
+
+
+/// 最上位宣言の種類（#10-c・`Op::DeclareGlobal` のオペランド）。
+///
+/// ツリーウォーク側の対応:
+/// - `Const`            … `exec` の `Stmt::Const` アーム（コピーもフリーズもしない）
+/// - `Mut`              … `exec` の `Stmt::Mut` アーム（**常に** `deep_copy_value`）
+/// - `LetPlain`         … `exec_let` の「不変ソース／リテラル」分岐（そのまま束縛）
+/// - `LetFreezeInstance`… `exec_let` の「非識別子式」分岐（`Instance` のときだけ copy+freeze）
+///
+/// `exec_let` の「`mut` 変数から `let` へ」分岐（常に copy+freeze）は、最上位では
+/// **ソースの可変性がコンパイル時に分からない**ため対象外（コンパイラが bail する）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclKind {
+    /// `const x = e`
+    Const,
+    /// `mut x = e`
+    Mut,
+    /// `let x = e`（ソースが不変と分かっている／リテラル）
+    LetPlain,
+    /// `let x = e`（非識別子式。`Instance` のときだけ deep_copy + freeze）
+    LetFreezeInstance,
 }

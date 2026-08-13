@@ -32,8 +32,22 @@ impl Interpreter {
                 self.eval(expr)?;
                 Ok(ExecResult::Normal)
             }
-            Stmt::Let(name, _, expr) => self.exec_let(name, expr),
+            // 最上位の宣言は VM で回せることがある（#10-c）。**初期化子がループ式**のとき
+            // 本体が N 回まわるので、1 回しか実行されない文でも Chunk 化する価値がある。
+            Stmt::Let(name, _, expr) => {
+                if self.toplevel_vm_candidate() {
+                    if let Some(r) = self.try_run_toplevel_stmt(stmt)? {
+                        return Ok(r);
+                    }
+                }
+                self.exec_let(name, expr)
+            }
             Stmt::Const(name, _, expr) => {
+                if self.toplevel_vm_candidate() {
+                    if let Some(r) = self.try_run_toplevel_stmt(stmt)? {
+                        return Ok(r);
+                    }
+                }
                 if name != "_" && self.get_var(name).is_some() {
                     return Err(format!("NameError: variable '{name}' is already declared"));
                 }
@@ -42,6 +56,11 @@ impl Interpreter {
                 Ok(ExecResult::Normal)
             }
             Stmt::Mut(name, _, expr) => {
+                if self.toplevel_vm_candidate() {
+                    if let Some(r) = self.try_run_toplevel_stmt(stmt)? {
+                        return Ok(r);
+                    }
+                }
                 if name != "_" && self.get_var(name).is_some() {
                     return Err(format!("NameError: variable '{name}' is already declared"));
                 }
@@ -119,7 +138,7 @@ impl Interpreter {
             // **関数内ループの実行でも通る**ので、いきなり非インライン呼び出しにすると数 % 損する。
             Stmt::While { cond, body } => {
                 if self.toplevel_vm_candidate() {
-                    if let Some(r) = self.try_run_toplevel_loop(stmt)? {
+                    if let Some(r) = self.try_run_toplevel_stmt(stmt)? {
                         return Ok(r);
                     }
                 }
@@ -131,7 +150,7 @@ impl Interpreter {
                 body,
             } => {
                 if self.toplevel_vm_candidate() {
-                    if let Some(r) = self.try_run_toplevel_loop(stmt)? {
+                    if let Some(r) = self.try_run_toplevel_stmt(stmt)? {
                         return Ok(r);
                     }
                 }

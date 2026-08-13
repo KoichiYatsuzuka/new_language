@@ -74,6 +74,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::ListOrNone => "LIST_OR_NONE".to_string(),
         Op::LoadName(n) => format!("LOAD_NAME {:?}", chunk.names.get(*n as usize)),
         Op::DeclareName(n) => format!("DECLARE_NAME {:?}", chunk.names.get(*n as usize)),
+        Op::DeclareGlobal(n, k) => format!("DECLARE_GLOBAL {:?} {k:?}", chunk.names.get(*n as usize)),
         Op::LoadSelfClass => "LOAD_SELF_CLASS".to_string(),
         Op::GetTraitAttr(t, a) => format!("GET_TRAIT_ATTR {:?}::{:?}", chunk.names.get(*t as usize), chunk.names.get(*a as usize)),
         Op::SetTraitAttr(t, a) => format!("SET_TRAIT_ATTR {:?}::{:?}", chunk.names.get(*t as usize), chunk.names.get(*a as usize)),

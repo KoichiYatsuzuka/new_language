@@ -2080,6 +2080,74 @@ VM フレームのローカルは flat buffer にあるので、**必ず #1 の 
 `#[inline(never)]` な関数の中で二段目の match を回す。`exec_op` のアーム数を増やさずに
 op を増やせる。効果は要実測（この文書の規約どおり、着手前に A/B すること）。
 
+### #10-c 最上位の宣言文を Chunk 化 — 完了 2026-08-13
+
+**計画書の想定と実体がずれていた。** #10-c は「`DeclareGlobal` を足して `let`/`Assign`/`if`/`try`/
+式文を覆う」と書いてあり、暗に「最上位の文は 1 回しか実行されないが数が多い」と読める。
+実測すると残っていた 30,123 件の内訳は `Let` 14,412 ＋ `LoopYield` 14,018 で、
+**93% が 2 ファイルの 4 文**だった:
+
+```
+mut pts = for i in range(N) -> list[Particle]:
+    let f = float(i) * 0.001
+    loop_yield Particle(f, f * 2.0, f * 3.0, 1.0 + f)
+```
+
+＝ **宣言文そのものではなく、初期化子のループ式が N 回まわる**のが実体。
+「1 回しか実行されない文を Chunk 化しても損」という素朴な判断で切ると**これを取り逃す**。
+
+#### 実装
+
+- **`Op::DeclareGlobal(name_idx, DeclKind)`** — `DeclKind` は `Const`/`Mut`/`LetPlain`/
+  `LetFreezeInstance`。**4 つの op に分けず 1 op のオペランドにした**（op を 1 つ足すごとに
+  VM 支配ベンチが ~1〜1.5% 落ちるため。#27/#27-a の実測）。
+  実体は `Interpreter::vm_declare_global` 1 箇所で、コピー・フリーズ・再宣言検査を
+  `exec_let` / `exec` の `Const`・`Mut` アームと同じ判断で行う。
+- **`compile_toplevel_stmt` が `Let`/`Mut`/`Const` を受け付ける**ようになった。
+- **`exec()` の該当アームから `try_run_toplevel_stmt` を呼ぶ**（`toplevel_vm_candidate` で先に切る）。
+
+⚠ **slot 採番の落とし穴**: 宣言文を `collect_nested_decls` に渡すと
+**その文が宣言する名前に slot を割り当ててしまう**。最上位の宣言はグローバルなので、
+slot を振ると `store_target` が slot 側を優先し、`DeclareGlobal` が出ずに値がフレームへ消える。
+宣言文だけは**初期化子に対して `collect_expr_decls`** を呼ぶ。
+
+⚠ **`let x = <識別子>` は bail**。`exec_let` は「ソースが `mut` なら copy+freeze」を
+ソース変数の可変性で分岐するが、最上位ではコンパイル時に分からない
+（`toplevel_globals` は名前の集合しか持たない）。13 件がこれで bail する。
+
+⚠ **評価順が 1 点だけ違う**: ツリーウォークは「再宣言検査 → 初期化子の評価」だが、
+VM は「初期化子の評価 → `DeclareGlobal` 内で検査」。ただし**型検査が再宣言を先に弾く**ので
+（`redeclare_error.ar` は `StaticTypeError` で実行に到達しない）観測されない。
+
+#### 結果
+
+| 指標 | before | after |
+|---|---|---|
+| 最上位ツリーウォークのディスパッチ | 30,123 | **2,071（14.5x 減）** |
+| 〃（#10 着手前から） | 11,235,617 | **2,071（5,425x 減）** |
+| E2E（A/B・release） | — | **退行なし**（0.98〜1.06x・わずかに正） |
+
+E2E の伸びが小さいのは当然で、残っていたのは数万回のディスパッチ＝ミリ秒級だから。
+**#10-c の価値は速度ではなく #3 に向けたカバレッジ**にある。
+
+#### 最上位に残る 2,071 件と bail 163 件の内訳
+
+`toplevel_FAILED` が 11 → 163 に増えたのは**試行する文が激増したため**で、退行ではない
+（比較すべきは常にディスパッチ数の方）。
+
+| bail 理由 | 件数 | 行き先 |
+|---|---|---|
+| `method-receiver:*`（Ident 79/Attr 16/Call 2/Cast 1） | **98** | #27-b（非 Arrow レシーバ） |
+| `toplevel-let-from-ident` | 13 | 最上位グローバルの可変性を持てば解決 |
+| `expr:ImaginaryLit` | 13 | 虚数リテラル。小さい |
+| `callee-expr:TemplateInstantiate` | 13 | テンプレート実体化呼び出し |
+| `call-arg`（キーワード/可変長） | 8 | |
+| `for-tuple-target` | 7 | `for k, v in ...` のタプル分解 |
+| 未帰属 / その他 | 11 | |
+
+残るツリーウォークは `Expr`（式文 `print(...)` 等）909 が最大で、これは**まだ試行していない**
+（`compile_toplevel_stmt` が受け付けていない）。#3 にはこれと定義文・`import` が要る。
+
 ### #10 import モジュール Chunk — 保留 2026-07-27（高コスト・低効果）
 > ⚠ **この節は 2026-07-27 時点の判断。(a) と (c) は #10-a の実測で部分的に否定された**（上記参照）。
 > (b)「`StoreGlobal` op が無い」は正しく、#10-b でそれを新設して解決した。

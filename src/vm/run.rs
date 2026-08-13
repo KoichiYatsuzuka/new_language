@@ -211,6 +211,20 @@ fn store_global_miss(
     Ok(())
 }
 
+/// `Op::DeclareGlobal` の本体（#10-c）。ツリーウォークと同じ `vm_declare_global` へ委譲する。
+/// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
+#[inline(never)]
+fn declare_global(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    ni: u32,
+    kind: super::op::DeclKind,
+    v: Value,
+) -> Result<(), String> {
+    let name = &chunk.names[ni as usize];
+    interp.vm_declare_global(name, kind, v)
+}
+
 /// `Op::GetTraitAttr` の本体（#27）。ツリーウォークと同じ `trait_access_evaled` へ委譲する。
 /// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
 #[inline(never)]
@@ -763,6 +777,11 @@ fn exec_op(
         Op::DeclareName(name_idx) => {
             let v = buf.pop().unwrap();
             interp.vm_declare_debug(&chunk.names[*name_idx as usize], v)?;
+        }
+        Op::DeclareGlobal(ni, kind) => {
+            // #10-c: 最上位の `let`/`mut`/`const`。本体は `#[inline(never)]`（`exec_op` を太らせない）。
+            let v = buf.pop().unwrap();
+            declare_global(interp, chunk, *ni, *kind, v)?;
         }
         Op::LoadSelfClass => {
             // #27: メソッド本体の `Self`。ツリーウォークが宣言する `Self` と同じ値

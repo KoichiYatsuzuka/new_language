@@ -18,7 +18,7 @@ use crate::ast::{
 use crate::interpreter::Value;
 
 use super::chunk::Chunk;
-use super::op::Op;
+use super::op::{DeclKind, Op};
 
 /// 診断フック（#10）: コンパイルを諦めた地点と構文種別を計上する。
 /// `AR_TW_STATS=1` のときだけ働く（既定は enabled() の分岐 1 つで終わる）。
@@ -267,15 +267,27 @@ pub fn compile_fn(
 /// - **書き込み先にグローバルを許す**（`toplevel_globals`）。読み取りは従来どおり AST の
 ///   `Resolution::Global`（#21-b）に従うので、ここで渡すのは書き込み判定のためだけ。
 ///
-/// 対象は**ループ文（`while` / `for`）に限る**。最上位で 2 回以上実行される文はループだけで、
-/// それ以外を Chunk 化しても「1 回実行するためにコンパイルする」ぶん損になる。
-/// （最上位の全文カバーは #10-c 以降。#3 に必要なのはそちら。）
+/// 対象は**ループ文（`while`/`for`）と宣言文（`let`/`mut`/`const`）**（#10-b/#10-c）。
+///
+/// 宣言文を入れる理由は「宣言が多いから」ではない。**初期化子がループ式**のとき
+/// （`mut xs = for i in range(N) -> list[T]: ... loop_yield ...`）本体が N 回まわるからで、
+/// 実測では最上位に残っていたツリーウォークの **93% がこの形**だった。
+/// 素朴に「1 回しか実行されない文はコンパイル損」と考えると取り逃す。
+///
+/// 残り（式文・`if`/`try`・定義文・`import`）は未対応。#3 にはそれらも要る。
 pub fn compile_toplevel_stmt(
     stmt: &Stmt,
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     toplevel_globals: &HashSet<String>,
 ) -> Option<Chunk> {
-    if !matches!(stmt, Stmt::While { .. } | Stmt::For { .. }) {
+    if !matches!(
+        stmt,
+        Stmt::While { .. }
+            | Stmt::For { .. }
+            | Stmt::Let(..)
+            | Stmt::Mut(..)
+            | Stmt::Const(..)
+    ) {
         return None;
     }
     // 診断フック（#10）: `compile_fn` と同じく取りこぼしを「未帰属」として可視化する。
@@ -308,7 +320,17 @@ fn compile_toplevel_stmt_inner(
     let mut slot_mut: Vec<bool> = Vec::new();
     let mut slot_type: Vec<Option<String>> = Vec::new();
     let mut n: u16 = 0;
-    if collect_nested_decls(body, &mut slots, &mut slot_mut, &mut slot_type, &mut n).is_none() {
+    // ⚠ 宣言文は **`collect_nested_decls` に渡してはいけない**（#10-c）。
+    // あれは「その文が宣言する名前」に slot を割り当てるが、最上位の宣言はグローバルであって
+    // slot ではない。slot を振ると `store_target` が slot 側を優先してしまい、
+    // `DeclareGlobal` が出ずに値がフレームへ消える。初期化子の**内側**の宣言だけを採番する。
+    let collected = match stmt {
+        Stmt::Let(_, _, e) | Stmt::Mut(_, _, e) | Stmt::Const(_, _, e) => {
+            collect_expr_decls(e, &mut slots, &mut slot_mut, &mut slot_type, &mut n)
+        }
+        _ => collect_nested_decls(body, &mut slots, &mut slot_mut, &mut slot_type, &mut n),
+    };
+    if collected.is_none() {
         bail("nested-decls", None);
         return None;
     }
@@ -1178,6 +1200,18 @@ impl Compiler {
         self.annotations.binop_kind(node_id)
     }
 
+    /// 最上位宣言の名前なら name プールの index を返す（#10-c）。
+    ///
+    /// 条件は 2 つ: **最上位モードであること**（`toplevel_globals` が非空）と、
+    /// **その名前が slot に無いこと**。後者が要るのは、最上位文の内側（ループ本体・
+    /// ブロック式の中）の宣言は slot だから — そちらは従来どおり `StoreLocal*` に落とす。
+    fn toplevel_decl_name(&mut self, name: &str) -> Option<u32> {
+        if self.toplevel_globals.is_empty() || self.slots.contains_key(name) {
+            return None;
+        }
+        Some(self.add_name(name))
+    }
+
     /// 変数への書き込み先を決める（#10-b）。
     ///
     /// 1. VM の slot にある名前 → `Local`（関数本体でもブロック内宣言でもここに来る）
@@ -1682,10 +1716,13 @@ impl Compiler {
                 self.emit(Op::Jump(target));
             }
             // ── ローカル宣言（exec_let / exec の const・mut と同一セマンティクス） ──
+            // 最上位モード（#10-c）では slot ではなくグローバルへ宣言する（`DeclareGlobal`）。
             Stmt::Const(name, _, e) => {
                 self.compile_expr(e)?;
                 if name == "_" {
                     self.emit(Op::Pop);
+                } else if let Some(ni) = self.toplevel_decl_name(name) {
+                    self.emit(Op::DeclareGlobal(ni, DeclKind::Const));
                 } else {
                     let slot = *self.slots.get(name)?;
                     self.emit(Op::StoreLocal(slot)); // const は copy/freeze しない
@@ -1695,10 +1732,30 @@ impl Compiler {
                 self.compile_expr(e)?;
                 if name == "_" {
                     self.emit(Op::Pop);
+                } else if let Some(ni) = self.toplevel_decl_name(name) {
+                    self.emit(Op::DeclareGlobal(ni, DeclKind::Mut));
                 } else {
                     let slot = *self.slots.get(name)?;
                     self.emit(Op::StoreLocalDeepCopy(slot)); // mut は常に deep_copy
                 }
+            }
+            Stmt::Let(name, _, e) if self.toplevel_decl_name(name).is_some() && name != "_" => {
+                // 最上位の `let`（#10-c）。ソースが識別子のときは**その変数の可変性**が要るが、
+                // 最上位ではコンパイル時に分からない（`toplevel_globals` は名前の集合だけ）。
+                // `exec_let` の「mut ソースなら copy+freeze」分岐を再現できないので bail する。
+                let kind = match e {
+                    Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::None => {
+                        DeclKind::LetPlain
+                    }
+                    Expr::Ident { .. } => {
+                        bail("toplevel-let-from-ident", None);
+                        return None;
+                    }
+                    _ => DeclKind::LetFreezeInstance,
+                };
+                let ni = self.toplevel_decl_name(name)?;
+                self.compile_expr(e)?;
+                self.emit(Op::DeclareGlobal(ni, kind));
             }
             Stmt::Let(name, _, e) => {
                 if name == "_" {

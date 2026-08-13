@@ -11,14 +11,14 @@
 
 use std::rc::Rc;
 
-use crate::interpreter::{ExecResult, Interpreter, Value};
+use crate::interpreter::{ExecResult, Interpreter, Value, Var};
 
 impl Interpreter {
     /// 最上位ループの VM 実行を**試す価値があるか**の即断（#10-b）。
     ///
     /// ⚠ **`exec()` から必ずこれを先に呼ぶこと。** `Stmt::While`/`Stmt::For` の実行は
     /// 最上位だけでなく**ツリーウォーク関数の中でも起きる**ので、いきなり
-    /// `try_run_toplevel_loop`（非インライン）を呼ぶと関数内ループの実行ごとに
+    /// `try_run_toplevel_stmt`（非インライン）を呼ぶと関数内ループの実行ごとに
     /// 呼び出しコストを払う。実測でそれが数 % の退行になった。
     /// ここはフィールド 3 本の比較だけなのでインライン展開される。
     #[inline(always)]
@@ -29,7 +29,8 @@ impl Interpreter {
             && !self.toplevel_globals.is_empty()
     }
 
-    /// 最上位のループ文（`while` / `for`）を VM で実行する（#10-b）。
+    /// 最上位の文を VM で実行する（#10-b/#10-c）。対象はループ文と宣言文
+    /// （`compile_toplevel_stmt` が受け付ける形）。
     ///
     /// 適格でなければ `Ok(None)` を返し、呼び出し側がツリーウォークへ落ちる。
     ///
@@ -43,7 +44,7 @@ impl Interpreter {
     /// ⚠ **`exec()` の中から呼ぶ**こと（`run_program` からではなく）。
     /// デバッガの `should_pause_at` は `exec()` 冒頭で走るので、そこを飛ばすと
     /// off/auto でステッピングが食い違う（#1 で修正した既存バグと同じ形）。
-    pub(crate) fn try_run_toplevel_loop(
+    pub(crate) fn try_run_toplevel_stmt(
         &mut self,
         stmt: &crate::ast::Stmt,
     ) -> Result<Option<ExecResult>, String> {
@@ -76,8 +77,52 @@ impl Interpreter {
         let result = crate::vm::run(self, &chunk, &mut buf, base);
         buf.truncate(base);
         self.vm_stack = buf;
-        // 最上位ループは値を返さない（`ReturnNil`）。制御は必ず次の文へ進む。
+        // 最上位文は値を返さない（`ReturnNil`）。制御は必ず次の文へ進む。
         result.map(|_| Some(ExecResult::Normal))
+    }
+
+    /// `Op::DeclareGlobal` の実体（#10-c）: 最上位の `let`/`mut`/`const` を宣言する。
+    ///
+    /// ツリーウォークの `exec_let` / `exec` の `Const`・`Mut` アームと**同じ判断を同じ順序で**行う。
+    /// コンパイル時に決まるのは「どの分岐を取るか」（`DeclKind`）だけで、コピー・フリーズ・
+    /// 再宣言検査の実装はここに 1 つだけ置く。
+    ///
+    /// ⚠ **再宣言の `NameError` を落とさないこと。** 型検査も再宣言を弾くが、
+    /// `redeclare_error.ar` が実行時メッセージを stderr で比較しているので挙動が変わると検出される。
+    pub(crate) fn vm_declare_global(
+        &mut self,
+        name: &str,
+        kind: crate::vm::op::DeclKind,
+        value: Value,
+    ) -> Result<(), String> {
+        use crate::vm::op::DeclKind;
+        // `_` は束縛せず捨てる（ツリーウォークも同じ）。
+        if name == "_" {
+            return Ok(());
+        }
+        if self.get_var(name).is_some() {
+            return Err(format!("NameError: variable '{name}' is already declared"));
+        }
+        let (value, mutable) = match kind {
+            DeclKind::Const => (value, false),
+            // `mut` は常に deep_copy（`exec` の `Stmt::Mut` アームと同一）。
+            DeclKind::Mut => (Self::deep_copy_value(value), true),
+            DeclKind::LetPlain => (value, false),
+            // 非識別子式からの `let`: `Instance` のときだけ copy + freeze。
+            // 可変コレクションから取り出した `Instance` を直接フリーズすると
+            // 共有 `Rc` 経由で元まで不変化されるため（`exec_let` のコメント参照）。
+            DeclKind::LetFreezeInstance => {
+                if matches!(value, Value::Instance(_)) {
+                    let copied = Self::deep_copy_value(value);
+                    self.apply_freeze_to_value(&copied, true)?;
+                    (copied, false)
+                } else {
+                    (value, false)
+                }
+            }
+        };
+        self.declare_var(name.to_string(), Var::new(value, mutable));
+        Ok(())
     }
 
     /// `Op::LoadSelfClass` の実体（#27）: メソッド本体の `Self` の値。
