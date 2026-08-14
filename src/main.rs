@@ -369,9 +369,11 @@ fn run_program(
     // ソーステキストはエラー報告時のスタックトレース表示に使用される
     let mut interp = Interpreter::new();
     interp.set_vm_mode(vm_mode);
-    // 最上位ループの VM 化（#10-b）に使う「確実に scopes[0] を指す名前」の集合。
-    // リゾルバが `Resolution::Global` を付ける判定と同一関数から得る（判定は 1 実装）。
-    interp.set_toplevel_globals(interpreter::resolver::toplevel_visible_globals(&stmts));
+    // 最上位 Chunk（#10-b/#10-c/#27-c）が「この名前は scopes[0]」と判断するための集合。
+    // ⚠ リゾルバ用の `toplevel_visible_globals`（シャドウ減算あり）**ではない**。
+    // VM コンパイラは文を 1 つずつ見て、その文の束縛は `slots` に入っているので、
+    // 減算するとむしろ解決できる名前を落とす（理由は `toplevel_declared_globals` の doc）。
+    interp.set_toplevel_globals(interpreter::resolver::toplevel_declared_globals(&stmts));
     // AST 型解決層の注釈を注入する（#16）。段階(b)/(c) の消費側が node-id で参照する。
     interp.set_annotations(std::rc::Rc::new(annotations));
     interp.add_source_text(filename, source);

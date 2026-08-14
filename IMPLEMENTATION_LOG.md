@@ -2278,6 +2278,101 @@ E2E の伸びが小さいのは当然で、残っていたのは数万回のデ�
 `len` のような**純粋組み込みは `scopes[0]` に居ない**ので `NameError` になる（#15d の再演）。
 潰すなら「起動時に登録される名前の集合」をリゾルバへ渡す形にすること。
 
+### #27-c 続き — bail を「どの文を落としたか」で切る 2026-08-14
+
+#### 計測: bail に**最上位文の種別**を前置した
+
+bail 理由だけでは「何を落としたか」が分からず、#3 に効く**制御フローを含む文**を
+選べなかった。`ToplevelCompileGuard` に文種別を持たせ、キーを `<文種別>/<理由>:<詳細>` にした。
+⚠ **キーに空白を入れないこと**（集計スクリプトが `key=value` を空白で分割する。一度踏んだ）。
+
+これで #3 に効く bail が一目で分かった（134 件中の**制御フロー文**）:
+`For/for-tuple-target` 7・`Block/stmt:Block` 4・`Try/unattributed` 2・その他 5 ＝ **18 件**。
+⚠ 併せて分かったこと: ツリーウォークに残る `If` 19 は**最上位の `If` ではなく、bail した親文の
+本体に入れ子になった `If`** だった（親が VM 化されれば消える）。**内訳の文種別を
+「最上位文の種別」と読み違えない**こと。
+
+#### 実装 2 件
+
+| 対象 | 件数 | 手法 |
+|---|---|---|
+| `block:` 文 | 4 | `Stmt::Block` をブロック式のコンパイラで処理し値を `Pop`。ツリーウォークの `exec_block_stmt` は **`block_return` を吸収**するので意味論が一致する（脱出制御を含む本体は `block_body_bails` が元から弾く） |
+| `for k, v in ...` | 7 | **`Op::UnpackTuple(src_slot, n)` を 1 つだけ新設**。要素をスタックへ push し、既存の `StoreLocal` を**逆順**に並べて受ける（op を 2 つ足さずに済む） |
+
+⚠ **temp slot の解放を忘れない**。`for` の複数ターゲットは受け皿 temp を 1 つ増やすので
+`free_temp()` も 2 回要る（1 回のままだと以降の temp 番号がずれる）。
+
+#### 結果
+
+| 指標 | before | after |
+|---|---|---|
+| `toplevel_FAILED` | 134 | **128** |
+| 最上位 Chunk のコンパイル成功 | 1,409 | **1,415** |
+| 最上位ツリーウォーク | 596 | **572** |
+| 制御フロー文の bail | 18 | **12** |
+| E2E（A/B・release） | — | 焦点測定で **0.973〜1.003x**（op 1 個追加の既知帯 ~1〜1.5% の内側） |
+
+#### 残り 128 件（うち #3 に効くのは 12 件）
+
+制御フロー文の bail: `For` 4（`call-arg`/`stmt:LetTuple`/未帰属/`attr-compound-target:Subscript` 各 1）・
+`Block` 3（`ident-unresolved` 2・`store-target` 1）・`Match` 2・`Try` 2・`While` 1。
+
+件数上位（#3 には効きにくい・一度きりの式文）: `TemplateInstantiate` 31・`Slice` 21・
+`toplevel-let-from-ident` 13・`call-arg` 11・`stmt:Freeze` 7・`stmt:EventSubscribe` 7・`stmt:LetTuple` 7。
+
+⚠ `Block/ident-unresolved:*` と `For/stmt:LetTuple` は**今回 `block:`/`for` が通るようになった結果、
+より深い bail が露出したもの**。潰すたびに次の層が見えるので、件数の増減だけで判断しないこと。
+
+### #27-c 続き（2）— 制御フロー bail 12 → 10 / 2026-08-14
+
+#### 実装 2 件
+
+**(1) VM コンパイラへ渡すグローバル集合を「シャドウ減算なし」に変えた。**
+リゾルバ用の `toplevel_visible_globals`（プログラム全体のシャドウを引いた集合）を渡していたが、
+**VM コンパイラにその減算は不要**だった。理由:
+- リゾルバは AST ノードに `Resolution::Global` を**一度だけ焼く**。そのノードは `for i in ...` の
+  本体でも評価されうるので、全体のシャドウを引く必要がある。
+- VM コンパイラは**最上位文を 1 つずつ**コンパイルし、その文で束縛される名前は全部 `slots` に入る。
+  最上位に他の囲みスコープは無いので **`slots` に無い名前は必ず `scopes[0]`**。
+  減算後の集合を渡すと、別の文の `for i in ...` のせいで `while i < N` の `i` まで落ちる。
+
+`resolver::toplevel_declared_globals` を新設して切り替え、識別子読みのフォールバックでも
+（**`slots` を引いた後に**）グローバル読みへ落とすようにした。
+⚠ **順序が健全性そのもの**。`slots` を先に引かないと、本当にシャドウしているローカルを
+グローバルとして読んでしまう。
+
+⚠ **正直な評価**: この変更単体では bail 件数は動かなかった（128 → 128）。
+書き込み側の bail が読み取り側へ移っただけで、実際に減ったのは次の (2) と合わせてから。
+一般性と健全性の理由で残している。
+
+**(2) `collect_nested_decls` が `Stmt::Block` を降りていなかった。**
+最上位の `block:` 文の中の `let` に slot が割り当てられず、「slot にもグローバルにも無い識別子」
+として bail していた。⚠ **`block_body_bails` は元から `Stmt::Block` を降りており、
+2 つの walker が不整合**だった。あわせて `Stmt::Raise` の式も拾うようにした。
+
+#### 結果
+
+| 指標 | before | after |
+|---|---|---|
+| `toplevel_FAILED` | 128 | **126** |
+| **制御フロー文の bail** | **12** | **10** |
+| 最上位ツリーウォーク | 572 | **563** |
+| `Block` のツリーウォーク | 4 | **1** |
+| E2E（A/B・release） | — | **1.008〜1.039x**（退行なし・新 op ゼロ） |
+
+リゾルバを触ったので **IR byte-identical を確認済み**。
+
+#### 残り 126 件（うち #3 に効くのは 10 件）
+
+`For` 4（`call-arg`/`stmt:LetTuple`/未帰属/`attr-compound-target:Subscript` 各 1）・
+`Try` 2（`try-except-finally` 1・未帰属 1）・`Match` 2（`ident-unresolved`）・
+`While` 1・`Block` 1（`ident-unresolved:outer`）。
+
+⚠ 残る `ident-unresolved:outer` は**入れ子関数のキャプチャ変数**とみられ、#27 の
+「入れ子 `fn`（クロージャ）」と同じ根（クロージャ非対応）に行き着く。
+件数上位（`TemplateInstantiate` 31・`Slice` 21・`toplevel-let-from-ident` 13）は
+一度きりの式文で #3 には効かない。
+
 ### #10-c2 最上位の残り文を Chunk 化 — 完了 2026-08-14
 
 #### 実装

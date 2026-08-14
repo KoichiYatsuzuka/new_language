@@ -88,17 +88,21 @@ fn resolve_toplevel(stmts: &mut [Stmt], globals: &HashSet<String>) {
     rewrite_stmts(stmts, &base, &visible);
 }
 
-/// 最上位から見て「`scopes[0]` の同名変数を確実に指す」と言える名前の集合（#21-b / #10-b）。
+/// 最上位で**宣言された**グローバル名の集合（シャドウ減算なし・#27-c）。
 ///
-/// `resolve_toplevel` が `Resolution::Global` を付ける判定そのもの。VM の最上位コンパイラ（#10-b）が
-/// **書き込み先**（`Assign`/`CompoundAssign`）をグローバルと断定してよいかの判定にも使うため、
-/// 判定を 2 箇所に書かず**この 1 関数へ委譲する**（#22 系列の「同じ判断をする 2 実装は畳む」）。
+/// `toplevel_visible_globals` との違いと、**なぜ VM コンパイラはこちらでよいのか**:
+/// - リゾルバは AST のノードに `Resolution::Global` を**一度だけ焼く**。そのノードは
+///   `for i in ...` の本体の中でも評価されうるので、**プログラム全体のシャドウを引く**必要がある。
+/// - VM コンパイラは**最上位文を 1 つずつ**コンパイルし、その文の中で束縛される名前は
+///   すべて `slots` に入る（`collect_nested_decls` / `collect_expr_decls` / for ターゲット）。
+///   最上位に他の囲みスコープは無いので、**`slots` に無い名前は必ず `scopes[0]` を指す**。
+///   ⇒ 減算後の集合を渡すと、別の文の `for i in ...` のせいで `while i < N` の `i` まで
+///   解決できなくなる（実測でこの形の bail が出ていた）。
 ///
-/// ⚠ 読み取り（`Expr::Ident`）は AST の `res` に焼かれるが、`Stmt::Assign`/`Stmt::CompoundAssign` は
-/// `res` を持たない。そのため書き込み側はこの集合を実行前に引き直す必要がある。
-pub(crate) fn toplevel_visible_globals(stmts: &[Stmt]) -> HashSet<String> {
-    let globals = collect_program_globals(stmts);
-    toplevel_visible_globals_with(stmts, &globals)
+/// ⚠ 使う側は**必ず `slots` を先に引くこと**。順序を逆にすると本当にシャドウしている
+/// ローカルをグローバルとして読んでしまう。
+pub(crate) fn toplevel_declared_globals(stmts: &[Stmt]) -> HashSet<String> {
+    collect_program_globals(stmts)
 }
 
 /// `toplevel_visible_globals` の内部版（最上位グローバル集合を渡す形）。

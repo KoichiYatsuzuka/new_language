@@ -172,6 +172,13 @@ pub enum Op {
     LoadName(u32),
     /// pop した値を `let dbg::name` として現在のスコープへ宣言する（不変・`let` 意味論）。
     DeclareName(u32),
+    /// `for k, v in ...` のタプル分解（#27-c）。`locals[slot]` のタプルを検査して
+    /// **要素を順に push** する（呼び出し側は `StoreLocal` を逆順に並べて受ける）。
+    /// フィールドは (src_slot, 要素数)。
+    ///
+    /// 検査もエラー文言もツリーウォーク（`exec_for_stmt` の複数ターゲット分岐）と同一:
+    /// タプルでなければ `TypeError`、要素数が合わなければ `ValueError`。
+    UnpackTuple(u16, u16),
     /// pop した値で**グローバルを新規宣言**する（#10-c: 最上位の `let`/`mut`/`const`）。
     /// フィールドは (name_idx, 宣言の種類)。
     ///

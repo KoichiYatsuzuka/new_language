@@ -211,6 +211,28 @@ fn store_global_miss(
     Ok(())
 }
 
+/// `Op::UnpackTuple` の本体（#27-c）。`for k, v in ...` の要素をスタックへ積む。
+///
+/// 検査とエラー文言はツリーウォーク（`exec_for_stmt` の複数ターゲット分岐）と一字一句同じにする。
+/// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
+#[inline(never)]
+fn unpack_tuple(buf: &mut Vec<Value>, base: usize, src: u16, n: u16) -> Result<(), String> {
+    let item = &buf[base + src as usize];
+    let Value::Tuple(td) = item else {
+        return Err("TypeError: cannot unpack non-tuple value in for loop".to_string());
+    };
+    if td.len() != n as usize {
+        return Err(format!(
+            "ValueError: not enough values to unpack (expected {}, got {})",
+            n,
+            td.len()
+        ));
+    }
+    let elems = td.all_values().to_vec();
+    buf.extend(elems);
+    Ok(())
+}
+
 /// `Op::DeclareGlobal` の本体（#10-c）。ツリーウォークと同じ `vm_declare_global` へ委譲する。
 /// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
 #[inline(never)]
@@ -781,6 +803,10 @@ fn exec_op(
         Op::DeclareName(name_idx) => {
             let v = buf.pop().unwrap();
             interp.vm_declare_debug(&chunk.names[*name_idx as usize], v)?;
+        }
+        Op::UnpackTuple(src, n) => {
+            // #27-c: `for k, v in ...`。本体は `#[inline(never)]`（`exec_op` を太らせない）。
+            unpack_tuple(buf, base, *src, *n)?;
         }
         Op::DeclareGlobal(ni, kind) => {
             // #10-c: 最上位の `let`/`mut`/`const`。本体は `#[inline(never)]`（`exec_op` を太らせない）。

@@ -108,12 +108,14 @@ impl Drop for ModuleBodyGuard {
 /// 最上位文（`vm_bail_toplevel`）は残タスクが別物なので、混ぜると内訳が読めない。
 pub(crate) fn record_bail(label: &str, detail: &str) {
     BAIL_COUNT.with(|c| c.set(c.get() + 1));
-    let cat = if COMPILING_TOPLEVEL.with(|c| c.get()) {
-        "vm_bail_toplevel"
+    if COMPILING_TOPLEVEL.with(|c| c.get()) {
+        // 最上位は**どの文種別を落としたか**を前置する（#27-c）。
+        let kind = TOPLEVEL_STMT_KIND.with(|k| k.get());
+        // ⚠ キーに空白を入れないこと（集計スクリプトが `key=value` を空白で分割する）。
+        bump("vm_bail_toplevel", &format!("{kind}/{label}:{detail}"));
     } else {
-        "vm_bail_fn"
-    };
-    bump(cat, &format!("{label}:{detail}"));
+        bump("vm_bail_fn", &format!("{label}:{detail}"));
+    }
 }
 
 // これまでに記録した bail 件数（`compile_fn` が「未帰属の失敗」を検出するのに使う）。
@@ -124,19 +126,32 @@ thread_local! {
 }
 
 /// 最上位文のコンパイル区間を囲むガード（#27）。bail の分類先を切り替える。
-pub(crate) struct ToplevelCompileGuard(bool);
+pub(crate) struct ToplevelCompileGuard(bool, &'static str);
 
 impl ToplevelCompileGuard {
-    pub(crate) fn new() -> Self {
+    /// `stmt` は**コンパイル対象の最上位文**。bail のキーに種別を前置するのに使う（#27-c）。
+    ///
+    /// bail 理由だけでは「どの文を落としたか」が分からない。#3 に効くのは
+    /// **制御フローを含む文**（`If`/`For`/`While`/`Try`/`Match`/`Block`）を落としている bail だけなので、
+    /// 種別で切れないと優先度を決められない。
+    pub(crate) fn new(stmt: &Stmt) -> Self {
         let prev = COMPILING_TOPLEVEL.with(|c| c.replace(true));
-        ToplevelCompileGuard(prev)
+        let kind = stmt_kind(stmt);
+        let prev_kind = TOPLEVEL_STMT_KIND.with(|k| k.replace(kind));
+        ToplevelCompileGuard(prev, prev_kind)
     }
 }
 
 impl Drop for ToplevelCompileGuard {
     fn drop(&mut self) {
         COMPILING_TOPLEVEL.with(|c| c.set(self.0));
+        TOPLEVEL_STMT_KIND.with(|k| k.set(self.1));
     }
+}
+
+// コンパイル中の最上位文の種別（#27-c。bail のキーに前置する）。
+thread_local! {
+    static TOPLEVEL_STMT_KIND: std::cell::Cell<&'static str> = const { std::cell::Cell::new("-") };
 }
 
 /// これまでに記録した bail 件数を返す。

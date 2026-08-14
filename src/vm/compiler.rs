@@ -175,8 +175,10 @@ struct Compiler {
     /// 最上位モード（#10-b）で「`scopes[0]` の同名を確実に指す」と言える名前の集合。
     /// 空 = 関数本体のコンパイル（従来どおり `slots` に無い書き込み先は bail）。
     ///
-    /// ⚠ **書き込み専用の判定材料**。読み取りは AST の `Resolution::Global` に従う（そちらが正）。
-    /// リゾルバの `toplevel_visible_globals` がそのまま入るので、判定は 1 実装で共有される。
+    /// ⚠ **使う前に必ず `slots` を引くこと**。この集合は「最上位で宣言された名前」であって
+    /// 「今この文でシャドウされていない名前」ではない。順序を守れば健全（その文の束縛は
+    /// すべて `slots` に入るため）。`resolver::toplevel_declared_globals`（**減算なし**）が入る
+    /// — 減算版を渡すと別の文の `for i in ...` のせいで `while i < N` の `i` まで落ちる（#27-c）。
     toplevel_globals: HashSet<String>,
 }
 
@@ -316,7 +318,7 @@ pub fn compile_toplevel_stmt(
         return compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals);
     }
     // bail の分類先を「最上位」へ切り替える（#27。関数側と残タスクが別物なので混ぜない）。
-    let _g = crate::interpreter::tw_stats::ToplevelCompileGuard::new();
+    let _g = crate::interpreter::tw_stats::ToplevelCompileGuard::new(stmt);
     let before = crate::interpreter::tw_stats::bail_count();
     let out = compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals);
     if out.is_none() && crate::interpreter::tw_stats::bail_count() == before {
@@ -873,6 +875,14 @@ fn collect_nested_decls(
                 }
                 collect_expr_decls(iter, slots, slot_mut, slot_type, n)?;
                 collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
+            }
+            // `block: <stmts>` 文の中の宣言も slot を持つ（#27-c）。
+            // ⚠ ここが抜けていたため、最上位の `block:` 内の `let` が slot に載らず
+            // 「slot にもグローバルにも無い識別子」として bail していた。
+            // `block_body_bails` は元から `Stmt::Block` を降りており、**2 つの walker が不整合**だった。
+            Stmt::Block(b) => collect_nested_decls(b, slots, slot_mut, slot_type, n)?,
+            Stmt::Raise { exc: Some(e), .. } => {
+                collect_expr_decls(e, slots, slot_mut, slot_type, n)?
             }
             Stmt::Try { body, handlers, finally_body } => {
                 collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
@@ -1731,12 +1741,28 @@ impl Compiler {
                 self.compile_match(subject, arms)?;
             }
             Stmt::For { targets, iter, body } => {
-                // 単一ターゲットのみ対応（タプルアンパックは非対応 → bail）。
-                if targets.len() != 1 {
-                    bail("for-tuple-target", None);
+                if targets.is_empty() {
+                    bail("for-no-target", None);
                     return None;
                 }
-                let target_slot = *self.slots.get(&targets[0])?;
+                // 複数ターゲット（`for k, v in ...`）は要素をいったん temp へ受けてから分解する（#27-c）。
+                let unpack_temp = if targets.len() == 1 {
+                    None
+                } else {
+                    Some(self.alloc_temp()?)
+                };
+                let target_slot = match unpack_temp {
+                    Some(t) => t,
+                    None => *self.slots.get(&targets[0])?,
+                };
+                // 分解先 slot は**本体をコンパイルする前に**引いておく（`?` の早期 return で
+                // temp の解放が漏れないようにするため）。
+                let mut target_slots: Vec<u16> = Vec::new();
+                if unpack_temp.is_some() {
+                    for t in targets {
+                        target_slots.push(*self.slots.get(t)?);
+                    }
+                }
                 // イテレータを取得して temp slot に格納。
                 let iter_temp = self.alloc_temp()?;
                 self.compile_expr(iter)?;
@@ -1745,6 +1771,13 @@ impl Compiler {
                 // loop_start: ForIter で next。EndOfIteration なら exit へ、要素なら target へ束縛。
                 let loop_start = self.here();
                 let fi = self.emit(Op::ForIter(iter_temp, target_slot, 0)); // exit は後でパッチ
+                // タプル分解: 要素を push して**逆順**に StoreLocal で受ける（pop は末尾から）。
+                if let Some(src) = unpack_temp {
+                    self.emit(Op::UnpackTuple(src, targets.len() as u16));
+                    for &ts in target_slots.iter().rev() {
+                        self.emit(Op::StoreLocal(ts));
+                    }
+                }
                 self.loops.push(LoopCtx {
                     continue_target: loop_start, // continue は次の ForIter へ戻る
                     break_jumps: Vec::new(),
@@ -1760,7 +1793,10 @@ impl Compiler {
                 for j in ctx.break_jumps {
                     self.patch_jump(j, exit);
                 }
-                self.free_temp();
+                self.free_temp(); // iter_temp
+                if unpack_temp.is_some() {
+                    self.free_temp(); // タプル分解用の受け皿（#27-c）
+                }
             }
             Stmt::Break => {
                 // 最内ループの break_jumps に登録し、末尾へジャンプ（バックパッチ）。
@@ -1988,6 +2024,14 @@ impl Compiler {
             Stmt::AsyncAssign { target, stmts, .. } => {
                 self.compile_async_assign(target, stmts)?;
             }
+            // `block: <stmts>` 文（#27-c）。ツリーウォークの `exec_block_stmt` は
+            // **`block_return` を吸収**して `Normal` を返し、break/continue/return/raise は外へ通す。
+            // ブロック式のコンパイラをそのまま使い、値を捨てれば同じ意味論になる
+            // （脱出制御を含む本体は `block_body_bails` が弾くので、外へ通す形は元から非対応）。
+            Stmt::Block(body) => {
+                self.compile_block_expr(body)?;
+                self.emit(Op::Pop);
+            }
             // `pass` は何も出さない（#27）。ツリーウォークも `ExecResult::Normal` を返すだけ。
             // 文境界の予約（`mark_stmt_start`）は入口で済んでいるので、
             // 命令を 1 つも出さなくてもデバッガの停止位置はずれない。
@@ -2017,7 +2061,11 @@ impl Compiler {
         match finally_body {
             None => self.compile_try_except(body, handlers),
             Some(fin) if handlers.is_empty() => self.compile_try_finally(body, fin),
-            Some(_) => None, // try/except/finally 併用は非対応
+            // try/except/finally の 3 点セットは非対応（finally とハンドラの相互作用が複雑）。
+            Some(_) => {
+                bail("try-except-finally", None);
+                None
+            }
         }
     }
 
