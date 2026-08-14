@@ -191,8 +191,9 @@ pub enum Op {
     /// `exec_let` / `exec` の `Const`/`Mut` アームと**同じ判断を同じ順序で**行う
     /// （実体は `Interpreter::vm_declare_global`）。
     ///
-    /// ⚠ **4 つの op に分けない**。`exec_op` は `#[inline(always)]` なので op を 1 つ足すごとに
-    /// VM 支配ベンチが ~1〜1.5% 落ちる（#27/#27-a で実測）。種類はオペランドで持つ。
+    /// ⚠ **4 つの op に分けず種類はオペランドで持つ**。op を増やすと `Op` のサイズと
+    /// ディスパッチの配置に効き、E2E ベンチが**どちら向きにも ±5% 揺れる**（#28 の実測）。
+    /// 意味が同じものを別 op に分ける理由は無い。
     DeclareGlobal(u32, DeclKind),
     /// メソッド本体の `Self`（#27）: レシーバのクラスを `Value::Class` として push する。
     ///
@@ -257,4 +258,26 @@ pub enum DeclKind {
     LetPlain,
     /// `let x = e`（非識別子式。`Instance` のときだけ deep_copy + freeze）
     LetFreezeInstance,
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    /// `Op` のサイズは `Vec<Op>`（Chunk の `code`）のキャッシュ密度そのもの。
+    ///
+    /// 最大 variant は `Call(u16,u32,u32,u32,u32)`。新しい op がこれを超えると
+    /// **命令列全体**が太るので、意図せず起きていないかをここで固定する。
+    ///
+    /// ⚠ この数値が変わったら「速くなったか」を必ず A/B で測ること。ただし
+    /// **この規模の変更は E2E ベンチを ±5% 揺らす**（#28 の実測）ので、
+    /// 数 % の差を根拠に良し悪しを判断しないこと。
+    #[test]
+    fn op_size_is_pinned() {
+        assert_eq!(
+            std::mem::size_of::<Op>(),
+            20,
+            "Op のサイズが変わった: 命令列全体のキャッシュ密度に効くので意図を確認すること"
+        );
+    }
 }

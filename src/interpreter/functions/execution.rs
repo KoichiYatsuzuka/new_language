@@ -335,6 +335,15 @@ impl Interpreter {
         } else {
             None
         };
+        // #25: `--vm=force` はフォールバック禁止。関数本体が載らなければ止める。
+        // ⚠ `vm_eligible` が偽（クロージャ等）も**失敗として扱う**。そこを見逃すと
+        //    「bail 0 なのにツリーウォークが残る」というゲートの穴になる（#27 の `vm_ineligible` 20 件）。
+        if self.vm_mode == crate::vm::VmMode::Force && chunk_opt.is_none() {
+            return Err(format!(
+                "VmForceError: cannot compile function '{}' to bytecode",
+                fn_val.name
+            ));
+        }
         // ── 高速バインド（タスク #4）: 単純シグネチャ + キャスト不要なら bind_args を介さず直接実行 ──
         if let Some(chunk) = &chunk_opt {
             if let Some((buf, base)) = self.try_fast_bind(&fn_val, chunk, evaled, &self_val)? {
@@ -658,6 +667,13 @@ impl Interpreter {
             if let Some(chunk) = self.get_or_compile_gen_chunk(&gen_fn) {
                 return self.run_vm_generator(&chunk, bindings, &self_val);
             }
+        }
+        // #25: `--vm=force` はフォールバック禁止（ジェネレータ本体）。
+        if self.vm_mode == crate::vm::VmMode::Force {
+            return Err(format!(
+                "VmForceError: cannot compile generator '{}' to bytecode",
+                gen_fn.name
+            ));
         }
 
         // yield 収集を有効化する（スレッドローカルに収集先を設定）

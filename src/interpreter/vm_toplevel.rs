@@ -71,6 +71,10 @@ impl Interpreter {
             }
         };
         let Some(chunk) = chunk else {
+            // #25: `--vm=force` はフォールバック禁止。落ちた箇所を位置つきで報告して止める。
+            if self.vm_mode == crate::vm::VmMode::Force {
+                return Err(Self::vm_force_error("top-level statement", stmt));
+            }
             return Ok(None);
         };
 
@@ -119,6 +123,20 @@ impl Interpreter {
             None => (method_name, None),
         };
         self.check_ffi_return(l, r, node_id, name, span)
+    }
+
+    /// `--vm=force` で VM に載せられなかったときのエラー（#25）。
+    ///
+    /// **どこが載らなかったか**を位置つきで出す。理由（bail の種別）までは載せない
+    /// — それは `AR_TW_STATS` の役目で、両者は役割が違う
+    /// （こちらは「0 件かどうかを止めて判定するゲート」、あちらは「何件どこにあるかの計数」）。
+    pub(crate) fn vm_force_error(what: &str, stmt: &crate::ast::Stmt) -> String {
+        // 文種別は必ず出す（位置が取れない文が多いため。`Stmt::Expr` 等は Span を持たない）。
+        let kind = crate::interpreter::tw_stats::stmt_kind_of(stmt);
+        match crate::interpreter::debugger::stmt_span_of(stmt) {
+            Some(sp) => format!("VmForceError: cannot compile {what} `{kind}` to bytecode at {sp}"),
+            None => format!("VmForceError: cannot compile {what} `{kind}` to bytecode"),
+        }
     }
 
     /// `Op::DeclareGlobal` の実体（#10-c）: 最上位の `let`/`mut`/`const` を宣言する。
