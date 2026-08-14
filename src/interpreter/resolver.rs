@@ -160,7 +160,12 @@ fn collect_program_globals(stmts: &[Stmt]) -> HashSet<String> {
             | Stmt::GenDef { name, .. }
             | Stmt::ClassDef { name, .. }
             | Stmt::TraitDef { name, .. }
-            | Stmt::ProtocolDef { name, .. } => {
+            | Stmt::ProtocolDef { name, .. }
+            // `enum` / `new_type` も最上位に名前を作る（#27-c）。
+            // 抜けていたため `MyEnum` のような読みが `Resolution::Global` にならず、
+            // VM が「slot にもグローバルにも無い識別子」として bail していた。
+            | Stmt::EnumDef { name, .. }
+            | Stmt::NewTypeDef { name, .. } => {
                 out.insert(name.clone());
             }
             Stmt::Import { module, alias, .. } => {
@@ -219,8 +224,13 @@ fn collect_bound_names(body: &[Stmt], out: &mut HashSet<String>) {
                 collect_bound_in_expr(iter, out);
                 collect_bound_names(body, out);
             }
-            Stmt::AsyncAssign { target, stmts, .. } => {
-                out.insert(target.clone());
+            // `mng <- async->T: body`（#27-c）。
+            // ⚠ **`target` は束縛ではない**。`exec_async_assign` は `get_var(target)` するだけで
+            // （未定義なら `NameError`）、新しい名前を作らない。ここで束縛扱いすると
+            // `mng` がシャドウ候補になり `Resolution::Global` が付かず、VM が
+            // 「slot にもグローバルにも無い識別子」として bail していた（実測 18 件）。
+            // 本体 `stmts` は束縛を作りうるので、そちらは従来どおり集める。
+            Stmt::AsyncAssign { stmts, .. } => {
                 collect_bound_names(stmts, out);
             }
             Stmt::FnDef { name, body, .. }

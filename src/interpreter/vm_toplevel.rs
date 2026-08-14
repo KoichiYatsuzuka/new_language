@@ -49,6 +49,10 @@ impl Interpreter {
         stmt: &crate::ast::Stmt,
     ) -> Result<Option<ExecResult>, String> {
         debug_assert!(self.toplevel_vm_candidate(), "caller must gate on toplevel_vm_candidate");
+        // 対象外（定義文）は**失敗として数えない**。キャッシュにも入れない（#27-c）。
+        if !crate::vm::is_toplevel_compile_target(stmt) {
+            return Ok(None);
+        }
         let key = stmt as *const crate::ast::Stmt as usize;
         let chunk = match self.vm_toplevel_chunks.get(&key) {
             Some(cached) => cached.clone(),

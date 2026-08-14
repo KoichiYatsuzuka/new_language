@@ -2214,6 +2214,70 @@ E2E の伸びが小さいのは当然で、残っていたのは数万回のデ�
   キーワード/可変長引数 8・`for` タプル分解 7・未帰属 7・その他 4。
 - 最上位のツリーウォーク 2,071 件は**式文 909 が最大で、まだ試行すらしていない**（#10-c2）。
 
+### #27-c 最上位 bail の解消 — 進行中（175 → 134）2026-08-14
+
+#### まず計測の穴を 2 つ塞いだ（数字が読めていなかった）
+
+**(1) `toplevel_FAILED` 511 のうち 336 件は「失敗」ではなかった。**
+#10-c2 で受理判定を除外リストにしたとき、定義文は `compile_toplevel_stmt` が入口で `None` を返す。
+呼び出し側はそれを一律「コンパイル失敗」として計上していたため、**意図的なスキップが失敗に化けていた**。
+`is_toplevel_compile_target` を公開し、`try_run_toplevel_stmt` が**対象外なら計上もキャッシュもしない**
+ようにした（`toplevel_FAILED` 511 → 175 ＝ bail 合計と一致）。
+⇒ **「対象外」と「失敗」を同じ `None` で表すな**、という設計上の教訓。
+
+**(2) 未帰属 46 → 3。** 未帰属の bail に**文種別を添える**ようにしたら 33 件が `Expr` と分かり、
+そこから `Expr::Ident` のフォールバック（slot にもグローバル解決にも載らない識別子）が
+無記録で落ちていると特定できた。**識別子名まで記録**する形にしたら原因が一目で分かった
+（`mng` 13・`Color` 7・`MyEnum` 3 …）。あわせて block 式／if 式／match 式／ループ式の
+脱出制御 bail と temp slot 枯渇も計装した。
+
+#### 実際の修正 3 件（**新しい opcode はゼロ**）
+
+| 対象 | 件数 | 原因と修正 |
+|---|---|---|
+| `enum` / `new_type` 名 | 10 | `collect_program_globals` が **`EnumDef`/`NewTypeDef` を集めていなかった**。最上位に名前を作るのに `Resolution::Global` が付かず、VM が「slot にもグローバルにも無い識別子」として bail していた |
+| `mng <- async->T:` の受信者 | 18 | `collect_bound_names` が **`AsyncAssign` の `target` を束縛扱い**していた。`exec_async_assign` は `get_var(target)` するだけ（未定義なら `NameError`）で**名前を作らない**ので、シャドウ候補に入れるのは誤り |
+| 虚数リテラル | 13 | `Expr::ImaginaryLit(f)` → `Op::Const(Value::Complex(0.0, f))`。`eval` と同一 |
+
+⚠ **どちらの誤りも「保守的すぎる」方向のバグ**で、動作は正しいまま最適化だけが効かなくなる。
+`AR_TW_STATS` で bail の**名前まで**出さなければ永遠に見つからなかった。
+
+#### 結果
+
+| 指標 | before | after |
+|---|---|---|
+| `toplevel_FAILED` | 175 | **134** |
+| 最上位 Chunk のコンパイル成功 | 1,368 | **1,409** |
+| 最上位ツリーウォーク | 643 | **596** |
+| E2E（A/B・release） | — | **退行なし**（1.00〜1.07x） |
+
+⚠ リゾルバを変更したので [dump_native_ir.ps1](dump_native_ir.ps1) で **IR byte-identical を確認済み**
+（`collect_program_globals`/`collect_bound_names` はネイティブ codegen が消費する解決結果に効くため）。
+
+#### 残り 134 件と、#3 から見た優先度
+
+| bail | 件数 |
+|---|---|
+| `callee-expr:TemplateInstantiate` | 31 |
+| `expr:Slice` | 21 |
+| `toplevel-let-from-ident` | 13 |
+| `call-arg`（キーワード/可変長） | 10 |
+| `stmt:EventSubscribe` / `stmt:Freeze` / `for-tuple-target` | 各 7 |
+| `stmt:LetTuple` 6・`stmt:Block` 4・組み込みグローバル名（`EventLoop`/`Async`/`Encoding`…）約 10 | |
+
+⚠ **ただし #3 の観点では件数が優先度ではない**（#10-d と同じ罠）。#3 は TLS/センチネルの削除なので、
+効くのは**制御フローを含む文**だけ。最上位に残る非定義文 ~239 件のうち制御フローを持つのは
+**`If` 19・`For` 9・`Block` 5・`Match` 3・`Try` 2・`While` 1 の計 39 件**（＋ブロック式内の
+`BlockReturn` 19）。**この 39 件を落としている bail から潰すのが #3 への最短路**。
+
+#### 組み込みグローバル名（約 10 件）を潰すときの注意
+
+`EventLoop`/`Async`/`Encoding`/`FileOpenMode`/`StartPoint`/`ByteRecognizingMode` は
+**インタプリタが起動時に `scopes[0]` へ登録する**グローバルで、AST には宣言が無いため
+リゾルバが知らない。⚠ **「未解決なら `LoadGlobal` に落とす」で済ませてはいけない** —
+`len` のような**純粋組み込みは `scopes[0]` に居ない**ので `NameError` になる（#15d の再演）。
+潰すなら「起動時に登録される名前の集合」をリゾルバへ渡す形にすること。
+
 ### #10-c2 最上位の残り文を Chunk 化 — 完了 2026-08-14
 
 #### 実装

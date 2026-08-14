@@ -281,13 +281,14 @@ pub fn compile_fn(
 /// **初期化子がループ式**のとき（`mut xs = for i in range(N) -> list[T]: ... loop_yield ...`）
 /// 本体が N 回まわるからで、実測では最上位のツリーウォークの **93% がこの形**だった。
 /// 「1 回しか実行されない文はコンパイル損」と素朴に考えると取り逃す。
-pub fn compile_toplevel_stmt(
-    stmt: &Stmt,
-    annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
-    toplevel_globals: &HashSet<String>,
-) -> Option<Chunk> {
-    // 定義文（＝インタプリタ状態への登録）は #10-d の担当。試しても必ず bail するので入口で切る。
-    if matches!(
+/// 最上位文のうち **Chunk 化を試みる対象か**（#10-c2 / #27-c）。
+///
+/// 定義文（＝インタプリタ状態への登録）は #10-d の担当で、試しても必ず bail する。
+/// ⚠ **「対象外」と「コンパイル失敗」は別物**として扱うこと。呼び出し側がこれを見ずに
+/// `compile_toplevel_stmt` の `None` を一律「失敗」と数えると、定義文が失敗に化けて
+/// 数字が読めなくなる（実際 `toplevel_FAILED` 511 のうち **336 件が定義文**だった）。
+pub fn is_toplevel_compile_target(stmt: &Stmt) -> bool {
+    !matches!(
         stmt,
         Stmt::FnDef { .. }
             | Stmt::GenDef { .. }
@@ -299,7 +300,15 @@ pub fn compile_toplevel_stmt(
             | Stmt::Import { .. }
             | Stmt::FromImport { .. }
             | Stmt::Field { .. }
-    ) {
+    )
+}
+
+pub fn compile_toplevel_stmt(
+    stmt: &Stmt,
+    annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
+    toplevel_globals: &HashSet<String>,
+) -> Option<Chunk> {
+    if !is_toplevel_compile_target(stmt) {
         return None;
     }
     // 診断フック（#10）: `compile_fn` と同じく取りこぼしを「未帰属」として可視化する。
@@ -311,7 +320,8 @@ pub fn compile_toplevel_stmt(
     let before = crate::interpreter::tw_stats::bail_count();
     let out = compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals);
     if out.is_none() && crate::interpreter::tw_stats::bail_count() == before {
-        bail("unattributed", None);
+        // 未帰属でも**どの文種別か**は分かる。これが無いと 46 件の出所を探せない（#27-c）。
+        bail("unattributed", Some(stmt));
     }
     out
 }
@@ -1062,7 +1072,10 @@ impl Compiler {
     /// スタック規律の一時 slot を確保する（match サブジェクト等）。名前付き slot の上に積む。
     /// `free_temp` と対で使う。フレーム総 slot 数（`n_locals`）を必要に応じて拡張する。
     fn alloc_temp(&mut self) -> Option<u16> {
-        let slot = self.named_locals.checked_add(self.temps_in_use)?;
+        let Some(slot) = self.named_locals.checked_add(self.temps_in_use) else {
+            bail("temp-slot-overflow", None);
+            return None;
+        };
         self.temps_in_use = self.temps_in_use.checked_add(1)?;
         let total = self.named_locals as usize + self.temps_in_use as usize;
         if total > self.n_locals {
@@ -1545,6 +1558,7 @@ impl Compiler {
     /// keyword/可変長引数・33個以上は非対応（`None`）。
     fn compile_call_args(&mut self, args: &[CallArg]) -> Option<u32> {
         if args.len() > 32 {
+            bail("too-many-args", None);
             return None;
         }
         let mut mask: u32 = 0;
@@ -2191,6 +2205,11 @@ impl Compiler {
                 let ai = self.add_name(attr);
                 self.emit(Op::GetTraitAttr(ti, ai));
             }
+            // 虚数リテラル（#27-c）。`eval` の `ImaginaryLit(f) => Value::Complex(0.0, f)` と同じ。
+            Expr::ImaginaryLit(f) => {
+                let ci = self.add_const(Value::Complex(0.0, *f));
+                self.emit(Op::Const(ci));
+            }
             // `undefined` リテラル（#27）。`eval` の `Expr::Undefined => Value::Undefined` と同じ。
             Expr::Undefined => {
                 let ci = self.add_const(Value::Undefined);
@@ -2218,8 +2237,20 @@ impl Compiler {
                     let ni = self.add_name(name);
                     self.emit(Op::LoadName(ni));
                 } else {
-                    let slot = *self.slots.get(name)?;
-                    self.emit(Op::LoadLocal(slot));
+                    match self.slots.get(name) {
+                        Some(&slot) => {
+                            self.emit(Op::LoadLocal(slot));
+                        }
+                        None => {
+                            // slot にもグローバル解決にも載らない識別子（組み込み名・
+                            // リゾルバがシャドウ懸念で外した名前など）。**名前まで記録する**
+                            // — 未帰属 33 件の出所がここだった（#27-c）。
+                            if crate::interpreter::tw_stats::enabled() {
+                                crate::interpreter::tw_stats::record_bail("ident-unresolved", name);
+                            }
+                            return None;
+                        }
+                    }
                 }
             }
             Expr::UnaryOp { op, operand } => {
@@ -2457,6 +2488,7 @@ impl Compiler {
     /// `block: <stmts>` 式。block_return 値、なければ loop_yield 蓄積リスト、どちらもなければ None。
     fn compile_block_expr(&mut self, stmts: &[Stmt]) -> Option<()> {
         if block_body_bails(stmts, false, 0) {
+            bail("block-expr-escape", None);
             return None;
         }
         let yield_slot = self.alloc_temp()?;
@@ -2498,11 +2530,13 @@ impl Compiler {
     ) -> Option<()> {
         for (_, b) in branches {
             if block_body_bails(b, false, 0) {
+                bail("if-expr-escape", None);
                 return None;
             }
         }
         if let Some(eb) = else_body {
             if block_body_bails(eb, false, 0) {
+                bail("ifexpr-else-escape", None);
                 return None;
             }
         }
@@ -2547,6 +2581,7 @@ impl Compiler {
     fn compile_match_expr(&mut self, subject: &Expr, arms: &[MatchArm]) -> Option<()> {
         for arm in arms {
             if block_body_bails(&arm.body, false, 0) {
+                bail("matchexpr-escape", None);
                 return None;
             }
         }
@@ -2613,6 +2648,7 @@ impl Compiler {
     /// `for target in iter -> T: body` 式。block_return 値、なければ loop_yield 蓄積リスト（空なら None）。
     fn compile_for_expr(&mut self, target: &str, iter: &Expr, body: &[Stmt]) -> Option<()> {
         if block_body_bails(body, true, 0) {
+            bail("loopexpr-escape", None);
             return None;
         }
         let target_slot = *self.slots.get(target)?;
@@ -2667,6 +2703,7 @@ impl Compiler {
     /// `while cond -> T: body` 式。block_return 値、なければ loop_yield 蓄積リスト（空なら None）。
     fn compile_while_expr(&mut self, cond: &Expr, body: &[Stmt]) -> Option<()> {
         if block_body_bails(body, true, 0) {
+            bail("loopexpr-escape", None);
             return None;
         }
         let yield_slot = self.alloc_temp()?;
