@@ -51,7 +51,7 @@ mod eval;
 mod exceptions;
 #[path = "interpreter/exec/mod.rs"]
 mod exec;
-pub(crate) use exec::collect_referenced_names;
+pub(crate) use exec::{collect_declared_names, collect_referenced_names};
 #[path = "interpreter/functions/mod.rs"]
 mod functions;
 #[path = "interpreter/msvc_errors.rs"]

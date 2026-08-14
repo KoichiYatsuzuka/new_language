@@ -211,6 +211,32 @@ fn store_global_miss(
     Ok(())
 }
 
+/// `Op::MakeFn` の本体（#27）。入れ子 `fn` の関数値を作って slot へ書く。
+///
+/// ツリーウォークの `exec_fn_def`（デコレータ・テンプレートなし・キャプチャ空の経路）と同じ判断を、
+/// **オーバーロード合成も含めて** `Interpreter::make_nested_fn_value` に集約して共有する。
+/// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
+#[inline(never)]
+fn make_fn(interp: &mut Interpreter, chunk: &Chunk, buf: &mut [Value], base: usize, idx: u32) {
+    let d = &chunk.fn_defs[idx as usize];
+    // 不変キャプチャは**生成時点の値を複製**する（ツリーウォークの `capture_env` の不変分岐と同じ）。
+    let captured: Vec<(String, Value)> = d
+        .captures
+        .iter()
+        .map(|(n, s)| (n.clone(), buf[base + *s as usize].clone()))
+        .collect();
+    let slot = base + d.slot as usize;
+    let existing = std::mem::replace(&mut buf[slot], Value::None);
+    buf[slot] = interp.make_nested_fn_value(
+        &d.name,
+        &d.params,
+        &d.body,
+        d.return_type.as_deref(),
+        captured,
+        existing,
+    );
+}
+
 /// `Op::UnpackTuple` の本体（#27-c）。`for k, v in ...` の要素をスタックへ積む。
 ///
 /// 検査とエラー文言はツリーウォーク（`exec_for_stmt` の複数ターゲット分岐）と一字一句同じにする。
@@ -803,6 +829,10 @@ fn exec_op(
         Op::DeclareName(name_idx) => {
             let v = buf.pop().unwrap();
             interp.vm_declare_debug(&chunk.names[*name_idx as usize], v)?;
+        }
+        Op::MakeFn(idx) => {
+            // #27: 入れ子 `fn` 定義。本体は `#[inline(never)]`（`exec_op` を太らせない）。
+            make_fn(interp, chunk, buf, base, *idx);
         }
         Op::UnpackTuple(src, n) => {
             // #27-c: `for k, v in ...`。本体は `#[inline(never)]`（`exec_op` を太らせない）。

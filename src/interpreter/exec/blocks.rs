@@ -87,6 +87,17 @@ impl Interpreter {
             }
         }
 
+        // 診断フック（#27）: クロージャのキャプチャ内訳。**可変キャプチャの有無**が
+        // VM 対応の設計を分ける（可変はセル共有が要り、VM のフラット slot では表現できない）。
+        if crate::interpreter::tw_stats::enabled() {
+            if captured.is_empty() {
+                crate::interpreter::tw_stats::record_capture("none");
+            } else if captured.values().any(|c| matches!(c, CapturedVar::Mutable(_))) {
+                crate::interpreter::tw_stats::record_capture("has-mutable");
+            } else {
+                crate::interpreter::tw_stats::record_capture("immutable-only");
+            }
+        }
         captured
     }
 

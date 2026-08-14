@@ -74,6 +74,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::ListOrNone => "LIST_OR_NONE".to_string(),
         Op::LoadName(n) => format!("LOAD_NAME {:?}", chunk.names.get(*n as usize)),
         Op::DeclareName(n) => format!("DECLARE_NAME {:?}", chunk.names.get(*n as usize)),
+        Op::MakeFn(i) => format!("MAKE_FN def[{i}]"),
         Op::UnpackTuple(s, n) => format!("UNPACK_TUPLE slot={s} n={n}"),
         Op::DeclareGlobal(n, k) => format!("DECLARE_GLOBAL {:?} {k:?}", chunk.names.get(*n as usize)),
         Op::LoadSelfClass => "LOAD_SELF_CLASS".to_string(),

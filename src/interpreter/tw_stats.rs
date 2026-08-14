@@ -164,6 +164,17 @@ pub(crate) fn stmt_kind_of(stmt: &Stmt) -> &'static str {
     stmt_kind(stmt)
 }
 
+/// **VM に載せる前に弾かれた**関数呼び出しを計上する（#27）。
+/// `vm_eligible` が偽だとコンパイルを試みないので bail 統計には現れない。
+pub(crate) fn record_ineligible(why: &'static str) {
+    bump("vm_ineligible", why);
+}
+
+/// クロージャ生成時のキャプチャ内訳を計上する（#27）。
+pub(crate) fn record_capture(kind: &'static str) {
+    bump("closure_capture", kind);
+}
+
 /// VM チャンクのコンパイル成否を計上する。
 pub(crate) fn record_compile(kind: &'static str, ok: bool) {
     if ok {
@@ -182,7 +193,7 @@ pub(crate) fn dump() {
         .map(|((c, k), &v)| (*c, k.as_str(), v))
         .collect();
     rows.sort_by(|a, b| a.0.cmp(b.0).then(b.2.cmp(&a.2)));
-    for cat in ["toplevel", "module_body", "in_fn", "vm_compile", "vm_bail_fn", "vm_bail_toplevel"] {
+    for cat in ["toplevel", "module_body", "in_fn", "vm_compile", "vm_ineligible", "closure_capture", "vm_bail_fn", "vm_bail_toplevel"] {
         let sub: Vec<_> = rows.iter().filter(|r| r.0 == cat).collect();
         if sub.is_empty() {
             continue;

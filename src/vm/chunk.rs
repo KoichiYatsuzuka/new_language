@@ -10,6 +10,23 @@ use super::op::Op;
 /// `target <- async->T: body` の VM 表現（タスク #9）。`AsyncSubmit(idx)` op が参照する。
 /// `body` は非同期タスクの AST（別スレッドでツリーウォーク実行される）。`captures` は本体が参照する
 /// enclosing フレームの `(変数名, slot, is_mutable)`（実行時に frame から値を読んで env を組む）。
+/// 入れ子 `fn` 定義 1 件ぶんのデータ（#27・`Op::MakeFn`）。
+#[derive(Debug, Clone)]
+pub struct ChunkFnDef {
+    pub name: String,
+    pub params: Vec<crate::ast::Param>,
+    pub body: Vec<Stmt>,
+    pub return_type: Option<String>,
+    /// 生成した関数値を書き込む slot（リゾルバの base slot と同じ番号）。
+    pub slot: u16,
+    /// キャプチャする外側ローカル（名前, slot）。**不変な変数だけ**（#27）。
+    ///
+    /// 可変変数のキャプチャはツリーウォークだと `Var::Mutable` → `Var::Cell` へ昇格して
+    /// **外側と同じ `Rc<RefCell<Value>>` を共有**する。VM のフラット slot は `Value` 直値なので
+    /// 共有セルを表現できず、コンパイラが bail する（対応にはフレーム表現の変更が要る）。
+    pub captures: Vec<(String, u16)>,
+}
+
 pub struct AsyncBlock {
     pub body: Vec<Stmt>,
     pub captures: Vec<(String, u16, bool)>,
@@ -68,4 +85,11 @@ pub struct Chunk {
     /// **参照されるのが外部言語レシーバのときだけ**という性質を使って副表に逃がしてある。
     /// これが無いと `L.get_int` が `get_int`、位置が `<unknown>` になり off/auto が食い違う。
     pub ffi_call_info: std::collections::HashMap<u32, (u32, u32)>,
+    /// 入れ子 `fn` 定義（#27）。`Op::MakeFn(idx)` が index で参照する。
+    ///
+    /// ⚠ **キャプチャを持たない入れ子 `fn` に限る**。コンパイラが
+    /// 「自由変数 ∩ 外側の slot = ∅」を確かめてから積むので、生成する `FnValue` の
+    /// `captured_env` は**構成上空**になり、ツリーウォークの `capture_env`（外側スコープを
+    /// 走査して何も見つからない）と一致する。
+    pub fn_defs: Vec<ChunkFnDef>,
 }

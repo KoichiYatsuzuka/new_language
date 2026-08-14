@@ -113,7 +113,7 @@ fn simple_hash(s: &str) -> u64 {
 // フリー変数分析ヘルパー（モジュールプライベート）
 // ---------------------------------------------------------------------------
 
-fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
+pub(crate) fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
     for stmt in stmts {
         match stmt {
             Stmt::Let(name, _, _)

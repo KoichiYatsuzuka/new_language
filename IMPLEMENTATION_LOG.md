@@ -2373,6 +2373,67 @@ bail 理由だけでは「何を落としたか」が分からず、#3 に効く
 件数上位（`TemplateInstantiate` 31・`Slice` 21・`toplevel-let-from-ident` 13）は
 一度きりの式文で #3 には効かない。
 
+### #27 クロージャ対応 — 外側関数を VM 化（`decl-prepass:FnDef` 8 → 0）2026-08-14
+
+#### 計測: クロージャの問題は 2 つに分かれる
+
+計装を 2 つ足して切り分けた（`vm_ineligible` と `closure_capture`）。
+
+| 区分 | 件数 | 意味 |
+|---|---|---|
+| `vm_ineligible: closure-capture` | **20** | **クロージャ本体**の呼び出しがコンパイル前に弾かれている（`captured_env` が非空） |
+| `decl-prepass:FnDef` | **8** | **外側の関数**が入れ子 `fn` を含むせいで丸ごと bail |
+| キャプチャ内訳（生成 27 件） | none 12 / immutable-only 8 / **has-mutable 7** | 可変キャプチャが 26% |
+
+⚠ `vm_ineligible` は **`vm_eligible` が偽だとコンパイルを試みない**ため bail 統計に現れず、
+それまで完全に見えていなかった。**「弾かれた理由」も計上しないと穴が見えない**。
+
+#### なぜ可変キャプチャだけ別格か
+
+`capture_env` は可変変数を `Var::Mutable` → **`Var::Cell(Rc<RefCell<Value>>)` へその場で昇格**し、
+外側スコープと**同じセルを共有**する。VM のフラット slot は `Value` 直値なので**共有セルを表現できない**。
+対応にはフレーム表現の変更（slot と並行するセル表を持ち `LoadCell`/`StoreCell` を足す等）が要る。
+＝ §2.4 が「相性が良い」と書いていた部分のうち、**可変キャプチャだけは表現の変更が必須**。
+
+#### 実装（外側関数側のみ・本体側は未対応）
+
+- **`Op::MakeFn(idx)` ＋ `Chunk.fn_defs`** を新設。入れ子 `fn` の関数値を作って slot へ書く。
+- **健全性の要**: コンパイラが `nested_fn_captures` で「自由変数 ∩ 外側 slot」を求め、
+  **可変が 1 つでもあれば bail**。不変のみなら (名前, slot) を記録し、実行時に**値を複製**して
+  `CapturedVar::Immutable` を作る。`capture_env` の不変分岐と一致する。
+  ⚠ **`capture_env` と自由変数の定義がずれると閉包変数が黙って消える**。片方を変えたら両方見ること。
+- **`exec_fn_def` とのオーバーロード合成を `merge_fn_overload` に集約**（#22 系列の「畳む」）。
+- 採番順: リゾルバの `collect_base_decls` が入れ子定義名も base slot に載せるので、
+  **decl-prepass でも `Stmt::FnDef` を同じ順で採番**する（他の定義文は従来どおり bail するので整合は保たれる）。
+  ⚠ **採番だけ prepass で行い、載せられるかの判定は `compile_stmt`** で行う（自由変数の判定に `slots` の完成が要る）。
+- デコレータ・テンプレートは bail（`eval` と `TemplateFnValue` の再現が要るため）。
+
+#### 結果
+
+| 指標 | before | after |
+|---|---|---|
+| `fn_FAILED` | 17 | **11** |
+| `decl-prepass:FnDef` | 8 | **0**（残るのは `nested-fn-mutable-capture` 2） |
+| 関数本体内のツリーウォーク | 127 | **111** |
+| `FnDef` のツリーウォーク実行 | 16 | **8** |
+| VM コンパイル成功（fn） | 338 | **344** |
+
+**残る `vm_ineligible: closure-capture` 20 は手つかず**（クロージャ**本体**の VM 化）。
+本体側は「キャプチャ変数を slot へ束縛して実行」で不変分は届くが、
+**クロージャ実体ごとに `FnValue` が別物なので Chunk が使い回せない**（`vm_chunks` は `Rc<FnValue>`
+アドレス鍵）。ループ内で作られるクロージャでは**コンパイルし直しが毎回**になり得る点を織り込むこと。
+
+#### ⚠ op を 2 つ足した代償（実測）
+
+今回 `UnpackTuple`（#27-c）と `MakeFn` を足した結果、VM 支配ベンチが
+`bench_control_flow` **0.944x**・`flat_bench_interp` **0.936x**。`--vm=off` では
+`bench_control_flow` が **1.027x** なので、**VM ディスパッチループの肥大**が原因と確定
+（この op 自体は当該ベンチで 1 回も実行されない）。
+既知の「**op 1 個あたり ~1〜1.5%**」が積み上がっている。
+⇒ **`Op::Rare(RareOp)` への畳み込み**（稀な op を 1 アームに集約し `#[inline(never)]` の
+二段目 match で捌く）を実施する価値が出てきた。対象は
+`MakeFn`/`UnpackTuple`/`BreakPoint`/`DeclareGlobal`/`GetTraitAttr`/`SetTraitAttr`/`LoadSelfClass` の 7 個。
+
 ### #10-c2 最上位の残り文を Chunk 化 — 完了 2026-08-14
 
 #### 実装

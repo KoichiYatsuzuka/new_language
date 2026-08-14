@@ -317,6 +317,19 @@ impl Interpreter {
             && !fn_val.is_python
             && fn_val.captured_env.is_empty()
             && matches!(self_val, None | Some(Value::Instance(_)));
+        // 診断フック（#27）: **なぜ VM に載せなかったか**を計上する。
+        // `vm_eligible` が偽だと `compile_fn` を呼ばないので bail 統計に現れず、
+        // 「クロージャがどれだけツリーウォークへ落ちているか」が測れなかった。
+        if crate::interpreter::tw_stats::enabled() && !vm_eligible && self.vm_mode != crate::vm::VmMode::Off {
+            let why = if fn_val.is_python {
+                "python"
+            } else if !fn_val.captured_env.is_empty() {
+                "closure-capture"
+            } else {
+                "self-kind"
+            };
+            crate::interpreter::tw_stats::record_ineligible(why);
+        }
         let chunk_opt: Option<Rc<crate::vm::Chunk>> = if vm_eligible {
             self.get_or_compile_chunk(&fn_val)
         } else {

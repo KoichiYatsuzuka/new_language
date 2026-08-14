@@ -16,6 +16,59 @@ use {
 
 impl Interpreter {
     /// `fn` 定義を実行して関数値をスコープに登録する。テンプレート関数はテンプレート値として格納する。
+    /// 同名の既存値と合成して関数値を作る（`fn` のオーバーロード規則・#27）。
+    ///
+    /// ツリーウォーク（`exec_fn_def`）と VM（`Op::MakeFn`）の**唯一の実装**。
+    /// 「同じ判断をする 2 実装は片方を委譲にして畳む」（#22 系列）。
+    pub(crate) fn merge_fn_overload(fn_val: Rc<FnValue>, existing: Option<Value>) -> Value {
+        match existing {
+            Some(Value::Function(prev)) => Value::OverloadedFn(vec![prev, fn_val]),
+            Some(Value::OverloadedFn(mut fns)) => {
+                fns.push(fn_val);
+                Value::OverloadedFn(fns)
+            }
+            _ => Value::Function(fn_val),
+        }
+    }
+
+    /// `Op::MakeFn` の実体（#27）: 入れ子 `fn` の関数値を作る。
+    ///
+    /// ⚠ **`captured_env` は不変キャプチャのみ**。呼び出し側（VM コンパイラ）が
+    /// 「自由変数 ∩ 外側の slot」を求め、**すべて不変**であることを確かめてからしか emit しない。
+    /// ツリーウォークの `capture_env` は同じ自由変数集合に対し不変なら値を複製するので一致する。
+    /// **この前提を崩すと閉包変数が黙って消える／共有が切れる**。
+    ///
+    /// `captured` は (名前, 値) の組（呼び出し側が VM フレームの slot から読む）。
+    /// `existing` は slot の現在値（オーバーロード合成用。未宣言なら `Value::None`）。
+    pub(crate) fn make_nested_fn_value(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        body: &[Stmt],
+        return_type: Option<&str>,
+        captured: Vec<(String, Value)>,
+        existing: Value,
+    ) -> Value {
+        use crate::interpreter::CapturedVar;
+        let captured_env: HashMap<String, CapturedVar> = captured
+            .into_iter()
+            .map(|(n, v)| (n, CapturedVar::Immutable(v)))
+            .collect();
+        let fn_val = Rc::new(FnValue {
+            name: name.to_string(),
+            params: params.to_vec(),
+            body: body.to_vec(),
+            is_python: self.in_python_module,
+            captured_env,
+            return_type: return_type.map(|s| s.to_string()),
+        });
+        let existing = match existing {
+            Value::None => None,
+            v => Some(v),
+        };
+        Self::merge_fn_overload(fn_val, existing)
+    }
+
     pub(crate) fn exec_fn_def(
         &mut self,
         name: &str,
@@ -59,14 +112,7 @@ impl Interpreter {
                 .last()
                 .and_then(|s| s.get(name))
                 .map(|v| v.get_value());
-            let new_value = match existing {
-                Some(Value::Function(prev)) => Value::OverloadedFn(vec![prev, fn_val]),
-                Some(Value::OverloadedFn(mut fns)) => {
-                    fns.push(fn_val);
-                    Value::OverloadedFn(fns)
-                }
-                _ => Value::Function(fn_val),
-            };
+            let new_value = Self::merge_fn_overload(fn_val, existing);
             self.scopes
                 .last_mut()
                 .unwrap()

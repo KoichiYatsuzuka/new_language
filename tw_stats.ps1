@@ -30,7 +30,7 @@ if (-not (Test-Path $exe)) { throw "not built: $exe" }
 $files = Get-ChildItem -Path (Join-Path $PSScriptRoot 'examples') -Filter *.ar -Recurse |
          Where-Object { $_.FullName -notmatch '\\archived\\' }
 
-$toplevel = @{}; $modbody = @{}; $infn = @{}; $vmc = @{}; $bailFn = @{}; $bailTop = @{}
+$toplevel = @{}; $modbody = @{}; $infn = @{}; $vmc = @{}; $inelig = @{}; $cap = @{}; $bailFn = @{}; $bailTop = @{}
 $ran = 0; $failed = 0
 
 foreach ($f in $files) {
@@ -60,7 +60,9 @@ foreach ($f in $files) {
                 'toplevel'    { $toplevel }
                 'module_body' { $modbody }
                 'in_fn'      { $infn }
-                'vm_compile' { $vmc }
+                'vm_compile'    { $vmc }
+                'vm_ineligible' { $inelig }
+                'closure_capture' { $cap }
                 'vm_bail_fn'       { $bailFn }
                 'vm_bail_toplevel' { $bailTop }
                 default            { $null }
@@ -92,5 +94,7 @@ Show-Table 'toplevel (module level tree-walk)' $toplevel
 Show-Table 'module_body (import module bodies - all tree-walk today)' $modbody
 Show-Table 'in_fn (tree-walk function bodies)' $infn
 Show-Table 'vm_compile (chunk compile outcome)' $vmc
+Show-Table 'vm_ineligible (rejected before compiling)' $inelig
+Show-Table 'closure_capture (capture kinds at closure creation)' $cap
 Show-Table 'vm_bail_fn (why a FUNCTION body failed to compile)' $bailFn
 Show-Table 'vm_bail_toplevel (why a TOP-LEVEL loop failed to compile)' $bailTop

@@ -172,6 +172,8 @@ struct Compiler {
     /// メソッド呼び出しの FFI 境界検査用の表示情報（#27-b）。node_id → (表示名 index, span index)。
     /// 詳細は [`Chunk::ffi_call_info`](super::chunk::Chunk)。
     ffi_call_info: HashMap<u32, (u32, u32)>,
+    /// 入れ子 `fn` 定義（#27）。`Op::MakeFn` が index で参照する。
+    fn_defs: Vec<crate::vm::chunk::ChunkFnDef>,
     /// 最上位モード（#10-b）で「`scopes[0]` の同名を確実に指す」と言える名前の集合。
     /// 空 = 関数本体のコンパイル（従来どおり `slots` に無い書き込み先は bail）。
     ///
@@ -388,6 +390,7 @@ fn compile_toplevel_stmt_inner(
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
         ffi_call_info: HashMap::new(),
+        fn_defs: Vec::new(),
         toplevel_globals: toplevel_globals.clone(),
     };
 
@@ -409,6 +412,7 @@ fn compile_toplevel_stmt_inner(
         async_blocks: c.async_blocks,
         global_caches: c.global_caches,
         ffi_call_info: c.ffi_call_info,
+        fn_defs: c.fn_defs,
     };
 
     if std::env::var("AR_VM_DUMP").is_ok_and(|v| !v.is_empty()) {
@@ -468,10 +472,19 @@ fn compile_fn_inner(
             }
             // `_` 名・既出名の宣言は base slot を増やさない（no-op）。
             Stmt::Let(..) | Stmt::Const(..) | Stmt::Mut(..) => {}
+            // 入れ子 `fn` の名前も base slot を占める（リゾルバの `collect_base_decls` と同順・#27）。
+            // ⚠ **採番だけここで行い、載せられるかの判定は `compile_stmt` で行う**
+            //    （自由変数の判定に `slots` の完成が要るため）。載せられなければそこで bail する。
+            Stmt::FnDef { name, .. } if name != "_" && !slots.contains_key(name) => {
+                slots.insert(name.clone(), n);
+                slot_mut.push(false);
+                slot_type.push(None);
+                n = n.checked_add(1)?;
+            }
+            Stmt::FnDef { .. } => {}
             // slot を採番する可能性のある未対応の宣言的文があれば、番号ずれを避けて丸ごと諦める。
             Stmt::LetTuple { .. }
             | Stmt::Static(..)
-            | Stmt::FnDef { .. }
             | Stmt::GenDef { .. }
             | Stmt::ClassDef { .. }
             | Stmt::TraitDef { .. }
@@ -526,6 +539,7 @@ fn compile_fn_inner(
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
         ffi_call_info: HashMap::new(),
+        fn_defs: Vec::new(),
         toplevel_globals: HashSet::new(),
     };
 
@@ -552,6 +566,7 @@ fn compile_fn_inner(
         async_blocks: c.async_blocks,
         global_caches: c.global_caches,
         ffi_call_info: c.ffi_call_info,
+        fn_defs: c.fn_defs,
     };
 
     // 開発用フック: `AR_VM_DUMP=1` で生成バイトコードを標準エラーへ逆アセンブルする。
@@ -590,6 +605,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
         ffi_call_info: HashMap::new(),
+        fn_defs: Vec::new(),
         toplevel_globals: HashSet::new(),
     };
     match stmt {
@@ -619,6 +635,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         async_blocks: Vec::new(),
         global_caches: c.global_caches,
         ffi_call_info: c.ffi_call_info,
+        fn_defs: c.fn_defs,
     })
 }
 
@@ -1263,6 +1280,41 @@ impl Compiler {
         let ni = self.add_name(&display);
         let si = self.add_span(span);
         self.ffi_call_info.insert(node_id, (ni, si));
+    }
+
+    /// 入れ子 `fn` がキャプチャする外側ローカル（名前, slot）を求める（#27）。
+    ///
+    /// `capture_env` と**同じ自由変数の定義**（参照 − 自前の名前）を使い、現在の `slots`
+    /// （＝外側関数のローカル）と交わるものを返す。交わらなければ空 Vec（キャプチャなし）。
+    /// ⚠ **`capture_env` と定義がずれると閉包変数が黙って消える**。片方を変えたら両方見ること。
+    ///
+    /// **可変ローカルを 1 つでも掴むなら `None`**。ツリーウォークはそこで `Var::Cell` へ昇格して
+    /// 外側と共有するが、VM のフラット slot（`Value` 直値）では共有セルを表現できない。
+    ///
+    /// 返す順序は **slot 昇順**（決定的。`captured_env` は `HashMap` なので順序は挙動に影響しないが、
+    /// Chunk が実行ごとに変わらないようにするため）。
+    fn nested_fn_captures(&self, params: &[Param], body: &[Stmt]) -> Option<Vec<(String, u16)>> {
+        use std::collections::HashSet;
+        let mut own: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        crate::interpreter::collect_declared_names(body, &mut own);
+        let mut referenced: HashSet<String> = HashSet::new();
+        crate::interpreter::collect_referenced_names(body, &mut referenced);
+
+        let mut caps: Vec<(String, u16)> = Vec::new();
+        for n in &referenced {
+            if own.contains(n) {
+                continue;
+            }
+            let Some(&slot) = self.slots.get(n) else {
+                continue; // 外側ローカルでない（グローバル等）＝キャプチャ対象外
+            };
+            if self.slot_mut.get(slot as usize).copied().unwrap_or(true) {
+                return None; // 可変キャプチャ → 非対応
+            }
+            caps.push((n.clone(), slot));
+        }
+        caps.sort_by_key(|(_, s)| *s);
+        Some(caps)
     }
 
     /// 最上位宣言の名前なら name プールの index を返す（#10-c）。
@@ -2023,6 +2075,49 @@ impl Compiler {
             // `target <- async->T: body`（タスク #9）。AsyncManager にタスクを投入する。
             Stmt::AsyncAssign { target, stmts, .. } => {
                 self.compile_async_assign(target, stmts)?;
+            }
+            // 入れ子 `fn` 定義（#27）。**外側フレームを一切参照しない場合に限り**載せる。
+            //
+            // ⚠ ここが健全性の要。ツリーウォークは `capture_env` で外側スコープを走査して
+            // キャプチャを作るが、VM フレームは `scopes` に無いので走査しても見つからない。
+            // 「自由変数 ∩ 外側の slot = ∅」を確かめれば、ツリーウォークでも
+            // キャプチャは空になる＝両者一致する。**この検査を緩めると閉包変数が黙って消える**。
+            //
+            // デコレータ・テンプレートは非対応（`eval` と `TemplateFnValue` の再現が要るため）。
+            Stmt::FnDef {
+                name,
+                template_params,
+                params,
+                body,
+                decorators,
+                return_type,
+                ..
+            } => {
+                if !template_params.is_empty() {
+                    bail("nested-fn-template", None);
+                    return None;
+                }
+                if !decorators.is_empty() {
+                    bail("nested-fn-decorator", None);
+                    return None;
+                }
+                let Some(captures) = self.nested_fn_captures(params, body) else {
+                    // 可変ローカルのキャプチャ。ツリーウォークは外側と `Rc<RefCell>` を共有するが、
+                    // VM のフラット slot は `Value` 直値なので表現できない（フレーム表現の変更が要る）。
+                    bail("nested-fn-mutable-capture", None);
+                    return None;
+                };
+                let slot = *self.slots.get(name)?;
+                let idx = u32::try_from(self.fn_defs.len()).ok()?;
+                self.fn_defs.push(crate::vm::chunk::ChunkFnDef {
+                    name: name.clone(),
+                    params: params.clone(),
+                    body: body.clone(),
+                    return_type: return_type.clone(),
+                    slot,
+                    captures,
+                });
+                self.emit(Op::MakeFn(idx));
             }
             // `block: <stmts>` 文（#27-c）。ツリーウォークの `exec_block_stmt` は
             // **`block_return` を吸収**して `Normal` を返し、break/continue/return/raise は外へ通す。
