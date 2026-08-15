@@ -173,23 +173,44 @@ impl Interpreter {
             // 共有 `Rc` 経由で元まで不変化されるため（`exec_let` のコメント参照）。
             DeclKind::LetFreezeInstance => (self.let_freeze_instance(value)?, false),
             // #27-c: ソースの可変性は**実行時**に見る（`exec_let` と同じ判断）。
-            // `src` が変数でなければ非識別子式と同じ扱いに落ちる。
+            // 最上位チャンクは `scopes.len() == 1` が保証されているので `get_var` で足りる。
             DeclKind::LetFromIdent(si) => {
-                let src = &names[si as usize];
-                match self.get_var(src).map(|v| v.is_mutable()) {
-                    // mut ソース: 深いコピーを作ってフリーズする。
-                    Some(true) => {
-                        let copied = Self::deep_copy_value(value);
-                        self.apply_freeze_to_value(&copied, true)?;
-                        (copied, false)
-                    }
-                    Some(false) => (value, false),
-                    None => (self.let_freeze_instance(value)?, false),
-                }
+                let src_mutable = self.get_var(&names[si as usize]).map(|v| v.is_mutable());
+                (self.vm_let_value_from_ident(src_mutable, value)?, false)
             }
         };
         self.declare_var(name.to_string(), Var::new(value, mutable));
         Ok(())
+    }
+
+    /// `let x = <識別子>` のコピー意味論（#27-c）— **`exec_let` の識別子分岐の唯一の実装**。
+    ///
+    /// `src_mutable` は**ソース変数の可変性**（`None` = そもそも変数として存在しない）。
+    /// 消費者は `DeclKind::LetFromIdent`（最上位の `DeclareGlobal`）と
+    /// `Op::StoreLocalFromIdent`（slot への宣言）の 2 つで、**違うのは可変性の引き方だけ**
+    /// （前者は `get_var`／後者は `scopes[0]`。理由は `Op::StoreLocalFromIdent` の doc）。
+    pub(crate) fn vm_let_value_from_ident(
+        &mut self,
+        src_mutable: Option<bool>,
+        value: Value,
+    ) -> Result<Value, String> {
+        match src_mutable {
+            // mut ソース: 深いコピーを作ってフリーズする。
+            Some(true) => {
+                let copied = Self::deep_copy_value(value);
+                self.apply_freeze_to_value(&copied, true)?;
+                Ok(copied)
+            }
+            Some(false) => Ok(value),
+            // 変数として存在しない名前は非識別子式と同じ扱いに落ちる。
+            None => self.let_freeze_instance(value),
+        }
+    }
+
+    /// グローバル（`scopes[0]`）の変数の可変性。存在しなければ `None`（`Op::StoreLocalFromIdent` 用）。
+    /// ⚠ **呼び出し元スコープを跨がない**のが要点（`vm_global_slot_of` と同じ規則）。
+    pub(crate) fn vm_global_is_mutable(&self, name: &str) -> Option<bool> {
+        self.scopes[0].slot_of(name).and_then(|idx| self.scopes[0].slot(idx)).map(|v| v.is_mutable())
     }
 
     /// `let` の「非識別子式」分岐（#27-c）: `Instance` のときだけ deep_copy + freeze。

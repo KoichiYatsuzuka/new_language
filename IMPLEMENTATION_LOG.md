@@ -2801,6 +2801,225 @@ VM 側の `is_vm_builtin(name) && !slots.contains_key(name)` と同じ健全性�
 
 ---
 
+## #27 続き（2026-08-15）— fn bail 11→4・`force_gate` 12→8・**リゾルバの実バグを 1 件検出**
+
+`force_gate` が 12/125 の状態から着手。**最初にやったのは実測**で、これが計画の前提を 2 つ覆した。
+
+### 帰属の実測（着手前の想定と違った）
+
+`force_gate`（止めて判定）と `AR_TW_STATS`（数える）を併用して 7 例題の失敗理由を取った結果:
+
+| 想定（計画書） | 実測 |
+|---|---|
+| 「`force_gate` 12 件中 **7 件が #27**」 | 実際は **#27 が 4 例題・#27-d が 3 例題**（`spider_solitaire` の `draw_game` は bail ではなく `vm_ineligible: closure-capture`） |
+| 「識別子 2」 | **4 bail / 3 例題**（最大要因だった） |
+
+⚠ **`force_gate` のメッセージだけでは #27 と #27-d を区別できない**（どちらも
+"cannot compile function 'X' to bytecode"）。`AR_TW_STATS` の `vm_bail_fn` / `vm_ineligible` を
+突き合わせないと帰属を間違える。
+
+さらに、**bail を潰しても例題が落ち続ける**組み合わせがある: `functions.ar` / `variable.ar` は
+bail（`Static` / 可変キャプチャ）と `vm_ineligible`（クロージャ本体）の**両方**を持つので、
+#27 側だけ直しても `force_gate` は減らない。⇒ **「bail を減らす」ではなく「例題が落ちる理由を
+全部消す」で優先度を決めること**。
+
+### やったこと
+
+| 項目 | 手法 | 効果 |
+|---|---|---|
+| `ident-unresolved`（4 bail） | 関数本体の未解決 Ident を **`Op::LoadGlobal`** で載せる | `global_resolution.ar` 解消 |
+| `attr-compound-target`（1 bail） | レシーバ制限を撤去し、**局所 slot 以外は 2 回評価する経路**を追加 | `class_trait.ar` 解消・**dead code 約 90 行削除** |
+| `for-target-shadow`（1 bail） | **リゾルバのバグ修正**＋ループ本体の間だけ専用 slot へ差し替え | `for_range_typing.ar` 解消・**実バグ 1 件修正** |
+| `variadic-param`（2 bail） | 可変長を `local::args` という名前で**末尾 slot**に採番 | `variadic.ar` 解消 |
+
+`fn_FAILED` **11→4**・`in_fn`（ツリーウォーク実行文）**111→70**・`force_gate` **12→8**。
+
+### `LoadName` は関数本体で使えないが `LoadGlobal` なら使える（#27-c の制約の抜け道）
+
+#27-c は最上位の未解決 Ident を `Op::LoadName`（＝`get_val`）で載せたが、関数本体では
+`frame_floor` が前進していないため **呼び出し元のローカルが見えてしまう**ので使えなかった。
+
+`Op::LoadGlobal` は `scopes[0]` **だけ**を見る（`vm_global_slot_of` = `scopes[0].slot_of`）ので
+この問題が起きない。そして関数本体では **`slots` を引いて外れた名前がローカルでないことが
+コンパイル時に確定している**（base slot 採番と `collect_nested_decls` が for ターゲット・入れ子
+ブロックを含む全宣言を**先に** `slots` へ入れる）。よってツリーウォークの `get_val`
+（`scopes[frame_floor..]` 走査 → `scopes[0]`）と結果が一致する — 前段の走査が必ず外れるため。
+`NameError` の文言も両者同一。
+
+⇒ **教訓: 「その op が使えない」の理由を辿ると、別の op なら条件を満たすことがある。**
+制約は op 単位ではなく**参照するスコープ単位**で見ること。
+
+### レシーバ制限はまた「最適化の前提」を守っていた（#27-c の逆パターン）
+
+#27-c では `object_is_instance` は「2 実装の差（`attr_assign` vs `attr_assign_evaled`）を
+隠していた」ため、1 実装に畳んだら制限ごと外せた。今回の `AttrCompoundAssign` の同名の条件は
+**理由が違った**: `GetAttrLocal` でレシーバを 1 回しか評価しない融合を使うため、
+「再評価しても副作用が無い＝局所 slot」であることが必要だった。
+
+⇒ 制限を外す手は**融合を使わない一般経路を足す**こと。ツリーウォークは
+`eval(value)` → `eval(target)`（object 1 回目）→ 二項演算 → `attr_assign`（object 2 回目）と
+**object を 2 回評価する**ので、そのまま 2 回積む（添字複合代入と同じ形）。
+
+⚠ **副次効果**: この条件が `object_is_instance` の最後の消費者だった。#26・#27-a で作った
+「形＋出自」2 段判定（`is_user_instance_type` / `is_arrow_instance_type` /
+`annot_is_arrow_instance`）が**まるごと dead code になり削除**（約 90 行）。
+読み書きが `get_attr_val` / `attr_assign_evaled` へ一本化された結果、どの op も
+`Value::Instance` を前提にしなくなったため。
+⚠ **`Value::Instance` 前提の op を新設するなら判定を復活させること**（型検査の
+`NamedInstance` は外部言語スタブのクラス＝実行時 `Value::CsObject` も同じ注釈になる）。
+
+### **リゾルバの実バグ**（for ターゲットが base 名を覆うと外側の値を読む）
+
+`for-target-shadow` を潰そうとして、その手前で**ツリーウォーク自体が間違っていた**ことが判明した。
+
+```
+fn in_fn(let n: int) -> int:
+    mut i = 100
+    mut s = 0
+    for i in range(n):
+        s += i        # ← ここが毎回 100 を読んでいた
+    return s * 1000 + i
+```
+
+| 実装 | 結果 |
+|---|---|
+| Python 参照実装（`impl_python`） | **6100**（s=6・i=100） |
+| Rust（修正前） | **400100**（s=400 ＝ 100 を 4 回加算） |
+| Rust 最上位に同じコードを書いた場合 | **6**（正しい） |
+
+原因: `rewrite_stmts` の `Stmt::For` は「ループ変数 target は base に無いので本体の読みは
+書き換わらない」という前提でコメントまで書かれていたが、**外側に同名の base 宣言がある場合は
+その前提が崩れる**。`i` が base 名なので本体の `i` が `Resolution::Local(base slot)` に
+書き換えられ、`eval_local_ref` が `scopes[frame_floor]`（base スコープ）を直接引くため、
+内側スコープにあるループ変数を飛ばして外側の値を読んでいた。
+
+修正: `resolve_function` で `base` から**入れ子スコープで束縛されうる名前を差し引く**。
+グローバル側（R2-b）は既に同じ差し引きを `collect_toplevel_shadowing` で行っていたので、
+**同じ関数を共有**して `collect_shadowing_binders` に改名（同じ判断をする 2 実装を作らない）。
+slot 番号は `order` の並びで決まるので**採番後に**除外する（番号はずらさない）。
+
+⚠ **教訓**: 「VM が bail する形」は**ツリーウォークが正しいとは限らない**。
+bail はモデルの表現力の問題として片付けられがちだが、今回は
+**両実装が同じ入力で違う答えを出す形**＝バグの温床でもあった。
+`compare_vm_modes.ps1` は off/auto を比べるので、**両方がツリーウォークに落ちるケースは
+検知できない**（`--vm=off` と `impl_python` を比べる検査は存在しない）。
+
+VM 側は、ループ本体のコンパイル中だけ `slots[name]` を temp slot へ差し替え、ループ後に戻す
+（`for_target_shadows` は「諦める判定」から「差し替える名前の集合」へ役割変更）。
+これで flat-slot のままブロックスコープを表現できる。
+
+### 可変長引数（`local::args`）
+
+`bind_args` は可変長を **`local::args` という名前で末尾に 1 つだけ**束縛する（引数が無ければ
+`Value::None`）。VM の一般バインド経路は `bindings[i]` → slot i と**位置で**流し込むので、
+コンパイラ側も「非可変長を宣言順 → 最後に `local::args`」で採番すれば一致する。
+読み（`Expr::LocalVar`）は `slots["local::args"]` の `LoadLocal` で足りる。
+⚠ 型注釈（`let ...: int`）は**要素の型**なので `slot_type` には入れない（型特化が誤る）。
+⚠ 並びが `bind_args` と一致することが健全性そのものなので、可変長が末尾でなければ bail する。
+
+### 残り（4 bail）と、それが #27-d と同じ土台であること
+
+| 残り | 件数 | 実体 |
+|---|---|---|
+| `decl-prepass:Static` | 2 | `static mut x = e` は span をキーに `Rc<RefCell<Value>>` を作り `Var::Cell` で束縛する（`exec_static_var`）。**slot は `Value` 直値なのでセルを置けない** |
+| `nested-fn-mutable-capture` | 2 | 可変キャプチャは `capture_env` が外側変数を `Var::Cell` へ昇格して**セルを共有**する。同上 |
+
+⇒ **どちらも「slot と並行するセル表＋`LoadCell`/`StoreCell`」を要求する**。これは計画書が
+#27-d（クロージャ本体の VM 化）の前提として挙げているものと**同一の土台**。
+⇒ **#27 の残り 4 bail は #27-d と分けて着手する意味がない**（片方だけ作ってももう片方が
+同じ表現を必要とする）。また、この 2 件が属する `functions.ar` / `variable.ar` は
+クロージャ本体（`vm_ineligible`）も抱えているので、**セル表を入れるまで `force_gate` は減らない**。
+
+---
+
+## #27-c 完了（2026-08-16）— `vm_bail_toplevel` **0 件**・`force_gate` 8→4
+
+最上位文の bail を全て解消した。**残る `force_gate` 4 件はすべて #27-d（クロージャ本体）**で、
+最上位側の未対応構文は無くなった。
+
+### 5 例題 → 実測すると原因は 4 種だった
+
+`force_gate` は例題ごとに**最初の 1 件**で止まるので、潰すたびに次の原因が出てくる。
+1 例題 = 1 原因ではない（`built_in.ar` は 2 つ、`alias.ar` は 2 つ、`try_except.ar` は 2 つ持っていた）。
+
+| 原因 | 手法 | 例題 |
+|---|---|---|
+| `callee-builtin:create_flat_int_list` | flat リスト組み込み 3 種を**評価済み引数の 1 実装**（`eval_builtin_flat_evaled`）へ集約し、ツリーウォーク側を委譲に | langtons_ant / _profile |
+| `decl-no-slot:<ソース名>` | `let x = <グローバル識別子>` に **`Op::StoreLocalFromIdent`**（ソースの可変性を実行時に見る） | try_except |
+| `try-except-finally` | **`try/except` を `try/finally` で包む**（Python と同じ等価変形） | try_except |
+| `decl-no-slot:<fn 名>` | `collect_nested_decls` に **`Stmt::FnDef` のアームを追加**（ブロック式内の入れ子 `fn` に slot） | alias |
+| `callee-expr:Block` | 一般の呼び先式を **[callee, args…] + `Call`** で素直に積む（表示名は `<anonymous>`） | alias |
+| `call-arg`（組み込み） | **`Op::CallBuiltinKw`** ＋ `eval_builtin_evaled_named`（`enumerate(xs, start=1)`） | built_in |
+| `call-arg`（メソッド） | **`Op::CallMethodKw`**（`f.read_line(backward=True)`） | built_in |
+
+### `let x = <識別子>` は `Resolution` を見てはいけなかった（**潜在バグ 1 件**）
+
+`exec_let` は**ソース式が `Expr::Ident` でありさえすれば** `get_var(src)` の可変性で 3 分岐する
+（mut→deep_copy+freeze／let→そのまま／変数でない→Instance だけ copy+freeze）。
+ところが VM コンパイラは `Resolution::Local` と `Resolution::Unresolved` の 2 アームしか持たず、
+**`Resolution::Global` の識別子が「非識別子式」の枝**（`StoreLocalFreezeInstance`）へ落ちていた。
+
+⇒ 可変グローバルをソースにした `let`（例: `mut g = [1,2]` … 関数内で `let x = g`）で
+**コピーとフリーズが漏れる**。#15e の原則（注釈は最適化ヒントであって意味論の根拠ではない）を
+破っていた形で、`for-target-shadow` と同じ「off/auto では検知できない」種類のずれ。
+例題が踏んでいなかったので実害は出ていなかったが、分岐条件を
+「**ident かどうか**（`Resolution` は見ない）／可変性が slot から分かるか」に組み替えて解消した。
+
+判断そのものは `vm_let_value_from_ident` に 1 本化し、`DeclKind::LetFromIdent`（最上位）と
+`Op::StoreLocalFromIdent`（slot）が共有する。**違うのは可変性の引き方だけ**:
+前者は `get_var`（最上位は `scopes.len()==1` が保証されている）、後者は `scopes[0]` 限定
+（#27 の `LoadGlobal` と同じ理由 — VM フレームでは `get_var` が呼び出し元のローカルを覗く）。
+
+### `try/except/finally` は新実装ではなく**入れ子**で足りた
+
+「finally とハンドラの相互作用が複雑」として bail していたが、
+**`try/except` を丸ごと `try/finally` の本体として埋め込む**だけで全経路が揃う:
+
+- 本体が正常終了 → 内側 `PopTry` → 外側 `PopTry` → finally
+- ハンドラがマッチ → ハンドラ本体 → 外側 `PopTry` → finally
+- どのハンドラにもマッチしない → 内側の `Reraise` が**外側の landing pad** へ落ちる → finally → 再送出
+- ハンドラ本体が例外を出した → 同上
+
+成立の根拠は **`run` が例外時に `handlers.pop()` してから landing pad へ跳ぶ**こと
+（内側ハンドラは既に外れているので、内側で捕まり直すことがない）。
+追加したのはハンドラ本体の脱出チェック（`has_escape(.., true, ..)`）だけで、コードは実質 +10 行。
+
+⇒ **「相互作用が複雑」と書かれた bail は、既存の 2 つを組み合わせられないか先に見ること。**
+
+### 採番 walker の漏れがまた出た（`Stmt::FnDef`）
+
+`collect_nested_decls` に `Stmt::FnDef` のアームが無く、**ブロック式の中の `fn` に slot が
+振られていなかった**（`compile_stmt` 側は `slot_of` を引くので `decl-no-slot` で bail）。
+関数本体**直下**の `fn` は `compile_fn_inner` の prepass が採番していたので、
+「入れ子だけ落ちる」形になっていた。#27-c で 2 回目（前回は `Stmt::Block` と `Stmt::LetTuple`）。
+
+⇒ **同じ木を歩く walker が 2 つある限りこの穴は再発する**。新しい文種別を
+`compile_stmt` に足したら、必ず `collect_nested_decls` 側も見ること。
+
+### 組み込み／メソッドのキーワード引数
+
+`CallBuiltin` / `CallMethod` は評価済みの**値だけ**を運ぶので、引数名が要る形が bail していた。
+`chunk.kw_calls`（`CallKw` 用の副表）をそのまま流用して `CallBuiltinKw` / `CallMethodKw` を追加。
+
+⚠ **組み込みはキーワードの扱いが名前ごとに違う**（`enumerate` は `start` だけ許容／`zip` は
+エラー／`len` は名前を無視して位置引数扱い）。一致を確認した名前だけを
+`VM_BUILTIN_KW_NAMES`（現在 `enumerate`・`open`）に挙げ、それ以外は従来どおり bail する。
+**「キーワードを一般に通す」実装にすると off/auto がずれる**。
+
+⚠ メソッド側は **`CallMethodLocal`（レシーバ frame 直読み融合）を使うかどうかを
+引数のコンパイル前に決める**必要がある（融合はレシーバを push しないので、後から
+「やっぱり一般形」に切り替えられない）。`has_named_args` を先に見る形にした。
+
+### 残り
+
+`force_gate` 4 件は `spider_solitaire`(draw_game) / `functions`(inner_greet) /
+`variable`(make_id_generator) / `langtons_ant_profile`(draw_cells) — **全て
+`vm_ineligible: closure-capture`＝#27-d**。`vm_bail_fn` は #27 の 4 件（`static` 2・
+可変キャプチャ 2）のままで、これも #27-d と同じセル表を要求する。
+⇒ **#3 に残っているのは #27-d ただ 1 つ**。
+
+---
+
 ## 実装メモ（プラン記述からの差分・追記）
 - **例外は「静的例外テーブル」ではなく実行時ハンドラスタック**: `run` が `Vec<Handler{handler_ip, stack_len}>` を持ち、
   ディスパッチループが `Err` を捕捉してオペランドを巻き戻し landing pad へ跳ぶ。§5.2 の SETUP_TRY/POP_TRY 通りだが
@@ -2834,5 +3053,9 @@ VM 側の `is_vm_builtin(name) && !slots.contains_key(name)` と同じ健全性�
 | #16 (b)(i) メソッド版 | 同じ手が効くはず | **1.042x**（レシーバは所有権が要り clone が消せない） |
 | #14 / #11 R2-c | 仕様書どおり実装する前提 | **消費者が存在しない**ことが計測で判明し保留 |
 | #15b（Ident への node-id） | 「ローカルの型を注釈に載せる前提基盤」 | **消費者 0 件**（型落ち 40 件は全てハンドル表現が正しい型） |
+| #27 の残り（2026-08-15） | 「`force_gate` 12 件中 7 件が #27」 | **#27 は 4 例題・#27-d が 3 例題**（`force_gate` の文言では両者を区別できない） |
+| #27 `for-target-shadow` | 「flat-slot で表現できないだけ」 | **ツリーウォークが間違っていた**（Python 実装 6100 に対し Rust 400100）。bail は表現力ではなくバグの目印だった |
+| #27-c `try/except/finally` | 「finally とハンドラの相互作用が複雑」＝新実装が要る | **既存の 2 つを入れ子にするだけ**で全経路が揃った（実質 +10 行） |
+| #27-c `let x = <ident>` | 「グローバルソースは非対応なだけ」 | **`Resolution::Global` が非識別子式の枝へ落ちていた**＝可変グローバルのコピー漏れ（潜在バグ） |
 
 **教訓**: 着手前に診断フックで数字を取る。IR / バイトコードを実際にダンプして見る。

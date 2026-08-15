@@ -34,6 +34,10 @@ impl Interpreter {
                 println!("{}", parts.join(" "));
                 Some(Ok(Value::None))
             }
+            // flat リスト組み込み（#27-c）。ツリーウォーク側と**同一の本体**へ委譲する。
+            "create_flat_int_list" | "flat_get_int" | "flat_set_int" => {
+                Some(self.eval_builtin_flat_evaled(name, args))
+            }
             // ファイル操作（#27-c）。VM は位置引数だけを積むので、名前無しの 3 つ組に直して
             // ツリーウォークと同じ本体へ渡す（キーワード引数つきの呼び出しはコンパイラが bail する）。
             "open" => Some(
@@ -371,72 +375,17 @@ impl Interpreter {
                 })
             }
             // ── mutable flat-list built-ins ───────────────────────────────────
-            // create_flat_int_list(size, val) → fixed_list[Cell]
-            // Allocates a flat byte buffer directly — no Cell instance allocation.
-            // Requires 'Cell' class to be in scope (via `from ant_render import Cell`).
-            "create_flat_int_list" => {
-                if args.len() != 2 {
-                    return Some(Err("TypeError: create_flat_int_list() takes exactly 2 arguments".to_string()));
-                }
-                let size_v = match self.eval(args[0].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
-                let init_v = match self.eval(args[1].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
-                let size = match &size_v { Value::Int(n) => *n as usize, _ => return Some(Err("TypeError: create_flat_int_list: size must be int".to_string())) };
-                let init = match &init_v { Value::Int(n) => *n, _ => return Some(Err("TypeError: create_flat_int_list: val must be int".to_string())) };
-                let cell_class = match self.get_val("Cell") {
-                    Some(Value::Class(c)) => c,
-                    _ => return Some(Err("NameError: create_flat_int_list requires 'Cell' class in scope".to_string())),
-                };
-                let init_bytes = init.to_le_bytes();
-                let mut raw = vec![0u8; size * 8];
-                for chunk in raw.chunks_exact_mut(8) { chunk.copy_from_slice(&init_bytes); }
-                let flat_data = crate::interpreter::value::FlatListData { data: raw, len: size, allocated_size: size };
-                let layout = crate::interpreter::value::FlatLayout {
-                    class_name: "Cell".to_string(),
-                    fields: vec![("v".to_string(), crate::interpreter::value::FlatFieldTy::Int)],
-                    stride: 8,
-                    class: cell_class,
-                };
-                Some(Ok(Value::FrozenList { state: Rc::new(RefCell::new(flat_data)), layout: Rc::new(layout) }))
-            }
-            // flat_get_int(grid, idx) → int
-            "flat_get_int" => {
-                if args.len() != 2 {
-                    return Some(Err("TypeError: flat_get_int() takes exactly 2 arguments".to_string()));
-                }
-                let grid_v = match self.eval(args[0].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
-                let idx_v  = match self.eval(args[1].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
-                let idx = match &idx_v { Value::Int(n) => *n as usize, _ => return Some(Err("TypeError: flat_get_int: idx must be int".to_string())) };
-                match &grid_v {
-                    Value::FrozenList { state, .. } => {
-                        let s = state.borrow();
-                        if idx >= s.len { return Some(Err(format!("IndexError: flat_get_int index {idx} out of range (len {})", s.len))); }
-                        let off = idx * 8;
-                        let bytes: [u8; 8] = s.data[off..off + 8].try_into().unwrap();
-                        Some(Ok(Value::Int(i64::from_le_bytes(bytes))))
+            // 本体は `eval_builtin_flat_evaled`（評価済み引数版）に 1 本化してある（#27-c）。
+            // ここは引数を評価して委譲するだけ（`*_evaled` とずれた実装を作らない — #22 系列）。
+            "create_flat_int_list" | "flat_get_int" | "flat_set_int" => {
+                let mut vals = Vec::with_capacity(args.len());
+                for a in args {
+                    match self.eval(a.expr()) {
+                        Ok(v) => vals.push(v),
+                        Err(e) => return Some(Err(e)),
                     }
-                    _ => Some(Err(format!("TypeError: flat_get_int expects fixed_list, got {}", self.type_name(&grid_v)))),
                 }
-            }
-            // flat_set_int(grid, idx, val) → None  — writes directly into the flat buffer
-            "flat_set_int" => {
-                if args.len() != 3 {
-                    return Some(Err("TypeError: flat_set_int() takes exactly 3 arguments".to_string()));
-                }
-                let grid_v = match self.eval(args[0].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
-                let idx_v  = match self.eval(args[1].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
-                let val_v  = match self.eval(args[2].expr()) { Ok(v) => v, Err(e) => return Some(Err(e)) };
-                let idx = match &idx_v { Value::Int(n) => *n as usize, _ => return Some(Err("TypeError: flat_set_int: idx must be int".to_string())) };
-                let val = match &val_v { Value::Int(n) => *n, _ => return Some(Err("TypeError: flat_set_int: val must be int".to_string())) };
-                match &grid_v {
-                    Value::FrozenList { state, .. } => {
-                        let mut s = state.borrow_mut();
-                        if idx >= s.len { return Some(Err(format!("IndexError: flat_set_int index {idx} out of range"))); }
-                        let off = idx * 8;
-                        s.data[off..off + 8].copy_from_slice(&val.to_le_bytes());
-                        Some(Ok(Value::None))
-                    }
-                    _ => Some(Err(format!("TypeError: flat_set_int expects fixed_list, got {}", self.type_name(&grid_v)))),
-                }
+                Some(self.eval_builtin_flat_evaled(name, vals))
             }
             // ─────────────────────────────────────────────────────────────────
             "id" => {
@@ -611,6 +560,199 @@ impl Interpreter {
                 Some(Ok(crate::interpreter::ast_value::stmts_to_value(&stmts)))
             }
             _ => None,
+        }
+    }
+
+    /// 評価済み引数＋**引数名**の組み込み呼び出し（VM の `Op::CallBuiltinKw` 用・#27-c）。
+    ///
+    /// `eval_builtin_evaled` は位置引数しか受け取れないので、`enumerate(xs, start=1)` のような
+    /// 形はコンパイラが bail していた。ここはキーワードの解釈が**ツリーウォークと一致すると
+    /// 確認できた組み込みだけ**を扱う（`vm::compiler::VM_BUILTIN_KW_NAMES` と対応）。
+    ///
+    /// ⚠ **名前ごとにキーワードの扱いが違う**（`enumerate` は `start` だけ許容、`zip` はエラー、
+    /// `len` は名前を無視して位置引数として扱う…）。一致を確認していない名前をここへ足すと
+    /// off/auto がずれるので、必ず `eval_builtin_ident_call` の当該アームと突き合わせること。
+    pub(crate) fn eval_builtin_evaled_named(
+        &mut self,
+        name: &str,
+        args: Vec<(Option<String>, Value)>,
+    ) -> Option<Result<Value, String>> {
+        match name {
+            // `eval_builtin_ident_call` の `enumerate` アームと同じ引数解釈。
+            "enumerate" => {
+                let mut positional: Vec<Value> = Vec::new();
+                let mut start_val: Option<Value> = None;
+                for (key, v) in args {
+                    match key.as_deref() {
+                        None => positional.push(v),
+                        Some("start") => start_val = Some(v),
+                        Some(other) => {
+                            return Some(Err(format!(
+                                "TypeError: enumerate() got unexpected keyword argument '{other}'"
+                            )))
+                        }
+                    }
+                }
+                if positional.len() != 1 {
+                    return Some(Err(format!(
+                        "TypeError: enumerate() expected 1 positional argument, got {}",
+                        positional.len()
+                    )));
+                }
+                let start = match start_val {
+                    Some(Value::Int(n)) => n,
+                    Some(other) => {
+                        return Some(Err(format!(
+                            "TypeError: enumerate() 'start' must be int, not '{}'",
+                            self.type_name(&other)
+                        )))
+                    }
+                    None => 0i64,
+                };
+                let iterable = positional.into_iter().next().unwrap();
+                Some(self.enumerate_core(iterable, start))
+            }
+            // `open` の評価済み版は元から名前つきの 3 つ組を受け取る（そのまま渡せる）。
+            "open" => Some(
+                self.eval_builtin_open_evaled(
+                    args.into_iter().map(|(k, v)| (k, v, true)).collect(),
+                ),
+            ),
+            // ここに無い名前はコンパイラが `CallBuiltinKw` を発行しない（到達しない）。
+            _ => None,
+        }
+    }
+
+    /// flat リスト組み込み（`create_flat_int_list` / `flat_get_int` / `flat_set_int`）の**唯一の実装**。
+    ///
+    /// ツリーウォーク（`eval_builtin_ident_call`）と VM（`CallBuiltin` → `eval_builtin_evaled`）の
+    /// 両方がここへ委譲する（#27-c）。以前はツリーウォーク側にしか無く、VM は `is_builtin_callee` で
+    /// bail していた（`langtons_ant.ar` / `langtons_ant_profile.ar` の最上位が丸ごとツリーウォーク）。
+    ///
+    /// 全て**評価済み引数の純関数**（副作用は `flat_set_int` のバッファ書き込みのみ）なので、
+    /// 評価順の違いは生じない。
+    pub(crate) fn eval_builtin_flat_evaled(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, String> {
+        match name {
+            // create_flat_int_list(size, val) → fixed_list[Cell]
+            // フラットなバイト列を直接確保する（Cell インスタンスは作らない）。
+            // 'Cell' クラスがスコープに要る（`from ant_render import Cell`）。
+            "create_flat_int_list" => {
+                if args.len() != 2 {
+                    return Err(
+                        "TypeError: create_flat_int_list() takes exactly 2 arguments".to_string()
+                    );
+                }
+                let size = match &args[0] {
+                    Value::Int(n) => *n as usize,
+                    _ => {
+                        return Err(
+                            "TypeError: create_flat_int_list: size must be int".to_string()
+                        )
+                    }
+                };
+                let init = match &args[1] {
+                    Value::Int(n) => *n,
+                    _ => {
+                        return Err("TypeError: create_flat_int_list: val must be int".to_string())
+                    }
+                };
+                let cell_class = match self.get_val("Cell") {
+                    Some(Value::Class(c)) => c,
+                    _ => {
+                        return Err(
+                            "NameError: create_flat_int_list requires 'Cell' class in scope"
+                                .to_string(),
+                        )
+                    }
+                };
+                let init_bytes = init.to_le_bytes();
+                let mut raw = vec![0u8; size * 8];
+                for chunk in raw.chunks_exact_mut(8) {
+                    chunk.copy_from_slice(&init_bytes);
+                }
+                let flat_data = crate::interpreter::value::FlatListData {
+                    data: raw,
+                    len: size,
+                    allocated_size: size,
+                };
+                let layout = crate::interpreter::value::FlatLayout {
+                    class_name: "Cell".to_string(),
+                    fields: vec![(
+                        "v".to_string(),
+                        crate::interpreter::value::FlatFieldTy::Int,
+                    )],
+                    stride: 8,
+                    class: cell_class,
+                };
+                Ok(Value::FrozenList {
+                    state: Rc::new(RefCell::new(flat_data)),
+                    layout: Rc::new(layout),
+                })
+            }
+            // flat_get_int(grid, idx) → int
+            "flat_get_int" => {
+                if args.len() != 2 {
+                    return Err("TypeError: flat_get_int() takes exactly 2 arguments".to_string());
+                }
+                let idx = match &args[1] {
+                    Value::Int(n) => *n as usize,
+                    _ => return Err("TypeError: flat_get_int: idx must be int".to_string()),
+                };
+                match &args[0] {
+                    Value::FrozenList { state, .. } => {
+                        let s = state.borrow();
+                        if idx >= s.len {
+                            return Err(format!(
+                                "IndexError: flat_get_int index {idx} out of range (len {})",
+                                s.len
+                            ));
+                        }
+                        let off = idx * 8;
+                        let bytes: [u8; 8] = s.data[off..off + 8].try_into().unwrap();
+                        Ok(Value::Int(i64::from_le_bytes(bytes)))
+                    }
+                    other => Err(format!(
+                        "TypeError: flat_get_int expects fixed_list, got {}",
+                        self.type_name(other)
+                    )),
+                }
+            }
+            // flat_set_int(grid, idx, val) → None — フラットバッファへ直接書き込む
+            "flat_set_int" => {
+                if args.len() != 3 {
+                    return Err("TypeError: flat_set_int() takes exactly 3 arguments".to_string());
+                }
+                let idx = match &args[1] {
+                    Value::Int(n) => *n as usize,
+                    _ => return Err("TypeError: flat_set_int: idx must be int".to_string()),
+                };
+                let val = match &args[2] {
+                    Value::Int(n) => *n,
+                    _ => return Err("TypeError: flat_set_int: val must be int".to_string()),
+                };
+                match &args[0] {
+                    Value::FrozenList { state, .. } => {
+                        let mut s = state.borrow_mut();
+                        if idx >= s.len {
+                            return Err(format!(
+                                "IndexError: flat_set_int index {idx} out of range"
+                            ));
+                        }
+                        let off = idx * 8;
+                        s.data[off..off + 8].copy_from_slice(&val.to_le_bytes());
+                        Ok(Value::None)
+                    }
+                    other => Err(format!(
+                        "TypeError: flat_set_int expects fixed_list, got {}",
+                        self.type_name(other)
+                    )),
+                }
+            }
+            other => Err(format!("NameError: '{other}' is not defined")),
         }
     }
 

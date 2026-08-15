@@ -40,19 +40,6 @@ fn bail_expr(site: &'static str, expr: &Expr) {
     crate::interpreter::tw_stats::record_bail(site, expr_kind(expr));
 }
 
-/// 注釈テーブルを引くための node-id（#26）。持たないバリアントは `None`。
-/// 0 は「未採番」（合成 AST・テンプレート本体など）なので同じく `None` にする。
-fn expr_node_id(e: &Expr) -> Option<u32> {
-    let id = match e {
-        Expr::Ident { node_id, .. }
-        | Expr::Attr { node_id, .. }
-        | Expr::Call { node_id, .. }
-        | Expr::Subscript { node_id, .. } => *node_id,
-        _ => return None,
-    };
-    (id != 0).then_some(id)
-}
-
 /// `Expr` バリアント名（診断フック用）。
 fn expr_kind(expr: &Expr) -> &'static str {
     match expr {
@@ -109,23 +96,42 @@ fn expr_kind(expr: &Expr) -> &'static str {
 /// 2 ファイルに跨る不変条件なので、`vm_builtin_names_are_all_handled` テストで固定してある（#22-d）。
 pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
     "print", "range", "len", "next", "repr", "id", "enumerate", "zip", "getenv", "open", "close",
+    // flat リスト（#27-c）。本体は `eval_builtin_flat_evaled` に 1 本化済み。
+    "create_flat_int_list", "flat_get_int", "flat_set_int",
 ];
 
 fn is_vm_builtin(name: &str) -> bool {
     VM_BUILTIN_NAMES.contains(&name)
 }
 
+/// **キーワード引数つきでも VM に載せられる**組み込み名（#27-c・`Op::CallBuiltinKw`）。
+///
+/// キーワードの扱いは組み込みごとに違う（`enumerate` は `start` だけ許容、`zip` はエラー、
+/// `len` は名前を無視して位置引数扱い…）ので、`eval_builtin_evaled_named` で
+/// **ツリーウォークと一致することを確認した名前だけ**を挙げる。ここに無い名前は従来どおり
+/// bail してツリーウォークへ落とす（＝安全側）。
+const VM_BUILTIN_KW_NAMES: &[&str] = &["enumerate", "open"];
+
+/// 引数に**名前付き**（キーワード／可変長）が含まれるか（#27-c）。
+/// `compile_call_args` は同じ判定を戻り値で返すが、それでは遅すぎる場面がある:
+/// メソッド呼び出しは「レシーバを push するか frame 直読み融合にするか」を
+/// **引数をコンパイルする前に**決めなければならない。
+fn has_named_args(args: &[CallArg]) -> bool {
+    args.iter()
+        .any(|a| matches!(a, CallArg::Keyword { .. } | CallArg::Variadic(_)))
+}
+
 /// VM が呼び先として扱えず、ツリーウォークへ bail すべき組み込み名。
 /// - `eval_builtin_ident_call` 専用の builtin のうち **`eval_builtin_evaled` が扱わない**もの
-///   （IO・flat リスト・parse_ar 等）。`is_vm_builtin` の集合はここより先に判定されるので重複不要。
+///   （`parse_ar` は AST を値へ変換するので評価済み引数では表現できない）。
+///   `is_vm_builtin` の集合はここより先に判定されるので重複不要。
 /// - `Value::Type` グローバルとして**登録されていない**型名（`tuple`/`list`/`type`/`byte`）。
 ///   これらはツリーウォークでも `NameError`（呼び出し不可）なので、bail して同じ挙動にする。
 ///   登録済みの型コンストラクタ（int/str/… は `LoadGlobal`+`Call` で解決）はここに含めない。
 fn is_builtin_callee(name: &str) -> bool {
     matches!(
         name,
-        "create_flat_int_list" | "flat_get_int" | "flat_set_int" | "open" | "close" | "parse_ar"
-            | "tuple" | "list" | "type" | "byte"
+        "parse_ar" | "tuple" | "list" | "type" | "byte"
     )
 }
 
@@ -188,6 +194,9 @@ struct Compiler {
     /// すべて `slots` に入るため）。`resolver::toplevel_declared_globals`（**減算なし**）が入る
     /// — 減算版を渡すと別の文の `for i in ...` のせいで `while i < N` の `i` まで落ちる（#27-c）。
     toplevel_globals: HashSet<String>,
+    /// 外側の同名束縛を覆う `for` ループ変数の名前（#27・`for_target_shadows`）。
+    /// `Stmt::For` のコンパイル時に、この名前だけ**本体の間だけ**専用 slot へ差し替える。
+    shadowed_for_targets: HashSet<String>,
 }
 
 /// 変数への書き込み先（#10-b）。`store_target` が決める。
@@ -220,34 +229,6 @@ struct BlockCtx {
     end_jumps: Vec<usize>,
     /// `loop_yield` の蓄積リスト slot（block:/for/while 式は Some、if/match 式は None＝透過）。
     yield_slot: Option<u16>,
-}
-
-/// 型注釈がユーザークラス/trait/protocol（＝実行時 Instance）であることを保守的に判定する。
-/// 組み込み型・ジェネリック・Optional/union は false（フォールバック）。健全性優先で、
-/// 少しでも Instance でない可能性があれば false を返す（型検査が Instance を保証する範囲のみ true）。
-fn is_user_instance_type(ann: &str) -> bool {
-    let t = ann.trim();
-    // ジェネリック・union・optional・nullable は非対応。
-    if t.is_empty()
-        || t.contains('[')
-        || t.contains('|')
-        || t.contains('?')
-        || t.contains(' ')
-        || t.starts_with("Optional")
-    {
-        return false;
-    }
-    // 識別子として妥当か（英数字と `_` のみ）。
-    if !t.chars().all(|c| c.is_alphanumeric() || c == '_') {
-        return false;
-    }
-    // 組み込み型（メソッドを別経路で持つ／プリミティブ）は除外。
-    !matches!(
-        t,
-        "int" | "uint" | "str" | "float" | "bool" | "complex" | "list" | "dict" | "set"
-            | "tuple" | "byte" | "bytes" | "char" | "Any" | "None" | "void" | "object"
-            | "function" | "type" | "slice" | "range" | "Self"
-    )
 }
 
 /// トップレベル関数本体を Chunk へコンパイルする。非対応構文があれば `None`。
@@ -342,11 +323,8 @@ fn compile_toplevel_stmt_inner(
     toplevel_globals: &HashSet<String>,
 ) -> Option<Chunk> {
     let body = std::slice::from_ref(stmt);
-    // for ターゲットが同名の宣言を覆う形は flat-slot で表現できない（関数側と同じ制約）。
-    if has_for_target_shadow(&[], body) {
-        bail("for-target-shadow", None);
-        return None;
-    }
+    // 関数側と同じ扱い（#27）。最上位でも 1 文の中で `for` 変数が宣言を覆いうる。
+    let shadowed_for_targets = for_target_shadows(&[], body);
 
     let mut slots: HashMap<String, u16> = HashMap::new();
     let mut slot_mut: Vec<bool> = Vec::new();
@@ -407,6 +385,7 @@ fn compile_toplevel_stmt_inner(
         tuple_decls: Vec::new(),
         kw_calls: Vec::new(),
         toplevel_globals: toplevel_globals.clone(),
+        shadowed_for_targets,
     };
 
     c.compile_stmt(stmt)?;
@@ -445,21 +424,31 @@ fn compile_fn_inner(
     body: &[Stmt],
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
 ) -> Option<Chunk> {
-    // `for` ループ変数が外側変数をシャドウする関数は flat-slot モデルで表現できないため諦める。
-    if has_for_target_shadow(params, body) {
-        bail("for-target-shadow", None);
-        return None;
-    }
+    // 外側変数をシャドウする `for` ループ変数は、本体のコンパイル中だけ専用 slot へ差し替える（#27）。
+    let shadowed_for_targets = for_target_shadows(params, body);
     // base slot をリゾルバと同順で採番する: パラメータ → トップレベル let/mut/const。
     let mut slots: HashMap<String, u16> = HashMap::new();
     let mut slot_mut: Vec<bool> = Vec::new();
     let mut slot_type: Vec<Option<String>> = Vec::new();
     let mut self_slot: Option<u16> = None;
     let mut n: u16 = 0;
-    for p in params {
+    for (i, p) in params.iter().enumerate() {
+        // 可変長パラメータ（#27）。`bind_args` は**受け取った値を `local::args` という名前で
+        // 末尾に 1 つ**束縛する（引数が無ければ `Value::None`）ので、slot も同じ名前・同じ位置に
+        // 採番すれば一般バインド経路（`bindings[i]` → slot i）とそのまま一致する。
+        // ⚠ **並びが `bind_args` と一致することが健全性そのもの**。パーサは可変長を末尾に
+        // しか許さないが、崩れたときに黙って値がずれないよう明示的に確かめる。
         if p.variadic {
-            bail("variadic-param", None);
-            return None;
+            if i + 1 != params.len() {
+                bail("variadic-param-not-last", None);
+                return None;
+            }
+            slots.insert("local::args".to_string(), n);
+            slot_mut.push(p.mutable);
+            // 型注釈は**要素の型**（`let ...: int`）であって束縛される list の型ではない。
+            slot_type.push(None);
+            n = n.checked_add(1)?;
+            continue;
         }
         if p.name == "self" {
             self_slot = Some(n);
@@ -562,6 +551,7 @@ fn compile_fn_inner(
         tuple_decls: Vec::new(),
         kw_calls: Vec::new(),
         toplevel_globals: HashSet::new(),
+        shadowed_for_targets,
     };
 
     for stmt in body {
@@ -634,6 +624,8 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         tuple_decls: Vec::new(),
         kw_calls: Vec::new(),
         toplevel_globals: HashSet::new(),
+        // デバッガ REPL の 1 文。`for` 変数のシャドウは扱わない（名前引きで動く）。
+        shadowed_for_targets: HashSet::new(),
     };
     match stmt {
         Stmt::Expr(e) => {
@@ -669,15 +661,17 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
     })
 }
 
-/// `for` ループ変数（式形含む）が param または非 `for` 宣言と名前衝突するか（＝ブロックスコープの
-/// シャドウ）を判定する。Arrow の `for` 変数はブロックスコープ（ループ後に外側へ戻る）だが、
-/// flat-slot VM モデルは同名 slot を再利用するため、シャドウ時に外側変数を上書きしてツリーウォークと
-/// 挙動が食い違う。該当関数はコンパイルを諦める（ツリーウォークへフォールバック）。
-fn has_for_target_shadow(params: &[Param], body: &[Stmt]) -> bool {
+/// param または非 `for` 宣言と名前衝突する `for` ループ変数（式形含む）の集合（#27）。
+///
+/// Arrow の `for` 変数はブロックスコープで、ループを抜けると外側の同名変数が戻る。
+/// flat-slot モデルは名前ごとに 1 slot なので、素直に採番すると外側の値を壊す。
+/// ⇒ **ここに挙がった名前だけ、ループ本体のコンパイル中に専用 slot へ差し替える**
+/// （`compile_stmt` の `Stmt::For`）。以前はこの集合が空でなければ関数ごと諦めていた。
+fn for_target_shadows(params: &[Param], body: &[Stmt]) -> HashSet<String> {
     let mut for_names: HashSet<String> = HashSet::new();
     let mut decl_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
     scan_shadow_stmts(body, &mut for_names, &mut decl_names);
-    for_names.iter().any(|n| decl_names.contains(n))
+    for_names.intersection(&decl_names).cloned().collect()
 }
 
 fn scan_shadow_stmts(
@@ -910,6 +904,15 @@ fn collect_nested_decls(
             | Stmt::Return(Some(e)) => collect_expr_decls(e, slots, slot_mut, slot_type, n)?,
             Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => {
                 collect_expr_decls(value, slots, slot_mut, slot_type, n)?
+            }
+            // 入れ子ブロック（`block:` 式・if/while の本体など）の中の `fn` 定義（#27-c）。
+            // 名前は**そのブロックのローカル**なので slot を振る（関数本体直下の `fn` を
+            // base slot に採番するのと同じ扱い）。⚠ **本体には踏み込まない**（別フレーム）。
+            // ⚠ ここが抜けていたため `alias.ar` の `block->function` が
+            // 「slot にもグローバルにも無い識別子」として bail していた
+            //   — 採番 walker と `compile_stmt` の walker がずれていた典型例。
+            Stmt::FnDef { name, .. } => {
+                add_decl(name, &None, false, slots, slot_mut, slot_type, n)?;
             }
             Stmt::AttrAssign { target, value }
             | Stmt::AttrCompoundAssign { target, value, .. } => {
@@ -1544,6 +1547,16 @@ impl Compiler {
         self.emit(Op::LoadGlobal(ni, ci));
     }
 
+    /// スタック上位 2 値への二項演算を、型特化つきで emit する（#2b）。
+    /// `kind` が決まらなければ動的ディスパッチの `Bin`。属性複合代入の 2 経路で共有する。
+    fn emit_bin_specialized(&mut self, kind: Option<crate::type_check::BinOperandKind>, op: &BinOp) {
+        match kind {
+            Some(crate::type_check::BinOperandKind::Int) => self.emit(Op::IntBinSS(op.clone())),
+            Some(crate::type_check::BinOperandKind::Float) => self.emit(Op::FloatBinSS(op.clone())),
+            None => self.emit(Op::Bin(op.clone())),
+        };
+    }
+
     fn add_name(&mut self, name: &str) -> u32 {
         let idx = self.names.len() as u32;
         self.names.push(name.to_string());
@@ -1609,63 +1622,14 @@ impl Compiler {
         };
     }
 
-    /// 式 `e` が実行時に **確実に Instance** の base ローカルを指すかを保守的に判定する。
-    /// `self` パラメータ（型注釈なしだが常に Instance）と、ユーザークラス型注釈の
-    /// 識別子（解決済み・未解決とも）を true とする。メソッド呼び出し・属性代入のレシーバ判定に使う。
-    fn object_is_instance(&self, e: &Expr) -> bool {
-        let slot = match e {
-            Expr::Ident { res: Resolution::Local(slot), .. } => *slot as usize,
-            Expr::Ident { name, res: Resolution::Unresolved, .. } => match self.slots.get(name) {
-                Some(&s) => s as usize,
-                None => return false,
-            },
-            // slot を持たないレシーバ（グローバル変数・属性・呼び出し結果など）は
-            // **型検査の注釈**で判定する（#26）。`slot_type` 経路と同じ 2 段の条件
-            // （形＋出自）を通すので健全性は同じ。
-            other => return self.annot_is_arrow_instance(other),
-        };
-        if Some(slot as u16) == self.self_slot {
-            return true;
-        }
-        self.slot_type
-            .get(slot)
-            .and_then(|o| o.as_deref())
-            .map(|t| self.is_arrow_instance_type(t))
-            .unwrap_or(false)
-    }
-
-    /// 型注釈名が「実行時 `Value::Instance` になるユーザークラス」か（#27-a）。
-    ///
-    /// **2 段構え**である点が要点:
-    /// 1. `is_user_instance_type` — 形（ジェネリック・union・組み込み型名を除く）
-    /// 2. `annotations.is_arrow_class` — **出自**（外部言語スタブ由来のクラスを除く）
-    ///
-    /// 2 が無いと C# スタブのクラス（`import[cs-dll]`）が同じ `NamedInstance` 注釈で通り、
-    /// 実行時の `Value::CsObject` を `Value::Instance` 前提の op へ流して落ちる
-    /// （`event_cs_handler.ar` の off/auto 不一致で実際に踏んだ）。
-    fn is_arrow_instance_type(&self, t: &str) -> bool {
-        is_user_instance_type(t) && self.annotations.is_arrow_class(t)
-    }
-
-    /// 注釈テーブルが当該式を「Arrow クラスのインスタンス」と確定しているか（#26）。
-    ///
-    /// `slot_type` を持たないレシーバ（グローバル・属性・呼び出し結果）に対する
-    /// `is_arrow_instance_type` の等価物。`NamedInstance` 以外（`Protocol`/`Union`/`Any`/
-    /// 組み込み型）は保守的に false。
-    ///
-    /// ⚠ **`NamedInstance` だけで true にしてはいけない**。外部言語スタブのクラスも
-    /// 同じ注釈になるので、`is_arrow_class`（出自）まで見る（#27-a）。
-    fn annot_is_arrow_instance(&self, e: &Expr) -> bool {
-        let Some(node_id) = expr_node_id(e) else {
-            return false;
-        };
-        match self.annotations.resolved_type(node_id) {
-            Some(crate::type_check::InferredType::NamedInstance(name)) => {
-                self.is_arrow_instance_type(name)
-            }
-            _ => false,
-        }
-    }
+    // ⚠ **レシーバが Arrow インスタンスかを判定する仕組みは撤去した**（#27）。
+    // `object_is_instance` / `is_arrow_instance_type` / `annot_is_arrow_instance` /
+    // `is_user_instance_type`（#26・#27-a の「形＋出自」2 段判定）は、属性複合代入の
+    // レシーバ制限が最後の消費者だった。読み書きが `get_attr_val` / `attr_assign_evaled`
+    // へ一本化された今、どの op も `Value::Instance` を前提にしていないので判定自体が不要。
+    // ⚠ **`Value::Instance` を前提とする op を新設するなら判定を復活させること**。
+    // 型検査の `NamedInstance` は外部言語スタブのクラス（実行時 `Value::CsObject`）も
+    // 同じ注釈になるので、`annotations.is_arrow_class`（出自）まで見る必要がある。
 
     /// 呼び出し引数の `is_mutable`（`eval_call_args` と同じ判定: 変数 ident は変数の可変性、
     /// それ以外の式は保守的に true）。VM は base ローカルしか読まないので slot_mut で判定できる。
@@ -1936,6 +1900,25 @@ impl Compiler {
                 //  - 複数ターゲット `for k, v in ...` … 要素をいったん受けてから分解する
                 //  - 捨てターゲット `for _ in ...`   … `_` は `add_decl` が slot を振らない
                 //    （`let _ = e` は値を捨てるため）が、`ForIter` には**書き込み先が要る**
+                // ⚠ **外側の同名束縛を覆うループ変数には専用 slot を割り当てる**（#27）。
+                //
+                // Arrow の `for` 変数はブロックスコープで、ツリーウォークは反復ごとに
+                // スコープを push して宣言する（ループを抜けると外側の値が戻る）。
+                // 名前ごとに 1 slot の flat モデルでこれを表現するため、**本体の間だけ**
+                // `slots` の対応を temp slot へ差し替え、ループ後に元へ戻す。
+                // これにより本体内の読みは temp を、ループ後の読みは元の slot を指す。
+                //
+                // 差し替えは `slot_of`（`target_slot` / `target_slots` の算出）より**前**に
+                // 行う必要がある。temp は LIFO なので、解放は iter/sink より後（＝最後）。
+                let mut shadow_saved: Vec<(String, u16)> = Vec::new();
+                for t in targets {
+                    if t != "_" && self.shadowed_for_targets.contains(t) {
+                        let fresh = self.alloc_temp()?;
+                        if let Some(old) = self.slots.insert(t.clone(), fresh) {
+                            shadow_saved.push((t.clone(), old));
+                        }
+                    }
+                }
                 let unpack = targets.len() > 1;
                 let sink_temp = if unpack || targets[0] == "_" {
                     Some(self.alloc_temp()?)
@@ -1995,6 +1978,11 @@ impl Compiler {
                 if sink_temp.is_some() {
                     self.free_temp(); // タプル分解／`_` 用の受け皿（#27-c）
                 }
+                // シャドウしていたループ変数の名前を外側の slot へ戻す（#27）。
+                for (name, old) in shadow_saved.into_iter().rev() {
+                    self.slots.insert(name, old);
+                    self.free_temp();
+                }
             }
             Stmt::Break => {
                 // 最内ループの break_jumps に登録し、末尾へジャンプ（バックパッチ）。
@@ -2051,8 +2039,14 @@ impl Compiler {
                 } else {
                     let slot = self.slot_of(name)?;
                     // ソースの種類で store op を選ぶ（exec_let のセマンティクスに一致）。
+                    //
+                    // ⚠ **`exec_let` は `Resolution` を見ない**。`Expr::Ident` なら何であれ
+                    // `get_var(src)` の可変性で分岐する。よってここも**識別子は全て識別子として
+                    // 扱う**こと（`Resolution::Global` を非識別子式の枝へ落とすと、可変グローバルを
+                    // ソースにした `let` でコピー＆フリーズが漏れる）。
                     let store = match e {
-                        // ident/localref ソース: 可変なら copy+freeze、不変ならそのまま。
+                        // ident ソースのうち**可変性がコンパイル時に分かる**もの（＝slot にある）。
+                        // 可変なら copy+freeze、不変ならそのまま。
                         Expr::Ident { res: Resolution::Local(s), .. } => {
                             if self.slot_mut.get(*s as usize).copied().unwrap_or(false) {
                                 Op::StoreLocalCopyFreeze(slot)
@@ -2060,13 +2054,18 @@ impl Compiler {
                                 Op::StoreLocal(slot)
                             }
                         }
-                        Expr::Ident { name: nm, res: Resolution::Unresolved, .. } => {
-                            let s = self.slot_of(nm)?; // base slot 以外（グローバル）は非対応
+                        Expr::Ident { name: nm, .. } if self.slots.contains_key(nm) => {
+                            let s = self.slots[nm];
                             if self.slot_mut.get(s as usize).copied().unwrap_or(false) {
                                 Op::StoreLocalCopyFreeze(slot)
                             } else {
                                 Op::StoreLocal(slot)
                             }
+                        }
+                        // slot に無い ident（グローバル・未定義）は**実行時に**ソースの可変性を見る。
+                        Expr::Ident { name: nm, .. } => {
+                            let ni = self.add_name(nm);
+                            Op::StoreLocalFromIdent(slot, ni)
                         }
                         // リテラル（プリミティブ）は freeze 不要。
                         Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_)
@@ -2144,12 +2143,17 @@ impl Compiler {
                 self.free_temp();
                 self.free_temp();
             }
-            // 属性複合代入 `obj.attr op= value`（obj が `self`/instance のときのみ）。
+            // 属性複合代入 `obj.attr op= value`。
+            //
+            // ⚠ **レシーバの種類で絞らない**（#27）。読みは `GetAttr`（ツリーウォークの
+            // `eval_attr` と同じ `get_attr_val`）、書きは `SetAttr`（`attr_assign` と**同一の**
+            // `attr_assign_evaled`）なので、`Value::Class` の `static mut` まで意味論が一致する。
+            // 以前あった `object_is_instance` の条件は「2 実装の差」ではなく、下の
+            // **局所 slot 前提の最適化**（レシーバを 1 回しか評価しない融合）を守るためのもの。
+            // 局所 slot でないレシーバはツリーウォークどおり 2 回評価する経路へ回す。
             Stmt::AttrCompoundAssign { target, op, value } => {
                 let (object, attr) = match target {
-                    Expr::Attr { object, attr, .. } if self.object_is_instance(object) => {
-                        (object, attr)
-                    }
+                    Expr::Attr { object, attr, .. } => (object, attr),
                     other => {
                         bail_expr("attr-compound-target", other);
                         return None;
@@ -2166,51 +2170,62 @@ impl Compiler {
                         .and_then(|k| Self::gate_bin_kind(k, op)),
                     _ => None,
                 };
-                // `object_is_instance` が通った時点でレシーバは局所 slot（`self` か instance 型の
-                // ローカル）と確定している。`as_local` は debug_mode でだけ `None` を返す。
-                let obj_slot = self.as_local(object);
-                self.compile_expr(object)?; // SetAttr のベース（ここは常に必要）
+                match self.as_local(object) {
+                    // レシーバが局所 slot（`self`・ローカル変数）のとき。**再評価が副作用を
+                    // 持たない**ので、`SetAttr` のベースを 1 回積むだけで読み書き両方に使える。
+                    Some(obj_slot) => {
+                        self.compile_expr(object)?; // SetAttr のベース
 
-                // 評価順（#2a）。ツリーウォークは **value を先に評価してから**現在値を読むので、
-                // 素直に組むと [value, cur] の順にスタックへ乗り `Swap` が要る。
-                // ただし value が**副作用を持たない**（局所変数読み or 定数リテラル）なら、
-                // 先に現在値を読んでも観測結果は同じなので `Swap` を丸ごと落とせる。
-                // レシーバ slot が value の評価中に再束縛されないことは `CallMethodLocal` と同じ根拠
-                // （再束縛は文＝`StoreLocal` でしか起きず、クロージャ捕捉は VM 非対応で bail する）。
-                //
-                // 現在値の読み出しは、レシーバが局所 slot なら `LoadLocal; GetAttr` の 2 命令を
-                // `GetAttrLocal` 1 命令へ畳む（レシーバを **clone せず frame から参照で読む**ので
-                // `Rc` の refcount 増減も消える）。`Expr::Attr` の compile と同じ融合。
-                let value_pure =
-                    self.as_local(value).is_some() || Self::as_const_lit(value).is_some();
-                if !value_pure {
-                    self.compile_expr(value)?; // rhs を先に評価（順序保存）
-                }
-                match obj_slot {
-                    Some(s) => self.emit(Op::GetAttrLocal(s, ni, ni)),
+                        // 評価順（#2a）。ツリーウォークは **value を先に評価してから**現在値を読むので、
+                        // 素直に組むと [value, cur] の順にスタックへ乗り `Swap` が要る。
+                        // ただし value が**副作用を持たない**（局所変数読み or 定数リテラル）なら、
+                        // 先に現在値を読んでも観測結果は同じなので `Swap` を丸ごと落とせる。
+                        // レシーバ slot が value の評価中に再束縛されないことは `CallMethodLocal` と
+                        // 同じ根拠（再束縛は文＝`StoreLocal` でしか起きず、クロージャ捕捉は VM 非対応
+                        // で bail する）。
+                        //
+                        // 現在値の読み出しは `LoadLocal; GetAttr` の 2 命令を `GetAttrLocal` 1 命令へ
+                        // 畳む（レシーバを **clone せず frame から参照で読む**ので `Rc` の refcount
+                        // 増減も消える）。`Expr::Attr` の compile と同じ融合。
+                        let value_pure =
+                            self.as_local(value).is_some() || Self::as_const_lit(value).is_some();
+                        if !value_pure {
+                            self.compile_expr(value)?; // rhs を先に評価（順序保存）
+                        }
+                        self.emit(Op::GetAttrLocal(obj_slot, ni, ni));
+                        if value_pure {
+                            // [obj, cur, value] → Bin → [obj, new]（Swap 不要）
+                            self.compile_expr(value)?;
+                        } else {
+                            // [obj, value, cur] → Swap → [obj, cur, value] → Bin → [obj, new]
+                            self.emit(Op::Swap);
+                        }
+                        self.emit_bin_specialized(kind, op);
+                        self.emit(Op::SetAttr(ni));
+                    }
+                    // 一般レシーバ（グローバル変数・クラス名・属性・呼び出し結果／`debug_mode`）。
+                    //
+                    // ツリーウォークは `eval(value)` → `eval(target)`（**object 1 回目**）→ 二項演算
+                    // → `attr_assign(target, ..)`（**object 2 回目**）の順で、`object` を 2 回評価する。
+                    // 副作用まで一致させるため**そのまま 2 回積む**（添字複合代入 `d[k] op= v` と
+                    // 同じ扱い・#27-c）。上の融合を使えるのは再評価が無害な局所 slot のときだけ。
                     None => {
-                        // `debug_mode` では `as_local` が常に `None`。従来どおり 2 命令で組む。
-                        self.compile_expr(object)?;
-                        self.emit(Op::GetAttr(ni, ni))
+                        let rhs_tmp = self.alloc_temp()?;
+                        self.compile_expr(value)?; // 1. rhs を先に評価
+                        self.emit(Op::StoreLocal(rhs_tmp));
+                        self.compile_expr(object)?; // 2. 現在値の読み
+                        self.emit(Op::GetAttr(ni, ni));
+                        self.emit(Op::LoadLocal(rhs_tmp));
+                        self.emit_bin_specialized(kind, op); // 3. 二項演算
+                        let res_tmp = self.alloc_temp()?;
+                        self.emit(Op::StoreLocal(res_tmp));
+                        self.compile_expr(object)?; // 4. 代入（`attr_assign` と同じく再評価）
+                        self.emit(Op::LoadLocal(res_tmp));
+                        self.emit(Op::SetAttr(ni));
+                        self.free_temp();
+                        self.free_temp();
                     }
-                };
-                if value_pure {
-                    // [obj, cur, value] → Bin → [obj, new]（Swap 不要）
-                    self.compile_expr(value)?;
-                } else {
-                    // [obj, value, cur] → Swap → [obj, cur, value] → Bin → [obj, new]
-                    self.emit(Op::Swap);
                 }
-                match kind {
-                    Some(crate::type_check::BinOperandKind::Int) => {
-                        self.emit(Op::IntBinSS(op.clone()))
-                    }
-                    Some(crate::type_check::BinOperandKind::Float) => {
-                        self.emit(Op::FloatBinSS(op.clone()))
-                    }
-                    None => self.emit(Op::Bin(op.clone())),
-                };
-                self.emit(Op::SetAttr(ni));
             }
             Stmt::Raise { exc, span } => match exc {
                 Some(e) => {
@@ -2379,8 +2394,15 @@ impl Compiler {
         Some(())
     }
 
-    /// `try/except`（finally なし）と `try/finally`（except なし）をコンパイルする。
-    /// 両方揃う `try/except/finally` は現状 bail（finally とハンドラの相互作用が複雑なため）。
+    /// `try/except` / `try/finally` / `try/except/finally` をコンパイルする。
+    ///
+    /// 3 点セットは **`try/except` を `try/finally` で包む**形に落とす（#27-c）。
+    /// これは Python と同じ等価変形で、finally とハンドラの相互作用を別実装しなくて済む:
+    /// - 本体が正常終了 → 内側 `PopTry` → 外側 `PopTry` → finally
+    /// - ハンドラがマッチ → ハンドラ本体 → 外側 `PopTry` → finally
+    /// - どのハンドラにもマッチしない → 内側の `Reraise` が**外側の landing pad** へ落ちる
+    ///   （例外時に `run` がハンドラを pop 済みなので、内側で捕まり直すことはない）→ finally → 再送出
+    /// - ハンドラ本体が例外を出した → 同上（外側 landing pad）→ finally → 再送出
     fn compile_try(
         &mut self,
         body: &[Stmt],
@@ -2389,12 +2411,7 @@ impl Compiler {
     ) -> Option<()> {
         match finally_body {
             None => self.compile_try_except(body, handlers),
-            Some(fin) if handlers.is_empty() => self.compile_try_finally(body, fin),
-            // try/except/finally の 3 点セットは非対応（finally とハンドラの相互作用が複雑）。
-            Some(_) => {
-                bail("try-except-finally", None);
-                None
-            }
+            Some(fin) => self.compile_try_finally(body, handlers, fin),
         }
     }
 
@@ -2459,16 +2476,35 @@ impl Compiler {
         Some(())
     }
 
-    /// `try: <body> finally: <fin>`（except なし）。正常経路・例外経路の両方で finally を走らせる。
-    fn compile_try_finally(&mut self, body: &[Stmt], fin: &[Stmt]) -> Option<()> {
+    /// `try: <body> [except ...:] finally: <fin>`。正常経路・例外経路の両方で finally を走らせる。
+    ///
+    /// `handlers` が空でなければ、**内側に `try/except` をそのまま埋め込む**（`compile_try` の doc）。
+    fn compile_try_finally(
+        &mut self,
+        body: &[Stmt],
+        handlers: &[ExceptHandler],
+        fin: &[Stmt],
+    ) -> Option<()> {
         // finally は全出口で走る必要があるので、脱出制御フロー（return 含む）があれば bail。
         if has_escape(body, true, 0) || has_escape(fin, true, 0) {
             bail("finally-escape", None);
             return None;
         }
+        // ハンドラ本体も同じ理由で脱出禁止（`compile_try_except` は return を許すが、
+        // finally があるとその return が finally を飛ばしてしまう）。
+        for h in handlers {
+            if has_escape(&h.body, true, 0) {
+                bail("finally-handler-escape", None);
+                return None;
+            }
+        }
         let setup = self.emit(Op::SetupTry(0));
-        for s in body {
-            self.compile_stmt(s)?;
+        if handlers.is_empty() {
+            for s in body {
+                self.compile_stmt(s)?;
+            }
+        } else {
+            self.compile_try_except(body, handlers)?;
         }
         self.emit(Op::PopTry);
         // 正常経路の finally。
@@ -2607,7 +2643,7 @@ impl Compiler {
             {
                 self.emit(Op::LoadSelfClass);
             }
-            // 未解決 Ident はパラメータ名のときのみローカル読み（それ以外＝グローバル/組み込みは非対応）。
+            // 未解決 Ident は slot にあればローカル読み、無ければグローバル読み。
             // デバッグモードでは停止スコープからの名前引き（LoadName）。
             Expr::Ident { name, .. } => {
                 if self.debug_mode {
@@ -2625,23 +2661,43 @@ impl Compiler {
                         // `Op::LoadName`（= `vm_load_name` = `get_val`）と**エラー文言まで同一**。
                         // よって最上位ではそのまま置き換えられる（#27-c）。
                         //
-                        // ⚠ **関数本体では使えない**。スコープの隔離は `frame_floor` が担うが、
-                        // VM フレームは `exec_fn_evaled` の `frame_floor` 前進より手前で分岐するので、
-                        // `get_val` が**呼び出し元のローカルまで見えてしまう**。最上位は
+                        // ⚠ **関数本体では `LoadName` は使えない**。スコープの隔離は `frame_floor`
+                        // が担うが、VM フレームは `exec_fn_evaled` の `frame_floor` 前進より手前で
+                        // 分岐するので、`get_val` が**呼び出し元のローカルまで見えてしまう**。最上位は
                         // `toplevel_vm_candidate` が `scopes.len() == 1` を保証するので安全。
                         None if !self.toplevel_globals.is_empty() => {
                             let ni = self.add_name(name);
                             self.emit(Op::LoadName(ni));
                         }
+                        // 関数本体側は `LoadGlobal`（**`scopes[0]` だけを見る**）で載せる（#27）。
+                        //
+                        // ここへ来る名前が**この関数のローカルではない**ことはコンパイル時に確定している:
+                        // base slot の採番と `collect_nested_decls` が本体の全宣言（for ターゲット・
+                        // 入れ子ブロックの宣言を含む）を**先に** `slots` へ入れるので、`slots` を引いて
+                        // 外れた名前はどの束縛にも当たらない。よってツリーウォークの `get_val`
+                        // （`scopes[frame_floor..]` を走査 → `scopes[0]`）と**結果が一致する**
+                        // （前段の走査は必ず外れる）。`LoadName` と違い呼び出し元のローカルを覗かないので
+                        // `frame_floor` の問題も起きない。未定義時の `NameError: '<name>' is not defined`
+                        // も文言まで同一（`Op::LoadGlobal` のミス経路）。
                         None => {
-                            // 関数本体側。**名前まで記録する** — 未帰属 33 件の出所がここだった。
-                            if crate::interpreter::tw_stats::enabled() {
-                                crate::interpreter::tw_stats::record_bail("ident-unresolved", name);
-                            }
-                            return None;
+                            self.emit_load_global(name);
                         }
                     }
                 }
+            }
+            // 可変長引数の読み `local::args`（#27）。ツリーウォークは `get_val("local::args")`
+            // だが、VM では `compile_fn_inner` が同名で slot を採番しているので slot 読みで足りる。
+            // slot が無い＝可変長パラメータを持たない関数での参照＝ツリーウォークでも
+            // `NameError` になる形なので、そちらへ委ねる。
+            Expr::LocalVar(name) => {
+                let key = format!("local::{name}");
+                match self.slots.get(key.as_str()) {
+                    Some(&slot) => self.emit(Op::LoadLocal(slot)),
+                    None => {
+                        bail_expr("localvar-unbound", expr);
+                        return None;
+                    }
+                };
             }
             Expr::UnaryOp { op, operand } => {
                 self.compile_expr(operand)?;
@@ -2706,18 +2762,39 @@ impl Compiler {
                     // `callee_display_name(func)`（= `L.get_int`）と呼び出し位置を渡すので、
                     // 同じものをコンパイル時に作って副表へ置く（op は太らせない）。
                     self.record_ffi_call_info(*node_id, object, attr, span);
-                    if let Some(slot) = self.as_local(object) {
+                    // ⚠ **レシーバを push するかは引数をコンパイルする前に決める**（#27-c）。
+                    // 名前付き引数があると `CallMethodLocal`（frame 直読み融合）は使えないので、
+                    // 引数の形を先に見て融合の可否を確定させる。
+                    let fuse_slot = if has_named_args(args) { None } else { self.as_local(object) };
+                    if let Some(slot) = fuse_slot {
                         // 超命令融合（#16 段階(b)(i)）: レシーバが局所変数なら push せず frame 直読み。
-                        let (mask, kw) = self.compile_call_args(args)?;
-                        Self::no_kw(kw)?; // メソッドの名前付き引数は未対応（#27-c 残り）
+                        let (mask, _) = self.compile_call_args(args)?;
                         let ni = self.add_name(attr);
                         self.emit(Op::CallMethodLocal(slot, ni, args.len() as u16, mask, *node_id));
                     } else {
                         self.compile_expr(object)?; // receiver を push
                         let (mask, kw) = self.compile_call_args(args)?;
-                        Self::no_kw(kw)?; // メソッドの名前付き引数は未対応（#27-c 残り）
                         let ni = self.add_name(attr);
-                        self.emit(Op::CallMethod(ni, args.len() as u16, mask, *node_id));
+                        match kw {
+                            None => {
+                                self.emit(Op::CallMethod(ni, args.len() as u16, mask, *node_id));
+                            }
+                            // 名前付き／可変長引数（#27-c）。dispatcher は同じで、
+                            // 引数名を `kw_calls` 経由で運ぶだけ。
+                            Some(arg_names) => {
+                                let i = u32::try_from(self.kw_calls.len()).ok()?;
+                                self.kw_calls.push(crate::vm::chunk::KwCall {
+                                    argc: u16::try_from(args.len()).ok()?,
+                                    mut_mask: mask,
+                                    name_idx: ni,
+                                    // メソッドは call_span=None で呼ぶので span は使わない。
+                                    span_idx: 0,
+                                    node_id: *node_id,
+                                    arg_names,
+                                });
+                                self.emit(Op::CallMethodKw(i));
+                            }
+                        }
                     }
                     return Some(()); // メソッド呼び出しは span 不要
                 }
@@ -2726,12 +2803,32 @@ impl Compiler {
                     // ── VM 対応組み込み（print/range/len）── 評価済み引数で直接呼ぶ。
                     // ローカル slot に同名（シャドウ）がなければ組み込みとして扱う。
                     if is_vm_builtin(name) && !self.slots.contains_key(name) {
-                        // 組み込みは mut_mask 不要。名前付き引数は `eval_builtin_evaled` が
-                        // 受け取れないので bail する（ツリーウォークへ落とす）。
+                        // 組み込みは mut_mask 不要。
                         let (_, kw) = self.compile_call_args(args)?;
-                        Self::no_kw(kw)?;
                         let ni = self.add_name(name);
-                        self.emit(Op::CallBuiltin(ni, args.len() as u16));
+                        match kw {
+                            None => {
+                                self.emit(Op::CallBuiltin(ni, args.len() as u16));
+                            }
+                            // 名前付き引数（#27-c）。解釈を確認済みの組み込みだけ引数名ごと運ぶ。
+                            // それ以外は `eval_builtin_evaled` が名前を受け取れないので bail。
+                            Some(arg_names) if VM_BUILTIN_KW_NAMES.contains(&name.as_str()) => {
+                                let i = u32::try_from(self.kw_calls.len()).ok()?;
+                                self.kw_calls.push(crate::vm::chunk::KwCall {
+                                    argc: u16::try_from(args.len()).ok()?,
+                                    mut_mask: 0, // 組み込みは mut 引数を取らない
+                                    name_idx: ni,
+                                    span_idx: site,
+                                    node_id: *node_id,
+                                    arg_names,
+                                });
+                                self.emit(Op::CallBuiltinKw(i));
+                            }
+                            Some(_) => {
+                                bail("call-arg", None);
+                                return None;
+                            }
+                        }
                     } else if self.debug_mode {
                         // デバッグモード: 呼び先を名前引きで取得（局所・グローバル両対応）。
                         let cn = self.add_name(name);
@@ -2797,9 +2894,16 @@ impl Compiler {
                     self.type_arg_lists.push(type_args.clone());
                     self.emit(Op::CallTemplate(ti, args.len() as u16, mask));
                 } else {
-                    // その他の呼び先式（添字結果など）は非対応。
-                    bail_expr("callee-expr", func);
-                    return None;
+                    // その他の呼び先式（`block:` 式・添字結果・属性以外の任意式）。
+                    //
+                    // ツリーウォークの `eval_call` も「呼び先式を評価 → `call_value_evaled`」なので、
+                    // 素直に **[callee, args...] を積んで `Call`** すればよい（#27-c）。
+                    // ⚠ トレースバック表示名は **`<anonymous>`**（`eval_call` の `call_name` が
+                    // 識別子以外に付ける名前と揃える。ここを関数名にすると off/auto で出力が食い違う）。
+                    self.compile_expr(func)?;
+                    let (mask, kw) = self.compile_call_args(args)?;
+                    let ni = self.add_name("<anonymous>");
+                    self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                 }
             }
             // ── 添字・コレクションリテラル（タスク #5） ──

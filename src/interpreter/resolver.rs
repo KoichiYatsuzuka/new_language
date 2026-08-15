@@ -108,15 +108,20 @@ pub(crate) fn toplevel_declared_globals(stmts: &[Stmt]) -> HashSet<String> {
 /// `toplevel_visible_globals` の内部版（最上位グローバル集合を渡す形）。
 fn toplevel_visible_globals_with(stmts: &[Stmt], globals: &HashSet<String>) -> HashSet<String> {
     let mut shadowing: HashSet<String> = HashSet::new();
-    collect_toplevel_shadowing(stmts, &mut shadowing);
+    collect_shadowing_binders(stmts, &mut shadowing);
     globals.difference(&shadowing).cloned().collect()
 }
 
-/// 最上位でグローバルを覆いうる名前を集める（#21-b）。
+/// **直下宣言以外**で束縛される名前を集める（#21-b）。
 ///
-/// `collect_bound_names` をそのまま使うと**直下宣言まで拾ってしまい**、
-/// 差し引いた結果が空になる（＝何も解決されない）。そこで直下宣言だけを除いて集める。
-fn collect_toplevel_shadowing(stmts: &[Stmt], out: &mut HashSet<String>) {
+/// 「その文の並びを囲むスコープの名前を覆いうる名前」＝ for ターゲット・入れ子ブロックの
+/// 宣言・`except ... as` の別名など。`collect_bound_names` をそのまま使うと**直下宣言まで
+/// 拾ってしまい**、差し引いた結果が空になる（＝何も解決されない）ので、直下宣言だけを除く。
+///
+/// 消費者は 2 つで、**どちらも「覆われる側の集合から差し引く」**用途:
+/// - 最上位のグローバル（`toplevel_visible_globals_with`）
+/// - 関数の base スコープ（`resolve_function`）
+fn collect_shadowing_binders(stmts: &[Stmt], out: &mut HashSet<String>) {
     for stmt in stmts {
         match stmt {
             // 直下宣言 = グローバルそのもの。名前は覆わないが、初期化式の中は見る
@@ -380,9 +385,24 @@ fn resolve_function(params: &[Param], body: &mut [Stmt], globals: &HashSet<Strin
         return; // 未対応の宣言的文を検出 → この関数は解決しない
     }
 
+    // ⚠ **入れ子スコープで覆われうる base 名は解決しない**（#27）。
+    //
+    // `for i in ...` は base に載らないが、ツリーウォークは**内側スコープに**ループ変数を
+    // 宣言する。base に `mut i` がある関数でその読みを `Resolution::Local` に書き換えると、
+    // `eval_local_ref` が `scopes[frame_floor]`（＝base スコープ）を直接引くため、
+    // **ループ本体の `i` が外側の値を読んでしまう**。
+    // 実測: `for i in range(4): s += i` が毎回 100 を読み、Python 実装の 6 に対し
+    // Rust が 400 を返していた（最上位では正しく 6 で、関数内だけずれていた）。
+    //
+    // 判定は最上位のグローバル側と**同じ関数**を使う（同じ判断をする 2 実装を作らない）。
+    // slot 番号は `order` の並びで決まるので、**採番後に**除外する（番号はずらさない）。
+    let mut shadowing: HashSet<String> = HashSet::new();
+    collect_shadowing_binders(body, &mut shadowing);
+
     let base: HashMap<String, u32> = order
         .into_iter()
         .enumerate()
+        .filter(|(_, n)| !shadowing.contains(n))
         .map(|(i, n)| (n, i as u32))
         .collect();
     if base.is_empty() {

@@ -41,6 +41,34 @@ pub enum Op {
     /// pop し、Instance のときのみ deep_copy + freeze してから locals[slot] へ
     /// （`let` = 非識別子式からの束縛。exec_let の非 ident 分岐に一致）。
     StoreLocalFreezeInstance(u16),
+    /// pop して `let x = <識別子>` のコピー意味論を**実行時に**決めてから locals[slot] へ。
+    /// フィールド (slot, ソース名 name_idx)。
+    ///
+    /// `exec_let` はソース変数の可変性で 3 分岐する（mut→deep_copy+freeze / let→そのまま /
+    /// 変数でない→Instance だけ copy+freeze）。ソースが**グローバル**のときその可変性は
+    /// コンパイル時に分からないので、`DeclKind::LetFromIdent` と同じ判断を実行時に行う（#27-c）。
+    ///
+    /// ⚠ **ソースの可変性は `scopes[0]` だけを見る**。この op が出るのは
+    /// 「コンパイラが `slots` を引いて外れた＝ローカルではないと確定した」名前に限るので、
+    /// グローバルを見るのが正しい（`get_var` だと VM フレームで呼び出し元のローカルが見える）。
+    StoreLocalFromIdent(u16, u32),
+    /// キーワード引数つきの組み込み呼び出し（#27-c）。フィールドは `chunk.kw_calls` の index。
+    ///
+    /// `CallBuiltin` は評価済みの値だけを渡すので `enumerate(xs, start=1)` のような形を表現できず、
+    /// コンパイラが bail していた。ここでは `kw_calls[i].arg_names` を一緒に運び、
+    /// `eval_builtin_evaled_named` がツリーウォークと同じ引数解釈を行う。
+    ///
+    /// ⚠ **発行できるのは `VM_BUILTIN_KW_NAMES` の組み込みだけ**。
+    /// キーワードの解釈はツリーウォークの各アームごとに違う（無視する／エラーにする）ので、
+    /// 一致を確認した名前以外は従来どおり bail してツリーウォークへ落とす。
+    CallBuiltinKw(u32),
+    /// キーワード／可変長引数つきのメソッド呼び出し（#27-c）。フィールドは `chunk.kw_calls` の index。
+    ///
+    /// `CallMethod` は引数名を持てないので `f.read_line(backward = True)` の形が bail していた。
+    /// スタックは `CallMethod` と同じ `[recv, arg0..argN-1]`。引数名を添えて
+    /// ツリーウォークと同じ dispatcher（`call_instance_method_evaled` / `vm_method_call_other`）へ渡す。
+    /// ⚠ `kw_calls[i].span_idx` は**使わない**（メソッドは call_span=None でツリーウォークに揃える）。
+    CallMethodKw(u32),
     /// スタックトップを1つ捨てる。
     Pop,
     /// 二項演算: pop b, pop a, push apply_binop_dyn(op, a, b)。

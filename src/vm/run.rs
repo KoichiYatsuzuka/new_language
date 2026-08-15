@@ -176,6 +176,7 @@ fn declared_slots(chunk: &Chunk, ip: usize) -> Vec<bool> {
             | Op::StoreLocalDeepCopy(s)
             | Op::StoreLocalCopyFreeze(s)
             | Op::StoreLocalFreezeInstance(s)
+            | Op::StoreLocalFromIdent(s, _)
             | Op::ListAppendLocal(s) => *s as usize,
             Op::ForIter(_, target, _) => *target as usize,
             _ => continue,
@@ -427,6 +428,14 @@ fn exec_op(
             interp.apply_freeze_to_value(&v, true)?;
             buf[base + *s as usize] = v;
         }
+        // `let x = <グローバル識別子>`（#27-c）。ソースの可変性は実行時にしか分からないので
+        // `vm_let_value_from_ident`（`DeclKind::LetFromIdent` と**同一の実装**）へ委譲する。
+        Op::StoreLocalFromIdent(s, ni) => {
+            let v = buf.pop().unwrap();
+            let src_mutable = interp.vm_global_is_mutable(&chunk.names[*ni as usize]);
+            let v = interp.vm_let_value_from_ident(src_mutable, v)?;
+            buf[base + *s as usize] = v;
+        }
         Op::StoreLocalFreezeInstance(s) => {
             let v = buf.pop().unwrap();
             let v = if matches!(v, Value::Instance(_)) {
@@ -672,6 +681,35 @@ fn exec_op(
                 }
             }
         }
+        // キーワード引数つきの組み込み呼び出し（#27-c）。`CallBuiltin` と同じ経路だが、
+        // 引数名を一緒に渡して `eval_builtin_evaled_named` に解釈させる。
+        Op::CallBuiltinKw(kw_idx) => {
+            let kw = &chunk.kw_calls[*kw_idx as usize];
+            let n = kw.argc as usize;
+            let split = buf.len() - n;
+            let args = buf.split_off(split); // arg0..argN-1（順序保持）
+            let name = &chunk.names[kw.name_idx as usize];
+            if interp.builtin_is_shadowed_global(name) {
+                // グローバルにユーザー束縛があれば組み込みではなくそちらを呼ぶ（`CallBuiltin` と同じ）。
+                let callee = interp
+                    .vm_load_name(name)
+                    .ok_or_else(|| format!("NameError: '{name}' is not defined"))?;
+                let evaled = args
+                    .into_iter()
+                    .zip(kw.arg_names.iter())
+                    .map(|(v, k)| (k.clone(), v, false))
+                    .collect();
+                let name = name.clone(); // interp の可変借用のため名前を退避する
+                buf.push(interp.call_value_evaled(callee, evaled, &name, None, 0)?);
+            } else {
+                let named: Vec<(Option<String>, Value)> =
+                    args.into_iter().zip(kw.arg_names.iter()).map(|(v, k)| (k.clone(), v)).collect();
+                match interp.eval_builtin_evaled_named(name, named) {
+                    Some(r) => buf.push(r?),
+                    None => return Err(format!("NameError: '{name}' is not defined")),
+                }
+            }
+        }
         Op::GetIter => {
             let iterable = buf.pop().unwrap();
             let iter = interp.make_for_iterator(iterable)?;
@@ -798,6 +836,34 @@ fn exec_op(
                 )?
             } else {
                 interp.vm_method_call_other(obj, name, evaled, *node_id, chunk)?
+            };
+            buf.push(r);
+            return Ok(Flow::NextAfterCall); // #1
+        }
+        // キーワード／可変長引数つきのメソッド呼び出し（#27-c）。
+        // `CallMethod` との違いは**引数名を添えること**だけ（dispatcher は同一）。
+        Op::CallMethodKw(kw_idx) => {
+            let kw = &chunk.kw_calls[*kw_idx as usize];
+            let n = kw.argc as usize;
+            let split = buf.len() - n;
+            let arg_vals = buf.split_off(split);
+            let obj = buf.pop().unwrap();
+            let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| (kw.arg_names[i].clone(), v, (kw.mut_mask >> i) & 1 == 1))
+                .collect();
+            let name = &chunk.names[kw.name_idx as usize];
+            let r = if matches!(obj, Value::Instance(_)) {
+                interp.call_instance_method_evaled(
+                    obj,
+                    name,
+                    evaled,
+                    Some(&chunk.attr_caches[kw.name_idx as usize]),
+                    None,
+                )?
+            } else {
+                interp.vm_method_call_other(obj, name, evaled, kw.node_id, chunk)?
             };
             buf.push(r);
             return Ok(Flow::NextAfterCall); // #1

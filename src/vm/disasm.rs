@@ -31,6 +31,27 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::StoreLocalDeepCopy(s) => format!("STORE_LOCAL_DEEPCOPY {s}"),
         Op::StoreLocalCopyFreeze(s) => format!("STORE_LOCAL_COPYFREEZE {s}"),
         Op::StoreLocalFreezeInstance(s) => format!("STORE_LOCAL_FREEZE_INST {s}"),
+        Op::StoreLocalFromIdent(s, n) => {
+            format!("STORE_LOCAL_FROM_IDENT {s} src={:?}", chunk.names.get(*n as usize))
+        }
+        Op::CallBuiltinKw(i) => match chunk.kw_calls.get(*i as usize) {
+            Some(kw) => format!(
+                "CALL_BUILTIN_KW {:?} argc={} names={:?}",
+                chunk.names.get(kw.name_idx as usize),
+                kw.argc,
+                kw.arg_names
+            ),
+            None => format!("CALL_BUILTIN_KW <bad idx {i}>"),
+        },
+        Op::CallMethodKw(i) => match chunk.kw_calls.get(*i as usize) {
+            Some(kw) => format!(
+                "CALL_METHOD_KW {:?} argc={} names={:?}",
+                chunk.names.get(kw.name_idx as usize),
+                kw.argc,
+                kw.arg_names
+            ),
+            None => format!("CALL_METHOD_KW <bad idx {i}>"),
+        },
         Op::Pop => "POP".to_string(),
         Op::Bin(o) => format!("BIN {o:?}"),
         Op::BinLocalLocal(a, b, o) => format!("BIN_LL {a} {b} {o:?}"),
