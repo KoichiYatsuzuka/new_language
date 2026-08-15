@@ -108,7 +108,7 @@ fn expr_kind(expr: &Expr) -> &'static str {
 /// （`run.rs` の `CallBuiltin` は `eval_builtin_evaled` が `None` を返すと `NameError` になる）。
 /// 2 ファイルに跨る不変条件なので、`vm_builtin_names_are_all_handled` テストで固定してある（#22-d）。
 pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
-    "print", "range", "len", "next", "repr", "id", "enumerate", "zip", "getenv",
+    "print", "range", "len", "next", "repr", "id", "enumerate", "zip", "getenv", "open", "close",
 ];
 
 fn is_vm_builtin(name: &str) -> bool {
@@ -174,6 +174,12 @@ struct Compiler {
     ffi_call_info: HashMap<u32, (u32, u32)>,
     /// 入れ子 `fn` 定義（#27）。`Op::MakeFn` が index で参照する。
     fn_defs: Vec<crate::vm::chunk::ChunkFnDef>,
+    /// テンプレート呼び出しの型引数リスト（#27-c）。`Op::CallTemplate` が index で参照する。
+    type_arg_lists: Vec<Vec<String>>,
+    /// `let a, b = t` の分解情報（#27-c）。`Op::LetTuple` が index で参照する。
+    tuple_decls: Vec<crate::vm::chunk::TupleDecl>,
+    /// キーワード/可変長引数つき呼び出し（#27-c）。`Op::CallKw` が index で参照する。
+    kw_calls: Vec<crate::vm::chunk::KwCall>,
     /// 最上位モード（#10-b）で「`scopes[0]` の同名を確実に指す」と言える名前の集合。
     /// 空 = 関数本体のコンパイル（従来どおり `slots` に無い書き込み先は bail）。
     ///
@@ -354,6 +360,12 @@ fn compile_toplevel_stmt_inner(
         Stmt::Let(_, _, e) | Stmt::Mut(_, _, e) | Stmt::Const(_, _, e) => {
             collect_expr_decls(e, &mut slots, &mut slot_mut, &mut slot_type, &mut n)
         }
+        // `let a, b = t` も宣言文（#27-c）。ターゲットは最上位ではグローバルなので
+        // slot を振らない — 振ると `Op::LetTuple` が slot 束縛側を選び、値がフレームへ消える
+        // （`collection.ar` の `tx` が実例）。
+        Stmt::LetTuple { value, .. } => {
+            collect_expr_decls(value, &mut slots, &mut slot_mut, &mut slot_type, &mut n)
+        }
         _ => collect_nested_decls(body, &mut slots, &mut slot_mut, &mut slot_type, &mut n),
     };
     if collected.is_none() {
@@ -391,6 +403,9 @@ fn compile_toplevel_stmt_inner(
         global_caches: Vec::new(),
         ffi_call_info: HashMap::new(),
         fn_defs: Vec::new(),
+        type_arg_lists: Vec::new(),
+        tuple_decls: Vec::new(),
+        kw_calls: Vec::new(),
         toplevel_globals: toplevel_globals.clone(),
     };
 
@@ -413,6 +428,9 @@ fn compile_toplevel_stmt_inner(
         global_caches: c.global_caches,
         ffi_call_info: c.ffi_call_info,
         fn_defs: c.fn_defs,
+        type_arg_lists: c.type_arg_lists,
+        tuple_decls: c.tuple_decls,
+        kw_calls: c.kw_calls,
     };
 
     if std::env::var("AR_VM_DUMP").is_ok_and(|v| !v.is_empty()) {
@@ -540,6 +558,9 @@ fn compile_fn_inner(
         global_caches: Vec::new(),
         ffi_call_info: HashMap::new(),
         fn_defs: Vec::new(),
+        type_arg_lists: Vec::new(),
+        tuple_decls: Vec::new(),
+        kw_calls: Vec::new(),
         toplevel_globals: HashSet::new(),
     };
 
@@ -567,6 +588,9 @@ fn compile_fn_inner(
         global_caches: c.global_caches,
         ffi_call_info: c.ffi_call_info,
         fn_defs: c.fn_defs,
+        type_arg_lists: c.type_arg_lists,
+        tuple_decls: c.tuple_decls,
+        kw_calls: c.kw_calls,
     };
 
     // 開発用フック: `AR_VM_DUMP=1` で生成バイトコードを標準エラーへ逆アセンブルする。
@@ -606,6 +630,9 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         global_caches: Vec::new(),
         ffi_call_info: HashMap::new(),
         fn_defs: Vec::new(),
+        type_arg_lists: Vec::new(),
+        tuple_decls: Vec::new(),
+        kw_calls: Vec::new(),
         toplevel_globals: HashSet::new(),
     };
     match stmt {
@@ -636,6 +663,9 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         global_caches: c.global_caches,
         ffi_call_info: c.ffi_call_info,
         fn_defs: c.fn_defs,
+        type_arg_lists: c.type_arg_lists,
+        tuple_decls: c.tuple_decls,
+        kw_calls: c.kw_calls,
     })
 }
 
@@ -852,6 +882,26 @@ fn collect_nested_decls(
             Stmt::Mut(name, ty, e) => {
                 add_decl(name, ty, true, slots, slot_mut, slot_type, n)?;
                 collect_expr_decls(e, slots, slot_mut, slot_type, n)?;
+            }
+            // 入れ子の `let a, b = t`（#27-c）。ツリーウォークはスコープを push するので
+            // **反復ごとに宣言し直せる**が、slot を割り当てないとグローバル宣言に落ちて
+            // 2 周目で「already declared」になる（`built_in.ar` の `zx` が実例）。
+            // ここで slot に載せることで、最上位の `let a, b = t` 文（slot 無し）と
+            // 入れ子（slot 有り）をコンパイラが区別できる。
+            Stmt::LetTuple { targets, value, .. } => {
+                for t in targets {
+                    match t {
+                        crate::ast::TupleTarget::Wildcard => {}
+                        crate::ast::TupleTarget::Let(name)
+                        | crate::ast::TupleTarget::Bare(name) => {
+                            add_decl(name, &None, false, slots, slot_mut, slot_type, n)?
+                        }
+                        crate::ast::TupleTarget::Mut(name) => {
+                            add_decl(name, &None, true, slots, slot_mut, slot_type, n)?
+                        }
+                    }
+                }
+                collect_expr_decls(value, slots, slot_mut, slot_type, n)?;
             }
             Stmt::Expr(e)
             | Stmt::BlockReturn(e, _)
@@ -1337,6 +1387,23 @@ impl Compiler {
     ///
     /// ⚠ 順序が重要。ループ本体の `let` は毎回スコープに入る**ローカル**なので、
     /// 同名グローバルより先に slot を見なければならない。
+    /// `slots` 引きの失敗を**必ず計上する**（#27-c）。
+    ///
+    /// ⚠ 素の `self.slot_of(name)?` は「未帰属」として計測から消える。
+    /// 宣言文のコンパイルはここを通してから諦めること
+    /// （`For/unattributed:For` の出所がここだった）。
+    fn slot_of(&self, name: &str) -> Option<u16> {
+        match self.slots.get(name) {
+            Some(&s) => Some(s),
+            None => {
+                if crate::interpreter::tw_stats::enabled() {
+                    crate::interpreter::tw_stats::record_bail("decl-no-slot", name);
+                }
+                None
+            }
+        }
+    }
+
     fn store_target(&mut self, name: &str) -> Option<StoreTarget> {
         if let Some(&slot) = self.slots.get(name) {
             return Some(StoreTarget::Local(slot));
@@ -1618,12 +1685,26 @@ impl Compiler {
 
     /// 位置引数をスタックへ push し、各引数の is_mutable を bit にした mask を返す。
     /// keyword/可変長引数・33個以上は非対応（`None`）。
-    fn compile_call_args(&mut self, args: &[CallArg]) -> Option<u32> {
+    /// 呼び出し引数をスタックへ積み、`(mut_mask, 引数名)` を返す（#27-c）。
+    ///
+    /// 引数名が全て `None`（＝純粋な位置引数）なら 2 番目は `None` を返し、呼び出し側は
+    /// `Op::Call` を使う。1 つでも名前付き・可変長があれば `Some(names)` になり、
+    /// **`Op::CallKw` を使える呼び出し形でだけ**受け付ける（それ以外は `no_kw` で bail）。
+    ///
+    /// 可変長 `f(... = A, B, C)` は要素を積んでから `BuildList` で 1 値に畳む。
+    /// `eval_call_args` が作る `(Some("..."), Value::List, true)` と同じ形。
+    #[allow(clippy::type_complexity)]
+    fn compile_call_args(
+        &mut self,
+        args: &[CallArg],
+    ) -> Option<(u32, Option<Vec<Option<String>>>)> {
         if args.len() > 32 {
             bail("too-many-args", None);
             return None;
         }
         let mut mask: u32 = 0;
+        let mut names: Vec<Option<String>> = Vec::new();
+        let mut any_named = false;
         for (i, arg) in args.iter().enumerate() {
             match arg {
                 CallArg::Positional(e) => {
@@ -1631,15 +1712,66 @@ impl Compiler {
                         mask |= 1 << i;
                     }
                     self.compile_expr(e)?;
+                    names.push(None);
                 }
-                // キーワード引数・可変長展開は非対応。
-                _ => {
-                    bail("call-arg", None);
-                    return None;
+                CallArg::Keyword { name, value } => {
+                    if self.arg_is_mutable(value) {
+                        mask |= 1 << i;
+                    }
+                    self.compile_expr(value)?;
+                    names.push(Some(name.clone()));
+                    any_named = true;
+                }
+                CallArg::Variadic(exprs) => {
+                    let n = u16::try_from(exprs.len()).ok()?;
+                    for e in exprs {
+                        self.compile_expr(e)?;
+                    }
+                    self.emit(Op::BuildList(n));
+                    mask |= 1 << i; // variadic は保守的に mutable 扱い（ツリーウォークと同じ）
+                    names.push(Some("...".to_string()));
+                    any_named = true;
                 }
             }
         }
-        Some(mask)
+        Some((mask, any_named.then_some(names)))
+    }
+
+    /// `Op::CallKw` を使えない呼び出し形で名前付き引数が来たら bail する（#27-c）。
+    fn no_kw(kw: Option<Vec<Option<String>>>) -> Option<()> {
+        if kw.is_some() {
+            bail("call-arg", None);
+            return None;
+        }
+        Some(())
+    }
+
+    /// 通常の呼び出しを発行する（#27-c）。名前付き引数の有無で `Call` / `CallKw` を選ぶ。
+    fn emit_call(
+        &mut self,
+        argc: usize,
+        mask: u32,
+        name_idx: u32,
+        span_idx: u32,
+        node_id: u32,
+        kw: Option<Vec<Option<String>>>,
+    ) -> Option<()> {
+        match kw {
+            None => self.emit(Op::Call(argc as u16, mask, name_idx, span_idx, node_id)),
+            Some(arg_names) => {
+                let i = u32::try_from(self.kw_calls.len()).ok()?;
+                self.kw_calls.push(crate::vm::chunk::KwCall {
+                    argc: u16::try_from(argc).ok()?,
+                    mut_mask: mask,
+                    name_idx,
+                    span_idx,
+                    node_id,
+                    arg_names,
+                });
+                self.emit(Op::CallKw(i))
+            }
+        };
+        Some(())
     }
 
     /// `target <- async->T: body` をコンパイルする（タスク #9）。
@@ -1654,7 +1786,10 @@ impl Compiler {
         let mut captures: Vec<(String, u16, bool)> = refs
             .iter()
             .filter_map(|name| {
-                let slot = *self.slots.get(name)?;
+                // ⚠ ここは `slot_of` を使わない。**当たらないのが正常**（グローバル参照は
+                // 捕捉対象外）で、`slot_of` を通すと計測に幻の bail が 35 件載る。
+                // 「対象外」と「失敗」を同じ `None` で表さないこと（#27-c で再発）。
+                let &slot = self.slots.get(name)?;
                 let is_mut = self.slot_mut.get(slot as usize).copied().unwrap_or(false);
                 Some((name.clone(), slot, is_mut))
             })
@@ -1797,22 +1932,30 @@ impl Compiler {
                     bail("for-no-target", None);
                     return None;
                 }
-                // 複数ターゲット（`for k, v in ...`）は要素をいったん temp へ受けてから分解する（#27-c）。
-                let unpack_temp = if targets.len() == 1 {
-                    None
-                } else {
+                // 受け皿の temp が要るのは 2 通り（#27-c）:
+                //  - 複数ターゲット `for k, v in ...` … 要素をいったん受けてから分解する
+                //  - 捨てターゲット `for _ in ...`   … `_` は `add_decl` が slot を振らない
+                //    （`let _ = e` は値を捨てるため）が、`ForIter` には**書き込み先が要る**
+                let unpack = targets.len() > 1;
+                let sink_temp = if unpack || targets[0] == "_" {
                     Some(self.alloc_temp()?)
+                } else {
+                    None
                 };
-                let target_slot = match unpack_temp {
+                let target_slot = match sink_temp {
                     Some(t) => t,
-                    None => *self.slots.get(&targets[0])?,
+                    None => self.slot_of(&targets[0])?,
                 };
                 // 分解先 slot は**本体をコンパイルする前に**引いておく（`?` の早期 return で
-                // temp の解放が漏れないようにするため）。
-                let mut target_slots: Vec<u16> = Vec::new();
-                if unpack_temp.is_some() {
+                // temp の解放が漏れないようにするため）。`_` は捨てるので `None`。
+                let mut target_slots: Vec<Option<u16>> = Vec::new();
+                if unpack {
                     for t in targets {
-                        target_slots.push(*self.slots.get(t)?);
+                        if t == "_" {
+                            target_slots.push(None);
+                        } else {
+                            target_slots.push(Some(self.slot_of(t)?));
+                        }
                     }
                 }
                 // イテレータを取得して temp slot に格納。
@@ -1824,10 +1967,13 @@ impl Compiler {
                 let loop_start = self.here();
                 let fi = self.emit(Op::ForIter(iter_temp, target_slot, 0)); // exit は後でパッチ
                 // タプル分解: 要素を push して**逆順**に StoreLocal で受ける（pop は末尾から）。
-                if let Some(src) = unpack_temp {
-                    self.emit(Op::UnpackTuple(src, targets.len() as u16));
-                    for &ts in target_slots.iter().rev() {
-                        self.emit(Op::StoreLocal(ts));
+                if unpack {
+                    self.emit(Op::UnpackTuple(target_slot, targets.len() as u16));
+                    for ts in target_slots.iter().rev() {
+                        match ts {
+                            Some(slot) => self.emit(Op::StoreLocal(*slot)),
+                            None => self.emit(Op::Pop), // `for k, _ in ...` の捨て要素
+                        };
                     }
                 }
                 self.loops.push(LoopCtx {
@@ -1846,8 +1992,8 @@ impl Compiler {
                     self.patch_jump(j, exit);
                 }
                 self.free_temp(); // iter_temp
-                if unpack_temp.is_some() {
-                    self.free_temp(); // タプル分解用の受け皿（#27-c）
+                if sink_temp.is_some() {
+                    self.free_temp(); // タプル分解／`_` 用の受け皿（#27-c）
                 }
             }
             Stmt::Break => {
@@ -1868,7 +2014,7 @@ impl Compiler {
                 } else if let Some(ni) = self.toplevel_decl_name(name) {
                     self.emit(Op::DeclareGlobal(ni, DeclKind::Const));
                 } else {
-                    let slot = *self.slots.get(name)?;
+                    let slot = self.slot_of(name)?;
                     self.emit(Op::StoreLocal(slot)); // const は copy/freeze しない
                 }
             }
@@ -1879,22 +2025,19 @@ impl Compiler {
                 } else if let Some(ni) = self.toplevel_decl_name(name) {
                     self.emit(Op::DeclareGlobal(ni, DeclKind::Mut));
                 } else {
-                    let slot = *self.slots.get(name)?;
+                    let slot = self.slot_of(name)?;
                     self.emit(Op::StoreLocalDeepCopy(slot)); // mut は常に deep_copy
                 }
             }
             Stmt::Let(name, _, e) if self.toplevel_decl_name(name).is_some() && name != "_" => {
-                // 最上位の `let`（#10-c）。ソースが識別子のときは**その変数の可変性**が要るが、
-                // 最上位ではコンパイル時に分からない（`toplevel_globals` は名前の集合だけ）。
-                // `exec_let` の「mut ソースなら copy+freeze」分岐を再現できないので bail する。
+                // 最上位の `let`（#10-c）。ソースが識別子のときの可変性は**コンパイル時に
+                // 分からない**（`toplevel_globals` は名前の集合だけ）ので、予測せず
+                // `LetFromIdent` でソース名を渡し、`exec_let` と同じ判断を実行時に行う（#27-c）。
                 let kind = match e {
                     Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Str(_) | Expr::None => {
                         DeclKind::LetPlain
                     }
-                    Expr::Ident { .. } => {
-                        bail("toplevel-let-from-ident", None);
-                        return None;
-                    }
+                    Expr::Ident { name: src, .. } => DeclKind::LetFromIdent(self.add_name(src)),
                     _ => DeclKind::LetFreezeInstance,
                 };
                 let ni = self.toplevel_decl_name(name)?;
@@ -1906,7 +2049,7 @@ impl Compiler {
                     self.compile_expr(e)?;
                     self.emit(Op::Pop);
                 } else {
-                    let slot = *self.slots.get(name)?;
+                    let slot = self.slot_of(name)?;
                     // ソースの種類で store op を選ぶ（exec_let のセマンティクスに一致）。
                     let store = match e {
                         // ident/localref ソース: 可変なら copy+freeze、不変ならそのまま。
@@ -1918,7 +2061,7 @@ impl Compiler {
                             }
                         }
                         Expr::Ident { name: nm, res: Resolution::Unresolved, .. } => {
-                            let s = *self.slots.get(nm)?; // base slot 以外（グローバル）は非対応
+                            let s = self.slot_of(nm)?; // base slot 以外（グローバル）は非対応
                             if self.slot_mut.get(s as usize).copied().unwrap_or(false) {
                                 Op::StoreLocalCopyFreeze(slot)
                             } else {
@@ -1937,9 +2080,14 @@ impl Compiler {
             }
             // 属性代入 `obj.attr = value` / 添字代入 `obj[i] = value`。
             Stmt::AttrAssign { target, value } => match target {
-                Expr::Attr { object, attr, .. } if self.object_is_instance(object) => {
-                    // obj（SetAttr のベース）を push → value を push → SetAttr。
-                    // object は side-effect-free（self/base ローカル）なので先に push してよい。
+                // `obj.attr = value`。obj を push → value を push → SetAttr。
+                //
+                // ⚠ レシーバの種類で絞らない（#27-c）。`attr_assign_evaled` が
+                // ツリーウォークの `attr_assign` の**唯一の実装**になったので、
+                // `Value::Instance` / `Value::Class` / それ以外のエラーまで一致する。
+                // 以前は `object_is_instance` で絞っていたが、それは 2 実装の差を
+                // 隠すためのもので、型注釈の無いグローバルが bail する原因だった。
+                Expr::Attr { object, attr, .. } => {
                     self.compile_expr(object)?;
                     self.compile_expr(value)?;
                     let ni = self.add_name(attr);
@@ -1970,6 +2118,32 @@ impl Compiler {
                     return None;
                 }
             },
+            // 添字への複合代入 `obj[k] op= value`（#27-c）。
+            //
+            // ツリーウォークは `rhs = eval(value)` → `lhs = eval(target)` → 二項演算 →
+            // `attr_assign(target, result)` の順で、**`object`/`index` を 2 回評価する**
+            // （読みで 1 回、代入で 1 回）。副作用まで一致させるため、そのまま 2 回積む。
+            Stmt::AttrCompoundAssign { target: target @ Expr::Subscript { .. }, op, value } => {
+                let Expr::Subscript { object, index, .. } = target else {
+                    unreachable!("matched above")
+                };
+                let rhs_tmp = self.alloc_temp()?;
+                self.compile_expr(value)?; // 1. rhs を先に評価
+                self.emit(Op::StoreLocal(rhs_tmp));
+                self.compile_expr(object)?; // 2. 現在値の読み
+                self.compile_expr(index)?;
+                self.emit(Op::Subscript);
+                self.emit(Op::LoadLocal(rhs_tmp));
+                self.emit(Op::Bin(op.clone())); // 3. 二項演算
+                let res_tmp = self.alloc_temp()?;
+                self.emit(Op::StoreLocal(res_tmp));
+                self.compile_expr(object)?; // 4. 代入（`attr_assign` と同じく再評価）
+                self.compile_expr(index)?;
+                self.emit(Op::LoadLocal(res_tmp));
+                self.emit(Op::SetIndex);
+                self.free_temp();
+                self.free_temp();
+            }
             // 属性複合代入 `obj.attr op= value`（obj が `self`/instance のときのみ）。
             Stmt::AttrCompoundAssign { target, op, value } => {
                 let (object, attr) = match target {
@@ -2107,7 +2281,7 @@ impl Compiler {
                     bail("nested-fn-mutable-capture", None);
                     return None;
                 };
-                let slot = *self.slots.get(name)?;
+                let slot = self.slot_of(name)?;
                 let idx = u32::try_from(self.fn_defs.len()).ok()?;
                 self.fn_defs.push(crate::vm::chunk::ChunkFnDef {
                     name: name.clone(),
@@ -2135,6 +2309,66 @@ impl Compiler {
             Stmt::BreakPoint { span } => {
                 let si = self.add_span(span);
                 self.emit(Op::BreakPoint(si));
+            }
+            // `let a, b = t`（#27-c）。束縛先は slot（制御フロー内の宣言）と
+            // グローバル宣言（最上位の宣言文）の 2 通り。`collect_nested_decls` が
+            // 入れ子のターゲットにだけ slot を割り当てるので、その有無で判別できる。
+            //
+            // ⚠ 混ぜると `for` の 2 周目で「already declared」になる（`built_in.ar` の `zx`）。
+            Stmt::LetTuple { targets, value, .. } => {
+                use crate::ast::TupleTarget;
+                let name_of = |t: &TupleTarget| match t {
+                    TupleTarget::Let(n) | TupleTarget::Bare(n) | TupleTarget::Mut(n) => {
+                        Some(n.clone())
+                    }
+                    TupleTarget::Wildcard => None,
+                };
+                let slots: Vec<Option<u16>> = targets
+                    .iter()
+                    .map(|t| name_of(t).and_then(|n| self.slots.get(&n).copied()))
+                    .collect();
+                let any_slot = slots.iter().any(|s| s.is_some());
+                if any_slot {
+                    // 一部だけ slot に載る形は想定外（`collect_nested_decls` は全ターゲットを
+                    // まとめて登録する）。取りこぼしを黙って混ぜないよう弾く。
+                    if targets
+                        .iter()
+                        .zip(&slots)
+                        .any(|(t, s)| name_of(t).is_some() && s.is_none())
+                    {
+                        bail("let-tuple-partial-slots", Some(stmt));
+                        return None;
+                    }
+                } else if self.toplevel_globals.is_empty() {
+                    // 最上位モードでないのに slot も無い ＝ 束縛先が決まらない。
+                    bail("let-tuple-no-target", Some(stmt));
+                    return None;
+                }
+                self.compile_expr(value)?;
+                let i = u32::try_from(self.tuple_decls.len()).ok()?;
+                self.tuple_decls.push(crate::vm::chunk::TupleDecl {
+                    targets: targets.to_vec(),
+                    slots: if any_slot { slots } else { Vec::new() },
+                });
+                self.emit(Op::LetTuple(i));
+            }
+            // `freeze x`（#27-c）。値をスタックに載せずに `exec_freeze` を呼ぶだけ。
+            Stmt::Freeze(name, span) => {
+                let ni = self.add_name(name);
+                let si = self.add_span(span);
+                self.emit(Op::FreezeVar(ni, si));
+            }
+            // `src on/once handler` / `src off handler`（#27-c）。
+            // 評価順（source → handler）はツリーウォークと同じ。
+            Stmt::EventSubscribe { source, handler, is_once, is_async, .. } => {
+                self.compile_expr(source)?;
+                self.compile_expr(handler)?;
+                self.emit(Op::EventSubscribe(*is_once, *is_async));
+            }
+            Stmt::EventUnsubscribe { source, handler, .. } => {
+                self.compile_expr(source)?;
+                self.compile_expr(handler)?;
+                self.emit(Op::EventUnsubscribe);
             }
             // それ以外（定義・import 等）は非対応。
             _ => {
@@ -2384,10 +2618,23 @@ impl Compiler {
                         Some(&slot) => {
                             self.emit(Op::LoadLocal(slot));
                         }
+                        // slot にもグローバル解決にも載らない識別子（組み込み型名 `Signal`/`dict`、
+                        // リゾルバがシャドウ懸念で外した名前など）。
+                        //
+                        // ツリーウォークの `Resolution::Unresolved` は `get_val(name)` そのもので、
+                        // `Op::LoadName`（= `vm_load_name` = `get_val`）と**エラー文言まで同一**。
+                        // よって最上位ではそのまま置き換えられる（#27-c）。
+                        //
+                        // ⚠ **関数本体では使えない**。スコープの隔離は `frame_floor` が担うが、
+                        // VM フレームは `exec_fn_evaled` の `frame_floor` 前進より手前で分岐するので、
+                        // `get_val` が**呼び出し元のローカルまで見えてしまう**。最上位は
+                        // `toplevel_vm_candidate` が `scopes.len() == 1` を保証するので安全。
+                        None if !self.toplevel_globals.is_empty() => {
+                            let ni = self.add_name(name);
+                            self.emit(Op::LoadName(ni));
+                        }
                         None => {
-                            // slot にもグローバル解決にも載らない識別子（組み込み名・
-                            // リゾルバがシャドウ懸念で外した名前など）。**名前まで記録する**
-                            // — 未帰属 33 件の出所がここだった（#27-c）。
+                            // 関数本体側。**名前まで記録する** — 未帰属 33 件の出所がここだった。
                             if crate::interpreter::tw_stats::enabled() {
                                 crate::interpreter::tw_stats::record_bail("ident-unresolved", name);
                             }
@@ -2461,12 +2708,14 @@ impl Compiler {
                     self.record_ffi_call_info(*node_id, object, attr, span);
                     if let Some(slot) = self.as_local(object) {
                         // 超命令融合（#16 段階(b)(i)）: レシーバが局所変数なら push せず frame 直読み。
-                        let mask = self.compile_call_args(args)?;
+                        let (mask, kw) = self.compile_call_args(args)?;
+                        Self::no_kw(kw)?; // メソッドの名前付き引数は未対応（#27-c 残り）
                         let ni = self.add_name(attr);
                         self.emit(Op::CallMethodLocal(slot, ni, args.len() as u16, mask, *node_id));
                     } else {
                         self.compile_expr(object)?; // receiver を push
-                        let mask = self.compile_call_args(args)?;
+                        let (mask, kw) = self.compile_call_args(args)?;
+                        Self::no_kw(kw)?; // メソッドの名前付き引数は未対応（#27-c 残り）
                         let ni = self.add_name(attr);
                         self.emit(Op::CallMethod(ni, args.len() as u16, mask, *node_id));
                     }
@@ -2477,29 +2726,32 @@ impl Compiler {
                     // ── VM 対応組み込み（print/range/len）── 評価済み引数で直接呼ぶ。
                     // ローカル slot に同名（シャドウ）がなければ組み込みとして扱う。
                     if is_vm_builtin(name) && !self.slots.contains_key(name) {
-                        self.compile_call_args(args)?; // 組み込みは mut_mask 不要
+                        // 組み込みは mut_mask 不要。名前付き引数は `eval_builtin_evaled` が
+                        // 受け取れないので bail する（ツリーウォークへ落とす）。
+                        let (_, kw) = self.compile_call_args(args)?;
+                        Self::no_kw(kw)?;
                         let ni = self.add_name(name);
                         self.emit(Op::CallBuiltin(ni, args.len() as u16));
                     } else if self.debug_mode {
                         // デバッグモード: 呼び先を名前引きで取得（局所・グローバル両対応）。
                         let cn = self.add_name(name);
                         self.emit(Op::LoadName(cn));
-                        let mask = self.compile_call_args(args)?;
-                        self.emit(Op::Call(args.len() as u16, mask, cn, site, *node_id));
+                        let (mask, kw) = self.compile_call_args(args)?;
+                        self.emit_call(args.len(), mask, cn, site, *node_id, kw)?;
                     } else if let Some(&slot) = self.slots.get(name) {
                         // ローカル/パラメータが関数値を保持している場合は slot 読み。
                         self.emit(Op::LoadLocal(slot));
-                        let mask = self.compile_call_args(args)?;
+                        let (mask, kw) = self.compile_call_args(args)?;
                         let ni = self.add_name(name);
-                        self.emit(Op::Call(args.len() as u16, mask, ni, site, *node_id));
+                        self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                     } else if name == "Self" && self.self_slot.is_some() {
                         // メソッド本体の `Self(...)`（#27）: レシーバのクラスを積んで通常の
                         // `Call` へ流す（`call_value_evaled` の `Value::Class` アーム＝
                         // ツリーウォークと同一のインスタンス化経路）。
                         self.emit(Op::LoadSelfClass);
-                        let mask = self.compile_call_args(args)?;
+                        let (mask, kw) = self.compile_call_args(args)?;
                         let ni = self.add_name(name);
-                        self.emit(Op::Call(args.len() as u16, mask, ni, site, *node_id));
+                        self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                     } else if is_builtin_callee(name) || name == "Self" {
                         // その他の純粋 builtin・型コンストラクタ・`Self` は非対応。
                         // 呼び先名まで記録する（どれを `eval_builtin_evaled` へ足せば効くかを測るため・#27）。
@@ -2513,8 +2765,8 @@ impl Compiler {
                         let ci = self.global_caches.len() as u32;
                         self.global_caches.push(crate::ast::SlotCache::default());
                         self.emit(Op::LoadGlobal(ni, ci));
-                        let mask = self.compile_call_args(args)?;
-                        self.emit(Op::Call(args.len() as u16, mask, ni, site, *node_id));
+                        let (mask, kw) = self.compile_call_args(args)?;
+                        self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                     }
                 } else if let Expr::Ident { name, res: Resolution::Global(_), .. } = func.as_ref() {
                     // 解決済みグローバル関数呼び出し（R2-b）。
@@ -2526,15 +2778,24 @@ impl Compiler {
                     } else {
                         self.emit_load_global(name);
                     }
-                    let mask = self.compile_call_args(args)?;
-                    self.emit(Op::Call(args.len() as u16, mask, ni, site, *node_id));
+                    let (mask, kw) = self.compile_call_args(args)?;
+                    self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                 } else if let Expr::Ident { name, res: Resolution::Local(slot), .. } = func.as_ref() {
                     // 解決済みローカル関数値の呼び出し。
                     let s = u16::try_from(*slot).ok()?;
                     self.emit(Op::LoadLocal(s));
-                    let mask = self.compile_call_args(args)?;
+                    let (mask, kw) = self.compile_call_args(args)?;
                     let ni = self.add_name(name);
-                    self.emit(Op::Call(args.len() as u16, mask, ni, site, *node_id));
+                    self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
+                } else if let Expr::TemplateInstantiate { base, type_args } = func.as_ref() {
+                    // テンプレート呼び出し `Tmpl[T](args)`（#27-c）。ツリーウォークの
+                    // `eval_call` と同じく「base を評価 → `instantiate_template` 本体」。
+                    self.compile_expr(base)?;
+                    let (mask, kw) = self.compile_call_args(args)?;
+                    Self::no_kw(kw)?; // テンプレートの名前付き引数は未対応（#27-c 残り）
+                    let ti = u32::try_from(self.type_arg_lists.len()).ok()?;
+                    self.type_arg_lists.push(type_args.clone());
+                    self.emit(Op::CallTemplate(ti, args.len() as u16, mask));
                 } else {
                     // その他の呼び先式（添字結果など）は非対応。
                     bail_expr("callee-expr", func);
@@ -2546,6 +2807,19 @@ impl Compiler {
                 self.compile_expr(object)?;
                 self.compile_expr(index)?;
                 self.emit(Op::Subscript);
+            }
+            Expr::Slice { begin, end, step } => {
+                // 省略された要素は `Op::Nil`（= `Value::None`）を積む。`slice_from_values`
+                // が「無し」に畳むので、ツリーウォークの `None` と同じ意味になる。
+                for part in [begin, end, step] {
+                    match part {
+                        Some(e) => self.compile_expr(e)?,
+                        None => {
+                            self.emit(Op::Nil);
+                        }
+                    }
+                }
+                self.emit(Op::BuildSlice);
             }
             Expr::List(items) => {
                 let n = u16::try_from(items.len()).ok()?;

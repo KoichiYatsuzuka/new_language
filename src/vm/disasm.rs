@@ -85,6 +85,13 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::SetIndex => "SET_INDEX".to_string(),
         Op::BuildList(n) => format!("BUILD_LIST {n}"),
         Op::BuildTuple(n) => format!("BUILD_TUPLE {n}"),
+        Op::BuildSlice => "BUILD_SLICE".to_string(),
+        Op::FreezeVar(n, _) => format!("FREEZE_VAR #{n}"),
+        Op::LetTuple(i) => format!("LET_TUPLE decl#{i}"),
+        Op::EventSubscribe(once, is_async) => format!("EVENT_SUBSCRIBE once={once} async={is_async}"),
+        Op::EventUnsubscribe => "EVENT_UNSUBSCRIBE".to_string(),
+        Op::CallTemplate(t, argc, _) => format!("CALL_TEMPLATE tmpl#{t} argc={argc}"),
+        Op::CallKw(i) => format!("CALL_KW site#{i}"),
         Op::BuildSet(n) => format!("BUILD_SET {n}"),
         Op::BuildDict(n) => format!("BUILD_DICT {n}"),
     }

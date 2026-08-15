@@ -368,10 +368,14 @@ impl Interpreter {
         }
     }
 
-    /// 評価済みのオブジェクトと値でインスタンスフィールドに代入する（VM の `SetAttr` op 用）。
-    /// `attr_assign` の `Value::Instance` アーム（class-var 検査・static mut・アクセス制御・
-    /// field_index・可変性・INST_IMMUTABLE・store_field 型検査）と**同一のセマンティクス**。
-    /// コンパイラは `self` または instance 型注釈の受け手にのみ `SetAttr` を発行する。
+    /// 評価済みのオブジェクトと値で属性に代入する。
+    ///
+    /// `obj.attr = v` の**唯一の実装**（#27-c）。ツリーウォークの `attr_assign` も
+    /// `object` を評価してここへ委譲する。以前は `attr_assign` 側に `Value::Class`
+    /// （`static mut` への代入）のアームが**もう 1 つ**あり、VM 側にだけ無かった。
+    /// コンパイラが「レシーバが Arrow インスタンスと確定できるときだけ `SetAttr`」と
+    /// 絞ることで差を隠していたが、絞れないレシーバ（型注釈の無いグローバル等）が
+    /// そのまま bail になっていた。
     pub(crate) fn attr_assign_evaled(
         &mut self,
         obj: Value,
@@ -421,6 +425,22 @@ impl Interpreter {
                 }
                 Ok(())
             }
+            Value::Class(cls) => {
+                // クラスオブジェクトへの代入: static mut 変数のみ許可
+                if let Some(cell) = cls.static_vars.get(attr).cloned() {
+                    *cell.borrow_mut() = rhs;
+                    return Ok(());
+                }
+                if Self::lookup_class_var(&cls, attr).is_some() {
+                    return Err(format!(
+                        "TypeError: cannot assign to class variable '{attr}' (declared const)"
+                    ));
+                }
+                Err(format!(
+                    "AttributeError: class '{}' has no static field '{attr}'",
+                    cls.name
+                ))
+            }
             _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
         }
     }
@@ -445,68 +465,7 @@ impl Interpreter {
     pub(crate) fn attr_assign(&mut self, target: &Expr, rhs: Value) -> Result<(), String> {
         if let Expr::Attr { object, attr, .. } = target {
             let obj_val = self.eval(object)?;
-            match obj_val {
-                Value::Instance(inst_rc) => {
-                    let inst_class = inst_rc.borrow().class.clone();
-                    if Self::lookup_class_var(&inst_class, attr).is_some() {
-                        return Err(format!(
-                            "TypeError: cannot assign to class variable '{attr}' (declared const)"
-                        ));
-                    }
-                    // static mut 変数への代入: 共有セルを更新する
-                    if let Some(cell) = inst_class.static_vars.get(attr.as_str()).cloned() {
-                        self.check_member_access(&inst_class, attr, attr)?;
-                        *cell.borrow_mut() = rhs;
-                        return Ok(());
-                    }
-                    // アクセス制御チェック
-                    self.check_member_access(&inst_class, attr, attr)?;
-                    let Some(&idx) = inst_class.field_index.get(attr.as_str()) else {
-                        return Err(format!(
-                            "AttributeError: '{}' has no field '{attr}'; \
-                             all fields must be declared in the class body",
-                            inst_class.name
-                        ));
-                    };
-                    let mut inst = inst_rc.borrow_mut();
-                    if inst.field_mutable(idx) == Some(false) {
-                        return Err(format!(
-                            "TypeError: cannot assign to immutable field '{attr}'"
-                        ));
-                    }
-                    if !inst.slot_initialized(idx)
-                        && inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0
-                    {
-                        return Err(format!(
-                            "TypeError: cannot assign field '{attr}' on immutable instance"
-                        ));
-                    }
-                    let is_mutable = inst.class.field_mutability.get(attr.as_str()).copied().unwrap_or(true);
-                    if !inst.store_field(idx, rhs, is_mutable) {
-                        return Err(format!(
-                            "TypeError: value does not match declared type of field '{attr}'"
-                        ));
-                    }
-                    Ok(())
-                }
-                Value::Class(cls) => {
-                    // クラスオブジェクトへの代入: static mut 変数のみ許可
-                    if let Some(cell) = cls.static_vars.get(attr.as_str()).cloned() {
-                        *cell.borrow_mut() = rhs;
-                        return Ok(());
-                    }
-                    if Self::lookup_class_var(&cls, attr).is_some() {
-                        return Err(format!(
-                            "TypeError: cannot assign to class variable '{attr}' (declared const)"
-                        ));
-                    }
-                    Err(format!(
-                        "AttributeError: class '{}' has no static field '{attr}'",
-                        cls.name
-                    ))
-                }
-                _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
-            }
+            self.attr_assign_evaled(obj_val, attr, rhs)
         } else if let Expr::TraitAccess {
             object,
             trait_name,

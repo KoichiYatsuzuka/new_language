@@ -403,6 +403,17 @@ impl Interpreter {
     ) -> Result<ExecResult, String> {
         let source_val = self.eval(source)?;
         let handler_val = self.eval(handler)?;
+        self.event_subscribe_evaled(source_val, handler_val, is_once, is_async)
+    }
+
+    /// 評価済みの source/handler で購読する（VM の `Op::EventSubscribe` 用・#27-c）。
+    pub(crate) fn event_subscribe_evaled(
+        &mut self,
+        source_val: Value,
+        handler_val: Value,
+        is_once: bool,
+        is_async: bool,
+    ) -> Result<ExecResult, String> {
         match source_val {
             Value::Signal(sig_rc) => {
                 sig_rc
@@ -425,6 +436,15 @@ impl Interpreter {
     ) -> Result<ExecResult, String> {
         let source_val = self.eval(source)?;
         let handler_val = self.eval(handler)?;
+        self.event_unsubscribe_evaled(source_val, handler_val)
+    }
+
+    /// 評価済みの source/handler で解除する（VM の `Op::EventUnsubscribe` 用・#27-c）。
+    pub(crate) fn event_unsubscribe_evaled(
+        &mut self,
+        source_val: Value,
+        handler_val: Value,
+    ) -> Result<ExecResult, String> {
         match source_val {
             Value::Signal(sig_rc) => {
                 sig_rc.borrow_mut().unsubscribe_by_value(&handler_val);

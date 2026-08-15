@@ -17,6 +17,28 @@ use super::{
     ClassValue, DictData, FnValue, GeneratorFnValue, Interpreter, TemplateClassValue, Value,
 };
 
+/// テンプレート実体化に渡す呼び出し引数（#27-c）。
+///
+/// ツリーウォークは AST のまま、VM はスタックから取った評価済み値を渡す。**評価の時点を
+/// ずらさない**ために、`instantiate_template_args` は最後まで未評価のまま持ち回り、
+/// 呼び先へ渡す直前に `into_evaled` する。
+pub(crate) enum TemplateArgs<'a> {
+    Ast(&'a [CallArg]),
+    Evaled(Vec<(Option<String>, Value, bool)>),
+}
+
+impl TemplateArgs<'_> {
+    fn into_evaled(
+        self,
+        it: &mut Interpreter,
+    ) -> Result<Vec<(Option<String>, Value, bool)>, String> {
+        match self {
+            TemplateArgs::Ast(args) => it.eval_call_args(args),
+            TemplateArgs::Evaled(v) => Ok(v),
+        }
+    }
+}
+
 impl Interpreter {
     /// 各具体型引数がテンプレートパラメータの trait 制約を満たすか検証する。
     ///
@@ -81,14 +103,38 @@ impl Interpreter {
     ///
     /// - `tmpl_val`: 実体化するテンプレート値
     /// - `type_args`: 具体型名のリスト（テンプレートパラメータと同数）
-    /// - `call_args`: 実体化後の関数/コンストラクタ呼び出し引数
+    /// - `call_args`: 実体化後の関数/コンストラクタ呼び出し引数（AST または評価済み）
     ///
     /// 戻り値: `Ok(Value)` — 実行結果またはインスタンス。`Err(message)` — 制約違反・型エラー等
+    ///
+    /// ⚠ 引数は `TemplateArgs` のまま持ち回り、**各分岐が呼び先へ渡す直前**に評価する。
+    /// 先に評価してしまうと、制約検証（`check_template_constraints`）より前に引数の
+    /// 副作用が起きてツリーウォークと順序がずれる（#27-c）。
     pub(super) fn instantiate_template(
         &mut self,
         tmpl_val: Value,
         type_args: &[String],
         call_args: &[CallArg],
+    ) -> Result<Value, String> {
+        self.instantiate_template_args(tmpl_val, type_args, TemplateArgs::Ast(call_args))
+    }
+
+    /// 評価済み引数でテンプレートを実体化する（VM の `Op::CallTemplate` 用・#27-c）。
+    /// `instantiate_template` と**同一の本体**を通る。
+    pub(crate) fn instantiate_template_evaled(
+        &mut self,
+        tmpl_val: Value,
+        type_args: &[String],
+        evaled: Vec<(Option<String>, Value, bool)>,
+    ) -> Result<Value, String> {
+        self.instantiate_template_args(tmpl_val, type_args, TemplateArgs::Evaled(evaled))
+    }
+
+    fn instantiate_template_args(
+        &mut self,
+        tmpl_val: Value,
+        type_args: &[String],
+        call_args: TemplateArgs<'_>,
     ) -> Result<Value, String> {
         match tmpl_val {
             Value::TemplateFn(tmpl) => {
@@ -120,7 +166,8 @@ impl Interpreter {
                         fn_val
                     }
                 };
-                self.exec_fn(fn_val, call_args, None, "<template_fn>", None)
+                let evaled = call_args.into_evaled(self)?;
+                self.exec_fn_evaled(fn_val, &evaled, None, "<template_fn>", None)
             }
             Value::TemplateClass(tmpl) => {
                 // テンプレートクラス: 制約を検証し、型変数を置換してクラスを構築・インスタンス化する
@@ -160,7 +207,8 @@ impl Interpreter {
                         gen_fn
                     }
                 };
-                self.exec_generator(gen_fn, call_args, None)
+                let evaled = call_args.into_evaled(self)?;
+                self.exec_generator_evaled(gen_fn, evaled, None)
             }
             // Signal[T]() — 型付きシグナルを生成する（型引数は型チェックの注釈としてのみ使用）
             Value::Type(ref t) if t == "Signal" => {
@@ -179,6 +227,7 @@ impl Interpreter {
                 let key_type = type_args[0].clone();
                 let item_type = type_args[1].clone();
 
+                let call_args = call_args.into_evaled(self)?;
                 if call_args.is_empty() {
                     // `dict[K, V]()` — 空の型付き辞書を生成する
                     Ok(Value::Dict(Rc::new(RefCell::new(DictData::new(
@@ -186,7 +235,7 @@ impl Interpreter {
                     )))))
                 } else if call_args.len() == 1 {
                     // `dict[K, V]({key: val, ...})` — 辞書リテラルから型付き辞書を生成する
-                    let arg_val = self.eval(call_args[0].expr())?;
+                    let arg_val = call_args[0].1.clone();
                     match arg_val {
                         Value::Dict(src_rc) => {
                             let src = src_rc.borrow();
@@ -240,14 +289,14 @@ impl Interpreter {
     ///
     /// - `tmpl`: 元のテンプレートクラス定義（名前・bases を参照する）
     /// - `concrete_body`: 型変数が具体型に置換済みのクラス本体文リスト
-    /// - `call_args`: コンストラクタ呼び出し引数リスト
+    /// - `call_args`: コンストラクタ呼び出し引数リスト（AST または評価済み）
     ///
     /// 戻り値: `Ok(Value::Instance)` — 構築済みインスタンス。`Err` — 実行エラー
     pub(super) fn instantiate_template_class(
         &mut self,
         tmpl: &TemplateClassValue,
         concrete_body: Vec<Stmt>,
-        call_args: &[CallArg],
+        call_args: TemplateArgs<'_>,
     ) -> Result<Value, String> {
         let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
         let mut gen_methods: HashMap<String, Rc<GeneratorFnValue>> = HashMap::new();
@@ -394,7 +443,8 @@ impl Interpreter {
             is_exception: false,
             raw_layout: None,
         });
-        self.instantiate(cls, call_args)
+        let evaled = call_args.into_evaled(self)?;
+        self.instantiate_evaled(cls, evaled)
     }
 }
 

@@ -184,6 +184,42 @@ pub enum Op {
     /// 検査もエラー文言もツリーウォーク（`exec_for_stmt` の複数ターゲット分岐）と同一:
     /// タプルでなければ `TypeError`、要素数が合わなければ `ValueError`。
     UnpackTuple(u16, u16),
+    /// `let a, b = t`（#27-c）。pop した値を `tuple_decls[idx]` に従って分解束縛する。
+    ///
+    /// 束縛先が slot かグローバル宣言かは `TupleDecl::slots` が持つ。検査・エラー文言・
+    /// `let` の freeze / `mut` の deep_copy はツリーウォークと同じ `let_tuple_values`。
+    LetTuple(u32),
+    /// `freeze x`（#27-c）。フィールドは (name_idx, span_idx)。
+    ///
+    /// 値はスタックに載せない。`exec_freeze` をそのまま呼ぶ（`__freeze__` の呼び出しや
+    /// クロージャセル検査を含む意味論はツリーウォークと同一の 1 実装）。
+    FreezeVar(u32, u32),
+    /// `src on/once handler`（#27-c）。スタックは `[source, handler]`。
+    /// フィールドは (is_once, is_async)。
+    EventSubscribe(bool, bool),
+    /// `src off handler`（#27-c）。スタックは `[source, handler]`。
+    EventUnsubscribe,
+    /// キーワード/可変長引数つき呼び出し（#27-c）。スタックは `Op::Call` と同じ
+    /// `[callee, arg0..argN-1]` で、引数名だけ `chunk.kw_calls[idx]` が持つ。
+    ///
+    /// 可変長 `f(... = A, B, C)` は**コンパイラが `BuildList` で 1 値に畳む**ので、
+    /// スタック上の引数は常に 1 引数 1 値。`eval_call_args` が作る
+    /// `(Some("..."), Value::List, true)` と同じ形になる。
+    CallKw(u32),
+    /// テンプレート呼び出し `Tmpl[T](args)`（#27-c）。スタックは `[tmpl, arg0..argN-1]`。
+    /// フィールドは (type_arg_lists の index, 引数の数, mut マスク)。
+    ///
+    /// ツリーウォークの `eval_call` の `TemplateInstantiate` 分岐と同じく
+    /// `instantiate_template` の本体（`instantiate_template_args`）を通る。
+    /// **位置引数のみ**（キーワード引数はコンパイラが bail する。`Call` と同じ制限）。
+    CallTemplate(u32, u16, u32),
+    /// スライス式 `a[b:e:s]` の `b:e:s` 部分（#27-c）。スタックは `[begin, end, step]`。
+    /// 3 つを pop して `Value::Slice` を push する。
+    ///
+    /// **省略された要素はコンパイラが `Op::Nil` を積む**ので、op にオペランドは要らない
+    /// （`slice_from_values` が `Value::None` を「無し」に畳む）。検査もエラー文言も
+    /// ツリーウォークと同じ 1 実装（`Interpreter::slice_from_values`）。
+    BuildSlice,
     /// pop した値で**グローバルを新規宣言**する（#10-c: 最上位の `let`/`mut`/`const`）。
     /// フィールドは (name_idx, 宣言の種類)。
     ///
@@ -246,8 +282,12 @@ pub enum Op {
 /// - `LetPlain`         … `exec_let` の「不変ソース／リテラル」分岐（そのまま束縛）
 /// - `LetFreezeInstance`… `exec_let` の「非識別子式」分岐（`Instance` のときだけ copy+freeze）
 ///
-/// `exec_let` の「`mut` 変数から `let` へ」分岐（常に copy+freeze）は、最上位では
-/// **ソースの可変性がコンパイル時に分からない**ため対象外（コンパイラが bail する）。
+/// - `LetFromIdent`     … `exec_let` の「識別子ソース」分岐（#27-c）
+///
+/// ⚠ `LetFromIdent` だけ**コンパイル時に結論を出さない**。`exec_let` はソース変数の
+/// 可変性を実行時の `get_var` で見て分岐するので、VM も同じ実行時判断を行う
+/// （ソース名の index を持ち回るだけ）。予測して op を選ぶと再宣言や再束縛で
+/// ずれる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeclKind {
     /// `const x = e`
@@ -258,6 +298,10 @@ pub enum DeclKind {
     LetPlain,
     /// `let x = e`（非識別子式。`Instance` のときだけ deep_copy + freeze）
     LetFreezeInstance,
+    /// `let x = <識別子>`（#27-c）。フィールドは**ソース名**の index。
+    /// 実行時に `get_var(src)` を引き、可変なら copy+freeze・不変ならそのまま・
+    /// 変数でなければ `LetFreezeInstance` と同じ扱い（＝`exec_let` と同一の分岐）。
+    LetFromIdent(u32),
 }
 
 #[cfg(test)]

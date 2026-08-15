@@ -2523,6 +2523,142 @@ bail 理由だけでは「何を落としたか」が分からず、#3 に効く
   「`--vm=off` でも同じ差が出るか（＝経路の切り分け）」と「ハードな計数（bail 件数・
   ディスパッチ回数）」の 2 つ。
 
+### #27-c 続き（3）— 最上位 bail 126 → 23 / `force_gate` 36 → 17 / 2026-08-15
+
+#### 判断基準を変えた
+
+#25 で `force_gate.ps1` ができたので、**「#3 に効くのは制御フロー文の bail だけ」という
+それまでの絞り込みは無効**になった。ゲートは「1 文でも載らなければその例題は落ちる」なので、
+制御フローかどうかに関係なく**全部潰す**必要がある。以降は件数上位から着手した。
+
+#### 載せたもの
+
+| 対象 | 手法 | 減った bail |
+|---|---|---|
+| スライス式 `a[b:e:s]` | `Op::BuildSlice`。省略要素は `Op::Nil` を積み、`slice_from_values` が `Value::None` を「無し」に畳む | 21 |
+| テンプレート実体化 `Tmpl[T](...)` | `Op::CallTemplate` + `Chunk::type_arg_lists` | 31 |
+| `let x = <識別子>` | `DeclKind::LetFromIdent(src)`。**コンパイル時に結論を出さず**実行時に `get_var(src)` を引く | 13 |
+| 最上位の未解決識別子 | `Op::LoadName`（`Signal`/`dict`/`EventLoop` 等の組み込み型名） | 32 |
+| `freeze x` | `Op::FreezeVar` → `exec_freeze` をそのまま呼ぶ | 7 |
+| `on`/`once`/`off` | `Op::EventSubscribe`/`EventUnsubscribe` + `*_evaled` 分離 | 9 |
+| `let a, b = t` | `Op::LetTuple` + `Chunk::tuple_decls`（束縛先が slot かグローバルかを持つ） | 7 |
+
+`toplevel_FAILED` **126 → 23**、`force_gate` **36 → 17/125**、最上位ツリーウォーク **497 → 429**
+（残り 429 のうち 350 は定義文＝設計上の対象外）。
+
+#### 未解決識別子を `LoadName` にできる理由と、その限界
+
+ツリーウォークの `Resolution::Unresolved` は `get_val(name)` そのもので、
+`Op::LoadName`（`vm_load_name` = `get_val`）と**エラー文言まで同一**。よって置き換えは無条件に健全…
+**ではない**。スコープの隔離を担うのは `frame_floor` で、`exec_fn_evaled` は VM へ分岐する時点では
+**まだ `frame_floor` を進めていない**。関数本体で `LoadName` を使うと `get_val` が
+**呼び出し元のローカルまで走査してしまう**。
+
+最上位は `toplevel_vm_candidate` が `scopes.len() == 1` を保証するので安全。よって
+**最上位モード限定**で置き換えた（`fn_bail` に残る `g_counter`/`Registry` の 2 件は対象外のまま）。
+
+#### テンプレート実体化: 引数を未評価のまま持ち回る
+
+`instantiate_template` は `exec_fn` / `instantiate` / `exec_generator` に `&[CallArg]` を渡していた。
+VM はスタック上の評価済み値しか持たないので `*_evaled` へ切り替える必要があるが、
+**入口で一括評価すると評価順が変わる**（`check_template_constraints` より前に引数の副作用が出る）。
+
+`TemplateArgs { Ast(&[CallArg]), Evaled(Vec<...>) }` を導入し、**呼び先へ渡す直前**に
+`into_evaled` する形にした。これで本体は 1 つのまま、評価の時点が元と一致する。
+副作用として `instantiate` / `exec_generator`（`eval_call_args` + `*_evaled` の 2 行ラッパ）が
+最後の呼び出し元を失ったので削除した。
+
+#### `let a, b = t` — walker と除外リストは**対で**直さないと壊れる
+
+このタスクで**同じバグを 2 方向から踏んだ**。どちらも検証スクリプトが捕まえた。
+
+1. `collect_nested_decls` が `Stmt::LetTuple` を見ていなかった。→ `for` 本体の
+   `let zx, let zy = pair` に slot が振られず**グローバル宣言**に落ち、
+   2 周目で `NameError: variable 'zx' is already declared`（`built_in.ar`）。
+2. 1 を直したら、今度は**最上位の宣言文**にも slot が振られるようになり、
+   `let tx, mut ty = tup1` の値がフレームへ消えて `NameError: 'tx' is not defined`（`collection.ar`）。
+
+正しい形は **2 箇所を対で直すこと**:
+- `collect_nested_decls` は **入れ子の** `LetTuple` ターゲットに slot を振る
+- `compile_toplevel_stmt` の宣言文除外リスト（#10-c で `Let`/`Mut`/`Const` に入れたもの）に
+  `LetTuple` を追加し、**最上位の**ターゲットには振らない
+
+この「slot の有無」がそのまま `Op::LetTuple` の束縛先（slot / `declare_var`）の判別子になる。
+
+⚠ 教訓の再確認: **同じ木を歩く walker が 2 つあると必ずずれる**（既出）。加えて
+**宣言文の扱いは walker と除外リストの 2 箇所に散っている**ので、片方だけ直すと
+「値が消える」「二重宣言」のどちらかに倒れる。**両方向のテストが要る**。
+
+#### 検査の 1 実装化（#22 の原則の適用）
+
+新しい op を足すたびに、ツリーウォーク側の本体を `*_evaled` へ割り、**検査とエラー文言を
+1 箇所に集約**した: `slice_from_values` / `let_tuple_values` / `event_subscribe_evaled` /
+`event_unsubscribe_evaled` / `instantiate_template_args` / `let_freeze_instance`。
+
+唯一意図的にずらしたのはスライスの評価順で、旧実装は begin を**検査してから** end を評価していた
+（begin が不正なら end/step は評価されない）。今は 3 つとも評価してから検査する。
+差が出るのは「不正な境界＋副作用つき境界式」＝どのみち TypeError になるコードだけ。
+
+#### 続けて載せたもの（同日・126 → 23 → **5**）
+
+| 対象 | 手法 | 直った例題 |
+|---|---|---|
+| キーワード/可変長引数 | `Op::CallKw` + `Chunk::kw_calls`。可変長は `BuildList` で**1 値に畳む**ので、スタック配置は `Op::Call` と同じ | 4 |
+| 添字への複合代入 `d[k] += v` | `object`/`index` を**2 回積む**（ツリーウォークが読みと代入で 2 回評価するため） | 2 |
+| `obj.attr = v`（レシーバ無制限） | `attr_assign` を `attr_assign_evaled` へ畳んだ（下記） | 1 |
+| `for _ in ...` | `_` には `add_decl` が slot を振らないので受け皿 temp を割り当てる | 1 |
+| `open` / `close` | `eval_builtin_open_evaled` を分離し `VM_BUILTIN_NAMES` へ追加 | 2 |
+
+`Op` は 20 バイトのままに保った。`Op::Call` は既に最大 variant（5 フィールド）なので、
+キーワード名は**副表へ逃がす**しかない（`ffi_call_info` と同じ判断）。
+
+#### コンパイラのレシーバ制限は「2 実装の差」を隠していただけだった
+
+`Stmt::AttrAssign` は `object_is_instance(object)` が真のときしか `Op::SetAttr` を出さず、
+型注釈の無いグローバル（`mut p2 = p1.copy()` の `p2`）が bail していた。
+
+調べると、**ツリーウォークの `attr_assign` と VM の `attr_assign_evaled` が別実装**で、
+前者にだけ `Value::Class`（`static mut` への代入）のアームがあった。
+`object_is_instance` はその差が露見しないようレシーバを絞る役をしていた。
+
+`attr_assign` を `eval(object)` + `attr_assign_evaled` へ畳み、`Value::Class` アームを
+`attr_assign_evaled` 側へ移した。**1 実装にした結果、制限そのものが不要になった**。
+
+⚠ 一般化: **コンパイラ側の「この形のときだけ載せる」条件は、意味論上の制約とは限らない。
+2 実装の差を隠しているだけのことがある**。条件を緩める前に、まず呼び先が 1 実装かを確かめること。
+
+#### 計測の穴（`unattributed`）と、その修正で作った新しい穴
+
+`For/unattributed:For` の出所は素の `*self.slots.get(name)?` だった（`?` で黙って諦めるので
+`record_bail` を通らない）。`slot_of` ヘルパーを作って全置換したところ、`toplevel_FAILED` 5 に対し
+**bail が 39 件**という食い違いが出た。
+
+原因は `compile_async_assign` の `filter_map`。ここは
+**「本体が参照する名前のうち slot にあるものだけ捕捉する」＝当たらないのが正常**な場所で、
+`slot_of` を通したせいで幻の bail が 35 件載っていた。1 箇所だけ素の `get` に戻して bail 5 = FAILED 5 に一致。
+
+⚠ **「対象外」と「失敗」を同じ `None` で表すな**（#27-c で既出）の**再発**。
+今回は「失敗を計上する」側を機械的に全置換したことで、逆向きに同じ罠を踏んだ。
+`Option` を返すヘルパーを一括置換するときは、**呼び出し側それぞれで `None` が何を意味するか**を見ること。
+
+#### 残り 5 件
+
+`try-except-finally` 1・`Try` 内の `let v = <未定義識別子>`（`decl-no-slot`）1・
+メソッドのキーワード引数（`For/call-arg`）1・`block:` 式の中の入れ子 `fn`（`Let/decl-no-slot`）1・
+`callee-expr:Block` 1。
+
+`force_gate` は **12/125**。うち **7 件は #27（関数本体）**で、#27-c 由来は 5 件。
+
+⚠ `let v = <識別子>` の入れ子版は、最上位でやった `DeclKind::LetFromIdent` と同じ手
+（実行時に `get_var(src)` の可変性を見る）で載るが、**最上位モード限定**にすること
+（`LoadName` と同じ `frame_floor` の理由）。
+
+#### 検証
+
+`cargo test` 706 / `compare_vm_modes` 71 identical・0 differing / `scan_examples` FAIL 0 /
+`compare_debug_modes` 5 identical / clippy 62（増分 0）。
+`Op` サイズは 20 バイトのまま（`op_size_is_pinned` 通過）。
+
 ### #10-c2 最上位の残り文を Chunk 化 — 完了 2026-08-14
 
 #### 実装

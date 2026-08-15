@@ -34,6 +34,29 @@ impl Interpreter {
                 println!("{}", parts.join(" "));
                 Some(Ok(Value::None))
             }
+            // ファイル操作（#27-c）。VM は位置引数だけを積むので、名前無しの 3 つ組に直して
+            // ツリーウォークと同じ本体へ渡す（キーワード引数つきの呼び出しはコンパイラが bail する）。
+            "open" => Some(
+                self.eval_builtin_open_evaled(args.into_iter().map(|v| (None, v, true)).collect()),
+            ),
+            "close" => {
+                if args.len() != 1 {
+                    return Some(Err(
+                        "TypeError: close() takes exactly one argument".to_string()
+                    ));
+                }
+                let val = args.into_iter().next().unwrap();
+                Some(match val {
+                    Value::FileObject(fd_rc) => {
+                        fd_rc.borrow_mut().close();
+                        Ok(Value::None)
+                    }
+                    other => Err(format!(
+                        "TypeError: close() argument must be FileObject, not '{}'",
+                        self.type_name(&other)
+                    )),
+                })
+            }
             "range" => Some(match args.as_slice() {
                 [Value::Int(stop)] => Ok(Value::List(Rc::new(RefCell::new(
                     (0..*stop).map(Value::Int).collect(),
@@ -595,10 +618,18 @@ impl Interpreter {
     /// 引数 `file_path`, `open_mode`, `start_point`, `byte_recognizing`, `encoding`, `exclusion` を解析し、
     /// 対応する `std::fs::OpenOptions` を構築してファイルを開く。
     pub(crate) fn eval_builtin_open(&mut self, args: &[CallArg]) -> Result<Value, String> {
+        let evaled = self.eval_call_args(args)?;
+        self.eval_builtin_open_evaled(evaled)
+    }
+
+    /// 評価済み引数版の `open()`（VM の `CallBuiltin` 用・#27-c）。`eval_builtin_open` の本体。
+    pub(crate) fn eval_builtin_open_evaled(
+        &mut self,
+        evaled: Vec<(Option<String>, Value, bool)>,
+    ) -> Result<Value, String> {
         use std::collections::HashMap as HMap;
         use std::fs::OpenOptions;
         use std::io::Read as IoRead;
-        let evaled = self.eval_call_args(args)?;
         let mut kw: HMap<String, Value> = HMap::new();
         let mut pos: Vec<Value> = Vec::new();
         for (k, v, _) in evaled {

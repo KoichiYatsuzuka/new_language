@@ -259,6 +259,31 @@ fn unpack_tuple(buf: &mut Vec<Value>, base: usize, src: u16, n: u16) -> Result<(
     Ok(())
 }
 
+/// `Op::LetTuple` の本体（#27-c）。検査は `let_tuple_values`（ツリーウォークと同じ 1 実装）。
+/// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
+#[inline(never)]
+fn let_tuple(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &mut [Value],
+    base: usize,
+    idx: u32,
+    v: Value,
+) -> Result<(), String> {
+    let decl = &chunk.tuple_decls[idx as usize];
+    if decl.slots.is_empty() {
+        // 最上位の宣言文: スコープへ宣言する（「既に宣言済み」検査もそちらが行う）。
+        interp.exec_let_tuple_evaled(&decl.targets, v)?;
+        return Ok(());
+    }
+    for (i, val) in interp.let_tuple_values(&decl.targets, v)? {
+        if let Some(slot) = decl.slots[i] {
+            buf[base + slot as usize] = val;
+        }
+    }
+    Ok(())
+}
+
 /// `Op::DeclareGlobal` の本体（#10-c）。ツリーウォークと同じ `vm_declare_global` へ委譲する。
 /// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
 #[inline(never)]
@@ -270,7 +295,7 @@ fn declare_global(
     v: Value,
 ) -> Result<(), String> {
     let name = &chunk.names[ni as usize];
-    interp.vm_declare_global(name, kind, v)
+    interp.vm_declare_global(name, kind, &chunk.names, v)
 }
 
 /// `Op::GetTraitAttr` の本体（#27）。ツリーウォークと同じ `trait_access_evaled` へ委譲する。
@@ -837,6 +862,76 @@ fn exec_op(
         Op::UnpackTuple(src, n) => {
             // #27-c: `for k, v in ...`。本体は `#[inline(never)]`（`exec_op` を太らせない）。
             unpack_tuple(buf, base, *src, *n)?;
+        }
+        Op::CallKw(i) => {
+            // #27-c: キーワード/可変長引数つき呼び出し。スタック配置は `Op::Call` と同じで、
+            // 引数名だけ副表から取る（`eval_call_args` が作る 3 つ組と同じ形にする）。
+            let kc = &chunk.kw_calls[*i as usize];
+            let n = kc.argc as usize;
+            let split = buf.len() - n;
+            let arg_vals = buf.split_off(split);
+            let callee = buf.pop().unwrap();
+            let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
+                .into_iter()
+                .enumerate()
+                .map(|(j, v)| (kc.arg_names[j].clone(), v, (kc.mut_mask >> j) & 1 == 1))
+                .collect();
+            let r = interp.call_value_evaled(
+                callee,
+                evaled,
+                &chunk.names[kc.name_idx as usize],
+                Some(chunk.spans[kc.span_idx as usize].clone()),
+                kc.node_id,
+            )?;
+            buf.push(r);
+            return Ok(Flow::NextAfterCall);
+        }
+        Op::CallTemplate(t, argc, mut_mask) => {
+            // #27-c: `Tmpl[T](args)`。引数の作り方は `Op::Call` と同じ（位置引数のみ）。
+            let n = *argc as usize;
+            let split = buf.len() - n;
+            let arg_vals = buf.split_off(split);
+            let tmpl = buf.pop().unwrap();
+            let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
+                .collect();
+            let r = interp.instantiate_template_evaled(
+                tmpl,
+                &chunk.type_arg_lists[*t as usize],
+                evaled,
+            )?;
+            buf.push(r);
+            return Ok(Flow::NextAfterCall); // 呼び出し中に debug が始まった可能性を拾う
+        }
+        Op::LetTuple(i) => {
+            // #27-c: `let a, b = t`。本体は `#[inline(never)]`（`exec_op` を太らせない）。
+            let v = buf.pop().unwrap();
+            let_tuple(interp, chunk, buf, base, *i, v)?;
+        }
+        Op::FreezeVar(ni, si) => {
+            // #27-c: `freeze x`。意味論はツリーウォークと同じ 1 実装。
+            interp.exec_freeze(&chunk.names[*ni as usize], &chunk.spans[*si as usize])?;
+        }
+        Op::EventSubscribe(once, is_async) => {
+            // #27-c: `src on/once handler`。
+            let handler = buf.pop().unwrap();
+            let source = buf.pop().unwrap();
+            interp.event_subscribe_evaled(source, handler, *once, *is_async)?;
+        }
+        Op::EventUnsubscribe => {
+            // #27-c: `src off handler`。
+            let handler = buf.pop().unwrap();
+            let source = buf.pop().unwrap();
+            interp.event_unsubscribe_evaled(source, handler)?;
+        }
+        Op::BuildSlice => {
+            // #27-c: `a[b:e:s]`。検査・エラー文言はツリーウォークと同じ 1 実装。
+            let step = buf.pop().unwrap();
+            let end = buf.pop().unwrap();
+            let begin = buf.pop().unwrap();
+            buf.push(interp.slice_from_values(begin, end, step)?);
         }
         Op::DeclareGlobal(ni, kind) => {
             // #10-c: 最上位の `let`/`mut`/`const`。本体は `#[inline(never)]`（`exec_op` を太らせない）。

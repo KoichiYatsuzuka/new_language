@@ -601,27 +601,6 @@ impl Interpreter {
         self.exec_fn_evaled(fn_val, &evaled, self_val, fn_name, call_span)
     }
 
-    /// ジェネレータ関数の本体を一括実行し、すべての `yield` 値を収集して `Value::Generator` を返す。
-    ///
-    /// スレッドローカル `GENERATOR_YIELDS` を `Some(Vec::new())` にセットして yield 収集を有効化し、
-    /// 本体実行後に収集した値リストを取り出して `GeneratorState` を構築する。
-    ///
-    /// - `gen_fn`: 実行するジェネレータ関数定義
-    /// - `call_args`: 呼び出し引数リスト（AST の `CallArg`）
-    /// - `self_val`: レシーバインスタンス（ジェネレータメソッド用; `None` はスタンドアロン）
-    ///
-    /// 戻り値: `Ok(Value::Generator)` — 収集済みの yield 値を保持するジェネレータ。
-    ///         `Err(message)` — ランタイムエラーまたは例外センチネル
-    pub(crate) fn exec_generator(
-        &mut self,
-        gen_fn: Rc<GeneratorFnValue>,
-        call_args: &[CallArg],
-        self_val: Option<Value>,
-    ) -> Result<Value, String> {
-        let evaled = self.eval_call_args(call_args)?;
-        self.exec_generator_evaled(gen_fn, evaled, self_val)
-    }
-
     /// 評価済み引数でジェネレータメソッドを実行する（VM の CallMethod 用）。`exec_generator` の本体。
     pub(crate) fn exec_generator_evaled(
         &mut self,

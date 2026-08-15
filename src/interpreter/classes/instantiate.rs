@@ -2,7 +2,6 @@
 
 use {
     std::cell::RefCell, std::rc::Rc,
-    crate::ast::CallArg,
     crate::interpreter::{
         ClassValue, InstanceData,
         Interpreter, Value,
@@ -10,26 +9,6 @@ use {
 };
 
 impl Interpreter {
-    /// クラスを引数付きでインスタンス化して `Value::Instance` を返す。
-    ///
-    /// 処理フロー:
-    /// 1. `field_defaults` からデフォルトフィールドを初期化
-    /// 2. `InstanceData` を構築して `Rc<RefCell>` に包む
-    /// 3. `__init__` メソッドを呼び出す（オーバーロードがある場合は `dispatch_overload`）
-    ///
-    /// - `class`: インスタンス化するクラス定義
-    /// - `call_args`: コンストラクタ引数リスト（AST の `CallArg`）
-    ///
-    /// 戻り値: `Ok(Value::Instance)` — 初期化済みインスタンス。`Err` — コンストラクタ実行エラー
-    pub(crate) fn instantiate(
-        &mut self,
-        class: Rc<ClassValue>,
-        call_args: &[CallArg],
-    ) -> Result<Value, String> {
-        let evaled = self.eval_call_args(call_args)?;
-        self.instantiate_evaled(class, evaled)
-    }
-
     /// オブジェクトのメソッドを呼び出して結果を返す。
     ///
     /// 各値型に対してディスパッチを行う:

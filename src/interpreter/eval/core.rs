@@ -357,54 +357,58 @@ impl Interpreter {
         end: &Option<Box<Expr>>,
         step: &Option<Box<Expr>>,
     ) -> Result<Value, String> {
-        let begin = match begin {
-            None => None,
-            Some(e) => {
-                let v = self.eval(e)?;
-                match &v {
-                    Value::None => None,
-                    Value::Int(_) => Some(v),
-                    Value::Instance(inst) if inst.borrow().class.name == "Index" => Some(v),
-                    _ => {
-                        return Err(format!(
-                            "TypeError: slice begin must be int, Index, or None, got '{}'",
-                            self.type_name(&v)
-                        ))
-                    }
-                }
+        // 省略された要素は `Value::None` として扱う（`slice_from_values` が「無し」に畳む）。
+        let b = match begin {
+            None => Value::None,
+            Some(e) => self.eval(e)?,
+        };
+        let en = match end {
+            None => Value::None,
+            Some(e) => self.eval(e)?,
+        };
+        let st = match step {
+            None => Value::None,
+            Some(e) => self.eval(e)?,
+        };
+        self.slice_from_values(b, en, st)
+    }
+
+    /// 評価済みの 3 要素から `Value::Slice` を作る（#27-c）。
+    ///
+    /// ツリーウォーク（`eval_slice_expr`）と VM（`Op::BuildSlice`）の**唯一の実装**。
+    /// 検査もエラー文言もここ 1 箇所にある。
+    ///
+    /// ⚠ 評価順が 1 点だけツリーウォークの旧実装と違う: 以前は begin を検査してから end を
+    /// **評価**していたので、begin が不正なら end/step は評価されなかった。今は 3 つとも
+    /// 評価してから検査する。差が出るのは「不正な境界＋副作用つき境界式」＝どのみち
+    /// TypeError になるコードだけ。
+    pub(crate) fn slice_from_values(
+        &mut self,
+        begin: Value,
+        end: Value,
+        step: Value,
+    ) -> Result<Value, String> {
+        let bound = |it: &Self, v: Value, which: &str| -> Result<Option<Value>, String> {
+            match &v {
+                Value::None => Ok(None),
+                Value::Int(_) => Ok(Some(v)),
+                Value::Instance(inst) if inst.borrow().class.name == "Index" => Ok(Some(v)),
+                _ => Err(format!(
+                    "TypeError: slice {which} must be int, Index, or None, got '{}'",
+                    it.type_name(&v)
+                )),
             }
         };
-        let end = match end {
-            None => None,
-            Some(e) => {
-                let v = self.eval(e)?;
-                match &v {
-                    Value::None => None,
-                    Value::Int(_) => Some(v),
-                    Value::Instance(inst) if inst.borrow().class.name == "Index" => Some(v),
-                    _ => {
-                        return Err(format!(
-                            "TypeError: slice end must be int, Index, or None, got '{}'",
-                            self.type_name(&v)
-                        ))
-                    }
-                }
-            }
-        };
-        let step = match step {
-            None => None,
-            Some(e) => {
-                let v = self.eval(e)?;
-                match &v {
-                    Value::None => None,
-                    Value::Int(_) => Some(v),
-                    _ => {
-                        return Err(format!(
-                            "TypeError: slice step must be int or None, got '{}'",
-                            self.type_name(&v)
-                        ))
-                    }
-                }
+        let begin = bound(self, begin, "begin")?;
+        let end = bound(self, end, "end")?;
+        let step = match &step {
+            Value::None => None,
+            Value::Int(_) => Some(step),
+            _ => {
+                return Err(format!(
+                    "TypeError: slice step must be int or None, got '{}'",
+                    self.type_name(&step)
+                ))
             }
         };
         Ok(Value::Slice(Rc::new(SliceValue { begin, end, step })))

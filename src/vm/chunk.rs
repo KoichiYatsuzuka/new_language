@@ -27,6 +27,34 @@ pub struct ChunkFnDef {
     pub captures: Vec<(String, u16)>,
 }
 
+/// `let a, b = t` 1 件ぶんの分解情報（#27-c）。
+pub struct TupleDecl {
+    pub targets: Vec<crate::ast::TupleTarget>,
+    /// 各ターゲットの格納先 slot（`Wildcard` と最上位宣言は `None`）。
+    ///
+    /// **空 Vec なら最上位**（`declare_var` でグローバルを宣言する）。空でなければ
+    /// `targets` と同じ長さで、フラットフレームの slot へ直接書く。
+    /// 入れ子の宣言は `collect_nested_decls` が slot を割り当てるので、この 2 つで
+    /// 「最上位の宣言文」と「制御フロー内の宣言」を区別できる。
+    pub slots: Vec<Option<u16>>,
+}
+
+/// キーワード/可変長引数つき呼び出し 1 件ぶんの情報（#27-c）。`Op::CallKw(idx)` が参照する。
+///
+/// `Op::Call` は (argc, mut_mask, name, span, node_id) で既に 20 バイト＝最大 variant なので、
+/// 引数名を足すと**全命令が太る**。稀な形なので副表へ逃がしてある（`ffi_call_info` と同じ判断）。
+pub struct KwCall {
+    pub argc: u16,
+    pub mut_mask: u32,
+    /// 呼び先の表示名（トレースバック用）。
+    pub name_idx: u32,
+    pub span_idx: u32,
+    pub node_id: u32,
+    /// 各引数の名前。`None` = 位置引数、`Some("...")` = 可変長（値はリストに畳んである）。
+    /// 長さは `argc` と一致する。
+    pub arg_names: Vec<Option<String>>,
+}
+
 pub struct AsyncBlock {
     pub body: Vec<Stmt>,
     pub captures: Vec<(String, u16, bool)>,
@@ -92,4 +120,13 @@ pub struct Chunk {
     /// `captured_env` は**構成上空**になり、ツリーウォークの `capture_env`（外側スコープを
     /// 走査して何も見つからない）と一致する。
     pub fn_defs: Vec<ChunkFnDef>,
+    /// テンプレート実体化の型引数リスト（#27-c）。`Op::CallTemplate(idx, ..)` が index で参照する。
+    ///
+    /// `names` に入れて (開始, 個数) で持つ手もあるが、`instantiate_template_evaled` が
+    /// `&[String]` を要求するので**そのまま渡せる形**にしてある。
+    pub type_arg_lists: Vec<Vec<String>>,
+    /// `let a, b = t` の分解（#27-c）。`Op::LetTuple(idx)` が参照する。
+    pub tuple_decls: Vec<TupleDecl>,
+    /// キーワード/可変長引数つき呼び出し（#27-c）。`Op::CallKw(idx)` が参照する。
+    pub kw_calls: Vec<KwCall>,
 }

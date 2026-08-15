@@ -65,6 +65,51 @@ impl Interpreter {
         value: &Expr,
     ) -> Result<ExecResult, String> {
         let val = self.eval(value)?;
+        self.exec_let_tuple_evaled(targets, val)
+    }
+
+    /// 評価済みの値でタプル分解宣言を行う（最上位 VM の `Op::LetTuple` 用・#27-c）。
+    /// 束縛先が現スコープ（＝グローバル）の場合。
+    pub(crate) fn exec_let_tuple_evaled(
+        &mut self,
+        targets: &[TupleTarget],
+        val: Value,
+    ) -> Result<ExecResult, String> {
+        for target in targets.iter() {
+            match target {
+                TupleTarget::Let(n) | TupleTarget::Bare(n) | TupleTarget::Mut(n) => {
+                    if n != "_" && self.get_var(n).is_some() {
+                        return Err(format!("NameError: variable '{n}' is already declared"));
+                    }
+                }
+                TupleTarget::Wildcard => {}
+            }
+        }
+        for (i, v) in self.let_tuple_values(targets, val)? {
+            let mutable = matches!(targets[i], TupleTarget::Mut(_));
+            let name = match &targets[i] {
+                TupleTarget::Let(n) | TupleTarget::Bare(n) | TupleTarget::Mut(n) => n.clone(),
+                TupleTarget::Wildcard => continue,
+            };
+            self.declare_var(name, Var::new(v, mutable));
+        }
+        Ok(ExecResult::Normal)
+    }
+
+    /// タプル分解の**検査と値の取り出し**（#27-c）。
+    ///
+    /// ツリーウォーク（`exec_let_tuple`）と VM（`Op::LetTuple` の両経路）の**唯一の実装**。
+    /// 型検査・要素数検査・エラー文言・`let` の freeze / `mut` の deep_copy がここに集約されている。
+    /// 戻り値は `(targets の index, 束縛する値)` を宣言順に並べたもの（`Wildcard` 以降は打ち切り）。
+    ///
+    /// ⚠ 「既に宣言済み」検査は**ここに入れない**。最上位はスコープに宣言するので必要だが、
+    /// VM のフラット slot には宣言集合が無く、ツリーウォークも反復ごとにスコープを push し直す
+    /// ため入れ子では発生しない。束縛先を知っている呼び出し側の責務。
+    pub(crate) fn let_tuple_values(
+        &mut self,
+        targets: &[TupleTarget],
+        val: Value,
+    ) -> Result<Vec<(usize, Value)>, String> {
         let tuple_rc = match val {
             Value::Tuple(rc) => rc,
             _ => {
@@ -90,34 +135,25 @@ impl Interpreter {
                 "TypeError: not enough values to unpack (expected {named}, got {tlen})"
             ));
         }
-        for target in targets.iter() {
-            match target {
-                TupleTarget::Let(n) | TupleTarget::Bare(n) | TupleTarget::Mut(n) => {
-                    if n != "_" && self.get_var(n).is_some() {
-                        return Err(format!("NameError: variable '{n}' is already declared"));
-                    }
-                }
-                TupleTarget::Wildcard => {}
-            }
-        }
+        let mut out = Vec::with_capacity(named);
         let mut idx = 0usize;
-        for target in targets.iter() {
+        for (i, target) in targets.iter().enumerate() {
             match target {
                 TupleTarget::Wildcard => break,
-                TupleTarget::Let(n) | TupleTarget::Bare(n) => {
+                TupleTarget::Let(_) | TupleTarget::Bare(_) => {
                     let v = tuple_rc.get(idx).unwrap().clone();
                     self.apply_freeze_to_value(&v, false)?;
-                    self.declare_var(n.clone(), Var::new(v, false));
+                    out.push((i, v));
                     idx += 1;
                 }
-                TupleTarget::Mut(n) => {
+                TupleTarget::Mut(_) => {
                     let v = Self::deep_copy_value(tuple_rc.get(idx).unwrap().clone());
-                    self.declare_var(n.clone(), Var::new(v, true));
+                    out.push((i, v));
                     idx += 1;
                 }
             }
         }
-        Ok(ExecResult::Normal)
+        Ok(out)
     }
 
     /// `static mut` 変数宣言を実行する。ソース位置をキーに静的セルを確保し、呼び出し間で値を共有する。

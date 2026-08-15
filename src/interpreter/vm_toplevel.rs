@@ -151,6 +151,8 @@ impl Interpreter {
         &mut self,
         name: &str,
         kind: crate::vm::op::DeclKind,
+        // `LetFromIdent` がソース名を index で持つので、解決用に定数表を受け取る（#27-c）。
+        names: &[String],
         value: Value,
     ) -> Result<(), String> {
         use crate::vm::op::DeclKind;
@@ -169,18 +171,39 @@ impl Interpreter {
             // 非識別子式からの `let`: `Instance` のときだけ copy + freeze。
             // 可変コレクションから取り出した `Instance` を直接フリーズすると
             // 共有 `Rc` 経由で元まで不変化されるため（`exec_let` のコメント参照）。
-            DeclKind::LetFreezeInstance => {
-                if matches!(value, Value::Instance(_)) {
-                    let copied = Self::deep_copy_value(value);
-                    self.apply_freeze_to_value(&copied, true)?;
-                    (copied, false)
-                } else {
-                    (value, false)
+            DeclKind::LetFreezeInstance => (self.let_freeze_instance(value)?, false),
+            // #27-c: ソースの可変性は**実行時**に見る（`exec_let` と同じ判断）。
+            // `src` が変数でなければ非識別子式と同じ扱いに落ちる。
+            DeclKind::LetFromIdent(si) => {
+                let src = &names[si as usize];
+                match self.get_var(src).map(|v| v.is_mutable()) {
+                    // mut ソース: 深いコピーを作ってフリーズする。
+                    Some(true) => {
+                        let copied = Self::deep_copy_value(value);
+                        self.apply_freeze_to_value(&copied, true)?;
+                        (copied, false)
+                    }
+                    Some(false) => (value, false),
+                    None => (self.let_freeze_instance(value)?, false),
                 }
             }
         };
         self.declare_var(name.to_string(), Var::new(value, mutable));
         Ok(())
+    }
+
+    /// `let` の「非識別子式」分岐（#27-c）: `Instance` のときだけ deep_copy + freeze。
+    ///
+    /// 可変コレクションから取り出した `Instance` を直接フリーズすると共有 `Rc` 経由で
+    /// 元まで不変化されるため、コピーが要る（`exec_let` のコメント参照）。
+    fn let_freeze_instance(&mut self, value: Value) -> Result<Value, String> {
+        if matches!(value, Value::Instance(_)) {
+            let copied = Self::deep_copy_value(value);
+            self.apply_freeze_to_value(&copied, true)?;
+            Ok(copied)
+        } else {
+            Ok(value)
+        }
     }
 
     /// `Op::LoadSelfClass` の実体（#27）: メソッド本体の `Self` の値。
