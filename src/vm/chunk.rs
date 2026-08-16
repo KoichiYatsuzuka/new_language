@@ -129,4 +129,14 @@ pub struct Chunk {
     pub tuple_decls: Vec<TupleDecl>,
     /// キーワード/可変長引数つき呼び出し（#27-c）。`Op::CallKw(idx)` が参照する。
     pub kw_calls: Vec<KwCall>,
+    /// クロージャの**不変キャプチャ**の束縛先（#27-d）。`(変数名, slot)`。
+    ///
+    /// 呼び出し側（`exec_fn_evaled`）がパラメータを束縛したあと、`fn_val.captured_env` から
+    /// 同名の値を読んでこの slot へ書き込む。**名前で引く**ので `captured_env`（HashMap）の
+    /// 反復順に依存しない。
+    ///
+    /// ⚠ **可変キャプチャ（`CapturedVar::Mutable`）はここに載せられない**。
+    /// ツリーウォークは外側と `Rc<RefCell<Value>>` を共有するので、値を slot へコピーすると
+    /// 書き戻りが消える。可変キャプチャを含むクロージャは `vm_eligible` が偽になる。
+    pub captured_slots: Vec<(String, u16)>,
 }

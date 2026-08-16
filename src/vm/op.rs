@@ -69,6 +69,18 @@ pub enum Op {
     /// ツリーウォークと同じ dispatcher（`call_instance_method_evaled` / `vm_method_call_other`）へ渡す。
     /// ⚠ `kw_calls[i].span_idx` は**使わない**（メソッドは call_span=None でツリーウォークに揃える）。
     CallMethodKw(u32),
+    /// `static mut x = e` の初期化ガード（#27-d）。フィールド (span_idx, 初期化子の直後の ip)。
+    ///
+    /// `static` の記憶域は**フレームではなく `Interpreter::static_cells`**（宣言位置＝span をキーに
+    /// した `Rc<RefCell<Value>>`）。`exec_static_var` と同じく、**セルが既にあれば初期化子を
+    /// 評価しない**ので、あるときは初期化子を飛び越えてジャンプする。
+    StaticInit(u32, u32),
+    /// `static` セルを**新規作成**して pop した値を入れる（`StaticInit` が素通りしたときだけ到達）。
+    StaticStore(u32),
+    /// `static` 変数の読み出し（セルの中身を clone して push）。フィールドは span_idx。
+    LoadStatic(u32),
+    /// `static` 変数への書き込み（pop してセルへ）。フィールドは span_idx。
+    StoreStatic(u32),
     /// スタックトップを1つ捨てる。
     Pop,
     /// 二項演算: pop b, pop a, push apply_binop_dyn(op, a, b)。

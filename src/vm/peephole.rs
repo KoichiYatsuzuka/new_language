@@ -49,6 +49,8 @@ fn code_target_mut(op: &mut Op) -> Option<&mut u32> {
         | Op::JumpIfFalseOrPop(t)
         | Op::JumpIfTrueOrPop(t)
         | Op::SetupTry(t)
+        // `static mut` の初期化ガード（#27-d）。`after` は**飛び先**なので再マップが要る。
+        | Op::StaticInit(_, t)
         | Op::ForIter(_, _, t) => Some(t),
         _ => None,
     }

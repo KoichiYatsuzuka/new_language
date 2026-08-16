@@ -3020,6 +3020,105 @@ VM 側は、ループ本体のコンパイル中だけ `slots[name]` を temp sl
 
 ---
 
+## #27-d 段階 1・2a（2026-08-16）— `force_gate` 4→2・**残りは「可変キャプチャ」1 種だけ**
+
+### 実測が段階分けを決めた
+
+着手前に 4 例題のキャプチャ内訳を取ったところ、**半分は可変キャプチャを持っていなかった**:
+
+| 例題 | `closure_capture` の内訳 | 必要なもの |
+|---|---|---|
+| spider_solitaire | immutable-only 15 / none 7 | **セル不要** |
+| langtons_ant_profile | immutable-only 2 | **セル不要** |
+| functions | has-mutable 5 / immutable-only 1 | セル |
+| variable | has-mutable 2 | セル |
+
+⇒ 「クロージャ＝フレーム表現の変更が必須」と一括りにせず、**不変キャプチャだけ先に載せる**ことで
+フレーム表現を変えずに 2 例題を消せる、と分かった。計画書は #27-d を丸ごと architectural と
+書いていたが、**architectural なのは可変キャプチャの部分だけ**だった。
+
+### 段階 1: 不変キャプチャを slot へ束縛
+
+- `compile_fn` に `captures: &[String]` を追加し、**全ての宣言を採番したあと末尾に**キャプチャ slot を採る。
+  末尾なのは `Resolution::Local`（パラメータ→本体直下の宣言の並びで焼かれている）を動かさないため。
+- `Chunk.captured_slots: Vec<(String, u16)>` を持ち、呼び出し側（`try_fast_bind` と一般バインドの
+  両方）が `fn_val.captured_env` から**名前で引いて**書き込む（`captured_env` は `HashMap` なので
+  反復順に依存させない）。
+- `vm_eligible` を `captured_env.is_empty()` から **「全て `CapturedVar::Immutable`」** へ緩和。
+
+⚠ **値は `clone` するだけでよい**。`CapturedVar::Immutable` は `capture_env` が
+**クロージャ生成時に deep_copy 済み**のスナップショットで、呼び出しごとにコピーし直すのは
+ツリーウォークの意味論と違う。
+
+⚠ **キャプチャ名が既存 slot とぶつかったら bail する**（`capture-slot-conflict`）。
+`capture_env` は「パラメータでも本体の宣言でもない自由変数」だけを捕まえるので本来ぶつからない。
+ぶつかる＝`collect_declared_names`（キャプチャ側）と `slots`（コンパイラ側）の木の歩き方がずれた
+ということなので、**黙って上書きすると閉包変数が消える**（#27 で計画書が警告していた形）。
+
+結果: `force_gate` 4→3（langtons_ant_profile が解消）・`vm_ineligible` 20→13。
+
+### 段階 2a: `static mut` は**フレームを変えずに**載る
+
+`static` の記憶域は最初から**フレームではなく `Interpreter::static_cells`**
+（宣言位置 (file,line,col) をキーにした `Rc<RefCell<Value>>`）だった。
+⇒ span をキーに直接読み書きすれば、セル表を作らずに VM 化できる。
+
+```
+StaticInit(span, after) ─ セルが既にあれば after へジャンプ（初期化子を評価しない）
+<初期化子>
+StaticStore(span)       ─ セルを新規作成して値を入れる
+after:
+```
+読み書きは `LoadStatic(span)` / `StoreStatic(span)`。`exec_static_var` の
+「セルが無いときだけ初期化子を評価する」分岐がそのままジャンプになる。
+
+⚠ `static` 名は **slot を持たない**。`slots` を引く経路（`slot_of`・`as_local`・`store_target`・
+`Expr::Ident`）すべてで**先に `statics` を見る**こと。`slot_of` に落ちる経路（for ターゲット・
+`let a,b = t`・`except as`・入れ子 `fn` の格納先）は共有セルを扱えないので `static-as-slot` で bail する。
+
+⚠⚠ **`StaticInit` の `after` は「コード索引」なので `peephole::code_target_mut` に足すこと**。
+最初これを忘れており、**テストも例題も通ってしまっていた**（たまたま該当関数に除去対象の
+`Jump` が無かっただけ）。計画書の「コード索引を持つ op は飛び先だけではない」（#2a）が
+そのまま当てはまる箇所で、**op を足すときの定型チェック項目**として扱うべきだった。
+
+⚠ リゾルバは `static` を含む関数の解決を諦める（`collect_base_decls` が未対応の宣言文で false）ので
+本体は全て `Unresolved`。それでも `Resolution::Local` より**前に** `statics` を見る順序にしてある。
+
+結果: `force_gate` 3→2（spider_solitaire が解消）・`in_fn` 70→**50**。
+
+### 残り: 可変キャプチャ 1 種だけ（設計は確定済み）
+
+`vm_bail_fn` は 4 件すべて `nested-fn-mutable-capture`、`vm_ineligible` は 13 件すべて
+`closure-mutable-capture`。**外側フレームとクロージャが `Rc<RefCell<Value>>` を共有する**という
+1 点に収束した。残る 2 例題:
+
+```
+fn make_counter() -> function[]->int:      fn make_id_generator() -> function[]->int:
+    mut count = 0                              static mut next_id = 0
+    fn inc() -> int:                           fn next() -> int:
+        count += 1                                 next_id += 1
+        return count                               return next_id
+    return inc                                 return next
+```
+
+必要なのは 2 つ:
+1. **クロージャ側**（両方が必要）: `captured_env` の `Mutable(cell)` を呼び出しごとに
+   フレームのセル表へ束縛し、本体の読み書きを `LoadCell`/`StoreCell` にする。
+   ⇒ `Chunk.n_cells` ＋ `captured_cells: Vec<(String,u16)>`、`run`/`exec_op` に
+   `cells: &mut Vec<Rc<RefCell<Value>>>` を通す。
+2. **外側フレーム側**（`make_counter` だけが必要）: 「入れ子 `fn` に可変キャプチャされる
+   ローカル」をコンパイル前に洗い出し、slot ではなくセルに置く。`MakeFn` がそのセルを
+   `CapturedVar::Mutable` として渡す。
+   ※ `make_id_generator` は外側のセルが `static_cells` にあるので、`MakeFn` が
+   **static セルを Mutable キャプチャとして渡す**だけで済む（外側フレームの変更は不要）。
+
+⚠ **`freeze` との相互作用に注意**。`make_var_immutable` は「`Cell` 変数（キャプチャ済み）は
+freeze できない」規則を持つ。コンパイル時に「セルに置く」と決めた変数は、ツリーウォークでは
+まだ `Var::Mutable` の可能性がある（キャプチャは `fn` 定義の実行時に起きる）ので、
+**セル化する名前に `freeze` があれば bail する**こと。
+
+---
+
 ## 実装メモ（プラン記述からの差分・追記）
 - **例外は「静的例外テーブル」ではなく実行時ハンドラスタック**: `run` が `Vec<Handler{handler_ip, stack_len}>` を持ち、
   ディスパッチループが `Err` を捕捉してオペランドを巻き戻し landing pad へ跳ぶ。§5.2 の SETUP_TRY/POP_TRY 通りだが
@@ -3057,5 +3156,6 @@ VM 側は、ループ本体のコンパイル中だけ `slots[name]` を temp sl
 | #27 `for-target-shadow` | 「flat-slot で表現できないだけ」 | **ツリーウォークが間違っていた**（Python 実装 6100 に対し Rust 400100）。bail は表現力ではなくバグの目印だった |
 | #27-c `try/except/finally` | 「finally とハンドラの相互作用が複雑」＝新実装が要る | **既存の 2 つを入れ子にするだけ**で全経路が揃った（実質 +10 行） |
 | #27-c `let x = <ident>` | 「グローバルソースは非対応なだけ」 | **`Resolution::Global` が非識別子式の枝へ落ちていた**＝可変グローバルのコピー漏れ（潜在バグ） |
+| #27-d（2026-08-16） | 「クロージャ＝フレーム表現の変更が必須」 | **半分は可変キャプチャを持たない**。不変キャプチャと `static` はフレームを変えずに載り、4→2 まで減った |
 
 **教訓**: 着手前に診断フックで数字を取る。IR / バイトコードを実際にダンプして見る。

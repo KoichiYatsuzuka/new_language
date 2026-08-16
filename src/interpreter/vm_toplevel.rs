@@ -9,6 +9,7 @@
 // （`partial_call_overhead.ar` で実測・`--vm=off` でも同じ幅で出るので VM 経路とは無関係だった）。
 // #1-x の「`#[inline]` は効いているとは限らない」と同じ現象を逆向きに踏んだもの。
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::interpreter::{ExecResult, Interpreter, Value, Var};
@@ -205,6 +206,25 @@ impl Interpreter {
             // 変数として存在しない名前は非識別子式と同じ扱いに落ちる。
             None => self.let_freeze_instance(value),
         }
+    }
+
+    /// `static mut` の共有セルを引く（#27-d）。キーは**宣言位置**で `exec_static_var` と同一。
+    ///
+    /// `static` の記憶域はフレームではなく `Interpreter::static_cells` なので、VM は
+    /// フレーム表現を変えずに読み書きできる（`Op::LoadStatic`/`StoreStatic`）。
+    pub(crate) fn vm_static_cell(&self, span: &crate::token::Span) -> Option<Rc<RefCell<Value>>> {
+        self.static_cells
+            .get(&(span.file.to_string(), span.line, span.col))
+            .cloned()
+    }
+
+    /// `static mut` のセルを新規作成して登録する（初回実行時だけ・#27-d）。
+    /// `exec_static_var` の「セルが無ければ初期化子を評価して作る」分岐と同じ登録を行う。
+    pub(crate) fn vm_static_create(&mut self, span: &crate::token::Span, value: Value) {
+        self.static_cells.insert(
+            (span.file.to_string(), span.line, span.col),
+            Rc::new(RefCell::new(value)),
+        );
     }
 
     /// グローバル（`scopes[0]`）の変数の可変性。存在しなければ `None`（`Op::StoreLocalFromIdent` 用）。

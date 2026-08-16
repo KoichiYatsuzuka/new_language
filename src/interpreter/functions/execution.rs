@@ -67,10 +67,15 @@ impl Interpreter {
         match self.vm_chunks.get(&key) {
             Some((weak, cached)) if weak.upgrade().is_some() => cached.clone(),
             _ => {
+                // 不変キャプチャの名前を渡す（#27-d）。コンパイラが末尾に slot を採番し、
+                // 呼び出し側が `chunk.captured_slots` を見て値を書き込む。
+                // 可変キャプチャを含む場合は `vm_eligible` が偽なのでここへ来ない。
+                let captures: Vec<String> = fn_val.captured_env.keys().cloned().collect();
                 let compiled = crate::vm::compile_fn(
                     &fn_val.params,
                     &fn_val.body,
                     self.annotations.clone(),
+                    &captures,
                 )
                 .map(Rc::new);
                 if crate::interpreter::tw_stats::enabled() {
@@ -97,6 +102,7 @@ impl Interpreter {
                     &gen_fn.params,
                     &gen_fn.body,
                     self.annotations.clone(),
+                    &[], // ジェネレータのクロージャ化は未対応（従来どおり）
                 )
                 .map(Rc::new);
                 if crate::interpreter::tw_stats::enabled() {
@@ -282,7 +288,33 @@ impl Interpreter {
             }
             slot += 1;
         }
+        Self::bind_captures(fn_val, chunk, &mut buf, base);
         Ok(Some((buf, base)))
+    }
+
+    /// クロージャの不変キャプチャをフレームの slot へ書き込む（#27-d）。
+    ///
+    /// ツリーウォークが `captured_env` を base スコープへ注入するのと同じ位置づけ。
+    /// **名前で引く**ので `captured_env`（HashMap）の反復順に依存しない。
+    /// キャプチャの無い関数では `captured_slots` が空なのでループごと消える。
+    ///
+    /// ⚠ 値は `clone` するだけでよい。`CapturedVar::Immutable` は
+    /// `capture_env` が**生成時に deep_copy 済み**（クロージャ定義時のスナップショット）で、
+    /// 呼び出しごとにコピーし直すのはツリーウォークの意味論と違う。
+    fn bind_captures(
+        fn_val: &Rc<FnValue>,
+        chunk: &crate::vm::Chunk,
+        buf: &mut [Value],
+        base: usize,
+    ) {
+        for (name, slot) in &chunk.captured_slots {
+            if let Some(CapturedVar::Immutable(v)) = fn_val.captured_env.get(name) {
+                let idx = base + *slot as usize;
+                if idx < buf.len() {
+                    buf[idx] = v.clone();
+                }
+            }
+        }
     }
 
     /// 評価済み引数リストを用いて関数を実行する。
@@ -313,9 +345,15 @@ impl Interpreter {
         // 対象: フリー関数（self なし）＋ インスタンスメソッド（self=Instance）。非 Python・クロージャなし。
         // #1 完了により **デバッグ中でも VM を使う**（`vm/run.rs` の `run_stepping` が
         // 文境界で停止判定する）。以前はここでデバッグ中の VM を丸ごと無効化していた。
+        // クロージャは**不変キャプチャだけ**なら VM に載る（#27-d）。捕捉値は呼び出しごとに
+        // `chunk.captured_slots` の slot へ書き込む。可変キャプチャは外側と
+        // `Rc<RefCell<Value>>` を共有するので slot（`Value` 直値）では表現できない。
         let vm_eligible = self.vm_mode != crate::vm::VmMode::Off
             && !fn_val.is_python
-            && fn_val.captured_env.is_empty()
+            && fn_val
+                .captured_env
+                .values()
+                .all(|c| matches!(c, CapturedVar::Immutable(_)))
             && matches!(self_val, None | Some(Value::Instance(_)));
         // 診断フック（#27）: **なぜ VM に載せなかったか**を計上する。
         // `vm_eligible` が偽だと `compile_fn` を呼ばないので bail 統計に現れず、
@@ -324,7 +362,8 @@ impl Interpreter {
             let why = if fn_val.is_python {
                 "python"
             } else if !fn_val.captured_env.is_empty() {
-                "closure-capture"
+                // #27-d 以降は**可変キャプチャだけ**が残る（不変は slot へ載る）。
+                "closure-mutable-capture"
             } else {
                 "self-kind"
             };
@@ -455,6 +494,7 @@ impl Interpreter {
                     buf[base + i] = val.clone();
                 }
             }
+            Self::bind_captures(&fn_val, chunk, &mut buf, base); // #27-d
             return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span);
         }
 

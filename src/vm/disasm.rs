@@ -43,6 +43,10 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
             ),
             None => format!("CALL_BUILTIN_KW <bad idx {i}>"),
         },
+        Op::StaticInit(s, after) => format!("STATIC_INIT {:?} after={after}", chunk.spans.get(*s as usize)),
+        Op::StaticStore(s) => format!("STATIC_STORE {:?}", chunk.spans.get(*s as usize)),
+        Op::LoadStatic(s) => format!("LOAD_STATIC {:?}", chunk.spans.get(*s as usize)),
+        Op::StoreStatic(s) => format!("STORE_STATIC {:?}", chunk.spans.get(*s as usize)),
         Op::CallMethodKw(i) => match chunk.kw_calls.get(*i as usize) {
             Some(kw) => format!(
                 "CALL_METHOD_KW {:?} argc={} names={:?}",

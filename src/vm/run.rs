@@ -925,6 +925,36 @@ fn exec_op(
             // #27: 入れ子 `fn` 定義。本体は `#[inline(never)]`（`exec_op` を太らせない）。
             make_fn(interp, chunk, buf, base, *idx);
         }
+        // ── `static mut`（#27-d）。記憶域は `Interpreter::static_cells`（span キー） ──
+        // `exec_static_var` と同じく、**セルが既にあれば初期化子を評価しない**。
+        Op::StaticInit(span_idx, after_init) => {
+            if interp.vm_static_cell(&chunk.spans[*span_idx as usize]).is_some() {
+                return Ok(Flow::Jump(*after_init as usize));
+            }
+        }
+        Op::StaticStore(span_idx) => {
+            let v = buf.pop().unwrap();
+            interp.vm_static_create(&chunk.spans[*span_idx as usize], v);
+        }
+        Op::LoadStatic(span_idx) => {
+            let span = &chunk.spans[*span_idx as usize];
+            match interp.vm_static_cell(span) {
+                Some(cell) => {
+                    let v = cell.borrow().clone();
+                    buf.push(v);
+                }
+                // `StaticInit` を必ず先に通るので理論上起きない。
+                None => return Err("NameError: static variable is not initialized".to_string()),
+            }
+        }
+        Op::StoreStatic(span_idx) => {
+            let v = buf.pop().unwrap();
+            let span = &chunk.spans[*span_idx as usize];
+            match interp.vm_static_cell(span) {
+                Some(cell) => *cell.borrow_mut() = v,
+                None => return Err("NameError: static variable is not initialized".to_string()),
+            }
+        }
         Op::UnpackTuple(src, n) => {
             // #27-c: `for k, v in ...`。本体は `#[inline(never)]`（`exec_op` を太らせない）。
             unpack_tuple(buf, base, *src, *n)?;
