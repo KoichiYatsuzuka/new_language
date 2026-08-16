@@ -175,6 +175,19 @@ pub(crate) fn record_capture(kind: &'static str) {
     bump("closure_capture", kind);
 }
 
+/// **ツリーウォークの制御フロー**（TLS / センチネルを使う経路）に入ったことを計上する（#3）。
+///
+/// #3（強制バイトコード）は「TLS とセンチネルの実削除」を掲げているが、削除できるのは
+/// **通常実行で 1 度も通らない**ものだけ。ここで実測してから消す。
+pub(crate) fn record_tls(site: &'static str) {
+    // ⚠ ここは**ホットパス**（ツリーウォークのループ入口）なので `enabled()` を先に見る。
+    // `enabled()` は `cfg!` で定数 false に畳まれるため既定ビルドではコードごと消える（#10-a）。
+    if !enabled() {
+        return;
+    }
+    bump("tw_control_flow", site);
+}
+
 /// VM チャンクのコンパイル成否を計上する。
 pub(crate) fn record_compile(kind: &'static str, ok: bool) {
     if ok {
@@ -193,7 +206,7 @@ pub(crate) fn dump() {
         .map(|((c, k), &v)| (*c, k.as_str(), v))
         .collect();
     rows.sort_by(|a, b| a.0.cmp(b.0).then(b.2.cmp(&a.2)));
-    for cat in ["toplevel", "module_body", "in_fn", "vm_compile", "vm_ineligible", "closure_capture", "vm_bail_fn", "vm_bail_toplevel"] {
+    for cat in ["toplevel", "module_body", "in_fn", "vm_compile", "vm_ineligible", "closure_capture", "vm_bail_fn", "vm_bail_toplevel", "tw_control_flow"] {
         let sub: Vec<_> = rows.iter().filter(|r| r.0 == cat).collect();
         if sub.is_empty() {
             continue;

@@ -11,6 +11,7 @@ use {
 impl Interpreter {
     /// block: 式 / Expr::Block の実体。BLOCK_YIELDS コンテキストを退避・復元しながら実行する。
     pub(crate) fn eval_block_expr(&mut self, stmts: &[crate::ast::Stmt]) -> Result<Value, String> {
+        crate::interpreter::tw_stats::record_tls("block-expr");
         let saved = BLOCK_YIELDS.with(|y| y.borrow_mut().take());
         BLOCK_YIELDS.with(|y| *y.borrow_mut() = Some(Vec::new()));
 
@@ -177,6 +178,7 @@ impl Interpreter {
             _ => return Err("TypeError: object is not iterable".to_string()),
         };
 
+        crate::interpreter::tw_stats::record_tls("loop-expr");
         let saved = BLOCK_YIELDS.with(|y| y.borrow_mut().take());
         BLOCK_YIELDS.with(|y| *y.borrow_mut() = Some(Vec::new()));
         LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
@@ -256,6 +258,7 @@ impl Interpreter {
         cond_expr: &crate::ast::Expr,
         body: &[crate::ast::Stmt],
     ) -> Result<Value, String> {
+        crate::interpreter::tw_stats::record_tls("loop-expr");
         let saved = BLOCK_YIELDS.with(|y| y.borrow_mut().take());
         BLOCK_YIELDS.with(|y| *y.borrow_mut() = Some(Vec::new()));
         LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);

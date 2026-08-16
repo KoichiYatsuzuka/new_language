@@ -310,7 +310,7 @@ fn run_task(
         return finish_task(&mut interp, result);
     }
     // #25 と同じ規約: `--vm=force` はフォールバック禁止。ゲートの穴を塞ぐ（#32）。
-    if vm_mode == crate::vm::VmMode::Force {
+    if vm_mode != crate::vm::VmMode::Off {
         return ThreadResult {
             value: None,
             error: Some("VmForceError: cannot compile async task body to bytecode".to_string()),

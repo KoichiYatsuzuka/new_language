@@ -79,6 +79,7 @@ impl Interpreter {
 
     /// `while cond: body` 文を実行する。条件が偽になるか `break` が発生するまでボディを繰り返す。
     pub(crate) fn exec_while_stmt(&mut self, cond: &Expr, body: &[Stmt]) -> Result<ExecResult, String> {
+        crate::interpreter::tw_stats::record_tls("while-stmt");
         LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
         let result = (|| {
             loop {
@@ -151,6 +152,7 @@ impl Interpreter {
     ) -> Result<ExecResult, String> {
         let iter_val = self.eval(iter)?;
         let generator = self.make_for_iterator(iter_val)?;
+        crate::interpreter::tw_stats::record_tls("for-stmt");
         LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
         let result =
             (|| {

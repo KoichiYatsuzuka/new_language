@@ -381,7 +381,7 @@ impl Interpreter {
         // #25: `--vm=force` はフォールバック禁止。関数本体が載らなければ止める。
         // ⚠ `vm_eligible` が偽（クロージャ等）も**失敗として扱う**。そこを見逃すと
         //    「bail 0 なのにツリーウォークが残る」というゲートの穴になる（#27 の `vm_ineligible` 20 件）。
-        if self.vm_mode == crate::vm::VmMode::Force && chunk_opt.is_none() {
+        if self.vm_mode != crate::vm::VmMode::Off && chunk_opt.is_none() {
             return Err(format!(
                 "VmForceError: cannot compile function '{}' to bytecode",
                 fn_val.name
@@ -691,8 +691,8 @@ impl Interpreter {
                 return self.run_vm_generator(&chunk, bindings, &self_val);
             }
         }
-        // #25: `--vm=force` はフォールバック禁止（ジェネレータ本体）。
-        if self.vm_mode == crate::vm::VmMode::Force {
+        // #3: フォールバックは撤去済み（ジェネレータ本体）。`Off` 以外は必ず VM で走る。
+        if self.vm_mode != crate::vm::VmMode::Off {
             return Err(format!(
                 "VmForceError: cannot compile generator '{}' to bytecode",
                 gen_fn.name

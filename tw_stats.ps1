@@ -30,7 +30,7 @@ if (-not (Test-Path $exe)) { throw "not built: $exe" }
 $files = Get-ChildItem -Path (Join-Path $PSScriptRoot 'examples') -Filter *.ar -Recurse |
          Where-Object { $_.FullName -notmatch '\\archived\\' }
 
-$toplevel = @{}; $modbody = @{}; $infn = @{}; $vmc = @{}; $inelig = @{}; $cap = @{}; $bailFn = @{}; $bailTop = @{}
+$toplevel = @{}; $modbody = @{}; $infn = @{}; $vmc = @{}; $inelig = @{}; $cap = @{}; $bailFn = @{}; $bailTop = @{}; $twcf = @{}
 $ran = 0; $failed = 0
 
 foreach ($f in $files) {
@@ -65,6 +65,7 @@ foreach ($f in $files) {
                 'closure_capture' { $cap }
                 'vm_bail_fn'       { $bailFn }
                 'vm_bail_toplevel' { $bailTop }
+                'tw_control_flow'  { $twcf }
                 default            { $null }
             }
             if ($null -eq $tbl) { continue }
@@ -98,3 +99,6 @@ Show-Table 'vm_ineligible (rejected before compiling)' $inelig
 Show-Table 'closure_capture (capture kinds at closure creation)' $cap
 Show-Table 'vm_bail_fn (why a FUNCTION body failed to compile)' $bailFn
 Show-Table 'vm_bail_toplevel (why a TOP-LEVEL loop failed to compile)' $bailTop
+# #3: ツリーウォークの制御フロー（TLS/センチネルを使う経路）に入った回数。
+# 通常実行（--vm=on）では 0 のはず。0 でなければ「まだ VM に載っていない経路がある」。
+Show-Table 'tw_control_flow (tree-walk control flow entered = TLS/sentinel used)' $twcf

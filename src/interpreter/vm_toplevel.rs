@@ -73,7 +73,7 @@ impl Interpreter {
         };
         let Some(chunk) = chunk else {
             // #25: `--vm=force` はフォールバック禁止。落ちた箇所を位置つきで報告して止める。
-            if self.vm_mode == crate::vm::VmMode::Force {
+            if self.vm_mode != crate::vm::VmMode::Off {
                 return Err(Self::vm_force_error("top-level statement", stmt));
             }
             return Ok(None);

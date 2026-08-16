@@ -310,13 +310,13 @@ fn run_program(
     mut cli_args: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
     // `--vm` フラグを取り出す（スクリプトの `args` には渡さない）。
+    // #3: デュアルモードを畳んだので実質 2 値。`auto`/`force` は既存スクリプト互換の別名。
     let vm_mode = match cli_args.remove("__vm__").as_deref() {
         Some("off") => vm::VmMode::Off,
-        Some("force") => vm::VmMode::Force,
-        Some("auto") | None => vm::VmMode::Auto,
+        Some("on") | Some("auto") | Some("force") | None => vm::VmMode::On,
         Some(other) => {
-            eprintln!("Warning: unknown --vm mode '{other}', using 'auto'");
-            vm::VmMode::Auto
+            eprintln!("Warning: unknown --vm mode '{other}', using 'on'");
+            vm::VmMode::On
         }
     };
     // --- 字句解析: ソースをトークン列（Vec<Spanned>）に変換する ---
