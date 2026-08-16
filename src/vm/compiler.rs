@@ -647,6 +647,125 @@ fn compile_fn_inner(
     Some(chunk)
 }
 
+/// `mng <- async->T: body` の**本体**を Chunk へコンパイルする（#32）。
+///
+/// 本体は「値を返すブロック式」（`block_return v` が結果）なので、`compile_fn` ではなく
+/// `compile_block_expr` の上に `Return` を載せた形にする。
+///
+/// `captures` は submit 時に deep-clone された環境の変数名（D5 share-nothing）。
+/// #27-d 段階 1 と同じく**末尾に slot を採番**し、実行側が `chunk.captured_slots` を見て
+/// 値を書き込む（名前で引くので `env` の並びに依存しない）。
+///
+/// ⚠ **worker スレッドは型注釈を持てない**（`AstAnnotations` は `Rc` ベースで `Send` でない）。
+/// 呼び出し側は空の注釈を渡すので**型特化 op は乗らない**が、
+/// 注釈は最適化ヒントであって意味論の根拠ではない（#15e の原則）ので結果は変わらない。
+///
+/// ⚠ **worker のスコープは `[globals, env]` の 2 段**。ここで slot に載らない自由名は
+/// `LoadName`（`get_val`）に落ちる必要があるので、`toplevel_globals` に env の名前を入れて
+/// 最上位モード扱いにする（`frame_floor` は 0 のままで、覗かれて困る呼び出し元も居ない）。
+pub fn compile_async_body(
+    body: &[Stmt],
+    annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
+    captures: &[String],
+) -> Option<Chunk> {
+    let mut slots: HashMap<String, u16> = HashMap::new();
+    let mut slot_mut: Vec<bool> = Vec::new();
+    let mut slot_type: Vec<Option<String>> = Vec::new();
+    let mut n: u16 = 0;
+    // 本体の宣言（入れ子ブロックを含む）を先に採番する。
+    if collect_nested_decls(body, &mut slots, &mut slot_mut, &mut slot_type, &mut n).is_none() {
+        bail("nested-decls", None);
+        return None;
+    }
+    // 捕捉環境は末尾（#27-d 段階 1 と同じ理由・同じ表）。
+    let mut captured_slots: Vec<(String, u16)> = Vec::with_capacity(captures.len());
+    let mut capture_names: Vec<&String> = captures.iter().collect();
+    capture_names.sort();
+    for name in capture_names {
+        // ⚠ **本体が同名を宣言していたら諦める**（#27-d 段階 1 と同じ判断）。
+        // ツリーウォークでは捕捉値が push されたスコープに居るので**宣言より前は捕捉値が見える**。
+        // slot を宣言側に取られると、その読みが未初期化 slot になって黙って値が変わる。
+        if slots.contains_key(name) {
+            bail("capture-slot-conflict", None);
+            return None;
+        }
+        slots.insert(name.clone(), n);
+        slot_mut.push(false);
+        slot_type.push(None);
+        captured_slots.push((name.clone(), n));
+        n = n.checked_add(1)?;
+    }
+
+    let mut local_names = vec![String::new(); n as usize];
+    for (name, &slot) in &slots {
+        if let Some(entry) = local_names.get_mut(slot as usize) {
+            *entry = name.clone();
+        }
+    }
+    let shadowed_for_targets = for_target_shadows(&[], body);
+
+    let mut c = Compiler {
+        code: Vec::new(),
+        consts: Vec::new(),
+        names: Vec::new(),
+        attr_caches: Vec::new(),
+        spans: Vec::new(),
+        stmt_spans: Vec::new(),
+        pending_stmt: None,
+        annotations,
+        slots,
+        slot_mut,
+        slot_type,
+        self_slot: None,
+        loops: Vec::new(),
+        block_ctxs: Vec::new(),
+        debug_mode: false,
+        named_locals: n,
+        temps_in_use: 0,
+        n_locals: n as usize,
+        async_blocks: Vec::new(),
+        global_caches: Vec::new(),
+        ffi_call_info: HashMap::new(),
+        fn_defs: Vec::new(),
+        type_arg_lists: Vec::new(),
+        tuple_decls: Vec::new(),
+        kw_calls: Vec::new(),
+        // 空でないと `Op::LoadName` の分岐（最上位扱い）に入らない。名前の中身は
+        // 書き込み判定にしか使わないので、捕捉名を入れておけば足りる。
+        toplevel_globals: captures.iter().cloned().collect(),
+        shadowed_for_targets,
+        statics: HashMap::new(),
+    };
+
+    c.compile_block_expr(body)?;
+    c.emit(Op::Return);
+    super::peephole::optimize(&mut c.code, &mut c.stmt_spans);
+
+    let chunk = Chunk {
+        code: c.code,
+        consts: c.consts,
+        names: c.names,
+        attr_caches: c.attr_caches,
+        spans: c.spans,
+        stmt_spans: c.stmt_spans,
+        local_names,
+        n_locals: c.n_locals,
+        n_params: 0,
+        async_blocks: c.async_blocks,
+        global_caches: c.global_caches,
+        ffi_call_info: c.ffi_call_info,
+        fn_defs: c.fn_defs,
+        type_arg_lists: c.type_arg_lists,
+        tuple_decls: c.tuple_decls,
+        kw_calls: c.kw_calls,
+        captured_slots,
+    };
+    if std::env::var("AR_VM_DUMP").is_ok_and(|v| !v.is_empty()) {
+        eprintln!("{}", super::disasm::disassemble(&chunk, "<async>"));
+    }
+    Some(chunk)
+}
+
 /// デバッガ REPL の 1 文をデバッグモード（名前引きアクセス）でコンパイルする。
 /// 対応: 式文（値を `Return`）・`let/const dbg::name = 式`（`DeclareName`）。
 /// メソッド呼び出し・添字・制御フロー等は `None`（呼び出し側がツリーウォークへフォールバック）。

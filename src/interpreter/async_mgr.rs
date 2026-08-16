@@ -56,6 +56,8 @@ unsafe impl Send for SendableBody {}
 struct AsyncTask {
     body: Vec<Stmt>,
     env: Vec<(String, Value, bool)>,
+    /// submit 時点の親スレッドの `--vm` モード（#32）。worker はこれを引き継ぐ。
+    vm_mode: crate::vm::VmMode,
 }
 
 /// スレッドから親スレッドへ返す実行結果（値またはエラー文字列）。
@@ -131,7 +133,12 @@ impl AsyncManagerData {
     }
 
     /// 新しいタスクを登録し、スレッドスロットが空いていれば即座に実行を開始する。
-    pub fn add_task(&mut self, body: Vec<Stmt>, env: Vec<(String, Value, bool)>) {
+    pub fn add_task(
+        &mut self,
+        body: Vec<Stmt>,
+        env: Vec<(String, Value, bool)>,
+        vm_mode: crate::vm::VmMode,
+    ) {
         if env.iter().any(|(_, v, _)| matches!(v, Value::PyObject(_))) {
             eprintln!(
                 "Warning: async task captures Python objects; \
@@ -142,7 +149,7 @@ impl AsyncManagerData {
         self.progress.push(AsyncStatus::Waiting);
         self.results.push(Value::None);
         self.error_list.push(None);
-        self.pending.push_back((task_idx, AsyncTask { body, env }));
+        self.pending.push_back((task_idx, AsyncTask { body, env, vm_mode }));
         self.try_schedule();
     }
 
@@ -158,6 +165,7 @@ impl AsyncManagerData {
 
             let body = SendableBody(task.body);
             let env = SendableEnv(task.env);
+            let vm_mode = task.vm_mode;
 
             let handle = std::thread::spawn(move || {
                 // Rebind whole structs so the closure captures SendableBody/SendableEnv
@@ -165,7 +173,7 @@ impl AsyncManagerData {
                 // precise-field capture would otherwise bypass our unsafe impl Send).
                 let body = body;
                 let env = env;
-                let result = run_task(body.0, env.0, abort);
+                let result = run_task(body.0, env.0, abort, vm_mode);
                 let _ = tx.send(result);
             });
 
@@ -254,6 +262,10 @@ fn run_task(
     body: Vec<Stmt>,
     env: Vec<(String, Value, bool)>,
     abort: Arc<AtomicBool>,
+    // 親スレッドの `--vm` を引き継ぐ（#32）。以前は `Interpreter::new()` が既定の `Auto` に
+    // 戻していたので、**`--vm=off` も `--vm=force` も worker には届いていなかった**
+    // （＝`force_gate` が async 本体を一切検査できていなかった）。
+    vm_mode: crate::vm::VmMode,
 ) -> ThreadResult {
     if abort.load(Ordering::Relaxed) {
         return ThreadResult {
@@ -263,12 +275,64 @@ fn run_task(
     }
 
     let mut interp = Interpreter::new();
+    interp.set_vm_mode(vm_mode);
+
+    // ── VM 経路（#32）──────────────────────────────────────────────────────
+    // タスク本体は「値を返すブロック式」なので `compile_async_body` で Chunk 化する。
+    // これが無いと**本体の文は全部ツリーウォーク**で、本体に直接書いたループが
+    // 同じループを関数へ出した場合の 3.53x 遅さになっていた（実測・#32）。
+    //
+    // ⚠ worker は `Interpreter::new()` なので**型注釈を引き継げない**
+    // （`AstAnnotations` は `Rc` ベースで `Send` でない）。空の注釈でコンパイルするので
+    // 型特化 op は乗らないが、注釈は意味論の根拠ではない（#15e）ので結果は変わらない。
+    let capture_names: Vec<String> = env.iter().map(|(n, _, _)| n.clone()).collect();
+    let chunk = if vm_mode == crate::vm::VmMode::Off {
+        None
+    } else {
+        crate::vm::compile_async_body(&body, interp.annotations.clone(), &capture_names)
+    };
+    if let Some(chunk) = chunk {
+        let mut buf: Vec<Value> = vec![Value::None; chunk.n_locals];
+        for (name, slot) in &chunk.captured_slots {
+            if let Some((_, v, _)) = env.iter().find(|(n, _, _)| n == name) {
+                if let Some(cell) = buf.get_mut(*slot as usize) {
+                    *cell = v.clone();
+                }
+            }
+        }
+        // 捕捉値のうち slot に載らなかったもの（本体が同名を宣言している等）は
+        // 従来どおりスコープにも置く。`Op::LoadName` の落ち先になる。
+        interp.push_scope();
+        for (name, value, is_mutable) in env {
+            interp.declare_var(name, Var::new(value, is_mutable));
+        }
+        let result = crate::vm::run(&mut interp, &chunk, &mut buf, 0);
+        return finish_task(&mut interp, result);
+    }
+    // #25 と同じ規約: `--vm=force` はフォールバック禁止。ゲートの穴を塞ぐ（#32）。
+    if vm_mode == crate::vm::VmMode::Force {
+        return ThreadResult {
+            value: None,
+            error: Some("VmForceError: cannot compile async task body to bytecode".to_string()),
+        };
+    }
+
+    // ── ツリーウォーク経路（従来）────────────────────────────────────────
     interp.push_scope();
     for (name, value, is_mutable) in env {
         interp.declare_var(name, Var::new(value, is_mutable));
     }
 
     let result = interp.eval_block_expr(&body);
+    finish_task(&mut interp, result)
+}
+
+/// タスクの実行結果を `ThreadResult` へ変換する（VM 経路・ツリーウォーク経路で共有・#32）。
+/// `raise` はスレッド内の例外をこのスレッドのインタプリタから取り出して文字列化する。
+fn finish_task(
+    interp: &mut Interpreter,
+    result: Result<Value, String>,
+) -> ThreadResult {
     match result {
         Ok(value) => ThreadResult {
             value: Some(value),

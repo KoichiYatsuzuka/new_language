@@ -1,0 +1,48 @@
+# async_vm_body.ar — async タスク本体そのものが VM で走ることの確認（#32）
+#
+# #32 以前、`mng <- async->T:` の**本体の文**は worker スレッドで 100% ツリーウォークだった。
+# 本体に直接ループを書くと全反復がツリーウォークになり、同じループを関数へ出した場合と
+# 比べて 3.5〜5x 遅かった（実測）。今は本体も `compile_async_body` で Chunk 化される。
+#
+# この例題が守っているもの:
+#   (1) 本体に直接書いた制御フロー（for/while/if）が VM 経路でも同じ結果を出す
+#   (2) 捕捉した変数（deep-clone 済み）が本体の slot から正しく読める
+#   (3) `block_return` がタスクの戻り値になる
+#   (4) 本体からの関数呼び出しも従来どおり動く
+#
+# 検証: .\compare_vm_modes.ps1 -Filter async_vm_body  （off/auto が byte-identical）
+
+let BASE = 100
+let REPS = 2000
+
+fn triple(let n: int) -> int:
+    return n * 3
+
+mut mng = AsyncManager(num_thread=2)
+
+# (1)(2) 本体に直接ループ + 捕捉変数の読み
+mng <- async->int:
+    mut s = 0
+    for i in range(REPS):
+        s += i
+    block_return s + BASE
+
+# (1) 本体に直接 while + if（分岐も本体側で走る）
+mng <- async->int:
+    mut i = 0
+    mut odd = 0
+    while i < REPS:
+        if i % 2 == 1:
+            odd += 1
+        i += 1
+    block_return odd
+
+# (4) 本体からの関数呼び出し（関数側は従来どおり VM 化される）
+mng <- async->int:
+    block_return triple(BASE)
+
+mng.wait_for_finish()
+
+print("results:", mng.results)      # [1999100, 1000, 300]
+print("errors:", mng.error_list)    # [None, None, None]
+print("all_done:", mng.all_done())  # True

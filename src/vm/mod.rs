@@ -13,7 +13,10 @@ pub mod peephole;
 pub mod run;
 
 pub use chunk::Chunk;
-pub use compiler::{compile_debug, compile_fn, compile_toplevel_stmt, is_toplevel_compile_target};
+pub use compiler::{
+    compile_async_body, compile_debug, compile_fn, compile_toplevel_stmt,
+    is_toplevel_compile_target,
+};
 pub use run::run;
 
 /// VM 実行モード（CLI `--vm=off|auto|force`）。
