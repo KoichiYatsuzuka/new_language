@@ -20,11 +20,15 @@ pub struct ChunkFnDef {
     /// 生成した関数値を書き込む slot（リゾルバの base slot と同じ番号）。
     pub slot: u16,
     /// キャプチャする外側ローカル（名前, slot）。**不変な変数だけ**（#27）。
-    ///
-    /// 可変変数のキャプチャはツリーウォークだと `Var::Mutable` → `Var::Cell` へ昇格して
-    /// **外側と同じ `Rc<RefCell<Value>>` を共有**する。VM のフラット slot は `Value` 直値なので
-    /// 共有セルを表現できず、コンパイラが bail する（対応にはフレーム表現の変更が要る）。
+    /// 生成時点の値を複製して `CapturedVar::Immutable` にする。
     pub captures: Vec<(String, u16)>,
+    /// 可変キャプチャ（名前, **外側フレームのセル index**）（#27-d 段階 2b）。
+    /// `CapturedVar::Mutable(cell)` としてセルを**共有**する（ツリーウォークの
+    /// `capture_env` が `Var::Mutable` → `Var::Cell` へ昇格するのと同じ効果）。
+    pub cell_captures: Vec<(String, u16)>,
+    /// `static mut` のキャプチャ（名前, 宣言位置の span index）（#27-d 段階 2b）。
+    /// セルは `Interpreter::static_cells` にあるので、実行時に span をキーに引いて共有する。
+    pub static_captures: Vec<(String, u32)>,
 }
 
 /// `let a, b = t` 1 件ぶんの分解情報（#27-c）。
@@ -129,6 +133,17 @@ pub struct Chunk {
     pub tuple_decls: Vec<TupleDecl>,
     /// キーワード/可変長引数つき呼び出し（#27-c）。`Op::CallKw(idx)` が参照する。
     pub kw_calls: Vec<KwCall>,
+    /// フレームの**セル表**の大きさ（#27-d 段階 2b）。0 なら確保しない（大多数の関数）。
+    ///
+    /// セルは `Rc<RefCell<Value>>` で、slot（`Value` 直値）では表現できない
+    /// 「外側フレームやクロージャとの共有」を担う。`LoadCell`/`StoreCell` の index 空間。
+    pub n_cells: usize,
+    /// **可変キャプチャ**の束縛先（#27-d 段階 2b）。`(変数名, セル index)`。
+    ///
+    /// 呼び出し側が `fn_val.captured_env` の `CapturedVar::Mutable(cell)` を**そのまま**
+    /// この index へ入れる（clone するのは `Rc` だけ＝**外側と同じセルを指す**）。
+    /// ここに載らないセル index は呼び出しごとに新規作成される（自分のローカル用）。
+    pub captured_cells: Vec<(String, u16)>,
     /// クロージャの**不変キャプチャ**の束縛先（#27-d）。`(変数名, slot)`。
     ///
     /// 呼び出し側（`exec_fn_evaled`）がパラメータを束縛したあと、`fn_val.captured_env` から

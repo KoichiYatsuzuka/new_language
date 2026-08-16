@@ -46,6 +46,9 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::StaticInit(s, after) => format!("STATIC_INIT {:?} after={after}", chunk.spans.get(*s as usize)),
         Op::StaticStore(s) => format!("STATIC_STORE {:?}", chunk.spans.get(*s as usize)),
         Op::LoadStatic(s) => format!("LOAD_STATIC {:?}", chunk.spans.get(*s as usize)),
+        Op::LoadCell(i) => format!("LOAD_CELL {i}"),
+        Op::StoreCell(i) => format!("STORE_CELL {i}"),
+        Op::StoreCellDeepCopy(i) => format!("STORE_CELL_DEEPCOPY {i}"),
         Op::StoreStatic(s) => format!("STORE_STATIC {:?}", chunk.spans.get(*s as usize)),
         Op::CallMethodKw(i) => match chunk.kw_calls.get(*i as usize) {
             Some(kw) => format!(

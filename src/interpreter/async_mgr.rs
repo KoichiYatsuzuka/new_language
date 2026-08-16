@@ -306,7 +306,7 @@ fn run_task(
         for (name, value, is_mutable) in env {
             interp.declare_var(name, Var::new(value, is_mutable));
         }
-        let result = crate::vm::run(&mut interp, &chunk, &mut buf, 0);
+        let result = crate::vm::run(&mut interp, &chunk, &mut buf, 0, None);
         return finish_task(&mut interp, result);
     }
     // #25 と同じ規約: `--vm=force` はフォールバック禁止。ゲートの穴を塞ぐ（#32）。

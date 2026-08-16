@@ -81,6 +81,19 @@ pub enum Op {
     LoadStatic(u32),
     /// `static` 変数への書き込み（pop してセルへ）。フィールドは span_idx。
     StoreStatic(u32),
+    /// **セル変数**の読み出し（#27-d 段階 2b）。フィールドはフレームのセル表の index。
+    ///
+    /// セル変数＝`Rc<RefCell<Value>>` を**外側フレームやクロージャと共有する**ローカル。
+    /// slot（`Value` 直値）では共有を表現できないので、slot と並行するセル表に置く。
+    /// 該当するのは 2 つ:
+    /// - クロージャが**可変キャプチャ**している名前（`CapturedVar::Mutable` の相手）
+    /// - 入れ子 `fn` に可変キャプチャされる自分のローカル（生成時に `MakeFn` へ渡す）
+    LoadCell(u16),
+    /// セル変数への書き込み（pop してセルの中身を置き換える）。共有相手からも見える。
+    StoreCell(u16),
+    /// `mut x = e` でセル変数を初期化する（pop → deep_copy → セルへ）。
+    /// ツリーウォークの `Stmt::Mut` が常に `deep_copy_value` するのに合わせる。
+    StoreCellDeepCopy(u16),
     /// スタックトップを1つ捨てる。
     Pop,
     /// 二項演算: pop b, pop a, push apply_binop_dyn(op, a, b)。

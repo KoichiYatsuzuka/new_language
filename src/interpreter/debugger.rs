@@ -326,7 +326,7 @@ impl Interpreter {
         let mut buf = std::mem::take(&mut self.vm_stack);
         let base = buf.len();
         buf.resize(base + chunk.n_locals, Value::None);
-        let result = crate::vm::run(self, chunk, &mut buf, base);
+        let result = crate::vm::run(self, chunk, &mut buf, base, None);
         buf.truncate(base);
         self.vm_stack = buf;
         result

@@ -33,13 +33,18 @@ impl Interpreter {
 
     /// `Op::MakeFn` の実体（#27）: 入れ子 `fn` の関数値を作る。
     ///
-    /// ⚠ **`captured_env` は不変キャプチャのみ**。呼び出し側（VM コンパイラ）が
-    /// 「自由変数 ∩ 外側の slot」を求め、**すべて不変**であることを確かめてからしか emit しない。
-    /// ツリーウォークの `capture_env` は同じ自由変数集合に対し不変なら値を複製するので一致する。
-    /// **この前提を崩すと閉包変数が黙って消える／共有が切れる**。
+    /// キャプチャは 2 種類（ツリーウォークの `capture_env` と同じ区別・#27-d 段階 2b）:
+    /// - `captured`（不変）= **生成時点の値を複製**する。呼び出し側が VM フレームの slot から読む。
+    /// - `cell_captured`（可変）= **`Rc<RefCell<Value>>` を共有**する。外側フレームのセル表
+    ///   （`Op::LoadCell`/`StoreCell` の相手）か `Interpreter::static_cells` から取る。
     ///
-    /// `captured` は (名前, 値) の組（呼び出し側が VM フレームの slot から読む）。
+    /// ⚠ **自由変数の集合が `capture_env` とずれると閉包変数が黙って消える／共有が切れる**。
+    /// VM コンパイラ側の判定は `nested_fn_captures` に 1 本化してある。
     /// `existing` は slot の現在値（オーバーロード合成用。未宣言なら `Value::None`）。
+    // 引数が多いのは「クロージャ生成に要る素材」が単に多いから（名前・シグネチャ・本体・
+    // 不変キャプチャ・可変キャプチャ・オーバーロード合成用の既存値）。struct に束ねると
+    // 呼び出し側（`Op::MakeFn` の `#[inline(never)]` 本体）で組み立てコストが増えるだけ。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn make_nested_fn_value(
         &mut self,
         name: &str,
@@ -47,13 +52,18 @@ impl Interpreter {
         body: &[Stmt],
         return_type: Option<&str>,
         captured: Vec<(String, Value)>,
+        // 可変キャプチャ（#27-d 段階 2b）。**セルを共有**するので値ではなく `Rc` を受け取る。
+        cell_captured: Vec<(String, std::rc::Rc<std::cell::RefCell<Value>>)>,
         existing: Value,
     ) -> Value {
         use crate::interpreter::CapturedVar;
-        let captured_env: HashMap<String, CapturedVar> = captured
+        let mut captured_env: HashMap<String, CapturedVar> = captured
             .into_iter()
             .map(|(n, v)| (n, CapturedVar::Immutable(v)))
             .collect();
+        for (n, cell) in cell_captured {
+            captured_env.insert(n, CapturedVar::Mutable(cell));
+        }
         let fn_val = Rc::new(FnValue {
             name: name.to_string(),
             params: params.to_vec(),

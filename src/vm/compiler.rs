@@ -112,6 +112,60 @@ fn is_vm_builtin(name: &str) -> bool {
 /// bail してツリーウォークへ落とす（＝安全側）。
 const VM_BUILTIN_KW_NAMES: &[&str] = &["enumerate", "open"];
 
+/// 本体の**入れ子 `fn` が自由変数として参照する名前**をすべて集める（#27-d 段階 2b）。
+///
+/// この中で「自分の**可変**ローカル」に当たるものは、ツリーウォークだと `capture_env` が
+/// `Var::Mutable` → `Var::Cell` へ昇格して**外側と `Rc<RefCell<Value>>` を共有**する。
+/// VM でも slot ではなくセルに置かないと、クロージャ内の書き込みが外側へ返らない。
+///
+/// ⚠ **入れ子の入れ子まで拾える**（`collect_referenced_names` が `Stmt::FnDef` の本体へ
+/// 降りるので、内側の `fn` の自由変数も中間の `fn` の参照に含まれる）。
+fn nested_fn_free_names(body: &[Stmt]) -> HashSet<String> {
+    fn walk(stmts: &[Stmt], out: &mut HashSet<String>) {
+        for s in stmts {
+            if let Stmt::FnDef { params, body, .. } = s {
+                let mut own: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                crate::interpreter::collect_declared_names(body, &mut own);
+                let mut referenced: HashSet<String> = HashSet::new();
+                crate::interpreter::collect_referenced_names(body, &mut referenced);
+                out.extend(referenced.into_iter().filter(|n| !own.contains(n)));
+                continue; // 本体へは降りない（その中の `fn` は上の `referenced` に含まれる）
+            }
+            // 制御フローの中に置かれた `fn` も拾う。
+            match s {
+                Stmt::If { branches, else_body } => {
+                    for (_, b) in branches {
+                        walk(b, out);
+                    }
+                    if let Some(eb) = else_body {
+                        walk(eb, out);
+                    }
+                }
+                Stmt::While { body, .. } | Stmt::For { body, .. } => walk(body, out),
+                Stmt::Block(b) => walk(b, out),
+                Stmt::Match { arms, .. } => {
+                    for a in arms {
+                        walk(&a.body, out);
+                    }
+                }
+                Stmt::Try { body, handlers, finally_body } => {
+                    walk(body, out);
+                    for h in handlers {
+                        walk(&h.body, out);
+                    }
+                    if let Some(fb) = finally_body {
+                        walk(fb, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = HashSet::new();
+    walk(body, &mut out);
+    out
+}
+
 /// 引数に**名前付き**（キーワード／可変長）が含まれるか（#27-c）。
 /// `compile_call_args` は同じ判定を戻り値で返すが、それでは遅すぎる場面がある:
 /// メソッド呼び出しは「レシーバを push するか frame 直読み融合にするか」を
@@ -204,6 +258,17 @@ struct Compiler {
     /// ⚠ **`slots` より先に引くこと**（`static` 名に slot は無いので順序で壊れはしないが、
     /// 将来 slot と同名が同居したときに黙って値が消えるのを防ぐ）。
     statics: HashMap<String, crate::token::Span>,
+    /// **セル変数**の名前 → セル表の index（#27-d 段階 2b）。
+    ///
+    /// `Rc<RefCell<Value>>` を外側フレームやクロージャと共有する名前。slot は持たない。
+    /// ⚠ **`slots` より先に引くこと**（`statics` と同じ理由）。
+    cells: HashMap<String, u16>,
+    /// **slot 番号 → セル index**（#27-d 段階 2b）。
+    /// `Resolution::Local(slot)` が付いた読みをセルへ振り替えるために要る
+    /// （セル化してもリゾルバの採番と合わせるため slot 番号は穴として残してある）。
+    cell_by_slot: HashMap<u16, u16>,
+    /// セル表の大きさ（`Chunk.n_cells` になる）。
+    n_cells: usize,
 }
 
 /// 変数への書き込み先（#10-b）。`store_target` が決める。
@@ -214,6 +279,8 @@ enum StoreTarget {
     Global(u32, u32),
     /// `static mut` の共有セル（`StoreStatic`）。値は宣言位置の span index（#27-d）。
     Static(u32),
+    /// セル変数（`StoreCell`）。値はフレームのセル表の index（#27-d 段階 2b）。
+    Cell(u16),
 }
 
 /// ループ1つ分の break/continue ジャンプ先。`continue` は `continue_target` へ、
@@ -251,14 +318,15 @@ pub fn compile_fn(
     body: &[Stmt],
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     captures: &[String],
+    mut_captures: &[String],
 ) -> Option<Chunk> {
     // 診断フック（#10）: 失敗したのに bail 地点が 1 件も記録されなかったら「未帰属」として計上する。
     // 個々の `?` を全て計装する代わりに、取りこぼしを総量で可視化する。
     if !crate::interpreter::tw_stats::enabled() {
-        return compile_fn_inner(params, body, annotations, captures);
+        return compile_fn_inner(params, body, annotations, captures, mut_captures);
     }
     let before = crate::interpreter::tw_stats::bail_count();
-    let out = compile_fn_inner(params, body, annotations, captures);
+    let out = compile_fn_inner(params, body, annotations, captures, mut_captures);
     if out.is_none() && crate::interpreter::tw_stats::bail_count() == before {
         bail("unattributed", None);
     }
@@ -400,6 +468,9 @@ fn compile_toplevel_stmt_inner(
         shadowed_for_targets,
         // 最上位に `static` は無い（あれば定義文として #10-d の担当）。
         statics: HashMap::new(),
+        cells: HashMap::new(),
+        cell_by_slot: HashMap::new(),
+        n_cells: 0,
     };
 
     c.compile_stmt(stmt)?;
@@ -426,6 +497,8 @@ fn compile_toplevel_stmt_inner(
         kw_calls: c.kw_calls,
         // 最上位文にクロージャキャプチャは無い（#27-d）。
         captured_slots: Vec::new(),
+        n_cells: 0,
+        captured_cells: Vec::new(),
     };
 
     if std::env::var("AR_VM_DUMP").is_ok_and(|v| !v.is_empty()) {
@@ -440,6 +513,7 @@ fn compile_fn_inner(
     body: &[Stmt],
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     captures: &[String],
+    mut_captures: &[String],
 ) -> Option<Chunk> {
     // 外側変数をシャドウする `for` ループ変数は、本体のコンパイル中だけ専用 slot へ差し替える（#27）。
     let shadowed_for_targets = for_target_shadows(params, body);
@@ -508,11 +582,21 @@ fn compile_fn_inner(
                 n = n.checked_add(1)?;
             }
             Stmt::FnDef { .. } => {}
-            // `static mut x = e`（#27-d）。**slot は割り当てない** — 記憶域はフレームではなく
-            // `Interpreter::static_cells`（宣言位置がキーの共有セル）で、呼び出しをまたいで生き残る。
-            // ここで名前 → 宣言位置を控えておき、本体の読み書きを `LoadStatic`/`StoreStatic` に落とす。
+            // `static mut x = e`（#27-d）。記憶域はフレームではなく `Interpreter::static_cells`
+            // （宣言位置がキーの共有セル）で、呼び出しをまたいで生き残る。名前 → 宣言位置を
+            // 控えておき、本体の読み書きを `LoadStatic`/`StoreStatic` に落とす。
+            //
+            // ⚠⚠ **slot は「使わないが必ず 1 つ消費する」**。リゾルバの `collect_base_decls` は
+            // `Stmt::Static` にも `push_base` するので、ここで飛ばすと**以降の base slot が
+            // 全部 1 つずれ**、`Resolution::Local(k)` が別の変数（または範囲外）を指す。
+            // 実際に `LoadLocal` の添字 out-of-bounds で落ちた。**採番はリゾルバと同順・同数**が契約。
             Stmt::Static(name, _, span) => {
                 statics.insert(name.clone(), span.clone());
+                if name != "_" {
+                    slot_mut.push(true);
+                    slot_type.push(None);
+                    n = n.checked_add(1)?; // 穴を空けるだけ（`slots` には入れない）
+                }
             }
             // slot を採番する可能性のある未対応の宣言的文があれば、番号ずれを避けて丸ごと諦める。
             Stmt::LetTuple { .. }
@@ -569,6 +653,47 @@ fn compile_fn_inner(
         n = n.checked_add(1)?;
     }
 
+    // **可変キャプチャ**にセル index を採番する（#27-d 段階 2b）。
+    //
+    // slot ではなくセルなのは、ツリーウォークが `CapturedVar::Mutable(cell)` として
+    // **外側と同じ `Rc<RefCell<Value>>` を共有**するから。slot（`Value` 直値）へ値を
+    // コピーすると、クロージャ内の書き込みが外側へ返らない。
+    // 実行時は `build_cells` が `captured_env` のセルを**そのまま**この index へ入れる。
+    let mut cells: HashMap<String, u16> = HashMap::new();
+    let mut captured_cells: Vec<(String, u16)> = Vec::with_capacity(mut_captures.len());
+    let mut mut_capture_names: Vec<&String> = mut_captures.iter().collect();
+    mut_capture_names.sort(); // 採番順を安定させる（HashMap 由来）
+    for name in mut_capture_names {
+        // 不変キャプチャと同じ理由で、slot と衝突したら諦める。
+        if slots.contains_key(name) || cells.contains_key(name) {
+            bail("capture-slot-conflict", None);
+            return None;
+        }
+        let idx = u16::try_from(cells.len()).ok()?;
+        cells.insert(name.clone(), idx);
+        captured_cells.push((name.clone(), idx));
+    }
+
+    // **入れ子 `fn` に可変キャプチャされる自分のローカル**もセルへ移す（#27-d 段階 2b）。
+    //
+    // ⚠ **slot は解放しない**（穴のまま残す）。`Resolution::Local(k)` はリゾルバの採番で
+    // 焼かれているので、詰め直すと別の変数を指す（`static` で実際に踏んだ）。
+    // 読み書きは `cells` を先に引くことで slot 側へ行かないようにする。
+    let mut cell_by_slot: HashMap<u16, u16> = HashMap::new();
+    let mut free_in_nested: Vec<String> = nested_fn_free_names(body).into_iter().collect();
+    free_in_nested.sort(); // 採番順を安定させる
+    for name in free_in_nested {
+        let Some(&slot) = slots.get(&name) else { continue };
+        if !slot_mut.get(slot as usize).copied().unwrap_or(false) {
+            continue; // 不変ローカルのキャプチャは値の複製で足りる（従来どおり slot）
+        }
+        let idx = u16::try_from(cells.len()).ok()?;
+        slots.remove(&name); // slot 番号は残したまま名前だけ外す
+        cells.insert(name.clone(), idx);
+        cell_by_slot.insert(slot, idx);
+    }
+    let n_cells = cells.len();
+
     // V-E: slot → 変数名 のデバッグ名テーブル（named slot のみ。temp は無名）。
     let mut local_names = vec![String::new(); n as usize];
     for (name, &slot) in &slots {
@@ -606,6 +731,9 @@ fn compile_fn_inner(
         toplevel_globals: HashSet::new(),
         shadowed_for_targets,
         statics,
+        cells,
+        cell_by_slot,
+        n_cells,
     };
 
     for stmt in body {
@@ -636,6 +764,8 @@ fn compile_fn_inner(
         tuple_decls: c.tuple_decls,
         kw_calls: c.kw_calls,
         captured_slots,
+        n_cells: c.n_cells,
+        captured_cells,
     };
 
     // 開発用フック: `AR_VM_DUMP=1` で生成バイトコードを標準エラーへ逆アセンブルする。
@@ -735,6 +865,10 @@ pub fn compile_async_body(
         toplevel_globals: captures.iter().cloned().collect(),
         shadowed_for_targets,
         statics: HashMap::new(),
+        // async 本体は可変キャプチャを持たない（submit 時に deep-clone される・D5）。
+        cells: HashMap::new(),
+        cell_by_slot: HashMap::new(),
+        n_cells: 0,
     };
 
     c.compile_block_expr(body)?;
@@ -759,6 +893,8 @@ pub fn compile_async_body(
         tuple_decls: c.tuple_decls,
         kw_calls: c.kw_calls,
         captured_slots,
+        n_cells: 0,
+        captured_cells: Vec::new(),
     };
     if std::env::var("AR_VM_DUMP").is_ok_and(|v| !v.is_empty()) {
         eprintln!("{}", super::disasm::disassemble(&chunk, "<async>"));
@@ -801,6 +937,9 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         // デバッガ REPL の 1 文。`for` 変数のシャドウは扱わない（名前引きで動く）。
         shadowed_for_targets: HashSet::new(),
         statics: HashMap::new(),
+        cells: HashMap::new(),
+        cell_by_slot: HashMap::new(),
+        n_cells: 0,
     };
     match stmt {
         Stmt::Expr(e) => {
@@ -835,6 +974,8 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         kw_calls: c.kw_calls,
         // デバッガ REPL の 1 文は名前引きで動く（キャプチャ slot は使わない）。
         captured_slots: Vec::new(),
+        n_cells: 0,
+        captured_cells: Vec::new(),
     })
 }
 
@@ -1360,9 +1501,15 @@ impl Compiler {
             return None;
         }
         match e {
-            // `static mut` は slot を持たない（#27-d）。融合の対象外。
-            Expr::Ident { name, .. } if self.statics.contains_key(name) => None,
-            Expr::Ident { res: Resolution::Local(slot), .. } => u16::try_from(*slot).ok(),
+            // `static mut` / セル変数は slot を持たない（#27-d）。融合の対象外。
+            Expr::Ident { name, .. }
+                if self.statics.contains_key(name) || self.cells.contains_key(name) =>
+            {
+                None
+            }
+            Expr::Ident { res: Resolution::Local(slot), .. } => u16::try_from(*slot)
+                .ok()
+                .filter(|s| !self.cell_by_slot.contains_key(s)),
             Expr::Ident { name, res: Resolution::Unresolved, .. } => self.slots.get(name).copied(),
             _ => None,
         }
@@ -1525,7 +1672,12 @@ impl Compiler {
     ///
     /// 返す順序は **slot 昇順**（決定的。`captured_env` は `HashMap` なので順序は挙動に影響しないが、
     /// Chunk が実行ごとに変わらないようにするため）。
-    fn nested_fn_captures(&self, params: &[Param], body: &[Stmt]) -> Option<Vec<(String, u16)>> {
+    #[allow(clippy::type_complexity)]
+    fn nested_fn_captures(
+        &mut self,
+        params: &[Param],
+        body: &[Stmt],
+    ) -> Option<(Vec<(String, u16)>, Vec<(String, u16)>, Vec<(String, u32)>)> {
         use std::collections::HashSet;
         let mut own: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
         crate::interpreter::collect_declared_names(body, &mut own);
@@ -1533,25 +1685,41 @@ impl Compiler {
         crate::interpreter::collect_referenced_names(body, &mut referenced);
 
         let mut caps: Vec<(String, u16)> = Vec::new();
-        for n in &referenced {
+        let mut cell_caps: Vec<(String, u16)> = Vec::new();
+        let mut static_caps: Vec<(String, u32)> = Vec::new();
+        // `add_span` が `&mut self` を要るので、走査順を安定させるためソートしてから回す。
+        let mut referenced: Vec<&String> = referenced.iter().collect();
+        referenced.sort();
+        for n in referenced {
             if own.contains(n) {
                 continue;
             }
-            // `static mut` のキャプチャ（#27-d 段階 2b）。ツリーウォークは共有セルを渡すので
-            // 値のコピーでは代用できない。載せるにはクロージャ側もセルを扱える必要がある。
-            if self.statics.contains_key(n) {
-                return None;
+            // `static mut` のキャプチャ（#27-d 段階 2b）。セルは `Interpreter::static_cells` に
+            // あるので、span を運んで実行時に共有する（値のコピーでは書き戻りが消える）。
+            if let Some(span) = self.statics.get(n).cloned() {
+                let si = self.add_span(&span);
+                static_caps.push((n.clone(), si));
+                continue;
+            }
+            // 外側フレームのセル変数のキャプチャ（#27-d 段階 2b）。セル index をそのまま渡す。
+            if let Some(&i) = self.cells.get(n) {
+                cell_caps.push((n.clone(), i));
+                continue;
             }
             let Some(&slot) = self.slots.get(n) else {
                 continue; // 外側ローカルでない（グローバル等）＝キャプチャ対象外
             };
             if self.slot_mut.get(slot as usize).copied().unwrap_or(true) {
-                return None; // 可変キャプチャ → 非対応
+                // 可変ローカルのキャプチャ。セル化は `mut_captured_by_nested_fn` の
+                // 事前解析が担うので、ここへ来るのは解析漏れ（保守的に諦める）。
+                return None;
             }
             caps.push((n.clone(), slot));
         }
         caps.sort_by_key(|(_, s)| *s);
-        Some(caps)
+        cell_caps.sort_by_key(|(_, i)| *i);
+        static_caps.sort_by(|a, b| a.0.cmp(&b.0));
+        Some((caps, cell_caps, static_caps))
     }
 
     /// 最上位宣言の名前なら name プールの index を返す（#10-c）。
@@ -1580,8 +1748,14 @@ impl Compiler {
     /// 宣言文のコンパイルはここを通してから諦めること
     /// （`For/unattributed:For` の出所がここだった）。
     fn slot_of(&self, name: &str) -> Option<u16> {
-        // ⚠ `static mut` は slot を持たない（#27-d）。ここへ来る経路（for ターゲット・
+        // ⚠ `static mut` / セル変数は slot を持たない（#27-d）。ここへ来る経路（for ターゲット・
         // `let a,b = t`・`except as`・入れ子 `fn` の格納先）は共有セルを扱えないので諦める。
+        if self.cells.contains_key(name) {
+            if crate::interpreter::tw_stats::enabled() {
+                crate::interpreter::tw_stats::record_bail("cell-as-slot", name);
+            }
+            return None;
+        }
         if self.statics.contains_key(name) {
             if crate::interpreter::tw_stats::enabled() {
                 crate::interpreter::tw_stats::record_bail("static-as-slot", name);
@@ -1600,7 +1774,11 @@ impl Compiler {
     }
 
     fn store_target(&mut self, name: &str) -> Option<StoreTarget> {
-        // `static mut` は slot ではなく共有セル（#27-d）。**slot より先に見る**。
+        // セル変数は slot ではなく共有セル（#27-d 段階 2b）。**slot より先に見る**。
+        if let Some(&i) = self.cells.get(name) {
+            return Some(StoreTarget::Cell(i));
+        }
+        // `static mut` も slot ではなく共有セル（#27-d）。**slot より先に見る**。
         if let Some(span) = self.statics.get(name).cloned() {
             let si = self.add_span(&span);
             return Some(StoreTarget::Static(si));
@@ -2003,6 +2181,11 @@ impl Compiler {
                     self.compile_expr(value)?;
                     self.emit(Op::StoreStatic(si));
                 }
+                // セル変数への代入（#27-d 段階 2b）。共有相手からも見える。
+                StoreTarget::Cell(i) => {
+                    self.compile_expr(value)?;
+                    self.emit(Op::StoreCell(i));
+                }
             },
             // `x <op>= e` は `x = x <op> e` と同じ命令列になる（`StoreLocal` は deep_copy しない）ので、
             // `Expr::BinOp` と同じ融合＋型特化を通す（#2b）。通さないと複合代入だけが
@@ -2055,6 +2238,18 @@ impl Compiler {
                             None => self.emit(Op::Bin(op.clone())),
                         };
                         self.emit(Op::StoreStatic(si));
+                    }
+                    // セル変数への複合代入（#27-d 段階 2b）。`static` 版と同じ形。
+                    StoreTarget::Cell(i) => {
+                        let kind = self.annot_binop_kind(*node_id);
+                        self.emit(Op::LoadCell(i));
+                        self.compile_expr(value)?;
+                        match kind {
+                            Some(K::Int) => self.emit(Op::IntBinSS(op.clone())),
+                            Some(K::Float) => self.emit(Op::FloatBinSS(op.clone())),
+                            None => self.emit(Op::Bin(op.clone())),
+                        };
+                        self.emit(Op::StoreCell(i));
                     }
                 }
             }
@@ -2226,6 +2421,10 @@ impl Compiler {
                     self.emit(Op::Pop);
                 } else if let Some(ni) = self.toplevel_decl_name(name) {
                     self.emit(Op::DeclareGlobal(ni, DeclKind::Mut));
+                } else if let Some(&i) = self.cells.get(name) {
+                    // 入れ子 `fn` に可変キャプチャされるローカル（#27-d 段階 2b）。
+                    // deep_copy はセル版でも同じ（`Stmt::Mut` は常に複製する）。
+                    self.emit(Op::StoreCellDeepCopy(i));
                 } else {
                     let slot = self.slot_of(name)?;
                     self.emit(Op::StoreLocalDeepCopy(slot)); // mut は常に deep_copy
@@ -2533,9 +2732,10 @@ impl Compiler {
                     bail("nested-fn-decorator", None);
                     return None;
                 }
-                let Some(captures) = self.nested_fn_captures(params, body) else {
-                    // 可変ローカルのキャプチャ。ツリーウォークは外側と `Rc<RefCell>` を共有するが、
-                    // VM のフラット slot は `Value` 直値なので表現できない（フレーム表現の変更が要る）。
+                let Some((captures, cell_captures, static_captures)) =
+                    self.nested_fn_captures(params, body)
+                else {
+                    // 事前解析（`mut_captured_by_nested_fn`）が拾えなかった可変キャプチャ。
                     bail("nested-fn-mutable-capture", None);
                     return None;
                 };
@@ -2548,6 +2748,8 @@ impl Compiler {
                     return_type: return_type.clone(),
                     slot,
                     captures,
+                    cell_captures,
+                    static_captures,
                 });
                 self.emit(Op::MakeFn(idx));
             }
@@ -2871,6 +3073,11 @@ impl Compiler {
                 let ci = self.add_const(Value::Undefined);
                 self.emit(Op::Const(ci));
             }
+            // **セル変数**の読み（#27-d 段階 2b）。slot を持たないので slot 系より先に判定する。
+            Expr::Ident { name, .. } if self.cells.contains_key(name) => {
+                let i = self.cells[name];
+                self.emit(Op::LoadCell(i));
+            }
             // `static mut` の読み（#27-d）。**slot 系より先に判定する**（slot を持たない名前）。
             // ⚠ `Resolution::Local` より先に置くこと。`static` を含む関数はリゾルバが
             // 解決を諦める（`collect_base_decls` が未対応の宣言文で false を返す）ので
@@ -2882,7 +3089,11 @@ impl Compiler {
             }
             Expr::Ident { res: Resolution::Local(slot), .. } => {
                 let s = u16::try_from(*slot).ok()?;
-                self.emit(Op::LoadLocal(s));
+                // セル化された base slot（#27-d 段階 2b）。slot は穴なので読んではいけない。
+                match self.cell_by_slot.get(&s) {
+                    Some(&i) => self.emit(Op::LoadCell(i)),
+                    None => self.emit(Op::LoadLocal(s)),
+                };
             }
             // 解決済みグローバル参照（R2-b）。リゾルバが「最上位宣言かつ非シャドウ」と
             // 確定した読み取りなので、slots 走査も builtin 判定も要らず直接 LoadGlobal。

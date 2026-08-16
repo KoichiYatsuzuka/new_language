@@ -35,6 +35,38 @@ enum Flow {
     Return(Value),
 }
 
+/// フレームのセル表を作る（#27-d 段階 2b）。
+///
+/// - **可変キャプチャ**（`chunk.captured_cells`）は `captured_env` のセルを**そのまま入れる**
+///   （`Rc` を clone するだけ＝外側と同じセルを指す）。ツリーウォークが `Var::Cell` を
+///   共有するのと同じ効果。
+/// - それ以外の index は**呼び出しごとに新しいセル**（入れ子 `fn` に可変キャプチャされる
+///   自分のローカル用。呼び出しごとに別のセルになるのもツリーウォークと同じ）。
+///
+/// ⚠ `n_cells == 0`（大多数の関数）では `Vec::new()` を返すので**確保は起きない**。
+#[inline]
+fn build_cells(
+    chunk: &Chunk,
+    captured_env: Option<&std::collections::HashMap<String, crate::interpreter::CapturedVar>>,
+) -> Vec<Rc<RefCell<Value>>> {
+    if chunk.n_cells == 0 {
+        return Vec::new();
+    }
+    let mut cells: Vec<Rc<RefCell<Value>>> = (0..chunk.n_cells)
+        .map(|_| Rc::new(RefCell::new(Value::None)))
+        .collect();
+    if let Some(env) = captured_env {
+        for (name, idx) in &chunk.captured_cells {
+            if let Some(crate::interpreter::CapturedVar::Mutable(cell)) = env.get(name) {
+                if let Some(slot) = cells.get_mut(*idx as usize) {
+                    *slot = cell.clone(); // ⚠ 中身ではなく **Rc を共有**する
+                }
+            }
+        }
+    }
+    cells
+}
+
 /// アクティブな例外ハンドラ（try 節ごとに VM のハンドラスタックに積む）。
 struct Handler {
     /// 例外発生時に飛ぶ landing pad の ip。
@@ -51,19 +83,24 @@ pub fn run(
     chunk: &Chunk,
     buf: &mut Vec<Value>,
     base: usize,
+    // クロージャの捕捉環境（#27-d 段階 2b）。可変キャプチャのセルを**共有**するために要る。
+    // 捕捉を持たない呼び出し（大多数）は `None`。
+    captured_env: Option<&std::collections::HashMap<String, crate::interpreter::CapturedVar>>,
 ) -> Result<Value, String> {
     let mut ip: usize = 0;
     let mut handlers: Vec<Handler> = Vec::new();
+    // セル表（#27-d 段階 2b）。`n_cells == 0` の関数（大多数）は確保しない。
+    let cells = build_cells(chunk, captured_env);
 
     // デバッグセッション中はステップ判定つきのループへ（#1）。
     // ⚠ **通常経路には何も足さない**のがこの分岐の目的。文境界ごとの停止判定を
     // このループに入れると、#12/#2b/#2a で削ったコストを毎命令ぶん戻すことになる。
     if crate::interpreter::debugger::dbg_active() {
-        return run_stepping(interp, chunk, buf, base, ip, handlers);
+        return run_stepping(interp, chunk, buf, base, ip, handlers, cells);
     }
 
     loop {
-        match exec_op(interp, chunk, buf, base, ip, &mut handlers) {
+        match exec_op(interp, chunk, buf, base, ip, &mut handlers, &cells) {
             Ok(Flow::Next) => ip += 1,
             Ok(Flow::Jump(t)) => ip = t,
             Ok(Flow::Return(v)) => return Ok(v),
@@ -74,7 +111,7 @@ pub fn run(
             Ok(Flow::NextAfterCall) => {
                 ip += 1;
                 if crate::interpreter::debugger::dbg_active() {
-                    return run_stepping(interp, chunk, buf, base, ip, handlers);
+                    return run_stepping(interp, chunk, buf, base, ip, handlers, cells);
                 }
             }
             Err(e) => {
@@ -117,6 +154,7 @@ fn run_stepping(
     base: usize,
     mut ip: usize,
     mut handlers: Vec<Handler>,
+    cells: Vec<Rc<RefCell<Value>>>, // #27-d 段階 2b: 通常ループから引き継ぐ
 ) -> Result<Value, String> {
     loop {
         // 文の先頭か？（行テーブルは code と 1:1 なので O(1)）
@@ -128,7 +166,7 @@ fn run_stepping(
                 }
             }
         }
-        match exec_op(interp, chunk, buf, base, ip, &mut handlers) {
+        match exec_op(interp, chunk, buf, base, ip, &mut handlers, &cells) {
             Ok(Flow::Next) | Ok(Flow::NextAfterCall) => ip += 1,
             Ok(Flow::Jump(t)) => ip = t,
             Ok(Flow::Return(v)) => return Ok(v),
@@ -218,7 +256,14 @@ fn store_global_miss(
 /// **オーバーロード合成も含めて** `Interpreter::make_nested_fn_value` に集約して共有する。
 /// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
 #[inline(never)]
-fn make_fn(interp: &mut Interpreter, chunk: &Chunk, buf: &mut [Value], base: usize, idx: u32) {
+fn make_fn(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &mut [Value],
+    base: usize,
+    idx: u32,
+    cells: &[Rc<RefCell<Value>>],
+) {
     let d = &chunk.fn_defs[idx as usize];
     // 不変キャプチャは**生成時点の値を複製**する（ツリーウォークの `capture_env` の不変分岐と同じ）。
     let captured: Vec<(String, Value)> = d
@@ -226,6 +271,19 @@ fn make_fn(interp: &mut Interpreter, chunk: &Chunk, buf: &mut [Value], base: usi
         .iter()
         .map(|(n, s)| (n.clone(), buf[base + *s as usize].clone()))
         .collect();
+    // 可変キャプチャは**セルを共有**する（#27-d 段階 2b）。`Rc` を clone するだけなので
+    // 外側フレームの書き込みがクロージャから見え、その逆も見える（`capture_env` の可変分岐と同じ）。
+    let mut cell_captured: Vec<(String, Rc<RefCell<Value>>)> = d
+        .cell_captures
+        .iter()
+        .filter_map(|(n, i)| cells.get(*i as usize).map(|c| (n.clone(), c.clone())))
+        .collect();
+    // `static mut` のキャプチャはセルが `Interpreter::static_cells` にある（span がキー）。
+    for (n, span_idx) in &d.static_captures {
+        if let Some(cell) = interp.vm_static_cell(&chunk.spans[*span_idx as usize]) {
+            cell_captured.push((n.clone(), cell));
+        }
+    }
     let slot = base + d.slot as usize;
     let existing = std::mem::replace(&mut buf[slot], Value::None);
     buf[slot] = interp.make_nested_fn_value(
@@ -234,6 +292,7 @@ fn make_fn(interp: &mut Interpreter, chunk: &Chunk, buf: &mut [Value], base: usi
         &d.body,
         d.return_type.as_deref(),
         captured,
+        cell_captured,
         existing,
     );
 }
@@ -366,6 +425,8 @@ fn exec_op(
     base: usize,
     ip: usize,
     handlers: &mut Vec<Handler>,
+    // #27-d 段階 2b: フレームのセル表（`n_cells == 0` の関数では空スライス）。
+    cells: &[Rc<RefCell<Value>>],
 ) -> Result<Flow, String> {
     match &chunk.code[ip] {
         Op::Const(i) => buf.push(chunk.consts[*i as usize].clone()),
@@ -923,7 +984,7 @@ fn exec_op(
         }
         Op::MakeFn(idx) => {
             // #27: 入れ子 `fn` 定義。本体は `#[inline(never)]`（`exec_op` を太らせない）。
-            make_fn(interp, chunk, buf, base, *idx);
+            make_fn(interp, chunk, buf, base, *idx, cells);
         }
         // ── `static mut`（#27-d）。記憶域は `Interpreter::static_cells`（span キー） ──
         // `exec_static_var` と同じく、**セルが既にあれば初期化子を評価しない**。
@@ -954,6 +1015,19 @@ fn exec_op(
                 Some(cell) => *cell.borrow_mut() = v,
                 None => return Err("NameError: static variable is not initialized".to_string()),
             }
+        }
+        // ── セル変数（#27-d 段階 2b）。共有相手（外側フレーム／クロージャ）から見える ──
+        Op::LoadCell(i) => {
+            let v = cells[*i as usize].borrow().clone();
+            buf.push(v);
+        }
+        Op::StoreCell(i) => {
+            let v = buf.pop().unwrap();
+            *cells[*i as usize].borrow_mut() = v;
+        }
+        Op::StoreCellDeepCopy(i) => {
+            let v = Interpreter::deep_copy_value(buf.pop().unwrap());
+            *cells[*i as usize].borrow_mut() = v;
         }
         Op::UnpackTuple(src, n) => {
             // #27-c: `for k, v in ...`。本体は `#[inline(never)]`（`exec_op` を太らせない）。

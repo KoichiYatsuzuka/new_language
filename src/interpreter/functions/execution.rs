@@ -70,12 +70,21 @@ impl Interpreter {
                 // 不変キャプチャの名前を渡す（#27-d）。コンパイラが末尾に slot を採番し、
                 // 呼び出し側が `chunk.captured_slots` を見て値を書き込む。
                 // 可変キャプチャを含む場合は `vm_eligible` が偽なのでここへ来ない。
-                let captures: Vec<String> = fn_val.captured_env.keys().cloned().collect();
+                // 不変キャプチャは slot へ、**可変キャプチャはセルへ**（#27-d 段階 2b）。
+                let mut captures: Vec<String> = Vec::new();
+                let mut mut_captures: Vec<String> = Vec::new();
+                for (n, c) in &fn_val.captured_env {
+                    match c {
+                        CapturedVar::Immutable(_) => captures.push(n.clone()),
+                        CapturedVar::Mutable(_) => mut_captures.push(n.clone()),
+                    }
+                }
                 let compiled = crate::vm::compile_fn(
                     &fn_val.params,
                     &fn_val.body,
                     self.annotations.clone(),
                     &captures,
+                    &mut_captures,
                 )
                 .map(Rc::new);
                 if crate::interpreter::tw_stats::enabled() {
@@ -103,6 +112,7 @@ impl Interpreter {
                     &gen_fn.body,
                     self.annotations.clone(),
                     &[], // ジェネレータのクロージャ化は未対応（従来どおり）
+                    &[],
                 )
                 .map(Rc::new);
                 if crate::interpreter::tw_stats::enabled() {
@@ -149,7 +159,7 @@ impl Interpreter {
         if let Some(Value::Instance(inst_rc)) = self_val {
             self.current_class = Some(inst_rc.borrow().class.clone());
         }
-        let result = crate::vm::run(self, chunk, &mut buf, base);
+        let result = crate::vm::run(self, chunk, &mut buf, base, None);
         self.current_class = prev_class;
         buf.truncate(base);
         self.vm_stack = buf;
@@ -166,6 +176,9 @@ impl Interpreter {
 
     /// バインド済みバッファで VM Chunk を実行し、戻り値／例外フレームを組み立てる（fast/general 共通）。
     /// `buf[base..base+n_locals]` にパラメータが束縛済み。`current_class` はメソッド実行のため一時設定する。
+    // 引数が多いのは VM フレームの起動に要る素材がそのまま並んでいるから
+    // （chunk・バッファ・base・self・表示名・呼び出し位置・捕捉環境）。
+    #[allow(clippy::too_many_arguments)]
     fn run_vm_method(
         &mut self,
         chunk: &crate::vm::Chunk,
@@ -174,13 +187,15 @@ impl Interpreter {
         self_val: &Option<Value>,
         fn_name: &str,
         call_span: Option<Span>,
+        // クロージャの捕捉環境（#27-d 段階 2b）。可変キャプチャのセルを共有するために渡す。
+        captured_env: Option<&std::collections::HashMap<String, CapturedVar>>,
     ) -> Result<Value, String> {
         let prev_class = self.current_class.take();
         if let Some(Value::Instance(inst_rc)) = self_val {
             self.current_class = Some(inst_rc.borrow().class.clone());
         }
         self.push_call_name(fn_name);
-        let result = crate::vm::run(self, chunk, &mut buf, base);
+        let result = crate::vm::run(self, chunk, &mut buf, base, captured_env);
         self.pop_call_name();
         self.current_class = prev_class;
         buf.truncate(base);
@@ -345,28 +360,17 @@ impl Interpreter {
         // 対象: フリー関数（self なし）＋ インスタンスメソッド（self=Instance）。非 Python・クロージャなし。
         // #1 完了により **デバッグ中でも VM を使う**（`vm/run.rs` の `run_stepping` が
         // 文境界で停止判定する）。以前はここでデバッグ中の VM を丸ごと無効化していた。
-        // クロージャは**不変キャプチャだけ**なら VM に載る（#27-d）。捕捉値は呼び出しごとに
-        // `chunk.captured_slots` の slot へ書き込む。可変キャプチャは外側と
-        // `Rc<RefCell<Value>>` を共有するので slot（`Value` 直値）では表現できない。
+        // クロージャは**キャプチャの種類を問わず** VM に載る（#27-d 段階 2b）。
+        // 不変は `captured_slots` の slot へ値を書き込み、可変は `captured_cells` の
+        // セル index へ **`Rc` を共有**する（外側との書き戻りが保たれる）。
         let vm_eligible = self.vm_mode != crate::vm::VmMode::Off
             && !fn_val.is_python
-            && fn_val
-                .captured_env
-                .values()
-                .all(|c| matches!(c, CapturedVar::Immutable(_)))
             && matches!(self_val, None | Some(Value::Instance(_)));
         // 診断フック（#27）: **なぜ VM に載せなかったか**を計上する。
         // `vm_eligible` が偽だと `compile_fn` を呼ばないので bail 統計に現れず、
         // 「クロージャがどれだけツリーウォークへ落ちているか」が測れなかった。
         if crate::interpreter::tw_stats::enabled() && !vm_eligible && self.vm_mode != crate::vm::VmMode::Off {
-            let why = if fn_val.is_python {
-                "python"
-            } else if !fn_val.captured_env.is_empty() {
-                // #27-d 以降は**可変キャプチャだけ**が残る（不変は slot へ載る）。
-                "closure-mutable-capture"
-            } else {
-                "self-kind"
-            };
+            let why = if fn_val.is_python { "python" } else { "self-kind" };
             crate::interpreter::tw_stats::record_ineligible(why);
         }
         let chunk_opt: Option<Rc<crate::vm::Chunk>> = if vm_eligible {
@@ -386,7 +390,7 @@ impl Interpreter {
         // ── 高速バインド（タスク #4）: 単純シグネチャ + キャスト不要なら bind_args を介さず直接実行 ──
         if let Some(chunk) = &chunk_opt {
             if let Some((buf, base)) = self.try_fast_bind(&fn_val, chunk, evaled, &self_val)? {
-                return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span);
+                return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span, Some(&fn_val.captured_env));
             }
         }
 
@@ -495,7 +499,7 @@ impl Interpreter {
                 }
             }
             Self::bind_captures(&fn_val, chunk, &mut buf, base); // #27-d
-            return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span);
+            return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span, Some(&fn_val.captured_env));
         }
 
         // 関数フレームへ切り替える: frame_floor を現在の scopes 長に進め（＝これから push する
