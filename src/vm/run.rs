@@ -964,6 +964,12 @@ fn exec_op(
         Op::Fail(idx) => return Err(chunk.names[*idx as usize].clone()),
         // #35: block_return / loop_yield の実行時型検査。どちらも**値を消費しない**
         // （直後に StoreLocal / ListAppendLocal が使う）。判定はツリーウォークと同じ 1 実装へ委譲。
+        // #42: モジュール本体の代入。`assign_var` はスコープチェーンを探すので
+        // `StoreGlobal`（`scopes[0]` 限定）と違い push 済みスコープの名前にも当たる。
+        Op::StoreName(idx) => {
+            let v = buf.pop().unwrap();
+            interp.vm_assign_by_name(&chunk.names[*idx as usize], v)?;
+        }
         Op::CheckBlockReturn(idx) => {
             let v = buf.last().unwrap();
             interp.check_block_return_type(v, &chunk.names[*idx as usize])?;

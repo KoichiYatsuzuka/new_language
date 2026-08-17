@@ -94,6 +94,50 @@ impl Interpreter {
         result.map(|_| Some(ExecResult::Normal))
     }
 
+    /// **import モジュール本体の 1 文**を VM で実行する（#42）。
+    ///
+    /// `try_run_toplevel_stmt` との違いは 2 点:
+    /// - `scopes.len() == 1` を要求しない（`exec_module` が `push_scope` 済み）。
+    /// - 代入が `StoreName`（チェーン探索）になる（`compile_module_stmt`）。
+    ///
+    /// 対象外（定義文）は `Ok(None)` を返し、呼び出し側がインタプリタで実行する（#10-d）。
+    /// ⚠ **フォールバックは無い**。載らなければ `VmForceError` で止める。
+    pub(crate) fn try_run_module_stmt(
+        &mut self,
+        stmt: &crate::ast::Stmt,
+        module_globals: &std::collections::HashSet<String>,
+    ) -> Result<Option<ExecResult>, String> {
+        if !crate::vm::is_toplevel_compile_target(stmt) {
+            return Ok(None);
+        }
+        // ⚠ キーは `Stmt` のアドレス（#36 の不変条件）。モジュール本体は `Stmt::Import` に
+        // 埋め込まれておりプログラム AST と寿命が同じなので、アドレスは安定している。
+        let key = stmt as *const crate::ast::Stmt as usize;
+        let chunk = match self.vm_toplevel_chunks.get(&key) {
+            Some(cached) => cached.clone(),
+            None => {
+                let compiled =
+                    crate::vm::compile_module_stmt(stmt, self.annotations.clone(), module_globals)
+                        .map(Rc::new);
+                if crate::interpreter::tw_stats::enabled() {
+                    crate::interpreter::tw_stats::record_compile("module", compiled.is_some());
+                }
+                self.vm_toplevel_chunks.insert(key, compiled.clone());
+                compiled
+            }
+        };
+        let Some(chunk) = chunk else {
+            return Err(Self::vm_force_error("module-body statement", stmt));
+        };
+        let mut buf = std::mem::take(&mut self.vm_stack);
+        let base = buf.len();
+        buf.resize(base + chunk.n_locals, Value::None);
+        let result = crate::vm::run(self, &chunk, &mut buf, base, None);
+        buf.truncate(base);
+        self.vm_stack = buf;
+        result.map(|_| Some(ExecResult::Normal))
+    }
+
     /// **定義文脈の式**を VM で評価する（#41）。
     ///
     /// クラスのフィールド既定値・`enum` の値・デコレータ式は定義文の一部なので
@@ -316,6 +360,17 @@ impl Interpreter {
         }
         var.set_value(value);
         Ok(())
+    }
+
+    /// `Op::StoreName` の実体（#42）: **スコープチェーンを探して**代入する。
+    ///
+    /// ツリーウォークの `Stmt::Assign` と**同じ関数**（`assign_var`）へ委譲する。
+    /// `vm_assign_global`（`scopes[0]` 限定）との違いは探索範囲だけで、使い分けは
+    /// **その Chunk がどのスコープ深さで走るか**で決まる:
+    /// - 最上位 Chunk … `scopes.len() == 1` が保証されるので `StoreGlobal`（IC が効く）
+    /// - モジュール本体 … `exec_module` が `push_scope` 済みなので `StoreName`
+    pub(crate) fn vm_assign_by_name(&mut self, name: &str, value: Value) -> Result<(), String> {
+        self.assign_var(name, value)
     }
 
     /// `Op::StoreGlobal` の索引経路（#10-b）: 昇格済みセルへ直接書き込む。

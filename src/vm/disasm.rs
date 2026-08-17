@@ -98,6 +98,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::Dup => "DUP".to_string(),
         Op::ExcMatch(n) => format!("EXC_MATCH {:?}", chunk.names.get(*n as usize)),
         Op::Fail(n) => format!("FAIL {:?}", chunk.names.get(*n as usize)),
+        Op::StoreName(n) => format!("STORE_NAME {:?}", chunk.names.get(*n as usize)),
         Op::CheckBlockReturn(n) => {
             format!("CHECK_BLOCK_RETURN {:?}", chunk.names.get(*n as usize))
         }

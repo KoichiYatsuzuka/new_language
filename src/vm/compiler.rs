@@ -245,6 +245,13 @@ struct Compiler {
     /// `finally` 本体（脱出経路への複製を含む）をコンパイル中かどうか（#37）。
     /// **1 以上なら脱出制御は bail する**（finally の中から跳ぶのは未対応）。
     in_finally: usize,
+    /// **import モジュール本体をコンパイルしている**（#42）。
+    ///
+    /// モジュール本体は `exec_module` が `push_scope` してから回すので、名前は `scopes[0]` ではなく
+    /// **push 済みスコープ**に入る。⇒ 代入は `StoreGlobal`（`scopes[0]` 限定）ではなく
+    /// `StoreName`（`assign_var` = チェーン探索）で行う。宣言（`DeclareGlobal`）と読み（`LoadName`）は
+    /// もともとチェーンを見るので変更不要。
+    module_mode: bool,
     /// **自由な識別子を実行時に名前で引く**（#41）。`eval()` と同じスコープ走査になるので、
     /// **`scopes` の深さを問わず健全**（定義文脈の式は最上位とは限らない — import モジュール
     /// 本体の中のクラス定義など）。`debug_mode` と違い、融合・FFI 情報の記録は落とさない。
@@ -314,6 +321,9 @@ enum StoreTarget {
     Static(u32),
     /// セル変数（`StoreCell`）。値はフレームのセル表の index（#27-d 段階 2b）。
     Cell(u16),
+    /// 名前で引いて代入する（`StoreName`・#42）。値は name プール index。
+    /// **import モジュール本体**専用（`scopes[0]` 限定の `StoreGlobal` では届かない）。
+    Name(u32),
 }
 
 /// ループ1つ分の break/continue ジャンプ先。`continue` は `continue_target` へ、
@@ -426,17 +436,41 @@ pub fn compile_toplevel_stmt(
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     toplevel_globals: &HashSet<String>,
 ) -> Option<Chunk> {
+    compile_toplevel_or_module(stmt, annotations, toplevel_globals, false)
+}
+
+/// **import モジュール本体の 1 文**を Chunk へコンパイルする（#42）。
+///
+/// `compile_toplevel_stmt` との違いは `module_mode` だけ。モジュール本体は
+/// `exec_module` が `push_scope` してから回すので、名前は `scopes[0]` ではなく
+/// **push 済みスコープ**に入る。⇒ 代入を `StoreName`（`assign_var` = チェーン探索）にする。
+/// 宣言（`DeclareGlobal` → `declare_var` → `scopes.last_mut()`）と
+/// 読み（`LoadName`）はもともとチェーンを見るので変更不要。
+pub fn compile_module_stmt(
+    stmt: &Stmt,
+    annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
+    module_globals: &HashSet<String>,
+) -> Option<Chunk> {
+    compile_toplevel_or_module(stmt, annotations, module_globals, true)
+}
+
+fn compile_toplevel_or_module(
+    stmt: &Stmt,
+    annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
+    toplevel_globals: &HashSet<String>,
+    module_mode: bool,
+) -> Option<Chunk> {
     if !is_toplevel_compile_target(stmt) {
         return None;
     }
     // 診断フック（#10）: `compile_fn` と同じく取りこぼしを「未帰属」として可視化する。
     if !crate::interpreter::tw_stats::enabled() {
-        return compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals);
+        return compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals, module_mode);
     }
     // bail の分類先を「最上位」へ切り替える（#27。関数側と残タスクが別物なので混ぜない）。
     let _g = crate::interpreter::tw_stats::ToplevelCompileGuard::new(stmt);
     let before = crate::interpreter::tw_stats::bail_count();
-    let out = compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals);
+    let out = compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals, module_mode);
     if out.is_none() && crate::interpreter::tw_stats::bail_count() == before {
         // 未帰属でも**どの文種別か**は分かる。これが無いと 46 件の出所を探せない（#27-c）。
         bail("unattributed", Some(stmt));
@@ -494,6 +528,7 @@ pub fn compile_definition_expr(
         pending: Some(0),
         try_stack: Vec::new(),
         in_finally: 0,
+        module_mode: false,
         name_lookup: true,
         debug_mode: false,
         named_locals: n,
@@ -545,6 +580,7 @@ fn compile_toplevel_stmt_inner(
     stmt: &Stmt,
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     toplevel_globals: &HashSet<String>,
+    module_mode: bool,
 ) -> Option<Chunk> {
     let body = std::slice::from_ref(stmt);
     // 関数側と同じ扱い（#27）。最上位でも 1 文の中で `for` 変数が宣言を覆いうる。
@@ -601,6 +637,7 @@ fn compile_toplevel_stmt_inner(
         pending: None,
         try_stack: Vec::new(),
         in_finally: 0,
+        module_mode,
         name_lookup: false,
         debug_mode: false,
         named_locals: n,
@@ -870,6 +907,7 @@ fn compile_fn_inner(
         pending: None,
         try_stack: Vec::new(),
         in_finally: 0,
+        module_mode: false,
         name_lookup: false,
         debug_mode: false,
         named_locals: n,
@@ -1007,6 +1045,7 @@ pub fn compile_async_body(
         pending: None,
         try_stack: Vec::new(),
         in_finally: 0,
+        module_mode: false,
         name_lookup: false,
         debug_mode: false,
         named_locals: n,
@@ -1088,6 +1127,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         pending: None,
         try_stack: Vec::new(),
         in_finally: 0,
+        module_mode: false,
         name_lookup: true,
         debug_mode: true,
         named_locals: 0,
@@ -1916,6 +1956,11 @@ impl Compiler {
         // ⚠ デバッガ REPL（`compile_debug`）だけは例外（#39）。停止フレームの**生スコープ**へ
         // 書かねばならず、`scopes[0]` 限定の `StoreGlobal` では別の変数を書いてしまう。
         // 読み側が `LoadName` に落ちているのと同じ理由。ここは従来どおり bail する。
+        if self.module_mode {
+            // モジュール本体は push 済みスコープに名前がある（#42）。
+            let ni = self.add_name(name);
+            return Some(StoreTarget::Name(ni));
+        }
         if self.debug_mode || self.name_lookup {
             // 停止フレーム／外側スコープの**生の変数**へ書く必要があるが、
             // `scopes[0]` 限定の `StoreGlobal` では別の変数を書いてしまう（#39）。
@@ -2422,6 +2467,11 @@ impl Compiler {
                     self.compile_expr(value)?;
                     self.emit(Op::StoreGlobal(ni, ci));
                 }
+                // モジュール本体の代入（#42）。名前でチェーンを探して書く。
+                StoreTarget::Name(ni) => {
+                    self.compile_expr(value)?;
+                    self.emit(Op::StoreName(ni));
+                }
                 // `static mut` への代入（#27-d）。共有セルへ直接書く。
                 StoreTarget::Static(si) => {
                     self.compile_expr(value)?;
@@ -2472,6 +2522,18 @@ impl Compiler {
                             None => self.emit(Op::Bin(op.clone())),
                         };
                         self.emit(Op::StoreGlobal(ni, ci));
+                    }
+                    // モジュール本体への複合代入（#42）。読みは `LoadName`、書きは `StoreName`。
+                    StoreTarget::Name(ni) => {
+                        let kind = self.annot_binop_kind(*node_id);
+                        self.emit(Op::LoadName(ni));
+                        self.compile_expr(value)?;
+                        match kind {
+                            Some(K::Int) => self.emit(Op::IntBinSS(op.clone())),
+                            Some(K::Float) => self.emit(Op::FloatBinSS(op.clone())),
+                            None => self.emit(Op::Bin(op.clone())),
+                        };
+                        self.emit(Op::StoreName(ni));
                     }
                     // `static mut` への複合代入（#27-d）。グローバル版と同じ形。
                     StoreTarget::Static(si) => {

@@ -4228,6 +4228,89 @@ TwStats[tw_control_flow] total=2 loop-expr=1 for-stmt=1
 
 ---
 
+## #42 完了（2026-08-18）— import モジュール本体の VM 化
+
+#33 が削除できなかった 2 つの消費者の**もう片方**。これで両方潰れた。
+
+### 足りなかったのは「名前ベースの代入」だけだった
+
+モジュール本体は `exec_module` が `push_scope` してから回すので、名前は `scopes[0]` ではなく
+**push 済みスコープ**に入る。既存の仕組みを 1 つずつ確かめたら、大半はそのまま使えた:
+
+| 操作 | 既存の挙動 | 判定 |
+|---|---|---|
+| 宣言（`Op::DeclareGlobal`） | `declare_var` → **`scopes.last_mut()`** | ✅ そのまま正しい |
+| 読み（`Op::LoadName`） | スコープチェーン探索 | ✅ そのまま正しい |
+| **代入（`Op::StoreGlobal`）** | **`scopes[0]` 限定**（#39 で厳格化した） | ❌ 届かない |
+
+⇒ **`Op::StoreName`（`assign_var` へ委譲）を 1 個足すだけ**で済んだ。
+`assign_var` はツリーウォークの `Stmt::Assign` が使う**同じ関数**なので意味論のずれが起きない。
+
+⚠ #39 で `vm_assign_global` を `scopes[0]` 限定へ厳格化していなければ、ここは
+「たまたま動くが呼び出し元のローカルを壊しうる」形になっていた。**厳格化しておいたことで、
+足りない部分が「届かない」という形で明示的に現れた**。
+
+### 実装
+
+- `module_mode` フラグ ＋ `compile_module_stmt`（`compile_toplevel_stmt` と共通の内部関数へ
+  フラグを通すだけ）／`store_target` が `module_mode` なら `StoreTarget::Name`。
+- `try_run_module_stmt`（`scopes.len() == 1` を要求しない版）。
+- `exec_module` の**実行ループ 2 箇所**（通常モジュール／ネイティブモジュールのスタブ本体）を接続。
+- 定義文は従来どおりインタプリタが実行する（`is_toplevel_compile_target` が `None` を返す・#10-d）。
+
+### 効果
+
+[module_toplevel_flow.ar](examples/interop/module_toplevel_flow.ar):
+
+| | 前 | 後 |
+|---|---|---|
+| `module_body`（ツリーウォーク文） | **18**（`If=5 Assign=4 LoopYield=3 For=1 Continue=1 …`） | **2**（`FnDef` のみ＝定義文） |
+| `tw_control_flow` | `loop-expr=1 for-stmt=1` | **なし** |
+| `vm_compile` | — | `module=3` |
+
+### 検証
+
+`cargo build` 警告 0 ／ `cargo test` **734 緑** ／
+[debug_session.ps1](debug_session.ps1) **5 identical** ／ [repl_session.ps1](repl_session.ps1) **identical** ／
+[compare_python_impl.ps1](compare_python_impl.ps1) **46 検査・46 一致** ／
+`scan_examples.ps1` **FAIL 0** ／ `force_gate.ps1` **0 件・139 例題完走**。
+
+### 🔎 #33 の前提の検算（全例題 `tw_stats`）
+
+| 指標 | 値 |
+|---|---|
+| **`tw_control_flow`** | **0** |
+| `in_fn` | **0** |
+| `vm_bail_fn` / `vm_bail_toplevel` / `vm_ineligible` | すべて **0** |
+| `toplevel`（ツリーウォーク） | 379 ＝ **全て定義文** |
+| `module_body` | **22 ＝ 全て定義文**（`ClassDef` 19・`FnDef` 3。**前回は制御フロー込み**） |
+| `vm_compile` | 2,158（toplevel 1,752 ／ fn 401 ／ **module 3** ／ gen 2） |
+
+⚠ **今回は測定が盲目ではない**: #41/#42 で見つけた 2 つの消費者はどちらも例題を追加したので、
+例題スイートが実際にその形を踏んでいる。これが過去 5 回との違い。
+
+`exec()` の外部呼び出し元も総ざらいした（6 箇所）:
+`run_program` ／ `exec_repl_stmt` ／ モジュール本体（定義文のみ）／ 定義文 ／
+ツリーウォーク制御フロー自身（削除対象）／ **デバッガ REPL のフォールバック**。
+最後のものは **1 行ずつ読む**ので、制御フロー式（`:` ＋改行＋インデントが必須）を
+**構造的に受け取れない**（単一行形は `ParseError`。実測で確認）。
+
+⇒ **#33 の残り（制御フロー本体 ≈700 行の削除）は着手可能**。
+
+### A/B（HEAD #34 前 → #42 まで・既定モード・min of 7）
+
+`bench_arith` 1.022x ／`bench_control_flow` 1.006x ／`bench_field_access` 1.038x ／
+`bench_method_call` 1.017x ／`bench_for` 0.992x ／**`bench_block_expr` 0.936x**。
+
+⚠ `bench_block_expr` の 0.936x は**測定 2 回で再現した＝ノイズではない**。原因を特定した:
+`AR_VM_DUMP` で数えると `CHECK_LOOP_YIELD` が **1 個**あり、それが
+`for i in range(n) ->list[int]: loop_yield i * i` の**内側**＝反復ごとに走る。
+**#35 が足した実行時型検査の費用**で、`--vm=off` も同じ検査をしていたので**退行ではない**
+（VM だけが検査を飛ばしていたのを直した結果）。
+⇒ 注釈が `list[int]` で yield 式も `int` と確定しているならコンパイル時に省ける → **#43**。
+
+---
+
 ## この記録の使いどころ
 
 **見積もりが外れた事例**が最も価値がある。同じ判断ミスを繰り返さないために残してある。
@@ -4253,6 +4336,7 @@ TwStats[tw_control_flow] total=2 loop-expr=1 for-stmt=1
 | `force_gate` 0 件 | 「VM は言語全体を載せられる」 | **「128 例題で 0」でしかなかった**。例題が 1 本も無い言語機能（制御フロー式貫通 `break`）は**ゲートにも off/on 比較にも映らない**。単体テストだけが 11 件押さえていた |
 | #34（2026-08-17） | 「跳び先の計算が要る＝ジャンプ機構の作り直し」 | **機構は最初から揃っていた**（`LoopCtx` は絶対ジャンプ）。足りなかったのは**跳ぶ時点で積まれている値の始末**だけ。しかも「ブロック式は式の末尾にしか置けない」を**構文で実測**したら、深さの伝播は 3 箇所で済み**新オペコード 0**になった |
 | #34 の `continue` | 「`break` を通せば `continue` も同じ」 | **ツリーウォークに `continue` の貫通が無かった**（SyntaxError 化＋**黙って握り潰し**）。VM の方が正しく、参照実装と一致していた。`for-target-shadow` と同じ「bail する形はツリーウォークが正しいとは限らない」 |
+| #42（2026-08-18） | 「モジュール本体を VM に載せるのは大仕事」 | **`Op::StoreName` を 1 個足すだけ**だった。宣言（`declare_var` → `scopes.last_mut()`）と読み（`LoadName`）は元からチェーンを見ていて、届かないのは代入だけ。⚠ **#39 で `vm_assign_global` を `scopes[0]` 限定へ厳格化しておいたおかげ**で、足りない部分が「たまたま動く」ではなく「届かない」という形で明示的に出た |
 | #41（2026-08-18） | 「定義文脈を潰せば #33 が通る」 | **もう 1 つ消費者が残っていた** — import モジュール本体は `exec_module` が `push_scope` するので最上位 VM の対象外で、丸ごとツリーウォーク。#10-d が「モジュール本体は 20 文」として保留にした判断も**例題依存**だった（最上位に制御フローを持つモジュールの例題が 0 本）。**同じパターンは 5 回目** |
 | #33（2026-08-18） | 「前提（34〜40）を全部潰したのでツリーウォークを削除できる」 | **削除できなかった**。クラスのフィールド既定値・`enum` 値のような**定義文脈の式**が `eval()` で評価され、その中の制御フローがツリーウォークで動いていた。しかも **`if`/`match` 式には計測フックが無く**、`tw_control_flow` 0 はその過小報告の上に乗っていた。⇒ **`force_gate` 0 件・`tw_control_flow` 0 は毎回「例題がその形を書いているか」に依存する**（#27/#34/#36/#33 で 4 回踏んだ） |
 | #31（2026-08-17） | 「参照実装と突き合わせれば差分が出る」 | **`impl_python` が 100 コミット前に同期**されていた（`33ef765`）。差分 36 件のうち 5 件は「同期以降に Rust 側へ入った修正」で、**差分がある＝Rust のバグ ではない**。前提を書かずに網を作ると誤検知の山になる |

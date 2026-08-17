@@ -83,8 +83,17 @@ impl Interpreter {
         // 診断フック（#10-d）: ここから先は import モジュール本体（メイン最上位と区別して計上）。
         let _mod_guard = crate::interpreter::tw_stats::enabled()
             .then(crate::interpreter::tw_stats::ModuleBodyGuard::new);
+        // #42: モジュール本体も**バイトコード VM で実行する**。以前はここが丸ごと
+        // ツリーウォークで、`for`/`if` などの制御フローがツリーウォークで動いていた
+        // （`AR_TW_STATS` の `tw_control_flow` で実測）。定義文（`fn`/`class`/`import`）は
+        // 設計上インタプリタが実行する（#10-d）ので `try_run_module_stmt` が `None` を返す。
+        let module_globals = crate::interpreter::resolver::toplevel_declared_globals(body);
         for stmt in body {
-            match self.exec(stmt)? {
+            let res = match self.try_run_module_stmt(stmt, &module_globals)? {
+                Some(r) => r,
+                None => self.exec(stmt)?,
+            };
+            match res {
                 ExecResult::Normal => {}
                 ExecResult::Raise(_) => {
                     self.pop_scope();
@@ -215,8 +224,14 @@ impl Interpreter {
         let lib_path_buf = lib_path.to_path_buf();
 
         self.push_scope();
+        // #42: ネイティブモジュールのスタブ本体も同じ経路で実行する。
+        let module_globals = crate::interpreter::resolver::toplevel_declared_globals(body);
         for stmt in body {
-            match self.exec(stmt)? {
+            let res = match self.try_run_module_stmt(stmt, &module_globals)? {
+                Some(r) => r,
+                None => self.exec(stmt)?,
+            };
+            match res {
                 ExecResult::Normal => {}
                 ExecResult::Raise(_raised) => {
                     self.pop_scope();

@@ -32,6 +32,13 @@ pub enum Op {
     /// 1 本のキャッシュ枠は必ず 1 つの op 実体だけが読み書きするので混ざらないが、
     /// **枠を共有・再利用する最適化を足すときはここで壊れる**。
     StoreGlobal(u32, u32),
+    /// pop した値を **`names[idx]` の変数へ名前で代入**する（#42）。
+    ///
+    /// `assign_var` へ委譲する＝**スコープチェーンを内側から探す**（`scopes[frame_floor..]` →
+    /// `scopes[0]`）ので、`StoreGlobal`（`scopes[0]` 限定）が使えない文脈で使う。
+    /// 現在の発行元は **import モジュール本体**（`exec_module` が `push_scope` するため
+    /// モジュール名は `scopes[0]` に無い）。⚠ ホットパスではない（モジュールは 1 回だけ走る）。
+    StoreName(u32),
     /// pop して locals[slot] へそのまま書き込む（const / 代入 / let-from-immutable / リテラル let）。
     StoreLocal(u16),
     /// pop して deep_copy してから locals[slot] へ（`mut` 宣言: exec は常に deep_copy_value）。
