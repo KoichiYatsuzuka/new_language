@@ -653,6 +653,76 @@ let y = for i in range(3) ->list[int]:
     assert_int_list(run_get(src, "y"), &[0, 1, 2]);
 }
 
+// ---------------------------------------------------------------------------
+// #40: finally 本体そのものからの脱出（保留中の動作を破棄する）
+//
+// ⚠ VM 側の回帰検知が本命。finally は正常路・例外路・各脱出路に複製され、
+//    **複製ごとにスタックの形が違う**（例外路は例外値、return 路は戻り値が載る）。
+//    `compile_finally_copy` の `extra` を落とすとその値が残って壊れる。
+//    例題は examples/exceptions/finally_body_escape.ar。
+// ---------------------------------------------------------------------------
+
+/// `finally` 内の `break` は**保留中の `return` を破棄する**（#40）。
+#[test]
+fn test_break_in_finally_discards_pending_return() {
+    let src = "
+fn f() -> int:
+    for i in range(3):
+        try:
+            return 100
+        finally:
+            break
+    return -1
+let v = f()
+";
+    assert_int(run_get(src, "v"), -1);
+}
+
+/// `finally` 内の `return` は**伝播中の例外を破棄する**（#40）。
+#[test]
+fn test_return_in_finally_discards_exception() {
+    let src = "
+fn f() -> int:
+    try:
+        raise ValueError(\"x\")
+    finally:
+        return 7
+let v = f()
+";
+    assert_int(run_get(src, "v"), 7);
+}
+
+/// `finally` 内の `block_return` は**例外経路でも**ブロック式の値を差し替える（#40）。
+#[test]
+fn test_block_return_in_finally_on_exception_path() {
+    let src = "
+let b = block ->int:
+    try:
+        raise ValueError(\"boom\")
+    finally:
+        block_return 3
+";
+    assert_int(run_get(src, "b"), 3);
+}
+
+/// 内側の `finally` が `break` しても**外側の `finally` は走る**（#40）。
+#[test]
+fn test_outer_finally_runs_when_inner_breaks() {
+    let src = "
+mut log = []
+for i in range(3):
+    try:
+        try:
+            log.append(i)
+        finally:
+            if i == 1:
+                break
+    finally:
+        log.append(100 + i)
+";
+    assert_int_list(run_get(src, "log"), &[0, 100, 1, 101]);
+}
+
 /// `block:` **文**は `loop_yield` に対して透過（#35）。
 ///
 /// ⚠ VM 側の回帰検知が本命。`Stmt::Block` に蓄積先を持たせると値が文へ吸い込まれ、

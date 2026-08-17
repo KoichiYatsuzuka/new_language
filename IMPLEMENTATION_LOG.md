@@ -3803,6 +3803,68 @@ bail する。finally は正常路・例外路・**各脱出路**に複製され
 
 ---
 
+## #40 完了（2026-08-17）— `finally` 本体そのものからの脱出
+
+`finally:` の**中**の `break`/`continue`/`return`/`block_return` を VM に載せた。
+**新オペコード 0**。#37 の `compile_finally_copy` に引数を 1 本足しただけで済んだ。
+
+### 意味論は Python と同じ（`--vm=off` と `impl_python` が 8 形すべて一致）
+
+| 形 | 結果 |
+|---|---|
+| `try: return 100 finally: break` | **return は破棄**されループを抜ける |
+| `try: raise … finally: return 7` | **例外は破棄**され 7 を返す |
+| `try: raise … finally: break` | **例外は破棄**されループを抜ける（後続も生存） |
+| `try: block_return 1 finally: block_return 2` | 2 |
+| 内側 finally が break | **外側 finally は依然走る** |
+
+### 鍵は「複製ごとにスタックの形が違う」こと
+
+`finally` 本体は **正常路・例外路・各脱出路**に複製される。それぞれ土台が違う:
+
+| 複製 | 下に積まれているもの | `extra` |
+|---|---|---|
+| 正常路 | なし | 0 |
+| 例外 landing pad | `[exc]` | **1** |
+| `return` 経路 | 戻り値 | **1** |
+| `break`/`continue` 経路 | なし（`Pop` は finally の後に出す） | 0 |
+| `block_return` 経路 | なし（値は `result_slot` へ退避済み） | 0 |
+
+⇒ `compile_finally_copy(fin, extra)` が **`stmt_base` を `extra` だけ持ち上げる**。
+これだけで、複製の中の `break` が跳ぶときに `emit_unwind_to_loop` がその値まで捨てる
+＝ **「保留中の動作を破棄する」が自動的に成立する**。跳んだ結果 `Pop`/`Reraise`/`Return` を
+飛ばすので、例外・戻り値の破棄も自然に出る。
+
+`block_return` だけは `stmt_base` を捨てない（ブロック式入口の深さへ跳ぶ）ので、
+`BlockCtx.entry_depth` を足して**差分だけ `Pop`** する。
+
+### `has_escape` walker を全廃した
+
+#37 で `try/except` の門を、#40 で `try/finally` の門を外した結果、**`has_escape` の呼び出しが
+0 件**になったので関数ごと削除（41 行）。⇒ 「同じ木を歩く walker」が 1 つ減った。
+判断は `try_stack` / `stmt_base` という**実行時の形に対応した状態**へ完全に一本化された。
+
+### 複製の増殖対策
+
+各 finally が脱出を含むと複製が入れ子に増える。`MAX_FINALLY_NEST = 4` で頭打ちにし、
+超えたら bail（ツリーウォークへ）。⚠ 実測では **`try` を 6 段ネストしても発火しない**
+（`in_finally` が増えるのは「finally の中の脱出」だけ）。3 段すべての finally が
+`break` を持つ病的な形でも正しく `[0, 10, 20]` を出した。
+
+### 検証
+
+`cargo build` 警告 0 ／ `cargo test` **730 緑**（+4）／
+`compare_vm_modes.ps1` **78 identical / 0 differing** ／ `scan_examples.ps1` **FAIL 0** ／
+`force_gate.ps1` **0 件・134 例題完走** ／ `cargo clippy` 触ったファイルの警告 0。
+13 形（基本 8 ＋ 敵対的 5: 例外路の `block_return`・ブロック式内ループからの `return`・
+3 段ネスト・`finally` からの `raise`・例外を捨てる `continue`）が **3 実装で一致**。
+**過去の全バッテリ 107 形を再実行して不一致 1 件**（#39 の既知ギャップのみ）。
+
+新設例題 [finally_body_escape.ar](examples/exceptions/finally_body_escape.ar)（10 ケース）。
+⚠ `_error` 例題は非該当（新しいエラーパターンを足していない）。
+
+---
+
 ## この記録の使いどころ
 
 **見積もりが外れた事例**が最も価値がある。同じ判断ミスを繰り返さないために残してある。
@@ -3828,6 +3890,7 @@ bail する。finally は正常路・例外路・**各脱出路**に複製され
 | `force_gate` 0 件 | 「VM は言語全体を載せられる」 | **「128 例題で 0」でしかなかった**。例題が 1 本も無い言語機能（制御フロー式貫通 `break`）は**ゲートにも off/on 比較にも映らない**。単体テストだけが 11 件押さえていた |
 | #34（2026-08-17） | 「跳び先の計算が要る＝ジャンプ機構の作り直し」 | **機構は最初から揃っていた**（`LoopCtx` は絶対ジャンプ）。足りなかったのは**跳ぶ時点で積まれている値の始末**だけ。しかも「ブロック式は式の末尾にしか置けない」を**構文で実測**したら、深さの伝播は 3 箇所で済み**新オペコード 0**になった |
 | #34 の `continue` | 「`break` を通せば `continue` も同じ」 | **ツリーウォークに `continue` の貫通が無かった**（SyntaxError 化＋**黙って握り潰し**）。VM の方が正しく、参照実装と一致していた。`for-target-shadow` と同じ「bail する形はツリーウォークが正しいとは限らない」 |
+| #40（2026-08-17） | 「複製ごとにスタックの形が違うので一律の巻き戻しが書けない」＝#37 で保留にした | **`stmt_base` を複製の土台の分だけ持ち上げるだけ**で済んだ（引数 1 本）。既存の巻き戻しがそのまま「保留中の動作を破棄する」意味論を出した。⇒ **保留の理由が「難しい」だけのときは、一度は手を動かして確かめる** |
 | #37（2026-08-17） | 「跳ぶ経路にも finally を出す＝新しい機構が要る」 | **#34 の `try_depth` を `try_stack` に一般化するだけ**で済んだ（新オペコード 0）。さらに **`loop_yield` は脱出ではなかった**（蓄積して先へ進む）のに `has_escape` が脱出扱いしており、`try: loop_yield i` が**丸ごと誤爆で bail** していた |
 | #35（2026-08-17） | 「注釈を `BlockCtx` に持たせて検査 op を出すだけ」 | **どの注釈を見るか**が本体だった。`BLOCK_RETURN_EXPECTED_TYPE` を push するのは**式だけ**なので、`block:` 文は外側の注釈を継承し、かつ **`loop_yield` には透過**でなければならない。後者を見落として `for … ->list[int]: block: loop_yield i` が **`None`** になった |
 | #34 の `try` | 「脱出は `has_escape` が既に弾いている」 | **`has_escape` は文しか歩かない**のでブロック式の中の `break` が素通りし、**ハンドラが残って後続の例外を横取り**した。しかも「跳ぶだけ」の例題では**症状が出ない**（跳んだ後に別の例外を投げて初めて分かる） |

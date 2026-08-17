@@ -339,6 +339,9 @@ struct BlockCtx {
     yield_slot: Option<u16>,
     /// ブロック式入口時点の `try_stack` の深さ（#37）。`block_return` はここまで巻き戻す。
     try_len: usize,
+    /// ブロック式入口時点のオペランド深さ（#40）。`finally` の複製の中の `block_return` は
+    /// **複製が載っている分**（例外経路の `[exc]` 等）を捨ててから跳ぶ必要がある。
+    entry_depth: Option<u16>,
     /// `->T` アノテーションの名前プール index（#35）。`block_return`/`loop_yield` の実行時検査に使う。
     ///
     /// ⚠ ツリーウォークは `BLOCK_RETURN_EXPECTED_TYPE.last()`（**式のスタックの最内**）を見る。
@@ -1445,6 +1448,10 @@ fn collect_expr_decls(
 /// `include_return` が真なら `return` も脱出とみなす（finally は return でも走る必要があるため）。
 /// `break`/`continue` は `stmts` 内の while/for（loop_depth>0）に囲まれていなければ脱出。
 /// `block_return`/`loop_yield` は常に脱出とみなす。
+/// `finally` 本体の複製がネストできる上限（#40）。経路ごとに複製されるので、
+/// これを超えるとコード量が指数的に膨らむ。超えたら bail してツリーウォークへ落とす。
+const MAX_FINALLY_NEST: usize = 4;
+
 /// ブロック式の本体が VM コンパイル不能な脱出を含むかを判定する。
 /// `return` は常に不可（ブロック式内 return は構文エラー）。
 /// `block_return`/`loop_yield` は当該ブロック式が扱うので許容。
@@ -1466,47 +1473,6 @@ fn block_body_bails(stmts: &[Stmt]) -> bool {
             block_body_bails(body)
                 || handlers.iter().any(|h| block_body_bails(&h.body))
                 || finally_body.as_ref().is_some_and(|fb| block_body_bails(fb))
-        }
-        _ => false,
-    })
-}
-
-/// `include_break` は「`break`/`continue` を脱出として数えるか」（#34）。
-///
-/// `try/except`（finally なし）では **`false` を渡す**。`break` は `emit_unwind_to_loop` が
-/// `PopTry` を出して正しく抜けるので、弾く必要がない。
-/// `try/finally` では **`true`**（finally を飛ばしてしまうので通せない）。
-///
-/// ⚠ この関数は**文しか歩かない**ので、ブロック式の中の `break` は見えない。
-/// そちらは `Compiler.try_depth` / `finally_guard` が受け持つ（2 つ目の walker を作らない）。
-fn has_escape(
-    stmts: &[Stmt],
-    include_return: bool,
-    include_break: bool,
-    loop_depth: usize,
-) -> bool {
-    macro_rules! rec {
-        ($s:expr, $d:expr) => {
-            has_escape($s, include_return, include_break, $d)
-        };
-    }
-    stmts.iter().any(|s| match s {
-        Stmt::Return(_) => include_return,
-        Stmt::Break | Stmt::Continue => include_break && loop_depth == 0,
-        // ⚠ `loop_yield` は蓄積して**そのまま先へ進む**（跳ばない）ので脱出ではない（#37）。
-        //    ここを true にしていたため `try: loop_yield i` が丸ごと bail していた。
-        Stmt::BlockReturn(..) => true,
-        Stmt::While { body, .. } | Stmt::For { body, .. } => rec!(body, loop_depth + 1),
-        Stmt::If { branches, else_body } => {
-            branches.iter().any(|(_, b)| rec!(b, loop_depth))
-                || else_body.as_ref().is_some_and(|eb| rec!(eb, loop_depth))
-        }
-        Stmt::Match { arms, .. } => arms.iter().any(|a| rec!(&a.body, loop_depth)),
-        Stmt::Block(b) => rec!(b, loop_depth),
-        Stmt::Try { body, handlers, finally_body } => {
-            rec!(body, loop_depth)
-                || handlers.iter().any(|h| rec!(&h.body, loop_depth))
-                || finally_body.as_ref().is_some_and(|fb| rec!(fb, loop_depth))
         }
         _ => false,
     })
@@ -2224,7 +2190,8 @@ impl Compiler {
 
     fn emit_unwind_to_loop(&mut self) -> Option<()> {
         let loop_try_len = self.loops.last().map_or(0, |l| l.try_len);
-        self.emit_unwind_tries(loop_try_len, true)?;
+        // break/continue の経路では値を積んでいない（pops は finally の後に出す）。
+        self.emit_unwind_tries(loop_try_len, true, 0)?;
         let Some(depth) = self.stmt_base else {
             bail("break-unknown-depth", None);
             return None;
@@ -2244,12 +2211,7 @@ impl Compiler {
     ///
     /// `keep` は「跨がない外側の try の数」。break/continue は最内ループ入口、
     /// block_return は最内ブロック式入口、return は 0（全部）を渡す。
-    fn emit_unwind_tries(&mut self, keep: usize, pop_except: bool) -> Option<()> {
-        if self.in_finally > 0 && keep < self.try_stack.len() {
-            // finally の中から更に跳ぶ形は未対応（複製が入れ子に増殖する）。
-            bail("escape-inside-finally", None);
-            return None;
-        }
+    fn emit_unwind_tries(&mut self, keep: usize, pop_except: bool, extra: u16) -> Option<()> {
         for i in (keep..self.try_stack.len()).rev() {
             let Some(fin) = self.try_stack[i].clone() else {
                 if pop_except {
@@ -2259,22 +2221,48 @@ impl Compiler {
             };
             self.emit(Op::PopTry);
             // ⚠ 複製中は「巻き戻し済みの try」を見せない（同じ finally を二重に出さない）。
+            // 外側の try は残るので、複製の中の `break` は**外側の finally を走らせてから**跳ぶ。
             let saved = self.try_stack.split_off(i);
-            self.in_finally += 1;
-            let mut ok = true;
-            for s in &fin {
-                if self.compile_stmt(s).is_none() {
-                    ok = false;
-                    break;
-                }
-            }
-            self.in_finally -= 1;
+            let ok = self.compile_finally_copy(&fin, extra);
             self.try_stack.extend(saved);
-            if !ok {
-                return None;
-            }
+            ok?;
         }
         Some(())
+    }
+
+    /// `finally` 本体を**この経路のスタックの上に**複製する（#37/#40）。
+    ///
+    /// `extra` は「この複製が載っているオペランドの数」。例外経路は `[exc]`、`return` 経路は
+    /// 戻り値が 1 つ下に積まれている。⚠ **`stmt_base` をその分だけ持ち上げる**ことで、
+    /// 複製の中の `break`/`continue`（#40）が跳ぶときに**その値まで捨ててくれる**
+    /// （＝ Python と同じ「保留中の動作を破棄する」意味論になる）。
+    ///
+    /// 複製は経路ごとに増えるので、入れ子が深いとコードが指数的に膨らむ。
+    /// **`MAX_FINALLY_NEST` で頭打ちにして、それ以上は bail** する（ツリーウォークへ落とす）。
+    fn compile_finally_copy(&mut self, fin: &[Stmt], extra: u16) -> Option<()> {
+        if self.in_finally >= MAX_FINALLY_NEST {
+            bail("finally-nest-limit", None);
+            return None;
+        }
+        let saved_base = self.stmt_base;
+        if extra > 0 {
+            self.stmt_base = self.stmt_base.map(|d| d + extra);
+        }
+        self.in_finally += 1;
+        let mut ok = true;
+        for s in fin {
+            if self.compile_stmt(s).is_none() {
+                ok = false;
+                break;
+            }
+        }
+        self.in_finally -= 1;
+        self.stmt_base = saved_base;
+        if ok {
+            Some(())
+        } else {
+            None
+        }
     }
 
     fn compile_stmt(&mut self, stmt: &Stmt) -> Option<()> {
@@ -2292,11 +2280,12 @@ impl Compiler {
                 // #37: 開いている `finally` を**全部**走らせてから返す（内側から）。
                 // ⚠ `try/except` の `PopTry` は不要（`run` から即復帰してハンドラごと捨てられる）。
                 //    偽を渡すことで finally を持たない既存 Chunk は 1 命令も変わらない。
-                self.emit_unwind_tries(0, false)?;
+                // ⚠ 戻り値が 1 つ積まれた上で finally が走る（#40）。
+                self.emit_unwind_tries(0, false, 1)?;
                 self.emit(Op::Return);
             }
             Stmt::Return(None) => {
-                self.emit_unwind_tries(0, false)?;
+                self.emit_unwind_tries(0, false, 0)?;
                 self.emit(Op::ReturnNil);
             }
             // パラメータ（mut）への代入。let への代入は型検査で弾かれるので健全。
@@ -2849,6 +2838,11 @@ impl Compiler {
                 let result_slot = ctx.result_slot;
                 let ann = ctx.return_type;
                 let block_try_len = ctx.try_len;
+                // #40: `finally` の複製の中から跳ぶときは、複製が載っている分を捨てる。
+                let block_pops = match (self.stmt_base, ctx.entry_depth) {
+                    (Some(now), Some(base)) => now.saturating_sub(base),
+                    _ => 0,
+                };
                 self.compile_expr(e)?;
                 // #35: `->T` があれば実行時検査（ツリーウォークの `check_block_return_type`）。
                 if let Some(idx) = ann {
@@ -2857,7 +2851,10 @@ impl Compiler {
                 self.emit(Op::StoreLocal(result_slot));
                 // #37: ブロック式入口までの try を巻き戻す（finally を走らせる）。
                 // ⚠ 値は既に `result_slot` へ退避済みなので finally が何を積んでも安全。
-                self.emit_unwind_tries(block_try_len, true)?;
+                self.emit_unwind_tries(block_try_len, true, 0)?;
+                for _ in 0..block_pops {
+                    self.emit(Op::Pop);
+                }
                 let j = self.emit(Op::Jump(0));
                 self.block_ctxs.last_mut().unwrap().end_jumps.push(j);
             }
@@ -3122,12 +3119,8 @@ impl Compiler {
         handlers: &[ExceptHandler],
         fin: &[Stmt],
     ) -> Option<()> {
-        // #37: 本体とハンドラの脱出は `emit_unwind_tries` が finally を複製して扱う。
-        // ⚠ 残る禁止は **`finally` 本体そのものからの脱出**だけ（複製が入れ子に増殖する）。
-        if has_escape(fin, true, true, 0) {
-            bail("finally-body-escape", None);
-            return None;
-        }
+        // #37/#40: 本体・ハンドラ・`finally` 本体のいずれの脱出も
+        // `emit_unwind_tries` / `compile_finally_copy` が扱う（`has_escape` の門は不要になった）。
         let setup = self.emit(Op::SetupTry(0));
         // 本体から跳ぶ脱出は `finally` を走らせてから跳ぶ（#37）。そのために本体を
         // **この finally 付きで**登録する。⚠ `has_escape` は文しか歩かないので、
@@ -3146,22 +3139,16 @@ impl Compiler {
         self.try_stack.pop();
         r?;
         self.emit(Op::PopTry);
-        // 正常経路の finally。⚠ 例外経路の複製は `[exc]` を積んだまま走るので、
-        // finally 本体からの `break` は**どちらの複製でも**通さない（#34）。
-        self.in_finally += 1;
-        for s in fin {
-            self.compile_stmt(s)?;
-        }
-        self.in_finally -= 1;
+        // 正常経路の finally（オペランドは積まれていない）。
+        self.compile_finally_copy(fin, 0)?;
         let normal_jump = self.emit(Op::Jump(0)); // END
         // 例外 landing pad: スタック = [exc]。finally はスタック中立なので [exc] は底に残る。
         let land = self.here();
         self.code[setup] = Op::SetupTry(land);
-        self.in_finally += 1;
-        for s in fin {
-            self.compile_stmt(s)?;
-        }
-        self.in_finally -= 1;
+        // 例外経路の finally。⚠ `[exc]` が 1 つ積まれた上で走る（#40）。
+        // ここから `break`/`return` で跳ぶと `Pop`/`Reraise` を飛ばす＝**例外は破棄される**
+        // （ツリーウォーク・Python と同じ）。
+        self.compile_finally_copy(fin, 1)?;
         self.emit(Op::Pop); // [exc] を捨てる
         self.emit(Op::Reraise); // 再伝播（current_exception は設定済み）
         let end = self.here();
@@ -3742,6 +3729,7 @@ impl Compiler {
             yield_slot,
             return_type: ann,
             try_len: self.try_stack.len(),
+            entry_depth: self.stmt_base,
         });
         for s in stmts {
             self.compile_stmt(s)?;
@@ -3815,6 +3803,7 @@ impl Compiler {
             yield_slot: None,
             return_type: ann,
             try_len: self.try_stack.len(),
+            entry_depth: self.stmt_base,
         });
         let mut branch_ends: Vec<usize> = Vec::new();
         for (cond, body) in branches {
@@ -3883,6 +3872,7 @@ impl Compiler {
             yield_slot: None,
             return_type: ann,
             try_len: self.try_stack.len(),
+            entry_depth: self.stmt_base,
         });
         let mut arm_ends: Vec<usize> = Vec::new();
         for arm in arms {
@@ -3982,6 +3972,7 @@ impl Compiler {
             yield_slot: Some(yield_slot),
             return_type: ann,
             try_len: self.try_stack.len(),
+            entry_depth: self.stmt_base,
         });
         for s in body {
             self.compile_stmt(s)?;
@@ -4049,6 +4040,7 @@ impl Compiler {
             yield_slot: Some(yield_slot),
             return_type: ann,
             try_len: self.try_stack.len(),
+            entry_depth: self.stmt_base,
         });
         for s in body {
             self.compile_stmt(s)?;
