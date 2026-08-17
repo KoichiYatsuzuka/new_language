@@ -3388,6 +3388,275 @@ force_gate **0 件・128 例題完走** ／ clippy 62（増分 0）／ REPL 手�
 
 ---
 
+## #33 の判断材料 — 計測して前提が崩れた（2026-08-17）／ #34・#35・#36 の昇格
+
+#33 は「`--vm=off` を捨てるか」を決めないと成立しないタスクだったので、判断材料を実測した。
+結論は **「捨てられない。ただし捨てる方向は正しく、前提タスクを 3 本立てれば到達できる」**。
+
+### 崩れた前提 1: 「4 つの TLS は `--vm=off` のためだけに生きている」→ 誤り
+
+`VmMode::Default` は `Off`（#3 で意図的にそうした）。`set_vm_mode(On)` を呼ぶのは
+[main.rs:371](src/main.rs#L371) と [async_mgr.rs:278](src/interpreter/async_mgr.rs#L278) の 2 箇所だけ。
+実際の `Interpreter::new()` 呼び出しは **17 箇所**で、内訳は:
+
+| 消費者 | 箇所 | モード |
+|---|---|---|
+| `run_program` | main.rs:370 | `On`（CLI 指定） |
+| async worker | async_mgr.rs:277 | 親から継承（#32） |
+| **REPL** | [repl.rs:30](src/repl.rs#L30) | **`Off`** |
+| **単体テスト** | tests/mod.rs 6・callables.rs 3・file_io.rs 3・events_external.rs 1・iterator.rs 1 | **`Off`** |
+
+⇒ CLI フラグを消しても REPL と 706 テストがツリーウォーク制御フローを踏み続ける。
+**#33 の前提は「`--vm=off` 廃止の判断」ではなく「入口の移行（→ #36）」だった。**
+
+### 崩れた前提 2: 「`force_gate` 0 件＝VM は全部載せられる」→ 誤り
+
+release バイナリ（HEAD・未改変）で確認した **off/on 差**:
+
+| 入力 | `--vm=off` | `--vm=on`（既定） |
+|---|---|---|
+| `for` 内の `block ->int:` から `break` | `5` | `VmForceError: cannot compile top-level statement 'For'` |
+| `for` 内の `if ->int:` から `break` | `5` | `VmForceError` |
+| `while ->list[int]:` 内の `if ->int:` から `break` | `[0, 1, 2, 3]` | `VmForceError` |
+| 同じ形を**関数本体**へ | `5` | `VmForceError: cannot compile function 'g'` |
+| `block ->int: block_return "hello"` | `TypeError: block_return value has type 'str', but 'int' was expected` | **`hello`（素通り）** |
+
+`break` の貫通は `.claude/rules/language-differences.md` に明記された言語機能。
+**例題が 1 本も無い**（`break` を含む 34 箇所を確認したが制御フロー式を貫通する形は 0）ため、
+`force_gate` にも `compare_vm_modes` にも映っていなかった。⇒ **#34** と **#35** として昇格。
+
+⚠ 一般化: **例題が無い言語機能はゲートに映らない**。`force_gate` は
+「128 例題が通るか」の検査であって「言語全体が載るか」の検査ではない。
+
+### 移行コストの実測（#36 の見積もり根拠）
+
+テストヘルパー `run`/`run_get`/`run_exc` に `set_vm_mode(On)` ＋ `set_toplevel_globals(...)` を足して
+`cargo test`（実験後に完全復元）:
+
+```
+test result: FAILED. 676 passed; 30 failed
+```
+
+| 分類 | 件数 | 実体 |
+|---|---|---|
+| 注釈欠落（実験の副作用。ヘルパーで `check_and_annotate` を呼べば消える） | 19 | `mustbe::*` 13／`unpacking::test_cast_*` 5／`test_redeclaration_in_inner_scope` 1。全て `VmForceError: ... 'Let'` |
+| **VM が載せられない**（#34 の実体） | **5** | `break` の制御フロー式貫通 |
+| **VM が検査を持たない**（#35 の実体） | **6** | `block_return` の型検査 5／`loop_yield` の位置検査 1 |
+
+⇒ **#36 の実質作業は「入口 4 箇所（REPL ＋ ヘルパー 3 本）で注釈を供給する」だけ**で、
+残る 11 件は #34/#35 が閉じれば自動的に緑になる。
+
+### 捨てた場合に失うものの実測
+
+| 失うもの | 代替 |
+|---|---|
+| [compare_vm_modes.ps1](compare_vm_modes.ps1) の 72 例題 byte-identical 網（**実バグ 4 件**を検出: `JsProcFn` 欠落 #22-a／`<anonymous>` トレースバック #15d-2／`event_cs_handler.ar` の `CsObject` 誤ディスパッチ #10-b′・#27-a） | **#31 が唯一の候補**（下記） |
+| [ab_bench_vm.ps1](ab_bench_vm.ps1)（退行が VM 経路由来かの切り分け）と「`--vm=off` でも同じ差が出るか」という判断基準 | 代替なし |
+
+**#31 の実現可能性（`compare_vm_modes` と同一の 72 例題で実測）**:
+
+```
+stdout agrees with rust    : 39
+stdout disagrees           : 30   （うち _error 例題 8）
+impl_python internal crash :  3
+```
+
+⇒ **今の impl_python は代替にならない**（33/72 でオラクルとして使えない。`collection.ar` は
+rust 125 行に対し py 4 行、`built_in.ar` は 127 行に対し 1 行）。**39 本に絞れば成立する**。
+また #31 が埋めるのは「両モードともツリーウォークに落ちる形」という別の穴なので、
+**#33 の代替というより補完**。#33 の前に #31 を済ませておくのが望ましい。
+
+### 削除できるコード量の実測（#33 の見返り）
+
+| 対象 | 行数 |
+|---|---|
+| [eval/control_expr.rs](src/interpreter/eval/control_expr.rs) 全体 | 333 |
+| [exec/control_flow.rs](src/interpreter/exec/control_flow.rs) | 182（223 − `make_for_iterator` 41。**VM の `GetIter` が使用中**なので残る） |
+| [eval/core.rs](src/interpreter/eval/core.rs) 制御フロー式 5 アーム ＋ `eval_match_expr` | 54 |
+| [exec/dispatch.rs](src/interpreter/exec/dispatch.rs) の制御フロー文・信号アーム | 34 |
+| [exec/vars.rs](src/interpreter/exec/vars.rs) `exec_loop_yield` | 33 |
+| [functions/execution.rs](src/interpreter/functions/execution.rs) `LOOP_DEPTH` 退避×2 ＋ `BREAK_SENTINEL` 検査×2 | 24 |
+| [interpreter.rs](src/interpreter.rs) の TLS 3 本 ＋ `BREAK_SENTINEL` 宣言 | 17 |
+| [async_mgr.rs](src/interpreter/async_mgr.rs) のツリーウォーク経路 | 8 |
+| `ExecResult` の 4 バリアント（`Break` 9／`Continue` 8／`BlockReturn` 12／`BlockYield` 4 箇所） | ~15 |
+| **合計** | **≈ 700 行（src 65,012 行の 1.1%）** |
+
+**速度効果はゼロ**（`exec_op` にも VM のホットパスにも触れない）。見返りは構造の単純化のみ。
+
+---
+
+## #34 完了（2026-08-17）— 制御フロー式を貫通する `break`/`continue` の VM コンパイル
+
+`--vm=on`（既定）で `VmForceError` になっていた形を全部載せた。ついでに**ツリーウォークの
+`continue` バグ 2 件**と、**エラー報告の off/on 食い違い**（HEAD からの既存ギャップ）を解消した。
+
+### 何が bail していたか（計測）
+
+原因は 1 箇所だけだった。`block_body_bails(stmts, is_loop_expr, loop_depth)` が
+「本体内の while/for に囲まれていない `break`/`continue`」を**無条件に非対応**として弾いていた。
+`LoopCtx` の doc は「絶対ジャンプなので貫通は自然に成立する」と書いてあり、跳ぶ機構自体は
+最初から揃っていた。足りなかったのは**オペランドスタックの平衡**だけ。
+
+### 本当の問題は「跳ぶ時点で積まれている値」だった
+
+ブロック式は値を全部 temp **slot** に置くので、本体の文はブロック式の入口深さで走る。
+`let s = 1 + block ->int: … break …` は `1` を積んだまま跳ぶので、跳び先（ループ出口）と
+深さが合わない。⇒ **跳ぶ前にその数だけ `Op::Pop` する**。
+
+深さの求め方で 3 案を比較し、最も安い案を採った:
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| 全 op のスタック効果表 | `emit()` で深さを追う | **却下**（~120 variant の表を書く＝取り違えると黙って壊れる） |
+| 実行時マーク | ループ入口で深さを記録し `break` で truncate（`SetupTry` と同型） | **却下**（`exec_op` の引数が増える。`#[inline(always)]` の signature を触るのは risky） |
+| **末尾位置の相対深さ**（採用） | ブロック式は**常に式の末尾**にしか置けないので、親が「自分より左に積んだ数」を渡すだけでよい | **採用**（伝播は `BinOp` 左右と `UnaryOp` の 3 箇所・**新オペコード 0**） |
+
+「どの式位置にブロック式を置けるか」は**構文で確定する**ので実測した:
+
+| 位置 | 可否 |
+|---|---|
+| `1 + block …` / `block … + 1` / `1 < block …` / `True and block …` / `-block …` / `1 + 2 * block …` | **可** |
+| `print(block …)` / `[1, block …]` / `xs[block …]` | **ParseError**（カッコの中には置けない） |
+
+⇒ カッコの中を追う必要が無い。`BinOp` の左右と `UnaryOp` にだけ深さを伝えれば足りる。
+
+### 設計（fail-safe に倒す）
+
+- `Compiler.stmt_base: Option<u16>` … 現在の**文境界**の深さ（最内ループ入口からの相対）。
+- `Compiler.pending: Option<u16>` … これからコンパイルする式の開始深さ。
+  `compile_expr` が入口で `take()` するので、**直前に設定した親だけ**が伝えられる。
+- ループ（文・式の 4 箇所）は本体の `stmt_base` を `Some(0)` に、ブロック式は入口深さに差し替える。
+- `Stmt::Break`/`Continue` は `stmt_base` 分の `Op::Pop` を出してから跳ぶ。
+
+⚠ **`None`（不明）なら bail**。伝播を書き漏らした式の形は「壊れる」ではなく「載らない」で止まる。
+
+⇒ 既存コードは `stmt_base = Some(0)` なので **`Pop` は 1 つも増えず、既存 Chunk はバイト単位で不変**。
+
+**伝播漏れは「文の側」にもあった**（実測で発見）。`compile_stmt` が入口で 1 回だけ渡す方式なので、
+**値より先に別の式をコンパイルする文**では漏れる。8 つの文形を総当たりして 1 件見つかった:
+
+| 文の形 | 結果 |
+|---|---|
+| `a = …` / `a += …` / `xs[0] = …` / `xs[0] += …` / `obj.x += …` | ○（値を先にコンパイルする） |
+| **`obj.x = …`** | **✗**（`obj` を先に積む ⇒ 右辺は深さ +1）→ `stmt_base + 1` を渡して修正 |
+| `print(… block …)` / `let p, q = (…, block …)` | 構文上置けない（ParseError） |
+
+⇒ **fail-safe に倒してあったので症状は `VmForceError`**（誤答ではない）。設計判断が効いた形。
+
+### 2 つ目の walker を消した
+
+判定を `Stmt::Break` のコンパイル時（`loops` と `stmt_base` を見る）へ一本化し、
+`block_body_bails` から `break`/`continue` の判定と引数 2 本を削除した（`Stmt::Return` だけを見る）。
+⇒ #27-c の教訓「**同じ木を歩く walker が 2 つあるとずれる**」を作らずに済んだ。副産物として
+`block:` **文**の中の `break` も貫通するようになった（以前は本体ごと bail していた）。
+
+### 🐛 ツリーウォークの `continue` バグ 2 件（**VM の方が正しかった**）
+
+VM を載せてから off/on/`impl_python` を突き合わせて発覚した。
+
+| 形 | `--vm=off`（旧） | `--vm=on`（新） | `impl_python` |
+|---|---|---|---|
+| `100 + block ->int: … continue …` | `SyntaxError: 'continue' inside block expression …` | **312** | **312** |
+| `1 + if c ->int: continue else: …` | `TypeError: … Add: int and NoneType` | **12** | **12** |
+
+`eval_block_expr` は `continue` を SyntaxError にし、`eval_capture_block_return` は
+**アームが無くて `Ok(other)` へ落ち、黙って握り潰して `None` を返して**いた（後者の方が悪質＝
+誤った値が出る）。`break` には `BREAK_SENTINEL` があるのに `continue` には無かった。
+
+⇒ **基準は参照実装**（計画書の落とし穴どおり）。`CONTINUE_SENTINEL` を追加し、`break` と同じ
+経路（ブロック式 → ループ本体 → 関数境界）で外側ループへ届くようにした。これで
+off/on/`impl_python` の 3 実装が一致する。⚠ #33 で消す対象がセンチネル 1 本増えた。
+
+### 🐛 **自分で入れた実バグ**: `try` のハンドラが残る
+
+`break` を通せるようにした直後、`try` との相互作用で踏んだ。**オペランドスタックと同じ問題が
+ハンドラスタックにもあった**。
+
+```
+fn f() -> int:
+    for i in range(5):
+        try:
+            let _ = block ->int:
+                if i == 2:
+                    break          # ← PopTry を通らずにループ外へ跳ぶ
+            ...
+        except ValueError:
+            print("WRONG")
+    raise ValueError("must escape")  # ← 残ったハンドラがこれを横取りした
+```
+
+| | 結果 |
+|---|---|
+| `--vm=off` / `impl_python` | `OK: caught by the outer try` |
+| `--vm=on`（修正前） | **`WRONG: loop handler fired`** ＋ その後 |
+
+原因は **`has_escape` が文しか歩かない**こと。`Stmt::Break` なら弾けるが、
+`Expr::Block` の中の `break` は `Stmt::Let` の下に隠れて見えない。
+以前は `block_body_bails` が本体ごと弾いていたので露出していなかった。
+
+⇒ `Compiler.try_depth`（最内ループ以降に開いた `SetupTry` の数）を持ち、
+跳ぶ前に `Op::PopTry` をその数だけ出す。`finally` は `PopTry` では表せない
+（全出口で走る必要がある）ので `finally_guard` を別に持ち、**1 以上なら bail**。
+両方ともループ入口で 0 に退避する（外側の try を巻き込まないため）。
+
+⚠ **検知には「跳んだ後に別の例外を投げる」例題が要る**。跳ぶだけの例題（`u_try_break`）は
+残ったハンドラに触れないので**素通りした**。例題のケース 12 はこの形にしてある。
+
+**副産物**: `PopTry` を出せるようになったので `has_escape` に `include_break` を足し、
+`try/except`（finally なし）では `break`/`continue` を数えないようにした。
+⇒ `for: try: … break … except:` という**素の形も VM に載るようになった**（HEAD では bail）。
+
+**残ったギャップ → #37**: `try/finally` を跨ぐ `break` は依然 bail（`--vm=off` と `impl_python` は
+正しく finally を走らせる）。HEAD からの既存ギャップで、跳ぶ経路にも finally 本体を出す
+（複製 or サブルーチン化）実装が要る。#34 は `finally_guard` で「通さない」ことを明示しただけ。
+
+### 🐛 エラー報告の off/on 食い違い（HEAD からの既存ギャップ）
+
+囲むループの無い `break` は、ツリーウォークが `SyntaxError` を出すのに対し VM は
+**コンパイルを諦めていた**ので `--vm=on` が `VmForceError` になっていた（`for` も
+ブロック式も無い素の `break` でも同じ＝#34 とは独立の既存バグ）。
+
+⇒ **必ず失敗すると分かっている文は bail しない**。`Op::Fail(name_idx)` を 1 つ足し、
+ツリーウォークと**一字一句同じ**メッセージで落とす。発行元は「囲むループの無い
+`break`/`continue`」だけなので**既存 Chunk は 1 命令も変わらない**。飛び先索引を持たないので
+`peephole::code_target_mut` への登録は不要（`Op` のサイズも `op_size_is_pinned` で据え置き）。
+
+### A/B 実測（新オペコード 1 個ぶんの摂動）
+
+HEAD の `src/` をスクラッチパッドへ退避してビルドした `head.exe` と交互実行（min of 7）。
+
+| ベンチ | `--vm=force`（VM 経路） | `--vm=off`（ツリーウォーク） |
+|---|---|---|
+| `bench_field_access.ar` | **0.961x** | 1.011x |
+| `bench_method_call.ar` | 1.033x（別の回では 0.945x ＝**振れ**） | 1.001x |
+| `bench_control_flow.ar` | 0.994x | 1.024x |
+| 全体（`ab_bench.ps1`・9 本） | 0.945〜1.009x | — |
+
+⇒ **命令列は 1 命令も変わっていない**（既存コードは `stmt_base = Some(0)` なので `Pop` は増えず、
+`Op::Fail` は既存 Chunk に出ない）。`bench_method_call` が 0.945x↔1.033x で振れることが示すとおり
+これは**コード配置の揺れ**で、#28 が記録した「op を足す規模の摂動は 1 命令も実行しなくても
+0.88〜0.94x 動かす」の範囲内。判断基準どおり `--vm=off` 側には差が出ていない。
+
+⚠ **`ab_bench.ps1` / `ab_bench_vm.ps1` は `ReadToEnd()` を逐次に呼ぶのでデッドロックすることがある**
+（1 時間ブロックした。CPU 時間が伸びないので気づける）。`scan_examples.ps1` は非同期読みで回避済み。
+今回はパイプを使わない計測（出力を `DEVNULL` へ）に切り替えた。
+
+### 検証
+
+`cargo build` 警告 0 ／ `cargo test` **717 緑**（+11）／
+`compare_vm_modes.ps1` **74 identical / 0 differing**（例題 2 本増）／
+`scan_examples.ps1` **FAIL 0** ／ `force_gate.ps1` **0 件・130 例題完走** ／
+`cargo clippy` **触ったファイルの警告 0**（増分 0）。
+
+新設例題 [control_flow_expr_escape.ar](examples/basics/control_flow_expr_escape.ar)（11 ケース）と
+[control_flow_expr_escape_error.ar](examples/basics/control_flow_expr_escape_error.ar) は
+**3 実装（off / on / `impl_python`）で byte-identical**。単体テスト 8 件を追加。
+
+⚠ **この例題を削ると検知力を失う**。ここは長らく例題が 0 本で、`force_gate` にも
+`compare_vm_modes` にも映らなかった領域。
+
+---
+
 ## この記録の使いどころ
 
 **見積もりが外れた事例**が最も価値がある。同じ判断ミスを繰り返さないために残してある。
@@ -3409,5 +3678,10 @@ force_gate **0 件・128 例題完走** ／ clippy 62（増分 0）／ REPL 手�
 | #27-d 段階 2a→2b | 「`static` は slot を持たないので採番から外せばよい」 | リゾルバは `push_base` するので**以降の slot が全部ずれ**、`LoadLocal` が範囲外を読んだ。2a 単体では症状が出ず、2b で初めて露見 |
 | #3（2026-08-17） | 「TLS 4 本・センチネル 2 種を消す」 | **2 つは VM が現に使っていた**（`GENERATOR_YIELDS`＝#8・`RAISE_SENTINEL`＝V-C）。残り 4 つも `--vm=off` のために生きている＝**網を捨てる判断とセット** |
 | #3 フォールバック撤去 | 「既定を強制にすればよい」 | **REPL と単体テストが壊れた**（解決情報を持たない文脈では正しいコードも `VmForceError`）。効かせるのは `run_program` だけ |
+| #33 の前提（2026-08-17） | 「TLS 4 本は `--vm=off` のためだけに生きている＝捨てる判断さえすれば消せる」 | **`Default` が `Off`** なので REPL と 706 テストも同じ経路。さらに **`--vm=on` で実行できない正しいプログラムが実在**（→ #34/#35）。判断ではなく**前提タスク 3 本**が足りていなかった |
+| `force_gate` 0 件 | 「VM は言語全体を載せられる」 | **「128 例題で 0」でしかなかった**。例題が 1 本も無い言語機能（制御フロー式貫通 `break`）は**ゲートにも off/on 比較にも映らない**。単体テストだけが 11 件押さえていた |
+| #34（2026-08-17） | 「跳び先の計算が要る＝ジャンプ機構の作り直し」 | **機構は最初から揃っていた**（`LoopCtx` は絶対ジャンプ）。足りなかったのは**跳ぶ時点で積まれている値の始末**だけ。しかも「ブロック式は式の末尾にしか置けない」を**構文で実測**したら、深さの伝播は 3 箇所で済み**新オペコード 0**になった |
+| #34 の `continue` | 「`break` を通せば `continue` も同じ」 | **ツリーウォークに `continue` の貫通が無かった**（SyntaxError 化＋**黙って握り潰し**）。VM の方が正しく、参照実装と一致していた。`for-target-shadow` と同じ「bail する形はツリーウォークが正しいとは限らない」 |
+| #34 の `try` | 「脱出は `has_escape` が既に弾いている」 | **`has_escape` は文しか歩かない**のでブロック式の中の `break` が素通りし、**ハンドラが残って後続の例外を横取り**した。しかも「跳ぶだけ」の例題では**症状が出ない**（跳んだ後に別の例外を投げて初めて分かる） |
 
 **教訓**: 着手前に診断フックで数字を取る。IR / バイトコードを実際にダンプして見る。

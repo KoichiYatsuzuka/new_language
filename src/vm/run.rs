@@ -959,6 +959,9 @@ fn exec_op(
             let r = interp.vm_exc_matches(&v, &chunk.names[*name_idx as usize]);
             buf.push(Value::Bool(r));
         }
+        // #34: 実行時に必ず失敗する文（囲むループの無い break/continue）を、
+        // ツリーウォークと**一字一句同じ**メッセージで落とす。
+        Op::Fail(idx) => return Err(chunk.names[*idx as usize].clone()),
         Op::BuildEmptyList => buf.push(Value::List(Rc::new(RefCell::new(Vec::new())))),
         Op::ListAppendLocal(slot) => {
             let v = buf.pop().unwrap();

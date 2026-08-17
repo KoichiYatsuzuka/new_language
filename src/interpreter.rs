@@ -127,6 +127,15 @@ pub use value::*;
 /// `block:` expression) and needs to bubble up to the enclosing `for`/`while` loop.
  const BREAK_SENTINEL: &str = "\x00__break__";
 
+/// `continue` 版の同型センチネル（#34）。
+///
+/// ⚠ **以前は存在せず、これがツリーウォークのバグだった**。`eval_block_expr` は
+/// `continue` を SyntaxError にし、`eval_capture_block_return` は**黙って握り潰して
+/// `None` を返して**いた（`let v = 1 + if c ->int: continue` が TypeError になった）。
+/// VM は `break` と同じジャンプで正しく扱い、参照実装（`impl_python`）も継続する。
+/// 基準を参照実装に合わせ、`break` と同じ経路で外側ループへ届けるようにした。
+ const CONTINUE_SENTINEL: &str = "\x00__continue__";
+
 thread_local! {
     /// ジェネレータ本体の一括評価中に `yield` された値を収集するスレッドローカル変数。
     /// `None` の場合はジェネレータ実行コンテキスト外であることを意味する。

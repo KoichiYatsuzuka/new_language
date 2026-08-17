@@ -9,7 +9,7 @@ use {
     },
     crate::interpreter::{
         ExecResult, GeneratorState,
-        Interpreter, Value, Var, BREAK_SENTINEL, LOOP_DEPTH,
+        Interpreter, Value, Var, BREAK_SENTINEL, CONTINUE_SENTINEL, LOOP_DEPTH,
     },
 };
 use super::*;
@@ -92,6 +92,8 @@ impl Interpreter {
                     Ok(ExecResult::Continue) | Ok(ExecResult::Normal) => {}
                     Ok(r) => return Ok(r),
                     Err(ref e) if e.as_str() == BREAK_SENTINEL => break,
+                    // ブロック式を貫通してきた continue（#34）
+                    Err(ref e) if e.as_str() == CONTINUE_SENTINEL => {}
                     Err(e) => return Err(e),
                 }
             }
@@ -193,6 +195,8 @@ impl Interpreter {
                                 Ok(ExecResult::Continue) | Ok(ExecResult::Normal) => {}
                                 Ok(r) => return Ok(r),
                                 Err(ref e) if e.as_str() == BREAK_SENTINEL => break,
+                                // ブロック式を貫通してきた continue（#34）
+                                Err(ref e) if e.as_str() == CONTINUE_SENTINEL => {}
                                 Err(e) => return Err(e),
                             }
                         }

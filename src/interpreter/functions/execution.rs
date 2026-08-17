@@ -6,7 +6,8 @@ use {
     crate::token::Span,
     crate::interpreter::{
         CapturedVar, DictData, ExecResult, FnValue, GeneratorFnValue, GeneratorState,
-        Interpreter, StackFrame, Value, Var, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
+        Interpreter, StackFrame, Value, Var, BREAK_SENTINEL, CONTINUE_SENTINEL, GENERATOR_YIELDS,
+        LOOP_DEPTH,
         RAISE_SENTINEL,
     },
 };
@@ -595,6 +596,10 @@ impl Interpreter {
             if e.as_str() == BREAK_SENTINEL {
                 return Err("SyntaxError: 'break' outside for/while loop".to_string());
             }
+            // 同上（#34）。ループの無い関数のブロック式内 continue。
+            if e.as_str() == CONTINUE_SENTINEL {
+                return Err("SyntaxError: 'continue' outside for/while loop".to_string());
+            }
             // 内部エラー文字列を RaisedError に変換してスタックフレームを付加してから伝播する
             let msg = e.clone();
             if let Some(mut raised) = self.make_internal_raised_error(&msg) {
@@ -747,6 +752,9 @@ impl Interpreter {
         if let Err(ref e) = exec_result {
             if e.as_str() == BREAK_SENTINEL {
                 return Err("SyntaxError: 'break' outside for/while loop".to_string());
+            }
+            if e.as_str() == CONTINUE_SENTINEL {
+                return Err("SyntaxError: 'continue' outside for/while loop".to_string());
             }
         }
 

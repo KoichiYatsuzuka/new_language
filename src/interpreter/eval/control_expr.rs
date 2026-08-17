@@ -4,7 +4,8 @@ use {
     std::cell::RefCell, std::rc::Rc,
     crate::interpreter::{
         ExecResult, GeneratorState,
-        Interpreter, Value, Var, BLOCK_YIELDS, BREAK_SENTINEL, LOOP_DEPTH, RAISE_SENTINEL,
+        Interpreter, Value, Var, BLOCK_YIELDS, BREAK_SENTINEL, CONTINUE_SENTINEL, LOOP_DEPTH,
+        RAISE_SENTINEL,
     },
 };
 
@@ -45,7 +46,8 @@ impl Interpreter {
                     break 'block_expr;
                 }
                 Ok(ExecResult::Continue) => {
-                    early_err = Some("SyntaxError: 'continue' inside block expression is not supported outside a loop".to_string());
+                    // continue も break と同じく block: 式を貫通して外側ループへ届く（#34）。
+                    early_err = Some(CONTINUE_SENTINEL.to_string());
                     break 'block_expr;
                 }
                 Err(e) => {
@@ -112,6 +114,12 @@ impl Interpreter {
                 Ok(ExecResult::Break) => {
                     // break propagates through if/match expressions to reach the enclosing loop
                     early_err = Some(BREAK_SENTINEL.to_string());
+                    break 'body;
+                }
+                Ok(ExecResult::Continue) => {
+                    // ⚠ 以前はこのアームが無く `Ok(other)` へ落ちて**黙って握り潰されて**いた（#34）。
+                    // continue も break と同じく if/match 式を貫通して外側ループへ届く。
+                    early_err = Some(CONTINUE_SENTINEL.to_string());
                     break 'body;
                 }
                 Ok(ExecResult::Raise(raised)) => {
@@ -219,6 +227,8 @@ impl Interpreter {
                         Ok(ExecResult::BlockYield(_)) => {}
                         // break from inside an eval context (e.g. if expression body)
                         Err(ref e) if e.as_str() == BREAK_SENTINEL => break 'for_loop,
+                        // continue from inside an eval context（#34）
+                        Err(ref e) if e.as_str() == CONTINUE_SENTINEL => continue,
                         Err(e) => {
                             early_err = Some(e);
                             break 'for_loop;
@@ -304,6 +314,8 @@ impl Interpreter {
                 }
                 // break from inside an eval context (e.g. if expression body)
                 Err(ref e) if e.as_str() == BREAK_SENTINEL => break 'while_loop,
+                // continue from inside an eval context（#34）
+                Err(ref e) if e.as_str() == CONTINUE_SENTINEL => continue,
                 Err(e) => {
                     early_err = Some(e);
                     break;

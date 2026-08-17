@@ -1,0 +1,171 @@
+# control_flow_expr_escape.ar — break / continue が制御フロー「式」を貫通して外側ループへ届く（#34）
+#
+# Arrow では `break` / `continue` は入れ子の if / match / block: 式を貫通して
+# 最も内側の for / while へ届く。ブロック式が**式の途中**に現れる場合
+# （`1 + block ->int: …`）、跳ぶ時点で積まれている値も正しく捨てる必要がある。
+#
+# ⚠ この形を踏む例題が長らく 1 本も無く、VM が載せられないことに気づけなかった（#34）。
+#    ここを削ると `force_gate` / `compare_vm_modes` の検知力が落ちる。
+
+print("=== 1. break through a block: expression ===")
+mut found = -1
+for i in range(10):
+    let _ = block ->int:
+        if i == 5:
+            found = i
+            break
+        block_return i
+print(found)                      # 5
+
+print("=== 2. break through an if expression ===")
+mut hit = -1
+for i in range(10):
+    let _ = if i == 3 ->int:
+        hit = i
+        break
+    else:
+        0
+print(hit)                        # 3
+
+print("=== 3. break with pending operands on the stack ===")
+# `1 + 2 * block ...` は block 式に入る時点で 1 と 2 が積まれている。
+mut r = 0
+for i in range(5):
+    r = 1 + 2 * block ->int:
+        if i == 3:
+            break
+        block_return i
+print(r)                          # 5  (i=2 での 1 + 2*2)
+
+print("=== 4. continue through a block: expression ===")
+mut s = 0
+for i in range(6):
+    let v = 100 + block ->int:
+        if i < 3:
+            continue
+        block_return i
+    s = s + v
+print(s)                          # 312  (103 + 104 + 105)
+
+print("=== 5. continue through an if expression ===")
+mut t = 0
+for i in range(6):
+    let v = if i < 3 ->int:
+        continue
+    else:
+        block_return i
+    t = t + v
+print(t)                          # 12  (3 + 4 + 5)
+
+print("=== 6. break through a match expression (while) ===")
+mut n = 0
+mut out = -1
+while True:
+    let v = 5 + match n ->int:
+        case 3:
+            break
+        case _:
+            block_return n
+    out = v
+    n += 1
+print(out)                        # 7  (n=2 での 5 + 2)
+
+print("=== 7. break reaches only the innermost loop ===")
+mut log = []
+for i in range(3):
+    for j in range(5):
+        let v = 10 + block ->int:
+            if j == 2:
+                break
+            block_return j
+        log.append(v)
+print(log)                        # [10, 11, 10, 11, 10, 11]
+
+print("=== 8. break inside a loop expression returns accumulated yields ===")
+let res = for i in range(10) ->list[int]:
+    let _ = if i == 4 ->int:
+        break
+    else:
+        0
+    loop_yield i * 2
+print(res)                        # [0, 2, 4, 6]
+
+print("=== 9. nested block expressions ===")
+mut deep = -1
+for i in range(5):
+    let a = 1 + block ->int:
+        let b = 2 + block ->int:
+            if i == 2:
+                break
+            block_return i
+        block_return b
+    deep = a
+print(deep)                       # 4  (i=1 での 1 + (2 + 1))
+
+print("=== 10. break through a block: statement ===")
+mut bs = -1
+for i in range(5):
+    block:
+        if i == 3:
+            break
+        bs = i
+print(bs)                         # 2
+
+print("=== 11. same forms inside a function body ===")
+fn scan() -> int:
+    mut acc = 0
+    for i in range(5):
+        acc = 1 + block ->int:
+            if i == 3:
+                break
+            block_return i
+    return acc
+print(scan())                     # 3
+
+print("=== 12. break out of a try body (handler must not linger) ===")
+fn scan_try() -> int:
+    mut got = -1
+    for i in range(5):
+        try:
+            let _ = block ->int:
+                if i == 2:
+                    break
+                block_return i
+            got = i
+        except ValueError:
+            print("BUG: the loop handler fired")
+    # ループの try は既に抜けているので、ここの raise は外側で捕まらねばならない
+    raise ValueError("must escape")
+    return got
+
+try:
+    print(scan_try())
+except ValueError:
+    print("caught outside")     # ハンドラが残っていればここへ来ない
+
+print("=== 13. continue out of a try body ===")
+mut ts = 0
+for i in range(6):
+    try:
+        if i < 3:
+            continue
+        ts = ts + i
+    except ValueError:
+        print("unused")
+print(ts)                         # 12
+
+print("=== 14. block expression as the RHS of an attribute assignment ===")
+class Box:
+    mut v: int
+
+    fn __init__(mut self) -> None:
+        self.v = 0
+
+mut bx = Box()
+for i in range(5):
+    # 右辺の評価中はレシーバ bx が積まれている（跳ぶ前に捨てる必要がある）
+    bx.v = 1 + block ->int:
+        if i == 3:
+            break
+        block_return i
+print(bx.v)                       # 3

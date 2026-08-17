@@ -212,6 +212,12 @@ pub enum Op {
     Dup,
     /// pop した例外値が `names[name_idx]` 型にマッチするか（`exc_matches`）を Bool で push する。
     ExcMatch(u32),
+    /// `names[idx]` を内部エラー文字列として返して停止する（ツリーウォークの `Err(msg)` と同じ経路・#34）。
+    ///
+    /// 用途は「**実行時に必ず失敗すると分かっている文**」を、コンパイル失敗（`VmForceError`）ではなく
+    /// **ツリーウォークと同じメッセージ**で落とすこと。現在の発行元は囲むループの無い
+    /// `break`/`continue` だけ。⚠ **飛び先索引を持たない**ので `peephole::code_target_mut` は不要。
+    Fail(u32),
     // ── ブロック式（Phase V-C） ──
     /// 空の `Value::List` を push する（loop_yield の蓄積先の初期化）。
     BuildEmptyList,

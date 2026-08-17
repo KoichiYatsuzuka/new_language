@@ -97,6 +97,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::Reraise => "RERAISE".to_string(),
         Op::Dup => "DUP".to_string(),
         Op::ExcMatch(n) => format!("EXC_MATCH {:?}", chunk.names.get(*n as usize)),
+        Op::Fail(n) => format!("FAIL {:?}", chunk.names.get(*n as usize)),
         Op::BuildEmptyList => "BUILD_EMPTY_LIST".to_string(),
         Op::ListAppendLocal(s) => format!("LIST_APPEND_LOCAL {s}"),
         Op::ListOrNone => "LIST_OR_NONE".to_string(),

@@ -216,6 +216,36 @@ struct Compiler {
     loops: Vec<LoopCtx>,
     /// ネストしたブロック式のコンテキストスタック（block_return/loop_yield 用）。
     block_ctxs: Vec<BlockCtx>,
+    /// **現在の文境界のオペランドスタック深さ**（最内ループ入口からの相対・#34）。
+    ///
+    /// `break`/`continue` はブロック式の**途中**から外側ループへ跳べる
+    /// （`let s = 1 + block ->int: … break …` は `1` を積んだまま跳ぶ）。
+    /// 跳ぶ前にこの数だけ `Op::Pop` してオペランドスタックをループ入口の深さへ戻す。
+    ///
+    /// ⚠ **`None`（深さ不明）なら `break`/`continue` は bail する。** 既定を `None` 側に
+    /// 倒してあるので、伝播を書き忘れた式の形は「壊れる」ではなく「載らない」で止まる。
+    stmt_base: Option<u16>,
+    /// **これからコンパイルする式が始まる深さ**（`stmt_base` と同じ基準・#34）。
+    ///
+    /// `compile_expr` が入口で `take()` するので、**直前に設定した親だけ**が値を伝えられる。
+    /// 伝播するのは「末尾にブロック式が来られる」式だけでよい（`BinOp` の左右・`UnaryOp`）。
+    /// カッコの中（呼び出し引数・リテラル・添字）にブロック式は**構文上置けない**ので不要。
+    pending: Option<u16>,
+    /// **最内ループ以降に開いている `SetupTry` の数**（#34）。
+    ///
+    /// ⚠ オペランドスタックと**同じ問題がハンドラスタックにもある**。`break` が try 本体から
+    /// 外側ループへ跳ぶと `PopTry` を通らず、**ハンドラが残って後続の例外を横取りする**
+    /// （実際に踏んだ: ループを抜けた後の `raise` がループ内の `except` に捕まった）。
+    /// 跳ぶ前にこの数だけ `Op::PopTry` する。
+    ///
+    /// ⚠ `has_escape` は**文しか歩かない**ので、ブロック式の中の `break` は見えない。
+    /// ここを数えるのが唯一の防波堤。
+    try_depth: usize,
+    /// **最内ループ以降に開いている `finally` 保護区間の数**（#34）。
+    ///
+    /// `finally` は全出口で走らねばならず、跳び越えるのは `PopTry` では表現できない。
+    /// **1 以上なら `break`/`continue` は bail する**（ツリーウォークへ落とす）。
+    finally_guard: usize,
     /// デバッガ REPL モード: 変数参照は slot ではなく名前引き（`LoadName`）へ落とす。
     /// 停止スコープの生変数へアクセスし、`let dbg::x` を宣言できるようにする（V-E）。
     debug_mode: bool,
@@ -453,6 +483,10 @@ fn compile_toplevel_stmt_inner(
         self_slot: None,
         loops: Vec::new(),
         block_ctxs: Vec::new(),
+        stmt_base: Some(0),
+        pending: None,
+        try_depth: 0,
+        finally_guard: 0,
         debug_mode: false,
         named_locals: n,
         temps_in_use: 0,
@@ -717,6 +751,10 @@ fn compile_fn_inner(
         self_slot,
         loops: Vec::new(),
         block_ctxs: Vec::new(),
+        stmt_base: Some(0),
+        pending: None,
+        try_depth: 0,
+        finally_guard: 0,
         debug_mode: false,
         named_locals: n,
         temps_in_use: 0,
@@ -849,6 +887,10 @@ pub fn compile_async_body(
         self_slot: None,
         loops: Vec::new(),
         block_ctxs: Vec::new(),
+        stmt_base: Some(0),
+        pending: None,
+        try_depth: 0,
+        finally_guard: 0,
         debug_mode: false,
         named_locals: n,
         temps_in_use: 0,
@@ -871,7 +913,8 @@ pub fn compile_async_body(
         n_cells: 0,
     };
 
-    c.compile_block_expr(body)?;
+    // async 本体は Chunk の先頭＝オペランドスタックは空（#34）。
+    c.compile_block_expr(body, Some(0))?;
     c.emit(Op::Return);
     super::peephole::optimize(&mut c.code, &mut c.stmt_spans);
 
@@ -922,6 +965,10 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         self_slot: None,
         loops: Vec::new(),
         block_ctxs: Vec::new(),
+        stmt_base: Some(0),
+        pending: None,
+        try_depth: 0,
+        finally_guard: 0,
         debug_mode: true,
         named_locals: 0,
         temps_in_use: 0,
@@ -1387,70 +1434,65 @@ fn collect_expr_decls(
 /// `break`/`continue` は `stmts` 内の while/for（loop_depth>0）に囲まれていなければ脱出。
 /// `block_return`/`loop_yield` は常に脱出とみなす。
 /// ブロック式の本体が VM コンパイル不能な脱出を含むかを判定する。
-/// `return` は常に不可（ブロック式内 return は構文エラー）。`break`/`continue` は、
-/// 非ループ式（block:/if/match）では本体内 while/for に囲まれなければ脱出＝不可、
-/// ループ式（for/while 式）では自身が最内ループなので loop_depth 0 のものは許容。
+/// `return` は常に不可（ブロック式内 return は構文エラー）。
 /// `block_return`/`loop_yield` は当該ブロック式が扱うので許容。
-fn block_body_bails(stmts: &[Stmt], is_loop_expr: bool, loop_depth: usize) -> bool {
+///
+/// ⚠ **`break`/`continue` はここでは見ない**（#34）。跳び先も、跳ぶ前に捨てるオペランド数も
+/// `Stmt::Break` のコンパイル時に `loops` / `stmt_base` から確定するので、
+/// **同じ木を歩く 2 つ目の walker を持たない**（ずれの温床になる）。
+fn block_body_bails(stmts: &[Stmt]) -> bool {
     stmts.iter().any(|s| match s {
         Stmt::Return(_) => true,
-        Stmt::Break | Stmt::Continue => loop_depth == 0 && !is_loop_expr,
-        Stmt::While { body, .. } | Stmt::For { body, .. } => {
-            block_body_bails(body, is_loop_expr, loop_depth + 1)
-        }
+        Stmt::While { body, .. } | Stmt::For { body, .. } => block_body_bails(body),
         Stmt::If { branches, else_body } => {
-            branches
-                .iter()
-                .any(|(_, b)| block_body_bails(b, is_loop_expr, loop_depth))
-                || else_body
-                    .as_ref()
-                    .is_some_and(|eb| block_body_bails(eb, is_loop_expr, loop_depth))
+            branches.iter().any(|(_, b)| block_body_bails(b))
+                || else_body.as_ref().is_some_and(|eb| block_body_bails(eb))
         }
-        Stmt::Match { arms, .. } => arms
-            .iter()
-            .any(|a| block_body_bails(&a.body, is_loop_expr, loop_depth)),
-        Stmt::Block(b) => block_body_bails(b, is_loop_expr, loop_depth),
+        Stmt::Match { arms, .. } => arms.iter().any(|a| block_body_bails(&a.body)),
+        Stmt::Block(b) => block_body_bails(b),
         Stmt::Try { body, handlers, finally_body } => {
-            block_body_bails(body, is_loop_expr, loop_depth)
-                || handlers
-                    .iter()
-                    .any(|h| block_body_bails(&h.body, is_loop_expr, loop_depth))
-                || finally_body
-                    .as_ref()
-                    .is_some_and(|fb| block_body_bails(fb, is_loop_expr, loop_depth))
+            block_body_bails(body)
+                || handlers.iter().any(|h| block_body_bails(&h.body))
+                || finally_body.as_ref().is_some_and(|fb| block_body_bails(fb))
         }
         _ => false,
     })
 }
 
-fn has_escape(stmts: &[Stmt], include_return: bool, loop_depth: usize) -> bool {
+/// `include_break` は「`break`/`continue` を脱出として数えるか」（#34）。
+///
+/// `try/except`（finally なし）では **`false` を渡す**。`break` は `emit_unwind_to_loop` が
+/// `PopTry` を出して正しく抜けるので、弾く必要がない。
+/// `try/finally` では **`true`**（finally を飛ばしてしまうので通せない）。
+///
+/// ⚠ この関数は**文しか歩かない**ので、ブロック式の中の `break` は見えない。
+/// そちらは `Compiler.try_depth` / `finally_guard` が受け持つ（2 つ目の walker を作らない）。
+fn has_escape(
+    stmts: &[Stmt],
+    include_return: bool,
+    include_break: bool,
+    loop_depth: usize,
+) -> bool {
+    macro_rules! rec {
+        ($s:expr, $d:expr) => {
+            has_escape($s, include_return, include_break, $d)
+        };
+    }
     stmts.iter().any(|s| match s {
         Stmt::Return(_) => include_return,
-        Stmt::Break | Stmt::Continue => loop_depth == 0,
+        Stmt::Break | Stmt::Continue => include_break && loop_depth == 0,
         Stmt::BlockReturn(..) | Stmt::LoopYield(_) => true,
-        Stmt::While { body, .. } | Stmt::For { body, .. } => {
-            has_escape(body, include_return, loop_depth + 1)
-        }
+        Stmt::While { body, .. } | Stmt::For { body, .. } => rec!(body, loop_depth + 1),
         Stmt::If { branches, else_body } => {
-            branches
-                .iter()
-                .any(|(_, b)| has_escape(b, include_return, loop_depth))
-                || else_body
-                    .as_ref()
-                    .is_some_and(|eb| has_escape(eb, include_return, loop_depth))
+            branches.iter().any(|(_, b)| rec!(b, loop_depth))
+                || else_body.as_ref().is_some_and(|eb| rec!(eb, loop_depth))
         }
-        Stmt::Match { arms, .. } => arms
-            .iter()
-            .any(|a| has_escape(&a.body, include_return, loop_depth)),
-        Stmt::Block(b) => has_escape(b, include_return, loop_depth),
+        Stmt::Match { arms, .. } => arms.iter().any(|a| rec!(&a.body, loop_depth)),
+        Stmt::Block(b) => rec!(b, loop_depth),
         Stmt::Try { body, handlers, finally_body } => {
-            has_escape(body, include_return, loop_depth)
-                || handlers
-                    .iter()
-                    .any(|h| has_escape(&h.body, include_return, loop_depth))
-                || finally_body
-                    .as_ref()
-                    .is_some_and(|fb| has_escape(fb, include_return, loop_depth))
+            rec!(body, loop_depth)
+                || handlers.iter().any(|h| rec!(&h.body, loop_depth))
+                || finally_body.as_ref().is_some_and(|fb| rec!(fb, loop_depth))
         }
         _ => false,
     })
@@ -2151,8 +2193,41 @@ impl Compiler {
         Some(())
     }
 
+    /// `break`/`continue` が外側ループへ跳ぶ前に、途中のブロック式が積んだオペランドを捨てる（#34）。
+    ///
+    /// Arrow の `break` は入れ子の `if`/`match`/`block:` **式**を貫通して外側ループへ届く。
+    /// ブロック式は値をすべて temp slot に置くので、跳ぶ時点でオペランドスタックに残るのは
+    /// **そのブロック式より外側の式が積んだ分**だけ（`let s = 1 + block ->int: … break …` の `1`）。
+    /// その数が `stmt_base`。ループ入口は必ず深さ 0 基準なので、ここまで戻せば跳び先と平衡する。
+    ///
+    /// `None`（深さ不明）なら bail する。深さを伝えていない式の形は「壊れる」のではなく
+    /// 「VM に載らない」で止まるので、伝播の書き漏らしは安全側に倒れる。
+    fn emit_unwind_to_loop(&mut self) -> Option<()> {
+        // finally は全出口で走る必要があり、跳び越えは `PopTry` では表せない（#34）。
+        if self.finally_guard > 0 {
+            bail("break-crosses-finally", None);
+            return None;
+        }
+        let Some(depth) = self.stmt_base else {
+            bail("break-unknown-depth", None);
+            return None;
+        };
+        // ハンドラスタックも戻す。忘れると try を抜けたのにハンドラが残り、
+        // **後続の無関係な例外を横取りする**（実際に踏んだバグ）。
+        for _ in 0..self.try_depth {
+            self.emit(Op::PopTry);
+        }
+        for _ in 0..depth {
+            self.emit(Op::Pop);
+        }
+        Some(())
+    }
+
     fn compile_stmt(&mut self, stmt: &Stmt) -> Option<()> {
         self.mark_stmt_start(stmt);
+        // 文の入口はオペランドスタックが平衡（#34）。この文の**最初の**式にだけ深さを伝える。
+        // `compile_expr` が `take()` するので 2 つ目以降の式は `None`（＝保守的に bail）になる。
+        self.pending = self.stmt_base;
         match stmt {
             Stmt::Expr(e) => {
                 self.compile_expr(e)?;
@@ -2285,9 +2360,16 @@ impl Compiler {
                     continue_target: start,
                     break_jumps: Vec::new(),
                 });
+                // 本体はこのループ入口の深さで走る（#34）。
+                let saved_base = std::mem::replace(&mut self.stmt_base, Some(0));
+                let saved_try = std::mem::replace(&mut self.try_depth, 0);
+                let saved_fin = std::mem::replace(&mut self.finally_guard, 0);
                 for s in body {
                     self.compile_stmt(s)?;
                 }
+                self.stmt_base = saved_base;
+                self.try_depth = saved_try;
+                self.finally_guard = saved_fin;
                 self.emit(Op::Jump(start));
                 let end = self.here();
                 self.patch_jump(jf, end);
@@ -2372,9 +2454,16 @@ impl Compiler {
                     continue_target: loop_start, // continue は次の ForIter へ戻る
                     break_jumps: Vec::new(),
                 });
+                // 本体はこのループ入口の深さで走る（#34）。
+                let saved_base = std::mem::replace(&mut self.stmt_base, Some(0));
+                let saved_try = std::mem::replace(&mut self.try_depth, 0);
+                let saved_fin = std::mem::replace(&mut self.finally_guard, 0);
                 for s in body {
                     self.compile_stmt(s)?;
                 }
+                self.stmt_base = saved_base;
+                self.try_depth = saved_try;
+                self.finally_guard = saved_fin;
                 self.emit(Op::Jump(loop_start));
                 let exit = self.here();
                 // ForIter の exit_ip をバックパッチ（patch_jump は Jump 系専用なので手動）。
@@ -2395,11 +2484,26 @@ impl Compiler {
             }
             Stmt::Break => {
                 // 最内ループの break_jumps に登録し、末尾へジャンプ（バックパッチ）。
+                // ⚠ ブロック式の途中から跳ぶときは、その式が積んだオペランドを先に捨てる（#34）。
+                if self.loops.is_empty() {
+                    // 囲むループが無い＝実行時に必ず失敗する。**bail せず**ツリーウォークと
+                    // 同じメッセージで落とす（bail すると `--vm=on` が `VmForceError` になり、
+                    // 正しいエラー報告が off/on で食い違う・#34）。
+                    let n = self.add_name("SyntaxError: 'break' outside for/while loop");
+                    self.emit(Op::Fail(n));
+                    return Some(());
+                }
+                self.emit_unwind_to_loop()?;
                 let j = self.emit(Op::Jump(0));
                 self.loops.last_mut()?.break_jumps.push(j);
             }
             Stmt::Continue => {
-                let target = self.loops.last()?.continue_target;
+                let Some(target) = self.loops.last().map(|l| l.continue_target) else {
+                    let n = self.add_name("SyntaxError: 'continue' outside for/while loop");
+                    self.emit(Op::Fail(n));
+                    return Some(());
+                };
+                self.emit_unwind_to_loop()?;
                 self.emit(Op::Jump(target));
             }
             // ── ローカル宣言（exec_let / exec の const・mut と同一セマンティクス） ──
@@ -2530,6 +2634,9 @@ impl Compiler {
                 // 隠すためのもので、型注釈の無いグローバルが bail する原因だった。
                 Expr::Attr { object, attr, .. } => {
                     self.compile_expr(object)?;
+                    // #34: 右辺の評価中は obj が 1 つ積まれている。伝えないと
+                    // `obj.x = 1 + block ->int: … break …` が bail する（実測で見つけた漏れ）。
+                    self.pending = self.stmt_base.map(|d| d + 1);
                     self.compile_expr(value)?;
                     let ni = self.add_name(attr);
                     self.emit(Op::SetAttr(ni));
@@ -2548,6 +2655,7 @@ impl Compiler {
                 // `obj::Trait.attr = value`（#27）。`SetAttr` と同じく `[obj, value]` の順で積む。
                 Expr::TraitAccess { object, trait_name, attr } => {
                     self.compile_expr(object)?;
+                    self.pending = self.stmt_base.map(|d| d + 1); // 同上（#34）
                     self.compile_expr(value)?;
                     let ti = self.add_name(trait_name);
                     let ai = self.add_name(attr);
@@ -2755,10 +2863,12 @@ impl Compiler {
             }
             // `block: <stmts>` 文（#27-c）。ツリーウォークの `exec_block_stmt` は
             // **`block_return` を吸収**して `Normal` を返し、break/continue/return/raise は外へ通す。
-            // ブロック式のコンパイラをそのまま使い、値を捨てれば同じ意味論になる
-            // （脱出制御を含む本体は `block_body_bails` が弾くので、外へ通す形は元から非対応）。
+            // ブロック式のコンパイラをそのまま使い、値を捨てれば同じ意味論になる。
+            // ⚠ 文なので入口はオペランドスタックが平衡＝深さは `stmt_base` そのもの（#34）。
+            // 内部の `break`/`continue` は外側ループへ貫通する（以前は本体ごと bail していた）。
             Stmt::Block(body) => {
-                self.compile_block_expr(body)?;
+                let depth = self.stmt_base;
+                self.compile_block_expr(body, depth)?;
                 self.emit(Op::Pop);
             }
             // `pass` は何も出さない（#27）。ツリーウォークも `ExecResult::Normal` を返すだけ。
@@ -2864,21 +2974,25 @@ impl Compiler {
     fn compile_try_except(&mut self, body: &[Stmt], handlers: &[ExceptHandler]) -> Option<()> {
         // try を飛び越える制御フロー（break/continue/block_return/loop_yield）があると
         // SetupTry ハンドラが残るため bail。return は run から即復帰しハンドラは破棄されるので OK。
-        if has_escape(body, false, 0) {
+        if has_escape(body, false, false, 0) {
             bail("try-escape", None);
             return None;
         }
         for h in handlers {
-            if has_escape(&h.body, false, 0) {
+            if has_escape(&h.body, false, false, 0) {
                 bail("try-handler-escape", None);
                 return None;
             }
         }
 
         let setup = self.emit(Op::SetupTry(0)); // handler_ip は後でパッチ
+        // 本体の間だけハンドラが 1 つ多い（#34）。ここから外側ループへ跳ぶ `break` は
+        // `PopTry` を通らないので、跳ぶ側が同じ数だけ戻す必要がある。
+        self.try_depth += 1;
         for s in body {
             self.compile_stmt(s)?;
         }
+        self.try_depth -= 1;
         self.emit(Op::PopTry);
         let mut end_jumps = vec![self.emit(Op::Jump(0))]; // 正常終了 → END
         // landing pad: 例外時にここへ来る（スタック = [exc]）。
@@ -2931,19 +3045,24 @@ impl Compiler {
         fin: &[Stmt],
     ) -> Option<()> {
         // finally は全出口で走る必要があるので、脱出制御フロー（return 含む）があれば bail。
-        if has_escape(body, true, 0) || has_escape(fin, true, 0) {
+        if has_escape(body, true, true, 0) || has_escape(fin, true, true, 0) {
             bail("finally-escape", None);
             return None;
         }
         // ハンドラ本体も同じ理由で脱出禁止（`compile_try_except` は return を許すが、
         // finally があるとその return が finally を飛ばしてしまう）。
         for h in handlers {
-            if has_escape(&h.body, true, 0) {
+            if has_escape(&h.body, true, true, 0) {
                 bail("finally-handler-escape", None);
                 return None;
             }
         }
         let setup = self.emit(Op::SetupTry(0));
+        // finally 保護区間の内側では `break`/`continue` を通さない（#34）。
+        // `PopTry` だけ出して跳ぶと finally が走らないので、ここは bail させる。
+        // ⚠ `has_escape` は文しか歩かないので、ブロック式の中の `break` はこの印だけが捕まえる。
+        self.finally_guard += 1;
+        self.try_depth += 1;
         if handlers.is_empty() {
             for s in body {
                 self.compile_stmt(s)?;
@@ -2951,18 +3070,25 @@ impl Compiler {
         } else {
             self.compile_try_except(body, handlers)?;
         }
+        self.try_depth -= 1;
+        self.finally_guard -= 1;
         self.emit(Op::PopTry);
-        // 正常経路の finally。
+        // 正常経路の finally。⚠ 例外経路の複製は `[exc]` を積んだまま走るので、
+        // finally 本体からの `break` は**どちらの複製でも**通さない（#34）。
+        self.finally_guard += 1;
         for s in fin {
             self.compile_stmt(s)?;
         }
+        self.finally_guard -= 1;
         let normal_jump = self.emit(Op::Jump(0)); // END
         // 例外 landing pad: スタック = [exc]。finally はスタック中立なので [exc] は底に残る。
         let land = self.here();
         self.code[setup] = Op::SetupTry(land);
+        self.finally_guard += 1;
         for s in fin {
             self.compile_stmt(s)?;
         }
+        self.finally_guard -= 1;
         self.emit(Op::Pop); // [exc] を捨てる
         self.emit(Op::Reraise); // 再伝播（current_exception は設定済み）
         let end = self.here();
@@ -3035,6 +3161,9 @@ impl Compiler {
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> Option<()> {
+        // #34: 親が「この式が始まる深さ」を伝えていれば受け取る。ここで奪うので、
+        // 明示的に伝え直さない限り子の式は `None`（＝ブロック式内 `break` が bail）になる。
+        let pending = self.pending.take();
         match expr {
             Expr::Int(n) => {
                 let c = self.add_const(Value::Int(*n));
@@ -3163,30 +3292,42 @@ impl Compiler {
                 };
             }
             Expr::UnaryOp { op, operand } => {
+                // 被演算子は親と同じ深さで始まる（#34）。`-block ->int: …` が該当。
+                self.pending = pending;
                 self.compile_expr(operand)?;
                 self.emit(Op::Un(op.clone()));
             }
             Expr::BinOp { op, left, right, node_id, .. } => match op {
                 // 短絡評価: `a and b` / `a or b` は Python 意味論（値を返す）で書き下す。
                 BinOp::And => {
+                    self.pending = pending;
                     self.compile_expr(left)?;
                     let j = self.emit(Op::JumpIfFalseOrPop(0));
+                    // 右辺の評価中は左辺の値が 1 つ積まれている（`JumpIf*OrPop` は
+                    // 短絡したときだけ残す＝右辺へ進む経路でも push 済み・#34）。
+                    self.pending = pending.map(|d| d + 1);
                     self.compile_expr(right)?;
                     let end = self.here();
                     self.patch_jump(j, end);
                 }
                 BinOp::Or => {
+                    self.pending = pending;
                     self.compile_expr(left)?;
                     let j = self.emit(Op::JumpIfTrueOrPop(0));
+                    self.pending = pending.map(|d| d + 1);
                     self.compile_expr(right)?;
                     let end = self.here();
                     self.patch_jump(j, end);
                 }
                 _ => {
                     // 超命令融合（#2）＋型特化（plan A）: 単純オペランドなら LoadLocal…+Bin を1命令に。
+                    // ⚠ 融合対象は単純オペランドだけなのでブロック式は来ない（深さ伝播は不要）。
                     if !self.try_emit_bin_fused(left, right, op, *node_id) {
                         use crate::type_check::BinOperandKind as K;
+                        self.pending = pending;
                         self.compile_expr(left)?;
+                        // 右辺の評価中は左辺の値が 1 つ積まれている（#34）。
+                        self.pending = pending.map(|d| d + 1);
                         self.compile_expr(right)?;
                         // 融合できない形（属性・添字・呼び出し結果など）でも、注釈が型を確定して
                         // いればスタック版の型特化 op に落とす（#16 段階(b)(iii)）。
@@ -3418,11 +3559,13 @@ impl Compiler {
                 self.emit(Op::BuildDict(n));
             }
             // ── ブロック式（値を産む制御構文, Phase V-C） ──
-            Expr::Block { stmts, .. } => self.compile_block_expr(stmts)?,
+            Expr::Block { stmts, .. } => self.compile_block_expr(stmts, pending)?,
             Expr::IfExpr { branches, else_body, .. } => {
-                self.compile_if_expr(branches, else_body)?
+                self.compile_if_expr(branches, else_body, pending)?
             }
-            Expr::MatchExpr { subject, arms, .. } => self.compile_match_expr(subject, arms)?,
+            Expr::MatchExpr { subject, arms, .. } => {
+                self.compile_match_expr(subject, arms, pending)?
+            }
             Expr::ForExpr { target, iter, body, .. } => {
                 self.compile_for_expr(target, iter, body)?
             }
@@ -3470,11 +3613,21 @@ impl Compiler {
     }
 
     /// `block: <stmts>` 式。block_return 値、なければ loop_yield 蓄積リスト、どちらもなければ None。
-    fn compile_block_expr(&mut self, stmts: &[Stmt]) -> Option<()> {
-        if block_body_bails(stmts, false, 0) {
+    ///
+    /// `entry_depth` は**この式が始まるオペランド深さ**（#34）。本体の文はこの深さで走るので、
+    /// 本体内の `break`/`continue` はこの数だけ `Pop` してから外側ループへ跳ぶ。
+    fn compile_block_expr(&mut self, stmts: &[Stmt], entry_depth: Option<u16>) -> Option<()> {
+        if block_body_bails(stmts) {
             bail("block-expr-escape", None);
             return None;
         }
+        let saved_base = std::mem::replace(&mut self.stmt_base, entry_depth);
+        let r = self.compile_block_expr_inner(stmts);
+        self.stmt_base = saved_base;
+        r
+    }
+
+    fn compile_block_expr_inner(&mut self, stmts: &[Stmt]) -> Option<()> {
         let yield_slot = self.alloc_temp()?;
         self.emit(Op::BuildEmptyList);
         self.emit(Op::StoreLocal(yield_slot));
@@ -3511,19 +3664,31 @@ impl Compiler {
         &mut self,
         branches: &[(Expr, Vec<Stmt>)],
         else_body: &Option<Vec<Stmt>>,
+        entry_depth: Option<u16>,
     ) -> Option<()> {
         for (_, b) in branches {
-            if block_body_bails(b, false, 0) {
+            if block_body_bails(b) {
                 bail("if-expr-escape", None);
                 return None;
             }
         }
         if let Some(eb) = else_body {
-            if block_body_bails(eb, false, 0) {
+            if block_body_bails(eb) {
                 bail("ifexpr-else-escape", None);
                 return None;
             }
         }
+        let saved_base = std::mem::replace(&mut self.stmt_base, entry_depth);
+        let r = self.compile_if_expr_inner(branches, else_body);
+        self.stmt_base = saved_base;
+        r
+    }
+
+    fn compile_if_expr_inner(
+        &mut self,
+        branches: &[(Expr, Vec<Stmt>)],
+        else_body: &Option<Vec<Stmt>>,
+    ) -> Option<()> {
         let result_slot = self.alloc_temp()?;
         self.emit(Op::Nil);
         self.emit(Op::StoreLocal(result_slot)); // 既定 None
@@ -3562,13 +3727,25 @@ impl Compiler {
     }
 
     /// `match subj -> T: arms` 式。マッチしたアームの block_return 値、なければ None。
-    fn compile_match_expr(&mut self, subject: &Expr, arms: &[MatchArm]) -> Option<()> {
+    fn compile_match_expr(
+        &mut self,
+        subject: &Expr,
+        arms: &[MatchArm],
+        entry_depth: Option<u16>,
+    ) -> Option<()> {
         for arm in arms {
-            if block_body_bails(&arm.body, false, 0) {
+            if block_body_bails(&arm.body) {
                 bail("matchexpr-escape", None);
                 return None;
             }
         }
+        let saved_base = std::mem::replace(&mut self.stmt_base, entry_depth);
+        let r = self.compile_match_expr_inner(subject, arms);
+        self.stmt_base = saved_base;
+        r
+    }
+
+    fn compile_match_expr_inner(&mut self, subject: &Expr, arms: &[MatchArm]) -> Option<()> {
         let subj_temp = self.alloc_temp()?;
         self.compile_expr(subject)?;
         self.emit(Op::StoreLocal(subj_temp));
@@ -3631,10 +3808,23 @@ impl Compiler {
 
     /// `for target in iter -> T: body` 式。block_return 値、なければ loop_yield 蓄積リスト（空なら None）。
     fn compile_for_expr(&mut self, target: &str, iter: &Expr, body: &[Stmt]) -> Option<()> {
-        if block_body_bails(body, true, 0) {
+        if block_body_bails(body) {
             bail("loopexpr-escape", None);
             return None;
         }
+        // 自身が最内ループになるので本体の基準深さは 0（#34）。
+        // 本体内の `break` はこの式の NORMAL_END（= 蓄積リストを push する位置）へ跳ぶ。
+        let saved_base = std::mem::replace(&mut self.stmt_base, Some(0));
+        let saved_try = std::mem::replace(&mut self.try_depth, 0);
+        let saved_fin = std::mem::replace(&mut self.finally_guard, 0);
+        let r = self.compile_for_expr_inner(target, iter, body);
+        self.stmt_base = saved_base;
+        self.try_depth = saved_try;
+        self.finally_guard = saved_fin;
+        r
+    }
+
+    fn compile_for_expr_inner(&mut self, target: &str, iter: &Expr, body: &[Stmt]) -> Option<()> {
         let target_slot = *self.slots.get(target)?;
         let yield_slot = self.alloc_temp()?;
         self.emit(Op::BuildEmptyList);
@@ -3686,10 +3876,22 @@ impl Compiler {
 
     /// `while cond -> T: body` 式。block_return 値、なければ loop_yield 蓄積リスト（空なら None）。
     fn compile_while_expr(&mut self, cond: &Expr, body: &[Stmt]) -> Option<()> {
-        if block_body_bails(body, true, 0) {
+        if block_body_bails(body) {
             bail("loopexpr-escape", None);
             return None;
         }
+        // 自身が最内ループになるので本体の基準深さは 0（#34）。
+        let saved_base = std::mem::replace(&mut self.stmt_base, Some(0));
+        let saved_try = std::mem::replace(&mut self.try_depth, 0);
+        let saved_fin = std::mem::replace(&mut self.finally_guard, 0);
+        let r = self.compile_while_expr_inner(cond, body);
+        self.stmt_base = saved_base;
+        self.try_depth = saved_try;
+        self.finally_guard = saved_fin;
+        r
+    }
+
+    fn compile_while_expr_inner(&mut self, cond: &Expr, body: &[Stmt]) -> Option<()> {
         let yield_slot = self.alloc_temp()?;
         self.emit(Op::BuildEmptyList);
         self.emit(Op::StoreLocal(yield_slot));

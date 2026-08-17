@@ -1,0 +1,14 @@
+# control_flow_expr_escape_error.ar — ループの外のブロック式から break（#34）
+#
+# `break` / `continue` は if / match / block: 式を貫通するが、**届く先が無ければエラー**。
+# 関数境界は越えない（外側の呼び出し元のループには届かない）。
+
+fn no_loop_here() -> int:
+    # このブロック式を囲む for / while が無いので `break` は行き場が無い
+    let v = 1 + block ->int:
+        break
+    return v
+
+for i in range(3):
+    # 呼び出し先の break がこのループに届いてはいけない
+    print(no_loop_here())
