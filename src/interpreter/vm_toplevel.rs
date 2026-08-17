@@ -94,6 +94,36 @@ impl Interpreter {
         result.map(|_| Some(ExecResult::Normal))
     }
 
+    /// **定義文脈の式**を VM で評価する（#41）。
+    ///
+    /// クラスのフィールド既定値・`enum` の値・デコレータ式は定義文の一部なので
+    /// `try_run_toplevel_stmt` の対象にならないが、中身は任意の式で `block:`/`if`/`for` 式を
+    /// 書ける。ツリーウォークの `eval()` で評価していた頃は、**そこだけ制御フローが
+    /// ツリーウォークで動いていた**（`AR_TW_STATS` の `tw_control_flow` で実測・#33）。
+    ///
+    /// ⚠ **フォールバックは無い**（#3 の規約）。載せられなければ `VmForceError` で止める。
+    /// ⚠ 自由な識別子は `LoadName`（名前引き）なので、`scopes` の深さを問わず
+    /// ツリーウォークの `eval()` と同じ変数に当たる（import モジュール本体の中でも同じ）。
+    pub(crate) fn eval_definition_expr(
+        &mut self,
+        expr: &crate::ast::Expr,
+    ) -> Result<Value, String> {
+        let Some(chunk) = crate::vm::compile_definition_expr(expr, self.annotations.clone())
+        else {
+            return Err(format!(
+                "VmForceError: cannot compile definition-context expression `{}` to bytecode",
+                crate::vm::compiler::expr_kind(expr)
+            ));
+        };
+        let mut buf = std::mem::take(&mut self.vm_stack);
+        let base = buf.len();
+        buf.resize(base + chunk.n_locals, Value::None);
+        let result = crate::vm::run(self, &chunk, &mut buf, base, None);
+        buf.truncate(base);
+        self.vm_stack = buf;
+        result
+    }
+
     /// VM のメソッド呼び出しのうち **非 Instance レシーバ**の経路（#27-b）。
     /// list/str/dict/set/CsObject/Signal/Namespace… を統一実装へ流す。
     ///

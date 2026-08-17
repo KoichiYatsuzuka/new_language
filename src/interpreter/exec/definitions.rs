@@ -130,7 +130,7 @@ impl Interpreter {
         } else {
             let mut value = Value::Function(fn_val);
             for dec_expr in decorators.iter().rev() {
-                let dec = self.eval(dec_expr)?;
+                let dec = self.eval_definition_expr(dec_expr)?;
                 value = self.apply_value_call(dec, value, name)?;
             }
             self.scopes
@@ -420,7 +420,7 @@ impl Interpreter {
         let mut next_value: i64 = 0;
         for (variant_name, value_expr) in variants {
             let int_val = if let Some(expr) = value_expr {
-                match self.eval(expr)? {
+                match self.eval_definition_expr(expr)? {
                     Value::Int(n) => n,
                     other => {
                         return Err(format!(
@@ -552,7 +552,7 @@ impl Interpreter {
                     } else {
                         let mut value = Value::Function(fn_val);
                         for dec_expr in mdecs.iter().rev() {
-                            let dec = self.eval(dec_expr)?;
+                            let dec = self.eval_definition_expr(dec_expr)?;
                             value = self.apply_value_call(dec, value, mname)?;
                         }
                         match value {
@@ -597,7 +597,7 @@ impl Interpreter {
                     if *facc != Accessibility::Public {
                         field_access.insert(fname.clone(), facc.clone());
                     }
-                    let val = self.eval(init)?;
+                    let val = self.eval_definition_expr(init)?;
                     class_vars.insert(fname.clone(), val);
                 }
                 Stmt::Field {
@@ -611,7 +611,7 @@ impl Interpreter {
                         field_access.insert(fname.clone(), facc.clone());
                     }
                     let val = if let Some(init) = default {
-                        self.eval(init)?
+                        self.eval_definition_expr(init)?
                     } else {
                         Value::None
                     };
@@ -633,7 +633,7 @@ impl Interpreter {
                     own_field_types.push((fname.clone(), type_ann.clone()));
                     field_mutability.insert(fname.clone(), mutable);
                     if let Some(init) = default {
-                        let val = self.eval(init)?;
+                        let val = self.eval_definition_expr(init)?;
                         field_defaults.push((fname.clone(), val, mutable));
                     }
                 }
@@ -679,7 +679,7 @@ impl Interpreter {
         } else {
             let mut value = Value::Class(cls);
             for dec_expr in decorators.iter().rev() {
-                let dec = self.eval(dec_expr)?;
+                let dec = self.eval_definition_expr(dec_expr)?;
                 value = self.apply_value_call(dec, value, name)?;
             }
             self.declare_var(name.to_string(), Var::new(value, false));

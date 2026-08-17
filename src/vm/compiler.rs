@@ -41,7 +41,7 @@ fn bail_expr(site: &'static str, expr: &Expr) {
 }
 
 /// `Expr` バリアント名（診断フック用）。
-fn expr_kind(expr: &Expr) -> &'static str {
+pub fn expr_kind(expr: &Expr) -> &'static str {
     match expr {
         Expr::Int(..) => "Int",
         Expr::Float(..) => "Float",
@@ -245,6 +245,10 @@ struct Compiler {
     /// `finally` 本体（脱出経路への複製を含む）をコンパイル中かどうか（#37）。
     /// **1 以上なら脱出制御は bail する**（finally の中から跳ぶのは未対応）。
     in_finally: usize,
+    /// **自由な識別子を実行時に名前で引く**（#41）。`eval()` と同じスコープ走査になるので、
+    /// **`scopes` の深さを問わず健全**（定義文脈の式は最上位とは限らない — import モジュール
+    /// 本体の中のクラス定義など）。`debug_mode` と違い、融合・FFI 情報の記録は落とさない。
+    name_lookup: bool,
     /// デバッガ REPL モード: 変数参照は slot ではなく名前引き（`LoadName`）へ落とす。
     /// 停止スコープの生変数へアクセスし、`let dbg::x` を宣言できるようにする（V-E）。
     debug_mode: bool,
@@ -440,6 +444,103 @@ pub fn compile_toplevel_stmt(
     out
 }
 
+/// **定義文脈の式**を Chunk へコンパイルする（#41）。
+///
+/// クラスのフィールド既定値・`enum` の値・デコレータ式は**定義文の一部**なので
+/// `compile_toplevel_stmt` の対象外（定義文は除外リストに入っている）。それでも中身は
+/// 任意の式で、`block:` / `if` / `for` 式を書ける。ここを VM に載せないと
+/// **ツリーウォークの制御フローが生き続ける**（#33 が削除できない理由だった）。
+///
+/// `compile_toplevel_stmt` との違い:
+/// - **文ではなく式**をコンパイルし、値を `Return` で返す。
+/// - **自由な識別子は `LoadName`**（`name_lookup`）。定義文の実行位置は最上位とは限らず
+///   （import モジュール本体の中など）、`scopes[0]` 限定の `LoadGlobal` では
+///   ツリーウォークの `eval()` と答えが変わる。名前引きなら深さを問わず一致する。
+/// - **書き込み先は slot だけ**（`store_target` が `name_lookup` で bail する）。
+///   式の中で宣言したローカルは `collect_expr_decls` が slot を振るので影響しない。
+pub fn compile_definition_expr(
+    expr: &Expr,
+    annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
+) -> Option<Chunk> {
+    let mut slots: HashMap<String, u16> = HashMap::new();
+    let mut slot_mut: Vec<bool> = Vec::new();
+    let mut slot_type: Vec<Option<String>> = Vec::new();
+    let mut n: u16 = 0;
+    collect_expr_decls(expr, &mut slots, &mut slot_mut, &mut slot_type, &mut n)?;
+
+    let mut local_names = vec![String::new(); n as usize];
+    for (name, &slot) in &slots {
+        if let Some(entry) = local_names.get_mut(slot as usize) {
+            *entry = name.clone();
+        }
+    }
+
+    let mut c = Compiler {
+        code: Vec::new(),
+        consts: Vec::new(),
+        names: Vec::new(),
+        attr_caches: Vec::new(),
+        spans: Vec::new(),
+        stmt_spans: Vec::new(),
+        pending_stmt: None,
+        annotations,
+        slots,
+        slot_mut,
+        slot_type,
+        self_slot: None,
+        loops: Vec::new(),
+        block_ctxs: Vec::new(),
+        stmt_base: Some(0),
+        pending: Some(0),
+        try_stack: Vec::new(),
+        in_finally: 0,
+        name_lookup: true,
+        debug_mode: false,
+        named_locals: n,
+        temps_in_use: 0,
+        n_locals: n as usize,
+        async_blocks: Vec::new(),
+        global_caches: Vec::new(),
+        ffi_call_info: HashMap::new(),
+        fn_defs: Vec::new(),
+        type_arg_lists: Vec::new(),
+        tuple_decls: Vec::new(),
+        kw_calls: Vec::new(),
+        toplevel_globals: HashSet::new(),
+        shadowed_for_targets: HashSet::new(),
+        statics: HashMap::new(),
+        cells: HashMap::new(),
+        cell_by_slot: HashMap::new(),
+        n_cells: 0,
+    };
+
+    c.compile_expr(expr)?;
+    c.emit(Op::Return);
+    super::peephole::optimize(&mut c.code, &mut c.stmt_spans);
+
+    Some(Chunk {
+        code: c.code,
+        consts: c.consts,
+        names: c.names,
+        attr_caches: c.attr_caches,
+        spans: c.spans,
+        stmt_spans: c.stmt_spans,
+        local_names,
+        n_locals: c.n_locals,
+        n_params: 0,
+        async_blocks: c.async_blocks,
+        global_caches: c.global_caches,
+        ffi_call_info: c.ffi_call_info,
+        fn_defs: c.fn_defs,
+        type_arg_lists: c.type_arg_lists,
+        tuple_decls: c.tuple_decls,
+        kw_calls: c.kw_calls,
+        captured_slots: Vec::new(),
+        n_cells: 0,
+        captured_cells: Vec::new(),
+    })
+}
+
 fn compile_toplevel_stmt_inner(
     stmt: &Stmt,
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
@@ -500,6 +601,7 @@ fn compile_toplevel_stmt_inner(
         pending: None,
         try_stack: Vec::new(),
         in_finally: 0,
+        name_lookup: false,
         debug_mode: false,
         named_locals: n,
         temps_in_use: 0,
@@ -768,6 +870,7 @@ fn compile_fn_inner(
         pending: None,
         try_stack: Vec::new(),
         in_finally: 0,
+        name_lookup: false,
         debug_mode: false,
         named_locals: n,
         temps_in_use: 0,
@@ -904,6 +1007,7 @@ pub fn compile_async_body(
         pending: None,
         try_stack: Vec::new(),
         in_finally: 0,
+        name_lookup: false,
         debug_mode: false,
         named_locals: n,
         temps_in_use: 0,
@@ -984,6 +1088,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         pending: None,
         try_stack: Vec::new(),
         in_finally: 0,
+        name_lookup: true,
         debug_mode: true,
         named_locals: 0,
         temps_in_use: 0,
@@ -1811,8 +1916,11 @@ impl Compiler {
         // ⚠ デバッガ REPL（`compile_debug`）だけは例外（#39）。停止フレームの**生スコープ**へ
         // 書かねばならず、`scopes[0]` 限定の `StoreGlobal` では別の変数を書いてしまう。
         // 読み側が `LoadName` に落ちているのと同じ理由。ここは従来どおり bail する。
-        if self.debug_mode {
-            bail("store-target-debug", None);
+        if self.debug_mode || self.name_lookup {
+            // 停止フレーム／外側スコープの**生の変数**へ書く必要があるが、
+            // `scopes[0]` 限定の `StoreGlobal` では別の変数を書いてしまう（#39）。
+            // ⚠ チャンク内で宣言したローカルは上の `slots` で先に拾われるので影響しない。
+            bail("store-target-name-lookup", None);
             return None;
         }
         // ここまで全部外れた名前は**この関数のローカルでもキャプチャでもない**（#39）。
@@ -3332,7 +3440,7 @@ impl Compiler {
                         // が担うが、VM フレームは `exec_fn_evaled` の `frame_floor` 前進より手前で
                         // 分岐するので、`get_val` が**呼び出し元のローカルまで見えてしまう**。最上位は
                         // `toplevel_vm_candidate` が `scopes.len() == 1` を保証するので安全。
-                        None if !self.toplevel_globals.is_empty() => {
+                        None if self.name_lookup || !self.toplevel_globals.is_empty() => {
                             let ni = self.add_name(name);
                             self.emit(Op::LoadName(ni));
                         }
