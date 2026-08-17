@@ -485,6 +485,13 @@ pub struct Interpreter {
     ///
     /// AST は `run_program` / `exec_module` が実行中ずっと保持しているのでアドレスは安定
     /// （`vm_chunks` のような `Weak` による再利用検査は不要）。`None` = コンパイル不能と判明済み。
+    ///
+    /// ⚠⚠ **不変条件: このキャッシュに載せた `Stmt` は、インタプリタが生きている間
+    /// 解放してはいけない。** 解放するとアロケータが同じアドレスを再利用し、
+    /// **別の文が前の文の Chunk を引き当てる**（#36 で実際に踏んだ: REPL がブロックごとに
+    /// AST を捨てていたため `let xs = …` が `let total = …` の Chunk を実行し
+    /// `NameError: variable 'total' is already declared` になった）。
+    /// ⇒ 新しい入口を足すときは **AST を保持し続けること**（REPL は `run_repl` が Vec に溜める）。
     pub(self) vm_toplevel_chunks: HashMap<usize, Option<Rc<crate::vm::Chunk>>>,
     /// 最上位から見て `scopes[0]` を確実に指す名前の集合（#10-b, `resolver::toplevel_visible_globals`）。
     /// 最上位ループ Chunk の**書き込み先**判定に使う。空 = 最上位 VM 化を行わない。
@@ -581,6 +588,14 @@ impl Interpreter {
     /// `resolver::toplevel_visible_globals` の結果をそのまま渡すこと（判定を複製しない）。
     pub fn set_toplevel_globals(&mut self, names: std::collections::HashSet<String>) {
         self.toplevel_globals = names;
+    }
+
+    /// 最上位グローバル名の集合を**追加**する（REPL 用・#36）。
+    ///
+    /// REPL はブロックを 1 つずつ実行するので、前のブロックで宣言した名前を
+    /// 後のブロックからも「`scopes[0]` を指す」と判断できるように積み増す必要がある。
+    pub fn extend_toplevel_globals(&mut self, names: std::collections::HashSet<String>) {
+        self.toplevel_globals.extend(names);
     }
 
     /// AST 型解決層の注釈（タスク #16）を注入する。`check_program` が生成したものを main.rs が渡す。

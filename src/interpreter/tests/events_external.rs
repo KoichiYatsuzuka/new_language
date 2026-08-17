@@ -20,12 +20,8 @@ sig on on_msg
 let eid = sig.external_id
 let eid2 = sig.external_id
 ";
-    let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens, None).parse_program().unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        let _ = interp.exec(stmt).unwrap();
-    }
+    // ⚠ 後段で同じインタプリタに 2 つ目のソース（`EventLoop.run`）を流すので `mut`。
+    let mut interp = run_interp(src);
 
     // external_id は初回発番後、同じ値を返し続ける
     let id = match interp.get_val("eid").unwrap() {

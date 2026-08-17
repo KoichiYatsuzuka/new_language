@@ -3927,6 +3927,115 @@ bail する。finally は正常路・例外路・**各脱出路**に複製され
 
 ---
 
+## #36 完了（2026-08-17）— REPL・単体テストの VM 経路移行
+
+**これで `--vm=off` でしか走らない入口も 0 になった**（#33 の前提がすべて揃った）。
+⚠ 途中で**ゲートの穴 1 件**と**アドレス再利用の実バグ 1 件**を踏んだ。どちらも
+「移行そのもの」より重要な発見だった。
+
+### テスト側: 予測 19 件 → 実際は 1 件
+
+ヘルパーを `prepare()` に一本化し `run_program` と同じ 4 点を揃えた
+（`resolve_program` / `check_and_annotate` / `set_toplevel_globals` / `set_vm_mode(On)`）。
+⚠ **型エラーは無視する**（静的検査が弾く形を意図的に実行するテストがあるため。欲しいのは注釈だけ）。
+
+**注釈を渡すだけで 18 件が解消**（`mustbe` 13・`cast` 5）。残った 1 件
+`test_redeclaration_in_inner_scope` は「ブロックスコープの再宣言」で、**本番では静的型検査が
+捕まえる**規則だった（`let`/`fn`/`block:`/`for` の 4 形すべてで確認）。VM の最上位 Chunk は
+内側 `let` を slot 宣言に落とすので実行時の重複検査を通らない。
+⇒ `static_errors()` ヘルパーを足して**静的検査で固定**した。
+
+個別サイト 8 箇所（callables 3・file_io 3・events_external 1・iterator 1）は
+`run_interp()` / `run_err_msg()` へ移行。⇒ **734 テスト全件が本番と同じ VM 経路**で走る。
+`eval_expr` だけは `interp.eval()` を直接呼ぶので `VmMode` に依存しない（そのまま）。
+
+### REPL: ブロックごとに配線し、旧ツリーウォークと byte-identical
+
+グローバル名は **`extend_toplevel_globals` で積み増す**（前ブロックの宣言も
+「`scopes[0]` を指す」と判断できないと後ブロックの代入が載らない）。
+注釈は差し替え（node-id はパース単位なので混ぜられない。#15e どおり食い違っても
+「特化が乗らない／bail」方向にしか倒れない）。
+
+対話 REPL には検査網が 1 つも無かったので [repl_session.ps1](repl_session.ps1) を新設
+（`examples/repl/repl_session.{in,out}` の golden 比較）。**負の対照 3 種**で検知力を確認:
+
+| 外したもの | ゲート |
+|---|---|
+| **globals の積み増し** | **発火**（`NameError: 'total' is not defined`）＝ load-bearing |
+| `resolve_program` | identical（最適化ヒント） |
+| 注釈 | identical（#15e の裏取り） |
+
+⚠ **`Process.StandardInput` は PS5.1 だと UTF-8 BOM を先頭に書く**（REPL が
+`ParseError: unexpected token` になった）。`cmd /c` のリダイレクトで与える。
+起動バナーは ANSI＋非 ASCII でコードページ依存なので比較から除いた。
+
+### 🕳 ゲートの穴: 最上位に宣言が無いプログラムはツリーウォークだった
+
+**負の対照が発火しなかった**ことから判明。`toplevel_vm_candidate()` が
+**`!toplevel_globals.is_empty()`** を条件にしていたため:
+
+```
+print(1)
+for i in range(3):
+    print(i)
+```
+→ `AR_TW_STATS[toplevel] total=6 Expr=5 For=1` ／ **`tw_control_flow: for-stmt=1`**
+
+⇒ **`force_gate` 0 件・`tw_control_flow` 0 は「例題が必ず何かを宣言している」に依存していた**。
+#33（ツリーウォーク削除）の前提が崩れる穴。条件を撤去して `vm_compile toplevel=3` になった。
+残る条件は `scopes.len() == 1`（「名前は `scopes[0]`」の唯一の根拠）と `vm_mode != Off` だけ。
+
+### 🐛 最上位 Chunk キャッシュのアドレス再利用（REPL が別文の Chunk を実行した）
+
+`Interpreter::vm_toplevel_chunks` は **`Stmt` のアドレス**をキーにする。REPL はブロックごとに
+AST を捨てていたので、アロケータが同じアドレスを再利用し **`let xs = […]` が
+`let total = 0` の Chunk を実行**した:
+
+```
+NameError: variable 'total' is already declared   ← `let xs = [1, 2, 3]` の行
+NameError: 'doubled' is not defined
+```
+
+⚠ `toplevel_vm_candidate` の条件を外した結果**最上位が必ず VM になった**ことで露出した
+（それまではブロック 1 がツリーウォークで、たまたま衝突していなかった）。
+⇒ `run_repl` が実行済みブロックの AST を `Vec<Vec<Stmt>>` に**溜め続ける**ようにした
+（`Vec` を move してもヒープ上の要素は動かないのでアドレスは保たれる）。
+キャッシュ側にも不変条件をコメントで固定した。
+
+⚠ `import` は安全（モジュール本体は `Stmt::Import` に埋め込まれ、プログラム AST と寿命が同じ）。
+
+### 検証
+
+`cargo build` 警告 0 ／ `cargo test` **734 緑**（全件 VM 経路）／
+`compare_vm_modes.ps1` **80 identical / 0 differing** ／
+[repl_session.ps1](repl_session.ps1) **identical** ／
+[compare_debug_modes.ps1](compare_debug_modes.ps1) **5 identical / 0 differing** ／
+`scan_examples.ps1` **FAIL 0** ／ `force_gate.ps1` **0 件・136 例題完走** ／
+**過去の全バッテリ 133 形で off/on 不一致 0**。
+
+`tw_stats.ps1`（ゲート穴を塞いだ後の全例題計測。⚠ debug ビルドなので 11 例題はタイムアウト）:
+
+| 指標 | 値 |
+|---|---|
+| **`tw_control_flow`**（TLS/センチネル経路） | **0** |
+| `in_fn`（ツリーウォークの関数本体） | **0** |
+| `vm_bail_fn` / `vm_bail_toplevel` / `vm_ineligible` | **すべて 0** |
+| `toplevel`（ツリーウォークの最上位文） | 371 ＝ **全て定義文**（`FnDef` 229・`ClassDef` 80・`Import` 28・`TraitDef` 12・`FromImport` 8・`NewTypeDef` 8・`ProtocolDef` 3・`EnumDef` 2・`GenDef` 1）。設計上インタプリタが実行する（#10-d） |
+| `module_body` | 20 ＝ 全て定義文（`ClassDef` 19・`FnDef` 1） |
+| `vm_compile` | 2,133（toplevel 1,733 ／ fn 398 ／ gen 2） |
+
+⇒ **制御フローを持つツリーウォークは 1 文も無い**という #33 の前提が、
+ゲート穴（`!toplevel_globals.is_empty()`）を塞いだ**後の**計測でも成り立っている。
+
+A/B（HEAD #34 前 → #34〜#40 の累積・`--vm=force`・min of 7）:
+`bench_arith` 0.968x ／ `bench_control_flow` 0.977x ／ `bench_field_access` 1.019x ／
+`bench_method_call` 1.008x ／ `bench_for` 0.962x。⚠ 同じ 2 バイナリでも回ごとに
+`bench_field_access` が 0.954〜1.029x で振れる（測定 5 回分）ので、**この幅はノイズ**。
+`toplevel_vm_candidate` の条件を 1 本外したことで最上位が VM になる範囲は広がったが、
+ベンチはいずれも最上位に宣言を持つので命令列は変わっていない。
+
+---
+
 ## この記録の使いどころ
 
 **見積もりが外れた事例**が最も価値がある。同じ判断ミスを繰り返さないために残してある。
@@ -3952,6 +4061,7 @@ bail する。finally は正常路・例外路・**各脱出路**に複製され
 | `force_gate` 0 件 | 「VM は言語全体を載せられる」 | **「128 例題で 0」でしかなかった**。例題が 1 本も無い言語機能（制御フロー式貫通 `break`）は**ゲートにも off/on 比較にも映らない**。単体テストだけが 11 件押さえていた |
 | #34（2026-08-17） | 「跳び先の計算が要る＝ジャンプ機構の作り直し」 | **機構は最初から揃っていた**（`LoopCtx` は絶対ジャンプ）。足りなかったのは**跳ぶ時点で積まれている値の始末**だけ。しかも「ブロック式は式の末尾にしか置けない」を**構文で実測**したら、深さの伝播は 3 箇所で済み**新オペコード 0**になった |
 | #34 の `continue` | 「`break` を通せば `continue` も同じ」 | **ツリーウォークに `continue` の貫通が無かった**（SyntaxError 化＋**黙って握り潰し**）。VM の方が正しく、参照実装と一致していた。`for-target-shadow` と同じ「bail する形はツリーウォークが正しいとは限らない」 |
+| #36（2026-08-17） | 「入口に配線を足すだけ。テスト 19 件が直る」 | 直ったのは **18 件で残り 1 件は静的検査の担当**だった。それより重要な副産物が 2 つ: **`force_gate` 0 件が「例題が必ず何かを宣言している」に依存**していた（最上位に宣言の無いプログラムは最上位丸ごとツリーウォーク）／**最上位 Chunk キャッシュが `Stmt` のアドレス**キーで、REPL が AST を捨てて**別文の Chunk を実行**していた。⇒ **負の対照が発火しないときは配線を疑う** |
 | #39（2026-08-17） | 「`store_target` の `toplevel_globals` 門を外すだけ」 | **委譲先が間違っていた**。`Op::StoreGlobal` は `assign_var`（`scopes[frame_floor..]` を先に走査）へ委譲しており、**VM 関数は `scopes` を押さない**ので走査に映るのは**呼び出し元のローカル**。最上位では `scopes.len()==1` で偶然一致していただけで、関数本体へ広げた瞬間に健全性が壊れる形だった |
 | #40（2026-08-17） | 「複製ごとにスタックの形が違うので一律の巻き戻しが書けない」＝#37 で保留にした | **`stmt_base` を複製の土台の分だけ持ち上げるだけ**で済んだ（引数 1 本）。既存の巻き戻しがそのまま「保留中の動作を破棄する」意味論を出した。⇒ **保留の理由が「難しい」だけのときは、一度は手を動かして確かめる** |
 | #37（2026-08-17） | 「跳ぶ経路にも finally を出す＝新しい機構が要る」 | **#34 の `try_depth` を `try_stack` に一般化するだけ**で済んだ（新オペコード 0）。さらに **`loop_yield` は脱出ではなかった**（蓄積して先へ進む）のに `has_escape` が脱出扱いしており、`try: loop_yield i` が**丸ごと誤爆で bail** していた |

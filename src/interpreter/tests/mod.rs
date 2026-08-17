@@ -6,12 +6,49 @@ use crate::ast::Stmt;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 
-/// テストソースを字句解析・構文解析・実行する。エラーがあれば `Err` を返す。
-fn run(src: &str) -> Result<(), String> {
+/// テストソースを**本番と同じ配線**でパースし、実行可能なインタプリタを作る（#36）。
+///
+/// `run_program`（main.rs）と同じ 4 点を揃える。1 つでも欠けると、正しいコードでも
+/// `VmForceError` になる（`--vm=on` は「解決情報が揃っている」前提の経路）:
+///
+/// 1. `resolve_program` … ローカル slot・グローバル参照の解決（Phase R）
+/// 2. `check_and_annotate` … AST 型解決層の注釈（#16）。`mustbe`/`=>` の検査指示はこれが無いと
+///    出ないので、**注釈を渡さないと `Expr::MustBe`/`Cast` を含む文が丸ごと bail する**
+/// 3. `set_toplevel_globals` … 最上位 Chunk が「この名前は `scopes[0]`」と判断する集合
+/// 4. `set_vm_mode(On)` … 既定は `Off` なので明示が必要
+///
+/// ⚠ **型エラーは無視する**。テストには静的検査が弾く形を意図的に実行するものがあり、
+/// ここで弾くと検査対象が変わってしまう。欲しいのは注釈だけ。
+///
+/// ⚠ テストが**本番と同じ経路**（バイトコード VM）を検査することがこの関数の目的。
+/// 以前は既定の `Off`＝ツリーウォークで走っており、**本番と違う実装をテストしていた**（#36）。
+fn prepare(src: &str) -> Result<(Vec<Stmt>, Interpreter), String> {
     let tokens = Lexer::new(src, "").tokenize();
     let mut stmts = Parser::new(tokens, None).parse_program()?;
     super::resolver::resolve_program(&mut stmts);
+    let (_errors, annotations) = crate::type_check::TypeChecker::check_and_annotate(&stmts);
     let mut interp = Interpreter::new();
+    interp.set_vm_mode(crate::vm::VmMode::On);
+    interp.set_annotations(std::rc::Rc::new(annotations));
+    interp.set_toplevel_globals(super::resolver::toplevel_declared_globals(&stmts));
+    Ok((stmts, interp))
+}
+
+/// 静的型検査だけを走らせてエラー一覧を返す（#36）。
+///
+/// ⚠ **ブロックスコープの再宣言のように「本番では静的検査が捕まえる」規則**は、
+/// `run` では検査できない（`prepare` は注釈を得るために型エラーを無視するし、
+/// VM の最上位 Chunk は内側 `let` を slot 宣言に落とすので実行時の重複検査を通らない）。
+/// そういう規則はこちらで固定する。
+fn static_errors(src: &str) -> Vec<crate::type_check::StaticTypeError> {
+    let tokens = Lexer::new(src, "").tokenize();
+    let stmts = Parser::new(tokens, None).parse_program().expect("parse");
+    crate::type_check::TypeChecker::check(&stmts)
+}
+
+/// テストソースを字句解析・構文解析・実行する。エラーがあれば `Err` を返す。
+fn run(src: &str) -> Result<(), String> {
+    let (stmts, mut interp) = prepare(src)?;
     for stmt in &stmts {
         let _ = interp.exec(stmt)?;
     }
@@ -19,6 +56,10 @@ fn run(src: &str) -> Result<(), String> {
 }
 
 /// 単一の式文を評価して `Value` を返すテストヘルパー。
+///
+/// ⚠ **ここは `VmMode` に依存しない**（#36）。`interp.eval()` を直接呼ぶので
+/// バイトコード経路を通らない（VM も一部の式評価をこの関数へ委譲する）。
+/// `vm_mode` を立てても意味がないのでそのままにしてある。
 fn eval_expr(src: &str) -> Value {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().unwrap();
@@ -31,12 +72,31 @@ fn eval_expr(src: &str) -> Value {
         .unwrap()
 }
 
+/// テストソースを**本番と同じ配線**で実行し、実行後のインタプリタを返す（#36）。
+/// 複数の変数を読む／エラー後の状態を見るテスト用（`run_get` は 1 変数だけ）。
+fn run_interp(src: &str) -> Interpreter {
+    let (stmts, mut interp) = prepare(src).unwrap();
+    for stmt in &stmts {
+        interp.exec(stmt).unwrap();
+    }
+    interp
+}
+
+/// テストソースを**本番と同じ配線**で実行し、最初に返った内部エラー文字列を返す（#36）。
+/// エラーが出なければ空文字列。
+fn run_err_msg(src: &str) -> String {
+    let (stmts, mut interp) = prepare(src).unwrap();
+    for stmt in &stmts {
+        if let Err(e) = interp.exec(stmt) {
+            return e;
+        }
+    }
+    String::new()
+}
+
 /// テストソースを実行して変数 `var` の値を返すテストヘルパー。
 fn run_get(src: &str, var: &str) -> Value {
-    let tokens = Lexer::new(src, "").tokenize();
-    let mut stmts = Parser::new(tokens, None).parse_program().unwrap();
-    super::resolver::resolve_program(&mut stmts);
-    let mut interp = Interpreter::new();
+    let (stmts, mut interp) = prepare(src).unwrap();
     for stmt in &stmts {
         let _ = interp.exec(stmt).unwrap();
     }
@@ -45,10 +105,7 @@ fn run_get(src: &str, var: &str) -> Value {
 
 /// py-int テスト用: examples/ ディレクトリを Python 検索パスに追加して実行する
 fn run_py_get(src: &str, var: &str) -> Value {
-    let tokens = Lexer::new(src, "").tokenize();
-    let mut stmts = Parser::new(tokens, None).parse_program().unwrap();
-    super::resolver::resolve_program(&mut stmts);
-    let mut interp = Interpreter::new();
+    let (stmts, mut interp) = prepare(src).unwrap();
     interp.add_python_search_dir(std::path::PathBuf::from("examples"));
     interp.add_python_search_dir(std::path::PathBuf::from("examples/interop/test_modules"));
     for stmt in &stmts {
@@ -59,10 +116,7 @@ fn run_py_get(src: &str, var: &str) -> Value {
 
 /// テストソースを実行し、最初の `raise` で発生した例外を返すテストヘルパー。例外がなければ `Ok(None)`。
 fn run_exc(src: &str) -> Result<Option<RaisedError>, String> {
-    let tokens = Lexer::new(src, "").tokenize();
-    let mut stmts = Parser::new(tokens, None).parse_program()?;
-    super::resolver::resolve_program(&mut stmts);
-    let mut interp = Interpreter::new();
+    let (stmts, mut interp) = prepare(src)?;
     for stmt in &stmts {
         match interp.exec(stmt) {
             Ok(ExecResult::Raise(raised)) => return Ok(Some(raised)),

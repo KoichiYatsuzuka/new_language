@@ -1,8 +1,6 @@
 // tests/callables.rs — 関数型(function type)、クロージャ、デコレータのテスト。
 
 use super::*;
-use crate::lexer::Lexer;
-use crate::parser::Parser;
 
 // --- function type ---
 
@@ -148,12 +146,7 @@ fn test_closure_captures_mutable_shared() {
         "let r2 = counter()\n",
         "let r3 = counter()\n",
     );
-    let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens, None).parse_program().unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        interp.exec(stmt).unwrap();
-    }
+    let interp = run_interp(src);
     assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(1)));
     assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(2)));
     assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(3)));
@@ -175,12 +168,7 @@ fn test_closure_each_call_new_env() {
         "let r_a = a()\n",
         "let r_b = b()\n",
     );
-    let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens, None).parse_program().unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        interp.exec(stmt).unwrap();
-    }
+    let interp = run_interp(src);
     assert!(matches!(interp.get_val("r_a").unwrap(), Value::Int(1)));
     assert!(matches!(interp.get_val("r_b").unwrap(), Value::Int(101)));
 }
@@ -225,12 +213,7 @@ fn test_closure_static_shared_across_calls() {
         "let r2 = b()\n",
         "let r3 = a()\n",
     );
-    let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens, None).parse_program().unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        interp.exec(stmt).unwrap();
-    }
+    let interp = run_interp(src);
     assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(1)));
     assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(2)));
     assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(3)));

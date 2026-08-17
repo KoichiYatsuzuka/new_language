@@ -1,0 +1,70 @@
+# repl_session.in — REPL の回帰検知セッション（#36）
+#
+# `##REPL_EXEC##` がブロックの区切り（VS Code 拡張が選択範囲の後に付けるセンチネル）。
+# repl_session.ps1 が このセッションを流して repl_session.out と突き合わせる。
+#
+# ⚠ REPL は #36 で**バイトコード VM 経路**になった。ブロックを跨ぐ状態（グローバル・
+#    関数定義・クラス定義）と、ブロックごとの解決情報の受け渡しがここの検査対象。
+##REPL_EXEC##
+mut total = 0
+##REPL_EXEC##
+fn bump(let n: int) -> int:
+    total += n
+    return total
+##REPL_EXEC##
+bump(5)
+##REPL_EXEC##
+bump(7)
+##REPL_EXEC##
+total
+##REPL_EXEC##
+for i in range(3):
+    total += i
+##REPL_EXEC##
+total
+##REPL_EXEC##
+let xs = [1, 2, 3]
+##REPL_EXEC##
+let doubled = for x in xs ->list[int]:
+    loop_yield x * 2
+##REPL_EXEC##
+doubled
+##REPL_EXEC##
+class P:
+    mut v: int
+
+    fn __init__(mut self) -> None:
+        self.v = 1
+
+    fn get(let self) -> int:
+        return self.v
+##REPL_EXEC##
+let p = P()
+##REPL_EXEC##
+p.get()
+##REPL_EXEC##
+try:
+    raise ValueError("x")
+except ValueError:
+    print("caught")
+finally:
+    print("fin")
+##REPL_EXEC##
+mut esc = -1
+##REPL_EXEC##
+for i in range(5):
+    try:
+        let _ = block ->int:
+            if i == 3:
+                break
+            block_return i
+        esc = i
+    finally:
+        print("f" + str(i))
+##REPL_EXEC##
+esc
+##REPL_EXEC##
+undefined_thing
+##REPL_EXEC##
+total
+##REPL_EXEC##

@@ -22,12 +22,19 @@ impl Interpreter {
     /// `try_run_toplevel_stmt`（非インライン）を呼ぶと関数内ループの実行ごとに
     /// 呼び出しコストを払う。実測でそれが数 % の退行になった。
     /// ここはフィールド 3 本の比較だけなのでインライン展開される。
+    /// ⚠ **`toplevel_globals` が空かどうかは条件にしない**（#36）。以前は
+    /// 「空 = 配線されていない `Interpreter::new()` 消費者」の代用として弾いていたが、
+    /// **最上位に宣言が 1 つも無い正しいプログラム**（`print(1)` と `for` だけ等）も空になるので、
+    /// そういうプログラムは最上位が**丸ごとツリーウォーク**になっていた
+    /// （`AR_TW_STATS` で `tw_control_flow: for-stmt=1` を実測）。
+    /// ＝ `force_gate` 0 件・`tw_control_flow` 0 は「例題が必ず何かを宣言している」に
+    /// 依存していた。#33（ツリーウォーク削除）の前提が崩れる穴。
+    /// 配線は各入口（`run_program`・REPL・テストヘルパー）が責任を持つ（#36）。
     #[inline(always)]
     pub(crate) fn toplevel_vm_candidate(&self) -> bool {
         // `scopes.len() == 1` = モジュール最上位（関数フレームも push 済みブロックも無い）。
-        self.scopes.len() == 1
-            && self.vm_mode != crate::vm::VmMode::Off
-            && !self.toplevel_globals.is_empty()
+        // これが「名前は `scopes[0]` を指す」の唯一の根拠。
+        self.scopes.len() == 1 && self.vm_mode != crate::vm::VmMode::Off
     }
 
     /// 最上位の文を VM で実行する（#10-b/#10-c）。対象はループ文と宣言文

@@ -99,14 +99,7 @@ fn test_file_read_line_forward() {
         "let f = open(\"{p}\", FileOpenMode.read)\n\
          let a = f.read_line()\nlet b = f.read_line()\nclose(f)\n"
     );
-    let tokens = crate::lexer::Lexer::new(&src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None)
-        .parse_program()
-        .unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        interp.exec(stmt).unwrap();
-    }
+    let interp = run_interp(&src);
     let a = interp.get_val("a").unwrap();
     let b = interp.get_val("b").unwrap();
     cleanup(&p);
@@ -130,14 +123,7 @@ fn test_file_read_letter() {
         "let f = open(\"{p}\", FileOpenMode.read)\n\
          let a = f.read_letter()\nlet b = f.read_letter()\nclose(f)\n"
     );
-    let tokens = crate::lexer::Lexer::new(&src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None)
-        .parse_program()
-        .unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        interp.exec(stmt).unwrap();
-    }
+    let interp = run_interp(&src);
     let a = interp.get_val("a").unwrap();
     let b = interp.get_val("b").unwrap();
     cleanup(&p);
@@ -233,14 +219,7 @@ fn test_file_byte_mode_write_read() {
          let g = open(\"{p}\", FileOpenMode.read, StartPoint.top, ByteRecognizingMode.byte)\n\
          let r = g.read()\nclose(g)\n"
     );
-    let tokens = crate::lexer::Lexer::new(&src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None)
-        .parse_program()
-        .unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        interp.exec(stmt).unwrap();
-    }
+    let interp = run_interp(&src);
     let val = interp.get_val("r").unwrap();
     cleanup(&p);
     // r should be [72, 105]

@@ -76,8 +76,20 @@ fn test_let_then_mut_redeclaration() {
 
 /// redeclaration_in_inner_scope のテスト（外側スコープの変数と同名）。
 #[test]
+///
+/// ⚠ **静的検査で固定する**（#36）。本番（`run_program`）はこの形を型検査で弾くので
+/// 実行時までは到達しない。VM の最上位 Chunk は内側 `let` を slot 宣言に落とすため
+/// 実行時の重複検査（`exec_let`）も通らない。同じスコープの再宣言は実行時にも出るので
+/// 上 2 つのテストは `run` のまま。
 fn test_redeclaration_in_inner_scope() {
-    assert!(run("let x = 1\nif True:\n    let x = 2\n").is_err());
+    let errs = static_errors("let x = 1\nif True:\n    let x = 2\n");
+    assert!(
+        errs.iter().any(|e| matches!(
+            &e.kind,
+            crate::type_check::TypeErrorKind::VariableRedeclaration { name } if name == "x"
+        )),
+        "expected a redeclaration error for 'x', got: {errs:?}"
+    );
 }
 
 /// underscore_redeclaration_allowed のテスト（_ は再宣言を許可）。

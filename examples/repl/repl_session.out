@@ -1,0 +1,15 @@
+5
+12
+12
+15
+[2, 4, 6]
+1
+caught
+fin
+f0
+f1
+f2
+f3
+2
+NameError: 'undefined_thing' is not defined
+15

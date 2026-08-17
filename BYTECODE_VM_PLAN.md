@@ -95,12 +95,15 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 **型の解決**（#16 c-3）・**ローカルの解決**（#11 R2-a/R2-a′）は三経路とも到達済み。
 **グローバルの解決**（#11 R2-b）はツリーウォーク／VM が共有（ネイティブは参照が無く保留）。
 ### 次にやる候補
-1. **#36** — `--vm=off` でしか走らない**入口**（REPL・単体テスト）の VM 移行。**#33 の唯一の前提**。
-2. **#33** — #36 が終われば成立する（`--vm=off` の削除とツリーウォーク制御フローの実削除）。
-3. **#38 → #30 / #31** — 独立レーン。いつでも着手できる。
+1. **#31** — `--vm=off` × `impl_python` の差分検査。**#33 の前に済ませるべき**（#33 は
+   `compare_vm_modes` という唯一の差分網を失う）。72 例題中 **39 本**に絞れば成立（実測済み）。
+2. **#33** — 前提（34/35/36/37/39/40）はすべて満たした。`--vm=off` の削除と
+   ツリーウォーク制御フローの実削除（**≈700 行**）。
+3. **#38 → #30 / #24** — 独立レーン。いつでも着手できる。
 
-> **#34 / #35 / #37 / #39 / #40 は完了**（2026-08-17）。**`--vm=off` でしか走らない言語機能は 0 になった**
-> （127 形の総当たりで off/on 不一致 0）。⚠ どれも「VM に載せる」だけでは終わらず、
+> **#34 / #35 / #36 / #37 / #39 / #40 は完了**（2026-08-17）。**`--vm=off` でしか走らない
+> 言語機能も入口も 0 になった**（133 形の総当たりで off/on 不一致 0・テスト 734 件が VM 経路）。
+> ⚠ どれも「VM に載せる」だけでは終わらず、
 > **ツリーウォーク側のバグと VM 側の意味論差**が芋づるで出た（詳細は実装ログ）:
 > `continue` の貫通が無い 2 件（SyntaxError 化・**黙って握り潰し**）／**`try` のハンドラが残る**
 > （`has_escape` は**文しか歩かない**）／**`block:` 文が `loop_yield` を吸い込む**／
@@ -140,6 +143,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | [dump_native_ir.ps1](dump_native_ir.ps1) | 代表 6 モジュールの生成 LLVM IR を保存（`.arc`/`.ars` は退避・復元） |
 | [annot_diff.ps1](annot_diff.ps1) / [annot_unresolved.ps1](annot_unresolved.ps1) | 注釈の充填状況・binop 特化の内訳・`Unresolved` の発生源／その全例題集計（式種別ごと） |
 | [ab_bench.ps1](ab_bench.ps1) | 2 つの `arrow.exe` を**交互実行**して経過時間を比較（`-A head.exe -B new.exe`）。#2b で新設 |
+| [repl_session.ps1](repl_session.ps1) | **対話 REPL の回帰検知**（#36 で新設）。`examples/repl/repl_session.{in,out}` の golden 比較。⚠ `compare_vm_modes` は stdin を与えず、`compare_debug_modes` はデバッガ REPL（別物）を見るので、**対話 REPL はこれだけが検査している**。更新は `-Update`（差分は必ず目で見る） |
 | [compare_debug_modes.ps1](compare_debug_modes.ps1) | **対話デバッガのステッピング**が off/on で byte-identical か検証（`examples/debugger/<name>.ar` ＋ `<name>.in`）。#1 で新設 — `compare_vm_modes.ps1` は stdin を与えないのでこの経路を覆えない |
 | [ab_bench_vm.ps1](ab_bench_vm.ps1) | `ab_bench.ps1` の **`--vm=<mode>` 付き**版。「退行が VM 経路由来か」を切り分ける唯一の手段（#10-b で新設）。⚠ 交互実行必須 |
 | [force_gate.ps1](force_gate.ps1) | **強制バイトコードの回帰検知**（#25。#3 完了後は「既定の挙動が全例題で通るか」の検査）。全例題を `--vm=force`（=`on`）で実行し `VmForceError` を列挙。⚠ **止めて判定する**用途で件数は `tw_stats.ps1` で見る。GUI 例題は**タイムアウト後に窓を閉じて**完走させる（#29） |
@@ -192,6 +196,13 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 - **⚠ `--vm=on` が bail する形は「エラー報告」も食い違う**（#34）。実行時エラーになると分かっている
   文（囲むループの無い `break`）を bail すると、`--vm=off` は `SyntaxError`・`--vm=on` は
   `VmForceError` になる。**必ず失敗する文は bail せず `Op::Fail` で同じ文言を出す**。
+- **⚠⚠ 最上位 Chunk キャッシュは `Stmt` の**アドレス**をキーにする**（#36）。載せた AST を解放すると
+  アロケータが同じアドレスを再利用し、**別の文が前の文の Chunk を実行する**（REPL がブロックごとに
+  AST を捨てて `let xs = …` が `let total = …` の Chunk を走らせた）。新しい入口は **AST を保持し続ける**。
+- **⚠ ゲートが「例題の書き方」に依存していないか疑う**（#36）。`toplevel_vm_candidate` が
+  `!toplevel_globals.is_empty()` を条件にしていたため、**最上位に宣言の無いプログラム**は
+  最上位が丸ごとツリーウォークだったのに `force_gate` 0 件・`tw_control_flow` 0 のままだった
+  （例題が必ず何かを宣言していたため）。**負の対照が発火しないときは、まず配線を疑う**。
 - **⚠ 脱出制御を足すときは「オペランドスタック」と「ハンドラスタック」の両方を戻す**（#34）。
   `has_escape` は**文しか歩かない**のでブロック式の中の `break` を見落とす。`try` から跳ぶと
   `PopTry` を通らず**ハンドラが残り、ループを抜けた後の無関係な例外を横取りする**。
@@ -215,35 +226,23 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | 15-3 | 文字列インターン（§7.4-3） | 属性名・メソッド名を `Rc<str>` + ポインタ比較 | — | 保留（**消費者 0 件と実測**・R3 IC が名前引きを既に潰済） |
 | 2c | V-F R0-A エスケープ解析 | 非エスケープフレームのフラット確保 | **← 12b** | **保留**（12b が作るコストを取り消すだけのタスク。VM 経路は既にフラット） |
 | 10-d | 定義文のオペコード化・import モジュール本体 | — | — | **保留**（計測で**両半分とも #3 に寄与しない**と判明: モジュール本体は 20 文・定義文は制御フローも TLS も持たない。詳細は実装ログ） |
-| 27 | fn の VM コンパイル失敗の解消 | 未解決 Ident=`LoadGlobal`／属性複合代入=融合を使わない 2 回評価経路／for シャドウ=本体の間だけ slot 差し替え／可変長=`local::args` を末尾 slot へ／`static`=`static_cells` 直読み／可変キャプチャ=セル表 | — | **完了**（`vm_bail_fn` 49→**0**） |
-| 27-d | クロージャ本体の VM 化 | 段階 1（不変キャプチャ→末尾 slot・`captured_slots`）／段階 2a（`static`→`static_cells` 直読み）／段階 2b（可変キャプチャ→**slot と並行するセル表**・`LoadCell`/`StoreCell`）。⚠ クロージャ実体ごとに `FnValue` が別物で **Chunk を使い回せない**（→ #30） | — | **完了**（`vm_ineligible` 20→**0**） |
 | 28 | `Op::Rare` への畳み込み | 稀な 7 op を 1 アームに集約 | — | **却下**（実装して A/B した結果**何も回復せず** 1 件は悪化。**前提だった「op 1 個あたり ~1〜1.5%」というモデル自体が誤り**だった。詳細は実装ログ） |
-| 27-c | 最上位 Chunk 化の bail 解消 | flat リスト組み込みの 1 実装化／`StoreLocalFromIdent`／`try/except/finally` は `try/except` を `try/finally` で包む／ブロック式内 `fn` の採番／一般の呼び先式／`CallBuiltinKw`・`CallMethodKw` | — | **完了**（`vm_bail_toplevel` 175→**0**・`force_gate` 36→**4**） |
 | 24 | peephole パターンの追加 | `peephole.rs` へ足す（到達不能コード除去・`Const;Pop` 消去等）。**#2a の実測では JUMP 除去だけで総命令の 0.31%**なので、追加は「効く形を実測してから」 | — | 未着手（低優先・効果は要実測） |
-| 29 | `force_gate` の未判定を無くす | タイムアウトでも stderr を読む／`-Timeout` 45 秒／**kill の前に窓を閉じる**（繰り返し送る） | — | **完了**（未判定 5→**0**・128 例題すべて完走） |
 | **38** | **A/B 計測スクリプトのデッドロック解消** | [ab_bench.ps1](ab_bench.ps1) / [ab_bench_vm.ps1](ab_bench_vm.ps1) の `Measure-Run` が `StandardOutput.ReadToEnd()` → `StandardError.ReadToEnd()` を**逐次**呼ぶので、子が stderr のパイプを埋めると相互ブロックする（#34 で **1 時間停止**）。[scan_examples.ps1](scan_examples.ps1) と同じ**非同期読み**（`ReadToEndAsync`）に揃える。⚠ 症状は「CPU 時間が伸びないまま生き続ける」 | — | 未着手（**計測手段の不具合**・#30 の前に潰す） |
 | **30** | **クロージャ Chunk の実体跨ぎ再利用＋計測** | `get_or_compile_chunk` は `FnValue` ごとにキャッシュするので、**クロージャは実体ごとに再コンパイル**する。#27-d 段階 1 で初めて実際に走るようになった（それまでクロージャは VM 非対象）。⚠ **クロージャのベンチが 1 本も無い**ので、まず計測手段を作ってから判断する | **← 38**（A/B が止まるので先に直す） | 未着手（**新たに生じた性能リスク**） |
 | **31** | **`--vm=off` × `impl_python` の差分検査** | `compare_vm_modes` は**両モードともツリーウォークに落ちる形**を構造的に検知できない（#27 の `for-target-shadow` を取り逃していた）。参照実装との突き合わせスクリプトを作る。⚠ `impl_python` の対応範囲が狭ければ対象例題を絞る。**実現可能性は実測済み**（72 例題中 stdout 一致 **39**・不一致 30・内部クラッシュ 3 ⇒ **39 本に絞れば成立する**・詳細は実装ログ） | — | 未着手（**実バグ 1 件を取り逃した穴**・#33 の代替網） |
-| 32 | async ブロック本体の VM 化 | `compile_async_body`（`compile_block_expr` ＋ `Return`）で Chunk 化。捕捉環境は `captured_slots`。`vm_mode` を worker へ伝搬し `Force` を効かせた | — | **完了**（**3.77x**・最上位ツリーウォークが定義文だけになった） |
-| 3 | 強制バイトコード（D2） | `VmMode` を `Off`/`On` へ畳み、`On` は載らなければ `VmForceError` で停止。⚠ **`On` にするのは `run_program` だけ**（REPL/テストは解決情報を持たないので壊れる） | — | **完了**（フォールバック撤去。**TLS/センチネル削除は #33 へ分離**） |
-| **34** | **制御フロー式を貫通する `break`/`continue` の VM コンパイル** | 跳ぶ前に「途中の式が積んだオペランド」を `Pop` する（深さ＝`stmt_base`）。深さは `BinOp` 左右・`UnaryOp` にだけ伝播し、**不明なら bail**（既定 `None` が安全側）。判定を `Stmt::Break` へ一本化し `block_body_bails` の 2 つ目の walker を撤去。囲むループが無い場合は bail せず `Op::Fail`（ツリーウォークと同文言） | — | **完了**（**新オペコード 1・既存 Chunk 不変**。ツリーウォークの `continue` バグ 2 件も修正） |
-| **35** | **`block_return`/`loop_yield` の実行時検査を VM へ** | `BlockCtx` に `->T` を持たせ `Op::CheckBlockReturn`/`CheckLoopYield` を発行（判定は `check_block_return_type`/`check_loop_yield_type` の**1 実装へ委譲**）。for/while 式の外の `loop_yield` は bail せず `Op::Fail`。⚠ `block:` **文**は TLS へ push しないので**外側の注釈を継承**し、**`loop_yield` には透過**（蓄積先を持たせない） | — | **完了**（新オペコード 2。`block:` 文の yield 透過バグも修正） |
-| **39** | **関数本体からのグローバル代入の VM コンパイル** | `store_target` の `toplevel_globals` 門を撤去（`cells`/`statics`/`slots` を全部外れた名前＝ローカルでもキャプチャでもない＝`scopes[0]`。読み側 `LoadGlobal` と同じ根拠）。⚠ **`vm_assign_global` を `assign_var` 委譲から `scopes[0]` 限定へ変更**（VM 関数は `scopes` を押さないので、委譲すると**呼び出し元のローカル**を走査してしまう）。デバッガ REPL（`debug_mode`）だけは名前引きが要るので bail 継続 | — | **完了**（新オペコード 0。潜在的な健全性の穴も解消） |
-| **37** | **`try/finally` を跨ぐ `break`/`continue`/`return`/`block_return` の VM コンパイル** | `try_depth`/`finally_guard` を **`try_stack: Vec<Option<Vec<Stmt>>>`**（各 try の finally 本体）へ置換し、`emit_unwind_tries(keep, pop_except)` が**脱出経路へ finally 本体を複製**する（内側から）。バリアは `LoopCtx.try_len`／`BlockCtx.try_len`／`return` は 0。⚠ **`loop_yield` は跳ばないので `has_escape` から外した**（誤検知で丸ごと bail していた） | — | **完了**（新オペコード 0。`try/except` を跨ぐ脱出の bail も解消） |
-| **40** | **`finally` 本体そのものからの脱出の VM コンパイル** | `compile_finally_copy(fin, extra)` が**複製が載っているオペランド数**だけ `stmt_base` を持ち上げる（例外路 `[exc]`＝1・`return` 路の戻り値＝1）。跳ぶときにその分まで捨てるので **Python と同じ「保留中の動作を破棄する」**意味論になる。`block_return` は `BlockCtx.entry_depth` との差分を `Pop`。複製の増殖は `MAX_FINALLY_NEST` で頭打ち | — | **完了**（新オペコード 0。`has_escape` walker を**全廃**） |
-| **36** | **`Interpreter::new()` 消費者の VM 経路移行** | `VmMode::Default` が `Off` なので **REPL（[repl.rs:30](src/repl.rs#L30)）と単体テスト 14 箇所**が `--vm=off` と同じ経路を踏む。入口で `check_and_annotate` ＋ `resolve_program` ＋ `set_toplevel_globals` を供給して `On` にする。実測: テストヘルパー 3 本を `On` にすると **676 passed / 30 failed**（うち 19 は注釈欠落＝この配線で解消・11 は #34/#35 の実体） | — | 未着手 |
-| **33** | **`--vm=off` の削除とツリーウォーク制御フローの実削除** | ⚠ 前提は **34（済）/35/36/37**。`--vm` フラグ・`VmMode::Off`（8 箇所）・`BLOCK_YIELDS`/`LOOP_DEPTH`/`BLOCK_RETURN_EXPECTED_TYPE`/`BREAK_SENTINEL`/`CONTINUE_SENTINEL`（#34 で追加）と制御フロー実装を削除（**実測 ≈700 行**）。`GENERATOR_YIELDS`（#8）と `RAISE_SENTINEL`（V-C）は **VM が使うので対象外**。⚠ **[compare_vm_modes.ps1](compare_vm_modes.ps1)（実バグ 4 件を検出した唯一の差分網）と `ab_bench_vm.ps1` と「`--vm=off` でも同じ差が出るか」という切り分け基準を同時に失う**ので、先に #31 で代替網を用意すること | **← 34, 35, 36**（＋代替網として **31** を推奨） | **未着手（前提が未完）** |
+| **33** | **`--vm=off` の削除とツリーウォーク制御フローの実削除** | ⚠ **前提（34/35/36/37/39/40）はすべて完了**。`--vm` フラグ・`VmMode::Off`（8 箇所）・`BLOCK_YIELDS`/`LOOP_DEPTH`/`BLOCK_RETURN_EXPECTED_TYPE`/`BREAK_SENTINEL`/`CONTINUE_SENTINEL`（#34 で追加）と制御フロー実装を削除（**実測 ≈700 行**）。`GENERATOR_YIELDS`（#8）と `RAISE_SENTINEL`（V-C）は **VM が使うので対象外**。⚠ **[compare_vm_modes.ps1](compare_vm_modes.ps1)（実バグ 4 件を検出した唯一の差分網）と `ab_bench_vm.ps1` と「`--vm=off` でも同じ差が出るか」という切り分け基準を同時に失う**ので、先に #31 で代替網を用意すること | —（**前提はすべて完了**・代替網として **31** を推奨） | **未着手・着手可** |
 | 11 R2-c | グローバル記憶域の index 配列化 | ネイティブの index 参照 | **← 消費者の出現（14 と同時に再評価）** | ブロック中（消費者不在） |
 | 14 | §6 モジュール動的リンク | ディスクリプタシンボル＋ABI ハッシュ照合 | **← モジュール間ネイティブ直リンクの導入**（未実装・未計画） | ブロック中 |
 
 ```
 27/27-c/27-d/32/29/3 は完了（`force_gate` 0・128 例題完走・フォールバック撤去済み）
 
---vm=off 廃止レーン（34/35/37/39/40 は完了。残り 1 本 → 最後に 33）
-    34（break/continue 貫通）／35（block_return 検査）／37（finally 跨ぎ）
-    ／39（グローバル代入）／40（finally 本体）……完了
-    36（REPL・単体テストの VM 移行） → 33（--vm=off とツリーウォーク制御フローの削除）
-                                        ↑ 31 を先に済ませて代替網を作るのが望ましい
+--vm=off 廃止レーン（34/35/36/37/39/40 すべて完了 → 33 が着手可能になった）
+    34（break/continue 貫通）／35（block_return 検査）／36（REPL・テストの VM 移行）
+    ／37（finally 跨ぎ）／39（グローバル代入）／40（finally 本体）……完了
+    33（--vm=off とツリーウォーク制御フローの削除・≈700 行）  ← 前提はすべて満たした
+        ↑ 31 を先に済ませて代替網を作るのが望ましい（`compare_vm_modes` を失うので）
 
 38（A/B スクリプトのデッドロック解消）→ 30（クロージャ Chunk 再利用の計測）
 31（参照実装との差分検査）は独立していつでも可
@@ -492,6 +491,18 @@ cargo run -- --vm=force <file.ar>   # フォールバック禁止。載らなけ
 
 | # | 完了項目 | 手法 |
 |---|---|---|
+| 27 | fn の VM コンパイル失敗の解消 | 未解決 Ident=`LoadGlobal`／属性複合代入=融合を使わない 2 回評価経路／for シャドウ=本体の間だけ slot 差し替え／可変長=`local::args` を末尾 slot へ／`static`=`static_cells` 直読み／可変キャプチャ=セル表（**完了**（`vm_bail_fn` 49→**0**）） |
+| 27-d | クロージャ本体の VM 化 | 段階 1（不変キャプチャ→末尾 slot・`captured_slots`）／段階 2a（`static`→`static_cells` 直読み）／段階 2b（可変キャプチャ→**slot と並行するセル表**・`LoadCell`/`StoreCell`）。⚠ クロージャ実体ごとに `FnValue` が別物で **Chunk を使い回せない**（→ #30）（**完了**（`vm_ineligible` 20→**0**）） |
+| 27-c | 最上位 Chunk 化の bail 解消 | flat リスト組み込みの 1 実装化／`StoreLocalFromIdent`／`try/except/finally` は `try/except` を `try/finally` で包む／ブロック式内 `fn` の採番／一般の呼び先式／`CallBuiltinKw`・`CallMethodKw`（**完了**（`vm_bail_toplevel` 175→**0**・`force_gate` 36→**4**）） |
+| 29 | `force_gate` の未判定を無くす | タイムアウトでも stderr を読む／`-Timeout` 45 秒／**kill の前に窓を閉じる**（繰り返し送る）（**完了**（未判定 5→**0**・128 例題すべて完走）） |
+| 32 | async ブロック本体の VM 化 | `compile_async_body`（`compile_block_expr` ＋ `Return`）で Chunk 化。捕捉環境は `captured_slots`。`vm_mode` を worker へ伝搬し `Force` を効かせた（**完了**（**3.77x**・最上位ツリーウォークが定義文だけになった）） |
+| 3 | 強制バイトコード（D2） | `VmMode` を `Off`/`On` へ畳み、`On` は載らなければ `VmForceError` で停止。⚠ **`On` にするのは `run_program` だけ**（REPL/テストは解決情報を持たないので壊れる）（**完了**（フォールバック撤去。**TLS/センチネル削除は #33 へ分離**）） |
+| **34** | **制御フロー式を貫通する `break`/`continue` の VM コンパイル** | 跳ぶ前に「途中の式が積んだオペランド」を `Pop` する（深さ＝`stmt_base`）。深さは `BinOp` 左右・`UnaryOp` にだけ伝播し、**不明なら bail**（既定 `None` が安全側）。判定を `Stmt::Break` へ一本化し `block_body_bails` の 2 つ目の walker を撤去。囲むループが無い場合は bail せず `Op::Fail`（ツリーウォークと同文言）（**完了**（**新オペコード 1・既存 Chunk 不変**。ツリーウォークの `continue` バグ 2 件も修正）） |
+| **35** | **`block_return`/`loop_yield` の実行時検査を VM へ** | `BlockCtx` に `->T` を持たせ `Op::CheckBlockReturn`/`CheckLoopYield` を発行（判定は `check_block_return_type`/`check_loop_yield_type` の**1 実装へ委譲**）。for/while 式の外の `loop_yield` は bail せず `Op::Fail`。⚠ `block:` **文**は TLS へ push しないので**外側の注釈を継承**し、**`loop_yield` には透過**（蓄積先を持たせない）（**完了**（新オペコード 2。`block:` 文の yield 透過バグも修正）） |
+| **39** | **関数本体からのグローバル代入の VM コンパイル** | `store_target` の `toplevel_globals` 門を撤去（`cells`/`statics`/`slots` を全部外れた名前＝ローカルでもキャプチャでもない＝`scopes[0]`。読み側 `LoadGlobal` と同じ根拠）。⚠ **`vm_assign_global` を `assign_var` 委譲から `scopes[0]` 限定へ変更**（VM 関数は `scopes` を押さないので、委譲すると**呼び出し元のローカル**を走査してしまう）。デバッガ REPL（`debug_mode`）だけは名前引きが要るので bail 継続（**完了**（新オペコード 0。潜在的な健全性の穴も解消）） |
+| **37** | **`try/finally` を跨ぐ `break`/`continue`/`return`/`block_return` の VM コンパイル** | `try_depth`/`finally_guard` を **`try_stack: Vec<Option<Vec<Stmt>>>`**（各 try の finally 本体）へ置換し、`emit_unwind_tries(keep, pop_except)` が**脱出経路へ finally 本体を複製**する（内側から）。バリアは `LoopCtx.try_len`／`BlockCtx.try_len`／`return` は 0。⚠ **`loop_yield` は跳ばないので `has_escape` から外した**（誤検知で丸ごと bail していた）（**完了**（新オペコード 0。`try/except` を跨ぐ脱出の bail も解消）） |
+| **40** | **`finally` 本体そのものからの脱出の VM コンパイル** | `compile_finally_copy(fin, extra)` が**複製が載っているオペランド数**だけ `stmt_base` を持ち上げる（例外路 `[exc]`＝1・`return` 路の戻り値＝1）。跳ぶときにその分まで捨てるので **Python と同じ「保留中の動作を破棄する」**意味論になる。`block_return` は `BlockCtx.entry_depth` との差分を `Pop`。複製の増殖は `MAX_FINALLY_NEST` で頭打ち（**完了**（新オペコード 0。`has_escape` walker を**全廃**）） |
+| **36** | **`Interpreter::new()` 消費者の VM 経路移行** | テストは `prepare()` に一本化（`resolve_program`＋`check_and_annotate`＋`set_toplevel_globals`＋`On`）／REPL はブロックごとに同じ配線（**globals は積み増し**・注釈は差し替え）。⚠ **`toplevel_vm_candidate` の `!toplevel_globals.is_empty()` を撤去**（最上位に宣言の無いプログラムが最上位丸ごとツリーウォークだった＝ゲートの穴）。⚠ **最上位 Chunk キャッシュは `Stmt` のアドレスをキーにするので AST を捨ててはいけない**（REPL がブロックごとに捨てて別文の Chunk を実行していた）（**完了**（734 テスト全件が VM 経路。[repl_session.ps1](repl_session.ps1) を新設）） |
 | — | Phase R（R0/R1/R3/R4） | フレーム隔離・ローカル slot 化・属性 IC・呼び先解決・`Value` 32B 化 |
 | — | Phase V-A〜V-E | VM 骨格・制御フロー・メソッド・例外ハンドラスタック・ブロック式・トレースバック・デバッガ REPL |
 | 4〜9 | VM カバレッジ拡大 | メソッド高速バインド／添字・コレクション／組み込み拡張／テンプレート Chunk メモ化／ジェネレータ VM 化／関数内 async |
