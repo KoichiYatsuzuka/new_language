@@ -99,10 +99,12 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::ExcMatch(n) => format!("EXC_MATCH {:?}", chunk.names.get(*n as usize)),
         Op::Fail(n) => format!("FAIL {:?}", chunk.names.get(*n as usize)),
         Op::StoreName(n) => format!("STORE_NAME {:?}", chunk.names.get(*n as usize)),
-        Op::CheckBlockReturn(n) => {
-            format!("CHECK_BLOCK_RETURN {:?}", chunk.names.get(*n as usize))
+        Op::CheckBlockReturn(n, t) => {
+            format!("CHECK_BLOCK_RETURN {:?} tag={t:?}", chunk.names.get(*n as usize))
         }
-        Op::CheckLoopYield(n) => format!("CHECK_LOOP_YIELD {:?}", chunk.names.get(*n as usize)),
+        Op::CheckLoopYield(n, t) => {
+            format!("CHECK_LOOP_YIELD {:?} tag={t:?}", chunk.names.get(*n as usize))
+        }
         Op::BuildEmptyList => "BUILD_EMPTY_LIST".to_string(),
         Op::ListAppendLocal(s) => format!("LIST_APPEND_LOCAL {s}"),
         Op::ListOrNone => "LIST_OR_NONE".to_string(),

@@ -970,13 +970,19 @@ fn exec_op(
             let v = buf.pop().unwrap();
             interp.vm_assign_by_name(&chunk.names[*idx as usize], v)?;
         }
-        Op::CheckBlockReturn(idx) => {
+        // #43: 種別が合えばここで終わり（文字列に触らない）。外れたときだけ一般判定へ落として
+        // **同じ実装から同じ文言**のエラーを出す（`Other` は常に一般判定）。
+        Op::CheckBlockReturn(idx, tag) => {
             let v = buf.last().unwrap();
-            interp.check_block_return_type(v, &chunk.names[*idx as usize])?;
+            if !tag.matches(v) {
+                interp.check_block_return_type(v, &chunk.names[*idx as usize])?;
+            }
         }
-        Op::CheckLoopYield(idx) => {
+        Op::CheckLoopYield(idx, tag) => {
             let v = buf.last().unwrap();
-            interp.check_loop_yield_type(v, &chunk.names[*idx as usize])?;
+            if !tag.matches(v) {
+                interp.check_loop_yield_type(v, &chunk.names[*idx as usize])?;
+            }
         }
         Op::BuildEmptyList => buf.push(Value::List(Rc::new(RefCell::new(Vec::new())))),
         Op::ListAppendLocal(slot) => {

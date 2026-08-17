@@ -3030,8 +3030,13 @@ impl Compiler {
                 };
                 self.compile_expr(e)?;
                 // #35: `->T` があれば実行時検査（ツリーウォークの `check_block_return_type`）。
+                // #43: 判定種別をアノテーション文字列から先に決める。`Any` は常に真なので
+                // **op 自体を出さない**（検査を省くのではなく、検査が自明に成立する場合だけ）。
                 if let Some(idx) = ann {
-                    self.emit(Op::CheckBlockReturn(idx));
+                    let tag = crate::vm::op::TypeTag::of(&self.names[idx as usize]);
+                    if tag != crate::vm::op::TypeTag::Any {
+                        self.emit(Op::CheckBlockReturn(idx, tag));
+                    }
                 }
                 self.emit(Op::StoreLocal(result_slot));
                 // #37: ブロック式入口までの try を巻き戻す（finally を走らせる）。
@@ -3061,7 +3066,19 @@ impl Compiler {
                 let ann = self.block_ctxs.last().and_then(|c| c.return_type);
                 self.compile_expr(e)?;
                 if let Some(idx) = ann {
-                    self.emit(Op::CheckLoopYield(idx));
+                    // #43: **要素型**から種別を決める（`list[T]` の `T`）。
+                    // `list[T]` の形でなければ検査自体が無いので op を出さない
+                    // （`check_loop_yield_type` が `Ok(())` を返すのと同じ）。
+                    let ann_str = self.names[idx as usize].clone();
+                    match crate::vm::op::elem_type_of_list_ann(&ann_str) {
+                        Some(elem) => {
+                            let tag = crate::vm::op::TypeTag::of(elem);
+                            if tag != crate::vm::op::TypeTag::Any {
+                                self.emit(Op::CheckLoopYield(idx, tag));
+                            }
+                        }
+                        None => {}
+                    }
                 }
                 self.emit(Op::ListAppendLocal(yield_slot));
             }

@@ -6,6 +6,63 @@
 
 use crate::ast::{BinOp, UnaryOp};
 
+/// 実行時型検査の高速判定用の種別（#43）。**アノテーション文字列から**コンパイル時に決める。
+///
+/// ⚠ 型推論の結果を使ってはいけない（注釈は最適化ヒントであって意味論の根拠ではない・#15e）。
+/// ここが見ているのは「ソースに書かれた型注釈そのもの」なので、判定内容は
+/// `value_matches_type_ann` と同一で、**文字列比較を列挙比較に置き換えているだけ**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeTag {
+    /// `Any` — 常に真。⚠ この場合コンパイラは **op 自体を出さない**。
+    Any,
+    Int,
+    UInt,
+    Float,
+    Str,
+    Bool,
+    /// 上記以外（`list[T]`・クラス名・`Union[...]` 等）。一般判定へ落とす。
+    Other,
+}
+
+impl TypeTag {
+    /// 型注釈の文字列から種別を決める（#43）。⚠ C ABI 別名（`int32` 等）は
+    /// `value_matches_type_ann` と**同じ前処理**で基底型へ寄せる。
+    pub fn of(ann: &str) -> TypeTag {
+        let ann = crate::ast::c_abi_base_type(ann).unwrap_or(ann);
+        match ann {
+            "Any" => TypeTag::Any,
+            "int" => TypeTag::Int,
+            "uint" => TypeTag::UInt,
+            "float" => TypeTag::Float,
+            "str" => TypeTag::Str,
+            "bool" => TypeTag::Bool,
+            _ => TypeTag::Other,
+        }
+    }
+
+    /// 値がこの種別に合うか（`Other` は呼び出し側が一般判定へ落とす）。
+    #[inline(always)]
+    pub fn matches(self, v: &crate::interpreter::Value) -> bool {
+        use crate::interpreter::Value;
+        match self {
+            TypeTag::Any => true,
+            TypeTag::Int => matches!(v, Value::Int(_)),
+            TypeTag::UInt => matches!(v, Value::UInt(_)),
+            TypeTag::Float => matches!(v, Value::Float(_)),
+            TypeTag::Str => matches!(v, Value::Str(_)),
+            TypeTag::Bool => matches!(v, Value::Bool(_)),
+            TypeTag::Other => false,
+        }
+    }
+}
+
+/// `"list[T]"` から要素型 `"T"` を取り出す（#43）。`"list"` や他の型は `None`。
+/// ⚠ `Interpreter::check_loop_yield_type` が実行時にしている抽出と**同じ規則**。
+/// こちらはコンパイル時に 1 回だけ行う。
+pub fn elem_type_of_list_ann(ann: &str) -> Option<&str> {
+    Some(ann.strip_prefix("list[")?.strip_suffix(']')?.trim())
+}
+
 /// VM オペコード（V-A の最小セット）。
 #[derive(Debug, Clone)]
 pub enum Op {
@@ -219,16 +276,22 @@ pub enum Op {
     Dup,
     /// pop した例外値が `names[name_idx]` 型にマッチするか（`exc_matches`）を Bool で push する。
     ExcMatch(u32),
-    /// `block_return` の値をブロック式の `->T` アノテーションに対して検査する（#35）。
+    /// `block_return` の値をブロック式の `->T` アノテーションに対して検査する（#35/#43）。
     ///
-    /// スタックトップを**消費せず**見て、`check_block_return_type(v, names[idx])` が
-    /// `Err` なら停止する。アノテーションを持つブロック式の `block_return` にだけ出る。
-    CheckBlockReturn(u32),
-    /// `loop_yield` の値を for/while 式の `->list[T]` アノテーションに対して検査する（#35）。
+    /// スタックトップを**消費せず**見て、合わなければ停止する。
+    /// `tag` は**アノテーション文字列から**コンパイル時に決めた高速判定用の種別（#43）。
+    /// ⚠ **型推論の結果ではない**（推論に頼ると #15e の「注釈は意味論の根拠ではない」を破る）。
+    /// `TypeTag::Other` のときだけ `check_block_return_type` の一般判定へ落とす。
+    /// 失敗時は必ず一般判定を通すので**エラー文言は 1 実装のまま**。
+    CheckBlockReturn(u32, TypeTag),
+    /// `loop_yield` の値を for/while 式の `->list[T]` アノテーションに対して検査する（#35/#43）。
     ///
-    /// `CheckBlockReturn` と同じくスタックトップを消費しない。`names[idx]` は
-    /// **`list[T]` そのもの**（要素型の取り出しは `check_loop_yield_type` が行う＝1 実装）。
-    CheckLoopYield(u32),
+    /// `names[idx]` は **`list[T]` そのもの**（エラー文言の `(from ->list[T])` に要る）。
+    /// `tag` は**要素型**から決める。
+    ///
+    /// ⚠ **反復ごとに走る**ので、ここで文字列を触ってはいけない（#43 の計測で
+    /// `loop_yield` 支配のベンチの **12.4%** がこの検査だった）。
+    CheckLoopYield(u32, TypeTag),
     /// `names[idx]` を内部エラー文字列として返して停止する（ツリーウォークの `Err(msg)` と同じ経路・#34）。
     ///
     /// 用途は「**実行時に必ず失敗すると分かっている文**」を、コンパイル失敗（`VmForceError`）ではなく
