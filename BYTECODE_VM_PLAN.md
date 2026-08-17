@@ -95,17 +95,19 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 **型の解決**（#16 c-3）・**ローカルの解決**（#11 R2-a/R2-a′）は三経路とも到達済み。
 **グローバルの解決**（#11 R2-b）はツリーウォーク／VM が共有（ネイティブは参照が無く保留）。
 ### 次にやる候補
-1. **#37 / #39** — `--vm=off` でしか走らない**言語機能**の残り（try/finally 脱出・関数からのグローバル代入）。着手可。
+1. **#39 / #40** — `--vm=off` でしか走らない**言語機能**の残り（関数からのグローバル代入・finally 本体からの脱出）。着手可。
 2. **#36** — `--vm=off` でしか走らない**入口**（REPL・単体テスト）の VM 移行。着手可（並行可）。
 3. **#33** — 上 3 つが終わってはじめて成立する（`--vm=off` の削除とツリーウォーク制御フローの実削除）。
 4. **#38 → #30 / #31** — 独立レーン。いつでも着手できる。
 
-> **#34 / #35 は完了**（2026-08-17）。⚠ どちらも「VM に載せる」だけでは終わらず、
+> **#34 / #35 / #37 は完了**（2026-08-17）。⚠ どれも「VM に載せる」だけでは終わらず、
 > **ツリーウォーク側のバグと VM 側の意味論差**が芋づるで出た（詳細は実装ログ）:
 > `continue` の貫通が無い 2 件（SyntaxError 化・**黙って握り潰し**）／**`try` のハンドラが残る**
-> （`has_escape` は**文しか歩かない**）／**`block:` 文が `loop_yield` を吸い込む**。
+> （`has_escape` は**文しか歩かない**）／**`block:` 文が `loop_yield` を吸い込む**／
+> **`loop_yield` を脱出扱いしていた**（跳ばないのに丸ごと bail）。
 > ⇒ *bail する形はツリーウォークが正しいとは限らない* の再演が続いている。
-> ⚠ **`--vm=on` で動かない正しいプログラムはまだ残っている**（#37 / #39）。
+> ⚠ **`--vm=on` で動かない正しいプログラムはまだ残っている**（#39 / #40）。
+> **見つけ方は毎回同じ**: 形を総当たりして `--vm=off` / `--vm=on` / `impl_python` を突き合わせる。
 
 > **⚠ 速度目的の残タスクは枯れた**（#12 2.61x・#2b 1.6x・#2a・#1-x・#10-b・#26 で取り切った）。
 > ただし**カバレッジを広げると速度も付いてくる**ことがある（#32 の async 本体は 3.77x）。
@@ -228,7 +230,8 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | **34** | **制御フロー式を貫通する `break`/`continue` の VM コンパイル** | 跳ぶ前に「途中の式が積んだオペランド」を `Pop` する（深さ＝`stmt_base`）。深さは `BinOp` 左右・`UnaryOp` にだけ伝播し、**不明なら bail**（既定 `None` が安全側）。判定を `Stmt::Break` へ一本化し `block_body_bails` の 2 つ目の walker を撤去。囲むループが無い場合は bail せず `Op::Fail`（ツリーウォークと同文言） | — | **完了**（**新オペコード 1・既存 Chunk 不変**。ツリーウォークの `continue` バグ 2 件も修正） |
 | **35** | **`block_return`/`loop_yield` の実行時検査を VM へ** | `BlockCtx` に `->T` を持たせ `Op::CheckBlockReturn`/`CheckLoopYield` を発行（判定は `check_block_return_type`/`check_loop_yield_type` の**1 実装へ委譲**）。for/while 式の外の `loop_yield` は bail せず `Op::Fail`。⚠ `block:` **文**は TLS へ push しないので**外側の注釈を継承**し、**`loop_yield` には透過**（蓄積先を持たせない） | — | **完了**（新オペコード 2。`block:` 文の yield 透過バグも修正） |
 | **39** | **関数本体からのグローバル代入の VM コンパイル** | `mut g = 0` / `fn bump(): g += 1` が `VmForceError`（`--vm=off` と `impl_python` は動く）＝**既定 `--vm=on` で動かない正しいプログラム**。⚠ **HEAD からの既存ギャップ**で #34/#35 とは独立（#35 の計測中に発見）。`StoreGlobal` は最上位モード限定なので、関数本体でも書き込み先を `scopes[0]` と断定できる条件を用意する必要がある | — | 未着手（#34/#35 と同じクラス・#33 の前提） |
-| **37** | **`try/finally` を跨ぐ `break`/`continue`/`return` の VM コンパイル** | 現状は bail（`--vm=off` と `impl_python` は正しく finally を走らせる）＝**既定 `--vm=on` で動かない正しいプログラム**。⚠ HEAD からの既存ギャップで #34 とは独立（#34 は `finally_guard` で「通さない」ことを明示しただけ）。跳ぶ経路にも finally 本体を出す（複製 or サブルーチン化）が要る | — | 未着手（#34 と同じクラス・#33 の前提） |
+| **37** | **`try/finally` を跨ぐ `break`/`continue`/`return`/`block_return` の VM コンパイル** | `try_depth`/`finally_guard` を **`try_stack: Vec<Option<Vec<Stmt>>>`**（各 try の finally 本体）へ置換し、`emit_unwind_tries(keep, pop_except)` が**脱出経路へ finally 本体を複製**する（内側から）。バリアは `LoopCtx.try_len`／`BlockCtx.try_len`／`return` は 0。⚠ **`loop_yield` は跳ばないので `has_escape` から外した**（誤検知で丸ごと bail していた） | — | **完了**（新オペコード 0。`try/except` を跨ぐ脱出の bail も解消） |
+| **40** | **`finally` 本体そのものからの脱出の VM コンパイル** | `finally:` の**中**の `break`/`return` が bail（`--vm=off` は動く）＝**既定 `--vm=on` で動かない正しいプログラム**。⚠ finally は正常路・例外路・各脱出路に複製されており**コピーごとにスタックの形が違う**（例外路は `[exc]`、return 路は戻り値が載る）。#37 は `in_finally` で「通さない」ことを明示しただけ | — | 未着手（#33 の前提・稀な構文） |
 | **36** | **`Interpreter::new()` 消費者の VM 経路移行** | `VmMode::Default` が `Off` なので **REPL（[repl.rs:30](src/repl.rs#L30)）と単体テスト 14 箇所**が `--vm=off` と同じ経路を踏む。入口で `check_and_annotate` ＋ `resolve_program` ＋ `set_toplevel_globals` を供給して `On` にする。実測: テストヘルパー 3 本を `On` にすると **676 passed / 30 failed**（うち 19 は注釈欠落＝この配線で解消・11 は #34/#35 の実体） | — | 未着手 |
 | **33** | **`--vm=off` の削除とツリーウォーク制御フローの実削除** | ⚠ 前提は **34（済）/35/36/37**。`--vm` フラグ・`VmMode::Off`（8 箇所）・`BLOCK_YIELDS`/`LOOP_DEPTH`/`BLOCK_RETURN_EXPECTED_TYPE`/`BREAK_SENTINEL`/`CONTINUE_SENTINEL`（#34 で追加）と制御フロー実装を削除（**実測 ≈700 行**）。`GENERATOR_YIELDS`（#8）と `RAISE_SENTINEL`（V-C）は **VM が使うので対象外**。⚠ **[compare_vm_modes.ps1](compare_vm_modes.ps1)（実バグ 4 件を検出した唯一の差分網）と `ab_bench_vm.ps1` と「`--vm=off` でも同じ差が出るか」という切り分け基準を同時に失う**ので、先に #31 で代替網を用意すること | **← 34, 35, 36**（＋代替網として **31** を推奨） | **未着手（前提が未完）** |
 | 11 R2-c | グローバル記憶域の index 配列化 | ネイティブの index 参照 | **← 消費者の出現（14 と同時に再評価）** | ブロック中（消費者不在） |
@@ -237,12 +240,11 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 ```
 27/27-c/27-d/32/29/3 は完了（`force_gate` 0・128 例題完走・フォールバック撤去済み）
 
---vm=off 廃止レーン（34/35 は完了。残り 3 本 → 最後に 33）
-    34（break/continue 貫通の VM 化）……完了
-    35（block_return/loop_yield 検査の VM 化）……完了
-    36（REPL・単体テストの VM 移行）     ┐
-    37（try/finally を跨ぐ脱出の VM 化） ├→ 33（--vm=off とツリーウォーク制御フローの削除）
-    39（関数からのグローバル代入の VM 化）┘   ↑ 31 を先に済ませて代替網を作るのが望ましい
+--vm=off 廃止レーン（34/35/37 は完了。残り 3 本 → 最後に 33）
+    34（break/continue 貫通）／35（block_return 検査）／37（finally 跨ぎ）……完了
+    36（REPL・単体テストの VM 移行）      ┐
+    39（関数からのグローバル代入の VM 化）├→ 33（--vm=off とツリーウォーク制御フローの削除）
+    40（finally 本体からの脱出の VM 化）  ┘   ↑ 31 を先に済ませて代替網を作るのが望ましい
 
 38（A/B スクリプトのデッドロック解消）→ 30（クロージャ Chunk 再利用の計測）
 31（参照実装との差分検査）は独立していつでも可

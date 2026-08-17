@@ -231,21 +231,20 @@ struct Compiler {
     /// 伝播するのは「末尾にブロック式が来られる」式だけでよい（`BinOp` の左右・`UnaryOp`）。
     /// カッコの中（呼び出し引数・リテラル・添字）にブロック式は**構文上置けない**ので不要。
     pending: Option<u16>,
-    /// **最内ループ以降に開いている `SetupTry` の数**（#34）。
+    /// **現在開いている `SetupTry` のスタック**（#34/#37）。各要素は `finally` 本体
+    /// （`try/except` は `None`、`try/finally` は `Some(fin)`）。
     ///
     /// ⚠ オペランドスタックと**同じ問題がハンドラスタックにもある**。`break` が try 本体から
     /// 外側ループへ跳ぶと `PopTry` を通らず、**ハンドラが残って後続の例外を横取りする**
     /// （実際に踏んだ: ループを抜けた後の `raise` がループ内の `except` に捕まった）。
-    /// 跳ぶ前にこの数だけ `Op::PopTry` する。
+    /// さらに `finally` は**全出口で走らねばならない**ので、跳ぶ経路にも本体を複製する。
     ///
     /// ⚠ `has_escape` は**文しか歩かない**ので、ブロック式の中の `break` は見えない。
     /// ここを数えるのが唯一の防波堤。
-    try_depth: usize,
-    /// **最内ループ以降に開いている `finally` 保護区間の数**（#34）。
-    ///
-    /// `finally` は全出口で走らねばならず、跳び越えるのは `PopTry` では表現できない。
-    /// **1 以上なら `break`/`continue` は bail する**（ツリーウォークへ落とす）。
-    finally_guard: usize,
+    try_stack: Vec<Option<Vec<Stmt>>>,
+    /// `finally` 本体（脱出経路への複製を含む）をコンパイル中かどうか（#37）。
+    /// **1 以上なら脱出制御は bail する**（finally の中から跳ぶのは未対応）。
+    in_finally: usize,
     /// デバッガ REPL モード: 変数参照は slot ではなく名前引き（`LoadName`）へ落とす。
     /// 停止スコープの生変数へアクセスし、`let dbg::x` を宣言できるようにする（V-E）。
     debug_mode: bool,
@@ -322,6 +321,9 @@ struct LoopCtx {
     continue_target: u32,
     /// `break` 命令の位置（ループ末尾へバックパッチする）。
     break_jumps: Vec<usize>,
+    /// ループ入口時点の `try_stack` の深さ（#37）。`break`/`continue` はここまで巻き戻す
+    /// ＝**ループの内側で開いた `try` だけ**を閉じ、その `finally` だけを走らせる。
+    try_len: usize,
 }
 
 /// ブロック式1つ分のコンテキスト（block:/if/while/for/match 式）。
@@ -335,6 +337,8 @@ struct BlockCtx {
     end_jumps: Vec<usize>,
     /// `loop_yield` の蓄積リスト slot（block:/for/while 式は Some、if/match 式は None＝透過）。
     yield_slot: Option<u16>,
+    /// ブロック式入口時点の `try_stack` の深さ（#37）。`block_return` はここまで巻き戻す。
+    try_len: usize,
     /// `->T` アノテーションの名前プール index（#35）。`block_return`/`loop_yield` の実行時検査に使う。
     ///
     /// ⚠ ツリーウォークは `BLOCK_RETURN_EXPECTED_TYPE.last()`（**式のスタックの最内**）を見る。
@@ -491,8 +495,8 @@ fn compile_toplevel_stmt_inner(
         block_ctxs: Vec::new(),
         stmt_base: Some(0),
         pending: None,
-        try_depth: 0,
-        finally_guard: 0,
+        try_stack: Vec::new(),
+        in_finally: 0,
         debug_mode: false,
         named_locals: n,
         temps_in_use: 0,
@@ -759,8 +763,8 @@ fn compile_fn_inner(
         block_ctxs: Vec::new(),
         stmt_base: Some(0),
         pending: None,
-        try_depth: 0,
-        finally_guard: 0,
+        try_stack: Vec::new(),
+        in_finally: 0,
         debug_mode: false,
         named_locals: n,
         temps_in_use: 0,
@@ -895,8 +899,8 @@ pub fn compile_async_body(
         block_ctxs: Vec::new(),
         stmt_base: Some(0),
         pending: None,
-        try_depth: 0,
-        finally_guard: 0,
+        try_stack: Vec::new(),
+        in_finally: 0,
         debug_mode: false,
         named_locals: n,
         temps_in_use: 0,
@@ -975,8 +979,8 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         block_ctxs: Vec::new(),
         stmt_base: Some(0),
         pending: None,
-        try_depth: 0,
-        finally_guard: 0,
+        try_stack: Vec::new(),
+        in_finally: 0,
         debug_mode: true,
         named_locals: 0,
         temps_in_use: 0,
@@ -1489,7 +1493,9 @@ fn has_escape(
     stmts.iter().any(|s| match s {
         Stmt::Return(_) => include_return,
         Stmt::Break | Stmt::Continue => include_break && loop_depth == 0,
-        Stmt::BlockReturn(..) | Stmt::LoopYield(_) => true,
+        // ⚠ `loop_yield` は蓄積して**そのまま先へ進む**（跳ばない）ので脱出ではない（#37）。
+        //    ここを true にしていたため `try: loop_yield i` が丸ごと bail していた。
+        Stmt::BlockReturn(..) => true,
         Stmt::While { body, .. } | Stmt::For { body, .. } => rec!(body, loop_depth + 1),
         Stmt::If { branches, else_body } => {
             branches.iter().any(|(_, b)| rec!(b, loop_depth))
@@ -2217,22 +2223,56 @@ impl Compiler {
     }
 
     fn emit_unwind_to_loop(&mut self) -> Option<()> {
-        // finally は全出口で走る必要があり、跳び越えは `PopTry` では表せない（#34）。
-        if self.finally_guard > 0 {
-            bail("break-crosses-finally", None);
-            return None;
-        }
+        let loop_try_len = self.loops.last().map_or(0, |l| l.try_len);
+        self.emit_unwind_tries(loop_try_len, true)?;
         let Some(depth) = self.stmt_base else {
             bail("break-unknown-depth", None);
             return None;
         };
-        // ハンドラスタックも戻す。忘れると try を抜けたのにハンドラが残り、
-        // **後続の無関係な例外を横取りする**（実際に踏んだバグ）。
-        for _ in 0..self.try_depth {
-            self.emit(Op::PopTry);
-        }
         for _ in 0..depth {
             self.emit(Op::Pop);
+        }
+        Some(())
+    }
+
+    /// 脱出が跨ぐ `try` を**内側から**巻き戻す（#34/#37）。
+    ///
+    /// - `try/except`: `PopTry` だけ（`pop_except` が真のとき）。⚠ `return` は `run` から
+    ///   即復帰してハンドラごと捨てられるので不要 ＝ 既存 Chunk を変えないため偽を渡す。
+    /// - `try/finally`: `PopTry` ＋ **`finally` 本体をこの経路にも複製**する。
+    ///   ネストしていれば内側の finally から順に走る（ツリーウォーク・Python と同じ順）。
+    ///
+    /// `keep` は「跨がない外側の try の数」。break/continue は最内ループ入口、
+    /// block_return は最内ブロック式入口、return は 0（全部）を渡す。
+    fn emit_unwind_tries(&mut self, keep: usize, pop_except: bool) -> Option<()> {
+        if self.in_finally > 0 && keep < self.try_stack.len() {
+            // finally の中から更に跳ぶ形は未対応（複製が入れ子に増殖する）。
+            bail("escape-inside-finally", None);
+            return None;
+        }
+        for i in (keep..self.try_stack.len()).rev() {
+            let Some(fin) = self.try_stack[i].clone() else {
+                if pop_except {
+                    self.emit(Op::PopTry);
+                }
+                continue;
+            };
+            self.emit(Op::PopTry);
+            // ⚠ 複製中は「巻き戻し済みの try」を見せない（同じ finally を二重に出さない）。
+            let saved = self.try_stack.split_off(i);
+            self.in_finally += 1;
+            let mut ok = true;
+            for s in &fin {
+                if self.compile_stmt(s).is_none() {
+                    ok = false;
+                    break;
+                }
+            }
+            self.in_finally -= 1;
+            self.try_stack.extend(saved);
+            if !ok {
+                return None;
+            }
         }
         Some(())
     }
@@ -2249,9 +2289,14 @@ impl Compiler {
             }
             Stmt::Return(Some(e)) => {
                 self.compile_expr(e)?;
+                // #37: 開いている `finally` を**全部**走らせてから返す（内側から）。
+                // ⚠ `try/except` の `PopTry` は不要（`run` から即復帰してハンドラごと捨てられる）。
+                //    偽を渡すことで finally を持たない既存 Chunk は 1 命令も変わらない。
+                self.emit_unwind_tries(0, false)?;
                 self.emit(Op::Return);
             }
             Stmt::Return(None) => {
+                self.emit_unwind_tries(0, false)?;
                 self.emit(Op::ReturnNil);
             }
             // パラメータ（mut）への代入。let への代入は型検査で弾かれるので健全。
@@ -2373,17 +2418,14 @@ impl Compiler {
                 self.loops.push(LoopCtx {
                     continue_target: start,
                     break_jumps: Vec::new(),
+                    try_len: self.try_stack.len(),
                 });
                 // 本体はこのループ入口の深さで走る（#34）。
                 let saved_base = self.stmt_base.replace(0);
-                let saved_try = std::mem::replace(&mut self.try_depth, 0);
-                let saved_fin = std::mem::replace(&mut self.finally_guard, 0);
                 for s in body {
                     self.compile_stmt(s)?;
                 }
                 self.stmt_base = saved_base;
-                self.try_depth = saved_try;
-                self.finally_guard = saved_fin;
                 self.emit(Op::Jump(start));
                 let end = self.here();
                 self.patch_jump(jf, end);
@@ -2467,17 +2509,14 @@ impl Compiler {
                 self.loops.push(LoopCtx {
                     continue_target: loop_start, // continue は次の ForIter へ戻る
                     break_jumps: Vec::new(),
+                    try_len: self.try_stack.len(),
                 });
                 // 本体はこのループ入口の深さで走る（#34）。
                 let saved_base = self.stmt_base.replace(0);
-                let saved_try = std::mem::replace(&mut self.try_depth, 0);
-                let saved_fin = std::mem::replace(&mut self.finally_guard, 0);
                 for s in body {
                     self.compile_stmt(s)?;
                 }
                 self.stmt_base = saved_base;
-                self.try_depth = saved_try;
-                self.finally_guard = saved_fin;
                 self.emit(Op::Jump(loop_start));
                 let exit = self.here();
                 // ForIter の exit_ip をバックパッチ（patch_jump は Jump 系専用なので手動）。
@@ -2809,12 +2848,16 @@ impl Compiler {
                 let ctx = self.block_ctxs.last()?;
                 let result_slot = ctx.result_slot;
                 let ann = ctx.return_type;
+                let block_try_len = ctx.try_len;
                 self.compile_expr(e)?;
                 // #35: `->T` があれば実行時検査（ツリーウォークの `check_block_return_type`）。
                 if let Some(idx) = ann {
                     self.emit(Op::CheckBlockReturn(idx));
                 }
                 self.emit(Op::StoreLocal(result_slot));
+                // #37: ブロック式入口までの try を巻き戻す（finally を走らせる）。
+                // ⚠ 値は既に `result_slot` へ退避済みなので finally が何を積んでも安全。
+                self.emit_unwind_tries(block_try_len, true)?;
                 let j = self.emit(Op::Jump(0));
                 self.block_ctxs.last_mut().unwrap().end_jumps.push(j);
             }
@@ -3013,25 +3056,21 @@ impl Compiler {
     fn compile_try_except(&mut self, body: &[Stmt], handlers: &[ExceptHandler]) -> Option<()> {
         // try を飛び越える制御フロー（break/continue/block_return/loop_yield）があると
         // SetupTry ハンドラが残るため bail。return は run から即復帰しハンドラは破棄されるので OK。
-        if has_escape(body, false, false, 0) {
-            bail("try-escape", None);
-            return None;
-        }
-        for h in handlers {
-            if has_escape(&h.body, false, false, 0) {
-                bail("try-handler-escape", None);
-                return None;
-            }
-        }
+        // #37: `break`/`continue`/`block_return` は `emit_unwind_tries` が `PopTry` を
+        // 出して正しく抜けるので、ここで弾く必要はなくなった（`has_escape` は常に偽を返す）。
 
         let setup = self.emit(Op::SetupTry(0)); // handler_ip は後でパッチ
         // 本体の間だけハンドラが 1 つ多い（#34）。ここから外側ループへ跳ぶ `break` は
-        // `PopTry` を通らないので、跳ぶ側が同じ数だけ戻す必要がある。
-        self.try_depth += 1;
-        for s in body {
-            self.compile_stmt(s)?;
-        }
-        self.try_depth -= 1;
+        // `PopTry` を通らないので、跳ぶ側が同じ数だけ戻す必要がある（`finally` は無いので `None`）。
+        self.try_stack.push(None);
+        let r = (|| {
+            for s in body {
+                self.compile_stmt(s)?;
+            }
+            Some(())
+        })();
+        self.try_stack.pop();
+        r?;
         self.emit(Op::PopTry);
         let mut end_jumps = vec![self.emit(Op::Jump(0))]; // 正常終了 → END
         // landing pad: 例外時にここへ来る（スタック = [exc]）。
@@ -3083,51 +3122,46 @@ impl Compiler {
         handlers: &[ExceptHandler],
         fin: &[Stmt],
     ) -> Option<()> {
-        // finally は全出口で走る必要があるので、脱出制御フロー（return 含む）があれば bail。
-        if has_escape(body, true, true, 0) || has_escape(fin, true, true, 0) {
-            bail("finally-escape", None);
+        // #37: 本体とハンドラの脱出は `emit_unwind_tries` が finally を複製して扱う。
+        // ⚠ 残る禁止は **`finally` 本体そのものからの脱出**だけ（複製が入れ子に増殖する）。
+        if has_escape(fin, true, true, 0) {
+            bail("finally-body-escape", None);
             return None;
         }
-        // ハンドラ本体も同じ理由で脱出禁止（`compile_try_except` は return を許すが、
-        // finally があるとその return が finally を飛ばしてしまう）。
-        for h in handlers {
-            if has_escape(&h.body, true, true, 0) {
-                bail("finally-handler-escape", None);
-                return None;
-            }
-        }
         let setup = self.emit(Op::SetupTry(0));
-        // finally 保護区間の内側では `break`/`continue` を通さない（#34）。
-        // `PopTry` だけ出して跳ぶと finally が走らないので、ここは bail させる。
-        // ⚠ `has_escape` は文しか歩かないので、ブロック式の中の `break` はこの印だけが捕まえる。
-        self.finally_guard += 1;
-        self.try_depth += 1;
-        if handlers.is_empty() {
-            for s in body {
-                self.compile_stmt(s)?;
+        // 本体から跳ぶ脱出は `finally` を走らせてから跳ぶ（#37）。そのために本体を
+        // **この finally 付きで**登録する。⚠ `has_escape` は文しか歩かないので、
+        // ブロック式の中の `break` はこの登録だけが捕まえる。
+        self.try_stack.push(Some(fin.to_vec()));
+        let r = (|| {
+            if handlers.is_empty() {
+                for s in body {
+                    self.compile_stmt(s)?;
+                }
+            } else {
+                self.compile_try_except(body, handlers)?;
             }
-        } else {
-            self.compile_try_except(body, handlers)?;
-        }
-        self.try_depth -= 1;
-        self.finally_guard -= 1;
+            Some(())
+        })();
+        self.try_stack.pop();
+        r?;
         self.emit(Op::PopTry);
         // 正常経路の finally。⚠ 例外経路の複製は `[exc]` を積んだまま走るので、
         // finally 本体からの `break` は**どちらの複製でも**通さない（#34）。
-        self.finally_guard += 1;
+        self.in_finally += 1;
         for s in fin {
             self.compile_stmt(s)?;
         }
-        self.finally_guard -= 1;
+        self.in_finally -= 1;
         let normal_jump = self.emit(Op::Jump(0)); // END
         // 例外 landing pad: スタック = [exc]。finally はスタック中立なので [exc] は底に残る。
         let land = self.here();
         self.code[setup] = Op::SetupTry(land);
-        self.finally_guard += 1;
+        self.in_finally += 1;
         for s in fin {
             self.compile_stmt(s)?;
         }
-        self.finally_guard -= 1;
+        self.in_finally -= 1;
         self.emit(Op::Pop); // [exc] を捨てる
         self.emit(Op::Reraise); // 再伝播（current_exception は設定済み）
         let end = self.here();
@@ -3707,6 +3741,7 @@ impl Compiler {
             end_jumps: Vec::new(),
             yield_slot,
             return_type: ann,
+            try_len: self.try_stack.len(),
         });
         for s in stmts {
             self.compile_stmt(s)?;
@@ -3779,6 +3814,7 @@ impl Compiler {
             end_jumps: Vec::new(),
             yield_slot: None,
             return_type: ann,
+            try_len: self.try_stack.len(),
         });
         let mut branch_ends: Vec<usize> = Vec::new();
         for (cond, body) in branches {
@@ -3846,6 +3882,7 @@ impl Compiler {
             end_jumps: Vec::new(),
             yield_slot: None,
             return_type: ann,
+            try_len: self.try_stack.len(),
         });
         let mut arm_ends: Vec<usize> = Vec::new();
         for arm in arms {
@@ -3911,12 +3948,8 @@ impl Compiler {
         // 自身が最内ループになるので本体の基準深さは 0（#34）。
         // 本体内の `break` はこの式の NORMAL_END（= 蓄積リストを push する位置）へ跳ぶ。
         let saved_base = self.stmt_base.replace(0);
-        let saved_try = std::mem::replace(&mut self.try_depth, 0);
-        let saved_fin = std::mem::replace(&mut self.finally_guard, 0);
         let r = self.compile_for_expr_inner(target, iter, body, ann);
         self.stmt_base = saved_base;
-        self.try_depth = saved_try;
-        self.finally_guard = saved_fin;
         r
     }
 
@@ -3941,12 +3974,14 @@ impl Compiler {
         self.loops.push(LoopCtx {
             continue_target: loop_start,
             break_jumps: Vec::new(),
+            try_len: self.try_stack.len(),
         });
         self.block_ctxs.push(BlockCtx {
             result_slot,
             end_jumps: Vec::new(),
             yield_slot: Some(yield_slot),
             return_type: ann,
+            try_len: self.try_stack.len(),
         });
         for s in body {
             self.compile_stmt(s)?;
@@ -3990,12 +4025,8 @@ impl Compiler {
         }
         // 自身が最内ループになるので本体の基準深さは 0（#34）。
         let saved_base = self.stmt_base.replace(0);
-        let saved_try = std::mem::replace(&mut self.try_depth, 0);
-        let saved_fin = std::mem::replace(&mut self.finally_guard, 0);
         let r = self.compile_while_expr_inner(cond, body, ann);
         self.stmt_base = saved_base;
-        self.try_depth = saved_try;
-        self.finally_guard = saved_fin;
         r
     }
 
@@ -4010,12 +4041,14 @@ impl Compiler {
         self.loops.push(LoopCtx {
             continue_target: loop_start,
             break_jumps: Vec::new(),
+            try_len: self.try_stack.len(),
         });
         self.block_ctxs.push(BlockCtx {
             result_slot,
             end_jumps: Vec::new(),
             yield_slot: Some(yield_slot),
             return_type: ann,
+            try_len: self.try_stack.len(),
         });
         for s in body {
             self.compile_stmt(s)?;

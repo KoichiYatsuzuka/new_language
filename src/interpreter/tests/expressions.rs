@@ -580,6 +580,79 @@ fn test_block_stmt_block_return_uses_enclosing_annotation() {
     assert!(err.contains("block_return value has type 'str'"), "got: {err}");
 }
 
+// ---------------------------------------------------------------------------
+// #37: finally を跨ぐ脱出
+//
+// ⚠ VM 側の回帰検知が本命（`emit_unwind_tries` が finally 本体を脱出経路へ複製する）。
+//    例題は examples/exceptions/try_finally_escape.ar。
+// ---------------------------------------------------------------------------
+
+/// `break` が `finally` を走らせてからループを抜ける（#37）。
+#[test]
+fn test_break_through_finally_runs_it() {
+    let src = "
+mut log = []
+mut r = -1
+for i in range(4):
+    try:
+        if i == 2:
+            break
+        r = i
+    finally:
+        log.append(i)
+";
+    assert_int_list(run_get(src, "log"), &[0, 1, 2]);
+    assert_int(run_get(src, "r"), 1);
+}
+
+/// 入れ子の `finally` は**内側から**走る（#37）。
+#[test]
+fn test_nested_finally_runs_innermost_first() {
+    let src = "
+mut log = []
+fn f() -> int:
+    try:
+        try:
+            return 1
+        finally:
+            log.append(1)
+    finally:
+        log.append(2)
+let v = f()
+";
+    assert_int_list(run_get(src, "log"), &[1, 2]);
+}
+
+/// `block_return` も `finally` を走らせてからブロック式を抜ける（#37）。
+#[test]
+fn test_block_return_through_finally_runs_it() {
+    let src = "
+mut log = []
+let b = block ->int:
+    try:
+        block_return 7
+    finally:
+        log.append(1)
+";
+    assert_int(run_get(src, "b"), 7);
+    assert_int_list(run_get(src, "log"), &[1]);
+}
+
+/// `loop_yield` は脱出ではないので `try` の中でもそのまま蓄積が続く（#37）。
+///
+/// ⚠ `has_escape` が `LoopYield` を脱出扱いしていたため、この形は**丸ごと bail** していた。
+#[test]
+fn test_loop_yield_inside_try_is_not_an_escape() {
+    let src = "
+let y = for i in range(3) ->list[int]:
+    try:
+        loop_yield i
+    finally:
+        let _ = 0
+";
+    assert_int_list(run_get(src, "y"), &[0, 1, 2]);
+}
+
 /// `block:` **文**は `loop_yield` に対して透過（#35）。
 ///
 /// ⚠ VM 側の回帰検知が本命。`Stmt::Block` に蓄積先を持たせると値が文へ吸い込まれ、

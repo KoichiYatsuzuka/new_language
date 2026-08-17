@@ -3741,6 +3741,68 @@ let r = for i in range(3) ->list[int]:
 
 ---
 
+## #37 完了（2026-08-17）— `finally` を跨ぐ脱出の VM コンパイル
+
+`return`/`break`/`continue`/`block_return` が `try/finally` を跨ぐ形を VM に載せた。
+**新オペコードは 0**。#34 で入れた `try_depth`/`finally_guard` を一般化しただけで済んだ。
+
+### 計測: 9 形中 8 形が bail していた
+
+| 形 | `--vm=off` / `impl_python` | `--vm=on`（旧） |
+|---|---|---|
+| `try: return 1 finally: …` | `fin` → `1` | **`VmForceError`** |
+| `except` 併用・入れ子 finally | 同上（内側 finally が先） | **`VmForceError`** |
+| `try:` から `break` / `continue` | finally を走らせて抜ける | **`VmForceError`** |
+| `try: block_return 7 finally: …` | `fin` → `7` | **`VmForceError`** |
+| **`try: loop_yield i finally: …`** | 蓄積して継続 | **`VmForceError`**（← 誤検知） |
+| 脱出の無い `try/finally` | 動く | 動く |
+
+### 設計: `try_depth` → `try_stack`
+
+`try_depth: usize` ＋ `finally_guard: usize` を **`try_stack: Vec<Option<Vec<Stmt>>>`**
+（開いている `SetupTry` ごとに `finally` 本体・`try/except` は `None`）へ置換した。
+`Stmt: Clone` なので本体は `to_vec()` で持てる（コンパイル時だけのコストで finally は小さい）。
+
+`emit_unwind_tries(keep, pop_except)` が**内側から**巻き戻す:
+
+| 脱出 | `keep`（跨がない外側の数） | `pop_except` |
+|---|---|---|
+| `break` / `continue` | `LoopCtx.try_len` | 真 |
+| `block_return` | `BlockCtx.try_len` | 真 |
+| `return` | **0**（全部） | **偽**（`run` から即復帰しハンドラごと捨てられる） |
+
+⇒ `return` に偽を渡すので、**finally を持たないコードの Chunk は 1 命令も変わらない**。
+バリアを各コンテキストに持たせたので、#34 で入れていた「ループ入口で 0 に退避」は不要になった。
+
+### 消せた bail
+
+- `compile_try_except` の `has_escape` 2 件 … `PopTry` を出せるので**丸ごと不要**。
+  ⇒ `for: try: … break … except:` や `try: block_return … except:` も VM に載る。
+- `compile_try_finally` の `has_escape` 3 件 … **`fin` 本体の脱出だけ**に縮小（#40 へ）。
+- `has_escape` から **`LoopYield` を除去**。⚠ `loop_yield` は蓄積して**そのまま先へ進む**ので
+  そもそも脱出ではない。誤検知で `try: loop_yield i` が丸ごと bail していた。
+
+### 残り → #40
+
+**`finally` 本体そのものからの脱出**（`finally: break` / `finally: return`）は `in_finally` で
+bail する。finally は正常路・例外路・**各脱出路**に複製されており、**コピーごとにスタックの形が違う**
+（例外路は `[exc]` が載り、`return` 路は戻り値が載る）ので、一律の巻き戻しが書けない。
+
+### 検証
+
+`cargo build` 警告 0 ／ `cargo test` **726 緑**（+4）／
+`compare_vm_modes.ps1` **77 identical / 0 differing** ／ `scan_examples.ps1` **FAIL 0** ／
+`force_gate.ps1` **0 件・133 例題完走** ／ `cargo clippy` 触ったファイルの警告 0。
+16 形（基本 9 ＋ 敵対的 7: 入れ子 finally の順序・ループ内 return・例外路・
+オペランドが積まれた状態での break・`try/except` を跨ぐ `block_return`・脱出後の `raise`）が
+**3 実装（off / on / `impl_python`）で一致**。
+
+新設例題 [try_finally_escape.ar](examples/exceptions/try_finally_escape.ar)（10 ケース）。
+⚠ **`_error` 例題は作らない**。#37 は新しいエラーパターンを足しておらず、`finally: break` を
+例題にすると **off/on が割れて `compare_vm_modes` が落ちる**（それは #40 の対象）。
+
+---
+
 ## この記録の使いどころ
 
 **見積もりが外れた事例**が最も価値がある。同じ判断ミスを繰り返さないために残してある。
@@ -3766,6 +3828,7 @@ let r = for i in range(3) ->list[int]:
 | `force_gate` 0 件 | 「VM は言語全体を載せられる」 | **「128 例題で 0」でしかなかった**。例題が 1 本も無い言語機能（制御フロー式貫通 `break`）は**ゲートにも off/on 比較にも映らない**。単体テストだけが 11 件押さえていた |
 | #34（2026-08-17） | 「跳び先の計算が要る＝ジャンプ機構の作り直し」 | **機構は最初から揃っていた**（`LoopCtx` は絶対ジャンプ）。足りなかったのは**跳ぶ時点で積まれている値の始末**だけ。しかも「ブロック式は式の末尾にしか置けない」を**構文で実測**したら、深さの伝播は 3 箇所で済み**新オペコード 0**になった |
 | #34 の `continue` | 「`break` を通せば `continue` も同じ」 | **ツリーウォークに `continue` の貫通が無かった**（SyntaxError 化＋**黙って握り潰し**）。VM の方が正しく、参照実装と一致していた。`for-target-shadow` と同じ「bail する形はツリーウォークが正しいとは限らない」 |
+| #37（2026-08-17） | 「跳ぶ経路にも finally を出す＝新しい機構が要る」 | **#34 の `try_depth` を `try_stack` に一般化するだけ**で済んだ（新オペコード 0）。さらに **`loop_yield` は脱出ではなかった**（蓄積して先へ進む）のに `has_escape` が脱出扱いしており、`try: loop_yield i` が**丸ごと誤爆で bail** していた |
 | #35（2026-08-17） | 「注釈を `BlockCtx` に持たせて検査 op を出すだけ」 | **どの注釈を見るか**が本体だった。`BLOCK_RETURN_EXPECTED_TYPE` を push するのは**式だけ**なので、`block:` 文は外側の注釈を継承し、かつ **`loop_yield` には透過**でなければならない。後者を見落として `for … ->list[int]: block: loop_yield i` が **`None`** になった |
 | #34 の `try` | 「脱出は `has_escape` が既に弾いている」 | **`has_escape` は文しか歩かない**のでブロック式の中の `break` が素通りし、**ハンドラが残って後続の例外を横取り**した。しかも「跳ぶだけ」の例題では**症状が出ない**（跳んだ後に別の例外を投げて初めて分かる） |
 
