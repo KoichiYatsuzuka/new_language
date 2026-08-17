@@ -335,6 +335,12 @@ struct BlockCtx {
     end_jumps: Vec<usize>,
     /// `loop_yield` の蓄積リスト slot（block:/for/while 式は Some、if/match 式は None＝透過）。
     yield_slot: Option<u16>,
+    /// `->T` アノテーションの名前プール index（#35）。`block_return`/`loop_yield` の実行時検査に使う。
+    ///
+    /// ⚠ ツリーウォークは `BLOCK_RETURN_EXPECTED_TYPE.last()`（**式のスタックの最内**）を見る。
+    /// `block:` **文**は TLS へ push しないので、**外側の式のアノテーションを引き継ぐ**
+    /// （`Stmt::Block` のコンパイル時に継承する）。ここを独立させると off/on が割れる。
+    return_type: Option<u32>,
 }
 
 /// 関数本体を Chunk へコンパイルする。非対応構文があれば `None`。
@@ -914,7 +920,9 @@ pub fn compile_async_body(
     };
 
     // async 本体は Chunk の先頭＝オペランドスタックは空（#34）。
-    c.compile_block_expr(body, Some(0))?;
+    // アノテーションは持たない（`mng <- async->T:` の T は代入先の型で、`block_return` の
+    // 実行時検査はツリーウォークでも走らない＝`BLOCK_RETURN_EXPECTED_TYPE` は空・#35）。
+    c.compile_block_expr(body, Some(0), None, true)?;
     c.emit(Op::Return);
     super::peephole::optimize(&mut c.code, &mut c.stmt_spans);
 
@@ -2202,6 +2210,12 @@ impl Compiler {
     ///
     /// `None`（深さ不明）なら bail する。深さを伝えていない式の形は「壊れる」のではなく
     /// 「VM に載らない」で止まるので、伝播の書き漏らしは安全側に倒れる。
+    /// ブロック式の `->T` アノテーションを名前プールへ入れて index を返す（#35）。
+    /// 注釈が無ければ `None`（＝実行時検査を出さない＝ツリーウォークと同じ）。
+    fn add_return_type(&mut self, return_type: &Option<String>) -> Option<u32> {
+        return_type.as_ref().map(|t| self.add_name(t))
+    }
+
     fn emit_unwind_to_loop(&mut self) -> Option<()> {
         // finally は全出口で走る必要があり、跳び越えは `PopTry` では表せない（#34）。
         if self.finally_guard > 0 {
@@ -2361,7 +2375,7 @@ impl Compiler {
                     break_jumps: Vec::new(),
                 });
                 // 本体はこのループ入口の深さで走る（#34）。
-                let saved_base = std::mem::replace(&mut self.stmt_base, Some(0));
+                let saved_base = self.stmt_base.replace(0);
                 let saved_try = std::mem::replace(&mut self.try_depth, 0);
                 let saved_fin = std::mem::replace(&mut self.finally_guard, 0);
                 for s in body {
@@ -2455,7 +2469,7 @@ impl Compiler {
                     break_jumps: Vec::new(),
                 });
                 // 本体はこのループ入口の深さで走る（#34）。
-                let saved_base = std::mem::replace(&mut self.stmt_base, Some(0));
+                let saved_base = self.stmt_base.replace(0);
                 let saved_try = std::mem::replace(&mut self.try_depth, 0);
                 let saved_fin = std::mem::replace(&mut self.finally_guard, 0);
                 for s in body {
@@ -2792,8 +2806,14 @@ impl Compiler {
             }
             // ブロック式内: block_return は最内ブロック式の result_slot へ格納して出口へ跳ぶ。
             Stmt::BlockReturn(e, _) => {
-                let result_slot = self.block_ctxs.last()?.result_slot;
+                let ctx = self.block_ctxs.last()?;
+                let result_slot = ctx.result_slot;
+                let ann = ctx.return_type;
                 self.compile_expr(e)?;
+                // #35: `->T` があれば実行時検査（ツリーウォークの `check_block_return_type`）。
+                if let Some(idx) = ann {
+                    self.emit(Op::CheckBlockReturn(idx));
+                }
                 self.emit(Op::StoreLocal(result_slot));
                 let j = self.emit(Op::Jump(0));
                 self.block_ctxs.last_mut().unwrap().end_jumps.push(j);
@@ -2801,8 +2821,23 @@ impl Compiler {
             // loop_yield は最内の「yield 先を持つ」ブロック式（block:/for/while 式）の蓄積リストへ追加。
             // if/match 式は透過（yield_slot=None）なので飛ばして外側へ届く。
             Stmt::LoopYield(e) => {
-                let yield_slot = self.block_ctxs.iter().rev().find_map(|c| c.yield_slot)?;
+                let Some(yield_slot) = self.block_ctxs.iter().rev().find_map(|c| c.yield_slot)
+                else {
+                    // for/while 式の外の `loop_yield`（#35）。**bail せず**ツリーウォークと
+                    // 同じ文言で落とす（bail すると `--vm=on` だけ `VmForceError` になる）。
+                    let n = self.add_name(
+                        "SyntaxError: 'loop_yield' can only be used inside a for/while expression (with ->list[T] annotation)",
+                    );
+                    self.emit(Op::Fail(n));
+                    return Some(());
+                };
+                // ⚠ 要素型は**最内ブロック式**のアノテーションから引く（`yield_slot` を持つ
+                // ブロック式とは限らない）。ツリーウォークの `BLOCK_RETURN_EXPECTED_TYPE.last()` と同じ。
+                let ann = self.block_ctxs.last().and_then(|c| c.return_type);
                 self.compile_expr(e)?;
+                if let Some(idx) = ann {
+                    self.emit(Op::CheckLoopYield(idx));
+                }
                 self.emit(Op::ListAppendLocal(yield_slot));
             }
             // ジェネレータ本体の `yield expr`（タスク #8）。値を評価して yield 収集バッファへ産出する。
@@ -2868,7 +2903,11 @@ impl Compiler {
             // 内部の `break`/`continue` は外側ループへ貫通する（以前は本体ごと bail していた）。
             Stmt::Block(body) => {
                 let depth = self.stmt_base;
-                self.compile_block_expr(body, depth)?;
+                // ⚠ `block:` **文**はツリーウォークで `BLOCK_RETURN_EXPECTED_TYPE` へ push しない
+                // ので、中の `block_return` は**外側の式**のアノテーションで検査される（#35）。
+                let ann = self.block_ctxs.last().and_then(|c| c.return_type);
+                // ⚠ `block:` **文**は loop_yield に対して**透過**（#35）。
+                self.compile_block_expr(body, depth, ann, false)?;
                 self.emit(Op::Pop);
             }
             // `pass` は何も出さない（#27）。ツリーウォークも `ExecResult::Normal` を返すだけ。
@@ -3559,17 +3598,26 @@ impl Compiler {
                 self.emit(Op::BuildDict(n));
             }
             // ── ブロック式（値を産む制御構文, Phase V-C） ──
-            Expr::Block { stmts, .. } => self.compile_block_expr(stmts, pending)?,
-            Expr::IfExpr { branches, else_body, .. } => {
-                self.compile_if_expr(branches, else_body, pending)?
+            Expr::Block { stmts, return_type } => {
+                let ann = self.add_return_type(return_type);
+                self.compile_block_expr(stmts, pending, ann, true)?
             }
-            Expr::MatchExpr { subject, arms, .. } => {
-                self.compile_match_expr(subject, arms, pending)?
+            Expr::IfExpr { branches, else_body, return_type } => {
+                let ann = self.add_return_type(return_type);
+                self.compile_if_expr(branches, else_body, pending, ann)?
             }
-            Expr::ForExpr { target, iter, body, .. } => {
-                self.compile_for_expr(target, iter, body)?
+            Expr::MatchExpr { subject, arms, return_type } => {
+                let ann = self.add_return_type(return_type);
+                self.compile_match_expr(subject, arms, pending, ann)?
             }
-            Expr::WhileExpr { cond, body, .. } => self.compile_while_expr(cond, body)?,
+            Expr::ForExpr { target, iter, body, return_type } => {
+                let ann = self.add_return_type(return_type);
+                self.compile_for_expr(target, iter, body, ann)?
+            }
+            Expr::WhileExpr { cond, body, return_type } => {
+                let ann = self.add_return_type(return_type);
+                self.compile_while_expr(cond, body, ann)?
+            }
 
             // ── 動的型検査（#16 段階(b)(ii)）──
             // 型検査が付けた `CheckBefore` 指示を消費して検査 op を出す。
@@ -3616,34 +3664,64 @@ impl Compiler {
     ///
     /// `entry_depth` は**この式が始まるオペランド深さ**（#34）。本体の文はこの深さで走るので、
     /// 本体内の `break`/`continue` はこの数だけ `Pop` してから外側ループへ跳ぶ。
-    fn compile_block_expr(&mut self, stmts: &[Stmt], entry_depth: Option<u16>) -> Option<()> {
+    ///
+    /// `owns_yields` は「このブロックが `loop_yield` の蓄積先を持つか」（#35）。
+    /// **`block:` 式は持ち（true）、`block:` 文は持たない（false）**。ツリーウォークの
+    /// `exec_block_stmt` は `BLOCK_YIELDS` を push しないので、文の中の `loop_yield` は
+    /// **外側の for/while 式へ届く**（届く先が無ければ実行時エラー）。ここを true にすると
+    /// 蓄積が文に吸い込まれて捨てられる（`for … ->list[int]: block: loop_yield i` が `None` になった）。
+    fn compile_block_expr(
+        &mut self,
+        stmts: &[Stmt],
+        entry_depth: Option<u16>,
+        ann: Option<u32>,
+        owns_yields: bool,
+    ) -> Option<()> {
         if block_body_bails(stmts) {
             bail("block-expr-escape", None);
             return None;
         }
         let saved_base = std::mem::replace(&mut self.stmt_base, entry_depth);
-        let r = self.compile_block_expr_inner(stmts);
+        let r = self.compile_block_expr_inner(stmts, ann, owns_yields);
         self.stmt_base = saved_base;
         r
     }
 
-    fn compile_block_expr_inner(&mut self, stmts: &[Stmt]) -> Option<()> {
-        let yield_slot = self.alloc_temp()?;
-        self.emit(Op::BuildEmptyList);
-        self.emit(Op::StoreLocal(yield_slot));
+    fn compile_block_expr_inner(
+        &mut self,
+        stmts: &[Stmt],
+        ann: Option<u32>,
+        owns_yields: bool,
+    ) -> Option<()> {
+        let yield_slot = if owns_yields {
+            let s = self.alloc_temp()?;
+            self.emit(Op::BuildEmptyList);
+            self.emit(Op::StoreLocal(s));
+            Some(s)
+        } else {
+            None
+        };
         let result_slot = self.alloc_temp()?;
         self.block_ctxs.push(BlockCtx {
             result_slot,
             end_jumps: Vec::new(),
-            yield_slot: Some(yield_slot),
+            yield_slot,
+            return_type: ann,
         });
         for s in stmts {
             self.compile_stmt(s)?;
         }
         let ctx = self.block_ctxs.pop().unwrap();
-        // 正常フォールスルー: 値 = 蓄積リスト or None。
-        self.emit(Op::LoadLocal(yield_slot));
-        self.emit(Op::ListOrNone);
+        // 正常フォールスルー: 値 = 蓄積リスト or None（蓄積先を持たなければ常に None）。
+        match yield_slot {
+            Some(s) => {
+                self.emit(Op::LoadLocal(s));
+                self.emit(Op::ListOrNone);
+            }
+            None => {
+                self.emit(Op::Nil);
+            }
+        }
         let after_normal = self.emit(Op::Jump(0)); // → EXPR_END
         // block_return 出口: 値 = result_slot。
         let br_end = self.here();
@@ -3654,7 +3732,9 @@ impl Compiler {
         let expr_end = self.here();
         self.patch_jump(after_normal, expr_end);
         self.free_temp(); // result_slot
-        self.free_temp(); // yield_slot
+        if yield_slot.is_some() {
+            self.free_temp(); // yield_slot
+        }
         Some(())
     }
 
@@ -3665,6 +3745,7 @@ impl Compiler {
         branches: &[(Expr, Vec<Stmt>)],
         else_body: &Option<Vec<Stmt>>,
         entry_depth: Option<u16>,
+        ann: Option<u32>,
     ) -> Option<()> {
         for (_, b) in branches {
             if block_body_bails(b) {
@@ -3679,7 +3760,7 @@ impl Compiler {
             }
         }
         let saved_base = std::mem::replace(&mut self.stmt_base, entry_depth);
-        let r = self.compile_if_expr_inner(branches, else_body);
+        let r = self.compile_if_expr_inner(branches, else_body, ann);
         self.stmt_base = saved_base;
         r
     }
@@ -3688,6 +3769,7 @@ impl Compiler {
         &mut self,
         branches: &[(Expr, Vec<Stmt>)],
         else_body: &Option<Vec<Stmt>>,
+        ann: Option<u32>,
     ) -> Option<()> {
         let result_slot = self.alloc_temp()?;
         self.emit(Op::Nil);
@@ -3696,6 +3778,7 @@ impl Compiler {
             result_slot,
             end_jumps: Vec::new(),
             yield_slot: None,
+            return_type: ann,
         });
         let mut branch_ends: Vec<usize> = Vec::new();
         for (cond, body) in branches {
@@ -3732,6 +3815,7 @@ impl Compiler {
         subject: &Expr,
         arms: &[MatchArm],
         entry_depth: Option<u16>,
+        ann: Option<u32>,
     ) -> Option<()> {
         for arm in arms {
             if block_body_bails(&arm.body) {
@@ -3740,12 +3824,17 @@ impl Compiler {
             }
         }
         let saved_base = std::mem::replace(&mut self.stmt_base, entry_depth);
-        let r = self.compile_match_expr_inner(subject, arms);
+        let r = self.compile_match_expr_inner(subject, arms, ann);
         self.stmt_base = saved_base;
         r
     }
 
-    fn compile_match_expr_inner(&mut self, subject: &Expr, arms: &[MatchArm]) -> Option<()> {
+    fn compile_match_expr_inner(
+        &mut self,
+        subject: &Expr,
+        arms: &[MatchArm],
+        ann: Option<u32>,
+    ) -> Option<()> {
         let subj_temp = self.alloc_temp()?;
         self.compile_expr(subject)?;
         self.emit(Op::StoreLocal(subj_temp));
@@ -3756,6 +3845,7 @@ impl Compiler {
             result_slot,
             end_jumps: Vec::new(),
             yield_slot: None,
+            return_type: ann,
         });
         let mut arm_ends: Vec<usize> = Vec::new();
         for arm in arms {
@@ -3807,24 +3897,36 @@ impl Compiler {
     }
 
     /// `for target in iter -> T: body` 式。block_return 値、なければ loop_yield 蓄積リスト（空なら None）。
-    fn compile_for_expr(&mut self, target: &str, iter: &Expr, body: &[Stmt]) -> Option<()> {
+    fn compile_for_expr(
+        &mut self,
+        target: &str,
+        iter: &Expr,
+        body: &[Stmt],
+        ann: Option<u32>,
+    ) -> Option<()> {
         if block_body_bails(body) {
             bail("loopexpr-escape", None);
             return None;
         }
         // 自身が最内ループになるので本体の基準深さは 0（#34）。
         // 本体内の `break` はこの式の NORMAL_END（= 蓄積リストを push する位置）へ跳ぶ。
-        let saved_base = std::mem::replace(&mut self.stmt_base, Some(0));
+        let saved_base = self.stmt_base.replace(0);
         let saved_try = std::mem::replace(&mut self.try_depth, 0);
         let saved_fin = std::mem::replace(&mut self.finally_guard, 0);
-        let r = self.compile_for_expr_inner(target, iter, body);
+        let r = self.compile_for_expr_inner(target, iter, body, ann);
         self.stmt_base = saved_base;
         self.try_depth = saved_try;
         self.finally_guard = saved_fin;
         r
     }
 
-    fn compile_for_expr_inner(&mut self, target: &str, iter: &Expr, body: &[Stmt]) -> Option<()> {
+    fn compile_for_expr_inner(
+        &mut self,
+        target: &str,
+        iter: &Expr,
+        body: &[Stmt],
+        ann: Option<u32>,
+    ) -> Option<()> {
         let target_slot = *self.slots.get(target)?;
         let yield_slot = self.alloc_temp()?;
         self.emit(Op::BuildEmptyList);
@@ -3844,6 +3946,7 @@ impl Compiler {
             result_slot,
             end_jumps: Vec::new(),
             yield_slot: Some(yield_slot),
+            return_type: ann,
         });
         for s in body {
             self.compile_stmt(s)?;
@@ -3875,23 +3978,28 @@ impl Compiler {
     }
 
     /// `while cond -> T: body` 式。block_return 値、なければ loop_yield 蓄積リスト（空なら None）。
-    fn compile_while_expr(&mut self, cond: &Expr, body: &[Stmt]) -> Option<()> {
+    fn compile_while_expr(
+        &mut self,
+        cond: &Expr,
+        body: &[Stmt],
+        ann: Option<u32>,
+    ) -> Option<()> {
         if block_body_bails(body) {
             bail("loopexpr-escape", None);
             return None;
         }
         // 自身が最内ループになるので本体の基準深さは 0（#34）。
-        let saved_base = std::mem::replace(&mut self.stmt_base, Some(0));
+        let saved_base = self.stmt_base.replace(0);
         let saved_try = std::mem::replace(&mut self.try_depth, 0);
         let saved_fin = std::mem::replace(&mut self.finally_guard, 0);
-        let r = self.compile_while_expr_inner(cond, body);
+        let r = self.compile_while_expr_inner(cond, body, ann);
         self.stmt_base = saved_base;
         self.try_depth = saved_try;
         self.finally_guard = saved_fin;
         r
     }
 
-    fn compile_while_expr_inner(&mut self, cond: &Expr, body: &[Stmt]) -> Option<()> {
+    fn compile_while_expr_inner(&mut self, cond: &Expr, body: &[Stmt], ann: Option<u32>) -> Option<()> {
         let yield_slot = self.alloc_temp()?;
         self.emit(Op::BuildEmptyList);
         self.emit(Op::StoreLocal(yield_slot));
@@ -3907,6 +4015,7 @@ impl Compiler {
             result_slot,
             end_jumps: Vec::new(),
             yield_slot: Some(yield_slot),
+            return_type: ann,
         });
         for s in body {
             self.compile_stmt(s)?;

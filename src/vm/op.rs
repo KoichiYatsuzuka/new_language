@@ -212,6 +212,16 @@ pub enum Op {
     Dup,
     /// pop した例外値が `names[name_idx]` 型にマッチするか（`exc_matches`）を Bool で push する。
     ExcMatch(u32),
+    /// `block_return` の値をブロック式の `->T` アノテーションに対して検査する（#35）。
+    ///
+    /// スタックトップを**消費せず**見て、`check_block_return_type(v, names[idx])` が
+    /// `Err` なら停止する。アノテーションを持つブロック式の `block_return` にだけ出る。
+    CheckBlockReturn(u32),
+    /// `loop_yield` の値を for/while 式の `->list[T]` アノテーションに対して検査する（#35）。
+    ///
+    /// `CheckBlockReturn` と同じくスタックトップを消費しない。`names[idx]` は
+    /// **`list[T]` そのもの**（要素型の取り出しは `check_loop_yield_type` が行う＝1 実装）。
+    CheckLoopYield(u32),
     /// `names[idx]` を内部エラー文字列として返して停止する（ツリーウォークの `Err(msg)` と同じ経路・#34）。
     ///
     /// 用途は「**実行時に必ず失敗すると分かっている文**」を、コンパイル失敗（`VmForceError`）ではなく

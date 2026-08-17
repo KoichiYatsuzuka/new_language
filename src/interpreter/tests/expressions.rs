@@ -545,6 +545,71 @@ for i in range(5):
     assert_int(run_get(src, "bs"), 2);
 }
 
+// ---------------------------------------------------------------------------
+// #35: block_return / loop_yield の実行時型検査
+//
+// ⚠ ここも長らく **`--vm=off` にしか無い検査**で、VM 経路は素通りしていた。
+//    以下はツリーウォーク側の固定。VM 側は
+//    examples/basics/block_return_typecheck{,_error}.ar ＋ compare_vm_modes が押さえる。
+// ---------------------------------------------------------------------------
+
+/// `loop_yield` の値が `->list[T]` の要素型に合わなければ実行時エラー（#35）。
+#[test]
+fn test_loop_yield_element_type_check_error() {
+    let src = "let x = for i in range(3) ->list[int]:\n    loop_yield \"s\"\n";
+    let err = run(src).unwrap_err();
+    assert!(err.contains("loop_yield value has type 'str'"), "got: {err}");
+    assert!(err.contains("element type 'int'"), "got: {err}");
+}
+
+/// 素の `->list`（要素型なし）は `loop_yield` を検査しない（#35）。
+#[test]
+fn test_loop_yield_bare_list_ann_is_unchecked() {
+    let src = "let x = for i in range(2) ->list:\n    loop_yield \"any\"\n";
+    assert!(run(src).is_ok());
+}
+
+/// `block:` **文**の中の `block_return` は**外側の式**のアノテーションで検査される（#35）。
+///
+/// ⚠ ツリーウォークは `block:` 文で `BLOCK_RETURN_EXPECTED_TYPE` へ push しない。
+/// VM 側で独立したコンテキストにすると off/on が割れる（`Stmt::Block` は継承する）。
+#[test]
+fn test_block_stmt_block_return_uses_enclosing_annotation() {
+    let src = "let x = block ->int:\n    block:\n        block_return \"bad\"\n    block_return 1\n";
+    let err = run(src).unwrap_err();
+    assert!(err.contains("block_return value has type 'str'"), "got: {err}");
+}
+
+/// `block:` **文**は `loop_yield` に対して透過（#35）。
+///
+/// ⚠ VM 側の回帰検知が本命。`Stmt::Block` に蓄積先を持たせると値が文へ吸い込まれ、
+/// `for … ->list[int]: block: loop_yield i` が `None` になる（実際に踏んだ）。
+#[test]
+fn test_block_stmt_is_transparent_to_loop_yield() {
+    let src = "
+let r = for i in range(3) ->list[int]:
+    block:
+        loop_yield i
+";
+    assert_int_list(run_get(src, "r"), &[0, 1, 2]);
+}
+
+/// 検査に使うのは**最内**ブロック式のアノテーション（#35）。
+/// 内側 `if ->int:` は `list[T]` ではないので `loop_yield` は検査されない。
+#[test]
+fn test_loop_yield_uses_innermost_annotation() {
+    let src = "
+let x = for i in range(3) ->list[int]:
+    let _ = if i == 1 ->int:
+        loop_yield \"not checked\"
+        block_return 0
+    else:
+        0
+    loop_yield i
+";
+    assert!(run(src).is_ok());
+}
+
 /// 属性代入の右辺にあるブロック式から `break`（#34）。
 ///
 /// ⚠ VM 側の回帰検知が本命。右辺の評価中は**レシーバが 1 つ積まれている**ので、

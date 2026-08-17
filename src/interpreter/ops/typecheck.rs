@@ -2,6 +2,12 @@
 
 use crate::interpreter::{Interpreter, Value};
 
+/// `"list[T]"` からアイテム型 `"T"` を取り出す。`"list"` や他の型は `None` を返す。
+fn extract_list_elem_type(ann: &str) -> Option<&str> {
+    let inner = ann.strip_prefix("list[")?.strip_suffix(']')?;
+    Some(inner.trim())
+}
+
 impl Interpreter {
     /// 値の真偽判定を行う。
     ///
@@ -176,6 +182,26 @@ impl Interpreter {
                 ann
             ))
         }
+    }
+
+    /// `loop_yield` の値の型を、for/while 式の `->list[T]` アノテーションに対して検査する（#35）。
+    ///
+    /// `ann` が `list[T]` の形でなければ検査しない（`Ok(())`）。
+    /// ⚠ **ツリーウォーク（`exec_loop_yield`）と VM（`Op::CheckLoopYield`）の唯一の実装**。
+    /// メッセージが 1 文字でもずれると off/on 比較が割れる。
+    pub(crate) fn check_loop_yield_type(&self, val: &Value, ann: &str) -> Result<(), String> {
+        let Some(elem_type) = extract_list_elem_type(ann) else {
+            return Ok(());
+        };
+        if self.value_matches_type_ann(val, elem_type) {
+            return Ok(());
+        }
+        Err(format!(
+            "TypeError: loop_yield value has type '{}', but element type '{}' was expected (from ->{})",
+            self.type_name(val),
+            elem_type,
+            ann
+        ))
     }
 
     /// 値が指定した型名に一致するかを判定する（`is` 型ガードのランタイム検査）。

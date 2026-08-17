@@ -13,7 +13,6 @@ use {
         BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS,
     },
 };
-use super::*;
 
 impl Interpreter {
     /// `let` 宣言を実行する。
@@ -251,17 +250,10 @@ impl Interpreter {
     pub(crate) fn exec_loop_yield(&mut self, expr: &Expr) -> Result<ExecResult, String> {
         let val = self.eval(expr)?;
 
-        // Type-check the yielded value against the element type from a `->list[T]` annotation.
+        // `->list[T]` アノテーションの要素型に対する検査（#35 で VM と 1 実装に集約）。
         let expected = BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow().last().cloned().flatten());
         if let Some(ref ann) = expected {
-            if let Some(elem_type) = extract_list_elem_type(ann) {
-                if !self.value_matches_type_ann(&val, elem_type) {
-                    return Err(format!(
-                        "TypeError: loop_yield value has type '{}', but element type '{}' was expected (from ->{})",
-                        self.type_name(&val), elem_type, ann
-                    ));
-                }
-            }
+            self.check_loop_yield_type(&val, ann)?;
         }
 
         let mut in_loop_expr = false;

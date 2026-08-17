@@ -68,11 +68,6 @@ fn find_js_config(search_dirs: &[PathBuf])
     Err("ar_config.json: javascript section not found in any search directory".to_string())
 }
 
-/// `"list[T]"` からアイテム型 `"T"` を取り出す。`"list"` や他の型は `None` を返す。
-fn extract_list_elem_type(ann: &str) -> Option<&str> {
-    let inner = ann.strip_prefix("list[")?.strip_suffix(']')?;
-    Some(inner.trim())
-}
 
 /// `x.is_OK()` / `x.is_ERR()` の形式の式から `(変数名, is_ok_flag)` を抽出する。
 /// Result ガード節の変数バインディングに使う。

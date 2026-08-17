@@ -3657,6 +3657,90 @@ HEAD の `src/` をスクラッチパッドへ退避してビルドした `head.
 
 ---
 
+## #35 完了（2026-08-17）— `block_return`/`loop_yield` の実行時検査を VM へ
+
+`--vm=off` にしか無かった 2 つの実行時検査を VM に載せた。⚠ 実装より **「ツリーウォークが
+どの注釈を見ているか」を正確に写すこと**が本体で、そこで**新たなバグを 1 件**踏んだ。
+
+### 何が食い違っていた（計測・12 形）
+
+| 形 | `--vm=off` | `--vm=on`（旧） |
+|---|---|---|
+| `block ->int: block_return "hello"` | `TypeError: block_return value has type 'str', but 'int' was expected` | **`hello`（素通り）** |
+| `if True ->str: block_return 42` / `match … ->str:` | 同上（型が逆） | **素通り** |
+| `for i in range(3) ->list[int]: loop_yield "s"` | `TypeError: loop_yield value has type 'str', but element type 'int' …` | **`['s','s','s']`** |
+| 関数内の `loop_yield`（ループ式の外） | `SyntaxError: 'loop_yield' can only be used …` | **`VmForceError`** |
+
+### 設計
+
+- `BlockCtx` に `return_type: Option<u32>`（名前プール index）を持たせ、5 つのブロック式
+  コンパイラが AST の `return_type` を渡す。
+- `Stmt::BlockReturn` / `Stmt::LoopYield` は注釈があれば **`Op::CheckBlockReturn`/`CheckLoopYield`**
+  を出す（**スタックトップを消費しない**。直後の `StoreLocal`/`ListAppendLocal` が使う）。
+- 判定は **`check_block_return_type` / `check_loop_yield_type` の 1 実装へ委譲**。後者は
+  `exec_loop_yield` から切り出して共有した（`extract_list_elem_type` ごと `ops/typecheck.rs` へ移動）。
+  ⇒ #22 系列の「同じ判断をする 2 実装は片方を委譲にして畳む」。メッセージのずれが原理的に起きない。
+- ループ式の外の `loop_yield` は **bail せず `Op::Fail`**（#34 で足した op を再利用）。
+
+新オペコードは 2 個。注釈を持つブロック式にしか出ないので、注釈の無いコードの Chunk は不変。
+
+### ⚠ ツリーウォークが見ている注釈は「最内の**式**」
+
+`BLOCK_RETURN_EXPECTED_TYPE` は **`eval/core.rs` の 5 つの式アームだけ**が push する。
+ここから 2 つの非自明な帰結が出て、両方とも実測で確認した:
+
+| 形 | 挙動 | VM 側の対応 |
+|---|---|---|
+| `block ->int:` の中の **`block:` 文**の `block_return "bad"` | **外側の `->int` で検査**されて TypeError | `Stmt::Block` は外側の `return_type` を**継承**する |
+| `for … ->list[int]:` の中の **`if … ->int:`** の `loop_yield "x"` | 最内注釈が `int` ＝ `list[T]` でないので**検査されない** | `block_ctxs.last()` を見る（＝同じ） |
+
+### 🐛 `block:` **文**が `loop_yield` を吸い込んでいた
+
+`Stmt::Block` は `compile_block_expr` を流用しており、**式と同じく蓄積先（`yield_slot`）を
+確保していた**。ところがツリーウォークの `exec_block_stmt` は `BLOCK_YIELDS` を push しないので、
+文の中の `loop_yield` は**外側の for/while 式へ届く**。
+
+```
+let r = for i in range(3) ->list[int]:
+    block:
+        loop_yield i
+```
+| | 結果 |
+|---|---|
+| `--vm=off` / `impl_python` | `[0, 1, 2]` |
+| `--vm=on`（修正前） | **`None`**（蓄積が文へ吸い込まれて捨てられた） |
+
+⇒ `compile_block_expr` に `owns_yields` を足し、**式は true・文は false**（透過）にした。
+蓄積先が無いときの正常フォールスルー値は `Op::Nil`。
+これで「ループ式の外の `block:` 文の `loop_yield` は SyntaxError」も一致する。
+
+### 🔍 副産物: #34/#35 が閉じたことの直接確認と、新たなギャップ #39
+
+テストヘルパーを `VmMode::On` に強制する実験（#33 の判断材料で使ったもの）を再実行:
+
+| | 失敗数 |
+|---|---|
+| #34/#35 着手前 | **30**（注釈欠落 19 ＋ #34 の 5 ＋ #35 の 6） |
+| #35 完了後 | **21**（注釈欠落 19 ＋ グローバル代入 1 ＋ #39 由来 1） |
+
+⇒ **#34/#35 が押さえていた 11 件は全て解消**。残る 19 件は #36 の配線で消える見込み。
+
+残り 2 件から **#39** が出た: `mut g = 0` ＋ `fn bump(): g += 1` が `VmForceError`
+（`--vm=off` と `impl_python` は動く）。⚠ **HEAD のバイナリでも同じ**＝既存ギャップで #35 とは独立。
+
+### 検証
+
+`cargo build` 警告 0 ／ `cargo test` **722 緑**（+5）／
+`compare_vm_modes.ps1` **76 identical / 0 differing**（例題 2 本増）／
+`scan_examples.ps1` **FAIL 0** ／ `force_gate.ps1` **0 件・132 例題完走** ／
+`cargo clippy` **触ったファイルの警告 0**（⚠ #34 で入れた `mem::replace(&mut self.stmt_base, Some(0))`
+が 4 件の増分になっていたので `Option::replace` へ直した）。
+
+新設例題 [block_return_typecheck.ar](examples/basics/block_return_typecheck.ar)（8 ケース）と
+[block_return_typecheck_error.ar](examples/basics/block_return_typecheck_error.ar)。単体テスト 5 件を追加。
+
+---
+
 ## この記録の使いどころ
 
 **見積もりが外れた事例**が最も価値がある。同じ判断ミスを繰り返さないために残してある。
@@ -3682,6 +3766,7 @@ HEAD の `src/` をスクラッチパッドへ退避してビルドした `head.
 | `force_gate` 0 件 | 「VM は言語全体を載せられる」 | **「128 例題で 0」でしかなかった**。例題が 1 本も無い言語機能（制御フロー式貫通 `break`）は**ゲートにも off/on 比較にも映らない**。単体テストだけが 11 件押さえていた |
 | #34（2026-08-17） | 「跳び先の計算が要る＝ジャンプ機構の作り直し」 | **機構は最初から揃っていた**（`LoopCtx` は絶対ジャンプ）。足りなかったのは**跳ぶ時点で積まれている値の始末**だけ。しかも「ブロック式は式の末尾にしか置けない」を**構文で実測**したら、深さの伝播は 3 箇所で済み**新オペコード 0**になった |
 | #34 の `continue` | 「`break` を通せば `continue` も同じ」 | **ツリーウォークに `continue` の貫通が無かった**（SyntaxError 化＋**黙って握り潰し**）。VM の方が正しく、参照実装と一致していた。`for-target-shadow` と同じ「bail する形はツリーウォークが正しいとは限らない」 |
+| #35（2026-08-17） | 「注釈を `BlockCtx` に持たせて検査 op を出すだけ」 | **どの注釈を見るか**が本体だった。`BLOCK_RETURN_EXPECTED_TYPE` を push するのは**式だけ**なので、`block:` 文は外側の注釈を継承し、かつ **`loop_yield` には透過**でなければならない。後者を見落として `for … ->list[int]: block: loop_yield i` が **`None`** になった |
 | #34 の `try` | 「脱出は `has_escape` が既に弾いている」 | **`has_escape` は文しか歩かない**のでブロック式の中の `break` が素通りし、**ハンドラが残って後続の例外を横取り**した。しかも「跳ぶだけ」の例題では**症状が出ない**（跳んだ後に別の例外を投げて初めて分かる） |
 
 **教訓**: 着手前に診断フックで数字を取る。IR / バイトコードを実際にダンプして見る。

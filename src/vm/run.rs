@@ -962,6 +962,16 @@ fn exec_op(
         // #34: 実行時に必ず失敗する文（囲むループの無い break/continue）を、
         // ツリーウォークと**一字一句同じ**メッセージで落とす。
         Op::Fail(idx) => return Err(chunk.names[*idx as usize].clone()),
+        // #35: block_return / loop_yield の実行時型検査。どちらも**値を消費しない**
+        // （直後に StoreLocal / ListAppendLocal が使う）。判定はツリーウォークと同じ 1 実装へ委譲。
+        Op::CheckBlockReturn(idx) => {
+            let v = buf.last().unwrap();
+            interp.check_block_return_type(v, &chunk.names[*idx as usize])?;
+        }
+        Op::CheckLoopYield(idx) => {
+            let v = buf.last().unwrap();
+            interp.check_loop_yield_type(v, &chunk.names[*idx as usize])?;
+        }
         Op::BuildEmptyList => buf.push(Value::List(Rc::new(RefCell::new(Vec::new())))),
         Op::ListAppendLocal(slot) => {
             let v = buf.pop().unwrap();
