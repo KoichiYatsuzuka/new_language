@@ -1808,16 +1808,31 @@ impl Compiler {
         if let Some(&slot) = self.slots.get(name) {
             return Some(StoreTarget::Local(slot));
         }
-        if self.toplevel_globals.contains(name) {
-            let ni = self.add_name(name);
-            // `LoadGlobal` と同じく emit 1 回につきキャッシュ枠を 1 本割り当てる
-            // （枠は共有しない。op ごとに焼く index の意味が違うため — `Op::StoreGlobal` 参照）。
-            let ci = self.global_caches.len() as u32;
-            self.global_caches.push(crate::ast::SlotCache::default());
-            return Some(StoreTarget::Global(ni, ci));
+        // ⚠ デバッガ REPL（`compile_debug`）だけは例外（#39）。停止フレームの**生スコープ**へ
+        // 書かねばならず、`scopes[0]` 限定の `StoreGlobal` では別の変数を書いてしまう。
+        // 読み側が `LoadName` に落ちているのと同じ理由。ここは従来どおり bail する。
+        if self.debug_mode {
+            bail("store-target-debug", None);
+            return None;
         }
-        bail("store-target", None);
-        None
+        // ここまで全部外れた名前は**この関数のローカルでもキャプチャでもない**（#39）。
+        //
+        // 根拠は `Op::LoadGlobal` を関数本体で使うのと同じ（#27）: base slot の採番と
+        // `collect_nested_decls` が本体の全宣言を**先に** `slots` へ入れ、可変キャプチャは
+        // `capture_env` が作った集合ごと `cells` に入る。つまり `slots`/`cells`/`statics` を
+        // 引いて外れた名前は、ツリーウォークの `assign_var` でもローカル走査を必ず素通りして
+        // グローバル分岐へ落ちる。⇒ `scopes[0]` へ書く `StoreGlobal` と答えが一致する。
+        //
+        // ⚠ **最上位で宣言されているか（`toplevel_globals`）は条件にしない**。未宣言の名前は
+        // `vm_assign_global` が `NameError: '<name>' is not defined` を返し、これも
+        // ツリーウォークと同一文言（以前はここで bail し、関数本体からのグローバル代入が
+        // 丸ごと `VmForceError` になっていた）。
+        let ni = self.add_name(name);
+        // `LoadGlobal` と同じく emit 1 回につきキャッシュ枠を 1 本割り当てる
+        // （枠は共有しない。op ごとに焼く index の意味が違うため — `Op::StoreGlobal` 参照）。
+        let ci = self.global_caches.len() as u32;
+        self.global_caches.push(crate::ast::SlotCache::default());
+        Some(StoreTarget::Global(ni, ci))
     }
 
     fn specialized_bin_kind_slot(

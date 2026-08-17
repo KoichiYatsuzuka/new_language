@@ -654,6 +654,83 @@ let y = for i in range(3) ->list[int]:
 }
 
 // ---------------------------------------------------------------------------
+// #39: 関数本体からのグローバル代入
+//
+// ⚠ VM 側の回帰検知が本命。`Op::StoreGlobal` は **`scopes[0]` だけ**を対象にする
+//    （`assign_var` へ委譲すると、VM 関数は `scopes` を押さないので**呼び出し元のローカル**を
+//    走査してしまう）。例題は examples/basics/global_assign_from_fn.ar。
+// ---------------------------------------------------------------------------
+
+/// 関数本体からグローバルへ複合代入できる（#39）。
+#[test]
+fn test_compound_assign_to_global_from_fn() {
+    let src = "
+mut counter = 0
+fn bump() -> None:
+    counter += 1
+for i in range(3):
+    bump()
+";
+    assert_int(run_get(src, "counter"), 3);
+}
+
+/// クロージャが外側ローカルとグローバルの両方へ書ける（#39）。
+#[test]
+fn test_closure_writes_outer_local_and_global() {
+    let src = "
+mut total = 0
+fn outer() -> int:
+    mut acc = 10
+    fn inner() -> None:
+        acc += 1
+        total += 100
+    inner()
+    inner()
+    return acc
+let v = outer()
+";
+    assert_int(run_get(src, "v"), 12);
+    assert_int(run_get(src, "total"), 200);
+}
+
+/// グローバルへの書き込みが**呼び出し元の同名パラメータを壊さない**（#39）。
+///
+/// ⚠ `Op::StoreGlobal` を `assign_var` へ委譲に戻すとここが壊れる
+/// （グローバルと同名の**ローカル宣言**は静的型検査が禁じるので、
+///  同名にできるパラメータ／for ターゲットでしか検知できない）。
+#[test]
+fn test_global_store_does_not_touch_caller_frame() {
+    let src = "
+mut shared = 0
+fn writes_global() -> None:
+    shared = 999
+fn caller(mut shared: int) -> int:
+    writes_global()
+    return shared
+let kept = caller(1)
+";
+    assert_int(run_get(src, "kept"), 1);
+    assert_int(run_get(src, "shared"), 999);
+}
+
+/// 未宣言の名前への代入は実行時 `NameError`（検査は緩めていない）（#39）。
+#[test]
+fn test_assign_to_undeclared_global_from_fn_is_error() {
+    let src = "
+fn f() -> None:
+    not_declared_anywhere = 1
+f()
+";
+    // ⚠ 内部エラーは `RaisedError` へ包まれるので `run` の `Err` はセンチネル。
+    // 実際の例外は `run_exc` で取り出す（`raise` と同じ経路）。
+    let raised = run_exc(src).unwrap().expect("NameError が送出されるはず");
+    let Value::Instance(inst) = &raised.exception else {
+        panic!("expected an exception instance, got {:?}", raised.exception);
+    };
+    assert_eq!(inst.borrow().class.name, "NameError");
+}
+
+// ---------------------------------------------------------------------------
 // #40: finally 本体そのものからの脱出（保留中の動作を破棄する）
 //
 // ⚠ VM 側の回帰検知が本命。finally は正常路・例外路・各脱出路に複製され、

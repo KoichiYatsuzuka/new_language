@@ -257,14 +257,31 @@ impl Interpreter {
         self.current_class.clone().map(Value::Class)
     }
 
-    /// `Op::StoreGlobal` の実体（#10-b）: 既存グローバルへの代入。
+    /// `Op::StoreGlobal` の実体（#10-b/#39）: **`scopes[0]` だけ**を対象にした代入。
     ///
-    /// **`assign_var` へそのまま委譲する**のが要点。最上位 Chunk の実行中は
-    /// `scopes.len() == 1`（VM は `scopes` を使わずフラットな `vm_stack` で動く）なので、
-    /// `assign_var` のローカル走査 `scopes[frame_floor..]` は空回りし、グローバル分岐に落ちる。
-    /// ＝ ツリーウォークの `Stmt::Assign` と**同じコードが同じ判断をする**（#22 系列の型）。
+    /// ⚠ **`assign_var` へ委譲してはいけない**（#39 で判明）。`assign_var` は
+    /// `scopes[frame_floor..]` を先に走査するが、**VM 関数は `scopes` を一切押さない**
+    /// （フラットな `vm_stack` で動く）ので、走査に映るのは**呼び出し元のローカル**である。
+    /// 最上位 Chunk では `scopes.len() == 1` なので偶然一致していたが、関数本体から
+    /// この op を出せるようにすると（#39）**同名の呼び出し元ローカルを書き換えてしまう**。
+    ///
+    /// この op が出るのは「コンパイラが `cells`/`statics`/`slots` を引いて全部外れた
+    /// ＝ この関数のローカルでもキャプチャでもないと確定した」名前だけなので、
+    /// `scopes[0]` に限定するのが**そのままツリーウォークと同じ答え**になる
+    /// （`Op::LoadGlobal` が読み側で採っているのと同じ根拠）。
+    ///
+    /// メッセージは `assign_var` のグローバル分岐と一字一句同じにする。
     pub(crate) fn vm_assign_global(&mut self, name: &str, value: Value) -> Result<(), String> {
-        self.assign_var(name, value)
+        let Some(var) = self.scopes[0].get_mut(name) else {
+            return Err(format!("NameError: '{name}' is not defined"));
+        };
+        if !var.is_mutable() {
+            return Err(format!(
+                "TypeError: cannot assign to immutable variable '{name}'"
+            ));
+        }
+        var.set_value(value);
+        Ok(())
     }
 
     /// `Op::StoreGlobal` の索引経路（#10-b）: 昇格済みセルへ直接書き込む。

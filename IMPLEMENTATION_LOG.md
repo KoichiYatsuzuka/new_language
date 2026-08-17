@@ -3865,6 +3865,68 @@ bail する。finally は正常路・例外路・**各脱出路**に複製され
 
 ---
 
+## #39 完了（2026-08-17）— 関数本体からのグローバル代入
+
+**これで `--vm=off` でしか走らない言語機能は 0 になった**（過去の全バッテリ **127 形**を
+`--vm=off` / `--vm=on` で突き合わせて不一致 0）。
+
+### 対象は 2 形だけだった（計測）
+
+8 形を測ったところ、食い違うのは**名前への代入**だけ:
+
+| 形 | 結果 |
+|---|---|
+| `g = 42` / `g += 1`（関数内） | **`VmForceError`** ← 対象 |
+| `g` の読み／`b.v = 5`／`xs.append(3)`／`xs[0] = 9`（関数内） | 元から動く |
+
+属性・添字・メソッド経由の変更は `StoreGlobal` を必要としないので元から載っていた。
+
+### 🐛 委譲先が間違っていた（潜在的な健全性の穴）
+
+`store_target` の `toplevel_globals` 門を外すだけ…**ではなかった**。
+`Op::StoreGlobal` のミス経路は `vm_assign_global` → **`assign_var` へ委譲**しており、
+`assign_var` は `scopes[frame_floor..]`（ローカル）を**先に**走査する。
+
+⚠ **VM 関数は `scopes` を一切押さない**（フラットな `vm_stack` で動く。しかも
+`try_fast_bind` はフレーム構築より**前**に VM を回す）。つまりその走査に映るのは
+**呼び出し元のローカル**であり、関数本体からこの op を出せるようにすると
+**同名の呼び出し元変数を書き換えうる**。最上位 Chunk では `scopes.len() == 1` なので
+偶然一致していただけだった。
+
+⇒ `vm_assign_global` を **`scopes[0]` 限定**の実装に書き換えた（文言は `assign_var` の
+グローバル分岐と一字一句同じ）。これは読み側の `Op::LoadGlobal` が採っている根拠と同じで、
+「`cells`/`statics`/`slots` を全部外れた名前＝この関数のローカルでもキャプチャでもない」が
+コンパイル時に確定していることに乗る。
+
+⚠ **回帰検知は「呼び出し元の同名パラメータ」でしか書けない**。グローバルと同名の
+**ローカル宣言**は静的型検査が禁じる（`variable 'x' is already declared in an accessible scope`）
+ので、同名にできるのは**パラメータと for ターゲット**だけ。例題のケース 5 がこれ。
+
+### デバッガ REPL だけは bail を残す
+
+`compile_debug`（`debug_mode`）は停止フレームの**生スコープ**へ書く必要があり、
+`scopes[0]` 限定の `StoreGlobal` では別の変数を書いてしまう（読み側が `LoadName` に
+落ちているのと同じ理由）。ここは従来どおり bail。
+⇒ [compare_debug_modes.ps1](compare_debug_modes.ps1) **5 identical / 0 differing** で確認。
+
+### 検証
+
+`cargo build` 警告 0 ／ `cargo test` **734 緑**（+4）／
+`compare_vm_modes.ps1` **80 identical / 0 differing** ／
+[compare_debug_modes.ps1](compare_debug_modes.ps1) **5 identical / 0 differing** ／
+`scan_examples.ps1` **FAIL 0** ／ `force_gate.ps1` **0 件・136 例題完走** ／
+`cargo clippy` 触ったファイルの警告 0。
+15 形（基本 8 ＋ 敵対的 7: クロージャ・メソッド・パラメータ/for ターゲットのシャドウ・
+`static mut` 併用・ブロック式内・未宣言・不変）が 3 実装で一致
+（未宣言／不変はエラー**文言**が `impl_python` と違うが off/on は一致）。
+
+新設例題 [global_assign_from_fn.ar](examples/basics/global_assign_from_fn.ar)（9 ケース）と
+[global_assign_from_fn_error.ar](examples/basics/global_assign_from_fn_error.ar)。
+⚠ `_error` 例題は**未宣言の名前**にしてある（`let` への代入は**静的型検査が先に捕まえる**ので
+実行時経路＝`vm_assign_global` の `NameError` を通らない）。
+
+---
+
 ## この記録の使いどころ
 
 **見積もりが外れた事例**が最も価値がある。同じ判断ミスを繰り返さないために残してある。
@@ -3890,6 +3952,7 @@ bail する。finally は正常路・例外路・**各脱出路**に複製され
 | `force_gate` 0 件 | 「VM は言語全体を載せられる」 | **「128 例題で 0」でしかなかった**。例題が 1 本も無い言語機能（制御フロー式貫通 `break`）は**ゲートにも off/on 比較にも映らない**。単体テストだけが 11 件押さえていた |
 | #34（2026-08-17） | 「跳び先の計算が要る＝ジャンプ機構の作り直し」 | **機構は最初から揃っていた**（`LoopCtx` は絶対ジャンプ）。足りなかったのは**跳ぶ時点で積まれている値の始末**だけ。しかも「ブロック式は式の末尾にしか置けない」を**構文で実測**したら、深さの伝播は 3 箇所で済み**新オペコード 0**になった |
 | #34 の `continue` | 「`break` を通せば `continue` も同じ」 | **ツリーウォークに `continue` の貫通が無かった**（SyntaxError 化＋**黙って握り潰し**）。VM の方が正しく、参照実装と一致していた。`for-target-shadow` と同じ「bail する形はツリーウォークが正しいとは限らない」 |
+| #39（2026-08-17） | 「`store_target` の `toplevel_globals` 門を外すだけ」 | **委譲先が間違っていた**。`Op::StoreGlobal` は `assign_var`（`scopes[frame_floor..]` を先に走査）へ委譲しており、**VM 関数は `scopes` を押さない**ので走査に映るのは**呼び出し元のローカル**。最上位では `scopes.len()==1` で偶然一致していただけで、関数本体へ広げた瞬間に健全性が壊れる形だった |
 | #40（2026-08-17） | 「複製ごとにスタックの形が違うので一律の巻き戻しが書けない」＝#37 で保留にした | **`stmt_base` を複製の土台の分だけ持ち上げるだけ**で済んだ（引数 1 本）。既存の巻き戻しがそのまま「保留中の動作を破棄する」意味論を出した。⇒ **保留の理由が「難しい」だけのときは、一度は手を動かして確かめる** |
 | #37（2026-08-17） | 「跳ぶ経路にも finally を出す＝新しい機構が要る」 | **#34 の `try_depth` を `try_stack` に一般化するだけ**で済んだ（新オペコード 0）。さらに **`loop_yield` は脱出ではなかった**（蓄積して先へ進む）のに `has_escape` が脱出扱いしており、`try: loop_yield i` が**丸ごと誤爆で bail** していた |
 | #35（2026-08-17） | 「注釈を `BlockCtx` に持たせて検査 op を出すだけ」 | **どの注釈を見るか**が本体だった。`BLOCK_RETURN_EXPECTED_TYPE` を push するのは**式だけ**なので、`block:` 文は外側の注釈を継承し、かつ **`loop_yield` には透過**でなければならない。後者を見落として `for … ->list[int]: block: loop_yield i` が **`None`** になった |

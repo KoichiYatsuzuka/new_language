@@ -1,0 +1,15 @@
+# global_assign_from_fn_error.ar — 関数から未宣言のグローバルへ代入（#39）
+#
+# 関数本体からのグローバル代入は #39 で VM に載ったが、**検査は緩めていない**。
+# 宣言されていない名前への代入は実行時 `NameError` になる
+# （`vm_assign_global` が `scopes[0]` を引いて外れた場合）。
+# ⚠ `let`（不変）への代入は**静的型検査**が先に捕まえるので、実行時経路はこちらで確かめる。
+
+print("before")
+
+fn writes_undeclared() -> None:
+    not_declared_anywhere = 1
+
+writes_undeclared()
+
+print("unreachable")
