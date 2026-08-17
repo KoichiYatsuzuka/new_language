@@ -82,6 +82,9 @@ impl Interpreter {
         branches: &[(crate::ast::Expr, Vec<crate::ast::Stmt>)],
         else_body: &Option<Vec<crate::ast::Stmt>>,
     ) -> Result<Value, String> {
+        // ⚠ 計測フックが**無かった**（#33）。`tw_control_flow` が if/match 式を数えず、
+        // 「ツリーウォークの制御フローは 0」という判断が過小報告に乗っていた。
+        crate::interpreter::tw_stats::record_tls("if-expr");
         for (cond, body) in branches {
             let val = self.eval(cond)?;
             if self.eval_truthy(&val)? {

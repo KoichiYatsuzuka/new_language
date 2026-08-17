@@ -5,9 +5,8 @@ use {
     crate::ast::CallArg,
     crate::token::Span,
     crate::interpreter::{
-        CapturedVar, DictData, ExecResult, FnValue, GeneratorFnValue, GeneratorState,
-        Interpreter, StackFrame, Value, Var, BREAK_SENTINEL, CONTINUE_SENTINEL, GENERATOR_YIELDS,
-        LOOP_DEPTH,
+        CapturedVar, FnValue, GeneratorFnValue, GeneratorState,
+        Interpreter, StackFrame, Value, GENERATOR_YIELDS,
         RAISE_SENTINEL,
     },
 };
@@ -364,13 +363,11 @@ impl Interpreter {
         // クロージャは**キャプチャの種類を問わず** VM に載る（#27-d 段階 2b）。
         // 不変は `captured_slots` の slot へ値を書き込み、可変は `captured_cells` の
         // セル index へ **`Rc` を共有**する（外側との書き戻りが保たれる）。
-        let vm_eligible = self.vm_mode != crate::vm::VmMode::Off
-            && !fn_val.is_python
-            && matches!(self_val, None | Some(Value::Instance(_)));
+        let vm_eligible = !fn_val.is_python && matches!(self_val, None | Some(Value::Instance(_)));
         // 診断フック（#27）: **なぜ VM に載せなかったか**を計上する。
         // `vm_eligible` が偽だと `compile_fn` を呼ばないので bail 統計に現れず、
         // 「クロージャがどれだけツリーウォークへ落ちているか」が測れなかった。
-        if crate::interpreter::tw_stats::enabled() && !vm_eligible && self.vm_mode != crate::vm::VmMode::Off {
+        if crate::interpreter::tw_stats::enabled() && !vm_eligible {
             let why = if fn_val.is_python { "python" } else { "self-kind" };
             crate::interpreter::tw_stats::record_ineligible(why);
         }
@@ -382,7 +379,7 @@ impl Interpreter {
         // #25: `--vm=force` はフォールバック禁止。関数本体が載らなければ止める。
         // ⚠ `vm_eligible` が偽（クロージャ等）も**失敗として扱う**。そこを見逃すと
         //    「bail 0 なのにツリーウォークが残る」というゲートの穴になる（#27 の `vm_ineligible` 20 件）。
-        if self.vm_mode != crate::vm::VmMode::Off && chunk_opt.is_none() {
+        if chunk_opt.is_none() {
             return Err(format!(
                 "VmForceError: cannot compile function '{}' to bytecode",
                 fn_val.name
@@ -410,7 +407,9 @@ impl Interpreter {
             Vec::new()
         };
 
-        let (mut bindings, extra_kwargs) = if fn_val.is_python {
+        // ⚠ `extra_kwargs` は**ツリーウォークの関数本体だけ**が使っていた（#33 で削除）。
+        // `is_python` の関数はそもそも VM 非適格で `VmForceError` になるので到達しない。
+        let (mut bindings, _extra_kwargs) = if fn_val.is_python {
             Self::bind_args_relaxed(
                 &fn_val.params,
                 evaled,
@@ -503,131 +502,9 @@ impl Interpreter {
             return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span, Some(&fn_val.captured_env));
         }
 
-        // 関数フレームへ切り替える: frame_floor を現在の scopes 長に進め（＝これから push する
-        // base スコープの index）、呼び出し元のローカルを隔離する。drain/退避/復元の Vec 確保は不要。
-        let saved_floor = self.frame_floor;
-        let saved_len = self.scopes.len();
-        self.frame_floor = saved_len;
-        self.push_scope();
-
-        // クロージャキャプチャ環境を先に注入する（パラメータより低い優先度になるよう先にセット）
-        for (name, captured) in &fn_val.captured_env {
-            let var = match captured {
-                CapturedVar::Immutable(v) => Var::new(v.clone(), false),
-                CapturedVar::Mutable(cell) => Var::new_cell(cell.clone()),
-            };
-            self.declare_var(name.clone(), var);
-        }
-
-        for (name, val, mutable, _) in bindings {
-            self.declare_var(name, Var::new(val, mutable));
-        }
-        // Python 関数: 引数リストにない余分なキーワード引数を kwargs dict に注入する
-        if fn_val.is_python && !extra_kwargs.is_empty() {
-            let mut dict = DictData::new("str".to_string(), "Any".to_string());
-            for (k, v) in extra_kwargs {
-                dict.set(Value::str(k), v);
-            }
-            self.declare_var(
-                "kwargs".to_string(),
-                Var::new(Value::Dict(Rc::new(RefCell::new(dict))), false),
-            );
-        }
-        // メソッド実行時: `Self` をレシーバインスタンスのクラスにバインドする
-        let prev_class = self.current_class.take();
-        if let Some(Value::Instance(inst_rc)) = &self_val {
-            let class = inst_rc.borrow().class.clone();
-            self.declare_var(
-                "Self".to_string(),
-                Var::new(Value::Class(class.clone()), false),
-            );
-            self.current_class = Some(class);
-        }
-
-        // Reset LOOP_DEPTH so that break/continue cannot escape this function's body
-        // and cannot accidentally see loop depth from an outer call site.
-        let prev_loop_depth = LOOP_DEPTH.with(|d| {
-            let prev = *d.borrow();
-            *d.borrow_mut() = 0;
-            prev
-        });
-
-        self.push_call_name(fn_name);
-        // 診断フック（#10）: ここから先はツリーウォークの関数本体（最上位と区別して計上する）。
-        let _tw_guard = crate::interpreter::tw_stats::enabled()
-            .then(crate::interpreter::tw_stats::FnBodyGuard::new);
-        let result = self.exec_block(&fn_val.body);
-        drop(_tw_guard);
-        self.pop_call_name();
-
-        LOOP_DEPTH.with(|d| *d.borrow_mut() = prev_loop_depth);
-
-        // アクセス制御コンテキストを復元する
-        self.current_class = prev_class;
-
-        // フレームを復元する: base とブロックを切り捨てて呼び出し元の状態に戻す（Vec 確保なし）。
-        self.scopes.truncate(saved_len);
-        self.frame_floor = saved_floor;
-
-        // 呼び出し元フレームは**エラー経路でしか使わない**ので、ここでは作らない（#12）。
-        // 作ると `get_context_lines` がソース 5 行を join して String を確保する。
-
-        // 例外が ExecResult::Raise として直接返ってきた場合: 呼び出し元フレームを追加してセンチネルを返す
-        if let Ok(ExecResult::Raise(mut raised)) = result {
-            let caller_frame = self.build_caller_frame(call_span.as_ref());
-            raised.frames.push(caller_frame);
-            self.current_exception = Some(raised);
-            return Err(RAISE_SENTINEL.to_string());
-        }
-
-        // 例外センチネルが Err として伝播してきた場合（ネストした関数からの raise）: 呼び出し元フレームを追加する
-        if let Err(ref e) = result {
-            if e.as_str() == RAISE_SENTINEL {
-                if self.current_exception.is_some() {
-                    let caller_frame = self.build_caller_frame(call_span.as_ref());
-                    if let Some(ref mut raised) = self.current_exception {
-                        raised.frames.push(caller_frame);
-                    }
-                }
-                return Err(RAISE_SENTINEL.to_string());
-            }
-            // BREAK_SENTINEL should not escape a function — it means break was inside an eval
-            // context (e.g., if expression) within a function that has no enclosing loop.
-            if e.as_str() == BREAK_SENTINEL {
-                return Err("SyntaxError: 'break' outside for/while loop".to_string());
-            }
-            // 同上（#34）。ループの無い関数のブロック式内 continue。
-            if e.as_str() == CONTINUE_SENTINEL {
-                return Err("SyntaxError: 'continue' outside for/while loop".to_string());
-            }
-            // 内部エラー文字列を RaisedError に変換してスタックフレームを付加してから伝播する
-            let msg = e.clone();
-            if let Some(mut raised) = self.make_internal_raised_error(&msg) {
-                // Frame[0]: the function where the error occurred (unknown line within it)
-                raised.frames.push(StackFrame {
-                    file: String::new(),
-                    line: 0,
-                    col: 0,
-                    fn_name: fn_name.to_string(),
-                    context: String::new(),
-                });
-                // Frame[1]: the caller frame (where this function was called from)
-                raised.frames.push(self.build_caller_frame(call_span.as_ref()));
-                self.current_exception = Some(raised);
-                return Err(RAISE_SENTINEL.to_string());
-            }
-        }
-
-        match result? {
-            ExecResult::Return(v) => Ok(v),
-            ExecResult::Normal => Ok(Value::None),
-            ExecResult::BlockReturn(_) | ExecResult::BlockYield(_) => {
-                Err("SyntaxError: 'block_return' used outside any block expression".to_string())
-            }
-            ExecResult::Break => Err("SyntaxError: 'break' outside for/while loop".to_string()),
-            ExecResult::Continue => Err("SyntaxError: 'continue' outside loop".to_string()),
-            ExecResult::Raise(_) => unreachable!("Raise already handled above"),
-        }
+        // #33: ツリーウォークのフォールバックは無い。ここへ来るのは `chunk_opt` が None の
+        // ときだけだが、それは上の `VmForceError` で既に return 済み（到達不能）。
+        unreachable!("chunk_opt is None was already rejected as VmForceError")
     }
 
     /// 呼び出し引数式リストを評価してから関数を実行する。`exec_fn_evaled` の呼び出しラッパー。
@@ -688,98 +565,18 @@ impl Interpreter {
         // ── VM 経路（タスク #8）: 本体をバイトコードで実行し yield を eager 収集する ──
         // 対象: フリージェネレータ（self なし）＋ Instance レシーバのジェネレータメソッド。
         // クロージャキャプチャあり・非対応構文（`Self` 参照等）はツリーウォークへフォールバック。
-        let vm_eligible = self.vm_mode != crate::vm::VmMode::Off
-            && gen_fn.captured_env.is_empty()
+        let vm_eligible = gen_fn.captured_env.is_empty()
             && matches!(self_val, None | Some(Value::Instance(_)));
         if vm_eligible {
             if let Some(chunk) = self.get_or_compile_gen_chunk(&gen_fn) {
                 return self.run_vm_generator(&chunk, bindings, &self_val);
             }
         }
-        // #3: フォールバックは撤去済み（ジェネレータ本体）。`Off` 以外は必ず VM で走る。
-        if self.vm_mode != crate::vm::VmMode::Off {
-            return Err(format!(
-                "VmForceError: cannot compile generator '{}' to bytecode",
-                gen_fn.name
-            ));
-        }
-
-        // yield 収集を有効化する（スレッドローカルに収集先を設定）
-        GENERATOR_YIELDS.with(|y| {
-            *y.borrow_mut() = Some(Vec::new());
-        });
-
-        // exec_fn_evaled と同様に frame_floor を進めて呼び出し元ローカルを隔離する（Vec 確保なし）
-        let saved_floor = self.frame_floor;
-        let saved_len = self.scopes.len();
-        self.frame_floor = saved_len;
-        self.push_scope();
-
-        // クロージャキャプチャ環境を注入する
-        for (name, captured) in &gen_fn.captured_env {
-            let var = match captured {
-                CapturedVar::Immutable(v) => Var::new(v.clone(), false),
-                CapturedVar::Mutable(cell) => Var::new_cell(cell.clone()),
-            };
-            self.declare_var(name.clone(), var);
-        }
-
-        for (name, val, mutable, _) in bindings {
-            self.declare_var(name, Var::new(val, mutable));
-        }
-        // ジェネレータメソッド実行時: `Self` をレシーバインスタンスのクラスにバインドする
-        if let Some(Value::Instance(inst_rc)) = &self_val {
-            let class = inst_rc.borrow().class.clone();
-            self.declare_var("Self".to_string(), Var::new(Value::Class(class), false));
-        }
-        let prev_loop_depth = LOOP_DEPTH.with(|d| {
-            let prev = *d.borrow();
-            *d.borrow_mut() = 0;
-            prev
-        });
-        // 診断フック（#10）: ジェネレータ本体もツリーウォークの「関数本体内」として計上する。
-        let _tw_guard = crate::interpreter::tw_stats::enabled()
-            .then(crate::interpreter::tw_stats::FnBodyGuard::new);
-        let exec_result = self.exec_block(&gen_fn.body);
-        drop(_tw_guard);
-        LOOP_DEPTH.with(|d| *d.borrow_mut() = prev_loop_depth);
-        self.scopes.truncate(saved_len);
-        self.frame_floor = saved_floor;
-
-        // エラー時も含めて必ずスレッドローカルをクリーンアップして yield 値を回収する
-        let yields = GENERATOR_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
-
-        if let Err(ref e) = exec_result {
-            if e.as_str() == BREAK_SENTINEL {
-                return Err("SyntaxError: 'break' outside for/while loop".to_string());
-            }
-            if e.as_str() == CONTINUE_SENTINEL {
-                return Err("SyntaxError: 'continue' outside for/while loop".to_string());
-            }
-        }
-
-        match exec_result? {
-            ExecResult::Normal => {}
-            ExecResult::BlockReturn(_) | ExecResult::BlockYield(_) => {
-                return Err(
-                    "SyntaxError: 'block_return' used outside any block expression".to_string(),
-                );
-            }
-            ExecResult::Break => {
-                return Err("SyntaxError: 'break' outside for/while loop".to_string())
-            }
-            ExecResult::Continue => return Err("SyntaxError: 'continue' outside loop".to_string()),
-            ExecResult::Return(_) => {} // パーサーが gen 内の return を禁止しているためここには到達しない
-            ExecResult::Raise(raised) => {
-                self.current_exception = Some(raised);
-                return Err(RAISE_SENTINEL.to_string());
-            }
-        }
-
-        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-            values: yields,
-            index: 0,
-        }))))
+        // #3/#33: フォールバックは存在しない（ジェネレータ本体もツリーウォークごと削除）。
+        Err(format!(
+            "VmForceError: cannot compile generator '{}' to bytecode",
+            gen_fn.name
+        ))
     }
 
 }

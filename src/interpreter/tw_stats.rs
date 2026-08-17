@@ -47,21 +47,9 @@ fn bump(cat: &'static str, key: &str) {
     }
 }
 
-/// ツリーウォークの関数本体実行を囲むガード（深さを 1 増やす）。
-pub(crate) struct FnBodyGuard;
-
-impl FnBodyGuard {
-    pub(crate) fn new() -> Self {
-        TW_FN_DEPTH.with(|d| d.set(d.get() + 1));
-        FnBodyGuard
-    }
-}
-
-impl Drop for FnBodyGuard {
-    fn drop(&mut self) {
-        TW_FN_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
-    }
-}
+// ⚠ `FnBodyGuard`（ツリーウォークの関数本体を囲むガード）は #33 で削除した。
+// 関数本体のツリーウォーク経路そのものが無くなったので、`in_fn` は**構造的に 0**
+// （0 でない値が出たら計測側の配線ミス）。`TW_FN_DEPTH` は判定の形を保つために残す。
 
 /// `exec()` のディスパッチを 1 件計上する。
 ///

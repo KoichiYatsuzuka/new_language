@@ -29,11 +29,9 @@ pub fn run_repl() {
     );
 
     let mut interp = Interpreter::new();
-    // #36: 本番（`run_program`）と同じ**バイトコード VM 経路**で走らせる。
-    // 以前は既定の `VmMode::Off` のままで、REPL だけツリーウォークを使っていた
-    // （＝ REPL では本番と違う実装が動いていた）。解決情報はブロックごとに
-    // `run_block` が用意する（`resolve_program` ＋ `check_and_annotate` ＋ globals の積み増し）。
-    interp.set_vm_mode(crate::vm::VmMode::On);
+    // #36/#33: 実行経路はバイトコード VM 一本（`--vm` もツリーウォークも無い）。
+    // 解決情報はブロックごとに `run_block` が用意する
+    // （`resolve_program` ＋ `check_and_annotate` ＋ globals の積み増し）。
     let stdin = io::stdin();
     let mut pending: Vec<String> = Vec::new();
     // ⚠⚠ **実行し終えたブロックの AST を捨てない**（#36）。最上位 Chunk キャッシュ

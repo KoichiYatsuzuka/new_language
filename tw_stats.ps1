@@ -36,7 +36,7 @@ $ran = 0; $failed = 0
 foreach ($f in $files) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe
-    $psi.Arguments = "-src `"$($f.FullName)`" --vm=auto"
+    $psi.Arguments = "-src `"$($f.FullName)`""
     $psi.WorkingDirectory = $f.DirectoryName
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true

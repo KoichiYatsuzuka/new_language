@@ -34,7 +34,7 @@ impl Interpreter {
     pub(crate) fn toplevel_vm_candidate(&self) -> bool {
         // `scopes.len() == 1` = モジュール最上位（関数フレームも push 済みブロックも無い）。
         // これが「名前は `scopes[0]` を指す」の唯一の根拠。
-        self.scopes.len() == 1 && self.vm_mode != crate::vm::VmMode::Off
+        self.scopes.len() == 1
     }
 
     /// 最上位の文を VM で実行する（#10-b/#10-c）。対象はループ文と宣言文
@@ -79,11 +79,8 @@ impl Interpreter {
             }
         };
         let Some(chunk) = chunk else {
-            // #25: `--vm=force` はフォールバック禁止。落ちた箇所を位置つきで報告して止める。
-            if self.vm_mode != crate::vm::VmMode::Off {
-                return Err(Self::vm_force_error("top-level statement", stmt));
-            }
-            return Ok(None);
+            // フォールバックは存在しない（#3/#33）。落ちた箇所を位置つきで報告して止める。
+            return Err(Self::vm_force_error("top-level statement", stmt));
         };
 
         // フレームは Chunk のローカル数ぶんだけ。パラメータは無いので全て None で始める。

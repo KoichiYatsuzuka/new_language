@@ -1,0 +1,44 @@
+
+[break_point] Paused at [32m<REPO>\examples\debugger\step_over_out.ar[0m:15
+[33m  13[0m    fn outer(let a: int) -> int:
+[33m  14[0m        let first = inner(a)
+[33m  15[0m [36m>>[0m     break_point
+[33m  16[0m        let second = inner(first)
+[33m  17[0m        let third = second - 1
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) (dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\step_over_out.ar[0m:9
+[33m   7[0m    
+[33m   8[0m    fn inner(let a: int) -> int:
+[33m   9[0m [36m>>[0m     let doubled = a * 2
+[33m  10[0m        let shifted = doubled + 1
+[33m  11[0m        return shifted
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 9
+(dbg) (dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\step_over_out.ar[0m:17
+[33m  15[0m        break_point
+[33m  16[0m        let second = inner(first)
+[33m  17[0m [36m>>[0m     let third = second - 1
+[33m  18[0m        return third
+[33m  19[0m    
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 19
+(dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\step_over_out.ar[0m:17
+[33m  15[0m        break_point
+[33m  16[0m        let second = inner(first)
+[33m  17[0m [36m>>[0m     let third = second - 1
+[33m  18[0m        return third
+[33m  19[0m    
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 18
+(dbg) 18
+
+--stderr--
+  [dbg] Error: unexpected token: `?﻿`
+  [dbg] Error: NameError: 'doubled' is not defined

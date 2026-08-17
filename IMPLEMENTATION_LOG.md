@@ -4091,6 +4091,87 @@ git SHA も更新する）。同期点が進めば (d) 群は消え、(a) 群も
 
 ---
 
+## #33 部分完了（2026-08-18）— `--vm` の削除と、削除できなかった理由
+
+**削除前に到達可能性を測ったら、ツリーウォークの制御フローはまだ生きていた。**
+⇒ 削除できたのは「真に到達不能だった分」だけ（**src 実質 -284 行**）。残りは #41 待ち。
+
+### 🕳 生きていた経路: 定義文脈の式
+
+クラスのフィールド既定値・`enum` の値は**定義文の一部**なので、VM の Chunk には載らず
+インタプリタが `eval()` で評価する。そこに制御フロー式を書くと**中身も本体の文も**
+ツリーウォークが実行する:
+
+```
+class Summed:
+    const total: int = block ->int:
+        mut s = 0
+        for i in range(4):
+            if i == 2:
+                continue
+            s = s + i
+        block_return s
+```
+→ `AR_TW_STATS`: **`tw_control_flow: for-stmt=1 block-expr=1`** ／
+`toplevel: If=4 BlockReturn=1 For=1 Continue=1 Assign=3 Mut=1`
+
+確認できた形は 4 種（フィールド既定値の `block:` / `if` / `for` 式、`enum` 値）。
+`static mut n = block …`（関数内）は VM の `StaticInit` が扱うので**該当しない**。
+
+⇒ **`eval/control_expr.rs`・`exec/control_flow.rs`・TLS 5 種・`ExecResult` の 4 バリアントは
+削除できない**。#41（定義文脈の式の VM 化）を立てて #33 の前提にした。
+
+### 🔍 計測そのものが過小報告していた
+
+`eval_if_expr_body` と `eval_match_expr` には **`record_tls` フックが無かった**。
+つまり `tw_control_flow` は **if/match 式を 1 件も数えていなかった**。
+「制御フローを持つツリーウォークは 0」という判断はこの穴の上に乗っていた。⇒ フックを追加。
+併せて `FnBodyGuard`（ツリーウォーク関数本体の深さ計測）を削除した（経路ごと消えたので
+`in_fn` は**構造的に 0**）。
+
+### 削除できた分
+
+| 対象 | 行数 |
+|---|---|
+| `exec_fn_evaled` のツリーウォーク関数本体 | 125 |
+| `exec_generator_evaled` のツリーウォーク本体 | 84 |
+| async worker のツリーウォーク経路 | 12 |
+| `VmMode` enum・`vm_mode` フィールド・`set_vm_mode`・`--vm` の解析と plumbing | ~60 |
+| `tw_stats::FnBodyGuard` | 17 |
+
+⚠ **`--vm` は「渡されたら警告して無視」にした**。黙って無視すると、古い比較スクリプトが
+「同じものを 2 回実行して一致」と報告して**空回りする**（無い検査より悪い）。
+
+### スクリプトの整理（削除と golden 化）
+
+| スクリプト | 措置 |
+|---|---|
+| `compare_vm_modes.ps1` / `ab_bench_vm.ps1` | **削除**（`--vm` が無いので空回りする） |
+| `compare_debug_modes.ps1` | **[debug_session.ps1](debug_session.ps1) へ golden 化**（5 シナリオの期待値比較。負の対照で検知力確認） |
+| `force_gate.ps1` / `tw_stats.ps1` / `tw_stats_files.ps1` | `--vm` 引数を除去 |
+
+### 新設例題
+
+[definition_context_expr.ar](examples/classes/definition_context_expr.ar)（5 ケース）。
+**この経路の唯一の網**で、`tw_control_flow` を 6 件計上する。`impl_python` と完全一致。
+⚠ この形の例題が 1 本も無かったことが、判断が例題依存になっていた原因そのもの。
+
+### 検証
+
+`cargo build` 警告 0 ／ `cargo test` **734 緑** ／
+[debug_session.ps1](debug_session.ps1) **5 identical / 0 differing** ／
+[repl_session.ps1](repl_session.ps1) **identical** ／
+[compare_python_impl.ps1](compare_python_impl.ps1) **45 検査・45 一致**（例題 1 本増）／
+`scan_examples.ps1` **FAIL 0** ／ `force_gate.ps1` **0 件・137 例題完走**。
+
+A/B（HEAD #34 前 → 現在・既定モード・min of 7）: `bench_arith` 0.999x ／
+`bench_control_flow` 1.004x ／`bench_field_access` 1.035x ／`bench_method_call` 1.048x ／
+`bench_for` 1.022x ／`bench_block_expr` 0.935x。⚠ `bench_block_expr` の 0.935x は
+**この一連で初めて測った項目**なので比較材料が無い。他の 5 本は 1.0 前後で、
+`bench_field_access` は測定 6 回で 0.954〜1.035x に振れている（ノイズ幅）。
+
+---
+
 ## この記録の使いどころ
 
 **見積もりが外れた事例**が最も価値がある。同じ判断ミスを繰り返さないために残してある。
@@ -4116,6 +4197,7 @@ git SHA も更新する）。同期点が進めば (d) 群は消え、(a) 群も
 | `force_gate` 0 件 | 「VM は言語全体を載せられる」 | **「128 例題で 0」でしかなかった**。例題が 1 本も無い言語機能（制御フロー式貫通 `break`）は**ゲートにも off/on 比較にも映らない**。単体テストだけが 11 件押さえていた |
 | #34（2026-08-17） | 「跳び先の計算が要る＝ジャンプ機構の作り直し」 | **機構は最初から揃っていた**（`LoopCtx` は絶対ジャンプ）。足りなかったのは**跳ぶ時点で積まれている値の始末**だけ。しかも「ブロック式は式の末尾にしか置けない」を**構文で実測**したら、深さの伝播は 3 箇所で済み**新オペコード 0**になった |
 | #34 の `continue` | 「`break` を通せば `continue` も同じ」 | **ツリーウォークに `continue` の貫通が無かった**（SyntaxError 化＋**黙って握り潰し**）。VM の方が正しく、参照実装と一致していた。`for-target-shadow` と同じ「bail する形はツリーウォークが正しいとは限らない」 |
+| #33（2026-08-18） | 「前提（34〜40）を全部潰したのでツリーウォークを削除できる」 | **削除できなかった**。クラスのフィールド既定値・`enum` 値のような**定義文脈の式**が `eval()` で評価され、その中の制御フローがツリーウォークで動いていた。しかも **`if`/`match` 式には計測フックが無く**、`tw_control_flow` 0 はその過小報告の上に乗っていた。⇒ **`force_gate` 0 件・`tw_control_flow` 0 は毎回「例題がその形を書いているか」に依存する**（#27/#34/#36/#33 で 4 回踏んだ） |
 | #31（2026-08-17） | 「参照実装と突き合わせれば差分が出る」 | **`impl_python` が 100 コミット前に同期**されていた（`33ef765`）。差分 36 件のうち 5 件は「同期以降に Rust 側へ入った修正」で、**差分がある＝Rust のバグ ではない**。前提を書かずに網を作ると誤検知の山になる |
 | #36（2026-08-17） | 「入口に配線を足すだけ。テスト 19 件が直る」 | 直ったのは **18 件で残り 1 件は静的検査の担当**だった。それより重要な副産物が 2 つ: **`force_gate` 0 件が「例題が必ず何かを宣言している」に依存**していた（最上位に宣言の無いプログラムは最上位丸ごとツリーウォーク）／**最上位 Chunk キャッシュが `Stmt` のアドレス**キーで、REPL が AST を捨てて**別文の Chunk を実行**していた。⇒ **負の対照が発火しないときは配線を疑う** |
 | #39（2026-08-17） | 「`store_target` の `toplevel_globals` 門を外すだけ」 | **委譲先が間違っていた**。`Op::StoreGlobal` は `assign_var`（`scopes[frame_floor..]` を先に走査）へ委譲しており、**VM 関数は `scopes` を押さない**ので走査に映るのは**呼び出し元のローカル**。最上位では `scopes.len()==1` で偶然一致していただけで、関数本体へ広げた瞬間に健全性が壊れる形だった |

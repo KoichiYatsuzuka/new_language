@@ -327,7 +327,7 @@ impl Interpreter {
 
         let env = crate::interpreter::async_mgr::capture_env(self);
         // #32: 親スレッドの `--vm` を引き継ぐ（worker が既定の Auto に戻らないように）。
-        mgr_rc.borrow_mut().add_task(stmts.to_vec(), env, self.vm_mode);
+        mgr_rc.borrow_mut().add_task(stmts.to_vec(), env);
         Ok(ExecResult::Normal)
     }
 
@@ -362,7 +362,7 @@ impl Interpreter {
         let env = crate::interpreter::async_mgr::capture_env(self);
         self.scopes.truncate(saved_len);
         self.frame_floor = saved_floor;
-        mgr_rc.borrow_mut().add_task(body.to_vec(), env, self.vm_mode); // #32
+        mgr_rc.borrow_mut().add_task(body.to_vec(), env);
         Ok(())
     }
 

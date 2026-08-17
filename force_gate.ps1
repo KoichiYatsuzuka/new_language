@@ -50,7 +50,7 @@ $ran = 0
 foreach ($f in $files) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe
-    $psi.Arguments = "-src `"$($f.FullName)`" --vm=force"
+    $psi.Arguments = "-src `"$($f.FullName)`""
     $psi.WorkingDirectory = $f.DirectoryName
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true

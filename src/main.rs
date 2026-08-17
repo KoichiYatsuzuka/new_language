@@ -309,16 +309,12 @@ fn run_program(
     filename: &str,
     mut cli_args: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
-    // `--vm` フラグを取り出す（スクリプトの `args` には渡さない）。
-    // #3: デュアルモードを畳んだので実質 2 値。`auto`/`force` は既存スクリプト互換の別名。
-    let vm_mode = match cli_args.remove("__vm__").as_deref() {
-        Some("off") => vm::VmMode::Off,
-        Some("on") | Some("auto") | Some("force") | None => vm::VmMode::On,
-        Some(other) => {
-            eprintln!("Warning: unknown --vm mode '{other}', using 'on'");
-            vm::VmMode::On
-        }
-    };
+    // #33: `--vm` は廃止した（実行経路はバイトコード VM 一本）。
+    // 古いスクリプトが渡してきたら**黙って無視せず**警告する（無視すると
+    // `--vm=off` を渡したつもりの比較が「同じものを 2 回実行」になって空回りする）。
+    if let Some(mode) = cli_args.remove("__vm__") {
+        eprintln!("Warning: --vm={mode} is no longer supported (the tree-walk path was removed); ignoring");
+    }
     // --- 字句解析: ソースをトークン列（Vec<Spanned>）に変換する ---
     let tokens = Lexer::new(source, filename).tokenize();
 
@@ -368,7 +364,6 @@ fn run_program(
     // --- インタープリタの初期化とソーステキストの登録 ---
     // ソーステキストはエラー報告時のスタックトレース表示に使用される
     let mut interp = Interpreter::new();
-    interp.set_vm_mode(vm_mode);
     // 最上位 Chunk（#10-b/#10-c/#27-c）が「この名前は scopes[0]」と判断するための集合。
     // ⚠ リゾルバ用の `toplevel_visible_globals`（シャドウ減算あり）**ではない**。
     // VM コンパイラは文を 1 つずつ見て、その文の束縛は `slots` に入っているので、

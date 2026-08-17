@@ -15,7 +15,9 @@ use crate::parser::Parser;
 /// 2. `check_and_annotate` … AST 型解決層の注釈（#16）。`mustbe`/`=>` の検査指示はこれが無いと
 ///    出ないので、**注釈を渡さないと `Expr::MustBe`/`Cast` を含む文が丸ごと bail する**
 /// 3. `set_toplevel_globals` … 最上位 Chunk が「この名前は `scopes[0]`」と判断する集合
-/// 4. `set_vm_mode(On)` … 既定は `Off` なので明示が必要
+///
+/// ⚠ #33 で `--vm` とツリーウォークは削除された（実行経路は VM 一本）ので、
+/// モードの設定は不要になった。**解決情報の供給だけが本番との差**になる。
 ///
 /// ⚠ **型エラーは無視する**。テストには静的検査が弾く形を意図的に実行するものがあり、
 /// ここで弾くと検査対象が変わってしまう。欲しいのは注釈だけ。
@@ -28,7 +30,6 @@ fn prepare(src: &str) -> Result<(Vec<Stmt>, Interpreter), String> {
     super::resolver::resolve_program(&mut stmts);
     let (_errors, annotations) = crate::type_check::TypeChecker::check_and_annotate(&stmts);
     let mut interp = Interpreter::new();
-    interp.set_vm_mode(crate::vm::VmMode::On);
     interp.set_annotations(std::rc::Rc::new(annotations));
     interp.set_toplevel_globals(super::resolver::toplevel_declared_globals(&stmts));
     Ok((stmts, interp))

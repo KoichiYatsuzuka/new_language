@@ -1,0 +1,37 @@
+
+[break_point] Paused at [32m<REPO>\examples\debugger\dbg_vars.ar[0m:25
+[33m  23[0m        let xs = [1, 2, 3]
+[33m  24[0m        mut acc = 0.0
+[33m  25[0m [36m>>[0m     break_point
+[33m  26[0m        acc = p.norm_sq()
+[33m  27[0m        return acc
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) (dbg) [1, 2, 3]
+(dbg) (dbg) 7
+(dbg) 2
+(dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\dbg_vars.ar[0m:25
+[33m  23[0m        let xs = [1, 2, 3]
+[33m  24[0m        mut acc = 0.0
+[33m  25[0m [36m>>[0m     break_point
+[33m  26[0m        acc = p.norm_sq()
+[33m  27[0m        return acc
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 3.0
+(dbg) 4.0
+(dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\dbg_vars.ar[0m:25
+[33m  23[0m        let xs = [1, 2, 3]
+[33m  24[0m        mut acc = 0.0
+[33m  25[0m [36m>>[0m     break_point
+[33m  26[0m        acc = p.norm_sq()
+[33m  27[0m        return acc
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 25.0
+(dbg) 25.0
+
+--stderr--
+  [dbg] Error: unexpected token: `?﻿`

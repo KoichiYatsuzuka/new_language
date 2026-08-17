@@ -443,6 +443,8 @@ impl Interpreter {
 
     /// match 式を評価する。各アームのパターンとサブジェクトを照合し、最初に一致したアームのボディを実行して値を返す。
     pub(crate) fn eval_match_expr(&mut self, subject: &Expr, arms: &[MatchArm]) -> Result<Value, String> {
+        // 計測フック（#33）。`eval_if_expr_body` と同じ理由で追加した。
+        crate::interpreter::tw_stats::record_tls("match-expr");
         let subject_val = self.eval(subject)?;
         for arm in arms {
             let matched = match &arm.pattern {

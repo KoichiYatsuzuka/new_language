@@ -1,0 +1,54 @@
+
+[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:19
+[33m  17[0m    fn main() -> int:
+[33m  18[0m        let base = 5
+[33m  19[0m [36m>>[0m     break_point
+[33m  20[0m        let got = accumulate(base)
+[33m  21[0m        return got
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) (dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:19
+[33m  17[0m    fn main() -> int:
+[33m  18[0m        let base = 5
+[33m  19[0m [36m>>[0m     break_point
+[33m  20[0m        let got = accumulate(base)
+[33m  21[0m        return got
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 5
+(dbg) (dbg) (dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:19
+[33m  17[0m    fn main() -> int:
+[33m  18[0m        let base = 5
+[33m  19[0m [36m>>[0m     break_point
+[33m  20[0m        let got = accumulate(base)
+[33m  21[0m        return got
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:19
+[33m  17[0m    fn main() -> int:
+[33m  18[0m        let base = 5
+[33m  19[0m [36m>>[0m     break_point
+[33m  20[0m        let got = accumulate(base)
+[33m  21[0m        return got
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 0
+(dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\step_into_fn.ar[0m:19
+[33m  17[0m    fn main() -> int:
+[33m  18[0m        let base = 5
+[33m  19[0m [36m>>[0m     break_point
+[33m  20[0m        let got = accumulate(base)
+[33m  21[0m        return got
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 20
+(dbg) 20
+
+--stderr--
+  [dbg] Error: unexpected token: `?﻿`
+  [dbg] Error: NameError: 'total' is not defined
+  [dbg] Error: NameError: 'i' is not defined
