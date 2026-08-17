@@ -4363,6 +4363,51 @@ break/continue の巻き戻し・実行時型検査・finally 複製・グロー
 
 ---
 
+## #33 完了（2026-08-18）— ツリーウォーク制御フローの削除【本系列の主目的】
+
+**src 実質 -762 行**。解釈実行はバイトコード VM 一本になった。
+
+### 着手前の規約を守った
+
+計画書に自分で書いた「**着手前に必ず `tw_stats.ps1` を全例題で取り直す**」を実行し、
+`tw_control_flow` 0・`vm_bail_*` 0・`in_fn` 0・ツリーウォークは**定義文のみ**（最上位 379・
+モジュール本体 22）を確認してから削除に入った。⚠ この規約は #27/#34/#36/#33/#41 で
+**5 回**「例題が踏まない形が残っていた」ことから作ったもの。今回は #41/#42 で見つけた
+2 つの消費者に**例題を追加済み**なので、測定が盲目ではない。
+
+### 4 層に分けて削除（各層でビルド＋テスト）
+
+| 層 | 対象 |
+|---|---|
+| A | `eval/control_expr.rs` 全体（**348 行**）・`eval_match_expr`・`eval()` の 5 アーム |
+| B | `exec/control_flow.rs`（227→**55 行**。`make_for_iterator` だけ残す＝`Op::GetIter` が使う）・`exec()` の 10 アーム |
+| C | **TLS 3 本**（`BLOCK_YIELDS`/`LOOP_DEPTH`/`BLOCK_RETURN_EXPECTED_TYPE`）・**センチネル 2 種**（`BREAK_SENTINEL`/`CONTINUE_SENTINEL`）・`exec_loop_yield`・`record_tls`・`extract_result_guard_call` |
+| D | `ExecResult` の 4 バリアント（`Break`/`Continue`/`BlockReturn`/`BlockYield`）・ツリーウォークの `try/except/finally`・`exec_block`/`exec_scoped_block` |
+
+⚠ `GENERATOR_YIELDS`（#8）と `RAISE_SENTINEL`（V-C）は **VM が使うので残す**（当初計画どおり）。
+
+### 🔑 アームは「削除」ではなく「明示的なエラー」に畳んだ
+
+`eval()`/`exec()` の制御フローアームを match から消すと、将来 `Expr`/`Stmt` に
+バリアントが増えたときに黙って別の挙動へ落ちうる。⇒ **1 つのエラーアームに畳み**、
+到達したら `VmForceError: control-flow … reached the tree-walk` で止める。
+コメントに**到達しうる入口を全部列挙**した（最上位／モジュール本体／関数・ジェネレータ・
+async 本体／定義文脈の式／デバッガ REPL は 1 行入力なので構文上不可）。
+
+### 検証
+
+`cargo build` 警告 0 ／ `cargo build --features tw_stats` 警告 0 ／ `cargo test` **734 緑** ／
+[debug_session.ps1](debug_session.ps1) **5 identical** ／ [repl_session.ps1](repl_session.ps1) **identical** ／
+[compare_python_impl.ps1](compare_python_impl.ps1) **46 検査・46 一致** ／
+`scan_examples.ps1` **FAIL 0** ／ `force_gate.ps1` **0 件・139 例題完走**。
+
+A/B（HEAD #34 前 → #33 完了・既定モード・min of 7）:
+`bench_arith` 1.032x ／`bench_control_flow` 0.984x ／`bench_field_access` 1.032x ／
+`bench_method_call` 1.016x ／`bench_for` 0.975x ／`bench_block_expr` 1.023x。
+⇒ **#34〜#43 の全変更（機能追加・実行時検査の追加を含む）を積んで概ね同等**。
+
+---
+
 ## この記録の使いどころ
 
 **見積もりが外れた事例**が最も価値がある。同じ判断ミスを繰り返さないために残してある。

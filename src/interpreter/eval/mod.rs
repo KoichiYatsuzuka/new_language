@@ -2,7 +2,7 @@
 //
 // `Interpreter::eval` が式(`Expr`)を再帰的にツリーウォークして `Value` を返す。
 // このファイルは共有の自由ヘルパー関数(スライス計算・パス/enum抽出など)を保持し、
-// 役割別サブモジュール(core/calls/native/attrs/control_expr/subscript)を宣言する。
+// 役割別サブモジュール(core/calls/native/attrs/subscript)を宣言する。
 
 use super::{Interpreter, Value};
 
@@ -192,5 +192,4 @@ mod calls;
 mod builtins;
 mod native;
 mod attrs;
-mod control_expr;
 mod subscript;

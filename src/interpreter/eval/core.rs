@@ -3,11 +3,11 @@
 use crate::ast::Resolution;
 use {
     std::cell::RefCell, std::rc::Rc,
-    crate::ast::{BinOp, Expr, MatchArm, MatchPattern},
+    crate::ast::{BinOp, Expr},
     crate::interpreter::{
         DictData,
         Interpreter, SliceValue, TupleData, Value,
-        BLOCK_RETURN_EXPECTED_TYPE, RAISE_SENTINEL,
+        RAISE_SENTINEL,
     },
 };
 use super::*;
@@ -154,36 +154,23 @@ impl Interpreter {
             Expr::TemplateInstantiate { .. } => Err(
                 "TemplateError: template expression must be immediately called (e.g. `Func[T](args)`)".to_string()
             ),
-            Expr::Block { stmts, return_type } => {
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
-                let result = self.eval_block_expr(stmts);
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
-                result
-            }
-            Expr::IfExpr { branches, else_body, return_type } => {
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
-                let result = self.eval_if_expr_body(branches, else_body);
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
-                result
-            }
-            Expr::ForExpr { target, iter, body, return_type } => {
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
-                let result = self.eval_for_expr(target, iter, body);
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
-                result
-            }
-            Expr::WhileExpr { cond, body, return_type } => {
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
-                let result = self.eval_while_expr(cond, body);
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
-                result
-            }
-            Expr::MatchExpr { subject, arms, return_type } => {
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
-                let result = self.eval_match_expr(subject, arms);
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
-                result
-            }
+            // #33: 制御フロー式は**必ずバイトコード VM が評価する**（ツリーウォークの実装は削除した）。
+            //
+            // 到達しうる入口はすべて VM 経路になっている:
+            // - 最上位・モジュール本体の文 … `try_run_toplevel_stmt` / `try_run_module_stmt`（#42）
+            // - 関数・ジェネレータ・async の本体 … Chunk（載らなければ `VmForceError`）
+            // - 定義文脈の式（フィールド既定値・`enum` 値・デコレータ）… `eval_definition_expr`（#41）
+            // - デバッガ REPL … **1 行ずつ読む**ので制御フロー式は構文上入力できない（実測）
+            //
+            // ⚠ ここへ来たら配線の穴なので、黙って動かず落とす。
+            Expr::Block { .. }
+            | Expr::IfExpr { .. }
+            | Expr::ForExpr { .. }
+            | Expr::WhileExpr { .. }
+            | Expr::MatchExpr { .. } => Err(format!(
+                "VmForceError: control-flow expression `{}` reached the tree-walk evaluator",
+                crate::vm::compiler::expr_kind(expr)
+            )),
             Expr::IsType { expr, negated, type_name, .. } => {
                 let val = self.eval(expr)?;
                 let result = self.value_is_type(&val, type_name);
@@ -441,31 +428,5 @@ impl Interpreter {
         }
     }
 
-    /// match 式を評価する。各アームのパターンとサブジェクトを照合し、最初に一致したアームのボディを実行して値を返す。
-    pub(crate) fn eval_match_expr(&mut self, subject: &Expr, arms: &[MatchArm]) -> Result<Value, String> {
-        // 計測フック（#33）。`eval_if_expr_body` と同じ理由で追加した。
-        crate::interpreter::tw_stats::record_tls("match-expr");
-        let subject_val = self.eval(subject)?;
-        for arm in arms {
-            let matched = match &arm.pattern {
-                MatchPattern::Case(pattern_expr) => {
-                    if matches!(pattern_expr, Expr::Ident { name: n, .. } if n == "_") {
-                        true
-                    } else {
-                        let pv = self.eval(pattern_expr)?;
-                        matches!(
-                            self.apply_binop_dyn(&BinOp::Eq, subject_val.clone(), pv)?,
-                            Value::Bool(true)
-                        )
-                    }
-                }
-                MatchPattern::IsType(type_name) => self.value_is_type(&subject_val, type_name),
-            };
-            if matched {
-                return self.eval_capture_block_return(&arm.body);
-            }
-        }
-        Ok(Value::None)
-    }
 
 }

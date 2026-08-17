@@ -122,39 +122,11 @@ pub use value::*;
 ///   interpreter bug rather than a user `raise`.
  const RAISE_SENTINEL: &str = "\x00__raise__";
 
-/// Sentinel error string used to propagate a `break` signal through `eval()` return channels.
-/// Produced when `break` is executed inside a control-flow expression body (e.g., an `if` or
-/// `block:` expression) and needs to bubble up to the enclosing `for`/`while` loop.
- const BREAK_SENTINEL: &str = "\x00__break__";
-
-/// `continue` 版の同型センチネル（#34）。
-///
-/// ⚠ **以前は存在せず、これがツリーウォークのバグだった**。`eval_block_expr` は
-/// `continue` を SyntaxError にし、`eval_capture_block_return` は**黙って握り潰して
-/// `None` を返して**いた（`let v = 1 + if c ->int: continue` が TypeError になった）。
-/// VM は `break` と同じジャンプで正しく扱い、参照実装（`impl_python`）も継続する。
-/// 基準を参照実装に合わせ、`break` と同じ経路で外側ループへ届けるようにした。
- const CONTINUE_SENTINEL: &str = "\x00__continue__";
-
 thread_local! {
     /// ジェネレータ本体の一括評価中に `yield` された値を収集するスレッドローカル変数。
     /// `None` の場合はジェネレータ実行コンテキスト外であることを意味する。
     /// `exec_generator` が開始時に `Some(Vec::new())` をセットし、終了時に `take()` で回収する。
     pub(self) static GENERATOR_YIELDS: RefCell<Option<Vec<Value>>> = const { RefCell::new(None) };
-
-    /// `for`/`while` 式の評価中に `loop_yield` された値を収集するスレッドローカル変数。
-    /// `None` の場合は for/while 式の外であることを意味する（loop_yield はここで実行時エラー）。
-    /// ネストした for/while 式を正しく扱うため、外側の式の値を退避して評価後に復元する。
-    pub(self) static BLOCK_YIELDS: RefCell<Option<Vec<Value>>> = const { RefCell::new(None) };
-
-    /// 現在の for/while ループ（文・式両形式）のネスト深さ。
-    /// `break` はこれが 0 のときに実行時エラーを返す。
-    pub(self) static LOOP_DEPTH: RefCell<usize> = const { RefCell::new(0) };
-
-    /// block_return / loop_yield のランタイム型チェック用。
-    /// block:/if/for/while/match 式へ入るときに期待型アノテーション文字列を push し、
-    /// 抜けるときに pop する。None は型注釈なし（任意の型を受け入れる）を意味する。
-    pub(self) static BLOCK_RETURN_EXPECTED_TYPE: RefCell<Vec<Option<String>>> = const { RefCell::new(Vec::new()) };
 }
 
 // ---------------------------------------------------------------------------

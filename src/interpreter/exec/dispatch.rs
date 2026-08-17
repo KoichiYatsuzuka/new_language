@@ -6,7 +6,7 @@ use {
     crate::interpreter::{
         debugger::DbgMode, ExecResult,
         Interpreter, ModuleState, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, GENERATOR_YIELDS, LOOP_DEPTH,
+        GENERATOR_YIELDS,
     },
 };
 use super::*;
@@ -96,47 +96,23 @@ impl Interpreter {
             } => self.exec_compound_assign(name, op, value, slot),
             Stmt::Pass => Ok(ExecResult::Normal),
             Stmt::Field { .. } => Ok(ExecResult::Normal),
-            Stmt::Break => {
-                if !LOOP_DEPTH.with(|d| *d.borrow() > 0) {
-                    return Err("SyntaxError: 'break' outside for/while loop".to_string());
-                }
-                Ok(ExecResult::Break)
-            }
-            Stmt::Continue => {
-                if !LOOP_DEPTH.with(|d| *d.borrow() > 0) {
-                    return Err("SyntaxError: 'continue' outside for/while loop".to_string());
-                }
-                Ok(ExecResult::Continue)
-            }
-            Stmt::Return(expr) => {
-                let val = match expr {
-                    Some(e) => self.eval(e)?,
-                    None => Value::None,
-                };
-                Ok(ExecResult::Return(val))
-            }
-            Stmt::BlockReturn(expr, _span) => {
-                let val = self.eval(expr)?;
-                let expected =
-                    BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow().last().cloned().flatten());
-                if let Some(ann) = expected {
-                    self.check_block_return_type(&val, &ann)?;
-                }
-                Ok(ExecResult::BlockReturn(val))
-            }
-            Stmt::LoopYield(expr) => self.exec_loop_yield(expr),
-            Stmt::If {
-                branches,
-                else_body,
-            } => self.exec_if_stmt(branches, else_body),
-            Stmt::Match { subject, arms, .. } => self.exec_match_stmt(subject, arms),
-            Stmt::While { cond, body } => self.exec_while_stmt(cond, body),
-            Stmt::For {
-                targets,
-                iter,
-                body,
-            } => self.exec_for_stmt(targets, iter, body),
-            Stmt::Block(body) => self.exec_block_stmt(body),
+            // #33: 制御フロー文は**必ずバイトコード VM が実行する**（ツリーウォークの実装は削除した）。
+            // 入口の一覧と根拠は `eval()` の同じアーム（`eval/core.rs`）を参照。
+            // ⚠ ここへ来たら配線の穴なので、黙って動かず落とす。
+            Stmt::Break
+            | Stmt::Continue
+            | Stmt::Return(_)
+            | Stmt::BlockReturn(..)
+            | Stmt::LoopYield(_)
+            | Stmt::If { .. }
+            | Stmt::Match { .. }
+            | Stmt::While { .. }
+            | Stmt::For { .. }
+            | Stmt::Block(_)
+            | Stmt::Try { .. } => Err(format!(
+                "VmForceError: control-flow statement `{}` reached the tree-walk executor",
+                crate::interpreter::tw_stats::stmt_kind_of(stmt)
+            )),
             Stmt::FnDef {
                 name,
                 template_params,
@@ -175,11 +151,7 @@ impl Interpreter {
             } => self.exec_class_def(name, template_params, bases, body, decorators),
             Stmt::Freeze(name, span) => self.exec_freeze(name, span),
             Stmt::Raise { exc, span } => self.exec_raise(exc, span),
-            Stmt::Try {
-                body,
-                handlers,
-                finally_body,
-            } => self.exec_try(body, handlers, finally_body),
+
             Stmt::Import {
                 lang,
                 module,

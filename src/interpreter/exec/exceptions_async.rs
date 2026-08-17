@@ -2,7 +2,7 @@
 
 use {
     crate::ast::{
-        ExceptHandler, Expr,
+        Expr,
         Stmt,
     },
     crate::token::Span,
@@ -227,86 +227,6 @@ impl Interpreter {
             false
         }
     }
-
-    /// `try / except / finally` 文を実行する。例外を捕捉してハンドラを実行し、finally ブロックは常に実行する。
-    pub(crate) fn exec_try(
-        &mut self,
-        body: &[Stmt],
-        handlers: &[ExceptHandler],
-        finally_body: &Option<Vec<Stmt>>,
-    ) -> Result<ExecResult, String> {
-        let body_result = self.exec_scoped_block(body);
-
-        let mut converted_internal = false;
-        let raise_opt: Option<RaisedError> = match &body_result {
-            Ok(ExecResult::Raise(r)) => Some(r.clone()),
-            Err(e) if e.as_str() == RAISE_SENTINEL => self.current_exception.clone(),
-            Err(e) => {
-                let msg = e.clone();
-                let r = self.make_internal_raised_error(&msg);
-                if r.is_some() {
-                    converted_internal = true;
-                }
-                r
-            }
-            _ => None,
-        };
-
-        let mut final_result: Result<ExecResult, String> = body_result;
-
-        if let Some(raised) = raise_opt {
-            let mut handled = false;
-            for handler in handlers {
-                let matches = match &handler.exc_type {
-                    None => true,
-                    Some(type_name) => {
-                        if let Value::Instance(ref inst_rc) = raised.exception {
-                            Self::exc_matches(&inst_rc.borrow().class, type_name)
-                        } else {
-                            false
-                        }
-                    }
-                };
-                if matches {
-                    let prev_exc = self.current_exception.clone();
-                    self.current_exception = Some(raised.clone());
-
-                    self.push_scope();
-                    if let Some(alias) = &handler.name {
-                        let exc_val = raised.exception.clone();
-                        self.declare_var(alias.clone(), Var::new(exc_val, false));
-                    }
-                    let handler_result = self.exec_block(&handler.body);
-                    self.pop_scope();
-
-                    self.current_exception = prev_exc;
-                    final_result = handler_result;
-                    handled = true;
-                    break;
-                }
-            }
-            if !handled && converted_internal {
-                // 内部エラーから変換された RaisedError がどのハンドラにもマッチしなかった場合:
-                // ExecResult::Raise として上位に伝播させ、トレースバック表示が機能するようにする
-                final_result = Ok(ExecResult::Raise(raised));
-            }
-        }
-
-        if let Some(finally) = finally_body {
-            let finally_result = self.exec_scoped_block(finally);
-            match finally_result {
-                Ok(ExecResult::Normal) => {}
-                Ok(signal) => return Ok(signal),
-                Err(e) => return Err(e),
-            }
-        }
-
-        final_result
-    }
-
-    // ---------------------------------------------------------------------------
-    // Async
-    // ---------------------------------------------------------------------------
 
     /// `target <- async->T: body` 文を実行する。`AsyncManager` にタスクを追加する。
     pub(crate) fn exec_async_assign(&mut self, target: &str, stmts: &[Stmt]) -> Result<ExecResult, String> {

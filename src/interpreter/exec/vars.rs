@@ -10,7 +10,6 @@ use {
     crate::interpreter::{
         ExecResult,
         Interpreter, Value, Var,
-        BLOCK_RETURN_EXPECTED_TYPE, BLOCK_YIELDS,
     },
 };
 
@@ -246,28 +245,6 @@ impl Interpreter {
     // Control flow signals
     // ---------------------------------------------------------------------------
 
-    /// `loop_yield expr` 文を実行する。for/while 式の中で値を蓄積する制御フロー信号。
-    pub(crate) fn exec_loop_yield(&mut self, expr: &Expr) -> Result<ExecResult, String> {
-        let val = self.eval(expr)?;
-
-        // `->list[T]` アノテーションの要素型に対する検査（#35 で VM と 1 実装に集約）。
-        let expected = BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow().last().cloned().flatten());
-        if let Some(ref ann) = expected {
-            self.check_loop_yield_type(&val, ann)?;
-        }
-
-        let mut in_loop_expr = false;
-        BLOCK_YIELDS.with(|y| {
-            if let Some(yields) = y.borrow_mut().as_mut() {
-                yields.push(val);
-                in_loop_expr = true;
-            }
-        });
-        if !in_loop_expr {
-            return Err("SyntaxError: 'loop_yield' can only be used inside a for/while expression (with ->list[T] annotation)".to_string());
-        }
-        Ok(ExecResult::Normal)
-    }
 
     // ---------------------------------------------------------------------------
     // Control flow structures

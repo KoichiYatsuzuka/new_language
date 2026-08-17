@@ -167,14 +167,10 @@ pub(crate) fn record_capture(kind: &'static str) {
 ///
 /// #3（強制バイトコード）は「TLS とセンチネルの実削除」を掲げているが、削除できるのは
 /// **通常実行で 1 度も通らない**ものだけ。ここで実測してから消す。
-pub(crate) fn record_tls(site: &'static str) {
-    // ⚠ ここは**ホットパス**（ツリーウォークのループ入口）なので `enabled()` を先に見る。
-    // `enabled()` は `cfg!` で定数 false に畳まれるため既定ビルドではコードごと消える（#10-a）。
-    if !enabled() {
-        return;
-    }
-    bump("tw_control_flow", site);
-}
+
+// ⚠ `record_tls`（ツリーウォークの制御フロー計上）は #33 で削除した。
+// 制御フローの実装そのものが無くなったので `tw_control_flow` は**構造的に 0**
+// （表は残してある。0 でない値が出たら計測側の配線ミス）。
 
 /// VM チャンクのコンパイル成否を計上する。
 pub(crate) fn record_compile(kind: &'static str, ok: bool) {

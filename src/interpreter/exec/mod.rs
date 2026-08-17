@@ -69,25 +69,6 @@ fn find_js_config(search_dirs: &[PathBuf])
 }
 
 
-/// `x.is_OK()` / `x.is_ERR()` の形式の式から `(変数名, is_ok_flag)` を抽出する。
-/// Result ガード節の変数バインディングに使う。
-fn extract_result_guard_call(cond: &Expr) -> Option<(String, bool)> {
-    if let Expr::Call { func, args, .. } = cond {
-        if !args.is_empty() {
-            return None;
-        }
-        if let Expr::Attr { object, attr, .. } = func.as_ref() {
-            if let Expr::Ident { name: var_name, .. } = object.as_ref() {
-                match attr.as_str() {
-                    "is_OK" => return Some((var_name.clone(), true)),
-                    "is_ERR" => return Some((var_name.clone(), false)),
-                    _ => {}
-                }
-            }
-        }
-    }
-    None
-}
 
 // ---------------------------------------------------------------------------
 // Misc free helpers

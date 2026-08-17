@@ -355,16 +355,12 @@ impl Value {
 pub enum ExecResult {
     /// 通常終了。次の文へ制御を移す。
     Normal,
-    /// `break` 文が実行された。最も内側のループを抜ける。
-    Break,
-    /// `continue` 文が実行された。ループの次のイテレーションへ進む。
-    Continue,
     /// `return expr` 文が実行された。現在の関数を即座に終了して値を返す。
+    ///
+    /// ⚠ #33 で `Break`/`Continue`/`BlockReturn`/`BlockYield` は削除した。
+    /// 制御フローは**すべてバイトコード VM がジャンプで表現する**ので、
+    /// `ExecResult` を経由して伝播させる必要が無くなった。
     Return(Value),
-    /// `block_return expr` 文が実行された。`block:` / `if` / `match` / `for` / `while` 式を即座に終了して値を返す。
-    BlockReturn(Value),
-    /// `loop_yield expr` 文が実行された。実行を継続しつつ値を結果リストに積む。`for`/`while` 式でのみ有効。
-    BlockYield(Value),
     /// コールスタックを遡って伝播中の言語レベル例外。`try/except` で捕捉される。
     Raise(RaisedError),
 }
