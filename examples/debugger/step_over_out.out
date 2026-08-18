@@ -7,7 +7,8 @@
 [33m  17[0m        let third = second - 1
   Commands: <Enter> step | e step-into | o step-out | q resume
   Debug vars: let dbg::x = expr  |  access: dbg::x
-(dbg) (dbg) 
+(dbg) 9
+(dbg) 
 [break_point] Paused at [32m<REPO>\examples\debugger\step_over_out.ar[0m:9
 [33m   7[0m    
 [33m   8[0m    fn inner(let a: int) -> int:
@@ -40,5 +41,4 @@
 (dbg) 18
 
 --stderr--
-  [dbg] Error: unexpected token: `?﻿`
   [dbg] Error: NameError: 'doubled' is not defined

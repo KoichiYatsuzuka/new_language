@@ -13,6 +13,7 @@
 #
 # 期待値を更新するとき: debug_session.ps1 -Update
 #   ⚠ 差分の中身を必ず目で見ること（黙って上書きすると検知力を失う）。
+#   ⇒ #44 以降、`-Update` は**書き換える行を必ず表示**する（UPDATING/UNCHANGED/CREATING）。
 
 param(
     [string]$Filter = '',
@@ -32,6 +33,19 @@ if (-not (Test-Path $dir)) { throw "not found: $dir" }
 # 1 本走らせて stdout+stderr を返す（stdin に $inputFile の内容を流す）。
 # ⚠ 出力は**非同期で同時に読む**（逐次 ReadToEnd はデッドロックする・#38）。
 # ⚠ stdin は BaseStream へ BOM 無しで書く（PS5.1 の StandardInput は BOM を付ける）。
+# 2 つの transcript の食い違う行だけを並べて出す。
+# 比較（want/got）と -Update（old/new）で**同じ実装**を使う（片方だけ直すとずれる）。
+function Show-Diff([string]$left, [string]$right, [string]$leftLabel, [string]$rightLabel) {
+    $ll = $left -split "`n"; $rl = $right -split "`n"
+    for ($i = 0; $i -lt [Math]::Max($ll.Count, $rl.Count); $i++) {
+        $l = if ($i -lt $ll.Count) { $ll[$i] } else { '<missing>' }
+        $r = if ($i -lt $rl.Count) { $rl[$i] } else { '<missing>' }
+        if ($l -ne $r) {
+            Write-Host ("    line {0}: {1} [{2}]  {3} [{4}]" -f ($i + 1), $leftLabel, $l, $rightLabel, $r)
+        }
+    }
+}
+
 function Invoke-Debug([string]$script, [string]$inputFile) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe
@@ -77,6 +91,23 @@ foreach ($s in $scripts) {
     $actual = Invoke-Debug $s.FullName $inFile
 
     if ($Update) {
+        # ⚠⚠ **黙って上書きしない**（#44）。何をどう書き換えるのかを必ず出してから書く。
+        # `6bf039c`（#33 partial）は「stdin の BOM 修正」と「修正前の golden」を
+        # **同じコミット**に入れ、録り直し漏れに誰も気づけないまま 5 件が赤くなった
+        # （しかも完了報告には「5 identical」と書かれていた）。差分を出していれば気づけた。
+        if (-not (Test-Path $outFile)) {
+            Write-Host "  CREATING: $($s.BaseName)" -ForegroundColor Yellow
+            [System.IO.File]::WriteAllText($outFile, $actual)
+            $updated++
+            continue
+        }
+        $prev = ([System.IO.File]::ReadAllText($outFile) -replace "`r`n", "`n").TrimEnd()
+        if ($prev -eq $actual) {
+            Write-Host "  UNCHANGED: $($s.BaseName)" -ForegroundColor DarkGray
+            continue
+        }
+        Write-Host "  UPDATING: $($s.BaseName)" -ForegroundColor Yellow
+        Show-Diff $prev $actual 'old' 'new'
         [System.IO.File]::WriteAllText($outFile, $actual)
         $updated++
         continue
@@ -91,12 +122,7 @@ foreach ($s in $scripts) {
     else {
         $differing++; $diffNames += $s.BaseName
         Write-Host "  DIFFERING: $($s.BaseName)" -ForegroundColor Red
-        $wl = $want -split "`n"; $al = $actual -split "`n"
-        for ($i = 0; $i -lt [Math]::Max($wl.Count, $al.Count); $i++) {
-            $w = if ($i -lt $wl.Count) { $wl[$i] } else { '<missing>' }
-            $a = if ($i -lt $al.Count) { $al[$i] } else { '<missing>' }
-            if ($w -ne $a) { Write-Host ("    line {0}: want [{1}]  got [{2}]" -f ($i + 1), $w, $a) }
-        }
+        Show-Diff $want $actual 'want' 'got'
     }
 }
 

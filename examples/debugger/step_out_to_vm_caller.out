@@ -7,7 +7,8 @@
 [33m  17[0m    
   Commands: <Enter> step | e step-into | o step-out | q resume
   Debug vars: let dbg::x = expr  |  access: dbg::x
-(dbg) (dbg) 
+(dbg) 18
+(dbg) 
 [break_point] Paused at [32m<REPO>\examples\debugger\step_out_to_vm_caller.ar[0m:21
 [33m  19[0m        let before = a + 1
 [33m  20[0m        let got = probe(before)
@@ -21,4 +22,3 @@
 (dbg) 118
 
 --stderr--
-  [dbg] Error: unexpected token: `?﻿`
