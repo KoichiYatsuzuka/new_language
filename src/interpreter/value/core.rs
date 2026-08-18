@@ -274,7 +274,10 @@ impl Value {
             Value::Function(rc) => Value::Function(Rc::new(FnValue {
                 name: rc.name.clone(),
                 params: rc.params.clone(),
-                body: rc.body.clone(),
+                // ⚠ **`Rc` を clone してはいけない**（#45）。`Rc<[Stmt]>` の参照カウントは
+                // 非アトミックなので、スレッドへ送る複製で共有すると親と競合する（#15）。
+                // 中身を複製して**独立した Rc** を作る。
+                body: std::rc::Rc::from(&rc.body[..]),
                 is_python: rc.is_python,
                 captured_env: deep_clone_captured_env(&rc.captured_env),
             return_type: None,
@@ -287,7 +290,8 @@ impl Value {
                         Rc::new(FnValue {
                             name: rc.name.clone(),
                             params: rc.params.clone(),
-                            body: rc.body.clone(),
+                            // ⚠ **`Rc` を clone してはいけない**（#45/#15）。上と同じ理由。
+                            body: std::rc::Rc::from(&rc.body[..]),
                             is_python: rc.is_python,
                             captured_env: deep_clone_captured_env(&rc.captured_env),
                             return_type: rc.return_type.clone(),

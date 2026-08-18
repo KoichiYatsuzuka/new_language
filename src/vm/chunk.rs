@@ -80,7 +80,10 @@ impl std::fmt::Debug for SharedFnChunk {
 pub struct ChunkFnDef {
     pub name: String,
     pub params: Vec<crate::ast::Param>,
-    pub body: Vec<Stmt>,
+    /// 入れ子 `fn` の本体。**`Rc` で持つ**（#45）。`Op::MakeFn` は実体ごとに
+    /// この `Rc` を clone するだけなので、クロージャ生成から**AST の複製が消える**。
+    /// ⚠ **スレッドへ送る `deep_clone` では共有しない**（参照カウントが非アトミック・#15）。
+    pub body: std::rc::Rc<[Stmt]>,
     pub return_type: Option<String>,
     /// 生成した関数値を書き込む slot（リゾルバの base slot と同じ番号）。
     pub slot: u16,

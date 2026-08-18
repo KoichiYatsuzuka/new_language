@@ -581,7 +581,7 @@ impl Interpreter {
             let init_fn = Rc::new(FnValue {
                 name: "__init__".to_string(),
                 params: init_params,
-                body: init_body,
+                body: std::rc::Rc::from(init_body),
                 is_python: false,
                 captured_env: HashMap::new(),
             return_type: None,

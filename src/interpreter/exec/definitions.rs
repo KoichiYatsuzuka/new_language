@@ -49,7 +49,10 @@ impl Interpreter {
         &mut self,
         name: &str,
         params: &[Param],
-        body: &[Stmt],
+        // ⚠ `&[Stmt]` ではなく `Rc` を受け取る（#45）。`Op::MakeFn` は定義サイトが持つ
+        // `ChunkFnDef::body` の `Rc` をそのまま渡すので、**実体ごとの AST 複製が消える**
+        // （本体 1 文で 0.2µs・1 文増えるごとに +0.19µs）。
+        body: std::rc::Rc<[Stmt]>,
         return_type: Option<&str>,
         captured: Vec<(String, Value)>,
         // 可変キャプチャ（#27-d 段階 2b）。**セルを共有**するので値ではなく `Rc` を受け取る。
@@ -70,7 +73,7 @@ impl Interpreter {
         let fn_val = Rc::new(FnValue {
             name: name.to_string(),
             params: params.to_vec(),
-            body: body.to_vec(),
+            body,
             is_python: self.in_python_module,
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
@@ -114,7 +117,7 @@ impl Interpreter {
         let fn_val = Rc::new(FnValue {
             name: name.to_string(),
             params: params.to_vec(),
-            body: body.to_vec(),
+            body: std::rc::Rc::from(body),
             is_python: self.in_python_module,
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
@@ -311,7 +314,7 @@ impl Interpreter {
                             variadic: false,
                         },
                     ],
-                    body: init_body,
+                    body: std::rc::Rc::from(init_body),
                     is_python: false,
                     captured_env: HashMap::new(),
                 return_type: None,
@@ -387,7 +390,7 @@ impl Interpreter {
                     variadic: false,
                 },
             ],
-            body: init_body,
+            body: std::rc::Rc::from(init_body),
             is_python: false,
             captured_env: HashMap::new(),
         return_type: None,
@@ -533,7 +536,7 @@ impl Interpreter {
                     let fn_val = Rc::new(FnValue {
                         name: mname.clone(),
                         params: params.clone(),
-                        body: mbody.clone(),
+                        body: std::rc::Rc::from(&mbody[..]),
                         is_python: self.in_python_module,
                         captured_env: HashMap::new(),
                         return_type: mret.clone(),

@@ -289,7 +289,8 @@ fn make_fn(
     buf[slot] = interp.make_nested_fn_value(
         &d.name,
         &d.params,
-        &d.body,
+        // #45: AST は複製せず定義サイトの `Rc` を共有する（参照カウント +1 だけ）。
+        d.body.clone(),
         d.return_type.as_deref(),
         captured,
         cell_captured,

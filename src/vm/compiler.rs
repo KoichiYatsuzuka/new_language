@@ -3129,7 +3129,8 @@ impl Compiler {
                 self.fn_defs.push(crate::vm::chunk::ChunkFnDef {
                     name: name.clone(),
                     params: params.clone(),
-                    body: body.clone(),
+                    // #45: ここで 1 回だけ複製する。以降の実体は Rc を clone するだけ。
+                    body: std::rc::Rc::from(&body[..]),
                     return_type: return_type.clone(),
                     slot,
                     captures,

@@ -157,7 +157,7 @@ impl Interpreter {
                         let fn_val = Rc::new(FnValue {
                             name: tmpl.name.clone(),
                             params: concrete_params,
-                            body: concrete_body,
+                            body: std::rc::Rc::from(concrete_body),
                             is_python: false,
                             captured_env: std::collections::HashMap::new(),
                             return_type: None,
@@ -344,7 +344,7 @@ impl Interpreter {
                         .push(Rc::new(FnValue {
                             name: mname.clone(),
                             params: params.clone(),
-                            body: mbody.clone(),
+                            body: std::rc::Rc::from(&mbody[..]),
                             is_python: false,
                             captured_env: std::collections::HashMap::new(),
                         return_type: None,

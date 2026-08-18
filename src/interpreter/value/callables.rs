@@ -114,7 +114,7 @@ pub struct TemplateClassValue {
 pub struct FnValue {
     pub name: String,
     pub params: Vec<Param>,
-    pub body: Vec<Stmt>,
+    pub body: std::rc::Rc<[Stmt]>,
     /// Python モジュールから変換された関数かどうか。
     pub is_python: bool,
     /// キャプチャした外側スコープ変数（クロージャ環境）。
@@ -199,7 +199,9 @@ impl ClassValue {
                         Rc::new(FnValue {
                             name: rc.name.clone(),
                             params: rc.params.clone(),
-                            body: rc.body.clone(),
+                            // ⚠ **`Rc` を clone してはいけない**（#45/#15）。`ClassValue::deep_clone`
+                            // はスレッド送出経路で使われるので、中身を複製して独立させる。
+                            body: std::rc::Rc::from(&rc.body[..]),
                             is_python: rc.is_python,
                             captured_env: deep_clone_captured_env(&rc.captured_env),
                             return_type: rc.return_type.clone(),

@@ -6,6 +6,10 @@
 #         実体ごとに再コンパイルされる分がここに出る（#30 の性能リスク本体）。
 #   B. 呼び出しが支配する形（実体は 1 つ、呼び出しだけを回す）
 #      → 定常状態の実行速度。A の対照であり、#30 の変更で悪化していないかを見る。
+#   C. **本体が大きい**クロージャを大量に作る形（#45）
+#      → `FnValue.body` の複製は本体の文数に比例した（実測 **0.19µs/文**）。
+#         ⚠ A-1/A-2 の本体は **1 文**なのでこの費用がほとんど出ない。
+#         #45 の効果は C でしか見えない（A/B が 1.03x に対し C は 4x 超）。
 #
 # A/B 計測は ./ab_bench.ps1 -A <head.exe> -B <new.exe> -Scripts examples/bench/bench_closure.ar
 import[py-int] time
@@ -46,6 +50,34 @@ fn spawn_counters(let n: int) -> int:
         i += 1
     return acc
 
+# C-1: 本体の大きいクロージャの実体を大量に作る（#45）
+#      本体は 13 文。#45 以前は実体ごとに丸ごとディープクローンしていた。
+fn make_wide(let x: int) -> function[]->int:
+    fn wide() -> int:
+        let v0 = x + 0
+        let v1 = x + 1
+        let v2 = x + 2
+        let v3 = x + 3
+        let v4 = x + 4
+        let v5 = x + 5
+        let v6 = x + 6
+        let v7 = x + 7
+        let v8 = x + 8
+        let v9 = x + 9
+        let v10 = x + 10
+        let v11 = x + 11
+        return x + v0
+    return wide
+
+fn spawn_wide(let n: int) -> int:
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        let f = make_wide(i)
+        acc += f()
+        i += 1
+    return acc
+
 # B-1: 実体 1 つを大量に呼ぶ（不変キャプチャ）
 fn call_adder_hot(let n: int) -> int:
     let f = make_adder(7)
@@ -79,11 +111,14 @@ fn main() -> None:
     let t3 = time.time()
     let b2 = call_counter_hot(HOT)
     let t4 = time.time()
+    let c1 = spawn_wide(SPAWN)
+    let t5 = time.time()
 
     print("A-1 spawn immutable-capture x" + str(SPAWN) + ": " + str(t1 - t0) + " s")
     print("A-2 spawn mutable-capture   x" + str(SPAWN) + ": " + str(t2 - t1) + " s")
     print("B-1 hot call immutable      x" + str(HOT) + ": " + str(t3 - t2) + " s")
     print("B-2 hot call mutable        x" + str(HOT) + ": " + str(t4 - t3) + " s")
-    print("checksum=" + str(a1 + a2 + b1 + b2))
+    print("C-1 spawn wide-body(13)   x" + str(SPAWN) + ": " + str(t5 - t4) + " s")
+    print("checksum=" + str(a1 + a2 + b1 + b2 + c1))
 
 main()

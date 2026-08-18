@@ -59,6 +59,7 @@ $knownDiff = @{
     'complex_error'                  = 'py: complex の一部演算が未実装'
     'mustbe_error'                   = 'py: mustbe 失敗時の出力形式が違う'
     'async_string_share'             = 'py: AsyncManager 未実装'
+    'async_closure_share'            = 'py: AsyncManager 未実装'
     'async_vm_body'                  = 'py: AsyncManager 未実装'
     # (b) FFI / 外部言語ブリッジ（外部ツールチェーンに依存し実装差が本質的）
     'cpp_struct_ptr'                 = 'py: C++ ブリッジの struct 書き戻しが未実装'
