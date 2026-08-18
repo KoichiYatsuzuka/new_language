@@ -5165,3 +5165,71 @@ native モードは負の対照（純ネイティブ `native_sum_fixed`）自身
 | 「書き戻しは `assign_var` が VM のローカルに届かないのが原因」（#47 で最初にそう書いた） | **誤り**。最上位の変数は `DECLARE_GLOBAL`/`LOAD_GLOBAL` で `scopes[0]` にあり `assign_var` なら届く。真因は**登録自体が引数 AST を要求する**こと。⇒ **「届かない」と決める前に `AR_VM_DUMP` でどこに置かれているか見る** |
 | 「副表は稀にしか引かれないので `Op::Call` に判定を置いても無料」 | **0.91x の退行**。`f(mut x)` は普通に書かれるので副表は空にならない。⇒ #10-b の教訓は「重い本体を書かない」だけでなく「**安いつもりの判定も測る**」 |
 | 「FFI 経路には触らないので cdll の速度は変わらない」 | **1.13〜1.16x 速くなった**（`call_value_evaled` を経由しなくなったため）。修正のついでに経路が 1 段短くなった |
+
+---
+
+## #49 `debug_session.ps1` の stdin BOM 混入を解消（2026-08-19）
+
+#48 の検証中に「[debug_session.ps1](debug_session.ps1) が HEAD で既に 5/5 赤い」と判明した件。
+**ゲートスクリプト側の欠陥**で、インタプリタは無関係だった。
+
+### 症状と切り分け
+デバッガ REPL の **1 行目が `?<BOM>` に化けてコマンドが 1 つずれ**、以降の transcript が全部ずれる。
+`  [dbg] Error: unexpected token: ` + `?﻿` が stderr に出る（生バイトは `3F EF BB BF`）。
+
+切り分けの順序（**「そもそも自分のせいか」を最初に潰した**）:
+1. `.in` / `.ar` / golden に BOM は無い（`xxd` で確認）。
+2. **修正前バイナリ（#48 前）で走らせても出力が 5/5 byte-identical** ⇒ #48 とは無関係・HEAD で既に赤い。
+3. stdin を `q
+1+1
+q
+` に置き換えても再現 ⇒ `.in` の内容に依らない。
+4. `[Console]::InputEncoding` を見ると **cp65001・preamble `EF BB BF`**。
+
+### 原因
+.NET Framework の `Process.Start` は `RedirectStandardInput` のとき
+**`StandardInput` の `StreamWriter` を `[Console]::InputEncoding` で作り、`AutoFlush = true` を立てる**。
+`AutoFlush` の setter は `Flush()` を呼び、`StreamWriter.Flush` は
+**まだ書いていなければ preamble を書く**。⇒ **`Start()` が返った時点で子の stdin に BOM が入っている**。
+
+⚠ スクリプトは既に「BOM を避ける」つもりで `$proc.StandardInput.**BaseStream**` へ
+`UTF8Encoding($false)` の writer を作って書いていた。**これでは遅い** —
+BOM は自分が書く**前**に入っており、`BaseStream` へ書いた内容はその後ろに continue する。
+
+### 手法
+子を起こす直前だけ `[Console]::InputEncoding` を **preamble 無し**の `UTF8Encoding($false)` に
+差し替え、`finally` で必ず戻す（`Invoke-Debug` の中にスコープ）。
+⇒ **golden は 1 行も変えずに 5/5 identical**（`-Update` を一切使っていない）。
+＝ **#44 の golden は最初から正しく、壊れていたのは入力の与え方だった**。
+
+### ⚠ 同じ罠を隣のスクリプトが**別の手で**避けていた
+[repl_session.ps1](repl_session.ps1) は `cmd /c "exe --repl < file"` の**ネイティブリダイレクト**で
+stdin を与えており、マネージド writer 自体が作られないので原理的に踏まない。
+しかもコメントに「PS5.1 の Process.StandardInput は UTF-8 BOM を先頭に書いてしまい、
+REPL が ParseError: unexpected token になる」と**症状まで書いてあった**。
+⇒ **知識はリポジトリ内にあったのに、隣のスクリプトへ渡っていなかった**（相互参照が無かった）。
+#49 で両方にクロスリファレンスを入れた。
+⚠ `debug_session` が cmd 方式を採れないのは **stdout と stderr を分けて受ける**必要がある
+（`--stderr--` 区切り）＋タイムアウト時に `Kill()` したいため。手当てが違ってよい。
+
+### ⚠⚠ このゲートは「黙って赤くなる」癖がある（これで 2 度目）
+| 回 | 期間 | 原因 | 見つかり方 |
+|---|---|---|---|
+| 1 回目 | `6bf039c`〜`7aea0e5` | golden が BOM 修正前のまま（#33 partial が修正と golden を同じコミットに入れた） | #44 で発見 |
+| 2 回目 | #44 以降〜#49 | **環境側**（コンソールのコードページが 65001 になり `InputEncoding` に preamble が付いた） | #48 の検証で発見 |
+
+⚠ **2 回目は src も golden も無関係**＝ **コミットを遡っても原因が出ない種類**の赤。
+発火はマシン依存なので、**別の環境では緑のまま**通ってしまう。
+⇒ 計画書の「ゲートは自分で走らせて緑を確かめる」に、**「緑だった環境と同じとは限らない」**が加わる。
+
+### 検証
+- `debug_session.ps1` **5 identical**（2 回連続・golden 無変更）
+- `[Console]::InputEncoding` の preamble が実行前後で **3 → 3**（復元されている）
+- `repl_session.ps1` identical（巻き添えが無いこと）
+
+### 見積もりと実測
+| 事前の見立て | 実測 |
+|---|---|
+| 「`.in` に BOM が混じっているのだろう」 | **違った**。入力ファイルは全部クリーンで、BOM は `Process.Start` が書いていた |
+| 「`.BaseStream` へ BOM 無しで書けば防げる」（スクリプトの既存コメントの前提） | **防げない**。preamble は `Start()` の時点で既に書かれている ⇒ **対策は「後から正しく書く」ではなく「writer に preamble を持たせない」** |
+| 「goldens を録り直す必要がある」 | **不要だった**。goldens は正しく、入力が壊れていた。⇒ **赤いゲートを見たら `-Update` の前に「入力が意図どおり届いているか」を疑う** |

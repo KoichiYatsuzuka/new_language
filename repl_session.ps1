@@ -12,6 +12,13 @@
 #
 # ⚠ stdin は **cmd のリダイレクト**で与える。PS5.1 の Process.StandardInput は
 #   UTF-8 BOM を先頭に書いてしまい、REPL が ParseError: unexpected token になる。
+#   ⚠ 正確には `Process.Start` が `[Console]::InputEncoding` で StreamWriter を作り、
+#     `AutoFlush=true` を立てた時点で preamble を書く。**`.BaseStream` へ BOM 無しで
+#     書いても遅い**（BOM は既に入っている）。ここは cmd のネイティブリダイレクトなので
+#     マネージド writer 自体が作られず、原理的に踏まない。
+#   ⚠ **debug_session.ps1 は `.BaseStream` 方式で踏んでいた**（#49 で
+#     `[Console]::InputEncoding` を preamble 無しに差し替えて解消）。あちらが cmd 方式に
+#     できないのは stdout/stderr を分けて受ける必要があるため。
 
 param([switch]$Update)
 

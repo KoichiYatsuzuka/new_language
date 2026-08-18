@@ -32,7 +32,20 @@ if (-not (Test-Path $dir)) { throw "not found: $dir" }
 
 # 1 本走らせて stdout+stderr を返す（stdin に $inputFile の内容を流す）。
 # ⚠ 出力は**非同期で同時に読む**（逐次 ReadToEnd はデッドロックする・#38）。
-# ⚠ stdin は BaseStream へ BOM 無しで書く（PS5.1 の StandardInput は BOM を付ける）。
+# ⚠⚠ stdin へ BOM を混ぜないこと（#49）。**`.BaseStream` へ BOM 無しで書くだけでは足りない。**
+#   .NET Framework の `Process.Start` は `StandardInput` の `StreamWriter` を
+#   `[Console]::InputEncoding` で作り、`AutoFlush = true` を立てた時点で
+#   **preamble を子の stdin へ書いてしまう** — つまり `Start()` が返った時点で既に
+#   BOM が入っており、こちらが `BaseStream` に書くのはその**後ろ**になる。
+#   ⇒ 起動前に **preamble 無しのエンコーディングへ差し替える**のが唯一効く手当て。
+#   症状: デバッガの 1 行目が `?<BOM>` に化けて**コマンドが 1 つずれる**（全 5 件が赤くなる）。
+#   ⚠ 発火はコンソールのコードページ依存（`chcp 65001` の環境で `[Console]::InputEncoding`
+#     が preamble 付き utf-8 になる）。**別のマシンでは緑のまま**なので、
+#     このゲートは「黙って赤くなる」癖がある（#44 に続き 2 度目）。
+#   ⚠ **repl_session.ps1 は同じ罠を別の手で避けている**（`cmd /c "exe < file"` の
+#     ネイティブリダイレクト＝マネージド writer を一切作らない）。あちらが緑のままだったのは
+#     そのため。こちらが同じ手を採れないのは **stdout と stderr を分けて受ける必要がある**
+#     から（`--stderr--` 区切り）＋タイムアウト時に `Kill()` したいから。
 # 2 つの transcript の食い違う行だけを並べて出す。
 # 比較（want/got）と -Update（old/new）で**同じ実装**を使う（片方だけ直すとずれる）。
 function Show-Diff([string]$left, [string]$right, [string]$leftLabel, [string]$rightLabel) {
@@ -47,6 +60,10 @@ function Show-Diff([string]$left, [string]$right, [string]$leftLabel, [string]$r
 }
 
 function Invoke-Debug([string]$script, [string]$inputFile) {
+    # 子を起こす直前だけ preamble 無しにして、必ず元へ戻す（#49・上のコメント参照）。
+    $savedInputEncoding = [Console]::InputEncoding
+    try { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+    try {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe
     $psi.Arguments = "-src `"$script`""
@@ -74,6 +91,9 @@ function Invoke-Debug([string]$script, [string]$inputFile) {
     # 絶対パスは環境依存なので伏せる（期待値ファイルを持ち運べるように）
     $text = $text -replace [regex]::Escape($repo), '<REPO>'
     return ($text -replace "`r`n", "`n").TrimEnd()
+    } finally {
+        try { [Console]::InputEncoding = $savedInputEncoding } catch {}
+    }
 }
 
 $scripts = Get-ChildItem "$dir/*.ar" | Where-Object {

@@ -53,13 +53,19 @@ C DLL は見かけ 2.18x でも **FFI 自体は 1.15〜1.23x**（速いのは周
 **期待値と違えば `raise` する**（負の対照＝修正前バイナリで exit=1 を確認済み）。
 詳細は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) #47 / #48。
 
-⚠⚠ **[debug_session.ps1](debug_session.ps1) は HEAD で既に赤い（→ #49・#48 とは無関係）。**
-`Process.StandardInput` の暗黙 `StreamWriter` が `[Console]::InputEncoding`（この環境では
-**preamble 3 バイトの utf-8**）の BOM を子の stdin へ流し込み、**最初の 1 行が `?<BOM>` に化けて
-コマンドが 1 つずれる**。⇒ 「`.in` を BOM 無しで書く」だけでは足りず、
-**`.BaseStream` を触った時点で暗黙 writer が生まれる**のが穴。
-⚠ **#44 の「5 identical」以降に環境側で発火した**（goldens は #44 のまま・src は無関係）。
-⇒ **これで 2 度目**（`6bf039c`〜`7aea0e5` に続く）。**このゲートは黙って赤くなる癖がある**。
+⚠⚠ **[debug_session.ps1](debug_session.ps1) が HEAD で赤かった（#48 の検証で発見 → #49 で解消）。**
+原因は**スクリプト側**: .NET Framework の `Process.Start` は `StandardInput` の `StreamWriter` を
+`[Console]::InputEncoding`（この環境は preamble 付き utf-8）で作り **`AutoFlush=true` を立てた時点で
+preamble を書く** ⇒ **`Start()` が返った時点で子の stdin に BOM が入っている**。
+最初の 1 行が `?<BOM>` に化けて**コマンドが 1 つずれ**、5 件とも赤くなっていた。
+⚠ 「`.BaseStream` へ BOM 無しで書く」既存の手当ては**効かない**（BOM は自分が書く前に入っている）。
+#49 は**起動直前だけ preamble 無しのエンコーディングに差し替える**ことで解消し、
+**golden を 1 行も変えずに 5/5 identical**（＝ #44 の golden は最初から正しかった）。
+⚠⚠ **これで 2 度目**（`6bf039c`〜`7aea0e5` に続く）。**しかも 2 回目は src も golden も無関係＝
+環境側（コンソールのコードページ）で発火**した。**別のマシンでは緑のまま通る**。
+⇒ 「ゲートは自分で走らせて緑を確かめる」に **「緑だった環境と同じとは限らない」**が加わる。
+⚠ 同じ罠を [repl_session.ps1](repl_session.ps1) は `cmd` のネイティブリダイレクトで避けており、
+**症状までコメントに書いてあった**のに隣のスクリプトへ渡っていなかった（#49 で相互参照を追加）。
 
 > **✅ この系列は完了している（2026-08-19 時点）**
 > **解釈実行の統一（VM 一本化）も高速化も、やり切って打ち止め**まで確認した。
@@ -193,6 +199,14 @@ C DLL は見かけ 2.18x でも **FFI 自体は 1.15〜1.23x**（速いのは周
   **Rust ソースの一括書き換えは Python で `encoding='utf-8'` を明示**（`Set-Content` は文字化けする）。
   ⚠ **そのスクリプトから日本語を `print` すると cp932 の `UnicodeEncodeError` で書き込み前に落ち、
   変更が丸ごと消える**。進捗表示は ASCII か件数だけにすること。
+- **⚠⚠ 子プロセスへ stdin を流すときは `Process.StandardInput` を使わない**（#49）。
+  .NET Framework の `Process.Start` は writer を `[Console]::InputEncoding` で作り
+  `AutoFlush=true` を立てた時点で **preamble（BOM）を子へ書く** ⇒ **`Start()` が返った時点で
+  もう入っている**。`.BaseStream` へ BOM 無しで書く手当ては**効かない**。
+  手は 2 つ: **`cmd /c "exe < file"` のネイティブリダイレクト**（[repl_session.ps1](repl_session.ps1)。
+  stdout/stderr を分けられない）か、**起動直前だけ `[Console]::InputEncoding` を preamble 無しに
+  差し替えて `finally` で戻す**（[debug_session.ps1](debug_session.ps1)）。
+  ⚠ **発火はコンソールのコードページ依存**なので、別のマシンでは緑のまま通る。
 - **native exe の stderr を `2>&1` で受けると PS5.1 が ErrorRecord 化**して exit 0 でも失敗扱いになる。`Start-Process -PassThru` の `ExitCode` も当てにならない（`System.Diagnostics.Process` を直接使う）。
 - **⚠ `ReadToEnd()` を stdout→stderr の順に逐次呼ぶと子とデッドロックする**（#34 で 1 時間停止・#38 で修正）。
   子が stderr のパイプ（既定 4KB）を埋めると書き込みでブロックし、親は stdout を待ち続ける。
@@ -310,6 +324,8 @@ C DLL は見かけ 2.18x でも **FFI 自体は 1.15〜1.23x**（速いのは周
     47（master との端点 A/B 実測）……完了 ＝ 解釈 3.97x / native 境界 1.60x / 純ネイティブ 1.00x
     48（native `mut` ポインタ書き戻しの VM 対応）……**完了** ＝ #47 で検出した実バグを修正
         （副産物: cdll の呼び出しが **1.13〜1.16x** 速くなった／シャドウ変換の書き戻しも直った）
+    49（`debug_session.ps1` の stdin BOM 混入）……**完了** ＝ golden 無変更で 5/5 identical
+        （原因は `Process.Start` が `[Console]::InputEncoding` の preamble を子の stdin へ書くこと）
 
 残り: 速度目的は無し。別レーン（外部接続系）とブロック中の 14 / 11 R2-c のみ
 保留: モジュール間ネイティブ直リンク（未計画）→ 14 → 11 R2-c ／ 12b → 2c は循環依存で両方保留
@@ -323,7 +339,6 @@ C DLL は見かけ 2.18x でも **FFI 自体は 1.15〜1.23x**（速いのは周
 
 | # | タスク | 手法 | 前提（依存） | 状態 |
 |---|---|---|---|---|
-| 49 | **`debug_session.ps1` の stdin BOM 混入**（ゲートが赤い） | 暗黙 `StandardInput` writer を作らせない／`[Console]::InputEncoding` を preamble 無しにする | — | **未着手・ゲート赤（#48 の検証中に判明）** |
 | 19 | py 組み込みスタブ整備（`time`/`math`） | 同梱 `.pyi` ＋ `python_search_dirs()` に置き場を追加 | — | 未着手・優先度低 |
 | 17-b | JS スタブの型付け | 既定 `Any`・`.d.ts` から `.ars` 生成 | — | 未着手・優先度低 |
 | 17-a | C/C++ `void*` の専用型 | 不透明ハンドル型を導入し int との相互代入を静的禁止 | — | 未着手・優先度低 |
