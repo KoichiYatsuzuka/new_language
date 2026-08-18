@@ -219,6 +219,141 @@ fn test_closure_static_shared_across_calls() {
     assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(3)));
 }
 
+/// #30 の不変条件: **多数のクロージャ実体が 1 つの Chunk を共有しても環境は独立**。
+///
+/// `get_or_compile_chunk` は定義サイト（`ChunkFnDef::compiled`）ごとに 1 回だけ
+/// コンパイルし、実体間で `Rc<Chunk>` を共有する。共有してよい根拠は
+/// 「キャプチャの slot 採番が `sort()` 済みで実体に依らない」＋「束縛は名前で引く」の 2 つ。
+/// **どちらかが崩れると、後から作った実体が先の実体の値を見る**ので、
+/// ここでは実体を**交互に**呼んで取り違えを検出する。
+#[test]
+fn test_closure_chunk_shared_across_instances_keeps_env_independent() {
+    // 不変キャプチャ: 3 実体を作り、作った順と違う順で呼ぶ
+    let src = concat!(
+        "fn make_adder(let x: int) -> function[let int]->int:
+",
+        "    fn add(let y: int) -> int:
+",
+        "        return x + y
+",
+        "    return add
+",
+        "let a1 = make_adder(1)
+",
+        "let a2 = make_adder(20)
+",
+        "let a3 = make_adder(300)
+",
+        "let r3 = a3(7)
+",
+        "let r1 = a1(7)
+",
+        "let r2 = a2(7)
+",
+        // 実体を作り直しても以前の実体は影響を受けない
+        "let a4 = make_adder(4000)
+",
+        "let r1b = a1(7)
+",
+        "let r4 = a4(7)
+",
+    );
+    let interp = run_interp(src);
+    assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(8)));
+    assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(27)));
+    assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(307)));
+    assert!(matches!(interp.get_val("r1b").unwrap(), Value::Int(8)));
+    assert!(matches!(interp.get_val("r4").unwrap(), Value::Int(4007)));
+}
+
+/// #30 の不変条件（可変キャプチャ版）: セルは**実体ごとに独立**でなければならない。
+///
+/// 可変キャプチャは slot ではなく**セル表**（`captured_cells`）を通るので、
+/// 共有する Chunk が持つのは「セル index」だけで、セル自体は `captured_env` から来る。
+/// index が実体間でずれると**別の実体のカウンタを進める**。
+#[test]
+fn test_closure_chunk_shared_across_instances_keeps_cells_independent() {
+    let src = concat!(
+        "fn make_counter(let start: int) -> function[]->int:
+",
+        "    mut n = start
+",
+        "    fn inc() -> int:
+",
+        "        n += 1
+",
+        "        return n
+",
+        "    return inc
+",
+        "let c1 = make_counter(0)
+",
+        "let c2 = make_counter(100)
+",
+        "let c3 = make_counter(200)
+",
+        // 交互に呼ぶ（取り違えると値が飛ぶ）
+        "let r1 = c1()
+",
+        "let r2 = c2()
+",
+        "let r3 = c1()
+",
+        "let r4 = c3()
+",
+        "let r5 = c2()
+",
+        "let r6 = c1()
+",
+    );
+    let interp = run_interp(src);
+    assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(1)));
+    assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(101)));
+    assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(2)));
+    assert!(matches!(interp.get_val("r4").unwrap(), Value::Int(201)));
+    assert!(matches!(interp.get_val("r5").unwrap(), Value::Int(102)));
+    assert!(matches!(interp.get_val("r6").unwrap(), Value::Int(3)));
+}
+
+/// #30: 不変キャプチャと可変キャプチャを**同時に**持つクロージャ。
+///
+/// 両方を持つと slot 採番（不変）とセル採番（可変）が同じ Chunk に同居する。
+/// 片方だけ正しい実装でも通ってしまわないよう、混在形を独立に押さえる。
+#[test]
+fn test_closure_chunk_shared_mixed_captures() {
+    let src = concat!(
+        "fn make(let step: int, let base: int) -> function[]->int:
+",
+        "    mut acc = base
+",
+        "    fn bump() -> int:
+",
+        "        acc += step
+",
+        "        return acc
+",
+        "    return bump
+",
+        "let m1 = make(1, 0)
+",
+        "let m2 = make(10, 1000)
+",
+        "let r1 = m1()
+",
+        "let r2 = m2()
+",
+        "let r3 = m1()
+",
+        "let r4 = m2()
+",
+    );
+    let interp = run_interp(src);
+    assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(1)));
+    assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(1010)));
+    assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(2)));
+    assert!(matches!(interp.get_val("r4").unwrap(), Value::Int(1020)));
+}
+
 /// closure_freeze_captured_var_error のテスト。
 #[test]
 fn test_closure_freeze_captured_var_error() {

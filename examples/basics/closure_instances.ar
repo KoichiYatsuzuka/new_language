@@ -1,0 +1,73 @@
+# closure_instances.ar — クロージャの実体が複数あっても環境が独立していることの確認（#30）。
+#
+# #30 で「コンパイル済み本体（Chunk）を定義サイトごとに 1 つだけ作り、全実体で共有する」
+# ようにした。共有してよい根拠は次の 2 つで、どちらかが崩れると
+# **後から作った実体が先の実体の値を見る**。
+#   1. キャプチャの slot 採番が実体に依らない（コンパイラが名前を sort してから採番する）
+#   2. 束縛が名前引き（`captured_slots` / `captured_cells` を名前で照合する）
+#
+# 取り違えを検出するため、実体は**作った順と違う順で・交互に**呼ぶ。
+
+# --- 不変キャプチャ（値を slot へ複製） ---
+fn make_adder(let x: int) -> function[let int]->int:
+    fn add(let y: int) -> int:
+        return x + y
+    return add
+
+let a1 = make_adder(1)
+let a2 = make_adder(20)
+let a3 = make_adder(300)
+
+# 作った順と逆に呼ぶ
+print(a3(7))   # 307
+print(a1(7))   # 8
+print(a2(7))   # 27
+
+# 実体を後から足しても既存の実体は影響を受けない
+let a4 = make_adder(4000)
+print(a1(7))   # 8
+print(a4(7))   # 4007
+
+# --- 可変キャプチャ（セルを共有） ---
+fn make_counter(let start: int) -> function[]->int:
+    mut n = start
+    fn inc() -> int:
+        n += 1
+        return n
+    return inc
+
+let c1 = make_counter(0)
+let c2 = make_counter(100)
+let c3 = make_counter(200)
+
+# 交互に呼ぶ（セルを取り違えると値が飛ぶ）
+print(c1())    # 1
+print(c2())    # 101
+print(c1())    # 2
+print(c3())    # 201
+print(c2())    # 102
+print(c1())    # 3
+
+# --- 不変キャプチャと可変キャプチャの混在 ---
+fn make_stepper(let step: int, let base: int) -> function[]->int:
+    mut acc = base
+    fn bump() -> int:
+        acc += step
+        return acc
+    return bump
+
+let m1 = make_stepper(1, 0)
+let m2 = make_stepper(10, 1000)
+print(m1())    # 1
+print(m2())    # 1010
+print(m1())    # 2
+print(m2())    # 1020
+
+# --- ループで大量に実体を作る（Chunk 共有が効く形） ---
+mut total = 0
+mut i = 0
+while i < 50:
+    let f = make_adder(i)
+    total += f(1)
+    i += 1
+print(total)   # sum(i+1 for i in 0..49) = 1275

@@ -278,6 +278,8 @@ impl Value {
                 is_python: rc.is_python,
                 captured_env: deep_clone_captured_env(&rc.captured_env),
             return_type: None,
+            // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
+            vm_chunk: None,
             })),
             Value::OverloadedFn(fns) => Value::OverloadedFn(
                 fns.iter()
@@ -289,6 +291,8 @@ impl Value {
                             is_python: rc.is_python,
                             captured_env: deep_clone_captured_env(&rc.captured_env),
                             return_type: rc.return_type.clone(),
+                            // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
+                            vm_chunk: None,
                         })
                     })
                     .collect(),

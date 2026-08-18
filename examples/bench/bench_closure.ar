@@ -1,0 +1,89 @@
+# bench_closure.ar — クロージャのベンチ（#30）。
+#
+# 狙いは 2 軸を分けて測ること:
+#   A. 実体生成が支配する形（クロージャを大量に作り、各実体は少ししか呼ばない）
+#      → `get_or_compile_chunk` が `FnValue` ごとにキャッシュするので、
+#         実体ごとに再コンパイルされる分がここに出る（#30 の性能リスク本体）。
+#   B. 呼び出しが支配する形（実体は 1 つ、呼び出しだけを回す）
+#      → 定常状態の実行速度。A の対照であり、#30 の変更で悪化していないかを見る。
+#
+# A/B 計測は ./ab_bench.ps1 -A <head.exe> -B <new.exe> -Scripts examples/bench/bench_closure.ar
+import[py-int] time
+
+# --- 不変キャプチャ（値を末尾 slot へ・#27-d 段階 1） ---
+fn make_adder(let x: int) -> function[let int]->int:
+    fn add(let y: int) -> int:
+        return x + y
+    return add
+
+# --- 可変キャプチャ（セル表・#27-d 段階 2b） ---
+fn make_counter(let start: int) -> function[]->int:
+    mut count = start
+    fn inc() -> int:
+        count += 1
+        return count
+    return inc
+
+# A-1: 不変キャプチャの実体を大量に作る（各実体は 2 回だけ呼ぶ）
+fn spawn_adders(let n: int) -> int:
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        let f = make_adder(i)
+        acc += f(1)
+        acc += f(2)
+        i += 1
+    return acc
+
+# A-2: 可変キャプチャの実体を大量に作る（各実体は 2 回だけ呼ぶ）
+fn spawn_counters(let n: int) -> int:
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        let c = make_counter(i)
+        acc += c()
+        acc += c()
+        i += 1
+    return acc
+
+# B-1: 実体 1 つを大量に呼ぶ（不変キャプチャ）
+fn call_adder_hot(let n: int) -> int:
+    let f = make_adder(7)
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        acc += f(i)
+        i += 1
+    return acc
+
+# B-2: 実体 1 つを大量に呼ぶ（可変キャプチャ）
+fn call_counter_hot(let n: int) -> int:
+    let c = make_counter(0)
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        acc += c()
+        i += 1
+    return acc
+
+fn main() -> None:
+    let SPAWN = 20000
+    let HOT = 200000
+
+    let t0 = time.time()
+    let a1 = spawn_adders(SPAWN)
+    let t1 = time.time()
+    let a2 = spawn_counters(SPAWN)
+    let t2 = time.time()
+    let b1 = call_adder_hot(HOT)
+    let t3 = time.time()
+    let b2 = call_counter_hot(HOT)
+    let t4 = time.time()
+
+    print("A-1 spawn immutable-capture x" + str(SPAWN) + ": " + str(t1 - t0) + " s")
+    print("A-2 spawn mutable-capture   x" + str(SPAWN) + ": " + str(t2 - t1) + " s")
+    print("B-1 hot call immutable      x" + str(HOT) + ": " + str(t3 - t2) + " s")
+    print("B-2 hot call mutable        x" + str(HOT) + ": " + str(t4 - t3) + " s")
+    print("checksum=" + str(a1 + a2 + b1 + b2))
+
+main()

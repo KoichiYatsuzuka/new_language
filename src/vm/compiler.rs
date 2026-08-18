@@ -3135,6 +3135,9 @@ impl Compiler {
                     captures,
                     cell_captures,
                     static_captures,
+                    // #30: 実体ごとではなく**定義サイトごと**に本体をコンパイルする。
+                    // 最初の呼び出しで埋まり、以降の実体は同じ `Rc<Chunk>` を共有する。
+                    compiled: Default::default(),
                 });
                 self.emit(Op::MakeFn(idx));
             }

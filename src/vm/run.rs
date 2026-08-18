@@ -294,6 +294,8 @@ fn make_fn(
         captured,
         cell_captured,
         existing,
+        // #30: 実体ごとに再コンパイルせず、定義サイトの器を全実体で共有する。
+        Some(d.compiled.clone()),
     );
 }
 

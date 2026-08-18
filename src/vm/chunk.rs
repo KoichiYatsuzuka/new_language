@@ -10,6 +10,71 @@ use super::op::Op;
 /// `target <- async->T: body` の VM 表現（タスク #9）。`AsyncSubmit(idx)` op が参照する。
 /// `body` は非同期タスクの AST（別スレッドでツリーウォーク実行される）。`captures` は本体が参照する
 /// enclosing フレームの `(変数名, slot, is_mutable)`（実行時に frame から値を読んで env を組む）。
+/// 定義サイトごとに共有する、コンパイル済みクロージャ本体（#30）。
+///
+/// `Op::MakeFn` はクロージャ**実体**ごとに新しい `FnValue` を作るので、`FnValue` の
+/// アドレスをキーにする `Interpreter::vm_chunks` では**実体ごとに再コンパイル**していた
+/// （実測 **2.3µs/実体** ＝ クロージャ呼び出し約 8 回分）。本体は `ChunkFnDef`（＝定義サイト）
+/// ごとに 1 つで足りるので、ここに持たせて全実体で共有する。
+///
+/// **実体に依らないことの根拠**（`compile_fn` の入力が定義サイトで決まること）:
+/// - `params` / `body` は `ChunkFnDef` の値そのもの。
+/// - キャプチャ名の集合は `captures` / `cell_captures` / `static_captures` で固定。
+/// - slot 採番は `capture_names.sort()` 済みで **`captured_env`（HashMap）の反復順に依存しない**。
+/// - 束縛は `bind_captures` が**名前で引く**ので、slot 番号が実体間で共有されても正しい。
+///
+/// ⚠ 注釈テーブル（`Interpreter::annotations`）だけは入口によって差し替わりうる（REPL）ので、
+/// コンパイル時のものを一緒に覚えて**違えば作り直す**（`Rc::ptr_eq` 1 回）。
+/// ⚠ **生ポインタではなく `Rc` を保持する**。生ポインタだと古い表が解放されたあと
+/// アロケータが同じアドレスを再利用し、**別の表で当たったと誤判定する**
+/// （最上位 Chunk キャッシュが `Stmt` のアドレスで踏んだのと同じ形・#36）。
+/// `Rc` を持っている間はその表が解放されないので、この誤判定が原理的に起きない。
+/// ⚠ **スレッドへ送る `deep_clone` では共有しない**（`Rc` の参照カウントは非アトミック・#15）。
+#[derive(Clone, Default)]
+pub struct SharedFnChunk(std::rc::Rc<std::cell::RefCell<Option<CachedFnChunk>>>);
+
+struct CachedFnChunk {
+    /// コンパイル時の注釈テーブル。**アドレス再利用を防ぐため `Rc` ごと保持する**。
+    annot: std::rc::Rc<crate::type_check::AstAnnotations>,
+    /// `None` = このクロージャは VM に載らないと判明済み（再挑戦しない）。
+    chunk: Option<std::rc::Rc<Chunk>>,
+}
+
+impl SharedFnChunk {
+    /// キャッシュを引く。`None` = 未コンパイル、または注釈が差し替わっていて使えない。
+    /// `Some(inner)` の `inner` が `compile_fn` の結果（`None` = 非対応）。
+    pub fn lookup(
+        &self,
+        annot: &std::rc::Rc<crate::type_check::AstAnnotations>,
+    ) -> Option<Option<std::rc::Rc<Chunk>>> {
+        match &*self.0.borrow() {
+            Some(c) if std::rc::Rc::ptr_eq(&c.annot, annot) => Some(c.chunk.clone()),
+            _ => None,
+        }
+    }
+
+    /// コンパイル結果を覚える（非対応＝`None` も覚えて再挑戦を防ぐ）。
+    pub fn store(
+        &self,
+        annot: std::rc::Rc<crate::type_check::AstAnnotations>,
+        chunk: Option<std::rc::Rc<Chunk>>,
+    ) {
+        *self.0.borrow_mut() = Some(CachedFnChunk { annot, chunk });
+    }
+}
+
+// `Chunk` は `Debug` を実装しないので手書きする（`ChunkFnDef` の derive を保つため）。
+impl std::fmt::Debug for SharedFnChunk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = match &*self.0.borrow() {
+            None => "uncompiled",
+            Some(c) if c.chunk.is_some() => "compiled",
+            Some(_) => "ineligible",
+        };
+        write!(f, "SharedFnChunk({state})")
+    }
+}
+
 /// 入れ子 `fn` 定義 1 件ぶんのデータ（#27・`Op::MakeFn`）。
 #[derive(Debug, Clone)]
 pub struct ChunkFnDef {
@@ -29,6 +94,8 @@ pub struct ChunkFnDef {
     /// `static mut` のキャプチャ（名前, 宣言位置の span index）（#27-d 段階 2b）。
     /// セルは `Interpreter::static_cells` にあるので、実行時に span をキーに引いて共有する。
     pub static_captures: Vec<(String, u32)>,
+    /// この定義サイトから作られた**全クロージャ実体で共有**するコンパイル済み本体（#30）。
+    pub compiled: SharedFnChunk,
 }
 
 /// `let a, b = t` 1 件ぶんの分解情報（#27-c）。

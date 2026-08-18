@@ -61,40 +61,67 @@ impl Interpreter {
     }
 
     /// fn_val に対応する VM Chunk を取得（なければコンパイルしてキャッシュ）。
-    /// キャッシュキーは `Rc::as_ptr`。`Weak` 検証でアドレス再利用（テンプレート一時 fn_val）を弾く。
+    ///
+    /// キャッシュは 2 段（#30）:
+    /// 1. **定義サイト共有**（`fn_val.vm_chunk` = `ChunkFnDef::compiled`）。`Op::MakeFn` で
+    ///    作られたクロージャはこちら。実体が何個できても**コンパイルは 1 回**。
+    /// 2. **実体ごと**（`self.vm_chunks`・キー = `Rc::as_ptr`）。ツリーウォークの
+    ///    `exec_fn_def` 由来やテンプレート実体化など、定義サイトの器を持たない関数用。
+    ///    `Weak` 検証でアドレス再利用（テンプレート一時 fn_val）を弾く。
+    ///
+    /// ⚠ 1 は**注釈テーブルが同じときだけ**再利用する（REPL は入口ごとに差し替える）。
+    /// 判定は `Rc::ptr_eq` 1 回なので、HashMap 引き + `Weak::upgrade` より軽い。
     fn get_or_compile_chunk(&mut self, fn_val: &Rc<FnValue>) -> Option<Rc<crate::vm::Chunk>> {
+        if let Some(shared) = fn_val.vm_chunk.clone() {
+            if let Some(hit) = shared.lookup(&self.annotations) {
+                return hit;
+            }
+            let compiled = self.compile_fn_value(fn_val);
+            shared.store(self.annotations.clone(), compiled.clone());
+            return compiled;
+        }
         let key = Rc::as_ptr(fn_val) as usize;
         match self.vm_chunks.get(&key) {
             Some((weak, cached)) if weak.upgrade().is_some() => cached.clone(),
             _ => {
-                // 不変キャプチャの名前を渡す（#27-d）。コンパイラが末尾に slot を採番し、
-                // 呼び出し側が `chunk.captured_slots` を見て値を書き込む。
-                // 可変キャプチャを含む場合は `vm_eligible` が偽なのでここへ来ない。
-                // 不変キャプチャは slot へ、**可変キャプチャはセルへ**（#27-d 段階 2b）。
-                let mut captures: Vec<String> = Vec::new();
-                let mut mut_captures: Vec<String> = Vec::new();
-                for (n, c) in &fn_val.captured_env {
-                    match c {
-                        CapturedVar::Immutable(_) => captures.push(n.clone()),
-                        CapturedVar::Mutable(_) => mut_captures.push(n.clone()),
-                    }
-                }
-                let compiled = crate::vm::compile_fn(
-                    &fn_val.params,
-                    &fn_val.body,
-                    self.annotations.clone(),
-                    &captures,
-                    &mut_captures,
-                )
-                .map(Rc::new);
-                if crate::interpreter::tw_stats::enabled() {
-                    crate::interpreter::tw_stats::record_compile("fn", compiled.is_some());
-                }
+                let compiled = self.compile_fn_value(fn_val);
                 self.vm_chunks
                     .insert(key, (Rc::downgrade(fn_val), compiled.clone()));
                 compiled
             }
         }
+    }
+
+    /// `fn_val` の本体をバイトコードへコンパイルする（キャッシュ判断は呼び出し側・#30）。
+    ///
+    /// 不変キャプチャの名前を渡す（#27-d）。コンパイラが末尾に slot を採番し、
+    /// 呼び出し側が `chunk.captured_slots` を見て値を書き込む。
+    /// 不変キャプチャは slot へ、**可変キャプチャはセルへ**（#27-d 段階 2b）。
+    ///
+    /// ⚠ 渡す名前の集合は `captured_env`（HashMap）の反復順に依存してはいけない。
+    /// 依存しないのは `compile_fn` 側が `sort()` してから採番するため（そこが崩れると
+    /// #30 の「実体間で Chunk を共有してよい」根拠も同時に崩れる）。
+    fn compile_fn_value(&mut self, fn_val: &Rc<FnValue>) -> Option<Rc<crate::vm::Chunk>> {
+        let mut captures: Vec<String> = Vec::new();
+        let mut mut_captures: Vec<String> = Vec::new();
+        for (n, c) in &fn_val.captured_env {
+            match c {
+                CapturedVar::Immutable(_) => captures.push(n.clone()),
+                CapturedVar::Mutable(_) => mut_captures.push(n.clone()),
+            }
+        }
+        let compiled = crate::vm::compile_fn(
+            &fn_val.params,
+            &fn_val.body,
+            self.annotations.clone(),
+            &captures,
+            &mut_captures,
+        )
+        .map(Rc::new);
+        if crate::interpreter::tw_stats::enabled() {
+            crate::interpreter::tw_stats::record_compile("fn", compiled.is_some());
+        }
+        compiled
     }
 
     /// ジェネレータ本体に対応する VM Chunk を取得（なければコンパイルしてキャッシュ, タスク #8）。

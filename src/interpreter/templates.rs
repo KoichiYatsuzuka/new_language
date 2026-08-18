@@ -161,6 +161,7 @@ impl Interpreter {
                             is_python: false,
                             captured_env: std::collections::HashMap::new(),
                             return_type: None,
+                            vm_chunk: None,
                         });
                         self.template_fn_cache.insert(key, fn_val.clone());
                         fn_val
@@ -347,6 +348,7 @@ impl Interpreter {
                             is_python: false,
                             captured_env: std::collections::HashMap::new(),
                         return_type: None,
+                        vm_chunk: None,
                         }));
                 }
                 Stmt::GenDef {

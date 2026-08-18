@@ -121,6 +121,13 @@ pub struct FnValue {
     pub captured_env: HashMap<String, CapturedVar>,
     /// 静的型アノテーションの戻り値型（文字列）。import[cs-dll] のブリッジ呼び出しで使用。
     pub return_type: Option<String>,
+    /// 定義サイト共有のコンパイル済み本体（#30）。`Op::MakeFn` で作られたクロージャだけが持つ。
+    ///
+    /// `Some` なら `get_or_compile_chunk` は `Interpreter::vm_chunks`（`FnValue` アドレスが
+    /// キー＝**実体ごとに再コンパイル**）を引かずにこちらを使う。`None`（ツリーウォークの
+    /// `exec_fn_def` 由来・テンプレート実体化・`deep_clone` 由来）は従来どおり。
+    /// ⚠ **`deep_clone` では必ず `None`**（スレッドへ `Rc` を持ち出さない・#15）。
+    pub vm_chunk: Option<crate::vm::chunk::SharedFnChunk>,
 }
 
 
@@ -196,6 +203,8 @@ impl ClassValue {
                             is_python: rc.is_python,
                             captured_env: deep_clone_captured_env(&rc.captured_env),
                             return_type: rc.return_type.clone(),
+                            // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
+                            vm_chunk: None,
                         })
                     })
                     .collect();

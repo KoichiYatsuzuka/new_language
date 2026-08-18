@@ -55,6 +55,9 @@ impl Interpreter {
         // 可変キャプチャ（#27-d 段階 2b）。**セルを共有**するので値ではなく `Rc` を受け取る。
         cell_captured: Vec<(String, std::rc::Rc<std::cell::RefCell<Value>>)>,
         existing: Value,
+        // 定義サイト共有の Chunk（#30）。`Op::MakeFn` は `ChunkFnDef::compiled` を渡す。
+        // ツリーウォークの `exec_fn_def` 経由は定義サイトの器を持たないので `None`。
+        vm_chunk: Option<crate::vm::chunk::SharedFnChunk>,
     ) -> Value {
         use crate::interpreter::CapturedVar;
         let mut captured_env: HashMap<String, CapturedVar> = captured
@@ -71,6 +74,7 @@ impl Interpreter {
             is_python: self.in_python_module,
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
+            vm_chunk,
         });
         let existing = match existing {
             Value::None => None,
@@ -114,6 +118,7 @@ impl Interpreter {
             is_python: self.in_python_module,
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
+            vm_chunk: None,
         });
 
         if decorators.is_empty() {
@@ -310,6 +315,7 @@ impl Interpreter {
                     is_python: false,
                     captured_env: HashMap::new(),
                 return_type: None,
+                vm_chunk: None,
                 });
                 let mut methods = HashMap::new();
                 methods.insert("__init__".to_string(), vec![init_fn]);
@@ -385,6 +391,7 @@ impl Interpreter {
             is_python: false,
             captured_env: HashMap::new(),
         return_type: None,
+        vm_chunk: None,
         });
         let mut item_methods = HashMap::new();
         item_methods.insert("__init__".to_string(), vec![init_fn]);
@@ -530,6 +537,7 @@ impl Interpreter {
                         is_python: self.in_python_module,
                         captured_env: HashMap::new(),
                         return_type: mret.clone(),
+                        vm_chunk: None,
                     });
                     // `__cast__[TypeName]` メソッドはキャスト専用のキー名で格納する。
                     // テンプレートパラメータの名前（具体型名）をキーとして使用する。

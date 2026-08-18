@@ -66,6 +66,7 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
         is_python: false,
         captured_env: HashMap::new(),
     return_type: None,
+    vm_chunk: None,
     });
     let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
     methods.insert("__init__".to_string(), vec![init_fn]);
@@ -161,6 +162,7 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
         is_python: false,
         captured_env: HashMap::new(),
     return_type: None,
+    vm_chunk: None,
     });
     let mut methods = HashMap::new();
     methods.insert("__init__".to_string(), vec![init_fn]);
