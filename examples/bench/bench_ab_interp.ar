@@ -1,0 +1,244 @@
+# bench_ab_interp.ar — A/B ベンチ **モード1: 非コンパイル（解釈実行）**
+#
+# master（ツリーウォーク）と byte-code（バイトコード VM）を同じ .ar で比べるための計測。
+# 出力は 1 行 1 指標の `METRIC <name> <seconds>` 形式（ab_bench_modes.ps1 が解析する）。
+#
+# ホットループは必ず `fn` の中に置く（VM は関数本体に載る）。
+# 各指標は「ループ制御込みの経過時間」であり、baseline（空ループ）を別指標として出す。
+#
+# Run: target/release/arrow.exe -src examples/bench/bench_ab_interp.ar
+
+import[py-int] time
+
+let N  = 1_000_000     # 単純ループ用
+let NM = 600_000       # メソッド/属性/クロージャ用
+let NS = 300_000       # 文字列/コレクション用
+
+# ─────────────────────────── 計測対象 ───────────────────────────
+
+fn loop_empty(let n: int) -> int:
+    mut i = 0
+    while i < n:
+        i += 1
+    return i
+
+fn loop_int_arith(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        acc = acc + i * 2 - 1
+        i += 1
+    return acc
+
+fn loop_float_arith(let n: int) -> float:
+    mut i = 0
+    mut acc = 0.0
+    let k = 1.5
+    while i < n:
+        acc = acc + k * 2.0
+        i += 1
+    return acc
+
+fn leaf(let x: int) -> int:
+    return x + 1
+
+fn loop_fn_call(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        acc += leaf(i)
+        i += 1
+    return acc
+
+fn loop_for_range(let n: int) -> int:
+    mut acc = 0
+    for x in range(n):
+        acc += x
+    return acc
+
+fn loop_branch(let n: int) -> int:
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        if i % 3 == 0:
+            acc += 1
+        elif i % 3 == 1:
+            acc += 2
+        else:
+            acc -= 1
+        i += 1
+    return acc
+
+class Vec3:
+    mut x: float
+    mut y: float
+    mut z: float
+
+    fn __init__(mut self, let x: float, let y: float, let z: float) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+
+    fn norm2(let self) -> float:
+        return self.x * self.x + self.y * self.y + self.z * self.z
+
+fn loop_field(let n: int) -> float:
+    mut v = Vec3(1.0, 2.0, 3.0)
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        v.x = float(i)
+        acc += v.x + v.y + v.z
+        i += 1
+    return acc
+
+fn loop_method(let n: int) -> float:
+    let v = Vec3(1.0, 2.0, 3.0)
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += v.norm2()
+        i += 1
+    return acc
+
+fn loop_new_obj(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        let v = Vec3(float(i), 2.0, 3.0)
+        acc += v.x
+        i += 1
+    return acc
+
+fn make_adder(let x: int) -> function[let int]->int:
+    fn add(let y: int) -> int:
+        return x + y
+    return add
+
+fn loop_closure_call(let n: int) -> int:
+    let f = make_adder(3)
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        acc += f(i)
+        i += 1
+    return acc
+
+fn loop_list_index(let n: int) -> int:
+    mut xs = [0, 1, 2, 3, 4, 5, 6, 7]
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        xs[i % 8] = i
+        acc += xs[(i + 1) % 8]
+        i += 1
+    return acc
+
+fn loop_str_ops(let n: int) -> int:
+    let s = "the quick brown fox jumps over the lazy dog"
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        let a = s
+        acc += len(a) + len(s + "!")
+        i += 1
+    return acc
+
+fn loop_dict(let n: int) -> int:
+    mut d: dict[str, int] = {"a": 1, "b": 2, "c": 3}
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        d["a"] = i
+        acc += d["a"] + d["b"] + d["c"]
+        i += 1
+    return acc
+
+fn loop_try(let n: int) -> int:
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        try:
+            acc += i
+        except Exception as e:
+            acc -= 1
+        i += 1
+    return acc
+
+fn loop_block_expr(let n: int) -> int:
+    mut acc = 0
+    mut i = 0
+    while i < n:
+        let v = block->int:
+            if i % 2 == 0:
+                block_return i * 2
+            block_return i
+        acc += v
+        i += 1
+    return acc
+
+# ─────────────────────────── 計測ドライバ ───────────────────────────
+
+mut sink: float = 0.0
+
+let t0 = time.time()
+sink += float(loop_empty(N))
+print("METRIC interp_baseline_empty " + str(time.time() - t0))
+
+let t1 = time.time()
+sink += float(loop_int_arith(N))
+print("METRIC interp_int_arith " + str(time.time() - t1))
+
+let t2 = time.time()
+sink += loop_float_arith(N)
+print("METRIC interp_float_arith " + str(time.time() - t2))
+
+let t3 = time.time()
+sink += float(loop_fn_call(N))
+print("METRIC interp_fn_call " + str(time.time() - t3))
+
+let t4 = time.time()
+sink += float(loop_for_range(N))
+print("METRIC interp_for_range " + str(time.time() - t4))
+
+let t5 = time.time()
+sink += float(loop_branch(N))
+print("METRIC interp_branch " + str(time.time() - t5))
+
+let t6 = time.time()
+sink += loop_field(NM)
+print("METRIC interp_field_access " + str(time.time() - t6))
+
+let t7 = time.time()
+sink += loop_method(NM)
+print("METRIC interp_method_call " + str(time.time() - t7))
+
+let t8 = time.time()
+sink += loop_new_obj(NM)
+print("METRIC interp_new_object " + str(time.time() - t8))
+
+let t9 = time.time()
+sink += float(loop_closure_call(NM))
+print("METRIC interp_closure_call " + str(time.time() - t9))
+
+let t10 = time.time()
+sink += float(loop_list_index(NM))
+print("METRIC interp_list_index " + str(time.time() - t10))
+
+let t11 = time.time()
+sink += float(loop_str_ops(NS))
+print("METRIC interp_str_ops " + str(time.time() - t11))
+
+let t12 = time.time()
+sink += float(loop_dict(NS))
+print("METRIC interp_dict " + str(time.time() - t12))
+
+let t13 = time.time()
+sink += float(loop_try(NM))
+print("METRIC interp_try " + str(time.time() - t13))
+
+let t14 = time.time()
+sink += float(loop_block_expr(NM))
+print("METRIC interp_block_expr " + str(time.time() - t14))
+
+print("CHECKSUM " + str(sink))

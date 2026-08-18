@@ -37,6 +37,14 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 #46=ループ反転は**命令数 -20% でも 1.003x**）。
 ⇒ **速度目的の残タスクは無い**。残るのは外部接続系の別レーン（#19/#17-a/#17-b・優先度低）と
 ブロック中の 2 件（#14 → #11 R2-c・前提が**未計画**）だけ。
+**#47 で master との端点 A/B を実行モード別に実測した**（[ab_bench_modes.ps1](ab_bench_modes.ps1)・新設）:
+解釈実行 **3.97x** ／ native の境界・コールバック **1.60x** ／ 純ネイティブ **1.00x**（＝負の対照）／
+C DLL は見かけ 2.18x でも **FFI 自体は 1.15〜1.23x**（速いのは周りの解釈実行）。
+⚠ **最上位は fn 内より 3.6 倍遅い**（baseline 1.62x ↔ 5.90x）＝ **VM に載っている ≠ 同じ速さ**。
+⚠⚠ **この計測で byte-code 側の実バグが 1 件出た** — `import[cpp-lib]` の `double*` out 引数の
+書き戻し（`assign_var` ＝名前引き）が **VM のローカル（`vm_stack` slot）に届かず黙って 0.0 を返す**。
+既存ゲートは exit code しか見ないので全部緑のまま素通りした（**FFI の値を検査する網が無い**）。
+詳細は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) #47。
 
 > **✅ この系列は完了している（2026-08-19 時点）**
 > **解釈実行の統一（VM 一本化）も高速化も、やり切って打ち止め**まで確認した。
@@ -149,6 +157,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | [dump_native_ir.ps1](dump_native_ir.ps1) | 代表 6 モジュールの生成 LLVM IR を保存（`.arc`/`.ars` は退避・復元） |
 | [annot_diff.ps1](annot_diff.ps1) / [annot_unresolved.ps1](annot_unresolved.ps1) | 注釈の充填状況・binop 特化の内訳・`Unresolved` の発生源／その全例題集計（式種別ごと） |
 | [ab_bench.ps1](ab_bench.ps1) | 2 つの `arrow.exe` を**交互実行**して経過時間を比較（`-A head.exe -B new.exe`）。#2b で新設・**#38 で非同期読み化**。異常終了／タイムアウト（`-TimeoutSec` 既定 180）／不在パスは**値を出さず理由を表示**する（黙って速い値を出さない）。⚠ `powershell -File` 経由だと `-Scripts a,b,c` が 1 要素に潰れるので `-Command` で呼ぶ |
+| [ab_bench_modes.ps1](ab_bench_modes.ps1) | **実行モード別**の A/B 計測（#47 で新設）。非コンパイル／コンパイル済み native／C DLL の 3 経路を交互実行し、スクリプトが出す `METRIC <name> <secs>` を解析する（プロセス経過時間ではないので起動・DLL ロード・setup を計測から外せる）。`CHECKSUM` を A/B で突き合わせ、食い違えば値を出さず警告。⚠ native モードは**測る側のバイナリで `--compile` し直す**（.arc の形式がブランチ間で違う） |
 | [repl_session.ps1](repl_session.ps1) | **対話 REPL の回帰検知**（#36 で新設）。`examples/repl/repl_session.{in,out}` の golden 比較。⚠ `compare_vm_modes` は stdin を与えず、`compare_debug_modes` はデバッガ REPL（別物）を見るので、**対話 REPL はこれだけが検査している**。更新は `-Update`（差分は必ず目で見る） |
 | [debug_session.ps1](debug_session.ps1) | **対話デバッガのステッピングの回帰検知**（#1 で新設・#33 で golden 化）。`examples/debugger/<name>.{ar,in,out}` の期待値比較。⚠ 他のどのゲートも stdin を与えないので、**ステッピングはこれだけが検査している**。更新は `-Update`（**#44 以降は書き換える行を必ず表示する**＝黙って上書きできない）。⚠ `6bf039c`〜`7aea0e5` の間は golden が BOM 修正前のままで **5 件とも赤かった**（#44 で録り直し済み） |
 | [compare_python_impl.ps1](compare_python_impl.ps1) | **参照実装（`impl_python`）との stdout 差分検査**（#31 で新設）。「**両実装が同じ間違いをする形**」以外を覆う唯一の網で、`compare_vm_modes` を失った後の代替。既知差分は理由つきで `$knownDiff` に列挙（`-ShowSkipped`）。⚠ `impl_python` は 100 コミット前に同期 |
