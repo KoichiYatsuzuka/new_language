@@ -401,7 +401,7 @@ examples/  (recursive .ar counts per category)
   ar_config.json (32)
   bench.ps1 (36)
   bench_baseline.md (68)
-  BYTECODE_VM_PLAN.md (905)
+  BYTECODE_VM_PLAN.md (925)
   CLAUDE.md (70)
   compare_python_impl.ps1 (203)
   debug_session.ps1 (141)
@@ -420,5 +420,5 @@ examples/  (recursive .ar counts per category)
   tw_stats.ps1 (104)
   tw_stats_files.ps1 (57)
 ```
-_Generated 2026-08-18 by generate-codebase-map.ps1_
+_Generated 2026-08-19 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->
