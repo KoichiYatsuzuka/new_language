@@ -22,9 +22,8 @@ impl Interpreter {
     ) -> Result<Value, String> {
         use crate::interpreter::PtrParam;
 
-        // Fast path: no write-back parameters
-        let has_writeback = fn_ref.ptr_params.contains(&PtrParam::MutPtr);
-        if !has_writeback {
+        // Fast path: no write-back parameters（判定は VM 側と同一実装・#48）
+        if !fn_ref.has_writeback() {
             let evaled = self.eval_call_args(args)?;
             let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
             return self.dispatch_native_evaled(fn_ref, vals);
@@ -415,7 +414,29 @@ impl Interpreter {
     pub(crate) fn dispatch_native_evaled(
         &mut self,
         fn_ref: &Arc<NativeFnRef>,
+        vals: Vec<Value>,
+    ) -> Result<Value, String> {
+        // 書き戻し先を持たない呼び出し（＝従来の全経路）。**唯一の実装は `_wb` 版**に置き、
+        // ここは「書き戻し先ゼロ」で委譲するだけにする（`*_evaled` 版とずれた実装を作らない）。
+        self.dispatch_native_evaled_wb(fn_ref, vals, 0, &mut Vec::new())
+    }
+
+    /// `dispatch_native_evaled` の書き戻し対応版（#48）。
+    ///
+    /// `wb_mask` の bit i が立っている引数は「**呼び出し元が書き戻し先を知っている
+    /// 名前付き mut 変数**」で、ツリーウォークの `call_native_function` が
+    /// 引数式を `Expr::Ident` と判定したのと同じ意味を持つ。C が書いた値は
+    /// `wb_out` に `(arg index, 値)` で積んで返し、**格納は呼び出し元が行う**
+    /// （VM のローカルは `vm_stack` の slot にあり、ここからは触れないため）。
+    ///
+    /// ⚠ `wb_mask` を 0 にすると従来どおり**書き戻しをしない**。判定不能な呼び出し元
+    /// （`call_value_evaled` 経由など）はそのまま 0 を渡せばよい。
+    pub(crate) fn dispatch_native_evaled_wb(
+        &mut self,
+        fn_ref: &Arc<NativeFnRef>,
         mut vals: Vec<Value>,
+        wb_mask: u32,
+        wb_out: &mut Vec<(u8, Value)>,
     ) -> Result<Value, String> {
         if vals.len() < fn_ref.min_params || vals.len() > fn_ref.n_params {
             let expected = if fn_ref.min_params == fn_ref.n_params {
@@ -452,13 +473,16 @@ impl Interpreter {
             let typed_ptr = fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed);
             if typed_ptr != 0 && vals.len() == sig.params.len() && vals.len() <= 16 {
                 let mut slots = [0u64; 16];
-                // OutPtr 用ローカル領域。この経路は CallArg 情報がなく named-mut 判定が
-                // できないため書き戻しは行わない（Ptr の named_mut=None と同じ安全側）。
+                // OutPtr 用ローカル領域（呼び出し終了まで生存）。書き戻すのは
+                // `wb_mask` の立った引数だけ — 呼び出し元が書き戻し先を知っている印で、
+                // ツリーウォークの「引数式が `Expr::Ident`」と同じ意味（#48）。
                 let mut out_locals = [0u64; 16];
+                let mut out_wb: Vec<(usize, crate::interpreter::value::RawWidth)> = Vec::new();
                 let mut cleanups: Vec<PtrArgCleanup> = Vec::new();
                 let mut ptr_err: Option<String> = None;
                 let mut ok = true;
                 for (i, (v, ty)) in vals.iter().zip(&sig.params).enumerate() {
+                    let named_mut = ((wb_mask >> i) & 1 == 1).then_some(true);
                     match (v, ty) {
                         (Value::Int(n), AbiTy::I64) => slots[i] = *n as u64,
                         (Value::Float(f), AbiTy::F64) => slots[i] = f.to_bits(),
@@ -466,7 +490,7 @@ impl Interpreter {
                         (Value::Int(n), AbiTy::F64) => slots[i] = (*n as f64).to_bits(),
                         (_, AbiTy::Ptr { mutable, by_value, layout }) => {
                             match crate::interpreter::value::resolve_typed_ptr_arg(
-                                v, *mutable, *by_value, layout, None,
+                                v, *mutable, *by_value, layout, named_mut,
                             ) {
                                 Ok(Some((slot, cleanup))) => {
                                     slots[i] = slot;
@@ -488,6 +512,9 @@ impl Interpreter {
                                 Some(enc) => {
                                     out_locals[i] = enc;
                                     slots[i] = std::ptr::addr_of_mut!(out_locals[i]) as u64;
+                                    if named_mut.is_some() {
+                                        out_wb.push((i, *width));
+                                    }
                                 }
                                 None => {
                                     ok = false;
@@ -522,6 +549,15 @@ impl Interpreter {
                         // 既存の raise 経路と同じ "TypeName: msg" 形式で伝播
                         return Err(err.to_error_string());
                     }
+                    // OutPtr の書き戻し（C が書いた値を呼び出し元へ返す — 成功時のみ・#48）。
+                    // 格納は呼び出し元（VM）が行う。`call_native_function` の同じ処理と
+                    // **同じタイミング・同じ decode** であること。
+                    for (i, width) in out_wb {
+                        wb_out.push((
+                            i as u8,
+                            crate::interpreter::value::decode_out_ptr(out_locals[i], width),
+                        ));
+                    }
                     return Ok(match sig.ret {
                         AbiTy::I64 => Value::Int(ret as i64),
                         AbiTy::F64 => Value::Float(f64::from_bits(ret)),
@@ -536,10 +572,20 @@ impl Interpreter {
 
         let is_outermost = crate::interpreter::native_api::enter_native_call(self as *mut Interpreter);
 
+        // ハンドル経路の書き戻し（#48）: `MutPtr` パラメータかつ `wb_mask` が立っている
+        // 引数には**書き込み可能なアリーナ枠**を渡す。`call_native_function` の
+        // handles 構築と同じ規則（あちらは `Expr::Ident` か、こちらは mask）。
+        let mut handle_wb: Vec<(u8, i64)> = Vec::new();
         let handles: Vec<i64> = vals
             .iter()
             .enumerate()
             .map(|(i, v)| {
+                let pp = fn_ref.ptr_params.get(i).copied().unwrap_or(crate::interpreter::PtrParam::None);
+                if pp == crate::interpreter::PtrParam::MutPtr && (wb_mask >> i) & 1 == 1 {
+                    let h = crate::interpreter::native_api::push_handle_writeback(v.clone());
+                    handle_wb.push((i as u8, h));
+                    return h;
+                }
                 let is_mut = fn_ref.param_mutabilities.get(i).copied().unwrap_or(true);
                 let owned = if is_mut {
                     v.clone()
@@ -603,6 +649,11 @@ impl Interpreter {
                         return Err(format!("{type_name}: {msg}"));
                     }
                     return Err("NativeError: CB_RAISE called but no pending raise".to_string());
+                }
+                // ⚠ **`exit_native_call` がアリーナを切り詰める前に**読み出すこと（#48）。
+                // `call_native_function` の `updated` と同じ順序・同じ関数を使う。
+                for (i, h) in &handle_wb {
+                    wb_out.push((*i, crate::interpreter::native_api::clone_value_at(*h)));
                 }
                 Ok(crate::interpreter::native_api::exit_native_call(result_h, is_outermost))
             }

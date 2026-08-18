@@ -250,6 +250,107 @@ fn store_global_miss(
     Ok(())
 }
 
+/// `Op::Call` の呼び先が `NativeFunction` だったときの本体（#48）。
+///
+/// `call_value_evaled` の `NativeFunction` アームと**同じ意味**（＝`dispatch_native_evaled`）に、
+/// 書き戻しがある場合の副表引きと格納を足しただけ。
+///
+/// ⚠ `#[inline(never)]`。副表のハッシュ引きも `has_writeback()`（`ptr_params` の走査）も
+/// ここに閉じ込める — `exec_op` は `#[inline(always)]` なので、展開すると native を
+/// 使わない Chunk まで遅くなる（#10-b と同じ失敗を #48 で一度踏んだ）。
+#[inline(never)]
+fn native_call_with_wb(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &mut [Value],
+    base: usize,
+    cells: &[Rc<RefCell<Value>>],
+    fn_ref: &std::sync::Arc<crate::interpreter::value::NativeFnRef>,
+    evaled: Vec<(Option<String>, Value, bool)>,
+    node_id: &u32,
+) -> Result<Value, String> {
+    let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+    let wb = if fn_ref.has_writeback() {
+        chunk.wb_targets.get(node_id)
+    } else {
+        None
+    };
+    let Some(wb) = wb else {
+        return interp.dispatch_native_evaled(fn_ref, vals);
+    };
+    let mut out = Vec::new();
+    let r = interp.dispatch_native_evaled_wb(fn_ref, vals, wb.mask, &mut out)?;
+    apply_writeback(interp, chunk, buf, base, cells, wb, out)?;
+    Ok(r)
+}
+
+/// `mod.func(mut x)` が **書き戻しを持つ native 呼び出し**かを判定する（#48）。
+///
+/// `Some((呼び先, 書き戻し表))` を返したときだけ VM が `dispatch_native_evaled_wb` を
+/// 直接呼ぶ。外れたら従来どおり `vm_method_call_other` に委ねる（挙動は変わらない）。
+///
+/// ⚠ **判定は「レシーバの形」から始める**（`Value::Namespace` か = discriminant 1 個）。
+/// 副表のハッシュ引きを先に置くと、str/list/dict のメソッド呼び出し全部が毎回それを払う。
+/// `Value::Instance` の通常のメソッド呼び出しはここに来ない
+/// （呼び出し側が先に `matches!(obj, Value::Instance(_))` で分岐している）。
+#[inline(never)]
+fn wb_native_method<'c>(
+    chunk: &'c Chunk,
+    obj: &Value,
+    name: &str,
+    node_id: &u32,
+) -> Option<(
+    std::sync::Arc<crate::interpreter::value::NativeFnRef>,
+    &'c crate::vm::chunk::WbCall,
+)> {
+    let fn_ref = Interpreter::vm_namespace_writeback_fn(obj, name)?;
+    let wb = chunk.wb_targets.get(node_id)?;
+    Some((fn_ref, wb))
+}
+
+/// native の `mut` ポインタ引数の**書き戻しを格納する**（#48）。
+///
+/// `dispatch_native_evaled_wb` が返した `(arg index, 値)` を、コンパイル時に確定した
+/// 書き戻し先（[`WbStore`](crate::vm::chunk::WbStore)）へ書く。
+/// ツリーウォークが `assign_var(名前)` でやっていたことの slot 版。
+///
+/// ⚠ **各アームは対応する `Op::Store*` と同じ意味でなければならない**
+/// （`Local`→`StoreLocal` / `Cell`→`StoreCell` / `Global`→`StoreGlobal` /
+/// `Name`→`StoreName`）。回帰検知は
+/// `examples/interop/cpp_out_param_writeback.ar`（記憶域の種類ごとに 1 本ずつ置き、
+/// **期待値と違えば raise する**ので exit code しか見ないゲートにも映る）。
+/// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
+#[inline(never)]
+fn apply_writeback(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &mut [Value],
+    base: usize,
+    cells: &[Rc<RefCell<Value>>],
+    wb: &crate::vm::chunk::WbCall,
+    out: Vec<(u8, Value)>,
+) -> Result<(), String> {
+    use crate::vm::chunk::WbStore;
+    for (arg_idx, v) in out {
+        // `targets` は数個なので線形探索で足りる（呼び出し 1 回につき 1〜2 件）。
+        let Some((_, store)) = wb.targets.iter().find(|(i, _)| *i == arg_idx) else {
+            continue;
+        };
+        match *store {
+            WbStore::Local(s) => buf[base + s as usize] = v,
+            WbStore::Cell(i) => *cells[i as usize].borrow_mut() = v,
+            // 書き戻しは稀なので `StoreGlobal` のヒット経路は使わず、
+            // **ミス経路の実装をそのまま共有する**（可変性検査・`NameError`・
+            // `Var::SlotCell` 昇格まで `Op::StoreGlobal` と同一になる）。
+            WbStore::Global(ni, ci) => {
+                store_global_miss(interp, chunk, ni, &chunk.global_caches[ci as usize], v)?
+            }
+            WbStore::Name(ni) => interp.vm_assign_by_name(&chunk.names[ni as usize], v)?,
+        }
+    }
+    Ok(())
+}
+
 /// `Op::MakeFn` の本体（#27）。入れ子 `fn` の関数値を作って slot へ書く。
 ///
 /// ツリーウォークの `exec_fn_def`（デコレータ・テンプレートなし・キャプチャ空の経路）と同じ判断を、
@@ -844,6 +945,22 @@ fn exec_op(
                 .enumerate()
                 .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
                 .collect();
+            // native の `mut` ポインタ書き戻し（#48）。
+            //
+            // ⚠⚠ ここに置いてよいのは **discriminant 1 個の判定だけ**。`exec_op` は
+            // `#[inline(always)]` なので、副表の `is_empty()`／ハッシュ引き／`has_writeback()`
+            // （`ptr_params` の線形走査）をここへ展開すると、**native を 1 度も呼ばない
+            // Chunk のホットループまで巻き添えで遅くなる**（実測: `fn_call` / `closure_call` /
+            // `block_expr` が 0.91x。`f(mut x)` は普通に書かれるので副表はまず空にならない）。
+            // 判定の残りと本体は `#[inline(never)]` の `native_call_with_wb` に置く。
+            if let Value::NativeFunction(fn_ref) = &callee {
+                let fn_ref = fn_ref.clone();
+                let r = native_call_with_wb(
+                    interp, chunk, buf, base, cells, &fn_ref, evaled, node_id,
+                )?;
+                buf.push(r);
+                return Ok(Flow::NextAfterCall);
+            }
             // 呼び出し元名・位置をトレースバック用に渡す（V-E）。
             // `node_id` は FFI 境界検査の宣言型キー（#22-b）。
             let r = interp.call_value_evaled(
@@ -875,6 +992,16 @@ fn exec_op(
                     obj, name, evaled,
                     Some(&chunk.attr_caches[*name_idx as usize]), None,
                 )?
+            } else if let Some((fn_ref, wb)) = (matches!(obj, Value::Namespace(_)))
+                .then(|| wb_native_method(chunk, &obj, name, node_id))
+                .flatten()
+            {
+                // native の `mut` ポインタ書き戻し（#48）
+                let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+                let mut out = Vec::new();
+                let r = interp.dispatch_native_evaled_wb(&fn_ref, vals, wb.mask, &mut out)?;
+                apply_writeback(interp, chunk, buf, base, cells, wb, out)?;
+                r
             } else {
                 interp.vm_method_call_other(obj, name, evaled, *node_id, chunk)?
             };
@@ -898,6 +1025,16 @@ fn exec_op(
                     obj, name, evaled,
                     Some(&chunk.attr_caches[*name_idx as usize]), None,
                 )?
+            } else if let Some((fn_ref, wb)) = (matches!(obj, Value::Namespace(_)))
+                .then(|| wb_native_method(chunk, &obj, name, node_id))
+                .flatten()
+            {
+                // native の `mut` ポインタ書き戻し（#48）。`mod.func(mut x)` の形はここに来る。
+                let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
+                let mut out = Vec::new();
+                let r = interp.dispatch_native_evaled_wb(&fn_ref, vals, wb.mask, &mut out)?;
+                apply_writeback(interp, chunk, buf, base, cells, wb, out)?;
+                r
             } else {
                 interp.vm_method_call_other(obj, name, evaled, *node_id, chunk)?
             };

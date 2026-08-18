@@ -180,6 +180,28 @@ impl Interpreter {
     /// （method IC を効かせるため＋最頻路に判定を足さないため。実測でここを経由させると 3% 落ちた）。
     /// ⚠ **`#[inline(never)]` を外さないこと**（`exec_op` は `#[inline(always)]`）。
     #[inline(never)]
+    /// `mod.func(...)` の呼び先が **`mut` ポインタ書き戻しを持つ native 関数**なら返す（#48）。
+    ///
+    /// VM の `CallMethod` は評価済みの値で呼ぶので、書き戻し先を渡すには
+    /// 呼び先を**先に**同定する必要がある。同定できたときだけ
+    /// `dispatch_native_evaled_wb` を直接呼び、それ以外は従来どおり
+    /// `vm_method_call_other` → `eval_method_call_full` に委ねる
+    /// （＝ここで外れても挙動は変わらない。書き戻しが付かないだけ）。
+    ///
+    /// ⚠ メンバ取得は `eval_method_call_full` の `Namespace` アームと同じ
+    /// `ns.members.get(name)`。見つからない場合はここでエラーにせず `None` を返し、
+    /// **エラー文言の生成は既存の 1 箇所に任せる**。
+    pub(crate) fn vm_namespace_writeback_fn(
+        obj: &Value,
+        method_name: &str,
+    ) -> Option<std::sync::Arc<crate::interpreter::value::NativeFnRef>> {
+        let Value::Namespace(ns) = obj else { return None };
+        match ns.members.get(method_name) {
+            Some(Value::NativeFunction(fn_ref)) if fn_ref.has_writeback() => Some(fn_ref.clone()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn vm_method_call_other(
         &mut self,
         obj: Value,

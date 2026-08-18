@@ -62,7 +62,7 @@ $knownDiff = @{
     'async_closure_share'            = 'py: AsyncManager 未実装'
     'async_vm_body'                  = 'py: AsyncManager 未実装'
     # (b) FFI / 外部言語ブリッジ（外部ツールチェーンに依存し実装差が本質的）
-    'cpp_struct_ptr'                 = 'py: C++ ブリッジの struct 書き戻しが未実装'
+    'bench_ab_cdll'                  = 'py: 計測用（time の再代入が未対応）。#47 の A/B ベンチで意味論の例題ではない'
     'cs_interop_test'                = 'py: C# ブリッジの状態保持が違う'
     'event_cs_fire'                  = 'py: Signal の external_id が未実装'
     'event_external_handler'         = 'py: 外部イベントキューが未実装'

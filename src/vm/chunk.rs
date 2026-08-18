@@ -129,6 +129,44 @@ pub struct KwCall {
     pub arg_names: Vec<Option<String>>,
 }
 
+/// native の `mut` ポインタ引数の**書き戻し先**（#48）。`Chunk::wb_targets` の要素。
+///
+/// ツリーウォークは書き戻し先を「引数式が `Expr::Ident` か」で決め、`assign_var(名前)` で
+/// 書いていた（`Interpreter::call_native_function`）。VM は**評価済みの値**で呼ぶので
+/// 呼び出し時点に引数式が無く、`dispatch_native_evaled` は
+/// 「書き戻し先が判らないので書き戻さない」で通っていた
+/// ＝ **`double*` out 引数が黙って書き戻されなかった**（#47 で検出）。
+///
+/// 引数式はコンパイル時には有るので、**そのとき書き戻し先を確定して副表に置く**。
+/// `ffi_call_info` と同じ判断で op には足さない（`Op::Call` は既に最大 variant で、
+/// フィールドを増やすと**全命令が太る**）。
+pub struct WbCall {
+    /// bit i = arg i の書き戻し先が判っている（＝可変な名前付き変数）。
+    /// `dispatch_native_evaled_wb` にそのまま渡り、ツリーウォークの
+    /// 「引数が名前付き mut 変数のときだけ書き戻す」判定と同じ役割を果たす。
+    pub mask: u32,
+    /// `(arg index, 書き戻し先)`。`mask` の立っている bit と 1:1 に対応する。
+    pub targets: Vec<(u8, WbStore)>,
+}
+
+/// 書き戻し先の記憶域（#48）。コンパイラの `StoreTarget` と 1:1 で、
+/// 対応する `Op::Store*` と**同じ意味**でなければならない（`vm::run::apply_writeback`）。
+///
+/// ⚠ `static mut`（`StoreTarget::Static`）は対象外。`Interpreter::static_cells` を
+/// span キーで直読みする別経路で、native 書き戻しの実例が無いため記録しない
+/// （記録しない＝書き戻さない＝従来どおりで、誤った書き込みは起きない）。
+#[derive(Debug, Clone, Copy)]
+pub enum WbStore {
+    /// VM フレームの slot（`Op::StoreLocal` と同じ）。
+    Local(u16),
+    /// セル変数（`Op::StoreCell` と同じ）。
+    Cell(u16),
+    /// `scopes[0]` のグローバル（`Op::StoreGlobal` と同じ）。(name index, キャッシュ枠 index)。
+    Global(u32, u32),
+    /// 名前で引いて代入（`Op::StoreName` と同じ）。import モジュール本体専用。
+    Name(u32),
+}
+
 pub struct AsyncBlock {
     pub body: Vec<Stmt>,
     pub captures: Vec<(String, u16, bool)>,
@@ -187,6 +225,15 @@ pub struct Chunk {
     /// **参照されるのが外部言語レシーバのときだけ**という性質を使って副表に逃がしてある。
     /// これが無いと `L.get_int` が `get_int`、位置が `<unknown>` になり off/auto が食い違う。
     pub ffi_call_info: std::collections::HashMap<u32, (u32, u32)>,
+    /// native の `mut` ポインタ引数の書き戻し先（#48）。node_id → [`WbCall`]。
+    ///
+    /// **引かれるのは「呼び先が実行時に write-back 持ちの `NativeFunction` だった」ときだけ**。
+    /// 通常の呼び出しは `is_empty()` の 1 回の判定で素通りする（`Op::Call` は最ホットの
+    /// op の 1 つなので、ここに毎回のハッシュ引きを置いてはいけない）。
+    ///
+    /// ⚠ **キーは node_id**（`ffi_call_info` と同じ）。code index にすると
+    /// [peephole](super::peephole) が命令を詰めた瞬間にずれる。
+    pub wb_targets: std::collections::HashMap<u32, WbCall>,
     /// 入れ子 `fn` 定義（#27）。`Op::MakeFn(idx)` が index で参照する。
     ///
     /// ⚠ **キャプチャを持たない入れ子 `fn` に限る**。コンパイラが

@@ -272,6 +272,9 @@ struct Compiler {
     /// メソッド呼び出しの FFI 境界検査用の表示情報（#27-b）。node_id → (表示名 index, span index)。
     /// 詳細は [`Chunk::ffi_call_info`](super::chunk::Chunk)。
     ffi_call_info: HashMap<u32, (u32, u32)>,
+    /// native の `mut` ポインタ引数の書き戻し先（#48）。node_id → `WbCall`。
+    /// 詳細は [`Chunk::wb_targets`](super::chunk::Chunk)。
+    wb_targets: HashMap<u32, crate::vm::chunk::WbCall>,
     /// 入れ子 `fn` 定義（#27）。`Op::MakeFn` が index で参照する。
     fn_defs: Vec<crate::vm::chunk::ChunkFnDef>,
     /// テンプレート呼び出しの型引数リスト（#27-c）。`Op::CallTemplate` が index で参照する。
@@ -537,6 +540,7 @@ pub fn compile_definition_expr(
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
         ffi_call_info: HashMap::new(),
+        wb_targets: HashMap::new(),
         fn_defs: Vec::new(),
         type_arg_lists: Vec::new(),
         tuple_decls: Vec::new(),
@@ -566,6 +570,7 @@ pub fn compile_definition_expr(
         async_blocks: c.async_blocks,
         global_caches: c.global_caches,
         ffi_call_info: c.ffi_call_info,
+        wb_targets: c.wb_targets,
         fn_defs: c.fn_defs,
         type_arg_lists: c.type_arg_lists,
         tuple_decls: c.tuple_decls,
@@ -646,6 +651,7 @@ fn compile_toplevel_stmt_inner(
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
         ffi_call_info: HashMap::new(),
+        wb_targets: HashMap::new(),
         fn_defs: Vec::new(),
         type_arg_lists: Vec::new(),
         tuple_decls: Vec::new(),
@@ -677,6 +683,7 @@ fn compile_toplevel_stmt_inner(
         async_blocks: c.async_blocks,
         global_caches: c.global_caches,
         ffi_call_info: c.ffi_call_info,
+        wb_targets: c.wb_targets,
         fn_defs: c.fn_defs,
         type_arg_lists: c.type_arg_lists,
         tuple_decls: c.tuple_decls,
@@ -916,6 +923,7 @@ fn compile_fn_inner(
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
         ffi_call_info: HashMap::new(),
+        wb_targets: HashMap::new(),
         fn_defs: Vec::new(),
         type_arg_lists: Vec::new(),
         tuple_decls: Vec::new(),
@@ -951,6 +959,7 @@ fn compile_fn_inner(
         async_blocks: c.async_blocks,
         global_caches: c.global_caches,
         ffi_call_info: c.ffi_call_info,
+        wb_targets: c.wb_targets,
         fn_defs: c.fn_defs,
         type_arg_lists: c.type_arg_lists,
         tuple_decls: c.tuple_decls,
@@ -1054,6 +1063,7 @@ pub fn compile_async_body(
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
         ffi_call_info: HashMap::new(),
+        wb_targets: HashMap::new(),
         fn_defs: Vec::new(),
         type_arg_lists: Vec::new(),
         tuple_decls: Vec::new(),
@@ -1089,6 +1099,7 @@ pub fn compile_async_body(
         async_blocks: c.async_blocks,
         global_caches: c.global_caches,
         ffi_call_info: c.ffi_call_info,
+        wb_targets: c.wb_targets,
         fn_defs: c.fn_defs,
         type_arg_lists: c.type_arg_lists,
         tuple_decls: c.tuple_decls,
@@ -1136,6 +1147,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         async_blocks: Vec::new(),
         global_caches: Vec::new(),
         ffi_call_info: HashMap::new(),
+        wb_targets: HashMap::new(),
         fn_defs: Vec::new(),
         type_arg_lists: Vec::new(),
         tuple_decls: Vec::new(),
@@ -1175,6 +1187,7 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         async_blocks: Vec::new(),
         global_caches: c.global_caches,
         ffi_call_info: c.ffi_call_info,
+        wb_targets: c.wb_targets,
         fn_defs: c.fn_defs,
         type_arg_lists: c.type_arg_lists,
         tuple_decls: c.tuple_decls,
@@ -2212,6 +2225,76 @@ impl Compiler {
         }
     }
 
+    /// native の `mut` ポインタ引数の**書き戻し先**を 1 つ解決する（#48）。
+    ///
+    /// [`store_target`](Self::store_target) と**同じ順序で同じ記憶域を見る**が、
+    /// 決められないときに `bail` せず `None` を返す点だけが違う。
+    /// ここは「載せられるか」ではなく「書き戻し先が判るか」の判定であり、
+    /// 判らない＝**書き戻さない（従来どおり）**で正しく、プログラムを拒否してはいけない。
+    ///
+    /// ⚠ `static mut` は対象外（`Interpreter::static_cells` を span キーで直読みする別経路。
+    /// native 書き戻しの実例が無いので `None` にして黙って見送る）。
+    fn wb_store_target(&mut self, name: &str) -> Option<crate::vm::chunk::WbStore> {
+        use crate::vm::chunk::WbStore;
+        // セル変数は slot ではなく共有セル。**slot より先に見る**（`store_target` と同順）。
+        if let Some(&i) = self.cells.get(name) {
+            return Some(WbStore::Cell(i));
+        }
+        if self.statics.contains_key(name) {
+            return None;
+        }
+        if let Some(&slot) = self.slots.get(name) {
+            return Some(WbStore::Local(slot));
+        }
+        if self.module_mode {
+            let ni = self.add_name(name);
+            return Some(WbStore::Name(ni));
+        }
+        // デバッガ REPL／定義文脈は停止フレームの生スコープを見るので `StoreGlobal` では
+        // 別の変数を書く（`store_target` が bail するのと同じ理由）。書き戻しは見送る。
+        if self.debug_mode || self.name_lookup {
+            return None;
+        }
+        let ni = self.add_name(name);
+        // `Op::StoreGlobal` と同じく emit 1 回につきキャッシュ枠を 1 本割り当てる。
+        let ci = self.global_caches.len() as u32;
+        self.global_caches.push(crate::ast::SlotCache::default());
+        Some(WbStore::Global(ni, ci))
+    }
+
+    /// 呼び出し 1 件ぶんの書き戻し先を採取して副表へ記録する（#48）。
+    ///
+    /// **呼び先が native かどうかはコンパイル時には判らない**ので、`f(mut x)` の形なら
+    /// 一律に記録する。実行時に「呼び先が write-back 持ちの `NativeFunction`」だった
+    /// ときだけ引かれるので、余分な記録は害にならない（表が少し太るだけ）。
+    ///
+    /// ⚠ 記録するのは**引数式が識別子**のものだけ。ツリーウォークの
+    /// `call_native_function` が `Expr::Ident` のときだけ書き戻すのと同じ規則。
+    fn record_wb_targets(&mut self, node_id: u32, args: &[CallArg]) {
+        // node_id 0 = 未採番（実行時に引けない）。合成ノードなど。
+        if node_id == 0 || args.len() > 32 {
+            return;
+        }
+        let mut mask: u32 = 0;
+        let mut targets: Vec<(u8, crate::vm::chunk::WbStore)> = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            let CallArg::Positional(e) = arg else { continue };
+            let Expr::Ident { name, .. } = e else { continue };
+            if !self.arg_is_mutable(e) {
+                continue;
+            }
+            let name = name.clone();
+            if let Some(t) = self.wb_store_target(&name) {
+                mask |= 1 << i;
+                targets.push((i as u8, t));
+            }
+        }
+        if !targets.is_empty() {
+            self.wb_targets
+                .insert(node_id, crate::vm::chunk::WbCall { mask, targets });
+        }
+    }
+
     /// 位置引数をスタックへ push し、各引数の is_mutable を bit にした mask を返す。
     /// keyword/可変長引数・33個以上は非対応（`None`）。
     /// 呼び出し引数をスタックへ積み、`(mut_mask, 引数名)` を返す（#27-c）。
@@ -2226,10 +2309,17 @@ impl Compiler {
     fn compile_call_args(
         &mut self,
         args: &[CallArg],
+        wb_node: Option<u32>,
     ) -> Option<(u32, Option<Vec<Option<String>>>)> {
         if args.len() > 32 {
             bail("too-many-args", None);
             return None;
+        }
+        // native の `mut` ポインタ書き戻し先を副表へ（#48）。呼び先が native か判らないので
+        // 「識別子の mut 引数がある呼び出し」を一律に記録する。組み込み・テンプレートは
+        // ポインタ引数を取らないので呼び出し側が `None` を渡して記録しない。
+        if let Some(node_id) = wb_node {
+            self.record_wb_targets(node_id, args);
         }
         let mut mask: u32 = 0;
         let mut names: Vec<Option<String>> = Vec::new();
@@ -3638,12 +3728,12 @@ impl Compiler {
                     let fuse_slot = if has_named_args(args) { None } else { self.as_local(object) };
                     if let Some(slot) = fuse_slot {
                         // 超命令融合（#16 段階(b)(i)）: レシーバが局所変数なら push せず frame 直読み。
-                        let (mask, _) = self.compile_call_args(args)?;
+                        let (mask, _) = self.compile_call_args(args, Some(*node_id))?;
                         let ni = self.add_name(attr);
                         self.emit(Op::CallMethodLocal(slot, ni, args.len() as u16, mask, *node_id));
                     } else {
                         self.compile_expr(object)?; // receiver を push
-                        let (mask, kw) = self.compile_call_args(args)?;
+                        let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                         let ni = self.add_name(attr);
                         match kw {
                             None => {
@@ -3674,7 +3764,8 @@ impl Compiler {
                     // ローカル slot に同名（シャドウ）がなければ組み込みとして扱う。
                     if is_vm_builtin(name) && !self.slots.contains_key(name) {
                         // 組み込みは mut_mask 不要。
-                        let (_, kw) = self.compile_call_args(args)?;
+                        // 組み込みは `mut` ポインタ引数を取らないので書き戻し記録は不要（#48）。
+                        let (_, kw) = self.compile_call_args(args, None)?;
                         let ni = self.add_name(name);
                         match kw {
                             None => {
@@ -3703,12 +3794,12 @@ impl Compiler {
                         // デバッグモード: 呼び先を名前引きで取得（局所・グローバル両対応）。
                         let cn = self.add_name(name);
                         self.emit(Op::LoadName(cn));
-                        let (mask, kw) = self.compile_call_args(args)?;
+                        let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                         self.emit_call(args.len(), mask, cn, site, *node_id, kw)?;
                     } else if let Some(&slot) = self.slots.get(name) {
                         // ローカル/パラメータが関数値を保持している場合は slot 読み。
                         self.emit(Op::LoadLocal(slot));
-                        let (mask, kw) = self.compile_call_args(args)?;
+                        let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                         let ni = self.add_name(name);
                         self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                     } else if name == "Self" && self.self_slot.is_some() {
@@ -3716,7 +3807,7 @@ impl Compiler {
                         // `Call` へ流す（`call_value_evaled` の `Value::Class` アーム＝
                         // ツリーウォークと同一のインスタンス化経路）。
                         self.emit(Op::LoadSelfClass);
-                        let (mask, kw) = self.compile_call_args(args)?;
+                        let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                         let ni = self.add_name(name);
                         self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                     } else if is_builtin_callee(name) || name == "Self" {
@@ -3732,7 +3823,7 @@ impl Compiler {
                         let ci = self.global_caches.len() as u32;
                         self.global_caches.push(crate::ast::SlotCache::default());
                         self.emit(Op::LoadGlobal(ni, ci));
-                        let (mask, kw) = self.compile_call_args(args)?;
+                        let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                         self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                     }
                 } else if let Expr::Ident { name, res: Resolution::Global(_), .. } = func.as_ref() {
@@ -3745,20 +3836,21 @@ impl Compiler {
                     } else {
                         self.emit_load_global(name);
                     }
-                    let (mask, kw) = self.compile_call_args(args)?;
+                    let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                     self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                 } else if let Expr::Ident { name, res: Resolution::Local(slot), .. } = func.as_ref() {
                     // 解決済みローカル関数値の呼び出し。
                     let s = u16::try_from(*slot).ok()?;
                     self.emit(Op::LoadLocal(s));
-                    let (mask, kw) = self.compile_call_args(args)?;
+                    let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                     let ni = self.add_name(name);
                     self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                 } else if let Expr::TemplateInstantiate { base, type_args } = func.as_ref() {
                     // テンプレート呼び出し `Tmpl[T](args)`（#27-c）。ツリーウォークの
                     // `eval_call` と同じく「base を評価 → `instantiate_template` 本体」。
                     self.compile_expr(base)?;
-                    let (mask, kw) = self.compile_call_args(args)?;
+                    // テンプレート実体化は Arrow 関数なので native 書き戻しは無い（#48）。
+                    let (mask, kw) = self.compile_call_args(args, None)?;
                     Self::no_kw(kw)?; // テンプレートの名前付き引数は未対応（#27-c 残り）
                     let ti = u32::try_from(self.type_arg_lists.len()).ok()?;
                     self.type_arg_lists.push(type_args.clone());
@@ -3771,7 +3863,7 @@ impl Compiler {
                     // ⚠ トレースバック表示名は **`<anonymous>`**（`eval_call` の `call_name` が
                     // 識別子以外に付ける名前と揃える。ここを関数名にすると off/auto で出力が食い違う）。
                     self.compile_expr(func)?;
-                    let (mask, kw) = self.compile_call_args(args)?;
+                    let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                     let ni = self.add_name("<anonymous>");
                     self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                 }

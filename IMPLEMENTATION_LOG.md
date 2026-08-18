@@ -5027,16 +5027,35 @@ FFI 経路（引数マーシャリング・ハンドル表・書き戻し）は�
 [cpp_struct_ptr.ar](examples/interop/cpp_struct_ptr.ar) の `v3_norm`（`double*` out 引数 → `mut float` 変数への
 書き戻し）が、**master は `5.0`・byte-code は `0.0` を黙って返す**（最上位・関数内の両方）。
 
-原因: 書き戻しが [native.rs:169-172](src/interpreter/eval/native.rs#L169) ／
-[native.rs:400-403](src/interpreter/eval/native.rs#L400) で `assign_var(&name, …)`
-＝**スコープチェーンへの名前引き代入**を使っている。VM 関数のローカルは `vm_stack` の slot にあり
-`scopes` を参照しないので、代入は**どこにも届かないまま成功する**（`NameError` にもならない）。
-構造体 out 引数（`V3*`）はゼロコピーで同一 `InstanceData` に書くので影響を受けない（`5 7 9` は正しい）。
+原因（**当初 `assign_var` と `vm_stack` の不一致だと書いたが誤り**。`AR_VM_DUMP` で確かめ直した）:
+書き戻しは**引数の AST 式**（`CallArg` が `Expr::Ident` か）を見て初めて登録される
+（[native.rs:129-133](src/interpreter/eval/native.rs#L129) typed OutPtr ／
+[native.rs:196-201](src/interpreter/eval/native.rs#L196) ハンドル経路 MutPtr）。
+VM の `Call` / `CALL_METHOD` は**評価済みの値**をオペランドスタックで渡すので
+`call_value_evaled` → `dispatch_native_evaled` に落ちる。この経路は
+「**CallArg 情報がなく named-mut 判定ができないため書き戻しを行わない**」と
+[native.rs:443-446](src/interpreter/eval/native.rs#L443) / [calls.rs:698-700](src/interpreter/eval/calls.rs#L698)
+に**設計として明記**されている。master ではツリーウォークの `eval_call` が
+`call_native_function`（式を持つ経路）を通っていたので書き戻しが効いていた。
+⇒ **#33 で解釈経路を VM 一本にした結果、式を持つ経路が通常実行から消えた**のが本当の原因。
+
+⚠ 通ったのは「安全側に倒している」と書かれた分岐で、**倒れた先が黙って間違った値**だった。
+⚠ 構造体 out 引数（`V3*`）はゼロコピーで同一 `InstanceData` に書くので影響を受けない（`5 7 9` は正しい）。
+**壊れるのはプリミティブ out 引数（`double*` 等の typed OutPtr）と、ハンドル経路の MutPtr 書き戻し**。
+現行例題でこの形を踏むのは [cpp_struct_ptr.ar](examples/interop/cpp_struct_ptr.ar) だけ。
 
 ⚠ **既存ゲートは全部緑のまま素通りした**: `scan_examples` / `force_gate` は **exit code しか見ない**、
 `compare_python_impl` は **cpp-lib 例題を対象にしていない**（参照実装が C を呼べない）。
 ⇒ 計画書の「**検査網は例題が踏む形しか見ない**」の **6 例目**。しかも今回は形ではなく
 「**値を見ていない**」という別の穴だった。**FFI の戻り値・書き戻しを検査するゲートが存在しない。**
+
+**残タスクでは解消しない**（#19 / #17-b / #17-a / #14 / #11 R2-c のいずれも実行時ディスパッチに触れない。
+#17-a は話題こそ C/C++ 相互運用だが**静的型検査だけ**の変更）。⇒ **新タスク #48 として起票が要る**。
+修正の方向: VM は**コンパイル時に引数式を持っている**（`Expr::Ident` → slot / グローバル）ので、
+`has_writeback` な native 呼び出しでは書き戻し先の slot を呼び出し点に載せ、
+`dispatch_native_evaled` が返した out 値を呼び出し後に `STORE_LOCAL` / `STORE_GLOBAL` する
+（＝ツリーウォークが名前でやっていたことを slot でやる）。
+⚠ **bail は選択肢にならない**（#33 でフォールバックを撤去したので `VmForceError` で止まる）。
 
 ### 見積もりと実測
 
@@ -5046,3 +5065,103 @@ FFI 経路（引数マーシャリング・ハンドル表・書き戻し）は�
 | 「native 経路は codegen を触っていないので無関係」 | **半分正しい**。純ネイティブは 1.00x だが、**境界とコールバックは 1.60x**（解釈側に戻る部分がある） |
 | 「C DLL 呼び出しも速くなった（2.18x）」 | **誤り**。baseline を引くと **FFI 自体は 1.15〜1.23x**。速くなったのは周りの解釈実行 |
 | 「最上位も #36/#41 で VM に載ったので同じ速度」 | **1.62x**（fn 内 5.90x）。**載っている ≠ 同じ速さ** |
+| 検出したバグの原因は「`assign_var` が `vm_stack` に届かない」 | **誤り**。`AR_VM_DUMP` で見たら最上位の `n1` は `DECLARE_GLOBAL`/`LOAD_GLOBAL`＝`scopes[0]` にあり、`assign_var` なら届く形だった。真因は**書き戻しの登録自体が引数 AST を要求する**こと。⇒ **「届かない」と決める前に、その値がどこに置かれているかをダンプで確かめる** |
+
+---
+
+## #48 native の `mut` ポインタ書き戻しを VM 経路で復旧（2026-08-19）
+
+#47 で検出した実バグの修正。**`import[cpp-lib]` / `import[cpp-dll]` のプリミティブ out 引数
+（`double*` 等）と、ハンドル経路の `MutPtr` 引数の書き戻しが、VM 経路では黙って起きなかった。**
+
+### 原因（#47 の記述を実測で確定させた）
+書き戻し先は**引数の AST 式**が `Expr::Ident` かどうかで決まる
+（[native.rs:129](src/interpreter/eval/native.rs#L129) typed OutPtr ／
+[native.rs:196](src/interpreter/eval/native.rs#L196) ハンドル経路 MutPtr）。
+VM の `Call` / `CallMethod` は**評価済みの値**をオペランドスタックで渡すため
+`call_value_evaled` → `dispatch_native_evaled` に落ち、この経路は
+「`CallArg` 情報がなく named-mut 判定ができないため書き戻しを行わない」と**設計として明記**されていた。
+⇒ **#33 で解釈経路を VM 一本にしたときに、式を持つ経路が通常実行から消えた**のが真因。
+
+### 手法 — 「判るときに決めて副表へ置く」
+引数式は**コンパイル時には有る**ので、そのとき書き戻し先を確定して Chunk の副表に載せる。
+
+| 層 | 変更 |
+|---|---|
+| [chunk.rs](src/vm/chunk.rs) | `WbCall { mask, targets }` / `WbStore { Local, Cell, Global, Name }` と `Chunk::wb_targets` |
+| [compiler.rs](src/vm/compiler.rs) | `wb_store_target`（`store_target` と同順・同記憶域だが **bail せず `None`**）＋ `record_wb_targets`。`compile_call_args` に `wb_node` を追加して全呼び出し形から通す |
+| [eval/native.rs](src/interpreter/eval/native.rs) | `dispatch_native_evaled_wb(fn_ref, vals, wb_mask, wb_out)`。**既存の `dispatch_native_evaled` は mask=0 での委譲に畳んだ** |
+| [value/native.rs](src/interpreter/value/native.rs) | `NativeFnRef::has_writeback()`（ツリーウォーク側の判定もこれに統一） |
+| [vm_toplevel.rs](src/interpreter/vm_toplevel.rs) | `vm_namespace_writeback_fn`（`mod.func` の呼び先を先に同定。外れたら従来経路） |
+| [run.rs](src/vm/run.rs) | `native_call_with_wb` / `wb_native_method` / `apply_writeback`（いずれも `#[inline(never)]`） |
+
+**キーは node_id**（`ffi_call_info` と同じ）。code index にすると
+[peephole](src/vm/peephole.rs) が命令を詰めた瞬間にずれる。
+`static mut` だけは対象外（`static_cells` を span キーで直読みする別経路。実例が無い）。
+
+副産物: **シャドウ変換が要る構造体引数の書き戻しも直った**。VM 経路は
+`resolve_typed_ptr_arg` の `named_mut` に常に `None` を渡していたので、レイアウトが
+完全一致しない構造体は書き戻されていなかった（`cpp_struct_ptr.ar` はゼロコピーが
+効く形なので露見していなかった）。
+
+### ⚠⚠ 一度目の実装で 0.91x の退行を出した（#10-b と同じ失敗）
+最初は書き戻しの判定と本体を **`Op::Call` のアームに直接書いた**。`exec_op` は
+`#[inline(always)]` なので、`wb_targets.is_empty()`／ハッシュ引き／`has_writeback()`
+（`ptr_params` の線形走査）がホットループへ展開され、**native を 1 度も呼ばない Chunk**まで遅くなった:
+
+| 指標 | 1 回目 | 2 回目 | 判定 |
+|---|---|---|---|
+| `interp_fn_call` | 0.924x | 0.906x | **再現＝実費用** |
+| `interp_closure_call` | 0.918x | 0.917x | **再現＝実費用** |
+| `interp_for_range` | 0.921x | 1.072x | 揺れ |
+| `interp_field_access` | 0.920x | 0.998x | 揺れ |
+
+⚠ **前提が外れていた**: 「副表が空なら素通りするので実質無料」と考えていたが、
+`f(mut x)`（例: `leaf(i)` の `i` は `mut` ローカル）は普通に書かれるので
+**副表はまず空にならない**。「稀な形だから安い」は**書いてみて測るまで判らない**。
+
+修正: **`exec_op` に残すのは discriminant 1 個だけ**にし
+（`Op::Call` は `matches!(callee, Value::NativeFunction(_))`、`CallMethod` は
+`matches!(obj, Value::Namespace(_))`）、残りの判定と本体を `#[inline(never)]` へ出した。
+
+| 指標 | 修正後 1 回目 | 修正後 2 回目 |
+|---|---|---|
+| `interp_fn_call` | 1.002x | 0.980x |
+| `interp_closure_call` | 0.964x | 0.976x |
+| **interp 幾何平均** | **0.996x** | **0.993x** |
+
+⚠ `interp_str_ops` だけ 0.900x / 0.934x と両方で低い（修正前は 1.015x / 1.004x）。
+ただし**ホットループに `Op::Call` が 1 つも無い**ので機序が無く、独立の
+[bench_string.ar](examples/bench/bench_string.ar) は **0.987x**。⇒ **コード配置の揺れ**
+（#28 の「効くのはアーム数ではなくコード配置」と同じ）と判断した。
+
+**cdll は逆に速くなった**（`Value::NativeFunction` を `call_value_evaled` を経ずに
+直接ディスパッチするため）: `cdll_v3_add` **1.131x** ／ `cdll_v3_add_toplevel` **1.157x**（再現あり）。
+native モードは負の対照（純ネイティブ `native_sum_fixed`）自身が 1.015x → 0.958x と動いたので、
+**その帯の中**（再現する退行なし）。
+
+### 検証
+| ゲート | 結果 |
+|---|---|
+| `cargo build` | 警告 0 |
+| `cargo test` | **740 passed** |
+| `cargo clippy` | 変更ファイルの指摘 **0 件**（増分 0） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL 0 |
+| [force_gate.ps1](force_gate.ps1) | `VmForceError` **0 件** / **147 例題**完走 |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **49/49 identical** |
+| [repl_session.ps1](repl_session.ps1) | identical |
+| [debug_session.ps1](debug_session.ps1) | **赤（HEAD で既に赤・#49）**。修正前バイナリと出力が **5/5 byte-identical** なので #48 の影響ではない |
+
+回帰検知は [cpp_out_param_writeback.ar](examples/interop/cpp_out_param_writeback.ar)（新設）。
+`WbStore` の全アーム（関数内ローカル／最上位グローバル／クロージャの可変捕捉セル／ループ反復）を
+1 本ずつ踏み、**期待値と違えば `raise` する**。
+⚠ **負の対照を確認済み**: 修正前バイナリで走らせると `exit=1`（`ValueError: local: got 0.0, want 5.0`）。
+さらに `compare_python_impl` の `$knownDiff` から `cpp_struct_ptr` が**「stale＝もう一致する」と
+報告された**（参照実装との突き合わせによる独立確認）。
+
+### 見積もりと実測
+| 事前の見立て | 実測 |
+|---|---|
+| 「書き戻しは `assign_var` が VM のローカルに届かないのが原因」（#47 で最初にそう書いた） | **誤り**。最上位の変数は `DECLARE_GLOBAL`/`LOAD_GLOBAL` で `scopes[0]` にあり `assign_var` なら届く。真因は**登録自体が引数 AST を要求する**こと。⇒ **「届かない」と決める前に `AR_VM_DUMP` でどこに置かれているか見る** |
+| 「副表は稀にしか引かれないので `Op::Call` に判定を置いても無料」 | **0.91x の退行**。`f(mut x)` は普通に書かれるので副表は空にならない。⇒ #10-b の教訓は「重い本体を書かない」だけでなく「**安いつもりの判定も測る**」 |
+| 「FFI 経路には触らないので cdll の速度は変わらない」 | **1.13〜1.16x 速くなった**（`call_value_evaled` を経由しなくなったため）。修正のついでに経路が 1 段短くなった |

@@ -239,6 +239,17 @@ pub struct NativeFnRef {
 }
 
 
+impl NativeFnRef {
+    /// `mut` ポインタ引数（＝呼び出し元へ書き戻す引数）を持つか（#48）。
+    ///
+    /// ツリーウォークの `call_native_function` が「書き戻し経路へ入るか」を決めるのと
+    /// **同じ判定**。VM 側は「この呼び出しで書き戻し副表を引くか」の門に使う。
+    #[inline]
+    pub fn has_writeback(&self) -> bool {
+        self.ptr_params.contains(&PtrParam::MutPtr)
+    }
+}
+
 impl Clone for NativeFnRef {
     fn clone(&self) -> Self {
         Self {
