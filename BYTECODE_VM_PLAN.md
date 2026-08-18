@@ -31,7 +31,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 センチネル・`--vm` フラグを削除。**src 実質 -762 行**）。ツリーウォークが実行するのは
 **定義文だけ**（設計どおり・#10-d）。`force_gate` **0 件・139 例題完走**。
 
-**残るのは #38→#30（クロージャの性能リスク）／#24（低優先）／外部接続系の別レーン。**
+**残るのは #30（クロージャの性能リスク・#38 完了で着手可能）／#24（低優先）／外部接続系の別レーン。**
 
 **⚠⚠ #33 の前提は 2 度崩れた**（この系列で最も再利用価値のある教訓）。
 1 度目: 「TLS は `--vm=off` のためだけに生きている」→ **`Default` が `Off`** なので REPL と
@@ -98,8 +98,9 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 > ツリーウォークの制御フロー・TLS・センチネルは**すべて削除**した（#33・src 実質 **-762 行**）。
 > ツリーウォークが実行するのは**定義文だけ**（設計どおり・#10-d）。
 
-1. **#38 → #30** — A/B スクリプトのデッドロック解消 → クロージャ Chunk 再利用の計測。
+1. **#30** — クロージャ Chunk 再利用の計測（**#38 完了で着手可能**）。
    **唯一残っている性能リスク**（クロージャは実体ごとに再コンパイルされる）。
+   ⚠ **クロージャ支配のベンチが 1 本も無い**ので、まずベンチを作るところから。
 2. **#24** — peephole パターンの追加（低優先・効果は要実測）。
 3. 別レーン（#19 / #17-a / #17-b）— 外部接続系。
 
@@ -152,7 +153,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | [scan_examples.ps1](scan_examples.ps1) | 全例題をタイムアウト付きで実行し、失敗のみ理由付きで列挙 |
 | [dump_native_ir.ps1](dump_native_ir.ps1) | 代表 6 モジュールの生成 LLVM IR を保存（`.arc`/`.ars` は退避・復元） |
 | [annot_diff.ps1](annot_diff.ps1) / [annot_unresolved.ps1](annot_unresolved.ps1) | 注釈の充填状況・binop 特化の内訳・`Unresolved` の発生源／その全例題集計（式種別ごと） |
-| [ab_bench.ps1](ab_bench.ps1) | 2 つの `arrow.exe` を**交互実行**して経過時間を比較（`-A head.exe -B new.exe`）。#2b で新設 |
+| [ab_bench.ps1](ab_bench.ps1) | 2 つの `arrow.exe` を**交互実行**して経過時間を比較（`-A head.exe -B new.exe`）。#2b で新設・**#38 で非同期読み化**。異常終了／タイムアウト（`-TimeoutSec` 既定 180）／不在パスは**値を出さず理由を表示**する（黙って速い値を出さない）。⚠ `powershell -File` 経由だと `-Scripts a,b,c` が 1 要素に潰れるので `-Command` で呼ぶ |
 | [repl_session.ps1](repl_session.ps1) | **対話 REPL の回帰検知**（#36 で新設）。`examples/repl/repl_session.{in,out}` の golden 比較。⚠ `compare_vm_modes` は stdin を与えず、`compare_debug_modes` はデバッガ REPL（別物）を見るので、**対話 REPL はこれだけが検査している**。更新は `-Update`（差分は必ず目で見る） |
 | [debug_session.ps1](debug_session.ps1) | **対話デバッガのステッピングの回帰検知**（#1 で新設・#33 で golden 化）。`examples/debugger/<name>.{ar,in,out}` の期待値比較。⚠ 他のどのゲートも stdin を与えないので、**ステッピングはこれだけが検査している**。更新は `-Update` |
 | [compare_python_impl.ps1](compare_python_impl.ps1) | **参照実装（`impl_python`）との stdout 差分検査**（#31 で新設）。「**両実装が同じ間違いをする形**」以外を覆う唯一の網で、`compare_vm_modes` を失った後の代替。既知差分は理由つきで `$knownDiff` に列挙（`-ShowSkipped`）。⚠ `impl_python` は 100 コミット前に同期 |
@@ -174,11 +175,13 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
   ⚠ **そのスクリプトから日本語を `print` すると cp932 の `UnicodeEncodeError` で書き込み前に落ち、
   変更が丸ごと消える**。進捗表示は ASCII か件数だけにすること。
 - **native exe の stderr を `2>&1` で受けると PS5.1 が ErrorRecord 化**して exit 0 でも失敗扱いになる。`Start-Process -PassThru` の `ExitCode` も当てにならない（`System.Diagnostics.Process` を直接使う）。
-- **⚠ `ReadToEnd()` を stdout→stderr の順に逐次呼ぶと子とデッドロックする**（#34 で 1 時間停止・#38）。
-  子が stderr のパイプを埋めると書き込みでブロックし、親は stdout を待ち続ける。
+- **⚠ `ReadToEnd()` を stdout→stderr の順に逐次呼ぶと子とデッドロックする**（#34 で 1 時間停止・#38 で修正）。
+  子が stderr のパイプ（既定 4KB）を埋めると書き込みでブロックし、親は stdout を待ち続ける。
   **必ず `ReadToEndAsync()` で同時に読む**（[scan_examples.ps1](scan_examples.ps1) が手本）。
-  症状は「**CPU 時間が伸びないまま生き続ける**」。⚠ 現に [ab_bench.ps1](ab_bench.ps1) /
-  [ab_bench.ps1](ab_bench.ps1) がこの形（#38 で直すまで A/B は別手段で取ること）。
+  症状は「**CPU 時間が伸びないまま生き続ける**」。
+  ⚠ **普段の実行では踏まない**（子の stderr が数 KB を超えて初めて発火する）ので、
+  新しく子プロセスを起こすスクリプトを書いたら **`AR_VM_DUMP=1` を付けて回して確かめる**
+  （`bench_branch.ar` で 7KB 出る＝そのまま負の対照になる・#38）。
 - **A/B は当該変更だけを切り替えて取ること**（#21-b）。前回測定から時間が空いた値と比べると他の変更やマシン変動を誤って帰属する（`bench_field_access` の退行を 21-b のせいと誤認した実例あり）。
 - **HEAD のバイナリが要る A/B・IR 比較では `git stash push -- src/` で退避**してビルドする。
   実行前に必ず `git status` を確認し、`src/` をスクラッチパッドへコピーしておく（過去に未コミット変更の破棄事故あり）。
@@ -242,14 +245,8 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | 2c | V-F R0-A エスケープ解析 | 非エスケープフレームのフラット確保 | **← 12b** | **保留**（12b が作るコストを取り消すだけのタスク。VM 経路は既にフラット） |
 | 10-d | 定義文のオペコード化・import モジュール本体 | — | — | **保留**（計測で**両半分とも #3 に寄与しない**と判明: モジュール本体は 20 文・定義文は制御フローも TLS も持たない。詳細は実装ログ） |
 | 28 | `Op::Rare` への畳み込み | 稀な 7 op を 1 アームに集約 | — | **却下**（実装して A/B した結果**何も回復せず** 1 件は悪化。**前提だった「op 1 個あたり ~1〜1.5%」というモデル自体が誤り**だった。詳細は実装ログ） |
-| **43** | **実行時型検査の高速判定**（`loop_yield`/`block_return`） | `TypeTag`（**アノテーション文字列から**コンパイル時に決める種別）を op に載せ、実行時は**列挙比較 1 回**で済ませる。外れたときだけ一般判定（`check_*_type`）へ落とすので**エラー文言は 1 実装のまま**。`Any` は自明に真なので **op 自体を出さない**。⚠ **型推論の結果は使わない**（#15e の「注釈は意味論の根拠ではない」を破らないため） | — | **完了**（`loop_yield` 支配ベンチ **1.177x**＝検査を消した上限の **104%** を回収。`bench_block_expr` は 0.936→**1.016x**） |
 | 24 | peephole パターンの追加 | `peephole.rs` へ足す（到達不能コード除去・`Const;Pop` 消去等）。**#2a の実測では JUMP 除去だけで総命令の 0.31%**なので、追加は「効く形を実測してから」 | — | 未着手（低優先・効果は要実測） |
-| **38** | **A/B 計測スクリプトのデッドロック解消** | [ab_bench.ps1](ab_bench.ps1) の `Measure-Run` が `StandardOutput.ReadToEnd()` → `StandardError.ReadToEnd()` を**逐次**呼ぶので、子が stderr のパイプを埋めると相互ブロックする（#34 で **1 時間停止**）。[scan_examples.ps1](scan_examples.ps1) と同じ**非同期読み**（`ReadToEndAsync`）に揃える。⚠ 症状は「CPU 時間が伸びないまま生き続ける」 | — | 未着手（**計測手段の不具合**・#30 の前に潰す） |
-| **30** | **クロージャ Chunk の実体跨ぎ再利用＋計測** | `get_or_compile_chunk` は `FnValue` ごとにキャッシュするので、**クロージャは実体ごとに再コンパイル**する。#27-d 段階 1 で初めて実際に走るようになった（それまでクロージャは VM 非対象）。⚠ **クロージャのベンチが 1 本も無い**ので、まず計測手段を作ってから判断する | **← 38**（A/B が止まるので先に直す） | 未着手（**新たに生じた性能リスク**） |
-| **31** | **参照実装（`impl_python`）との差分検査** | [compare_python_impl.ps1](compare_python_impl.ps1) を新設。**stdout だけ**を比べ、Rust は**既定モード**で走らせる。既知差分は**理由つきの `$knownDiff` に明示列挙**し、載っていない例題は既定で検査対象＝**新しい例題は自動的に検査される**。一致するようになった項目は STALE として報告。⚠ **`impl_python` は 100 コミット前（`33ef765`）に同期**なので既知差分が 36 件ある | — | **完了**（**46 検査・46 一致**／既知差分 36。負の対照 2 種で検知力確認） |
-| **41** | **定義文脈の式の VM 化** | `compile_definition_expr`（式 ＋ `Return` の Chunk）と `eval_definition_expr` を新設し、クラスのフィールド既定値・クラス変数・`enum` 値・デコレータの **7 箇所**を VM 経路へ。⚠ **自由な識別子は `LoadName`**（新フラグ `name_lookup`）— 定義文の実行位置は最上位とは限らない（モジュール本体の中など）ので `scopes[0]` 限定の `LoadGlobal` ではツリーウォークと答えが変わる | — | **完了**（新オペコード 0。[definition_context_expr.ar](examples/classes/definition_context_expr.ar) の `tw_control_flow` 6→**0**） |
-| **42** | **import モジュール本体の VM 化** | `Op::StoreName`（`assign_var` へ委譲＝チェーン探索）を 1 個追加し、`module_mode` / `compile_module_stmt` / `try_run_module_stmt` で `exec_module` の 2 つの実行ループを VM 経路へ。⚠ 宣言（`DeclareGlobal`→`declare_var`→`scopes.last_mut()`）と読み（`LoadName`）は**元からチェーンを見る**ので変更不要で、足りないのは**名前ベースの代入**だけだった | — | **完了**（[module_toplevel_flow.ar](examples/interop/module_toplevel_flow.ar) の `module_body` 18→**2（定義文のみ）**・`tw_control_flow` **0**） |
-| **33** | **ツリーウォーク制御フローの削除**（本系列の主目的） | 4 層で削除（**src 実質 -762 行**）: A=`eval/control_expr.rs` 全体＋`eval()` の 5 アーム ／ B=`exec/control_flow.rs`（227→55・`make_for_iterator` だけ残す）＋`exec()` の 10 アーム ／ C=**TLS 3 本＋センチネル 2 種**＋`exec_loop_yield`／ D=`ExecResult` の 4 バリアント＋ツリーウォークの `try`＋`exec_block`/`exec_scoped_block`。⚠ `GENERATOR_YIELDS`（#8）と `RAISE_SENTINEL`（V-C）は **VM が使うので残す**。⚠ `eval()`/`exec()` のアームは**削除せず明示的なエラー**に畳んだ（到達したら黙って動かず落とす） | — | **完了**（着手前に `tw_stats` を全例題で再測定して 0 を確認） |
+| **30** | **クロージャ Chunk の実体跨ぎ再利用＋計測** | `get_or_compile_chunk` は `FnValue` ごとにキャッシュするので、**クロージャは実体ごとに再コンパイル**する。#27-d 段階 1 で初めて実際に走るようになった（それまでクロージャは VM 非対象）。⚠ **クロージャのベンチが 1 本も無い**ので、まず計測手段を作ってから判断する | —（**38 完了で解除**） | 未着手（**新たに生じた性能リスク**・唯一残る） |
 | 11 R2-c | グローバル記憶域の index 配列化 | ネイティブの index 参照 | **← 消費者の出現（14 と同時に再評価）** | ブロック中（消費者不在） |
 | 14 | §6 モジュール動的リンク | ディスクリプタシンボル＋ABI ハッシュ照合 | **← モジュール間ネイティブ直リンクの導入**（未実装・未計画） | ブロック中 |
 
@@ -264,7 +261,9 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
     43（実行時型検査の高速判定）……完了 ＝ 上記で足した検査の費用を回収
     33（ツリーウォーク制御フロー・TLS・センチネル・`--vm` の削除）……**完了**（src 実質 -762 行）
 
-残り: 38（A/B スクリプトのデッドロック解消）→ 30（クロージャ Chunk 再利用の計測）／24（peephole・低優先）
+    38（A/B スクリプトのデッドロック解消）……完了 ＝ 30 の前提が外れ、計測手段が揃った
+
+残り: 30（クロージャ Chunk 再利用の計測・前提なし）／24（peephole・低優先）
 保留: モジュール間ネイティブ直リンク（未計画）→ 14 → 11 R2-c ／ 12b → 2c は循環依存で両方保留
 ```
 
@@ -553,6 +552,12 @@ cargo run -- <file.ar>              # フォールバックは無い。載らな
 | 27-c の一部 | 最上位 bail **175 → 126**（制御フロー文の bail 18→**10**） | リゾルバ 4 件（`enum`/`new_type` を globals へ・`AsyncAssign` の `target` は束縛でない・虚数リテラル・**VM へ渡す集合をシャドウ減算なしに**）＋ `block:` 文＋`for k, v in ...`（`Op::UnpackTuple` 1 個）＋ `collect_nested_decls` の `Stmt::Block` 漏れ。**計測の穴 3 件**も修正（意図的スキップ 336 件が失敗に化けていた／未帰属 46→3／bail を `<文種別>/<理由>` で切れるように） |
 | 10-c2 | 最上位の残り文を Chunk 化 | 受理判定を**許可リスト→定義文の除外リスト**へ反転（式文・`if`/`try`/`match`・代入・属性代入…）。`exec()` の VM 試行を 5 アーム→**入口 1 箇所**へ集約。最上位 Chunk 499→**1,368**・ツリーウォーク **663**（うち 56% は定義文）。**計測フックの過大計上を修正** |
 | 27-b | メソッド dispatcher の 1 本化 | `eval_method_call` を「引数評価＋委譲」だけにし 16 レシーバを評価済み版へ集約。`Instance` アーム 144 行と旧 evaled 版 85 行を委譲に畳む。`Op::CallMethod*` に `node_id` を足して FFI 戻り値検査を VM へ。`fn_FAILED` 29→**17**・`toplevel_FAILED` 163→**65**・実質 -230 行 |
+| **31** | **参照実装（`impl_python`）との差分検査** | [compare_python_impl.ps1](compare_python_impl.ps1) を新設。**stdout だけ**を比べ、Rust は**既定モード**で走らせる。既知差分は**理由つきの `$knownDiff` に明示列挙**し、載っていない例題は既定で検査対象＝**新しい例題は自動的に検査される**。一致するようになった項目は STALE として報告。⚠ **`impl_python` は 100 コミット前（`33ef765`）に同期**なので既知差分が 36 件ある（**完了**（**46 検査・46 一致**／既知差分 36。負の対照 2 種で検知力確認）） |
+| **41** | **定義文脈の式の VM 化** | `compile_definition_expr`（式 ＋ `Return` の Chunk）と `eval_definition_expr` を新設し、クラスのフィールド既定値・クラス変数・`enum` 値・デコレータの **7 箇所**を VM 経路へ。⚠ **自由な識別子は `LoadName`**（新フラグ `name_lookup`）— 定義文の実行位置は最上位とは限らない（モジュール本体の中など）ので `scopes[0]` 限定の `LoadGlobal` ではツリーウォークと答えが変わる（**完了**（新オペコード 0。[definition_context_expr.ar](examples/classes/definition_context_expr.ar) の `tw_control_flow` 6→**0**）） |
+| **42** | **import モジュール本体の VM 化** | `Op::StoreName`（`assign_var` へ委譲＝チェーン探索）を 1 個追加し、`module_mode` / `compile_module_stmt` / `try_run_module_stmt` で `exec_module` の 2 つの実行ループを VM 経路へ。⚠ 宣言（`DeclareGlobal`→`declare_var`→`scopes.last_mut()`）と読み（`LoadName`）は**元からチェーンを見る**ので変更不要で、足りないのは**名前ベースの代入**だけだった（**完了**（[module_toplevel_flow.ar](examples/interop/module_toplevel_flow.ar) の `module_body` 18→**2（定義文のみ）**・`tw_control_flow` **0**）） |
+| **43** | **実行時型検査の高速判定**（`loop_yield`/`block_return`） | `TypeTag`（**アノテーション文字列から**コンパイル時に決める種別）を op に載せ、実行時は**列挙比較 1 回**で済ませる。外れたときだけ一般判定（`check_*_type`）へ落とすので**エラー文言は 1 実装のまま**。`Any` は自明に真なので **op 自体を出さない**。⚠ **型推論の結果は使わない**（#15e の「注釈は意味論の根拠ではない」を破らないため）（**完了**（`loop_yield` 支配ベンチ **1.177x**＝検査を消した上限の **104%** を回収。`bench_block_expr` は 0.936→**1.016x**）） |
+| **33** | **ツリーウォーク制御フローの削除**（本系列の主目的） | 4 層で削除（**src 実質 -762 行**）: A=`eval/control_expr.rs` 全体＋`eval()` の 5 アーム ／ B=`exec/control_flow.rs`（227→55・`make_for_iterator` だけ残す）＋`exec()` の 10 アーム ／ C=**TLS 3 本＋センチネル 2 種**＋`exec_loop_yield`／ D=`ExecResult` の 4 バリアント＋ツリーウォークの `try`＋`exec_block`/`exec_scoped_block`。⚠ `GENERATOR_YIELDS`（#8）と `RAISE_SENTINEL`（V-C）は **VM が使うので残す**。⚠ `eval()`/`exec()` のアームは**削除せず明示的なエラー**に畳んだ（到達したら黙って動かず落とす）（**完了**（着手前に `tw_stats` を全例題で再測定して 0 を確認）） |
+| **38** | **A/B 計測スクリプトのデッドロック解消** | [ab_bench.ps1](ab_bench.ps1) の `Measure-Run` を**非同期読み**（`ReadToEndAsync`）に揃え、併せて**異常終了・タイムアウト・不在パスを黙殺しない**ようにした（`-TimeoutSec` 既定 180・失敗は min から除外して `!!`／`WARN:` で再掲）（**完了**（負の対照＝`AR_VM_DUMP=1` で修正前ハング→修正後完走。詳細は実装ログ）） |
 | 10-c | 最上位の宣言文を Chunk 化 | `Op::DeclareGlobal(name, DeclKind)`（**4 種を 1 op のオペランドに畳む**）＋ `compile_toplevel_stmt` が `let`/`mut`/`const` を受理。最上位ツリーウォーク **30,123 → 2,071**（#10 着手前から **5,425x 減**）。E2E は退行なし |
 | 27-a/26 | レシーバ判定を**「形＋出自」の 2 段**に | 型検査に `arrow_class_names`（外部言語 import 本体の `ClassDef` を除外）を持たせ注釈経由で VM へ。slot を持たないレシーバ（グローバル/属性/呼び出し結果）も注釈から判定。最上位ツリーウォーク **120x 減**・`bench_method_call` **1.45x**・unsound だった 2 件を正しく弾いた |
 | 27 の一部 | fn の VM コンパイル失敗 **49 → 29** | `pass`(3)／`break_point`(5, `Op::BreakPoint`＋`vm_debug_pause` 委譲)／`undefined`(1)／`obj::Trait.attr`(5, `Get/SetTraitAttr`＋`trait_*_evaled` へ委譲)／メソッド本体の `Self`(4, `Op::LoadSelfClass`)。bail 計上を fn/最上位に分離し未帰属を 6→2 に |
