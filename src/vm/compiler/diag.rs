@@ -87,6 +87,9 @@ pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
     "print", "range", "len", "next", "repr", "id", "enumerate", "zip", "getenv", "open", "close",
     // flat リスト（#27-c）。本体は `eval_builtin_flat_evaled` に 1 本化済み。
     "create_flat_int_list", "flat_get_int", "flat_set_int",
+    // `parse_ar`（#56）。入力は文字列だけなので評価済み引数で表現できる。
+    // ⚠ #33〜#55 の間、`is_builtin_callee` が bail していたせいで **`VmForceError` で死んでいた**。
+    "parse_ar",
 ];
 
 pub(super) fn is_vm_builtin(name: &str) -> bool {
@@ -110,16 +113,15 @@ pub(super) fn has_named_args(args: &[CallArg]) -> bool {
         .any(|a| matches!(a, CallArg::Keyword { .. } | CallArg::Variadic(_)))
 }
 
-/// VM が呼び先として扱えず、ツリーウォークへ bail すべき組み込み名。
-/// - `eval_builtin_ident_call` 専用の builtin のうち **`eval_builtin_evaled` が扱わない**もの
-///   （`parse_ar` は AST を値へ変換するので評価済み引数では表現できない）。
-///   `is_vm_builtin` の集合はここより先に判定されるので重複不要。
-/// - `Value::Type` グローバルとして**登録されていない**型名（`tuple`/`list`/`type`/`byte`）。
-///   これらはツリーウォークでも `NameError`（呼び出し不可）なので、bail して同じ挙動にする。
-///   登録済みの型コンストラクタ（int/str/… は `LoadGlobal`+`Call` で解決）はここに含めない。
-pub(super) fn is_builtin_callee(name: &str) -> bool {
-    matches!(
-        name,
-        "parse_ar" | "tuple" | "list" | "type" | "byte"
-    )
-}
+// ⚠⚠ **`is_builtin_callee` は #56 で削除した。**
+//
+// 「VM が呼び先として扱えないので bail してツリーウォークへ落とす」ための表だったが、
+// **#33 でツリーウォークへのフォールバックは消えている**ので bail ＝ `VmForceError` で停止。
+// その取り違えのせいで:
+// - `parse_ar` … 「AST を値へ変換するので評価済み引数では表現できない」は**出力と入力の
+//   取り違え**（入力は文字列 2 つだけ）。**この組み込みは #33 以来まったく動かなかった**。
+//   → `VM_BUILTIN_NAMES` へ移して VM に載せた。
+// - `tuple` / `list` / `type` / `byte` … 本来の `NameError` が `VmForceError` に化けていた。
+//   → そのまま `LoadGlobal` + `Call` に流せば実行時に正しい `NameError` が出る（#34 と同じ考え方）。
+//
+// ⇒ **新しく bail を足すときは「bail した先で何が起きるか」を必ず確かめること。**

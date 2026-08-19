@@ -34,6 +34,11 @@ impl Interpreter {
                 println!("{}", parts.join(" "));
                 Some(Ok(Value::None))
             }
+            // `parse_ar(source[, path])`（#56）。**入力は評価済みの文字列だけ**なので
+            // 評価済み引数で完全に表現できる（AST が要るのは**出力**＝`Value::Namespace` ツリーの側）。
+            // ⚠ #33 でフォールバックが消えた後も `is_builtin_callee` が bail し続けており、
+            //    **`parse_ar` は `VmForceError` で完全に死んでいた**（#55 で検出）。
+            "parse_ar" => Some(self.parse_ar_evaled(args)),
             // flat リスト組み込み（#27-c）。ツリーウォーク側と**同一の本体**へ委譲する。
             "create_flat_int_list" | "flat_get_int" | "flat_set_int" => {
                 Some(self.eval_builtin_flat_evaled(name, args))
@@ -519,50 +524,63 @@ impl Interpreter {
                     std::env::var(&*name).unwrap_or_else(|_| default.to_string()),
                 )))
             }
+            // `parse_ar`（#56）。**唯一の実装は `eval_builtin_evaled` 側**。ここは引数を評価して
+            // 委譲するだけにする（`*_evaled` 版とずれた実装を作らない — 実バグ 4 回の教訓）。
             "parse_ar" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Some(Err(
-                        "TypeError: parse_ar() takes 1 or 2 arguments (source[, path])".to_string(),
-                    ));
-                }
-                let source = match self.eval(args[0].expr()) {
-                    Ok(Value::Str(s)) => s,
-                    Ok(other) => {
-                        return Some(Err(format!(
-                            "TypeError: parse_ar() source must be str, not '{}'",
-                            self.type_name(&other)
-                        )))
-                    }
-                    Err(e) => return Some(Err(e)),
-                };
-                let path = if args.len() > 1 {
-                    match self.eval(args[1].expr()) {
-                        Ok(Value::Str(s)) => s,
-                        Ok(other) => {
-                            return Some(Err(format!(
-                                "TypeError: parse_ar() path must be str, not '{}'",
-                                self.type_name(&other)
-                            )))
-                        }
+                let mut vals: Vec<Value> = Vec::with_capacity(args.len());
+                for a in args {
+                    match self.eval(a.expr()) {
+                        Ok(v) => vals.push(v),
                         Err(e) => return Some(Err(e)),
                     }
-                } else {
-                    Rc::from("")
-                };
-                let source: &str = source.strip_prefix('\u{FEFF}').unwrap_or(&source);
-                let path: &str = &path;
-                let tokens = crate::lexer::Lexer::new(source, path).tokenize();
-                let source_dir = std::path::Path::new(path)
-                    .parent()
-                    .map(|p| p.to_path_buf());
-                let stmts = match crate::parser::Parser::new(tokens, source_dir).parse_program() {
-                    Ok(s) => s,
-                    Err(e) => return Some(Err(format!("ParseError in parse_ar: {e}"))),
-                };
-                Some(Ok(crate::interpreter::ast_value::stmts_to_value(&stmts)))
+                }
+                self.eval_builtin_evaled("parse_ar", vals)
             }
             _ => None,
         }
+    }
+
+    /// `parse_ar(source[, path])` の**唯一の実装**（#56）。
+    ///
+    /// ソースを字句解析・構文解析して、AST を `Value::Namespace` ツリーへ変換して返す（§2.1）。
+    /// `python_converter` / `converter.ar` がこれに依存する。
+    ///
+    /// ⚠ **入力は文字列だけ**なので評価済み引数で表現できる。`is_builtin_callee` にあった
+    /// 「AST を値へ変換するので評価済み引数では表現できない」は**出力と入力を取り違えていた**。
+    /// その誤りのせいで #33 以降 `parse_ar` は `VmForceError` で停止していた（#55 で検出・#56 で修正）。
+    pub(crate) fn parse_ar_evaled(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        if args.is_empty() || args.len() > 2 {
+            return Err("TypeError: parse_ar() takes 1 or 2 arguments (source[, path])".to_string());
+        }
+        let mut it = args.into_iter();
+        let source = match it.next().unwrap() {
+            Value::Str(s) => s,
+            other => {
+                return Err(format!(
+                    "TypeError: parse_ar() source must be str, not '{}'",
+                    self.type_name(&other)
+                ))
+            }
+        };
+        let path = match it.next() {
+            Some(Value::Str(s)) => s,
+            Some(other) => {
+                return Err(format!(
+                    "TypeError: parse_ar() path must be str, not '{}'",
+                    self.type_name(&other)
+                ))
+            }
+            None => Rc::from(""),
+        };
+        let source: &str = source.strip_prefix('\u{FEFF}').unwrap_or(&source);
+        let path: &str = &path;
+        let tokens = crate::lexer::Lexer::new(source, path).tokenize();
+        let source_dir = std::path::Path::new(path).parent().map(|p| p.to_path_buf());
+        let stmts = match crate::parser::Parser::new(tokens, source_dir).parse_program() {
+            Ok(s) => s,
+            Err(e) => return Err(format!("ParseError in parse_ar: {e}")),
+        };
+        Ok(crate::interpreter::ast_value::stmts_to_value(&stmts))
     }
 
     /// 評価済み引数＋**引数名**の組み込み呼び出し（VM の `Op::CallBuiltinKw` 用・#27-c）。

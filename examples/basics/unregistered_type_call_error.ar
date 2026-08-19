@@ -1,0 +1,16 @@
+# unregistered_type_call_error.ar — 未登録の型名を呼び出したときのエラー（負の対照・#56）。
+#
+# `tuple` / `list` / `type` / `byte` は `Value::Type` グローバルとして**登録されていない**ので、
+# 呼び出すと `NameError: 'tuple' is not defined` になる。
+#
+# ⚠ この例題の役目は「**`VmForceError` ではなく `NameError` が出る**」ことの固定。
+# #33〜#55 の間、コンパイラがこれらの名前を bail していたせいで
+# `VmForceError: cannot compile top-level statement ...` に化けており、
+# **エラー文言が壊れていることに誰も気づかなかった**（例題が無かったため）。
+# #34 の教訓「必ず失敗する文は bail せず同じ文言を出す」の再演。
+
+print("before")
+
+let t = tuple(1, 2)
+
+print(t)

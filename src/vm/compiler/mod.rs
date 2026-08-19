@@ -62,8 +62,7 @@ use decls::{
     block_body_bails, collect_expr_decls, collect_nested_decls, for_target_shadows,
     nested_fn_free_names, MAX_FINALLY_NEST,
 };
-use diag::{bail, bail_expr, has_named_args, is_builtin_callee, is_vm_builtin,
-    VM_BUILTIN_KW_NAMES};
+use diag::{bail, bail_expr, has_named_args, is_vm_builtin, VM_BUILTIN_KW_NAMES};
 
 
 struct Compiler {

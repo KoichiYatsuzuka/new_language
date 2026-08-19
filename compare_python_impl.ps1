@@ -47,6 +47,9 @@ $skip = @(
 # 既知差分: 例題名 → 理由。⚠ 理由を書けないものを足さないこと（黙ったスキップは網を殺す）。
 $knownDiff = @{
     # (a) impl_python が未対応の言語機能・組み込み（NameError / AttributeError / TypeError を出す）
+    'parse_ar'                       = 'py: 組み込み parse_ar 未実装（AST を値として返す・#56 で新設）'
+    'parse_ar_error'                 = 'py: 組み込み parse_ar 未実装（#56 で新設）'
+    'unregistered_type_call_error'   = 'py: tuple は Python の組み込みなので NameError にならない（#56 で新設）'
     'built_in'                       = 'py: 組み込みの対応範囲が狭い（id/repr 等）'
     'builtin_shadow'                 = 'py: 組み込みのシャドウ規則が未実装'
     'collection'                     = 'py: コレクション組み込みの一部が未実装'

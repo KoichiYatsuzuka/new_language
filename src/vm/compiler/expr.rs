@@ -308,9 +308,16 @@ impl Compiler {
                         let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                         let ni = self.add_name(name);
                         self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
-                    } else if is_builtin_callee(name) || name == "Self" {
-                        // その他の純粋 builtin・型コンストラクタ・`Self` は非対応。
-                        // 呼び先名まで記録する（どれを `eval_builtin_evaled` へ足せば効くかを測るため・#27）。
+                    } else if name == "Self" {
+                        // メソッド本体の外の `Self(...)`。**そもそも不正なコード**だが、現状は
+                        // bail するので `VmForceError` になる（本来は `NameError: 'Self' is not defined`）。
+                        // ⚠ #34 の「必ず失敗する文は bail せず同じ文言を出す」に反している。#56 の
+                        // 調査で見つけたが、`is_builtin_callee` と違って**正しいコードは壊していない**
+                        // ので分離した（別タスク）。
+                        //
+                        // ⚠⚠ **bail を足す前に「bail した先で何が起きるか」を確かめること。**
+                        // #33 でツリーウォークへのフォールバックは消えたので **bail ＝ 停止**である。
+                        // `is_builtin_callee` はこの取り違えで `parse_ar` を丸ごと殺していた（#55/#56）。
                         if crate::interpreter::tw_stats::enabled() {
                             crate::interpreter::tw_stats::record_bail("callee-builtin", name);
                         }

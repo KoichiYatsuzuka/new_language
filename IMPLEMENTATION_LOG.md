@@ -5746,3 +5746,95 @@ A/B（#53 バイナリ比較・`bench_ab_interp.ar`）は **0.968x → 再実行
 | 「式経路は死んでいるか、生きているかのどちらか」 | **両方だった**。通常実行では死／REPL・デバッガでは生 |
 | 「FFI 例題なら AST 引数版が通るはず」 | **違った**。FFI も全部 VM の評価済み値経路 |
 | 「#55 は測るだけの小さいタスク」 | **違った**。`parse_ar` が死んでいるという実バグが出た |
+
+---
+
+## #56 `is_builtin_callee` の bail が #33 で実バグ化していた（2026-08-20）
+
+#55 の計測中に出てきた**実バグ**。`parse_ar()` が **#33 以来まったく動いていなかった**。
+
+```
+$ arrow -src probe.ar          # let ast = parse_ar("let x: int = 1")
+VmForceError: cannot compile top-level statement `Let` to bytecode
+```
+
+### 原因 — 「bail ＝ ツリーウォークへ落とす」という前提が消えていた
+
+`is_builtin_callee` は「VM が呼び先として扱えないので **bail してツリーウォークへ落とす**」ための表。
+その doc にもそう書いてあった。**#33 でツリーウォークへのフォールバックは削除された**ので、
+今の bail は「落とす」ではなく **`VmForceError` で停止**である。表はそのまま残っていた。
+
+被害は 2 つ:
+
+| 名前 | 起きていたこと |
+|---|---|
+| `parse_ar` | **完全に停止**。最上位でも関数内でも `VmForceError` |
+| `tuple` / `list` / `type` / `byte` | 本来の `NameError` が `VmForceError` に化けていた |
+
+### `parse_ar` を外せた理由 — doc が入力と出力を取り違えていた
+
+bail の根拠は「`parse_ar` は **AST を値へ変換するので評価済み引数では表現できない**」だった。
+実装を読むと **`self.eval(args[0].expr())` で文字列を取り出しているだけ**で、AST が要るのは
+**出力**（`Value::Namespace` ツリーを作る側）。**入力は文字列 1〜2 個**なので評価済み引数で
+完全に表現できる。
+
+⇒ `eval_builtin_evaled` に `parse_ar` を実装し、`VM_BUILTIN_NAMES` へ追加。
+AST 版（`eval_builtin_ident_call`）は**引数を評価して委譲するだけ**に畳んだ
+（#22 の「同じ判断をする 2 実装は片方を委譲に」／`*_evaled` 版とずれた実装を作らない）。
+
+### `tuple`/`list`/`type`/`byte` は bail を外すだけでよかった
+
+これらは `Value::Type` グローバルとして登録されていないので、**そのまま `LoadGlobal` + `Call` に
+流せば実行時に `NameError: 'tuple' is not defined` が出る** — 本来の文言そのもの。
+#34 が確立した「**必ず失敗する文は bail せず同じ文言を出す**」がここに適用されていなかった。
+
+⇒ `is_builtin_callee` は**空になったので削除**した。知識（「bail を足す前に bail した先で
+何が起きるかを確かめる」）は削除跡のコメントとして `diag.rs` に残した。
+
+### ⚠⚠ なぜ 3 系列も見逃されたか — 例題が 1 本も無かった
+
+`parse_ar` を使う例題が**ゼロ**。`std_tools/convert_to_python/converter.ar` は依存しているが
+`examples/` の外にあり、しかも**別の ParseError で既に壊れている**ので誰も走らせていない。
+⇒ `force_gate` も `scan_examples` も `compare_python_impl` も、**全部緑のまま**だった。
+
+「⚠ 例題が無い言語機能はゲートに映らない」（#34/#35）の **6 回目**。
+
+⇒ #56 で例題を 3 本新設した:
+- [parse_ar.ar](examples/basics/parse_ar.ar) … 単一文・複数文・path 引数・**関数内から**（VM 経路）
+- [parse_ar_error.ar](examples/basics/parse_ar_error.ar) … `parse_ar(42)` が **`TypeError`**（`VmForceError` ではない）
+- [unregistered_type_call_error.ar](examples/basics/unregistered_type_call_error.ar) … `tuple(1,2)` が **`NameError`**
+
+⚠ 後ろ 2 本は「**エラー文言が壊れていないこと**」を固定するのが役目。
+値ではなく**文言**を見る負の対照は、この系列では #48 に続いて 2 例目。
+
+### 検証（全ゲート緑）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` | **警告 0** |
+| `cargo test` | **742 passed**（`vm_builtin_names_are_all_handled`（#22-d）が `parse_ar` の追加も検査） |
+| `cargo clippy --all-targets` | bin **52**（増分 **0**） |
+| [scan_examples.ps1](scan_examples.ps1) | **FAIL 0** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **49/49**（新例題 3 本は `$knownDiff` に理由つきで登録） |
+| [force_gate.ps1](force_gate.ps1) | **150 例題・`VmForceError` 0 件** |
+| [debug_session.ps1](debug_session.ps1) | **5 identical** |
+| [repl_session.ps1](repl_session.ps1) | **identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+
+⚠ 新例題は `compare_python_impl` を**一度落とした**（`parse_ar` が py 側に無い・`tuple` は
+Python の組み込み）。これは設計どおりの挙動（「新しい例題を足すと自動的に検査される」）なので、
+`$knownDiff` に**理由つきで**登録して解消した。
+
+### 積み残し（別タスク候補）
+
+`Self(...)` をメソッド本体の外で呼ぶと、いまも `VmForceError` になる（本来は
+`NameError: 'Self' is not defined`）。**不正なコードなので正しいコードは壊していない**が、
+#34 の規則には反している。`is_builtin_callee` と分離して残した。
+
+### 見積もりと実測
+
+| 事前の見立て | 実測 |
+|---|---|
+| 「`parse_ar` は AST が要るから VM に載せられない」（既存 doc） | **違った**。入力は文字列だけで、AST が要るのは出力側 |
+| 「`tuple` 等は bail を `Op::Fail` に置き換える必要がある」 | **違った**。bail を外すだけで正しい `NameError` が出る |
+| 「#56 は #54 より軽い」 | 概ね合っていた（src は 3 ファイル・例題 3 本） |
