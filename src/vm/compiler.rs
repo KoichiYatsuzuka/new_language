@@ -248,20 +248,8 @@ struct Compiler {
     /// `finally` 本体（脱出経路への複製を含む）をコンパイル中かどうか（#37）。
     /// **1 以上なら脱出制御は bail する**（finally の中から跳ぶのは未対応）。
     in_finally: usize,
-    /// **import モジュール本体をコンパイルしている**（#42）。
-    ///
-    /// モジュール本体は `exec_module` が `push_scope` してから回すので、名前は `scopes[0]` ではなく
-    /// **push 済みスコープ**に入る。⇒ 代入は `StoreGlobal`（`scopes[0]` 限定）ではなく
-    /// `StoreName`（`assign_var` = チェーン探索）で行う。宣言（`DeclareGlobal`）と読み（`LoadName`）は
-    /// もともとチェーンを見るので変更不要。
-    module_mode: bool,
-    /// **自由な識別子を実行時に名前で引く**（#41）。`eval()` と同じスコープ走査になるので、
-    /// **`scopes` の深さを問わず健全**（定義文脈の式は最上位とは限らない — import モジュール
-    /// 本体の中のクラス定義など）。`debug_mode` と違い、融合・FFI 情報の記録は落とさない。
-    name_lookup: bool,
-    /// デバッガ REPL モード: 変数参照は slot ではなく名前引き（`LoadName`）へ落とす。
-    /// 停止スコープの生変数へアクセスし、`let dbg::x` を宣言できるようにする（V-E）。
-    debug_mode: bool,
+    /// **どの入口からのコンパイルか**（#52）。挙動の分岐はすべてここから導く。
+    mode: CompileMode,
     /// 名前付き slot 数（パラメータ + 全ローカル宣言）。temp slot はこの上に積む。
     named_locals: u16,
     /// 現在使用中の temp slot 数（match サブジェクト等のスタック規律の一時領域）。
@@ -315,6 +303,75 @@ struct Compiler {
     cell_by_slot: HashMap<u16, u16>,
     /// セル表の大きさ（`Chunk.n_cells` になる）。
     n_cells: usize,
+}
+
+/// **コンパイルの入口ごとのモード**（#52）。
+///
+/// #51 まで `module_mode` / `name_lookup` / `debug_mode` の 3 bool が別々に立っており、
+/// 入口を足すときに「どれを立てるか」を推測するしかなかった（対応表がどこにも無かった）。
+/// 組み合わせをこの enum 1 本に閉じ込め、**判定はすべてメソッド経由**にする。
+///
+/// ⚠ **新しい入口を足すときはここにバリアントを足す**。`base()` の呼び出し側で
+/// bool を並べるのではなく、下のメソッドが答えを持つ形を保つこと。
+///
+/// ⚠ **`toplevel_globals` はモードではなくデータ**（#52 では畳まなかった）。
+/// 「最上位相当か」の判定に `!toplevel_globals.is_empty()` を使っている箇所があり、
+/// `AsyncBody` ではその集合が**捕捉名**なので `captures` が空だと偽になる。
+/// モードから導くと**挙動が変わる**ので、そこは `reads_by_name` / `writes_toplevel_globals`
+/// として式のまま名前を付けてある。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CompileMode {
+    /// 関数本体（`compile_fn`）。読みは `LoadGlobal`（`scopes[0]` 限定）。
+    Function,
+    /// モジュール最上位の 1 文（`compile_toplevel_stmt`・#10-b）。書きは `StoreGlobal`。
+    Toplevel,
+    /// import モジュール本体の 1 文（`compile_module_stmt`・#42）。書きは `StoreName`。
+    Module,
+    /// 定義文脈の式（`compile_definition_expr`・#41）。自由な識別子は `LoadName`。
+    DefinitionExpr,
+    /// async ブロック本体（`compile_async_body`・タスク #9）。
+    AsyncBody,
+    /// デバッガ REPL の 1 文（`compile_debug`・V-E）。宣言は `DeclareName`。
+    DebugRepl,
+}
+
+impl CompileMode {
+    /// import モジュール本体か。代入を `StoreName`（チェーン探索）にする（#42）。
+    #[inline]
+    fn is_module_body(self) -> bool {
+        matches!(self, Self::Module)
+    }
+
+    /// 自由な識別子を**実行時に名前で引く**か（`LoadName`）。
+    ///
+    /// `eval()` と同じスコープ走査になるので `scopes` の深さを問わず健全（#41）。
+    /// ⚠ #51 まで `debug_mode || name_lookup` と書かれていたが、`DebugRepl` は
+    /// 常に `name_lookup` も真だったので**この 1 つに畳める**（挙動は同一）。
+    #[inline]
+    fn uses_name_lookup(self) -> bool {
+        matches!(self, Self::DefinitionExpr | Self::DebugRepl)
+    }
+
+    /// デバッガ REPL か。変数参照を slot ではなく名前引きへ落とし、`let dbg::x` を宣言できる（V-E）。
+    /// ⚠ `uses_name_lookup` と違い、**融合・FFI 情報の記録も落とす**のはこちらだけ。
+    #[inline]
+    fn is_debug_repl(self) -> bool {
+        matches!(self, Self::DebugRepl)
+    }
+}
+
+/// `Chunk` のうち**モードごとに違う**メタ情報（#52・`Compiler::finish` の引数）。
+/// これ以外の 15 フィールドは `Compiler` からそのまま移すので、ここに並ぶのが差分のすべて。
+#[derive(Default)]
+struct ChunkMeta {
+    /// slot → 変数名（デバッガ表示用）。`compile_debug` は slot を持たないので空。
+    local_names: Vec<String>,
+    /// 先頭から何 slot がパラメータか。関数本体以外は 0。
+    n_params: usize,
+    /// 不変キャプチャの (名前, slot)（#27-d）。クロージャ／async 本体だけ非空。
+    captured_slots: Vec<(String, u16)>,
+    /// 可変キャプチャの (名前, セル index)（#27-d 段階 2b）。クロージャ本体だけ非空。
+    captured_cells: Vec<(String, u16)>,
 }
 
 /// 変数への書き込み先（#10-b）。`store_target` が決める。
@@ -445,7 +502,7 @@ pub fn compile_toplevel_stmt(
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     toplevel_globals: &HashSet<String>,
 ) -> Option<Chunk> {
-    compile_toplevel_or_module(stmt, annotations, toplevel_globals, false)
+    compile_toplevel_or_module(stmt, annotations, toplevel_globals, CompileMode::Toplevel)
 }
 
 /// **import モジュール本体の 1 文**を Chunk へコンパイルする（#42）。
@@ -460,15 +517,16 @@ pub fn compile_module_stmt(
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     module_globals: &HashSet<String>,
 ) -> Option<Chunk> {
-    compile_toplevel_or_module(stmt, annotations, module_globals, true)
+    compile_toplevel_or_module(stmt, annotations, module_globals, CompileMode::Module)
 }
 
 fn compile_toplevel_or_module(
     stmt: &Stmt,
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     toplevel_globals: &HashSet<String>,
-    module_mode: bool,
+    mode: CompileMode,
 ) -> Option<Chunk> {
+    debug_assert!(matches!(mode, CompileMode::Toplevel | CompileMode::Module));
     if !is_toplevel_compile_target(stmt) {
         return None;
     }
@@ -477,12 +535,12 @@ fn compile_toplevel_or_module(
     let _ct = crate::prof::CompileTimer::new();
     // 診断フック（#10）: `compile_fn` と同じく取りこぼしを「未帰属」として可視化する。
     if !crate::interpreter::tw_stats::enabled() {
-        return compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals, module_mode);
+        return compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals, mode);
     }
     // bail の分類先を「最上位」へ切り替える（#27。関数側と残タスクが別物なので混ぜない）。
     let _g = crate::interpreter::tw_stats::ToplevelCompileGuard::new(stmt);
     let before = crate::interpreter::tw_stats::bail_count();
-    let out = compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals, module_mode);
+    let out = compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals, mode);
     if out.is_none() && crate::interpreter::tw_stats::bail_count() == before {
         // 未帰属でも**どの文種別か**は分かる。これが無いと 46 件の出所を探せない（#27-c）。
         bail("unattributed", Some(stmt));
@@ -522,79 +580,26 @@ pub fn compile_definition_expr(
     }
 
     let mut c = Compiler {
-        code: Vec::new(),
-        consts: Vec::new(),
-        names: Vec::new(),
-        attr_caches: Vec::new(),
-        spans: Vec::new(),
-        stmt_spans: Vec::new(),
-        pending_stmt: None,
-        annotations,
         slots,
         slot_mut,
         slot_type,
-        self_slot: None,
-        loops: Vec::new(),
-        block_ctxs: Vec::new(),
-        stmt_base: Some(0),
+        // Chunk の先頭がそのまま式なので、深さ 0 を最初の式へ伝える（#34）。
         pending: Some(0),
-        try_stack: Vec::new(),
-        in_finally: 0,
-        module_mode: false,
-        name_lookup: true,
-        debug_mode: false,
         named_locals: n,
-        temps_in_use: 0,
         n_locals: n as usize,
-        async_blocks: Vec::new(),
-        global_caches: Vec::new(),
-        ffi_call_info: HashMap::new(),
-        wb_targets: HashMap::new(),
-        fn_defs: Vec::new(),
-        type_arg_lists: Vec::new(),
-        tuple_decls: Vec::new(),
-        kw_calls: Vec::new(),
-        toplevel_globals: HashSet::new(),
-        shadowed_for_targets: HashSet::new(),
-        statics: HashMap::new(),
-        cells: HashMap::new(),
-        cell_by_slot: HashMap::new(),
-        n_cells: 0,
+        ..Compiler::base(CompileMode::DefinitionExpr, annotations)
     };
 
     c.compile_expr(expr)?;
     c.emit(Op::Return);
-    super::peephole::optimize(&mut c.code, &mut c.stmt_spans);
-
-    Some(Chunk {
-        code: c.code,
-        consts: c.consts,
-        names: c.names,
-        attr_caches: c.attr_caches,
-        spans: c.spans,
-        stmt_spans: c.stmt_spans,
-        local_names,
-        n_locals: c.n_locals,
-        n_params: 0,
-        async_blocks: c.async_blocks,
-        global_caches: c.global_caches,
-        ffi_call_info: c.ffi_call_info,
-        wb_targets: c.wb_targets,
-        fn_defs: c.fn_defs,
-        type_arg_lists: c.type_arg_lists,
-        tuple_decls: c.tuple_decls,
-        kw_calls: c.kw_calls,
-        captured_slots: Vec::new(),
-        n_cells: 0,
-        captured_cells: Vec::new(),
-    })
+    Some(c.finish(ChunkMeta { local_names, ..ChunkMeta::default() }))
 }
 
 fn compile_toplevel_stmt_inner(
     stmt: &Stmt,
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
     toplevel_globals: &HashSet<String>,
-    module_mode: bool,
+    mode: CompileMode,
 ) -> Option<Chunk> {
     let body = std::slice::from_ref(stmt);
     // 関数側と同じ扱い（#27）。最上位でも 1 文の中で `for` 変数が宣言を覆いうる。
@@ -633,75 +638,21 @@ fn compile_toplevel_stmt_inner(
     }
 
     let mut c = Compiler {
-        code: Vec::new(),
-        consts: Vec::new(),
-        names: Vec::new(),
-        attr_caches: Vec::new(),
-        spans: Vec::new(),
-        stmt_spans: Vec::new(),
-        pending_stmt: None,
-        annotations,
         slots,
         slot_mut,
         slot_type,
-        self_slot: None,
-        loops: Vec::new(),
-        block_ctxs: Vec::new(),
-        stmt_base: Some(0),
-        pending: None,
-        try_stack: Vec::new(),
-        in_finally: 0,
-        module_mode,
-        name_lookup: false,
-        debug_mode: false,
         named_locals: n,
-        temps_in_use: 0,
         n_locals: n as usize,
-        async_blocks: Vec::new(),
-        global_caches: Vec::new(),
-        ffi_call_info: HashMap::new(),
-        wb_targets: HashMap::new(),
-        fn_defs: Vec::new(),
-        type_arg_lists: Vec::new(),
-        tuple_decls: Vec::new(),
-        kw_calls: Vec::new(),
         toplevel_globals: toplevel_globals.clone(),
         shadowed_for_targets,
         // 最上位に `static` は無い（あれば定義文として #10-d の担当）。
-        statics: HashMap::new(),
-        cells: HashMap::new(),
-        cell_by_slot: HashMap::new(),
-        n_cells: 0,
+        ..Compiler::base(mode, annotations)
     };
 
     c.compile_stmt(stmt)?;
     // 最上位文は値を返さない（`Return` は型検査が最上位で禁じる）。
     c.emit(Op::ReturnNil);
-    super::peephole::optimize(&mut c.code, &mut c.stmt_spans);
-
-    let chunk = Chunk {
-        code: c.code,
-        consts: c.consts,
-        names: c.names,
-        attr_caches: c.attr_caches,
-        spans: c.spans,
-        stmt_spans: c.stmt_spans,
-        local_names,
-        n_locals: c.n_locals,
-        n_params: 0,
-        async_blocks: c.async_blocks,
-        global_caches: c.global_caches,
-        ffi_call_info: c.ffi_call_info,
-        wb_targets: c.wb_targets,
-        fn_defs: c.fn_defs,
-        type_arg_lists: c.type_arg_lists,
-        tuple_decls: c.tuple_decls,
-        kw_calls: c.kw_calls,
-        // 最上位文にクロージャキャプチャは無い（#27-d）。
-        captured_slots: Vec::new(),
-        n_cells: 0,
-        captured_cells: Vec::new(),
-    };
+    let chunk = c.finish(ChunkMeta { local_names, ..ChunkMeta::default() });
 
     if std::env::var("AR_VM_DUMP").is_ok_and(|v| !v.is_empty()) {
         eprintln!("{}", super::disasm::disassemble(&chunk, "<toplevel>"));
@@ -905,44 +856,18 @@ fn compile_fn_inner(
     }
 
     let mut c = Compiler {
-        code: Vec::new(),
-        consts: Vec::new(),
-        names: Vec::new(),
-        attr_caches: Vec::new(),
-        spans: Vec::new(),
-        stmt_spans: Vec::new(),
-        pending_stmt: None,
-        annotations,
         slots,
         slot_mut,
         slot_type,
         self_slot,
-        loops: Vec::new(),
-        block_ctxs: Vec::new(),
-        stmt_base: Some(0),
-        pending: None,
-        try_stack: Vec::new(),
-        in_finally: 0,
-        module_mode: false,
-        name_lookup: false,
-        debug_mode: false,
         named_locals: n,
-        temps_in_use: 0,
         n_locals: n as usize,
-        async_blocks: Vec::new(),
-        global_caches: Vec::new(),
-        ffi_call_info: HashMap::new(),
-        wb_targets: HashMap::new(),
-        fn_defs: Vec::new(),
-        type_arg_lists: Vec::new(),
-        tuple_decls: Vec::new(),
-        kw_calls: Vec::new(),
-        toplevel_globals: HashSet::new(),
         shadowed_for_targets,
         statics,
         cells,
         cell_by_slot,
         n_cells,
+        ..Compiler::base(CompileMode::Function, annotations)
     };
 
     for stmt in body {
@@ -951,32 +876,13 @@ fn compile_fn_inner(
     // 本体末尾までフォールオフしたら None を返す。
     c.emit(Op::ReturnNil);
 
-    // 覗き穴最適化（#2a）。コード生成は「素直に出す」ままにして、構造的に出る無駄
-    // （`else` 無し `if` の次命令への `Jump` 等）はここで回収する。意味論は不変。
-    super::peephole::optimize(&mut c.code, &mut c.stmt_spans);
 
-    let chunk = Chunk {
-        code: c.code,
-        consts: c.consts,
-        names: c.names,
-        attr_caches: c.attr_caches,
-        spans: c.spans,
-        stmt_spans: c.stmt_spans,
+    let chunk = c.finish(ChunkMeta {
         local_names,
-        n_locals: c.n_locals,
         n_params,
-        async_blocks: c.async_blocks,
-        global_caches: c.global_caches,
-        ffi_call_info: c.ffi_call_info,
-        wb_targets: c.wb_targets,
-        fn_defs: c.fn_defs,
-        type_arg_lists: c.type_arg_lists,
-        tuple_decls: c.tuple_decls,
-        kw_calls: c.kw_calls,
         captured_slots,
-        n_cells: c.n_cells,
         captured_cells,
-    };
+    });
 
     // 開発用フック: `AR_VM_DUMP=1` で生成バイトコードを標準エラーへ逆アセンブルする。
     // どの式に型特化 op が乗ったかを目視で確認するために使う（disasm.rs の唯一の呼び元）。
@@ -1045,47 +951,17 @@ pub fn compile_async_body(
     let shadowed_for_targets = for_target_shadows(&[], body);
 
     let mut c = Compiler {
-        code: Vec::new(),
-        consts: Vec::new(),
-        names: Vec::new(),
-        attr_caches: Vec::new(),
-        spans: Vec::new(),
-        stmt_spans: Vec::new(),
-        pending_stmt: None,
-        annotations,
         slots,
         slot_mut,
         slot_type,
-        self_slot: None,
-        loops: Vec::new(),
-        block_ctxs: Vec::new(),
-        stmt_base: Some(0),
-        pending: None,
-        try_stack: Vec::new(),
-        in_finally: 0,
-        module_mode: false,
-        name_lookup: false,
-        debug_mode: false,
         named_locals: n,
-        temps_in_use: 0,
         n_locals: n as usize,
-        async_blocks: Vec::new(),
-        global_caches: Vec::new(),
-        ffi_call_info: HashMap::new(),
-        wb_targets: HashMap::new(),
-        fn_defs: Vec::new(),
-        type_arg_lists: Vec::new(),
-        tuple_decls: Vec::new(),
-        kw_calls: Vec::new(),
-        // 空でないと `Op::LoadName` の分岐（最上位扱い）に入らない。名前の中身は
-        // 書き込み判定にしか使わないので、捕捉名を入れておけば足りる。
+        // ⚠ **空でないと `reads_by_name` が偽になり `LoadGlobal` へ落ちる**。名前の中身は
+        // 書き込み判定にしか使わないので、捕捉名を入れておけば足りる（`CompileMode` の doc）。
         toplevel_globals: captures.iter().cloned().collect(),
         shadowed_for_targets,
-        statics: HashMap::new(),
         // async 本体は可変キャプチャを持たない（submit 時に deep-clone される・D5）。
-        cells: HashMap::new(),
-        cell_by_slot: HashMap::new(),
-        n_cells: 0,
+        ..Compiler::base(CompileMode::AsyncBody, annotations)
     };
 
     // async 本体は Chunk の先頭＝オペランドスタックは空（#34）。
@@ -1093,30 +969,11 @@ pub fn compile_async_body(
     // 実行時検査はツリーウォークでも走らない＝`BLOCK_RETURN_EXPECTED_TYPE` は空・#35）。
     c.compile_block_expr(body, Some(0), None, true)?;
     c.emit(Op::Return);
-    super::peephole::optimize(&mut c.code, &mut c.stmt_spans);
-
-    let chunk = Chunk {
-        code: c.code,
-        consts: c.consts,
-        names: c.names,
-        attr_caches: c.attr_caches,
-        spans: c.spans,
-        stmt_spans: c.stmt_spans,
+    let chunk = c.finish(ChunkMeta {
         local_names,
-        n_locals: c.n_locals,
-        n_params: 0,
-        async_blocks: c.async_blocks,
-        global_caches: c.global_caches,
-        ffi_call_info: c.ffi_call_info,
-        wb_targets: c.wb_targets,
-        fn_defs: c.fn_defs,
-        type_arg_lists: c.type_arg_lists,
-        tuple_decls: c.tuple_decls,
-        kw_calls: c.kw_calls,
         captured_slots,
-        n_cells: 0,
-        captured_cells: Vec::new(),
-    };
+        ..ChunkMeta::default()
+    });
     if std::env::var("AR_VM_DUMP").is_ok_and(|v| !v.is_empty()) {
         eprintln!("{}", super::disasm::disassemble(&chunk, "<async>"));
     }
@@ -1128,46 +985,11 @@ pub fn compile_async_body(
 /// メソッド呼び出し・添字・制御フロー等は `None`（呼び出し側がツリーウォークへフォールバック）。
 pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
     let mut c = Compiler {
-        code: Vec::new(),
-        consts: Vec::new(),
-        names: Vec::new(),
-        attr_caches: Vec::new(),
-        spans: Vec::new(),
-        stmt_spans: Vec::new(),
-        pending_stmt: None,
         // デバッグ経路は注釈を持たない（空＝型特化しない）。
-        annotations: std::rc::Rc::new(crate::type_check::AstAnnotations::default()),
-        slots: HashMap::new(),
-        slot_mut: Vec::new(),
-        slot_type: Vec::new(),
-        self_slot: None,
-        loops: Vec::new(),
-        block_ctxs: Vec::new(),
-        stmt_base: Some(0),
-        pending: None,
-        try_stack: Vec::new(),
-        in_finally: 0,
-        module_mode: false,
-        name_lookup: true,
-        debug_mode: true,
-        named_locals: 0,
-        temps_in_use: 0,
-        n_locals: 0,
-        async_blocks: Vec::new(),
-        global_caches: Vec::new(),
-        ffi_call_info: HashMap::new(),
-        wb_targets: HashMap::new(),
-        fn_defs: Vec::new(),
-        type_arg_lists: Vec::new(),
-        tuple_decls: Vec::new(),
-        kw_calls: Vec::new(),
-        toplevel_globals: HashSet::new(),
-        // デバッガ REPL の 1 文。`for` 変数のシャドウは扱わない（名前引きで動く）。
-        shadowed_for_targets: HashSet::new(),
-        statics: HashMap::new(),
-        cells: HashMap::new(),
-        cell_by_slot: HashMap::new(),
-        n_cells: 0,
+        ..Compiler::base(
+            CompileMode::DebugRepl,
+            std::rc::Rc::new(crate::type_check::AstAnnotations::default()),
+        )
     };
     match stmt {
         Stmt::Expr(e) => {
@@ -1182,30 +1004,8 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
         }
         _ => return None,
     }
-    Some(Chunk {
-        code: c.code,
-        consts: c.consts,
-        names: c.names,
-        attr_caches: c.attr_caches,
-        spans: c.spans,
-        stmt_spans: c.stmt_spans,
-        local_names: Vec::new(),
-        n_locals: c.n_locals,
-        // デバッグ REPL 用 Chunk は停止対象ではないので 0 でよい。
-        n_params: 0,
-        async_blocks: Vec::new(),
-        global_caches: c.global_caches,
-        ffi_call_info: c.ffi_call_info,
-        wb_targets: c.wb_targets,
-        fn_defs: c.fn_defs,
-        type_arg_lists: c.type_arg_lists,
-        tuple_decls: c.tuple_decls,
-        kw_calls: c.kw_calls,
-        // デバッガ REPL の 1 文は名前引きで動く（キャプチャ slot は使わない）。
-        captured_slots: Vec::new(),
-        n_cells: 0,
-        captured_cells: Vec::new(),
-    })
+    // ⚠ **覗き穴最適化を掛けない**（#52 以前からの挙動。差を消すのは別タスク）。
+    Some(c.into_chunk(ChunkMeta::default()))
 }
 
 /// param または非 `for` 宣言と名前衝突する `for` ループ変数（式形含む）の集合（#27）。
@@ -1645,6 +1445,116 @@ fn block_body_bails(stmts: &[Stmt]) -> bool {
 }
 
 impl Compiler {
+    /// **全モード共通の初期状態**（#52）。呼び出し側は `..Compiler::base(mode, annot)` で
+    /// 差分フィールドだけを書く。
+    ///
+    /// ⚠ **フィールドを足すときに直すのはここ 1 箇所**。#51 まで 38 フィールドの構造体
+    /// リテラルが 5 箇所にあり、1 本足すたびに 5 箇所を直していた
+    /// （差分が 5 倍に膨らみ、レビューで異常が埋もれる — #33 の golden 録り直し漏れと同じ形）。
+    fn base(mode: CompileMode, annotations: std::rc::Rc<crate::type_check::AstAnnotations>) -> Self {
+        Compiler {
+            code: Vec::new(),
+            consts: Vec::new(),
+            names: Vec::new(),
+            attr_caches: Vec::new(),
+            spans: Vec::new(),
+            stmt_spans: Vec::new(),
+            pending_stmt: None,
+            annotations,
+            slots: HashMap::new(),
+            slot_mut: Vec::new(),
+            slot_type: Vec::new(),
+            self_slot: None,
+            loops: Vec::new(),
+            block_ctxs: Vec::new(),
+            // 文の入口はオペランドスタックが平衡（#34）。
+            stmt_base: Some(0),
+            // ⚠ 既定は `None`（＝深さ不明なら `break`/`continue` は bail する安全側）。
+            // `Some(0)` を要るのは「Chunk の先頭がそのまま式」の入口だけ（`DefinitionExpr`）。
+            pending: None,
+            try_stack: Vec::new(),
+            in_finally: 0,
+            mode,
+            named_locals: 0,
+            temps_in_use: 0,
+            n_locals: 0,
+            async_blocks: Vec::new(),
+            global_caches: Vec::new(),
+            ffi_call_info: HashMap::new(),
+            wb_targets: HashMap::new(),
+            fn_defs: Vec::new(),
+            type_arg_lists: Vec::new(),
+            tuple_decls: Vec::new(),
+            kw_calls: Vec::new(),
+            toplevel_globals: HashSet::new(),
+            shadowed_for_targets: HashSet::new(),
+            statics: HashMap::new(),
+            cells: HashMap::new(),
+            cell_by_slot: HashMap::new(),
+            n_cells: 0,
+        }
+    }
+
+    /// 覗き穴最適化を掛けてから `Chunk` に固める（#52）。**通常の入口はすべてこちら**。
+    ///
+    /// 覗き穴最適化（#2a）は、コード生成を「素直に出す」ままに保ちつつ構造的に出る無駄
+    /// （`else` 無し `if` の次命令への `Jump` 等）を回収する。意味論は不変。
+    ///
+    /// ⚠ **`peephole::optimize` の呼び出しはこの 1 箇所**にしてある。コード索引を持つ op を
+    /// 足したときに `peephole::code_target_mut` への登録漏れ（#27-d で `StaticInit` の飛び先を
+    /// 忘れ、**テストも例題も通ってしまった**）を探す場所を 1 つに保つため。
+    fn finish(mut self, meta: ChunkMeta) -> Chunk {
+        super::peephole::optimize(&mut self.code, &mut self.stmt_spans);
+        self.into_chunk(meta)
+    }
+
+    /// `Chunk` を組み立てるだけ（**覗き穴最適化を掛けない**）。
+    ///
+    /// ⚠ 掛けないのは `compile_debug` だけ — #52 以前からそうで、**この差を消すのは
+    /// 挙動の変更**（デバッガ REPL の 1 文に最適化を新たに通すこと）になるので保存した。
+    /// 通したいなら独立したタスクとして A/B と golden 比較つきで判断すること。
+    fn into_chunk(self, meta: ChunkMeta) -> Chunk {
+        Chunk {
+            code: self.code,
+            consts: self.consts,
+            names: self.names,
+            attr_caches: self.attr_caches,
+            spans: self.spans,
+            stmt_spans: self.stmt_spans,
+            local_names: meta.local_names,
+            n_locals: self.n_locals,
+            n_params: meta.n_params,
+            async_blocks: self.async_blocks,
+            global_caches: self.global_caches,
+            ffi_call_info: self.ffi_call_info,
+            wb_targets: self.wb_targets,
+            fn_defs: self.fn_defs,
+            type_arg_lists: self.type_arg_lists,
+            tuple_decls: self.tuple_decls,
+            kw_calls: self.kw_calls,
+            captured_slots: meta.captured_slots,
+            n_cells: self.n_cells,
+            captured_cells: meta.captured_cells,
+        }
+    }
+
+    /// 自由な識別子を**名前で読む**か（`LoadName`）。偽なら `LoadGlobal`（`scopes[0]` 限定）。
+    ///
+    /// ⚠ **`toplevel_globals` の空・非空を見る**のはモードに畳めないため（`CompileMode` の doc）。
+    /// 最上位モードで「その名前が最上位で宣言されている」ことは条件では**ない** —
+    /// 集合が非空でありさえすれば名前引きに落ちる（#27-c）。
+    #[inline]
+    fn reads_by_name(&self) -> bool {
+        self.mode.uses_name_lookup() || !self.toplevel_globals.is_empty()
+    }
+
+    /// 「slot に無い名前をグローバルへ書ける」モードか（#10-b）。
+    /// ⚠ 空・非空の判定そのものが条件（`reads_by_name` と同じ理由でモードに畳めない）。
+    #[inline]
+    fn writes_toplevel_globals(&self) -> bool {
+        !self.toplevel_globals.is_empty()
+    }
+
     #[inline]
     fn emit(&mut self, op: Op) -> usize {
         self.code.push(op);
@@ -1685,7 +1595,7 @@ impl Compiler {
     /// debug_mode では融合しない（未解決 `Ident` は `LoadName` に落ちるため）。
     /// `Resolution::Global` は対象外（`_` に落ちる）。
     fn as_local(&self, e: &Expr) -> Option<u16> {
-        if self.debug_mode {
+        if self.mode.is_debug_repl() {
             return None;
         }
         match e {
@@ -1916,7 +1826,7 @@ impl Compiler {
     /// **その名前が slot に無いこと**。後者が要るのは、最上位文の内側（ループ本体・
     /// ブロック式の中）の宣言は slot だから — そちらは従来どおり `StoreLocal*` に落とす。
     fn toplevel_decl_name(&mut self, name: &str) -> Option<u32> {
-        if self.toplevel_globals.is_empty() || self.slots.contains_key(name) {
+        if !self.writes_toplevel_globals() || self.slots.contains_key(name) {
             return None;
         }
         Some(self.add_name(name))
@@ -1983,12 +1893,12 @@ impl Compiler {
         // ⚠ デバッガ REPL（`compile_debug`）だけは例外（#39）。停止フレームの**生スコープ**へ
         // 書かねばならず、`scopes[0]` 限定の `StoreGlobal` では別の変数を書いてしまう。
         // 読み側が `LoadName` に落ちているのと同じ理由。ここは従来どおり bail する。
-        if self.module_mode {
+        if self.mode.is_module_body() {
             // モジュール本体は push 済みスコープに名前がある（#42）。
             let ni = self.add_name(name);
             return Some(StoreTarget::Name(ni));
         }
-        if self.debug_mode || self.name_lookup {
+        if self.mode.uses_name_lookup() {
             // 停止フレーム／外側スコープの**生の変数**へ書く必要があるが、
             // `scopes[0]` 限定の `StoreGlobal` では別の変数を書いてしまう（#39）。
             // ⚠ チャンク内で宣言したローカルは上の `slots` で先に拾われるので影響しない。
@@ -2188,7 +2098,7 @@ impl Compiler {
     /// ⚠ `debug_mode`（デバッガ REPL 用の `compile_debug`）では記録しない。
     /// あちらは停止対象ではなく、REPL 入力を評価するだけの Chunk。
     fn mark_stmt_start(&mut self, stmt: &Stmt) {
-        if self.debug_mode {
+        if self.mode.is_debug_repl() {
             return;
         }
         let idx = match crate::interpreter::debugger::stmt_span_of(stmt) {
@@ -2260,13 +2170,13 @@ impl Compiler {
         if let Some(&slot) = self.slots.get(name) {
             return Some(WbStore::Local(slot));
         }
-        if self.module_mode {
+        if self.mode.is_module_body() {
             let ni = self.add_name(name);
             return Some(WbStore::Name(ni));
         }
         // デバッガ REPL／定義文脈は停止フレームの生スコープを見るので `StoreGlobal` では
         // 別の変数を書く（`store_target` が bail するのと同じ理由）。書き戻しは見送る。
-        if self.debug_mode || self.name_lookup {
+        if self.mode.uses_name_lookup() {
             return None;
         }
         let ni = self.add_name(name);
@@ -3298,7 +3208,7 @@ impl Compiler {
                         bail("let-tuple-partial-slots", Some(stmt));
                         return None;
                     }
-                } else if self.toplevel_globals.is_empty() {
+                } else if !self.writes_toplevel_globals() {
                     // 最上位モードでないのに slot も無い ＝ 束縛先が決まらない。
                     bail("let-tuple-no-target", Some(stmt));
                     return None;
@@ -3608,7 +3518,7 @@ impl Compiler {
             // 未解決 Ident は slot にあればローカル読み、無ければグローバル読み。
             // デバッグモードでは停止スコープからの名前引き（LoadName）。
             Expr::Ident { name, .. } => {
-                if self.debug_mode {
+                if self.mode.is_debug_repl() {
                     let ni = self.add_name(name);
                     self.emit(Op::LoadName(ni));
                 } else {
@@ -3627,7 +3537,7 @@ impl Compiler {
                         // が担うが、VM フレームは `exec_fn_evaled` の `frame_floor` 前進より手前で
                         // 分岐するので、`get_val` が**呼び出し元のローカルまで見えてしまう**。最上位は
                         // `toplevel_vm_candidate` が `scopes.len() == 1` を保証するので安全。
-                        None if self.name_lookup || !self.toplevel_globals.is_empty() => {
+                        None if self.reads_by_name() => {
                             let ni = self.add_name(name);
                             self.emit(Op::LoadName(ni));
                         }
@@ -3804,7 +3714,7 @@ impl Compiler {
                                 return None;
                             }
                         }
-                    } else if self.debug_mode {
+                    } else if self.mode.is_debug_repl() {
                         // デバッグモード: 呼び先を名前引きで取得（局所・グローバル両対応）。
                         let cn = self.add_name(name);
                         self.emit(Op::LoadName(cn));
@@ -3845,7 +3755,7 @@ impl Compiler {
                     // 分類はリゾルバ済みなので builtin/slots の判定は不要。
                     // ただしデバッグモードは停止スコープの名前引きに合わせる。
                     let ni = self.add_name(name);
-                    if self.debug_mode {
+                    if self.mode.is_debug_repl() {
                         self.emit(Op::LoadName(ni));
                     } else {
                         self.emit_load_global(name);
@@ -4378,5 +4288,44 @@ impl Compiler {
         self.free_temp(); // result_slot
         self.free_temp(); // yield_slot
         Some(())
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::CompileMode::*;
+    use super::CompileMode;
+
+    /// **#52 で 3 つの bool を `CompileMode` へ畳んだときの対応表**を固定する。
+    ///
+    /// ⚠ 畳む前は各入口の構造体リテラルに `module_mode` / `name_lookup` / `debug_mode` が
+    /// 並んでいたので、値は**読めば分かった**。畳んだ後は `matches!` のアームを 1 つ書き換えると
+    /// **静かに全入口の挙動が変わる**。ここが唯一の防波堤。
+    ///
+    /// 期待値は #51 時点の実装から写したもの（左から module_mode / name_lookup / debug_mode）。
+    #[test]
+    fn mode_predicates_match_the_pre_52_flags() {
+        let expected: &[(CompileMode, bool, bool, bool)] = &[
+            //                     is_module_body / uses_name_lookup / is_debug_repl
+            (Function, false, false, false),
+            (Toplevel, false, false, false),
+            (Module, true, false, false),
+            (DefinitionExpr, false, true, false),
+            (AsyncBody, false, false, false),
+            (DebugRepl, false, true, true),
+        ];
+        for &(m, module_body, name_lookup, debug_repl) in expected {
+            assert_eq!(m.is_module_body(), module_body, "is_module_body for {m:?}");
+            assert_eq!(m.uses_name_lookup(), name_lookup, "uses_name_lookup for {m:?}");
+            assert_eq!(m.is_debug_repl(), debug_repl, "is_debug_repl for {m:?}");
+        }
+    }
+
+    /// `uses_name_lookup` は畳む前の **`debug_mode || name_lookup`** と一致すること。
+    /// ⚠ 畳めた根拠は「`DebugRepl` は `name_lookup` も真だった」の 1 点だけなので、
+    /// `DebugRepl` を名前引きでなくするなら**この畳み込みも解く**必要がある。
+    #[test]
+    fn debug_repl_implies_name_lookup() {
+        assert!(DebugRepl.uses_name_lookup());
     }
 }

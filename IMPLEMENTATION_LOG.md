@@ -5463,3 +5463,103 @@ A = HEAD（属性が `vm_namespace_writeback_fn` に付いていた状態）、B
 - **⚠ 1 回目の Edit が doc ブロックの後半しか消せていなかった**。orphan doc は
   「A の doc ＋ A の属性 ＋ B の doc」の 3 連なので、**属性の直上だけを消すと A の doc が残る**。
   残骸は次の読者に同じ誤読をさせるので、**orphan を直したら必ず前後を目視する**。
+
+---
+
+## #52 `CompileMode` 導入 ＋ `Compiler::base` / `finish`（2026-08-20）
+
+保守性レーンの 2 本目。**挙動を 1 ビットも変えずに**、`vm/compiler.rs` の
+「38 フィールドの構造体リテラル × 5」「24 フィールドの `Chunk` リテラル × 5」
+「4 つのモードフラグが 12 箇所へ散在」を畳む。
+
+### やったこと
+
+| 対象 | 前 | 後 |
+|---|---|---|
+| モードフラグ | `module_mode` / `name_lookup` / `debug_mode` の 3 bool | `CompileMode` enum 1 本（6 バリアント）＋述語メソッド 3 つ |
+| `Compiler` の生成 | 38 フィールドのリテラル × 5 箇所（206 行） | `Compiler::base(mode, annot)` ＋ `..` で差分だけ（**最大 11 フィールド**） |
+| `Chunk` の生成 | 24 フィールドのリテラル × 5 箇所（113 行） | `finish(ChunkMeta)` 1 本（差分は 4 フィールド） |
+| `peephole::optimize` の呼び出し | 4 箇所に散在 | `finish` の 1 箇所 |
+
+`src/vm/compiler.rs` **4,383 → 4,292 行**（-91）。⚠ この数字は
+**`base`/`finish`/`CompileMode`/`ChunkMeta` の新規 ~100 行（doc 込み）を足した後**の純減。
+定型の削減量そのものは 319 行。
+
+### 畳まなかったもの — `toplevel_globals`
+
+診断では「`toplevel_globals` が **3 役**（グローバル集合／最上位モードの真偽値／
+`AsyncBody` ではフラグを立てるためだけの捕捉名）を兼ねている」を指摘したが、**#52 では畳まなかった**。
+
+理由: `!toplevel_globals.is_empty()` を `matches!(mode, Toplevel | Module | AsyncBody)` に
+置き換えると **`AsyncBody` で挙動が変わる**。async 本体の集合は**捕捉名**なので、
+`captures` が空なら偽になり `LoadGlobal` へ落ちる。モードから導くと常に真になってしまう。
+
+⇒ **式のまま名前だけ付けた**（`reads_by_name` / `writes_toplevel_globals`）。
+「何を見ているか」は読めるようになり、かつ**挙動は同一**。
+真に畳むなら「captures が空の async 本体で `LoadGlobal` に落ちるのは正しいのか」を
+先に決める必要がある（別タスク）。
+
+### ⚠ `compile_debug` だけ覗き穴最適化を通していない
+
+5 つの `Chunk` リテラルのうち `compile_debug` **だけ** `peephole::optimize` を呼んでいなかった。
+`finish()` に一本化すると**デバッガ REPL の 1 文に最適化を新たに通す**ことになる＝挙動の変更。
+
+⇒ `finish`（peephole あり）が `into_chunk`（組み立てのみ）へ**委譲**する形にして、
+`compile_debug` だけ `into_chunk` を直接呼ぶ。**`Chunk` を組み立てる場所は 1 箇所**のまま
+（#22 の「同じ判断をする 2 実装は片方を委譲に畳む」）。
+
+### 不変条件をテストで固定（`mode_tests`）
+
+畳む前は各リテラルに 3 bool が並んでいたので値は**読めば分かった**。畳んだ後は
+`matches!` のアームを 1 つ書き換えると**静かに全入口の挙動が変わる**。
+⇒ #51 時点の対応表を写した表駆動テストを置いた（`mode_predicates_match_the_pre_52_flags`）。
+
+畳めた根拠のうち非自明なのは 1 点だけ: **`debug_mode || name_lookup` ≡ `name_lookup`**
+（`DebugRepl` は `name_lookup` も真だったため）。これも独立したテストで固定した。
+
+### 検証 — **バイトコードの byte-identical 比較**
+
+「挙動を変えていない」の主張は exit code では弱いので、`AR_VM_DUMP=1` の逆アセンブルを
+#51 のバイナリと突き合わせた。
+
+| 結果 | |
+|---|---|
+| 比較した例題 | **210**（dump を出さない 9 件を除く） |
+| byte-identical | **206** |
+| 差分 | **4（すべて `examples/async/`）** |
+
+⚠⚠ **その 4 件は #52 とは無関係だった**。**同一バイナリで 2 回走らせても差が出る**
+（`async_demo.ar` の `<async>` チャンク数が **7↔8 で揺れる**。`arrow_new` が `7 7 8 8 8 8 7 8`、
+`arrow_52` が `7 7 7 8 7 7 7 8`）。worker スレッドが stderr へ書く順序と、
+タスクが何回コンパイルされるかがスケジューリング依存であるため。
+⇒ **`AR_VM_DUMP` の突き合わせは async 例題には使えない**（#53 で再利用するときの前提）。
+⚠ 差分を見た瞬間に「退行だ」と判断せず、**まず同一バイナリで再現するかを見る**こと
+（#43 で確立した手順がそのまま効いた）。
+
+### 見積もりと実測
+
+| 事前の見立て | 実測 |
+|---|---|
+| 「5 つのリテラルは差分 8 フィールド程度」 | 概ね合っていた（最大 11・`fn_inner` が最多） |
+| 「`peephole` の呼び出しは 5 箇所」 | **違った。4 箇所**（`compile_debug` は通していない）＝ 一本化は**挙動の変更**になるところだった |
+| 「`toplevel_globals` もモードへ畳める」 | **違った**。`AsyncBody` が捕捉名の空・非空に依存しており、畳むと挙動が変わる |
+| 「バイトコードは全例題で byte-identical になるはず」 | **206/210**。残り 4 は**検査側の非決定性**（async）で、#52 とは無関係 |
+
+### 検証（全ゲート緑・2026-08-20）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` | **警告 0** |
+| `cargo test` | **742 passed / 0 failed**（740 ＋ `mode_tests` 2 本） |
+| `cargo clippy --all-targets` | bin **52**（増分 **0**） |
+| **`AR_VM_DUMP` 突き合わせ**（#51 バイナリ比較） | **210 中 206 が byte-identical**／残り 4 は async（**同一バイナリでも揺れる**＝無罪） |
+| [scan_examples.ps1](scan_examples.ps1) | **FAIL 0** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **49/49 identical** |
+| [force_gate.ps1](force_gate.ps1) | **147 例題・`VmForceError` 0 件** |
+| [debug_session.ps1](debug_session.ps1) | **5 identical**（`compile_debug` を触ったので重要） |
+| [repl_session.ps1](repl_session.ps1) | **identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+
+⚠ A/B ベンチは**取っていない**。コンパイラは Chunk キャッシュの裏にいて実行のホットパスでは
+なく、かつ**生成バイトコードが byte-identical** と示せたので、実行時性能は定義上不変。
+（`exec_op` のような `#[inline(always)]` の本体には一切触れていない。）
