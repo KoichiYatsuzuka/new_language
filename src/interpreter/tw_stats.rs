@@ -182,6 +182,54 @@ pub(crate) fn record_compile(kind: &'static str, ok: bool) {
 }
 
 /// 収集結果を stderr へ出す（`run_program` の末尾から呼ぶ）。
+/// ツリーウォークの**式**評価の計測（#55）。
+///
+/// `record_stmt` が「どの**文**がツリーウォークに残っているか」を数えるのに対し、こちらは
+/// 「**式**の評価がツリーウォークで走っているか」を数える。#33 以降「ツリーウォークが実行するのは
+/// 定義文だけ」と言い続けてきたが、**その根拠は文の粒度でしか測られていなかった**
+/// （`record_stmt` は `Stmt` しか数えない）。式経路が生きているかは誰も見ていない。
+///
+/// ⚠ **`bump()`（Mutex ＋ `String` 確保）は使えない。** `eval()` は**式ノードごと**に
+/// 呼ばれるので、1 ノードごとにロックを取ると計測自体が完走しない。
+/// relaxed の `AtomicU64` を叩くだけにする（async の worker からも数えるので thread_local 不可）。
+static EVAL_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 「AST の式を引数に取る」ツリーウォーク専用の入口。**評価済み値版（`*_evaled`）と対**になる
+/// 実装で、#48 の実バグ（VM 経路だけ書き戻しが起きない）が出たのがまさにこの二重化。
+/// ⇒ ここが全例題で 0 なら、対の AST 版は通常実行から到達不能ということ（#54 の規模が変わる）。
+pub(crate) const TW_SITES: &[&str] = &[
+    "eval_call",
+    "call_native_function",
+    "dispatch_native_typed_exprs",
+    "eval_method_call",
+    "eval_builtin_ident_call",
+];
+static SITE_HITS: [std::sync::atomic::AtomicU64; 5] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+];
+
+/// `eval()` の呼び出しを 1 件計上する（#55）。
+#[inline(always)]
+pub(crate) fn record_eval() {
+    if !enabled() {
+        return;
+    }
+    EVAL_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// AST 式を取るツリーウォーク入口の通過を 1 件計上する（#55）。`idx` は `TW_SITES` の添字。
+#[inline(always)]
+pub(crate) fn record_site(idx: usize) {
+    if !enabled() {
+        return;
+    }
+    SITE_HITS[idx].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(crate) fn dump() {
     let Some(m) = COUNTS.get() else { return };
     let Ok(g) = m.lock() else { return };
@@ -203,6 +251,14 @@ pub(crate) fn dump() {
             .join(" ");
         eprintln!("TwStats[{cat}] total={total} {body}");
     }
+    // 式評価の計測（#55）。**0 なら式経路はツリーウォークに残っていない**。
+    let evals = EVAL_CALLS.load(std::sync::atomic::Ordering::Relaxed);
+    let sites: Vec<String> = TW_SITES
+        .iter()
+        .enumerate()
+        .map(|(i, n)| format!("{n}={}", SITE_HITS[i].load(std::sync::atomic::Ordering::Relaxed)))
+        .collect();
+    eprintln!("TwStats[tw_eval] total={evals} {}", sites.join(" "));
 }
 
 /// `Stmt` バリアント名（計上キー）。

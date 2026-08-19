@@ -20,6 +20,8 @@ impl Interpreter {
         fn_ref: &Arc<NativeFnRef>,
         args: &[crate::ast::CallArg],
     ) -> Result<Value, String> {
+        // #55: AST 式を取るツリーウォーク入口の通過を数える（既定ビルドでは消える）。
+        crate::interpreter::tw_stats::record_site(1);
         use crate::interpreter::PtrParam;
 
         // Fast path: no write-back parameters（判定は VM 側と同一実装・#48）
@@ -299,6 +301,8 @@ impl Interpreter {
         any_arc: &Arc<dyn std::any::Any + Send + Sync>,
         args: &[CallArg],
     ) -> Result<Value, String> {
+        // #55: AST 式を取るツリーウォーク入口の通過を数える（既定ビルドでは消える）。
+        crate::interpreter::tw_stats::record_site(2);
         use crate::interpreter::value::{AbiTy, PtrArgCleanup};
         let sig = fn_ref.typed_sig.as_ref().expect("cache guarantees typed_sig");
         let mut slots = [0u64; 16];

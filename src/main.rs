@@ -530,6 +530,11 @@ fn main() {
 
         Mode::Repl => {
             repl::run_repl();
+            // 診断フック（#55）: REPL 経路にも内訳を出す。⚠ ここが抜けていたので
+            // **対話 REPL は `AR_TW_STATS` に一度も映っていなかった**（`run_program` 側だけ配線済み）。
+            if interpreter::tw_stats::enabled() {
+                interpreter::tw_stats::dump();
+            }
         }
     }
 }

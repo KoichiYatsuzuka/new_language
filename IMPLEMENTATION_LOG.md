@@ -5651,3 +5651,98 @@ doc コメント境界込みでアイテムを切り出すスクリプトを書�
 | 「純粋な移動なので付随修正はほぼ無い」 | **違った**。可視性 85 箇所＋パス修正が必須（兄弟モジュールは private が見えない） |
 | 「`cargo fix` で未使用 import を消せば終わり」 | **違った**。テスト専用の再エクスポートまで消され、`cargo test` が壊れた |
 | 「全例題でバイトコードを比較できる」 | **違った**。GUI 4 例題は `timeout` で殺せずループが停止する |
+
+---
+
+## #55 ツリーウォークの**式**評価経路の生死判定（2026-08-20）
+
+#33 以降「ツリーウォークが実行するのは定義文だけ」と言い続けてきたが、**その根拠は文の粒度でしか
+測られていなかった**（`record_stmt` は `Stmt` しか数えない）。式経路が生きているかは誰も見ていない。
+#54（native typed ABI の 1 本化）の規模がこれで変わるので、先に測った。
+
+### 手法 — `AR_TW_STATS` に `tw_eval` を追加
+
+⚠ **`bump()`（Mutex ＋ `String` 確保）は使えない。** `eval()` は**式ノードごと**に呼ばれるので
+1 ノードごとにロックを取ると計測が完走しない。relaxed の `AtomicU64` を叩くだけにした
+（async の worker からも数えるので thread_local 不可）。
+
+数えたのは 2 つ:
+1. `eval()` の呼び出し総数。
+2. **AST の式を引数に取る**ツリーウォーク専用入口 5 つの通過数
+   （`eval_call` / `call_native_function` / `dispatch_native_typed_exprs` /
+   `eval_method_call` / `eval_builtin_ident_call`）。#48 の実バグはこの二重化が原因だった。
+
+⚠ **配線の負の対照を先に取った**（0 を信じる前に）。`control_flow.ar` で `eval_method_call=1` が
+発火することを確認 — これは VM の `Op::GetIter` が `__iter__` を呼ぶ経路で、**ツリーウォークの
+式評価ではない**。フックは効いている。
+
+### 結果
+
+| 経路 | `eval()` | `eval_call` | native 2 経路 |
+|---|---|---|---|
+| 例題 130 本（FFI 含む） | **129 本で 0**／`functions.ar` のみ 21 | **全 0** | **全 0** |
+| 対話 REPL | **14** | **3** | 0 |
+| デバッガ（`dbg_vars`） | **2** | 0 | 0 |
+
+⚠ **FFI 例題が測定対象に入っていることを確認した**（`cpp_out_param_writeback.ar`＝#48 の負の対照・
+`cpp_struct_ptr.ar`・`bench_ab_cdll.ar`・`ffi_boundary_check.ar`・`import_py_json.ar`）。
+**それでも `call_native_function` / `dispatch_native_typed_exprs` は 0**。
+＝ FFI はすべて VM の評価済み値経路（`dispatch_native_evaled_wb`）を通っている。
+
+`functions.ar` の 21 件はデコレータではない（デコレータは #41 で `eval_definition_expr`＝VM 経由）。
+`functions/args.rs` の引数束縛と `templates.rs` の実体化が `self.eval()` を直接呼んでいる。
+**いずれも定義文・束縛の内側**で、式文の評価ではない。
+
+### 結論 — #54 は「消す」ではなく「畳む」
+
+AST 引数版は **通常実行から到達不能だが REPL/デバッガからは到達しうる**（`eval_call` が REPL で 3 回発火）。
+⇒ 削除はできない。**`*_evaled` 版への委譲に畳む**のが正しい（#22 の作法）。
+⚠ ただし **native の 2 経路はどのゲートも通っていない**ので、畳むときは
+REPL かデバッガを使う負の対照を別に用意すること。
+
+### ⚠⚠ 副産物 — 実バグ 1 件（→ #56）
+
+**`parse_ar()` が完全に死んでいる。**
+
+```
+$ arrow -src probe.ar          # let ast = parse_ar("let x: int = 1")
+VmForceError: cannot compile top-level statement `Let` to bytecode
+```
+
+`is_builtin_callee` が `parse_ar` を bail するが、その doc は「**ツリーウォークへ bail すべき**」と
+書いている — **#33 でフォールバックは消えた**。bail ＝ `VmForceError` ＝ 停止。
+関数の中でも同じ（`cannot compile function 'go' to bytecode`）。
+
+§2.1 は `parse_ar` を **【✅ AST 保持】**とし、`python_converter` / `converter.ar` が依存するとしている。
+それが動かない。**#51 のバイナリでも同じ**なので、私の #51〜#53 が原因ではなく **#33 以来**の状態。
+
+同じ根で `tuple`/`list`/`type`/`byte` も壊れている: 本来 `NameError`（呼び出し不可）を出すはずが
+`VmForceError` に化ける。#34 が確立した「**必ず失敗する文は bail せず `Op::Fail` で同じ文言を出す**」
+がここに適用されていない。
+
+⚠⚠ **なぜどのゲートにも映らなかったか**: **`parse_ar` を使う例題が 1 本も無い**
+（`converter.ar` は `std_tools/` にあり、しかも別の ParseError で既に壊れている）。
+「⚠ 例題が無い言語機能はゲートに映らない」（#34/#35）の 6 回目。
+
+### 計測の穴も 1 つ塞いだ
+
+`tw_stats::dump()` は `run_program` 経路にしか配線されておらず、**対話 REPL は `AR_TW_STATS` に
+一度も映っていなかった**。#55 で `Mode::Repl` にも配線した（これが無ければ「REPL で 14 回」は
+測れていない）。
+
+### 検証
+
+`cargo build` 警告 **0**（既定・`--features tw_stats` の両方）／`cargo test` **742 passed**／
+clippy bin **52（増分 0）**。
+
+A/B（#53 バイナリ比較・`bench_ab_interp.ar`）は **0.968x → 再実行で 1.021x** と**符号が反転**したので
+ノイズと判断（フックは `cfg!` 先行判定で既定ビルドから消えるうえ、`eval()` はそもそも 0 回）。
+⚠ 1 回目の 3% を「実費用」と読まずに**同じ 2 バイナリで測り直した**のが効いた（#43 の手順）。
+
+### 見積もりと実測
+
+| 事前の見立て | 実測 |
+|---|---|
+| 「式経路は死んでいるか、生きているかのどちらか」 | **両方だった**。通常実行では死／REPL・デバッガでは生 |
+| 「FFI 例題なら AST 引数版が通るはず」 | **違った**。FFI も全部 VM の評価済み値経路 |
+| 「#55 は測るだけの小さいタスク」 | **違った**。`parse_ar` が死んでいるという実バグが出た |

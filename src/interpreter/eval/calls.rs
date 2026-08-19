@@ -94,6 +94,8 @@ impl Interpreter {
         cache: &crate::ast::NativeCallCache,
         node_id: u32,
     ) -> Result<Value, String> {
+        // #55: AST 式を取るツリーウォーク入口の通過を数える（既定ビルドでは消える）。
+        crate::interpreter::tw_stats::record_site(0);
         // ── インラインキャッシュ命中: AST に焼き込まれた typed ネイティブ関数 ──
         // スコープ検索・Value マッチ・組み込みチェックをすべて跳ばして直接ディスパッチ。
         // （充填条件: 不変バインディング + typed ABI あり — 下の NativeFunction アーム参照）

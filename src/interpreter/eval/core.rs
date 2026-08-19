@@ -73,6 +73,8 @@ impl Interpreter {
 
     /// 式（`Expr`）を評価して `Value` を返す。各バリアントを専用メソッドに委譲する薄いディスパッチャ。
     pub fn eval(&mut self, expr: &Expr) -> Result<Value, String> {
+        // 式評価がツリーウォークで走っているかの計測（#55）。既定ビルドでは消える。
+        crate::interpreter::tw_stats::record_eval();
         match expr {
             Expr::Int(n) => Ok(Value::Int(*n)),
             Expr::Float(f) => Ok(Value::Float(*f)),

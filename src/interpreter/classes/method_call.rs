@@ -148,6 +148,8 @@ impl Interpreter {
         args: &[CallArg],
         cache: Option<&crate::ast::NativeCallCache>,
     ) -> Result<Value, String> {
+        // #55: AST 式を取るツリーウォーク入口の通過を数える（既定ビルドでは消える）。
+        crate::interpreter::tw_stats::record_site(3);
         // #27-b: **引数を評価してから評価済み版へ委譲するだけ**にした。
         // 実装は `eval_method_call_full` に 1 つだけ置く（VM も同じものを通る）。
         //

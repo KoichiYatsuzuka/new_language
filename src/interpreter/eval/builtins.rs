@@ -252,6 +252,8 @@ impl Interpreter {
         name: &str,
         args: &[CallArg],
     ) -> Option<Result<Value, String>> {
+        // #55: AST 式を取るツリーウォーク入口の通過を数える（既定ビルドでは消える）。
+        crate::interpreter::tw_stats::record_site(4);
         match name {
             "print" => {
                 let mut parts: Vec<String> = Vec::new();
