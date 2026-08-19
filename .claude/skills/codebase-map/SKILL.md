@@ -86,7 +86,7 @@ Refresh with `./generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (192 files, 67020 lines)
+src/  (201 files, 67150 lines)
   ast.rs (1124)
   interpreter.rs (744)
   main.rs (613)
@@ -299,13 +299,23 @@ src/  (192 files, 67020 lines)
       resolve.rs (189)
   vm/
     chunk.rs (273)
-    compiler.rs (4382)
     disasm.rs (132)
     mod.rs (33)
     op.rs (467)
     op_prof.rs (192)
     peephole.rs (272)
     run.rs (1505)
+    compiler/
+      block_expr.rs (404)
+      calls.rs (324)
+      control.rs (285)
+      decls.rs (504)
+      diag.rs (127)
+      emit.rs (533)
+      entry.rs (601)
+      expr.rs (480)
+      mod.rs (436)
+      stmt.rs (818)
 
 impl_python/  (49 files, 16410 lines)
   __init__.py (0)
@@ -404,14 +414,14 @@ examples/  (recursive .ar counts per category)
   ar_config.json (32)
   bench.ps1 (36)
   bench_baseline.md (68)
-  BYTECODE_VM_PLAN.md (933)
+  BYTECODE_VM_PLAN.md (944)
   CLAUDE.md (71)
   compare_python_impl.ps1 (203)
   debug_session.ps1 (161)
   dump_native_ir.ps1 (92)
   force_gate.ps1 (133)
   generate-codebase-map.ps1 (100)
-  IMPLEMENTATION_LOG.md (5420)
+  IMPLEMENTATION_LOG.md (5565)
   PHASE_R1_RESULTS.md (741)
   PHASE5_PLAN.md (427)
   prof_dist.ps1 (180)
@@ -425,5 +435,5 @@ examples/  (recursive .ar counts per category)
   tw_stats.ps1 (104)
   tw_stats_files.ps1 (57)
 ```
-_Generated 2026-08-19 by generate-codebase-map.ps1_
+_Generated 2026-08-20 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->

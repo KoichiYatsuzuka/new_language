@@ -5563,3 +5563,91 @@ A = HEAD（属性が `vm_namespace_writeback_fn` に付いていた状態）、B
 ⚠ A/B ベンチは**取っていない**。コンパイラは Chunk キャッシュの裏にいて実行のホットパスでは
 なく、かつ**生成バイトコードが byte-identical** と示せたので、実行時性能は定義上不変。
 （`exec_op` のような `#[inline(always)]` の本体には一切触れていない。）
+
+---
+
+## #53 `vm/compiler.rs` のサブ分割（2026-08-20）
+
+保守性レーンの 3 本目。§5.1 に「**実装差分**: compiler/ サブ分割（stmt/expr/control）は未分離」と
+**当初設計として書かれたまま実施されていなかった**もの（番号も付いていなかった）。
+
+### 結果
+
+`src/vm/compiler.rs` **4,331 行の単一ファイル → `src/vm/compiler/` 10 モジュール**。
+
+| module | 行 | 役割 |
+|---|---|---|
+| `stmt.rs` | 818 | `compile_stmt` |
+| `entry.rs` | 601 | 公開入口 6 つとその `_inner` |
+| `emit.rs` | 533 | 命令発行のプリミティブ・書き込み先の決定・型特化の判定 |
+| `decls.rs` | 504 | slot 採番と AST 走査 |
+| `expr.rs` | 480 | `compile_expr` |
+| `mod.rs` | 436 | 型（`Compiler`/`CompileMode`/`ChunkMeta`/`StoreTarget`/`LoopCtx`/`BlockCtx`）＋ `base`/`finish` |
+| `block_expr.rs` | 404 | ブロック式 5 種 |
+| `calls.rs` | 324 | 呼び出し（引数・FFI 情報・書き戻し先・async 投入） |
+| `control.rs` | 285 | `try`/`finally`/`match` 文と脱出時の巻き戻し |
+| `diag.rs` | 127 | `bail` 診断フック・組み込み名の表 |
+
+合計 4,507 行（+176）。増分は**ヘッダ 10 本・`use` ブロック 10 本・`impl Compiler {}` の再構成**で、
+**中身は 1 行も書き換えていない**。⇒ 診断 [C-1]「1000 行超のファイル」は VM 側では解消
+（残るのは `run.rs` 1,505 行だが、これは `exec_op` が `#[inline(always)]` なので**分割してはいけない**）。
+
+### 方針 — 「切って貼るだけ」に徹した
+
+doc コメント境界込みでアイテムを切り出すスクリプトを書き、`impl Compiler` のメソッドは
+行き先ごとに `impl Compiler { .. }` を組み直した。**中身の編集は禁止**にしたので、
+差分レビューは「どこへ動いたか」だけを見ればよい。
+
+機械的に必要になった付随修正は 4 種類だけ:
+
+1. **`impl` メソッド 70 個に `pub(super)`** — Rust のメソッド可視性は `impl` が置かれた
+   モジュール基準なので、**兄弟モジュールからは private メソッドが見えない**。
+2. **自由関数 13 個・定数 2 個に `pub(super)`**（`decls` / `diag`）。
+3. **`super::chunk::` → `crate::vm::chunk::`** — モジュールが 1 段深くなったため。
+4. **未使用 `use` の除去**（`cargo fix`）。
+
+### 踏んだこと
+
+- **⚠⚠ `cargo fix` がテスト専用の再エクスポートを消した。** `VM_BUILTIN_NAMES` は
+  `vm_builtin_names_are_all_handled`（#22-d の 2 ファイル跨ぎ不変条件テスト）**だけ**が使うので、
+  通常ビルドでは未使用に見える。消された結果 `cargo test` が**コンパイルできなくなった**
+  （`cargo build` は緑のまま）。⇒ `#[cfg(test)] pub(crate) use` で復旧。
+  **`cargo fix` の後は必ず `cargo test` までやること**（build だけ見て済ませない）。
+- **⚠ clippy が +2 になった**（`unnecessary pub(self)`）。`pub(self)` は private と同義で冗長。
+  素の `use` に直して 52（増分 0）へ戻した。
+- **⚠⚠ `timeout 20` は Windows の GUI 例題を殺せない**。バイトコード比較のループが
+  `cs_form_app.ar` で**無限に止まった**（arrow プロセスは既に居ないのにループが進まない）。
+  ⇒ `force_gate.ps1` が特別扱いしているのと**同じ 4 例題**を除外して回した。
+  症状は #38 のデッドロックと似ているが**原因は別**（あちらはパイプ、こちらは GUI の終了処理）。
+- **⚠ 差分 1 件は「バイトコードの差」ではなかった**。`examples/interop/importation.ar` の
+  `import[rs]` が **cargo のビルド状態**に依存して別々の地点で `ParseError` になっていた
+  （A は `sha2` で失敗、B はその先の `libm` の cargo build 出力を吐いた）。
+  どちらも `== chunk` を 1 つも出していない。**状態が落ち着いた後に両バイナリで取り直したら
+  完全に一致**。⇒ #52 で確立した「差分を見たらまず同一バイナリ／同一状態で再現するか」が再び効いた。
+
+### 検証（全ゲート緑）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` | **警告 0** |
+| `cargo test` | **742 passed / 0 failed** |
+| `cargo clippy --all-targets` | bin **52**（増分 **0**） |
+| **`AR_VM_DUMP` 突き合わせ**（#52 バイナリ比較） | **202 例題すべて byte-identical**（async と GUI 4 件は対象外） |
+| [scan_examples.ps1](scan_examples.ps1) | **FAIL 0** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **49/49 identical** |
+| [debug_session.ps1](debug_session.ps1) | **5 identical** |
+| [repl_session.ps1](repl_session.ps1) | **identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+
+⚠ A/B ベンチは取っていない。**バイトコードが byte-identical** で、かつ `exec_op` を含む
+`run.rs` には触れていないため。⚠ ただし「ファイルを移すと LLVM のインライン判断が変わる」実例は
+この系列に**現にある**（`vm_toplevel.rs` の冒頭コメント: `exec_fn_evaled` と同居させて 10% 退行）。
+`compiler/` はコンパイル時しか走らず Chunk はキャッシュされるので該当しないと判断した。
+
+### 見積もりと実測
+
+| 事前の見立て | 実測 |
+|---|---|
+| 「純粋な移動なので付随修正はほぼ無い」 | **違った**。可視性 85 箇所＋パス修正が必須（兄弟モジュールは private が見えない） |
+| 「`cargo fix` で未使用 import を消せば終わり」 | **違った**。テスト専用の再エクスポートまで消され、`cargo test` が壊れた |
+| 「全例題でバイトコードを比較できる」 | **違った**。GUI 4 例題は `timeout` で殺せずループが停止する |
