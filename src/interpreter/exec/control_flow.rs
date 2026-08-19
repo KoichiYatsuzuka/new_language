@@ -12,7 +12,7 @@ use {
 
 impl Interpreter {
     /// イテラブルな値を `for` 反復用のイテレータ（多くは `Value::Generator`）へ変換する。
-    /// `exec_for_stmt`（ツリーウォーク）と VM の `GetIter` op が共有する（意味論一致）。
+    /// 消費者は VM の `Op::GetIter` **だけ**（ツリーウォークの `exec_for_stmt` は #33 で削除）。
     pub(crate) fn make_for_iterator(&mut self, iter_val: Value) -> Result<Value, String> {
         let generator = match iter_val {
             Value::List(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState {

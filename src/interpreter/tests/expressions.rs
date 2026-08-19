@@ -640,7 +640,7 @@ let b = block ->int:
 
 /// `loop_yield` は脱出ではないので `try` の中でもそのまま蓄積が続く（#37）。
 ///
-/// ⚠ `has_escape` が `LoopYield` を脱出扱いしていたため、この形は**丸ごと bail** していた。
+/// ⚠ 旧 `has_escape`（削除済み）が `LoopYield` を脱出扱いしていたため、この形は**丸ごと bail** していた。
 #[test]
 fn test_loop_yield_inside_try_is_not_an_escape() {
     let src = "

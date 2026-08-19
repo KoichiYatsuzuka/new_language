@@ -320,8 +320,9 @@ pub enum Op {
     /// **要素を順に push** する（呼び出し側は `StoreLocal` を逆順に並べて受ける）。
     /// フィールドは (src_slot, 要素数)。
     ///
-    /// 検査もエラー文言もツリーウォーク（`exec_for_stmt` の複数ターゲット分岐）と同一:
     /// タプルでなければ `TypeError`、要素数が合わなければ `ValueError`。
+    /// ⚠ 文言は #33 まで `exec_for_stmt`（削除済み）と揃えていたもの。**今は唯一の実装**なので
+    /// 勝手に変えると例題の期待出力が動く（基準は `compare_python_impl.ps1` の参照実装）。
     UnpackTuple(u16, u16),
     /// `let a, b = t`（#27-c）。pop した値を `tuple_decls[idx]` に従って分解束縛する。
     ///

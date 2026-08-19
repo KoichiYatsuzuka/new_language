@@ -102,7 +102,6 @@ impl Interpreter {
                         module.join(".")
                     ));
                 }
-                _ => {}
             }
         }
         let members: HashMap<String, Value> = self
@@ -240,7 +239,6 @@ impl Interpreter {
                         module.join(".")
                     ));
                 }
-                _ => {}
             }
         }
         let mut members: HashMap<String, Value> = self

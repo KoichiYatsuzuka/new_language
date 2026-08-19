@@ -1,6 +1,6 @@
 // type_check/registry/builder.rs — 収集パス。AST を先行スキャンして `TypeRegistry` を組み立てる。
 //
-// Phase 5A-3b で `TypeChecker::collect_fn_sigs` をここへ移設したもの。
+// Phase 5A-3b で `TypeChecker` の関数シグネチャ収集（旧 `collect_fn_sigs`）をここへ移設したもの。
 // **レジストリへ書き込めるのはこのファイルだけ**であり、`build()` を通した後は
 // 読み取り専用の `TypeRegistry` になる（registry/mod.rs の不変条件）。
 //

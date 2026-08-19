@@ -5233,3 +5233,233 @@ REPL が ParseError: unexpected token になる」と**症状まで書いてあ�
 | 「`.in` に BOM が混じっているのだろう」 | **違った**。入力ファイルは全部クリーンで、BOM は `Process.Start` が書いていた |
 | 「`.BaseStream` へ BOM 無しで書けば防げる」（スクリプトの既存コメントの前提） | **防げない**。preamble は `Start()` の時点で既に書かれている ⇒ **対策は「後から正しく書く」ではなく「writer に preamble を持たせない」** |
 | 「goldens を録り直す必要がある」 | **不要だった**。goldens は正しく、入力が壊れていた。⇒ **赤いゲートを見たら `-Update` の前に「入力が意図どおり届いているか」を疑う** |
+
+---
+
+## #50 非コンパイル実行の**実行時間分布**を実測（2026-08-19）
+
+「VM 化で解釈実行は 3.97x（#47）なのに、`master` と比べた**体感の速度向上が限定的**」という
+問いに答えるための計測。**推測せず、時間がどこに行っているかを 2 軸で実測した**。
+
+### 手法 — 計測フックを新設（`--features prof` / [src/prof.rs](src/prof.rs)）
+
+| 軸 | 何を測るか | 方式 |
+|---|---|---|
+| 軸1 段別 | startup / lex / parse / type_check / resolve / interp_init / exec / teardown | `Instant` 直接計測（段は数回しか通らない） |
+| 軸2 op 別 | **exec の中でどの op に何 ms 居たか** | **統計サンプリング**（ディスパッチループが relaxed store で「今の op」を置き、別スレッドが 20µs 間隔で読む） |
+
+⚠ **op ごとに時計を読む方式は採らなかった。** 安い op ほど相対誤差が大きくなり、
+「命令には値段の差がある」（#46）という**肝心の量が歪む**。サンプリングなら滞在時間に比例する。
+⚠ 既定ビルドでは**コードごと消える**（#10-a の規約）。`AR_PROF=1`（段のみ）/ `AR_PROF=ops`（段＋op）。
+実行は [prof_dist.ps1](prof_dist.ps1)（新設）。
+
+### 計測の妥当性検査（先に潰した 3 件）
+
+1. **計測ビルドの下駄** — `bench_ab_interp.ar` を plain と交互実行して **0.95x**（15 指標の個別も
+   0.94〜1.03x）。**系統的な遅化なし**＝分布は代表性がある（#27 のノイズ床 ±5〜12% の内側）。
+2. **⚠ 1 回目の実行はファイルのコールドリードを踏む** — `startup` が **0.1ms → 10ms** に化けていた
+   （最初の集計は全部これに汚染されていた）。⇒ 2 パス走らせて 2 パス目だけ採る。
+3. **⚠⚠ 帰属バグを 1 件出した（負の対照で発見）** — `event_handler.ar` の **1 秒の待ちが丸ごと
+   `ReturnNil` に化けていた**（VM フレームが返った後も `CUR` が最後の op のまま）。
+   ⇒ `run()` の入口に **`CurGuard`（抜けるとき呼び出し元の op へ戻す）** を置いて解消。
+   修正後は同例題が `CallMethod`（＝実際にブロックしている呼び出し）99.95% になった。
+   ⚠ **「ReturnNil が 72%」という一見それらしい結果**が出ていた。もっともらしい分布ほど裏を取る。
+4. **帰属の独立検証** — 5,000,000 回の関数呼び出しだけをするマイクロベンチで、
+   解析値（`call − empty` の差分＝79.8%）と サンプリング値（`Call`+`Return`+`LoadGlobal` = 67.8%、
+   残りは呼び先本体とループ制御）が整合。**1 呼び出し ≈ 275ns / うち `Call` op 自体が ≈ 213ns**。
+
+### 結果1 — 段別（79 例題・warm・2 パス目）
+
+| 対象 | arrow の実費用 | うち exec | 端点 A/B の上限（exec を 3.97x にしたとき） |
+|---|---|---|---|
+| 全 79 例題（合計） | 43.9 s | **91.9%** | 3.73x |
+| bench 系 21 例題 | 38.3 s | **97.7%** | 3.90x |
+| **bench 以外 58 例題** | 5.57 s | **51.9%** | **2.54x** |
+| **例題 1 本ごとの中央値** | 3.40 ms | **exec 0.46 ms（14%）** | **1.59x**（p25 1.30x） |
+
+短命スクリプト 1 本の中央値内訳（ms）:
+`プロセス生成・イメージロード・終了 1.5` ／ `interp_init 0.32` ／ `type_check 0.175` ／
+`parse 0.171` ／ `startup 0.145` ／ `teardown 0.127` ／ `lex 0.083` ／ `resolve 0.019` ／ **`exec 0.46`**。
+
+⇒ **⚠⚠ 「VM を無限に速くしても中央値の例題は 1.6x 弱しか速くならない」**。
+高速化したのは **exec だけ**で、それ以外（プロセス費用・parse・type_check・interp_init）は
+`master` と同じまま残っている。**体感が伸びない理由はここ**。
+⚠ 例外は **import が重いスクリプト**（`event_external_handler.ar` は **parse が 2320ms＝全体の 98%**。
+`import` はパース時にモジュールを実行するため）。
+
+⚠ プロセス費用の内訳は別に取った（min・15 回）: `cmd /c exit` **8.63ms**（＝計測側の床）／
+`arrow.exe` 引数なし **9.96ms** ⇒ **arrow 自体のプロセス費用は ≈ 1.4ms**、
+短命スクリプトの `wall − in_main` の実測中央値 **1.56ms** と整合。
+
+### 結果2 — exec の中の op 別（統計サンプリング）
+
+**純 Arrow 解釈実行 72 例題**（FFI ベンチ・ブロッキング待ちを除く・exec 計 28.2 s）:
+
+| グループ | 割合 | 主な op |
+|---|---|---|
+| 算術・比較・型判定 | 22.3% | `IntBinLC` `IntBinSS` `IntBinLL` |
+| **呼び出し機構 `Call`** | **19.9%** | `Call` |
+| **メソッド呼び出し** | **16.3%** | `CallMethodLocal` `CallMethod` |
+| ローカル・定数・スタック | 13.2% | `LoadLocal` `StoreLocalFreezeInstance` `StoreLocal` |
+| コレクション・反復 | 10.5% | `BuildTuple` `Subscript` `ForIter` |
+| 属性 get/set | 6.6% | `GetAttrLocal` `SetAttr` |
+| 分岐 | 4.1% | `JumpIfFalse` `Jump` |
+| グローバル/名前引き | 3.9% | `LoadGlobal` `StoreGlobal` |
+| 組み込み関数 / VM の外 / 復帰 / 例外 | 1.2 / 1.1 / 1.0 / 0.0% | |
+
+⇒ **呼び出し系だけで 37〜38%**（`Call` 19.9 ＋ メソッド 16.3 ＋ 組み込み 1.2）。
+**`exec_op` 1 回あたりのコストではなく「高い命令」を狙え**（#46 の指針どおり）という結論を
+**実測で裏付けた**形。⚠ `Jump`+`JumpIfFalse` は合わせて **4.1%** しかない。
+
+代表ワークロード別（exec に占める上位 op）:
+
+| 例題 | 支配項 |
+|---|---|
+| `bench_ab_interp.ar`（#47 の基準） | `Call` **32%** ／ `IntBinLC` 7 ／ `SetAttr` 6 ／ `IntBinLL` 6 |
+| `bench_method_hot.ar` | `CallMethodLocal` **70%** ／ `GetAttrLocal` 15 |
+| `bottleneck_bench.ar` | `Call` **58%** ／ `LoadGlobal` 13 |
+| `bench_field_access.ar` | `Call` **58%** ／ `FloatBinSS` 8 ／ `GetAttrLocal` 8 |
+| `bench_collections.ar` | `BuildTuple` 21 ／ `Subscript` 14 ／ `Call` 13 |
+| `partial_call_overhead.ar` | `(native_callee)` **75%**（＝FFI 本体。VM の費用ではない） |
+
+⚠ **FFI ベンチを混ぜると絵が変わる**（全 79 例題だと `(native_callee)` が 16.9% で 3 位に来る）。
+`Op::Call` の native 分岐に専用バケットを置いて **呼び出し機構と呼び先本体を分離した**。
+
+### 見積もりと実測
+
+| 事前の見立て | 実測 |
+|---|---|
+| 「exec が 3.97x なら全体もそれに近いはず」 | **違った**。例題 1 本の中央値で **1.59x**（exec は中央値で全体の 14%） |
+| 「短命スクリプトは parse が支配的だろう」 | **概ね違った**。parse 0.171ms より `interp_init` 0.322ms の方が大きく、最大項は**プロセス費用 1.5ms** |
+| 「`ReturnNil` が 72% という結果」 | **計測バグ**。ブロッキング待ちの誤帰属だった（#50 の `CurGuard` で解消） |
+| 「命令は満遍なく効いている」 | **違った**。呼び出し系 3 種で **37〜38%**、分岐は 4% |
+
+---
+
+## #51 doc/属性の迷子と陳腐化コメントの一掃（2026-08-19）
+
+2026-08-19 の**全 src 診断**（66,107 行・非テスト関数 1,136 個を機械スキャン＋目視）で起票した
+保守性レーンの 1 本目。**速度目的ではない**が、**実バグを 1 件含んでいた**。
+
+### 起点 — コンパイラが黙っている 3 種類の壊れ方
+
+| 種別 | 件数 | なぜテストで見えないか |
+|---|---|---|
+| **orphan doc / 属性の迷子** | 3 | doc コメントも属性なので**構文的に正しい**。位置がずれても通る |
+| 存在しない識別子への参照 | 37 識別子 / 61 参照 | コメントは検査されない |
+| 死んだ enum バリアント | 1 | `#[allow(dead_code)]` が警告を止めていた |
+
+### ⚠⚠ 実バグ — 「外すな」と書いた属性が黙って外れていた
+
+[vm_toplevel.rs](src/interpreter/vm_toplevel.rs) で、#48 が `vm_namespace_writeback_fn` を
+**`vm_method_call_other` の doc と `#[inline(never)]` の間に挿入**していた。結果:
+
+```rust
+/// ⚠ **`#[inline(never)]` を外さないこと**（`exec_op` は `#[inline(always)]`）。   // ← A の doc
+#[inline(never)]                                                                  // ← A の属性
+/// `mod.func(...)` の呼び先が … （#48）                                            // ← B の doc
+pub(crate) fn vm_namespace_writeback_fn(...)   // ← doc も属性も全部 B に付く
+```
+
+⇒ `vm_method_call_other`（`exec_op` から呼ばれる非 Instance レシーバ経路）は
+**doc も `#[inline(never)]` も失っていた**。doc 自身が「実測でここを経由させると 3% 落ちた」と
+書いていた関数で、**#10-b の「op のアームに重い本体を書かない」を破りうる状態**だった。
+逆に 8 行の `vm_namespace_writeback_fn` に不要な `#[inline(never)]` が付いていた。
+
+**同じ形をあと 2 件見つけた**:
+- [compiler.rs](src/vm/compiler.rs): `store_target` の doc が、後から挿入された `slot_of` に付いていた
+  （`slot_of` は `Option<u16>` を返すのに doc は「`Local`/`Global`/`None` を返す」と書いてある）。
+- [compiler.rs](src/vm/compiler.rs): **削除済み `has_escape` の doc**（`include_return` 引数の説明）が
+  `const MAX_FINALLY_NEST` の doc に前置されたまま残っていた。
+
+⇒ **教訓: 関数を既存の doc ブロックの「下」へ挿入しない。消すときは doc も一緒に消す。**
+
+### 陳腐化コメント — 特に有害だった 2 件
+
+1. **指示が真逆に矛盾していた**。[interpreter.rs](src/interpreter.rs) は
+   「`resolver::toplevel_visible_globals` の結果をそのまま渡すこと（判定を複製しない）」と
+   書いていたが、[main.rs](src/main.rs) は「**リゾルバ用の `toplevel_visible_globals`
+   （シャドウ減算あり）ではない**。減算するとむしろ解決できる名前を落とす」と書いていた。
+   しかも `toplevel_visible_globals` という名前は**もう存在しない**（正は
+   `toplevel_declared_globals`／減算版は `toplevel_visible_globals_with`）。
+   `interpreter.rs` に従うと **#27-c の実バグが再発する**。
+2. **#36 で潰した穴の説明が残っていた**。`toplevel_globals` の doc に
+   「**空 = 最上位 VM 化を行わない**」とあったが、#36 でまさにその条件を削除している。
+   復活させると「最上位に宣言が 1 つも無いプログラムが丸ごとツリーウォーク」に戻る。
+
+サブシステムのヘッダも全滅だった: [vm/mod.rs](src/vm/mod.rs) と [compiler.rs](src/vm/compiler.rs) は
+**削除済みのデュアルモード**（「ツリーウォークにフォールバックする」「`Interpreter::vm_mode`
+（Off/Auto/Force）で制御する」「V-A の対応範囲＝トップレベル関数のリーフ計算に限定」）を
+説明したままで、**新規参加者が最初に読む 11 行が全部古い**状態だった。
+
+### 死んでいたもの
+
+- `ExecResult::Return` — **構築も match も 0 件**（`Normal` 41 / `Raise` 9）。削除。
+  ⚠ 削除したら `modules.rs` の `_ => {}` 2 箇所が unreachable になった
+  （＝`#[allow(dead_code)]` が**警告を 2 件も隠していた**）。
+- `Chunk::local_names` と `disasm::{disassemble, fmt_op}` の `#[allow(dead_code)]` —
+  **どちらも実際には消費されている**（前者は debugger.rs、後者は `AR_VM_DUMP`）。
+  付けたままだと**本当に死んだときに警告が出ない**ので外した。
+
+### 再発防止 — [stale_doc_refs.ps1](stale_doc_refs.ps1)（新設）
+
+src のコメント内 `` `識別子` `` がコードに存在するかを検査するゲート。
+⚠ **履歴として正しい言及を落とす仕掛けが要る**（「`exec_for_stmt` は #33 で削除した」は正しい記述）。
+同じ行に「削除／廃止／撤去／以前／旧／移設／だった／していた」のマーカー語があれば履歴扱いにする。
+⇒ **消えたものに言及したいときはマーカー語を書く**、が運用規約になる。
+外部成果物（`.ps1` 名・ベンチの METRIC 名・生成 C シンボル）は `$whitelist`。
+
+61 参照 → **0 件**（履歴・外部参照 38 件は除外して報告）。
+
+### 見積もりと実測
+
+| 事前の見立て | 実測 |
+|---|---|
+| 「コメント修正だけなのでゲートは全部素通りするはず」 | **違った**。`ExecResult::Return` 削除で警告 2 件が新たに出た（隠れていた） |
+| 「orphan doc は 1 件（#48 のもの）だけ」 | **違った。3 件**あった。うち 1 件は削除済み関数の doc が定数に付いていた |
+| 「陳腐化参照は 30 前後」 | 概ね合っていた（**37 識別子 / 61 参照**） |
+
+### 検証（全ゲート緑・2026-08-19）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` | **警告 0**（⚠ 途中 2 件出た。下記） |
+| `cargo test` | **740 passed / 0 failed** |
+| `cargo clippy --all-targets` | bin **52**（増分 **0**）／bin test 53（52 duplicates）／bench 12 |
+| [scan_examples.ps1](scan_examples.ps1) | **FAIL 0** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **49/49 identical**・unexpected diff 0 |
+| [force_gate.ps1](force_gate.ps1) | **147 例題・`VmForceError` 0 件** |
+| [debug_session.ps1](debug_session.ps1) | **5 identical / 0 differing** |
+| [repl_session.ps1](repl_session.ps1) | **identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1)（新設） | **0 件**（履歴・外部参照 38 件は除外） |
+
+### A/B — `#[inline(never)]` を正しい関数へ戻した影響
+
+A = HEAD（属性が `vm_namespace_writeback_fn` に付いていた状態）、B = #51。
+⚠ **コメント以外の差分は 4 つだけ**なので、その 3 ファイルだけを `git stash` して A を作った
+（作業ツリーには #50 の未コミット変更が同居していたため、`src/` 全体の stash は避けた）。
+
+| bench | A/B |
+|---|---|
+| `bench_collections.ar` | 0.986x |
+| `bench_string.ar` | 1.001x |
+| `bench_ab_interp.ar` | 1.000x |
+| `bench_arith.ar` | 1.013x |
+
+⇒ **±1.4% ＝ ノイズ床（#27 の ±5〜12%）の内側**。**退行なし・改善も無し**と読む
+（#28 の教訓: 数 % で良し悪しを決めない）。属性を戻したのは**設計どおりの状態に戻すため**であって
+速度改善のためではない。
+
+### 踏んだこと（作業中）
+
+- **⚠ `git stash push -- <3 ファイル>` は #50 の未コミット変更を巻き込まない形にした。**
+  作業ツリーには他人の未コミット作業（#50 の `prof.rs` / `op_prof.rs` / 各フック）が居たので、
+  `src/` 全体の stash は**過去の破棄事故**（`git-checkout-destroyed-uncommitted-value-rs`）と同型。
+  先に `src/` をスクラッチパッドへ丸ごとコピーしてから触った。
+- **⚠ ベンチのプロセス名は `arrow` ではない**。A/B 用にコピーした exe は `arrow_head` /
+  `arrow_new` なので、`Get-Process arrow` は**常に 0 件**を返す。これを「A/B が停止した」と
+  誤読して 1 回目の実行を kill してしまった（実際は正常に走っていた・20 本は単に遅い）。
+  ⇒ **「動いていない」の判断は、名前を実際に確かめてからにする**。
+- **⚠ 1 回目の Edit が doc ブロックの後半しか消せていなかった**。orphan doc は
+  「A の doc ＋ A の属性 ＋ B の doc」の 3 連なので、**属性の直上だけを消すと A の doc が残る**。
+  残骸は次の読者に同じ誤読をさせるので、**orphan を直したら必ず前後を目視する**。

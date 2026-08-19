@@ -14,6 +14,11 @@ use super::*;
 impl Interpreter {
     /// 文（`Stmt`）を実行して `ExecResult` を返す。各 Stmt バリアントを専用メソッドに委譲する。
     pub fn exec(&mut self, stmt: &Stmt) -> Result<ExecResult, String> {
+        // 実行時間分布の計測（`--features prof`）: ここから先は「VM の外」。
+        // ⚠ 既定ビルドでは消える（#10-a: env 判定だけにすると 11% 退行する）。
+        #[cfg(feature = "prof")]
+        crate::prof::note_outside();
+
         // Step-mode check: pause before this statement if the debugger asked us to.
         // Skip the check when we're already inside a break_point (would re-enter).
         if crate::interpreter::debugger::DBG_MODE.with(|m| *m.borrow() != DbgMode::Inactive) {

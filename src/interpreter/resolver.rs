@@ -90,7 +90,7 @@ fn resolve_toplevel(stmts: &mut [Stmt], globals: &HashSet<String>) {
 
 /// 最上位で**宣言された**グローバル名の集合（シャドウ減算なし・#27-c）。
 ///
-/// `toplevel_visible_globals` との違いと、**なぜ VM コンパイラはこちらでよいのか**:
+/// `toplevel_visible_globals_with` との違いと、**なぜ VM コンパイラはこちらでよいのか**:
 /// - リゾルバは AST のノードに `Resolution::Global` を**一度だけ焼く**。そのノードは
 ///   `for i in ...` の本体の中でも評価されうるので、**プログラム全体のシャドウを引く**必要がある。
 /// - VM コンパイラは**最上位文を 1 つずつ**コンパイルし、その文の中で束縛される名前は
@@ -105,7 +105,8 @@ pub(crate) fn toplevel_declared_globals(stmts: &[Stmt]) -> HashSet<String> {
     collect_program_globals(stmts)
 }
 
-/// `toplevel_visible_globals` の内部版（最上位グローバル集合を渡す形）。
+/// 最上位の**可視**グローバル集合（宣言 − 入れ子スコープのシャドウ）。`resolve_toplevel` 専用。
+/// ⚠ VM コンパイラへ渡すのは**こちらではなく** `toplevel_declared_globals`（上の doc を参照）。
 fn toplevel_visible_globals_with(stmts: &[Stmt], globals: &HashSet<String>) -> HashSet<String> {
     let mut shadowing: HashSet<String> = HashSet::new();
     collect_shadowing_binders(stmts, &mut shadowing);

@@ -390,7 +390,7 @@ impl Interpreter {
     }
 
     /// Dispatch an already-evaluated argument list to a built-in type constructor.
-    /// Called by `eval_type_constructor_call` (from AST) and `call_value_with_args`
+    /// Called by `call_type_constructor_evaled` and `call_value_with_args`
     /// (from native callbacks that hold a `Value::Type`).
     pub(crate) fn call_type_by_name_evaled(
         &mut self,
@@ -731,7 +731,7 @@ impl Interpreter {
             // #22-a で欠落が判明したアーム。`eval_call` には有ったが**ここには無く**、
             // VM の `Op::Call` はこの関数を使うため、`let f = js_mod.func` を
             // VM 化された関数内から呼ぶと `'function' object is not callable` で落ちていた
-            // （`--vm=off` では通る＝off/auto の不一致）。
+            // （当時は `--vm=off` では通る＝off/auto の不一致だった。`--vm` は #33 で削除）。
             //
             // ⚠ 残る差: ツリーウォーク側は続けて `check_ffi_return` で戻り値を検査するが、
             // 検査は**型検査が Call ノードへ焼いた宣言型**（node_id 索引）を根拠にするため、

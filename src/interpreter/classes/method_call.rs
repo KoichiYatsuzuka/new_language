@@ -151,10 +151,10 @@ impl Interpreter {
         // #27-b: **引数を評価してから評価済み版へ委譲するだけ**にした。
         // 実装は `eval_method_call_full` に 1 つだけ置く（VM も同じものを通る）。
         //
-        // ⚠ 評価順が 1 点だけ変わる: 以前は `expect_no_args` が**引数を評価せずに**
+        // ⚠ 評価順が 1 点だけ変わる: 以前は `expect_no_args`（旧 CallArg 版・削除済み）が**引数を評価せずに**
         // arity エラーを返していた（15 箇所）。今は先に評価する。正常系（0 引数）では
         // 差が無く、差が出るのは「no-arg メソッドに副作用つき引数を渡す」= どのみち
-        // エラーになるコードだけ。`eval_one_arg` は元から全評価後に検査していたので不変。
+        // エラーになるコードだけ。`eval_one_arg`（同・削除済み）は元から全評価後に検査していたので不変。
         let evaled = self.eval_call_args(args)?;
         self.eval_method_call_full(obj, method_name, evaled, cache)
     }
@@ -715,7 +715,7 @@ impl Interpreter {
     }
 
     /// ちょうど 1 個であることを検証してその値を返す（評価済み版・#27-b）。
-    /// 旧 CallArg 版（`eval_one_arg`）も**元から全評価後に検査**していたので意味論は完全に同じ。
+    /// 旧 CallArg 版（`eval_one_arg`・削除済み）も**元から全評価後に検査**していたので意味論は完全に同じ。
     fn one_arg_evaled(
         evaled: Vec<(Option<String>, Value, bool)>,
         type_name: &str,

@@ -204,9 +204,8 @@ pub struct Chunk {
     /// ⚠ 命令を削除・移動する最適化（[peephole](super::peephole)）は**この表も同時に詰め直す**こと。
     /// ずれると停止位置が別の文にずれる。
     pub stmt_spans: Vec<u32>,
-    /// slot → 変数名 のデバッグ名テーブル（V-E。デバッガ REPL 用メタデータ。実行では未使用なので
-    /// 現状は保持のみ — デバッガ VM 統合で消費予定）。
-    #[allow(dead_code)]
+    /// slot → 変数名 のデバッグ名テーブル（V-E。デバッガ REPL 用メタデータ・実行では未使用）。
+    /// 消費者は `debugger.rs` の停止時ローカル表示（#1 で配線済み）。
     pub local_names: Vec<String>,
     /// フレームのローカル slot 総数（パラメータ + base ローカル）。
     pub n_locals: usize,

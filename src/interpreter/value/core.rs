@@ -349,26 +349,17 @@ impl Value {
 // Control-flow signals
 // ---------------------------------------------------------------------------
 
-/// 文の実行結果を表す制御フロー信号。
+/// ツリーウォーク（`exec()`）が返す制御フロー信号。
 ///
-/// - `Normal`: 通常終了（次の文へ進む）
-/// - `Break`: `break` 文が実行された（ループを抜ける）
-/// - `Continue`: `continue` 文が実行された（ループの次の反復へ進む）
-/// - `Return(v)`: `return` 文が実行された（関数を抜けて値 `v` を返す）
-/// - `BlockReturn(v)`: `block_return` 文が実行された（ブロック式を即座に終了して `v` を返す）
-/// - `BlockYield(v)`: `block_yield` 文が実行された（実行を継続しつつ `v` を結果リストに積む）
-/// - `Raise(e)`: `raise` 文が実行された（言語レベルの例外 `e` がコールスタックを遡る）
+/// ⚠ **#33 でほぼ退化した**。`Break`/`Continue`/`Return`/`BlockReturn`/`BlockYield` は
+/// すべて削除済みで、制御フローは**バイトコード VM がジャンプで表現する**。
+/// ツリーウォークが実行するのは定義文だけ（#10-d）なので、実際に流れるのは
+/// `Normal`（定義文の完了）と `Raise`（`exec_raise` の 1 箇所）の 2 つだけ。
+/// （`Return` は #51 で削除 — 構築も match も 0 件だった。）
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum ExecResult {
     /// 通常終了。次の文へ制御を移す。
     Normal,
-    /// `return expr` 文が実行された。現在の関数を即座に終了して値を返す。
-    ///
-    /// ⚠ #33 で `Break`/`Continue`/`BlockReturn`/`BlockYield` は削除した。
-    /// 制御フローは**すべてバイトコード VM がジャンプで表現する**ので、
-    /// `ExecResult` を経由して伝播させる必要が無くなった。
-    Return(Value),
     /// コールスタックを遡って伝播中の言語レベル例外。`try/except` で捕捉される。
     Raise(RaisedError),
 }

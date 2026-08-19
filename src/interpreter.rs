@@ -125,7 +125,7 @@ pub use value::*;
 thread_local! {
     /// ジェネレータ本体の一括評価中に `yield` された値を収集するスレッドローカル変数。
     /// `None` の場合はジェネレータ実行コンテキスト外であることを意味する。
-    /// `exec_generator` が開始時に `Some(Vec::new())` をセットし、終了時に `take()` で回収する。
+    /// `exec_generator_evaled` が開始時に `Some(Vec::new())` をセットし、終了時に `take()` で回収する。
     pub(self) static GENERATOR_YIELDS: RefCell<Option<Vec<Value>>> = const { RefCell::new(None) };
 }
 
@@ -463,7 +463,7 @@ pub struct Interpreter {
     /// `NameError: variable 'total' is already declared` になった）。
     /// ⇒ 新しい入口を足すときは **AST を保持し続けること**（REPL は `run_repl` が Vec に溜める）。
     pub(self) vm_toplevel_chunks: HashMap<usize, Option<Rc<crate::vm::Chunk>>>,
-    /// 最上位から見て `scopes[0]` を確実に指す名前の集合（#10-b, `resolver::toplevel_visible_globals`）。
+    /// 最上位から見て `scopes[0]` を確実に指す名前の集合（#10-b, `resolver::toplevel_declared_globals`）。
     /// 最上位ループ Chunk の**書き込み先**判定に使う。空 = 最上位 VM 化を行わない。
     pub(self) toplevel_globals: std::collections::HashSet<String>,
 }
@@ -549,7 +549,9 @@ impl Interpreter {
     }
 
     /// 最上位ループの VM 化（#10-b）で「書き込み先はグローバル」と断定してよい名前を注入する。
-    /// `resolver::toplevel_visible_globals` の結果をそのまま渡すこと（判定を複製しない）。
+    /// `resolver::toplevel_declared_globals`（**シャドウ減算なし**）の結果をそのまま渡すこと。
+    /// ⚠ 減算版（`toplevel_visible_globals_with`）を渡してはいけない — 別の文の
+    /// `for i in ...` のせいで `while i < N` の `i` まで解決できなくなる（#27-c の実測）。
     pub fn set_toplevel_globals(&mut self, names: std::collections::HashSet<String>) {
         self.toplevel_globals = names;
     }

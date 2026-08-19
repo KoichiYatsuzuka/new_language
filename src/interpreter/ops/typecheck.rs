@@ -187,7 +187,7 @@ impl Interpreter {
     /// `loop_yield` の値の型を、for/while 式の `->list[T]` アノテーションに対して検査する（#35）。
     ///
     /// `ann` が `list[T]` の形でなければ検査しない（`Ok(())`）。
-    /// ⚠ **ツリーウォーク（`exec_loop_yield`）と VM（`Op::CheckLoopYield`）の唯一の実装**。
+    /// ⚠ **`Op::CheckLoopYield` の唯一の実装**（ツリーウォークの `exec_loop_yield` は #33 で削除）。
     /// メッセージが 1 文字でもずれると off/on 比較が割れる。
     pub(crate) fn check_loop_yield_type(&self, val: &Value, ann: &str) -> Result<(), String> {
         let Some(elem_type) = extract_list_elem_type(ann) else {

@@ -87,6 +87,9 @@ pub fn run(
     // 捕捉を持たない呼び出し（大多数）は `None`。
     captured_env: Option<&std::collections::HashMap<String, crate::interpreter::CapturedVar>>,
 ) -> Result<Value, String> {
+    // 実行時間分布の計測（`--features prof`）: 抜けるとき呼び出し元の op へ戻す。
+    #[cfg(feature = "prof")]
+    let _cur = crate::prof::CurGuard::new();
     let mut ip: usize = 0;
     let mut handlers: Vec<Handler> = Vec::new();
     // セル表（#27-d 段階 2b）。`n_cells == 0` の関数（大多数）は確保しない。
@@ -100,6 +103,9 @@ pub fn run(
     }
 
     loop {
+        // 実行時間分布の計測（`--features prof`）。既定ビルドでは消える。
+        #[cfg(feature = "prof")]
+        crate::prof::note_op(&chunk.code[ip]);
         match exec_op(interp, chunk, buf, base, ip, &mut handlers, &cells) {
             Ok(Flow::Next) => ip += 1,
             Ok(Flow::Jump(t)) => ip = t,
@@ -403,7 +409,8 @@ fn make_fn(
 
 /// `Op::UnpackTuple` の本体（#27-c）。`for k, v in ...` の要素をスタックへ積む。
 ///
-/// 検査とエラー文言はツリーウォーク（`exec_for_stmt` の複数ターゲット分岐）と一字一句同じにする。
+/// ⚠ 検査とエラー文言は #33 まで `exec_for_stmt`（削除済み）と揃えていたもの。**今は唯一の実装**。
+/// 基準は参照実装の出力（`compare_python_impl.ps1`）。
 /// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
 #[inline(never)]
 fn unpack_tuple(buf: &mut Vec<Value>, base: usize, src: u16, n: u16) -> Result<(), String> {
@@ -954,6 +961,9 @@ fn exec_op(
             // `block_expr` が 0.91x。`f(mut x)` は普通に書かれるので副表はまず空にならない）。
             // 判定の残りと本体は `#[inline(never)]` の `native_call_with_wb` に置く。
             if let Value::NativeFunction(fn_ref) = &callee {
+                // 計測（`--features prof`）: 呼び先本体を `Call` と別バケットにする。
+                #[cfg(feature = "prof")]
+                crate::prof::note_native_callee();
                 let fn_ref = fn_ref.clone();
                 let r = native_call_with_wb(
                     interp, chunk, buf, base, cells, &fn_ref, evaled, node_id,

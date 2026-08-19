@@ -6,7 +6,7 @@
 // ⚠ **この関数を `functions/execution.rs` に置いてはいけない。**
 // 同じ `impl Interpreter` でもファイルが違えば済む話ではなく、`exec_fn_evaled` と同居させると
 // LLVM のインライン判断が変わり、ネイティブ→Arrow コールバックのループで **10% 級の退行**が出た
-// （`partial_call_overhead.ar` で実測・`--vm=off` でも同じ幅で出るので VM 経路とは無関係だった）。
+// （`partial_call_overhead.ar` で実測。当時 `--vm=off` でも同じ幅で出たので VM 経路とは無関係）。
 // #1-x の「`#[inline]` は効いているとは限らない」と同じ現象を逆向きに踏んだもの。
 
 use std::cell::RefCell;
@@ -40,14 +40,17 @@ impl Interpreter {
     /// 最上位の文を VM で実行する（#10-b/#10-c）。対象はループ文と宣言文
     /// （`compile_toplevel_stmt` が受け付ける形）。
     ///
-    /// 適格でなければ `Ok(None)` を返し、呼び出し側がツリーウォークへ落ちる。
+    /// 戻り値は 3 通り（**`Ok(None)` と `Err` を混同しないこと**）:
+    /// - `Ok(Some(..))` … VM が実行した。
+    /// - `Ok(None)` … **定義文だった**（`is_toplevel_compile_target` が偽）。設計どおり
+    ///   呼び出し側のツリーウォークが実行する（#10-d）。失敗ではないので計上もしない。
+    /// - `Err(VmForceError)` … 定義文以外なのに Chunk へ載らなかった。**フォールバックは無い**（#33）。
     ///
-    /// 適格条件:
-    /// - `--vm` が Off でない
+    /// 呼び出し前提:
     /// - **`scopes.len() == 1`**（＝モジュール最上位。関数フレームや push 済みブロックスコープの
     ///   中ではない）。この 1 条件が「名前は `scopes[0]` を指す」の根拠であり、
     ///   コンパイル時の `toplevel_globals` 判定と実行時の記憶域を一致させる。
-    /// - 当該文が Chunk へコンパイルできる
+    ///   ⇒ `toplevel_vm_candidate()` で門を作ること（`debug_assert!` で固定してある）。
     ///
     /// ⚠ **`exec()` の中から呼ぶ**こと（`run_program` からではなく）。
     /// デバッガの `should_pause_at` は `exec()` 冒頭で走るので、そこを飛ばすと
@@ -168,18 +171,6 @@ impl Interpreter {
         result
     }
 
-    /// VM のメソッド呼び出しのうち **非 Instance レシーバ**の経路（#27-b）。
-    /// list/str/dict/set/CsObject/Signal/Namespace… を統一実装へ流す。
-    ///
-    /// ツリーウォークの `eval_call` の `Expr::Attr` 分岐と**同じ 3 手順**を踏む:
-    /// ①呼ぶ前にレシーバから外部言語を覗く ②ディスパッチ ③外部言語なら戻り値を宣言型と照合。
-    /// ⚠ **③ を落とすと FFI 境界検査が VM 経路だけ素通りする**（`Op::Call` で #22-a が踏んだ穴と同型）。
-    /// そのために `node_id` を op で運んでいる。
-    ///
-    /// ⚠ **Instance はここへ来ない**。`exec_op` 側で先に `call_instance_method_evaled` へ直行する
-    /// （method IC を効かせるため＋最頻路に判定を足さないため。実測でここを経由させると 3% 落ちた）。
-    /// ⚠ **`#[inline(never)]` を外さないこと**（`exec_op` は `#[inline(always)]`）。
-    #[inline(never)]
     /// `mod.func(...)` の呼び先が **`mut` ポインタ書き戻しを持つ native 関数**なら返す（#48）。
     ///
     /// VM の `CallMethod` は評価済みの値で呼ぶので、書き戻し先を渡すには
@@ -202,6 +193,21 @@ impl Interpreter {
         }
     }
 
+    /// VM のメソッド呼び出しのうち **非 Instance レシーバ**の経路（#27-b）。
+    /// list/str/dict/set/CsObject/Signal/Namespace… を統一実装へ流す。
+    ///
+    /// ツリーウォークの `eval_call` の `Expr::Attr` 分岐と**同じ 3 手順**を踏む:
+    /// ①呼ぶ前にレシーバから外部言語を覗く ②ディスパッチ ③外部言語なら戻り値を宣言型と照合。
+    /// ⚠ **③ を落とすと FFI 境界検査が VM 経路だけ素通りする**（`Op::Call` で #22-a が踏んだ穴と同型）。
+    /// そのために `node_id` を op で運んでいる。
+    ///
+    /// ⚠ **Instance はここへ来ない**。`exec_op` 側で先に `call_instance_method_evaled` へ直行する
+    /// （method IC を効かせるため＋最頻路に判定を足さないため。実測でここを経由させると 3% 落ちた）。
+    /// ⚠ **`#[inline(never)]` を外さないこと**（`exec_op` は `#[inline(always)]`）。
+    /// ⚠⚠ この属性と上の doc は **#48 が `vm_namespace_writeback_fn` を doc と属性の間へ挿入した
+    /// せいで、長らくそちらに付いていた**（doc コメントも属性なので**コンパイルは通る**）。
+    /// ＝「外すな」と書いた属性が黙って外れていた。#51 で戻した。
+    #[inline(never)]
     pub(crate) fn vm_method_call_other(
         &mut self,
         obj: Value,
@@ -215,7 +221,7 @@ impl Interpreter {
         let Some(l) = lang else { return Ok(r) };
         // ⚠ 表示名と位置はツリーウォークと**同じもの**を使う（`L.get_int` / `file:line:col`）。
         // `method_name` と `None` で済ませると `get_int` / `<unknown>` になり
-        // off/auto でエラーメッセージが食い違う（`ffi_boundary_check_error.ar` が検出）。
+        // エラーメッセージが食い違う（`ffi_boundary_check_error.ar` が検出）。
         let (name, span) = match chunk.ffi_call_info.get(&node_id) {
             Some(&(ni, si)) => (
                 chunk.names[ni as usize].as_str(),
@@ -226,7 +232,7 @@ impl Interpreter {
         self.check_ffi_return(l, r, node_id, name, span)
     }
 
-    /// `--vm=force` で VM に載せられなかったときのエラー（#25）。
+    /// VM に載せられなかったときのエラー（#25。#33 以降フォールバックが無いので**必ず停止する**）。
     ///
     /// **どこが載らなかったか**を位置つきで出す。理由（bail の種別）までは載せない
     /// — それは `AR_TW_STATS` の役目で、両者は役割が違う

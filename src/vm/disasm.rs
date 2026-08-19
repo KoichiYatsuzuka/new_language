@@ -3,8 +3,7 @@
 use super::chunk::Chunk;
 use super::op::Op;
 
-/// Chunk を人間可読な逆アセンブル文字列にする。
-#[allow(dead_code)]
+/// Chunk を人間可読な逆アセンブル文字列にする（`AR_VM_DUMP=1` の出力）。
 pub fn disassemble(chunk: &Chunk, name: &str) -> String {
     let mut out = format!("== chunk {name} (n_locals={}) ==\n", chunk.n_locals);
     for (i, op) in chunk.code.iter().enumerate() {
@@ -13,7 +12,6 @@ pub fn disassemble(chunk: &Chunk, name: &str) -> String {
     out
 }
 
-#[allow(dead_code)]
 fn fmt_op(op: &Op, chunk: &Chunk) -> String {
     match op {
         Op::Const(i) => format!("CONST {i} = {:?}", chunk.consts.get(*i as usize)),

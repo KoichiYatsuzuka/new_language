@@ -58,9 +58,9 @@ fn run(src: &str) -> Result<(), String> {
 
 /// 単一の式文を評価して `Value` を返すテストヘルパー。
 ///
-/// ⚠ **ここは `VmMode` に依存しない**（#36）。`interp.eval()` を直接呼ぶので
-/// バイトコード経路を通らない（VM も一部の式評価をこの関数へ委譲する）。
-/// `vm_mode` を立てても意味がないのでそのままにしてある。
+/// ⚠ **ここはバイトコード経路を通らない**（#36）。`interp.eval()` を直接呼ぶ
+/// （VM も一部の式評価をこの関数へ委譲する）ので、VM の配線（`resolve_program` 等）は不要。
+/// ⚠ 裏を返すと**このヘルパーを使うテストは VM を検査していない**。
 fn eval_expr(src: &str) -> Value {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().unwrap();

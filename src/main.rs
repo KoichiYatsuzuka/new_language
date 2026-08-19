@@ -8,6 +8,8 @@ mod frontend_tests;
 mod interpreter;
 mod lexer;
 mod parser;
+#[cfg(feature = "prof")]
+mod prof;
 mod partial_compiler;
 mod python_converter;
 mod repl;
@@ -315,8 +317,16 @@ fn run_program(
     if let Some(mode) = cli_args.remove("__vm__") {
         eprintln!("Warning: --vm={mode} is no longer supported (the tree-walk path was removed); ignoring");
     }
+    // 実行時間分布の計測（`--features prof`）。既定ビルドでは全部消える。
+    #[cfg(feature = "prof")]
+    prof::mark_startup_done();
+
     // --- 字句解析: ソースをトークン列（Vec<Spanned>）に変換する ---
+    #[cfg(feature = "prof")]
+    let _p_lex = prof::Timer::new(prof::Phase::Lex);
     let tokens = Lexer::new(source, filename).tokenize();
+    #[cfg(feature = "prof")]
+    drop(_p_lex);
 
     // ソースファイルのディレクトリを解決する（import 時の検索基準）
     let source_dir = std::path::Path::new(filename)
@@ -324,12 +334,20 @@ fn run_program(
         .map(|p| p.to_path_buf());
 
     // --- 構文解析: トークン列を AST（Vec<Stmt>）に変換する ---
+    #[cfg(feature = "prof")]
+    let _p_parse = prof::Timer::new(prof::Phase::Parse);
     let mut stmts = Parser::new(tokens, source_dir.clone())
         .parse_program()
         .map_err(|e| format!("ParseError: {e}"))?;
+    #[cfg(feature = "prof")]
+    drop(_p_parse);
 
     // --- 静的型検査: AST を走査してエラー・警告を収集し、AST 型解決層の注釈を生成する（#16 段階(a)） ---
+    #[cfg(feature = "prof")]
+    let _p_tc = prof::Timer::new(prof::Phase::TypeCheck);
     let (type_errors, type_warnings, annotations) = TypeChecker::check_program(&stmts);
+    #[cfg(feature = "prof")]
+    drop(_p_tc);
     for w in &type_warnings {
         eprintln!("Warning: {w}");
     }
@@ -359,13 +377,19 @@ fn run_program(
     }
 
     // --- Phase R / R1: ローカル読み取りの slot 解決（トップレベル関数を書き換える） ---
+    #[cfg(feature = "prof")]
+    let _p_res = prof::Timer::new(prof::Phase::Resolve);
     interpreter::resolver::resolve_program(&mut stmts);
+    #[cfg(feature = "prof")]
+    drop(_p_res);
 
     // --- インタープリタの初期化とソーステキストの登録 ---
+    #[cfg(feature = "prof")]
+    let _p_init = prof::Timer::new(prof::Phase::InterpInit);
     // ソーステキストはエラー報告時のスタックトレース表示に使用される
     let mut interp = Interpreter::new();
     // 最上位 Chunk（#10-b/#10-c/#27-c）が「この名前は scopes[0]」と判断するための集合。
-    // ⚠ リゾルバ用の `toplevel_visible_globals`（シャドウ減算あり）**ではない**。
+    // ⚠ リゾルバ用の `toplevel_visible_globals_with`（シャドウ減算あり）**ではない**。
     // VM コンパイラは文を 1 つずつ見て、その文の束縛は `slots` に入っているので、
     // 減算するとむしろ解決できる名前を落とす（理由は `toplevel_declared_globals` の doc）。
     interp.set_toplevel_globals(interpreter::resolver::toplevel_declared_globals(&stmts));
@@ -404,6 +428,8 @@ fn run_program(
     }
     // CLIパラメータを `args` dict としてグローバルスコープに登録する
     interp.set_cli_args(cli_args);
+    #[cfg(feature = "prof")]
+    drop(_p_init);
 
     // 診断フック（#10）: 実行終了時にツリーウォークの実行内訳を出す。
     struct TwStatsDump;
@@ -417,6 +443,10 @@ fn run_program(
     let _tw_dump = TwStatsDump;
 
     // --- 各トップレベル文を順番に実行する ---
+    #[cfg(feature = "prof")]
+    prof::begin_exec();
+    #[cfg(feature = "prof")]
+    let _p_exec = prof::Timer::new(prof::Phase::Exec);
     for stmt in &stmts {
         match interp.exec(stmt) {
             // `raise` 文が実行された場合: フォーマット済みエラーレポートを返す
@@ -437,11 +467,25 @@ fn run_program(
             Err(e) => return Err(e),
         }
     }
+    // 後始末（AST・インタープリタ・値の解放）も 1 段として計上する。
+    // ⚠ 明示的に drop しないと関数末尾（＝計測の外）へ落ちる。
+    #[cfg(feature = "prof")]
+    {
+        drop(_p_exec);
+        prof::end_exec();
+        let _p_td = prof::Timer::new(prof::Phase::Teardown);
+        drop(interp);
+        drop(stmts);
+        drop(_p_td);
+        prof::dump();
+    }
     Ok(())
 }
 
 /// プログラムのエントリーポイント。
 fn main() {
+    #[cfg(feature = "prof")]
+    prof::mark_start();
     match parse_args() {
         Mode::Run(path, cli_args) => {
             // .arc: extract embedded source first, then run normally
@@ -457,6 +501,8 @@ fn main() {
                 (read_file(&path), path)
             };
             if let Err(e) = run_program(&source, &filename, cli_args) {
+                #[cfg(feature = "prof")]
+                prof::dump();
                 eprintln!("{e}");
                 std::process::exit(1);
             }

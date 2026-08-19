@@ -345,7 +345,9 @@ impl Interpreter {
     ///
     /// ツリーウォーク（`should_pause_at`）と VM の文境界判定（`vm_should_pause`）が
     /// **同じ判断を 2 箇所に持たない**ようにするための共通部。片方だけ直すと
-    /// `--vm=off` と `--vm=auto` でステップ位置がずれる（[compare_debug_modes.ps1] が検出する）。
+    /// `--vm=off` と `--vm=auto` でステップ位置がずれていた（#33 で `--vm` は削除）。
+    /// ⚠ 検出していた `compare_debug_modes.ps1` も無い。**今の網は
+    /// [debug_session.ps1](debug_session.ps1) の golden 比較だけ**（他のゲートは stdin を与えない）。
     ///
     /// 副作用: StepInto / StepOut は停止時にモードを StepOver へ遷移させる（元実装のまま）。
     fn should_pause_now(&self) -> bool {

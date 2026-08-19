@@ -47,7 +47,7 @@ pub struct TypeChecker {
     /// 追加は `report_error` / `report_warning`（scope.rs）経由で行う。
     diags: Diagnostics,
     /// AST 型解決層の注釈（タスク #16・段階(a)）。検査走査中に `infer`/`check` が node-id 索引で
-    /// 型・検査指示を焼く。`check_and_annotate` で取り出す（既存 `check`/`check_with_warnings` は不変）。
+    /// 型・検査指示を焼く。`check_and_annotate` で取り出す（既存 `check`/`check_program` は不変）。
     annotations: annotations::AstAnnotations,
     /// 注釈採取済みの import モジュール `(lang, モジュールパス)`（#16 段階 F）。
     /// 同じモジュールが複数箇所から import される・入れ子 import で再訪する場合の重複走査を防ぐ。
@@ -185,7 +185,7 @@ impl TypeChecker {
     }
 
     /// エラー・警告・**AST 型解決層の注釈**をまとめて返す（ランタイム配線用・main.rs が使う）。
-    /// `check_with_warnings` と同じ検査に注釈生成を加えたもの（同一走査・追加コストは注釈の充填のみ）。
+    /// `check` と同じ検査に**警告と注釈生成**を加えたもの（同一走査・追加コストは注釈の充填のみ）。
     pub fn check_program(
         stmts: &[Stmt],
     ) -> (

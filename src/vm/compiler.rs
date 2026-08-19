@@ -1,14 +1,17 @@
-// vm/compiler.rs — 解決済み AST → Chunk のコンパイラ（Phase V, V-A）。
+// vm/compiler.rs — 解決済み AST → Chunk のコンパイラ（Phase V）。
 //
-// 保守的コンパイル: 対応できない構文に出会ったら `None` を返し、呼び出し側は
-// ツリーウォークにフォールバックする（デュアルモード, D2）。
+// 対応範囲は **定義文以外のすべて**。文（制御フロー・例外・宣言・代入・async）と式
+// （ブロック式・クロージャ・呼び出し・添字・コレクション・テンプレート）を Chunk に載せる。
+// 載らないのは**定義文**（fn/class/gen/trait/protocol/newtype/enum/import）だけで、
+// それは設計どおりツリーウォークが実行する（#10-d）。
 //
-// V-A の対応範囲（トップレベル関数のリーフ計算に限定）:
-// - 文: `return` / `if` / `while` / 式文 / パラメータへの代入・複合代入。
-// - 式: リテラル / `Resolution::Local`（パラメータ読み）/ 二項・単項演算 / 属性（フィールド）読み。
-// - **非対応（=フォールバック）**: ローカル宣言（let/mut/const の freeze 意味論を避けるため）、
-//   関数・メソッド呼び出し、クロージャ、for/match/block、例外、可変長引数、
-//   グローバル/組み込み参照、添字、コレクションリテラル 等。
+// ⚠ **フォールバックは無い**（#33）。`None` を返すと呼び出し側は `VmForceError` で**停止する**。
+// ⇒ `bail()` は「ツリーウォークへ落とす印」ではなく「**まだ載せられていない印**」。
+// 未対応を見つけたら `AR_TW_STATS=1`（要 `--features tw_stats`）で bail 地点を数えること。
+//
+// ⚠ 入口は 6 つあり、モードで挙動が変わる（`Compiler` の `module_mode` / `name_lookup` /
+// `debug_mode` / `toplevel_globals` の空・非空）。**新しい入口を足すときはこの 4 つを全部決める**
+// （#52 でこれを `CompileMode` 1 本へ畳む予定）。
 
 use std::collections::{HashMap, HashSet};
 
@@ -239,8 +242,8 @@ struct Compiler {
     /// （実際に踏んだ: ループを抜けた後の `raise` がループ内の `except` に捕まった）。
     /// さらに `finally` は**全出口で走らねばならない**ので、跳ぶ経路にも本体を複製する。
     ///
-    /// ⚠ `has_escape` は**文しか歩かない**ので、ブロック式の中の `break` は見えない。
-    /// ここを数えるのが唯一の防波堤。
+    /// ⚠ **式の中の `break` を見る静的判定は存在しない**（`block_body_bails` は `break`/`continue`
+    /// を見ない = #34 の「2 つ目の walker を持たない」方針）。ここを数えるのが唯一の防波堤。
     try_stack: Vec<Option<Vec<Stmt>>>,
     /// `finally` 本体（脱出経路への複製を含む）をコンパイル中かどうか（#37）。
     /// **1 以上なら脱出制御は bail する**（finally の中から跳ぶのは未対応）。
@@ -380,6 +383,9 @@ pub fn compile_fn(
     captures: &[String],
     mut_captures: &[String],
 ) -> Option<Chunk> {
+    // 実行時間分布の計測（`--features prof`）。既定ビルドでは消える。
+    #[cfg(feature = "prof")]
+    let _ct = crate::prof::CompileTimer::new();
     // 診断フック（#10）: 失敗したのに bail 地点が 1 件も記録されなかったら「未帰属」として計上する。
     // 個々の `?` を全て計装する代わりに、取りこぼしを総量で可視化する。
     if !crate::interpreter::tw_stats::enabled() {
@@ -466,6 +472,9 @@ fn compile_toplevel_or_module(
     if !is_toplevel_compile_target(stmt) {
         return None;
     }
+    // 実行時間分布の計測（`--features prof`）。既定ビルドでは消える。
+    #[cfg(feature = "prof")]
+    let _ct = crate::prof::CompileTimer::new();
     // 診断フック（#10）: `compile_fn` と同じく取りこぼしを「未帰属」として可視化する。
     if !crate::interpreter::tw_stats::enabled() {
         return compile_toplevel_stmt_inner(stmt, annotations, toplevel_globals, module_mode);
@@ -1602,12 +1611,11 @@ fn collect_expr_decls(
     Some(())
 }
 
-/// `stmts` に「囲む try を飛び越える」制御フローがあるかを保守的に判定する。
-/// `include_return` が真なら `return` も脱出とみなす（finally は return でも走る必要があるため）。
-/// `break`/`continue` は `stmts` 内の while/for（loop_depth>0）に囲まれていなければ脱出。
-/// `block_return`/`loop_yield` は常に脱出とみなす。
 /// `finally` 本体の複製がネストできる上限（#40）。経路ごとに複製されるので、
-/// これを超えるとコード量が指数的に膨らむ。超えたら bail してツリーウォークへ落とす。
+/// これを超えるとコード量が指数的に膨らむ。超えたら bail する（＝`VmForceError` で停止・#33）。
+///
+/// ⚠ #51 まで、ここには**削除済みの `has_escape` の doc**（`include_return` 引数の説明）が
+/// 前置されたまま残っていた。関数を消すときは doc も一緒に消すこと。
 const MAX_FINALLY_NEST: usize = 4;
 
 /// ブロック式の本体が VM コンパイル不能な脱出を含むかを判定する。
@@ -1793,7 +1801,7 @@ impl Compiler {
             Some(k) => k,
             // 注釈が無いときは**局所変数の型注釈**から導出する（#16 段階 E）。
             //
-            // テンプレート実体化では `subst` が param の型注釈を具体型へ置き換える
+            // テンプレート実体化では `subst_params` が param の型注釈を具体型へ置き換える
             // （`fn add[T](a: T, b: T)` → `add[int]` なら `a: int, b: int`）が、
             // node-id は原型からコピーされるため注釈テーブルは**型変数のままの原型**を指す。
             // そこで実体化後の AST に書かれている型注釈を直接見る。
@@ -1890,7 +1898,7 @@ impl Compiler {
                 continue; // 外側ローカルでない（グローバル等）＝キャプチャ対象外
             };
             if self.slot_mut.get(slot as usize).copied().unwrap_or(true) {
-                // 可変ローカルのキャプチャ。セル化は `mut_captured_by_nested_fn` の
+                // 可変ローカルのキャプチャ。セル化は `nested_fn_free_names` の
                 // 事前解析が担うので、ここへ来るのは解析漏れ（保守的に諦める）。
                 return None;
             }
@@ -1914,19 +1922,10 @@ impl Compiler {
         Some(self.add_name(name))
     }
 
-    /// 変数への書き込み先を決める（#10-b）。
+    /// 名前を VM フレームの slot へ解決する（`static mut`／セル変数は slot を持たないので `None`）。
     ///
-    /// 1. VM の slot にある名前 → `Local`（関数本体でもブロック内宣言でもここに来る）
-    /// 2. 最上位モードで可視グローバルと確定できる名前 → `Global`
-    /// 3. どちらでもない → `None`（＝ツリーウォークへフォールバック）
-    ///
-    /// ⚠ 順序が重要。ループ本体の `let` は毎回スコープに入る**ローカル**なので、
-    /// 同名グローバルより先に slot を見なければならない。
-    /// `slots` 引きの失敗を**必ず計上する**（#27-c）。
-    ///
-    /// ⚠ 素の `self.slot_of(name)?` は「未帰属」として計測から消える。
-    /// 宣言文のコンパイルはここを通してから諦めること
-    /// （`For/unattributed:For` の出所がここだった）。
+    /// ⚠ 引けなかった理由を**必ず計上する**（#27-c）。素の `self.slots.get(name)?` で諦めると
+    /// 「未帰属」として計測から消え、`For/unattributed:For` のように出所が追えなくなる。
     fn slot_of(&self, name: &str) -> Option<u16> {
         // ⚠ `static mut` / セル変数は slot を持たない（#27-d）。ここへ来る経路（for ターゲット・
         // `let a,b = t`・`except as`・入れ子 `fn` の格納先）は共有セルを扱えないので諦める。
@@ -1953,6 +1952,21 @@ impl Compiler {
         }
     }
 
+    /// 変数への書き込み先を決める（#10-b）。
+    ///
+    /// 1. セル変数 → `Cell` ／ `static mut` → `Static`（どちらも slot を持たない・**slot より先**）
+    /// 2. VM の slot にある名前 → `Local`（関数本体でもブロック内宣言でもここに来る）
+    /// 3. モジュール本体（`module_mode`）→ `Name`（チェーン探索・#42）
+    /// 4. 最上位モードで可視グローバルと確定できる名前 → `Global`
+    /// 5. どれでもない → `None`（＝この文は VM に載らない ⇒ `VmForceError` で停止・#33）
+    ///
+    /// ⚠ 順序が重要。ループ本体の `let` は毎回スコープに入る**ローカル**なので、
+    /// 同名グローバルより先に slot を見なければならない。
+    ///
+    /// ⚠⚠ この doc は #51 まで**下の `slot_of` に付いていた**（`slot_of` が後から
+    /// この doc と本体の間へ挿入されたため）。orphan doc は `#[inline(never)]` を
+    /// 別関数へ運ぶこともある（`vm_toplevel.rs` の実例）。**関数を挿入するときは
+    /// doc ブロックの上へ置くこと**。
     fn store_target(&mut self, name: &str) -> Option<StoreTarget> {
         // セル変数は slot ではなく共有セル（#27-d 段階 2b）。**slot より先に見る**。
         if let Some(&i) = self.cells.get(name) {
@@ -2201,8 +2215,8 @@ impl Compiler {
     }
 
     // ⚠ **レシーバが Arrow インスタンスかを判定する仕組みは撤去した**（#27）。
-    // `object_is_instance` / `is_arrow_instance_type` / `annot_is_arrow_instance` /
-    // `is_user_instance_type`（#26・#27-a の「形＋出自」2 段判定）は、属性複合代入の
+    // 削除したのは `object_is_instance` / `is_arrow_instance_type` / `annot_is_arrow_instance` /
+    // `is_user_instance_type` の 4 つ（#26・#27-a の「形＋出自」2 段判定。すべて削除済み）。属性複合代入の
     // レシーバ制限が最後の消費者だった。読み書きが `get_attr_val` / `attr_assign_evaled`
     // へ一本化された今、どの op も `Value::Instance` を前提にしていないので判定自体が不要。
     // ⚠ **`Value::Instance` を前提とする op を新設するなら判定を復活させること**。
@@ -3210,7 +3224,7 @@ impl Compiler {
                 let Some((captures, cell_captures, static_captures)) =
                     self.nested_fn_captures(params, body)
                 else {
-                    // 事前解析（`mut_captured_by_nested_fn`）が拾えなかった可変キャプチャ。
+                    // 事前解析（`nested_fn_free_names`）が拾えなかった可変キャプチャ。
                     bail("nested-fn-mutable-capture", None);
                     return None;
                 };
@@ -3232,7 +3246,7 @@ impl Compiler {
                 });
                 self.emit(Op::MakeFn(idx));
             }
-            // `block: <stmts>` 文（#27-c）。ツリーウォークの `exec_block_stmt` は
+            // `block: <stmts>` 文（#27-c）。ツリーウォークの `exec_block_stmt`（#33 で削除）は
             // **`block_return` を吸収**して `Normal` を返し、break/continue/return/raise は外へ通す。
             // ブロック式のコンパイラをそのまま使い、値を捨てれば同じ意味論になる。
             // ⚠ 文なので入口はオペランドスタックが平衡＝深さは `stmt_base` そのもの（#34）。
@@ -3350,7 +3364,7 @@ impl Compiler {
         // try を飛び越える制御フロー（break/continue/block_return/loop_yield）があると
         // SetupTry ハンドラが残るため bail。return は run から即復帰しハンドラは破棄されるので OK。
         // #37: `break`/`continue`/`block_return` は `emit_unwind_tries` が `PopTry` を
-        // 出して正しく抜けるので、ここで弾く必要はなくなった（`has_escape` は常に偽を返す）。
+        // 出して正しく抜けるので、ここで弾く必要はなくなった（旧 `has_escape` の門は削除済み）。
 
         let setup = self.emit(Op::SetupTry(0)); // handler_ip は後でパッチ
         // 本体の間だけハンドラが 1 つ多い（#34）。ここから外側ループへ跳ぶ `break` は
@@ -3416,10 +3430,10 @@ impl Compiler {
         fin: &[Stmt],
     ) -> Option<()> {
         // #37/#40: 本体・ハンドラ・`finally` 本体のいずれの脱出も
-        // `emit_unwind_tries` / `compile_finally_copy` が扱う（`has_escape` の門は不要になった）。
+        // `emit_unwind_tries` / `compile_finally_copy` が扱う（旧 `has_escape` の門は削除済み）。
         let setup = self.emit(Op::SetupTry(0));
         // 本体から跳ぶ脱出は `finally` を走らせてから跳ぶ（#37）。そのために本体を
-        // **この finally 付きで**登録する。⚠ `has_escape` は文しか歩かないので、
+        // **この finally 付きで**登録する。⚠ **式の中の `break` を見る静的判定は無い**ので、
         // ブロック式の中の `break` はこの登録だけが捕まえる。
         self.try_stack.push(Some(fin.to_vec()));
         let r = (|| {
@@ -3463,7 +3477,7 @@ impl Compiler {
         Some(())
     }
 
-    /// `match` 文を temp slot + ジャンプ列にコンパイルする（`exec_match_stmt` と同一意味論）。
+    /// `match` 文を temp slot + ジャンプ列にコンパイルする（`exec_match_stmt`＝#33 で削除、と同一意味論）。
     /// サブジェクトを一度だけ評価して temp に格納し、各アームを順に照合する。
     fn compile_match(&mut self, subject: &Expr, arms: &[MatchArm]) -> Option<()> {
         // サブジェクトを一度評価して temp に退避（各アームの照合で使い回す）。
@@ -3710,7 +3724,7 @@ impl Compiler {
             Expr::Call { func, args, span, node_id, .. } => {
                 if let Expr::Attr { object, attr, .. } = func.as_ref() {
                     // ── メソッド呼び出し ──
-                    // #27-b: **レシーバの型を問わない**。実行時の `vm_method_call` が
+                    // #27-b: **レシーバの型を問わない**。実行時の `vm_method_call_other` が
                     // ツリーウォークと同じ統一実装（`eval_method_call_full`）へ委ねるので、
                     // list/str/dict/CsObject/Signal… どれでも同じ結果になる。
                     // 以前は `Value::Instance` 専用経路しか無く `object_is_instance` で
@@ -3986,7 +4000,7 @@ impl Compiler {
     ///
     /// `owns_yields` は「このブロックが `loop_yield` の蓄積先を持つか」（#35）。
     /// **`block:` 式は持ち（true）、`block:` 文は持たない（false）**。ツリーウォークの
-    /// `exec_block_stmt` は `BLOCK_YIELDS` を push しないので、文の中の `loop_yield` は
+    /// `exec_block_stmt`（#33 で削除）は `BLOCK_YIELDS` を push しなかったので、文の中の `loop_yield` は
     /// **外側の for/while 式へ届く**（届く先が無ければ実行時エラー）。ここを true にすると
     /// 蓄積が文に吸い込まれて捨てられる（`for … ->list[int]: block: loop_yield i` が `None` になった）。
     fn compile_block_expr(

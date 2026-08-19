@@ -297,6 +297,8 @@ impl Interpreter {
     /// 以前はここに `Instance`/`PyObject` だけの独自ディスパッチがあり、CallArg 版
     /// （16 レシーバ）と**ずれていた**。VM はこちらしか呼べないため
     /// 「`--vm=off` では動くが `--vm=auto` で落ちる」が繰り返し起きた（#22-a/-b/-c・#10-b′）。
+    /// ⚠ `--vm` は #33 で削除済み（以下は当時の記録）。今は VM 一本なので
+    /// **食い違いの検出は `compare_python_impl.ps1`（参照実装との突き合わせ）が担う**。
     /// 実装は `eval_method_call_full` 1 箇所だけにする。
     pub(crate) fn eval_method_call_evaled(
         &mut self,

@@ -509,7 +509,7 @@ pub enum Expr {
     /// `block_return value` で即座に終了してその値を返す。
     /// `block_yield value` は値を積みながら実行を継続し、ブロック終了時にリストを返す。
     /// どちらも使わない場合は `None` を返す。
-    /// `return_type` が `Some` の場合は静的型検査で `block_return`/`block_yield` の型を照合する。
+    /// `return_type` が `Some` の場合は静的型検査で `block_return`/`loop_yield` の型を照合する。
     Block {
         stmts: Vec<Stmt>,
         return_type: Option<String>,
@@ -524,7 +524,7 @@ pub enum Expr {
     },
     /// for 式: `for target in iter [->Type]: body`。
     ///
-    /// `->list[T]` アノテーションと `block_yield` でリストを構築する。
+    /// `->list[T]` アノテーションと `loop_yield` でリストを構築する。
     /// `->T` アノテーションと `block_return` で単一値を返す。
     ForExpr {
         target: String,
@@ -534,7 +534,7 @@ pub enum Expr {
     },
     /// while 式: `while cond [->Type]: body`。
     ///
-    /// ForExpr と同様に `block_yield` または `block_return` で値を返す。
+    /// ForExpr と同様に `loop_yield` または `block_return` で値を返す。
     WhileExpr {
         cond: Box<Expr>,
         body: Vec<Stmt>,

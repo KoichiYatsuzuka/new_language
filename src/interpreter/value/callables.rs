@@ -61,7 +61,7 @@ pub struct TemplateGenFnValue {
 
 
 /// インスタンス化済みジェネレータオブジェクトの実行時状態。
-/// `exec_generator` によってジェネレータ本体を一括実行し、すべての `yield` 値を収集してから保持する。
+/// `exec_generator_evaled` によってジェネレータ本体を一括実行し、すべての `yield` 値を収集してから保持する。
 ///
 /// - `values`: ジェネレータ本体から収集されたすべての yield 値（順序保証）
 /// - `index`: 次回 `next()` 呼び出しで返す値のインデックス。`values.len()` 以上になると枯渇

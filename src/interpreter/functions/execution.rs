@@ -403,7 +403,7 @@ impl Interpreter {
         } else {
             None
         };
-        // #25: `--vm=force` はフォールバック禁止。関数本体が載らなければ止める。
+        // #25/#33: **フォールバックは存在しない**。関数本体が載らなければ止める。
         // ⚠ `vm_eligible` が偽（クロージャ等）も**失敗として扱う**。そこを見逃すと
         //    「bail 0 なのにツリーウォークが残る」というゲートの穴になる（#27 の `vm_ineligible` 20 件）。
         if chunk_opt.is_none() {
@@ -554,7 +554,7 @@ impl Interpreter {
         self.exec_fn_evaled(fn_val, &evaled, self_val, fn_name, call_span)
     }
 
-    /// 評価済み引数でジェネレータメソッドを実行する（VM の CallMethod 用）。`exec_generator` の本体。
+    /// 評価済み引数でジェネレータメソッドを実行する（VM の CallMethod 用）。`exec_generator_evaled` の本体。
     pub(crate) fn exec_generator_evaled(
         &mut self,
         gen_fn: Rc<GeneratorFnValue>,

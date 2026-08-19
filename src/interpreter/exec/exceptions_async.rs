@@ -201,7 +201,7 @@ impl Interpreter {
     }
 
     /// VM: 捕捉すべき例外 Value を取り出す。`err` が RAISE_SENTINEL なら `current_exception`、
-    /// それ以外は内部エラーを RaisedError へ変換する（`exec_try` と同じ）。`current_exception` を
+    /// それ以外は内部エラーを RaisedError へ変換する（`exec_try`＝#33 で削除、と同じ）。`current_exception` を
     /// 設定して例外 Value を返す。変換できなければ `None`（＝伝播）。
     pub(crate) fn vm_take_raised(&mut self, err: &str) -> Option<Value> {
         let raised = if err == RAISE_SENTINEL {
@@ -246,7 +246,9 @@ impl Interpreter {
         };
 
         let env = crate::interpreter::async_mgr::capture_env(self);
-        // #32: 親スレッドの `--vm` を引き継ぐ（worker が既定の Auto に戻らないように）。
+        // #32: worker スレッドは `Interpreter::new()` を作るので、**親の設定を渡す責任がある**。
+        // ⚠ `--vm` は #33 で無くなったが、型注釈（`annotations`）の引き継ぎは今も要る
+        //    （渡し忘れるとゲートに穴が開く。実際に開いていた）。
         mgr_rc.borrow_mut().add_task(stmts.to_vec(), env);
         Ok(ExecResult::Normal)
     }
