@@ -1,0 +1,46 @@
+# cpp_default_arg_native_call.ar — **デフォルト引数の中の native 呼び出し**（#54 の負の対照）
+#
+# ⚠⚠ この例題が要る理由:
+# native 関数の呼び出しには 3 つの経路があり、うち 2 つは **AST の引数式を取る**ツリーウォーク版:
+#   (1) `call_native_function`        … 呼び先が裸の識別子・キャッシュ未充填（初回）
+#   (2) `dispatch_native_typed_exprs` … 同じ呼び出しノードの 2 回目以降（インラインキャッシュ命中）
+#   (3) `dispatch_native_evaled_wb`   … VM の評価済み値経路（通常の呼び出しはすべてここ）
+#
+# #55 の計測で (1)(2) は **全例題で 0 回**だった。だが「到達不能」ではない —
+# **デフォルト引数の式は呼び出しごとにツリーウォークの `eval()` で評価される**ので、
+# そこに native 呼び出しを書くと (1)(2) を通る。**例題が無かっただけ**だった。
+#
+# ⚠ 3 経路は同じ typed ABI 呼び出しを**手書きで 3 回**持っていた（#54 で 1 本化）。
+#   #48 の実バグ（VM 経路だけ書き戻しが起きない）はまさにこの二重化が原因。
+#
+# ⚠ **期待値と違えば raise する**（print するだけにしない）。`scan_examples` / `force_gate` は
+#   exit code しか見ないので、raise して初めて「落ちないが値が違う」退行がゲートに映る（#47）。
+#
+# 実行には examples/interop/test_modules/vec_math_x64.lib が必要:
+#   powershell -File examples/interop/test_modules/build_vec_math.ps1
+
+import[cpp-lib] test_modules.vec_math as vm
+
+fn check(let label: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError(label + ": got " + str(got) + ", want " + str(want))
+    print(label + " OK " + str(got))
+
+let v345 = V3(3.0, 4.0, 0.0)      # |v| = 5
+let norm = vm.v3_norm             # 裸の識別子に束縛（(1)(2) の到達条件）
+mut m: float = 0.0
+
+# デフォルト引数の式は **呼び出しのたびに** 評価される。
+# 1 回目 → call_native_function（キャッシュ充填）／2 回目以降 → dispatch_native_typed_exprs。
+fn touch(let _unused: float = norm(v345, m)) -> float:
+    return m
+
+check("defarg 1st", touch(), 5.0)
+
+# 2 回目: 同じ AST ノードなのでインラインキャッシュが命中する経路を通る。
+m = 0.0
+check("defarg 2nd", touch(), 5.0)
+
+# 3 回目も同じ（キャッシュ命中の反復）。
+m = 0.0
+check("defarg 3rd", touch(), 5.0)

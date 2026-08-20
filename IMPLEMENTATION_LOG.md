@@ -5695,10 +5695,18 @@ doc コメント境界込みでアイテムを切り出すスクリプトを書�
 
 ### 結論 — #54 は「消す」ではなく「畳む」
 
-AST 引数版は **通常実行から到達不能だが REPL/デバッガからは到達しうる**（`eval_call` が REPL で 3 回発火）。
-⇒ 削除はできない。**`*_evaled` 版への委譲に畳む**のが正しい（#22 の作法）。
-⚠ ただし **native の 2 経路はどのゲートも通っていない**ので、畳むときは
-REPL かデバッガを使う負の対照を別に用意すること。
+AST 引数版は削除できない。**`*_evaled` 版への委譲／共通化に畳む**のが正しい（#22 の作法）。
+⚠ **native の 2 経路はどのゲートも通っていない**ので、畳むときは負の対照を別に用意すること。
+
+> ⚠⚠ **訂正（#54 で判明）**: ここで一度「AST 引数版は**通常実行から到達不能**」と結論したが、
+> **これは誤り**だった。正しくは「**例題が到達していない**」だけ。
+> **デフォルト引数の式は呼び出しのたびにツリーウォークの `eval()` で評価される**ので、
+> そこに native 呼び出しを書けば `call_native_function`（初回）と
+> `dispatch_native_typed_exprs`（インラインキャッシュ命中）を**通常実行で**通る。
+> #54 で [cpp_default_arg_native_call.ar](examples/interop/cpp_default_arg_native_call.ar) を書いて実測した
+> （`call_native_function=1` / `dispatch_native_typed_exprs=2`）。
+> ⇒ **「全例題で 0」から「到達不能」を結論してはいけない**（#34/#35 の教訓そのものを、
+> それを引用している最中に踏んだ）。
 
 ### ⚠⚠ 副産物 — 実バグ 1 件（→ #56）
 
@@ -5838,3 +5846,96 @@ Python の組み込み）。これは設計どおりの挙動（「新しい例�
 | 「`parse_ar` は AST が要るから VM に載せられない」（既存 doc） | **違った**。入力は文字列だけで、AST が要るのは出力側 |
 | 「`tuple` 等は bail を `Op::Fail` に置き換える必要がある」 | **違った**。bail を外すだけで正しい `NameError` が出る |
 | 「#56 は #54 より軽い」 | 概ね合っていた（src は 3 ファイル・例題 3 本） |
+
+---
+
+## #54 native typed ABI 呼び出しの 1 本化（2026-08-20）
+
+保守性レーンの最後。診断 [F-5] で挙げた「typed ABI の C 呼び出しが 3 箇所に手書きコピー」を畳む。
+**#48 の実バグ（VM 経路だけ書き戻しが起きず 0.0 を返す）は、まさにこの二重化が原因**だった。
+
+### ⚠⚠ 着手前に #55 の結論を覆した
+
+#55 で「AST 引数版の native 2 経路は **通常実行から到達不能**」と結論していた。**これは誤り**だった。
+
+正しくは「**例題が到達していない**」だけ。到達条件を追うと:
+- `call_native_function` … 呼び先が**裸の識別子**で、その文が**ツリーウォークで実行される**とき
+- `dispatch_native_typed_exprs` … **同じ呼び出しノード**の 2 回目以降（インラインキャッシュ命中）
+
+REPL では「ブロック最後の式文」だけが `eval()` に落ちるので `call_native_function` には届くが、
+ブロックごとに AST が別なのでキャッシュは当たらない。**しかし通常実行に到達路があった** —
+**デフォルト引数の式は呼び出しのたびにツリーウォークの `eval()` で評価される**。
+
+```
+fn touch(let _unused: float = norm(v345, m)) -> float: return m
+```
+
+これで `call_native_function=1`（初回）／`dispatch_native_typed_exprs=2`（2 回目以降）を実測した。
+
+⇒ **「全例題で 0」から「到達不能」を結論してはいけない。**
+#34/#35 の教訓（例題が無い機能はゲートに映らない）を、**それを引用している最中に自分で踏んだ**。
+
+### 負の対照を先に作った
+
+[cpp_default_arg_native_call.ar](examples/interop/cpp_default_arg_native_call.ar) を新設。
+デフォルト引数から native を呼び、**期待値と違えば `raise` する**（#47/#48 と同じ形。
+`scan_examples`/`force_gate` は exit code しか見ないので、raise しないと値の退行が映らない）。
+
+これで 3 経路すべてに例題が付いた:
+
+| 経路 | 例題 |
+|---|---|
+| `call_native_function`（初回） | [cpp_default_arg_native_call.ar](examples/interop/cpp_default_arg_native_call.ar) |
+| `dispatch_native_typed_exprs`（IC 命中） | 同上（2 回目以降） |
+| `dispatch_native_evaled_wb`（VM） | [cpp_out_param_writeback.ar](examples/interop/cpp_out_param_writeback.ar)（#48） |
+
+⚠ **畳む前に、この 2 本が緑であることを確認してから**着手した。
+
+### やったこと
+
+3 箇所に手書きされていた 15 行（transmute → 呼び出し → cleanup → status 判定）と、
+戻り値デコードの `match sig.ret` を 2 つの関数へ集約:
+
+- `unsafe fn invoke_typed_abi(typed_ptr, slots, cleanups) -> Result<u64, String>`
+- `fn decode_typed_ret(ret_ty, ret) -> Value`
+
+⚠ **`unsafe fn` にした**（呼び出し側に `unsafe` ブロック）。生ポインタを関数ポインタへ
+transmute して呼ぶ関数を安全な API として置くのは不正直なので、契約を `# Safety` に明記した。
+
+**3 経路で違ってよいのは「書き戻し先をどこへ返すか」だけ**になった:
+- `call_native_function` / `dispatch_native_typed_exprs` … 自分で `assign_var`
+- `dispatch_native_evaled_wb` … `wb_out` へ積んで**呼び出し元（VM）が格納**（#48）
+
+typed ABI の `transmute` は **3 箇所 → 1 箇所**。`native.rs` は 669 → 667 行
+（削減量そのものは ~57 行で、doc 付きヘルパ ~55 行を足した後の純減）。
+⚠ **狙いは行数ではなく「実装が 1 つになること」**。#48 の再演を構造的に防ぐのが目的。
+
+### 検証（全ゲート緑）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` | **警告 0** |
+| `cargo test` | **742 passed** |
+| `cargo clippy --all-targets` | bin **52**（増分 **0**） |
+| **負の対照（AST 経路 1・2）** | `defarg 1st/2nd/3rd OK 5.0` |
+| **負の対照（VM 経路 3）** | `local/global/cell/loop/status/probe` 全 OK（#48 の 6 検査） |
+| `cpp_struct_ptr.ar`（シャドウ変換の書き戻し） | 一致 |
+| [scan_examples.ps1](scan_examples.ps1) | **FAIL 0** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **50/50**（新例題も検査対象・一致） |
+| [force_gate.ps1](force_gate.ps1) | **151 例題・`VmForceError` 0 件** |
+| [debug_session.ps1](debug_session.ps1) | **5 identical** |
+| [repl_session.ps1](repl_session.ps1) | **identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+
+⚠ A/B は取っていない。`invoke_typed_abi` は `#[inline]` を付けていないが、FFI 呼び出し 1 回の
+コスト（DLL 越しの C 呼び出し）に対して関数呼び出し 1 段は無視できる。⚠ ただし #48 は
+「判定を `Op::Call` のアームに直接書いて 0.91x」を踏んでいるので、**もし将来 typed ABI の
+呼び出しがベンチ支配項になったら測り直すこと**（現状 `bench_ab_cdll.ar` で支配的なのは FFI 本体）。
+
+### 見積もりと実測
+
+| 事前の見立て | 実測 |
+|---|---|
+| 「#55 で AST 経路は通常実行から到達不能と分かった」 | **違った**。デフォルト引数の式から到達する（#55 の結論を訂正） |
+| 「負の対照は REPL かデバッガでしか作れない」 | **違った**。通常の例題で 3 経路すべてを踏める |
+| 「1 本化で大幅に行数が減る」 | **違った**。純減は 2 行（doc 付きヘルパを足したため）。**価値は行数ではない** |

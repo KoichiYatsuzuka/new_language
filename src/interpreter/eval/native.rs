@@ -8,6 +8,64 @@ use {
     },
 };
 
+/// **統一 typed ABI の呼び出し本体**（#54 で 1 本化）。
+///
+/// `status = fn(args*, ret*, err*)` の直接 C ABI 呼び出し。TLS・アリーナ・ハンドルを
+/// 一切通らない。raise は `ErrSlot` 経由で伝播する。
+///
+/// ⚠⚠ **#54 以前はこの 15 行が 3 箇所に手書きされていた**
+/// （`call_native_function` / `dispatch_native_typed_exprs` / `dispatch_native_evaled_wb`）。
+/// #48 の実バグ（VM 経路だけ書き戻しが起きず 0.0 を返す）は、まさにこの二重化が原因。
+/// **3 経路で違ってよいのは「書き戻し先をどこへ返すか」だけ**なので、呼び出し自体はここに集約する。
+///
+/// 成功時は raw な戻り値（`u64`）を返す。呼び出し側が `sig.ret` に従って
+/// [`decode_typed_ret`] でデコードすること。
+///
+/// # Safety
+/// `typed_ptr` は `build_cpp_typed_sig` が検証した **typed ABI の関数ポインタ**でなければならない
+/// （`unsafe extern "C" fn(*const u64, *mut u64, *mut ErrSlot) -> u32`）。
+/// `slots` は少なくともシグネチャの引数個数ぶんの有効な要素を持つこと。
+unsafe fn invoke_typed_abi(
+    typed_ptr: usize,
+    slots: &[u64],
+    cleanups: Vec<crate::interpreter::value::PtrArgCleanup>,
+) -> Result<u64, String> {
+    let mut ret: u64 = 0;
+    let mut err = crate::interpreter::native_api::ErrSlot::default();
+    let status = {
+        let f: unsafe extern "C" fn(
+            *const u64,
+            *mut u64,
+            *mut crate::interpreter::native_api::ErrSlot,
+        ) -> u32 = std::mem::transmute(typed_ptr);
+        f(slots.as_ptr(), &mut ret, &mut err)
+    };
+    // ⚠ **cleanup は成否によらず必ず走らせる**（3 経路とも元からこの順序だった）。
+    for c in cleanups {
+        crate::interpreter::value::finish_ptr_arg_cleanup(c);
+    }
+    if status != 0 {
+        // 既存の raise 経路と同じ "TypeName: msg" 形式で伝播
+        return Err(err.to_error_string());
+    }
+    Ok(ret)
+}
+
+/// typed ABI の raw な戻り値を `Value` へデコードする（#54 で 1 本化）。
+///
+/// ⚠ typed ABI の戻り値に `Ptr`/`OutPtr` は使わない（`build_cpp_typed_sig` が除外する）。
+fn decode_typed_ret(ret_ty: &crate::interpreter::value::AbiTy, ret: u64) -> Value {
+    use crate::interpreter::value::AbiTy;
+    match ret_ty {
+        AbiTy::I64 => Value::Int(ret as i64),
+        AbiTy::F64 => Value::Float(f64::from_bits(ret)),
+        AbiTy::Void => Value::None,
+        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
+            unreachable!("typed ABI ret excludes Ptr/OutPtr")
+        }
+    }
+}
+
 impl Interpreter {
     /// `Value::NativeFunction` を呼び出す（ハンドルベース ABI）。
     ///
@@ -149,37 +207,16 @@ impl Interpreter {
                     return Err(e);
                 }
                 if ok {
-                    let mut ret: u64 = 0;
-                    let mut err = crate::interpreter::native_api::ErrSlot::default();
-                    let status = unsafe {
-                        let f: unsafe extern "C" fn(
-                            *const u64,
-                            *mut u64,
-                            *mut crate::interpreter::native_api::ErrSlot,
-                        ) -> u32 = std::mem::transmute(typed_ptr);
-                        f(slots.as_ptr(), &mut ret, &mut err)
-                    };
-                    for c in cleanups {
-                        crate::interpreter::value::finish_ptr_arg_cleanup(c);
-                    }
-                    if status != 0 {
-                        // 既存の raise 経路と同じ "TypeName: msg" 形式で伝播
-                        return Err(err.to_error_string());
-                    }
-                    // OutPtr の書き戻し（C が書いた値を named mut 変数へ反映 — 成功時のみ）
+                    // #54: 呼び出し本体は `invoke_typed_abi` に 1 本化した。
+                    // SAFETY: `typed_ptr` は typed_sig 付き（`build_cpp_typed_sig` 検証済み）の関数。
+                    let ret = unsafe { invoke_typed_abi(typed_ptr, &slots, cleanups)? };
+                    // OutPtr の書き戻し（C が書いた値を named mut 変数へ反映 — 成功時のみ）。
+                    // ⚠ **3 経路で違ってよいのはここだけ**（あちらは呼び出し元へ返す・#48）。
                     for (i, width, name) in out_wb {
                         let val = crate::interpreter::value::decode_out_ptr(out_locals[i], width);
                         self.assign_var(&name, val)?;
                     }
-                    return Ok(match sig.ret {
-                        AbiTy::I64 => Value::Int(ret as i64),
-                        AbiTy::F64 => Value::Float(f64::from_bits(ret)),
-                        AbiTy::Void => Value::None,
-                        // typed ABI の戻り値に Ptr/OutPtr は使わない（build_cpp_typed_sig が除外する）。
-                        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
-                            unreachable!("typed ABI ret excludes Ptr/OutPtr")
-                        }
-                    });
+                    return Ok(decode_typed_ret(&sig.ret, ret));
                 }
             }
         }
@@ -384,35 +421,16 @@ impl Interpreter {
             }
         }
         let typed_ptr = fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed);
-        let mut ret: u64 = 0;
-        let mut err = crate::interpreter::native_api::ErrSlot::default();
-        let status = unsafe {
-            let f: unsafe extern "C" fn(
-                *const u64,
-                *mut u64,
-                *mut crate::interpreter::native_api::ErrSlot,
-            ) -> u32 = std::mem::transmute(typed_ptr);
-            f(slots.as_ptr(), &mut ret, &mut err)
-        };
-        for c in cleanups {
-            crate::interpreter::value::finish_ptr_arg_cleanup(c);
-        }
-        if status != 0 {
-            return Err(err.to_error_string());
-        }
+        // #54: 呼び出し本体は `invoke_typed_abi` に 1 本化した。
+        // SAFETY: この経路はインラインキャッシュ命中時のみで、キャッシュには typed_sig 付きの
+        // `NativeFnRef` しか入らない（`eval_call` の充填条件）。
+        let ret = unsafe { invoke_typed_abi(typed_ptr, &slots, cleanups)? };
         // OutPtr の書き戻し（C が書いた値を named mut 変数へ反映 — 成功時のみ）
         for (i, width, name) in out_wb {
             let val = crate::interpreter::value::decode_out_ptr(out_locals[i], width);
             self.assign_var(&name, val)?;
         }
-        Ok(match sig.ret {
-            AbiTy::I64 => Value::Int(ret as i64),
-            AbiTy::F64 => Value::Float(f64::from_bits(ret)),
-            AbiTy::Void => Value::None,
-            AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
-                unreachable!("typed ABI ret excludes Ptr/OutPtr")
-            }
-        })
+        Ok(decode_typed_ret(&sig.ret, ret))
     }
 
     pub(crate) fn dispatch_native_evaled(
@@ -536,40 +554,20 @@ impl Interpreter {
                     return Err(e);
                 }
                 if ok {
-                    let mut ret: u64 = 0;
-                    let mut err = crate::interpreter::native_api::ErrSlot::default();
-                    let status = unsafe {
-                        let f: unsafe extern "C" fn(
-                            *const u64,
-                            *mut u64,
-                            *mut crate::interpreter::native_api::ErrSlot,
-                        ) -> u32 = std::mem::transmute(typed_ptr);
-                        f(slots.as_ptr(), &mut ret, &mut err)
-                    };
-                    for c in cleanups {
-                        crate::interpreter::value::finish_ptr_arg_cleanup(c);
-                    }
-                    if status != 0 {
-                        // 既存の raise 経路と同じ "TypeName: msg" 形式で伝播
-                        return Err(err.to_error_string());
-                    }
-                    // OutPtr の書き戻し（C が書いた値を呼び出し元へ返す — 成功時のみ・#48）。
-                    // 格納は呼び出し元（VM）が行う。`call_native_function` の同じ処理と
-                    // **同じタイミング・同じ decode** であること。
+                    // #54: 呼び出し本体は `invoke_typed_abi` に 1 本化した。
+                    // SAFETY: `typed_ptr` は typed_sig 付き（`build_cpp_typed_sig` 検証済み）の関数。
+                    let ret = unsafe { invoke_typed_abi(typed_ptr, &slots, cleanups)? };
+                    // OutPtr の書き戻し（C が書いた値を**呼び出し元へ返す** — 成功時のみ・#48）。
+                    // 格納は呼び出し元（VM）が行う。⚠ **3 経路で違ってよいのはここだけ**
+                    // （`call_native_function` は自分で `assign_var` する）。
+                    // decode とタイミングは共通なので、ずれる余地は残っていない。
                     for (i, width) in out_wb {
                         wb_out.push((
                             i as u8,
                             crate::interpreter::value::decode_out_ptr(out_locals[i], width),
                         ));
                     }
-                    return Ok(match sig.ret {
-                        AbiTy::I64 => Value::Int(ret as i64),
-                        AbiTy::F64 => Value::Float(f64::from_bits(ret)),
-                        AbiTy::Void => Value::None,
-                        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
-                            unreachable!("typed ABI ret excludes Ptr/OutPtr")
-                        }
-                    });
+                    return Ok(decode_typed_ret(&sig.ret, ret));
                 }
             }
         }
