@@ -180,7 +180,7 @@ struct Compiler {
 
 /// **コンパイルの入口ごとのモード**（#52）。
 ///
-/// #51 まで `module_mode` / `name_lookup` / `debug_mode` の 3 bool が別々に立っており、
+/// #52 以前は `module_mode` / `name_lookup` / `debug_mode` の 3 bool が別々に立っていた。
 /// 入口を足すときに「どれを立てるか」を推測するしかなかった（対応表がどこにも無かった）。
 /// 組み合わせをこの enum 1 本に閉じ込め、**判定はすべてメソッド経由**にする。
 ///
@@ -402,7 +402,7 @@ mod mode_tests {
 
     /// **#52 で 3 つの bool を `CompileMode` へ畳んだときの対応表**を固定する。
     ///
-    /// ⚠ 畳む前は各入口の構造体リテラルに `module_mode` / `name_lookup` / `debug_mode` が
+    /// ⚠ #52 以前は各入口の構造体リテラルに `module_mode` / `name_lookup` / `debug_mode` が
     /// 並んでいたので、値は**読めば分かった**。畳んだ後は `matches!` のアームを 1 つ書き換えると
     /// **静かに全入口の挙動が変わる**。ここが唯一の防波堤。
     ///

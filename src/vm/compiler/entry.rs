@@ -99,7 +99,7 @@ pub fn compile_toplevel_stmt(
 
 /// **import モジュール本体の 1 文**を Chunk へコンパイルする（#42）。
 ///
-/// `compile_toplevel_stmt` との違いは `module_mode` だけ。モジュール本体は
+/// `compile_toplevel_stmt` との違いは `CompileMode::Module` だけ。モジュール本体は
 /// `exec_module` が `push_scope` してから回すので、名前は `scopes[0]` ではなく
 /// **push 済みスコープ**に入る。⇒ 代入を `StoreName`（`assign_var` = チェーン探索）にする。
 /// 宣言（`DeclareGlobal` → `declare_var` → `scopes.last_mut()`）と

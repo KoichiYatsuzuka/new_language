@@ -31,12 +31,14 @@ if (-not (Test-Path $root)) { Write-Error "src/ が見つからない: $root"; e
 # 履歴マーカー: この語が同じ行にあれば「意図的に消えたものへ言及している」とみなす
 $histWords = @('削除', '廃止', '撤去', '以前', 'かつて', '旧 ', '旧`', '移設', 'だった', 'していた')
 
-# 外部成果物（Rust の識別子ではないので永久に「存在しない」）
+# 外部成果物・命名パターン（Rust の識別子ではないので永久に「存在しない」）
+# ⚠ `extend_` / `_inner` / `snake_case` は**接頭辞・接尾辞・命名規約**であって識別子ではない。
+#    「`compile_fn` とその `_inner`」のように規約を説明する書き方は正当なので落とす（#57）。
 $whitelist = @(
     'force_gate','compare_vm_modes','compare_python_impl','scan_examples','debug_session',
     'repl_session','tw_stats_files','ab_bench','ab_bench_modes','dump_native_ir','prof_dist',
     'bench_field_access','fn_call','closure_call','block_expr','method_call','field_access',
-    'cb_call_fn','snake_case','stubgen','extend_','ar_init','ar_event_fire'
+    'cb_call_fn','snake_case','stubgen','extend_','_inner','ar_init','ar_event_fire'
 )
 
 $files = Get-ChildItem -Path $root -Recurse -Filter *.rs -File

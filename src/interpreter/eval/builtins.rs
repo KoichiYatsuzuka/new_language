@@ -36,7 +36,7 @@ impl Interpreter {
             }
             // `parse_ar(source[, path])`（#56）。**入力は評価済みの文字列だけ**なので
             // 評価済み引数で完全に表現できる（AST が要るのは**出力**＝`Value::Namespace` ツリーの側）。
-            // ⚠ #33 でフォールバックが消えた後も `is_builtin_callee` が bail し続けており、
+            // ⚠ #33 でフォールバックが消えた後も、#56 で削除した `is_builtin_callee` が bail し続け、
             //    **`parse_ar` は `VmForceError` で完全に死んでいた**（#55 で検出）。
             "parse_ar" => Some(self.parse_ar_evaled(args)),
             // flat リスト組み込み（#27-c）。ツリーウォーク側と**同一の本体**へ委譲する。
@@ -545,7 +545,7 @@ impl Interpreter {
     /// ソースを字句解析・構文解析して、AST を `Value::Namespace` ツリーへ変換して返す（§2.1）。
     /// `python_converter` / `converter.ar` がこれに依存する。
     ///
-    /// ⚠ **入力は文字列だけ**なので評価済み引数で表現できる。`is_builtin_callee` にあった
+    /// ⚠ **入力は文字列だけ**なので評価済み引数で表現できる。#56 で削除した `is_builtin_callee` の
     /// 「AST を値へ変換するので評価済み引数では表現できない」は**出力と入力を取り違えていた**。
     /// その誤りのせいで #33 以降 `parse_ar` は `VmForceError` で停止していた（#55 で検出・#56 で修正）。
     pub(crate) fn parse_ar_evaled(&mut self, args: Vec<Value>) -> Result<Value, String> {

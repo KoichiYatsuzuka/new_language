@@ -257,7 +257,7 @@ impl Compiler {
     ///
     /// 1. セル変数 → `Cell` ／ `static mut` → `Static`（どちらも slot を持たない・**slot より先**）
     /// 2. VM の slot にある名前 → `Local`（関数本体でもブロック内宣言でもここに来る）
-    /// 3. モジュール本体（`module_mode`）→ `Name`（チェーン探索・#42）
+    /// 3. モジュール本体（`CompileMode::Module`）→ `Name`（チェーン探索・#42）
     /// 4. 最上位モードで可視グローバルと確定できる名前 → `Global`
     /// 5. どれでもない → `None`（＝この文は VM に載らない ⇒ `VmForceError` で停止・#33）
     ///
@@ -486,7 +486,7 @@ impl Compiler {
     /// 位置情報を持たない種類の文（`if`/`while`/`return` 等）は `STMT_NO_SPAN` を記録し、
     /// 表示スパンは `best_span_for` のフォールバック（`dbg_last_span`）に委ねる。
     ///
-    /// ⚠ `debug_mode`（デバッガ REPL 用の `compile_debug`）では記録しない。
+    /// ⚠ `CompileMode::DebugRepl`（デバッガ REPL 用の `compile_debug`）では記録しない。
     /// あちらは停止対象ではなく、REPL 入力を評価するだけの Chunk。
     pub(super) fn mark_stmt_start(&mut self, stmt: &Stmt) {
         if self.mode.is_debug_repl() {

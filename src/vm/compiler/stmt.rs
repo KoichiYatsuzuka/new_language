@@ -561,7 +561,7 @@ impl Compiler {
                         self.emit_bin_specialized(kind, op);
                         self.emit(Op::SetAttr(ni));
                     }
-                    // 一般レシーバ（グローバル変数・クラス名・属性・呼び出し結果／`debug_mode`）。
+                    // 一般レシーバ（グローバル変数・クラス名・属性・呼び出し結果／`CompileMode::DebugRepl`）。
                     //
                     // ツリーウォークは `eval(value)` → `eval(target)`（**object 1 回目**）→ 二項演算
                     // → `attr_assign(target, ..)`（**object 2 回目**）の順で、`object` を 2 回評価する。
