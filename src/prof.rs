@@ -152,6 +152,67 @@ impl Drop for CompileTimer {
     }
 }
 
+// ───────────────── 軸1b: 段の**内訳**（`sum` には入れない補助計測） ─────────────────
+//
+// 段（`Phase`）は「合計が in_main になる」不変条件を持たせたいので、内訳はこちらへ分ける。
+// ⚠ 内訳を `Phase` に足すと二重計上になり `PHASE sum` が壊れる。
+
+/// `interp_init` の内訳（#58 の調査用）。`SUB_NAMES` と**同じ順序**。
+#[derive(Clone, Copy)]
+pub enum Sub {
+    /// `Interpreter::new()`（組み込みグローバル登録・EventLoop 生成）
+    InterpNew = 0,
+    /// `set_toplevel_globals`（`toplevel_declared_globals` の AST 走査を含む）
+    ToplevelGlobals = 1,
+    /// `set_annotations` ＋ `add_source_text`
+    AnnotSource = 2,
+    /// `ar_config.json` の祖先ウォーク（`exists()` の syscall 連打 ＋ 見つかれば読み込み・JSON パース）
+    CfgWalk = 3,
+    /// `set_cli_args`
+    CliArgs = 4,
+}
+
+pub const SUB_NAMES: [&str; 5] = [
+    "interp_new",
+    "toplevel_globals",
+    "annot+source",
+    "ar_config_walk",
+    "cli_args",
+];
+
+static SUB_NS: [AtomicU64; 5] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+pub fn add_sub(sub: Sub, ns: u64) {
+    SUB_NS[sub as usize].fetch_add(ns, Ordering::Relaxed);
+}
+
+/// `Timer` の内訳版。
+pub struct SubTimer {
+    sub: Sub,
+    t0: Instant,
+}
+
+impl SubTimer {
+    pub fn new(sub: Sub) -> SubTimer {
+        SubTimer {
+            sub,
+            t0: Instant::now(),
+        }
+    }
+}
+
+impl Drop for SubTimer {
+    fn drop(&mut self) {
+        add_sub(self.sub, self.t0.elapsed().as_nanos() as u64);
+    }
+}
+
 // ───────────────────────────── 軸2: op 別サンプリング ─────────────────────────────
 
 /// 「いま実行中の op」。`0` = VM の外（ツリーウォーク／パース／後始末など）、
@@ -348,6 +409,26 @@ pub fn dump() {
         },
         COMPILE_N.load(Ordering::Relaxed)
     ));
+
+    // 段の内訳（`sum` には入っていない補助計測）。0 なら出さない。
+    let sub_tot: u64 = SUB_NS.iter().map(|a| a.load(Ordering::Relaxed)).sum();
+    if sub_tot > 0 {
+        for (i, name) in SUB_NAMES.iter().enumerate() {
+            let ns = SUB_NS[i].load(Ordering::Relaxed);
+            lines.push(format!(
+                "SUB   {name:<16} {:>12.3} ms  {:>6.2}% of interp_init",
+                ns as f64 / 1e6,
+                {
+                    let init = PHASE_NS[Phase::InterpInit as usize].load(Ordering::Relaxed);
+                    if init > 0 {
+                        ns as f64 * 100.0 / init as f64
+                    } else {
+                        0.0
+                    }
+                }
+            ));
+        }
+    }
 
     let hist = RESULT.lock().unwrap().take();
     if let Some(hist) = hist {

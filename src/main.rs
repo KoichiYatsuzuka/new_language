@@ -387,16 +387,30 @@ fn run_program(
     #[cfg(feature = "prof")]
     let _p_init = prof::Timer::new(prof::Phase::InterpInit);
     // ソーステキストはエラー報告時のスタックトレース表示に使用される
+    #[cfg(feature = "prof")]
+    let _s_new = prof::SubTimer::new(prof::Sub::InterpNew);
     let mut interp = Interpreter::new();
+    #[cfg(feature = "prof")]
+    drop(_s_new);
     // 最上位 Chunk（#10-b/#10-c/#27-c）が「この名前は scopes[0]」と判断するための集合。
     // ⚠ リゾルバ用の `toplevel_visible_globals_with`（シャドウ減算あり）**ではない**。
     // VM コンパイラは文を 1 つずつ見て、その文の束縛は `slots` に入っているので、
     // 減算するとむしろ解決できる名前を落とす（理由は `toplevel_declared_globals` の doc）。
+    #[cfg(feature = "prof")]
+    let _s_tg = prof::SubTimer::new(prof::Sub::ToplevelGlobals);
     interp.set_toplevel_globals(interpreter::resolver::toplevel_declared_globals(&stmts));
+    #[cfg(feature = "prof")]
+    drop(_s_tg);
     // AST 型解決層の注釈を注入する（#16）。段階(b)/(c) の消費側が node-id で参照する。
+    #[cfg(feature = "prof")]
+    let _s_as = prof::SubTimer::new(prof::Sub::AnnotSource);
     interp.set_annotations(std::rc::Rc::new(annotations));
     interp.add_source_text(filename, source);
+    #[cfg(feature = "prof")]
+    drop(_s_as);
     // ソースファイルのディレクトリを import 検索パスに追加する
+    #[cfg(feature = "prof")]
+    let _s_cfg = prof::SubTimer::new(prof::Sub::CfgWalk);
     if let Some(dir) = &source_dir {
         interp.add_python_search_dir(dir.clone());
         // ar_config.json の python.search_paths を追加する（source_dir から上位へウォーク）
@@ -426,8 +440,14 @@ fn run_program(
             walk = d.parent();
         }
     }
+    #[cfg(feature = "prof")]
+    drop(_s_cfg);
     // CLIパラメータを `args` dict としてグローバルスコープに登録する
+    #[cfg(feature = "prof")]
+    let _s_cli = prof::SubTimer::new(prof::Sub::CliArgs);
     interp.set_cli_args(cli_args);
+    #[cfg(feature = "prof")]
+    drop(_s_cli);
     #[cfg(feature = "prof")]
     drop(_p_init);
 

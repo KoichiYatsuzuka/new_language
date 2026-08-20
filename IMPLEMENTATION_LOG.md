@@ -5985,3 +5985,320 @@ typed ABI の `transmute` は **3 箇所 → 1 箇所**。`native.rs` は 669 �
 | 「14 件とも改名の取り残しだろう」 | **4 件だけ**。残り 10 件は**ゲートの語彙の問題**（マーカー語・whitelist の使い忘れ）で、実害は無かった |
 | 「ゲートを作れば陳腐化は止まる」（#51 の暗黙の前提） | **止まらなかった**。#51 の**直後 4 タスク**で 0 → 14。**改名・削除をしたら走らせる**という運用が要る（#57 で「検証は 5 点セット」へ明記） |
 | 「マーカー語を足すのは無害」 | **無害ではない**。マーカーは**行単位**なので、同じ行の他の識別子も検査から外れる。⇒ 足すときは行の内容ごと確認する |
+
+---
+
+## #58〜#68 保守性レーン第 2 弾の起票 — 全 src 機械診断（2026-08-21）
+
+#51〜#57 で保守性レーン第 1 弾が完了した後、**あらためて `src/` 全体を機械計測**して
+起票した 11 件。観点は「1 ファイル 1000 行以上／1 関数 300 行以上／多数の関数から参照される型／
+深いネスト／ロジックフローの煩雑さ」。**この時点では 1 行も変更していない**（起票のみ）。
+
+### 計測方法（推測ではなく実測・#50 と同じ方針）
+
+| 観点 | 手法 |
+|---|---|
+| ファイル行数 | `wc -l` を `src/**/*.rs` 全件 |
+| 関数長 | ブレース平衡でスパン抽出（行コメント・文字列リテラルを除去してから計数） |
+| ネスト深さ | 関数先頭のインデントを基準にした相対深さ（4 スペース = 1 段） |
+| 型の参照範囲 | `impl` ブロック内の `fn` 数・フィールド数・`impl` が散っているファイル数 |
+| 重複 | 14 行窓の正規化ハッシュ一致（doc コメント・空行を除去） |
+
+⚠ **「大きい」だけでは起票しない**。`exec_op` のように「大きいが平坦で、しかも大きいことに
+理由がある」ものを弾くため、**大きい関数は必ずアームごとの内訳まで採った**（下記）。
+
+### ⚠⚠ 副産物 — 実バグ 1 件（→ #68）
+
+診断中に **`enum` を関数本体で宣言すると `VmForceError` になる**ことを発見した。
+
+```
+fn outer()->int:
+    enum Color:
+        RED
+        GREEN
+    let c = Color.RED
+    return 1
+print(outer())
+```
+
+| 実装 | 結果 |
+|---|---|
+| `target/release/arrow.exe`（HEAD・a7597a6） | `VmForceError: cannot compile function 'outer' to bytecode` |
+| `python -m impl_python`（参照実装） | `1` |
+
+真因は `vm/compiler/stmt.rs` の catch-all `_ => bail("stmt", …)` — `compile_stmt` に
+`Stmt::EnumDef` のアームが無い。**`Stmt::ClassDef` / `TraitDef` / `ProtocolDef` / `GenDef` /
+`NewTypeDef` も同様に無い**が、差分が確認できたのは `EnumDef` だけだった:
+
+| 形 | Rust HEAD | impl_python | 判定 |
+|---|---|---|---|
+| `enum` in fn | `VmForceError` | `1` | **差分＝実バグ** |
+| `class` in fn | `VmForceError` | `AttributeError: 'P' has no field 'x'` | 両方失敗・別要因 |
+| `new_type` in fn | `ParseError` | `ParseError` | 文法として未サポート |
+
+⚠⚠ **これは「VM に載らない正しいプログラムを 0 にした」（#34〜#42）の 3 度目の綻び**。
+1 度目＝定義文脈の式（#41）／2 度目＝import モジュール本体（#42）と同じ形で、
+**`force_gate` 0 件・151 例題が緑なのは、例題にこの形が 1 本も無いから**。
+⇒ #56 の「なぜ 3 系列も見逃されたか＝例題が 1 本も無かった」と**同じ理由で同じことが起きた**。
+
+### 起票した 11 件
+
+**A. ロジックフローが実際に絡んでいる（最優先）**
+
+| # | 対象 | 実測 |
+|---|---|---|
+| 58 | `exec` の `Stmt::Import` アーム | 関数 394 行のうち **この 1 アームで 210 行**・最大ネスト 11。他 30 アームは全部 5〜21 行で `self.exec_*()` へ委譲している |
+| 59 | `collect_declared_names` ⇔ `collect_program_globals` | 14 行の重複が機械検出。**しかも既にドリフト済み**（下記） |
+| 60 | `parse_struct_bodies` | 307 行・**最大ネスト 12（src 最悪）**。`decls.rs:scan_scope` も 405 行・深さ 8 で同型 |
+| 61 | `run_program` の `ar_config.json` 探索 | パイプライン関数の中に **深さ 9** の探索ループが直書き |
+
+**B. サイズ（大きいが性質が違う）**
+
+| # | 対象 | 実測 |
+|---|---|---|
+| 62 | `compile_stmt` | **1 関数で 800 行＝ファイル 817 行のほぼ全部**。33 アームだが偏りが大きい（`For` 97／`AttrCompoundAssign` 76／`CompoundAssign` 75／`Let` 55／`AttrAssign` 48） |
+| 63 | `eval_method_call_full` | 530 行・深さ 10。**型ごとの切り出しが途中で止まっている**（下記） |
+| 64 | `gen_expr_inner` | 558 行・深さ 9。`Expr::Call` アームが 146 行ある一方、同ファイルに `fn gen_call`（156 行）が別に居る＝**呼び出し生成が 2 箇所** |
+| 65 | `eval_str_method` | 581 行だが **48 個の `"method" =>` が並ぶ平坦な組み込みメソッド表**（平均 12 行）。優先度低 |
+
+**C. 神クラス**
+
+| 型 | メソッド | フィールド | `impl` の散在 |
+|---|---|---|---|
+| `Interpreter` | **215** | **31** | **33 ファイル** |
+| `Parser` | 95 | 13 | 14 |
+| `Compiler` | 65 | **36** | 7 |
+| `TypeChecker` | 63 | 5 | 11 |
+| `GenCtx` | 39 | **39** | 4 |
+
+| # | 対象 | 実測 |
+|---|---|---|
+| 66 | `Compiler` の 36 フィールド | **うち 17 は `Chunk` の複製**で、`into_chunk` が 1 対 1 で move するだけの 17 行になっている |
+| 67 | `Interpreter` の 31 フィールド | 責務は 7 クラスタに分かれる（スコープ/VM キャッシュ/イベントループ/モジュールロード/クラス情報/デバッガ/コールスタック） |
+
+### #59 の詳細 — walker は既にずれている
+
+| walker | `EnumDef` / `NewTypeDef` |
+|---|---|
+| `resolver.rs:collect_program_globals` | **有り**（#27-c で追加。無かったため VM が bail したとコメントに明記されている） |
+| `exec/mod.rs:collect_declared_names` | **無し** |
+
+`collect_declared_names` の消費者は **3 系統**（`exec/blocks.rs:capture_env` のクロージャキャプチャ、
+`vm/compiler/decls.rs`、`vm/compiler/calls.rs`）。同じ文法を歩く walker は現在 **8 本**あり
+（`collect_declared_names` / `collect_referenced_names` / `collect_shadowing_binders` /
+`collect_program_globals` / `collect_bound_names` / `collect_base_decls` /
+`scan_shadow_stmts` / `collect_nested_decls`）、`Stmt` に variant を足しても何も強制しない。
+⇒ プランの教訓「**同じ木を歩く walker が 2 つあるとずれる**」（#27-c で 2 回踏んだ）が
+**現状のコードで既に成立している**。
+
+### #63 の詳細 — 委譲したものとしていないものが混在
+
+| レシーバ | 状態 |
+|---|---|
+| `Value::Str` | ✅ `eval_str_method`（別ファイル 601 行）へ 1 行委譲 |
+| `Value::Instance` / `FileObject` / `PyObject` | ✅ 委譲（5 行以下） |
+| `Value::Set` | ❌ **126 行インライン** |
+| `Value::AsyncManager` | ❌ 76 行インライン |
+| `Value::Class` | ❌ 71 行インライン |
+| `Value::FrozenList` | ❌ 65 行インライン |
+
+`eval_set_method` / `eval_list_method` / `eval_dict_method` は **1 つも存在しない**（grep 済み）。
+`classes/` は既に `freeze` / `instantiate` / `lookup` / `object_methods` / `string_methods` に
+分かれているので、**受け皿の形は決まっている**。
+
+### ⚠ 対象外と判断したもの（誤って着手しないための記録）
+
+| 箇所 | 行数 | 対象外の理由 |
+|---|---|---|
+| `vm/run.rs:exec_op` | **836** | **86 アームの平坦なディスパッチ表で、最大アームは `Op::Call` の 42 行**（実測）。`#[inline(always)]` かつ「重い本体はアームに書かない」制約が #10-b で実測済み。`breakpoint_op` 等は既に `#[inline(never)]` で外出しされていて**設計どおり守られている**。⇒ **行数だけを見て割ると #10-b を再演する** |
+| `ast.rs` | 1124 | `Expr` 30 / `Stmt` 40 variant の型定義。ロジックがほぼ無い |
+| `Value`(352 fn / 64 file)・`Stmt`(200/56)・`Expr`(177/57) | — | 言語処理系の中核データ型。参照が広いのは正常で、狭めると逆に悪化する |
+| `parser/exprs.rs` | 940 | 優先順位チェーンで 1 段 1 関数。最大は `parse_primary` の 157 行 |
+
+### 参考 — 現状の clippy 内訳（`cargo clippy --all-targets` 65 件）
+
+上位は `irrefutable let...else` 12／`stripping a prefix manually` 10／`empty line after doc comment` 7／
+`very complex type` 5／`doc list item without indentation` 5。
+**`#[allow(clippy::too_many_lines)]` は src 全体で 1 箇所だけ**（`string_methods.rs:16`）で、
+そこは `///` → 属性 → `///` と **doc コメントに属性が挟まった形**になっている（#51 が潰した orphan doc と同型）。
+`#[allow(dead_code)]` は 12 箇所 — #51 の教訓「**属性が警告を食っていないか疑う**」の対象。
+
+### 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「`exec_op` 836 行は最大の分割対象だろう」 | **外れ**。アーム内訳を採ると最大 42 行の平坦な表で、分割は #10-b の再演になる |
+| 「`exec` 394 行は全体的に肥大しているのだろう」 | **外れ**。異常なのは `Stmt::Import` の 210 行 **1 アームだけ**で、残り 30 アームは 5〜21 行 |
+| 「重複検出はノイズだらけだろう」 | **半分外れ**。14 行窓で 23 組しか出ず、うち 1 組（#59）は**実際にドリフト済み**だった |
+| 「診断だけなのでバグは出ないだろう」 | **外れ**。`enum` in fn で実バグ 1 件（→ #68）。#55 に続き **2 回連続で「調査だけのタスク」が実バグを出した** |
+
+---
+
+## #69 `interp_init` の削減（**未着手**・調査済み・速度／#50 の①）
+
+> ⚠ **61（`ar_config.json` 探索の切り出し）と同じ場所を触る。** 61 は保守性、69 は速度。
+> **切り出してから速度を入れる**（順序を逆にすると、切り出しの「挙動不変」検査に速度変更が混ざる）。
+
+### 1. この段の役割 — `interp_init` は何をしているか
+
+`run_program` が「インタープリタを実行可能な状態にする」段。中身は 6 つの独立した仕事:
+
+| # | 仕事 | 目的 |
+|---|---|---|
+| ① | `Interpreter::new()` | 組み込みグローバル（`int`/`str`/`len` 等 24 件）を `scopes[0]` へ登録し、`EventLoop` シングルトンと外部イベントキューを生成する |
+| ② | `set_toplevel_globals` | 最上位 Chunk（#10-b/#10-c）が「この名前は `scopes[0]`」と断定するための名前集合を注入（AST を 1 walk） |
+| ③ | `set_annotations` | 型解決層の注釈（#16）を `Rc` で注入。VM コンパイラが node-id で引く |
+| ④ | `add_source_text` | エラー報告のスタックトレース表示用にソース文字列を登録 |
+| ⑤ | **`ar_config.json` の祖先ウォーク** | `import[py]` の検索パスを組み立てる。`source_dir` から**親へ遡って** `ar_config.json` を探し、最初に見つけた所の `python.search_paths` を（相対なら絶対化して）`python_search_dirs` へ push |
+| ⑥ | `set_cli_args` | `--key value` を `args` dict としてグローバルへ登録 |
+
+### 2. 動作 — ⑤ が具体的に何をするか
+
+```
+walk = source_dir
+loop:
+    cfg = walk.join("ar_config.json")
+    if cfg.exists():                     ← ファイルシステムの metadata 問い合わせ
+        read_to_string(cfg)              ← open + read + close
+        serde_json::from_str(text)       ← JSON パース
+        push 検索パス; break
+    walk = walk.parent()                 ← 無ければ**ドライブ root まで**遡る（打ち切り無し）
+```
+
+⇒ **見つかるまでの祖先の数だけ `exists()` が走り、見つからない場合は root まで全部走る。**
+
+### 3. 具体的な遅延の要因（**実測**・`--features prof` の `SUB` 行）
+
+同一バイナリ・warm（コールドリードは捨てた）:
+
+| 内訳 | repo 内（3 階層上で発見）× 4 | repo 外（root まで走って不発）× 3 |
+|---|---|---|
+| **`ar_config_walk`** | **0.176〜0.541 ms（50〜75%）** | **0.234〜0.347 ms（55〜62%）** |
+| `interp_new` | 0.137〜0.186 ms（21〜43%） | 0.172〜0.209 ms（35〜42%） |
+| `annot+source` | 0.016〜0.022 ms（3〜5%） | 0.007〜0.009 ms（<2%） |
+| `toplevel_globals` / `cli_args` | 合計 0.006〜0.013 ms（<2%） | <0.1% |
+| **`interp_init` 合計** | 0.351〜0.723 ms | 0.417〜0.555 ms |
+
+**要因1 — ⑤ が syscall の連打になっている。** 支配項は `read_to_string` でも JSON パースでもなく
+**`exists()` の回数**（config が見つからない repo 外でも同じだけ掛かっている）。
+1 回あたり Windows では `GetFileAttributesW` ＋ フィルタドライバ（Defender 等）を通る。
+⇒ **ファイルが深い所にあるほど・config が無いほど高い**（打ち切りが無いため）。
+
+**要因2 — ⑤ は `import[py]` が無いプログラムでも必ず走る。** `python_search_dirs` の唯一の
+消費者は Python モジュールの解決なので、**大多数のスクリプトではこの結果を誰も読まない**。
+
+**要因3 — ① が仕事量に対して高い（0.14〜0.21 ms）。** 中身は挿入 24 件と空コレクションだけで、
+`add_python_search_dir` は `Vec::push`、`global_ext_queue()` は `OnceLock` の初期化、
+`EventLoopData::new()` は空の `VecDeque` — **どれもこの時間を説明できない**。
+⇒ **仮説: プロセス最初のまとまったヒープ確保が CRT ヒープ／ページのコミットを引き起こす
+first-touch コスト**（`Interpreter::new()` が悪いのではなく、**そこが最初だっただけ**）。
+
+### 4. ⚠ 着手時にまずやること（順序を守る）
+
+1. **要因3 の仮説を先に潰す。** `Interpreter::new()` の直前に同規模のダミー確保を置き、
+   `interp_new` が縮んで **`in_main` の合計が変わらなければ first-touch**。
+   ⇒ そうなら **①を最適化しても総時間は減らない**（費用が後段へ移るだけ）。**着手範囲から外す。**
+2. その上で ⑤ に手を入れる。候補は 4 つ:
+   - (a) **遅延化** — `import[py]` が現れたときに初めてウォークする（**要因2 を直接消す・本命**）
+   - (b) 打ち切り — 探索段数の上限、またはリポジトリ境界（`.git` 等）で止める
+   - (c) `exists()` を廃し `read_to_string` の失敗で判定（祖先 1 段あたり syscall 1 本に）
+   - (d) 不発の否定キャッシュ（1 プロセスで複数モジュールを読むとき効く）
+
+### 5. ⚠ 期待値を先に釘付けにしておく（過大評価の防止）
+
+`interp_init` は `in_main` の 20〜50% だが、**`in_main` 自体が process wall の半分以下**
+（#50: 非 bench 例題の中央値で wall 3.40ms ／ `in_main` 1.57ms）。
+⇒ **完全に消しても端点への効果は 0.3〜0.5 ms/実行**。#50 の「exec 以外が 86%」のうち
+**Arrow が触れるのはここと `parse`/`type_check` だけ**で、残り（プロセス生成・イメージロード・終了
+≈1.5ms）は OS 側である。**「86% が取れる」ではない。**
+
+### 6. 検証
+
+- 効果は [prof_dist.ps1](prof_dist.ps1) の `-Mode phases` の `interp_init` と **`SUB` 行**で見る。
+  ⚠ **process wall では見えない**（spawn 床のゆらぎ ±2ms に埋もれる）。
+- 負の対照: **config が無い深い階層**（repo 外）でも改善すること。ここが一番損をしている形。
+- 挙動不変: `import[py]` を使う例題（`examples/interop/import_py_*.ar`）が通ること。
+  ⚠ (a) を採るなら **`ar_config.json` の `python.search_paths` に依存する例題**が要る。
+  無ければ**先に足す**（「検査網は例題が踏む形しか見ない」）。
+
+---
+
+## #70 最上位ループが型特化・融合命令に載らない（**未着手**・調査済み・速度）
+
+> ⚠ **#59（walker 8 本の統合）とは無関係**。番号が近いだけ。
+
+### 1. 役割 — 型特化・融合命令とは何か
+
+`IntBinLL` / `IntBinLC` / `FloatBinLL` / `FloatBinLC` / `BinLocalLocal` / `BinLocalConst` は、
+二項演算の **①オペランドのスタック積み ②タグ検査 ③op ディスパッチ ④`Value` の clone** を
+**1 命令に畳む**超命令（#2 ＋ #2b の型特化）。`i < n` や `i += 1` のようなループ制御が主な客で、
+VM の算術が exec の 22.3%（#50）を占める中の中核。
+
+### 2. 動作 — 融合の入口条件
+
+[src/vm/compiler/emit.rs](src/vm/compiler/emit.rs) `try_emit_bin_fused`:
+
+```rust
+let Some(a) = self.as_local(left) else { return false; };   // ← 左辺が slot でなければ即諦める
+let kind = self.specialized_bin_kind(op, node_id, left, right);
+self.emit_bin_fused_slot(a, kind, right, op)                // 右辺: slot → *BinLL / 定数 → *BinLC
+```
+
+つまり **融合の前提は「左辺がフレーム内 slot であること」**。型注釈が int/float 確定なら型特化 op、
+決まらなければ `BinLocal*`、どちらでもなければ融合せず通常経路（`LoadX…; Bin`）。
+
+### 3. 具体的な遅延の要因
+
+**最上位（関数の外）で宣言された変数は slot ではなくグローバル**なので `as_local` が `None` を返し、
+**融合が一切効かない**。同じ `while i < n:` が置き場所で別のコードになる:
+
+| 置き場所 | 生成される命令 |
+|---|---|
+| `fn` の中 | `IntBinLL(i, n, Lt)` … **1 命令** |
+| 最上位 | `LoadGlobal(i); LoadGlobal(n); IntBinSS(Lt)` … **3 命令**（しかも `LoadGlobal` は IC ヒットでもセル読み＋`Value` clone） |
+
+**実測**（同一プログラム内 A/B・`N = 3,000,000`・best of 3）:
+
+| | 空ループ 1 反復 | 呼び出し 1 回の追加コスト |
+|---|---|---|
+| `fn` の中 | **30.8 ns** | 279.9 ns |
+| 最上位 | **79.5 ns（2.58x）** | 280.7 ns |
+
+⇒ **⚠⚠ 呼び出しコストは置き場所に依らない（280 ns で一致）。**
+当初の見立て「最上位は**呼び出し**が高い」は**実測で否定された**。最上位の遅さは
+**ループ制御＝変数アクセスが融合非適格**であることが原因。
+
+同プログラムの op サンプリング（4 ループ合計・`AR_PROF=ops`）:
+`LoadGlobal` 282.8ms ＋ `StoreGlobal` 98.9ms = **381.7 ms** ／
+`LoadLocal` 16.6ms ＋ `StoreLocal` 39.4ms = **56.0 ms**
+（fn 側は読みが超命令に畳まれているので `LoadLocal` 自体がほとんど出てこない）。
+
+### 4. 手法の候補
+
+- (a) **帰納変数の slot 昇格** — 最上位の `while`/`for` 文 Chunk 内でローカル化し、文の終わりで
+  グローバルへ書き戻す。⚠ 意味論の確認が要る: 途中で例外／`break` が飛んだときの可視性、
+  クロージャの捕捉、`static mut`、**デバッガからの観測**（`local_names` / 停止時の名前引き）。
+- (b) **グローバル版の融合 op**（`IntBinGL` 等）を足す。
+  ⚠ **#27 の教訓: op を足す規模の摂動は 1 命令も実行しなくてもベンチを 0.88〜0.94x 動かす。**
+  「変更と同規模のプローブ」との 3 本比較が必須。
+- (c) 何もしない（「ホットループは fn の中に書け」と言い続ける）。
+  ⚠ #47 の「最上位は fn 内より 3.6 倍遅い」を放置することになる。
+
+### 5. ⚠ 着手前に例題を足すこと
+
+**corpus 全体ではグローバル/名前引きは exec の 3.9% しかない**（#50）。理由は
+**例題側の規約**で、bench 群は先頭に「ホットループは必ず `fn` の中に置く」と書いてある。
+⇒ **素直に最上位へ書くユーザーのコードは、今の検査網に一切映らない。**
+これは「検査網は例題が踏む形しか見ない」（#27/#34/#36/#33/#41 で 5 回踏んだ）の再演なので、
+**着手するなら最上位ホットループの例題を先に新設する**。
+
+### 6. ⚠ 参考 — 呼び出し側は投影に到達済み（ここを狙う前に読む）
+
+同日に `bottleneck_bench.ar` の `fn call (no args)` を測ると **0.123〜0.135 µs**
+＝ 実装ログ #12 の記録 **0.138 µs** と一致。§7.2 の投影「フラットなら ~0.12µs」は**達成済み**。
+1 引数の往復が 280 ns なので、呼び出し系に残る伸びしろは **引数束縛**側にある（§7.2 も別項目）。
+
+⚠⚠ **この確認の途中で「0.405 µs ＝ 3x の退行」という誤報を 1 度出した。**
+原因は **`cargo build` 直後の初回実行**を測ったこと（コールドリード）。#50 で自分が
+`prof_dist.ps1` に「1 回目は捨てる」と書いた**その罠を、素のベンチで踏んだ**。
+⇒ **`bench.ps1` 系も初回実行を捨てる**（`-Reps` の 1 本目を採用しない）。
