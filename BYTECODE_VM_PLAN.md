@@ -23,66 +23,46 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 ---
 
-## 🚩 次スレッドへの引き継ぎ（2026-08-19・**ここだけ読めば再開できる**）
+## 🚩 次スレッドへの引き継ぎ（2026-08-20・**ここだけ読めば再開できる**）
 
 ### 現在地
 🎉 **本系列の主目的は完了した**。Phase R（AST 解決層）・Phase V（バイトコード VM）に加え、
 **解釈実行はバイトコード VM 一本**になった（#33 でツリーウォークの制御フロー・TLS・
 センチネル・`--vm` フラグを削除。**src 実質 -762 行**）。ツリーウォークが実行するのは
-**定義文だけ**（設計どおり・#10-d）。`force_gate` **0 件・142 例題完走**。
+**定義文だけ**（設計どおり・#10-d／#55 で `eval()` もほぼ 0 と実測）。
 
-**#30 / #45 でクロージャの性能リスクは解消した**（定義サイトごとに 1 回だけコンパイルし、
-本体 AST も共有＝**生成費用が本体サイズに依存しなくなった**）。#44 で全ゲートが緑に戻った。
-**#24 も #46 も実測して却下した**（#24=到達不能コード除去は原理的に速度へ効かない／
-#46=ループ反転は**命令数 -20% でも 1.003x**）。
-⇒ **速度目的の残タスクは無い**。残るのは外部接続系の別レーン（#19/#17-a/#17-b・優先度低）と
-ブロック中の 2 件（#14 → #11 R2-c・前提が**未計画**）だけ。
-**#47 で master との端点 A/B を実行モード別に実測した**（[ab_bench_modes.ps1](ab_bench_modes.ps1)・新設）:
-解釈実行 **3.97x** ／ native の境界・コールバック **1.60x** ／ 純ネイティブ **1.00x**（＝負の対照）／
-C DLL は見かけ 2.18x でも **FFI 自体は 1.15〜1.23x**（速いのは周りの解釈実行）。
-⚠ **最上位は fn 内より 3.6 倍遅い**（baseline 1.62x ↔ 5.90x）＝ **VM に載っている ≠ 同じ速さ**。
-⚠⚠ **この計測で byte-code 側の実バグが 1 件出た（#47 で検出 → #48 で修正済み）** —
-`import[cpp-lib]` のプリミティブ out 引数（`double*`）の書き戻しが**黙って起きず 0.0 を返していた**。
-真因は「VM は評価済みの値で呼ぶ ⇒ `dispatch_native_evaled` に落ちる ⇒ **この経路は設計として
-書き戻しをしない**（引数の AST 式が無いと書き戻し先が決まらないため）」＝
-**#33 で式を持つ経路が通常実行から消えたのが原因**。
-#48 は「**引数式が有るコンパイル時に書き戻し先を決めて副表（node_id キー）へ置く**」で解いた。
-⚠ 一度目の実装は判定を `Op::Call` のアームに直接書いて **0.91x の退行**を出した（#10-b の再演）。
-⚠ **既存ゲートは exit code しか見ないので全部緑のまま素通りした**（**FFI の値を検査する網が無い**）。
-⇒ 新設した [cpp_out_param_writeback.ar](examples/interop/cpp_out_param_writeback.ar) は
-**期待値と違えば `raise` する**（負の対照＝修正前バイナリで exit=1 を確認済み）。
-詳細は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) #47 / #48。
+**速度レーンも保守性レーンも打ち止め**。直近の到達点は 1 行ずつ（詳細は
+[IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号）:
 
-⚠⚠ **#50 で「なぜ体感が伸びないか」を実測で確定した**（[prof_dist.ps1](prof_dist.ps1)・[src/prof.rs](src/prof.rs) 新設）。
-**exec は 3.97x でも、例題 1 本の中央値では exec が全体の 14%（0.46ms / 3.40ms）しかない**
-⇒ **端点の中央値は 1.59x**（exec を無限に速くしても同じ）。残りはプロセス費用 1.5ms・
-`interp_init` 0.32・`type_check` 0.18・`parse` 0.17 …＝**master と同じまま残っている段**。
-⇒ **次に速度をやるなら exec の中ではなく「exec 以外」を測ってから決める**。
-exec の中の分布（純 Arrow 72 例題）は **呼び出し系 37〜38%**（`Call` 19.9 ／ メソッド 16.3 ／ 組み込み 1.2）・
-算術 22.3 ・ローカル 13.2 ・コレクション 10.5 ・属性 6.6 ・**分岐はわずか 4.1%**
-＝ #46 の「安い命令を狙うな」を実測で裏付けた。
+| # | 到達点（**事実と手法のみ**） |
+|---|---|
+| 47 | master との**端点 A/B を実行モード別に実測**（[ab_bench_modes.ps1](ab_bench_modes.ps1) 新設）。解釈 **3.97x** ／ native の境界・コールバック **1.60x** ／ 純ネイティブ **1.00x**（＝負の対照）／ C DLL は見かけ 2.18x でも **FFI 自体は 1.15〜1.23x** |
+| 48 | #47 で出た実バグを修正 — native の `mut` ポインタ書き戻しを**コンパイル時に決めて副表（node_id キー）へ**。副産物で cdll 呼び出しが **1.13〜1.16x** |
+| 49 | [debug_session.ps1](debug_session.ps1) の stdin BOM 混入を解消（**golden 無変更で 5/5 identical**） |
+| 50 | **段別＋op 別の実行時間分布**を実測（[prof_dist.ps1](prof_dist.ps1)・`--features prof` 新設） |
+| 51〜56 | 保守性レーン全 6 件完了（陳腐化コメント一掃＋[stale_doc_refs.ps1](stale_doc_refs.ps1) 新設／`CompileMode` 導入／`compiler.rs` を 10 モジュールへ分割／typed ABI 呼び出しの 1 本化／`eval()` の生死判定／**`parse_ar` の復活**） |
 
-⚠⚠ **[debug_session.ps1](debug_session.ps1) が HEAD で赤かった（#48 の検証で発見 → #49 で解消）。**
-原因は**スクリプト側**: .NET Framework の `Process.Start` は `StandardInput` の `StreamWriter` を
-`[Console]::InputEncoding`（この環境は preamble 付き utf-8）で作り **`AutoFlush=true` を立てた時点で
-preamble を書く** ⇒ **`Start()` が返った時点で子の stdin に BOM が入っている**。
-最初の 1 行が `?<BOM>` に化けて**コマンドが 1 つずれ**、5 件とも赤くなっていた。
-⚠ 「`.BaseStream` へ BOM 無しで書く」既存の手当ては**効かない**（BOM は自分が書く前に入っている）。
-#49 は**起動直前だけ preamble 無しのエンコーディングに差し替える**ことで解消し、
-**golden を 1 行も変えずに 5/5 identical**（＝ #44 の golden は最初から正しかった）。
-⚠⚠ **これで 2 度目**（`6bf039c`〜`7aea0e5` に続く）。**しかも 2 回目は src も golden も無関係＝
-環境側（コンソールのコードページ）で発火**した。**別のマシンでは緑のまま通る**。
-⇒ 「ゲートは自分で走らせて緑を確かめる」に **「緑だった環境と同じとは限らない」**が加わる。
-⚠ 同じ罠を [repl_session.ps1](repl_session.ps1) は `cmd` のネイティブリダイレクトで避けており、
-**症状までコメントに書いてあった**のに隣のスクリプトへ渡っていなかった（#49 で相互参照を追加）。
+⚠⚠ **#50 で狙い所が変わった。** exec は 3.97x でも、例題 1 本の中央値では
+**exec は全体の 14%**（0.46ms / 3.40ms）しかなく、**exec を無限に速くしても端点は 1.59x**。
+残りはプロセス費用 1.5ms・`interp_init` 0.32・`type_check` 0.18・`parse` 0.17
+＝ **master と同じまま残っている段**。⇒ **次に速度をやるなら「exec 以外」を測ってから決める**。
 
-> **✅ この系列は完了している（2026-08-19 時点）**
-> **解釈実行の統一（VM 一本化）も高速化も、やり切って打ち止め**まで確認した。
-> 全ゲート緑: `cargo test` **740** ／ `cargo build` **警告 0** ／ `clippy` **52 件（増分 0）** ／
-> [scan_examples.ps1](scan_examples.ps1) **FAIL 0** ／ [compare_python_impl.ps1](compare_python_impl.ps1) **47/47** ／
-> [force_gate.ps1](force_gate.ps1) **0 件・142 例題** ／ [repl_session.ps1](repl_session.ps1) **identical** ／
+⚠ **同じコードでも書く場所で速さが違う**（#47）: 最上位は fn 内より改善が薄い
+（baseline 1.62x ↔ 5.90x）＝ **VM に載っている ≠ 同じ速さ**。
+
+> **ゲートの現況（2026-08-20 に自分で走らせて確認）— 1 件を除いて緑**
+> `cargo test` **742** ／ `cargo build` **警告 0** ／ `cargo clippy` **52 件（増分 0）** ／
+> [scan_examples.ps1](scan_examples.ps1) **FAIL 0** ／ [force_gate.ps1](force_gate.ps1) **0 件・151 例題** ／
+> [compare_python_impl.ps1](compare_python_impl.ps1) **50/50** ／ [repl_session.ps1](repl_session.ps1) **identical** ／
 > [debug_session.ps1](debug_session.ps1) **5 identical** ／ `tw_stats` は `in_fn` 0・`tw_control_flow` 0・bail 0。
-> **新しく着手するなら別レーンか、下の「次に速度をやるなら」を読んでから測ること。**
+> ⚠ **`cargo clippy` と `cargo clippy --all-targets` は別の数**（52 ↔ 65。差は `benches/`）。
+> **基準値を書くときは必ずコマンドごと書く**（§10 の指示と 52 件が食い違っていた）。
+
+⚠⚠ **[stale_doc_refs.ps1](stale_doc_refs.ps1) は現在 14 件で赤い（→ #57・未着手）。**
+#51 が 61→0 にしたゲートが、**#52（`module_mode`/`debug_mode` → `CompileMode` へ改名）・
+#53（ファイル分割）・#56（`is_builtin_callee` 削除）で再び入った**。
+内訳は ①改名の取り残し ②履歴として正しいがマーカー語が無い ③誤検知（`_inner` は接尾辞）の 3 種。
+⇒ **#51 の教訓「ゲートを作っただけでは守られない」**。**改名・削除をしたら必ず走らせること。**
 
 **⚠⚠ #33 の前提は 2 度崩れた**（この系列で最も再利用価値のある教訓）。
 1 度目: 「TLS は `--vm=off` のためだけに生きている」→ **`Default` が `Off`** なので REPL と
@@ -92,6 +72,11 @@ preamble を書く** ⇒ **`Start()` が返った時点で子の stdin に BOM �
 **import モジュール本体**（→ #42）。
 ⇒ **`force_gate` 0 件・`tw_control_flow` 0 は毎回「例題がその形を書いているか」に依存していた。**
 ⇒ 潰すたびに**その形の例題を新設**した（これが 3 度目を防いだ）。
+⚠ **3 度目は #56 で判明した** — `is_builtin_callee` の bail が #33 以来 `parse_ar` を
+**完全に殺していた**（`VmForceError` で停止）。`force_gate` も例題も気づかず、
+**#55 の計測で偶然出た**（`parse_ar` を使う例題が 1 本も無かったため）。
+⇒ **「bail＝ツリーウォークへ落とす」という前提が #33 で消えたのに、表と doc がそのまま残っていた**
+＝ 前提が変わったとき、**それに依存していた側を機械的に洗い出す手段が無い**のが根本。
 
 ### 設計上の教訓（**再利用する知識**。各タスクの経緯は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md)）
 
@@ -154,10 +139,12 @@ preamble を書く** ⇒ **`Start()` が返った時点で子の stdin に BOM �
 >    1 呼び出し ≈ 275ns（うち `Call` op 自体が ≈ 213ns。int 加算 ≈ 11〜13ns の **20 倍**）。
 >    `Jump`+`JumpIfFalse` は合わせて **4.1%** しかない（安い命令を狙うな・#46）。
 
-1. ~~保守性レーン~~ — **全 6 件（51/52/53/54/55/56）完了**（2026-08-20）。
-   **#51 / #52 / #53 は完了**。速度目的ではないので A/B は**退行が無いことの確認**に使う。
+1. **#57（今すぐ着手できる唯一のタスク）** — [stale_doc_refs.ps1](stale_doc_refs.ps1) が **14 件で赤い**。
+   保守性レーン自身（#52 改名／#53 分割／#56 削除）が入れた取り残しで、**ゲートを走らせれば出る**。
 2. 別レーン（#19 / #17-a / #17-b）— 外部接続系。いつ着手しても他をブロックしない。
 3. ブロック中（#14 → #11 R2-c）— 前提の「モジュール間ネイティブ直リンク」が未計画。
+   ~~保守性レーン~~ — **全 6 件（51〜56）完了**（2026-08-20）。速度目的ではないので
+   A/B は**退行が無いことの確認**に使った。
 
 > **⚠ 速度目的の残タスクは枯れた**（#12 2.61x・#2b 1.6x・#2a・#1-x・#10-b・#26 で取り切った）。
 > ただし**カバレッジを広げると速度も付いてくる**ことがある（#32 の async 本体は 3.77x）。
@@ -169,13 +156,16 @@ preamble を書く** ⇒ **`Start()` が返った時点で子の stdin に BOM �
 ### 作業の進め方（この系列で有効だった型）
 - **推測せず先に計測する**。見積もりは本系列で何度も外れた（一覧は実装ログ末尾の表）。
   ⚠ **命令数は「当たりを付ける」用で「速度の予測」には使えない**（#46）。
-- **検証は 5 点セット**: `cargo build`（**警告 0**）・`cargo test`（**740 緑**）・
-  [compare_python_impl.ps1](compare_python_impl.ps1)（**47/47**）・[scan_examples.ps1](scan_examples.ps1)（**FAIL 0**）・
-  [force_gate.ps1](force_gate.ps1)（`VmForceError` **0 件**）。⚠ **release バイナリを見る**。
+- **検証は 5 点セット**: `cargo build`（**警告 0**）・`cargo test`（**742 緑**）・
+  [compare_python_impl.ps1](compare_python_impl.ps1)（**50/50**）・[scan_examples.ps1](scan_examples.ps1)（**FAIL 0**）・
+  [force_gate.ps1](force_gate.ps1)（`VmForceError` **0 件・151 例題**）。⚠ **release バイナリを見る**。
   デバッガに触るなら [debug_session.ps1](debug_session.ps1)、REPL なら [repl_session.ps1](repl_session.ps1)、
   codegen なら [dump_native_ir.ps1](dump_native_ir.ps1) の IR byte-identical（最強の検査）。
   ⚠ **VM の適格範囲に触るなら [tw_stats.ps1](tw_stats.ps1) も**（ツリーウォークが定義文だけかを確認）。
-  `cargo clippy` は既存 **52 件**（file:line 単位）。総数でなく**増分 0** を確認すること。
+  ⚠ **識別子を改名・削除したら [stale_doc_refs.ps1](stale_doc_refs.ps1) も**（#52/#53/#56 が
+  走らせずに 14 件入れた → #57）。
+  clippy は **`cargo clippy` で 52 件**・**`cargo clippy --all-targets` で 65 件**（差は `benches/`）。
+  ⚠ **基準値はコマンドごと書く**。総数でなく**増分 0** を確認すること。
 - 大きな変更の前後で **A/B 実測**する（同一ビルドで emit のみを切り替える）。
   ⚠ **op を足す規模の変更は「op を足しただけ」のプローブと 3 本で切り分ける**（#27/#46）。
 - 速度効果が小さくても、コード・ロジックの簡素化が見込めるならメリットとして認識する。
@@ -194,9 +184,9 @@ preamble を書く** ⇒ **`Start()` が返った時点で子の stdin に BOM �
 | [ab_bench.ps1](ab_bench.ps1) | 2 つの `arrow.exe` を**交互実行**して経過時間を比較（`-A head.exe -B new.exe`）。#2b で新設・**#38 で非同期読み化**。異常終了／タイムアウト（`-TimeoutSec` 既定 180）／不在パスは**値を出さず理由を表示**する（黙って速い値を出さない）。⚠ `powershell -File` 経由だと `-Scripts a,b,c` が 1 要素に潰れるので `-Command` で呼ぶ |
 | [ab_bench_modes.ps1](ab_bench_modes.ps1) | **実行モード別**の A/B 計測（#47 で新設）。非コンパイル／コンパイル済み native／C DLL の 3 経路を交互実行し、スクリプトが出す `METRIC <name> <secs>` を解析する（プロセス経過時間ではないので起動・DLL ロード・setup を計測から外せる）。`CHECKSUM` を A/B で突き合わせ、食い違えば値を出さず警告。⚠ native モードは**測る側のバイナリで `--compile` し直す**（.arc の形式がブランチ間で違う） |
 | [repl_session.ps1](repl_session.ps1) | **対話 REPL の回帰検知**（#36 で新設）。`examples/repl/repl_session.{in,out}` の golden 比較。⚠ `compare_vm_modes` は stdin を与えず、`compare_debug_modes` はデバッガ REPL（別物）を見るので、**対話 REPL はこれだけが検査している**。更新は `-Update`（差分は必ず目で見る） |
-| [debug_session.ps1](debug_session.ps1) | **対話デバッガのステッピングの回帰検知**（#1 で新設・#33 で golden 化）。`examples/debugger/<name>.{ar,in,out}` の期待値比較。⚠ 他のどのゲートも stdin を与えないので、**ステッピングはこれだけが検査している**。更新は `-Update`（**#44 以降は書き換える行を必ず表示する**＝黙って上書きできない）。⚠ `6bf039c`〜`7aea0e5` の間は golden が BOM 修正前のままで **5 件とも赤かった**（#44 で録り直し済み） |
+| [debug_session.ps1](debug_session.ps1) | **対話デバッガのステッピングの回帰検知**（#1 で新設・#33 で golden 化）。`examples/debugger/<name>.{ar,in,out}` の期待値比較。⚠ 他のどのゲートも stdin を与えないので、**ステッピングはこれだけが検査している**。更新は `-Update`（**#44 以降は書き換える行を必ず表示する**＝黙って上書きできない）。⚠ **このゲートは 2 度、黙って赤くなった**: ①`6bf039c`〜`7aea0e5`（golden が BOM 修正前のまま・#44 で録り直し）②#44〜#49（**環境側**＝コンソールのコードページで `Process.Start` が stdin に BOM を書いていた。**src も golden も無関係**なので遡っても原因が出ない／**別のマシンでは緑のまま通る**）。#49 で解消 |
 | [compare_python_impl.ps1](compare_python_impl.ps1) | **参照実装（`impl_python`）との stdout 差分検査**（#31 で新設）。「**両実装が同じ間違いをする形**」以外を覆う唯一の網で、`compare_vm_modes` を失った後の代替。既知差分は理由つきで `$knownDiff` に列挙（`-ShowSkipped`）。⚠ `impl_python` は 100 コミット前に同期 |
-| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **コメント内の `` `識別子` `` が src に実在するか**の検査（#51 で新設）。#33 で消した関数を指す記述が 61 箇所あり、うち 2 件は**指示が真逆に矛盾**していた（コンパイラは何も言わない）。⚠ 履歴として正しい言及は落とす — 同じ行に「削除／廃止／撤去／以前／旧／移設／だった／していた」があれば履歴扱い。⇒ **消えたものに言及するときはマーカー語を書く**。外部成果物（`.ps1` 名・METRIC 名）は `$whitelist`。`-All` で除外分も表示 |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **コメント内の `` `識別子` `` が src に実在するか**の検査（#51 で新設）。#33 で消した関数を指す記述が 61 箇所あり、うち 2 件は**指示が真逆に矛盾**していた（コンパイラは何も言わない）。⚠ 履歴として正しい言及は落とす — 同じ行に「削除／廃止／撤去／以前／旧／移設／だった／していた」があれば履歴扱い。⇒ **消えたものに言及するときはマーカー語を書く**。外部成果物（`.ps1` 名・METRIC 名）は `$whitelist`。`-All` で除外分も表示。⚠⚠ **現在 14 件で赤い**（#52/#53/#56 が走らせずに入れた → #57） |
 | [force_gate.ps1](force_gate.ps1) | **VM に載らない構文の回帰検知**（#25。#33 完了後は「既定の挙動が全例題で通るか」の検査）。全例題を実行し `VmForceError` を列挙。⚠ **止めて判定する**用途で件数は `tw_stats.ps1` で見る。GUI 例題は**タイムアウト後に窓を閉じて**完走させる（#29） |
 | [prof_dist.ps1](prof_dist.ps1) | **非コンパイル実行の実行時間分布**（#50 で新設・要 `--features prof`）。`-Mode phases` で段別（startup/lex/parse/type_check/resolve/interp_init/exec/teardown）、`-Mode ops` で **exec 中の op 別滞在時間**（統計サンプリング）。⚠ **1 回目はファイルのコールドリードを踏む**ので既定で 2 パス走らせて 2 パス目だけ採る。⚠ `-Mode ops` はサンプラーが 1 コアをスピンするので**プロセス wall が伸びる**（wall を見るときは `-Mode phases`） |
 | [tw_stats.ps1](tw_stats.ps1) / [tw_stats_files.ps1](tw_stats_files.ps1) | **ツリーウォークが実際に実行している文**を全例題で集計（`AR_TW_STATS`）／その例題別内訳。feature 付きビルドを自動で行う |
@@ -236,6 +226,7 @@ preamble を書く** ⇒ **`Start()` が返った時点で子の stdin に BOM �
 
 | # | タスク | 手法 | 前提（依存） | 状態 |
 |---|---|---|---|---|
+| 57 | **`stale_doc_refs` の再発 14 件を 0 に戻す** | ①改名の取り残しを現名へ ②履歴言及にマーカー語 ③接尾辞パターンは `$whitelist` | — | **未着手・ゲート赤**（#52/#53/#56 が入れた） |
 | 11 R2-c | グローバル記憶域の index 配列化 | ネイティブの index 参照 | **← 消費者の出現（14 と同時に再評価）** | ブロック中（消費者不在） |
 | 14 | §6 モジュール動的リンク | ディスクリプタシンボル＋ABI ハッシュ照合 | **← モジュール間ネイティブ直リンクの導入**（未実装・未計画） | ブロック中 |
 
@@ -255,7 +246,7 @@ preamble を書く** ⇒ **`Start()` が返った時点で子の stdin に BOM �
 
 ```
 27/27-c/27-d/32/29/3 は完了（当時 `force_gate` 0・128 例題・フォールバック撤去済み）
-    ※例題数はその後 142 まで増えた。**現在の値は必ずゲートを走らせて確認すること**
+    ※例題数はその後 **151** まで増えた（2026-08-20）。**現在の値は必ずゲートを走らせて確認すること**
 
 🎉 VM 一本化レーンは全完了（2026-08-18）
     34（break/continue 貫通）／35（block_return・loop_yield 検査）／36（REPL・テストの移行）
@@ -300,8 +291,8 @@ preamble を書く** ⇒ **`Start()` が返った時点で子の stdin に BOM �
         ⚠ **#55 の「通常実行から到達不能」は誤りだった** — デフォルト引数の式はツリーウォークで
         評価されるので AST 引数版 2 経路にも通常実行で到達する。負の対照を例題化
 
-残り: 速度目的は無し。**保守性レーン 51〜56 は全完了**／別レーン（外部接続系）／
-      ブロック中の 14 / 11 R2-c
+残り: 速度目的は無し。**保守性レーン 51〜56 は全完了**だが **57（その副作用でゲートが赤い）が未着手**／
+      別レーン（外部接続系）／ブロック中の 14 / 11 R2-c
 保留: モジュール間ネイティブ直リンク（未計画）→ 14 → 11 R2-c ／ 12b → 2c は循環依存で両方保留
       23（評価済み引数の struct 化）は **54 に吸収**（保留理由が #48 で失効した）
 ```
@@ -310,7 +301,7 @@ preamble を書く** ⇒ **`Start()` が返った時点で子の stdin に BOM �
 
 実行方式の統一・高速化とは**交差しない**（型検査とスタブ側の話題で、実行時ディスパッチに触れない）。
 いつでも着手でき、いつ着手しても他タスクをブロックしない。
-⇒ **実行系は一段落した（2026-08-19）ので、着手可能なタスクはこの 3 件だけ**になった。
+⇒ 実行系は一段落した（2026-08-19）。**今すぐ着手できるのは #57 ＋ この 3 件**（2026-08-20 時点）。
 
 | # | タスク | 手法 | 前提（依存） | 状態 |
 |---|---|---|---|---|
@@ -438,15 +429,19 @@ R1〜R4 の解決ステップ・V-A〜V-F の段階・`src/vm/` の構成はそ�
 ## 10. 検証コマンド / 規約
 
 ```
-cargo test                          # 740 passed を維持（各ステップ/各段ごと）
+cargo test                          # 742 passed を維持（各ステップ/各段ごと）
 cargo build                         # 警告0 を維持
-cargo clippy --all-targets          # exit 0
+cargo clippy                        # 既存 52 件・増分 0（--all-targets だと 65 件。基準値はコマンドごと書く）
 ./scan_examples.ps1                 # 例題スイートの回帰確認（FAIL 0）
-./compare_python_impl.ps1           # 参照実装との stdout 差分（47/47）— off/on 比較の代替
+./compare_python_impl.ps1           # 参照実装との stdout 差分（50/50）— off/on 比較の代替
+./repl_session.ps1                  # 対話 REPL の golden（identical）
+./debug_session.ps1                 # 対話デバッガのステッピングの golden（5 identical）
+./stale_doc_refs.ps1                # コメント内の識別子が src に実在するか（⚠ 現在 14 件で赤い・#57）
+./prof_dist.ps1                     # 実行時間の段別/op 別分布（要 --features prof）
 ./bench.ps1                         # Phase R の各ステップ / Phase V の各段で再測定（フェーズ0基準 = bench_baseline.md）
 cargo run -- --compile examples/interop/test_modules/physics.ar  # Phase R: native 経路の数値一致確認
 cargo run -- <file.ar>              # フォールバックは無い。載らなければ VmForceError で停止（#25/#33）
-./force_gate.ps1                    # 全例題で上記を回す「VM に載らない形が無い」ゲート
+./force_gate.ps1                    # 全例題で上記を回す「VM に載らない形が無い」ゲート（0 件・151 例題）
 ./tw_stats.ps1                      # 未対応箇所の件数・内訳（要 --features tw_stats）
 ./generate-codebase-map.ps1         # src/vm/ 等の新設後に必須
 ```
