@@ -134,7 +134,7 @@ impl Compiler {
         let mut end_jumps = vec![self.emit(Op::Jump(0))]; // 正常終了 → END
         // landing pad: 例外時にここへ来る（スタック = [exc]）。
         let land = self.here();
-        self.code[setup] = Op::SetupTry(land);
+        self.chunk.code[setup] = Op::SetupTry(land);
         for h in handlers {
             match &h.exc_type {
                 // bare `except:` — 無条件マッチ。
@@ -206,7 +206,7 @@ impl Compiler {
         let normal_jump = self.emit(Op::Jump(0)); // END
         // 例外 landing pad: スタック = [exc]。finally はスタック中立なので [exc] は底に残る。
         let land = self.here();
-        self.code[setup] = Op::SetupTry(land);
+        self.chunk.code[setup] = Op::SetupTry(land);
         // 例外経路の finally。⚠ `[exc]` が 1 つ積まれた上で走る（#40）。
         // ここから `break`/`return` で跳ぶと `Pop`/`Reraise` を飛ばす＝**例外は破棄される**
         // （ツリーウォーク・Python と同じ）。

@@ -6302,3 +6302,217 @@ self.emit_bin_fused_slot(a, kind, right, op)                // 右辺: slot → 
 原因は **`cargo build` 直後の初回実行**を測ったこと（コールドリード）。#50 で自分が
 `prof_dist.ps1` に「1 回目は捨てる」と書いた**その罠を、素のベンチで踏んだ**。
 ⇒ **`bench.ps1` 系も初回実行を捨てる**（`-Reps` の 1 本目を採用しない）。
+
+---
+
+## #68 関数本体の `enum` が `VmForceError`（実バグ）を修正（2026-08-21）
+
+#58〜#68 の起票診断で見つけた実バグ（起票の経緯は 1 つ上の項）。**#33 以降、`enum` を
+関数の中で宣言すると `VmForceError` で止まっていた**（参照実装 `impl_python` は通る）。
+
+### 原因は 2 段（片方だけ直すと直らない）
+
+| 段 | 場所 | 症状 |
+|---|---|---|
+| ① | `compile_fn_inner` の decl-prepass | `Stmt::EnumDef` が**明示的な bail リスト**に入っていた（`bail("decl-prepass")`） |
+| ② | `compile_stmt` | `Stmt::EnumDef` のアームが無く catch-all の `bail("stmt")` に落ちる |
+
+⚠ 起票時は②だけを真因と書いたが、**実際に先に発火するのは①**だった（`AR_TW_STATS` で確認）。
+①のリストは「slot を採番する可能性のある未対応の宣言的文」で、**リゾルバの
+`collect_base_decls` が `EnumDef` に `push_base` している**ため、飛ばすと以降の base slot が
+全部 1 つずれる。⇒ **採番を足さずに bail だけ外すと `LoadLocal` が別の変数を読む**。
+
+### 直し方 — 「組み立て」と「記憶域」を分けた
+
+`exec_enum_def` が **クラスの組み立てと `declare_var` を一体で**やっていたので、VM から
+呼んでも `Name` が slot ではなく**呼び出し元のスコープ**へ入ってしまい、載せようが無かった。
+（VM 関数の実行は `push_scope` しない ＝ `scopes.last_mut()` は呼び出し元のスコープ。）
+
+⇒ `build_enum_classes`（組み立てのみ・`declare_var` しない）へ切り出し、記憶域は
+呼び出し元が決める形にした:
+
+| 呼び出し元 | `Name` | `enum_item_Name` |
+|---|---|---|
+| ツリーウォーク `exec_enum_def`（最上位・モジュール本体） | `declare_var` | `declare_var` |
+| VM `Op::EnumDef`（関数本体） | **フレームの slot** | `declare_var` |
+
+`enum_item_Name` を slot にしないのは、**リゾルバが slot を採らない合成名**だから
+（`collect_base_decls` は `name` だけ `push_base` する）。実行時に名前で引かれる経路は
+`value_is_type` を確かめたが**クラス名の文字列比較**でスコープを見ていない。
+
+### 変更点（src +155 / -9）
+
+- `Op::EnumDef(u32)` を追加（`Op` のサイズは **20 byte のまま**＝`op_size_is_pinned` が緑）
+- `Chunk::enum_defs: Vec<ChunkEnumDef>`（`name` / `variants: Rc<[..]>` / `slot`）
+- `run.rs`: `enum_def_op` を **`#[inline(never)]`** で外出し（#10-b の教訓。アームは 3 行）
+- `compile_stmt`: `slot_of(name)?` → 表へ push → `Op::EnumDef` を emit
+  ⇒ **slot を持たない文脈（最上位・モジュール本体）ではこのアームが自分で bail する**ので、
+  入口ごとの場合分けが要らない（最上位は `is_toplevel_compile_target` が従来どおり除外）
+- `peephole::code_target_mut` への登録は**不要**（`MakeFn` と同じくコード索引ではなく表索引）
+
+### ⚠⚠ 副産物 — #59（walker のドリフト）が実害として発火した
+
+本体直下の `enum` が通るようになった直後、**クロージャが自分の `enum` を宣言する形**が
+`capture-slot-conflict` で bail した（`AR_TW_STATS` で確認）。
+
+```
+fn outer()->int:
+    enum E:
+        A = 1
+    fn inner()->int:
+        enum E:           # ← これで outer ごと VmForceError
+            A = 2
+        return E.A.value
+    return inner() * 10 + E.A.value
+```
+
+真因は #59 として起票した**まさにそのドリフト** — `exec/mod.rs:collect_declared_names` に
+`EnumDef` が無いので、`capture_env` が `E` を自由変数と誤認して外側を捕まえ、
+コンパイラが採番した slot とぶつかった。**`entry.rs` の「ぶつかったら諦める」ガードが
+設計どおり機能して**、黙って閉包変数が消えるのではなく計測できる形で落ちていた。
+⇒ `collect_declared_names` に `EnumDef` を追加（**この 1 variant だけ**。
+`NewTypeDef` は関数内でパースエラーなので検証できず、#59 の統合へ回した）。
+
+### 例題（**この形が 1 本も無かったのが 4 度目の綻びの原因**）
+
+- [enum_in_function.ar](examples/typing/enum_in_function.ar) — 9 ケース:
+  本体直下／明示値の自動採番継続／同名グローバルとの分離／複数回呼び出し／
+  値式（`1 + 1`）／等値比較／**クロージャが自分の enum を宣言**／**クロージャが親の enum を読む**／
+  **if・for・while・try の中**
+- [enum_in_function_error.ar](examples/typing/enum_in_function_error.ar) — バリアント値の int 検査。
+  ⚠ **#68 以前はこの行に届く前に関数ごと bail していた**＝「必ず失敗する文は bail せず
+  同じ文言を出す」（#34）も破れていた。今は最上位に同じ enum を書いたときと**同一文言**。
+  `compare_python_impl.ps1` の `$knownDiff` に登録（py は int 検査が無く `x` を通す）。
+
+### 検証（全ゲート緑・**自分で走らせた**）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` | 警告 **0** |
+| `cargo test` | **742 passed**（`op_size_is_pinned` 含む） |
+| `cargo clippy` | **52 件（増分 0）** |
+| [scan_examples.ps1](scan_examples.ps1) | **FAIL 0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件 / 153 例題**（151 → +2 は今回の例題） |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51 identical**（50 → +1）・stale 0 |
+| [repl_session.ps1](repl_session.ps1) | identical |
+| [debug_session.ps1](debug_session.ps1) | **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+| [tw_stats.ps1](tw_stats.ps1) | `in_fn` **0**・`vm_bail_fn` **0**・`vm_ineligible` **0**・`tw_control_flow` **0**。最上位のツリーウォークは**定義文だけ**（`EnumDef` 4 件＝最上位の enum は従来どおり） |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **106/108 byte-identical**。差分は**今回の例題 2 本だけ**（HEAD は bail するので 15 行 / 9 行しか出ない） |
+
+### [compare_bytecode.ps1](compare_bytecode.ps1) を新設した
+
+「挙動不変」を exit code より強く裏付ける **`AR_VM_DUMP=1` の突き合わせ**（#52 で確立）は
+毎回手で回していたので固定した（規約: 同じ操作を繰り返すなら .ps1 化）。
+残りの保守性タスク（#62 / #63 / #66）が同じ検査を要る。
+
+⚠ **負の対照を先に取ってから使った** — 同一 exe 同士で **108/108 identical**。
+これで「差が出ない」のがバグではなく事実だと確かめてから A/B を読んだ。
+
+### ⚠ 詰まった点（次に .ps1 を生成するとき用）
+
+- **ヒアドキュメント経由で Python に渡すとバックスラッシュ 2 個が 1 個に潰れる**。結果、
+  Windows パスの区切りが**エスケープとして解釈**され、`\t` が TAB、`\r` が CR、
+  `\a` が BEL に化けた。**PS は「行 25 の構文エラー」と誤報**する（実際に壊れていたのは
+  行 8 のコメント行）＝ **エラー行番号を信じて探すと見つからない**。
+  ⇒ **生成する .ps1 のパス区切りは全部スラッシュ**にした（PowerShell は受け付ける）。
+  書き出し後に**バックスラッシュ・TAB・CR・BEL が 1 つも無いことを assert** している。
+  ⚠ **この段落自体が 1 度この罠で壊れた**（罠の説明に書いたバックスラッシュが潰れた）。
+- `PSParser.Tokenize` は**通るのに `Parser.ParseFile` で落ちる**（字句と構文は別）。
+  生成した .ps1 の検査は **`ParseFile` でやる**こと。
+- vm-pitfalls §4 の「Python から日本語を print すると cp932 で落ちる」も実際に踏んだ
+  （行を確認するだけのワンライナーが `UnicodeEncodeError`）。**進捗表示は ASCII に落とす**。
+
+### 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「真因は `compile_stmt` の catch-all」 | **半分外れ**。先に発火するのは decl-prepass の明示 bail リストで、**採番を足さないと直せない** |
+| 「`exec_enum_def` をそのまま VM から呼べばよい」 | **外れ**。`declare_var` と一体だったので `Name` が呼び出し元スコープへ入る。**組み立てと記憶域の分離が必須**だった |
+| 「本体直下だけ直せば済む」 | **外れ**。if/for/while/try の中は `collect_nested_decls` も要り、クロージャは #59 のドリフトを踏んだ（**1 バグに 4 箇所**） |
+| 「診断で見つけたバグなので小さい」 | **当たり**（src +155 行）。ただし**触った walker は 3 本**（prepass・nested・declared_names） |
+
+---
+
+## #66 `Compiler` の `Chunk` 複製フィールドを畳む（2026-08-21・完了）
+
+保守性レーン第 2 弾。起票時の見立ては「`Compiler` の 36 フィールドのうち **17 が `Chunk` の複製**で、
+`into_chunk` が 1 対 1 で move するだけの 17 行になっている」（→ #58〜#68 の診断）。
+
+### 1. 実際に何が重複していたか
+
+`Compiler` と `Chunk` に**同じ名前・同じ型のフィールドが 17 本**並んでいた:
+
+```
+code / consts / names / attr_caches / spans / stmt_spans / n_locals / async_blocks /
+global_caches / ffi_call_info / wb_targets / fn_defs / enum_defs / type_arg_lists /
+tuple_decls / kw_calls / n_cells
+```
+
+⇒ **`Chunk` にフィールドを 1 本足すと 4 箇所**を直す必要があった:
+`Chunk` の定義／`Compiler` の定義／`Compiler::base()` の初期化／`into_chunk()` の move。
+#52 が「構造体リテラル 5 箇所 → 1 箇所」に畳んだのと**同じ形の重複が残っていた**。
+
+⚠ **実際に踏んでいる**: この直前の #68（`enum_defs` の追加）が、まさにこの 4 箇所を全部直している。
+
+### 2. 手法 — ⚠ 起票時の「`ChunkBuilder` 部分構造体へ」は**採らなかった**
+
+起票時の手法欄は「`ChunkBuilder` 部分構造体へ」だったが、それでは
+**`into_chunk` の逐語 move は消えず、`ChunkBuilder::build()` の中へ引っ越すだけ**になる
+（Rust は構造体 A → 構造体 B のフィールド移送を無償にはできない）。
+
+⇒ **`Compiler` が `Chunk` そのものを組み立てながら持つ**形にした（`Compiler::chunk: Chunk`）。
+
+| | 前 | 後 |
+|---|---|---|
+| `Compiler` のフィールド | **37**（#68 の `enum_defs` を含む。診断時の 36 はその前の値） | **21** |
+| `into_chunk` の本体 | 21 行の逐語 move | **6 行**（`ChunkMeta` の 4 つ ＋ `..self.chunk`） |
+| `Chunk` にフィールドを足すとき直す箇所 | **4** | **1**（`Chunk` の定義だけ。`Default` が埋める） |
+| `src/vm/compiler/mod.rs` | 439 行 | **395 行**（doc を 20 行増やした上で **-44**） |
+
+`Chunk` に `#[derive(Default)]` を付けた（全フィールドが `Vec`/`HashMap`/`usize` なので
+要素型に `Default` を要求しない）。
+
+⚠ **`ChunkMeta` は畳まなかった**（#52 が「入口ごとに違うのはこの 4 つだけ」を可視化するために
+導入したもので、消すとその情報が失われる）。`local_names` / `n_params` / `captured_slots` /
+`captured_cells` は **コンパイル中には決まらず入口が知っている**値なので、性質としても別物。
+⇒ `Chunk` にフィールドを足すとき `ChunkMeta` に足してよいのはこの性質を持つものだけ、と doc に明記した。
+
+### 3. 作業の内訳（**1 行も意味を変えない機械的置換**）
+
+| 対象 | 件数 |
+|---|---|
+| `self.<field>` → `self.chunk.<field>`（正規表現で一括） | **48 箇所 / 6 ファイル**（emit 19・stmt 10・calls 8・expr 8・control 2・block_expr 1） |
+| `mod.rs` の `finish` / `into_chunk` | 手で 2 箇所 |
+| `entry.rs` の構造体リテラル 5 箇所（`n_locals` / `n_cells` の初期値） | `chunk: Chunk { n_locals: …, ..Chunk::default() }` へ |
+| 不要になった import（`Op` / `Value`） | mod.rs から削除（各サブモジュールは自前で import 済みと確認してから） |
+
+⚠ **`self.` 以外の経路が無いことを先に grep で確かめた**（`compiler.code` のような外部アクセスは 0 件）。
+これが無いと一括置換が漏れる。
+
+### 4. 検証（**全ゲート緑**）
+
+| ゲート | 結果 |
+|---|---|
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **108 / 108 byte-identical**（⚠ **先に同一 exe の負の対照 108/108 を取ってから** A/B を読んだ） |
+| `cargo build` | 警告 **0** |
+| `cargo test` | **742 passed** |
+| `cargo clippy` / `--all-targets` | **52 / 65**（増分 **0**・基準値と一致） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・153 例題** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+| [ab_bench.ps1](ab_bench.ps1) | 0.972〜1.036x（**退行なし**。1.15〜1.18x に見える 3 本は 0.02s 台＝プロセス起動床のみでノイズ） |
+
+⚠ **バイトコードが byte-identical なので実行時の退行は原理的に起きない**（`vm/run.rs` は 1 行も触っていない）。
+A/B は「そう言えることの確認」であって判断材料ではない。
+
+### 5. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「`ChunkBuilder` 部分構造体を作る」 | **手法が不適**。それでは逐語 move が引っ越すだけ。**`Chunk` を直接持つ**のが正解だった |
+| 「17 フィールド × 参照多数で大工事だろう」 | **外れ**。`self.<field>` の参照は全部で **48 箇所**しかなく、一括置換で足りた |
+| 「`entry.rs` は `..Compiler::base()` なので触らずに済む」 | **外れ**。5 入口が `n_locals` / `n_cells` の**初期値**をリテラルで渡していた（`self.` の grep には出ない） |
+| 「`Chunk` に `Default` を足すと要素型にも `Default` が要る」 | **外れ**。全部 `Vec`/`HashMap`/`usize` なので要素型は無関係 |

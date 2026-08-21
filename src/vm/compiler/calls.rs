@@ -36,7 +36,7 @@ impl Compiler {
         };
         let ni = self.add_name(&display);
         let si = self.add_span(span);
-        self.ffi_call_info.insert(node_id, (ni, si));
+        self.chunk.ffi_call_info.insert(node_id, (ni, si));
     }
 
     /// 入れ子 `fn` がキャプチャする外側ローカル（名前, slot）を求める（#27）。
@@ -148,8 +148,8 @@ impl Compiler {
         }
         let ni = self.add_name(name);
         // `Op::StoreGlobal` と同じく emit 1 回につきキャッシュ枠を 1 本割り当てる。
-        let ci = self.global_caches.len() as u32;
-        self.global_caches.push(crate::ast::SlotCache::default());
+        let ci = self.chunk.global_caches.len() as u32;
+        self.chunk.global_caches.push(crate::ast::SlotCache::default());
         Some(WbStore::Global(ni, ci))
     }
 
@@ -181,7 +181,7 @@ impl Compiler {
             }
         }
         if !targets.is_empty() {
-            self.wb_targets
+            self.chunk.wb_targets
                 .insert(node_id, crate::vm::chunk::WbCall { mask, targets });
         }
     }
@@ -269,8 +269,8 @@ impl Compiler {
         match kw {
             None => self.emit(Op::Call(argc as u16, mask, name_idx, span_idx, node_id)),
             Some(arg_names) => {
-                let i = u32::try_from(self.kw_calls.len()).ok()?;
-                self.kw_calls.push(crate::vm::chunk::KwCall {
+                let i = u32::try_from(self.chunk.kw_calls.len()).ok()?;
+                self.chunk.kw_calls.push(crate::vm::chunk::KwCall {
                     argc: u16::try_from(argc).ok()?,
                     mut_mask: mask,
                     name_idx,
@@ -307,8 +307,8 @@ impl Compiler {
         // 決定的順序（HashSet は非決定）: slot 昇順。env の順序は task 挙動に影響しないが再現性のため固定。
         captures.sort_by_key(|(_, slot, _)| *slot);
 
-        let idx = u32::try_from(self.async_blocks.len()).ok()?;
-        self.async_blocks.push(crate::vm::chunk::AsyncBlock {
+        let idx = u32::try_from(self.chunk.async_blocks.len()).ok()?;
+        self.chunk.async_blocks.push(crate::vm::chunk::AsyncBlock {
             body: stmts.to_vec(),
             captures,
         });

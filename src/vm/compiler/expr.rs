@@ -240,8 +240,8 @@ impl Compiler {
                             // 名前付き／可変長引数（#27-c）。dispatcher は同じで、
                             // 引数名を `kw_calls` 経由で運ぶだけ。
                             Some(arg_names) => {
-                                let i = u32::try_from(self.kw_calls.len()).ok()?;
-                                self.kw_calls.push(crate::vm::chunk::KwCall {
+                                let i = u32::try_from(self.chunk.kw_calls.len()).ok()?;
+                                self.chunk.kw_calls.push(crate::vm::chunk::KwCall {
                                     argc: u16::try_from(args.len()).ok()?,
                                     mut_mask: mask,
                                     name_idx: ni,
@@ -272,8 +272,8 @@ impl Compiler {
                             // 名前付き引数（#27-c）。解釈を確認済みの組み込みだけ引数名ごと運ぶ。
                             // それ以外は `eval_builtin_evaled` が名前を受け取れないので bail。
                             Some(arg_names) if VM_BUILTIN_KW_NAMES.contains(&name.as_str()) => {
-                                let i = u32::try_from(self.kw_calls.len()).ok()?;
-                                self.kw_calls.push(crate::vm::chunk::KwCall {
+                                let i = u32::try_from(self.chunk.kw_calls.len()).ok()?;
+                                self.chunk.kw_calls.push(crate::vm::chunk::KwCall {
                                     argc: u16::try_from(args.len()).ok()?,
                                     mut_mask: 0, // 組み込みは mut 引数を取らない
                                     name_idx: ni,
@@ -325,8 +325,8 @@ impl Compiler {
                     } else {
                         // グローバル関数呼び出し（#11: 索引キャッシュ付き LoadGlobal）。
                         let ni = self.add_name(name);
-                        let ci = self.global_caches.len() as u32;
-                        self.global_caches.push(crate::ast::SlotCache::default());
+                        let ci = self.chunk.global_caches.len() as u32;
+                        self.chunk.global_caches.push(crate::ast::SlotCache::default());
                         self.emit(Op::LoadGlobal(ni, ci));
                         let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                         self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
@@ -357,8 +357,8 @@ impl Compiler {
                     // テンプレート実体化は Arrow 関数なので native 書き戻しは無い（#48）。
                     let (mask, kw) = self.compile_call_args(args, None)?;
                     Self::no_kw(kw)?; // テンプレートの名前付き引数は未対応（#27-c 残り）
-                    let ti = u32::try_from(self.type_arg_lists.len()).ok()?;
-                    self.type_arg_lists.push(type_args.clone());
+                    let ti = u32::try_from(self.chunk.type_arg_lists.len()).ok()?;
+                    self.chunk.type_arg_lists.push(type_args.clone());
                     self.emit(Op::CallTemplate(ti, args.len() as u16, mask));
                 } else {
                     // その他の呼び先式（`block:` 式・添字結果・属性以外の任意式）。

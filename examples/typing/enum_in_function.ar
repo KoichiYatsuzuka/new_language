@@ -1,0 +1,117 @@
+# enum_in_function.ar — 関数本体で宣言する `enum`（#68）
+#
+# ⚠ **この形の例題が 1 本も無かったため、実バグが `force_gate` 0 件のまま生き残っていた**。
+#    #33 以降 `enum` を関数の中に書くと `VmForceError` で停止していた（参照実装は通る）。
+#    `compile_stmt` に `Stmt::EnumDef` のアームが無く、catch-all の bail に落ちていたのが原因。
+#    ⇒ ここを削ると同じ穴が再発する（#41 / #42 / #56 と同じ理由で 4 度目だった）。
+#
+# 最上位の `enum` はツリーウォーク（`exec_enum_def`）が実行する（`is_toplevel_compile_target`
+# が定義文を除外している）。関数本体の `enum` だけが `Op::EnumDef` で VM に載る。
+
+print("=== 1. enum declared inside a function ===")
+fn pick()->int:
+    enum Color:
+        Red
+        Green
+        Blue
+    let c = Color.Green
+    return c.value
+
+print(pick())                     # 1
+
+print("=== 2. explicit values keep auto-numbering ===")
+fn codes()->list[int]:
+    enum Code:
+        a
+        b = 5
+        c
+    return [Code.a.value, Code.b.value, Code.c.value]
+
+print(codes())                    # [0, 5, 6]
+
+print("=== 3. the enum name is a function-local (a global of the same name is not touched) ===")
+enum Color:
+    Red = 100
+    Green = 200
+
+fn shadow_free()->int:
+    enum Color:
+        Red = 1
+        Green = 2
+    return Color.Green.value
+
+print(shadow_free())              # 2
+print(Color.Green.value)          # 200
+
+print("=== 4. called twice: the definition runs on every call ===")
+fn twice()->int:
+    enum Flag:
+        Off
+        On
+    return Flag.On.value
+
+print(twice() + twice())          # 2
+
+print("=== 5. enum value expressions are evaluated in definition context ===")
+fn computed()->int:
+    enum Sized:
+        small = 1 + 1
+        large
+    return Sized.large.value
+
+print(computed())                 # 3
+
+print("=== 6. equality and `is` on a function-local enum ===")
+fn compare()->bool:
+    enum Mode:
+        Read
+        Write
+    let m = Mode.Write
+    return m == Mode.Write
+
+print(compare())                  # True
+
+print("=== 7. a closure declaring its own enum does not capture the outer one ===")
+# ⚠ `collect_declared_names`（capture_env 側）に `EnumDef` が無かったため、この形は
+#    `E` を自由変数と誤認して外側を捕まえ、`capture-slot-conflict` で bail していた（#68）。
+fn nested()->int:
+    enum E:
+        A = 1
+    fn inner()->int:
+        enum E:
+            A = 2
+        return E.A.value
+    return inner() * 10 + E.A.value
+
+print(nested())                   # 21
+
+print("=== 8. a closure can still read an enum declared by its parent ===")
+fn shared()->int:
+    enum E:
+        A = 9
+    fn inner()->int:
+        return E.A.value
+    return inner()
+
+print(shared())                   # 9
+
+print("=== 9. enum inside if / for / while / try bodies (nested slots) ===")
+fn in_blocks()->int:
+    mut total = 0
+    if True:
+        enum A:
+            V = 1
+        total = total + A.V.value
+    for i in range(2):
+        enum B:
+            V = 10
+        total = total + B.V.value
+    try:
+        enum C:
+            V = 100
+        total = total + C.V.value
+    except Exception as e:
+        total = -1
+    return total
+
+print(in_blocks())                # 121

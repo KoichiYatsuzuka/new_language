@@ -357,6 +357,29 @@ fn apply_writeback(
     Ok(())
 }
 
+/// `Op::EnumDef` の本体（#68）。関数本体の `enum` 定義。
+///
+/// ツリーウォークの `exec_enum_def` と**同じ `build_enum_classes`** を呼ぶので、
+/// バリアント値の採番・明示値の評価（`eval_definition_expr`）・エラー文言が構造的に一致する。
+/// 違うのは**記憶域だけ**:
+/// - `Name` → フレームの slot（リゾルバが base slot を採番済み。名前で宣言すると
+///   読みの `LoadLocal` が別の変数を読む）
+/// - `enum_item_Name` → 従来どおり `declare_var`（リゾルバは slot を採らない合成名）
+///
+/// ⚠ `#[inline(never)]`（`exec_op` は `#[inline(always)]` — #10-b の教訓）。
+#[inline(never)]
+fn enum_def_op(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &mut [Value],
+    base: usize,
+    idx: u32,
+) -> Result<(), String> {
+    let d = &chunk.enum_defs[idx as usize];
+    buf[base + d.slot as usize] = interp.vm_enum_def(&d.name, &d.variants)?;
+    Ok(())
+}
+
 /// `Op::MakeFn` の本体（#27）。入れ子 `fn` の関数値を作って slot へ書く。
 ///
 /// ツリーウォークの `exec_fn_def`（デコレータ・テンプレートなし・キャプチャ空の経路）と同じ判断を、
@@ -1160,6 +1183,10 @@ fn exec_op(
         Op::MakeFn(idx) => {
             // #27: 入れ子 `fn` 定義。本体は `#[inline(never)]`（`exec_op` を太らせない）。
             make_fn(interp, chunk, buf, base, *idx, cells);
+        }
+        Op::EnumDef(idx) => {
+            // #68: 関数本体の `enum` 定義。本体は `#[inline(never)]`。
+            enum_def_op(interp, chunk, buf, base, *idx)?;
         }
         // ── `static mut`（#27-d）。記憶域は `Interpreter::static_cells`（span キー） ──
         // `exec_static_var` と同じく、**セルが既にあれば初期化子を評価しない**。

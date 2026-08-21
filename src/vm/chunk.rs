@@ -101,6 +101,20 @@ pub struct ChunkFnDef {
     pub compiled: SharedFnChunk,
 }
 
+/// 関数本体の `enum` 定義 1 件（#68）。`Op::EnumDef(idx)` が参照する。
+///
+/// バリアントの値式は**そのまま AST を持つ**。`exec_enum_def` と同じ
+/// `eval_definition_expr`（#41）で評価するので、明示値（`RED = 1 + 2`）の意味論が一致する。
+/// ⚠ `Rc` で持つ理由は `ChunkFnDef::body` と同じ（#45）— Chunk は実体間で共有される。
+pub struct ChunkEnumDef {
+    /// 列挙型の名前。`enum_item_<name>` クラスの名前もここから作る。
+    pub name: String,
+    /// `(バリアント名, 省略可能な値式)` の並び。
+    pub variants: std::rc::Rc<[(String, Option<crate::ast::Expr>)]>,
+    /// 組み立てた `Name` クラスを書き込む slot（リゾルバの base slot と同じ番号）。
+    pub slot: u16,
+}
+
 /// `let a, b = t` 1 件ぶんの分解情報（#27-c）。
 pub struct TupleDecl {
     pub targets: Vec<crate::ast::TupleTarget>,
@@ -184,6 +198,16 @@ pub const NOT_STMT: u32 = u32::MAX;
 pub const STMT_NO_SPAN: u32 = u32::MAX - 1;
 
 /// 1 関数分のコンパイル結果。`Rc<Chunk>` で関数ごとにキャッシュされる。
+///
+/// ⚠ **`Compiler` はこの構造体をそのまま組み立てながらコンパイルする**（#66・`Compiler::chunk`）。
+/// #66 以前は同じ 17 フィールドが `Compiler` にも並んでいて、`into_chunk` が 1 対 1 で
+/// move するだけの 17 行になっていた（＝フィールドを 1 本足すたびに 3 箇所を直していた）。
+/// ⇒ **ここにフィールドを足すだけでコンパイラ側は追従する**。`Default` が要るのはそのため。
+///
+/// ⚠ **コンパイル中は「途中の Chunk」である**。`local_names` / `n_params` /
+/// `captured_slots` / `captured_cells` の 4 つだけは入口ごとに違うので
+/// `ChunkMeta` が持ち、`into_chunk` が最後に埋める。
+#[derive(Default)]
 pub struct Chunk {
     /// 命令列。
     pub code: Vec<Op>,
@@ -240,6 +264,8 @@ pub struct Chunk {
     /// `captured_env` は**構成上空**になり、ツリーウォークの `capture_env`（外側スコープを
     /// 走査して何も見つからない）と一致する。
     pub fn_defs: Vec<ChunkFnDef>,
+    /// 関数本体の `enum` 定義（#68）。`Op::EnumDef(idx)` が index で参照する。
+    pub enum_defs: Vec<ChunkEnumDef>,
     /// テンプレート実体化の型引数リスト（#27-c）。`Op::CallTemplate(idx, ..)` が index で参照する。
     ///
     /// `names` に入れて (開始, 個数) で持つ手もあるが、`instantiate_template_evaled` が

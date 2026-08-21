@@ -316,6 +316,16 @@ pub enum Op {
     /// ⚠ **キャプチャは不変な外側ローカルに限る**（コンパイラが保証）。可変キャプチャは
     /// 外側ローカルとのセル共有が要るが、VM のフラット slot は `Value` 直値なので表現できない。
     MakeFn(u32),
+    /// 関数本体の `enum` 定義（#68）。`chunk.enum_defs[idx]` からクラス 2 つを組み立て、
+    /// `enum_item_Name` は名前で宣言し、`Name` クラス**だけを push** する
+    /// （呼び出し側が `StoreLocal` で slot へ落とす）。
+    ///
+    /// ⚠ **定義文なのに op がある**のは、`Name` の記憶域が slot だから（#10-d の例外）。
+    /// リゾルバの `collect_base_decls` が関数本体の `enum` に base slot を採番するので、
+    /// `declare_var` に任せると読みの `LoadLocal` が**別の変数を読む**。
+    /// 最上位・モジュール本体の `enum` は `is_toplevel_compile_target` が除外するので
+    /// 従来どおりツリーウォーク（`exec_enum_def`）が実行する。
+    EnumDef(u32),
     /// `for k, v in ...` のタプル分解（#27-c）。`locals[slot]` のタプルを検査して
     /// **要素を順に push** する（呼び出し側は `StoreLocal` を逆順に並べて受ける）。
     /// フィールドは (src_slot, 要素数)。

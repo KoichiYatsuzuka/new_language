@@ -178,7 +178,7 @@ pub fn compile_definition_expr(
         // Chunk の先頭がそのまま式なので、深さ 0 を最初の式へ伝える（#34）。
         pending: Some(0),
         named_locals: n,
-        n_locals: n as usize,
+        chunk: Chunk { n_locals: n as usize, ..Chunk::default() },
         ..Compiler::base(CompileMode::DefinitionExpr, annotations)
     };
 
@@ -234,7 +234,7 @@ fn compile_toplevel_stmt_inner(
         slot_mut,
         slot_type,
         named_locals: n,
-        n_locals: n as usize,
+        chunk: Chunk { n_locals: n as usize, ..Chunk::default() },
         toplevel_globals: toplevel_globals.clone(),
         shadowed_for_targets,
         // 最上位に `static` は無い（あれば定義文として #10-d の担当）。
@@ -327,6 +327,18 @@ fn compile_fn_inner(
                 n = n.checked_add(1)?;
             }
             Stmt::FnDef { .. } => {}
+            // 関数本体の `enum` の名前も base slot を占める（#68）。
+            // ⚠ **リゾルバの `collect_base_decls` は `EnumDef` に `push_base` する**ので、
+            // ここで飛ばすと以降の base slot が全部 1 つずれる（`Stmt::Static` と同じ罠）。
+            // ⚠ `enum_item_<name>` には slot を採らない。リゾルバも採らないし、
+            //    `Op::EnumDef` が `declare_var` で名前として宣言する（合成名なので読みは名前引き）。
+            Stmt::EnumDef { name, .. } if name != "_" && !slots.contains_key(name) => {
+                slots.insert(name.clone(), n);
+                slot_mut.push(false);
+                slot_type.push(None);
+                n = n.checked_add(1)?;
+            }
+            Stmt::EnumDef { .. } => {}
             // `static mut x = e`（#27-d）。記憶域はフレームではなく `Interpreter::static_cells`
             // （宣言位置がキーの共有セル）で、呼び出しをまたいで生き残る。名前 → 宣言位置を
             // 控えておき、本体の読み書きを `LoadStatic`/`StoreStatic` に落とす。
@@ -350,7 +362,6 @@ fn compile_fn_inner(
             | Stmt::TraitDef { .. }
             | Stmt::ProtocolDef { .. }
             | Stmt::NewTypeDef { .. }
-            | Stmt::EnumDef { .. }
             | Stmt::Import { .. }
             | Stmt::FromImport { .. } => {
                 bail("decl-prepass", Some(stmt));
@@ -453,12 +464,11 @@ fn compile_fn_inner(
         slot_type,
         self_slot,
         named_locals: n,
-        n_locals: n as usize,
+        chunk: Chunk { n_locals: n as usize, n_cells, ..Chunk::default() },
         shadowed_for_targets,
         statics,
         cells,
         cell_by_slot,
-        n_cells,
         ..Compiler::base(CompileMode::Function, annotations)
     };
 
@@ -547,7 +557,7 @@ pub fn compile_async_body(
         slot_mut,
         slot_type,
         named_locals: n,
-        n_locals: n as usize,
+        chunk: Chunk { n_locals: n as usize, ..Chunk::default() },
         // ⚠ **空でないと `reads_by_name` が偽になり `LoadGlobal` へ落ちる**。名前の中身は
         // 書き込み判定にしか使わないので、捕捉名を入れておけば足りる（`CompileMode` の doc）。
         toplevel_globals: captures.iter().cloned().collect(),

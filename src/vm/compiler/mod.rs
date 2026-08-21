@@ -32,10 +32,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::Stmt;
-use crate::interpreter::Value;
 
+// ⚠ `Op` / `Value` はここでは要らない（#66 で `code` / `consts` が `Chunk` へ移った）。
+// 各サブモジュールは `use super::*` とは別に自前で import しているので消してよい。
 use super::chunk::Chunk;
-use super::op::Op;
 
 mod block_expr;
 mod calls;
@@ -66,13 +66,19 @@ use diag::{bail, bail_expr, has_named_args, is_vm_builtin, VM_BUILTIN_KW_NAMES};
 
 
 struct Compiler {
-    code: Vec<Op>,
-    consts: Vec<Value>,
-    names: Vec<String>,
-    attr_caches: Vec<crate::ast::AttrCache>,
-    spans: Vec<crate::token::Span>,
-    /// 文境界の行テーブル（#1）。`code` と 1:1。詳細は [`Chunk::stmt_spans`](super::chunk::Chunk).
-    stmt_spans: Vec<u32>,
+    /// **組み立て中の `Chunk` そのもの**（#66）。`code` / `consts` / `names` / `spans` /
+    /// `stmt_spans` / `n_locals` / `n_cells` / 各副表 …… ＝ **成果物になるフィールドは全部ここ**。
+    ///
+    /// #66 以前は同じ 17 フィールドが `Compiler` にも平坦に並んでいて、`into_chunk` が
+    /// 1 対 1 で move するだけの 17 行になっていた。**フィールドを 1 本足すたびに
+    /// `Chunk` / `Compiler` / `base()` / `into_chunk()` の 4 箇所**を直す必要があり、
+    /// #52 が構造体リテラル 5 箇所を 1 箇所に畳んだのと同じ重複が残っていた。
+    ///
+    /// ⚠ **`Chunk` にフィールドを足すときここは何もしなくてよい**（`Default` が埋める）。
+    /// ⚠ 入口ごとに違う 4 つ（`local_names` / `n_params` / `captured_slots` /
+    /// `captured_cells`）だけは [`ChunkMeta`] が持ち、`into_chunk` が最後に埋める。
+    /// **コンパイル中にこの 4 つを読んではいけない**（空のままなので）。
+    chunk: Chunk,
     /// 「次に emit する op が文の先頭」を表す予約（#1）。`compile_stmt` が設定し `emit` が消費する。
     /// 文の先頭 op は `compile_stmt` の中で任意の深さから emit されるので、位置ではなく予約で持つ。
     pending_stmt: Option<u32>,
@@ -127,26 +133,6 @@ struct Compiler {
     named_locals: u16,
     /// 現在使用中の temp slot 数（match サブジェクト等のスタック規律の一時領域）。
     temps_in_use: u16,
-    /// フレームに必要な総 slot 数（名前付き + temp の最大同時数）。
-    n_locals: usize,
-    /// 非同期タスクブロック（`AsyncSubmit(idx)` が index で参照, タスク #9）。
-    async_blocks: Vec<crate::vm::chunk::AsyncBlock>,
-    /// `LoadGlobal` のグローバル索引キャッシュ（#11）。emit ごとに1本割り当てる。
-    global_caches: Vec<crate::ast::SlotCache>,
-    /// メソッド呼び出しの FFI 境界検査用の表示情報（#27-b）。node_id → (表示名 index, span index)。
-    /// 詳細は [`Chunk::ffi_call_info`](super::chunk::Chunk)。
-    ffi_call_info: HashMap<u32, (u32, u32)>,
-    /// native の `mut` ポインタ引数の書き戻し先（#48）。node_id → `WbCall`。
-    /// 詳細は [`Chunk::wb_targets`](super::chunk::Chunk)。
-    wb_targets: HashMap<u32, crate::vm::chunk::WbCall>,
-    /// 入れ子 `fn` 定義（#27）。`Op::MakeFn` が index で参照する。
-    fn_defs: Vec<crate::vm::chunk::ChunkFnDef>,
-    /// テンプレート呼び出しの型引数リスト（#27-c）。`Op::CallTemplate` が index で参照する。
-    type_arg_lists: Vec<Vec<String>>,
-    /// `let a, b = t` の分解情報（#27-c）。`Op::LetTuple` が index で参照する。
-    tuple_decls: Vec<crate::vm::chunk::TupleDecl>,
-    /// キーワード/可変長引数つき呼び出し（#27-c）。`Op::CallKw` が index で参照する。
-    kw_calls: Vec<crate::vm::chunk::KwCall>,
     /// 最上位モード（#10-b）で「`scopes[0]` の同名を確実に指す」と言える名前の集合。
     /// 空 = 関数本体のコンパイル（従来どおり `slots` に無い書き込み先は bail）。
     ///
@@ -165,7 +151,7 @@ struct Compiler {
     /// ⚠ **`slots` より先に引くこと**（`static` 名に slot は無いので順序で壊れはしないが、
     /// 将来 slot と同名が同居したときに黙って値が消えるのを防ぐ）。
     statics: HashMap<String, crate::token::Span>,
-    /// **セル変数**の名前 → セル表の index（#27-d 段階 2b）。
+    /// **セル変数**の名前 → セル表の index（#27-d 段階 2b）。⚠ 大きさは `chunk.n_cells`。
     ///
     /// `Rc<RefCell<Value>>` を外側フレームやクロージャと共有する名前。slot は持たない。
     /// ⚠ **`slots` より先に引くこと**（`statics` と同じ理由）。
@@ -174,8 +160,6 @@ struct Compiler {
     /// `Resolution::Local(slot)` が付いた読みをセルへ振り替えるために要る
     /// （セル化してもリゾルバの採番と合わせるため slot 番号は穴として残してある）。
     cell_by_slot: HashMap<u16, u16>,
-    /// セル表の大きさ（`Chunk.n_cells` になる）。
-    n_cells: usize,
 }
 
 /// **コンパイルの入口ごとのモード**（#52）。
@@ -234,7 +218,11 @@ impl CompileMode {
 }
 
 /// `Chunk` のうち**モードごとに違う**メタ情報（#52・`Compiler::finish` の引数）。
-/// これ以外の 15 フィールドは `Compiler` からそのまま移すので、ここに並ぶのが差分のすべて。
+///
+/// これ以外のフィールドは `Compiler::chunk` に直接組み上がる（#66）ので、
+/// **ここに並ぶ 4 つが「入口ごとに違う」ものの全部**である。
+/// ⚠ `Chunk` にフィールドを足すとき、ここに足してよいのは
+/// 「**コンパイル中には決まらず、入口が知っている**」ものだけ。それ以外は `chunk` へ直接書く。
 #[derive(Default)]
 struct ChunkMeta {
     /// slot → 変数名（デバッガ表示用）。`compile_debug` は slot を持たないので空。
@@ -309,12 +297,7 @@ impl Compiler {
     /// （差分が 5 倍に膨らみ、レビューで異常が埋もれる — #33 の golden 録り直し漏れと同じ形）。
     pub(super) fn base(mode: CompileMode, annotations: std::rc::Rc<crate::type_check::AstAnnotations>) -> Self {
         Compiler {
-            code: Vec::new(),
-            consts: Vec::new(),
-            names: Vec::new(),
-            attr_caches: Vec::new(),
-            spans: Vec::new(),
-            stmt_spans: Vec::new(),
+            chunk: Chunk::default(),
             pending_stmt: None,
             annotations,
             slots: HashMap::new(),
@@ -333,21 +316,11 @@ impl Compiler {
             mode,
             named_locals: 0,
             temps_in_use: 0,
-            n_locals: 0,
-            async_blocks: Vec::new(),
-            global_caches: Vec::new(),
-            ffi_call_info: HashMap::new(),
-            wb_targets: HashMap::new(),
-            fn_defs: Vec::new(),
-            type_arg_lists: Vec::new(),
-            tuple_decls: Vec::new(),
-            kw_calls: Vec::new(),
             toplevel_globals: HashSet::new(),
             shadowed_for_targets: HashSet::new(),
             statics: HashMap::new(),
             cells: HashMap::new(),
             cell_by_slot: HashMap::new(),
-            n_cells: 0,
         }
     }
 
@@ -360,7 +333,7 @@ impl Compiler {
     /// 足したときに `peephole::code_target_mut` への登録漏れ（#27-d で `StaticInit` の飛び先を
     /// 忘れ、**テストも例題も通ってしまった**）を探す場所を 1 つに保つため。
     pub(super) fn finish(mut self, meta: ChunkMeta) -> Chunk {
-        super::peephole::optimize(&mut self.code, &mut self.stmt_spans);
+        super::peephole::optimize(&mut self.chunk.code, &mut self.chunk.stmt_spans);
         self.into_chunk(meta)
     }
 
@@ -369,28 +342,15 @@ impl Compiler {
     /// ⚠ 掛けないのは `compile_debug` だけ — #52 以前からそうで、**この差を消すのは
     /// 挙動の変更**（デバッガ REPL の 1 文に最適化を新たに通すこと）になるので保存した。
     /// 通したいなら独立したタスクとして A/B と golden 比較つきで判断すること。
+    /// ⚠ **本体は `ChunkMeta` の 4 つを埋めるだけ**（#66）。残りは `self.chunk` に
+    /// 組み上がっているので、`Chunk` にフィールドを足してもここは変わらない。
     pub(super) fn into_chunk(self, meta: ChunkMeta) -> Chunk {
         Chunk {
-            code: self.code,
-            consts: self.consts,
-            names: self.names,
-            attr_caches: self.attr_caches,
-            spans: self.spans,
-            stmt_spans: self.stmt_spans,
             local_names: meta.local_names,
-            n_locals: self.n_locals,
             n_params: meta.n_params,
-            async_blocks: self.async_blocks,
-            global_caches: self.global_caches,
-            ffi_call_info: self.ffi_call_info,
-            wb_targets: self.wb_targets,
-            fn_defs: self.fn_defs,
-            type_arg_lists: self.type_arg_lists,
-            tuple_decls: self.tuple_decls,
-            kw_calls: self.kw_calls,
             captured_slots: meta.captured_slots,
-            n_cells: self.n_cells,
             captured_cells: meta.captured_cells,
+            ..self.chunk
         }
     }
 }

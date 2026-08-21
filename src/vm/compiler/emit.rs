@@ -33,12 +33,12 @@ impl Compiler {
 
     #[inline]
     pub(super) fn emit(&mut self, op: Op) -> usize {
-        self.code.push(op);
+        self.chunk.code.push(op);
         // 行テーブルを code と 1:1 に保つ（#1）。`compile_stmt` が予約していれば
         // **この op が文の先頭**なので、そこに文の位置を記録する。
-        self.stmt_spans
+        self.chunk.stmt_spans
             .push(self.pending_stmt.take().unwrap_or(crate::vm::chunk::NOT_STMT));
-        self.code.len() - 1
+        self.chunk.code.len() - 1
     }
 
     /// スタック規律の一時 slot を確保する（match サブジェクト等）。名前付き slot の上に積む。
@@ -50,8 +50,8 @@ impl Compiler {
         };
         self.temps_in_use = self.temps_in_use.checked_add(1)?;
         let total = self.named_locals as usize + self.temps_in_use as usize;
-        if total > self.n_locals {
-            self.n_locals = total;
+        if total > self.chunk.n_locals {
+            self.chunk.n_locals = total;
         }
         Some(slot)
     }
@@ -61,8 +61,8 @@ impl Compiler {
     }
 
     pub(super) fn add_const(&mut self, v: Value) -> u32 {
-        let idx = self.consts.len() as u32;
-        self.consts.push(v);
+        let idx = self.chunk.consts.len() as u32;
+        self.chunk.consts.push(v);
         idx
     }
 
@@ -311,8 +311,8 @@ impl Compiler {
         let ni = self.add_name(name);
         // `LoadGlobal` と同じく emit 1 回につきキャッシュ枠を 1 本割り当てる
         // （枠は共有しない。op ごとに焼く index の意味が違うため — `Op::StoreGlobal` 参照）。
-        let ci = self.global_caches.len() as u32;
-        self.global_caches.push(crate::ast::SlotCache::default());
+        let ci = self.chunk.global_caches.len() as u32;
+        self.chunk.global_caches.push(crate::ast::SlotCache::default());
         Some(StoreTarget::Global(ni, ci))
     }
 
@@ -435,8 +435,8 @@ impl Compiler {
     /// `LoadGlobal` を index キャッシュ付きで emit する（#11）。name プールとキャッシュ枠を確保。
     pub(super) fn emit_load_global(&mut self, name: &str) {
         let ni = self.add_name(name);
-        let ci = self.global_caches.len() as u32;
-        self.global_caches.push(crate::ast::SlotCache::default());
+        let ci = self.chunk.global_caches.len() as u32;
+        self.chunk.global_caches.push(crate::ast::SlotCache::default());
         self.emit(Op::LoadGlobal(ni, ci));
     }
 
@@ -451,9 +451,9 @@ impl Compiler {
     }
 
     pub(super) fn add_name(&mut self, name: &str) -> u32 {
-        let idx = self.names.len() as u32;
-        self.names.push(name.to_string());
-        self.attr_caches.push(crate::ast::AttrCache::default());
+        let idx = self.chunk.names.len() as u32;
+        self.chunk.names.push(name.to_string());
+        self.chunk.attr_caches.push(crate::ast::AttrCache::default());
         idx
     }
 
@@ -474,8 +474,8 @@ impl Compiler {
     }
 
     pub(super) fn add_span(&mut self, span: &crate::token::Span) -> u32 {
-        let idx = self.spans.len() as u32;
-        self.spans.push(span.clone());
+        let idx = self.chunk.spans.len() as u32;
+        self.chunk.spans.push(span.clone());
         idx
     }
 
@@ -502,11 +502,11 @@ impl Compiler {
     /// バックパッチ用: 直後に置く命令の index を現在位置として返す。
     #[inline]
     pub(super) fn here(&self) -> u32 {
-        self.code.len() as u32
+        self.chunk.code.len() as u32
     }
 
     pub(super) fn patch_jump(&mut self, at: usize, target: u32) {
-        self.code[at] = match &self.code[at] {
+        self.chunk.code[at] = match &self.chunk.code[at] {
             Op::Jump(_) => Op::Jump(target),
             Op::JumpIfFalse(_) => Op::JumpIfFalse(target),
             Op::JumpIfFalseOrPop(_) => Op::JumpIfFalseOrPop(target),

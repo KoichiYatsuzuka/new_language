@@ -360,6 +360,50 @@ impl Interpreter {
         name: &str,
         variants: &[(String, Option<Expr>)],
     ) -> Result<ExecResult, String> {
+        let (item_cls, enum_cls) = self.build_enum_classes(name, variants)?;
+        self.declare_var(
+            item_cls.name.clone(),
+            Var::new(Value::Class(item_cls), false),
+        );
+        self.declare_var(name.to_string(), Var::new(Value::Class(enum_cls), false));
+        Ok(ExecResult::Normal)
+    }
+
+    /// VM の `Op::EnumDef` 用（#68）。`enum_item_Name` だけを名前で宣言し、
+    /// `Name` クラスを**値として返す**（呼び出し側がフレームの slot へ入れる）。
+    ///
+    /// ⚠ `declare_var` は interpreter モジュール内に閉じているので、
+    /// `vm_declare_global` / `vm_declare_debug` と同じく**ここに入口を置く**。
+    pub(crate) fn vm_enum_def(
+        &mut self,
+        name: &str,
+        variants: &[(String, Option<Expr>)],
+    ) -> Result<Value, String> {
+        let (item_cls, enum_cls) = self.build_enum_classes(name, variants)?;
+        self.declare_var(
+            item_cls.name.clone(),
+            Var::new(Value::Class(item_cls), false),
+        );
+        Ok(Value::Class(enum_cls))
+    }
+
+    /// `enum` 定義から `(enum_item_Name クラス, Name クラス)` を組み立てる（#68）。
+    ///
+    /// **スコープへの登録はしない**。呼び出し元が記憶域を決める:
+    /// - ツリーウォーク（`exec_enum_def`）は両方を `declare_var` する（最上位・モジュール本体）。
+    /// - VM（`Op::EnumDef`）は `Name` を**フレームの slot** へ入れる（関数内の `enum`）。
+    ///   リゾルバの `collect_base_decls` が `Name` に base slot を採番するので、
+    ///   読みは `LoadLocal` になる＝ slot に入れないと**別の変数を読む**。
+    ///
+    /// ⚠ **2 つに分けたのは #68 の実バグのため**。分ける前は「組み立て」と「`declare_var`」が
+    /// 一体だったので、VM から呼ぶと `Name` が slot ではなく**呼び出し元のスコープ**へ
+    /// 入ってしまい、載せようが無かった（＝ `compile_stmt` が bail し `VmForceError`）。
+    fn build_enum_classes(
+        &mut self,
+        name: &str,
+        variants: &[(String, Option<Expr>)],
+    ) -> Result<(Rc<crate::interpreter::ClassValue>, Rc<crate::interpreter::ClassValue>), String>
+    {
         // enum_item_Name クラスを生成する（new_type enum_item_Name: int 相当）
         let item_type_name = format!("enum_item_{}", name);
         let init_body = vec![Stmt::AttrAssign {
@@ -400,7 +444,7 @@ impl Interpreter {
         item_methods.insert("__init__".to_string(), vec![init_fn]);
         let item_cls_id = crate::interpreter::value::alloc_class_id();
         let item_cls = Rc::new(crate::interpreter::ClassValue {
-            name: item_type_name.clone(),
+            name: item_type_name,
             class_id: item_cls_id,
             bases: vec![],
             methods: item_methods,
@@ -420,10 +464,7 @@ impl Interpreter {
             is_exception: false,
             raw_layout: None,
         });
-        self.declare_var(
-            item_type_name.clone(),
-            Var::new(Value::Class(item_cls.clone()), false),
-        );
+        // ⚠ ここで `declare_var` はしない（#68）。記憶域は呼び出し元が決める。
 
         // 各バリアントの値を計算し、enum クラスの const クラス変数として登録する
         let mut class_vars: HashMap<String, Value> = HashMap::new();
@@ -470,8 +511,7 @@ impl Interpreter {
             is_exception: false,
             raw_layout: None,
         });
-        self.declare_var(name.to_string(), Var::new(Value::Class(enum_cls), false));
-        Ok(ExecResult::Normal)
+        Ok((item_cls, enum_cls))
     }
 
     /// `class` 定義を実行してクラス値をスコープに登録する。トレイト継承・フィールド・メソッドを処理する。

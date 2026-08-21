@@ -275,7 +275,7 @@ impl Compiler {
                 self.emit(Op::Jump(loop_start));
                 let exit = self.here();
                 // ForIter の exit_ip をバックパッチ（patch_jump は Jump 系専用なので手動）。
-                self.code[fi] = Op::ForIter(iter_temp, target_slot, exit);
+                self.chunk.code[fi] = Op::ForIter(iter_temp, target_slot, exit);
                 let ctx = self.loops.pop().unwrap();
                 for j in ctx.break_jumps {
                     self.patch_jump(j, exit);
@@ -429,7 +429,7 @@ impl Compiler {
                 self.compile_expr(expr)?;
                 self.emit(Op::StaticStore(si));
                 let after = self.here();
-                self.code[guard] = Op::StaticInit(si, after);
+                self.chunk.code[guard] = Op::StaticInit(si, after);
             }
             // 属性代入 `obj.attr = value` / 添字代入 `obj[i] = value`。
             Stmt::AttrAssign { target, value } => match target {
@@ -614,7 +614,7 @@ impl Compiler {
                 // #43: 判定種別をアノテーション文字列から先に決める。`Any` は常に真なので
                 // **op 自体を出さない**（検査を省くのではなく、検査が自明に成立する場合だけ）。
                 if let Some(idx) = ann {
-                    let tag = crate::vm::op::TypeTag::of(&self.names[idx as usize]);
+                    let tag = crate::vm::op::TypeTag::of(&self.chunk.names[idx as usize]);
                     if tag != crate::vm::op::TypeTag::Any {
                         self.emit(Op::CheckBlockReturn(idx, tag));
                     }
@@ -650,7 +650,7 @@ impl Compiler {
                     // #43: **要素型**から種別を決める（`list[T]` の `T`）。
                     // `list[T]` の形でなければ検査自体が無いので op を出さない
                     // （`check_loop_yield_type` が `Ok(())` を返すのと同じ）。
-                    let ann_str = self.names[idx as usize].clone();
+                    let ann_str = self.chunk.names[idx as usize].clone();
                     match crate::vm::op::elem_type_of_list_ann(&ann_str) {
                         Some(elem) => {
                             let tag = crate::vm::op::TypeTag::of(elem);
@@ -706,8 +706,8 @@ impl Compiler {
                     return None;
                 };
                 let slot = self.slot_of(name)?;
-                let idx = u32::try_from(self.fn_defs.len()).ok()?;
-                self.fn_defs.push(crate::vm::chunk::ChunkFnDef {
+                let idx = u32::try_from(self.chunk.fn_defs.len()).ok()?;
+                self.chunk.fn_defs.push(crate::vm::chunk::ChunkFnDef {
                     name: name.clone(),
                     params: params.clone(),
                     // #45: ここで 1 回だけ複製する。以降の実体は Rc を clone するだけ。
@@ -722,6 +722,23 @@ impl Compiler {
                     compiled: Default::default(),
                 });
                 self.emit(Op::MakeFn(idx));
+            }
+            // 関数本体の `enum` 定義（#68）。組み立ては `build_enum_classes`（ツリーウォークと
+            // 同一）で、ここは**記憶域だけ**を決める。
+            //
+            // ⚠ `slot_of` が `None` を返したら bail する＝ **slot を持たない文脈
+            // （最上位・モジュール本体）ではこのアームに載らない**。そこは
+            // `is_toplevel_compile_target` が除外していて `exec_enum_def` が走る。
+            // この 1 行が「載る文脈」を自分で閉じているので、入口ごとの場合分けが要らない。
+            Stmt::EnumDef { name, variants } => {
+                let slot = self.slot_of(name)?;
+                let idx = u32::try_from(self.chunk.enum_defs.len()).ok()?;
+                self.chunk.enum_defs.push(crate::vm::chunk::ChunkEnumDef {
+                    name: name.clone(),
+                    variants: std::rc::Rc::from(&variants[..]),
+                    slot,
+                });
+                self.emit(Op::EnumDef(idx));
             }
             // `block: <stmts>` 文（#27-c）。ツリーウォークの `exec_block_stmt`（#33 で削除）は
             // **`block_return` を吸収**して `Normal` を返し、break/continue/return/raise は外へ通す。
@@ -781,8 +798,8 @@ impl Compiler {
                     return None;
                 }
                 self.compile_expr(value)?;
-                let i = u32::try_from(self.tuple_decls.len()).ok()?;
-                self.tuple_decls.push(crate::vm::chunk::TupleDecl {
+                let i = u32::try_from(self.chunk.tuple_decls.len()).ok()?;
+                self.chunk.tuple_decls.push(crate::vm::chunk::TupleDecl {
                     targets: targets.to_vec(),
                     slots: if any_slot { slots } else { Vec::new() },
                 });

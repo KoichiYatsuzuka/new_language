@@ -282,6 +282,15 @@ pub(super) fn collect_nested_decls(
                 add_decl(name, ty, true, slots, slot_mut, slot_type, n)?;
                 collect_expr_decls(e, slots, slot_mut, slot_type, n)?;
             }
+            // 入れ子ブロック（if/for/while/try のボディ）の `enum`（#68）。
+            //
+            // ⚠ **`compile_stmt` にアームを足したら必ずここも見る**（#27-c で 2 回踏んだ罠）。
+            // 足す前は `slot_of` が引けず、`if:` の中に `enum` を書いた関数が丸ごと
+            // `VmForceError` になっていた（本体直下の `enum` だけが通る、という中途半端な状態）。
+            // 値式（`A = 1 + 2`）は定義文脈で評価されるので `collect_expr_decls` は要らない。
+            Stmt::EnumDef { name, .. } => {
+                add_decl(name, &None, false, slots, slot_mut, slot_type, n)?
+            }
             // 入れ子の `let a, b = t`（#27-c）。ツリーウォークはスコープを push するので
             // **反復ごとに宣言し直せる**が、slot を割り当てないとグローバル宣言に落ちて
             // 2 周目で「already declared」になる（`built_in.ar` の `zx` が実例）。

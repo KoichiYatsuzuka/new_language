@@ -313,7 +313,7 @@ impl Compiler {
         self.emit(Op::Jump(loop_start));
         // NORMAL_END: 反復終了 or break → 蓄積リスト or None。
         let normal_end = self.here();
-        self.code[fi] = Op::ForIter(iter_temp, target_slot, normal_end);
+        self.chunk.code[fi] = Op::ForIter(iter_temp, target_slot, normal_end);
         let loop_ctx = self.loops.pop().unwrap();
         for j in loop_ctx.break_jumps {
             self.patch_jump(j, normal_end);

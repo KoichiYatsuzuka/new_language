@@ -112,7 +112,13 @@ pub(crate) fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) 
             | Stmt::GenDef { name, .. }
             | Stmt::ClassDef { name, .. }
             | Stmt::TraitDef { name, .. }
-            | Stmt::ProtocolDef { name, .. } => {
+            | Stmt::ProtocolDef { name, .. }
+            // ⚠ `EnumDef` は #27-c で `resolver::collect_program_globals` にだけ足され、
+            // **こちらへ足し忘れていた**（#68 で顕在化）。抜けていると `enum` を宣言する
+            // クロージャがその名前を「自由変数」と見なして外側を捕まえ、
+            // コンパイラが採番した slot とぶつかって `capture-slot-conflict` で bail する。
+            // ⇒ **同じ木を歩く walker が 2 つあるとずれる**の実例。統合は #59。
+            | Stmt::EnumDef { name, .. } => {
                 out.insert(name.clone());
             }
             Stmt::For { targets, body, .. } => {
