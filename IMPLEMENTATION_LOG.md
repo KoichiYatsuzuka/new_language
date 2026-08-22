@@ -6885,3 +6885,94 @@ fn pick()->int:
 | 「新しい出力ゲートは素直に緑になるだろう」 | **外れ**。負の対照で **13 例題**が落ちた（ベンチの経過時間 10・アドレス 3） |
 | 「揺れる例題は除外すればよい」 | **半分外れ**。`collection.ar` は **set メソッドの主要カバレッジ**なので、除外ではなく**正規化**が正解だった |
 | 「`Value::List` / `Dict` も肥大しているだろう」 | **外れ**。28 行 / 17 行しかない。`eval_list_method` / `eval_dict_method` を作る必要は今のところ無い |
+
+---
+
+## #62 `compile_stmt` 800 行の分割（2026-08-23・完了）
+
+保守性レーン第 2 弾。起票時の実測は「**1 関数で 800 行＝ファイル 817 行のほぼ全部**。33 アームだが
+偏りが大きい（`For` 97／`AttrCompoundAssign` 76／`CompoundAssign` 75／`Let` 55／`AttrAssign` 48）」。
+
+### 1. 手法
+
+`compile_stmt` は**文種別の振り分け表**であるべきなのに、9 アームが本文を抱えていた。
+それらをメソッドへ出し、代入族は新しいモジュールへ分離した。
+
+| | 前 | 後 |
+|---|---|---|
+| `compile_stmt` | **817 行** | **371 行** |
+| 最大アーム | `For` **97 行** | `LoopYield` **34 行** |
+| アーム数 | 34 | **33**（`AttrCompoundAssign` の重複アームを統合） |
+| `vm/compiler/stmt.rs` | 834 行 | **643 行** |
+| `vm/compiler/stmt_assign.rs` | — | **293 行**（新設） |
+
+**新設 [stmt_assign.rs](src/vm/compiler/stmt_assign.rs)（代入族）**: `compile_assign` /
+`compile_compound_assign` / `compile_attr_assign` / `compile_attr_compound_assign`。
+この族の不変条件は「**ツリーウォークと同じ評価順・同じ再評価回数**」で、そこだけを 1 ファイルに閉じた。
+
+**`stmt.rs` 内のメソッド**: `compile_for` / `compile_let` / `compile_nested_fn_def` / `compile_let_tuple`。
+
+副次的に:
+- **`Stmt::AttrCompoundAssign` のアームが 2 つあった**（添字用のパターンガード付き＋一般）のを
+  **入口 1 つ**に統合し、中で `Expr::Subscript` / `Expr::Attr` に分岐する形へ。
+  同じ文種別を 2 箇所で受けると片方だけ直す事故が起きる（#59 の walker と同じ形）。
+- `StoreTarget` の 4 種（グローバル / モジュール名 / `static mut` / セル）に**逐語で同じ 8 行**が
+  並んでいたのを `emit_compound_via_stack` へ畳んだ。**出る命令列は 1 バイトも変わらない**。
+
+### 2. ⚠⚠ **偽の 6.5% 退行**を出し、プローブで棄却した（#62 で最も価値のある部分）
+
+[ab_bench.ps1](ab_bench.ps1) が `flat_bench.ar` で **0.926〜0.939x** を出した。
+バイトコードは **108/108 byte-identical**、`vm/run.rs` は 1 行も触っていないのに、である。
+
+**手順（プランの判断基準どおり 2 つとも実施した）**
+
+| 段 | 実験 | 結果 |
+|---|---|---|
+| ① 再現性 | 同じ 2 バイナリで測り直す | **再現**（0.929／0.939） |
+| ① 負の対照 | `-A x.exe -B x.exe`（同一 exe） | **1.004x**（＝計測系は安定） |
+| ① 区間別 | `flat_bench` の内訳を見る | `fixed_list` 区間は 0.018s で**完全同一**。差は **native↔解釈のコールバック 25M 回**の区間だけ |
+| ① 分散 | 各 4 回・区間値で比較 | A: 23.88〜23.97（**分散 0.4%**）／B: 25.43〜26.10 ⇒ **ノイズではない** |
+| ② **同規模プローブ** | **`vm/compiler/mod.rs` の `mod` 宣言の順序を逆にしただけ**のビルド | **0.929x**（#62 と同じ） |
+
+⇒ **#62 の内容とは無関係な、コード配置（CGU 分配）の影響**と確定。プローブは
+`bottleneck_bench.ar` でも **0.969x** と #62 の値に**完全一致**した。
+
+**機構**: `Cargo.toml` に `[profile.release]` が無い ＝ **`codegen-units = 16`（既定）・LTO 無し**。
+CGU の分配は**モジュール構成に依存する**ので、460 行を新モジュールへ移すだけで
+インライン化と配置が crate 全体で変わる。⇒ #28 の教訓「**効くのはアーム数ではなくコード配置**」の再演。
+
+⚠⚠ **`flat_bench.ar` は配置ノイズだけで ±7% 動く**（`bottleneck_bench.ar` は ±3%）。
+**このベンチでリファクタリングの良し悪しを判断してはいけない。**
+理由は「25M 回の native↔解釈コールバック」という、配置に最も敏感な形だから。
+
+### 3. 検証（**全ゲート緑**）
+
+| ゲート | 結果 |
+|---|---|
+| **[compare_bytecode.ps1](compare_bytecode.ps1)** | **108 / 108 byte-identical**（⚠ #62 は**コンパイラ**の変更なのでこれが主検査） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **91 / 91 identical** |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **10 / 10 identical** |
+| `cargo build` | 警告 **0** |
+| `cargo test` | **742 passed** |
+| `cargo clippy` / `--all-targets` | **52 / 65**（増分 **0**。⚠ 下記参照） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・153 例題** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+| [ab_bench.ps1](ab_bench.ps1) | **配置ノイズの床の中**（上記 ②） |
+
+⚠ **clippy が一度 52 → 53 に増えた**。原因は `compile_nested_fn_def` の引数を
+`&Vec<Stmt>` から `&[Stmt]` にしたことで `Rc::from(&body[..])` が
+**redundant slicing** になったこと。`Rc::from(body)` へ直して 52 に戻した。
+⇒ **総数ではなく増分を見ること**（1 件でも増えたら原因を特定する）が効いた例。
+
+### 4. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「アームをメソッドへ出すだけの機械的作業」 | **おおむね当たり**。ただし `AttrCompoundAssign` の重複アーム統合と `emit_compound_via_stack` の畳み込みが付いてきた |
+| 「バイトコードが同一なら A/B は素通りする」 | **外れ**。`flat_bench` が **0.93x** を出し、**再現もした**。プローブを取るまで棄却できなかった |
+| 「再現したなら実差だろう」 | **外れ**。**`mod` 宣言の順序を変えただけで同じ 0.929x が出た** ＝ 配置の影響 |
+| 「引数を `&[T]` にするのは無害」 | **半分外れ**。`&body[..]` が冗長になり clippy が 1 件増えた（気づけたのは**増分**を見ていたから） |
+| 「`compile_stmt` は 300 行台まで落ちる」 | **当たり**（371 行・最大アーム 34 行） |

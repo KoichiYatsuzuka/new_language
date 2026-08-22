@@ -21,7 +21,8 @@
 // | [`emit`] | 命令発行のプリミティブ・書き込み先の決定・型特化の判定 |
 // | [`calls`] | 呼び出し（引数・FFI 情報・書き戻し先・async 投入） |
 // | [`control`] | `try`/`finally`/`match` 文と脱出時の巻き戻し |
-// | [`stmt`] | `compile_stmt` |
+// | [`stmt`] | `compile_stmt`（**振り分け表**）＋ `for` / `let` / 入れ子 `fn` / `let a,b=t` |
+// | [`stmt_assign`] | 代入族（`=` / `<op>=` / 属性 / 添字）。#62 で分離 |
 // | [`expr`] | `compile_expr` |
 // | [`block_expr`] | ブロック式 5 種 |
 //
@@ -46,6 +47,7 @@ mod emit;
 mod entry;
 mod expr;
 mod stmt;
+mod stmt_assign;
 
 pub use diag::expr_kind;
 /// `vm_builtin_names_are_all_handled`（#22-d）専用の再エクスポート。
