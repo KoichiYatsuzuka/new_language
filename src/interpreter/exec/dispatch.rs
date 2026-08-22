@@ -1,15 +1,16 @@
 // exec/dispatch.rs — exec のメインディスパッチャ: 文の種類に応じて各専用メソッドへ委譲する。
 
+// ⚠ #58 で `Stmt::Import` の本体（210 行）を `exec/modules.rs` へ移したので、
+// このファイルは**もう import 関連の型を一切知らない**（`PathBuf` / `ModuleState` /
+// `Value` / `use super::*` はそこでだけ要るものだった）。**ディスパッチ表に必要な物だけ**を残す。
 use {
-    std::path::PathBuf,
     crate::ast::Stmt,
     crate::interpreter::{
         debugger::DbgMode, ExecResult,
-        Interpreter, ModuleState, Value, Var,
+        Interpreter, Var,
         GENERATOR_YIELDS,
     },
 };
-use super::*;
 
 impl Interpreter {
     /// 文（`Stmt`）を実行して `ExecResult` を返す。各 Stmt バリアントを専用メソッドに委譲する。
@@ -157,216 +158,14 @@ impl Interpreter {
             Stmt::Freeze(name, span) => self.exec_freeze(name, span),
             Stmt::Raise { exc, span } => self.exec_raise(exc, span),
 
+            // ⚠ 本体は `exec/modules.rs` の `exec_import`（#58 で 210 行のアームを切り出した）。
             Stmt::Import {
                 lang,
                 module,
                 with_file,
                 alias,
                 body,
-            } => {
-                let ns = if lang == "cpp-dll" || lang == "cpp-lib" {
-                    let file_path = module.first().map(|s| s.as_str()).unwrap_or("");
-                    let cache_key = (lang.clone(), PathBuf::from(file_path));
-                    if let Some(ModuleState::Loaded(cached)) =
-                        self.module_cache.get(&cache_key).cloned()
-                    {
-                        cached
-                    } else {
-                        self.module_cache
-                            .insert(cache_key.clone(), ModuleState::Loading);
-                        let ns = self.load_cpp_module(lang, file_path, with_file.as_deref())?;
-                        self.module_cache
-                            .insert(cache_key, ModuleState::Loaded(ns.clone()));
-                        ns
-                    }
-                } else if lang == "cs-dll" {
-                    let stub_ns = self.exec_module(lang, module, body)?;
-                    // Locate the NativeAOT bridge DLL next to the managed DLL.
-                    let managed_name = module.last().unwrap();
-                    let native_dll_name = format!("{managed_name}_native.dll");
-                    let sub_dir: PathBuf = module[..module.len().saturating_sub(1)].iter().collect();
-                    let bridge_path = {
-                        let mut found: Option<PathBuf> = None;
-                        for search_dir in &self.python_search_dirs {
-                            let c = search_dir.join(&sub_dir).join(&native_dll_name);
-                            if c.exists() { found = Some(c); break; }
-                            let c2 = search_dir.join(&native_dll_name);
-                            if c2.exists() { found = Some(c2); break; }
-                        }
-                        if found.is_none() {
-                            let c = sub_dir.join(&native_dll_name);
-                            if c.exists() { found = Some(c); }
-                        }
-                        if found.is_none() {
-                            let c = PathBuf::from(&native_dll_name);
-                            if c.exists() { found = Some(c); }
-                        }
-                        found.map(std::rc::Rc::new)
-                    };
-                    if let Some(ref bp) = bridge_path {
-                        if let Err(e) = crate::interpreter::cs_dll_runtime::load_bridge(bp.as_ref()) {
-                            eprintln!("Warning: cs-dll bridge not loaded: {e}");
-                        } else {
-                            let bp_str = bp.to_string_lossy().into_owned();
-                            let mut patched = (*stub_ns).clone();
-                            for val in patched.members.values_mut() {
-                                if let Value::Class(cls) = val {
-                                    let mut new_cls = cls.deep_clone();
-                                    new_cls.class_vars.insert(
-                                        "__cs_bridge_path__".to_string(),
-                                        Value::str(bp_str.clone()),
-                                    );
-                                    *val = Value::Class(std::rc::Rc::new(new_cls));
-                                }
-                            }
-                            return {
-                                let bind_name = alias.clone().unwrap_or_else(|| module.last().unwrap().clone());
-                                self.declare_var(bind_name, Var::new(Value::Namespace(std::rc::Rc::new(patched)), false));
-                                Ok(ExecResult::Normal)
-                            };
-                        }
-                    }
-                    stub_ns
-                } else if lang == "cs-proc" {
-                    let stub_ns = self.exec_module(lang, module, body)?;
-                    // Locate the cs-proc host executable.
-                    // Searches for {Name}_proc.exe first, then {Name}.exe.
-                    let managed_name = module.last().unwrap();
-                    let sub_dir: PathBuf = module[..module.len().saturating_sub(1)].iter().collect();
-                    let proc_path = {
-                        let candidates_names = [
-                            format!("{managed_name}_proc.exe"),
-                            format!("{managed_name}.exe"),
-                        ];
-                        let mut found: Option<PathBuf> = None;
-                        'outer: for name in &candidates_names {
-                            for search_dir in &self.python_search_dirs {
-                                let c = search_dir.join(&sub_dir).join(name);
-                                if c.exists() { found = Some(c); break 'outer; }
-                                let c2 = search_dir.join(name);
-                                if c2.exists() { found = Some(c2); break 'outer; }
-                                // Single-segment: also try source_dir/name_dir/exe_name
-                                if module.len() == 1 {
-                                    let c3 = search_dir.join(managed_name).join(name);
-                                    if c3.exists() { found = Some(c3); break 'outer; }
-                                }
-                            }
-                            let c = sub_dir.join(name);
-                            if c.exists() { found = Some(c); break; }
-                            // Single-segment CWD fallback: managed_name/exe_name
-                            if module.len() == 1 {
-                                let c2 = PathBuf::from(managed_name).join(name);
-                                if c2.exists() { found = Some(c2); break; }
-                            }
-                            let c = PathBuf::from(name);
-                            if c.exists() { found = Some(c); break; }
-                        }
-                        found
-                    };
-                    if let Some(ref pp) = proc_path {
-                        match crate::interpreter::cs_proc_runtime::launch_proc(pp.as_ref()) {
-                            Err(e) => eprintln!("Warning: cs-proc host not started: {e}"),
-                            Ok(()) => {
-                                let pp_str = pp.to_string_lossy().into_owned();
-                                let mut patched = (*stub_ns).clone();
-                                for val in patched.members.values_mut() {
-                                    if let Value::Class(cls) = val {
-                                        let mut new_cls = cls.deep_clone();
-                                        new_cls.class_vars.insert(
-                                            "__cs_proc_path__".to_string(),
-                                            Value::str(pp_str.clone()),
-                                        );
-                                        *val = Value::Class(std::rc::Rc::new(new_cls));
-                                    }
-                                }
-                                return {
-                                    let bind_name = alias.clone().unwrap_or_else(|| module.last().unwrap().clone());
-                                    self.declare_var(bind_name, Var::new(Value::Namespace(std::rc::Rc::new(patched)), false));
-                                    Ok(ExecResult::Normal)
-                                };
-                            }
-                        }
-                    }
-                    stub_ns
-                } else if lang == "js-proc" {
-                    // import[js-proc]: Node.js IPC サブプロセス経由で JS モジュールを呼び出す。
-                    // 1. ar_config.json から node_path と bridge_script を読み込む
-                    // 2. ブリッジプロセスを起動（キャッシュ済みなら再利用）
-                    // 3. list 操作でモジュールのエクスポート関数名を取得
-                    // 4. 各関数を Value::JsProcFn としてネームスペースに登録
-                    let cfg = find_js_config(&self.python_search_dirs);
-                    match cfg {
-                        Err(e) => {
-                            eprintln!("Warning: js-proc: {e}");
-                            self.exec_module(lang, module, body)?
-                        }
-                        Ok((node_exe, bridge_script, bridge_root)) => {
-                            let bridge_key = bridge_script
-                                .canonicalize()
-                                .unwrap_or_else(|_| bridge_script.clone())
-                                .to_string_lossy()
-                                .into_owned();
-
-                            match crate::interpreter::js_proc_runtime::launch_proc(
-                                &node_exe, &bridge_script, &bridge_root,
-                            ) {
-                                Err(e) => {
-                                    eprintln!("Warning: js-proc bridge not started: {e}");
-                                    self.exec_module(lang, module, body)?
-                                }
-                                Ok(()) => {
-                                    let module_name = module.join("/");
-                                    let fn_names = crate::interpreter::js_proc_runtime::list_functions(
-                                        &bridge_key, &module_name,
-                                    ).unwrap_or_else(|e| {
-                                        eprintln!("Warning: js-proc list_functions: {e}");
-                                        vec![]
-                                    });
-
-                                    let mut members = std::collections::HashMap::new();
-                                    for fn_name in fn_names {
-                                        members.insert(fn_name.clone(), Value::JsProcFn(Box::new(
-                                            crate::interpreter::JsProcData {
-                                                bridge_key:  bridge_key.clone(),
-                                                module_name: module_name.clone(),
-                                                fn_name,
-                                            },
-                                        )));
-                                    }
-                                    let ns = std::rc::Rc::new(crate::interpreter::NamespaceData {
-                                        name: module.join("."),
-                                        members,
-                                    });
-                                    let bind_name = alias.clone()
-                                        .unwrap_or_else(|| module.last().unwrap().clone());
-                                    self.declare_var(
-                                        bind_name,
-                                        Var::new(Value::Namespace(ns), false),
-                                    );
-                                    return Ok(ExecResult::Normal);
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    self.exec_module(lang, module, body)?
-                };
-                // Default bind name: for cpp imports use the file stem; otherwise last module segment
-                let bind_name = alias.clone().unwrap_or_else(|| {
-                    if lang == "cpp-dll" || lang == "cpp-lib" {
-                        let path = module.first().map(|s| s.as_str()).unwrap_or("lib");
-                        std::path::Path::new(path)
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("lib")
-                            .to_string()
-                    } else {
-                        module.last().unwrap().clone()
-                    }
-                });
-                self.declare_var(bind_name, Var::new(Value::Namespace(ns), false));
-                Ok(ExecResult::Normal)
-            }
+            } => self.exec_import(lang, module, with_file.as_deref(), alias.as_deref(), body),
             Stmt::FromImport {
                 lang,
                 module,

@@ -166,6 +166,18 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   ⚠ **普段の実行では踏まない**（子の stderr が数 KB を超えて初めて発火）ので、新しく子プロセスを
   起こすスクリプトを書いたら **`AR_VM_DUMP=1` を付けて回して確かめる**
   （`bench_branch.ar` で 7KB 出る ＝ そのまま負の対照になる・#38）。
+- **⚠⚠ `ReadToEndAsync` でも足りない — 孫プロセスが生き残るとパイプが閉じない**（#58）。
+  `import[js-proc]` は **node のブリッジを孫として起こし、それが arrow.exe より長生きする**。
+  孫はパイプの**書き込み端を握ったまま**なので、`WaitForExit` が返った後の
+  **`$task.Result` が永久に完了しない**（親は無限に待つ）。
+  ⚠ **症状は §4 の逐次 `ReadToEnd` と見分けが付かない**（CPU 0 のまま生きている）が、
+  **原因も直し方も別**。⇒ 見分け方は「**`arrow.exe` は既に消えているか**」
+  （`Get-Process` に子が居らず node/dotnet だけ残っていれば孫の握りっぱなし）。
+  手は **`Start-Process -RedirectStandardOutput/-RedirectStandardError` でファイルへ落として
+  終了後に読む**（ファイルハンドルは孫が持っていても読み出しを妨げない・
+  [compare_import_paths.ps1](../../../compare_import_paths.ps1)）。
+  ⚠ [compare_bytecode.ps1](../../../compare_bytecode.ps1) が `js_proc_*` / `cs_proc_app` を
+  skip リストに入れているのは**この理由**（当時は理由を書いていなかったので #58 で踏み直した）。
 - **native exe の stderr を `2>&1` で受けると PS5.1 が ErrorRecord 化** して exit 0 でも失敗扱いに
   なる。`Start-Process -PassThru` の `ExitCode` も当てにならない
   （`System.Diagnostics.Process` を直接使う）。

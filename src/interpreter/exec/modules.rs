@@ -2,7 +2,7 @@
 
 use crate::ast::Resolution;
 use {
-    std::collections::HashMap, std::path::PathBuf,
+    std::collections::HashMap, std::path::{Path, PathBuf},
     std::rc::Rc, std::sync::Arc,
     crate::ast::Stmt,
     crate::interpreter::{
@@ -13,6 +13,287 @@ use {
 use super::*;
 
 impl Interpreter {
+    /// `import[lang] a.b as c` の実行（#58 で `exec` から切り出し）。
+    ///
+    /// ⚠ **言語ごとに違うのは「名前空間の作り方」だけ**で、束縛（`declare_var`）は共通。
+    /// #58 以前は cs-dll / cs-proc / js-proc の 3 経路が名前空間を作った直後に
+    /// **自分で `declare_var` して早期 return** していたが、その 3 箇所の束縛名は
+    /// 共通の末尾と**逐語で同じ式**だった（`alias` か `module.last()` ＝ この 3 言語では
+    /// `import_bind_name` の cpp 判定が必ず偽になる）。⇒ 早期 return を畳み、
+    /// 各経路は**名前空間を返すだけ**にしてある。
+    pub(crate) fn exec_import(
+        &mut self,
+        lang: &str,
+        module: &[String],
+        with_file: Option<&str>,
+        alias: Option<&str>,
+        body: &[Stmt],
+    ) -> Result<ExecResult, String> {
+        let ns = match lang {
+            "cpp-dll" | "cpp-lib" => self.import_cpp_module(lang, module, with_file)?,
+            "cs-dll" => self.import_cs_dll(lang, module, body)?,
+            "cs-proc" => self.import_cs_proc(lang, module, body)?,
+            "js-proc" => self.import_js_proc(lang, module, body)?,
+            _ => self.exec_module(lang, module, body)?,
+        };
+        let bind_name = match alias {
+            Some(a) => a.to_string(),
+            None => Self::import_bind_name(lang, module),
+        };
+        self.declare_var(bind_name, Var::new(Value::Namespace(ns), false));
+        Ok(ExecResult::Normal)
+    }
+
+    /// `import` の既定の束縛名（`as` が無いとき）。
+    /// cpp 系だけ**ヘッダ/DLL のファイル名（stem）**で、他はモジュールパスの末尾。
+    fn import_bind_name(lang: &str, module: &[String]) -> String {
+        if lang == "cpp-dll" || lang == "cpp-lib" {
+            let path = module.first().map(|s| s.as_str()).unwrap_or("lib");
+            std::path::Path::new(path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("lib")
+                .to_string()
+        } else {
+            module.last().unwrap().clone()
+        }
+    }
+
+    /// `import[cpp-dll]` / `import[cpp-lib]`。
+    /// ⚠ キャッシュキーは**ヘッダのパス**（`exec_module` の `module.join("/")` ではない）。
+    fn import_cpp_module(
+        &mut self,
+        lang: &str,
+        module: &[String],
+        with_file: Option<&str>,
+    ) -> Result<Rc<NamespaceData>, String> {
+        let file_path = module.first().map(|s| s.as_str()).unwrap_or("");
+        let cache_key = (lang.to_string(), PathBuf::from(file_path));
+        if let Some(ModuleState::Loaded(cached)) = self.module_cache.get(&cache_key).cloned() {
+            return Ok(cached);
+        }
+        self.module_cache
+            .insert(cache_key.clone(), ModuleState::Loading);
+        let ns = self.load_cpp_module(lang, file_path, with_file)?;
+        self.module_cache
+            .insert(cache_key, ModuleState::Loaded(ns.clone()));
+        Ok(ns)
+    }
+
+    /// `import[cs-dll]`。スタブ名前空間を作ってから NativeAOT ブリッジ DLL を探して読み込み、
+    /// 見つかった DLL のパスを各クラスへ焼き込む。
+    ///
+    /// ⚠ **ブリッジが無い／読み込めない場合はスタブのまま返す**（警告のみ・従来どおり）。
+    fn import_cs_dll(
+        &mut self,
+        lang: &str,
+        module: &[String],
+        body: &[Stmt],
+    ) -> Result<Rc<NamespaceData>, String> {
+        let stub_ns = self.exec_module(lang, module, body)?;
+        let managed_name = module.last().unwrap();
+        let native_dll_name = format!("{managed_name}_native.dll");
+        let sub_dir: PathBuf = module[..module.len().saturating_sub(1)].iter().collect();
+
+        let Some(bp) = self.find_cs_dll_bridge(&sub_dir, &native_dll_name) else {
+            return Ok(stub_ns);
+        };
+        if let Err(e) = crate::interpreter::cs_dll_runtime::load_bridge(&bp) {
+            eprintln!("Warning: cs-dll bridge not loaded: {e}");
+            return Ok(stub_ns);
+        }
+        Ok(Self::inject_class_var(
+            &stub_ns,
+            "__cs_bridge_path__",
+            &bp.to_string_lossy(),
+        ))
+    }
+
+    /// `{Name}_native.dll` の探索（`import[cs-dll]`）。
+    ///
+    /// ⚠ **`find_cs_proc_host` の探索とは順序も候補も違う**ので畳んでいない（#58）。
+    /// こちらは「全 `python_search_dirs` を先に見てから CWD 側へ落ちる」1 候補名の探索。
+    fn find_cs_dll_bridge(&self, sub_dir: &Path, native_dll_name: &str) -> Option<PathBuf> {
+        for search_dir in &self.python_search_dirs {
+            let c = search_dir.join(sub_dir).join(native_dll_name);
+            if c.exists() {
+                return Some(c);
+            }
+            let c2 = search_dir.join(native_dll_name);
+            if c2.exists() {
+                return Some(c2);
+            }
+        }
+        let c = sub_dir.join(native_dll_name);
+        if c.exists() {
+            return Some(c);
+        }
+        let c = PathBuf::from(native_dll_name);
+        if c.exists() {
+            return Some(c);
+        }
+        None
+    }
+
+    /// `import[cs-proc]`。スタブ名前空間を作ってからホスト実行ファイルを探して起動し、
+    /// そのパスを各クラスへ焼き込む。
+    ///
+    /// ⚠ **ホストが無い／起動できない場合はスタブのまま返す**（警告のみ・従来どおり）。
+    fn import_cs_proc(
+        &mut self,
+        lang: &str,
+        module: &[String],
+        body: &[Stmt],
+    ) -> Result<Rc<NamespaceData>, String> {
+        let stub_ns = self.exec_module(lang, module, body)?;
+        let managed_name = module.last().unwrap();
+        let sub_dir: PathBuf = module[..module.len().saturating_sub(1)].iter().collect();
+
+        let Some(pp) = self.find_cs_proc_host(module, managed_name, &sub_dir) else {
+            return Ok(stub_ns);
+        };
+        if let Err(e) = crate::interpreter::cs_proc_runtime::launch_proc(&pp) {
+            eprintln!("Warning: cs-proc host not started: {e}");
+            return Ok(stub_ns);
+        }
+        Ok(Self::inject_class_var(
+            &stub_ns,
+            "__cs_proc_path__",
+            &pp.to_string_lossy(),
+        ))
+    }
+
+    /// `{Name}_proc.exe` → `{Name}.exe` の順で探す（`import[cs-proc]`）。
+    ///
+    /// ⚠ **`find_cs_dll_bridge` とは探索順が違う**（畳まない理由）。こちらは
+    /// **候補名ごと**に「全 `python_search_dirs` → CWD 側」を回すので、
+    /// `{Name}_proc.exe` が CWD にあれば `{Name}.exe` が search_dir にあっても前者が勝つ。
+    /// さらに単一セグメントのときだけ `<dir>/{Name}/{exe}` も見る。
+    fn find_cs_proc_host(
+        &self,
+        module: &[String],
+        managed_name: &str,
+        sub_dir: &Path,
+    ) -> Option<PathBuf> {
+        let candidates_names = [
+            format!("{managed_name}_proc.exe"),
+            format!("{managed_name}.exe"),
+        ];
+        for name in &candidates_names {
+            for search_dir in &self.python_search_dirs {
+                let c = search_dir.join(sub_dir).join(name);
+                if c.exists() {
+                    return Some(c);
+                }
+                let c2 = search_dir.join(name);
+                if c2.exists() {
+                    return Some(c2);
+                }
+                // Single-segment: also try source_dir/name_dir/exe_name
+                if module.len() == 1 {
+                    let c3 = search_dir.join(managed_name).join(name);
+                    if c3.exists() {
+                        return Some(c3);
+                    }
+                }
+            }
+            let c = sub_dir.join(name);
+            if c.exists() {
+                return Some(c);
+            }
+            // Single-segment CWD fallback: managed_name/exe_name
+            if module.len() == 1 {
+                let c2 = PathBuf::from(managed_name).join(name);
+                if c2.exists() {
+                    return Some(c2);
+                }
+            }
+            let c = PathBuf::from(name);
+            if c.exists() {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    /// `import[js-proc]`。Node.js の IPC サブプロセス経由で JS モジュールを呼ぶ。
+    /// 1. `ar_config.json` から node_path と bridge_script を読む
+    /// 2. ブリッジプロセスを起動（キャッシュ済みなら再利用）
+    /// 3. `list` 操作でエクスポート関数名を取得し `Value::JsProcFn` として登録
+    ///
+    /// ⚠ **設定が無い／起動できない場合はスタブ（`exec_module` の結果）へ落ちる**（従来どおり）。
+    fn import_js_proc(
+        &mut self,
+        lang: &str,
+        module: &[String],
+        body: &[Stmt],
+    ) -> Result<Rc<NamespaceData>, String> {
+        let (node_exe, bridge_script, bridge_root) = match find_js_config(&self.python_search_dirs)
+        {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("Warning: js-proc: {e}");
+                return self.exec_module(lang, module, body);
+            }
+        };
+        // ⚠ ブリッジの鍵は**起動前**に確定させる（起動の成否に依らず同じ鍵になる）。
+        let bridge_key = bridge_script
+            .canonicalize()
+            .unwrap_or_else(|_| bridge_script.clone())
+            .to_string_lossy()
+            .into_owned();
+
+        if let Err(e) = crate::interpreter::js_proc_runtime::launch_proc(
+            &node_exe,
+            &bridge_script,
+            &bridge_root,
+        ) {
+            eprintln!("Warning: js-proc bridge not started: {e}");
+            return self.exec_module(lang, module, body);
+        }
+
+        let module_name = module.join("/");
+        let fn_names =
+            crate::interpreter::js_proc_runtime::list_functions(&bridge_key, &module_name)
+                .unwrap_or_else(|e| {
+                    eprintln!("Warning: js-proc list_functions: {e}");
+                    vec![]
+                });
+
+        let mut members = HashMap::new();
+        for fn_name in fn_names {
+            members.insert(
+                fn_name.clone(),
+                Value::JsProcFn(Box::new(crate::interpreter::JsProcData {
+                    bridge_key: bridge_key.clone(),
+                    module_name: module_name.clone(),
+                    fn_name,
+                })),
+            );
+        }
+        Ok(Rc::new(NamespaceData {
+            name: module.join("."),
+            members,
+        }))
+    }
+
+    /// 名前空間中の**全クラス**に class 変数を 1 本注入した複製を返す（#58）。
+    /// cs-dll / cs-proc がブリッジのパスをクラスへ焼き込むのに使う
+    /// （#58 以前は**逐語で同じ 10 行**が 2 箇所にあった）。
+    fn inject_class_var(ns: &Rc<NamespaceData>, key: &str, value: &str) -> Rc<NamespaceData> {
+        let mut patched = (**ns).clone();
+        for val in patched.members.values_mut() {
+            if let Value::Class(cls) = val {
+                let mut new_cls = cls.deep_clone();
+                new_cls
+                    .class_vars
+                    .insert(key.to_string(), Value::str(value.to_string()));
+                *val = Value::Class(Rc::new(new_cls));
+            }
+        }
+        Rc::new(patched)
+    }
+
     /// モジュールの body を孤立スコープで実行し、`Value::Namespace` を返す。
     /// キャッシュを使用し、循環 import はエラーにする。
     pub(crate) fn exec_module(

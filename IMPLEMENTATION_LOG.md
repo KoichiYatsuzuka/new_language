@@ -6516,3 +6516,128 @@ A/B は「そう言えることの確認」であって判断材料ではない�
 | 「17 フィールド × 参照多数で大工事だろう」 | **外れ**。`self.<field>` の参照は全部で **48 箇所**しかなく、一括置換で足りた |
 | 「`entry.rs` は `..Compiler::base()` なので触らずに済む」 | **外れ**。5 入口が `n_locals` / `n_cells` の**初期値**をリテラルで渡していた（`self.` の grep には出ない） |
 | 「`Chunk` に `Default` を足すと要素型にも `Default` が要る」 | **外れ**。全部 `Vec`/`HashMap`/`usize` なので要素型は無関係 |
+
+---
+
+## #58 `exec` の `Stmt::Import` アーム 210 行を切り出す（2026-08-22・完了）
+
+保守性レーン第 2 弾の「A. ロジックフローが実際に絡んでいる」最優先枠。起票時の実測は
+「`exec` は 394 行で、**うち `Stmt::Import` の 1 アームが 210 行・最大ネスト 11**。
+残り 30 アームは全部 5〜21 行で `self.exec_*()` へ委譲している」。
+
+### 1. 何が異常だったか
+
+`exec` は**ディスパッチ表**である。30 アームは 1〜2 行で専用メソッドへ渡すのに、
+`Stmt::Import` だけが **4 言語ぶんの読み込み手順を丸ごと本文に持っていた**
+（cpp のキャッシュ／cs-dll のブリッジ DLL 探索／cs-proc のホスト exe 探索／js-proc の
+Node ブリッジ起動）。⇒ **「文の種類を振り分ける」以外の関心事が 1 箇所だけ混ざっていた**。
+
+### 2. 手法
+
+`exec/modules.rs` へ `exec_import` ＋ 補助 7 本を新設し、`exec` 側は 1 アーム 8 行の委譲にした。
+
+| | 前 | 後 |
+|---|---|---|
+| `exec()` | **394 行** | **192 行** |
+| `Stmt::Import` アーム | **210 行**・最大ネスト **11** | **8 行**（委譲のみ） |
+| 新設側の最大ネスト | — | **5** |
+| `exec/dispatch.rs` | 415 行 | **214 行** |
+| `exec/modules.rs` | 688 行 | **969 行** |
+
+新設したもの:
+
+| 関数 | 役割 |
+|---|---|
+| `exec_import` | 言語で分岐して名前空間を作り、共通の束縛をする（**23 行**） |
+| `import_bind_name` | `as` が無いときの既定の束縛名（cpp だけファイル stem） |
+| `import_cpp_module` | `cpp-dll`/`cpp-lib`。キャッシュキーは**ヘッダのパス** |
+| `import_cs_dll` / `find_cs_dll_bridge` | `{Name}_native.dll` を探して `load_bridge` |
+| `import_cs_proc` / `find_cs_proc_host` | `{Name}_proc.exe` → `{Name}.exe` を探して `launch_proc` |
+| `import_js_proc` | `ar_config.json` → ブリッジ起動 → `list_functions` → `JsProcFn` 登録 |
+| `inject_class_var` | 名前空間中の全クラスへ class 変数を 1 本注入した複製を返す |
+
+### 3. ⚠ 畳んだ重複 2 件（**どちらも逐語だったことを確かめてから畳んだ**）
+
+**(a) 早期 return 3 箇所 → 共通の末尾。** cs-dll / cs-proc / js-proc は名前空間を作った直後に
+**自分で `declare_var` して `return`** していた。その 3 箇所の束縛名は
+
+```rust
+alias.clone().unwrap_or_else(|| module.last().unwrap().clone())
+```
+
+で、共通の末尾は
+
+```rust
+alias.clone().unwrap_or_else(|| if lang == "cpp-dll" || lang == "cpp-lib" { …stem… }
+                                else { module.last().unwrap().clone() })
+```
+
+⇒ **この 3 言語では `if` が必ず偽**なので**逐語で同じ式**。早期 return を畳んで
+「各経路は名前空間を返すだけ」にできる。**畳めた根拠はこの 1 点だけ**なので doc に書いた。
+
+**(b) クラスへのパス焼き込み 10 行が 2 箇所に逐語で存在。** cs-dll の `__cs_bridge_path__` と
+cs-proc の `__cs_proc_path__` は、**キー名と値以外が 1 文字も違わなかった** ⇒ `inject_class_var` へ。
+
+### 4. ⚠ 畳まなかったもの（**理由を確かめてから残した**）
+
+`find_cs_dll_bridge` と `find_cs_proc_host` は**似ているが探索順が違う**:
+
+| | cs-dll | cs-proc |
+|---|---|---|
+| 候補名 | 1 つ（`{Name}_native.dll`） | 2 つ（`{Name}_proc.exe` → `{Name}.exe`） |
+| ループの入れ子 | search_dir を全部見てから CWD 側へ | **候補名ごと**に「search_dir 全部 → CWD 側」 |
+| 単一セグメント特例 | なし | `<dir>/{Name}/{exe}` と `{Name}/{exe}` を追加で見る |
+
+⇒ 畳むと **`{Name}_proc.exe` が CWD にあり `{Name}.exe` が search_dir にある**ときに
+勝つ方が変わる。**挙動が変わる統合はしない**（プランの「2 実装の差／最適化の前提／
+本当の非対応の 3 通りがあり、外し方が違う」）。両者の doc に**畳まない理由**を明記した。
+
+### 5. 副産物 — `exec/dispatch.rs` が import の型を知らなくなった
+
+`std::path::PathBuf` / `ModuleState` / `Value` / `use super::*` が**すべて不要になった**
+（ぜんぶこのアームのためだけの import だった）。⇒ ディスパッチ表が本当に
+「文の種類を振り分けるだけ」のファイルになったことが、import 行からも読める。
+
+### 6. ⚠⚠ 検査網の穴を 2 つ見つけた（**#58 で最も価値のある部分**）
+
+**(a) `import[cs-proc]` を見ている差分ゲートが 1 つも無かった。**
+`cs_proc_app.ar` は**唯一の非 GUI の cs-proc 例題**だが、外部プロセスを起こすことを理由に
+[compare_bytecode.ps1](compare_bytecode.ps1) の skip リストに入っており、
+他のどのゲートも stdout を突き合わせていなかった。
+⇒ **3(a) で畳んだ早期 return のうち cs-proc 分は、既存の網では 1 つも検証できなかった。**
+新設した [compare_import_paths.ps1](compare_import_paths.ps1) に**明示のコメント付きで**入れた。
+
+**(b) `ReadToEndAsync` でも孫プロセスがパイプを握ると返らない。**
+最初に書いた [compare_import_paths.ps1](compare_import_paths.ps1) は
+`compare_bytecode.ps1` と同じ `ReadToEndAsync` 方式にしたが、`js_proc_test.ar` で**ハングした**。
+`arrow.exe` は終了して `WaitForExit` も返っているのに `$task.Result` が完了しない
+— **node のブリッジが孫として生き残り、パイプの書き込み端を握ったまま**だった。
+⇒ `Start-Process -RedirectStandardOutput/-RedirectStandardError` で**ファイルへ落とす**方式へ変更。
+⚠ **これは #38 の「逐次 `ReadToEnd` のデッドロック」とは別物**（症状は同じ「CPU 0 のまま生存」）。
+skill [vm-pitfalls](.claude/skills/vm-pitfalls/SKILL.md) §4 に**見分け方つきで**追記した。
+
+### 7. 検証（**全ゲート緑**）
+
+| ゲート | 結果 |
+|---|---|
+| **[compare_import_paths.ps1](compare_import_paths.ps1)**（新設） | **10 / 10 identical**（cs-dll・**cs-proc**・js-proc・cpp-dll/lib。⚠ 先に同一 exe の負の対照 10/10） |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **108 / 108 byte-identical** |
+| `cargo build` | 警告 **0** |
+| `cargo test` | **742 passed** |
+| `cargo clippy` / `--all-targets` | **52 / 65**（増分 **0**） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・153 例題** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+| [ab_bench.ps1](ab_bench.ps1) | 0.977〜1.029x（**退行なし**。1.15x 超の 3 本は 0.02s 台＝プロセス起動床のみ） |
+
+### 8. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「切り出すだけの機械的な移動」 | **半分外れ**。逐語の重複が 2 件（束縛 3 箇所・パス焼き込み 2 箇所）あり、**畳める根拠を確かめる作業が本体**だった |
+| 「cs-dll と cs-proc の探索は同じだろう」 | **外れ**。候補名の数・ループの入れ子・単一セグメント特例がすべて違う。**畳んだら挙動が変わる** |
+| 「既存ゲートで挙動不変は言える」 | **外れ**。cs-proc を見ている差分ゲートが **0 個**だった（新設して初めて言えるようになった） |
+| 「`compare_bytecode.ps1` と同じ方式で書けばよい」 | **外れ**。js-proc の**孫プロセス**が `ReadToEndAsync` を返さなくする（#38 とは別の原因） |
+| 「`exec` は全体的に肥大しているのだろう」（起票時） | **当たっていなかったのが判明済み**（起票時に確認）。異常は 1 アームだけで、切り出したら残り 192 行は全部 5〜21 行の委譲 |
