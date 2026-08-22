@@ -3,6 +3,8 @@
 /// パイプラインは以下の順序で処理を行う:
 ///   ソースファイル → Lexer（字句解析）→ Parser（構文解析）→ TypeChecker（静的型検査）→ Interpreter（実行）
 mod ast;
+// 「この文はどの名前を束縛するか」の唯一の定義（#59）。resolver / exec / vm-compiler が共有する。
+mod decl_names;
 #[cfg(test)]
 mod frontend_tests;
 mod interpreter;

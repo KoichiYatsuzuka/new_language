@@ -6641,3 +6641,144 @@ skill [vm-pitfalls](.claude/skills/vm-pitfalls/SKILL.md) §4 に**見分け方�
 | 「既存ゲートで挙動不変は言える」 | **外れ**。cs-proc を見ている差分ゲートが **0 個**だった（新設して初めて言えるようになった） |
 | 「`compare_bytecode.ps1` と同じ方式で書けばよい」 | **外れ**。js-proc の**孫プロセス**が `ReadToEndAsync` を返さなくする（#38 とは別の原因） |
 | 「`exec` は全体的に肥大しているのだろう」（起票時） | **当たっていなかったのが判明済み**（起票時に確認）。異常は 1 アームだけで、切り出したら残り 192 行は全部 5〜21 行の委譲 |
+
+---
+
+## #59 同じ木を歩く walker の統合 — 「宣言される名前」の唯一の定義（2026-08-22・完了）
+
+保守性レーン第 2 弾。起票時の実測は「`collect_declared_names` ⇔ `collect_program_globals` に
+**14 行の重複が機械検出され、しかも既にドリフト済み**」。
+
+### 1. ⚠⚠ 起票時の手法（「`collect_program_globals` 側へ委譲」）は**成立しなかった**
+
+読み比べた結果、この 2 本は**委譲できる関係ではない**:
+
+| | `collect_declared_names` | `collect_program_globals` |
+|---|---|---|
+| 再帰 | if/while/for/try の**本体へ降りる** | **降りない**（最上位の並びだけ） |
+| `for` ターゲット | 拾う | 見ない |
+| `except ... as` の別名 | 拾う | 見ない |
+| `NewTypeDef` | **拾わない** | 拾う |
+| `Import` / `FromImport` | **拾わない** | 拾う |
+
+⇒ 一方を他方に委譲すると**両方向に挙動が変わる**。**重複しているのは「再帰」ではなく
+「この 1 文が直接束縛する名前は何か」という判断だけ**で、それが 6 本に複製されていた。
+
+### 2. 真因は「重複」ではなく「**強制が無いこと**」
+
+6 本とも `match stmt { …宣言アーム… _ => {} }` の形で、`Stmt` に variant を足しても
+**コンパイラは何も言わない**。実際に起きたこと:
+
+- #27-c が `EnumDef` を `collect_program_globals` に**だけ**足した
+- #68 で `collect_declared_names` の抜けが**実バグとして発火**した
+
+⇒ **直すべきは「同じ判断を 1 箇所にする」ことではなく「足したら気づく形にする」こと。**
+
+### 3. 手法 — 2 段の強制
+
+新設 [src/decl_names.rs](src/decl_names.rs)（173 行）に唯一の定義を置いた。
+
+| 段 | 仕掛け | 効果 |
+|---|---|---|
+| ① | `each_declared_name` の `match stmt` を **exhaustive**（`_` を書かない） | **`Stmt` に variant を足すとまずここが壊れる** |
+| ② | `DeclOrigin`（束縛の出どころ 14 種）を消費側が**全て exhaustive match** | **束縛すると分類した瞬間、全 walker が壊れる** |
+
+⇒ 「この walker では拾うのか・拾わないのか」を**必ず決めさせられる**。
+拾わない場合も**バリアントを列挙して理由を書く**ので、**穴が見える形で残る**。
+
+### 4. ⚠ 統合した 4 本／しなかった 4 本（**理由を確かめてから決めた**）
+
+**統合した（既定が危険な側）**
+
+| walker | 旧 `_ => {}` の意味 | 危険度 |
+|---|---|---|
+| `exec::collect_declared_names` | 自由変数と誤認 → 外側を捕捉 | **#68 の実バグそのもの** |
+| `resolver::collect_bound_names` | シャドウを見落とし `Resolution::Global` を誤付与 | **静かに別の値を読む**（`collection.ar` で実測済み） |
+| `resolver::collect_program_globals` | グローバルと認識されず VM が bail | 停止する（声は出る） |
+| `vm::compiler::decls::collect_nested_decls` | slot が振られず `VmForceError` | 停止する（声は出る） |
+
+**統合しなかった（理由を `decl_names.rs` の doc に表で記録）**
+
+| walker | 理由 |
+|---|---|
+| `resolver::collect_base_decls` | 答える問いが違う（「**この文を理解できるか**」）。未知の文は `false` を返して解決を諦める＝**既定が安全側** |
+| `vm::compiler::decls::scan_shadow_stmts` | 集めるのは `for` ターゲットとの**衝突候補**で、定義文を意図的に入れない |
+| `resolver::collect_shadowing_binders` | 自前の判断を持たず `collect_bound_names` へ委譲するだけ（既に 1 本） |
+| `exec::collect_referenced_names` | **参照**を集める walker で、宣言とは逆向きの問い |
+
+### 5. ⚠⚠ `for` ターゲットと `except as` 別名は**わざと載せなかった**（採番順の罠）
+
+`collect_nested_decls` の `Try` アームは **「try 本体 → 別名 → handler 本体」の順**に slot を振る。
+`each_declared_name` が別名を報告してしまうと、`declare_stmt_slots` が**本体より先に**振るので
+**slot 番号が全部ずれ、`LoadLocal` が別の変数を読む**（プランの「採番はリゾルバと同順・同数」）。
+⇒ **順序に意味がある束縛はこの列挙器に載せない**と決め、モジュール doc に理由ごと書いた。
+同じ理由で `declare_stmt_slots` は**必ず再帰より前に呼ぶ**（従来の順が「宣言 → 部分式 → 本体」）。
+
+### 6. 調査 — `collect_bound_names` の `EnumDef` 抜けは**実バグではなかった**
+
+統合中に「`collect_bound_names` に `EnumDef`/`NewTypeDef` が無い」ことに気づき、
+#68 と同型の実バグを疑って 2 本の例題で確かめた:
+
+```
+enum Color:            # 最上位
+    RED
+    GREEN
+fn pick()->int:
+    if True:           # ← 入れ子ブロックの enum（base decl ではない）
+        enum Color:
+            BLUE
+        let c = Color.BLUE
+        return 42
+    return 0
+```
+
+| 実装 | 結果 |
+|---|---|
+| Rust（HEAD） | `42` |
+| `python -m impl_python` | `42` |
+
+⇒ **差分なし**。理由は **VM コンパイラが注釈より先に `slots` を引く**から
+（`collect_nested_decls` が `EnumDef` に slot を振っているので `Resolution::Global` が上書きされる）。
+プランの「**注釈は最適化ヒントであって意味論の根拠ではない**」（#15e）が防波堤として効いていた。
+⇒ **#59 では拾わないまま保存**し、`DeclOrigin::Enum | D::NewType => {}` のアームに
+**この実測と「直すとバイトコードが動くので独立タスク」**を書き残した。
+
+### 7. ⚠⚠ 負の対照 — 仕掛けが**実際に効くこと**を確かめた（#57 の教訓）
+
+「ゲートを作っただけでは守られない」ので、**わざと壊して検知力を測った**（どちらも実施後に復元）:
+
+| 実験 | 結果 |
+|---|---|
+| `DeclOrigin` に 1 バリアント追加 | **消費者 4 本ちょうど**が `E0004` で停止（`exec/mod.rs:107` / `resolver.rs:164` / `resolver.rs:202` / `vm/compiler/decls.rs:288`） |
+| `Stmt` に 1 variant 追加 | `src/decl_names.rs:95` が **6 件のうち最初**に停止 |
+
+⚠ 副産物: `Stmt` を exhaustive に受けている場所は src 全体で **6 箇所**しかない
+（`dispatch` / `templates` / `tw_stats` / `ast_value` / `type_check::stmt::check`、そして #59 の `decl_names`）。
+**#59 以前は、そのどれも「この文は名前を束縛するか」を問うていなかった。**
+
+### 8. 検証（**全ゲート緑**）
+
+| ゲート | 結果 |
+|---|---|
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **108 / 108 byte-identical** ＝ **slot 採番が 1 つも動いていない**（#59 で最重要の検査） |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **10 / 10 identical** |
+| `cargo build` | 警告 **0** |
+| `cargo test` | **742 passed** |
+| `cargo clippy` / `--all-targets` | **52 / 65**（増分 **0**） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・153 例題** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+| [ab_bench.ps1](ab_bench.ps1) | 0.987〜1.052x（**退行なし**。バイトコードが同一なので実行時は原理的に不変） |
+| #68 の例題（`enum_in_function.ar`） | 通過（クロージャからの enum 読み・入れ子 enum を含む） |
+
+### 9. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「`collect_declared_names` を `collect_program_globals` へ委譲する」（起票時の手法） | **外れ**。再帰範囲・受理する variant・`for`/`except` の扱いが全部違い、委譲すると**両方向に挙動が変わる** |
+| 「8 本を 1 本に畳む」 | **過剰**。畳めるのは「1 文が直接束縛する名前」という**判断だけ**で、降り方は本当に違う。4 本は**理由を確かめて残した** |
+| 「`collect_bound_names` の `EnumDef` 抜けも #68 と同じ実バグだろう」 | **外れ**。VM が注釈より先に `slots` を引くので覆い隠されていた（2 例題で実測） |
+| 「`for` ターゲットも列挙器に載せれば統合が進む」 | **外れ**。`Try` の採番順（本体→別名）が壊れて **`LoadLocal` が別の変数を読む**。載せてはいけない |
+| 「行数が減る」 | **外れ**。src は **+51 行**（`decl_names.rs` 173 行の新設ぶん）。#59 が買ったのは行数ではなく**強制** |

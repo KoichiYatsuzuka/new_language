@@ -146,51 +146,40 @@ fn collect_shadowing_binders(stmts: &[Stmt], out: &mut HashSet<String>) {
 }
 
 /// プログラム最上位で宣言される名前を集める（R2-b の `Resolution::Global` 判定用）。
+///
+/// ⚠ **最上位の並びだけを見る**（入れ子ブロックの宣言はグローバルではない）＝ 降りない walker。
+/// 直接の束縛の判断は [`crate::decl_names`] に集約してある（#59）。
+///
+/// ⚠ `enum` / `new_type` が抜けていたため `MyEnum` のような読みが `Resolution::Global` に
+/// ならず VM が bail していた（#27-c で修正）。**同じ抜けが `collect_declared_names` 側に
+/// 残って #68 の実バグになった** — その再発を止めるのが #59。
 fn collect_program_globals(stmts: &[Stmt]) -> HashSet<String> {
     let mut out = HashSet::new();
     for stmt in stmts {
-        match stmt {
-            Stmt::Let(n, _, _)
-            | Stmt::Const(n, _, _)
-            | Stmt::Mut(n, _, _)
-            | Stmt::Static(n, _, _) => {
-                out.insert(n.clone());
-            }
-            Stmt::LetTuple { targets, .. } => {
-                for t in targets {
-                    match t {
-                        TupleTarget::Let(n) | TupleTarget::Mut(n) | TupleTarget::Bare(n) => {
-                            out.insert(n.clone());
-                        }
-                        TupleTarget::Wildcard => {}
-                    }
+        crate::decl_names::each_declared_name(stmt, &mut |name, origin, _| {
+            use crate::decl_names::DeclOrigin as D;
+            // ⚠ **全バリアントを拾う**（最上位の束縛はすべてグローバル）。
+            // `|_|` で済ませず match で書くのは、`DeclOrigin` が増えたとき
+            // **ここでも判断を強制する**ため（#59 の仕掛け）。
+            match origin {
+                D::Let
+                | D::Mut
+                | D::Static
+                | D::TupleLet
+                | D::TupleMut
+                | D::Fn
+                | D::Gen
+                | D::Class
+                | D::Trait
+                | D::Protocol
+                | D::Enum
+                | D::NewType
+                | D::Import
+                | D::FromImport => {
+                    out.insert(name.to_string());
                 }
             }
-            Stmt::FnDef { name, .. }
-            | Stmt::GenDef { name, .. }
-            | Stmt::ClassDef { name, .. }
-            | Stmt::TraitDef { name, .. }
-            | Stmt::ProtocolDef { name, .. }
-            // `enum` / `new_type` も最上位に名前を作る（#27-c）。
-            // 抜けていたため `MyEnum` のような読みが `Resolution::Global` にならず、
-            // VM が「slot にもグローバルにも無い識別子」として bail していた。
-            | Stmt::EnumDef { name, .. }
-            | Stmt::NewTypeDef { name, .. } => {
-                out.insert(name.clone());
-            }
-            Stmt::Import { module, alias, .. } => {
-                let bind = alias.clone().or_else(|| module.last().cloned());
-                if let Some(b) = bind {
-                    out.insert(b);
-                }
-            }
-            Stmt::FromImport { names, .. } => {
-                for (orig, alias) in names {
-                    out.insert(alias.clone().unwrap_or_else(|| orig.clone()));
-                }
-            }
-            _ => {}
-        }
+        });
     }
     out
 }
@@ -207,24 +196,44 @@ fn collect_program_globals(stmts: &[Stmt]) -> HashSet<String> {
 /// **1 つでも該当したらその名前は `Resolution::Global` にしない**。
 fn collect_bound_names(body: &[Stmt], out: &mut HashSet<String>) {
     for stmt in body {
-        match stmt {
-            Stmt::Let(n, _, e) | Stmt::Const(n, _, e) | Stmt::Mut(n, _, e) => {
-                out.insert(n.clone());
-                collect_bound_in_expr(e, out);
-            }
-            Stmt::Static(n, e, _) => {
-                out.insert(n.clone());
-                collect_bound_in_expr(e, out);
-            }
-            Stmt::LetTuple { targets, value, .. } => {
-                for t in targets {
-                    match t {
-                        TupleTarget::Let(n) | TupleTarget::Mut(n) | TupleTarget::Bare(n) => {
-                            out.insert(n.clone());
-                        }
-                        TupleTarget::Wildcard => {}
-                    }
+        // ① この 1 文が直接束縛する名前（判断は [`crate::decl_names`] に集約・#59）。
+        crate::decl_names::each_declared_name(stmt, &mut |name, origin, _| {
+            use crate::decl_names::DeclOrigin as D;
+            match origin {
+                D::Let
+                | D::Mut
+                | D::Static
+                | D::TupleLet
+                | D::TupleMut
+                | D::Fn
+                | D::Gen
+                | D::Class
+                | D::Trait
+                | D::Protocol => {
+                    out.insert(name.to_string());
                 }
+                // ⚠⚠ **#59 時点で拾っていない既知の穴**（挙動を保存するため変えていない）。
+                // 拾わないと、入れ子ブロックで `enum E` を宣言した関数の中で
+                // 外側の同名グローバルが `Resolution::Global` のまま残る。
+                // **実害が出ていないのは VM コンパイラが注釈より先に `slots` を引くから**
+                // （#59 で実測確認: `if` の中の `enum` が外側の同名 enum を読むかを検査 → 読まない）。
+                // ⇒ 直すと `LoadGlobal` が動いてバイトコードが変わるので**独立タスク**にすること。
+                D::Enum | D::NewType => {}
+                // 関数本体の `import` は `collect_base_decls` が `false` を返して
+                // 関数ごと解決を諦めるので、ここへ来ても意味がない。
+                D::Import | D::FromImport => {}
+            }
+        });
+
+        // ② どこへ降りるか＋入れ子スコープの束縛（**この walker 固有**・保守的に広く取る）。
+        match stmt {
+            Stmt::Let(_, _, e) | Stmt::Const(_, _, e) | Stmt::Mut(_, _, e) => {
+                collect_bound_in_expr(e, out);
+            }
+            Stmt::Static(_, e, _) => {
+                collect_bound_in_expr(e, out);
+            }
+            Stmt::LetTuple { value, .. } => {
                 collect_bound_in_expr(value, out);
             }
             Stmt::For { targets, iter, body } => {
@@ -243,15 +252,13 @@ fn collect_bound_names(body: &[Stmt], out: &mut HashSet<String>) {
             Stmt::AsyncAssign { stmts, .. } => {
                 collect_bound_names(stmts, out);
             }
-            Stmt::FnDef { name, body, .. }
-            | Stmt::GenDef { name, body, .. }
-            | Stmt::ClassDef { name, body, .. }
-            | Stmt::TraitDef { name, body, .. } => {
-                out.insert(name.clone());
+            // ⚠ 名前は①が入れる。ここは**本体へ降りる**ためだけのアーム。
+            // `protocol` の本体はシグネチャ宣言だけなので降りない（従来どおり）。
+            Stmt::FnDef { body, .. }
+            | Stmt::GenDef { body, .. }
+            | Stmt::ClassDef { body, .. }
+            | Stmt::TraitDef { body, .. } => {
                 collect_bound_names(body, out);
-            }
-            Stmt::ProtocolDef { name, .. } => {
-                out.insert(name.clone());
             }
             Stmt::If { branches, else_body } => {
                 for (c, b) in branches {

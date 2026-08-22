@@ -6,7 +6,8 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use crate::ast::{Expr, Stmt, TupleTarget};
+// ⚠ `TupleTarget` はもう要らない（#59 でタプル分解の判断が `decl_names` へ移った）。
+use crate::ast::{Expr, Stmt};
 
 /// `ar_config.json` の `javascript` セクションを読んで
 /// `(node_exe, bridge_script, bridge_root)` を返す。
@@ -89,38 +90,46 @@ fn simple_hash(s: &str) -> u64 {
 // フリー変数分析ヘルパー（モジュールプライベート）
 // ---------------------------------------------------------------------------
 
+/// 本体が**自前で束縛する名前**を集める（クロージャの自由変数分析）。
+///
+/// 消費者は 3 つ（`exec::blocks::capture_env` / `vm::compiler::decls::nested_fn_free_names` /
+/// `vm::compiler::calls`）で、いずれも「参照名 − 自前名 ＝ 捕捉すべき自由変数」を出すのに使う。
+///
+/// ⚠ **直接の束縛の判断は [`crate::decl_names`] に集約してある**（#59）。
+/// ここが持つのは「**どこへ降りるか**」と「入れ子スコープの束縛（`for` ターゲット・
+/// `except ... as` の別名）」だけ。#68 の実バグ（`enum` の抜け）は、この 2 つを
+/// 分けずに 1 つの `match` に混ぜて `_ => {}` で落としていたのが原因だった。
 pub(crate) fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
     for stmt in stmts {
-        match stmt {
-            Stmt::Let(name, _, _)
-            | Stmt::Const(name, _, _)
-            | Stmt::Mut(name, _, _)
-            | Stmt::Static(name, _, _) => {
-                out.insert(name.clone());
-            }
-            Stmt::LetTuple { targets, .. } => {
-                for t in targets {
-                    match t {
-                        TupleTarget::Let(n) | TupleTarget::Mut(n) | TupleTarget::Bare(n) => {
-                            out.insert(n.clone());
-                        }
-                        TupleTarget::Wildcard => {}
-                    }
+        // ① この 1 文が直接束縛する名前（判断は 1 箇所・#59）。
+        crate::decl_names::each_declared_name(stmt, &mut |name, origin, _| {
+            use crate::decl_names::DeclOrigin as D;
+            match origin {
+                D::Let
+                | D::Mut
+                | D::Static
+                | D::TupleLet
+                | D::TupleMut
+                | D::Fn
+                | D::Gen
+                | D::Class
+                | D::Trait
+                | D::Protocol
+                | D::Enum => {
+                    out.insert(name.to_string());
                 }
+                // ⚠ **#59 時点で拾っていないもの**（挙動を変えないためそのまま保存した）。
+                // `new_type` は関数本体に書くと**パースが通らない**ので現れない（#68 の調査）。
+                D::NewType => {}
+                // 関数本体の `import` は `compile_stmt` にアームが無く VmForceError になるので
+                // VM 経路には現れない。⚠ **ツリーウォークの `capture_env` は到達しうる**ので
+                // ここは既知の穴。拾うとクロージャの捕捉が変わるため #59 では触らない。
+                D::Import | D::FromImport => {}
             }
-            Stmt::FnDef { name, .. }
-            | Stmt::GenDef { name, .. }
-            | Stmt::ClassDef { name, .. }
-            | Stmt::TraitDef { name, .. }
-            | Stmt::ProtocolDef { name, .. }
-            // ⚠ `EnumDef` は #27-c で `resolver::collect_program_globals` にだけ足され、
-            // **こちらへ足し忘れていた**（#68 で顕在化）。抜けていると `enum` を宣言する
-            // クロージャがその名前を「自由変数」と見なして外側を捕まえ、
-            // コンパイラが採番した slot とぶつかって `capture-slot-conflict` で bail する。
-            // ⇒ **同じ木を歩く walker が 2 つあるとずれる**の実例。統合は #59。
-            | Stmt::EnumDef { name, .. } => {
-                out.insert(name.clone());
-            }
+        });
+
+        // ② どこへ降りるか＋入れ子スコープの束縛（**この walker 固有**・#59 で統合しない差）。
+        match stmt {
             Stmt::For { targets, body, .. } => {
                 for t in targets {
                     out.insert(t.clone());
@@ -157,6 +166,7 @@ pub(crate) fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) 
                     collect_declared_names(body, out);
                 }
             }
+            // ⚠ 入れ子定義（`fn`/`class`…）の**本体には降りない**（別フレーム）。
             _ => {}
         }
     }

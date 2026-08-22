@@ -243,9 +243,12 @@ pub(super) fn scan_shadow_expr(
 }
 
 /// slot テーブルへ1つ宣言を追加する（既出名・`_` はスキップ）。
+///
+/// ⚠ `ty` は `Option<&String>`（#59）。[`crate::decl_names::each_declared_name`] が
+/// この形で型注釈を渡すので、変換を挟まずそのまま流せるようにしてある。
 pub(super) fn add_decl(
     name: &str,
-    ty: &Option<String>,
+    ty: Option<&String>,
     mutable: bool,
     slots: &mut HashMap<String, u16>,
     slot_mut: &mut Vec<bool>,
@@ -255,10 +258,65 @@ pub(super) fn add_decl(
     if name != "_" && !slots.contains_key(name) {
         slots.insert(name.to_string(), *n);
         slot_mut.push(mutable);
-        slot_type.push(ty.clone());
+        slot_type.push(ty.cloned());
         *n = n.checked_add(1)?;
     }
     Some(())
+}
+
+/// `stmt` が**直接束縛する名前**のうち、VM がフレーム slot を持たせるものだけ採番する（#59）。
+///
+/// 束縛の一覧は [`crate::decl_names::each_declared_name`] が持つ唯一の定義から取り、
+/// ここが決めるのは「**その種類に slot を振るか**」だけ。
+/// ⚠ `DeclOrigin` が増えるとこの `match` が壊れる — それが #59 の仕掛けなので
+/// `_ => {}` を足して黙らせないこと（#68 の実バグはこの強制が無かったせい）。
+///
+/// ⚠ **`for` ターゲットと `except ... as` の別名はここでは振らない**。
+/// `collect_nested_decls` の `Try` アームは「try 本体 → 別名 → handler 本体」の順に振るので、
+/// ここで先に振ると **slot 番号がずれる**（`decl_names` のモジュール doc 参照）。
+fn declare_stmt_slots(
+    stmt: &Stmt,
+    slots: &mut HashMap<String, u16>,
+    slot_mut: &mut Vec<bool>,
+    slot_type: &mut Vec<Option<String>>,
+    n: &mut u16,
+) -> Option<()> {
+    // ⚠ クロージャからは `?` で抜けられないので、slot 数の溢れはフラグで持ち帰る。
+    let mut overflow = false;
+    crate::decl_names::each_declared_name(stmt, &mut |name, origin, ty| {
+        use crate::decl_names::DeclOrigin as D;
+        let mutable = match origin {
+            D::Let | D::TupleLet => false,
+            D::Mut | D::TupleMut => true,
+            // 入れ子ブロック（`block:` 式・if/while の本体など）の `fn` / `enum`（#27-c / #68）。
+            // 名前は**そのブロックのローカル**なので slot を振る（関数本体直下の定義を
+            // base slot に採番するのと同じ扱い）。⚠ **本体には踏み込まない**（別フレーム）。
+            // ⚠ `fn` が抜けていたため `alias.ar` の `block->function` が、`enum` が抜けていたため
+            // `if:` の中の `enum` が、それぞれ「slot にもグローバルにも無い識別子」として
+            // bail していた — **採番 walker と `compile_stmt` の walker がずれていた**典型例。
+            D::Fn | D::Enum => false,
+            // ⚠ **slot を振らないもの**（振っても使われない or 振ってはいけない）:
+            // - `static mut` は記憶域が `Interpreter::static_cells`（span がキー）で slot を持たない
+            // - `gen`/`class`/`trait`/`protocol`/`new_type`/`import` は `compile_stmt` に
+            //   アームが無く、到達すれば bail する
+            D::Static
+            | D::Gen
+            | D::Class
+            | D::Trait
+            | D::Protocol
+            | D::NewType
+            | D::Import
+            | D::FromImport => return,
+        };
+        if add_decl(name, ty, mutable, slots, slot_mut, slot_type, n).is_none() {
+            overflow = true;
+        }
+    });
+    if overflow {
+        None
+    } else {
+        Some(())
+    }
 }
 
 /// ネストしたブロック内の `let`/`const`/`mut` 宣言に平坦 slot を割り当てる（再帰）。
@@ -273,42 +331,25 @@ pub(super) fn collect_nested_decls(
     n: &mut u16,
 ) -> Option<()> {
     for stmt in body {
+        // ① この 1 文が直接束縛する名前に slot を振る（判断は [`crate::decl_names`]・#59）。
+        //
+        // ⚠⚠ **②より先に呼ぶこと。** 従来の採番順は「その文の宣言 → 部分式 → 本体」で、
+        // `each_declared_name` は宣言順に報告するので、この順序でのみ **slot 番号が一致する**
+        // （ずれると `LoadLocal` が別の変数を読む — プランの「採番はリゾルバと同順・同数」）。
+        declare_stmt_slots(stmt, slots, slot_mut, slot_type, n)?;
+
+        // ② どこへ降りるか＋入れ子スコープの束縛（**この walker 固有**）。
         match stmt {
-            Stmt::Let(name, ty, e) | Stmt::Const(name, ty, e) => {
-                add_decl(name, ty, false, slots, slot_mut, slot_type, n)?;
+            // 初期化式の中のブロック式にも宣言がありうる。名前は①が振り済み。
+            Stmt::Let(_, _, e) | Stmt::Const(_, _, e) | Stmt::Mut(_, _, e) => {
                 collect_expr_decls(e, slots, slot_mut, slot_type, n)?;
-            }
-            Stmt::Mut(name, ty, e) => {
-                add_decl(name, ty, true, slots, slot_mut, slot_type, n)?;
-                collect_expr_decls(e, slots, slot_mut, slot_type, n)?;
-            }
-            // 入れ子ブロック（if/for/while/try のボディ）の `enum`（#68）。
-            //
-            // ⚠ **`compile_stmt` にアームを足したら必ずここも見る**（#27-c で 2 回踏んだ罠）。
-            // 足す前は `slot_of` が引けず、`if:` の中に `enum` を書いた関数が丸ごと
-            // `VmForceError` になっていた（本体直下の `enum` だけが通る、という中途半端な状態）。
-            // 値式（`A = 1 + 2`）は定義文脈で評価されるので `collect_expr_decls` は要らない。
-            Stmt::EnumDef { name, .. } => {
-                add_decl(name, &None, false, slots, slot_mut, slot_type, n)?
             }
             // 入れ子の `let a, b = t`（#27-c）。ツリーウォークはスコープを push するので
             // **反復ごとに宣言し直せる**が、slot を割り当てないとグローバル宣言に落ちて
             // 2 周目で「already declared」になる（`built_in.ar` の `zx` が実例）。
             // ここで slot に載せることで、最上位の `let a, b = t` 文（slot 無し）と
             // 入れ子（slot 有り）をコンパイラが区別できる。
-            Stmt::LetTuple { targets, value, .. } => {
-                for t in targets {
-                    match t {
-                        crate::ast::TupleTarget::Wildcard => {}
-                        crate::ast::TupleTarget::Let(name)
-                        | crate::ast::TupleTarget::Bare(name) => {
-                            add_decl(name, &None, false, slots, slot_mut, slot_type, n)?
-                        }
-                        crate::ast::TupleTarget::Mut(name) => {
-                            add_decl(name, &None, true, slots, slot_mut, slot_type, n)?
-                        }
-                    }
-                }
+            Stmt::LetTuple { value, .. } => {
                 collect_expr_decls(value, slots, slot_mut, slot_type, n)?;
             }
             Stmt::Expr(e)
@@ -318,15 +359,6 @@ pub(super) fn collect_nested_decls(
             | Stmt::Return(Some(e)) => collect_expr_decls(e, slots, slot_mut, slot_type, n)?,
             Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => {
                 collect_expr_decls(value, slots, slot_mut, slot_type, n)?
-            }
-            // 入れ子ブロック（`block:` 式・if/while の本体など）の中の `fn` 定義（#27-c）。
-            // 名前は**そのブロックのローカル**なので slot を振る（関数本体直下の `fn` を
-            // base slot に採番するのと同じ扱い）。⚠ **本体には踏み込まない**（別フレーム）。
-            // ⚠ ここが抜けていたため `alias.ar` の `block->function` が
-            // 「slot にもグローバルにも無い識別子」として bail していた
-            //   — 採番 walker と `compile_stmt` の walker がずれていた典型例。
-            Stmt::FnDef { name, .. } => {
-                add_decl(name, &None, false, slots, slot_mut, slot_type, n)?;
             }
             Stmt::AttrAssign { target, value }
             | Stmt::AttrCompoundAssign { target, value, .. } => {
@@ -355,7 +387,7 @@ pub(super) fn collect_nested_decls(
             Stmt::For { targets, iter, body } => {
                 // ループ変数は可変（tree-walk は Var::new(item, true)）。型注釈なし。
                 for t in targets {
-                    add_decl(t, &None, true, slots, slot_mut, slot_type, n)?;
+                    add_decl(t, None, true, slots, slot_mut, slot_type, n)?;
                 }
                 collect_expr_decls(iter, slots, slot_mut, slot_type, n)?;
                 collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
@@ -373,7 +405,7 @@ pub(super) fn collect_nested_decls(
                 for h in handlers {
                     // `except E as e:` の別名は不変束縛（tree-walk は Var::new(exc, false)）。
                     if let Some(alias) = &h.name {
-                        add_decl(alias, &None, false, slots, slot_mut, slot_type, n)?;
+                        add_decl(alias, None, false, slots, slot_mut, slot_type, n)?;
                     }
                     collect_nested_decls(&h.body, slots, slot_mut, slot_type, n)?;
                 }
@@ -421,7 +453,7 @@ pub(super) fn collect_expr_decls(
             }
         }
         Expr::ForExpr { target, iter, body, .. } => {
-            add_decl(target, &None, true, slots, slot_mut, slot_type, n)?;
+            add_decl(target, None, true, slots, slot_mut, slot_type, n)?;
             rec!(iter);
             collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
         }
