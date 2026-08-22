@@ -5,7 +5,8 @@ use {
     crate::ast::CallArg,
     crate::interpreter::{
         FnValue, GeneratorState,
-        Interpreter, RaisedError, Value, RAISE_SENTINEL,
+        // ⚠ `RaisedError` / `RAISE_SENTINEL` は #63 で `async_manager_methods.rs` へ移った。
+        Interpreter, Value,
     },
 };
 
@@ -217,69 +218,12 @@ impl Interpreter {
                 ))
             }
             Value::FrozenList { ref state, ref layout } => {
-                match method_name {
-                    "__iter__" => {
-                        Self::expect_no_args_evaled(&evaled, "fixed_list", "__iter__")?;
-                        let st = state.borrow();
-                        let values = (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
-                        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                            values,
-                            index: 0,
-                        }))))
-                    }
-                    "__contains__" => {
-                        let needle = Self::one_arg_evaled(evaled, "fixed_list", "__contains__")?;
-                        let st = state.borrow();
-                        let found = (0..st.len)
-                            .map(|i| layout.reconstruct_item(&st.data, i))
-                            .any(|v| self.values_eq(&v, &needle));
-                        Ok(Value::Bool(found))
-                    }
-                    "allocated_size" => {
-                        Self::expect_no_args_evaled(&evaled, "fixed_list", "allocated_size")?;
-                        Ok(Value::Int(state.borrow().allocated_size as i64))
-                    }
-                    "append" => {
-                        let item = Self::one_arg_evaled(evaled, "fixed_list", "append")?;
-                        match item {
-                            Value::Instance(inst_rc) => {
-                                let inst = inst_rc.borrow();
-                                if inst.class.name != layout.class_name {
-                                    return Err(format!(
-                                        "TypeError: fixed_list.append(): expected instance of '{}', got '{}'",
-                                        layout.class_name, inst.class.name
-                                    ));
-                                }
-                                let mut st = state.borrow_mut();
-                                // Grow capacity when full (double, minimum 1)
-                                if st.len >= st.allocated_size {
-                                    let new_cap = (st.allocated_size * 2).max(1);
-                                    st.data.resize(new_cap * layout.stride, 0);
-                                    st.allocated_size = new_cap;
-                                }
-                                // Write each field recursively (alphabetical order)
-                                let base_offset = st.len * layout.stride;
-                                let mut tmp = Vec::with_capacity(layout.stride);
-                                Self::write_flat_instance(&inst, &layout.fields, &mut tmp)
-                                    .ok_or_else(|| format!(
-                                        "TypeError: fixed_list.append(): field type mismatch for class '{}'",
-                                        layout.class_name
-                                    ))?;
-                                st.data[base_offset..base_offset + layout.stride]
-                                    .copy_from_slice(&tmp);
-                                st.len += 1;
-                                Ok(Value::None)
-                            }
-                            other => Err(format!(
-                                "TypeError: fixed_list.append(): expected class instance, got '{}'",
-                                self.type_name(&other)
-                            )),
-                        }
-                    }
-                    _ => Err(format!(
-                        "AttributeError: 'fixed_list' object has no method '{method_name}'"
-                    )),
-                }
+                self.eval_frozen_list_method(
+                    state.clone(),
+                    layout.clone(),
+                    method_name,
+                    evaled,
+                )
             }
             Value::Str(s) => self.eval_str_method(s.clone(), method_name, evaled),
             Value::Complex(re, im) => {
@@ -309,77 +253,7 @@ impl Interpreter {
             Value::Instance(_) => {
                 self.call_instance_method_evaled(obj, method_name, evaled, cache.map(|c| &c.2), None)
             }
-            Value::Class(cls) => {
-                // cs-dll static method dispatch
-                if let Some(Value::Str(bp)) = cls.class_vars.get("__cs_bridge_path__") {
-                    let bp_path = std::path::PathBuf::from(&**bp);
-                    let class_name = cls.name.clone();
-                    let ret_type: Option<String> = cls
-                        .methods
-                        .get(method_name)
-                        .and_then(|overloads| overloads.first())
-                        .and_then(|f| f.return_type.clone());
-                    if let Some(bridge) = crate::interpreter::cs_dll_runtime::get_bridge(&bp_path) {
-                        let evaled = evaled;
-                        let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
-                        return crate::interpreter::cs_dll_runtime::call_static(
-                            &bridge, &class_name, method_name, &arg_vals,
-                            ret_type.as_deref(),
-                        ).map_err(|e| format!("CsDll: {e}"));
-                    }
-                }
-                // cs-proc static method dispatch
-                if let Some(Value::Str(pp)) = cls.class_vars.get("__cs_proc_path__") {
-                    let pp_path = std::path::PathBuf::from(&**pp);
-                    let class_name = cls.name.clone();
-                    let ret_type: Option<String> = cls
-                        .methods
-                        .get(method_name)
-                        .and_then(|overloads| overloads.first())
-                        .and_then(|f| f.return_type.clone());
-                    let evaled = evaled;
-                    let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
-                    return crate::interpreter::cs_proc_runtime::call_static(
-                        &pp_path, &class_name, method_name, &arg_vals,
-                        ret_type.as_deref(),
-                    ).map_err(|e| format!("CsProc: {e}"));
-                }
-
-                // クラスオブジェクトに対するメソッド呼び出し: static / class_method のみ許可
-                let overloads =
-                    self.lookup_method_in_class(cls, method_name)
-                        .ok_or_else(|| {
-                            format!(
-                                "AttributeError: class '{}' has no method '{method_name}'",
-                                cls.name
-                            )
-                        })?;
-
-                if cls.static_method_names.contains(method_name) {
-                    return if overloads.len() == 1 {
-                        self.exec_fn_evaled(overloads[0].clone(), &evaled, None, method_name, None)
-                    } else {
-                        self.dispatch_overload_evaled(overloads, evaled, None, method_name, None)
-                    };
-                }
-
-                if cls.class_method_names.contains(method_name) {
-                    let cls_val = Value::Class(cls.clone());
-                    let evaled = evaled;
-                    let mut all_evaled: Vec<(Option<String>, Value, bool)> = vec![(None, cls_val, true)];
-                    all_evaled.extend(evaled);
-                    return if overloads.len() == 1 {
-                        self.exec_fn_evaled(overloads[0].clone(), &all_evaled, None, method_name, None)
-                    } else {
-                        self.dispatch_overload_evaled(overloads, all_evaled, None, method_name, None)
-                    };
-                }
-
-                Err(format!(
-                    "TypeError: cannot call instance method '{method_name}' on class '{}' directly; use an instance",
-                    cls.name
-                ))
-            }
+            Value::Class(cls) => self.eval_class_method(cls.clone(), method_name, evaled),
             Value::Dict(d) => {
                 match method_name {
                     // `d.key()` / `d.keys()` — キーのリストを返す
@@ -397,132 +271,7 @@ impl Interpreter {
                     )),
                 }
             }
-            Value::Set(s) => {
-                match method_name {
-                    "__iter__" => {
-                        Self::expect_no_args_evaled(&evaled, "set", "__iter__")?;
-                        let items = s.borrow().clone();
-                        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                            values: items,
-                            index: 0,
-                        }))))
-                    }
-                    "add" => {
-                        let item = Self::one_arg_evaled(evaled, "set", "add")?;
-                        let mut s_mut = s.borrow_mut();
-                        if !s_mut.iter().any(|v| self.values_eq(v, &item)) {
-                            s_mut.push(item);
-                        }
-                        Ok(Value::None)
-                    }
-                    "discard" => {
-                        let item = Self::one_arg_evaled(evaled, "set", "discard")?;
-                        let mut s_mut = s.borrow_mut();
-                        if let Some(pos) = s_mut.iter().position(|v| self.values_eq(v, &item)) {
-                            s_mut.remove(pos);
-                        }
-                        Ok(Value::None)
-                    }
-                    "remove" => {
-                        let item = Self::one_arg_evaled(evaled, "set", "remove")?;
-                        let mut s_mut = s.borrow_mut();
-                        if let Some(pos) = s_mut.iter().position(|v| self.values_eq(v, &item)) {
-                            s_mut.remove(pos);
-                            Ok(Value::None)
-                        } else {
-                            Err(format!("KeyError: {} is not in set", self.display(&item)))
-                        }
-                    }
-                    "pop" => {
-                        Self::expect_no_args_evaled(&evaled, "set", "pop")?;
-                        let mut s_mut = s.borrow_mut();
-                        if s_mut.is_empty() {
-                            Err("KeyError: pop from an empty set".to_string())
-                        } else {
-                            Ok(s_mut.remove(0))
-                        }
-                    }
-                    "clear" => {
-                        Self::expect_no_args_evaled(&evaled, "set", "clear")?;
-                        s.borrow_mut().clear();
-                        Ok(Value::None)
-                    }
-                    "copy" => {
-                        Self::expect_no_args_evaled(&evaled, "set", "copy")?;
-                        Ok(Value::Set(Rc::new(RefCell::new(s.borrow().clone()))))
-                    }
-                    "union" => {
-                        let other = Self::one_arg_evaled(evaled, "set", "union")?;
-                        let other_items = self.set_other_items(&other, "union")?;
-                        let mut result = s.borrow().clone();
-                        for v in other_items {
-                            if !result.iter().any(|x| self.values_eq(x, &v)) {
-                                result.push(v);
-                            }
-                        }
-                        Ok(Value::Set(Rc::new(RefCell::new(result))))
-                    }
-                    "intersection" => {
-                        let other = Self::one_arg_evaled(evaled, "set", "intersection")?;
-                        let other_items = self.set_other_items(&other, "intersection")?;
-                        let result: Vec<Value> = s
-                            .borrow()
-                            .iter()
-                            .filter(|v| other_items.iter().any(|x| self.values_eq(x, v)))
-                            .cloned()
-                            .collect();
-                        Ok(Value::Set(Rc::new(RefCell::new(result))))
-                    }
-                    "difference" => {
-                        let other = Self::one_arg_evaled(evaled, "set", "difference")?;
-                        let other_items = self.set_other_items(&other, "difference")?;
-                        let result: Vec<Value> = s
-                            .borrow()
-                            .iter()
-                            .filter(|v| !other_items.iter().any(|x| self.values_eq(x, v)))
-                            .cloned()
-                            .collect();
-                        Ok(Value::Set(Rc::new(RefCell::new(result))))
-                    }
-                    "symmetric_difference" => {
-                        let other = Self::one_arg_evaled(evaled, "set", "symmetric_difference")?;
-                        let other_items = self.set_other_items(&other, "symmetric_difference")?;
-                        let s_ref = s.borrow();
-                        let mut result: Vec<Value> = s_ref
-                            .iter()
-                            .filter(|v| !other_items.iter().any(|x| self.values_eq(x, v)))
-                            .cloned()
-                            .collect();
-                        for v in &other_items {
-                            if !s_ref.iter().any(|x| self.values_eq(x, v)) {
-                                result.push(v.clone());
-                            }
-                        }
-                        Ok(Value::Set(Rc::new(RefCell::new(result))))
-                    }
-                    "issubset" => {
-                        let other = Self::one_arg_evaled(evaled, "set", "issubset")?;
-                        let other_items = self.set_other_items(&other, "issubset")?;
-                        let result = s
-                            .borrow()
-                            .iter()
-                            .all(|v| other_items.iter().any(|x| self.values_eq(x, v)));
-                        Ok(Value::Bool(result))
-                    }
-                    "issuperset" => {
-                        let other = Self::one_arg_evaled(evaled, "set", "issuperset")?;
-                        let other_items = self.set_other_items(&other, "issuperset")?;
-                        let s_ref = s.borrow();
-                        let result = other_items
-                            .iter()
-                            .all(|v| s_ref.iter().any(|x| self.values_eq(x, v)));
-                        Ok(Value::Bool(result))
-                    }
-                    _ => Err(format!(
-                        "AttributeError: 'set' object has no method '{method_name}'"
-                    )),
-                }
-            }
+            Value::Set(s) => self.eval_set_method(s.clone(), method_name, evaled),
             Value::Generator(state) => {
                 if method_name != "next" {
                     return Err(format!(
@@ -581,80 +330,7 @@ impl Interpreter {
                 self.exec_file_method(fd_rc, method_name, &evaled)
             }
             Value::AsyncManager(mgr_rc) => {
-                match method_name {
-                    "all_done" => {
-                        Self::expect_no_args_evaled(&evaled, "AsyncManager", "all_done")?;
-                        let all = mgr_rc.borrow().all_done();
-                        Ok(Value::Bool(all))
-                    }
-                    "wait_for_finish" => {
-                        // wait_for_finish(await_interval_msec = 100)
-                        let evaled = evaled;
-                        let interval_ms: u64 = match evaled.as_slice() {
-                            [] => 100,
-                            [(key, Value::Int(n), _)] if key.is_none() || key.as_deref() == Some("await_interval_msec") => (*n).max(1) as u64,
-                            _ => return Err("TypeError: wait_for_finish() takes at most 1 argument (await_interval_msec)".to_string()),
-                        };
-
-                        loop {
-                            let (done, abort_triggered) = {
-                                let mut mgr = mgr_rc.borrow_mut();
-                                mgr.poll_completed();
-                                mgr.try_schedule_pub();
-                                let done = mgr.all_done();
-                                let abort = mgr.raise_immediately && mgr.first_error().is_some();
-                                (done, abort)
-                            };
-
-                            if done {
-                                break;
-                            }
-
-                            if abort_triggered {
-                                // Cancel remaining pending tasks then wait for running ones
-                                mgr_rc.borrow_mut().cancel_pending();
-                                // Keep polling until all running threads finish
-                                loop {
-                                    {
-                                        let mut mgr = mgr_rc.borrow_mut();
-                                        mgr.poll_completed();
-                                        if mgr.all_done() {
-                                            break;
-                                        }
-                                    }
-                                    std::thread::sleep(std::time::Duration::from_millis(
-                                        interval_ms,
-                                    ));
-                                }
-                                break;
-                            }
-
-                            std::thread::sleep(std::time::Duration::from_millis(interval_ms));
-                        }
-
-                        // Propagate first error if raise_immediately, as a catchable raise
-                        let first_err = {
-                            let mgr = mgr_rc.borrow();
-                            if mgr.raise_immediately {
-                                mgr.first_error()
-                            } else {
-                                None
-                            }
-                        };
-                        if let Some(e) = first_err {
-                            self.current_exception = Some(RaisedError {
-                                exception: Value::str(e),
-                                frames: vec![],
-                            });
-                            return Err(RAISE_SENTINEL.to_string());
-                        }
-
-                        Ok(Value::None)
-                    }
-                    _ => Err(format!(
-                        "AttributeError: 'AsyncManager' has no method '{method_name}'"
-                    )),
-                }
+                self.eval_async_manager_method(mgr_rc.clone(), method_name, evaled)
             }
             Value::Signal(sig_rc) => {
                 self.exec_signal_method(sig_rc.clone(), method_name, evaled)
@@ -704,7 +380,9 @@ impl Interpreter {
     /// ⚠ 旧 CallArg 版は**引数を評価せずに** arity エラーを返していた。今は先に評価される。
     /// エラーメッセージは同一なので、差が出るのは「no-arg メソッドに副作用つき引数を渡したとき、
     /// その副作用が起きるか」だけ（どのみちエラーになるコード）。
-    fn expect_no_args_evaled(
+    /// ⚠ 可視性は `pub(super)`（#63）— レシーバ別ファイル（`set_methods` 等）が使う。
+    /// `classes/` の外へは出さない（引数の形が `*_evaled` 版に固有のため）。
+    pub(super) fn expect_no_args_evaled(
         evaled: &[(Option<String>, Value, bool)],
         type_name: &str,
         method: &str,
@@ -718,7 +396,8 @@ impl Interpreter {
 
     /// ちょうど 1 個であることを検証してその値を返す（評価済み版・#27-b）。
     /// 旧 CallArg 版（`eval_one_arg`・削除済み）も**元から全評価後に検査**していたので意味論は完全に同じ。
-    fn one_arg_evaled(
+    /// ⚠ 可視性は `pub(super)`（#63・`expect_no_args_evaled` と同じ理由）。
+    pub(super) fn one_arg_evaled(
         evaled: Vec<(Option<String>, Value, bool)>,
         type_name: &str,
         method: &str,
@@ -727,18 +406,6 @@ impl Interpreter {
             return Err(format!("TypeError: {type_name}.{method}() takes exactly 1 argument"));
         }
         Ok(evaled.into_iter().next().unwrap().1)
-    }
-
-    /// set 演算の引数（`set` または `list`）を `Vec<Value>` に変換する。
-    fn set_other_items(&self, other: &Value, method: &str) -> Result<Vec<Value>, String> {
-        match other {
-            Value::Set(o) => Ok(o.borrow().clone()),
-            Value::List(l) => Ok(l.borrow().clone()),
-            _ => Err(format!(
-                "TypeError: set.{method}() argument must be a set or list, not '{}'",
-                self.type_name(other)
-            )),
-        }
     }
 
     // ---------------------------------------------------------------------------

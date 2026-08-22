@@ -13,9 +13,15 @@ use {
 
 impl Interpreter {
     /// 文字列値のメソッド（`split` / `strip` / `replace` / `startswith` 等）を評価して結果を返す。
-    #[allow(clippy::too_many_lines)]
+    ///
     /// `str` のメソッドを評価済み引数で呼ぶ（#27-b で CallArg 版から変換）。
     /// 呼び出し元は `eval_method_call_full` のみ。
+    ///
+    /// ⚠ 48 アームの**平坦な組み込みメソッド表**（平均 12 行）。カテゴリ別への分割は #65
+    /// だが優先度は低い（得るのは行数だけで、`exec_op` を対象外にしたのと同じ理由が半分当たる）。
+    // ⚠ 属性は doc コメントの**後**に置くこと（#51 が潰した orphan doc と同型で、
+    // #58〜#68 の診断が「src 唯一の `too_many_lines` がこの形」と指摘していた・#63 で修正）。
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn eval_str_method(
         &mut self,
         s: Rc<str>,

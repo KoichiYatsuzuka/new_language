@@ -33,7 +33,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 **exec の中の速度は打ち止め**（#24/#46 を実測して却下）。残る速度は **#50 の分布から起票した
 69（`interp_init`）・70（最上位ループ）＝ どちらも「exec の外／載り方」の話**。
-保守性は**第 2 弾（#58〜#68）を 2026-08-21 に起票**し、**#68（実バグ）・#66・#58・#59 が完了**。
+保守性は**第 2 弾（#58〜#68）を 2026-08-21 に起票**し、**#68（実バグ）・#66・#58・#59・#63 が完了**。
 直近の到達点は 1 行ずつ（詳細は
 [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号）:
 
@@ -45,6 +45,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | 50 | **段別＋op 別の実行時間分布**を実測（[prof_dist.ps1](prof_dist.ps1)・`--features prof` 新設） |
 | 57 | [stale_doc_refs.ps1](stale_doc_refs.ps1) の**再発 14 件を 0 に**（改名の取り残し／マーカー語／`$whitelist`）。**負の対照で検知力も確認** |
 | 68 | 関数本体の `enum` が `VmForceError` だった実バグを修正 — `build_enum_classes` で**組み立てと記憶域を分離**し `Op::EnumDef` が `Name` を slot へ。副産物で **#59 のドリフトが実害として発火**（`collect_declared_names` に `EnumDef` を追加）。[compare_bytecode.ps1](compare_bytecode.ps1) を新設 |
+| 63 | `eval_method_call_full` の委譲漏れ 4 型を `*_methods.rs` へ（**1 レシーバ = 1 ファイル**）。**530→205 行**・最大ネスト **10→6**。⚠⚠ **bytecode は自明に一致する**ので証拠にならず、[compare_outputs.ps1](compare_outputs.ps1)（全例題の stdout/stderr/exit）を新設 |
 | 59 | 「**この文はどの名前を束縛するか**」を [decl_names.rs](src/decl_names.rs) の 1 箇所へ（`each_declared_name` ＋ `DeclOrigin`）。**exhaustive match 2 段で「足したら壊れる」形に**し、walker 4 本を委譲（4 本は理由を確かめて残置）。⚠ **負の対照で検知力を確認**（`DeclOrigin` +1 → 消費者 4 本ちょうど停止／`Stmt` +1 → `decl_names` が停止） |
 | 58 | `exec` の `Stmt::Import` アーム **210 行 → 8 行の委譲**（`exec_import` ＋ 補助 7 本を `exec/modules.rs` へ）。`exec` **394→192 行**・最大ネスト **11→5**。逐語重複 2 件を畳み、探索順が違う 2 本は**畳まない理由を明記**。⚠ **cs-proc を見る差分ゲートが 0 個**だったので [compare_import_paths.ps1](compare_import_paths.ps1) を新設 |
 | 66 | `Compiler` の `Chunk` 複製 17 フィールドを廃止 — **`Compiler` が `Chunk` を直接組み立てる**（`chunk: Chunk`）。フィールド **37→21**・`into_chunk` **21→6 行**・`Chunk` にフィールドを足すとき直す箇所 **4→1**。[compare_bytecode.ps1](compare_bytecode.ps1) **108/108 byte-identical** |
@@ -153,8 +154,8 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 1. **速度（#69 / #70）— 調査済み・前提なし**。69 は `interp_init` の内訳を実測済み
    （ウォーク 50〜75%）で **61 と同じ場所＝同時にやる**。70 は原因確定済み（`as_local` 前提）。
-2. **保守性レーン第 2 弾 — 残り 7 件（#60〜#65・#67）は全件が前提なし**（#58/#59/#66/#68 は完了）。
-   次は **63**（委譲漏れ 4 型・受け皿は `classes/` に決まっている）と **62**（`compile_stmt` の肥大アーム 5 つ）。
+2. **保守性レーン第 2 弾 — 残り 6 件（#60〜#62・#64・#65・#67）は全件が前提なし**（#58/#59/#63/#66/#68 は完了）。
+   次は **62**。⚠ **65 は解釈側だけの変更**＝ bytecode では検証できない（[compare_outputs.ps1](compare_outputs.ps1)）。
 3. 別レーン（#19 / #17-a / #17-b）— 外部接続系。いつ着手しても他をブロックしない。
 4. ブロック中（#14 → #11 R2-c）— 前提の「モジュール間ネイティブ直リンク」が未計画。
 
@@ -204,6 +205,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | [stale_doc_refs.ps1](stale_doc_refs.ps1) | **コメント内の `` `識別子` `` が src に実在するか**の検査（#51 で新設）。#33 で消した関数を指す記述が 61 箇所あり、うち 2 件は**指示が真逆に矛盾**していた（コンパイラは何も言わない）。⚠ 履歴として正しい言及は落とす — 同じ行に「削除／廃止／撤去／以前／旧／移設／だった／していた」があれば履歴扱い。⇒ **消えたものに言及するときはマーカー語を書く**。外部成果物（`.ps1` 名・METRIC 名）は `$whitelist`。`-All` で除外分も表示。⚠⚠ **#51 で 0 にした直後、#52/#53/#56 が走らせずに 14 件へ戻した**（#57 で再び 0）＝ **改名・削除をしたら走らせること**。⚠ マーカー語は**行単位**なので、足すと同じ行の他の識別子も検査から外れる |
 | [compare_bytecode.ps1](compare_bytecode.ps1) | **2 つの `arrow.exe` のバイトコードが同一か**を全例題で突き合わせる（#52 の手順を #68 で .ps1 化）。「挙動不変」を exit code より強く裏付ける唯一の手段で、#62/#63/#66 が要る。⚠ **async は対象外**（同一バイナリでも dump が揺れる）。⚠ **使う前に同一 exe 同士で負の対照を取る**。⚠ 生成する .ps1 のパス区切りはスラッシュにすること（バックスラッシュがエスケープに化けて壊した実績あり） |
 | [compare_import_paths.ps1](compare_import_paths.ps1) | **import 系例題の stdout/stderr/exit が 2 バイナリで同一か**（#58 で新設）。cs-dll・**cs-proc**・js-proc・cpp-dll/lib の 10 例題。⚠⚠ **子の出力はパイプで受けず `Start-Process -RedirectStandard*` でファイルへ落とす** — `import[js-proc]` の **node ブリッジが孫として生き残ってパイプを握る**ので `ReadToEndAsync` でも返らない（#38 のデッドロックとは別原因・skill `vm-pitfalls` §4）。⚠ `cs_proc_app.ar` は **`import[cs-proc]` を踏む唯一の非 GUI 例題**で、#58 以前は**どの差分ゲートにも入っていなかった** |
+| [compare_outputs.ps1](compare_outputs.ps1) | **全例題の stdout/stderr/exit が 2 バイナリで同一か**（#63 で新設・91 例題）。⚠⚠ **解釈側（`eval_*`/`exec_*`）だけを触った変更は [compare_bytecode.ps1](compare_bytecode.ps1) が自明に一致してしまう**ので、挙動不変はこちらで主張する。⚠ `bench` 分類は**経過時間そのものが出力**なので丸ごと対象外（`interop/bench_ab_cdll.ar` は名指しで除外）。⚠ アドレス（`0x…`・`id()`）は**除外せず正規化**する — `collection.ar` を落とすと set メソッドを見る網が消える |
 | [force_gate.ps1](force_gate.ps1) | **VM に載らない構文の回帰検知**（#25。#33 完了後は「既定の挙動が全例題で通るか」の検査）。全例題を実行し `VmForceError` を列挙。⚠ **止めて判定する**用途で件数は `tw_stats.ps1` で見る。GUI 例題は**タイムアウト後に窓を閉じて**完走させる（#29） |
 | [prof_dist.ps1](prof_dist.ps1) | **非コンパイル実行の実行時間分布**（#50 で新設・要 `--features prof`）。`-Mode phases` で段別（startup/lex/parse/type_check/resolve/interp_init/exec/teardown）、`-Mode ops` で **exec 中の op 別滞在時間**（統計サンプリング）。⚠ **1 回目はファイルのコールドリードを踏む**ので既定で 2 パス走らせて 2 パス目だけ採る。⚠ `-Mode ops` はサンプラーが 1 コアをスピンするので**プロセス wall が伸びる**（wall を見るときは `-Mode phases`） |
 | [tw_stats.ps1](tw_stats.ps1) / [tw_stats_files.ps1](tw_stats_files.ps1) | **ツリーウォークが実際に実行している文**を全例題で集計（`AR_TW_STATS`）／その例題別内訳。feature 付きビルドを自動で行う |
@@ -248,18 +250,16 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | 60 | `parse_struct_bodies` のネスト 12 | 成功パスを早期 `continue` へ反転 | — | 未着手 |
 | 61 | `run_program` の `ar_config.json` 探索 | `load_python_search_paths()` へ切り出し | — | 未着手 |
 | 62 | `compile_stmt` 800 行 | 肥大アーム上位 5 つをメソッドへ | — | 未着手 |
-| 63 | `eval_method_call_full` の委譲漏れ | `Set`/`Class`/`FrozenList`/`AsyncManager` を `*_methods.rs` へ | — | 未着手 |
 | 64 | `gen_expr_inner` の `Expr::Call` 二重化 | `gen_call` との役割分担を確認してから統合 | — | 未着手（**まず理由を確かめる**） |
 | 65 | `eval_str_method` 48 アーム | カテゴリ別サブ関数へ | — | 未着手・**優先度低**（平坦な表・得るのは行数だけ） |
 | 67 | `Interpreter` 31 フィールドの部分クラスタ化 | イベントループ 4 本・デバッガ 2 本のみ畳む | — | 未着手・**部分適用のみ**（全面分解は保留） |
 | 11 R2-c | グローバル記憶域の index 配列化 | ネイティブの index 参照 | **← 消費者の出現（14 と同時に再評価）** | ブロック中（消費者不在） |
 | 14 | §6 モジュール動的リンク | ディスクリプタシンボル＋ABI ハッシュ照合 | **← モジュール間ネイティブ直リンクの導入**（未実装・未計画） | ブロック中 |
 
-> **69・70 は #50 の実行時間分布から起票した速度タスク**（他は保守性レーン）。根拠は
-> [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) #69/#70 — **役割・動作・遅延要因の解説から始まる**。
+> **69・70 は #50 の分布から起票した速度タスク**（根拠は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号）。
 > **58〜68 は 2026-08-21 の全 src 機械診断で起票**（保守性レーン第 2 弾。内訳・実測・対象外の根拠は
 > [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) #58〜#68）。**残る 8 件は全件が前提なし**。
-> **58・59・66・68 は完了**。残りは **62・63 →（61＋69）・60・64 → 67 → 70**（65 は最後）。
+> **58・59・63・66・68 は完了**。残りは **62 →（61＋69）・60・64 → 67 → 70**（65 は最後）。
 > ⚠⚠ **`vm/run.rs:exec_op`（836 行）は対象外**。86 アームの平坦な表で**最大アームは 42 行**であり、
 > 行数だけを見て割ると **#10-b（`#[inline(always)]` のアームに重い本体を書くと全体が遅くなる）を再演する**。
 > 同じ理由で `ast.rs`(1124)・`parser/exprs.rs`(940)・`Value`/`Stmt`/`Expr` の広い参照も**起票しない**。
@@ -320,9 +320,10 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
         ⚠ **#55 の「通常実行から到達不能」は誤りだった** — デフォルト引数の式はツリーウォークで
         評価されるので AST 引数版 2 経路にも通常実行で到達する。負の対照を例題化
 
-    58〜67（保守性レーン第 2 弾）……**58・59・66 完了・残り 7 件は起票のみ**（2026-08-21 の全 src 機械診断）
+    58〜67（保守性レーン第 2 弾）……**58・59・63・66 完了・残り 6 件は起票のみ**（2026-08-21 の全 src 機械診断）
         ⚠ **`exec_op` 836 行は対象外**（平坦な表・割ると #10-b の再演）
     58（`Stmt::Import` アーム 210 行）……**完了** ＝ `exec_import` ＋ 補助 7 本へ切り出し（`exec` 394→192 行）
+    63（委譲漏れ 4 型）……**完了** ＝ `*_methods.rs` へ（530→205 行）。⚠⚠ **bytecode が自明に一致する変更**
     59（walker 8 本のドリフト）……**完了** ＝ 束縛判断を [decl_names.rs](src/decl_names.rs) へ集約。
         ⚠ **買ったのは行数ではなく強制**（src は +51 行）。⚠ 起票時の「委譲」案は再帰範囲が違って不成立
     66（`Compiler` の `Chunk` 複製 17 フィールド）……**完了** ＝ `Compiler` が `Chunk` を直接組み立てる。
@@ -330,8 +331,8 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
     68（関数本体の `enum` が `VmForceError`）……**完了** ＝ 組み立て（`build_enum_classes`）と
         記憶域を分離し `Op::EnumDef` で slot へ。**副産物で #59 のドリフトが実害化**（→ 部分修正）
 
-残り: **第 1 弾 51〜57 全完了／第 2 弾は 58・59・66・68 完了**／速度 69・70／別レーン（外部接続系）／ブロック中 14・11 R2-c
-      ⇒ **今すぐ着手できるのは 60〜65・67 の 7 件・69・70 と別レーン 3 件**
+残り: **第 1 弾 51〜57 全完了／第 2 弾は 58・59・63・66・68 完了**／速度 69・70／別レーン（外部接続系）／ブロック中 14・11 R2-c
+      ⇒ **今すぐ着手できるのは 60〜62・64・65・67 の 6 件・69・70 と別レーン 3 件**
 保留: モジュール間ネイティブ直リンク（未計画）→ 14 → 11 R2-c ／ 12b → 2c は循環依存で両方保留
       23（評価済み引数の struct 化）は **54 に吸収**（保留理由が #48 で失効した）
 ```
@@ -476,7 +477,8 @@ cargo clippy                        # 既存 52 件・増分 0（--all-targets �
 ./repl_session.ps1                  # 対話 REPL の golden（identical）
 ./debug_session.ps1                 # 対話デバッガのステッピングの golden（5 identical）
 ./stale_doc_refs.ps1                # コメント内の識別子が src に実在するか（0 件。⚠ 改名・削除の直後は必ず）
-./compare_bytecode.ps1 -A <head.exe> # 2 バイナリのバイトコードが同一か（挙動不変の主張に使う）
+./compare_bytecode.ps1 -A <head.exe> # 2 バイナリのバイトコードが同一か（コンパイラを触ったとき）
+./compare_outputs.ps1 -A <head.exe>  # 全例題の stdout/stderr/exit が同一か（⚠ 解釈側を触ったときはこちら）
 ./prof_dist.ps1                     # 実行時間の段別/op 別分布（要 --features prof）
 ./bench.ps1                         # Phase R の各ステップ / Phase V の各段で再測定（フェーズ0基準 = bench_baseline.md）
 cargo run -- --compile examples/interop/test_modules/physics.ar  # Phase R: native 経路の数値一致確認

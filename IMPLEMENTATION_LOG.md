@@ -6782,3 +6782,106 @@ fn pick()->int:
 | 「`collect_bound_names` の `EnumDef` 抜けも #68 と同じ実バグだろう」 | **外れ**。VM が注釈より先に `slots` を引くので覆い隠されていた（2 例題で実測） |
 | 「`for` ターゲットも列挙器に載せれば統合が進む」 | **外れ**。`Try` の採番順（本体→別名）が壊れて **`LoadLocal` が別の変数を読む**。載せてはいけない |
 | 「行数が減る」 | **外れ**。src は **+51 行**（`decl_names.rs` 173 行の新設ぶん）。#59 が買ったのは行数ではなく**強制** |
+
+---
+
+## #63 `eval_method_call_full` の委譲漏れを解消（2026-08-23・完了）
+
+保守性レーン第 2 弾。起票時の実測は「530 行・深さ 10。**型ごとの切り出しが途中で止まっている**」。
+
+### 1. 何が中途半端だったか（起票時の表を実測で再確認）
+
+`Value::Str` は別ファイル（`string_methods.rs`）へ **1 行で委譲**、`Instance`/`FileObject`/`PyObject`
+も 5 行以下で委譲済み。ところが 4 つのレシーバだけがインラインのまま残っていた:
+
+| レシーバ | 前 | 後 |
+|---|---|---|
+| `Value::Set` | **126 行**（最大アーム） | **1 行** |
+| `Value::AsyncManager` | 76 行 | 3 行 |
+| `Value::Class` | 71 行 | 1 行 |
+| `Value::FrozenList` | 65 行 | 8 行 |
+
+### 2. 手法 — 「1 レシーバ = 1 ファイル」（既存の `string_methods.rs` に合わせた）
+
+| 新設ファイル | 行数 | 中身 |
+|---|---|---|
+| [set_methods.rs](src/interpreter/classes/set_methods.rs) | 163 | `eval_set_method` ＋ `set_other_items`（**method_call.rs から移設**・消費者は set 演算 6 種だけ） |
+| [class_methods.rs](src/interpreter/classes/class_methods.rs) | 102 | `eval_class_method`（`static` / `class_method` ／ cs-dll・cs-proc の static ディスパッチ） |
+| [async_manager_methods.rs](src/interpreter/classes/async_manager_methods.rs) | 102 | `eval_async_manager_method`（`all_done` / `wait_for_finish`） |
+| [frozen_list_methods.rs](src/interpreter/classes/frozen_list_methods.rs) | 93 | `eval_frozen_list_method`（`fixed_list` のフラットレイアウト操作） |
+
+| | 前 | 後 |
+|---|---|---|
+| `eval_method_call_full` | **530 行**・最大ネスト **10** | **205 行**・最大ネスト **6** |
+| `classes/method_call.rs` | 748 行 | **415 行** |
+| 残る最大アーム | `Set` 126 行 | `CsObject` **33 行**（次点 `Namespace` 29・`List` 28） |
+
+副次的に:
+- `expect_no_args_evaled` / `one_arg_evaled` を `pub(super)` へ（`classes/` の中だけに閉じる）。
+- **`string_methods.rs:16` の orphan doc を修正**（`///` → `#[allow(too_many_lines)]` → `///` の順で
+  属性が doc に挟まっていた。#58〜#68 の診断が「src 唯一の `too_many_lines` がこの形」と
+  指摘していたもの。#51 が潰した orphan doc と同型）。
+
+### 3. ⚠⚠ `compare_bytecode.ps1` は #63 の証拠にならない（**新しい検査網を足した**）
+
+**#63 はコンパイラを 1 行も触っていない**ので、バイトコードは**自明に**一致する。
+つまり「108/108 byte-identical」は #63 について**何も言っていない**。
+一方で `eval_method_call_full` は**実行時に全メソッド呼び出しが通る**場所である。
+
+⇒ [compare_outputs.ps1](compare_outputs.ps1) を新設した（**全例題の stdout / stderr / exit code を
+2 バイナリで突き合わせる**）。**解釈側（`eval_*` / `exec_*`）を触ったら、挙動不変はこちらで主張する。**
+
+⚠ これは #62（`compile_stmt`）や #65（`eval_str_method`）でも要る。#65 は #63 と同じく
+**解釈側だけの変更**になるので、bytecode では検証できない。
+
+### 4. ⚠⚠ 負の対照で 13 例題が落ちた（**先に取ったから気づけた**）
+
+同一 exe 同士で回した初回、**13 例題が DIFFERS** になった。原因は 2 種:
+
+| 原因 | 例題数 | 対処 |
+|---|---|---|
+| **ベンチの経過時間**（`METRIC …` / `ns/iter` / `µs/call`） | 10 | `bench` 分類を丸ごと除外（速度の A/B は [ab_bench.ps1](ab_bench.ps1) の担当）。⚠ `interop/bench_ab_cdll.ar` は**ディレクトリ除外では漏れる**ので名指し |
+| **オブジェクトアドレス**（`<X object at 0x…>` / `id()` の 10 進値） | 3 | **除外せず正規化**（`Normalize-Volatile`） |
+
+⚠ **アドレスの 3 件を「除外」で済ませてはいけなかった** — その 1 つが `collection.ar` で、
+**#63 で切り出した `eval_set_method` を見る主要カバレッジ**である。除外していたら
+「網はあるが肝心の所を見ていない」状態になっていた（#58 の cs-proc と同じ形）。
+
+### 5. 例題カバレッジの確認（着手前に数えた）
+
+| 切り出したもの | 踏んでいる例題 |
+|---|---|
+| `eval_set_method` | `collections/collection.ar` ほか |
+| `eval_frozen_list_method` | `collections/fixed_list.ar` / `fixed_list_error.ar` / `swd_class.ar` |
+| `eval_class_method`（`static fn` / `class_method fn`） | `classes/class_trait.ar` / `class_trait_error.ar`（**この 2 本だけ**） |
+| `eval_class_method`（cs-dll / cs-proc static） | `interop/cs_interop_test.ar` / `cs_proc_app.ar`（[compare_import_paths.ps1](compare_import_paths.ps1)） |
+| `eval_async_manager_method` | `async/*.ar` 5 本 ＋ `js_proc_async_test.ar` |
+
+⚠ `static fn` / `class_method fn` は **2 例題しか無い**。カバレッジは足りているが薄い。
+
+### 6. 検証（**全ゲート緑**）
+
+| ゲート | 結果 |
+|---|---|
+| **[compare_outputs.ps1](compare_outputs.ps1)**（新設） | **91 / 91 identical**（⚠ **負の対照 91/91 を取ってから**読んだ） |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **10 / 10 identical**（cs-dll / cs-proc の static ディスパッチ） |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | 108 / 108（⚠ **#63 では自明に一致する**ので証拠としては弱い） |
+| `cargo build` | 警告 **0** |
+| `cargo test` | **742 passed** |
+| `cargo clippy` / `--all-targets` | **52 / 65**（増分 **0**） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・153 例題** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+| [ab_bench.ps1](ab_bench.ps1) | 0.989〜1.048x（**退行なし**） |
+
+### 7. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「4 アームを移すだけの機械的作業」 | **おおむね当たり**。ただし `set_other_items`（set 専用ヘルパ）と可視性 2 件が付いてきた |
+| 「`compare_bytecode.ps1` で挙動不変を主張できる」 | **外れ**。コンパイラを触っていないので**自明に一致する**＝証拠にならない。**出力ゲートを新設**した |
+| 「新しい出力ゲートは素直に緑になるだろう」 | **外れ**。負の対照で **13 例題**が落ちた（ベンチの経過時間 10・アドレス 3） |
+| 「揺れる例題は除外すればよい」 | **半分外れ**。`collection.ar` は **set メソッドの主要カバレッジ**なので、除外ではなく**正規化**が正解だった |
+| 「`Value::List` / `Dict` も肥大しているだろう」 | **外れ**。28 行 / 17 行しかない。`eval_list_method` / `eval_dict_method` を作る必要は今のところ無い |
