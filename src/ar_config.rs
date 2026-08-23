@@ -12,7 +12,7 @@
 // | `Parser::python_search_dirs()` | `python.search_paths` | **`source_dir` と `root_dir` の 2 箇所だけ** | `root_dir` は**エントリのディレクトリ**でサブパーサにも引き継ぐ、というパーサ側の契約 |
 // | `cpp_bridge::config::load_cpp_config` | `cpp.*` | 祖先を root まで ＋ cwd を**全部レイヤーマージ**（遠い方から適用） | **打ち切りだと中間の部分的な設定がルートの cpp 設定を丸ごと隠す**（実バグとして修正済み） |
 // | `exec::find_js_config` | `javascript.*` | `python_search_dirs` → cwd の順に**最初に見つかったもの** | ブリッジは 1 つだけ要るため |
-// | `parser::imports::parse_cs_lib_paths` | `csharp.lib_paths` | 呼び出し側依存 | — |
+// | `Parser::load_cs_lib_paths` | `csharp.lib_paths` | `source_dir` から**祖先を root まで**・最初の 1 個 | `python` 側と同じ（#73 で読み取りを共有化） |
 //
 // ⚠ **`python` の 2 つは方針が食い違ったままである**（祖先全走査 ↔ 2 箇所）。
 // つまり中間の祖先にある設定は `import[py-int]` からは見えて `import[py]` からは見えない。
@@ -24,6 +24,9 @@
 // `python.search_paths` の**読み取り実装が 2 つ**あった:
 // - ここ（serde）
 // - `parser/imports/mod.rs::parse_python_search_paths`（**手書きの文字列走査**・削除済み）
+//
+// #73 で `csharp.lib_paths` の手書き走査（`parse_cs_lib_paths`・削除済み）も同じ形で畳んだ。
+// **そちらはセクション名で絞ってすらいなかった**ので誤りが 1 つ多い（11 ケース中 6 件相違）。
 //
 // 差分計測（14 ケース）で **5 件食い違い**、うち **3 件は手書き側の誤り**だった:
 //
@@ -86,8 +89,39 @@ pub(crate) fn read_python_search_paths_from_str(text: &str, base: &Path) -> Vec<
     else {
         return Vec::new();
     };
-    paths
-        .iter()
+    resolve_path_array(paths, base)
+}
+
+/// `ar_config.json` のテキストから `csharp.lib_paths` を読む（#73 で共有化）。
+///
+/// `import[cs-dll]` / `import[cs-proc]` が既定の候補パスで DLL を見つけられなかったときの
+/// **追加検索ディレクトリ**。空なら `None`（呼び出し側が「設定なし」と同じ扱いをするため）。
+///
+/// ⚠⚠ **セクション（`csharp`）で必ず絞ること。** #73 以前の手書き走査は
+/// `"lib_paths"` を **JSON 全文から探して**いたので、`cpp.lib_paths` のような
+/// 別セクションの値や、トップレベルの `lib_paths` を**C# の DLL 探索に使ってしまう**状態だった
+/// （差分計測 11 ケース中 6 件相違・うち 5 件が手書き側の誤り）。
+///
+/// ⚠ `python` 側と違って**パスを取る版は用意しない** — 呼び出し側
+/// （`Parser::load_cs_lib_paths`）は「存在するが読めない設定ファイル」のとき
+/// **さらに上へ遡る**という独自の方針を持っており、読み込みを自分で行う必要がある。
+pub(crate) fn read_cs_lib_paths_from_str(text: &str, base: &Path) -> Option<Vec<PathBuf>> {
+    let root: serde_json::Value = serde_json::from_str(text).ok()?;
+    let arr = root.get("csharp")?.get("lib_paths")?.as_array()?;
+    let v = resolve_path_array(arr, base);
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+/// JSON の文字列配列を `base` 基準の絶対パス列にする（#73 で `python` 版と共有）。
+///
+/// ⚠ **文字列でない要素と空文字列は捨てる。** 空文字を残すと `base.join("")` ＝ `base` 自身が
+/// 検索パスに入り、「設定に空文字を書いたら設定ファイルの場所が検索対象になる」ことになる。
+fn resolve_path_array(arr: &[serde_json::Value], base: &Path) -> Vec<PathBuf> {
+    arr.iter()
         .filter_map(|p| p.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| {
@@ -100,6 +134,7 @@ pub(crate) fn read_python_search_paths_from_str(text: &str, base: &Path) -> Vec<
         })
         .collect()
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -154,5 +189,35 @@ mod tests {
         let b = Path::new("/BASE");
         assert!(read(r#"{"rust":{"crates_path":"x"}}"#, b).is_empty());
         assert!(read(r#"{"python":{"other":1}}"#, b).is_empty());
+    }
+
+    /// ⚠⚠ **#73 以前の手書き走査（`parse_cs_lib_paths`）が間違えていた形**を固定する。
+    /// そちらは `"lib_paths"` を **JSON 全文から探して**いたので、
+    /// **セクション違いの値を C# の DLL 探索に使って**いた。
+    #[test]
+    fn cs_reader_requires_the_csharp_section() {
+        use super::read_cs_lib_paths_from_str as read_cs;
+        let b = Path::new("/BASE");
+        // ① トップレベルの `lib_paths` は拾わない（手書きは拾っていた）
+        assert!(read_cs(r#"{"lib_paths":["top"]}"#, b).is_none());
+        // ② **別セクション**の `lib_paths` は拾わない（手書きは `cpp` 側を返していた）
+        assert_eq!(
+            read_cs(r#"{"cpp":{"lib_paths":["cpp1"]},"csharp":{"lib_paths":["cs1"]}}"#, b),
+            Some(v("/BASE", &["cs1"]))
+        );
+        assert!(read_cs(r#"{"cpp":{"lib_paths":["cpp1"]}}"#, b).is_none());
+        // ③ 文字列でない要素を捨てる／カンマで割らない／壊れた JSON は None
+        assert_eq!(read_cs(r#"{"csharp":{"lib_paths":[1,"a"]}}"#, b), Some(v("/BASE", &["a"])));
+        assert_eq!(read_cs(r#"{"csharp":{"lib_paths":["a,b"]}}"#, b), Some(v("/BASE", &["a,b"])));
+        assert!(read_cs(r#"{"csharp":{"lib_paths":["a"]"#, b).is_none());
+    }
+
+    /// 空配列・空文字列だけ → `None`（「設定なし」と同じ扱い・#73）。
+    #[test]
+    fn cs_empty_yields_none() {
+        use super::read_cs_lib_paths_from_str as read_cs;
+        let b = Path::new("/BASE");
+        assert!(read_cs(r#"{"csharp":{"lib_paths":[]}}"#, b).is_none());
+        assert!(read_cs(r#"{"csharp":{"lib_paths":[""]}}"#, b).is_none());
     }
 }

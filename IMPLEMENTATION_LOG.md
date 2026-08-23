@@ -7680,3 +7680,81 @@ C++ ヘッダのパーサなので、既存ゲートでは弱い。そこで**�
 | 「差は些細だろう」 | **外れ**。14 ケース中 **5 件相違**、うち **3 件は手書き側の実バグ**（セクション外の拾い上げ等） |
 | 「委譲すれば挙動が変わる」 | **半分外れ**。空文字列の扱いを手書き側へ寄せたので、**残る変更はすべて修正方向**になった |
 | 「テストは素直に通る」 | **外れ**。`/abs` は **Windows では絶対パスでない**（`is_absolute()` が偽）ので 1 本落ちた |
+
+---
+
+## #73 `csharp.lib_paths` も手書き走査（2026-08-23・完了）
+
+#72 で発見して起票したもの。起票時のメモは「⚠ **セクション名で絞ってすらいない**＝
+#72 と同じ 3 つの誤りを持つ**はず**」。⇒ 仮説なので**まず測った**。
+
+### 1. 実測 — 11 ケース中 **6 件相違・うち 5 件が手書き側の誤り**（#72 より 1 つ多い）
+
+| ケース | 手書き | serde（`csharp` で絞る） | 判定 |
+|---|---|---|---|
+| `{"lib_paths":["top"]}`（**セクション無し**） | `top` を拾う | `None` | **手書きが誤り** |
+| `{"cpp":{"lib_paths":["cpp1"]},"csharp":{"lib_paths":["cs1"]}}` | **`cpp1` を返す** | `cs1` | **手書きが誤り（最悪）** |
+| `{"cpp":{"lib_paths":["cpp1"]}}` | 拾う | `None` | **手書きが誤り** |
+| `{"csharp":{"lib_paths":[1,"a"]}}` | `1` をパス扱い | `a` のみ | **手書きが誤り** |
+| `{"csharp":{"lib_paths":["a,b"]}}` | `a` と `b` に割る | `a,b` | **手書きが誤り** |
+| 壊れた JSON | 拾えるだけ拾う | `None` | 寛容（議論の余地） |
+
+⚠⚠ **`WRONG-SECTION` が最も悪い** — `cpp.lib_paths` と `csharp.lib_paths` が両方あると
+**C# の DLL 探索に C++ 用のパスを使う**。`parse_python_search_paths` は少なくとも
+`"python"` の**後ろ**を探していたが、`parse_cs_lib_paths` は `"lib_paths"` を**JSON 全文検索**していた。
+
+⚠ 現状は潜在的（`cpp` の設定キーは `lib_patterns` / `system_libs` で `lib_paths` は使っていない）。
+**だが 1 キー足されたら発火する。**
+
+### 2. 手法 — #72 と同じく**読み取りだけ**を [ar_config.rs](src/ar_config.rs) へ
+
+- `read_cs_lib_paths_from_str`（serde・`csharp` セクションで絞る）を追加
+- 配列 → 絶対パス列の変換を `resolve_path_array` に切り出し、**python 版と共有**
+  （空文字列と非文字列を捨てる規則が 1 箇所になった）
+- `Parser::load_cs_lib_paths` は委譲。**探索方針（祖先ウォーク）はそのまま**
+- 手書きの `parse_cs_lib_paths` を**削除**
+
+⚠ **パスを取る版（`read_cs_lib_paths`）は作らなかった**。呼び出し側は
+「**存在するが読めない設定ファイルのときはさらに上へ遡る**」という python 側と違う方針を持っており、
+読み込みを自分で行う必要がある。一度作ったが未使用警告が出たので削除した
+（`#[allow(dead_code)]` で黙らせない）。その理由を doc に書いてある。
+
+### 3. ⚠⚠ エンドツーエンドの例題は**作らなかった**（理由を記録）
+
+`csharp.lib_paths` を踏む例題はリポジトリに **0 本**（`lib_paths` を書いた設定も 0 個）。
+作るには DLL を**既定の候補パスの外**に置く必要があり、さらに実行時の
+`{Name}_native.dll` ブリッジも既定外になるため、**リポジトリにバイナリを増やす**ことになる。
+⇒ 割に合わないと判断し、代わりに:
+
+- **探索まで含む単体テスト**（`cs_lib_path_search_tests`）— 一時ディレクトリに設定を置き、
+  祖先ウォークで届くこと・相対パスが**設定ファイルの場所**基準で解決されることを固定
+- **パースの単体テスト**（`ar_config::tests::cs_reader_requires_the_csharp_section`）—
+  削除した手書き実装が取り違えていた**6 形すべて**を固定
+
+⚠ **負の対照で検知力を確認**: `csharp` セクションのスコープ確認をわざと外すと、
+**この 1 本だけが FAILED** になる。
+
+### 4. 検証（全ゲート緑）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test` | **750 passed**（+4 = 新設テスト） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **93 / 93 identical** |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **110 / 110** |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **10 / 10**（cs-dll / cs-proc を含む） |
+| `cargo build` | 警告 **0** |
+| `cargo clippy` / `--all-targets` | **51 / 64**（増分 **0**） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・155 例題** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件**（⚠ 一度 1 件 — 削除した `parse_cs_lib_paths` への言及にマーカー語を付けた） |
+
+### 5. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「#72 と同じ 3 つの誤りを持つはず」（起票時） | **当たり、かつそれ以上**。**5 件**で、うち「別セクションの値を返す」が最悪（#72 には無い形） |
+| 「例題を足せる」 | **外れ**。DLL ＋ ネイティブブリッジを既定外に置く必要があり、**バイナリが増える**。単体テスト 2 種で代替し理由を記録 |
+| 「python 版と同じ形にできる」 | **半分外れ**。パスを取る版は**呼び出し側の読み込み失敗ポリシーが違う**ので作れない（未使用警告で気づいた） |
+| 「`cpp` セクションが `lib_paths` を使っている」 | **外れ**。使っているのは `lib_patterns` / `system_libs`。⇒ `WRONG-SECTION` は**潜在**（1 キー足されたら発火） |

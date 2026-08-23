@@ -129,6 +129,11 @@ impl Parser {
     }
 
     /// ar_config.json の `csharp.lib_paths` を読んでパスリストを返す。
+    ///
+    /// ⚠ JSON の読み取りは [`crate::ar_config`] へ委譲（#73）。ここが持つのは
+    /// **探索方針（`source_dir` から祖先へ遡り、最初に読めた設定で確定）**だけ。
+    /// ⚠ `cfg.exists()` でも読めなかった場合は**さらに上へ遡る**（`python` 側は空を返して打ち切る）。
+    /// 既存の挙動なのでそのまま保存してある。
     pub(crate) fn load_cs_lib_paths(&self) -> Option<Vec<PathBuf>> {
         // Walk up from source_dir looking for ar_config.json
         let mut dir = self.source_dir.clone();
@@ -136,7 +141,7 @@ impl Parser {
             let cfg = dir.join("ar_config.json");
             if cfg.exists() {
                 if let Ok(text) = std::fs::read_to_string(&cfg) {
-                    return parse_cs_lib_paths(&text, &dir);
+                    return crate::ar_config::read_cs_lib_paths_from_str(&text, &dir);
                 }
             }
             if !dir.pop() { break; }
@@ -185,5 +190,56 @@ impl Parser {
             }
         }
         dirs
+    }
+}
+
+
+#[cfg(test)]
+mod cs_lib_path_search_tests {
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    /// `load_cs_lib_paths` の**探索方針**（`source_dir` から祖先へ遡り、最初に読めた設定で確定）を
+    /// 実ファイルで固定する（#73）。
+    ///
+    /// ⚠ **エンドツーエンドの例題は無い** — `csharp.lib_paths` を踏むには DLL と
+    /// ネイティブブリッジを既定の候補パスの**外**に置く必要があり、リポジトリに
+    /// バイナリを増やすことになる。そこでここが唯一の網になっている。
+    #[test]
+    fn walks_up_to_the_nearest_config() {
+        let root = std::env::temp_dir().join(format!("ar73_{}_{}", std::process::id(), line!()));
+        let deep = root.join("a").join("b");
+        std::fs::create_dir_all(&deep).unwrap();
+        // 上位に設定を置き、途中には置かない ⇒ 祖先ウォークで届くこと。
+        std::fs::write(
+            root.join("ar_config.json"),
+            r#"{"csharp":{"lib_paths":["libs","/tmp/abs73"]}}"#,
+        )
+        .unwrap();
+
+        let tokens = Lexer::new("", "<test>").tokenize();
+        let parser = Parser::new(tokens, Some(deep.clone()));
+        let got = parser.load_cs_lib_paths().expect("lib_paths must be found");
+
+        // 相対パスは**設定ファイルのある場所**（root）基準で解決される。
+        assert_eq!(got[0], root.join("libs"));
+        assert_eq!(got.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 設定が 1 つも無ければ `None`（root まで遡って空振り）。
+    #[test]
+    fn returns_none_without_any_config() {
+        let root = std::env::temp_dir().join(format!("ar73_{}_{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&root).unwrap();
+        let tokens = Lexer::new("", "<test>").tokenize();
+        let parser = Parser::new(tokens, Some(root.clone()));
+        // ⚠ temp の祖先に ar_config.json が置かれている環境では成立しないので、
+        //    「見つかったとしても temp 配下ではない」ことだけを確かめる。
+        if let Some(paths) = parser.load_cs_lib_paths() {
+            assert!(paths.iter().all(|p| !p.starts_with(&root)));
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

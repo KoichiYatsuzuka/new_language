@@ -4,26 +4,6 @@
 // `impl Parser` の import 解析メソッドを役割別サブモジュール(dispatch/cpp/ar_modules/py_modules/
 // cs_js_modules)へ分割して宣言する。
 
-/// ar_config.json の JSON テキストから `csharp.lib_paths` を取り出す。
-/// 依存クレートなしの簡易パーサー（正規表現・serde 不使用）。
-fn parse_cs_lib_paths(json: &str, base: &std::path::Path) -> Option<Vec<std::path::PathBuf>> {
-    // "lib_paths" キーを探す
-    let key = "\"lib_paths\"";
-    let start = json.find(key)?;
-    let after_key = &json[start + key.len()..];
-    let arr_start = after_key.find('[')?;
-    let arr_end = after_key[arr_start..].find(']')?;
-    let arr = &after_key[arr_start + 1..arr_start + arr_end];
-    let mut paths = Vec::new();
-    for part in arr.split(',') {
-        let trimmed = part.trim().trim_matches('"');
-        if !trimmed.is_empty() {
-            let p = std::path::PathBuf::from(trimmed);
-            paths.push(if p.is_absolute() { p } else { base.join(p) });
-        }
-    }
-    if paths.is_empty() { None } else { Some(paths) }
-}
 
 
 /// Python プロセスを実行して標準ライブラリと site-packages のパスを取得する。
