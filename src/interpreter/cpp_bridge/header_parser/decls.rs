@@ -21,46 +21,13 @@ pub(crate) fn scan_scope(text: &str, ns: Option<String>, decls: &mut Vec<(String
             !prev.is_alphanumeric() && prev != '_'
         };
 
+        // ⚠ #60: `extern "C" { … }` / `namespace X { … }` への降下は
+        // `try_enter_scope` へ切り出した（以前はここに 5 段の入れ子で書かれていた）。
         if at_boundary {
-            // ── `extern "C" { ... }` ──────────────────────────────────────────
-            if text[i..].starts_with("extern") {
-                let after_kw = text[i + 6..].trim_start();
-                if after_kw.starts_with('"') {
-                    if let Some(qclose) = after_kw[1..].find('"') {
-                        let rest = after_kw[2 + qclose..].trim_start();
-                        if rest.starts_with('{') {
-                            if let Some(brace_end) = find_matching_brace(rest) {
-                                // Recurse: extern "C" is linkage-only, inherits namespace
-                                scan_scope(&rest[1..brace_end], ns.clone(), decls);
-                                let consumed = (text.len() - rest.len()) - i + brace_end + 1;
-                                i += consumed;
-                                seg_start = i;
-                                continue;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ── `namespace X { ... }` ─────────────────────────────────────────
-            if text[i..].starts_with("namespace") {
-                let after_kw = text[i + 9..].trim_start();
-                let name_end = after_kw
-                    .find(|c: char| !c.is_alphanumeric() && c != '_')
-                    .unwrap_or(after_kw.len());
-                let ns_name = &after_kw[..name_end];
-                if !ns_name.is_empty() {
-                    let rest = after_kw[name_end..].trim_start();
-                    if rest.starts_with('{') {
-                        if let Some(brace_end) = find_matching_brace(rest) {
-                            scan_scope(&rest[1..brace_end], Some(ns_name.to_string()), decls);
-                            let consumed = (text.len() - rest.len()) - i + brace_end + 1;
-                            i += consumed;
-                            seg_start = i;
-                            continue;
-                        }
-                    }
-                }
+            if let Some(consumed) = try_enter_scope(text, i, &ns, decls) {
+                i += consumed;
+                seg_start = i;
+                continue;
             }
         }
 
@@ -91,6 +58,77 @@ pub(crate) fn scan_scope(text: &str, ns: Option<String>, decls: &mut Vec<(String
 
         i += 1;
     }
+}
+
+/// 位置 `i` が `extern "C" {` / `namespace X {` の始まりなら**内部へ降下**して
+/// 消費バイト数を返す（#60 で `scan_scope` から切り出し）。`None` = 降下しない。
+///
+/// ⚠ `extern` と `namespace` は同じ位置で両方に一致しえないので、
+/// 片方が `None` を返したときにもう片方を試さなくてよい（切り出し前と同じ挙動）。
+fn try_enter_scope(
+    text: &str,
+    i: usize,
+    ns: &Option<String>,
+    decls: &mut Vec<(String, Option<String>)>,
+) -> Option<usize> {
+    if text[i..].starts_with("extern") {
+        return try_enter_extern_c(text, i, ns, decls);
+    }
+    if text[i..].starts_with("namespace") {
+        return try_enter_namespace(text, i, decls);
+    }
+    None
+}
+
+/// `extern "C" { … }`（#60）。**リンケージ指定だけ**なので名前空間は引き継ぐ。
+fn try_enter_extern_c(
+    text: &str,
+    i: usize,
+    ns: &Option<String>,
+    decls: &mut Vec<(String, Option<String>)>,
+) -> Option<usize> {
+    let after_kw = text[i + 6..].trim_start();
+    let after_quote = after_kw.strip_prefix('"')?;
+    let qclose = after_quote.find('"')?;
+    let rest = after_quote[qclose + 1..].trim_start();
+    descend_scope(text, i, rest, ns.clone(), decls)
+}
+
+/// `namespace X { … }`（#60）。内部の宣言には `X` を付ける。
+fn try_enter_namespace(
+    text: &str,
+    i: usize,
+    decls: &mut Vec<(String, Option<String>)>,
+) -> Option<usize> {
+    let after_kw = text[i + 9..].trim_start();
+    let name_end = after_kw
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(after_kw.len());
+    let ns_name = &after_kw[..name_end];
+    if ns_name.is_empty() {
+        return None;
+    }
+    let rest = after_kw[name_end..].trim_start();
+    descend_scope(text, i, rest, Some(ns_name.to_string()), decls)
+}
+
+/// `rest`（キーワードの後ろ）が `{ … }` なら再帰して**消費バイト数**を返す（#60）。
+///
+/// ⚠ 消費量は `text` 先頭からの位置で数える — `rest` は `trim_start()` 済みなので
+/// `(text.len() - rest.len())` が `rest` の絶対オフセットになる。
+fn descend_scope(
+    text: &str,
+    i: usize,
+    rest: &str,
+    child_ns: Option<String>,
+    decls: &mut Vec<(String, Option<String>)>,
+) -> Option<usize> {
+    if !rest.starts_with('{') {
+        return None;
+    }
+    let brace_end = find_matching_brace(rest)?;
+    scan_scope(&rest[1..brace_end], child_ns, decls);
+    Some((text.len() - rest.len()) - i + brace_end + 1)
 }
 
 // ── Function declaration parser ───────────────────────────────────────────────

@@ -229,9 +229,27 @@ mod tests {
     fn test_real_dxlib_header_structs() {
         let raw = std::fs::read("examples/DxLib/DxLib.h").expect("header");
         let content = String::from_utf8_lossy(&raw);
-        let defs = parse(&content);
+        let custom = HashMap::new();
+        let typedefs = HashMap::new();
+        let (sigs, defs) = parse_header_full(&content, &custom, &typedefs);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"VECTOR"), "structs found: {} — {:?}", defs.len(), &names[..names.len().min(20)]);
+
+        // ⚠⚠ #60 で**件数を固定した**。それ以前は「VECTOR が居る」だけの検査で、
+        // `parse_struct_bodies` / `scan_scope` を丸ごと書き換えても素通りしていた
+        // （#60 の実作業では一時的な全ダンプ差分で担保したが、恒久の網が要る）。
+        // ⚠ パーサを**改良**して数が変わったら、差分を目で見てからこの値を更新すること。
+        assert_eq!(sigs.len(), 2445, "declaration count drifted");
+        assert_eq!(defs.len(), 65, "struct count drifted");
+
+        // 代表的な struct の raw レイアウトも固定する（オフセット計算の回帰検知）。
+        let vector = defs.iter().find(|d| d.name == "VECTOR").expect("VECTOR");
+        let layout = vector.raw_layout().expect("VECTOR raw layout");
+        assert_eq!(
+            layout.fields.iter().map(|f| f.byte_offset).collect::<Vec<_>>(),
+            vec![0, 4, 8]
+        );
+        assert_eq!(layout.total_bytes, 16);
     }
 }
 

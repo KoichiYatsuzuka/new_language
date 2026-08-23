@@ -20,98 +20,157 @@ pub(crate) fn parse_struct_bodies(
     let mut seg_start = 0;
 
     while i < stripped.len() {
-        if stripped[i..].starts_with('{') {
-            // `namespace X { … }` / `extern "C" { … }` はスコープブロックなので
-            // スキップせず内部に降下する（DxLib.h は全体が namespace DxLib で包まれている）。
-            {
-                let seg_before = stripped[seg_start..i].trim();
-                let w: Vec<&str> = seg_before.split_whitespace().collect();
-                let is_scope_block = matches!(w.first().copied(), Some("namespace"))
-                    || (w.contains(&"extern") && seg_before.contains("\"C\""));
-                if is_scope_block {
-                    i += 1;
-                    seg_start = i;
-                    continue;
-                }
+        // ⚠ #60: **成功パスを早期 continue へ反転**した（以前は最大ネスト 11 ＝ src 最悪）。
+        // `{` 以外の位置は「区切りを覚えて 1 バイト進むだけ」。
+        if !stripped[i..].starts_with('{') {
+            if stripped[i..].starts_with(';') {
+                seg_start = i + 1;
             }
-            if let Some(brace_end) = find_matching_brace(&stripped[i..]) {
-                let seg_before = stripped[seg_start..i].trim_start();
-                let is_union = seg_before.starts_with("typedef") && seg_before.contains(" union ");
-                let is_struct_typedef = seg_before.starts_with("typedef")
-                    && (seg_before.contains(" struct ") || is_union);
-
-                // `class Name { … }` or `struct Name { … }` (not typedef)
-                // 継承（`class D : public B`）はレイアウトに基底部分が含まれるため complete=false。
-                let (class_name, has_inheritance) = if !is_struct_typedef {
-                    let w: Vec<&str> = seg_before.split_whitespace().collect();
-                    if matches!(w.first().copied(), Some("class") | Some("struct"))
-                        && w.len() >= 2
-                        && w[1]
-                            .trim_end_matches(':')
-                            .chars()
-                            .all(|c| c.is_alphanumeric() || c == '_')
-                        && !w[1].trim_end_matches(':').is_empty()
-                    {
-                        let inherits = seg_before.contains(':');
-                        (Some(w[1].trim_end_matches(':').to_string()), inherits)
-                    } else {
-                        (None, false)
-                    }
-                } else {
-                    (None, false)
-                };
-
-                if is_struct_typedef {
-                    let body = &stripped[i + 1..i + brace_end];
-                    let rest = &stripped[i + brace_end + 1..];
-                    if let Some(semi_pos) = rest.find(';') {
-                        let aliases_str = rest[..semi_pos].trim();
-                        if !aliases_str.is_empty() {
-                            if let Some((fields, fields_complete)) =
-                                parse_struct_field_decls(body, custom, typedefs)
-                            {
-                                if !fields.is_empty() {
-                                    // union はフィールドが重なるためレイアウト不完全扱い
-                                    let complete = fields_complete && !is_union;
-                                    for (alias, ptr_suffix) in parse_alias_list(aliases_str, "") {
-                                        if !ptr_suffix.contains('*') {
-                                            result.push(CStructDef {
-                                                name: alias,
-                                                fields: fields.clone(),
-                                                complete,
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if let Some(name) = class_name {
-                    let body = &stripped[i + 1..i + brace_end];
-                    if let Some((fields, fields_complete)) =
-                        parse_struct_field_decls(body, custom, typedefs)
-                    {
-                        if !fields.is_empty() {
-                            result.push(CStructDef {
-                                name,
-                                fields,
-                                complete: fields_complete && !has_inheritance,
-                            });
-                        }
-                    }
-                }
-                i += brace_end + 1;
-                seg_start = i;
-                continue;
-            }
+            i += 1;
+            continue;
         }
 
-        if stripped[i..].starts_with(';') {
-            seg_start = i + 1;
+        // ⚠ `trim()` と `trim_start()` を**取り違えないこと**。
+        // 分類側（`classify_struct_head`）は `trim_start()` でなければならない —
+        // `.trim()` すると `"typedef union "` の**末尾の空白が消えて** `" union "` の
+        // 部分文字列判定が外れ、union が struct として扱われる。
+        let seg_raw = &stripped[seg_start..i];
+
+        // `namespace X { … }` / `extern "C" { … }` はスコープブロックなので
+        // スキップせず内部に降下する（DxLib.h は全体が namespace DxLib で包まれている）。
+        if is_scope_block(seg_raw.trim()) {
+            i += 1;
+            seg_start = i;
+            continue;
         }
-        i += 1;
+
+        let Some(brace_end) = find_matching_brace(&stripped[i..]) else {
+            // 対応する `}` が無い（打ち切られたヘッダ等）。1 バイト進めて探索を続ける。
+            i += 1;
+            continue;
+        };
+
+        let body = &stripped[i + 1..i + brace_end];
+        match classify_struct_head(seg_raw.trim_start()) {
+            StructHead::Typedef { is_union } => push_typedef_structs(
+                body,
+                &stripped[i + brace_end + 1..],
+                is_union,
+                custom,
+                typedefs,
+                &mut result,
+            ),
+            StructHead::Class { name, inherits } => {
+                push_class_struct(&name, body, inherits, custom, typedefs, &mut result)
+            }
+            StructHead::Other => {}
+        }
+        i += brace_end + 1;
+        seg_start = i;
     }
     result
+}
+
+/// `{` の直前のセグメントが**スコープブロック**（`namespace X` / `extern "C"`）か（#60）。
+///
+/// スコープブロックは**スキップせず内部へ降下する**（DxLib.h は全体が `namespace DxLib`）。
+fn is_scope_block(seg_before: &str) -> bool {
+    let w: Vec<&str> = seg_before.split_whitespace().collect();
+    matches!(w.first().copied(), Some("namespace"))
+        || (w.contains(&"extern") && seg_before.contains("\"C\""))
+}
+
+/// `{` の直前のセグメントから**何の定義か**を判定した結果（#60）。
+enum StructHead {
+    /// `typedef struct/union Tag { … } Alias;` — 名前は `}` の**後ろ**にある。
+    Typedef { is_union: bool },
+    /// `class Name { … }` / `struct Name { … }`（typedef ではない）。
+    /// `inherits` は継承の有無（基底部分がレイアウトに入るので complete=false になる）。
+    Class { name: String, inherits: bool },
+    /// 構造体定義ではない（関数本体・初期化子など）。
+    Other,
+}
+
+/// `{` の直前のセグメントを分類する（#60 で `parse_struct_bodies` から切り出し）。
+///
+/// ⚠ 引数は **`trim_start()` したもの**を渡すこと（`trim()` だと union 判定が壊れる）。
+fn classify_struct_head(seg_before: &str) -> StructHead {
+    let is_union = seg_before.starts_with("typedef") && seg_before.contains(" union ");
+    if seg_before.starts_with("typedef") && (seg_before.contains(" struct ") || is_union) {
+        return StructHead::Typedef { is_union };
+    }
+    let w: Vec<&str> = seg_before.split_whitespace().collect();
+    if !matches!(w.first().copied(), Some("class") | Some("struct")) || w.len() < 2 {
+        return StructHead::Other;
+    }
+    let name = w[1].trim_end_matches(':');
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return StructHead::Other;
+    }
+    // 継承（`class D : public B`）はレイアウトに基底部分が含まれるため complete=false。
+    StructHead::Class {
+        name: name.to_string(),
+        inherits: seg_before.contains(':'),
+    }
+}
+
+/// `typedef struct/union Tag { … } A, B, *P;` の**エイリアスごと**に `CStructDef` を積む（#60）。
+///
+/// ⚠ **ポインタ別名（`*P`）は積まない**（raw レイアウトを持たないため）。
+fn push_typedef_structs(
+    body: &str,
+    rest: &str,
+    is_union: bool,
+    custom: &HashMap<String, String>,
+    typedefs: &HashMap<String, String>,
+    out: &mut Vec<CStructDef>,
+) {
+    let Some(semi_pos) = rest.find(';') else {
+        return;
+    };
+    let aliases_str = rest[..semi_pos].trim();
+    if aliases_str.is_empty() {
+        return;
+    }
+    let Some((fields, fields_complete)) = parse_struct_field_decls(body, custom, typedefs) else {
+        return;
+    };
+    if fields.is_empty() {
+        return;
+    }
+    // union はフィールドが重なるためレイアウト不完全扱い
+    let complete = fields_complete && !is_union;
+    for (alias, ptr_suffix) in parse_alias_list(aliases_str, "") {
+        if !ptr_suffix.contains('*') {
+            out.push(CStructDef {
+                name: alias,
+                fields: fields.clone(),
+                complete,
+            });
+        }
+    }
+}
+
+/// `class Name { … }` / `struct Name { … }` を 1 件積む（#60）。
+fn push_class_struct(
+    name: &str,
+    body: &str,
+    has_inheritance: bool,
+    custom: &HashMap<String, String>,
+    typedefs: &HashMap<String, String>,
+    out: &mut Vec<CStructDef>,
+) {
+    let Some((fields, fields_complete)) = parse_struct_field_decls(body, custom, typedefs) else {
+        return;
+    };
+    if fields.is_empty() {
+        return;
+    }
+    out.push(CStructDef {
+        name: name.to_string(),
+        fields,
+        complete: fields_complete && !has_inheritance,
+    });
 }
 
 /// 構造体本体のフィールド宣言をパースする。`float x, y, z;` → 3 フィールド。

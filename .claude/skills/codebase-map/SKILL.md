@@ -86,7 +86,7 @@ Refresh with `./generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (207 files, 68132 lines)
+src/  (207 files, 68247 lines)
   ast.rs (1124)
   decl_names.rs (173)
   interpreter.rs (779)
@@ -154,10 +154,10 @@ src/  (207 files, 68132 lines)
       typedef_loader.rs (324)
       types.rs (185)
       header_parser/
-        decls.rs (415)
-        mod.rs (237)
+        decls.rs (453)
+        mod.rs (255)
         preprocess.rs (252)
-        structs.rs (317)
+        structs.rs (376)
     eval/
       attrs.rs (536)
       builtins.rs (925)
@@ -430,7 +430,7 @@ examples/  (recursive .ar counts per category)
   dump_native_ir.ps1 (92)
   force_gate.ps1 (133)
   generate-codebase-map.ps1 (100)
-  IMPLEMENTATION_LOG.md (7359)
+  IMPLEMENTATION_LOG.md (7484)
   PHASE_R1_RESULTS.md (741)
   PHASE5_PLAN.md (427)
   prof_dist.ps1 (180)
