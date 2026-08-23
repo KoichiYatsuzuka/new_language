@@ -279,6 +279,14 @@ impl Interpreter {
         let has_self = self_val.is_some() && params.first().is_some_and(|p| p.name == "self");
         let bind_params = if has_self { &params[1..] } else { &params[..] };
 
+        // ⚠⚠ #71: **Python 関数は受けない。** 高速バインドは `let` パラメータ ＋ mut 引数に
+        // `copy_value` を掛けるが、一般経路は `is_python` のとき**掛けない**（Python は
+        // 値の deep copy をしない）。ここで受けると 2 経路で意味論がずれる
+        // （プランの「`*_evaled` 版とずれた実装を作らない」— 実バグ 4 回）。
+        // 束縛規則そのものも `bind_args` と `bind_args_relaxed` で違う。
+        if fn_val.is_python {
+            return Ok(None);
+        }
         // 単純シグネチャの判定。
         if params.iter().any(|p| p.variadic || p.default.is_some()) {
             return Ok(None);
@@ -390,13 +398,25 @@ impl Interpreter {
         // クロージャは**キャプチャの種類を問わず** VM に載る（#27-d 段階 2b）。
         // 不変は `captured_slots` の slot へ値を書き込み、可変は `captured_cells` の
         // セル index へ **`Rc` を共有**する（外側との書き戻りが保たれる）。
-        let vm_eligible = !fn_val.is_python && matches!(self_val, None | Some(Value::Instance(_)));
+        // ⚠⚠ #71: **`is_python` を条件から外した。** `import[py]` のモジュールは
+        // `python_converter` が **Arrow の AST へ変換**したものなので、本体は普通に
+        // バイトコードへ載る。`is_python` が意味するのは**引数束縛の規則**だけ
+        // （`bind_args_relaxed` ＋ `let` パラメータの copy をしない）で、それは下の
+        // 一般経路が見ている。
+        //
+        // #33 でツリーウォークのフォールバックが消えるまでは、ここで偽にすると
+        // 「ツリーウォークで実行する」意味だった。消えた後は**そのまま `VmForceError`**
+        // になり、`import[py]` の関数呼び出しが**丸ごと死んでいた**（#71 で発見）。
+        // ⇒ #56（`is_builtin_callee`・削除済み）・#68（`enum`）と**同型の 5 度目**。
+        //
+        // ⚠ **`try_fast_bind` は python を受け付けない**（下記）。受けると copy 規則が
+        // 一般経路とずれる（`*_evaled` 版とずれた実装を作らない・#22 系列）。
+        let vm_eligible = matches!(self_val, None | Some(Value::Instance(_)));
         // 診断フック（#27）: **なぜ VM に載せなかったか**を計上する。
         // `vm_eligible` が偽だと `compile_fn` を呼ばないので bail 統計に現れず、
         // 「クロージャがどれだけツリーウォークへ落ちているか」が測れなかった。
         if crate::interpreter::tw_stats::enabled() && !vm_eligible {
-            let why = if fn_val.is_python { "python" } else { "self-kind" };
-            crate::interpreter::tw_stats::record_ineligible(why);
+            crate::interpreter::tw_stats::record_ineligible("self-kind");
         }
         let chunk_opt: Option<Rc<crate::vm::Chunk>> = if vm_eligible {
             self.get_or_compile_chunk(&fn_val)
@@ -434,8 +454,9 @@ impl Interpreter {
             Vec::new()
         };
 
-        // ⚠ `extra_kwargs` は**ツリーウォークの関数本体だけ**が使っていた（#33 で削除）。
-        // `is_python` の関数はそもそも VM 非適格で `VmForceError` になるので到達しない。
+        // ⚠ `extra_kwargs` は**ツリーウォークの関数本体だけ**が使っていた（#33 で削除）ので捨てる。
+        // ⚠ #71 以前はここに「`is_python` の関数は VM 非適格なので到達しない」と書いてあった。
+        // それは**到達不能なのではなく `VmForceError` で死んでいた**という意味だった。今は到達する。
         let (mut bindings, _extra_kwargs) = if fn_val.is_python {
             Self::bind_args_relaxed(
                 &fn_val.params,

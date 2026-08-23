@@ -7120,3 +7120,112 @@ CRT ヒープ／ページのコミットを引き起こす first-touch コスト
 | 「例題は既にあるだろう」 | **外れ**。`search_paths` は全 config で `[]` ＝ **踏む例題が 0 本**だった |
 | 「計測はすぐ始められる」 | **外れ**。`--features prof` が **#68 以来壊れていた**（既定ビルドでは消えるコードなので誰も気づかない） |
 | 「遅延化で `interp_init` は半分くらいになる」 | **当たり**（0.378 → 0.172 ms） |
+
+---
+
+## #71 `import[py]` の関数呼び出しが `VmForceError`（実バグ）を修正（2026-08-23）
+
+#69 で `python.search_paths` の例題を書こうとして発見した実バグ。**`import[py]` で読んだ
+Python の関数・メソッドが 1 つも呼べない**（属性の読み出しだけが動く）状態だった。
+
+```
+import[py] cfg_probe
+print(cfg_probe.MARKER)      # → search_path_ok（動く）
+print(cfg_probe.describe())  # → VmForceError: cannot compile function 'describe' to bytecode
+```
+
+| 実装 | 結果 |
+|---|---|
+| `target/release/arrow.exe`（#69 時点） | `VmForceError`（最初の関数呼び出しで停止） |
+| CPython（参照） | 正常に 8 行 |
+
+### 1. 真因 — **#33 で前提が消えたのに条件がそのまま残っていた**（5 度目）
+
+[functions/execution.rs](src/interpreter/functions/execution.rs) の `exec_fn_evaled`:
+
+```rust
+let vm_eligible = !fn_val.is_python && matches!(self_val, None | Some(Value::Instance(_)));
+…
+if chunk_opt.is_none() {
+    return Err(format!("VmForceError: cannot compile function '{}' to bytecode", fn_val.name));
+}
+```
+
+`!fn_val.is_python` は **#33 以前は「ツリーウォークで実行する」**という意味だった。
+#33 でフォールバックを撤去した後は「**`VmForceError` で死ぬ**」に化けていた。
+
+⚠⚠ **#56（`is_builtin_callee` の bail が `parse_ar` を殺していた）と完全に同型**で、
+同じ系列の **5 度目**（#41 定義文脈の式／#42 モジュール本体／#56 `parse_ar`／#68 `enum` in fn／#71 `import[py]`）。
+コードのコメント自身が「`is_python` の関数はそもそも VM 非適格で `VmForceError` になるので到達しない」と
+書いており、**到達不能ではなく死んでいた**ことを取り違えていた。
+
+### 2. ⚠ 「VM に載らない」は誤解だった — 本体は**普通の Arrow AST**
+
+`import[py]` は `python_converter::convert_python_source` で **Python ソースを Arrow の AST へ変換**する
+（`parser/imports/py_modules.rs`）。つまり Python 関数の本体は普通にバイトコードへ載る。
+`is_python` が意味するのは**引数束縛の規則だけ**:
+
+| | 非 python | python（`is_python`） |
+|---|---|---|
+| 束縛 | `bind_args`（厳密） | `bind_args_relaxed` |
+| `let` パラメータ ＋ mut 引数 | `copy_value` する | **しない**（Python は値を deep copy しない） |
+| `self`（非 mut） | deep copy | **しない** |
+
+### 3. 手法
+
+1. `vm_eligible` から `!fn_val.is_python` を外す（＝本体はコンパイルする）。
+2. ⚠⚠ **`try_fast_bind` が python を受けないようにする。**
+   高速バインドは `let` パラメータ ＋ mut 引数に `copy_value` を掛けるが、一般経路は
+   `is_python` のとき掛けない。受けさせると **2 経路で意味論がずれる**
+   （プランの「`*_evaled` 版とずれた実装を作らない」＝実バグ 4 回の形）。
+   同じ理由で `self` の deep copy も食い違う。
+3. 陳腐化したコメント（「到達しない」）を事実に合わせる。
+
+⇒ **修正は実質 2 行**。ただし ② を忘れると「動くが Python の値渡し規則が壊れる」形になる。
+
+### 4. 検証 — **CPython と 1 行ずつ突き合わせた**
+
+`examples/interop/py_libs/cfg_probe.py` に、関数・デフォルト引数・**破壊的変更**・クラスを足し、
+`import_py_search_path.ar` から呼んで CPython の出力と比較:
+
+| 形 | Arrow | CPython |
+|---|---|---|
+| `describe()` | `cfg_probe from py_libs` | 同 |
+| `probe(7)` | `22` | 同 |
+| `with_default(5, 10)` | `15` | 同 |
+| `mutate([1,2])` → 戻り値 / 呼び出し元 | `3` / `[1, 2, 99]` | 同 |
+| `Counter(3).bump(4)` / `.get()` | `7` / `7` | 同 |
+
+⚠ **`mutate` と `Counter` が本質的な検査**。前者は「`let` パラメータでも copy しない」、
+後者は「`self` を deep copy しない」を見ている。手順 ② を省くとこの 2 つが CPython と食い違う。
+
+⚠ 静的型検査は **Python のデフォルト引数の省略を許さない**（`'with_default' takes 2 argument(s) but 1 were given`）。
+これは #71 とは**別の層**なので触っていない（例題では全部明示的に渡している）。
+
+### 5. 検証（全ゲート緑）
+
+| ゲート | 結果 |
+|---|---|
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **109 / 110**。⚠ **唯一の差分が修正そのもの**（`import_py_search_path.ar` が 21→147 行＝Python 関数がコンパイルされるようになった） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **92 / 93**。⚠ **唯一の差分が修正そのもの**（旧: `VmForceError` → 新: CPython と一致） |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **10 / 10 identical** |
+| `cargo build` / `--features prof` / `--features tw_stats` | いずれも警告 **0** |
+| `cargo test` | **742 passed** |
+| `cargo clippy` / `--all-targets` | **52 / 65**（増分 **0**） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・155 例題** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51**（既知差分 43） |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件**（⚠ 一度 1 件出した — 自分のコメントで**削除済みの** `is_builtin_callee` に言及した。マーカー語で解消） |
+| [tw_stats.ps1](tw_stats.ps1) | `in_fn` **0**・`vm_ineligible` **0**・`vm_bail_fn` **0**・`tw_control_flow` **0** |
+
+⚠ **他の 109 例題はバイトコードも出力も 1 バイトも変わっていない** ＝ 巻き添えが無いことの裏づけ。
+
+### 6. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「Python 関数は VM に載らないから別経路が要る」 | **外れ**。本体は `python_converter` が作った**普通の Arrow AST**で、そのまま載る |
+| 「`vm_eligible` を直すだけ」 | **半分外れ**。`try_fast_bind` を塞がないと copy 規則が 2 経路でずれる（Python の値渡しが壊れる） |
+| 「大がかりな修正になる」 | **外れ**。実質 2 行。**難しかったのは修正ではなく「何が壊れているか」の特定**で、それは例題が無かったせい |
+| 「既存のゲートで巻き添えが分かる」 | **当たり**。bytecode 109/110・outputs 92/93 で**差分が修正 1 件だけ**と示せた |

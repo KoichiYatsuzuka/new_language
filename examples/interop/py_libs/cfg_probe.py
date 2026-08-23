@@ -1,19 +1,34 @@
-# cfg_probe.py — ar_config.json の python.search_paths でしか到達できない位置に置いた
-# Python モジュール（#61/#69 の検査用）。
-#
-# このファイルは examples/interop/ の**直下ではなく py_libs/ の中**にある。
-# 既定の検索パス（.ar のあるディレクトリ）だけでは見つからず、
-# examples/interop/ar_config.json の "python": {"search_paths": ["py_libs"]} を
-# 読めて初めて解決できる。⇒ 設定の読み取りが壊れるとこの例題が落ちる。
-#
-# ⚠ 埋め込み Python の print は flush されないと消えるので、ここでは print せず値を返す。
-
 MARKER = "search_path_ok"
-
 
 def probe(n):
     return n * 3 + 1
 
-
 def describe():
     return "cfg_probe from py_libs"
+
+def with_default(a, b=10):
+    return a + b
+
+def with_kwargs(a, b=1, c=2):
+    return a * 100 + b * 10 + c
+
+def varargs(*items):
+    total = 0
+    for it in items:
+        total += it
+    return total
+
+def mutate(lst):
+    lst.append(99)
+    return len(lst)
+
+class Counter:
+    def __init__(self, start):
+        self.value = start
+
+    def bump(self, by):
+        self.value = self.value + by
+        return self.value
+
+    def get(self):
+        return self.value

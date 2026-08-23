@@ -1,25 +1,49 @@
-# import_py_search_path.ar — `ar_config.json` の `python.search_paths` 経由で
-# Python モジュールを解決できることの検査（パーサ側の実装・#61 / #69）。
+# import_py_search_path.ar — `import[py]`（ファイル `.py` を Arrow AST へ変換して読む形）の検査。
 #
-# `cfg_probe.py` は `examples/interop/py_libs/` にあり、**この .ar のあるディレクトリには無い**。
-# `examples/interop/ar_config.json` の `"python": {"search_paths": ["py_libs"]}` を
-# 読み取って初めて import できる ⇒ **設定の読み取りが壊れるとこの例題が落ちる**。
+# 2 つのことを同時に見ている:
 #
-# ⚠⚠ **読み取りの実装は 2 つある**（#69 で判明）。**タグごとに別の実装**を通るので、
-# この例題は 2 本に分けてある（1 ファイルに両方書くと参照実装が同名 import で落ちる）:
-#   - `import[py]`     … パーサ側（`parser/imports/cs_js_modules.rs::python_search_dirs`）。
-#                        source_dir と root_dir の 2 箇所だけ見る自前の JSON 走査。
-#   - `import[py-int]` … インタープリタ側（`Interpreter::python_search_dirs`）。
-#                        `main.rs` が起点を覚え、**初回参照時に**祖先をウォークする（#69 で遅延化）。
-#   ⇒ 片方だけ直すと、もう片方が静かに壊れる。
+# ① **`ar_config.json` の `python.search_paths` 経由でモジュールを解決できること**（#61 / #69）
+#    `cfg_probe.py` は `examples/interop/py_libs/` にあり、**この .ar のあるディレクトリには無い**。
+#    `examples/interop/ar_config.json` の `"python": {"search_paths": ["py_libs"]}` を
+#    読み取って初めて import できる ⇒ 設定の読み取りが壊れるとここが `ParseError` で落ちる。
+#    ⚠⚠ 読み取りの実装は **2 つある**（#69 で判明）。こちらが踏むのは**パーサ側**
+#    （`parser/imports/cs_js_modules.rs::python_search_dirs`・source_dir と root_dir だけ見る）。
+#    **インタープリタ側**は `import_py_int_search_path.ar` が踏む。
 #
-# ⚠ この例題が無かったので、設定の読み取りを壊しても全ゲートが緑のままだった
-#   （#58 の cs-proc・#68 の enum と同じ「例題が 1 本も無い」形）。
+# ② **Python の関数・メソッドを実際に呼べること**（#71）
+#    #33 でツリーウォークのフォールバックが消えたあと、`vm_eligible = !fn_val.is_python` が
+#    「VM に載せない」ではなく「**`VmForceError` で死ぬ**」を意味するようになり、
+#    `import[py]` の関数呼び出しが**丸ごと動かなくなっていた**（#71 で修正）。
+#    ⚠ この例題が無かったので、全ゲートが緑のまま 1 つも呼べない状態が続いていた
+#      （#56 の `parse_ar`・#68 の `enum` と同じ「例題が 1 本も無い」形の 5 度目）。
 #
-# ⚠ **関数呼び出しは書けない** — `import[py]` の関数は `vm_eligible = !is_python` で
-#   VM 非対象にされ、#33 でフォールバックが消えたため `VmForceError` になる（既存の実バグ）。
-#   ここが直ったら `cfg_probe.probe()` / `describe()` の呼び出しも足すこと。
+# ⚠ 期待値は **CPython と一致**させてある（#71 で突き合わせ済み）。
+# ⚠ py 関数の引数は型注釈が無いので Arrow からは `mut` 扱い（可変引数は明示、が Arrow の規約）。
+# ⚠ デフォルト引数は**静的型検査が省略を許さない**ので、明示的に全部渡している（#71 とは別の層）。
 
 import[py] cfg_probe
 
+# ── ① モジュール属性（解決だけで読める） ──────────────────────────────────
 print(cfg_probe.MARKER)
+
+# ── ② 関数呼び出し（#71 以前は VmForceError） ────────────────────────────
+print(cfg_probe.describe())
+mut n = 7
+print(cfg_probe.probe(n))
+mut a = 5
+mut b = 10
+print(cfg_probe.with_default(a, b))
+
+# ⚠ **Python の値渡し規則**（deep copy しない）が保たれていること。
+#    Arrow の `let` パラメータは通常 copy されるが、`is_python` の関数では copy しない。
+#    ⇒ 呼び出し元の `lst` が変更されるのが正しい（CPython と同じ）。
+mut lst = [1, 2]
+print(cfg_probe.mutate(lst))
+print(lst)
+
+# ── ② クラス（`self` を持つ経路） ────────────────────────────────────────
+#    ⚠ `self` も deep copy しない。`bump` の変更が `get` に見えるのが正しい。
+mut c = cfg_probe.Counter(3)
+mut by = 4
+print(c.bump(by))
+print(c.get())
