@@ -179,6 +179,17 @@ pub enum Op {
     IntBinLL(u16, u16, BinOp),
     /// `local[a] <op> consts[idx]`（両 int 確定）。
     IntBinLC(u16, u32, BinOp),
+    /// **グローバル `<op>` グローバル** の int 特化融合（#70）。値は `Chunk::global_refs` の index。
+    ///
+    /// 最上位で宣言した変数は slot を持たないので `IntBinLL` に載らず、
+    /// `LoadGlobal; LoadGlobal; IntBinSS` の **3 命令**に落ちていた（`while i < N:` の実測）。
+    /// ⚠ `LoadGlobal` 2 回と**同じ順序で**読むこと（`a` → `b`）— 未定義名のエラー位置が変わる。
+    IntBinGG(u32, u32, BinOp),
+    /// **グローバル `<op>` 定数** の int 特化融合（#70）。`(global_refs index, consts index)`。
+    ///
+    /// `i += 1` が `LoadGlobal; Const; IntBinSS; StoreGlobal` の **4 命令**に落ちていたのを
+    /// `IntBinGC; StoreGlobal` の 2 命令にする。
+    IntBinGC(u32, u32, BinOp),
     /// `local[a] <op> local[b]`（両 float 確定）。
     FloatBinLL(u16, u16, BinOp),
     /// `local[a] <op> consts[idx]`（両 float 確定）。

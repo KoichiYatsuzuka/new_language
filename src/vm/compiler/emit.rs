@@ -390,11 +390,121 @@ impl Compiler {
     /// 型特化 op は実行時型が想定外なら**汎用へフォールバック**するので、注釈が古くても健全。
     /// 融合できなければ `false`（呼び出し側が通常経路 `LoadLocal…; Bin` を出す）。意味論は不変。
     pub(super) fn try_emit_bin_fused(&mut self, left: &Expr, right: &Expr, op: &BinOp, node_id: u32) -> bool {
-        let Some(a) = self.as_local(left) else {
+        if let Some(a) = self.as_local(left) {
+            let kind = self.specialized_bin_kind(op, node_id, left, right);
+            return self.emit_bin_fused_slot(a, kind, right, op);
+        }
+        // ⚠ #70: 左辺が slot でなくても、**最上位のグローバル**なら融合できる。
+        // それまでは `LoadGlobal; LoadGlobal; IntBinSS` の 3 命令に落ちており、
+        // 同じループが fn の中より **2.3〜2.5x 遅かった**（`bench_toplevel_loop.ar`）。
+        self.try_emit_bin_fused_global(left, right, op, node_id)
+    }
+
+    /// 式が **`LoadGlobal` に落ちる読み**なら、その名前を返す（**副作用なし**・#70）。
+    ///
+    /// ⚠⚠ **判定は `compile_expr` の `Expr::Ident` アームと同じでなければならない。**
+    /// あちらは cells → statics → `Resolution::Local` → `Resolution::Global` の順に見るので、
+    /// ここでも **cells / statics を明示的に除く**（`Resolution::Global` は `Local` と排他）。
+    /// 間違えると**別の記憶域を読む**（`static mut` のセルは `Interpreter::static_cells` にある）。
+    ///
+    /// ⚠ `CompileMode::DebugRepl` は名前引き（`LoadName`）なので融合しない。
+    fn global_read_name<'a>(&self, e: &'a Expr) -> Option<&'a str> {
+        if self.mode.is_debug_repl() {
+            return None;
+        }
+        match e {
+            Expr::Ident { name, res: Resolution::Global(_), .. }
+                if !self.cells.contains_key(name) && !self.statics.contains_key(name) =>
+            {
+                Some(name)
+            }
+            _ => None,
+        }
+    }
+
+    /// グローバル参照表へ 1 件積んで index を返す（#70）。
+    ///
+    /// ⚠ **同じ名前でも毎回 1 枠取る**（`emit_load_global` の索引キャッシュと同じ方針）。
+    /// 枠を共有すると、別の使用地点のキャッシュの当たり外れが混ざる。
+    fn add_global_ref(&mut self, name: &str) -> u32 {
+        let ni = self.add_name(name);
+        let gi = self.chunk.global_refs.len() as u32;
+        self.chunk
+            .global_refs
+            .push((ni, crate::ast::SlotCache::default()));
+        gi
+    }
+
+    /// `x <op>= e` の左辺が**最上位グローバル**のとき、読み＋二項演算を 1 命令へ融合する（#70）。
+    ///
+    /// 成功すると**結果がスタックに 1 つ積まれた状態**で返るので、呼び出し側が `StoreGlobal` を出す。
+    /// ⚠ 融合しないときは**何も emit しない**（副作用なしで `false`）。
+    ///
+    /// ⚠ 左辺が `LoadGlobal` に落ちることは呼び出し側が `StoreTarget::Global` で確かめている
+    /// （書きが `scopes[0]` なら読みも `emit_load_global` — 従来の経路がそう組んでいる）。
+    pub(super) fn try_emit_compound_fused_global(
+        &mut self,
+        name: &str,
+        right: &Expr,
+        op: &BinOp,
+        node_id: u32,
+    ) -> bool {
+        use crate::type_check::BinOperandKind as K;
+        if self.annot_binop_kind(node_id) != Some(K::Int) {
+            return false;
+        }
+        if let Some(rname) = self.global_read_name(right).map(str::to_string) {
+            let ga = self.add_global_ref(name);
+            let gb = self.add_global_ref(&rname);
+            self.emit(Op::IntBinGG(ga, gb, op.clone()));
+            return true;
+        }
+        if let Some(cv) = Self::as_const_lit(right) {
+            let ga = self.add_global_ref(name);
+            let ci = self.add_const(cv);
+            self.emit(Op::IntBinGC(ga, ci, op.clone()));
+            return true;
+        }
+        false
+    }
+
+    /// 最上位グローバル同士（またはグローバル＋定数）の二項演算を融合する（#70）。
+    ///
+    /// ⚠ **int 特化が確定しているときだけ**融合する。`Float` / 型不明のグローバル版 op は
+    /// 足していない — op を増やすほど `Op` のサイズ余裕と命令列のキャッシュ密度を削るので、
+    /// **実測で効くと分かった形（int のループ制御）だけ**に絞ってある。
+    ///
+    /// ⚠⚠ **判定を全部済ませてから表に積む**。`add_global_ref` / `add_const` は
+    /// 副作用（表への push）を持つので、途中で諦めると**使われない枠が残る**。
+    fn try_emit_bin_fused_global(
+        &mut self,
+        left: &Expr,
+        right: &Expr,
+        op: &BinOp,
+        node_id: u32,
+    ) -> bool {
+        use crate::type_check::BinOperandKind as K;
+        if self.specialized_bin_kind(op, node_id, left, right) != Some(K::Int) {
+            return false;
+        }
+        let Some(lname) = self.global_read_name(left).map(str::to_string) else {
             return false;
         };
-        let kind = self.specialized_bin_kind(op, node_id, left, right);
-        self.emit_bin_fused_slot(a, kind, right, op)
+        // グローバル `<op>` グローバル
+        if let Some(rname) = self.global_read_name(right).map(str::to_string) {
+            let ga = self.add_global_ref(&lname);
+            let gb = self.add_global_ref(&rname);
+            self.emit(Op::IntBinGG(ga, gb, op.clone()));
+            return true;
+        }
+        // グローバル `<op>` 定数
+        if let Some(cv) = Self::as_const_lit(right) {
+            let ga = self.add_global_ref(&lname);
+            let ci = self.add_const(cv);
+            self.emit(Op::IntBinGC(ga, ci, op.clone()));
+            return true;
+        }
+        false
     }
 
     /// 左辺が slot と確定している二項演算を 1 命令へ融合 emit する（`try_emit_bin_fused` の中核）。

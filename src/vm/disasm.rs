@@ -63,6 +63,17 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
         Op::BinLocalConst(a, c, o) => format!("BIN_LC {a} const[{c}] {o:?}"),
         Op::IntBinLL(a, b, o) => format!("IBIN_LL {a} {b} {o:?}"),
         Op::IntBinLC(a, c, o) => format!("IBIN_LC {a} const[{c}] {o:?}"),
+        // #70: グローバル融合。`global_refs` の index から名前を引いて表示する
+        //（生の index だけだと dump を読んでも何の変数か分からない）。
+        Op::IntBinGG(ga, gb, o) => format!(
+            "IBIN_GG {:?} {:?} {o:?}",
+            chunk.global_refs.get(*ga as usize).and_then(|(n, _)| chunk.names.get(*n as usize)),
+            chunk.global_refs.get(*gb as usize).and_then(|(n, _)| chunk.names.get(*n as usize))
+        ),
+        Op::IntBinGC(ga, c, o) => format!(
+            "IBIN_GC {:?} const[{c}] {o:?}",
+            chunk.global_refs.get(*ga as usize).and_then(|(n, _)| chunk.names.get(*n as usize))
+        ),
         Op::FloatBinLL(a, b, o) => format!("FBIN_LL {a} {b} {o:?}"),
         Op::FloatBinLC(a, c, o) => format!("FBIN_LC {a} const[{c}] {o:?}"),
         Op::GetAttrLocal(s, n, c) => format!("GET_ATTR_L {s} name[{n}] cache[{c}]"),

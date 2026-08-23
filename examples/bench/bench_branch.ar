@@ -4,7 +4,10 @@
 # **直後の命令**になるため、素直に生成すると毎回無駄な JUMP を 1 回踏む。
 # ループ内 `if` ではさらに「if の脱出 → ループ back-edge」の JUMP 連鎖も出る。
 #
-# VM は**関数本体**にしか乗らないので、ホットループは必ず fn の中に置く。
+# ホットループは fn の中に置く（この bench が測りたいのは算術そのものなので、
+# ループ制御の差を持ち込まないため）。
+# ⚠ 「VM は関数本体にしか乗らない」という以前の記述は**古い**（#10-b で最上位も VM 化された）。
+# 最上位ループとの差そのものは [bench_toplevel_loop.ar](bench_toplevel_loop.ar) が測る（#70）。
 #
 # Run: target/release/arrow.exe -src examples/bench/bench_branch.ar
 

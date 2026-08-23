@@ -551,6 +551,52 @@ fn breakpoint_op(
 ///
 /// ⚠ **重い op の本体はここに書かず `#[inline(never)]` の関数へ出す**（#10-b で実測）。
 /// この関数は全呼び出し元へ展開されるので、その op を使わない Chunk まで巻き添えで遅くなる。
+/// `Chunk::global_refs[gi]` のグローバルを読む（#70）。
+///
+/// ⚠⚠ **`Op::LoadGlobal` と完全に同じ手順**でなければならない — 索引キャッシュのヒット判定、
+/// 失効時の名前引きフォールバック、`NameError` の文言まで。違えると
+/// 「融合したときだけ挙動が変わる」という最悪の形になる。
+///
+/// ⚠ `exec_op` は `#[inline(always)]` なので**アームに重い本体を書かない**（#10-b）。
+/// ここは `#[inline]` に留めて、ミス経路が展開されないようにしてある。
+/// 索引キャッシュが**当たっているとき限定**で、グローバルの `i64` を clone せずに読む（#70）。
+///
+/// ⚠ キャッシュミス時は解決を**しない**（`None` を返す）。解決とキャッシュ充填は
+/// `load_global_ref` の 1 箇所に閉じておきたいため — 2 箇所で埋めると
+/// 「どちらが埋めたか」で `NameError` の出方が変わりうる。
+#[inline]
+fn cached_global_int(interp: &Interpreter, chunk: &Chunk, gi: u32) -> Option<i64> {
+    let (_, cache) = &chunk.global_refs[gi as usize];
+    let idx = cache.get(interp.vm_slot_epoch())?;
+    interp.vm_global_int_by_slot(idx)
+}
+
+#[inline]
+fn load_global_ref(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    gi: u32,
+) -> Result<Value, String> {
+    let (ni, cache) = &chunk.global_refs[gi as usize];
+    let epoch = interp.vm_slot_epoch();
+    if let Some(idx) = cache.get(epoch) {
+        if let Some(v) = interp.vm_global_by_slot(idx) {
+            return Ok(v);
+        }
+        // 想定外（index 失効）は名前引きへフォールバック。
+    }
+    let name = &chunk.names[*ni as usize];
+    match interp.vm_global_slot_of(name) {
+        Some(idx) => {
+            cache.fill(epoch, idx as u32);
+            interp
+                .vm_global_by_slot(idx)
+                .ok_or_else(|| format!("NameError: '{name}' is not defined"))
+        }
+        None => Err(format!("NameError: '{name}' is not defined")),
+    }
+}
+
 #[inline(always)]
 fn exec_op(
     interp: &mut Interpreter,
@@ -676,6 +722,61 @@ fn exec_op(
                     let l = buf[base + *a as usize].clone();
                     let rr = buf[base + *b as usize].clone();
                     let v = apply_bin_fast(interp, op, l, rr)?;
+                    buf.push(v);
+                }
+            }
+        }
+        // #70: 最上位ループ用のグローバル融合。`LoadGlobal` 相当の読みを**同じ順序で**行う。
+        // ⚠ 重い本体はここに書かない（`exec_op` は `#[inline(always)]`・#10-b）。
+        //    グローバル読みは `#[inline]` の `load_global_ref` へ出してある。
+        Op::IntBinGG(ga, gb, op) => {
+            // 速い経路（#70）: 索引キャッシュが当たっていて両方 int なら**clone せずに**計算する。
+            // ⚠ ここを通らない場合（キャッシュミス・非 int・未定義）は下の通常経路へ落ちる
+            //   — `NameError` の文言と `apply_bin_fast` の意味論を保つため。
+            if let (Some(x), Some(y)) = (
+                cached_global_int(interp, chunk, *ga),
+                cached_global_int(interp, chunk, *gb),
+            ) {
+                if let Some(v) = int_binop_specialized(x, y, op) {
+                    buf.push(v);
+                    return Ok(Flow::Next);
+                }
+            }
+            let a = load_global_ref(interp, chunk, *ga)?;
+            let b = load_global_ref(interp, chunk, *gb)?;
+            let r = match (&a, &b) {
+                (Value::Int(x), Value::Int(y)) => int_binop_specialized(*x, *y, op),
+                _ => None,
+            };
+            match r {
+                Some(v) => buf.push(v),
+                None => {
+                    let v = apply_bin_fast(interp, op, a, b)?;
+                    buf.push(v);
+                }
+            }
+        }
+        Op::IntBinGC(ga, ci, op) => {
+            // 速い経路（#70）。`IntBinGG` と同じ理由。
+            if let (Some(x), Value::Int(y)) = (
+                cached_global_int(interp, chunk, *ga),
+                &chunk.consts[*ci as usize],
+            ) {
+                if let Some(v) = int_binop_specialized(x, *y, op) {
+                    buf.push(v);
+                    return Ok(Flow::Next);
+                }
+            }
+            let a = load_global_ref(interp, chunk, *ga)?;
+            let r = match (&a, &chunk.consts[*ci as usize]) {
+                (Value::Int(x), Value::Int(y)) => int_binop_specialized(*x, *y, op),
+                _ => None,
+            };
+            match r {
+                Some(v) => buf.push(v),
+                None => {
+                    let b = chunk.consts[*ci as usize].clone();
+                    let v = apply_bin_fast(interp, op, a, b)?;
                     buf.push(v);
                 }
             }

@@ -80,8 +80,15 @@ impl Compiler {
             // 融合 op（`BinLocalLocal` 等）は slot 前提なので使えないが、注釈由来の
             // スタック版型特化（`IntBinSS`/`FloatBinSS`）はそのまま乗る（#2b と同じ扱い）。
             StoreTarget::Global(ni, ci) => {
-                self.emit_load_global(name);
-                self.emit_compound_via_stack(op, node_id, value, Op::StoreGlobal(ni, ci))?;
+                // ⚠ #70: `x <op>= e` は `x = x <op> e` と同じなので、**グローバル融合**が使える。
+                // 融合前は `LoadGlobal; Const; IntBinSS; StoreGlobal` の 4 命令で、
+                // 同じ `i += 1` が fn の中では 2 命令（`IntBinLC; StoreLocal`）だった。
+                if self.try_emit_compound_fused_global(name, value, op, node_id) {
+                    self.emit(Op::StoreGlobal(ni, ci));
+                } else {
+                    self.emit_load_global(name);
+                    self.emit_compound_via_stack(op, node_id, value, Op::StoreGlobal(ni, ci))?;
+                }
             }
             // モジュール本体への複合代入（#42）。読みは `LoadName`、書きは `StoreName`。
             StoreTarget::Name(ni) => {

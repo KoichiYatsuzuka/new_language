@@ -241,6 +241,15 @@ pub struct Chunk {
     pub async_blocks: Vec<AsyncBlock>,
     /// `LoadGlobal` のグローバル索引キャッシュ（#11）。`(slot_epoch, scopes[0] index)` を焼く。
     pub global_caches: Vec<crate::ast::SlotCache>,
+    /// **グローバル参照表**（#70）。要素は `(名前プール index, 索引キャッシュ)`。
+    ///
+    /// 融合 op（`IntBinGG` / `IntBinGC`）が **u32 1 本**で「どのグローバルか」を指せるようにする副表。
+    /// ⚠⚠ op に `(name_idx, cache_idx)` を直接持たせると `Op` が **20 バイトを超えて全命令が太る**
+    /// （`op_size_is_pinned` が守っている不変条件）。だから副表へ逃がしてある
+    /// — `ffi_call_info` / `wb_targets` と同じ判断。
+    ///
+    /// ⚠ `global_caches` とは**別の表**（あちらは `LoadGlobal` 専用で name とペアになっていない）。
+    pub global_refs: Vec<(u32, crate::ast::SlotCache)>,
     /// メソッド呼び出しの FFI 境界検査用の表示情報（#27-b）。node_id → (表示名 index, span index)。
     ///
     /// **エラーメッセージのためだけ**に要る（`check_ffi_return` の `callee_name` / `call_span`）。

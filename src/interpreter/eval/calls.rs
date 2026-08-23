@@ -775,6 +775,26 @@ impl Interpreter {
         self.scopes[0].slot(idx).map(|v| v.get_value())
     }
 
+    /// `scopes[0]` の slot が `Value::Int` ならその値を返す（**`Value` を clone しない**・#70）。
+    ///
+    /// `vm_global_by_slot` は `Var::get_value()` を通すので**必ず `Value` を clone する**。
+    /// `IntBinLL`（slot 版）は `&buf[..]` を参照のまま match していて clone しないので、
+    /// グローバル融合だけが余分な clone を払っていた。
+    /// ⚠ 非 int・未初期化は `None` を返し、呼び出し側は**通常経路へ落ちる**（エラー文言を保つため）。
+    pub(crate) fn vm_global_int_by_slot(&self, idx: usize) -> Option<i64> {
+        match self.scopes[0].slot(idx)? {
+            crate::interpreter::Var::Immutable(Value::Int(n))
+            | crate::interpreter::Var::Mutable(Value::Int(n)) => Some(*n),
+            crate::interpreter::Var::Cell(rc) | crate::interpreter::Var::SlotCell(rc) => {
+                match &*rc.borrow() {
+                    Value::Int(n) => Some(*n),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// `slot_epoch`（`freeze` で進む）。VM の LoadGlobal cache の世代検証に使う。
     pub(crate) fn vm_slot_epoch(&self) -> u32 {
         self.slot_epoch

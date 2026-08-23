@@ -7862,3 +7862,130 @@ let config_search = if self.source_dir == self.root_dir {
 | 「`root_dir` は不要になる」 | **外れ**。`source_dir` の祖先とは限らないのでフォールバックとして必要 |
 | 「例題を足せばゲートが拾う」 | **外れ**。`compare_outputs` / `compare_python_impl` は**非再帰**でサブディレクトリを見ない ⇒ `compare_import_paths` へ明示登録が要った |
 | 「巻き添えが出るかもしれない」 | **出なかった**（root の設定が空だったため）。outputs / bytecode とも同一 |
+
+---
+
+## #70 最上位ループの型特化・融合（2026-08-24・完了）
+
+#50 の実行時間分布から起票した速度タスク。起票時の実測は
+「fn 内比 **2.6x**・原因は `try_emit_bin_fused` の `as_local` 前提と確定」。
+
+### 1. ⚠ まず例題を新設した（起票時の指示）
+
+`examples/bench/bench_toplevel_loop.ar` — **同一プログラム内**で「fn 内ループ」と
+「最上位ループ」を測り、比を出す。
+
+⚠⚠ **他の bench は全部「ホットループは必ず fn の中に置く」と冒頭に書いてあり**
+（#10-b で最上位も VM 化された後もその文言が残っていた）、
+**素直に最上位へ書くユーザーのコードを測るものが 1 本も無かった**。
+⇒ その古い記述も `bench_arith.ar` / `bench_branch.ar` で訂正した。
+
+⚠ **同一プログラム内 A/B** にしたのは、別プロセス比較だとプロセス生成の床（±2ms）と
+コード配置ノイズ（#62 で ±7% を実測）に埋もれるため。
+
+### 2. 実測 — 命令列を dump して原因を確定
+
+```
+# while i < N:  /  i += 1   （最上位）
+0  LOAD_GLOBAL i      3  JUMP_IF_FALSE      6  IBIN_SS Add
+1  LOAD_GLOBAL N      4  LOAD_GLOBAL i      7  STORE_GLOBAL i
+2  IBIN_SS Lt         5  CONST 1            8  JUMP          ← 9 命令/反復
+```
+fn 内は `IntBinLL` / `IntBinLC; StoreLocal` で **5 命令/反復**。
+
+### 3. ⚠⚠ 見立ては**半分外れていた** — 効いたのは命令数ではなく **`Value` の clone**
+
+融合 op（`IntBinGG` / `IntBinGC`）を足して **9 → 5 命令**（fn と同数）にしたが:
+
+| | ratio（最上位 / fn） |
+|---|---|
+| 元 | 2.295 ／ 2.499 |
+| **融合のみ**（命令数は fn と同数） | 1.955 ／ 2.338 ← **ほとんど縮まない** |
+| **融合 ＋ clone 回避** | **1.188 ／ 1.342** |
+
+命令数を揃えても 2x が残った ⇒ 原因はグローバル読みの**中身**だった。
+`Var::get_value()` は必ず `Value` を **clone** するが、slot 版 `IntBinLL` は
+`&buf[..]` を**参照のまま match** して clone しない。
+⇒ 「索引キャッシュが当たっていて両方 int なら clone せず `i64` を取り出す」速い経路を足した
+（`vm_global_int_by_slot` / `cached_global_int`）。
+
+⚠ **これが本命だった**。融合だけなら 1.05〜1.16x、clone 回避まで入れて **1.80〜1.86x**。
+プランの「推測せず先に計測する」が効いた例で、**op を足す前に clone を疑うべきだった**。
+
+### 4. 手法
+
+| 追加 | 中身 |
+|---|---|
+| `Chunk::global_refs: Vec<(u32, SlotCache)>` | **グローバル参照表**。op が u32 1 本で「どのグローバルか」を指す |
+| `Op::IntBinGG(u32, u32, BinOp)` | グローバル `<op>` グローバル |
+| `Op::IntBinGC(u32, u32, BinOp)` | グローバル `<op>` 定数 |
+| `Interpreter::vm_global_int_by_slot` | **clone しない** int 読み |
+| `run::cached_global_int` | キャッシュ命中時限定の clone なし読み |
+
+⚠⚠ **op に `(name_idx, cache_idx)` を直接持たせなかった**のは、`Op` が **20 バイト**を超えると
+**全命令が太る**から（`op_size_is_pinned`）。副表へ逃がす判断は `ffi_call_info` / `wb_targets` と同じ。
+**変更後も `Op` は 20 バイトのまま**。
+
+⚠ **int 特化が確定しているときだけ**融合する。Float / 型不明のグローバル版 op は足していない
+（op を増やすほど命令列のキャッシュ密度を削るので、**実測で効くと分かった形だけ**に絞った）。
+
+⚠ 融合の可否判定（`global_read_name`）は **`compile_expr` の `Expr::Ident` アームと同じ順序**
+（cells → statics → `Resolution::Local` → `Resolution::Global`）でなければならない。
+間違えると**別の記憶域を読む**。`add_global_ref` / `add_const` は副表に積む副作用があるので、
+**判定を全部済ませてから積む**（途中で諦めると使われない枠が残る）。
+
+### 5. ⚠ 3 者比較で判定した（#27 の要求）
+
+op を足す規模の変更は「1 命令も実行しなくてもベンチが動く」ので、
+**op は足すが融合を一切発行しない プローブ**を作って 3 本で比べた:
+
+| bench | ① HEAD vs プローブ<br>（op 追加の摂動だけ） | ② HEAD vs #70 | ③ **プローブ vs #70**<br>（**純粋な融合の効果**） |
+|---|---|---|---|
+| `bench_toplevel_loop` | 1.111x | 1.392x | **1.212x** |
+| `bottleneck_bench` | 1.021x | 1.108x | **1.090x** |
+| `bench_string` | 1.034x | 1.089x | **1.047x** |
+| `bench_name_hash` | 1.059x | 1.103x | **1.044x** |
+| その他 18 本 | 0.977〜1.003x | 0.970〜1.029x | — |
+
+⇒ **op 追加の摂動は 1〜2%**（①）、**融合の実効は 1.04〜1.21x**（③）。
+⚠ 新設ベンチの信用は**内部 METRIC のほう**（②の 1.392x はプロセス wall なのでばらつく）。
+内部計測では ratio **2.295 → 1.188** ／ **2.499 → 1.342**、絶対値で
+**73.6 → 39.6 ns/iter（1.86x）** ／ **113.3 → 62.9（1.80x）**。
+
+### 6. ⚠ バイトコードは**意図的に変わる**（挙動不変は出力で見る）
+
+| ゲート | 結果 |
+|---|---|
+| **[compare_outputs.ps1](compare_outputs.ps1)** | **93 / 93 identical** ← **挙動不変の主検査** |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **93 / 111**（18 例題で差分）。⚠ **全部 B のほうが短い**（例: `control_flow.ar` 1443→1397 行）。目視で `LOAD_GLOBAL; CONST; IBIN_SS` → `IBIN_GC` と飛び先の調整だけと確認 |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | 12 / 13（差分は **#74** のもの。基準バイナリが #72〜#74 より前） |
+| `cargo build` / `--features prof` / `--features tw_stats` | いずれも警告 **0** |
+| `cargo test` | **750 passed**（`op_size_is_pinned` **20 バイトのまま**） |
+| `cargo clippy` / `--all-targets` | **51 / 64**（増分 **0**） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・157 例題**（+1） |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+
+⚠ **`op_prof.rs` が `--features prof` で落ちた**（#69 で直した仕掛けが正しく発火）。
+既定ビルドでは消えるファイルなので、**op を足したら feature ビルドも通す**を実際に守って再生成した。
+
+### 7. ⚠ 採らなかった案とその理由
+
+- **(a) 帰納変数の slot 昇格**（起票時の第 1 候補）… **採らなかった**。
+  ループ本体から呼ばれた関数が**同じグローバルへ代入できる**（#39 で入った機能）ので、
+  slot へ写して最後に書き戻すと**更新が消える**。呼び出しを含むループは実際のコードでは普通なので、
+  「本体に呼び出しが無いときだけ」に絞ると**ベンチしか通らない**。
+  例外・`break` の可視性やデバッガからの観測も同じ問題を持つ。
+- **Float / 型不明のグローバル融合** … 足していない（実測で効くと分かった形に絞る）。
+
+### 8. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「原因は `as_local` 前提＝命令数」（起票時） | **半分外れ**。命令数を fn と同数にしても **2x が残った**。本命は `Value` の clone |
+| 「(a) slot 昇格が第 1 候補」（起票時） | **採れない**。呼び出し先がグローバルへ代入できるので更新が消える |
+| 「op を足すと `Op` が太るかも」 | **回避できた**。`(name, cache)` を副表へ逃がして **20 バイト維持** |
+| 「op 追加の摂動が大きいかも」（#27） | **1〜2%**（プローブで実測）。融合の実効 1.04〜1.21x が上回る |
+| 「効くのは新設ベンチだけ」 | **外れ**。既存の `bottleneck_bench` +9%・`bench_string` +5%・`bench_name_hash` +4%、**18 例題でバイトコードが短くなった** |
