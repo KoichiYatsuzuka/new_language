@@ -7570,3 +7570,113 @@ C++ ヘッダのパーサなので、既存ゲートでは弱い。そこで**�
 | 「可視性は素直に通る」 | **外れ**。`Var` が `pub(self)` なので `pub(crate)` にすると警告。`pub(super)` へ揃えた |
 | 「改名の影響はデバッガ／イベント周辺だけ」 | **外れ**。コメント内の旧名参照が **`vm/chunk.rs` / `vm/compiler/emit.rs` / `decl_names.rs`** にもあった |
 | 「フィールド数が目に見えて減る」 | **半分当たり**。32→28（-4）。**得たのは数より「デバッガ／イベントの持ち物だと分かる」こと** |
+
+---
+
+## #72 `python.search_paths` の読み取り 2 実装（2026-08-23・完了）
+
+#69 で発見して起票したもの。起票時のメモは「⚠ **探索範囲が違う**ので畳むと挙動が変わる。**まず差を測る**」。
+
+### 1. 調査 — 読み手は 2 つではなく **5 つ**あり、探索方針は **4 通り**だった
+
+| 読み手 | セクション | 探索方針 | JSON |
+|---|---|---|---|
+| `Interpreter::python_search_dirs()`（`load_python_search_paths`） | `python.search_paths` | `source_dir` から**祖先を root まで**・**最初の 1 個で打ち切り** | serde |
+| `Parser::python_search_dirs()` | `python.search_paths` | **`source_dir` と `root_dir` の 2 箇所だけ** | **手書き走査** |
+| `cpp_bridge::config::load_cpp_config` | `cpp.*` | 祖先 ＋ cwd を**全部レイヤーマージ** | 手書き走査 |
+| `exec::find_js_config` | `javascript.*` | search_dirs → cwd の**最初** | serde |
+| `parser::imports::parse_cs_lib_paths` | `csharp.lib_paths` | 呼び出し側依存 | 手書き走査 |
+
+⚠ **探索方針にはどれも理由がある**:
+- `load_cpp_config` がレイヤーマージなのは、**打ち切りだと中間の部分的な設定がルートの
+  `cpp` 設定を丸ごと隠す**実バグを直した結果（コメントに経緯あり）。
+- `Parser` の 2 箇所は `root_dir` ＝ **エントリのディレクトリ**（サブパーサにも引き継ぐ）という
+  パーサ側の契約。
+- `Interpreter` の全走査は #61 で「上位が下位を上書きしない」を保つと明記済み。
+
+⇒ **探索方針は畳まない**（#64 と同じ判断: 畳むのは「判断」であって「方針」ではない）。
+
+### 2. ⚠⚠ 差分を実測した（14 ケース → **5 件相違・うち 3 件は手書き側の誤り**）
+
+一時的な差分テストで両実装に同じ JSON を食わせた:
+
+| ケース | 手書き | serde | 判定 |
+|---|---|---|---|
+| `{"python":{},"rust":{"search_paths":["x"]}}` | `x` を拾う | 空 | **手書きが誤り**（`python` の外なのに拾う） |
+| `{"python":{"search_paths":[1,"a"]}}` | `1` をパス扱い | `a` のみ | **手書きが誤り** |
+| `{"python":{"search_paths":["a,b"]}}` | `a` と `b` に割る | `a,b` | **手書きが誤り**（配列区切りと誤認） |
+| `{"python":{"search_paths":["","a"]}}` | 空要素を捨てる | `base` 自身を返す | **手書きが妥当** |
+| 壊れた JSON | 拾えるだけ拾う | 空 | 議論の余地（手書きが寛容） |
+
+⚠ 手書き走査の根本問題は「**`"python"` を見つけた後ろで `"search_paths"` を探すだけ**」で、
+**セクションの内側かどうかを見ていない**こと。
+
+⚠ 副次的な観察: `"C:\\x\\y"` は表示上ずれるが `PathBuf` としては**等しい**
+（Windows のパス比較は連続セパレータを潰す）。**文字列で比べると誤検知する**。
+
+### 3. 手法 — **JSON の読み取りだけを畳む**
+
+新設 [src/ar_config.rs](src/ar_config.rs)（**共有**）へ:
+- `load_python_search_paths`（祖先ウォーク・`main.rs` から移設）
+- `read_python_search_paths` / `read_python_search_paths_from_str`（serde）
+
+そして:
+- `Parser::python_search_dirs()` を `crate::ar_config::read_python_search_paths` へ委譲
+- 手書きの `parse_python_search_paths` を**削除**
+- **空文字列要素は捨てる**方へ揃えた（手書き側が妥当だったので serde 版を寄せた）
+  ⇒ 残る差分は**「手書きが誤っていた 3 件」＋「壊れた JSON」だけ**＝ 変更は**すべて修正方向**
+
+⚠ `main.rs` に置いたままだと「パーサが `main` を呼ぶ」形になるので、
+**crate 直下の小さな共有モジュール**へ出した（#59 の `decl_names.rs` と同じ形）。
+
+⚠⚠ **モジュール doc に「5 つの読み手 × 4 通りの探索方針」の地図を書いた**。
+これが #72 の一番の成果 — 次の人が同じ調査をしなくて済む。
+
+### 4. 恒久テストを新設（負の対照つき）
+
+`ar_config::tests` に 4 本。うち `serde_reader_fixes_hand_rolled_scanner_bugs` は
+**削除した手書き実装が取り違えていた 4 形**をそのまま固定してある（また同じ実装を書かないための番人）。
+
+⚠ **負の対照で検知力を確認した**: `python` セクションのスコープ確認をわざと外す
+（＝手書きと同じ誤り）と、**この 1 本だけが FAILED** になる。
+
+⚠ もう 1 件、テストが最初 FAILED した — `PathBuf::from("/abs").is_absolute()` は
+**Windows では偽**（ドライブが無い）。`cfg!(windows)` で分けた。
+
+### 5. 検証（全ゲート緑）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test` | **746 passed**（+4 = 新設テスト） |
+| `import_py_search_path.ar`（パーサ側）／`import_py_int_search_path.ar`（インタープリタ側） | 両方とも従来どおり |
+| [compare_outputs.ps1](compare_outputs.ps1) | **93 / 93 identical** |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **110 / 110** |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **10 / 10** |
+| `cargo build` | 警告 **0** |
+| `cargo clippy` / `--all-targets` | **51 / 64**（増分 **0**） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・155 例題** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+
+### 6. ⚠ 残した課題（#72 では触らない）
+
+- **`python` の 2 つは探索方針が食い違ったまま**（祖先全走査 ↔ 2 箇所）。
+  中間の祖先にある設定は `import[py-int]` からは見えて `import[py]` からは見えない。
+  ⇒ 揃えるなら独立タスクで、**先に「どちらへ揃えるか」を決めること**。
+- **`parse_cs_lib_paths`（`csharp.lib_paths`）も同じ手書き走査**で、しかも
+  **セクション名で絞ってすらいない**（`"lib_paths"` を全文検索）。同じ 3 つの誤りを持つはず。
+  ⇒ `ar_config` に `read_cs_lib_paths` を足して委譲できる（別タスク）。
+- `cpp_bridge::config` の手書き JSON パーサ（`extract_json_object` 等）も同系統。
+  ただしこちらは**レイヤーマージ**という別の要件を持つので、単純委譲にはならない。
+
+### 7. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「読み取り実装は 2 つ」（起票時） | **外れ**。**5 つの読み手・4 通りの探索方針**があった |
+| 「探索範囲が違うので畳めない」（起票時） | **当たり**。しかも**それぞれに理由がある**（cpp のレイヤーマージは実バグの修正結果） |
+| 「差は些細だろう」 | **外れ**。14 ケース中 **5 件相違**、うち **3 件は手書き側の実バグ**（セクション外の拾い上げ等） |
+| 「委譲すれば挙動が変わる」 | **半分外れ**。空文字列の扱いを手書き側へ寄せたので、**残る変更はすべて修正方向**になった |
+| 「テストは素直に通る」 | **外れ**。`/abs` は **Windows では絶対パスでない**（`is_absolute()` が偽）ので 1 本落ちた |

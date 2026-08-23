@@ -154,14 +154,16 @@ impl Parser {
         } else {
             vec![self.source_dir.clone(), self.root_dir.clone()]
         };
+        // ⚠ #72: JSON の読み取りは [`crate::ar_config`] へ委譲した（以前はここ専用の
+        // 手書き文字列走査で、`python` の外の `search_paths` を拾う等の誤りが 3 件あった）。
+        // ⚠⚠ **探索方針（`source_dir` と `root_dir` の 2 箇所だけ）はここの契約なので畳まない**
+        // （`Interpreter` 側は祖先を root まで遡る。理由は `ar_config` のモジュール doc）。
         for config_dir in &config_search {
             let cfg_path = config_dir.join("ar_config.json");
             if cfg_path.exists() {
-                if let Ok(text) = std::fs::read_to_string(&cfg_path) {
-                    for p in parse_python_search_paths(&text, config_dir) {
-                        if !dirs.contains(&p) {
-                            dirs.push(p);
-                        }
+                for p in crate::ar_config::read_python_search_paths(&cfg_path, config_dir) {
+                    if !dirs.contains(&p) {
+                        dirs.push(p);
                     }
                 }
                 break;

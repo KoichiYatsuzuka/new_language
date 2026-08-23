@@ -2,6 +2,8 @@
 ///
 /// パイプラインは以下の順序で処理を行う:
 ///   ソースファイル → Lexer（字句解析）→ Parser（構文解析）→ TypeChecker（静的型検査）→ Interpreter（実行）
+// `ar_config.json` の読み取り（#72）。**探索方針は呼び出し側ごと**で、その地図も doc にある。
+mod ar_config;
 mod ast;
 // 「この文はどの名前を束縛するか」の唯一の定義（#59）。resolver / exec / vm-compiler が共有する。
 mod decl_names;
@@ -484,56 +486,6 @@ fn run_program(
     Ok(())
 }
 
-/// `source_dir` から**祖先へ遡って** `ar_config.json` を探し、最初に見つけたものの
-/// `python.search_paths` を（相対なら設定ファイルのある場所を基準に）絶対パス化して返す（#61）。
-///
-/// 消費者は `import[py]` のモジュール解決だけ（`Interpreter::python_search_dirs`）。
-///
-/// ⚠ **見つかった時点で打ち切る**（読めなくても・壊れていても遡らない）。
-/// 上位の設定が下位を上書きしない、という既存の挙動をそのまま保つため。
-/// ⚠ **見つからない場合はドライブ root まで遡る**（打ち切りが無い）。
-/// これが `interp_init` の支配項で、削減は #69 の担当。
-pub(crate) fn load_python_search_paths(source_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut walk: Option<&std::path::Path> = Some(source_dir);
-    while let Some(d) = walk {
-        let cfg_path = d.join("ar_config.json");
-        if cfg_path.exists() {
-            return read_python_search_paths(&cfg_path, d);
-        }
-        walk = d.parent();
-    }
-    Vec::new()
-}
-
-/// `ar_config.json` 1 個から `python.search_paths` を読む（#61）。
-/// 読めない・壊れている・キーが無い場合は**空**（エラーにはしない＝従来どおり）。
-fn read_python_search_paths(cfg_path: &std::path::Path, base: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let Ok(text) = std::fs::read_to_string(cfg_path) else {
-        return Vec::new();
-    };
-    let Ok(root) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return Vec::new();
-    };
-    let Some(paths) = root
-        .get("python")
-        .and_then(|p| p.get("search_paths"))
-        .and_then(|v| v.as_array())
-    else {
-        return Vec::new();
-    };
-    paths
-        .iter()
-        .filter_map(|p| p.as_str())
-        .map(|s| {
-            let pb = std::path::PathBuf::from(s);
-            if pb.is_absolute() {
-                pb
-            } else {
-                base.join(pb)
-            }
-        })
-        .collect()
-}
 
 /// プログラムのエントリーポイント。
 fn main() {

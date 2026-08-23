@@ -25,42 +25,6 @@ fn parse_cs_lib_paths(json: &str, base: &std::path::Path) -> Option<Vec<std::pat
     if paths.is_empty() { None } else { Some(paths) }
 }
 
-/// ar_config.json の JSON テキストから `python.search_paths` を取り出す。
-/// 依存クレートなしの簡易パーサー（正規表現・serde 不使用）。
-fn parse_python_search_paths(json: &str, base: &std::path::Path) -> Vec<std::path::PathBuf> {
-    // "python" キーを探す
-    let python_key = "\"python\"";
-    let start = match json.find(python_key) {
-        Some(s) => s,
-        None => return vec![],
-    };
-    // "search_paths" キーを python オブジェクト内で探す
-    let after_python = &json[start + python_key.len()..];
-    let key = "\"search_paths\"";
-    let key_start = match after_python.find(key) {
-        Some(s) => s,
-        None => return vec![],
-    };
-    let after_key = &after_python[key_start + key.len()..];
-    let arr_start = match after_key.find('[') {
-        Some(s) => s,
-        None => return vec![],
-    };
-    let arr_end = match after_key[arr_start..].find(']') {
-        Some(s) => s,
-        None => return vec![],
-    };
-    let arr = &after_key[arr_start + 1..arr_start + arr_end];
-    let mut paths = Vec::new();
-    for part in arr.split(',') {
-        let trimmed = part.trim().trim_matches('"');
-        if !trimmed.is_empty() {
-            let p = std::path::PathBuf::from(trimmed);
-            paths.push(if p.is_absolute() { p } else { base.join(p) });
-        }
-    }
-    paths
-}
 
 /// Python プロセスを実行して標準ライブラリと site-packages のパスを取得する。
 /// OnceLock でキャッシュするので初回のみサブプロセスが起動する。

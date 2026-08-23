@@ -561,7 +561,7 @@ impl Interpreter {
     /// ⇒ cs-dll / cs-proc / js-proc / `import[py-int]` を使わないスクリプトは**一度も走らない**。
     pub(crate) fn python_search_dirs(&self) -> impl Iterator<Item = &PathBuf> {
         let cfg = self.config_search_dirs.get_or_init(|| match &self.config_base_dir {
-            Some(d) => crate::load_python_search_paths(d),
+            Some(d) => crate::ar_config::load_python_search_paths(d),
             None => Vec::new(),
         });
         self.python_search_dirs.iter().chain(cfg.iter())
