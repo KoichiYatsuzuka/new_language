@@ -7229,3 +7229,131 @@ if chunk_opt.is_none() {
 | 「`vm_eligible` を直すだけ」 | **半分外れ**。`try_fast_bind` を塞がないと copy 規則が 2 経路でずれる（Python の値渡しが壊れる） |
 | 「大がかりな修正になる」 | **外れ**。実質 2 行。**難しかったのは修正ではなく「何が壊れているか」の特定**で、それは例題が無かったせい |
 | 「既存のゲートで巻き添えが分かる」 | **当たり**。bytecode 109/110・outputs 92/93 で**差分が修正 1 件だけ**と示せた |
+
+---
+
+## #64 `gen_expr_inner` の `Expr::Call` 二重化（2026-08-23・完了）
+
+保守性レーン第 2 弾。起票時の実測は「`gen_expr_inner` 558 行・深さ 9。`Expr::Call` アームが
+146 行ある一方、同ファイルに `fn gen_call`（156 行）が別に居る ＝ **呼び出し生成が 2 箇所**」。
+起票時のメモは「**まず理由を確かめる**」だった。
+
+### 1. ⚠⚠ 結論 — **統合してはいけない**（2 実装ではなく「2 つの ABI」だった）
+
+まず `gen_call` の呼び出し元を数えたところ、**`Expr::Call` アームの中の 3 箇所だけ**だった
+（独立した 2 実装ではなく、アームが**一部を自分で出して残りを委譲している**形）。
+中身を読み比べた結果:
+
+| | `Expr::Call` アーム | `gen_call` |
+|---|---|---|
+| 戻り値 | `(値, ネイティブ型)` | **i64 ハンドル 1 本** |
+| 呼び出し規約 | 戻り値が `Ty::Float` のときだけ **`double` を返す `_impl` / `_fast`** を直接呼ぶ | **ハンドル ABI 一本** |
+| アリーナ | **触らない**（save/compact を出さない） | `CB_ARENA_SAVE` → `CB_ARENA_COMPACT` を必ず挟む |
+| boxing | 無し（スカラーのまま） | 有り |
+
+⇒ **同じ呼び先に対する 2 つの ABI**。片方へ寄せると
+**float の高速経路が消える**（アリーナ操作と boxing が復活する）か、逆に
+**アリーナの巻き戻しが漏れる**。プランの分類でいう「**最適化の前提**」であって
+「2 実装の差」ではない ⇒ **畳まない**。
+
+### 2. ⚠ 重複していたのは「**判断**」のほうだった
+
+emit は違うのに、**どちらへ行くかを決める判断**が各自に書かれていた:
+
+| 重複していた判断 | 箇所 |
+|---|---|
+| 「この名前はモジュール内関数か」（`module_fns.contains && !locals.contains_key`） | **4 箇所** |
+| 「レシーバのクラスは何か」（`self` → `current_class` ／ 識別子 → `param_classes`） | **2 箇所・逐語で同一** |
+| 「非 float の戻り値はハンドル ABI ＋ `CB_TO_INT` で開ける」 | **2 箇所・逐語で同一** |
+| 「引数ハンドルを entry ブロックの `alloca` 配列へ積む」 | **3 箇所・逐語で同一**（違うのは生成 IR 側の配列名の接頭辞だけ） |
+
+⇒ ここだけを 4 つのヘルパへ畳んだ（`is_module_fn` / `receiver_class` /
+`gen_call_unwrapped` / `spill_handle_array`）。**emit は 1 行も変えていない**。
+
+### 3. 手法と規模
+
+| | 前 | 後 |
+|---|---|---|
+| `gen_expr_inner` | **558 行**・最大ネスト **9** | **414 行**・最大ネスト **6** |
+| `gen_call` | 156 行 | **130 行** |
+| `gen_call_expr`（新設） | — | 126 行 |
+| `llvm_codegen/expr.rs` | 1,011 行 | 1,044 行（**doc を約 90 行足した上で**コード自体は縮小） |
+
+`Expr::Call` アームは `self.gen_call_expr(func, args)` の **1 行**になった。
+役割分担の表は `gen_call_expr` の doc に**そのまま書いてある**（次に読む人が同じ調査をしないため）。
+
+### 4. ⚠⚠ 検証は `dump_native_ir.ps1` の **IR byte-identical**（bytecode は無関係）
+
+#64 は**ネイティブ codegen** の変更なので、`compare_bytecode.ps1` は何も言わない
+（#63 で「解釈側だけの変更では bytecode が自明に一致する」と書いたのと**逆向きの同じ話**）。
+主検査は [dump_native_ir.ps1](dump_native_ir.ps1) の生成 LLVM IR の突き合わせ。
+
+⚠ **使う前に負の対照を取った** — 同一バイナリで 2 回ダンプして **6/6 byte-identical**
+（＝ダンプが決定的であることの確認）。そのうえで:
+
+| 段 | 結果 |
+|---|---|
+| ① アームをメソッドへ切り出した直後 | **6 / 6 IR byte-identical** |
+| ② 判断 4 種をヘルパへ畳んだ後 | **6 / 6 IR byte-identical** |
+
+⚠ 代表 6 モジュール（physics 66KB ／ swd_nested ／ typed_abi_module ／ geometry ／
+flat_bench_module ／ partial_call_overhead_module）で**全バイト一致**。
+
+### 5. 検証（全ゲート緑）
+
+| ゲート | 結果 |
+|---|---|
+| **[dump_native_ir.ps1](dump_native_ir.ps1)** | **6 / 6 IR byte-identical**（⚠ 負の対照 6/6 を先に取得） |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **110 / 110**（⚠ #64 では自明。コンパイラを触っていない） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **93 / 93 identical** |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **10 / 10 identical** |
+| `cargo build` | 警告 **0** |
+| `cargo test` | **742 passed** |
+| `cargo clippy` / `--all-targets` | **52 / 65**（増分 **0**） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・155 例題** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件**（⚠ 一度 3 件出した — 下記） |
+| [ab_bench.ps1](ab_bench.ps1) | 退行なし（⚠ 判定までに 4 回測り直した — 下記） |
+
+### 5-b. ⚠⚠ **同じ 2 バイナリが 0.897x と 1.007x を出した**（ベンチの信用）
+
+`partial_call_overhead.ar` が **0.897x → 0.922x** を続けて出した。IR は 6/6 byte-identical で
+インタープリタ／VM は 1 行も触っていないのに、である。#62 の手順で潰した:
+
+| 段 | 実験 | 結果 |
+|---|---|---|
+| ① | 再測定（Reps 5） | **0.922x**（再現した） |
+| ① | 負の対照（同一 exe） | 1.001x（計測系は安定に見えた） |
+| ② | **同規模プローブ**（`llvm_codegen` の `mod` 宣言順を反転しただけ・`expr.rs` は HEAD 同一） | **1.018x**（**再現しない**） |
+| ③ | **3 者を同一セッションで交互に測り直す** | **HEAD vs #64 = 1.007x** ／ HEAD vs probe = 1.017x ／ probe vs #64 = 0.995x |
+
+⇒ **0.897/0.922x は実差ではなくセッション間のドリフト**だった。
+
+⚠⚠ **交絡因子は [dump_native_ir.ps1](dump_native_ir.ps1) だった** — 最初の 2 回は
+**IR ダンプ（clang を 6 回起動して `.arc`/`.ars` を書き換え・復元する）の直後**に測っていた。
+⇒ **IR ダンプの直後にベンチを取らない。** 取るなら計測対象の全バイナリを
+**同一セッションで交互に**測ること（負の対照 A vs A は**時間相関のドリフトを打ち消してしまう**ので
+「計測系は安定」の証明にならない）。
+
+⚠ #69 でも同じ `partial_call_overhead.ar` が 0.887x を出して外れ値だった。
+**このベンチは数 % の判定に使えない**（`flat_bench.ar` の ±7%・#62 と同類）。
+
+### 5-c. stale_doc_refs
+
+⚠ `stale_doc_refs` が `_margs` / `_targs` / `_cargs` を「実在しない識別子」として挙げた。
+これらは **生成 IR 側のレジスタ名の接頭辞**で Rust の識別子ではない。
+whitelist へ足さず、**バッククォートを外して地の文にした**（マーカー語は行単位で効くので、
+同じ行の他の識別子まで検査から外れるのを避けた）。
+
+### 6. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「呼び出し生成が 2 箇所ある＝統合できる」（起票時） | **外れ**。**2 つの ABI**（float 直返し ↔ ハンドル＋アリーナ）で、畳むと生成コードが変わる |
+| 「`gen_call` は別経路から呼ばれているだろう」 | **外れ**。呼び出し元は `Expr::Call` アームの中の **3 箇所だけ** |
+| 「重複は無い」 | **半分外れ**。emit は違うが**判断が 4 種・計 11 箇所**重複していた（うち 7 箇所は逐語） |
+| 「bytecode ゲートで挙動不変を言える」 | **外れ**。ネイティブ codegen なので bytecode は自明に一致する。**IR ダンプが主検査** |
+| 「行数は減る」 | **半分外れ**。`gen_expr_inner` は 558→414 だがファイルは +33 行（**doc に役割分担の表を書いたぶん**） |
+| 「A/B は素通りする（IR が同一なので）」 | **外れ**。**同じ 2 バイナリが 0.897x と 1.007x** を出した。交絡は **IR ダンプ直後に測ったこと** |
