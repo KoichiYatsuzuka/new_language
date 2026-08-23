@@ -153,25 +153,29 @@ impl Parser {
     /// source_dir を先頭に、ar_config.json の python.search_paths、PYTHONPATH 環境変数、Python site-packages を続ける。
     pub(crate) fn python_search_dirs(&self) -> Vec<PathBuf> {
         let mut dirs = vec![self.source_dir.clone()];
-        // ar_config.json の python.search_paths を追加する（source_dir → root_dir の順に探す）
-        let config_search = if self.source_dir == self.root_dir {
-            vec![self.source_dir.clone()]
-        } else {
-            vec![self.source_dir.clone(), self.root_dir.clone()]
-        };
+        // ar_config.json の python.search_paths を追加する。
+        //
         // ⚠ #72: JSON の読み取りは [`crate::ar_config`] へ委譲した（以前はここ専用の
         // 手書き文字列走査で、`python` の外の `search_paths` を拾う等の誤りが 3 件あった）。
-        // ⚠⚠ **探索方針（`source_dir` と `root_dir` の 2 箇所だけ）はここの契約なので畳まない**
-        // （`Interpreter` 側は祖先を root まで遡る。理由は `ar_config` のモジュール doc）。
-        for config_dir in &config_search {
-            let cfg_path = config_dir.join("ar_config.json");
-            if cfg_path.exists() {
-                for p in crate::ar_config::read_python_search_paths(&cfg_path, config_dir) {
-                    if !dirs.contains(&p) {
-                        dirs.push(p);
-                    }
+        //
+        // ⚠⚠ #74: **探索方針を祖先ウォークへ揃えた**（以前は `source_dir` と `root_dir` の
+        // 2 箇所だけ）。揃える前は、`examples/interop/py_subdir/` のように**自分の設定を
+        // 持たないサブディレクトリ**から実行すると、同じ `ar_config.json` が
+        // `import[py-int]` からは見えて `import[py]` からは見えず **ParseError** になっていた。
+        // ⚠ `root_dir`（エントリのディレクトリ）は `source_dir` の祖先とは限らない
+        // （検索パス経由のモジュール等）ので、**空振りしたときのフォールバック**として残す。
+        let cfg = crate::ar_config::find_ancestor_config(&self.source_dir).or_else(|| {
+            if self.root_dir == self.source_dir {
+                None
+            } else {
+                crate::ar_config::find_ancestor_config(&self.root_dir)
+            }
+        });
+        if let Some((cfg_path, base)) = cfg {
+            for p in crate::ar_config::read_python_search_paths(&cfg_path, &base) {
+                if !dirs.contains(&p) {
+                    dirs.push(p);
                 }
-                break;
             }
         }
         if let Ok(pythonpath) = std::env::var("PYTHONPATH") {

@@ -9,15 +9,17 @@
 // | 読み手 | セクション | 探索方針 | 理由 |
 // |---|---|---|---|
 // | `Interpreter::python_search_dirs()`（`load_python_search_paths`） | `python.search_paths` | `source_dir` から**祖先を root まで**遡り、**最初の 1 個で打ち切り** | 上位の設定が下位を上書きしない、という既存の挙動（#61） |
-// | `Parser::python_search_dirs()` | `python.search_paths` | **`source_dir` と `root_dir` の 2 箇所だけ** | `root_dir` は**エントリのディレクトリ**でサブパーサにも引き継ぐ、というパーサ側の契約 |
+// | `Parser::python_search_dirs()` | `python.search_paths` | `source_dir` から祖先へ遡り、空振りなら `root_dir` から祖先へ | **#74 で上の行と揃えた**（以前は 2 箇所だけで、同じ設定が `import[py-int]` からは見えて `import[py]` からは見えなかった） |
 // | `cpp_bridge::config::load_cpp_config` | `cpp.*` | 祖先を root まで ＋ cwd を**全部レイヤーマージ**（遠い方から適用） | **打ち切りだと中間の部分的な設定がルートの cpp 設定を丸ごと隠す**（実バグとして修正済み） |
 // | `exec::find_js_config` | `javascript.*` | `python_search_dirs` → cwd の順に**最初に見つかったもの** | ブリッジは 1 つだけ要るため |
 // | `Parser::load_cs_lib_paths` | `csharp.lib_paths` | `source_dir` から**祖先を root まで**・最初の 1 個 | `python` 側と同じ（#73 で読み取りを共有化） |
 //
-// ⚠ **`python` の 2 つは方針が食い違ったままである**（祖先全走査 ↔ 2 箇所）。
-// つまり中間の祖先にある設定は `import[py-int]` からは見えて `import[py]` からは見えない。
-// #72 では**そこは変えていない**（どちらの契約にも理由があり、揃えると解決順が動く）。
-// ⇒ 揃えるなら独立タスクで、**先に「どちらへ揃えるか」を決めること**。
+// ⚠⚠ **`python` の 2 つは #74 で揃えた**（どちらも祖先ウォーク）。揃える前は
+// `examples/interop/py_subdir/` から `import[py] cfg_probe` が **ParseError** になる一方
+// `import[py-int]` は通る、という食い違いが実際にあった。
+// **ウォーク側へ寄せた根拠**: 5 つの読み手のうち **4 つが既にウォーク**で、2 箇所ルールが異端だった。
+// ⚠ `root_dir`（エントリのディレクトリ）は `source_dir` の祖先とは限らない
+// （検索パス経由のモジュール等）ので、**空振りしたときのフォールバックとして残してある**。
 //
 // ## #72 が実際に畳んだもの
 //
@@ -51,15 +53,34 @@ use std::path::{Path, PathBuf};
 /// ⚠ **見つからない場合はドライブ root まで遡る**（打ち切りが無い）。
 /// これが `interp_init` の支配項だったので、**呼び出しは遅延させてある**（#69）。
 pub(crate) fn load_python_search_paths(source_dir: &Path) -> Vec<PathBuf> {
-    let mut walk: Option<&Path> = Some(source_dir);
+    match find_ancestor_config(source_dir) {
+        Some((cfg_path, base)) => read_python_search_paths(&cfg_path, &base),
+        None => Vec::new(),
+    }
+}
+
+/// `start` から**祖先へ遡って**最初の `ar_config.json` を探す（#74 で切り出し）。
+///
+/// 返すのは `(設定ファイルのパス, その置き場所)`。**相対パスの基準は後者**。
+/// 見つからなければドライブ root まで遡って `None`。
+///
+/// ⚠ **最初に見つかったところで打ち切る**（上位の設定が下位を上書きしない）。
+/// `cpp_bridge::config::load_cpp_config` だけは**全部レイヤーマージ**する — 打ち切りだと
+/// 中間の部分的な設定がルートの `cpp` 設定を丸ごと隠す実バグがあったため（モジュール doc の表）。
+///
+/// ⚠ `Parser::load_cs_lib_paths` はこれを使わず**自前でウォークしている**。
+/// 「設定ファイルが**存在するが読めない**ときはさらに上へ遡る」という独自の挙動を持つため
+/// （ここは読めなければ空を返して打ち切る）。意図的な差なので畳んでいない。
+pub(crate) fn find_ancestor_config(start: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut walk: Option<&Path> = Some(start);
     while let Some(d) = walk {
         let cfg_path = d.join("ar_config.json");
         if cfg_path.exists() {
-            return read_python_search_paths(&cfg_path, d);
+            return Some((cfg_path, d.to_path_buf()));
         }
         walk = d.parent();
     }
-    Vec::new()
+    None
 }
 
 /// `ar_config.json` **1 個**から `python.search_paths` を読む（#61・#72 で共有化）。

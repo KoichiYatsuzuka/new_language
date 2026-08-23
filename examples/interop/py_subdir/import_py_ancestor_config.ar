@@ -1,0 +1,22 @@
+# import_py_ancestor_config.ar — **自分の設定を持たないサブディレクトリ**から、
+# 祖先の `ar_config.json` の `python.search_paths` が見えることの検査（#74）。
+#
+# このファイルの置き場所（`examples/interop/py_subdir/`）には `ar_config.json` が無い。
+# 設定は 1 つ上の `examples/interop/ar_config.json` にあり、そこの
+# `"python": {"search_paths": ["py_libs"]}` を読めて初めて `cfg_probe` を解決できる。
+#
+# ⚠⚠ **#74 以前は `import[py]` だけがここで落ちていた**（`ParseError: cannot find module`）。
+#   - `import[py]`     … パーサ側。**`source_dir` と `root_dir` の 2 箇所しか見ない**方針だった。
+#                        このファイルを直接実行すると source_dir == root_dir == py_subdir なので、
+#                        1 つ上の設定に**到達できなかった**。
+#   - `import[py-int]` … インタープリタ側。最初から祖先を root まで遡っていたので**通っていた**。
+#   ⇒ **同じディレクトリ・同じ設定なのにタグで結果が違う**状態だった。#74 で祖先ウォークへ揃えた。
+#
+# ⚠ この例題が無いと、方針がまた 2 通りに分かれても全ゲートが緑のまま通る
+#   （#58 の cs-proc・#68 の enum と同じ「例題が 1 本も無い」形）。
+
+import[py] cfg_probe
+import[py-int] cfg_probe as cfg_int
+
+print(cfg_probe.MARKER)
+print(cfg_int.MARKER)

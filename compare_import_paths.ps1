@@ -37,6 +37,13 @@ foreach ($exe in @($A, $B)) {
 # import[cs-dll] / [cs-proc] / [js-proc] / [cpp-dll] / [cpp-lib] を踏む非 GUI 例題。
 $targets = @(
     'examples/interop/cs_interop_test.ar',
+    # ⚠ `ar_config.json` の `python.search_paths` を踏む唯一の例題群（#61/#69/#74）。
+    #    ⚠⚠ `py_subdir/` のものは**サブディレクトリ**にあるので
+    #    [compare_outputs.ps1](compare_outputs.ps1) からは見えない（あちらは非再帰）。
+    #    祖先ウォークの回帰はここでしか検知できない。
+    'examples/interop/import_py_search_path.ar',
+    'examples/interop/import_py_int_search_path.ar',
+    'examples/interop/py_subdir/import_py_ancestor_config.ar',
     # ⚠ **`import[cs-proc]` を踏む唯一の非 GUI 例題**（#58 で気づいた）。
     #    [compare_bytecode.ps1](compare_bytecode.ps1) は外部プロセスを理由に skip しているので、
     #    これを外すと cs-proc 経路を見る網が 1 つも無くなる。

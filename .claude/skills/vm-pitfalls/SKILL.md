@@ -175,6 +175,14 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   実ヘッダ検査を**通り抜け**、合成テスト `test_union_incomplete` だけが検知した。
   **広い回帰は実ファイル、意味論は合成テスト**の役割分担が要る。
 
+- **⚠⚠ 例題スイートのグロブは非再帰のものがある**（#74）。
+  [compare_outputs.ps1](../../../compare_outputs.ps1) と
+  [compare_python_impl.ps1](../../../compare_python_impl.ps1) は `examples/<cat>/*.ar` なので
+  **サブディレクトリの例題を 1 本も見ない**（`scan_examples` / `force_gate` は再帰する）。
+  ⇒ サブディレクトリに例題を置いたら、**どのゲートが実際に拾うかを確かめる**こと。
+  #74 では [compare_import_paths.ps1](../../../compare_import_paths.ps1) へ明示登録した
+  （ついでに `import_py_search_path.ar` 等が**どのゲートにも入っていなかった**ことも判明した）。
+
 ## 4. PowerShell / 子プロセス / エンコーディング
 
 - **PowerShell 5.1 は BOM 無し `.ps1` を ANSI として読む**（日本語コメント入りは UTF-8

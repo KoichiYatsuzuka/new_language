@@ -7758,3 +7758,107 @@ C++ ヘッダのパーサなので、既存ゲートでは弱い。そこで**�
 | 「例題を足せる」 | **外れ**。DLL ＋ ネイティブブリッジを既定外に置く必要があり、**バイナリが増える**。単体テスト 2 種で代替し理由を記録 |
 | 「python 版と同じ形にできる」 | **半分外れ**。パスを取る版は**呼び出し側の読み込み失敗ポリシーが違う**ので作れない（未使用警告で気づいた） |
 | 「`cpp` セクションが `lib_paths` を使っている」 | **外れ**。使っているのは `lib_patterns` / `system_libs`。⇒ `WRONG-SECTION` は**潜在**（1 キー足されたら発火） |
+
+---
+
+## #74 `python.search_paths` の探索方針を祖先ウォークへ統一（2026-08-23・完了）
+
+#72 で確認して起票したもの。起票時のメモは「⚠ **先にどちらへ揃えるかを決める**。
+中間の祖先の設定が `import[py]` から見えない」。
+
+⚠⚠ **本系列で初めて「意図的に挙動を変える」タスク**。
+
+### 1. 実証 — 同じディレクトリ・同じ設定で**タグによって結果が違った**
+
+`examples/interop/py_subdir/`（**自分の `ar_config.json` を持たない**）から実行:
+
+| | 結果 |
+|---|---|
+| `import[py] cfg_probe` | **`ParseError: cannot find module 'cfg_probe'`** |
+| `import[py-int] cfg_probe` | `search_path_ok`（**通る**） |
+
+原因はパーサ側の探索方針:
+
+```rust
+let config_search = if self.source_dir == self.root_dir {
+    vec![self.source_dir.clone()]            // ← 直接実行するとここだけ
+} else {
+    vec![self.source_dir.clone(), self.root_dir.clone()]
+};
+```
+
+`py_subdir/x.ar` を直接実行すると `source_dir == root_dir == py_subdir` になるので
+**1 つ上の `examples/interop/ar_config.json` に到達できない**。
+インタープリタ側は最初から祖先を root まで遡っていたので通っていた。
+
+### 2. どちらへ揃えるか — **ウォーク側**（5 つ中 4 つが既にウォーク）
+
+| 読み手 | 方針 |
+|---|---|
+| `Interpreter::python_search_dirs()` | 祖先ウォーク |
+| `Parser::load_cs_lib_paths()` | 祖先ウォーク |
+| `cpp_bridge::config::load_cpp_config` | 祖先ウォーク（＋レイヤーマージ） |
+| **`Parser::python_search_dirs()`** | **2 箇所だけ ← 異端** |
+| `exec::find_js_config` | search_dirs → cwd |
+
+⇒ 2 箇所ルールが異端。**ウォーク側へ寄せた。**
+
+⚠ `root_dir`（エントリのディレクトリ）は **`source_dir` の祖先とは限らない**
+（検索パス経由で読まれるモジュールなど）ので、**空振りしたときのフォールバックとして残した**。
+新しい方針は「`source_dir` から祖先へ遡って最初の設定 ／ 無ければ `root_dir` から祖先へ」。
+
+⚠ 「最初に見つかった**設定ファイル**で確定（中身が空でも遡らない）」という既存の意味論を保つため、
+`ar_config` に **`find_ancestor_config`（ファイルを探すだけ）** を切り出し、
+`load_python_search_paths` もそれを使う形にした（ウォークの実装も 1 本になった）。
+
+### 3. ⚠ `load_cs_lib_paths` は畳まなかった（理由を doc に記録）
+
+`find_ancestor_config` は「最初に**存在する**設定ファイルで打ち切り」だが、
+`load_cs_lib_paths` は「**存在するが読めない**ときはさらに上へ遡る」という独自の挙動を持つ（#73 で確認）。
+意図的な差として残し、`find_ancestor_config` の doc に書いた。
+
+### 4. 例題を新設（#74 の回帰を止める唯一の網）
+
+`examples/interop/py_subdir/import_py_ancestor_config.ar` —
+**同じファイルで両タグを使い、両方が同じ設定を見る**ことを固定する。
+
+⚠⚠ **ゲートへの登録が要った**:
+- `compare_outputs.ps1` / `compare_python_impl.ps1` は `examples/<cat>/*.ar` の**非再帰グロブ**なので
+  **サブディレクトリの例題を見ない**。
+- ⇒ import 解決の検査である [compare_import_paths.ps1](compare_import_paths.ps1) へ登録した。
+  ついでに `import_py_search_path.ar` / `import_py_int_search_path.ar` も**未登録だった**ので追加
+  （対象 10 → 13 本）。
+
+⚠ **負の対照で確認**: 祖先ウォークを外して `source_dir` だけ見る形に戻すと、
+この例題は **ParseError に戻る**。
+
+### 5. 検証（**差分は意図した 1 件だけ**）
+
+| ゲート | 結果 |
+|---|---|
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **12 / 13**。⚠ **唯一の差分が修正そのもの**（新例題が旧 ParseError → 正常） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **93 / 93 identical**（巻き添えなし） |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **110 / 110** |
+| `cargo build` | 警告 **0** |
+| `cargo test` | **750 passed** |
+| `cargo clippy` / `--all-targets` | **51 / 64**（増分 **0**） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・156 例題**（+1） |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+
+⚠ **広がる方向の変更なので巻き添えを気にした**が、リポジトリ内の設定は
+`ar_config.json`（root・`search_paths: []`）と `examples/interop/ar_config.json`（`["py_libs"]`）だけで、
+前者は空なので「祖先で root の設定を見つける」ようになっても**追加されるパスは無い**。
+実測でも outputs 93/93・bytecode 110/110 が同一だった。
+
+### 6. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「中間の祖先の設定が見えない」（起票時） | **当たり、かつもっと狭い** — `source_dir == root_dir` なら**1 つ上すら**見えなかった |
+| 「どちらへ揃えるか迷う」 | **迷わなかった**。5 つの読み手のうち **4 つが既にウォーク**で 2 箇所ルールが異端 |
+| 「`root_dir` は不要になる」 | **外れ**。`source_dir` の祖先とは限らないのでフォールバックとして必要 |
+| 「例題を足せばゲートが拾う」 | **外れ**。`compare_outputs` / `compare_python_impl` は**非再帰**でサブディレクトリを見ない ⇒ `compare_import_paths` へ明示登録が要った |
+| 「巻き添えが出るかもしれない」 | **出なかった**（root の設定が空だったため）。outputs / bytecode とも同一 |

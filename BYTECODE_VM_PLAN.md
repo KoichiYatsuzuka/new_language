@@ -33,7 +33,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 **exec の中の速度は打ち止め**（#24/#46 を実測して却下）。残る速度は **#50 の分布から起票した
 69（`interp_init`）・70（最上位ループ）＝ どちらも「exec の外／載り方」の話**。
-保守性は**第 2 弾（#58〜#68）を 2026-08-21 に起票**し、**#68・#71（実バグ）・#58〜#64・#66〜#69・#72・#73 が完了**（第 2 弾は **#65 のみ残り**）。
+保守性は**第 2 弾（#58〜#68）を 2026-08-21 に起票**し、**#68・#71（実バグ）・#58〜#64・#66〜#69・#72〜#74 が完了**（第 2 弾は **#65 のみ残り**）。
 直近の到達点は 1 行ずつ（詳細は
 [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号）:
 
@@ -45,6 +45,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | 50 | **段別＋op 別の実行時間分布**を実測（[prof_dist.ps1](prof_dist.ps1)・`--features prof` 新設） |
 | 57 | [stale_doc_refs.ps1](stale_doc_refs.ps1) の**再発 14 件を 0 に**（改名の取り残し／マーカー語／`$whitelist`）。**負の対照で検知力も確認** |
 | 68 | 関数本体の `enum` が `VmForceError` だった実バグを修正 — `build_enum_classes` で**組み立てと記憶域を分離**し `Op::EnumDef` が `Name` を slot へ。副産物で **#59 のドリフトが実害として発火**（`collect_declared_names` に `EnumDef` を追加）。[compare_bytecode.ps1](compare_bytecode.ps1) を新設 |
+| 74 | `python.search_paths` の**探索方針を祖先ウォークへ統一**（本系列で初の**意図的な挙動変更**）。⚠⚠ 揃える前は**同じ設定が `import[py-int]` からは見えて `import[py]` からは ParseError** だった（実証済み）。根拠は「読み手 5 つのうち **4 つが既にウォーク**」。差分は**意図した 1 件だけ**（outputs 93/93・bytecode 110/110 は同一） |
 | 73 | `csharp.lib_paths` の手書き走査も [ar_config.rs](src/ar_config.rs) へ委譲。⚠⚠ 実測 11 ケース中 **6 件相違・うち 5 件が手書き側の誤り** — 最悪は **`cpp.lib_paths` と併存すると C++ 用のパスを C# の DLL 探索に使う**（潜在）。⚠ 踏む例題が作れない（DLL とブリッジを既定外に置く必要）ので**単体テスト 2 種**で担保 |
 | 72 | `python.search_paths` の**読み取り**を [ar_config.rs](src/ar_config.rs) へ 1 本化（手書きの文字列走査を削除）。⚠⚠ 調べたら読み手は **5 つ・探索方針は 4 通り**で**どれにも理由がある**ので**方針は畳まない**（地図をモジュール doc に記載）。⚠ 差分計測 14 ケース中 **5 件相違・うち 3 件は手書き側の実バグ**（セクション外の拾い上げ等） |
 | 67 | `Interpreter` のイベント 4 本・デバッガ 2 本を部分構造体へ（**32→28 フィールド**）。⚠ **全面分解はしない**（`impl` が 33 ファイルに散る）＝ 凝集が明らかで参照が少ないクラスタだけ（対象の参照は計 13 箇所）。⚠ [stale_doc_refs.ps1](stale_doc_refs.ps1) が**旧名参照 6 件**を捕捉（`vm/` 側にもあった） |
@@ -70,7 +71,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 > **✅ 全ゲート緑（2026-08-21 に自分で走らせて確認）**
 > `cargo test` **742** ／ `cargo build` **警告 0** ／ `cargo clippy` **51 件（増分 0）** ／
-> [scan_examples.ps1](scan_examples.ps1) **FAIL 0** ／ [force_gate.ps1](force_gate.ps1) **0 件・153 例題** ／
+> [scan_examples.ps1](scan_examples.ps1) **FAIL 0** ／ [force_gate.ps1](force_gate.ps1) **0 件・156 例題** ／
 > [compare_python_impl.ps1](compare_python_impl.ps1) **51/51** ／ [repl_session.ps1](repl_session.ps1) **identical** ／
 > [debug_session.ps1](debug_session.ps1) **5 identical** ／ [stale_doc_refs.ps1](stale_doc_refs.ps1) **0 件** ／
 > `tw_stats` は `in_fn` 0・`tw_control_flow` 0・bail 0。
@@ -167,8 +168,8 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 1. **速度（#69 / #70）— 調査済み・前提なし**。69 は `interp_init` の内訳を実測済み
    （ウォーク 50〜75%）で **61 と同じ場所＝同時にやる**。70 は原因確定済み（`as_local` 前提）。
-2. **保守性レーン — 残り 1 件（#65・優先度低）＋ #74**。どちらも前提なし。
-   ⚠ **#74 は挙動が動く**ので、着手するなら**先にどちらへ揃えるかを決めること**。
+2. **保守性レーンは #65（優先度低）を残すのみ**。前提なし。
+   ⚠ **65 は解釈側だけの変更**＝ bytecode では検証できない（[compare_outputs.ps1](compare_outputs.ps1) を使う）。
 3. 別レーン（#19 / #17-a / #17-b）— 外部接続系。いつ着手しても他をブロックしない。
 4. ブロック中（#14 → #11 R2-c）— 前提の「モジュール間ネイティブ直リンク」が未計画。
 
@@ -185,7 +186,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
   ⚠ **命令数は「当たりを付ける」用で「速度の予測」には使えない**（#46）。
 - **検証は 5 点セット**: `cargo build`（**警告 0**）・`cargo test`（**742 緑**）・
   [compare_python_impl.ps1](compare_python_impl.ps1)（**51/51**）・[scan_examples.ps1](scan_examples.ps1)（**FAIL 0**）・
-  [force_gate.ps1](force_gate.ps1)（`VmForceError` **0 件・153 例題**）。⚠ **release バイナリを見る**。
+  [force_gate.ps1](force_gate.ps1)（`VmForceError` **0 件・156 例題**）。⚠ **release バイナリを見る**。
   デバッガに触るなら [debug_session.ps1](debug_session.ps1)、REPL なら [repl_session.ps1](repl_session.ps1)、
   codegen なら [dump_native_ir.ps1](dump_native_ir.ps1) の IR byte-identical（最強の検査）。
   ⚠ **VM の適格範囲に触るなら [tw_stats.ps1](tw_stats.ps1) も**（ツリーウォークが定義文だけかを確認）。
@@ -259,7 +260,6 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | # | タスク | 手法 | 前提（依存） | 状態 |
 |---|---|---|---|---|
 | **70** | **最上位ループが型特化・融合命令に載らない**（速度・#59 とは無関係） | 帰納変数の slot 昇格 か グローバル版融合 op | — | **未着手・調査済み**（fn 内比 **2.6x**・原因は `try_emit_bin_fused` の `as_local` 前提と確定） |
-| 74 | `python` の**探索方針**が 2 通りのまま（#72 で確認） | 祖先全走査 ↔ source_dir+root_dir を揃える | — | 未着手（⚠ **先にどちらへ揃えるかを決める**。中間の祖先の設定が `import[py]` から見えない） |
 | 65 | `eval_str_method` 48 アーム | カテゴリ別サブ関数へ | — | 未着手・**優先度低**（平坦な表・得るのは行数だけ） |
 | 11 R2-c | グローバル記憶域の index 配列化 | ネイティブの index 参照 | **← 消費者の出現（14 と同時に再評価）** | ブロック中（消費者不在） |
 | 14 | §6 モジュール動的リンク | ディスクリプタシンボル＋ABI ハッシュ照合 | **← モジュール間ネイティブ直リンクの導入**（未実装・未計画） | ブロック中 |
@@ -267,7 +267,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 > **69・70 は #50 の分布から起票した速度タスク**（根拠は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号）。
 > **58〜68 は 2026-08-21 の全 src 機械診断で起票**（保守性レーン第 2 弾。内訳・実測・対象外の根拠は
 > [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) #58〜#68）。**残る 8 件は全件が前提なし**。
-> **58〜64・66〜69・71〜73 は完了**。残りは **70**（65・74 は最後）。
+> **58〜64・66〜69・71〜74 は完了**。残りは **70**（65 は最後・優先度低）。
 > ⚠⚠ **`vm/run.rs:exec_op`（836 行）は対象外**。86 アームの平坦な表で**最大アームは 42 行**であり、
 > 行数だけを見て割ると **#10-b（`#[inline(always)]` のアームに重い本体を書くと全体が遅くなる）を再演する**。
 > 同じ理由で `ast.rs`(1124)・`parser/exprs.rs`(940)・`Value`/`Stmt`/`Expr` の広い参照も**起票しない**。
@@ -290,8 +290,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
     31（参照実装との差分検査）／43（実行時型検査の高速判定）……完了
     33（ツリーウォーク制御フロー・TLS・センチネル・`--vm` の削除）……**完了**（src 実質 -762 行）
 
-    38（A/B のデッドロック解消）／30（クロージャ Chunk の実体跨ぎ再利用・1.456x）／
-    44（デバッガ golden 録り直し）／45（`FnValue.body` を `Rc<[Stmt]>` 化）……いずれも完了
+    38（A/B のデッドロック解消）／30（Chunk 再利用 1.456x）／44（golden 録り直し）／45（`Rc<[Stmt]>` 化）……完了
     24（peephole パターン追加）／46（ループ反転）……**却下** ＝ 実測で効果 0%・1.003x
         （⚠ **命令数 -20% でも速くならない** ＝ 命令には値段の差がある）
     47（端点 A/B）……完了 ＝ 解釈 3.97x / native 境界 1.60x ／ 48（native 書き戻しの実バグ）……**完了**
@@ -320,7 +319,8 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
     60（cpp ヘッダパーサのネスト）……**完了** ＝ ネスト **11→3** / **7→3**。実ヘッダ全ダンプが byte-identical
     67（`Interpreter` の部分クラスタ化）……**完了** ＝ 32→28 フィールド（イベント 4・デバッガ 2）
     72（`search_paths` の読み取り）／73（`csharp.lib_paths`）……**完了** ＝ [ar_config.rs](src/ar_config.rs) へ 1 本化。
-        ⚠⚠ **探索方針は畳まない**（読み手 5 つ・方針 4 通り）。⚠ 73 は**別セクションの値を返す**誤りを含んでいた
+        ⚠ 73 は**別セクションの値を返す**誤りを含んでいた
+    74（`python` の探索方針）……**完了** ＝ **祖先ウォークへ統一**（初の意図的な挙動変更）
     63（委譲漏れ 4 型）……**完了** ＝ `*_methods.rs` へ（530→205 行）。⚠⚠ **bytecode が自明に一致する変更**
     59（walker 8 本のドリフト）……**完了** ＝ 束縛判断を [decl_names.rs](src/decl_names.rs) へ集約。
         ⚠ **買ったのは行数ではなく強制**（src は +51 行）。⚠ 起票時の「委譲」案は再帰範囲が違って不成立
@@ -329,8 +329,8 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
     68（関数本体の `enum` が `VmForceError`）……**完了** ＝ 組み立て（`build_enum_classes`）と
         記憶域を分離し `Op::EnumDef` で slot へ。**副産物で #59 のドリフトが実害化**（→ 部分修正）
 
-残り: **第 2 弾は 58〜64・66〜68 完了**／**72・73 完了・74 は未着手**／速度は **69 完了**・70／**71 完了・72 は未着手**／別レーン／ブロック中 14・11 R2-c
-      ⇒ **今すぐ着手できるのは 65・74 の 2 件・70 と別レーン 3 件**
+残り: **第 2 弾は 58〜64・66〜68 完了**／**72〜74 完了**／速度は **69 完了**・70／**71 完了・72 は未着手**／別レーン／ブロック中 14・11 R2-c
+      ⇒ **今すぐ着手できるのは 65・70 と別レーン 3 件**
 保留: モジュール間ネイティブ直リンク（未計画）→ 14 → 11 R2-c ／ 12b → 2c は循環依存で両方保留
       23（評価済み引数の struct 化）は **54 に吸収**（保留理由が #48 で失効した）
 ```
@@ -482,7 +482,7 @@ cargo clippy                        # 既存 51 件・増分 0（--all-targets �
 ./bench.ps1                         # Phase R の各ステップ / Phase V の各段で再測定（フェーズ0基準 = bench_baseline.md）
 cargo run -- --compile examples/interop/test_modules/physics.ar  # Phase R: native 経路の数値一致確認
 cargo run -- <file.ar>              # フォールバックは無い。載らなければ VmForceError で停止（#25/#33）
-./force_gate.ps1                    # 全例題で上記を回す「VM に載らない形が無い」ゲート（0 件・153 例題）
+./force_gate.ps1                    # 全例題で上記を回す「VM に載らない形が無い」ゲート（0 件・156 例題）
 ./tw_stats.ps1                      # 未対応箇所の件数・内訳（要 --features tw_stats）
 ./generate-codebase-map.ps1         # src/vm/ 等の新設後に必須
 ```
