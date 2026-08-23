@@ -86,7 +86,7 @@ Refresh with `./generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (208 files, 68767 lines)
+src/  (208 files, 68774 lines)
   ar_config.rs (244)
   ast.rs (1124)
   decl_names.rs (173)
@@ -146,7 +146,7 @@ src/  (208 files, 68767 lines)
       mod.rs (111)
       object_methods.rs (314)
       set_methods.rs (163)
-      string_methods.rs (607)
+      string_methods.rs (614)
     cpp_bridge/
       codegen.rs (499)
       compiler.rs (632)
@@ -431,7 +431,7 @@ examples/  (recursive .ar counts per category)
   dump_native_ir.ps1 (92)
   force_gate.ps1 (133)
   generate-codebase-map.ps1 (100)
-  IMPLEMENTATION_LOG.md (7991)
+  IMPLEMENTATION_LOG.md (8100)
   PHASE_R1_RESULTS.md (741)
   PHASE5_PLAN.md (427)
   prof_dist.ps1 (180)

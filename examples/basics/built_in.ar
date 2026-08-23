@@ -317,6 +317,15 @@ print("42".zfill(6))
 print("hi".ljust(10, "*"))
 print("hi".rjust(10, "*"))
 print("hi".center(10, "-"))
+# ⚠⚠ #65 で見つけた実バグ 2 件の回帰検知。どちらも「同じ処理を 3 回書いた」ことが原因で、
+#    上の 3 行（空白なし ASCII）では**発火しなかった**。
+#  ① 埋め文字つき ljust が**元の文字列内の空白まで**置換していた（CPython: "a b***"）
+print("a b".ljust(6, "*"))
+#  ② rjust / center が**バイト長**で幅を判定していたため、マルチバイト文字列が全く詰められなかった
+#     （旧: "あい" のまま。CPython: "***あい" / "--あい--"）
+print("あい".ljust(5, "*"))
+print("あい".rjust(5, "*"))
+print("あい".center(6, "-"))
 
 let multiline = "line1\nline2\nline3"
 print(multiline.splitlines())

@@ -69,6 +69,26 @@ impl Interpreter {
                 }
             };
         }
+        // ⚠⚠ `ljust` / `rjust` / `center` の**幅と埋め文字**（#65）。
+        // 3 アームに**逐語で同じ 10 行**が書かれており、その結果 `ljust` だけが
+        // 別実装になって**実バグ**を持っていた（元の文字列内の空白まで埋め文字に置換していた）。
+        // ⇒ 解析も詰め方も 1 箇所に畳んで、3 つが同じ規則で動くことを構造で保証する。
+        macro_rules! pad_args {
+            () => {{
+                let width = arg_int!(0, 0).max(0) as usize;
+                let fill = match vals.get(1) {
+                    Some(Value::Str(f)) if f.chars().count() == 1 => f.chars().next().unwrap(),
+                    None => ' ',
+                    _ => {
+                        return Err(format!(
+                            "TypeError: {}() fillchar must be single char str",
+                            method_name
+                        ))
+                    }
+                };
+                (width, fill)
+            }};
+        }
         macro_rules! arg_opt_str {
             ($idx:expr) => {
                 match vals.get($idx) {
@@ -174,6 +194,15 @@ impl Interpreter {
             }
 
             // ── 分割 ────────────────────────────────────────────────────────
+            //
+            // ⚠⚠ `split` と `rsplit` は 9 割同じだが**畳んでいない**（#65 で判断）。
+            // 違うのは 3 点で、**どれも CPython に合わせるために必要**（実際に突き合わせて確認した）:
+            //   ① `splitn` ↔ `rsplitn`（＋ `rsplit` は結果を `reverse()` する）
+            //   ② 空白区切り＋maxsplit のとき `split` だけ `retain(非空)` する
+            //   ③ 区切り指定＋maxsplit のとき `rsplit` だけ `reverse()` する
+            // ⇒ 「reverse するか」1 つのフラグでは表せず、**畳むと非対称の理由が読めなくなる**。
+            // 検査: `"a  b  c".split(" ",1)` → `['a', ' b  c']` ／ `.rsplit(" ",1)` → `['a  b ', 'c']`
+            //       `"x,,y".split(",",1)` → `['x', ',y']` ／ `.rsplit(",",1)` → `['x,', 'y']`（CPython 一致）
             "split" => {
                 let sep = arg_opt_str!(0);
                 let maxsplit = arg_int!(1, -1);
@@ -392,55 +421,33 @@ impl Interpreter {
                     Ok(Value::str(format!("{:0>width$}", s)))
                 }
             }
+            // ⚠⚠ #65 で**実バグを修正**した。以前は「空白で幅詰めしてから空白を埋め文字へ
+            // `replace`」していたので、**元の文字列に含まれる空白まで置換**していた
+            // （`"a b".ljust(6, "*")` が CPython の `a b***` に対し `a*b***`）。
+            // `rjust` / `center` は最初から `repeat(pad)` で正しく、**ljust だけがずれていた**
+            // ＝ 同じ処理を 3 回書いた結果。⇒ 3 つとも同じ形に揃えてある。
             "ljust" => {
-                let width = arg_int!(0, 0).max(0) as usize;
-                let fill = match vals.get(1) {
-                    Some(Value::Str(f)) if f.chars().count() == 1 => f.chars().next().unwrap(),
-                    None => ' ',
-                    _ => {
-                        return Err(
-                            "TypeError: ljust() fillchar must be single char str".to_string()
-                        )
-                    }
-                };
-                Ok(Value::str(
-                    format!("{:<width$}", s, width = width)
-                        .replace(' ', &fill.to_string())
-                        .replacen(&fill.to_string(), &fill.to_string(), width),
-                ))
+                let (width, fill) = pad_args!();
+                if s.chars().count() >= width {
+                    return Ok(Value::str(s.to_string()));
+                }
+                let pad = width - s.chars().count();
+                Ok(Value::str(format!("{}{}", s, fill.to_string().repeat(pad))))
             }
             "rjust" => {
-                let width = arg_int!(0, 0).max(0) as usize;
-                let fill = match vals.get(1) {
-                    Some(Value::Str(f)) if f.chars().count() == 1 => f.chars().next().unwrap(),
-                    None => ' ',
-                    _ => {
-                        return Err(
-                            "TypeError: rjust() fillchar must be single char str".to_string()
-                        )
-                    }
-                };
-                if s.len() >= width {
-                    return Ok(Value::str(s.clone()));
+                let (width, fill) = pad_args!();
+                if s.chars().count() >= width {
+                    return Ok(Value::str(s.to_string()));
                 }
-                let pad = width - s.len();
+                let pad = width - s.chars().count();
                 Ok(Value::str(format!("{}{}", fill.to_string().repeat(pad), s)))
             }
             "center" => {
-                let width = arg_int!(0, 0).max(0) as usize;
-                let fill = match vals.get(1) {
-                    Some(Value::Str(f)) if f.chars().count() == 1 => f.chars().next().unwrap(),
-                    None => ' ',
-                    _ => {
-                        return Err(
-                            "TypeError: center() fillchar must be single char str".to_string()
-                        )
-                    }
-                };
-                if s.len() >= width {
-                    return Ok(Value::str(s.clone()));
+                let (width, fill) = pad_args!();
+                if s.chars().count() >= width {
+                    return Ok(Value::str(s.to_string()));
                 }
-                let pad = width - s.len();
+                let pad = width - s.chars().count();
                 let left = pad / 2;
                 let right = pad - left;
                 Ok(Value::str(format!(

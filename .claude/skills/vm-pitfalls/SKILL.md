@@ -183,6 +183,13 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   #74 では [compare_import_paths.ps1](../../../compare_import_paths.ps1) へ明示登録した
   （ついでに `import_py_search_path.ar` 等が**どのゲートにも入っていなかった**ことも判明した）。
 
+- **⚠⚠ 「clippy 増分 0」は緑の証明ではない**（#65）。受け入れ済みの baseline
+  （当時 51 件）の中に **`replacing text with itself`** があり、それは
+  `ljust` の**実バグの行そのもの**を指していた（`replacen(&fill, &fill, width)`）。
+  #58 以降ずっと「51/64・増分 0」を緑としてきたが、その 51 に混じっていた。
+  ⇒ **baseline を一度は 1 件ずつ読む**こと。特に `replacing text with itself` /
+  `parameter is only used in recursion` のような「意味が壊れている」系は要確認。
+
 ## 4. PowerShell / 子プロセス / エンコーディング
 
 - **PowerShell 5.1 は BOM 無し `.ps1` を ANSI として読む**（日本語コメント入りは UTF-8
