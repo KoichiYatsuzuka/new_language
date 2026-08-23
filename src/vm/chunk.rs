@@ -191,7 +191,7 @@ pub struct AsyncBlock {
 /// - `NOT_STMT`: その ip は**文の先頭ではない**（大多数の op）。
 /// - `STMT_NO_SPAN`: 文の先頭だが、その文は位置情報を持たない
 ///   （`stmt_location` が `None` を返す種類 — `if`/`while`/`return` 等）。
-///   ツリーウォークの `best_span_for` はこの場合 `dbg_last_span` へフォールバックするので、
+///   ツリーウォークの `best_span_for` はこの場合 `DebugState::last_span` へフォールバックするので、
 ///   VM も同じ扱いにする（そうしないと transcript が食い違う）。
 pub const NOT_STMT: u32 = u32::MAX;
 /// 文の先頭だが位置情報なし（`best_span_for` のフォールバックに委ねる）。

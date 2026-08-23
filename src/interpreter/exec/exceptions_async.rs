@@ -295,11 +295,11 @@ impl Interpreter {
     /// 外部イベントキュー（C#/Go ブリッジが ar_event_fire() で書き込んだもの）をすべて処理する。
     pub(crate) fn drain_external_events(&mut self) -> Result<(), String> {
         let events: Vec<crate::interpreter::event_loop::ExternalEvent> = {
-            let mut guard = self.external_event_queue.lock().unwrap();
+            let mut guard = self.events.external_queue.lock().unwrap();
             guard.drain(..).collect()
         };
         for ev in events {
-            let sig_rc = self.external_handler_registry.get(&ev.handler_id).cloned();
+            let sig_rc = self.events.external_handlers.get(&ev.handler_id).cloned();
             if let Some(sig_rc) = sig_rc {
                 // データは MessagePack でシリアライズされているが、現時点では str として渡す。
                 let val = Value::str(String::from_utf8_lossy(&ev.data).into_owned());

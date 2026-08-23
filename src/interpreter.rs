@@ -446,22 +446,13 @@ pub struct Interpreter {
     /// ロード済みのネイティブ共有ライブラリ。キーは DLL の絶対パス。
     /// ライブラリはインタープリタの生存期間を通じて保持される（アンロードしない）。
     pub(self) native_libs: HashMap<PathBuf, NativeLibWrapper>,
-    /// デバッガ REPL 内で `let dbg::name = expr` として宣言された一時変数。
-    /// `q`（再開）または `break_point` のスコープ終了時にクリアされる。
-    pub(self) dbg_vars: HashMap<String, Var>,
-    /// Last span successfully extracted from a statement — used as fallback
-    /// when the current statement has no extractable location (e.g. `Stmt::Mut`
-    /// wrapping a bare `Expr::Call(Expr::Ident(...))`).
-    pub(self) dbg_last_span: Option<crate::token::Span>,
-    /// Arrow ネイティブの EventLoop シングルトン状態。
-    /// `EventLoop.run()` が処理する非同期イベントキューと post コールバックキューを保持する。
-    pub(self) event_loop_data: Rc<RefCell<event_loop::EventLoopData>>,
-    /// C#/Go ブリッジが `ar_event_fire()` で書き込むスレッドセーフキュー。
-    pub(self) external_event_queue: event_loop::ExternalEventQueue,
-    /// 外部イベント handler_id → SignalData の逆引きマップ（C#/Go 連携時に使用）。
-    pub(self) external_handler_registry: HashMap<u64, Rc<RefCell<event_loop::SignalData>>>,
-    /// `sig.external_id` の発番カウンタ（プロセス内の Interpreter 単位で単調増加、1 始まり）。
-    pub(self) next_external_signal_id: u64,
+    /// デバッガの状態 2 本（#67 で `debugger::DebugState` へ束ねた）。
+    pub(self) dbg: debugger::DebugState,
+    /// イベントループの状態 4 本（#67 で `event_loop::EventState` へ束ねた）。
+    ///
+    /// ⚠ **`Interpreter` の全面分解はしていない**（起票時の判断）。`impl` が 33 ファイルに
+    /// 散っているので、凝集が明らかで参照が少ないクラスタだけを畳んである。
+    pub(self) events: event_loop::EventState,
     // ── #10-b で追加。既存フィールドのオフセットを動かさないよう末尾に置く。
     /// 最上位ループの Chunk キャッシュ（#10-b）。キー = `Stmt` のアドレス。
     ///
@@ -506,9 +497,6 @@ impl Interpreter {
             Var::new(Value::EventLoop(el_data.clone()), false),
         );
 
-        // グローバル外部イベントキューを共有する（ar_event_fire が書き込む先と同一）。
-        let ext_q = event_loop::global_ext_queue();
-
         Self {
             scopes: vec![global],
             global_slot_cells: Vec::new(),
@@ -548,12 +536,8 @@ impl Interpreter {
             },
             protocol_required_members: HashMap::new(),
             native_libs: HashMap::new(),
-            dbg_vars: HashMap::new(),
-            dbg_last_span: None,
-            event_loop_data: el_data,
-            external_event_queue: ext_q,
-            external_handler_registry: HashMap::new(),
-            next_external_signal_id: 1,
+            dbg: debugger::DebugState::default(),
+            events: event_loop::EventState::new(el_data),
         }
     }
 

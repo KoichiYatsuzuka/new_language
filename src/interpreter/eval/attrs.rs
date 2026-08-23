@@ -230,10 +230,10 @@ impl Interpreter {
                         if let Some(id) = existing {
                             return Ok(Value::Int(id as i64));
                         }
-                        let id = self.next_external_signal_id;
-                        self.next_external_signal_id += 1;
+                        let id = self.events.next_external_id;
+                        self.events.next_external_id += 1;
                         sig_rc.borrow_mut().external_id = Some(id);
-                        self.external_handler_registry.insert(id, sig_rc.clone());
+                        self.events.external_handlers.insert(id, sig_rc.clone());
                         Ok(Value::Int(id as i64))
                     }
                     _ => Err(format!(

@@ -26,7 +26,7 @@ impl Interpreter {
                 };
                 // 全ハンドラを取得（is_once のものはリストから除去される）。
                 let handlers = sig_rc.borrow_mut().collect_handlers_for_emit();
-                let el_rc = self.event_loop_data.clone();
+                let el_rc = self.events.data.clone();
                 for (func, is_async) in handlers {
                     if is_async {
                         // 非同期ハンドラ: EventLoop キューに積む。
@@ -45,7 +45,7 @@ impl Interpreter {
                     _ => return Err("TypeError: Signal.emit_async() takes exactly 1 argument".to_string()),
                 };
                 // EventLoop のキューに積むだけ。実際の呼び出しは EventLoop.run() が行う。
-                let el_rc = self.event_loop_data.clone();
+                let el_rc = self.events.data.clone();
                 el_rc.borrow_mut().signal_queue.push_back((sig_rc.clone(), val));
                 Ok(Value::None)
             }

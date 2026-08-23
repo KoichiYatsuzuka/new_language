@@ -166,7 +166,7 @@ pub fn each_declared_name(stmt: &Stmt, f: &mut impl FnMut(&str, DeclOrigin, Opti
         // クラス本体のフィールド宣言。作るのは**インスタンスのフィールド**であって
         // スコープの名前ではない。
         Stmt::Field { .. } => {}
-        // デバッガ REPL の `let dbg::x`。束縛先は `Interpreter::dbg_vars` で、
+        // デバッガ REPL の `let dbg::x`。束縛先は `DebugState::vars` で、
         // 通常のスコープではない（walker はどれもこの文を見ない）。
         Stmt::DebugLet(..) => {}
     }

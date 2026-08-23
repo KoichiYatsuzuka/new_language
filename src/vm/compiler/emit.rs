@@ -484,7 +484,7 @@ impl Compiler {
     /// ツリーウォークは `exec()` の冒頭で**すべての文**について `should_pause_at` を呼ぶので、
     /// VM も**すべての文**の先頭を記録しないと停止位置が食い違う。
     /// 位置情報を持たない種類の文（`if`/`while`/`return` 等）は `STMT_NO_SPAN` を記録し、
-    /// 表示スパンは `best_span_for` のフォールバック（`dbg_last_span`）に委ねる。
+    /// 表示スパンは `best_span_for` のフォールバック（`DebugState::last_span`）に委ねる。
     ///
     /// ⚠ `CompileMode::DebugRepl`（デバッガ REPL 用の `compile_debug`）では記録しない。
     /// あちらは停止対象ではなく、REPL 入力を評価するだけの Chunk。

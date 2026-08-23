@@ -163,6 +163,45 @@ pub struct ExternalEvent {
 /// Arrow メインスレッドが `EventLoop.run()` のティック内で読み出す。
 pub type ExternalEventQueue = Arc<Mutex<VecDeque<ExternalEvent>>>;
 
+// ---------------------------------------------------------------------------
+// EventState — `Interpreter` のイベントループ状態（#67）
+// ---------------------------------------------------------------------------
+
+/// `Interpreter` が持つ**イベントループ関連の状態 4 本**を束ねた部分構造体（#67）。
+///
+/// #67 以前は `Interpreter` に平坦に並んでいた（当時 32 フィールド）。
+/// この 4 本は**必ず一緒に動く**（外部イベントが来る → `external_handlers` で
+/// `SignalData` を引く → `data` のキューへ積む）ので、まとめて 1 フィールドにした。
+///
+/// ⚠ **全面分解はしない**（起票時の判断）。`Interpreter` の `impl` は 33 ファイルに
+/// 散っており、スコープ・VM キャッシュ・コールスタックまで動かすと差分が巨大になる。
+/// ⇒ **凝集が明らかで参照が少ないクラスタだけ**を畳む（#67 は event 4 本 ＋ debugger 2 本）。
+pub struct EventState {
+    /// Arrow ネイティブの EventLoop シングルトン状態。
+    /// `EventLoop.run()` が処理する非同期イベントキューと post コールバックキューを保持する。
+    pub data: Rc<RefCell<EventLoopData>>,
+    /// C#/Go ブリッジが `ar_event_fire()` で書き込むスレッドセーフキュー。
+    /// ⚠ **プロセス全体で共有**（`global_ext_queue()`）。Interpreter ごとには作らない。
+    pub external_queue: ExternalEventQueue,
+    /// 外部イベント handler_id → `SignalData` の逆引きマップ（C#/Go 連携時に使用）。
+    pub external_handlers: std::collections::HashMap<u64, Rc<RefCell<SignalData>>>,
+    /// `sig.external_id` の発番カウンタ（Interpreter 単位で単調増加、**1 始まり**）。
+    pub next_external_id: u64,
+}
+
+impl EventState {
+    /// `Interpreter::new()` 用の初期状態（#67）。
+    /// `data` は呼び出し側が `EventLoop` グローバルへ登録するものと**同じ `Rc`** を渡すこと。
+    pub fn new(data: Rc<RefCell<EventLoopData>>) -> Self {
+        Self {
+            data,
+            external_queue: global_ext_queue(),
+            external_handlers: std::collections::HashMap::new(),
+            next_external_id: 1,
+        }
+    }
+}
+
 /// ExternalEventQueue を新規生成する（global_ext_queue の遅延初期化用）。
 fn new_external_queue() -> ExternalEventQueue {
     Arc::new(Mutex::new(VecDeque::new()))
@@ -177,7 +216,7 @@ fn new_external_queue() -> ExternalEventQueue {
 static GLOBAL_EXT_QUEUE: std::sync::OnceLock<ExternalEventQueue> = std::sync::OnceLock::new();
 
 /// グローバル外部キューを取得する（未生成なら生成する）。
-/// `Interpreter::new()` はこれを自分の `external_event_queue` として保持するため、
+/// `Interpreter::new()` はこれを `EventState::external_queue` として保持するため、
 /// プロセス内の全インタープリタが同一キューを共有する
 /// （2 個目以降のインタープリタでも `ar_event_fire` の書き込みが届く）。
 pub fn global_ext_queue() -> ExternalEventQueue {

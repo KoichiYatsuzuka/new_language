@@ -91,7 +91,8 @@ impl Interpreter {
                     .ok_or_else(|| format!("NameError: '{name}' is not defined")),
             },
             Expr::DebugVar(name) => self
-                .dbg_vars
+                .dbg
+                .vars
                 .get(name)
                 .map(|v| v.get_value())
                 .ok_or_else(|| format!("NameError: 'dbg::{name}' is not defined")),

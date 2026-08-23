@@ -108,7 +108,7 @@ fn print_context(interp: &Interpreter, file: &str, target_line: usize) {
 ///
 /// `best_span_for` の**フォールバックを除いた部分**と同じ判定なので、
 /// ここが `None` を返す文は VM 側では `STMT_NO_SPAN` として記録され、
-/// 停止時に `best_span_for` の `dbg_last_span` フォールバックへ委ねられる。
+/// 停止時に `best_span_for` の `DebugState::last_span` フォールバックへ委ねられる。
 /// ＝ ツリーウォークと同じ表示になる。
 pub(crate) fn stmt_span_of(stmt: &Stmt) -> Option<Span> {
     stmt_location(stmt).map(|(file, line)| Span {
@@ -170,6 +170,27 @@ enum ReplCmd {
 // Debugger REPL
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// DebugState — `Interpreter` のデバッガ状態（#67）
+// ---------------------------------------------------------------------------
+
+/// `Interpreter` が持つ**デバッガ関連の状態 2 本**を束ねた部分構造体（#67）。
+///
+/// ⚠ どちらも**デバッグセッション中しか意味を持たない**（通常実行では
+/// `vars` は空のまま、`last_span` は `should_pause_at` が有効なときだけ更新される）。
+/// ⇒ `Interpreter` の平坦なフィールドから外して、デバッガの持ち物だと分かる形にした。
+/// ⚠ 可視性は `pub(super)`（= `crate::interpreter` 以下）。`Var` が `pub(self)` なので
+/// `pub(crate)` にすると「型のほうが private」警告になる（#67）。
+#[derive(Default)]
+pub(super) struct DebugState {
+    /// デバッガ REPL 内で `let dbg::name = expr` として宣言された一時変数。
+    /// `q`（再開）または `break_point` のスコープ終了時にクリアされる。
+    pub(super) vars: std::collections::HashMap<String, super::Var>,
+    /// 直近に取れた文の Span — 現在の文から位置が取れないときのフォールバック
+    /// （`Stmt::Mut` が裸の `Expr::Call(Expr::Ident(..))` を包んでいる場合など）。
+    pub(super) last_span: Option<crate::token::Span>,
+}
+
 impl Interpreter {
     /// `Stmt::BreakPoint` または ステップ実行時に `exec()` から呼ばれるデバッガ REPL エントリポイント。
     pub(super) fn exec_breakpoint(&mut self, span: &Span) -> Result<ExecResult, String> {
@@ -203,7 +224,7 @@ impl Interpreter {
         // We always clear on 'q' (resume).
         match &cmd {
             ReplCmd::Resume => {
-                self.dbg_vars.clear();
+                self.dbg.vars.clear();
                 DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::Inactive);
             }
             ReplCmd::StepOver => {
@@ -407,7 +428,7 @@ impl Interpreter {
     ///
     /// `span_idx` は `Chunk::stmt_spans` の値（`spans` への index か `STMT_NO_SPAN`）。
     /// `STMT_NO_SPAN` は「位置情報を持たない文」で、ツリーウォークの `best_span_for` と同じく
-    /// `dbg_last_span` へフォールバックする（そうしないと transcript が食い違う）。
+    /// `DebugState::last_span` へフォールバックする（そうしないと transcript が食い違う）。
     pub(crate) fn vm_should_pause(&mut self, chunk: &crate::vm::Chunk, span_idx: u32) -> Option<Span> {
         if !self.should_pause_now() {
             return None;
@@ -416,7 +437,7 @@ impl Interpreter {
             .spans
             .get(span_idx as usize)
             .cloned()
-            .or_else(|| self.dbg_last_span.clone())
+            .or_else(|| self.dbg.last_span.clone())
             .unwrap_or(Span {
                 file: self.source_map.keys().next().cloned().unwrap_or_default().into(),
                 line: 0,
@@ -478,7 +499,7 @@ impl Interpreter {
             };
         }
         // Fall back to last known good span (set in exec() after every successful pause).
-        if let Some(ref s) = self.dbg_last_span {
+        if let Some(ref s) = self.dbg.last_span {
             return s.clone();
         }
         let file = self.source_map.keys().next().cloned().unwrap_or_default();
@@ -492,7 +513,7 @@ impl Interpreter {
     /// 直前に表示したスパンを記録し、次の位置不明文のフォールバックとして使えるようにする。
     pub(super) fn record_dbg_span(&mut self, span: &Span) {
         if span.line != 0 {
-            self.dbg_last_span = Some(span.clone());
+            self.dbg.last_span = Some(span.clone());
         }
     }
 }

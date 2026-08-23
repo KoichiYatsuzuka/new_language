@@ -7482,3 +7482,91 @@ C++ ヘッダのパーサなので、既存ゲートでは弱い。そこで**�
 | 「既存テストで挙動不変を言える」 | **外れ**。実ヘッダ検査は「VECTOR が居る」だけの空に近い検査だった ⇒ **全ダンプ差分を自分で作った** |
 | 「恒久テストを強化すれば十分」 | **半分外れ**。実ヘッダ検査は **union 破壊を検知しない**（合成テストが検知した）。**両方要る** |
 | 「clippy は増分 0 になる」 | **外れ**（良い方向）。`strip_prefix` で 1 件**減った** |
+
+---
+
+## #67 `Interpreter` フィールドの部分クラスタ化（2026-08-23・完了）
+
+保守性レーン第 2 弾。起票時の実測は「`Interpreter` はメソッド **215**・フィールド **31**・
+`impl` が **33 ファイル**に散る。責務は 7 クラスタ」。起票時の判断は
+「**イベントループ 4 本・デバッガ 2 本のみ畳む／全面分解は保留**」。
+
+### 1. 手法 — 起票どおり**部分適用のみ**
+
+着手時のフィールドは **32 本**（#69 が `config_base_dir` / `config_search_dirs` を足していた）。
+
+| 新設した部分構造体 | 置き場所 | 束ねたフィールド |
+|---|---|---|
+| `event_loop::EventState` | `event_loop.rs`（**消費者の隣**） | `event_loop_data` / `external_event_queue` / `external_handler_registry` / `next_external_signal_id` |
+| `debugger::DebugState` | `debugger.rs`（同上） | `dbg_vars` / `dbg_last_span` |
+
+| | 前 | 後 |
+|---|---|---|
+| `Interpreter` のフィールド | **32** | **28** |
+| 初期化（`Interpreter::new()`） | 6 行 | **2 行** |
+
+⚠ **全面分解はしていない**（起票時の判断をそのまま守った）。`impl` が 33 ファイルに散っているので、
+スコープ・VM キャッシュ・コールスタックまで動かすと差分が巨大になる。
+⇒ **凝集が明らかで参照が少ないクラスタだけ**を畳んだ。その理由を `EventState` の doc に残した。
+
+### 2. なぜこの 2 クラスタだったか（着手前に数えた）
+
+参照箇所は**合計 13 箇所**しかなかった:
+
+| フィールド | 参照数 |
+|---|---|
+| `event_loop_data` / `external_event_queue` / `external_handler_registry` / `next_external_signal_id` | 2 / 1 / 2 / 2 |
+| `dbg_vars` / `dbg_last_span` | 3 / 3 |
+
+⇒ **書き換え量が小さく、凝集が高い**（外部イベントが来る → `external_handlers` で `SignalData` を
+引く → `data` のキューへ積む、が必ずセット）。他のクラスタ（スコープ・VM キャッシュ）は
+参照が数百あるので同じ判断にはならない。
+
+### 3. ⚠ 可視性で 1 回引っかかった
+
+`DebugState` を `pub(crate)` にしたら **`type Var` is more private than the item** 警告。
+`Var` は `interpreter.rs` で `pub(self)`（= `crate::interpreter` 内）なので、
+`DebugState` とそのフィールドも **`pub(super)`**（= 同じ範囲）に揃えた。doc に理由を書いてある。
+
+⚠ もう 1 件: `global_ext_queue()` の呼び出しを `EventState::new()` へ移したので
+`Interpreter::new()` のローカル `ext_q` が未使用になった（削除）。
+
+### 4. ⚠⚠ `stale_doc_refs` が**旧名への参照 6 件**を捕まえた
+
+フィールドを改名したので、コメント内の `dbg_last_span`（4 箇所）／`external_event_queue`（1）／
+`dbg_vars`（1）が実在しない識別子になった。**6 箇所とも現在の名前へ書き換えた**
+（`DebugState::last_span` / `EventState::external_queue` / `DebugState::vars`）。
+
+⚠ 参照元は `debugger.rs` だけでなく **`vm/chunk.rs` と `vm/compiler/emit.rs` と `decl_names.rs`** にもあった
+（`best_span_for` のフォールバック規約を VM 側が参照している）。
+⇒ **改名の影響は「そのフィールドを使っているファイル」より広い**。
+プランの教訓「**改名・削除をしたら [stale_doc_refs.ps1](stale_doc_refs.ps1) を必ず走らせる**」が効いた例。
+
+### 5. 検証（全ゲート緑）
+
+| ゲート | 結果 |
+|---|---|
+| **[debug_session.ps1](debug_session.ps1)** | **5 identical**（⚠ デバッガの 2 フィールドを動かしたので**これが主検査**） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **93 / 93 identical** |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **110 / 110** |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **10 / 10**（cs-dll / cs-proc の**外部イベント**経路を含む） |
+| イベント系例題の直接確認 | `event_external_handler.ar`（外部イベント + 一度きりハンドラ + 遅延）・`async_demo.ar` とも正常 |
+| `cargo build` | 警告 **0** |
+| `cargo test` | **742 passed** |
+| `cargo clippy` / `--all-targets` | **51 / 64**（増分 **0**） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・155 例題** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51** |
+| [repl_session.ps1](repl_session.ps1) | identical |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件**（⚠ 一度 6 件出した — §4） |
+| [ab_bench.ps1](ab_bench.ps1) | 0.979〜1.029x（**退行なし**。`flat_bench` 0.979x は #62 で実測した ±7% の配置ノイズ内） |
+
+### 6. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「フィールド 31 本」（起票時） | **ずれ**。着手時は **32 本**（#69 が 2 本足していた） |
+| 「33 ファイルに散る `impl` を触ることになる」 | **外れ**。対象 6 フィールドの参照は**合計 13 箇所・8 ファイル**だけ。触ったのは 7 ファイル |
+| 「可視性は素直に通る」 | **外れ**。`Var` が `pub(self)` なので `pub(crate)` にすると警告。`pub(super)` へ揃えた |
+| 「改名の影響はデバッガ／イベント周辺だけ」 | **外れ**。コメント内の旧名参照が **`vm/chunk.rs` / `vm/compiler/emit.rs` / `decl_names.rs`** にもあった |
+| 「フィールド数が目に見えて減る」 | **半分当たり**。32→28（-4）。**得たのは数より「デバッガ／イベントの持ち物だと分かる」こと** |

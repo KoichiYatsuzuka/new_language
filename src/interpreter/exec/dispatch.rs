@@ -191,7 +191,7 @@ impl Interpreter {
             Stmt::BreakPoint { span } => self.exec_breakpoint(span),
             Stmt::DebugLet(name, expr) => {
                 let value = self.eval(expr)?;
-                self.dbg_vars.insert(name.clone(), Var::new(value, false));
+                self.dbg.vars.insert(name.clone(), Var::new(value, false));
                 Ok(ExecResult::Normal)
             }
             Stmt::EventSubscribe {
