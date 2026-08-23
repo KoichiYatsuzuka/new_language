@@ -166,7 +166,13 @@ pub enum Sub {
     ToplevelGlobals = 1,
     /// `set_annotations` ＋ `add_source_text`
     AnnotSource = 2,
-    /// `ar_config.json` の祖先ウォーク（`exists()` の syscall 連打 ＋ 見つかれば読み込み・JSON パース）
+    /// `ar_config.json` 由来の検索パスの**登録**（起点を覚えるだけ）。
+    ///
+    /// ⚠⚠ **ここは常に ~0.000 ms でなければならない**（#69）。#69 以前は祖先ウォーク
+    /// （`exists()` の syscall 連打 ＋ 読み込み ＋ JSON パース）を**起動時に必ず**行っており、
+    /// `interp_init` の **48〜53%**（repo 外の深い階層では 55〜62%）を占めていた。
+    /// 今は `Interpreter::python_search_dirs()` の初回参照まで遅延する。
+    /// ⇒ **この値が 0 でなくなったら、eager なウォークが復活している。**
     CfgWalk = 3,
     /// `set_cli_args`
     CliArgs = 4,
@@ -176,7 +182,7 @@ pub const SUB_NAMES: [&str; 5] = [
     "interp_new",
     "toplevel_globals",
     "annot+source",
-    "ar_config_walk",
+    "ar_config_setup",
     "cli_args",
 ];
 

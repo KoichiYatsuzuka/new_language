@@ -6976,3 +6976,147 @@ CGU の分配は**モジュール構成に依存する**ので、460 行を新�
 | 「再現したなら実差だろう」 | **外れ**。**`mod` 宣言の順序を変えただけで同じ 0.929x が出た** ＝ 配置の影響 |
 | 「引数を `&[T]` にするのは無害」 | **半分外れ**。`&body[..]` が冗長になり clippy が 1 件増えた（気づけたのは**増分**を見ていたから） |
 | 「`compile_stmt` は 300 行台まで落ちる」 | **当たり**（371 行・最大アーム 34 行） |
+
+---
+
+## #61 `run_program` の `ar_config.json` 探索を切り出す（2026-08-23・完了）
+
+保守性レーン第 2 弾。起票時の実測は「パイプライン関数の中に**深さ 9** の探索ループが直書き」。
+
+### 1. 手法
+
+`load_python_search_paths`（祖先ウォーク）と `read_python_search_paths`（1 ファイルの読み取り）へ分割。
+後者は `let ... else` で早期 return に反転した。
+
+| | 前 | 後 |
+|---|---|---|
+| `run_program` | 195 行・最大ネスト **9** | **173 行**・最大ネスト **5** |
+
+### 2. ⚠ 挿入位置を誤って `run_program` の doc を orphan 化した
+
+最初 `fn run_program(` の直前に置いたが、そこは**`run_program` の doc コメントと本体の間**だった。
+結果、`run_program` の doc が新関数に付き、clippy が **52 → 54**（`doc_lazy_continuation` ×2）。
+⇒ `run_program` の**後ろ**へ置き直して 52 に戻した。
+**#51 が潰した orphan doc と同型を自分で作った**（気づけたのは**増分**を見ていたから）。
+
+### 3. 検証（全ゲート緑）
+
+bytecode **109/109** ／ outputs **92/92** ／ import paths **10/10** ／ `cargo test` **742** ／
+clippy **52 / 65**（増分 0）／ scan FAIL 0 ／ force_gate 0 件・154 例題 ／ stale_doc_refs 0 件。
+
+---
+
+## #69 `interp_init` の削減 — `ar_config.json` ウォークの遅延化（2026-08-23・完了）
+
+#50 の①（exec 以外）から起票した速度タスク。
+
+### 1. ⚠ 段階 1: **first-touch 仮説は棄却された**
+
+起票時の仮説「`Interpreter::new()` の 0.14〜0.21ms は、プロセス最初のまとまったヒープ確保が
+CRT ヒープ／ページのコミットを引き起こす first-touch コストで、**そこが最初だっただけ**」。
+
+**実験**: `Interpreter::new()` の直前に同規模のダミー確保（`String` 64 本 ＋ `HashMap`）を置く。
+⚠ **環境変数（`AR_WARM_PROBE`）で切り替える形にした** — 別ビルドで比べると配置差が混ざるため
+（#62 の教訓）。同一バイナリ・各 8 回:
+
+| | `interp_new` | `interp_init` | `in_main` |
+|---|---|---|---|
+| プローブ OFF | 0.152（min 0.137） | 0.378 | 1.865 |
+| プローブ ON | 0.155（min 0.139） | 0.400 | 1.885 |
+
+⇒ **`interp_new` は縮まなかった** ＝ first-touch ではなく**実仕事**。
+起票時の「そうなら着手範囲から外す」分岐は**不成立**（が、本命は⑤なのでそちらへ進んだ）。
+
+### 2. ⚠⚠ 段階 2 の前に判明 — **起票時の消費者の見立てが誤り**だった
+
+起票時は「`python_search_dirs` の唯一の消費者は Python モジュールの解決」としていた。実際は:
+
+| 実装 | 消費者 |
+|---|---|
+| `main.rs` のウォーク → `Interpreter::python_search_dirs` | cs-dll / cs-proc / js-proc の**ブリッジ探索**と **`import[py-int]`** |
+| `parser/imports/cs_js_modules.rs::python_search_dirs`（**別実装**） | **`import[py]`**（ファイル `.py` の解決。パース時に走る） |
+
+⇒ **`python.search_paths` を読むコードが 2 つある**。しかも探索範囲が違う
+（main.rs は**祖先を root まで全ウォーク**／パーサ側は **source_dir と root_dir の 2 箇所だけ**）で、
+パーサ側は serde ではなく**自前の文字列走査**で JSON を読む。→ 統合は別タスクへ（下記の起票提案）。
+
+「大多数のスクリプトはこの結果を誰も読まない」という**結論自体は正しかった**ので、方針（遅延化）は変えていない。
+
+### 3. 手法 — (a) 遅延化
+
+`Interpreter` に `config_base_dir: Option<PathBuf>` と
+`config_search_dirs: OnceCell<Vec<PathBuf>>` を持たせ、`run_program` は**起点を覚えるだけ**にした。
+実際のウォークは `Interpreter::python_search_dirs()` の**初回呼び出し**で走る。
+
+⚠ 順序（明示登録 → 設定由来）は `python_search_dirs()` が `chain` で保つ。
+⚠ 消費者 4 箇所を `&self.python_search_dirs` から `self.python_search_dirs()` へ。
+`OnceCell::get_or_init` は `&self` で済むので、`&mut self` への波及は無い。
+
+### 4. 実測（`--features prof`・各 8 回の平均）
+
+| | `ar_config_setup` | `interp_init` |
+|---|---|---|
+| **前**（repo 内・3 階層上で発見） | **0.19〜0.21 ms** | **0.378 ms** |
+| **後**（同上） | **0.000 ms** | **0.172 ms** |
+| **後**（repo 外・深い階層・不発 ＝ 一番損をしていた形） | **0.000 ms** | **0.178 ms** |
+
+⇒ `interp_init` が **約 2.2 分の 1**。⚠ **process wall では見えない**（spawn 床のゆらぎに埋もれる）ので
+主張は段別の数字に限る。⚠ 起票時の釘付け「完全に消しても端点への効果は 0.3〜0.5 ms/実行」は妥当。
+
+⚠ `prof::Sub::CfgWalk` の表示名を `ar_config_walk` → **`ar_config_setup`** に変え、doc に
+**「ここは常に ~0.000 ms でなければならない ＝ 0 でなくなったら eager なウォークが復活している」**と書いた
+（遅延化を守る回帰検知になる）。
+
+### 5. ⚠⚠ 副産物 1 — 例題が 1 本も無かった（**5 度目の同型**）
+
+`python.search_paths` は**リポジトリ内の全 `ar_config.json` で `[]`** だった。
+⇒ **読み取りが壊れても全ゲートが緑のまま**（#58 の cs-proc・#68 の enum と同じ形）。
+
+新設したもの:
+- `examples/interop/py_libs/cfg_probe.py`（**`.ar` と同じディレクトリには置かない**）
+- `examples/interop/ar_config.json` に `"python": {"search_paths": ["py_libs"]}`
+- `examples/interop/import_py_search_path.ar`（**パーサ側**の実装を踏む）
+- `examples/interop/import_py_int_search_path.ar`（**インタープリタ側**＝#69 が遅延化した実装を踏む）
+
+⚠ **負の対照で「本当に設定に依存しているか」を確認した**: `search_paths` を空にすると
+前者は `ParseError: cannot find module 'cfg_probe'`、後者は `ImportError: ModuleNotFoundError` で落ちる。
+⚠ **2 タグを 1 ファイルに書くと参照実装が落ちる**（`cannot assign to immutable variable`）ので 2 本に分けた。
+どちらも `impl_python` は `import[py]`/`import[py-int]` の束縛自体が未対応なので `$knownDiff` へ理由つきで登録。
+
+### 6. ⚠⚠ 副産物 2 — **`--features prof` ビルドが #68 以来壊れていた**
+
+`prof_dist.ps1 -Build` が `E0004: non-exhaustive patterns: &Op::EnumDef(_) not covered`
+（`src/vm/op_prof.rs`）で失敗し、**古い非 prof バイナリのまま計測が走って全段 0.0 ms** を出した。
+
+`op_prof.rs` は「ワイルドカードを置いていないので、ずれたまま `--features prof` が通ることはない」
+という設計だが、**既定ビルドではファイルごと消える**ので #68 が `Op::EnumDef` を足したとき誰も気づかなかった。
+⇒ `op.rs` の宣言順から**再生成**して修正（`EnumDef` は宣言順 65 番で、65 以降の索引が全てずれていた）。
+`op_prof.rs` の doc に **「op を足したら `--features prof` と `--features tw_stats` も通すこと」**を明記した。
+
+### 7. 検証（全ゲート緑）
+
+| ゲート | 結果 |
+|---|---|
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **109 / 109 byte-identical** |
+| [compare_outputs.ps1](compare_outputs.ps1) | **93 / 93 identical** |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **10 / 10 identical**（cs-dll/cs-proc/js-proc ＝ 遅延化の主な消費者） |
+| `cargo build` / `--features prof` / `--features tw_stats` | いずれも警告 **0** |
+| `cargo test` | **742 passed** |
+| `cargo clippy` / `--all-targets` | **52 / 65**（増分 **0**） |
+| [scan_examples.ps1](scan_examples.ps1) | FAIL **0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・155 例題** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **51/51**（既知差分 43） |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+| [ab_bench.ps1](ab_bench.ps1) | 退行なし。⚠ `partial_call_overhead.ar` が一度 **0.887x** を出したが、**Reps 5 で 0.998x**・負の対照 1.002x ＝ **単発の外れ値**（#62 の手順で棄却） |
+
+### 8. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「`Interpreter::new()` は first-touch だろう」 | **外れ**。プローブで `interp_new` は縮まず＝実仕事 |
+| 「`python_search_dirs` の消費者は Python モジュール解決だけ」 | **外れ**。実際は cs/js ブリッジ探索と `py-int`。`import[py]` は**別実装**を使う |
+| 「読み取りの実装は 1 つ」 | **外れ**。**2 つある**（探索範囲も JSON の読み方も違う） |
+| 「例題は既にあるだろう」 | **外れ**。`search_paths` は全 config で `[]` ＝ **踏む例題が 0 本**だった |
+| 「計測はすぐ始められる」 | **外れ**。`--features prof` が **#68 以来壊れていた**（既定ビルドでは消えるコードなので誰も気づかない） |
+| 「遅延化で `interp_init` は半分くらいになる」 | **当たり**（0.378 → 0.172 ms） |

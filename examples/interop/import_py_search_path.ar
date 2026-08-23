@@ -1,0 +1,25 @@
+# import_py_search_path.ar — `ar_config.json` の `python.search_paths` 経由で
+# Python モジュールを解決できることの検査（パーサ側の実装・#61 / #69）。
+#
+# `cfg_probe.py` は `examples/interop/py_libs/` にあり、**この .ar のあるディレクトリには無い**。
+# `examples/interop/ar_config.json` の `"python": {"search_paths": ["py_libs"]}` を
+# 読み取って初めて import できる ⇒ **設定の読み取りが壊れるとこの例題が落ちる**。
+#
+# ⚠⚠ **読み取りの実装は 2 つある**（#69 で判明）。**タグごとに別の実装**を通るので、
+# この例題は 2 本に分けてある（1 ファイルに両方書くと参照実装が同名 import で落ちる）:
+#   - `import[py]`     … パーサ側（`parser/imports/cs_js_modules.rs::python_search_dirs`）。
+#                        source_dir と root_dir の 2 箇所だけ見る自前の JSON 走査。
+#   - `import[py-int]` … インタープリタ側（`Interpreter::python_search_dirs`）。
+#                        `main.rs` が起点を覚え、**初回参照時に**祖先をウォークする（#69 で遅延化）。
+#   ⇒ 片方だけ直すと、もう片方が静かに壊れる。
+#
+# ⚠ この例題が無かったので、設定の読み取りを壊しても全ゲートが緑のままだった
+#   （#58 の cs-proc・#68 の enum と同じ「例題が 1 本も無い」形）。
+#
+# ⚠ **関数呼び出しは書けない** — `import[py]` の関数は `vm_eligible = !is_python` で
+#   VM 非対象にされ、#33 でフォールバックが消えたため `VmForceError` になる（既存の実バグ）。
+#   ここが直ったら `cfg_probe.probe()` / `describe()` の呼び出しも足すこと。
+
+import[py] cfg_probe
+
+print(cfg_probe.MARKER)

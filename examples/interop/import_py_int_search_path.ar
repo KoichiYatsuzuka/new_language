@@ -1,0 +1,25 @@
+# import_py_int_search_path.ar — `ar_config.json` の `python.search_paths` 経由で
+# Python モジュールを解決できることの検査（インタープリタ側の実装・#61 / #69）。
+#
+# `cfg_probe.py` は `examples/interop/py_libs/` にあり、**この .ar のあるディレクトリには無い**。
+# `examples/interop/ar_config.json` の `"python": {"search_paths": ["py_libs"]}` を
+# 読み取って初めて import できる ⇒ **設定の読み取りが壊れるとこの例題が落ちる**。
+#
+# ⚠⚠ **読み取りの実装は 2 つある**（#69 で判明）。**タグごとに別の実装**を通るので、
+# この例題は 2 本に分けてある（1 ファイルに両方書くと参照実装が同名 import で落ちる）:
+#   - `import[py]`     … パーサ側（`parser/imports/cs_js_modules.rs::python_search_dirs`）。
+#                        source_dir と root_dir の 2 箇所だけ見る自前の JSON 走査。
+#   - `import[py-int]` … インタープリタ側（`Interpreter::python_search_dirs`）。
+#                        `main.rs` が起点を覚え、**初回参照時に**祖先をウォークする（#69 で遅延化）。
+#   ⇒ 片方だけ直すと、もう片方が静かに壊れる。
+#
+# ⚠ この例題が無かったので、設定の読み取りを壊しても全ゲートが緑のままだった
+#   （#58 の cs-proc・#68 の enum と同じ「例題が 1 本も無い」形）。
+#
+# ⚠⚠ **#69 の遅延化を守っているのはこの例題**。`import[py-int]` は
+#   `Interpreter::python_search_dirs()` を実際に呼ぶ数少ない形で、
+#   遅延の初期化が壊れるとここが `ImportError` で落ちる（負の対照で確認済み）。
+
+import[py-int] cfg_probe
+
+print(cfg_probe.MARKER)

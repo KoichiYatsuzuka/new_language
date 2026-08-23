@@ -415,7 +415,19 @@ pub struct Interpreter {
     /// このフラグが `true` のとき定義された `FnValue` は `is_python: true` になる。
     pub(self) in_python_module: bool,
     /// `import[py-int]` 時に Python の `sys.path` に追加するディレクトリ一覧。
+    /// **明示的に登録されたぶんだけ**（ソースのあるディレクトリ・テストの手動登録）。
+    /// ⚠ `ar_config.json` 由来のぶんは [`Self::config_search_dirs`] に**遅延で**入る（#69）。
+    /// 読むときは必ず [`Self::python_search_dirs()`] を通すこと（両方を順に返す）。
     pub(self) python_search_dirs: Vec<PathBuf>,
+    /// `ar_config.json` の祖先ウォークを始める起点（＝ソースのあるディレクトリ）。#69。
+    pub(self) config_base_dir: Option<PathBuf>,
+    /// `ar_config.json` の `python.search_paths` 由来の検索パス（**初回参照時に遅延して読む**・#69）。
+    ///
+    /// ⚠⚠ **起動時に読んではいけない。** 消費者は cs-dll / cs-proc / js-proc の
+    /// ブリッジ探索と `import[py-int]` **だけ**で、大多数のスクリプトは 1 回も読まない。
+    /// それなのに #69 以前は `run_program` が**必ず**祖先を root までウォークしており、
+    /// `interp_init` の **48〜53%**（0.19〜0.21ms）を占めていた（支配項は `exists()` の syscall 連打）。
+    pub(self) config_search_dirs: std::cell::OnceCell<Vec<PathBuf>>,
     /// `static mut` 変数の永続セル。キーは宣言の (ファイル名, 行, 列)。
     /// 外側関数の全呼び出しで同じセルを共有する。
     pub(self) static_cells: HashMap<(String, usize, usize), Rc<RefCell<Value>>>,
@@ -517,6 +529,8 @@ impl Interpreter {
             module_cache: HashMap::new(),
             in_python_module: false,
             python_search_dirs: Vec::new(),
+            config_base_dir: None,
+            config_search_dirs: std::cell::OnceCell::new(),
             static_cells: HashMap::new(),
             current_class: None,
             trait_field_access: HashMap::new(),
@@ -546,6 +560,27 @@ impl Interpreter {
     /// `import[py-int]` 時に Python の `sys.path` に追加するディレクトリを登録する。
     pub fn add_python_search_dir(&mut self, dir: PathBuf) {
         self.python_search_dirs.push(dir);
+    }
+
+    /// `ar_config.json` の祖先ウォークの起点を覚える（#69）。**この時点では読まない**。
+    /// 実際に読むのは [`Self::python_search_dirs()`] が初めて呼ばれたとき。
+    pub fn set_config_base_dir(&mut self, dir: PathBuf) {
+        self.config_base_dir = Some(dir);
+    }
+
+    /// Python / ブリッジ探索に使う検索ディレクトリを**順に**返す（#69）。
+    ///
+    /// 順序は「**明示登録ぶん → `ar_config.json` 由来**」で、#69 以前に
+    /// `run_program` が `add_python_search_dir` を呼んでいた順とまったく同じ。
+    ///
+    /// ⚠ **初回呼び出しで祖先ウォークが走る**（以降は `OnceCell` が返す）。
+    /// ⇒ cs-dll / cs-proc / js-proc / `import[py-int]` を使わないスクリプトは**一度も走らない**。
+    pub(crate) fn python_search_dirs(&self) -> impl Iterator<Item = &PathBuf> {
+        let cfg = self.config_search_dirs.get_or_init(|| match &self.config_base_dir {
+            Some(d) => crate::load_python_search_paths(d),
+            None => Vec::new(),
+        });
+        self.python_search_dirs.iter().chain(cfg.iter())
     }
 
     /// 最上位ループの VM 化（#10-b）で「書き込み先はグローバル」と断定してよい名前を注入する。

@@ -3,11 +3,16 @@
 // 生成元: src/vm/op.rs の `enum Op` の宣言順。**手で書き換えない**。
 // op を追加/削除したら再生成すること（`op_index` にワイルドカードを置いていないので、
 // ずれたまま `cargo build --features prof` が通ることはない）。
+//
+// ⚠⚠ **「通ることはない」のは `--features prof` でビルドしたときだけ**（#69 で判明）。
+// 既定ビルドではこのファイルごと消えるので、#68 が `EnumDef` を足したとき**誰も気づかず**、
+// `--features prof` が壊れたまま残っていた。⇒ **op を足したら
+// `cargo build --features prof` と `--features tw_stats` も通すこと**（5 点セットの外側）。
 
 use super::op::Op;
 
 /// 宣言順の op 名（`op_index` の戻り値でそのまま索引できる）。
-pub const OP_NAMES: [&str; 86] = [
+pub const OP_NAMES: [&str; 87] = [
     "Const",
     "Nil",
     "LoadLocal",
@@ -73,6 +78,7 @@ pub const OP_NAMES: [&str; 86] = [
     "LoadName",
     "DeclareName",
     "MakeFn",
+    "EnumDef",
     "UnpackTuple",
     "LetTuple",
     "FreezeVar",
@@ -167,26 +173,27 @@ pub fn op_index(op: &Op) -> u8 {
         Op::LoadName { .. } => 62,
         Op::DeclareName { .. } => 63,
         Op::MakeFn { .. } => 64,
-        Op::UnpackTuple { .. } => 65,
-        Op::LetTuple { .. } => 66,
-        Op::FreezeVar { .. } => 67,
-        Op::EventSubscribe { .. } => 68,
-        Op::EventUnsubscribe => 69,
-        Op::CallKw { .. } => 70,
-        Op::CallTemplate { .. } => 71,
-        Op::BuildSlice => 72,
-        Op::DeclareGlobal { .. } => 73,
-        Op::LoadSelfClass => 74,
-        Op::GetTraitAttr { .. } => 75,
-        Op::SetTraitAttr { .. } => 76,
-        Op::BreakPoint { .. } => 77,
-        Op::Subscript => 78,
-        Op::SetIndex => 79,
-        Op::BuildList { .. } => 80,
-        Op::BuildTuple { .. } => 81,
-        Op::BuildSet { .. } => 82,
-        Op::BuildDict { .. } => 83,
-        Op::Yield => 84,
-        Op::AsyncSubmit { .. } => 85,
+        Op::EnumDef { .. } => 65,
+        Op::UnpackTuple { .. } => 66,
+        Op::LetTuple { .. } => 67,
+        Op::FreezeVar { .. } => 68,
+        Op::EventSubscribe { .. } => 69,
+        Op::EventUnsubscribe => 70,
+        Op::CallKw { .. } => 71,
+        Op::CallTemplate { .. } => 72,
+        Op::BuildSlice => 73,
+        Op::DeclareGlobal { .. } => 74,
+        Op::LoadSelfClass => 75,
+        Op::GetTraitAttr { .. } => 76,
+        Op::SetTraitAttr { .. } => 77,
+        Op::BreakPoint { .. } => 78,
+        Op::Subscript => 79,
+        Op::SetIndex => 80,
+        Op::BuildList { .. } => 81,
+        Op::BuildTuple { .. } => 82,
+        Op::BuildSet { .. } => 83,
+        Op::BuildDict { .. } => 84,
+        Op::Yield => 85,
+        Op::AsyncSubmit { .. } => 86,
     }
 }

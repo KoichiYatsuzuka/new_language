@@ -114,7 +114,7 @@ impl Interpreter {
     /// ⚠ **`find_cs_proc_host` の探索とは順序も候補も違う**ので畳んでいない（#58）。
     /// こちらは「全 `python_search_dirs` を先に見てから CWD 側へ落ちる」1 候補名の探索。
     fn find_cs_dll_bridge(&self, sub_dir: &Path, native_dll_name: &str) -> Option<PathBuf> {
-        for search_dir in &self.python_search_dirs {
+        for search_dir in self.python_search_dirs() {
             let c = search_dir.join(sub_dir).join(native_dll_name);
             if c.exists() {
                 return Some(c);
@@ -180,7 +180,7 @@ impl Interpreter {
             format!("{managed_name}.exe"),
         ];
         for name in &candidates_names {
-            for search_dir in &self.python_search_dirs {
+            for search_dir in self.python_search_dirs() {
                 let c = search_dir.join(sub_dir).join(name);
                 if c.exists() {
                     return Some(c);
@@ -228,7 +228,9 @@ impl Interpreter {
         module: &[String],
         body: &[Stmt],
     ) -> Result<Rc<NamespaceData>, String> {
-        let (node_exe, bridge_script, bridge_root) = match find_js_config(&self.python_search_dirs)
+        // ⚠ #69: `python_search_dirs()` は遅延なので、いったん集めてから渡す。
+        let search_dirs: Vec<PathBuf> = self.python_search_dirs().cloned().collect();
+        let (node_exe, bridge_script, bridge_root) = match find_js_config(&search_dirs)
         {
             Ok(cfg) => cfg,
             Err(e) => {
@@ -319,7 +321,7 @@ impl Interpreter {
             .insert(cache_key.clone(), ModuleState::Loading);
 
         if lang == "py-int" {
-            let search_dirs = self.python_search_dirs.clone();
+            let search_dirs: Vec<PathBuf> = self.python_search_dirs().cloned().collect();
             let ns = crate::interpreter::py_interop::load_py_int_module(module, &search_dirs)?;
             self.module_cache
                 .insert(cache_key, ModuleState::Loaded(ns.clone()));

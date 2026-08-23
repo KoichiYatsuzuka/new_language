@@ -410,37 +410,17 @@ fn run_program(
     interp.add_source_text(filename, source);
     #[cfg(feature = "prof")]
     drop(_s_as);
-    // ソースファイルのディレクトリを import 検索パスに追加する
+    // ソースファイルのディレクトリを import 検索パスに追加する。
+    // ⚠ この区間は **~0.000 ms でなければならない**（#69・`prof::Sub::CfgWalk` の doc 参照）。
     #[cfg(feature = "prof")]
     let _s_cfg = prof::SubTimer::new(prof::Sub::CfgWalk);
     if let Some(dir) = &source_dir {
         interp.add_python_search_dir(dir.clone());
-        // ar_config.json の python.search_paths を追加する（source_dir から上位へウォーク）
-        let mut walk: Option<&std::path::Path> = Some(dir.as_path());
-        while let Some(d) = walk {
-            let cfg_path = d.join("ar_config.json");
-            if cfg_path.exists() {
-                if let Ok(text) = std::fs::read_to_string(&cfg_path) {
-                    if let Ok(root) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if let Some(paths) = root
-                            .get("python")
-                            .and_then(|p| p.get("search_paths"))
-                            .and_then(|v| v.as_array())
-                        {
-                            for p in paths {
-                                if let Some(s) = p.as_str() {
-                                    let pb = std::path::PathBuf::from(s);
-                                    let abs = if pb.is_absolute() { pb } else { d.join(pb) };
-                                    interp.add_python_search_dir(abs);
-                                }
-                            }
-                        }
-                    }
-                }
-                break;
-            }
-            walk = d.parent();
-        }
+        // ⚠⚠ #69: **ここでは `ar_config.json` を読まない**（起点を覚えるだけ）。
+        // 読むのは `Interpreter::python_search_dirs()` の初回呼び出し ＝
+        // cs-dll / cs-proc / js-proc / `import[py-int]` を実際に使ったときだけ。
+        // 順序（明示登録 → 設定由来）は `python_search_dirs()` が保つ。
+        interp.set_config_base_dir(dir.clone());
     }
     #[cfg(feature = "prof")]
     drop(_s_cfg);
@@ -502,6 +482,57 @@ fn run_program(
         prof::dump();
     }
     Ok(())
+}
+
+/// `source_dir` から**祖先へ遡って** `ar_config.json` を探し、最初に見つけたものの
+/// `python.search_paths` を（相対なら設定ファイルのある場所を基準に）絶対パス化して返す（#61）。
+///
+/// 消費者は `import[py]` のモジュール解決だけ（`Interpreter::python_search_dirs`）。
+///
+/// ⚠ **見つかった時点で打ち切る**（読めなくても・壊れていても遡らない）。
+/// 上位の設定が下位を上書きしない、という既存の挙動をそのまま保つため。
+/// ⚠ **見つからない場合はドライブ root まで遡る**（打ち切りが無い）。
+/// これが `interp_init` の支配項で、削減は #69 の担当。
+pub(crate) fn load_python_search_paths(source_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut walk: Option<&std::path::Path> = Some(source_dir);
+    while let Some(d) = walk {
+        let cfg_path = d.join("ar_config.json");
+        if cfg_path.exists() {
+            return read_python_search_paths(&cfg_path, d);
+        }
+        walk = d.parent();
+    }
+    Vec::new()
+}
+
+/// `ar_config.json` 1 個から `python.search_paths` を読む（#61）。
+/// 読めない・壊れている・キーが無い場合は**空**（エラーにはしない＝従来どおり）。
+fn read_python_search_paths(cfg_path: &std::path::Path, base: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(text) = std::fs::read_to_string(cfg_path) else {
+        return Vec::new();
+    };
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(paths) = root
+        .get("python")
+        .and_then(|p| p.get("search_paths"))
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+    paths
+        .iter()
+        .filter_map(|p| p.as_str())
+        .map(|s| {
+            let pb = std::path::PathBuf::from(s);
+            if pb.is_absolute() {
+                pb
+            } else {
+                base.join(pb)
+            }
+        })
+        .collect()
 }
 
 /// プログラムのエントリーポイント。

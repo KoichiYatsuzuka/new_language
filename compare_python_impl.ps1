@@ -74,6 +74,10 @@ $knownDiff = @{
     'ffi_boundary_check_error'       = 'py: FFI 境界検査が未実装'
     'ffi_boundary_value_call_error'  = 'py: FFI 境界検査が未実装'
     'import_py_json'                 = 'py: py-int モジュールの値変換が違う'
+    # ⚠ impl_python は `import[py]` / `import[py-int]` の束縛自体が未対応
+    #    （`cannot assign to immutable variable` になる。`import_py_json` と同じ原因）。
+    'import_py_search_path'          = 'py: import[py] の束縛が未対応（#61/#69 で新設）'
+    'import_py_int_search_path'      = 'py: import[py-int] の束縛が未対応（#61/#69 で新設）'
     'stale_arc_check'                = 'py: .arc を UTF-8 として読んで UnicodeDecodeError'
     'swd_nested_runner'              = 'py: バイナリを UTF-8 として読んで UnicodeDecodeError'
     'typed_abi'                      = 'py: バイナリを UTF-8 として読んで UnicodeDecodeError'
