@@ -52,6 +52,7 @@ $knownDiff = @{
     'unregistered_type_call_error'   = 'py: tuple は Python の組み込みなので NameError にならない（#56 で新設）'
     'enum_in_function_error'         = 'py: enum バリアント値の int 検査が無い（str をそのまま通す・#68 で新設）'
     'built_in'                       = 'py: 組み込みの対応範囲が狭い（id/repr 等）'
+    'math_string'                    = 'py: m"..." 数式文字列そのものが未実装（ParseError になる・#78 で新設）'
     'builtin_shadow'                 = 'py: 組み込みのシャドウ規則が未実装'
     'collection'                     = 'py: コレクション組み込みの一部が未実装'
     'collection_error'               = 'py: 例外の出し方が違う（未対応の組み込み経由）'

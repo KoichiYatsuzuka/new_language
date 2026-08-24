@@ -1,0 +1,44 @@
+# math_string.ar — `m"..."` 数式文字列（LaTeX 風 → Unicode）の分岐網羅（#78）。
+#
+# 変換は `src/lexer/math.rs:render_math_str`。`^` / `_` の処理は
+#   ① 波括弧グループ `^{...}` か、② 単一要素 `^x` か
+#   ③ 中身が `\name`（コマンド）か通常文字か
+#   ④ コマンド／文字が変換表に有るか無いか
+# の 2×2×2 で分岐する。#78 で `^` 用と `_` 用の 69 行 2 アームを 1 実装へ畳んだ
+# （差はマーカー文字と写像だけだった）。
+#
+# ⚠ #78 の時点で **これらの分岐を踏む例題は `built_in.ar` の 6 行だけ**で、
+# 単独形のコマンド（`^\pi`）・未知コマンド・未終端などは**どのゲートも見ていなかった**。
+#
+# ⚠⚠ 下の期待値は「**現時点の挙動**」であって「望ましい表示」ではない。
+# 一部（未終端・入れ子）は素直な出力ではないが、#78 は**1 バイトも変えていない**。
+# 表示を変えたくなったらここが変わるので、そのときは意図的な変更として扱うこと。
+
+print("--- group: ^{...} ---")
+print(m"x^{2}")        # x²        変換表にある文字
+print(m"x^{Z}")        # x^Z       無い文字はマーカー付きで素通し
+print(m"x^{\pi}")      # xπ        既知コマンド（上付きが無いので記号のまま）
+print(m"x^{\qqq}")     # x\qqq     未知コマンドはそのまま
+
+print("--- single: ^x ---")
+print(m"x^2")          # x²
+print(m"x^Z")          # x^Z
+print(m"x^\pi")        # xπ
+print(m"x^\qqq")       # x^\qqq   ⚠ 単独形は未知コマンドの前にマーカーが付く（グループ形と違う）
+
+print("--- subscript ---")
+print(m"x_{2}")        # x₂
+print(m"x_{Z}")        # x_Z
+print(m"x_{\pi}")      # xπ
+print(m"x_2")          # x₂
+print(m"x_Z")          # x_Z
+print(m"x_\qqq")       # x_\qqq
+
+print("--- top-level commands ---")
+print(m"\alpha \beta \qqq")   # α β \qqq
+
+print("--- edge cases（現状の挙動を固定する）---")
+print(m"unterminated ^{ab")   # 閉じ `}` が無い
+print(m"trailing x^")         # `^` で終わる
+print(m"trailing x_")         # `_` で終わる
+print(m"\sum_{i=0}^{n} x_i")  # ∑ᵢ₌₀ⁿ xᵢ

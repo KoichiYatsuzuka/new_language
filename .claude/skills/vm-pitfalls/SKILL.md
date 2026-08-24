@@ -209,6 +209,18 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   ⇒ **baseline を一度は 1 件ずつ読む**こと。特に `replacing text with itself` /
   `parameter is only used in recursion` のような「意味が壊れている」系は要確認。
 
+- **⚠⚠ この環境の heredoc は「クォート付き」でもバックスラッシュを 1 段食う**（#78・複雑さ診断でも同じ罠）。
+  `cat > x.py <<'EOF'` に Rust の `'\\'` を書くと**ファイルには `'\'` が入り**、
+  `unterminated character literal` で落ちる。⇒ **バックスラッシュを含むコードを heredoc で生成しない**
+  （`chr(92)` で組み立てるか、書き込んだ後に置換で直す）。
+- **⚠⚠ 置換スクリプトには必ず件数の assert を入れる**（#78）。`src/lexer/math.rs` は **CRLF** で、
+  LF 前提のパターンが**黙って 0 件マッチ**になり、負の対照が「適用されたつもり」で通りかけた。
+  ⇒ `assert s.count(old) == 1` を必ず書く。改行コードは LF / CRLF の両方を試す。
+- **⚠ タイムアウトを持つゲートを並走させない**（#78）。[scan_examples.ps1](../../../scan_examples.ps1) を
+  比較ゲートと同時に走らせたら `partial_call_overhead.ar` が TIMEOUT した（単独ではクリーン）。
+- **⚠⚠ 書き換える前に golden を取る**（#78）。`render_math_str` は分岐が 2×2×2 あるのに
+  既存例題は 6 行しか踏んでいなかった。**HEAD のバイナリで 23 分岐の出力を先に保存**してから
+  書き換え、byte-identical を確認した。⇒ **「網が無い所を触る」と分かったら、まず自分で網を作る**。
 - **⚠⚠ 手で A/B するときは揮発値を正規化してから比較する**（#77）。
   例外系例題を `md5sum` で突き合わせたら 1 本が「差分」に見えたが、実体は
   `<ZeroDivisionError object at 0x1971969f8b0>` の**ヒープアドレス**だった。
