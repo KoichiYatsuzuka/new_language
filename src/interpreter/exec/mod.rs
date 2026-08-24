@@ -172,6 +172,18 @@ pub(crate) fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) 
     }
 }
 
+/// 本体が**参照する名前**を集める（クロージャの自由変数解決の入力・#75）。
+///
+/// 消費者は 3 系統ともクロージャの捕捉:
+/// [`crate::interpreter::exec::blocks`] の `capture_env`（ツリーウォークの捕捉）、
+/// `vm::compiler::calls`（VM の捕捉 slot）、`vm::compiler::decls::nested_fn_free_names`。
+///
+/// ⚠⚠ **`_ => {}` を足さないこと**（#75 の実バグ）。この 2 本の walker は #75 まで
+/// `_ => {}` で終わっており、`Expr` 30 variant のうち 8 個・`Stmt` 40 variant のうち 6 個を
+/// 黙って落としていた。結果、**式形式の制御構文（`if`/`match`/`block`/`for`/`while` 式）や
+/// `match` 文・set リテラルの中だけで外側変数を参照するクロージャが `NameError`** になっていた
+/// （正しいプログラムが 6 形で動かない。参照実装 impl_python との差分で確定）。
+/// ⇒ **降りないバリアントも「降りない理由」を書いて列挙する**（#59 と同じ方針）。
 pub(crate) fn collect_referenced_names(stmts: &[Stmt], out: &mut HashSet<String>) {
     for stmt in stmts {
         collect_referenced_names_stmt(stmt, out);
@@ -246,7 +258,51 @@ fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
         Stmt::Freeze(name, _) => {
             out.insert(name.clone());
         }
-        _ => {}
+        // ⚠ #75 で追加。`match` **文**はここに無く、本体の参照が丸ごと落ちていた。
+        Stmt::Match { subject, arms, .. } => {
+            collect_refs_expr(subject, out);
+            for arm in arms {
+                if let crate::ast::MatchPattern::Case(e) = &arm.pattern {
+                    collect_refs_expr(e, out);
+                }
+                collect_referenced_names(&arm.body, out);
+            }
+        }
+        // `mng <- async->T:` の本体（⚠ `target` は束縛ではない・`decl_names` と同じ扱い）。
+        Stmt::AsyncAssign { target, stmts, .. } => {
+            out.insert(target.clone());
+            collect_referenced_names(stmts, out);
+        }
+        Stmt::EventSubscribe {
+            source, handler, ..
+        }
+        | Stmt::EventUnsubscribe {
+            source, handler, ..
+        } => {
+            collect_refs_expr(source, out);
+            collect_refs_expr(handler, out);
+        }
+        // クラス本体のフィールド宣言。既定値の式だけが参照になりうる。
+        Stmt::Field { default, .. } => {
+            if let Some(e) = default {
+                collect_refs_expr(e, out);
+            }
+        }
+        Stmt::EnumDef { variants, .. } => {
+            for (_, e) in variants {
+                if let Some(e) = e {
+                    collect_refs_expr(e, out);
+                }
+            }
+        }
+        Stmt::DebugLet(_, e) => collect_refs_expr(e, out),
+        // ── ここから下は「降りない」バリアント。⚠ 理由を消さずに残すこと（#59/#75）──
+        // 参照する式を持たない文。
+        Stmt::Break | Stmt::Continue | Stmt::Pass | Stmt::BreakPoint { .. } => {}
+        Stmt::Return(None) | Stmt::Raise { exc: None, .. } => {}
+        Stmt::NewTypeDef { .. } => {}
+        // `import` の `body` は**別モジュールの本体**。呼び出し元のフレームからは捕捉しない。
+        Stmt::Import { .. } | Stmt::FromImport { .. } => {}
     }
 }
 
@@ -297,7 +353,60 @@ fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
         }
         Expr::TemplateInstantiate { base, .. } => collect_refs_expr(base, out),
         Expr::IsType { expr, .. } => collect_refs_expr(expr, out),
-        _ => {}
+        // ── ⚠⚠ ここから下は #75 で追加。すべて「式形式の制御構文」で、
+        //    ここが `_ => {}` に落ちていたせいでクロージャの捕捉が壊れていた ──
+        Expr::Set(items) => {
+            for item in items {
+                collect_refs_expr(item, out);
+            }
+        }
+        Expr::Block { stmts, .. } => collect_referenced_names(stmts, out),
+        Expr::IfExpr {
+            branches,
+            else_body,
+            ..
+        } => {
+            for (cond, body) in branches {
+                collect_refs_expr(cond, out);
+                collect_referenced_names(body, out);
+            }
+            if let Some(body) = else_body {
+                collect_referenced_names(body, out);
+            }
+        }
+        // ⚠ `target` は入れ子スコープの束縛なので**参照として拾わない**
+        //    （`Stmt::For` の既存の扱いと同じ。`decl_names` の「順序に意味がある束縛」側）。
+        Expr::ForExpr { iter, body, .. } => {
+            collect_refs_expr(iter, out);
+            collect_referenced_names(body, out);
+        }
+        Expr::WhileExpr { cond, body, .. } => {
+            collect_refs_expr(cond, out);
+            collect_referenced_names(body, out);
+        }
+        Expr::MatchExpr { subject, arms, .. } => {
+            collect_refs_expr(subject, out);
+            for arm in arms {
+                if let crate::ast::MatchPattern::Case(e) = &arm.pattern {
+                    collect_refs_expr(e, out);
+                }
+                collect_referenced_names(&arm.body, out);
+            }
+        }
+        Expr::Cast { object, .. } => collect_refs_expr(object, out),
+        Expr::MustBe { expr, .. } => collect_refs_expr(expr, out),
+        // ── ここから下は「降りない」バリアント。⚠ 理由を消さずに残すこと（#59/#75）──
+        // リテラル。名前を含まない。
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::ImaginaryLit(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::None
+        | Expr::Undefined => {}
+        // `dbg::name` / `local::name` は**専用の名前空間**への参照で、
+        // 外側フレームのローカルではない（捕捉の対象にすると別物を掴む）。
+        Expr::DebugVar(_) | Expr::LocalVar(_) => {}
     }
 }
 
