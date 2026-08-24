@@ -10,7 +10,7 @@
 //   register_builtin_globals  — グローバルスコープに全組み込み値を登録
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ast::{Expr, Param, Stmt, Resolution};
@@ -105,25 +105,15 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
     .collect();
 
     Rc::new(ClassValue {
-        name: class_name.to_string(),
-        class_id: crate::interpreter::value::alloc_class_id(),
         bases: vec!["Error".to_string()],
         methods,
-        gen_methods: HashMap::new(),
         field_defaults,
-        class_vars: HashMap::new(),
         field_mutability,
         field_index,
         field_count: 5,
         field_mutability_vec: vec![false, false, false, false, false],
-        field_access: HashMap::new(),
-        method_access: HashMap::new(),
-        static_method_names: HashSet::new(),
-        class_method_names: HashSet::new(),
-        static_vars: HashMap::new(),
-        new_type_base: None,
         is_exception: true,
-        raw_layout: None,
+        ..ClassValue::synthetic(class_name.to_string(), crate::interpreter::value::alloc_class_id())
     })
 }
 
@@ -167,25 +157,12 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
     let mut methods = HashMap::new();
     methods.insert("__init__".to_string(), vec![init_fn]);
     Rc::new(ClassValue {
-        name: name.to_string(),
-        class_id: crate::interpreter::value::alloc_class_id(),
-        bases: vec![],
         methods,
-        gen_methods: HashMap::new(),
-        field_defaults: vec![],
-        class_vars: HashMap::new(),
         field_mutability: HashMap::from([("value".to_string(), true)]),
         field_index: HashMap::from([("value".to_string(), 0usize)]),
         field_count: 1,
         field_mutability_vec: vec![true],
-        field_access: HashMap::new(),
-        method_access: HashMap::new(),
-        static_method_names: HashSet::new(),
-        class_method_names: HashSet::new(),
-        static_vars: HashMap::new(),
-        new_type_base: None,
-        is_exception: false,
-        raw_layout: None,
+        ..ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
     })
 }
 
@@ -203,25 +180,11 @@ pub(super) fn make_builtin_enum_class(
     // バリアントのインスタンス型（`enum_item_X`）: value フィールドを持つだけ
     let item_cls_id = crate::interpreter::value::alloc_class_id();
     let item_cls = Rc::new(ClassValue {
-        name: item_cls_name.clone(),
-        class_id: item_cls_id,
-        bases: vec![],
-        methods: HashMap::new(),
-        gen_methods: HashMap::new(),
-        field_defaults: vec![],
-        class_vars: HashMap::new(),
         field_mutability: HashMap::from([("value".to_string(), true)]),
         field_index: HashMap::from([("value".to_string(), 0usize)]),
         field_count: 1,
         field_mutability_vec: vec![true],
-        field_access: HashMap::new(),
-        method_access: HashMap::new(),
-        static_method_names: HashSet::new(),
-        class_method_names: HashSet::new(),
-        static_vars: HashMap::new(),
-        new_type_base: None,
-        is_exception: false,
-        raw_layout: None,
+        ..ClassValue::synthetic(item_cls_name.clone(), item_cls_id)
     });
     // 各バリアントをインスタンスとして生成し class_vars に登録
     let mut class_vars: HashMap<String, Value> = HashMap::new();
@@ -233,25 +196,8 @@ pub(super) fn make_builtin_enum_class(
     }
     // enum クラス本体（バリアントのみ保持、インスタンス化不可）
     let enum_cls = Rc::new(ClassValue {
-        name: name.to_string(),
-        class_id: crate::interpreter::value::alloc_class_id(),
-        bases: vec![],
-        methods: HashMap::new(),
-        gen_methods: HashMap::new(),
-        field_defaults: vec![],
         class_vars,
-        field_mutability: HashMap::new(),
-        field_index: HashMap::new(),
-        field_count: 0,
-        field_mutability_vec: vec![],
-        field_access: HashMap::new(),
-        method_access: HashMap::new(),
-        static_method_names: HashSet::new(),
-        class_method_names: HashSet::new(),
-        static_vars: HashMap::new(),
-        new_type_base: None,
-        is_exception: false,
-        raw_layout: None,
+        ..ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
     });
     (item_cls_name, item_cls, enum_cls)
 }

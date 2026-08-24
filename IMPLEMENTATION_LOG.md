@@ -8767,3 +8767,116 @@ lint（`used to index slots`）で、**マーシャリングを書くとこの l
 | 「`^` と `_` の差はマーカーと写像だけ」 | **当たり**（diff 4 行）。ただし**同じアーム内の波括弧あり／なしに 2 点の非対称**があった |
 | 「非対称は片方に揃えられる」 | **やらなかった**。`unwrap_or(sym)` は多文字シンボルで割れるが**現状 71 個すべて 1 文字**。挙動不変を優先し、潜在として記録 |
 | 「例題は built_in.ar があるので足りる」 | **外れ**。単独形コマンド・未知コマンド・未終端は**どのゲートも見ていなかった** |
+
+---
+
+## #79 `ar_modules.rs` の逐語重複を 1 本化（2026-08-25・完了）
+
+3 つのローダ（`load_tl_module` / `load_tl_source_module` / `load_tlc_module`）の重複。
+起票時は「子パーサ生成 22 行 × 3」だけを見ていたが、**実際は 4 種類が重複していた**。
+
+| 重複していたもの | コピー数 | 畳んだ先 |
+|---|---|---|
+| 検索ディレクトリ（`source_dir` → `root_dir`、同じなら重複させない）5 行 | **3** | `module_search_dirs` |
+| キャッシュ命中 ＋ 循環 import 検査 10 行 | **3** | `module_cache_probe` |
+| 子パーサ生成・親からの引き継ぎ・キャッシュのマージ 22 行 | **3** | `parse_sub_module` |
+| `node_counter` の注意書き（`#16・C1`）コメント | **3** | 同上（doc へ 1 本化） |
+
+⚠ **`node_counter` の注意書きが 3 重化していた**のが典型的な症状 — 「直す人が 3 箇所とも
+直したか誰にも分からない」形で、`decl_names`（#59）が潰したのと同じ構造。
+
+### 畳まなかったもの（理由つき）
+
+**候補パスの列挙と「見つからない」エラー文**は 3 つで違うので**畳まない**:
+
+| ローダ | 候補 | エラー文 |
+|---|---|---|
+| `load_tl_module`（auto） | `.arc` → `.ar` → `__init__.ar` | `cannot find module` |
+| `load_tl_source_module`（`import[ar]`） | `.ar` → `__init__.ar` | `cannot find source module` |
+| `load_tlc_module`（`import[arc]`） | `.arc` のみ | `cannot find compiled module`（`--compile` の案内つき） |
+
+⚠ **探索順に意味がある**（`.arc` が `.ar` より先＝ #58 の「探索順が違う 2 本は畳まない」と同じ判断）。
+
+### ⚠ 保存した既存の挙動
+
+`parse_program` が失敗すると `abs_path` は `loading` に**残る**（3 実装とも元からそう）。
+畳むときに直したくなるが、変えると「一度失敗したモジュールを再 import すると循環扱いになる」が
+変わるので**そのまま保存**し、doc に明記した。
+
+規模: **264 行**（-14）。`+93 / -107`。
+
+---
+
+## #80 `ClassValue` の 11 箇所リテラルを `synthetic` へ（2026-08-25・完了）
+
+19 フィールドの `ClassValue` を**リテラルで組む箇所が 11**（`built_in_types.rs` 4 ／
+`exec/definitions.rs` 5 ／ `exec/modules.rs` 1 ／ `templates.rs` 1）。
+どれも「空の既定値 8〜17 個 ＋ 違うところ数個」で、フィールド言及は約 200 箇所あった。
+
+⇒ [`ClassValue::synthetic(name, class_id)`](src/interpreter/value/callables.rs) を追加し、
+各サイトは `ClassValue { field_index, .., ..ClassValue::synthetic(name, id) }` の形へ。
+
+### ⚠⚠ `Default` は実装しない（起票時の方針をそのまま守った）
+
+`..Default::default()` を許すと「フィールドを足したら考える」強制が消える。
+`synthetic` を**exhaustive なリテラル**にしてあるので、`ClassValue` にフィールドを足すと
+**まずここがコンパイルエラーになる**（#59 と同じ仕掛け）。
+
+⚠ **doc の「src で唯一の exhaustive リテラル」は誤りだったので直した。**
+実際は **2 つ**あり、答える問いが違う:
+`synthetic` = 「合成クラスの既定値は何か」／`deep_clone` = 「そのフィールドはどう深いコピーを作るか」。
+**どちらもフィールド追加で止まる**ので、2 つあるのが正しい。
+
+### ⚠⚠ 最大の危険は「行数」ではなく **`class_id` の採番順**
+
+`class_id: alloc_class_id()` をリテラルの中に書いていた 9 サイトは、`..synthetic(name, id)` へ
+移すと **`id` の評価が構造体更新記法の位置＝列挙したフィールドより後ろ**になる。
+採番がずれると **`class_id` はインスタンスヘッダとネイティブ dispatch の GEP に焼かれる**ので、
+`compare_outputs` では見えない形で壊れうる。
+
+⇒ **`class_id` を引数で受ける設計**にして呼び出し側に残し（`synthetic` の中で採番しない）、
+検査は [dump_native_ir.ps1](dump_native_ir.ps1) の **生成 LLVM IR が byte-identical** で行った
+（代表 6 モジュール・`partial_call_overhead_module` 23,333 バイトを含む）。
+⇒ **IR 完全一致 ＝ 採番も不変**と確認できた。⚠ プランの「codegen を触ったら IR が主検査」が、
+**codegen を触っていなくても効いた**例。
+
+### ⚠ 手写しをしない
+
+11 サイト × 19 フィールドを手で書き換えると転記ミスが必ず出るので、**機械変換**した:
+リテラルをブレース平衡で切り出し、**既定値と完全一致する 1 行フィールドだけ**を落として
+`..ClassValue::synthetic(..)` を足す（多行フィールドには触らない）。
+⚠ 途中 2 回、変換スクリプト自身の欠陥を assert が捕まえた:
+① フィールド短縮記法（`methods,`）を未対応 ②`TemplateClassValue {` を
+**`ClassValue {` として誤マッチ**（単語境界が無かった）。⇒ **`assert count == n` は必ず書く**。
+
+規模: 4 ファイルで **-138 行**（`built_in_types.rs` -64・`definitions.rs` -56・
+`modules.rs` -12・`templates.rs` -6）、`callables.rs` +39（`synthetic` 本体と doc）。
+
+### 検証（#79・#80 まとめて）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` / `--release` / `--features prof` / `--features tw_stats` | すべて警告 **0** |
+| `cargo test` | **750 passed** |
+| `cargo clippy` / `--all-targets` | **50 / 65 ＝ 増分 0** |
+| [dump_native_ir.ps1](dump_native_ir.ps1) | **生成 LLVM IR byte-identical**（#80 の主検査） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **96 / 96 identical** |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **114 / 114 identical** |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **13 / 13 identical**（#79 の主検査） |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **52/52**・stale **0** |
+| [scan_examples.ps1](scan_examples.ps1) / [force_gate.ps1](force_gate.ps1) | FAIL **0** / **0 件・160 例題** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) / [stale_doc_refs.ps1](stale_doc_refs.ps1) | identical / 5 identical / **0 件** |
+
+⚠ 速度 A/B は取っていない。#79 は import 時（1 モジュール 1 回）、#80 はクラス定義時にしか
+通らず、`compare_bytecode` **114/114** と **IR byte-identical** で生成物が動いていないことを確認済み。
+⚠ 例題は増やしていない（**どちらも既存例題が濃く踏む経路** — import は 13 例題、
+クラス生成は全例題）。#77/#78 と違い「網が無い」状況ではなかった。
+
+### 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「#79 は子パーサの 22 行 × 3 だけ」 | **外れ**。**4 種類**が重複していた（検索ディレクトリ・キャッシュ検査・子パーサ・注意書き） |
+| 「#80 は行数を減らすだけの退屈な作業」 | **外れ**。**`class_id` の採番順**という壊れ方が隠れていて、`compare_outputs` では見えない。IR 比較が要った |
+| 「11 サイトなら手で書き換えられる」 | **やらなかった**。機械変換にして正解 — スクリプトの欠陥を assert が 2 回捕まえた |
+| 「`Default` を derive すれば早い」 | **却下**（起票時の方針どおり）。強制が消える。⚠ ただし **exhaustive リテラルは 2 つある**（`deep_clone` も）ので doc を直した |

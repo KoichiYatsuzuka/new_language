@@ -425,8 +425,6 @@ impl Interpreter {
         let (field_index, field_mutability_vec, field_count) =
             self.build_field_index(&own_field_order, &tmpl.bases);
         let cls = Rc::new(ClassValue {
-            name: tmpl.name.clone(),
-            class_id: crate::interpreter::value::alloc_class_id(),
             bases: tmpl.bases.clone(),
             methods,
             gen_methods,
@@ -441,9 +439,7 @@ impl Interpreter {
             static_method_names,
             class_method_names,
             static_vars,
-            new_type_base: None,
-            is_exception: false,
-            raw_layout: None,
+            ..ClassValue::synthetic(tmpl.name.clone(), crate::interpreter::value::alloc_class_id())
         });
         let evaled = call_args.into_evaled(self)?;
         self.instantiate_evaled(cls, evaled)

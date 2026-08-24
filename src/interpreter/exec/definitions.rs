@@ -262,8 +262,6 @@ impl Interpreter {
         match orig_val {
             Value::Class(orig_cls) => {
                 let new_cls = Rc::new(crate::interpreter::ClassValue {
-                    name: name.to_string(),
-                    class_id: crate::interpreter::value::alloc_class_id(),
                     bases: orig_cls.bases.clone(),
                     methods: orig_cls.methods.clone(),
                     gen_methods: orig_cls.gen_methods.clone(),
@@ -281,6 +279,7 @@ impl Interpreter {
                     new_type_base: orig_cls.new_type_base.clone(),
                     is_exception: orig_cls.is_exception,
                     raw_layout: orig_cls.raw_layout.clone(),
+                    ..crate::interpreter::ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
                 });
                 self.declare_var(name.to_string(), Var::new(Value::Class(new_cls), false));
             }
@@ -323,25 +322,13 @@ impl Interpreter {
                 let mut methods = HashMap::new();
                 methods.insert("__init__".to_string(), vec![init_fn]);
                 let new_cls = Rc::new(crate::interpreter::ClassValue {
-                    name: name.to_string(),
-                    class_id: crate::interpreter::value::alloc_class_id(),
-                    bases: vec![],
                     methods,
-                    gen_methods: HashMap::new(),
-                    field_defaults: vec![],
-                    class_vars: HashMap::new(),
                     field_mutability: HashMap::from([("value".to_string(), true)]),
                     field_index: HashMap::from([("value".to_string(), 0usize)]),
                     field_count: 1,
                     field_mutability_vec: vec![true],
-                    field_access: HashMap::new(),
-                    method_access: HashMap::new(),
-                    static_method_names: HashSet::new(),
-                    class_method_names: HashSet::new(),
-                    static_vars: HashMap::new(),
                     new_type_base: Some(type_name.clone()),
-                    is_exception: false,
-                    raw_layout: None,
+                    ..crate::interpreter::ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
                 });
                 self.declare_var(name.to_string(), Var::new(Value::Class(new_cls), false));
             }
@@ -444,25 +431,12 @@ impl Interpreter {
         item_methods.insert("__init__".to_string(), vec![init_fn]);
         let item_cls_id = crate::interpreter::value::alloc_class_id();
         let item_cls = Rc::new(crate::interpreter::ClassValue {
-            name: item_type_name,
-            class_id: item_cls_id,
-            bases: vec![],
             methods: item_methods,
-            gen_methods: HashMap::new(),
-            field_defaults: vec![],
-            class_vars: HashMap::new(),
             field_mutability: HashMap::from([("value".to_string(), true)]),
             field_index: HashMap::from([("value".to_string(), 0usize)]),
             field_count: 1,
             field_mutability_vec: vec![true],
-            field_access: HashMap::new(),
-            method_access: HashMap::new(),
-            static_method_names: HashSet::new(),
-            class_method_names: HashSet::new(),
-            static_vars: HashMap::new(),
-            new_type_base: None,
-            is_exception: false,
-            raw_layout: None,
+            ..crate::interpreter::ClassValue::synthetic(item_type_name, item_cls_id)
         });
         // ⚠ ここで `declare_var` はしない（#68）。記憶域は呼び出し元が決める。
 
@@ -491,25 +465,8 @@ impl Interpreter {
         }
 
         let enum_cls = Rc::new(crate::interpreter::ClassValue {
-            name: name.to_string(),
-            class_id: crate::interpreter::value::alloc_class_id(),
-            bases: vec![],
-            methods: HashMap::new(),
-            gen_methods: HashMap::new(),
-            field_defaults: vec![],
             class_vars,
-            field_mutability: HashMap::new(),
-            field_index: HashMap::new(),
-            field_count: 0,
-            field_mutability_vec: vec![],
-            field_access: HashMap::new(),
-            method_access: HashMap::new(),
-            static_method_names: HashSet::new(),
-            class_method_names: HashSet::new(),
-            static_vars: HashMap::new(),
-            new_type_base: None,
-            is_exception: false,
-            raw_layout: None,
+            ..crate::interpreter::ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
         });
         Ok((item_cls, enum_cls))
     }
@@ -705,8 +662,6 @@ impl Interpreter {
         };
 
         let cls = Rc::new(crate::interpreter::ClassValue {
-            name: name.to_string(),
-            class_id: crate::interpreter::value::alloc_class_id(),
             bases: bases.to_vec(),
             methods,
             gen_methods,
@@ -721,9 +676,8 @@ impl Interpreter {
             static_method_names,
             class_method_names,
             static_vars,
-            new_type_base: None,
-            is_exception: false,
             raw_layout,
+            ..crate::interpreter::ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
         });
         if decorators.is_empty() {
             self.declare_var(name.to_string(), Var::new(Value::Class(cls), false));

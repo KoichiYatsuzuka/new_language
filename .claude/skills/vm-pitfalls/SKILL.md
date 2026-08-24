@@ -213,6 +213,19 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   `cat > x.py <<'EOF'` に Rust の `'\\'` を書くと**ファイルには `'\'` が入り**、
   `unterminated character literal` で落ちる。⇒ **バックスラッシュを含むコードを heredoc で生成しない**
   （`chr(92)` で組み立てるか、書き込んだ後に置換で直す）。
+- **⚠⚠ 大量サイトの書き換えは手写ししない — 機械変換して assert で守る**（#80）。
+  `ClassValue` 11 サイト × 19 フィールドを機械変換したところ、**スクリプト自身の欠陥を
+  assert が 2 回捕まえた**: ①フィールド短縮記法（`methods,`）を未対応
+  ②`TemplateClassValue {` を `ClassValue {` として**誤マッチ**（単語境界が無い）。
+  手で書いていたら**静かに壊れていた**。⇒ 変換は「切り出す → 判定 → 組み直す」を機械にやらせ、
+  各段で `assert count == n` を置く。
+- **⚠⚠ 「挙動不変」は触った場所によって見るゲートが違う。`compare_outputs` では見えない壊れ方がある**（#80）。
+  `ClassValue` の構造体更新記法（`..synthetic(name, id)`）は **`alloc_class_id()` の評価を
+  後ろへ動かす**。`class_id` は**インスタンスヘッダとネイティブ dispatch の GEP に焼かれる**ので、
+  採番がずれても stdout は同じまま壊れうる。⇒ **`class_id` を引数で受けて呼び出し側に順序を残し**、
+  [dump_native_ir.ps1](../../../dump_native_ir.ps1) の **IR byte-identical** で確認した。
+  ⚠ 「codegen を触ったら IR が主検査」は、**codegen を触っていなくても**効くことがある。
+
 - **⚠⚠ 置換スクリプトには必ず件数の assert を入れる**（#78）。`src/lexer/math.rs` は **CRLF** で、
   LF 前提のパターンが**黙って 0 件マッチ**になり、負の対照が「適用されたつもり」で通りかけた。
   ⇒ `assert s.count(old) == 1` を必ず書く。改行コードは LF / CRLF の両方を試す。

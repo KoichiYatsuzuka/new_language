@@ -878,25 +878,15 @@ impl Interpreter {
             // `ClassValue.raw_layout` は `Rc`（スレッド境界を越えない）なので複製する。
             let raw_layout = raw_layouts.get(&sdef.name).map(|l| Rc::new((**l).clone()));
             let cls = Rc::new(ClassValue {
-                name: sdef.name.clone(),
-                class_id: crate::interpreter::value::alloc_class_id(),
-                bases: vec![],
                 methods,
-                gen_methods: HashMap::new(),
-                class_vars: HashMap::new(),
-                field_defaults: vec![],
                 field_mutability,
                 field_index,
                 field_count,
                 field_mutability_vec,
-                field_access: HashMap::new(),
-                method_access: HashMap::new(),
                 static_method_names: std::collections::HashSet::new(),
                 class_method_names: std::collections::HashSet::new(),
-                static_vars: HashMap::new(),
-                new_type_base: None,
-                is_exception: false,
                 raw_layout,
+                ..ClassValue::synthetic(sdef.name.clone(), crate::interpreter::value::alloc_class_id())
             });
 
             members.insert(sdef.name.clone(), Value::Class(cls));
