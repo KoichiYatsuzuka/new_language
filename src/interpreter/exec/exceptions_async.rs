@@ -106,10 +106,26 @@ impl Interpreter {
         }
 
         let exc_val = self.eval(exc.as_ref().unwrap())?;
+        // 組み立ては 1 箇所（#77）。ここは**結果の返し方**だけを持つ。
+        Ok(ExecResult::Raise(self.build_raised_error(exc_val, span)))
+    }
 
-        // 例外インスタンスに file / line / col / code_context を直接書き込む
+    /// `raise <expr>` の値と位置から [`RaisedError`] を組む — **唯一の実装**（#77）。
+    ///
+    /// ① 例外インスタンスへ `file` / `line` / `col` / `code_context`（および `Error::` 修飾名）を
+    /// 直接書き込み、② raise 地点の [`StackFrame`] を 1 つ持つ `RaisedError` を返す。
+    ///
+    /// ⚠⚠ **#77 以前は `exec_raise`（ツリーウォーク）と `vm_raise`（VM）に同じ 40 行が
+    /// 書かれていた** — しかも `vm_raise` の doc は「`exec_raise` と同一意味論」と**明記**していた。
+    /// **2 経路で違ってよいのは「組んだ結果をどう返すか」だけ**:
+    /// `exec_raise` は `ExecResult::Raise` で返し、`vm_raise` は `current_exception` へ積んで
+    /// `RAISE_SENTINEL` を返す。⇒ 組み立てはここに集約する（`*_evaled` 版とずれた実装を作らない）。
+    fn build_raised_error(&self, exc_val: Value, span: &Span) -> RaisedError {
+        // ⚠ `get_context_lines` は純粋（`source_map` を読むだけ）なので 1 回で足りる。
+        // #77 以前は**同じ引数で 2 回**呼んでいた（インスタンス書き込み用とフレーム用）。
+        let context = self.get_context_lines(&span.file, span.line, 5);
+
         if let Value::Instance(ref inst_rc) = exc_val {
-            let context = self.get_context_lines(&span.file, span.line, 5);
             let cls = inst_rc.borrow().class.clone();
             let mut inst = inst_rc.borrow_mut();
             for (key, val) in [
@@ -120,7 +136,7 @@ impl Interpreter {
                 ("Error::file", Value::str(span.file.to_string())),
                 ("Error::line", Value::Int(span.line as i64)),
                 ("Error::col", Value::Int(span.col as i64)),
-                ("Error::code_context", Value::str(context)),
+                ("Error::code_context", Value::str(context.clone())),
             ] {
                 if let Some(&idx) = cls.field_index.get(key) {
                     inst.store_field(idx, val, false);
@@ -133,61 +149,29 @@ impl Interpreter {
             .last()
             .cloned()
             .unwrap_or_else(|| "<module>".to_string());
-        let frame = StackFrame {
-            file: span.file.to_string(),
-            line: span.line,
-            col: span.col,
-            fn_name,
-            context: self.get_context_lines(&span.file, span.line, 5),
-        };
-        Ok(ExecResult::Raise(RaisedError {
+        RaisedError {
             exception: exc_val,
-            frames: vec![frame],
-        }))
+            frames: vec![StackFrame {
+                file: span.file.to_string(),
+                line: span.line,
+                col: span.col,
+                fn_name,
+                context,
+            }],
+        }
     }
 
     // ── VM 例外サポート（vm/run.rs のハンドラスタックが使う。current_exception 等は
     //     interpreter モジュール private なのでここにヘルパを置く） ──
 
-    /// VM: `raise expr`。`exec_raise`（bare でない側）と同一意味論。
-    /// 例外インスタンスに span フィールドを書き込み、フレーム付き RaisedError を
-    /// `current_exception` に設定して RAISE_SENTINEL を返す（呼び出し側が Err で伝播）。
+    /// VM: `raise expr`。`exec_raise`（bare でない側）と**同一意味論**
+    /// — 組み立ては [`Self::build_raised_error`] に 1 本化してあるので、
+    /// **その「同一」は仕様ではなく実装で保証されている**（#77）。
+    ///
+    /// フレーム付き `RaisedError` を `current_exception` に設定して `RAISE_SENTINEL` を返す
+    /// （呼び出し側が Err で伝播）。⚠ **2 経路で違うのはこの 2 行だけ**。
     pub(crate) fn vm_raise(&mut self, exc_val: Value, span: &Span) -> String {
-        if let Value::Instance(ref inst_rc) = exc_val {
-            let context = self.get_context_lines(&span.file, span.line, 5);
-            let cls = inst_rc.borrow().class.clone();
-            let mut inst = inst_rc.borrow_mut();
-            for (key, val) in [
-                ("file", Value::str(span.file.to_string())),
-                ("line", Value::Int(span.line as i64)),
-                ("col", Value::Int(span.col as i64)),
-                ("code_context", Value::str(context.clone())),
-                ("Error::file", Value::str(span.file.to_string())),
-                ("Error::line", Value::Int(span.line as i64)),
-                ("Error::col", Value::Int(span.col as i64)),
-                ("Error::code_context", Value::str(context)),
-            ] {
-                if let Some(&idx) = cls.field_index.get(key) {
-                    inst.store_field(idx, val, false);
-                }
-            }
-        }
-        let fn_name = self
-            .call_stack
-            .last()
-            .cloned()
-            .unwrap_or_else(|| "<module>".to_string());
-        let frame = StackFrame {
-            file: span.file.to_string(),
-            line: span.line,
-            col: span.col,
-            fn_name,
-            context: self.get_context_lines(&span.file, span.line, 5),
-        };
-        self.current_exception = Some(RaisedError {
-            exception: exc_val,
-            frames: vec![frame],
-        });
+        self.current_exception = Some(self.build_raised_error(exc_val, span));
         RAISE_SENTINEL.to_string()
     }
 

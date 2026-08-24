@@ -62,6 +62,7 @@ $knownDiff = @{
     'polymorphism_error'             = 'py: エラーの出方が違う（AttributeError で落ちる）'
     'complex_error'                  = 'py: complex の一部演算が未実装'
     'mustbe_error'                   = 'py: mustbe 失敗時の出力形式が違う'
+    'raise_span_fields'              = 'py: raise した例外への file/line/col/code_context 焼き込みが未実装（0 / False を返す・#77 で新設）'
     'async_string_share'             = 'py: AsyncManager 未実装'
     'async_closure_share'            = 'py: AsyncManager 未実装'
     'async_vm_body'                  = 'py: AsyncManager 未実装'

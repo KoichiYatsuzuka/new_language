@@ -37,7 +37,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 ⚠⚠ **2026-08-24 の全 src 機械診断（第 3 弾）で #75〜#82 を起票**（複雑さ 3 軸＝制御ネスト・分岐・
 変数参照。2,105 関数を実測）。**うち #75 は実バグで、最初に潰した**（`if`/`match`/`block`/`for`/
 `while` **式**と `match` 文の中だけで外側変数を参照するクロージャが `NameError` だった）。
-⇒ **着手可能なのは #77〜#82 ＋ 別レーン 3 件**（全件が前提なし。#75・#76・#83 は完了）。
+⇒ **着手可能なのは #78〜#82 ＋ 別レーン 3 件**（全件が前提なし。**A 群 75・76・77 と 83 は完了**）。
 ⚠⚠ **「保守性」のつもりで始めた 4 件から実バグが出た**（#68 関数本体の `enum` ／
 #71 `import[py]` の関数が 1 つも呼べない ／ #65 `ljust`・`rjust`・`center` ／ **#75 クロージャの捕捉**）。
 到達点は 1 行ずつ（詳細は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号）:
@@ -66,6 +66,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | 71 | **`import[py]` の関数が 1 つも呼べなかった実バグを修正**（`vm_eligible` の `!is_python` が #33 で `VmForceError` に化けていた）。本体は `python_converter` が作る**普通の Arrow AST**なので載る。⚠ `try_fast_bind` も塞ぐ（copy 規則が 2 経路でずれる）。**CPython と 1 行ずつ突き合わせ**。差分は bytecode 109/110・outputs 92/93 の**修正 1 件だけ** |
 | 72 | `python.search_paths` の**読み取り**を [ar_config.rs](src/ar_config.rs) へ 1 本化（手書きの文字列走査を削除）。⚠⚠ 調べたら読み手は **5 つ・探索方針は 4 通り**で**どれにも理由がある**ので**方針は畳まない**（地図をモジュール doc に記載）。⚠ 差分計測 14 ケース中 **5 件相違・うち 3 件は手書き側の実バグ**（セクション外の拾い上げ等） |
 | 73 | `csharp.lib_paths` の手書き走査も [ar_config.rs](src/ar_config.rs) へ委譲。⚠⚠ 実測 11 ケース中 **6 件相違・うち 5 件が手書き側の誤り** — 最悪は **`cpp.lib_paths` と併存すると C++ 用のパスを C# の DLL 探索に使う**（潜在）。⚠ 踏む例題が作れない（DLL とブリッジを既定外に置く必要）ので**単体テスト 2 種**で担保 |
+| 77 | **`exec_raise` ⇔ `vm_raise` の 2 実装を 1 本化**（`build_raised_error`）。**差は「組んだ結果をどう返すか」だけ** — `ExecResult::Raise` で返すか `current_exception` へ積むか。`exec_raise` **58→15 行**・`vm_raise` **40→4 行**。副産物で `get_context_lines` の二重呼び出しも解消。⚠⚠ **`file`/`line`/`col`/`code_context` を読む例題が 0 本だった**ので新設（負の対照つき）。⚠ 手 A/B で**アドレスを正規化せず偽の差分**を出しかけた。⚠ tw_stats では `Raise` が 1 件も出ない（`exec_raise` は通常実行から到達しない可能性・**起票はしない**） |
 | 83 | `ar_call_fn` の**ガードの入れ子**を平坦化（typed 高速パスを `try_typed_fast_call` ＋ 2 段へ切り出して早期 return へ反転）。**196 行/ネスト 8 → 96 行/ネスト 5**・切り出し先は最大ネスト 2。src の**ネスト ≥7 は 2 本 → 1 本**。⚠⚠ **`#[inline(always)]` は速度目的ではなく「生成コードを変えないため」**（外すと **cdll が 0.94x**。⚠ **cdll は `ar_call_fn` を通らない**ので配置の話 — 属性を戻すだけで 1.04x に振れた）。⚠ **ノイズ帯は測るたび違う**（±1%〜±3.5%）ので**対照は同じセッションで取る** |
 | 76 | **typed ABI 引数マーシャリングの 4 コピーを 1 本化**（`TypedArgs::marshal`／#54 が呼び出しだけ畳んだ続き）。畳めた根拠は「差は**入力**（`named_mut` を何にできるか）と**書き戻し先**だけ」で、⚠ **`Some(false)`（名前付き `let`）と `None` は同義でない**ので潰さず引数化。ネスト **7 が 4 本 → 0 本**（773→599 行）。⚠⚠ **`Vec` を 1 個ホットパスに置いて cdll が 0.900x に退行**→固定長配列で解消（**判定は負の対照で**）。⚠ `ar_call_fn` の深さ 8 は残る（実体はマーシャリングでなく**ガードの入れ子**）|
 | 75 | **クロージャの捕捉が「式形式の制御構文」を見ていなかった実バグを修正**（第 3 弾の診断で発見）。`collect_referenced_names_stmt` / `collect_refs_expr` の `_ => {}` を**両方 exhaustive 化**（`Expr` 30 中 8・`Stmt` 40 中 6 が欠落）。⚠⚠ 起票時は `Expr` 側だけのつもりだったが、**対の `Stmt` 側にも穴があり `match` 文が実バグとして再現**。例題を新設し**負の対照で検出力も確認**。⚠⚠ **clippy の基準 50/63 は数え方違い**（同コマンドで HEAD を測り直すと 51/66 ＝ **増分 0**） |
@@ -82,13 +83,13 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 ⚠ **同じコードでも書く場所で速さが違う**（#47）: 最上位は fn 内より改善が薄い
 （baseline 1.62x ↔ 5.90x）＝ **VM に載っている ≠ 同じ速さ**。
 
-> **✅ 全ゲート緑（2026-08-24・#83 完了時に自分で走らせて確認）**
+> **✅ 全ゲート緑（2026-08-24・#77 完了時に自分で走らせて確認）**
 > `cargo test` **750** ／ `cargo build` **警告 0**（`--features prof` / `--features tw_stats` も 0）／
 > `cargo clippy` **50**・`--all-targets` **65**（#76 で **1 件減**。⚠ 数え方は下記）／
-> [compare_outputs.ps1](compare_outputs.ps1) **94** ／ [compare_bytecode.ps1](compare_bytecode.ps1) **112** ／
+> [compare_outputs.ps1](compare_outputs.ps1) **95** ／ [compare_bytecode.ps1](compare_bytecode.ps1) **113** ／
 > [compare_import_paths.ps1](compare_import_paths.ps1) **13** ／ [scan_examples.ps1](scan_examples.ps1) **FAIL 0** ／
 > [ab_bench_modes.ps1](ab_bench_modes.ps1) は**負の対照つきで**読む（⚠ **帯は測るたび違う** — ±1%〜±3.5%・#76/#83。**同じセッションで取る**）／
-> [force_gate.ps1](force_gate.ps1) **0 件・158 例題** ／ [compare_python_impl.ps1](compare_python_impl.ps1) **52/52** ／
+> [force_gate.ps1](force_gate.ps1) **0 件・159 例題** ／ [compare_python_impl.ps1](compare_python_impl.ps1) **52/52**（既知差分 44）／
 > [repl_session.ps1](repl_session.ps1) **identical** ／ [debug_session.ps1](debug_session.ps1) **5 identical** ／
 > [stale_doc_refs.ps1](stale_doc_refs.ps1) **0 件** ／ `tw_stats` は `in_fn` 0・`tw_control_flow` 0・bail 0。
 > ⚠ **`cargo clippy` と `cargo clippy --all-targets` は別の数**（50 ↔ 65。差は `benches/`）。
@@ -182,7 +183,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 >    1 呼び出し ≈ 275ns（うち `Call` op 自体が ≈ 213ns。int 加算 ≈ 11〜13ns の **20 倍**）。
 >    `Jump`+`JumpIfFalse` は合わせて **4.1%** しかない（安い命令を狙うな・#46）。
 
-1. ⚠⚠ **#77〜#82（第 3 弾）が起票済み・全件が前提なし**（**#75・#76・#83 は完了**）。実バグの温床は **#77**。
+1. ⚠⚠ **#78〜#82（第 3 弾）が起票済み・全件が前提なし**（**#75・#76・#77・#83 は完了** ＝ **A 群は全滅**）。次は B 群（逐語重複 78〜80）か C 群（81・82）。
    速度を再開するなら #50 の分布は #69・#70 で 2 段動いたので**取り直しから**（[prof_dist.ps1](prof_dist.ps1) `-Mode phases`）。
    残っている段はプロセス費用 1.5ms・`type_check` 0.18ms・`parse` 0.17ms ＝ **どれも master のまま**。
 2. 別レーン（#19 / #17-a / #17-b）— 外部接続系・優先度低。いつ着手しても他をブロックしない。
@@ -275,7 +276,6 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 | # | タスク | 手法 | 前提（依存） | 状態 |
 |---|---|---|---|---|
-| 77 | `exec_raise` ⇔ `vm_raise` の 2 実装 | 例外への span 書き込み＋`StackFrame` 組み立てを 1 本へ | — | 未着手 |
 | 78 | `render_math_str`（src 最深・制御ネスト 8） | `'^'`/`'_'` の 69 行 2 アーム（diff 4 行）をマップ関数で引数化 | — | 未着手 |
 | 79 | `ar_modules.rs` の子パーサ生成 22 行 × 3 コピー | 取得元だけを外に出して `parse_sub_module` へ委譲 | — | 未着手 |
 | 80 | `ClassValue` 22 フィールドの 11 箇所リテラル構築 | 共通コンストラクタ 1 本（⚠ `..Default::default()` は**禁止**＝ #59 の強制が消える） | — | 未着手 |
@@ -285,7 +285,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | 14 | §6 モジュール動的リンク | ディスクリプタシンボル＋ABI ハッシュ照合 | **← モジュール間ネイティブ直リンクの導入**（未実装・未計画） | ブロック中 |
 
 > **58〜74 は全件完了**（第 2 弾・2026-08-21 起票）。**75〜82 は 2026-08-24 の全 src 機械診断で起票**
-> （第 3 弾。A群＝実バグの温床 75〜77／B群＝逐語重複 78〜80／C群＝ドリフト強制の穴 81・82／**83 は #76 からの派生**。**75・76・83 は完了**。
+> （第 3 弾。A群＝実バグの温床 75〜77／B群＝逐語重複 78〜80／C群＝ドリフト強制の穴 81・82／**83 は #76 からの派生**。**A 群 75〜77 と 83 は完了**。
 > 内訳・実測・対象外の根拠は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号）。
 > ⚠⚠ **`vm/run.rs:exec_op`（895 行）と `eval_str_method`（588 行）は対象外**（#65 と**第 3 弾で再確認** —
 > 制御ネストは**どちらも 5** で深さ順では 20 位圏外＝**行数 1 位でも平坦**）。行数だけを見て割ると

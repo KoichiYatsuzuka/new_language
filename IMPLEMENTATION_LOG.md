@@ -8573,3 +8573,103 @@ lint（`used to index slots`）で、**マーシャリングを書くとこの l
 | 「cdll が落ちたのだから FFI 経路の退行だ」 | **外れ**。cdll は `ar_call_fn` を通らない。**属性 1 つで 1.04x に振れて確定** |
 | 「#76 で測ったノイズ帯を使い回せる」 | **外れ**。帯は ±1% 〜 ±3.5% で変動する。**対照は同じセッションで取る** |
 | 「`ar_call_fn` はネスト 0〜1 まで下がる」 | **外れ**。残り 5（ハンドル経路の DLL シンボル解決 `if`→`match`→`match`）。p99 = 5 なので許容 |
+
+---
+
+## #77 `exec_raise` ⇔ `vm_raise` の 2 実装を 1 本化（2026-08-24・完了）
+
+第 3 弾 A 群の最後。**コード内コメント自身が「`exec_raise` と同一意味論」と明記していながら
+同じ 40 行が 2 箇所に書かれていた**箇所（`vm_raise` の doc）。
+プランの「⚠ **`*_evaled` 版とずれた実装を作らない** — 実バグ 4 回」がそのまま当てはまる形。
+
+### 1. 畳んだもの — 差は「組んだ結果をどう返すか」だけ
+
+共有部分は「`Value` ＋ `Span` → `RaisedError`」:
+① 例外インスタンスへ `file` / `line` / `col` / `code_context`（および `Error::` 修飾名）を直接書き込み、
+② raise 地点の `StackFrame` を 1 つ持つ `RaisedError` を組む。
+
+| 経路 | 組んだ結果の扱い（**唯一の差**） |
+|---|---|
+| `exec_raise`（ツリーウォーク） | `Ok(ExecResult::Raise(err))` で返す |
+| `vm_raise`（VM） | `current_exception` へ積んで `RAISE_SENTINEL` を返す |
+
+⇒ `Interpreter::build_raised_error(&self, exc_val, span) -> RaisedError` に集約。
+
+| 関数 | 前 | 後 |
+|---|---|---|
+| `exec_raise` | 58 行 | **15 行**（bare 再送出の分岐 ＋ 1 行の委譲） |
+| `vm_raise` | 40 行 | **4 行** |
+| `build_raised_error`（新設・共有） | — | 40 行・制御ネスト **1** |
+
+差分は **+35 / -51**（doc を厚くしたうえで正味 -16 行）。
+
+### 2. ⚠ 副産物 — `get_context_lines` の二重呼び出しを解消
+
+畳む前は**同じ引数で 2 回**呼んでいた（インスタンス書き込み用とフレーム用）。
+`get_context_lines(&self, ...)` は `source_map` を読むだけの純粋関数なので 1 回に統合した。
+⚠ 速度目的ではない（`raise` は例外時にしか通らない）。**2 回呼ぶ理由が無いのに 2 回呼ぶ形が
+残っていたのは、2 実装だったから**という位置づけで記録する。
+
+### 3. ⚠⚠ この組み立てを見る例題が **1 本も無かった**（→ 新設）
+
+`e.file` / `e.line` / `e.col` / `e.code_context` を読むアクティブな例題は **0 本**だった
+（`examples/archived/exceptions.ar` のみ・archived はゲート対象外）。
+⇒ **`build_raised_error` のインスタンス書き込み側は、壊しても全ゲートが緑のまま**だった。
+#56 / #68 / #71 / #75 と**同じ形**なので
+[examples/exceptions/raise_span_fields.ar](examples/exceptions/raise_span_fields.ar) を新設した。
+
+見るもの: 関数内 `raise`（VM 経路）と最上位 `raise` の両方で
+`file`（末尾一致のみ — **絶対パスは print しない**）・`line`・`col`・`code_context` の内容、
+および「位置が違えば `line` も違う」（＝ 焼き込みが呼び出しごとに起きている）。
+
+⚠⚠ **負の対照で検出力を確認した**: `build_raised_error` の `context` を `String::new()` に
+差し替えると `ctx-has-raise: True` → `False` に反転する。
+
+⚠ **`impl_python` はこの焼き込みを実装していない**（`line`/`col` が 0・`code_context` が空）ので
+[compare_python_impl.ps1](compare_python_impl.ps1) の `$knownDiff` に**理由つきで登録**した。
+
+### 4. ⚠ 観察 — `exec_raise` は通常実行では到達しない（**起票はしない**）
+
+[tw_stats.ps1](tw_stats.ps1) で全例題を集計したところ、ツリーウォークが実行する文は
+`FnDef` / `ClassDef` / `Import` / `FromImport` / `TraitDef` / `NewTypeDef` / `EnumDef` /
+`ProtocolDef` / `GenDef` の**定義文だけ**で、**`Raise` は 1 件も現れない**
+（`in_fn` は 0・`module_body` も `ClassDef`/`FnDef` のみ）。
+⇒ `dispatch.rs` の `Stmt::Raise => self.exec_raise(..)` は**通常実行から到達不能**の可能性が高い。
+
+⚠ **#56（`parse_ar` が死んでいた）とは向きが違う**ので、消す判断はここではしない:
+あちらは「動くべきものが bail していた」、こちらは「VM が担当しているので単に通らない」。
+到達不能を**証明**するには REPL・デバッガ REPL・モジュール本体・定義文脈の式まで
+洗い出す必要があり、それは #56 が示したとおり**例題だけでは足りない**。
+⇒ **本タスクでは畳むだけに留めた**（畳んだので、仮に到達しても VM と同じ結果になる）。
+
+### 5. 検証
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` / `--release` / `--features prof` / `--features tw_stats` | すべて警告 **0** |
+| `cargo test` | **750 passed** |
+| `cargo clippy` / `--all-targets` | **50 / 65 ＝ 増分 0** |
+| [compare_outputs.ps1](compare_outputs.ps1) | **95 / 95 identical**（例題 +1） |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **113 / 113 identical** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **52/52**・既知差分 **44**・stale **0** |
+| [scan_examples.ps1](scan_examples.ps1) / [force_gate.ps1](force_gate.ps1) | FAIL **0** / **0 件・159 例題** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) / [stale_doc_refs.ps1](stale_doc_refs.ps1) | identical / **5 identical** / **0 件** |
+
+⚠ **例外系例題 6 本を直接 A/B** した（`examples/exceptions/*.ar`）。
+⚠⚠ **最初 `traceback_frame_names` が「差分」に見えた** — 実体は
+`<ZeroDivisionError object at 0x…>` の**ヒープアドレス**で、
+[compare_outputs.ps1](compare_outputs.ps1) が正規化している揮発値だった。
+⇒ **手で A/B するときも `0x…` を正規化してから比較する**（さもないと存在しない退行を報告する）。
+
+⚠ 速度 A/B は取っていない。`raise` は例外時にしか通らず、`compare_bytecode` が
+**113/113 byte-identical**（＝ コンパイル結果は 1 バイトも動いていない）なので、
+ホットパスへの影響が無いことはそれで足りる。
+
+### 6. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「40 行の逐語重複を畳むだけ」 | **当たり**。ただし副産物で `get_context_lines` の二重呼び出しも消えた |
+| 「例外は例題が多いので網は足りている」 | **外れ**。**`file`/`line`/`col`/`code_context` を読む例題は 0 本**だった（`message` しか読んでいない） |
+| 「手で md5 を突き合わせれば A/B になる」 | **外れ**。**アドレスを正規化しないと偽の差分が出る**（1 本で実際に出た） |
+| 「`exec_raise` は普通に使われている」 | **外れ**。tw_stats では `Raise` が 1 件も出ない（ただし到達不能の**証明**にはならない） |

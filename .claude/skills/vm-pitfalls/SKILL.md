@@ -209,6 +209,13 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   ⇒ **baseline を一度は 1 件ずつ読む**こと。特に `replacing text with itself` /
   `parameter is only used in recursion` のような「意味が壊れている」系は要確認。
 
+- **⚠⚠ 手で A/B するときは揮発値を正規化してから比較する**（#77）。
+  例外系例題を `md5sum` で突き合わせたら 1 本が「差分」に見えたが、実体は
+  `<ZeroDivisionError object at 0x1971969f8b0>` の**ヒープアドレス**だった。
+  [compare_outputs.ps1](../../../compare_outputs.ps1) は `Normalize-Volatile` で
+  `0x…` と 10 桁以上の整数（`id()`）を潰している。**手作業はこれを飛ばすので偽の差分が出る**。
+  ⇒ 手 A/B は `sed -E 's/0x[0-9a-fA-F]+/0xADDR/g'` を通してから比較する。
+
 ## 4. PowerShell / 子プロセス / エンコーディング
 
 - **PowerShell 5.1 は BOM 無し `.ps1` を ANSI として読む**（日本語コメント入りは UTF-8
