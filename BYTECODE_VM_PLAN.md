@@ -23,7 +23,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 ---
 
-## 🚩 次スレッドへの引き継ぎ（2026-08-21・**ここだけ読めば再開できる**）
+## 🚩 次スレッドへの引き継ぎ（2026-08-24・**ここだけ読めば再開できる**）
 
 ### 現在地
 🎉 **本系列の主目的は完了した**。Phase R（AST 解決層）・Phase V（バイトコード VM）に加え、
@@ -31,11 +31,14 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 センチネル・`--vm` フラグを削除。**src 実質 -762 行**）。ツリーウォークが実行するのは
 **定義文だけ**（設計どおり・#10-d／#55 で `eval()` もほぼ 0 と実測）。
 
-**exec の中の速度は打ち止め**（#24/#46 を実測して却下）。残る速度は **#50 の分布から起票した
-69（`interp_init`）・70（最上位ループ）＝ どちらも「exec の外／載り方」の話**。
-保守性は**第 2 弾（#58〜#68）を 2026-08-21 に起票**し、**#58〜#74 が全件完了**（実バグ #68・#71・#65 を含む）。**保守性レーン第 2 弾と速度レーンは終了**。
-直近の到達点は 1 行ずつ（詳細は
-[IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号）:
+⚠⚠ **起票済みのタスクはすべて片付いた**（#58〜#74 が全件完了）。内訳は
+**保守性レーン第 2 弾**（#58〜#68 を 2026-08-21 に全 src 機械診断で一括起票・#72〜#74 は派生）と
+**速度レーン**（#50 の分布から起票した #69 `interp_init`・#70 最上位ループ）で、**どちらも終了**。
+⚠ **exec の中の速度は打ち止め**（#24/#46 を実測して却下）。#69/#70 は「exec の外／載り方」だった。
+⚠⚠ **「保守性」のつもりで始めた 3 件から実バグが出た**（#68 関数本体の `enum` ／
+#71 `import[py]` の関数が 1 つも呼べない ／ #65 `ljust`・`rjust`・`center`）。
+⇒ **残るのは別レーン 3 件（外部接続系・優先度低）だけ**。新しい課題は**まず計測してから**立てる。
+到達点は 1 行ずつ（詳細は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号）:
 
 | # | 到達点（**事実と手法のみ**） |
 |---|---|
@@ -43,68 +46,71 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | 48 | #47 で出た実バグを修正 — native の `mut` ポインタ書き戻しを**コンパイル時に決めて副表（node_id キー）へ**。副産物で cdll 呼び出しが **1.13〜1.16x** |
 | 49 | [debug_session.ps1](debug_session.ps1) の stdin BOM 混入を解消（**golden 無変更で 5/5 identical**） |
 | 50 | **段別＋op 別の実行時間分布**を実測（[prof_dist.ps1](prof_dist.ps1)・`--features prof` 新設） |
+| 51〜56 | 保守性レーン全 6 件完了（陳腐化コメント一掃＋[stale_doc_refs.ps1](stale_doc_refs.ps1) 新設／`CompileMode` 導入／`compiler.rs` を 10 モジュールへ分割／typed ABI 呼び出しの 1 本化／`eval()` の生死判定／**`parse_ar` の復活**） |
 | 57 | [stale_doc_refs.ps1](stale_doc_refs.ps1) の**再発 14 件を 0 に**（改名の取り残し／マーカー語／`$whitelist`）。**負の対照で検知力も確認** |
-| 68 | 関数本体の `enum` が `VmForceError` だった実バグを修正 — `build_enum_classes` で**組み立てと記憶域を分離**し `Op::EnumDef` が `Name` を slot へ。副産物で **#59 のドリフトが実害として発火**（`collect_declared_names` に `EnumDef` を追加）。[compare_bytecode.ps1](compare_bytecode.ps1) を新設 |
-| 65 | `eval_str_method` — ⚠⚠ **カテゴリ分割はしない**と判断（`exec_op` と同型の平坦な表）。代わりに重複を測り、**逐語 3 回の埋め文字解析から実バグ 2 件**（`ljust` が文字列内の空白まで置換／`rjust`・`center` がバイト長判定でマルチバイト非対応）。⚠ **clippy の受け入れ済み 51 件にバグを指す警告が埋もれていた** |
-| 70 | 最上位ループの融合（`IntBinGG`/`IntBinGC` ＋ **グローバル読みの clone 回避**）。最上位/fn 比 **2.30→1.19・2.50→1.34**（絶対 1.8x）。⚠⚠ **効いたのは命令数ではなく `Value` の clone**（融合だけなら 1.05〜1.16x）。⚠ 3 者比較で op 追加の摂動 1〜2% と分離。`Op` は 20 バイト維持 |
-| 74 | `python.search_paths` の**探索方針を祖先ウォークへ統一**（本系列で初の**意図的な挙動変更**）。⚠⚠ 揃える前は**同じ設定が `import[py-int]` からは見えて `import[py]` からは ParseError** だった（実証済み）。根拠は「読み手 5 つのうち **4 つが既にウォーク**」。差分は**意図した 1 件だけ**（outputs 93/93・bytecode 110/110 は同一） |
-| 73 | `csharp.lib_paths` の手書き走査も [ar_config.rs](src/ar_config.rs) へ委譲。⚠⚠ 実測 11 ケース中 **6 件相違・うち 5 件が手書き側の誤り** — 最悪は **`cpp.lib_paths` と併存すると C++ 用のパスを C# の DLL 探索に使う**（潜在）。⚠ 踏む例題が作れない（DLL とブリッジを既定外に置く必要）ので**単体テスト 2 種**で担保 |
-| 72 | `python.search_paths` の**読み取り**を [ar_config.rs](src/ar_config.rs) へ 1 本化（手書きの文字列走査を削除）。⚠⚠ 調べたら読み手は **5 つ・探索方針は 4 通り**で**どれにも理由がある**ので**方針は畳まない**（地図をモジュール doc に記載）。⚠ 差分計測 14 ケース中 **5 件相違・うち 3 件は手書き側の実バグ**（セクション外の拾い上げ等） |
-| 67 | `Interpreter` のイベント 4 本・デバッガ 2 本を部分構造体へ（**32→28 フィールド**）。⚠ **全面分解はしない**（`impl` が 33 ファイルに散る）＝ 凝集が明らかで参照が少ないクラスタだけ（対象の参照は計 13 箇所）。⚠ [stale_doc_refs.ps1](stale_doc_refs.ps1) が**旧名参照 6 件**を捕捉（`vm/` 側にもあった） |
+| 58 | `exec` の `Stmt::Import` アーム **210 行 → 8 行の委譲**（`exec_import` ＋ 補助 7 本を `exec/modules.rs` へ）。`exec` **394→192 行**・最大ネスト **11→5**。逐語重複 2 件を畳み、探索順が違う 2 本は**畳まない理由を明記**。⚠ **cs-proc を見る差分ゲートが 0 個**だったので [compare_import_paths.ps1](compare_import_paths.ps1) を新設 |
+| 59 | 「**この文はどの名前を束縛するか**」を [decl_names.rs](src/decl_names.rs) の 1 箇所へ（`each_declared_name` ＋ `DeclOrigin`）。**exhaustive match 2 段で「足したら壊れる」形に**し、walker 4 本を委譲（4 本は理由を確かめて残置）。⚠ **負の対照で検知力を確認**（`DeclOrigin` +1 → 消費者 4 本ちょうど停止／`Stmt` +1 → `decl_names` が停止） |
 | 60 | `parse_struct_bodies` を早期 continue へ反転（**103→60 行・ネスト 11→3**）＋ `scan_scope`（**82→49 行・ネスト 7→3**）。⚠⚠ **起票時の行数 307/405 は誤り**（診断が**文字リテラルを潰さず**ブレース平衡を崩していた）。実ヘッダ 6 本の全パース結果が **byte-identical**。⚠ 実ヘッダ検査が「VECTOR が居る」だけの空検査だったので件数・レイアウトを固定 |
-| 64 | `gen_expr_inner` の `Expr::Call` を切り出し（**558→414 行・ネスト 9→6**）。⚠⚠ **統合はしない**と判断 — `gen_call` とは「2 実装」ではなく **float 直返し ↔ ハンドル＋アリーナの 2 つの ABI**。重複していたのは**判断 4 種・計 11 箇所**でそこだけ畳んだ。**IR 6/6 byte-identical** |
-| 71 | **`import[py]` の関数が 1 つも呼べなかった実バグを修正**（`vm_eligible` の `!is_python` が #33 で `VmForceError` に化けていた）。本体は `python_converter` が作る**普通の Arrow AST**なので載る。⚠ `try_fast_bind` も塞ぐ（copy 規則が 2 経路でずれる）。**CPython と 1 行ずつ突き合わせ**。差分は bytecode 109/110・outputs 92/93 の**修正 1 件だけ** |
-| 69 | `ar_config.json` の祖先ウォークを**遅延化**（`OnceCell` ＋ 起点だけ記憶）。`interp_init` **0.378→0.172 ms**・`ar_config_setup` **0.19〜0.21→0.000 ms**（repo 外の深い階層でも同じ）。⚠ **first-touch 仮説は棄却**。⚠⚠ **踏む例題が 0 本だった**ので 2 本新設（読み取りの実装は**2 つある**）。副産物で **`--features prof` が #68 以来壊れていた**のを修正 |
 | 61 | `run_program` の設定探索を `load_python_search_paths` へ（**195→173 行・ネスト 9→5**）。⚠ 挿入位置を誤って `run_program` の doc を orphan 化し clippy +2 → 置き直して復帰 |
 | 62 | `compile_stmt` **817→371 行**（最大アーム 97→34）。代入族を [stmt_assign.rs](src/vm/compiler/stmt_assign.rs) へ分離し、`AttrCompoundAssign` の重複アームを統合。**bytecode 108/108 byte-identical**。⚠⚠ **偽の 6.5% 退行**を出したが、**`mod` 宣言の順序を逆にしただけのプローブが同じ 0.929x を再現**して棄却 |
 | 63 | `eval_method_call_full` の委譲漏れ 4 型を `*_methods.rs` へ（**1 レシーバ = 1 ファイル**）。**530→205 行**・最大ネスト **10→6**。⚠⚠ **bytecode は自明に一致する**ので証拠にならず、[compare_outputs.ps1](compare_outputs.ps1)（全例題の stdout/stderr/exit）を新設 |
-| 59 | 「**この文はどの名前を束縛するか**」を [decl_names.rs](src/decl_names.rs) の 1 箇所へ（`each_declared_name` ＋ `DeclOrigin`）。**exhaustive match 2 段で「足したら壊れる」形に**し、walker 4 本を委譲（4 本は理由を確かめて残置）。⚠ **負の対照で検知力を確認**（`DeclOrigin` +1 → 消費者 4 本ちょうど停止／`Stmt` +1 → `decl_names` が停止） |
-| 58 | `exec` の `Stmt::Import` アーム **210 行 → 8 行の委譲**（`exec_import` ＋ 補助 7 本を `exec/modules.rs` へ）。`exec` **394→192 行**・最大ネスト **11→5**。逐語重複 2 件を畳み、探索順が違う 2 本は**畳まない理由を明記**。⚠ **cs-proc を見る差分ゲートが 0 個**だったので [compare_import_paths.ps1](compare_import_paths.ps1) を新設 |
+| 64 | `gen_expr_inner` の `Expr::Call` を切り出し（**558→414 行・ネスト 9→6**）。⚠⚠ **統合はしない**と判断 — `gen_call` とは「2 実装」ではなく **float 直返し ↔ ハンドル＋アリーナの 2 つの ABI**。重複していたのは**判断 4 種・計 11 箇所**でそこだけ畳んだ。**IR 6/6 byte-identical** |
+| 65 | `eval_str_method` — ⚠⚠ **カテゴリ分割はしない**と判断（`exec_op` と同型の平坦な表）。代わりに重複を測り、**逐語 3 回の埋め文字解析から実バグ 2 件**（`ljust` が文字列内の空白まで置換／`rjust`・`center` がバイト長判定でマルチバイト非対応）。⚠ **clippy の受け入れ済み 51 件にバグを指す警告が埋もれていた** |
 | 66 | `Compiler` の `Chunk` 複製 17 フィールドを廃止 — **`Compiler` が `Chunk` を直接組み立てる**（`chunk: Chunk`）。フィールド **37→21**・`into_chunk` **21→6 行**・`Chunk` にフィールドを足すとき直す箇所 **4→1**。[compare_bytecode.ps1](compare_bytecode.ps1) **108/108 byte-identical** |
-| 51〜56 | 保守性レーン全 6 件完了（陳腐化コメント一掃＋[stale_doc_refs.ps1](stale_doc_refs.ps1) 新設／`CompileMode` 導入／`compiler.rs` を 10 モジュールへ分割／typed ABI 呼び出しの 1 本化／`eval()` の生死判定／**`parse_ar` の復活**） |
+| 67 | `Interpreter` のイベント 4 本・デバッガ 2 本を部分構造体へ（**32→28 フィールド**）。⚠ **全面分解はしない**（`impl` が 33 ファイルに散る）＝ 凝集が明らかで参照が少ないクラスタだけ（対象の参照は計 13 箇所）。⚠ [stale_doc_refs.ps1](stale_doc_refs.ps1) が**旧名参照 6 件**を捕捉（`vm/` 側にもあった） |
+| 68 | 関数本体の `enum` が `VmForceError` だった実バグを修正 — `build_enum_classes` で**組み立てと記憶域を分離**し `Op::EnumDef` が `Name` を slot へ。副産物で **#59 のドリフトが実害として発火**（`collect_declared_names` に `EnumDef` を追加）。[compare_bytecode.ps1](compare_bytecode.ps1) を新設 |
+| 69 | `ar_config.json` の祖先ウォークを**遅延化**（`OnceCell` ＋ 起点だけ記憶）。`interp_init` **0.378→0.172 ms**・`ar_config_setup` **0.19〜0.21→0.000 ms**（repo 外の深い階層でも同じ）。⚠ **first-touch 仮説は棄却**。⚠⚠ **踏む例題が 0 本だった**ので 2 本新設（読み取りの実装は**2 つある**）。副産物で **`--features prof` が #68 以来壊れていた**のを修正 |
+| 70 | 最上位ループの融合（`IntBinGG`/`IntBinGC` ＋ **グローバル読みの clone 回避**）。最上位/fn 比 **2.30→1.19・2.50→1.34**（絶対 1.8x）。⚠⚠ **効いたのは命令数ではなく `Value` の clone**（融合だけなら 1.05〜1.16x）。⚠ 3 者比較で op 追加の摂動 1〜2% と分離。`Op` は 20 バイト維持 |
+| 71 | **`import[py]` の関数が 1 つも呼べなかった実バグを修正**（`vm_eligible` の `!is_python` が #33 で `VmForceError` に化けていた）。本体は `python_converter` が作る**普通の Arrow AST**なので載る。⚠ `try_fast_bind` も塞ぐ（copy 規則が 2 経路でずれる）。**CPython と 1 行ずつ突き合わせ**。差分は bytecode 109/110・outputs 92/93 の**修正 1 件だけ** |
+| 72 | `python.search_paths` の**読み取り**を [ar_config.rs](src/ar_config.rs) へ 1 本化（手書きの文字列走査を削除）。⚠⚠ 調べたら読み手は **5 つ・探索方針は 4 通り**で**どれにも理由がある**ので**方針は畳まない**（地図をモジュール doc に記載）。⚠ 差分計測 14 ケース中 **5 件相違・うち 3 件は手書き側の実バグ**（セクション外の拾い上げ等） |
+| 73 | `csharp.lib_paths` の手書き走査も [ar_config.rs](src/ar_config.rs) へ委譲。⚠⚠ 実測 11 ケース中 **6 件相違・うち 5 件が手書き側の誤り** — 最悪は **`cpp.lib_paths` と併存すると C++ 用のパスを C# の DLL 探索に使う**（潜在）。⚠ 踏む例題が作れない（DLL とブリッジを既定外に置く必要）ので**単体テスト 2 種**で担保 |
+| 74 | `python.search_paths` の**探索方針を祖先ウォークへ統一**（本系列で初の**意図的な挙動変更**）。⚠⚠ 揃える前は**同じ設定が `import[py-int]` からは見えて `import[py]` からは ParseError** だった（実証済み）。根拠は「読み手 5 つのうち **4 つが既にウォーク**」。差分は**意図した 1 件だけ**（outputs 93/93・bytecode 110/110 は同一） |
 
 ⚠⚠ **#50 で狙い所が変わった。** exec は 3.97x でも、例題 1 本の中央値では
 **exec は全体の 14%**（0.46ms / 3.40ms）しかなく、**exec を無限に速くしても端点は 1.59x**。
-残りはプロセス費用 1.5ms・`interp_init` 0.32・`type_check` 0.18・`parse` 0.17
-＝ **master と同じまま残っている段**。⇒ **次に速度をやるなら「exec 以外」を測ってから決める**。
+残りはプロセス費用 1.5ms・`interp_init`・`type_check` 0.18・`parse` 0.17
+＝ **master と同じまま残っている段**。⇒ ここから #69（`interp_init` **0.378→0.172 ms**）と
+#70（最上位ループ 比 **2.30→1.19**）を起票して**両方とも取り切った**。
+⇒ **次に速度をやるなら、また「exec 以外」を測り直してから決める**
+（分布が 2 段動いたので #50 の数字はもう使えない。残る段はプロセス費用・`type_check`・`parse`）。
 
 ⚠ **同じコードでも書く場所で速さが違う**（#47）: 最上位は fn 内より改善が薄い
 （baseline 1.62x ↔ 5.90x）＝ **VM に載っている ≠ 同じ速さ**。
 
-> **✅ 全ゲート緑（2026-08-21 に自分で走らせて確認）**
-> `cargo test` **742** ／ `cargo build` **警告 0** ／ `cargo clippy` **50 件（増分 0）** ／
-> [scan_examples.ps1](scan_examples.ps1) **FAIL 0** ／ [force_gate.ps1](force_gate.ps1) **0 件・157 例題** ／
-> [compare_python_impl.ps1](compare_python_impl.ps1) **51/51** ／ [repl_session.ps1](repl_session.ps1) **identical** ／
-> [debug_session.ps1](debug_session.ps1) **5 identical** ／ [stale_doc_refs.ps1](stale_doc_refs.ps1) **0 件** ／
-> `tw_stats` は `in_fn` 0・`tw_control_flow` 0・bail 0。
+> **✅ 全ゲート緑（2026-08-24・#65 完了時に自分で走らせて確認）**
+> `cargo test` **750** ／ `cargo build` **警告 0**（`--features prof` / `--features tw_stats` も 0）／
+> `cargo clippy` **50**・`--all-targets` **63**（増分 0）／
+> [compare_outputs.ps1](compare_outputs.ps1) **93** ／ [compare_bytecode.ps1](compare_bytecode.ps1) **111** ／
+> [compare_import_paths.ps1](compare_import_paths.ps1) **13** ／ [scan_examples.ps1](scan_examples.ps1) **FAIL 0** ／
+> [force_gate.ps1](force_gate.ps1) **0 件・157 例題** ／ [compare_python_impl.ps1](compare_python_impl.ps1) **51/51** ／
+> [repl_session.ps1](repl_session.ps1) **identical** ／ [debug_session.ps1](debug_session.ps1) **5 identical** ／
+> [stale_doc_refs.ps1](stale_doc_refs.ps1) **0 件** ／ `tw_stats` は `in_fn` 0・`tw_control_flow` 0・bail 0。
 > ⚠ **`cargo clippy` と `cargo clippy --all-targets` は別の数**（50 ↔ 63。差は `benches/`）。
-> **基準値を書くときは必ずコマンドごと書く**（§10 の指示と 52 件が食い違っていた）。
-> ⚠⚠ **この「全ゲート緑」の状態で #68 の実バグが生きていた**（`enum` in fn）。
-> **緑は「例題が書いている形については緑」という意味**でしかない。
+> **基準値は必ずコマンドごと書く**（総数ではなく**増分 0** を見る）。
+> ⚠⚠ **緑は「例題が書いている形については緑」という意味しかない** — この状態で #68・#71 の
+> 実バグが生きていた。⚠⚠ **#65 で「増分 0 でも足りない」と分かった**：
+> **受け入れ済み clippy 51 件の中に実バグを指す警告が埋もれていた**（`replacing text with itself`）。
 
 ⚠⚠ **ゲートを作っただけでは陳腐化は止まらない**（#51 → #57・内訳は実装ログ）。
 #51 が 61→0 にした [stale_doc_refs.ps1](stale_doc_refs.ps1) は**直後の 4 タスクで 14 件に戻った**
 （#52/#53/#56 が**走らせなかった**）。⇒ **改名・削除をしたら必ず走らせる**（5 点セットに明記）。
 ⚠ **マーカー語は行単位で効く** — 足すと**同じ行の他の識別子も検査から外れる**（黙らせない）。
 
-**⚠⚠ #33 の前提は 2 度崩れた**（この系列で最も再利用価値のある教訓）。
-1 度目: 「TLS は `--vm=off` のためだけに生きている」→ **`Default` が `Off`** なので REPL と
+**⚠⚠ #33 の前提は 5 度崩れた**（この系列で最も再利用価値のある教訓）。
+**1 度目**: 「TLS は `--vm=off` のためだけに生きている」→ **`Default` が `Off`** なので REPL と
 単体テストも踏んでいた（→ #36）。加えて `--vm=on` で動かない正しいプログラムが 5 種あった
 （→ #34/#35/#37/#39/#40）。
-2 度目: それらを全部潰した後でも生きていた — **定義文脈の式**（→ #41）と
-**import モジュール本体**（→ #42）。
-⇒ **`force_gate` 0 件・`tw_control_flow` 0 は毎回「例題がその形を書いているか」に依存していた。**
-⇒ 潰すたびに**その形の例題を新設**した（これが 3 度目を防いだ）。
-⚠ **3 度目は #56 で判明した** — `is_builtin_callee` の bail が #33 以来 `parse_ar` を
-**完全に殺していた**（`VmForceError` で停止）。`force_gate` も例題も気づかず、
-**#55 の計測で偶然出た**（`parse_ar` を使う例題が 1 本も無かったため）。
-⇒ **「bail＝ツリーウォークへ落とす」という前提が #33 で消えたのに、表と doc がそのまま残っていた**
-＝ 前提が変わったとき、**それに依存していた側を機械的に洗い出す手段が無い**のが根本。
-⚠⚠ **5 度目は #71**（修正済み）— **`import[py]` の関数が 1 つも呼べなかった**
+**2 度目**: それらを全部潰した後でも生きていた — **定義文脈の式**（→ #41）と
+**import モジュール本体**（→ #42）。⇒ 潰すたびに**その形の例題を新設**した。
+**3 度目（#56）**: `is_builtin_callee` の bail が #33 以来 `parse_ar` を**完全に殺していた**
+（`VmForceError` で停止）。`force_gate` も例題も気づかず、**#55 の計測で偶然出た**
+（`parse_ar` を使う例題が 1 本も無かったため）。
+**4 度目（#68）**: 関数本体の `enum`。**またしても「例題が 1 本も無かった」**。
+**5 度目（#71）**: **`import[py]` の関数が 1 つも呼べなかった**
 （`vm_eligible = !is_python` が「ツリーウォークで実行」から「**死ぬ**」に化けていた）。
-⚠⚠ **4 度目は #68**（修正済み）— 関数本体の `enum`。**またしても「例題が 1 本も無かった」**。
-⇒ **`force_gate` 0 件・全例題 緑は「0 である」ことの証明ではない**。**未カバーの構文を
-例題側から数える手段がまだ無い**（`Stmt` の全 variant × 文脈のマトリクスが存在しない）。
+⇒ 根本は **「bail＝ツリーウォークへ落とす」という前提が #33 で消えたのに、それに依存していた側を
+機械的に洗い出す手段が無い**こと。⇒ **`force_gate` 0 件・全例題 緑は「0 である」ことの証明ではない**。
+**未カバーの構文を例題側から数える手段がまだ無い**（`Stmt` の全 variant × 文脈のマトリクスが無い）。
 
 ### 設計上の教訓（**再利用する知識**。各タスクの経緯は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md)）
 
@@ -168,16 +174,14 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 >    1 呼び出し ≈ 275ns（うち `Call` op 自体が ≈ 213ns。int 加算 ≈ 11〜13ns の **20 倍**）。
 >    `Jump`+`JumpIfFalse` は合わせて **4.1%** しかない（安い命令を狙うな・#46）。
 
-1. **速度（#69 / #70）— 調査済み・前提なし**。69 は `interp_init` の内訳を実測済み
-   （ウォーク 50〜75%）で **61 と同じ場所＝同時にやる**。70 は原因確定済み（`as_local` 前提）。
-2. ⚠⚠ **起票済みのタスクはすべて片付いた**（#58〜#74）。残るのは別レーン 3 件（外部接続系・優先度低）だけ。
-   ⇒ 次の課題を立てるなら**まず計測して支配項を出すこと**（#50 の分布: exec は wall の 14%、
-   残りはプロセス費用・`parse` 0.17ms・`type_check` 0.18ms）。
-3. 別レーン（#19 / #17-a / #17-b）— 外部接続系。いつ着手しても他をブロックしない。
-4. ブロック中（#14 → #11 R2-c）— 前提の「モジュール間ネイティブ直リンク」が未計画。
+1. ⚠⚠ **起票済みのタスクはすべて片付いた**（〜#74）。**新しい課題を立てるなら先に計測する。**
+   #50 の分布は #69・#70 で 2 段動いたので**取り直しから**（[prof_dist.ps1](prof_dist.ps1) `-Mode phases`）。
+   残っている段はプロセス費用 1.5ms・`type_check` 0.18ms・`parse` 0.17ms ＝ **どれも master のまま**。
+2. 別レーン（#19 / #17-a / #17-b）— 外部接続系・優先度低。いつ着手しても他をブロックしない。
+3. ブロック中（#14 → #11 R2-c）— 前提の「モジュール間ネイティブ直リンク」が未計画。
 
 > **⚠ 枯れたのは「exec の中」だけ**（#12 2.61x・#2b 1.6x・#2a・#1-x・#10-b・#26 で取り切り、
-> #24/#46 は実測して却下）。**exec の外（#69）と載り方（#70）は手つかず**。
+> #24/#46 は実測して却下）。**exec の外（#69）と載り方（#70）も取り切った**。
 > ⚠ **カバレッジを広げると速度も付いてくる**ことがある（#32 の async 本体は 3.77x）。
 > 新しく速度課題を立てるなら**まず計測して支配項を出すこと**。
 > ⚠ #1-x の教訓: **`#[inline]` は効いているとは限らない**（巨大関数は LLVM が却下する）。
@@ -188,7 +192,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 - **推測せず先に計測する**。見積もりは本系列で何度も外れた（一覧は実装ログ末尾の表）。
   ⚠ **命令数は「当たりを付ける」用で「速度の予測」には使えない**（#46・#70 で再確認 —
   #70 は命令数を fn と**同数**にしても 2x が残り、本命は `Value` の clone だった）。
-- **検証は 5 点セット**: `cargo build`（**警告 0**）・`cargo test`（**742 緑**）・
+- **検証は 5 点セット**: `cargo build`（**警告 0**）・`cargo test`（**750 緑**）・
   [compare_python_impl.ps1](compare_python_impl.ps1)（**51/51**）・[scan_examples.ps1](scan_examples.ps1)（**FAIL 0**）・
   [force_gate.ps1](force_gate.ps1)（`VmForceError` **0 件・157 例題**）。⚠ **release バイナリを見る**。
   デバッガに触るなら [debug_session.ps1](debug_session.ps1)、REPL なら [repl_session.ps1](repl_session.ps1)、
@@ -222,8 +226,8 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | [compare_python_impl.ps1](compare_python_impl.ps1) | **参照実装（`impl_python`）との stdout 差分検査**（#31 で新設）。「**両実装が同じ間違いをする形**」以外を覆う唯一の網で、`compare_vm_modes` を失った後の代替。既知差分は理由つきで `$knownDiff` に列挙（`-ShowSkipped`）。⚠ `impl_python` は 100 コミット前に同期 |
 | [stale_doc_refs.ps1](stale_doc_refs.ps1) | **コメント内の `` `識別子` `` が src に実在するか**の検査（#51 で新設）。#33 で消した関数を指す記述が 61 箇所あり、うち 2 件は**指示が真逆に矛盾**していた（コンパイラは何も言わない）。⚠ 履歴として正しい言及は落とす — 同じ行に「削除／廃止／撤去／以前／旧／移設／だった／していた」があれば履歴扱い。⇒ **消えたものに言及するときはマーカー語を書く**。外部成果物（`.ps1` 名・METRIC 名）は `$whitelist`。`-All` で除外分も表示。⚠⚠ **#51 で 0 にした直後、#52/#53/#56 が走らせずに 14 件へ戻した**（#57 で再び 0）＝ **改名・削除をしたら走らせること**。⚠ マーカー語は**行単位**なので、足すと同じ行の他の識別子も検査から外れる |
 | [compare_bytecode.ps1](compare_bytecode.ps1) | **2 つの `arrow.exe` のバイトコードが同一か**を全例題で突き合わせる（#52 の手順を #68 で .ps1 化）。「挙動不変」を exit code より強く裏付ける唯一の手段で、#62/#63/#66 が要る。⚠ **async は対象外**（同一バイナリでも dump が揺れる）。⚠ **使う前に同一 exe 同士で負の対照を取る**。⚠ 生成する .ps1 のパス区切りはスラッシュにすること（バックスラッシュがエスケープに化けて壊した実績あり） |
-| [compare_import_paths.ps1](compare_import_paths.ps1) | **import 系例題の stdout/stderr/exit が 2 バイナリで同一か**（#58 で新設）。cs-dll・**cs-proc**・js-proc・cpp-dll/lib の 10 例題。⚠⚠ **子の出力はパイプで受けず `Start-Process -RedirectStandard*` でファイルへ落とす** — `import[js-proc]` の **node ブリッジが孫として生き残ってパイプを握る**ので `ReadToEndAsync` でも返らない（#38 のデッドロックとは別原因・skill `vm-pitfalls` §4）。⚠ `cs_proc_app.ar` は **`import[cs-proc]` を踏む唯一の非 GUI 例題**で、#58 以前は**どの差分ゲートにも入っていなかった** |
-| [compare_outputs.ps1](compare_outputs.ps1) | **全例題の stdout/stderr/exit が 2 バイナリで同一か**（#63 で新設・91 例題）。⚠⚠ **解釈側（`eval_*`/`exec_*`）だけを触った変更は [compare_bytecode.ps1](compare_bytecode.ps1) が自明に一致してしまう**ので、挙動不変はこちらで主張する。⚠ `bench` 分類は**経過時間そのものが出力**なので丸ごと対象外（`interop/bench_ab_cdll.ar` は名指しで除外）。⚠ アドレス（`0x…`・`id()`）は**除外せず正規化**する — `collection.ar` を落とすと set メソッドを見る網が消える |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **import 系例題の stdout/stderr/exit が 2 バイナリで同一か**（#58 で新設）。cs-dll・**cs-proc**・js-proc・cpp-dll/lib の **13 例題**。⚠⚠ **子の出力はパイプで受けず `Start-Process -RedirectStandard*` でファイルへ落とす** — `import[js-proc]` の **node ブリッジが孫として生き残ってパイプを握る**ので `ReadToEndAsync` でも返らない（#38 のデッドロックとは別原因・skill `vm-pitfalls` §4）。⚠ `cs_proc_app.ar` は **`import[cs-proc]` を踏む唯一の非 GUI 例題**で、#58 以前は**どの差分ゲートにも入っていなかった** |
+| [compare_outputs.ps1](compare_outputs.ps1) | **全例題の stdout/stderr/exit が 2 バイナリで同一か**（#63 で新設・**93 例題**）。⚠⚠ **解釈側（`eval_*`/`exec_*`）だけを触った変更は [compare_bytecode.ps1](compare_bytecode.ps1) が自明に一致してしまう**ので、挙動不変はこちらで主張する。⚠ `bench` 分類は**経過時間そのものが出力**なので丸ごと対象外（`interop/bench_ab_cdll.ar` は名指しで除外）。⚠ アドレス（`0x…`・`id()`）は**除外せず正規化**する — `collection.ar` を落とすと set メソッドを見る網が消える |
 | [force_gate.ps1](force_gate.ps1) | **VM に載らない構文の回帰検知**（#25。#33 完了後は「既定の挙動が全例題で通るか」の検査）。全例題を実行し `VmForceError` を列挙。⚠ **止めて判定する**用途で件数は `tw_stats.ps1` で見る。GUI 例題は**タイムアウト後に窓を閉じて**完走させる（#29） |
 | [prof_dist.ps1](prof_dist.ps1) | **非コンパイル実行の実行時間分布**（#50 で新設・要 `--features prof`）。`-Mode phases` で段別（startup/lex/parse/type_check/resolve/interp_init/exec/teardown）、`-Mode ops` で **exec 中の op 別滞在時間**（統計サンプリング）。⚠ **1 回目はファイルのコールドリードを踏む**ので既定で 2 パス走らせて 2 パス目だけ採る。⚠ `-Mode ops` はサンプラーが 1 コアをスピンするので**プロセス wall が伸びる**（wall を見るときは `-Mode phases`） |
 | [tw_stats.ps1](tw_stats.ps1) / [tw_stats_files.ps1](tw_stats_files.ps1) | **ツリーウォークが実際に実行している文**を全例題で集計（`AR_TW_STATS`）／その例題別内訳。feature 付きビルドを自動で行う |
@@ -266,12 +270,13 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | 11 R2-c | グローバル記憶域の index 配列化 | ネイティブの index 参照 | **← 消費者の出現（14 と同時に再評価）** | ブロック中（消費者不在） |
 | 14 | §6 モジュール動的リンク | ディスクリプタシンボル＋ABI ハッシュ照合 | **← モジュール間ネイティブ直リンクの導入**（未実装・未計画） | ブロック中 |
 
-> **69・70 は #50 の分布から起票した速度タスク**（根拠は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号）。
-> **58〜68 は 2026-08-21 の全 src 機械診断で起票**（保守性レーン第 2 弾。内訳・実測・対象外の根拠は
-> [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) #58〜#68）。**残る 8 件は全件が前提なし**。
-> **58〜74 は全件完了**。残るは別レーン（外部接続系）3 件のみ。
-> ⚠⚠ **`vm/run.rs:exec_op`（836 行）は対象外**。86 アームの平坦な表で**最大アームは 42 行**であり、
-> 行数だけを見て割ると **#10-b（`#[inline(always)]` のアームに重い本体を書くと全体が遅くなる）を再演する**。
+> **58〜68 は 2026-08-21 の全 src 機械診断で起票**（保守性レーン第 2 弾。#72〜#74 は #61/#72 からの派生）。
+> **69・70 は #50 の分布から起票した速度タスク**。⇒ **58〜74 は全件完了**（内訳・実測・対象外の
+> 根拠は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号）。**残るは別レーン 3 件のみ**で、
+> **上の表の 2 件はどちらも前提が未計画**＝今は着手できない。
+> ⚠⚠ **`vm/run.rs:exec_op`（895 行）と `eval_str_method`（588 行）は対象外**（後者は #65 で再確認）。
+> どちらも**平坦な表**（89 アーム／最大 42 行・48 アーム／最大 32 行）で、行数だけを見て割ると
+> **#10-b（`#[inline(always)]` のアームに重い本体を書くと全体が遅くなる）を再演する**。
 > 同じ理由で `ast.rs`(1124)・`parser/exprs.rs`(940)・`Value`/`Stmt`/`Expr` の広い参照も**起票しない**。
 
 > **保守性レーンは速度目的ではない**ので A/B は**退行が無いことの確認**に使う。
@@ -307,30 +312,12 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
     54（native typed ABI 呼び出しの 1 本化）……**完了** ＝ 3 箇所の手書きを 1 本へ（#48 の実バグの温床）。
         ⚠ **#55 の「通常実行から到達不能」は誤りだった**（デフォルト引数の式が到達する）。負の対照を例題化
 
-    58〜67（保守性レーン第 2 弾）……**全件完了**
-        ⚠ **`exec_op` 836 行は対象外**（平坦な表・割ると #10-b の再演）
-    58（`Stmt::Import` アーム 210 行）……**完了** ＝ `exec_import` ＋ 補助 7 本へ切り出し（`exec` 394→192 行）
-    62（`compile_stmt` 817→371 行）……**完了**。⚠⚠ **偽の 6.5% 退行**をプローブで棄却
-    61（設定探索の切り出し）／69（遅延化）……**完了** ＝ `interp_init` **0.378→0.172 ms**
-    71（`import[py]` の関数が呼べない）……**完了**（実質 2 行。**#33 の綻びの 5 度目**）
-    64（`Expr::Call` の二重化）……**完了** ＝ 558→414 行。⚠⚠ **統合はしない**（2 つの ABI）。**IR 6/6 一致**
-    60（cpp ヘッダパーサのネスト）……**完了** ＝ ネスト **11→3** / **7→3**。実ヘッダ全ダンプが byte-identical
-    67（`Interpreter` の部分クラスタ化）……**完了** ＝ 32→28 フィールド（イベント 4・デバッガ 2）
-    72（`search_paths` の読み取り）／73（`csharp.lib_paths`）……**完了** ＝ [ar_config.rs](src/ar_config.rs) へ 1 本化。
-        ⚠ 73 は**別セクションの値を返す**誤りを含んでいた
-    74（`python` の探索方針）……**完了** ＝ **祖先ウォークへ統一**（初の意図的な挙動変更）
-    70（最上位ループの融合）……**完了** ＝ 比 **2.30→1.19**。⚠⚠ **効いたのは clone 回避**（命令数ではない）
-    65（`eval_str_method`）……**完了・分割はしない**（平坦な表）。⚠⚠ 重複から**実バグ 2 件**
-    63（委譲漏れ 4 型）……**完了** ＝ `*_methods.rs` へ（530→205 行）。⚠⚠ **bytecode が自明に一致する変更**
-    59（walker 8 本のドリフト）……**完了** ＝ 束縛判断を [decl_names.rs](src/decl_names.rs) へ集約。
-        ⚠ **買ったのは行数ではなく強制**（src は +51 行）。⚠ 起票時の「委譲」案は再帰範囲が違って不成立
-    66（`Compiler` の `Chunk` 複製 17 フィールド）……**完了** ＝ `Compiler` が `Chunk` を直接組み立てる。
-        ⚠ 起票時の `ChunkBuilder` 案は**逐語 move が引っ越すだけ**なので採らなかった
-    68（関数本体の `enum` が `VmForceError`）……**完了** ＝ 組み立て（`build_enum_classes`）と
-        記憶域を分離し `Op::EnumDef` で slot へ。**副産物で #59 のドリフトが実害化**（→ 部分修正）
+    58〜74（保守性レーン第 2 弾 ＋ 派生 ＋ 速度 69/70）……**全件完了**（1 行ずつは冒頭の到達点表）
+        ⚠ **`exec_op` 895 行・`eval_str_method` 588 行は対象外**（平坦な表・割ると #10-b の再演）
+        ⚠⚠ **「保守性」から実バグ 3 件**（68 関数本体の `enum` ／ 71 `import[py]` ／ 65 `ljust` ほか）
 
-残り: **58〜74 全件完了**／速度は **69 完了**・70／**71 完了・72 は未着手**／別レーン／ブロック中 14・11 R2-c
-      ⇒ **残りは別レーン 3 件のみ**（#19 / #17-a / #17-b・外部接続系・優先度低）
+残り: **起票済みは全件完了**（〜#74）⇒ **別レーン 3 件のみ**（#19 / #17-a / #17-b・外部接続系・優先度低）
+      ＋ ブロック中 2 件（14 → 11 R2-c。前提の「モジュール間ネイティブ直リンク」が未計画）
 保留: モジュール間ネイティブ直リンク（未計画）→ 14 → 11 R2-c ／ 12b → 2c は循環依存で両方保留
       23（評価済み引数の struct 化）は **54 に吸収**（保留理由が #48 で失効した）
 ```
@@ -339,7 +326,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 実行方式の統一・高速化とは**交差しない**（型検査とスタブ側の話題で、実行時ディスパッチに触れない）。
 いつでも着手でき、いつ着手しても他タスクをブロックしない。
-⇒ 実行系は一段落した（2026-08-19）。**今すぐ着手できるのはこの 3 件だけ**（2026-08-20 時点）。
+⇒ 実行系は一段落した（2026-08-19）。**今すぐ着手できるのはこの 3 件だけ**（2026-08-24 時点）。
 
 | # | タスク | 手法 | 前提（依存） | 状態 |
 |---|---|---|---|---|
@@ -467,7 +454,7 @@ R1〜R4 の解決ステップ・V-A〜V-F の段階・`src/vm/` の構成はそ�
 ## 10. 検証コマンド / 規約
 
 ```
-cargo test                          # 742 passed を維持（各ステップ/各段ごと）
+cargo test                          # 750 passed を維持（各ステップ/各段ごと）
 cargo build                         # 警告0 を維持
 cargo clippy                        # 既存 50 件・増分 0（--all-targets だと 63 件。⚠ **baseline にもバグが埋もれる**・#65）
 ./scan_examples.ps1                 # 例題スイートの回帰確認（FAIL 0）
@@ -482,7 +469,7 @@ cargo clippy                        # 既存 50 件・増分 0（--all-targets �
 ./bench.ps1                         # Phase R の各ステップ / Phase V の各段で再測定（フェーズ0基準 = bench_baseline.md）
 cargo run -- --compile examples/interop/test_modules/physics.ar  # Phase R: native 経路の数値一致確認
 cargo run -- <file.ar>              # フォールバックは無い。載らなければ VmForceError で停止（#25/#33）
-./force_gate.ps1                    # 全例題で上記を回す「VM に載らない形が無い」ゲート（0 件・156 例題）
+./force_gate.ps1                    # 全例題で上記を回す「VM に載らない形が無い」ゲート（0 件・157 例題）
 ./tw_stats.ps1                      # 未対応箇所の件数・内訳（要 --features tw_stats）
 ./generate-codebase-map.ps1         # src/vm/ 等の新設後に必須
 ```
