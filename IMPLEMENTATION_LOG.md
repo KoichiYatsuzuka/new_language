@@ -8354,3 +8354,127 @@ walker ごとに本当に違う**」と理由付きで残置を決めている�
 | 「捕捉が増えると既存の挙動が動くかもしれない」 | **当たらなかった**。既存例題は 1 つも踏んでいない（＝ だから 6 形とも生き残っていた） |
 | 「clippy が +1/+3 したので退行だ」 | **外れ**。**数え方の違い**。修正前を同じコマンドで測り直して増分 0 と確定 |
 | 「診断で見つけたバグなので小さい」 | **当たり**（src +94 行・1 ファイル）。ただし**触った walker の消費者は 3 系統**（ツリーウォーク捕捉・VM 捕捉 slot・`nested_fn_free_names`） |
+
+---
+
+## #76 typed ABI 引数マーシャリングの 4 コピーを 1 本化（2026-08-24・完了）
+
+第 3 弾の診断で「**src の制御ネスト上位 5 位のうち 4 つが同一クラスタ**」と出た箇所。
+#54 は**呼び出し本体**（`invoke_typed_abi`）だけを畳み、**引数マーシャリングは 4 コピーのまま**だった。
+
+### 1. 畳める根拠 — 差は「入力」であって「ロジック」ではない
+
+畳む前に `resolve_typed_ptr_arg` を読んで、`named_mut` が **3 状態**であることを確認した:
+
+| `named_mut` | 意味 | 挙動 |
+|---|---|---|
+| `Some(true)` | 名前付き `mut` 変数 | 書き戻す |
+| `Some(false)` | 名前付き `let` 変数 | **`Err`**（書き込みポインタへ `let` を渡した） |
+| `None` | 判定できない経路 | エラーにせず**書き戻さない**（安全側） |
+
+⚠⚠ **`Some(false)` と `None` は同義ではない。** ここを潰すと `let` の誤用が黙って通る。
+4 経路が違うのは「**何を知っているか**（＝ この入力を何にできるか）」と「**書き戻し先**」だけ:
+
+| 経路 | 作れる `named_mut` | 書き戻し先 |
+|---|---|---|
+| `call_native_function`（ツリーウォーク） | 3 状態すべて（引数式を見る） | 自分で `assign_var` |
+| `dispatch_native_typed_exprs`（IC 命中） | 3 状態すべて | 自分で `assign_var` |
+| `dispatch_native_evaled_wb`（VM） | `Some(true)` / `None`（マスク） | **呼び出し元へ返す**（VM のローカルは触れない・#48） |
+| `ar_call_fn`（ネイティブ→C コールバック） | `None` のみ（アリーナハンドル止まり） | **書き戻しなし** |
+
+⇒ `TypedArgs::marshal(vals, params, named_mut)` を [value/native.rs](src/interpreter/value/native.rs) に置き、
+**`named_mut` の作り方と `out_wb` の消費だけを呼び出し側に残した**。
+
+### 2. ⚠⚠ 値で返す API にしなかった理由（安全性）
+
+`OutPtr` のスロットには `out_locals` の**要素のアドレス**が入る。`TypedArgs` を値で返すと
+move で **C が解放済みスタックへ書く**。⇒ 呼び出し側のローカルに置き `&mut` で `marshal` を呼ぶ形にし、
+doc に「**move 禁止**」を明記した。
+
+### 3. ⚠ 副産物 — `dispatch_native_typed_exprs` の引数評価を 3 経路と揃えた
+
+畳む前のこの経路は **eval とマーシャリングが交互**で、型不一致で打ち切ると
+**残りの引数式が一度も評価されなかった**（他の 2 経路は `eval_call_args` で全部評価している）。
+畳むにあたり「全部評価してからマーシャリング」に揃えた。⚠ `Vec` の確保は**元からあった**
+（`evaled` に毎回 push していた）ので追加コストは無い。
+併せて OutPtr へ名前付き `let` を渡す誤りの拒否も、ハンドル経路（MutPtr 事前チェック）と
+**同じ規則で明示的に書いた**。根拠は「`AbiTy::OutPtr` は必ず `PtrParam::MutPtr`」
+（どちらも `CType::Ptr { mutable: true }` 由来）と確認したこと。
+
+### 4. ⚠ `ar_call_fn` の純スカラー枝だけは共有マーシャラを通さない（残した例外）
+
+ハンドル → `Value` のクローンを挟まずアリーナから直接デコードする最適化で、
+**STATE アクセスが ~8 回 → 1〜2 回**になる（既存のコメントに実測が残っている）。
+型の許容表は共有側と同一であることを確認したうえで残し、**残した理由をコードに書いた**。
+一方、構造体ポインタを含む枝と**呼び出し本体（`invoke_typed_abi`）は合流させた**
+（cleanup の実行順と status の扱いが 4 経路で同一になる）。
+
+### 5. ⚠⚠ 実測で退行を 1 件出して潰した — **`Vec` をホットパスに置いた**
+
+最初の実装は `named_mut` を `Vec<Option<bool>>` で作っていた（`.collect()`）。
+**FFI 呼び出しごとに 1 回ヒープ確保**が増え、cdll ベンチが落ちた:
+
+| メトリクス | `Vec` 版 | 固定長配列版 | 負の対照（同一 exe） |
+|---|---|---|---|
+| `cdll_v3_add` | **0.900x** | 0.980x / 0.966x | 1.014x |
+| `cdll_v3_add_toplevel` | **0.901x** | 1.007x / 0.966x | 0.989x |
+| `cdll_v3_add_fresh` | 1.004x | 1.002x / 1.006x | 0.989x |
+
+⇒ `std::array::from_fn` の `[Option<bool>; 16]` に変更（typed 経路の引数上限が 16 なので足りる）。
+**doc に「ヒープ確保しないこと」と実測値を書いた。**
+
+⚠⚠ **判定は「負の対照」で行った。** 修正後も 0.966〜1.007x と振れるが、
+**同一バイナリ同士の A/B が 0.966〜1.031x** なので**ノイズ帯の内側**。
+プランの「数 % で良し悪しを決めない」「同じ 2 バイナリで測り直しても同じ差が出るか」がそのまま効いた。
+⚠ 逆に **`Vec` 版の 0.900x は 2 メトリクスで一貫していてノイズ帯の外**だった ＝ 実差の見分けはついた。
+（`interp` モードは全指標 1.02〜1.05x で、退行なし。）
+
+### 6. 規模と複雑さ
+
+| 関数 | 前 | 後 |
+|---|---|---|
+| `call_native_function` | 247 行・ネスト **7** | **189 行・ネスト 3** |
+| `dispatch_native_typed_exprs` | 100 行・ネスト **6** | **62 行・ネスト 1** |
+| `dispatch_native_evaled_wb` | 208 行・ネスト **7** | **152 行・ネスト 3** |
+| `ar_call_fn` | 218 行・ネスト **8** | **196 行・ネスト 8**（下記） |
+| 合計 | **773 行** | **599 行** |
+| 新設（共有） | — | `marshal` 40 行/ネスト 4・`invoke_typed_abi` 25 行・`decode_typed_ret` 11 行 |
+
+src 全体: **制御ネスト 7 の関数が 4 本 → 0 本**、深さ ≥6 が **19 → 16 個**。
+差分は 3 ファイルで **+311 / -340**（doc コメントを厚く書いたので正味の削減は行数より大きい）。
+
+⚠ **`ar_call_fn` のネスト 8 は残った**（`render_math_str` と並んで src 最深）。
+残った深さは**マーシャリングではなく「typed 高速パスに入るためのガードの入れ子」**
+（`if let NativeFunction` → `if let Some(sig)` → `if typed_ptr != 0` → `if !has_ptr` →
+`STATE.with` → `for` → `match` → `match`）。
+⇒ **#76 の定義（4 コピーの重複）は達成したのでここで止めた。** ガードの平坦化
+（typed 高速パスを `try_typed_fast_call(...) -> Option<i64>` へ切り出す）は
+**ホットな FFI コールバック経路の構造を変える別件**で、独立に A/B が要る。**未起票**。
+
+### 7. 検証
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` / `--release` / `--features prof` / `--features tw_stats` | すべて警告 **0** |
+| `cargo test` | **750 passed** |
+| `cargo clippy` / `--all-targets` | **50 / 65**（⚠ **1 件減**。消えたのは `the loop variable i is used to index slots` ＝ 畳んだマーシャリングのループそのもの。実害を指す警告ではないことを確認した） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **94 / 94 identical** |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **112 / 112 identical** |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **13 / 13 identical**（⚠ FFI を触ったのでこれが主検査） |
+| [ab_bench_modes.ps1](ab_bench_modes.ps1) | cdll・interp とも**ノイズ帯内**（上表・負の対照つき） |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **52/52** |
+| [scan_examples.ps1](scan_examples.ps1) / [force_gate.ps1](force_gate.ps1) | FAIL **0** / **0 件・158 例題** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+
+⚠ 併せて C++ FFI 例題 6 本を**直接 A/B**（md5 一致）— 特に `cpp_out_param_writeback.ar`
+（#48 の実バグを固定している例題。local / global / cell / loop / status / probe の 6 形）。
+
+### 8. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「4 経路の差は書き戻し先だけ」（起票時） | **半分外れ**。差は**2 つ**あった —「書き戻し先」と「`named_mut` を何にできるか」。後者を潰さなかったのが正解で、潰すと `let` の誤用が黙って通る |
+| 「保守性の変更なので速度は動かない」 | **外れ**。`Vec` 1 個で **0.90x**。⚠ **ホットパスに `.collect()` を置かない** |
+| 「`ar_call_fn` も同じだけ浅くなる」 | **外れ**。マーシャリングは畳めたが、深さの実体は**ガードの入れ子**だった（8 のまま） |
+| 「差分ゲートは compare_outputs で足りる」 | **外れではないが不足**。FFI は例題が少ないので [compare_import_paths.ps1](compare_import_paths.ps1) と C++ 例題の直接 A/B が主検査 |

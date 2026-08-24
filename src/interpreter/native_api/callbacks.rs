@@ -173,18 +173,20 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
             let typed_ptr = fn_ref.typed_fn_ptr.load(Ordering::Relaxed);
             let n = n_args as usize;
             if typed_ptr != 0 && n == sig.params.len() && n <= 16 {
-                use crate::interpreter::value::{AbiTy, PtrArgCleanup};
+                use crate::interpreter::value::{AbiTy, Marshalled, TypedArgs};
                 let has_ptr = sig
                     .params
                     .iter()
                     .any(|p| matches!(p, AbiTy::Ptr { .. } | AbiTy::OutPtr { .. }));
-                let mut slots = [0u64; 16];
-                // OutPtr（プリミティブ書き込みポインタ）用ローカル領域（呼び出し終了まで生存）。
-                let mut out_locals = [0u64; 16];
-                let mut cleanups: Vec<PtrArgCleanup> = Vec::new();
+                // #76: 引数マーシャリングは `TypedArgs` に 1 本化した。
+                // ⚠⚠ **move 禁止**（`slots` が `out_locals` を指す）。ここに置いたまま使う。
+                let mut ta = TypedArgs::new();
                 let mut call_err: Option<String> = None;
                 let ok = if !has_ptr {
-                    // 純スカラー: 1回の STATE ボローでデコード（Value クローンなし）
+                    // 純スカラー: 1回の STATE ボローでデコード（Value クローンなし）。
+                    // ⚠ **この枝だけ共有マーシャラを通さない**（#76 で残した唯一の例外）:
+                    // ハンドル → Value のクローンを挟まずアリーナから直接デコードする最適化で、
+                    // STATE アクセスが ~8 回 → 1〜2 回になる。型の許容表は下の枝と同一。
                     STATE.with(|s| {
                         let st = s.borrow();
                         for i in 0..n {
@@ -200,7 +202,7 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
                                 }
                                 _ => return false, // None/Bool/sentinel → ハンドル経路へ
                             };
-                            slots[i] = match (iv, fv, &sig.params[i]) {
+                            ta.slots[i] = match (iv, fv, &sig.params[i]) {
                                 (Some(v), _, AbiTy::I64) => v as u64,
                                 (Some(v), _, AbiTy::F64) => (v as f64).to_bits(),
                                 (_, Some(f), AbiTy::F64) => f.to_bits(),
@@ -216,65 +218,41 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
                         let st = s.borrow();
                         (0..n).map(|i| st.clone_value(unsafe { *args_ptr.add(i) })).collect()
                     });
-                    let mut all_ok = true;
-                    for (i, v) in vals.iter().enumerate() {
-                        match &sig.params[i] {
-                            AbiTy::I64 => match v {
-                                Value::Int(iv) => slots[i] = *iv as u64,
-                                _ => { all_ok = false; break; }
-                            },
-                            AbiTy::F64 => match v {
-                                Value::Float(f) => slots[i] = f.to_bits(),
-                                Value::Int(iv) => slots[i] = (*iv as f64).to_bits(),
-                                _ => { all_ok = false; break; }
-                            },
-                            AbiTy::Ptr { mutable, by_value, layout } => {
-                                match crate::interpreter::value::resolve_typed_ptr_arg(
-                                    v, *mutable, *by_value, layout, None,
-                                ) {
-                                    Ok(Some((slot, cleanup))) => {
-                                        slots[i] = slot;
-                                        cleanups.push(cleanup);
-                                    }
-                                    Ok(None) => { all_ok = false; break; }
-                                    Err(e) => { call_err = Some(e); all_ok = false; break; }
-                                }
-                            }
-                            // OutPtr: この経路（コンパイル済み Arrow → C）には named-variable の
-                            // 概念がないため書き戻しなし（安全側）。ローカルのアドレスを渡すのみ。
-                            AbiTy::OutPtr { width } => {
-                                match crate::interpreter::value::encode_out_ptr_init(v, *width) {
-                                    Some(enc) => {
-                                        out_locals[i] = enc;
-                                        slots[i] = std::ptr::addr_of_mut!(out_locals[i]) as u64;
-                                    }
-                                    None => { all_ok = false; break; }
-                                }
-                            }
-                            AbiTy::Void => { all_ok = false; break; } // params に Void は入らない
+                    // ⚠ この層は named-variable の概念が無い（アリーナハンドル止まり）ので
+                    // `named_mut` は**全部 None**＝書き戻ししない（安全側）。#76 で畳んだ結果、
+                    // 4 経路で違うのは**この入力だけ**になった。
+                    match ta.marshal(&vals, &sig.params, &[]) {
+                        Ok(Marshalled::Ready) => true,
+                        Ok(Marshalled::TypeMismatch) => false,
+                        Err(e) => {
+                            call_err = Some(e);
+                            false
                         }
                     }
-                    all_ok
                 };
                 if let Some(e) = call_err {
                     STATE.with(|s| s.borrow_mut().error = Some(e));
                     return TL_NONE;
                 }
                 if ok {
-                    let mut ret: u64 = 0;
-                    let mut err = ErrSlot::default();
-                    let status = unsafe {
-                        let f: unsafe extern "C" fn(*const u64, *mut u64, *mut ErrSlot) -> u32 =
-                            std::mem::transmute(typed_ptr);
-                        f(slots.as_ptr(), &mut ret, &mut err)
+                    // #76: 呼び出し本体も `invoke_typed_abi` に合流させた（cleanup の実行順と
+                    // status の扱いが 4 経路で同一になる）。⚠ この層はエラーを戻り値で返せない
+                    // ので `STATE.error` に載せて TL_NONE を返す — 違いはそこだけ。
+                    // SAFETY: `typed_ptr` は typed_sig 付き（`build_cpp_typed_sig` 検証済み）の関数。
+                    let ret = match unsafe {
+                        crate::interpreter::value::invoke_typed_abi(
+                            typed_ptr,
+                            &ta.slots,
+                            std::mem::take(&mut ta.cleanups),
+                        )
+                    } {
+                        Ok(r) => r,
+                        Err(e) => {
+                            STATE.with(|s| s.borrow_mut().error = Some(e));
+                            return TL_NONE;
+                        }
                     };
-                    for c in cleanups {
-                        crate::interpreter::value::finish_ptr_arg_cleanup(c);
-                    }
-                    if status != 0 {
-                        STATE.with(|s| s.borrow_mut().error = Some(err.to_error_string()));
-                        return TL_NONE;
-                    }
+                    // ⚠ OutPtr の書き戻しは無い（名前が無いので安全側 ＝ `ta.out_wb` は常に空）。
                     return match sig.ret {
                         // 小整数はキャッシュ済みハンドル（STATE アクセスなし）
                         AbiTy::I64 => push_handle(Value::Int(ret as i64)),
