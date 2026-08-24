@@ -8478,3 +8478,98 @@ src 全体: **制御ネスト 7 の関数が 4 本 → 0 本**、深さ ≥6 が
 | 「保守性の変更なので速度は動かない」 | **外れ**。`Vec` 1 個で **0.90x**。⚠ **ホットパスに `.collect()` を置かない** |
 | 「`ar_call_fn` も同じだけ浅くなる」 | **外れ**。マーシャリングは畳めたが、深さの実体は**ガードの入れ子**だった（8 のまま） |
 | 「差分ゲートは compare_outputs で足りる」 | **外れではないが不足**。FFI は例題が少ないので [compare_import_paths.ps1](compare_import_paths.ps1) と C++ 例題の直接 A/B が主検査 |
+
+---
+
+## #83 `ar_call_fn` のガードの入れ子を平坦化（2026-08-24・完了）
+
+#76 で**重複**は畳んだが**深さ**が残った箇所（制御ネスト **8** ＝ `render_math_str` と並んで src 最深）。
+残っていた深さの実体は**マーシャリングではなく「typed 高速パスに入るためのガード」**:
+`if let NativeFunction` → `if let Some(sig)` → `if typed_ptr != 0` → `if !has_ptr` →
+`STATE.with` → `for` → `match h` → `match arena.get`。
+
+### 1. 直し方 — 早期 return へ反転し、深い所を 2 段に切り出す
+
+| 新設 | 役割 | 行数 / ネスト |
+|---|---|---|
+| `try_typed_fast_call` | typed 高速パスの試行。`Some(h)`＝決着 / `None`＝ハンドル経路へ | **72 / 2** |
+| `marshal_scalar_handles` | 全引数が純スカラーのときのマーシャリング（1 回の STATE ボローで全引数） | **18 / 2** |
+| `scalar_handle_slot` | ハンドル 1 個 → u64 スロット（アリーナ直読み・`Value` クローンなし） | **18 / 1** |
+
+`ar_call_fn` 側は `if let Some(h) = try_typed_fast_call(...) { return h; }` の 3 行になった。
+
+| 関数 | 前 | 後 |
+|---|---|---|
+| `ar_call_fn` | 196 行・ネスト **8** | **96 行・ネスト 5** |
+
+src 全体で **制御ネスト ≥7 が 2 本 → 1 本**（残りは `render_math_str` ＝ #78 の対象）、≥6 が 16 → 15。
+
+### 2. ⚠⚠ `#[inline(always)]` は「速度のため」ではなく「**生成コードを変えないため**」
+
+切り出しただけ（`#[inline]`）の版で **cdll ベンチが落ちた**:
+
+| メトリクス | `#[inline]` 版（2 回） | `#[inline(always)]` 版（2 回） |
+|---|---|---|
+| `cdll_v3_add` | **0.933x / 0.963x** | 0.979x / 0.999x |
+| `cdll_v3_add_toplevel` | **0.940x / 0.947x** | **1.036x / 1.037x** |
+
+⚠⚠ **これは経路の速度ではない。** `bench_ab_cdll.ar` は**非コンパイル実行**で C DLL を呼ぶ
+（`eval/native.rs` 側）ので、**`ar_call_fn` を 1 度も通らない**。
+それでも 0.94x が出て、**属性を 1 つ変えるだけで 1.04x に振れた**
+＝ **コード配置に支配されている**（#28「効くのはアーム数ではなくコード配置」・
+#62「`mod` 宣言の順序を逆にしただけで 0.929x」の 3 度目）。
+
+⇒ 採用したのは `#[inline(always)]`。理由は数値ではなく**意味論**:
+**呼び出し元は `ar_call_fn` の 1 箇所だけで、#83 以前は文字どおりインライン展開されていたコード**
+なので、これが「生成コードを保ったまま**構造だけ**平坦化する」形になる。
+⚠ #10-b（`exec_op` のアームに重い本体を書くな）とは状況が違う — **呼び出し元が 1 つなので
+インライン化してもコードは複製されない**。doc に「外さないこと」と実測を書いた。
+
+### 3. ⚠ 「ノイズ帯」は固定値ではない — 測るたびに取り直す
+
+同一バイナリ同士の A/B（負の対照）は**その時々で幅が違った**:
+
+| 負の対照 | `cdll_v3_add` | `cdll_v3_add_toplevel` |
+|---|---|---|
+| #76 完了時 | 1.014x | 0.989x（帯 ±3.5%） |
+| #83 途中（n83f 同士 / n76b 同士） | 1.002x / 1.004x | 1.010x / 1.006x（**±1%**） |
+| #83 最終（probe 同士） | 0.978x | 1.031x（±3%） |
+
+⇒ **「#76 で測った ±3.5% を使い回す」ができない。** `#[inline]` 版を退行と判定できたのは、
+**同じ時間帯に取った ±1% の対照**と並べたから。⇒ **A/B と負の対照は同じセッションで取る**。
+
+### 4. 検証
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` / `--release` / `--features prof` / `--features tw_stats` | すべて警告 **0** |
+| `cargo test` | **750 passed** |
+| `cargo clippy` / `--all-targets` | **50 / 65 ＝ 増分 0**（⚠ 下記） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **94 / 94 identical** |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **13 / 13 identical** |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **112 / 112 identical** |
+| [ab_bench_modes.ps1](ab_bench_modes.ps1) | cdll・native とも**同一バイナリの振れ幅の内側**（上表） |
+| [compare_python_impl.ps1](compare_python_impl.ps1) / [scan_examples.ps1](scan_examples.ps1) / [force_gate.ps1](force_gate.ps1) | 52/52 / FAIL 0 / **0 件・158 例題** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) / [stale_doc_refs.ps1](stale_doc_refs.ps1) | identical / 5 identical / **0 件** |
+
+⚠ **`ar_call_fn` を実際に踏むのはコンパイル済みネイティブ → インタープリタの経路**なので、
+[ab_bench_modes.ps1](ab_bench_modes.ps1) の **native モード**（`native_sum_list_cb` /
+`native_apply_fn_cb`）が主検査。`CHECKSUM` の突き合わせも通っている（食い違えば値が出ない）。
+併せて**コンパイル済みモジュールを踏む例題 2 本**（`typed_abi.ar` / `swd_nested_runner.ar`）を
+`--compile` からやり直して A/B（**出力一致**）。⚠ `importation.ar` は
+**環境要因で元から失敗する**（`import[rs] 'sha2'` のクレート未配置）ので検査に使えない。
+
+⚠ **clippy が一度 +1 した**（`needless_range_loop`）。`0..n` の添字ループを
+`params.iter().enumerate().take(n)` に直して増分 0 に戻した。⚠ #76 で**消えた**のも同じ
+lint（`used to index slots`）で、**マーシャリングを書くとこの lint が出入りする**。
+⚠ [stale_doc_refs.ps1](stale_doc_refs.ps1) も 1 件捕捉（`` `enter`/`exit_native_call` `` と
+**識別子を割って書いた**ため `enter` が存在しない扱いに）。`` `enter_native_call` `` へ直した。
+
+### 5. 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「切り出せば深さは下がる。速度は関係ない」 | **半分外れ**。深さは 8→5 に下がったが、**関係ないはずの cdll が 0.94x に動いた**（配置） |
+| 「cdll が落ちたのだから FFI 経路の退行だ」 | **外れ**。cdll は `ar_call_fn` を通らない。**属性 1 つで 1.04x に振れて確定** |
+| 「#76 で測ったノイズ帯を使い回せる」 | **外れ**。帯は ±1% 〜 ±3.5% で変動する。**対照は同じセッションで取る** |
+| 「`ar_call_fn` はネスト 0〜1 まで下がる」 | **外れ**。残り 5（ハンドル経路の DLL シンボル解決 `if`→`match`→`match`）。p99 = 5 なので許容 |

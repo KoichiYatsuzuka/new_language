@@ -147,6 +147,147 @@ extern "C" fn ar_unop(op: i32, a: i64) -> i64 {
     }
 }
 
+/// 純スカラー引数のハンドル 1 個を u64 スロット値へデコードする（#83 で切り出し）。
+///
+/// ⚠ **アリーナから直接読む**（`Value` のクローンを挟まない）。これが `TypedArgs::marshal` を
+/// 通さない唯一の理由で、STATE アクセスが ~8 回 → 1〜2 回になる（#76 で残した例外）。
+/// 型の許容表は共有マーシャラと同一に保つこと（`I64` は int のみ・`F64` は float と int）。
+#[inline]
+fn scalar_handle_slot(st: &NativeCallState, h: i64, ty: &crate::interpreter::value::AbiTy) -> Option<u64> {
+    use crate::interpreter::value::AbiTy;
+    let (iv, fv): (Option<i64>, Option<f64>) = match h {
+        x if (3..INT_CACHE_BASE as i64).contains(&x) => (Some(x - 3), None),
+        x if x >= INT_CACHE_BASE as i64 => match st.arena.get(x as usize) {
+            Some(Value::Int(v)) => (Some(*v), None),
+            Some(Value::Float(f)) => (None, Some(*f)),
+            _ => return None,
+        },
+        _ => return None, // None/Bool/sentinel → ハンドル経路へ
+    };
+    match (iv, fv, ty) {
+        (Some(v), _, AbiTy::I64) => Some(v as u64),
+        (Some(v), _, AbiTy::F64) => Some((v as f64).to_bits()),
+        (_, Some(f), AbiTy::F64) => Some(f.to_bits()),
+        _ => None,
+    }
+}
+
+/// 全引数が純スカラーのときのマーシャリング（#83 で切り出し）。`false` ＝ ハンドル経路へ。
+///
+/// ⚠ **1 回の STATE ボローで全引数を処理する**のが要点（借用を跨がないこと）。
+#[inline]
+fn marshal_scalar_handles(
+    ta: &mut crate::interpreter::value::TypedArgs,
+    params: &[crate::interpreter::value::AbiTy],
+    args_ptr: *const i64,
+    n: usize,
+) -> bool {
+    STATE.with(|s| {
+        let st = s.borrow();
+        for (i, ty) in params.iter().enumerate().take(n) {
+            let h = unsafe { *args_ptr.add(i) };
+            match scalar_handle_slot(&st, h, ty) {
+                Some(v) => ta.slots[i] = v,
+                None => return false,
+            }
+        }
+        true
+    })
+}
+
+/// 統一 typed ABI 最速パス（ネイティブ → C DLL）の試行（#83 で `ar_call_fn` から切り出し）。
+///
+/// 引数ハンドルを 1 回の STATE ボローで u64 スロットへ展開し、`{name}_typed` を直接呼ぶ。
+/// `enter_native_call` / `exit_native_call`・per-arg unmarshal コールバック・結果 marshal が
+/// すべて消える（STATE アクセス ~8 回 → 1〜2 回）。
+///
+/// - `Some(h)`: この経路で決着した（エラーも `STATE.error` に載せて `TL_NONE` を返す形で含む）
+/// - `None`: この経路に載らない ⇒ **呼び出し側がハンドル経路へ落とす**
+///
+/// ⚠ この層は named-variable の概念がない（アリーナハンドル止まり）ため、
+/// `named_mut` は常に空＝**書き戻しなし**（安全側・#76）。
+///
+/// ⚠⚠ **#83 以前はこれが `ar_call_fn` に直書きで、ガードが 4 段入れ子になっていた**
+/// （制御ネスト 8 ＝ src 最深）。早期 return へ反転してある — **`if` を足して深くしないこと**。
+///
+/// ⚠⚠ **`#[inline(always)]` を外さないこと**（#83）。呼び出し元は `ar_call_fn` の 1 箇所だけで、
+/// #83 以前は文字どおりインライン展開されていたコード。切り出しただけで生成コードが変わると
+/// **cdll ベンチが 0.94x に動く**（実測。⚠ cdll は `ar_call_fn` を通らないので
+/// **これは経路の速度ではなくコード配置の話** — 属性を戻すだけで 1.04x に振れた）。
+#[inline(always)]
+fn try_typed_fast_call(fn_val: &Value, args_ptr: *const i64, n_args: i32) -> Option<i64> {
+    use crate::interpreter::value::{AbiTy, Marshalled, TypedArgs};
+    use std::sync::atomic::Ordering;
+
+    let Value::NativeFunction(fn_ref) = fn_val else {
+        return None;
+    };
+    let sig = fn_ref.typed_sig.as_ref()?;
+    let typed_ptr = fn_ref.typed_fn_ptr.load(Ordering::Relaxed);
+    let n = n_args as usize;
+    if typed_ptr == 0 || n != sig.params.len() || n > 16 {
+        return None;
+    }
+
+    // 構造体ポインタ引数（`AbiTy::Ptr`）を含む場合はゼロコピー／シャドウ変換を解決する
+    // 別経路を通る（P3/P4 — .claude/skills/c-abi-interop/SKILL.md）。
+    let has_ptr = sig
+        .params
+        .iter()
+        .any(|p| matches!(p, AbiTy::Ptr { .. } | AbiTy::OutPtr { .. }));
+    // ⚠⚠ **move 禁止**（`slots` が `out_locals` を指す）。ここに置いたまま使う。
+    let mut ta = TypedArgs::new();
+
+    let ok = if !has_ptr {
+        marshal_scalar_handles(&mut ta, &sig.params, args_ptr, n)
+    } else {
+        // 1 回の STATE ボローでハンドルを Value に解決（Instance は Rc クローンのみで安価）、
+        // 以降は STATE の外で処理する。マーシャリング本体は共有実装（#76）。
+        let vals: Vec<Value> = STATE.with(|s| {
+            let st = s.borrow();
+            (0..n).map(|i| st.clone_value(unsafe { *args_ptr.add(i) })).collect()
+        });
+        match ta.marshal(&vals, &sig.params, &[]) {
+            Ok(Marshalled::Ready) => true,
+            Ok(Marshalled::TypeMismatch) => false,
+            Err(e) => {
+                STATE.with(|s| s.borrow_mut().error = Some(e));
+                return Some(TL_NONE);
+            }
+        }
+    };
+    if !ok {
+        return None; // 型不一致 → 既存のハンドル経路にフォールバック
+    }
+
+    // 呼び出し本体は 4 経路で共有（#54 / #76）。⚠ この層はエラーを戻り値で返せないので
+    // `STATE.error` に載せて TL_NONE を返す — 違いはそこだけ。
+    // SAFETY: `typed_ptr` は typed_sig 付き（`build_cpp_typed_sig` 検証済み）の関数。
+    let ret = match unsafe {
+        crate::interpreter::value::invoke_typed_abi(
+            typed_ptr,
+            &ta.slots,
+            std::mem::take(&mut ta.cleanups),
+        )
+    } {
+        Ok(r) => r,
+        Err(e) => {
+            STATE.with(|s| s.borrow_mut().error = Some(e));
+            return Some(TL_NONE);
+        }
+    };
+    // ⚠ OutPtr の書き戻しは無い（名前が無いので安全側 ＝ `ta.out_wb` は常に空）。
+    Some(match sig.ret {
+        // 小整数はキャッシュ済みハンドル（STATE アクセスなし）
+        AbiTy::I64 => push_handle(Value::Int(ret as i64)),
+        AbiTy::F64 => push_handle(Value::Float(f64::from_bits(ret))),
+        AbiTy::Void => TL_NONE,
+        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
+            unreachable!("typed ABI ret excludes Ptr/OutPtr")
+        }
+    })
+}
+
 /// 関数ハンドルと引数ハンドル配列を受け取り関数を呼び出す C コールバック。
 ///
 /// Fast path: `Value::NativeFunction` はインタープリタを経由せず直接 DLL 関数を呼び出す。
@@ -162,110 +303,10 @@ extern "C" fn ar_call_fn(fn_h: i64, args_ptr: *const i64, n_args: i32) -> i64 {
     if has_err { return TL_NONE; }
 
     // ── 統一 typed ABI 最速パス（ネイティブ→C DLL） ─────────────────────────
-    // 引数ハンドルを1回の STATE ボローで u64 スロットに展開し、{name}_typed を
-    // 直接呼ぶ。enter/exit_native_call・per-arg unmarshal コールバック・
-    // 結果 marshal コールバックがすべて消える（STATE アクセス ~8回 → 1-2回）。
-    // 構造体ポインタ引数（AbiTy::Ptr）を含む場合はゼロコピー／シャドウ変換を解決する
-    // 別経路を通る（P3/P4 — .claude/skills/c-abi-interop/SKILL.md）。この層は named-variable の
-    // 概念がない（アリーナハンドル止まり）ため let/mut 判定は常に `None` で渡す。
-    if let Value::NativeFunction(ref fn_ref) = fn_val {
-        if let Some(sig) = &fn_ref.typed_sig {
-            let typed_ptr = fn_ref.typed_fn_ptr.load(Ordering::Relaxed);
-            let n = n_args as usize;
-            if typed_ptr != 0 && n == sig.params.len() && n <= 16 {
-                use crate::interpreter::value::{AbiTy, Marshalled, TypedArgs};
-                let has_ptr = sig
-                    .params
-                    .iter()
-                    .any(|p| matches!(p, AbiTy::Ptr { .. } | AbiTy::OutPtr { .. }));
-                // #76: 引数マーシャリングは `TypedArgs` に 1 本化した。
-                // ⚠⚠ **move 禁止**（`slots` が `out_locals` を指す）。ここに置いたまま使う。
-                let mut ta = TypedArgs::new();
-                let mut call_err: Option<String> = None;
-                let ok = if !has_ptr {
-                    // 純スカラー: 1回の STATE ボローでデコード（Value クローンなし）。
-                    // ⚠ **この枝だけ共有マーシャラを通さない**（#76 で残した唯一の例外）:
-                    // ハンドル → Value のクローンを挟まずアリーナから直接デコードする最適化で、
-                    // STATE アクセスが ~8 回 → 1〜2 回になる。型の許容表は下の枝と同一。
-                    STATE.with(|s| {
-                        let st = s.borrow();
-                        for i in 0..n {
-                            let h = unsafe { *args_ptr.add(i) };
-                            let (iv, fv): (Option<i64>, Option<f64>) = match h {
-                                x if (3..INT_CACHE_BASE as i64).contains(&x) => (Some(x - 3), None),
-                                x if x >= INT_CACHE_BASE as i64 => {
-                                    match st.arena.get(x as usize) {
-                                        Some(Value::Int(v)) => (Some(*v), None),
-                                        Some(Value::Float(f)) => (None, Some(*f)),
-                                        _ => return false,
-                                    }
-                                }
-                                _ => return false, // None/Bool/sentinel → ハンドル経路へ
-                            };
-                            ta.slots[i] = match (iv, fv, &sig.params[i]) {
-                                (Some(v), _, AbiTy::I64) => v as u64,
-                                (Some(v), _, AbiTy::F64) => (v as f64).to_bits(),
-                                (_, Some(f), AbiTy::F64) => f.to_bits(),
-                                _ => return false,
-                            };
-                        }
-                        true
-                    })
-                } else {
-                    // 構造体ポインタあり: 1回の STATE ボローでハンドルを Value に解決
-                    // （Instance は Rc クローンのみで安価）、以降は STATE の外で処理する。
-                    let vals: Vec<Value> = STATE.with(|s| {
-                        let st = s.borrow();
-                        (0..n).map(|i| st.clone_value(unsafe { *args_ptr.add(i) })).collect()
-                    });
-                    // ⚠ この層は named-variable の概念が無い（アリーナハンドル止まり）ので
-                    // `named_mut` は**全部 None**＝書き戻ししない（安全側）。#76 で畳んだ結果、
-                    // 4 経路で違うのは**この入力だけ**になった。
-                    match ta.marshal(&vals, &sig.params, &[]) {
-                        Ok(Marshalled::Ready) => true,
-                        Ok(Marshalled::TypeMismatch) => false,
-                        Err(e) => {
-                            call_err = Some(e);
-                            false
-                        }
-                    }
-                };
-                if let Some(e) = call_err {
-                    STATE.with(|s| s.borrow_mut().error = Some(e));
-                    return TL_NONE;
-                }
-                if ok {
-                    // #76: 呼び出し本体も `invoke_typed_abi` に合流させた（cleanup の実行順と
-                    // status の扱いが 4 経路で同一になる）。⚠ この層はエラーを戻り値で返せない
-                    // ので `STATE.error` に載せて TL_NONE を返す — 違いはそこだけ。
-                    // SAFETY: `typed_ptr` は typed_sig 付き（`build_cpp_typed_sig` 検証済み）の関数。
-                    let ret = match unsafe {
-                        crate::interpreter::value::invoke_typed_abi(
-                            typed_ptr,
-                            &ta.slots,
-                            std::mem::take(&mut ta.cleanups),
-                        )
-                    } {
-                        Ok(r) => r,
-                        Err(e) => {
-                            STATE.with(|s| s.borrow_mut().error = Some(e));
-                            return TL_NONE;
-                        }
-                    };
-                    // ⚠ OutPtr の書き戻しは無い（名前が無いので安全側 ＝ `ta.out_wb` は常に空）。
-                    return match sig.ret {
-                        // 小整数はキャッシュ済みハンドル（STATE アクセスなし）
-                        AbiTy::I64 => push_handle(Value::Int(ret as i64)),
-                        AbiTy::F64 => push_handle(Value::Float(f64::from_bits(ret))),
-                        AbiTy::Void => TL_NONE,
-                        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
-                            unreachable!("typed ABI ret excludes Ptr/OutPtr")
-                        }
-                    };
-                }
-                // 型不一致 → 既存のハンドル経路にフォールバック
-            }
-        }
+    // 本体は下の `try_typed_fast_call`（#83 で切り出した）。`None` ＝ この経路に載らない
+    // ので、そのままハンドル経路へ落ちる。
+    if let Some(h) = try_typed_fast_call(&fn_val, args_ptr, n_args) {
+        return h;
     }
 
     // Fast path: NativeFunction (native DLL).
