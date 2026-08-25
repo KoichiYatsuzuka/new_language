@@ -347,6 +347,9 @@ impl Compiler {
     /// ⚠ **本体は `ChunkMeta` の 4 つを埋めるだけ**（#66）。残りは `self.chunk` に
     /// 組み上がっているので、`Chunk` にフィールドを足してもここは変わらない。
     pub(super) fn into_chunk(self, meta: ChunkMeta) -> Chunk {
+        // ⚠ 出来上がった Chunk の記憶域索引を検査する（#86）。**release では消える**。
+        #[cfg(debug_assertions)]
+        verify_storage_indices(&self.chunk, &meta.local_names, meta.n_params);
         Chunk {
             local_names: meta.local_names,
             n_params: meta.n_params,
@@ -355,6 +358,159 @@ impl Compiler {
             ..self.chunk
         }
     }
+}
+
+
+/// **Chunk の記憶域索引の事後条件**をデバッグビルドで検査する（#86）。
+///
+/// ⚠⚠ 採番のずれには 2 つの壊れ方がある:
+/// ① **別の変数を読む**（番号は範囲内だが指す先が違う）… [`Compiler::local_slot`] が
+///    コンパイル時にリゾルバと突き合わせて捕まえる。
+/// ② **範囲外を読む**（`static` を飛ばして実際に起きた）… こちらがそれ。
+///    `Resolution` を経由しない経路（`slot_of` / `alloc_temp` / 融合 op）も通るので、
+///    **Chunk が出来上がった時点で全命令を見る**のが唯一の網になる。
+///
+/// ⚠ `local_names` は**名前付き slot だけ**の表で、`alloc_temp` が伸ばした `n_locals` より
+/// 短い（temp は名前を持たない）。⇒ 等しさではなく `<=` を検査する。
+#[cfg(debug_assertions)]
+fn verify_storage_indices(chunk: &Chunk, local_names: &[String], n_params: usize) {
+    debug_assert!(
+        local_names.len() <= chunk.n_locals,
+        "デバッグ名テーブルがフレームより長い: local_names={} n_locals={}",
+        local_names.len(),
+        chunk.n_locals
+    );
+    debug_assert!(
+        n_params <= local_names.len(),
+        "パラメータ数が名前表を超えた: n_params={} local_names={}",
+        n_params,
+        local_names.len()
+    );
+    for (ip, op) in chunk.code.iter().enumerate() {
+        let (locals, cells) = storage_operands(op);
+        for s in locals.into_iter().flatten() {
+            debug_assert!(
+                (s as usize) < chunk.n_locals,
+                "ローカル slot が範囲外: ip={ip} op={op:?} slot={s} n_locals={} \
+(プランの「採番はリゾルバと同順・同数」。`collect_nested_decls` の採番と `alloc_temp` を見ること)",
+                chunk.n_locals
+            );
+        }
+        for c in cells.into_iter().flatten() {
+            debug_assert!(
+                (c as usize) < chunk.n_cells,
+                "セル索引が範囲外: ip={ip} op={op:?} cell={c} n_cells={}",
+                chunk.n_cells
+            );
+        }
+    }
+}
+
+/// op が持つ **(ローカル slot, セル索引)** を返す（#86）。
+///
+/// ⚠⚠ **`_` を書かないこと。** op を足すとここが止まるのが仕掛けの全部で、
+/// [`super::peephole::code_target_mut`] が `_ => None` にしているために
+/// 「**忘れてもテストは通ってしまう**」状態になっているのと同じ轍を踏まないため。
+/// ⚠ ローカル slot（`n_locals` で縛る）と**セル索引**（`n_cells` で縛る）は
+/// **別の記憶域**なので混ぜない。混ぜると `LoadCell` が別の値を読む。
+#[cfg(debug_assertions)]
+fn storage_operands(op: &crate::vm::op::Op) -> ([Option<u16>; 2], [Option<u16>; 2]) {
+    use crate::vm::op::Op;
+        match op {
+            Op::LoadLocal(a0) => ([Some(*a0), None], [None, None]),
+            Op::StoreLocal(a0) => ([Some(*a0), None], [None, None]),
+            Op::StoreLocalDeepCopy(a0) => ([Some(*a0), None], [None, None]),
+            Op::StoreLocalCopyFreeze(a0) => ([Some(*a0), None], [None, None]),
+            Op::StoreLocalFreezeInstance(a0) => ([Some(*a0), None], [None, None]),
+            Op::StoreLocalFromIdent(a0, _) => ([Some(*a0), None], [None, None]),
+            Op::BinLocalLocal(a0, a1, _) => ([Some(*a0), Some(*a1)], [None, None]),
+            Op::BinLocalConst(a0, _, _) => ([Some(*a0), None], [None, None]),
+            Op::IntBinLL(a0, a1, _) => ([Some(*a0), Some(*a1)], [None, None]),
+            Op::IntBinLC(a0, _, _) => ([Some(*a0), None], [None, None]),
+            Op::FloatBinLL(a0, a1, _) => ([Some(*a0), Some(*a1)], [None, None]),
+            Op::FloatBinLC(a0, _, _) => ([Some(*a0), None], [None, None]),
+            Op::CallMethodLocal(a0, _, _, _, _) => ([Some(*a0), None], [None, None]),
+            Op::GetAttrLocal(a0, _, _) => ([Some(*a0), None], [None, None]),
+            Op::ForIter(a0, a1, _) => ([Some(*a0), Some(*a1)], [None, None]),
+            Op::ListAppendLocal(a0) => ([Some(*a0), None], [None, None]),
+            Op::UnpackTuple(a0, _) => ([Some(*a0), None], [None, None]),
+            Op::LoadCell(a0) => ([None, None], [Some(*a0), None]),
+            Op::StoreCell(a0) => ([None, None], [Some(*a0), None]),
+            Op::StoreCellDeepCopy(a0) => ([None, None], [Some(*a0), None]),
+            // ── ローカル slot もセル索引も持たない op ──
+            // ⚠⚠ **`_` を書かない**。op を足すとここが止まり、
+            //    「この op は slot を持つのか」を必ず決めさせられる（#87 の code_target_mut と同型）。
+            Op::Const(_)
+            | Op::Nil
+            | Op::LoadGlobal(_, _)
+            | Op::StoreGlobal(_, _)
+            | Op::StoreName(_)
+            | Op::CallBuiltinKw(_)
+            | Op::CallMethodKw(_)
+            | Op::StaticInit(_, _)
+            | Op::StaticStore(_)
+            | Op::LoadStatic(_)
+            | Op::StoreStatic(_)
+            | Op::Pop
+            | Op::Bin(_)
+            | Op::IntBinGG(_, _, _)
+            | Op::IntBinGC(_, _, _)
+            | Op::IntBinSS(_)
+            | Op::FloatBinSS(_)
+            | Op::Un(_)
+            | Op::GetAttr(_, _)
+            | Op::SetAttr(_)
+            | Op::Swap
+            | Op::IsType(_)
+            | Op::MustBe(_, _)
+            | Op::Cast(_)
+            | Op::CallBuiltin(_, _)
+            | Op::GetIter
+            | Op::Jump(_)
+            | Op::JumpIfFalse(_)
+            | Op::JumpIfFalseOrPop(_)
+            | Op::JumpIfTrueOrPop(_)
+            | Op::Call(_, _, _, _, _)
+            | Op::CallMethod(_, _, _, _)
+            | Op::Return
+            | Op::ReturnNil
+            | Op::SetupTry(_)
+            | Op::PopTry
+            | Op::Raise(_)
+            | Op::Reraise
+            | Op::Dup
+            | Op::ExcMatch(_)
+            | Op::CheckBlockReturn(_, _)
+            | Op::CheckLoopYield(_, _)
+            | Op::Fail(_)
+            | Op::BuildEmptyList
+            | Op::ListOrNone
+            | Op::LoadName(_)
+            | Op::DeclareName(_)
+            | Op::MakeFn(_)
+            | Op::EnumDef(_)
+            | Op::LetTuple(_)
+            | Op::FreezeVar(_, _)
+            | Op::EventSubscribe(_, _)
+            | Op::EventUnsubscribe
+            | Op::CallKw(_)
+            | Op::CallTemplate(_, _, _)
+            | Op::BuildSlice
+            | Op::DeclareGlobal(_, _)
+            | Op::LoadSelfClass
+            | Op::GetTraitAttr(_, _)
+            | Op::SetTraitAttr(_, _)
+            | Op::BreakPoint(_)
+            | Op::Subscript
+            | Op::SetIndex
+            | Op::BuildList(_)
+            | Op::BuildTuple(_)
+            | Op::BuildSet(_)
+            | Op::BuildDict(_)
+            | Op::Yield
+            | Op::AsyncSubmit(_)
+            => ([None, None], [None, None]),
+        }
 }
 
 #[cfg(test)]

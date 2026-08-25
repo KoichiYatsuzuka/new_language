@@ -512,7 +512,14 @@ impl Compiler {
             let store = match e {
                 // ident ソースのうち**可変性がコンパイル時に分かる**もの（＝slot にある）。
                 // 可変なら copy+freeze、不変ならそのまま。
-                Expr::Ident { res: Resolution::Local(s), .. } => {
+                // ⚠⚠ 採番のずれをデバッグビルドで捕まえる（#86）。**この直下のアームが
+                // 同じ判断を `self.slots` 経由でやっている**ので、2 つがずれたら
+                // `let` のコピー＆フリーズが**ソースによって変わる**（黙って違う挙動になる）。
+                // ⚠ **ガードにはしない** — `local_slot` が `None` を返すのは slot が u16 に
+                // 収まらない場合だけで、そこでアームを外すと**別の枝へ落ちて挙動が変わる**。
+                // ここは検査のためだけに呼ぶ。
+                Expr::Ident { name: nm, res: Resolution::Local(s), .. } => {
+                    let _ = self.local_slot(nm, *s);
                     if self.slot_mut.get(*s as usize).copied().unwrap_or(false) {
                         Op::StoreLocalCopyFreeze(slot)
                     } else {

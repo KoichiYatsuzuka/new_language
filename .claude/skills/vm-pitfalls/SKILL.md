@@ -105,6 +105,28 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
 - **診断フックを実行経路に足すときは feature で消せる形にする**（#10-a）。`exec()` は文ごとに
   呼ばれるので `OnceLock` の atomic 読み 1 回でも **11% 退行** した
   （`cfg!(feature=..)` を先に見て定数 false にする）。
+- **⚠⚠ 採番のずれは #86 以降デバッグビルドが止める。ただし「止まらなかった＝正しい」ではない**。
+  網は 2 本で、**壊れ方が 2 通りある**から: ①**別の変数を読む**（`Compiler::local_slot` が
+  コンパイル時にリゾルバの `Resolution::Local` と `slots` を突き合わせる）②**範囲外を読む**
+  （`into_chunk` の `verify_storage_indices` が全命令の記憶域索引を検査）。
+  ⚠ **どちらも `debug_assert` なので release では消える** — ゲートを `target/release` で
+  回していると**この網は 1 度も動かない**。⇒ 採番に触ったら**デバッグビルドで例題を回す**。
+- **⚠⚠ assert を書く前に「誤検知しないか」を実装より先に確かめる**（#86）。2 つ踏みかけた:
+  ① `for` ターゲットのシャドウは**本体の間だけ `slots` を temp slot へ差し替える**ので、
+  素朴に突き合わせると誤検知する（→ リゾルバが `collect_shadowing_binders` の名前を
+  `base` から外していると確認できたので衝突しない）。
+  ② `local_names.len() == n_locals` は**不変条件ではない**（`alloc_temp` が `n_locals` だけ
+  伸ばし、`local_names` は名前付き slot だけ）。**等号で書いていたら全例題で誤検知していた。**
+  ⇒ **「たぶん成り立つ」で assert を書かない。成り立つ根拠をコードで確かめてから書く。**
+- **⚠⚠ 発火しない assert は無意味 — 「歴史的な失敗そのもの」を再現して検出力を測る**（#86）。
+  `collect_base_decls` から `Stmt::Static` を落とす（#27 の実バグの再現）と
+  `'acc' をリゾルバは slot 2、コンパイラは slot Some(3)` で**発火**した。
+  ⚠⚠ **同じプローブを release で走らせると `TypeError: ... int and NoneType`** ＝
+  **原因から遠い場所で、原因を示さないメッセージ**になる。
+  ⇒ この種の網の価値は「落ちること」ではなく「**落ちる場所と理由が原因と一致すること**」。
+- **⚠ 記憶域が 2 種類あるなら索引も分けて検査する**（#86）。ローカル slot は `n_locals`、
+  **セル索引は `n_cells`** で縛られる別の記憶域。1 つの上限でまとめて検査すると
+  **`LoadCell` が別の値を読む形を見逃す**。
 - **⚠ コード索引を持つ op を足したら `peephole::code_target_mut` に登録する**（#27-d）。
   `ForIter` の exit・`SetupTry` の handler・`StaticInit` の after。忘れても
   **テストも例題も通ってしまう**（たまたま除去対象が無かっただけ）。
@@ -226,6 +248,20 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   [dump_native_ir.ps1](../../../dump_native_ir.ps1) の **IR byte-identical** で確認した。
   ⚠ 「codegen を触ったら IR が主検査」は、**codegen を触っていなくても**効くことがある。
 
+- **⚠⚠ `rindex` で「末尾まで」を取る置換をしない**（#86 で自分が #78/#80 の教訓を破った）。
+  `match` の中身を差し替えるのに `s.rindex(chr(10)+'}'+chr(10))` で末尾を取ったところ、
+  **その後ろにあった `#[cfg(test)] mod mode_tests`（#52 の「唯一の防波堤」）ごと消していた**。
+  ⚠⚠ **ビルドも clippy も例題も全部通った**。気づいたのは **`cargo test` が 750 → 748 に
+  減った**ことだけ。⇒ **置換は「何を消すか」を assert できる形に切る**
+  （アンカーを前後 2 つ取る／`assert old.strip().startswith(...)` を書く）。
+  ⇒ **リファクタ後は必ずテスト件数を前後で比べる**（合否だけ見ていると減っても気づけない）。
+- **⚠⚠ op を分類する表は「名前」で作らない — doc で作る**（#86）。`storage_operands` の
+  初版は **op 名に `local`/`slot` を含むものだけ**を拾い、`IntBinLL` / `IntBinLC` /
+  `FloatBinLL` / `FloatBinLC` / `UnpackTuple` の **5 つを「slot を持たない」と分類**していた
+  （`LL` = `local[a] <op> local[b]`）。⚠ **exhaustive な match でも防げない** —
+  網羅はしているが**分類が間違っている**から。
+  ⇒ 生成器に「**doc に `local[` と書いてあるのに一覧に無い op があれば落ちる**」assert を入れた。
+  **人間の記憶ではなく `op.rs` の記述を根拠にする。**
 - **⚠⚠ 置換スクリプトには必ず件数の assert を入れる**（#78）。`src/lexer/math.rs` は **CRLF** で、
   LF 前提のパターンが**黙って 0 件マッチ**になり、負の対照が「適用されたつもり」で通りかけた。
   ⇒ `assert s.count(old) == 1` を必ず書く。改行コードは LF / CRLF の両方を試す。

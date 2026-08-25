@@ -81,12 +81,41 @@ impl Compiler {
             {
                 None
             }
-            Expr::Ident { res: Resolution::Local(slot), .. } => u16::try_from(*slot)
-                .ok()
+            Expr::Ident { name, res: Resolution::Local(slot), .. } => self
+                .local_slot(name, *slot)
                 .filter(|s| !self.cell_by_slot.contains_key(s)),
             Expr::Ident { name, res: Resolution::Unresolved, .. } => self.slots.get(name).copied(),
             _ => None,
         }
+    }
+
+    /// `Resolution::Local(slot)` を u16 slot へ落とす**唯一の入口**（#86）。
+    ///
+    /// ⚠⚠ **リゾルバとコンパイラは別々に採番している。** リゾルバは
+    /// `collect_base_decls` の出現順（パラメータ → 本体直下の宣言）、コンパイラは
+    /// `collect_nested_decls` の走査順。「**採番はリゾルバと同順・同数**」は本系列で
+    /// 最も繰り返し壊れた不変条件で、崩れると `LoadLocal` が**別の変数を読む**か
+    /// **範囲外を読む**（`static` を飛ばして実際に起きた）。**どちらも黙って間違う。**
+    ///
+    /// ⚠⚠ ここまで**注釈を検証せずに信用していた** — `res` に入っている番号をそのまま
+    /// `Op::LoadLocal` へ流していた。ツリーウォーク側には同じ突き合わせが
+    /// [`eval_local_ref`](crate::interpreter::Interpreter::eval_local_ref) にあるが、
+    /// #33/#55 で**ツリーウォークは定義文しか実行しなくなった**ので**その網はもう働いていない**
+    /// （#84 の調査で判明）。⇒ VM 側に置き直したのがこれ。
+    ///
+    /// ⚠ `slots` に名前が無い場合は**照合しない**。セル化された base slot（`cell_by_slot`）や
+    /// 入れ子定義の捕捉名は `slots` に載らないまま `Resolution::Local` が付きうる。
+    /// ⚠ **`debug_assert` なので release では消える**（`exec_op` 系のホットパスに
+    /// 実行時コストを足さない・#10-b）。
+    #[inline]
+    pub(super) fn local_slot(&self, name: &str, slot: u32) -> Option<u16> {
+        let s = u16::try_from(slot).ok()?;
+        debug_assert!(
+            !matches!(self.slots.get(name), Some(&own) if own != s),
+            "slot 採番がリゾルバとずれた: '{name}' をリゾルバは slot {s}、コンパイラは slot {:?} と採番した (プランの「採番はリゾルバと同順・同数」。`collect_base_decls` と `collect_nested_decls` の両方を見ること)",
+            self.slots.get(name)
+        );
+        Some(s)
     }
 
     /// 式が数値/真偽リテラルなら定数値を返す（超命令の融合判定, #2）。

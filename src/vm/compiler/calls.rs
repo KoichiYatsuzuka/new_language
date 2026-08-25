@@ -104,8 +104,12 @@ impl Compiler {
     /// それ以外の式は保守的に true）。VM は base ローカルしか読まないので slot_mut で判定できる。
     pub(super) fn arg_is_mutable(&self, e: &Expr) -> bool {
         match e {
-            Expr::Ident { res: Resolution::Local(slot), .. } => {
-                self.slot_mut.get(*slot as usize).copied().unwrap_or(true)
+            Expr::Ident { name, res: Resolution::Local(slot), .. } => {
+                // ⚠ 採番のずれをデバッグビルドで捕まえる（#86）。ここは可変性を引くだけだが、
+                // **ずれた slot の可変性を読む**と `mut` 引数の判定が別の変数のものになる。
+                let s = self.local_slot(name, *slot);
+                s.and_then(|s| self.slot_mut.get(s as usize).copied())
+                    .unwrap_or(true)
             }
             Expr::Ident { name, res: Resolution::Unresolved, .. } => self
                 .slots

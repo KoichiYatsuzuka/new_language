@@ -70,8 +70,9 @@ impl Compiler {
                 let si = self.add_span(&span);
                 self.emit(Op::LoadStatic(si));
             }
-            Expr::Ident { res: Resolution::Local(slot), .. } => {
-                let s = u16::try_from(*slot).ok()?;
+            Expr::Ident { name, res: Resolution::Local(slot), .. } => {
+                // ⚠ 採番のずれをデバッグビルドで捕まえる（#86。`local_slot` の doc）。
+                let s = self.local_slot(name, *slot)?;
                 // セル化された base slot（#27-d 段階 2b）。slot は穴なので読んではいけない。
                 match self.cell_by_slot.get(&s) {
                     Some(&i) => self.emit(Op::LoadCell(i)),
@@ -345,7 +346,8 @@ impl Compiler {
                     self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                 } else if let Expr::Ident { name, res: Resolution::Local(slot), .. } = func.as_ref() {
                     // 解決済みローカル関数値の呼び出し。
-                    let s = u16::try_from(*slot).ok()?;
+                    // ⚠ 採番のずれをデバッグビルドで捕まえる（#86）。
+                    let s = self.local_slot(name, *slot)?;
                     self.emit(Op::LoadLocal(s));
                     let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                     let ni = self.add_name(name);

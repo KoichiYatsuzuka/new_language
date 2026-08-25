@@ -9436,6 +9436,125 @@ byte-identical** で裏づけたので、A/B 速度計測は不要と判断し�
 #84 がコミットされた時点で**基準を #84 に取り直した**。⇒ **A/B の基準は「直前のタスク」に置く**
 （前々回の基準のままだと、他人の変更を自分の差分として読んでしまう）。
 
+## #86 VM の slot 採番に不変条件の検査を入れる（2026-08-26・完了）
+
+#84 の調査で判明した穴を塞ぐ: **採番を実際に決めている `vm/compiler/` には `debug_assert` が 0 件**
+だった。ツリーウォーク側には
+[`eval_local_ref`](src/interpreter/eval/core.rs) ほか 4 件あるが、**#33 / #55 で
+ツリーウォークは定義文しか実行しなくなった**ので、**その網はもう働いていない**。
+
+⚠⚠ 「**採番はリゾルバと同順・同数**」は本系列で最も繰り返し壊れた不変条件で、
+**壊れ方は 2 通り**ある。両方に別々の網を置いた。
+
+| # | 壊れ方 | 置いた網 | 検出のタイミング |
+|---|---|---|---|
+| ① | **別の変数を読む**（番号は範囲内だが指す先が違う） | `Compiler::local_slot`（`slots` と突き合わせ） | **コンパイル時**（原因の場所で止まる） |
+| ② | **範囲外を読む**（`static` を飛ばして実際に起きた） | `verify_storage_indices`（Chunk の全命令を走査） | **Chunk 完成時** |
+
+### ① `Resolution::Local` を**検証せずに信用していた**
+
+`Expr::Ident { res: Resolution::Local(slot), .. }` の消費側 **5 箇所**は、
+`name` を束縛すらせず **`slot` をそのまま `Op::LoadLocal` へ流していた**
+（`compile_expr` の読み／`as_local`／`arg_is_mutable`／ローカル関数値の呼び出し／`compile_let`）。
+⇒ [`Compiler::local_slot`](src/vm/compiler/emit.rs) を**唯一の入口**にして、
+デバッグビルドで**コンパイラ自身の `slots` と突き合わせる**。
+
+⚠ **非自明な照合である根拠**: リゾルバは `collect_base_decls` の出現順（パラメータ →
+本体直下の宣言）、コンパイラは `collect_nested_decls` の走査順で、**独立に採番している**。
+
+⚠ `slots` に名前が無い場合は照合しない（セル化された base slot・捕捉名は `slots` に載らない）。
+
+⚠⚠ **`compile_let` はガードにしなかった** — `local_slot` が `None` を返すのは slot が u16 に
+収まらない場合だけで、そこでアームを外すと**別の枝へ落ちて挙動が変わる**。検査のためだけに呼ぶ。
+
+### ⚠ 誤検知しないことを**先に**確かめた（`for` ターゲットのシャドウ）
+
+`compile_stmt` の `Stmt::For` は、外側の同名束縛を覆うループ変数のために
+**本体の間だけ `slots` の対応を temp slot へ差し替える**（#27）。
+このとき `Resolution::Local` が同じ名前に付いていれば**誤検知する**。
+⇒ 実装前に resolver を読んで確認: **`collect_shadowing_binders` に載る名前は `base` から
+除外される**ので `Resolution::Local` が付かない。⇒ 衝突しない。
+
+### ② 範囲外 slot は Chunk 完成時に全命令を走査
+
+`Resolution` を経由しない経路（`slot_of` / `alloc_temp` / 融合 op）は ① では捕まらない。
+⇒ `into_chunk` で `verify_storage_indices` を呼び、**全命令の記憶域索引**を検査する。
+
+- ローカル slot は `n_locals` 未満
+- **セル索引は `n_cells` 未満**（⚠ **別の記憶域**なので混ぜない）
+- `local_names.len() <= n_locals` ／ `n_params <= local_names.len()`
+
+⚠ **`local_names.len() == n_locals` は不変条件ではない**（実装前に確認した）。
+`alloc_temp` は temp のぶん `n_locals` を伸ばすが、`local_names` は**名前付き slot だけ**の表。
+等号で書いていたら**全例題で誤検知していた**。
+
+⚠⚠ **op → 記憶域索引の対応表は exhaustive**（`storage_operands`・89 variant を機械生成）。
+`_ => None` にすると [`peephole::code_target_mut`](src/vm/peephole.rs) と同じ
+「**忘れてもテストは通ってしまう**」状態になる（それ自体は **#87** で扱う）。
+⚠ 生成は #80 の教訓どおり**機械変換 ＋ 件数 assert**（`variants == 89` / `local 17` / `cell 3` / `rest 69`）。
+
+#### ⚠⚠ その分類を最初 5 つ間違えた（#81 の「1 段目は保証されない」の再演）
+
+最初の版は **op 名に `local` / `slot` を含むものだけ**を拾っており、
+**`IntBinLL` / `IntBinLC` / `FloatBinLL` / `FloatBinLC` / `UnpackTuple` の 5 つを落としていた**
+（`LL` = `local[a] <op> local[b]`、`UnpackTuple(src_slot, 要素数)`）。
+**コンパイラは何も言わない** — 網羅していないのではなく「持たない」と**分類**しているため。
+⇒ 気づいたのは生成された `match` を目で読んだから。
+⇒ 対策として、生成器に**doc から候補を機械抽出して突き合わせる assert** を入れた
+（`doc に local[ と書いてあるのに一覧に無い op` があれば落ちる）。**人間の記憶ではなく op.rs の記述が根拠**。
+
+#### ⚠⚠ 置換スクリプトが `mode_tests` を丸ごと消していた（自分で #80 の教訓を破った）
+
+`match` の中身を差し替えるとき `s.rindex("\n}\n")` で末尾を取ったところ、
+**その後ろにあった `#[cfg(test)] mod mode_tests`（#52 の「唯一の防波堤」）ごと置換**していた。
+⚠ **ビルドも clippy も通り、例題も全部通った**。気づいたのは
+**`cargo test` が 750 → 748 に減った**ことだけ。
+⇒ HEAD から `mod.rs` を取り直し、`mode_tests` の**手前**へ挿入し直して 750 に復帰。
+⇒ **#80 の「置換スクリプトには必ず件数の assert を入れる」を自分で破った**。
+**`rindex` で「末尾まで」を取る置換をしない**（何を消したかを assert できない）。
+
+### 検出力の確認（負の対照 3 本）
+
+⚠⚠ **発火しない assert は無意味**なので、**歴史的な失敗そのもの**を再現して確かめた。
+
+| 対照 | 仕込み | 結果 |
+|---|---|---|
+| ① 別の変数 | `collect_base_decls` から **`Stmt::Static` を落とす**（#27 の実バグの再現） | **発火**: `'acc' をリゾルバは slot 2、コンパイラは slot Some(3) と採番した` |
+| ② 範囲外 | `alloc_temp` が **`n_locals` を伸ばさない**ようにする | **発火**: `ローカル slot が範囲外: ip=11 op=StoreLocal(5) slot=5 n_locals=5` |
+| 2 段目 | `Op` に variant を +1 | **3 箇所**が停止（`run.rs:611` / `disasm.rs:16` / **`mod.rs:418`＝今回追加**）。⚠ `peephole::code_target_mut` は**止まらない**＝ #87 の穴がここで可視化された |
+
+⚠⚠ **assert が無いとどうなるか**も測った。① のプローブを **release**（`debug_assert` が消える）で
+走らせると `TypeError: unsupported operand types for Add: int and NoneType` で落ちる
+＝ **原因から遠い場所で、原因を示さないメッセージ**になる。
+⇒ この網の価値は「落ちること」ではなく「**落ちる場所と理由が原因と一致すること**」。
+
+### ⚠ release には 1 命令も足していない
+
+`local_slot` は release では `u16::try_from(slot).ok()` そのもの、`verify_storage_indices` は
+`#[cfg(debug_assertions)]` で**コードごと消える**。裏づけは実測:
+
+- [compare_bytecode.ps1](compare_bytecode.ps1) が **115 / 115 byte-identical・差分 0**
+  （⚠ **#85 が `d13ead9` としてコミットされたので、そこからビルドした `base85.exe` と A/B**
+  ＝ **#86 だけを切り分けた**。同一 exe の負の対照も **115/115・timeout 1** で完全一致）
+- ⇒ **A/B 速度計測は不要**と判断（#10-b の「`exec_op` のホットパスに足さない」は満たしている）
+
+### 検証（**すべて自分で走らせて確認**）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` / `--features prof` / `--features tw_stats` | **警告 0**（3 つとも） |
+| `cargo test` / `--features tw_stats` | **750** / **753** |
+| `cargo clippy` / `--all-targets` | **50 / 65**（増分 0） |
+| **全 162 例題を debug ビルドで実行** | **panic 0**（＝ 現状この不変条件は成立している） |
+| [compare_bytecode.ps1](compare_bytecode.ps1) / [compare_outputs.ps1](compare_outputs.ps1) | **115/115** / **98/98**（どちらも差分 0） |
+| [compare_python_impl.ps1](compare_python_impl.ps1) / [scan_examples.ps1](scan_examples.ps1) | **54/54** / **FAIL 0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・162 例題**（⚠ `bench_ab_native.ar` は #85 と同じくタイムアウト未確認） |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) / [stale_doc_refs.ps1](stale_doc_refs.ps1) | identical / **5 identical** / **0 件** |
+
+⚠⚠ **「162 本で panic 0」は「不変条件が守られている証明」ではない** — #85 が測ったとおり
+**例題が書いていない形は検査されない**（入れ子 fn の NESTED-GAP が 10 件残っている）。
+この網の値打ちは「**次に壊したとき、原因の場所で止まる**」ことにある。
+
 ## 見積もりと実測
 
 | 事前の想定 | 実際 |
