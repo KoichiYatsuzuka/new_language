@@ -9300,6 +9300,142 @@ VM 非対応**（実測で確認）。`nested_fn_free_names` が `GenDef` を見
 - ⚠ `ModuleBody` の payload だけ `#[allow(dead_code)]`（**7 本すべてが降りないと決めている**ため）。
   **`allow` の範囲は enum の 1 フィールドのみ**＝ #51 の「属性が別の警告を食う」は起こりえない
 
+## #85 未カバー構文の機械カウント — [syntax_cov](src/syntax_cov.rs) ＋ [syntax_cov.ps1](syntax_cov.ps1)（2026-08-26・完了）
+
+プラン冒頭が「**未カバーの構文を例題側から数える手段がまだ無い**（`Stmt` の全 variant ×
+文脈のマトリクスが無い）」と自認していた穴を塞ぐ。この穴から出た実バグは
+**#56 / #68 / #71 / #75 / #84 の 5 件**で、**全件が「その形の例題が 1 本も無かった」**ために
+全ゲート緑のまま通り抜けている。
+
+### ⚠⚠ 実行せずに測る（設計の要点）
+
+`compile_stmt` 入口で bump する当初案ではなく、**パース直後の AST を静的に歩く**方式にした。
+`AR_SYNTAX_COV=1` は AST を歩いて stderr へ出し、**実行せずに終了する**。理由は 3 つ:
+
+1. **決定的**。[force_gate.ps1](force_gate.ps1) は 161 例題中 **4 本をタイムアウト経由で完走**
+   させている（GUI）。実行を挟むとカバレッジがマシンの都合で揺れる。
+2. **呼ばれない関数の中も数えられる。** 問いは「**書いてあるか**」であって「実行されたか」ではない。
+   ⚠ `compile_stmt` 入口で数えると、bail する形が「未カバー」と report されて**理由が二重化**する。
+3. **速い**（実行しないので 161 例題が数十秒）。
+
+### ⚠ 走査は自前で持たない ＝ #59 / #81 / #84 の 3 点セットに乗せた
+
+木の歩き方は [decl_names](src/decl_names.rs)(#59)・[expr_walk](src/expr_walk.rs)(#81)・
+[stmt_walk](src/stmt_walk.rs)(#84) に**既にある**。`syntax_cov` は**それを歩いて数えるだけ**で、
+`Stmt`/`Expr` に variant を足すと `each_subpart` 側がコンパイルエラーになる
+⇒ **この計測が黙って古くなることは無い**。
+
+⚠ **#84 の直接の配当**: `syntax_cov` が `StmtPart::ModuleBody` の payload を読む
+**8 本目の消費者**になった（別モジュールの構文も数えるため）。
+⚠⚠ ただし **#84 の `#[allow(dead_code)]` は外せない** — `syntax_cov` は
+`#[cfg(feature = "tw_stats")]` なので**既定ビルドには居ない**。外して測ったら
+既定ビルドが**警告 2 件**になったので戻し、doc に理由を書いた（**推測で外さない**）。
+
+### 出す表（3 軸）
+
+| 表 | 読めること | 対応する歴史的バグ |
+|---|---|---|
+| `stmt` / `expr` | variant が全例題で 0 回か | — |
+| `ctx`（`variant@文脈`） | 文脈は**フレーム**（`top`/`fn`/`nested_fn`/`type`/`module`/`async`）×**式本体の中か**（`+expr`） | #68（関数本体の `enum`）／#75（式本体の中） |
+| `pair`（`親>子`） | 「`static mut s = block …:` を書いた例題があるか」 | #84 ①③ |
+
+⚠ **母集団（言語に存在する variant 一覧）は Rust 側が出す**（`SyntaxCov[all_stmt]`/`[all_expr]`）。
+集計スクリプトに一覧を書くとそちらが黙って古くなる。⚠⚠ さらに **観測した種別が一覧に無ければ
+`STALE POPULATION` で落とす** ＝ **161 例題ぶんの実 AST が母集団検査そのもの**になる
+（合成サンプルによる単体テストは書きかけて捨てた — 綴りを網羅できず、実データより弱い）。
+
+### 実測 — 初回の結果
+
+| 指標 | 値 |
+|---|---|
+| 測れた例題 | **154 / 161**（例題追加後は **155 / 162**。測れない 7 本は**理由つきで表示**する） |
+| `Stmt` variant | **39 / 40**（未カバーは `DebugLet`） |
+| `Expr` variant | **29 / 30**（未カバーは `DebugVar`） |
+| **最上位 `fn` には書かれているが入れ子 `fn` には 1 度も書かれていない** | **24 件** |
+
+⚠ `DebugLet` / `DebugVar` は**デバッガ REPL 専用**（`let dbg::x = …`）。`.ar` 例題には書けず、
+[debug_session.ps1](debug_session.ps1) の golden だけが踏んでいる ＝ **正しく「未カバー」**。
+
+⚠ **測れない 7 本の内訳**（黙って落とさず理由を出す）:
+`_error` / `_errors` 系 3 本（**わざと**パースに失敗する）／`importation.ar`
+（`rust.crates_path` 未設定＝環境依存）／⚠⚠ **`interop/subdir/sub_module.ar` と
+`sub_script.ar` は実在しない `tl_math` を import している ＝ 壊れたまま**。
+**どのゲートも捕まえていない**（`scan_examples` は**非再帰**でこのディレクトリを見ず、
+`force_gate` は `VmForceError` しか見ないので `ParseError` は素通り）。
+⇒ **#85 が最初に見つけた既存の穴**。修正は別タスク（例題の意図が読めないため）。
+
+### 検出力の確認（負の対照）
+
+⚠⚠ **#84 の実バグを再現できるかで検証した**（歴史的な真の未カバーで試す）。
+[examples/basics/nested_decl_scopes.ar](examples/basics/nested_decl_scopes.ar) を**一時的に外して**再測定:
+
+| キー | 例題あり | 例題なし |
+|---|---|---|
+| `pair Static>Block`（#84 ③） | **1** | **0** ✅ 検出 |
+| `pair Match>Let`（#84 ①） | **1** | **0** ✅ 検出 |
+| `ctx Match@nested_fn` | O | **O**（他の例題が踏む） |
+
+⇒ **ペア表を消すと差分はちょうど 2 件**（`Match>Let` と `Static>Block`）。
+⚠ **`ctx` 表だけでは #84 ① は検出できなかった** — 2 軸を両方持つ理由がこれ。
+⚠⚠ **#84 ② は検出できない**（入れ子 `fn` のブロック式。`Let>Block` は他の例題が埋めており、
+ペア表は文脈を持たないため）。文脈つきペアはキーが 3 倍以上に増えて読めなくなるので
+**意図的に分けていない** — 代わりに nested-fn 列を見る、という設計。
+
+### 見つけた穴に 1 本目の例題を当てた
+
+`NESTED-GAP` 24 件のうち高リスクなもの（`For`/`Try`/`Static`/`AttrCompoundAssign`/
+`Slice`/`Dict`/`Tuple`/`UnaryOp`/`IsType`/`MustBe`）を**先に手で叩いて実装差を確認**してから
+[examples/basics/nested_fn_syntax_matrix.ar](examples/basics/nested_fn_syntax_matrix.ar) を新設。
+⇒ **NESTED-GAP 24 → 10 件**（ツール自身が改善を数えた）。
+
+⚠ **新しい実バグは出なかった**（`impl_python` と全件一致）。#84 と違い、ここは「地図を作った」
+成果であって「バグを潰した」成果ではない。
+
+⚠⚠ ただし**切り分けで 1 件、既存の実装差を踏んだ**: `let bx = Box(0)` として `bx.v += 5` すると
+Rust は `cannot assign to immutable field 'v'`・`impl_python` は通る。**クロージャとは無関係**で
+（入れ子 `fn` 無しでも再現）、`let` 束縛の意味論の差。⚠ **どの例題も書いていない形**なので
+[compare_python_impl.ps1](compare_python_impl.ps1) にも映っていない。⇒ 起票は言語設計の決定が先。
+
+### ⚠ 作業ディレクトリを 2 通り試している
+
+`import` は**エントリスクリプトの dir 基準**だが、`ar_config.json` は **cwd からの祖先ウォーク**
+（#69/#74）。片方でしか解決できない例題が実在する（`event_external_handler.ar`）ので
+**両方試して測れた方を採る**。⚠ 既存ゲートも割れていた: `force_gate` はファイルの dir、
+`scan_examples` はリポジトリ直下。この差は #85 で初めて可視化された。
+
+### 検証（**すべて自分で走らせて確認**）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` / `--features tw_stats` / `--features prof` | **警告 0**（3 つとも） |
+| `cargo test` / `--features tw_stats` | **750** / **753**（新設 3 件） |
+| `cargo clippy` / `--all-targets` | **50 / 65**（増分 0） |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **115 / 115 byte-identical・差分 0** （⚠ **#84 が `04e48e6` としてコミットされたので、そこからビルドした `base84.exe` と A/B した** ＝ **#85 だけを切り分けた**。**同一 exe の負の対照も 115/115・timeout 1 で完全一致**） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **98 / 98 identical・差分 0**（同じ `base84.exe` と A/B） |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **54 / 54**・unexpected diff 0 |
+| [scan_examples.ps1](scan_examples.ps1) / [force_gate.ps1](force_gate.ps1) | **FAIL 0** / **0 件・162 例題**（⚠ うち `bench_ab_native.ar` 1 本は**タイムアウトで kill ＝ 未確認**。下記） |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) / [stale_doc_refs.ps1](stale_doc_refs.ps1) | identical / **5 identical** / **0 件** |
+
+⚠⚠ **`bench_ab_native.ar` が `compare_bytecode` と `force_gate` の両方でタイムアウトした**が、
+**この変更とは無関係**と 3 通りで裏を取った:
+
+1. `compare_bytecode` の**同一 exe 同士の負の対照**でも同じくタイムアウトする
+2. **pre-#84 のバイナリで直接実行しても 60 秒で終わらない**（exit 124）
+3. **180 秒でも終わらない**（新旧どちらのバイナリでも）
+
+⇒ ネイティブ bench で、`examples/bench/bench_ab_native_module.arc` の鮮度に依存する形
+（この `.arc` は**本セッション開始時点で既に変更済み**だった）。⚠ #84 の時点の force_gate では
+「サンプル未取得 0」だったので、**環境側の状態で出たり出なかったりする**。
+⇒ vm-pitfalls §1「触っていない経路が動いたら配置／環境の話」。**起票はしない**が、
+force_gate の「0 件」は**この 1 本を見ていない**ことを含めて読むこと。
+
+⚠ **既定ビルドのバイナリは実質無変更**（`syntax_cov` は `#[cfg(feature = "tw_stats")]` で
+モジュールごと消え、`run_program` の分岐も同じ cfg の下）。⇒ **バイトコード 115/115・出力 98/98 が
+byte-identical** で裏づけたので、A/B 速度計測は不要と判断した。
+⚠ 途中まで **pre-#84 のバイナリ**と比べていて「差分 1 件（＝#84 の例題）」を読んでいたが、
+#84 がコミットされた時点で**基準を #84 に取り直した**。⇒ **A/B の基準は「直前のタスク」に置く**
+（前々回の基準のままだと、他人の変更を自分の差分として読んでしまう）。
+
 ## 見積もりと実測
 
 | 事前の想定 | 実際 |

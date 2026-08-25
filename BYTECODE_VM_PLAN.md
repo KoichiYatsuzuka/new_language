@@ -41,19 +41,13 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 ⚠⚠ **2026-08-25 に「新文法（`++`・メタプロ用 `expr`）の追加に対する冗長性」を負の対照で実測し
 #84〜#89 を起票**（プローブ variant を足して止まる箇所を数えた ＝ `Expr` **6** / `Stmt` **7** しか
 止まらず、実在 walker は **27** / **45**）。**#75・#81 で `Expr` 側は塞がり、残るのは `Stmt` 側と VM 側**。
-⇒ **#84 は完了**（下の到達点表）。**残りは #85〜#88 と別レーン 3 件**。
+⇒ **#84・#85 は完了**（下の到達点表）。**残りは #86〜#88 と別レーン 3 件**。
 ⚠⚠ **「保守性」のつもりで始めた 4 件から実バグが出た**（#68 関数本体の `enum` ／
 #71 `import[py]` の関数が 1 つも呼べない ／ #65 `ljust`・`rjust`・`center` ／ **#75 クロージャの捕捉**）。
-到達点は 1 行ずつ（詳細は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号）:
+到達点は 1 行ずつ（詳細は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号。⚠ **#47〜#57 は区切り線の下の「到達点の履歴」へ移した**・規約 3）:
 
 | # | 到達点（**事実と手法のみ**） |
 |---|---|
-| 47 | master との**端点 A/B を実行モード別に実測**（[ab_bench_modes.ps1](ab_bench_modes.ps1) 新設）。解釈 **3.97x** ／ native の境界・コールバック **1.60x** ／ 純ネイティブ **1.00x**（＝負の対照）／ C DLL は見かけ 2.18x でも **FFI 自体は 1.15〜1.23x** |
-| 48 | #47 で出た実バグを修正 — native の `mut` ポインタ書き戻しを**コンパイル時に決めて副表（node_id キー）へ**。副産物で cdll 呼び出しが **1.13〜1.16x** |
-| 49 | [debug_session.ps1](debug_session.ps1) の stdin BOM 混入を解消（**golden 無変更で 5/5 identical**） |
-| 50 | **段別＋op 別の実行時間分布**を実測（[prof_dist.ps1](prof_dist.ps1)・`--features prof` 新設） |
-| 51〜56 | 保守性レーン全 6 件完了（陳腐化コメント一掃＋[stale_doc_refs.ps1](stale_doc_refs.ps1) 新設／`CompileMode` 導入／`compiler.rs` を 10 モジュールへ分割／typed ABI 呼び出しの 1 本化／`eval()` の生死判定／**`parse_ar` の復活**） |
-| 57 | [stale_doc_refs.ps1](stale_doc_refs.ps1) の**再発 14 件を 0 に**（改名の取り残し／マーカー語／`$whitelist`）。**負の対照で検知力も確認** |
 | 58 | `exec` の `Stmt::Import` アーム **210 行 → 8 行の委譲**（`exec_import` ＋ 補助 7 本を `exec/modules.rs` へ）。`exec` **394→192 行**・最大ネスト **11→5**。逐語重複 2 件を畳み、探索順が違う 2 本は**畳まない理由を明記**。⚠ **cs-proc を見る差分ゲートが 0 個**だったので [compare_import_paths.ps1](compare_import_paths.ps1) を新設 |
 | 59 | 「**この文はどの名前を束縛するか**」を [decl_names.rs](src/decl_names.rs) の 1 箇所へ（`each_declared_name` ＋ `DeclOrigin`）。**exhaustive match 2 段で「足したら壊れる」形に**し、walker 4 本を委譲（4 本は理由を確かめて残置）。⚠ **負の対照で検知力を確認**（`DeclOrigin` +1 → 消費者 4 本ちょうど停止／`Stmt` +1 → `decl_names` が停止） |
 | 60 | `parse_struct_bodies` を早期 continue へ反転（**103→60 行・ネスト 11→3**）＋ `scan_scope`（**82→49 行・ネスト 7→3**）。⚠⚠ **起票時の行数 307/405 は誤り**（診断が**文字リテラルを潰さず**ブレース平衡を崩していた）。実ヘッダ 6 本の全パース結果が **byte-identical**。⚠ 実ヘッダ検査が「VECTOR が居る」だけの空検査だったので件数・レイアウトを固定 |
@@ -79,6 +73,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | 83 | `ar_call_fn` の**ガードの入れ子**を平坦化（typed 高速パスを `try_typed_fast_call` ＋ 2 段へ切り出して早期 return へ反転）。**196 行/ネスト 8 → 96 行/ネスト 5**・切り出し先は最大ネスト 2。src の**ネスト ≥7 は 2 本 → 1 本**。⚠⚠ **`#[inline(always)]` は速度目的ではなく「生成コードを変えないため」**（外すと **cdll が 0.94x**。⚠ **cdll は `ar_call_fn` を通らない**ので配置の話 — 属性を戻すだけで 1.04x に振れた）。⚠ **ノイズ帯は測るたび違う**（±1%〜±3.5%）ので**対照は同じセッションで取る** |
 | 76 | **typed ABI 引数マーシャリングの 4 コピーを 1 本化**（`TypedArgs::marshal`／#54 が呼び出しだけ畳んだ続き）。畳めた根拠は「差は**入力**（`named_mut` を何にできるか）と**書き戻し先**だけ」で、⚠ **`Some(false)`（名前付き `let`）と `None` は同義でない**ので潰さず引数化。ネスト **7 が 4 本 → 0 本**（773→599 行）。⚠⚠ **`Vec` を 1 個ホットパスに置いて cdll が 0.900x に退行**→固定長配列で解消（**判定は負の対照で**）。⚠ `ar_call_fn` の深さ 8 は残る（実体はマーシャリングでなく**ガードの入れ子**）|
 | 84 | **`Stmt` 再帰骨格の 7 本を [stmt_walk.rs](src/stmt_walk.rs) へ 1 本化**（#59 の名前・#81 の式に続く**3 つ目の半分**。両者が doc で「範囲外」と書いていた所）。⚠⚠ **畳む前に 8 walker × 40 variant の表を機械生成したら実バグ 3 件**（`collect_declared_names` が `match` 腕と部分式へ降りない ／ `collect_nested_decls` が `Stmt::Static` の初期化式へ降りない）＝ **すべて `VmForceError` で停止する形**で、**3 件とも例題が 0 本**（#56/#68/#71/#75 に続く **5 度目**）。⚠ **2 段目が本番で発火**（`TargetName` 追加で消費者 6 本が停止）。負の対照で `StmtPart` +1 → **7 本ちょうど**停止。walker **45→39**・`_ => {}` **35→29**。**bytecode 114/114 byte-identical**（＝例題が無かったことの裏取り）。⚠ `collect_base_decls` は**対象外**（そもそも降りない・既定が安全側）。例題 +1（負の対照つき） |
+| 85 | **例題スイートの構文カバレッジを機械で数える**（[syntax_cov.rs](src/syntax_cov.rs) ＋ [syntax_cov.ps1](syntax_cov.ps1) 新設）。プランが自認していた「未カバー構文を数える手段が無い」を塞いだ。⚠⚠ **実行せず・パース直後の AST を歩く**（`AR_SYNTAX_COV=1` は実行前に終了）＝ GUI もタイムアウトも無く**決定的**。走査は自前で持たず **#59/#81/#84 の 3 点セットに乗せた**ので**黙って古くならない**（母集団も Rust 側が出し、観測種別が一覧に無ければ落とす）。実測: `Stmt` **39/40**・`Expr` **29/30**（未カバーは debugger 専用の 2 つ）／⚠⚠ **最上位 fn には書かれているが入れ子 fn には 1 度も無い構文が 24 件**（歴史的バグ 5 件中 4 件がこの文脈）。⚠ **検出力は #84 の実バグで確認** — 例題を外すと `Static>Block`・`Match>Let` が**ちょうど 2 件**消える。例題 +1 で **24→10 件**。⚠ 副産物で**壊れたまま全ゲートを素通りしていた例題 2 本**を発見 |
 | 75 | **クロージャの捕捉が「式形式の制御構文」を見ていなかった実バグを修正**（第 3 弾の診断で発見）。`collect_referenced_names_stmt` / `collect_refs_expr` の `_ => {}` を**両方 exhaustive 化**（`Expr` 30 中 8・`Stmt` 40 中 6 が欠落）。⚠⚠ 起票時は `Expr` 側だけのつもりだったが、**対の `Stmt` 側にも穴があり `match` 文が実バグとして再現**。例題を新設し**負の対照で検出力も確認**。⚠⚠ **clippy の基準 50/63 は数え方違い**（同コマンドで HEAD を測り直すと 51/66 ＝ **増分 0**） |
 | 74 | `python.search_paths` の**探索方針を祖先ウォークへ統一**（本系列で初の**意図的な挙動変更**）。⚠⚠ 揃える前は**同じ設定が `import[py-int]` からは見えて `import[py]` からは ParseError** だった（実証済み）。根拠は「読み手 5 つのうち **4 つが既にウォーク**」。差分は**意図した 1 件だけ**（outputs 93/93・bytecode 110/110 は同一） |
 
@@ -93,21 +88,24 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 ⚠ **同じコードでも書く場所で速さが違う**（#47）: 最上位は fn 内より改善が薄い
 （baseline 1.62x ↔ 5.90x）＝ **VM に載っている ≠ 同じ速さ**。
 
-> **✅ 全ゲート緑（2026-08-25・#84 完了時に自分で走らせて確認）**
-> `cargo test` **750** ／ `cargo build` **警告 0**（`--features prof` / `--features tw_stats` も 0）／
-> `cargo clippy` **50**・`--all-targets` **65** ／
-> [compare_outputs.ps1](compare_outputs.ps1) **96** ／ [compare_bytecode.ps1](compare_bytecode.ps1) **114** ／
-> [compare_import_paths.ps1](compare_import_paths.ps1) **13** ／ [scan_examples.ps1](scan_examples.ps1) **FAIL 0** ／
-> [ab_bench_modes.ps1](ab_bench_modes.ps1) は**負の対照つきで**読む（⚠ **帯は測るたび違う** — ±1%〜±3.5%・#76/#83。**同じセッションで取る**）／
-> [force_gate.ps1](force_gate.ps1) **0 件・161 例題** ／ [compare_python_impl.ps1](compare_python_impl.ps1) **53/53**（既知差分 45）／
-> [repl_session.ps1](repl_session.ps1) **identical** ／ [debug_session.ps1](debug_session.ps1) **5 identical** ／
-> [stale_doc_refs.ps1](stale_doc_refs.ps1) **0 件** ／ `tw_stats` は `in_fn` 0・`tw_control_flow` 0・bail 0。
+> **✅ 全ゲート緑（2026-08-26・#85 完了時に自分で走らせて確認）**
+> `cargo test` **750**（`--features tw_stats` は **753**）／ `cargo build` **警告 0**（`prof` / `tw_stats` も 0）／
+> `cargo clippy` **50**・`--all-targets` **65** ／ [compare_outputs.ps1](compare_outputs.ps1) **98/98** ／
+> [compare_bytecode.ps1](compare_bytecode.ps1) **115/115** ／ [compare_import_paths.ps1](compare_import_paths.ps1) **13** ／
+> [scan_examples.ps1](scan_examples.ps1) **FAIL 0** ／ [force_gate.ps1](force_gate.ps1) **0 件・162 例題**（⚠ `bench_ab_native.ar` 1 本は**タイムアウトで未確認**。新旧どちらのバイナリでも 180 秒で終わらない＝環境要因）／
+> [compare_python_impl.ps1](compare_python_impl.ps1) **54/54**（既知差分 45）／ [repl_session.ps1](repl_session.ps1) **identical** ／
+> [debug_session.ps1](debug_session.ps1) **5 identical** ／ [stale_doc_refs.ps1](stale_doc_refs.ps1) **0 件** ／
+> `tw_stats` は `in_fn` 0・`tw_control_flow` 0・bail 0 ／ [ab_bench_modes.ps1](ab_bench_modes.ps1) は**負の対照つきで**読む
+> （⚠ **帯は測るたび違う** — ±1%〜±3.5%・#76/#83。**同じセッションで取る**）。
+> ⚠⚠ **A/B の基準は「直前のタスク」に置く**（前々回の基準のままだと**他人の変更を自分の差分として読む**）。
 > ⚠⚠ **この数字を信用せず、同じセッションで HEAD を stash して測り直す**（`clippy` は
 > プラン「50/63」・#75 の実装ログ「51/66」・#84 の実測「50/65」と **3 通りあった**）。
 > **基準値はコマンドごと書き、総数ではなく増分 0 を見る**。差は `benches/`。
 > ⚠⚠ **緑は「例題が書いている形については緑」という意味しかない** — この状態で #68・#71・
-> **#84 の 3 件**の実バグが生きていた。⚠⚠ **#65 で「増分 0 でも足りない」と分かった**：
-> **受け入れ済み clippy 51 件の中に実バグを指す警告が埋もれていた**（`replacing text with itself`）。
+> **#84 の 3 件**の実バグが生きていた。⇒ **#85 でその「書いている形」自体を数えられるようにした**
+> （[syntax_cov.ps1](syntax_cov.ps1)。⚠ **入れ子 fn の穴が 10 件残っている**）。
+> ⚠⚠ **#65 で「増分 0 でも足りない」と分かった**：**受け入れ済み clippy 51 件の中に実バグを指す警告が
+> 埋もれていた**（`replacing text with itself`）。
 
 ⚠⚠ **ゲートを作っただけでは陳腐化は止まらない**（#51 → #57・内訳は実装ログ）。
 #51 が 61→0 にした [stale_doc_refs.ps1](stale_doc_refs.ps1) は**直後の 4 タスクで 14 件に戻った**
@@ -195,9 +193,10 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 >    1 呼び出し ≈ 275ns（うち `Call` op 自体が ≈ 213ns。int 加算 ≈ 11〜13ns の **20 倍**）。
 >    `Jump`+`JumpIfFalse` は合わせて **4.1%** しかない（安い命令を狙うな・#46）。
 
-1. 🎉 **第 3 弾（#75〜#83）は全件完了**。⇒ 今すぐ着手できるのは **#85〜#88**（2026-08-25 起票・
-   ドリフト強制の残り。**#84 は完了**）と**別レーン 3 件**（#19 / #17-a / #17-b・外部接続系・優先度低）。
-   ⚠ **#85 が最も安く最も効く**（材料が全部揃っており、実バグ 4 件の共通原因に直接効く）。
+1. 🎉 **第 3 弾（#75〜#83）＋ #84・#85 完了**。着手できるのは **#86〜#88** と**別レーン 3 件**
+   （#19 / #17-a / #17-b・外部接続系・優先度低）。⚠⚠ **#85 が地図を出した** —
+   [syntax_cov.ps1](syntax_cov.ps1) の **NESTED-GAP 10 件**が「次に足すべき例題」の一覧
+   （**歴史的バグ 5 件中 4 件が入れ子 fn**）。新しい課題を探すならまずここ。
    速度を再開するなら #50 の分布は #69・#70 で 2 段動いたので**取り直しから**（[prof_dist.ps1](prof_dist.ps1) `-Mode phases`）。
    残っている段はプロセス費用 1.5ms・`type_check` 0.18ms・`parse` 0.17ms ＝ **どれも master のまま**。
 2. 別レーン（#19 / #17-a / #17-b）— 外部接続系・優先度低。いつ着手しても他をブロックしない。
@@ -221,6 +220,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
   デバッガに触るなら [debug_session.ps1](debug_session.ps1)、REPL なら [repl_session.ps1](repl_session.ps1)、
   codegen なら [dump_native_ir.ps1](dump_native_ir.ps1) の IR byte-identical（最強の検査）。
   ⚠ **VM の適格範囲に触るなら [tw_stats.ps1](tw_stats.ps1) も**（ツリーウォークが定義文だけかを確認）。
+  ⚠⚠ **新しい構文・文脈を扱うなら [syntax_cov.ps1](syntax_cov.ps1)**（#85。例題が書いていない形を出す）。
   ⚠⚠ **「挙動不変」の主張には [compare_bytecode.ps1](compare_bytecode.ps1)**（#68 で .ps1 化・
   **使う前に同一 exe 同士で負の対照**を取る。#68 は 108/108 を確認してから A/B を読んだ）。
   ⚠⚠ **識別子を改名・削除したら [stale_doc_refs.ps1](stale_doc_refs.ps1) を必ず走らせる**
@@ -255,6 +255,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | [compare_outputs.ps1](compare_outputs.ps1) | **全例題の stdout/stderr/exit が 2 バイナリで同一か**（#63 で新設・**93 例題**）。⚠⚠ **解釈側（`eval_*`/`exec_*`）だけを触った変更は [compare_bytecode.ps1](compare_bytecode.ps1) が自明に一致してしまう**ので、挙動不変はこちらで主張する。⚠ `bench` 分類は**経過時間そのものが出力**なので丸ごと対象外（`interop/bench_ab_cdll.ar` は名指しで除外）。⚠ アドレス（`0x…`・`id()`）は**除外せず正規化**する — `collection.ar` を落とすと set メソッドを見る網が消える |
 | [force_gate.ps1](force_gate.ps1) | **VM に載らない構文の回帰検知**（#25。#33 完了後は「既定の挙動が全例題で通るか」の検査）。全例題を実行し `VmForceError` を列挙。⚠ **止めて判定する**用途で件数は `tw_stats.ps1` で見る。GUI 例題は**タイムアウト後に窓を閉じて**完走させる（#29） |
 | [prof_dist.ps1](prof_dist.ps1) | **非コンパイル実行の実行時間分布**（#50 で新設・要 `--features prof`）。`-Mode phases` で段別（startup/lex/parse/type_check/resolve/interp_init/exec/teardown）、`-Mode ops` で **exec 中の op 別滞在時間**（統計サンプリング）。⚠ **1 回目はファイルのコールドリードを踏む**ので既定で 2 パス走らせて 2 パス目だけ採る。⚠ `-Mode ops` はサンプラーが 1 コアをスピンするので**プロセス wall が伸びる**（wall を見るときは `-Mode phases`） |
+| [syntax_cov.ps1](syntax_cov.ps1) | **例題スイートが一度も書いていない構文**を数える（#85 で新設・要 `--features tw_stats`）。⚠ **実行しない**（`AR_SYNTAX_COV=1` はパース直後に AST を歩いて終了）ので GUI もタイムアウトも無く**決定的**。出るのは ①未カバー variant ②`variant×文脈`マトリクス（`top`/`fn`/`nested_fn`/`type`/`module`/`async` × 式本体の中か）③`親>子` ペア（`-Pairs`）。⚠⚠ **最も見る所は `NESTED-GAP`**（最上位 fn には書かれているが入れ子 fn には無い構文）— **歴史的な実バグ 5 件中 4 件がこの文脈**。⚠ 測れない例題は**理由つきで表示**する（黙って落とさない）。⚠ 母集団は Rust 側が出し、観測種別が一覧に無ければ `STALE POPULATION` で落ちる |
 | [tw_stats.ps1](tw_stats.ps1) / [tw_stats_files.ps1](tw_stats_files.ps1) | **ツリーウォークが実際に実行している文**を全例題で集計（`AR_TW_STATS`）／その例題別内訳。feature 付きビルドを自動で行う |
 | [run_examples.ps1](run_examples.ps1) / [bench.ps1](bench.ps1) | 素朴な例題ランナー（タイムアウトなし）／ベンチ一式 |
 
@@ -265,6 +266,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | `AR_ANNOT_DIFF=1` | 注釈の充填状況・binop 特化の内訳・`Unresolved` の発生源・slot 索引読みの件数・`AnnotIdent`（識別子読みの型落ち内訳・#15b） |
 | `AR_VM_DUMP=1` | VM の生成バイトコードを逆アセンブルして stderr へ |
 | `AR_PROF=1` / `AR_PROF=ops` | 実行時間分布（#50）。段別のみ／段別＋**exec 中の op 別サンプリング**（`AR_PROF_US` で間隔µs・既定 20、`AR_PROF_CSV` で CSV 出力）。**`cargo build --release --features prof` が要る**（既定ビルドではコードごと消える） |
+| `AR_SYNTAX_COV=1` | 例題スイートの**構文カバレッジ**（#85）。パース直後の AST を歩いて `SyntaxCov[...]` を stderr へ出し、**実行せずに終了する**。**`cargo build --features tw_stats` が要る**（既定ビルドではコードごと消える）。集計は [syntax_cov.ps1](syntax_cov.ps1) |
 | `AR_TW_STATS=1` | ツリーウォークの実行内訳（文種別×最上位/関数内）・VM コンパイル成否・bail 地点・**`tw_eval`（`eval()` の回数と AST 引数版入口 5 つの通過数・#55。通常実行ではほぼ 0）**・**`tw_control_flow`（TLS/センチネルを使う経路に入った回数・#3。通常実行では 0）**。**`cargo build --features tw_stats` が要る**（既定ビルドではコードごと消える。env 判定だけにすると `exec()` 1 文ごとの atomic 読みで 11% 退行する） |
 
 ### 落とし穴（既知）
@@ -292,7 +294,6 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 | # | タスク | 手法 | 前提（依存） | 状態 |
 |---|---|---|---|---|
-| 85 | **未カバー構文の機械カウント**（最安・最効） | exhaustive な `stmt_kind`/`expr_kind` を `compile_*` 入口で bump し例題横断で集計（材料は全部ある） | — | 未着手 |
 | 86 | VM の slot 採番に不変条件検査が 0 件 | デバッグ名テーブル（§2.3）と `LoadLocal`/`StoreLocal` の slot を突き合わせ（`cfg(debug_assertions)`） | — | 未着手 |
 | 87 | `peephole::code_target_mut` の `_ => None` | 全 89 variant を列挙し**op を足すと止まる**形へ | — | 未着手 |
 | 88 | パイプライン配線が 3 入口に手写し | **まず 3 入口の差を測る**（#72 と同じく畳まない判断もありうる） | — | 未着手 |
@@ -502,6 +503,19 @@ cargo run -- <file.ar>              # フォールバックは無い。載らな
 §3 アーキテクチャ決定 / §1 背景実測 / §7 速度投影 / §8 非目標 / §9 未決事項。
 番号は初版のまま（本文中の相互参照 §3.4 等を保つため物理位置のみ末尾へ移動）。
 ═══════════════════════════════════════════════════════════════════════════════
+
+## 到達点の履歴 — #47〜#57（規約 3 で必読部から移動）
+
+⚠ 詳細・実測・判断の根拠は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) の同番号。
+
+| # | 到達点（**事実と手法のみ**） |
+|---|---|
+| 47 | master との**端点 A/B を実行モード別に実測**（[ab_bench_modes.ps1](ab_bench_modes.ps1) 新設）。解釈 **3.97x** ／ native の境界・コールバック **1.60x** ／ 純ネイティブ **1.00x**（＝負の対照）／ C DLL は見かけ 2.18x でも **FFI 自体は 1.15〜1.23x** |
+| 48 | #47 で出た実バグを修正 — native の `mut` ポインタ書き戻しを**コンパイル時に決めて副表（node_id キー）へ**。副産物で cdll 呼び出しが **1.13〜1.16x** |
+| 49 | [debug_session.ps1](debug_session.ps1) の stdin BOM 混入を解消（**golden 無変更で 5/5 identical**） |
+| 50 | **段別＋op 別の実行時間分布**を実測（[prof_dist.ps1](prof_dist.ps1)・`--features prof` 新設） |
+| 51〜56 | 保守性レーン全 6 件完了（陳腐化コメント一掃＋[stale_doc_refs.ps1](stale_doc_refs.ps1) 新設／`CompileMode` 導入／`compiler.rs` を 10 モジュールへ分割／typed ABI 呼び出しの 1 本化／`eval()` の生死判定／**`parse_ar` の復活**） |
+| 57 | [stale_doc_refs.ps1](stale_doc_refs.ps1) の**再発 14 件を 0 に**（改名の取り残し／マーカー語／`$whitelist`）。**負の対照で検知力も確認** |
 
 ## 4. Phase R — AST 解決層 ＋ フレーム/slot ランタイム（**共有基盤・本命**）　【✅ R1/R3/R4/codegen 消費 完了。R2-c は**ブロック中**（消費者不在）・R0-A(#12b) は**保留**】
 

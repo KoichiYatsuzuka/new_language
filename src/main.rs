@@ -9,6 +9,9 @@ mod ast;
 mod decl_names;
 mod expr_walk;
 mod stmt_walk;
+// 例題スイートの構文カバレッジ計測（#85）。診断専用なので tw_stats と同じ feature に閉じる。
+#[cfg(feature = "tw_stats")]
+mod syntax_cov;
 #[cfg(test)]
 mod frontend_tests;
 mod interpreter;
@@ -347,6 +350,14 @@ fn run_program(
         .map_err(|e| format!("ParseError: {e}"))?;
     #[cfg(feature = "prof")]
     drop(_p_parse);
+
+    // 構文カバレッジ（#85）。⚠ **実行せずにここで終わる** — GUI・async・FFI を起こさずに
+    // 全例題を舐めるための仕掛け（`AR_SYNTAX_COV` はどのゲートも立てない）。
+    #[cfg(feature = "tw_stats")]
+    if syntax_cov::enabled() {
+        syntax_cov::dump_program(&stmts);
+        return Ok(());
+    }
 
     // --- 静的型検査: AST を走査してエラー・警告を収集し、AST 型解決層の注釈を生成する（#16 段階(a)） ---
     #[cfg(feature = "prof")]
