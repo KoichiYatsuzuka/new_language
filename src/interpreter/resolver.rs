@@ -307,74 +307,24 @@ fn collect_bound_names(body: &[Stmt], out: &mut HashSet<String>) {
 
 /// 式の内部（ブロック式・for 式など）に現れる束縛も集める。
 fn collect_bound_in_expr(expr: &Expr, out: &mut HashSet<String>) {
-    match expr {
-        Expr::Block { stmts, .. } => collect_bound_names(stmts, out),
-        Expr::IfExpr { branches, else_body, .. } => {
-            for (c, b) in branches {
-                collect_bound_in_expr(c, out);
-                collect_bound_names(b, out);
+    // 部分式の構造は 1 箇所（#81）。⚠ **`_ => {}` を書かない**。
+    //
+    // ⚠ #81 で `Slice` と `TemplateInstantiate` へも降りるようになった（それ以前は
+    // `_ => {}` に落ちて**見ていなかった**）。束縛は取りこぼすと危険側に倒れるので、
+    // 網が広がるのは正しい方向。挙動が動かないことは compare_bytecode で確認した。
+    crate::expr_walk::each_subpart(expr, &mut |part| {
+        use crate::expr_walk::SubPart as P;
+        match part {
+            P::Plain(x) | P::Control(x) => collect_bound_in_expr(x, out),
+            P::Body(b) => collect_bound_names(b, out),
+            // `for` ターゲットは入れ子スコープの束縛（この walker は拾う）。
+            P::ForTarget(t) => {
+                out.insert(t.to_string());
             }
-            if let Some(b) = else_body {
-                collect_bound_names(b, out);
-            }
+            // ⚠ パターンは**束縛を作らない**（`case` は値比較・#81 以前も見ていない）。
+            P::MatchPattern(_) => {}
         }
-        Expr::ForExpr { target, iter, body, .. } => {
-            out.insert(target.clone());
-            collect_bound_in_expr(iter, out);
-            collect_bound_names(body, out);
-        }
-        Expr::WhileExpr { cond, body, .. } => {
-            collect_bound_in_expr(cond, out);
-            collect_bound_names(body, out);
-        }
-        Expr::MatchExpr { subject, arms, .. } => {
-            collect_bound_in_expr(subject, out);
-            for a in arms {
-                collect_bound_names(&a.body, out);
-            }
-        }
-        Expr::BinOp { left, right, .. } => {
-            collect_bound_in_expr(left, out);
-            collect_bound_in_expr(right, out);
-        }
-        Expr::UnaryOp { operand, .. } => collect_bound_in_expr(operand, out),
-        Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => {
-            collect_bound_in_expr(object, out)
-        }
-        Expr::Call { func, args, .. } => {
-            collect_bound_in_expr(func, out);
-            for a in args {
-                match a {
-                    CallArg::Positional(e) | CallArg::Keyword { value: e, .. } => {
-                        collect_bound_in_expr(e, out)
-                    }
-                    CallArg::Variadic(es) => {
-                        for e in es {
-                            collect_bound_in_expr(e, out);
-                        }
-                    }
-                }
-            }
-        }
-        Expr::Subscript { object, index, .. } => {
-            collect_bound_in_expr(object, out);
-            collect_bound_in_expr(index, out);
-        }
-        Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
-            for e in items {
-                collect_bound_in_expr(e, out);
-            }
-        }
-        Expr::Dict(pairs) => {
-            for (k, v) in pairs {
-                collect_bound_in_expr(k, out);
-                collect_bound_in_expr(v, out);
-            }
-        }
-        Expr::Cast { object, .. } => collect_bound_in_expr(object, out),
-        Expr::MustBe { expr, .. } | Expr::IsType { expr, .. } => collect_bound_in_expr(expr, out),
-        _ => {}
-    }
+    });
 }
 
 /// 単一関数の base スコープを解決して本体の読み取りを書き換える。

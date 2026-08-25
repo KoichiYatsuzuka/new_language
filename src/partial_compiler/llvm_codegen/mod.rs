@@ -808,71 +808,104 @@ fn ann_has_intersection(params: &[crate::ast::Param], return_type: Option<&str>)
 /// `annotations` は型検査が生成した AST 型解決層の注釈（#16 段階(c)）。node-id は
 /// `stmts` を作ったパーサの採番であり、ここで扱うのも同じトップレベル定義のみ
 /// （import 済みモジュール body は `Stmt::Import` に入れ子で対象外）＝ node-id 空間が一致する。
+/// ネイティブ codegen の対象と決まった関数／メソッド 1 つ分。
+struct EligibleFn<'a> {
+    /// Symbol prefix used in the DLL (e.g. "dot" or "Vec2D__dot").
+    symbol:      String,
+    /// Original method/function name (used in FnExport).
+    orig_name:   &'a str,
+    /// Owning class name for methods; None for top-level functions.
+    class_name:  Option<String>,
+    params:      &'a [Param],
+    return_type: Option<&'a str>,
+    body:        &'a [Stmt],
+    is_gen:      bool,
+}
+
+/// `FnDef` / `GenDef` がネイティブ codegen の対象かを判定し、対象なら [`EligibleFn`] を組む（#82）。
+///
+/// `class_name` が `Some` ならメソッド（シンボルを [`method_symbol`] でクラス修飾する）、
+/// `None` なら最上位関数。`FnDef`/`GenDef` 以外は `None`。
+///
+/// ⚠⚠ **#82 以前はこの判定が 4 箇所に手書きされていた**
+/// （最上位 × クラス本体 の 2 通り × `fn` / `gen` の 2 通り）。
+/// **4 つで違うのはシンボルをクラス修飾するかだけ**なので、判定はここに集約する。
+///
+/// ⚠ `fn` と `gen` で本当に違うのは 3 点だけ:
+/// ① 適格判定（`body_eligible` / `body_eligible_gen`）
+/// ② `is_abstract` は `fn` にしか無い
+/// ③ `gen` は戻り値注釈を見ない（`return_type: None` で交差型検査も `None`）。
+fn eligible_fn<'a>(stmt: &'a Stmt, class_name: Option<&str>) -> Option<EligibleFn<'a>> {
+    let symbolize = |name: &str| match class_name {
+        Some(c) => method_symbol(c, name),
+        None => name.to_string(),
+    };
+    match stmt {
+        Stmt::FnDef { name, template_params, params, body, is_abstract, return_type, .. } => {
+            if !template_params.is_empty() || *is_abstract || !body_eligible(body) {
+                return None;
+            }
+            if ann_has_intersection(params, return_type.as_deref()) {
+                return None;
+            }
+            Some(EligibleFn {
+                symbol: symbolize(name),
+                orig_name: name,
+                class_name: class_name.map(str::to_string),
+                params,
+                return_type: return_type.as_deref(),
+                body,
+                is_gen: false,
+            })
+        }
+        Stmt::GenDef { name, template_params, params, body, .. } => {
+            if !template_params.is_empty() || !body_eligible_gen(body) {
+                return None;
+            }
+            if ann_has_intersection(params, None) {
+                return None;
+            }
+            Some(EligibleFn {
+                symbol: symbolize(name),
+                orig_name: name,
+                class_name: class_name.map(str::to_string),
+                params,
+                return_type: None,
+                body,
+                is_gen: true,
+            })
+        }
+        _ => None,
+    }
+}
+
 pub fn generate_llvm_module(
     stmts: &[Stmt],
     annotations: &AstAnnotations,
 ) -> Option<(String, Vec<FnExport>)> {
-    struct EligibleFn<'a> {
-        /// Symbol prefix used in the DLL (e.g. "dot" or "Vec2D__dot").
-        symbol:      String,
-        /// Original method/function name (used in FnExport).
-        orig_name:   &'a str,
-        /// Owning class name for methods; None for top-level functions.
-        class_name:  Option<String>,
-        params:      &'a [Param],
-        return_type: Option<&'a str>,
-        body:        &'a [Stmt],
-        is_gen:      bool,
-    }
-
     let mut eligible: Vec<EligibleFn> = Vec::new();
 
+    // ⚠ 収集の**順序**が emit 順（＝生成 IR）を決める。最上位は `stmts` 順、
+    //    メソッドはクラス本体順 — #82 で畳んだときもこの順序は変えていない。
     for s in stmts {
         match s {
-            Stmt::FnDef { name, template_params, params, body, is_abstract, return_type, .. } => {
-                if !template_params.is_empty() || *is_abstract || !body_eligible(body) { continue; }
-                if ann_has_intersection(params, return_type.as_deref()) { continue; }
-                eligible.push(EligibleFn {
-                    symbol: name.clone(), orig_name: name, class_name: None,
-                    params, return_type: return_type.as_deref(), body, is_gen: false,
-                });
-            }
-            Stmt::GenDef { name, template_params, params, body, .. } => {
-                if !template_params.is_empty() || !body_eligible_gen(body) { continue; }
-                if ann_has_intersection(params, None) { continue; }
-                eligible.push(EligibleFn {
-                    symbol: name.clone(), orig_name: name, class_name: None,
-                    params, return_type: None, body, is_gen: true,
-                });
+            Stmt::FnDef { .. } | Stmt::GenDef { .. } => {
+                if let Some(e) = eligible_fn(s, None) {
+                    eligible.push(e);
+                }
             }
             Stmt::ClassDef { name: class_name, body: class_body, template_params, .. } => {
                 if !template_params.is_empty() { continue; }
                 for method_stmt in class_body {
-                    match method_stmt {
-                        Stmt::FnDef { name: mname, template_params: mtp, params, body, is_abstract, return_type, .. } => {
-                            if !mtp.is_empty() || *is_abstract || !body_eligible(body) { continue; }
-                            if ann_has_intersection(params, return_type.as_deref()) { continue; }
-                            eligible.push(EligibleFn {
-                                symbol: method_symbol(class_name, mname),
-                                orig_name: mname,
-                                class_name: Some(class_name.clone()),
-                                params, return_type: return_type.as_deref(), body, is_gen: false,
-                            });
-                        }
-                        Stmt::GenDef { name: mname, template_params: mtp, params, body, .. } => {
-                            if !mtp.is_empty() || !body_eligible_gen(body) { continue; }
-                            if ann_has_intersection(params, None) { continue; }
-                            eligible.push(EligibleFn {
-                                symbol: method_symbol(class_name, mname),
-                                orig_name: mname,
-                                class_name: Some(class_name.clone()),
-                                params, return_type: None, body, is_gen: true,
-                            });
-                        }
-                        _ => {}
+                    if let Some(e) = eligible_fn(method_stmt, Some(class_name)) {
+                        eligible.push(e);
                     }
                 }
             }
+            // ⚠ これは `Stmt` を歩く **5 本目の walker**（#59 の `decl_names` は
+            //    「束縛する名前」だけを強制化しており、ここは対象外）。
+            //    **関数を含みうる `Stmt` variant を足したらここも見ること** —
+            //    `_ => {}` なので何も強制されない（既知の穴・#82 で明記した）。
             _ => {}
         }
     }

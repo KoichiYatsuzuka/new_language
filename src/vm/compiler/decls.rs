@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    CallArg, Expr, Param, Stmt, TupleTarget,
+    Expr, Param, Stmt, TupleTarget,
 };
 
 
@@ -165,81 +165,21 @@ pub(super) fn scan_shadow_expr(
     for_names: &mut HashSet<String>,
     decl_names: &mut HashSet<String>,
 ) {
-    macro_rules! rec {
-        ($x:expr) => {
-            scan_shadow_expr($x, for_names, decl_names)
-        };
-    }
-    match e {
-        Expr::Block { stmts, .. } => scan_shadow_stmts(stmts, for_names, decl_names),
-        Expr::IfExpr { branches, else_body, .. } => {
-            for (c, b) in branches {
-                rec!(c);
-                scan_shadow_stmts(b, for_names, decl_names);
+    // 部分式の構造は 1 箇所（#81）。⚠ **`_ => {}` を書かない** — `SubPart` に
+    // 種類が増えるとここが止まり、「この walker ではどう扱うか」を決めさせられる。
+    crate::expr_walk::each_subpart(e, &mut |part| {
+        use crate::expr_walk::SubPart as P;
+        match part {
+            P::Plain(x) | P::Control(x) => scan_shadow_expr(x, for_names, decl_names),
+            P::Body(b) => scan_shadow_stmts(b, for_names, decl_names),
+            // `for` ターゲットは**衝突候補**として集める（この walker 固有の判断）。
+            P::ForTarget(t) => {
+                for_names.insert(t.to_string());
             }
-            if let Some(eb) = else_body {
-                scan_shadow_stmts(eb, for_names, decl_names);
-            }
+            // ⚠ パターンは宣言を含まない（#81 以前も見ていない）。
+            P::MatchPattern(_) => {}
         }
-        Expr::MatchExpr { subject, arms, .. } => {
-            rec!(subject);
-            for a in arms {
-                scan_shadow_stmts(&a.body, for_names, decl_names);
-            }
-        }
-        Expr::ForExpr { target, iter, body, .. } => {
-            for_names.insert(target.clone());
-            rec!(iter);
-            scan_shadow_stmts(body, for_names, decl_names);
-        }
-        Expr::WhileExpr { cond, body, .. } => {
-            rec!(cond);
-            scan_shadow_stmts(body, for_names, decl_names);
-        }
-        Expr::BinOp { left, right, .. } => {
-            rec!(left);
-            rec!(right);
-        }
-        Expr::UnaryOp { operand, .. } => rec!(operand),
-        Expr::Call { func, args, .. } => {
-            rec!(func);
-            for a in args {
-                match a {
-                    CallArg::Positional(x) | CallArg::Keyword { value: x, .. } => rec!(x),
-                    CallArg::Variadic(xs) => {
-                        for x in xs {
-                            rec!(x);
-                        }
-                    }
-                }
-            }
-        }
-        Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => rec!(object),
-        Expr::Subscript { object, index, .. } => {
-            rec!(object);
-            rec!(index);
-        }
-        Expr::Slice { begin, end, step } => {
-            for x in [begin, end, step].into_iter().flatten() {
-                rec!(x);
-            }
-        }
-        Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
-            for x in items {
-                rec!(x);
-            }
-        }
-        Expr::Dict(pairs) => {
-            for (k, v) in pairs {
-                rec!(k);
-                rec!(v);
-            }
-        }
-        Expr::TemplateInstantiate { base, .. } => rec!(base),
-        Expr::IsType { expr, .. } | Expr::MustBe { expr, .. } => rec!(expr),
-        Expr::Cast { object, .. } => rec!(object),
-        _ => {}
-    }
+    });
 }
 
 /// slot テーブルへ1つ宣言を追加する（既出名・`_` はスキップ）。
@@ -429,85 +369,32 @@ pub(super) fn collect_expr_decls(
     slot_type: &mut Vec<Option<String>>,
     n: &mut u16,
 ) -> Option<()> {
-    macro_rules! rec {
-        ($x:expr) => {
-            collect_expr_decls($x, slots, slot_mut, slot_type, n)?
+    // 部分式の構造は 1 箇所（#81）。⚠ **`_ => {}` を書かない**。
+    //
+    // ⚠⚠ **列挙の順序＝採番の順序**。`each_subpart` は `ForExpr` を
+    // `target` → `iter` → `body` の順に返す（#81 以前の手書きと同じ順序）。
+    // ここを崩すと `LoadLocal` が別の変数を読む（プランの「採番はリゾルバと同順・同数」）。
+    //
+    // ⚠ `add_decl` は slot が溢れると `None` を返して**打ち切る**。クロージャからは `?` で
+    // 抜けられないので、`ok` が落ちたら以降は**何もしない**（＝ 以後 slot を増やさない）。
+    // #81 以前の `?` による早期 return と同じ効果。
+    let mut ok = Some(());
+    crate::expr_walk::each_subpart(e, &mut |part| {
+        use crate::expr_walk::SubPart as P;
+        if ok.is_none() {
+            return;
+        }
+        ok = match part {
+            P::Plain(x) | P::Control(x) => collect_expr_decls(x, slots, slot_mut, slot_type, n),
+            P::Body(b) => collect_nested_decls(b, slots, slot_mut, slot_type, n),
+            // `for` ターゲットはこの式が宣言する名前（この walker 固有の判断）。
+            P::ForTarget(t) => add_decl(t, None, true, slots, slot_mut, slot_type, n),
+            // ⚠⚠ パターンへは**降りない**。降りるとパターン内のブロック式が slot を取り、
+            // **採番がずれる**（#81 以前も見ていない。挙動不変を優先）。
+            P::MatchPattern(_) => Some(()),
         };
-    }
-    match e {
-        // ── ブロック式（本体に宣言を持つ） ──
-        Expr::Block { stmts, .. } => collect_nested_decls(stmts, slots, slot_mut, slot_type, n)?,
-        Expr::IfExpr { branches, else_body, .. } => {
-            for (c, b) in branches {
-                rec!(c);
-                collect_nested_decls(b, slots, slot_mut, slot_type, n)?;
-            }
-            if let Some(eb) = else_body {
-                collect_nested_decls(eb, slots, slot_mut, slot_type, n)?;
-            }
-        }
-        Expr::MatchExpr { subject, arms, .. } => {
-            rec!(subject);
-            for arm in arms {
-                collect_nested_decls(&arm.body, slots, slot_mut, slot_type, n)?;
-            }
-        }
-        Expr::ForExpr { target, iter, body, .. } => {
-            add_decl(target, None, true, slots, slot_mut, slot_type, n)?;
-            rec!(iter);
-            collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
-        }
-        Expr::WhileExpr { cond, body, .. } => {
-            rec!(cond);
-            collect_nested_decls(body, slots, slot_mut, slot_type, n)?;
-        }
-        // ── 部分式を辿る（入れ子のブロック式を探す） ──
-        Expr::BinOp { left, right, .. } => {
-            rec!(left);
-            rec!(right);
-        }
-        Expr::UnaryOp { operand, .. } => rec!(operand),
-        Expr::Call { func, args, .. } => {
-            rec!(func);
-            for a in args {
-                match a {
-                    CallArg::Positional(x) | CallArg::Keyword { value: x, .. } => rec!(x),
-                    CallArg::Variadic(xs) => {
-                        for x in xs {
-                            rec!(x);
-                        }
-                    }
-                }
-            }
-        }
-        Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => rec!(object),
-        Expr::Subscript { object, index, .. } => {
-            rec!(object);
-            rec!(index);
-        }
-        Expr::Slice { begin, end, step } => {
-            for x in [begin, end, step].into_iter().flatten() {
-                rec!(x);
-            }
-        }
-        Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
-            for x in items {
-                rec!(x);
-            }
-        }
-        Expr::Dict(pairs) => {
-            for (k, v) in pairs {
-                rec!(k);
-                rec!(v);
-            }
-        }
-        Expr::TemplateInstantiate { base, .. } => rec!(base),
-        Expr::IsType { expr, .. } | Expr::MustBe { expr, .. } => rec!(expr),
-        Expr::Cast { object, .. } => rec!(object),
-        // リテラル・Ident 等は宣言を含まない。
-        _ => {}
-    }
-    Some(())
+    });
+    ok
 }
 
 /// `finally` 本体の複製がネストできる上限（#40）。経路ごとに複製されるので、

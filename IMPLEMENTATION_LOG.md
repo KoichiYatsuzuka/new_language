@@ -8880,3 +8880,134 @@ lint（`used to index slots`）で、**マーシャリングを書くとこの l
 | 「#80 は行数を減らすだけの退屈な作業」 | **外れ**。**`class_id` の採番順**という壊れ方が隠れていて、`compare_outputs` では見えない。IR 比較が要った |
 | 「11 サイトなら手で書き換えられる」 | **やらなかった**。機械変換にして正解 — スクリプトの欠陥を assert が 2 回捕まえた |
 | 「`Default` を derive すれば早い」 | **却下**（起票時の方針どおり）。強制が消える。⚠ ただし **exhaustive リテラルは 2 つある**（`deep_clone` も）ので doc を直した |
+
+---
+
+## #81 `Expr` 再帰骨格の 4 本を [`expr_walk`](src/expr_walk.rs) へ 1 本化（2026-08-25・完了）
+
+**#75 の実バグ（式形式の制御構文の中だけで外側変数を参照するクロージャが `NameError`）の恒久対策。**
+#75 は `collect_refs_expr` を exhaustive にしただけで、**同じ形の walker が他に 3 本**残っていた。
+
+| walker | 状態（#81 前） |
+|---|---|
+| `exec::collect_refs_expr` | #75 で exhaustive 化済み（ただし構造は手書き） |
+| `vm::compiler::decls::scan_shadow_expr` | `_ => {}` |
+| `vm::compiler::decls::collect_expr_decls` | `_ => {}` |
+| `interpreter::resolver::collect_bound_in_expr` | `_ => {}`（**`Slice` と `TemplateInstantiate` を見ていなかった**） |
+
+### 1. 仕掛け — #59（`decl_names`）と同じ 2 段
+
+新設 [expr_walk.rs](src/expr_walk.rs) の `each_subpart(expr, &mut f)` が
+「**この式の直下に何がぶら下がっているか**」を答える。
+
+1. `match expr` が **exhaustive**（`_` を書かない）⇒ `Expr` に variant を足すと**まずここが止まる**。
+2. `SubPart` を消費側が**すべて exhaustive match** で受ける ⇒ 部分の種類を足すと**全 walker が止まり**、
+   「この walker ではどう扱うか」を必ず決めさせられる。
+
+```
+SubPart::Plain        純粋な部分式（項・引数・要素・添字…）
+SubPart::Control      式形式制御構文の式（if/while の条件・match の subject・for の iter）
+SubPart::Body         式形式制御構文の**文の本体**  ← 降り方は walker ごとに違う
+SubPart::ForTarget    `for` の target             ← 束縛。拾うかは walker が決める
+SubPart::MatchPattern `case <expr>` のパターン     ← 参照 walker だけが降りる
+```
+
+### 2. ⚠⚠ 仕掛けが**実際に働いて**取りこぼしを 1 件止めた
+
+最初 `SubPart` に `MatchPattern` を置いておらず、**#75 が入れた「`case` パターンも参照として拾う」が
+消えるところだった**（`each_subpart` がパターンを返さないため）。
+気づいて `MatchPattern` を足した瞬間、**消費者 4 本すべてがコンパイルエラーで停止**し、
+各 walker に「降りるのか降りないのか」を書かせた:
+
+| walker | `MatchPattern` の扱い | 理由 |
+|---|---|---|
+| `collect_refs_expr` | **降りる** | パターンは参照（#75） |
+| `collect_bound_in_expr` | 降りない | `case` は値比較で束縛を作らない |
+| `scan_shadow_expr` | 降りない | 宣言を含まない |
+| `collect_expr_decls` | **降りない** | 降りるとパターン内のブロック式が slot を取り**採番がずれる** |
+
+⚠⚠ **これは「畳んだら壊れた」の実例**。exhaustive でなければ黙って通っていた。
+⚠ ただし**コンパイラが教えてくれたのは 2 段目だけ**（`SubPart` を足したとき）。
+1 段目（そもそもパターンを列挙し忘れる）は**人間が読んで気づいた** — 仕掛けは万能ではない。
+
+### 3. ⚠ 意図的に広げた網 — `Slice` / `TemplateInstantiate`
+
+`collect_bound_in_expr` は `_ => {}` に落ちて**この 2 つを見ていなかった**。
+`each_subpart` は exhaustive なので #81 で**降りるようになった**（束縛は取りこぼすと危険側なので
+広がるのは正しい方向）。挙動が動かないことは [compare_bytecode.ps1](compare_bytecode.ps1)
+**114/114 byte-identical** で確認した（＝ 現状の例題はこの形を踏んでいない）。
+
+### 4. 例題
+
+`match` **パターンの中だけ**で外側変数を参照する形は、**#75 の例題も踏んでいなかった**
+（`case 1:` のリテラルパターンだけだった）。
+[examples/basics/closure_capture_expr_forms.ar](examples/basics/closure_capture_expr_forms.ar)
+に `c_match_pattern` を追加。
+⚠⚠ **負の対照で検出力を確認**: `P::MatchPattern(x) => collect_refs_expr(x, out)` を
+`P::MatchPattern(_) => {}` に変えると `NameError: 'key' is not defined` に反転する。
+⚠ Rust / `impl_python` / HEAD の 3 者とも同じ出力（`100` / `0`）。
+
+### 5. 規模
+
+| ファイル | 差分 |
+|---|---|
+| `vm/compiler/decls.rs` | **-160**（2 walker が 86+102 行 → 各 12 行前後） |
+| `interpreter/exec/mod.rs` | -85 |
+| `interpreter/resolver.rs` | -63 |
+| `expr_walk.rs`（新設） | +178 |
+| 実質 | **約 -130 行**（doc を厚く書いたうえで） |
+
+---
+
+## #82 `generate_llvm_module` の適格関数収集を 1 本化（2026-08-25・完了）
+
+**最上位 × クラス本体** の 2 通り × **`fn` / `gen`** の 2 通り＝ **4 ブロック 48 行**が
+ほぼ同一だった。⇒ `eligible_fn(stmt, class_name) -> Option<EligibleFn>` に集約し、
+ローカル `struct EligibleFn` をモジュールスコープへ引き上げた。
+
+**4 つで違うのはシンボルをクラス修飾するかだけ**。`fn` と `gen` の差は 3 点しかない:
+① 適格判定（`body_eligible` / `body_eligible_gen`）② `is_abstract` は `fn` にしか無い
+③ `gen` は戻り値注釈を見ない。⇒ すべて 1 つの `match` の中に収まった。
+
+### ⚠ 残した穴を**明記**した（畳んでも消えない）
+
+これは **`Stmt` を歩く 5 本目の walker** で、`_ => {}` で終わっている
+（#59 の `decl_names` は「束縛する名前」だけを強制化しており、ここは対象外）。
+⇒ **関数を含みうる `Stmt` variant を足したらここも見る**必要があり、
+**何も強制されない**。畳んだうえでコメントに既知の穴として書いた。
+
+### ⚠⚠ 検査は IR byte-identical
+
+収集の**順序が emit 順＝生成 IR** を決めるので、[dump_native_ir.ps1](dump_native_ir.ps1) が主検査。
+⇒ 代表 6 モジュールの **LLVM IR が byte-identical**（#81 と合わせて確認）。
+
+規模: `llvm_codegen/mod.rs` は `+133/-` の書き換えで、収集ループが **48 行 → 18 行**。
+
+---
+
+## #81・#82 の検証（まとめて）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` / `--release` / `--features prof` / `--features tw_stats` | すべて警告 **0** |
+| `cargo test` | **750 passed** |
+| `cargo clippy` / `--all-targets` | **50 / 65 ＝ 増分 0** |
+| [dump_native_ir.ps1](dump_native_ir.ps1) | **生成 LLVM IR byte-identical**（#82 の主検査） |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **114 / 114 identical**（#81 の主検査 — slot 採番が動いていない証拠） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **96 / 96 identical** |
+| [compare_import_paths.ps1](compare_import_paths.ps1) | **13 / 13 identical** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **52/52**・stale **0** |
+| [scan_examples.ps1](scan_examples.ps1) / [force_gate.ps1](force_gate.ps1) | FAIL **0** / **0 件・160 例題** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) / [stale_doc_refs.ps1](stale_doc_refs.ps1) | identical / 5 identical / **0 件** |
+
+⚠ 速度 A/B は取っていない。どちらもコンパイル前段（解決・codegen 収集）で 1 回しか通らず、
+**バイトコードと IR がどちらも byte-identical** ＝ 生成物が動いていない。
+
+## 見積もりと実測
+
+| 事前の想定 | 実際 |
+|---|---|
+| 「#81 は 3 本を委譲にするだけ」 | **半分外れ**。**4 本目**（#75 で直した `collect_refs_expr`）も寄せた。さらに **`MatchPattern` の取りこぼし**が出て、**仕掛けが停止させた** |
+| 「exhaustive にすれば取りこぼしは無くなる」 | **外れ**。止めてくれるのは **2 段目**（種類を足したとき）だけ。**そもそも列挙し忘れる**のは人間が読むしかない |
+| 「`_ => {}` を消すと挙動が動くはず」 | **動かなかった**（bytecode 114/114）。`Slice`/`TemplateInstantiate` の中に束縛を書く例題が無いため。**網が広がったこと自体は正しい方向** |
+| 「#82 は 4 ブロックを 1 つにするだけ」 | **当たり**。ただし **5 本目の walker という穴は畳んでも消えない**ので、明記に留めた |

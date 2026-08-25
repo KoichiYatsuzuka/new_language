@@ -307,107 +307,30 @@ fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
 }
 
 fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
-    match expr {
-        Expr::Ident { name, .. } => {
-            out.insert(name.clone());
-        }
-        Expr::BinOp { left, right, .. } => {
-            collect_refs_expr(left, out);
-            collect_refs_expr(right, out);
-        }
-        Expr::UnaryOp { operand, .. } => collect_refs_expr(operand, out),
-        Expr::Call { func, args, .. } => {
-            collect_refs_expr(func, out);
-            for arg in args {
-                collect_refs_expr(arg.expr(), out);
-            }
-        }
-        Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => {
-            collect_refs_expr(object, out);
-        }
-        Expr::List(items) | Expr::Tuple(items) => {
-            for item in items {
-                collect_refs_expr(item, out);
-            }
-        }
-        Expr::Dict(pairs) => {
-            for (k, v) in pairs {
-                collect_refs_expr(k, out);
-                collect_refs_expr(v, out);
-            }
-        }
-        Expr::Subscript { object, index, .. } => {
-            collect_refs_expr(object, out);
-            collect_refs_expr(index, out);
-        }
-        Expr::Slice { begin, end, step } => {
-            if let Some(e) = begin {
-                collect_refs_expr(e, out);
-            }
-            if let Some(e) = end {
-                collect_refs_expr(e, out);
-            }
-            if let Some(e) = step {
-                collect_refs_expr(e, out);
-            }
-        }
-        Expr::TemplateInstantiate { base, .. } => collect_refs_expr(base, out),
-        Expr::IsType { expr, .. } => collect_refs_expr(expr, out),
-        // ── ⚠⚠ ここから下は #75 で追加。すべて「式形式の制御構文」で、
-        //    ここが `_ => {}` に落ちていたせいでクロージャの捕捉が壊れていた ──
-        Expr::Set(items) => {
-            for item in items {
-                collect_refs_expr(item, out);
-            }
-        }
-        Expr::Block { stmts, .. } => collect_referenced_names(stmts, out),
-        Expr::IfExpr {
-            branches,
-            else_body,
-            ..
-        } => {
-            for (cond, body) in branches {
-                collect_refs_expr(cond, out);
-                collect_referenced_names(body, out);
-            }
-            if let Some(body) = else_body {
-                collect_referenced_names(body, out);
-            }
-        }
-        // ⚠ `target` は入れ子スコープの束縛なので**参照として拾わない**
-        //    （`Stmt::For` の既存の扱いと同じ。`decl_names` の「順序に意味がある束縛」側）。
-        Expr::ForExpr { iter, body, .. } => {
-            collect_refs_expr(iter, out);
-            collect_referenced_names(body, out);
-        }
-        Expr::WhileExpr { cond, body, .. } => {
-            collect_refs_expr(cond, out);
-            collect_referenced_names(body, out);
-        }
-        Expr::MatchExpr { subject, arms, .. } => {
-            collect_refs_expr(subject, out);
-            for arm in arms {
-                if let crate::ast::MatchPattern::Case(e) = &arm.pattern {
-                    collect_refs_expr(e, out);
-                }
-                collect_referenced_names(&arm.body, out);
-            }
-        }
-        Expr::Cast { object, .. } => collect_refs_expr(object, out),
-        Expr::MustBe { expr, .. } => collect_refs_expr(expr, out),
-        // ── ここから下は「降りない」バリアント。⚠ 理由を消さずに残すこと（#59/#75）──
-        // リテラル。名前を含まない。
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::ImaginaryLit(_)
-        | Expr::Str(_)
-        | Expr::Bool(_)
-        | Expr::None
-        | Expr::Undefined => {}
-        // `dbg::name` / `local::name` は**専用の名前空間**への参照で、
-        // 外側フレームのローカルではない（捕捉の対象にすると別物を掴む）。
-        Expr::DebugVar(_) | Expr::LocalVar(_) => {}
+    // 名前そのものだけがこの walker 固有の判断。⚠ `dbg::name` / `local::name` は
+    // **専用の名前空間**への参照であって外側フレームのローカルではないので拾わない
+    // （捕捉対象にすると別物を掴む）。
+    if let Expr::Ident { name, .. } = expr {
+        out.insert(name.clone());
     }
+    // 部分式の構造は 1 箇所（#81）。⚠ **`_ => {}` を書かない**。
+    //
+    // ⚠⚠ #75 の実バグ（`if`/`match`/`block`/`for`/`while` **式**と set リテラルの中だけで
+    // 外側変数を参照するクロージャが `NameError`）は、ここが `_ => {}` で
+    // `Expr` 30 variant のうち 8 個を落としていたのが原因。#81 で構造そのものを
+    // [`crate::expr_walk`] へ移し、**variant を足すとコンパイルが止まる**ようにした。
+    crate::expr_walk::each_subpart(expr, &mut |part| {
+        use crate::expr_walk::SubPart as P;
+        match part {
+            P::Plain(x) | P::Control(x) => collect_refs_expr(x, out),
+            P::Body(b) => collect_referenced_names(b, out),
+            // ⚠ `for` ターゲットは**入れ子スコープの束縛**なので参照として拾わない
+            //（`Stmt::For` の既存の扱いと揃える）。
+            P::ForTarget(_) => {}
+            // `case <expr>` のパターンは**参照**（#75 で拾うようにした）。
+            P::MatchPattern(x) => collect_refs_expr(x, out),
+        }
+    });
 }
 
 mod dispatch;

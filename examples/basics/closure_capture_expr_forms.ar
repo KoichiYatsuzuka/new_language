@@ -120,3 +120,20 @@ fn c_mut_capture() -> int:
     return total
 
 print(c_mut_capture())    # 3
+
+# --- match 式の case パターンの中だけで参照する（#81 で恒久対策した経路） ---
+# ⚠ パターン式は本体とは別の経路で捕捉される。#75 の修正時点では例題が
+# リテラルパターン（`case 1:`）しか踏んでおらず、この形は無検査だった。
+fn c_match_pattern(k: int) -> int:
+    let key = 7
+    fn inner(x: int) -> int:
+        let r = match x ->int:
+            case key:
+                block_return 100
+            case _:
+                block_return 0
+        return r
+    return inner(k)
+
+print(c_match_pattern(7))   # 100
+print(c_match_pattern(1))   # 0
