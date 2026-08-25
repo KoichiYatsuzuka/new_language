@@ -8,6 +8,7 @@ mod ast;
 // 「この文はどの名前を束縛するか」の唯一の定義（#59）。resolver / exec / vm-compiler が共有する。
 mod decl_names;
 mod expr_walk;
+mod stmt_walk;
 #[cfg(test)]
 mod frontend_tests;
 mod interpreter;

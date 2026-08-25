@@ -9003,6 +9003,303 @@ SubPart::MatchPattern `case <expr>` のパターン     ← 参照 walker だけ
 ⚠ 速度 A/B は取っていない。どちらもコンパイル前段（解決・codegen 収集）で 1 回しか通らず、
 **バイトコードと IR がどちらも byte-identical** ＝ 生成物が動いていない。
 
+## #84〜#89 新文法の追加に対する冗長性の評価と起票（2026-08-25）
+
+依頼は「**インクリメント `++` やメタプログラミング用 `expr` のような新しい文法を足したとき、
+柔軟に対応できるか**」の評価。⚠ **#75〜#83（第 3 弾）の完了直後に測った**ので、
+**#75（クロージャ捕捉）と #81（`expr_walk`）が入った後の数字**である。
+**この時点では 1 行も変更していない**（起票のみ）。
+
+### 計測方法 — 負の対照（#59 / #81 と同じ手法）
+
+推測せず、**`Expr` / `Stmt` / `DeclOrigin` にプローブ variant を 1 個ずつ足して `cargo build` を
+通し、止まった箇所を数えた**。実施後すべて復元し、`git status` クリーン・`cargo build` 警告 0 を確認。
+併せて**非テスト `src` の `match` を全数走査**し、`Expr::` / `Stmt::` のアームを持つものを
+`_ =>` の有無で分類した。
+
+⚠ **走査器は先に負の対照を取った**（#60 / 第 3 弾の教訓）。`DeclOrigin` +1 で
+**消費者がちょうど 4 本**停止することを確認し、実装ログ #59 の記載値と一致することを見てから使った。
+
+### 結果 ① — 「コンパイラが止める数」と「実在する walker 数」の乖離
+
+| 追加するもの | **止まる数** | 実在 walker | うち `_ =>` |
+|---|---|---|---|
+| `Stmt` variant | **7** | 45 | 35 |
+| `Expr` variant | **6** | 27 | 19 |
+| `DeclOrigin`（#59 の 2 段目） | **4** | 4 | 0 |
+
+止まる箇所の実測内訳:
+
+- `Stmt`: `check_stmt` ／ `exec`(dispatch) ／ `subst_stmt` ／ `stmt_to_value` ／ `stmt_kind` ／
+  `each_declared_name` ／ **`collect_referenced_names_stmt`（#75 で増えた）**
+- `Expr`: `infer` ／ `eval` ／ `subst_expr` ／ `expr_to_value` ／ `expr_kind` ／
+  **`each_subpart`（#81 で増えた）**
+
+⇒ **第 3 弾は効いている**。`Expr` 5→6・`Stmt` 6→7 に増え、`Expr` walker の `_ =>` は **23→19**、
+`Expr` walker 総数も **30→27**（4 本が `expr_walk` へ委譲され消えた）。
+
+⚠⚠ **それでも最大の AST 消費者 2 本は止まらない** — `compile_expr`（33 アーム）と
+`compile_stmt`（33 アーム）はどちらも `_ => bail`。#33 以降これは「ツリーウォークへ落とす」ではなく
+「**実行時に `VmForceError` で死ぬ**」であり、**その形の例題があるときだけ**発覚する。
+**#56 / #68 / #71 / #75 の実バグ 4 件はすべてこの経路**で、共通原因は「**その形の例題が 1 本も無かった**」。
+
+### 結果 ② — 失敗の型で 3 分類した（`_ =>` を一律に危険と見ない）
+
+**A. 落ちる（安全側だが例題頼み）** — `compile_expr` / `compile_stmt` の bail。
+
+**B. 静かに劣化するだけ（実害なし・設計として正しい）**
+
+- `llvm_codegen` の `expr_eligible` / `stmt_eligible` / `walk_expr` / `walk_stmts`・`stub_gen`
+  → **ネイティブ対象外になるだけ**
+- `resolver::rewrite_expr` / `rewrite_stmt` → **最適化されないだけ**
+- ⚠ **小さい `_ =>` は保守的ホワイトリスト**で、既定が安全側 —
+  `as_const_lit` / `expr_prim` / `as_local` は `_ => None`、`arg_is_mutable` は `_ => true`
+- `node_id` の採番漏れ → **`0 = 未採番`** を `type_check/annotations.rs` 4 箇所と
+  `vm/compiler/calls.rs` 2 箇所が防御済み（＝合成 AST は「遅いが動く」）
+
+**C. 静かに壊れる（本当の穴）** — すべて「**どの名前が束縛／参照されるか・どこへ降りるか**」を
+答える walker。⚠⚠ **`Expr` 側は #75 / #81 で塞がった**（4 本が `expr_walk` へ委譲）。
+**残っているのは `Stmt` 側と VM 側**:
+
+1. **`Stmt` 本体への降り方が 6 本バラバラ**（→ **#84**）—
+   `collect_nested_decls`(12 アーム) ／ `scan_shadow_stmts`(11) ／ `collect_bound_names`(14) ／
+   `collect_declared_names`(4) ／ `nested_fn_free_names::walk`(5) ／ `collect_base_decls`(5)。
+   `decl_names` は「**どの名前**」を、`expr_walk` は「**式の直下に何**」を強制化したが、
+   「**文の下にどの `Vec<Stmt>` がぶら下がるか**」は**どちらも意図的に範囲外**にしている
+   （#59 / #81 の doc に明記）。⇒ 3 つ目の欠けている半分。
+2. **`peephole::code_target_mut` が `_ => None`**（→ **#87**）。`Op` は **89 variant**。
+   プラン自身が「**忘れてもテストは通ってしまう**」と名指ししている唯一の穴。
+3. **VM の slot 採番に不変条件の検査が 0 件**（→ **#86**）。
+   ⚠⚠ ツリーウォーク側には `eval_local_ref` ほか **`debug_assert` が 4 件**あるが、
+   **採番を実際に決めている `vm/compiler/decls.rs` は 0 件**。#33 / #55 でツリーウォークが
+   定義文しか実行しなくなったので、**この安全網は実質もう働いていない**。
+4. `impl_python/`（**16,410 行**の第 2 実装）— 動的型なので**強制ゼロ**。
+   ゲートは [compare_python_impl.ps1](compare_python_impl.ps1) だけ。⇒ **起票はしない**
+   （第 2 実装を持つこと自体が設計判断で、畳む先が無い）。
+
+### 結果 ③ — 依頼の 2 例に対する答え
+
+#### `++`（インクリメント）: **文位置なら AST 追加ゼロで通る**
+
+`lexer/keyword.rs` と `parser/stmts/assignment.rs` で `CompoundAssign` /
+`AttrCompoundAssign` へ**脱糖するだけ**。パーサ内脱糖の前例あり（f-string → `str()` 呼び出し・
+`parser/exprs.rs`）。`AttrAssign { target: Expr }` が属性と添字を一律に受けるので
+**lvalue の分岐も増えない**。⇒ **上記 C の穴を 1 つも踏まない**。
+⚠ `a[f()]++` が `object` / `index` を 2 回評価するのは**既存の `+=` と同じ**
+（`vm/compiler/stmt_assign.rs` に「ツリーウォークと副作用まで一致させるため」と明記済み）
+＝ 新しい問題ではない。
+
+⚠⚠ **式位置（`arr[i++]`）は別物**。現在 `Expr` に**変数へ書き込む variant は 0 個**で、
+副作用は `Call` の先にしか無い。`compile_attr_compound_assign` の
+「value が副作用を持たないなら `Swap` を丸ごと落とす」融合など、**複数の最適化が
+「式は概ね純粋」を前提**にしている。**判定は上記 B の保守的ホワイトリストなので既定は安全側**
+＝ 今すぐ壊れはしないが、式位置を入れるなら**この既定に依存している箇所を先に列挙する**必要がある。
+⇒ **起票はしない**（言語設計の決定が先）。**式位置 `++` を採用すると決めたときの前提**として記録する。
+
+#### メタプログラミング用 `expr`: **詰まるのは AST 側ではなく `Value↔AST` 境界とパイプライン入口**
+
+追い風（既にある）:
+
+- **AST は既に第一級の値** — `ast_value.rs`（735 行・Stmt 40 / Expr 29 が **exhaustive**）。
+  variant を足せば**必ずコンパイルが止まる**（結果 ① の実測どおり）
+- **「実行時に AST を作って実行する」は `templates.rs` が実証済み**
+  （`subst_stmt` / `subst_expr` ＋ #7 の `(テンプレート, 型引数)` キー Chunk メモ化）
+- **合成 AST は `node_id: 0` / `Resolution::Unresolved` でも正しく動く**（上記 B）＝「遅いが動く」が既定
+- **パイプラインが `&mut Vec<Stmt>` の独立パスに分かれている**（`resolve_program(&mut stmts)`）
+  ⇒ **展開パスは parse と type_check の間にそのまま挟める**
+
+向かい風:
+
+- **`Value → AST` の逆変換が無い** — `ast_value.rs` は**一方向のみ**
+  （`value_to_stmt` / `value_to_expr` は grep で **0 件**）。今できるのは
+  「AST を読む」「文字列を組んで `parse_ar`」まで。
+  ⚠⚠ **`Value` は動的なので match で守れない** ＝ 逆変換を書くと **C の穴が一気に増える**
+- **AST→実行の入口が無い** — `compile_debug` は `Stmt::Expr` / `Stmt::Let` の
+  **2 形だけ**で `_ => return None`
+- **パイプライン配線が 3 入口に手写し**。⚠ しかも**関数まで違う** —
+  `run_program` は `TypeChecker::check_program`、`--compile` と REPL は
+  `TypeChecker::check_and_annotate`（＋テストヘルパー 1 本）
+
+### 起票（#84〜#89）
+
+⚠ **採番は別スレッドの #75〜#83 の続き**。この評価は当初 4 件を提案したが、そのうち
+**「`Expr` 版 `decl_names`」は #81 が、「クロージャ捕捉の穴」は #75 が先に実装済み**だったため
+**取り下げ、HEAD で測り直して立て直した**。⇒ **評価の数字は必ず対象の HEAD で取り直すこと**。
+
+| # | タスク | 手法 | 前提（依存） | 状態 |
+|---|---|---|---|---|
+| 84 | `Stmt` 本体への降り方 6 本 | `expr_walk` の `Stmt` 版（**列挙だけ** exhaustive 化・判断は walker に残す） | — | 未着手 |
+| 85 | 未カバー構文の機械カウント | exhaustive な `stmt_kind` / `expr_kind` を `compile_*` 入口で bump し例題横断で集計 | — | 未着手 |
+| 86 | VM の slot 採番の不変条件検査 | デバッグ名テーブル（§2.3）と `LoadLocal` / `StoreLocal` の slot を突き合わせ | — | 未着手 |
+| 87 | `peephole::code_target_mut` の `_ => None` | 全 89 variant を列挙して**op を足すと止まる**形へ | — | 未着手 |
+| 88 | パイプライン配線 3 入口の手写し | まず 3 入口の**差を測る**（畳まない判断もありうる） | — | 未着手 |
+| 89 | メタプロの前提（`Value→AST` ＋ AST→実行の入口） | 逆変換 ＋ `compile_debug` の一般化 | **← 84・85 ＋ 消費者の出現** | 別レーン・優先度低 |
+
+各件の補足:
+
+- **#84** — ⚠⚠ **#59 と #81 はどちらも「降り方は walker ごとに本当に違う」として意図的に外した**。
+  したがって畳むのは「**どの `Vec<Stmt>` がぶら下がるか**」の列挙だけで、
+  **降りる／降りないの判断は walker に残す**（`expr_walk::SubPart::Body` と同じ形）。
+  ⚠⚠ **列挙の順序＝採番の順序**（`Try` は「本体 → 別名 → handler 本体」）。並べ替えると
+  **`LoadLocal` が別の変数を読む**。⚠ `collect_base_decls` は**既定が安全側**（未知の文で
+  解決を諦める）なので、**対象に含めるかは測ってから決める**（#72 の「読み手ごとに理由がある」）。
+- **#85** — **最も安く、最も効く**。プラン冒頭が「**未カバーの構文を例題側から数える手段がまだ無い**
+  （`Stmt` の全 variant × 文脈のマトリクスが無い）」と明記しており、**#56 / #68 / #71 / #75 の
+  実バグ 4 件すべての共通原因**（「その形の例題が 1 本も無かった」）に直接効く。
+  ⚠ **材料は既に揃っている** — exhaustive な `tw_stats::stmt_kind`（40 アーム）と
+  `vm::compiler::expr_kind`（30 アーム）、集計機構 `bump` / `record_bail`、
+  [tw_stats.ps1](tw_stats.ps1)。⚠ **`--features tw_stats` 側に閉じる**（#69 の教訓で
+  `--features prof` / `--features tw_stats` の両方を通すこと）。
+- **#86** — ⚠ **速度に触るので `#[cfg(debug_assertions)]` に閉じる**
+  （#10-b: `exec_op` は `#[inline(always)]`・診断フックは 11% 退行の実績あり）。
+  ⚠ #84 と同時にやると**検出力の負の対照が取りやすい**（採番を 1 つずらして止まるかを見る）。
+- **#88** — ⚠⚠ **畳むのが正解とは限らない**。#72 は「読み手 5 つ・探索方針 4 通りで
+  **どれにも理由がある**」で**方針を畳まなかった**。⇒ **先に 3 入口の差を測ってから**決める。
+- **#89** — 判定基準は「**消費者が居るか**」（#11 R2-c / #14 / #15b と同じ）。
+  **今は消費者が居ない**ので優先度低。⚠ 着手するなら **#84 / #85 が先**
+  （逆変換は match で守れないので、`Stmt` 側の強制と未カバー計測が無いまま入れると
+  C の穴が制御不能になる）。
+
+## #84 `Stmt` 再帰骨格の 7 本を [`stmt_walk`](src/stmt_walk.rs) へ 1 本化（2026-08-25・完了）
+
+#59（[decl_names.rs](src/decl_names.rs)＝「`Stmt` はどの名前を束縛するか」）と
+#81（[expr_walk.rs](src/expr_walk.rs)＝「`Expr` の直下に何があるか」）が強制化した残りの半分、
+**「文の下にどの本体・部分式がぶら下がるか」**を 1 箇所へ。
+⚠ **どちらの doc も明示的に「範囲外」と書いていた**ので、3 つ目の欠けている半分だった。
+
+### ⚠⚠ 畳む前に表を突き合わせたら、実バグが 3 件出た
+
+vm-pitfalls §3 の「**畳む前に元の N 実装がそれぞれ何を見ていたかを表にして突き合わせる**」
+（#81 の教訓）を実際にやった。**8 walker × 40 variant の表を機械生成**したところ、
+制御フロー本体へ「6 本は降りるが 1 本だけ降りない」というセルが 3 つ見つかり、
+**3 件とも実バグ**だった（いずれも `impl_python` は正しく実行できる正しいプログラム）。
+
+| # | ずれ | 症状 | 再現 |
+|---|---|---|---|
+| ① | `exec::collect_declared_names` **だけ**が `Stmt::Match` のアーム本体へ降りない | アーム内の宣言が「自前の名前」から漏れ、**自由変数として捕捉**され、採番側（`collect_nested_decls` は降りる）の slot と衝突 ⇒ `capture-slot-conflict` で **`VmForceError`** | `impl_python` は 109 |
+| ② | 同 walker が**部分式へも降りない** | ①と同じ衝突が `let q = block ->T: …` 経由でも起きる（**別経路**） | `impl_python` は 109 |
+| ③ | `vm::compiler::decls::collect_nested_decls` **だけ**が `Stmt::Static` の初期化式へ降りない | `static mut s = block ->T: …` の本体宣言が slot を取れず **`decl-no-slot`** で `VmForceError` | `impl_python` は 7 |
+
+⚠⚠ **#68 と同じ壊れ方が 2 度（①②）**。#68 は `decl_names`（名前）側のずれ、今回は**降り方**側のずれで、
+**#59 が「降り方は walker ごとに違う」として意図的に残した差**がそのまま実バグになっていた。
+⚠⚠ **3 件とも「例題が 1 本も無かった」** — #56 / #68 / #71 / #75 と**同じ再演で 5 度目**。
+
+### 突き合わせた表（機械生成・`O` ＝ その variant のアームを持つ）
+
+母集団は**本体または部分式を持つ 14 variant**（`Vec<Stmt>` / `MatchArm` / `ExceptHandler` を持つ文）。
+ずれていた 3 セルを **★** で示す。
+
+| variant | nested_decls | shadow_stmts | body_bails | fn_free | bound_names | declared_names | referenced |
+|---|---|---|---|---|---|---|---|
+| `If` / `While` / `For` / `Block` / `Try` | O | O | O | O | O | O | O |
+| `Match` | O | O | O | O | O | **★ .** | O |
+| `Static`（初期化式） | **★ .** | O | . | . | O | . | O |
+| 部分式一般 | O | O | . | . | O | **★ .** | O |
+| `FnDef` / `GenDef` | . | . | . | O(fn のみ) | O | . | O |
+| `ClassDef` / `TraitDef` | . | . | . | . | O | . | O |
+| `ProtocolDef` | . | . | . | . | **.**（意図） | . | O |
+| `Import` / `FromImport` | . | . | . | . | . | . | **.**（意図） |
+| `AsyncAssign` | . | . | . | . | O | . | O |
+
+⚠ **`.` がすべてバグではない**。#81 の 3 分類で仕分けた:
+①**本当の取りこぼし**（★ の 3 件 ＋ `collect_bound_names` の `AttrAssign`/`AttrCompoundAssign`/`Raise`）
+②**意図的な差**（`ProtocolDef` はシグネチャ宣言だけ／`Import` は別モジュール／
+パターンへ降りると**採番がずれる**／async 本体は別チャンク）
+③**現状観測できない**（`nested_fn_free_names` が `GenDef` を見ない ⇒ 下記）
+
+### 手法 — #59 / #81 と同じ 2 段の強制
+
+1. `each_subpart` の `match stmt` は **exhaustive**（`Stmt` に variant を足すと止まる）
+2. `StmtPart` を消費側は**すべて exhaustive match**（種類を足すと**全 walker が止まる**）
+
+`StmtPart` は **11 種**。⚠ **本体の種類を細かく分けてある**のは walker ごとに本当に判断が違うため:
+
+- `Control`（同じフレーム）／`FnBody { params, body }`／`GenBody`／`TypeBody`／`ProtocolBody`／
+  `ModuleBody`／`AsyncBody` — **7 本が全部違う組み合わせで降りる**
+- `Expr`／`MatchPattern` — パターンへ降りるのは**参照を集める walker だけ**（#81 と同じ判断）
+- `ForTarget`／`ExceptAlias` — **束縛**で**採番順に意味がある**（#59 が `decl_names` に載せなかったもの）
+- `TargetName` — `x = …` の左辺・`freeze x`・`mng <- async` の `mng`。**束縛ではなく既存名**
+
+⚠ `FnBody` だけ `params` を持つ。**これが無いと `nested_fn_free_names` に 2 つ目の
+`match stmt` が残ってしまう**（自由変数解析は「仮引数 ＋ 本体の宣言」を自前の名前とするため）。
+⚠ `GenBody` に `params` は無い（要るのは `fn` の解析だけ）。
+
+### ⚠⚠ 2 段目が実地で発火した（負の対照ではなく本番で）
+
+`TargetName` を足した瞬間に**消費者 6 本がコンパイルエラーで停止**した（当時の変換済み本数）。
+⚠ #81 の `MatchPattern` に続く **2 例目**。⚠ ただし**止めてくれるのは 2 段目だけ**で、
+「`TargetName` を足すべきだ」と気づいたのは**人間が `dead_code` 警告を読んだから**
+（`MatchPattern` / `ProtocolBody` の payload を誰も読んでいなかった ⇒ 7 本目の walker を
+変換する判断につながった）。
+
+### 変換した 7 本／しなかった 1 本
+
+| walker | 変換 | 備考 |
+|---|---|---|
+| `vm::compiler::decls::collect_nested_decls` | ✅ | **採番順に意味がある**（`For`＝ターゲット→iter→本体、`Try`＝本体→別名→handler→finally）。③を修正 |
+| `vm::compiler::decls::scan_shadow_stmts` | ✅ | ついでに**①も `decl_names` へ委譲**（手書きの名前収集を削除。集合は完全一致を確認） |
+| `vm::compiler::decls::block_body_bails` | ✅ | `Stmt::Return` の判定だけ手前に残す |
+| `vm::compiler::decls::nested_fn_free_names::walk` | ✅ | `FnBody { params, body }` で**丸ごと委譲**（外側の `if let` を削除） |
+| `interpreter::resolver::collect_bound_names` | ✅ | `AttrAssign`/`AttrCompoundAssign`/`Raise` などへ**新たに降りる**ようになった |
+| `interpreter::exec::collect_declared_names` | ✅ | ①②を修正。式側は新設 `collect_declared_in_expr` が [`expr_walk`](src/expr_walk.rs) を歩く |
+| `interpreter::exec::collect_referenced_names_stmt` | ✅ | **#75 で既に exhaustive** だったが、`MatchPattern`/`ProtocolBody`/`TargetName` を読む唯一の walker なので変換した |
+| `interpreter::resolver::collect_base_decls` | ❌ | ⚠ **そもそも降りない**（関数本体の直下しか見ない）。問いは「**この文を理解できるか**」で、未知の文は `false` を返して解決を諦める＝**既定が安全側**（#59 が `decl_names` で下したのと同じ判定） |
+
+⚠ **`partial_compiler/llvm_codegen` の `Stmt` walker 5 本は対象外**
+（`walk_stmts`・`stmt_eligible`・`gen_stmt`・`stmt_writes_param`・`stmt_has_loop_yield`）。
+`_ =>` の既定が「**ネイティブ非対象**」＝**安全側の劣化**で、#84 の起票時評価の分類 B。
+
+### ⚠ 直さなかったもの（起票候補）
+
+**入れ子 `gen` が外側の可変ローカルを捕捉すると `VmForceError`**（`impl_python` は 6）。
+⚠ 原因は #84 ではない — `decl-prepass:GenDef` で**入れ子 `gen` は捕捉の有無に関係なく
+VM 非対応**（実測で確認）。`nested_fn_free_names` が `GenDef` を見ないのはそのため
+（③ の分類＝現状観測できない）。⇒ `gen` の VM 対応と同時にやる別タスク。
+
+### 検証（**すべて自分で走らせて確認**）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` / `--features prof` / `--features tw_stats` | **警告 0**（3 つとも） |
+| `cargo test` | **750 passed** |
+| `cargo clippy` / `--all-targets` | **50 / 65** ＝ ⚠ **同じコマンドで HEAD を測り直して 50 / 65**（増分 0） |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **114 / 114 byte-identical**（⚠ 先に**同一 exe の負の対照**で 114/114 を確認してから読んだ） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **96 / 96 identical** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) | **53 / 53 identical**・unexpected diff 0 |
+| [scan_examples.ps1](scan_examples.ps1) / [force_gate.ps1](force_gate.ps1) | **FAIL 0** / **0 件・161 例題** |
+| [tw_stats.ps1](tw_stats.ps1)（⚠ **VM の適格範囲に触ったので必須**） | `in_fn` **0**・`tw_control_flow` **0**・`vm_bail_fn` **0**・`vm_ineligible` **0** |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) | identical / **5 identical** |
+| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **0 件** |
+
+⚠ **`force_gate` は 1 度やり直した** — 走行中に `src/` へプローブを当ててしまったため
+（vm-pitfalls §4「タイムアウトを持つゲートを並走させない」の再演）。
+**止めて、`src/` がバックアップと一致することを確認してから再実行**した。
+
+⚠⚠ **bytecode が 114/114 一致した ＝ 3 件の実バグに例題が 1 本も無かったことの裏取り**。
+網を広げても既存例題では 1 バイトも動かない（#81 と同じ結論）。
+
+⚠ **clippy の基準値は当てにしない** — プランには「50 / 63」、#75 の実装ログには「51 / 66」と
+**3 通りの数字**があった。⇒ **同じセッションで HEAD を stash して測り直す**のが唯一の方法。
+
+### 負の対照（検出力の確認）
+
+| 対照 | 結果 |
+|---|---|
+| `StmtPart` に variant を +1 | **消費者 7 本ちょうど**が停止（＝変換した 7 本と一致） |
+| `Stmt` に variant を +1 | **7 箇所**が停止（`each_subpart` を含む。構成は変わったが数は同じ — ⚠ **利得は件数ではなく「1 箇所が 7 walker を代表する」こと**） |
+| 新例題を**修正前バイナリ**で実行 | **exit=1**（`VmForceError`） |
+| ①②③ を**個別に**修正前バイナリで実行 | **3 件とも個別に exit=1**（⚠ 1 例題 = 1 原因ではないので分けて確認した） |
+
+### 成果物
+
+- [src/stmt_walk.rs](src/stmt_walk.rs) 新設（274 行）
+- `Stmt` を歩く walker **45 → 39 本**・うち `_ => {}` **35 → 29 本**（どちらも -6）
+- 例題 [examples/basics/nested_decl_scopes.ar](examples/basics/nested_decl_scopes.ar) 新設
+  （①②③ ＋ **対照 3 種**: 同じ宣言を文形式で書いた場合／`for` ターゲット／`except as` 別名。
+  ⚠ 後 2 つは**採番順を崩すと値が壊れる**ので順序の検査を兼ねる）
+- ⚠ `ModuleBody` の payload だけ `#[allow(dead_code)]`（**7 本すべてが降りないと決めている**ため）。
+  **`allow` の範囲は enum の 1 フィールドのみ**＝ #51 の「属性が別の警告を食う」は起こりえない
+
 ## 見積もりと実測
 
 | 事前の想定 | 実際 |

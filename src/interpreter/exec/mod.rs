@@ -128,48 +128,62 @@ pub(crate) fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) 
             }
         });
 
-        // ② どこへ降りるか＋入れ子スコープの束縛（**この walker 固有**・#59 で統合しない差）。
-        match stmt {
-            Stmt::For { targets, body, .. } => {
-                for t in targets {
-                    out.insert(t.clone());
+        // ② どこへ降りるか＋入れ子スコープの束縛（**この walker 固有**・#84 で構造を 1 箇所へ）。
+        // ⚠ **`_ => {}` を書かない** — `StmtPart` に種類が増えるとここが止まる。
+        crate::stmt_walk::each_subpart(stmt, &mut |part| {
+            use crate::stmt_walk::StmtPart as P;
+            match part {
+                // ⚠⚠ #84 で `Stmt::Match` のアーム本体へ降りるようになった（実バグの修正）。
+                // 降りていなかったため、`match` アームの中で宣言した名前が「自前の名前」から
+                // 漏れて**自由変数として捕捉**され、採番側（`collect_nested_decls` は降りる）が
+                // 振った slot と衝突して `capture-slot-conflict` で `VmForceError` になっていた。
+                P::Control(b) => collect_declared_names(b, out),
+                // ⚠⚠ #84 で式の中のブロック式へも降りるようになった（同じ実バグの別経路）。
+                // `let q = block ->T: let z = …` を持つ入れ子 `fn` が同じ衝突で落ちていた。
+                P::Expr(e) => collect_declared_in_expr(e, out),
+                // 入れ子スコープの束縛（#59 が意図的に `decl_names` へ載せなかったもの）。
+                P::ForTarget(t) => {
+                    out.insert(t.to_string());
                 }
-                collect_declared_names(body, out);
+                P::ExceptAlias(a) => {
+                    out.insert(a.to_string());
+                }
+                // ⚠ 入れ子定義の**本体には降りない**（別フレーム）。名前そのものは①が入れる。
+                P::FnBody { .. } | P::GenBody { .. } | P::TypeBody(_) | P::ProtocolBody(_) => {}
+                // 別モジュールの本体。呼び出し元のフレームの名前ではない。
+                P::ModuleBody(_) => {}
+                // async 本体は送出時にディープクローンされ別チャンクになる
+                // （採番側の `collect_nested_decls` も降りない＝2 本の判断が揃っている）。
+                P::AsyncBody(_) => {}
+                // ⚠ パターンへは降りない（採番側と揃える）。
+                P::MatchPattern(_) => {}
+                // 既存の名前への代入は**自前の宣言ではない**（参照側が別に拾う）。
+                P::TargetName(_) => {}
             }
-            Stmt::If {
-                branches,
-                else_body,
-            } => {
-                for (_, body) in branches {
-                    collect_declared_names(body, out);
-                }
-                if let Some(body) = else_body {
-                    collect_declared_names(body, out);
-                }
-            }
-            Stmt::While { body, .. } | Stmt::Block(body) => {
-                collect_declared_names(body, out);
-            }
-            Stmt::Try {
-                body,
-                handlers,
-                finally_body,
-            } => {
-                collect_declared_names(body, out);
-                for h in handlers {
-                    if let Some(alias) = &h.name {
-                        out.insert(alias.clone());
-                    }
-                    collect_declared_names(&h.body, out);
-                }
-                if let Some(body) = finally_body {
-                    collect_declared_names(body, out);
-                }
-            }
-            // ⚠ 入れ子定義（`fn`/`class`…）の**本体には降りない**（別フレーム）。
-            _ => {}
-        }
+        });
     }
+}
+
+/// 式の中の**ブロック式**（`block:`/if/while/for/match 式）が宣言する名前も集める（#84）。
+///
+/// ⚠ [`crate::interpreter::resolver`] の `collect_bound_in_expr` と**同じ形**だが、
+/// 集めた名前の使い道が違う（あちらは「シャドウしうる名前」＝解決を諦める根拠、
+/// こちらは「クロージャの自前の名前」＝捕捉しない根拠）。判断は各 walker が持つ。
+fn collect_declared_in_expr(expr: &Expr, out: &mut HashSet<String>) {
+    // 部分式の構造は 1 箇所（#81）。⚠ **`_ => {}` を書かない**。
+    crate::expr_walk::each_subpart(expr, &mut |part| {
+        use crate::expr_walk::SubPart as P;
+        match part {
+            P::Plain(x) | P::Control(x) => collect_declared_in_expr(x, out),
+            P::Body(b) => collect_declared_names(b, out),
+            // `for i in …` 式のループ変数はブロック内の束縛（`Stmt::For` と揃える）。
+            P::ForTarget(t) => {
+                out.insert(t.to_string());
+            }
+            // ⚠ パターンへは降りない（採番側 `collect_expr_decls` と揃える）。
+            P::MatchPattern(_) => {}
+        }
+    });
 }
 
 /// 本体が**参照する名前**を集める（クロージャの自由変数解決の入力・#75）。
@@ -191,119 +205,40 @@ pub(crate) fn collect_referenced_names(stmts: &[Stmt], out: &mut HashSet<String>
 }
 
 fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
-    match stmt {
-        Stmt::Expr(e) => collect_refs_expr(e, out),
-        Stmt::Let(_, _, e) | Stmt::Const(_, _, e) | Stmt::Mut(_, _, e) | Stmt::Static(_, e, _) => {
-            collect_refs_expr(e, out);
-        }
-        Stmt::LetTuple { value, .. } => {
-            collect_refs_expr(value, out);
-        }
-        Stmt::Assign { name, value, .. } => {
-            out.insert(name.clone());
-            collect_refs_expr(value, out);
-        }
-        Stmt::CompoundAssign { name, value, .. } => {
-            out.insert(name.clone());
-            collect_refs_expr(value, out);
-        }
-        Stmt::AttrAssign { target, value } | Stmt::AttrCompoundAssign { target, value, .. } => {
-            collect_refs_expr(target, out);
-            collect_refs_expr(value, out);
-        }
-        Stmt::Return(Some(e)) | Stmt::BlockReturn(e, _) | Stmt::LoopYield(e) | Stmt::Yield(e) => {
-            collect_refs_expr(e, out);
-        }
-        Stmt::Raise { exc: Some(e), .. } => collect_refs_expr(e, out),
-        Stmt::If {
-            branches,
-            else_body,
-        } => {
-            for (cond, body) in branches {
-                collect_refs_expr(cond, out);
+    // 文の直下の構造は 1 箇所（#84）。⚠ **`_ => {}` を書かない** — `StmtPart` に
+    // 種類が増えるとここが止まり、「この walker ではどう扱うか」を決めさせられる。
+    //
+    // ⚠⚠ #75 まではここが自前の `match stmt` で、`Expr` 30 variant のうち 8 個・
+    // `Stmt` 40 variant のうち 6 個を `_ => {}` で黙って落としていた（**式形式の制御構文や
+    // `match` 文の中だけで外側変数を参照するクロージャが `NameError`**）。#75 で exhaustive 化し、
+    // #84 で構造そのものを [`crate::stmt_walk`] へ移した。
+    crate::stmt_walk::each_subpart(stmt, &mut |part| {
+        use crate::stmt_walk::StmtPart as P;
+        match part {
+            P::Expr(e) => collect_refs_expr(e, out),
+            // `case <expr>` のパターンは**参照**（#75 で拾うようにした）。
+            P::MatchPattern(e) => collect_refs_expr(e, out),
+            P::Control(b) => collect_referenced_names(b, out),
+            // 入れ子定義の本体も参照を持つ（その中の自由変数は外側から捕捉される）。
+            P::FnBody { body, .. } | P::GenBody(body) | P::TypeBody(body) => {
                 collect_referenced_names(body, out);
             }
-            if let Some(body) = else_body {
-                collect_referenced_names(body, out);
+            // `protocol` の本体はシグネチャ宣言だけだが、既定値の式がありうるので降りる
+            // （#75 以前からの挙動）。
+            P::ProtocolBody(body) => collect_referenced_names(body, out),
+            // ⚠ `import` の `body` は**別モジュールの本体**。呼び出し元のフレームからは捕捉しない。
+            P::ModuleBody(_) => {}
+            // `mng <- async->T:` の本体（送出時にディープクローンされるが、参照は解決が要る）。
+            P::AsyncBody(b) => collect_referenced_names(b, out),
+            // 既存の名前を指す ＝ **参照**（`x = …` の左辺・`freeze x`・`mng <- async` の `mng`）。
+            P::TargetName(n) => {
+                out.insert(n.to_string());
             }
+            // ⚠ `for` ターゲットと `except ... as` の別名は**入れ子スコープの束縛**なので
+            // 参照として拾わない（拾うと自前の名前を自由変数と誤認する）。
+            P::ForTarget(_) | P::ExceptAlias(_) => {}
         }
-        Stmt::While { cond, body } => {
-            collect_refs_expr(cond, out);
-            collect_referenced_names(body, out);
-        }
-        Stmt::For { iter, body, .. } => {
-            collect_refs_expr(iter, out);
-            collect_referenced_names(body, out);
-        }
-        Stmt::Block(body) => collect_referenced_names(body, out),
-        Stmt::FnDef { body, .. } | Stmt::GenDef { body, .. } => {
-            collect_referenced_names(body, out);
-        }
-        Stmt::ClassDef { body, .. } | Stmt::TraitDef { body, .. } | Stmt::ProtocolDef { body, .. } => {
-            collect_referenced_names(body, out);
-        }
-        Stmt::Try {
-            body,
-            handlers,
-            finally_body,
-        } => {
-            collect_referenced_names(body, out);
-            for h in handlers {
-                collect_referenced_names(&h.body, out);
-            }
-            if let Some(body) = finally_body {
-                collect_referenced_names(body, out);
-            }
-        }
-        Stmt::Freeze(name, _) => {
-            out.insert(name.clone());
-        }
-        // ⚠ #75 で追加。`match` **文**はここに無く、本体の参照が丸ごと落ちていた。
-        Stmt::Match { subject, arms, .. } => {
-            collect_refs_expr(subject, out);
-            for arm in arms {
-                if let crate::ast::MatchPattern::Case(e) = &arm.pattern {
-                    collect_refs_expr(e, out);
-                }
-                collect_referenced_names(&arm.body, out);
-            }
-        }
-        // `mng <- async->T:` の本体（⚠ `target` は束縛ではない・`decl_names` と同じ扱い）。
-        Stmt::AsyncAssign { target, stmts, .. } => {
-            out.insert(target.clone());
-            collect_referenced_names(stmts, out);
-        }
-        Stmt::EventSubscribe {
-            source, handler, ..
-        }
-        | Stmt::EventUnsubscribe {
-            source, handler, ..
-        } => {
-            collect_refs_expr(source, out);
-            collect_refs_expr(handler, out);
-        }
-        // クラス本体のフィールド宣言。既定値の式だけが参照になりうる。
-        Stmt::Field { default, .. } => {
-            if let Some(e) = default {
-                collect_refs_expr(e, out);
-            }
-        }
-        Stmt::EnumDef { variants, .. } => {
-            for (_, e) in variants {
-                if let Some(e) = e {
-                    collect_refs_expr(e, out);
-                }
-            }
-        }
-        Stmt::DebugLet(_, e) => collect_refs_expr(e, out),
-        // ── ここから下は「降りない」バリアント。⚠ 理由を消さずに残すこと（#59/#75）──
-        // 参照する式を持たない文。
-        Stmt::Break | Stmt::Continue | Stmt::Pass | Stmt::BreakPoint { .. } => {}
-        Stmt::Return(None) | Stmt::Raise { exc: None, .. } => {}
-        Stmt::NewTypeDef { .. } => {}
-        // `import` の `body` は**別モジュールの本体**。呼び出し元のフレームからは捕捉しない。
-        Stmt::Import { .. } | Stmt::FromImport { .. } => {}
-    }
+    });
 }
 
 fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {

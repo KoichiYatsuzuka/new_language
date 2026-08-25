@@ -225,83 +225,41 @@ fn collect_bound_names(body: &[Stmt], out: &mut HashSet<String>) {
             }
         });
 
-        // ② どこへ降りるか＋入れ子スコープの束縛（**この walker 固有**・保守的に広く取る）。
-        match stmt {
-            Stmt::Let(_, _, e) | Stmt::Const(_, _, e) | Stmt::Mut(_, _, e) => {
-                collect_bound_in_expr(e, out);
-            }
-            Stmt::Static(_, e, _) => {
-                collect_bound_in_expr(e, out);
-            }
-            Stmt::LetTuple { value, .. } => {
-                collect_bound_in_expr(value, out);
-            }
-            Stmt::For { targets, iter, body } => {
-                for t in targets {
-                    out.insert(t.clone());
+        // ② どこへ降りるか＋入れ子スコープの束縛（**この walker 固有**・保守的に広く取る・#84）。
+        // ⚠ **`_ => {}` を書かない** — `StmtPart` に種類が増えるとここが止まる。
+        crate::stmt_walk::each_subpart(stmt, &mut |part| {
+            use crate::stmt_walk::StmtPart as P;
+            match part {
+                // ⚠ #84 で `AttrAssign` / `AttrCompoundAssign` / `Raise` / `enum` の初期化式などへも
+                // 降りるようになった（それ以前は `_ => {}` に落ちて**見ていなかった**）。
+                // **束縛は取りこぼすと危険側に倒れる**ので、網が広がるのは正しい方向。
+                P::Expr(e) => collect_bound_in_expr(e, out),
+                P::Control(b) => collect_bound_names(b, out),
+                // `for` ターゲット・`except ... as` の別名は入れ子スコープの束縛。
+                P::ForTarget(t) => {
+                    out.insert(t.to_string());
                 }
-                collect_bound_in_expr(iter, out);
-                collect_bound_names(body, out);
-            }
-            // `mng <- async->T: body`（#27-c）。
-            // ⚠ **`target` は束縛ではない**。`exec_async_assign` は `get_var(target)` するだけで
-            // （未定義なら `NameError`）、新しい名前を作らない。ここで束縛扱いすると
-            // `mng` がシャドウ候補になり `Resolution::Global` が付かず、VM が
-            // 「slot にもグローバルにも無い識別子」として bail していた（実測 18 件）。
-            // 本体 `stmts` は束縛を作りうるので、そちらは従来どおり集める。
-            Stmt::AsyncAssign { stmts, .. } => {
-                collect_bound_names(stmts, out);
-            }
-            // ⚠ 名前は①が入れる。ここは**本体へ降りる**ためだけのアーム。
-            // `protocol` の本体はシグネチャ宣言だけなので降りない（従来どおり）。
-            Stmt::FnDef { body, .. }
-            | Stmt::GenDef { body, .. }
-            | Stmt::ClassDef { body, .. }
-            | Stmt::TraitDef { body, .. } => {
-                collect_bound_names(body, out);
-            }
-            Stmt::If { branches, else_body } => {
-                for (c, b) in branches {
-                    collect_bound_in_expr(c, out);
-                    collect_bound_names(b, out);
+                P::ExceptAlias(a) => {
+                    out.insert(a.to_string());
                 }
-                if let Some(b) = else_body {
-                    collect_bound_names(b, out);
+                // 入れ子定義の本体。⚠ 名前そのものは①が入れる。ここは**降りる**ためだけ。
+                P::FnBody { body, .. } | P::GenBody(body) | P::TypeBody(body) => {
+                    collect_bound_names(body, out);
                 }
+                // ⚠ `protocol` の本体は**シグネチャ宣言だけ**なので降りない（従来どおり）。
+                P::ProtocolBody(_) => {}
+                // 別モジュールの本体。この関数の解決とは無関係。
+                P::ModuleBody(_) => {}
+                // `mng <- async->T:` の本体は束縛を作りうる（#27-c）。
+                // ⚠ `target` は**束縛ではない**ので①も②も入れない。
+                P::AsyncBody(b) => collect_bound_names(b, out),
+                // ⚠ パターンへは降りない（従来どおり）。
+                P::MatchPattern(_) => {}
+                // ⚠ 既存の名前への代入は**束縛ではない**。`mng <- async` の `mng` を
+                // 束縛扱いするとシャドウ候補に化けて VM が bail する（#27-c の実バグ）。
+                P::TargetName(_) => {}
             }
-            Stmt::While { cond, body } => {
-                collect_bound_in_expr(cond, out);
-                collect_bound_names(body, out);
-            }
-            Stmt::Block(b) => collect_bound_names(b, out),
-            Stmt::Match { subject, arms, .. } => {
-                collect_bound_in_expr(subject, out);
-                for a in arms {
-                    collect_bound_names(&a.body, out);
-                }
-            }
-            Stmt::Try { body, handlers, finally_body } => {
-                collect_bound_names(body, out);
-                for h in handlers {
-                    if let Some(n) = &h.name {
-                        out.insert(n.clone());
-                    }
-                    collect_bound_names(&h.body, out);
-                }
-                if let Some(f) = finally_body {
-                    collect_bound_names(f, out);
-                }
-            }
-            Stmt::Expr(e)
-            | Stmt::LoopYield(e)
-            | Stmt::Yield(e)
-            | Stmt::BlockReturn(e, _) => collect_bound_in_expr(e, out),
-            Stmt::Return(Some(e)) => collect_bound_in_expr(e, out),
-            Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => {
-                collect_bound_in_expr(value, out)
-            }
-            _ => {}
-        }
+        });
     }
 }
 
