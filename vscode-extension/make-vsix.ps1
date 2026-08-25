@@ -23,6 +23,7 @@ $contentTypes = @'
   <Default Extension="md"           ContentType="text/markdown"/>
   <Default Extension="vsixmanifest" ContentType="text/xml"/>
   <Default Extension="png"          ContentType="image/png"/>
+  <Default Extension="svg"          ContentType="image/svg+xml"/>
   <Default Extension="ars"          ContentType="text/plain"/>
 </Types>
 '@
@@ -83,12 +84,18 @@ Copy-Item "$root\language-configuration.json" "$tmp\extension\language-configura
 
 New-Item -ItemType Directory "$tmp\extension\out"      | Out-Null
 New-Item -ItemType Directory "$tmp\extension\syntaxes" | Out-Null
+New-Item -ItemType Directory "$tmp\extension\icons"    | Out-Null
 
 Get-ChildItem "$root\out\*.js" | ForEach-Object {
     Copy-Item $_.FullName "$tmp\extension\out\$($_.Name)"
 }
-Copy-Item "$root\syntaxes\arrow.tmLanguage.json" "$tmp\extension\syntaxes\arrow.tmLanguage.json"
+Get-ChildItem "$root\syntaxes\*.json" | ForEach-Object {
+    Copy-Item $_.FullName "$tmp\extension\syntaxes\$($_.Name)"
+}
 Copy-Item "$root\builtins.ars"       "$tmp\extension\builtins.ars"
+Get-ChildItem "$root\icons\*.svg" | ForEach-Object {
+    Copy-Item $_.FullName "$tmp\extension\icons\$($_.Name)"
+}
 
 # -------------------------------------------------------
 # Zip → .vsix

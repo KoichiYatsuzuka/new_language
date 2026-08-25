@@ -71,15 +71,29 @@ function getCellAtCursor(editor) {
     const range = new vscode.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length);
     return doc.getText(range);
 }
+// ===== Language selectors =====
+/**
+ * `.ar` and `.ars` are registered as separate languages so the file explorer can
+ * give them different icons; both get the full set of language features.
+ * (`.arc` is a compiled binary module — icon only, no providers.)
+ */
+const ARROW_SELECTOR = [
+    { language: 'arrow' },
+    { language: 'arrow-stub' },
+];
+/** True for documents the language features apply to (`.ar` / `.ars`). */
+function isArrowDocument(document) {
+    return document.languageId === 'arrow' || document.languageId === 'arrow-stub';
+}
 // ===== Activation =====
 function activate(context) {
     (0, type_infer_1.initBuiltinStub)(path.join(context.extensionPath, 'builtins.ars'));
     context.subscriptions.push(vscode.window.onDidCloseTerminal(t => { if (t === replTerminal)
-        replTerminal = undefined; }), vscode.languages.registerInlayHintsProvider({ language: 'arrow' }, { provideInlayHints: type_infer_1.provideInlayHints }), vscode.languages.registerHoverProvider({ language: 'arrow' }, { provideHover: type_infer_1.provideHover }), vscode.languages.registerDocumentSemanticTokensProvider({ language: 'arrow' }, { provideDocumentSemanticTokens: type_infer_1.provideDocumentSemanticTokens }, type_infer_1.SEMANTIC_TOKENS_LEGEND), vscode.languages.registerCompletionItemProvider({ language: 'arrow' }, { provideCompletionItems: type_infer_1.provideCompletionItems }, '.'), vscode.languages.registerDocumentSymbolProvider({ language: 'arrow' }, { provideDocumentSymbols: type_infer_1.provideDocumentSymbols }), vscode.languages.registerSignatureHelpProvider({ language: 'arrow' }, { provideSignatureHelp: type_infer_1.provideSignatureHelp }, '(', ','), vscode.languages.registerDefinitionProvider({ language: 'arrow' }, { provideDefinition: type_infer_1.provideDefinition }));
+        replTerminal = undefined; }), vscode.languages.registerInlayHintsProvider(ARROW_SELECTOR, { provideInlayHints: type_infer_1.provideInlayHints }), vscode.languages.registerHoverProvider(ARROW_SELECTOR, { provideHover: type_infer_1.provideHover }), vscode.languages.registerDocumentSemanticTokensProvider(ARROW_SELECTOR, { provideDocumentSemanticTokens: type_infer_1.provideDocumentSemanticTokens }, type_infer_1.SEMANTIC_TOKENS_LEGEND), vscode.languages.registerCompletionItemProvider(ARROW_SELECTOR, { provideCompletionItems: type_infer_1.provideCompletionItems }, '.'), vscode.languages.registerDocumentSymbolProvider(ARROW_SELECTOR, { provideDocumentSymbols: type_infer_1.provideDocumentSymbols }), vscode.languages.registerSignatureHelpProvider(ARROW_SELECTOR, { provideSignatureHelp: type_infer_1.provideSignatureHelp }, '(', ','), vscode.languages.registerDefinitionProvider(ARROW_SELECTOR, { provideDefinition: type_infer_1.provideDefinition }));
     // ---- Send-to-REPL command ----
     context.subscriptions.push(vscode.commands.registerCommand('arrow.sendToRepl', () => {
         const editor = vscode.window.activeTextEditor;
-        if (!editor || editor.document.languageId !== 'arrow') {
+        if (!editor || !isArrowDocument(editor.document)) {
             vscode.window.showWarningMessage('Arrow REPL: open a .ar file first.');
             return;
         }
@@ -109,7 +123,7 @@ function activate(context) {
     const debounceMap = new Map();
     /** Debounce diagnostics so rapid edits don't trigger a rebuild on every keystroke. */
     function scheduleDiagnostics(document) {
-        if (document.languageId !== 'arrow')
+        if (!isArrowDocument(document))
             return;
         const key = document.uri.toString();
         const existing = debounceMap.get(key);

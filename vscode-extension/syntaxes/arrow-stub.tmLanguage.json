@@ -1,0 +1,8 @@
+{
+  "name": "Arrow Stub",
+  "scopeName": "source.ars",
+  "fileTypes": ["ars"],
+  "patterns": [
+    { "include": "source.ar" }
+  ]
+}

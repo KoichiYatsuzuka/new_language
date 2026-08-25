@@ -26,7 +26,7 @@
       {
         "command": "arrow.sendToRepl",
         "key": "ctrl+enter",
-        "when": "editorTextFocus && editorLangId == arrow"
+        "when": "editorTextFocus && (editorLangId == 'arrow' || editorLangId == 'arrow-stub')"
       }
     ],
     "languages": [
@@ -37,10 +37,42 @@
           "ar"
         ],
         "extensions": [
-          ".ar",
+          ".ar"
+        ],
+        "icon": {
+          "light": "./icons/arrow-yellow-light.svg",
+          "dark": "./icons/arrow-yellow-dark.svg"
+        },
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "arrow-stub",
+        "aliases": [
+          "Arrow Stub",
+          "ars"
+        ],
+        "extensions": [
           ".ars"
         ],
+        "icon": {
+          "light": "./icons/arrow-red-light.svg",
+          "dark": "./icons/arrow-red-dark.svg"
+        },
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "arrow-compiled",
+        "aliases": [
+          "Arrow Compiled Module",
+          "arc"
+        ],
+        "extensions": [
+          ".arc"
+        ],
+        "icon": {
+          "light": "./icons/arrow-green-light.svg",
+          "dark": "./icons/arrow-green-dark.svg"
+        }
       }
     ],
     "grammars": [
@@ -48,6 +80,11 @@
         "language": "arrow",
         "scopeName": "source.ar",
         "path": "./syntaxes/arrow.tmLanguage.json"
+      },
+      {
+        "language": "arrow-stub",
+        "scopeName": "source.ars",
+        "path": "./syntaxes/arrow-stub.tmLanguage.json"
       }
     ],
     "configuration": {

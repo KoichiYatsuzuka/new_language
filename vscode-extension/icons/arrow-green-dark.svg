@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Arrow language icon (green, dark): head, shaft, swept-back fletching -->
+  <g fill="#3FB950" stroke="#3FB950" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round">
+    <line x1="27.52" y1="4.48" x2="10.01" y2="21.99" stroke-width="2.9"/>
+    <polygon points="4,28 7.89,17.04 14.96,24.11"/>
+    <polygon points="19.67,12.33 25.96,6.04 29.78,9.86 21.37,14.03"/>
+    <polygon points="19.67,12.33 25.96,6.04 22.14,2.22 17.97,10.63"/>
+  </g>
+</svg>

@@ -88,6 +88,23 @@ function getCellAtCursor(editor: vscode.TextEditor): string {
     return doc.getText(range);
 }
 
+// ===== Language selectors =====
+
+/**
+ * `.ar` and `.ars` are registered as separate languages so the file explorer can
+ * give them different icons; both get the full set of language features.
+ * (`.arc` is a compiled binary module — icon only, no providers.)
+ */
+const ARROW_SELECTOR: vscode.DocumentSelector = [
+    { language: 'arrow' },
+    { language: 'arrow-stub' },
+];
+
+/** True for documents the language features apply to (`.ar` / `.ars`). */
+function isArrowDocument(document: vscode.TextDocument): boolean {
+    return document.languageId === 'arrow' || document.languageId === 'arrow-stub';
+}
+
 // ===== Activation =====
 
 export function activate(context: vscode.ExtensionContext) {
@@ -97,34 +114,34 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.onDidCloseTerminal(t => { if (t === replTerminal) replTerminal = undefined; }),
 
         vscode.languages.registerInlayHintsProvider(
-            { language: 'arrow' },
+            ARROW_SELECTOR,
             { provideInlayHints }
         ),
         vscode.languages.registerHoverProvider(
-            { language: 'arrow' },
+            ARROW_SELECTOR,
             { provideHover }
         ),
         vscode.languages.registerDocumentSemanticTokensProvider(
-            { language: 'arrow' },
+            ARROW_SELECTOR,
             { provideDocumentSemanticTokens },
             SEMANTIC_TOKENS_LEGEND
         ),
         vscode.languages.registerCompletionItemProvider(
-            { language: 'arrow' },
+            ARROW_SELECTOR,
             { provideCompletionItems },
             '.'
         ),
         vscode.languages.registerDocumentSymbolProvider(
-            { language: 'arrow' },
+            ARROW_SELECTOR,
             { provideDocumentSymbols }
         ),
         vscode.languages.registerSignatureHelpProvider(
-            { language: 'arrow' },
+            ARROW_SELECTOR,
             { provideSignatureHelp },
             '(', ','
         ),
         vscode.languages.registerDefinitionProvider(
-            { language: 'arrow' },
+            ARROW_SELECTOR,
             { provideDefinition }
         ),
     );
@@ -133,7 +150,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('arrow.sendToRepl', () => {
             const editor = vscode.window.activeTextEditor;
-            if (!editor || editor.document.languageId !== 'arrow') {
+            if (!editor || !isArrowDocument(editor.document)) {
                 vscode.window.showWarningMessage('Arrow REPL: open a .ar file first.');
                 return;
             }
@@ -164,7 +181,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     /** Debounce diagnostics so rapid edits don't trigger a rebuild on every keystroke. */
     function scheduleDiagnostics(document: vscode.TextDocument): void {
-        if (document.languageId !== 'arrow') return;
+        if (!isArrowDocument(document)) return;
         const key = document.uri.toString();
         const existing = debounceMap.get(key);
         if (existing) clearTimeout(existing);
