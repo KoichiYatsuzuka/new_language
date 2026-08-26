@@ -39,7 +39,7 @@ class _ParserImports:
 
     def _parse_import_stmt(self) -> Stmt:
         self._eat(TokenKind.IMPORT)
-        lang = self._parse_lang_bracket() if self._current_kind() == TokenKind.LBRACKET else "tl-auto"
+        lang = self._parse_lang_bracket() if self._current_kind() == TokenKind.LBRACKET else "ar-auto"
 
         if lang in ("cpp-dll", "cpp-lib"):
             return self._parse_cpp_import(lang)
@@ -60,7 +60,7 @@ class _ParserImports:
         self._eat(TokenKind.FROM)
         module = self._parse_module_path()
         self._eat(TokenKind.IMPORT)
-        lang = self._parse_lang_bracket() if self._current_kind() == TokenKind.LBRACKET else "tl-auto"
+        lang = self._parse_lang_bracket() if self._current_kind() == TokenKind.LBRACKET else "ar-auto"
         names: list[tuple[str, Optional[str]]] = []
         while True:
             iname = self._expect_ident()
@@ -221,7 +221,8 @@ class _ParserImports:
     def _load_module(
         self, lang: str, module: list[str], version: Optional[str] = None
     ) -> list[Stmt]:
-        if lang in ("tl-auto", "ar-auto", "tl", "ar"):
+        # "tl-auto" / "tl" は旧名の別名。既存ソース互換のため受理し続ける
+        if lang in ("ar-auto", "tl-auto", "ar", "tl"):
             return self._load_tl_module(module, force_source=(lang in ("tl", "ar")))
         if lang in ("tlc", "arc"):
             return self._load_tlc_module(module)
@@ -258,7 +259,7 @@ class _ParserImports:
             raise self._error(f"cannot find module '{'.'.join(module)}' (looked at {checked})")
 
         abs_path, is_tlc = found
-        cache_key = ("tl-auto", abs_path)
+        cache_key = ("ar-auto", abs_path)
         if cache_key in self._module_cache:
             return self._module_cache[cache_key]
         if abs_path in self._loading:

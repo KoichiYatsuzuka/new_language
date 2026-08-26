@@ -6,7 +6,7 @@
 
 ### `let` — 不変変数
 
-```hv
+```ar
 let x = 42
 let name = "Alice"
 let pi = 3.14159
@@ -18,7 +18,7 @@ let pi = 3.14159
 
 ### `mut` — 可変変数
 
-```hv
+```ar
 mut count = 0
 mut items: list[str] = []
 count = count + 1   # 再代入可能
@@ -30,7 +30,7 @@ count = count + 1   # 再代入可能
 
 ### `const` — 定数
 
-```hv
+```ar
 const MAX = 100
 const GREETING = "hello"
 ```
@@ -41,7 +41,7 @@ const GREETING = "hello"
 
 ### `static mut` — 静的可変変数
 
-```hv
+```ar
 fn counter() -> int:
     static mut n = 0
     n += 1
@@ -57,7 +57,7 @@ fn counter() -> int:
 
 ## タプルアンパック宣言
 
-```hv
+```ar
 let x, mut y = (10, 20)
 let a, mut b, _ = some_tuple   # _ は残余要素を破棄
 ```
@@ -75,7 +75,7 @@ let a, mut b, _ = some_tuple   # _ は残余要素を破棄
 
 ## `freeze` 文
 
-```hv
+```ar
 mut data = [1, 2, 3]
 # ... data を構築 ...
 freeze data   # data を let (不変) に降格する
@@ -98,18 +98,18 @@ freeze data   # data を let (不変) に降格する
 `let` / `mut` / `const` / タプルアンパックで宣言する変数の名前が、  
 その時点からアクセス可能な **任意のスコープ** に既に存在する場合はエラーです。
 
-```hv
+```ar
 let a = 5
 let a = 6   # StaticTypeError / NameError: variable 'a' is already declared
 ```
 
-```hv
+```ar
 let x = 1
 if True:
     let x = 2   # エラー: 外側スコープの x と衝突
 ```
 
-```hv
+```ar
 let x = 1
 fn f() -> None:
     let x = 2   # エラー: 外側スコープの x と衝突
@@ -122,7 +122,7 @@ fn f() -> None:
 **例外 — `_`（捨て変数）**:  
 `_` は何度でも再宣言できます。戻り値を意図的に無視するための慣用パターンです。
 
-```hv
+```ar
 let _ = f.read_letter()
 let _ = f.read_letter()   # OK: _ は例外
 ```
@@ -130,7 +130,7 @@ let _ = f.read_letter()   # OK: _ は例外
 **注意**: 外側スコープの変数を **参照する**（読み取る）ことは引き続き許可されます。  
 禁止されるのはあくまで同名の **新規宣言** のみです。
 
-```hv
+```ar
 let x = 5
 fn f() -> None:
     print(x)   # OK: 参照は禁止されていない
@@ -142,7 +142,7 @@ fn f() -> None:
 
 ### レキシカルスコープ
 
-```hv
+```ar
 let outer = 10
 
 fn foo() -> int:
@@ -157,7 +157,7 @@ fn foo() -> int:
 制御構文 (`if`/`for`/`while`/`match`/`block`) の中で宣言された変数は  
 そのブロックを抜けると破棄されます (Python とは異なります)。
 
-```hv
+```ar
 if condition:
     let temp = "inside"   # この変数はブロック内のみ有効
 
@@ -217,7 +217,7 @@ pub struct InstanceData {
 3. 関数本体を実行
 4. スコープを復元
 
-```hv
+```ar
 mut global_x = 0
 
 fn modify() -> None:
@@ -230,7 +230,7 @@ fn modify() -> None:
 
 関数定義時に外側スコープの変数をキャプチャします。
 
-```hv
+```ar
 fn make_adder(let n: int) -> function->int:
     fn adder(let x: int) -> int:
         return x + n   # n をキャプチャ
@@ -243,7 +243,7 @@ fn make_adder(let n: int) -> function->int:
 
 `mut` キャプチャでは関数内外で値が共有されます:
 
-```hv
+```ar
 mut counter = 0
 
 fn increment() -> None:
@@ -293,7 +293,7 @@ pub(self) enum Var {
 すべてのインスタンスは組み込みの `copy()` メソッドを持ちます。  
 `copy()` は呼び出し元インスタンスの **ディープコピー** を新しくメモリ上に確保して返します。
 
-```hv
+```ar
 mut p1 = Point(10, 20)
 mut p2 = p1.copy()   # p2 は独立したコピー
 p2.x = 99
@@ -312,7 +312,7 @@ print(p1.x)   # 10 — p1 は変更されない
 クラスに `__copy__(let self) -> ClassName:` メソッドを定義すると、  
 `copy()` 呼び出し時にデフォルトのディープコピーの代わりにそのメソッドが使われます。
 
-```hv
+```ar
 class Named:
     mut name: str
     mut tag: int
@@ -360,7 +360,7 @@ mut n2 = n1.copy()   # __copy__ が呼ばれる
   関数内のパラメータは **フリーズなし** の新鮮なコピーとして受け取られる
 - `mut` パラメータは引き続き参照共有（コピーなし）
 
-```hv
+```ar
 fn transform(let p: Point) -> None:
     p.x = p.x * 2   # コピー上での変更。呼び出し元の p3 には影響しない
 

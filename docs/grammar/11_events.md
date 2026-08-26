@@ -21,7 +21,7 @@ Arrow ネイティブのイベントハンドラ機構。`Signal[T]` に関数�
 
 ## Signal[T] の生成
 
-```hv
+```ar
 let counter = Signal[int]()    # 型引数付き
 let anything = Signal()        # 型引数なしも可
 ```
@@ -36,7 +36,7 @@ let anything = Signal()        # 型引数なしも可
 
 ## 購読 (on / once)
 
-```hv
+```ar
 let counter = Signal[int]()
 
 fn on_count(mut n: int) -> None:
@@ -73,7 +73,7 @@ source once [async] handler
 
 ## 解除 (off)
 
-```hv
+```ar
 counter off on_count
 ```
 
@@ -93,7 +93,7 @@ counter off on_count
 
 ## 発火 (emit / emit_async)
 
-```hv
+```ar
 counter.emit(1)         # 同期発火: 同期ハンドラを即時呼び出し
 counter.emit_async(2)   # 遅延発火: EventLoop のキューに積むだけ
 ```
@@ -125,7 +125,7 @@ counter.emit_async(2)   # 遅延発火: EventLoop のキューに積むだけ
 
 グローバルに 1 つだけ存在する組み込みオブジェクトです (`Interpreter::new()` で登録)。
 
-```hv
+```ar
 events.emit_async(10)
 EventLoop.run(1.0)          # 1.0 秒間キューを処理し続ける
 
@@ -174,7 +174,7 @@ EventLoop.run()             # キューが空になったら即終了
 DLL ロード直後に Rust 側から `ar_event_fire` の関数ポインタが注入されます
 (`src/interpreter/cs_dll_runtime.rs` の `load_bridge`。シンボルが無い旧 DLL では何もしない)。
 
-```hv
+```ar
 import[cs-dll] cs_interop_test.ArrowBridge as bridge
 
 let ticks = Signal[str]()

@@ -6,7 +6,7 @@
 
 `block:` / `if` / `match` / `for` / `while` の各式から値を返します。
 
-```hv
+```ar
 let result = block ->int:
     mut x = 0
     for i in range(5):
@@ -37,7 +37,7 @@ else:
 
 `for`/`while` 式の中で値を蓄積してリストを構築します。
 
-```hv
+```ar
 let squares = for i in range(10) ->list[int]:
     loop_yield i * i
 
@@ -61,7 +61,7 @@ let filtered = for x in data ->list[float]:
 
 ジェネレータ関数 (`gen`) の中で値を産出します。
 
-```hv
+```ar
 gen fibonacci() -> int:
     mut a, mut b = 0, 1
     while True:
@@ -86,7 +86,7 @@ gen fibonacci() -> int:
 
 `AsyncManager` インスタンスにタスクを送信します。
 
-```hv
+```ar
 let mng = AsyncManager(num_thread=4)
 
 mng <- async ->int:
@@ -111,7 +111,7 @@ mng <- async ->str:
 
 **結果の収集**:
 
-```hv
+```ar
 mng.poll_completed()   # 完了したタスクを収集 (非ブロッキング)
 mng.wait_all()         # 全タスクの完了を待つ (ブロッキング)
 let results = mng.results
@@ -125,7 +125,7 @@ let results = mng.results
 
 実行を一時停止してデバッグ REPL を起動します。
 
-```hv
+```ar
 mut x = compute()
 break_point   # ここで一時停止
 process(x)
@@ -150,7 +150,7 @@ process(x)
 
 デバッガ REPL 内での専用変数:
 
-```hv
+```ar
 # REPL 内で:
 let dbg::temp = x * 2   # デバッガ一時変数を宣言
 dbg::temp               # 参照
@@ -166,7 +166,7 @@ dbg::temp               # 参照
 
 LaTeX 風の記法で数学記号を Unicode として扱えます。
 
-```hv
+```ar
 let phi = m"\phi"         # "φ"
 let eq  = m"E = mc^2"     # "E = mc²"
 let vec = m"\vec{v}_{n}"  # "v⃗ₙ"
@@ -180,7 +180,7 @@ LaTeX コマンド→ Unicode 変換は `src/lexer/math.rs` の `render_math_str
 
 ## f-string 式補間
 
-```hv
+```ar
 let name = "world"
 let n = 42
 print(f"Hello, {name}! The answer is {n}.")
@@ -201,7 +201,7 @@ print(f"Pi ≈ {3.14159:.4f}")   # 書式指定
 
 ## `@` 演算子 (行列積)
 
-```hv
+```ar
 let c = a @ b   # 行列積 (NumPy 互換)
 a @= b          # インプレース行列積
 ```
@@ -219,7 +219,7 @@ a @= b          # インプレース行列積
 
 ## `::` 演算子 (トレイト修飾アクセス)
 
-```hv
+```ar
 obj::TraitName.method(args)
 ```
 
@@ -229,7 +229,7 @@ obj::TraitName.method(args)
 
 ## `assert` 文
 
-```hv
+```ar
 assert x > 0
 assert len(items) > 0, "items must not be empty"
 ```

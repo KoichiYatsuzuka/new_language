@@ -1,10 +1,10 @@
-﻿# Language Comparison: Rust · Python · tl
+﻿# Language Comparison: Rust · Python · ar
 
 ---
 
 ## Variable Declaration
 
-| Concept | Rust | Python | tl |
+| Concept | Rust | Python | ar |
 |---|---|---|---|
 | Immutable binding | `let x = 5` | `x = 5` (all mutable) | `let x = 5` |
 | Mutable binding | `let mut x = 5` | `x = 5` | `mut x = 5` |
@@ -17,7 +17,7 @@
 
 ## Primitive Types
 
-| Type | Rust | Python | tl |
+| Type | Rust | Python | ar |
 |---|---|---|---|
 | Integer | `i64`, `i32`, `usize`, … | `int` | `int` |
 | Float | `f64`, `f32` | `float` | `float` |
@@ -30,7 +30,7 @@
 
 ## Collections
 
-| Collection | Rust | Python | tl |
+| Collection | Rust | Python | ar |
 |---|---|---|---|
 | Dynamic array | `Vec<T>` | `list` | `list` / `list[T]` |
 | Hash map | `HashMap<K,V>` | `dict` | `dict` / `dict[K,V]` |
@@ -47,7 +47,7 @@
 
 ## Type System
 
-| Concept | Rust | Python | tl |
+| Concept | Rust | Python | ar |
 |---|---|---|---|
 | Optional value | `Option<T>` | `Optional[T]` / `T \| None` | `Option[T]` |
 | Union / sum type | `enum Foo { A(i32), B(str) }` | `Union[int, str]` | `Union[int, str]` |
@@ -63,7 +63,7 @@
 
 ## Functions
 
-| Concept | Rust | Python | tl |
+| Concept | Rust | Python | ar |
 |---|---|---|---|
 | Function definition | `fn f(x: i32) -> i32 { … }` | `def f(x: int) -> int: …` | `fn f(let x: int) -> int: …` |
 | Param mutability | `fn f(mut x: i32)` | — | `fn f(mut x: int)` (caller must pass `mut`) |
@@ -85,7 +85,7 @@
 
 ## Classes & Structs
 
-| Concept | Rust | Python | tl |
+| Concept | Rust | Python | ar |
 |---|---|---|---|
 | Definition | `struct Foo { x: i32 }` + `impl Foo { … }` | `class Foo: …` | `class Foo: …` |
 | Constructor | `impl Foo { fn new(…) -> Self }` | `def __init__(self, …)` | auto-generated from fields; or explicit `fn __init__(mut self, …)` |
@@ -108,7 +108,7 @@
 
 ## Traits / Interfaces
 
-| Concept | Rust | Python | tl |
+| Concept | Rust | Python | ar |
 |---|---|---|---|
 | Trait / interface | `trait Foo { fn method(&self); }` | `class Foo(Protocol): …` or ABC | `trait Foo: fn method(self) -> T: ...` |
 | Abstract method | default: must implement | `@abstractmethod` | method body is `...` |
@@ -123,7 +123,7 @@
 
 ## Generics / Templates
 
-| Concept | Rust | Python | tl |
+| Concept | Rust | Python | ar |
 |---|---|---|---|
 | Generic function | `fn f<T>(x: T) -> T` | `def f(x: T) -> T` (TypeVar) | `fn f[T: Trait](x: T) -> T` |
 | Generic class | `struct Box<T> { … }` | `class Box(Generic[T]): …` | `class Box[T: Trait]: …` |
@@ -134,7 +134,7 @@
 
 ## Enums
 
-| Concept | Rust | Python | tl |
+| Concept | Rust | Python | ar |
 |---|---|---|---|
 | Basic enum | `enum Color { Red, Green, Blue }` | `class Color(Enum): Red=0 …` | `enum Color: Red; Green; Blue` |
 | Auto-value | starts at 0 (discriminant) | `auto()` | starts at 0 |
@@ -148,7 +148,7 @@
 
 ## Control Flow
 
-| Concept | Rust | Python | tl |
+| Concept | Rust | Python | ar |
 |---|---|---|---|
 | If / else if / else | `if … { } else if … { } else { }` | `if …: elif …: else:` | `if …: elif …: else:` |
 | While loop | `while cond { }` | `while cond:` | `while cond:` |
@@ -172,7 +172,7 @@
 
 ## Error Handling
 
-| Concept | Rust | Python | tl |
+| Concept | Rust | Python | ar |
 |---|---|---|---|
 | Try/catch | — | `try: … except E as e: …` | `try: … except E as e: …` |
 | Finally | — | `finally:` | `finally:` |
@@ -185,7 +185,7 @@
 
 ## Access Control
 
-| Level | Rust | Python | tl |
+| Level | Rust | Python | ar |
 |---|---|---|---|
 | Public | `pub` on each item | convention (`_` prefix for private) | `public:` section marker (default) |
 | Private | no modifier (crate-private) | `_name` convention | `private:` section marker |
@@ -196,7 +196,7 @@
 
 ## Async / Concurrency
 
-| Concept | Rust | Python | tl |
+| Concept | Rust | Python | ar |
 |---|---|---|---|
 | Async function | `async fn f() -> T` | `async def f() -> T` | — (uses submit model, not async fn) |
 | Await | `.await` | `await expr` | — |
@@ -211,7 +211,7 @@
 
 ## Module / Import
 
-| Concept | Rust | Python | tl |
+| Concept | Rust | Python | ar |
 |---|---|---|---|
 | Import module | `use crate::foo;` | `import foo` | `import foo` |
 | Import item | `use foo::bar;` | `from foo import bar` | `from foo import bar` |
@@ -222,7 +222,7 @@
 
 ---
 
-## Special / Unique to tl
+## Special / Unique to ar
 
 | Feature | Syntax | Notes |
 |---|---|---|

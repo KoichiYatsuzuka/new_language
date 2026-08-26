@@ -4,7 +4,7 @@
 
 ## 関数定義 (`fn`)
 
-```hv
+```ar
 fn greet(let name: str) -> str:
     return "Hello, " + name
 
@@ -26,7 +26,7 @@ fn add(let a: int, let b: int) -> int:
 | `self` | メソッドの第1引数 (型アノテーション不要) |
 | `mut self` | 可変レシーバ (インスタンスフィールドを変更するメソッド) |
 
-```hv
+```ar
 fn scale(mut self, let factor: float) -> None:
     self.x *= factor
     self.y *= factor
@@ -34,7 +34,7 @@ fn scale(mut self, let factor: float) -> None:
 
 ### デフォルト値
 
-```hv
+```ar
 fn connect(let host: str, let port: int = 8080) -> None:
     ...
 ```
@@ -51,7 +51,7 @@ fn connect(let host: str, let port: int = 8080) -> None:
 
 ## ジェネレータ定義 (`gen`)
 
-```hv
+```ar
 gen count_up(let start: int, let end: int) -> int:
     mut i = start
     while i < end:
@@ -65,7 +65,7 @@ gen count_up(let start: int, let end: int) -> int:
 呼び出すと `Value::Generator` が返ります。  
 `for` ループや `next()` で値を取り出します。
 
-```hv
+```ar
 for val in count_up(0, 5):
     print(val)   # 0, 1, 2, 3, 4
 ```
@@ -84,7 +84,7 @@ for val in count_up(0, 5):
 
 同じスコープに同名の関数を複数定義できます。
 
-```hv
+```ar
 fn process(let x: int) -> str:
     return "int: " + str(x)
 
@@ -108,7 +108,7 @@ fn process(let x: int, let y: int) -> str:
 
 ## テンプレート (ジェネリクス)
 
-```hv
+```ar
 fn identity[T](let x: T) -> T:
     return x
 
@@ -122,7 +122,7 @@ fn first[T: Printable](let items: list[T]) -> T:
 
 **呼び出し**:
 
-```hv
+```ar
 identity[int](42)
 first[Vector](vec_list)
 ```
@@ -136,7 +136,7 @@ first[Vector](vec_list)
 
 ## 関数値とファーストクラス関数
 
-```hv
+```ar
 fn square(let x: int) -> int:
     return x * x
 
@@ -162,7 +162,7 @@ apply(square, 10)
 
 ## クロージャとキャプチャ
 
-```hv
+```ar
 fn make_multiplier(let n: int) -> function[let int]->int:
     fn multiply(let x: int) -> int:
         return x * n   # n をキャプチャ
@@ -175,7 +175,7 @@ fn make_multiplier(let n: int) -> function[let int]->int:
 
 ## デコレータ
 
-```hv
+```ar
 @logger
 fn compute(let x: int) -> int:
     return x * x
@@ -206,7 +206,7 @@ for decorator in reversed(decorators):
 `let` パラメータに型アノテーションがあり、渡された値のクラスが異なる場合、  
 `__cast__[TypeName]` テンプレートメソッドが定義されていれば自動的に呼び出されます。
 
-```hv
+```ar
 class Point:
     let x: float
     let y: float
@@ -244,7 +244,7 @@ distance(v)   # 自動的に Point にキャスト
 
 ## `static` メソッドと `class_method`
 
-```hv
+```ar
 class MathHelper:
     static fn square(let x: int) -> int:
         return x * x

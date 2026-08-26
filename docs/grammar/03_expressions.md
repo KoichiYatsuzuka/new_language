@@ -28,7 +28,7 @@
 
 ## リテラル
 
-```hv
+```ar
 42          # Expr::Int(42)
 3.14        # Expr::Float(3.14)
 "hello"     # Expr::Str("hello")
@@ -43,7 +43,7 @@ None        # Expr::None
 
 ## 識別子 (変数参照)
 
-```hv
+```ar
 x
 name
 ```
@@ -55,7 +55,7 @@ name
 
 ## f-string
 
-```hv
+```ar
 f"x = {x}, y = {x + y:.2f}"
 ```
 
@@ -72,7 +72,7 @@ f"x = {x}, y = {x + y:.2f}"
 
 ### リスト
 
-```hv
+```ar
 [1, 2, 3]                    # Expr::List([...])
 let empty: list[int] = []    # 空リストは型アノテーション必須
 ```
@@ -81,7 +81,7 @@ let empty: list[int] = []    # 空リストは型アノテーション必須
 
 ### タプル
 
-```hv
+```ar
 (1, "hello", True)           # Expr::Tuple([...])
 (42,)                        # 末尾カンマで 1 要素タプル
 ```
@@ -91,7 +91,7 @@ let empty: list[int] = []    # 空リストは型アノテーション必須
 
 ### 辞書
 
-```hv
+```ar
 {"key": value, x: y + 1}    # Expr::Dict([...])
 ```
 
@@ -99,7 +99,7 @@ let empty: list[int] = []    # 空リストは型アノテーション必須
 
 ### セット
 
-```hv
+```ar
 {1, 2, 3}                   # Expr::Set([...])
 ```
 
@@ -109,7 +109,7 @@ let empty: list[int] = []    # 空リストは型アノテーション必須
 
 ## 算術演算子
 
-```hv
+```ar
 a + b    # 加算 (str 連結にも使用)
 a - b    # 減算
 a * b    # 乗算
@@ -127,7 +127,7 @@ a ** b   # べき乗 (右結合)
 
 ### 文字列乗算
 
-```hv
+```ar
 "ab" * 3   # → "ababab"
 [1] * 3    # → [1, 1, 1]
 ```
@@ -141,7 +141,7 @@ a ** b   # べき乗 (右結合)
 
 ## 比較演算子
 
-```hv
+```ar
 a == b    # 等値 (values_eq)
 a != b    # 非等値
 a < b
@@ -159,7 +159,7 @@ a not in b
 
 ## 論理演算子
 
-```hv
+```ar
 a and b   # 短絡評価: a が falsy なら a を返す、そうでなければ b を返す
 a or b    # 短絡評価: a が truthy なら a を返す、そうでなければ b を返す
 not a     # 論理否定: Bool を返す
@@ -171,7 +171,7 @@ not a     # 論理否定: Bool を返す
 
 ## ビット演算子
 
-```hv
+```ar
 a & b    # AND
 a | b    # OR
 a ^ b    # XOR
@@ -186,7 +186,7 @@ a >> n   # 右シフト
 
 ## 型ガード (`is` / `is not`)
 
-```hv
+```ar
 if x is int:
     # このブロック内で x は int として扱われる
     let val = x + 1
@@ -208,7 +208,7 @@ if y is not None:
 
 ## キャスト演算子 (`=>`)
 
-```hv
+```ar
 let v: MyType = raw_value => MyType
 ```
 
@@ -223,7 +223,7 @@ let v: MyType = raw_value => MyType
 
 ## 関数呼び出し
 
-```hv
+```ar
 func(a, b, c)           # 位置引数
 func(x=1, y=2)          # キーワード引数
 func(a, keyword=b)      # 混在
@@ -246,7 +246,7 @@ template_fn[T](args)    # テンプレート型引数付き呼び出し
 
 ## 属性アクセス
 
-```hv
+```ar
 obj.name
 self.field
 module.function
@@ -267,7 +267,7 @@ module.function
 
 ## トレイト修飾アクセス (`::`)
 
-```hv
+```ar
 obj::Trait.method(args)
 ```
 
@@ -278,7 +278,7 @@ obj::Trait.method(args)
 
 ## 添字アクセスとスライス
 
-```hv
+```ar
 items[0]          # Expr::Subscript
 items[-1]         # 負インデックス (末尾から)
 items[1:3]        # Expr::Slice (begin=1, end=3, step=None)
@@ -297,7 +297,7 @@ d["key"]          # 辞書アクセス
 
 ## テンプレート型引数適用
 
-```hv
+```ar
 Container[int]       # Expr::TemplateInstantiate
 Template[int](args)  # Call の func に TemplateInstantiate を使用
 ```
@@ -309,7 +309,7 @@ Template[int](args)  # Call の func に TemplateInstantiate を使用
 
 ## ブロック式
 
-```hv
+```ar
 let result = block ->int:
     mut x = 0
     for i in range(10):
@@ -325,7 +325,7 @@ let result = block ->int:
 
 ## if 式
 
-```hv
+```ar
 let label = if score >= 90 ->str:
     block_return "A"
 elif score >= 80:
@@ -340,7 +340,7 @@ else:
 
 ## for 式
 
-```hv
+```ar
 let squares = for i in range(5) ->list[int]:
     loop_yield i * i
 ```
@@ -353,7 +353,7 @@ let squares = for i in range(5) ->list[int]:
 
 ## while 式
 
-```hv
+```ar
 let found = while condition ->str:
     let item = next()
     if item.matches(target):
@@ -366,7 +366,7 @@ let found = while condition ->str:
 
 ## match 式
 
-```hv
+```ar
 let msg = match code ->str:
     case 200:
         block_return "OK"

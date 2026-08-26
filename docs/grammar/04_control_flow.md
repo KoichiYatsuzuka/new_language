@@ -7,7 +7,7 @@ Arrow の制御構文はすべて **文** としても **式** としても使�
 
 ## if 文
 
-```hv
+```ar
 if condition:
     # 真のとき実行
 elif other_condition:
@@ -28,7 +28,7 @@ else:
 
 ### 型ガードナロイング
 
-```hv
+```ar
 let x: Option[int] = get_value()
 
 if x is not None:
@@ -44,7 +44,7 @@ if x is not None:
 `Result[T, E]` 型の変数は `is_OK()` / `is_ERR()` メソッドをガード条件として使うことで、  
 ブランチ内の変数が内部値の型に絞り込まれます。
 
-```hv
+```ar
 let r: Result[int, str] = divide(10, 2)
 
 if r.is_OK():
@@ -63,7 +63,7 @@ if r.is_ERR():
 
 ## match 文
 
-```hv
+```ar
 match value:
     case 1:
         print("one")
@@ -77,7 +77,7 @@ match value:
 
 ### case パターン (値比較)
 
-```hv
+```ar
 match code:
     case 200:
         handle_ok()
@@ -92,7 +92,7 @@ match code:
 
 ### is パターン (型チェック)
 
-```hv
+```ar
 match value:
     is int:
         print("integer:", value)
@@ -118,7 +118,7 @@ match value:
 
 ## for 文
 
-```hv
+```ar
 for item in collection:
     process(item)
 
@@ -146,7 +146,7 @@ for i, val in enumerate(items):   # タプルアンパック
 
 ### 組み込みイテラブル
 
-```hv
+```ar
 for i in range(10):
     print(i)       # 0, 1, ..., 9
 
@@ -161,7 +161,7 @@ for i in range(0, 10, 2):
 
 ## while 文
 
-```hv
+```ar
 mut i = 0
 while i < 10:
     print(i)
@@ -179,7 +179,7 @@ while i < 10:
 
 ## break / continue / pass
 
-```hv
+```ar
 for item in items:
     if item < 0:
         continue      # このイテレーションをスキップ
@@ -199,7 +199,7 @@ while True:
 
 ### 制御構文式の中での break
 
-```hv
+```ar
 for i in range(10):
     let found = if check(i) ->bool:
         block_return True
@@ -217,7 +217,7 @@ for i in range(10):
 
 ## block 文
 
-```hv
+```ar
 block:
     let temp = heavy_computation()
     process(temp)
@@ -237,7 +237,7 @@ block:
 
 ### block 式
 
-```hv
+```ar
 let result = block ->int:
     mut acc = 0
     for i in range(10):
@@ -247,7 +247,7 @@ let result = block ->int:
 
 ### if 式
 
-```hv
+```ar
 let max_val = if a > b ->int:
     block_return a
 else:
@@ -256,7 +256,7 @@ else:
 
 ### for 式 と loop_yield
 
-```hv
+```ar
 let evens = for i in range(20) ->list[int]:
     if i % 2 == 0:
         loop_yield i
@@ -267,7 +267,7 @@ let evens = for i in range(20) ->list[int]:
 
 ### while 式
 
-```hv
+```ar
 mut buf = []
 let total = while len(buf) < target_len ->int:
     buf.append(read_next())
@@ -278,7 +278,7 @@ block_return sum(buf)
 
 ### match 式
 
-```hv
+```ar
 let label = match score ->str:
     case _ if score >= 90:
         block_return "A"

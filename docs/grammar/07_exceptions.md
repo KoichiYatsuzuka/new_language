@@ -4,7 +4,7 @@
 
 ## try / except / finally
 
-```hv
+```ar
 try:
     let result = risky_operation()
     process(result)
@@ -42,7 +42,7 @@ struct ExceptHandler {
 
 ### 例外マッチング (`exc_matches`)
 
-```hv
+```ar
 try: ...
 except Exception:   # Exception, ValueError, TypeError, ... のすべて
     ...
@@ -57,7 +57,7 @@ except ValueError:  # ValueError のみ
 
 ## raise 文
 
-```hv
+```ar
 raise ValueError("invalid input")  # 例外を送出
 raise                               # 現在の例外を再送出 (bare raise)
 ```
@@ -111,7 +111,7 @@ raise                               # 現在の例外を再送出 (bare raise)
 
 ## カスタム例外クラス
 
-```hv
+```ar
 class NetworkError(Error):
     let url: str
     let status_code: int
@@ -124,7 +124,7 @@ class NetworkError(Error):
 
 `Error` trait を継承することで `try/except` で捕捉できます。
 
-```hv
+```ar
 try:
     fetch(url)
 except NetworkError as e:
@@ -148,7 +148,7 @@ except NetworkError as e:
 
 ## assert 文
 
-```hv
+```ar
 assert condition
 assert condition, "エラーメッセージ"
 ```

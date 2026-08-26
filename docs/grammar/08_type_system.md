@@ -6,7 +6,7 @@
 
 型アノテーションは変数宣言・関数パラメータ・戻り値の後に `: Type` の形で付けます。
 
-```hv
+```ar
 let x: int = 42
 mut name: str = "Alice"
 fn add(let a: int, let b: int) -> int: ...
@@ -51,7 +51,7 @@ fn add(let a: int, let b: int) -> int: ...
 
 ### `Any` — 動的型エスケープ
 
-```hv
+```ar
 let val: Any = get_unknown()
 # val.attr     → 静的型エラー OperationOnAny
 # val + 1      → 静的型エラー OperationOnAny
@@ -65,7 +65,7 @@ if val is int:
 
 ### `Union[T1, T2, ...]` — 合併型
 
-```hv
+```ar
 fn parse(let s: str) -> Union[int, None]:
     ...
 
@@ -82,7 +82,7 @@ Union 型の変数に対して演算子を適用すると
 `Intersection[T1, T2, ...]` は、値が **すべての構成型を同時に満たす** ことを表す型です。  
 `Union` が「どれか一つ」であるのに対し、`Intersection` は「すべて」の型制約を要求します。
 
-```hv
+```ar
 trait Flyable:
     fn fly(self) -> str: ...
 
@@ -112,7 +112,7 @@ show_abilities(duck)   # Duck は Flyable と Swimmable を両方継承するの
 
 #### 型ガードと `Intersection`
 
-```hv
+```ar
 let animal: Intersection[Flyable, Swimmable] = duck
 
 # is C でガードして C 型に絞り込める（C がすべての構成型を満たす場合のみ有効）
@@ -122,7 +122,7 @@ if animal is Duck:
 
 `is C` のガード型 `C` がいずれかの構成型を満たさない場合、静的型エラー `IntersectionGuardTypeFails` が報告されます。
 
-```hv
+```ar
 class Bird(Flyable, Runnable):   # Swimmable を実装していない
     ...
 
@@ -154,7 +154,7 @@ if x is Bird:    # StaticTypeError: Bird は Swimmable を満たさない
 
 `Option[T]` は `Union[T, None]` の糖衣構文です。
 
-```hv
+```ar
 fn find_user(let id: int) -> Option[User]:
     ...
 
@@ -182,7 +182,7 @@ if user is not None:
 | `if result.is_OK():` | `result` が `T`（Ok の内部値）に絞り込まれる |
 | `if result.is_ERR():` | `result` が `E`（Err の内部値）に絞り込まれる |
 
-```hv
+```ar
 fn divide(a: int, b: int) -> Result[int, str]:
     if b == 0:
         return Err("division by zero")
@@ -204,14 +204,14 @@ if r2.is_ERR():
 - ガード節なしで `Result` 型の変数に演算子・属性アクセスを適用すると `OperationOnUnion` が報告されます。
 - `is_OK()` / `is_ERR()` は引数なしで呼び出します。
 
-```hv
+```ar
 # エラー例: Ok 型と Err 型が同じ
 let bad: Result[int, int] = Ok(1)   # StaticTypeError: ResultSameTypes
 ```
 
 ### `type[T]` — 型値型
 
-```hv
+```ar
 fn create(let cls: type[MyClass]) -> MyClass:
     return cls()
 ```
@@ -220,7 +220,7 @@ fn create(let cls: type[MyClass]) -> MyClass:
 
 ### `function` 型
 
-```hv
+```ar
 fn apply(let f: function[let int]->int, let x: int) -> int:
     return f(x)
 ```
@@ -232,7 +232,7 @@ fn apply(let f: function[let int]->int, let x: int) -> int:
 クラス・trait メソッド内でのみ有効な自己参照型。  
 そのクラスのインスタンスを表します。
 
-```hv
+```ar
 class Node:
     fn clone(self) -> Self:
         return Self(self.value)
@@ -245,7 +245,7 @@ class Node:
 `mustbe` は式の実行時型を検査し、型が一致しなければ `TypeError` を raise します。  
 静的型検査では右辺の型情報を完全に保持するため、以降のコード解析もその型として扱われます。
 
-```hv
+```ar
 let x: Any = compute()
 let n = x mustbe int     # 実行時に int か確認; 静的型: int
 let doubled = n * 2      # n は int なので OK
@@ -274,13 +274,13 @@ expr mustbe TypeExpr
 
 ### 静的型の保持
 
-```hv
+```ar
 let xs: Any = get_list()
 let typed_xs = xs mustbe list[int]   # 静的型: list[int]
 let elem = typed_xs[0]               # 静的型: int (添字型推論)
 ```
 
-```hv
+```ar
 fn greet() -> int: return 42
 let f: Any = greet
 let g = f mustbe function[()->int]   # 静的型: ()->int
@@ -292,14 +292,14 @@ let r = g()                          # 静的型: int
 要素型付きコレクション (`list[int]` 等) やシグネチャ付き `function` を `mustbe` に使用すると  
 静的型警告が発生します。型情報は静的解析に活用されますが、実行時チェックには反映されません。
 
-```hv
+```ar
 let nums = vals mustbe list[int]
 # Warning: `mustbe 'list[int]'` only checks that the value is a `list` at runtime; element type is not verified
 ```
 
 ### 型が一致しない場合
 
-```hv
+```ar
 let s = "hello"
 let n = s mustbe int
 # TypeError: mustbe assertion failed: expected `int`, got `str`
@@ -311,7 +311,7 @@ let n = s mustbe int
 
 ### `is` による絞り込み
 
-```hv
+```ar
 let x: Union[int, str] = get_value()
 
 if x is int:
@@ -321,7 +321,7 @@ if x is int:
 
 ### `is not` による絞り込み
 
-```hv
+```ar
 let y: Option[str] = maybe_str()
 
 if y is not None:
@@ -397,7 +397,7 @@ StaticTypeError のリストを収集
 
 型アノテーションが省略された場合、型検査器が式から型を推論します。
 
-```hv
+```ar
 let x = 42           # InferredType::Int
 let items = [1, 2]   # InferredType::ListOf(Int)
 let d = {"a": 1}     # InferredType::DictOf(Str, Int)
@@ -415,7 +415,7 @@ let d = {"a": 1}     # InferredType::DictOf(Str, Int)
 型検査の前にトップレベルの関数・クラスシグネチャを先行スキャンします。  
 これにより前方参照が可能になります。
 
-```hv
+```ar
 # foo が bar より先に定義されていなくても、bar を呼び出せる
 fn foo() -> int:
     return bar()

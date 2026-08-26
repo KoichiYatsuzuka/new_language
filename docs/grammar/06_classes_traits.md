@@ -4,7 +4,7 @@
 
 ## クラス定義
 
-```hv
+```ar
 class Point:
     mut x: float
     mut y: float
@@ -43,7 +43,7 @@ pub struct ClassValue {
 
 ## フィールド宣言
 
-```hv
+```ar
 class Config:
     mut timeout: int         # 可変インスタンスフィールド
     let name: str            # 不変インスタンスフィールド
@@ -72,7 +72,7 @@ class Config:
 `__init__` を手動定義しなかった場合、すべてのフィールド引数を受け取る  
 `__init__` が自動生成されます。
 
-```hv
+```ar
 class Vec3:
     mut x: float
     mut y: float
@@ -95,7 +95,7 @@ let v = Vec3(1.0, 2.0, 3.0)
 クラス本体は `public:` / `private:` / `protected:` セクションで区切られます。  
 セクション宣言がない場合のデフォルトは `public`。
 
-```hv
+```ar
 class BankAccount:
     public:
         let owner: str
@@ -125,7 +125,7 @@ class BankAccount:
 
 ## trait 定義
 
-```hv
+```ar
 trait Printable:
     fn print(self) -> None: ...   # 抽象メソッド
 
@@ -146,7 +146,7 @@ trait Comparable:
 
 ### trait の実装
 
-```hv
+```ar
 class Temperature(Comparable):
     let value: float
 
@@ -166,7 +166,7 @@ class Temperature(Comparable):
 
 trait メソッド内の `Self` は、そのメソッドを実装したクラスの型を表します。
 
-```hv
+```ar
 trait Builder:
     fn set_name(mut self, let name: str) -> Self: ...
     fn build(self) -> Self: ...
@@ -180,7 +180,7 @@ trait Builder:
 `trait` が明示的な継承（名前的型付け）を要求するのに対し、`protocol` は  
 必要なメンバーを持っていれば自動的に適合とみなします（Go のインターフェースに相当）。
 
-```hv
+```ar
 protocol Drawable:
     fn draw(self) -> None:
         ...
@@ -210,7 +210,7 @@ protocol Resizable:
 そのクラスは自動的に protocol に適合しているとみなされます。  
 明示的な継承宣言は不要です。
 
-```hv
+```ar
 class Circle:
     mut radius: float
 
@@ -236,14 +236,14 @@ class Circle:
 変数宣言時に `: ProtocolName` 型アノテーションを付けると、  
 代入時に静的型チェッカーが適合検査を行います。
 
-```hv
+```ar
 mut c = Circle(5.0)
 let d: Drawable = c   # 適合検査: Circle が Drawable を満たすか確認
 ```
 
 適合していない場合は静的型エラー `ProtocolConformanceFailed` が報告されます。
 
-```hv
+```ar
 class Dog:
     let name: str
     fn __init__(self, n: str) -> None: ...
@@ -260,7 +260,7 @@ let p: Printable = d  # StaticTypeError: type 'Dog' does not satisfy protocol 'P
 関数の引数型に `protocol` 名を指定できます。  
 呼び出し時に適合検査が行われます。
 
-```hv
+```ar
 fn render(shape: Drawable) -> None:
     shape.draw()
     print("Area:", shape.area())
@@ -282,7 +282,7 @@ make_bigger(c)   # OK: Circle は Resizable に適合
 
 `is` 演算子で protocol 適合を実行時に検査できます。
 
-```hv
+```ar
 if c is Drawable:
     print("Circle satisfies Drawable")
 ```
@@ -303,7 +303,7 @@ if c is Drawable:
 | テンプレート境界 | `[T: MyTrait]` | `[T: MyProtocol]` |
 | 継承 | クラスが実装 | なし |
 
-```hv
+```ar
 # trait → 明示的な継承が必要
 trait Printable:
     fn print_info(self) -> None: ...
@@ -331,7 +331,7 @@ let d: Displayable = Dog()   # OK: Dog は display を持つ
 `Intersection[T1, T2, ...]` を使うと、複数の trait を**同時に**要求する型制約を表現できます。  
 詳細は [08_type_system.md](08_type_system.md) を参照してください。
 
-```hv
+```ar
 trait Flyable:
     fn fly(self) -> str: ...
 
@@ -366,7 +366,7 @@ demo(Duck("Donald"))
 
 ## テンプレートクラス
 
-```hv
+```ar
 class Stack[T]:
     mut items: list[T]
 
@@ -379,7 +379,7 @@ class Stack[T]:
 
 **使用**:
 
-```hv
+```ar
 let int_stack = Stack[int]()
 int_stack.push(1)
 int_stack.push(2)
@@ -394,7 +394,7 @@ let top = int_stack.pop()   # 2
 
 ## `new_type` 宣言
 
-```hv
+```ar
 new_type Celsius: float
 new_type UserId: int
 new_type AdminId: UserId
@@ -404,7 +404,7 @@ new_type AdminId: UserId
 
 **動作**: `original` の型定義をコピーして `name` という別名で登録します。
 
-```hv
+```ar
 let temp = Celsius(36.5)   # コンストラクタで作成
 let id: UserId = UserId(42)
 
@@ -414,7 +414,7 @@ let id: UserId = UserId(42)
 
 **`Self` 型との組み合わせ**:
 
-```hv
+```ar
 class Meters:
     let value: float
 
@@ -431,7 +431,7 @@ new_type Kilometers: Meters
 
 ## `enum` 宣言
 
-```hv
+```ar
 enum Color:
     Red
     Green
@@ -450,7 +450,7 @@ enum Status:
 2. `Color` クラスを作成し、各バリアントを `const` フィールドとして設定
 3. 値は `0` から自動採番 (明示値がない場合)
 
-```hv
+```ar
 let c = Color.Red
 match c:
     case Color.Red:

@@ -4,7 +4,7 @@
 
 ## 基本構文
 
-```hv
+```ar
 import module.submodule
 import module.submodule as alias
 from module import Name1, Name2
@@ -20,7 +20,7 @@ from module import Name as Alias
 
 インポート時に `[lang]` タグで読み込む形式を指定します。
 
-```hv
+```ar
 import[ar]      mod          # .ar ファイルを強制読み込み
 import[arc]     mod          # .arc (コンパイル済み) を強制読み込み
 import          mod          # 自動選択 (.arc 優先、なければ .ar)
@@ -56,7 +56,7 @@ geometry/
 └── vector.ar
 ```
 
-```hv
+```ar
 import geometry               # geometry/__init__.ar を読み込む
 import geometry.point         # geometry/point.ar を読み込む
 from geometry import Vector   # geometry/__init__.ar 内の Vector を取得
@@ -78,7 +78,7 @@ loading:      HashSet<PathBuf>
 
 ## .ar / .arc 自動選択
 
-`lang = "tl-auto"` (タグなし) のとき:
+`lang = "ar-auto"` (タグなし) のとき:
 
 1. `.arc` ファイルが存在すれば `.arc` を優先
 2. なければ `.ar` を読み込む
@@ -92,7 +92,7 @@ loading:      HashSet<PathBuf>
 
 Python ソースファイルを Arrow の AST に変換してインポートします。
 
-```hv
+```ar
 import[py] math as m
 from[py] os.path import join, exists
 ```
@@ -110,7 +110,7 @@ from[py] os.path import join, exists
 
 PyO3 を介して Python インタープリタを呼び出します。
 
-```hv
+```ar
 import[py-int] numpy as np
 let arr = np.array([1, 2, 3, 4])
 let mean = np.mean(arr)
@@ -134,7 +134,7 @@ let mean = np.mean(arr)
 }
 ```
 
-```hv
+```ar
 import[rs] regex as re
 let r = re.Regex("\\d+")
 ```
@@ -154,7 +154,7 @@ LLVM IR ラッパーを生成します。
 
 C/C++ ヘッダファイルを型スタブとして読み込みます。
 
-```hv
+```ar
 import[cpp-dll] DxLib.DxLib with stub as dx
 import[cpp-lib] MyMath.VecMath with stub as vm
 ```
@@ -172,7 +172,7 @@ import[cpp-lib] MyMath.VecMath with stub as vm
 
 C# の NativeAOT でコンパイルしたネイティブ DLL を Arrow から直接呼び出します。
 
-```hv
+```ar
 import[cs-dll] cs_form_test.FormBridge as forms
 
 # 静的メソッド
@@ -333,7 +333,7 @@ dotnet publish -r win-x64 -c Release --self-contained
 
 ### WinForms の例
 
-```hv
+```ar
 import[cs-dll] cs_form_test.FormBridge as forms
 
 # MessageBox (ブロッキング)
@@ -364,7 +364,7 @@ forms.FormApp.release(todo_h)
 
 `import[cs-proc]` は通常の .NET アプリ（NativeAOT 不要）を子プロセスとして起動し、**Windows 名前付きパイプ**経由で JSON-RPC を行います。
 
-```hv
+```ar
 import[cs-proc] cs_proc_test as svc
 
 # 静的メソッド
@@ -504,7 +504,7 @@ Arrow                           C# Host (ArrowPipeHost)
 
 `import[js-proc]` は Node.js プロセスを子プロセスとして起動し、**Windows 名前付きパイプ**経由で JSON-RPC を行います。Node.js の任意のモジュール（npm パッケージ・組み込みモジュール・カスタムスクリプト）を Arrow から呼び出せます。
 
-```hv
+```ar
 import[js-proc] path as js_path
 
 let base: str  = js_path.basename("examples/file.ar")   # → "file.ar"
@@ -512,14 +512,14 @@ let ext:  str  = js_path.extname("file.ar")             # → ".ar"
 let joined: str = js_path.join("a", "b", "c")           # → "a\b\c"
 ```
 
-```hv
+```ar
 import[js-proc] out_debug.analysis as analysis
 
 let stripped: str = analysis.stripComment("let x = 1  # comment")
 let parts: List[str] = analysis.splitComma("int, str, bool")
 ```
 
-```hv
+```ar
 import[js-proc] lw_math as math
 
 let err: str = math.renderSVGToFile("\\frac{1}{2}", True, "out/frac.svg", 1.5, "#cdd6f4")
@@ -615,7 +615,7 @@ Arrow runtime                              Node.js bridge (js_bridge.cjs)
 
 JS 呼び出しは Arrow の `<-` async 構文と組み合わせられます。ブリッジはグローバルな `Mutex` で保護されているため、複数の async スレッドから安全に同時呼び出しできます（シリアル化）。
 
-```hv
+```ar
 import[js-proc] lw_math as math
 
 let mng = AsyncManager(2)
@@ -642,7 +642,7 @@ function add(a, b)   { return a + b; }
 module.exports = { greet, add };
 ```
 
-```hv
+```ar
 import[js-proc] my_tool as tool
 print(tool.greet("Arrow"))   # Hello, Arrow!
 print(tool.add(3, 4))        # 7
@@ -654,7 +654,7 @@ print(tool.add(3, 4))        # 7
 
 LaTeX Workshop VS Code 拡張 (`james-yu.latex-workshop`) は `mathjax-full` をバンドルしています。`bridge/lw_math.cjs` はこれを動的ロードして hover preview と同じパイプラインで数式を SVG に変換します。
 
-```hv
+```ar
 import[js-proc] lw_math as math
 
 fn render(name: str, formula: str) -> None:
@@ -686,7 +686,7 @@ import 文はパース時に実行されます (`parse_import_stmt`):
 
 ## from import の動作
 
-```hv
+```ar
 from geometry import Vector, Matrix as Mat
 ```
 
