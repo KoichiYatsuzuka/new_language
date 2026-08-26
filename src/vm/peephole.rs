@@ -43,6 +43,19 @@ const MAX_PASSES: usize = 8;
 /// op が持つ**コード索引**への可変参照を返す（持たなければ `None`）。
 ///
 /// コード索引を持つ op を一箇所に集約するための関数。飛び先の書き換えは必ずここを通す。
+///
+/// ⚠⚠ **`match` は exhaustive**（#87）。`_ => None` だった頃は
+/// **op を足しても何も強制されず**、`ForIter` の exit・`SetupTry` の handler・
+/// `StaticInit` の after を登録し忘れても **テストも例題も通ってしまった**（#27-d が実例）。
+/// ⇒ 今は op を足すとここが止まり、「**この op は飛び先を持つのか**」を必ず決めさせられる。
+/// ⚠ **`_` を書き足してこの仕掛けを無効化しないこと。** 持たないなら列挙側へ足す。
+///
+/// ⚠ **1 op につき飛び先は 1 つ**という前提の API（`Option<&mut u32>`）。
+/// 2 つ持つ op を足すときは**まずこの戻り値の型から直す**こと
+/// （再マップする [`collapse_jump_chains`] と [`remove_jumps_to_next`] も同時に見直しが要る）。
+///
+/// ⚠ 分類は **op の doc を機械抽出して突き合わせた**（#86 の教訓 — 名前で分類すると取りこぼす）。
+/// 生成器は `doc が飛び先に言及しているのに分類されていない op` があれば落ちる。
 fn code_target_mut(op: &mut Op) -> Option<&mut u32> {
     match op {
         Op::Jump(t)
@@ -50,10 +63,98 @@ fn code_target_mut(op: &mut Op) -> Option<&mut u32> {
         | Op::JumpIfFalseOrPop(t)
         | Op::JumpIfTrueOrPop(t)
         | Op::SetupTry(t)
-        // `static mut` の初期化ガード（#27-d）。`after` は**飛び先**なので再マップが要る。
-        | Op::StaticInit(_, t)
-        | Op::ForIter(_, _, t) => Some(t),
-        _ => None,
+        => Some(t),
+        Op::StaticInit(_, t) => Some(t),
+        Op::ForIter(_, _, t) => Some(t),
+        // ── コード索引を持たない op ──
+        // ⚠⚠ **`_` を書かない**。op を足すとここが止まり、
+        //    「この op は飛び先を持つのか」を必ず決めさせられる（#87）。
+        //    #27-d で `StaticInit` の飛び先を登録し忘れた実例があり、
+        //    **テストも例題も通ってしまった**（たまたま除去対象が無かっただけ）。
+        // ⚠ `Fail`: doc に「**飛び先索引を持たない**ので `code_target_mut` は不要」と明記（u32 は名前プール索引）。
+        Op::Const(_)
+        | Op::Nil
+        | Op::LoadLocal(_)
+        | Op::LoadGlobal(_, _)
+        | Op::StoreGlobal(_, _)
+        | Op::StoreName(_)
+        | Op::StoreLocal(_)
+        | Op::StoreLocalDeepCopy(_)
+        | Op::StoreLocalCopyFreeze(_)
+        | Op::StoreLocalFreezeInstance(_)
+        | Op::StoreLocalFromIdent(_, _)
+        | Op::CallBuiltinKw(_)
+        | Op::CallMethodKw(_)
+        | Op::StaticStore(_)
+        | Op::LoadStatic(_)
+        | Op::StoreStatic(_)
+        | Op::LoadCell(_)
+        | Op::StoreCell(_)
+        | Op::StoreCellDeepCopy(_)
+        | Op::Pop
+        | Op::Bin(_)
+        | Op::BinLocalLocal(_, _, _)
+        | Op::BinLocalConst(_, _, _)
+        | Op::IntBinLL(_, _, _)
+        | Op::IntBinLC(_, _, _)
+        | Op::IntBinGG(_, _, _)
+        | Op::IntBinGC(_, _, _)
+        | Op::FloatBinLL(_, _, _)
+        | Op::FloatBinLC(_, _, _)
+        | Op::IntBinSS(_)
+        | Op::FloatBinSS(_)
+        | Op::Un(_)
+        | Op::GetAttr(_, _)
+        | Op::SetAttr(_)
+        | Op::Swap
+        | Op::CallMethodLocal(_, _, _, _, _)
+        | Op::GetAttrLocal(_, _, _)
+        | Op::IsType(_)
+        | Op::MustBe(_, _)
+        | Op::Cast(_)
+        | Op::CallBuiltin(_, _)
+        | Op::GetIter
+        | Op::Call(_, _, _, _, _)
+        | Op::CallMethod(_, _, _, _)
+        | Op::Return
+        | Op::ReturnNil
+        | Op::PopTry
+        | Op::Raise(_)
+        | Op::Reraise
+        | Op::Dup
+        | Op::ExcMatch(_)
+        | Op::CheckBlockReturn(_, _)
+        | Op::CheckLoopYield(_, _)
+        | Op::Fail(_)
+        | Op::BuildEmptyList
+        | Op::ListAppendLocal(_)
+        | Op::ListOrNone
+        | Op::LoadName(_)
+        | Op::DeclareName(_)
+        | Op::MakeFn(_)
+        | Op::EnumDef(_)
+        | Op::UnpackTuple(_, _)
+        | Op::LetTuple(_)
+        | Op::FreezeVar(_, _)
+        | Op::EventSubscribe(_, _)
+        | Op::EventUnsubscribe
+        | Op::CallKw(_)
+        | Op::CallTemplate(_, _, _)
+        | Op::BuildSlice
+        | Op::DeclareGlobal(_, _)
+        | Op::LoadSelfClass
+        | Op::GetTraitAttr(_, _)
+        | Op::SetTraitAttr(_, _)
+        | Op::BreakPoint(_)
+        | Op::Subscript
+        | Op::SetIndex
+        | Op::BuildList(_)
+        | Op::BuildTuple(_)
+        | Op::BuildSet(_)
+        | Op::BuildDict(_)
+        | Op::Yield
+        | Op::AsyncSubmit(_)
+        => None,
     }
 }
 
@@ -217,18 +318,24 @@ mod tests {
     #[test]
     fn remaps_for_iter_exit_and_setup_try_handler() {
         let mut code = vec![
-            Op::SetupTry(5),       // 0 → ハンドラは索引 5
-            Op::ForIter(0, 1, 5),  // 1 → 脱出先は索引 5
-            Op::Jump(3),           // 2 ← 除去対象（次命令へ）
-            Op::Bin(BinOp::Add),   // 3
-            Op::Jump(5),           // 4 ← 除去対象（次命令へ）
-            Op::Return,            // 5 ← 除去後は索引 3
+            Op::SetupTry(6),       // 0 → ハンドラは索引 6
+            Op::ForIter(0, 1, 6),  // 1 → 脱出先は索引 6
+            // ⚠⚠ `StaticInit` の第 2 引数は**飛び先**（#27-d で登録し忘れた実例）。
+            // ここに入れる前は、`code_target_mut` から `StaticInit` を外しても
+            // **750 テストが全部通っていた**（#87 で実測）。
+            Op::StaticInit(0, 6),  // 2 → 初期化済みなら索引 6 へ
+            Op::Jump(4),           // 3 ← 除去対象（次命令へ）
+            Op::Bin(BinOp::Add),   // 4
+            Op::Jump(6),           // 5 ← 除去対象（次命令へ）
+            Op::Return,            // 6 ← 除去後は索引 4
         ];
         optimize(&mut code, &mut Vec::new());
-        assert_eq!(code.len(), 4);
-        assert!(matches!(code[0], Op::SetupTry(3)), "{code:?}");
-        assert!(matches!(code[1], Op::ForIter(0, 1, 3)), "{code:?}");
-        assert!(matches!(code[3], Op::Return), "{code:?}");
+        assert_eq!(code.len(), 5, "{code:?}");
+        assert!(matches!(code[0], Op::SetupTry(4)), "{code:?}");
+        assert!(matches!(code[1], Op::ForIter(0, 1, 4)), "{code:?}");
+        // ⚠ 第 1 引数（span 索引）は**コード索引ではない**ので動いてはいけない。
+        assert!(matches!(code[2], Op::StaticInit(0, 4)), "{code:?}");
+        assert!(matches!(code[4], Op::Return), "{code:?}");
     }
 
     /// 自分自身へ跳ぶ `JUMP`（異常系）で無限ループしないこと。
