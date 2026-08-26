@@ -155,12 +155,12 @@ impl Parser {
         // モジュールパス
         let module = self.parse_module_path()?;
 
-        // `import[lang]` または `import`（省略時は "tl-auto"）
+        // `import[lang]` または `import`（省略時は "ar-auto"）
         self.eat(&Token::Import)?;
         let lang = if *self.current() == Token::LBracket {
             self.parse_lang_bracket()?
         } else {
-            "tl-auto".to_string()
+            "ar-auto".to_string()
         };
 
         // 名前リスト: `Name1, Name2 as N2, ...`

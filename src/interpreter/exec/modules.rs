@@ -328,8 +328,9 @@ impl Interpreter {
             return Ok(ns);
         }
 
-        // tl-auto / tlc / rs: native payload in cache → try to load natively
-        if lang == "tl-auto" || lang == "ar-auto" || lang == "tlc" || lang == "arc" || lang == "rs" {
+        // ar-auto / arc / rs: native payload in cache → try to load natively
+        // ("tl-auto" / "tlc" は旧名の別名)
+        if lang == "ar-auto" || lang == "tl-auto" || lang == "arc" || lang == "tlc" || lang == "rs" {
             let module_name = module.join(".");
             // .arc files store only the stem as their module name; fall back to last segment.
             let native_data = crate::partial_compiler::take_native_bytes(&module_name)
