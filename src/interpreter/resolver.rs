@@ -30,6 +30,62 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{CallArg, Expr, ExceptHandler, MatchArm, MatchPattern, Param, Stmt, TupleTarget, Resolution};
 
+/// **VM が要求する解決情報を 1 箇所で揃える**（#88）。
+///
+/// ## なぜ要るのか
+///
+/// プランが明記しているとおり **VM は「解決情報が揃っている」前提**（#3/#36）で、
+/// `resolve_program` ＋ 型検査の注釈 ＋ 最上位グローバル集合を供給しない入口では
+/// **正しいコードでも `VmForceError` になる**。ところがその配線は **入口ごとの手写し**だった。
+///
+/// #88 で 5 入口を実測したところ、**理由の無い差が 2 つ**あった:
+///
+/// | 差 | 実測 | 判定 |
+/// |---|---|---|
+/// | **順序** | `run_program`/`--compile` は「型検査 → 解決」、REPL / テストヘルパーは「解決 → 型検査」 | ⚠ **理由なし**（型検査は [`crate::ast::Resolution`] を**一切読まない**と確認）⇒ ここへ畳んだ |
+/// | **型検査の入口** | 2 種あった（片方は警告を落としただけの逐語コピー） | ⚠ #88 で [`check_program`](crate::type_check::TypeChecker::check_program) **1 本へ削除統合**した |
+///
+/// ## ⚠ ここで畳まないもの（**実測して理由があると分かった差**・#72 と同じ判断）
+///
+/// - **型エラーをどうするか**: `run_program` は停止／`--compile` は `exit(1)`／
+///   REPL は**無視して続行**／テストヘルパーは**無視**（注釈だけ欲しい・型エラーを
+///   意図的に踏むテストがある）。⇒ **戻り値で返して呼び出し側に決めさせる**。
+/// - **グローバル集合の入れ方**: REPL だけ `extend_toplevel_globals`
+///   （ブロックを跨いで積み増さないと後のブロックの代入が VM に載らない）。
+///   ⇒ `toplevel_declared_globals` は呼び出し側が呼ぶ。
+/// - **`--compile` は `Interpreter` を持たない**（ネイティブ codegen は注釈だけ消費する）。
+///
+/// ## ⚠ 供給しない入口が 1 つある（**意図的**）
+///
+/// **import モジュール本体**（`exec_module`）は解決も注釈も供給しない。
+/// `Resolution::Unresolved` のまま名前引き・注釈なしで特化しないだけで、
+/// **どちらも安全側へ倒れる**（注釈は最適化ヒントであって意味論の根拠ではない・#15e）。
+/// グローバル集合だけは `toplevel_declared_globals(body)` をその場で作って渡している。
+pub(crate) fn resolve_and_annotate(
+    stmts: &mut [Stmt],
+) -> (
+    Vec<crate::type_check::StaticTypeError>,
+    Vec<crate::type_check::StaticTypeWarning>,
+    crate::type_check::AstAnnotations,
+) {
+    // ⚠⚠ **順序はここが唯一の定義**。型検査を先に走らせる（`run_program` の順序に揃えた）。
+    // 現時点では型検査が `Resolution` を読まないのでどちらでも同じ結果になるが、
+    // **読むようになった瞬間に入口ごとの挙動差になる**ので 1 箇所に固定する。
+    #[cfg(feature = "prof")]
+    let _p_tc = crate::prof::Timer::new(crate::prof::Phase::TypeCheck);
+    let (errors, warnings, annotations) = crate::type_check::TypeChecker::check_program(stmts);
+    #[cfg(feature = "prof")]
+    drop(_p_tc);
+
+    #[cfg(feature = "prof")]
+    let _p_res = crate::prof::Timer::new(crate::prof::Phase::Resolve);
+    resolve_program(stmts);
+    #[cfg(feature = "prof")]
+    drop(_p_res);
+
+    (errors, warnings, annotations)
+}
+
 /// メインプログラムのトップレベル文列を走査し、解決可能な関数本体を書き換える。
 pub(crate) fn resolve_program(stmts: &mut [Stmt]) {
     // プログラム最上位で宣言される名前（＝グローバル）を先に集める（R2-b）。

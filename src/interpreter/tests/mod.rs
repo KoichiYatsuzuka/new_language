@@ -12,7 +12,7 @@ use crate::parser::Parser;
 /// `VmForceError` になる（`--vm=on` は「解決情報が揃っている」前提の経路）:
 ///
 /// 1. `resolve_program` … ローカル slot・グローバル参照の解決（Phase R）
-/// 2. `check_and_annotate` … AST 型解決層の注釈（#16）。`mustbe`/`=>` の検査指示はこれが無いと
+/// 2. `check_program` … AST 型解決層の注釈（#16）。`mustbe`/`=>` の検査指示はこれが無いと
 ///    出ないので、**注釈を渡さないと `Expr::MustBe`/`Cast` を含む文が丸ごと bail する**
 /// 3. `set_toplevel_globals` … 最上位 Chunk が「この名前は `scopes[0]`」と判断する集合
 ///
@@ -27,11 +27,15 @@ use crate::parser::Parser;
 fn prepare(src: &str) -> Result<(Vec<Stmt>, Interpreter), String> {
     let tokens = Lexer::new(src, "").tokenize();
     let mut stmts = Parser::new(tokens, None).parse_program()?;
-    super::resolver::resolve_program(&mut stmts);
-    let (_errors, annotations) = crate::type_check::TypeChecker::check_and_annotate(&stmts);
+    // ⚠ 配線は 1 箇所（#88）。⚠ この入口は**型エラーを無視する**（下の doc の理由）。
+    let (_errors, _warnings, annotations) =
+        super::resolver::resolve_and_annotate(&mut stmts);
     let mut interp = Interpreter::new();
-    interp.set_annotations(std::rc::Rc::new(annotations));
-    interp.set_toplevel_globals(super::resolver::toplevel_declared_globals(&stmts));
+    interp.wire_resolution(
+        annotations,
+        super::resolver::toplevel_declared_globals(&stmts),
+        crate::interpreter::GlobalsMode::Replace,
+    );
     Ok((stmts, interp))
 }
 
@@ -230,15 +234,15 @@ mod a_axis_invariants {
 mod bin_specialization_invariants {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
-    use crate::type_check::TypeChecker;
     use crate::vm::op::Op;
 
     /// ソース中の関数 `name` をコンパイルして op 列を返す。
     fn compile(src: &str, name: &str) -> Vec<Op> {
         let tokens = Lexer::new(src, "").tokenize();
         let mut stmts = Parser::new(tokens, None).parse_program().unwrap();
-        crate::interpreter::resolver::resolve_program(&mut stmts);
-        let (_errs, annots) = TypeChecker::check_and_annotate(&stmts);
+        // ⚠ 配線は 1 箇所（#88）。
+        let (_errs, _warns, annots) =
+            crate::interpreter::resolver::resolve_and_annotate(&mut stmts);
         let annots = std::rc::Rc::new(annots);
         for s in &stmts {
             if let crate::ast::Stmt::FnDef { name: n, params, body, .. } = s {

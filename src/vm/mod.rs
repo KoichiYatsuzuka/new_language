@@ -10,7 +10,7 @@
 // すべて削除した）。載せられない構文に出会ったらコンパイラは `None` を返し、呼び出し側は
 // **`VmForceError` で停止する**。ツリーウォーク（`exec()`）が実行するのは**定義文だけ**（#10-d）。
 //
-// ⚠ VM は「解決情報が揃っている」前提（#3/#36）。`resolve_program` ＋ `check_and_annotate` ＋
+// ⚠ VM は「解決情報が揃っている」前提（#3/#36）。`resolve_and_annotate`（#88 で 1 本化）＋
 // `set_toplevel_globals` を供給しない入口では、正しいコードでも `VmForceError` になる。
 // **入口ごとに配線する責任がある**（`run_program`・REPL・テストヘルパー・モジュール本体）。
 

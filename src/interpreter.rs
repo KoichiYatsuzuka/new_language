@@ -471,6 +471,17 @@ pub struct Interpreter {
     pub(self) toplevel_globals: std::collections::HashSet<String>,
 }
 
+/// [`Interpreter::wire_resolution`] のグローバル集合の入れ方（#88）。
+///
+/// ⚠ **消費側は exhaustive に match する。** 入れ方を足したら全入口が止まる。
+pub(crate) enum GlobalsMode {
+    /// 集合を**置き換える**（1 プログラム = 1 回の入口）。
+    Replace,
+    /// 集合へ**積み増す**（REPL。前のブロックで宣言した名前も `scopes[0]` と判断できないと、
+    /// 後のブロックの代入が VM に載らない）。
+    Extend,
+}
+
 impl Interpreter {
     /// インタープリタを初期化する。
     ///
@@ -571,7 +582,38 @@ impl Interpreter {
     /// `resolver::toplevel_declared_globals`（**シャドウ減算なし**）の結果をそのまま渡すこと。
     /// ⚠ 減算版（`toplevel_visible_globals_with`）を渡してはいけない — 別の文の
     /// `for i in ...` のせいで `while i < N` の `i` まで解決できなくなる（#27-c の実測）。
-    pub fn set_toplevel_globals(&mut self, names: std::collections::HashSet<String>) {
+    /// **実行入口が VM へ渡す解決情報をまとめて注入する**（#88）。
+    ///
+    /// ⚠⚠ 注釈と最上位グローバル集合は**対で要る**。片方だけ渡した入口では
+    /// 正しいコードでも `VmForceError` になる（#3/#36。VM は「解決情報が揃っている」前提）。
+    /// ⇒ **2 つの setter を別々に呼ばせない**。#88 まで入口ごとの手写しで、
+    /// 呼ぶ関数も順序も割れていた。
+    ///
+    /// ⚠ AST 側（`resolve_program` ＋ 型検査）は
+    /// [`resolver::resolve_and_annotate`](crate::interpreter::resolver::resolve_and_annotate) が担う。
+    /// **こちらは「揃えた情報をインタプリタへ載せる」だけ**。
+    ///
+    /// ⚠⚠ **3 つの setter は private にしてある**（#88）。`pub` のままだと入口が
+    /// `set_annotations` だけ呼んでグローバル集合を忘れられる ＝ **今まさに割れていた形**。
+    /// ⇒ **この関数以外から個別に呼べない**のが強制の全部。
+    ///
+    /// ⚠ `mode` は**グローバル集合の入れ方**で、ここだけは入口ごとに本当に違う（#88 で実測）:
+    /// REPL は [`GlobalsMode::Extend`]（ブロックを跨いで積み増さないと後のブロックの代入が
+    /// VM に載らない）、それ以外は [`GlobalsMode::Replace`]。
+    pub(crate) fn wire_resolution(
+        &mut self,
+        annotations: crate::type_check::AstAnnotations,
+        globals: std::collections::HashSet<String>,
+        mode: GlobalsMode,
+    ) {
+        self.set_annotations(std::rc::Rc::new(annotations));
+        match mode {
+            GlobalsMode::Replace => self.set_toplevel_globals(globals),
+            GlobalsMode::Extend => self.extend_toplevel_globals(globals),
+        }
+    }
+
+    fn set_toplevel_globals(&mut self, names: std::collections::HashSet<String>) {
         self.toplevel_globals = names;
     }
 
@@ -579,13 +621,13 @@ impl Interpreter {
     ///
     /// REPL はブロックを 1 つずつ実行するので、前のブロックで宣言した名前を
     /// 後のブロックからも「`scopes[0]` を指す」と判断できるように積み増す必要がある。
-    pub fn extend_toplevel_globals(&mut self, names: std::collections::HashSet<String>) {
+    fn extend_toplevel_globals(&mut self, names: std::collections::HashSet<String>) {
         self.toplevel_globals.extend(names);
     }
 
     /// AST 型解決層の注釈（タスク #16）を注入する。`check_program` が生成したものを main.rs が渡す。
     /// メインプログラムの node-id 索引。段階(b)/(c) の消費側（VM コンパイラ/eval/codegen）が参照する。
-    pub fn set_annotations(&mut self, annotations: std::rc::Rc<crate::type_check::AstAnnotations>) {
+    fn set_annotations(&mut self, annotations: std::rc::Rc<crate::type_check::AstAnnotations>) {
         self.annotations = annotations;
     }
 

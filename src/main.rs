@@ -29,7 +29,6 @@ mod vm;
 use interpreter::{ExecResult, Interpreter};
 use lexer::Lexer;
 use parser::Parser;
-use type_check::TypeChecker;
 
 /// インタープリタの実行モードを表す列挙型。
 ///
@@ -359,12 +358,12 @@ fn run_program(
         return Ok(());
     }
 
-    // --- 静的型検査: AST を走査してエラー・警告を収集し、AST 型解決層の注釈を生成する（#16 段階(a)） ---
-    #[cfg(feature = "prof")]
-    let _p_tc = prof::Timer::new(prof::Phase::TypeCheck);
-    let (type_errors, type_warnings, annotations) = TypeChecker::check_program(&stmts);
-    #[cfg(feature = "prof")]
-    drop(_p_tc);
+    // --- 静的型検査（#16 段階(a)）＋ Phase R / R1 のローカル slot 解決 ---
+    // ⚠ **配線は 1 箇所**（#88。`resolve_and_annotate` の doc に「畳んだ差」と
+    // 「畳まなかった差」の一覧がある）。型エラーの扱いだけが入口ごとに違うので
+    // ここで決める（この入口は**停止する**）。
+    let (type_errors, type_warnings, annotations) =
+        interpreter::resolver::resolve_and_annotate(&mut stmts);
     for w in &type_warnings {
         eprintln!("Warning: {w}");
     }
@@ -393,13 +392,6 @@ fn run_program(
         eprintln!("AnnotUnresolvedSrc: {}", srcs.join(" "));
     }
 
-    // --- Phase R / R1: ローカル読み取りの slot 解決（トップレベル関数を書き換える） ---
-    #[cfg(feature = "prof")]
-    let _p_res = prof::Timer::new(prof::Phase::Resolve);
-    interpreter::resolver::resolve_program(&mut stmts);
-    #[cfg(feature = "prof")]
-    drop(_p_res);
-
     // --- インタープリタの初期化とソーステキストの登録 ---
     #[cfg(feature = "prof")]
     let _p_init = prof::Timer::new(prof::Phase::InterpInit);
@@ -415,13 +407,16 @@ fn run_program(
     // 減算するとむしろ解決できる名前を落とす（理由は `toplevel_declared_globals` の doc）。
     #[cfg(feature = "prof")]
     let _s_tg = prof::SubTimer::new(prof::Sub::ToplevelGlobals);
-    interp.set_toplevel_globals(interpreter::resolver::toplevel_declared_globals(&stmts));
+    interp.wire_resolution(
+        annotations,
+        interpreter::resolver::toplevel_declared_globals(&stmts),
+        interpreter::GlobalsMode::Replace,
+    );
     #[cfg(feature = "prof")]
     drop(_s_tg);
-    // AST 型解決層の注釈を注入する（#16）。段階(b)/(c) の消費側が node-id で参照する。
+    // ⚠ 注釈は上の `wire_resolution` が最上位グローバル集合と**対で**入れている（#88）。
     #[cfg(feature = "prof")]
     let _s_as = prof::SubTimer::new(prof::Sub::AnnotSource);
-    interp.set_annotations(std::rc::Rc::new(annotations));
     interp.add_source_text(filename, source);
     #[cfg(feature = "prof")]
     drop(_s_as);
@@ -609,19 +604,17 @@ fn compile_module(path: &str) {
     // node-id はこのモジュールのパーサが採番したもので、codegen が扱うのも同じ
     // トップレベル定義のみ（import 済みモジュールの body は `Stmt::Import` に入れ子で
     // 型検査も codegen も踏み込まない）＝ node-id 空間が一致する。
-    let (type_errors, annotations) = TypeChecker::check_and_annotate(&stmts);
+    // ⚠ 配線は 1 箇所（#88）。⚠ Phase R / R1 の解決は**コンパイル経路でも**要る（#11 R2-a）
+    // — 通していなかった頃はネイティブ codegen だけが「名前で自前解決した AST」を見ていた。
+    // ⚠ この入口は `Interpreter` を持たない（注釈は codegen が直接消費する）。
+    let (type_errors, _warnings, annotations) =
+        interpreter::resolver::resolve_and_annotate(&mut stmts);
     if !type_errors.is_empty() {
         for e in &type_errors {
             eprintln!("{e}");
         }
         std::process::exit(1);
     }
-
-    // Phase R / R1 のローカル slot 解決を**コンパイル経路でも**走らせる（#11 R2-a）。
-    // 実行経路（run_file）は以前から通していたが `--compile` は通しておらず、
-    // ネイティブ codegen だけが「名前で自前解決した AST」を見ていた。
-    // ここを揃えることで、三経路が同じ解決済み AST（`Resolution::Local`）を消費する。
-    interpreter::resolver::resolve_program(&mut stmts);
 
     match partial_compiler::compile(&source, &stmts, std::path::Path::new(path), &annotations) {
         Ok((tlc, tls)) => {

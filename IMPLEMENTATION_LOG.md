@@ -9555,6 +9555,91 @@ byte-identical** で裏づけたので、A/B 速度計測は不要と判断し�
 **例題が書いていない形は検査されない**（入れ子 fn の NESTED-GAP が 10 件残っている）。
 この網の値打ちは「**次に壊したとき、原因の場所で止まる**」ことにある。
 
+## #88 パイプライン配線を入口ごとの手写しから 1 箇所へ（2026-08-26・完了）
+
+プランが明記していた既知の穴: **VM は「解決情報が揃っている」前提**（#3/#36）で、
+`resolve_program` ＋ 型検査の注釈 ＋ 最上位グローバル集合を供給しない入口では
+**正しいコードでも `VmForceError` になる**。ところがその配線は**入口ごとの手写し**だった。
+
+### ⚠ まず測った（#72 と同じく「畳まない判断もありうる」ので）
+
+起票時に「**まず 3 入口の差を測る**」と決めていたので、先に 5 入口を実測して表にした
+（実際は 3 ではなく **5** あった）。
+
+| 入口 | 型検査 | 順序 | グローバル集合 | 型エラー |
+|---|---|---|---|---|
+| ① `run_program` | `check_program` | **型検査 → 解決** | `set_` | **停止** |
+| ② `compile_module`（`--compile`） | `check_and_annotate` | **型検査 → 解決** | — (`Interpreter` 無し) | `exit(1)` |
+| ③ `repl::run_block` | `check_and_annotate` | **解決 → 型検査** ⚠ | `extend_` | **無視** |
+| ④ import モジュール本体 | **供給しない** | — | ローカル変数で渡す | — |
+| ⑤ テストヘルパー（2 本） | `check_and_annotate` | **解決 → 型検査** ⚠ | `set_` | **無視** |
+
+### 実測で分かった「理由の無い差」2 つ ⇒ 畳んだ
+
+1. **順序が割れていた**（①② と ③⑤ で逆）。
+   ⚠ **型検査は [`Resolution`] を一切読まない**と確認したので**今は無害**だったが、
+   **読むようになった瞬間に「入口ごとに挙動が違う」になる**（#15e の「同じコードが
+   書かれた場所で挙動を変える」＝実バグ 5 件の類型）。
+2. **型検査の入口が 2 種類**あり、**`check_and_annotate` は `check_program` から
+   警告を落としただけの逐語コピー**だった。
+
+⇒ [`resolver::resolve_and_annotate`](src/interpreter/resolver.rs) を新設して
+**順序をここ 1 箇所に固定**し、`check_and_annotate` は**削除**（テスト 13 箇所を機械変換で
+`check_program` へ寄せた）。⇒ 型検査の入口は **`check_program` 1 本**。
+
+### ⚠ 畳まなかった差（**実測して理由があると分かった**もの・#72 と同じ判断）
+
+- **型エラーの扱い**: 停止／`exit(1)`／無視（REPL は次のブロックで直せる）／無視（テストは
+  注釈だけ欲しく、型エラーを意図的に踏むテストがある）。⇒ **戻り値で返して呼び出し側が決める**。
+- **グローバル集合の入れ方**: REPL だけ `extend_`（ブロックを跨いで積み増さないと
+  後のブロックの代入が VM に載らない）。
+- **`--compile` は `Interpreter` を持たない**（注釈は codegen が直接消費する）。
+- **④ モジュール本体は供給しない**（**意図的**）。`Resolution::Unresolved` のまま名前引き・
+  注釈なしで特化しないだけで、**どちらも安全側へ倒れる**（注釈は最適化ヒントであって
+  意味論の根拠ではない・#15e）。
+
+### ⚠⚠ 「片方だけ渡して忘れる」を型で塞いだ
+
+配線を 1 本にしても、**`set_annotations` だけ呼んでグローバル集合を忘れる**形は残る
+（＝ まさに割れていた形）。⇒ `Interpreter` に
+[`wire_resolution(annotations, globals, mode)`](src/interpreter.rs) を足し、
+**3 つの setter（`set_annotations` / `set_toplevel_globals` / `extend_toplevel_globals`）を
+private にした**。⇒ **入口からは対でしか渡せない**。
+
+⚠ 負の対照: 入口（`main.rs`）から `set_annotations` を直接呼ぶプローブを入れると
+**`method 'set_annotations' is private` でコンパイルが止まる**ことを確認した。
+
+### ⚠ `prof` の段別内訳を壊していないか確かめた
+
+タイマー（`Phase::TypeCheck` / `Phase::Resolve`）を共有関数の中へ移したので、
+[prof_dist.ps1](prof_dist.ps1) が依存する段別が潰れる恐れがあった。⇒ 実測して
+**`type_check` と `resolve` が別々に出る**ことを確認（`parse 0.280ms / type_check 0.334ms /
+resolve 0.053ms`）。
+
+### 検証（**すべて自分で走らせて確認**）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` / `--features prof` / `--features tw_stats` | **警告 0**（3 つとも） |
+| `cargo test` / `--features tw_stats` | **750** / **753** |
+| `cargo clippy` / `--all-targets` | **50 / 65**（増分 0） |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **115 / 115 byte-identical・差分 0**（⚠ **#86 のコミット `b0700de` から `base86.exe` を建てて #88 だけを切り分け**。負の対照も一致） |
+| [compare_outputs.ps1](compare_outputs.ps1) | **98 / 98 identical・差分 0** |
+| [compare_python_impl.ps1](compare_python_impl.ps1) / [scan_examples.ps1](scan_examples.ps1) | **54/54** / **FAIL 0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・162 例題**（⚠ `bench_ab_native.ar` は #85/#86 と同じくタイムアウト未確認＝既知の環境要因） |
+| [repl_session.ps1](repl_session.ps1) | **identical**（⚠ **順序を変えた入口**なのでここが主検査） |
+| [debug_session.ps1](debug_session.ps1) / [stale_doc_refs.ps1](stale_doc_refs.ps1) | **5 identical** / **0 件** |
+
+⚠⚠ **clippy が一度 65 → 66 に増えた**。差分を取ったら
+`tests/mod.rs` の `use crate::type_check::TypeChecker`（配線を畳んで不要になった）だった。
+⇒ 削除して 65 に復帰。**総数だけ見ていると気づけない** — #84 で書いたとおり
+**増分を見る**こと。
+
+⚠ **`check_and_annotate` を消したので [stale_doc_refs.ps1](stale_doc_refs.ps1) が必須**だった。
+実際に **7 箇所の doc 参照**が残っており（`src/vm/mod.rs` の「VM は解決情報が揃っている前提」の
+注意書きを含む）、全部書き換えて 0 件に戻した。⇒ #52/#53/#56 の再演を回避できたのは
+**識別子を消したら必ず走らせる**という 5 点セットの規約のおかげ。
+
 ## 見積もりと実測
 
 | 事前の想定 | 実際 |

@@ -31,7 +31,7 @@ pub fn run_repl() {
     let mut interp = Interpreter::new();
     // #36/#33: 実行経路はバイトコード VM 一本（`--vm` もツリーウォークも無い）。
     // 解決情報はブロックごとに `run_block` が用意する
-    // （`resolve_program` ＋ `check_and_annotate` ＋ globals の積み増し）。
+    // （`resolve_and_annotate` ＋ globals の積み増し。配線は #88 で 1 箇所に畳んだ）。
     let stdin = io::stdin();
     let mut pending: Vec<String> = Vec::new();
     // ⚠⚠ **実行し終えたブロックの AST を捨てない**（#36）。最上位 Chunk キャッシュ
@@ -92,10 +92,16 @@ fn run_block(interp: &mut Interpreter, code: &str) -> Option<Vec<Stmt>> {
     // 前のブロックの AST を後のブロックの注釈表で引くと別のノードを見る。
     // 注釈は最適化ヒントであって意味論の根拠ではない（#15e）ので、
     // 食い違っても「特化が乗らない／bail する」方向にしか倒れない。
-    crate::interpreter::resolver::resolve_program(&mut stmts);
-    let (_errors, annotations) = crate::type_check::TypeChecker::check_and_annotate(&stmts);
-    interp.set_annotations(std::rc::Rc::new(annotations));
-    interp.extend_toplevel_globals(crate::interpreter::resolver::toplevel_declared_globals(&stmts));
+    // ⚠ 配線は 1 箇所（#88）。⚠ この入口は**型エラーを無視して続行する**
+    // （REPL は次のブロックで直せる）。⚠ #88 まで**解決 → 型検査**の順で、
+    // `run_program` と逆だった（型検査が `Resolution` を読まないので無害だったが理由が無い差）。
+    let (_errors, _warnings, annotations) =
+        crate::interpreter::resolver::resolve_and_annotate(&mut stmts);
+    interp.wire_resolution(
+        annotations,
+        crate::interpreter::resolver::toplevel_declared_globals(&stmts),
+        crate::interpreter::GlobalsMode::Extend,
+    );
 
     let last = stmts.len() - 1;
     for (i, stmt) in stmts.iter().enumerate() {

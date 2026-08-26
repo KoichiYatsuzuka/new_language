@@ -33,7 +33,7 @@ fn mustbe_annotation_recorded_resolved_and_directive() {
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
     let node_id = find_mustbe_node_id(&stmts).expect("MustBe node not found");
 
-    let (_errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
 
     // ① 解決型テーブル: mustbe は確定後の型（int）を焼く。
     let tid = ann
@@ -79,7 +79,7 @@ fn binop_result_type_recorded() {
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
     let node_id = find_binop_node_id(&stmts).expect("BinOp node not found");
     assert_ne!(node_id, 0);
-    let (errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (errors, _warnings, ann) = TypeChecker::check_program(&stmts);
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     let tid = ann.resolved(node_id).expect("binop result type recorded");
     assert_eq!(ann.type_of(tid), Some(&InferredType::Int));
@@ -93,7 +93,7 @@ fn binop_float_result_type_recorded() {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
     let node_id = find_binop_node_id(&stmts).expect("BinOp node not found");
-    let (_errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
     let tid = ann.resolved(node_id).expect("binop result type recorded");
     // int + float → float（昇格）。
     assert_eq!(ann.type_of(tid), Some(&InferredType::Float));
@@ -133,7 +133,7 @@ fn attr_field_type_recorded() {
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
     let node_id = find_attr_node_id(&stmts).expect("Attr node not found");
     assert_ne!(node_id, 0);
-    let (errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (errors, _warnings, ann) = TypeChecker::check_program(&stmts);
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     let tid = ann.resolved(node_id).expect("attr field type recorded");
     assert_eq!(ann.type_of(tid), Some(&InferredType::Int));
@@ -148,7 +148,7 @@ fn subscript_element_type_recorded() {
         Stmt::Let(_, _, Expr::Subscript { node_id, .. }) => *node_id,
         other => panic!("expected Subscript, got {other:?}"),
     };
-    let (_errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
     let tid = ann.resolved(node_id).expect("subscript element type recorded");
     assert_eq!(ann.type_of(tid), Some(&InferredType::Int));
 }
@@ -162,7 +162,7 @@ fn istype_records_bool() {
         Stmt::Let(_, _, Expr::IsType { node_id, .. }) => *node_id,
         other => panic!("expected IsType, got {other:?}"),
     };
-    let (_errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
     let tid = ann.resolved(node_id).expect("istype bool recorded");
     assert_eq!(ann.type_of(tid), Some(&InferredType::Bool));
     // `is` 自体は検査なので CheckBefore は付かない。
@@ -178,7 +178,7 @@ fn cast_records_target_type_and_check_directive() {
         Stmt::Let(_, _, Expr::Cast { node_id, .. }) => *node_id,
         other => panic!("expected Cast, got {other:?}"),
     };
-    let (_errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
     let tid = ann.resolved(node_id).expect("cast target type recorded");
     assert_eq!(ann.type_of(tid), Some(&InferredType::Int));
     match ann.directive(node_id) {
@@ -198,7 +198,7 @@ fn call_result_type_recorded() {
         other => panic!("expected Call, got {other:?}"),
     };
     assert_ne!(node_id, 0);
-    let (errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (errors, _warnings, ann) = TypeChecker::check_program(&stmts);
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     let tid = ann.resolved(node_id).expect("call result type recorded");
     assert_eq!(ann.type_of(tid), Some(&InferredType::Int));
@@ -213,7 +213,7 @@ fn call_info_records_callee_and_arg_types() {
         Stmt::Let(_, _, Expr::Call { node_id, .. }) => *node_id,
         other => panic!("expected Call, got {other:?}"),
     };
-    let (errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (errors, _warnings, ann) = TypeChecker::check_program(&stmts);
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     let info = ann.call_info(node_id).expect("CallInfo recorded");
     // 呼び先シンボル参照 = "f"
@@ -256,7 +256,7 @@ fn call_arg_dynamic_gets_check_before_directive() {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
     let node_id = find_call_node_id(&stmts).expect("Call node not found");
-    let (_errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
     let info = ann.call_info(node_id).expect("CallInfo recorded");
     assert_eq!(info.callee.as_deref(), Some("f"));
     assert_eq!(info.args.len(), 1);
@@ -283,7 +283,7 @@ fn method_call_arg_dynamic_gets_check_directive() {
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
     let node_id = find_call_node_id(&stmts).expect("Call node not found");
-    let (_errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
     let info = ann.call_info(node_id).expect("CallInfo recorded");
     assert_eq!(info.callee.as_deref(), Some("m"));
     assert_eq!(info.args.len(), 1);
@@ -303,7 +303,7 @@ fn call_arg_static_has_no_check_directive() {
         Stmt::Let(_, _, Expr::Call { node_id, .. }) => *node_id,
         other => panic!("expected Call, got {other:?}"),
     };
-    let (_errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
     let info = ann.call_info(node_id).expect("CallInfo recorded");
     assert_eq!(info.args[0].directive, Directive::None);
 }
@@ -314,7 +314,7 @@ fn unannotated_node_has_no_directive() {
     let src = "let x: Any = 5\nlet y = x mustbe int\n";
     let tokens = Lexer::new(src, "").tokenize();
     let stmts = Parser::new(tokens, None).parse_program().expect("parse error");
-    let (_errors, ann) = TypeChecker::check_and_annotate(&stmts);
+    let (_errors, _warnings, ann) = TypeChecker::check_program(&stmts);
     // 存在しない node_id は None ディレクティブ。
     assert_eq!(ann.directive(9_999_999), Directive::None);
     assert!(ann.resolved(9_999_999).is_none());
