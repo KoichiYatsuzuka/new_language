@@ -9640,6 +9640,81 @@ resolve 0.053ms`）。
 注意書きを含む）、全部書き換えて 0 件に戻した。⇒ #52/#53/#56 の再演を回避できたのは
 **識別子を消したら必ず走らせる**という 5 点セットの規約のおかげ。
 
+## #87 `peephole::code_target_mut` の `_ => None` を exhaustive 化（2026-08-26・完了）
+
+プランの教訓リストが**唯一「忘れてもテストは通ってしまう」と名指ししていた穴**。
+⚠ #86 の負の対照で「`Op` に variant を足しても**ここだけ止まらない**」ことを実証済みだった。
+
+### 何が問題だったか
+
+命令を削除する覗き穴最適化は、**コード索引を持つ op を全て再マップ**しないと壊れる。
+再マップ対象は「飛び先を持つ op」だけではなく、`ForIter` の `exit_ip`・`SetupTry` の
+`handler_ip`・`StaticInit` の `after` も**コード索引**。
+`_ => None` だったので **op を足しても何も強制されず**、#27-d で `StaticInit` の飛び先を
+登録し忘れた実例がある（**テストも例題も通った** — たまたま除去対象が無かっただけ）。
+
+⇒ 全 89 variant を列挙して **op を足すとコンパイルが止まる**形へ。
+
+### 手法 — #86 の `storage_operands` と同じ型
+
+- **機械生成 ＋ 件数 assert**（`variants == 89` / `TARGET 7` / `rest 82`）。
+- ⚠⚠ **分類は op の doc から機械抽出して突き合わせる**（#86 で「名前で分類して 5 件取りこぼした」教訓）。
+  キーワード（`飛び先` / `ジャンプ` / `_ip` / `コード索引`）を含む doc を持つ op が
+  分類表に無ければ生成器が落ちる。
+
+#### ⚠ doc 由来の突き合わせが**偽陽性**を 1 件出した
+
+`Op::Fail(u32)` が候補に挙がったが、doc は
+「⚠ **飛び先索引を持たない**ので `peephole::code_target_mut` は不要」と
+**持たないことを明記している**ため引っかかっただけだった（`u32` は名前プール索引）。
+⇒ 生成器に `NOT_TARGET`（**doc が言及しているが持たない op ＋ その理由**）を設け、
+`候補 − TARGET − NOT_TARGET` が空であることを assert する形にした。
+⚠ **キーワード一致は否定表現を読めない**。候補は「必ず人間が 1 件ずつ判断する」ためのもの。
+
+### ⚠⚠ 「登録漏れ」側にはまだ穴が残っていたので塞いだ
+
+exhaustive 化で守れるのは「**新しい op を分類し忘れる**」側だけ。
+**既存の登録を外す**側は別の網（単体テスト）が要る。⇒ 実測したところ:
+
+| 外した登録 | 結果（拡張前） |
+|---|---|
+| `ForIter` | `remaps_for_iter_exit_and_setup_try_handler` が **FAIL** ✅ |
+| `SetupTry` | 同テストが **FAIL** ✅ |
+| **`StaticInit`** | ⚠⚠ **750 テスト全部通る**（＝ #27-d の再演がそのまま可能だった） |
+
+⇒ そのテストへ `StaticInit(0, 6)` を足し、**飛び先（第 2 引数）は詰め直され、
+span 索引（第 1 引数）は動かない**ことを固定した。
+⇒ 拡張後は **3 種とも外すと FAIL** することを実測で確認。
+
+### 負の対照
+
+| 対照 | 結果 |
+|---|---|
+| `Op` に variant を +1 | **4 箇所**が停止（`run.rs` / `disasm.rs` / `compiler/mod.rs`(#86) / **`peephole.rs`(#87)**）。⚠ #86 時点は **3 箇所**だった |
+| 登録を 1 つ外す（3 種） | **3 種とも単体テストが FAIL** |
+| [compare_bytecode.ps1](compare_bytecode.ps1) | **115 / 115 byte-identical**（⚠ **peephole は生成コードを直接書き換える**ので、分類の取りこぼし／誤りはここに出る。**主検査**） |
+
+### 検証（**すべて自分で走らせて確認**）
+
+| ゲート | 結果 |
+|---|---|
+| `cargo build` / `--features prof` / `--features tw_stats` | **警告 0**（3 つとも） |
+| `cargo test` / `--features tw_stats` | **750** / **753** |
+| `cargo clippy` / `--all-targets` | **50 / 65**（増分 0） |
+| [compare_bytecode.ps1](compare_bytecode.ps1) / [compare_outputs.ps1](compare_outputs.ps1) | **115/115** / **98/98**（⚠ **#88 のコミット `e7aee47` から `base88.exe` を建てて #87 だけを切り分け**。負の対照も一致） |
+| [compare_python_impl.ps1](compare_python_impl.ps1) / [scan_examples.ps1](scan_examples.ps1) | **54/54** / **FAIL 0** |
+| [force_gate.ps1](force_gate.ps1) | **0 件・162 例題**（⚠ `bench_ab_native.ar` は #85〜#88 と同じくタイムアウト未確認＝既知の環境要因） |
+| [repl_session.ps1](repl_session.ps1) / [debug_session.ps1](debug_session.ps1) / [stale_doc_refs.ps1](stale_doc_refs.ps1) | identical / **5 identical** / **0 件** |
+
+⚠ **[stale_doc_refs.ps1](stale_doc_refs.ps1) が自分の新しい doc を捕まえた** —
+「再マップは `remap` 経由」と書いたが**そんな識別子は無い**（実体は `collapse_jump_chains` と
+`remove_jumps_to_next`）。⇒ **新しく書いた doc も検査対象**であることを再確認した。
+
+### ⚠ release への影響
+
+`code_target_mut` は**コンパイル時に 1 回だけ走る後処理**の内部関数で、実行ループは通らない。
+生成コードが **115/115 byte-identical** なので **A/B 速度計測は不要**と判断した。
+
 ## 見積もりと実測
 
 | 事前の想定 | 実際 |

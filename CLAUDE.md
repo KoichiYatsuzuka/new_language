@@ -62,6 +62,7 @@ Detailed, situational reference material lives in `.claude/skills/` and is loade
 - `importation` — `import[lang]` tag reference (`.ar`, `.py`, `.dll`/`.lib`, `.rs`, C#, Node.js) and the full `src/parser/imports.rs` / `exec_module` implementation reference
 - `c-abi-interop` — C/C++ struct-passing design spec (raw layout, zero-copy vs. shadow conversion, write-back) for `import[cpp-dll]`/`import[cpp-lib]`
 - `vscode-extension-dev` — adding/modifying VS Code extension features (highlighting, hover, inlay hints, completions, commands, settings) and packaging the VSIX
+- `language-dev-principles` — durable design principles + working method for evolving the language (annotations are hints not semantics, the 4 storage kinds, stopping walker drift with exhaustive 2-stage forcing, which gate to run for which change, how to decide a task is worth doing); read when **designing or reviewing** a language change, before claiming "behaviour-preserving", and when filing tasks in a plan document
 - `vm-pitfalls` — pitfalls hit while building the resolver + bytecode VM (benchmarking/A-B, opcode + peephole changes, why a green gate may be lying, PowerShell child-process and encoding traps); read before measuring or trusting a gate
 - `vscode-debug-runner` — standalone CLI for exercising the VS Code extension's analysis code without launching VS Code
 
