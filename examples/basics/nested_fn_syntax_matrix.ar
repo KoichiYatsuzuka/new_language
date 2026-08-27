@@ -1,0 +1,96 @@
+# nested_fn_syntax_matrix.ar — **入れ子 `fn`（クロージャ）の本体**に各種構文を書く（#85）。
+#
+# ## なぜこの形なのか
+#
+# [syntax_cov.ps1](syntax_cov.ps1)（#85 で新設）が例題スイートの構文カバレッジを測ったところ、
+# **「最上位 `fn` の本体には書かれているのに、入れ子 `fn` の中では 1 度も書かれていない」構文が
+# 24 件**あった。⚠⚠ **歴史的な実バグ 5 件のうち 4 件（#68 / #75 / #84 ×2）がまさにこの文脈**で、
+# どれも「その形の例題が 1 本も無かった」ために全ゲートが緑のまま通り抜けている。
+#
+# ⇒ この例題は **NESTED-GAP に挙がった構文を入れ子 `fn` の中で実際に書く**ためのもの。
+# 値まで検査するのは、#47/#48 の教訓（既存ゲートは exit code しか見ないので
+# **黙って違う値**を返しても緑）による。
+#
+# ⚠ 追加時点で **Rust 実装と `python -m impl_python` の出力が一致すること**を確認済み。
+
+class Box:
+    mut v: int
+    fn __init__(mut self, let v: int) -> None:
+        self.v = v
+
+# ── ① 制御フロー・例外・属性代入・static mut を入れ子 fn の中で ────────────────
+# `For` / `Break` / `Continue` / `Try`（`except as` 別名・`finally`）/ `Raise` /
+# `AttrCompoundAssign` / `Static` — いずれも NESTED-GAP に挙がっていた。
+#
+# ⚠ `static mut` は**呼び出しを跨いで保持される**ので 2 回呼んで確かめる
+#   （初期化式が 1 度しか走らないことの検査も兼ねる）。
+# ⚠ `bx` は `mut` で束縛する — `let` 束縛だと `cannot assign to immutable field` になる
+#   （クロージャとは無関係な既存の意味論。切り分け済み）。
+fn control_flow_in_closure() -> int:
+    let items = [1, 2, 3]
+    mut bx = Box(0)
+    fn inner() -> int:
+        static mut calls = 0
+        calls += 1
+        mut acc = 0
+        for i in items:
+            if i == 2:
+                continue
+            if i > 90:
+                break
+            acc += i
+        bx.v += acc
+        try:
+            raise ValueError("x")
+        except ValueError as e:
+            acc += 10
+        finally:
+            acc += 100
+        return acc + calls
+    let a = inner()
+    let b = inner()
+    return a * 1000 + b + bx.v
+
+print(control_flow_in_closure())        # 115124
+
+# ── ② リテラル・添字・型演算を入れ子 fn の中で ───────────────────────────────
+# `Slice` / `Dict` / `Tuple` / `Float` / `UnaryOp` / `IsType` / `MustBe` /
+# `List`（外側の捕捉）— いずれも NESTED-GAP に挙がっていた。
+fn literals_in_closure(k: int) -> str:
+    let xs = [1, 2, 3, 4]
+    fn inner() -> str:
+        let sl = xs[1:3]
+        let dc = {1: "a", 2: "b"}
+        let tp = (1, 2.5)
+        let f = 2.5
+        let neg = -k
+        let g = k is int
+        let m = k mustbe int
+        return str(sl[0]) + dc[1] + str(tp[1]) + str(f) + str(g) + str(m + neg)
+    return inner()
+
+print(literals_in_closure(3))           # 2a2.52.5True0
+
+# ── ③ 対照: 同じ構文を「最上位 fn の本体」に書いた場合 ───────────────────────
+# ⚠ #75 / #84 の実バグは**書いた場所で挙動が変わる**形だった。同じ計算を 1 段浅い所に
+#   書いて**同じ値**になることを見ておくと、差が出たときにどちらが壊れたか切り分けられる。
+fn control_flow_flat() -> int:
+    let items = [1, 2, 3]
+    mut bx = Box(0)
+    static mut calls = 0
+    calls += 1
+    mut acc = 0
+    for i in items:
+        if i == 2:
+            continue
+        acc += i
+    bx.v += acc
+    try:
+        raise ValueError("x")
+    except ValueError as e:
+        acc += 10
+    finally:
+        acc += 100
+    return acc + calls + bx.v
+
+print(control_flow_flat())              # 119

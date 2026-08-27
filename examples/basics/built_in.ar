@@ -5,6 +5,7 @@
 #   2. enumerate()     — indexed iteration
 #   3. zip()           — parallel iteration
 #   4. File I/O        — path, open/close, FileOpenMode, StartPoint, ByteRecognizingMode
+#                        （make_and_write の節だけ import[py-int] os で後始末する）
 #   5. String features — f/r/m/$-strings, %, format(), methods, regex, ord()
 
 # ── 1. id() ──────────────────────────────────────────────────────────────────
@@ -16,6 +17,8 @@ print("id(42) =", str(p.value))
 
 # Reference types: same variable → same id
 class Box:
+    mut val: int
+
     fn __init__(mut self, let val: int) -> None:
         self.val = val
 
@@ -193,6 +196,15 @@ close(bk)
 print(last_line)   # No newline at end
 
 # make_and_write: create a new file
+# make_and_write は対象が既に存在すると RuntimeError になる（それが仕様）。
+# 例題を何度実行しても通るよう、Python の os.remove で前回の生成物を先に消しておく。
+# （まだ無い場合は FileNotFoundError になるので握りつぶす）
+import[py-int] os
+try:
+    os.remove("examples/basics/_tmp_new.txt")
+except Exception as e:
+    print("no leftover to clean")
+
 let nf = open("examples/basics/_tmp_new.txt", FileOpenMode.make_and_write)
 nf.write("Created fresh!")
 close(nf)
@@ -305,6 +317,15 @@ print("42".zfill(6))
 print("hi".ljust(10, "*"))
 print("hi".rjust(10, "*"))
 print("hi".center(10, "-"))
+# ⚠⚠ #65 で見つけた実バグ 2 件の回帰検知。どちらも「同じ処理を 3 回書いた」ことが原因で、
+#    上の 3 行（空白なし ASCII）では**発火しなかった**。
+#  ① 埋め文字つき ljust が**元の文字列内の空白まで**置換していた（CPython: "a b***"）
+print("a b".ljust(6, "*"))
+#  ② rjust / center が**バイト長**で幅を判定していたため、マルチバイト文字列が全く詰められなかった
+#     （旧: "あい" のまま。CPython: "***あい" / "--あい--"）
+print("あい".ljust(5, "*"))
+print("あい".rjust(5, "*"))
+print("あい".center(6, "-"))
 
 let multiline = "line1\nline2\nline3"
 print(multiline.splitlines())

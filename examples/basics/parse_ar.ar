@@ -1,0 +1,34 @@
+# parse_ar.ar — 組み込み `parse_ar()`：Arrow ソースを解析して AST を「値」として受け取る（§2.1）。
+#
+# 戻り値は**文のリスト**で、各要素は `__type__` を持つ名前空間。
+# `python_converter` / `std_tools/convert_to_python/converter.ar` がこの形に依存する。
+#
+# ⚠ この例題は #56 で新設した。**それまで parse_ar を使う例題が 1 本も無く**、
+# #33 でフォールバックが消えて以来 `parse_ar` が `VmForceError` で完全に死んでいたのに、
+# どのゲートにも映らなかった（#55 で検出）。負の対照は parse_ar_error.ar。
+
+print("=== 単一の let 文 ===")
+let stmts = parse_ar("let x: int = 1 + 2")
+print(len(stmts))
+let s0 = stmts[0]
+print(s0.__type__)
+print(s0.name)
+
+print("=== 複数文・関数定義 ===")
+let src: str = "fn add(let a: int, let b: int) -> int:\n    return a + b\n\nlet y = add(1, 2)"
+let prog = parse_ar(src)
+print(len(prog))
+print(prog[0].__type__)
+print(prog[0].name)
+print(prog[1].__type__)
+
+print("=== 第 2 引数（path）も渡せる ===")
+let withpath = parse_ar("let z = 1", "sample.ar")
+print(withpath[0].__type__)
+
+print("=== 関数の中からでも呼べる（VM 経路） ===")
+fn count_stmts(let source: str) -> int:
+    let parsed = parse_ar(source)
+    return len(parsed)
+
+print(count_stmts("let a = 1\nlet b = 2\nlet c = 3"))

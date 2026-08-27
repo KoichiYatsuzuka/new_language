@@ -45,6 +45,16 @@ pub(super) struct TypeRegistry {
     class_static_methods: HashMap<String, HashSet<String>>,
     /// プロトコル定義。プロトコル名 → `ProtocolInfo`。
     known_protocols: HashMap<String, ProtocolInfo>,
+    /// **Arrow ソースで `class` 宣言された**クラス名（#27-a）。
+    ///
+    /// `known_class_names` との違いが要点: あちらは**外部言語のスタブ由来クラスも含む**
+    /// （`import[cs-dll]` 等はパース時に `Stmt::ClassDef` へ変換されるため）。
+    /// スタブ由来クラスの実行時表現は `Value::CsObject` などで **`Value::Instance` ではない**ので、
+    /// 「このインスタンスは Arrow のクラスだ」と断定してよいのはこちらの集合だけ。
+    ///
+    /// 用途: VM コンパイラがメソッド呼び出し・属性代入のレシーバを
+    /// `Value::Instance` 前提の op へ落としてよいかの判定（#26/#27-a）。
+    arrow_class_names: HashSet<String>,
 }
 
 impl TypeRegistry {
@@ -56,6 +66,11 @@ impl TypeRegistry {
     }
 
     // ── クラス ────────────────────────────────────────────────────────────────
+
+    /// Arrow ソース由来クラス名の集合（注釈テーブルへ渡す・#27-a）。
+    pub(super) fn arrow_class_names(&self) -> &HashSet<String> {
+        &self.arrow_class_names
+    }
 
     /// クラス・enum・new_type として登録済みの名前か。
     pub(super) fn is_known_class(&self, name: &str) -> bool {

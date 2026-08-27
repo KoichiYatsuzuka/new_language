@@ -131,7 +131,11 @@ impl AsyncManagerData {
     }
 
     /// 新しいタスクを登録し、スレッドスロットが空いていれば即座に実行を開始する。
-    pub fn add_task(&mut self, body: Vec<Stmt>, env: Vec<(String, Value, bool)>) {
+    pub fn add_task(
+        &mut self,
+        body: Vec<Stmt>,
+        env: Vec<(String, Value, bool)>,
+    ) {
         if env.iter().any(|(_, v, _)| matches!(v, Value::PyObject(_))) {
             eprintln!(
                 "Warning: async task captures Python objects; \
@@ -263,12 +267,48 @@ fn run_task(
     }
 
     let mut interp = Interpreter::new();
-    interp.push_scope();
-    for (name, value, is_mutable) in env {
-        interp.declare_var(name, Var::new(value, is_mutable));
-    }
 
-    let result = interp.eval_block_expr(&body);
+    // ── VM 経路（#32）──────────────────────────────────────────────────────
+    // タスク本体は「値を返すブロック式」なので `compile_async_body` で Chunk 化する。
+    // これが無いと**本体の文は全部ツリーウォーク**で、本体に直接書いたループが
+    // 同じループを関数へ出した場合の 3.53x 遅さになっていた（実測・#32）。
+    //
+    // ⚠ worker は `Interpreter::new()` なので**型注釈を引き継げない**
+    // （`AstAnnotations` は `Rc` ベースで `Send` でない）。空の注釈でコンパイルするので
+    // 型特化 op は乗らないが、注釈は意味論の根拠ではない（#15e）ので結果は変わらない。
+    let capture_names: Vec<String> = env.iter().map(|(n, _, _)| n.clone()).collect();
+    let chunk = crate::vm::compile_async_body(&body, interp.annotations.clone(), &capture_names);
+    if let Some(chunk) = chunk {
+        let mut buf: Vec<Value> = vec![Value::None; chunk.n_locals];
+        for (name, slot) in &chunk.captured_slots {
+            if let Some((_, v, _)) = env.iter().find(|(n, _, _)| n == name) {
+                if let Some(cell) = buf.get_mut(*slot as usize) {
+                    *cell = v.clone();
+                }
+            }
+        }
+        // 捕捉値のうち slot に載らなかったもの（本体が同名を宣言している等）は
+        // 従来どおりスコープにも置く。`Op::LoadName` の落ち先になる。
+        interp.push_scope();
+        for (name, value, is_mutable) in env {
+            interp.declare_var(name, Var::new(value, is_mutable));
+        }
+        let result = crate::vm::run(&mut interp, &chunk, &mut buf, 0, None);
+        return finish_task(&mut interp, result);
+    }
+    // #25 と同じ規約: フォールバックは存在しない（#33 でツリーウォーク経路ごと削除）。
+    ThreadResult {
+        value: None,
+        error: Some("VmForceError: cannot compile async task body to bytecode".to_string()),
+    }
+}
+
+/// タスクの実行結果を `ThreadResult` へ変換する（VM 経路・ツリーウォーク経路で共有・#32）。
+/// `raise` はスレッド内の例外をこのスレッドのインタプリタから取り出して文字列化する。
+fn finish_task(
+    interp: &mut Interpreter,
+    result: Result<Value, String>,
+) -> ThreadResult {
     match result {
         Ok(value) => ThreadResult {
             value: Some(value),
@@ -317,8 +357,15 @@ impl AsyncStatus {
 pub(super) fn capture_env(interp: &Interpreter) -> Vec<(String, Value, bool)> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut env: Vec<(String, Value, bool)> = Vec::new();
-    for scope in interp.scopes.iter().rev() {
-        for (name, var) in scope {
+    // 可視スコープ = 現関数のローカル（frame_floor..、内側優先）+ グローバル（0）。
+    // 呼び出し元のローカルは隔離されているため対象外。
+    let floor = interp.frame_floor;
+    let visible = interp.scopes[floor..]
+        .iter()
+        .rev()
+        .chain(std::iter::once(&interp.scopes[0]));
+    for scope in visible {
+        for (name, var) in scope.iter() {
             if seen.insert(name.clone()) {
                 let value = if var.is_mutable() {
                     var.get_value().clone()

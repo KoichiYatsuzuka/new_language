@@ -1,0 +1,40 @@
+# builtin_shadow.ar — 組み込み名をユーザー変数でシャドウできること（#15d）
+#
+# 組み込み（print/next/zip/enumerate/getenv/repr など）と同名の変数を宣言したら、
+# **そのスコープでは組み込みではなくユーザーの束縛が呼ばれる**。
+#
+# 以前はモジュール最上位でこれが壊れていた。呼び先の振り分けが名前だけを見ていて、
+# 「リゾルバが解決していない＝シャドウが無い」と誤って仮定していたため。
+# リゾルバが処理するのはトップレベル関数の本体だけなので、最上位・テンプレート本体・
+# 合成 AST は常に未解決であり、そこでは組み込みが横取りしていた。
+#
+# 注: 同じ名前を外側と内側の両方で宣言することはできない
+#     （'X' is already declared in an accessible scope）。ここでは名前を分けている。
+
+fn tagged(let s: str) -> str:
+    return "user:" + s
+
+# ── 最上位でのシャドウ（以前壊れていた場所）────────────────────────────────
+let repr = tagged
+let zip = tagged
+let getenv = tagged
+
+print("repr   ->", repr("a"))
+print("zip    ->", zip("b"))
+print("getenv ->", getenv("c"))
+
+# 最上位の束縛は関数本体からも見える（＝組み込みではなく user 側が呼ばれる）
+fn from_fn() -> str:
+    return repr("from-fn")
+
+print("nested ->", from_fn())
+
+# ── 関数本体でのシャドウ（以前から正しく動いていた側）──────────────────────
+fn shadow_local() -> str:
+    let enumerate = tagged
+    return enumerate("in-fn")
+
+print("in-fn  ->", shadow_local())
+
+# ── シャドウしていない組み込みは組み込みのまま ──────────────────────────────
+print("len    ->", len("abcd"))

@@ -33,5 +33,5 @@
 | [.claude/skills/type-checking/SKILL.md](../../.claude/skills/type-checking/SKILL.md) | 型システム実装詳細 |
 | [.claude/skills/partial-compile/SKILL.md](../../.claude/skills/partial-compile/SKILL.md) | 部分コンパイル実装詳細 |
 | [.claude/skills/c-abi-interop/SKILL.md](../../.claude/skills/c-abi-interop/SKILL.md) | C ABI 相互運用設計仕様 |
-| [spec.md](../../spec.md) | 言語仕様概要 (日本語) |
+| [spec.md](../spec.md) | 言語仕様概要 (日本語) |
 | [docs/language_comparison.md](../language_comparison.md) | Rust/Python/Arrow 比較表 |

@@ -1,0 +1,11 @@
+# block_return_typecheck_error.ar — block_return の値がアノテーションに合わない（#35）
+#
+# `->int` を宣言したブロック式が str を返すので、実行時に TypeError になる。
+# 静的型検査はこの形を捕まえないため、実行時検査が唯一の防波堤（`--vm=off`/`--vm=on` 共通）。
+
+print("before")
+
+let x = block ->int:
+    block_return "hello"
+
+print(x)

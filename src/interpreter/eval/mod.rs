@@ -2,7 +2,7 @@
 //
 // `Interpreter::eval` が式(`Expr`)を再帰的にツリーウォークして `Value` を返す。
 // このファイルは共有の自由ヘルパー関数(スライス計算・パス/enum抽出など)を保持し、
-// 役割別サブモジュール(core/calls/native/attrs/control_expr/subscript)を宣言する。
+// 役割別サブモジュール(core/calls/native/attrs/subscript)を宣言する。
 
 use super::{Interpreter, Value};
 
@@ -15,7 +15,9 @@ fn set_insert(set: &mut Vec<Value>, item: Value, interp: &Interpreter) {
 
 /// `mustbe` 用: ガード型文字列から外側の型名（型パラメータを除いた部分）を返す。
 /// 例: `"list[int]"` → `"list"`,  `"function[int]->str"` → `"function"`, `"int"` → `"int"`
-fn mustbe_outer_type(guard_type: &str) -> String {
+///
+/// ツリーウォーク（`eval`）と VM（`Op::MustBe`）の双方が使うので crate 公開。
+pub(crate) fn mustbe_outer_type(guard_type: &str) -> String {
     // `[` または `{` より前の部分を取り出す
     let end = guard_type.find(['[', '{']).unwrap_or(guard_type.len());
     // `->` より前の部分も考慮（function->R の形式）
@@ -128,13 +130,13 @@ fn compute_slice_indices(len: i64, begin: Option<i64>, end: Option<i64>, step: i
 /// str または path インスタンスからファイルパス文字列を取り出す。
 fn extract_path_str(val: &Value) -> Result<String, String> {
     match val {
-        Value::Str(s) => Ok(s.clone()),
+        Value::Str(s) => Ok(s.to_string()),
         Value::Instance(inst_rc) => {
             let inst = inst_rc.borrow();
             if inst.class.name == "path" {
                 if let Some(&idx) = inst.class.field_index.get("value") {
                     if let Some(Value::Str(s)) = inst.field_value(idx) {
-                        return Ok(s);
+                        return Ok(s.to_string());
                     }
                 }
             }
@@ -190,5 +192,4 @@ mod calls;
 mod builtins;
 mod native;
 mod attrs;
-mod control_expr;
 mod subscript;

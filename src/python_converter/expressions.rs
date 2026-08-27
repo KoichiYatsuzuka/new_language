@@ -1,5 +1,7 @@
 // python_converter/expressions.rs — 式・定数・演算子の変換: convert_expr / convert_constant / convert_binop / convert_augop / convert_cmpop。
 
+use crate::ast::Resolution;
+use std::rc::Rc;
 use {
     rustpython_parser::ast as py,
     crate::ast::{BinOp, CallArg, Expr, UnaryOp},
@@ -16,7 +18,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
     match expr {
         py::Expr::Constant(c) => convert_constant(c, filename),
 
-        py::Expr::Name(n) => Ok(Expr::Ident(n.id.to_string())),
+        py::Expr::Name(n) => Ok(Expr::Ident { name: n.id.to_string(), node_id: 0, res: Resolution::Unresolved }),
 
         py::Expr::Attribute(a) => {
             let obj = convert_expr(&a.value, filename)?;
@@ -24,6 +26,8 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 object: Box::new(obj),
                 attr: a.attr.to_string(),
                 span: make_span(filename),
+                cache: Default::default(),
+                node_id: 0, // #16: 合成/変換コード（注釈対象外）
             })
         }
 
@@ -37,6 +41,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: 0, // #16: py-converter は未採番（0=注釈対象外）
             })
         }
 
@@ -72,6 +77,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                     left: Box::new(result),
                     right: Box::new(right),
                     span,
+                    node_id: 0, // #16: py-converter は未採番
                 };
             }
             Ok(result)
@@ -90,6 +96,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: 0, // #16: py-converter は未採番（0=注釈対象外）
             })
         }
 
@@ -116,6 +123,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
                 args,
                 span: crate::token::Span::unknown(),
                 cache: Default::default(),
+                node_id: 0, // #16: py-converter は未採番
             })
         }
 
@@ -125,6 +133,7 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             Ok(Expr::Subscript {
                 object: Box::new(obj),
                 index: Box::new(idx),
+                node_id: 0, // #16: py-converter は未採番
             })
         }
 
@@ -199,7 +208,7 @@ pub(crate) fn convert_constant(c: &py::ExprConstant, filename: &str) -> Result<E
             Ok(Expr::Int(v))
         }
         py::Constant::Float(f) => Ok(Expr::Float(*f)),
-        py::Constant::Str(s) => Ok(Expr::Str(s.to_string())),
+        py::Constant::Str(s) => Ok(Expr::Str(Rc::from(s.as_str()))),
         py::Constant::Bool(b) => Ok(Expr::Bool(*b)),
         py::Constant::None => Ok(Expr::None),
         py::Constant::Bytes(_) => Err(format!("{filename}: bytes literals are not supported")),

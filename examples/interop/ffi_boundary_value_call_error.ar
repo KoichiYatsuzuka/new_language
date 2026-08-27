@@ -1,0 +1,24 @@
+# ffi_boundary_value_call_error.ar — 関数値経由の呼び出しでも FFI 境界検査が効くこと（#22-b）
+#
+# `mod.func()` の形（Attr 呼び出し）は以前から検査されていたが、
+# **関数値に束縛してから呼ぶ形**は VM 経路で検査が丸ごと素通りしていた。
+#
+# 原因: 検査は「型検査が Call ノードへ焼いた宣言型」を node_id で引くが、
+# VM の `Op::Call` が node_id を運んでいなかった（#22-a 発見 2）。
+# その結果 `--vm=off` は FfiTypeError、`--vm=auto` は "I am a string" を素通しし、
+# **モードによって静かに誤った値が流れ込む**状態だった。
+#
+# 期待されるエラー（両モード共通）:
+#   FfiTypeError: python function `f` is declared to return `int` but returned `str`
+#
+# 素材: ffi_probe/lying_py.py（注釈と実装が食い違う Python モジュール）
+
+import[py-int] ffi_probe.lying_py as L
+
+fn call_via_value() -> int:
+    let f = L.get_int       # 関数値に束縛
+    return f()              # 宣言は int だが実際は str を返す
+
+print("before")
+print(call_via_value())
+print("unreachable")

@@ -1,0 +1,96 @@
+# bench_ab_native.ar — A/B ベンチ **モード2: コンパイル済み arrow native 実行**
+#
+# 前提:
+#   target/release/arrow.exe --compile examples/bench/bench_ab_native_module.ar
+#
+# 出力は 1 行 1 指標の `METRIC <name> <seconds>` 形式（ab_bench_modes.ps1 が解析する）。
+# ⚠ .arc の形式はブランチ間で異なるので、**測る側のバイナリで --compile し直してから**走らせること。
+
+import[py-int] time
+
+from bench_ab_native_module import noop0
+from bench_ab_native_module import id1
+from bench_ab_native_module import hot_int
+from bench_ab_native_module import hot_float
+from bench_ab_native_module import Item
+from bench_ab_native_module import sum_fixed
+from bench_ab_native_module import sum_list
+from bench_ab_native_module import apply_fn
+
+let CALLS   = 1_000_000    # 解釈側ループからネイティブを呼ぶ回数
+let HOT     = 30_000_000   # ネイティブ内で回す回数（純ネイティブ）
+let LIST_N  = 200_000      # list / fixed_list の要素数
+let LIST_R  = 20           # list（コールバック）反復回数
+let FIXED_R = 4000         # fixed_list（純ネイティブ）反復回数
+let CB_N    = 1_000_000    # function 引数コールバック回数
+
+mut sink: float = 0.0
+
+# ── (a) 呼び出し境界: 解釈側の while から native を呼ぶ ───────────────
+fn call_noop(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        acc += noop0()
+        i += 1
+    return acc
+
+fn call_id1(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        acc += id1(i)
+        i += 1
+    return acc
+
+let t0 = time.time()
+sink += float(call_noop(CALLS))
+print("METRIC native_call_noop " + str(time.time() - t0))
+
+let t1 = time.time()
+sink += float(call_id1(CALLS))
+print("METRIC native_call_id1 " + str(time.time() - t1))
+
+# ── (b) 純ネイティブ（対照群: 両ブランチで同じはず）──────────────────
+let t2 = time.time()
+sink += float(hot_int(HOT))
+print("METRIC native_hot_int " + str(time.time() - t2))
+
+let t3 = time.time()
+sink += hot_float(HOT)
+print("METRIC native_hot_float " + str(time.time() - t3))
+
+# ── リスト構築（解釈側。計測対象外だが参考に出す）────────────────────
+let tb = time.time()
+mut raw = for j in range(LIST_N)->list[Item]:
+    loop_yield Item(j)
+print("METRIC native_setup_build_list " + str(time.time() - tb))
+
+let xs = raw => fixed_list[Item]
+
+# (b) 純ネイティブのフラット反復
+let t4 = time.time()
+mut r4 = 0
+mut k4 = 0
+while k4 < FIXED_R:
+    r4 = sum_fixed(xs)
+    k4 += 1
+sink += float(r4)
+print("METRIC native_sum_fixed " + str(time.time() - t4))
+
+# (c) ネイティブ → 解釈側コールバック（list 反復）
+let t5 = time.time()
+mut r5 = 0
+mut k5 = 0
+while k5 < LIST_R:
+    r5 = sum_list(raw)
+    k5 += 1
+sink += float(r5)
+print("METRIC native_sum_list_cb " + str(time.time() - t5))
+
+# (c) ネイティブ → 解釈側コールバック（function 引数）
+let t6 = time.time()
+sink += float(apply_fn(id1, CB_N))
+print("METRIC native_apply_fn_cb " + str(time.time() - t6))
+
+print("CHECKSUM " + str(sink))

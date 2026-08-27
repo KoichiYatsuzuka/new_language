@@ -2,7 +2,6 @@
 
 use {
     std::cell::RefCell, std::rc::Rc,
-    crate::ast::CallArg,
     crate::interpreter::{
         ClassValue, InstanceData,
         Interpreter, Value,
@@ -10,96 +9,6 @@ use {
 };
 
 impl Interpreter {
-    /// クラスを引数付きでインスタンス化して `Value::Instance` を返す。
-    ///
-    /// 処理フロー:
-    /// 1. `field_defaults` からデフォルトフィールドを初期化
-    /// 2. `InstanceData` を構築して `Rc<RefCell>` に包む
-    /// 3. `__init__` メソッドを呼び出す（オーバーロードがある場合は `dispatch_overload`）
-    ///
-    /// - `class`: インスタンス化するクラス定義
-    /// - `call_args`: コンストラクタ引数リスト（AST の `CallArg`）
-    ///
-    /// 戻り値: `Ok(Value::Instance)` — 初期化済みインスタンス。`Err` — コンストラクタ実行エラー
-    pub(crate) fn instantiate(
-        &mut self,
-        class: Rc<ClassValue>,
-        call_args: &[CallArg],
-    ) -> Result<Value, String> {
-        // デフォルト値付きフィールドをインスタンスに事前設定する
-        let mut inst = InstanceData::new_empty(class.clone(), 0);
-        for (name, default_val, mutable) in &class.field_defaults {
-            if let Some(&idx) = class.field_index.get(name.as_str()) {
-                inst.store_field(idx, default_val.clone(), *mutable);
-            }
-        }
-        let inst_rc = Rc::new(RefCell::new(inst));
-        let inst_val = Value::Instance(inst_rc);
-
-        // cs-dll / cs-proc bridge dispatch: check class_vars for bridge path markers.
-        let class_name = class.name.clone();
-        if let Some(Value::Str(bp)) = class.class_vars.get("__cs_bridge_path__") {
-            let bp_path = std::path::PathBuf::from(bp.clone());
-            let evaled = self.eval_call_args(call_args)?;
-            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
-            if let Some(bridge) = crate::interpreter::cs_dll_runtime::get_bridge(&bp_path) {
-                let handle = crate::interpreter::cs_dll_runtime::call_constructor(&bridge, &class_name, &arg_vals)
-                    .map_err(|e| format!("CsDll: constructor for '{class_name}' failed: {e}"))?;
-                return Ok(Value::CsObject(Rc::new(crate::interpreter::value::CsObjectData {
-                    class_name: class_name.clone(),
-                    handle,
-                    bridge_path: bp_path,
-                    class: class.clone(),
-                    is_proc: false,
-                })));
-            }
-        }
-        if let Some(Value::Str(pp)) = class.class_vars.get("__cs_proc_path__") {
-            let pp_path = std::path::PathBuf::from(pp.clone());
-            let evaled = self.eval_call_args(call_args)?;
-            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
-            let handle = crate::interpreter::cs_proc_runtime::call_constructor(&pp_path, &class_name, &arg_vals)
-                .map_err(|e| format!("CsProc: constructor for '{class_name}' failed: {e}"))?;
-            return Ok(Value::CsObject(Rc::new(crate::interpreter::value::CsObjectData {
-                class_name: class_name.clone(),
-                handle,
-                bridge_path: pp_path,
-                class: class.clone(),
-                is_proc: true,
-            })));
-        }
-
-        // Native __init__ dispatch (for import[rs] structs and compiled classes).
-        // Check NATIVE_METHODS before falling back to tree-walk.
-        if crate::interpreter::native_api::lookup_native_method_ptr(&class_name, "__init__").is_some() {
-            let evaled = self.eval_call_args(call_args)?;
-            let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
-            if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method(
-                self, inst_val.clone(), "__init__", arg_vals,
-            ) {
-                result?;
-            }
-            return Ok(inst_val);
-        }
-
-        // `__init__` を呼び出す（定義がない場合はスキップ）
-        if let Some(init_overloads) = self.lookup_method_in_class(&class, "__init__") {
-            if init_overloads.len() == 1 {
-                self.exec_fn(
-                    init_overloads[0].clone(),
-                    call_args,
-                    Some(inst_val.clone()),
-                    "__init__",
-                    None,
-                )?;
-            } else {
-                self.dispatch_overload(init_overloads, call_args, Some(inst_val.clone()), None)?;
-            }
-        }
-
-        Ok(inst_val)
-    }
-
     /// オブジェクトのメソッドを呼び出して結果を返す。
     ///
     /// 各値型に対してディスパッチを行う:
@@ -130,8 +39,46 @@ impl Interpreter {
         }
         let inst_rc = Rc::new(RefCell::new(inst));
         let inst_val = Value::Instance(inst_rc);
-        // Native __init__ dispatch
         let class_name = class.name.clone();
+
+        // ── cs-dll / cs-proc ブリッジ経由のコンストラクタ（#22-c で移植）──
+        // 以前は `instantiate`（CallArg 版）にしか無く、`instantiate_evaled` は
+        // ツリーウォークの `Class` アームからしか呼ばれていなかったため露見していなかった。
+        // 22-c で `Namespace` アームを C 軸へ委譲した際に `cs_interop_test.ar` が
+        // `TypeError: function takes 0 argument(s), got 1` で落ちて発覚した
+        // （ブリッジ分岐が無く、引数無しの Arrow 側 stub `__init__` へ流れていた）。
+        if let Some(Value::Str(bp)) = class.class_vars.get("__cs_bridge_path__") {
+            let bp_path = std::path::PathBuf::from(&**bp);
+            let arg_vals: Vec<Value> = evaled.iter().map(|(_, v, _)| v.clone()).collect();
+            if let Some(bridge) = crate::interpreter::cs_dll_runtime::get_bridge(&bp_path) {
+                let handle =
+                    crate::interpreter::cs_dll_runtime::call_constructor(&bridge, &class_name, &arg_vals)
+                        .map_err(|e| format!("CsDll: constructor for '{class_name}' failed: {e}"))?;
+                return Ok(Value::CsObject(Rc::new(crate::interpreter::value::CsObjectData {
+                    class_name: class_name.clone(),
+                    handle,
+                    bridge_path: bp_path,
+                    class: class.clone(),
+                    is_proc: false,
+                })));
+            }
+        }
+        if let Some(Value::Str(pp)) = class.class_vars.get("__cs_proc_path__") {
+            let pp_path = std::path::PathBuf::from(&**pp);
+            let arg_vals: Vec<Value> = evaled.iter().map(|(_, v, _)| v.clone()).collect();
+            let handle =
+                crate::interpreter::cs_proc_runtime::call_constructor(&pp_path, &class_name, &arg_vals)
+                    .map_err(|e| format!("CsProc: constructor for '{class_name}' failed: {e}"))?;
+            return Ok(Value::CsObject(Rc::new(crate::interpreter::value::CsObjectData {
+                class_name: class_name.clone(),
+                handle,
+                bridge_path: pp_path,
+                class: class.clone(),
+                is_proc: true,
+            })));
+        }
+
+        // Native __init__ dispatch
         if crate::interpreter::native_api::lookup_native_method_ptr(&class_name, "__init__").is_some() {
             let arg_vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
             if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method(

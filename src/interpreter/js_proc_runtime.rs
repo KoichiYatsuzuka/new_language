@@ -141,7 +141,7 @@ fn encode_arg(v: &Value) -> serde_json::Value {
         Value::UInt(n) => serde_json::json!({"t":"i","v": n}),
         Value::Float(f) => serde_json::json!({"t":"f","v": f}),
         Value::Bool(b)  => serde_json::json!({"t":"b","v": b}),
-        Value::Str(s)   => serde_json::json!({"t":"s","v": s}),
+        Value::Str(s)   => serde_json::json!({"t":"s","v": &**s}),
         Value::None     => serde_json::json!({"t":"n"}),
         Value::List(rc) => {
             let arr: Vec<serde_json::Value> = rc.borrow().iter().map(encode_arg).collect();
@@ -156,9 +156,7 @@ fn decode_result(v: &serde_json::Value) -> Value {
     let t   = v.get("t").and_then(|t| t.as_str()).unwrap_or("n");
     let val = v.get("v");
     match t {
-        "s" => Value::Str(
-            val.and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        ),
+        "s" => Value::str(val.and_then(|v| v.as_str()).unwrap_or("")),
         "f" => Value::Float(val.and_then(|v| v.as_f64()).unwrap_or(0.0)),
         "b" => Value::Bool(val.and_then(|v| v.as_bool()).unwrap_or(false)),
         "n" => Value::None,
@@ -177,7 +175,7 @@ fn decode_result(v: &serde_json::Value) -> Value {
                 .map(|obj| {
                     obj.iter().map(|(k, ov)| {
                         let decoded = decode_result(ov);
-                        Value::Str(format!("{k}={}", value_to_str(&decoded)))
+                        Value::str(format!("{k}={}", value_to_str(&decoded)))
                     }).collect()
                 })
                 .unwrap_or_default();
@@ -192,7 +190,7 @@ fn decode_result(v: &serde_json::Value) -> Value {
 
 fn value_to_str(v: &Value) -> String {
     match v {
-        Value::Str(s)   => s.clone(),
+        Value::Str(s)   => s.to_string(),
         Value::Int(n)   => n.to_string(),
         Value::Float(f) => f.to_string(),
         Value::Bool(b)  => b.to_string(),

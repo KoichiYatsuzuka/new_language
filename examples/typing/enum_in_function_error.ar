@@ -1,0 +1,16 @@
+# enum_in_function_error.ar — 関数本体の `enum` の値検査（#68）
+#
+# バリアントの明示値は int でなければならない。この検査は `build_enum_classes` にあり、
+# **ツリーウォーク（最上位の `enum`）と VM（`Op::EnumDef`＝関数本体の `enum`）が同じ関数を
+# 呼ぶ**ので、文言が構造的に一致する（同じ enum を最上位に書いても同じ TypeError になる）。
+#
+# ⚠ #68 以前は、この行に到達する前に関数ごと `VmForceError` で止まっていた
+#    ＝ **本来のエラー文言が出ないという別のバグ**にもなっていた
+#    （「必ず失敗する文は bail せず同じ文言を出す」という #34 の原則が破れていた）。
+
+fn f()->int:
+    enum E:
+        A = "x"    # TypeError: enum variant 'A' value must be int, got 'str'
+    return E.A.value
+
+print(f())

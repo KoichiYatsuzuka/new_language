@@ -1,0 +1,101 @@
+# nested_decl_scopes.ar — 「入れ子の本体で宣言した名前」を各 walker が正しく見ることの確認（#84）。
+#
+# #84 まで「文の下にどの本体・部分式がぶら下がるか」を答える walker が **7 本**あり、
+# うち 6 本が `_ => {}` で終わっていた。8 本の表を突き合わせたところ **3 箇所ずれており、
+# 3 件とも実バグ**だった（参照実装 `python -m impl_python` は 3 件とも正しく動いていた）。
+#
+# ⚠⚠ 3 件とも **VmForceError で停止**する形（黙って違う値を出すのではない）。
+# ⚠⚠ そして **3 件とも例題が 1 本も無かった** — #56 / #68 / #71 / #75 と同じ再演なので、
+#     ここに 1 本ずつ置いて負の対照が取れるようにする。
+#
+# 直し方の実体は [`src/stmt_walk.rs`]（`each_subpart` ＋ `StmtPart` の exhaustive 2 段）。
+
+let outer_const = 100
+
+# ── ① `match` アームの中の宣言 ───────────────────────────────────────────────
+# `exec::collect_declared_names` だけが `Stmt::Match` のアーム本体へ降りていなかった。
+# ⇒ アーム内で宣言した `z` が「自前の名前」から漏れて**自由変数として捕捉**され、
+#    採番側（`collect_nested_decls` は降りる）が振った slot と衝突して
+#    `capture-slot-conflict` で `VmForceError`。#68 と同じ壊れ方。
+#
+# ⚠ 外側の `z` と内側の `z` は**別のブロック**なので型検査を通る（同一スコープなら再宣言エラー）。
+fn decl_in_match_arm() -> int:
+    mut r = 0
+    if True:
+        let z = 1
+        r = z
+    fn inner() -> int:
+        match 1:
+            case 1:
+                let z = 9
+                return z
+        return 0
+    return r * 100 + inner()
+
+print(decl_in_match_arm())      # 109
+
+# ── ② ブロック式の中の宣言 ──────────────────────────────────────────────────
+# 同じ walker が**部分式へも降りていなかった**ので、①と同じ衝突が
+# `let q = block ->T:` 経由でも起きていた（アーム経由とは別の経路）。
+fn decl_in_block_expr() -> int:
+    mut r = 0
+    if True:
+        let z = 1
+        r = z
+    fn inner() -> int:
+        let q = block ->int:
+            let z = 9
+            block_return z
+        return q
+    return r * 100 + inner()
+
+print(decl_in_block_expr())     # 109
+
+# ── ③ `static mut` の初期化式の中の宣言 ─────────────────────────────────────
+# 採番側 `vm::compiler::decls::collect_nested_decls` だけが `Stmt::Static` の
+# 初期化式へ降りていなかった。⇒ ブロック式の本体宣言 `q` が slot を取れず
+# `decl-no-slot` で `VmForceError`。
+#
+# ⚠ `static mut` は初回だけ初期化されるので、2 回呼んでも同じ値が返る（記憶域の確認も兼ねる）。
+fn decl_in_static_init() -> int:
+    static mut s = block ->int:
+        let q = 7
+        block_return q
+    s += 1
+    return s
+
+print(decl_in_static_init())    # 8
+print(decl_in_static_init())    # 9
+
+# ── 対照: 同じ宣言を「文形式」で書いた場合 ──────────────────────────────────
+# #84 以前も通っていた形。①②③ が壊れていたときも**これだけは動いていた**ので、
+# 「どの構文の中に書いたか」で結果が変わっていたことの証拠になる。
+fn decl_in_if_stmt() -> int:
+    mut r = 0
+    if True:
+        let z = 1
+        r = z
+    fn inner() -> int:
+        if True:
+            let z = 9
+            return z
+        return 0
+    return r * 100 + inner()
+
+print(decl_in_if_stmt())        # 109
+
+# ── 対照: `for` ターゲットと `except as` の別名（採番順に意味がある束縛）──────
+# `stmt_walk` はこの 2 つを本体とは別の種類で渡す。**順序を崩すと `LoadLocal` が
+# 別の変数を読む**ので、値が合うことが順序の検査になっている。
+fn ordered_bindings() -> int:
+    mut acc = 0
+    for i in [1, 2, 3]:
+        acc += i
+    try:
+        raise ValueError("x")
+    except ValueError as e:
+        acc += 10
+    return acc
+
+print(ordered_bindings())       # 16
+print(outer_const)              # 100

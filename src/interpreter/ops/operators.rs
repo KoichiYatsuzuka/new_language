@@ -119,7 +119,7 @@ impl Interpreter {
             if inst_rc.borrow().class.methods.contains_key("__str__") {
                 let result = self.eval_method_call_evaled(val.clone(), "__str__", vec![])?;
                 return match result {
-                    Value::Str(s) => Ok(s),
+                    Value::Str(s) => Ok(s.to_string()),
                     other => Ok(self.display(&other)),
                 };
             }
@@ -208,7 +208,7 @@ impl Interpreter {
                 s.borrow().iter().any(|v| self.values_eq(v, item)),
             )),
             (BinOp::In, Value::Str(sub), Value::Str(s)) => {
-                Ok(Value::Bool(s.contains(sub.as_str())))
+                Ok(Value::Bool(s.contains(&**sub)))
             }
             (BinOp::In, item, Value::Dict(d)) => Ok(Value::Bool(d.borrow().get(item).is_some())),
             (BinOp::In, item, Value::Tuple(t)) => Ok(Value::Bool(
@@ -227,7 +227,7 @@ impl Interpreter {
                 !s.borrow().iter().any(|v| self.values_eq(v, item)),
             )),
             (BinOp::NotIn, Value::Str(sub), Value::Str(s)) => {
-                Ok(Value::Bool(!s.contains(sub.as_str())))
+                Ok(Value::Bool(!s.contains(&**sub)))
             }
             (BinOp::NotIn, item, Value::Dict(d)) => Ok(Value::Bool(d.borrow().get(item).is_none())),
             (BinOp::NotIn, item, Value::Tuple(t)) => Ok(Value::Bool(
@@ -246,13 +246,13 @@ impl Interpreter {
             (BinOp::Add, Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a + *b)),
             (BinOp::Add, Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + *b)),
             (BinOp::Add, Value::Float(a), Value::Int(b)) => Ok(Value::Float(*a + *b as f64)),
-            (BinOp::Add, Value::Str(a), Value::Str(b)) => Ok(Value::Str(format!("{a}{b}"))),
+            (BinOp::Add, Value::Str(a), Value::Str(b)) => Ok(Value::str(format!("{a}{b}"))),
             // str * int / int * str → repeat
             (BinOp::Mul, Value::Str(s), Value::Int(n)) => {
-                Ok(Value::Str(s.repeat((*n).max(0) as usize)))
+                Ok(Value::str(s.repeat((*n).max(0) as usize)))
             }
             (BinOp::Mul, Value::Int(n), Value::Str(s)) => {
-                Ok(Value::Str(s.repeat((*n).max(0) as usize)))
+                Ok(Value::str(s.repeat((*n).max(0) as usize)))
             }
             // str % args → printf-style format
             (BinOp::Mod, Value::Str(fmt), rv) => {
@@ -262,7 +262,7 @@ impl Interpreter {
                     other => vec![other.clone()],
                 };
                 let result = percent_format(fmt, &args, &display_fn)?;
-                Ok(Value::Str(result))
+                Ok(Value::str(result))
             }
             (BinOp::Sub, Value::Int(a), Value::Int(b)) => Ok(Value::Int(*a - *b)),
             (BinOp::Sub, Value::Float(a), Value::Float(b)) => Ok(Value::Float(*a - *b)),
@@ -319,6 +319,21 @@ impl Interpreter {
             (BinOp::LtEq, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(*a <= *b)),
             (BinOp::GtEq, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(*a >= *b)),
             (BinOp::GtEq, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(*a >= *b)),
+            // ── タスク #18: 静的型検査と実行時の食い違いを解消する ──
+            // 型検査の `ordered_comparable`（[type_check/binop.rs]）は `<` `>` `<=` `>=` の
+            // **すべて**について `(Int,Float)` / `(Float,Int)` / `(Str,Str)` を許可している。
+            // ところが実行時は `<` `>` の混在アームと int/float 同士しか実装しておらず、
+            // `i <= f` や `"a" < "b"` が「検査は通るのに実行時 TypeError」になっていた。
+            // 検査器側の許可リストを仕様とみなし、実行時をそれに合わせる。
+            (BinOp::LtEq, Value::Int(a), Value::Float(b)) => Ok(Value::Bool((*a as f64) <= *b)),
+            (BinOp::LtEq, Value::Float(a), Value::Int(b)) => Ok(Value::Bool(*a <= (*b as f64))),
+            (BinOp::GtEq, Value::Int(a), Value::Float(b)) => Ok(Value::Bool((*a as f64) >= *b)),
+            (BinOp::GtEq, Value::Float(a), Value::Int(b)) => Ok(Value::Bool(*a >= (*b as f64))),
+            // 文字列同士の順序比較（辞書順）。
+            (BinOp::Lt, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a < b)),
+            (BinOp::Gt, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a > b)),
+            (BinOp::LtEq, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a <= b)),
+            (BinOp::GtEq, Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a >= b)),
             // uint 算術・比較
             (BinOp::Add, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_add(*b))),
             (BinOp::Sub, Value::UInt(a), Value::UInt(b)) => Ok(Value::UInt(a.wrapping_sub(*b))),

@@ -30,7 +30,7 @@ impl Interpreter {
                 CallArg::Positional(e) => {
                     // Ident が let 変数を指す場合のみ is_mutable = false（コピー省略可）
                     let is_mutable = match e {
-                        Expr::Ident(name) => self.get_var(name)
+                        Expr::Ident { name, .. } => self.get_var(name)
                             .map(|v| v.is_mutable())
                             .unwrap_or(true),
                         _ => true,
@@ -39,7 +39,7 @@ impl Interpreter {
                 }
                 CallArg::Keyword { name, value } => {
                     let is_mutable = match value {
-                        Expr::Ident(vname) => self.get_var(vname)
+                        Expr::Ident { name: vname, .. } => self.get_var(vname)
                             .map(|v| v.is_mutable())
                             .unwrap_or(true),
                         _ => true,
@@ -95,7 +95,7 @@ impl Interpreter {
                     };
                     // self の arg_is_mutable は特別扱い（常にコピー済みなので false でよい）
                     result.push(("self".to_string(), self_to_bind, p.mutable, false));
-                    (&params[1..], &defaults[1..])
+                    (&params[1..], defaults.get(1..).unwrap_or(&[]))
                 } else {
                     (params, defaults)
                 }
@@ -103,10 +103,24 @@ impl Interpreter {
                 (params, defaults)
             };
 
+        // 高速経路（Phase R / R0）: 位置引数のみ・可変長なし・引数数が仮引数数と完全一致。
+        // 通常の関数呼び出しの大多数はここを通る。中間 Vec（non_variadic_evaled / slots /
+        // slot_is_mutable）を一切確保せず、仮引数と評価済み引数を直接 zip して result を作る。
+        // 出力は下の一般経路と同一（位置引数を宣言順に並べるだけ）。
+        if evaled.len() == params_to_bind.len()
+            && evaled.iter().all(|(k, _, _)| k.is_none())
+            && !params_to_bind.iter().any(|p| p.variadic)
+        {
+            for (p, (_, val, is_mut)) in params_to_bind.iter().zip(evaled.iter()) {
+                result.push((p.name.clone(), val.clone(), p.mutable, *is_mut));
+            }
+            return Ok(result);
+        }
+
         // 可変長パラメータを分離する（末尾にのみ存在する）
         let variadic_idx = params_to_bind.iter().position(|p| p.variadic);
         let (non_variadic_params, non_variadic_defaults) = if let Some(vi) = variadic_idx {
-            (&params_to_bind[..vi], &defaults_to_bind[..vi])
+            (&params_to_bind[..vi], defaults_to_bind.get(..vi).unwrap_or(&[]))
         } else {
             (params_to_bind, defaults_to_bind)
         };
@@ -121,9 +135,13 @@ impl Interpreter {
             .filter(|(k, _, _)| k.as_deref() != Some("..."))
             .collect();
 
-        // デフォルト値なしのパラメータ数（必須引数数）と最大引数数を計算する
-        let required_count = non_variadic_defaults.iter().filter(|d| d.is_none()).count();
+        // デフォルト値なしのパラメータ数（必須引数数）と最大引数数を計算する。
+        // defaults スライスは空（デフォルトなし最適化）や部分長でもよいので、範囲外は
+        // 「デフォルトなし＝必須」とみなす（`.get(i)` が None）。
         let max_count = non_variadic_params.len();
+        let required_count = (0..max_count)
+            .filter(|&i| non_variadic_defaults.get(i).and_then(|o| o.as_ref()).is_none())
+            .count();
         if non_variadic_evaled.len() < required_count || non_variadic_evaled.len() > max_count {
             if required_count == max_count {
                 return Err(format!(
@@ -177,7 +195,7 @@ impl Interpreter {
             let param = &non_variadic_params[i];
             let v = match slot {
                 Some(v) => v,
-                None => match &non_variadic_defaults[i] {
+                None => match non_variadic_defaults.get(i).and_then(|o| o.as_ref()) {
                     Some(dv) => dv.clone(),
                     None => return Err(format!("TypeError: missing argument '{}'", param.name)),
                 },
@@ -212,7 +230,7 @@ impl Interpreter {
             if let (Some(sv), Some(p)) = (&self_val, params.first()) {
                 if p.name == "self" {
                     result.push(("self".to_string(), sv.clone(), p.mutable, false));
-                    (&params[1..], &defaults[1..])
+                    (&params[1..], defaults.get(1..).unwrap_or(&[]))
                 } else {
                     (params, defaults)
                 }
@@ -223,7 +241,7 @@ impl Interpreter {
         // 可変長パラメータを分離する
         let variadic_idx = params_to_bind.iter().position(|p| p.variadic);
         let (non_variadic_params, non_variadic_defaults) = if let Some(vi) = variadic_idx {
-            (&params_to_bind[..vi], &defaults_to_bind[..vi])
+            (&params_to_bind[..vi], defaults_to_bind.get(..vi).unwrap_or(&[]))
         } else {
             (params_to_bind, defaults_to_bind)
         };
@@ -273,7 +291,7 @@ impl Interpreter {
         for (i, slot) in slots.into_iter().enumerate() {
             let v = match slot {
                 Some(v) => v,
-                None => match &non_variadic_defaults[i] {
+                None => match non_variadic_defaults.get(i).and_then(|o| o.as_ref()) {
                     Some(dv) => dv.clone(),
                     None => {
                         return Err(format!(

@@ -1,36 +1,20 @@
-// exec/blocks.rs — ブロック実行とクロージャ補助: exec_block / exec_scoped_block / capture_env / apply_value_call。
+// exec/blocks.rs — クロージャ補助: capture_env / apply_value_call。
+//
+// ⚠ `exec_block` / `exec_scoped_block`（文のリストをスコープ付きで回す）は #33 で削除した。
+// 制御フローと `try` の実行がバイトコード VM へ移り、呼び出し元が無くなったため。
 
 use {
     std::cell::RefCell, std::collections::{HashMap, HashSet},
     std::rc::Rc,
     crate::ast::Stmt,
     crate::interpreter::{
-        CapturedVar, ExecResult,
+        CapturedVar,
         Interpreter, Value, Var,
     },
 };
 use super::*;
 
 impl Interpreter {
-    /// 文のリストを順に実行する。Normal 以外のシグナルが発生したら即返す。
-    pub(crate) fn exec_block(&mut self, stmts: &[Stmt]) -> Result<ExecResult, String> {
-        for stmt in stmts {
-            match self.exec(stmt)? {
-                ExecResult::Normal => {}
-                signal => return Ok(signal),
-            }
-        }
-        Ok(ExecResult::Normal)
-    }
-
-    /// 新しいスコープを積んでから文のリストを実行し、完了後にスコープを取り除く。
-    pub(crate) fn exec_scoped_block(&mut self, stmts: &[Stmt]) -> Result<ExecResult, String> {
-        self.push_scope();
-        let result = self.exec_block(stmts);
-        self.pop_scope();
-        result
-    }
-
     // ---------------------------------------------------------------------------
     // Closure capture
     // ---------------------------------------------------------------------------
@@ -56,7 +40,9 @@ impl Interpreter {
         let n_scopes = self.scopes.len();
 
         for name in &free_vars {
-            for scope_idx in (1..n_scopes).rev() {
+            // 現関数のローカルスコープ（frame_floor..）からのみキャプチャする。
+            // 呼び出し元のローカルは隔離されているため対象外（自由変数はグローバルへ解決）。
+            for scope_idx in (self.frame_floor..n_scopes).rev() {
                 let found = self.scopes[scope_idx]
                     .get(name.as_str())
                     .map(|var| (var.is_mutable(), var.cell(), var.get_value()));
@@ -85,6 +71,17 @@ impl Interpreter {
             }
         }
 
+        // 診断フック（#27）: クロージャのキャプチャ内訳。**可変キャプチャの有無**が
+        // VM 対応の設計を分ける（可変はセル共有が要り、VM のフラット slot では表現できない）。
+        if crate::interpreter::tw_stats::enabled() {
+            if captured.is_empty() {
+                crate::interpreter::tw_stats::record_capture("none");
+            } else if captured.values().any(|c| matches!(c, CapturedVar::Mutable(_))) {
+                crate::interpreter::tw_stats::record_capture("has-mutable");
+            } else {
+                crate::interpreter::tw_stats::record_capture("immutable-only");
+            }
+        }
         captured
     }
 

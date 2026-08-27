@@ -1,0 +1,22 @@
+# stale_arc_check.ar — コンパイル済みモジュール（.arc）の陳腐化検査（#14 の一部）
+#
+# `.arc` は**ソースを埋め込んだ**バイナリで、存在すると `.ar` より優先される。
+# 以前は両者の一致を確認していなかったため、`.ar` を編集しても再コンパイルするまで
+# 反映されず、しかも**警告なしに古い答えを返していた**（実測で確認済み）。
+#
+# 現在は import 時に「.arc の埋め込みソース」と「隣の .ar」を突き合わせ、
+# 食い違ったら警告して**ソース側を正として** `.ar` を使う
+# （§6.3 の「不一致ならフォールバック」を、回復手段が常にある本ケースへ適用したもの）。
+#
+# 試し方:
+#   1. arrow --compile examples/interop/stale_arc/mathmod.ar
+#   2. この例題を実行 → 警告なしでネイティブ経路が使われる
+#   3. mathmod.ar の 100.0 を 999.0 に書き換えて再実行
+#      → "compiled module ... is out of date" の警告が出て **1000.0**（新しい値）が返る
+#   4. 再度 --compile すると警告が消える
+
+from stale_arc.mathmod import scale
+from stale_arc.mathmod import offset
+
+print(scale(3.0, 4.0))
+print(offset(1.0))

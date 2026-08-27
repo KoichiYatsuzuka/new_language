@@ -12,6 +12,7 @@ impl<'a> GenCtx<'a> {
         class_fields_ord:  &'a HashMap<String, Vec<(String, Ty)>>,
         all_class_fields:  &'a HashMap<String, Vec<(String, String)>>,
         fast_fns:          &'a HashSet<String>,
+        annotations:       &'a crate::type_check::AstAnnotations,
     ) -> Self {
         Self {
             str_globals: String::new(),
@@ -40,18 +41,71 @@ impl<'a> GenCtx<'a> {
             typed_failed:          false,
             typed_ok:              HashSet::new(),
             typed_sigs:            HashMap::new(),
+            annotations,
+            name_to_slot:          HashMap::new(),
+            locals_by_slot:        Vec::new(),
+            slot_reads:            0,
+            fast_mode:             false,
+            fast_failed:           false,
+            fast_flattened:        HashSet::new(),
+            discarded_fast:        HashSet::new(),
+            attr_stats:            AttrResolutionStats::default(),
+            expr_stats:            HandleFallbackStats::default(),
+            ident_stats:           IdentHandleStats::default(),
         }
     }
 
     /// Look up the native type of a field access on a known class instance.
     /// Returns Some(Ty) only if the field is typed int/float in the class definition.
+    ///
+    /// **自前の型再導出**（#16 段階(c) で置換対象）。受け手が `self` か、型注釈から
+    /// クラスが判るパラメータのときしか解決できない。
     pub(super) fn field_ty(&self, object: &Expr, attr: &str) -> Option<Ty> {
-        let class_name = match object {
-            Expr::Ident(n) if n == "self" => self.current_class.as_deref(),
-            Expr::Ident(n) => self.param_classes.get(n.as_str()).map(|s| s.as_str()),
-            _ => None,
+        let class_name = match ident_name(object) {
+            Some("self") => self.current_class.as_deref(),
+            Some(n) => self.param_classes.get(n).map(|s| s.as_str()),
+            None => None,
         }?;
         self.class_fields.get(class_name)?.get(attr).copied()
+    }
+
+    /// AST 型解決層の注釈（#16）から属性アクセスの型を引く。
+    ///
+    /// 型検査は `Expr::Attr` の node-id に**フィールドの宣言型**を焼いている
+    /// （受け手が `NamedInstance` と解決できたとき・`infer_attr`）。`field_ty` と違い
+    /// 受け手の式の形を問わないため、局所変数や入れ子属性（`a.b.c`）でも解決できる。
+    ///
+    /// `Ty::Int` / `Ty::Float` に対応する型のみ返す（`field_ty` と同じ判定粒度に揃える）。
+    /// node_id==0（未採番＝合成 AST・テンプレート置換）や未注釈は `None`。
+    pub(super) fn field_ty_annotated(&self, node_id: u32) -> Option<Ty> {
+        use crate::type_check::InferredType;
+        match self.annotations.resolved_type(node_id)? {
+            InferredType::Int => Some(Ty::Int),
+            InferredType::Float => Some(Ty::Float),
+            _ => None,
+        }
+    }
+
+    /// 属性アクセスの型を決める（#16 段階 c-3）。
+    ///
+    /// **AST 型解決層の注釈を第一の根拠にする**（＝ツリーウォーク／VM／ネイティブが同じ解決を共有する）。
+    /// 自前導出 `field_ty` は注釈が無いときのフォールバックとしてのみ残す。
+    ///
+    /// 実測（代表 6 モジュール）では `legacy_only = 0`・`conflict = 0` で、
+    /// **自前導出が注釈より広く解けるケースは 1 件も無い**。それでも撤去せず残しているのは、
+    /// node-id が付かない合成 AST 等でゼロコストの保険になるため。
+    /// 一致状況は `AR_ANNOT_DIFF=1` で引き続き観測できる。
+    pub(super) fn field_ty_resolved(&mut self, object: &Expr, attr: &str, node_id: u32) -> Option<Ty> {
+        let legacy = self.field_ty(object, attr);
+        let annotated = self.field_ty_annotated(node_id);
+        match (legacy, annotated) {
+            (Some(a), Some(b)) if a == b => self.attr_stats.agree += 1,
+            (Some(_), Some(_)) => self.attr_stats.conflict += 1,
+            (Some(_), None) => self.attr_stats.legacy_only += 1,
+            (None, Some(_)) => self.attr_stats.annot_only += 1,
+            (None, None) => self.attr_stats.neither += 1,
+        }
+        annotated.or(legacy)
     }
 
     pub(super) fn fresh_reg(&mut self) -> String { let r = self.reg; self.reg += 1; format!("%_r{r}") }
@@ -127,21 +181,23 @@ impl<'a> GenCtx<'a> {
     pub(super) fn emit_typed_raise(&mut self, exc_expr: &Expr) {
         let (type_name, msg): (String, String) = match exc_expr {
             Expr::Call { func, args, .. } => {
-                let Expr::Ident(name) = func.as_ref() else {
+                let Some(name) = ident_name(func.as_ref()) else {
                     self.typed_failed = true;
                     return;
                 };
                 let msg = match args.first() {
                     None => String::new(),
-                    Some(CallArg::Positional(Expr::Str(s))) => s.clone(),
+                    Some(CallArg::Positional(Expr::Str(s))) => s.to_string(),
                     _ => {
                         self.typed_failed = true;
                         return;
                     }
                 };
-                (name.clone(), msg)
+                (name.to_string(), msg)
             }
-            Expr::Ident(name) => (name.clone(), String::new()),
+            e if ident_name(e).is_some() => {
+                (ident_name(e).unwrap().to_string(), String::new())
+            }
             _ => {
                 self.typed_failed = true;
                 return;
@@ -228,7 +284,28 @@ impl<'a> GenCtx<'a> {
         let t = llvm_ty(ty);
         self.ea(&format!("{reg} = alloca {t}, align 8"));
         self.locals.insert(name.to_string(), (reg.clone(), ty));
+        // リゾルバが slot を割り当てている名前なら slot 索引側にも載せる（#11 R2-a′）。
+        // 合成ローカル（preread の一時変数など）は slot を持たないので名前引きのみ。
+        if let Some(&slot) = self.name_to_slot.get(name) {
+            if let Some(e) = self.locals_by_slot.get_mut(slot as usize) {
+                *e = Some((reg.clone(), ty));
+            }
+        }
         reg
+    }
+
+    /// `Resolution::Local(slot)` の読み取り（#11 R2-a′）。
+    /// リゾルバの割り当てた slot で直接引き、未登録なら名前引きへフォールバックする
+    /// （リゾルバが解決を諦めた関数・合成ローカル）。
+    pub(super) fn load_var_by_slot(&mut self, slot: u32, name: &str) -> (String, Ty) {
+        if let Some(Some((ptr, ty))) = self.locals_by_slot.get(slot as usize).cloned() {
+            self.slot_reads += 1;
+            let t = llvm_ty(ty);
+            let r = self.fresh_reg();
+            self.ec(&format!("{r} = load {t}, ptr {ptr}"));
+            return (r, ty);
+        }
+        self.load_var(name)
     }
 
     pub(super) fn store_val(&mut self, ty: Ty, val: &str, ptr: &str) {

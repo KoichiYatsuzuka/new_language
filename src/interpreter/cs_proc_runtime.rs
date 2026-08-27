@@ -155,7 +155,7 @@ fn encode_arg(v: &Value) -> serde_json::Value {
         Value::UInt(n) => serde_json::json!({"t": "i", "v": n}),
         Value::Float(f) => serde_json::json!({"t": "f", "v": f}),
         Value::Bool(b) => serde_json::json!({"t": "b", "v": b}),
-        Value::Str(s) => serde_json::json!({"t": "s", "v": s}),
+        Value::Str(s) => serde_json::json!({"t": "s", "v": &**s}),
         Value::CsObject(o) => serde_json::json!({"t": "h", "v": o.handle}),
         Value::None => serde_json::json!({"t": "n"}),
         _ => serde_json::json!({"t": "n"}),
@@ -169,7 +169,7 @@ fn decode_result(v: &serde_json::Value, ret_type: Option<&str>) -> Value {
     let t = v.get("t").and_then(|t| t.as_str()).unwrap_or("i");
     let val = v.get("v");
     match t {
-        "s" => Value::Str(val.and_then(|v| v.as_str()).unwrap_or("").to_string()),
+        "s" => Value::str(val.and_then(|v| v.as_str()).unwrap_or("").to_string()),
         "f" => Value::Float(val.and_then(|v| v.as_f64()).unwrap_or(0.0)),
         "b" => Value::Bool(val.and_then(|v| v.as_bool()).unwrap_or(false)),
         "n" => Value::None,

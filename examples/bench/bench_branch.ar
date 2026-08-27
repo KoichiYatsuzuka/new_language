@@ -1,0 +1,91 @@
+# bench_branch.ar — 分岐支配ループの計測（タスク #2a「覗き穴最適化」の A/B 用）
+#
+# `if` に `else` が無い形は、コンパイラが分岐ごとに置く `Jump(end)` の飛び先が
+# **直後の命令**になるため、素直に生成すると毎回無駄な JUMP を 1 回踏む。
+# ループ内 `if` ではさらに「if の脱出 → ループ back-edge」の JUMP 連鎖も出る。
+#
+# ホットループは fn の中に置く（この bench が測りたいのは算術そのものなので、
+# ループ制御の差を持ち込まないため）。
+# ⚠ 「VM は関数本体にしか乗らない」という以前の記述は**古い**（#10-b で最上位も VM 化された）。
+# 最上位ループとの差そのものは [bench_toplevel_loop.ar](bench_toplevel_loop.ar) が測る（#70）。
+#
+# Run: target/release/arrow.exe -src examples/bench/bench_branch.ar
+
+import[py-int] time
+
+let N = 3_000_000
+
+# ── baseline: 分岐なしのループ制御のみ ────────────────────
+fn loop_empty(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        i += 1
+    return acc
+
+# ── else 無し if（条件が真: 本体を通って末尾の JUMP を踏む）──
+fn loop_if_taken(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        if i > -1:
+            acc += 1
+        i += 1
+    return acc
+
+# ── else 無し if（条件が偽: JUMP_IF_FALSE → ループ back-edge の連鎖）──
+fn loop_if_untaken(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        if i < -1:
+            acc += 1
+        i += 1
+    return acc
+
+# ── 入れ子 if（連鎖が深くなる形）──────────────────────────
+fn loop_if_nested(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        if i > -1:
+            if i > -2:
+                acc += 1
+        i += 1
+    return acc
+
+# ── if/else（分岐が両方あり JUMP は必要・退行が無いことの対照）──
+fn loop_if_else(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        if i > -1:
+            acc += 1
+        else:
+            acc += 2
+        i += 1
+    return acc
+
+fn bench(let label: str, let secs: float, let base: float, let n: int) -> None:
+    print(label + str((secs - base) * 1e9 / float(n)) + " ns/iter over baseline")
+
+let t0 = time.time()
+loop_empty(N)
+let base_s = time.time() - t0
+print("baseline (loop only):          " + str(base_s * 1e9 / float(N)) + " ns/iter")
+
+let t1 = time.time()
+loop_if_taken(N)
+bench("if (no else), taken:           ", time.time() - t1, base_s, N)
+
+let t2 = time.time()
+loop_if_untaken(N)
+bench("if (no else), untaken:         ", time.time() - t2, base_s, N)
+
+let t3 = time.time()
+loop_if_nested(N)
+bench("nested if (no else), taken:    ", time.time() - t3, base_s, N)
+
+let t4 = time.time()
+loop_if_else(N)
+bench("if/else (control):             ", time.time() - t4, base_s, N)

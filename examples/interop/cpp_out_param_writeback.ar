@@ -1,0 +1,81 @@
+# cpp_out_param_writeback.ar — C の書き込みポインタ引数の**書き戻し先**を網羅する正例（#48）
+#
+# `v3_norm(const V3* v, double* out_len)` の `out_len` はプリミティブ書き込みポインタ。
+# C が書いた値は呼び出し元の `mut` 変数へ反映されなければならない。
+#
+# ⚠ この例題が要る理由（#47 で実バグを検出した経緯）:
+#   書き戻し先は **引数式が識別子か**を見て決まる。ツリーウォークは呼び出し時に引数式を
+#   持っていたが、VM は**評価済みの値**で呼ぶので持っていない。#33 で解釈経路が VM 一本に
+#   なった結果、書き戻しが**黙って起きなくなり 0.0 が返っていた**。
+#   ⚠⚠ `scan_examples` / `force_gate` は **exit code しか見ない**ので、この種の
+#   「落ちないが値が違う」退行は素通りする。だからこの例題は**期待値と違えば raise する**。
+#   期待値をコメントに書くだけにしないこと。
+#
+# 記憶域の種類ごとに 1 本ずつ置く（VM の書き戻し先 `WbStore` の全アーム）:
+#   (1) 関数内のローカル      → WbStore::Local
+#   (2) 最上位のグローバル    → WbStore::Global
+#   (3) クロージャの可変捕捉  → WbStore::Cell
+#   (4) ループの中で繰り返し  → 同じ呼び出し点を何度も通る形
+#
+# 実行には examples/interop/test_modules/vec_math_x64.lib が必要:
+#   powershell -File examples/interop/test_modules/build_vec_math.ps1
+#
+# 対になる例: examples/interop/cpp_struct_ptr.ar（構造体ポインタ `V3*` の書き戻し）
+
+import[cpp-lib] test_modules.vec_math as vm
+
+let v345 = V3(3.0, 4.0, 0.0)      # |v| = 5
+let v6810 = V3(6.0, 8.0, 0.0)     # |v| = 10
+
+# ⚠ **一致しなければ raise する**（print するだけにしない）。
+# `scan_examples` / `force_gate` は exit code しか見ないので、raise して初めて
+# 「落ちないが値が違う」退行がゲートに映る（#47 でこの穴を踏んだ）。
+fn check(let label: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError(label + ": got " + str(got) + ", want " + str(want))
+    print(label + " OK " + str(got))
+
+# (1) 関数内のローカル変数（VM フレームの slot）
+fn norm_local(let v: V3) -> float:
+    mut m: float = 0.0
+    vm.v3_norm(v, m)
+    return m
+
+check("local   ", norm_local(v345), 5.0)
+
+# (2) 最上位のグローバル変数
+mut g: float = 0.0
+vm.v3_norm(v6810, g)
+check("global  ", g, 10.0)
+
+# (3) クロージャに可変捕捉された変数（セル表）
+#     内側 `fn` が書き換えるので `c` はセルへ昇格する。書き戻しもそのセルへ届く必要がある。
+fn capture_case(let v: V3) -> float:
+    mut c: float = 0.0
+    fn fill() -> None:
+        vm.v3_norm(v, c)
+    fill()
+    return c
+
+check("cell    ", capture_case(v345), 5.0)
+
+# (4) ループの中で同じ呼び出し点を繰り返す（書き戻し先が毎回同じ slot を指すこと）
+fn loop_case() -> float:
+    mut total: float = 0.0
+    mut n: float = 0.0
+    mut i = 0
+    while i < 3:
+        vm.v3_norm(v345, n)
+        total += n
+        n = 0.0
+        i += 1
+    return total
+
+check("loop    ", loop_case(), 15.0)
+
+# (5) 書き戻し先が**識別子でない**形は書き戻さない（ツリーウォークと同じ規則）。
+#     ここでは呼び出しが成功し、戻り値 0 が返ることだけを確かめる（黙って壊れないこと）。
+mut probe: float = 0.0
+let status = vm.v3_norm(v345, probe)
+check("status  ", float(status), 0.0)
+check("probe   ", probe, 5.0)

@@ -36,8 +36,9 @@ C ABIに対応するASTを展開するため、C ABIを介して大抵の言語�
 Pythonのライブラリの多さがゆえに後発言語が超えられなかった汎用性を同レベルまでに引き上げています。Pythonでなければ〇〇ができない、を封じ、むしろこれまでの様々な言語のライブラリを使用可能にします。
 
 ### 二種類の実装（2 implementations）
-この言語は速度優先のRust製インタープリタと頒布性優先のPython製インタープリタの両方を実装予定です。
-Pythonが使えるなら後者の実装ごと配れば即座に使えるようにします。
+この言語は速度優先のRust製実装（`src/`）と頒布性優先のPython製実装（`impl_python/`）の両方を持ちます。
+Pythonが使えるなら後者の実装ごと配れば即座に使えます。
+両者の出力は `compare_python_impl.ps1` で全例題を突き合わせて一致を確認しています。
 
 ### 変数の自動管理（Automatic management of mutabilitis of variables）
 変数と関数の引数は定数属性、可変属性、非可変属性に分かれています。値が変わらないことが保証される場合には参照を渡すことで、コピーによるオーバーヘッドを防ぎ、速度を上げます。逆に値が変更されうる時には値をコピーして渡すようにします。これにより、借用権の管理を行わずに、値が変更されうることを防ぎます。可変引数も値の編集が終われば固定化（feeze）することもできます。その他、インスタンスのメンバ変数を変更しうるメンバ関数と変更しないメンバ関数が明示されるなど、値が変更されうるタイミングを追跡しやすくしています。
@@ -77,9 +78,9 @@ cargo test
 ### ビルド後の実行ファイルの実行方法
 ビルドされた実行ファイルがあるディレクトリにパスを通したあとで
 ```bash
-havakirie.exe examples/basics/variable.ar //ファイル実行
-havakirie.exe --repl //対話画面起動
-havakirie.exe --compile examples/interop/test_modules/physics.ar //モジュールとしてコンパイル
+arrow.exe examples/basics/variable.ar //ファイル実行
+arrow.exe --repl //対話画面起動
+arrow.exe --compile examples/interop/test_modules/physics.ar //モジュールとしてコンパイル
 
 ```
 ---
@@ -127,19 +128,31 @@ print(describe[Point](p))
 
 ```text
 Arrow/
-├── src/
-│   ├── main.rs          # CLI と実行フロー (CLI and execution flow)
-│   ├── token.rs         # Token / Span / Spanned
-│   ├── lexer.rs         # 字句解析器 (Lexical analyzer)
-│   ├── ast.rs           # AST 定義 (AST definitions)
-│   ├── parser.rs        # 再帰下降パーサー (Recursive descent parser)
-│   ├── type_check.rs    # 静的型検査 (Static type checker)
-│   └── interpreter.rs   # tree-walk interpreter
-├── spec/                # 言語仕様メモ (Language specification notes)
-├── examples/            # 正常系・エラー系サンプル (Success and error case samples)
-├── stdlib/              # 標準 trait の実験置き場 (Standard trait experiment area)
-└── vscode-extension/    # .tl 用 VS Code 拡張 (VS Code extension for .ar)
+├── src/                    # Rust 実装 (Rust implementation)
+│   ├── main.rs             # CLI と実行フロー (CLI and execution flow)
+│   ├── token.rs / ast.rs   # Token / Span / Spanned・AST 定義 (AST definitions)
+│   ├── lexer/              # 字句解析器 (Lexical analyzer)
+│   ├── parser/             # 再帰下降パーサー・import 解決 (Recursive descent parser, import resolution)
+│   ├── type_check/         # 静的型検査 ＋ AST 型注釈 (Static type checker + AST annotations)
+│   ├── interpreter/        # 実行時の値・クラス・FFI・定義文の実行 (Runtime values, classes, FFI)
+│   │   └── resolver.rs     # 解決層: 名前 → slot / グローバル索引 (Resolution layer)
+│   ├── vm/                 # バイトコードコンパイラ ＋ VM (Bytecode compiler + VM)
+│   ├── partial_compiler/   # LLVM IR 生成・部分ネイティブコンパイル (LLVM IR codegen)
+│   ├── decl_names.rs       # 「この文はどの名前を束縛するか」の唯一の定義
+│   ├── expr_walk.rs        # 「この式の直下に何があるか」の唯一の定義
+│   └── stmt_walk.rs        # 「この文の下に何があるか」の唯一の定義
+├── impl_python/            # Python 実装 (Python implementation)
+├── docs/                   # 言語仕様 (Language specification)
+├── examples/               # 正常系・エラー系サンプル (Success and error case samples)
+├── std_tools/              # 標準ツール群 (Standard tools)
+├── bridge/                 # 他言語ブリッジ (Bridges to other languages)
+└── vscode-extension/       # .ar 用 VS Code 拡張 (VS Code extension for .ar)
 ```
+
+⚠ `decl_names.rs` / `expr_walk.rs` / `stmt_walk.rs` は「AST を歩く処理が増えても取りこぼしが起きない」
+ようにするための仕掛けです。AST に構文を 1 つ足すと、これらを消費する全箇所がコンパイルエラーになり、
+対応漏れが**コンパイル時に**分かります。 / These three modules make AST traversal drift impossible:
+adding one AST variant breaks compilation at every consumer, so nothing can be silently missed.
 
 ---
 
@@ -147,13 +160,46 @@ Arrow/
 
 ```text
 source.ar
-  -> Lexer        Vec<Spanned> を生成 (Generate Vec<Spanned>)
-  -> Parser       Vec<Stmt> の AST を生成 (Generate AST (Vec<Stmt>))
-  -> TypeChecker  StaticTypeError をまとめて報告 (Collect and report StaticTypeErrors)
-  -> Interpreter  AST を実行 (Execute AST)
+  -> Lexer         Vec<Spanned> を生成 (Generate Vec<Spanned>)
+  -> Parser        Vec<Stmt> の AST を生成 (Generate AST (Vec<Stmt>))
+  -> TypeChecker   StaticTypeError をまとめて報告 ＋ AST に型注釈を焼く
+                   (Collect StaticTypeErrors + bake type annotations into the AST)
+  -> Resolver      名前を slot / グローバル索引へ解決 (Resolve names to slots / global indices)
+  -> VM compiler   AST → バイトコード (Chunk) へ翻訳 (Translate AST into bytecode)
+  -> VM            バイトコードを実行 (Execute bytecode)
 ```
 
 静的型検査でエラーが 1 件でも見つかった場合は、全件を表示して実行せずに終了します。/ If any errors are found during static type checking, all errors are displayed and the program exits without running.
+
+### 実行方式（Execution model）
+
+**解釈実行はバイトコード VM 一本です。** 以前は AST をそのまま辿る tree-walk インタープリタでしたが、
+`AST → 解決層 → バイトコード VM` に置き換えました。/ **Interpretation runs entirely on a bytecode VM.**
+The original tree-walk interpreter was replaced by `AST -> resolution layer -> bytecode VM`.
+
+- **解決層（Resolver）** — 実行のたびに名前をスコープチェーンで辿るのをやめ、
+  ローカル変数は**フレーム内の固定 slot 番号**、最上位の変数は**グローバル索引**へ、実行前に解決します。
+  属性アクセスもクラス先頭からのオフセットに解決し、外れた場合だけ辞書を引き直します（インラインキャッシュ）。
+- **バイトコード VM** — 解決済み AST を `Chunk`（命令列 ＋ 定数プール ＋ 行テーブル）へ翻訳して実行します。
+  頻出パターンは 1 命令へ融合してあります（`local[a] + local[b]`、`local.attr` など）。
+- **フォールバックはありません。** VM に載せられない構文に出会った場合は
+  `VmForceError` で停止します（黙って遅い経路へ落ちることはありません）。
+  tree-walk が実行するのは**定義文（`fn` / `class` / `import` など）だけ**です。
+- **デバッガと REPL** はバイトコード上でそのまま動きます（`Chunk` が行テーブルと
+  slot → 変数名のデバッグ名テーブルを持つため）。
+
+⚠ 実測（tree-walk 版との A/B）: **解釈が支配的なベンチでは約 3.97 倍**。
+ただし例題 1 本の中央値では実行そのものが全体の **14%**（0.46ms / 3.40ms）しかなく、
+残りはプロセス起動・パース・型検査です。⇒ **短命なスクリプトでは、実行を無限に速くしても
+プロセス全体では 1.59 倍が上限**。/ Measured against the tree-walk build: **~3.97x on
+execution-dominated benchmarks**, but execution is only **14%** of a median example's wall time,
+so short-lived scripts cap at ~1.59x end-to-end.
+
+### 部分ネイティブコンパイル（Partial native compilation）
+
+`--compile` で `.ar` モジュールを LLVM IR 経由でネイティブコードへ落とし、`.arc`（バイナリ）と
+`.ars`（型スタブ）を生成します。適格な関数だけがネイティブ化され、import 時にネイティブ側へ
+直接ディスパッチされます。/ `--compile` lowers eligible functions to native code via LLVM IR.
 
 ---
 
@@ -175,6 +221,19 @@ source.ar
 - `freeze` による `mut` 変数・インスタンスの凍結 / `freeze` for immutability of `mut` variables and instances
 - `gen` / `yield` による eager generator と `next()` / `gen` / `yield` for eager generators and `next()`
 - 型注釈としての `Union[...]` / `Option[...]` / Type annotations using `Union[...]` / `Option[...]`
+- 辞書・セット・タプルのリテラル / Dictionary, set and tuple literals
+- `match` 文（`case` / `is` パターン）と `enum` / `match` statements (`case` / `is` patterns) and `enum`
+- `try` / `except ... as` / `finally` / `raise` による例外処理 / Exception handling
+- **式としての制御構文** — `if` / `for` / `while` / `match` / `block` に `->Type` を付けて値を返す
+  （`block_return` で値を返し、`loop_yield` で値を積む） / Control constructs usable as expressions
+- 型ガード `is` / 動的アサーション `mustbe` / キャスト `=>` と `__cast__` / Type guards, assertions and casts
+- **多言語 import** — `import[lang]` で Python・C の DLL/LIB・Rust crate・C# DLL・Node.js を呼び出し /
+  Multi-language interop via `import[lang]`
+- `async` タスク（`mng <- async->T:`）と `AsyncManager` / Async tasks and `AsyncManager`
+- イベント購読（`EventSubscribe` / `EventUnsubscribe`）／`protocol` 定義 / Event subscription and `protocol`
+- アクセス制御のセクションマーカー（`public:` / `private:` / `protected:`） / Access-control section markers
+- **対話 REPL**（`--repl`）と**ステップ実行デバッガ** / Interactive REPL and a stepping debugger
+- **部分ネイティブコンパイル**（`--compile` → LLVM IR → `.arc` / `.ars`） / Partial native compilation
 - VS Code 拡張によるシンタックスハイライトと簡易 inlay hint / VS Code extension with syntax highlighting and basic inlay hints
 
 ---
@@ -233,12 +292,15 @@ cargo fmt
 
 ## 現在の主な制限（Current Limitations）
 
-- LLVM IR 生成は未実装です。 / LLVM IR code generation is not yet implemented.
-- Python 実装は未着手です。 / Python implementation has not been started.
-- `import` / `from ... import` は未実装です。 / `import` / `from ... import` are not implemented.
-- `try` / `except` / `finally` / `raise` は未実装です。 / `try` / `except` / `finally` / `raise` are not implemented.
-- `match` は未実装です。 / `match` statements are not implemented.
-- 辞書・セットリテラルは未実装です。 / Dictionary and set literals are not implemented.
+- ネイティブコンパイル（`--compile`）の対象は**適格な関数だけ**です。クロージャ・ジェネレータ・
+  `block_return` / `loop_yield` を含む関数は対象外で、解釈実行へ回ります。 / Native compilation
+  covers eligible functions only; closures, generators and `block_return`/`loop_yield` fall back to interpretation.
+- `--compile` でネイティブライブラリまで生成するには `clang` が必要です（見つからない場合は
+  `.arc` だけ生成してスキップします）。 / `clang` is required to emit the native library.
+- 入れ子の `gen`（ジェネレータ）は VM 非対応で、含む関数は `VmForceError` になります。 /
+  Nested generators are not supported by the VM.
+- `async` は share-nothing（送出時にディープコピー）で、共有可変状態は持てません。 /
+  `async` is share-nothing; there is no shared mutable state.
 - template の静的型検査は限定的で、制約チェックの多くは実行時に行われます。 / Static type checking for templates is limited, with most constraint checks performed at runtime.
 - trait は現在、主に parse/type-check/interpreter のための構造で、完全な runtime object ではありません。 / Traits are currently structures primarily for parse/type-check/interpreter use, not complete runtime objects.
 

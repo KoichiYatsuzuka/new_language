@@ -19,7 +19,7 @@ fn test_raise_uncaught_reaches_caller() {
             }
         }).expect("message field missing or wrong type");
         drop(b);
-        assert_eq!(msg, "oops");
+        assert_eq!(&*msg, "oops");
     } else {
         panic!("expected Instance");
     }
@@ -133,7 +133,7 @@ fn test_exception_message_accessible() {
     );
     let v = run_get(src, "msg");
     match v {
-        Value::Str(s) => assert_eq!(s, "hello world"),
+        Value::Str(s) => assert_eq!(&*s, "hello world"),
         _ => panic!("expected Str"),
     }
 }

@@ -7,6 +7,65 @@ use {
 };
 
 impl TypeChecker {
+    /// import 先モジュールの本体を検査して**注釈だけ**を採取する（#16 段階 F）。
+    ///
+    /// 型検査は従来メインプログラムの文だけを走査しており、`Stmt::Import` の `body` は
+    /// `collect_module_types`（署名を読むだけ）しか通らなかった。そのため
+    /// **import 先の関数本体には注釈が付かず**、同じコードでもメイン側より最適化が効かなかった
+    /// （実測: メインの `v.x*v.x+v.y*v.y` は `FBIN_SS` になるのに、import 先の同じ式は `BIN` のまま）。
+    ///
+    /// **診断は捨てる**。モジュール自身の型エラーは、そのモジュールを直接実行/`--compile` した
+    /// ときに報告されるべきもので、ここで出すと import 側に二重に出てしまう。
+    /// 採取したいのは注釈テーブルへの書き込み（副作用）だけ。
+    ///
+    /// スコープは push/pop で隔離する。万一 import 先がメイン側の名前を拾っても、
+    /// 影響は注釈が不正確になることだけで、VM の特化 op は実行時型が想定外なら汎用へ
+    /// フォールバックするため結果は変わらない。
+    pub(crate) fn annotate_module_body(
+        &mut self,
+        lang: &str,
+        module: &[String],
+        body: &[Stmt],
+    ) {
+        if !self
+            .annotated_modules
+            .insert((lang.to_string(), module.to_vec()))
+        {
+            return; // 収集済み（複数箇所からの import・入れ子 import）
+        }
+        let saved = std::mem::take(&mut self.diags);
+        self.push_scope();
+        self.check_stmts(body);
+        self.pop_scope();
+        self.diags = saved;
+    }
+
+    /// `for target in iter:` のターゲットに与える**要素型**を、イテラブルの型から求める。
+    ///
+    /// 反復の意味論は `Interpreter::make_for_iterator`
+    /// （[control_flow.rs](../../interpreter/exec/control_flow.rs)）に合わせる:
+    /// list / fixed_list / set は要素を、`str` は 1 文字ずつ（＝`str`）、タプルは各要素を返す。
+    /// **`dict` は Arrow では反復不可**（実行時 `TypeError: object is not iterable`）なので扱わない。
+    /// ジェネレータ・`__iter__` を持つインスタンス・Python オブジェクトは静的に要素型を決められない。
+    ///
+    /// 決められない場合は従来どおり `Unresolved`（＝下流の検査を抑制する）を返す。
+    pub(crate) fn for_element_type(iter_ty: &InferredType) -> InferredType {
+        match iter_ty {
+            InferredType::ListOf(elem)
+            | InferredType::FixedListOf(elem)
+            | InferredType::ListLikeOf(elem)
+            | InferredType::SetOf(elem) => (**elem).clone(),
+            // タプルの反復は各要素を順に返すので、全要素が同型のときだけ確定できる。
+            // 異種タプルは反復ごとに型が変わるため `Unresolved`。
+            InferredType::Tuple(types) if !types.is_empty() && types.iter().all(|t| *t == types[0]) => {
+                types[0].clone()
+            }
+            // 文字列の反復は 1 文字ずつの `str` を返す。
+            InferredType::Str => InferredType::Str,
+            _ => InferredType::Unresolved,
+        }
+    }
+
     /// モジュールの tl AST を浅くスキャンして「名前 → 型」マップを返す。
     pub(crate) fn collect_module_types(
         &self,

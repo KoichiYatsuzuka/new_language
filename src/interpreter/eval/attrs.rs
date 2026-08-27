@@ -29,9 +29,31 @@ impl Interpreter {
             .or_else(|| class.method_access.get(member_key))
             .cloned()
             .unwrap_or(Accessibility::Public);
+        self.check_access_level(class, Self::access_level(&access), display_name)
+    }
+
+    /// `Accessibility` を IC 用のレベル定数（0=Public / 1=Private / 2=Protected）へ変換する。
+    #[inline]
+    pub(crate) fn access_level(access: &Accessibility) -> u8 {
         match access {
-            Accessibility::Public => Ok(()),
-            Accessibility::Private => {
+            Accessibility::Public => crate::ast::AttrCache::PUBLIC,
+            Accessibility::Private => 1,
+            Accessibility::Protected => 2,
+        }
+    }
+
+    /// アクセスレベル（`access_level` で得た u8）だけを使ってアクセス可否を判定する。
+    /// R3 インラインキャッシュのヒット経路が `field_access` の辞書引きを飛ばして直接呼ぶ。
+    pub(crate) fn check_access_level(
+        &self,
+        class: &crate::interpreter::ClassValue,
+        access: u8,
+        display_name: &str,
+    ) -> Result<(), String> {
+        match access {
+            crate::ast::AttrCache::PUBLIC => Ok(()),
+            1 => {
+                // Private
                 if let Some(cur) = &self.current_class {
                     if cur.name == class.name {
                         return Ok(());
@@ -42,7 +64,8 @@ impl Interpreter {
                     display_name, class.name
                 ))
             }
-            Accessibility::Protected => {
+            _ => {
+                // Protected (2)
                 if let Some(cur) = &self.current_class {
                     if cur.name == class.name {
                         return Ok(());
@@ -62,7 +85,15 @@ impl Interpreter {
 
     /// Resolve an attribute on any `Value`.
     /// Used by both `eval_attr` (from AST) and native callbacks (`ar_get_attr`).
-    pub(crate) fn get_attr_val(&mut self, obj: Value, attr: &str) -> Result<Value, String> {
+    ///
+    /// `cache` が `Some` かつインスタンスの own/unqualified フィールドに解決できた場合、
+    /// `(class_id, slot, アクセスレベル)` を焼き込む（R3・以後は `eval_attr` の高速経路が使う）。
+    pub(crate) fn get_attr_val(
+        &mut self,
+        obj: Value,
+        attr: &str,
+        cache: Option<&crate::ast::AttrCache>,
+    ) -> Result<Value, String> {
         match &obj {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
@@ -75,8 +106,19 @@ impl Interpreter {
                             .find(|(k, &i)| k.ends_with(suffix.as_str()) && i == idx)
                             .map(|(k, _)| k.as_str())
                             .unwrap_or(attr);
+                        // アクセスレベルを確定して IC に焼く（R3）。
+                        let level = {
+                            let acc = cls.field_access.get(access_key)
+                                .or_else(|| cls.method_access.get(access_key))
+                                .cloned()
+                                .unwrap_or(Accessibility::Public);
+                            Self::access_level(&acc)
+                        };
+                        if let Some(c) = cache {
+                            c.fill(cls.class_id, idx, level);
+                        }
                         drop(inst);
-                        self.check_member_access(&cls, access_key, attr)?;
+                        self.check_access_level(&cls, level, attr)?;
                         return Ok(v);
                     }
                 }
@@ -144,7 +186,7 @@ impl Interpreter {
             }
             Value::Class(cls) => {
                 if attr == "name" {
-                    return Ok(Value::Str(cls.name.clone()));
+                    return Ok(Value::str(cls.name.as_str()));
                 }
                 if let Some(v) = Self::lookup_class_var(cls, attr) {
                     return Ok(v);
@@ -188,10 +230,10 @@ impl Interpreter {
                         if let Some(id) = existing {
                             return Ok(Value::Int(id as i64));
                         }
-                        let id = self.next_external_signal_id;
-                        self.next_external_signal_id += 1;
+                        let id = self.events.next_external_id;
+                        self.events.next_external_id += 1;
                         sig_rc.borrow_mut().external_id = Some(id);
-                        self.external_handler_registry.insert(id, sig_rc.clone());
+                        self.events.external_handlers.insert(id, sig_rc.clone());
                         Ok(Value::Int(id as i64))
                     }
                     _ => Err(format!(
@@ -234,7 +276,7 @@ impl Interpreter {
                             .error_list
                             .iter()
                             .map(|e| match e {
-                                Some(s) => Value::Str(s.clone()),
+                                Some(s) => Value::str(s.as_str()),
                                 None => Value::None,
                             })
                             .collect();
@@ -326,6 +368,83 @@ impl Interpreter {
         }
     }
 
+    /// 評価済みのオブジェクトと値で属性に代入する。
+    ///
+    /// `obj.attr = v` の**唯一の実装**（#27-c）。ツリーウォークの `attr_assign` も
+    /// `object` を評価してここへ委譲する。以前は `attr_assign` 側に `Value::Class`
+    /// （`static mut` への代入）のアームが**もう 1 つ**あり、VM 側にだけ無かった。
+    /// コンパイラが「レシーバが Arrow インスタンスと確定できるときだけ `SetAttr`」と
+    /// 絞ることで差を隠していたが、絞れないレシーバ（型注釈の無いグローバル等）が
+    /// そのまま bail になっていた。
+    pub(crate) fn attr_assign_evaled(
+        &mut self,
+        obj: Value,
+        attr: &str,
+        rhs: Value,
+    ) -> Result<(), String> {
+        match obj {
+            Value::Instance(inst_rc) => {
+                let inst_class = inst_rc.borrow().class.clone();
+                if Self::lookup_class_var(&inst_class, attr).is_some() {
+                    return Err(format!(
+                        "TypeError: cannot assign to class variable '{attr}' (declared const)"
+                    ));
+                }
+                // static mut 変数への代入: 共有セルを更新する
+                if let Some(cell) = inst_class.static_vars.get(attr).cloned() {
+                    self.check_member_access(&inst_class, attr, attr)?;
+                    *cell.borrow_mut() = rhs;
+                    return Ok(());
+                }
+                self.check_member_access(&inst_class, attr, attr)?;
+                let Some(&idx) = inst_class.field_index.get(attr) else {
+                    return Err(format!(
+                        "AttributeError: '{}' has no field '{attr}'; \
+                         all fields must be declared in the class body",
+                        inst_class.name
+                    ));
+                };
+                let mut inst = inst_rc.borrow_mut();
+                if inst.field_mutable(idx) == Some(false) {
+                    return Err(format!(
+                        "TypeError: cannot assign to immutable field '{attr}'"
+                    ));
+                }
+                if !inst.slot_initialized(idx)
+                    && inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0
+                {
+                    return Err(format!(
+                        "TypeError: cannot assign field '{attr}' on immutable instance"
+                    ));
+                }
+                let is_mutable = inst.class.field_mutability.get(attr).copied().unwrap_or(true);
+                if !inst.store_field(idx, rhs, is_mutable) {
+                    return Err(format!(
+                        "TypeError: value does not match declared type of field '{attr}'"
+                    ));
+                }
+                Ok(())
+            }
+            Value::Class(cls) => {
+                // クラスオブジェクトへの代入: static mut 変数のみ許可
+                if let Some(cell) = cls.static_vars.get(attr).cloned() {
+                    *cell.borrow_mut() = rhs;
+                    return Ok(());
+                }
+                if Self::lookup_class_var(&cls, attr).is_some() {
+                    return Err(format!(
+                        "TypeError: cannot assign to class variable '{attr}' (declared const)"
+                    ));
+                }
+                Err(format!(
+                    "AttributeError: class '{}' has no static field '{attr}'",
+                    cls.name
+                ))
+            }
+            _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
+        }
+    }
+
     // --- 属性代入ヘルパー ---
 
     /// 属性・添字に値を代入する。`AttrAssign` 文と `AttrCompoundAssign` 文から呼ばれる。
@@ -337,7 +456,7 @@ impl Interpreter {
     /// 対応する代入ターゲット:
     /// - `Expr::Attr { object, attr }`: インスタンスフィールドへの代入（可変性・const チェック付き）
     /// - `Expr::TraitAccess { object, trait_name, attr }`: トレイトフィールドへの代入
-    /// - `Expr::Subscript { object, index }`: 辞書への添字代入（型制約チェック付き）
+    /// - `Expr::Subscript { object, index, .. }`: 辞書への添字代入（型制約チェック付き）
     ///
     /// - `target`: 代入先の式（`Attr` / `TraitAccess` / `Subscript`）
     /// - `rhs`: 代入する値（評価済み）
@@ -346,68 +465,7 @@ impl Interpreter {
     pub(crate) fn attr_assign(&mut self, target: &Expr, rhs: Value) -> Result<(), String> {
         if let Expr::Attr { object, attr, .. } = target {
             let obj_val = self.eval(object)?;
-            match obj_val {
-                Value::Instance(inst_rc) => {
-                    let inst_class = inst_rc.borrow().class.clone();
-                    if Self::lookup_class_var(&inst_class, attr).is_some() {
-                        return Err(format!(
-                            "TypeError: cannot assign to class variable '{attr}' (declared const)"
-                        ));
-                    }
-                    // static mut 変数への代入: 共有セルを更新する
-                    if let Some(cell) = inst_class.static_vars.get(attr.as_str()).cloned() {
-                        self.check_member_access(&inst_class, attr, attr)?;
-                        *cell.borrow_mut() = rhs;
-                        return Ok(());
-                    }
-                    // アクセス制御チェック
-                    self.check_member_access(&inst_class, attr, attr)?;
-                    let Some(&idx) = inst_class.field_index.get(attr.as_str()) else {
-                        return Err(format!(
-                            "AttributeError: '{}' has no field '{attr}'; \
-                             all fields must be declared in the class body",
-                            inst_class.name
-                        ));
-                    };
-                    let mut inst = inst_rc.borrow_mut();
-                    if inst.field_mutable(idx) == Some(false) {
-                        return Err(format!(
-                            "TypeError: cannot assign to immutable field '{attr}'"
-                        ));
-                    }
-                    if !inst.slot_initialized(idx)
-                        && inst.flags() & crate::interpreter::value::INST_IMMUTABLE != 0
-                    {
-                        return Err(format!(
-                            "TypeError: cannot assign field '{attr}' on immutable instance"
-                        ));
-                    }
-                    let is_mutable = inst.class.field_mutability.get(attr.as_str()).copied().unwrap_or(true);
-                    if !inst.store_field(idx, rhs, is_mutable) {
-                        return Err(format!(
-                            "TypeError: value does not match declared type of field '{attr}'"
-                        ));
-                    }
-                    Ok(())
-                }
-                Value::Class(cls) => {
-                    // クラスオブジェクトへの代入: static mut 変数のみ許可
-                    if let Some(cell) = cls.static_vars.get(attr.as_str()).cloned() {
-                        *cell.borrow_mut() = rhs;
-                        return Ok(());
-                    }
-                    if Self::lookup_class_var(&cls, attr).is_some() {
-                        return Err(format!(
-                            "TypeError: cannot assign to class variable '{attr}' (declared const)"
-                        ));
-                    }
-                    Err(format!(
-                        "AttributeError: class '{}' has no static field '{attr}'",
-                        cls.name
-                    ))
-                }
-                _ => Err("AttributeError: cannot set attribute on non-instance".to_string()),
-            }
+            self.attr_assign_evaled(obj_val, attr, rhs)
         } else if let Expr::TraitAccess {
             object,
             trait_name,
@@ -415,7 +473,31 @@ impl Interpreter {
         } = target
         {
             let obj_val = self.eval(object)?;
-            match obj_val {
+            self.trait_assign_evaled(obj_val, trait_name, attr, rhs)
+        } else if let Expr::Subscript { object, index, .. } = target {
+            let obj_val = self.eval(object)?;
+            let key = self.eval(index)?;
+            self.eval_setitem(obj_val, key, rhs)
+        } else {
+            Err("SyntaxError: invalid assignment target".to_string())
+        }
+    }
+
+    /// `obj::Trait.attr = value` の代入（評価済みレシーバ版・#27）。
+    ///
+    /// VM の `Op::SetTraitAttr` とツリーウォークの `attr_assign` の**唯一の実装**。
+    /// 可変性検査・不変インスタンス検査・宣言型検査はすべてここに集約する
+    /// （`*_evaled` 版とずれた実装を作らない — #22 系列）。
+    /// ⚠ `#[inline(never)]`: トレイトフィールド代入は稀なので `attr_assign` へ展開させない。
+    #[inline(never)]
+    pub(crate) fn trait_assign_evaled(
+        &mut self,
+        obj_val: Value,
+        trait_name: &str,
+        attr: &str,
+        rhs: Value,
+    ) -> Result<(), String> {
+        match obj_val {
                 Value::Instance(inst_rc) => {
                     // Trait fields are stored with a namespaced key "TraitName::field"
                     let key = format!("{}::{}", trait_name, attr);
@@ -449,13 +531,6 @@ impl Interpreter {
                 }
                 _ => Err("AttributeError: cannot set trait field on non-instance".to_string()),
             }
-        } else if let Expr::Subscript { object, index } = target {
-            let obj_val = self.eval(object)?;
-            let key = self.eval(index)?;
-            self.eval_setitem(obj_val, key, rhs)
-        } else {
-            Err("SyntaxError: invalid assignment target".to_string())
-        }
     }
 
 }

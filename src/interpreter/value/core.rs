@@ -53,7 +53,13 @@ pub enum Value {
     /// 複素数プリミティブ値（実部・虚部はそれぞれ f64）。
     Complex(f64, f64),
     /// 文字列プリミティブ値（Unicode UTF-8）。
-    Str(String),
+    ///
+    /// `Rc<str>` なので `Value::clone`（変数読み・引数束縛・スタック push）は
+    /// **参照カウント加算のみ**でヒープ確保しない（#15 / §7.4-1）。
+    /// 文字列は不変なので共有しても意味論は変わらない。
+    /// ただし **`deep_clone` は必ず独立バッファを作ること**（async のスレッド間 share-nothing。
+    /// `Rc` の参照カウントは非アトミックなので共有したまま送ると壊れる）。
+    Str(Rc<str>),
     /// 真偽値プリミティブ値（`true` / `false`）。
     Bool(bool),
     /// `None` リテラル。Python の `None` に相当する。
@@ -125,19 +131,25 @@ pub enum Value {
     CsObject(Rc<CsObjectData>),
     /// import[js-proc] で生成される JavaScript モジュール関数のランタイム表現。
     /// 呼び出し時に js_proc_runtime 経由で Node.js ブリッジに IPC 送信する。
-    JsProcFn {
-        /// ブリッジスクリプトのパス（ブリッジレジストリのキー）。
-        bridge_key:  String,
-        /// JS モジュール名（スラッシュ区切り、ブリッジに渡す）。
-        module_name: String,
-        /// 呼び出す関数名。
-        fn_name:     String,
-    },
+    /// フィールドは `Box` 化して `size_of::<Value>()` を縮める（§7.4）。稀な値なので
+    /// clone の深いコピー（Box::clone = 中身複製）コストは支配的でない。
+    JsProcFn(Box<JsProcData>),
     /// `Result[T, E]` 値。`Ok(value)` または `Err(error)` で生成される。
     /// `ok: true` → Ok 側の値、`ok: false` → Err 側の値。
     ResultVal { ok: bool, inner: Box<Value> },
 }
 
+
+/// `Value::JsProcFn` の中身（`Box` 化して `Value` サイズを縮小; §7.4）。
+#[derive(Debug, Clone)]
+pub struct JsProcData {
+    /// ブリッジスクリプトのパス（ブリッジレジストリのキー）。
+    pub bridge_key: String,
+    /// JS モジュール名（スラッシュ区切り、ブリッジに渡す）。
+    pub module_name: String,
+    /// 呼び出す関数名。
+    pub fn_name: String,
+}
 
 /// import[cs-dll] / import[cs-proc] ブリッジが管理する C# オブジェクトのランタイム表現。
 #[derive(Debug, Clone)]
@@ -176,6 +188,15 @@ pub fn deep_clone_captured_env(
 
 
 impl Value {
+    /// 文字列値を作る。`&str` / `String` / `Rc<str>` のいずれからでも書ける（#15）。
+    ///
+    /// `Rc<str>` を渡した場合は参照カウント加算のみで**確保しない**ので、
+    /// 既にある文字列値を使い回す経路（属性名・辞書キー・リテラル）はこれを通すこと。
+    #[inline]
+    pub fn str(s: impl Into<Rc<str>>) -> Value {
+        Value::Str(s.into())
+    }
+
     /// Create a fully independent deep copy with no shared Rc pointers.
     /// Used before sending values across thread boundaries for async tasks.
     pub fn deep_clone(&self) -> Value {
@@ -184,7 +205,8 @@ impl Value {
             Value::UInt(n) => Value::UInt(*n),
             Value::Float(f) => Value::Float(*f),
             Value::Complex(re, im) => Value::Complex(*re, *im),
-            Value::Str(s) => Value::Str(s.clone()),
+            // Rc の参照カウントは非アトミック。スレッド間送出では共有せず必ず複製する（#15）。
+            Value::Str(s) => Value::Str(Rc::from(&**s)),
             Value::Bool(b) => Value::Bool(*b),
             Value::None => Value::None,
             Value::Undefined => Value::Undefined,
@@ -218,7 +240,7 @@ impl Value {
                 for (k, v) in b.iter() {
                     let key_val = match k {
                         DictKey::Int(n) => Value::Int(*n),
-                        DictKey::Str(s) => Value::Str(s.clone()),
+                        DictKey::Str(s) => Value::Str(Rc::from(&**s)),
                         DictKey::Bool(b) => Value::Bool(*b),
                         DictKey::None => Value::None,
                     };
@@ -252,10 +274,15 @@ impl Value {
             Value::Function(rc) => Value::Function(Rc::new(FnValue {
                 name: rc.name.clone(),
                 params: rc.params.clone(),
-                body: rc.body.clone(),
+                // ⚠ **`Rc` を clone してはいけない**（#45）。`Rc<[Stmt]>` の参照カウントは
+                // 非アトミックなので、スレッドへ送る複製で共有すると親と競合する（#15）。
+                // 中身を複製して**独立した Rc** を作る。
+                body: std::rc::Rc::from(&rc.body[..]),
                 is_python: rc.is_python,
                 captured_env: deep_clone_captured_env(&rc.captured_env),
             return_type: None,
+            // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
+            vm_chunk: None,
             })),
             Value::OverloadedFn(fns) => Value::OverloadedFn(
                 fns.iter()
@@ -263,10 +290,13 @@ impl Value {
                         Rc::new(FnValue {
                             name: rc.name.clone(),
                             params: rc.params.clone(),
-                            body: rc.body.clone(),
+                            // ⚠ **`Rc` を clone してはいけない**（#45/#15）。上と同じ理由。
+                            body: std::rc::Rc::from(&rc.body[..]),
                             is_python: rc.is_python,
                             captured_env: deep_clone_captured_env(&rc.captured_env),
                             return_type: rc.return_type.clone(),
+                            // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
+                            vm_chunk: None,
                         })
                     })
                     .collect(),
@@ -319,30 +349,29 @@ impl Value {
 // Control-flow signals
 // ---------------------------------------------------------------------------
 
-/// 文の実行結果を表す制御フロー信号。
+/// ツリーウォーク（`exec()`）が返す制御フロー信号。
 ///
-/// - `Normal`: 通常終了（次の文へ進む）
-/// - `Break`: `break` 文が実行された（ループを抜ける）
-/// - `Continue`: `continue` 文が実行された（ループの次の反復へ進む）
-/// - `Return(v)`: `return` 文が実行された（関数を抜けて値 `v` を返す）
-/// - `BlockReturn(v)`: `block_return` 文が実行された（ブロック式を即座に終了して `v` を返す）
-/// - `BlockYield(v)`: `block_yield` 文が実行された（実行を継続しつつ `v` を結果リストに積む）
-/// - `Raise(e)`: `raise` 文が実行された（言語レベルの例外 `e` がコールスタックを遡る）
+/// ⚠ **#33 でほぼ退化した**。`Break`/`Continue`/`Return`/`BlockReturn`/`BlockYield` は
+/// すべて削除済みで、制御フローは**バイトコード VM がジャンプで表現する**。
+/// ツリーウォークが実行するのは定義文だけ（#10-d）なので、実際に流れるのは
+/// `Normal`（定義文の完了）と `Raise`（`exec_raise` の 1 箇所）の 2 つだけ。
+/// （`Return` は #51 で削除 — 構築も match も 0 件だった。）
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum ExecResult {
     /// 通常終了。次の文へ制御を移す。
     Normal,
-    /// `break` 文が実行された。最も内側のループを抜ける。
-    Break,
-    /// `continue` 文が実行された。ループの次のイテレーションへ進む。
-    Continue,
-    /// `return expr` 文が実行された。現在の関数を即座に終了して値を返す。
-    Return(Value),
-    /// `block_return expr` 文が実行された。`block:` / `if` / `match` / `for` / `while` 式を即座に終了して値を返す。
-    BlockReturn(Value),
-    /// `loop_yield expr` 文が実行された。実行を継続しつつ値を結果リストに積む。`for`/`while` 式でのみ有効。
-    BlockYield(Value),
     /// コールスタックを遡って伝播中の言語レベル例外。`try/except` で捕捉される。
     Raise(RaisedError),
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::Value;
+
+    /// `Value` は 32 バイトに収まっていること（§7.4-2 で 72→32B に縮めた成果を守る）。
+    /// #15 で `Str` を `String`(24B) → `Rc<str>`(16B) にしたが、最大変種は別なので不変。
+    #[test]
+    fn value_stays_32_bytes() {
+        assert_eq!(std::mem::size_of::<Value>(), 32);
+    }
 }

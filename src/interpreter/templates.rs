@@ -17,6 +17,28 @@ use super::{
     ClassValue, DictData, FnValue, GeneratorFnValue, Interpreter, TemplateClassValue, Value,
 };
 
+/// テンプレート実体化に渡す呼び出し引数（#27-c）。
+///
+/// ツリーウォークは AST のまま、VM はスタックから取った評価済み値を渡す。**評価の時点を
+/// ずらさない**ために、`instantiate_template_args` は最後まで未評価のまま持ち回り、
+/// 呼び先へ渡す直前に `into_evaled` する。
+pub(crate) enum TemplateArgs<'a> {
+    Ast(&'a [CallArg]),
+    Evaled(Vec<(Option<String>, Value, bool)>),
+}
+
+impl TemplateArgs<'_> {
+    fn into_evaled(
+        self,
+        it: &mut Interpreter,
+    ) -> Result<Vec<(Option<String>, Value, bool)>, String> {
+        match self {
+            TemplateArgs::Ast(args) => it.eval_call_args(args),
+            TemplateArgs::Evaled(v) => Ok(v),
+        }
+    }
+}
+
 impl Interpreter {
     /// 各具体型引数がテンプレートパラメータの trait 制約を満たすか検証する。
     ///
@@ -81,36 +103,72 @@ impl Interpreter {
     ///
     /// - `tmpl_val`: 実体化するテンプレート値
     /// - `type_args`: 具体型名のリスト（テンプレートパラメータと同数）
-    /// - `call_args`: 実体化後の関数/コンストラクタ呼び出し引数
+    /// - `call_args`: 実体化後の関数/コンストラクタ呼び出し引数（AST または評価済み）
     ///
     /// 戻り値: `Ok(Value)` — 実行結果またはインスタンス。`Err(message)` — 制約違反・型エラー等
+    ///
+    /// ⚠ 引数は `TemplateArgs` のまま持ち回り、**各分岐が呼び先へ渡す直前**に評価する。
+    /// 先に評価してしまうと、制約検証（`check_template_constraints`）より前に引数の
+    /// 副作用が起きてツリーウォークと順序がずれる（#27-c）。
     pub(super) fn instantiate_template(
         &mut self,
         tmpl_val: Value,
         type_args: &[String],
         call_args: &[CallArg],
     ) -> Result<Value, String> {
+        self.instantiate_template_args(tmpl_val, type_args, TemplateArgs::Ast(call_args))
+    }
+
+    /// 評価済み引数でテンプレートを実体化する（VM の `Op::CallTemplate` 用・#27-c）。
+    /// `instantiate_template` と**同一の本体**を通る。
+    pub(crate) fn instantiate_template_evaled(
+        &mut self,
+        tmpl_val: Value,
+        type_args: &[String],
+        evaled: Vec<(Option<String>, Value, bool)>,
+    ) -> Result<Value, String> {
+        self.instantiate_template_args(tmpl_val, type_args, TemplateArgs::Evaled(evaled))
+    }
+
+    fn instantiate_template_args(
+        &mut self,
+        tmpl_val: Value,
+        type_args: &[String],
+        call_args: TemplateArgs<'_>,
+    ) -> Result<Value, String> {
         match tmpl_val {
             Value::TemplateFn(tmpl) => {
-                // テンプレート関数: 制約を検証し、型変数を具体型に置換して通常関数として実行する
+                // テンプレート関数: 制約を検証し、型変数を具体型に置換して通常関数として実行する。
+                // 制約検証は毎回行う（安価・エラー意味論を保つ）。AST 置換と FnValue 構築は
+                // `(テンプレート, 型引数)` でメモ化し、再実体化で clone-walk と Chunk 再コンパイルを省く（#7）。
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
-                let type_map: HashMap<String, String> = tmpl
-                    .template_params
-                    .iter()
-                    .zip(type_args.iter())
-                    .map(|(p, t)| (p.name.clone(), t.clone()))
-                    .collect();
-                let concrete_params = subst_params(&tmpl.params, &type_map);
-                let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                let fn_val = Rc::new(FnValue {
-                    name: tmpl.name.clone(),
-                    params: concrete_params,
-                    body: concrete_body,
-                    is_python: false,
-                    captured_env: std::collections::HashMap::new(),
-                return_type: None,
-                });
-                self.exec_fn(fn_val, call_args, None, "<template_fn>", None)
+                let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
+                let fn_val = match self.template_fn_cache.get(&key) {
+                    Some(cached) => cached.clone(),
+                    None => {
+                        let type_map: HashMap<String, String> = tmpl
+                            .template_params
+                            .iter()
+                            .zip(type_args.iter())
+                            .map(|(p, t)| (p.name.clone(), t.clone()))
+                            .collect();
+                        let concrete_params = subst_params(&tmpl.params, &type_map);
+                        let concrete_body = subst_stmts(&tmpl.body, &type_map);
+                        let fn_val = Rc::new(FnValue {
+                            name: tmpl.name.clone(),
+                            params: concrete_params,
+                            body: std::rc::Rc::from(concrete_body),
+                            is_python: false,
+                            captured_env: std::collections::HashMap::new(),
+                            return_type: None,
+                            vm_chunk: None,
+                        });
+                        self.template_fn_cache.insert(key, fn_val.clone());
+                        fn_val
+                    }
+                };
+                let evaled = call_args.into_evaled(self)?;
+                self.exec_fn_evaled(fn_val, &evaled, None, "<template_fn>", None)
             }
             Value::TemplateClass(tmpl) => {
                 // テンプレートクラス: 制約を検証し、型変数を置換してクラスを構築・インスタンス化する
@@ -125,23 +183,33 @@ impl Interpreter {
                 self.instantiate_template_class(&tmpl, concrete_body, call_args)
             }
             Value::TemplateGenFn(tmpl) => {
-                // テンプレートジェネレータ関数: 型変数を置換してジェネレータとして実行する
+                // テンプレートジェネレータ関数: 型変数を置換してジェネレータとして実行する。
+                // TemplateFn と同様に `(テンプレート, 型引数)` でメモ化（#7）。
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
-                let type_map: HashMap<String, String> = tmpl
-                    .template_params
-                    .iter()
-                    .zip(type_args.iter())
-                    .map(|(p, t)| (p.name.clone(), t.clone()))
-                    .collect();
-                let concrete_params = subst_params(&tmpl.params, &type_map);
-                let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                let gen_fn = Rc::new(GeneratorFnValue {
-                    name: tmpl.name.clone(),
-                    params: concrete_params,
-                    body: concrete_body,
-                    captured_env: std::collections::HashMap::new(),
-                });
-                self.exec_generator(gen_fn, call_args, None)
+                let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
+                let gen_fn = match self.template_gen_cache.get(&key) {
+                    Some(cached) => cached.clone(),
+                    None => {
+                        let type_map: HashMap<String, String> = tmpl
+                            .template_params
+                            .iter()
+                            .zip(type_args.iter())
+                            .map(|(p, t)| (p.name.clone(), t.clone()))
+                            .collect();
+                        let concrete_params = subst_params(&tmpl.params, &type_map);
+                        let concrete_body = subst_stmts(&tmpl.body, &type_map);
+                        let gen_fn = Rc::new(GeneratorFnValue {
+                            name: tmpl.name.clone(),
+                            params: concrete_params,
+                            body: concrete_body,
+                            captured_env: std::collections::HashMap::new(),
+                        });
+                        self.template_gen_cache.insert(key, gen_fn.clone());
+                        gen_fn
+                    }
+                };
+                let evaled = call_args.into_evaled(self)?;
+                self.exec_generator_evaled(gen_fn, evaled, None)
             }
             // Signal[T]() — 型付きシグナルを生成する（型引数は型チェックの注釈としてのみ使用）
             Value::Type(ref t) if t == "Signal" => {
@@ -160,6 +228,7 @@ impl Interpreter {
                 let key_type = type_args[0].clone();
                 let item_type = type_args[1].clone();
 
+                let call_args = call_args.into_evaled(self)?;
                 if call_args.is_empty() {
                     // `dict[K, V]()` — 空の型付き辞書を生成する
                     Ok(Value::Dict(Rc::new(RefCell::new(DictData::new(
@@ -167,7 +236,7 @@ impl Interpreter {
                     )))))
                 } else if call_args.len() == 1 {
                     // `dict[K, V]({key: val, ...})` — 辞書リテラルから型付き辞書を生成する
-                    let arg_val = self.eval(call_args[0].expr())?;
+                    let arg_val = call_args[0].1.clone();
                     match arg_val {
                         Value::Dict(src_rc) => {
                             let src = src_rc.borrow();
@@ -221,14 +290,14 @@ impl Interpreter {
     ///
     /// - `tmpl`: 元のテンプレートクラス定義（名前・bases を参照する）
     /// - `concrete_body`: 型変数が具体型に置換済みのクラス本体文リスト
-    /// - `call_args`: コンストラクタ呼び出し引数リスト
+    /// - `call_args`: コンストラクタ呼び出し引数リスト（AST または評価済み）
     ///
     /// 戻り値: `Ok(Value::Instance)` — 構築済みインスタンス。`Err` — 実行エラー
     pub(super) fn instantiate_template_class(
         &mut self,
         tmpl: &TemplateClassValue,
         concrete_body: Vec<Stmt>,
-        call_args: &[CallArg],
+        call_args: TemplateArgs<'_>,
     ) -> Result<Value, String> {
         let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
         let mut gen_methods: HashMap<String, Rc<GeneratorFnValue>> = HashMap::new();
@@ -275,10 +344,11 @@ impl Interpreter {
                         .push(Rc::new(FnValue {
                             name: mname.clone(),
                             params: params.clone(),
-                            body: mbody.clone(),
+                            body: std::rc::Rc::from(&mbody[..]),
                             is_python: false,
                             captured_env: std::collections::HashMap::new(),
                         return_type: None,
+                        vm_chunk: None,
                         }));
                 }
                 Stmt::GenDef {
@@ -355,8 +425,6 @@ impl Interpreter {
         let (field_index, field_mutability_vec, field_count) =
             self.build_field_index(&own_field_order, &tmpl.bases);
         let cls = Rc::new(ClassValue {
-            name: tmpl.name.clone(),
-            class_id: crate::interpreter::value::alloc_class_id(),
             bases: tmpl.bases.clone(),
             methods,
             gen_methods,
@@ -371,11 +439,10 @@ impl Interpreter {
             static_method_names,
             class_method_names,
             static_vars,
-            new_type_base: None,
-            is_exception: false,
-            raw_layout: None,
+            ..ClassValue::synthetic(tmpl.name.clone(), crate::interpreter::value::alloc_class_id())
         });
-        self.instantiate(cls, call_args)
+        let evaled = call_args.into_evaled(self)?;
+        self.instantiate_evaled(cls, evaled)
     }
 }
 
@@ -428,12 +495,18 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
         | Expr::Str(_) | Expr::Bool(_) | Expr::None | Expr::Undefined => expr.clone(),
-        Expr::Ident(name) => Expr::Ident(name.clone()),
+        // テンプレート関数はリゾルバの対象外なので `res` は通常 `Unresolved` だが、
+        // 網羅性のためそのまま複製する。`Resolution::Global` の `SlotCache::clone` は
+        // 空キャッシュを返すので、実体化ごとに解決し直される。
+        Expr::Ident { name, node_id, res } =>
+            Expr::Ident { name: name.clone(), node_id: *node_id, res: res.clone() },
         Expr::List(items) => Expr::List(items.iter().map(|e| subst_expr(e, type_map)).collect()),
-        Expr::Attr { object, attr, span } => Expr::Attr {
+        Expr::Attr { object, attr, span, node_id, .. } => Expr::Attr {
             object: Box::new(subst_expr(object, type_map)),
             attr: attr.clone(),
             span: span.clone(),
+            cache: Default::default(),
+            node_id: *node_id,
         },
         Expr::TraitAccess {
             object,
@@ -449,29 +522,33 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             left,
             right,
             span,
+            node_id,
         } => Expr::BinOp {
             op: op.clone(),
             left: Box::new(subst_expr(left, type_map)),
             right: Box::new(subst_expr(right, type_map)),
             span: span.clone(),
+            node_id: *node_id,
         },
         Expr::UnaryOp { op, operand } => Expr::UnaryOp {
             op: op.clone(),
             operand: Box::new(subst_expr(operand, type_map)),
         },
-        Expr::Call { func, args, span, .. } => Expr::Call {
+        Expr::Call { func, args, span, node_id, .. } => Expr::Call {
             func: Box::new(subst_expr(func, type_map)),
             args: args.iter().map(|a| subst_call_arg(a, type_map)).collect(),
             span: span.clone(),
             cache: Default::default(),
+            node_id: *node_id,
         },
         Expr::TemplateInstantiate { base, type_args } => Expr::TemplateInstantiate {
             base: Box::new(subst_expr(base, type_map)),
             type_args: type_args.iter().map(|t| subst_type(t, type_map)).collect(),
         },
-        Expr::Subscript { object, index } => Expr::Subscript {
+        Expr::Subscript { object, index, node_id } => Expr::Subscript {
             object: Box::new(subst_expr(object, type_map)),
             index: Box::new(subst_expr(index, type_map)),
+            node_id: *node_id,
         },
         Expr::Slice { begin, end, step } => Expr::Slice {
             begin: begin.as_ref().map(|e| Box::new(subst_expr(e, type_map))),
@@ -490,11 +567,13 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             negated,
             type_name,
             span,
+            node_id,
         } => Expr::IsType {
             expr: Box::new(subst_expr(expr, type_map)),
             negated: *negated,
             type_name: subst_type(type_name, type_map),
             span: span.clone(),
+            node_id: *node_id,
         },
         Expr::Block { stmts, return_type } => Expr::Block {
             stmts: subst_stmts(stmts, type_map),
@@ -555,17 +634,21 @@ fn subst_expr(expr: &Expr, type_map: &HashMap<String, String>) -> Expr {
             object,
             type_name,
             span,
+            node_id,
         } => Expr::Cast {
             object: Box::new(subst_expr(object, type_map)),
             type_name: subst_type(type_name, type_map),
             span: span.clone(),
+            node_id: *node_id,
         },
         Expr::DebugVar(name) => Expr::DebugVar(name.clone()),
         Expr::LocalVar(name) => Expr::LocalVar(name.clone()),
-        Expr::MustBe { expr, guard_type, span } => Expr::MustBe {
+        Expr::MustBe { expr, guard_type, span, node_id } => Expr::MustBe {
             expr: Box::new(subst_expr(expr, type_map)),
             guard_type: guard_type.clone(),
             span: span.clone(),
+            // テンプレ実体化のクローン: node_id を引き継ぐ（テンプレ対応は #16 次段）。
+            node_id: *node_id,
         },
     }
 }
@@ -612,6 +695,7 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             op,
             value,
             span,
+            node_id,
             ..
         } => Stmt::CompoundAssign {
             name: name.clone(),
@@ -619,6 +703,9 @@ fn subst_stmt(stmt: &Stmt, type_map: &HashMap<String, String>) -> Stmt {
             value: subst_expr(value, type_map),
             span: span.clone(),
             slot: Default::default(),
+            // node_id は原型から引き継ぐ（他ノードと同じ規約）。実体化後は型変数が具体型に
+            // 置き換わるため注釈は原型のものを指すが、VM 側は slot 型からの導出で補う。
+            node_id: *node_id,
         },
         Stmt::If {
             branches,

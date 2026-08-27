@@ -1,0 +1,64 @@
+# block_return_typecheck.ar — block_return / loop_yield の実行時型検査（#35）
+#
+# `->T` アノテーションを持つブロック式では、`block_return` の値の型が実行時に検査される。
+# `->list[T]` の for/while 式では `loop_yield` の値が要素型 T に対して検査される。
+#
+# ⚠ 長らく **`--vm=off` にしか無い検査**で、VM 経路は素通りしていた（#35）。
+#    この例題が検知の唯一の網なので、削ると off/on の食い違いが再発しても分からない。
+
+print("=== 1. block_return that matches the annotation ===")
+let a = block ->int:
+    block_return 7
+print(a)                          # 7
+
+print("=== 2. block_return inside an if expression ===")
+let b = if True ->str:
+    block_return "ok"
+else:
+    block_return "no"
+print(b)                          # ok
+
+print("=== 3. block_return inside a match expression ===")
+let c = match 1 ->str:
+    case 1:
+        block_return "one"
+    case _:
+        block_return "other"
+print(c)                          # one
+
+print("=== 4. loop_yield matching the element type ===")
+let d = for i in range(3) ->list[int]:
+    loop_yield i
+print(d)                          # [0, 1, 2]
+
+print("=== 5. a bare `->list` imposes no element type ===")
+let e = for i in range(3) ->list:
+    loop_yield "any"
+print(e)                          # ['any', 'any', 'any']
+
+print("=== 6. the innermost annotation is the one that applies ===")
+# 内側の if 式の注釈は `->int` なので list[T] ではなく、loop_yield は検査されない
+let f = for i in range(4) ->list[int]:
+    let _ = if i == 1 ->int:
+        loop_yield "not checked here"
+        block_return 0
+    else:
+        0
+    loop_yield i
+print(f)                          # [0, 'not checked here', 1, 2, 3]
+
+print("=== 7. a block: statement uses the enclosing annotation ===")
+let g = block ->int:
+    block:
+        # ここの block_return は外側の `->int` に対して検査される
+        block_return 5
+    block_return 1
+print(g)                          # 1
+
+print("=== 8. a block: statement is transparent to loop_yield ===")
+# `block:` **文**は蓄積先を持たない。中の loop_yield は外側の for/while 式へ届く。
+# ⚠ ここを「文が蓄積先を持つ」実装にすると値が吸い込まれて None になる（#35 で踏んだ）。
+let h = for i in range(3) ->list[int]:
+    block:
+        loop_yield i
+print(h)                          # [0, 1, 2]

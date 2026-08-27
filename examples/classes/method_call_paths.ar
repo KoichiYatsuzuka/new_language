@@ -1,0 +1,62 @@
+# method_call_paths.ar — メソッド呼び出しの各経路を網羅する（#16 段階(b)(i)）
+#
+# VM は `local.method(args)` を超命令 `CallMethodLocal` へ融合し、レシーバをスタックへ
+# 積まず frame から直接読む。融合できない形（レシーバが属性など）は従来の `CallMethod`。
+#
+# 融合版は**引数を評価したあとに** frame からレシーバを読む（融合前はレシーバが先）。
+# VM がコンパイルするコードでは式の評価中に自フレームの slot が再束縛されないため
+# 観測されるレシーバは同じだが、その前提を踏む形（引数自体がメソッド呼び出し・mut self・
+# ネストしたレシーバ）をここで通しておく。
+#
+# 検証: .\compare_vm_modes.ps1 -Filter method_call_paths
+
+class Counter:
+    mut n: int
+    fn __init__(mut self, let n: int) -> None:
+        self.n = n
+    fn get(self) -> int:
+        return self.n
+    fn add(mut self, let d: int) -> None:
+        self.n = self.n + d
+    fn combine(self, let a: int, let b: int) -> int:
+        return self.n + a + b
+
+class Holder:
+    mut c: Counter
+    fn __init__(mut self, let c: Counter) -> None:
+        self.c = c
+    fn inner_get(self) -> int:
+        return self.c.get()
+
+fn no_args(let c: Counter) -> int:
+    return c.get()
+
+fn with_args(let c: Counter) -> int:
+    return c.combine(10, 20)
+
+fn mut_self(mut c: Counter) -> int:
+    c.add(5)
+    c.add(5)
+    return c.get()
+
+fn nested_receiver(let h: Holder) -> int:
+    return h.inner_get()
+
+fn non_local_receiver(let h: Holder) -> int:
+    return h.c.get()
+
+fn arg_is_call(let c: Counter, let d: Counter) -> int:
+    return c.combine(d.get(), d.get())
+
+fn self_receiver_in_method(let h: Holder) -> int:
+    return h.inner_get() + h.c.get()
+
+let c = Counter(1)
+print(no_args(c))
+print(with_args(c))
+print(mut_self(Counter(1)))
+let h = Holder(Counter(7))
+print(nested_receiver(h))
+print(non_local_receiver(h))
+print(arg_is_call(Counter(100), Counter(3)))
+print(self_receiver_in_method(h))

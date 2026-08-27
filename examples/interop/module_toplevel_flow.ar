@@ -1,0 +1,9 @@
+# module_toplevel_flow.ar — 最上位に制御フローを持つモジュールを import する（#41）
+#
+# import されるモジュールの本体は**まだツリーウォークで実行される**（#42）。
+# この例題はその経路の唯一の網で、`AR_TW_STATS` の `tw_control_flow` に計上される。
+
+from test_modules.mod_toplevel_flow import[ar] get_total, get_doubled
+
+print(get_total())                # 8  (0 + 1 + 3 + 4)
+print(get_doubled())              # [0, 2, 4]

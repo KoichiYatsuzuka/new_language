@@ -1,0 +1,62 @@
+# bench_ab_native_module.ar — bench_ab_native.ar が import する **ネイティブ compile 対象**モジュール。
+#
+#   target/release/arrow.exe --compile examples/bench/bench_ab_native_module.ar
+#
+# 目的別に 3 系統を置く:
+#   (a) 呼び出し境界が支配する形（noop0 / id1）… 解釈側 → ネイティブ側のディスパッチ費用
+#   (b) ネイティブ側だけで完結する形（hot_*）… 純ネイティブ。両ブランチで同じはず＝**対照群**
+#   (c) ネイティブ → 解釈側コールバックの形（sum_list / apply_fn）… CB_ITER / function 引数
+
+fn noop0() -> int:
+    return 1
+
+fn id1(let x: int) -> int:
+    return x
+
+# (b) 純ネイティブのホットループ（呼び出しは 1 回だけ）
+# ⚠ 閉形式へ畳まれない形にする（単なる加算は LLVM が定数畳み込みして 0 秒になる）
+fn hot_int(let n: int) -> int:
+    mut i = 0
+    mut acc = 1
+    while i < n:
+        acc = (acc * 31 + i) % 1000003
+        i += 1
+    return acc
+
+# ⚠ float の連鎖積和は fast-math 無しでは再結合できないので畳まれない
+fn hot_float(let n: int) -> float:
+    mut i = 0
+    mut acc = 1.0
+    let k = 1.0000001
+    while i < n:
+        acc = acc * k + 0.5
+        i += 1
+    return acc
+
+class Item:
+    mut v: int
+    fn __init__(mut self, let v: int) -> None:
+        self.v = v
+
+# (b) 純ネイティブ: fixed_list をフラット GEP で反復（コールバック無し）
+fn sum_fixed(let xs: fixed_list[Item]) -> int:
+    mut total = 0
+    for x in xs:
+        total += x.v
+    return total
+
+# (c) ネイティブ → 解釈側コールバック: list[T] の反復（CB_ITER_FROM / CB_ITER_NEXT）
+fn sum_list(mut xs: list[Item]) -> int:
+    mut total = 0
+    for x in xs:
+        total += x.v
+    return total
+
+# (c) ネイティブ → 解釈側コールバック: function 引数の呼び出し
+fn apply_fn(let f: function{let x: int}->int, let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        acc += f(i)
+        i += 1
+    return acc

@@ -1,4 +1,9 @@
 {
+  "python": {
+    "_comment": "import_py_search_path.ar が py_libs/cfg_probe.py を解決するのに使う（#61/#69）",
+    "search_paths": ["py_libs"]
+  },
+
   "rust": {
     "crates_path": "rs_crates"
   }

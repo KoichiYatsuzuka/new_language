@@ -1,9 +1,10 @@
 // exprs.rs — expression parsing (precedence chain, literals, subscript, f-strings).
 
 use super::Parser;
-use crate::ast::{BinOp, CallArg, Expr, UnaryOp};
+use crate::ast::{BinOp, CallArg, Expr, UnaryOp, Resolution};
 use crate::token::{FStrPart, Span, Token};
 use crate::lexer;
+use std::rc::Rc;
 
 impl Parser {
     // --- 式のパース（優先順位昇順）---
@@ -37,6 +38,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             };
         }
         Ok(left)
@@ -57,6 +59,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             };
         }
         Ok(left)
@@ -95,6 +98,7 @@ impl Parser {
                 negated: false,
                 type_name,
                 span,
+                node_id: self.next_node_id(),
             });
         }
         if *self.current() == Token::IsNot {
@@ -105,15 +109,18 @@ impl Parser {
                 negated: true,
                 type_name,
                 span,
+                node_id: self.next_node_id(),
             });
         }
         if *self.current() == Token::MustBe {
             self.advance();
             let guard_type = self.parse_mustbe_type()?;
+            let node_id = self.next_node_id();
             return Ok(Expr::MustBe {
                 expr: Box::new(left),
                 guard_type,
                 span,
+                node_id,
             });
         }
         if *self.current() == Token::In {
@@ -124,6 +131,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             });
         }
         if *self.current() == Token::NotIn {
@@ -134,6 +142,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             });
         }
         let op = match self.current() {
@@ -154,6 +163,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             });
         }
         Ok(left)
@@ -174,6 +184,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             };
         }
         Ok(left)
@@ -193,6 +204,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             };
         }
         Ok(left)
@@ -212,6 +224,7 @@ impl Parser {
                 left: Box::new(left),
                 right: Box::new(right),
                 span,
+                node_id: self.next_node_id(),
             };
         }
         Ok(left)
@@ -237,6 +250,7 @@ impl Parser {
                     left: Box::new(left),
                     right: Box::new(right),
                     span,
+                    node_id: self.next_node_id(),
                 };
             } else {
                 break;
@@ -266,6 +280,7 @@ impl Parser {
                     left: Box::new(left),
                     right: Box::new(right),
                     span,
+                    node_id: self.next_node_id(),
                 };
             } else {
                 break;
@@ -296,6 +311,7 @@ impl Parser {
                     left: Box::new(left),
                     right: Box::new(right),
                     span,
+                    node_id: self.next_node_id(),
                 };
             } else {
                 break;
@@ -351,6 +367,7 @@ impl Parser {
                 left: Box::new(base),
                 right: Box::new(exp),
                 span,
+                node_id: self.next_node_id(),
             })
         } else {
             Ok(base)
@@ -423,6 +440,7 @@ impl Parser {
                         args,
                         span: call_span,
                         cache: Default::default(),
+                        node_id: self.next_node_id(),
                     };
                 }
                 Token::Dot => {
@@ -433,6 +451,8 @@ impl Parser {
                         object: Box::new(expr),
                         attr,
                         span: dot_span,
+                        cache: Default::default(),
+                        node_id: self.next_node_id(),
                     };
                 }
                 Token::ColonColon => {
@@ -460,6 +480,7 @@ impl Parser {
                         object: Box::new(expr),
                         type_name,
                         span,
+                        node_id: self.next_node_id(),
                     };
                     // ループを継続して `.method()` などをチェーン可能にする
                 }
@@ -555,6 +576,7 @@ impl Parser {
             Ok(Expr::Subscript {
                 object: Box::new(expr),
                 index: Box::new(index),
+                node_id: self.next_node_id(),
             })
         }
     }
@@ -591,13 +613,13 @@ impl Parser {
     /// `f"Hello {name}!"` → `"Hello " + str(name) + "!"`
     fn desugar_fstring(&mut self, parts: Vec<FStrPart>) -> Result<Expr, String> {
         if parts.is_empty() {
-            return Ok(Expr::Str(String::new()));
+            return Ok(Expr::Str(Rc::from("")));
         }
         let span = Span::unknown();
         let mut exprs: Vec<Expr> = Vec::new();
         for part in parts {
             match part {
-                FStrPart::Lit(s) => exprs.push(Expr::Str(s)),
+                FStrPart::Lit(s) => exprs.push(Expr::Str(Rc::from(s.as_str()))),
                 FStrPart::Expr(src) => {
                     // Re-lex and re-parse the expression source
                     let tokens = lexer::Lexer::new(&src, "<fstring>").tokenize();
@@ -605,10 +627,11 @@ impl Parser {
                     let expr = sub_parser.parse_expr()?;
                     // Wrap in str() call to convert to string
                     exprs.push(Expr::Call {
-                        func: Box::new(Expr::Ident("str".to_string())),
+                        func: Box::new(Expr::Ident { name: "str".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved }),
                         args: vec![crate::ast::CallArg::Positional(expr)],
                         span: span.clone(),
                         cache: Default::default(),
+                        node_id: self.next_node_id(),
                     });
                 }
             }
@@ -621,6 +644,8 @@ impl Parser {
             left: Box::new(acc),
             right: Box::new(e),
             span: span.clone(),
+            // クロージャ内で self 不可＝node-id 未採番（合成連結。#16 注釈対象外で可）。
+            node_id: 0,
         });
         Ok(result)
     }
@@ -654,7 +679,7 @@ impl Parser {
             }
             Token::Str(s) => {
                 self.advance();
-                Ok(Expr::Str(s))
+                Ok(Expr::Str(Rc::from(s.as_str())))
             }
             Token::FStr(parts) => {
                 self.advance();
@@ -678,15 +703,15 @@ impl Parser {
             }
             Token::Any => {
                 self.advance();
-                Ok(Expr::Ident("Any".to_string()))
+                Ok(Expr::Ident { name: "Any".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
             }
             Token::Union => {
                 self.advance();
-                Ok(Expr::Ident("Union".to_string()))
+                Ok(Expr::Ident { name: "Union".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
             }
             Token::Option => {
                 self.advance();
-                Ok(Expr::Ident("Option".to_string()))
+                Ok(Expr::Ident { name: "Option".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
             }
             Token::Ident(name) if name == "dbg" => {
                 self.advance();
@@ -714,7 +739,7 @@ impl Parser {
                 // 後続の postfix（`(...)` / `[...]` / `.attr`）は展開後の式に適用される。
                 match self.aliases.get(&name).map(|e| (*e.expr).clone()) {
                     Some(expanded) => Ok(expanded),
-                    None => Ok(Expr::Ident(name)),
+                    None => Ok(Expr::Ident { name, node_id: self.next_node_id(), res: Resolution::Unresolved }),
                 }
             }
             Token::SelfType => {
@@ -725,7 +750,7 @@ impl Parser {
                     );
                 }
                 self.advance();
-                Ok(Expr::Ident("Self".to_string()))
+                Ok(Expr::Ident { name: "Self".to_string(), node_id: self.next_node_id(), res: Resolution::Unresolved })
             }
             Token::LParen => self.parse_paren_expr(),
             Token::LBracket => self.parse_list_literal(),

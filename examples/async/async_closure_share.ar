@@ -1,0 +1,62 @@
+# async_closure_share.ar — クロージャを async タスクへ渡して呼ぶ経路の実地確認（#45）
+#
+# #45 で `FnValue.body` を `Rc<[Stmt]>` にした（クロージャ実体ごとの本体 AST 複製を消すため）。
+# `Rc` の参照カウントは**非アトミック**なので、スレッドへ送る `deep_clone` が
+# `Rc` の clone で済ませていると、複数スレッドが同じカウンタを叩いて壊れる（#15 と同じ形）。
+#
+# ⚠⚠ **この例題はその誤りを検出しない**（実測で確認済み）。理由:
+#   `let a = f` が clone するのは **外側の `Rc<FnValue>`** であって内側の body `Rc` ではなく、
+#   worker が内側のカウンタに触るのは**タスク終了時の drop 1 回だけ**＝競合窓が狭すぎる。
+#   ⇒ 誤りを**決定的に**押さえているのは Rust 側の単体テスト
+#      `test_deep_clone_does_not_share_fn_body_rc` ほか 2 本（ポインタ同一性を直接見る）。
+#      **あちらを消さないこと。** ここを増やしても代わりにはならない。
+#
+# この例題が覆うのは「**クロージャを async タスクへ捕捉させて worker 側で呼べる**」という
+# 機能そのもの（他の例題が 1 つも書いていなかった形）。期待は毎回同じ結果が出ること。
+
+fn make_adder(let x: int) -> function[let int]->int:
+    fn add(let y: int) -> int:
+        return x + y
+    return add
+
+fn touch(let f: function[let int]->int, let n: int) -> int:
+    mut total = 0
+    mut i = 0
+    while i < n:
+        let a = f
+        let b = f
+        let c = f
+        total += a(1) + b(2) + c(3)
+        i += 1
+    return total
+
+mut mng = AsyncManager(num_thread=8)
+
+# 全タスクが同一のクロージャ実体を捕捉する（共有されていれば同じカウンタを取り合う）
+let shared_fn = make_adder(100)
+
+let REPS = 2000
+
+mng <- async->int:
+    block_return touch(shared_fn, REPS)
+mng <- async->int:
+    block_return touch(shared_fn, REPS)
+mng <- async->int:
+    block_return touch(shared_fn, REPS)
+mng <- async->int:
+    block_return touch(shared_fn, REPS)
+mng <- async->int:
+    block_return touch(shared_fn, REPS)
+mng <- async->int:
+    block_return touch(shared_fn, REPS)
+mng <- async->int:
+    block_return touch(shared_fn, REPS)
+mng <- async->int:
+    block_return touch(shared_fn, REPS)
+
+mng.wait_for_finish()
+
+# 元のクロージャがスレッド側の操作で壊れていないこと
+print("shared intact:", shared_fn(5))
+print("results:", mng.results)
+print("errors:", mng.error_list)

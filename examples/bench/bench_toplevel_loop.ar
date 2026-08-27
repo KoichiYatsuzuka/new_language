@@ -1,0 +1,72 @@
+# bench_toplevel_loop.ar — **最上位ループ vs fn 内ループ**の計測（#70）。
+#
+# ⚠⚠ **この例題が無かったので、最上位ホットループの遅さは検査網に一切映っていなかった。**
+# 他の bench は全部「ホットループは必ず fn の中に置く」と冒頭に書いてあり
+# （#10-b で最上位も VM に載るようになった後もその文言が残っていた）、
+# **素直に最上位へ書くユーザーのコードを測るものが 1 本も無かった**（#70 で起票）。
+#
+# 何を見ているか:
+#   最上位で宣言した変数は slot ではなく**グローバル**なので、コンパイラの
+#   `as_local` が `None` を返し、**型特化・融合命令（IntBinLL / IntBinLC）が一切効かない**。
+#     fn の中   : `IntBinLL(i, n, Lt)`                  … 1 命令
+#     最上位    : `LoadGlobal(i); LoadGlobal(n); IntBinSS(Lt)` … 3 命令
+#                 （しかも `LoadGlobal` は IC ヒットでも epoch 検査＋値の clone）
+#
+# ⚠ **同一プログラム内で両方を測る**。別プロセスで比べるとプロセス生成の床（±2ms）と
+#   コード配置のノイズ（#62 で ±7% を実測）に埋もれる。
+#
+# Run: target/release/arrow.exe examples/bench/bench_toplevel_loop.ar
+
+import[py-int] time
+
+let N = 2_000_000
+
+# ── fn 内: 空ループ（ループ制御のみ）────────────────────────
+fn loop_empty_fn(let n: int) -> int:
+    mut i = 0
+    while i < n:
+        i += 1
+    return i
+
+# ── fn 内: int 加算（IntBinLL が効く形）─────────────────────
+fn loop_add_fn(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    let k = 3
+    while i < n:
+        acc = acc + k
+        i += 1
+    return acc
+
+let t0 = time.time()
+let r1 = loop_empty_fn(N)
+let t1 = time.time()
+let r2 = loop_add_fn(N)
+let t2 = time.time()
+
+# ── 最上位: 同じループを素直に書く ──────────────────────────
+mut i = 0
+while i < N:
+    i += 1
+let t3 = time.time()
+
+mut j = 0
+mut acc = 0
+let k = 3
+while j < N:
+    acc = acc + k
+    j += 1
+let t4 = time.time()
+
+let fn_empty = (t1 - t0) / float(N) * 1000000000.0
+let fn_add = (t2 - t1) / float(N) * 1000000000.0
+let tl_empty = (t3 - t2) / float(N) * 1000000000.0
+let tl_add = (t4 - t3) / float(N) * 1000000000.0
+
+print("empty loop  fn      : " + str(fn_empty) + " ns/iter")
+print("empty loop  toplevel: " + str(tl_empty) + " ns/iter")
+print("METRIC toplevel_empty_ratio " + str(tl_empty / fn_empty))
+print("int add     fn      : " + str(fn_add) + " ns/iter")
+print("int add     toplevel: " + str(tl_add) + " ns/iter")
+print("METRIC toplevel_add_ratio " + str(tl_add / fn_add))
+print("checksum " + str(r1) + " " + str(r2) + " " + str(i) + " " + str(acc))

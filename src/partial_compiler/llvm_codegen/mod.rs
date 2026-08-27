@@ -10,7 +10,8 @@
 // Eligibility rules are identical to the old codegen.
 
 use std::collections::{HashMap, HashSet};
-use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Param, Stmt};
+use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Param, Stmt, Resolution};
+use crate::type_check::AstAnnotations;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -111,11 +112,169 @@ fn collect_flat_leaves(
     leaves
 }
 
+/// 関数本体に現れる `Resolution::Local` から「名前 → slot」を収穫する（#11 R2-a′）。
+///
+/// **codegen は slot を採番しない**。Phase R/R1 のリゾルバが AST に書き込んだ割り当てを
+/// そのまま読み取るだけなので、VM・ツリーウォークと同一の slot 同一性を共有できる。
+/// リゾルバが解決を諦めた関数では収穫結果が空になり、従来の名前引きにフォールバックする。
+fn harvest_local_slots(body: &[Stmt]) -> HashMap<String, u16> {
+    fn walk_expr(e: &Expr, out: &mut HashMap<String, u16>) {
+        match e {
+            Expr::Ident { name, res: Resolution::Local(slot), .. } => {
+                if let Ok(s) = u16::try_from(*slot) {
+                    out.insert(name.clone(), s);
+                }
+            }
+            Expr::BinOp { left, right, .. } => {
+                walk_expr(left, out);
+                walk_expr(right, out);
+            }
+            Expr::UnaryOp { operand, .. } => walk_expr(operand, out),
+            Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => walk_expr(object, out),
+            Expr::Cast { object, .. } => walk_expr(object, out),
+            Expr::MustBe { expr, .. } | Expr::IsType { expr, .. } => walk_expr(expr, out),
+            Expr::Subscript { object, index, .. } => {
+                walk_expr(object, out);
+                walk_expr(index, out);
+            }
+            Expr::Call { func, args, .. } => {
+                walk_expr(func, out);
+                for a in args {
+                    match a {
+                        CallArg::Positional(x) | CallArg::Keyword { value: x, .. } => {
+                            walk_expr(x, out)
+                        }
+                        CallArg::Variadic(xs) => {
+                            for x in xs {
+                                walk_expr(x, out);
+                            }
+                        }
+                    }
+                }
+            }
+            Expr::List(items) | Expr::Tuple(items) | Expr::Set(items) => {
+                for x in items {
+                    walk_expr(x, out);
+                }
+            }
+            Expr::Dict(pairs) => {
+                for (k, v) in pairs {
+                    walk_expr(k, out);
+                    walk_expr(v, out);
+                }
+            }
+            Expr::Block { stmts, .. } => walk_stmts(stmts, out),
+            Expr::IfExpr { branches, else_body, .. } => {
+                for (c, b) in branches {
+                    walk_expr(c, out);
+                    walk_stmts(b, out);
+                }
+                if let Some(b) = else_body {
+                    walk_stmts(b, out);
+                }
+            }
+            Expr::ForExpr { iter, body, .. } => {
+                walk_expr(iter, out);
+                walk_stmts(body, out);
+            }
+            Expr::WhileExpr { cond, body, .. } => {
+                walk_expr(cond, out);
+                walk_stmts(body, out);
+            }
+            Expr::MatchExpr { subject, arms, .. } => {
+                walk_expr(subject, out);
+                for a in arms {
+                    walk_stmts(&a.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn walk_stmts(body: &[Stmt], out: &mut HashMap<String, u16>) {
+        for stmt in body {
+            match stmt {
+                Stmt::Let(_, _, e)
+                | Stmt::Const(_, _, e)
+                | Stmt::Mut(_, _, e)
+                | Stmt::Static(_, e, _)
+                | Stmt::Expr(e)
+                | Stmt::LoopYield(e)
+                | Stmt::Yield(e)
+                | Stmt::BlockReturn(e, _)
+                | Stmt::Return(Some(e)) => walk_expr(e, out),
+                Stmt::LetTuple { value, .. } => walk_expr(value, out),
+                Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => {
+                    walk_expr(value, out)
+                }
+                Stmt::AttrAssign { target, value }
+                | Stmt::AttrCompoundAssign { target, value, .. } => {
+                    walk_expr(target, out);
+                    walk_expr(value, out);
+                }
+                Stmt::If { branches, else_body } => {
+                    for (c, b) in branches {
+                        walk_expr(c, out);
+                        walk_stmts(b, out);
+                    }
+                    if let Some(b) = else_body {
+                        walk_stmts(b, out);
+                    }
+                }
+                Stmt::While { cond, body } => {
+                    walk_expr(cond, out);
+                    walk_stmts(body, out);
+                }
+                Stmt::For { iter, body, .. } => {
+                    walk_expr(iter, out);
+                    walk_stmts(body, out);
+                }
+                Stmt::Block(b) => walk_stmts(b, out),
+                Stmt::Match { subject, arms, .. } => {
+                    walk_expr(subject, out);
+                    for a in arms {
+                        walk_stmts(&a.body, out);
+                    }
+                }
+                Stmt::Try { body, handlers, finally_body } => {
+                    walk_stmts(body, out);
+                    for h in handlers {
+                        walk_stmts(&h.body, out);
+                    }
+                    if let Some(f) = finally_body {
+                        walk_stmts(f, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut out = HashMap::new();
+    walk_stmts(body, &mut out);
+    out
+}
+
+/// 変数参照式から名前を取り出す（#11 R2-a）。
+///
+/// 解決状態（`res`）に関わらず名前を返す。`Resolution::Local` は「確実にローカル」という
+/// リゾルバの判定を意味するが、リゾルバは関数単位で解決を諦める（可変長引数・未対応の宣言文・
+/// メソッド/入れ子/テンプレート）ので、**`Unresolved` だからローカルでない、とは言えない**。
+/// 分類は従来どおり `locals` 表も併用する。
+pub(super) fn ident_name(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Ident { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
 /// ネストした属性アクセス式をドット区切りパス文字列に変換する。
 /// 例: `item.start.x` → `"item.start.x"`。変換できない場合は `None`。
 fn preread_path(expr: &Expr) -> Option<String> {
+    if let Some(n) = ident_name(expr) {
+        return Some(n.to_string());
+    }
     match expr {
-        Expr::Ident(n) => Some(n.clone()),
         Expr::Attr { object, attr, .. } => {
             let base = preread_path(object)?;
             Some(format!("{base}.{attr}"))
@@ -357,6 +516,121 @@ struct GenCtx<'a> {
     typed_ok: HashSet<String>,
     // symbol → (param Tys, ret Ty) for typed candidates (Int/Float only).
     typed_sigs: HashMap<String, (Vec<Ty>, Ty)>,
+
+    // ── AST 型解決層の注釈（#16 段階(c)） ─────────────────────────────────────
+    // 型検査が node-id 索引で焼いた解決型テーブル。`field_ty` などの自前型再導出を
+    // これに置き換えていく。
+    annotations: &'a AstAnnotations,
+    // ── ローカルの slot 索引（#11 R2-a′） ────────────────────────────────────
+    // `Resolution::Local(slot)` から**リゾルバの割り当てを収穫**した表。
+    // codegen が自前で採番し直すことはせず、AST に書かれた slot をそのまま権威とする。
+    // `locals`（名前引き）は残す: リゾルバが解決を諦めた関数と、codegen が作る
+    // 合成ローカル（preread の `%_prf_*`・flat-list 反復の一時変数など）は slot を持たない。
+    name_to_slot: HashMap<String, u16>,
+    locals_by_slot: Vec<Option<(String, Ty)>>,
+    /// slot 索引で解決したローカル読みの件数（診断用・`AR_ANNOT_DIFF=1`）。
+    slot_reads: usize,
+    // ── `_fast` 変種の生成状態（#11 R2-c の調査で見つかった不具合の対策）──
+    // `_fast` ABI はクラス型パラメータを**フィールド単位のスカラ**へ平坦化するので、
+    // 本体がそのパラメータを**値そのもの**として要求すると表現できない。
+    // 事前判定は誤って正当なケース（呼び先も `_fast` なので平坦なまま転送できる
+    // `a.potential(b)` など）まで潰してしまったため、`typed_failed` と同じく
+    // **生成中に検出して変種を破棄する**方式にした。
+    /// `_fast` 変種を生成中か。
+    fast_mode: bool,
+    /// `_fast` 生成中に平坦化済みパラメータの値そのものが要求された（＝変種を破棄する）。
+    fast_failed: bool,
+    /// このパラメータ名は `_fast` で平坦化されている（値としての読みは表現不能）。
+    fast_flattened: HashSet<String>,
+    /// 破棄した `_fast` 変種のシンボル（呼び出し側が選ばないようにする）。
+    discarded_fast: HashSet<String>,
+    // 属性アクセスの型解決について、自前導出と注釈の一致状況（段階 c-2 の検証用）。
+    attr_stats: AttrResolutionStats,
+    // `Ty::Handle` へ落ちた式のうち注釈が具象型を持つものの内訳（段階 c-2 の検証用）。
+    expr_stats: HandleFallbackStats,
+    // 識別子読みが型を落としている件数の内訳（#15b の消費者判定用）。
+    ident_stats: IdentHandleStats,
+}
+
+/// `Expr` が annotatable（パーサが node-id を採番する変種）なら node-id を返す。
+/// 0（未採番＝合成 AST・テンプレート置換由来）も含めてそのまま返す。
+fn annotatable_node_id(expr: &Expr) -> Option<u32> {
+    match expr {
+        Expr::Attr { node_id, .. }
+        | Expr::Subscript { node_id, .. }
+        | Expr::Call { node_id, .. }
+        | Expr::BinOp { node_id, .. }
+        | Expr::Cast { node_id, .. }
+        | Expr::MustBe { node_id, .. }
+        | Expr::IsType { node_id, .. } => Some(*node_id),
+        // 識別子も #15b で node-id を持つ。参照サイトごとに型検査の答えが焼かれている。
+        Expr::Ident { node_id, .. } => Some(*node_id),
+        _ => None,
+    }
+}
+
+/// 属性アクセスの型解決における「自前導出 vs 注釈」の一致状況（#16 段階 c-2）。
+/// `AR_ANNOT_DIFF=1` で内訳を出力し、注釈へ完全移行（c-3）してよいかを判断するために使う。
+#[derive(Default)]
+pub(super) struct AttrResolutionStats {
+    /// 双方が同じ `Ty` を返した。
+    pub agree: usize,
+    /// 双方が `Some` だが型が食い違った（**要調査**・0 であるべき）。
+    pub conflict: usize,
+    /// 自前導出のみ解決できた（注釈が受け手のクラスを解決できていない）。
+    pub legacy_only: usize,
+    /// 注釈のみ解決できた（＝注釈へ移行すると**新たに型特化できる**箇所）。
+    pub annot_only: usize,
+    /// どちらも解決できなかった（汎用 `CB_GET_ATTR` 経路）。
+    pub neither: usize,
+}
+
+/// ノード種別ごとの int/float 件数（`HandleFallbackStats` の要素）。
+#[derive(Default)]
+pub(super) struct IntFloatCount {
+    pub int: usize,
+    pub float: usize,
+}
+
+/// codegen が `Ty::Handle`（ボックス化ハンドル）へ落としたが、AST 型解決層の注釈は
+/// 具象プリミティブ型を持っていた式の内訳（#16 段階 c-2 の実測用）。
+/// これが 段階 c-3 で「注釈消費により型特化できる」上限を表す。
+#[derive(Default)]
+pub(super) struct HandleFallbackStats {
+    pub attr: IntFloatCount,
+    pub subscript: IntFloatCount,
+    pub call: IntFloatCount,
+    pub other: IntFloatCount,
+}
+
+/// 識別子読み（`Expr::Ident`）が `Ty::Handle` へ落ちた件数の内訳（#15b の実測用）。
+///
+/// `HandleFallbackStats` はこれを数えられない — 集計が `annotatable_node_id` でゲートされており、
+/// 同関数は識別子系に `None` を返すため**構造上ゼロになる**。「#15b（Ident への node-id 付与）に
+/// 消費者が居るか」は、識別子読みが実際に型を落としている件数でしか判定できないので別途数える。
+///
+/// `slot_typed` / `name_typed` が大きいほど「codegen は自前導出で型を得られている」＝
+/// 注釈を足しても新規に特化できる余地は無い、と読む。
+#[derive(Default)]
+pub(super) struct IdentHandleStats {
+    /// slot 表に載っており具象型で読めた（＝自前導出が成功・#15b の余地なし）。
+    pub slot_typed: usize,
+    /// slot 表に載っているが `Ty::Handle`（＝型が判っていない・**#15b の候補**）。
+    pub slot_handle: usize,
+    /// 名前引きで具象型が取れた（自前導出が成功）。
+    pub name_typed: usize,
+    /// 名前引きしたが `Ty::Handle`（**#15b の候補**）。
+    pub name_handle: usize,
+    /// モジュール内関数参照・グローバル参照（本質的にハンドル。#15b では解消しない）。
+    pub global_ref: usize,
+    /// `Ty::Handle` へ落ちた識別子読みのうち、**注釈は具象プリミティブ型を持っていた**件数。
+    /// これが #15b で新たに型特化できる箇所の実測上限（`AttrResolutionStats::annot_only` の識別子版）。
+    pub annot_only: usize,
+    /// 注釈が具象だが**ハンドル表現が正しい**型だった件数（class/list/str 等）。取りこぼしではない。
+    pub annot_boxed: usize,
+    /// 注釈が無い or `Unresolved`/`Any` だった件数。
+    /// 大きければ律速は表現ではなく**型検査の解像度**（→ スタブ整備などの別タスク）。
+    pub annot_none: usize,
 }
 
 
@@ -418,7 +692,7 @@ fn expr_eligible(expr: &Expr) -> bool {
     match expr {
         Expr::Int(_) | Expr::Float(_) | Expr::ImaginaryLit(_)
         | Expr::Str(_) | Expr::Bool(_) | Expr::None | Expr::Undefined => true,
-        Expr::Ident(_) => true,
+        Expr::Ident { .. } => true,
         Expr::BinOp { left, right, .. } => expr_eligible(left) && expr_eligible(right),
         Expr::UnaryOp { operand, .. } => expr_eligible(operand),
         Expr::List(items) | Expr::Tuple(items) => items.iter().all(expr_eligible),
@@ -426,7 +700,7 @@ fn expr_eligible(expr: &Expr) -> bool {
         Expr::Call { func, args, .. } =>
             expr_eligible(func) && args.iter().all(|a| matches!(a, CallArg::Positional(e) if expr_eligible(e))),
         Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => expr_eligible(object),
-        Expr::Subscript { object, index } => expr_eligible(object) && expr_eligible(index),
+        Expr::Subscript { object, index, .. } => expr_eligible(object) && expr_eligible(index),
         Expr::IsType { expr, .. } => expr_eligible(expr),
         Expr::TemplateInstantiate { base, .. } => expr_eligible(base),
         // Control-flow expressions (block_return / loop_yield inside these is also handled)
@@ -459,7 +733,7 @@ fn stmt_writes_param(stmt: &Stmt, param: &str) -> bool {
     match stmt {
         Stmt::AttrAssign { target, .. } | Stmt::AttrCompoundAssign { target, .. } => {
             if let Expr::Attr { object, .. } = target {
-                matches!(object.as_ref(), Expr::Ident(n) if n == param)
+                ident_name(object.as_ref()) == Some(param)
             } else { false }
         }
         Stmt::If { branches, else_body } =>
@@ -529,68 +803,109 @@ fn ann_has_intersection(params: &[crate::ast::Param], return_type: Option<&str>)
     }) || return_type.is_some_and(|ann| ann.contains("Intersection["))
 }
 
-pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
-    struct EligibleFn<'a> {
-        /// Symbol prefix used in the DLL (e.g. "dot" or "Vec2D__dot").
-        symbol:      String,
-        /// Original method/function name (used in FnExport).
-        orig_name:   &'a str,
-        /// Owning class name for methods; None for top-level functions.
-        class_name:  Option<String>,
-        params:      &'a [Param],
-        return_type: Option<&'a str>,
-        body:        &'a [Stmt],
-        is_gen:      bool,
-    }
+/// モジュールの LLVM IR テキストとエクスポート関数一覧を生成する。
+///
+/// `annotations` は型検査が生成した AST 型解決層の注釈（#16 段階(c)）。node-id は
+/// `stmts` を作ったパーサの採番であり、ここで扱うのも同じトップレベル定義のみ
+/// （import 済みモジュール body は `Stmt::Import` に入れ子で対象外）＝ node-id 空間が一致する。
+/// ネイティブ codegen の対象と決まった関数／メソッド 1 つ分。
+struct EligibleFn<'a> {
+    /// Symbol prefix used in the DLL (e.g. "dot" or "Vec2D__dot").
+    symbol:      String,
+    /// Original method/function name (used in FnExport).
+    orig_name:   &'a str,
+    /// Owning class name for methods; None for top-level functions.
+    class_name:  Option<String>,
+    params:      &'a [Param],
+    return_type: Option<&'a str>,
+    body:        &'a [Stmt],
+    is_gen:      bool,
+}
 
+/// `FnDef` / `GenDef` がネイティブ codegen の対象かを判定し、対象なら [`EligibleFn`] を組む（#82）。
+///
+/// `class_name` が `Some` ならメソッド（シンボルを [`method_symbol`] でクラス修飾する）、
+/// `None` なら最上位関数。`FnDef`/`GenDef` 以外は `None`。
+///
+/// ⚠⚠ **#82 以前はこの判定が 4 箇所に手書きされていた**
+/// （最上位 × クラス本体 の 2 通り × `fn` / `gen` の 2 通り）。
+/// **4 つで違うのはシンボルをクラス修飾するかだけ**なので、判定はここに集約する。
+///
+/// ⚠ `fn` と `gen` で本当に違うのは 3 点だけ:
+/// ① 適格判定（`body_eligible` / `body_eligible_gen`）
+/// ② `is_abstract` は `fn` にしか無い
+/// ③ `gen` は戻り値注釈を見ない（`return_type: None` で交差型検査も `None`）。
+fn eligible_fn<'a>(stmt: &'a Stmt, class_name: Option<&str>) -> Option<EligibleFn<'a>> {
+    let symbolize = |name: &str| match class_name {
+        Some(c) => method_symbol(c, name),
+        None => name.to_string(),
+    };
+    match stmt {
+        Stmt::FnDef { name, template_params, params, body, is_abstract, return_type, .. } => {
+            if !template_params.is_empty() || *is_abstract || !body_eligible(body) {
+                return None;
+            }
+            if ann_has_intersection(params, return_type.as_deref()) {
+                return None;
+            }
+            Some(EligibleFn {
+                symbol: symbolize(name),
+                orig_name: name,
+                class_name: class_name.map(str::to_string),
+                params,
+                return_type: return_type.as_deref(),
+                body,
+                is_gen: false,
+            })
+        }
+        Stmt::GenDef { name, template_params, params, body, .. } => {
+            if !template_params.is_empty() || !body_eligible_gen(body) {
+                return None;
+            }
+            if ann_has_intersection(params, None) {
+                return None;
+            }
+            Some(EligibleFn {
+                symbol: symbolize(name),
+                orig_name: name,
+                class_name: class_name.map(str::to_string),
+                params,
+                return_type: None,
+                body,
+                is_gen: true,
+            })
+        }
+        _ => None,
+    }
+}
+
+pub fn generate_llvm_module(
+    stmts: &[Stmt],
+    annotations: &AstAnnotations,
+) -> Option<(String, Vec<FnExport>)> {
     let mut eligible: Vec<EligibleFn> = Vec::new();
 
+    // ⚠ 収集の**順序**が emit 順（＝生成 IR）を決める。最上位は `stmts` 順、
+    //    メソッドはクラス本体順 — #82 で畳んだときもこの順序は変えていない。
     for s in stmts {
         match s {
-            Stmt::FnDef { name, template_params, params, body, is_abstract, return_type, .. } => {
-                if !template_params.is_empty() || *is_abstract || !body_eligible(body) { continue; }
-                if ann_has_intersection(params, return_type.as_deref()) { continue; }
-                eligible.push(EligibleFn {
-                    symbol: name.clone(), orig_name: name, class_name: None,
-                    params, return_type: return_type.as_deref(), body, is_gen: false,
-                });
-            }
-            Stmt::GenDef { name, template_params, params, body, .. } => {
-                if !template_params.is_empty() || !body_eligible_gen(body) { continue; }
-                if ann_has_intersection(params, None) { continue; }
-                eligible.push(EligibleFn {
-                    symbol: name.clone(), orig_name: name, class_name: None,
-                    params, return_type: None, body, is_gen: true,
-                });
+            Stmt::FnDef { .. } | Stmt::GenDef { .. } => {
+                if let Some(e) = eligible_fn(s, None) {
+                    eligible.push(e);
+                }
             }
             Stmt::ClassDef { name: class_name, body: class_body, template_params, .. } => {
                 if !template_params.is_empty() { continue; }
                 for method_stmt in class_body {
-                    match method_stmt {
-                        Stmt::FnDef { name: mname, template_params: mtp, params, body, is_abstract, return_type, .. } => {
-                            if !mtp.is_empty() || *is_abstract || !body_eligible(body) { continue; }
-                            if ann_has_intersection(params, return_type.as_deref()) { continue; }
-                            eligible.push(EligibleFn {
-                                symbol: method_symbol(class_name, mname),
-                                orig_name: mname,
-                                class_name: Some(class_name.clone()),
-                                params, return_type: return_type.as_deref(), body, is_gen: false,
-                            });
-                        }
-                        Stmt::GenDef { name: mname, template_params: mtp, params, body, .. } => {
-                            if !mtp.is_empty() || !body_eligible_gen(body) { continue; }
-                            if ann_has_intersection(params, None) { continue; }
-                            eligible.push(EligibleFn {
-                                symbol: method_symbol(class_name, mname),
-                                orig_name: mname,
-                                class_name: Some(class_name.clone()),
-                                params, return_type: None, body, is_gen: true,
-                            });
-                        }
-                        _ => {}
+                    if let Some(e) = eligible_fn(method_stmt, Some(class_name)) {
+                        eligible.push(e);
                     }
                 }
             }
+            // ⚠ これは `Stmt` を歩く **5 本目の walker**（#59 の `decl_names` は
+            //    「束縛する名前」だけを強制化しており、ここは対象外）。
+            //    **関数を含みうる `Stmt` variant を足したらここも見ること** —
+            //    `_ => {}` なので何も強制されない（既知の穴・#82 で明記した）。
             _ => {}
         }
     }
@@ -658,7 +973,7 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
         .map(|f| f.symbol.clone())
         .collect();
 
-    let mut ctx = GenCtx::new(&module_fns, &fn_sigs, &class_fields, &class_fields_ord, &all_class_fields, &fast_fns);
+    let mut ctx = GenCtx::new(&module_fns, &fn_sigs, &class_fields, &class_fields_ord, &all_class_fields, &fast_fns, annotations);
 
     for f in &eligible {
         // Set current_class so field reads on 'self' are type-specialised.
@@ -727,6 +1042,34 @@ pub fn generate_llvm_module(stmts: &[Stmt]) -> Option<(String, Vec<FnExport>)> {
     }
     if typed_count > 0 {
         eprintln!("NativeLib: {typed_count} typed entry point(s) (zero-TLS ABI)");
+    }
+
+    // 属性型解決の「自前導出 vs 注釈」内訳（#16 段階 c-2 の検証用・既定では無出力）。
+    if std::env::var("AR_ANNOT_DIFF").is_ok_and(|v| !v.is_empty()) {
+        eprintln!(
+            "AnnotDiff(table): resolved={} interned={}",
+            annotations.resolved_len(), annotations.intern_len()
+        );
+        let s = &ctx.attr_stats;
+        eprintln!(
+            "AnnotDiff(attr): agree={} conflict={} legacy_only={} annot_only={} neither={}",
+            s.agree, s.conflict, s.legacy_only, s.annot_only, s.neither
+        );
+        eprintln!("AnnotLocals: slot_indexed_reads={}", ctx.slot_reads);
+        let e = &ctx.expr_stats;
+        eprintln!(
+            "AnnotDiff(handle-fallback with concrete annotation): attr={}i/{}f subscript={}i/{}f call={}i/{}f other={}i/{}f",
+            e.attr.int, e.attr.float,
+            e.subscript.int, e.subscript.float,
+            e.call.int, e.call.float,
+            e.other.int, e.other.float
+        );
+        let i = &ctx.ident_stats;
+        eprintln!(
+            "AnnotIdent(handle-fallback of identifier reads): slot_typed={} slot_handle={} name_typed={} name_handle={} global_ref={} | annot_only={} annot_boxed={} annot_none={}",
+            i.slot_typed, i.slot_handle, i.name_typed, i.name_handle, i.global_ref,
+            i.annot_only, i.annot_boxed, i.annot_none
+        );
     }
 
     let header = if cfg!(target_os = "windows") {

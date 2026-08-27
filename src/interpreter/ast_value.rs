@@ -25,7 +25,7 @@ use super::value::{NamespaceData, TupleData, Value};
 
 fn ns(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
     let mut members = HashMap::new();
-    members.insert("__type__".to_string(), Value::Str(type_name.to_string()));
+    members.insert("__type__".to_string(), Value::str(type_name.to_string()));
     for (k, v) in fields {
         members.insert(k.to_string(), v);
     }
@@ -59,7 +59,7 @@ fn str_list(strings: &[String]) -> Value {
     Value::List(Rc::new(RefCell::new(
         strings
             .iter()
-            .map(|s| Value::Str(s.clone()))
+            .map(|s| Value::str(s.as_str()))
             .collect(),
     )))
 }
@@ -73,7 +73,7 @@ fn opt_expr(e: Option<&Expr>) -> Value {
 
 fn opt_str(s: &Option<String>) -> Value {
     match s {
-        Some(s) => Value::Str(s.clone()),
+        Some(s) => Value::str(s.as_str()),
         None => Value::None,
     }
 }
@@ -89,7 +89,7 @@ fn template_params_list(params: &[TemplateParam]) -> Value {
     Value::List(Rc::new(RefCell::new(
         params
             .iter()
-            .map(|p| ns("TemplateParam", vec![("name", Value::Str(p.name.clone()))]))
+            .map(|p| ns("TemplateParam", vec![("name", Value::str(p.name.as_str()))]))
             .collect(),
     )))
 }
@@ -102,7 +102,7 @@ fn params_list(params: &[Param]) -> Value {
                 ns(
                     "Param",
                     vec![
-                        ("name", Value::Str(p.name.clone())),
+                        ("name", Value::str(p.name.as_str())),
                         ("mutable", Value::Bool(p.mutable)),
                         ("type_ann", opt_str(&p.type_ann)),
                         ("default", opt_expr(p.default.as_ref())),
@@ -123,7 +123,7 @@ fn match_arms_list(arms: &[MatchArm]) -> Value {
                     }
                     MatchPattern::IsType(type_name) => ns(
                         "MatchPatternIsType",
-                        vec![("type_name", Value::Str(type_name.clone()))],
+                        vec![("type_name", Value::str(type_name.as_str()))],
                     ),
                 };
                 ns(
@@ -139,7 +139,7 @@ fn match_arms_list(arms: &[MatchArm]) -> Value {
 }
 
 fn binop_str(op: &BinOp) -> Value {
-    Value::Str(op.as_str().to_string())
+    Value::str(op.as_str().to_string())
 }
 
 fn unaryop_str(op: &UnaryOp) -> Value {
@@ -148,7 +148,7 @@ fn unaryop_str(op: &UnaryOp) -> Value {
         UnaryOp::Not => "NOT",
         UnaryOp::BitNot => "BIT_NOT",
     };
-    Value::Str(s.to_string())
+    Value::str(s.to_string())
 }
 
 fn call_args_list(args: &[CallArg]) -> Value {
@@ -161,7 +161,7 @@ fn call_args_list(args: &[CallArg]) -> Value {
                 CallArg::Keyword { name, value } => ns(
                     "CallArgKeyword",
                     vec![
-                        ("name", Value::Str(name.clone())),
+                        ("name", Value::str(name.as_str())),
                         ("value", expr_to_value(value)),
                     ],
                 ),
@@ -192,7 +192,7 @@ fn field_kind_value(kind: &FieldKind) -> Value {
         FieldKind::Const => "CONST",
         FieldKind::StaticMut => "STATIC_MUT",
     };
-    ns("FieldKind", vec![("name", Value::Str(name.to_string()))])
+    ns("FieldKind", vec![("name", Value::str(name.to_string()))])
 }
 
 fn tuple_targets_list(targets: &[TupleTarget]) -> Value {
@@ -201,14 +201,14 @@ fn tuple_targets_list(targets: &[TupleTarget]) -> Value {
             .iter()
             .map(|t| match t {
                 TupleTarget::Let(name) => {
-                    ns("TupleTargetLet", vec![("name", Value::Str(name.clone()))])
+                    ns("TupleTargetLet", vec![("name", Value::str(name.as_str()))])
                 }
                 TupleTarget::Mut(name) => {
-                    ns("TupleTargetMut", vec![("name", Value::Str(name.clone()))])
+                    ns("TupleTargetMut", vec![("name", Value::str(name.as_str()))])
                 }
                 TupleTarget::Wildcard => ns("TupleTargetWildcard", vec![]),
                 TupleTarget::Bare(name) => {
-                    ns("TupleTargetBare", vec![("name", Value::Str(name.clone()))])
+                    ns("TupleTargetBare", vec![("name", Value::str(name.as_str()))])
                 }
             })
             .collect(),
@@ -252,28 +252,28 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         Stmt::Let(name, _, expr) => ns(
             "StmtLet",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("expr", expr_to_value(expr)),
             ],
         ),
         Stmt::Const(name, _, expr) => ns(
             "StmtConst",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("expr", expr_to_value(expr)),
             ],
         ),
         Stmt::Mut(name, _, expr) => ns(
             "StmtMut",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("expr", expr_to_value(expr)),
             ],
         ),
         Stmt::Static(name, expr, _) => ns(
             "StmtStatic",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("expr", expr_to_value(expr)),
             ],
         ),
@@ -288,7 +288,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         Stmt::Assign { name, value, .. } => ns(
             "StmtAssign",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("value", expr_to_value(value)),
             ],
         ),
@@ -310,7 +310,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         Stmt::CompoundAssign { name, op, value, .. } => ns(
             "StmtCompoundAssign",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("op", binop_str(op)),
                 ("value", expr_to_value(value)),
             ],
@@ -357,7 +357,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         }
         Stmt::LoopYield(expr) => ns("StmtLoopYield", vec![("expr", expr_to_value(expr))]),
         Stmt::Yield(expr) => ns("StmtYield", vec![("expr", expr_to_value(expr))]),
-        Stmt::Freeze(name, _) => ns("StmtFreeze", vec![("name", Value::Str(name.clone()))]),
+        Stmt::Freeze(name, _) => ns("StmtFreeze", vec![("name", Value::str(name.as_str()))]),
 
         Stmt::FnDef {
             name,
@@ -373,7 +373,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         } => ns(
             "StmtFnDef",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("template_params", template_params_list(template_params)),
                 ("params", params_list(params)),
                 ("return_type", opt_str(return_type)),
@@ -394,7 +394,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         } => ns(
             "StmtGenDef",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("template_params", template_params_list(template_params)),
                 ("params", params_list(params)),
                 ("yield_type", opt_str(yield_type)),
@@ -410,7 +410,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         } => ns(
             "StmtClassDef",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("template_params", template_params_list(template_params)),
                 ("bases", str_list(bases)),
                 ("decorators", exprs_list(decorators)),
@@ -424,7 +424,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         } => ns(
             "StmtTraitDef",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("template_params", template_params_list(template_params)),
                 ("body", stmts_list(body)),
             ],
@@ -432,7 +432,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         Stmt::ProtocolDef { name, body } => ns(
             "StmtProtocolDef",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("body", stmts_list(body)),
             ],
         ),
@@ -445,17 +445,17 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         } => ns(
             "StmtField",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("kind", field_kind_value(kind)),
-                ("type_ann", Value::Str(type_ann.clone())),
+                ("type_ann", Value::str(type_ann.as_str())),
                 ("default", opt_expr(default.as_ref())),
             ],
         ),
         Stmt::NewTypeDef { name, original } => ns(
             "StmtNewTypeDef",
             vec![
-                ("name", Value::Str(name.clone())),
-                ("original", Value::Str(original.clone())),
+                ("name", Value::str(name.as_str())),
+                ("original", Value::str(original.as_str())),
             ],
         ),
         Stmt::EnumDef { name, variants } => {
@@ -464,7 +464,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
                     .iter()
                     .map(|(vname, vval)| {
                         pair(
-                            Value::Str(vname.clone()),
+                            Value::str(vname.as_str()),
                             vval.as_ref().map(expr_to_value).unwrap_or(Value::None),
                         )
                     })
@@ -473,7 +473,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
             ns(
                 "StmtEnumDef",
                 vec![
-                    ("name", Value::Str(name.clone())),
+                    ("name", Value::str(name.as_str())),
                     ("variants", variants_val),
                 ],
             )
@@ -500,7 +500,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         } => ns(
             "StmtImport",
             vec![
-                ("lang", Value::Str(lang.clone())),
+                ("lang", Value::str(lang.as_str())),
                 ("module", str_list(module)),
                 ("alias", opt_str(alias)),
             ],
@@ -514,13 +514,13 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
             let names_val = Value::List(Rc::new(RefCell::new(
                 names
                     .iter()
-                    .map(|(nm, al)| pair(Value::Str(nm.clone()), opt_str(al)))
+                    .map(|(nm, al)| pair(Value::str(nm.as_str()), opt_str(al)))
                     .collect(),
             )));
             ns(
                 "StmtFromImport",
                 vec![
-                    ("lang", Value::Str(lang.clone())),
+                    ("lang", Value::str(lang.as_str())),
                     ("module", str_list(module)),
                     ("names", names_val),
                 ],
@@ -533,7 +533,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         } => ns(
             "StmtAsyncAssign",
             vec![
-                ("target", Value::Str(target.clone())),
+                ("target", Value::str(target.as_str())),
                 ("return_type", opt_str(return_type)),
                 ("stmts", stmts_list(stmts)),
             ],
@@ -543,7 +543,7 @@ fn stmt_to_value(stmt: &Stmt) -> Value {
         Stmt::DebugLet(name, expr) => ns(
             "StmtDebugLet",
             vec![
-                ("name", Value::Str(name.clone())),
+                ("name", Value::str(name.as_str())),
                 ("expr", expr_to_value(expr)),
             ],
         ),
@@ -577,11 +577,15 @@ fn expr_to_value(expr: &Expr) -> Value {
         Expr::Float(v) | Expr::ImaginaryLit(v) => {
             ns("ExprFloat", vec![("value", Value::Float(*v))])
         }
+        // v は既に Rc<str>。clone は参照カウント加算のみで確保しない（#15）。
         Expr::Str(v) => ns("ExprStr", vec![("value", Value::Str(v.clone()))]),
         Expr::Bool(v) => ns("ExprBool", vec![("value", Value::Bool(*v))]),
         Expr::None => ns("ExprNone", vec![]),
         Expr::Undefined => ns("ExprUndefined", vec![]),
-        Expr::Ident(name) => ns("ExprIdent", vec![("name", Value::Str(name.clone()))]),
+        // 解決状態（`res`）は AST 値としては見せない（parse_ar は実行時に新規パースするので常に未解決）。
+        Expr::Ident { name, .. } => {
+            ns("ExprIdent", vec![("name", Value::str(name.as_str()))])
+        }
 
         Expr::List(elements) => ns("ExprList", vec![("elements", exprs_list(elements))]),
         Expr::Dict(pairs) => {
@@ -623,7 +627,7 @@ fn expr_to_value(expr: &Expr) -> Value {
             "ExprAttr",
             vec![
                 ("object", expr_to_value(object)),
-                ("attr", Value::Str(attr.clone())),
+                ("attr", Value::str(attr.as_str())),
             ],
         ),
         Expr::TraitAccess {
@@ -632,10 +636,10 @@ fn expr_to_value(expr: &Expr) -> Value {
             "ExprTraitAccess",
             vec![
                 ("object", expr_to_value(object)),
-                ("attr", Value::Str(attr.clone())),
+                ("attr", Value::str(attr.as_str())),
             ],
         ),
-        Expr::Subscript { object, index } => ns(
+        Expr::Subscript { object, index, .. } => ns(
             "ExprSubscript",
             vec![
                 ("object", expr_to_value(object)),
@@ -667,14 +671,14 @@ fn expr_to_value(expr: &Expr) -> Value {
             vec![
                 ("expr", expr_to_value(expr)),
                 ("negated", Value::Bool(*negated)),
-                ("type_name", Value::Str(type_name.clone())),
+                ("type_name", Value::str(type_name.as_str())),
             ],
         ),
         Expr::Cast { object, type_name, .. } => ns(
             "ExprCast",
             vec![
                 ("object", expr_to_value(object)),
-                ("type_name", Value::Str(type_name.clone())),
+                ("type_name", Value::str(type_name.as_str())),
             ],
         ),
 
@@ -698,7 +702,7 @@ fn expr_to_value(expr: &Expr) -> Value {
         } => ns(
             "ExprForExpr",
             vec![
-                ("target", Value::Str(target.clone())),
+                ("target", Value::str(target.as_str())),
                 ("iter", expr_to_value(iter)),
                 ("body", stmts_list(body)),
             ],
@@ -718,13 +722,13 @@ fn expr_to_value(expr: &Expr) -> Value {
             ],
         ),
 
-        Expr::DebugVar(name) => ns("ExprDebugVar", vec![("name", Value::Str(name.clone()))]),
-        Expr::LocalVar(name) => ns("ExprLocalVar", vec![("name", Value::Str(name.clone()))]),
+        Expr::DebugVar(name) => ns("ExprDebugVar", vec![("name", Value::str(name.as_str()))]),
+        Expr::LocalVar(name) => ns("ExprLocalVar", vec![("name", Value::str(name.as_str()))]),
         Expr::MustBe { expr, guard_type, .. } => ns(
             "ExprMustBe",
             vec![
                 ("expr", expr_to_value(expr)),
-                ("guard_type", Value::Str(guard_type.clone())),
+                ("guard_type", Value::str(guard_type.as_str())),
             ],
         ),
     }

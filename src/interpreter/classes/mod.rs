@@ -59,7 +59,7 @@ fn file_content_arg<'a>(
 /// - Byte モード: バイト値のリスト `Value::List[Value::Int]` に変換
 fn bytes_to_value(data: &[u8], byte_mode: &ByteModeRust) -> Value {
     match byte_mode {
-        ByteModeRust::Text => Value::Str(String::from_utf8_lossy(data).into_owned()),
+        ByteModeRust::Text => Value::str(String::from_utf8_lossy(data).into_owned()),
         ByteModeRust::Byte => Value::List(Rc::new(RefCell::new(
             data.iter().map(|&b| Value::Int(b as i64)).collect(),
         ))),
@@ -99,7 +99,13 @@ fn value_to_bytes(val: &Value, byte_mode: &ByteModeRust) -> Result<Vec<u8>, Stri
 
 mod freeze;
 mod instantiate;
-mod method_call;
-mod object_methods;
-mod string_methods;
 mod lookup;
+mod method_call;
+// レシーバ種別ごとのメソッドディスパッチ（#63 で `method_call.rs` から切り出し）。
+// ⚠ **1 レシーバ = 1 ファイル**。`eval_method_call_full` のアームは委譲 1〜7 行に保つこと。
+mod async_manager_methods;
+mod class_methods;
+mod frozen_list_methods;
+mod object_methods;
+mod set_methods;
+mod string_methods;

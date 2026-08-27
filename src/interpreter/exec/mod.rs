@@ -6,7 +6,8 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use crate::ast::{Expr, Stmt, TupleTarget};
+// ⚠ `TupleTarget` はもう要らない（#59 でタプル分解の判断が `decl_names` へ移った）。
+use crate::ast::{Expr, Stmt};
 
 /// `ar_config.json` の `javascript` セクションを読んで
 /// `(node_exe, bridge_script, bridge_root)` を返す。
@@ -68,31 +69,7 @@ fn find_js_config(search_dirs: &[PathBuf])
     Err("ar_config.json: javascript section not found in any search directory".to_string())
 }
 
-/// `"list[T]"` からアイテム型 `"T"` を取り出す。`"list"` や他の型は `None` を返す。
-fn extract_list_elem_type(ann: &str) -> Option<&str> {
-    let inner = ann.strip_prefix("list[")?.strip_suffix(']')?;
-    Some(inner.trim())
-}
 
-/// `x.is_OK()` / `x.is_ERR()` の形式の式から `(変数名, is_ok_flag)` を抽出する。
-/// Result ガード節の変数バインディングに使う。
-fn extract_result_guard_call(cond: &Expr) -> Option<(String, bool)> {
-    if let Expr::Call { func, args, .. } = cond {
-        if !args.is_empty() {
-            return None;
-        }
-        if let Expr::Attr { object, attr, .. } = func.as_ref() {
-            if let Expr::Ident(var_name) = object.as_ref() {
-                match attr.as_str() {
-                    "is_OK" => return Some((var_name.clone(), true)),
-                    "is_ERR" => return Some((var_name.clone(), false)),
-                    _ => {}
-                }
-            }
-        }
-    }
-    None
-}
 
 // ---------------------------------------------------------------------------
 // Misc free helpers
@@ -113,200 +90,182 @@ fn simple_hash(s: &str) -> u64 {
 // フリー変数分析ヘルパー（モジュールプライベート）
 // ---------------------------------------------------------------------------
 
-fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
+/// 本体が**自前で束縛する名前**を集める（クロージャの自由変数分析）。
+///
+/// 消費者は 3 つ（`exec::blocks::capture_env` / `vm::compiler::decls::nested_fn_free_names` /
+/// `vm::compiler::calls`）で、いずれも「参照名 − 自前名 ＝ 捕捉すべき自由変数」を出すのに使う。
+///
+/// ⚠ **直接の束縛の判断は [`crate::decl_names`] に集約してある**（#59）。
+/// ここが持つのは「**どこへ降りるか**」と「入れ子スコープの束縛（`for` ターゲット・
+/// `except ... as` の別名）」だけ。#68 の実バグ（`enum` の抜け）は、この 2 つを
+/// 分けずに 1 つの `match` に混ぜて `_ => {}` で落としていたのが原因だった。
+pub(crate) fn collect_declared_names(stmts: &[Stmt], out: &mut HashSet<String>) {
     for stmt in stmts {
-        match stmt {
-            Stmt::Let(name, _, _)
-            | Stmt::Const(name, _, _)
-            | Stmt::Mut(name, _, _)
-            | Stmt::Static(name, _, _) => {
-                out.insert(name.clone());
-            }
-            Stmt::LetTuple { targets, .. } => {
-                for t in targets {
-                    match t {
-                        TupleTarget::Let(n) | TupleTarget::Mut(n) | TupleTarget::Bare(n) => {
-                            out.insert(n.clone());
-                        }
-                        TupleTarget::Wildcard => {}
-                    }
+        // ① この 1 文が直接束縛する名前（判断は 1 箇所・#59）。
+        crate::decl_names::each_declared_name(stmt, &mut |name, origin, _| {
+            use crate::decl_names::DeclOrigin as D;
+            match origin {
+                D::Let
+                | D::Mut
+                | D::Static
+                | D::TupleLet
+                | D::TupleMut
+                | D::Fn
+                | D::Gen
+                | D::Class
+                | D::Trait
+                | D::Protocol
+                | D::Enum => {
+                    out.insert(name.to_string());
                 }
+                // ⚠ **#59 時点で拾っていないもの**（挙動を変えないためそのまま保存した）。
+                // `new_type` は関数本体に書くと**パースが通らない**ので現れない（#68 の調査）。
+                D::NewType => {}
+                // 関数本体の `import` は `compile_stmt` にアームが無く VmForceError になるので
+                // VM 経路には現れない。⚠ **ツリーウォークの `capture_env` は到達しうる**ので
+                // ここは既知の穴。拾うとクロージャの捕捉が変わるため #59 では触らない。
+                D::Import | D::FromImport => {}
             }
-            Stmt::FnDef { name, .. }
-            | Stmt::GenDef { name, .. }
-            | Stmt::ClassDef { name, .. }
-            | Stmt::TraitDef { name, .. }
-            | Stmt::ProtocolDef { name, .. } => {
-                out.insert(name.clone());
-            }
-            Stmt::For { targets, body, .. } => {
-                for t in targets {
-                    out.insert(t.clone());
+        });
+
+        // ② どこへ降りるか＋入れ子スコープの束縛（**この walker 固有**・#84 で構造を 1 箇所へ）。
+        // ⚠ **`_ => {}` を書かない** — `StmtPart` に種類が増えるとここが止まる。
+        crate::stmt_walk::each_subpart(stmt, &mut |part| {
+            use crate::stmt_walk::StmtPart as P;
+            match part {
+                // ⚠⚠ #84 で `Stmt::Match` のアーム本体へ降りるようになった（実バグの修正）。
+                // 降りていなかったため、`match` アームの中で宣言した名前が「自前の名前」から
+                // 漏れて**自由変数として捕捉**され、採番側（`collect_nested_decls` は降りる）が
+                // 振った slot と衝突して `capture-slot-conflict` で `VmForceError` になっていた。
+                P::Control(b) => collect_declared_names(b, out),
+                // ⚠⚠ #84 で式の中のブロック式へも降りるようになった（同じ実バグの別経路）。
+                // `let q = block ->T: let z = …` を持つ入れ子 `fn` が同じ衝突で落ちていた。
+                P::Expr(e) => collect_declared_in_expr(e, out),
+                // 入れ子スコープの束縛（#59 が意図的に `decl_names` へ載せなかったもの）。
+                P::ForTarget(t) => {
+                    out.insert(t.to_string());
                 }
-                collect_declared_names(body, out);
-            }
-            Stmt::If {
-                branches,
-                else_body,
-            } => {
-                for (_, body) in branches {
-                    collect_declared_names(body, out);
+                P::ExceptAlias(a) => {
+                    out.insert(a.to_string());
                 }
-                if let Some(body) = else_body {
-                    collect_declared_names(body, out);
-                }
+                // ⚠ 入れ子定義の**本体には降りない**（別フレーム）。名前そのものは①が入れる。
+                P::FnBody { .. } | P::GenBody { .. } | P::TypeBody(_) | P::ProtocolBody(_) => {}
+                // 別モジュールの本体。呼び出し元のフレームの名前ではない。
+                P::ModuleBody(_) => {}
+                // async 本体は送出時にディープクローンされ別チャンクになる
+                // （採番側の `collect_nested_decls` も降りない＝2 本の判断が揃っている）。
+                P::AsyncBody(_) => {}
+                // ⚠ パターンへは降りない（採番側と揃える）。
+                P::MatchPattern(_) => {}
+                // 既存の名前への代入は**自前の宣言ではない**（参照側が別に拾う）。
+                P::TargetName(_) => {}
             }
-            Stmt::While { body, .. } | Stmt::Block(body) => {
-                collect_declared_names(body, out);
-            }
-            Stmt::Try {
-                body,
-                handlers,
-                finally_body,
-            } => {
-                collect_declared_names(body, out);
-                for h in handlers {
-                    if let Some(alias) = &h.name {
-                        out.insert(alias.clone());
-                    }
-                    collect_declared_names(&h.body, out);
-                }
-                if let Some(body) = finally_body {
-                    collect_declared_names(body, out);
-                }
-            }
-            _ => {}
-        }
+        });
     }
 }
 
-fn collect_referenced_names(stmts: &[Stmt], out: &mut HashSet<String>) {
+/// 式の中の**ブロック式**（`block:`/if/while/for/match 式）が宣言する名前も集める（#84）。
+///
+/// ⚠ [`crate::interpreter::resolver`] の `collect_bound_in_expr` と**同じ形**だが、
+/// 集めた名前の使い道が違う（あちらは「シャドウしうる名前」＝解決を諦める根拠、
+/// こちらは「クロージャの自前の名前」＝捕捉しない根拠）。判断は各 walker が持つ。
+fn collect_declared_in_expr(expr: &Expr, out: &mut HashSet<String>) {
+    // 部分式の構造は 1 箇所（#81）。⚠ **`_ => {}` を書かない**。
+    crate::expr_walk::each_subpart(expr, &mut |part| {
+        use crate::expr_walk::SubPart as P;
+        match part {
+            P::Plain(x) | P::Control(x) => collect_declared_in_expr(x, out),
+            P::Body(b) => collect_declared_names(b, out),
+            // `for i in …` 式のループ変数はブロック内の束縛（`Stmt::For` と揃える）。
+            P::ForTarget(t) => {
+                out.insert(t.to_string());
+            }
+            // ⚠ パターンへは降りない（採番側 `collect_expr_decls` と揃える）。
+            P::MatchPattern(_) => {}
+        }
+    });
+}
+
+/// 本体が**参照する名前**を集める（クロージャの自由変数解決の入力・#75）。
+///
+/// 消費者は 3 系統ともクロージャの捕捉:
+/// [`crate::interpreter::exec::blocks`] の `capture_env`（ツリーウォークの捕捉）、
+/// `vm::compiler::calls`（VM の捕捉 slot）、`vm::compiler::decls::nested_fn_free_names`。
+///
+/// ⚠⚠ **`_ => {}` を足さないこと**（#75 の実バグ）。この 2 本の walker は #75 まで
+/// `_ => {}` で終わっており、`Expr` 30 variant のうち 8 個・`Stmt` 40 variant のうち 6 個を
+/// 黙って落としていた。結果、**式形式の制御構文（`if`/`match`/`block`/`for`/`while` 式）や
+/// `match` 文・set リテラルの中だけで外側変数を参照するクロージャが `NameError`** になっていた
+/// （正しいプログラムが 6 形で動かない。参照実装 impl_python との差分で確定）。
+/// ⇒ **降りないバリアントも「降りない理由」を書いて列挙する**（#59 と同じ方針）。
+pub(crate) fn collect_referenced_names(stmts: &[Stmt], out: &mut HashSet<String>) {
     for stmt in stmts {
         collect_referenced_names_stmt(stmt, out);
     }
 }
 
 fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
-    match stmt {
-        Stmt::Expr(e) => collect_refs_expr(e, out),
-        Stmt::Let(_, _, e) | Stmt::Const(_, _, e) | Stmt::Mut(_, _, e) | Stmt::Static(_, e, _) => {
-            collect_refs_expr(e, out);
-        }
-        Stmt::LetTuple { value, .. } => {
-            collect_refs_expr(value, out);
-        }
-        Stmt::Assign { name, value, .. } => {
-            out.insert(name.clone());
-            collect_refs_expr(value, out);
-        }
-        Stmt::CompoundAssign { name, value, .. } => {
-            out.insert(name.clone());
-            collect_refs_expr(value, out);
-        }
-        Stmt::AttrAssign { target, value } | Stmt::AttrCompoundAssign { target, value, .. } => {
-            collect_refs_expr(target, out);
-            collect_refs_expr(value, out);
-        }
-        Stmt::Return(Some(e)) | Stmt::BlockReturn(e, _) | Stmt::LoopYield(e) | Stmt::Yield(e) => {
-            collect_refs_expr(e, out);
-        }
-        Stmt::Raise { exc: Some(e), .. } => collect_refs_expr(e, out),
-        Stmt::If {
-            branches,
-            else_body,
-        } => {
-            for (cond, body) in branches {
-                collect_refs_expr(cond, out);
+    // 文の直下の構造は 1 箇所（#84）。⚠ **`_ => {}` を書かない** — `StmtPart` に
+    // 種類が増えるとここが止まり、「この walker ではどう扱うか」を決めさせられる。
+    //
+    // ⚠⚠ #75 まではここが自前の `match stmt` で、`Expr` 30 variant のうち 8 個・
+    // `Stmt` 40 variant のうち 6 個を `_ => {}` で黙って落としていた（**式形式の制御構文や
+    // `match` 文の中だけで外側変数を参照するクロージャが `NameError`**）。#75 で exhaustive 化し、
+    // #84 で構造そのものを [`crate::stmt_walk`] へ移した。
+    crate::stmt_walk::each_subpart(stmt, &mut |part| {
+        use crate::stmt_walk::StmtPart as P;
+        match part {
+            P::Expr(e) => collect_refs_expr(e, out),
+            // `case <expr>` のパターンは**参照**（#75 で拾うようにした）。
+            P::MatchPattern(e) => collect_refs_expr(e, out),
+            P::Control(b) => collect_referenced_names(b, out),
+            // 入れ子定義の本体も参照を持つ（その中の自由変数は外側から捕捉される）。
+            P::FnBody { body, .. } | P::GenBody(body) | P::TypeBody(body) => {
                 collect_referenced_names(body, out);
             }
-            if let Some(body) = else_body {
-                collect_referenced_names(body, out);
+            // `protocol` の本体はシグネチャ宣言だけだが、既定値の式がありうるので降りる
+            // （#75 以前からの挙動）。
+            P::ProtocolBody(body) => collect_referenced_names(body, out),
+            // ⚠ `import` の `body` は**別モジュールの本体**。呼び出し元のフレームからは捕捉しない。
+            P::ModuleBody(_) => {}
+            // `mng <- async->T:` の本体（送出時にディープクローンされるが、参照は解決が要る）。
+            P::AsyncBody(b) => collect_referenced_names(b, out),
+            // 既存の名前を指す ＝ **参照**（`x = …` の左辺・`freeze x`・`mng <- async` の `mng`）。
+            P::TargetName(n) => {
+                out.insert(n.to_string());
             }
+            // ⚠ `for` ターゲットと `except ... as` の別名は**入れ子スコープの束縛**なので
+            // 参照として拾わない（拾うと自前の名前を自由変数と誤認する）。
+            P::ForTarget(_) | P::ExceptAlias(_) => {}
         }
-        Stmt::While { cond, body } => {
-            collect_refs_expr(cond, out);
-            collect_referenced_names(body, out);
-        }
-        Stmt::For { iter, body, .. } => {
-            collect_refs_expr(iter, out);
-            collect_referenced_names(body, out);
-        }
-        Stmt::Block(body) => collect_referenced_names(body, out),
-        Stmt::FnDef { body, .. } | Stmt::GenDef { body, .. } => {
-            collect_referenced_names(body, out);
-        }
-        Stmt::ClassDef { body, .. } | Stmt::TraitDef { body, .. } | Stmt::ProtocolDef { body, .. } => {
-            collect_referenced_names(body, out);
-        }
-        Stmt::Try {
-            body,
-            handlers,
-            finally_body,
-        } => {
-            collect_referenced_names(body, out);
-            for h in handlers {
-                collect_referenced_names(&h.body, out);
-            }
-            if let Some(body) = finally_body {
-                collect_referenced_names(body, out);
-            }
-        }
-        Stmt::Freeze(name, _) => {
-            out.insert(name.clone());
-        }
-        _ => {}
-    }
+    });
 }
 
 fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
-    match expr {
-        Expr::Ident(name) => {
-            out.insert(name.clone());
-        }
-        Expr::BinOp { left, right, .. } => {
-            collect_refs_expr(left, out);
-            collect_refs_expr(right, out);
-        }
-        Expr::UnaryOp { operand, .. } => collect_refs_expr(operand, out),
-        Expr::Call { func, args, .. } => {
-            collect_refs_expr(func, out);
-            for arg in args {
-                collect_refs_expr(arg.expr(), out);
-            }
-        }
-        Expr::Attr { object, .. } | Expr::TraitAccess { object, .. } => {
-            collect_refs_expr(object, out);
-        }
-        Expr::List(items) | Expr::Tuple(items) => {
-            for item in items {
-                collect_refs_expr(item, out);
-            }
-        }
-        Expr::Dict(pairs) => {
-            for (k, v) in pairs {
-                collect_refs_expr(k, out);
-                collect_refs_expr(v, out);
-            }
-        }
-        Expr::Subscript { object, index } => {
-            collect_refs_expr(object, out);
-            collect_refs_expr(index, out);
-        }
-        Expr::Slice { begin, end, step } => {
-            if let Some(e) = begin {
-                collect_refs_expr(e, out);
-            }
-            if let Some(e) = end {
-                collect_refs_expr(e, out);
-            }
-            if let Some(e) = step {
-                collect_refs_expr(e, out);
-            }
-        }
-        Expr::TemplateInstantiate { base, .. } => collect_refs_expr(base, out),
-        Expr::IsType { expr, .. } => collect_refs_expr(expr, out),
-        _ => {}
+    // 名前そのものだけがこの walker 固有の判断。⚠ `dbg::name` / `local::name` は
+    // **専用の名前空間**への参照であって外側フレームのローカルではないので拾わない
+    // （捕捉対象にすると別物を掴む）。
+    if let Expr::Ident { name, .. } = expr {
+        out.insert(name.clone());
     }
+    // 部分式の構造は 1 箇所（#81）。⚠ **`_ => {}` を書かない**。
+    //
+    // ⚠⚠ #75 の実バグ（`if`/`match`/`block`/`for`/`while` **式**と set リテラルの中だけで
+    // 外側変数を参照するクロージャが `NameError`）は、ここが `_ => {}` で
+    // `Expr` 30 variant のうち 8 個を落としていたのが原因。#81 で構造そのものを
+    // [`crate::expr_walk`] へ移し、**variant を足すとコンパイルが止まる**ようにした。
+    crate::expr_walk::each_subpart(expr, &mut |part| {
+        use crate::expr_walk::SubPart as P;
+        match part {
+            P::Plain(x) | P::Control(x) => collect_refs_expr(x, out),
+            P::Body(b) => collect_referenced_names(b, out),
+            // ⚠ `for` ターゲットは**入れ子スコープの束縛**なので参照として拾わない
+            //（`Stmt::For` の既存の扱いと揃える）。
+            P::ForTarget(_) => {}
+            // `case <expr>` のパターンは**参照**（#75 で拾うようにした）。
+            P::MatchPattern(x) => collect_refs_expr(x, out),
+        }
+    });
 }
 
 mod dispatch;

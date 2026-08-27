@@ -1,19 +1,80 @@
 // eval/core.rs — 式評価のコア: eval 本体のディスパッチと、トレイトアクセス・属性・スライス・二項演算・match 式の評価。
 
+use crate::ast::Resolution;
 use {
     std::cell::RefCell, std::rc::Rc,
-    crate::ast::{BinOp, Expr, MatchArm, MatchPattern},
+    crate::ast::{BinOp, Expr},
     crate::interpreter::{
         DictData,
         Interpreter, SliceValue, TupleData, Value,
-        BLOCK_RETURN_EXPECTED_TYPE, RAISE_SENTINEL,
+        RAISE_SENTINEL,
     },
 };
 use super::*;
 
 impl Interpreter {
+    /// `expr mustbe T` の動的型検査本体（#16 段階(b)(ii)）。
+    ///
+    /// 一致すれば値をそのまま返し、不一致なら位置付きの TypeError を送出する。
+    /// **ツリーウォーク（`Expr::MustBe` アーム）と VM（`Op::MustBe`）が共有する**ので、
+    /// 両経路の意味論が構造的に一致する（コピーではなく同一コード）。
+    pub(crate) fn mustbe_check(
+        &mut self,
+        val: Value,
+        guard_type: &str,
+        span: &crate::token::Span,
+    ) -> Result<Value, String> {
+        let outer = mustbe_outer_type(guard_type);
+        if self.value_is_type(&val, &outer) {
+            return Ok(val);
+        }
+        let actual = self.type_name_of(&val);
+        let msg = format!(
+            "TypeError: mustbe assertion failed at {}: expected `{}`, got `{}`",
+            span, guard_type, actual
+        );
+        if let Some(raised) = self.make_internal_raised_error(&msg) {
+            self.current_exception = Some(raised);
+            Err(RAISE_SENTINEL.to_string())
+        } else {
+            Err(msg)
+        }
+    }
+
+    /// VM: リテラルから List を構築する（`Expr::List` と同一意味論）。
+    pub(crate) fn vm_build_list(&self, vals: Vec<Value>) -> Value {
+        Value::List(Rc::new(RefCell::new(vals)))
+    }
+
+    /// VM: リテラルから Tuple を構築する（`Expr::Tuple` と同一・要素型名を収集）。
+    pub(crate) fn vm_build_tuple(&self, vals: Vec<Value>) -> Value {
+        let types: Vec<String> = vals.iter().map(|v| self.type_name(v).to_string()).collect();
+        Value::Tuple(Rc::new(TupleData::new(vals, types)))
+    }
+
+    /// VM: リテラルから Set を構築する（`Expr::Set` と同一・`set_insert` で重複排除）。
+    pub(crate) fn vm_build_set(&self, vals: Vec<Value>) -> Value {
+        let mut out: Vec<Value> = Vec::new();
+        for v in vals {
+            set_insert(&mut out, v, self);
+        }
+        Value::Set(Rc::new(RefCell::new(out)))
+    }
+
+    /// VM: リテラルから Dict を構築する（`Expr::Dict` と同一）。`flat` は `[k0,v0,k1,v1,..]`。
+    pub(crate) fn vm_build_dict(&self, flat: Vec<Value>) -> Value {
+        let mut d = DictData::new("Any".to_string(), "Any".to_string());
+        let mut it = flat.into_iter();
+        while let (Some(k), Some(v)) = (it.next(), it.next()) {
+            d.set(k, v);
+        }
+        Value::Dict(Rc::new(RefCell::new(d)))
+    }
+
     /// 式（`Expr`）を評価して `Value` を返す。各バリアントを専用メソッドに委譲する薄いディスパッチャ。
     pub fn eval(&mut self, expr: &Expr) -> Result<Value, String> {
+        // 式評価がツリーウォークで走っているかの計測（#55）。既定ビルドでは消える。
+        crate::interpreter::tw_stats::record_eval();
         match expr {
             Expr::Int(n) => Ok(Value::Int(*n)),
             Expr::Float(f) => Ok(Value::Float(*f)),
@@ -22,11 +83,16 @@ impl Interpreter {
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::None => Ok(Value::None),
             Expr::Undefined => Ok(Value::Undefined),
-            Expr::Ident(name) => self
-                .get_val(name)
-                .ok_or_else(|| format!("NameError: '{name}' is not defined")),
+            Expr::Ident { name, res, .. } => match res {
+                Resolution::Local(slot) => self.eval_local_ref(name, *slot),
+                Resolution::Global(cache) => self.eval_global_ref(name, cache),
+                Resolution::Unresolved => self
+                    .get_val(name)
+                    .ok_or_else(|| format!("NameError: '{name}' is not defined")),
+            },
             Expr::DebugVar(name) => self
-                .dbg_vars
+                .dbg
+                .vars
                 .get(name)
                 .map(|v| v.get_value())
                 .ok_or_else(|| format!("NameError: 'dbg::{name}' is not defined")),
@@ -42,7 +108,7 @@ impl Interpreter {
             Expr::TraitAccess { object, trait_name, attr } => {
                 self.eval_trait_access(object, trait_name, attr)
             }
-            Expr::Attr { object, attr, .. } => self.eval_attr(object, attr),
+            Expr::Attr { object, attr, cache, .. } => self.eval_attr(object, attr, cache),
             Expr::List(items) => {
                 let mut vals = Vec::new();
                 for item in items {
@@ -77,7 +143,7 @@ impl Interpreter {
                 }
                 Ok(Value::Set(Rc::new(RefCell::new(vals))))
             }
-            Expr::Subscript { object, index } => {
+            Expr::Subscript { object, index, .. } => {
                 let obj = self.eval(object)?;
                 let key = self.eval(index)?;
                 self.eval_subscript(obj, key)
@@ -91,63 +157,104 @@ impl Interpreter {
             Expr::TemplateInstantiate { .. } => Err(
                 "TemplateError: template expression must be immediately called (e.g. `Func[T](args)`)".to_string()
             ),
-            Expr::Block { stmts, return_type } => {
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
-                let result = self.eval_block_expr(stmts);
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
-                result
-            }
-            Expr::IfExpr { branches, else_body, return_type } => {
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
-                let result = self.eval_if_expr_body(branches, else_body);
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
-                result
-            }
-            Expr::ForExpr { target, iter, body, return_type } => {
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
-                let result = self.eval_for_expr(target, iter, body);
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
-                result
-            }
-            Expr::WhileExpr { cond, body, return_type } => {
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
-                let result = self.eval_while_expr(cond, body);
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
-                result
-            }
-            Expr::MatchExpr { subject, arms, return_type } => {
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().push(return_type.clone()));
-                let result = self.eval_match_expr(subject, arms);
-                BLOCK_RETURN_EXPECTED_TYPE.with(|t| t.borrow_mut().pop());
-                result
-            }
+            // #33: 制御フロー式は**必ずバイトコード VM が評価する**（ツリーウォークの実装は削除した）。
+            //
+            // 到達しうる入口はすべて VM 経路になっている:
+            // - 最上位・モジュール本体の文 … `try_run_toplevel_stmt` / `try_run_module_stmt`（#42）
+            // - 関数・ジェネレータ・async の本体 … Chunk（載らなければ `VmForceError`）
+            // - 定義文脈の式（フィールド既定値・`enum` 値・デコレータ）… `eval_definition_expr`（#41）
+            // - デバッガ REPL … **1 行ずつ読む**ので制御フロー式は構文上入力できない（実測）
+            //
+            // ⚠ ここへ来たら配線の穴なので、黙って動かず落とす。
+            Expr::Block { .. }
+            | Expr::IfExpr { .. }
+            | Expr::ForExpr { .. }
+            | Expr::WhileExpr { .. }
+            | Expr::MatchExpr { .. } => Err(format!(
+                "VmForceError: control-flow expression `{}` reached the tree-walk evaluator",
+                crate::vm::compiler::expr_kind(expr)
+            )),
             Expr::IsType { expr, negated, type_name, .. } => {
                 let val = self.eval(expr)?;
                 let result = self.value_is_type(&val, type_name);
                 Ok(Value::Bool(if *negated { !result } else { result }))
             }
-            Expr::MustBe { expr, guard_type, span } => {
+            Expr::MustBe { expr, guard_type, span, .. } => {
                 let val = self.eval(expr)?;
-                let outer = mustbe_outer_type(guard_type);
-                if self.value_is_type(&val, &outer) {
-                    Ok(val)
-                } else {
-                    let actual = self.type_name_of(&val);
-                    let msg = format!(
-                        "TypeError: mustbe assertion failed at {}: expected `{}`, got `{}`",
-                        span, guard_type, actual
-                    );
-                    if let Some(raised) = self.make_internal_raised_error(&msg) {
-                        self.current_exception = Some(raised);
-                        Err(RAISE_SENTINEL.to_string())
-                    } else {
-                        Err(msg)
-                    }
-                }
+                self.mustbe_check(val, guard_type, span)
             }
-            Expr::Call { func, args, span, cache } => self.eval_call(func, args, span, cache),
+            // node_id は FFI 境界検査（`ffi_boundary`）が宣言型を引くために要る。
+            Expr::Call { func, args, span, cache, node_id } => {
+                self.eval_call(func, args, span, cache, *node_id)
+            }
             Expr::Cast { object, type_name, .. } => self.eval_cast(object, type_name),
         }
+    }
+
+    /// 解決済みローカル参照（`Resolution::Local`）の高速読み取り（Phase R / R1）。
+    ///
+    /// リゾルバは、トップレベル関数の base スコープに確実に解決できる読み取りだけを書き換える。
+    /// base スコープは実行時 `scopes[frame_floor]`（関数フレームの底）に来るので、
+    /// `scopes[frame_floor].slot(slot)` を index 1回で読める（スコープ遡り・文字列ハッシュなし）。
+    /// デバッグビルドでは slot と名前の一致を検証し、リゾルバのずれを即座に露見させる。
+    /// 想定外（境界外など）の場合のみ名前引きへフォールバックして正しさを保つ。
+    #[inline]
+    pub(crate) fn eval_local_ref(&self, name: &str, slot: u32) -> Result<Value, String> {
+        let s = slot as usize;
+        if let Some(scope) = self.scopes.get(self.frame_floor) {
+            if let Some(var) = scope.slot(s) {
+                debug_assert_eq!(
+                    scope.slot_of(name),
+                    Some(s),
+                    "Resolution::Local slot mismatch for '{name}': resolver said slot {s}, \
+                     runtime index says {:?}",
+                    scope.slot_of(name)
+                );
+                return Ok(var.get_value());
+            }
+        }
+        self.get_val(name)
+            .ok_or_else(|| format!("NameError: '{name}' is not defined"))
+    }
+
+    /// 解決済みグローバル参照（`Resolution::Global`）の読み取り（Phase R / R2-b）。
+    ///
+    /// リゾルバが「プログラム最上位で宣言され、この関数内でシャドウされない名前」と
+    /// 確定したノードにだけ付く。`scopes[0]` の slot index を AST ノードのキャッシュへ
+    /// `(slot_epoch, index)` で焼き、以後はスコープ鎖の名前走査を配列 1 回に置き換える。
+    ///
+    /// **解決結果を AST に置く**のが要点で、VM は同じノードを見て `LoadGlobal` を出す。
+    /// `slot_epoch` は `freeze` による降格などで進むので、失効時は名前引きへ戻る。
+    pub(crate) fn eval_global_ref(
+        &self,
+        name: &str,
+        cache: &crate::ast::SlotCache,
+    ) -> Result<Value, String> {
+        if let Some(idx) = cache.get(self.slot_epoch) {
+            if let Some(var) = self.scopes[0].slot(idx) {
+                debug_assert_eq!(
+                    self.scopes[0].slot_of(name),
+                    Some(idx),
+                    "Resolution::Global slot mismatch for '{name}'"
+                );
+                return Ok(var.get_value());
+            }
+        }
+        // 未充填・失効時は名前で引き直してキャッシュを更新する。
+        if let Some(idx) = self.scopes[0].slot_of(name) {
+            // ローカル側にシャドウが無いことはリゾルバが保証しているが、
+            // 保証が崩れた場合に誤読しないよう、デバッグビルドで通常解決と突き合わせる。
+            debug_assert!(
+                self.scopes[self.frame_floor..].iter().all(|sc| !sc.contains_key(name)),
+                "Resolution::Global '{name}' is shadowed by a local at runtime"
+            );
+            if let Some(var) = self.scopes[0].slot(idx) {
+                cache.fill(self.slot_epoch, idx as u32);
+                return Ok(var.get_value());
+            }
+        }
+        self.get_val(name)
+            .ok_or_else(|| format!("NameError: '{name}' is not defined"))
     }
 
     // --- eval() から抽出したメソッド群 ---
@@ -161,6 +268,23 @@ impl Interpreter {
         attr: &str,
     ) -> Result<Value, String> {
         let obj_val = self.eval(object)?;
+        self.trait_access_evaled(obj_val, trait_name, attr)
+    }
+
+    /// `obj::Trait.attr` の読み出し（評価済みレシーバ版・#27）。
+    ///
+    /// VM の `Op::GetTraitAttr` とツリーウォークの `eval_trait_access` の**唯一の実装**。
+    /// 違うのはレシーバの評価だけなので、そこから先をここに集約する
+    /// （`*_evaled` 版とずれた実装を作らない — #22 系列）。
+    /// ⚠ `#[inline(never)]`: トレイト修飾アクセスは稀な構文なので、`eval` のような
+    /// ホット関数へ展開させない（#10-b で確立した「稀な経路は外へ出す」）。
+    #[inline(never)]
+    pub(crate) fn trait_access_evaled(
+        &mut self,
+        obj_val: Value,
+        trait_name: &str,
+        attr: &str,
+    ) -> Result<Value, String> {
         match obj_val {
             Value::Instance(inst_rc) => {
                 let inst = inst_rc.borrow();
@@ -179,10 +303,40 @@ impl Interpreter {
         }
     }
 
-    /// 属性アクセス式 `obj.attr` を評価する。`get_attr_val` に委譲するシンラッパー。
-    pub(crate) fn eval_attr(&mut self, object: &Expr, attr: &str) -> Result<Value, String> {
+    /// 属性アクセス式 `obj.attr` を評価する。
+    ///
+    /// R3 インラインキャッシュ: インスタンスの own/unqualified フィールドで `class_id` が
+    /// キャッシュと一致すれば、`field_index` の辞書引き・アクセスキー走査・`format!` 確保を
+    /// 飛ばして slot を直接読む。ミス時は `get_attr_val` で解決してキャッシュを更新する。
+    pub(crate) fn eval_attr(
+        &mut self,
+        object: &Expr,
+        attr: &str,
+        cache: &crate::ast::AttrCache,
+    ) -> Result<Value, String> {
         let obj_val = self.eval(object)?;
-        self.get_attr_val(obj_val, attr)
+        if let Value::Instance(inst_rc) = &obj_val {
+            let class_id = inst_rc.borrow().class.class_id;
+            if let Some((idx, access)) = cache.get(class_id) {
+                let inst = inst_rc.borrow();
+                debug_assert_eq!(
+                    inst.class.field_index.get(attr).copied(),
+                    Some(idx),
+                    "AttrCache slot mismatch for '{attr}' on class_id {class_id}"
+                );
+                if let Some(v) = inst.field_value(idx) {
+                    if access == crate::ast::AttrCache::PUBLIC {
+                        return Ok(v);
+                    }
+                    let cls = inst.class.clone();
+                    drop(inst);
+                    self.check_access_level(&cls, access, attr)?;
+                    return Ok(v);
+                }
+                // 未初期化 slot 等の想定外ケースは通常経路へ委譲する。
+            }
+        }
+        self.get_attr_val(obj_val, attr, Some(cache))
     }
 
     /// スライス式 `begin:end:step` を評価して `Value::Slice` を生成する。
@@ -193,54 +347,58 @@ impl Interpreter {
         end: &Option<Box<Expr>>,
         step: &Option<Box<Expr>>,
     ) -> Result<Value, String> {
-        let begin = match begin {
-            None => None,
-            Some(e) => {
-                let v = self.eval(e)?;
-                match &v {
-                    Value::None => None,
-                    Value::Int(_) => Some(v),
-                    Value::Instance(inst) if inst.borrow().class.name == "Index" => Some(v),
-                    _ => {
-                        return Err(format!(
-                            "TypeError: slice begin must be int, Index, or None, got '{}'",
-                            self.type_name(&v)
-                        ))
-                    }
-                }
+        // 省略された要素は `Value::None` として扱う（`slice_from_values` が「無し」に畳む）。
+        let b = match begin {
+            None => Value::None,
+            Some(e) => self.eval(e)?,
+        };
+        let en = match end {
+            None => Value::None,
+            Some(e) => self.eval(e)?,
+        };
+        let st = match step {
+            None => Value::None,
+            Some(e) => self.eval(e)?,
+        };
+        self.slice_from_values(b, en, st)
+    }
+
+    /// 評価済みの 3 要素から `Value::Slice` を作る（#27-c）。
+    ///
+    /// ツリーウォーク（`eval_slice_expr`）と VM（`Op::BuildSlice`）の**唯一の実装**。
+    /// 検査もエラー文言もここ 1 箇所にある。
+    ///
+    /// ⚠ 評価順が 1 点だけツリーウォークの旧実装と違う: 以前は begin を検査してから end を
+    /// **評価**していたので、begin が不正なら end/step は評価されなかった。今は 3 つとも
+    /// 評価してから検査する。差が出るのは「不正な境界＋副作用つき境界式」＝どのみち
+    /// TypeError になるコードだけ。
+    pub(crate) fn slice_from_values(
+        &mut self,
+        begin: Value,
+        end: Value,
+        step: Value,
+    ) -> Result<Value, String> {
+        let bound = |it: &Self, v: Value, which: &str| -> Result<Option<Value>, String> {
+            match &v {
+                Value::None => Ok(None),
+                Value::Int(_) => Ok(Some(v)),
+                Value::Instance(inst) if inst.borrow().class.name == "Index" => Ok(Some(v)),
+                _ => Err(format!(
+                    "TypeError: slice {which} must be int, Index, or None, got '{}'",
+                    it.type_name(&v)
+                )),
             }
         };
-        let end = match end {
-            None => None,
-            Some(e) => {
-                let v = self.eval(e)?;
-                match &v {
-                    Value::None => None,
-                    Value::Int(_) => Some(v),
-                    Value::Instance(inst) if inst.borrow().class.name == "Index" => Some(v),
-                    _ => {
-                        return Err(format!(
-                            "TypeError: slice end must be int, Index, or None, got '{}'",
-                            self.type_name(&v)
-                        ))
-                    }
-                }
-            }
-        };
-        let step = match step {
-            None => None,
-            Some(e) => {
-                let v = self.eval(e)?;
-                match &v {
-                    Value::None => None,
-                    Value::Int(_) => Some(v),
-                    _ => {
-                        return Err(format!(
-                            "TypeError: slice step must be int or None, got '{}'",
-                            self.type_name(&v)
-                        ))
-                    }
-                }
+        let begin = bound(self, begin, "begin")?;
+        let end = bound(self, end, "end")?;
+        let step = match &step {
+            Value::None => None,
+            Value::Int(_) => Some(step),
+            _ => {
+                return Err(format!(
+                    "TypeError: slice step must be int or None, got '{}'",
+                    self.type_name(&step)
+                ))
             }
         };
         Ok(Value::Slice(Rc::new(SliceValue { begin, end, step })))
@@ -273,29 +431,5 @@ impl Interpreter {
         }
     }
 
-    /// match 式を評価する。各アームのパターンとサブジェクトを照合し、最初に一致したアームのボディを実行して値を返す。
-    pub(crate) fn eval_match_expr(&mut self, subject: &Expr, arms: &[MatchArm]) -> Result<Value, String> {
-        let subject_val = self.eval(subject)?;
-        for arm in arms {
-            let matched = match &arm.pattern {
-                MatchPattern::Case(pattern_expr) => {
-                    if matches!(pattern_expr, Expr::Ident(n) if n == "_") {
-                        true
-                    } else {
-                        let pv = self.eval(pattern_expr)?;
-                        matches!(
-                            self.apply_binop_dyn(&BinOp::Eq, subject_val.clone(), pv)?,
-                            Value::Bool(true)
-                        )
-                    }
-                }
-                MatchPattern::IsType(type_name) => self.value_is_type(&subject_val, type_name),
-            };
-            if matched {
-                return self.eval_capture_block_return(&arm.body);
-            }
-        }
-        Ok(Value::None)
-    }
 
 }

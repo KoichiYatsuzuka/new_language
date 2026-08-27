@@ -254,11 +254,8 @@ impl<'a> GenCtx<'a> {
 
                 // ── Flat list iteration path ──────────────────────────────────
                 // Activated when the iterator is a `let fixed_list[ClassName]` param.
-                let flat_info: Option<FlatListInfo> = if let Expr::Ident(n) = iter {
-                    self.flat_list_params.get(n.as_str()).cloned()
-                } else {
-                    None
-                };
+                let flat_info: Option<FlatListInfo> = ident_name(iter)
+                    .and_then(|n| self.flat_list_params.get(n).cloned());
 
                 if let Some(ref fi) = flat_info {
                     // Get flat data ptr and length (2 callbacks, paid once).
@@ -396,7 +393,7 @@ impl<'a> GenCtx<'a> {
                     self.ec(&format!("{subj_r} = load i64, ptr {subj_al}"));
 
                     match &arm.pattern {
-                        MatchPattern::Case(Expr::Ident(w)) if w == "_" => {
+                        MatchPattern::Case(e) if ident_name(e) == Some("_") => {
                             self.br(&body_blk);
                         }
                         MatchPattern::Case(pat_expr) => {

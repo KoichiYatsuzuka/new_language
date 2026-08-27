@@ -4,63 +4,7 @@
 // `impl Parser` の import 解析メソッドを役割別サブモジュール(dispatch/cpp/ar_modules/py_modules/
 // cs_js_modules)へ分割して宣言する。
 
-/// ar_config.json の JSON テキストから `csharp.lib_paths` を取り出す。
-/// 依存クレートなしの簡易パーサー（正規表現・serde 不使用）。
-fn parse_cs_lib_paths(json: &str, base: &std::path::Path) -> Option<Vec<std::path::PathBuf>> {
-    // "lib_paths" キーを探す
-    let key = "\"lib_paths\"";
-    let start = json.find(key)?;
-    let after_key = &json[start + key.len()..];
-    let arr_start = after_key.find('[')?;
-    let arr_end = after_key[arr_start..].find(']')?;
-    let arr = &after_key[arr_start + 1..arr_start + arr_end];
-    let mut paths = Vec::new();
-    for part in arr.split(',') {
-        let trimmed = part.trim().trim_matches('"');
-        if !trimmed.is_empty() {
-            let p = std::path::PathBuf::from(trimmed);
-            paths.push(if p.is_absolute() { p } else { base.join(p) });
-        }
-    }
-    if paths.is_empty() { None } else { Some(paths) }
-}
 
-/// ar_config.json の JSON テキストから `python.search_paths` を取り出す。
-/// 依存クレートなしの簡易パーサー（正規表現・serde 不使用）。
-fn parse_python_search_paths(json: &str, base: &std::path::Path) -> Vec<std::path::PathBuf> {
-    // "python" キーを探す
-    let python_key = "\"python\"";
-    let start = match json.find(python_key) {
-        Some(s) => s,
-        None => return vec![],
-    };
-    // "search_paths" キーを python オブジェクト内で探す
-    let after_python = &json[start + python_key.len()..];
-    let key = "\"search_paths\"";
-    let key_start = match after_python.find(key) {
-        Some(s) => s,
-        None => return vec![],
-    };
-    let after_key = &after_python[key_start + key.len()..];
-    let arr_start = match after_key.find('[') {
-        Some(s) => s,
-        None => return vec![],
-    };
-    let arr_end = match after_key[arr_start..].find(']') {
-        Some(s) => s,
-        None => return vec![],
-    };
-    let arr = &after_key[arr_start + 1..arr_start + arr_end];
-    let mut paths = Vec::new();
-    for part in arr.split(',') {
-        let trimmed = part.trim().trim_matches('"');
-        if !trimmed.is_empty() {
-            let p = std::path::PathBuf::from(trimmed);
-            paths.push(if p.is_absolute() { p } else { base.join(p) });
-        }
-    }
-    paths
-}
 
 /// Python プロセスを実行して標準ライブラリと site-packages のパスを取得する。
 /// OnceLock でキャッシュするので初回のみサブプロセスが起動する。
@@ -350,14 +294,45 @@ fn py_type_to_arrow(ann: &str) -> String {
     if let Some(inner) = a.strip_prefix("Optional[").and_then(|s| s.strip_suffix(']')) {
         return format!("Option[{}]", py_type_to_arrow(inner));
     }
-    // List[T] → list (Arrow は List 型パラメータなし)
+    // List[T] → list[T]
     if let Some(inner) = a.strip_prefix("List[").and_then(|s| s.strip_suffix(']')) {
         return format!("list[{}]", py_type_to_arrow(inner));
     }
-    // Dict → dict
-    if a.starts_with("Dict[") { return "dict".to_string(); }
-    // Tuple → tuple
-    if a.starts_with("Tuple[") { return "tuple".to_string(); }
+    // Set[T] → set[T]
+    if let Some(inner) = a.strip_prefix("Set[").and_then(|s| s.strip_suffix(']')) {
+        return format!("set[{}]", py_type_to_arrow(inner));
+    }
+    // ── PEP 585: 小文字の組み込みジェネリクス（Python 3.9+）──
+    // `typing.List[T]` 等の旧表記だけを見ていると、現代的な `-> list[int]` が
+    // 下の catch-all で `Any` に落ち、**スタブが要素型の情報を失う**。
+    // そうなると FFI 境界検査（`ffi_boundary`）も `Any` は検査不能として素通しするため、
+    // 「スタブを整備するほど検査が効く」という設計が成立しない。ここで拾う。
+    if let Some(inner) = a.strip_prefix("list[").and_then(|s| s.strip_suffix(']')) {
+        return format!("list[{}]", py_type_to_arrow(inner));
+    }
+    if let Some(inner) = a.strip_prefix("set[").and_then(|s| s.strip_suffix(']')) {
+        return format!("set[{}]", py_type_to_arrow(inner));
+    }
+    // Dict / dict → dict（キー・値の型は保守的に落とす）
+    if a.starts_with("Dict[") || a.starts_with("dict[") { return "dict".to_string(); }
+    // Tuple / tuple → tuple
+    if a.starts_with("Tuple[") || a.starts_with("tuple[") { return "tuple".to_string(); }
+    // ── PEP 604: `X | None` / `X | Y`（Python 3.10+）──
+    // 角括弧を含む場合は入れ子の区切りと紛れるため対象外にする（保守的）。
+    if !a.contains('[') {
+        if let Some((l, r)) = a.split_once('|') {
+            let (l, r) = (l.trim(), r.trim());
+            if !l.is_empty() && !r.is_empty() {
+                return if r == "None" {
+                    format!("Option[{}]", py_type_to_arrow(l))
+                } else if l == "None" {
+                    format!("Option[{}]", py_type_to_arrow(r))
+                } else {
+                    format!("Union[{}, {}]", py_type_to_arrow(l), py_type_to_arrow(r))
+                };
+            }
+        }
+    }
     // プリミティブ型はそのまま
     match a {
         "str" | "int" | "float" | "bool" | "None" | "Any" | "bytes"

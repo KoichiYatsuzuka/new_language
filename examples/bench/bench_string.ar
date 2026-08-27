@@ -1,0 +1,100 @@
+# bench_string.ar
+#
+# E2E benchmark: 文字列を多用するワークロードでのインタープリタ負荷を測る。
+# Run: cargo run --release -- examples/bench/bench_string.ar
+#
+# #15（`Value::Str` → `Rc<str>` / 文字列インターン, BYTECODE_VM_PLAN.md §7.4）の A/B 基準。
+# 既存ベンチ（bottleneck / field_access）は int/float 中心で String クローンを踏まないため、
+# ここだけが #15 の効果を観測できる。
+#
+# 各ケースが測る対象:
+#   1. 変数読み  — Value::clone（String ヒープ確保）が支配。#15-1 の主対象
+#   2. 引数束縛  — 呼び出しごとの String クローン。#15-1 の主対象
+#   3. 連結      — 実際の文字列生成。#15 では改善しない（対照群）
+#   4. 属性/メソッド名 — 名前の照合。#15-3（インターン）の主対象
+#   5. dict キー — DictKey::Str の比較・複製
+
+import[py-int] time
+
+let N = 200000
+
+# -------------------------------------------------------------------------
+# Case 1: 文字列変数の読み出し（Value::clone のみ・生成なし）
+# -------------------------------------------------------------------------
+let s = "the quick brown fox jumps over the lazy dog"
+let t0 = time.time()
+mut i = 0
+mut acc = 0
+while i < N:
+    let a = s
+    let b = s
+    let c = s
+    acc += len(a) + len(b) + len(c)
+    i += 1
+let t1 = time.time()
+print("1. str var read   : " + str(t1 - t0) + " s  (N=" + str(N) + " x3)")
+
+# -------------------------------------------------------------------------
+# Case 2: 文字列の引数束縛（呼び出しごとに clone）
+# -------------------------------------------------------------------------
+fn take(let v: str) -> int:
+    return len(v)
+
+let t2 = time.time()
+mut j = 0
+mut acc2 = 0
+while j < N:
+    acc2 += take(s)
+    j += 1
+let t3 = time.time()
+print("2. str arg bind   : " + str(t3 - t2) + " s  (N=" + str(N) + ")")
+
+# -------------------------------------------------------------------------
+# Case 3: 文字列連結（対照群 — #15 では改善しないはず）
+# -------------------------------------------------------------------------
+let t4 = time.time()
+mut k = 0
+mut acc3 = 0
+while k < N:
+    let joined = "id-" + "0123456789"
+    acc3 += len(joined)
+    k += 1
+let t5 = time.time()
+print("3. str concat     : " + str(t5 - t4) + " s  (N=" + str(N) + ")")
+
+# -------------------------------------------------------------------------
+# Case 4: 属性名・メソッド名の照合（#15-3 インターンの対象）
+# -------------------------------------------------------------------------
+class Holder:
+    mut name: str
+    mut label: str
+    fn __init__(mut self, let name: str, let label: str) -> None:
+        self.name = name
+        self.label = label
+    fn get_name(let self) -> str:
+        return self.name
+
+let h = Holder("alpha", "beta")
+let t6 = time.time()
+mut m = 0
+mut acc4 = 0
+while m < N:
+    acc4 += len(h.name) + len(h.label) + len(h.get_name())
+    m += 1
+let t7 = time.time()
+print("4. attr/method str: " + str(t7 - t6) + " s  (N=" + str(N) + " x3)")
+
+# -------------------------------------------------------------------------
+# Case 5: dict の文字列キー
+# -------------------------------------------------------------------------
+mut d: dict[str, int] = {"alpha": 1, "beta": 2, "gamma": 3}
+let t8 = time.time()
+mut n = 0
+mut acc5 = 0
+while n < N:
+    acc5 += d["alpha"] + d["beta"] + d["gamma"]
+    n += 1
+let t9 = time.time()
+print("5. dict str key   : " + str(t9 - t8) + " s  (N=" + str(N) + " x3)")
+
+print("checksum: " + str(acc) + " / " + str(acc2) + " / " + str(acc3) + " / " + str(acc4) + " / " + str(acc5))

@@ -1,0 +1,11 @@
+# parse_ar_error.ar — `parse_ar()` の型エラー（負の対照・#56）。
+#
+# 引数は **str** でなければならない。int を渡すと TypeError になる。
+# ⚠ この例題の役目は「**`VmForceError` ではなく本来の TypeError が出る**」ことの固定。
+# #33〜#55 の間は、正しい呼び出しですら `VmForceError: cannot compile ...` で止まっていた。
+
+print("before")
+
+let bad = parse_ar(42)
+
+print(bad)

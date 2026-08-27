@@ -131,8 +131,8 @@ fn test_enum_item_type_name() {
 #[test]
 fn test_default_param_uses_default_when_omitted() {
     let src = "fn greet(let name: str = \"world\") -> str:\n    return name\nlet a = greet()\nlet b = greet(\"Alice\")\n";
-    assert!(matches!(run_get(src, "a"), Value::Str(s) if s == "world"));
-    assert!(matches!(run_get(src, "b"), Value::Str(s) if s == "Alice"));
+    assert!(matches!(run_get(src, "a"), Value::Str(s) if &*s == "world"));
+    assert!(matches!(run_get(src, "b"), Value::Str(s) if &*s == "Alice"));
 }
 
 /// default_param_multiple_defaults のテスト。

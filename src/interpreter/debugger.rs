@@ -17,6 +17,7 @@ use crate::ast::{Expr, Stmt};
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::token::Span;
+use super::Var;
 
 use super::{ExecResult, Interpreter, Value};
 
@@ -51,6 +52,15 @@ thread_local! {
     pub(super) static DBG_STEP_INTO_SKIP: RefCell<usize> = const { RefCell::new(0) };
     /// Whether we are currently inside the REPL (to avoid re-entering).
     static IN_REPL: RefCell<bool> = const { RefCell::new(false) };
+}
+
+/// デバッガがアクティブ（ステップ実行中）かを返す。
+///
+/// VM のディスパッチループ（[`crate::vm::run`]）が**入口で 1 回だけ**これを見て、
+/// 真ならステップ判定つきループ（`run_stepping`）へ入る（#1）。
+/// 通常経路には停止判定を一切足さないための入口分岐。
+pub(crate) fn dbg_active() -> bool {
+    DBG_MODE.with(|m| *m.borrow() != DbgMode::Inactive)
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +102,20 @@ fn print_context(interp: &Interpreter, file: &str, target_line: usize) {
             println!("{YELLOW}{lineno:>4}{RESET}    {text}");
         }
     }
+}
+
+/// 文の表示用スパンを返す（VM の行テーブル構築用・#1）。
+///
+/// `best_span_for` の**フォールバックを除いた部分**と同じ判定なので、
+/// ここが `None` を返す文は VM 側では `STMT_NO_SPAN` として記録され、
+/// 停止時に `best_span_for` の `DebugState::last_span` フォールバックへ委ねられる。
+/// ＝ ツリーウォークと同じ表示になる。
+pub(crate) fn stmt_span_of(stmt: &Stmt) -> Option<Span> {
+    stmt_location(stmt).map(|(file, line)| Span {
+        file: file.into(),
+        line,
+        col: 1,
+    })
 }
 
 /// 文から代表的な（ファイル名, 行番号）を取り出す。スパンを持たない文は `None` を返す。
@@ -146,6 +170,27 @@ enum ReplCmd {
 // Debugger REPL
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// DebugState — `Interpreter` のデバッガ状態（#67）
+// ---------------------------------------------------------------------------
+
+/// `Interpreter` が持つ**デバッガ関連の状態 2 本**を束ねた部分構造体（#67）。
+///
+/// ⚠ どちらも**デバッグセッション中しか意味を持たない**（通常実行では
+/// `vars` は空のまま、`last_span` は `should_pause_at` が有効なときだけ更新される）。
+/// ⇒ `Interpreter` の平坦なフィールドから外して、デバッガの持ち物だと分かる形にした。
+/// ⚠ 可視性は `pub(super)`（= `crate::interpreter` 以下）。`Var` が `pub(self)` なので
+/// `pub(crate)` にすると「型のほうが private」警告になる（#67）。
+#[derive(Default)]
+pub(super) struct DebugState {
+    /// デバッガ REPL 内で `let dbg::name = expr` として宣言された一時変数。
+    /// `q`（再開）または `break_point` のスコープ終了時にクリアされる。
+    pub(super) vars: std::collections::HashMap<String, super::Var>,
+    /// 直近に取れた文の Span — 現在の文から位置が取れないときのフォールバック
+    /// （`Stmt::Mut` が裸の `Expr::Call(Expr::Ident(..))` を包んでいる場合など）。
+    pub(super) last_span: Option<crate::token::Span>,
+}
+
 impl Interpreter {
     /// `Stmt::BreakPoint` または ステップ実行時に `exec()` から呼ばれるデバッガ REPL エントリポイント。
     pub(super) fn exec_breakpoint(&mut self, span: &Span) -> Result<ExecResult, String> {
@@ -179,7 +224,7 @@ impl Interpreter {
         // We always clear on 'q' (resume).
         match &cmd {
             ReplCmd::Resume => {
-                self.dbg_vars.clear();
+                self.dbg.vars.clear();
                 DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::Inactive);
             }
             ReplCmd::StepOver => {
@@ -275,29 +320,64 @@ impl Interpreter {
             _ => {}
         }
 
-        match self.exec(&stmt)? {
-            ExecResult::Normal => {}
-            ExecResult::Return(v)
-                if !matches!(v, Value::None) => {
-                    println!("{}", self.display(&v));
+        // バイトコード経路（V-E）: 停止スコープの視点でコンパイル・実行する。
+        // 式は値を返して表示、`let dbg::x` は宣言のみ。コンパイル不能な構文（メソッド呼び出し・
+        // 添字・制御フロー等）はツリーウォークへフォールバックする。
+        let value: Value = if let Some(chunk) = crate::vm::compile_debug(&stmt) {
+            self.run_debug_chunk(&chunk)?
+        } else {
+            match &stmt {
+                // 式文はフォールバックでも値を取り出して表示する（バイトコード経路と一致）。
+                Stmt::Expr(e) => self.eval(e)?,
+                _ => {
+                    self.exec(&stmt)?;
+                    Value::None
                 }
-            _ => {}
+            }
+        };
+        if !matches!(value, Value::None) {
+            println!("{}", self.display(&value));
         }
         Ok(())
     }
 
+    /// デバッグ用 Chunk を停止スコープ上で実行する（名前引きアクセス。共有バッファを使い回す）。
+    /// `LoadName`/`DeclareName` は現在の `scopes`（停止フレーム）に対して名前解決・宣言する。
+    fn run_debug_chunk(&mut self, chunk: &crate::vm::Chunk) -> Result<Value, String> {
+        let mut buf = std::mem::take(&mut self.vm_stack);
+        let base = buf.len();
+        buf.resize(base + chunk.n_locals, Value::None);
+        let result = crate::vm::run(self, chunk, &mut buf, base, None);
+        buf.truncate(base);
+        self.vm_stack = buf;
+        result
+    }
+
     /// 文の実行前に一時停止すべきかを判定する。`exec()` 冒頭で毎回呼ばれ、停止する場合は表示スパンを返す。
     pub(super) fn should_pause_at(&self, stmt: &Stmt) -> Option<Span> {
+        if self.should_pause_now() {
+            Some(self.best_span_for(stmt))
+        } else {
+            None
+        }
+    }
+
+    /// **停止すべきか**を「モード × 呼び出し深さ」だけで判定する（表示スパンの決定は呼び出し側）。
+    ///
+    /// ツリーウォーク（`should_pause_at`）と VM の文境界判定（`vm_should_pause`）が
+    /// **同じ判断を 2 箇所に持たない**ようにするための共通部。片方だけ直すと
+    /// `--vm=off` と `--vm=auto` でステップ位置がずれていた（#33 で `--vm` は削除）。
+    /// ⚠ 検出していた `compare_debug_modes.ps1` も無い。**今の網は
+    /// [debug_session.ps1](debug_session.ps1) の golden 比較だけ**（他のゲートは stdin を与えない）。
+    ///
+    /// 副作用: StepInto / StepOut は停止時にモードを StepOver へ遷移させる（元実装のまま）。
+    fn should_pause_now(&self) -> bool {
         let mode = DBG_MODE.with(|m| m.borrow().clone());
         match mode {
-            DbgMode::Inactive => None,
+            DbgMode::Inactive => false,
             DbgMode::StepOver => {
                 // Only pause at the same depth as when the breakpoint fired.
-                let entry = DBG_ENTRY_DEPTH.with(|d| *d.borrow());
-                if self.call_stack.len() != entry {
-                    return None;
-                }
-                Some(self.best_span_for(stmt))
+                self.call_stack.len() == DBG_ENTRY_DEPTH.with(|d| *d.borrow())
             }
             DbgMode::StepInto => {
                 let entry = DBG_ENTRY_DEPTH.with(|d| *d.borrow());
@@ -307,7 +387,7 @@ impl Interpreter {
                     DBG_ENTRY_DEPTH.with(|d| *d.borrow_mut() = depth);
                     DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::StepOver);
                     DBG_STEP_INTO_SKIP.with(|s| *s.borrow_mut() = 0);
-                    Some(self.best_span_for(stmt))
+                    true
                 } else if depth == entry {
                     // Same depth: check if we still need to let one statement pass.
                     let skip = DBG_STEP_INTO_SKIP.with(|s| {
@@ -320,15 +400,15 @@ impl Interpreter {
                     if skip > 0 {
                         // Let this statement execute; the function call inside it
                         // will trigger the depth > entry branch above.
-                        None
+                        false
                     } else {
                         // The statement that was supposed to call a function has
                         // already run (or had no call). Fall back to step-over.
                         DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::StepOver);
-                        Some(self.best_span_for(stmt))
+                        true
                     }
                 } else {
-                    None
+                    false
                 }
             }
             DbgMode::StepOut { target } => {
@@ -336,12 +416,77 @@ impl Interpreter {
                     // We have returned to (or past) the target depth.
                     DBG_MODE.with(|m| *m.borrow_mut() = DbgMode::StepOver);
                     DBG_ENTRY_DEPTH.with(|d| *d.borrow_mut() = self.call_stack.len());
-                    Some(self.best_span_for(stmt))
+                    true
                 } else {
-                    None
+                    false
                 }
             }
         }
+    }
+
+    /// VM の**文境界**から呼ばれる停止判定（#1）。`Stmt` の代わりに行テーブルの span を受け取る。
+    ///
+    /// `span_idx` は `Chunk::stmt_spans` の値（`spans` への index か `STMT_NO_SPAN`）。
+    /// `STMT_NO_SPAN` は「位置情報を持たない文」で、ツリーウォークの `best_span_for` と同じく
+    /// `DebugState::last_span` へフォールバックする（そうしないと transcript が食い違う）。
+    pub(crate) fn vm_should_pause(&mut self, chunk: &crate::vm::Chunk, span_idx: u32) -> Option<Span> {
+        if !self.should_pause_now() {
+            return None;
+        }
+        let span = chunk
+            .spans
+            .get(span_idx as usize)
+            .cloned()
+            .or_else(|| self.dbg.last_span.clone())
+            .unwrap_or(Span {
+                file: self.source_map.keys().next().cloned().unwrap_or_default().into(),
+                line: 0,
+                col: 0,
+            });
+        Some(span)
+    }
+
+    /// VM フレームで停止し、デバッガ REPL へ入る（#1）。
+    ///
+    /// VM 適格関数のローカルは **flat buffer（`buf[base..]`）にあり `scopes` に存在しない**ので、
+    /// そのまま REPL へ入ると「呼び出し元のローカルが見えてしまう」。
+    /// そこで停止中だけ `chunk.local_names`（slot → 変数名。V-E で用意され、ここが**最初の消費者**）
+    /// を使って一時スコープを組み、`frame_floor` を進めて呼び出し元を隠す
+    /// ＝ ツリーウォークで停止したときと同じ見え方にする。
+    ///
+    /// 値は**コピー**を見せる。REPL はプログラム変数への代入を拒否する仕様なので
+    /// 書き戻しは不要（`let dbg::x` だけが書き込み可能で、それはこの一時スコープに入る）。
+    pub(crate) fn vm_debug_pause(
+        &mut self,
+        chunk: &crate::vm::Chunk,
+        buf: &[Value],
+        base: usize,
+        span: &Span,
+        declared: &[bool],
+    ) -> Result<(), String> {
+        let saved_floor = self.frame_floor;
+        let saved_len = self.scopes.len();
+        self.push_scope();
+        self.frame_floor = saved_len;
+        for (slot, name) in chunk.local_names.iter().enumerate() {
+            if name.is_empty() || name == "_" {
+                continue; // temp slot（無名）と `_` は見せない
+            }
+            // ⚠ **まだ宣言文を実行していない slot は見せない**。flat buffer は全 slot を
+            // `None` で初期化するので、見せるとツリーウォークでは NameError になる名前が
+            // `None` として引けてしまう（off/auto 不一致）。
+            if !declared.get(slot).copied().unwrap_or(false) {
+                continue;
+            }
+            if let Some(v) = buf.get(base + slot) {
+                self.declare_var(name.clone(), Var::new(v.clone(), false));
+            }
+        }
+        let r = self.exec_breakpoint(span);
+        // 例外で抜けても必ず戻す。
+        self.scopes.truncate(saved_len);
+        self.frame_floor = saved_floor;
+        r.map(|_| ())
     }
 
     /// 文に使用可能な最良の `Span` を返す。スパンがなければ最後の既知スパン、最悪は行 0 を返す。
@@ -354,7 +499,7 @@ impl Interpreter {
             };
         }
         // Fall back to last known good span (set in exec() after every successful pause).
-        if let Some(ref s) = self.dbg_last_span {
+        if let Some(ref s) = self.dbg.last_span {
             return s.clone();
         }
         let file = self.source_map.keys().next().cloned().unwrap_or_default();
@@ -368,7 +513,7 @@ impl Interpreter {
     /// 直前に表示したスパンを記録し、次の位置不明文のフォールバックとして使えるようにする。
     pub(super) fn record_dbg_span(&mut self, span: &Span) {
         if span.line != 0 {
-            self.dbg_last_span = Some(span.clone());
+            self.dbg.last_span = Some(span.clone());
         }
     }
 }

@@ -1,8 +1,6 @@
 // tests/callables.rs — 関数型(function type)、クロージャ、デコレータのテスト。
 
 use super::*;
-use crate::lexer::Lexer;
-use crate::parser::Parser;
 
 // --- function type ---
 
@@ -148,12 +146,7 @@ fn test_closure_captures_mutable_shared() {
         "let r2 = counter()\n",
         "let r3 = counter()\n",
     );
-    let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens, None).parse_program().unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        interp.exec(stmt).unwrap();
-    }
+    let interp = run_interp(src);
     assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(1)));
     assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(2)));
     assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(3)));
@@ -175,12 +168,7 @@ fn test_closure_each_call_new_env() {
         "let r_a = a()\n",
         "let r_b = b()\n",
     );
-    let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens, None).parse_program().unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        interp.exec(stmt).unwrap();
-    }
+    let interp = run_interp(src);
     assert!(matches!(interp.get_val("r_a").unwrap(), Value::Int(1)));
     assert!(matches!(interp.get_val("r_b").unwrap(), Value::Int(101)));
 }
@@ -225,15 +213,278 @@ fn test_closure_static_shared_across_calls() {
         "let r2 = b()\n",
         "let r3 = a()\n",
     );
-    let tokens = Lexer::new(src, "").tokenize();
-    let stmts = Parser::new(tokens, None).parse_program().unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        interp.exec(stmt).unwrap();
-    }
+    let interp = run_interp(src);
     assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(1)));
     assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(2)));
     assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(3)));
+}
+
+/// #30 の不変条件: **多数のクロージャ実体が 1 つの Chunk を共有しても環境は独立**。
+///
+/// `get_or_compile_chunk` は定義サイト（`ChunkFnDef::compiled`）ごとに 1 回だけ
+/// コンパイルし、実体間で `Rc<Chunk>` を共有する。共有してよい根拠は
+/// 「キャプチャの slot 採番が `sort()` 済みで実体に依らない」＋「束縛は名前で引く」の 2 つ。
+/// **どちらかが崩れると、後から作った実体が先の実体の値を見る**ので、
+/// ここでは実体を**交互に**呼んで取り違えを検出する。
+#[test]
+fn test_closure_chunk_shared_across_instances_keeps_env_independent() {
+    // 不変キャプチャ: 3 実体を作り、作った順と違う順で呼ぶ
+    let src = concat!(
+        "fn make_adder(let x: int) -> function[let int]->int:
+",
+        "    fn add(let y: int) -> int:
+",
+        "        return x + y
+",
+        "    return add
+",
+        "let a1 = make_adder(1)
+",
+        "let a2 = make_adder(20)
+",
+        "let a3 = make_adder(300)
+",
+        "let r3 = a3(7)
+",
+        "let r1 = a1(7)
+",
+        "let r2 = a2(7)
+",
+        // 実体を作り直しても以前の実体は影響を受けない
+        "let a4 = make_adder(4000)
+",
+        "let r1b = a1(7)
+",
+        "let r4 = a4(7)
+",
+    );
+    let interp = run_interp(src);
+    assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(8)));
+    assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(27)));
+    assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(307)));
+    assert!(matches!(interp.get_val("r1b").unwrap(), Value::Int(8)));
+    assert!(matches!(interp.get_val("r4").unwrap(), Value::Int(4007)));
+}
+
+/// #30 の不変条件（可変キャプチャ版）: セルは**実体ごとに独立**でなければならない。
+///
+/// 可変キャプチャは slot ではなく**セル表**（`captured_cells`）を通るので、
+/// 共有する Chunk が持つのは「セル index」だけで、セル自体は `captured_env` から来る。
+/// index が実体間でずれると**別の実体のカウンタを進める**。
+#[test]
+fn test_closure_chunk_shared_across_instances_keeps_cells_independent() {
+    let src = concat!(
+        "fn make_counter(let start: int) -> function[]->int:
+",
+        "    mut n = start
+",
+        "    fn inc() -> int:
+",
+        "        n += 1
+",
+        "        return n
+",
+        "    return inc
+",
+        "let c1 = make_counter(0)
+",
+        "let c2 = make_counter(100)
+",
+        "let c3 = make_counter(200)
+",
+        // 交互に呼ぶ（取り違えると値が飛ぶ）
+        "let r1 = c1()
+",
+        "let r2 = c2()
+",
+        "let r3 = c1()
+",
+        "let r4 = c3()
+",
+        "let r5 = c2()
+",
+        "let r6 = c1()
+",
+    );
+    let interp = run_interp(src);
+    assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(1)));
+    assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(101)));
+    assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(2)));
+    assert!(matches!(interp.get_val("r4").unwrap(), Value::Int(201)));
+    assert!(matches!(interp.get_val("r5").unwrap(), Value::Int(102)));
+    assert!(matches!(interp.get_val("r6").unwrap(), Value::Int(3)));
+}
+
+/// #30: 不変キャプチャと可変キャプチャを**同時に**持つクロージャ。
+///
+/// 両方を持つと slot 採番（不変）とセル採番（可変）が同じ Chunk に同居する。
+/// 片方だけ正しい実装でも通ってしまわないよう、混在形を独立に押さえる。
+#[test]
+fn test_closure_chunk_shared_mixed_captures() {
+    let src = concat!(
+        "fn make(let step: int, let base: int) -> function[]->int:
+",
+        "    mut acc = base
+",
+        "    fn bump() -> int:
+",
+        "        acc += step
+",
+        "        return acc
+",
+        "    return bump
+",
+        "let m1 = make(1, 0)
+",
+        "let m2 = make(10, 1000)
+",
+        "let r1 = m1()
+",
+        "let r2 = m2()
+",
+        "let r3 = m1()
+",
+        "let r4 = m2()
+",
+    );
+    let interp = run_interp(src);
+    assert!(matches!(interp.get_val("r1").unwrap(), Value::Int(1)));
+    assert!(matches!(interp.get_val("r2").unwrap(), Value::Int(1010)));
+    assert!(matches!(interp.get_val("r3").unwrap(), Value::Int(2)));
+    assert!(matches!(interp.get_val("r4").unwrap(), Value::Int(1020)));
+}
+
+/// #45 の不変条件: **`deep_clone` は本体 AST の `Rc` を共有してはいけない**。
+///
+/// `FnValue.body` は `Rc<[Stmt]>`（クロージャ実体ごとの AST 複製を消すため）。
+/// `Rc` の参照カウントは**非アトミック**なので、スレッドへ送る `deep_clone` が
+/// `body.clone()`（＝参照カウント加算）で済ませると、複数スレッドが同じカウンタを
+/// 叩いて壊れる（解放済みメモリの再利用 / 二重解放）— #15 と同じ形。
+///
+/// ⚠⚠ **この誤りはコンパイルエラーにならない**。`body` の型が `Vec<Stmt>` から
+/// `Rc<[Stmt]>` に変わった瞬間、`body.clone()` の意味が「中身の複製」から
+/// 「参照カウント加算」へ**黙って**変わる。⇒ 型ではなくテストで固定する。
+///
+/// ⚠ async の実地ストレス（[async_closure_share.ar](examples/async/async_closure_share.ar)）は
+/// **この誤りを再現しない** — worker は捕捉したクロージャの内側 `Rc` を
+/// タスク終了時に 1 回 drop するだけで、競合窓が狭すぎる。
+/// **決定的に押さえるのはこのテストだけ**なので消さないこと。
+#[test]
+fn test_deep_clone_does_not_share_fn_body_rc() {
+    use std::rc::Rc;
+    let src = concat!(
+        "fn make_adder(let x: int) -> function[let int]->int:
+",
+        "    fn add(let y: int) -> int:
+",
+        "        let unused = x + 1
+",
+        "        return x + y
+",
+        "    return add
+",
+        "let f = make_adder(10)
+",
+    );
+    let interp = run_interp(src);
+    let original = interp.get_val("f").expect("f must exist");
+    let cloned = original.deep_clone();
+
+    let (a, b) = match (&original, &cloned) {
+        (Value::Function(a), Value::Function(b)) => (a, b),
+        _ => panic!("expected Value::Function on both sides"),
+    };
+    // 本体は同じ内容でなければならない（複製の失敗＝空や欠損を弾く）
+    assert_eq!(a.body.len(), b.body.len(), "deep_clone changed the body length");
+    assert!(!a.body.is_empty(), "test is vacuous if the body is empty");
+    // ⚠ 本体は**別のアロケーション**でなければならない（ここが本題）
+    assert!(
+        !std::ptr::eq(a.body.as_ptr(), b.body.as_ptr()),
+        "deep_clone shared the body Rc across the copy (non-atomic refcount would race across threads)"
+    );
+    // 外側の `Rc<FnValue>` も当然別物
+    assert!(!Rc::ptr_eq(a, b), "deep_clone returned the same FnValue");
+}
+
+/// #45 の不変条件（`OverloadedFn` 版）。`deep_clone` は**オーバーロードの全要素**で
+/// 本体 `Rc` を複製しなければならない（`Value::Function` だけ直して満足しない）。
+#[test]
+fn test_deep_clone_does_not_share_overloaded_fn_body_rc() {
+    let src = concat!(
+        "fn dup(let a: int) -> int:
+",
+        "    return a * 2
+",
+        "fn dup(let a: str) -> str:
+",
+        "    return a + a
+",
+        "let g = dup
+",
+    );
+    let interp = run_interp(src);
+    let original = interp.get_val("g").expect("g must exist");
+    let cloned = original.deep_clone();
+    let (a, b) = match (&original, &cloned) {
+        (Value::OverloadedFn(a), Value::OverloadedFn(b)) => (a, b),
+        _ => panic!("expected Value::OverloadedFn on both sides (got {original:?})"),
+    };
+    assert_eq!(a.len(), b.len());
+    assert!(a.len() >= 2, "test is vacuous without at least 2 overloads");
+    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+        assert!(!x.body.is_empty());
+        assert!(
+            !std::ptr::eq(x.body.as_ptr(), y.body.as_ptr()),
+            "overload {i} shared its body Rc across deep_clone"
+        );
+    }
+}
+
+/// #45 の不変条件（クラスのメソッド版）。インスタンスをスレッドへ送ると
+/// `ClassValue::deep_clone` がメソッドの `FnValue` を作り直すので、そこでも共有しない。
+#[test]
+fn test_deep_clone_does_not_share_method_body_rc() {
+    use crate::interpreter::Value as V;
+    let src = concat!(
+        "class Counter:
+",
+        "    mut n: int
+",
+        "    fn __init__(mut self, let n: int) -> None:
+",
+        "        self.n = n
+",
+        "    fn bump(mut self) -> int:
+",
+        "        self.n += 1
+",
+        "        return self.n
+",
+        "let c = Counter(1)
+",
+    );
+    let interp = run_interp(src);
+    let original = interp.get_val("c").expect("c must exist");
+    let cloned = original.deep_clone();
+    let (ca, cb) = match (&original, &cloned) {
+        (V::Instance(a), V::Instance(b)) => (a.borrow().class.clone(), b.borrow().class.clone()),
+        _ => panic!("expected Value::Instance on both sides"),
+    };
+    let mut checked = 0;
+    for (name, overloads) in &ca.methods {
+        let other = cb.methods.get(name).expect("method missing after deep_clone");
+        for (x, y) in overloads.iter().zip(other.iter()) {
+            if x.body.is_empty() {
+                continue;
+            }
+            assert!(
+                !std::ptr::eq(x.body.as_ptr(), y.body.as_ptr()),
+                "method `{name}` shared its body Rc across deep_clone"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 2, "test is vacuous: only {checked} method bodies checked");
 }
 
 /// closure_freeze_captured_var_error のテスト。

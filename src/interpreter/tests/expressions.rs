@@ -426,6 +426,496 @@ let result = while True ->list[int]:
     assert_int_list(run_get(src, "result"), &[0, 1, 2, 3]);
 }
 
+// ---------------------------------------------------------------------------
+// #34: break / continue が制御フロー「式」を貫通して外側ループへ届く
+//
+// ⚠ ここは長らく**例題が 1 本も無く**、`force_gate` にも `compare_vm_modes` にも
+//    映らなかった領域。基準は参照実装（`python -m impl_python`）の出力。
+//    例題は examples/basics/control_flow_expr_escape{,_error}.ar。
+// ---------------------------------------------------------------------------
+
+/// `continue` が block: 式を貫通して外側 for へ届く（#34）。
+/// **以前は `SyntaxError` になっていた**（ツリーウォークのバグ）。
+#[test]
+fn test_continue_through_block_expr_reaches_loop() {
+    let src = "
+mut s = 0
+for i in range(6):
+    let v = 100 + block ->int:
+        if i < 3:
+            continue
+        block_return i
+    s = s + v
+";
+    assert_int(run_get(src, "s"), 312); // 103 + 104 + 105
+}
+
+/// `continue` が if 式を貫通して外側 for へ届く（#34）。
+/// **以前は黙って握り潰されて `None` が返り** `int + None` の TypeError になっていた。
+#[test]
+fn test_continue_through_if_expr_reaches_loop() {
+    let src = "
+mut t = 0
+for i in range(6):
+    let v = if i < 3 ->int:
+        continue
+    else:
+        block_return i
+    t = t + v
+";
+    assert_int(run_get(src, "t"), 12); // 3 + 4 + 5
+}
+
+/// `continue` が while 文でも貫通する（#34）。
+#[test]
+fn test_continue_through_block_expr_in_while() {
+    let src = "
+mut s = 0
+mut i = 0
+while i < 6:
+    i += 1
+    let v = 100 + block ->int:
+        if i < 3:
+            continue
+        block_return i
+    s = s + v
+";
+    assert_int(run_get(src, "s"), 418); // 103 + 104 + 105 + 106
+}
+
+/// 跳ぶ時点でオペランドが積まれている形（`1 + 2 * block …`）でも正しく抜ける（#34）。
+/// VM はここで積んだ値を捨ててからジャンプする（`stmt_base` 分の `Pop`）。
+#[test]
+fn test_break_with_pending_operands() {
+    let src = "
+mut r = 0
+for i in range(5):
+    r = 1 + 2 * block ->int:
+        if i == 3:
+            break
+        block_return i
+";
+    assert_int(run_get(src, "r"), 5); // i=2 の 1 + 2*2
+}
+
+/// 入れ子のブロック式を 2 段貫通する（#34）。
+#[test]
+fn test_break_through_nested_block_exprs() {
+    let src = "
+mut deep = -1
+for i in range(5):
+    let a = 1 + block ->int:
+        let b = 2 + block ->int:
+            if i == 2:
+                break
+            block_return i
+        block_return b
+    deep = a
+";
+    assert_int(run_get(src, "deep"), 4); // i=1 の 1 + (2 + 1)
+}
+
+/// `break` は最内ループだけを抜ける（外側へ漏れない）（#34）。
+#[test]
+fn test_break_through_block_expr_reaches_innermost_loop_only() {
+    let src = "
+mut n = 0
+for i in range(3):
+    for j in range(5):
+        let _ = block ->int:
+            if j == 2:
+                break
+            block_return j
+        n += 1
+";
+    assert_int(run_get(src, "n"), 6); // 外ループ 3 周 × 内ループ 2 回
+}
+
+/// `block:` **文**の中の `break` も外側ループへ届く（#34）。
+#[test]
+fn test_break_inside_block_stmt_exits_loop() {
+    let src = "
+mut bs = -1
+for i in range(5):
+    block:
+        if i == 3:
+            break
+        bs = i
+";
+    assert_int(run_get(src, "bs"), 2);
+}
+
+// ---------------------------------------------------------------------------
+// #35: block_return / loop_yield の実行時型検査
+//
+// ⚠ ここも長らく **`--vm=off` にしか無い検査**で、VM 経路は素通りしていた。
+//    以下はツリーウォーク側の固定。VM 側は
+//    examples/basics/block_return_typecheck{,_error}.ar ＋ compare_vm_modes が押さえる。
+// ---------------------------------------------------------------------------
+
+/// `loop_yield` の値が `->list[T]` の要素型に合わなければ実行時エラー（#35）。
+#[test]
+fn test_loop_yield_element_type_check_error() {
+    let src = "let x = for i in range(3) ->list[int]:\n    loop_yield \"s\"\n";
+    let err = run(src).unwrap_err();
+    assert!(err.contains("loop_yield value has type 'str'"), "got: {err}");
+    assert!(err.contains("element type 'int'"), "got: {err}");
+}
+
+/// 素の `->list`（要素型なし）は `loop_yield` を検査しない（#35）。
+#[test]
+fn test_loop_yield_bare_list_ann_is_unchecked() {
+    let src = "let x = for i in range(2) ->list:\n    loop_yield \"any\"\n";
+    assert!(run(src).is_ok());
+}
+
+/// `block:` **文**の中の `block_return` は**外側の式**のアノテーションで検査される（#35）。
+///
+/// ⚠ ツリーウォークは `block:` 文で `BLOCK_RETURN_EXPECTED_TYPE` へ push しない。
+/// VM 側で独立したコンテキストにすると off/on が割れる（`Stmt::Block` は継承する）。
+#[test]
+fn test_block_stmt_block_return_uses_enclosing_annotation() {
+    let src = "let x = block ->int:\n    block:\n        block_return \"bad\"\n    block_return 1\n";
+    let err = run(src).unwrap_err();
+    assert!(err.contains("block_return value has type 'str'"), "got: {err}");
+}
+
+// ---------------------------------------------------------------------------
+// #37: finally を跨ぐ脱出
+//
+// ⚠ VM 側の回帰検知が本命（`emit_unwind_tries` が finally 本体を脱出経路へ複製する）。
+//    例題は examples/exceptions/try_finally_escape.ar。
+// ---------------------------------------------------------------------------
+
+/// `break` が `finally` を走らせてからループを抜ける（#37）。
+#[test]
+fn test_break_through_finally_runs_it() {
+    let src = "
+mut log = []
+mut r = -1
+for i in range(4):
+    try:
+        if i == 2:
+            break
+        r = i
+    finally:
+        log.append(i)
+";
+    assert_int_list(run_get(src, "log"), &[0, 1, 2]);
+    assert_int(run_get(src, "r"), 1);
+}
+
+/// 入れ子の `finally` は**内側から**走る（#37）。
+#[test]
+fn test_nested_finally_runs_innermost_first() {
+    let src = "
+mut log = []
+fn f() -> int:
+    try:
+        try:
+            return 1
+        finally:
+            log.append(1)
+    finally:
+        log.append(2)
+let v = f()
+";
+    assert_int_list(run_get(src, "log"), &[1, 2]);
+}
+
+/// `block_return` も `finally` を走らせてからブロック式を抜ける（#37）。
+#[test]
+fn test_block_return_through_finally_runs_it() {
+    let src = "
+mut log = []
+let b = block ->int:
+    try:
+        block_return 7
+    finally:
+        log.append(1)
+";
+    assert_int(run_get(src, "b"), 7);
+    assert_int_list(run_get(src, "log"), &[1]);
+}
+
+/// `loop_yield` は脱出ではないので `try` の中でもそのまま蓄積が続く（#37）。
+///
+/// ⚠ 旧 `has_escape`（削除済み）が `LoopYield` を脱出扱いしていたため、この形は**丸ごと bail** していた。
+#[test]
+fn test_loop_yield_inside_try_is_not_an_escape() {
+    let src = "
+let y = for i in range(3) ->list[int]:
+    try:
+        loop_yield i
+    finally:
+        let _ = 0
+";
+    assert_int_list(run_get(src, "y"), &[0, 1, 2]);
+}
+
+// ---------------------------------------------------------------------------
+// #39: 関数本体からのグローバル代入
+//
+// ⚠ VM 側の回帰検知が本命。`Op::StoreGlobal` は **`scopes[0]` だけ**を対象にする
+//    （`assign_var` へ委譲すると、VM 関数は `scopes` を押さないので**呼び出し元のローカル**を
+//    走査してしまう）。例題は examples/basics/global_assign_from_fn.ar。
+// ---------------------------------------------------------------------------
+
+/// 関数本体からグローバルへ複合代入できる（#39）。
+#[test]
+fn test_compound_assign_to_global_from_fn() {
+    let src = "
+mut counter = 0
+fn bump() -> None:
+    counter += 1
+for i in range(3):
+    bump()
+";
+    assert_int(run_get(src, "counter"), 3);
+}
+
+/// クロージャが外側ローカルとグローバルの両方へ書ける（#39）。
+#[test]
+fn test_closure_writes_outer_local_and_global() {
+    let src = "
+mut total = 0
+fn outer() -> int:
+    mut acc = 10
+    fn inner() -> None:
+        acc += 1
+        total += 100
+    inner()
+    inner()
+    return acc
+let v = outer()
+";
+    assert_int(run_get(src, "v"), 12);
+    assert_int(run_get(src, "total"), 200);
+}
+
+/// グローバルへの書き込みが**呼び出し元の同名パラメータを壊さない**（#39）。
+///
+/// ⚠ `Op::StoreGlobal` を `assign_var` へ委譲に戻すとここが壊れる
+/// （グローバルと同名の**ローカル宣言**は静的型検査が禁じるので、
+///  同名にできるパラメータ／for ターゲットでしか検知できない）。
+#[test]
+fn test_global_store_does_not_touch_caller_frame() {
+    let src = "
+mut shared = 0
+fn writes_global() -> None:
+    shared = 999
+fn caller(mut shared: int) -> int:
+    writes_global()
+    return shared
+let kept = caller(1)
+";
+    assert_int(run_get(src, "kept"), 1);
+    assert_int(run_get(src, "shared"), 999);
+}
+
+/// 未宣言の名前への代入は実行時 `NameError`（検査は緩めていない）（#39）。
+#[test]
+fn test_assign_to_undeclared_global_from_fn_is_error() {
+    let src = "
+fn f() -> None:
+    not_declared_anywhere = 1
+f()
+";
+    // ⚠ 内部エラーは `RaisedError` へ包まれるので `run` の `Err` はセンチネル。
+    // 実際の例外は `run_exc` で取り出す（`raise` と同じ経路）。
+    let raised = run_exc(src).unwrap().expect("NameError が送出されるはず");
+    let Value::Instance(inst) = &raised.exception else {
+        panic!("expected an exception instance, got {:?}", raised.exception);
+    };
+    assert_eq!(inst.borrow().class.name, "NameError");
+}
+
+// ---------------------------------------------------------------------------
+// #40: finally 本体そのものからの脱出（保留中の動作を破棄する）
+//
+// ⚠ VM 側の回帰検知が本命。finally は正常路・例外路・各脱出路に複製され、
+//    **複製ごとにスタックの形が違う**（例外路は例外値、return 路は戻り値が載る）。
+//    `compile_finally_copy` の `extra` を落とすとその値が残って壊れる。
+//    例題は examples/exceptions/finally_body_escape.ar。
+// ---------------------------------------------------------------------------
+
+/// `finally` 内の `break` は**保留中の `return` を破棄する**（#40）。
+#[test]
+fn test_break_in_finally_discards_pending_return() {
+    let src = "
+fn f() -> int:
+    for i in range(3):
+        try:
+            return 100
+        finally:
+            break
+    return -1
+let v = f()
+";
+    assert_int(run_get(src, "v"), -1);
+}
+
+/// `finally` 内の `return` は**伝播中の例外を破棄する**（#40）。
+#[test]
+fn test_return_in_finally_discards_exception() {
+    let src = "
+fn f() -> int:
+    try:
+        raise ValueError(\"x\")
+    finally:
+        return 7
+let v = f()
+";
+    assert_int(run_get(src, "v"), 7);
+}
+
+/// `finally` 内の `block_return` は**例外経路でも**ブロック式の値を差し替える（#40）。
+#[test]
+fn test_block_return_in_finally_on_exception_path() {
+    let src = "
+let b = block ->int:
+    try:
+        raise ValueError(\"boom\")
+    finally:
+        block_return 3
+";
+    assert_int(run_get(src, "b"), 3);
+}
+
+/// 内側の `finally` が `break` しても**外側の `finally` は走る**（#40）。
+#[test]
+fn test_outer_finally_runs_when_inner_breaks() {
+    let src = "
+mut log = []
+for i in range(3):
+    try:
+        try:
+            log.append(i)
+        finally:
+            if i == 1:
+                break
+    finally:
+        log.append(100 + i)
+";
+    assert_int_list(run_get(src, "log"), &[0, 100, 1, 101]);
+}
+
+/// `block:` **文**は `loop_yield` に対して透過（#35）。
+///
+/// ⚠ VM 側の回帰検知が本命。`Stmt::Block` に蓄積先を持たせると値が文へ吸い込まれ、
+/// `for … ->list[int]: block: loop_yield i` が `None` になる（実際に踏んだ）。
+#[test]
+fn test_block_stmt_is_transparent_to_loop_yield() {
+    let src = "
+let r = for i in range(3) ->list[int]:
+    block:
+        loop_yield i
+";
+    assert_int_list(run_get(src, "r"), &[0, 1, 2]);
+}
+
+/// 検査に使うのは**最内**ブロック式のアノテーション（#35）。
+/// 内側 `if ->int:` は `list[T]` ではないので `loop_yield` は検査されない。
+#[test]
+fn test_loop_yield_uses_innermost_annotation() {
+    let src = "
+let x = for i in range(3) ->list[int]:
+    let _ = if i == 1 ->int:
+        loop_yield \"not checked\"
+        block_return 0
+    else:
+        0
+    loop_yield i
+";
+    assert!(run(src).is_ok());
+}
+
+/// 属性代入の右辺にあるブロック式から `break`（#34）。
+///
+/// ⚠ VM 側の回帰検知が本命。右辺の評価中は**レシーバが 1 つ積まれている**ので、
+/// `Stmt::AttrAssign` が深さ `stmt_base + 1` を伝えないと `--vm=on` だけ
+/// `VmForceError` になる（実測で見つけた伝播漏れ）。
+#[test]
+fn test_break_in_attr_assign_rhs() {
+    let src = "
+class Box:
+    mut v: int
+
+    fn __init__(mut self) -> None:
+        self.v = 0
+
+mut bx = Box()
+for i in range(5):
+    bx.v = 1 + block ->int:
+        if i == 3:
+            break
+        block_return i
+let got = bx.v
+";
+    assert_int(run_get(src, "got"), 3);
+}
+
+/// `try` 本体のブロック式から `break` で抜けても、**例外ハンドラが残らない**（#34）。
+///
+/// ⚠ VM 側の回帰検知が本命（ツリーウォークにハンドラスタックは無い）。
+/// `emit_unwind_to_loop` の `PopTry` を消すと、ループを抜けた後の `raise` を
+/// ループ内の `except` が横取りする（実際に踏んだ）。例題は
+/// examples/basics/control_flow_expr_escape.ar のケース 12。
+#[test]
+fn test_break_out_of_try_does_not_leave_handler() {
+    let src = "
+mut fired = 0
+mut caught = 0
+fn scan() -> int:
+    for i in range(5):
+        try:
+            let _ = block ->int:
+                if i == 2:
+                    break
+                block_return i
+        except ValueError:
+            fired += 1
+    raise ValueError(\"must escape\")
+    return 0
+try:
+    let _ = scan()
+except ValueError:
+    caught = 1
+";
+    assert_int(run_get(src, "fired"), 0);
+    assert_int(run_get(src, "caught"), 1);
+}
+
+/// `try` 本体からの `continue` も外側ループへ届く（#34）。
+#[test]
+fn test_continue_out_of_try_reaches_loop() {
+    let src = "
+mut s = 0
+for i in range(6):
+    try:
+        if i < 3:
+            continue
+        s = s + i
+    except ValueError:
+        s = -1
+";
+    assert_int(run_get(src, "s"), 12); // 3 + 4 + 5
+}
+
+/// 囲むループが無ければ `continue` は実行時エラー（関数境界を越えない）（#34）。
+#[test]
+fn test_continue_outside_loop_in_block_expr_is_error() {
+    let src = "
+fn bad() -> int:
+    let v = 1 + block ->int:
+        continue
+    return v
+let x = bad()
+";
+    let err = run(src).unwrap_err();
+    assert!(err.contains("'continue' outside for/while loop"), "got: {err}");
+}
+
 /// break_does_not_cross_function_boundary のテスト。
 #[test]
 fn test_break_does_not_cross_function_boundary() {

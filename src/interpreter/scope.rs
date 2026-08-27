@@ -28,13 +28,47 @@ impl Interpreter {
     ///
     /// 戻り値: 見つかった `Var` への参照、存在しない場合は `None`
     pub(super) fn get_var(&self, name: &str) -> Option<&Var> {
-        // 末尾（最内部スコープ）から先頭（グローバル）へ向けて順に検索する
-        for scope in self.scopes.iter().rev() {
+        // 現関数のローカル（frame_floor..）を最内部から外側へ検索し、なければグローバル（0）を見る。
+        // 呼び出し元のローカル（1..frame_floor）はレキシカル隔離のため走査しない。
+        for scope in self.scopes[self.frame_floor..].iter().rev() {
             if let Some(v) = scope.get(name) {
                 return Some(v);
             }
         }
-        None
+        self.scopes[0].get(name)
+    }
+
+    /// 組み込み名がユーザーの束縛でシャドウされているか（#15d）。
+    ///
+    /// 呼び先の振り分けが「名前が組み込みと一致するか」だけを見ていると、
+    /// `let repr = my_fn` としても組み込みが横取りする。`Resolution` は使えない —
+    /// リゾルバが処理するのはトップレベル関数の本体だけで、**モジュール最上位・
+    /// テンプレート本体・合成 AST は常に `Unresolved`** だからである
+    /// （`Unresolved` は「シャドウが無い」を意味しない）。よって実際の束縛を見る。
+    ///
+    /// ⚠ `Value::Type(name)` は**組み込み登録そのもの**なのでシャドウとみなさない。
+    /// `register_builtin_globals` が `len` を型値としてグローバルに置いており
+    /// （ネイティブの `cb_get_global("len")` 用）、これを除かないと `len()` が
+    /// 組み込み経路から `call_type_by_name_evaled` へ逸れる。そちらには
+    /// `Value::PyObject` のアームが無いので **`len(py_obj)` が壊れ**、
+    /// 組み込み経路を保つ VM 側とも食い違う。
+    pub(crate) fn builtin_is_shadowed(&self, name: &str) -> bool {
+        match self.get_var(name) {
+            None => false,
+            Some(Var::Immutable(Value::Type(t)) | Var::Mutable(Value::Type(t))) => t != name,
+            Some(_) => true,
+        }
+    }
+
+    /// グローバルスコープ側だけを見た同判定（VM 用・#15d）。
+    /// VM はローカルのシャドウをコンパイル時に `slots.contains_key` で除外済みなので、
+    /// 実行時に見る必要があるのはグローバルだけ。
+    pub(crate) fn builtin_is_shadowed_global(&self, name: &str) -> bool {
+        match self.scopes[0].get(name) {
+            None => false,
+            Some(Var::Immutable(Value::Type(t)) | Var::Mutable(Value::Type(t))) => t != name,
+            Some(_) => true,
+        }
     }
 
     /// 指定名の変数の値だけをクローンして返す。
@@ -42,6 +76,25 @@ impl Interpreter {
     /// 変数が存在しない場合は `None`。
     pub(super) fn get_val(&self, name: &str) -> Option<Value> {
         self.get_var(name).map(|v| v.get_value())
+    }
+
+    /// VM デバッガ: 停止スコープから名前引きで値を取る（`LoadName` op）。
+    pub(crate) fn vm_load_name(&self, name: &str) -> Option<Value> {
+        self.get_val(name)
+    }
+
+    /// VM デバッガ: `let dbg::name = expr` を停止スコープへ宣言する（`DeclareName` op）。
+    /// 非識別子ソースの `let` 意味論に合わせ、Instance は deep_copy + freeze する。
+    pub(crate) fn vm_declare_debug(&mut self, name: &str, value: Value) -> Result<(), String> {
+        let v = if matches!(value, Value::Instance(_)) {
+            let copied = Self::deep_copy_value(value);
+            self.apply_freeze_to_value(&copied, true)?;
+            copied
+        } else {
+            value
+        };
+        self.declare_var(name.to_string(), Var::new(v, false));
+        Ok(())
     }
 
     /// 最内部スコープに新しい変数を宣言する。
@@ -62,7 +115,9 @@ impl Interpreter {
     ///
     /// 戻り値: `Ok(())` — 成功。`Err(message)` — 変数未定義 (`NameError`) または不変変数 (`TypeError`)
     pub(super) fn assign_var(&mut self, name: &str, value: Value) -> Result<(), String> {
-        for scope in self.scopes.iter_mut().rev() {
+        // 現関数のローカル（frame_floor..）を内側から検索し、なければグローバル（0）。
+        let floor = self.frame_floor;
+        for scope in self.scopes[floor..].iter_mut().rev() {
             if let Some(v) = scope.get_mut(name) {
                 if !v.is_mutable() {
                     return Err(format!(
@@ -73,6 +128,15 @@ impl Interpreter {
                 return Ok(());
             }
         }
+        if let Some(v) = self.scopes[0].get_mut(name) {
+            if !v.is_mutable() {
+                return Err(format!(
+                    "TypeError: cannot assign to immutable variable '{name}'"
+                ));
+            }
+            v.set_value(value);
+            return Ok(());
+        }
         Err(format!("NameError: '{name}' is not defined"))
     }
 
@@ -81,21 +145,32 @@ impl Interpreter {
     /// `SlotCell`（スロットキャッシュ昇格済み）は値スナップショットで `Immutable` に戻し、
     /// `slot_epoch` を進めて全 AST スロットキャッシュを無効化する。
     pub(super) fn make_var_immutable(&mut self, name: &str) {
-        let mut freeze_slot = false;
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(v) = scope.get_mut(name) {
-                match v {
-                    Var::Mutable(val) => {
-                        *v = Var::Immutable(std::mem::replace(val, Value::None));
-                    }
-                    Var::SlotCell(rc) => {
-                        let snapshot = rc.borrow().clone();
-                        *v = Var::Immutable(snapshot);
-                        freeze_slot = true;
-                    }
-                    _ => {}
-                }
+        // 対象スコープの index を先に確定する（現関数のローカル frame_floor.. を内側から、なければグローバル 0）。
+        let floor = self.frame_floor;
+        let mut idx: Option<usize> = None;
+        for i in (floor..self.scopes.len()).rev() {
+            if self.scopes[i].contains_key(name) {
+                idx = Some(i);
                 break;
+            }
+        }
+        let idx = match idx {
+            Some(i) => i,
+            None if self.scopes[0].contains_key(name) => 0,
+            None => return,
+        };
+        let mut freeze_slot = false;
+        if let Some(v) = self.scopes[idx].get_mut(name) {
+            match v {
+                Var::Mutable(val) => {
+                    *v = Var::Immutable(std::mem::replace(val, Value::None));
+                }
+                Var::SlotCell(rc) => {
+                    let snapshot = rc.borrow().clone();
+                    *v = Var::Immutable(snapshot);
+                    freeze_slot = true;
+                }
+                _ => {}
             }
         }
         if freeze_slot {

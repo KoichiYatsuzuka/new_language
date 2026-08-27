@@ -1,0 +1,40 @@
+# toplevel_global_shadow.ar — 最上位グローバルが入れ子束縛に覆われるケース（#21-b）
+#
+# リゾルバをモジュール最上位まで広げ、最上位で宣言された名前への参照に
+# `Resolution::Global` を付けるようにした（名前引き → 索引アクセス）。
+#
+# その際 **push されたスコープの束縛は `scopes[0]` に居ない**ので、
+# それらに覆われる名前を `Global` にしてはいけない。取り違えると
+# 「グローバルを読むべきでない位置でグローバルを読む」バグになる
+# （関数側では `collection.ar` の set を for ターゲットが覆って実際に落ちた実例がある）。
+#
+# 期待: for / if / while / block のどこでも、覆われた名前は内側の束縛を読むこと。
+
+let items = [10, 20, 30]
+
+# (1) for ターゲットが最上位グローバルと同名
+let x = 999                 # グローバル
+for x in items:             # push されたスコープの x が覆う
+    print("in-for x =", x)  # 10, 20, 30（999 ではない）
+print("after   x =", x)     # 999 に戻る
+
+# (2) if ブロック内から外側グローバルを読む
+let y = 1
+if True:
+    let y2 = y + 1
+    print("in-if  y2 =", y2)
+print("after   y =", y)
+
+# (3) while 内で最上位 mut を更新する（書き込みは Stmt::Assign の SlotCache 経路）
+mut c = 0
+while c < 3:
+    c = c + 1
+print("c =", c)
+
+# (4) ブロック式の中から外側グローバルを読む
+#     （型検査が同名再宣言を禁じるので内側は別名にしてある）
+let z = 5
+let w = block -> int:
+    let inner = z * 20
+    block_return inner
+print("w =", w, " z =", z)

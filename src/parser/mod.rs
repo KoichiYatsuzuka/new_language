@@ -77,6 +77,15 @@ pub struct Parser {
     module_cache: HashMap<(String, PathBuf), Vec<Stmt>>,
     /// 循環 import 検出用: 現在読み込み中のモジュールパスのセット。
     loading: HashSet<PathBuf>,
+    /// AST 型解決層の node-id 採番カウンタ（タスク #16・段階(a)）。annotatable な Expr を
+    /// 構築するたびに `next_node_id()` で採番する。
+    ///
+    /// **サブパーサと共有してプログラム全体で一意にする**（設計判断 C1「グローバル採番」）。
+    /// per-module 採番だと import 先モジュールの node-id がメインと衝突し、
+    /// 消費側が**別モジュールの注釈を読んでしまう**。VM の型特化のように実行時フォールバックが
+    /// ある消費者は結果が変わらないが、FFI 境界検査のように注釈を信頼する消費者では
+    /// **誤検知（正しい値を型不一致と報告）**になる。実際に再現したため共有へ変更した。
+    node_counter: std::rc::Rc<std::cell::Cell<u32>>,
 }
 
 impl Parser {
@@ -140,7 +149,16 @@ impl Parser {
             root_dir: resolved,
             module_cache: HashMap::new(),
             loading: HashSet::new(),
+            node_counter: std::rc::Rc::new(std::cell::Cell::new(0)),
         }
+    }
+
+    /// AST 型解決層の node-id を1つ採番する（タスク #16）。1 始まり（0 = 未採番）。
+    /// カウンタはサブパーサと共有しているので、プログラム全体で一意になる。
+    fn next_node_id(&mut self) -> u32 {
+        let next = self.node_counter.get() + 1;
+        self.node_counter.set(next);
+        next
     }
 
     /// 現在位置のトークンへの参照を返す。

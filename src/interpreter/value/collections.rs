@@ -1,6 +1,7 @@
 // value/collections.rs — コレクション値型: SliceValue / TupleData / DictData / DictKey。
 
 use indexmap::IndexMap;
+use std::rc::Rc;
 use super::*;
 
 
@@ -97,7 +98,10 @@ pub struct DictData {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum DictKey {
     Int(i64),
-    Str(String),
+    /// `Value::Str` と同じ `Rc<str>`。`d["key"]` の索引でキーを作るたびに
+    /// String を確保しないようにするため（#15 / §7.4-1）。
+    /// `Hash`/`Eq` は `Rc` が pointee へ委譲するので意味論は `String` 時と同一。
+    Str(Rc<str>),
     Bool(bool),
     None,
 }

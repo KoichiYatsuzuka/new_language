@@ -46,7 +46,7 @@ fn test_file_path_type() {
     let src = "let p = path(\"foo.txt\")\nlet v = p.value\n";
     let val = run_get(src, "v");
     assert!(
-        matches!(val, Value::Str(s) if s == "foo.txt"),
+        matches!(val, Value::Str(s) if &*s == "foo.txt"),
         "path.value should be 'foo.txt'"
     );
 }
@@ -65,7 +65,7 @@ fn test_file_rewrite_and_read() {
     let val = run_get(&src2, "r");
     cleanup(&p);
     assert!(
-        matches!(val, Value::Str(s) if s == "hello"),
+        matches!(val, Value::Str(s) if &*s == "hello"),
         "read() should return written text"
     );
 }
@@ -84,7 +84,7 @@ fn test_file_write_line() {
     let val = run_get(&src2, "r");
     cleanup(&p);
     assert!(
-        matches!(val, Value::Str(s) if s == "line1\nline2\n"),
+        matches!(val, Value::Str(s) if &*s == "line1\nline2\n"),
         "write_line should append newline"
     );
 }
@@ -99,23 +99,16 @@ fn test_file_read_line_forward() {
         "let f = open(\"{p}\", FileOpenMode.read)\n\
          let a = f.read_line()\nlet b = f.read_line()\nclose(f)\n"
     );
-    let tokens = crate::lexer::Lexer::new(&src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None)
-        .parse_program()
-        .unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        interp.exec(stmt).unwrap();
-    }
+    let interp = run_interp(&src);
     let a = interp.get_val("a").unwrap();
     let b = interp.get_val("b").unwrap();
     cleanup(&p);
     assert!(
-        matches!(a, Value::Str(s) if s == "alpha\n"),
+        matches!(a, Value::Str(s) if &*s == "alpha\n"),
         "first read_line should be 'alpha\\n'"
     );
     assert!(
-        matches!(b, Value::Str(s) if s == "beta\n"),
+        matches!(b, Value::Str(s) if &*s == "beta\n"),
         "second read_line should be 'beta\\n'"
     );
 }
@@ -130,23 +123,16 @@ fn test_file_read_letter() {
         "let f = open(\"{p}\", FileOpenMode.read)\n\
          let a = f.read_letter()\nlet b = f.read_letter()\nclose(f)\n"
     );
-    let tokens = crate::lexer::Lexer::new(&src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None)
-        .parse_program()
-        .unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        interp.exec(stmt).unwrap();
-    }
+    let interp = run_interp(&src);
     let a = interp.get_val("a").unwrap();
     let b = interp.get_val("b").unwrap();
     cleanup(&p);
     assert!(
-        matches!(a, Value::Str(s) if s == "A"),
+        matches!(a, Value::Str(s) if &*s == "A"),
         "first letter should be 'A'"
     );
     assert!(
-        matches!(b, Value::Str(s) if s == "B"),
+        matches!(b, Value::Str(s) if &*s == "B"),
         "second letter should be 'B'"
     );
 }
@@ -233,14 +219,7 @@ fn test_file_byte_mode_write_read() {
          let g = open(\"{p}\", FileOpenMode.read, StartPoint.top, ByteRecognizingMode.byte)\n\
          let r = g.read()\nclose(g)\n"
     );
-    let tokens = crate::lexer::Lexer::new(&src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None)
-        .parse_program()
-        .unwrap();
-    let mut interp = Interpreter::new();
-    for stmt in &stmts {
-        interp.exec(stmt).unwrap();
-    }
+    let interp = run_interp(&src);
     let val = interp.get_val("r").unwrap();
     cleanup(&p);
     // r should be [72, 105]

@@ -14,11 +14,11 @@ impl Parser {
     pub(crate) fn parse_import_stmt(&mut self) -> Result<Stmt, String> {
         self.advance(); // `import` を消費
 
-        // `[lang]` を読む。省略時は "tl-auto" (auto-select: prefer .arc over .ar)
+        // `[lang]` を読む。省略時は "ar-auto" (auto-select: prefer .arc over .ar)
         let lang = if *self.current() == Token::LBracket {
             self.parse_lang_bracket()?
         } else {
-            "tl-auto".to_string()
+            "ar-auto".to_string()
         };
 
         // cpp-dll / cpp-lib: `import[cpp-dll] Dir.Name with stub as alias`
@@ -105,7 +105,8 @@ impl Parser {
     ) -> Result<Vec<Stmt>, String> {
         match lang {
             // default (no bracket): prefer .arc, fall back to .ar
-            "tl-auto" | "ar-auto" => self.load_tl_module(module),
+            // ("tl-auto" は旧名の別名。既存ソース互換のため受理し続ける)
+            "ar-auto" | "tl-auto" => self.load_tl_module(module),
             // import[ar]: force .ar source, skip .arc
             "tl" | "ar" => self.load_tl_source_module(module),
             // import[arc]: force .arc, error if not found

@@ -1,0 +1,115 @@
+# try_finally_escape.ar — finally を跨ぐ脱出（return / break / continue / block_return）（#37）
+#
+# `finally` は**全ての出口**で走る。try 本体から `return` / `break` / `continue` /
+# `block_return` で抜けるときも、跳ぶ前に finally 本体が実行される。
+# 入れ子なら**内側の finally から**順に走る。
+#
+# ⚠ ここは長らく VM が丸ごと bail していた領域（#37）。この例題が唯一の網なので削らないこと。
+
+print("=== 1. return through finally ===")
+fn ret() -> int:
+    try:
+        return 1
+    finally:
+        print("fin")
+print(ret())                      # fin / 1
+
+print("=== 2. return through except + finally ===")
+fn ret_exc() -> int:
+    try:
+        raise ValueError("x")
+    except ValueError:
+        return 9
+    finally:
+        print("fin")
+print(ret_exc())                  # fin / 9
+
+print("=== 3. nested finally runs innermost first ===")
+fn ret_nested() -> int:
+    try:
+        try:
+            return 1
+        finally:
+            print("inner")
+    finally:
+        print("outer")
+print(ret_nested())               # inner / outer / 1
+
+print("=== 4. break through finally ===")
+mut r = -1
+for i in range(4):
+    try:
+        if i == 2:
+            break
+        r = i
+    finally:
+        print("fin " + str(i))
+print(r)                          # fin 0 / fin 1 / fin 2 / 1
+
+print("=== 5. continue through finally ===")
+mut s = 0
+for i in range(4):
+    try:
+        if i < 2:
+            continue
+        s = s + i
+    finally:
+        print("c " + str(i))
+print(s)                          # 5
+
+print("=== 6. break through nested finallys ===")
+mut t = -1
+for i in range(3):
+    try:
+        try:
+            if i == 2:
+                break
+            t = i
+        finally:
+            print("in " + str(i))
+    finally:
+        print("out " + str(i))
+print(t)                          # 1
+
+print("=== 7. block_return through finally ===")
+let b = block ->int:
+    try:
+        block_return 7
+    finally:
+        print("bfin")
+print(b)                          # bfin / 7
+
+print("=== 8. loop_yield does not escape (the try body just continues) ===")
+let y = for i in range(3) ->list[int]:
+    try:
+        loop_yield i
+    finally:
+        print("yfin")
+print(y)                          # yfin x3 / [0, 1, 2]
+
+print("=== 9. return from a loop inside a try/finally ===")
+fn scan() -> int:
+    try:
+        for i in range(5):
+            if i == 3:
+                return i
+        return -1
+    finally:
+        print("sfin")
+print(scan())                     # sfin / 3
+
+print("=== 10. break out of a try does not leave the handler behind ===")
+fn esc() -> int:
+    for i in range(3):
+        try:
+            if i == 1:
+                break
+        finally:
+            print("efin " + str(i))
+    # ループの try は既に抜けているので、この raise は外側で捕まらねばならない
+    raise ValueError("must escape")
+    return 0
+try:
+    print(esc())
+except ValueError:
+    print("caught outside")

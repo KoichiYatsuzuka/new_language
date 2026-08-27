@@ -65,7 +65,7 @@ impl TypeChecker {
     /// サブスクリプトチェーン `x[i][j]...` のルート識別子名を返す。
     pub(super) fn subscript_root_ident(expr: &Expr) -> Option<&str> {
         match expr {
-            Expr::Ident(name) => Some(name.as_str()),
+            Expr::Ident { name, .. } => Some(name.as_str()),
             Expr::Subscript { object, .. } => Self::subscript_root_ident(object),
             _ => None,
         }
@@ -123,13 +123,13 @@ impl TypeChecker {
 
     /// `obj.attr = val` のとき `attr` が `let` フィールドであれば `AssignToImmutableField` エラーを記録する。
     pub(super) fn check_immutable_field_assign(&mut self, target: &Expr) {
-        if let Expr::Attr { object, attr, span } = target {
-            let is_self_in_init = matches!(object.as_ref(), Expr::Ident(n) if n == "self")
+        if let Expr::Attr { object, attr, span, .. } = target {
+            let is_self_in_init = matches!(object.as_ref(), Expr::Ident { name: n, .. } if n == "self")
                 && self.state.current_fn() == Some("__init__");
             if is_self_in_init {
                 return;
             }
-            let class_name_opt: Option<String> = if matches!(object.as_ref(), Expr::Ident(n) if n == "self")
+            let class_name_opt: Option<String> = if matches!(object.as_ref(), Expr::Ident { name: n, .. } if n == "self")
             {
                 self.state.current_class().map(str::to_string)
             } else {

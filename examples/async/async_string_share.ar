@@ -1,0 +1,53 @@
+# async_string_share.ar — 文字列を跨いだ async の share-nothing 確認
+#
+# #15 で `Value::Str` を `Rc<str>` にした。`Rc` の参照カウントは**非アトミック**なので、
+# スレッドへ送る `deep_clone` が参照カウント加算で済ませていると、
+# 複数スレッドが同じカウンタを叩いて壊れる（解放済みメモリの再利用 / 二重解放）。
+#
+# そこで各タスクは **捕捉した文字列を loop 内で何度も読む**（＝ Value::clone を繰り返し、
+# 参照カウントを高頻度で上下させる）。deep_clone が独立バッファを作っていれば
+# スレッドごとに別カウンタなので安全。
+#
+# 期待: 毎回同じ結果が出て、クラッシュしないこと。
+
+fn touch(let s: str, let n: int) -> int:
+    mut total = 0
+    mut i = 0
+    while i < n:
+        let a = s
+        let b = s
+        let c = s
+        total += len(a) + len(b) + len(c)
+        i += 1
+    return total
+
+mut mng = AsyncManager(num_thread=8)
+
+# 全タスクが同一の文字列を捕捉する（共有されていれば同じカウンタを取り合う）
+let shared = "shared-buffer-contents-for-refcount-stress"
+
+let REPS = 40000
+
+mng <- async->int:
+    block_return touch(shared, REPS)
+mng <- async->int:
+    block_return touch(shared, REPS)
+mng <- async->int:
+    block_return touch(shared, REPS)
+mng <- async->int:
+    block_return touch(shared, REPS)
+mng <- async->int:
+    block_return touch(shared, REPS)
+mng <- async->int:
+    block_return touch(shared, REPS)
+mng <- async->int:
+    block_return touch(shared, REPS)
+mng <- async->int:
+    block_return touch(shared, REPS)
+
+mng.wait_for_finish()
+
+# 元の文字列がスレッド側の操作で壊れていないこと
+print("shared intact:", shared)
+print("results:", mng.results)
+print("errors:", mng.error_list)

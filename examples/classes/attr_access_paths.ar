@@ -1,0 +1,81 @@
+# attr_access_paths.ar — 属性アクセスの各経路を網羅する（#16 段階(b)(i)）
+#
+# VM は `local.attr` を超命令 `GetAttrLocal` へ融合し、レシーバを frame から
+# **参照で**読む（`Value` の clone ＝ Rc refcount 増減を省く）。フォールバックは
+# 従来どおり R3 インラインキャッシュ経由の `GetAttr`。
+#
+# この例題はその両経路と、キャッシュが外れる場合を通す:
+#   - 局所変数レシーバ（融合対象）／ネスト属性 `o.inner.v`（外側は非局所）
+#   - public / private フィールド（アクセス制御）
+#   - 同じ命令に別クラスが流れる場合（テンプレート経由 → IC ミス→再解決）
+#   - 存在しない属性（AttributeError）
+#
+# 検証: .\compare_vm_modes.ps1 -Filter attr_access_paths
+
+trait HasPub:
+    mut pub_f: int
+
+class Inner:
+    mut v: int
+    fn __init__(mut self, let v: int) -> None:
+        self.v = v
+
+class Outer:
+    mut inner: Inner
+    mut tag: str
+    fn __init__(mut self, let inner: Inner, let tag: str) -> None:
+        self.inner = inner
+        self.tag = tag
+
+class Base(HasPub):
+    public:
+    mut pub_f: int
+    private:
+    mut priv_f: int
+
+    fn __init__(mut self) -> None:
+        self.pub_f = 1
+        self.priv_f = 2
+
+    fn read_priv(self) -> int:
+        return self.priv_f
+
+class Other(HasPub):
+    mut pub_f: int
+    fn __init__(mut self) -> None:
+        self.pub_f = 30
+
+fn read_local(let o: Outer) -> None:
+    print(o.tag)
+    print(o.inner.v)
+    print(o.inner.v + 1)
+
+fn read_base(let b: Base) -> None:
+    print(b.pub_f)
+    print(b.read_priv())
+
+fn write_read(mut o: Outer) -> None:
+    o.tag = "changed"
+    print(o.tag)
+    o.inner.v = 99
+    print(o.inner.v)
+
+# 同じ op に別クラスが流れる（IC ミス→再解決を強制）
+fn show_pub[T: HasPub](let it: T) -> None:
+    print(it.pub_f)
+
+fn missing(let o: Outer) -> None:
+    try:
+        print(o.nope)
+    except AttributeError as e:
+        print("caught missing attr")
+
+let inner = Inner(7)
+let o = Outer(inner, "hello")
+read_local(o)
+read_base(Base())
+write_read(Outer(Inner(1), "orig"))
+show_pub[Base](Base())
+show_pub[Other](Other())
+show_pub[Base](Base())
+missing(o)

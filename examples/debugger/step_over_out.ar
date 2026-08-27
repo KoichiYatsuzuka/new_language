@@ -1,0 +1,20 @@
+# step_over_out.ar — step-over（呼び出しを跨ぐ）と step-out（呼び出し元へ戻る）のシナリオ。
+#
+# step-over は「呼び出し先を最後まで走らせて同じ深さの次の文で止まる」ので、
+# 呼び出し先が VM 適格でもデバッグ中はツリーウォークで走る（#1 の暫定対応が効く箇所）。
+#
+# 対応する stdin は step_over_out.in。
+
+fn inner(let a: int) -> int:
+    let doubled = a * 2
+    let shifted = doubled + 1
+    return shifted
+
+fn outer(let a: int) -> int:
+    let first = inner(a)
+    break_point
+    let second = inner(first)
+    let third = second - 1
+    return third
+
+print(outer(4))

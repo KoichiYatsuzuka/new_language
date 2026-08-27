@@ -39,14 +39,19 @@ pub(crate) mod cs_dll_runtime;
 pub(crate) mod cs_proc_runtime;
 #[path = "interpreter/js_proc_runtime.rs"]
 pub(crate) mod js_proc_runtime;
+
+/// FFI 境界検査（#16）: 動的型付け言語から Arrow へ入る値をスタブ宣言型と突き合わせる。
+pub(crate) mod ffi_boundary;
 #[path = "interpreter/debugger.rs"]
- mod debugger;
+// `pub(crate)`: VM コンパイラが行テーブル構築で `stmt_span_of` を使う（#1）。
+pub(crate) mod debugger;
 #[path = "interpreter/eval/mod.rs"]
 mod eval;
 #[path = "interpreter/exceptions.rs"]
 mod exceptions;
 #[path = "interpreter/exec/mod.rs"]
 mod exec;
+pub(crate) use exec::{collect_declared_names, collect_referenced_names};
 #[path = "interpreter/functions/mod.rs"]
 mod functions;
 #[path = "interpreter/msvc_errors.rs"]
@@ -57,12 +62,20 @@ mod functions;
 mod ops;
 #[path = "interpreter/py_interop.rs"]
  mod py_interop;
+#[path = "interpreter/resolver.rs"]
+pub(crate) mod resolver;
 #[path = "interpreter/scope.rs"]
 mod scope;
 #[path = "interpreter/str_methods.rs"]
 pub(super) mod str_methods;
 #[path = "interpreter/templates.rs"]
 mod templates;
+/// 診断フック `AR_TW_STATS=1`（#10 のスコープ計測）。既定では完全に無効。
+#[path = "interpreter/tw_stats.rs"]
+pub(crate) mod tw_stats;
+/// 最上位文の VM 実行経路（#10-b）。**`functions/execution.rs` へ移してはいけない**（同ファイル冒頭参照）。
+#[path = "interpreter/vm_toplevel.rs"]
+mod vm_toplevel;
 
 #[cfg(test)]
 #[path = "interpreter/tests/mod.rs"]
@@ -109,30 +122,11 @@ pub use value::*;
 ///   interpreter bug rather than a user `raise`.
  const RAISE_SENTINEL: &str = "\x00__raise__";
 
-/// Sentinel error string used to propagate a `break` signal through `eval()` return channels.
-/// Produced when `break` is executed inside a control-flow expression body (e.g., an `if` or
-/// `block:` expression) and needs to bubble up to the enclosing `for`/`while` loop.
- const BREAK_SENTINEL: &str = "\x00__break__";
-
 thread_local! {
     /// ジェネレータ本体の一括評価中に `yield` された値を収集するスレッドローカル変数。
     /// `None` の場合はジェネレータ実行コンテキスト外であることを意味する。
-    /// `exec_generator` が開始時に `Some(Vec::new())` をセットし、終了時に `take()` で回収する。
+    /// `exec_generator_evaled` が開始時に `Some(Vec::new())` をセットし、終了時に `take()` で回収する。
     pub(self) static GENERATOR_YIELDS: RefCell<Option<Vec<Value>>> = const { RefCell::new(None) };
-
-    /// `for`/`while` 式の評価中に `loop_yield` された値を収集するスレッドローカル変数。
-    /// `None` の場合は for/while 式の外であることを意味する（loop_yield はここで実行時エラー）。
-    /// ネストした for/while 式を正しく扱うため、外側の式の値を退避して評価後に復元する。
-    pub(self) static BLOCK_YIELDS: RefCell<Option<Vec<Value>>> = const { RefCell::new(None) };
-
-    /// 現在の for/while ループ（文・式両形式）のネスト深さ。
-    /// `break` はこれが 0 のときに実行時エラーを返す。
-    pub(self) static LOOP_DEPTH: RefCell<usize> = const { RefCell::new(0) };
-
-    /// block_return / loop_yield のランタイム型チェック用。
-    /// block:/if/for/while/match 式へ入るときに期待型アノテーション文字列を push し、
-    /// 抜けるときに pop する。None は型注釈なし（任意の型を受け入れる）を意味する。
-    pub(self) static BLOCK_RETURN_EXPECTED_TYPE: RefCell<Vec<Option<String>>> = const { RefCell::new(Vec::new()) };
 }
 
 // ---------------------------------------------------------------------------
@@ -183,8 +177,104 @@ impl std::hash::BuildHasher for FxBuildHasher {
     }
 }
 
-/// スコープ1段分の変数マップ（FxHash キー）。
- type ScopeMap = HashMap<String, Var, FxBuildHasher>;
+/// スコープ1段分の変数ストレージ（Phase R / R0）。
+///
+/// 従来の `HashMap<String, Var>` を **slot 配列（宣言順）** に置き換えたもの。
+/// - `names` / `slots`: 平行配列。`slots[i]` が名前 `names[i]` の `Var`。
+///   `Resolution::Local(slot)` は `slots[i]` を index 1回で読む（スコープ遡り・ハッシュなしの高速経路）。
+/// - `index`: 名前 → slot の遅延ハッシュ索引。**大きいスコープ（=グローバル）でのみ**構築する。
+///
+/// 関数/ブロックのローカルスコープは通常ごく少数の変数しか持たないため、宣言は単純な `push`
+/// （ハッシュ計算なし）、未解決名の引きは**線形走査**の方が `HashMap` より速い。
+/// 変数数が `INDEX_THRESHOLD` を超えたスコープ（実質グローバルのみ）だけ索引を構築して O(1) 化する。
+/// 宣言順（= slot 番号）は決定的なので、リゾルバが静的に付けた slot 番号と実行時の slot が一致する。
+/// 既存呼び出し側との互換のため `HashMap` 互換の `get`/`get_mut`/`insert`/`contains_key`/`iter` を提供する。
+#[derive(Default)]
+ struct Scope {
+    /// (名前, Var) を宣言順に持つ単一配列（allocation 1本）。`slots[i]` が slot i。
+    slots: Vec<(String, Var)>,
+    /// 大きいスコープでのみ構築される名前索引（`None` = 線形走査）。
+    index: Option<HashMap<String, usize, FxBuildHasher>>,
+}
+
+/// このサイズを超えたスコープはハッシュ索引を構築する（グローバルスコープ想定）。
+/// 関数/ブロックローカルは通常これ未満で、索引なしの線形走査で済む。
+const INDEX_THRESHOLD: usize = 16;
+
+impl Scope {
+    /// 名前 → slot 番号を引く（索引があれば O(1)、なければ末尾からの線形走査）。
+    #[inline]
+    fn find(&self, name: &str) -> Option<usize> {
+        if let Some(idx) = &self.index {
+            idx.get(name).copied()
+        } else {
+            // 末尾（最後に宣言されたもの）から走査する。小さいスコープでは十分速い。
+            self.slots.iter().rposition(|(n, _)| n == name)
+        }
+    }
+
+    /// 名前で `Var` を引く。
+    #[inline]
+    pub(self) fn get(&self, name: &str) -> Option<&Var> {
+        self.find(name).map(|i| &self.slots[i].1)
+    }
+
+    /// 名前で `Var` を可変参照で引く。
+    #[inline]
+    pub(self) fn get_mut(&mut self, name: &str) -> Option<&mut Var> {
+        let i = self.find(name)?;
+        Some(&mut self.slots[i].1)
+    }
+
+    /// 変数を宣言/上書きする。既存名は同じ slot を保持したまま値を差し替え、
+    /// 新規名は配列末尾に slot を確保する。戻り値は上書き前の `Var`（新規なら `None`）。
+    #[inline]
+    pub(self) fn insert(&mut self, name: String, var: Var) -> Option<Var> {
+        if let Some(i) = self.find(&name) {
+            return Some(std::mem::replace(&mut self.slots[i].1, var));
+        }
+        let i = self.slots.len();
+        if let Some(idx) = &mut self.index {
+            idx.insert(name.clone(), i);
+        }
+        self.slots.push((name, var));
+        // しきい値を超えたら索引を構築して以降 O(1) 化する（グローバル想定）。
+        if self.index.is_none() && self.slots.len() > INDEX_THRESHOLD {
+            let mut idx: HashMap<String, usize, FxBuildHasher> = Default::default();
+            for (j, (n, _)) in self.slots.iter().enumerate() {
+                idx.insert(n.clone(), j);
+            }
+            self.index = Some(idx);
+        }
+        None
+    }
+
+    /// 指定名が宣言済みか。
+    #[inline]
+    pub(self) fn contains_key(&self, name: &str) -> bool {
+        self.find(name).is_some()
+    }
+
+    /// (名前, Var) を走査する（宣言順）。
+    pub(self) fn iter(&self) -> impl Iterator<Item = (&String, &Var)> {
+        self.slots.iter().map(|(n, v)| (n, v))
+    }
+
+    /// slot 番号で直接 `Var` を引く高速経路（`Resolution::Local` 用）。
+    #[inline]
+    pub(self) fn slot(&self, i: usize) -> Option<&Var> {
+        self.slots.get(i).map(|(_, v)| v)
+    }
+
+    /// デバッグ検証用: 名前 → slot 番号。
+    #[inline]
+    pub(self) fn slot_of(&self, name: &str) -> Option<usize> {
+        self.find(name)
+    }
+}
+
+/// スコープ1段分の変数ストレージ（互換エイリアス）。
+ type ScopeMap = Scope;
 
 /// スコープ内の1つの変数エントリ。
 ///
@@ -269,10 +359,53 @@ pub struct Interpreter {
     /// スロットキャッシュの世代番号。`freeze`（SlotCell → Immutable 降格）時にインクリメントされ、
     /// 全 AST スロットキャッシュを一括無効化する。
     pub(self) slot_epoch: u32,
+    /// AST 型解決層の注釈（タスク #16）。型検査（`check_program`）が生成し main.rs が注入する。
+    /// メインプログラムの node-id 索引で型・検査指示・CallInfo を引ける。段階(b)/(c) の消費側が参照。
+    /// 既定は空（`Interpreter::new` 直後は注釈なし＝挙動不変。注入されるまで消費側はフォールバック）。
+    pub(crate) annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
+    /// 関数ごとのコンパイル済み Chunk キャッシュ。キー = `Rc::as_ptr(fn_val)`。
+    /// 値 = `(Weak<FnValue>, Some(chunk)=VM 実行 / None=非対応)`。
+    /// テンプレート実体化は呼び出しごとに一時的な `Rc<FnValue>` を作って破棄するため、
+    /// 解放されたアドレスが後続の別 fn_val に再利用され得る（キー衝突）。`Weak` を保持し、
+    /// ヒット時に `upgrade()` が失敗したら「アドレス再利用＝別関数」と判定して再コンパイルする
+    /// （リークなし・古い Chunk の誤用を防ぐ, Phase V-D）。
+    pub(self) vm_chunks: HashMap<usize, (std::rc::Weak<FnValue>, Option<Rc<crate::vm::Chunk>>)>,
+    /// ジェネレータ関数本体の Chunk キャッシュ（タスク #8）。キー = `Rc::as_ptr(gen_fn)`。
+    /// `vm_chunks` と同型だが `GeneratorFnValue` を指すため別テーブル。`Weak` でアドレス再利用を弾く。
+    pub(self) vm_gen_chunks:
+        HashMap<usize, (std::rc::Weak<GeneratorFnValue>, Option<Rc<crate::vm::Chunk>>)>,
+    /// テンプレート関数/ジェネレータ関数の実体化メモ（タスク #7）。
+    /// キー = `(Rc::as_ptr(template) as usize, 具体型引数リスト)`。値 = 置換済み具体 `FnValue`。
+    /// 同一 `(テンプレート, 型引数)` の再実体化で **AST 置換（`subst_stmts` の clone-walk）を省略**し、
+    /// かつ **安定した `Rc<FnValue>` アドレスにより `vm_chunks` の Chunk が再利用**される
+    /// （従来は呼び出しごとに一時 fn_val を作って捨てるため毎回再コンパイルしていた, §2.2）。
+    /// テンプレートは寿命が長い（グローバル束縛）ので実体化数は有限＝メモリは有界。
+    pub(self) template_fn_cache: HashMap<(usize, Vec<String>), Rc<FnValue>>,
+    /// テンプレートジェネレータ関数の実体化メモ（タスク #7）。`template_fn_cache` と同様。
+    pub(self) template_gen_cache: HashMap<(usize, Vec<String>), Rc<GeneratorFnValue>>,
+    /// VM の値スタックバッファ（per-call 確保を避けるため使い回す）。
+    /// 実行中は `std::mem::take` で借り出し、復帰時に容量ごと戻す（Phase V）。
+    pub(crate) vm_stack: Vec<Value>,
+    /// 現在の関数フレームの base スコープの `scopes` 内インデックス（Phase R / R0）。
+    ///
+    /// 関数に入ると呼び出し前の `scopes.len()` を新しい floor として記録し、base スコープを push する。
+    /// 名前引き（get_var/assign_var/…）は `scopes[0]`（グローバル）+ `scopes[frame_floor..]`
+    /// （現関数のローカル）のみを走査し、**呼び出し元のローカルは走査しない**（レキシカル隔離）。
+    /// これにより「呼び出しごとに外側スコープを drain/退避/復元する」Vec 確保を排除する。
+    /// モジュールトップレベルでは 1（グローバルのみ可視）。
+    pub(self) frame_floor: usize,
     /// ファイル名 → ソース行リスト のマップ（トレースバックのコンテキスト抽出用）。
     pub(self) source_map: HashMap<String, Vec<String>>,
     /// 関数名のコールスタック。関数実行前後で push / pop される。
     pub(self) call_stack: Vec<String>,
+    /// `call_stack` から pop した `String` バッファの再利用プール（#12）。
+    ///
+    /// 関数名の push は**呼び出しごとに 1 回のヒープ確保**になっていた（実測 ~43ns/call）。
+    /// 名前は毎回同じものが並ぶので、pop したバッファを取っておいて
+    /// `clear()` + `push_str()` で詰め直せば定常状態で確保が 0 になる。
+    /// `call_stack` 自体の型と `len()` の意味は変えないので、深さを見ている
+    /// デバッガ（`debugger.rs`）や例外フレーム生成には影響しない。
+    pub(self) call_name_pool: Vec<String>,
     /// `except` ブロック内で処理中の例外（裸の `raise` で再 raise するために保持）。
     pub(self) current_exception: Option<RaisedError>,
     /// モジュールキャッシュ: (lang, 解決済みパス) → ロード状態。
@@ -282,7 +415,19 @@ pub struct Interpreter {
     /// このフラグが `true` のとき定義された `FnValue` は `is_python: true` になる。
     pub(self) in_python_module: bool,
     /// `import[py-int]` 時に Python の `sys.path` に追加するディレクトリ一覧。
+    /// **明示的に登録されたぶんだけ**（ソースのあるディレクトリ・テストの手動登録）。
+    /// ⚠ `ar_config.json` 由来のぶんは [`Self::config_search_dirs`] に**遅延で**入る（#69）。
+    /// 読むときは必ず [`Self::python_search_dirs()`] を通すこと（両方を順に返す）。
     pub(self) python_search_dirs: Vec<PathBuf>,
+    /// `ar_config.json` の祖先ウォークを始める起点（＝ソースのあるディレクトリ）。#69。
+    pub(self) config_base_dir: Option<PathBuf>,
+    /// `ar_config.json` の `python.search_paths` 由来の検索パス（**初回参照時に遅延して読む**・#69）。
+    ///
+    /// ⚠⚠ **起動時に読んではいけない。** 消費者は cs-dll / cs-proc / js-proc の
+    /// ブリッジ探索と `import[py-int]` **だけ**で、大多数のスクリプトは 1 回も読まない。
+    /// それなのに #69 以前は `run_program` が**必ず**祖先を root までウォークしており、
+    /// `interp_init` の **48〜53%**（0.19〜0.21ms）を占めていた（支配項は `exists()` の syscall 連打）。
+    pub(self) config_search_dirs: std::cell::OnceCell<Vec<PathBuf>>,
     /// `static mut` 変数の永続セル。キーは宣言の (ファイル名, 行, 列)。
     /// 外側関数の全呼び出しで同じセルを共有する。
     pub(self) static_cells: HashMap<(String, usize, usize), Rc<RefCell<Value>>>,
@@ -301,22 +446,40 @@ pub struct Interpreter {
     /// ロード済みのネイティブ共有ライブラリ。キーは DLL の絶対パス。
     /// ライブラリはインタープリタの生存期間を通じて保持される（アンロードしない）。
     pub(self) native_libs: HashMap<PathBuf, NativeLibWrapper>,
-    /// デバッガ REPL 内で `let dbg::name = expr` として宣言された一時変数。
-    /// `q`（再開）または `break_point` のスコープ終了時にクリアされる。
-    pub(self) dbg_vars: HashMap<String, Var>,
-    /// Last span successfully extracted from a statement — used as fallback
-    /// when the current statement has no extractable location (e.g. `Stmt::Mut`
-    /// wrapping a bare `Expr::Call(Expr::Ident(...))`).
-    pub(self) dbg_last_span: Option<crate::token::Span>,
-    /// Arrow ネイティブの EventLoop シングルトン状態。
-    /// `EventLoop.run()` が処理する非同期イベントキューと post コールバックキューを保持する。
-    pub(self) event_loop_data: Rc<RefCell<event_loop::EventLoopData>>,
-    /// C#/Go ブリッジが `ar_event_fire()` で書き込むスレッドセーフキュー。
-    pub(self) external_event_queue: event_loop::ExternalEventQueue,
-    /// 外部イベント handler_id → SignalData の逆引きマップ（C#/Go 連携時に使用）。
-    pub(self) external_handler_registry: HashMap<u64, Rc<RefCell<event_loop::SignalData>>>,
-    /// `sig.external_id` の発番カウンタ（プロセス内の Interpreter 単位で単調増加、1 始まり）。
-    pub(self) next_external_signal_id: u64,
+    /// デバッガの状態 2 本（#67 で `debugger::DebugState` へ束ねた）。
+    pub(self) dbg: debugger::DebugState,
+    /// イベントループの状態 4 本（#67 で `event_loop::EventState` へ束ねた）。
+    ///
+    /// ⚠ **`Interpreter` の全面分解はしていない**（起票時の判断）。`impl` が 33 ファイルに
+    /// 散っているので、凝集が明らかで参照が少ないクラスタだけを畳んである。
+    pub(self) events: event_loop::EventState,
+    // ── #10-b で追加。既存フィールドのオフセットを動かさないよう末尾に置く。
+    /// 最上位ループの Chunk キャッシュ（#10-b）。キー = `Stmt` のアドレス。
+    ///
+    /// AST は `run_program` / `exec_module` が実行中ずっと保持しているのでアドレスは安定
+    /// （`vm_chunks` のような `Weak` による再利用検査は不要）。`None` = コンパイル不能と判明済み。
+    ///
+    /// ⚠⚠ **不変条件: このキャッシュに載せた `Stmt` は、インタプリタが生きている間
+    /// 解放してはいけない。** 解放するとアロケータが同じアドレスを再利用し、
+    /// **別の文が前の文の Chunk を引き当てる**（#36 で実際に踏んだ: REPL がブロックごとに
+    /// AST を捨てていたため `let xs = …` が `let total = …` の Chunk を実行し
+    /// `NameError: variable 'total' is already declared` になった）。
+    /// ⇒ 新しい入口を足すときは **AST を保持し続けること**（REPL は `run_repl` が Vec に溜める）。
+    pub(self) vm_toplevel_chunks: HashMap<usize, Option<Rc<crate::vm::Chunk>>>,
+    /// 最上位から見て `scopes[0]` を確実に指す名前の集合（#10-b, `resolver::toplevel_declared_globals`）。
+    /// 最上位ループ Chunk の**書き込み先**判定に使う。空 = 最上位 VM 化を行わない。
+    pub(self) toplevel_globals: std::collections::HashSet<String>,
+}
+
+/// [`Interpreter::wire_resolution`] のグローバル集合の入れ方（#88）。
+///
+/// ⚠ **消費側は exhaustive に match する。** 入れ方を足したら全入口が止まる。
+pub(crate) enum GlobalsMode {
+    /// 集合を**置き換える**（1 プログラム = 1 回の入口）。
+    Replace,
+    /// 集合へ**積み増す**（REPL。前のブロックで宣言した名前も `scopes[0]` と判断できないと、
+    /// 後のブロックの代入が VM に載らない）。
+    Extend,
 }
 
 impl Interpreter {
@@ -345,19 +508,28 @@ impl Interpreter {
             Var::new(Value::EventLoop(el_data.clone()), false),
         );
 
-        // グローバル外部イベントキューを共有する（ar_event_fire が書き込む先と同一）。
-        let ext_q = event_loop::global_ext_queue();
-
         Self {
             scopes: vec![global],
             global_slot_cells: Vec::new(),
             slot_epoch: 0,
+            annotations: std::rc::Rc::new(crate::type_check::AstAnnotations::default()),
+            vm_chunks: HashMap::new(),
+            vm_gen_chunks: HashMap::new(),
+            vm_toplevel_chunks: HashMap::new(),
+            toplevel_globals: std::collections::HashSet::new(),
+            template_fn_cache: HashMap::new(),
+            template_gen_cache: HashMap::new(),
+            vm_stack: Vec::new(),
+            frame_floor: 1,
             source_map: HashMap::new(),
             call_stack: Vec::new(),
+            call_name_pool: Vec::new(),
             current_exception: None,
             module_cache: HashMap::new(),
             in_python_module: false,
             python_search_dirs: Vec::new(),
+            config_base_dir: None,
+            config_search_dirs: std::cell::OnceCell::new(),
             static_cells: HashMap::new(),
             current_class: None,
             trait_field_access: HashMap::new(),
@@ -375,12 +547,8 @@ impl Interpreter {
             },
             protocol_required_members: HashMap::new(),
             native_libs: HashMap::new(),
-            dbg_vars: HashMap::new(),
-            dbg_last_span: None,
-            event_loop_data: el_data,
-            external_event_queue: ext_q,
-            external_handler_registry: HashMap::new(),
-            next_external_signal_id: 1,
+            dbg: debugger::DebugState::default(),
+            events: event_loop::EventState::new(el_data),
         }
     }
 
@@ -389,12 +557,86 @@ impl Interpreter {
         self.python_search_dirs.push(dir);
     }
 
+    /// `ar_config.json` の祖先ウォークの起点を覚える（#69）。**この時点では読まない**。
+    /// 実際に読むのは [`Self::python_search_dirs()`] が初めて呼ばれたとき。
+    pub fn set_config_base_dir(&mut self, dir: PathBuf) {
+        self.config_base_dir = Some(dir);
+    }
+
+    /// Python / ブリッジ探索に使う検索ディレクトリを**順に**返す（#69）。
+    ///
+    /// 順序は「**明示登録ぶん → `ar_config.json` 由来**」で、#69 以前に
+    /// `run_program` が `add_python_search_dir` を呼んでいた順とまったく同じ。
+    ///
+    /// ⚠ **初回呼び出しで祖先ウォークが走る**（以降は `OnceCell` が返す）。
+    /// ⇒ cs-dll / cs-proc / js-proc / `import[py-int]` を使わないスクリプトは**一度も走らない**。
+    pub(crate) fn python_search_dirs(&self) -> impl Iterator<Item = &PathBuf> {
+        let cfg = self.config_search_dirs.get_or_init(|| match &self.config_base_dir {
+            Some(d) => crate::ar_config::load_python_search_paths(d),
+            None => Vec::new(),
+        });
+        self.python_search_dirs.iter().chain(cfg.iter())
+    }
+
+    /// 最上位ループの VM 化（#10-b）で「書き込み先はグローバル」と断定してよい名前を注入する。
+    /// `resolver::toplevel_declared_globals`（**シャドウ減算なし**）の結果をそのまま渡すこと。
+    /// ⚠ 減算版（`toplevel_visible_globals_with`）を渡してはいけない — 別の文の
+    /// `for i in ...` のせいで `while i < N` の `i` まで解決できなくなる（#27-c の実測）。
+    /// **実行入口が VM へ渡す解決情報をまとめて注入する**（#88）。
+    ///
+    /// ⚠⚠ 注釈と最上位グローバル集合は**対で要る**。片方だけ渡した入口では
+    /// 正しいコードでも `VmForceError` になる（#3/#36。VM は「解決情報が揃っている」前提）。
+    /// ⇒ **2 つの setter を別々に呼ばせない**。#88 まで入口ごとの手写しで、
+    /// 呼ぶ関数も順序も割れていた。
+    ///
+    /// ⚠ AST 側（`resolve_program` ＋ 型検査）は
+    /// [`resolver::resolve_and_annotate`](crate::interpreter::resolver::resolve_and_annotate) が担う。
+    /// **こちらは「揃えた情報をインタプリタへ載せる」だけ**。
+    ///
+    /// ⚠⚠ **3 つの setter は private にしてある**（#88）。`pub` のままだと入口が
+    /// `set_annotations` だけ呼んでグローバル集合を忘れられる ＝ **今まさに割れていた形**。
+    /// ⇒ **この関数以外から個別に呼べない**のが強制の全部。
+    ///
+    /// ⚠ `mode` は**グローバル集合の入れ方**で、ここだけは入口ごとに本当に違う（#88 で実測）:
+    /// REPL は [`GlobalsMode::Extend`]（ブロックを跨いで積み増さないと後のブロックの代入が
+    /// VM に載らない）、それ以外は [`GlobalsMode::Replace`]。
+    pub(crate) fn wire_resolution(
+        &mut self,
+        annotations: crate::type_check::AstAnnotations,
+        globals: std::collections::HashSet<String>,
+        mode: GlobalsMode,
+    ) {
+        self.set_annotations(std::rc::Rc::new(annotations));
+        match mode {
+            GlobalsMode::Replace => self.set_toplevel_globals(globals),
+            GlobalsMode::Extend => self.extend_toplevel_globals(globals),
+        }
+    }
+
+    fn set_toplevel_globals(&mut self, names: std::collections::HashSet<String>) {
+        self.toplevel_globals = names;
+    }
+
+    /// 最上位グローバル名の集合を**追加**する（REPL 用・#36）。
+    ///
+    /// REPL はブロックを 1 つずつ実行するので、前のブロックで宣言した名前を
+    /// 後のブロックからも「`scopes[0]` を指す」と判断できるように積み増す必要がある。
+    fn extend_toplevel_globals(&mut self, names: std::collections::HashSet<String>) {
+        self.toplevel_globals.extend(names);
+    }
+
+    /// AST 型解決層の注釈（タスク #16）を注入する。`check_program` が生成したものを main.rs が渡す。
+    /// メインプログラムの node-id 索引。段階(b)/(c) の消費側（VM コンパイラ/eval/codegen）が参照する。
+    fn set_annotations(&mut self, annotations: std::rc::Rc<crate::type_check::AstAnnotations>) {
+        self.annotations = annotations;
+    }
+
     /// CLIパラメータをグローバルスコープの `args` dict として登録する。
     /// スクリプト内では `args["key"]` でアクセスできる。
     pub fn set_cli_args(&mut self, params: HashMap<String, String>) {
         let mut dict = DictData::new("str".to_string(), "str".to_string());
         for (k, v) in params {
-            dict.set(Value::Str(k), Value::Str(v));
+            dict.set(Value::str(k), Value::str(v));
         }
         self.scopes[0].insert(
             "args".to_string(),
@@ -507,7 +749,7 @@ impl Interpreter {
                 let class_name = inst.class.name.clone();
                 let message = inst.class.field_index.get("message").and_then(|&idx| {
                     inst.field_value(idx).map(|v| match v {
-                        Value::Str(s) => s,
+                        Value::Str(s) => s.to_string(),
                         Value::Int(n) => n.to_string(),
                         Value::Float(f) => f.to_string(),
                         Value::Bool(b) => b.to_string(),

@@ -1,4 +1,4 @@
-use crate::token::Span;
+use {crate::token::Span, std::rc::Rc};
 
 /// テンプレート型パラメータ（型変数とそのトレイト制約）。
 ///
@@ -28,6 +28,18 @@ pub struct TemplateParam {
 #[derive(Default)]
 pub struct NativeCallCache(
     pub std::cell::RefCell<Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>>,
+    /// Arrow 関数呼び先のグローバル slot キャッシュ（R4）。
+    /// 呼び先が不変グローバル関数（`fn` 定義）と解決されたとき、`scopes[0]` 内の slot 番号を
+    /// `(slot_epoch, index)` で焼き込む。以後の同一呼び出しは builtin 判定・名前引き・`name.clone()`
+    /// を跳ばして `scopes[0].slot(idx)` から直接ディスパッチする。`Cell<u64>` なので Send 安全。
+    pub SlotCache,
+    /// メソッド呼び出し（`obj.method(args)`）のインラインキャッシュ（method IC）。
+    /// 呼び先が「plain な非 mut-self・単一オーバーロードのインスタンスメソッド
+    /// （gen/native/static/class_method でない）」と解決されたとき `class_id` を焼き込む
+    /// （`AttrCache` の class_id パッキングを流用、slot/access は未使用）。以後の同一 `class_id`
+    /// は gen_methods/native/static/class_method 判定と不変性フィルタを跳ばして直接ディスパッチする。
+    /// 非 mut-self に限定するのでインスタンス可変性に依存しない。`Cell<u64>` なので Send 安全。
+    pub AttrCache,
 );
 
 impl Clone for NativeCallCache {
@@ -97,9 +109,96 @@ impl Clone for SlotCache {
     }
 }
 
+/// 識別子参照（[`Expr::Ident`]）の**記憶域の解決結果**（Phase R）。
+///
+/// Phase R のリゾルバ（[`crate::interpreter::resolver`]）がトップレベル関数本体を走査して書き込む。
+/// リゾルバは解釈経路の前処理として走るが、ネイティブ codegen も**同じ解決済み AST を消費する**
+/// （#11 R2-a′: codegen は slot を採番せずリゾルバの割り当てを収穫する）。
+///
+/// 以前は `Expr::Ident` / `Expr::LocalRef` / `Expr::GlobalRef` の 3 変種で表していた。
+/// 統合の要点は「**未解決かどうかは変種ではなくフィールドの問題**」で、
+/// 3 変種のままだと全パスが同じ 3 アームを書く必要があった一方、
+/// 名前だけ欲しい大多数のサイトはその区別を使っていなかった。
+#[derive(Debug, Clone, Default)]
+pub enum Resolution {
+    /// 未解決。実行時にスコープチェーンを名前で引く。
+    /// リゾルバの対象外（テンプレート本体・実行時合成 AST・入れ子定義）か、
+    /// 解決を諦めた（シャドウの可能性がある）名前。
+    #[default]
+    Unresolved,
+    /// 関数 base スコープ（実行時は `scopes[frame_floor]`）内の slot 索引（R1）。
+    ///
+    /// ローカル読み取りがスコープ遡り＋文字列ハッシュから配列 1 回に置き換わる。
+    /// `Expr::Ident` の `name` はフォールバック（境界外時）と一致検証のために保持され続ける。
+    Local(u32),
+    /// プログラム最上位スコープで宣言された名前（R2-b）。
+    ///
+    /// `SlotCache` は `scopes[0]` 内の index を `(slot_epoch, index)` で焼く実行時キャッシュ。
+    /// **解決結果を AST ノードに置く**ことが要点で、ツリーウォーク（従来はキャッシュ無し）と
+    /// VM（従来は `Chunk` 側の別キャッシュ）が同じ問いを別々に解いていたのを同一ノードへ寄せる。
+    ///
+    /// `slot_epoch` による一括無効化をそのまま使うので、`freeze` による
+    /// `SlotCell` → `Immutable` 降格でも安全（epoch が進みキャッシュが失効する）。
+    /// `SlotCache::clone` が空を返すため、AST コピー（テンプレート実体化）では自動的に再解決される。
+    Global(SlotCache),
+}
+
 impl std::fmt::Debug for SlotCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SlotCache(..)")
+    }
+}
+
+/// 属性アクセスのインラインキャッシュ（Phase R / R3）。
+///
+/// `Expr::Attr`（`obj.attr`）が具象クラスのインスタンスフィールドに解決されたとき、
+/// `(class_id, フィールド slot, アクセスレベル)` を焼き込む。次回同じ `class_id` の
+/// インスタンスなら、`field_index` の辞書引き・アクセスキーの走査・`format!` 確保を
+/// すべて省いて slot を直接読める（[eval/attrs.rs] `eval_attr`）。
+/// 多相な呼び出し点（毎回別クラス）では `class_id` 不一致でミスし、その都度再解決＋更新する
+/// （単相 IC）。
+///
+/// パック形式: 上位 32bit = class_id（1 始まり・0=未解決）、bit 30-31 = アクセスレベル
+/// （0=Public / 1=Private / 2=Protected）、下位 30bit = slot インデックス。
+/// `Clone` は空キャッシュを返す（AST コピーごとに再解決）。
+#[derive(Default)]
+pub struct AttrCache(pub std::cell::Cell<u64>);
+
+impl AttrCache {
+    /// アクセスレベル定数。
+    pub const PUBLIC: u8 = 0;
+
+    /// (class_id, slot, access) をパックして格納する。
+    #[inline]
+    pub fn fill(&self, class_id: u32, idx: usize, access: u8) {
+        let packed =
+            ((class_id as u64) << 32) | (((access & 0x3) as u64) << 30) | (idx as u64 & 0x3FFF_FFFF);
+        self.0.set(packed);
+    }
+
+    /// `class_id` が一致すれば `(slot, access)` を返す。
+    #[inline]
+    pub fn get(&self, class_id: u32) -> Option<(usize, u8)> {
+        let packed = self.0.get();
+        if packed != 0 && (packed >> 32) as u32 == class_id {
+            let access = ((packed >> 30) & 0x3) as u8;
+            let idx = (packed & 0x3FFF_FFFF) as usize;
+            Some((idx, access))
+        } else {
+            None
+        }
+    }
+}
+
+impl Clone for AttrCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for AttrCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AttrCache(..)")
     }
 }
 
@@ -295,7 +394,7 @@ pub enum UnaryOp {
 /// # バリアント
 /// - `Int(i64)`       : 整数リテラル。
 /// - `Float(f64)`     : 浮動小数点リテラル。
-/// - `Str(String)`    : 文字列リテラル。
+/// - `Str(Rc<str>)`   : 文字列リテラル。
 /// - `Bool(bool)`     : 真偽値リテラル (`True` / `False`)。
 /// - `None`           : `None` リテラル。
 /// - `Ident(String)`  : 変数名・識別子。スコープから値をルックアップする。
@@ -318,7 +417,11 @@ pub enum Expr {
     /// 虚数リテラル（例: `2j` → 係数 `2.0`）。評価結果は `Value::Complex(0.0, coeff)`。
     ImaginaryLit(f64),
     /// 文字列リテラル（シングル・ダブル・トリプルクォート対応）。
-    Str(String),
+    ///
+    /// `Rc<str>` なのは、ツリーウォークが評価のたびに `Value::Str(s.clone())` で
+    /// ヒープ確保するのを避けるため（#15 / §7.4-1）。リテラルのバッファは AST に 1 本だけ持ち、
+    /// 評価は参照カウント加算で済む。
+    Str(Rc<str>),
     /// 真偽値リテラル (`True` / `False`)。
     Bool(bool),
     /// `None` リテラル。
@@ -327,14 +430,28 @@ pub enum Expr {
     /// 変数への代入は静的型エラー。条件判定・型アノテーション・引数としてのみ使用可能。
     Undefined,
     /// 変数参照。スコープチェーンからこの名前の値をルックアップする。
-    Ident(String),
+    ///
+    /// `node_id` は AST 型解決層のキー（タスク #15b）。パーサが per-program 採番し、
+    /// **0 = 未採番**（実行時に合成した AST・テンプレート置換由来）を意味する。
+    /// 型検査は参照サイトごとの型をここへ焼く。参照サイト単位なのが要点で、
+    /// 型ガード絞り込み（`if x is int:` は分岐スコープで再 `declare` する実装）により
+    /// **同じ変数でも参照位置で型が変わる**ため、変数単位の表では表現できない。
+    /// `res` は Phase R のリゾルバが書き込む**記憶域の解決結果**（[`Resolution`]）。
+    /// 以前は `Ident` / `LocalRef` / `GlobalRef` の 3 変種に分かれていたが、
+    /// 「1 つの概念（識別子参照）に 3 変種」は各パスに同じ 3 アームを書かせるだけだったので
+    /// 1 変種＋解決フィールドへ統合した。
+    Ident { name: String, node_id: u32, res: Resolution },
     /// リストリテラル `[a, b, c]`。要素の式を順に評価して `Value::List` を生成する。
     List(Vec<Expr>),
     /// 属性アクセス `object.attr`。インスタンスフィールドやクラス変数の読み取りに使用する。
+    /// `cache` はインスタンスフィールド解決のインラインキャッシュ（R3・初回解決時に焼き込み）。
     Attr {
         object: Box<Expr>,
         attr: String,
         span: Span,
+        cache: AttrCache,
+        /// AST 型解決層の node-id（タスク #16）。パーサが per-module 採番。0 = 未採番。
+        node_id: u32,
     },
     /// トレイト修飾アクセス `object::Trait.attr`。特定のトレイト実装のメソッドを明示的に呼び出す。
     TraitAccess {
@@ -348,6 +465,8 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
         span: Span,
+        /// AST 型解決層の node-id（タスク #16）。パーサが per-module 採番。0 = 未採番。
+        node_id: u32,
     },
     /// 単項演算 `op operand`（例: `-x`, `not x`, `~x`）。
     UnaryOp { op: UnaryOp, operand: Box<Expr> },
@@ -358,6 +477,8 @@ pub enum Expr {
         args: Vec<CallArg>,
         span: Span,
         cache: NativeCallCache,
+        /// AST 型解決層の node-id（タスク #16）。0 = 未採番。
+        node_id: u32,
     },
     /// テンプレート型引数適用: `expr[T1, T2]` — テンプレート値に具体的な型引数を与える。
     /// `Call` 式の `func` として使用する。単独の値としては無効。
@@ -366,7 +487,7 @@ pub enum Expr {
         type_args: Vec<String>,
     },
     /// 添字アクセス: `expr[index]` — 辞書やリストなどのインデックスルックアップ。
-    Subscript { object: Box<Expr>, index: Box<Expr> },
+    Subscript { object: Box<Expr>, index: Box<Expr>, node_id: u32 },
     /// スライス式: `begin:end` または `begin:end:step`。
     /// 添字 `expr[begin:end:step]` の中でのみ生成される。
     /// begin/end は Optional[Index]、step は Optional[int]。
@@ -388,7 +509,7 @@ pub enum Expr {
     /// `block_return value` で即座に終了してその値を返す。
     /// `block_yield value` は値を積みながら実行を継続し、ブロック終了時にリストを返す。
     /// どちらも使わない場合は `None` を返す。
-    /// `return_type` が `Some` の場合は静的型検査で `block_return`/`block_yield` の型を照合する。
+    /// `return_type` が `Some` の場合は静的型検査で `block_return`/`loop_yield` の型を照合する。
     Block {
         stmts: Vec<Stmt>,
         return_type: Option<String>,
@@ -403,7 +524,7 @@ pub enum Expr {
     },
     /// for 式: `for target in iter [->Type]: body`。
     ///
-    /// `->list[T]` アノテーションと `block_yield` でリストを構築する。
+    /// `->list[T]` アノテーションと `loop_yield` でリストを構築する。
     /// `->T` アノテーションと `block_return` で単一値を返す。
     ForExpr {
         target: String,
@@ -413,7 +534,7 @@ pub enum Expr {
     },
     /// while 式: `while cond [->Type]: body`。
     ///
-    /// ForExpr と同様に `block_yield` または `block_return` で値を返す。
+    /// ForExpr と同様に `loop_yield` または `block_return` で値を返す。
     WhileExpr {
         cond: Box<Expr>,
         body: Vec<Stmt>,
@@ -439,6 +560,8 @@ pub enum Expr {
         type_name: String,
         /// エラー報告に使用する位置情報。
         span: Span,
+        /// AST 型解決層の node-id（タスク #16）。0 = 未採番。
+        node_id: u32,
     },
     /// 型ガード式: `expr is TypeName` または `expr is not TypeName`。
     /// ランタイムでは `Bool` を返す。型検査器は直後の `if` 分岐内でオペランドの型を絞り込む。
@@ -453,6 +576,8 @@ pub enum Expr {
         type_name: String,
         /// エラー報告に使用する位置情報。
         span: Span,
+        /// AST 型解決層の node-id（タスク #16）。0 = 未採番。
+        node_id: u32,
     },
     /// 動的型アサーション: `expr mustbe Type`。
     /// 実行時に型チェックを行い、一致しなければ `TypeError` を raise する。
@@ -464,6 +589,9 @@ pub enum Expr {
         guard_type: String,
         /// エラー報告に使用する位置情報。
         span: Span,
+        /// AST 型解決層の node-id（タスク #16）。パーサが per-module 採番。0 = 未採番。
+        /// 型検査が `annotations` へ型・検査指示を焼く際のキー。
+        node_id: u32,
     },
     /// デバッガ名前空間アクセス: `dbg::name`。デバッガ REPL 内でのみ有効。
     DebugVar(String),
@@ -579,12 +707,16 @@ pub enum Stmt {
     },
     /// 変数への複合代入: `x += expr` など。`span` は型検査・エラー報告に使用する位置情報。
     /// `slot` はグローバル可変変数への直接アクセス用スロットキャッシュ（初回解決時に焼き込み）。
+    /// `node_id` は AST 型解決層（#16）の注釈キー。`x <op>= e` は `x <op> e` と同じ二項演算なので、
+    /// 型検査が `Expr::BinOp` と同様に `binop_kind`（両オペランドの種別）を焼き、VM が型特化 op を
+    /// 選ぶのに使う（#2b）。0 = 未採番（合成 AST など）。
     CompoundAssign {
         name: String,
         op: BinOp,
         value: Expr,
         span: Span,
         slot: SlotCache,
+        node_id: u32,
     },
     /// `if` / `elif` / `else` 条件分岐。
     ///

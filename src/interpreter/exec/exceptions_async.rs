@@ -2,7 +2,7 @@
 
 use {
     crate::ast::{
-        ExceptHandler, Expr,
+        Expr,
         Stmt,
     },
     crate::token::Span,
@@ -106,21 +106,37 @@ impl Interpreter {
         }
 
         let exc_val = self.eval(exc.as_ref().unwrap())?;
+        // 組み立ては 1 箇所（#77）。ここは**結果の返し方**だけを持つ。
+        Ok(ExecResult::Raise(self.build_raised_error(exc_val, span)))
+    }
 
-        // 例外インスタンスに file / line / col / code_context を直接書き込む
+    /// `raise <expr>` の値と位置から [`RaisedError`] を組む — **唯一の実装**（#77）。
+    ///
+    /// ① 例外インスタンスへ `file` / `line` / `col` / `code_context`（および `Error::` 修飾名）を
+    /// 直接書き込み、② raise 地点の [`StackFrame`] を 1 つ持つ `RaisedError` を返す。
+    ///
+    /// ⚠⚠ **#77 以前は `exec_raise`（ツリーウォーク）と `vm_raise`（VM）に同じ 40 行が
+    /// 書かれていた** — しかも `vm_raise` の doc は「`exec_raise` と同一意味論」と**明記**していた。
+    /// **2 経路で違ってよいのは「組んだ結果をどう返すか」だけ**:
+    /// `exec_raise` は `ExecResult::Raise` で返し、`vm_raise` は `current_exception` へ積んで
+    /// `RAISE_SENTINEL` を返す。⇒ 組み立てはここに集約する（`*_evaled` 版とずれた実装を作らない）。
+    fn build_raised_error(&self, exc_val: Value, span: &Span) -> RaisedError {
+        // ⚠ `get_context_lines` は純粋（`source_map` を読むだけ）なので 1 回で足りる。
+        // #77 以前は**同じ引数で 2 回**呼んでいた（インスタンス書き込み用とフレーム用）。
+        let context = self.get_context_lines(&span.file, span.line, 5);
+
         if let Value::Instance(ref inst_rc) = exc_val {
-            let context = self.get_context_lines(&span.file, span.line, 5);
             let cls = inst_rc.borrow().class.clone();
             let mut inst = inst_rc.borrow_mut();
             for (key, val) in [
-                ("file", Value::Str(span.file.to_string())),
+                ("file", Value::str(span.file.to_string())),
                 ("line", Value::Int(span.line as i64)),
                 ("col", Value::Int(span.col as i64)),
-                ("code_context", Value::Str(context.clone())),
-                ("Error::file", Value::Str(span.file.to_string())),
+                ("code_context", Value::str(context.clone())),
+                ("Error::file", Value::str(span.file.to_string())),
                 ("Error::line", Value::Int(span.line as i64)),
                 ("Error::col", Value::Int(span.col as i64)),
-                ("Error::code_context", Value::Str(context)),
+                ("Error::code_context", Value::str(context.clone())),
             ] {
                 if let Some(&idx) = cls.field_index.get(key) {
                     inst.store_field(idx, val, false);
@@ -133,98 +149,68 @@ impl Interpreter {
             .last()
             .cloned()
             .unwrap_or_else(|| "<module>".to_string());
-        let frame = StackFrame {
-            file: span.file.to_string(),
-            line: span.line,
-            col: span.col,
-            fn_name,
-            context: self.get_context_lines(&span.file, span.line, 5),
-        };
-        Ok(ExecResult::Raise(RaisedError {
+        RaisedError {
             exception: exc_val,
-            frames: vec![frame],
-        }))
+            frames: vec![StackFrame {
+                file: span.file.to_string(),
+                line: span.line,
+                col: span.col,
+                fn_name,
+                context,
+            }],
+        }
     }
 
-    /// `try / except / finally` 文を実行する。例外を捕捉してハンドラを実行し、finally ブロックは常に実行する。
-    pub(crate) fn exec_try(
-        &mut self,
-        body: &[Stmt],
-        handlers: &[ExceptHandler],
-        finally_body: &Option<Vec<Stmt>>,
-    ) -> Result<ExecResult, String> {
-        let body_result = self.exec_scoped_block(body);
+    // ── VM 例外サポート（vm/run.rs のハンドラスタックが使う。current_exception 等は
+    //     interpreter モジュール private なのでここにヘルパを置く） ──
 
-        let mut converted_internal = false;
-        let raise_opt: Option<RaisedError> = match &body_result {
-            Ok(ExecResult::Raise(r)) => Some(r.clone()),
-            Err(e) if e.as_str() == RAISE_SENTINEL => self.current_exception.clone(),
-            Err(e) => {
-                let msg = e.clone();
-                let r = self.make_internal_raised_error(&msg);
-                if r.is_some() {
-                    converted_internal = true;
-                }
-                r
-            }
-            _ => None,
+    /// VM: `raise expr`。`exec_raise`（bare でない側）と**同一意味論**
+    /// — 組み立ては [`Self::build_raised_error`] に 1 本化してあるので、
+    /// **その「同一」は仕様ではなく実装で保証されている**（#77）。
+    ///
+    /// フレーム付き `RaisedError` を `current_exception` に設定して `RAISE_SENTINEL` を返す
+    /// （呼び出し側が Err で伝播）。⚠ **2 経路で違うのはこの 2 行だけ**。
+    pub(crate) fn vm_raise(&mut self, exc_val: Value, span: &Span) -> String {
+        self.current_exception = Some(self.build_raised_error(exc_val, span));
+        RAISE_SENTINEL.to_string()
+    }
+
+    /// VM: bare `raise`（再送出）。`current_exception` があれば RAISE_SENTINEL、なければエラー文字列。
+    pub(crate) fn vm_reraise(&mut self) -> String {
+        if self.current_exception.is_some() {
+            RAISE_SENTINEL.to_string()
+        } else {
+            "RuntimeError: no active exception to re-raise".to_string()
+        }
+    }
+
+    /// VM: 捕捉すべき例外 Value を取り出す。`err` が RAISE_SENTINEL なら `current_exception`、
+    /// それ以外は内部エラーを RaisedError へ変換する（`exec_try`＝#33 で削除、と同じ）。`current_exception` を
+    /// 設定して例外 Value を返す。変換できなければ `None`（＝伝播）。
+    pub(crate) fn vm_take_raised(&mut self, err: &str) -> Option<Value> {
+        let raised = if err == RAISE_SENTINEL {
+            self.current_exception.clone()
+        } else {
+            self.make_internal_raised_error(err)
         };
-
-        let mut final_result: Result<ExecResult, String> = body_result;
-
-        if let Some(raised) = raise_opt {
-            let mut handled = false;
-            for handler in handlers {
-                let matches = match &handler.exc_type {
-                    None => true,
-                    Some(type_name) => {
-                        if let Value::Instance(ref inst_rc) = raised.exception {
-                            Self::exc_matches(&inst_rc.borrow().class, type_name)
-                        } else {
-                            false
-                        }
-                    }
-                };
-                if matches {
-                    let prev_exc = self.current_exception.clone();
-                    self.current_exception = Some(raised.clone());
-
-                    self.push_scope();
-                    if let Some(alias) = &handler.name {
-                        let exc_val = raised.exception.clone();
-                        self.declare_var(alias.clone(), Var::new(exc_val, false));
-                    }
-                    let handler_result = self.exec_block(&handler.body);
-                    self.pop_scope();
-
-                    self.current_exception = prev_exc;
-                    final_result = handler_result;
-                    handled = true;
-                    break;
-                }
+        match raised {
+            Some(r) => {
+                let v = r.exception.clone();
+                self.current_exception = Some(r);
+                Some(v)
             }
-            if !handled && converted_internal {
-                // 内部エラーから変換された RaisedError がどのハンドラにもマッチしなかった場合:
-                // ExecResult::Raise として上位に伝播させ、トレースバック表示が機能するようにする
-                final_result = Ok(ExecResult::Raise(raised));
-            }
+            None => None,
         }
-
-        if let Some(finally) = finally_body {
-            let finally_result = self.exec_scoped_block(finally);
-            match finally_result {
-                Ok(ExecResult::Normal) => {}
-                Ok(signal) => return Ok(signal),
-                Err(e) => return Err(e),
-            }
-        }
-
-        final_result
     }
 
-    // ---------------------------------------------------------------------------
-    // Async
-    // ---------------------------------------------------------------------------
+    /// VM: `except TypeName` の型マッチ（`exc_matches` と同一）。
+    pub(crate) fn vm_exc_matches(&self, exc: &Value, type_name: &str) -> bool {
+        if let Value::Instance(inst_rc) = exc {
+            Self::exc_matches(&inst_rc.borrow().class, type_name)
+        } else {
+            false
+        }
+    }
 
     /// `target <- async->T: body` 文を実行する。`AsyncManager` にタスクを追加する。
     pub(crate) fn exec_async_assign(&mut self, target: &str, stmts: &[Stmt]) -> Result<ExecResult, String> {
@@ -244,8 +230,46 @@ impl Interpreter {
         };
 
         let env = crate::interpreter::async_mgr::capture_env(self);
+        // #32: worker スレッドは `Interpreter::new()` を作るので、**親の設定を渡す責任がある**。
+        // ⚠ `--vm` は #33 で無くなったが、型注釈（`annotations`）の引き継ぎは今も要る
+        //    （渡し忘れるとゲートに穴が開く。実際に開いていた）。
         mgr_rc.borrow_mut().add_task(stmts.to_vec(), env);
         Ok(ExecResult::Normal)
+    }
+
+    /// VM の `AsyncSubmit` op 用（タスク #9）。VM フレームには `scopes` が無いため、frame から読み出した
+    /// 捕捉ローカル `captured` を一時スコープに積んでから `capture_env` を呼び、ツリーウォークの
+    /// `exec_async_assign` と**同一の env**（捕捉ローカル + グローバル・mutable/immutable の deep_clone 規則込み）
+    /// を組んで AsyncManager にタスクを投入する。捕捉は本体が参照する slot に限定済み（未参照ローカルは載せない）。
+    pub(crate) fn vm_async_submit(
+        &mut self,
+        mgr: Value,
+        body: &[Stmt],
+        captured: Vec<(String, Value, bool)>,
+    ) -> Result<(), String> {
+        let mgr_rc = match mgr {
+            Value::AsyncManager(rc) => rc,
+            other => {
+                return Err(format!(
+                    "TypeError: '<-' operator requires an AsyncManager, got '{}'",
+                    self.type_name(&other)
+                ))
+            }
+        };
+        // 捕捉ローカルだけを可視にする一時スコープを積み、capture_env に globals と合成させる。
+        // frame_floor を進めることで capture_env が「現関数ローカル = この一時スコープ」とみなす。
+        let saved_floor = self.frame_floor;
+        let saved_len = self.scopes.len();
+        self.frame_floor = saved_len;
+        self.push_scope();
+        for (name, value, is_mut) in captured {
+            self.declare_var(name, Var::new(value, is_mut));
+        }
+        let env = crate::interpreter::async_mgr::capture_env(self);
+        self.scopes.truncate(saved_len);
+        self.frame_floor = saved_floor;
+        mgr_rc.borrow_mut().add_task(body.to_vec(), env);
+        Ok(())
     }
 
     // ---------------------------------------------------------------------------
@@ -255,14 +279,14 @@ impl Interpreter {
     /// 外部イベントキュー（C#/Go ブリッジが ar_event_fire() で書き込んだもの）をすべて処理する。
     pub(crate) fn drain_external_events(&mut self) -> Result<(), String> {
         let events: Vec<crate::interpreter::event_loop::ExternalEvent> = {
-            let mut guard = self.external_event_queue.lock().unwrap();
+            let mut guard = self.events.external_queue.lock().unwrap();
             guard.drain(..).collect()
         };
         for ev in events {
-            let sig_rc = self.external_handler_registry.get(&ev.handler_id).cloned();
+            let sig_rc = self.events.external_handlers.get(&ev.handler_id).cloned();
             if let Some(sig_rc) = sig_rc {
                 // データは MessagePack でシリアライズされているが、現時点では str として渡す。
-                let val = Value::Str(String::from_utf8_lossy(&ev.data).into_owned());
+                let val = Value::str(String::from_utf8_lossy(&ev.data).into_owned());
                 let handlers = sig_rc.borrow_mut().collect_handlers_for_emit();
                 for (h, _) in handlers {
                     self.call_value_with_args(h, vec![val.clone()])?;
@@ -286,6 +310,17 @@ impl Interpreter {
     ) -> Result<ExecResult, String> {
         let source_val = self.eval(source)?;
         let handler_val = self.eval(handler)?;
+        self.event_subscribe_evaled(source_val, handler_val, is_once, is_async)
+    }
+
+    /// 評価済みの source/handler で購読する（VM の `Op::EventSubscribe` 用・#27-c）。
+    pub(crate) fn event_subscribe_evaled(
+        &mut self,
+        source_val: Value,
+        handler_val: Value,
+        is_once: bool,
+        is_async: bool,
+    ) -> Result<ExecResult, String> {
         match source_val {
             Value::Signal(sig_rc) => {
                 sig_rc
@@ -308,6 +343,15 @@ impl Interpreter {
     ) -> Result<ExecResult, String> {
         let source_val = self.eval(source)?;
         let handler_val = self.eval(handler)?;
+        self.event_unsubscribe_evaled(source_val, handler_val)
+    }
+
+    /// 評価済みの source/handler で解除する（VM の `Op::EventUnsubscribe` 用・#27-c）。
+    pub(crate) fn event_unsubscribe_evaled(
+        &mut self,
+        source_val: Value,
+        handler_val: Value,
+    ) -> Result<ExecResult, String> {
         match source_val {
             Value::Signal(sig_rc) => {
                 sig_rc.borrow_mut().unsubscribe_by_value(&handler_val);

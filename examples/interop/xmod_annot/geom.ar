@@ -1,0 +1,9 @@
+class Vec2:
+    mut x: float
+    mut y: float
+    fn __init__(mut self, let x: float, let y: float) -> None:
+        self.x = x
+        self.y = y
+
+fn norm_sq(let v: Vec2) -> float:
+    return v.x * v.x + v.y * v.y

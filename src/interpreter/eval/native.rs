@@ -6,7 +6,30 @@ use {
     crate::interpreter::{
         Interpreter, NativeFnRef, Value,
     },
+    // typed ABI の仕組み（引数マーシャリング・呼び出し・戻り値デコード）は
+    // すべて `value::native` に 1 箇所で置いてある（#54 / #76）。
+    crate::interpreter::value::{decode_typed_ret, invoke_typed_abi, Marshalled, TypedArgs},
 };
+
+/// 引数 `i` が名前付き変数（`Expr::Ident`）ならその名前（#76）。
+fn arg_ident_name(args: &[CallArg], i: usize) -> Option<&str> {
+    match args.get(i).map(|a| a.expr()) {
+        Some(crate::ast::Expr::Ident { name, .. }) => Some(name),
+        _ => None,
+    }
+}
+
+/// `wb_mask`（VM が知っている「書き戻し先を持つ引数」のビットマスク）を
+/// [`TypedArgs::marshal`] の `named_mut` 形式へ変換する（#76）。
+///
+/// ⚠ マスクは `Some(true)` / `None` しか作れない。**`Some(false)`（名前付き `let`）は
+/// 表現できない**ので、この経路は `let` を書き込みポインタへ渡してもエラーにならず
+/// **単に書き戻さない**（安全側）。ツリーウォーク側は元の式を見て `Some(false)` を作れる。
+fn named_mut_from_mask(wb_mask: u32) -> [Option<bool>; 16] {
+    // ⚠ **ヒープ確保しないこと**。ここは FFI 呼び出しごとに通る（typed 経路の引数上限が
+    // 16 なので固定長で足りる）。`Vec` にすると cdll ベンチが 0.90x に落ちる（実測）。
+    std::array::from_fn(|i| ((wb_mask >> i) & 1 == 1).then_some(true))
+}
 
 impl Interpreter {
     /// `Value::NativeFunction` を呼び出す（ハンドルベース ABI）。
@@ -15,16 +38,29 @@ impl Interpreter {
     /// 結果ハンドルをアリーナから取り出して返す。
     /// `enter_native_call` / `exit_native_call` でアリーナのセーブポイントを管理し、
     /// 呼び出しツリーが終わると一括クリーンアップする。
+    /// 引数式から [`TypedArgs::marshal`] の `named_mut` を作る（ツリーウォーク経路・#76）。
+    ///
+    /// ⚠ こちらは **3 状態すべて**を作れる（マスク経路は `Some(false)` を作れない）。
+    /// これが 4 経路で唯一違ってよい入力。
+    fn named_mut_from_args(&self, args: &[CallArg]) -> [Option<bool>; 16] {
+        // ⚠ **ヒープ確保しないこと**（`named_mut_from_mask` と同じ理由）。
+        std::array::from_fn(|i| match arg_ident_name(args, i) {
+            Some(name) => self.get_var(name).map(|v| v.is_mutable()),
+            None => None,
+        })
+    }
+
     pub(crate) fn call_native_function(
         &mut self,
         fn_ref: &Arc<NativeFnRef>,
         args: &[crate::ast::CallArg],
     ) -> Result<Value, String> {
+        // #55: AST 式を取るツリーウォーク入口の通過を数える（既定ビルドでは消える）。
+        crate::interpreter::tw_stats::record_site(1);
         use crate::interpreter::PtrParam;
 
-        // Fast path: no write-back parameters
-        let has_writeback = fn_ref.ptr_params.contains(&PtrParam::MutPtr);
-        if !has_writeback {
+        // Fast path: no write-back parameters（判定は VM 側と同一実装・#48）
+        if !fn_ref.has_writeback() {
             let evaled = self.eval_call_args(args)?;
             let vals: Vec<Value> = evaled.into_iter().map(|(_, v, _)| v).collect();
             return self.dispatch_native_evaled(fn_ref, vals);
@@ -36,7 +72,7 @@ impl Interpreter {
             if *pp != PtrParam::MutPtr {
                 continue;
             }
-            if let Some(crate::ast::Expr::Ident(name)) = args.get(i).map(|a| a.expr()) {
+            if let Some(crate::ast::Expr::Ident { name, .. }) = args.get(i).map(|a| a.expr()) {
                 let is_mut = self.get_var(name).map(|v| v.is_mutable()).unwrap_or(false);
                 if !is_mut {
                     return Err(format!(
@@ -75,110 +111,31 @@ impl Interpreter {
         // 構造体ポインタ引数（AbiTy::Ptr）は resolve_typed_ptr_arg でゼロコピー／
         // シャドウ変換のどちらかを解決する（P3/P4 — .claude/skills/c-abi-interop/SKILL.md）。
         if let Some(sig) = &fn_ref.typed_sig {
-            use crate::interpreter::value::{AbiTy, PtrArgCleanup};
             let typed_ptr = fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed);
             if typed_ptr != 0 && vals.len() == sig.params.len() && vals.len() <= 16 {
-                let mut slots = [0u64; 16];
-                // OutPtr（プリミティブ書き込みポインタ）用のローカル領域。
-                // スロットにはこの要素のアドレスが入るため、呼び出しが終わるまで生存する。
-                let mut out_locals = [0u64; 16];
-                let mut out_wb: Vec<(usize, crate::interpreter::value::RawWidth, String)> =
-                    Vec::new();
-                let mut cleanups: Vec<PtrArgCleanup> = Vec::new();
-                let mut ptr_err: Option<String> = None;
-                let mut ok = true;
-                for (i, (v, ty)) in vals.iter().zip(&sig.params).enumerate() {
-                    match (v, ty) {
-                        (Value::Int(n), AbiTy::I64) => slots[i] = *n as u64,
-                        (Value::Float(f), AbiTy::F64) => slots[i] = f.to_bits(),
-                        // int → float 引数の自動昇格（ハンドル経路の ar_to_float と同義）
-                        (Value::Int(n), AbiTy::F64) => slots[i] = (*n as f64).to_bits(),
-                        (_, AbiTy::Ptr { mutable, by_value, layout }) => {
-                            let named_mut = match args.get(i).map(|a| a.expr()) {
-                                Some(crate::ast::Expr::Ident(name)) => {
-                                    self.get_var(name).map(|v| v.is_mutable())
-                                }
-                                _ => None,
-                            };
-                            match crate::interpreter::value::resolve_typed_ptr_arg(
-                                v, *mutable, *by_value, layout, named_mut,
-                            ) {
-                                Ok(Some((slot, cleanup))) => {
-                                    slots[i] = slot;
-                                    cleanups.push(cleanup);
-                                }
-                                Ok(None) => {
-                                    ok = false;
-                                    break;
-                                }
-                                Err(e) => {
-                                    ptr_err = Some(e);
-                                    ok = false;
-                                    break;
-                                }
-                            }
-                        }
-                        // プリミティブ書き込みポインタ（`double*` 等）: 初期値を width 幅で
-                        // エンコードしたローカルのアドレスを渡し、呼び出し後に名前付き
-                        // `mut` 変数へ書き戻す（let 拒否は冒頭の MutPtr 事前チェック済み）。
-                        (_, AbiTy::OutPtr { width }) => {
-                            match crate::interpreter::value::encode_out_ptr_init(v, *width) {
-                                Some(enc) => {
-                                    out_locals[i] = enc;
-                                    slots[i] = std::ptr::addr_of_mut!(out_locals[i]) as u64;
-                                    if let Some(crate::ast::Expr::Ident(name)) =
-                                        args.get(i).map(|a| a.expr())
-                                    {
-                                        out_wb.push((i, *width, name.clone()));
-                                    }
-                                }
-                                None => {
-                                    ok = false;
-                                    break;
-                                }
-                            }
-                        }
-                        _ => {
-                            ok = false;
-                            break;
-                        }
+                // ツリーウォークは元の引数式を見られるので **3 状態すべて**を作れる
+                // （`Some(false)` ＝ 名前付き `let`。書き込みポインタへ渡すと `Err`）。
+                let named_mut = self.named_mut_from_args(args);
+                // ⚠ **move 禁止**（`slots` が `out_locals` を指す）。ここに置いたまま使う。
+                let mut ta = TypedArgs::new();
+                if matches!(
+                    ta.marshal(&vals, &sig.params, &named_mut)?,
+                    Marshalled::Ready
+                ) {
+                    // SAFETY: `typed_ptr` は typed_sig 付き（`build_cpp_typed_sig` 検証済み）の関数。
+                    let ret = unsafe {
+                        invoke_typed_abi(typed_ptr, &ta.slots, std::mem::take(&mut ta.cleanups))?
                     };
-                }
-                if let Some(e) = ptr_err {
-                    return Err(e);
-                }
-                if ok {
-                    let mut ret: u64 = 0;
-                    let mut err = crate::interpreter::native_api::ErrSlot::default();
-                    let status = unsafe {
-                        let f: unsafe extern "C" fn(
-                            *const u64,
-                            *mut u64,
-                            *mut crate::interpreter::native_api::ErrSlot,
-                        ) -> u32 = std::mem::transmute(typed_ptr);
-                        f(slots.as_ptr(), &mut ret, &mut err)
-                    };
-                    for c in cleanups {
-                        crate::interpreter::value::finish_ptr_arg_cleanup(c);
-                    }
-                    if status != 0 {
-                        // 既存の raise 経路と同じ "TypeName: msg" 形式で伝播
-                        return Err(err.to_error_string());
-                    }
-                    // OutPtr の書き戻し（C が書いた値を named mut 変数へ反映 — 成功時のみ）
-                    for (i, width, name) in out_wb {
-                        let val = crate::interpreter::value::decode_out_ptr(out_locals[i], width);
+                    // ⚠ **4 経路で違ってよいのはここだけ**（#76）。こちらは**自分で変数へ代入**する。
+                    // ⚠ `out_wb` は `named_mut == Some(true)` のときだけ積まれる ＝ 必ず名前がある。
+                    for (i, width) in std::mem::take(&mut ta.out_wb) {
+                        let val = ta.decode_out(i, width);
+                        let name = arg_ident_name(args, i)
+                            .expect("out_wb は named mut と判定した引数にだけ積まれる")
+                            .to_string();
                         self.assign_var(&name, val)?;
                     }
-                    return Ok(match sig.ret {
-                        AbiTy::I64 => Value::Int(ret as i64),
-                        AbiTy::F64 => Value::Float(f64::from_bits(ret)),
-                        AbiTy::Void => Value::None,
-                        // typed ABI の戻り値に Ptr/OutPtr は使わない（build_cpp_typed_sig が除外する）。
-                        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
-                            unreachable!("typed ABI ret excludes Ptr/OutPtr")
-                        }
-                    });
+                    return Ok(decode_typed_ret(&sig.ret, ret));
                 }
             }
         }
@@ -195,7 +152,7 @@ impl Interpreter {
                 if pp == PtrParam::MutPtr {
                     // Only do write-back when the argument is a named mut variable.
                     // Literals / expressions are passed read-only (no write-back needed).
-                    if let Some(crate::ast::Expr::Ident(n)) = args.get(i).map(|a| a.expr()) {
+                    if let Some(crate::ast::Expr::Ident { name: n, .. }) = args.get(i).map(|a| a.expr()) {
                         let h = crate::interpreter::native_api::push_handle_writeback(v.clone());
                         writebacks.push((n.clone(), h));
                         h
@@ -300,122 +257,89 @@ impl Interpreter {
         any_arc: &Arc<dyn std::any::Any + Send + Sync>,
         args: &[CallArg],
     ) -> Result<Value, String> {
-        use crate::interpreter::value::{AbiTy, PtrArgCleanup};
+        // #55: AST 式を取るツリーウォーク入口の通過を数える（既定ビルドでは消える）。
+        crate::interpreter::tw_stats::record_site(2);
         let sig = fn_ref.typed_sig.as_ref().expect("cache guarantees typed_sig");
-        let mut slots = [0u64; 16];
-        // OutPtr（プリミティブ書き込みポインタ）用のローカル領域（呼び出し終了まで生存）。
-        let mut out_locals = [0u64; 16];
-        let mut out_wb: Vec<(usize, crate::interpreter::value::RawWidth, String)> = Vec::new();
-        // 評価済みの値を常に保持しておく（フォールバック時にスロットから復元する必要がなくなる）。
-        let mut evaled: Vec<Value> = Vec::with_capacity(args.len());
-        let mut cleanups: Vec<PtrArgCleanup> = Vec::new();
-        for (i, arg) in args.iter().enumerate() {
-            let v = self.eval(arg.expr())?;
-            let ok = match (&v, &sig.params[i]) {
-                (Value::Int(n), AbiTy::I64) => {
-                    slots[i] = *n as u64;
-                    true
-                }
-                (Value::Float(f), AbiTy::F64) => {
-                    slots[i] = f.to_bits();
-                    true
-                }
-                // int → float 引数の自動昇格
-                (Value::Int(n), AbiTy::F64) => {
-                    slots[i] = (*n as f64).to_bits();
-                    true
-                }
-                (_, AbiTy::Ptr { mutable, by_value, layout }) => {
-                    let named_mut = match arg.expr() {
-                        crate::ast::Expr::Ident(name) => {
-                            self.get_var(name).map(|v| v.is_mutable())
-                        }
-                        _ => None,
-                    };
-                    match crate::interpreter::value::resolve_typed_ptr_arg(
-                        &v, *mutable, *by_value, layout, named_mut,
-                    ) {
-                        Ok(Some((slot, cleanup))) => {
-                            slots[i] = slot;
-                            cleanups.push(cleanup);
-                            true
-                        }
-                        Ok(None) => false,
-                        Err(e) => return Err(e),
-                    }
-                }
-                // プリミティブ書き込みポインタ（`double*` 等）: ローカルのアドレスを渡し、
-                // 呼び出し後に名前付き `mut` 変数へ書き戻す。let 変数はエラー
-                // （ハンドル経路 call_native_function の事前チェックと同じ規則）。
-                (_, AbiTy::OutPtr { width }) => {
-                    match crate::interpreter::value::encode_out_ptr_init(&v, *width) {
-                        Some(enc) => {
-                            out_locals[i] = enc;
-                            slots[i] = std::ptr::addr_of_mut!(out_locals[i]) as u64;
-                            if let crate::ast::Expr::Ident(name) = arg.expr() {
-                                let is_mut =
-                                    self.get_var(name).map(|v| v.is_mutable()).unwrap_or(false);
-                                if !is_mut {
-                                    return Err(format!(
-                                        "TypeError: pointer parameter {i} requires a `mut` variable, '{name}' is not mutable"
-                                    ));
-                                }
-                                out_wb.push((i, *width, name.clone()));
-                            }
-                            true
-                        }
-                        None => false,
-                    }
-                }
-                _ => false,
-            };
-            evaled.push(v);
-            if !ok {
-                // 型不一致 → ここまで評価済みの値をそのままハンドル経路へ渡す
-                // （副作用の二重実行はない — 各引数式は一度しか eval していない）。
-                let arc = any_arc
-                    .clone()
-                    .downcast::<NativeFnRef>()
-                    .expect("cache holds NativeFnRef");
-                return self.dispatch_native_evaled(&arc, evaled);
+
+        // ⚠ **引数はここで全部評価する**（#76 で 3 経路と揃えた）。以前はマーシャリングと
+        // 交互に評価し、型不一致で打ち切ると**残りの引数式が一度も評価されなかった**。
+        // 他の 2 経路（`eval_call_args`）は元から全部評価しているので、こちらが例外だった。
+        let mut vals: Vec<Value> = Vec::with_capacity(args.len());
+        for arg in args {
+            vals.push(self.eval(arg.expr())?);
+        }
+
+        let named_mut = self.named_mut_from_args(args);
+        // ⚠ OutPtr へ名前付き `let` を渡す誤りは、ハンドル経路（`call_native_function` の
+        // MutPtr 事前チェック）と同じ規則でここでも拒否する
+        //（`AbiTy::OutPtr` は必ず `PtrParam::MutPtr`。どちらも `CType::Ptr{mutable:true}` 由来）。
+        for (i, ty) in sig.params.iter().enumerate() {
+            if matches!(ty, crate::interpreter::value::AbiTy::OutPtr { .. })
+                && named_mut.get(i).copied().flatten() == Some(false)
+            {
+                let name = arg_ident_name(args, i).unwrap_or("");
+                return Err(format!(
+                    "TypeError: pointer parameter {i} requires a `mut` variable, '{name}' is not mutable"
+                ));
             }
         }
+
+        // ⚠ **move 禁止**（`slots` が `out_locals` を指す）。ここに置いたまま使う。
+        let mut ta = TypedArgs::new();
+        if !matches!(
+            ta.marshal(&vals, &sig.params, &named_mut)?,
+            Marshalled::Ready
+        ) {
+            // 型不一致 → 評価済みの値をそのままハンドル経路へ渡す（副作用の二重実行はない）。
+            let arc = any_arc
+                .clone()
+                .downcast::<NativeFnRef>()
+                .expect("cache holds NativeFnRef");
+            return self.dispatch_native_evaled(&arc, vals);
+        }
+
         let typed_ptr = fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed);
-        let mut ret: u64 = 0;
-        let mut err = crate::interpreter::native_api::ErrSlot::default();
-        let status = unsafe {
-            let f: unsafe extern "C" fn(
-                *const u64,
-                *mut u64,
-                *mut crate::interpreter::native_api::ErrSlot,
-            ) -> u32 = std::mem::transmute(typed_ptr);
-            f(slots.as_ptr(), &mut ret, &mut err)
-        };
-        for c in cleanups {
-            crate::interpreter::value::finish_ptr_arg_cleanup(c);
-        }
-        if status != 0 {
-            return Err(err.to_error_string());
-        }
-        // OutPtr の書き戻し（C が書いた値を named mut 変数へ反映 — 成功時のみ）
-        for (i, width, name) in out_wb {
-            let val = crate::interpreter::value::decode_out_ptr(out_locals[i], width);
+        // SAFETY: この経路はインラインキャッシュ命中時のみで、キャッシュには typed_sig 付きの
+        // `NativeFnRef` しか入らない（`eval_call` の充填条件）。
+        let ret =
+            unsafe { invoke_typed_abi(typed_ptr, &ta.slots, std::mem::take(&mut ta.cleanups))? };
+        // ⚠ **4 経路で違ってよいのはここだけ**（#76）。こちらは**自分で変数へ代入**する。
+        for (i, width) in std::mem::take(&mut ta.out_wb) {
+            let val = ta.decode_out(i, width);
+            let name = arg_ident_name(args, i)
+                .expect("out_wb は named mut と判定した引数にだけ積まれる")
+                .to_string();
             self.assign_var(&name, val)?;
         }
-        Ok(match sig.ret {
-            AbiTy::I64 => Value::Int(ret as i64),
-            AbiTy::F64 => Value::Float(f64::from_bits(ret)),
-            AbiTy::Void => Value::None,
-            AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
-                unreachable!("typed ABI ret excludes Ptr/OutPtr")
-            }
-        })
+        Ok(decode_typed_ret(&sig.ret, ret))
     }
 
     pub(crate) fn dispatch_native_evaled(
         &mut self,
         fn_ref: &Arc<NativeFnRef>,
+        vals: Vec<Value>,
+    ) -> Result<Value, String> {
+        // 書き戻し先を持たない呼び出し（＝従来の全経路）。**唯一の実装は `_wb` 版**に置き、
+        // ここは「書き戻し先ゼロ」で委譲するだけにする（`*_evaled` 版とずれた実装を作らない）。
+        self.dispatch_native_evaled_wb(fn_ref, vals, 0, &mut Vec::new())
+    }
+
+    /// `dispatch_native_evaled` の書き戻し対応版（#48）。
+    ///
+    /// `wb_mask` の bit i が立っている引数は「**呼び出し元が書き戻し先を知っている
+    /// 名前付き mut 変数**」で、ツリーウォークの `call_native_function` が
+    /// 引数式を `Expr::Ident` と判定したのと同じ意味を持つ。C が書いた値は
+    /// `wb_out` に `(arg index, 値)` で積んで返し、**格納は呼び出し元が行う**
+    /// （VM のローカルは `vm_stack` の slot にあり、ここからは触れないため）。
+    ///
+    /// ⚠ `wb_mask` を 0 にすると従来どおり**書き戻しをしない**。判定不能な呼び出し元
+    /// （`call_value_evaled` 経由など）はそのまま 0 を渡せばよい。
+    pub(crate) fn dispatch_native_evaled_wb(
+        &mut self,
+        fn_ref: &Arc<NativeFnRef>,
         mut vals: Vec<Value>,
+        wb_mask: u32,
+        wb_out: &mut Vec<(u8, Value)>,
     ) -> Result<Value, String> {
         if vals.len() < fn_ref.min_params || vals.len() > fn_ref.n_params {
             let expected = if fn_ref.min_params == fn_ref.n_params {
@@ -448,98 +372,47 @@ impl Interpreter {
         // const 構造体ポインタのみを取る関数（`VectorInnerProduct` 等）は
         // **このパスでしか typed 高速化を受けられない**。
         if let Some(sig) = &fn_ref.typed_sig {
-            use crate::interpreter::value::{AbiTy, PtrArgCleanup};
             let typed_ptr = fn_ref.typed_fn_ptr.load(std::sync::atomic::Ordering::Relaxed);
             if typed_ptr != 0 && vals.len() == sig.params.len() && vals.len() <= 16 {
-                let mut slots = [0u64; 16];
-                // OutPtr 用ローカル領域。この経路は CallArg 情報がなく named-mut 判定が
-                // できないため書き戻しは行わない（Ptr の named_mut=None と同じ安全側）。
-                let mut out_locals = [0u64; 16];
-                let mut cleanups: Vec<PtrArgCleanup> = Vec::new();
-                let mut ptr_err: Option<String> = None;
-                let mut ok = true;
-                for (i, (v, ty)) in vals.iter().zip(&sig.params).enumerate() {
-                    match (v, ty) {
-                        (Value::Int(n), AbiTy::I64) => slots[i] = *n as u64,
-                        (Value::Float(f), AbiTy::F64) => slots[i] = f.to_bits(),
-                        // int → float 引数の自動昇格（ハンドル経路の ar_to_float と同義）
-                        (Value::Int(n), AbiTy::F64) => slots[i] = (*n as f64).to_bits(),
-                        (_, AbiTy::Ptr { mutable, by_value, layout }) => {
-                            match crate::interpreter::value::resolve_typed_ptr_arg(
-                                v, *mutable, *by_value, layout, None,
-                            ) {
-                                Ok(Some((slot, cleanup))) => {
-                                    slots[i] = slot;
-                                    cleanups.push(cleanup);
-                                }
-                                Ok(None) => {
-                                    ok = false;
-                                    break;
-                                }
-                                Err(e) => {
-                                    ptr_err = Some(e);
-                                    ok = false;
-                                    break;
-                                }
-                            }
-                        }
-                        (_, AbiTy::OutPtr { width }) => {
-                            match crate::interpreter::value::encode_out_ptr_init(v, *width) {
-                                Some(enc) => {
-                                    out_locals[i] = enc;
-                                    slots[i] = std::ptr::addr_of_mut!(out_locals[i]) as u64;
-                                }
-                                None => {
-                                    ok = false;
-                                    break;
-                                }
-                            }
-                        }
-                        _ => {
-                            ok = false;
-                            break;
-                        }
+                // 書き戻し先を知っている引数だけ `Some(true)`。⚠ **`Some(false)` は作れない**
+                // （元の `CallArg` 式が無いので「名前付き let」を判別できない）＝ 安全側。
+                let named_mut = named_mut_from_mask(wb_mask);
+                // ⚠ **move 禁止**（`slots` が `out_locals` を指す）。ここに置いたまま使う。
+                let mut ta = TypedArgs::new();
+                if matches!(
+                    ta.marshal(&vals, &sig.params, &named_mut)?,
+                    Marshalled::Ready
+                ) {
+                    // SAFETY: `typed_ptr` は typed_sig 付き（`build_cpp_typed_sig` 検証済み）の関数。
+                    let ret = unsafe {
+                        invoke_typed_abi(typed_ptr, &ta.slots, std::mem::take(&mut ta.cleanups))?
                     };
-                }
-                if let Some(e) = ptr_err {
-                    return Err(e);
-                }
-                if ok {
-                    let mut ret: u64 = 0;
-                    let mut err = crate::interpreter::native_api::ErrSlot::default();
-                    let status = unsafe {
-                        let f: unsafe extern "C" fn(
-                            *const u64,
-                            *mut u64,
-                            *mut crate::interpreter::native_api::ErrSlot,
-                        ) -> u32 = std::mem::transmute(typed_ptr);
-                        f(slots.as_ptr(), &mut ret, &mut err)
-                    };
-                    for c in cleanups {
-                        crate::interpreter::value::finish_ptr_arg_cleanup(c);
+                    // ⚠ **4 経路で違ってよいのはここだけ**（#76）。こちらは**呼び出し元へ返す**
+                    // （VM のローカルは `vm_stack` の slot にあり、ここからは触れない・#48）。
+                    for (i, width) in std::mem::take(&mut ta.out_wb) {
+                        wb_out.push((i as u8, ta.decode_out(i, width)));
                     }
-                    if status != 0 {
-                        // 既存の raise 経路と同じ "TypeName: msg" 形式で伝播
-                        return Err(err.to_error_string());
-                    }
-                    return Ok(match sig.ret {
-                        AbiTy::I64 => Value::Int(ret as i64),
-                        AbiTy::F64 => Value::Float(f64::from_bits(ret)),
-                        AbiTy::Void => Value::None,
-                        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
-                            unreachable!("typed ABI ret excludes Ptr/OutPtr")
-                        }
-                    });
+                    return Ok(decode_typed_ret(&sig.ret, ret));
                 }
             }
         }
 
         let is_outermost = crate::interpreter::native_api::enter_native_call(self as *mut Interpreter);
 
+        // ハンドル経路の書き戻し（#48）: `MutPtr` パラメータかつ `wb_mask` が立っている
+        // 引数には**書き込み可能なアリーナ枠**を渡す。`call_native_function` の
+        // handles 構築と同じ規則（あちらは `Expr::Ident` か、こちらは mask）。
+        let mut handle_wb: Vec<(u8, i64)> = Vec::new();
         let handles: Vec<i64> = vals
             .iter()
             .enumerate()
             .map(|(i, v)| {
+                let pp = fn_ref.ptr_params.get(i).copied().unwrap_or(crate::interpreter::PtrParam::None);
+                if pp == crate::interpreter::PtrParam::MutPtr && (wb_mask >> i) & 1 == 1 {
+                    let h = crate::interpreter::native_api::push_handle_writeback(v.clone());
+                    handle_wb.push((i as u8, h));
+                    return h;
+                }
                 let is_mut = fn_ref.param_mutabilities.get(i).copied().unwrap_or(true);
                 let owned = if is_mut {
                     v.clone()
@@ -603,6 +476,11 @@ impl Interpreter {
                         return Err(format!("{type_name}: {msg}"));
                     }
                     return Err("NativeError: CB_RAISE called but no pending raise".to_string());
+                }
+                // ⚠ **`exit_native_call` がアリーナを切り詰める前に**読み出すこと（#48）。
+                // `call_native_function` の `updated` と同じ順序・同じ関数を使う。
+                for (i, h) in &handle_wb {
+                    wb_out.push((*i, crate::interpreter::native_api::clone_value_at(*h)));
                 }
                 Ok(crate::interpreter::native_api::exit_native_call(result_h, is_outermost))
             }

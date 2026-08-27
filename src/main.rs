@@ -2,22 +2,33 @@
 ///
 /// パイプラインは以下の順序で処理を行う:
 ///   ソースファイル → Lexer（字句解析）→ Parser（構文解析）→ TypeChecker（静的型検査）→ Interpreter（実行）
+// `ar_config.json` の読み取り（#72）。**探索方針は呼び出し側ごと**で、その地図も doc にある。
+mod ar_config;
 mod ast;
+// 「この文はどの名前を束縛するか」の唯一の定義（#59）。resolver / exec / vm-compiler が共有する。
+mod decl_names;
+mod expr_walk;
+mod stmt_walk;
+// 例題スイートの構文カバレッジ計測（#85）。診断専用なので tw_stats と同じ feature に閉じる。
+#[cfg(feature = "tw_stats")]
+mod syntax_cov;
 #[cfg(test)]
 mod frontend_tests;
 mod interpreter;
 mod lexer;
 mod parser;
+#[cfg(feature = "prof")]
+mod prof;
 mod partial_compiler;
 mod python_converter;
 mod repl;
 mod token;
 mod type_check;
+mod vm;
 
 use interpreter::{ExecResult, Interpreter};
 use lexer::Lexer;
 use parser::Parser;
-use type_check::TypeChecker;
 
 /// インタープリタの実行モードを表す列挙型。
 ///
@@ -84,6 +95,19 @@ fn parse_args() -> Mode {
                 }
             }
             "--repl" => return Mode::Repl,
+            // バイトコード VM モード: `--vm=off|auto|force` または `--vm off` 形式（Phase V）。
+            arg if arg == "--vm" || arg.starts_with("--vm=") => {
+                let mode_str = if let Some(eq) = arg.strip_prefix("--vm=") {
+                    eq.to_string()
+                } else {
+                    let m = args.get(i + 1).cloned().unwrap_or_default();
+                    i += 1;
+                    m
+                };
+                cli_params.insert("__vm__".to_string(), mode_str);
+                i += 1;
+                continue;
+            }
             arg if arg.starts_with("--") => {
                 // User-defined parameter: --key [value]
                 let key = arg[2..].to_string();
@@ -293,10 +317,24 @@ fn format_static_errors(errors: &[type_check::StaticTypeError]) -> String {
 fn run_program(
     source: &str,
     filename: &str,
-    cli_args: std::collections::HashMap<String, String>,
+    mut cli_args: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
+    // #33: `--vm` は廃止した（実行経路はバイトコード VM 一本）。
+    // 古いスクリプトが渡してきたら**黙って無視せず**警告する（無視すると
+    // `--vm=off` を渡したつもりの比較が「同じものを 2 回実行」になって空回りする）。
+    if let Some(mode) = cli_args.remove("__vm__") {
+        eprintln!("Warning: --vm={mode} is no longer supported (the tree-walk path was removed); ignoring");
+    }
+    // 実行時間分布の計測（`--features prof`）。既定ビルドでは全部消える。
+    #[cfg(feature = "prof")]
+    prof::mark_startup_done();
+
     // --- 字句解析: ソースをトークン列（Vec<Spanned>）に変換する ---
+    #[cfg(feature = "prof")]
+    let _p_lex = prof::Timer::new(prof::Phase::Lex);
     let tokens = Lexer::new(source, filename).tokenize();
+    #[cfg(feature = "prof")]
+    drop(_p_lex);
 
     // ソースファイルのディレクトリを解決する（import 時の検索基準）
     let source_dir = std::path::Path::new(filename)
@@ -304,12 +342,28 @@ fn run_program(
         .map(|p| p.to_path_buf());
 
     // --- 構文解析: トークン列を AST（Vec<Stmt>）に変換する ---
-    let stmts = Parser::new(tokens, source_dir.clone())
+    #[cfg(feature = "prof")]
+    let _p_parse = prof::Timer::new(prof::Phase::Parse);
+    let mut stmts = Parser::new(tokens, source_dir.clone())
         .parse_program()
         .map_err(|e| format!("ParseError: {e}"))?;
+    #[cfg(feature = "prof")]
+    drop(_p_parse);
 
-    // --- 静的型検査: AST を走査してエラー・警告を収集する ---
-    let (type_errors, type_warnings) = TypeChecker::check_with_warnings(&stmts);
+    // 構文カバレッジ（#85）。⚠ **実行せずにここで終わる** — GUI・async・FFI を起こさずに
+    // 全例題を舐めるための仕掛け（`AR_SYNTAX_COV` はどのゲートも立てない）。
+    #[cfg(feature = "tw_stats")]
+    if syntax_cov::enabled() {
+        syntax_cov::dump_program(&stmts);
+        return Ok(());
+    }
+
+    // --- 静的型検査（#16 段階(a)）＋ Phase R / R1 のローカル slot 解決 ---
+    // ⚠ **配線は 1 箇所**（#88。`resolve_and_annotate` の doc に「畳んだ差」と
+    // 「畳まなかった差」の一覧がある）。型エラーの扱いだけが入口ごとに違うので
+    // ここで決める（この入口は**停止する**）。
+    let (type_errors, type_warnings, annotations) =
+        interpreter::resolver::resolve_and_annotate(&mut stmts);
     for w in &type_warnings {
         eprintln!("Warning: {w}");
     }
@@ -317,44 +371,94 @@ fn run_program(
         return Err(format_static_errors(&type_errors));
     }
 
+    // 診断フック（#16 段階(b)(ii)）: `AR_ANNOT_DIFF=1` で境界検査指示の生成状況を出す。
+    // 「Call 注釈のうち引数に CheckBefore が付いたものが何件か」を全例題で測るために使う。
+    if std::env::var("AR_ANNOT_DIFF").is_ok_and(|v| !v.is_empty()) {
+        let (calls, checked) = annotations.call_check_stats();
+        eprintln!("AnnotCalls: calls={calls} args_with_CheckBefore={checked}");
+        let m = annotations.binop_miss();
+        eprintln!(
+            "AnnotBinop: specialized={} miss_both_unresolved={} miss_one_unresolved={} miss_resolved_mixed={}",
+            annotations.binop_kind_len(),
+            m.both_unresolved,
+            m.one_unresolved,
+            m.resolved_but_mixed
+        );
+        let srcs: Vec<String> = annotations
+            .unresolved_sources()
+            .into_iter()
+            .map(|(k, n)| format!("{k}={n}"))
+            .collect();
+        eprintln!("AnnotUnresolvedSrc: {}", srcs.join(" "));
+    }
+
     // --- インタープリタの初期化とソーステキストの登録 ---
+    #[cfg(feature = "prof")]
+    let _p_init = prof::Timer::new(prof::Phase::InterpInit);
     // ソーステキストはエラー報告時のスタックトレース表示に使用される
+    #[cfg(feature = "prof")]
+    let _s_new = prof::SubTimer::new(prof::Sub::InterpNew);
     let mut interp = Interpreter::new();
+    #[cfg(feature = "prof")]
+    drop(_s_new);
+    // 最上位 Chunk（#10-b/#10-c/#27-c）が「この名前は scopes[0]」と判断するための集合。
+    // ⚠ リゾルバ用の `toplevel_visible_globals_with`（シャドウ減算あり）**ではない**。
+    // VM コンパイラは文を 1 つずつ見て、その文の束縛は `slots` に入っているので、
+    // 減算するとむしろ解決できる名前を落とす（理由は `toplevel_declared_globals` の doc）。
+    #[cfg(feature = "prof")]
+    let _s_tg = prof::SubTimer::new(prof::Sub::ToplevelGlobals);
+    interp.wire_resolution(
+        annotations,
+        interpreter::resolver::toplevel_declared_globals(&stmts),
+        interpreter::GlobalsMode::Replace,
+    );
+    #[cfg(feature = "prof")]
+    drop(_s_tg);
+    // ⚠ 注釈は上の `wire_resolution` が最上位グローバル集合と**対で**入れている（#88）。
+    #[cfg(feature = "prof")]
+    let _s_as = prof::SubTimer::new(prof::Sub::AnnotSource);
     interp.add_source_text(filename, source);
-    // ソースファイルのディレクトリを import 検索パスに追加する
+    #[cfg(feature = "prof")]
+    drop(_s_as);
+    // ソースファイルのディレクトリを import 検索パスに追加する。
+    // ⚠ この区間は **~0.000 ms でなければならない**（#69・`prof::Sub::CfgWalk` の doc 参照）。
+    #[cfg(feature = "prof")]
+    let _s_cfg = prof::SubTimer::new(prof::Sub::CfgWalk);
     if let Some(dir) = &source_dir {
         interp.add_python_search_dir(dir.clone());
-        // ar_config.json の python.search_paths を追加する（source_dir から上位へウォーク）
-        let mut walk: Option<&std::path::Path> = Some(dir.as_path());
-        while let Some(d) = walk {
-            let cfg_path = d.join("ar_config.json");
-            if cfg_path.exists() {
-                if let Ok(text) = std::fs::read_to_string(&cfg_path) {
-                    if let Ok(root) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if let Some(paths) = root
-                            .get("python")
-                            .and_then(|p| p.get("search_paths"))
-                            .and_then(|v| v.as_array())
-                        {
-                            for p in paths {
-                                if let Some(s) = p.as_str() {
-                                    let pb = std::path::PathBuf::from(s);
-                                    let abs = if pb.is_absolute() { pb } else { d.join(pb) };
-                                    interp.add_python_search_dir(abs);
-                                }
-                            }
-                        }
-                    }
-                }
-                break;
+        // ⚠⚠ #69: **ここでは `ar_config.json` を読まない**（起点を覚えるだけ）。
+        // 読むのは `Interpreter::python_search_dirs()` の初回呼び出し ＝
+        // cs-dll / cs-proc / js-proc / `import[py-int]` を実際に使ったときだけ。
+        // 順序（明示登録 → 設定由来）は `python_search_dirs()` が保つ。
+        interp.set_config_base_dir(dir.clone());
+    }
+    #[cfg(feature = "prof")]
+    drop(_s_cfg);
+    // CLIパラメータを `args` dict としてグローバルスコープに登録する
+    #[cfg(feature = "prof")]
+    let _s_cli = prof::SubTimer::new(prof::Sub::CliArgs);
+    interp.set_cli_args(cli_args);
+    #[cfg(feature = "prof")]
+    drop(_s_cli);
+    #[cfg(feature = "prof")]
+    drop(_p_init);
+
+    // 診断フック（#10）: 実行終了時にツリーウォークの実行内訳を出す。
+    struct TwStatsDump;
+    impl Drop for TwStatsDump {
+        fn drop(&mut self) {
+            if interpreter::tw_stats::enabled() {
+                interpreter::tw_stats::dump();
             }
-            walk = d.parent();
         }
     }
-    // CLIパラメータを `args` dict としてグローバルスコープに登録する
-    interp.set_cli_args(cli_args);
+    let _tw_dump = TwStatsDump;
 
     // --- 各トップレベル文を順番に実行する ---
+    #[cfg(feature = "prof")]
+    prof::begin_exec();
+    #[cfg(feature = "prof")]
+    let _p_exec = prof::Timer::new(prof::Phase::Exec);
     for stmt in &stmts {
         match interp.exec(stmt) {
             // `raise` 文が実行された場合: フォーマット済みエラーレポートを返す
@@ -375,11 +479,26 @@ fn run_program(
             Err(e) => return Err(e),
         }
     }
+    // 後始末（AST・インタープリタ・値の解放）も 1 段として計上する。
+    // ⚠ 明示的に drop しないと関数末尾（＝計測の外）へ落ちる。
+    #[cfg(feature = "prof")]
+    {
+        drop(_p_exec);
+        prof::end_exec();
+        let _p_td = prof::Timer::new(prof::Phase::Teardown);
+        drop(interp);
+        drop(stmts);
+        drop(_p_td);
+        prof::dump();
+    }
     Ok(())
 }
 
+
 /// プログラムのエントリーポイント。
 fn main() {
+    #[cfg(feature = "prof")]
+    prof::mark_start();
     match parse_args() {
         Mode::Run(path, cli_args) => {
             // .arc: extract embedded source first, then run normally
@@ -395,6 +514,8 @@ fn main() {
                 (read_file(&path), path)
             };
             if let Err(e) = run_program(&source, &filename, cli_args) {
+                #[cfg(feature = "prof")]
+                prof::dump();
                 eprintln!("{e}");
                 std::process::exit(1);
             }
@@ -422,6 +543,11 @@ fn main() {
 
         Mode::Repl => {
             repl::run_repl();
+            // 診断フック（#55）: REPL 経路にも内訳を出す。⚠ ここが抜けていたので
+            // **対話 REPL は `AR_TW_STATS` に一度も映っていなかった**（`run_program` 側だけ配線済み）。
+            if interpreter::tw_stats::enabled() {
+                interpreter::tw_stats::dump();
+            }
         }
     }
 }
@@ -466,14 +592,23 @@ fn compile_module(path: &str) {
     let tokens = Lexer::new(&source, path).tokenize();
     let source_dir = std::path::Path::new(path).parent().map(|p| p.to_path_buf());
 
-    let stmts = Parser::new(tokens, source_dir)
+    let mut stmts = Parser::new(tokens, source_dir)
         .parse_program()
         .unwrap_or_else(|e| {
             eprintln!("ParseError: {e}");
             std::process::exit(1);
         });
 
-    let type_errors = TypeChecker::check(&stmts);
+    // 型検査と同時に AST 型解決層の注釈を生成する（#16 段階(c)）。
+    // ネイティブ codegen はこの注釈を消費して自前の型再導出を置き換える。
+    // node-id はこのモジュールのパーサが採番したもので、codegen が扱うのも同じ
+    // トップレベル定義のみ（import 済みモジュールの body は `Stmt::Import` に入れ子で
+    // 型検査も codegen も踏み込まない）＝ node-id 空間が一致する。
+    // ⚠ 配線は 1 箇所（#88）。⚠ Phase R / R1 の解決は**コンパイル経路でも**要る（#11 R2-a）
+    // — 通していなかった頃はネイティブ codegen だけが「名前で自前解決した AST」を見ていた。
+    // ⚠ この入口は `Interpreter` を持たない（注釈は codegen が直接消費する）。
+    let (type_errors, _warnings, annotations) =
+        interpreter::resolver::resolve_and_annotate(&mut stmts);
     if !type_errors.is_empty() {
         for e in &type_errors {
             eprintln!("{e}");
@@ -481,7 +616,7 @@ fn compile_module(path: &str) {
         std::process::exit(1);
     }
 
-    match partial_compiler::compile(&source, &stmts, std::path::Path::new(path)) {
+    match partial_compiler::compile(&source, &stmts, std::path::Path::new(path), &annotations) {
         Ok((tlc, tls)) => {
             println!("Compiled : {}", tlc.display());
             println!("Stub     : {}", tls.display());

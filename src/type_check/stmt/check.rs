@@ -5,6 +5,7 @@ use {
     crate::token::Span,
     crate::type_check::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind},
     crate::type_check::types::InferredType,
+    crate::type_check::BinOperandKind,
     crate::type_check::TypeChecker,
 };
 
@@ -57,6 +58,7 @@ impl TypeChecker {
                 op: _,
                 value,
                 span,
+                node_id,
                 ..
             } => {
                 if let Some(info) = self.lookup(name) {
@@ -64,7 +66,14 @@ impl TypeChecker {
                         self.report_error(StaticTypeError::assign_immutable(name, span.clone()));
                     }
                 }
-                self.infer(value);
+                let lt = self.lookup(name).map(|i| i.ty.clone());
+                let rt = self.infer(value);
+                // ── AST 型解決層（#16 / #2b）── `x <op>= e` は `x <op> e` と同じ二項演算なので、
+                // `Expr::BinOp` と同じ基準でオペランド種別を焼き、VM が型特化 op を選べるようにする。
+                // 焼かないと複合代入だけが汎用 `Bin` に落ちる（実測 1.9x 遅い）。
+                if let Some(k) = lt.as_ref().and_then(|lt| BinOperandKind::of(lt, &rt)) {
+                    self.annotations.set_binop_kind(*node_id, k);
+                }
             }
             // 通常・複合いずれの属性/添字代入も検査内容は同一（複合の op は型に影響しない）。
             Stmt::AttrAssign { target, value }
@@ -94,10 +103,17 @@ impl TypeChecker {
                 iter,
                 body,
             } => {
-                self.infer(iter);
+                let iter_ty = self.infer(iter);
+                let elem_ty = Self::for_element_type(&iter_ty);
                 self.push_scope();
-                for t in targets {
-                    self.declare(t.clone(), InferredType::Unresolved, true);
+                // 分割代入（`for k, v in pairs`）は要素がタプルのときだけ各要素型へ割り当てる。
+                let target_tys: Vec<InferredType> = match (&elem_ty, targets.len()) {
+                    (_, 1) => vec![elem_ty.clone()],
+                    (InferredType::Tuple(ts), n) if ts.len() == n => ts.clone(),
+                    (_, n) => vec![InferredType::Unresolved; n],
+                };
+                for (t, ty) in targets.iter().zip(target_tys) {
+                    self.declare(t.clone(), ty, true);
                 }
                 self.check_stmts(body);
                 self.pop_scope();
@@ -288,6 +304,7 @@ impl TypeChecker {
                 body,
                 ..
             } => {
+                self.annotate_module_body(lang, module, body);
                 let member_types = self.collect_module_types(body);
                 let bind_name = alias
                     .clone()
@@ -300,7 +317,8 @@ impl TypeChecker {
                 self.declare(bind_name, ns_ty, false);
             }
 
-            Stmt::FromImport { lang, names, body, .. } => {
+            Stmt::FromImport { lang, module, names, body, .. } => {
+                self.annotate_module_body(lang, module, body);
                 let member_types = self.collect_module_types(body);
                 let is_py = lang == "py" || lang == "py-int";
                 for (orig_name, alias) in names {
@@ -328,7 +346,7 @@ impl TypeChecker {
     /// `match` 文を型検査する。`is Type` パターンでは対象変数を各腕スコープ内で絞り込む。
     fn check_match(&mut self, subject: &Expr, arms: &[MatchArm]) {
         let subject_ty = self.infer(subject);
-        let subject_name: Option<String> = if let Expr::Ident(n) = subject {
+        let subject_name: Option<String> = if let Expr::Ident { name: n, .. } = subject {
             Some(n.clone())
         } else {
             None
@@ -388,10 +406,10 @@ impl TypeChecker {
 
     /// 条件式が `is Type` ガードなら `(変数名, 型名, 否定か, span)` を返す。
     fn detect_type_guard(cond: &Expr) -> Option<(String, String, bool, Span)> {
-        let Expr::IsType { expr, type_name, negated, span } = cond else {
+        let Expr::IsType { expr, type_name, negated, span, .. } = cond else {
             return None;
         };
-        let Expr::Ident(var_name) = expr.as_ref() else {
+        let Expr::Ident { name: var_name, .. } = expr.as_ref() else {
             return None;
         };
         Some((var_name.clone(), type_name.clone(), *negated, span.clone()))
@@ -412,7 +430,7 @@ impl TypeChecker {
         if attr != "is_OK" && attr != "is_ERR" {
             return None;
         }
-        let Expr::Ident(var_name) = object.as_ref() else {
+        let Expr::Ident { name: var_name, .. } = object.as_ref() else {
             return None;
         };
         let info = self.lookup(var_name)?;

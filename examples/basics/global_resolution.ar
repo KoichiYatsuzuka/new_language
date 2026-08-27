@@ -1,0 +1,51 @@
+# global_resolution.ar — グローバル参照の解決（Phase R / R2-b）
+#
+# リゾルバは関数本体の中で「プログラム最上位で宣言され、その関数内で一度も束縛されない」
+# 名前を `Expr::GlobalRef` へ書き換える。解決結果を AST ノードに置くことで、
+# ツリーウォークと VM が同じノードを見て解決を共有する
+# （以前はツリーウォークがキャッシュ無しの名前走査、VM が Chunk 側の別キャッシュだった）。
+#
+# 安全条件が肝心で、型検査は `let`/`mut` によるグローバルの再宣言を禁じるが
+# **for ループのターゲットは同名で束縛できる**。この例題はその境界を通す:
+#   (1) 素直なグローバル読み・グローバル関数呼び出し → 書き換え対象
+#   (2)(3) for ターゲットがグローバル名を覆う → 書き換えてはいけない
+#   (4) mut グローバルの読み書き
+#
+# 検証: .\compare_vm_modes.ps1 -Filter global_resolution
+
+let g_int = 7
+let g_set = {1, 2, 3}
+mut g_counter = 0
+
+fn helper(let a: int) -> int:
+    return a * 2
+
+# (1) 素直なグローバル読み・グローバル関数呼び出し → GlobalRef 対象
+fn uses_globals(let n: int) -> int:
+    return g_int + helper(n)
+
+# (2) for ターゲットがグローバル名を覆う（型検査は許す）→ GlobalRef にしてはいけない
+fn shadow_by_for(let items: list[int]) -> int:
+    mut acc = 0
+    for g_set in items:
+        acc += g_set
+    return acc
+
+# (3) 入れ子ブロック内の for でも同様
+fn shadow_nested(let items: list[int], let flag: bool) -> int:
+    mut acc = 0
+    if flag:
+        for g_int in items:
+            acc += g_int
+    return acc
+
+# (4) mut グローバルの読み書き
+fn read_counter() -> int:
+    return g_counter
+
+print(uses_globals(5))
+print(shadow_by_for([10, 20, 30]))
+print(shadow_nested([1, 2, 3], True))
+g_counter = 42
+print(read_counter())
+print(g_set)

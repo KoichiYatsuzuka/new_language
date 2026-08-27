@@ -1,0 +1,99 @@
+# bench_arith.ar — 算術支配ループの計測（タスク #2b「単型算術命令」の A/B 用）
+#
+# ホットループは fn の中に置く（この bench が測りたいのは算術そのものなので、
+# ループ制御の差を持ち込まないため）。
+# ⚠ 「VM は関数本体にしか乗らない」という以前の記述は**古い**（#10-b で最上位も VM 化された）。
+# 最上位ループとの差そのものは [bench_toplevel_loop.ar](bench_toplevel_loop.ar) が測る（#70）。
+# 各ループは「ループ制御（i += 1 / i < n）」＋「本命の算術」で構成されるので、
+# 空ループ baseline を引いて算術 1 回あたりのコストを出す。
+#
+# Run: target/release/arrow.exe -src examples/bench/bench_arith.ar
+
+import[py-int] time
+
+let N = 3_000_000
+
+# ── baseline: ループ制御のみ ──────────────────────────────
+fn loop_empty(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        i += 1
+    return acc
+
+# ── int: local <op> local（IntBinLL）──────────────────────
+fn loop_int_ll(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    let k = 3
+    while i < n:
+        acc = acc + k
+        i += 1
+    return acc
+
+# ── int: local <op> const（IntBinLC）──────────────────────
+fn loop_int_lc(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        acc = acc + 3
+        i += 1
+    return acc
+
+# ── int: 混合演算（Add/Sub/Mul/比較 が同じループに同居）────
+fn loop_int_mix(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        acc = acc + i * 2 - 1
+        i += 1
+    return acc
+
+# ── float: local <op> local（FloatBinLL）──────────────────
+fn loop_float_ll(let n: int) -> float:
+    mut i = 0
+    mut acc = 0.0
+    let k = 1.5
+    while i < n:
+        acc = acc + k
+        i += 1
+    return acc
+
+# ── int: スタック版（IntBinSS）— 局所変数以外を含む式 ─────
+fn loop_int_ss(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    let xs = [1, 2, 3, 4]
+    while i < n:
+        acc = xs[0] + xs[1]
+        i += 1
+    return acc
+
+fn bench(let label: str, let secs: float, let base: float, let n: int) -> None:
+    let per = (secs - base) * 1e9 / float(n)
+    print(label + str(per) + " ns/op")
+
+let t0 = time.time()
+loop_empty(N)
+let base_s = time.time() - t0
+print("baseline (loop only):          " + str(base_s * 1e9 / float(N)) + " ns/iter")
+
+let t1 = time.time()
+loop_int_ll(N)
+bench("int  LL  (acc + k):            ", time.time() - t1, base_s, N)
+
+let t2 = time.time()
+loop_int_lc(N)
+bench("int  LC  (acc + 3):            ", time.time() - t2, base_s, N)
+
+let t3 = time.time()
+loop_int_mix(N)
+bench("int  mix (acc + i*2 - 1) /3op: ", time.time() - t3, base_s, N)
+
+let t4 = time.time()
+loop_float_ll(N)
+bench("float LL (acc + k):            ", time.time() - t4, base_s, N)
+
+let t5 = time.time()
+loop_int_ss(N)
+bench("int  SS  (xs[0] + xs[1]):      ", time.time() - t5, base_s, N)

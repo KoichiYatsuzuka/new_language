@@ -11,11 +11,16 @@ mod type_utils;
 mod call_check;
 mod binop;
 mod decorator;
+pub mod annotations;
 
 // 型チェッカの公開 API 面。`FnTypeParam` / `TypeErrorKind` / `TypeWarningKind` は
 // bin からは未使用だが frontend_tests が使うため、narrowing しないこと。
 #[allow(unused_imports)]
 pub use types::{FnTypeParam, InferredType};
+#[allow(unused_imports)]
+pub use annotations::{
+    ArgAnnotation, AstAnnotations, BinOperandKind, CallInfo, Directive, TypeId,
+};
 #[allow(unused_imports)]
 pub use errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};
 use types::VarInfo;
@@ -41,6 +46,12 @@ pub struct TypeChecker {
     /// 収集された静的型エラー・警告。`check()` が返す前にここへ蓄積される。
     /// 追加は `report_error` / `report_warning`（scope.rs）経由で行う。
     diags: Diagnostics,
+    /// AST 型解決層の注釈（タスク #16・段階(a)）。検査走査中に `infer`/`check` が node-id 索引で
+    /// 型・検査指示を焼く。`check_program` が取り出す（`check` は注釈を捨てる）。
+    annotations: annotations::AstAnnotations,
+    /// 注釈採取済みの import モジュール `(lang, モジュールパス)`（#16 段階 F）。
+    /// 同じモジュールが複数箇所から import される・入れ子 import で再訪する場合の重複走査を防ぐ。
+    annotated_modules: std::collections::HashSet<(String, Vec<String>)>,
 }
 
 impl TypeChecker {
@@ -68,6 +79,33 @@ impl TypeChecker {
                 name.to_string(),
                 VarInfo {
                     ty: InferredType::TypeValOf(Box::new(inner.clone())),
+                    mutable: false,
+                },
+            );
+        }
+        // 組み込み**関数**の戻り値型（#16 段階 D）。
+        //
+        // これが無いと `range` は未知の識別子扱いで `range(n)` が `Unresolved` になり、
+        // **`for i in range(n)` のループ変数が型無し**になる。最頻出のループ形なのに
+        // 本体の演算が一切型特化されず、そこから `Unresolved` が式全体へ伝播していた。
+        // シグネチャは `params: None`（引数の検査はしない）で戻り値型だけ与える。
+        //
+        // **`range` に絞っている**。ここへ登録した名前はグローバルスコープを占めるため
+        // `let <name> = ...` が「already declared」の静的エラーになる（`int`/`str` と同じ扱い）。
+        // `len` も試したが、`let len = ...` は今まで通っていた書き方なので**新たなエラーを増やす**割に
+        // 特化件数の伸びが小さく、割に合わないと判断して外した。
+        // `range` はループ形 `for i in range(n)` の頻度が圧倒的で、変数名として使われることは稀。
+        let builtin_fns: &[(&str, InferredType)] = &[
+            ("range", InferredType::ListOf(Box::new(InferredType::Int))),
+        ];
+        for (name, ret) in builtin_fns {
+            global.insert(
+                name.to_string(),
+                VarInfo {
+                    ty: InferredType::Function {
+                        params: None,
+                        return_type: Box::new(ret.clone()),
+                    },
                     mutable: false,
                 },
             );
@@ -111,21 +149,45 @@ impl TypeChecker {
             state: CheckState::new(global),
             registry: builder.build(),
             diags: Diagnostics::default(),
+            annotations: annotations::AstAnnotations::default(),
+            annotated_modules: std::collections::HashSet::new(),
         }
     }
 
     /// 文のスライスを静的型検査して、収集されたすべての [`StaticTypeError`] を返す。
+    // バイナリの実行経路は `check_program` を使うため（#88 で入口を 1 本化した）、
+    // 現在この最小版はテストからのみ呼ばれる。
+    #[allow(dead_code)]
     pub fn check(stmts: &[Stmt]) -> Vec<StaticTypeError> {
         let mut tc = Self::new(stmts);
         tc.check_stmts(stmts);
         tc.diags.into_parts().0
     }
 
-    /// 文のスライスを静的型検査して、エラーと警告を両方返す。
-    pub fn check_with_warnings(stmts: &[Stmt]) -> (Vec<StaticTypeError>, Vec<StaticTypeWarning>) {
+
+    /// エラー・警告・**AST 型解決層の注釈**をまとめて返す（**型検査の唯一の入口**）。
+    /// `check` と同じ検査に**警告と注釈生成**を加えたもの（同一走査・追加コストは注釈の充填のみ）。
+    ///
+    /// ⚠ #88 まで警告を落としただけの**逐語コピー**が併存し、
+    /// 入口によってどちらを呼ぶかが分かれていた。⇒ **こちらへ 1 本化**し、
+    /// 警告を捨てるかどうかは呼び出し側が決める（配線は
+    /// [`resolver::resolve_and_annotate`](crate::interpreter::resolver::resolve_and_annotate)）。
+    pub fn check_program(
+        stmts: &[Stmt],
+    ) -> (
+        Vec<StaticTypeError>,
+        Vec<StaticTypeWarning>,
+        annotations::AstAnnotations,
+    ) {
         let mut tc = Self::new(stmts);
         tc.check_stmts(stmts);
-        tc.diags.into_parts()
+        // Arrow ソース由来のクラス名を注釈へ移す（#27-a）。VM コンパイラが
+        // 「このレシーバは `Value::Instance` だ」と断定してよいかの唯一の根拠。
+        tc.annotations
+            .set_arrow_classes(tc.registry.arrow_class_names().clone());
+        let annotations = std::mem::take(&mut tc.annotations);
+        let (errors, warnings) = tc.diags.into_parts();
+        (errors, warnings, annotations)
     }
 }
 

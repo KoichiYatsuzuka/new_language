@@ -50,12 +50,12 @@ fn test_str_getitem() {
     // str[int] インデックスアクセス（正・負）
     let src = concat!("let s = \"hello\"\n", "let a = s[0]\n", "let b = s[-1]\n",);
     if let Value::Str(a) = run_get(src, "a") {
-        assert_eq!(a, "h");
+        assert_eq!(&*a, "h");
     } else {
         panic!("expected Str");
     }
     if let Value::Str(b) = run_get(src, "b") {
-        assert_eq!(b, "o");
+        assert_eq!(&*b, "o");
     } else {
         panic!("expected Str");
     }

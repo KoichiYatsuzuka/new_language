@@ -36,3 +36,14 @@ let v = V3(3.0, 4.0, 0.0)
 mut n: float = 0.0
 vm.v3_norm(v, n)
 print(n)                      # 5.0
+
+# (4) 同じことを**関数本体の中で**やる（#15e の回帰）
+#     書き戻し先の登録が `Expr::Ident` の `res` を見ており、リゾルバが解決した
+#     ローカル変数（＝関数本体）では out_wb に積まれず、**書き戻しが黙って起きなかった**。
+#     最上位の (3) は通るのに関数内だけ 0.0 が返る、という位置依存のバグだった。
+fn norm_in_fn(let vv: V3) -> float:
+    mut m: float = 0.0
+    vm.v3_norm(vv, m)
+    return m
+
+print(norm_in_fn(v))          # 5.0（以前は 0.0）

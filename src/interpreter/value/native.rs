@@ -125,6 +125,174 @@ pub enum PtrArgCleanup {
 }
 
 
+/// **統一 typed ABI の呼び出し本体**（#54 で 1 本化）。
+///
+/// `status = fn(args*, ret*, err*)` の直接 C ABI 呼び出し。TLS・アリーナ・ハンドルを
+/// 一切通らない。raise は `ErrSlot` 経由で伝播する。
+///
+/// ⚠⚠ **#54 以前はこの 15 行が 3 箇所に手書きされていた**
+/// （`call_native_function` / `dispatch_native_typed_exprs` / `dispatch_native_evaled_wb`）。
+/// #48 の実バグ（VM 経路だけ書き戻しが起きず 0.0 を返す）は、まさにこの二重化が原因。
+/// **3 経路で違ってよいのは「書き戻し先をどこへ返すか」だけ**なので、呼び出し自体はここに集約する。
+///
+/// 成功時は raw な戻り値（`u64`）を返す。呼び出し側が `sig.ret` に従って
+/// [`decode_typed_ret`] でデコードすること。
+///
+/// # Safety
+/// `typed_ptr` は `build_cpp_typed_sig` が検証した **typed ABI の関数ポインタ**でなければならない
+/// （`unsafe extern "C" fn(*const u64, *mut u64, *mut ErrSlot) -> u32`）。
+/// `slots` は少なくともシグネチャの引数個数ぶんの有効な要素を持つこと。
+pub unsafe fn invoke_typed_abi(
+    typed_ptr: usize,
+    slots: &[u64],
+    cleanups: Vec<PtrArgCleanup>,
+) -> Result<u64, String> {
+    let mut ret: u64 = 0;
+    let mut err = crate::interpreter::native_api::ErrSlot::default();
+    let status = {
+        let f: unsafe extern "C" fn(
+            *const u64,
+            *mut u64,
+            *mut crate::interpreter::native_api::ErrSlot,
+        ) -> u32 = std::mem::transmute(typed_ptr);
+        f(slots.as_ptr(), &mut ret, &mut err)
+    };
+    // ⚠ **cleanup は成否によらず必ず走らせる**（3 経路とも元からこの順序だった）。
+    for c in cleanups {
+        crate::interpreter::value::finish_ptr_arg_cleanup(c);
+    }
+    if status != 0 {
+        // 既存の raise 経路と同じ "TypeName: msg" 形式で伝播
+        return Err(err.to_error_string());
+    }
+    Ok(ret)
+}
+
+/// typed ABI の raw な戻り値を `Value` へデコードする（#54 で 1 本化）。
+///
+/// ⚠ typed ABI の戻り値に `Ptr`/`OutPtr` は使わない（`build_cpp_typed_sig` が除外する）。
+pub fn decode_typed_ret(ret_ty: &AbiTy, ret: u64) -> Value {
+    use AbiTy;
+    match ret_ty {
+        AbiTy::I64 => Value::Int(ret as i64),
+        AbiTy::F64 => Value::Float(f64::from_bits(ret)),
+        AbiTy::Void => Value::None,
+        AbiTy::Ptr { .. } | AbiTy::OutPtr { .. } => {
+            unreachable!("typed ABI ret excludes Ptr/OutPtr")
+        }
+    }
+}
+
+/// typed ABI 引数マーシャリングの**唯一の実装**（#76）。
+///
+/// `slots` を組み、`Ptr` はゼロコピー／シャドウ変換で解決し（[`resolve_typed_ptr_arg`]）、
+/// `OutPtr` は自前のローカル領域に初期値を入れてそのアドレスを渡す。
+///
+/// ⚠⚠ **#76 以前はこのループが 4 箇所に手書きされていた**
+/// （`call_native_function` / `dispatch_native_typed_exprs` / `dispatch_native_evaled_wb` /
+/// `native_api::callbacks::ar_call_fn`）。#48 の実バグ（VM 経路だけ書き戻しが起きず 0.0 を返す）は
+/// **同じ形の二重化**が原因で、#54 は「呼び出し本体」だけを畳んで**引数側は 4 コピーのまま**だった。
+/// ⇒ **4 経路で違ってよいのは `named_mut`（＝何を知っているか）と、書き戻し先だけ**。
+///
+/// ⚠⚠ **この構造体は呼び出しが終わるまで move してはいけない。**
+/// `OutPtr` のスロットには `out_locals` の要素のアドレスが入るため、move すると
+/// **C が解放済みスタックへ書く**。⇒ 呼び出し側のローカルに置き `&mut` で [`Self::marshal`]
+/// を呼ぶこと（値で返す API にしていないのはこのため）。
+pub struct TypedArgs {
+    /// C へ渡す u64 スロット列（`marshal` が埋める）。
+    pub slots: [u64; 16],
+    /// `OutPtr` 引数の実体。⚠ `slots` がこの要素を指す。
+    out_locals: [u64; 16],
+    /// 書き戻すべき `OutPtr` 引数の `(引数 index, 幅)`。
+    /// ⚠ **「誰に書き戻すか」は呼び出し側の責任**（名前へ代入するか、呼び出し元へ返すか）。
+    pub out_wb: Vec<(usize, RawWidth)>,
+    /// 呼び出し後に必ず実行する後処理（シャドウの生存・書き戻し）。
+    pub cleanups: Vec<PtrArgCleanup>,
+}
+
+/// [`TypedArgs::marshal`] の結果。
+pub enum Marshalled {
+    /// 全引数を組めた ＝ typed ABI を呼んでよい。
+    Ready,
+    /// 実行時型がシグネチャと合わない ＝ **ハンドル経路へフォールバックする**。
+    /// ⚠ エラーではない（この形は正常系）。
+    TypeMismatch,
+}
+
+impl Default for TypedArgs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TypedArgs {
+    pub fn new() -> Self {
+        TypedArgs {
+            slots: [0u64; 16],
+            out_locals: [0u64; 16],
+            out_wb: Vec::new(),
+            cleanups: Vec::new(),
+        }
+    }
+
+    /// 評価済みの引数列を u64 スロットへ組む。
+    ///
+    /// `named_mut[i]` は「引数 i が名前付き変数か・可変か」で、**経路ごとに違ってよい唯一の入力**:
+    /// - `Some(true)`  — 名前付き `mut` 変数（書き戻しの対象になる）
+    /// - `Some(false)` — 名前付き `let` 変数（書き込みポインタへ渡すと `Err`）
+    /// - `None`        — 判定できない経路（VM のマスク未設定・ネイティブコールバック）。
+    ///   **常に安全側＝書き戻ししない**。⚠ `Some(false)` と `None` は**同義ではない**
+    ///   （前者だけがエラーになる。畳むときはここを潰さないこと）。
+    ///
+    /// `named_mut` は短くてよい（足りない分は `None` 扱い）。
+    pub fn marshal(
+        &mut self,
+        vals: &[Value],
+        params: &[AbiTy],
+        named_mut: &[Option<bool>],
+    ) -> Result<Marshalled, String> {
+        for (i, (v, ty)) in vals.iter().zip(params).enumerate() {
+            let nm = named_mut.get(i).copied().flatten();
+            match (v, ty) {
+                (Value::Int(n), AbiTy::I64) => self.slots[i] = *n as u64,
+                (Value::Float(f), AbiTy::F64) => self.slots[i] = f.to_bits(),
+                // int → float 引数の自動昇格（ハンドル経路の `ar_to_float` と同義）。
+                (Value::Int(n), AbiTy::F64) => self.slots[i] = (*n as f64).to_bits(),
+                (_, AbiTy::Ptr { mutable, by_value, layout }) => {
+                    match resolve_typed_ptr_arg(v, *mutable, *by_value, layout, nm)? {
+                        Some((slot, cleanup)) => {
+                            self.slots[i] = slot;
+                            self.cleanups.push(cleanup);
+                        }
+                        None => return Ok(Marshalled::TypeMismatch),
+                    }
+                }
+                // プリミティブ書き込みポインタ（`double*` 等）: 初期値を width 幅でエンコードした
+                // ローカルのアドレスを渡し、呼び出し後にデコードして書き戻す。
+                (_, AbiTy::OutPtr { width }) => match encode_out_ptr_init(v, *width) {
+                    Some(enc) => {
+                        self.out_locals[i] = enc;
+                        self.slots[i] = std::ptr::addr_of_mut!(self.out_locals[i]) as u64;
+                        // 書き戻すのは「名前付き mut 変数」と分かっているときだけ（#48）。
+                        if nm == Some(true) {
+                            self.out_wb.push((i, *width));
+                        }
+                    }
+                    None => return Ok(Marshalled::TypeMismatch),
+                },
+                _ => return Ok(Marshalled::TypeMismatch),
+            }
+        }
+        Ok(Marshalled::Ready)
+    }
+
+    /// `OutPtr` 引数 `i` に C が書いた値を読み出す（`out_wb` の要素に対して呼ぶ）。
+    pub fn decode_out(&self, i: usize, width: RawWidth) -> Value {
+        decode_out_ptr(self.out_locals[i], width)
+    }
+}
+
+
 /// typed ABI のポインタ引数（`AbiTy::Ptr`）を u64 スロット値へ解決する。全呼び出し経路で共有。
 ///
 /// - `Ok(Some((slot, cleanup)))`: `slot` を u64 スロットへ格納し、呼び出し後に
@@ -238,6 +406,17 @@ pub struct NativeFnRef {
     pub typed_sig: Option<TypedSig>,
 }
 
+
+impl NativeFnRef {
+    /// `mut` ポインタ引数（＝呼び出し元へ書き戻す引数）を持つか（#48）。
+    ///
+    /// ツリーウォークの `call_native_function` が「書き戻し経路へ入るか」を決めるのと
+    /// **同じ判定**。VM 側は「この呼び出しで書き戻し副表を引くか」の門に使う。
+    #[inline]
+    pub fn has_writeback(&self) -> bool {
+        self.ptr_params.contains(&PtrParam::MutPtr)
+    }
+}
 
 impl Clone for NativeFnRef {
     fn clone(&self) -> Self {

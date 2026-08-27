@@ -1,0 +1,37 @@
+# V-D ベンチ: for ループ（range / リスト反復 / ネスト for / break/continue）。
+# V-C まで for を含む関数は丸ごとフォールバックしていた。
+
+fn sum_range(n: int) -> int:
+    mut s: int = 0
+    for x in range(n):
+        s += x
+    return s
+
+fn filtered(n: int) -> int:
+    mut s: int = 0
+    for x in range(n):
+        if x % 3 == 0:
+            continue
+        if x > 5000:
+            break
+        s += x * 2
+    return s
+
+fn nested(a: int, b: int) -> int:
+    mut acc: int = 0
+    for i in range(a):
+        for j in range(b):
+            acc += (i * j) % 7
+    return acc
+
+fn main() -> None:
+    mut total: int = 0
+    mut k: int = 0
+    while k < 400:
+        total += sum_range(1000)
+        total += filtered(2000)
+        total += nested(30, 30)
+        k += 1
+    print(total)
+
+main()

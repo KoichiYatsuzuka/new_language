@@ -45,7 +45,7 @@ Type checking (`src/type_check/stmt.rs`) reads the `body` AST directly to collec
 ## Syntax and Language Tags
 
 ```ar
-import module.path                    # tl-auto (default)
+import module.path                    # ar-auto (default)
 import[ar]  module.path              # force .ar source
 import[arc] module.path              # force .arc compiled
 import[py]  module.path              # Python source
@@ -56,7 +56,7 @@ import[rs]  crate_name[0.2]          # Rust crate, specific version
 from module import[lang] Name1, Name2 as N2
 ```
 
-`parse_lang_bracket()` (imports.rs:267) reads the `[lang]` bracket and assembles hyphenated identifiers (e.g. `py-int`). If absent, the default is `"tl-auto"`.
+`parse_lang_bracket()` (imports.rs:267) reads the `[lang]` bracket and assembles hyphenated identifiers (e.g. `py-int`). If absent, the default is `"ar-auto"`.
 
 `parse_version_bracket()` (imports.rs:359) reads `[X.Y.Z]` — only valid for `import[rs]`.
 
@@ -66,7 +66,7 @@ from module import[lang] Name1, Name2 as N2
 
 ```
 Stmt::Import {
-    lang:      String,              // "tl-auto" | "ar" | "arc" | "py" | "py-int" | "rs" | "cpp-dll" | ...
+    lang:      String,              // "ar-auto" | "ar" | "arc" | "py" | "py-int" | "rs" | "cpp-dll" | ...
     module:    Vec<String>,         // dotted path segments, e.g. ["os", "path"]
     with_file: Option<String>,      // header path for cpp-dll/cpp-lib only
     alias:     Option<String>,      // as alias
@@ -91,8 +91,8 @@ Stmt::FromImport {
 ```
 lang         → loader
 ──────────────────────────────────────────────
-"tl-auto"    → load_tl_module        prefer .arc, fallback to .ar
-"ar-auto"    → load_tl_module        (alias)
+"ar-auto"    → load_tl_module        prefer .arc, fallback to .ar
+"tl-auto"    → load_tl_module        (旧名の別名)
 "tl"         → load_tl_source_module force .ar, skip .arc
 "ar"         → load_tl_source_module (alias)
 "tlc"        → load_tlc_module       force .arc, error if absent
@@ -134,7 +134,7 @@ After parsing, the child's `module_cache` is merged back into the parent.
 
 **Circular import detection**: `self.loading` is a `HashSet<PathBuf>`. Before parsing a module, its absolute path is inserted; it is removed after parsing completes. If a path is already in `loading`, an error is returned immediately.
 
-**Cache key**: `("ar-auto", abs_path)` for tl-auto, `("ar", abs_path)` for forced source, `("arc", abs_path)` for forced compiled.
+**Cache key**: `("ar-auto", abs_path)` for ar-auto, `("ar", abs_path)` for forced source, `("arc", abs_path)` for forced compiled.
 
 `load_tl_source_module` and `load_tlc_module` are identical to `load_tl_module` but skip `.arc` or skip `.ar` respectively.
 

@@ -61,7 +61,7 @@ pub struct TemplateGenFnValue {
 
 
 /// インスタンス化済みジェネレータオブジェクトの実行時状態。
-/// `exec_generator` によってジェネレータ本体を一括実行し、すべての `yield` 値を収集してから保持する。
+/// `exec_generator_evaled` によってジェネレータ本体を一括実行し、すべての `yield` 値を収集してから保持する。
 ///
 /// - `values`: ジェネレータ本体から収集されたすべての yield 値（順序保証）
 /// - `index`: 次回 `next()` 呼び出しで返す値のインデックス。`values.len()` 以上になると枯渇
@@ -114,13 +114,20 @@ pub struct TemplateClassValue {
 pub struct FnValue {
     pub name: String,
     pub params: Vec<Param>,
-    pub body: Vec<Stmt>,
+    pub body: std::rc::Rc<[Stmt]>,
     /// Python モジュールから変換された関数かどうか。
     pub is_python: bool,
     /// キャプチャした外側スコープ変数（クロージャ環境）。
     pub captured_env: HashMap<String, CapturedVar>,
     /// 静的型アノテーションの戻り値型（文字列）。import[cs-dll] のブリッジ呼び出しで使用。
     pub return_type: Option<String>,
+    /// 定義サイト共有のコンパイル済み本体（#30）。`Op::MakeFn` で作られたクロージャだけが持つ。
+    ///
+    /// `Some` なら `get_or_compile_chunk` は `Interpreter::vm_chunks`（`FnValue` アドレスが
+    /// キー＝**実体ごとに再コンパイル**）を引かずにこちらを使う。`None`（ツリーウォークの
+    /// `exec_fn_def` 由来・テンプレート実体化・`deep_clone` 由来）は従来どおり。
+    /// ⚠ **`deep_clone` では必ず `None`**（スレッドへ `Rc` を持ち出さない・#15）。
+    pub vm_chunk: Option<crate::vm::chunk::SharedFnChunk>,
 }
 
 
@@ -180,6 +187,48 @@ pub struct ClassValue {
 
 
 impl ClassValue {
+    /// 合成クラス（組み込み型・`enum` の実体型・`new_type` ラッパー等）の**土台**（#80）。
+    ///
+    /// `name` と `class_id` だけを受け取り、残りは「空」の既定値で埋める。
+    /// 呼び出し側は `ClassValue { field_index, .., ..ClassValue::synthetic(name, id) }` の形で
+    /// **既定と違うところだけ**を書く。
+    ///
+    /// ⚠⚠ **`Default` は実装しない。** `..Default::default()` を許すと
+    /// 「フィールドを足したら各所で考える」強制が消えるため。
+    /// `ClassValue` にフィールドを足すと**まずここがコンパイルエラーになる**（#59 と同じ仕掛け）。
+    /// ⇒ 既定値を決める場所が 1 つに定まる。**`..` を書き足して黙らせないこと。**
+    ///
+    /// ⚠ exhaustive なリテラルは **src に 2 つだけ**で、答える問いが違う:
+    /// ここは「**合成クラスの既定値は何か**」、[`Self::deep_clone`] は
+    /// 「**そのフィールドはどう深いコピーを作るか**」。フィールドを足すと両方が止まる。
+    ///
+    /// ⚠ `class_id` を**引数で受ける**のは、`alloc_class_id()` の**呼ばれる順序**を
+    /// 呼び出し側に残すため（#80 以前は各リテラルの中で採番していた。ここで採番すると
+    /// 構造体更新記法の評価順が後ろになり、**採番の順序が変わる**）。
+    pub fn synthetic(name: impl Into<String>, class_id: u32) -> ClassValue {
+        ClassValue {
+            name: name.into(),
+            class_id,
+            bases: vec![],
+            methods: HashMap::new(),
+            gen_methods: HashMap::new(),
+            field_defaults: vec![],
+            class_vars: HashMap::new(),
+            field_mutability: HashMap::new(),
+            field_index: HashMap::new(),
+            field_count: 0,
+            field_mutability_vec: vec![],
+            field_access: HashMap::new(),
+            method_access: HashMap::new(),
+            static_method_names: HashSet::new(),
+            class_method_names: HashSet::new(),
+            static_vars: HashMap::new(),
+            new_type_base: None,
+            is_exception: false,
+            raw_layout: None,
+        }
+    }
+
     /// Create a fully independent deep copy of this ClassValue (no shared Rcs).
     pub fn deep_clone(&self) -> ClassValue {
         let methods = self
@@ -192,10 +241,14 @@ impl ClassValue {
                         Rc::new(FnValue {
                             name: rc.name.clone(),
                             params: rc.params.clone(),
-                            body: rc.body.clone(),
+                            // ⚠ **`Rc` を clone してはいけない**（#45/#15）。`ClassValue::deep_clone`
+                            // はスレッド送出経路で使われるので、中身を複製して独立させる。
+                            body: std::rc::Rc::from(&rc.body[..]),
                             is_python: rc.is_python,
                             captured_env: deep_clone_captured_env(&rc.captured_env),
                             return_type: rc.return_type.clone(),
+                            // ⚠ スレッドへ送る複製では定義サイトの `Rc` を持ち出さない（#15/#30）。
+                            vm_chunk: None,
                         })
                     })
                     .collect();

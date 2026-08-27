@@ -7,15 +7,20 @@ use super::TypeChecker;
 
 impl TypeChecker {
     /// 関数呼び出し式の型を推論し、引数の型・個数・Self 型パラメータを検査する。
-    pub(super) fn infer_call(&mut self, func: &Expr, args: &[CallArg]) -> InferredType {
+    pub(super) fn infer_call(
+        &mut self,
+        func: &Expr,
+        args: &[CallArg],
+        node_id: u32,
+    ) -> InferredType {
         // __freeze__ may only be invoked via the `freeze` keyword, never as a direct call.
         let freeze_span = match func {
             Expr::Attr { attr, span, .. } if attr == "__freeze__" => Some(span.clone()),
-            Expr::Ident(name) if name == "__freeze__" => None,
+            Expr::Ident { name, .. } if name == "__freeze__" => None,
             _ => {
                 // Not a __freeze__ call — proceed normally.
                 #[allow(clippy::needless_return)]
-                return self.infer_call_inner(func, args);
+                return self.infer_call_inner(func, args, node_id);
             }
         };
         self.report_error(StaticTypeError {
@@ -25,7 +30,7 @@ impl TypeChecker {
         InferredType::Unresolved
     }
 
-    fn infer_call_inner(&mut self, func: &Expr, args: &[CallArg]) -> InferredType {
+    fn infer_call_inner(&mut self, func: &Expr, args: &[CallArg], node_id: u32) -> InferredType {
         // ── Step 1: method-call detection ──────────────────────────────────────
         // Infer the object type exactly once here. This handles:
         //   - NamedInstance: regular instance method calls (obj.method())
@@ -34,7 +39,7 @@ impl TypeChecker {
         // When method_call_info is Some, we skip self.infer(func) later to avoid
         // double-evaluating the object and duplicating error reports.
         let method_call_info: Option<(String, String)> =
-            if let Expr::Attr { object, attr, span } = func {
+            if let Expr::Attr { object, attr, span, .. } = func {
                 let obj_ty = self.infer(object);
 
                 // Result[T, E] の is_OK() / is_ERR() は特別扱いして bool を返す。
@@ -90,7 +95,7 @@ impl TypeChecker {
             };
 
         let func_name = match func {
-            Expr::Ident(name) => Some(name.clone()),
+            Expr::Ident { name, .. } => Some(name.clone()),
             Expr::Attr { attr, .. } => Some(attr.clone()),
             _ => None,
         };
@@ -128,6 +133,64 @@ impl TypeChecker {
                     arg_data.push((Some("...".to_string()), list_ty));
                 }
             }
+        }
+
+        // ── AST 型解決層（#16）── Call 構造化注釈を焼く（arg_data・func_name はここで確定済み）。
+        // 呼び先＝シンボル参照（名前）、引数＝(型, 検査指示)。
+        // 検査指示（境界検査・点4 の畳み込み）: **直接関数呼び出し（単一シグネチャ・全引数が位置引数）**で、
+        // param が具象・arg が動的（`Any`/`Unresolved`）のとき `CheckBefore(param型)`。それ以外は保守的に `None`
+        // （overload・メソッド・キーワード/可変長・関数型変数などは次段で精緻化）。
+        {
+            // パラメータ型の取得（全引数が位置引数のときのみ・単一シグネチャに限る）。
+            // overload・キーワード/可変長・関数{params:None}・静的メソッドは静的に param 型が一意でないため None。
+            let positional_only = arg_data.iter().all(|(k, _)| k.is_none());
+            let param_types: Option<Vec<Option<InferredType>>> = if !positional_only {
+                None
+            } else if let Some((cls, method)) = &method_call_info {
+                // インスタンスメソッド呼び出し: 単一シグネチャ・非 static のとき self(先頭)を除いて対応付け。
+                if self.registry.is_static_method(cls, method) {
+                    None
+                } else {
+                    self.registry.class_methods(cls).and_then(|m| m.get(method)).and_then(|sigs| {
+                        (sigs.len() == 1).then(|| {
+                            sigs[0].params.iter().skip(1).map(|(_, t)| t.clone()).collect()
+                        })
+                    })
+                }
+            } else if let IT::Function { params: Some(fn_params), .. } = &func_type {
+                // 関数型変数/パラメータ: シグネチャの各 param 型を使う。
+                Some(fn_params.iter().map(|p| Some(p.ty.clone())).collect())
+            } else if let Expr::Ident { name, .. } = func {
+                // 直接グローバル関数呼び出し（単一シグネチャ）。
+                self.registry.fn_sigs(name).and_then(|sigs| {
+                    (sigs.len() == 1)
+                        .then(|| sigs[0].params.iter().map(|(_, t)| t.clone()).collect())
+                })
+            } else {
+                None
+            };
+
+            let mut args_ann = Vec::with_capacity(arg_data.len());
+            for (i, (_, arg_ty)) in arg_data.iter().enumerate() {
+                let tid = self.annotations.intern(arg_ty.clone());
+                let directive = match param_types.as_ref().and_then(|p| p.get(i)) {
+                    Some(Some(param_ty))
+                        if is_specific_param(param_ty) && is_dynamic_arg(arg_ty) =>
+                    {
+                        let ptid = self.annotations.intern(param_ty.clone());
+                        super::annotations::Directive::CheckBefore(ptid)
+                    }
+                    _ => super::annotations::Directive::None,
+                };
+                args_ann.push(super::annotations::ArgAnnotation { ty: tid, directive });
+            }
+            self.annotations.set_call(
+                node_id,
+                super::annotations::CallInfo {
+                    callee: func_name.clone(),
+                    args: args_ann,
+                },
+            );
         }
 
         match func_type {
@@ -518,10 +581,22 @@ impl TypeChecker {
 
     /// 式が可変変数の参照かどうかを判定する。
     pub(super) fn is_mutable_expr(&self, expr: &Expr) -> bool {
-        if let Expr::Ident(name) = expr {
+        if let Expr::Ident { name, .. } = expr {
             self.lookup(name).map(|v| v.mutable).unwrap_or(false)
         } else {
             false
         }
     }
+}
+
+// ── AST 型解決層（#16）の引数検査指示ヘルパ ──
+/// 引数の静的型が「完全に動的（実行時まで型が不明）」か。`Any`/`Unresolved` のとき true。
+/// これらは呼び出し前に対象型で検査しないと具象パラメータへ渡せない（境界検査）。
+fn is_dynamic_arg(t: &InferredType) -> bool {
+    matches!(t, InferredType::Any | InferredType::Unresolved)
+}
+
+/// パラメータ型が「具象（検査に値する特定の型）」か。`Any`/`Unresolved` 以外なら true。
+fn is_specific_param(t: &InferredType) -> bool {
+    !matches!(t, InferredType::Any | InferredType::Unresolved)
 }

@@ -14,6 +14,11 @@ impl<'a> GenCtx<'a> {
         self.blk = 0;
         self.terminated = false;
         self.locals.clear();
+        // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
+        // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
+        self.name_to_slot = harvest_local_slots(body);
+        let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
+        self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
@@ -170,6 +175,7 @@ impl<'a> GenCtx<'a> {
         self.fn_defs.push_str(&wrapper);
 
         // Emit _fast variant if there were pre-reads (class params with typed fields).
+        //
         if has_preread {
             self.emit_fn_fast(name, params, ret_ty, body);
         }
@@ -182,6 +188,9 @@ impl<'a> GenCtx<'a> {
     /// raw scalars instead of arena handles.  No callbacks inside the body; the
     /// function is pure arithmetic and LLVM can inline and hoist it freely.
     pub(super) fn emit_fn_fast(&mut self, name: &str, params: &[Param], ret_ty: Ty, body: &[Stmt]) {
+        self.fast_mode = true;
+        self.fast_failed = false;
+        self.fast_flattened.clear();
         // Build fast signature: for each param, if it's a class instance with
         // pre-readable fields → expand to scalars; otherwise keep as i64 handle.
         let mut fast_sig: Vec<String> = Vec::new();
@@ -212,6 +221,8 @@ impl<'a> GenCtx<'a> {
                                 *field_ty,
                             ));
                         }
+                        // このパラメータは平坦化された（値そのものは表現できない）。
+                        self.fast_flattened.insert(p.name.clone());
                         continue; // skip handle param
                     }
                 }
@@ -231,6 +242,11 @@ impl<'a> GenCtx<'a> {
         self.blk = 0;
         self.terminated = false;
         self.locals.clear();
+        // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
+        // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
+        self.name_to_slot = harvest_local_slots(body);
+        let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
+        self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
@@ -299,10 +315,18 @@ impl<'a> GenCtx<'a> {
 
         let impl_ret = if ret_ty == Ty::Float { "double" } else { "i64" };
         let sig = fast_sig.join(", ");
-        self.fn_defs.push_str(&format!(
-            "\ndefine internal {impl_ret} @{name}_fast({sig}) {{\nentry:\n{}{}}}\n",
-            self.alloca_buf, self.code_buf
-        ));
+        // 平坦化パラメータの値そのものが要求されていたら、この変種は不正なので捨てる。
+        // 呼び出し側は `fast_fns` を見て `_fast` を選ぶため、破棄集合にも記録する。
+        if self.fast_failed {
+            self.discarded_fast.insert(name.to_string());
+        } else {
+            self.fn_defs.push_str(&format!(
+                "\ndefine internal {impl_ret} @{name}_fast({sig}) {{\nentry:\n{}{}}}\n",
+                self.alloca_buf, self.code_buf
+            ));
+        }
+        self.fast_mode = false;
+        self.fast_flattened.clear();
 
         self.current_fn_ret = Ty::Handle;
         self.preread_fields.clear();
@@ -332,6 +356,11 @@ impl<'a> GenCtx<'a> {
         self.blk = 0;
         self.terminated = false;
         self.locals.clear();
+        // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
+        // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
+        self.name_to_slot = harvest_local_slots(body);
+        let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
+        self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
@@ -385,6 +414,11 @@ impl<'a> GenCtx<'a> {
         self.code_buf.clear();
         self.reg = 0; self.blk = 0; self.terminated = false;
         self.locals.clear();
+        // リゾルバが AST に書いた slot 割り当てを収穫する（#11 R2-a′）。
+        // codegen は採番せず、この表を権威として `Resolution::Local` 読みを slot 索引で解決する。
+        self.name_to_slot = harvest_local_slots(body);
+        let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
+        self.locals_by_slot = vec![None; max_slot];
         self.loop_stack.clear();
         self.block_stack.clear();
 

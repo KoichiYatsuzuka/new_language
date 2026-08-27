@@ -84,8 +84,8 @@ fn test_overload_by_count() {
         "let b = describe(1, 2)\n",
     );
     if let (Value::Str(a), Value::Str(b)) = (run_get(src, "a"), run_get(src, "b")) {
-        assert_eq!(a, "one");
-        assert_eq!(b, "two");
+        assert_eq!(&*a, "one");
+        assert_eq!(&*b, "two");
     } else {
         panic!();
     }
@@ -104,8 +104,8 @@ fn test_overload_by_type() {
         "let b = process(\"hello\")\n",
     );
     if let (Value::Str(a), Value::Str(b)) = (run_get(src, "a"), run_get(src, "b")) {
-        assert_eq!(a, "int");
-        assert_eq!(b, "str");
+        assert_eq!(&*a, "int");
+        assert_eq!(&*b, "str");
     } else {
         panic!();
     }
@@ -128,9 +128,9 @@ fn test_overload_three_variants() {
     if let (Value::Str(a), Value::Str(b), Value::Str(c)) =
         (run_get(src, "a"), run_get(src, "b"), run_get(src, "c"))
     {
-        assert_eq!(a, "int");
-        assert_eq!(b, "str");
-        assert_eq!(c, "bool");
+        assert_eq!(&*a, "int");
+        assert_eq!(&*b, "str");
+        assert_eq!(&*c, "bool");
     } else {
         panic!();
     }
@@ -162,8 +162,8 @@ fn test_overload_method_by_type() {
         "let b = p.print_val(\"hi\")\n",
     );
     if let (Value::Str(a), Value::Str(b)) = (run_get(src, "a"), run_get(src, "b")) {
-        assert_eq!(a, "int");
-        assert_eq!(b, "str");
+        assert_eq!(&*a, "int");
+        assert_eq!(&*b, "str");
     } else {
         panic!();
     }

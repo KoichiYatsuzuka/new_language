@@ -1,0 +1,73 @@
+# bench_name_hash.ar
+#
+# #15-3（§7.4-3 文字列インターン）の要否判定用プローブ。
+# Run: cargo run --release -- examples/bench/bench_name_hash.ar
+#
+# 狙い: 属性名・メソッド名の「名前引き」が実行時間に効いているかを、
+#       **名前の長さだけを変えた同一形状のコード** で切り分ける。
+#       ハッシュ計算はキー長に比例するので、長い名前が有意に遅ければ
+#       名前引きが支配項に含まれる＝インターンに消費者が居る。
+#       差が出なければ消費者不在（R3 の IC が既に名前引きを潰している）。
+
+import[py-int] time
+
+let N = 300000
+
+class Short:
+    mut a: int
+    fn __init__(mut self, let a: int) -> None:
+        self.a = a
+    fn m(let self) -> int:
+        return self.a
+
+class Long:
+    mut aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: int
+    fn __init__(mut self, let a: int) -> None:
+        self.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa = a
+    fn mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm(let self) -> int:
+        return self.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+let s = Short(1)
+let l = Long(1)
+
+# --- 属性読み: 短い名前 ---
+let t0 = time.time()
+mut i = 0
+mut acc = 0
+while i < N:
+    acc += s.a
+    i += 1
+let t1 = time.time()
+print("attr  short name: " + str(t1 - t0) + " s")
+
+# --- 属性読み: 長い名前（60文字） ---
+let t2 = time.time()
+mut j = 0
+mut acc2 = 0
+while j < N:
+    acc2 += l.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    j += 1
+let t3 = time.time()
+print("attr  long  name: " + str(t3 - t2) + " s")
+
+# --- メソッド呼び出し: 短い名前 ---
+let t4 = time.time()
+mut k = 0
+mut acc3 = 0
+while k < N:
+    acc3 += s.m()
+    k += 1
+let t5 = time.time()
+print("call  short name: " + str(t5 - t4) + " s")
+
+# --- メソッド呼び出し: 長い名前（60文字） ---
+let t6 = time.time()
+mut m = 0
+mut acc4 = 0
+while m < N:
+    acc4 += l.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm()
+    m += 1
+let t7 = time.time()
+print("call  long  name: " + str(t7 - t6) + " s")
+
+print("checksum: " + str(acc) + " / " + str(acc2) + " / " + str(acc3) + " / " + str(acc4))

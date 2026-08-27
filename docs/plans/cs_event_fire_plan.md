@@ -152,7 +152,7 @@ print("done")
 
 - `docs/grammar/11_events.md` の「外部イベント」節を更新:
   `handler_id` → シグナル単位 ID である旨、`sig.external_id` の使い方、cs-dll 注入方式
-- `./generate-codebase-map.ps1` 再実行 (ファイル追加のため)
+- `./scripts/generate-codebase-map.ps1` 再実行 (ファイル追加のため)
 - 将来課題として明記: cs-proc 対応 / MessagePack 復号 / `external_id` の解除 API
   (registry は Rc を保持し続けるため、大量登録時はリーク相当になる)
 

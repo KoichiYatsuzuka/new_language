@@ -41,7 +41,7 @@ impl Interpreter {
                     format!("({}-{}j)", fmt_f(re_n), fmt_f(im_n.abs()))
                 }
             }
-            Value::Str(s) => s.clone(),
+            Value::Str(s) => s.to_string(),
             Value::Bool(b) => if *b { "True" } else { "False" }.to_string(),
             Value::None => "None".to_string(),
             Value::Undefined => "Undefined".to_string(),
@@ -176,8 +176,8 @@ impl Interpreter {
             }
             Value::EventLoop(_) => "<EventLoop>".to_string(),
             Value::CsObject(o) => format!("<CsObject '{}' handle={}>", o.class_name, o.handle),
-            Value::JsProcFn { module_name, fn_name, .. } => {
-                format!("<js function '{module_name}.{fn_name}'>")
+            Value::JsProcFn(data) => {
+                format!("<js function '{}.{}'>", data.module_name, data.fn_name)
             }
             Value::ResultVal { ok, inner } => {
                 if *ok {
@@ -291,7 +291,7 @@ impl Interpreter {
                 if class.methods.contains_key("__repr__") {
                     let result = self.eval_method_call_evaled(val.clone(), "__repr__", vec![])?;
                     return match result {
-                        Value::Str(s) => Ok(s),
+                        Value::Str(s) => Ok(s.to_string()),
                         other => Ok(self.display(&other)),
                     };
                 }

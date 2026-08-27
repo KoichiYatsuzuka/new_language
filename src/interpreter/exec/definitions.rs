@@ -1,5 +1,6 @@
 // exec/definitions.rs — 定義文の実行: 関数/ジェネレータ定義、トレイト/プロトコル/new_type/enum/クラス定義。
 
+use crate::ast::Resolution;
 use {
     std::cell::RefCell, std::collections::{HashMap, HashSet},
     std::rc::Rc,
@@ -15,6 +16,76 @@ use {
 
 impl Interpreter {
     /// `fn` 定義を実行して関数値をスコープに登録する。テンプレート関数はテンプレート値として格納する。
+    /// 同名の既存値と合成して関数値を作る（`fn` のオーバーロード規則・#27）。
+    ///
+    /// ツリーウォーク（`exec_fn_def`）と VM（`Op::MakeFn`）の**唯一の実装**。
+    /// 「同じ判断をする 2 実装は片方を委譲にして畳む」（#22 系列）。
+    pub(crate) fn merge_fn_overload(fn_val: Rc<FnValue>, existing: Option<Value>) -> Value {
+        match existing {
+            Some(Value::Function(prev)) => Value::OverloadedFn(vec![prev, fn_val]),
+            Some(Value::OverloadedFn(mut fns)) => {
+                fns.push(fn_val);
+                Value::OverloadedFn(fns)
+            }
+            _ => Value::Function(fn_val),
+        }
+    }
+
+    /// `Op::MakeFn` の実体（#27）: 入れ子 `fn` の関数値を作る。
+    ///
+    /// キャプチャは 2 種類（ツリーウォークの `capture_env` と同じ区別・#27-d 段階 2b）:
+    /// - `captured`（不変）= **生成時点の値を複製**する。呼び出し側が VM フレームの slot から読む。
+    /// - `cell_captured`（可変）= **`Rc<RefCell<Value>>` を共有**する。外側フレームのセル表
+    ///   （`Op::LoadCell`/`StoreCell` の相手）か `Interpreter::static_cells` から取る。
+    ///
+    /// ⚠ **自由変数の集合が `capture_env` とずれると閉包変数が黙って消える／共有が切れる**。
+    /// VM コンパイラ側の判定は `nested_fn_captures` に 1 本化してある。
+    /// `existing` は slot の現在値（オーバーロード合成用。未宣言なら `Value::None`）。
+    // 引数が多いのは「クロージャ生成に要る素材」が単に多いから（名前・シグネチャ・本体・
+    // 不変キャプチャ・可変キャプチャ・オーバーロード合成用の既存値）。struct に束ねると
+    // 呼び出し側（`Op::MakeFn` の `#[inline(never)]` 本体）で組み立てコストが増えるだけ。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn make_nested_fn_value(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        // ⚠ `&[Stmt]` ではなく `Rc` を受け取る（#45）。`Op::MakeFn` は定義サイトが持つ
+        // `ChunkFnDef::body` の `Rc` をそのまま渡すので、**実体ごとの AST 複製が消える**
+        // （本体 1 文で 0.2µs・1 文増えるごとに +0.19µs）。
+        body: std::rc::Rc<[Stmt]>,
+        return_type: Option<&str>,
+        captured: Vec<(String, Value)>,
+        // 可変キャプチャ（#27-d 段階 2b）。**セルを共有**するので値ではなく `Rc` を受け取る。
+        cell_captured: Vec<(String, std::rc::Rc<std::cell::RefCell<Value>>)>,
+        existing: Value,
+        // 定義サイト共有の Chunk（#30）。`Op::MakeFn` は `ChunkFnDef::compiled` を渡す。
+        // ツリーウォークの `exec_fn_def` 経由は定義サイトの器を持たないので `None`。
+        vm_chunk: Option<crate::vm::chunk::SharedFnChunk>,
+    ) -> Value {
+        use crate::interpreter::CapturedVar;
+        let mut captured_env: HashMap<String, CapturedVar> = captured
+            .into_iter()
+            .map(|(n, v)| (n, CapturedVar::Immutable(v)))
+            .collect();
+        for (n, cell) in cell_captured {
+            captured_env.insert(n, CapturedVar::Mutable(cell));
+        }
+        let fn_val = Rc::new(FnValue {
+            name: name.to_string(),
+            params: params.to_vec(),
+            body,
+            is_python: self.in_python_module,
+            captured_env,
+            return_type: return_type.map(|s| s.to_string()),
+            vm_chunk,
+        });
+        let existing = match existing {
+            Value::None => None,
+            v => Some(v),
+        };
+        Self::merge_fn_overload(fn_val, existing)
+    }
+
     pub(crate) fn exec_fn_def(
         &mut self,
         name: &str,
@@ -38,7 +109,7 @@ impl Interpreter {
             return Ok(ExecResult::Normal);
         }
 
-        let captured_env = if self.scopes.len() > 1 {
+        let captured_env = if self.scopes.len() > self.frame_floor {
             self.capture_env(body, params)
         } else {
             HashMap::new()
@@ -46,10 +117,11 @@ impl Interpreter {
         let fn_val = Rc::new(FnValue {
             name: name.to_string(),
             params: params.to_vec(),
-            body: body.to_vec(),
+            body: std::rc::Rc::from(body),
             is_python: self.in_python_module,
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
+            vm_chunk: None,
         });
 
         if decorators.is_empty() {
@@ -58,14 +130,7 @@ impl Interpreter {
                 .last()
                 .and_then(|s| s.get(name))
                 .map(|v| v.get_value());
-            let new_value = match existing {
-                Some(Value::Function(prev)) => Value::OverloadedFn(vec![prev, fn_val]),
-                Some(Value::OverloadedFn(mut fns)) => {
-                    fns.push(fn_val);
-                    Value::OverloadedFn(fns)
-                }
-                _ => Value::Function(fn_val),
-            };
+            let new_value = Self::merge_fn_overload(fn_val, existing);
             self.scopes
                 .last_mut()
                 .unwrap()
@@ -73,7 +138,7 @@ impl Interpreter {
         } else {
             let mut value = Value::Function(fn_val);
             for dec_expr in decorators.iter().rev() {
-                let dec = self.eval(dec_expr)?;
+                let dec = self.eval_definition_expr(dec_expr)?;
                 value = self.apply_value_call(dec, value, name)?;
             }
             self.scopes
@@ -197,8 +262,6 @@ impl Interpreter {
         match orig_val {
             Value::Class(orig_cls) => {
                 let new_cls = Rc::new(crate::interpreter::ClassValue {
-                    name: name.to_string(),
-                    class_id: crate::interpreter::value::alloc_class_id(),
                     bases: orig_cls.bases.clone(),
                     methods: orig_cls.methods.clone(),
                     gen_methods: orig_cls.gen_methods.clone(),
@@ -216,6 +279,7 @@ impl Interpreter {
                     new_type_base: orig_cls.new_type_base.clone(),
                     is_exception: orig_cls.is_exception,
                     raw_layout: orig_cls.raw_layout.clone(),
+                    ..crate::interpreter::ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
                 });
                 self.declare_var(name.to_string(), Var::new(Value::Class(new_cls), false));
             }
@@ -223,11 +287,13 @@ impl Interpreter {
                 // `new_type Meters: int` → `class Meters: mut value: int` と等価
                 let init_body = vec![Stmt::AttrAssign {
                     target: Expr::Attr {
-                        object: Box::new(Expr::Ident("self".to_string())),
+                        object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
                         attr: "value".to_string(),
                         span: crate::token::Span::unknown(),
+                        cache: Default::default(),
+                        node_id: 0, // #16: 合成/変換コード（注釈対象外）
                     },
-                    value: Expr::Ident("value".to_string()),
+                    value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
                 }];
                 let init_fn = Rc::new(FnValue {
                     name: "__init__".to_string(),
@@ -247,33 +313,22 @@ impl Interpreter {
                             variadic: false,
                         },
                     ],
-                    body: init_body,
+                    body: std::rc::Rc::from(init_body),
                     is_python: false,
                     captured_env: HashMap::new(),
                 return_type: None,
+                vm_chunk: None,
                 });
                 let mut methods = HashMap::new();
                 methods.insert("__init__".to_string(), vec![init_fn]);
                 let new_cls = Rc::new(crate::interpreter::ClassValue {
-                    name: name.to_string(),
-                    class_id: crate::interpreter::value::alloc_class_id(),
-                    bases: vec![],
                     methods,
-                    gen_methods: HashMap::new(),
-                    field_defaults: vec![],
-                    class_vars: HashMap::new(),
                     field_mutability: HashMap::from([("value".to_string(), true)]),
                     field_index: HashMap::from([("value".to_string(), 0usize)]),
                     field_count: 1,
                     field_mutability_vec: vec![true],
-                    field_access: HashMap::new(),
-                    method_access: HashMap::new(),
-                    static_method_names: HashSet::new(),
-                    class_method_names: HashSet::new(),
-                    static_vars: HashMap::new(),
                     new_type_base: Some(type_name.clone()),
-                    is_exception: false,
-                    raw_layout: None,
+                    ..crate::interpreter::ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
                 });
                 self.declare_var(name.to_string(), Var::new(Value::Class(new_cls), false));
             }
@@ -292,15 +347,61 @@ impl Interpreter {
         name: &str,
         variants: &[(String, Option<Expr>)],
     ) -> Result<ExecResult, String> {
+        let (item_cls, enum_cls) = self.build_enum_classes(name, variants)?;
+        self.declare_var(
+            item_cls.name.clone(),
+            Var::new(Value::Class(item_cls), false),
+        );
+        self.declare_var(name.to_string(), Var::new(Value::Class(enum_cls), false));
+        Ok(ExecResult::Normal)
+    }
+
+    /// VM の `Op::EnumDef` 用（#68）。`enum_item_Name` だけを名前で宣言し、
+    /// `Name` クラスを**値として返す**（呼び出し側がフレームの slot へ入れる）。
+    ///
+    /// ⚠ `declare_var` は interpreter モジュール内に閉じているので、
+    /// `vm_declare_global` / `vm_declare_debug` と同じく**ここに入口を置く**。
+    pub(crate) fn vm_enum_def(
+        &mut self,
+        name: &str,
+        variants: &[(String, Option<Expr>)],
+    ) -> Result<Value, String> {
+        let (item_cls, enum_cls) = self.build_enum_classes(name, variants)?;
+        self.declare_var(
+            item_cls.name.clone(),
+            Var::new(Value::Class(item_cls), false),
+        );
+        Ok(Value::Class(enum_cls))
+    }
+
+    /// `enum` 定義から `(enum_item_Name クラス, Name クラス)` を組み立てる（#68）。
+    ///
+    /// **スコープへの登録はしない**。呼び出し元が記憶域を決める:
+    /// - ツリーウォーク（`exec_enum_def`）は両方を `declare_var` する（最上位・モジュール本体）。
+    /// - VM（`Op::EnumDef`）は `Name` を**フレームの slot** へ入れる（関数内の `enum`）。
+    ///   リゾルバの `collect_base_decls` が `Name` に base slot を採番するので、
+    ///   読みは `LoadLocal` になる＝ slot に入れないと**別の変数を読む**。
+    ///
+    /// ⚠ **2 つに分けたのは #68 の実バグのため**。分ける前は「組み立て」と「`declare_var`」が
+    /// 一体だったので、VM から呼ぶと `Name` が slot ではなく**呼び出し元のスコープ**へ
+    /// 入ってしまい、載せようが無かった（＝ `compile_stmt` が bail し `VmForceError`）。
+    fn build_enum_classes(
+        &mut self,
+        name: &str,
+        variants: &[(String, Option<Expr>)],
+    ) -> Result<(Rc<crate::interpreter::ClassValue>, Rc<crate::interpreter::ClassValue>), String>
+    {
         // enum_item_Name クラスを生成する（new_type enum_item_Name: int 相当）
         let item_type_name = format!("enum_item_{}", name);
         let init_body = vec![Stmt::AttrAssign {
             target: Expr::Attr {
-                object: Box::new(Expr::Ident("self".to_string())),
+                object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
                 attr: "value".to_string(),
                 span: crate::token::Span::unknown(),
+                cache: Default::default(),
+                node_id: 0, // #16: 合成/変換コード（注釈対象外）
             },
-            value: Expr::Ident("value".to_string()),
+            value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
         }];
         let init_fn = Rc::new(FnValue {
             name: "__init__".to_string(),
@@ -320,46 +421,31 @@ impl Interpreter {
                     variadic: false,
                 },
             ],
-            body: init_body,
+            body: std::rc::Rc::from(init_body),
             is_python: false,
             captured_env: HashMap::new(),
         return_type: None,
+        vm_chunk: None,
         });
         let mut item_methods = HashMap::new();
         item_methods.insert("__init__".to_string(), vec![init_fn]);
         let item_cls_id = crate::interpreter::value::alloc_class_id();
         let item_cls = Rc::new(crate::interpreter::ClassValue {
-            name: item_type_name.clone(),
-            class_id: item_cls_id,
-            bases: vec![],
             methods: item_methods,
-            gen_methods: HashMap::new(),
-            field_defaults: vec![],
-            class_vars: HashMap::new(),
             field_mutability: HashMap::from([("value".to_string(), true)]),
             field_index: HashMap::from([("value".to_string(), 0usize)]),
             field_count: 1,
             field_mutability_vec: vec![true],
-            field_access: HashMap::new(),
-            method_access: HashMap::new(),
-            static_method_names: HashSet::new(),
-            class_method_names: HashSet::new(),
-            static_vars: HashMap::new(),
-            new_type_base: None,
-            is_exception: false,
-            raw_layout: None,
+            ..crate::interpreter::ClassValue::synthetic(item_type_name, item_cls_id)
         });
-        self.declare_var(
-            item_type_name.clone(),
-            Var::new(Value::Class(item_cls.clone()), false),
-        );
+        // ⚠ ここで `declare_var` はしない（#68）。記憶域は呼び出し元が決める。
 
         // 各バリアントの値を計算し、enum クラスの const クラス変数として登録する
         let mut class_vars: HashMap<String, Value> = HashMap::new();
         let mut next_value: i64 = 0;
         for (variant_name, value_expr) in variants {
             let int_val = if let Some(expr) = value_expr {
-                match self.eval(expr)? {
+                match self.eval_definition_expr(expr)? {
                     Value::Int(n) => n,
                     other => {
                         return Err(format!(
@@ -379,28 +465,10 @@ impl Interpreter {
         }
 
         let enum_cls = Rc::new(crate::interpreter::ClassValue {
-            name: name.to_string(),
-            class_id: crate::interpreter::value::alloc_class_id(),
-            bases: vec![],
-            methods: HashMap::new(),
-            gen_methods: HashMap::new(),
-            field_defaults: vec![],
             class_vars,
-            field_mutability: HashMap::new(),
-            field_index: HashMap::new(),
-            field_count: 0,
-            field_mutability_vec: vec![],
-            field_access: HashMap::new(),
-            method_access: HashMap::new(),
-            static_method_names: HashSet::new(),
-            class_method_names: HashSet::new(),
-            static_vars: HashMap::new(),
-            new_type_base: None,
-            is_exception: false,
-            raw_layout: None,
+            ..crate::interpreter::ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
         });
-        self.declare_var(name.to_string(), Var::new(Value::Class(enum_cls), false));
-        Ok(ExecResult::Normal)
+        Ok((item_cls, enum_cls))
     }
 
     /// `class` 定義を実行してクラス値をスコープに登録する。トレイト継承・フィールド・メソッドを処理する。
@@ -465,10 +533,11 @@ impl Interpreter {
                     let fn_val = Rc::new(FnValue {
                         name: mname.clone(),
                         params: params.clone(),
-                        body: mbody.clone(),
+                        body: std::rc::Rc::from(&mbody[..]),
                         is_python: self.in_python_module,
                         captured_env: HashMap::new(),
                         return_type: mret.clone(),
+                        vm_chunk: None,
                     });
                     // `__cast__[TypeName]` メソッドはキャスト専用のキー名で格納する。
                     // テンプレートパラメータの名前（具体型名）をキーとして使用する。
@@ -491,7 +560,7 @@ impl Interpreter {
                     } else {
                         let mut value = Value::Function(fn_val);
                         for dec_expr in mdecs.iter().rev() {
-                            let dec = self.eval(dec_expr)?;
+                            let dec = self.eval_definition_expr(dec_expr)?;
                             value = self.apply_value_call(dec, value, mname)?;
                         }
                         match value {
@@ -536,7 +605,7 @@ impl Interpreter {
                     if *facc != Accessibility::Public {
                         field_access.insert(fname.clone(), facc.clone());
                     }
-                    let val = self.eval(init)?;
+                    let val = self.eval_definition_expr(init)?;
                     class_vars.insert(fname.clone(), val);
                 }
                 Stmt::Field {
@@ -550,7 +619,7 @@ impl Interpreter {
                         field_access.insert(fname.clone(), facc.clone());
                     }
                     let val = if let Some(init) = default {
-                        self.eval(init)?
+                        self.eval_definition_expr(init)?
                     } else {
                         Value::None
                     };
@@ -572,7 +641,7 @@ impl Interpreter {
                     own_field_types.push((fname.clone(), type_ann.clone()));
                     field_mutability.insert(fname.clone(), mutable);
                     if let Some(init) = default {
-                        let val = self.eval(init)?;
+                        let val = self.eval_definition_expr(init)?;
                         field_defaults.push((fname.clone(), val, mutable));
                     }
                 }
@@ -593,8 +662,6 @@ impl Interpreter {
         };
 
         let cls = Rc::new(crate::interpreter::ClassValue {
-            name: name.to_string(),
-            class_id: crate::interpreter::value::alloc_class_id(),
             bases: bases.to_vec(),
             methods,
             gen_methods,
@@ -609,16 +676,15 @@ impl Interpreter {
             static_method_names,
             class_method_names,
             static_vars,
-            new_type_base: None,
-            is_exception: false,
             raw_layout,
+            ..crate::interpreter::ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
         });
         if decorators.is_empty() {
             self.declare_var(name.to_string(), Var::new(Value::Class(cls), false));
         } else {
             let mut value = Value::Class(cls);
             for dec_expr in decorators.iter().rev() {
-                let dec = self.eval(dec_expr)?;
+                let dec = self.eval_definition_expr(dec_expr)?;
                 value = self.apply_value_call(dec, value, name)?;
             }
             self.declare_var(name.to_string(), Var::new(value, false));

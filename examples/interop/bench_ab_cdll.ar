@@ -1,0 +1,83 @@
+# bench_ab_cdll.ar — A/B ベンチ **モード3: C の DLL 呼び出し（import[cpp-lib]）**
+#
+# C 側の関数（v3_add / v3_norm）は数命令しかないので、ここで測っているのは
+# **呼び出し側（解釈実行／VM）の FFI ディスパッチ費用**（引数評価・マーシャリング・書き戻し）。
+# baseline（同じ形の空ループ）を別指標で出すので、差分が FFI 1 回あたりの費用になる。
+#
+# 実行には examples/interop/test_modules/vec_math_x64.lib が要る:
+#   powershell -File examples/interop/test_modules/build_vec_math.ps1
+#
+# 出力は 1 行 1 指標の `METRIC <name> <seconds>` 形式（ab_bench_modes.ps1 が解析する）。
+
+import[py-int] time
+import[cpp-lib] test_modules.vec_math as vm
+
+let N = 300_000
+
+fn baseline_loop(let n: int) -> int:
+    mut i = 0
+    mut acc = 0
+    while i < n:
+        acc += i
+        i += 1
+    return acc
+
+# 構造体ポインタ 3 本（out / a / b）— ゼロコピー write-back 経路
+fn call_v3_add(let n: int) -> float:
+    mut r = V3(0.0, 0.0, 0.0)
+    let a = V3(1.0, 2.0, 3.0)
+    let b = V3(4.0, 5.0, 6.0)
+    mut i = 0
+    while i < n:
+        vm.v3_add(r, a, b)
+        i += 1
+    return r.x + r.y + r.z
+
+# 呼び出しのたびに引数の構造体を作り直す形（構造体の実体化費用込み）
+fn call_v3_add_fresh(let n: int) -> float:
+    mut r = V3(0.0, 0.0, 0.0)
+    mut i = 0
+    while i < n:
+        let a = V3(float(i), 2.0, 3.0)
+        let b = V3(4.0, 5.0, 6.0)
+        vm.v3_add(r, a, b)
+        i += 1
+    return r.x + r.y + r.z
+
+mut sink: float = 0.0
+
+let t0 = time.time()
+sink += float(baseline_loop(N))
+print("METRIC cdll_baseline_loop " + str(time.time() - t0))
+
+let t1 = time.time()
+sink += call_v3_add(N)
+print("METRIC cdll_v3_add " + str(time.time() - t1))
+
+let t2 = time.time()
+sink += call_v3_add_fresh(N)
+print("METRIC cdll_v3_add_fresh " + str(time.time() - t2))
+
+# 最上位（関数の外）から呼ぶ形 — 最上位も VM 経路に載っているかを見る対照
+# ⚠ 最上位のループ制御費用は fn 内と同じとは限らないので、baseline も最上位で測る
+let tb = time.time()
+mut ib = 0
+mut accb = 0
+while ib < N:
+    accb += ib
+    ib += 1
+print("METRIC cdll_baseline_toplevel " + str(time.time() - tb))
+sink += float(accb)
+
+mut r2 = V3(0.0, 0.0, 0.0)
+let a2 = V3(1.0, 2.0, 3.0)
+let b2 = V3(4.0, 5.0, 6.0)
+let t3 = time.time()
+mut i2 = 0
+while i2 < N:
+    vm.v3_add(r2, a2, b2)
+    i2 += 1
+print("METRIC cdll_v3_add_toplevel " + str(time.time() - t3))
+sink += r2.x + r2.y + r2.z
+
+print("CHECKSUM " + str(sink))

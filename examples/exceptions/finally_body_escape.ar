@@ -1,0 +1,112 @@
+# finally_body_escape.ar — finally 本体そのものからの脱出（#40）
+#
+# `finally` の**中**の `break` / `continue` / `return` / `block_return` は、
+# **保留中の動作を破棄する**（Python と同じ）:
+#   - 保留中の `return` は捨てられる
+#   - 伝播中の例外は捨てられる（＝握り潰される）
+# 外側にさらに `finally` があれば、それは**依然として走る**。
+#
+# ⚠ VM はこの形を長らく丸ごと bail していた（#40）。finally は正常路・例外路・各脱出路に
+#    複製され、**複製ごとにスタックの形が違う**（例外路は例外値が、return 路は戻り値が載る）。
+#    跳ぶ前にその分を捨てないと壊れる。この例題が唯一の網。
+
+print("=== 1. break in finally exits the loop ===")
+mut r = -1
+for i in range(4):
+    try:
+        r = i
+    finally:
+        if i == 2:
+            break
+print(r)                          # 2
+
+print("=== 2. break in finally discards a pending return ===")
+fn over_ret() -> int:
+    for i in range(3):
+        try:
+            return 100
+        finally:
+            break
+    return -1
+print(over_ret())                 # -1
+
+print("=== 3. return in finally replaces a pending return ===")
+fn over_ret2() -> int:
+    try:
+        return 1
+    finally:
+        return 2
+print(over_ret2())                # 2
+
+print("=== 4. return in finally discards a propagating exception ===")
+fn over_exc() -> int:
+    try:
+        raise ValueError("x")
+    finally:
+        return 7
+print(over_exc())                 # 7
+
+print("=== 5. break in finally discards a propagating exception ===")
+mut log = []
+for i in range(3):
+    try:
+        raise ValueError("x")
+    finally:
+        log.append(i)
+        break
+print(log)                        # [0]
+print("survived")
+
+print("=== 6. continue in finally skips the rest of the body ===")
+mut s = 0
+for i in range(4):
+    try:
+        s = s + 10
+    finally:
+        if i < 2:
+            continue
+    s = s + 1
+print(s)                          # 42
+
+print("=== 7. block_return in finally replaces the block value ===")
+let b = block ->int:
+    try:
+        block_return 1
+    finally:
+        block_return 2
+print(b)                          # 2
+
+print("=== 8. block_return in finally on the exception path ===")
+let b2 = block ->int:
+    try:
+        raise ValueError("boom")
+    finally:
+        block_return 3
+print(b2)                         # 3
+
+print("=== 9. an outer finally still runs when an inner one breaks ===")
+mut log2 = []
+for i in range(3):
+    try:
+        try:
+            log2.append(i)
+        finally:
+            if i == 1:
+                break
+    finally:
+        log2.append(100 + i)
+print(log2)                       # [0, 100, 1, 101]
+
+print("=== 10. every level breaks (each outer finally still runs once) ===")
+mut log3 = []
+for i in range(3):
+    try:
+        try:
+            log3.append(i)
+        finally:
+            log3.append(10)
+            break
+    finally:
+        log3.append(20)
+        break
+print(log3)                       # [0, 10, 20]

@@ -1,0 +1,36 @@
+# mut_to_let_copy.ar — `mut` 変数を `let` に代入したらコピーされること（#15e）
+#
+# `let b = a`（a は mut）は **深いコピー + freeze** であって共有ではない。
+# 以前は**関数本体の中でだけコピーされなかった**（b が a を共有していた）。
+#
+# 原因: コピー判定が `Expr::Ident` の `res` を見ており、
+# 「リゾルバが解決していない（= Unresolved）」ときしか元変数の可変性を調べていなかった。
+# リゾルバが処理するのはトップレベル関数の本体だけなので、
+# **最上位では動き、関数内では壊れる**という位置依存の挙動になっていた。
+# `res` は「どの記憶域から読むか」のヒントであって、意味論の根拠にしてはいけない。
+
+fn in_fn() -> None:
+    mut a = [1, 2, 3]
+    let b = a            # コピーされるべき
+    a.append(4)
+    print("in-fn  a =", a, " b =", b)
+
+fn in_fn_dict() -> None:
+    mut d = {"k": 1}
+    let e = d
+    d["k"] = 99
+    print("in-fn  d =", d, " e =", e)
+
+# 最上位（以前から正しかった側）
+mut a2 = [1, 2, 3]
+let b2 = a2
+a2.append(4)
+print("top    a =", a2, " b =", b2)
+
+in_fn()
+in_fn_dict()
+
+# let -> let はコピー不要（共有でよい / 双方不変）
+let src = [7, 8]
+let dst = src
+print("let->let", src, dst)

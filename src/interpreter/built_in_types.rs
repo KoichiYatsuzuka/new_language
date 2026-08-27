@@ -10,10 +10,10 @@
 //   register_builtin_globals  — グローバルスコープに全組み込み値を登録
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::ast::{Expr, Param, Stmt};
+use crate::ast::{Expr, Param, Stmt, Resolution};
 use crate::token::Span;
 
 use super::{
@@ -36,11 +36,13 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
     // __init__ 本体: `self.message = message` を表す AST ノード
     let init_body = vec![Stmt::AttrAssign {
         target: E::Attr {
-            object: Box::new(E::Ident("self".to_string())),
+            object: Box::new(E::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
             attr: "message".to_string(),
             span: Span::unknown(),
+            cache: Default::default(),
+            node_id: 0, // #16: 合成コード（注釈対象外）
         },
-        value: E::Ident("message".to_string()),
+        value: E::Ident { name: "message".to_string(), node_id: 0, res: Resolution::Unresolved },
     }];
     let init_fn = Rc::new(FnValue {
         name: "__init__".to_string(),
@@ -60,18 +62,19 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
                 variadic: false,
             },
         ],
-        body: init_body,
+        body: std::rc::Rc::from(init_body),
         is_python: false,
         captured_env: HashMap::new(),
     return_type: None,
+    vm_chunk: None,
     });
     let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
     methods.insert("__init__".to_string(), vec![init_fn]);
 
     // raise 時にインタープリタが自動上書きするフィールドのデフォルト値（空文字・0で初期化）
     let field_defaults = vec![
-        ("code_context".to_string(), Value::Str("".to_string()), false),
-        ("file".to_string(), Value::Str("".to_string()), false),
+        ("code_context".to_string(), Value::str("".to_string()), false),
+        ("file".to_string(), Value::str("".to_string()), false),
         ("line".to_string(), Value::Int(0), false),
         ("col".to_string(), Value::Int(0), false),
     ];
@@ -102,25 +105,15 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
     .collect();
 
     Rc::new(ClassValue {
-        name: class_name.to_string(),
-        class_id: crate::interpreter::value::alloc_class_id(),
         bases: vec!["Error".to_string()],
         methods,
-        gen_methods: HashMap::new(),
         field_defaults,
-        class_vars: HashMap::new(),
         field_mutability,
         field_index,
         field_count: 5,
         field_mutability_vec: vec![false, false, false, false, false],
-        field_access: HashMap::new(),
-        method_access: HashMap::new(),
-        static_method_names: HashSet::new(),
-        class_method_names: HashSet::new(),
-        static_vars: HashMap::new(),
-        new_type_base: None,
         is_exception: true,
-        raw_layout: None,
+        ..ClassValue::synthetic(class_name.to_string(), crate::interpreter::value::alloc_class_id())
     })
 }
 
@@ -129,11 +122,13 @@ pub(super) fn make_error_class(class_name: &str) -> Rc<ClassValue> {
 pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<ClassValue> {
     let init_body = vec![Stmt::AttrAssign {
         target: Expr::Attr {
-            object: Box::new(Expr::Ident("self".to_string())),
+            object: Box::new(Expr::Ident { name: "self".to_string(), node_id: 0, res: Resolution::Unresolved }),
             attr: "value".to_string(),
             span: Span::unknown(),
+            cache: Default::default(),
+            node_id: 0, // #16: 合成コード（注釈対象外）
         },
-        value: Expr::Ident("value".to_string()),
+        value: Expr::Ident { name: "value".to_string(), node_id: 0, res: Resolution::Unresolved },
     }];
     let init_fn = Rc::new(FnValue {
         name: "__init__".to_string(),
@@ -153,33 +148,21 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
                 variadic: false,
             },
         ],
-        body: init_body,
+        body: std::rc::Rc::from(init_body),
         is_python: false,
         captured_env: HashMap::new(),
     return_type: None,
+    vm_chunk: None,
     });
     let mut methods = HashMap::new();
     methods.insert("__init__".to_string(), vec![init_fn]);
     Rc::new(ClassValue {
-        name: name.to_string(),
-        class_id: crate::interpreter::value::alloc_class_id(),
-        bases: vec![],
         methods,
-        gen_methods: HashMap::new(),
-        field_defaults: vec![],
-        class_vars: HashMap::new(),
         field_mutability: HashMap::from([("value".to_string(), true)]),
         field_index: HashMap::from([("value".to_string(), 0usize)]),
         field_count: 1,
         field_mutability_vec: vec![true],
-        field_access: HashMap::new(),
-        method_access: HashMap::new(),
-        static_method_names: HashSet::new(),
-        class_method_names: HashSet::new(),
-        static_vars: HashMap::new(),
-        new_type_base: None,
-        is_exception: false,
-        raw_layout: None,
+        ..ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
     })
 }
 
@@ -197,25 +180,11 @@ pub(super) fn make_builtin_enum_class(
     // バリアントのインスタンス型（`enum_item_X`）: value フィールドを持つだけ
     let item_cls_id = crate::interpreter::value::alloc_class_id();
     let item_cls = Rc::new(ClassValue {
-        name: item_cls_name.clone(),
-        class_id: item_cls_id,
-        bases: vec![],
-        methods: HashMap::new(),
-        gen_methods: HashMap::new(),
-        field_defaults: vec![],
-        class_vars: HashMap::new(),
         field_mutability: HashMap::from([("value".to_string(), true)]),
         field_index: HashMap::from([("value".to_string(), 0usize)]),
         field_count: 1,
         field_mutability_vec: vec![true],
-        field_access: HashMap::new(),
-        method_access: HashMap::new(),
-        static_method_names: HashSet::new(),
-        class_method_names: HashSet::new(),
-        static_vars: HashMap::new(),
-        new_type_base: None,
-        is_exception: false,
-        raw_layout: None,
+        ..ClassValue::synthetic(item_cls_name.clone(), item_cls_id)
     });
     // 各バリアントをインスタンスとして生成し class_vars に登録
     let mut class_vars: HashMap<String, Value> = HashMap::new();
@@ -227,25 +196,8 @@ pub(super) fn make_builtin_enum_class(
     }
     // enum クラス本体（バリアントのみ保持、インスタンス化不可）
     let enum_cls = Rc::new(ClassValue {
-        name: name.to_string(),
-        class_id: crate::interpreter::value::alloc_class_id(),
-        bases: vec![],
-        methods: HashMap::new(),
-        gen_methods: HashMap::new(),
-        field_defaults: vec![],
         class_vars,
-        field_mutability: HashMap::new(),
-        field_index: HashMap::new(),
-        field_count: 0,
-        field_mutability_vec: vec![],
-        field_access: HashMap::new(),
-        method_access: HashMap::new(),
-        static_method_names: HashSet::new(),
-        class_method_names: HashSet::new(),
-        static_vars: HashMap::new(),
-        new_type_base: None,
-        is_exception: false,
-        raw_layout: None,
+        ..ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
     });
     (item_cls_name, item_cls, enum_cls)
 }

@@ -43,18 +43,7 @@ fn test_generator_exhausted_raises_end_of_iteration() {
         "it.next()\n",
     );
     assert!(run(src).is_err());
-    let tokens = crate::lexer::Lexer::new(src, "").tokenize();
-    let stmts = crate::parser::Parser::new(tokens, None)
-        .parse_program()
-        .unwrap();
-    let mut interp = Interpreter::new();
-    let mut err_msg = String::new();
-    for stmt in &stmts {
-        if let Err(e) = interp.exec(stmt) {
-            err_msg = e;
-            break;
-        }
-    }
+    let err_msg = run_err_msg(src);
     assert!(
         err_msg.starts_with("EndOfIteration"),
         "expected EndOfIteration, got: {err_msg}"

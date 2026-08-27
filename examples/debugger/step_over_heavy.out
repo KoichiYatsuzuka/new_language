@@ -1,0 +1,30 @@
+
+[break_point] Paused at [32m<REPO>\examples\debugger\step_over_heavy.ar[0m:20
+[33m  18[0m    fn driver() -> int:
+[33m  19[0m        let n = 2_000_000
+[33m  20[0m [36m>>[0m     break_point
+[33m  21[0m        let a = heavy(n)
+[33m  22[0m        let b = heavy(n)
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\step_over_heavy.ar[0m:21
+[33m  19[0m        let n = 2_000_000
+[33m  20[0m        break_point
+[33m  21[0m [36m>>[0m     let a = heavy(n)
+[33m  22[0m        let b = heavy(n)
+[33m  23[0m        return a + b
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\step_over_heavy.ar[0m:22
+[33m  20[0m        break_point
+[33m  21[0m        let a = heavy(n)
+[33m  22[0m [36m>>[0m     let b = heavy(n)
+[33m  23[0m        return a + b
+[33m  24[0m    
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 7999992000002
+
+--stderr--

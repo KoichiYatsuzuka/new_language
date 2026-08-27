@@ -40,6 +40,7 @@ use std::process::Command;
 use super::llvm_codegen as codegen;
 use super::stub_gen;
 use crate::ast::Stmt;
+use crate::type_check::AstAnnotations;
 
 const MAGIC: &[u8; 4] = b"TLC\x00";
 const VERSION_V0: u32 = 0;
@@ -86,10 +87,14 @@ pub fn cache_native(module_name: &str, exports: Vec<codegen::FnExport>, dll_byte
 /// `.arc` is written as version 0 (source-only) and a warning is printed.
 ///
 /// Returns the paths of the two output files (`.arc`, `.ars`) on success.
+///
+/// `annotations` は型検査が生成した AST 型解決層の注釈（#16 段階(c)）。codegen が
+/// node-id 索引で解決型を引き、自前の型再導出を置き換えるために使う。
 pub fn compile(
     source: &str,
     stmts: &[Stmt],
     source_path: &Path,
+    annotations: &AstAnnotations,
 ) -> std::io::Result<(std::path::PathBuf, std::path::PathBuf)> {
     let stem = source_path
         .file_stem()
@@ -105,7 +110,7 @@ pub fn compile(
     std::fs::write(&tls_path, &stub)?;
 
     // Attempt native compilation.
-    match compile_native(stmts) {
+    match compile_native(stmts, annotations) {
         Ok((payload, exports)) => {
             let NativePayload::Dll(bytes) = &payload;
             write_tlc_native(source, stem, &exports, bytes, VERSION_V1, &tlc_path)?;
@@ -135,6 +140,18 @@ pub fn native_lib_ext() -> &'static str {
     }
 }
 
+/// `.arc` に埋め込まれたソースだけを読む（**ネイティブキャッシュを汚さない**）。
+///
+/// `load_tlc` は埋め込み DLL を `NATIVE_CACHE` へ載せてしまうため、
+/// 「`.arc` が古いかどうか」を判定する目的には使えない（古いと判った後にキャッシュが残る＝
+/// 新しいソース × 古い DLL という最悪の組み合わせになる）。判定用にはこちらを使う。
+pub fn read_tlc_source(path: &Path) -> std::io::Result<(String, String)> {
+    let data = std::fs::read(path)?;
+    let (name, source, _native) = parse_tlc(&data)
+        .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidData, msg))?;
+    Ok((name, source))
+}
+
 /// Load a `.arc` file and return `(module_name, source_text)`.
 ///
 /// If the file is v1, the embedded native data is placed in the
@@ -160,8 +177,11 @@ pub fn load_tlc(path: &Path) -> std::io::Result<(String, String)> {
 ///
 /// Emits LLVM IR text via `llvm_codegen`, then compiles it to a shared library
 /// with the external `clang` driver.
-fn compile_native(stmts: &[Stmt]) -> Result<(NativePayload, Vec<codegen::FnExport>), String> {
-    let (llvm_ir, exports) = codegen::generate_llvm_module(stmts)
+fn compile_native(
+    stmts: &[Stmt],
+    annotations: &AstAnnotations,
+) -> Result<(NativePayload, Vec<codegen::FnExport>), String> {
+    let (llvm_ir, exports) = codegen::generate_llvm_module(stmts, annotations)
         .ok_or_else(|| "no codegen-eligible functions".to_string())?;
 
     let fn_names: Vec<&str> = exports.iter().map(|e| e.name.as_str()).collect();
@@ -174,6 +194,14 @@ fn compile_native(stmts: &[Stmt]) -> Result<(NativePayload, Vec<codegen::FnExpor
 
     std::fs::write(&ll_path, &llvm_ir)
         .map_err(|e| format!("cannot write LLVM IR: {e}"))?;
+
+    // 開発用フック（#16 段階(c)）: `AR_DUMP_LL=<path>` を指定すると生成 IR をそこへも保存する。
+    // codegen 変更が IR を変えていないこと（byte-identical）を差分で検証するために使う。
+    if let Ok(dump) = std::env::var("AR_DUMP_LL") {
+        if !dump.is_empty() {
+            let _ = std::fs::write(&dump, &llvm_ir);
+        }
+    }
 
     let result = invoke_clang(&ll_path, &dll_path);
     let _ = std::fs::remove_file(&ll_path);

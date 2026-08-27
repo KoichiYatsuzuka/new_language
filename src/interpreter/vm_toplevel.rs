@@ -1,0 +1,426 @@
+// interpreter/vm_toplevel.rs — VM から呼ぶインタプリタ側の入口。
+//
+// - モジュール最上位の文を VM で実行する経路（#10-b）
+// - 一部 op の実体（`StoreGlobal` #10-b / `LoadSelfClass` #27）
+//
+// ⚠ **この関数を `functions/execution.rs` に置いてはいけない。**
+// 同じ `impl Interpreter` でもファイルが違えば済む話ではなく、`exec_fn_evaled` と同居させると
+// LLVM のインライン判断が変わり、ネイティブ→Arrow コールバックのループで **10% 級の退行**が出た
+// （`partial_call_overhead.ar` で実測。当時 `--vm=off` でも同じ幅で出たので VM 経路とは無関係）。
+// #1-x の「`#[inline]` は効いているとは限らない」と同じ現象を逆向きに踏んだもの。
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::interpreter::{ExecResult, Interpreter, Value, Var};
+
+impl Interpreter {
+    /// 最上位ループの VM 実行を**試す価値があるか**の即断（#10-b）。
+    ///
+    /// ⚠ **`exec()` から必ずこれを先に呼ぶこと。** `Stmt::While`/`Stmt::For` の実行は
+    /// 最上位だけでなく**ツリーウォーク関数の中でも起きる**ので、いきなり
+    /// `try_run_toplevel_stmt`（非インライン）を呼ぶと関数内ループの実行ごとに
+    /// 呼び出しコストを払う。実測でそれが数 % の退行になった。
+    /// ここはフィールド 3 本の比較だけなのでインライン展開される。
+    /// ⚠ **`toplevel_globals` が空かどうかは条件にしない**（#36）。以前は
+    /// 「空 = 配線されていない `Interpreter::new()` 消費者」の代用として弾いていたが、
+    /// **最上位に宣言が 1 つも無い正しいプログラム**（`print(1)` と `for` だけ等）も空になるので、
+    /// そういうプログラムは最上位が**丸ごとツリーウォーク**になっていた
+    /// （`AR_TW_STATS` で `tw_control_flow: for-stmt=1` を実測）。
+    /// ＝ `force_gate` 0 件・`tw_control_flow` 0 は「例題が必ず何かを宣言している」に
+    /// 依存していた。#33（ツリーウォーク削除）の前提が崩れる穴。
+    /// 配線は各入口（`run_program`・REPL・テストヘルパー）が責任を持つ（#36）。
+    #[inline(always)]
+    pub(crate) fn toplevel_vm_candidate(&self) -> bool {
+        // `scopes.len() == 1` = モジュール最上位（関数フレームも push 済みブロックも無い）。
+        // これが「名前は `scopes[0]` を指す」の唯一の根拠。
+        self.scopes.len() == 1
+    }
+
+    /// 最上位の文を VM で実行する（#10-b/#10-c）。対象はループ文と宣言文
+    /// （`compile_toplevel_stmt` が受け付ける形）。
+    ///
+    /// 戻り値は 3 通り（**`Ok(None)` と `Err` を混同しないこと**）:
+    /// - `Ok(Some(..))` … VM が実行した。
+    /// - `Ok(None)` … **定義文だった**（`is_toplevel_compile_target` が偽）。設計どおり
+    ///   呼び出し側のツリーウォークが実行する（#10-d）。失敗ではないので計上もしない。
+    /// - `Err(VmForceError)` … 定義文以外なのに Chunk へ載らなかった。**フォールバックは無い**（#33）。
+    ///
+    /// 呼び出し前提:
+    /// - **`scopes.len() == 1`**（＝モジュール最上位。関数フレームや push 済みブロックスコープの
+    ///   中ではない）。この 1 条件が「名前は `scopes[0]` を指す」の根拠であり、
+    ///   コンパイル時の `toplevel_globals` 判定と実行時の記憶域を一致させる。
+    ///   ⇒ `toplevel_vm_candidate()` で門を作ること（`debug_assert!` で固定してある）。
+    ///
+    /// ⚠ **`exec()` の中から呼ぶ**こと（`run_program` からではなく）。
+    /// デバッガの `should_pause_at` は `exec()` 冒頭で走るので、そこを飛ばすと
+    /// off/auto でステッピングが食い違う（#1 で修正した既存バグと同じ形）。
+    pub(crate) fn try_run_toplevel_stmt(
+        &mut self,
+        stmt: &crate::ast::Stmt,
+    ) -> Result<Option<ExecResult>, String> {
+        debug_assert!(self.toplevel_vm_candidate(), "caller must gate on toplevel_vm_candidate");
+        // 対象外（定義文）は**失敗として数えない**。キャッシュにも入れない（#27-c）。
+        if !crate::vm::is_toplevel_compile_target(stmt) {
+            return Ok(None);
+        }
+        let key = stmt as *const crate::ast::Stmt as usize;
+        let chunk = match self.vm_toplevel_chunks.get(&key) {
+            Some(cached) => cached.clone(),
+            None => {
+                let compiled = crate::vm::compile_toplevel_stmt(
+                    stmt,
+                    self.annotations.clone(),
+                    &self.toplevel_globals,
+                )
+                .map(Rc::new);
+                if crate::interpreter::tw_stats::enabled() {
+                    crate::interpreter::tw_stats::record_compile("toplevel", compiled.is_some());
+                }
+                self.vm_toplevel_chunks.insert(key, compiled.clone());
+                compiled
+            }
+        };
+        let Some(chunk) = chunk else {
+            // フォールバックは存在しない（#3/#33）。落ちた箇所を位置つきで報告して止める。
+            return Err(Self::vm_force_error("top-level statement", stmt));
+        };
+
+        // フレームは Chunk のローカル数ぶんだけ。パラメータは無いので全て None で始める。
+        let mut buf = std::mem::take(&mut self.vm_stack);
+        let base = buf.len();
+        buf.resize(base + chunk.n_locals, Value::None);
+        let result = crate::vm::run(self, &chunk, &mut buf, base, None);
+        buf.truncate(base);
+        self.vm_stack = buf;
+        // 最上位文は値を返さない（`ReturnNil`）。制御は必ず次の文へ進む。
+        result.map(|_| Some(ExecResult::Normal))
+    }
+
+    /// **import モジュール本体の 1 文**を VM で実行する（#42）。
+    ///
+    /// `try_run_toplevel_stmt` との違いは 2 点:
+    /// - `scopes.len() == 1` を要求しない（`exec_module` が `push_scope` 済み）。
+    /// - 代入が `StoreName`（チェーン探索）になる（`compile_module_stmt`）。
+    ///
+    /// 対象外（定義文）は `Ok(None)` を返し、呼び出し側がインタプリタで実行する（#10-d）。
+    /// ⚠ **フォールバックは無い**。載らなければ `VmForceError` で止める。
+    pub(crate) fn try_run_module_stmt(
+        &mut self,
+        stmt: &crate::ast::Stmt,
+        module_globals: &std::collections::HashSet<String>,
+    ) -> Result<Option<ExecResult>, String> {
+        if !crate::vm::is_toplevel_compile_target(stmt) {
+            return Ok(None);
+        }
+        // ⚠ キーは `Stmt` のアドレス（#36 の不変条件）。モジュール本体は `Stmt::Import` に
+        // 埋め込まれておりプログラム AST と寿命が同じなので、アドレスは安定している。
+        let key = stmt as *const crate::ast::Stmt as usize;
+        let chunk = match self.vm_toplevel_chunks.get(&key) {
+            Some(cached) => cached.clone(),
+            None => {
+                let compiled =
+                    crate::vm::compile_module_stmt(stmt, self.annotations.clone(), module_globals)
+                        .map(Rc::new);
+                if crate::interpreter::tw_stats::enabled() {
+                    crate::interpreter::tw_stats::record_compile("module", compiled.is_some());
+                }
+                self.vm_toplevel_chunks.insert(key, compiled.clone());
+                compiled
+            }
+        };
+        let Some(chunk) = chunk else {
+            return Err(Self::vm_force_error("module-body statement", stmt));
+        };
+        let mut buf = std::mem::take(&mut self.vm_stack);
+        let base = buf.len();
+        buf.resize(base + chunk.n_locals, Value::None);
+        let result = crate::vm::run(self, &chunk, &mut buf, base, None);
+        buf.truncate(base);
+        self.vm_stack = buf;
+        result.map(|_| Some(ExecResult::Normal))
+    }
+
+    /// **定義文脈の式**を VM で評価する（#41）。
+    ///
+    /// クラスのフィールド既定値・`enum` の値・デコレータ式は定義文の一部なので
+    /// `try_run_toplevel_stmt` の対象にならないが、中身は任意の式で `block:`/`if`/`for` 式を
+    /// 書ける。ツリーウォークの `eval()` で評価していた頃は、**そこだけ制御フローが
+    /// ツリーウォークで動いていた**（`AR_TW_STATS` の `tw_control_flow` で実測・#33）。
+    ///
+    /// ⚠ **フォールバックは無い**（#3 の規約）。載せられなければ `VmForceError` で止める。
+    /// ⚠ 自由な識別子は `LoadName`（名前引き）なので、`scopes` の深さを問わず
+    /// ツリーウォークの `eval()` と同じ変数に当たる（import モジュール本体の中でも同じ）。
+    pub(crate) fn eval_definition_expr(
+        &mut self,
+        expr: &crate::ast::Expr,
+    ) -> Result<Value, String> {
+        let Some(chunk) = crate::vm::compile_definition_expr(expr, self.annotations.clone())
+        else {
+            return Err(format!(
+                "VmForceError: cannot compile definition-context expression `{}` to bytecode",
+                crate::vm::compiler::expr_kind(expr)
+            ));
+        };
+        let mut buf = std::mem::take(&mut self.vm_stack);
+        let base = buf.len();
+        buf.resize(base + chunk.n_locals, Value::None);
+        let result = crate::vm::run(self, &chunk, &mut buf, base, None);
+        buf.truncate(base);
+        self.vm_stack = buf;
+        result
+    }
+
+    /// `mod.func(...)` の呼び先が **`mut` ポインタ書き戻しを持つ native 関数**なら返す（#48）。
+    ///
+    /// VM の `CallMethod` は評価済みの値で呼ぶので、書き戻し先を渡すには
+    /// 呼び先を**先に**同定する必要がある。同定できたときだけ
+    /// `dispatch_native_evaled_wb` を直接呼び、それ以外は従来どおり
+    /// `vm_method_call_other` → `eval_method_call_full` に委ねる
+    /// （＝ここで外れても挙動は変わらない。書き戻しが付かないだけ）。
+    ///
+    /// ⚠ メンバ取得は `eval_method_call_full` の `Namespace` アームと同じ
+    /// `ns.members.get(name)`。見つからない場合はここでエラーにせず `None` を返し、
+    /// **エラー文言の生成は既存の 1 箇所に任せる**。
+    pub(crate) fn vm_namespace_writeback_fn(
+        obj: &Value,
+        method_name: &str,
+    ) -> Option<std::sync::Arc<crate::interpreter::value::NativeFnRef>> {
+        let Value::Namespace(ns) = obj else { return None };
+        match ns.members.get(method_name) {
+            Some(Value::NativeFunction(fn_ref)) if fn_ref.has_writeback() => Some(fn_ref.clone()),
+            _ => None,
+        }
+    }
+
+    /// VM のメソッド呼び出しのうち **非 Instance レシーバ**の経路（#27-b）。
+    /// list/str/dict/set/CsObject/Signal/Namespace… を統一実装へ流す。
+    ///
+    /// ツリーウォークの `eval_call` の `Expr::Attr` 分岐と**同じ 3 手順**を踏む:
+    /// ①呼ぶ前にレシーバから外部言語を覗く ②ディスパッチ ③外部言語なら戻り値を宣言型と照合。
+    /// ⚠ **③ を落とすと FFI 境界検査が VM 経路だけ素通りする**（`Op::Call` で #22-a が踏んだ穴と同型）。
+    /// そのために `node_id` を op で運んでいる。
+    ///
+    /// ⚠ **Instance はここへ来ない**。`exec_op` 側で先に `call_instance_method_evaled` へ直行する
+    /// （method IC を効かせるため＋最頻路に判定を足さないため。実測でここを経由させると 3% 落ちた）。
+    /// ⚠ **`#[inline(never)]` を外さないこと**（`exec_op` は `#[inline(always)]`）。
+    /// ⚠⚠ この属性と上の doc は **#48 が `vm_namespace_writeback_fn` を doc と属性の間へ挿入した
+    /// せいで、長らくそちらに付いていた**（doc コメントも属性なので**コンパイルは通る**）。
+    /// ＝「外すな」と書いた属性が黙って外れていた。#51 で戻した。
+    #[inline(never)]
+    pub(crate) fn vm_method_call_other(
+        &mut self,
+        obj: Value,
+        method_name: &str,
+        evaled: Vec<(Option<String>, Value, bool)>,
+        node_id: u32,
+        chunk: &crate::vm::Chunk,
+    ) -> Result<Value, String> {
+        let lang = Self::foreign_call_lang(&obj, method_name);
+        let r = self.eval_method_call_evaled(obj, method_name, evaled)?;
+        let Some(l) = lang else { return Ok(r) };
+        // ⚠ 表示名と位置はツリーウォークと**同じもの**を使う（`L.get_int` / `file:line:col`）。
+        // `method_name` と `None` で済ませると `get_int` / `<unknown>` になり
+        // エラーメッセージが食い違う（`ffi_boundary_check_error.ar` が検出）。
+        let (name, span) = match chunk.ffi_call_info.get(&node_id) {
+            Some(&(ni, si)) => (
+                chunk.names[ni as usize].as_str(),
+                chunk.spans.get(si as usize),
+            ),
+            None => (method_name, None),
+        };
+        self.check_ffi_return(l, r, node_id, name, span)
+    }
+
+    /// VM に載せられなかったときのエラー（#25。#33 以降フォールバックが無いので**必ず停止する**）。
+    ///
+    /// **どこが載らなかったか**を位置つきで出す。理由（bail の種別）までは載せない
+    /// — それは `AR_TW_STATS` の役目で、両者は役割が違う
+    /// （こちらは「0 件かどうかを止めて判定するゲート」、あちらは「何件どこにあるかの計数」）。
+    pub(crate) fn vm_force_error(what: &str, stmt: &crate::ast::Stmt) -> String {
+        // 文種別は必ず出す（位置が取れない文が多いため。`Stmt::Expr` 等は Span を持たない）。
+        let kind = crate::interpreter::tw_stats::stmt_kind_of(stmt);
+        match crate::interpreter::debugger::stmt_span_of(stmt) {
+            Some(sp) => format!("VmForceError: cannot compile {what} `{kind}` to bytecode at {sp}"),
+            None => format!("VmForceError: cannot compile {what} `{kind}` to bytecode"),
+        }
+    }
+
+    /// `Op::DeclareGlobal` の実体（#10-c）: 最上位の `let`/`mut`/`const` を宣言する。
+    ///
+    /// ツリーウォークの `exec_let` / `exec` の `Const`・`Mut` アームと**同じ判断を同じ順序で**行う。
+    /// コンパイル時に決まるのは「どの分岐を取るか」（`DeclKind`）だけで、コピー・フリーズ・
+    /// 再宣言検査の実装はここに 1 つだけ置く。
+    ///
+    /// ⚠ **再宣言の `NameError` を落とさないこと。** 型検査も再宣言を弾くが、
+    /// `redeclare_error.ar` が実行時メッセージを stderr で比較しているので挙動が変わると検出される。
+    pub(crate) fn vm_declare_global(
+        &mut self,
+        name: &str,
+        kind: crate::vm::op::DeclKind,
+        // `LetFromIdent` がソース名を index で持つので、解決用に定数表を受け取る（#27-c）。
+        names: &[String],
+        value: Value,
+    ) -> Result<(), String> {
+        use crate::vm::op::DeclKind;
+        // `_` は束縛せず捨てる（ツリーウォークも同じ）。
+        if name == "_" {
+            return Ok(());
+        }
+        if self.get_var(name).is_some() {
+            return Err(format!("NameError: variable '{name}' is already declared"));
+        }
+        let (value, mutable) = match kind {
+            DeclKind::Const => (value, false),
+            // `mut` は常に deep_copy（`exec` の `Stmt::Mut` アームと同一）。
+            DeclKind::Mut => (Self::deep_copy_value(value), true),
+            DeclKind::LetPlain => (value, false),
+            // 非識別子式からの `let`: `Instance` のときだけ copy + freeze。
+            // 可変コレクションから取り出した `Instance` を直接フリーズすると
+            // 共有 `Rc` 経由で元まで不変化されるため（`exec_let` のコメント参照）。
+            DeclKind::LetFreezeInstance => (self.let_freeze_instance(value)?, false),
+            // #27-c: ソースの可変性は**実行時**に見る（`exec_let` と同じ判断）。
+            // 最上位チャンクは `scopes.len() == 1` が保証されているので `get_var` で足りる。
+            DeclKind::LetFromIdent(si) => {
+                let src_mutable = self.get_var(&names[si as usize]).map(|v| v.is_mutable());
+                (self.vm_let_value_from_ident(src_mutable, value)?, false)
+            }
+        };
+        self.declare_var(name.to_string(), Var::new(value, mutable));
+        Ok(())
+    }
+
+    /// `let x = <識別子>` のコピー意味論（#27-c）— **`exec_let` の識別子分岐の唯一の実装**。
+    ///
+    /// `src_mutable` は**ソース変数の可変性**（`None` = そもそも変数として存在しない）。
+    /// 消費者は `DeclKind::LetFromIdent`（最上位の `DeclareGlobal`）と
+    /// `Op::StoreLocalFromIdent`（slot への宣言）の 2 つで、**違うのは可変性の引き方だけ**
+    /// （前者は `get_var`／後者は `scopes[0]`。理由は `Op::StoreLocalFromIdent` の doc）。
+    pub(crate) fn vm_let_value_from_ident(
+        &mut self,
+        src_mutable: Option<bool>,
+        value: Value,
+    ) -> Result<Value, String> {
+        match src_mutable {
+            // mut ソース: 深いコピーを作ってフリーズする。
+            Some(true) => {
+                let copied = Self::deep_copy_value(value);
+                self.apply_freeze_to_value(&copied, true)?;
+                Ok(copied)
+            }
+            Some(false) => Ok(value),
+            // 変数として存在しない名前は非識別子式と同じ扱いに落ちる。
+            None => self.let_freeze_instance(value),
+        }
+    }
+
+    /// `static mut` の共有セルを引く（#27-d）。キーは**宣言位置**で `exec_static_var` と同一。
+    ///
+    /// `static` の記憶域はフレームではなく `Interpreter::static_cells` なので、VM は
+    /// フレーム表現を変えずに読み書きできる（`Op::LoadStatic`/`StoreStatic`）。
+    pub(crate) fn vm_static_cell(&self, span: &crate::token::Span) -> Option<Rc<RefCell<Value>>> {
+        self.static_cells
+            .get(&(span.file.to_string(), span.line, span.col))
+            .cloned()
+    }
+
+    /// `static mut` のセルを新規作成して登録する（初回実行時だけ・#27-d）。
+    /// `exec_static_var` の「セルが無ければ初期化子を評価して作る」分岐と同じ登録を行う。
+    pub(crate) fn vm_static_create(&mut self, span: &crate::token::Span, value: Value) {
+        self.static_cells.insert(
+            (span.file.to_string(), span.line, span.col),
+            Rc::new(RefCell::new(value)),
+        );
+    }
+
+    /// グローバル（`scopes[0]`）の変数の可変性。存在しなければ `None`（`Op::StoreLocalFromIdent` 用）。
+    /// ⚠ **呼び出し元スコープを跨がない**のが要点（`vm_global_slot_of` と同じ規則）。
+    pub(crate) fn vm_global_is_mutable(&self, name: &str) -> Option<bool> {
+        self.scopes[0].slot_of(name).and_then(|idx| self.scopes[0].slot(idx)).map(|v| v.is_mutable())
+    }
+
+    /// `let` の「非識別子式」分岐（#27-c）: `Instance` のときだけ deep_copy + freeze。
+    ///
+    /// 可変コレクションから取り出した `Instance` を直接フリーズすると共有 `Rc` 経由で
+    /// 元まで不変化されるため、コピーが要る（`exec_let` のコメント参照）。
+    fn let_freeze_instance(&mut self, value: Value) -> Result<Value, String> {
+        if matches!(value, Value::Instance(_)) {
+            let copied = Self::deep_copy_value(value);
+            self.apply_freeze_to_value(&copied, true)?;
+            Ok(copied)
+        } else {
+            Ok(value)
+        }
+    }
+
+    /// `Op::LoadSelfClass` の実体（#27）: メソッド本体の `Self` の値。
+    ///
+    /// ツリーウォークは `exec_fn_evaled` が `Self` をスコープへ宣言し、VM は
+    /// `run_vm_method` が同じクラスを `current_class` に入れる。**同じ出どころ**なので
+    /// 値は一致する。メソッド外（`current_class` が `None`）では `None` を返し、
+    /// 呼び出し側が `NameError` にする（ツリーウォークの名前引き失敗と同じ）。
+    pub(crate) fn vm_self_class(&self) -> Option<Value> {
+        self.current_class.clone().map(Value::Class)
+    }
+
+    /// `Op::StoreGlobal` の実体（#10-b/#39）: **`scopes[0]` だけ**を対象にした代入。
+    ///
+    /// ⚠ **`assign_var` へ委譲してはいけない**（#39 で判明）。`assign_var` は
+    /// `scopes[frame_floor..]` を先に走査するが、**VM 関数は `scopes` を一切押さない**
+    /// （フラットな `vm_stack` で動く）ので、走査に映るのは**呼び出し元のローカル**である。
+    /// 最上位 Chunk では `scopes.len() == 1` なので偶然一致していたが、関数本体から
+    /// この op を出せるようにすると（#39）**同名の呼び出し元ローカルを書き換えてしまう**。
+    ///
+    /// この op が出るのは「コンパイラが `cells`/`statics`/`slots` を引いて全部外れた
+    /// ＝ この関数のローカルでもキャプチャでもないと確定した」名前だけなので、
+    /// `scopes[0]` に限定するのが**そのままツリーウォークと同じ答え**になる
+    /// （`Op::LoadGlobal` が読み側で採っているのと同じ根拠）。
+    ///
+    /// メッセージは `assign_var` のグローバル分岐と一字一句同じにする。
+    pub(crate) fn vm_assign_global(&mut self, name: &str, value: Value) -> Result<(), String> {
+        let Some(var) = self.scopes[0].get_mut(name) else {
+            return Err(format!("NameError: '{name}' is not defined"));
+        };
+        if !var.is_mutable() {
+            return Err(format!(
+                "TypeError: cannot assign to immutable variable '{name}'"
+            ));
+        }
+        var.set_value(value);
+        Ok(())
+    }
+
+    /// `Op::StoreName` の実体（#42）: **スコープチェーンを探して**代入する。
+    ///
+    /// ツリーウォークの `Stmt::Assign` と**同じ関数**（`assign_var`）へ委譲する。
+    /// `vm_assign_global`（`scopes[0]` 限定）との違いは探索範囲だけで、使い分けは
+    /// **その Chunk がどのスコープ深さで走るか**で決まる:
+    /// - 最上位 Chunk … `scopes.len() == 1` が保証されるので `StoreGlobal`（IC が効く）
+    /// - モジュール本体 … `exec_module` が `push_scope` 済みなので `StoreName`
+    pub(crate) fn vm_assign_by_name(&mut self, name: &str, value: Value) -> Result<(), String> {
+        self.assign_var(name, value)
+    }
+
+    /// `Op::StoreGlobal` の索引経路（#10-b）: 昇格済みセルへ直接書き込む。
+    ///
+    /// 戻り値 `Some(value)` = index が失効していて書けなかった（**値を返す**ので
+    /// 呼び出し側は clone せずミス経路へ渡し直せる）。`None` = 書き込み成功。
+    ///
+    /// ツリーウォークの `Stmt::Assign` スロット命中経路（[exec/dispatch.rs]）と同じ書き込み。
+    #[inline]
+    pub(crate) fn vm_store_global_by_cell(&mut self, idx: usize, value: Value) -> Option<Value> {
+        match self.global_slot_cells.get(idx) {
+            Some(cell) => {
+                *cell.borrow_mut() = value;
+                None
+            }
+            None => Some(value),
+        }
+    }
+
+    /// `Op::StoreGlobal` のキャッシュ充填（#10-b）。ツリーウォークと同一の `try_fill_slot` へ委譲する。
+    /// 昇格できない変数（`Var::Immutable` 等）では何も焼かれず、次回もこの経路を通る。
+    pub(crate) fn vm_fill_global_store_cache(&mut self, name: &str, cache: &crate::ast::SlotCache) {
+        self.try_fill_slot(name, cache);
+    }
+}

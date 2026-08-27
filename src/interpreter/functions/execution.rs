@@ -5,13 +5,368 @@ use {
     crate::ast::CallArg,
     crate::token::Span,
     crate::interpreter::{
-        CapturedVar, DictData, ExecResult, FnValue, GeneratorFnValue, GeneratorState,
-        Interpreter, StackFrame, Value, Var, BREAK_SENTINEL, GENERATOR_YIELDS, LOOP_DEPTH,
+        CapturedVar, FnValue, GeneratorFnValue, GeneratorState,
+        Interpreter, StackFrame, Value, GENERATOR_YIELDS,
         RAISE_SENTINEL,
     },
 };
 
 impl Interpreter {
+    /// 呼び出し名スタックへ push する（#12）。
+    /// プールに空きバッファがあれば確保せず詰め直す。
+    #[inline]
+    fn push_call_name(&mut self, fn_name: &str) {
+        match self.call_name_pool.pop() {
+            Some(mut buf) => {
+                buf.clear();
+                buf.push_str(fn_name);
+                self.call_stack.push(buf);
+            }
+            None => self.call_stack.push(fn_name.to_string()),
+        }
+    }
+
+    /// 呼び出し名スタックから pop し、バッファをプールへ返す（#12）。
+    #[inline]
+    fn pop_call_name(&mut self) {
+        if let Some(buf) = self.call_stack.pop() {
+            self.call_name_pool.push(buf);
+        }
+    }
+
+    /// 呼び出し元スタックフレーム（トレースバック用）を構築する。
+    /// `call_stack` から呼び出し元名を、`call_span` から位置とコンテキスト行を取る。
+    pub(crate) fn build_caller_frame(&self, call_span: Option<&Span>) -> StackFrame {
+        let caller_name = self
+            .call_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "<module>".to_string());
+        match call_span {
+            Some(span) => StackFrame {
+                file: span.file.to_string(),
+                line: span.line,
+                col: span.col,
+                fn_name: caller_name,
+                context: self.get_context_lines(&span.file, span.line, 5),
+            },
+            None => StackFrame {
+                file: String::new(),
+                line: 0,
+                col: 0,
+                fn_name: caller_name,
+                context: String::new(),
+            },
+        }
+    }
+
+    /// fn_val に対応する VM Chunk を取得（なければコンパイルしてキャッシュ）。
+    ///
+    /// キャッシュは 2 段（#30）:
+    /// 1. **定義サイト共有**（`fn_val.vm_chunk` = `ChunkFnDef::compiled`）。`Op::MakeFn` で
+    ///    作られたクロージャはこちら。実体が何個できても**コンパイルは 1 回**。
+    /// 2. **実体ごと**（`self.vm_chunks`・キー = `Rc::as_ptr`）。ツリーウォークの
+    ///    `exec_fn_def` 由来やテンプレート実体化など、定義サイトの器を持たない関数用。
+    ///    `Weak` 検証でアドレス再利用（テンプレート一時 fn_val）を弾く。
+    ///
+    /// ⚠ 1 は**注釈テーブルが同じときだけ**再利用する（REPL は入口ごとに差し替える）。
+    /// 判定は `Rc::ptr_eq` 1 回なので、HashMap 引き + `Weak::upgrade` より軽い。
+    fn get_or_compile_chunk(&mut self, fn_val: &Rc<FnValue>) -> Option<Rc<crate::vm::Chunk>> {
+        if let Some(shared) = fn_val.vm_chunk.clone() {
+            if let Some(hit) = shared.lookup(&self.annotations) {
+                return hit;
+            }
+            let compiled = self.compile_fn_value(fn_val);
+            shared.store(self.annotations.clone(), compiled.clone());
+            return compiled;
+        }
+        let key = Rc::as_ptr(fn_val) as usize;
+        match self.vm_chunks.get(&key) {
+            Some((weak, cached)) if weak.upgrade().is_some() => cached.clone(),
+            _ => {
+                let compiled = self.compile_fn_value(fn_val);
+                self.vm_chunks
+                    .insert(key, (Rc::downgrade(fn_val), compiled.clone()));
+                compiled
+            }
+        }
+    }
+
+    /// `fn_val` の本体をバイトコードへコンパイルする（キャッシュ判断は呼び出し側・#30）。
+    ///
+    /// 不変キャプチャの名前を渡す（#27-d）。コンパイラが末尾に slot を採番し、
+    /// 呼び出し側が `chunk.captured_slots` を見て値を書き込む。
+    /// 不変キャプチャは slot へ、**可変キャプチャはセルへ**（#27-d 段階 2b）。
+    ///
+    /// ⚠ 渡す名前の集合は `captured_env`（HashMap）の反復順に依存してはいけない。
+    /// 依存しないのは `compile_fn` 側が `sort()` してから採番するため（そこが崩れると
+    /// #30 の「実体間で Chunk を共有してよい」根拠も同時に崩れる）。
+    fn compile_fn_value(&mut self, fn_val: &Rc<FnValue>) -> Option<Rc<crate::vm::Chunk>> {
+        let mut captures: Vec<String> = Vec::new();
+        let mut mut_captures: Vec<String> = Vec::new();
+        for (n, c) in &fn_val.captured_env {
+            match c {
+                CapturedVar::Immutable(_) => captures.push(n.clone()),
+                CapturedVar::Mutable(_) => mut_captures.push(n.clone()),
+            }
+        }
+        let compiled = crate::vm::compile_fn(
+            &fn_val.params,
+            &fn_val.body,
+            self.annotations.clone(),
+            &captures,
+            &mut_captures,
+        )
+        .map(Rc::new);
+        if crate::interpreter::tw_stats::enabled() {
+            crate::interpreter::tw_stats::record_compile("fn", compiled.is_some());
+        }
+        compiled
+    }
+
+    /// ジェネレータ本体に対応する VM Chunk を取得（なければコンパイルしてキャッシュ, タスク #8）。
+    /// `get_or_compile_chunk` の `GeneratorFnValue` 版。`Weak` でアドレス再利用を弾く。
+    fn get_or_compile_gen_chunk(
+        &mut self,
+        gen_fn: &Rc<GeneratorFnValue>,
+    ) -> Option<Rc<crate::vm::Chunk>> {
+        let key = Rc::as_ptr(gen_fn) as usize;
+        match self.vm_gen_chunks.get(&key) {
+            Some((weak, cached)) if weak.upgrade().is_some() => cached.clone(),
+            _ => {
+                let compiled = crate::vm::compile_fn(
+                    &gen_fn.params,
+                    &gen_fn.body,
+                    self.annotations.clone(),
+                    &[], // ジェネレータのクロージャ化は未対応（従来どおり）
+                    &[],
+                )
+                .map(Rc::new);
+                if crate::interpreter::tw_stats::enabled() {
+                    crate::interpreter::tw_stats::record_compile("gen", compiled.is_some());
+                }
+                self.vm_gen_chunks
+                    .insert(key, (Rc::downgrade(gen_fn), compiled.clone()));
+                compiled
+            }
+        }
+    }
+
+    /// VM の `Yield` op 用: 値をジェネレータの yield 収集バッファ（`GENERATOR_YIELDS`）へ追加する。
+    /// ツリーウォークの `Stmt::Yield`（dispatch.rs）と同一意味論。収集が無効（`None`）なら何もしない。
+    pub(crate) fn vm_yield_push(&self, val: Value) {
+        GENERATOR_YIELDS.with(|y| {
+            if let Some(yields) = y.borrow_mut().as_mut() {
+                yields.push(val);
+            }
+        });
+    }
+
+    /// バインド済みのジェネレータ本体を VM で実行し、eager 収集した yield 値から `Value::Generator` を作る。
+    /// yield 収集は `GENERATOR_YIELDS`（ツリーウォークと共有）を使うので意味論一致。エラーは生の `Err` を
+    /// 伝播（`exec_generator_evaled` のツリーウォーク経路と同じ・RAISE_SENTINEL は `current_exception` 設定済み）。
+    fn run_vm_generator(
+        &mut self,
+        chunk: &crate::vm::Chunk,
+        bindings: Vec<(String, Value, bool, bool)>,
+        self_val: &Option<Value>,
+    ) -> Result<Value, String> {
+        GENERATOR_YIELDS.with(|y| *y.borrow_mut() = Some(Vec::new()));
+        // 共有バッファへ locals を確保し、バインディングを slot へ詰める（self は slot 0）。
+        let mut buf = std::mem::take(&mut self.vm_stack);
+        let base = buf.len();
+        buf.resize(base + chunk.n_locals, Value::None);
+        for (i, (_, val, _, _)) in bindings.into_iter().enumerate() {
+            if i < chunk.n_locals {
+                buf[base + i] = val;
+            }
+        }
+        // ジェネレータメソッド: アクセス制御・Self 依存ディスパッチのため current_class を張る。
+        let prev_class = self.current_class.take();
+        if let Some(Value::Instance(inst_rc)) = self_val {
+            self.current_class = Some(inst_rc.borrow().class.clone());
+        }
+        let result = crate::vm::run(self, chunk, &mut buf, base, None);
+        self.current_class = prev_class;
+        buf.truncate(base);
+        self.vm_stack = buf;
+        // エラー時も含めて必ず yield 値を回収してクリーンアップする。
+        let yields = GENERATOR_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
+        match result {
+            Ok(_) => Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+                values: yields,
+                index: 0,
+            })))),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// バインド済みバッファで VM Chunk を実行し、戻り値／例外フレームを組み立てる（fast/general 共通）。
+    /// `buf[base..base+n_locals]` にパラメータが束縛済み。`current_class` はメソッド実行のため一時設定する。
+    // 引数が多いのは VM フレームの起動に要る素材がそのまま並んでいるから
+    // （chunk・バッファ・base・self・表示名・呼び出し位置・捕捉環境）。
+    #[allow(clippy::too_many_arguments)]
+    fn run_vm_method(
+        &mut self,
+        chunk: &crate::vm::Chunk,
+        mut buf: Vec<Value>,
+        base: usize,
+        self_val: &Option<Value>,
+        fn_name: &str,
+        call_span: Option<Span>,
+        // クロージャの捕捉環境（#27-d 段階 2b）。可変キャプチャのセルを共有するために渡す。
+        captured_env: Option<&std::collections::HashMap<String, CapturedVar>>,
+    ) -> Result<Value, String> {
+        let prev_class = self.current_class.take();
+        if let Some(Value::Instance(inst_rc)) = self_val {
+            self.current_class = Some(inst_rc.borrow().class.clone());
+        }
+        self.push_call_name(fn_name);
+        let result = crate::vm::run(self, chunk, &mut buf, base, captured_env);
+        self.pop_call_name();
+        self.current_class = prev_class;
+        buf.truncate(base);
+        self.vm_stack = buf;
+        // ⚠ `build_caller_frame` は**エラー経路でしか使わない**ので遅延させる（#12）。
+        // 以前は成功時にも毎回作っており、その中で `get_context_lines` が
+        // **ソース 5 行を `join` して String を確保**していた（＋呼び出し元名の String clone、
+        // ＋`span.file.to_string()`）。呼び出しごとに 3 回のヒープ確保を無駄に払っていた。
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) if e.as_str() == RAISE_SENTINEL => {
+                if self.current_exception.is_some() {
+                    let caller_frame = self.build_caller_frame(call_span.as_ref());
+                    if let Some(raised) = self.current_exception.as_mut() {
+                        raised.frames.push(caller_frame);
+                    }
+                }
+                Err(RAISE_SENTINEL.to_string())
+            }
+            Err(msg) => {
+                if let Some(mut raised) = self.make_internal_raised_error(&msg) {
+                    raised.frames.push(StackFrame {
+                        file: String::new(),
+                        line: 0,
+                        col: 0,
+                        fn_name: fn_name.to_string(),
+                        context: String::new(),
+                    });
+                    raised.frames.push(self.build_caller_frame(call_span.as_ref()));
+                    self.current_exception = Some(raised);
+                    Err(RAISE_SENTINEL.to_string())
+                } else {
+                    Err(msg)
+                }
+            }
+        }
+    }
+
+    /// 高速バインド（タスク #4）: 単純シグネチャの VM 呼び出しで `bind_args` の Vec 確保・名前 clone・
+    /// copy/cast の各パスを飛ばし、引数を直接バッファへ束縛する。コピー意味論は `bind_args` ＋ copy ループ
+    /// と同一（self 非 mut → deep_copy、let パラメータ + mut 引数 → copy_value）。
+    ///
+    /// 対応条件（いずれか外れれば `Ok(None)` で一般経路へ）: 可変長なし・デフォルトなし・キーワード引数なし・
+    /// 実引数数が仮引数数（self 除く）と完全一致・キャスト不要（let パラメータの型注釈と Instance 引数の
+    /// クラス名が一致 or 非 Instance）。
+    fn try_fast_bind(
+        &mut self,
+        fn_val: &Rc<FnValue>,
+        chunk: &crate::vm::Chunk,
+        evaled: &[(Option<String>, Value, bool)],
+        self_val: &Option<Value>,
+    ) -> Result<Option<(Vec<Value>, usize)>, String> {
+        let params = &fn_val.params;
+        let has_self = self_val.is_some() && params.first().is_some_and(|p| p.name == "self");
+        let bind_params = if has_self { &params[1..] } else { &params[..] };
+
+        // ⚠⚠ #71: **Python 関数は受けない。** 高速バインドは `let` パラメータ ＋ mut 引数に
+        // `copy_value` を掛けるが、一般経路は `is_python` のとき**掛けない**（Python は
+        // 値の deep copy をしない）。ここで受けると 2 経路で意味論がずれる
+        // （プランの「`*_evaled` 版とずれた実装を作らない」— 実バグ 4 回）。
+        // 束縛規則そのものも `bind_args` と `bind_args_relaxed` で違う。
+        if fn_val.is_python {
+            return Ok(None);
+        }
+        // 単純シグネチャの判定。
+        if params.iter().any(|p| p.variadic || p.default.is_some()) {
+            return Ok(None);
+        }
+        if evaled.len() != bind_params.len() {
+            return Ok(None);
+        }
+        if evaled.iter().any(|(k, _, _)| k.is_some()) {
+            return Ok(None);
+        }
+        // キャストの可能性（let パラメータ + 型注釈 + クラス名不一致の Instance 引数）があれば一般経路へ。
+        for (p, (_, val, _)) in bind_params.iter().zip(evaled.iter()) {
+            if !p.mutable {
+                if let (Some(ta), Value::Instance(rc)) = (&p.type_ann, val) {
+                    if &rc.borrow().class.name != ta {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+
+        // 直接バインド。
+        let mut buf = std::mem::take(&mut self.vm_stack);
+        let base = buf.len();
+        buf.resize(base + chunk.n_locals, Value::None);
+        let mut slot = 0usize;
+        if has_self {
+            let sv = self_val.as_ref().unwrap();
+            // 非 mut self は deep_copy（bind_args と同一。エイリアス／変異から呼び出し元を保護）。
+            let self_bound = if params[0].mutable {
+                sv.clone()
+            } else {
+                Self::deep_copy_value(sv.clone())
+            };
+            if slot < chunk.n_locals {
+                buf[base + slot] = self_bound;
+            }
+            slot += 1;
+        }
+        for (p, (_, val, arg_mut)) in bind_params.iter().zip(evaled.iter()) {
+            // let パラメータ + mut 引数 → copy_value（copy ループと同一）。それ以外は共有。
+            let v = if !p.mutable && *arg_mut {
+                self.copy_value(val.clone())?
+            } else {
+                val.clone()
+            };
+            if slot < chunk.n_locals {
+                buf[base + slot] = v;
+            }
+            slot += 1;
+        }
+        Self::bind_captures(fn_val, chunk, &mut buf, base);
+        Ok(Some((buf, base)))
+    }
+
+    /// クロージャの不変キャプチャをフレームの slot へ書き込む（#27-d）。
+    ///
+    /// ツリーウォークが `captured_env` を base スコープへ注入するのと同じ位置づけ。
+    /// **名前で引く**ので `captured_env`（HashMap）の反復順に依存しない。
+    /// キャプチャの無い関数では `captured_slots` が空なのでループごと消える。
+    ///
+    /// ⚠ 値は `clone` するだけでよい。`CapturedVar::Immutable` は
+    /// `capture_env` が**生成時に deep_copy 済み**（クロージャ定義時のスナップショット）で、
+    /// 呼び出しごとにコピーし直すのはツリーウォークの意味論と違う。
+    fn bind_captures(
+        fn_val: &Rc<FnValue>,
+        chunk: &crate::vm::Chunk,
+        buf: &mut [Value],
+        base: usize,
+    ) {
+        for (name, slot) in &chunk.captured_slots {
+            if let Some(CapturedVar::Immutable(v)) = fn_val.captured_env.get(name) {
+                let idx = base + *slot as usize;
+                if idx < buf.len() {
+                    buf[idx] = v.clone();
+                }
+            }
+        }
+    }
+
     /// 評価済み引数リストを用いて関数を実行する。
     ///
     /// 実行フロー:
@@ -36,17 +391,73 @@ impl Interpreter {
         fn_name: &str,
         call_span: Option<Span>,
     ) -> Result<Value, String> {
-        // デフォルト値を事前評価する（self パラメータは常に None）
-        let mut evaluated_defaults: Vec<Option<Value>> = Vec::new();
-        for p in &fn_val.params {
-            if let Some(ref expr) = p.default {
-                evaluated_defaults.push(Some(self.eval(expr)?));
-            } else {
-                evaluated_defaults.push(None);
+        // ── VM チャンクを1回だけ取得（fast/general 両経路で共有） ──
+        // 対象: フリー関数（self なし）＋ インスタンスメソッド（self=Instance）。非 Python・クロージャなし。
+        // #1 完了により **デバッグ中でも VM を使う**（`vm/run.rs` の `run_stepping` が
+        // 文境界で停止判定する）。以前はここでデバッグ中の VM を丸ごと無効化していた。
+        // クロージャは**キャプチャの種類を問わず** VM に載る（#27-d 段階 2b）。
+        // 不変は `captured_slots` の slot へ値を書き込み、可変は `captured_cells` の
+        // セル index へ **`Rc` を共有**する（外側との書き戻りが保たれる）。
+        // ⚠⚠ #71: **`is_python` を条件から外した。** `import[py]` のモジュールは
+        // `python_converter` が **Arrow の AST へ変換**したものなので、本体は普通に
+        // バイトコードへ載る。`is_python` が意味するのは**引数束縛の規則**だけ
+        // （`bind_args_relaxed` ＋ `let` パラメータの copy をしない）で、それは下の
+        // 一般経路が見ている。
+        //
+        // #33 でツリーウォークのフォールバックが消えるまでは、ここで偽にすると
+        // 「ツリーウォークで実行する」意味だった。消えた後は**そのまま `VmForceError`**
+        // になり、`import[py]` の関数呼び出しが**丸ごと死んでいた**（#71 で発見）。
+        // ⇒ #56（`is_builtin_callee`・削除済み）・#68（`enum`）と**同型の 5 度目**。
+        //
+        // ⚠ **`try_fast_bind` は python を受け付けない**（下記）。受けると copy 規則が
+        // 一般経路とずれる（`*_evaled` 版とずれた実装を作らない・#22 系列）。
+        let vm_eligible = matches!(self_val, None | Some(Value::Instance(_)));
+        // 診断フック（#27）: **なぜ VM に載せなかったか**を計上する。
+        // `vm_eligible` が偽だと `compile_fn` を呼ばないので bail 統計に現れず、
+        // 「クロージャがどれだけツリーウォークへ落ちているか」が測れなかった。
+        if crate::interpreter::tw_stats::enabled() && !vm_eligible {
+            crate::interpreter::tw_stats::record_ineligible("self-kind");
+        }
+        let chunk_opt: Option<Rc<crate::vm::Chunk>> = if vm_eligible {
+            self.get_or_compile_chunk(&fn_val)
+        } else {
+            None
+        };
+        // #25/#33: **フォールバックは存在しない**。関数本体が載らなければ止める。
+        // ⚠ `vm_eligible` が偽（クロージャ等）も**失敗として扱う**。そこを見逃すと
+        //    「bail 0 なのにツリーウォークが残る」というゲートの穴になる（#27 の `vm_ineligible` 20 件）。
+        if chunk_opt.is_none() {
+            return Err(format!(
+                "VmForceError: cannot compile function '{}' to bytecode",
+                fn_val.name
+            ));
+        }
+        // ── 高速バインド（タスク #4）: 単純シグネチャ + キャスト不要なら bind_args を介さず直接実行 ──
+        if let Some(chunk) = &chunk_opt {
+            if let Some((buf, base)) = self.try_fast_bind(&fn_val, chunk, evaled, &self_val)? {
+                return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span, Some(&fn_val.captured_env));
             }
         }
 
-        let (mut bindings, extra_kwargs) = if fn_val.is_python {
+        // デフォルト値を事前評価する（self パラメータは常に None）。
+        // デフォルトを持つ仮引数が1つもなければ Vec 確保を省く（bind_args は空 defaults を許容する）。
+        let evaluated_defaults: Vec<Option<Value>> = if fn_val.params.iter().any(|p| p.default.is_some()) {
+            let mut v = Vec::with_capacity(fn_val.params.len());
+            for p in &fn_val.params {
+                v.push(match &p.default {
+                    Some(expr) => Some(self.eval(expr)?),
+                    None => None,
+                });
+            }
+            v
+        } else {
+            Vec::new()
+        };
+
+        // ⚠ `extra_kwargs` は**ツリーウォークの関数本体だけ**が使っていた（#33 で削除）ので捨てる。
+        // ⚠ #71 以前はここに「`is_python` の関数は VM 非適格なので到達しない」と書いてあった。
+        // それは**到達不能なのではなく `VmForceError` で死んでいた**という意味だった。今は到達する。
+        let (mut bindings, _extra_kwargs) = if fn_val.is_python {
             Self::bind_args_relaxed(
                 &fn_val.params,
                 evaled,
@@ -82,14 +493,14 @@ impl Interpreter {
         // かつ型が異なる場合、__cast__[TypeName] メソッドが定義されていれば自動的にキャストする。
         // `mut` パラメータは自動キャストしない。
         {
-            let params_ref = fn_val.params.clone();
-            // 第1パス: キャスト対象を特定する（self は除外）
+            // 第1パス: キャスト対象を特定する（self は除外）。params は借用のみ（clone しない）。
             let mut cast_targets: Vec<(usize, String, Value)> = Vec::new();
             for (idx, (name, val, mutable, _)) in bindings.iter().enumerate() {
                 if *mutable || name == "self" {
                     continue;
                 }
-                let type_ann = params_ref
+                let type_ann = fn_val
+                    .params
                     .iter()
                     .find(|p| &p.name == name)
                     .and_then(|p| p.type_ann.as_deref());
@@ -123,139 +534,25 @@ impl Interpreter {
             }
         }
 
-        // グローバルスコープ（インデックス 0）以外を一時退避して関数専用スコープを構築する
-        let outer_scopes: Vec<_> = self.scopes.drain(1..).collect();
-        self.push_scope();
-
-        // クロージャキャプチャ環境を先に注入する（パラメータより低い優先度になるよう先にセット）
-        for (name, captured) in &fn_val.captured_env {
-            let var = match captured {
-                CapturedVar::Immutable(v) => Var::new(v.clone(), false),
-                CapturedVar::Mutable(cell) => Var::new_cell(cell.clone()),
-            };
-            self.declare_var(name.clone(), var);
-        }
-
-        for (name, val, mutable, _) in bindings {
-            self.declare_var(name, Var::new(val, mutable));
-        }
-        // Python 関数: 引数リストにない余分なキーワード引数を kwargs dict に注入する
-        if fn_val.is_python && !extra_kwargs.is_empty() {
-            let mut dict = DictData::new("str".to_string(), "Any".to_string());
-            for (k, v) in extra_kwargs {
-                dict.set(Value::Str(k), v);
-            }
-            self.declare_var(
-                "kwargs".to_string(),
-                Var::new(Value::Dict(Rc::new(RefCell::new(dict))), false),
-            );
-        }
-        // メソッド実行時: `Self` をレシーバインスタンスのクラスにバインドする
-        let prev_class = self.current_class.take();
-        if let Some(Value::Instance(inst_rc)) = &self_val {
-            let class = inst_rc.borrow().class.clone();
-            self.declare_var(
-                "Self".to_string(),
-                Var::new(Value::Class(class.clone()), false),
-            );
-            self.current_class = Some(class);
-        }
-
-        // Reset LOOP_DEPTH so that break/continue cannot escape this function's body
-        // and cannot accidentally see loop depth from an outer call site.
-        let prev_loop_depth = LOOP_DEPTH.with(|d| {
-            let prev = *d.borrow();
-            *d.borrow_mut() = 0;
-            prev
-        });
-
-        self.call_stack.push(fn_name.to_string());
-        let result = self.exec_block(&fn_val.body);
-        self.call_stack.pop();
-
-        LOOP_DEPTH.with(|d| *d.borrow_mut() = prev_loop_depth);
-
-        // アクセス制御コンテキストを復元する
-        self.current_class = prev_class;
-
-        // スコープを復元する（グローバルのみ残してから退避分を追記）
-        self.scopes.truncate(1);
-        self.scopes.extend(outer_scopes);
-
-        // Build a caller frame using the call site span (where this function was called from).
-        // The caller's name is the last entry in call_stack after we already popped fn_name.
-        let caller_frame = {
-            let caller_name = self
-                .call_stack
-                .last()
-                .cloned()
-                .unwrap_or_else(|| "<module>".to_string());
-            match call_span.as_ref() {
-                Some(span) => StackFrame {
-                    file: span.file.to_string(),
-                    line: span.line,
-                    col: span.col,
-                    fn_name: caller_name,
-                    context: self.get_context_lines(&span.file, span.line, 5),
-                },
-                None => StackFrame {
-                    file: String::new(),
-                    line: 0,
-                    col: 0,
-                    fn_name: caller_name,
-                    context: String::new(),
-                },
-            }
-        };
-
-        // 例外が ExecResult::Raise として直接返ってきた場合: 呼び出し元フレームを追加してセンチネルを返す
-        if let Ok(ExecResult::Raise(mut raised)) = result {
-            raised.frames.push(caller_frame);
-            self.current_exception = Some(raised);
-            return Err(RAISE_SENTINEL.to_string());
-        }
-
-        // 例外センチネルが Err として伝播してきた場合（ネストした関数からの raise）: 呼び出し元フレームを追加する
-        if let Err(ref e) = result {
-            if e.as_str() == RAISE_SENTINEL {
-                if let Some(ref mut raised) = self.current_exception {
-                    raised.frames.push(caller_frame);
+        // ── Phase V: バイトコード VM 経路（一般バインド）── 上で取得済みの chunk_opt を再利用。
+        // fast-bind に載らなかった呼び出し（キャスト・キーワード引数・デフォルト等）はここで
+        // bindings（bind_args + copy + cast 済み）から buffer を埋めて実行する。
+        if let Some(chunk) = &chunk_opt {
+            let mut buf = std::mem::take(&mut self.vm_stack);
+            let base = buf.len();
+            buf.resize(base + chunk.n_locals, Value::None);
+            for (i, (_, val, _, _)) in bindings.iter().enumerate() {
+                if i < chunk.n_locals {
+                    buf[base + i] = val.clone();
                 }
-                return Err(RAISE_SENTINEL.to_string());
             }
-            // BREAK_SENTINEL should not escape a function — it means break was inside an eval
-            // context (e.g., if expression) within a function that has no enclosing loop.
-            if e.as_str() == BREAK_SENTINEL {
-                return Err("SyntaxError: 'break' outside for/while loop".to_string());
-            }
-            // 内部エラー文字列を RaisedError に変換してスタックフレームを付加してから伝播する
-            let msg = e.clone();
-            if let Some(mut raised) = self.make_internal_raised_error(&msg) {
-                // Frame[0]: the function where the error occurred (unknown line within it)
-                raised.frames.push(StackFrame {
-                    file: String::new(),
-                    line: 0,
-                    col: 0,
-                    fn_name: fn_name.to_string(),
-                    context: String::new(),
-                });
-                // Frame[1]: the caller frame (where this function was called from)
-                raised.frames.push(caller_frame);
-                self.current_exception = Some(raised);
-                return Err(RAISE_SENTINEL.to_string());
-            }
+            Self::bind_captures(&fn_val, chunk, &mut buf, base); // #27-d
+            return self.run_vm_method(chunk, buf, base, &self_val, fn_name, call_span, Some(&fn_val.captured_env));
         }
 
-        match result? {
-            ExecResult::Return(v) => Ok(v),
-            ExecResult::Normal => Ok(Value::None),
-            ExecResult::BlockReturn(_) | ExecResult::BlockYield(_) => {
-                Err("SyntaxError: 'block_return' used outside any block expression".to_string())
-            }
-            ExecResult::Break => Err("SyntaxError: 'break' outside for/while loop".to_string()),
-            ExecResult::Continue => Err("SyntaxError: 'continue' outside loop".to_string()),
-            ExecResult::Raise(_) => unreachable!("Raise already handled above"),
-        }
+        // #33: ツリーウォークのフォールバックは無い。ここへ来るのは `chunk_opt` が None の
+        // ときだけだが、それは上の `VmForceError` で既に return 済み（到達不能）。
+        unreachable!("chunk_opt is None was already rejected as VmForceError")
     }
 
     /// 呼び出し引数式リストを評価してから関数を実行する。`exec_fn_evaled` の呼び出しラッパー。
@@ -278,32 +575,25 @@ impl Interpreter {
         self.exec_fn_evaled(fn_val, &evaled, self_val, fn_name, call_span)
     }
 
-    /// ジェネレータ関数の本体を一括実行し、すべての `yield` 値を収集して `Value::Generator` を返す。
-    ///
-    /// スレッドローカル `GENERATOR_YIELDS` を `Some(Vec::new())` にセットして yield 収集を有効化し、
-    /// 本体実行後に収集した値リストを取り出して `GeneratorState` を構築する。
-    ///
-    /// - `gen_fn`: 実行するジェネレータ関数定義
-    /// - `call_args`: 呼び出し引数リスト（AST の `CallArg`）
-    /// - `self_val`: レシーバインスタンス（ジェネレータメソッド用; `None` はスタンドアロン）
-    ///
-    /// 戻り値: `Ok(Value::Generator)` — 収集済みの yield 値を保持するジェネレータ。
-    ///         `Err(message)` — ランタイムエラーまたは例外センチネル
-    pub(crate) fn exec_generator(
+    /// 評価済み引数でジェネレータメソッドを実行する（VM の CallMethod 用）。`exec_generator_evaled` の本体。
+    pub(crate) fn exec_generator_evaled(
         &mut self,
         gen_fn: Rc<GeneratorFnValue>,
-        call_args: &[CallArg],
+        evaled: Vec<(Option<String>, Value, bool)>,
         self_val: Option<Value>,
     ) -> Result<Value, String> {
-        let evaled = self.eval_call_args(call_args)?;
-        let mut evaluated_defaults: Vec<Option<Value>> = Vec::new();
-        for p in &gen_fn.params {
-            if let Some(ref expr) = p.default {
-                evaluated_defaults.push(Some(self.eval(expr)?));
-            } else {
-                evaluated_defaults.push(None);
+        let evaluated_defaults: Vec<Option<Value>> = if gen_fn.params.iter().any(|p| p.default.is_some()) {
+            let mut v = Vec::with_capacity(gen_fn.params.len());
+            for p in &gen_fn.params {
+                v.push(match &p.default {
+                    Some(expr) => Some(self.eval(expr)?),
+                    None => None,
+                });
             }
-        }
+            v
+        } else {
+            Vec::new()
+        };
         let mut bindings = Self::bind_args(
             &gen_fn.params,
             &evaled,
@@ -320,73 +610,21 @@ impl Interpreter {
             }
         }
 
-        // yield 収集を有効化する（スレッドローカルに収集先を設定）
-        GENERATOR_YIELDS.with(|y| {
-            *y.borrow_mut() = Some(Vec::new());
-        });
-
-        // exec_fn_evaled と同様にグローバルスコープ以外を退避して独立したスコープで実行する
-        let outer_scopes: Vec<_> = self.scopes.drain(1..).collect();
-        self.push_scope();
-
-        // クロージャキャプチャ環境を注入する
-        for (name, captured) in &gen_fn.captured_env {
-            let var = match captured {
-                CapturedVar::Immutable(v) => Var::new(v.clone(), false),
-                CapturedVar::Mutable(cell) => Var::new_cell(cell.clone()),
-            };
-            self.declare_var(name.clone(), var);
-        }
-
-        for (name, val, mutable, _) in bindings {
-            self.declare_var(name, Var::new(val, mutable));
-        }
-        // ジェネレータメソッド実行時: `Self` をレシーバインスタンスのクラスにバインドする
-        if let Some(Value::Instance(inst_rc)) = &self_val {
-            let class = inst_rc.borrow().class.clone();
-            self.declare_var("Self".to_string(), Var::new(Value::Class(class), false));
-        }
-        let prev_loop_depth = LOOP_DEPTH.with(|d| {
-            let prev = *d.borrow();
-            *d.borrow_mut() = 0;
-            prev
-        });
-        let exec_result = self.exec_block(&gen_fn.body);
-        LOOP_DEPTH.with(|d| *d.borrow_mut() = prev_loop_depth);
-        self.scopes.truncate(1);
-        self.scopes.extend(outer_scopes);
-
-        // エラー時も含めて必ずスレッドローカルをクリーンアップして yield 値を回収する
-        let yields = GENERATOR_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
-
-        if let Err(ref e) = exec_result {
-            if e.as_str() == BREAK_SENTINEL {
-                return Err("SyntaxError: 'break' outside for/while loop".to_string());
+        // ── VM 経路（タスク #8）: 本体をバイトコードで実行し yield を eager 収集する ──
+        // 対象: フリージェネレータ（self なし）＋ Instance レシーバのジェネレータメソッド。
+        // クロージャキャプチャあり・非対応構文（`Self` 参照等）はツリーウォークへフォールバック。
+        let vm_eligible = gen_fn.captured_env.is_empty()
+            && matches!(self_val, None | Some(Value::Instance(_)));
+        if vm_eligible {
+            if let Some(chunk) = self.get_or_compile_gen_chunk(&gen_fn) {
+                return self.run_vm_generator(&chunk, bindings, &self_val);
             }
         }
-
-        match exec_result? {
-            ExecResult::Normal => {}
-            ExecResult::BlockReturn(_) | ExecResult::BlockYield(_) => {
-                return Err(
-                    "SyntaxError: 'block_return' used outside any block expression".to_string(),
-                );
-            }
-            ExecResult::Break => {
-                return Err("SyntaxError: 'break' outside for/while loop".to_string())
-            }
-            ExecResult::Continue => return Err("SyntaxError: 'continue' outside loop".to_string()),
-            ExecResult::Return(_) => {} // パーサーが gen 内の return を禁止しているためここには到達しない
-            ExecResult::Raise(raised) => {
-                self.current_exception = Some(raised);
-                return Err(RAISE_SENTINEL.to_string());
-            }
-        }
-
-        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-            values: yields,
-            index: 0,
-        }))))
+        // #3/#33: フォールバックは存在しない（ジェネレータ本体もツリーウォークごと削除）。
+        Err(format!(
+            "VmForceError: cannot compile generator '{}' to bytecode",
+            gen_fn.name
+        ))
     }
 
 }

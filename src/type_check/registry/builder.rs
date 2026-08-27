@@ -1,6 +1,6 @@
 // type_check/registry/builder.rs — 収集パス。AST を先行スキャンして `TypeRegistry` を組み立てる。
 //
-// Phase 5A-3b で `TypeChecker::collect_fn_sigs` をここへ移設したもの。
+// Phase 5A-3b で `TypeChecker` の関数シグネチャ収集（旧 `collect_fn_sigs`）をここへ移設したもの。
 // **レジストリへ書き込めるのはこのファイルだけ**であり、`build()` を通した後は
 // 読み取り専用の `TypeRegistry` になる（registry/mod.rs の不変条件）。
 //
@@ -42,6 +42,32 @@ const BUILTIN_NEW_TYPES: [(&str, &str); 3] = [("path", "str"), ("Index", "int"),
 /// `TypeRegistry` の構築器。`collect` で AST を走査し、`build` で凍結する。
 pub(in crate::type_check) struct TypeRegistryBuilder {
     reg: TypeRegistry,
+    /// 収集済み import モジュールの `(lang, モジュールパス)`（#16 段階 F）。
+    ///
+    /// `fn_sigs` は `push` で積むため、同じモジュールを二度収集すると**偽のオーバーロード**が
+    /// できてしまう（単一シグネチャ前提の高速パスが崩れる）。同じモジュールが複数箇所から
+    /// import される・入れ子 import で再訪する、のどちらも起こるのでここで弾く。
+    seen_modules: HashSet<(String, Vec<String>)>,
+    /// 外部言語 import の本体を収集中の深さ（#27-a）。
+    ///
+    /// 0 のときに見た `ClassDef` だけを `arrow_class_names` に載せる。外部言語スタブは
+    /// パース時に `Stmt::ClassDef` へ変換されるため、これが無いと C# クラスも
+    /// 「Arrow のクラス」に見えてしまう（実際 `event_cs_handler.ar` で
+    /// `Value::CsObject` を `Value::Instance` 前提の op に流して落ちた）。
+    foreign_depth: u32,
+}
+
+/// `import[lang]` のうち、**モジュール本体が Arrow ソース**であるものか（#27-a）。
+///
+/// これが true の import で宣言されたクラスは、実行時も Arrow の `Value::Instance` になる。
+/// false（`py`/`cs-*`/`js-*`/`cpp-*`/`rs`）のクラスは `Value::PyObject`/`CsObject` 等になるので、
+/// `Value::Instance` を前提とする最適化に載せてはいけない。
+///
+/// ⚠ **未知のタグは false（保守的）**。新しい言語を足したときに黙って
+/// 「Arrow のクラス扱い」になって壊れるより、最適化が効かない方が安全。
+/// 現行のタグは `parser/imports/dispatch.rs` の `match lang` が唯一の一覧。
+fn is_arrow_source_lang(lang: &str) -> bool {
+    matches!(lang, "ar" | "tl" | "ar-auto" | "tl-auto" | "arc" | "tlc")
 }
 
 impl TypeRegistryBuilder {
@@ -68,6 +94,7 @@ impl TypeRegistryBuilder {
                 trait_method_sigs: HashMap::new(),
                 trait_field_details: HashMap::new(),
                 known_class_names,
+                arrow_class_names: HashSet::new(),
                 new_type_originals,
                 class_bases,
                 class_fields: HashMap::new(),
@@ -76,6 +103,8 @@ impl TypeRegistryBuilder {
                 class_static_methods: HashMap::new(),
                 known_protocols: HashMap::new(),
             },
+            seen_modules: HashSet::new(),
+            foreign_depth: 0,
         }
     }
 
@@ -136,6 +165,10 @@ impl TypeRegistryBuilder {
                     name, bases, body, ..
                 } => {
                     self.reg.known_class_names.insert(name.clone());
+                    // 外部言語スタブ由来でなければ「Arrow のクラス」（#27-a）。
+                    if self.foreign_depth == 0 {
+                        self.reg.arrow_class_names.insert(name.clone());
+                    }
                     self.reg.class_bases.insert(name.clone(), bases.clone());
                     self.collect_class_methods(name, body);
                     self.collect_class_members(name, body);
@@ -176,6 +209,26 @@ impl TypeRegistryBuilder {
                 }
                 Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::Block(body) => {
                     self.collect(body);
+                }
+                // import 先モジュールの定義も収集する（#16 段階 F）。
+                //
+                // これが無いと import したクラスが `known_class_names` に載らず、
+                // **メインプログラム側でも** `v.x`（`v: Vec2` が import 由来）の型が引けない。
+                // 実測では import クラスを使う算術が 1 件も型特化されていなかった。
+                // 同一モジュールの二重収集は `fn_sigs` の偽オーバーロードを生むので弾く。
+                Stmt::Import { lang, module, body, .. }
+                | Stmt::FromImport { lang, module, body, .. } => {
+                    if self.seen_modules.insert((lang.clone(), module.clone())) {
+                        // 外部言語のスタブ本体に入る間は `arrow_class_names` へ載せない（#27-a）。
+                        let foreign = !is_arrow_source_lang(lang);
+                        if foreign {
+                            self.foreign_depth += 1;
+                        }
+                        self.collect(body);
+                        if foreign {
+                            self.foreign_depth -= 1;
+                        }
+                    }
                 }
                 _ => {}
             }

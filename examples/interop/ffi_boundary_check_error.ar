@@ -1,0 +1,25 @@
+# ffi_boundary_check_error.ar — FFI 境界検査が捕捉するエラー（#16）
+#
+# 素材の ffi_probe/lying_py.py は型注釈と実装が食い違う Python モジュール。
+# Python は注釈を実行時に強制しないので、こういう実装は普通に書けてしまい、
+# Arrow のスタブ（= 注釈を写したもの）も静的検査も素通りする。
+#
+# 期待されるエラー（FfiTypeError・実行時）:
+#   python function `L.get_int` is declared to return `int` but returned `str`
+#
+# 境界検査が無かったころは、この呼び出しは**エラーも警告も出さず**に通り、
+# `x: int` と宣言したパラメータに str が入って `x * 2` が文字列反復になっていた
+# （＝静かに誤った答えが出る、最悪の失敗形）。
+#
+# 他の 2 つも同じ形で捕まる。個別に試すときは行をコメントアウトすること:
+#   L.get_int_none()      → declared `int` but returned `None`
+#   L.get_list_of_int()   → declared `list[int]` but returned `list`（要素型の違反）
+
+import[py-int] ffi_probe.lying_py as L
+
+fn double_it(let x: int) -> str:
+    return "doubled=" + str(x * 2)
+
+print("before")
+
+print(double_it(L.get_int()))   # FfiTypeError: declared `int` but returned `str`

@@ -1,0 +1,139 @@
+# closure_capture_expr_forms.ar — 外側変数を「式形式の制御構文の中だけ」で参照する
+# クロージャが、その変数を正しく捕捉することの確認（#75）。
+#
+# #75 まで `collect_referenced_names` / `collect_refs_expr`（自由変数を集める walker）が
+# `_ => {}` で終わっており、`Expr` 30 variant のうち 8 個・`Stmt` 40 variant のうち 6 個を
+# 黙って落としていた。その結果、下の 6 形は**すべて `NameError` で落ちていた**
+# （参照実装 `python -m impl_python` は正しく動いていたので差分で確定した）。
+#
+# ⚠ 捕捉は「本体が参照する名前」の集合で決まるので、**参照をどの構文の中に書いたか**で
+# 結果が変わってはいけない。対照として同じ参照を `if` **文**の中にも書いてある
+# （#75 以前も文形式だけは通っていた ＝ 原因の切り分けに使った形）。
+#
+# 消費者は 3 系統ともここを通る: ツリーウォークの `capture_env`・VM の捕捉 slot
+# （`vm::compiler::calls`）・`nested_fn_free_names`。
+
+let base = 10
+
+# --- 対照: if 文（#75 以前から通っていた） ---
+fn c_if_stmt(flag: bool) -> int:
+    fn inner() -> int:
+        if flag:
+            return base
+        return 0
+    return inner()
+
+print(c_if_stmt(True))    # 10
+
+# --- if 式 ---
+fn c_if_expr(flag: bool) -> int:
+    fn inner() -> int:
+        let r = if flag ->int:
+            block_return base
+        else:
+            block_return 0
+        return r
+    return inner()
+
+print(c_if_expr(True))    # 10
+
+# --- match 式 ---
+fn c_match_expr(k: int) -> int:
+    fn inner() -> int:
+        let r = match k ->int:
+            case 1:
+                block_return base
+            case _:
+                block_return 0
+        return r
+    return inner()
+
+print(c_match_expr(1))    # 10
+
+# --- match 文 ---
+fn c_match_stmt(k: int) -> int:
+    fn inner() -> int:
+        match k:
+            case 1:
+                return base
+            case _:
+                return 0
+        return 0
+    return inner()
+
+print(c_match_stmt(1))    # 10
+
+# --- block 式 ---
+fn c_block_expr() -> int:
+    fn inner() -> int:
+        let r = block ->int:
+            block_return base
+        return r
+    return inner()
+
+print(c_block_expr())     # 10
+
+# --- for 式（loop_yield） ---
+fn c_for_expr() -> int:
+    fn inner() -> int:
+        let xs = for i in range(3) ->list[int]:
+            loop_yield base + i
+        return xs[0] + xs[2]
+    return inner()
+
+print(c_for_expr())       # 22
+
+# --- while 式（loop_yield） ---
+fn c_while_expr() -> int:
+    fn inner() -> int:
+        mut n = 0
+        let xs = while n < 2 ->list[int]:
+            n += 1
+            loop_yield base
+        return len(xs) * xs[0]
+    return inner()
+
+print(c_while_expr())     # 20
+
+# --- set リテラル ---
+fn c_set_lit() -> int:
+    fn inner() -> int:
+        let s = {base, 99}
+        return len(s)
+    return inner()
+
+print(c_set_lit())        # 2
+
+# --- 可変キャプチャ（セルへの昇格）を式の中だけで参照する ---
+# ⚠ 不変キャプチャと違い、外側を `Var::Cell` へ昇格させる経路を通る。
+# 捕捉に失敗すると `NameError` ではなく「書き戻しが外側に見えない」形で壊れうる。
+fn c_mut_capture() -> int:
+    mut total = 0
+    fn bump() -> None:
+        let _ = if True ->int:
+            total += 1
+            block_return total
+        return None
+    bump()
+    bump()
+    bump()
+    return total
+
+print(c_mut_capture())    # 3
+
+# --- match 式の case パターンの中だけで参照する（#81 で恒久対策した経路） ---
+# ⚠ パターン式は本体とは別の経路で捕捉される。#75 の修正時点では例題が
+# リテラルパターン（`case 1:`）しか踏んでおらず、この形は無検査だった。
+fn c_match_pattern(k: int) -> int:
+    let key = 7
+    fn inner(x: int) -> int:
+        let r = match x ->int:
+            case key:
+                block_return 100
+            case _:
+                block_return 0
+        return r
+    return inner(k)
+
+print(c_match_pattern(7))   # 100
+print(c_match_pattern(1))   # 0

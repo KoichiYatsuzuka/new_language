@@ -212,7 +212,7 @@ fn test_tuple_multi() {
     if let Value::Tuple(t) = v {
         assert_eq!(t.len(), 3);
         assert!(matches!(t.get(0), Some(Value::Int(1))));
-        assert!(matches!(t.get(1), Some(Value::Str(s)) if s == "hello"));
+        assert!(matches!(t.get(1), Some(Value::Str(s)) if &**s == "hello"));
         assert!(matches!(t.get(2), Some(Value::Bool(true))));
     } else {
         panic!("expected Tuple");
