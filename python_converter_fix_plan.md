@@ -169,10 +169,16 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 注意: 位置デフォルトは「後ろ詰め」対応付け。rustpython のフィールド名を実物確認。
 - テスト: `greet("x")` が既定値を使う。
 
-#### [24] bare `*`（キーワード専用引数区切り）
-- 編集: `classes.rs` `convert_params`（現状ほぼ達成済み）
-  - bare `*` は rustpython では vararg なし＋`kwonlyargs`。既に kwonly を通常引数に平坦化しているため**実質対応済み**。挙動を確認し、必要なら注記コメントを追加。
-- テスト: `def f(a, *, b): ...` を `f(1, b=2)` で呼ぶ。
+#### [24] bare `*`（キーワード専用引数区切り）✅ **実装済（2026-08-28）**
+- **コード変更なし**。既存の `convert_params` が既に kwonly を通常引数へ平坦化しており、
+  6 形（bare `*` 1個/2個、`*` のみ、`/` 併用、`__init__`、位置渡し）すべて実機で期待どおりだった。
+- 実施したのは ①`convert_params` の doc コメントに**平坦化の方針と意味の緩和**を明文化、
+  ②例題で挙動を固定、の 2 点。
+- ⚠ 緩和: Python はキーワード専用引数の位置渡しを `TypeError` にするが、Arrow は通す
+  （`Param` に「位置渡し禁止」フラグが無いため）。**受け入れる Python が広がる方向**なので許容。
+- ⚠ 干渉: kwonly の**デフォルト値は落ちる**（項目 1）／**実体のある `*args` と併用すると壊れる**
+  （項目 6。bare `*` 単体は無害）。
+- 例題: `examples/interop/py_kwonly.ar` + `test_modules/py_kwonly.py`。エラー化なしのため `_error` 例は無し。
 
 #### [5] クラス変数 → `StaticMut`
 - 編集: `classes.rs` `convert_class`（クラス本体の `Assign`/`AnnAssign` アーム）
@@ -291,8 +297,8 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（3・4・12・13・11・18・19・22・~~20~~・21・1・24・5）— 独立・低リスク。1件ずつ通して examples を積む。
-   （20 は 2026-08-27 に完了）
+1. **フェーズ1**（3・4・12・13・11・18・19・22・~~20~~・21・1・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
+   （20 は 2026-08-27、24 は 2026-08-28 に完了）
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。
 3. **フェーズ2**（6・7・8・9・10・16・17）。7 は interpreter 変更を含む。
 4. **INF-B/INF-C → フェーズ3**（15・23・26）— 共通基盤を整えてから。

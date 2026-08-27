@@ -309,13 +309,39 @@ Python ソースを rustpython-parser でパースし、Arrow の AST（`Stmt`�
 - 難易度: 中（式コンテキストから囲みスコープへ文を注入する仕組みが必要。🟢15 複数代入と共通の配管）。
 - 懸念: if/while の条件など**文レベルの walrus は素直**。内包表記内や深いネスト式内の walrus は注入位置の決定が要る。
 
-### [ ] 24. bare `*`（キーワード専用引数の区切り）
+### [x] 24. bare `*`（キーワード専用引数の区切り）【実装済 2026-08-28】
 
 - 対象: [`classes.rs` `convert_params()`](src/python_converter/classes.rs)（既に概ね対応済み）
 - 背景: `def f(a, *, b)` の bare `*` は rustpython では「vararg なし＋`kwonlyargs`」として表現され、`convert_params` は `kwonlyargs` を通常引数へ平坦化している（＝bare `*` は実質無視済み）。
 - 方針（ユーザー指示）: bare `*` は**無視して引数リストを切り詰める**（キーワード専用引数を通常引数として平坦化）。現状挙動を正式化・確認する。
 - 難易度: 低（ほぼ現状どおり）。
 - 懸念: Python のキーワード専用引数は位置渡し不可だが、平坦化後の Arrow では位置渡しも可能になる（意味の緩和）。ユーザー方針で許容。
+
+**実装結果**: **コード変更は不要**だった（既存の `convert_params` が既に平坦化していた）。
+実機で全形を確認したうえで、`convert_params` の doc コメントに**方針と緩和の理由を明文化**し、
+例題で挙動を固定した。`/`（位置専用マーカ）も同じく無視される。
+
+確認した形（すべて期待どおり動作）:
+
+| 形 | 呼び出し | 結果 |
+|---|---|---|
+| `def f(a, *, b)` | `f(1, b=2)` | ✔ |
+| 同上 | `f(1, 2)` | ✔ **CPython は `TypeError`**（緩和・許容済み） |
+| `def g(a, *, b, c)` | `g(1, b=2, c=3)` | ✔ |
+| `def only_kw(*, b)` | `only_kw(b=5)` | ✔ |
+| `def both(a, /, b, *, c)` | `both(1, 2, c=3)` | ✔（`/` も無視） |
+| `def __init__(self, x, *, y)` | `Point(1, y=2)` | ✔ |
+
+**他項目との干渉（本項目では直さない）**:
+- キーワード専用引数の**デフォルト値は落ちる**（項目 1 未実装）。`def f(a, *, b=3)` を `f(1)` で
+  呼ぶと `'f' takes 2 argument(s) but 1 were given`。
+- **実体のある `*args` と併用**すると壊れる（項目 6 未実装。`*args` が不正な `Param` になるため
+  `def f(a, *rest, b)` が `takes 3 argument(s)` という紛らわしいエラーになる）。
+  **bare `*`（名前なし）単体はこの影響を受けない。**
+
+**例題**: [`examples/interop/py_kwonly.ar`](examples/interop/py_kwonly.ar) +
+[`test_modules/py_kwonly.py`](examples/interop/test_modules/py_kwonly.py)
+（②の位置渡しを除き CPython と出力一致を突き合わせ済）。エラー化した項目が無いため `_error` 例は無し。
 
 ### [ ] 25. `with` 文（`__exit__` 実行を伴わない場合のみ）
 

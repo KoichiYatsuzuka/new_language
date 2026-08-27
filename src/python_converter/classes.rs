@@ -204,9 +204,21 @@ pub(crate) fn extract_param_types(args: &py::Arguments) -> std::collections::Has
 // ---------------------------------------------------------------------------
 
 /// Python の引数リスト（`py::Arguments`）を tl の `Param` リストに変換する。
+///
+/// 順序は Python の宣言順（posonly → 通常 → vararg → kwonly）をそのまま保つ。
+///
+/// ⚠ **位置専用マーカ `/` と キーワード専用マーカ `*`（bare `*`）は無視して平坦化する**（項目 24）。
+/// rustpython はどちらもマーカ自体をノードとして持たず、`posonlyargs` / `kwonlyargs` という
+/// **区分**として表現するので、区分をまたいで 1 本の `Param` 列に並べるだけで済む。
+/// 　- `def f(a, *, b)` → `Param[a, b]`。`f(1, b=2)` も `f(1, 2)` も通る。
+/// 　- **意味の緩和**: Python はキーワード専用引数を位置渡しできない（`TypeError`）が、
+/// 　  平坦化後の Arrow は位置渡しも受け付ける。Arrow 側に「位置渡し禁止」を表す
+/// 　  `Param` のフラグが無いため。**受け入れる Python コードが広がる方向**なので許容
+/// 　  （`/` も同様に「キーワード渡しも通る」方向へ緩む）。
 pub(crate) fn convert_params(args: &py::Arguments, _filename: &str) -> Result<Vec<Param>, String> {
     let mut params: Vec<Param> = Vec::new();
 
+    // `/` より前（posonlyargs）と通常引数は区別せず同じ列に積む。
     for arg in args.posonlyargs.iter().chain(args.args.iter()) {
         let type_ann = arg.def.annotation.as_deref().map(convert_annotation);
         params.push(Param {
@@ -228,6 +240,9 @@ pub(crate) fn convert_params(args: &py::Arguments, _filename: &str) -> Result<Ve
         });
     }
 
+    // bare `*` / `*args` より後ろのキーワード専用引数。通常引数として平坦化する（項目 24）。
+    // ⚠ 上の vararg 分岐が走った場合（`def f(a, *rest, b)`）は、`*args` が不正な
+    //   `Param` になっている（項目 6 未実装）ため、この列全体が壊れる。bare `*` 単体は無害。
     for arg in &args.kwonlyargs {
         let type_ann = arg.def.annotation.as_deref().map(convert_annotation);
         params.push(Param {
