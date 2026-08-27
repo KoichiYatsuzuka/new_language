@@ -138,12 +138,24 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 根拠: Arrow は set 型実在（実機確認）。
 - テスト: `{1,2,3,2}` → `{1,2,3}`, `2 in s`。
 
-#### [20] デコレータ `@decorator`
-- 編集:
-  - `statements.rs` `convert_stmt` `FunctionDef` アーム: `decorator_list` の Err 分岐を削除し、`decorators: f.decorator_list.iter().map(convert_expr).collect()?` を `Stmt::FnDef` に格納。
-  - `classes.rs` `convert_class`: クラスの Err 分岐削除→`Stmt::ClassDef.decorators` に格納。メソッド（`FunctionDef` アーム内）の Err 分岐削除→メソッド `FnDef.decorators` に格納。
-- 根拠: Arrow は `@decorator fn/class` を実装済み・実行時逆順適用（実機確認）。
-- テスト: `@log` 関数、スタック `@a @b`、`@classmethod` 等。
+#### [20] デコレータ `@decorator` ✅ **実装済（2026-08-27）**
+- 実装: 新設 `src/python_converter/decorators.rs` の `convert_decorators()` に集約。
+  `statements.rs` の `FunctionDef` アーム / `classes.rs` の `convert_class`（クラス本体・メソッド）
+  の 3 箇所の Err 分岐を、この関数の呼び出しに置き換えた。
+- **単純な素通しでは不十分**だった: Arrow に `staticmethod` / `classmethod` という**組込関数が無い**ため、
+  `decorators` に積むと実行時 `NameError` になる。`convert_decorators` は
+  `@staticmethod`→`is_static` / `@classmethod`→`is_class_method` /
+  `@abstractmethod`(`abc.` 付きも)→`is_abstract` の**フラグに振り替える**。
+- 明示エラー: `@property` / `@cached_property` / `@x.setter` / `@x.getter` / `@x.deleter`、
+  モジュール直下の `@staticmethod` 等、`@staticmethod` と `@classmethod` の併用。
+- 例題: `examples/interop/py_decorators.ar` + `test_modules/py_decorators.py`（CPython と出力一致）/
+  `examples/interop/py_decorators_error.ar` + `test_modules/py_dec_*_error.py`。
+- ⚠ 意味差: Arrow の `static` / `class_method` は**クラス経由でしか呼べない**（Python は
+  インスタンス経由も可）。
+- ⚠ **本項目の外で見つかった別バグ 2 件**（詳細は coverage の 20 節 †）:
+  ① `mut` パラメータが入れ子 `fn` にキャプチャされない（**純 Arrow で再現**）→
+  「クロージャで包む」典型的な Python デコレータが動かない。
+  ② `.py` のモジュール直下から同モジュールの関数を呼べない（`NameError`）。
 
 #### [21] `...`（Ellipsis）→ 文位置は `pass`
 - 編集: `statements.rs` `convert_stmt` `Expr` アーム
@@ -279,7 +291,8 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（3・4・12・13・11・18・19・22・20・21・1・24・5）— 独立・低リスク。1件ずつ通して examples を積む。
+1. **フェーズ1**（3・4・12・13・11・18・19・22・~~20~~・21・1・24・5）— 独立・低リスク。1件ずつ通して examples を積む。
+   （20 は 2026-08-27 に完了）
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。
 3. **フェーズ2**（6・7・8・9・10・16・17）。7 は interpreter 変更を含む。
 4. **INF-B/INF-C → フェーズ3**（15・23・26）— 共通基盤を整えてから。

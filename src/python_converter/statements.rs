@@ -167,12 +167,13 @@ pub(crate) fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stm
     match stmt {
         // ----- 関数定義 -----
         py::Stmt::FunctionDef(f) => {
-            if !f.decorator_list.is_empty() {
-                return Err(format!(
-                    "{filename}: decorators are not yet implemented (function '{}')",
-                    f.name.as_str()
-                ));
-            }
+            // モジュール直下の関数なので `in_class: false`（`@staticmethod` 等は明示エラー）。
+            let dec = convert_decorators(
+                &f.decorator_list,
+                filename,
+                &format!("function '{}'", f.name.as_str()),
+                false,
+            )?;
             let params = convert_params(&f.args, filename)?;
             let return_type = f.returns.as_deref().map(convert_annotation);
             let body = convert_stmts_fn_body(&f.body, filename)?;
@@ -185,7 +186,7 @@ pub(crate) fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stm
                 is_abstract: false,
                 is_static: false,
                 is_class_method: false,
-                decorators: vec![],
+                decorators: dec.decorators,
                 access: crate::ast::Accessibility::Public,
             }))
         }
@@ -197,15 +198,8 @@ pub(crate) fn convert_stmt(stmt: &py::Stmt, filename: &str) -> Result<Option<Stm
         )),
 
         // ----- クラス定義 -----
-        py::Stmt::ClassDef(c) => {
-            if !c.decorator_list.is_empty() {
-                return Err(format!(
-                    "{filename}: decorators are not yet implemented (class '{}')",
-                    c.name.as_str()
-                ));
-            }
-            convert_class(c, filename).map(Some)
-        }
+        // デコレータは `convert_class` 側で処理する（クラス名が必要なため）。
+        py::Stmt::ClassDef(c) => convert_class(c, filename).map(Some),
 
         // ----- return -----
         py::Stmt::Return(r) => {

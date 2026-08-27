@@ -15,6 +15,13 @@ use super::*;
 pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt, String> {
     let class_name = c.name.to_string();
     let bases: Vec<String> = c.bases.iter().map(expr_to_name).collect();
+    // クラスデコレータ。`@staticmethod` 等はクラスには付かないので `in_class: false`。
+    let class_dec = convert_decorators(
+        &c.decorator_list,
+        filename,
+        &format!("class '{class_name}'"),
+        false,
+    )?;
 
     let mut fields: Vec<Stmt> = Vec::new();
     let mut methods: Vec<Stmt> = Vec::new();
@@ -91,13 +98,12 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                 }
             }
             py::Stmt::FunctionDef(f) => {
-                if !f.decorator_list.is_empty() {
-                    return Err(format!(
-                        "{filename}: decorators are not yet implemented (method '{}.{}')",
-                        class_name,
-                        f.name.as_str()
-                    ));
-                }
+                let dec = convert_decorators(
+                    &f.decorator_list,
+                    filename,
+                    &format!("method '{}.{}'", class_name, f.name.as_str()),
+                    true,
+                )?;
                 let params = convert_params(&f.args, filename)?;
                 let return_type = f.returns.as_deref().map(convert_annotation);
                 let body = convert_stmts_fn_body(&f.body, filename)?;
@@ -107,10 +113,10 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                     params,
                     return_type,
                     body,
-                    is_abstract: false,
-                    is_static: false,
-                    is_class_method: false,
-                    decorators: vec![],
+                    is_abstract: dec.is_abstract,
+                    is_static: dec.is_static,
+                    is_class_method: dec.is_class_method,
+                    decorators: dec.decorators,
                     access: crate::ast::Accessibility::Public,
                 });
             }
@@ -127,7 +133,7 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
         template_params: vec![],
         bases,
         body,
-        decorators: vec![],
+        decorators: class_dec.decorators,
     })
 }
 

@@ -1,0 +1,35 @@
+# py_decorators_error.ar — `import[py]` 変換器が**明示エラーにする**デコレータ（項目 20）。
+#
+# 変換器は「Arrow で表現できないデコレータ」を**黙って捨てない**。
+# 捨てると Python 側の意図（プロパティ／定義種別）が失われたまま動いてしまい、
+# 「静かに違う答えが出る」最悪の失敗形になるため。
+#
+# ⚠ いずれも**変換時（パース時）のエラー**なので、1 ファイルにつき 1 つしか踏めない。
+#   他の 2 つを試すときは import 行を入れ替えること。
+#
+# 期待されるエラー（ParseError・変換時）:
+#
+#   ① @property（本ファイルが踏む形）
+#      '@property' is not supported (method 'C.value'):
+#      Arrow has no property syntax; use a plain method instead
+#      ⇒ 代替: 素のメソッドにする（`c.value()` と呼ぶ）。`@x.setter` / `@x.deleter` も同じ。
+#
+#   ② モジュール直下の @staticmethod
+#      '@staticmethod' is only meaningful on a method (function 'f')
+#      ⇒ 代替: デコレータを外す（モジュール関数はそのまま呼べる）。
+#
+#   ③ @staticmethod と @classmethod の併用
+#      '@staticmethod' and '@classmethod' cannot be combined (method 'C.f')
+#      ⇒ 代替: どちらか一方にする。
+#
+# ⚠ 逆に **通る**マーカもある: `@abstractmethod` は Arrow の抽象フラグへ振り替えられる
+#   （`py_decorators.ar` の ⑦ を参照）。
+
+import[py] test_modules.py_dec_property_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_dec_module_static_error as m
+# ③ を試す場合:
+# import[py] test_modules.py_dec_static_class_error as m
+
+print("unreachable")

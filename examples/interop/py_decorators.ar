@@ -1,0 +1,60 @@
+# py_decorators.ar — `import[py]`（Python → Arrow 変換器）の**デコレータ対応**の検査。
+#
+# 対象は `src/python_converter/decorators.rs`（`convert_decorators`）。
+# 変換器は Python の `decorator_list` を 2 つに振り分ける:
+#
+#   ① 通常のデコレータ（`@banner` 等）      → Arrow の `FnDef.decorators` / `ClassDef.decorators`
+#      （インタープリタが定義時に**逆順**で適用する）
+#   ② Arrow ではフラグで表す定義種別マーカ  → `is_static` / `is_class_method` / `is_abstract`
+#      `@staticmethod` / `@classmethod` / `@abstractmethod`
+#
+# ⚠ ② を①として素通しすると Arrow に `staticmethod` という組込関数が無いため
+#   実行時 `NameError` になる。フラグへの振り替えが必須。
+# ⚠ Arrow の `static` / `class_method` は **クラス経由でしか呼べない**
+#   （インスタンス経由は `AttributeError`）。Python はどちらでも呼べるので**ここが意味差**。
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+# ⚠ デフォルト引数は変換器が未対応（項目 1）なので全部明示的に渡す。
+
+import[py] test_modules.py_decorators as d
+
+# ── 定義時に走るデコレータの副作用 ───────────────────────────────────────
+# import の時点で以下が出力済み:
+#   registered   … @banner
+#   B / A        … @tag_a @tag_b（下から適用）
+#   marked       … @mark（クラスデコレータ）
+
+# ── ① 元の関数をそのまま返すデコレータ ──────────────────────────────────
+mut name = "bob"
+print(d.hello(name))
+# hello bob
+
+# ── ② スタックされたデコレータ ───────────────────────────────────────────
+print(d.stacked())
+# stacked
+
+# ── ③ 関数を別の関数へ差し替えるデコレータ ──────────────────────────────
+#     twice(3) は本来 6 だが、@always42 が差し替えているので 42。
+mut n = 3
+print(d.twice(n))
+# 42
+
+# ── ④ クラスデコレータ（@mark はクラスをそのまま返す） ──────────────────
+mut v = 7
+mut b = d.Box(v)
+print(b.get())
+# 7
+
+# ── ⑤ @staticmethod → `static fn`（クラス経由で呼ぶ） ────────────────────
+mut a = 10
+print(d.Box.bump(a))
+# 11
+
+# ── ⑥ @classmethod → `class_method fn`（第 1 引数にクラス自身が渡る） ────
+mut w = 99
+mut b2 = d.Box.of(w)
+print(b2.get())
+# 99
+
+# ── ⑦ @abstractmethod は抽象フラグに振り替えるだけ（本体はそのまま動く） ─
+print(b.described())
+# box

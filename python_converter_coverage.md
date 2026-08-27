@@ -245,7 +245,7 @@ Python ソースを rustpython-parser でパースし、Arrow の AST（`Stmt`�
 - 難易度: 低〜中。
 - 懸念: 書式指定 `{x:.2f}`（format_spec）・変換 `!r`/`!s`（conversion）は `str()` 単純ラップでは再現不可。書式なし f-string を対応し、format_spec 付きは追加検討 or 明示エラー。
 
-### [ ] 20. デコレータ `@decorator`
+### [x] 20. デコレータ `@decorator`【実装済 2026-08-27】
 
 - 対象: [`statements.rs`](src/python_converter/statements.rs) の `FunctionDef` アーム + [`classes.rs`](src/python_converter/classes.rs)（クラス／メソッドの計3箇所のエラー分岐）
 - 現状: `decorators are not yet implemented` エラー（関数・クラス・メソッド）。
@@ -254,6 +254,34 @@ Python ソースを rustpython-parser でパースし、Arrow の AST（`Stmt`�
 - 制約: Arrow は `@` の直後が `fn`/`class` のみ（Python も関数/クラスのみで一致）。デコレータ関数は `fn d(let f: function) -> function:` 形のシグネチャが必要。
 - 難易度: 低。
 - 検証: ✔実機（`@log`、`@double_log @log` が正しく動作）。
+
+**実装結果**: [`decorators.rs`](src/python_converter/decorators.rs) を新設し、`convert_decorators()` で
+`decorator_list` を 2 つに振り分ける形にした（単純な素通しでは不十分だった）:
+
+- **通常のデコレータ** → `FnDef.decorators` / `ClassDef.decorators`（`convert_expr` で変換）。
+  `@f(x)` 形のデコレータファクトリもそのまま通る。
+- **定義種別マーカ** → Arrow のフラグに振り替える。⚠ Arrow には `staticmethod` /
+  `classmethod` という**組込関数が存在しない**ため、素通しすると実行時 `NameError` になる。
+  - `@staticmethod` → `is_static`（Arrow の `static fn`）
+  - `@classmethod` → `is_class_method`（Arrow の `class_method fn`。第 1 引数にクラス自身）
+  - `@abstractmethod` / `@abc.abstractmethod` → `is_abstract`（本体はそのまま残す）
+- **明示エラー**: `@property` / `@cached_property` / `@x.setter` / `@x.getter` / `@x.deleter`
+  （Arrow にプロパティ構文が無い）、モジュール直下の `@staticmethod` 等、
+  `@staticmethod` と `@classmethod` の併用。
+
+**意味差（要留意）**: Arrow の `static` / `class_method` は**クラス経由でしか呼べない**
+（インスタンス経由は `AttributeError`：[`method_call.rs`](src/interpreter/classes/method_call.rs) の
+`static_method_names` 判定）。Python は `obj.stat()` も許すので、ここだけ差が残る。
+
+**例題**: [`examples/interop/py_decorators.ar`](examples/interop/py_decorators.ar)（成功・CPython と出力一致を突き合わせ済）/
+[`examples/interop/py_decorators_error.ar`](examples/interop/py_decorators_error.ar)（明示エラー 3 種）。
+
+**† 実装中に見つかった別バグ（本項目の外）**:
+1. **`mut` パラメータが入れ子 `fn` にキャプチャされない**（None になる）。**純 Arrow で再現**する。
+   `fn f(let n: int)` なら通るが `fn f(mut n: int)` だと壊れる。変換器は全パラメータを
+   `mutable: true` にするため、**Python で最も普通の「クロージャで包むデコレータ」が使えない**。
+2. **`.py` のモジュール直下で同じモジュールの関数を呼べない**（`alias = ident(hello)` で
+   `NameError: 'ident' is not defined`）。デコレータは `eval_definition_expr` 経由なので通る。
 
 ### [ ] 21. `...`（Ellipsis）→ 文位置は `pass`
 
