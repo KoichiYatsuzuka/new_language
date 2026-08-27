@@ -23,7 +23,7 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 $exe = Join-Path $repo 'target/release/arrow.exe'
 if (-not (Test-Path $exe)) { throw "not built: $exe (run: cargo build --release)" }
 

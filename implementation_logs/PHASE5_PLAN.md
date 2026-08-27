@@ -25,7 +25,7 @@
 
 | 分類 | 書き込み箇所 |
 |---|---|
-| 宣言レジストリ系 **12フィールド** | **すべて [mod.rs](src/type_check/mod.rs) の 249–460 行**、すなわち `collect_fn_sigs`（217–484行）**1関数の中だけ** |
+| 宣言レジストリ系 **12フィールド** | **すべて [mod.rs](../src/type_check/mod.rs) の 249–460 行**、すなわち `collect_fn_sigs`（217–484行）**1関数の中だけ** |
 | 検査カーソル系 4フィールド | scope.rs / check.rs / infer.rs（検査中に増減） |
 | 診断 2フィールド | scope.rs / infer.rs / mod.rs（検査中に append） |
 
@@ -36,8 +36,8 @@
 
 ### 補足: 状態分割では解決しない別の問題
 
-`check_stmt`（[stmt/check.rs](src/type_check/stmt/check.rs#L20)）は **728行・最大ネスト深度14**。
-`infer`（[infer.rs](src/type_check/infer.rs#L9)）は380行、`collect_fn_sigs` は267行。
+`check_stmt`（[stmt/check.rs](../src/type_check/stmt/check.rs#L20)）は **728行・最大ネスト深度14**。
+`infer`（[infer.rs](../src/type_check/infer.rs#L9)）は380行、`collect_fn_sigs` は267行。
 **フィールドを構造体に束ねてもこの巨大関数は1行も短くならない。**
 体感的な「神クラス感」の主因はむしろこちらなので、5B として別建てで扱う（§5）。
 
@@ -285,7 +285,7 @@ cargo test                                  # 672 passed 期待（各ステッ�
 cargo test type_check                       # 型検査テストのみ高速確認
 cargo build                                 # 警告0 を維持
 cargo clippy --all-targets                  # exit 0
-./generate-codebase-map.ps1                 # registry/ 等のファイル新設後に必須
+../scripts/generate-codebase-map.ps1                 # registry/ 等のファイル新設後に必須
 ```
 
 規約（.claude/rules/regulations.md）: 新文法の追加がないので example 追加は非該当。

@@ -40,7 +40,7 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 ⚠⚠ **保守性のつもりで始めた 5 タスクから実バグが出た** — #65 `ljust` ほか／#68 関数本体の `enum`／
 #71 `import[py]` の関数が 1 つも呼べない／#75 クロージャの捕捉／**#84 は 3 件**（`match` 腕・
 ブロック式・`static` 初期化式の中の宣言）。**どれも「例題が 1 本も無かった」形**。
-⇒ **#85 でその「例題が書いている形」自体を数える手段を作った**（[syntax_cov.ps1](syntax_cov.ps1)）。
+⇒ **#85 でその「例題が書いている形」自体を数える手段を作った**（[syntax_cov.ps1](../scripts/syntax_cov.ps1)）。
 
 ⚠⚠ **2026-08-25〜26 の冗長性レーン（#84〜#88）で「ドリフトを強制で止める」形が揃った**:
 `Stmt`/`Expr`/`Op` に variant を足すと**コンパイルが止まる**（#84 `stmt_walk`・#86 `storage_operands`・
@@ -54,12 +54,12 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 | 77 | **`exec_raise` ⇔ `vm_raise` の 2 実装を 1 本化**（`build_raised_error`）。**差は「組んだ結果をどう返すか」だけ** — `ExecResult::Raise` で返すか `current_exception` へ積むか。`exec_raise` **58→15 行**・`vm_raise` **40→4 行**。副産物で `get_context_lines` の二重呼び出しも解消。⚠⚠ **`file`/`line`/`col`/`code_context` を読む例題が 0 本だった**ので新設（負の対照つき）。⚠ 手 A/B で**アドレスを正規化せず偽の差分**を出しかけた。⚠ tw_stats では `Raise` が 1 件も出ない（`exec_raise` は通常実行から到達しない可能性・**起票はしない**） |
 | 78 | **`render_math_str` の `^`/`_` 2 アームを 1 実装へ**（マーカー文字と写像を引数化）＋ 波括弧形／単独形を別関数へ切り出し。**167 行/ネスト 8 → 28 行/ネスト 3** ＝ 🎉 **src から制御ネスト ≥7 が消えた**。⚠ **畳むだけでは深さは下がらない**（切り出して初めて 3）。⚠⚠ グループ形と単独形は**2 点で本当に違う**ので畳まず保存（`unwrap_or(sym)` は多文字シンボルで割れるが 71 個すべて 1 文字と確認）。⚠⚠ **書き換える前に 23 分岐の golden を取り**、byte-identical を確認。例題を新設（負の対照つき） |
 | 79 | **`ar_modules.rs` の逐語重複を 1 本化**（`module_search_dirs` / `module_cache_probe` / `parse_sub_module`）。⚠ **起票時は「子パーサ 22 行 × 3」と読んでいたが実際は 4 種類**（検索ディレクトリ 5 行・キャッシュ検査 10 行・子パーサ 22 行・`#16・C1` の注意書き）が 3 重化していた。⚠ 候補パスとエラー文は**3 つで違うので畳まない**（探索順に意味がある・#58 と同じ判断）。⚠ `parse_program` 失敗時に `loading` が残る既存挙動はそのまま保存 |
-| 80 | **`ClassValue` の 11 箇所リテラルを `ClassValue::synthetic(name, class_id)` へ**（-138 行）。⚠⚠ **`Default` は実装しない**（`..Default::default()` は強制を消す）。exhaustive なリテラルは **2 つ**（`synthetic`＝既定値／`deep_clone`＝深いコピー）で、どちらもフィールド追加で止まる。⚠⚠ **本当の危険は行数ではなく `class_id` の採番順**（`..` は評価が後ろになる）⇒ `class_id` を引数で受け、[dump_native_ir.ps1](dump_native_ir.ps1) の **IR byte-identical** で確認。⚠ **手写しせず機械変換**（スクリプトの欠陥を assert が 2 回捕捉） |
-| 81 | **`Expr` 再帰骨格の 4 本を [expr_walk.rs](src/expr_walk.rs) へ 1 本化**（#75 の恒久対策）。#59 と同じ **2 段の強制**（`Expr` に variant を足すと `each_subpart` が止まる／`SubPart` に種類を足すと**全 walker が止まる**）。⚠⚠ **仕掛けが実際に働いた** — `MatchPattern` を足した瞬間に消費者 4 本が停止し、#75 の「`case` パターンも参照」が消えるのを止めた。⚠ ただし**止めてくれるのは 2 段目だけ**（列挙し忘れは人間が読むしかない）。⚠ `Slice`/`TemplateInstantiate` へ**新たに降りる**ようになったが bytecode 114/114 で不変。例題 +1 ケース（負の対照つき） |
-| 82 | **`generate_llvm_module` の適格関数収集 4 ブロックを `eligible_fn` へ**（48→18 行）。**4 つで違うのはシンボルをクラス修飾するかだけ**（`fn`/`gen` の差は適格判定・`is_abstract`・戻り値注釈の 3 点）。⚠ **`Stmt` を歩く 5 本目の walker という穴は畳んでも消えない**ので既知の穴として明記。⚠⚠ 収集順＝emit 順なので [dump_native_ir.ps1](dump_native_ir.ps1) の **IR byte-identical** が主検査 |
+| 80 | **`ClassValue` の 11 箇所リテラルを `ClassValue::synthetic(name, class_id)` へ**（-138 行）。⚠⚠ **`Default` は実装しない**（`..Default::default()` は強制を消す）。exhaustive なリテラルは **2 つ**（`synthetic`＝既定値／`deep_clone`＝深いコピー）で、どちらもフィールド追加で止まる。⚠⚠ **本当の危険は行数ではなく `class_id` の採番順**（`..` は評価が後ろになる）⇒ `class_id` を引数で受け、[dump_native_ir.ps1](../scripts/dump_native_ir.ps1) の **IR byte-identical** で確認。⚠ **手写しせず機械変換**（スクリプトの欠陥を assert が 2 回捕捉） |
+| 81 | **`Expr` 再帰骨格の 4 本を [expr_walk.rs](../src/expr_walk.rs) へ 1 本化**（#75 の恒久対策）。#59 と同じ **2 段の強制**（`Expr` に variant を足すと `each_subpart` が止まる／`SubPart` に種類を足すと**全 walker が止まる**）。⚠⚠ **仕掛けが実際に働いた** — `MatchPattern` を足した瞬間に消費者 4 本が停止し、#75 の「`case` パターンも参照」が消えるのを止めた。⚠ ただし**止めてくれるのは 2 段目だけ**（列挙し忘れは人間が読むしかない）。⚠ `Slice`/`TemplateInstantiate` へ**新たに降りる**ようになったが bytecode 114/114 で不変。例題 +1 ケース（負の対照つき） |
+| 82 | **`generate_llvm_module` の適格関数収集 4 ブロックを `eligible_fn` へ**（48→18 行）。**4 つで違うのはシンボルをクラス修飾するかだけ**（`fn`/`gen` の差は適格判定・`is_abstract`・戻り値注釈の 3 点）。⚠ **`Stmt` を歩く 5 本目の walker という穴は畳んでも消えない**ので既知の穴として明記。⚠⚠ 収集順＝emit 順なので [dump_native_ir.ps1](../scripts/dump_native_ir.ps1) の **IR byte-identical** が主検査 |
 | 83 | `ar_call_fn` の**ガードの入れ子**を平坦化（typed 高速パスを `try_typed_fast_call` ＋ 2 段へ切り出して早期 return へ反転）。**196 行/ネスト 8 → 96 行/ネスト 5**・切り出し先は最大ネスト 2。src の**ネスト ≥7 は 2 本 → 1 本**。⚠⚠ **`#[inline(always)]` は速度目的ではなく「生成コードを変えないため」**（外すと **cdll が 0.94x**。⚠ **cdll は `ar_call_fn` を通らない**ので配置の話 — 属性を戻すだけで 1.04x に振れた）。⚠ **ノイズ帯は測るたび違う**（±1%〜±3.5%）ので**対照は同じセッションで取る** |
-| 84 | **`Stmt` 再帰骨格の 7 本を [stmt_walk.rs](src/stmt_walk.rs) へ 1 本化**（#59 の名前・#81 の式に続く**3 つ目の半分**。両者が doc で「範囲外」と書いていた所）。⚠⚠ **畳む前に 8 walker × 40 variant の表を機械生成したら実バグ 3 件**（`collect_declared_names` が `match` 腕と部分式へ降りない ／ `collect_nested_decls` が `Stmt::Static` の初期化式へ降りない）＝ **すべて `VmForceError` で停止する形**で、**3 件とも例題が 0 本**（#56/#68/#71/#75 に続く **5 度目**）。⚠ **2 段目が本番で発火**（`TargetName` 追加で消費者 6 本が停止）。負の対照で `StmtPart` +1 → **7 本ちょうど**停止。walker **45→39**・`_ => {}` **35→29**。**bytecode 114/114 byte-identical**（＝例題が無かったことの裏取り）。⚠ `collect_base_decls` は**対象外**（そもそも降りない・既定が安全側）。例題 +1（負の対照つき） |
-| 85 | **例題スイートの構文カバレッジを機械で数える**（[syntax_cov.rs](src/syntax_cov.rs) ＋ [syntax_cov.ps1](syntax_cov.ps1) 新設）。プランが自認していた「未カバー構文を数える手段が無い」を塞いだ。⚠⚠ **実行せず・パース直後の AST を歩く**（`AR_SYNTAX_COV=1` は実行前に終了）＝ GUI もタイムアウトも無く**決定的**。走査は自前で持たず **#59/#81/#84 の 3 点セットに乗せた**ので**黙って古くならない**（母集団も Rust 側が出し、観測種別が一覧に無ければ落とす）。実測: `Stmt` **39/40**・`Expr` **29/30**（未カバーは debugger 専用の 2 つ）／⚠⚠ **最上位 fn には書かれているが入れ子 fn には 1 度も無い構文が 24 件**（歴史的バグ 5 件中 4 件がこの文脈）。⚠ **検出力は #84 の実バグで確認** — 例題を外すと `Static>Block`・`Match>Let` が**ちょうど 2 件**消える。例題 +1 で **24→10 件**。⚠ 副産物で**壊れたまま全ゲートを素通りしていた例題 2 本**を発見 |
+| 84 | **`Stmt` 再帰骨格の 7 本を [stmt_walk.rs](../src/stmt_walk.rs) へ 1 本化**（#59 の名前・#81 の式に続く**3 つ目の半分**。両者が doc で「範囲外」と書いていた所）。⚠⚠ **畳む前に 8 walker × 40 variant の表を機械生成したら実バグ 3 件**（`collect_declared_names` が `match` 腕と部分式へ降りない ／ `collect_nested_decls` が `Stmt::Static` の初期化式へ降りない）＝ **すべて `VmForceError` で停止する形**で、**3 件とも例題が 0 本**（#56/#68/#71/#75 に続く **5 度目**）。⚠ **2 段目が本番で発火**（`TargetName` 追加で消費者 6 本が停止）。負の対照で `StmtPart` +1 → **7 本ちょうど**停止。walker **45→39**・`_ => {}` **35→29**。**bytecode 114/114 byte-identical**（＝例題が無かったことの裏取り）。⚠ `collect_base_decls` は**対象外**（そもそも降りない・既定が安全側）。例題 +1（負の対照つき） |
+| 85 | **例題スイートの構文カバレッジを機械で数える**（[syntax_cov.rs](../src/syntax_cov.rs) ＋ [syntax_cov.ps1](../scripts/syntax_cov.ps1) 新設）。プランが自認していた「未カバー構文を数える手段が無い」を塞いだ。⚠⚠ **実行せず・パース直後の AST を歩く**（`AR_SYNTAX_COV=1` は実行前に終了）＝ GUI もタイムアウトも無く**決定的**。走査は自前で持たず **#59/#81/#84 の 3 点セットに乗せた**ので**黙って古くならない**（母集団も Rust 側が出し、観測種別が一覧に無ければ落とす）。実測: `Stmt` **39/40**・`Expr` **29/30**（未カバーは debugger 専用の 2 つ）／⚠⚠ **最上位 fn には書かれているが入れ子 fn には 1 度も無い構文が 24 件**（歴史的バグ 5 件中 4 件がこの文脈）。⚠ **検出力は #84 の実バグで確認** — 例題を外すと `Static>Block`・`Match>Let` が**ちょうど 2 件**消える。例題 +1 で **24→10 件**。⚠ 副産物で**壊れたまま全ゲートを素通りしていた例題 2 本**を発見 |
 | 86 | **VM の slot 採番に不変条件の検査**（#84 で「採番側の `debug_assert` が 0 件」と判明した穴）。⚠⚠ **壊れ方は 2 通り**あるので網も 2 本 — ①**別の変数を読む**は `Resolution::Local` の消費 5 箇所を `local_slot` に 1 本化して**コンパイル時にリゾルバと突き合わせ**（それまで `slot` を検証せず流していた）／②**範囲外を読む**は `into_chunk` で**全命令の記憶域索引**を検査（ローカル slot と**セル索引は別**）。⚠ 誤検知しないことを**先に**確認（`for` シャドウ名はリゾルバが `base` から除外／`local_names.len() == n_locals` は**不変条件ではない**＝ temp を含まない）。⚠⚠ **負の対照 3 本で検出力を確認** — `static` を飛ばす／`alloc_temp` が `n_locals` を伸ばさない／`Op` +1 で **3 箇所停止**（`peephole::code_target_mut` は**止まらない**＝ #87 の穴が可視化）。**release には 1 命令も足していない**（bytecode 115/115・出力 98/98 で裏づけ）。⚠⚠ **自分で 2 回踏んだ** — op 分類を**名前で作って 5 件取りこぼし**（doc から機械抽出する assert を追加）／`rindex` 置換が **`mode_tests` を丸ごと消した**（`cargo test` 750→748 だけが気づかせた） |
 | 87 | **`peephole::code_target_mut` を exhaustive 化**（プランが唯一「忘れてもテストは通ってしまう」と名指ししていた穴。#86 の負の対照で**ここだけ止まらない**と実証済みだった）。全 89 variant を列挙し、**`Op` を足すと止まる箇所が 3 → 4** に。⚠ 分類は #86 の手本どおり **op の doc から機械抽出して突き合わせ**（⚠ `Fail` が**偽陽性**で挙がった — doc が「飛び先を持たない」と**明記している**ため。⇒ `NOT_TARGET`＋理由を設けて assert）。⚠⚠ **exhaustive 化が守るのは「新しい op」側だけ**と気づき、「**既存の登録を外す**」側を実測 ⇒ **`StaticInit` を外しても 750 テスト全部通っていた**（#27-d の再演が可能な状態）⇒ 単体テストへ `StaticInit` を追加し **3 種とも FAIL する**ことを確認。**bytecode 115/115 byte-identical**。⚠ `stale_doc_refs` が**自分の新しい doc**（実在しない `remap`）を捕捉 |
 | 88 | **パイプライン配線を入口ごとの手写しから 1 箇所へ**。⚠ 起票どおり**先に測った** — 入口は 3 ではなく **5** で、**理由の無い差が 2 つ**（①型検査と解決の**順序が逆**の入口があった［型検査は `Resolution` を読まないので当時は無害］②型検査の入口が 2 種で**片方は警告を落としただけの逐語コピー**）。⇒ `resolve_and_annotate` へ順序を固定し、`check_and_annotate` は**削除**（テスト 13 箇所を機械変換）。⚠⚠ **畳まなかった差も実測で確定**（型エラーの扱い 4 通り／REPL だけ `extend_`／`--compile` は `Interpreter` 無し／モジュール本体は**意図的に供給しない**＝どちらも安全側）。⚠⚠ **「片方だけ渡して忘れる」を型で塞いだ** — `wire_resolution` を足して **3 setter を private 化**（負の対照: 入口から直接呼ぶと**コンパイルが止まる**）。⚠ clippy が一度 65→66 に増えた（畳んで不要になった import）。⚠ `prof` の段別が潰れていないことも実測 |
@@ -77,12 +77,12 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 
 > **✅ 全ゲート緑（2026-08-26・#87 完了時に自分で走らせて確認）**
 > `cargo test` **750**（`--features tw_stats` は **753**）／ `cargo build` **警告 0**（`prof` / `tw_stats` も 0）／
-> `cargo clippy` **50**・`--all-targets` **65** ／ [compare_outputs.ps1](compare_outputs.ps1) **98/98** ／
-> [compare_bytecode.ps1](compare_bytecode.ps1) **115/115** ／ [compare_import_paths.ps1](compare_import_paths.ps1) **13** ／
-> [scan_examples.ps1](scan_examples.ps1) **FAIL 0** ／ [force_gate.ps1](force_gate.ps1) **0 件・162 例題**（⚠ `bench_ab_native.ar` 1 本は**タイムアウトで未確認**。新旧どちらのバイナリでも 180 秒で終わらない＝環境要因）／
-> [compare_python_impl.ps1](compare_python_impl.ps1) **54/54**（既知差分 45）／ [repl_session.ps1](repl_session.ps1) **identical** ／
-> [debug_session.ps1](debug_session.ps1) **5 identical** ／ [stale_doc_refs.ps1](stale_doc_refs.ps1) **0 件** ／
-> `tw_stats` は `in_fn` 0・`tw_control_flow` 0・bail 0 ／ [ab_bench_modes.ps1](ab_bench_modes.ps1) は**負の対照つきで**読む
+> `cargo clippy` **50**・`--all-targets` **65** ／ [compare_outputs.ps1](../scripts/compare_outputs.ps1) **98/98** ／
+> [compare_bytecode.ps1](../scripts/compare_bytecode.ps1) **115/115** ／ [compare_import_paths.ps1](../scripts/compare_import_paths.ps1) **13** ／
+> [scan_examples.ps1](../scripts/scan_examples.ps1) **FAIL 0** ／ [force_gate.ps1](../scripts/force_gate.ps1) **0 件・162 例題**（⚠ `bench_ab_native.ar` 1 本は**タイムアウトで未確認**。新旧どちらのバイナリでも 180 秒で終わらない＝環境要因）／
+> [compare_python_impl.ps1](../scripts/compare_python_impl.ps1) **54/54**（既知差分 45）／ [repl_session.ps1](../scripts/repl_session.ps1) **identical** ／
+> [debug_session.ps1](../scripts/debug_session.ps1) **5 identical** ／ [stale_doc_refs.ps1](../scripts/stale_doc_refs.ps1) **0 件** ／
+> `tw_stats` は `in_fn` 0・`tw_control_flow` 0・bail 0 ／ [ab_bench_modes.ps1](../scripts/ab_bench_modes.ps1) は**負の対照つきで**読む
 > （⚠ **帯は測るたび違う** — ±1%〜±3.5%・#76/#83。**同じセッションで取る**）。
 > ⚠⚠ **A/B の基準は「直前のタスク」に置く**（前々回の基準のままだと**他人の変更を自分の差分として読む**）。
 > ⚠⚠ **この数字を信用せず、同じセッションで HEAD を stash して測り直す**（`clippy` は
@@ -90,12 +90,12 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 > **基準値はコマンドごと書き、総数ではなく増分 0 を見る**。差は `benches/`。
 > ⚠⚠ **緑は「例題が書いている形については緑」という意味しかない** — この状態で #68・#71・
 > **#84 の 3 件**の実バグが生きていた。⇒ **#85 でその「書いている形」自体を数えられるようにした**
-> （[syntax_cov.ps1](syntax_cov.ps1)。⚠ **入れ子 fn の穴が 10 件残っている**）。
+> （[syntax_cov.ps1](../scripts/syntax_cov.ps1)。⚠ **入れ子 fn の穴が 10 件残っている**）。
 > ⚠⚠ **#65 で「増分 0 でも足りない」と分かった**：**受け入れ済み clippy 51 件の中に実バグを指す警告が
 > 埋もれていた**（`replacing text with itself`）。
 
 ⚠⚠ **ゲートを作っただけでは陳腐化は止まらない**（#51 → #57・内訳は実装ログ）。
-#51 が 61→0 にした [stale_doc_refs.ps1](stale_doc_refs.ps1) は**直後の 4 タスクで 14 件に戻った**
+#51 が 61→0 にした [stale_doc_refs.ps1](../scripts/stale_doc_refs.ps1) は**直後の 4 タスクで 14 件に戻った**
 （#52/#53/#56 が**走らせなかった**）。⇒ **改名・削除をしたら必ず走らせる**（5 点セットに明記）。
 ⚠ **マーカー語は行単位で効く** — 足すと**同じ行の他の識別子も検査から外れる**（黙らせない）。
 
@@ -114,25 +114,25 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 **6 度目（#84）**: **入れ子 `fn` の `match` 腕／ブロック式／`static` 初期化式の中の宣言**（3 件）。
 ⇒ 根本は **「bail＝ツリーウォークへ落とす」という前提が #33 で消えた**こと。
 ⇒ **`force_gate` 0 件・全例題 緑は「0 である」ことの証明ではない**。
-⇒ **#85 で「例題側から数える手段」を作った**（[syntax_cov.ps1](syntax_cov.ps1)。`Stmt` 39/40・
+⇒ **#85 で「例題側から数える手段」を作った**（[syntax_cov.ps1](../scripts/syntax_cov.ps1)。`Stmt` 39/40・
 `Expr` 29/30 はカバー済みだが、⚠ **入れ子 `fn` の中に 1 度も書かれていない構文が 10 件残っている**）。
 
 ### 設計上の教訓
 
-> **汎用的な設計原則・作業の型は skill [language-dev-principles](.claude/skills/language-dev-principles/SKILL.md)
+> **汎用的な設計原則・作業の型は skill [language-dev-principles](../.claude/skills/language-dev-principles/SKILL.md)
 > へ移した**（規約 3）。健全性の原則（注釈は最適化ヒント／記憶域を混ぜない／採番は同順・同数）・
 > **ドリフトを強制で止める 2 段の型**・ゲートの選び方・やる／やらないの決め方・VM を触るときの制約。
 > ⇒ **言語に手を入れる設計をする前**と**「挙動不変」と言う前**に読むこと（skill 名: `language-dev-principles`）。
-> **実際に踏んだ失敗**の目録は skill [vm-pitfalls](.claude/skills/vm-pitfalls/SKILL.md)。
+> **実際に踏んだ失敗**の目録は skill [vm-pitfalls](../.claude/skills/vm-pitfalls/SKILL.md)。
 
 **この系列に固有の現在値**（skill には置かない。変わったらここを直す）:
 - **⚠ `--vm=off` は #33 で削除した**（`compare_vm_modes.ps1` / `ab_bench_vm.ps1` も同時に削除）。
-  差分検査は [compare_python_impl.ps1](compare_python_impl.ps1)（参照実装との突き合わせ）が担う。
+  差分検査は [compare_python_impl.ps1](../scripts/compare_python_impl.ps1)（参照実装との突き合わせ）が担う。
   **bail する形はツリーウォークが正しいとは限らない**（基準は `python -m impl_python` の出力）。
 - **`force_gate` は例題ごとに最初の 1 件で止まる**（1 例題 = 1 原因ではない）。潰すたび測り直す。
   文言だけで bail と `vm_ineligible` は区別できないので `AR_TW_STATS` の両表を突き合わせる。
-- **強制点の現在の一覧**: [decl_names.rs](src/decl_names.rs)(#59)／[expr_walk.rs](src/expr_walk.rs)(#81)／
-  [stmt_walk.rs](src/stmt_walk.rs)(#84)／`storage_operands`(#86)／`code_target_mut`(#87)。
+- **強制点の現在の一覧**: [decl_names.rs](../src/decl_names.rs)(#59)／[expr_walk.rs](../src/expr_walk.rs)(#81)／
+  [stmt_walk.rs](../src/stmt_walk.rs)(#84)／`storage_operands`(#86)／`code_target_mut`(#87)。
   ⇒ **`Stmt`/`Expr`/`Op` に variant を足すとコンパイルが止まる**（`Op` +1 で **4 箇所**）。
 - **⚠⚠ この規模の変更は VM 支配ベンチを ±5% 揺らす**。**数 % で良し悪しを決めない**
   （`flat_bench.ar` は **`mod` 宣言の順序を逆にしただけ**で 0.929x 動く。潰す順序は `vm-pitfalls` §1）。
@@ -145,10 +145,10 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 >    1 呼び出し ≈ 275ns（うち `Call` op 自体が ≈ 213ns。int 加算 ≈ 11〜13ns の **20 倍**）。
 >    `Jump`+`JumpIfFalse` は合わせて **4.1%** しかない（安い命令を狙うな・#46）。
 
-1. ⚠⚠ **新しい課題を探すならまず [syntax_cov.ps1](syntax_cov.ps1) の `NESTED-GAP`**（#85 が出した地図。
+1. ⚠⚠ **新しい課題を探すならまず [syntax_cov.ps1](../scripts/syntax_cov.ps1) の `NESTED-GAP`**（#85 が出した地図。
    現在 **10 件** ＝「次に足すべき例題」の一覧。**歴史的バグ 5 件中 4 件が入れ子 fn**）。
    ⚠ **新しい速度課題は必ず先に計測してから立てる**（#50 の分布は #69・#70 で 2 段動いたので
-   [prof_dist.ps1](prof_dist.ps1) `-Mode phases` で**取り直しから**。残る段はプロセス費用 1.5ms・
+   [prof_dist.ps1](../scripts/prof_dist.ps1) `-Mode phases` で**取り直しから**。残る段はプロセス費用 1.5ms・
    `type_check` 0.18ms・`parse` 0.17ms ＝ **どれも master のまま**）。
 2. 別レーン（#19 / #17-a / #17-b）— 外部接続系・優先度低。**今すぐ着手できるのはこれだけ**。
 3. 前提待ち: **#89**（← 84・85 ＋ **消費者の出現**）／**#14 → #11 R2-c**（モジュール間ネイティブ直リンクが未計画）。
@@ -161,11 +161,11 @@ Arrow（LLVM IR ターゲットのスクリプト言語, Rust 実装 `src/`）�
 > **⚠ #12b / #2c は保留**（循環依存・速度理由も #12 で消えた）。
 > **⚠ #19 / #17-a / #17-b（外部接続系）は優先度低**（本系列と独立・別レーンで扱う）。
 
-### 検証の 5 点セット（**現在値**。型は skill [language-dev-principles](.claude/skills/language-dev-principles/SKILL.md)）
+### 検証の 5 点セット（**現在値**。型は skill [language-dev-principles](../.claude/skills/language-dev-principles/SKILL.md)）
 
 `cargo build`（**警告 0**）・`cargo test`（**750 緑**／`--features tw_stats` は **753**）・
-[compare_python_impl.ps1](compare_python_impl.ps1)（**54/54**）・[scan_examples.ps1](scan_examples.ps1)（**FAIL 0**）・
-[force_gate.ps1](force_gate.ps1)（`VmForceError` **0 件・162 例題**）。⚠ **release バイナリを見る**。
+[compare_python_impl.ps1](../scripts/compare_python_impl.ps1)（**54/54**）・[scan_examples.ps1](../scripts/scan_examples.ps1)（**FAIL 0**）・
+[force_gate.ps1](../scripts/force_gate.ps1)（`VmForceError` **0 件・162 例題**）。⚠ **release バイナリを見る**。
 clippy は **`cargo clippy` 50 件**・**`--all-targets` 65 件**（差は `benches/`）。
 ⚠⚠ **この数字を信用せず、同じセッションで HEAD を stash して測り直す**（#84 の時点で
 プラン「50/63」・実装ログ「51/66」・実測「50/65」と **3 通りあった**）。**増分 0 を見る。**
@@ -176,23 +176,23 @@ clippy は **`cargo clippy` 50 件**・**`--all-targets` 65 件**（差は `benc
 ### 検証・計測スクリプト（リポジトリ直下）
 | スクリプト | 用途 |
 |---|---|
-| [scan_examples.ps1](scan_examples.ps1) | 全例題をタイムアウト付きで実行し、失敗のみ理由付きで列挙 |
-| [dump_native_ir.ps1](dump_native_ir.ps1) | 代表 6 モジュールの生成 LLVM IR を保存（`.arc`/`.ars` は退避・復元） |
-| [annot_diff.ps1](annot_diff.ps1) / [annot_unresolved.ps1](annot_unresolved.ps1) | 注釈の充填状況・binop 特化の内訳・`Unresolved` の発生源／その全例題集計（式種別ごと） |
-| [ab_bench.ps1](ab_bench.ps1) | 2 つの `arrow.exe` を**交互実行**して経過時間を比較（`-A head.exe -B new.exe`）。#2b で新設・**#38 で非同期読み化**。異常終了／タイムアウト（`-TimeoutSec` 既定 180）／不在パスは**値を出さず理由を表示**する（黙って速い値を出さない）。⚠ `powershell -File` 経由だと `-Scripts a,b,c` が 1 要素に潰れるので `-Command` で呼ぶ |
-| [ab_bench_modes.ps1](ab_bench_modes.ps1) | **実行モード別**の A/B 計測（#47 で新設）。非コンパイル／コンパイル済み native／C DLL の 3 経路を交互実行し、スクリプトが出す `METRIC <name> <secs>` を解析する（プロセス経過時間ではないので起動・DLL ロード・setup を計測から外せる）。`CHECKSUM` を A/B で突き合わせ、食い違えば値を出さず警告。⚠ native モードは**測る側のバイナリで `--compile` し直す**（.arc の形式がブランチ間で違う） |
-| [repl_session.ps1](repl_session.ps1) | **対話 REPL の回帰検知**（#36 で新設）。`examples/repl/repl_session.{in,out}` の golden 比較。⚠ `compare_vm_modes` は stdin を与えず、`compare_debug_modes` はデバッガ REPL（別物）を見るので、**対話 REPL はこれだけが検査している**。更新は `-Update`（差分は必ず目で見る） |
-| [debug_session.ps1](debug_session.ps1) | **対話デバッガのステッピングの回帰検知**（#1 で新設・#33 で golden 化）。`examples/debugger/<name>.{ar,in,out}` の期待値比較。⚠ 他のどのゲートも stdin を与えないので、**ステッピングはこれだけが検査している**。更新は `-Update`（**#44 以降は書き換える行を必ず表示する**＝黙って上書きできない）。⚠ **このゲートは 2 度、黙って赤くなった**: ①`6bf039c`〜`7aea0e5`（golden が BOM 修正前のまま・#44 で録り直し）②#44〜#49（**環境側**＝コンソールのコードページで `Process.Start` が stdin に BOM を書いていた。**src も golden も無関係**なので遡っても原因が出ない／**別のマシンでは緑のまま通る**）。#49 で解消 |
-| [compare_python_impl.ps1](compare_python_impl.ps1) | **参照実装（`impl_python`）との stdout 差分検査**（#31 で新設）。「**両実装が同じ間違いをする形**」以外を覆う唯一の網で、`compare_vm_modes` を失った後の代替。既知差分は理由つきで `$knownDiff` に列挙（`-ShowSkipped`）。⚠ `impl_python` は 100 コミット前に同期 |
-| [stale_doc_refs.ps1](stale_doc_refs.ps1) | **コメント内の `` `識別子` `` が src に実在するか**の検査（#51 で新設）。#33 で消した関数を指す記述が 61 箇所あり、うち 2 件は**指示が真逆に矛盾**していた（コンパイラは何も言わない）。⚠ 履歴として正しい言及は落とす — 同じ行に「削除／廃止／撤去／以前／旧／移設／だった／していた」があれば履歴扱い。⇒ **消えたものに言及するときはマーカー語を書く**。外部成果物（`.ps1` 名・METRIC 名）は `$whitelist`。`-All` で除外分も表示。⚠⚠ **#51 で 0 にした直後、#52/#53/#56 が走らせずに 14 件へ戻した**（#57 で再び 0）＝ **改名・削除をしたら走らせること**。⚠ マーカー語は**行単位**なので、足すと同じ行の他の識別子も検査から外れる |
-| [compare_bytecode.ps1](compare_bytecode.ps1) | **2 つの `arrow.exe` のバイトコードが同一か**を全例題で突き合わせる（#52 の手順を #68 で .ps1 化）。「挙動不変」を exit code より強く裏付ける唯一の手段で、#62/#63/#66 が要る。⚠ **async は対象外**（同一バイナリでも dump が揺れる）。⚠ **使う前に同一 exe 同士で負の対照を取る**。⚠ 生成する .ps1 のパス区切りはスラッシュにすること（バックスラッシュがエスケープに化けて壊した実績あり） |
-| [compare_import_paths.ps1](compare_import_paths.ps1) | **import 系例題の stdout/stderr/exit が 2 バイナリで同一か**（#58 で新設）。cs-dll・**cs-proc**・js-proc・cpp-dll/lib の **13 例題**。⚠⚠ **子の出力はパイプで受けず `Start-Process -RedirectStandard*` でファイルへ落とす** — `import[js-proc]` の **node ブリッジが孫として生き残ってパイプを握る**ので `ReadToEndAsync` でも返らない（#38 のデッドロックとは別原因・skill `vm-pitfalls` §4）。⚠ `cs_proc_app.ar` は **`import[cs-proc]` を踏む唯一の非 GUI 例題**で、#58 以前は**どの差分ゲートにも入っていなかった** |
-| [compare_outputs.ps1](compare_outputs.ps1) | **全例題の stdout/stderr/exit が 2 バイナリで同一か**（#63 で新設・**98 例題**）。⚠⚠ **解釈側（`eval_*`/`exec_*`）だけを触った変更は [compare_bytecode.ps1](compare_bytecode.ps1) が自明に一致してしまう**ので、挙動不変はこちらで主張する。⚠ `bench` 分類は**経過時間そのものが出力**なので丸ごと対象外（`interop/bench_ab_cdll.ar` は名指しで除外）。⚠ アドレス（`0x…`・`id()`）は**除外せず正規化**する — `collection.ar` を落とすと set メソッドを見る網が消える |
-| [force_gate.ps1](force_gate.ps1) | **VM に載らない構文の回帰検知**（#25。#33 完了後は「既定の挙動が全例題で通るか」の検査）。全例題を実行し `VmForceError` を列挙。⚠ **止めて判定する**用途で件数は `tw_stats.ps1` で見る。GUI 例題は**タイムアウト後に窓を閉じて**完走させる（#29） |
-| [prof_dist.ps1](prof_dist.ps1) | **非コンパイル実行の実行時間分布**（#50 で新設・要 `--features prof`）。`-Mode phases` で段別（startup/lex/parse/type_check/resolve/interp_init/exec/teardown）、`-Mode ops` で **exec 中の op 別滞在時間**（統計サンプリング）。⚠ **1 回目はファイルのコールドリードを踏む**ので既定で 2 パス走らせて 2 パス目だけ採る。⚠ `-Mode ops` はサンプラーが 1 コアをスピンするので**プロセス wall が伸びる**（wall を見るときは `-Mode phases`） |
-| [syntax_cov.ps1](syntax_cov.ps1) | **例題スイートが一度も書いていない構文**を数える（#85 で新設・要 `--features tw_stats`）。⚠ **実行しない**（`AR_SYNTAX_COV=1` はパース直後に AST を歩いて終了）ので GUI もタイムアウトも無く**決定的**。出るのは ①未カバー variant ②`variant×文脈`マトリクス（`top`/`fn`/`nested_fn`/`type`/`module`/`async` × 式本体の中か）③`親>子` ペア（`-Pairs`）。⚠⚠ **最も見る所は `NESTED-GAP`**（最上位 fn には書かれているが入れ子 fn には無い構文）— **歴史的な実バグ 5 件中 4 件がこの文脈**。⚠ 測れない例題は**理由つきで表示**する（黙って落とさない）。⚠ 母集団は Rust 側が出し、観測種別が一覧に無ければ `STALE POPULATION` で落ちる |
-| [tw_stats.ps1](tw_stats.ps1) / [tw_stats_files.ps1](tw_stats_files.ps1) | **ツリーウォークが実際に実行している文**を全例題で集計（`AR_TW_STATS`）／その例題別内訳。feature 付きビルドを自動で行う |
-| [run_examples.ps1](run_examples.ps1) / [bench.ps1](bench.ps1) | 素朴な例題ランナー（タイムアウトなし）／ベンチ一式 |
+| [scan_examples.ps1](../scripts/scan_examples.ps1) | 全例題をタイムアウト付きで実行し、失敗のみ理由付きで列挙 |
+| [dump_native_ir.ps1](../scripts/dump_native_ir.ps1) | 代表 6 モジュールの生成 LLVM IR を保存（`.arc`/`.ars` は退避・復元） |
+| [annot_diff.ps1](../scripts/annot_diff.ps1) / [annot_unresolved.ps1](../scripts/annot_unresolved.ps1) | 注釈の充填状況・binop 特化の内訳・`Unresolved` の発生源／その全例題集計（式種別ごと） |
+| [ab_bench.ps1](../scripts/ab_bench.ps1) | 2 つの `arrow.exe` を**交互実行**して経過時間を比較（`-A head.exe -B new.exe`）。#2b で新設・**#38 で非同期読み化**。異常終了／タイムアウト（`-TimeoutSec` 既定 180）／不在パスは**値を出さず理由を表示**する（黙って速い値を出さない）。⚠ `powershell -File` 経由だと `-Scripts a,b,c` が 1 要素に潰れるので `-Command` で呼ぶ |
+| [ab_bench_modes.ps1](../scripts/ab_bench_modes.ps1) | **実行モード別**の A/B 計測（#47 で新設）。非コンパイル／コンパイル済み native／C DLL の 3 経路を交互実行し、スクリプトが出す `METRIC <name> <secs>` を解析する（プロセス経過時間ではないので起動・DLL ロード・setup を計測から外せる）。`CHECKSUM` を A/B で突き合わせ、食い違えば値を出さず警告。⚠ native モードは**測る側のバイナリで `--compile` し直す**（.arc の形式がブランチ間で違う） |
+| [repl_session.ps1](../scripts/repl_session.ps1) | **対話 REPL の回帰検知**（#36 で新設）。`examples/repl/repl_session.{in,out}` の golden 比較。⚠ `compare_vm_modes` は stdin を与えず、`compare_debug_modes` はデバッガ REPL（別物）を見るので、**対話 REPL はこれだけが検査している**。更新は `-Update`（差分は必ず目で見る） |
+| [debug_session.ps1](../scripts/debug_session.ps1) | **対話デバッガのステッピングの回帰検知**（#1 で新設・#33 で golden 化）。`examples/debugger/<name>.{ar,in,out}` の期待値比較。⚠ 他のどのゲートも stdin を与えないので、**ステッピングはこれだけが検査している**。更新は `-Update`（**#44 以降は書き換える行を必ず表示する**＝黙って上書きできない）。⚠ **このゲートは 2 度、黙って赤くなった**: ①`6bf039c`〜`7aea0e5`（golden が BOM 修正前のまま・#44 で録り直し）②#44〜#49（**環境側**＝コンソールのコードページで `Process.Start` が stdin に BOM を書いていた。**src も golden も無関係**なので遡っても原因が出ない／**別のマシンでは緑のまま通る**）。#49 で解消 |
+| [compare_python_impl.ps1](../scripts/compare_python_impl.ps1) | **参照実装（`impl_python`）との stdout 差分検査**（#31 で新設）。「**両実装が同じ間違いをする形**」以外を覆う唯一の網で、`compare_vm_modes` を失った後の代替。既知差分は理由つきで `$knownDiff` に列挙（`-ShowSkipped`）。⚠ `impl_python` は 100 コミット前に同期 |
+| [stale_doc_refs.ps1](../scripts/stale_doc_refs.ps1) | **コメント内の `` `識別子` `` が src に実在するか**の検査（#51 で新設）。#33 で消した関数を指す記述が 61 箇所あり、うち 2 件は**指示が真逆に矛盾**していた（コンパイラは何も言わない）。⚠ 履歴として正しい言及は落とす — 同じ行に「削除／廃止／撤去／以前／旧／移設／だった／していた」があれば履歴扱い。⇒ **消えたものに言及するときはマーカー語を書く**。外部成果物（`.ps1` 名・METRIC 名）は `$whitelist`。`-All` で除外分も表示。⚠⚠ **#51 で 0 にした直後、#52/#53/#56 が走らせずに 14 件へ戻した**（#57 で再び 0）＝ **改名・削除をしたら走らせること**。⚠ マーカー語は**行単位**なので、足すと同じ行の他の識別子も検査から外れる |
+| [compare_bytecode.ps1](../scripts/compare_bytecode.ps1) | **2 つの `arrow.exe` のバイトコードが同一か**を全例題で突き合わせる（#52 の手順を #68 で .ps1 化）。「挙動不変」を exit code より強く裏付ける唯一の手段で、#62/#63/#66 が要る。⚠ **async は対象外**（同一バイナリでも dump が揺れる）。⚠ **使う前に同一 exe 同士で負の対照を取る**。⚠ 生成する .ps1 のパス区切りはスラッシュにすること（バックスラッシュがエスケープに化けて壊した実績あり） |
+| [compare_import_paths.ps1](../scripts/compare_import_paths.ps1) | **import 系例題の stdout/stderr/exit が 2 バイナリで同一か**（#58 で新設）。cs-dll・**cs-proc**・js-proc・cpp-dll/lib の **13 例題**。⚠⚠ **子の出力はパイプで受けず `Start-Process -RedirectStandard*` でファイルへ落とす** — `import[js-proc]` の **node ブリッジが孫として生き残ってパイプを握る**ので `ReadToEndAsync` でも返らない（#38 のデッドロックとは別原因・skill `vm-pitfalls` §4）。⚠ `cs_proc_app.ar` は **`import[cs-proc]` を踏む唯一の非 GUI 例題**で、#58 以前は**どの差分ゲートにも入っていなかった** |
+| [compare_outputs.ps1](../scripts/compare_outputs.ps1) | **全例題の stdout/stderr/exit が 2 バイナリで同一か**（#63 で新設・**98 例題**）。⚠⚠ **解釈側（`eval_*`/`exec_*`）だけを触った変更は [compare_bytecode.ps1](../scripts/compare_bytecode.ps1) が自明に一致してしまう**ので、挙動不変はこちらで主張する。⚠ `bench` 分類は**経過時間そのものが出力**なので丸ごと対象外（`interop/bench_ab_cdll.ar` は名指しで除外）。⚠ アドレス（`0x…`・`id()`）は**除外せず正規化**する — `collection.ar` を落とすと set メソッドを見る網が消える |
+| [force_gate.ps1](../scripts/force_gate.ps1) | **VM に載らない構文の回帰検知**（#25。#33 完了後は「既定の挙動が全例題で通るか」の検査）。全例題を実行し `VmForceError` を列挙。⚠ **止めて判定する**用途で件数は `tw_stats.ps1` で見る。GUI 例題は**タイムアウト後に窓を閉じて**完走させる（#29） |
+| [prof_dist.ps1](../scripts/prof_dist.ps1) | **非コンパイル実行の実行時間分布**（#50 で新設・要 `--features prof`）。`-Mode phases` で段別（startup/lex/parse/type_check/resolve/interp_init/exec/teardown）、`-Mode ops` で **exec 中の op 別滞在時間**（統計サンプリング）。⚠ **1 回目はファイルのコールドリードを踏む**ので既定で 2 パス走らせて 2 パス目だけ採る。⚠ `-Mode ops` はサンプラーが 1 コアをスピンするので**プロセス wall が伸びる**（wall を見るときは `-Mode phases`） |
+| [syntax_cov.ps1](../scripts/syntax_cov.ps1) | **例題スイートが一度も書いていない構文**を数える（#85 で新設・要 `--features tw_stats`）。⚠ **実行しない**（`AR_SYNTAX_COV=1` はパース直後に AST を歩いて終了）ので GUI もタイムアウトも無く**決定的**。出るのは ①未カバー variant ②`variant×文脈`マトリクス（`top`/`fn`/`nested_fn`/`type`/`module`/`async` × 式本体の中か）③`親>子` ペア（`-Pairs`）。⚠⚠ **最も見る所は `NESTED-GAP`**（最上位 fn には書かれているが入れ子 fn には無い構文）— **歴史的な実バグ 5 件中 4 件がこの文脈**。⚠ 測れない例題は**理由つきで表示**する（黙って落とさない）。⚠ 母集団は Rust 側が出し、観測種別が一覧に無ければ `STALE POPULATION` で落ちる |
+| [tw_stats.ps1](../scripts/tw_stats.ps1) | **ツリーウォークが実際に実行している文**を全例題で集計（`AR_TW_STATS`）。feature 付きビルドを自動で行う。⚠ 例題別内訳の `tw_stats_files.ps1` は [_archive/](../_archive/) へ退避（`in_fn` が構造的に 0 になり集中先を探す必要が無くなったため） |
+| ⚠ [_archive/](../_archive/) | `run_examples.ps1`（タイムアウト無しの素朴なランナー）・`bench.ps1`（**ツリーウォーク時代**のベースライン計測）・`tw_stats_files.ps1` は退避済み。理由と代替は [_archive/README.md](../_archive/README.md) |
 
 ### 診断フック（環境変数）
 | 変数 | 効果 |
@@ -201,12 +201,12 @@ clippy は **`cargo clippy` 50 件**・**`--all-targets` 65 件**（差は `benc
 | `AR_ANNOT_DIFF=1` | 注釈の充填状況・binop 特化の内訳・`Unresolved` の発生源・slot 索引読みの件数・`AnnotIdent`（識別子読みの型落ち内訳・#15b） |
 | `AR_VM_DUMP=1` | VM の生成バイトコードを逆アセンブルして stderr へ |
 | `AR_PROF=1` / `AR_PROF=ops` | 実行時間分布（#50）。段別のみ／段別＋**exec 中の op 別サンプリング**（`AR_PROF_US` で間隔µs・既定 20、`AR_PROF_CSV` で CSV 出力）。**`cargo build --release --features prof` が要る**（既定ビルドではコードごと消える） |
-| `AR_SYNTAX_COV=1` | 例題スイートの**構文カバレッジ**（#85）。パース直後の AST を歩いて `SyntaxCov[...]` を stderr へ出し、**実行せずに終了する**。**`cargo build --features tw_stats` が要る**（既定ビルドではコードごと消える）。集計は [syntax_cov.ps1](syntax_cov.ps1) |
+| `AR_SYNTAX_COV=1` | 例題スイートの**構文カバレッジ**（#85）。パース直後の AST を歩いて `SyntaxCov[...]` を stderr へ出し、**実行せずに終了する**。**`cargo build --features tw_stats` が要る**（既定ビルドではコードごと消える）。集計は [syntax_cov.ps1](../scripts/syntax_cov.ps1) |
 | `AR_TW_STATS=1` | ツリーウォークの実行内訳（文種別×最上位/関数内）・VM コンパイル成否・bail 地点・**`tw_eval`（`eval()` の回数と AST 引数版入口 5 つの通過数・#55。通常実行ではほぼ 0）**・**`tw_control_flow`（TLS/センチネルを使う経路に入った回数・#3。通常実行では 0）**。**`cargo build --features tw_stats` が要る**（既定ビルドではコードごと消える。env 判定だけにすると `exec()` 1 文ごとの atomic 読みで 11% 退行する） |
 
 ### 落とし穴（既知）
 
-> **本文は skill [vm-pitfalls](.claude/skills/vm-pitfalls/SKILL.md) へ移した**（規約 3）。
+> **本文は skill [vm-pitfalls](../.claude/skills/vm-pitfalls/SKILL.md) へ移した**（規約 3）。
 > 計測・A/B（§1）／VM・コンパイラ（§2）／検査網とゲートの信用（§3）／
 > PowerShell・子プロセス（§4）の 4 節。**各項は実際に踏んだ失敗**で、
 > 大半は**テストもゲートも緑のまま間違っていた**もの。
@@ -219,8 +219,8 @@ clippy は **`cargo clippy` 50 件**・**`--all-targets` 65 件**（差は `benc
 
 各段の実装詳細・実測は [PHASE_R1_RESULTS.md](PHASE_R1_RESULTS.md)。
 ⚠ **不変条件の検査は #33 で入れ替わった**: `--vm=off` との byte-identical 比較は成立しなくなり、
-[compare_python_impl.ps1](compare_python_impl.ps1)（参照実装との突き合わせ）＋
-[repl_session.ps1](repl_session.ps1) ＋ [debug_session.ps1](debug_session.ps1) が担う。
+[compare_python_impl.ps1](../scripts/compare_python_impl.ps1)（参照実装との突き合わせ）＋
+[repl_session.ps1](../scripts/repl_session.ps1) ＋ [debug_session.ps1](../scripts/debug_session.ps1) が担う。
 
 **完了項目の一覧は区切り線の下へ移した**（規約 3）。経緯は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md)。
 
@@ -254,7 +254,7 @@ clippy は **`cargo clippy` 50 件**・**`--all-targets` 65 件**（差は `benc
 > **保守性レーンは速度目的ではない**ので A/B は**退行が無いことの確認**に使う。
 > ⚠ **51 で「コメントだけ」の変更がゲートを 2 件動かした**（`#[allow(dead_code)]` が
 > unreachable 警告を食っていた）＝ **属性が警告を隠していないか疑うこと**。
-> ⚠⚠ **「挙動不変」は [compare_bytecode.ps1](compare_bytecode.ps1) で確かめる**（exit code では弱い）。
+> ⚠⚠ **「挙動不変」は [compare_bytecode.ps1](../scripts/compare_bytecode.ps1) で確かめる**（exit code では弱い）。
 > **async 例題は同一バイナリでも dump が揺れる**ので対象外（差分を見たらまず同一 exe で再現を見る）。
 > 第 1 弾 51〜57 の経緯・23 の 54 への吸収は [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md)。
 
@@ -311,7 +311,7 @@ source → lexer → parser ┤                              ↓ その上に
 ### 0.3 実装順序
 
 1. **Phase R**（§4）— R0 ランタイムモデル導入 → R1〜R4 解決ステップ。各ステップ独立コミット可、`cargo test` 緑維持。
-2. `bench.ps1` 再測定（§4.5 ゲート）— 呼び出し機構がなお支配的かを確認（Phase V の設計裏付け）。
+2. ベンチ再測定（§4.5 ゲート）— 呼び出し機構がなお支配的かを確認（Phase V の設計裏付け）。⚠ 当時の `bench.ps1` は [_archive/](../_archive/) へ退避。
 3. **Phase V**（§5）— V-A〜V-F。バイトコード VM を R0 のフレーム/slot 上に載せる。
 4. **モジュールリンク**（§6）— ネイティブ経路（`.arc`）の安全動的リンク。Phase V と並行可。
 
@@ -327,24 +327,24 @@ source → lexer → parser ┤                              ↓ その上に
 （✅=対応済 / 🔶=部分 / ❌=未着手 を各項目に付記）
 
 ### 2.1 AST は実行時の第一級の値 — `ast_value.rs` 【✅ AST 保持】
-[ast_value.rs](src/interpreter/ast_value.rs) は `parse_ar()` 組み込みの実装で、**AST ノードを `Value::Namespace` ツリーに変換**して
+[ast_value.rs](../src/interpreter/ast_value.rs) は `parse_ar()` 組み込みの実装で、**AST ノードを `Value::Namespace` ツリーに変換**して
 Arrow へ渡す（`__type__` 等）。`python_converter` / converter.ar が依存。
 → **AST は破棄不可。バイトコードは「置き換え」でなく「追加の実行表現」**。Chunk は AST から生成、AST は保持し続ける。
 
 ### 2.2 テンプレートは実行時 AST 置換 — `templates.rs` 【✅ #7 で `(テンプレート,型引数)` キーの実体化メモ化・関数/ジェネレータ。クラスは副作用のため対象外】
-[templates.rs](src/interpreter/templates.rs) の `subst_stmt`/`subst_expr` が、呼び出し時に型変数を具体型へ置換した
+[templates.rs](../src/interpreter/templates.rs) の `subst_stmt`/`subst_expr` が、呼び出し時に型変数を具体型へ置換した
 **新 AST を clone-walk で生成**してから実行。
 → **テンプレートは実体化時オンデマンドコンパイル**。`(テンプレート名, 型引数リスト)` をキーに Chunk キャッシュ。解決も実体化ごと。
 
 ### 2.3 デバッガが文単位 Span に依存 — `debugger.rs` 【✅ 行テーブル(トレースバック)・デバッグ名テーブル・REPL バイトコード実行】
-`exec()` 冒頭で `should_pause_at(stmt)` を Span で判定（[dispatch.rs:19-23](src/interpreter/exec/dispatch.rs#L19)）。
+`exec()` 冒頭で `should_pause_at(stmt)` を Span で判定（[dispatch.rs:19-23](../src/interpreter/exec/dispatch.rs#L19)）。
 デバッガ REPL は**生スコープに対して式を評価**し `let dbg::name = …` で一時変数宣言。
 → **必須成果物**: ① バイトコードオフセット→Span の**行テーブル**、② slot→変数名の**デバッグ名テーブル**。
    **後付け不可。Chunk の初期設計に入れる**。（V-E で ①②とも実装・REPL は `LoadName`/`compile_debug` で名前引きバイトコード実行。
    **VM 関数内のステートメント単位ブレークも #1 で完了**（`stmt_spans` 行テーブル＋`run_stepping`）。）
 
 ### 2.4 クロージャは定義時に名前でキャプチャ — `capture_env` 【✅ #27-d で VM 化・#30/#45 で実体ごとの費用も除去】
-[blocks.rs:39](src/interpreter/exec/blocks.rs#L39) が本体の自由変数を走査、外側から拾って `HashMap<String, CapturedVar>` を作る。
+[blocks.rs:39](../src/interpreter/exec/blocks.rs#L39) が本体の自由変数を走査、外側から拾って `HashMap<String, CapturedVar>` を作る。
 可変変数は `Var::Mutable` → `Var::Cell(Rc<RefCell<Value>>)` に**その場で昇格**して共有。
 → **バイトコード化と相性が良い**。自由変数解析をコンパイル時に前倒しすれば R0-A のフレーム参照になる。`Rc<RefCell>` 表現は流用。
 （#27-d で実装: 不変キャプチャは**末尾 slot**・可変キャプチャは**セル表**（`LoadCell`/`StoreCell`）。
@@ -354,18 +354,18 @@ Arrow へ渡す（`__type__` 等）。`python_converter` / converter.ar が依�
 ⚠ `deep_clone`（スレッド送出）では **`Rc` を共有してはいけない**（#15/#45・不変条件テスト 3 本で固定）。）
 
 ### 2.5 名前が実行時に計算される代入 【✅ 通常は静的解決・デバッガは名前引き】
-- `local::{name}`（可変長引数）— [eval/core.rs:34](src/interpreter/eval/core.rs#L34)。ただし `name` は AST 内リテラル＝静的解決可（§3.4-C）
+- `local::{name}`（可変長引数）— [eval/core.rs:34](../src/interpreter/eval/core.rs#L34)。ただし `name` は AST 内リテラル＝静的解決可（§3.4-C）
 - `Self` / `kwargs` — メソッド/Python 呼び出しで動的に `declare_var`。ただし名前は既知＝slot/型index に解決可
 - `import` バインド名 — パース時に一意確定＝静的解決可
 
 → 大半は静的解決可能（§3.4-C）。**真に動的なのは実行後パースされるコード（デバッガ/対話 REPL）のみ**。そこだけ動的名エスケープハッチ（`LoadName`/`DeclareName`）。
 
 ### 2.6 `freeze` が実行時に可変性を変える 【✅ 保守的に扱う】
-`make_var_immutable`（[scope.rs:83](src/interpreter/scope.rs#L83)）が `Mutable`→`Immutable` に降格。
+`make_var_immutable`（[scope.rs:83](../src/interpreter/scope.rs#L83)）が `Mutable`→`Immutable` に降格。
 → **「不変だから定数畳み込み」を仮定してはいけない**。freeze 対象になりうる変数は保守的に扱う。
 
 ### 2.7 ジェネレータが eager（先行収集）【✅ #8 で本体を VM 化（`Yield` op・eager 収集維持）。lazy 化は §8 非目標のまま】
-`exec_generator`（[functions/execution.rs:292](src/interpreter/functions/execution.rs#L292)）は**本体を最後まで実行し全 yield 値を Vec 収集**
+`exec_generator`（[functions/execution.rs:292](../src/interpreter/functions/execution.rs#L292)）は**本体を最後まで実行し全 yield 値を Vec 収集**
 してから `Value::Generator` を返す。遅延評価ではない。
 → **Phase V では eager のまま移植**。lazy 化（frame 中断・再開＝新機能）は §8 非目標。
 
@@ -379,14 +379,14 @@ Arrow へ渡す（`__type__` 等）。`python_converter` / converter.ar が依�
 
 ### 2.9 オフセットアクセスの記憶域は既に存在する（重要な追い風）【✅ R3 IC が field_value offset を利用】
 インスタンス先頭ポインタからのオフセットアクセスは、**コンパイルと無関係に解釈実行でも既に全インスタンスの実行時表現**:
-- `InstanceData { raw: Box<[u64]>, class, boxed_fields }`（[value/instance.rs:129](src/interpreter/value/instance.rs#L129)）。
+- `InstanceData { raw: Box<[u64]>, class, boxed_fields }`（[value/instance.rs:129](../src/interpreter/value/instance.rs#L129)）。
   slot 0=`[class_id][flags]`、適格クラス（全プリミティブ・trait 継承なし・≤24 フィールド）は C-ABI レイアウトで raw に格納。
-- `field_value(idx)` が `byte_offset` で**直接オフセット読み**（[value/instance.rs:213](src/interpreter/value/instance.rs#L213)）。
-- ただし **名前→idx の解決だけが毎回辞書引き**（`get_attr_val` → `field_index.get(attr)`, [eval/attrs.rs:70](src/interpreter/eval/attrs.rs#L70)）。
-  `Expr::Attr` は解決キャッシュを持たない（[ast.rs:334](src/ast.rs#L334)）。
+- `field_value(idx)` が `byte_offset` で**直接オフセット読み**（[value/instance.rs:213](../src/interpreter/value/instance.rs#L213)）。
+- ただし **名前→idx の解決だけが毎回辞書引き**（`get_attr_val` → `field_index.get(attr)`, [eval/attrs.rs:70](../src/interpreter/eval/attrs.rs#L70)）。
+  `Expr::Attr` は解決キャッシュを持たない（[ast.rs:334](../src/ast.rs#L334)）。
 
 → **記憶域は整地済み。Phase R の R3 は「名前→idx の辞書引き」だけを潰せばよい**（詳細 §4.3）。
-   設計思想は c-abi-interop（[.claude/skills/c-abi-interop](.claude/skills/c-abi-interop/SKILL.md)）が**ネイティブ境界**に既に採る
+   設計思想は c-abi-interop（[.claude/skills/c-abi-interop](../.claude/skills/c-abi-interop/SKILL.md)）が**ネイティブ境界**に既に採る
    「AST 作成時に解決済みなら直接オフセット、できねば辞書」を、**解釈経路そのものに広げる**もの。
 
 ---
@@ -403,23 +403,23 @@ R1〜R4 の解決ステップ・V-A〜V-F の段階・`src/vm/` の構成はそ�
 cargo test                          # 750 passed を維持（`--features tw_stats` は 753）
 cargo build                         # 警告0 を維持
 cargo clippy                        # 既存 50 件・増分 0（--all-targets だと 65 件。⚠ **同コマンドで HEAD を測り直す**・#84。⚠ **baseline にもバグが埋もれる**・#65）
-./scan_examples.ps1                 # 例題スイートの回帰確認（FAIL 0）
-./compare_python_impl.ps1           # 参照実装との stdout 差分（54/54）— off/on 比較の代替
-./repl_session.ps1                  # 対話 REPL の golden（identical）
-./debug_session.ps1                 # 対話デバッガのステッピングの golden（5 identical）
-./stale_doc_refs.ps1                # コメント内の識別子が src に実在するか（0 件。⚠ 改名・削除の直後は必ず）
-./compare_bytecode.ps1 -A <head.exe> # 2 バイナリのバイトコードが同一か（コンパイラを触ったとき）
-./compare_outputs.ps1 -A <head.exe>  # 全例題の stdout/stderr/exit が同一か（⚠ 解釈側を触ったときはこちら）
+../scripts/scan_examples.ps1                 # 例題スイートの回帰確認（FAIL 0）
+../scripts/compare_python_impl.ps1           # 参照実装との stdout 差分（54/54）— off/on 比較の代替
+../scripts/repl_session.ps1                  # 対話 REPL の golden（identical）
+../scripts/debug_session.ps1                 # 対話デバッガのステッピングの golden（5 identical）
+../scripts/stale_doc_refs.ps1                # コメント内の識別子が src に実在するか（0 件。⚠ 改名・削除の直後は必ず）
+../scripts/compare_bytecode.ps1 -A <head.exe> # 2 バイナリのバイトコードが同一か（コンパイラを触ったとき）
+../scripts/compare_outputs.ps1 -A <head.exe>  # 全例題の stdout/stderr/exit が同一か（⚠ 解釈側を触ったときはこちら）
 #                                     ⚠ **基準は「直前のタスクのコミット」から建てる**（#88）
-./dump_native_ir.ps1 -OutDir <dir>   # 生成 LLVM IR（⚠ **ネイティブ codegen を触ったときはこれが主検査**・#64）
-./prof_dist.ps1                     # 実行時間の段別/op 別分布（要 --features prof）
-./bench.ps1                         # Phase R の各ステップ / Phase V の各段で再測定（フェーズ0基準 = bench_baseline.md）
+../scripts/dump_native_ir.ps1 -OutDir <dir>   # 生成 LLVM IR（⚠ **ネイティブ codegen を触ったときはこれが主検査**・#64）
+../scripts/prof_dist.ps1                     # 実行時間の段別/op 別分布（要 --features prof）
+#  ⚠ bench.ps1 は _archive/ へ退避（ツリーウォーク時代のフェーズ0ゲート用）。速度は prof_dist / ab_bench で見る
 cargo run -- --compile examples/interop/test_modules/physics.ar  # Phase R: native 経路の数値一致確認
 cargo run -- <file.ar>              # フォールバックは無い。載らなければ VmForceError で停止（#25/#33）
-./force_gate.ps1                    # 全例題で上記を回す「VM に載らない形が無い」ゲート（0 件・162 例題）
-./tw_stats.ps1                      # 未対応箇所の件数・内訳（要 --features tw_stats）
-./syntax_cov.ps1                    # **例題が一度も書いていない構文**（#85。要 --features tw_stats）
-./generate-codebase-map.ps1         # src/vm/ 等の新設後に必須
+../scripts/force_gate.ps1                    # 全例題で上記を回す「VM に載らない形が無い」ゲート（0 件・162 例題）
+../scripts/tw_stats.ps1                      # 未対応箇所の件数・内訳（要 --features tw_stats）
+../scripts/syntax_cov.ps1                    # **例題が一度も書いていない構文**（#85。要 --features tw_stats）
+../scripts/generate-codebase-map.ps1         # src/vm/ 等の新設後に必須
 ```
 
 規約（`.claude/rules/regulations.md`）: 新文法の追加は非該当（ただし **VM の新しい適格範囲ごとに
@@ -427,6 +427,8 @@ cargo run -- <file.ar>              # フォールバックは無い。載らな
 同じスクリプトの反復実行は .ps1 化する。
 
 ### 参照資料
+- [FUTURE_FEATURE.md](FUTURE_FEATURE.md) — **残タスクの待機列**（意義・前提・留意点つき）。
+  ⚠ **着手したら番号を本文書の残タスク表へ移す**（進行中はこちら・待機列はあちら）。
 - [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) — **実装の詳細・実測値・判断の根拠・保留タスクの調査記録**（本文書の切り分け先）。
 - [PHASE_R1_RESULTS.md](PHASE_R1_RESULTS.md) — Phase R / Phase V-A〜V-E の実装詳細と実測（進捗の一次資料）。
 - [bench_baseline.md](bench_baseline.md) — フェーズ0の全実測値と支配項の切り分け（各ステップの比較基準）。
@@ -446,29 +448,29 @@ cargo run -- <file.ar>              # フォールバックは無い。載らな
 
 | # | 到達点（**事実と手法のみ**） |
 |---|---|
-| 47 | master との**端点 A/B を実行モード別に実測**（[ab_bench_modes.ps1](ab_bench_modes.ps1) 新設）。解釈 **3.97x** ／ native の境界・コールバック **1.60x** ／ 純ネイティブ **1.00x**（＝負の対照）／ C DLL は見かけ 2.18x でも **FFI 自体は 1.15〜1.23x** |
+| 47 | master との**端点 A/B を実行モード別に実測**（[ab_bench_modes.ps1](../scripts/ab_bench_modes.ps1) 新設）。解釈 **3.97x** ／ native の境界・コールバック **1.60x** ／ 純ネイティブ **1.00x**（＝負の対照）／ C DLL は見かけ 2.18x でも **FFI 自体は 1.15〜1.23x** |
 | 48 | #47 で出た実バグを修正 — native の `mut` ポインタ書き戻しを**コンパイル時に決めて副表（node_id キー）へ**。副産物で cdll 呼び出しが **1.13〜1.16x** |
-| 49 | [debug_session.ps1](debug_session.ps1) の stdin BOM 混入を解消（**golden 無変更で 5/5 identical**） |
-| 50 | **段別＋op 別の実行時間分布**を実測（[prof_dist.ps1](prof_dist.ps1)・`--features prof` 新設） |
-| 51〜56 | 保守性レーン全 6 件完了（陳腐化コメント一掃＋[stale_doc_refs.ps1](stale_doc_refs.ps1) 新設／`CompileMode` 導入／`compiler.rs` を 10 モジュールへ分割／typed ABI 呼び出しの 1 本化／`eval()` の生死判定／**`parse_ar` の復活**） |
-| 57 | [stale_doc_refs.ps1](stale_doc_refs.ps1) の**再発 14 件を 0 に**（改名の取り残し／マーカー語／`$whitelist`）。**負の対照で検知力も確認** |
+| 49 | [debug_session.ps1](../scripts/debug_session.ps1) の stdin BOM 混入を解消（**golden 無変更で 5/5 identical**） |
+| 50 | **段別＋op 別の実行時間分布**を実測（[prof_dist.ps1](../scripts/prof_dist.ps1)・`--features prof` 新設） |
+| 51〜56 | 保守性レーン全 6 件完了（陳腐化コメント一掃＋[stale_doc_refs.ps1](../scripts/stale_doc_refs.ps1) 新設／`CompileMode` 導入／`compiler.rs` を 10 モジュールへ分割／typed ABI 呼び出しの 1 本化／`eval()` の生死判定／**`parse_ar` の復活**） |
+| 57 | [stale_doc_refs.ps1](../scripts/stale_doc_refs.ps1) の**再発 14 件を 0 に**（改名の取り残し／マーカー語／`$whitelist`）。**負の対照で検知力も確認** |
 
-| 58 | `exec` の `Stmt::Import` アーム **210 行 → 8 行の委譲**（`exec_import` ＋ 補助 7 本を `exec/modules.rs` へ）。`exec` **394→192 行**・最大ネスト **11→5**。逐語重複 2 件を畳み、探索順が違う 2 本は**畳まない理由を明記**。⚠ **cs-proc を見る差分ゲートが 0 個**だったので [compare_import_paths.ps1](compare_import_paths.ps1) を新設 |
-| 59 | 「**この文はどの名前を束縛するか**」を [decl_names.rs](src/decl_names.rs) の 1 箇所へ（`each_declared_name` ＋ `DeclOrigin`）。**exhaustive match 2 段で「足したら壊れる」形に**し、walker 4 本を委譲（4 本は理由を確かめて残置）。⚠ **負の対照で検知力を確認**（`DeclOrigin` +1 → 消費者 4 本ちょうど停止／`Stmt` +1 → `decl_names` が停止） |
+| 58 | `exec` の `Stmt::Import` アーム **210 行 → 8 行の委譲**（`exec_import` ＋ 補助 7 本を `exec/modules.rs` へ）。`exec` **394→192 行**・最大ネスト **11→5**。逐語重複 2 件を畳み、探索順が違う 2 本は**畳まない理由を明記**。⚠ **cs-proc を見る差分ゲートが 0 個**だったので [compare_import_paths.ps1](../scripts/compare_import_paths.ps1) を新設 |
+| 59 | 「**この文はどの名前を束縛するか**」を [decl_names.rs](../src/decl_names.rs) の 1 箇所へ（`each_declared_name` ＋ `DeclOrigin`）。**exhaustive match 2 段で「足したら壊れる」形に**し、walker 4 本を委譲（4 本は理由を確かめて残置）。⚠ **負の対照で検知力を確認**（`DeclOrigin` +1 → 消費者 4 本ちょうど停止／`Stmt` +1 → `decl_names` が停止） |
 | 60 | `parse_struct_bodies` を早期 continue へ反転（**103→60 行・ネスト 11→3**）＋ `scan_scope`（**82→49 行・ネスト 7→3**）。⚠⚠ **起票時の行数 307/405 は誤り**（診断が**文字リテラルを潰さず**ブレース平衡を崩していた）。実ヘッダ 6 本の全パース結果が **byte-identical**。⚠ 実ヘッダ検査が「VECTOR が居る」だけの空検査だったので件数・レイアウトを固定 |
 | 61 | `run_program` の設定探索を `load_python_search_paths` へ（**195→173 行・ネスト 9→5**）。⚠ 挿入位置を誤って `run_program` の doc を orphan 化し clippy +2 → 置き直して復帰 |
-| 62 | `compile_stmt` **817→371 行**（最大アーム 97→34）。代入族を [stmt_assign.rs](src/vm/compiler/stmt_assign.rs) へ分離し、`AttrCompoundAssign` の重複アームを統合。**bytecode 108/108 byte-identical**。⚠⚠ **偽の 6.5% 退行**を出したが、**`mod` 宣言の順序を逆にしただけのプローブが同じ 0.929x を再現**して棄却 |
-| 63 | `eval_method_call_full` の委譲漏れ 4 型を `*_methods.rs` へ（**1 レシーバ = 1 ファイル**）。**530→205 行**・最大ネスト **10→6**。⚠⚠ **bytecode は自明に一致する**ので証拠にならず、[compare_outputs.ps1](compare_outputs.ps1)（全例題の stdout/stderr/exit）を新設 |
+| 62 | `compile_stmt` **817→371 行**（最大アーム 97→34）。代入族を [stmt_assign.rs](../src/vm/compiler/stmt_assign.rs) へ分離し、`AttrCompoundAssign` の重複アームを統合。**bytecode 108/108 byte-identical**。⚠⚠ **偽の 6.5% 退行**を出したが、**`mod` 宣言の順序を逆にしただけのプローブが同じ 0.929x を再現**して棄却 |
+| 63 | `eval_method_call_full` の委譲漏れ 4 型を `*_methods.rs` へ（**1 レシーバ = 1 ファイル**）。**530→205 行**・最大ネスト **10→6**。⚠⚠ **bytecode は自明に一致する**ので証拠にならず、[compare_outputs.ps1](../scripts/compare_outputs.ps1)（全例題の stdout/stderr/exit）を新設 |
 | 64 | `gen_expr_inner` の `Expr::Call` を切り出し（**558→414 行・ネスト 9→6**）。⚠⚠ **統合はしない**と判断 — `gen_call` とは「2 実装」ではなく **float 直返し ↔ ハンドル＋アリーナの 2 つの ABI**。重複していたのは**判断 4 種・計 11 箇所**でそこだけ畳んだ。**IR 6/6 byte-identical** |
 | 65 | `eval_str_method` — ⚠⚠ **カテゴリ分割はしない**と判断（`exec_op` と同型の平坦な表）。代わりに重複を測り、**逐語 3 回の埋め文字解析から実バグ 2 件**（`ljust` が文字列内の空白まで置換／`rjust`・`center` がバイト長判定でマルチバイト非対応）。⚠ **clippy の受け入れ済み 51 件にバグを指す警告が埋もれていた** |
-| 66 | `Compiler` の `Chunk` 複製 17 フィールドを廃止 — **`Compiler` が `Chunk` を直接組み立てる**（`chunk: Chunk`）。フィールド **37→21**・`into_chunk` **21→6 行**・`Chunk` にフィールドを足すとき直す箇所 **4→1**。[compare_bytecode.ps1](compare_bytecode.ps1) **108/108 byte-identical** |
-| 67 | `Interpreter` のイベント 4 本・デバッガ 2 本を部分構造体へ（**32→28 フィールド**）。⚠ **全面分解はしない**（`impl` が 33 ファイルに散る）＝ 凝集が明らかで参照が少ないクラスタだけ（対象の参照は計 13 箇所）。⚠ [stale_doc_refs.ps1](stale_doc_refs.ps1) が**旧名参照 6 件**を捕捉（`vm/` 側にもあった） |
-| 68 | 関数本体の `enum` が `VmForceError` だった実バグを修正 — `build_enum_classes` で**組み立てと記憶域を分離**し `Op::EnumDef` が `Name` を slot へ。副産物で **#59 のドリフトが実害として発火**（`collect_declared_names` に `EnumDef` を追加）。[compare_bytecode.ps1](compare_bytecode.ps1) を新設 |
+| 66 | `Compiler` の `Chunk` 複製 17 フィールドを廃止 — **`Compiler` が `Chunk` を直接組み立てる**（`chunk: Chunk`）。フィールド **37→21**・`into_chunk` **21→6 行**・`Chunk` にフィールドを足すとき直す箇所 **4→1**。[compare_bytecode.ps1](../scripts/compare_bytecode.ps1) **108/108 byte-identical** |
+| 67 | `Interpreter` のイベント 4 本・デバッガ 2 本を部分構造体へ（**32→28 フィールド**）。⚠ **全面分解はしない**（`impl` が 33 ファイルに散る）＝ 凝集が明らかで参照が少ないクラスタだけ（対象の参照は計 13 箇所）。⚠ [stale_doc_refs.ps1](../scripts/stale_doc_refs.ps1) が**旧名参照 6 件**を捕捉（`vm/` 側にもあった） |
+| 68 | 関数本体の `enum` が `VmForceError` だった実バグを修正 — `build_enum_classes` で**組み立てと記憶域を分離**し `Op::EnumDef` が `Name` を slot へ。副産物で **#59 のドリフトが実害として発火**（`collect_declared_names` に `EnumDef` を追加）。[compare_bytecode.ps1](../scripts/compare_bytecode.ps1) を新設 |
 | 69 | `ar_config.json` の祖先ウォークを**遅延化**（`OnceCell` ＋ 起点だけ記憶）。`interp_init` **0.378→0.172 ms**・`ar_config_setup` **0.19〜0.21→0.000 ms**（repo 外の深い階層でも同じ）。⚠ **first-touch 仮説は棄却**。⚠⚠ **踏む例題が 0 本だった**ので 2 本新設（読み取りの実装は**2 つある**）。副産物で **`--features prof` が #68 以来壊れていた**のを修正 |
 | 70 | 最上位ループの融合（`IntBinGG`/`IntBinGC` ＋ **グローバル読みの clone 回避**）。最上位/fn 比 **2.30→1.19・2.50→1.34**（絶対 1.8x）。⚠⚠ **効いたのは命令数ではなく `Value` の clone**（融合だけなら 1.05〜1.16x）。⚠ 3 者比較で op 追加の摂動 1〜2% と分離。`Op` は 20 バイト維持 |
 | 71 | **`import[py]` の関数が 1 つも呼べなかった実バグを修正**（`vm_eligible` の `!is_python` が #33 で `VmForceError` に化けていた）。本体は `python_converter` が作る**普通の Arrow AST**なので載る。⚠ `try_fast_bind` も塞ぐ（copy 規則が 2 経路でずれる）。**CPython と 1 行ずつ突き合わせ**。差分は bytecode 109/110・outputs 92/93 の**修正 1 件だけ** |
-| 72 | `python.search_paths` の**読み取り**を [ar_config.rs](src/ar_config.rs) へ 1 本化（手書きの文字列走査を削除）。⚠⚠ 調べたら読み手は **5 つ・探索方針は 4 通り**で**どれにも理由がある**ので**方針は畳まない**（地図をモジュール doc に記載）。⚠ 差分計測 14 ケース中 **5 件相違・うち 3 件は手書き側の実バグ**（セクション外の拾い上げ等） |
-| 73 | `csharp.lib_paths` の手書き走査も [ar_config.rs](src/ar_config.rs) へ委譲。⚠⚠ 実測 11 ケース中 **6 件相違・うち 5 件が手書き側の誤り** — 最悪は **`cpp.lib_paths` と併存すると C++ 用のパスを C# の DLL 探索に使う**（潜在）。⚠ 踏む例題が作れない（DLL とブリッジを既定外に置く必要）ので**単体テスト 2 種**で担保 |
+| 72 | `python.search_paths` の**読み取り**を [ar_config.rs](../src/ar_config.rs) へ 1 本化（手書きの文字列走査を削除）。⚠⚠ 調べたら読み手は **5 つ・探索方針は 4 通り**で**どれにも理由がある**ので**方針は畳まない**（地図をモジュール doc に記載）。⚠ 差分計測 14 ケース中 **5 件相違・うち 3 件は手書き側の実バグ**（セクション外の拾い上げ等） |
+| 73 | `csharp.lib_paths` の手書き走査も [ar_config.rs](../src/ar_config.rs) へ委譲。⚠⚠ 実測 11 ケース中 **6 件相違・うち 5 件が手書き側の誤り** — 最悪は **`cpp.lib_paths` と併存すると C++ 用のパスを C# の DLL 探索に使う**（潜在）。⚠ 踏む例題が作れない（DLL とブリッジを既定外に置く必要）ので**単体テスト 2 種**で担保 |
 | 74 | `python.search_paths` の**探索方針を祖先ウォークへ統一**（本系列で初の**意図的な挙動変更**）。⚠⚠ 揃える前は**同じ設定が `import[py-int]` からは見えて `import[py]` からは ParseError** だった（実証済み）。根拠は「読み手 5 つのうち **4 つが既にウォーク**」。差分は**意図した 1 件だけ**（outputs 93/93・bytecode 110/110 は同一） |
 
 ## 4. Phase R — AST 解決層 ＋ フレーム/slot ランタイム（**共有基盤・本命**）　【✅ R1/R3/R4/codegen 消費 完了。R2-c は**ブロック中**（消費者不在）・R0-A(#12b) は**保留**】
@@ -477,7 +479,7 @@ cargo run -- <file.ar>              # フォールバックは無い。載らな
 解釈経路・ネイティブ codegen の**両方**がこの解決結果を消費する。
 
 ### 4.1 成果物の表現
-AST を破壊的に書き換えず、**ノードに解決結果を持たせる**（既存 `SlotCache`（[ast.rs:73](src/ast.rs#L73)）と同じ
+AST を破壊的に書き換えず、**ノードに解決結果を持たせる**（既存 `SlotCache`（[ast.rs:73](../src/ast.rs#L73)）と同じ
 「ノード埋め込み `Cell` / 付随フィールド」方式。§9-1 で最終確認）。決まらなければ `Dynamic` を保持し実行時に従来経路。
 
 ### 4.2 R0 ランタイムモデル（解釈器ストレージ改修）— **当初の想定は外れた**
@@ -494,8 +496,8 @@ AST を破壊的に書き換えず、**ノードに解決結果を持たせる**
 |---|---|---|
 | **R1. ローカル/引数の slot 化** 【✅】 | 関数本体の変数を宣言順に slot 番号付け（B: フレーム内固定 slot）。`Expr::Ident` に `Resolved::Local{frame_level, slot}` を付与。決まらなければ `Dynamic`（§2.5） | scope HashMap 引き（~0.09µs/access） |
 | **R2. グローバルの slot 化** 【保留 #11・§6 と連動】 | 既存 `SlotCache` を「実行時遅延」から「AST 展開時解決」へ前倒し。各 .ar ファイルは固有のグローバル配列を持ち index アクセス（§6 のモジュールモデルと接続） | epoch 検証つき実行時キャッシュ |
-| **R3. フィールドのオフセット化** 【✅】 | 呼び出し点でオブジェクトの具象クラスが型チェッカから判れば `Expr::Attr` に `(class_id, idx)` を焼く（記憶域は §2.9 の通り既存）。判らなければ **多相 IC**: `InstanceData.class_id`（[value/core.rs:19](src/interpreter/value/core.rs#L19) `alloc_class_id`）で「前回と同じ class_id ならオフセット再利用、違えば `field_index` 引き直してキャッシュ更新」 | `field_index.get(attr)`（[eval/attrs.rs:70](src/interpreter/eval/attrs.rs#L70)） |
-| **R4. 呼び先の解決** 【✅】 | Arrow 関数呼び出しを名前引きから解決済みターゲット（グローバル関数 index / 関数ポインタ）へ。`Expr::Call.cache`（[ast.rs:356](src/ast.rs#L356)）を Arrow 関数にも拡張。関数オブジェクトを変数に代入した場合は slot 内 Value の CALL ディスパッチ（名前引きなし） | 呼び先名前引き |
+| **R3. フィールドのオフセット化** 【✅】 | 呼び出し点でオブジェクトの具象クラスが型チェッカから判れば `Expr::Attr` に `(class_id, idx)` を焼く（記憶域は §2.9 の通り既存）。判らなければ **多相 IC**: `InstanceData.class_id`（[value/core.rs:19](../src/interpreter/value/core.rs#L19) `alloc_class_id`）で「前回と同じ class_id ならオフセット再利用、違えば `field_index` 引き直してキャッシュ更新」 | `field_index.get(attr)`（[eval/attrs.rs:70](../src/interpreter/eval/attrs.rs#L70)） |
+| **R4. 呼び先の解決** 【✅】 | Arrow 関数呼び出しを名前引きから解決済みターゲット（グローバル関数 index / 関数ポインタ）へ。`Expr::Call.cache`（[ast.rs:356](../src/ast.rs#L356)）を Arrow 関数にも拡張。関数オブジェクトを変数に代入した場合は slot 内 Value の CALL ディスパッチ（名前引きなし） | 呼び先名前引き |
 
 - **protocol 引数・template**: 原型 AST は `templates.rs` が保持（§2.2）。解決可能な呼び出し点は固定オフセットに焼き（monomorphize 相当）、
   真に多相な protocol 引数は R3 の多相 IC に倒す（＝「できねば辞書アクセス」の実体）。
@@ -542,7 +544,7 @@ src/vm/
 - **行テーブル・デバッグ名テーブルを Chunk の初期設計に入れる**（§2.3, 後付け不可）。
 
 ### 5.2 オペコード
-**素案は役目を終えた。現物は [src/vm/op.rs](src/vm/op.rs) の `enum Op`**（doc コメントが仕様）。
+**素案は役目を終えた。現物は [src/vm/op.rs](../src/vm/op.rs) の `enum Op`**（doc コメントが仕様）。
 素案との差分: 例外は静的テーブルではなく実行時ハンドラスタック（`SETUP_TRY`/`POP_TRY`）。
 純粋組み込みは `CALL_BUILTIN`。デバッガは `LOAD_NAME`/`DECLARE_NAME`。`STORE_GLOBAL` は #10-b で追加。
 
@@ -557,7 +559,7 @@ Arrow 特有の「`break` が入れ子の if/match/block を貫通して外側�
 
 ### 5.4 段階（V-A 〜 V-F, 各段で テスト緑 + 穴の可視化 + ベンチ再測定）
 > ⚠ 当初は各段の穴を `--vm=force` で可視化する想定だったが、長らく **`Force` は `Auto` と同一の
-> no-op** だった。#25 でゲート化済み（[force_gate.ps1](force_gate.ps1)）。件数の可視化は `AR_TW_STATS`。
+> no-op** だった。#25 でゲート化済み（[force_gate.ps1](../scripts/force_gate.ps1)）。件数の可視化は `AR_TW_STATS`。
 - **V-A〜V-D** 【✅】: 骨格（op/chunk/run/disasm）→ 算術・slot・制御フロー・呼び出し → クラス/メソッド/属性（R3 の IC）
   → 例外・match・ブロック式（TLS/センチネルを**VM 経路で不使用化**・実削除は #33）→ for・組み込み・Chunk キャッシュ。
   ※当時はクロージャ・最上位・import が残っていた（**その後すべて解消**:
@@ -614,7 +616,7 @@ Arrow 特有の「`break` が入れ子の if/match/block を貫通して外側�
 > **`loop_yield` を脱出扱いしていた**（跳ばないのに丸ごと bail）。
 > ⇒ *bail する形はツリーウォークが正しいとは限らない* の再演が続いている。
 > **見つけ方は毎回同じ**: 形を総当たりして**参照実装（`impl_python`）**と突き合わせる
-> （`--vm=off` との比較は #33 で失われた。[compare_python_impl.ps1](compare_python_impl.ps1) が代替）。
+> （`--vm=off` との比較は #33 で失われた。[compare_python_impl.ps1](../scripts/compare_python_impl.ps1) が代替）。
 
 | # | 完了項目 | 手法 |
 |---|---|---|
@@ -629,7 +631,7 @@ Arrow 特有の「`break` が入れ子の if/match/block を貫通して外側�
 | **39** | **関数本体からのグローバル代入の VM コンパイル** | `store_target` の `toplevel_globals` 門を撤去（`cells`/`statics`/`slots` を全部外れた名前＝ローカルでもキャプチャでもない＝`scopes[0]`。読み側 `LoadGlobal` と同じ根拠）。⚠ **`vm_assign_global` を `assign_var` 委譲から `scopes[0]` 限定へ変更**（VM 関数は `scopes` を押さないので、委譲すると**呼び出し元のローカル**を走査してしまう）。デバッガ REPL（`debug_mode`）だけは名前引きが要るので bail 継続（**完了**（新オペコード 0。潜在的な健全性の穴も解消）） |
 | **37** | **`try/finally` を跨ぐ `break`/`continue`/`return`/`block_return` の VM コンパイル** | `try_depth`/`finally_guard` を **`try_stack: Vec<Option<Vec<Stmt>>>`**（各 try の finally 本体）へ置換し、`emit_unwind_tries(keep, pop_except)` が**脱出経路へ finally 本体を複製**する（内側から）。バリアは `LoopCtx.try_len`／`BlockCtx.try_len`／`return` は 0。⚠ **`loop_yield` は跳ばないので `has_escape` から外した**（誤検知で丸ごと bail していた）（**完了**（新オペコード 0。`try/except` を跨ぐ脱出の bail も解消）） |
 | **40** | **`finally` 本体そのものからの脱出の VM コンパイル** | `compile_finally_copy(fin, extra)` が**複製が載っているオペランド数**だけ `stmt_base` を持ち上げる（例外路 `[exc]`＝1・`return` 路の戻り値＝1）。跳ぶときにその分まで捨てるので **Python と同じ「保留中の動作を破棄する」**意味論になる。`block_return` は `BlockCtx.entry_depth` との差分を `Pop`。複製の増殖は `MAX_FINALLY_NEST` で頭打ち（**完了**（新オペコード 0。`has_escape` walker を**全廃**）） |
-| **36** | **`Interpreter::new()` 消費者の VM 経路移行** | テストは `prepare()` に一本化（`resolve_program`＋`check_and_annotate`＋`set_toplevel_globals`＋`On`）／REPL はブロックごとに同じ配線（**globals は積み増し**・注釈は差し替え）。⚠ **`toplevel_vm_candidate` の `!toplevel_globals.is_empty()` を撤去**（最上位に宣言の無いプログラムが最上位丸ごとツリーウォークだった＝ゲートの穴）。⚠ **最上位 Chunk キャッシュは `Stmt` のアドレスをキーにするので AST を捨ててはいけない**（REPL がブロックごとに捨てて別文の Chunk を実行していた）（**完了**（734 テスト全件が VM 経路。[repl_session.ps1](repl_session.ps1) を新設）） |
+| **36** | **`Interpreter::new()` 消費者の VM 経路移行** | テストは `prepare()` に一本化（`resolve_program`＋`check_and_annotate`＋`set_toplevel_globals`＋`On`）／REPL はブロックごとに同じ配線（**globals は積み増し**・注釈は差し替え）。⚠ **`toplevel_vm_candidate` の `!toplevel_globals.is_empty()` を撤去**（最上位に宣言の無いプログラムが最上位丸ごとツリーウォークだった＝ゲートの穴）。⚠ **最上位 Chunk キャッシュは `Stmt` のアドレスをキーにするので AST を捨ててはいけない**（REPL がブロックごとに捨てて別文の Chunk を実行していた）（**完了**（734 テスト全件が VM 経路。[repl_session.ps1](../scripts/repl_session.ps1) を新設）） |
 | — | Phase R（R0/R1/R3/R4） | フレーム隔離・ローカル slot 化・属性 IC・呼び先解決・`Value` 32B 化 |
 | — | Phase V-A〜V-E | VM 骨格・制御フロー・メソッド・例外ハンドラスタック・ブロック式・トレースバック・デバッガ REPL |
 | 4〜9 | VM カバレッジ拡大 | メソッド高速バインド／添字・コレクション／組み込み拡張／テンプレート Chunk メモ化／ジェネレータ VM 化／関数内 async |
@@ -656,19 +658,19 @@ Arrow 特有の「`break` が入れ子の if/match/block を貫通して外側�
 | 1-a | デバッガの自動検証を新設 | `examples/debugger/<name>.{ar,in}` の **5 シナリオ**（ステッピング transcript の比較）。**負の対照で検知力を確認**。⚠ #33 で golden 方式（`debug_session.ps1`）へ移行 |
 | 1-b | デバッグ中の VM 無効化を最小化 | `should_pause_at` を読み「**停止し得るのは StepInto だけ**」と確定し `dbg_blocks_vm()` へ置換。step-over が跨ぐ重い呼び出しで **1.97x**・通常経路のコストはゼロ |
 | 1 | V-E 本体（VM 内の文単位ブレーク） | 文境界行テーブル `stmt_spans` ＋停止判定つき専用ループ `run_stepping`（**通常ループには何も足さない**）／停止フレームのローカルを `local_names` から一時スコープへ。**既存バグ 1 件を修正**・ツリーウォークへのデバッグ用フォールバックを撤去 |
-| 10-a | 最上位ツリーウォークの実測 | 診断フック `AR_TW_STATS`（feature `tw_stats`）＋ [tw_stats.ps1](tw_stats.ps1)。文種別×最上位/関数内、VM コンパイル成否、bail 地点（未帰属 catch-all つき）。**#10 の保留理由 2 点と「#3 の前提は #10 のみ」を実測で否定** |
+| 10-a | 最上位ツリーウォークの実測 | 診断フック `AR_TW_STATS`（feature `tw_stats`）＋ [tw_stats.ps1](../scripts/tw_stats.ps1)。文種別×最上位/関数内、VM コンパイル成否、bail 地点（未帰属 catch-all つき）。**#10 の保留理由 2 点と「#3 の前提は #10 のみ」を実測で否定** |
 | 27 の一部 | クロージャ: **外側関数**を VM 化 | `Op::MakeFn` ＋ `Chunk.fn_defs`。`nested_fn_captures` が「自由変数 ∩ 外側 slot」を求め**全て不変のときだけ**載せる（値を複製して `CapturedVar::Immutable`）。オーバーロード合成は `merge_fn_overload` に集約。`decl-prepass:FnDef` 8→**0**・`fn_FAILED` 17→**11**・`in_fn` 127→**111** |
 | 27-c の一部 | 最上位 bail **175 → 126**（制御フロー文の bail 18→**10**） | リゾルバ 4 件（`enum`/`new_type` を globals へ・`AsyncAssign` の `target` は束縛でない・虚数リテラル・**VM へ渡す集合をシャドウ減算なしに**）＋ `block:` 文＋`for k, v in ...`（`Op::UnpackTuple` 1 個）＋ `collect_nested_decls` の `Stmt::Block` 漏れ。**計測の穴 3 件**も修正（意図的スキップ 336 件が失敗に化けていた／未帰属 46→3／bail を `<文種別>/<理由>` で切れるように） |
 | 10-c2 | 最上位の残り文を Chunk 化 | 受理判定を**許可リスト→定義文の除外リスト**へ反転（式文・`if`/`try`/`match`・代入・属性代入…）。`exec()` の VM 試行を 5 アーム→**入口 1 箇所**へ集約。最上位 Chunk 499→**1,368**・ツリーウォーク **663**（うち 56% は定義文）。**計測フックの過大計上を修正** |
 | 27-b | メソッド dispatcher の 1 本化 | `eval_method_call` を「引数評価＋委譲」だけにし 16 レシーバを評価済み版へ集約。`Instance` アーム 144 行と旧 evaled 版 85 行を委譲に畳む。`Op::CallMethod*` に `node_id` を足して FFI 戻り値検査を VM へ。`fn_FAILED` 29→**17**・`toplevel_FAILED` 163→**65**・実質 -230 行 |
-| **31** | **参照実装（`impl_python`）との差分検査** | [compare_python_impl.ps1](compare_python_impl.ps1) を新設。**stdout だけ**を比べ、Rust は**既定モード**で走らせる。既知差分は**理由つきの `$knownDiff` に明示列挙**し、載っていない例題は既定で検査対象＝**新しい例題は自動的に検査される**。一致するようになった項目は STALE として報告。⚠ **`impl_python` は 100 コミット前（`33ef765`）に同期**なので既知差分が 36 件ある（**完了**（**46 検査・46 一致**／既知差分 36。負の対照 2 種で検知力確認）） |
-| **41** | **定義文脈の式の VM 化** | `compile_definition_expr`（式 ＋ `Return` の Chunk）と `eval_definition_expr` を新設し、クラスのフィールド既定値・クラス変数・`enum` 値・デコレータの **7 箇所**を VM 経路へ。⚠ **自由な識別子は `LoadName`**（新フラグ `name_lookup`）— 定義文の実行位置は最上位とは限らない（モジュール本体の中など）ので `scopes[0]` 限定の `LoadGlobal` ではツリーウォークと答えが変わる（**完了**（新オペコード 0。[definition_context_expr.ar](examples/classes/definition_context_expr.ar) の `tw_control_flow` 6→**0**）） |
-| **42** | **import モジュール本体の VM 化** | `Op::StoreName`（`assign_var` へ委譲＝チェーン探索）を 1 個追加し、`module_mode` / `compile_module_stmt` / `try_run_module_stmt` で `exec_module` の 2 つの実行ループを VM 経路へ。⚠ 宣言（`DeclareGlobal`→`declare_var`→`scopes.last_mut()`）と読み（`LoadName`）は**元からチェーンを見る**ので変更不要で、足りないのは**名前ベースの代入**だけだった（**完了**（[module_toplevel_flow.ar](examples/interop/module_toplevel_flow.ar) の `module_body` 18→**2（定義文のみ）**・`tw_control_flow` **0**）） |
+| **31** | **参照実装（`impl_python`）との差分検査** | [compare_python_impl.ps1](../scripts/compare_python_impl.ps1) を新設。**stdout だけ**を比べ、Rust は**既定モード**で走らせる。既知差分は**理由つきの `$knownDiff` に明示列挙**し、載っていない例題は既定で検査対象＝**新しい例題は自動的に検査される**。一致するようになった項目は STALE として報告。⚠ **`impl_python` は 100 コミット前（`33ef765`）に同期**なので既知差分が 36 件ある（**完了**（**46 検査・46 一致**／既知差分 36。負の対照 2 種で検知力確認）） |
+| **41** | **定義文脈の式の VM 化** | `compile_definition_expr`（式 ＋ `Return` の Chunk）と `eval_definition_expr` を新設し、クラスのフィールド既定値・クラス変数・`enum` 値・デコレータの **7 箇所**を VM 経路へ。⚠ **自由な識別子は `LoadName`**（新フラグ `name_lookup`）— 定義文の実行位置は最上位とは限らない（モジュール本体の中など）ので `scopes[0]` 限定の `LoadGlobal` ではツリーウォークと答えが変わる（**完了**（新オペコード 0。[definition_context_expr.ar](../examples/classes/definition_context_expr.ar) の `tw_control_flow` 6→**0**）） |
+| **42** | **import モジュール本体の VM 化** | `Op::StoreName`（`assign_var` へ委譲＝チェーン探索）を 1 個追加し、`module_mode` / `compile_module_stmt` / `try_run_module_stmt` で `exec_module` の 2 つの実行ループを VM 経路へ。⚠ 宣言（`DeclareGlobal`→`declare_var`→`scopes.last_mut()`）と読み（`LoadName`）は**元からチェーンを見る**ので変更不要で、足りないのは**名前ベースの代入**だけだった（**完了**（[module_toplevel_flow.ar](../examples/interop/module_toplevel_flow.ar) の `module_body` 18→**2（定義文のみ）**・`tw_control_flow` **0**）） |
 | **43** | **実行時型検査の高速判定**（`loop_yield`/`block_return`） | `TypeTag`（**アノテーション文字列から**コンパイル時に決める種別）を op に載せ、実行時は**列挙比較 1 回**で済ませる。外れたときだけ一般判定（`check_*_type`）へ落とすので**エラー文言は 1 実装のまま**。`Any` は自明に真なので **op 自体を出さない**。⚠ **型推論の結果は使わない**（#15e の「注釈は意味論の根拠ではない」を破らないため）（**完了**（`loop_yield` 支配ベンチ **1.177x**＝検査を消した上限の **104%** を回収。`bench_block_expr` は 0.936→**1.016x**）） |
 | **33** | **ツリーウォーク制御フローの削除**（本系列の主目的） | 4 層で削除（**src 実質 -762 行**）: A=`eval/control_expr.rs` 全体＋`eval()` の 5 アーム ／ B=`exec/control_flow.rs`（227→55・`make_for_iterator` だけ残す）＋`exec()` の 10 アーム ／ C=**TLS 3 本＋センチネル 2 種**＋`exec_loop_yield`／ D=`ExecResult` の 4 バリアント＋ツリーウォークの `try`＋`exec_block`/`exec_scoped_block`。⚠ `GENERATOR_YIELDS`（#8）と `RAISE_SENTINEL`（V-C）は **VM が使うので残す**。⚠ `eval()`/`exec()` のアームは**削除せず明示的なエラー**に畳んだ（到達したら黙って動かず落とす）（**完了**（着手前に `tw_stats` を全例題で再測定して 0 を確認）） |
-| **38** | **A/B 計測スクリプトのデッドロック解消** | [ab_bench.ps1](ab_bench.ps1) の `Measure-Run` を**非同期読み**（`ReadToEndAsync`）に揃え、併せて**異常終了・タイムアウト・不在パスを黙殺しない**ようにした（`-TimeoutSec` 既定 180・失敗は min から除外して `!!`／`WARN:` で再掲）（**完了**（負の対照＝`AR_VM_DUMP=1` で修正前ハング→修正後完走。詳細は実装ログ）） |
+| **38** | **A/B 計測スクリプトのデッドロック解消** | [ab_bench.ps1](../scripts/ab_bench.ps1) の `Measure-Run` を**非同期読み**（`ReadToEndAsync`）に揃え、併せて**異常終了・タイムアウト・不在パスを黙殺しない**ようにした（`-TimeoutSec` 既定 180・失敗は min から除外して `!!`／`WARN:` で再掲）（**完了**（負の対照＝`AR_VM_DUMP=1` で修正前ハング→修正後完走。詳細は実装ログ）） |
 | **30** | **クロージャ Chunk の実体跨ぎ再利用＋計測** | `get_or_compile_chunk` は `FnValue` ごとにキャッシュするので、**クロージャは実体ごとに再コンパイル**する。#27-d 段階 1 で初めて実際に走るようになった（それまでクロージャは VM 非対象）。⚠ **クロージャのベンチが 1 本も無い**ので、まず計測手段を作ってから判断する（未着手（**新たに生じた性能リスク**・唯一残る）） |
-| **44** | **デバッガ golden の録り直し** | [debug_session.ps1](debug_session.ps1) が **#33 partial（`6bf039c`）からずっと FAILED**。同じコミットが「stdin を BOM 無しで書く」修正と「修正前の出力の golden」を**同時に**入れたため、golden に BOM 由来の**二重プロンプトと偽エラー**が焼き付いている。⚠ **`-Update` で黙って上書きしない**（差分の中身＝偽の 1 行が消えることを確認してから）。⚠ ステッピングを見ているゲートはこれだけなので**現状は無検査**（**完了**（golden を録り直して 5 identical。負の対照 3 種で検知力確認・`-Update` は差分表示するようにした）） |
+| **44** | **デバッガ golden の録り直し** | [debug_session.ps1](../scripts/debug_session.ps1) が **#33 partial（`6bf039c`）からずっと FAILED**。同じコミットが「stdin を BOM 無しで書く」修正と「修正前の出力の golden」を**同時に**入れたため、golden に BOM 由来の**二重プロンプトと偽エラー**が焼き付いている。⚠ **`-Update` で黙って上書きしない**（差分の中身＝偽の 1 行が消えることを確認してから）。⚠ ステッピングを見ているゲートはこれだけなので**現状は無検査**（**完了**（golden を録り直して 5 identical。負の対照 3 種で検知力確認・`-Update` は差分表示するようにした）） |
 | **45** | **`FnValue.body` の共有**（`Rc<[Stmt]>` 化） | #30 の実測で、クロージャ生成そのものに **1.05µs/実体**残っている。大半は `FnValue` が `body: Vec<Stmt>` を**実体ごとにディープクローン**する費用。`Rc` 共有にすれば消えるが `body` の消費者が多い。⚠ **#30 とは別軸**（#30 はコンパイル、これは AST 複製）（**完了**（本体サイズ依存を O(n)→O(1) 化。1 文 1.11x／10 文 4.07x／40 文 13.1x・`bench_closure` C-1 で 3.26x。⚠ `body.clone()` が「複製」から「参照カウント加算」へ黙って変わるので不変条件テスト 3 本で固定）） |
 | 10-c | 最上位の宣言文を Chunk 化 | `Op::DeclareGlobal(name, DeclKind)`（**4 種を 1 op のオペランドに畳む**）＋ `compile_toplevel_stmt` が `let`/`mut`/`const` を受理。最上位ツリーウォーク **30,123 → 2,071**（#10 着手前から **5,425x 減**）。E2E は退行なし |
 | 27-a/26 | レシーバ判定を**「形＋出自」の 2 段**に | 型検査に `arrow_class_names`（外部言語 import 本体の `ClassDef` を除外）を持たせ注釈経由で VM へ。slot を持たないレシーバ（グローバル/属性/呼び出し結果）も注釈から判定。最上位ツリーウォーク **120x 減**・`bench_method_call` **1.45x**・unsound だった 2 件を正しく弾いた |
@@ -735,10 +737,10 @@ for each import 辺 (自分 → B):
 
 | codegen が既にやっている解決 | コード |
 |---|---|
-| ローカル名 → alloca レジスタ | `GenCtx.locals: HashMap<String,(reg,Ty)>` [context.rs:22](src/partial_compiler/llvm_codegen/context.rs#L22) |
-| 引数名 → クラス | `param_classes` [context.rs:33](src/partial_compiler/llvm_codegen/context.rs#L33) |
-| フィールド → 型付きオフセット(GEP) | `field_ty()` [context.rs:48](src/partial_compiler/llvm_codegen/context.rs#L48) |
-| 二項演算を再帰でレジスタへ | `Expr::BinOp{left,right}` 依存（**木構造前提**） [expr.rs](src/partial_compiler/llvm_codegen/expr.rs) |
+| ローカル名 → alloca レジスタ | `GenCtx.locals: HashMap<String,(reg,Ty)>` [context.rs:22](../src/partial_compiler/llvm_codegen/context.rs#L22) |
+| 引数名 → クラス | `param_classes` [context.rs:33](../src/partial_compiler/llvm_codegen/context.rs#L33) |
+| フィールド → 型付きオフセット(GEP) | `field_ty()` [context.rs:48](../src/partial_compiler/llvm_codegen/context.rs#L48) |
+| 二項演算を再帰でレジスタへ | `Expr::BinOp{left,right}` 依存（**木構造前提**） [expr.rs](../src/partial_compiler/llvm_codegen/expr.rs) |
 
 **X が軽い理由**:
 1. codegen は既に AST 消費・解決済み。X は**表現を変えず**事前解決注釈を読むだけ（むしろ簡素化）。Y は入力を総取り替えし動くコードを捨てる。
@@ -787,7 +789,7 @@ Phase R/V の**ランタイム表現の土台**。解釈のフレーム/slot ス
 **B. 関数内は固定 slot** — 関数内の if/while/for/block は**実行時に push/pop せず**、全ローカルにフレーム内固定 slot を割り当てる
 （フレームサイズ = 同時生存ローカルの最大数、コンパイル時算出）。ブロックスコープはコンパイル時にのみ強制。
 → **関数内の実行時スコープ操作が消える**。Arrow は可視名の再宣言を禁止
-（[dispatch.rs:31](src/interpreter/exec/dispatch.rs#L31) 付近の "already declared" 検査）＝**シャドウイングなし**なので slot 割り当てが素直。
+（[dispatch.rs:31](../src/interpreter/exec/dispatch.rs#L31) 付近の "already declared" 検査）＝**シャドウイングなし**なので slot 割り当てが素直。
 ブロックを跨ぐ同名の slot 再利用/寿命解析のみ要実装。
 
 **C. 動的名はほぼ静的解決可** — `self`/可変長 `local::`/`kwargs`/import バインド名/`Self`/`static` は
@@ -823,9 +825,9 @@ Phase R/V の**ランタイム表現の土台**。解釈のフレーム/slot ス
 source → lexer → parser → type_check → Interpreter::exec(&Stmt) / eval(&Expr) を再帰呼び出し
 ```
 
-- `exec()` = [exec/dispatch.rs:16](src/interpreter/exec/dispatch.rs#L16) の巨大 match。`Stmt` バリアントごとに専用メソッドへ委譲。
-- `eval()` = [eval/core.rs:16](src/interpreter/eval/core.rs#L16) の match。同様。
-- 関数呼び出しは **Rust の再帰**。`exec_fn_evaled`（[functions/execution.rs:31](src/interpreter/functions/execution.rs#L31)）が
+- `exec()` = [exec/dispatch.rs:16](../src/interpreter/exec/dispatch.rs#L16) の巨大 match。`Stmt` バリアントごとに専用メソッドへ委譲。
+- `eval()` = [eval/core.rs:16](../src/interpreter/eval/core.rs#L16) の match。同様。
+- 関数呼び出しは **Rust の再帰**。`exec_fn_evaled`（[functions/execution.rs:31](../src/interpreter/functions/execution.rs#L31)）が
   スコープ退避 → 新スコープ構築 → `exec_block` → 復元。
 
 ### 1.2 変数アクセスのコスト構造
@@ -835,8 +837,8 @@ type ScopeMap = HashMap<String, Var, FxBuildHasher>;   // interpreter.rs:187
 scopes: Vec<ScopeMap>                                   // 0=グローバル, 末尾=最内
 ```
 
-- `get_var` は**末尾→先頭へ線形にスコープを遡り、各段で文字列ハッシュ**（[scope.rs:30](src/interpreter/scope.rs#L30)）。
-- `get_val` は `Var::get_value()` = **`v.clone()`**（[interpreter.rs:219](src/interpreter.rs#L219)）。
+- `get_var` は**末尾→先頭へ線形にスコープを遡り、各段で文字列ハッシュ**（[scope.rs:30](../src/interpreter/scope.rs#L30)）。
+- `get_val` は `Var::get_value()` = **`v.clone()`**（[interpreter.rs:219](../src/interpreter.rs#L219)）。
   → **変数を1回読むたびに `Value` が1つクローンされる**。`Value::Str(String)` なら毎回ヒープ確保。
 
 ### 1.3 既存の場当たり最適化（Phase R/V で不要になる = 置換・撤去対象）
@@ -844,16 +846,16 @@ scopes: Vec<ScopeMap>                                   // 0=グローバル, �
 | 既存最適化 | 場所 | 目的 | 置換後 |
 |---|---|---|---|
 | `FxHasher` | interpreter.rs:150 | 変数名ハッシュ高速化 | **撤去**（名前引きが消える） |
-| `SlotCache`（epoch 付き） | [ast.rs:73](src/ast.rs#L73) | グローバル代入のスコープ検索回避 | **撤去**（グローバル索引化, R2） |
+| `SlotCache`（epoch 付き） | [ast.rs:73](../src/ast.rs#L73) | グローバル代入のスコープ検索回避 | **撤去**（グローバル索引化, R2） |
 | `global_slot_cells` / `slot_epoch` | interpreter.rs:268 | 同上 + `freeze` 時の一括無効化 | **撤去** |
-| `Expr::Call { cache }` | [ast.rs:356](src/ast.rs#L356) | 呼び先解決キャッシュ | R4 の解決 + 多相 IC へ発展 |
+| `Expr::Call { cache }` | [ast.rs:356](../src/ast.rs#L356) | 呼び先解決キャッシュ | R4 の解決 + 多相 IC へ発展 |
 
 > `SlotCache` を AST に埋め込んでいる時点で、既に「AST を可変な実行表現として使う」方向にある。Phase R/V はその延長線上。
 
 ### 1.4 制御フローの3系統（Phase V で構造的に消える）
 
 1. `ExecResult` enum の戻り値伝播 — `Normal`/`Break`/`Continue`/`Return`/`BlockReturn`/`BlockYield`/`Raise`
-2. **スレッドローカル 4本**（[interpreter.rs:117-136](src/interpreter.rs#L117)）
+2. **スレッドローカル 4本**（[interpreter.rs:117-136](../src/interpreter.rs#L117)）
    - `LOOP_DEPTH`（break/continue 妥当性）/ `GENERATOR_YIELDS`（yield 収集）/
      `BLOCK_YIELDS`（loop_yield 収集）/ `BLOCK_RETURN_EXPECTED_TYPE`（block_return 実行時型検査; 式ごと push/pop）
 3. **文字列センチネル** — `RAISE_SENTINEL` / `BREAK_SENTINEL` を `Result<Value,String>` の `Err` に載せ、
@@ -953,8 +955,8 @@ scopes: Vec<ScopeMap>                                   // 0=グローバル, �
 > どちらも保留中の #12b / #14 に従属する。
 
 1. **解決注釈の持ち方** 【✅ 決着（#51）— 実際は**両方採用**している】
-   - **AST 埋め込み**（`Cell`/付随フィールド）: `SlotCache`（[ast.rs:85](src/ast.rs#L85)）・
-     `AttrCache`（[ast.rs:165](src/ast.rs#L165)）・`Expr::Call.cache`。
+   - **AST 埋め込み**（`Cell`/付随フィールド）: `SlotCache`（[ast.rs:85](../src/ast.rs#L85)）・
+     `AttrCache`（[ast.rs:165](../src/ast.rs#L165)）・`Expr::Call.cache`。
    - **node-id 副表**: `AstAnnotations`（型・検査指示）・`Chunk::ffi_call_info`（#27-b）・
      `Chunk::wb_targets`（#48）。
    - ⇒ **規則**: *ノード局所で毎回引く情報は AST 埋め込み・Chunk 生成時に確定して実行時は読むだけの
@@ -990,7 +992,7 @@ scopes: Vec<ScopeMap>                                   // 0=グローバル, �
     49（`debug_session.ps1` の stdin BOM 混入）……**完了** ＝ golden 無変更で 5/5 identical
         （原因は `Process.Start` が `[Console]::InputEncoding` の preamble を子の stdin へ書くこと）
     50（実行時間分布の実測）……**完了** ＝ **exec は全体の 14%（中央値）＝端点 1.59x**（exec 内は呼び出し系 37〜38%）
-    51（陳腐化コメント一掃）……**完了** ＝ 実バグ 1 件＋参照 61→0（[stale_doc_refs.ps1](stale_doc_refs.ps1) 新設）
+    51（陳腐化コメント一掃）……**完了** ＝ 実バグ 1 件＋参照 61→0（[stale_doc_refs.ps1](../scripts/stale_doc_refs.ps1) 新設）
     52（`CompileMode`）／53（`compiler.rs` を 10 モジュールへ）……**完了**。
         53 は**1 行も書き換えない機械的な移動**で**バイトコード 202 例題すべて byte-identical**
     55（`eval()` の生死判定）……**完了** ＝ 通常実行では `eval()` ほぼ 0。⚠ **副産物で実バグ 1 件（→ 56）**

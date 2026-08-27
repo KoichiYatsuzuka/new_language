@@ -5,9 +5,9 @@
 # 交互実行する。前回測定から時間が空いた値と比べると他要因を誤って帰属するため。
 #
 # Usage:
-#   ./ab_bench.ps1 -A <head.exe> -B <new.exe> -Scripts examples/bench/bench_for.ar,examples/bench/bench_arith.ar
-#   ./ab_bench.ps1 -A a.exe -B b.exe -Reps 5
-#   ./ab_bench.ps1 -A a.exe -B b.exe -TimeoutSec 300
+#   ./scripts/ab_bench.ps1 -A <head.exe> -B <new.exe> -Scripts examples/bench/bench_for.ar,examples/bench/bench_arith.ar
+#   ./scripts/ab_bench.ps1 -A a.exe -B b.exe -Reps 5
+#   ./scripts/ab_bench.ps1 -A a.exe -B b.exe -TimeoutSec 300
 #
 # 注意: Start-Process -PassThru の ExitCode は当てにならないので System.Diagnostics.Process を直接使う。
 
@@ -20,7 +20,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 
 if ($Scripts.Count -eq 0) {
     # 既定はリポジトリ直下基準（カレントディレクトリ依存で空集合にならないように）

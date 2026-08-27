@@ -5,8 +5,8 @@
 #   モード3 C の DLL          : examples/interop/bench_ab_cdll.ar（import[cpp-lib]）
 #
 # Usage:
-#   powershell -Command "./ab_bench_modes.ps1 -A <master.exe> -B <bytecode.exe> -Reps 3"
-#   powershell -Command "./ab_bench_modes.ps1 -A a.exe -B b.exe -Modes interp,cdll"
+#   powershell -Command "./scripts/ab_bench_modes.ps1 -A <master.exe> -B <bytecode.exe> -Reps 3"
+#   powershell -Command "./scripts/ab_bench_modes.ps1 -A a.exe -B b.exe -Modes interp,cdll"
 #
 # ab_bench.ps1 との違い:
 #   * プロセス全体の経過時間ではなく、スクリプトが出す `METRIC <name> <secs>` を解析する
@@ -31,7 +31,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 
 $SPECS = @(
     [pscustomobject]@{ Mode = 'interp'; Script = 'examples/bench/bench_ab_interp.ar';  Compile = '' }

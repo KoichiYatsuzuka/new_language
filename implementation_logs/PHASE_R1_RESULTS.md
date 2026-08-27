@@ -21,17 +21,17 @@ BYTECODE_VM_PLAN.md の **Phase R**（R0 ランタイムモデル ＋ R1 slot �
 
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| `Expr::LocalRef { name, slot }` 追加 | [src/ast.rs](src/ast.rs) | リゾルバが付ける解決済みローカル参照。`Ident` は変更せず新バリアント追加（既存83箇所の `Ident` マッチに波及させないため） |
-| `Scope` を slot 配列化 | [src/interpreter.rs](src/interpreter.rs) | `HashMap<String,Var>` → `Vec<(String,Var)>` + **遅延ハッシュ索引**（>16 変数のスコープ＝実質グローバルのみ索引構築）。関数/ブロックローカルは宣言=push、未解決名引き=線形走査 |
-| 高速読み取り経路 | [src/interpreter/eval/core.rs](src/interpreter/eval/core.rs) | `Expr::LocalRef` → `scopes[frame_floor].slot(i)` を index 1回で読む。デバッグビルドで slot と名前の一致を検証（リゾルバのずれを即露見） |
-| リゾルバパス | [src/interpreter/resolver.rs](src/interpreter/resolver.rs) | 型検査後・実行前に **メインプログラム直下の `fn`/`gen`** の base スコープ読み取りを `Ident`→`LocalRef` に書き換え |
-| フック | [src/main.rs](src/main.rs), tests/mod.rs | `run_program` とテストヘルパーで `resolve_program` を呼ぶ |
-| **`frame_floor` 隔離（R0）** | [interpreter.rs](src/interpreter.rs), [scope.rs](src/interpreter/scope.rs), [functions/execution.rs](src/interpreter/functions/execution.rs) | 呼び出しごとの `scopes.drain(1..).collect()`（Vec 確保）＋退避＋`extend` 復元を廃止。代わりに `frame_floor`（現関数 base の index）を進め、名前引きは `scopes[0]`＋`scopes[frame_floor..]` のみ走査。復元は `truncate` だけ（確保なし）。`capture_env`/`assign_var`/`make_var_immutable`/`try_fill_slot`/async キャプチャも frame_floor 準拠に更新 |
-| **引数束縛の割り当て削減** | [functions/args.rs](src/interpreter/functions/args.rs), [functions/execution.rs](src/interpreter/functions/execution.rs) | `bind_args` に高速経路を追加（位置引数のみ・可変長なし・引数数一致）: 中間 Vec（`non_variadic_evaled`/`slots`/`slot_is_mutable`）を確保せず仮引数と評価済み引数を直接 zip。`bind_args`/`bind_args_relaxed` を空 defaults スライス許容に変更し、デフォルトを持つ仮引数がなければ `evaluated_defaults` の確保を省略。出力・エラー意味論は一般経路と同一 |
-| **R3 属性 IC** | [ast.rs](src/ast.rs), [eval/attrs.rs](src/interpreter/eval/attrs.rs), [eval/core.rs](src/interpreter/eval/core.rs) | `Expr::Attr` に `AttrCache`（`Cell<u64>` に `class_id`/slot/アクセスレベルをパック）を追加。`eval_attr` は `class_id` 一致で `field_value(slot)` を直接読み、`field_index.get`・アクセスキー走査・`format!("::{attr}")` 確保・`check_member_access` の辞書引きをすべて省略。ミス時は `get_attr_val` が解決してキャッシュを更新（単相 IC・多相点は毎回再解決）。アクセス制御は `check_access_level` でヒット時も**毎回ライブ判定**（`current_class` 依存のため）。デバッグビルドで slot 一致を検証 |
-| **R4 呼び先解決** | [ast.rs](src/ast.rs), [eval/calls.rs](src/interpreter/eval/calls.rs) | `NativeCallCache` に `SlotCache`（`Cell<u64>`・Send 安全）を追加。`f(args)` が不変グローバル関数（`fn` 定義）と解決されたとき `(slot_epoch, global_slot)` を焼き込む。ヒット時は `eval_builtin_ident_call` の全 builtin 名照合・`get_val` 名前引き・`name.clone()` を跳ばし `scopes[0].slot(idx)` から直接 `exec_fn`。ローカル束縛・オーバーロード・可変束縛は対象外（通常経路）。`freeze` で epoch が進めば自動失効。デバッグビルドで呼び先一致を検証。あわせて slow path の `call_name` を `String`→`&str` 化（毎コールの確保も除去） |
-| **メソッド呼び出し IC** | [ast.rs](src/ast.rs), [classes/method_call.rs](src/interpreter/classes/method_call.rs), [eval/calls.rs](src/interpreter/eval/calls.rs) | `NativeCallCache` に 3本目 `AttrCache`（`Cell<u64>`・Send 安全）を追加し、`eval_method_call` に `Option<&cache>` 引数を追加。呼び先が **plain 非 mut-self 単一オーバーロードのインスタンスメソッド**（gen/native/static/class_method でない）と解決されたとき `class_id` を焼き込む。ヒット時は `gen_methods.get`/native 登録引き/`static_method_names.contains`/`class_method_names.contains` と不変性フィルタ Vec 確保を省略。非 mut-self に限定するのでインスタンス可変性に非依存。for ループ内部の `next`/`__iter__` 呼びは `None`（対象外）。デバッグビルドで高速経路の前提（gen/native/static/class_method でない・非 mut-self）を検証 |
-| **§7.4 `Value` サイズ削減** | [value/core.rs](src/interpreter/value/core.rs) ほか計6ファイル | `Value::JsProcFn { bridge_key, module_name, fn_name }`（String×3=72B）を `Value::JsProcFn(Box<JsProcData>)`（8B）に変更。`size_of::<Value>()` が **72→32B**、`Var` が 80→40B に縮小。`Box::clone` は中身を複製するので `deep_clone` の「スレッド跨ぎで Rc を共有しない」不変条件も維持（js-proc 値は稀なので複製コストは非支配的）。構築1箇所・マッチ8箇所を更新 |
+| `Expr::LocalRef { name, slot }` 追加 | [src/ast.rs](../src/ast.rs) | リゾルバが付ける解決済みローカル参照。`Ident` は変更せず新バリアント追加（既存83箇所の `Ident` マッチに波及させないため） |
+| `Scope` を slot 配列化 | [src/interpreter.rs](../src/interpreter.rs) | `HashMap<String,Var>` → `Vec<(String,Var)>` + **遅延ハッシュ索引**（>16 変数のスコープ＝実質グローバルのみ索引構築）。関数/ブロックローカルは宣言=push、未解決名引き=線形走査 |
+| 高速読み取り経路 | [src/interpreter/eval/core.rs](../src/interpreter/eval/core.rs) | `Expr::LocalRef` → `scopes[frame_floor].slot(i)` を index 1回で読む。デバッグビルドで slot と名前の一致を検証（リゾルバのずれを即露見） |
+| リゾルバパス | [src/interpreter/resolver.rs](../src/interpreter/resolver.rs) | 型検査後・実行前に **メインプログラム直下の `fn`/`gen`** の base スコープ読み取りを `Ident`→`LocalRef` に書き換え |
+| フック | [src/main.rs](../src/main.rs), tests/mod.rs | `run_program` とテストヘルパーで `resolve_program` を呼ぶ |
+| **`frame_floor` 隔離（R0）** | [interpreter.rs](../src/interpreter.rs), [scope.rs](../src/interpreter/scope.rs), [functions/execution.rs](../src/interpreter/functions/execution.rs) | 呼び出しごとの `scopes.drain(1..).collect()`（Vec 確保）＋退避＋`extend` 復元を廃止。代わりに `frame_floor`（現関数 base の index）を進め、名前引きは `scopes[0]`＋`scopes[frame_floor..]` のみ走査。復元は `truncate` だけ（確保なし）。`capture_env`/`assign_var`/`make_var_immutable`/`try_fill_slot`/async キャプチャも frame_floor 準拠に更新 |
+| **引数束縛の割り当て削減** | [functions/args.rs](../src/interpreter/functions/args.rs), [functions/execution.rs](../src/interpreter/functions/execution.rs) | `bind_args` に高速経路を追加（位置引数のみ・可変長なし・引数数一致）: 中間 Vec（`non_variadic_evaled`/`slots`/`slot_is_mutable`）を確保せず仮引数と評価済み引数を直接 zip。`bind_args`/`bind_args_relaxed` を空 defaults スライス許容に変更し、デフォルトを持つ仮引数がなければ `evaluated_defaults` の確保を省略。出力・エラー意味論は一般経路と同一 |
+| **R3 属性 IC** | [ast.rs](../src/ast.rs), [eval/attrs.rs](../src/interpreter/eval/attrs.rs), [eval/core.rs](../src/interpreter/eval/core.rs) | `Expr::Attr` に `AttrCache`（`Cell<u64>` に `class_id`/slot/アクセスレベルをパック）を追加。`eval_attr` は `class_id` 一致で `field_value(slot)` を直接読み、`field_index.get`・アクセスキー走査・`format!("::{attr}")` 確保・`check_member_access` の辞書引きをすべて省略。ミス時は `get_attr_val` が解決してキャッシュを更新（単相 IC・多相点は毎回再解決）。アクセス制御は `check_access_level` でヒット時も**毎回ライブ判定**（`current_class` 依存のため）。デバッグビルドで slot 一致を検証 |
+| **R4 呼び先解決** | [ast.rs](../src/ast.rs), [eval/calls.rs](../src/interpreter/eval/calls.rs) | `NativeCallCache` に `SlotCache`（`Cell<u64>`・Send 安全）を追加。`f(args)` が不変グローバル関数（`fn` 定義）と解決されたとき `(slot_epoch, global_slot)` を焼き込む。ヒット時は `eval_builtin_ident_call` の全 builtin 名照合・`get_val` 名前引き・`name.clone()` を跳ばし `scopes[0].slot(idx)` から直接 `exec_fn`。ローカル束縛・オーバーロード・可変束縛は対象外（通常経路）。`freeze` で epoch が進めば自動失効。デバッグビルドで呼び先一致を検証。あわせて slow path の `call_name` を `String`→`&str` 化（毎コールの確保も除去） |
+| **メソッド呼び出し IC** | [ast.rs](../src/ast.rs), [classes/method_call.rs](../src/interpreter/classes/method_call.rs), [eval/calls.rs](../src/interpreter/eval/calls.rs) | `NativeCallCache` に 3本目 `AttrCache`（`Cell<u64>`・Send 安全）を追加し、`eval_method_call` に `Option<&cache>` 引数を追加。呼び先が **plain 非 mut-self 単一オーバーロードのインスタンスメソッド**（gen/native/static/class_method でない）と解決されたとき `class_id` を焼き込む。ヒット時は `gen_methods.get`/native 登録引き/`static_method_names.contains`/`class_method_names.contains` と不変性フィルタ Vec 確保を省略。非 mut-self に限定するのでインスタンス可変性に非依存。for ループ内部の `next`/`__iter__` 呼びは `None`（対象外）。デバッグビルドで高速経路の前提（gen/native/static/class_method でない・非 mut-self）を検証 |
+| **§7.4 `Value` サイズ削減** | [value/core.rs](../src/interpreter/value/core.rs) ほか計6ファイル | `Value::JsProcFn { bridge_key, module_name, fn_name }`（String×3=72B）を `Value::JsProcFn(Box<JsProcData>)`（8B）に変更。`size_of::<Value>()` が **72→32B**、`Var` が 80→40B に縮小。`Box::clone` は中身を複製するので `deep_clone` の「スレッド跨ぎで Rc を共有しない」不変条件も維持（js-proc 値は稀なので複製コストは非支配的）。構築1箇所・マッチ8箇所を更新 |
 
 ### なぜ安全に slot 解決できるか（保守的解決）
 - `exec_fn_evaled` は呼び出しごとに `scopes.drain(1..)` → `push_scope()` するため、**関数 base スコープは常に実行時 `scopes[1]`**。`up`（深さ）計算が不要で、リゾルバの最大の脆弱点が消える。
@@ -97,7 +97,7 @@ BYTECODE_VM_PLAN §5 の Phase V の第一段（V-A）。解決済み AST をリ
 コンパイルし専用スタックマシンで実行する。非対応構文はコンパイル時に弾いてツリーウォークへ
 フォールバックする（D2 デュアルモード）。CLI `--vm=off|auto|force`（既定 auto）。
 
-## 実装（[src/vm/](src/vm/)）
+## 実装（[src/vm/](../src/vm/)）
 | ファイル | 役割 |
 |---|---|
 | `op.rs` | オペコード列挙（Const/LoadLocal/StoreLocal/Bin/Un/GetAttr/Jump 系/Return …） |
@@ -107,7 +107,7 @@ BYTECODE_VM_PLAN §5 の Phase V の第一段（V-A）。解決済み AST をリ
 | `disasm.rs` | 逆アセンブラ（開発用） |
 | `mod.rs` | `VmMode`（Off/Auto/Force）・公開 API |
 
-統合: [functions/execution.rs](src/interpreter/functions/execution.rs) の `exec_fn_evaled` で、フリー関数
+統合: [functions/execution.rs](../src/interpreter/functions/execution.rs) の `exec_fn_evaled` で、フリー関数
 （self なし・クロージャなし・非 Python）を初回にコンパイルして `vm_chunks` にキャッシュ、以後 VM 実行。
 
 ## 検証
@@ -202,13 +202,13 @@ slot 採番（`self`, params, body-decls…）と実行時レイアウト（`sel
 ## 実装
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| VM 経路をメソッドに開く | [functions/execution.rs](src/interpreter/functions/execution.rs) | `exec_fn_evaled` の VM ガードを `self_val.is_none()` から **`None` または `Some(Instance)`** に拡大（クラスメソッド等の非 Instance レシーバは除外）。`self` は `bind_args` で slot 0・compiler slot 0 に一致。実行前に **`current_class` を張り**（アクセス制御・`Self` 依存ディスパッチ）実行後に復元 |
-| `self` をレシーバ判定 | [vm/compiler.rs](src/vm/compiler.rs) | `self_slot`（`self` パラメータの slot）を記録。`object_is_instance` が「`self` slot」または「ユーザークラス型注釈の LocalRef/Ident」を Instance と判定。`self.method()` / `self.field = …` のコンパイルを許可 |
-| 呼び先 Ident の slot 優先 | [vm/compiler.rs](src/vm/compiler.rs) | 未解決メソッド本体では呼び先が `Ident` のまま来る。call 分岐を **slots 優先**（ローカル/param が関数値を保持）→ builtin/`Self` は bail → それ以外 `LoadGlobal` に修正（`Self(...)` コンストラクタ呼びが誤って `LoadGlobal` されるバグを解消） |
-| `SetAttr` op | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | `[obj, value]` を pop し `attr_assign_evaled(obj, name, value)` で代入。コンパイラは `self`/instance 受け手の side-effect-free 対象にのみ発行 |
-| `Swap` op | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | 複合属性代入で **rhs を先に評価**（ツリーウォークの評価順）しつつ演算オペランド順を保つためスタックトップ2つを入れ替える |
-| `attr_assign_evaled` | [eval/attrs.rs](src/interpreter/eval/attrs.rs) | `attr_assign` の `Value::Instance` アーム（class-var 検査・static mut・アクセス制御・field_index・可変性・`INST_IMMUTABLE`＋`slot_initialized`・`store_field` 型検査）と**同一セマンティクス**を評価済み値で実行 |
-| `AttrAssign`/`AttrCompoundAssign` | [vm/compiler.rs](src/vm/compiler.rs) | `self.x = v` → `[obj, value, SetAttr]`。`self.x op= v` → `[obj, value, obj, GetAttr, Swap, Bin, SetAttr]`（value 先行評価＝ツリーウォーク一致） |
+| VM 経路をメソッドに開く | [functions/execution.rs](../src/interpreter/functions/execution.rs) | `exec_fn_evaled` の VM ガードを `self_val.is_none()` から **`None` または `Some(Instance)`** に拡大（クラスメソッド等の非 Instance レシーバは除外）。`self` は `bind_args` で slot 0・compiler slot 0 に一致。実行前に **`current_class` を張り**（アクセス制御・`Self` 依存ディスパッチ）実行後に復元 |
+| `self` をレシーバ判定 | [vm/compiler.rs](../src/vm/compiler/) | `self_slot`（`self` パラメータの slot）を記録。`object_is_instance` が「`self` slot」または「ユーザークラス型注釈の LocalRef/Ident」を Instance と判定。`self.method()` / `self.field = …` のコンパイルを許可 |
+| 呼び先 Ident の slot 優先 | [vm/compiler.rs](../src/vm/compiler/) | 未解決メソッド本体では呼び先が `Ident` のまま来る。call 分岐を **slots 優先**（ローカル/param が関数値を保持）→ builtin/`Self` は bail → それ以外 `LoadGlobal` に修正（`Self(...)` コンストラクタ呼びが誤って `LoadGlobal` されるバグを解消） |
+| `SetAttr` op | [vm/op.rs](../src/vm/op.rs), [vm/run.rs](../src/vm/run.rs) | `[obj, value]` を pop し `attr_assign_evaled(obj, name, value)` で代入。コンパイラは `self`/instance 受け手の side-effect-free 対象にのみ発行 |
+| `Swap` op | [vm/op.rs](../src/vm/op.rs), [vm/run.rs](../src/vm/run.rs) | 複合属性代入で **rhs を先に評価**（ツリーウォークの評価順）しつつ演算オペランド順を保つためスタックトップ2つを入れ替える |
+| `attr_assign_evaled` | [eval/attrs.rs](../src/interpreter/eval/attrs.rs) | `attr_assign` の `Value::Instance` アーム（class-var 検査・static mut・アクセス制御・field_index・可変性・`INST_IMMUTABLE`＋`slot_initialized`・`store_field` 型検査）と**同一セマンティクス**を評価済み値で実行 |
+| `AttrAssign`/`AttrCompoundAssign` | [vm/compiler.rs](../src/vm/compiler/) | `self.x = v` → `[obj, value, SetAttr]`。`self.x op= v` → `[obj, value, obj, GetAttr, Swap, Bin, SetAttr]`（value 先行評価＝ツリーウォーク一致） |
 
 ## 検証
 - `cargo test`（既定 `--vm=auto`）→ **672 passed / 0 failed**。全 OOP テスト（メソッド・アクセス制御・
@@ -252,10 +252,10 @@ BYTECODE_VM_PLAN §5.3/§5.4 の V-C。制御フローを実行時センチネ�
 ## 実装
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| **break/continue のジャンプ化** | [vm/compiler.rs](src/vm/compiler.rs) | Compiler に `loops: Vec<LoopCtx>`（continue 先＝while 条件先頭 / break 命令位置）を追加。`while` 進入時に push、`break`→末尾へバックパッチする `Jump`、`continue`→条件先頭への `Jump`。**Arrow の「break/continue が入れ子の if/match を貫通して外側ループへ届く」規則は絶対ジャンプで自然に成立**（スタックは文境界で平衡）。ループ外の break/continue は bail。**`LOOP_DEPTH` スレッドローカルは VM 経路では不要に** |
-| **ネスト局所の平坦 slot 化（R0-B）** | [vm/compiler.rs](src/vm/compiler.rs) | `collect_nested_decls` を追加し、if/while/match のボディ内 `let`/`const`/`mut` にもフレーム内固定 slot を割り当て（再帰）。**トップレベル decl はリゾルバと同順で先に採番**し、ネスト decl はその上に積む（リゾルバはネスト名を解決しない＝Ident のまま・衝突しない）。シャドウ禁止＝同名は非同時生存なので slot 再利用は健全。**これまで「if/while 内で `let` する関数」は丸ごとフォールバックしていた** のが VM に載る（適用範囲が大幅拡大） |
-| **match 文** | [vm/compiler.rs](src/vm/compiler.rs), [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | サブジェクトを temp slot に一度だけ評価し（`alloc_temp`/`free_temp` のスタック規律割り当て）、各アームを順に照合。`case v`→`LoadLocal(temp); <pat>; Bin(Eq); JumpIfFalse(next)`、`is T`→新 `IsType(name_idx)` op（`value_is_type` 委譲）。ワイルドカード `case _` は無条件。`exec_match_stmt` と同一意味論（`apply_binop_dyn(Eq)` 委譲・最初のマッチのみ・非マッチは fall-through） |
-| temp slot 割り当て | [vm/compiler.rs](src/vm/compiler.rs) | `named_locals`/`temps_in_use` を追加。名前付き slot の上にスタック規律で temp を確保し、`n_locals`（フレーム総 slot 数）を高水位で拡張 |
+| **break/continue のジャンプ化** | [vm/compiler.rs](../src/vm/compiler/) | Compiler に `loops: Vec<LoopCtx>`（continue 先＝while 条件先頭 / break 命令位置）を追加。`while` 進入時に push、`break`→末尾へバックパッチする `Jump`、`continue`→条件先頭への `Jump`。**Arrow の「break/continue が入れ子の if/match を貫通して外側ループへ届く」規則は絶対ジャンプで自然に成立**（スタックは文境界で平衡）。ループ外の break/continue は bail。**`LOOP_DEPTH` スレッドローカルは VM 経路では不要に** |
+| **ネスト局所の平坦 slot 化（R0-B）** | [vm/compiler.rs](../src/vm/compiler/) | `collect_nested_decls` を追加し、if/while/match のボディ内 `let`/`const`/`mut` にもフレーム内固定 slot を割り当て（再帰）。**トップレベル decl はリゾルバと同順で先に採番**し、ネスト decl はその上に積む（リゾルバはネスト名を解決しない＝Ident のまま・衝突しない）。シャドウ禁止＝同名は非同時生存なので slot 再利用は健全。**これまで「if/while 内で `let` する関数」は丸ごとフォールバックしていた** のが VM に載る（適用範囲が大幅拡大） |
+| **match 文** | [vm/compiler.rs](../src/vm/compiler/), [vm/op.rs](../src/vm/op.rs), [vm/run.rs](../src/vm/run.rs) | サブジェクトを temp slot に一度だけ評価し（`alloc_temp`/`free_temp` のスタック規律割り当て）、各アームを順に照合。`case v`→`LoadLocal(temp); <pat>; Bin(Eq); JumpIfFalse(next)`、`is T`→新 `IsType(name_idx)` op（`value_is_type` 委譲）。ワイルドカード `case _` は無条件。`exec_match_stmt` と同一意味論（`apply_binop_dyn(Eq)` 委譲・最初のマッチのみ・非マッチは fall-through） |
+| temp slot 割り当て | [vm/compiler.rs](../src/vm/compiler/) | `named_locals`/`temps_in_use` を追加。名前付き slot の上にスタック規律で temp を確保し、`n_locals`（フレーム総 slot 数）を高水位で拡張 |
 
 ## 検証
 - `cargo test`（既定 `--vm=auto`）→ **672 passed / 0 failed**。break/continue・ネスト局所・match を
@@ -298,11 +298,11 @@ BYTECODE_VM_PLAN §5.4 の V-D。for ループを VM に載せ、あわせて **
 ## 実装
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| **for ループ** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs), [vm/compiler.rs](src/vm/compiler.rs) | `GetIter`（iterable→イテレータ）＋ `ForIter(iter_slot, target_slot, exit_ip)`（`.next()` 呼び・`EndOfIteration` で exit へ・要素は target へ束縛）。イテレータは temp slot に保持。ループ変数は `collect_nested_decls` で平坦 slot 割り当て（可変）。break/continue は既存 LoopCtx で自然対応（continue→ForIter へ戻る／break→exit）。単一ターゲットのみ（タプルアンパックは bail） |
-| イテレータ変換の共有 | [exec/control_flow.rs](src/interpreter/exec/control_flow.rs) | `exec_for_stmt` から `make_for_iterator`（List/FrozenList/Str/Set/Tuple/Generator/Instance(`__iter__`)/PyObject → イテレータ）を抽出し、ツリーウォークと VM `GetIter` で共有（意味論一致） |
-| **Generator 高速パス** | [vm/run.rs](src/vm/run.rs) | `ForIter` は iterator が `Value::Generator`（range/list/str/…/`gen __iter__` の実体）なら index を**直接前進**（`eval_method_call` のディスパッチを丸ごと回避）。カスタム Instance イテレータのみ `.next()` フォールバック。**この高速パスが for の速度差の主因** |
-| **共通組み込みの VM 呼び出し** | [eval/builtins.rs](src/interpreter/eval/builtins.rs), [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs), [vm/compiler.rs](src/vm/compiler.rs) | `print`/`range`/`len` を評価済み引数で呼ぶ `eval_builtin_evaled` を追加（`eval_builtin_ident_call` の対応アームと同一意味論）＋ `CallBuiltin(name_idx, argc)` op。コンパイラは `is_vm_builtin` かつローカル未シャドウのとき発行。**これまで `print` や `range` を含む関数（＝多数）が丸ごとフォールバックしていた** のを解消 |
-| **Chunk キャッシュの健全化（バグ修正）** | [interpreter.rs](src/interpreter.rs), [functions/execution.rs](src/interpreter/functions/execution.rs) | `vm_chunks` の値を `(Weak<FnValue>, Option<Rc<Chunk>>)` に変更。ヒット時に `Weak::upgrade()` が失敗したら「そのアドレスが別 fn_val に再利用された」と判定して**再コンパイル**する。**テンプレート実体化（`instantiate_template*`）は呼び出しごとに一時 `Rc<FnValue>` を生成・破棄するため、`Rc::as_ptr` キーが再利用されて古い Chunk を誤用する潜在バグ（V-A 由来）を修正**。リークなし |
+| **for ループ** | [vm/op.rs](../src/vm/op.rs), [vm/run.rs](../src/vm/run.rs), [vm/compiler.rs](../src/vm/compiler/) | `GetIter`（iterable→イテレータ）＋ `ForIter(iter_slot, target_slot, exit_ip)`（`.next()` 呼び・`EndOfIteration` で exit へ・要素は target へ束縛）。イテレータは temp slot に保持。ループ変数は `collect_nested_decls` で平坦 slot 割り当て（可変）。break/continue は既存 LoopCtx で自然対応（continue→ForIter へ戻る／break→exit）。単一ターゲットのみ（タプルアンパックは bail） |
+| イテレータ変換の共有 | [exec/control_flow.rs](../src/interpreter/exec/control_flow.rs) | `exec_for_stmt` から `make_for_iterator`（List/FrozenList/Str/Set/Tuple/Generator/Instance(`__iter__`)/PyObject → イテレータ）を抽出し、ツリーウォークと VM `GetIter` で共有（意味論一致） |
+| **Generator 高速パス** | [vm/run.rs](../src/vm/run.rs) | `ForIter` は iterator が `Value::Generator`（range/list/str/…/`gen __iter__` の実体）なら index を**直接前進**（`eval_method_call` のディスパッチを丸ごと回避）。カスタム Instance イテレータのみ `.next()` フォールバック。**この高速パスが for の速度差の主因** |
+| **共通組み込みの VM 呼び出し** | [eval/builtins.rs](../src/interpreter/eval/builtins.rs), [vm/op.rs](../src/vm/op.rs), [vm/run.rs](../src/vm/run.rs), [vm/compiler.rs](../src/vm/compiler/) | `print`/`range`/`len` を評価済み引数で呼ぶ `eval_builtin_evaled` を追加（`eval_builtin_ident_call` の対応アームと同一意味論）＋ `CallBuiltin(name_idx, argc)` op。コンパイラは `is_vm_builtin` かつローカル未シャドウのとき発行。**これまで `print` や `range` を含む関数（＝多数）が丸ごとフォールバックしていた** のを解消 |
+| **Chunk キャッシュの健全化（バグ修正）** | [interpreter.rs](../src/interpreter.rs), [functions/execution.rs](../src/interpreter/functions/execution.rs) | `vm_chunks` の値を `(Weak<FnValue>, Option<Rc<Chunk>>)` に変更。ヒット時に `Weak::upgrade()` が失敗したら「そのアドレスが別 fn_val に再利用された」と判定して**再コンパイル**する。**テンプレート実体化（`instantiate_template*`）は呼び出しごとに一時 `Rc<FnValue>` を生成・破棄するため、`Rc::as_ptr` キーが再利用されて古い Chunk を誤用する潜在バグ（V-A 由来）を修正**。リークなし |
 
 ### 発見したバグ（重要）
 `polymorphism.ar` で `--vm=off`/`auto` が相違（`AttributeError: 'NoneType' ... to_str`）。原因は
@@ -347,14 +347,14 @@ try/except・try/finally・raise・bare raise（再送出）を VM で実行で�
 ## 実装
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| **ディスパッチループの再構成** | [vm/run.rs](src/vm/run.rs) | `run` の巨大 match を `exec_op(...) -> Result<Flow, String>`（`Flow = Next/Jump/Return`）へ分離。`run` は `exec_op` を呼び、`Ok(Flow)` は ip 制御、**`Err(e)` は VM のハンドラスタックへ回す**。既存 op のロジックは不変（`?` はそのまま `exec_op` から伝播）。 |
-| **ハンドラスタック** | [vm/run.rs](src/vm/run.rs) | `run` が `Vec<Handler{ handler_ip, stack_len }>` を持つ。`Err` 時に最内ハンドラを pop → オペランドを try 進入時の深さへ巻き戻し → 例外値を push → landing pad へジャンプ。ハンドラ無し/変換不可なら伝播。ネストした関数呼び出しはそれぞれ独立の run/ハンドラスタックを持ち、callee の未捕捉例外は caller の Call op（`?`）→ caller のハンドラへ届く |
-| **例外 op** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | `SetupTry(handler_ip)`/`PopTry`（ハンドラ push/pop）・`Raise(span_idx)`（`raise expr`）・`Reraise`（bare raise・no-match 再送出）・`Dup`（例外値を型照合で残す）・`ExcMatch(name_idx)`（`exc_matches` 委譲） |
-| **例外ヘルパ（interpreter 側）** | [exec/exceptions_async.rs](src/interpreter/exec/exceptions_async.rs) | `vm_raise`（`exec_raise` と同一: span フィールド書込み＋フレーム＋current_exception 設定）・`vm_reraise`・`vm_take_raised`（RAISE_SENTINEL or 内部エラー→RaisedError、`exec_try` と同じ変換）・`vm_exc_matches`。`current_exception`/`RAISE_SENTINEL` は interpreter private なのでここに集約 |
-| **Chunk に span 表** | [vm/chunk.rs](src/vm/chunk.rs) | `spans: Vec<Span>`（`Raise` が例外に file/line/col を焼くため） |
-| **try/except・try/finally コンパイル** | [vm/compiler.rs](src/vm/compiler.rs) | `compile_try_except`（SetupTry→body→PopTry→正常 Jump／landing pad で各 except 節を `Dup;ExcMatch;JumpIfFalse` で照合・別名 slot 束縛・no-match は `Pop;Reraise`）。`compile_try_finally`（正常経路・例外経路の両方で finally を走らせ、例外経路は `Reraise` で再伝播）。`try/except/finally` 併用は bail |
-| **脱出制御の bail 判定** | [vm/compiler.rs](src/vm/compiler.rs) | `has_escape`: try/handler 本体に「try を飛び越える」`break`/`continue`（本体内の while/for に囲まれない）・`block_return`/`loop_yield`（finally では `return` も）があれば bail（ハンドラ残り・finally スキップを防ぐ）。`return` は try/except（finally なし）では run から即復帰しハンドラ破棄されるので許容 |
-| **別名 slot の事前採番** | [vm/compiler.rs](src/vm/compiler.rs) | `collect_nested_decls` を `Try` に対応（body/handler/finally へ再帰＋`except E as e` の別名を不変 slot として採番） |
+| **ディスパッチループの再構成** | [vm/run.rs](../src/vm/run.rs) | `run` の巨大 match を `exec_op(...) -> Result<Flow, String>`（`Flow = Next/Jump/Return`）へ分離。`run` は `exec_op` を呼び、`Ok(Flow)` は ip 制御、**`Err(e)` は VM のハンドラスタックへ回す**。既存 op のロジックは不変（`?` はそのまま `exec_op` から伝播）。 |
+| **ハンドラスタック** | [vm/run.rs](../src/vm/run.rs) | `run` が `Vec<Handler{ handler_ip, stack_len }>` を持つ。`Err` 時に最内ハンドラを pop → オペランドを try 進入時の深さへ巻き戻し → 例外値を push → landing pad へジャンプ。ハンドラ無し/変換不可なら伝播。ネストした関数呼び出しはそれぞれ独立の run/ハンドラスタックを持ち、callee の未捕捉例外は caller の Call op（`?`）→ caller のハンドラへ届く |
+| **例外 op** | [vm/op.rs](../src/vm/op.rs), [vm/run.rs](../src/vm/run.rs) | `SetupTry(handler_ip)`/`PopTry`（ハンドラ push/pop）・`Raise(span_idx)`（`raise expr`）・`Reraise`（bare raise・no-match 再送出）・`Dup`（例外値を型照合で残す）・`ExcMatch(name_idx)`（`exc_matches` 委譲） |
+| **例外ヘルパ（interpreter 側）** | [exec/exceptions_async.rs](../src/interpreter/exec/exceptions_async.rs) | `vm_raise`（`exec_raise` と同一: span フィールド書込み＋フレーム＋current_exception 設定）・`vm_reraise`・`vm_take_raised`（RAISE_SENTINEL or 内部エラー→RaisedError、`exec_try` と同じ変換）・`vm_exc_matches`。`current_exception`/`RAISE_SENTINEL` は interpreter private なのでここに集約 |
+| **Chunk に span 表** | [vm/chunk.rs](../src/vm/chunk.rs) | `spans: Vec<Span>`（`Raise` が例外に file/line/col を焼くため） |
+| **try/except・try/finally コンパイル** | [vm/compiler.rs](../src/vm/compiler/) | `compile_try_except`（SetupTry→body→PopTry→正常 Jump／landing pad で各 except 節を `Dup;ExcMatch;JumpIfFalse` で照合・別名 slot 束縛・no-match は `Pop;Reraise`）。`compile_try_finally`（正常経路・例外経路の両方で finally を走らせ、例外経路は `Reraise` で再伝播）。`try/except/finally` 併用は bail |
+| **脱出制御の bail 判定** | [vm/compiler.rs](../src/vm/compiler/) | `has_escape`: try/handler 本体に「try を飛び越える」`break`/`continue`（本体内の while/for に囲まれない）・`block_return`/`loop_yield`（finally では `return` も）があれば bail（ハンドラ残り・finally スキップを防ぐ）。`return` は try/except（finally なし）では run から即復帰しハンドラ破棄されるので許容 |
+| **別名 slot の事前採番** | [vm/compiler.rs](../src/vm/compiler/) | `collect_nested_decls` を `Try` に対応（body/handler/finally へ再帰＋`except E as e` の別名を不変 slot として採番） |
 
 ## 検証
 - `cargo test`（`--vm=auto`）→ **672 passed / 0 failed**。
@@ -388,11 +388,11 @@ BYTECODE_VM_PLAN §5.4 の V-C 最後のピース。**値を産む制御構文�
 ## 実装
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| **ブロック式コンテキスト** | [vm/compiler.rs](src/vm/compiler.rs) | `BlockCtx{ result_slot, end_jumps, yield_slot }` のスタック。`block_return` は最内 BlockCtx の `result_slot` に格納して出口へ跳ぶ。`loop_yield` は最内の「yield 先を持つ」BlockCtx（block:/for/while 式）の蓄積リストへ追加。**if/match 式は yield 透過**（`yield_slot=None`）＝外側の for/while/block へ届く（`eval_capture_block_return` の透過性に一致） |
-| **5 つの式形** | [vm/compiler.rs](src/vm/compiler.rs) | `Expr::Block`（block_return 値／loop_yield リスト／None）・`IfExpr`・`MatchExpr`（分岐/アームの block_return 値・既定 None）・`ForExpr`・`WhileExpr`（loop_yield 蓄積・break で蓄積リスト・block_return で単一値・二出口）。for/while 式は LoopCtx（break→NORMAL_END/continue→先頭）と BlockCtx（block_return→BR_END）を併用 |
-| **loop_yield 用 op** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | `BuildEmptyList`（蓄積リスト初期化）・`ListAppendLocal(slot)`（`loop_yield` 追加）・`ListOrNone`（蓄積が空なら None・非空ならリスト＝`eval` の `yields.is_empty()` 分岐に一致） |
-| **式内宣言の slot 採番** | [vm/compiler.rs](src/vm/compiler.rs) | `collect_nested_decls` に**式ウォーカ `collect_expr_decls`** を追加。`let x = block: let a=…` のような**式の中のブロック式本体の宣言**へ再帰的に slot を割り当てる（全部分式を辿り入れ子ブロック式を漏れなく採番）。`add_decl` を自由関数へ抽出 |
-| **脱出 bail 判定** | [vm/compiler.rs](src/vm/compiler.rs) | `block_body_bails`: ブロック式本体の `return`（常に不可）・非ループ式（block:/if/match）の脱出 break/continue を検出して bail。for/while 式は自身が最内ループなので直下 break/continue は許容（LoopCtx が処理） |
+| **ブロック式コンテキスト** | [vm/compiler.rs](../src/vm/compiler/) | `BlockCtx{ result_slot, end_jumps, yield_slot }` のスタック。`block_return` は最内 BlockCtx の `result_slot` に格納して出口へ跳ぶ。`loop_yield` は最内の「yield 先を持つ」BlockCtx（block:/for/while 式）の蓄積リストへ追加。**if/match 式は yield 透過**（`yield_slot=None`）＝外側の for/while/block へ届く（`eval_capture_block_return` の透過性に一致） |
+| **5 つの式形** | [vm/compiler.rs](../src/vm/compiler/) | `Expr::Block`（block_return 値／loop_yield リスト／None）・`IfExpr`・`MatchExpr`（分岐/アームの block_return 値・既定 None）・`ForExpr`・`WhileExpr`（loop_yield 蓄積・break で蓄積リスト・block_return で単一値・二出口）。for/while 式は LoopCtx（break→NORMAL_END/continue→先頭）と BlockCtx（block_return→BR_END）を併用 |
+| **loop_yield 用 op** | [vm/op.rs](../src/vm/op.rs), [vm/run.rs](../src/vm/run.rs) | `BuildEmptyList`（蓄積リスト初期化）・`ListAppendLocal(slot)`（`loop_yield` 追加）・`ListOrNone`（蓄積が空なら None・非空ならリスト＝`eval` の `yields.is_empty()` 分岐に一致） |
+| **式内宣言の slot 採番** | [vm/compiler.rs](../src/vm/compiler/) | `collect_nested_decls` に**式ウォーカ `collect_expr_decls`** を追加。`let x = block: let a=…` のような**式の中のブロック式本体の宣言**へ再帰的に slot を割り当てる（全部分式を辿り入れ子ブロック式を漏れなく採番）。`add_decl` を自由関数へ抽出 |
+| **脱出 bail 判定** | [vm/compiler.rs](../src/vm/compiler/) | `block_body_bails`: ブロック式本体の `return`（常に不可）・非ループ式（block:/if/match）の脱出 break/continue を検出して bail。for/while 式は自身が最内ループなので直下 break/continue は許容（LoopCtx が処理） |
 
 ## 検証
 - `cargo test`（`--vm=auto`）→ **672 passed / 0 failed**。
@@ -431,10 +431,10 @@ VM 化される関数が増え、未捕捉例外の degraded トレースバッ�
 ## 実装
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| **呼び出し位置 span の伝搬** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs), [vm/compiler.rs](src/vm/compiler.rs) | `Op::Call(argc, mut_mask, **name_idx, span_idx**)` に呼び出し元名（`names`）と位置（`spans`）を追加。`Expr::Call.span` をコンパイル時に記録し、実行時に `call_value_evaled` へ渡す |
-| **`call_value_evaled` の署名拡張** | [eval/calls.rs](src/interpreter/eval/calls.rs) | `fn_name: &str`・`call_span: Option<Span>` を受け取り `exec_fn_evaled` へ渡す（従来は `"<fn>"`/`None` 固定で degraded だった）。ネイティブ経路 `call_value_with_args` は `"<fn>"`/`None` 維持 |
-| **`call_instance_method_evaled` の署名拡張** | [classes/method_call.rs](src/interpreter/classes/method_call.rs) | `call_span` を受け取れるように（内部 `exec_fn_evaled` へ伝搬）。**ただし VM は `None` を渡す** — ツリーウォークのメソッド呼び出し（`eval_method_call`）が call_span を渡さず degraded なので、**それに一致**させる（byte-identical 優先） |
-| **デバッグ名テーブル** | [vm/chunk.rs](src/vm/chunk.rs), [vm/compiler.rs](src/vm/compiler.rs) | `Chunk.local_names: Vec<String>`（slot→変数名）を追加。デバッガ VM 統合（将来）用メタデータ。現状は保持のみ |
+| **呼び出し位置 span の伝搬** | [vm/op.rs](../src/vm/op.rs), [vm/run.rs](../src/vm/run.rs), [vm/compiler.rs](../src/vm/compiler/) | `Op::Call(argc, mut_mask, **name_idx, span_idx**)` に呼び出し元名（`names`）と位置（`spans`）を追加。`Expr::Call.span` をコンパイル時に記録し、実行時に `call_value_evaled` へ渡す |
+| **`call_value_evaled` の署名拡張** | [eval/calls.rs](../src/interpreter/eval/calls.rs) | `fn_name: &str`・`call_span: Option<Span>` を受け取り `exec_fn_evaled` へ渡す（従来は `"<fn>"`/`None` 固定で degraded だった）。ネイティブ経路 `call_value_with_args` は `"<fn>"`/`None` 維持 |
+| **`call_instance_method_evaled` の署名拡張** | [classes/method_call.rs](../src/interpreter/classes/method_call.rs) | `call_span` を受け取れるように（内部 `exec_fn_evaled` へ伝搬）。**ただし VM は `None` を渡す** — ツリーウォークのメソッド呼び出し（`eval_method_call`）が call_span を渡さず degraded なので、**それに一致**させる（byte-identical 優先） |
+| **デバッグ名テーブル** | [vm/chunk.rs](../src/vm/chunk.rs), [vm/compiler.rs](../src/vm/compiler/) | `Chunk.local_names: Vec<String>`（slot→変数名）を追加。デバッガ VM 統合（将来）用メタデータ。現状は保持のみ |
 
 ### 設計判断: メソッド呼び出しは “あえて degraded に一致”
 関数呼び出しはツリーウォークが `call_span` を渡す（フレームに行番号あり）ので VM も渡す。
@@ -467,10 +467,10 @@ byte-identical を優先し、VM のメソッド呼び出しも `call_span=None`
 ## 実装
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| **名前引き op** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | `LoadName(name_idx)`（`get_val` で停止スコープから名前解決）・`DeclareName(name_idx)`（`let dbg::x` を停止スコープへ宣言・`let` 意味論で Instance は deep_copy+freeze） |
-| **VM 側ヘルパ** | [interpreter/scope.rs](src/interpreter/scope.rs) | `vm_load_name`（`get_val` 委譲）・`vm_declare_debug`。`get_val`/`declare_var` は module private なので pub(crate) 経由 |
-| **デバッグモードコンパイラ** | [vm/compiler.rs](src/vm/compiler.rs) | `Compiler.debug_mode` を追加。true のとき `Expr::Ident`→`LoadName`、関数呼び先も名前引き。`compile_debug(stmt)`: 式文（値を `Return`）・`let/const dbg::name`（`DeclareName`）を対応。メソッド呼び出し・添字・制御フロー等は `None` |
-| **REPL 統合** | [interpreter/debugger.rs](src/interpreter/debugger.rs) | `exec_debug_input` が `compile_debug` を試し、`run_debug_chunk`（共有バッファ・`base` からローカル確保）で VM 実行。**式の値を表示**（従来は Return のみ表示だったのを改善し `access: dbg::x` が機能）。コンパイル不能な入力はツリーウォーク（`eval`/`exec`）へフォールバック |
+| **名前引き op** | [vm/op.rs](../src/vm/op.rs), [vm/run.rs](../src/vm/run.rs) | `LoadName(name_idx)`（`get_val` で停止スコープから名前解決）・`DeclareName(name_idx)`（`let dbg::x` を停止スコープへ宣言・`let` 意味論で Instance は deep_copy+freeze） |
+| **VM 側ヘルパ** | [interpreter/scope.rs](../src/interpreter/scope.rs) | `vm_load_name`（`get_val` 委譲）・`vm_declare_debug`。`get_val`/`declare_var` は module private なので pub(crate) 経由 |
+| **デバッグモードコンパイラ** | [vm/compiler.rs](../src/vm/compiler/) | `Compiler.debug_mode` を追加。true のとき `Expr::Ident`→`LoadName`、関数呼び先も名前引き。`compile_debug(stmt)`: 式文（値を `Return`）・`let/const dbg::name`（`DeclareName`）を対応。メソッド呼び出し・添字・制御フロー等は `None` |
+| **REPL 統合** | [interpreter/debugger.rs](../src/interpreter/debugger.rs) | `exec_debug_input` が `compile_debug` を試し、`run_debug_chunk`（共有バッファ・`base` からローカル確保）で VM 実行。**式の値を表示**（従来は Return のみ表示だったのを改善し `access: dbg::x` が機能）。コンパイル不能な入力はツリーウォーク（`eval`/`exec`）へフォールバック |
 
 ## 検証（対話デバッガに stdin パイプ）
 - **停止スコープ視点**: 関数フレーム内で停止し、局所変数（`total`・引数 `p`/`nums`）を名前で参照して
@@ -497,10 +497,10 @@ VM 化率が上がり、デバッガ REPL のフォールバックも減る。
 ## 実装
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| **op** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs) | `Subscript`（pop key/obj → `eval_subscript`）・`SetIndex`（pop value/key/obj → `eval_setitem`）・`BuildList/BuildTuple/BuildSet/BuildDict(N)`（末尾 N（辞書は 2N）要素を pop して構築） |
-| **構築ヘルパ** | [eval/core.rs](src/interpreter/eval/core.rs) | `vm_build_list/tuple/set/dict`（`Expr::List/Tuple/Set/Dict` と同一意味論・tuple は要素型名収集・set は `set_insert` 重複排除・dict は `[k0,v0,..]` フラット列） |
-| **コンパイラ** | [vm/compiler.rs](src/vm/compiler.rs) | `Expr::Subscript/List/Tuple/Set/Dict` を対応。`obj[i] = value` は `Stmt::AttrAssign` の Subscript 分岐で対応（**value を temp に先評価**しツリーウォークの評価順に一致） |
-| **シャドウ検出 bail** | [vm/compiler.rs](src/vm/compiler.rs) | `has_for_target_shadow`: `for` 変数が param/非 for 宣言をシャドウする関数は bail（下記） |
+| **op** | [vm/op.rs](../src/vm/op.rs), [vm/run.rs](../src/vm/run.rs) | `Subscript`（pop key/obj → `eval_subscript`）・`SetIndex`（pop value/key/obj → `eval_setitem`）・`BuildList/BuildTuple/BuildSet/BuildDict(N)`（末尾 N（辞書は 2N）要素を pop して構築） |
+| **構築ヘルパ** | [eval/core.rs](../src/interpreter/eval/core.rs) | `vm_build_list/tuple/set/dict`（`Expr::List/Tuple/Set/Dict` と同一意味論・tuple は要素型名収集・set は `set_insert` 重複排除・dict は `[k0,v0,..]` フラット列） |
+| **コンパイラ** | [vm/compiler.rs](../src/vm/compiler/) | `Expr::Subscript/List/Tuple/Set/Dict` を対応。`obj[i] = value` は `Stmt::AttrAssign` の Subscript 分岐で対応（**value を temp に先評価**しツリーウォークの評価順に一致） |
+| **シャドウ検出 bail** | [vm/compiler.rs](../src/vm/compiler/) | `has_for_target_shadow`: `for` 変数が param/非 for 宣言をシャドウする関数は bail（下記） |
 
 ## `for` 変数シャドウの扱い（重要な健全性判断）
 Arrow の `for` 変数は**ブロックスコープ**（ループ後に外側の同名変数へ戻る）だが、flat-slot VM は同名 slot を
@@ -530,7 +530,7 @@ V-B のメソッド呼び出しは `exec_fn_evaled` の一般経路（`bind_args
 `fn_val.params.clone()`・copy/cast の複数パス）を毎回通り、小さいメソッド本体では per-call オーバーヘッドが
 支配的だった（method_hot 1.13x 止まり）。**単純シグネチャの VM 呼び出しに高速バインド経路**を追加。
 
-## 実装（[functions/execution.rs](src/interpreter/functions/execution.rs)）
+## 実装（[functions/execution.rs](../src/interpreter/functions/execution.rs)）
 | ヘルパ | 内容 |
 |---|---|
 | `get_or_compile_chunk` | Chunk 取得/コンパイルを抽出（`exec_fn_evaled` の先頭で1回。fast/general 両経路で共有） |
@@ -569,9 +569,9 @@ VM 経路に載せ、対象関数を大幅に拡大した。
 ## 実装
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| **純粋組み込みの拡張** | [eval/builtins.rs](src/interpreter/eval/builtins.rs) | `eval_builtin_evaled` に `next`/`repr`/`id`/`enumerate`/`zip`/`getenv` を追加（`eval_builtin_ident_call` の対応アームと**同一意味論**）。`enumerate`/`zip` は**コアを共有ヘルパ `enumerate_core`/`zip_core` に抽出**し、CallArg 版（ツリーウォーク）と評価済み版（VM）が同一実装を呼ぶ形にして意味論の分岐を封じた |
-| **is_vm_builtin 拡張** | [vm/compiler.rs](src/vm/compiler.rs) | `CallBuiltin` を発行する純粋組み込み集合を `print`/`range`/`len` から6種追加。キーワード/可変長引数は `compile_call_args` が bail するので、位置引数の形だけが `CallBuiltin` になる |
-| **型コンストラクタは LoadGlobal+Call に開放** | [vm/compiler.rs](src/vm/compiler.rs) | `is_builtin_callee`（bail 集合）から**登録済み型コンストラクタ**（int/uint/str/float/complex/bool/dict/set/function/slice）を除外。これらは通常のグローバル呼び出し（`LoadGlobal`+`Call`）に流れ、`call_value_evaled` の `Value::Type` アーム＝`call_type_by_name_evaled` へ委譲される（ツリーウォークの `eval_type_constructor_call` と同一経路）。**`CallBuiltin` を使わない**理由: ユーザーが同名をグローバル shadow した場合も `LoadGlobal` が実バインディングを拾うので健全（`CallBuiltin` だと組み込みが常に勝ってしまう） |
+| **純粋組み込みの拡張** | [eval/builtins.rs](../src/interpreter/eval/builtins.rs) | `eval_builtin_evaled` に `next`/`repr`/`id`/`enumerate`/`zip`/`getenv` を追加（`eval_builtin_ident_call` の対応アームと**同一意味論**）。`enumerate`/`zip` は**コアを共有ヘルパ `enumerate_core`/`zip_core` に抽出**し、CallArg 版（ツリーウォーク）と評価済み版（VM）が同一実装を呼ぶ形にして意味論の分岐を封じた |
+| **is_vm_builtin 拡張** | [vm/compiler.rs](../src/vm/compiler/) | `CallBuiltin` を発行する純粋組み込み集合を `print`/`range`/`len` から6種追加。キーワード/可変長引数は `compile_call_args` が bail するので、位置引数の形だけが `CallBuiltin` になる |
+| **型コンストラクタは LoadGlobal+Call に開放** | [vm/compiler.rs](../src/vm/compiler/) | `is_builtin_callee`（bail 集合）から**登録済み型コンストラクタ**（int/uint/str/float/complex/bool/dict/set/function/slice）を除外。これらは通常のグローバル呼び出し（`LoadGlobal`+`Call`）に流れ、`call_value_evaled` の `Value::Type` アーム＝`call_type_by_name_evaled` へ委譲される（ツリーウォークの `eval_type_constructor_call` と同一経路）。**`CallBuiltin` を使わない**理由: ユーザーが同名をグローバル shadow した場合も `LoadGlobal` が実バインディングを拾うので健全（`CallBuiltin` だと組み込みが常に勝ってしまう） |
 
 ## 健全性判断: 型コンストラクタは `CallBuiltin` にしない
 当初 int/str 等を `is_vm_builtin` に入れて `CallBuiltin`→`call_type_by_name_evaled` へ委譲したが、
@@ -612,8 +612,8 @@ clone-walk で生成し、一時 `Rc<FnValue>` を作って捨てていた（§2
 ## 実装
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| **実体化メモ** | [interpreter.rs](src/interpreter.rs) | `template_fn_cache: HashMap<(usize, Vec<String>), Rc<FnValue>>` と `template_gen_cache`（ジェネレータ用）を追加。キー = `(Rc::as_ptr(template), 具体型引数リスト)` |
-| **TemplateFn/TemplateGenFn の実体化** | [templates.rs](src/interpreter/templates.rs) | `instantiate_template` の両アームで、制約検証（`check_template_constraints`）は**毎回**行いエラー意味論を保ちつつ、`subst_params`/`subst_stmts` と `FnValue`/`GeneratorFnValue` 構築を**キャッシュヒットで丸ごと省略**。安定した `Rc` を保持するので `vm_chunks` の `Weak` が生き続け、**Chunk が再利用**される |
+| **実体化メモ** | [interpreter.rs](../src/interpreter.rs) | `template_fn_cache: HashMap<(usize, Vec<String>), Rc<FnValue>>` と `template_gen_cache`（ジェネレータ用）を追加。キー = `(Rc::as_ptr(template), 具体型引数リスト)` |
+| **TemplateFn/TemplateGenFn の実体化** | [templates.rs](../src/interpreter/templates.rs) | `instantiate_template` の両アームで、制約検証（`check_template_constraints`）は**毎回**行いエラー意味論を保ちつつ、`subst_params`/`subst_stmts` と `FnValue`/`GeneratorFnValue` 構築を**キャッシュヒットで丸ごと省略**。安定した `Rc` を保持するので `vm_chunks` の `Weak` が生き続け、**Chunk が再利用**される |
 
 ## なぜ意味論が変わらないか
 - 具体 AST は `(テンプレート, 型引数)` に対し決定的＝同キーなら常に同一。再利用しても実行結果は不変。
@@ -651,11 +651,11 @@ clone-walk で生成し、一時 `Rc<FnValue>` を作って捨てていた（§2
 ## 実装
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| **`Yield` op** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs), [vm/disasm.rs](src/vm/disasm.rs) | `Op::Yield`: pop した値を `interp.vm_yield_push` で `GENERATOR_YIELDS` へ追加（ツリーウォークの `Stmt::Yield` と同一・値を産出し制御は継続） |
-| **`Stmt::Yield` のコンパイル** | [vm/compiler.rs](src/vm/compiler.rs) | `compile_stmt` に `Stmt::Yield(e)` → `compile_expr; Yield` を追加。`collect_nested_decls`／シャドウ検出（`scan_shadow`）にも `Stmt::Yield` の式を追加し、`yield block:…` のような式内宣言・for 式を漏れなく処理 |
-| **ジェネレータ本体の VM 実行** | [functions/execution.rs](src/interpreter/functions/execution.rs) | `get_or_compile_gen_chunk`（`GeneratorFnValue` 版 Chunk キャッシュ）・`vm_yield_push`・`run_vm_generator`（バインド済みバッファで `run`・`current_class` 設定・yield 回収→`GeneratorState`）を追加。`exec_generator_evaled` に VM 分岐を挿入（フリー gen ＋ Instance レシーバの gen メソッド・キャプチャなし・コンパイル可能時） |
-| **Chunk キャッシュ（gen 用）** | [interpreter.rs](src/interpreter.rs) | `vm_gen_chunks: HashMap<usize,(Weak<GeneratorFnValue>, Option<Rc<Chunk>>)>` を追加（`vm_chunks` の gen 版・別型のため別テーブル） |
-| **VM から gen 関数を呼べるように（付随バグ修正）** | [eval/calls.rs](src/interpreter/eval/calls.rs) | `call_value_evaled`（VM の `Call` op ハンドラ）に **`Value::GeneratorFn` アームが欠落**しており、VM コンパイル済み関数から `gen(...)` を呼ぶと `TypeError: 'gen_function' object is not callable` になっていた（#8 以前からの潜在ギャップ）。ツリーウォークの `eval_call` に合わせ `exec_generator_evaled` へ委譲するアームを追加 |
+| **`Yield` op** | [vm/op.rs](../src/vm/op.rs), [vm/run.rs](../src/vm/run.rs), [vm/disasm.rs](../src/vm/disasm.rs) | `Op::Yield`: pop した値を `interp.vm_yield_push` で `GENERATOR_YIELDS` へ追加（ツリーウォークの `Stmt::Yield` と同一・値を産出し制御は継続） |
+| **`Stmt::Yield` のコンパイル** | [vm/compiler.rs](../src/vm/compiler/) | `compile_stmt` に `Stmt::Yield(e)` → `compile_expr; Yield` を追加。`collect_nested_decls`／シャドウ検出（`scan_shadow`）にも `Stmt::Yield` の式を追加し、`yield block:…` のような式内宣言・for 式を漏れなく処理 |
+| **ジェネレータ本体の VM 実行** | [functions/execution.rs](../src/interpreter/functions/execution.rs) | `get_or_compile_gen_chunk`（`GeneratorFnValue` 版 Chunk キャッシュ）・`vm_yield_push`・`run_vm_generator`（バインド済みバッファで `run`・`current_class` 設定・yield 回収→`GeneratorState`）を追加。`exec_generator_evaled` に VM 分岐を挿入（フリー gen ＋ Instance レシーバの gen メソッド・キャプチャなし・コンパイル可能時） |
+| **Chunk キャッシュ（gen 用）** | [interpreter.rs](../src/interpreter.rs) | `vm_gen_chunks: HashMap<usize,(Weak<GeneratorFnValue>, Option<Rc<Chunk>>)>` を追加（`vm_chunks` の gen 版・別型のため別テーブル） |
+| **VM から gen 関数を呼べるように（付随バグ修正）** | [eval/calls.rs](../src/interpreter/eval/calls.rs) | `call_value_evaled`（VM の `Call` op ハンドラ）に **`Value::GeneratorFn` アームが欠落**しており、VM コンパイル済み関数から `gen(...)` を呼ぶと `TypeError: 'gen_function' object is not callable` になっていた（#8 以前からの潜在ギャップ）。ツリーウォークの `eval_call` に合わせ `exec_generator_evaled` へ委譲するアームを追加 |
 
 ## 設計と健全性
 - **eager 収集を維持**: `run_vm_generator` は本体を最後まで走らせ、`GENERATOR_YIELDS`（ツリーウォークと共有の
@@ -695,11 +695,11 @@ clone-walk で生成し、一時 `Rc<FnValue>` を作って捨てていた（§2
 ## 実装
 | 変更 | ファイル | 内容 |
 |---|---|---|
-| **`AsyncSubmit` op** | [vm/op.rs](src/vm/op.rs), [vm/run.rs](src/vm/run.rs), [vm/disasm.rs](src/vm/disasm.rs) | pop した AsyncManager に `chunk.async_blocks[idx]` を投入。捕捉変数を frame slot から読み `vm_async_submit` へ渡す |
-| **`AsyncBlock` を Chunk に** | [vm/chunk.rs](src/vm/chunk.rs) | `async_blocks: Vec<AsyncBlock{ body: Vec<Stmt>, captures: Vec<(name, slot, is_mut)> }>` |
-| **`AsyncAssign` のコンパイル** | [vm/compiler.rs](src/vm/compiler.rs) | slot 採番パスの bail から `AsyncAssign` を除外。`compile_async_assign`: 本体の参照名（`collect_referenced_names`）∩ enclosing frame の slot を捕捉対象に記録し、マネージャを `LoadLocal`/`LoadGlobal` で積んで `AsyncSubmit(idx)` を発行 |
-| **`vm_async_submit` ヘルパ** | [exec/exceptions_async.rs](src/interpreter/exec/exceptions_async.rs) | frame から読んだ捕捉ローカルを**一時スコープに積み**（`frame_floor` を進める）、既存 `capture_env` を呼んで env（捕捉ローカル + グローバル・deep_clone 規則込み）を組み `add_task`。ツリーウォークの `exec_async_assign` と同一の env 構築を再利用 |
-| **`collect_referenced_names` を再利用可能に** | [exec/mod.rs](src/interpreter/exec/mod.rs), [interpreter.rs](src/interpreter.rs) | `pub(crate)` 化 + 再エクスポート（VM コンパイラの捕捉解析で使う） |
+| **`AsyncSubmit` op** | [vm/op.rs](../src/vm/op.rs), [vm/run.rs](../src/vm/run.rs), [vm/disasm.rs](../src/vm/disasm.rs) | pop した AsyncManager に `chunk.async_blocks[idx]` を投入。捕捉変数を frame slot から読み `vm_async_submit` へ渡す |
+| **`AsyncBlock` を Chunk に** | [vm/chunk.rs](../src/vm/chunk.rs) | `async_blocks: Vec<AsyncBlock{ body: Vec<Stmt>, captures: Vec<(name, slot, is_mut)> }>` |
+| **`AsyncAssign` のコンパイル** | [vm/compiler.rs](../src/vm/compiler/) | slot 採番パスの bail から `AsyncAssign` を除外。`compile_async_assign`: 本体の参照名（`collect_referenced_names`）∩ enclosing frame の slot を捕捉対象に記録し、マネージャを `LoadLocal`/`LoadGlobal` で積んで `AsyncSubmit(idx)` を発行 |
+| **`vm_async_submit` ヘルパ** | [exec/exceptions_async.rs](../src/interpreter/exec/exceptions_async.rs) | frame から読んだ捕捉ローカルを**一時スコープに積み**（`frame_floor` を進める）、既存 `capture_env` を呼んで env（捕捉ローカル + グローバル・deep_clone 規則込み）を組み `add_task`。ツリーウォークの `exec_async_assign` と同一の env 構築を再利用 |
+| **`collect_referenced_names` を再利用可能に** | [exec/mod.rs](../src/interpreter/exec/mod.rs), [interpreter.rs](../src/interpreter.rs) | `pub(crate)` 化 + 再エクスポート（VM コンパイラの捕捉解析で使う） |
 
 ## 健全性（capture の正しさ）
 - **捕捉集合 = 本体の参照名 ∩ frame slot**。Arrow は「可視名の再宣言禁止」（`get_var` チェック）＋静的型検査の

@@ -6,8 +6,8 @@ description: Known pitfalls (落とし穴) collected while building Arrow's reso
 # 落とし穴（既知） — 解決層 / バイトコード VM
 
 Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実際に踏んだ**罠。
-各項の `#N` は [IMPLEMENTATION_LOG.md](../../../IMPLEMENTATION_LOG.md) のタスク番号。
-計画・現在地は [BYTECODE_VM_PLAN.md](../../../BYTECODE_VM_PLAN.md)。
+各項の `#N` は [IMPLEMENTATION_LOG.md](../../../implementation_logs/IMPLEMENTATION_LOG.md) のタスク番号。
+計画・現在地は [BYTECODE_VM_PLAN.md](../../../implementation_logs/BYTECODE_VM_PLAN.md)。
 
 > 共通する形は **「テストは通ってしまう」「ゲートは緑のまま」**。
 > ここに並ぶのは *壊れ方が見えない* 失敗ばかりで、見えるバグはそもそも載っていない。
@@ -51,7 +51,7 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
 - **⚠⚠ 「exec が N 倍」は「全体が N 倍」ではない**（#50）。例題 1 本の中央値では
   **exec は全体の 14%**（0.46ms / 3.40ms）しかなく、**exec を無限に速くしても端点は 1.59x**。
   残りはプロセス費用 1.5ms・`interp_init` 0.32・`type_check` 0.18・`parse` 0.17。
-  ⇒ 速度の話をする前に **[prof_dist.ps1](../../../prof_dist.ps1) で段別分布を取る**。
+  ⇒ 速度の話をする前に **[prof_dist.ps1](../../../scripts/prof_dist.ps1) で段別分布を取る**。
 - **⚠⚠ 1 回目の実行はコールドリードを踏む — プロファイラだけでなく素のベンチもである**（#50 → #70）。
   #50 では `startup` が **0.1ms → 10ms** に化け、最初の集計が丸ごと汚染された。
   #70 では **`cargo build` 直後の初回**の `bottleneck_bench.ar` が `fn call` を **0.405µs** と出し
@@ -78,7 +78,7 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
 - **⚠ `#[inline]` は効いているとは限らない**（#1-x）。巨大関数は LLVM が却下する。
 
 - **⚠⚠ IR ダンプ・`--compile` の直後にベンチを取らない**（#64）。
-  [dump_native_ir.ps1](../../../dump_native_ir.ps1) は **clang を 6 回起動して `.arc`/`.ars` を
+  [dump_native_ir.ps1](../../../scripts/dump_native_ir.ps1) は **clang を 6 回起動して `.arc`/`.ars` を
   書き換え・復元する**。その直後に測ると値が汚れ、#64 では**同じ 2 バイナリが
   `partial_call_overhead.ar` で 0.897x と 1.007x** を出した（同規模プローブは 1.018x で再現せず）。
   ⚠⚠ **負の対照（同一 exe の A vs A）は「計測系は安定」の証明にならない** — `ab_bench` は
@@ -183,7 +183,7 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   にする。負の対照は「入口から直接呼ぶプローブを書いてコンパイルが止まるか」。
 - **⚠ 段別プロファイルのタイマーを共有関数へ移したら、段が潰れていないか実測する**（#88）。
   `Phase::TypeCheck` / `Phase::Resolve` を `resolve_and_annotate` の中へ移したので、
-  [prof_dist.ps1](../../../prof_dist.ps1) が依存する内訳が消えうる。⇒ `AR_PROF=1` で
+  [prof_dist.ps1](../../../scripts/prof_dist.ps1) が依存する内訳が消えうる。⇒ `AR_PROF=1` で
   **2 段が別々に出ること**を確認した。
 - **⚠ worker スレッドは `Interpreter::new()` を作る**（#32）。**型注釈等を引き継がない** ので、
   親の設定を渡し忘れると **ゲートに穴が開く**（実際に開いていた）。
@@ -223,7 +223,7 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
 - **⚠ `force_gate` は例題ごとに最初の 1 件で止まる**（1 例題 = 1 原因ではない）。潰すたび測り直す。
   文言だけで bail と `vm_ineligible` は区別できないので `AR_TW_STATS` の両表を突き合わせる。
 - **bail する形はツリーウォークが正しいとは限らない**（`for-target-shadow` で実バグ）。
-  基準は `python -m impl_python` の出力（[compare_python_impl.ps1](../../../compare_python_impl.ps1)）。
+  基準は `python -m impl_python` の出力（[compare_python_impl.ps1](../../../scripts/compare_python_impl.ps1)）。
 - **ゲートスクリプトは `target/release` を見る**（`cargo build` の debug だけ見て「直った」と
   判断しない）。**`$ErrorActionPreference='Stop'` から `cargo` を呼ぶと進捗の stderr で終了
   エラーになる** ので、その呼び出しの間だけ `Continue` に落とす（`tw_stats.ps1` 参照）。
@@ -243,11 +243,11 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   **広い回帰は実ファイル、意味論は合成テスト**の役割分担が要る。
 
 - **⚠⚠ 例題スイートのグロブは非再帰のものがある**（#74）。
-  [compare_outputs.ps1](../../../compare_outputs.ps1) と
-  [compare_python_impl.ps1](../../../compare_python_impl.ps1) は `examples/<cat>/*.ar` なので
+  [compare_outputs.ps1](../../../scripts/compare_outputs.ps1) と
+  [compare_python_impl.ps1](../../../scripts/compare_python_impl.ps1) は `examples/<cat>/*.ar` なので
   **サブディレクトリの例題を 1 本も見ない**（`scan_examples` / `force_gate` は再帰する）。
   ⇒ サブディレクトリに例題を置いたら、**どのゲートが実際に拾うかを確かめる**こと。
-  #74 では [compare_import_paths.ps1](../../../compare_import_paths.ps1) へ明示登録した
+  #74 では [compare_import_paths.ps1](../../../scripts/compare_import_paths.ps1) へ明示登録した
   （ついでに `import_py_search_path.ar` 等が**どのゲートにも入っていなかった**ことも判明した）。
 
 - **⚠⚠ 「clippy 増分 0」は緑の証明ではない**（#65）。受け入れ済みの baseline
@@ -271,7 +271,7 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   `ClassValue` の構造体更新記法（`..synthetic(name, id)`）は **`alloc_class_id()` の評価を
   後ろへ動かす**。`class_id` は**インスタンスヘッダとネイティブ dispatch の GEP に焼かれる**ので、
   採番がずれても stdout は同じまま壊れうる。⇒ **`class_id` を引数で受けて呼び出し側に順序を残し**、
-  [dump_native_ir.ps1](../../../dump_native_ir.ps1) の **IR byte-identical** で確認した。
+  [dump_native_ir.ps1](../../../scripts/dump_native_ir.ps1) の **IR byte-identical** で確認した。
   ⚠ 「codegen を触ったら IR が主検査」は、**codegen を触っていなくても**効くことがある。
 
 - **⚠⚠ `rindex` で「末尾まで」を取る置換をしない**（#86 で自分が #78/#80 の教訓を破った）。
@@ -291,7 +291,7 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
 - **⚠⚠ 置換スクリプトには必ず件数の assert を入れる**（#78）。`src/lexer/math.rs` は **CRLF** で、
   LF 前提のパターンが**黙って 0 件マッチ**になり、負の対照が「適用されたつもり」で通りかけた。
   ⇒ `assert s.count(old) == 1` を必ず書く。改行コードは LF / CRLF の両方を試す。
-- **⚠ タイムアウトを持つゲートを並走させない**（#78）。[scan_examples.ps1](../../../scan_examples.ps1) を
+- **⚠ タイムアウトを持つゲートを並走させない**（#78）。[scan_examples.ps1](../../../scripts/scan_examples.ps1) を
   比較ゲートと同時に走らせたら `partial_call_overhead.ar` が TIMEOUT した（単独ではクリーン）。
 - **⚠⚠ 書き換える前に golden を取る**（#78）。`render_math_str` は分岐が 2×2×2 あるのに
   既存例題は 6 行しか踏んでいなかった。**HEAD のバイナリで 23 分岐の出力を先に保存**してから
@@ -299,7 +299,7 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
 - **⚠⚠ 手で A/B するときは揮発値を正規化してから比較する**（#77）。
   例外系例題を `md5sum` で突き合わせたら 1 本が「差分」に見えたが、実体は
   `<ZeroDivisionError object at 0x1971969f8b0>` の**ヒープアドレス**だった。
-  [compare_outputs.ps1](../../../compare_outputs.ps1) は `Normalize-Volatile` で
+  [compare_outputs.ps1](../../../scripts/compare_outputs.ps1) は `Normalize-Volatile` で
   `0x…` と 10 桁以上の整数（`id()`）を潰している。**手作業はこれを飛ばすので偽の差分が出る**。
   ⇒ 手 A/B は `sed -E 's/0x[0-9a-fA-F]+/0xADDR/g'` を通してから比較する。
 
@@ -315,7 +315,7 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   **8 walker × `Stmt` 40 variant の表を機械生成**したところ、「6 本は降りるが 1 本だけ降りない」
   というセルが 3 つ見つかり、**3 件とも実バグ**だった（`impl_python` は 3 件とも正しく動く）。
   ⚠⚠ **3 件とも例題が 0 本**（#56/#68/#71/#75 に続く **5 度目**）。裏取りは
-  [compare_bytecode.ps1](../../../compare_bytecode.ps1) が **114/114 byte-identical** だったこと
+  [compare_bytecode.ps1](../../../scripts/compare_bytecode.ps1) が **114/114 byte-identical** だったこと
   ＝ **網を広げても既存例題では 1 バイトも動かない**。
   ⇒ **目視で「たぶん揃っている」と言わない。表は機械で作る**（`match` のアーム名を grep するだけでよい）。
 - **⚠ 「列挙し忘れ」に唯一気づかせてくれるのは `dead_code` 警告**（#84）。1 段目（列挙の網羅）は
@@ -328,7 +328,7 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   #85 まで無かった**。実測すると、`Stmt` **39/40**・`Expr` **29/30** はカバーされている一方で、
   **「最上位 `fn` には書かれているのに入れ子 `fn`（クロージャ）の中には 1 度も書かれていない」構文が
   24 件**あった。⚠⚠ **歴史的な実バグ 5 件のうち 4 件（#68 / #75 / #84 ×2）がまさにこの文脈**。
-  ⇒ 新しい構文・文脈を扱う前に [syntax_cov.ps1](../../../syntax_cov.ps1) を走らせ、
+  ⇒ 新しい構文・文脈を扱う前に [syntax_cov.ps1](../../../scripts/syntax_cov.ps1) を走らせ、
   **`NESTED-GAP` を見る**。「たぶん例題があるはず」で進めない。
 - **⚠ カバレッジ計測は「実行」ではなく「パース」で取る**（#85）。実行すると GUI 例題の
   タイムアウト（`force_gate` は 161 本中 4 本がそれ）や async のスケジューリングで
@@ -366,14 +366,14 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   `AutoFlush=true` を立てた時点で **preamble（BOM）を子へ書く** ⇒ **`Start()` が返った時点で
   もう入っている**。`.BaseStream` へ BOM 無しで書く手当ては **効かない**。
   手は 2 つ: **`cmd /c "exe < file"` のネイティブリダイレクト**
-  （[repl_session.ps1](../../../repl_session.ps1)。stdout/stderr を分けられない）か、
+  （[repl_session.ps1](../../../scripts/repl_session.ps1)。stdout/stderr を分けられない）か、
   **起動直前だけ `[Console]::InputEncoding` を preamble 無しに差し替えて `finally` で戻す**
-  （[debug_session.ps1](../../../debug_session.ps1)）。
+  （[debug_session.ps1](../../../scripts/debug_session.ps1)）。
   ⚠ **発火はコンソールのコードページ依存** なので、別のマシンでは緑のまま通る。
 - **⚠ `ReadToEnd()` を stdout→stderr の順に逐次呼ぶと子とデッドロックする**（#34 で 1 時間停止・
   #38 で修正）。子が stderr のパイプ（既定 4KB）を埋めると書き込みでブロックし、親は stdout を
   待ち続ける。**必ず `ReadToEndAsync()` で同時に読む**
-  （[scan_examples.ps1](../../../scan_examples.ps1) が手本）。
+  （[scan_examples.ps1](../../../scripts/scan_examples.ps1) が手本）。
   症状は「**CPU 時間が伸びないまま生き続ける**」。
   ⚠ **普段の実行では踏まない**（子の stderr が数 KB を超えて初めて発火）ので、新しく子プロセスを
   起こすスクリプトを書いたら **`AR_VM_DUMP=1` を付けて回して確かめる**
@@ -387,8 +387,8 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   （`Get-Process` に子が居らず node/dotnet だけ残っていれば孫の握りっぱなし）。
   手は **`Start-Process -RedirectStandardOutput/-RedirectStandardError` でファイルへ落として
   終了後に読む**（ファイルハンドルは孫が持っていても読み出しを妨げない・
-  [compare_import_paths.ps1](../../../compare_import_paths.ps1)）。
-  ⚠ [compare_bytecode.ps1](../../../compare_bytecode.ps1) が `js_proc_*` / `cs_proc_app` を
+  [compare_import_paths.ps1](../../../scripts/compare_import_paths.ps1)）。
+  ⚠ [compare_bytecode.ps1](../../../scripts/compare_bytecode.ps1) が `js_proc_*` / `cs_proc_app` を
   skip リストに入れているのは**この理由**（当時は理由を書いていなかったので #58 で踏み直した）。
 - **native exe の stderr を `2>&1` で受けると PS5.1 が ErrorRecord 化** して exit 0 でも失敗扱いに
   なる。`Start-Process -PassThru` の `ExitCode` も当てにならない

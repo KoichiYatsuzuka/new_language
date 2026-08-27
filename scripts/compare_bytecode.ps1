@@ -4,9 +4,9 @@
 # リファクタリング（#62 / #63 / #66 …）のたびに手で回していたので固定した。
 #
 # 使い方:
-#   ./compare_bytecode.ps1 -A <head-arrow.exe> -B <new-arrow.exe>
-#   ./compare_bytecode.ps1 -A ../head_wt/target/release/arrow.exe   # -B の既定は target/release
-#   ./compare_bytecode.ps1 -A x.exe -B x.exe                        # 負の対照（必ず 100% 一致）
+#   ./scripts/compare_bytecode.ps1 -A <head-arrow.exe> -B <new-arrow.exe>
+#   ./scripts/compare_bytecode.ps1 -A ../head_wt/target/release/arrow.exe   # -B の既定は target/release
+#   ./scripts/compare_bytecode.ps1 -A x.exe -B x.exe                        # 負の対照（必ず 100% 一致）
 #
 # ⚠⚠ **async 例題は対象外**（#52）。worker スレッドの書き込み順とタスクのコンパイル回数が
 #    スケジューリング依存なので、**同一バイナリでも dump が揺れる**。
@@ -29,7 +29,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 if ([string]::IsNullOrEmpty($B)) { $B = Join-Path $repo 'target/release/arrow.exe' }
 
 foreach ($exe in @($A, $B)) {

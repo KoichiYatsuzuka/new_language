@@ -2,19 +2,19 @@
 #
 # #58（`Stmt::Import` アーム 210 行の切り出し）で cs-dll / cs-proc / js-proc の
 # **早期 return を共通の末尾へ畳んだ**ので、「束縛名が同じになる」ことを実測で裏づけるための検査。
-# これらの例題は [compare_bytecode.ps1](compare_bytecode.ps1) の対象外（GUI・外部プロセス）なので、
+# これらの例題は [compare_bytecode.ps1](scripts/compare_bytecode.ps1) の対象外（GUI・外部プロセス）なので、
 # **バイトコード同一性だけでは #58 の主張を支えられない**。
 #
 # 使い方:
-#   ./compare_import_paths.ps1 -A <head-arrow.exe> -B <new-arrow.exe>
-#   ./compare_import_paths.ps1 -A x.exe -B x.exe      # 負の対照（必ず 100% 一致）
+#   ./scripts/compare_import_paths.ps1 -A <head-arrow.exe> -B <new-arrow.exe>
+#   ./scripts/compare_import_paths.ps1 -A x.exe -B x.exe      # 負の対照（必ず 100% 一致）
 #
 # ⚠⚠ **子の出力をパイプで受けてはいけない**（#58 で実際にハングさせた）。
 #    `import[js-proc]` は **node のブリッジを孫プロセスとして起こし、それが生き残る**。
 #    孫はパイプの書き込み端を握ったままなので、`arrow.exe` が終了して `WaitForExit` が返っても
 #    `ReadToEndAsync` が**永久に完了しない**。⇒ ここでは `Start-Process -RedirectStandard*` で
 #    **ファイルへ落としてから読む**（ファイルハンドルは孫が持っていても読み出しを妨げない）。
-#    ⚠ [compare_bytecode.ps1](compare_bytecode.ps1) が js_proc 系を skip しているのは同じ理由。
+#    ⚠ [compare_bytecode.ps1](scripts/compare_bytecode.ps1) が js_proc 系を skip しているのは同じ理由。
 #
 # ⚠ GUI 例題（cs_form_app / DxLib 系）は窓が出て終わらないので**対象外**。
 #    ここで見るのは「import が名前空間を作って束縛するところまで」で足りる。
@@ -27,7 +27,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 if ([string]::IsNullOrEmpty($B)) { $B = Join-Path $repo 'target/release/arrow.exe' }
 
 foreach ($exe in @($A, $B)) {
@@ -39,13 +39,13 @@ $targets = @(
     'examples/interop/cs_interop_test.ar',
     # ⚠ `ar_config.json` の `python.search_paths` を踏む唯一の例題群（#61/#69/#74）。
     #    ⚠⚠ `py_subdir/` のものは**サブディレクトリ**にあるので
-    #    [compare_outputs.ps1](compare_outputs.ps1) からは見えない（あちらは非再帰）。
+    #    [compare_outputs.ps1](scripts/compare_outputs.ps1) からは見えない（あちらは非再帰）。
     #    祖先ウォークの回帰はここでしか検知できない。
     'examples/interop/import_py_search_path.ar',
     'examples/interop/import_py_int_search_path.ar',
     'examples/interop/py_subdir/import_py_ancestor_config.ar',
     # ⚠ **`import[cs-proc]` を踏む唯一の非 GUI 例題**（#58 で気づいた）。
-    #    [compare_bytecode.ps1](compare_bytecode.ps1) は外部プロセスを理由に skip しているので、
+    #    [compare_bytecode.ps1](scripts/compare_bytecode.ps1) は外部プロセスを理由に skip しているので、
     #    これを外すと cs-proc 経路を見る網が 1 つも無くなる。
     'examples/interop/cs_proc_app.ar',
     'examples/interop/event_cs_fire.ar',

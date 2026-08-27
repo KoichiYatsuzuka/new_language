@@ -8,7 +8,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 
 $targets = @(
     'examples/interop/test_modules/physics.ar',

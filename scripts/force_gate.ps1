@@ -30,16 +30,17 @@
 # 足りないのは「その先で初めて実行される経路」だけで、GUI のメインループのように
 # 毎フレーム同じ本体を回す形なら実質的に覆えている。
 #
-# 使い方: ./force_gate.ps1 [-Timeout 45] [-Grace 25]
+# 使い方: ./scripts/force_gate.ps1 [-Timeout 45] [-Grace 25]
 #   -Timeout … 1 例題を待つ秒数（`flat_bench` が 24 秒かかるので既定 45）
 #   -Grace   … タイムアウト後に「窓を閉じ続ける」秒数（ダイアログを順に出す例題があるので既定 25）
 param([int]$Timeout = 45, [int]$Grace = 25)
 
 $ErrorActionPreference = 'Stop'
-$exe = Join-Path $PSScriptRoot 'target\release\arrow.exe'
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
+$exe = Join-Path $repo 'target\release\arrow.exe'
 if (-not (Test-Path $exe)) { throw "not built: $exe (run: cargo build --release)" }
 
-$files = Get-ChildItem -Path (Join-Path $PSScriptRoot 'examples') -Filter *.ar -Recurse |
+$files = Get-ChildItem -Path (Join-Path $repo 'examples') -Filter *.ar -Recurse |
          Where-Object { $_.FullName -notmatch '\\archived\\' }
 
 $hits = @()
@@ -62,7 +63,7 @@ foreach ($f in $files) {
     $errTask = $p.StandardError.ReadToEndAsync()
     $outTask = $p.StandardOutput.ReadToEndAsync()
 
-    $rel = $f.FullName.Substring($PSScriptRoot.Length + 1)
+    $rel = $f.FullName.Substring($repo.Length + 1)
     $timedOut = $false
     if (-not $p.WaitForExit($Timeout * 1000)) {
         # ⚠ **いきなり kill しない**（#29）。GUI 例題は「窓が閉じる」と正常終了するように

@@ -7,8 +7,8 @@
 # 実行前に退避し実行後に復元する（作業ツリーを汚さない）。
 #
 # 使い方:
-#   .\dump_native_ir.ps1 -OutDir <dir>          # release ビルド済みバイナリでダンプ
-#   .\dump_native_ir.ps1 -OutDir <dir> -Build   # 先に cargo build --release も行う
+#   .\scripts\dump_native_ir.ps1 -OutDir <dir>          # release ビルド済みバイナリでダンプ
+#   .\scripts\dump_native_ir.ps1 -OutDir <dir> -Build   # 先に cargo build --release も行う
 
 param(
     [Parameter(Mandatory = $true)][string]$OutDir,
@@ -16,7 +16,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 
 # ネイティブ compile 対象の代表モジュール（codegen-eligible な関数を含むもの）
 $targets = @(

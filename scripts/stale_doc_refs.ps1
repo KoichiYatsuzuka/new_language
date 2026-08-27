@@ -19,13 +19,14 @@
   履歴扱い・ホワイトリストで落としたものも含めて全部出す（棚卸し用）。
 
 .EXAMPLE
-  ./stale_doc_refs.ps1          # ゲート（違反があれば exit 1）
-  ./stale_doc_refs.ps1 -All     # 落としたものも見る
+  ./scripts/stale_doc_refs.ps1          # ゲート（違反があれば exit 1）
+  ./scripts/stale_doc_refs.ps1 -All     # 落としたものも見る
 #>
 param([switch]$All)
 
 $ErrorActionPreference = 'Stop'
-$root = Join-Path $PSScriptRoot 'src'
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
+$root = Join-Path $repo 'src'
 if (-not (Test-Path $root)) { Write-Error "src/ が見つからない: $root"; exit 2 }
 
 # 履歴マーカー: この語が同じ行にあれば「意図的に消えたものへ言及している」とみなす
@@ -46,7 +47,7 @@ $code = New-Object 'System.Collections.Generic.HashSet[string]'
 $comments = New-Object 'System.Collections.Generic.List[object]'
 
 foreach ($f in $files) {
-    $rel = $f.FullName.Substring($PSScriptRoot.Length + 1).Replace('\', '/')
+    $rel = $f.FullName.Substring($repo.Length + 1).Replace('\', '/')
     $n = 0
     foreach ($line in [System.IO.File]::ReadAllLines($f.FullName)) {
         $n++

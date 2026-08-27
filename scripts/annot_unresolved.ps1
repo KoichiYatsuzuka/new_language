@@ -1,4 +1,4 @@
-# annot_unresolved.ps1 -- measure where Unresolved annotations come from (#15b payoff).
+﻿# annot_unresolved.ps1 -- measure where Unresolved annotations come from (#15b payoff).
 # Runs every example with AR_ANNOT_DIFF=1 and aggregates the AnnotUnresolvedSrc /
 # AnnotBinop lines that the type checker emits on stderr.
 #
@@ -10,11 +10,11 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 $exe  = Join-Path $repo 'target\release\arrow.exe'
 if (-not (Test-Path $exe)) { throw "not built: $exe" }
 
-# Skips mirror run_examples.ps1 (env-dependent / interactive / generated artifacts).
+# Skips mirror _archive/run_examples.ps1 (env-dependent / interactive / generated artifacts).
 $skip = @('importation.ar', 'rs_crates', 'archived', 'cs_form', 'cs_proc', 'js_proc')
 
 $files = Get-ChildItem -Path (Join-Path $repo 'examples') -Recurse -Filter $Filter |

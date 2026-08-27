@@ -13,8 +13,8 @@ Phase R（AST 解決層）＋ Phase V（バイトコード VM）の系列（#1�
 >   *やる前に読む*もの。⇒ ベンチを取る前・opcode を足す前・「緑だから大丈夫」と言う前。
 > - **本スキル** … **こう作る／こう進める**という原則。*設計するとき・レビューするときに読む*もの。
 > - 個別の失敗事例は本スキルに書かない（`vm-pitfalls` を指す）。番号 `#N` の詳細は
->   [IMPLEMENTATION_LOG.md](../../../IMPLEMENTATION_LOG.md)、現在地は
->   [BYTECODE_VM_PLAN.md](../../../BYTECODE_VM_PLAN.md)。
+>   [IMPLEMENTATION_LOG.md](../../../implementation_logs/IMPLEMENTATION_LOG.md)、現在地は
+>   [BYTECODE_VM_PLAN.md](../../../implementation_logs/BYTECODE_VM_PLAN.md)。
 
 ---
 
@@ -113,6 +113,10 @@ Phase R（AST 解決層）＋ Phase V（バイトコード VM）の系列（#1�
   （既存ゲートの多くは exit code しか見ないので、**黙って違う値**を返しても緑になる）。
 
 ### 触った場所 → 見るゲート
+
+⚠ 実体は **[scripts/](../../../scripts/)**（`./scripts/<name>.ps1` で呼ぶ）。
+一覧と「いつ走らせるか」は [CLAUDE.md](../../../CLAUDE.md)、引数と既知の罠は
+[BYTECODE_VM_PLAN.md](../../../implementation_logs/BYTECODE_VM_PLAN.md) の script 表。
 
 | 触った所 | 主検査 |
 |---|---|

@@ -65,7 +65,7 @@ Add the `Token` and `Stmt`/`Expr` variants, then `cargo build`. Most dispatch ma
    `frontend_tests/type_check_tests/`, and `src/interpreter/tests/<topic>.rs`.
    Run `cargo test <name>` for the touched areas, then the full `cargo test`.
 5. **Codebase map** — whenever the work performed file operations (created, moved, renamed, or
-   deleted files), or added/removed a file's responsibility, rerun `./generate-codebase-map.ps1`
+   deleted files), or added/removed a file's responsibility, rerun `./scripts/generate-codebase-map.ps1`
    from the repo root to regenerate the file tree in the `codebase-map` skill; if a directory's
    responsibility changed, also update the hand-written Module Roles section there.
 

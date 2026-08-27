@@ -7,10 +7,10 @@
 #                ⚠ **命令数ではなく時間**。命令数の内訳は速度の予測に使えない（#46）。
 #
 # 使い方:
-#   powershell -Command "./prof_dist.ps1 -Build"                      # prof ビルドを作る
-#   powershell -Command "./prof_dist.ps1 -Mode phases"                # 全例題の段別分布
-#   powershell -Command "./prof_dist.ps1 -Mode ops -Scripts examples/bench/bench_ab_interp.ar"
-#   powershell -Command "./prof_dist.ps1 -Mode ops -Csv dist.csv"
+#   powershell -Command "./scripts/prof_dist.ps1 -Build"                      # prof ビルドを作る
+#   powershell -Command "./scripts/prof_dist.ps1 -Mode phases"                # 全例題の段別分布
+#   powershell -Command "./scripts/prof_dist.ps1 -Mode ops -Scripts examples/bench/bench_ab_interp.ar"
+#   powershell -Command "./scripts/prof_dist.ps1 -Mode ops -Csv dist.csv"
 #
 # ⚠ 注意（この計測で実際に踏んだ落とし穴）:
 #   * **1 回目の実行はファイルのコールドリードを踏む**（startup が 0.1ms → 10ms に化ける）。
@@ -33,7 +33,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 if ([string]::IsNullOrEmpty($Exe)) { $Exe = Join-Path $repo 'target\release\arrow.exe' }
 
 if ($Build) {
@@ -47,7 +47,7 @@ if ($Build) {
 }
 
 if (-not (Test-Path $Exe)) {
-    throw "$Exe not found. Run: powershell -Command `"./prof_dist.ps1 -Build`""
+    throw "$Exe not found. Run: powershell -Command `"./scripts/prof_dist.ps1 -Build`""
 }
 
 # 対象スクリプト（未指定なら scan_examples.ps1 と同じ集合）

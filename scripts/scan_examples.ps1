@@ -1,15 +1,15 @@
 ﻿# scan_examples.ps1 — 全例題を実行し、失敗したものだけを理由付きで列挙する。
 #
-# run_examples.ps1 との違い:
+# _archive/run_examples.ps1（退避済み）との違い:
 #   - タイムアウト付き（GUI/外部プロセス例題でハングしない）
 #   - System.Diagnostics.Process を直接使う（Start-Process -PassThru の ExitCode は当てにならない）
 #   - 失敗した例題の stderr 末尾を 1 行に畳んで表示する
 #
-# 使い方: .\scan_examples.ps1
+# 使い方: .\scripts\scan_examples.ps1
 param([string]$Exe = '', [int]$TimeoutSec = 45)
 
 $ErrorActionPreference = 'Continue'
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 if ([string]::IsNullOrEmpty($Exe)) { $Exe = Join-Path $repo 'target\release\arrow.exe' }
 
 $skip = @(

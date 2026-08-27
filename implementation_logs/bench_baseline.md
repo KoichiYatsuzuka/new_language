@@ -2,7 +2,7 @@
 
 計測日: 2026-07-21 / release ビルド（`target/release/arrow.exe`）/ 各3回実行の代表値。
 スクリプト: `examples/bench/bottleneck_bench.ar`（N=1,000,000）, `examples/bench/bench_field_access.ar`。
-再測定は `./bench.ps1`。
+再測定は `../_archive/bench.ps1`（⚠ ツリーウォーク時代の計測。実行経路は #33 で置き換わったので**この基準値と直接は比べられない**）。
 
 ## 1. 要因分離（bottleneck_bench.ar, µs、baseline 差引後）
 

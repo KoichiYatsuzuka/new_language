@@ -17,15 +17,15 @@
 #    観測された種別が母集団に無ければ **STALE POPULATION で落とす**（実データによる母集団検査）。
 #
 # 使い方:
-#   ./syntax_cov.ps1                 # 未カバーの variant と文脈マトリクスを出す
-#   ./syntax_cov.ps1 -Pairs          # 親>子 のペア表も出す（384 件。既定では出さない）
+#   ./scripts/syntax_cov.ps1                 # 未カバーの variant と文脈マトリクスを出す
+#   ./scripts/syntax_cov.ps1 -Pairs          # 親>子 のペア表も出す（384 件。既定では出さない）
 #
 # ⚠ ペア表は**文脈を持たない**（`Match>Let` はあるが「入れ子 fn の中の `Match>Let`」は区別しない）。
 #   実測: #84 ①③ はペア表で検出できたが、②（入れ子 fn のブロック式）は `Let>Block` が
 #   他の例題で既に埋まっていたため**検出できない**。文脈ごとに分けるとキーが 3 倍以上に
 #   増えて読めなくなるので、**意図的に分けていない**（代わりに上の nested-fn 列を見る）。
-#   ./syntax_cov.ps1 -SkipBuild
-#   ./syntax_cov.ps1 -Exclude 'archived|practical_examples'
+#   ./scripts/syntax_cov.ps1 -SkipBuild
+#   ./scripts/syntax_cov.ps1 -Exclude 'archived|practical_examples'
 #
 # ⚠ このファイルは**日本語コメントを含むので UTF-8 BOM 付きで保存すること**（PS5.1 は BOM 無しを ANSI で読む）。
 param(
@@ -36,6 +36,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 
 if (-not $SkipBuild) {
     Write-Host "building with --features tw_stats ..." -ForegroundColor DarkGray
@@ -48,10 +49,10 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw "build failed" }
 }
 
-$exe = Join-Path $PSScriptRoot 'target\debug\arrow.exe'
+$exe = Join-Path $repo 'target\debug\arrow.exe'
 if (-not (Test-Path $exe)) { throw "not built: $exe" }
 
-$files = Get-ChildItem -Path (Join-Path $PSScriptRoot 'examples') -Filter *.ar -Recurse |
+$files = Get-ChildItem -Path (Join-Path $repo 'examples') -Filter *.ar -Recurse |
          Where-Object { $_.FullName -notmatch $Exclude }
 
 $stmt = @{}; $expr = @{}; $ctx = @{}; $pair = @{}
@@ -71,7 +72,7 @@ try {
         #    （#69/#74）。片方でしか解決できない例題が実在するので、**測れた方を採る**。
         #    ⚠ 既存ゲートも割れている: `force_gate` はファイルの dir・`scan_examples` はリポジトリ直下。
         $stderr = ''
-        foreach ($wd in @($f.DirectoryName, $PSScriptRoot)) {
+        foreach ($wd in @($f.DirectoryName, $repo)) {
             $outFile = Join-Path $tmp 'out.txt'
             $errFile = Join-Path $tmp 'err.txt'
             $prevVal = $env:AR_SYNTAX_COV
@@ -99,7 +100,7 @@ try {
             $reason = (($stderr -split "`n") | Where-Object { $_.Trim() } | Select-Object -First 1)
             if (-not $reason) { $reason = '(no output)' }
             $failed++
-            $failedFiles += ("{0}  --  {1}" -f $f.FullName.Replace($PSScriptRoot, '.'), $reason.Trim())
+            $failedFiles += ("{0}  --  {1}" -f $f.FullName.Replace($repo, '.'), $reason.Trim())
             continue
         }
         $ran++

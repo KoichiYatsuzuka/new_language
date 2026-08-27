@@ -1,6 +1,6 @@
 ﻿# compare_outputs.ps1 — 2 つの arrow.exe で**全例題の stdout / stderr / exit code が同一か**を見る。
 #
-# ⚠⚠ **[compare_bytecode.ps1](compare_bytecode.ps1) では足りない場合のためのゲート**（#63 で新設）。
+# ⚠⚠ **[compare_bytecode.ps1](scripts/compare_bytecode.ps1) では足りない場合のためのゲート**（#63 で新設）。
 #    バイトコード同一性が言えるのは「コンパイラを触っていない」ことだけで、
 #    **ツリーウォーク側（`eval_*` / `exec_*`）だけを触った変更では自明に一致してしまう**。
 #    #63（`eval_method_call_full` のレシーバ別切り出し）はまさにその形で、
@@ -8,9 +8,9 @@
 #    ⇒ **解釈側を触ったら bytecode ではなくこちらで「挙動不変」を主張すること。**
 #
 # 使い方:
-#   ./compare_outputs.ps1 -A <head-arrow.exe> -B <new-arrow.exe>
-#   ./compare_outputs.ps1 -A x.exe -B x.exe        # 負の対照（必ず 100% 一致）
-#   ./compare_outputs.ps1 -A x.exe -ShowDiff       # 差分の中身も表示
+#   ./scripts/compare_outputs.ps1 -A <head-arrow.exe> -B <new-arrow.exe>
+#   ./scripts/compare_outputs.ps1 -A x.exe -B x.exe        # 負の対照（必ず 100% 一致）
+#   ./scripts/compare_outputs.ps1 -A x.exe -ShowDiff       # 差分の中身も表示
 #
 # ⚠⚠ **使う前に必ず同一 exe 同士で負の対照を取る。** #63 の初回は 13 例題が DIFFERS になり、
 #    原因は ①`bench` の経過時間 ②オブジェクトアドレス（`0x…` / `id()`）の 2 種だった。
@@ -30,7 +30,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 if ([string]::IsNullOrEmpty($B)) { $B = Join-Path $repo 'target/release/arrow.exe' }
 
 foreach ($exe in @($A, $B)) {
@@ -46,7 +46,7 @@ $skip = @(
     'bench_ab_cdll'
 )
 # ⚠ **`bench` ディレクトリは丸ごと対象外**（#63 の負の対照で判明）。出力が経過時間そのものなので
-#    **同一バイナリでも 100% 一致しない**。速度の A/B は [ab_bench.ps1](ab_bench.ps1) の担当。
+#    **同一バイナリでも 100% 一致しない**。速度の A/B は [ab_bench.ps1](scripts/ab_bench.ps1) の担当。
 # ⚠ `async` も対象外（スケジューリング依存で揺れる。#52 と同じ理由）。
 $categoryDirs = @('basics','collections','classes','typing','exceptions','apps','interop')
 

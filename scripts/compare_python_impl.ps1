@@ -21,9 +21,9 @@
 #     （黙って残すと網が緩む）。
 #
 # 使い方:
-#   .\compare_python_impl.ps1                 # 検査（差分があれば exit 1）
-#   .\compare_python_impl.ps1 -ShowSkipped    # 既知差分の一覧も出す
-#   .\compare_python_impl.ps1 -Filter finally # ファイル名部分一致で絞り込み
+#   .\scripts\compare_python_impl.ps1                 # 検査（差分があれば exit 1）
+#   .\scripts\compare_python_impl.ps1 -ShowSkipped    # 既知差分の一覧も出す
+#   .\scripts\compare_python_impl.ps1 -Filter finally # ファイル名部分一致で絞り込み
 
 param(
     [string]$Filter = '',
@@ -32,7 +32,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 $exe = Join-Path $repo 'target/release/arrow.exe'
 if (-not (Test-Path $exe)) { throw "not built: $exe (run: cargo build --release)" }
 

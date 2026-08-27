@@ -1,4 +1,4 @@
-# generate-codebase-map.ps1
+﻿# generate-codebase-map.ps1
 # Regenerates the AUTO-TREE section of .claude/skills/codebase-map/SKILL.md.
 # Run from anywhere; paths resolve relative to this script's location (repo root).
 # Run this after creating / moving / renaming / deleting source files.
@@ -6,7 +6,7 @@
 # block between the AUTO-TREE markers is replaced.
 
 $ErrorActionPreference = 'Stop'
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 $excludeDirs = @('__pycache__', 'node_modules', 'out', 'out_debug', 'target', '.git', 'bin', 'obj', 'math_output')
 
 $script:fileCount = 0
@@ -75,6 +75,21 @@ foreach ($d in (Get-ChildItem (Join-Path $repo 'examples') -Directory | Sort-Obj
 }
 $loose = @(Get-ChildItem (Join-Path $repo 'examples') -File -Filter '*.ar').Count
 if ($loose -gt 0) { $tree += ('  ({0} loose .ar at top level)' -f $loose) }
+
+# --- scripts/ (検証・計測スクリプト) ---
+# ⚠ .ps1 は 2026-08-26 に直下から scripts/ へ集約した。役目を終えたものは _archive/。
+$tree += ''
+$tree += 'scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUDE.md)'
+foreach ($f in (Get-ChildItem (Join-Path $repo 'scripts') -File -Filter '*.ps1' | Sort-Object Name)) {
+    $tree += ('  {0} ({1})' -f $f.Name, (Get-LineCount $f.FullName))
+}
+
+# --- implementation_logs/ (計画・実装ログ) ---
+$tree += ''
+$tree += 'implementation_logs/  (計画・実装ログ・引き継ぎ文書)'
+foreach ($f in (Get-ChildItem (Join-Path $repo 'implementation_logs') -File -Filter '*.md' | Sort-Object Name)) {
+    $tree += ('  {0} ({1})' -f $f.Name, (Get-LineCount $f.FullName))
+}
 
 # --- repo root files ---
 $tree += ''

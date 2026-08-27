@@ -8,10 +8,11 @@
 #    1 文ごとに atomic 読みが残り 11% 退行するため、意図的にこの構成にしてある。
 #    このスクリプトが専用ビルドを行う。
 #
-# 使い方: ./tw_stats.ps1 [-Timeout 20] [-SkipBuild]
+# 使い方: ./scripts/tw_stats.ps1 [-Timeout 20] [-SkipBuild]
 param([int]$Timeout = 20, [switch]$SkipBuild)
 
 $ErrorActionPreference = 'Stop'
+$repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 if (-not $SkipBuild) {
     Write-Host "building with --features tw_stats ..." -ForegroundColor DarkGray
     # ⚠ `2>&1` を付けないこと。PS5.1 は native exe の stderr を ErrorRecord 化し、
@@ -24,10 +25,10 @@ if (-not $SkipBuild) {
     $ErrorActionPreference = $prevEap
     if ($LASTEXITCODE -ne 0) { throw "build failed" }
 }
-$exe = Join-Path $PSScriptRoot 'target\debug\arrow.exe'
+$exe = Join-Path $repo 'target\debug\arrow.exe'
 if (-not (Test-Path $exe)) { throw "not built: $exe" }
 
-$files = Get-ChildItem -Path (Join-Path $PSScriptRoot 'examples') -Filter *.ar -Recurse |
+$files = Get-ChildItem -Path (Join-Path $repo 'examples') -Filter *.ar -Recurse |
          Where-Object { $_.FullName -notmatch '\\archived\\' }
 
 $toplevel = @{}; $modbody = @{}; $infn = @{}; $vmc = @{}; $inelig = @{}; $cap = @{}; $bailFn = @{}; $bailTop = @{}; $twcf = @{}

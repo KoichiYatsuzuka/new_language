@@ -11,17 +11,18 @@ Two layers, maintained differently:
    module don't invalidate it. Update a role line when a directory's responsibility changes or a
    directory is added/removed.
 2. **File Tree** (bottom) — **auto-generated**. Never hand-edit between the AUTO-TREE markers;
-   after creating / moving / renaming / deleting files, rerun `./generate-codebase-map.ps1` from
+   after creating / moving / renaming / deleting files, rerun `./scripts/generate-codebase-map.ps1` from
    the repo root. Line counts are in parentheses — use them to plan partial reads (for files over
    ~300 lines, Grep for the anchor function and Read only that region with offset/limit).
 
 ## Module Roles
 
 ### Repo root
-- `spec.md` — language specification
+- `implementation_logs/` — 計画・実装ログ・引き継ぎ文書（`BYTECODE_VM_PLAN.md` / `IMPLEMENTATION_LOG.md` / `FUTURE_FEATURE.md` ほか）
+- `docs/spec.md` — 言語仕様の概要（日本語）。⚠ **残タスクはここに書かない**（正本は `implementation_logs/FUTURE_FEATURE.md`）
 - `ar_config.json` — interpreter config (e.g. `rust.crates_path` for `import[rs]`)
-- `run_examples.ps1` — batch-runs example scripts
-- `generate-codebase-map.ps1` — regenerates the File Tree section below
+- `_archive/` — 役目を終えたスクリプトの退避先（理由と代替は `_archive/README.md`）
+- `scripts/` — 検証・計測スクリプト（何をいつ走らせるかは `CLAUDE.md`）。`generate-codebase-map.ps1` もここ
 
 ### src/ — Rust implementation (primary)
 - Root files: `main.rs` entry point / CLI; `repl.rs` REPL; `token.rs` Token enum + Span;
@@ -82,19 +83,19 @@ lines in touched files (see regulations).
 
 ## File Tree (auto-generated)
 
-Refresh with `./generate-codebase-map.ps1`. Do not edit by hand.
+Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (211 files, 69236 lines)
+src/  (211 files, 69630 lines)
   ar_config.rs (244)
   ast.rs (1124)
   decl_names.rs (173)
   expr_walk.rs (172)
-  interpreter.rs (763)
-  main.rs (636)
+  interpreter.rs (805)
+  main.rs (629)
   prof.rs (508)
-  repl.rs (112)
+  repl.rs (118)
   stmt_walk.rs (277)
   syntax_cov.rs (379)
   token.rs (531)
@@ -132,7 +133,7 @@ src/  (211 files, 69236 lines)
     msvc_errors.rs (112)
     proc_bridge.rs (200)
     py_interop.rs (412)
-    resolver.rs (616)
+    resolver.rs (672)
     scope.rs (180)
     str_methods.rs (649)
     templates.rs (937)
@@ -177,7 +178,7 @@ src/  (211 files, 69236 lines)
       dispatch.rs (214)
       exceptions_async.rs (371)
       mod.rs (277)
-      modules.rs (961)
+      modules.rs (962)
       vars.rs (253)
     functions/
       args.rs (319)
@@ -211,7 +212,7 @@ src/  (211 files, 69236 lines)
       indexing.rs (124)
       instances.rs (427)
       iterator.rs (122)
-      mod.rs (315)
+      mod.rs (319)
       mustbe.rs (164)
       primitives.rs (186)
       pyobject.rs (213)
@@ -251,7 +252,7 @@ src/  (211 files, 69236 lines)
       ar_modules.rs (264)
       cpp.rs (203)
       cs_js_modules.rs (249)
-      dispatch.rs (186)
+      dispatch.rs (187)
       mod.rs (386)
       py_modules.rs (138)
     stmts/
@@ -293,7 +294,7 @@ src/  (211 files, 69236 lines)
     errors.rs (482)
     infer.rs (506)
     members.rs (316)
-    mod.rs (207)
+    mod.rs (193)
     scope.rs (156)
     state.rs (127)
     type_utils.rs (184)
@@ -312,19 +313,19 @@ src/  (211 files, 69236 lines)
     mod.rs (33)
     op.rs (488)
     op_prof.rs (203)
-    peephole.rs (272)
+    peephole.rs (379)
     run.rs (1633)
     compiler/
       block_expr.rs (403)
-      calls.rs (324)
+      calls.rs (328)
       control.rs (284)
       decls.rs (378)
       diag.rs (127)
-      emit.rs (642)
+      emit.rs (671)
       entry.rs (611)
-      expr.rs (486)
-      mod.rs (397)
-      stmt.rs (643)
+      expr.rs (488)
+      mod.rs (553)
+      stmt.rs (650)
       stmt_assign.rs (300)
 
 impl_python/  (49 files, 16410 lines)
@@ -416,38 +417,39 @@ examples/  (recursive .ar counts per category)
   typing/ (15 .ar)
   (2 loose .ar at top level)
 
-(repo root)
+scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUDE.md)
   ab_bench.ps1 (116)
   ab_bench_modes.ps1 (165)
   annot_diff.ps1 (58)
   annot_unresolved.ps1 (87)
-  ar_config.json (32)
-  bench.ps1 (36)
-  bench_baseline.md (68)
-  BYTECODE_VM_PLAN.md (1053)
-  CLAUDE.md (71)
   compare_bytecode.ps1 (109)
   compare_import_paths.ps1 (125)
   compare_outputs.ps1 (127)
   compare_python_impl.ps1 (213)
   debug_session.ps1 (161)
   dump_native_ir.ps1 (92)
-  force_gate.ps1 (133)
-  generate-codebase-map.ps1 (100)
-  IMPLEMENTATION_LOG.md (9433)
+  force_gate.ps1 (134)
+  generate-codebase-map.ps1 (115)
+  prof_dist.ps1 (180)
+  repl_session.ps1 (58)
+  scan_examples.ps1 (56)
+  stale_doc_refs.ps1 (98)
+  syntax_cov.ps1 (215)
+  tw_stats.ps1 (105)
+
+implementation_logs/  (計画・実装ログ・引き継ぎ文書)
+  bench_baseline.md (68)
+  BYTECODE_VM_PLAN.md (1009)
+  FUTURE_FEATURE.md (259)
+  IMPLEMENTATION_LOG.md (9725)
   PHASE_R1_RESULTS.md (741)
   PHASE5_PLAN.md (427)
-  prof_dist.ps1 (180)
-  README.md (255)
   REFACTORING_HANDOFF.md (133)
-  repl_session.ps1 (58)
-  run_examples.ps1 (53)
-  scan_examples.ps1 (56)
-  spec.md (570)
-  stale_doc_refs.ps1 (97)
-  syntax_cov.ps1 (214)
-  tw_stats.ps1 (104)
-  tw_stats_files.ps1 (57)
+
+(repo root)
+  ar_config.json (32)
+  CLAUDE.md (117)
+  README.md (317)
 ```
-_Generated 2026-08-26 by generate-codebase-map.ps1_
+_Generated 2026-08-27 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->
