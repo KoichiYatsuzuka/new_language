@@ -215,17 +215,32 @@ pub(crate) fn extract_param_types(args: &py::Arguments) -> std::collections::Has
 /// 　  平坦化後の Arrow は位置渡しも受け付ける。Arrow 側に「位置渡し禁止」を表す
 /// 　  `Param` のフラグが無いため。**受け入れる Python コードが広がる方向**なので許容
 /// 　  （`/` も同様に「キーワード渡しも通る」方向へ緩む）。
-pub(crate) fn convert_params(args: &py::Arguments, _filename: &str) -> Result<Vec<Param>, String> {
+///
+/// ⚠ **デフォルト値は「定義時に 1 回」ではなく「呼び出しごと」に評価される**（項目 1）。
+/// rustpython は `ArgWithDefault.default` として引数ごとにデフォルト式を持つので写すだけだが、
+/// Arrow の `exec_fn_evaled` は毎回 `self.eval(expr)` する（`functions/execution.rs` の
+/// `evaluated_defaults`）。Python は `def` の実行時に 1 回だけ評価して**その値を共有**する。
+/// 　- リテラル（`0` / `"hi"` / `None` / `True`）は**完全に同じ**。実用上ほぼこれ。
+/// 　- ⚠ **可変デフォルト**（`def f(x=[])`）だけ意味が違う: Python は同じリストを呼び出し間で
+/// 　  共有する（有名な罠）が、Arrow は毎回新しいリストを作る。**Arrow 側が「普通に期待される」
+/// 　  挙動**で、その罠に依存したコードだけが差を踏む。
+/// 　- ⚠ 名前を参照するデフォルト（`def f(x=CONST)`）も、Arrow は呼び出し時に読み直す。
+pub(crate) fn convert_params(args: &py::Arguments, filename: &str) -> Result<Vec<Param>, String> {
     let mut params: Vec<Param> = Vec::new();
 
     // `/` より前（posonlyargs）と通常引数は区別せず同じ列に積む。
     for arg in args.posonlyargs.iter().chain(args.args.iter()) {
         let type_ann = arg.def.annotation.as_deref().map(convert_annotation);
+        let default = arg
+            .default
+            .as_deref()
+            .map(|e| convert_expr(e, filename))
+            .transpose()?;
         params.push(Param {
             name: arg.def.arg.to_string(),
             mutable: true,
             type_ann,
-            default: None,
+            default,
             variadic: false,
         });
     }
@@ -245,11 +260,16 @@ pub(crate) fn convert_params(args: &py::Arguments, _filename: &str) -> Result<Ve
     //   `Param` になっている（項目 6 未実装）ため、この列全体が壊れる。bare `*` 単体は無害。
     for arg in &args.kwonlyargs {
         let type_ann = arg.def.annotation.as_deref().map(convert_annotation);
+        let default = arg
+            .default
+            .as_deref()
+            .map(|e| convert_expr(e, filename))
+            .transpose()?;
         params.push(Param {
             name: arg.def.arg.to_string(),
             mutable: true,
             type_ann,
-            default: None,
+            default,
             variadic: false,
         });
     }

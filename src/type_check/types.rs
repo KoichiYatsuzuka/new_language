@@ -50,9 +50,10 @@ fn split_top_level_commas_fn(s: &str) -> Vec<&str> {
 
 /// 関数型アノテーションの 1 パラメータ。
 ///
-/// - `name`    : パラメータ名（位置引数の場合は `"param1"` などの自動生成名になる場合もある）
-/// - `mutable` : `mut` 修飾子の有無。`true` なら可変引数として扱う
-/// - `ty`      : パラメータの推論済み型
+/// - `name`        : パラメータ名（位置引数の場合は `"param1"` などの自動生成名になる場合もある）
+/// - `mutable`     : `mut` 修飾子の有無。`true` なら可変引数として扱う
+/// - `ty`          : パラメータの推論済み型
+/// - `has_default` : デフォルト値を持つか（＝呼び出しで省略可能か）
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnTypeParam {
     /// パラメータ名。
@@ -61,6 +62,12 @@ pub struct FnTypeParam {
     pub mutable: bool,
     /// パラメータの推論済み型。
     pub ty: InferredType,
+    /// デフォルト値を持つか。`true` なら呼び出し時に省略できる。
+    ///
+    /// ⚠ **型注釈（`fn(int, str)->int`）にはデフォルトを書けない**ので、注釈由来の
+    /// `FnTypeParam` は常に `false`。`true` になるのは `Stmt::FnDef` から組み立てる
+    /// 経路（`collect_module_types`＝`import` したモジュールのメンバ）だけ。
+    pub has_default: bool,
 }
 
 /// 型推論システムが扱う型を表す列挙型。プリミティブ型・コレクション型・Union 型・関数型などを網羅する。
@@ -307,7 +314,8 @@ impl InferredType {
                         (format!("param{}", i + 1), type_str)
                     };
                     let ty = Self::from_ann(ty_s).unwrap_or(Self::Any);
-                    out.push(FnTypeParam { name, mutable, ty });
+                    // 型注釈にデフォルト値は書けないので常に `has_default: false`。
+                    out.push(FnTypeParam { name, mutable, ty, has_default: false });
                 }
                 out
             };
@@ -334,7 +342,8 @@ impl InferredType {
                     let name = rest_p[..colon].trim().to_string();
                     let ty_s = rest_p[colon + 1..].trim();
                     let ty = Self::from_ann(ty_s).unwrap_or(Self::Any);
-                    out.push(FnTypeParam { name, mutable, ty });
+                    // 型注釈にデフォルト値は書けないので常に `has_default: false`。
+                    out.push(FnTypeParam { name, mutable, ty, has_default: false });
                 }
                 out
             };

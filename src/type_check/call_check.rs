@@ -501,11 +501,13 @@ impl TypeChecker {
         arg_data: &[(Option<String>, InferredType)],
         params: &[FnTypeParam],
     ) {
-        if arg_data.len() != params.len() {
+        // デフォルトを持つ仮引数は省略できるので、必要数は `has_default` が false の個数。
+        let required = params.iter().filter(|p| !p.has_default).count();
+        if arg_data.len() < required || arg_data.len() > params.len() {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::CallArgCountMismatch {
                     func_name: func_name.to_string(),
-                    expected_min: params.len(),
+                    expected_min: required,
                     expected_max: params.len(),
                     got: arg_data.len(),
                 },

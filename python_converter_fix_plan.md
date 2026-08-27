@@ -163,11 +163,21 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 値位置の `...` は現状維持（`convert_constant` の `Ellipsis => Expr::None`、変更不要）。
 - テスト: `def f(): ...` / `class C: ...`。
 
-#### [1] デフォルト引数 `def f(x, y=10)`
-- 編集: `classes.rs` `convert_params`
-  - `args.defaults`（位置引数の末尾詰め）と `kw_defaults`（kwonly）を各 `Param.default` に載せる（現状 `default: None` 固定）。
-- 注意: 位置デフォルトは「後ろ詰め」対応付け。rustpython のフィールド名を実物確認。
-- テスト: `greet("x")` が既定値を使う。
+#### [1] デフォルト引数 `def f(x, y=10)` ✅ **実装済（2026-08-28）**
+- 実装（変換器）: `classes.rs` `convert_params` の 2 ループで `arg.default` を `convert_expr` して
+  `Param.default` へ。rustpython 0.4 の `ArgWithDefault` は**引数ごと**に `default` を持つので、
+  計画に書いた「末尾詰めの対応づけ」は**不要だった**。
+- ⚠⚠ **変換器だけでは動かない**。静的型検査 `check_fn_type_call`（`src/type_check/call_check.rs`）が
+  `arg_data.len() != params.len()` で弾いていた。`FnTypeParam` に `has_default` を足し、
+  必要数を数えるよう修正（`types.rs` / `stmt/resolve.rs` / `call_check.rs`）。
+  **`.ar` ネイティブモジュールでも同じく壊れていた**ので、そちらも同時に直った。
+  `impl_python` に同じ経路があるため**ミラー修正済み**（`type_check/types.py`・`stmt.py`・`call_check.py`）。
+- ⚠ 意味差: デフォルトは Python が **def 時 1 回**、Arrow は**呼び出しごと**に評価する。
+  リテラルは同じ。**可変デフォルト（`def f(xs=[])`）だけ結果が違う**（許容と判断）。
+- ⚠ 副作用: 未対応のデフォルト式（lambda・f-string 等）が**明示エラー**になる（従来はサイレント欠落）。
+- 例題: `examples/interop/py_defaults.ar` / `py_defaults_error.ar` + `test_modules/py_defaults*.py`。
+- ゲート: `compare_python_impl.ps1` は変換器の例題 5 本を **knownDiff に登録**した
+  （impl_python に python_converter 相当が無く原理的に一致しない。理由は実測確認済み）。
 
 #### [24] bare `*`（キーワード専用引数区切り）✅ **実装済（2026-08-28）**
 - **コード変更なし**。既存の `convert_params` が既に kwonly を通常引数へ平坦化しており、
@@ -297,8 +307,8 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（3・4・12・13・11・18・19・22・~~20~~・21・1・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
-   （20 は 2026-08-27、24 は 2026-08-28 に完了）
+1. **フェーズ1**（3・4・12・13・11・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
+   （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。
 3. **フェーズ2**（6・7・8・9・10・16・17）。7 は interpreter 変更を含む。
 4. **INF-B/INF-C → フェーズ3**（15・23・26）— 共通基盤を整えてから。

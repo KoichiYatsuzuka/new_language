@@ -80,6 +80,17 @@ $knownDiff = @{
     #    （`cannot assign to immutable variable` になる。`import_py_json` と同じ原因）。
     'import_py_search_path'          = 'py: import[py] の束縛が未対応（#61/#69 で新設）'
     'import_py_int_search_path'      = 'py: import[py-int] の束縛が未対応（#61/#69 で新設）'
+    # ⚠ python_converter（`.py` → Arrow AST のソース翻訳）は **Rust 専用機能**で、
+    #    impl_python には相当実装が無い（`parser/imports.py` の `lang in ("py","py-int")` は
+    #    body を `return []` にし、`interpreter.py` が `importlib.import_module` で
+    #    CPython の実行時 import にフォールバックする）。そのため `test_modules.*` が
+    #    sys.path に無く `AttributeError: module ... has no attribute ...` になる。
+    #    ⇒ 変換器の例題は原理的に一致しない。**実測して理由を確認済み（2026-08-28）**。
+    'py_decorators'                  = 'py: python_converter（import[py] のソース翻訳）が Rust 専用（項目20 で新設）'
+    'py_decorators_error'            = 'py: 同上。変換時エラーを出さず素通しする（項目20 で新設）'
+    'py_kwonly'                      = 'py: python_converter が Rust 専用（項目24 で新設）'
+    'py_defaults'                    = 'py: python_converter が Rust 専用（項目1 で新設）'
+    'py_defaults_error'              = 'py: 同上。変換時エラーを出さず素通しする（項目1 で新設）'
     'stale_arc_check'                = 'py: .arc を UTF-8 として読んで UnicodeDecodeError'
     'swd_nested_runner'              = 'py: バイナリを UTF-8 として読んで UnicodeDecodeError'
     'typed_abi'                      = 'py: バイナリを UTF-8 として読んで UnicodeDecodeError'

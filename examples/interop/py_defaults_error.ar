@@ -1,0 +1,26 @@
+# py_defaults_error.ar — デフォルト式が**変換できない**ときに明示エラーになること（項目 1）。
+#
+# 項目 1 の実装前は `Param.default` を常に `None` にしていた＝**デフォルト式を丸ごと捨てて**いた。
+# そのため下のような `.py` は「黙って読み込めて、呼ぶと引数不足で落ちる」という分かりにくい形だった。
+# 今はデフォルト式も `convert_expr` に通すので、**未対応構文がその場で表に出る**。
+#
+# ⚠ 変換時（パース時）のエラーなので 1 ファイルにつき 1 つしか踏めない。
+#   もう一方を試すときは import 行を入れ替えること。
+#
+# 期待されるエラー（ParseError・変換時）:
+#
+#   ① lambda デフォルト（本ファイルが踏む形／項目 26 が未実装）
+#      `lambda is not supported`
+#
+#   ② f-string デフォルト（項目 19 が未実装）
+#      `f-strings are not supported`
+#
+# ⇒ どちらも「項目 1 が壊れている」のではなく、**デフォルト式の中身が未対応**という意味。
+#   該当項目が実装されればそのまま通るようになる。
+
+import[py] test_modules.py_default_lambda_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_default_fstring_error as m
+
+print("unreachable")

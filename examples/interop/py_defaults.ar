@@ -1,0 +1,73 @@
+# py_defaults.ar — `import[py]`（Python → Arrow 変換器）の **デフォルト引数** 対応の検査。
+#
+# 対象は `convert_params()`（`src/python_converter/classes.rs`）。
+# rustpython は `ArgWithDefault.default` として引数ごとにデフォルト式を持つので、
+# `convert_expr` して `Param.default` に載せるだけ（「末尾詰めで対応づける」処理は要らない）。
+#
+# ⚠⚠ **変換器だけ直しても動かなかった**（もう 1 層あった）。
+#   静的型検査の `check_fn_type_call`（`src/type_check/call_check.rs`）が
+#   `arg_data.len() != params.len()` で弾いており、**デフォルトの有無を見ていなかった**。
+#   `FnTypeParam` に `has_default` を足して必要数を数えるよう直した。
+#   ⇒ これは **`.ar` のネイティブモジュールでも同じく壊れていた**（`import[ar] lib` して
+#      `lib.greet("bob")` が `takes 2 argument(s)` で落ちる）。py 固有の問題ではなかった。
+#
+# ⚠ **デフォルト値の評価時期が Python と違う**（下の ⑦ が踏む形）:
+#   Python は `def` の実行時に**1 回**評価してその値を共有する。
+#   Arrow は `exec_fn_evaled` が**呼び出しごと**に評価する（`evaluated_defaults`）。
+#   ⇒ リテラル（`0` / `"hi"` / `None` / `(1,2)`）は完全に同じ。**可変デフォルトだけ差が出る**。
+#
+# ⚠ 変換できないデフォルト式（lambda・f-string 等）は**明示エラー**になる。
+#   以前はデフォルトを丸ごと捨てていたので黙って通っていた（`py_defaults_error.ar` 参照）。
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_defaults as m
+
+# ── ① デフォルトを使う / 上書きする ──────────────────────────────────────
+mut name = "bob"
+print(m.greet(name))
+# hi bob
+mut greeting = "yo"
+print(m.greet(name, greeting))
+# yo bob
+
+# ── ② デフォルト複数（後ろから埋まる） ──────────────────────────────────
+mut a = 1
+mut b = 2
+mut c = 3
+print(m.add(a))
+# 111
+print(m.add(a, b))
+# 103
+print(m.add(a, b, c))
+# 6
+
+# ── ③ キーワード専用引数のデフォルト（項目 24 と併用） ──────────────────
+print(m.kw(a))
+# 134
+print(m.kw(a, c=c))
+# 133
+
+# ── ④ None デフォルト ───────────────────────────────────────────────────
+print(m.nonespec())
+# None
+
+# ── ⑤ タプルリテラルのデフォルト ────────────────────────────────────────
+print(m.pair())
+# 3
+
+# ── ⑥ `__init__` のデフォルト ───────────────────────────────────────────
+mut o = m.Box()
+print(o.show())
+# box=7
+mut v = 9
+mut o2 = m.Box(v)
+print(o2.show())
+# box=9
+
+# ── ⑦ ★可変デフォルト: ここだけ CPython と結果が違う ────────────────────
+#     CPython は 1 → 2（同じリストを共有）。Arrow は毎回新しいリストなので 1 → 1。
+#     Arrow 側が「普通に期待される」挙動で、Python の有名な罠に依存したコードだけが差を踏む。
+print(m.mutdef())
+# 1
+print(m.mutdef())
+# 1

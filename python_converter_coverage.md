@@ -40,7 +40,7 @@ Python ソースを rustpython-parser でパースし、Arrow の AST（`Stmt`�
 
 各項目 `[ ]` は未着手。実装時にチェックする。
 
-### [ ] 1. デフォルト引数 `def f(x, y=10)`
+### [x] 1. デフォルト引数 `def f(x, y=10)`【実装済 2026-08-28】
 
 - 対象: [`classes.rs` `convert_params()`](src/python_converter/classes.rs)（+ `extract_param_types` 近傍）
 - 現状: `Param { default: None, ... }` を常に生成し、デフォルト値を捨てている。
@@ -50,6 +50,46 @@ Python ソースを rustpython-parser でパースし、Arrow の AST（`Stmt`�
   - 位置引数のデフォルトは「後ろ詰め」で対応付く点に注意（`f(a, b=1, c=2)` なら defaults は `[1,2]` が末尾2個に対応）。
 - 難易度: 低。
 - テスト: `def greet(name, greeting="hi")` → `m.greet("x")` が `"hi x"` を返すこと（現状は引数不足エラー）。
+
+**実装結果**: 変換器側は**想定より簡単**だった。rustpython 0.4 の `ArgWithDefault` は
+`{ def: Arg, default: Option<Box<Expr>> }` と**引数ごと**にデフォルト式を持つので、
+「位置引数のデフォルトは末尾詰めで対応づける」処理は不要。`convert_expr` して
+`Param.default` に載せるだけ（`convert_params` の 2 ループ）。
+
+**⚠⚠ 変換器だけでは動かなかった — 静的型検査にもう 1 層あった**:
+`check_fn_type_call`（[`call_check.rs`](src/type_check/call_check.rs)）が
+`arg_data.len() != params.len()` で弾いており、**デフォルトの有無を見ていなかった**
+（`FnTypeParam` に情報自体が無かった）。`FnTypeParam` に `has_default` を追加し、
+必要数を `!has_default` の個数で数えるよう修正した。
+
+- **これは py 固有の問題ではなく、`.ar` のネイティブモジュールでも同じく壊れていた**。
+  `import[ar] lib` して `lib.greet("bob")` が `'greet' takes 2 argument(s) but 1 were given`
+  で落ちる（インタープリタは `evaluated_defaults` で正しく埋めるので、**静的検査だけが嘘をつく**形）。
+  ⇒ 本項目の副作用としてこちらも直った。
+- エラー文言も `takes 1 to 3 argument(s) but 0 were given` と範囲表示になる（上限も従来どおり検査）。
+- `impl_python` にも同じ経路があったので**ミラー修正済み**（`type_check/types.py`・`stmt.py`・`call_check.py`）。
+
+**⚠ 意味差: デフォルト値の評価時期**:
+Python は `def` の実行時に**1 回**評価してその値を共有する。Arrow は
+`exec_fn_evaled` が**呼び出しごと**に評価する（[`execution.rs`](src/interpreter/functions/execution.rs) の
+`evaluated_defaults`）。
+
+- リテラル（`0` / `"hi"` / `None` / `(1,2)`）は**完全に同じ**。実用上ほぼこれ。
+- ⚠ **可変デフォルト**（`def f(xs=[])`）だけ結果が違う。CPython は `1, 2, 3…`（同じリストを共有＝
+  有名な罠）、Arrow は毎回 `1`。**Arrow 側が「普通に期待される」挙動**で、罠に依存したコードだけが
+  差を踏む。⇒ **エラーにはせず許容**（エラー化すると無害な `def f(xs=[])` を大量に拒否するため）。
+  必要なら後から「可変リテラルのデフォルトは明示エラー」に倒せる。
+- ⚠ 名前参照のデフォルト（`def f(x=CONST)`）も Arrow は呼び出し時に読み直す。
+
+**⚠ 副作用: 未対応のデフォルト式が表に出る**:
+実装前は `default: None` 固定＝**デフォルト式を丸ごと捨てて**いたので、`def h(k=lambda: 1)` は
+黙って読み込めていた（呼ぶと引数不足で落ちる）。今はデフォルト式も `convert_expr` に通すので、
+lambda（項目 26）・f-string（項目 19）などがその場で明示エラーになる。**サイレント欠落の解消**。
+
+**例題**: [`examples/interop/py_defaults.ar`](examples/interop/py_defaults.ar) +
+[`test_modules/py_defaults.py`](examples/interop/test_modules/py_defaults.py)
+（⑦の可変デフォルトを除き CPython と出力一致を突き合わせ済）/
+[`examples/interop/py_defaults_error.ar`](examples/interop/py_defaults_error.ar)（lambda / f-string デフォルト）。
 
 ### [ ] 2. 変数の再代入 `x = 1; x = 2` / ループ内カウンタ
 

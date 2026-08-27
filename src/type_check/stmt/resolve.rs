@@ -96,6 +96,10 @@ impl TypeChecker {
                                 .as_deref()
                                 .and_then(InferredType::from_ann)
                                 .unwrap_or(InferredType::Any),
+                            // デフォルトを持つ仮引数は呼び出しで省略できる。これを落とすと
+                            // `mod.f()` が `takes N argument(s)` で弾かれる（インタープリタは
+                            // `evaluated_defaults` で正しく埋めるので、静的検査だけが嘘をつく形）。
+                            has_default: p.default.is_some(),
                         })
                         .collect();
                     map.insert(
