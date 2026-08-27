@@ -68,12 +68,22 @@ Mirrors `src/` layer-by-layer (`lexer/`, `parser/`, `type_check/`, `interpreter/
 `partial_compiler/`). Keep synchronized with Rust changes and update the `# git SHA:` header
 lines in touched files (see regulations).
 
+### crates/arrow-frontend/ — the editor's analysis engine
+The Arrow frontend (`src/lexer`, `src/parser`, `src/type_check`) pulled in with `#[path]` and
+built for `wasm32-unknown-unknown`. A separate crate because the root package depends on
+`pyo3` / `libloading`, which do not build for wasm — those live entirely in `src/interpreter/`.
+`analyze.rs` turns a parse + type-check into the JSON the extension consumes; `wasm.rs` is the
+plain `extern "C"` ABI (no `wasm-bindgen`, so no extra toolchain).
+
 ### vscode-extension/
-- `src/` — `extension.ts` activation/wiring; `analysis.ts` declaration/symbol analysis;
-  `type_infer.ts` hover + inlay type inference; `tokenizer.ts`; `builtins.ts` built-in stubs;
-  `native_module.ts`; `cs_assembly.ts`; `debug_runner.ts` (see `vscode-debug-runner` skill)
-- `syntaxes/arrow.tmLanguage.json` — TextMate grammar (keyword highlighting)
-- `make-vsix.ps1` — compile + package the VSIX (mandatory after extension changes)
+**Contains no Arrow-language logic** — all analysis comes from the wasm frontend above.
+- `src/` — `extension.ts` activation/wiring; `frontend.ts` wasm loader; `wasm_providers.ts` all
+  seven language-feature providers; `debug_runner.ts` + `vscode_mock.ts` (see the
+  `vscode-debug-runner` skill)
+- `builtins.ars` — built-in stubs, parsed by the real parser (bodies must be `pass`, not `...`)
+- `syntaxes/arrow.tmLanguage.json` — TextMate grammar (keyword highlighting; still hand-maintained)
+- `stress.js` — all-examples provider regression sweep
+- `make-vsix.ps1` — rebuild the wasm + compile TS + package the VSIX (mandatory after changes)
 
 ### examples/ — feature-grouped examples (`*_error.ar` = error demos)
 `basics/` core syntax; `typing/` type system; `classes/`; `collections/`; `exceptions/`;
@@ -87,7 +97,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (211 files, 69630 lines)
+src/  (215 files, 70706 lines)
   ar_config.rs (244)
   ast.rs (1124)
   decl_names.rs (173)
@@ -237,10 +247,13 @@ src/  (211 files, 69630 lines)
     scan.rs (426)
     symbol.rs (263)
   parser/
-    classes.rs (736)
+    classes.rs (782)
+    editor_hooks.rs (366)
+    editor_index.rs (200)
     exprs.rs (940)
-    mod.rs (221)
-    types.rs (623)
+    imports_editor.rs (228)
+    mod.rs (253)
+    types.rs (634)
     cs_assembly/
       metadata.rs (296)
       mod.rs (275)
@@ -258,9 +271,9 @@ src/  (211 files, 69630 lines)
     stmts/
       assignment.rs (193)
       control_flow.rs (150)
-      core.rs (324)
-      definitions.rs (208)
-      functions.rs (279)
+      core.rs (346)
+      definitions.rs (215)
+      functions.rs (320)
       mod.rs (35)
   partial_compiler/
     mod.rs (15)
@@ -280,10 +293,11 @@ src/  (211 files, 69630 lines)
       stubs.rs (179)
   python_converter/
     annotations.rs (71)
-    classes.rs (241)
+    classes.rs (247)
+    decorators.rs (93)
     expressions.rs (276)
-    mod.rs (29)
-    statements.rs (448)
+    mod.rs (31)
+    statements.rs (442)
     utils.rs (42)
   type_check/
     annotations.rs (263)
@@ -303,7 +317,7 @@ src/  (211 files, 69630 lines)
       builder.rs (422)
       mod.rs (157)
     stmt/
-      check.rs (737)
+      check.rs (765)
       mod.rs (6)
       protocol.rs (242)
       resolve.rs (189)
@@ -328,7 +342,7 @@ src/  (211 files, 69630 lines)
       stmt.rs (650)
       stmt_assign.rs (300)
 
-impl_python/  (49 files, 16410 lines)
+impl_python/  (49 files, 16411 lines)
   __init__.py (0)
   __main__.py (92)
   ast.py (608)
@@ -364,7 +378,7 @@ impl_python/  (49 files, 16410 lines)
     classes.py (335)
     cs_assembly.py (831)
     exprs.py (476)
-    imports.py (386)
+    imports.py (387)
     stmts.py (634)
     types.py (304)
   partial_compiler/
@@ -385,20 +399,16 @@ impl_python/  (49 files, 16410 lines)
     type_utils.py (78)
     types.py (335)
 
-vscode-extension/  (11 files, 6661 lines; src/ + syntaxes/ only)
+vscode-extension/  (7 files, 1993 lines; src/ + syntaxes/ only)
   src/
-    analysis.ts (1648)
-    builtins.ts (151)
-    cs_assembly.ts (742)
-    debug_runner.ts (417)
-    extension.ts (195)
-    native_module.ts (1059)
-    test_goto_def.ts (304)
-    tokenizer.ts (97)
-    type_infer.ts (1470)
-    vscode_mock.ts (279)
+    debug_runner.ts (337)
+    extension.ts (225)
+    frontend.ts (133)
+    vscode_mock.ts (289)
+    wasm_providers.ts (702)
   syntaxes/
     arrow.tmLanguage.json (299)
+    arrow-stub.tmLanguage.json (8)
 
 examples/  (recursive .ar counts per category)
   apps/ (2 .ar)
@@ -411,7 +421,7 @@ examples/  (recursive .ar counts per category)
   debugger/ (5 .ar)
   DxLib/ (0 .ar)
   exceptions/ (7 .ar)
-  interop/ (40 .ar)
+  interop/ (42 .ar)
   practical_examples/ (8 .ar)
   repl/ (0 .ar)
   typing/ (15 .ar)
@@ -426,6 +436,7 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   compare_import_paths.ps1 (125)
   compare_outputs.ps1 (127)
   compare_python_impl.ps1 (213)
+  compare_wasm_frontend.ps1 (200)
   debug_session.ps1 (161)
   dump_native_ir.ps1 (92)
   force_gate.ps1 (134)
@@ -444,12 +455,15 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   IMPLEMENTATION_LOG.md (9725)
   PHASE_R1_RESULTS.md (741)
   PHASE5_PLAN.md (427)
+  PYTHON_IMPL_SYNC_PLAN.md (207)
   REFACTORING_HANDOFF.md (133)
 
 (repo root)
   ar_config.json (32)
-  CLAUDE.md (117)
+  CLAUDE.md (130)
+  python_converter_coverage.md (440)
+  python_converter_fix_plan.md (307)
   README.md (317)
 ```
-_Generated 2026-08-27 by generate-codebase-map.ps1_
+_Generated 2026-08-28 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->

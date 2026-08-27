@@ -55,12 +55,31 @@ Add the `Token` and `Stmt`/`Expr` variants, then `cargo build`. Most dispatch ma
 2. **Examples** — `examples/<category>/feature.ar` demonstrating the syntax; if an error pattern
    was implemented, also `feature_error.ar`. Categories: `basics/`, `typing/`, `classes/`,
    `collections/`, `exceptions/`, `async/`, `interop/`, `apps/`, `bench/`.
-3. **VS Code extension** (`vscode-extension/`) — if a keyword was added:
+3. **VS Code extension** (`vscode-extension/`) — **most of this is now automatic.**
+
+   The extension analyses `.ar` files with `crates/arrow-frontend` compiled to wasm, and
+   that crate `#[path]`-includes the very files you just edited (`src/lexer`, `src/parser`,
+   `src/type_check`). So parsing, type checking, diagnostics, hover, inlay hints,
+   completion, signature help, go-to-definition and semantic tokens pick up the new syntax
+   **with no TypeScript changes at all** — `make-vsix.ps1` rebuilds the wasm for you.
+
+   What still needs a hand:
    - `syntaxes/arrow.tmLanguage.json` — add to the keyword alternation (and a dedicated
-     capture rule if the construct declares a name; see the `new_type` rule).
-   - `src/analysis.ts` — declaration regex + `HoverKind` if it declares symbols;
-     `src/type_infer.ts` — hover text rendering.
-   - Then compile and regenerate the VSIX via `make-vsix.ps1` (mandatory).
+     capture rule if the construct declares a name; see the `new_type` rule). TextMate
+     colouring runs before any analysis, so it is a genuinely separate system.
+   - **Only if the construct declares a name**: add a `note_def` / `note_var` /
+     `note_field` call at the parse site so the declaration lands in
+     `src/parser/editor_index.rs`. Call it **immediately after `expect_ident()`** —
+     the position comes from `prev_pos()`, so reading a type annotation first makes the
+     symbol point at the wrong token. Pick the matching `EditorKind`, or add one.
+   - **Only if you changed `import` syntax**: mirror it in `src/parser/imports_editor.rs`
+     (the fs-free import parser the editor build uses). `scripts/compare_wasm_frontend.ps1`
+     fails if the two stop accepting the same syntax.
+   - Then regenerate the VSIX via `make-vsix.ps1` (mandatory).
+
+   Verify with `scripts/compare_wasm_frontend.ps1` (editor and `arrow.exe` must agree on
+   every example) and `vscode-extension/stress.js` (no provider throws; no new hover /
+   go-to-definition misses).
 4. **Tests** — `src/frontend_tests/lexer_tests.rs`, `parser_tests.rs`,
    `frontend_tests/type_check_tests/`, and `src/interpreter/tests/<topic>.rs`.
    Run `cargo test <name>` for the touched areas, then the full `cargo test`.

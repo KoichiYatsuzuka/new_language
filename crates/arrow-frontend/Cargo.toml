@@ -1,0 +1,27 @@
+[package]
+name = "arrow-frontend"
+version = "0.1.0"
+edition = "2021"
+description = "Arrow language frontend (lexer + parser + type checker) built for editors, including wasm32."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# ⚠ ここには **ネイティブ依存を足さないこと**。pyo3 / libloading を入れた瞬間に
+#    wasm32 ビルドが壊れ、この crate の存在意義（VS Code 拡張への同梱）が無くなる。
+[dependencies]
+indexmap = "2"
+serde_json = "1"
+
+[features]
+default = ["editor"]
+# ルート crate の `editor` feature と同名。`src/parser/mod.rs` の #[cfg] がこれを見て
+# import 解析を fs 非依存版へ差し替える。
+editor = []
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
