@@ -106,7 +106,9 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                 )?;
                 let params = convert_params(&f.args, filename)?;
                 let return_type = f.returns.as_deref().map(convert_annotation);
-                let body = convert_stmts_fn_body(&f.body, filename)?;
+                // メソッド本体は**新しいスコープ**。パラメータ名（`self` 含む）を宣言済みとして渡す。
+                let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+                let body = convert_scope(&f.body, filename, &param_names)?;
                 methods.push(Stmt::FnDef {
                     name: f.name.to_string(),
                     template_params: vec![],

@@ -13,7 +13,8 @@ use crate::ast::Stmt;
 /// Python ソースコード文字列を解析し、tl の `Stmt` リストに変換する。
 pub fn convert_python_source(source: &str, filename: &str) -> Result<Vec<Stmt>, String> {
     let ast = py::Suite::parse(source, filename).map_err(|e| format!("{filename}: {e}"))?;
-    convert_stmts(&ast, filename)
+    // モジュール本体も 1 つのスコープ（パラメータは無い）。
+    convert_scope(&ast, filename, &[])
 }
 
 

@@ -67,7 +67,10 @@ Python ソースを rustpython-parser でパースし、Arrow の AST（`Stmt`�
   で落ちる（インタープリタは `evaluated_defaults` で正しく埋めるので、**静的検査だけが嘘をつく**形）。
   ⇒ 本項目の副作用としてこちらも直った。
 - エラー文言も `takes 1 to 3 argument(s) but 0 were given` と範囲表示になる（上限も従来どおり検査）。
-- `impl_python` にも同じ経路があったので**ミラー修正済み**（`type_check/types.py`・`stmt.py`・`call_check.py`）。
+- ⚠ `impl_python` にも同じ経路（`type_check/call_check.py` の `_check_fn_type_call`）があるが、
+  **ユーザー方針により impl_python は触らない**（同期点が約 100 コミット前で古いため）。
+  `compare_python_impl.ps1` は**この差分を踏む例題が無いので緑のまま**（54/54 一致・実測確認済み）。
+  ⇒ 将来 impl_python を同期するときの積み残しとして記録しておく。
 
 **⚠ 意味差: デフォルト値の評価時期**:
 Python は `def` の実行時に**1 回**評価してその値を共有する。Arrow は
@@ -91,7 +94,7 @@ lambda（項目 26）・f-string（項目 19）などがその場で明示エラ
 （⑦の可変デフォルトを除き CPython と出力一致を突き合わせ済）/
 [`examples/interop/py_defaults_error.ar`](examples/interop/py_defaults_error.ar)（lambda / f-string デフォルト）。
 
-### [ ] 2. 変数の再代入 `x = 1; x = 2` / ループ内カウンタ
+### [x] 2. 変数の再代入 `x = 1; x = 2` / ループ内カウンタ【実装済 2026-08-28】
 
 - 対象: [`statements.rs`](src/python_converter/statements.rs) の文変換全体（`Assign`/`AnnAssign` と巻き上げ処理）
 - 現状: すべての `x = expr` を `Stmt::Mut`（新規宣言）に変換 → Arrow は再宣言を禁止するため実行時 `NameError: variable 'x' is already declared`。既存の巻き上げは `if` ブランチ内代入のみに限定。
@@ -104,6 +107,49 @@ lambda（項目 26）・f-string（項目 19）などがその場で明示エラ
 - 難易度: 中。
 - 懸念: hoist 初期値 `None` により型が `Any`/nullable 化し静的型検査が緩む。機能的には正しいが型精度は下がる（許容範囲と判断）。
 - テスト: `x=1; x=2; x=x+10` → `13`。`while n>0: n=n-1` が回ること。
+
+**実装結果**: 計画（INF-A）どおり**スコープ単位の完全巻き上げ**に置き換えた。
+`statements.rs` の巻き上げ機構を丸ごと差し替え:
+
+| 旧 | 新 |
+|---|---|
+| `convert_stmts_with_hoist` / `convert_stmt_in_hoist_ctx` / `convert_stmts_hoisted_branch` / `collect_if_branch_assigns` | `convert_scope` / `convert_stmts(…, declared)` / `collect_assigned_names` / `assign_or_declare` |
+
+- `convert_scope(stmts, filename, params)` … **スコープの入口**（モジュール本体・関数本体・メソッド本体）。
+  代入名を再帰収集 → 先頭で `mut name = None` → 以降すべて `Stmt::Assign`。
+- `convert_stmts(stmts, filename, declared)` … **同一スコープ内**の本体（if/for/while/try）。
+  `declared` をそのまま引き回す。
+- `seen` をパラメータ名で初期化するので、**パラメータは巻き上げないが再代入扱いにはなる**。
+
+**⚠ 旧実装のドリフト（これが項目 2 の本体）**: 巻き上げは「**トップレベルの `if` のブランチ内代入だけ**」で、
+`for` / `while` / `try` の本体に降りた時点で `convert_stmts(…)` が巻き上げ集合を捨てていた。
+そのため同じ名前がまた `Stmt::Mut` になって `already declared` で落ちていた。
+⇒ 例題 ①〜④・⑥〜⑧ はすべて**旧実装では動かない**形。
+
+**収集しないもの（意図的）**:
+- `for` のループ変数・`except ... as e` … `=` ではない。`Stmt::For` / ハンドラ側が自前で宣言する。
+- `x += 1`（`AugAssign`）… Python でも事前の束縛が必要なので、その `=` から拾われる。
+- 入れ子の `def` / `class` の本体 … **別スコープ**（⑧ で確認済み）。
+
+**⚠ 残る意味差（1 件・実測）**: `=` で代入した名前を **`for` のループ変数にも使い、ループ後に読む**とき。
+Arrow の `for` は自前スコープでループ変数を束縛する（＝巻き上げた外側の変数は隠れるだけ）ため、
+ループ後は代入時の値に戻る。CPython は最後の要素。
+
+```python
+def f(xs):
+    i = -1
+    for i in xs: pass
+    return i        # Arrow: -1 / CPython: 3
+```
+
+⇒ **エラー化していない**（`i` をループ後に読まない限り無害で、`i = 0` の後に `for i in …` と書く
+コードを丸ごと拒否することになるため）。必要なら「同名衝突は明示エラー」に後から倒せる。
+なお `=` が無い純粋なループ変数（⑩）は巻き上げ対象外なので **CPython と一致**する。
+
+**例題**: [`examples/interop/py_reassign.ar`](examples/interop/py_reassign.ar) +
+[`test_modules/py_reassign.py`](examples/interop/test_modules/py_reassign.py)
+（12 ケース中 ⑨ の 1 件のみ CPython と相違。他 11 件は一致を突き合わせ済）。
+エラー化した経路が無いため `_error` 例は無し。
 
 ### [ ] 3. 添字/キー代入 `a[i] = x` / `d[k] = v`（+ 複合 `a[i] += 1`）
 
@@ -320,8 +366,11 @@ lambda（項目 26）・f-string（項目 19）などがその場で明示エラ
 1. **`mut` パラメータが入れ子 `fn` にキャプチャされない**（None になる）。**純 Arrow で再現**する。
    `fn f(let n: int)` なら通るが `fn f(mut n: int)` だと壊れる。変換器は全パラメータを
    `mutable: true` にするため、**Python で最も普通の「クロージャで包むデコレータ」が使えない**。
-2. **`.py` のモジュール直下で同じモジュールの関数を呼べない**（`alias = ident(hello)` で
-   `NameError: 'ident' is not defined`）。デコレータは `eval_definition_expr` 経由なので通る。
+2. **モジュール直下で同じモジュールの関数を「呼ぶ」ことができない**（項目 2 の作業中に切り分け完了）。
+   `g = hello`（**参照**）は通るが `MSG = hello("bob")`（**呼び出し**）が
+   `NameError: 'hello' is not defined` になる。⚠ **純 Arrow の `.ar` モジュールでも再現**する
+   （`import[ar] lib` した先の `let MSG = hello("bob")`）。⇒ 変換器ではなく
+   **モジュール本体の実行時の名前解決**の問題。デコレータは `eval_definition_expr` 経由なので通る。
 
 ### [ ] 21. `...`（Ellipsis）→ 文位置は `pass`
 

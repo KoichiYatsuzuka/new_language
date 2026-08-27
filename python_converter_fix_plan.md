@@ -59,7 +59,11 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 複数項目が依存するため、着手順の先頭で整備する。
 
-### INF-A: スコープ単位の再代入対応（＝項目2の中核）
+### INF-A: スコープ単位の再代入対応（＝項目2の中核）✅ **実装済（2026-08-28）**
+> 実装: `convert_scope` / `convert_stmts(…, declared)` / `collect_assigned_names` / `assign_or_declare`
+> （`statements.rs`）。旧 `convert_stmts_with_hoist` / `convert_stmt_in_hoist_ctx` /
+> `convert_stmts_hoisted_branch` / `collect_if_branch_assigns` は**削除**。詳細は coverage 項目 2。
+
 - ファイル: `statements.rs`
 - 現状: 既存の巻き上げは `collect_if_branch_assigns`（`if` ブランチのみ）＋ `convert_stmts_with_hoist`。全代入を `Stmt::Mut`（新規宣言）にしているため再代入で `NameError: already declared`。
 - 方針: **スコープ（関数本体／モジュール本体）ごとに、単純名前代入される全変数を再帰収集 → スコープ先頭で `mut name = None` を一度だけ宣言 → 以降の `x = expr` はすべて `Stmt::Assign`（再代入）に変換**。
@@ -171,7 +175,8 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   `arg_data.len() != params.len()` で弾いていた。`FnTypeParam` に `has_default` を足し、
   必要数を数えるよう修正（`types.rs` / `stmt/resolve.rs` / `call_check.rs`）。
   **`.ar` ネイティブモジュールでも同じく壊れていた**ので、そちらも同時に直った。
-  `impl_python` に同じ経路があるため**ミラー修正済み**（`type_check/types.py`・`stmt.py`・`call_check.py`）。
+  ⚠ `impl_python` にも同じ経路があるが**触らない方針**（古いため）。踏む例題が無く
+  `compare_python_impl.ps1` は緑のまま。**同期時の積み残し**として記録。
 - ⚠ 意味差: デフォルトは Python が **def 時 1 回**、Arrow は**呼び出しごと**に評価する。
   リテラルは同じ。**可変デフォルト（`def f(xs=[])`）だけ結果が違う**（許容と判断）。
 - ⚠ 副作用: 未対応のデフォルト式（lambda・f-string 等）が**明示エラー**になる（従来はサイレント欠落）。
@@ -197,8 +202,12 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ### フェーズ2: 中リスク（本体リライト／サブセット）
 
-#### [2] 変数の再代入 … **INF-A** を実施（上記 §1）
-- テスト: `x=1; x=2; x=x+10`→13、`while n>0: n=n-1`。
+#### [2] 変数の再代入 … **INF-A** を実施（上記 §1）✅ **実装済（2026-08-28）**
+- 旧実装は「トップレベルの `if` のブランチ内代入だけ」を巻き上げており、`for`/`while`/`try` の
+  本体に降りると巻き上げ集合を捨てていた（＝ネストで壊れるドリフト）。スコープ単位の完全巻き上げに置換。
+- ⚠ 残る意味差 1 件: `=` した名前を `for` のループ変数にも使い**ループ後に読む**と、Arrow は
+  代入時の値に戻る（`for` が自前スコープで束縛するため）。エラー化はしていない。
+- 例題: `examples/interop/py_reassign.ar` + `test_modules/py_reassign.py`（12 ケース中 11 件 CPython 一致）。
 
 #### [6] `*args`
 - 編集: `classes.rs` `convert_params` ＋ 本体リライト
@@ -309,6 +318,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 1. **フェーズ1**（3・4・12・13・11・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
    （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
+2'. ~~**INF-A → 項目2**（再代入）~~ — 2026-08-28 に完了。
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。
 3. **フェーズ2**（6・7・8・9・10・16・17）。7 は interpreter 変更を含む。
 4. **INF-B/INF-C → フェーズ3**（15・23・26）— 共通基盤を整えてから。
