@@ -31,6 +31,18 @@ cargo run -- --compile <file.ar>   # Partially compile a module (see partial-com
 cargo run -- --compile-cs <file.dll> # Generate .ars stub from a .NET DLL (import[cs-dll]/import[cs-proc])
 ```
 
+### VS Code 拡張のフロントエンド（wasm）
+
+```bash
+# 拡張が使う解析器。src/lexer, src/parser, src/type_check を #[path] で取り込んだ別クレート。
+cd crates/arrow-frontend && cargo build --release --target wasm32-unknown-unknown
+# ↑ make-vsix.ps1 が自動で実行するので、通常は個別に叩かなくてよい
+```
+
+拡張は**この wasm 以外に解析ロジックを持たない**。文法を追加すれば再ビルドだけで追随する。
+唯一の例外は `src/parser/imports_editor.rs`（fs に触れない import 解析）で、import 構文を
+変えたときだけ手当てが要る。
+
 ### Python implementation (`impl_python/`)
 
 ```bash
@@ -65,6 +77,7 @@ python -m impl_python examples/basics/control_flow.ar
 | `debug_session.ps1` | デバッガのステッピングの golden | **デバッガ / 行テーブル**を触ったとき |
 | `tw_stats.ps1` | ツリーウォークが定義文だけかの内訳 | **VM の適格範囲**を触ったとき |
 | `syntax_cov.ps1` | **例題が一度も書いていない構文**（`NESTED-GAP`） | **新しい構文・文脈**を扱うとき |
+| `compare_wasm_frontend.ps1` | VS Code 拡張の wasm フロントエンドが `arrow.exe` と同じ診断を出すか | **lexer / parser / type_check を触ったとき**（拡張だけ解釈がずれるのを防ぐ唯一の網） |
 | `generate-codebase-map.ps1` | `codebase-map` skill のファイル木を再生成 | **ファイルを作成・移動・削除したら必ず** |
 
 ⚠ A/B 系（`-A`）は **「直前のタスクのコミット」からビルドしたバイナリ**を基準にすること。

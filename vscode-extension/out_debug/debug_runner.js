@@ -1,23 +1,32 @@
 "use strict";
 /**
- * Standalone CLI debug runner for the VS Code extension analysis code.
+ * Standalone CLI debug runner for the VS Code extension.
  *
  * Run via:   node run_debug.js <path/to/file.ar>
  *
  * The run_debug.js bootstrap intercepts require('vscode') before this module
- * loads, so all extension modules (analysis.ts, type_infer.ts) receive the
- * vscode_mock implementations instead of the real VS Code API.
+ * loads, so the extension modules receive the vscode_mock implementations
+ * instead of the real VS Code API.
  *
- * Output:
- *   1. Source with ANSI colours (semantic tokens) and inlay hints inserted inline
- *   2. Hover balloon content for every symbol
- *   3. Diagnostics list
+ * It exercises all seven language features against the wasm frontend
+ * (`crates/arrow-frontend`), which is the same lexer/parser/type-checker that
+ * `cargo run` uses. That means a disagreement seen here is a real disagreement,
+ * not an artefact of a second implementation.
+ *
+ * Output sections:
+ *   1. Source with semantic-token colours and inlay hints inserted inline
+ *   2. Hover balloon for every declaration
+ *   3. Go-to-definition targets
+ *   4. Document symbols (outline)
+ *   5. Completion probes (scoped names and dot-access members)
+ *   6. Signature help probes
+ *   7. Diagnostics
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 const fs = require("fs");
 const path = require("path");
-const analysis_1 = require("./analysis");
-const type_infer_1 = require("./type_infer");
+const frontend_1 = require("./frontend");
+const wasm_providers_1 = require("./wasm_providers");
 // ── ANSI helpers ──────────────────────────────────────────────────────────────
 const A = {
     reset: '\x1b[0m',
@@ -31,16 +40,24 @@ const A = {
     cyan: '\x1b[36m',
     gray: '\x1b[90m',
     bYellow: '\x1b[93m',
+    bGreen: '\x1b[92m',
     bCyan: '\x1b[96m',
     bWhite: '\x1b[97m',
 };
 function c(color, text) { return `${color}${text}${A.reset}`; }
-// Semantic token type index → ANSI colour (must match SEMANTIC_TOKENS_LEGEND order)
-// 0=class  1=type  2=variable
+/** Semantic token type index → ANSI colour (indices follow SEMANTIC_TOKENS_LEGEND). */
 const TOKEN_COLORS = {
-    0: A.bYellow,
-    1: A.cyan,
-    2: A.bWhite, // variable reference
+    class: A.bYellow,
+    interface: A.yellow,
+    enum: A.bYellow,
+    enumMember: A.magenta,
+    function: A.bGreen,
+    method: A.bGreen,
+    property: A.cyan,
+    parameter: A.bCyan,
+    variable: A.bWhite,
+    namespace: A.blue,
+    type: A.cyan,
 };
 // ── Mock TextDocument ─────────────────────────────────────────────────────────
 class MockTextDocument {
@@ -48,10 +65,9 @@ class MockTextDocument {
         this.version = 1;
         this.languageId = 'arrow';
         this.fileName = filePath;
-        // Normalise line endings, strip single trailing blank line
         const raw = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
         this._lines = raw.split('\n');
-        if (this._lines.at(-1) === '')
+        if (this._lines[this._lines.length - 1] === '')
             this._lines.pop();
         this.lineCount = this._lines.length;
         const fp = filePath;
@@ -62,8 +78,7 @@ class MockTextDocument {
     }
     lineAt(line) {
         var _a;
-        const text = (_a = this._lines[line]) !== null && _a !== void 0 ? _a : '';
-        return { text, range: null };
+        return { text: (_a = this._lines[line]) !== null && _a !== void 0 ? _a : '', range: null };
     }
     getText(range) {
         var _a, _b;
@@ -93,23 +108,22 @@ class MockTextDocument {
         let m;
         while ((m = re.exec(line)) !== null) {
             if (m.index <= pos.character && m.index + m[0].length > pos.character) {
-                return { start: { line: pos.line, character: m.index }, end: { line: pos.line, character: m.index + m[0].length } };
+                return {
+                    start: { line: pos.line, character: m.index },
+                    end: { line: pos.line, character: m.index + m[0].length },
+                };
             }
         }
         return undefined;
     }
 }
-// ── Hover text extraction ─────────────────────────────────────────────────────
+// ── Rendering ─────────────────────────────────────────────────────────────────
 function extractHoverLines(hover) {
     const items = Array.isArray(hover.contents) ? hover.contents : [hover.contents];
     const lines = [];
     for (const item of items) {
         const raw = typeof item === 'string' ? item : item.value;
-        // Strip code-fence markers but keep the content
-        const stripped = raw
-            .replace(/```\w*\n?/g, '')
-            .trim();
-        for (const ln of stripped.split('\n')) {
+        for (const ln of raw.replace(/```\w*\n?/g, '').trim().split('\n')) {
             const t = ln.trim();
             if (t)
                 lines.push(t);
@@ -122,253 +136,168 @@ function renderBalloon(lines, indent) {
         return '';
     const width = Math.max(...lines.map(l => l.length), 0);
     const top = c(A.gray, `${indent}╭${'─'.repeat(width + 2)}╮`);
-    const bottom = c(A.gray, `${indent}╰${'─'.repeat(width + 2)}╯`);
-    const rows = lines.map(l => c(A.gray, `${indent}│`) +
-        ` ${c(A.bCyan, l.padEnd(width))} ` +
-        c(A.gray, '│'));
-    return [top, ...rows, bottom].join('\n');
+    const mid = lines.map(l => c(A.gray, `${indent}│`) + ' ' + c(A.bCyan, l.padEnd(width)) + ' ' + c(A.gray, '│'));
+    const bot = c(A.gray, `${indent}╰${'─'.repeat(width + 2)}╯`);
+    return [top, ...mid, bot].join('\n');
 }
-// ── Source renderer ───────────────────────────────────────────────────────────
-function renderSourceLine(lineText, tokens, hints) {
+/** Paint one source line using the semantic tokens and inline the inlay hints. */
+function renderSourceLine(lineNo, text, tokens, hints) {
     var _a;
-    // Build per-character colour map from semantic tokens
-    const colourAt = new Array(lineText.length).fill('');
-    for (const tok of tokens) {
-        const col = (_a = TOKEN_COLORS[tok.tokenType]) !== null && _a !== void 0 ? _a : '';
-        for (let i = tok.char; i < tok.char + tok.len && i < lineText.length; i++) {
-            colourAt[i] = col;
-        }
-    }
-    // Sort hints ascending so we can insert left-to-right
-    const sortedHints = [...hints].sort((a, b) => a.col - b.col);
-    let hintIdx = 0;
-    let result = '';
-    let cur = '';
-    const closeColour = () => { if (cur) {
-        result += A.reset;
-        cur = '';
-    } };
-    const openColour = (col) => { if (col !== cur) {
-        closeColour();
-        result += col;
-        cur = col;
-    } };
-    for (let i = 0; i <= lineText.length; i++) {
-        // Insert inlay hints due at this column
-        while (hintIdx < sortedHints.length && sortedHints[hintIdx].col === i) {
-            closeColour();
-            result += A.bCyan + sortedHints[hintIdx].text + A.reset;
-            hintIdx++;
-        }
-        if (i === lineText.length)
-            break;
-        const col = colourAt[i];
-        openColour(col);
-        result += lineText[i];
-    }
-    closeColour();
-    return result;
-}
-// Return the column of the first standalone occurrence of `name` in `line`,
-// using word boundaries so "a" doesn't match the "a" inside "add".
-function wordPos(line, name) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const m = new RegExp(`\\b${escaped}\\b`).exec(line);
-    return m ? m.index : -1;
-}
-// ── Main ──────────────────────────────────────────────────────────────────────
-async function main() {
-    var _a, _b, _c, _d, _e, _f;
-    const filePath = process.argv[2];
-    if (!filePath) {
-        console.error('Usage: node run_debug.js <path/to/file.ar>');
-        process.exit(1);
-    }
-    const absPath = path.resolve(filePath);
-    if (!fs.existsSync(absPath)) {
-        console.error(`File not found: ${absPath}`);
-        process.exit(1);
-    }
-    const content = fs.readFileSync(absPath, 'utf8');
-    const doc = new MockTextDocument(absPath, content);
-    // Run all providers
-    const analysis = await analysis_1.DocumentAnalysis.for(doc);
-    const hintsAll = await (0, type_infer_1.provideInlayHints)(doc, { start: { line: 0, character: 0 }, end: { line: doc.lineCount, character: 0 } });
-    const semTokens = await (0, type_infer_1.provideDocumentSemanticTokens)(doc);
-    const tokenList = (_a = semTokens.tokenList) !== null && _a !== void 0 ? _a : [];
-    const diagnostics = await (0, type_infer_1.provideDiagnostics)(doc);
-    // Group by line
-    const hintsByLine = new Map();
-    for (const hint of hintsAll) {
-        const ln = hint.position.line;
-        if (!hintsByLine.has(ln))
-            hintsByLine.set(ln, []);
-        const label = typeof hint.label === 'string'
-            ? hint.label
-            : hint.label.map(p => p.value).join('');
-        hintsByLine.get(ln).push({ col: hint.position.character, text: label });
-    }
-    const tokensByLine = new Map();
-    for (const tok of tokenList) {
-        if (!tokensByLine.has(tok.line))
-            tokensByLine.set(tok.line, []);
-        tokensByLine.get(tok.line).push(tok);
-    }
-    const diagsByLine = new Map();
-    for (const d of diagnostics) {
-        const ln = d.range.start.line;
-        if (!diagsByLine.has(ln))
-            diagsByLine.set(ln, []);
-        diagsByLine.get(ln).push(d);
-    }
-    // Hover results keyed by line (first symbol per line)
-    // Collect all hover results up front
-    const hoverByLine = new Map();
-    for (const sym of analysis.symbols) {
-        const lineText = doc.lineAt(sym.line).text;
-        const nameIdx = wordPos(lineText, sym.name);
-        if (nameIdx < 0)
-            continue;
-        const pos = { line: sym.line, character: nameIdx };
-        const hover = await (0, type_infer_1.provideHover)(doc, pos);
-        if (!hover)
-            continue;
-        const hl = extractHoverLines(hover);
-        if (hl.length === 0)
-            continue;
-        if (!hoverByLine.has(sym.line))
-            hoverByLine.set(sym.line, []);
-        hoverByLine.get(sym.line).push({ name: sym.name, hoverLines: hl });
-    }
-    const fileName = path.basename(absPath);
-    const sep = c(A.gray, '═'.repeat(70));
-    // ── Header ──
-    process.stdout.write('\n' + sep + '\n');
-    process.stdout.write(c(A.bold + A.bWhite, `  ARROW DEBUG:  ${fileName}`) + '\n');
-    process.stdout.write(sep + '\n\n');
-    // ── Legend ──
-    process.stdout.write(c(A.bold, 'Legend: ') +
-        c(A.bYellow, '■') + ' class/import  ' +
-        c(A.cyan, '■') + ' built-in type  ' +
-        c(A.bCyan, '■') + ' inlay hint  ' +
-        c(A.red, '■') + ' error  ' +
-        c(A.yellow, '■') + ' warning' +
-        '\n\n');
-    // ─────────────────────────────────────────────────────────────────────────
-    // Part 1 — Annotated source
-    // ─────────────────────────────────────────────────────────────────────────
-    process.stdout.write(c(A.bold + A.yellow, '── SOURCE  (with inlay hints and semantic colours) ──') + '\n\n');
-    const lineCount = doc.lineCount;
-    const numWidth = String(lineCount).length;
-    for (let ln = 0; ln < lineCount; ln++) {
-        const raw = doc.lineAt(ln).text;
-        // Diagnostics marker
-        const diags = (_b = diagsByLine.get(ln)) !== null && _b !== void 0 ? _b : [];
-        const diagMarker = diags.length > 0
-            ? c(diags.some(d => d.severity === 0) ? A.red : A.yellow, ' ●')
-            : '  ';
-        const lineNum = c(A.gray, String(ln + 1).padStart(numWidth));
-        const bar = c(A.gray, ' │ ');
-        const rendered = renderSourceLine(raw, (_c = tokensByLine.get(ln)) !== null && _c !== void 0 ? _c : [], (_d = hintsByLine.get(ln)) !== null && _d !== void 0 ? _d : []);
-        process.stdout.write(`${diagMarker}${lineNum}${bar}${rendered}\n`);
-        // Hover balloons — one per symbol defined on this line
-        const hovers = hoverByLine.get(ln);
-        if (hovers) {
-            for (const { name, hoverLines } of hovers) {
-                const label = c(A.gray, `  ${'─'.repeat(numWidth)} │ `) + c(A.dim, `hover:${name}  `);
-                process.stdout.write(label + '\n');
-                process.stdout.write(renderBalloon(hoverLines, ' '.repeat(numWidth + 5)) + '\n');
-            }
-        }
-        // Diagnostic messages
-        for (const d of diags) {
-            const col = d.severity === 0 ? A.red : A.yellow;
-            const label = d.severity === 0 ? 'error' : 'warn ';
-            const col0 = d.range.start.character;
-            const arrow = ' '.repeat(numWidth + 4 + col0) + c(col, `^ [${label}] ${d.message}`);
-            process.stdout.write(arrow + '\n');
-        }
-    }
-    // ─────────────────────────────────────────────────────────────────────────
-    // Part 2 — Full hover reference list
-    // ─────────────────────────────────────────────────────────────────────────
-    process.stdout.write('\n' + c(A.bold + A.yellow, '── HOVER REFERENCE ──') + '\n\n');
-    const KIND_COLOR = {
-        variable: A.cyan, function: A.green, class: A.bYellow,
-        trait: A.magenta, enum: A.bYellow, new_type: A.bCyan, module: A.blue,
-    };
-    for (const sym of analysis.symbols) {
-        const lineText = doc.lineAt(sym.line).text;
-        const nameIdx = wordPos(lineText, sym.name);
-        if (nameIdx < 0)
-            continue;
-        const pos = { line: sym.line, character: nameIdx };
-        const hover = await (0, type_infer_1.provideHover)(doc, pos);
-        const kindCol = (_e = KIND_COLOR[sym.kind]) !== null && _e !== void 0 ? _e : A.bWhite;
-        const location = c(A.gray, `L:${String(sym.line + 1).padStart(4, '0')}`);
-        const kind = c(kindCol, sym.kind.padEnd(9));
-        const name = c(A.bold + A.bWhite, sym.name);
-        const prefix = `  ${location}  ${kind}  ${name}`;
-        if (!hover) {
-            process.stdout.write(`${prefix}  ${c(A.gray, '(no hover)')}\n`);
-            continue;
-        }
-        const hl = extractHoverLines(hover);
-        if (hl.length === 1) {
-            process.stdout.write(`${prefix}  ${c(A.bCyan, hl[0])}\n`);
+    const legend = wasm_providers_1.SEMANTIC_TOKENS_LEGEND.tokenTypes;
+    // Build the coloured line right-to-left so earlier offsets stay valid.
+    const marks = [
+        ...tokens.map(t => ({ at: t.char, len: t.len, kind: 'tok', type: legend[t.tokenType] })),
+        ...hints.map(h => ({ at: h.char, len: 0, kind: 'hint', label: h.label })),
+    ].sort((a, b) => b.at - a.at || b.len - a.len);
+    let out = text;
+    for (const m of marks) {
+        if (m.kind === 'hint') {
+            out = out.slice(0, m.at) + c(A.dim + A.green, m.label) + out.slice(m.at);
         }
         else {
-            process.stdout.write(`${prefix}\n`);
-            process.stdout.write(renderBalloon(hl, '                       ') + '\n');
+            const colour = (_a = TOKEN_COLORS[m.type]) !== null && _a !== void 0 ? _a : A.bWhite;
+            out = out.slice(0, m.at) + c(colour, out.slice(m.at, m.at + m.len)) + out.slice(m.at + m.len);
         }
     }
-    // ─────────────────────────────────────────────────────────────────────────
-    // Part 3 — Diagnostics summary
-    // ─────────────────────────────────────────────────────────────────────────
-    process.stdout.write('\n' + c(A.bold + A.yellow, `── DIAGNOSTICS  (${diagnostics.length}) ──`) + '\n\n');
-    if (diagnostics.length === 0) {
-        process.stdout.write(c(A.gray, '  (none)\n'));
-    }
-    for (const d of diagnostics) {
-        const [col, label] = d.severity === 0 ? [A.red, 'error  '] : [A.yellow, 'warning'];
-        const loc = c(A.gray, `L:${String(d.range.start.line + 1).padStart(4, '0')}:${String(d.range.start.character + 1).padStart(3, '0')}`);
-        process.stdout.write(`  ${loc}  ${c(col, `[${label}]`)}  ${d.message}\n`);
-    }
-    // ─────────────────────────────────────────────────────────────────────────
-    // Part 4 — Completion items test (dot-access on cs/cpp modules)
-    // ─────────────────────────────────────────────────────────────────────────
-    process.stdout.write('\n' + c(A.bold + A.yellow, '── COMPLETION TEST (dot-access) ──') + '\n\n');
-    // Find interesting dot-access positions: lines ending with <alias>.
-    const testPositions = [];
-    for (let ln = 0; ln < doc.lineCount; ln++) {
-        const text = doc.lineAt(ln).text;
-        const m = text.match(/^(.+\.)(\s*)$/);
-        if (m && !text.trimStart().startsWith('#')) {
-            testPositions.push({ label: text.trimEnd(), line: ln, character: m[1].length });
-        }
-    }
-    // Also test known 2-level patterns (Alias.ClassName.)
-    for (let ln = 0; ln < doc.lineCount; ln++) {
-        const text = doc.lineAt(ln).text;
-        const m2 = text.match(/([A-Za-z_]\w*\.[A-Za-z_]\w*\.)/g);
-        if (m2) {
-            for (const seg of m2) {
-                testPositions.push({ label: text.trim(), line: ln, character: text.indexOf(seg) + seg.length });
-            }
-        }
-    }
-    for (const tp of testPositions) {
-        const items = await (0, type_infer_1.provideCompletionItems)(doc, { line: tp.line, character: tp.character });
-        const status = items.length > 0 ? c(A.green, `✓ ${items.length} items`) : c(A.red, '✗ empty');
-        process.stdout.write(`  ${c(A.gray, `L:${String(tp.line + 1).padStart(4, '0')}`)}  ${c(A.bCyan, tp.label.padEnd(35))}  ${status}\n`);
-        for (const it of items.slice(0, 8)) {
-            const detail = ((_f = it.detail) !== null && _f !== void 0 ? _f : '').toString().replace(/\n.*/s, '');
-            process.stdout.write(`      ${c(A.bYellow, String(it.label).padEnd(22))}  ${c(A.gray, detail)}\n`);
-        }
-        if (items.length > 8)
-            process.stdout.write(`      ${c(A.gray, `… and ${items.length - 8} more`)}\n`);
-    }
-    process.stdout.write('\n' + sep + '\n\n');
+    return `  ${c(A.gray, String(lineNo + 1).padStart(4))} ${c(A.gray, '│')} ${out}`;
 }
-main().catch(err => { console.error(err); process.exit(1); });
+function header(title) {
+    console.log('\n' + c(A.bold + A.yellow, `── ${title} ` + '─'.repeat(Math.max(0, 62 - title.length))));
+}
+// ── Main ──────────────────────────────────────────────────────────────────────
+function main() {
+    var _a, _b, _c, _d;
+    const target = process.argv[2];
+    if (!target) {
+        console.error('usage: node run_debug.js <path/to/file.ar>');
+        process.exit(2);
+    }
+    const filePath = path.resolve(target);
+    const content = fs.readFileSync(filePath, 'utf8');
+    const doc = new MockTextDocument(filePath, content);
+    // The extension root is one level above out_debug/.
+    if (!(0, frontend_1.loadFrontend)(path.join(__dirname, '..'))) {
+        console.error('failed to load arrow_frontend.wasm: ' + (0, frontend_1.frontendLoadError)());
+        console.error('build it with: cd crates/arrow-frontend && cargo build --release --target wasm32-unknown-unknown');
+        process.exit(1);
+    }
+    console.log('\n' + c(A.gray, '═'.repeat(70)));
+    console.log(c(A.bold + A.bWhite, `  ARROW DEBUG:  ${path.basename(filePath)}`));
+    console.log(c(A.gray, '═'.repeat(70)));
+    // ---- 1 + 2 + 3: source with tokens/hints, then hovers ----
+    const semantic = (0, wasm_providers_1.provideDocumentSemanticTokens)(doc);
+    const fullRange = { start: { line: 0, character: 0 }, end: { line: doc.lineCount, character: 0 } };
+    const hints = (0, wasm_providers_1.provideInlayHints)(doc, fullRange);
+    const tokensByLine = new Map();
+    for (const t of semantic.tokenList) {
+        const list = (_a = tokensByLine.get(t.line)) !== null && _a !== void 0 ? _a : [];
+        list.push(t);
+        tokensByLine.set(t.line, list);
+    }
+    const hintsByLine = new Map();
+    for (const h of hints) {
+        const p = h.position;
+        const label = typeof h.label === 'string' ? h.label : '';
+        const list = (_b = hintsByLine.get(p.line)) !== null && _b !== void 0 ? _b : [];
+        list.push({ char: p.character, label });
+        hintsByLine.set(p.line, list);
+    }
+    header('SOURCE  (semantic colours + inlay hints)');
+    for (let i = 0; i < doc.lineCount; i++) {
+        console.log(renderSourceLine(i, doc.lineAt(i).text, (_c = tokensByLine.get(i)) !== null && _c !== void 0 ? _c : [], (_d = hintsByLine.get(i)) !== null && _d !== void 0 ? _d : []));
+    }
+    // ---- 2: hover + 3: definition, probed at every declaration ----
+    const outline = (0, wasm_providers_1.provideDocumentSymbols)(doc);
+    header('HOVER + GO-TO-DEFINITION  (probed at each declaration)');
+    const probes = [];
+    const walk = (nodes) => {
+        for (const n of nodes) {
+            const r = n.selectionRange;
+            probes.push({ name: n.name, line: r.start.line, char: r.start.character });
+            walk(n.children);
+        }
+    };
+    walk(outline);
+    for (const p of probes) {
+        const pos = { line: p.line, character: p.char };
+        const hov = (0, wasm_providers_1.provideHover)(doc, pos);
+        const def = (0, wasm_providers_1.provideDefinition)(doc, pos);
+        const defStr = def
+            ? `→ L${def.range.start.line + 1}`
+            : c(A.red, '→ (none)');
+        console.log(`  ${c(A.gray, `L${String(p.line + 1).padStart(4)}`)} ${c(A.bWhite, p.name.padEnd(18))} ${c(A.gray, defStr)}`);
+        if (hov)
+            console.log(renderBalloon(extractHoverLines(hov), '        '));
+    }
+    // ---- 4: outline ----
+    header('DOCUMENT SYMBOLS  (outline)');
+    const printOutline = (nodes, depth) => {
+        for (const n of nodes) {
+            const r = n.selectionRange;
+            console.log(`  ${'  '.repeat(depth)}${c(A.bYellow, n.name)} ${c(A.gray, `[${n.detail}]  L${r.start.line + 1}`)}`);
+            printOutline(n.children, depth + 1);
+        }
+    };
+    printOutline(outline, 0);
+    // ---- 5: completion ----
+    header('COMPLETION');
+    // (a) scoped names: probe the last line of each function body-ish region
+    const scopeProbeLines = probes.filter(p => p.name !== '__init__').slice(0, 4).map(p => p.line + 1);
+    for (const line of scopeProbeLines) {
+        if (line >= doc.lineCount)
+            continue;
+        const items = (0, wasm_providers_1.provideCompletionItems)(doc, { line, character: 0 });
+        const names = items.slice(0, 8).map(i => i.label).join(', ');
+        console.log(`  ${c(A.gray, `L${String(line + 1).padStart(4)}`)} scope → ${c(A.bGreen, String(items.length))} items: ${c(A.gray, names)}${items.length > 8 ? c(A.gray, ' …') : ''}`);
+    }
+    // (b) dot access: every `x.` occurrence in the file
+    let dotProbes = 0;
+    for (let i = 0; i < doc.lineCount && dotProbes < 6; i++) {
+        const text = doc.lineAt(i).text;
+        // コメント行を拾わない（`# functions.ar — …` を受け手だと誤認しないため）。
+        if (/^\s*#/.test(text))
+            continue;
+        const m = /([A-Za-z_]\w*)\./.exec(text);
+        if (!m)
+            continue;
+        dotProbes++;
+        const pos = { line: i, character: m.index + m[0].length };
+        const items = (0, wasm_providers_1.provideCompletionItems)(doc, pos);
+        const label = items.length ? c(A.bGreen, `${items.length} members`) : c(A.red, 'empty');
+        console.log(`  ${c(A.gray, `L${String(i + 1).padStart(4)}`)} ${c(A.bWhite, m[0].padEnd(14))} → ${label} ${c(A.gray, items.slice(0, 6).map(x => x.label).join(', '))}`);
+    }
+    // ---- 6: signature help ----
+    header('SIGNATURE HELP');
+    let sigProbes = 0;
+    for (let i = 0; i < doc.lineCount && sigProbes < 6; i++) {
+        const text = doc.lineAt(i).text;
+        const m = /([A-Za-z_]\w*)\(/.exec(text);
+        if (!m)
+            continue;
+        const pos = { line: i, character: m.index + m[0].length };
+        const help = (0, wasm_providers_1.provideSignatureHelp)(doc, pos);
+        if (!help || help.signatures.length === 0)
+            continue;
+        sigProbes++;
+        const sig = help.signatures[0];
+        console.log(`  ${c(A.gray, `L${String(i + 1).padStart(4)}`)} ${c(A.bCyan, sig.label)} ${c(A.gray, `(active param ${help.activeParameter})`)}`);
+    }
+    if (sigProbes === 0)
+        console.log(c(A.gray, '  (no call sites resolved)'));
+    // ---- 7: diagnostics ----
+    const diags = (0, wasm_providers_1.provideDiagnostics)(doc);
+    header(`DIAGNOSTICS  (${diags.length})`);
+    if (diags.length === 0) {
+        console.log(c(A.green, '  none'));
+    }
+    else {
+        for (const d of diags) {
+            const r = d.range;
+            const sev = d.severity === 0 ? c(A.red, 'error  ') : c(A.yellow, 'warning');
+            console.log(`  ${c(A.gray, `L${String(r.start.line + 1).padStart(4)}:${String(r.start.character + 1).padStart(3)}`)}  [${sev}]  ${d.message}`);
+        }
+    }
+    console.log('\n' + c(A.gray, '═'.repeat(70)) + '\n');
+}
+main();
 //# sourceMappingURL=debug_runner.js.map

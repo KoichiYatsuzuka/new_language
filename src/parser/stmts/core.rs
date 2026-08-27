@@ -1,4 +1,4 @@
-// stmts/core.rs — 文パースの中核: parse_program / parse_block / parse_tuple_unpack / parse_stmt。
+﻿// stmts/core.rs — 文パースの中核: parse_program / parse_block / parse_tuple_unpack / parse_stmt。
 
 use {
     crate::parser::Parser,
@@ -41,6 +41,9 @@ impl Parser {
         // ブロックはエイリアスのスコープ境界。開始時にスナップショットを取り、
         // 終了時に復元することで、ブロック内で宣言した alias をブロック外に漏らさない。
         let saved_aliases = self.aliases.clone();
+        // 同じ境界がエディタ索引のスコープ境界でもある（[parser::editor_index] 参照）。
+        // 直前に控えた関数の仮引数はここで本体スコープへ配属される。
+        let _editor_scope = self.open_editor_scope();
         let mut stmts = Vec::new();
         loop {
             while matches!(self.current(), Token::Newline | Token::Semicolon) {
@@ -55,6 +58,7 @@ impl Parser {
             self.advance();
         }
         self.aliases = saved_aliases;
+        self.close_editor_scope();
         Ok(stmts)
     }
 
@@ -126,6 +130,8 @@ impl Parser {
                 if *self.current() == Token::Comma {
                     return self.parse_tuple_unpack(TupleTarget::Let(name));
                 }
+                // エディタ索引は名前トークンの直後に控える（位置がずれるため）。
+                let h = self.note_var(&name, "let");
                 // 型アノテーションを保存する（Protocol 型検査で使用）
                 let type_ann = if *self.current() == Token::Colon {
                     self.advance();
@@ -133,21 +139,28 @@ impl Parser {
                 } else {
                     None
                 };
+                self.note_type_ann(h, type_ann.as_deref());
                 self.eat(&Token::Eq)?;
-                Ok(Stmt::Let(name, type_ann, self.parse_expr()?))
+                let init = self.parse_expr()?;
+                self.note_init_expr(h, &init);
+                Ok(Stmt::Let(name, type_ann, init))
             }
             // `const 変数名 [: 型] = 式` — 定数宣言
             Token::Const => {
                 self.advance();
                 let name = self.expect_ident()?;
+                let h = self.note_var(&name, "const");
                 let type_ann = if *self.current() == Token::Colon {
                     self.advance();
                     Some(self.parse_type_expr()?)
                 } else {
                     None
                 };
+                self.note_type_ann(h, type_ann.as_deref());
                 self.eat(&Token::Eq)?;
-                Ok(Stmt::Const(name, type_ann, self.parse_expr()?))
+                let init = self.parse_expr()?;
+                self.note_init_expr(h, &init);
+                Ok(Stmt::Const(name, type_ann, init))
             }
             // `mut 変数名 [: 型] = 式` — ミュータブル変数宣言
             // `mut x, let y, _ = expr` — タプルアンパック宣言
@@ -157,14 +170,18 @@ impl Parser {
                 if *self.current() == Token::Comma {
                     return self.parse_tuple_unpack(TupleTarget::Mut(name));
                 }
+                let h = self.note_var(&name, "mut");
                 let type_ann = if *self.current() == Token::Colon {
                     self.advance();
                     Some(self.parse_type_expr()?)
                 } else {
                     None
                 };
+                self.note_type_ann(h, type_ann.as_deref());
                 self.eat(&Token::Eq)?;
-                Ok(Stmt::Mut(name, type_ann, self.parse_expr()?))
+                let init = self.parse_expr()?;
+                self.note_init_expr(h, &init);
+                Ok(Stmt::Mut(name, type_ann, init))
             }
             // `static mut 変数名 [: 型] = 式` — 静的可変変数宣言（全呼び出しでセル共有）
             Token::Static => {
@@ -172,18 +189,23 @@ impl Parser {
                 self.advance();
                 self.eat(&Token::Mut)?;
                 let name = self.expect_ident()?;
+                let h = self.note_var(&name, "static mut");
                 if *self.current() == Token::Colon {
                     self.advance();
-                    self.parse_type_expr()?;
+                    let t = self.parse_type_expr()?;
+                    self.note_type_ann(h, Some(&t));
                 }
                 self.eat(&Token::Eq)?;
-                Ok(Stmt::Static(name, self.parse_expr()?, span))
+                let init = self.parse_expr()?;
+                self.note_init_expr(h, &init);
+                Ok(Stmt::Static(name, init, span))
             }
             // `freeze 変数名` — 変数をイミュータブルに凍結
             Token::Freeze => {
                 let span = self.current_span();
                 self.advance();
                 let name = self.expect_ident()?;
+                self.note_var(&name, "freeze");
                 Ok(Stmt::Freeze(name, span))
             }
             // ジャンプ文・単純文

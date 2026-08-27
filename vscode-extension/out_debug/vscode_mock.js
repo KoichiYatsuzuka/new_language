@@ -262,9 +262,16 @@ class SignatureHelp {
 }
 exports.SignatureHelp = SignatureHelp;
 class Location {
-    constructor(uri, range) {
+    /**
+     * 実 VS Code の `Location` は `Range | Position` を受ける。`Position` を渡すと
+     * その位置の空レンジになる。モックがここを取り違えていると、`.range.start` が
+     * `undefined` になって debug_runner だけが落ちる（実際に落ちた）。
+     */
+    constructor(uri, rangeOrPosition) {
         this.uri = uri;
-        this.range = range;
+        this.range = rangeOrPosition instanceof Position
+            ? new Range(rangeOrPosition, rangeOrPosition)
+            : rangeOrPosition;
     }
 }
 exports.Location = Location;

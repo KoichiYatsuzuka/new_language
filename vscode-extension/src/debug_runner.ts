@@ -1,16 +1,25 @@
 /**
- * Standalone CLI debug runner for the VS Code extension analysis code.
+ * Standalone CLI debug runner for the VS Code extension.
  *
  * Run via:   node run_debug.js <path/to/file.ar>
  *
  * The run_debug.js bootstrap intercepts require('vscode') before this module
- * loads, so all extension modules (analysis.ts, type_infer.ts) receive the
- * vscode_mock implementations instead of the real VS Code API.
+ * loads, so the extension modules receive the vscode_mock implementations
+ * instead of the real VS Code API.
  *
- * Output:
- *   1. Source with ANSI colours (semantic tokens) and inlay hints inserted inline
- *   2. Hover balloon content for every symbol
- *   3. Diagnostics list
+ * It exercises all seven language features against the wasm frontend
+ * (`crates/arrow-frontend`), which is the same lexer/parser/type-checker that
+ * `cargo run` uses. That means a disagreement seen here is a real disagreement,
+ * not an artefact of a second implementation.
+ *
+ * Output sections:
+ *   1. Source with semantic-token colours and inlay hints inserted inline
+ *   2. Hover balloon for every declaration
+ *   3. Go-to-definition targets
+ *   4. Document symbols (outline)
+ *   5. Completion probes (scoped names and dot-access members)
+ *   6. Signature help probes
+ *   7. Diagnostics
  */
 
 import * as fs from 'fs';
@@ -18,15 +27,19 @@ import * as path from 'path';
 // At runtime 'vscode' is intercepted → vscode_mock; these imports are for types only
 import type * as vscode from 'vscode';
 import { SemanticTokenEntry } from './vscode_mock';
-import { DocumentAnalysis } from './analysis';
+import { loadFrontend, frontendLoadError } from './frontend';
 import {
     provideHover,
     provideInlayHints,
     provideDiagnostics,
     provideDocumentSemanticTokens,
     provideCompletionItems,
+    provideDocumentSymbols,
+    provideSignatureHelp,
+    provideDefinition,
+    loadPrelude,
     SEMANTIC_TOKENS_LEGEND,
-} from './type_infer';
+} from './wasm_providers';
 
 // ── ANSI helpers ──────────────────────────────────────────────────────────────
 
@@ -42,18 +55,26 @@ const A = {
     cyan:    '\x1b[36m',
     gray:    '\x1b[90m',
     bYellow: '\x1b[93m',
+    bGreen:  '\x1b[92m',
     bCyan:   '\x1b[96m',
     bWhite:  '\x1b[97m',
 } as const;
 
 function c(color: string, text: string): string { return `${color}${text}${A.reset}`; }
 
-// Semantic token type index → ANSI colour (must match SEMANTIC_TOKENS_LEGEND order)
-// 0=class  1=type  2=variable
-const TOKEN_COLORS: Record<number, string> = {
-    0: A.bYellow,  // class / imported name
-    1: A.cyan,     // built-in type (int, float, str, …)
-    2: A.bWhite,   // variable reference
+/** Semantic token type index → ANSI colour (indices follow SEMANTIC_TOKENS_LEGEND). */
+const TOKEN_COLORS: Record<string, string> = {
+    class:      A.bYellow,
+    interface:  A.yellow,
+    enum:       A.bYellow,
+    enumMember: A.magenta,
+    function:   A.bGreen,
+    method:     A.bGreen,
+    property:   A.cyan,
+    parameter:  A.bCyan,
+    variable:   A.bWhite,
+    namespace:  A.blue,
+    type:       A.cyan,
 };
 
 // ── Mock TextDocument ─────────────────────────────────────────────────────────
@@ -68,10 +89,9 @@ class MockTextDocument {
 
     constructor(filePath: string, content: string) {
         this.fileName = filePath;
-        // Normalise line endings, strip single trailing blank line
         const raw = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
         this._lines = raw.split('\n');
-        if (this._lines.at(-1) === '') this._lines.pop();
+        if (this._lines[this._lines.length - 1] === '') this._lines.pop();
         this.lineCount = this._lines.length;
         const fp = filePath;
         this.uri = {
@@ -81,8 +101,7 @@ class MockTextDocument {
     }
 
     lineAt(line: number): { text: string; range: unknown } {
-        const text = this._lines[line] ?? '';
-        return { text, range: null };
+        return { text: this._lines[line] ?? '', range: null };
     }
 
     getText(range?: unknown): string {
@@ -94,39 +113,41 @@ class MockTextDocument {
         const parts: string[] = [];
         for (let i = r.start.line; i <= r.end.line; i++) {
             const ln = this._lines[i] ?? '';
-            if (i === r.start.line)      parts.push(ln.slice(r.start.character));
-            else if (i === r.end.line)   parts.push(ln.slice(0, r.end.character));
-            else                          parts.push(ln);
+            if (i === r.start.line)    parts.push(ln.slice(r.start.character));
+            else if (i === r.end.line) parts.push(ln.slice(0, r.end.character));
+            else                       parts.push(ln);
         }
         return parts.join('\n');
     }
 
-    getWordRangeAtPosition(pos: { line: number; character: number }, regex?: RegExp): { start: { line: number; character: number }; end: { line: number; character: number } } | undefined {
+    getWordRangeAtPosition(
+        pos: { line: number; character: number },
+        regex?: RegExp,
+    ): { start: { line: number; character: number }; end: { line: number; character: number } } | undefined {
         const line = this._lines[pos.line];
         if (line === undefined) return undefined;
         const re = new RegExp((regex ?? /\w+/).source, 'g');
         let m: RegExpExecArray | null;
         while ((m = re.exec(line)) !== null) {
             if (m.index <= pos.character && m.index + m[0].length > pos.character) {
-                return { start: { line: pos.line, character: m.index }, end: { line: pos.line, character: m.index + m[0].length } };
+                return {
+                    start: { line: pos.line, character: m.index },
+                    end:   { line: pos.line, character: m.index + m[0].length },
+                };
             }
         }
         return undefined;
     }
 }
 
-// ── Hover text extraction ─────────────────────────────────────────────────────
+// ── Rendering ─────────────────────────────────────────────────────────────────
 
 function extractHoverLines(hover: vscode.Hover): string[] {
     const items = Array.isArray(hover.contents) ? hover.contents : [hover.contents];
     const lines: string[] = [];
     for (const item of items) {
         const raw = typeof item === 'string' ? item : (item as { value: string }).value;
-        // Strip code-fence markers but keep the content
-        const stripped = raw
-            .replace(/```\w*\n?/g, '')
-            .trim();
-        for (const ln of stripped.split('\n')) {
+        for (const ln of raw.replace(/```\w*\n?/g, '').trim().split('\n')) {
             const t = ln.trim();
             if (t) lines.push(t);
         }
@@ -137,281 +158,180 @@ function extractHoverLines(hover: vscode.Hover): string[] {
 function renderBalloon(lines: string[], indent: string): string {
     if (lines.length === 0) return '';
     const width = Math.max(...lines.map(l => l.length), 0);
-    const top    = c(A.gray, `${indent}╭${'─'.repeat(width + 2)}╮`);
-    const bottom = c(A.gray, `${indent}╰${'─'.repeat(width + 2)}╯`);
-    const rows = lines.map(l =>
-        c(A.gray, `${indent}│`) +
-        ` ${c(A.bCyan, l.padEnd(width))} ` +
-        c(A.gray, '│')
-    );
-    return [top, ...rows, bottom].join('\n');
+    const top = c(A.gray, `${indent}╭${'─'.repeat(width + 2)}╮`);
+    const mid = lines.map(l =>
+        c(A.gray, `${indent}│`) + ' ' + c(A.bCyan, l.padEnd(width)) + ' ' + c(A.gray, '│'));
+    const bot = c(A.gray, `${indent}╰${'─'.repeat(width + 2)}╯`);
+    return [top, ...mid, bot].join('\n');
 }
 
-// ── Source renderer ───────────────────────────────────────────────────────────
-
+/** Paint one source line using the semantic tokens and inline the inlay hints. */
 function renderSourceLine(
-    lineText: string,
+    lineNo: number,
+    text: string,
     tokens: SemanticTokenEntry[],
-    hints: Array<{ col: number; text: string }>,
+    hints: { char: number; label: string }[],
 ): string {
-    // Build per-character colour map from semantic tokens
-    const colourAt = new Array<string>(lineText.length).fill('');
-    for (const tok of tokens) {
-        const col = TOKEN_COLORS[tok.tokenType] ?? '';
-        for (let i = tok.char; i < tok.char + tok.len && i < lineText.length; i++) {
-            colourAt[i] = col;
+    const legend = SEMANTIC_TOKENS_LEGEND.tokenTypes;
+    // Build the coloured line right-to-left so earlier offsets stay valid.
+    const marks = [
+        ...tokens.map(t => ({ at: t.char, len: t.len, kind: 'tok' as const, type: legend[t.tokenType] })),
+        ...hints.map(h => ({ at: h.char, len: 0, kind: 'hint' as const, label: h.label })),
+    ].sort((a, b) => b.at - a.at || b.len - a.len);
+
+    let out = text;
+    for (const m of marks) {
+        if (m.kind === 'hint') {
+            out = out.slice(0, m.at) + c(A.dim + A.green, m.label) + out.slice(m.at);
+        } else {
+            const colour = TOKEN_COLORS[m.type] ?? A.bWhite;
+            out = out.slice(0, m.at) + c(colour, out.slice(m.at, m.at + m.len)) + out.slice(m.at + m.len);
         }
     }
-
-    // Sort hints ascending so we can insert left-to-right
-    const sortedHints = [...hints].sort((a, b) => a.col - b.col);
-    let hintIdx = 0;
-    let result = '';
-    let cur = '';
-
-    const closeColour = (): void => { if (cur) { result += A.reset; cur = ''; } };
-    const openColour  = (col: string): void => { if (col !== cur) { closeColour(); result += col; cur = col; } };
-
-    for (let i = 0; i <= lineText.length; i++) {
-        // Insert inlay hints due at this column
-        while (hintIdx < sortedHints.length && sortedHints[hintIdx].col === i) {
-            closeColour();
-            result += A.bCyan + sortedHints[hintIdx].text + A.reset;
-            hintIdx++;
-        }
-        if (i === lineText.length) break;
-
-        const col = colourAt[i];
-        openColour(col);
-        result += lineText[i];
-    }
-    closeColour();
-    return result;
+    return `  ${c(A.gray, String(lineNo + 1).padStart(4))} ${c(A.gray, '│')} ${out}`;
 }
 
-// Return the column of the first standalone occurrence of `name` in `line`,
-// using word boundaries so "a" doesn't match the "a" inside "add".
-function wordPos(line: string, name: string): number {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const m = new RegExp(`\\b${escaped}\\b`).exec(line);
-    return m ? m.index : -1;
+function header(title: string): void {
+    console.log('\n' + c(A.bold + A.yellow, `── ${title} ` + '─'.repeat(Math.max(0, 62 - title.length))));
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
-    const filePath = process.argv[2];
-    if (!filePath) {
-        console.error('Usage: node run_debug.js <path/to/file.ar>');
+function main(): void {
+    const target = process.argv[2];
+    if (!target) {
+        console.error('usage: node run_debug.js <path/to/file.ar>');
+        process.exit(2);
+    }
+    const filePath = path.resolve(target);
+    const content = fs.readFileSync(filePath, 'utf8');
+    const doc = new MockTextDocument(filePath, content) as unknown as vscode.TextDocument;
+
+    // The extension root is one level above out_debug/.
+    if (!loadFrontend(path.join(__dirname, '..'))) {
+        console.error('failed to load arrow_frontend.wasm: ' + frontendLoadError());
+        console.error('build it with: cd crates/arrow-frontend && cargo build --release --target wasm32-unknown-unknown');
         process.exit(1);
     }
 
-    const absPath = path.resolve(filePath);
-    if (!fs.existsSync(absPath)) {
-        console.error(`File not found: ${absPath}`);
-        process.exit(1);
-    }
+    console.log('\n' + c(A.gray, '═'.repeat(70)));
+    console.log(c(A.bold + A.bWhite, `  ARROW DEBUG:  ${path.basename(filePath)}`));
+    console.log(c(A.gray, '═'.repeat(70)));
 
-    const content = fs.readFileSync(absPath, 'utf8');
-    const doc = new MockTextDocument(absPath, content) as unknown as vscode.TextDocument;
-
-    // Run all providers
-    const analysis = await DocumentAnalysis.for(doc);
-    const hintsAll  = await provideInlayHints(doc, { start: { line: 0, character: 0 }, end: { line: doc.lineCount, character: 0 } } as unknown as vscode.Range);
-    const semTokens = await provideDocumentSemanticTokens(doc);
-    const tokenList: SemanticTokenEntry[] = (semTokens as unknown as { tokenList: SemanticTokenEntry[] }).tokenList ?? [];
-    const diagnostics = await provideDiagnostics(doc);
-
-    // Group by line
-    const hintsByLine = new Map<number, Array<{ col: number; text: string }>>();
-    for (const hint of hintsAll) {
-        const ln = hint.position.line;
-        if (!hintsByLine.has(ln)) hintsByLine.set(ln, []);
-        const label = typeof hint.label === 'string'
-            ? hint.label
-            : (hint.label as Array<{ value: string }>).map(p => p.value).join('');
-        hintsByLine.get(ln)!.push({ col: hint.position.character, text: label });
-    }
+    // ---- 1 + 2 + 3: source with tokens/hints, then hovers ----
+    const semantic = provideDocumentSemanticTokens(doc) as unknown as { tokenList: SemanticTokenEntry[] };
+    const fullRange = { start: { line: 0, character: 0 }, end: { line: doc.lineCount, character: 0 } };
+    const hints = provideInlayHints(doc, fullRange as unknown as vscode.Range);
 
     const tokensByLine = new Map<number, SemanticTokenEntry[]>();
-    for (const tok of tokenList) {
-        if (!tokensByLine.has(tok.line)) tokensByLine.set(tok.line, []);
-        tokensByLine.get(tok.line)!.push(tok);
+    for (const t of semantic.tokenList) {
+        const list = tokensByLine.get(t.line) ?? [];
+        list.push(t);
+        tokensByLine.set(t.line, list);
+    }
+    const hintsByLine = new Map<number, { char: number; label: string }[]>();
+    for (const h of hints) {
+        const p = h.position as unknown as { line: number; character: number };
+        const label = typeof h.label === 'string' ? h.label : '';
+        const list = hintsByLine.get(p.line) ?? [];
+        list.push({ char: p.character, label });
+        hintsByLine.set(p.line, list);
     }
 
-    const diagsByLine = new Map<number, typeof diagnostics>();
-    for (const d of diagnostics) {
-        const ln = d.range.start.line;
-        if (!diagsByLine.has(ln)) diagsByLine.set(ln, []);
-        diagsByLine.get(ln)!.push(d);
+    header('SOURCE  (semantic colours + inlay hints)');
+    for (let i = 0; i < doc.lineCount; i++) {
+        console.log(renderSourceLine(i, doc.lineAt(i).text, tokensByLine.get(i) ?? [], hintsByLine.get(i) ?? []));
     }
 
-    // Hover results keyed by line (first symbol per line)
-    // Collect all hover results up front
-    const hoverByLine = new Map<number, Array<{ name: string; hoverLines: string[] }>>();
-    for (const sym of analysis.symbols) {
-        const lineText = (doc as unknown as MockTextDocument).lineAt(sym.line).text;
-        const nameIdx  = wordPos(lineText, sym.name);
-        if (nameIdx < 0) continue;
-        const pos = { line: sym.line, character: nameIdx };
-        const hover = await provideHover(doc, pos as unknown as vscode.Position);
-        if (!hover) continue;
-        const hl = extractHoverLines(hover);
-        if (hl.length === 0) continue;
-        if (!hoverByLine.has(sym.line)) hoverByLine.set(sym.line, []);
-        hoverByLine.get(sym.line)!.push({ name: sym.name, hoverLines: hl });
-    }
-
-    const fileName = path.basename(absPath);
-    const sep = c(A.gray, '═'.repeat(70));
-
-    // ── Header ──
-    process.stdout.write('\n' + sep + '\n');
-    process.stdout.write(c(A.bold + A.bWhite, `  ARROW DEBUG:  ${fileName}`) + '\n');
-    process.stdout.write(sep + '\n\n');
-
-    // ── Legend ──
-    process.stdout.write(
-        c(A.bold, 'Legend: ') +
-        c(A.bYellow, '■') + ' class/import  ' +
-        c(A.cyan,    '■') + ' built-in type  ' +
-        c(A.bCyan,   '■') + ' inlay hint  ' +
-        c(A.red,     '■') + ' error  ' +
-        c(A.yellow,  '■') + ' warning' +
-        '\n\n'
-    );
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Part 1 — Annotated source
-    // ─────────────────────────────────────────────────────────────────────────
-    process.stdout.write(c(A.bold + A.yellow, '── SOURCE  (with inlay hints and semantic colours) ──') + '\n\n');
-
-    const lineCount = (doc as unknown as MockTextDocument).lineCount;
-    const numWidth = String(lineCount).length;
-
-    for (let ln = 0; ln < lineCount; ln++) {
-        const raw = (doc as unknown as MockTextDocument).lineAt(ln).text;
-
-        // Diagnostics marker
-        const diags = diagsByLine.get(ln) ?? [];
-        const diagMarker = diags.length > 0
-            ? c(diags.some(d => d.severity === 0) ? A.red : A.yellow, ' ●')
-            : '  ';
-
-        const lineNum = c(A.gray, String(ln + 1).padStart(numWidth));
-        const bar     = c(A.gray, ' │ ');
-        const rendered = renderSourceLine(raw, tokensByLine.get(ln) ?? [], hintsByLine.get(ln) ?? []);
-
-        process.stdout.write(`${diagMarker}${lineNum}${bar}${rendered}\n`);
-
-        // Hover balloons — one per symbol defined on this line
-        const hovers = hoverByLine.get(ln);
-        if (hovers) {
-            for (const { name, hoverLines } of hovers) {
-                const label = c(A.gray, `  ${'─'.repeat(numWidth)} │ `) + c(A.dim, `hover:${name}  `);
-                process.stdout.write(label + '\n');
-                process.stdout.write(renderBalloon(hoverLines, ' '.repeat(numWidth + 5)) + '\n');
-            }
+    // ---- 2: hover + 3: definition, probed at every declaration ----
+    const outline = provideDocumentSymbols(doc);
+    header('HOVER + GO-TO-DEFINITION  (probed at each declaration)');
+    const probes: { name: string; line: number; char: number }[] = [];
+    const walk = (nodes: vscode.DocumentSymbol[]) => {
+        for (const n of nodes) {
+            const r = n.selectionRange as unknown as { start: { line: number; character: number } };
+            probes.push({ name: n.name, line: r.start.line, char: r.start.character });
+            walk(n.children);
         }
-
-        // Diagnostic messages
-        for (const d of diags) {
-            const col   = d.severity === 0 ? A.red : A.yellow;
-            const label = d.severity === 0 ? 'error' : 'warn ';
-            const col0  = d.range.start.character;
-            const arrow = ' '.repeat(numWidth + 4 + col0) + c(col, `^ [${label}] ${d.message}`);
-            process.stdout.write(arrow + '\n');
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Part 2 — Full hover reference list
-    // ─────────────────────────────────────────────────────────────────────────
-    process.stdout.write('\n' + c(A.bold + A.yellow, '── HOVER REFERENCE ──') + '\n\n');
-
-    const KIND_COLOR: Record<string, string> = {
-        variable: A.cyan, function: A.green, class: A.bYellow,
-        trait: A.magenta, enum: A.bYellow, new_type: A.bCyan, module: A.blue,
     };
+    walk(outline);
+    for (const p of probes) {
+        const pos = { line: p.line, character: p.char } as unknown as vscode.Position;
+        const hov = provideHover(doc, pos);
+        const def = provideDefinition(doc, pos);
+        const defStr = def
+            ? `→ L${(def.range as unknown as { start: { line: number } }).start.line + 1}`
+            : c(A.red, '→ (none)');
+        console.log(`  ${c(A.gray, `L${String(p.line + 1).padStart(4)}`)} ${c(A.bWhite, p.name.padEnd(18))} ${c(A.gray, defStr)}`);
+        if (hov) console.log(renderBalloon(extractHoverLines(hov), '        '));
+    }
 
-    for (const sym of analysis.symbols) {
-        const lineText = (doc as unknown as MockTextDocument).lineAt(sym.line).text;
-        const nameIdx  = wordPos(lineText, sym.name);
-        if (nameIdx < 0) continue;
-
-        const pos   = { line: sym.line, character: nameIdx };
-        const hover = await provideHover(doc, pos as unknown as vscode.Position);
-
-        const kindCol  = KIND_COLOR[sym.kind] ?? A.bWhite;
-        const location = c(A.gray, `L:${String(sym.line + 1).padStart(4, '0')}`);
-        const kind     = c(kindCol, sym.kind.padEnd(9));
-        const name     = c(A.bold + A.bWhite, sym.name);
-        const prefix   = `  ${location}  ${kind}  ${name}`;
-
-        if (!hover) {
-            process.stdout.write(`${prefix}  ${c(A.gray, '(no hover)')}\n`);
-            continue;
+    // ---- 4: outline ----
+    header('DOCUMENT SYMBOLS  (outline)');
+    const printOutline = (nodes: vscode.DocumentSymbol[], depth: number) => {
+        for (const n of nodes) {
+            const r = n.selectionRange as unknown as { start: { line: number } };
+            console.log(`  ${'  '.repeat(depth)}${c(A.bYellow, n.name)} ${c(A.gray, `[${n.detail}]  L${r.start.line + 1}`)}`);
+            printOutline(n.children, depth + 1);
         }
+    };
+    printOutline(outline, 0);
 
-        const hl = extractHoverLines(hover);
-        if (hl.length === 1) {
-            process.stdout.write(`${prefix}  ${c(A.bCyan, hl[0])}\n`);
-        } else {
-            process.stdout.write(`${prefix}\n`);
-            process.stdout.write(renderBalloon(hl, '                       ') + '\n');
+    // ---- 5: completion ----
+    header('COMPLETION');
+    // (a) scoped names: probe the last line of each function body-ish region
+    const scopeProbeLines = probes.filter(p => p.name !== '__init__').slice(0, 4).map(p => p.line + 1);
+    for (const line of scopeProbeLines) {
+        if (line >= doc.lineCount) continue;
+        const items = provideCompletionItems(doc, { line, character: 0 } as unknown as vscode.Position);
+        const names = items.slice(0, 8).map(i => i.label).join(', ');
+        console.log(`  ${c(A.gray, `L${String(line + 1).padStart(4)}`)} scope → ${c(A.bGreen, String(items.length))} items: ${c(A.gray, names)}${items.length > 8 ? c(A.gray, ' …') : ''}`);
+    }
+    // (b) dot access: every `x.` occurrence in the file
+    let dotProbes = 0;
+    for (let i = 0; i < doc.lineCount && dotProbes < 6; i++) {
+        const text = doc.lineAt(i).text;
+        // コメント行を拾わない（`# functions.ar — …` を受け手だと誤認しないため）。
+        if (/^\s*#/.test(text)) continue;
+        const m = /([A-Za-z_]\w*)\./.exec(text);
+        if (!m) continue;
+        dotProbes++;
+        const pos = { line: i, character: m.index + m[0].length } as unknown as vscode.Position;
+        const items = provideCompletionItems(doc, pos);
+        const label = items.length ? c(A.bGreen, `${items.length} members`) : c(A.red, 'empty');
+        console.log(`  ${c(A.gray, `L${String(i + 1).padStart(4)}`)} ${c(A.bWhite, m[0].padEnd(14))} → ${label} ${c(A.gray, items.slice(0, 6).map(x => x.label).join(', '))}`);
+    }
+
+    // ---- 6: signature help ----
+    header('SIGNATURE HELP');
+    let sigProbes = 0;
+    for (let i = 0; i < doc.lineCount && sigProbes < 6; i++) {
+        const text = doc.lineAt(i).text;
+        const m = /([A-Za-z_]\w*)\(/.exec(text);
+        if (!m) continue;
+        const pos = { line: i, character: m.index + m[0].length } as unknown as vscode.Position;
+        const help = provideSignatureHelp(doc, pos);
+        if (!help || help.signatures.length === 0) continue;
+        sigProbes++;
+        const sig = help.signatures[0];
+        console.log(`  ${c(A.gray, `L${String(i + 1).padStart(4)}`)} ${c(A.bCyan, sig.label)} ${c(A.gray, `(active param ${help.activeParameter})`)}`);
+    }
+    if (sigProbes === 0) console.log(c(A.gray, '  (no call sites resolved)'));
+
+    // ---- 7: diagnostics ----
+    const diags = provideDiagnostics(doc);
+    header(`DIAGNOSTICS  (${diags.length})`);
+    if (diags.length === 0) {
+        console.log(c(A.green, '  none'));
+    } else {
+        for (const d of diags) {
+            const r = d.range as unknown as { start: { line: number; character: number } };
+            const sev = d.severity === 0 ? c(A.red, 'error  ') : c(A.yellow, 'warning');
+            console.log(`  ${c(A.gray, `L${String(r.start.line + 1).padStart(4)}:${String(r.start.character + 1).padStart(3)}`)}  [${sev}]  ${d.message}`);
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Part 3 — Diagnostics summary
-    // ─────────────────────────────────────────────────────────────────────────
-    process.stdout.write('\n' + c(A.bold + A.yellow, `── DIAGNOSTICS  (${diagnostics.length}) ──`) + '\n\n');
-    if (diagnostics.length === 0) {
-        process.stdout.write(c(A.gray, '  (none)\n'));
-    }
-    for (const d of diagnostics) {
-        const [col, label] = d.severity === 0 ? [A.red, 'error  '] : [A.yellow, 'warning'];
-        const loc = c(A.gray, `L:${String(d.range.start.line + 1).padStart(4, '0')}:${String(d.range.start.character + 1).padStart(3, '0')}`);
-        process.stdout.write(`  ${loc}  ${c(col, `[${label}]`)}  ${d.message}\n`);
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Part 4 — Completion items test (dot-access on cs/cpp modules)
-    // ─────────────────────────────────────────────────────────────────────────
-    process.stdout.write('\n' + c(A.bold + A.yellow, '── COMPLETION TEST (dot-access) ──') + '\n\n');
-
-    // Find interesting dot-access positions: lines ending with <alias>.
-    const testPositions: Array<{ label: string; line: number; character: number }> = [];
-    for (let ln = 0; ln < (doc as unknown as MockTextDocument).lineCount; ln++) {
-        const text = (doc as unknown as MockTextDocument).lineAt(ln).text;
-        const m = text.match(/^(.+\.)(\s*)$/);
-        if (m && !text.trimStart().startsWith('#')) {
-            testPositions.push({ label: text.trimEnd(), line: ln, character: m[1].length });
-        }
-    }
-    // Also test known 2-level patterns (Alias.ClassName.)
-    for (let ln = 0; ln < (doc as unknown as MockTextDocument).lineCount; ln++) {
-        const text = (doc as unknown as MockTextDocument).lineAt(ln).text;
-        const m2 = text.match(/([A-Za-z_]\w*\.[A-Za-z_]\w*\.)/g);
-        if (m2) {
-            for (const seg of m2) {
-                testPositions.push({ label: text.trim(), line: ln, character: text.indexOf(seg) + seg.length });
-            }
-        }
-    }
-
-    for (const tp of testPositions) {
-        const items = await provideCompletionItems(doc, { line: tp.line, character: tp.character } as unknown as vscode.Position);
-        const status = items.length > 0 ? c(A.green, `✓ ${items.length} items`) : c(A.red, '✗ empty');
-        process.stdout.write(`  ${c(A.gray, `L:${String(tp.line + 1).padStart(4, '0')}`)}  ${c(A.bCyan, tp.label.padEnd(35))}  ${status}\n`);
-        for (const it of items.slice(0, 8)) {
-            const detail = (it.detail ?? '').toString().replace(/\n.*/s, '');
-            process.stdout.write(`      ${c(A.bYellow, String(it.label).padEnd(22))}  ${c(A.gray, detail)}\n`);
-        }
-        if (items.length > 8) process.stdout.write(`      ${c(A.gray, `… and ${items.length - 8} more`)}\n`);
-    }
-
-    process.stdout.write('\n' + sep + '\n\n');
+    console.log('\n' + c(A.gray, '═'.repeat(70)) + '\n');
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+main();

@@ -1,3 +1,14 @@
+[workspace]
+# `crates/arrow-frontend` は wasm 用にフロントエンドを切り出した別クレート
+# （ルートは pyo3 / libloading に依存していて wasm32 に載らないため）。
+#
+# ⚠ **メンバーではなく exclude にすること。** メンバーにするとルートの
+#    `[profile.release]` が全体に適用され、`arrow.exe` が `opt-level="z"` /
+#    `panic="abort"` でビルドされてしまう（＝速度ベンチの基準が静かに変わる）。
+#    除外しておけば arrow-frontend は自分の profile と target ディレクトリを持ち、
+#    ルート側のビルドは**一切影響を受けない**。
+exclude = ["crates/arrow-frontend"]
+
 [package]
 name = "arrow"
 version = "0.1.0"
@@ -23,6 +34,12 @@ tw_stats = []
 # `cargo build --release --features prof` でビルドし、`AR_PROF=1`（段のみ）/
 # `AR_PROF=ops`（段 + op 別サンプリング）で有効化する。
 prof = []
+
+# エディタ解析ビルド（`crates/arrow-frontend` 専用）。
+# import 解析をファイルシステムに触れない `parser/imports_editor.rs` に差し替え、
+# `parser/cs_assembly` を外す。**bin では決して有効にしない**（ここで宣言しているのは
+# 共有ソースの `#[cfg(feature = "editor")]` に対する unexpected_cfgs 警告を防ぐため）。
+editor = []
 
 [[bench]]
 name = "field_access"

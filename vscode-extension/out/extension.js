@@ -4,8 +4,8 @@
  *
  * Responsibilities:
  * - Initialize the extension on activation (`activate`)
- * - Register all language-feature providers (hover, inlay hints, completions, …)
- *   defined in `type_infer.ts`
+ * - Load the Arrow frontend (wasm) and register all language-feature providers
+ *   defined in `wasm_providers.ts`
  * - Implement the "Send to REPL" command and REPL terminal management
  * - Schedule debounced diagnostics on document open/change events
  */
@@ -13,8 +13,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.deactivate = exports.activate = void 0;
 const vscode = require("vscode");
 const path = require("path");
-const type_infer_1 = require("./type_infer");
-const analysis_1 = require("./analysis");
+const wasm_providers_1 = require("./wasm_providers");
+const frontend_1 = require("./frontend");
 // ===== REPL terminal =====
 const REPL_SENTINEL = '##REPL_EXEC##';
 let replTerminal;
@@ -87,9 +87,19 @@ function isArrowDocument(document) {
 }
 // ===== Activation =====
 function activate(context) {
-    (0, type_infer_1.initBuiltinStub)(path.join(context.extensionPath, 'builtins.ars'));
+    // 解析は wasm 版フロントエンド（= `cargo run` と同一のソース）が担う。
+    // 読み込めない環境では言語機能を諦める。旧正規表現実装へは**戻さない**:
+    // 二重実装を残すと「拡張だけ解釈がずれる」問題がそのまま生き延びるため。
+    if (!(0, frontend_1.loadFrontend)(context.extensionPath)) {
+        vscode.window.showErrorMessage(`Arrow: failed to load the language frontend — code intelligence is disabled. ` +
+            `(${(0, frontend_1.frontendLoadError)() ?? 'unknown error'})`);
+        return;
+    }
+    // 組み込み関数（print / len / …）も同じフロントエンドで解析して取り込む。
+    // 読めなくても言語機能は動く（組み込みが候補に出なくなるだけ）。
+    (0, wasm_providers_1.loadPrelude)(path.join(context.extensionPath, 'builtins.ars'));
     context.subscriptions.push(vscode.window.onDidCloseTerminal(t => { if (t === replTerminal)
-        replTerminal = undefined; }), vscode.languages.registerInlayHintsProvider(ARROW_SELECTOR, { provideInlayHints: type_infer_1.provideInlayHints }), vscode.languages.registerHoverProvider(ARROW_SELECTOR, { provideHover: type_infer_1.provideHover }), vscode.languages.registerDocumentSemanticTokensProvider(ARROW_SELECTOR, { provideDocumentSemanticTokens: type_infer_1.provideDocumentSemanticTokens }, type_infer_1.SEMANTIC_TOKENS_LEGEND), vscode.languages.registerCompletionItemProvider(ARROW_SELECTOR, { provideCompletionItems: type_infer_1.provideCompletionItems }, '.'), vscode.languages.registerDocumentSymbolProvider(ARROW_SELECTOR, { provideDocumentSymbols: type_infer_1.provideDocumentSymbols }), vscode.languages.registerSignatureHelpProvider(ARROW_SELECTOR, { provideSignatureHelp: type_infer_1.provideSignatureHelp }, '(', ','), vscode.languages.registerDefinitionProvider(ARROW_SELECTOR, { provideDefinition: type_infer_1.provideDefinition }));
+        replTerminal = undefined; }), vscode.languages.registerInlayHintsProvider(ARROW_SELECTOR, { provideInlayHints: wasm_providers_1.provideInlayHints }), vscode.languages.registerHoverProvider(ARROW_SELECTOR, { provideHover: wasm_providers_1.provideHover }), vscode.languages.registerDocumentSemanticTokensProvider(ARROW_SELECTOR, { provideDocumentSemanticTokens: wasm_providers_1.provideDocumentSemanticTokens }, wasm_providers_1.SEMANTIC_TOKENS_LEGEND), vscode.languages.registerCompletionItemProvider(ARROW_SELECTOR, { provideCompletionItems: wasm_providers_1.provideCompletionItems }, '.'), vscode.languages.registerDocumentSymbolProvider(ARROW_SELECTOR, { provideDocumentSymbols: wasm_providers_1.provideDocumentSymbols }), vscode.languages.registerSignatureHelpProvider(ARROW_SELECTOR, { provideSignatureHelp: wasm_providers_1.provideSignatureHelp }, '(', ','), vscode.languages.registerDefinitionProvider(ARROW_SELECTOR, { provideDefinition: wasm_providers_1.provideDefinition }));
     // ---- Send-to-REPL command ----
     context.subscriptions.push(vscode.commands.registerCommand('arrow.sendToRepl', () => {
         const editor = vscode.window.activeTextEditor;
@@ -131,10 +141,12 @@ function activate(context) {
             clearTimeout(existing);
         debounceMap.set(key, setTimeout(() => {
             debounceMap.delete(key);
-            (0, type_infer_1.provideDiagnostics)(document)
-                .then(diags => diagCollection.set(document.uri, diags))
-                .catch(_err => { });
-        }, 400));
+            // wasm 解析は 400 行のファイルで 1 ms 未満なので同期で足りる。
+            try {
+                diagCollection.set(document.uri, (0, wasm_providers_1.provideDiagnostics)(document));
+            }
+            catch { /* 解析に失敗しても拡張は生かす */ }
+        }, 200));
     }
     context.subscriptions.push(diagCollection, vscode.workspace.onDidOpenTextDocument(scheduleDiagnostics), vscode.workspace.onDidChangeTextDocument(e => scheduleDiagnostics(e.document)), vscode.workspace.onDidCloseTextDocument(doc => {
         diagCollection.delete(doc.uri);
@@ -144,7 +156,7 @@ function activate(context) {
             clearTimeout(t);
             debounceMap.delete(key);
         }
-        analysis_1.DocumentAnalysis.evict(doc.uri);
+        (0, wasm_providers_1.forgetDocument)(doc);
     }));
     vscode.workspace.textDocuments.forEach(scheduleDiagnostics);
 }

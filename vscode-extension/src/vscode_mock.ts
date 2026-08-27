@@ -233,7 +233,17 @@ export class SignatureHelp {
 }
 
 export class Location {
-    constructor(readonly uri: Uri, readonly range: Range) {}
+    readonly range: Range;
+    /**
+     * 実 VS Code の `Location` は `Range | Position` を受ける。`Position` を渡すと
+     * その位置の空レンジになる。モックがここを取り違えていると、`.range.start` が
+     * `undefined` になって debug_runner だけが落ちる（実際に落ちた）。
+     */
+    constructor(readonly uri: Uri, rangeOrPosition: Range | Position) {
+        this.range = rangeOrPosition instanceof Position
+            ? new Range(rangeOrPosition, rangeOrPosition)
+            : rangeOrPosition;
+    }
 }
 
 // ── Workspace / window / languages stubs ─────────────────────────────────────

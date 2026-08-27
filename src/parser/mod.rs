@@ -31,10 +31,26 @@ pub(crate) struct AliasEntry {
 }
 
 mod stmts;
+// import 解析は 2 実装ある。既定（バッチ実行）はパース時に実モジュールを読み込む
+// `imports/`。`editor` feature ではファイルシステム・プロセス・DLL に一切触れない
+// `imports_editor.rs` に差し替わる（VS Code 拡張の wasm ビルド用）。
+// ⚠ 両者は**同じ構文を受理**しなければならない。詳細は imports_editor.rs の doc。
+#[cfg(not(feature = "editor"))]
+mod imports;
+#[cfg(feature = "editor")]
+#[path = "imports_editor.rs"]
 mod imports;
 mod classes;
 mod types;
 mod exprs;
+// エディタ用の位置情報テーブル（`editor` feature 専用）。AST は変更せず、
+// パースの途中で「どの名前がどこにあるか」を控えるだけの副次構造。
+#[cfg(feature = "editor")]
+pub mod editor_index;
+mod editor_hooks;
+// .NET アセンブリの読み取り（`import[cs-dll]`）。`editor` では import 自体を
+// 構文解釈だけで済ませるので、この重量級モジュールごと外す。
+#[cfg(not(feature = "editor"))]
 pub(crate) mod cs_assembly;
 
 /// tl 言語の再帰降下パーサ。
@@ -68,14 +84,20 @@ pub struct Parser {
     /// Names declared with `protocol` — instantiation of these is a parse-time error.
     known_protocols: HashSet<String>,
     /// 現在パース中のファイルのディレクトリ（import の第一検索先）。
+    // `editor` ではモジュールを読み込まないので、以下 4 つは未使用になる。
+    // フィールドごと消さないのは、通常ビルドと `Parser::new` の形を揃えておくため。
+    #[cfg_attr(feature = "editor", allow(dead_code))]
     source_dir: PathBuf,
     /// メインエントリーファイルのディレクトリ（import のフォールバック検索先）。
     /// サブパーサにも変更せず引き継がれる。
+    #[cfg_attr(feature = "editor", allow(dead_code))]
     root_dir: PathBuf,
     /// モジュールキャッシュ: (lang, 解決済みパス) → 変換済み tl AST。
     /// パース時に同じモジュールを複数回読み込まないために使用する。
+    #[cfg_attr(feature = "editor", allow(dead_code))]
     module_cache: HashMap<(String, PathBuf), Vec<Stmt>>,
     /// 循環 import 検出用: 現在読み込み中のモジュールパスのセット。
+    #[cfg_attr(feature = "editor", allow(dead_code))]
     loading: HashSet<PathBuf>,
     /// AST 型解決層の node-id 採番カウンタ（タスク #16・段階(a)）。annotatable な Expr を
     /// 構築するたびに `next_node_id()` で採番する。
@@ -86,6 +108,10 @@ pub struct Parser {
     /// ある消費者は結果が変わらないが、FFI 境界検査のように注釈を信頼する消費者では
     /// **誤検知（正しい値を型不一致と報告）**になる。実際に再現したため共有へ変更した。
     node_counter: std::rc::Rc<std::cell::Cell<u32>>,
+    /// エディタ用の位置情報テーブル（`editor` feature 専用・[editor_index] 参照）。
+    /// 通常ビルドではフィールドごと存在しない。
+    #[cfg(feature = "editor")]
+    editor: editor_index::EditorIndex,
 }
 
 impl Parser {
@@ -150,6 +176,8 @@ impl Parser {
             module_cache: HashMap::new(),
             loading: HashSet::new(),
             node_counter: std::rc::Rc::new(std::cell::Cell::new(0)),
+            #[cfg(feature = "editor")]
+            editor: editor_index::EditorIndex::new(),
         }
     }
 
@@ -158,6 +186,10 @@ impl Parser {
     fn next_node_id(&mut self) -> u32 {
         let next = self.node_counter.get() + 1;
         self.node_counter.set(next);
+        // `editor` のときだけ、この node-id が指す式の位置を控える。採番は式を読み終えた
+        // 直後に行われるので、直前に消費したトークンがその式の末尾を指す。
+        // `Expr::Ident` では末尾＝識別子そのものなので、hover の主用途にはこれで足りる。
+        self.note_node_span(next);
         next
     }
 

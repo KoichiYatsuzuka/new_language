@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $root   = Split-Path $MyInvocation.MyCommand.Path
 $vsix   = Join-Path $root "arrow-0.0.1.vsix"
@@ -25,6 +25,7 @@ $contentTypes = @'
   <Default Extension="png"          ContentType="image/png"/>
   <Default Extension="svg"          ContentType="image/svg+xml"/>
   <Default Extension="ars"          ContentType="text/plain"/>
+  <Default Extension="wasm"         ContentType="application/wasm"/>
 </Types>
 '@
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
@@ -92,6 +93,46 @@ Get-ChildItem "$root\out\*.js" | ForEach-Object {
 Get-ChildItem "$root\syntaxes\*.json" | ForEach-Object {
     Copy-Item $_.FullName "$tmp\extension\syntaxes\$($_.Name)"
 }
+# --- Arrow frontend (wasm) ---------------------------------------------
+# The real lexer/parser/type-checker (crates/arrow-frontend) compiled to wasm32.
+# Rust is needed to PRODUCE this file, never to run it: the .wasm ships inside
+# the VSIX like any other asset. It is architecture-independent, so one file
+# serves Windows / macOS / Linux on x64 and ARM alike -- unlike shipping
+# arrow.exe, which would need a separate build per platform.
+# Always ask cargo to rebuild. When nothing changed this costs ~0.1s, and it removes
+# the one failure mode this design really has: shipping a .wasm built from older Rust
+# sources than the interpreter, so the editor and `cargo run` disagree about the
+# grammar. cargo tracks the #[path]-included files in src/, so a new keyword added to
+# the lexer/parser/type-checker lands in the VSIX automatically.
+$frontendDir = Join-Path $root "..\crates\arrow-frontend"
+if (Get-Command cargo -ErrorAction SilentlyContinue) {
+    Write-Host "Building arrow-frontend (wasm32)..."
+    Push-Location $frontendDir
+    try {
+        # PS 5.1 trap: a native exe writing to stderr becomes a NativeCommandError,
+        # and the script-wide $ErrorActionPreference='Stop' turns that into a
+        # terminating error -- even when cargo exited 0. cargo prints its progress
+        # ("Finished `release` profile") on stderr, so this fired on every success.
+        # Relax the preference around the call and judge the result by $LASTEXITCODE.
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        cargo build --release --target wasm32-unknown-unknown 2>&1 | ForEach-Object { Write-Host "  $_" }
+        $buildExit = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($buildExit -ne 0) { throw "arrow-frontend wasm build failed (exit $buildExit)" }
+    } finally { Pop-Location }
+} else {
+    Write-Warning "cargo not found -- packaging the existing arrow_frontend.wasm without rebuilding."
+    Write-Warning "If src/lexer, src/parser or src/type_check changed, this VSIX will be STALE."
+}
+
+$wasmSrc = Join-Path $root "..\crates\arrow-frontend\target\wasm32-unknown-unknown\release\arrow_frontend.wasm"
+if (-not (Test-Path $wasmSrc)) {
+    throw "arrow_frontend.wasm not found. Build it with: cd crates/arrow-frontend; cargo build --release --target wasm32-unknown-unknown"
+}
+Copy-Item $wasmSrc "$tmp\extension\out\arrow_frontend.wasm"
+Write-Host ("Bundled arrow_frontend.wasm ({0} KB)" -f [Math]::Round((Get-Item $wasmSrc).Length/1KB, 1))
+
 Copy-Item "$root\builtins.ars"       "$tmp\extension\builtins.ars"
 Get-ChildItem "$root\icons\*.svg" | ForEach-Object {
     Copy-Item $_.FullName "$tmp\extension\icons\$($_.Name)"

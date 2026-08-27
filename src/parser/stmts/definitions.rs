@@ -1,4 +1,4 @@
-// stmts/definitions.rs — try / enum / new_type 定義の解析。
+﻿// stmts/definitions.rs — try / enum / new_type 定義の解析。
 
 use crate::ast::Resolution;
 use {
@@ -87,6 +87,8 @@ impl Parser {
     pub(crate) fn parse_enum_def(&mut self) -> Result<Stmt, String> {
         self.advance(); // `enum` を消費
         let name = self.expect_ident()?;
+        let decl_h = self.note_def(&name, crate::parser::editor_hooks::EditorKind::Enum);
+        self.note_signature(decl_h, &name);
         self.eat(&Token::Colon)?;
         self.eat(&Token::Newline)?;
         self.eat(&Token::Indent)?;
@@ -99,6 +101,7 @@ impl Parser {
                 break;
             }
             let variant_name = self.expect_ident()?;
+            self.note_enum_member(&variant_name, &name);
             let value = if matches!(self.current(), Token::Eq) {
                 self.advance(); // `=` を消費
                 Some(self.parse_expr()?)
@@ -141,6 +144,7 @@ impl Parser {
         let def_span = self.current_span();
         self.advance(); // `alias` を消費
         let name = self.expect_ident()?;
+        self.note_def(&name, crate::parser::editor_hooks::EditorKind::Alias);
         // 同一可視スコープでの再定義・シャドウは禁止（予期しない置換を避ける）。
         if self.aliases.contains_key(&name) {
             return Err(format!("alias `{name}` is already defined in this scope"));
@@ -199,8 +203,11 @@ impl Parser {
     pub(crate) fn parse_new_type_def(&mut self) -> Result<Stmt, String> {
         self.advance(); // `new_type` を消費
         let name = self.expect_ident()?;
+        let decl_h = self.note_def(&name, crate::parser::editor_hooks::EditorKind::NewType);
         self.eat(&Token::Colon)?;
         let original = self.parse_type_expr()?;
+        self.note_type_ann(decl_h, Some(&original));
+        self.note_signature(decl_h, &name);
         // 名前を登録して再代入を禁止する
         self.known_new_types.insert(name.clone());
         Ok(Stmt::NewTypeDef { name, original })

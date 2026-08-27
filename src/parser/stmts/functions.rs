@@ -1,4 +1,4 @@
-// stmts/functions.rs — 関数/ジェネレータ定義の解析: デコレータ / fn / gen / 抽象ボディ・return 検査。
+﻿// stmts/functions.rs — 関数/ジェネレータ定義の解析: デコレータ / fn / gen / 抽象ボディ・return 検査。
 
 use {
     crate::parser::Parser,
@@ -68,6 +68,8 @@ impl Parser {
     ) -> Result<Stmt, String> {
         self.advance(); // `fn` を消費
         let name = self.expect_ident()?;
+        // エディタ索引: 名前トークンの直後でなければ位置がずれる。
+        let decl_h = self.note_def(&name, crate::parser::editor_hooks::EditorKind::Function);
         // テンプレートパラメータ `[T: Trait, ...]` をパース（なければ空 Vec）
         let template_params = self.parse_template_params()?;
         // テンプレート関数は alias RHS の `base[Args]` をテンプレート具体化として解釈するため記録する。
@@ -108,6 +110,20 @@ impl Parser {
             None
         };
         self.eat(&Token::Colon)?;
+        // エディタ索引: シグネチャ文字列と仮引数名。`format!` は編集用ビルドだけで走る。
+        #[cfg(feature = "editor")]
+        {
+            let rendered = crate::parser::editor_hooks::render_fn_signature(
+                if is_static { "static fn" } else if is_class_method { "class_method fn" } else { "fn" },
+                &name,
+                &params,
+                return_type.as_deref(),
+            );
+            self.note_signature(decl_h, &rendered);
+            let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+            self.note_bases(decl_h, &names);
+        }
+        let body_scope = self.next_editor_scope_id();
         // 本体が `...` のみなら抽象メソッド（NEWLINE INDENT ELLIPSIS [NEWLINE] DEDENT）
         let (body, is_abstract) = if self.is_abstract_body() {
             self.advance(); // Newline
@@ -120,11 +136,21 @@ impl Parser {
             if *self.current() == Token::Dedent {
                 self.advance();
             }
+            // 本体が無くても仮引数のスコープは開閉する。開かないと控えた仮引数が
+            // `pending` に残り、**次に開いた別のスコープ**へ流れ込んでしまう。
+            self.open_editor_scope();
+            self.close_editor_scope();
             (vec![], true)
         } else {
             // 通常のブロックをパース
             (self.parse_block()?, false)
         };
+        if !is_abstract {
+            self.note_body_scope(decl_h, body_scope);
+        }
+        if let Some(doc) = crate::parser::editor_hooks::docstring_of(&body) {
+            self.note_doc(decl_h, doc);
+        }
         Ok(Stmt::FnDef {
             name,
             template_params,
@@ -154,6 +180,7 @@ impl Parser {
     pub(crate) fn parse_gen_def(&mut self) -> Result<Stmt, String> {
         self.advance(); // `gen` を消費
         let name = self.expect_ident()?;
+        let decl_h = self.note_def(&name, crate::parser::editor_hooks::EditorKind::Generator);
         // テンプレートパラメータをパース（なければ空 Vec）
         let template_params = self.parse_template_params()?;
         self.eat(&Token::LParen)?;
@@ -197,7 +224,21 @@ impl Parser {
             None
         };
         self.eat(&Token::Colon)?;
+        #[cfg(feature = "editor")]
+        {
+            let rendered = crate::parser::editor_hooks::render_fn_signature(
+                "gen", &name, &params, yield_type.as_deref(),
+            );
+            self.note_signature(decl_h, &rendered);
+            let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+            self.note_bases(decl_h, &names);
+        }
+        let body_scope = self.next_editor_scope_id();
         let body = self.parse_block()?;
+        self.note_body_scope(decl_h, body_scope);
+        if let Some(doc) = crate::parser::editor_hooks::docstring_of(&body) {
+            self.note_doc(decl_h, doc);
+        }
         // ジェネレータ本体に return 文が含まれていないか検証
         if Self::body_has_return(&body) {
             return Err(format!(

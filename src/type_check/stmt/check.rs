@@ -9,6 +9,21 @@ use {
     crate::type_check::TypeChecker,
 };
 
+/// この import 本体が「`editor` ビルドが読み込みを省略した結果の空」かどうか。
+///
+/// `editor` feature（VS Code 拡張の wasm ビルド）では `parser/imports_editor.rs` が
+/// import 文を構文解釈だけして `body: vec![]` を返す。型検査側はその空を
+/// 「メンバーが 0 個のモジュール」ではなく「**モジュールの中身が不明**」として扱う
+/// 必要がある。両者を取り違えると、未知メンバーが `Any` に落ちて
+/// エディタだけが偽陽性エラーを出す。
+///
+/// 通常ビルドでは常に `false` を返す（＝この分岐は消える）ので、
+/// バイナリの型検査結果は一切変わらない。
+#[inline]
+fn editor_stub_body(body: &[Stmt]) -> bool {
+    cfg!(feature = "editor") && body.is_empty()
+}
+
 impl TypeChecker {
     /// 文のスライスを順に型検査する。
     pub(crate) fn check_stmts(&mut self, stmts: &[Stmt]) {
@@ -309,7 +324,16 @@ impl TypeChecker {
                 let bind_name = alias
                     .clone()
                     .unwrap_or_else(|| module.last().unwrap().clone());
-                let ns_ty = if lang == "py" || lang == "py-int" {
+                let ns_ty = if editor_stub_body(body) {
+                    // `editor`（VS Code 拡張の wasm ビルド）は import 先を読み込まないので
+                    // body が空になる。ここで `PyNamespace([])` を束縛すると未知メンバが
+                    // `Any` になり、`d.Box.bump()` のような連鎖アクセスが
+                    // OperationOnAny エラー＝**エディタだけが出す偽陽性**になる
+                    // （examples/interop/py_decorators.ar で実際に発生した）。
+                    // `Unresolved` は attribute access の match で `_ => {}` に落ちるため
+                    // 「型は分からないがエラーでもない」を正しく表現できる。
+                    InferredType::Unresolved
+                } else if lang == "py" || lang == "py-int" {
                     InferredType::PyNamespace(member_types)
                 } else {
                     InferredType::Namespace(member_types)
@@ -323,10 +347,14 @@ impl TypeChecker {
                 let is_py = lang == "py" || lang == "py-int";
                 for (orig_name, alias) in names {
                     let bind_name = alias.clone().unwrap_or_else(|| orig_name.clone());
-                    let ty = member_types
-                        .get(orig_name.as_str())
-                        .cloned()
-                        .unwrap_or(if is_py { InferredType::Any } else { InferredType::Unresolved });
+                    let ty = member_types.get(orig_name.as_str()).cloned().unwrap_or(
+                        // `editor` の空 body では `Any` に落とさない（上の Stmt::Import と同じ理由）。
+                        if is_py && !editor_stub_body(body) {
+                            InferredType::Any
+                        } else {
+                            InferredType::Unresolved
+                        },
+                    );
                     self.declare(bind_name, ty, false);
                 }
             }

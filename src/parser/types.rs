@@ -1,4 +1,4 @@
-// types.rs — type annotation, template parameter, and function parameter parsing.
+﻿// types.rs — type annotation, template parameter, and function parameter parsing.
 
 use super::Parser;
 use crate::ast::{Param, TemplateParam};
@@ -130,6 +130,13 @@ impl Parser {
         } else {
             (self.expect_ident()?, false)
         };
+        // 名前トークンの位置。型注釈・デフォルト値を読むと `prev_pos()` がずれるので、
+        // ここで確保しておく（通常ビルドでは `note_param_at` が空関数なので捨てられる）。
+        let name_pos = self.prev_pos();
+
+        // エディタ索引: 位置は名前トークンの直後でしか正しく取れない。
+        // 仮引数は本体スコープが開く前に読まれるので `push_pending` 側へ入る。
+        let param_span_ok = !variadic;
 
         // 型アノテーション `: 型` があればパース（可変長は必須）
         let type_ann = if *self.current() == Token::Colon {
@@ -156,6 +163,10 @@ impl Parser {
         } else {
             None
         };
+
+        if param_span_ok {
+            self.note_param_at(&name, mutable, type_ann.as_deref(), name_pos);
+        }
 
         Ok(Param {
             name,

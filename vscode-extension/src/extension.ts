@@ -3,8 +3,8 @@
  *
  * Responsibilities:
  * - Initialize the extension on activation (`activate`)
- * - Register all language-feature providers (hover, inlay hints, completions, …)
- *   defined in `type_infer.ts`
+ * - Load the Arrow frontend (wasm) and register all language-feature providers
+ *   defined in `wasm_providers.ts`
  * - Implement the "Send to REPL" command and REPL terminal management
  * - Schedule debounced diagnostics on document open/change events
  */
@@ -21,9 +21,10 @@ import {
     provideSignatureHelp,
     provideDefinition,
     provideDiagnostics,
-    initBuiltinStub,
-} from './type_infer';
-import { DocumentAnalysis } from './analysis';
+    forgetDocument,
+    loadPrelude,
+} from './wasm_providers';
+import { loadFrontend, frontendLoadError } from './frontend';
 
 // ===== REPL terminal =====
 
@@ -108,7 +109,18 @@ function isArrowDocument(document: vscode.TextDocument): boolean {
 // ===== Activation =====
 
 export function activate(context: vscode.ExtensionContext) {
-    initBuiltinStub(path.join(context.extensionPath, 'builtins.ars'));
+    // 解析は wasm 版フロントエンド（= `cargo run` と同一のソース）が担う。
+    // 読み込めない環境では言語機能を諦める。旧正規表現実装へは**戻さない**:
+    // 二重実装を残すと「拡張だけ解釈がずれる」問題がそのまま生き延びるため。
+    if (!loadFrontend(context.extensionPath)) {
+        vscode.window.showErrorMessage(
+            `Arrow: failed to load the language frontend — code intelligence is disabled. ` +
+            `(${frontendLoadError() ?? 'unknown error'})`);
+        return;
+    }
+    // 組み込み関数（print / len / …）も同じフロントエンドで解析して取り込む。
+    // 読めなくても言語機能は動く（組み込みが候補に出なくなるだけ）。
+    loadPrelude(path.join(context.extensionPath, 'builtins.ars'));
 
     context.subscriptions.push(
         vscode.window.onDidCloseTerminal(t => { if (t === replTerminal) replTerminal = undefined; }),
@@ -187,10 +199,11 @@ export function activate(context: vscode.ExtensionContext) {
         if (existing) clearTimeout(existing);
         debounceMap.set(key, setTimeout(() => {
             debounceMap.delete(key);
-            provideDiagnostics(document)
-                .then(diags => diagCollection.set(document.uri, diags))
-                .catch(_err => { /* suppress unhandled rejection — extension stays alive */ });
-        }, 400));
+            // wasm 解析は 400 行のファイルで 1 ms 未満なので同期で足りる。
+            try {
+                diagCollection.set(document.uri, provideDiagnostics(document));
+            } catch { /* 解析に失敗しても拡張は生かす */ }
+        }, 200));
     }
 
     context.subscriptions.push(
@@ -202,7 +215,7 @@ export function activate(context: vscode.ExtensionContext) {
             const key = doc.uri.toString();
             const t = debounceMap.get(key);
             if (t) { clearTimeout(t); debounceMap.delete(key); }
-            DocumentAnalysis.evict(doc.uri);
+            forgetDocument(doc);
         })
     );
 

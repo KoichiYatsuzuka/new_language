@@ -1,4 +1,4 @@
-// classes.rs — class and trait definition parsing for the tl parser.
+﻿// classes.rs — class and trait definition parsing for the tl parser.
 
 use super::Parser;
 use crate::ast::{Accessibility, Expr, FieldKind, Param, Stmt, Resolution};
@@ -24,6 +24,7 @@ impl Parser {
     pub(super) fn parse_trait_def(&mut self) -> Result<Stmt, String> {
         self.advance(); // `trait` を消費
         let name = self.expect_ident()?;
+        let decl_h = self.note_def(&name, crate::parser::editor_hooks::EditorKind::Trait);
         // テンプレートパラメータをパース（`[T: Trait, ...]` 形式）
         let template_params = self.parse_template_params()?;
         // トレイトは継承不可
@@ -33,9 +34,17 @@ impl Parser {
             ));
         }
         self.eat(&Token::Colon)?;
+        self.note_signature(decl_h, &name);
         // Self 型が有効なスコープに入る
         self.class_or_trait_depth += 1;
+        let body_scope = self.next_editor_scope_id();
+        self.set_editor_container(&name);
         let body = self.parse_class_body(true)?;
+        self.clear_editor_container();
+        self.note_body_scope(decl_h, body_scope);
+        if let Some(doc) = crate::parser::editor_hooks::docstring_of(&body) {
+            self.note_doc(decl_h, doc);
+        }
         self.class_or_trait_depth -= 1;
 
         // 非仮想・仮想メソッドどちらも型アノテーションを必須とする
@@ -163,6 +172,7 @@ impl Parser {
     ) -> Result<Stmt, String> {
         self.advance(); // `class` を消費
         let name = self.expect_ident()?;
+        let decl_h = self.note_def(&name, crate::parser::editor_hooks::EditorKind::Class);
         // テンプレートパラメータをパース（`[T: Trait, ...]` 形式）
         let template_params = self.parse_template_params()?;
         // テンプレートクラスは alias RHS の `Base[Args]` をテンプレート具体化として解釈するため記録する。
@@ -198,9 +208,18 @@ impl Parser {
             }
         }
         self.eat(&Token::Colon)?;
+        self.note_bases(decl_h, &bases);
+        self.note_signature(decl_h, &name);
         // Self 型が有効なスコープに入る
         self.class_or_trait_depth += 1;
+        let body_scope = self.next_editor_scope_id();
+        self.set_editor_container(&name);
         let mut body = self.parse_class_body(false)?;
+        self.clear_editor_container();
+        self.note_body_scope(decl_h, body_scope);
+        if let Some(doc) = crate::parser::editor_hooks::docstring_of(&body) {
+            self.note_doc(decl_h, doc);
+        }
         self.class_or_trait_depth -= 1;
 
         // 仮想メソッドのオーバーライド検証とトレイト必須フィールドの収集
@@ -444,6 +463,8 @@ impl Parser {
     fn parse_class_body(&mut self, is_trait: bool) -> Result<Vec<Stmt>, String> {
         self.eat(&Token::Newline)?;
         self.eat(&Token::Indent)?;
+        // クラス本体はスコープ境界。フィールドとメソッドはここに属する。
+        let _editor_scope = self.open_editor_scope();
         let mut stmts = Vec::new();
         let mut current_access = Accessibility::Public;
         loop {
@@ -477,6 +498,8 @@ impl Parser {
                 }
                 _ => {}
             }
+            // エディタ索引はこの文が積んだ宣言を後から書き換えたいので、直前の件数を控える。
+            let decls_before = self.editor_decl_count();
             let mut stmt = self.parse_class_stmt()?;
             // apply current accessibility to fields and method definitions
             match &mut stmt {
@@ -485,11 +508,18 @@ impl Parser {
                 Stmt::GenDef { access, .. } => *access = current_access.clone(),
                 _ => {}
             }
+            // 同じ判断を索引側にも反映する（hover の "public mut x: int" 表示に使う）。
+            self.note_access(decls_before, match current_access {
+                Accessibility::Public => "public",
+                Accessibility::Private => "private",
+                Accessibility::Protected => "protected",
+            });
             stmts.push(stmt);
         }
         if *self.current() == Token::Dedent {
             self.advance();
         }
+        self.close_editor_scope();
         Ok(stmts)
     }
 
@@ -527,6 +557,7 @@ impl Parser {
                 };
                 self.advance();
                 let fname = self.expect_ident()?;
+                let field_h = self.note_field(&fname, keyword);
                 // 型アノテーションは必須
                 if *self.current() != Token::Colon {
                     return Err(format!(
@@ -535,6 +566,7 @@ impl Parser {
                 }
                 self.advance(); // `:` を消費
                 let type_ann = self.parse_type_expr()?;
+                self.note_type_ann(field_h, Some(&type_ann));
                 // `= デフォルト値` がある場合はパース
                 let default = if *self.current() == Token::Eq {
                     self.advance();
@@ -619,6 +651,7 @@ impl Parser {
     pub(super) fn parse_protocol_def(&mut self) -> Result<Stmt, String> {
         self.advance(); // `protocol` を消費
         let name = self.expect_ident()?;
+        let decl_h = self.note_def(&name, crate::parser::editor_hooks::EditorKind::Protocol);
         // プロトコルは継承不可
         if *self.current() == Token::LParen {
             return Err(format!(
@@ -626,8 +659,16 @@ impl Parser {
             ));
         }
         self.eat(&Token::Colon)?;
+        self.note_signature(decl_h, &name);
         self.class_or_trait_depth += 1;
+        let body_scope = self.next_editor_scope_id();
+        self.set_editor_container(&name);
         let body = self.parse_protocol_body(&name)?;
+        self.clear_editor_container();
+        self.note_body_scope(decl_h, body_scope);
+        if let Some(doc) = crate::parser::editor_hooks::docstring_of(&body) {
+            self.note_doc(decl_h, doc);
+        }
         self.class_or_trait_depth -= 1;
         // プロトコル名を登録してインスタンス化エラー検出に使用
         self.known_protocols.insert(name.clone());
@@ -641,6 +682,10 @@ impl Parser {
     fn parse_protocol_body(&mut self, proto_name: &str) -> Result<Vec<Stmt>, String> {
         self.eat(&Token::Newline)?;
         self.eat(&Token::Indent)?;
+        // プロトコル本体もスコープ境界。開かないとメソッドがトップレベルに見え、さらに
+        // 抽象メソッドの仮引数が**次に開いたスコープ**（＝直後のクラス本体）へ流れ込む。
+        // examples/classes/protocol.ar で実際に起きた。
+        let _editor_scope = self.open_editor_scope();
         let mut stmts = Vec::new();
         loop {
             while matches!(self.current(), Token::Newline | Token::Semicolon) {
@@ -710,6 +755,7 @@ impl Parser {
         if *self.current() == Token::Dedent {
             self.advance();
         }
+        self.close_editor_scope();
         Ok(stmts)
     }
 

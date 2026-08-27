@@ -2,156 +2,161 @@
 # Loaded by the VS Code extension to power hover, completion, and signature help.
 # Format: fn name(params) -> ReturnType:
 #             """Single-line docstring."""
-#             ...
+#             pass
+#
+# This file is parsed by the real Arrow parser (via the wasm frontend), so it must be
+# valid Arrow. In particular the body must be `pass`, not `...`: an `...` body is only
+# accepted when it is the *entire* body (an abstract method), so combining it with a
+# docstring is a syntax error.
 
 fn print(args: any, sep: str = " ", end: str = "\n") -> None:
     """Print values to stdout, separated by sep and followed by end."""
-    ...
+    pass
 
 fn len(x: any) -> int:
     """Return the number of items in a collection (list, str, tuple, dict, set)."""
-    ...
+    pass
 
 fn id(x: any) -> pointer:
     """Return the identity of an object as a pointer wrapping a uint value."""
-    ...
+    pass
 
 fn str(x: any) -> str:
     """Convert a value to its string representation."""
-    ...
+    pass
 
 fn int(x: any) -> int:
     """Convert a value to int (truncates floats, parses strings)."""
-    ...
+    pass
 
 fn uint(x: any) -> uint:
     """Convert a value to uint."""
-    ...
+    pass
 
 fn float(x: any) -> float:
     """Convert a value to float."""
-    ...
+    pass
 
 fn bool(x: any) -> bool:
     """Convert a value to bool."""
-    ...
+    pass
 
 fn ord(x: str) -> int:
     """Return the Unicode code point of a single character."""
-    ...
+    pass
 
 fn chr(x: int) -> str:
     """Return the character corresponding to a Unicode code point."""
-    ...
+    pass
 
 fn hex(x: int) -> str:
     """Return the hexadecimal string representation of an integer."""
-    ...
+    pass
 
 fn oct(x: int) -> str:
     """Return the octal string representation of an integer."""
-    ...
+    pass
 
 fn bin(x: int) -> str:
     """Return the binary string representation of an integer."""
-    ...
+    pass
 
 fn abs(x: any) -> any:
     """Return the absolute value of a number."""
-    ...
+    pass
 
 fn round(x: float, ndigits: int = 0) -> int:
     """Round a float to ndigits decimal places (default: nearest integer)."""
-    ...
+    pass
 
 fn hash(x: any) -> int:
     """Return the hash value of an object."""
-    ...
+    pass
 
 fn repr(x: any) -> str:
     """Return a developer-friendly string representation of an object."""
-    ...
+    pass
 
 fn input(prompt: str = "") -> str:
     """Read a line from stdin, optionally printing prompt first."""
-    ...
+    pass
 
 fn format(value: any, spec: str = "") -> str:
     """Format a value using an optional format specification string."""
-    ...
+    pass
 
 fn max(args: any) -> any:
     """Return the largest of the given values or items in a collection."""
-    ...
+    pass
 
 fn min(args: any) -> any:
     """Return the smallest of the given values or items in a collection."""
-    ...
+    pass
 
 fn sum(x: any, start: int = 0) -> any:
     """Return the sum of items in a collection, starting from start."""
-    ...
+    pass
 
 fn range(start: int, stop: int, step: int = 1) -> any:
     """Generate integers from start up to (not including) stop, incrementing by step."""
-    ...
+    pass
 
 fn enumerate(x: any, start: int = 0) -> any:
     """Yield (index, value) tuples for each element, starting index at start."""
-    ...
+    pass
 
 fn zip(a: any, b: any) -> any:
     """Yield tuples pairing elements of two or more iterables; stops at shortest."""
-    ...
+    pass
 
 fn sorted(x: any, key: any = None, reverse: bool = False) -> list:
     """Return a new sorted list from x."""
-    ...
+    pass
 
 fn reversed(x: any) -> any:
     """Return an iterator over x in reverse order."""
-    ...
+    pass
 
 fn isinstance(x: any, t: any) -> bool:
     """Return True if x is an instance of type t or a tuple of types."""
-    ...
+    pass
 
 fn callable(x: any) -> bool:
     """Return True if x appears callable (has __call__)."""
-    ...
+    pass
 
 fn hasattr(x: any, name: str) -> bool:
     """Return True if x has an attribute named name."""
-    ...
+    pass
 
 fn getattr(x: any, name: str, default: any = None) -> any:
     """Return the value of attribute name on x, or default if absent."""
-    ...
+    pass
 
 fn type(x: any) -> any:
     """Return the type of x."""
-    ...
+    pass
 
 fn path(value: str) -> path:
     """Construct a path value from a string."""
-    ...
+    pass
 
 fn open(p: path, mode: any, start: any = None, byte_mode: any = None) -> any:
     """Open a file and return a file handle."""
-    ...
+    pass
 
 fn close(f: any) -> None:
     """Close an open file handle."""
-    ...
+    pass
 
 fn set(x: any = None) -> set:
     """Construct a set from an iterable, or an empty set."""
-    ...
+    pass
 
 fn slice(begin: any, end: any, step: int = None) -> slice:
     """Construct a slice value with begin, end, and optional step."""
-    ...
+    pass
 
 fn exec(code: str) -> None:
     """Execute a string of Arrow code."""
-    ...
+    pass
