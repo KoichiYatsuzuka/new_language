@@ -1,0 +1,17 @@
+# py_set_error.ar — **集合内包**はセットリテラルとは別扱いで明示エラーになる（項目 22 / 17）。
+#
+# `{1, 2, 3}`（`py::Expr::Set`）は項目 22 で通るようになったが、
+# `{x * 2 for x in xs}` は `py::Expr::SetComp` という**別ノード**で、
+# 内包表記（項目 17: `for` 式 + `loop_yield` への脱糖）が要る。
+#
+# 取り違えると「セットは対応したはずなのに落ちる」と読めてしまうので、
+# 内包側だけ専用の文言にしてある。
+#
+# 期待されるエラー（ParseError・変換時）:
+#   set comprehension is not supported (set literals like `{1, 2}` are supported)
+#
+# ⇒ 項目 17 が入れば、この形は `set(<for 式>)` として通るようになる予定。
+
+import[py] test_modules.py_setcomp_error as m
+
+print("unreachable")

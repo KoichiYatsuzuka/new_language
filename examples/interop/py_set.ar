@@ -1,0 +1,60 @@
+# py_set.ar — `import[py]`（Python → Arrow 変換器）の **セットリテラル** 対応の検査（項目 22）。
+#
+# 対象は `convert_expr` の `py::Expr::Set` アーム（`src/python_converter/expressions.rs`）。
+# Arrow にも `Expr::Set` が実在するので、要素を順に変換して積むだけ。
+#
+# ⚠ **空セットは `set()`**（`{}` は空辞書）。これは Python と同じ規則なので、
+#   空セットが `py::Expr::Set` として来ることはない。
+# ⚠ **集合内包 `{x for x in xs}` は別ノード**（`SetComp`）で、内包表記（項目 17）の担当。
+#   取り違えやすいので専用のエラー文言にしてある（`py_set_error.ar` 参照）。
+#
+# ⚠⚠ **セットの repr 順は当てにしない**こと。CPython は文字列のハッシュを実行ごとに
+#   ランダム化するので、`{"a","b","c"}` の表示順は**実行のたびに変わる**。
+#   ここでは int / tuple のセットだけを表示し、str のセットはメンバシップで確認する。
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_set as m
+
+# ── ① リテラル / 重複除去 / 単要素 ──────────────────────────────────────
+print(m.literal())
+# {1, 2, 3}
+print(m.dedup())
+# {1, 2, 3}
+print(m.single())
+# {7}
+
+# ── ② 空セットは `set()` ────────────────────────────────────────────────
+print(m.empty())
+# set()
+
+# ── ③ メンバシップ / 長さ / 追加 ────────────────────────────────────────
+mut two = 2
+print(m.membership(two))
+# True
+mut nine = 9
+print(m.membership(nine))
+# False
+print(m.size())
+# 3
+print(m.add())
+# {1, 2, 3}
+
+# ── ④ 要素が式（重複はここでも潰れる） ──────────────────────────────────
+mut a = 1
+mut b = 3
+print(m.from_exprs(a, b))
+# {2, 6}
+
+# ── ⑤ 入れ子 / tuple 要素 ───────────────────────────────────────────────
+print(m.nested_in_list())
+# [{1, 2}, {3}]
+print(m.set_of_tuples())
+# {(1, 2), (3, 4)}
+
+# ── ⑥ str のセット（順不定なので `in` で確認） ──────────────────────────
+mut ka = "a"
+print(m.str_set_membership(ka))
+# True
+mut kz = "z"
+print(m.str_set_membership(kz))
+# False

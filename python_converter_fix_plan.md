@@ -157,7 +157,12 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 制約: `format_spec`（`{x:.2f}`）・`conversion`（`!r`/`!s`）付きは当面 Err（要追加検討）。
 - テスト: `f"hi {name} n={n}"`。
 
-#### [22] 集合リテラル `{1,2,3}` / set 内包
+#### [22] 集合リテラル `{1,2,3}` / set 内包 ✅ **リテラルのみ実装済（2026-08-28）**
+- リテラルは `py::Expr::Set` アームで要素を積むだけ。13 ケース CPython 一致。
+- set 内包は `SetComp`（別ノード）なので**未対応のまま**。取り違え防止に独立アームへ分けて
+  専用文言にした。項目 17 が入れば `set(<for 式>)` で通せる。
+- ⚠ セットの repr 順は当てにしない（CPython は str のハッシュを実行ごとにランダム化する）。
+- 例題: `examples/interop/py_set.ar` / `py_set_error.ar` + `test_modules/py_set.py` / `py_setcomp_error.py`。
 - 編集: `expressions.rs` `convert_expr`
   - `py::Expr::Set(s) => Expr::Set(s.elts.map(convert))`（現状 Err）。
   - `SetComp` は項目17 の for 式を `set(...)` で包む（後回し可）。
@@ -338,7 +343,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（~~3~~・~~4~~・~~12~~・~~13~~・~~11~~・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
+1. **フェーズ1**（~~3~~・~~4~~・~~12~~・~~13~~・~~11~~・18・19・~~22~~・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
    （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
 2'. ~~**INF-A → 項目2**（再代入）~~ — 2026-08-28 に完了。
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。

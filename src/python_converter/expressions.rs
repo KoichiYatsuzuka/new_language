@@ -187,10 +187,15 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             Ok(Expr::Dict(pairs))
         }
 
-        py::Expr::ListComp(_)
-        | py::Expr::SetComp(_)
-        | py::Expr::DictComp(_)
-        | py::Expr::GeneratorExp(_) => Err(format!("{filename}: comprehensions are not supported")),
+        // 集合内包は**セットリテラルとは別ノード**。リテラル `{1, 2}` は項目 22 で通るが、
+        // `{x for x in xs}` は内包表記（項目 17）が要る。取り違えやすいので専用の文言にする。
+        py::Expr::SetComp(_) => Err(format!(
+            "{filename}: set comprehension is not supported (set literals like `{{1, 2}}` are supported)"
+        )),
+
+        py::Expr::ListComp(_) | py::Expr::DictComp(_) | py::Expr::GeneratorExp(_) => {
+            Err(format!("{filename}: comprehensions are not supported"))
+        }
 
         py::Expr::Lambda(_) => Err(format!("{filename}: lambda is not supported")),
 
@@ -227,7 +232,14 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             "{filename}: starred expression is not supported in this context"
         )),
 
-        py::Expr::Set(_) => Err(format!("{filename}: set literal is not supported")),
+        // セットリテラル `{1, 2, 3}`。Arrow にも `Expr::Set` が実在する。
+        // ⚠ 空セットは Python でも `set()`（`{}` は空辞書）なので、ここには来ない。
+        // ⚠ 集合内包 `{x for x in xs}` は `SetComp` で別ノード。項目 17（内包表記）の担当。
+        py::Expr::Set(st) => {
+            let items: Result<Vec<Expr>, _> =
+                st.elts.iter().map(|e| convert_expr(e, filename)).collect();
+            Ok(Expr::Set(items?))
+        }
 
         // スライス `a[1:3]` / `a[::2]`。rustpython は 3 要素とも `Option` で持ち、
         // 省略（`a[:2]` の begin など）は `None` になる。Arrow の `Expr::Slice` も同じ形。

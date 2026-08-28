@@ -479,7 +479,7 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 - 難易度: 低。
 - 懸念: **値位置の `...`**（`x = ...`、`Callable[..., int]`、`a[...]`）は文（pass）にできない。値位置は現状どおり `Expr::None` を維持（**副作用が無いためユーザー承認済み・変更不要**）。文位置のみ pass 化。
 
-### [ ] 22. 集合リテラル `{1, 2, 3}` / set 内包
+### [x] 22. 集合リテラル `{1, 2, 3}` / set 内包【リテラルのみ実装済 2026-08-28】
 
 - 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `py::Expr::Set` アーム（＋ `SetComp`）
 - 現状: `set literal is not supported` エラー。
@@ -487,6 +487,28 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 - 方針: `py::Expr::Set { elts }` → `Expr::Set(elts.map(convert))`。set 内包は `set(<for式>)` 相当（ForExpr を set 化）。
 - 難易度: 低（リテラル）〜中（内包）。
 - 補足: ユーザーの「set 型が無いかも」という想定に反し、**Arrow は set をサポート**していた（実機確認済み）。
+
+**実装結果**: セットリテラルは `convert_expr` の `py::Expr::Set` アームで要素を順に変換して
+`Expr::Set` に積むだけ（13 ケース CPython 出力一致）。リテラル／重複除去／単要素／`set()` の空集合／
+メンバシップ／`len`／`add`／要素が式／リスト内の入れ子／tuple 要素／str 要素を確認。
+
+**⚠ 空セットは `set()`**（`{}` は空辞書）。これは Python の規則そのままなので、
+空セットが `py::Expr::Set` として来ることはない。
+
+**⚠ set 内包 `{x for x in xs}` は未対応のまま**（`SetComp` という**別ノード**で、
+内包表記＝項目 17 の担当）。「セットは対応したのに落ちる」と読み違えやすいので、
+`SetComp` を独立アームに分けて**専用の文言**にした:
+`set comprehension is not supported (set literals like `{1, 2}` are supported)`。
+項目 17 が入れば `set(<for 式>)` として通せる。
+
+**⚠ セットの repr 順は当てにしないこと**: CPython は文字列のハッシュを実行ごとに
+ランダム化するので `{"a","b","c"}` の表示順は**実行のたびに変わる**。例題では int / tuple の
+セットだけを表示し、str のセットはメンバシップで確認している。
+
+**例題**: [`examples/interop/py_set.ar`](examples/interop/py_set.ar) +
+[`test_modules/py_set.py`](examples/interop/test_modules/py_set.py) /
+[`examples/interop/py_set_error.ar`](examples/interop/py_set_error.ar) +
+[`test_modules/py_setcomp_error.py`](examples/interop/test_modules/py_setcomp_error.py)（set 内包）。
 
 ### [ ] 23. walrus 演算子 `:=`
 
