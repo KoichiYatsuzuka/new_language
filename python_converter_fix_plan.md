@@ -230,7 +230,15 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   （項目 6。bare `*` 単体は無害）。
 - 例題: `examples/interop/py_kwonly.ar` + `test_modules/py_kwonly.py`。エラー化なしのため `_error` 例は無し。
 
-#### [5] クラス変数 → `StaticMut`
+#### [5] クラス変数 → `StaticMut` ✅ **実装済（2026-08-28）**
+- `Assign` / `AnnAssign` 両アームで `FieldKind::Const` → `StaticMut` に変えるだけ。
+  以前は `C.count = ...` が `cannot assign to class variable (declared const)` で落ちていた。
+- ⚠ 残る意味差: `self.x = ...` は Python では**インスタンス属性の新設**だが、Arrow の
+  `static mut` は単一の記憶場所なので共有変数を書き換える。変換器では埋められないモデル差。
+- ⚠ 作業中に **クラス継承が黙って落ちる**ことを発見（未トリアージ／coverage 参照）。
+  Arrow はクラス継承を持たず（トレイトのみ）、変換器はパーサを通らないので
+  エラーも出ずメソッド・フィールドが引き継がれない。**Python では継承が非常に多いので優先度高**。
+- 例題: `examples/interop/py_classvar.ar` + `test_modules/py_classvar.py`。
 - 編集: `classes.rs` `convert_class`（クラス本体の `Assign`/`AnnAssign` アーム）
   - `FieldKind::Const` を `FieldKind::StaticMut` に変更（Python の可変クラス属性に合わせる）。`type_ann` は注釈があればそれ、無ければ `"Any"`。
 - テスト: `class C: count = 0` をインスタンス/クラス経由で読み書き。
@@ -351,7 +359,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（~~3~~・~~4~~・~~12~~・~~13~~・~~11~~・~~18~~・19・~~22~~・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
+1. **フェーズ1**（~~3~~・~~4~~・~~12~~・~~13~~・~~11~~・~~18~~・19・~~22~~・~~20~~・21・~~1~~・~~24~~・~~5~~）— 独立・低リスク。1件ずつ通して examples を積む。
    （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
 2'. ~~**INF-A → 項目2**（再代入）~~ — 2026-08-28 に完了。
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。

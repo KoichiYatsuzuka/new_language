@@ -214,7 +214,7 @@ Arrow の `Expr::Slice { begin, end, step }` も同じ形なのでそのまま�
 [`test_modules/py_slice.py`](examples/interop/test_modules/py_slice.py)。
 新しいエラー経路が無いため `_error` 例は無し。
 
-### [ ] 5. クラス変数 `class C: count = 0`
+### [x] 5. クラス変数 `class C: count = 0`【実装済 2026-08-28】
 
 - 対象: [`classes.rs` `convert_class()`](src/python_converter/classes.rs) のクラス本体 `Assign`/`AnnAssign` アーム
 - 現状: クラス直下の `x = value` を `FieldKind::Const`（不変・共有）に変換 → Python の可変クラス属性が const になる。`__` 始まりは無視。
@@ -225,6 +225,31 @@ Arrow の `Expr::Slice { begin, end, step }` も同じ形なのでそのまま�
 - 難易度: 低〜中。
 - 懸念: `type_ann` は `Field` で必須（`String`）。注釈なしは `"Any"` で埋める。定数意図の属性も `StaticMut` になる（Python 上は可変なので忠実）。
 - テスト: `class C: count = 0` 定義後にインスタンス/クラス経由で `count` を読み書き。
+
+**実装結果**: `convert_class` のクラス本体 `Assign` / `AnnAssign` 両アームで
+`FieldKind::Const` → `FieldKind::StaticMut` に変更しただけ（`type_ann` は注釈があればそれ、
+無ければ `"Any"`）。以前は `Counter.count = ...` が
+`TypeError: cannot assign to class variable 'count' (declared const)` で落ちていた。
+
+**確認（17 ケース中 15 件 CPython 一致）**: クラス経由の読み取り／ドライバ側からの書き換え／
+メソッド内からの読み書き（全インスタンス共有）／`self` 経由の読み取り／
+可変オブジェクト（`items = []`）の中身の共有／注釈つきクラス変数。
+
+**⚠ 残る意味差 1 件（2 ケース）— `self.x = ...` のインスタンス属性新設**:
+Python の `self.count = 99` は**クラス属性を隠すインスタンス属性を新設**するので
+`Counter.count` は変わらない。Arrow の `static mut` は**単一の記憶場所**でインスタンス側の層が
+無いため、共有変数そのものを書き換える。
+
+| | Arrow | CPython |
+|---|---|---|
+| `(self.count, Counter.count)` | `(99, 99)` | `(99, 102)` |
+| その後の `Counter.count` | `99` | `102` |
+
+⇒ **変換器では埋められないモデル差**（Arrow に「インスタンス属性の動的追加」が無い）。
+
+**例題**: [`examples/interop/py_classvar.ar`](examples/interop/py_classvar.ar) +
+[`test_modules/py_classvar.py`](examples/interop/test_modules/py_classvar.py)。
+新しいエラー経路が無いため `_error` 例は無し。
 
 ### [ ] 6. `*args`（可変長位置引数）
 
@@ -685,7 +710,21 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 
 以下は今回のフィードバックで言及されなかった、開いたままの「サイレント欠落／誤変換」項目。別途方針決定が必要:
 
-**現時点で ⚪ 未トリアージ項目はなし**（多重 for 内包は検証の結果 🟢17 に統合）。
+**⚪ 新規（2026-08-28・項目 5 の作業中に発見）: クラス継承が黙って落ちる**
+
+`class Sub(Base):` を変換すると `Stmt::ClassDef.bases = ["Base"]` は載るが、
+**Arrow はクラス継承をサポートしていない**（ネイティブ `.ar` では
+`ParseError: class \`Sub\` cannot inherit from \`Base\` (only traits are allowed as bases)`。
+Arrow の継承はトレイトのみ）。変換器はパーサを通らないのでこのエラーが出ず、
+基底クラスの**メソッドもフィールドも引き継がれない**まま実行される:
+
+- `s.hello()` → `AttributeError: 'Sub' has no method 'hello'`
+- 基底の `__init__` が動かないので `s.v` も無い（`'Sub' object has no attribute 'v'`）
+
+⇒ **サイレント欠落**（1 つ前の項目でいう「黙って壊れる」形）。方針決定が必要:
+①明示エラーにする（フェーズ 5 と同じ扱い）／②基底のメソッド・フィールドを
+**変換時に平坦化**して取り込む／③Arrow 側にクラス継承を入れる。
+⚠ **Python コードでクラス継承は非常に多い**ので、優先度は高い。
 
 分類済みの参照:
 - 🟢 対応予定: 三項式/`in`/`is`（11〜13）、複数代入/連鎖比較/内包表記(単一・多重for)/定数タプル/f-string（15〜19）、デコレータ/Ellipsis(文)/集合（20〜22）、walrus/bare`*`（23〜24）、`with`(no __exit__)/lambda/モジュール import（25〜27）、他（1〜10）

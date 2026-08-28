@@ -100,6 +100,7 @@ $knownDiff = @{
     'py_set'                         = 'py: python_converter が Rust 専用（項目22 で新設）'
     'py_set_error'                   = 'py: 同上。変換時エラーを出さず素通しする（項目22 で新設）'
     'py_tuple'                       = 'py: python_converter が Rust 専用（項目18 で新設）'
+    'py_classvar'                    = 'py: python_converter が Rust 専用（項目5 で新設）'
     'stale_arc_check'                = 'py: .arc を UTF-8 として読んで UnicodeDecodeError'
     'swd_nested_runner'              = 'py: バイナリを UTF-8 として読んで UnicodeDecodeError'
     'typed_abi'                      = 'py: バイナリを UTF-8 として読んで UnicodeDecodeError'

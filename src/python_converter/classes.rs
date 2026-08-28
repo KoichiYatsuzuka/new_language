@@ -68,7 +68,13 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                         if seen_fields.insert(fname.clone()) {
                             fields.push(Stmt::Field {
                                 name: fname,
-                                kind: FieldKind::Const,
+                                // ⚠ Python のクラス属性は**可変・全インスタンス共有**なので
+                                //   `StaticMut`（`static mut`）に対応する。`Const` にすると
+                                //   `Counter.count = ...` が
+                                //   `cannot assign to class variable (declared const)` で落ちる。
+                                //   定数として使いたい属性と静的に区別できないため、
+                                //   Python 側の意味に忠実な**可変**へ倒す。
+                                kind: FieldKind::StaticMut,
                                 type_ann: "Any".to_string(),
                                 default: Some(default),
                                 access: crate::ast::Accessibility::Public,
@@ -87,7 +93,8 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                             if seen_fields.insert(fname.clone()) {
                                 fields.push(Stmt::Field {
                                     name: fname,
-                                    kind: FieldKind::Const,
+                                    // 注釈つきクラス変数 `n: int = 5` も同じく共有可変。
+                                    kind: FieldKind::StaticMut,
                                     type_ann,
                                     default: Some(default),
                                     access: crate::ast::Accessibility::Public,
