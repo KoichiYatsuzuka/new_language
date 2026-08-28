@@ -1,0 +1,66 @@
+# py_comprehension.ar — `import[py]`（Python → Arrow 変換器）の **内包表記** 対応の検査（項目 17）。
+#
+# 対象は `convert_expr` の `ListComp` / `SetComp` アーム（`src/python_converter/expressions.rs`）。
+#
+# ⚠⚠ **脱糖は Arrow のネイティブ内包表記と同じ関数**（`ast::build_list_comprehension`）を通る。
+#   `[elt for x in it if c]` → `for` 式 + `loop_yield`:
+#
+#     ForExpr { target: x, iter: it, return_type: Some("list[Any]"), body: [
+#         If c: [ LoopYield(elt) ]
+#     ]}
+#
+#   ⇒ 「Arrow で書いた内包表記」（`examples/collections/comprehension.ar`）と
+#     「Python 由来の内包表記」で **AST が食い違うことはない**
+#     （`frontend_tests/parser_tests.rs::test_python_list_comprehension_matches_native_ast` で固定）。
+#
+# ⚠ 多重 `for` は先頭だけが `for` 式、2 つ目以降は本体の `Stmt::For`。
+#   `loop_yield` は入れ子を透過して最外の `for` 式へ積まれるので、結果は**平坦な 1 本のリスト**。
+# ⚠ **辞書内包・ジェネレータ式は未対応**（`py_comprehension_error.ar` を参照）。
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_comprehension as m
+
+mut xs = [1, 2, 3, 4]
+mut ys = [10, 20]
+
+# ── ① 基本形 ────────────────────────────────────────────────────────────
+print(m.simple(xs))
+# [2, 4, 6, 8]
+
+# ── ② フィルタ / フィルタ複数 ───────────────────────────────────────────
+print(m.filtered(xs))
+# [3, 4]
+print(m.two_ifs(xs))
+# [2, 3]
+
+# ── ③ 多重 for（結果は平坦） ────────────────────────────────────────────
+print(m.nested(xs, ys))
+# [10, 20, 20, 40, 30, 60, 40, 80]
+print(m.nested_filtered(xs, ys))
+# [60, 80]
+
+# ── ④ range / 任意の要素式 ──────────────────────────────────────────────
+mut n = 3
+print(m.over_range(n))
+# [0, 1, 2]
+print(m.expr_elt(xs))
+# ['1!', '2!', '3!', '4!']
+
+# ── ⑤ 内包表記の中に内包表記 ────────────────────────────────────────────
+print(m.comp_of_comp(xs, ys))
+# [[1, 2, 3, 4], [1, 2, 3, 4]]
+
+# ── ⑥ 式なので呼び出し引数にそのまま置ける ──────────────────────────────
+print(m.in_call(xs))
+# 3
+
+# ── ⑦ セット内包（`set(<for 式>)` に脱糖される） ────────────────────────
+#     ⚠ セットの表示順は当てにできないので、大きさとメンバシップで確認する。
+print(m.set_comp_size(xs))
+# 2
+mut zero = 0
+print(m.set_comp_has(xs, zero))
+# True
+mut nine = 9
+print(m.set_comp_has(xs, nine))
+# False

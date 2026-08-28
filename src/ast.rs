@@ -1122,3 +1122,78 @@ pub enum FieldKind {
     /// すべてのインスタンスで共有される可変セル。インスタンス経由・クラス名経由どちらでもアクセス・代入可能。
     StaticMut,
 }
+
+// ---------------------------------------------------------------------------
+// 内包表記（comprehension）の脱糖
+// ---------------------------------------------------------------------------
+
+/// 内包表記の 1 節（`for <target> in <iter> [if <cond>]...`）。
+///
+/// Arrow のネイティブ構文（`src/parser/exprs.rs`）と Python からの変換
+/// （`src/python_converter/expressions.rs`）の**両方**がこの形に落としてから
+/// [`build_list_comprehension`] を呼ぶ。⇒ **生成される AST が両者で必ず同一**になる。
+#[derive(Debug, Clone)]
+pub struct ComprehensionClause {
+    /// ループ変数名。⚠ タプル展開（`for k, v in ...`）は未対応なので単一名のみ。
+    pub target: String,
+    /// 反復対象の式。
+    pub iter: Expr,
+    /// この節に付くフィルタ条件（`if` は複数書ける。すべて満たすときだけ産出する）。
+    pub ifs: Vec<Expr>,
+}
+
+/// 内包表記を **`for` 式 + `loop_yield`** に脱糖する。
+///
+/// `[elt for a in xs if c1 for b in ys if c2]` は次の形になる:
+///
+/// ```text
+/// ForExpr { target: "a", iter: xs, return_type: Some("list[Any]"), body: [
+///     If c1: [
+///         For b in ys: [
+///             If c2: [ LoopYield(elt) ]
+///         ]
+///     ]
+/// ]}
+/// ```
+///
+/// - **先頭の節だけが `Expr::ForExpr`**（＝値を返す式）。2 つ目以降は本体の中の
+///   ふつうの `Stmt::For` になる。
+/// - `loop_yield` は入れ子の `for` 文 / `if` 文を**透過して最外の `for` 式へ積まれる**ので、
+///   多重ループでも結果は 1 本の平坦なリストになる（実機確認済み）。
+/// - 要素型は付けない（`list[Any]`）。Python の内包表記に型注釈は無く、
+///   `->list[T]` を付けると `loop_yield` の実行時型検査（#35）が走ってしまうため。
+///
+/// ⚠ `clauses` は**空であってはならない**（内包表記は最低 1 つの `for` を持つ）。
+///   空で呼ぶと `None` を返す。
+pub fn build_list_comprehension(elt: Expr, clauses: Vec<ComprehensionClause>) -> Option<Expr> {
+    if clauses.is_empty() {
+        return None;
+    }
+    // 最深部は `loop_yield <elt>`。そこから節を**逆順**に包んでいく。
+    let mut body: Vec<Stmt> = vec![Stmt::LoopYield(elt)];
+    let mut clauses = clauses;
+    while let Some(clause) = clauses.pop() {
+        // フィルタは書かれた順に外→内で効くので、包むときは逆順。
+        for cond in clause.ifs.into_iter().rev() {
+            body = vec![Stmt::If {
+                branches: vec![(cond, body)],
+                else_body: None,
+            }];
+        }
+        if clauses.is_empty() {
+            // 先頭の節だけが値を返す `for` 式になる。
+            return Some(Expr::ForExpr {
+                target: clause.target,
+                iter: Box::new(clause.iter),
+                body,
+                return_type: Some("list[Any]".to_string()),
+            });
+        }
+        body = vec![Stmt::For {
+            targets: vec![clause.target],
+            iter: clause.iter,
+            body,
+        }];
+    }
+    unreachable!("clauses was non-empty, so the loop returns from the `clauses.is_empty()` arm")
+}

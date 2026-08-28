@@ -98,13 +98,14 @@ $knownDiff = @{
     'py_membership'                  = 'py: python_converter が Rust 専用（項目12 で新設）'
     'py_identity'                    = 'py: python_converter が Rust 専用（項目13 で新設）'
     'py_set'                         = 'py: python_converter が Rust 専用（項目22 で新設）'
-    'py_set_error'                   = 'py: 同上。変換時エラーを出さず素通しする（項目22 で新設）'
     'py_tuple'                       = 'py: python_converter が Rust 専用（項目18 で新設）'
     'py_classvar'                    = 'py: python_converter が Rust 専用（項目5 で新設）'
     'py_inherit'                     = 'py: python_converter が Rust 専用（クラス継承サポートで新設）'
     'py_inherit_error'               = 'py: 同上。変換時エラーを出さず素通しする'
     'py_fstring'                     = 'py: python_converter が Rust 専用（項目19 で新設）'
     'py_fstring_error'               = 'py: 同上。変換時エラーを出さず素通しする（項目19 で新設）'
+    'py_comprehension'               = 'py: python_converter が Rust 専用（項目17 で新設）'
+    'py_comprehension_error'         = 'py: 同上。変換時エラーを出さず素通しする（項目17 で新設）'
     'stale_arc_check'                = 'py: .arc を UTF-8 として読んで UnicodeDecodeError'
     'swd_nested_runner'              = 'py: バイナリを UTF-8 として読んで UnicodeDecodeError'
     'typed_abi'                      = 'py: バイナリを UTF-8 として読んで UnicodeDecodeError'
@@ -112,6 +113,10 @@ $knownDiff = @{
     'block_return_typecheck'         = 'py: リスト内の str を引用符なしで表示する'
     'other_typing'                   = 'py: リスト repr と一部の型推論が違う'
     'result'                         = 'py: Result の repr が違う（Ok(5.0) と 5.0）'
+    # ⚠ 内包表記は Arrow の**新しいネイティブ構文**（2026-08-28）。impl_python は同期点が古く
+    #    パーサに入っていないので `ParseError: expected `RBRACKET`, got `FOR`` になる。
+    #    ⇒ ユーザー方針により impl_python は触らない（同期時の積み残し）。**実測して確認済み**。
+    'comprehension'                  = 'py: 内包表記の構文が未実装（Rust 側で 2026-08-28 に追加）'
     # (d) 同期以降（33ef765..）に Rust 側へ入った意味論の修正 — py が古い
     'copy_method'                    = 'py 古い: mut→let のコピー意味論（#15e で Rust を修正）'
     'mut_to_let_copy'                = 'py 古い: mut→let のコピー意味論（#15e）'

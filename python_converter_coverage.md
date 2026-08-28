@@ -424,7 +424,7 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 - 難易度: 低。
 - 懸念: `and` 展開で中間オペランド `b` が2回評価される（副作用のある中間式で差異）。→ **ユーザー方針によりこの副作用は許容**。
 
-### [ ] 17. 内包表記 → `for` 式 + `loop_yield`
+### [x] 17. 内包表記 → `for` 式 + `loop_yield`【実装済 2026-08-28 / list・set】
 
 - 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `ListComp`/`SetComp`/`DictComp`/`GeneratorExp` アーム
 - 現状: `comprehensions are not supported` エラー。
@@ -437,6 +437,50 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
   - set 内包は結果の set 化（`set(...)`、set は 🟢22 で対応）、dict 内包は dict 化（ペア構築→dict）が別途必要。
   - generator 式は遅延評価だが ForExpr は即時（list 構築）。async 内包（`async for`）は非対応。
   - → 単一 for / 多重 for のリスト内包を対応。set/dict/generator/async は追加検討 or 明示エラー。
+
+**実装結果**: 計画どおり `for` 式 + `loop_yield` に脱糖した。ただし**同時に Arrow 側の
+言語仕様としても内包表記を実装**した（ユーザー指示）。
+
+**★ 脱糖器は 1 箇所だけ**: [`ast::build_list_comprehension`](src/ast.rs)。
+Arrow のネイティブ構文（`parse_comprehension_tail`、[`src/parser/exprs.rs`](src/parser/exprs.rs)）と
+Python からの変換（`ListComp` / `SetComp` アーム）が**同じ関数**を通るので、
+生成される AST は必ず同一になる。
+`frontend_tests/parser_tests.rs::test_python_list_comprehension_matches_native_ast` で固定した。
+
+生成形（`[elt for a in xs if c1 for b in ys if c2]`）:
+
+```text
+ForExpr { target: "a", iter: xs, return_type: Some("list[Any]"), body: [
+    If c1: [ For b in ys: [ If c2: [ LoopYield(elt) ] ] ]
+]}
+```
+
+- **先頭の節だけが `Expr::ForExpr`**。2 つ目以降は本体の中のふつうの `Stmt::For`。
+- `loop_yield` は入れ子の `for` 文 / `if` 文を**透過して最外の `for` 式へ積まれる**ので、
+  多重ループでも結果は**平坦な 1 本のリスト**になる。
+- 要素型は付けない（`list[Any]`）。`->list[T]` にすると `loop_yield` の実行時型検査（#35）が
+  走ってしまい、内包表記だけ他と違う厳しさになるため。
+- **セット内包**は「リスト内包の結果を `set(...)` に通す」形に脱糖する（Arrow の `set()` は
+  リストを受け取れる）。⇒ **項目 22 で残していた set 内包の制限はこれで解消**した。
+
+**確認（12 ケース・すべて CPython と出力一致）**: 基本形／フィルタ／フィルタ複数／多重 `for`／
+多重 `for` + 各フィルタ／`range`／任意の要素式／内包表記の入れ子／呼び出し引数内／セット内包。
+
+**⚠ 未対応（どちらも明示エラー・FUTURE_FEATURE.md §4 (4) に方針を記録）**:
+- **辞書内包 `{k: v for ...}`** — `for` 式が作れるのはリストだけで、辞書には
+  「ペアのリストから dict を作る」手段が無い（`dict(pairs)` は `'dict' object is not callable`）。
+  ⇒ **先に `dict()` コンストラクタを用意するのが筋**。
+- **ジェネレータ式 `(v for v in xs)`** — **遅延評価**。リスト内包と同じ脱糖にすると先行評価になり、
+  無限ジェネレータや副作用の回数が変わる。「黙って別物にする」より明示エラーを選んだ。
+
+**例題**: Arrow ネイティブ = [`examples/collections/comprehension.ar`](examples/collections/comprehension.ar) /
+[`comprehension_error.ar`](examples/collections/comprehension_error.ar)、
+Python = [`examples/interop/py_comprehension.ar`](examples/interop/py_comprehension.ar) /
+[`py_comprehension_error.ar`](examples/interop/py_comprehension_error.ar)。
+
+**⚠ 項目 22 の `_error` 例題は削除した**: set 内包が通るようになり、専用のエラー文言が
+存在しなくなったため（`py_set_error.ar` / `py_setcomp_error.py`）。
+`compare_outputs.ps1` がこの陳腐化を検出した。
 
 ### [x] 18. 定数タプル【実装済 2026-08-28 / ただし現構成では到達しない経路】
 
@@ -570,11 +614,10 @@ f-string を多用する実在モジュールを読むうえで、これが現�
 **⚠ 空セットは `set()`**（`{}` は空辞書）。これは Python の規則そのままなので、
 空セットが `py::Expr::Set` として来ることはない。
 
-**⚠ set 内包 `{x for x in xs}` は未対応のまま**（`SetComp` という**別ノード**で、
-内包表記＝項目 17 の担当）。「セットは対応したのに落ちる」と読み違えやすいので、
-`SetComp` を独立アームに分けて**専用の文言**にした:
-`set comprehension is not supported (set literals like `{1, 2}` are supported)`。
-項目 17 が入れば `set(<for 式>)` として通せる。
+**set 内包 `{x for x in xs}` は項目 17 で解消済み**（2026-08-28）。
+本項目の時点では `SetComp` を独立アームに分けて専用のエラー文言にしていたが、
+項目 17 で `set(<for 式>)` への脱糖が入り**通るようになった**ため、その `_error` 例題は削除した。
+⇒ 集合内包の例題は [`examples/interop/py_comprehension.ar`](examples/interop/py_comprehension.ar) の ⑦。
 
 **⚠ セットの repr 順は当てにしないこと**: CPython は文字列のハッシュを実行ごとに
 ランダム化するので `{"a","b","c"}` の表示順は**実行のたびに変わる**。例題では int / tuple の

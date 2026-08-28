@@ -951,3 +951,97 @@
             stmts[1]
         );
     }
+    // -----------------------------------------------------------------------
+    // 内包表記 — Arrow ネイティブ構文と Python 変換が**同じ AST**になること
+    // -----------------------------------------------------------------------
+
+    /// 式文 1 本を取り出すヘルパー。
+    fn sole_expr(stmts: &[Stmt]) -> &Expr {
+        match &stmts[0] {
+            Stmt::Expr(e) => e,
+            other => panic!("expected an expression statement, got: {other:?}"),
+        }
+    }
+
+    /// 内包表記が `for` 式 + `loop_yield` に脱糖されていることを検証する。
+    ///
+    /// 期待する形（`[v * 2 for v in xs if v > 1]`）:
+    /// `ForExpr { target: "v", return_type: Some("list[Any]"),
+    ///            body: [If { branches: [(cond, [LoopYield(elt)])], else_body: None }] }`
+    fn assert_desugared_comprehension(e: &Expr) {
+        let Expr::ForExpr {
+            target,
+            body,
+            return_type,
+            ..
+        } = e
+        else {
+            panic!("expected Expr::ForExpr, got: {e:?}");
+        };
+        assert_eq!(target, "v");
+        // ⚠ 要素型は付けない。`->list[T]` にすると loop_yield の実行時型検査が走ってしまう。
+        assert_eq!(return_type.as_deref(), Some("list[Any]"));
+        assert_eq!(body.len(), 1, "body: {body:?}");
+        let Stmt::If {
+            branches,
+            else_body,
+        } = &body[0]
+        else {
+            panic!("expected the filter to become Stmt::If, got: {:?}", body[0]);
+        };
+        assert!(else_body.is_none());
+        assert_eq!(branches.len(), 1);
+        assert!(
+            matches!(branches[0].1.as_slice(), [Stmt::LoopYield(_)]),
+            "expected the element to become Stmt::LoopYield, got: {:?}",
+            branches[0].1
+        );
+    }
+
+    /// Arrow のネイティブ内包表記が `for` 式 + `loop_yield` に脱糖される。
+    #[test]
+    fn test_list_comprehension_desugars_to_for_expr() {
+        let stmts = parse("[v * 2 for v in xs if v > 1]\n");
+        assert_desugared_comprehension(sole_expr(&stmts));
+    }
+
+    /// ★ Python から変換した内包表記が**ネイティブ構文と同じ AST**になる。
+    ///
+    /// 両者は `ast::build_list_comprehension` という**同じ脱糖関数**を通す。
+    /// ここが崩れると「Arrow で書いた内包表記と Python 由来の内包表記で挙動が違う」
+    /// という気付きにくい形になるので、構造を固定しておく。
+    #[test]
+    fn test_python_list_comprehension_matches_native_ast() {
+        let native = parse("[v * 2 for v in xs if v > 1]\n");
+        assert_desugared_comprehension(sole_expr(&native));
+
+        let converted = crate::python_converter::convert_python_source(
+            "[v * 2 for v in xs if v > 1]\n",
+            "<test>",
+        )
+        .expect("python conversion failed");
+        assert_desugared_comprehension(sole_expr(&converted));
+    }
+
+    /// 多重 `for` は「先頭だけが `for` 式、2 つ目以降は本体の `Stmt::For`」になる。
+    #[test]
+    fn test_nested_comprehension_shape() {
+        let stmts = parse("[a * b for a in xs for b in ys]\n");
+        let Expr::ForExpr { target, body, .. } = sole_expr(&stmts) else {
+            panic!("expected Expr::ForExpr");
+        };
+        assert_eq!(target, "a");
+        assert!(
+            matches!(body.as_slice(), [Stmt::For { targets, body: inner, .. }]
+                if targets == &["b".to_string()]
+                    && matches!(inner.as_slice(), [Stmt::LoopYield(_)])),
+            "got: {body:?}"
+        );
+    }
+
+    /// 辞書内包は明示エラー（Arrow にペアのリストから dict を作る手段が無い）。
+    #[test]
+    fn test_dict_comprehension_is_rejected() {
+        let err = parse_fails("{k: v for k in xs}\n");
+        assert!(err.contains("dict comprehension"), "got: {err}");
+    }

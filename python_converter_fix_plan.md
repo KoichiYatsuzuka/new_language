@@ -295,7 +295,17 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 注意: 中間オペランド2回評価は**許容**（ユーザー方針）。
 - テスト: `1 < x < 10`。
 
-#### [17] 内包表記（単一 for / 多重 for / フィルタ）
+#### [17] 内包表記（単一 for / 多重 for / フィルタ）✅ **実装済（2026-08-28・list / set）**
+- ⚠ **Arrow 側の言語仕様としても同時に実装**（ユーザー指示）。ネイティブ構文
+  `[elt for x in it if c]` / `{elt for ...}` をパース時に脱糖する。
+- ★ **脱糖器は `ast::build_list_comprehension` の 1 箇所**。ネイティブ構文
+  （`parser/exprs.rs` の `parse_comprehension_tail`）と Python 変換が同じ関数を通るので
+  **AST が必ず一致**する（`parser_tests.rs::test_python_list_comprehension_matches_native_ast`）。
+- set 内包は `set(<リスト内包>)` に脱糖 ⇒ **項目 22 の制限を解消**（その `_error` 例題は削除）。
+- ⚠ 辞書内包・ジェネレータ式は明示エラー。方針は `FUTURE_FEATURE.md` §4 (4)。
+- ⚠ impl_python は**触らない**方針のため `comprehension.ar` を knownDiff に登録（実測確認済み）。
+- 例題: `examples/collections/comprehension.ar` / `comprehension_error.ar` /
+  `examples/interop/py_comprehension.ar` / `py_comprehension_error.ar`。
 - 編集: `expressions.rs` `ListComp` アーム
   - `[elt for x in it if c ...]` → 先頭 generator を外側 `Expr::ForExpr{ target, iter, body, return_type:Some("list[Any]") }`、2つ目以降 generator を body 内の入れ子 `Stmt::For`、各 `ifs` を `Stmt::If` ラップ、`elt` を最深部の `Stmt::LoopYield`。
 - 根拠: `loop_yield` は入れ子 for 文/if 文を透過して最外 for 式へ積まれフラット化（実機確認: 2重/3重/フィルタ）。

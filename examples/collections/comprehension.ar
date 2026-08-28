@@ -1,0 +1,72 @@
+# comprehension.ar — **内包表記**（Arrow ネイティブ構文）。
+#
+# `[elt for x in iter if cond]` は**糖衣**で、パース時に **`for` 式 + `loop_yield`** に脱糖される。
+# つまり次の 2 つは**同じ AST** になる:
+#
+#   [v * 2 for v in xs]
+#
+#   for v in xs -> list[Any]:
+#       loop_yield v * 2
+#
+# ⚠⚠ 脱糖器は `ast::build_list_comprehension` の 1 箇所だけ。
+#   **`import[py]` の Python 内包表記も同じ関数を通る**ので、「Arrow で書いた内包表記」と
+#   「Python 由来の内包表記」で AST が食い違うことはない
+#   （`frontend_tests/parser_tests.rs::test_python_list_comprehension_matches_native_ast` で固定）。
+#
+# ⚠ 要素型は付けない（`list[Any]`）。`->list[T]` にすると `loop_yield` の実行時型検査（#35）が
+#   走ってしまい、内包表記だけ他と違う厳しさになるため。
+# ⚠ **辞書内包 `{k: v for ...}` は未対応**（明示エラー）。`comprehension_error.ar` を参照。
+
+mut xs = [1, 2, 3, 4]
+mut ys = [10, 20]
+
+# ── ① 基本形 ────────────────────────────────────────────────────────────
+print([v * 2 for v in xs])
+# [2, 4, 6, 8]
+
+# ── ② フィルタ ──────────────────────────────────────────────────────────
+print([v for v in xs if v > 2])
+# [3, 4]
+
+# ── ③ フィルタは複数書ける（すべて満たすときだけ産出） ──────────────────
+print([v for v in xs if v > 1 if v < 4])
+# [2, 3]
+
+# ── ④ 多重 `for`（先頭だけが `for` 式。2 つ目以降は本体の `for` 文になる） ─
+#     `loop_yield` は入れ子の `for` 文 / `if` 文を透過して最外の `for` 式へ積まれるので、
+#     結果は入れ子ではなく**平坦な 1 本のリスト**になる。
+print([a * b for a in xs for b in ys])
+# [10, 20, 20, 40, 30, 60, 40, 80]
+
+# ── ⑤ 多重 `for` + それぞれにフィルタ ───────────────────────────────────
+print([a * b for a in xs if a > 2 for b in ys if b > 10])
+# [60, 80]
+
+# ── ⑥ `range` など任意の反復可能オブジェクト ────────────────────────────
+print([v for v in range(3)])
+# [0, 1, 2]
+
+# ── ⑦ 要素は任意の式 ────────────────────────────────────────────────────
+print([str(v) + "!" for v in xs])
+# ['1!', '2!', '3!', '4!']
+
+# ── ⑧ 内包表記の中に内包表記（要素側がリストになる） ────────────────────
+print([[a for a in xs] for b in ys])
+# [[1, 2, 3, 4], [1, 2, 3, 4]]
+
+# ── ⑨ 式なので、そのまま束縛・引数・演算に使える ────────────────────────
+let evens = [v for v in xs if v % 2 == 0]
+print(evens)
+# [2, 4]
+print(len([v for v in xs if v > 1]))
+# 3
+
+# ── ⑩ セット内包（`{...}`）— リスト内包の結果を `set(...)` に通す形に脱糖される ─
+mut s = {v % 2 for v in xs}
+print(len(s))
+# 2
+print(0 in s)
+# True
+print(1 in s)
+# True
+# ⚠ セットの表示順は当てにしないこと（要素の入り方に依存する）。ここでは len と `in` で確認する。

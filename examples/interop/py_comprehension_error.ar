@@ -1,0 +1,31 @@
+# py_comprehension_error.ar — 内包表記のうち**変換できない形**（項目 17）。
+#
+# リスト内包・セット内包は対応済み（`py_comprehension.ar`）。ここで固定するのは残り 2 つ。
+#
+# ⚠ 変換時（パース時）のエラーなので 1 ファイルにつき 1 つしか踏めない。
+#   もう一方を試すときは import 行を入れ替えること。
+#
+# 期待されるエラー（ParseError・変換時）:
+#
+#   ① 辞書内包 `{k: v for k in ks}`（本ファイルが踏む形）
+#      dict comprehension is not supported (list and set comprehensions are)
+#      ⇒ 内包表記は「`for` 式 + `loop_yield`」に脱糖する設計で、`for` 式が作れるのは**リスト**だけ。
+#        セット内包は結果を `set(...)` に通せば済むが、辞書には「ペアのリストから dict を作る」
+#        手段が無い（`dict(pairs)` は `'dict' object is not callable`）。
+#        ⇒ 先に `dict()` コンストラクタを用意するのが筋。方針は
+#          `implementation_logs/FUTURE_FEATURE.md` §4 (4)。
+#
+#   ② ジェネレータ式 `(v for v in xs)`
+#      generator expression is not supported (it is lazy; use a list comprehension `[...]` instead)
+#      ⇒ ジェネレータ式は**遅延評価**。リスト内包と同じ脱糖にすると先行評価になり、
+#        無限ジェネレータが止まらなくなったり副作用の回数が変わったりする。
+#        「黙って別物にする」より明示エラーを選んだ。
+#
+# ⚠ ネイティブ `.ar` 側の辞書内包エラーは `examples/collections/comprehension_error.ar` で固定。
+
+import[py] test_modules.py_dictcomp_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_genexp_error as m
+
+print("unreachable")

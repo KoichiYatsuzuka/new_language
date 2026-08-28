@@ -875,7 +875,15 @@ impl Parser {
         self.advance(); // consume `[`
         let mut items = Vec::new();
         while *self.current() != Token::RBracket && *self.current() != Token::Eof {
-            items.push(self.parse_expr()?);
+            let item = self.parse_expr()?;
+            // ★ 最初の要素の直後が `for` なら**リスト内包表記**。
+            //   `[elt for x in xs if c]` を `for` 式 + `loop_yield` に脱糖する
+            //   （脱糖器は `ast::build_list_comprehension`。Python からの変換と**同じ関数**を通す）。
+            if items.is_empty() && *self.current() == Token::For {
+                let comp = self.parse_comprehension_tail(item, &Token::RBracket, "list")?;
+                return Ok(comp);
+            }
+            items.push(item);
             if *self.current() == Token::Comma {
                 self.advance();
             } else {
@@ -884,6 +892,63 @@ impl Parser {
         }
         self.eat(&Token::RBracket)?;
         Ok(Expr::List(items))
+    }
+
+    /// 内包表記の `for` 以降をパースして、`for` 式 + `loop_yield` へ脱糖した式を返す。
+    ///
+    /// 呼び出し時点で「要素式」は読み終わっていて、現在トークンが `for` であること。
+    /// `close` は閉じ括弧（`]` か `}`）。`kind` は `"list"` / `"set"` でエラー文言と
+    /// 最終的な包み方を切り替える。
+    ///
+    /// 文法: `<elt> for <name> in <expr> [if <expr>]... [for <name> in <expr> [if <expr>]...]... <close>`
+    ///
+    /// ⚠ `for x in <iter>` の `<iter>` を `parse_expr` で読んでも、続く `if` / `for` は
+    ///   **中置演算子ではない**ので飲み込まれない（`if` は前置位置でのみ式になる）。
+    /// ⚠ タプル展開（`for k, v in ...`）は未対応。`Stmt::For` 側と同じ制限。
+    fn parse_comprehension_tail(
+        &mut self,
+        elt: Expr,
+        close: &Token,
+        kind: &str,
+    ) -> Result<Expr, String> {
+        let mut clauses: Vec<crate::ast::ComprehensionClause> = Vec::new();
+        while *self.current() == Token::For {
+            self.advance(); // consume `for`
+            let target = self.expect_ident()?;
+            if *self.current() == Token::Comma {
+                return Err(format!(
+                    "ParseError: tuple unpacking in a {kind} comprehension target is not supported"
+                ));
+            }
+            self.eat(&Token::In)?;
+            let iter = self.parse_expr()?;
+            let mut ifs = Vec::new();
+            while *self.current() == Token::If {
+                self.advance(); // consume `if`
+                ifs.push(self.parse_expr()?);
+            }
+            clauses.push(crate::ast::ComprehensionClause { target, iter, ifs });
+        }
+        self.eat(close)?;
+        let list_expr = crate::ast::build_list_comprehension(elt, clauses).ok_or_else(|| {
+            format!("ParseError: {kind} comprehension needs at least one `for` clause")
+        })?;
+        if kind == "set" {
+            // セット内包は「リスト内包の結果を `set(...)` に通す」形にする
+            // （Arrow の `set()` はリストを受け取れる）。
+            return Ok(Expr::Call {
+                func: Box::new(Expr::Ident {
+                    name: "set".to_string(),
+                    node_id: self.next_node_id(),
+                    res: crate::ast::Resolution::Unresolved,
+                }),
+                args: vec![crate::ast::CallArg::Positional(list_expr)],
+                span: Span::unknown(),
+                cache: Default::default(),
+                node_id: self.next_node_id(),
+            });
+        }
+        Ok(list_expr)
     }
 
     /// `{...}` をパースして辞書またはセットリテラルを返す。
@@ -906,10 +971,23 @@ impl Parser {
         }
         // Parse first expression to determine dict vs set
         let first = self.parse_expr()?;
+        // ★ 最初の要素の直後が `for` なら**セット内包表記**。
+        if *self.current() == Token::For {
+            return self.parse_comprehension_tail(first, &Token::RBrace, "set");
+        }
         if *self.current() == Token::Colon {
             // Dict path
             self.advance(); // consume `:`
             let val = self.parse_expr()?;
+            // ⚠ **辞書内包は未対応**（Arrow に「ペアのリストから dict を作る」手段が無い。
+            //   `dict(pairs)` は呼べない）。黙って落とさず明示エラーにする。
+            //   将来の方針は implementation_logs/FUTURE_FEATURE.md を参照。
+            if *self.current() == Token::For {
+                return Err(
+                    "ParseError: dict comprehension is not supported (list and set comprehensions are)"
+                        .to_string(),
+                );
+            }
             let mut pairs = vec![(first, val)];
             while *self.current() == Token::Comma {
                 self.advance();

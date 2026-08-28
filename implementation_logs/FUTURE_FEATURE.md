@@ -223,6 +223,43 @@
   例題 [`examples/interop/py_fstring_error.ar`](../examples/interop/py_fstring_error.ar)
   （エラーになる形を固定してある）／`desugar_fstring`（`src/parser/exprs.rs`）。
 
+## (4) 辞書内包 `{k: v for ...}` とジェネレータ式
+
+内包表記（`[elt for x in it if c]` / `{elt for ...}`）は **Arrow ネイティブ構文・`import[py]` の
+両方で対応済み**（`for` 式 + `loop_yield` に脱糖。脱糖器は `ast::build_list_comprehension` の 1 箇所）。
+残った 2 形は**どちらも明示エラー**にしてある。
+
+### (4-a) 辞書内包 `{k: v for k in ks}`
+
+- **内容**: 内包表記は「`for` 式 + `loop_yield`」に脱糖する設計で、`for` 式が作れるのは
+  **リスト**だけ。セット内包は結果を `set(...)` に通せば済むが、辞書には
+  **「ペアのリストから dict を作る」手段が無い**（`dict(pairs)` は
+  `TypeError: 'dict' object is not callable`）。
+- **前提**: **先に `dict()` コンストラクタ**（`dict([(k, v), ...])` / `dict()`）を用意すること。
+  それさえあれば脱糖は `dict([(k, v) for ...])` で済み、**内包表記側の変更は最小**。
+  ⇒ 順序は「①`dict()` を足す → ②辞書内包を `dict(<リスト内包>)` に脱糖」。
+- **留意点**:
+  - ⚠ `dict()` は `list` / `set` と違って**キーの重複規則**（後勝ち）を決める必要がある。
+  - ⚠⚠ **タプルを dict のキーにすると黙って消える**既知バグ（§5 参照）がある。
+    ペアのリストから dict を作る経路はそこに触れるので、**先にこちらを直す**こと。
+  - ⚠ 実装したら `examples/collections/comprehension_error.ar` と
+    `examples/interop/py_comprehension_error.ar` の①が**通るようになる**ので、
+    例題とエラー文言も同時に直すこと。
+
+### (4-b) ジェネレータ式 `(v for v in xs)`
+
+- **内容**: Python のジェネレータ式は**遅延評価**。リスト内包と同じ脱糖にすると**先行評価**になり、
+  無限ジェネレータが止まらなくなる／副作用の回数が変わる。**黙って別物にしないため**に明示エラー。
+- **前提**: Arrow の `gen` / ジェネレータ（`Stmt::GenDef`・`Value::Generator`）を使った脱糖を設計すること。
+  「合成のジェネレータ関数を作ってその呼び出しに置き換える」形になるので、
+  **python_converter 項目 26（lambda lifting）と同じ「式から囲みスコープへ定義を注入する」機構
+  （INF-B）が前提**になる可能性が高い。
+- **留意点**:
+  - ⚠ 安易に「リスト内包と同じ」に倒さないこと。**現状の明示エラーのほうが安全**。
+  - ⚠ `sum(v for v in xs)` のような**呼び出し引数の裸ジェネレータ式**が実コードでは最頻出。
+    先にそこだけリスト内包へ倒す案もあるが、**副作用と無限列で挙動が変わる**ので仕様判断が要る。
+- **参照**: 例題 [`examples/interop/py_comprehension_error.ar`](../examples/interop/py_comprehension_error.ar)。
+
 ---
 
 # 5. タスク化していない既知の課題（**起票候補**）

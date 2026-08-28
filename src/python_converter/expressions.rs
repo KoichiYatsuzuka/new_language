@@ -13,6 +13,42 @@ use super::*;
 // 式変換
 // ---------------------------------------------------------------------------
 
+/// 内包表記の `for ... in ... if ...` 節を [`crate::ast::ComprehensionClause`] に変換する。
+///
+/// ⚠ タプル展開（`for k, v in d.items()`）は未対応。`Stmt::For` 側と同じ制限なので同じ形で拒否する。
+/// ⚠ `async for` は Arrow の非同期モデル（`mng <- async->T:`）と別体系なので明示エラー。
+fn convert_comprehension_clauses(
+    generators: &[py::Comprehension],
+    filename: &str,
+    kind: &str,
+) -> Result<Vec<crate::ast::ComprehensionClause>, String> {
+    let mut clauses = Vec::new();
+    for gen in generators {
+        if gen.is_async {
+            return Err(format!(
+                "{filename}: `async for` in a {kind} comprehension is not supported"
+            ));
+        }
+        let target = match &gen.target {
+            py::Expr::Name(n) => n.id.to_string(),
+            _ => {
+                return Err(format!(
+                    "{filename}: tuple unpacking in a {kind} comprehension target is not supported"
+                ))
+            }
+        };
+        let iter = convert_expr(&gen.iter, filename)?;
+        let ifs: Result<Vec<Expr>, String> =
+            gen.ifs.iter().map(|c| convert_expr(c, filename)).collect();
+        clauses.push(crate::ast::ComprehensionClause {
+            target,
+            iter,
+            ifs: ifs?,
+        });
+    }
+    Ok(clauses)
+}
+
 /// 式が引数なしの `super()` 呼び出しかどうかを判定する。
 ///
 /// ⚠ Python 2 形式の `super(Cls, self)` は**対象外**（引数ありなので false を返し、
@@ -255,15 +291,46 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             Ok(Expr::Dict(pairs))
         }
 
-        // 集合内包は**セットリテラルとは別ノード**。リテラル `{1, 2}` は項目 22 で通るが、
-        // `{x for x in xs}` は内包表記（項目 17）が要る。取り違えやすいので専用の文言にする。
-        py::Expr::SetComp(_) => Err(format!(
-            "{filename}: set comprehension is not supported (set literals like `{{1, 2}}` are supported)"
+        // リスト内包表記 → `for` 式 + `loop_yield`。
+        // ⚠ 脱糖は `ast::build_list_comprehension` に集約してある。**Arrow のネイティブ構文
+        //   （`parse_comprehension_tail`）と同じ関数**を通すので、生成される AST は必ず同一。
+        py::Expr::ListComp(lc) => {
+            let elt = convert_expr(&lc.elt, filename)?;
+            let clauses = convert_comprehension_clauses(&lc.generators, filename, "list")?;
+            crate::ast::build_list_comprehension(elt, clauses)
+                .ok_or_else(|| format!("{filename}: list comprehension needs at least one `for` clause"))
+        }
+
+        // 集合内包 → リスト内包の結果を `set(...)` に通す（Arrow の `set()` はリストを受け取れる）。
+        py::Expr::SetComp(sc) => {
+            let elt = convert_expr(&sc.elt, filename)?;
+            let clauses = convert_comprehension_clauses(&sc.generators, filename, "set")?;
+            let list_expr = crate::ast::build_list_comprehension(elt, clauses)
+                .ok_or_else(|| format!("{filename}: set comprehension needs at least one `for` clause"))?;
+            Ok(Expr::Call {
+                func: Box::new(Expr::Ident {
+                    name: "set".to_string(),
+                    node_id: 0,
+                    res: Resolution::Unresolved,
+                }),
+                args: vec![CallArg::Positional(list_expr)],
+                span: make_span(filename),
+                cache: Default::default(),
+                node_id: 0, // #16: py-converter は未採番
+            })
+        }
+
+        // ⚠ 辞書内包は未対応。Arrow に「ペアのリストから dict を作る」手段が無い
+        //   （`dict(pairs)` は `'dict' object is not callable`）。
+        py::Expr::DictComp(_) => Err(format!(
+            "{filename}: dict comprehension is not supported (list and set comprehensions are)"
         )),
 
-        py::Expr::ListComp(_) | py::Expr::DictComp(_) | py::Expr::GeneratorExp(_) => {
-            Err(format!("{filename}: comprehensions are not supported"))
-        }
+        // ⚠ ジェネレータ式は**遅延評価**。リスト内包と同じ脱糖にすると先行評価になり、
+        //   無限ジェネレータや副作用の回数が変わる。黙って変えないため明示エラーにする。
+        py::Expr::GeneratorExp(_) => Err(format!(
+            "{filename}: generator expression is not supported (it is lazy; use a list comprehension `[...]` instead)"
+        )),
 
         py::Expr::Lambda(_) => Err(format!("{filename}: lambda is not supported")),
 
