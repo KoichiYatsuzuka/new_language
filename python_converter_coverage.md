@@ -306,7 +306,7 @@ Arrow の `if` 式は分岐本体が**文の列**なので、各腕を `BlockRet
 [`test_modules/py_ternary.py`](examples/interop/test_modules/py_ternary.py)。
 新しいエラー経路が無いため `_error` 例は無し（腕の式が未対応構文ならその構文自身のエラーが出る）。
 
-### [ ] 12. `in` / `not in`（メンバシップ）
+### [x] 12. `in` / `not in`（メンバシップ）【実装済 2026-08-28】
 
 - 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `py::Expr::Compare` 変換（`convert_cmpop` の `In`/`NotIn` アーム）
 - 現状: `'in' operator is not supported in expression context` エラー。
@@ -314,6 +314,16 @@ Arrow の `if` 式は分岐本体が**文の列**なので、各腕を `BlockRet
 - 変換方針: `CmpOp::In` → `Expr::BinOp{ op: In }`、`CmpOp::NotIn` → `Expr::BinOp{ op: NotIn }`。単一 BinOp で表現できる。
 - 難易度: 低。
 - 検証: ✔実機（`2 in [1,2,3]`→True、`9 not in [1,2,3]`→True）。
+
+**実装結果**: `convert_cmpop` で `CmpOp::In => BinOp::In` / `CmpOp::NotIn => BinOp::NotIn` を返すだけ。
+
+**⚠ コンテナごとの意味も Python と一致**（11 ケース CPython 出力一致）:
+list / tuple / set は**要素**、dict は**キー**、str は**部分文字列**。
+条件式・`and` との組み合わせ・ループ内フィルタも確認済み。
+
+**例題**: [`examples/interop/py_membership.ar`](examples/interop/py_membership.ar) +
+[`test_modules/py_membership.py`](examples/interop/test_modules/py_membership.py)。
+新しいエラー経路が無いため `_error` 例は無し。
 
 ### [ ] 13. `is` / `is not`（識別比較）— ★文法差異に注意★
 

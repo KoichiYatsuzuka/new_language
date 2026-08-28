@@ -289,16 +289,10 @@ pub(crate) fn convert_cmpop(op: &py::CmpOp, filename: &str) -> Result<BinOp, Str
         py::CmpOp::LtE => BinOp::LtEq,
         py::CmpOp::Gt => BinOp::Gt,
         py::CmpOp::GtE => BinOp::GtEq,
-        py::CmpOp::In => {
-            return Err(format!(
-                "{filename}: 'in' operator is not supported in expression context"
-            ))
-        }
-        py::CmpOp::NotIn => {
-            return Err(format!(
-                "{filename}: 'not in' operator is not supported in expression context"
-            ))
-        }
+        // メンバシップ。Arrow の `in` / `not in` は list / dict / str / tuple / set の
+        // どれにも効き、Python と同じ真偽を返す（実機確認済み）。
+        py::CmpOp::In => BinOp::In,
+        py::CmpOp::NotIn => BinOp::NotIn,
         py::CmpOp::Is => return Err(format!("{filename}: 'is' operator is not supported")),
         py::CmpOp::IsNot => return Err(format!("{filename}: 'is not' operator is not supported")),
     })

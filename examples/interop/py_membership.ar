@@ -1,0 +1,61 @@
+# py_membership.ar — `import[py]`（Python → Arrow 変換器）の **`in` / `not in`** 対応の検査（項目 12）。
+#
+# 対象は `convert_cmpop`（`src/python_converter/expressions.rs`）。
+# Arrow にも `BinOp::In` / `BinOp::NotIn` が実在するので、`CmpOp::In` / `CmpOp::NotIn` を
+# そこへ写すだけ（従来は「式コンテキストでは非対応」エラーだった）。
+#
+# ⚠ コンテナごとの意味も Python と一致する（実機確認済み）:
+#   list / tuple / set は**要素**、dict は**キー**、str は**部分文字列**。
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_membership as m
+
+mut xs = [1, 2, 3]
+mut two = 2
+mut nine = 9
+
+# ── ① list ──────────────────────────────────────────────────────────────
+print(m.in_list(two, xs))
+# True
+print(m.in_list(nine, xs))
+# False
+print(m.not_in_list(nine, xs))
+# True
+
+# ── ② dict はキーに対するメンバシップ ───────────────────────────────────
+mut d = {"a": 1}
+mut ka = "a"
+print(m.in_dict(ka, d))
+# True
+mut kz = "z"
+print(m.in_dict(kz, d))
+# False
+
+# ── ③ str は部分文字列 ──────────────────────────────────────────────────
+mut s = "hello"
+mut sub = "ell"
+print(m.in_str(sub, s))
+# True
+
+# ── ④ tuple / set ───────────────────────────────────────────────────────
+mut tup = (1, 2)
+mut one = 1
+print(m.in_tuple(one, tup))
+# True
+mut st = {1, 2, 3}
+print(m.in_set(two, st))
+# True
+
+# ── ⑤ 条件式としての利用 ────────────────────────────────────────────────
+print(m.guard(xs))
+# yes
+
+# ── ⑥ `and` と組み合わせる ──────────────────────────────────────────────
+mut ys = [9]
+print(m.combined(two, xs, ys))
+# True
+
+# ── ⑦ ループ内フィルタ（典型的な用途） ──────────────────────────────────
+mut banned = [2]
+print(m.filter_loop(xs, banned))
+# [1, 3]

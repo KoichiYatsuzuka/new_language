@@ -117,7 +117,10 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   - `py::Expr::Slice(_) => Err(...)` を、`Expr::Slice { begin: lower.map(convert→Box), end: upper.map(...), step: step.map(...) }` へ差し替え。
 - テスト: `xs[1:3]`, `xs[::2]`, `xs[:-1]`。
 
-#### [12] `in` / `not in`
+#### [12] `in` / `not in` ✅ **実装済（2026-08-28）**
+- `convert_cmpop` で 2 行返すだけ。コンテナごとの意味（list/tuple/set=要素、dict=キー、
+  str=部分文字列）も Python と一致。11 ケース CPython 一致。
+- 例題: `examples/interop/py_membership.ar` + `test_modules/py_membership.py`。
 - 編集: `expressions.rs` `convert_cmpop`（または `Compare` アーム）
   - `CmpOp::In => BinOp::In`、`CmpOp::NotIn => BinOp::NotIn` を返す（現状は Err）。
 - テスト: `t in xs`, `t not in xs`。
@@ -330,7 +333,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（~~3~~・~~4~~・12・13・~~11~~・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
+1. **フェーズ1**（~~3~~・~~4~~・~~12~~・13・~~11~~・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
    （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
 2'. ~~**INF-A → 項目2**（再代入）~~ — 2026-08-28 に完了。
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。
