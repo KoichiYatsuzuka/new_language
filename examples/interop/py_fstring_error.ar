@@ -1,0 +1,29 @@
+# py_fstring_error.ar — f-string のうち**変換できない形**が明示エラーになること（項目 19）。
+#
+# f-string 自体は対応済み（`py_fstring.ar`）。ここで固定するのは **Arrow 側に相当する
+# 機能が無い 2 つ**で、黙って落とさずその場でエラーにする。
+#
+# ⚠ 変換時（パース時）のエラーなので 1 ファイルにつき 1 つしか踏めない。
+#   もう一方を試すときは import 行を入れ替えること。
+#
+# 期待されるエラー（ParseError・変換時）:
+#
+#   ① 書式指定 `{x:.2f}`（本ファイルが踏む形）
+#      f-string format specifier (e.g. `{x:.2f}`) is not supported
+#      ⇒ Arrow に「値を書式付きで文字列化する」構文・組込が無い。
+#        `{x:>10}` / `{n:,}` / `{n:04d}` / `{n:x}` など**書式指定ミニ言語全般**が同じ扱い。
+#        将来の実装方針は `implementation_logs/FUTURE_FEATURE.md` §4 (3) に残してある。
+#
+#   ② 変換フラグ `!a`（ascii）
+#      f-string conversion `!a` is not supported (only `!s` and `!r`)
+#      ⇒ Arrow に `ascii()` 相当の組込が無い。`!s`（`str()`）と `!r`（`repr()`）は対応済み。
+#
+# ⚠⚠ モジュール単位変換なので、**書式指定を 1 箇所でも含む `.py` は import 全体が落ちる**。
+#   f-string を多用する実在モジュールを読むうえで、これが現状いちばん効く制約。
+
+import[py] test_modules.py_fstring_spec_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_fstring_ascii_error as m
+
+print("unreachable")

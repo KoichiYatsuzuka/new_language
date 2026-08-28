@@ -158,7 +158,13 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   - `Constant::Tuple(items) =>` 各要素を（`convert_constant` 相当で）`Expr` 化し `Expr::Tuple(...)` を返す（現状 Err）。
 - テスト: 定数タプルが出る文脈（デフォルト値等）。
 
-#### [19] f-string
+#### [19] f-string ✅ **実装済（2026-08-28・書式指定を除く）**
+- `desugar_fstring` と同形に脱糖（リテラル片 + `str(...)` を左結合 `+` で連結）。14 ケース CPython 一致。
+- ⚠ 計画より広く対応: `!s` → `str()`、`!r` → `repr()` も通る（Arrow に組込があるため）。
+  明示エラーは `!a`（ascii）と **書式指定 `{x:.2f}`**（Arrow に書式指定の構文・組込が無い）。
+- ⚠ 書式指定の将来方針は `implementation_logs/FUTURE_FEATURE.md` §4 (3) に残した。
+  **モジュール単位変換なので、1 箇所でも含む `.py` は import 全体が落ちる**点が効く。
+- 例題: `examples/interop/py_fstring.ar` / `py_fstring_error.ar` + `test_modules/py_fstring*.py`。
 - 編集: `expressions.rs` `convert_expr`
   - `py::Expr::JoinedStr(j) =>` 各要素を変換して左結合 `BinOp::Add` で連結: `Constant(str)`→`Expr::Str`、`FormattedValue{value}`→`Expr::Call{ func: Ident("str"), args:[convert(value)] }`。
   - 参照実装: `desugar_fstring`（`src/parser/exprs.rs`）と**同形**にする。
@@ -379,7 +385,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（~~3~~・~~4~~・~~12~~・~~13~~・~~11~~・~~18~~・19・~~22~~・~~20~~・21・~~1~~・~~24~~・~~5~~）— 独立・低リスク。1件ずつ通して examples を積む。
+1. **フェーズ1**（~~3~~・~~4~~・~~12~~・~~13~~・~~11~~・~~18~~・~~19~~・~~22~~・~~20~~・21・~~1~~・~~24~~・~~5~~）— 独立・低リスク。1件ずつ通して examples を積む。
    （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
 2'. ~~**INF-A → 項目2**（再代入）~~ — 2026-08-28 に完了。
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。

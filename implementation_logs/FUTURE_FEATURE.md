@@ -196,6 +196,33 @@
     新しい状態を足したら**渡し忘れがゲートの穴になる**（実際に開いていた）。
 - **参照**: プラン D5（区切り線の下の §3.5）／skill `vm-pitfalls` §2。
 
+## (3) 書式指定（f-string の `{x:.2f}` 相当）
+
+- **内容**: **Arrow に「値を書式付きで文字列化する」構文・組込が無い**。
+  そのため `import[py]` の f-string 変換（python_converter 項目 19）で
+  **`format_spec` 付きだけが明示エラー**になっている:
+  - `f"{x:.2f}"`（精度）・`f"{x:>10}"`（寄せ・幅）・`f"{n:,}"`（桁区切り）・
+    `f"{n:04d}"`（ゼロ埋め）・`f"{n:x}"`（基数）など **Python の書式指定ミニ言語全般**。
+  - `f"{x!a}"`（ascii 変換）も相当する組込が無いので同じく明示エラー。
+    ⚠ `!s` → `str()`、`!r` → `repr()` は**対応済み**（どちらも Arrow に組込がある）。
+- **前提**: なし。ただし**言語仕様の決定が先**。少なくとも 2 通りある:
+  1. 組込関数を足す（`format(value, spec)` / `str.format`）。変換器は
+     `f"{x:.2f}"` → `format(x, ".2f")` に脱糖するだけで済む。**変換器側の変更は最小**。
+  2. Arrow 自身に書式付き文字列補間の構文を入れる。Arrow の f-string 相当
+     （`desugar_fstring`、`src/parser/exprs.rs`）は**現在 `str()` 呼び出しへ脱糖するだけ**なので、
+     こちらを選ぶならその脱糖も一緒に設計し直すことになる。
+- **留意点**:
+  - ⚠ **Python の書式指定ミニ言語は広い**（`[[fill]align][sign][#][0][width][,][.prec][type]`）。
+    「全部やる」と決める前に、**どこまでを仕様にするか**を先に決めること。
+    部分実装のまま通すと「一部の書式だけ黙って違う結果になる」形になり、最悪。
+  - ⚠ 現状は**明示エラー**なので**黙っては壊れていない**。急ぐ理由は
+    「f-string を使う実在の Python モジュールが `format_spec` を 1 箇所でも含むと
+    **import 全体が落ちる**」という**モジュール単位変換**の性質のほうにある。
+  - ⚠ 実装したら `python_converter_coverage.md` の項目 19 の「未対応」記述も**同時に**直すこと。
+- **参照**: [python_converter_coverage.md](../python_converter_coverage.md) 項目 19 ／
+  例題 [`examples/interop/py_fstring_error.ar`](../examples/interop/py_fstring_error.ar)
+  （エラーになる形を固定してある）／`desugar_fstring`（`src/parser/exprs.rs`）。
+
 ---
 
 # 5. タスク化していない既知の課題（**起票候補**）

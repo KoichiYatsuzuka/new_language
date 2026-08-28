@@ -1,0 +1,63 @@
+# py_fstring.ar — `import[py]`（Python → Arrow 変換器）の **f-string** 対応の検査（項目 19）。
+#
+# 対象は `convert_expr` の `py::Expr::JoinedStr` アーム（`src/python_converter/expressions.rs`）。
+#
+# Arrow のパーサが自前の f-string を脱糖する `desugar_fstring`（`src/parser/exprs.rs`）と
+# **同形**に変換する:
+#   リテラル片はそのまま `Expr::Str`、埋め込み式は `str(...)` 呼び出しで包み、
+#   左結合の `BinOp::Add` で連結する。`f""` は空文字列。
+#
+# ⚠ **変換フラグは対応済み**: `!s` → `str()`、`!r` → `repr()`（どちらも Arrow に組込がある）。
+#   `!a`（ascii）は相当する組込が無いので明示エラー。
+# ⚠ **書式指定 `{x:.2f}` は明示エラー**（Arrow に書式指定の構文・組込が無い）。
+#   `py_fstring_error.ar` で固定し、将来の実装方針は
+#   `implementation_logs/FUTURE_FEATURE.md` の §4 (3) に残してある。
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_fstring as m
+
+# ── ① 基本形 ────────────────────────────────────────────────────────────
+mut name = "bob"
+print(m.simple(name))
+# hi bob
+mut n = 5
+print(m.multi(name, n))
+# hi bob, n=5!
+print(m.only_expr(n))
+# 5
+print(m.empty())
+#            （空行）
+print(m.literal_only())
+# plain
+mut a = 1
+mut b = 2
+print(m.adjacent(a, b))
+# 12
+
+# ── ② `{{` / `}}` はリテラルの波括弧 ────────────────────────────────────
+print(m.braces(n))
+# {literal} 5
+
+# ── ③ 埋め込みは任意の式（演算・呼び出し・属性・添字） ──────────────────
+print(m.expr_inside(a, b))
+# sum=3
+mut xs = [1, 2, 3]
+print(m.call_inside(xs))
+# len=3
+mut o = m.Box(7)
+print(m.attr_inside(o))
+# v=7
+mut d = {"x": 9}
+print(m.index_inside(d))
+# x=9
+
+# ── ④ 変換フラグ `!s` / `!r` ────────────────────────────────────────────
+mut s = "hi"
+print(m.conv_str(s))
+# hi
+print(m.conv_repr(s))
+# 'hi'      （repr なので引用符が付く）
+
+# ── ⑤ f-string の結果をさらに f-string に埋める ─────────────────────────
+print(m.nested_fstring(n))
+# outer [5]

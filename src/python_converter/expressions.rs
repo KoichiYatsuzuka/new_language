@@ -267,7 +267,78 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
 
         py::Expr::Lambda(_) => Err(format!("{filename}: lambda is not supported")),
 
-        py::Expr::JoinedStr(_) => Err(format!("{filename}: f-strings are not supported")),
+        // f-string。`desugar_fstring`（`src/parser/exprs.rs`）と**同形**に脱糖する:
+        // リテラル片はそのまま、埋め込み式は `str(...)` で包み、左結合の `+` で連結する。
+        //
+        // ⚠ Arrow に「書式指定」に相当する構文が無いので、`{x:.2f}` のような
+        //   **format_spec 付きは明示エラー**（FUTURE_FEATURE.md に残してある）。
+        // ⚠ 変換フラグは `!s` → `str()`、`!r` → `repr()` に写せる（どちらも Arrow に組込がある）。
+        //   `!a`（ascii）は相当する組込が無いので明示エラー。
+        py::Expr::JoinedStr(j) => {
+            let span = make_span(filename);
+            let mut parts: Vec<Expr> = Vec::new();
+            for v in &j.values {
+                match v {
+                    // リテラル片（`f"hi {n}"` の `"hi "` の部分）。
+                    py::Expr::Constant(c) => parts.push(convert_constant(c, filename)?),
+                    py::Expr::FormattedValue(fv) => {
+                        if fv.format_spec.is_some() {
+                            return Err(format!(
+                                "{filename}: f-string format specifier (e.g. `{{x:.2f}}`) is not supported"
+                            ));
+                        }
+                        let func_name = match fv.conversion.to_char() {
+                            None | Some('s') => "str",
+                            Some('r') => "repr",
+                            Some(other) => {
+                                return Err(format!(
+                                    "{filename}: f-string conversion `!{other}` is not supported (only `!s` and `!r`)"
+                                ))
+                            }
+                        };
+                        let inner = convert_expr(&fv.value, filename)?;
+                        parts.push(Expr::Call {
+                            func: Box::new(Expr::Ident {
+                                name: func_name.to_string(),
+                                node_id: 0,
+                                res: Resolution::Unresolved,
+                            }),
+                            args: vec![CallArg::Positional(inner)],
+                            span: span.clone(),
+                            cache: Default::default(),
+                            node_id: 0, // #16: py-converter は未採番
+                        });
+                    }
+                    // 仕様上ここには来ないが、来たら文字列化して連結する（黙って落とさない）。
+                    other => {
+                        let inner = convert_expr(other, filename)?;
+                        parts.push(Expr::Call {
+                            func: Box::new(Expr::Ident {
+                                name: "str".to_string(),
+                                node_id: 0,
+                                res: Resolution::Unresolved,
+                            }),
+                            args: vec![CallArg::Positional(inner)],
+                            span: span.clone(),
+                            cache: Default::default(),
+                            node_id: 0,
+                        });
+                    }
+                }
+            }
+            // `f""` は空文字列。
+            let mut iter = parts.into_iter();
+            let Some(first) = iter.next() else {
+                return Ok(Expr::Str(Rc::from("")));
+            };
+            Ok(iter.fold(first, |acc, e| Expr::BinOp {
+                op: BinOp::Add,
+                left: Box::new(acc),
+                right: Box::new(e),
+                span: span.clone(),
+                node_id: 0, // #16: 合成連結（注釈対象外）
+            }))
+        }
 
         py::Expr::Await(_) => Err(format!("{filename}: 'await' is not supported")),
 

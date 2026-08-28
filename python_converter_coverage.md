@@ -470,7 +470,7 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 [`test_modules/py_tuple.py`](examples/interop/test_modules/py_tuple.py)。
 到達しないアームなので `_error` 例は無し。
 
-### [ ] 19. f-string
+### [x] 19. f-string【実装済 2026-08-28 / 書式指定を除く】
 
 - 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `py::Expr::JoinedStr` アーム
 - 現状: `f-strings are not supported` エラー。
@@ -478,6 +478,32 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 - 方針: Python `JoinedStr { values }` を同形へ変換。各 `Constant(str)` → `Expr::Str`、各 `FormattedValue{value}` → `Expr::Call{ func:Ident("str"), args:[convert(value)] }`。全体を `BinOp::Add` で連結。
 - 難易度: 低〜中。
 - 懸念: 書式指定 `{x:.2f}`（format_spec）・変換 `!r`/`!s`（conversion）は `str()` 単純ラップでは再現不可。書式なし f-string を対応し、format_spec 付きは追加検討 or 明示エラー。
+
+**実装結果**: `desugar_fstring`（[`src/parser/exprs.rs`](src/parser/exprs.rs)）と**同形**に脱糖した。
+リテラル片はそのまま `Expr::Str`、埋め込み式は `str(...)` 呼び出しで包み、左結合の
+`BinOp::Add` で連結する。`f""` は空文字列。
+
+**確認（14 ケース・すべて CPython と出力一致）**: 基本形／埋め込みのみ／空／リテラルのみ／
+隣接する埋め込み／`{{` `}}` のリテラル波括弧／埋め込みが演算・呼び出し・属性アクセス・添字／
+`!s` / `!r`／f-string の結果をさらに f-string へ。
+
+**⚠ 変換フラグは計画より広く対応できた**: 計画では「conversion 付きは当面 Err」としていたが、
+`!s` → `str()`、`!r` → `repr()` は**どちらも Arrow に組込がある**のでそのまま写せる。
+明示エラーにしたのは `!a`（ascii。相当する組込が無い）だけ。
+
+**⚠ 未対応（言語機能の不足）: 書式指定 `{x:.2f}`**:
+Arrow に「値を書式付きで文字列化する」構文・組込が無いため、`format_spec` 付きは**明示エラー**。
+`{x:>10}` / `{n:,}` / `{n:04d}` / `{n:x}` など**書式指定ミニ言語全般**が同じ扱い。
+⇒ 将来の実装方針（`format(value, spec)` 組込を足す案／Arrow 自身に補間構文を入れる案、
+および「どこまでを仕様にするか先に決める」という留意点）は
+[`implementation_logs/FUTURE_FEATURE.md`](implementation_logs/FUTURE_FEATURE.md) §4 (3) に残した。
+⚠ **モジュール単位変換なので、書式指定を 1 箇所でも含む `.py` は import 全体が落ちる**。
+f-string を多用する実在モジュールを読むうえで、これが現状いちばん効く制約。
+
+**例題**: [`examples/interop/py_fstring.ar`](examples/interop/py_fstring.ar) +
+[`test_modules/py_fstring.py`](examples/interop/test_modules/py_fstring.py) /
+[`examples/interop/py_fstring_error.ar`](examples/interop/py_fstring_error.ar)
+（書式指定・`!a` の 2 種）。
 
 ### [x] 20. デコレータ `@decorator`【実装済 2026-08-27】
 
