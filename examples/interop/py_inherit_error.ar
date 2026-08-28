@@ -1,0 +1,27 @@
+# py_inherit_error.ar — `import[py]` のクラス継承サポートが**明示エラーにする** `super()` の形。
+#
+# `super()` は Arrow に無いので変換時に `<第1基底>.m(self, args)` へ脱糖する。
+# 脱糖できない形は黙って落とさず、その場でエラーにする。
+#
+# ⚠ 変換時（パース時）のエラーなので 1 ファイルにつき 1 つしか踏めない。
+#   もう一方を試すときは import 行を入れ替えること。
+#
+# 期待されるエラー（ParseError・変換時）:
+#
+#   ① 基底クラスの無いクラスでの `super()`（本ファイルが踏む形）
+#      `super()` is only supported inside a method of a class that has a base class
+#      ⇒ 脱糖先の基底名が決められない。Python でも `object` の実装しか得られない形。
+#
+#   ② `super()` をメソッド呼び出し以外に使う（値として束縛する等）
+#      bare `super()` is only supported as `super().method(...)`
+#      ⇒ Arrow に「基底にバインドしたプロキシ値」が無いので値としては作れない。
+#
+# ⚠ Python 2 形式の `super(Cls, self)` は引数つきなので上の判定に掛からず、
+#   `super` が未定義という別のエラーになる。
+
+import[py] test_modules.py_super_error as m
+
+# ② を試す場合:
+# import[py] test_modules.py_bare_super_error as m
+
+print("unreachable")

@@ -317,6 +317,26 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 注意: `fn` は戻り型注釈が要る（`MissingReturnTypeAnn`）→ 推論 or `Any` 補完。デフォルト引数は項目1と併用。
 - テスト: `sorted(xs, key=lambda x: -x)` 相当、クロージャ捕捉。
 
+### クラス継承（`import[py]` 限定）✅ **実装済（2026-08-28）**
+
+計画外の追加項目（項目 5 の作業中に「基底が黙って捨てられる」ことを発見して着手）。
+
+- **方針**: Arrow 本体では class 継承は**今後も不許可**（基底はトレイトのみ）。
+  **Python を読み込むときだけ**の特別処置として、**トレイト継承のロジックを流用**する。
+- **編集 3 箇所**:
+  - `src/interpreter/exec/definitions.rs` `exec_class_def` — `in_python_module` 限定で
+    基底クラスのメンバを**定義時に平坦化**して取り込む（オーバーライド優先）。
+  - `src/interpreter.rs` `build_field_index` + 新フィールド `py_class_field_order` —
+    基底フィールドを先頭に置く既存ロジックを流用。トレイトを先に見て無ければこちら。
+  - `src/python_converter/supers.rs`（新設）+ `expressions.rs` —
+    `super().m(a)` → `<第1基底>.m(self, a)` に**変換時**脱糖。受け側は
+    `classes/class_methods.rs` が `FnValue::is_python` 限定でアンバウンド呼び出しを許可。
+    ⚠ `in_python_module` で判定してはいけない（ドライバから呼ばれた時点で false）。
+- **境界の固定**: `examples/classes/class_inherit_error.ar`（ネイティブ `.ar` は今も ParseError）。
+- **挙動不変**: `compare_outputs.ps1 -A <HEAD>` が 114/116 一致・差分は新規例題 2 本のみ
+  （負の対照 116/116 取得済み）。
+- 例題: `examples/interop/py_inherit.ar` / `py_inherit_error.ar` + `test_modules/py_inherit.py`。
+
 ### フェーズ4: 大きめ／実行時ガード
 
 #### [25] `with`（`__exit__` 無しのみ block 脱糖）

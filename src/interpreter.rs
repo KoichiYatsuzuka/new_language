@@ -440,6 +440,18 @@ pub struct Interpreter {
     /// トレイト名 → (フィールド名, 可変フラグ) の宣言順リスト（TraitDef 実行時に収集）。
     /// exec_class_def で field_index を構築する際に trait フィールドの順序を決定する。
     pub(self) trait_field_order: HashMap<String, Vec<(String, bool)>>,
+    /// ★**`import[py]` 限定**: Python クラス名 → (フィールド名, 可変フラグ) の**平坦化済み**宣言順リスト。
+    ///
+    /// Arrow の `class` は**継承できない**（基底に置けるのはトレイトだけ。ネイティブ `.ar` では
+    /// パーサが `cannot inherit from ... (only traits are allowed as bases)` で弾く）。
+    /// しかし Python ではクラス継承が普通なので、**Python モジュールを読み込んでいる間だけ**
+    /// トレイト継承と同じ仕組みでクラス継承を成立させる。
+    ///
+    /// ⚠ `trait_field_order` と分けてあるのは、Python 側のクラス名がトレイト名（`Error` など）と
+    /// 衝突してトレイト継承を壊さないようにするため。`build_field_index` は
+    /// **トレイトを先に見て、無ければこちら**を見る。
+    /// ⚠ 「平坦化済み」= 自分の基底のフィールドも含む。多段継承（A→B→C）でも 1 段の参照で足りる。
+    pub(self) py_class_field_order: HashMap<String, Vec<(String, bool)>>,
     /// プロトコル名 → 必須メンバー名リスト（ProtocolDef 実行時に収集）。
     /// `is Protocol` 実行時チェックで使用する。
     pub(self) protocol_required_members: HashMap<String, Vec<String>>,
@@ -533,6 +545,7 @@ impl Interpreter {
             static_cells: HashMap::new(),
             current_class: None,
             trait_field_access: HashMap::new(),
+            py_class_field_order: HashMap::new(),
             trait_field_order: {
                 // Error trait のフィールド順序を登録: サブクラス定義時に build_field_index が参照する
                 let mut m = HashMap::new();
@@ -666,7 +679,13 @@ impl Interpreter {
         // Step 1: 継承 trait のフィールドを継承順で先頭に配置する。
         // これにより「基底部分が先頭」という C/C++ の継承レイアウト慣行と一致する。
         for base in bases {
-            if let Some(trait_fields) = self.trait_field_order.get(base) {
+            // トレイトを先に見る。無ければ ★`import[py]` 限定のクラス継承（Python クラスの
+            // 平坦化済みフィールド順）を見る。トレイト名との衝突でトレイト側を壊さない順序。
+            let base_fields = self
+                .trait_field_order
+                .get(base)
+                .or_else(|| self.py_class_field_order.get(base));
+            if let Some(trait_fields) = base_fields {
                 for (fname, is_mutable) in trait_fields {
                     let qualified = format!("{}::{}", base, fname);
                     if let Some(&existing_idx) = field_index.get(fname.as_str()) {

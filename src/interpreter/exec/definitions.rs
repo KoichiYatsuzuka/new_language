@@ -649,8 +649,104 @@ impl Interpreter {
             }
         }
 
+        // ★★ `import[py]` 限定: **クラス継承**を解決する。
+        //
+        // Arrow の `class` は継承できない（基底に置けるのはトレイトだけ。ネイティブ `.ar` では
+        // パーサが `cannot inherit from ... (only traits are allowed as bases)` で弾く）。
+        // だが Python ではクラス継承が普通で、変換器はパーサを通らないため、以前は
+        // `bases` が載っているのに**メソッドもフィールドも黙って引き継がれない**状態だった。
+        //
+        // ここではトレイト継承と同じ考え方（＝**定義時に平坦化する**。実行時に基底を辿らない）で
+        // 基底クラスのメンバを引き継ぐ:
+        //   - フィールドの並びは `py_class_field_order` 経由で `build_field_index` が処理する
+        //     （基底のフィールドが先頭、という C ABI 慣行もトレイトと同じ）。
+        //   - メソッド等は**サブクラス側が既に持っていなければ**取り込む（＝オーバーライド優先）。
+        // ⚠ 多重継承は「先に書いた基底が勝つ」。Python の MRO と厳密には違うが、単一継承では一致する。
+        if self.in_python_module && !bases.is_empty() {
+            let base_classes: Vec<Rc<crate::interpreter::ClassValue>> = bases
+                .iter()
+                .filter_map(|b| match self.get_var(b).map(|v| v.get_value()) {
+                    Some(Value::Class(c)) => Some(c),
+                    _ => None,
+                })
+                .collect();
+            for base_cls in &base_classes {
+                for (k, v) in &base_cls.methods {
+                    methods.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+                for (k, v) in &base_cls.gen_methods {
+                    gen_methods.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+                for (k, v) in &base_cls.class_vars {
+                    class_vars.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+                // ⚠ `static mut` のセル（`Rc`）は**共有する**。基底のクラス変数を
+                //   サブクラス経由で読めるようにするため。
+                //   Python は `Sub.x = ...` でサブクラス側に別の属性を作るが、Arrow の
+                //   `static mut` には「クラスごとの層」が無いので書き込みは基底に届く（項目 5 と同じモデル差）。
+                for (k, v) in &base_cls.static_vars {
+                    static_vars.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+                for (k, v) in &base_cls.field_mutability {
+                    field_mutability.entry(k.clone()).or_insert(*v);
+                }
+                for (k, v) in &base_cls.method_access {
+                    method_access.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+                for (k, v) in &base_cls.field_access {
+                    field_access.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+                for n in &base_cls.static_method_names {
+                    static_method_names.insert(n.clone());
+                }
+                for n in &base_cls.class_method_names {
+                    class_method_names.insert(n.clone());
+                }
+                // 既定値つきフィールドは基底の分を**前に**置く（フィールドの並びと同じ順序）。
+                let mut inherited_defaults: Vec<(String, Value, bool)> = base_cls
+                    .field_defaults
+                    .iter()
+                    .filter(|(n, _, _)| !field_defaults.iter().any(|(m, _, _)| m == n))
+                    .cloned()
+                    .collect();
+                inherited_defaults.extend(field_defaults.drain(..));
+                field_defaults = inherited_defaults;
+            }
+        }
+
         let (field_index, field_mutability_vec, field_count) =
             self.build_field_index(&own_field_order, bases);
+
+        // ★ `import[py]` 限定: このクラスの**平坦化済み**フィールド順を登録し、
+        //   さらにこれを基底とするクラス（多段継承）が 1 段の参照で解決できるようにする。
+        //   並べ方は `build_field_index` の Step1（基底が先）+ Step2（own が後）と同じ。
+        if self.in_python_module {
+            let mut full_order: Vec<(String, bool)> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for base in bases {
+                let base_fields = self
+                    .trait_field_order
+                    .get(base)
+                    .or_else(|| self.py_class_field_order.get(base));
+                if let Some(bf) = base_fields {
+                    for (fname, m) in bf {
+                        if seen.insert(fname.clone()) {
+                            full_order.push((fname.clone(), *m));
+                        }
+                    }
+                }
+            }
+            for (fname, m) in &own_field_order {
+                if seen.insert(fname.clone()) {
+                    full_order.push((fname.clone(), *m));
+                } else if let Some(e) = full_order.iter_mut().find(|(n, _)| n == fname) {
+                    // own 宣言の可変性を優先する（`build_field_index` と同じ規則）。
+                    e.1 = *m;
+                }
+            }
+            self.py_class_field_order
+                .insert(name.to_string(), full_order);
+        }
 
         // raw ブロックレイアウト（.claude/skills/c-abi-interop/SKILL.md P1）:
         // trait 継承なし・全フィールドがプリミティブ（int/float/C ABI 型）・24 フィールド以下の

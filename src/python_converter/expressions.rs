@@ -13,6 +13,17 @@ use super::*;
 // 式変換
 // ---------------------------------------------------------------------------
 
+/// 式が引数なしの `super()` 呼び出しかどうかを判定する。
+///
+/// ⚠ Python 2 形式の `super(Cls, self)` は**対象外**（引数ありなので false を返し、
+/// 通常の呼び出しとして扱われた結果 `super` が未定義でエラーになる）。
+fn is_zero_arg_super(e: &py::Expr) -> bool {
+    matches!(e, py::Expr::Call(c)
+        if c.args.is_empty()
+            && c.keywords.is_empty()
+            && matches!(&*c.func, py::Expr::Name(n) if n.id.as_str() == "super"))
+}
+
 /// 単一の Python 式を tl の `Expr` に変換する。
 pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, String> {
     match expr {
@@ -126,6 +137,63 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
         }
 
         py::Expr::Call(c) => {
+            // ★ `super().m(args)` の脱糖（`import[py]` 限定のクラス継承サポートの一部）。
+            //    Arrow に `super` は無いので、変換時に `<第1基底>.m(self, args)` へ書き換える。
+            //    受け側（クラス経由のアンバウンド呼び出し）は `classes/class_methods.rs` が
+            //    `FnValue::is_python` 限定で許可している。
+            if let py::Expr::Attribute(attr) = &*c.func {
+                if is_zero_arg_super(&attr.value) {
+                    let base = current_super_base().ok_or_else(|| {
+                        format!(
+                            "{filename}: `super()` is only supported inside a method of a class that has a base class"
+                        )
+                    })?;
+                    let mut args: Vec<CallArg> = vec![CallArg::Positional(Expr::Ident {
+                        name: "self".to_string(),
+                        node_id: 0,
+                        res: Resolution::Unresolved,
+                    })];
+                    for arg in &c.args {
+                        args.push(CallArg::Positional(convert_expr(arg, filename)?));
+                    }
+                    for kw in &c.keywords {
+                        let name = kw.arg.as_ref().map(|a| a.to_string()).unwrap_or_default();
+                        if name.is_empty() {
+                            return Err(format!(
+                                "{filename}: **kwargs unpacking in call is not supported"
+                            ));
+                        }
+                        args.push(CallArg::Keyword {
+                            name,
+                            value: convert_expr(&kw.value, filename)?,
+                        });
+                    }
+                    let base_expr = Expr::Ident {
+                        name: base,
+                        node_id: 0,
+                        res: Resolution::Unresolved,
+                    };
+                    return Ok(Expr::Call {
+                        func: Box::new(Expr::Attr {
+                            object: Box::new(base_expr),
+                            attr: attr.attr.to_string(),
+                            span: make_span(filename),
+                            cache: Default::default(),
+                            node_id: 0,
+                        }),
+                        args,
+                        span: crate::token::Span::unknown(),
+                        cache: Default::default(),
+                        node_id: 0,
+                    });
+                }
+            }
+            // `super()` を「メソッドを呼ぶ」以外の形で使うのは未対応（明示エラー）。
+            if is_zero_arg_super(expr) {
+                return Err(format!(
+                    "{filename}: bare `super()` is only supported as `super().method(...)`"
+                ));
+            }
             let func = convert_expr(&c.func, filename)?;
             let mut args: Vec<CallArg> = Vec::new();
             for arg in &c.args {

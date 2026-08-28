@@ -710,21 +710,57 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 
 以下は今回のフィードバックで言及されなかった、開いたままの「サイレント欠落／誤変換」項目。別途方針決定が必要:
 
-**⚪ 新規（2026-08-28・項目 5 の作業中に発見）: クラス継承が黙って落ちる**
+**✅ 解決済み（2026-08-28）: クラス継承 — `import[py]` 限定で実装した**
 
-`class Sub(Base):` を変換すると `Stmt::ClassDef.bases = ["Base"]` は載るが、
-**Arrow はクラス継承をサポートしていない**（ネイティブ `.ar` では
-`ParseError: class Sub cannot inherit from Base (only traits are allowed as bases)`。
-Arrow の継承はトレイトのみ）。変換器はパーサを通らないのでこのエラーが出ず、
-基底クラスの**メソッドもフィールドも引き継がれない**まま実行される:
+項目 5 の作業中に「`class Sub(Base):` の基底が黙って捨てられる」ことを発見し、その場で実装した。
 
-- `s.hello()` → `AttributeError: 'Sub' has no method 'hello'`
-- 基底の `__init__` が動かないので `s.v` も無い（`'Sub' object has no attribute 'v'`）
+**方針（ユーザー指示）**: **Arrow 本体では class の継承は今後も不許可**（基底に置けるのはトレイトだけ）。
+**Python を読み込んでいるときだけの特別処置**として、既存の**トレイト継承のロジックを流用**して成立させる。
 
-⇒ **サイレント欠落**（1 つ前の項目でいう「黙って壊れる」形）。方針決定が必要:
-①明示エラーにする（フェーズ 5 と同じ扱い）／②基底のメソッド・フィールドを
-**変換時に平坦化**して取り込む／③Arrow 側にクラス継承を入れる。
-⚠ **Python コードでクラス継承は非常に多い**ので、優先度は高い。
+**実装（3 箇所）**:
+
+1. **`exec_class_def`**（[`definitions.rs`](src/interpreter/exec/definitions.rs)）—
+   `in_python_module` のときだけ基底**クラス**のメンバ（メソッド／`gen` メソッド／`class_vars`／
+   `static_vars`／`field_mutability`／アクセス制御／`static`・`class_method` 名／既定値つきフィールド）を
+   引き継ぐ。トレイト継承と同じく**定義時に平坦化**する（実行時に基底を辿らない）。
+   取り込みは「**サブクラスが持っていなければ**」＝オーバーライド優先。
+2. **`build_field_index`**（[`interpreter.rs`](src/interpreter.rs)）— 基底フィールドを先頭に置く
+   既存ロジックをそのまま流用。**トレイトを先に見て、無ければ** `py_class_field_order`
+   （Python クラス限定・**平坦化済み**）を見る。
+   ⚠ 別マップにしたのは、Python 側のクラス名がトレイト名（`Error` 等）と衝突して
+   トレイト継承を壊さないため。多段継承のために登録する順序は平坦化済みにしてある。
+3. **`super()` の脱糖**（[`src/python_converter/supers.rs`](src/python_converter/supers.rs) 新設）—
+   Arrow に `super` は無いので**変換時に** `super().m(args)` → `<第1基底>.m(self, args)` へ書き換える。
+   基底名は `convert_class` の間だけ有効なスレッドローカルのスタックで持つ
+   （`convert_expr` まで引数で引き回すとシグネチャ変更が全域に及ぶため）。
+   受け側の**アンバウンド呼び出し**（`Base.__init__(self, ...)`）は
+   [`classes/class_methods.rs`](src/interpreter/classes/class_methods.rs) が許可する。
+   ⚠ 判定は `self.in_python_module` では**駄目**（ドライバ `.ar` から呼ばれた時点で false）。
+   `FnValue::is_python`（そのメソッド自身が Python 由来か）で見る。
+
+**動作確認（16 ケース・すべて CPython と出力一致）**: メソッド継承／フィールド（基底 `__init__`）継承／
+オーバーライドと**動的ディスパッチ**（基底のメソッド内の `self.label()` がサブクラス実装に届く）／
+`super().__init__()`／`super().method()` のチェーン／クラス変数の継承／3 段継承／
+明示的な `Base.__init__(self, ...)`／多重継承。
+
+**明示エラーにした形**: 基底クラスの無いクラスでの `super()`／`super()` をメソッド呼び出し以外に使う形。
+
+**境界の固定**: ネイティブ `.ar` は今も
+`ParseError: class Sub cannot inherit from Base (only traits are allowed as bases)`
+（[`examples/classes/class_inherit_error.ar`](examples/classes/class_inherit_error.ar) で固定）。
+
+**⚠ 残る差**: 多重継承は「**先に書いた基底が勝つ**」。Python の MRO（C3 線形化）とは厳密には違うが、
+単一継承では一致する。`Sub.x = ...` は基底の `static mut` セルを共有するので基底にも届く（項目 5 と同じモデル差）。
+
+**挙動不変の根拠**: `compare_outputs.ps1 -A <HEAD ビルド>` が **114/116 一致**、
+差分は**今回追加した 2 例題のみ**（負の対照 116/116 も取得済み）。
+
+**例題**: [`examples/interop/py_inherit.ar`](examples/interop/py_inherit.ar) +
+[`test_modules/py_inherit.py`](examples/interop/test_modules/py_inherit.py) /
+[`examples/interop/py_inherit_error.ar`](examples/interop/py_inherit_error.ar) /
+[`examples/classes/class_inherit_error.ar`](examples/classes/class_inherit_error.ar)。
+
+**現時点で ⚪ 未トリアージ項目はなし**。
 
 分類済みの参照:
 - 🟢 対応予定: 三項式/`in`/`is`（11〜13）、複数代入/連鎖比較/内包表記(単一・多重for)/定数タプル/f-string（15〜19）、デコレータ/Ellipsis(文)/集合（20〜22）、walrus/bare`*`（23〜24）、`with`(no __exit__)/lambda/モジュール import（25〜27）、他（1〜10）

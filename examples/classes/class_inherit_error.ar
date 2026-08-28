@@ -1,0 +1,19 @@
+# class_inherit_error.ar — ネイティブ `.ar` では **class の継承は今も不許可**であることの固定。
+#
+# ⚠⚠ `import[py]`（Python → Arrow 変換）にだけクラス継承サポートを入れたので、
+#   「Arrow 本体でも継承できるようになった」と誤読されないようにここで境界を固定する。
+#   Arrow の継承は**トレイトのみ**（`examples/classes/class_trait.ar` を参照）。
+#
+# 期待されるエラー（ParseError・パース時）:
+#   class `Sub` cannot inherit from `Base` (only traits are allowed as bases)
+
+class Base:
+    fn hello(self) -> str:
+        return "base"
+
+class Sub(Base):
+    fn own(self) -> str:
+        return "sub"
+
+mut s = Sub()
+print(s.hello())

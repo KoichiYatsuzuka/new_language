@@ -1,0 +1,88 @@
+# py_inherit.ar — `import[py]` の **クラス継承** サポートの検査。
+#
+# ★★ **Arrow の `class` は継承できない**。基底に置けるのは**トレイトだけ**で、
+#   ネイティブ `.ar` では今も
+#   `ParseError: class Sub cannot inherit from Base (only traits are allowed as bases)`
+#   になる（`examples/classes/class_inherit_error.ar` で固定）。
+#   Python ではクラス継承が普通なので、**Python モジュールを読み込むときだけ**の特別扱いとして
+#   トレイト継承と同じ考え方で成立させている。
+#
+# 仕組み（3 箇所）:
+#   ① `exec_class_def`（`src/interpreter/exec/definitions.rs`）
+#      `in_python_module` のときだけ基底**クラス**のメンバを引き継ぐ。
+#      トレイト継承と同じく**定義時に平坦化**する（実行時に基底を辿らない）。
+#      メソッド等は「サブクラスが持っていなければ取り込む」＝オーバーライド優先。
+#   ② `build_field_index`（`src/interpreter.rs`）
+#      基底のフィールドを先頭に置く既存ロジックを流用。トレイトを先に見て、
+#      無ければ `py_class_field_order`（Python クラス限定・平坦化済み）を見る。
+#      ⚠ 別のマップにしてあるのは、Python 側のクラス名がトレイト名と衝突して
+#        トレイト継承を壊さないようにするため。
+#   ③ `super()` は Arrow に無いので**変換時に脱糖**する（`src/python_converter/`）。
+#      `super().m(args)` → `<第1基底>.m(self, args)`。受け側のアンバウンド呼び出しは
+#      `classes/class_methods.rs` が **`FnValue::is_python` 限定**で許可する。
+#
+# ⚠ 多重継承は「**先に書いた基底が勝つ**」。Python の MRO（C3 線形化）とは厳密には違うが、
+#   単一継承では一致する。
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_inherit as m
+
+mut v = 5
+mut w = 2
+
+# ── ① 基底クラス単体 ────────────────────────────────────────────────────
+mut a = m.A(v)
+print(a.show())
+# A5
+
+# ── ② メソッドのオーバーライドと動的ディスパッチ ────────────────────────
+#     `show()` は基底 A の実装だが、その中の `self.label()` は B の実装に届く。
+mut b = m.B(v, w)
+print(b.label())
+# BA
+print(b.show())
+# BA5
+
+# ── ③ `super().__init__()` で基底のフィールドが初期化される ─────────────
+print(b.v)
+# 5
+print(b.w)
+# 2
+
+# ── ④ `super().method()` のチェーン ─────────────────────────────────────
+print(b.show2())
+# BA5/2
+
+# ── ⑤ 基底から引き継いだメソッド（B 自身のもの） ────────────────────────
+print(b.extra())
+# 10
+
+# ── ⑥ クラス変数の継承 ──────────────────────────────────────────────────
+print(m.B.tag)
+# A
+
+# ── ⑦ 3 段継承（C → B → A） ────────────────────────────────────────────
+mut c = m.C(v, w)
+print(c.label())
+# C
+print(c.show())
+# C5
+print(c.extra())
+# 10
+
+# ── ⑧ `super()` を使わず基底の `__init__` を明示的に呼ぶ古い書き方 ──────
+mut z = 4
+mut e = m.E(v, z)
+print(e.sum())
+# 9
+print(e.show())
+# A5
+
+# ── ⑨ 多重継承（メソッドは先に書いた基底が優先） ────────────────────────
+mut mm = m.Multi()
+print(mm.own())
+# own
+print(mm.m1())
+# m1
+print(mm.m2())
+# m2

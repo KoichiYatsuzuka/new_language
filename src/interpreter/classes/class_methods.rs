@@ -94,6 +94,23 @@ impl Interpreter {
             };
         }
 
+        // ★ **Python 由来のメソッド限定**: `Base.__init__(self, ...)` の形（アンバウンド呼び出し）を許す。
+        //
+        // Python のサブクラスは基底の初期化をこの書き方で行うのが定石で、クラス継承
+        // （`exec_class_def` の py 限定分岐）を入れた以上ここも通す必要がある。
+        // 第 1 実引数がそのまま `self` に位置で束縛される（`class_method` と同じ形）。
+        //
+        // ⚠ 判定に `self.in_python_module` は**使えない**。あれは「今 Python モジュール本体を
+        //   実行中か」でしかなく、ドライバ `.ar` から呼ばれた時点で false になる。
+        //   `FnValue::is_python`（そのメソッド自身が Python 由来か）で見るのが正しい。
+        if overloads.first().is_some_and(|f| f.is_python) {
+            return if overloads.len() == 1 {
+                self.exec_fn_evaled(overloads[0].clone(), &evaled, None, method_name, None)
+            } else {
+                self.dispatch_overload_evaled(overloads, evaled, None, method_name, None)
+            };
+        }
+
         Err(format!(
             "TypeError: cannot call instance method '{method_name}' on class '{}' directly; use an instance",
             cls.name

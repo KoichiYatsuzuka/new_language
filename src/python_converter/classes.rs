@@ -15,6 +15,9 @@ use super::*;
 pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt, String> {
     let class_name = c.name.to_string();
     let bases: Vec<String> = c.bases.iter().map(expr_to_name).collect();
+    // `super()` の脱糖用に**第 1 基底**を積む（メソッド本体の変換中だけ有効）。
+    // ⚠ 多重継承では 1 番目だけを見る（Python の MRO とは違うが、単一継承では一致する）。
+    let _super_guard = SuperBaseGuard::push(bases.first().cloned());
     // クラスデコレータ。`@staticmethod` 等はクラスには付かないので `in_class: false`。
     let class_dec = convert_decorators(
         &c.decorator_list,
