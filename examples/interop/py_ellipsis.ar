@@ -1,0 +1,48 @@
+# py_ellipsis.ar — `import[py]`（Python → Arrow 変換器）の **`...`（Ellipsis）** 対応の検査（項目 21）。
+#
+# 対象は `convert_stmt` の `py::Stmt::Expr` アーム（`src/python_converter/statements.rs`）と
+# `convert_constant` の `Constant::Ellipsis`（`expressions.rs`）。
+#
+# ⚠ **文位置と値位置で扱いが違う**:
+#   - **文**としての `...`（`def f(): ...` などスタブ本体のプレースホルダ）→ `Stmt::Pass`。
+#     「何もしない」以上の意味を持たないので `pass` と同じ形に読み替える。
+#     以前は `Stmt::Expr(Expr::None)`（None を評価して捨てる式文）になっていた。
+#   - **値**としての `...`（`x = ...`）→ `Expr::None`。Arrow に `Ellipsis` 値が無いため。
+#     ⇒ ⑤ だけ CPython と表示が違う（CPython は `Ellipsis`）。副作用が無いので許容している。
+#
+# ⚠ AST の形は `frontend_tests/parser_tests.rs` の
+#   `test_python_statement_ellipsis_becomes_pass` / `test_python_value_ellipsis_stays_none` で固定。
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_ellipsis as m
+
+# ── ① 関数のスタブ本体（戻り値は None） ────────────────────────────────
+print(m.stub())
+# None
+mut n = 5
+print(m.stub_typed(n))
+# None
+
+# ── ② クラスの空本体 / メソッドのスタブ ────────────────────────────────
+mut c = m.C()
+print("C ok")
+# C ok
+mut d = m.D()
+print(d.m())
+# None
+
+# ── ③ `if` の枝のプレースホルダ ─────────────────────────────────────────
+print(m.guarded(n))
+# pos
+mut neg = -1
+print(m.guarded(neg))
+# neg
+
+# ── ④ ループ本体のプレースホルダ ────────────────────────────────────────
+mut xs = [1, 2]
+print(m.loop_body(xs))
+# done
+
+# ── ⑤ ★値位置の `...` は None になる（CPython は `Ellipsis`） ───────────
+print(m.value_pos())
+# None      （CPython は Ellipsis）

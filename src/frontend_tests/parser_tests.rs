@@ -1045,3 +1045,44 @@
         let err = parse_fails("{k: v for k in xs}\n");
         assert!(err.contains("dict comprehension"), "got: {err}");
     }
+
+    // -----------------------------------------------------------------------
+    // Python の `...`（Ellipsis）— 文位置と値位置で扱いが違う
+    // -----------------------------------------------------------------------
+
+    /// 文としての `...`（スタブ本体）は `pass` に読み替えられる。
+    #[test]
+    fn test_python_statement_ellipsis_becomes_pass() {
+        let stmts =
+            crate::python_converter::convert_python_source("def f():\n    ...\n", "<test>")
+                .expect("python conversion failed");
+        let Stmt::FnDef { body, .. } = &stmts[0] else {
+            panic!("expected Stmt::FnDef, got: {:?}", stmts[0]);
+        };
+        assert!(
+            matches!(body.as_slice(), [Stmt::Pass]),
+            "expected the body to be a single Stmt::Pass, got: {body:?}"
+        );
+    }
+
+    /// 値としての `...` は `None` のまま（Arrow に `Ellipsis` 値が無いため。承認済みの仕様）。
+    ///
+    /// ⚠ 文位置だけを `pass` にしたので、値位置が巻き添えで変わっていないことを固定する。
+    #[test]
+    fn test_python_value_ellipsis_stays_none() {
+        let stmts =
+            crate::python_converter::convert_python_source("def f():\n    x = ...\n    return x\n", "<test>")
+                .expect("python conversion failed");
+        let Stmt::FnDef { body, .. } = &stmts[0] else {
+            panic!("expected Stmt::FnDef");
+        };
+        // #2 の巻き上げにより body は [Mut("x", None, None), Assign{..}, Return]。
+        assert!(
+            body.iter().any(|s| matches!(s, Stmt::Assign { value: Expr::None, .. })),
+            "expected an assignment of Expr::None, got: {body:?}"
+        );
+        assert!(
+            !body.iter().any(|s| matches!(s, Stmt::Pass)),
+            "value-position `...` must not become `pass`, got: {body:?}"
+        );
+    }

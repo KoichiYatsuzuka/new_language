@@ -590,13 +590,33 @@ f-string を多用する実在モジュールを読むうえで、これが現�
    （`import[ar] lib` した先の `let MSG = hello("bob")`）。⇒ 変換器ではなく
    **モジュール本体の実行時の名前解決**の問題。デコレータは `eval_definition_expr` 経由なので通る。
 
-### [ ] 21. `...`（Ellipsis）→ 文位置は `pass`
+### [x] 21. `...`（Ellipsis）→ 文位置は `pass`【実装済 2026-08-28】
 
 - 対象: [`statements.rs`](src/python_converter/statements.rs) の `py::Stmt::Expr` アーム（中身の Ellipsis 判定）
 - 現状: `Constant::Ellipsis` を式として `Expr::None` に変換（黙って None 化）。
 - 方針（ユーザー提案）: **文としての `...`**（スタブ本体の `...`）を `Stmt::Pass` に読み替える。`Expr` 文で中身が `Constant::Ellipsis` なら `Stmt::Pass` を返す。
 - 難易度: 低。
 - 懸念: **値位置の `...`**（`x = ...`、`Callable[..., int]`、`a[...]`）は文（pass）にできない。値位置は現状どおり `Expr::None` を維持（**副作用が無いためユーザー承認済み・変更不要**）。文位置のみ pass 化。
+
+**実装結果**: `convert_stmt` の `py::Stmt::Expr` アームで、中身が `Constant::Ellipsis` なら
+`Stmt::Pass` を返すようにした。以前は `Stmt::Expr(Expr::None)`（None を評価して捨てる式文）だった。
+
+**⚠ これは「挙動」ではなく「AST の形」の修正**: どちらでも実行結果は同じ（`...` は何もしない）。
+`pass` に読み替えることで、Arrow のパーサが `pass` に対して作る形と揃う。
+⇒ 検証は例題の出力ではなく **AST の形**で行った:
+`frontend_tests/parser_tests.rs::test_python_statement_ellipsis_becomes_pass`。
+
+**⚠ 値位置は据え置き（承認済みの仕様）**: `x = ...` は `Expr::None` のまま。
+Arrow に `Ellipsis` 値が無いため。⇒ **そこだけ CPython と表示が違う**（CPython は `Ellipsis`）。
+副作用が無いので許容。**文位置の変更が値位置に波及していない**ことを
+`test_python_value_ellipsis_stays_none` で固定した。
+
+**確認（9 ケース中 8 件 CPython 一致・残り 1 件が上記の値位置）**: 関数のスタブ本体／
+型注釈つきスタブ／クラスの空本体／メソッドのスタブ／`if` の枝／ループ本体／値位置。
+
+**例題**: [`examples/interop/py_ellipsis.ar`](examples/interop/py_ellipsis.ar) +
+[`test_modules/py_ellipsis.py`](examples/interop/test_modules/py_ellipsis.py)。
+新しいエラー経路が無いため `_error` 例は無し。
 
 ### [x] 22. 集合リテラル `{1, 2, 3}` / set 内包【リテラルのみ実装済 2026-08-28】
 

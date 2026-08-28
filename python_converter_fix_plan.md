@@ -202,7 +202,12 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   「クロージャで包む」典型的な Python デコレータが動かない。
   ② `.py` のモジュール直下から同モジュールの関数を呼べない（`NameError`）。
 
-#### [21] `...`（Ellipsis）→ 文位置は `pass`
+#### [21] `...`（Ellipsis）→ 文位置は `pass` ✅ **実装済（2026-08-28）**
+- ⚠ **挙動ではなく AST の形の修正**（どちらでも実行結果は同じ）。検証は例題の出力ではなく
+  AST の形で行った（`parser_tests.rs::test_python_statement_ellipsis_becomes_pass`）。
+- ⚠ 値位置（`x = ...`）は `Expr::None` のまま据え置き（承認済み）。波及していないことを
+  `test_python_value_ellipsis_stays_none` で固定。⇒ そこだけ CPython（`Ellipsis`）と表示が違う。
+- 例題: `examples/interop/py_ellipsis.ar` + `test_modules/py_ellipsis.py`。
 - 編集: `statements.rs` `convert_stmt` `Expr` アーム
   - 式文の中身が `Constant::Ellipsis` なら `Stmt::Pass` を返す。
 - 値位置の `...` は現状維持（`convert_constant` の `Ellipsis => Expr::None`、変更不要）。
@@ -395,7 +400,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（~~3~~・~~4~~・~~12~~・~~13~~・~~11~~・~~18~~・~~19~~・~~22~~・~~20~~・21・~~1~~・~~24~~・~~5~~）— 独立・低リスク。1件ずつ通して examples を積む。
+1. **フェーズ1**（~~3~~・~~4~~・~~12~~・~~13~~・~~11~~・~~18~~・~~19~~・~~22~~・~~20~~・~~21~~・~~1~~・~~24~~・~~5~~）— **完了**— 独立・低リスク。1件ずつ通して examples を積む。
    （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
 2'. ~~**INF-A → 項目2**（再代入）~~ — 2026-08-28 に完了。
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。

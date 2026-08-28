@@ -451,6 +451,17 @@ pub(crate) fn convert_stmt(
 
         // ----- 式文 -----
         py::Stmt::Expr(e) => {
+            // 文としての `...`（`def f(): ...` などスタブ本体のプレースホルダ）は
+            // 「何もしない」以上の意味を持たないので `pass` に読み替える。
+            //
+            // ⚠ **値位置の `...`（`x = ...` / `a[...]`）は対象外**。そちらは
+            //   `convert_constant` が `Expr::None` にする（承認済みの仕様）。
+            //   ⇒ CPython は `Ellipsis` オブジェクトを返すので**そこだけ表示が違う**が、
+            //     Arrow に `Ellipsis` 値が無く、副作用も無いため許容している。
+            if matches!(&*e.value, py::Expr::Constant(c) if matches!(c.value, py::Constant::Ellipsis))
+            {
+                return Ok(Some(Stmt::Pass));
+            }
             let expr = convert_expr(&e.value, filename)?;
             Ok(Some(Stmt::Expr(expr)))
         }
