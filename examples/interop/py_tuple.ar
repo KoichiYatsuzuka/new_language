@@ -1,0 +1,69 @@
+# py_tuple.ar — `import[py]`（Python → Arrow 変換器）の **タプル** 対応の検査（項目 18）。
+#
+# ⚠⚠ **項目 18 の「定数タプル」アームは現在の構成では到達しない**。
+#   `Constant::Tuple` を作るのは rustpython の `ConstantOptimizer` だけで、それは
+#   `constant-optimization` フィーチャ有効時にしか実装されず、`Suite::parse` は畳み込みをしない。
+#   通常のタプル `(1, 2)` は**常に** `py::Expr::Tuple` として来る（そちらは元から対応済み）。
+#   ⇒ 変換器側は将来フィーチャを有効にしても壊れないよう正しく再帰変換を実装したうえで、
+#     この例題では**実際に通る経路**（`Expr::Tuple`）を固定する。
+#
+# ⚠⚠ 検査中に **Arrow 本体側のタプルの穴を 3 つ**見つけた（いずれも変換器の外・未修正）:
+#   ① **タプルを dict のキーにすると黙って消える**（最悪の失敗形）。
+#      `{(1, 2): "x"}` は空の dict になり、`d[(1,2)] = "y"` も入らない（`len` が 0）。
+#      str / int / bool のキーは正常。⇒ ここでは dict キーの例を置けない。
+#   ② **タプル同士の `+`（連結）が未対応**。`(1,2) + (3,)` が
+#      `TypeError: unsupported operand types for Add: tuple and tuple`。
+#   ③ `list` の `==` が**値比較でない**（`[1,2] == [1,2]` が `False`）。
+#      ⚠ **タプルの `==` は値比較で正しい**（⑨ で固定）ので、list 側だけがおかしい。
+#
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_tuple as m
+
+# ── ① リテラル / 空 / 単要素 ────────────────────────────────────────────
+print(m.literal())
+# (1, 2, 3)
+print(m.empty())
+# ()
+print(m.single())
+# (1,)
+
+# ── ② 入れ子 / 型混在 ───────────────────────────────────────────────────
+print(m.nested())
+# ((1, 2), (3, 4))
+print(m.mixed())
+# (1, 'a', True, None)
+
+# ── ③ 要素が式 ──────────────────────────────────────────────────────────
+mut a = 1
+mut b = 3
+print(m.from_exprs(a, b))
+# (2, 6)
+
+# ── ④ 添字 / スライス / len / in / 反復 ─────────────────────────────────
+mut t = (1, 2, 3)
+print(m.index(t))
+# 2
+print(m.slice_it(t))
+# (2, 3)
+print(m.length(t))
+# 3
+mut two = 2
+print(m.contains(t, two))
+# True
+print(m.iterate(t))
+# 6
+
+# ── ⑤ デフォルト引数 / リスト要素 / 戻り値のペア ────────────────────────
+print(m.as_default())
+# (7, 8)
+print(m.in_list())
+# [(1, 2), (3, 4)]
+mut p = 7
+mut q = 8
+print(m.as_return_pair(p, q))
+# (7, 8)
+
+# ── ⑥ 等価比較は値で行われる（list と違ってタプルは正しい） ─────────────
+print(m.compare())
+# True

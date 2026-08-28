@@ -269,7 +269,15 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
 
 /// Python のリテラル定数を tl の `Expr` に変換する。
 pub(crate) fn convert_constant(c: &py::ExprConstant, filename: &str) -> Result<Expr, String> {
-    match &c.value {
+    constant_value_to_expr(&c.value, filename)
+}
+
+/// 生の `py::Constant` を Arrow の `Expr` に変換する。
+///
+/// `Constant::Tuple` が入れ子の `Constant` を持つため、`convert_constant` から分離して
+/// **再帰できる**形にしてある。
+fn constant_value_to_expr(value: &py::Constant, filename: &str) -> Result<Expr, String> {
+    match value {
         py::Constant::Int(n) => {
             let v: i64 = n.try_into().unwrap_or(i64::MAX);
             Ok(Expr::Int(v))
@@ -280,7 +288,20 @@ pub(crate) fn convert_constant(c: &py::ExprConstant, filename: &str) -> Result<E
         py::Constant::None => Ok(Expr::None),
         py::Constant::Bytes(_) => Err(format!("{filename}: bytes literals are not supported")),
         py::Constant::Ellipsis => Ok(Expr::None),
-        py::Constant::Tuple(_) => Err(format!("{filename}: constant tuple is not supported")),
+        // 定数タプル。要素も `Constant` なので再帰する。
+        //
+        // ⚠ **このアームは現在の構成では到達しない**。`Constant::Tuple` を作るのは
+        //   rustpython の `ConstantOptimizer` だけで、それは `constant-optimization`
+        //   フィーチャ有効時にしか実装されず、`Suite::parse` は畳み込みを行わない。
+        //   通常のタプル `(1, 2)` は**常に** `py::Expr::Tuple` として来る（そちらは対応済み）。
+        //   将来 rustpython の畳み込みを有効にしたときに黙って壊れないよう、正しく変換しておく。
+        py::Constant::Tuple(items) => {
+            let elts: Result<Vec<Expr>, _> = items
+                .iter()
+                .map(|x| constant_value_to_expr(x, filename))
+                .collect();
+            Ok(Expr::Tuple(elts?))
+        }
         py::Constant::Complex { .. } => {
             Err(format!("{filename}: complex numbers are not supported"))
         }

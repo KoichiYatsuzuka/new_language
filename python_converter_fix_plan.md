@@ -145,7 +145,15 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 根拠: `return_type: None` でも式評価可（実機確認済み）。
 - テスト: `x = (1 if c else 2)`、呼び出し引数内 `f(a if c else b)`。
 
-#### [18] 定数タプル
+#### [18] 定数タプル ✅ **実装済（2026-08-28）／ただし現構成では到達しない経路**
+- ⚠ `Constant::Tuple` を作るのは rustpython の `ConstantOptimizer` だけ（`constant-optimization`
+  フィーチャ限定）で、`Suite::parse` は畳み込みをしない。通常のタプルは常に `py::Expr::Tuple`。
+- 将来フィーチャを有効にしても壊れないよう `constant_value_to_expr` を切り出して再帰変換を実装。
+  例題は実際に通る経路（`Expr::Tuple`）を 16 ケースで固定。
+- ⚠ 検査中に **Arrow 本体のタプルの穴 3 件**を発見（未修正・詳細は coverage 項目 18）:
+  ①タプルを dict キーにすると**黙って消える** ②タプル同士の `+` が未対応
+  ③`list` の `==` が値比較でない（タプルは正しい）。
+- 例題: `examples/interop/py_tuple.ar` + `test_modules/py_tuple.py`。
 - 編集: `expressions.rs` `convert_constant`
   - `Constant::Tuple(items) =>` 各要素を（`convert_constant` 相当で）`Expr` 化し `Expr::Tuple(...)` を返す（現状 Err）。
 - テスト: 定数タプルが出る文脈（デフォルト値等）。
@@ -343,7 +351,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（~~3~~・~~4~~・~~12~~・~~13~~・~~11~~・18・19・~~22~~・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
+1. **フェーズ1**（~~3~~・~~4~~・~~12~~・~~13~~・~~11~~・~~18~~・19・~~22~~・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
    （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
 2'. ~~**INF-A → 項目2**（再代入）~~ — 2026-08-28 に完了。
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。

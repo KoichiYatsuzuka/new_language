@@ -413,13 +413,37 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
   - generator 式は遅延評価だが ForExpr は即時（list 構築）。async 内包（`async for`）は非対応。
   - → 単一 for / 多重 for のリスト内包を対応。set/dict/generator/async は追加検討 or 明示エラー。
 
-### [ ] 18. 定数タプル
+### [x] 18. 定数タプル【実装済 2026-08-28 / ただし現構成では到達しない経路】
 
 - 対象: [`expressions.rs` `convert_constant()`](src/python_converter/expressions.rs) の `Constant::Tuple` アーム
 - 現状: `constant tuple is not supported` エラー。
 - Arrow 側: `Expr::Tuple(Vec<Expr>)` 実在。
 - 方針: `Constant::Tuple(Vec<Constant>)` の各要素を定数変換して `Expr::Tuple` を構築。
 - 難易度: 低。
+
+**⚠⚠ 調査結果: このアームは現在の構成では到達しない**。
+`Constant::Tuple` を作るのは rustpython の `ConstantOptimizer` だけで、それは
+`constant-optimization` フィーチャ有効時にしか実装されず、`Suite::parse` は畳み込みをしない。
+通常のタプル `(1, 2)` は**常に** `py::Expr::Tuple` として来る（そちらは元から対応済み）。
+6 通りの書き方（代入・デフォルト引数・添字・注釈付き・return・型注釈つき return）で確認済み。
+
+**実装結果**: 将来フィーチャを有効にしても黙って壊れないよう、`convert_constant` から
+`constant_value_to_expr(&py::Constant)` を切り出して**再帰変換**を実装した（入れ子の定数タプルも通る）。
+例題は「実際に通る経路」（`Expr::Tuple`）を 16 ケースで固定した（CPython と出力一致）。
+
+**⚠⚠ 検査中に Arrow 本体側のタプルの穴を 3 つ発見（変換器の外・未修正）**:
+
+1. **タプルを dict のキーにすると黙って消える**（最悪の失敗形）。
+   `{(1, 2): "x"}` は**空の dict** になり、`d[(1,2)] = "y"` も入らない（`len` が 0）。
+   str / int / bool のキーは正常。純 Arrow で再現。
+2. **タプル同士の `+`（連結）が未対応**。`(1,2) + (3,)` が
+   `TypeError: unsupported operand types for Add: tuple and tuple`。純 Arrow で再現。
+3. **`list` の `==` が値比較でない**（`[1,2] == [1,2]` が `False`）。
+   ⚠ **タプルの `==` は値比較で正しい**ので、list 側だけがおかしい。純 Arrow で再現。
+
+**例題**: [`examples/interop/py_tuple.ar`](examples/interop/py_tuple.ar) +
+[`test_modules/py_tuple.py`](examples/interop/test_modules/py_tuple.py)。
+到達しないアームなので `_error` 例は無し。
 
 ### [ ] 19. f-string
 
