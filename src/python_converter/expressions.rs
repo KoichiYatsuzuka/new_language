@@ -204,7 +204,22 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
 
         py::Expr::Set(_) => Err(format!("{filename}: set literal is not supported")),
 
-        py::Expr::Slice(_) => Err(format!("{filename}: slice expression is not supported")),
+        // スライス `a[1:3]` / `a[::2]`。rustpython は 3 要素とも `Option` で持ち、
+        // 省略（`a[:2]` の begin など）は `None` になる。Arrow の `Expr::Slice` も同じ形。
+        // ⚠ 負のインデックス・負のステップ（`a[::-1]`）は Arrow 側が既に対応済み。
+        py::Expr::Slice(sl) => {
+            let conv = |e: &Option<Box<py::Expr>>| -> Result<Option<Box<Expr>>, String> {
+                match e {
+                    Some(inner) => Ok(Some(Box::new(convert_expr(inner, filename)?))),
+                    None => Ok(None),
+                }
+            };
+            Ok(Expr::Slice {
+                begin: conv(&sl.lower)?,
+                end: conv(&sl.upper)?,
+                step: conv(&sl.step)?,
+            })
+        }
 
         #[allow(unreachable_patterns)]
         _ => Err(format!("{filename}: unsupported Python expression")),

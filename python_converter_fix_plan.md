@@ -107,7 +107,12 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 - 根拠: Arrow は添字代入を `AttrAssign`(target=Subscript式) で表現（パーサ `finish_expr_stmt`）。
 - テスト: `d["k"]=5; return d` / `xs[0]+=1`。
 
-#### [4] スライス `a[1:2]` / `a[::2]`
+#### [4] スライス `a[1:2]` / `a[::2]` ✅ **実装済（2026-08-28）**
+- 計画どおり 1 対 1 の写し替え（`lower`/`upper`/`step` の `Option` をそのまま `begin`/`end`/`step` へ）。
+- ⚠ Arrow のスライス意味論は Python 互換だった（負インデックス・負ステップ・範囲外切り詰め・
+  str/tuple・`step==0` の `ValueError` 文言まで一致）。18 ケース CPython 一致。
+- ⚠ スライス代入 `xs[1:3] = [...]` は**項目 3 と揃って初めて**成立する（例題 ⑧ で固定）。
+- 例題: `examples/interop/py_slice.ar` + `test_modules/py_slice.py`。
 - 編集: `expressions.rs` `convert_expr`
   - `py::Expr::Slice(_) => Err(...)` を、`Expr::Slice { begin: lower.map(convert→Box), end: upper.map(...), step: step.map(...) }` へ差し替え。
 - テスト: `xs[1:3]`, `xs[::2]`, `xs[:-1]`。
@@ -325,7 +330,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（~~3~~・4・12・13・~~11~~・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
+1. **フェーズ1**（~~3~~・~~4~~・12・13・~~11~~・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
    （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
 2'. ~~**INF-A → 項目2**（再代入）~~ — 2026-08-28 に完了。
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。

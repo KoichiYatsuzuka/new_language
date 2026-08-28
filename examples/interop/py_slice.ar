@@ -1,0 +1,79 @@
+# py_slice.ar — `import[py]`（Python → Arrow 変換器）の **スライス** 対応の検査（項目 4）。
+#
+# 対象は `convert_expr` の `py::Expr::Slice` アーム（`src/python_converter/expressions.rs`）。
+#
+# rustpython の `ExprSlice` は `lower` / `upper` / `step` を 3 つとも `Option` で持ち、
+# 省略部分（`a[:2]` の begin など）は `None`。Arrow の `Expr::Slice { begin, end, step }` も
+# 同じ形なので **1 対 1 で写すだけ**で済む。
+#
+# ⚠ **Arrow のスライス意味論は Python 互換**であることを実機で確認済み:
+#   負のインデックス・負のステップ・範囲外の切り詰め・逆転した境界（空になる）・
+#   str / tuple への適用・`step == 0` の `ValueError` まで**文言ごと一致**する。
+#
+# ⚠ ⑧ の**スライス代入** `xs[1:3] = [...]` は、項目 3（添字代入で target に式を置く）と
+#   本項目（index が `Expr::Slice` になる）が**揃って初めて**成立する。
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_slice as m
+
+mut xs = [1, 2, 3, 4, 5]
+
+# ── ① 基本形 ────────────────────────────────────────────────────────────
+print(m.basic(xs))
+# [2, 3]
+print(m.open_begin(xs))
+# [1, 2]
+print(m.open_end(xs))
+# [3, 4, 5]
+print(m.full(xs))
+# [1, 2, 3, 4, 5]
+
+# ── ② ステップ ──────────────────────────────────────────────────────────
+print(m.step(xs))
+# [1, 3, 5]
+print(m.begin_end_step(xs))
+# [2, 4]
+
+# ── ③ 負のインデックス・負のステップ ────────────────────────────────────
+print(m.negative(xs))
+# [1, 2, 3, 4]
+print(m.neg_begin(xs))
+# [4, 5]
+print(m.reverse(xs))
+# [5, 4, 3, 2, 1]
+print(m.neg_step_partial(xs))
+# [5, 4, 3]
+
+# ── ④ 範囲外・逆転した境界（Python は例外にせず空／切り詰め） ────────────
+print(m.out_of_range(xs))
+# []
+print(m.reversed_bounds(xs))
+# []
+print(m.big_end(xs))
+# [2, 3, 4, 5]
+
+# ── ⑤ str / tuple にも効く ──────────────────────────────────────────────
+mut s = "hello"
+print(m.on_str(s))
+# el|olleh
+mut t = (1, 2, 3, 4)
+print(m.on_tuple(t))
+# (2, 3)
+
+# ── ⑥ 境界が式 ──────────────────────────────────────────────────────────
+mut a = 1
+mut b = 4
+print(m.computed(xs, a, b))
+# [2, 3, 4]
+
+# ── ⑦ スライスの結果にさらにスライス ────────────────────────────────────
+print(m.nested_expr(xs))
+# [2, 3]
+
+# ── ⑧ ★スライス代入（項目 3 と組み合わさって成立） ──────────────────────
+mut ys = [1, 2, 3, 4, 5]
+print(m.slice_assign(ys))
+# [1, 99, 98, 4, 5]
+
+# ⚠ `xs[::0]` は Arrow でも `ValueError: slice step cannot be zero`（CPython と**文言まで一致**）。
+#    例題を止めてしまうのでここでは呼ばない。

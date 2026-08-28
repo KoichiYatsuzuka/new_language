@@ -187,7 +187,7 @@ def f(xs):
 [`test_modules/py_subscript.py`](examples/interop/test_modules/py_subscript.py)。
 新しいエラー経路が無いため `_error` 例は無し（スライス代入 `a[1:2] = xs` は項目 4 のエラーになる）。
 
-### [ ] 4. スライス `a[1:2]` / `a[::2]`
+### [x] 4. スライス `a[1:2]` / `a[::2]`【実装済 2026-08-28】
 
 - 対象: [`expressions.rs` `convert_expr()`](src/python_converter/expressions.rs) の `py::Expr::Slice` アーム
 - 現状: `slice expression is not supported` エラー。
@@ -195,6 +195,24 @@ def f(xs):
 - 変換方針: `py::Expr::Slice { lower, upper, step }` → `Expr::Slice { begin: lower.map(convert), end: upper.map(convert), step: step.map(convert) }`。`Subscript` のインデックスとしてそのまま入る。
 - 難易度: 低。
 - テスト: `xs[1:3]`, `xs[::2]`, `xs[:-1]`。
+
+**実装結果**: 計画どおり 1 対 1 の写し替えで済んだ。rustpython の `ExprSlice` は
+`lower` / `upper` / `step` を 3 つとも `Option` で持ち、省略部分は `None`。
+Arrow の `Expr::Slice { begin, end, step }` も同じ形なのでそのまま変換できる。
+
+**⚠ Arrow のスライス意味論は Python 互換だった**（18 ケースすべて CPython と出力一致）:
+負のインデックス（`a[:-1]` / `a[-2:]`）・負のステップ（`a[::-1]` / `a[4:1:-1]`）・
+範囲外の切り詰め（`a[1:100]`）・逆転した境界（`a[3:1]` → 空）・`str` / `tuple` への適用・
+境界が定数でない式・スライス結果への再スライス。
+`a[::0]` の `ValueError: slice step cannot be zero` は**文言まで一致**する。
+
+**⚠ スライス代入 `xs[1:3] = [...]` は項目 3 と揃って初めて成立する**:
+項目 3 が代入 target に**式**（`Expr::Subscript`）を置けるようにし、本項目がその index を
+`Expr::Slice` にする。例題 ⑧ で固定した。
+
+**例題**: [`examples/interop/py_slice.ar`](examples/interop/py_slice.ar) +
+[`test_modules/py_slice.py`](examples/interop/test_modules/py_slice.py)。
+新しいエラー経路が無いため `_error` 例は無し。
 
 ### [ ] 5. クラス変数 `class C: count = 0`
 
