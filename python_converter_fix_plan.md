@@ -125,7 +125,12 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   - `CmpOp::In => BinOp::In`、`CmpOp::NotIn => BinOp::NotIn` を返す（現状は Err）。
 - テスト: `t in xs`, `t not in xs`。
 
-#### [13] `is` / `is not`（★文法差異）
+#### [13] `is` / `is not`（★文法差異）✅ **実装済（2026-08-28）**
+- 計画どおり `Compare` アーム側で処理（`is not` は `Not(RefEq)` ラップが要るため）。
+- ⚠ 残る意味差 2 件: 不変プリミティブ（計算で作った str / 256 超の int）は Arrow が `True`、
+  CPython は `False`（インターン依存）。CPython 自身が SyntaxWarning を出す使い方なので
+  エラー化はしない。13 ケース中 11 件 CPython 一致。
+- 例題: `examples/interop/py_identity.ar` + `test_modules/py_identity.py`。
 - 編集: `expressions.rs` `Compare` アーム（`convert_cmpop` では `not` ラップを表現できないため Compare 側で特別扱い）
   - `CmpOp::Is` → `Expr::BinOp{ op: RefEq, .. }`（Arrow の `===`。Python `is` は識別比較で **Arrow の `is`(=型ガード) とは別物**）。
   - `CmpOp::IsNot` → `Expr::UnaryOp{ Not, BinOp{RefEq} }`（`!==` は存在しない）。
@@ -333,7 +338,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（~~3~~・~~4~~・~~12~~・13・~~11~~・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
+1. **フェーズ1**（~~3~~・~~4~~・~~12~~・~~13~~・~~11~~・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
    （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
 2'. ~~**INF-A → 項目2**（再代入）~~ — 2026-08-28 に完了。
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。

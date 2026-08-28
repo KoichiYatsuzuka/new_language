@@ -1,0 +1,67 @@
+# py_identity.ar — `import[py]`（Python → Arrow 変換器）の **`is` / `is not`** 対応の検査（項目 13）。
+#
+# 対象は `convert_expr` の `Compare` アーム（`src/python_converter/expressions.rs`）。
+#
+# ★**名前の衝突に注意**: Python の `is` は**識別比較**で、Arrow では `===`（`BinOp::RefEq`）。
+#   Arrow にも `is` キーワードがあるが、あちらは**型ガード**（`x is int`）で**完全に別物**。
+#   ここで Arrow の `is` に写すと意味がまるごと変わる。
+#
+# ⚠ `is not` は `convert_cmpop` に置けない。Arrow に `!==` が無いので `Not(RefEq)` で
+#   ラップする必要があり、`BinOp` 1 個では表せないため `Compare` アーム側で組む。
+#
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_identity as m
+
+mut n = None
+mut v = 5
+
+# ── ① 最も多い用途: None 判定 ──────────────────────────────────────────
+print(m.is_none(n))
+# True
+print(m.is_none(v))
+# False
+print(m.is_not_none(n))
+# False
+print(m.is_not_none(v))
+# True
+print(m.default_guard(n))
+# default
+print(m.default_guard(v))
+# 5
+
+# ── ② 別名は同じオブジェクト / 別々に作ったものは違うオブジェクト ────────
+#     ⚠ `import[py]` の関数は Python の値渡し規則（deep copy しない）を保つので、
+#        `b = a` の別名が Arrow 側でも同一オブジェクトのまま残る。
+print(m.alias())
+# True
+print(m.distinct())
+# False
+print(m.obj_alias())
+# True
+
+# ── ③ True シングルトン ─────────────────────────────────────────────────
+mut t = True
+print(m.is_true(t))
+# True
+
+# ── ④ `and` との組み合わせ ──────────────────────────────────────────────
+print(m.combined(n, v))
+# True
+
+# ── ⑤ ★不変プリミティブ（str / int）は CPython と結果が違う ─────────────
+#     Arrow の `===` は不変プリミティブを**値で**比べる。CPython の `is` は
+#     オブジェクト識別なので**インターンの有無**に依存する
+#     （計算で作った文字列や 256 を超える int は別オブジェクトになる）。
+#     ⇒ CPython はどちらも False、Arrow はどちらも True。
+#     ⚠ これは CPython 自身が `SyntaxWarning: "is" with a literal` で警告する使い方の系列で、
+#        本来 `==` を使うべき場面。**Arrow の答えの方が書き手の意図に近い**。
+#        エラー化はしていない（import 全体を殺すには軽すぎる差のため）。
+mut h = "h"
+mut i = "i"
+print(m.computed_str(h, i))
+# True   （CPython は False）
+mut a = 500
+mut b = 500
+print(m.computed_int(a, b))
+# True   （CPython は False）

@@ -87,10 +87,35 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             if c.ops.len() != 1 || c.comparators.len() != 1 {
                 return Err(format!("{filename}: chained comparisons are not supported"));
             }
-            let op = convert_cmpop(&c.ops[0], filename)?;
             let left = convert_expr(&c.left, filename)?;
             let right = convert_expr(&c.comparators[0], filename)?;
             let span = make_span(filename);
+
+            // ★ `is` / `is not` は `convert_cmpop` に置けない。
+            //   - Python の `is` は**識別比較**なので Arrow の `===`（`BinOp::RefEq`）に対応する。
+            //     ⚠⚠ Arrow にも `is` キーワードがあるが**型ガード**（`x is int`）で**別物**。
+            //   - Arrow に `!==` が無いので `is not` は `Not(RefEq)` でラップする
+            //     （`convert_cmpop` は `BinOp` しか返せないのでここで組む）。
+            let is_op = matches!(c.ops[0], py::CmpOp::Is | py::CmpOp::IsNot);
+            if is_op {
+                let eq = Expr::BinOp {
+                    op: BinOp::RefEq,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                    span,
+                    node_id: 0, // #16: py-converter は未採番（0=注釈対象外）
+                };
+                return Ok(if matches!(c.ops[0], py::CmpOp::IsNot) {
+                    Expr::UnaryOp {
+                        op: UnaryOp::Not,
+                        operand: Box::new(eq),
+                    }
+                } else {
+                    eq
+                });
+            }
+
+            let op = convert_cmpop(&c.ops[0], filename)?;
             Ok(Expr::BinOp {
                 op,
                 left: Box::new(left),
@@ -293,8 +318,13 @@ pub(crate) fn convert_cmpop(op: &py::CmpOp, filename: &str) -> Result<BinOp, Str
         // どれにも効き、Python と同じ真偽を返す（実機確認済み）。
         py::CmpOp::In => BinOp::In,
         py::CmpOp::NotIn => BinOp::NotIn,
-        py::CmpOp::Is => return Err(format!("{filename}: 'is' operator is not supported")),
-        py::CmpOp::IsNot => return Err(format!("{filename}: 'is not' operator is not supported")),
+        // ⚠ `is` / `is not` は `Compare` アーム側で処理する（`is not` は `Not` ラップが要り、
+        //   `BinOp` 1 個では表せないため）。ここには到達しない。
+        py::CmpOp::Is | py::CmpOp::IsNot => {
+            return Err(format!(
+                "{filename}: internal error: 'is'/'is not' must be handled by the Compare arm"
+            ))
+        }
     })
 }
 

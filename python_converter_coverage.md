@@ -325,7 +325,7 @@ list / tuple / set は**要素**、dict は**キー**、str は**部分文字列
 [`test_modules/py_membership.py`](examples/interop/test_modules/py_membership.py)。
 新しいエラー経路が無いため `_error` 例は無し。
 
-### [ ] 13. `is` / `is not`（識別比較）— ★文法差異に注意★
+### [x] 13. `is` / `is not`（識別比較）— ★文法差異に注意★【実装済 2026-08-28】
 
 - 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `py::Expr::Compare` 変換
 - 現状: `'is' operator is not supported` エラー。
@@ -340,6 +340,37 @@ list / tuple / set は**要素**、dict は**キー**、str は**部分文字列
   - 実装上は `convert_cmpop`（`BinOp` を返す）では `is not` の Not ラップを表現できないため、`Compare` アーム側で `In`/`NotIn`/`Is`/`IsNot` を特別扱いする。
 - 難易度: 低〜中。
 - 懸念: Python の小整数/文字列インターン等の `is` 挙動差はあるが、一般用途（`x is None`・オブジェクト同一性）は `===` で一致。
+
+**実装結果**: 計画どおり `Compare` アーム側で処理した（`convert_cmpop` には置けない。
+Arrow に `!==` が無く `is not` は `Not(RefEq)` ラップが要るので `BinOp` 1 個では表せない）。
+`convert_cmpop` の `Is`/`IsNot` は到達しない内部エラーに変えてある。
+
+**⚠ 名前の衝突**: Arrow にも `is` キーワードがあるが**型ガード**（`x is int`）で別物。
+Python の `is` は `===`（`BinOp::RefEq`）に写す。
+
+**一致した形（11 ケース）**: `x is None` / `x is not None`（最頻出）・デフォルト値ガード・
+別名（`b = a` のあと `a is b` → True）・別々に作った同値オブジェクト（False）・
+インスタンスの別名・`f is True`・`and` との組み合わせ。
+⚠ 別名が True になるのは、`import[py]` の関数が **Python の値渡し規則（deep copy しない）** を
+保っているため。純 Arrow の `mut b = a` は deep copy されるので同じにはならない。
+
+**⚠ 残る意味差（2 ケース・実測）— 不変プリミティブのインターン**:
+Arrow の `===` は str / int を**値で**比べるが、CPython の `is` はオブジェクト識別なので
+**インターンの有無**に依存する。
+
+| 式 | Arrow | CPython |
+|---|---|---|
+| `(a+b) is "hi"` 相当（計算で作った str） | `True` | `False` |
+| `(500+500) is 1000` 相当（256 超の int） | `True` | `False` |
+
+⇒ **エラー化していない**。これは CPython 自身が `SyntaxWarning: "is" with a literal` で
+警告する使い方の系列（本来 `==` を使う場面）であり、**Arrow の答えの方が書き手の意図に近い**。
+モジュール単位変換では 1 箇所の拒否が import 全体を殺すので、警告相当を硬いエラーにするのは
+釣り合わない。将来「警告を出す」方向なら足せる。
+
+**例題**: [`examples/interop/py_identity.ar`](examples/interop/py_identity.ar) +
+[`test_modules/py_identity.py`](examples/interop/test_modules/py_identity.py)
+（13 ケース中 11 件 CPython 一致・⑤ の 2 件が上記の差）。
 
 ### [ ] 14. `del` 文（警告付き無視）
 
