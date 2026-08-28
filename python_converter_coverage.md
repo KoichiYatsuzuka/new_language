@@ -151,7 +151,7 @@ def f(xs):
 （12 ケース中 ⑨ の 1 件のみ CPython と相違。他 11 件は一致を突き合わせ済）。
 エラー化した経路が無いため `_error` 例は無し。
 
-### [ ] 3. 添字/キー代入 `a[i] = x` / `d[k] = v`（+ 複合 `a[i] += 1`）
+### [x] 3. 添字/キー代入 `a[i] = x` / `d[k] = v`（+ 複合 `a[i] += 1`）【実装済 2026-08-28】
 
 - 対象: [`statements.rs` `convert_stmt()`](src/python_converter/statements.rs) の `Assign` / `AugAssign` アーム
 - 現状: 代入ターゲットが `Subscript` の場合 `unsupported assignment target` エラー。
@@ -161,6 +161,31 @@ def f(xs):
   - `AugAssign` のターゲット `Subscript` も同様に `Stmt::AttrCompoundAssign` を生成する。
 - 難易度: 低（既存 `Attribute` アームの分岐を Subscript にも広げるだけ）。
 - テスト: `d["k"]=5; return d`、`xs[0]+=1`。
+
+**実装結果**: 計画どおり。Arrow は添字代入の専用ノードを持たず**属性代入と同じ `Stmt::AttrAssign`**
+（`target` に代入先の**式**を置く）で表すので、`Attribute` を受けていた 3 アーム
+（`Assign` / `AugAssign` / `AnnAssign`）を `Subscript` にも広げるだけで済んだ。
+入れ子（`box["k"][0] = v`）も target が入れ子の `Expr::Subscript` になるだけでそのまま通る。
+
+**確認（8 ケース・すべて CPython と出力一致）**: dict キー代入／読んで書き戻し／list 添字代入／
+複合代入 `+=` `*=` `-=`／入れ子／属性+添字（`self.data[i] += 1`）／ループ内での dict 構築。
+
+**⚠ 実在モジュールが読めるようになった**: `test_modules/py_calculator.py` は
+`Container.__setitem__` の `self.data[key] = value` 1 行のせいで `import[py]` が
+**丸ごと失敗**していた（モジュール単位変換なので 1 箇所の未対応構文が import 全体を殺す）。
+本項目で変換が通り、`Calculator` が使えるようになった
+（`sum_dict` だけは Arrow に `sum` 組込が無いため別途 `NameError`）。
+
+**⚠ 本項目の作業中に項目 2 の不具合を 1 件修正**:
+`collect_assigned_names` が `if __name__ == "__main__":` の中まで降りていた。
+`convert_stmt` はこのブロックを**丸ごと捨てる**ので、中の代入を巻き上げると
+「代入されないのに `mut name = None` だけ残る」モジュール変数が生まれ、取り込み側の同名変数と
+衝突して `already declared` になる（`py_calculator.py` のガード内 `c = Calculator(...)` で実際に踏んだ）。
+`is_main_guard` で降りないように修正し、退行例を `py_reassign.ar` の ⑪ に追加した。
+
+**例題**: [`examples/interop/py_subscript.ar`](examples/interop/py_subscript.ar) +
+[`test_modules/py_subscript.py`](examples/interop/test_modules/py_subscript.py)。
+新しいエラー経路が無いため `_error` 例は無し（スライス代入 `a[1:2] = xs` は項目 4 のエラーになる）。
 
 ### [ ] 4. スライス `a[1:2]` / `a[::2]`
 

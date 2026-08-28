@@ -95,3 +95,12 @@ def loop_var_only(xs):
     for i in xs:
         pass
     return i
+
+
+# --- 11. ★`if __name__ == "__main__":` の中の代入は巻き上げてはいけない ---
+#     変換器はこのブロックを丸ごと捨てるので、中の `scratch` を巻き上げると
+#     「代入されないのに `mut scratch = None` だけ残る」モジュール変数が生まれ、
+#     取り込み側の同名変数と衝突して `already declared` になる。
+if __name__ == "__main__":
+    scratch = basic()
+    print(scratch)

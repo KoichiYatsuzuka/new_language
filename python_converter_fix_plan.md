@@ -94,7 +94,13 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ### フェーズ1: 独立・低リスク（式/文の単純マッピング）
 
-#### [3] 添字/キー代入 `a[i]=x`, `d[k]=v`（+ `a[i]+=1`）
+#### [3] 添字/キー代入 `a[i]=x`, `d[k]=v`（+ `a[i]+=1`）✅ **実装済（2026-08-28）**
+- 計画どおり。`Attribute` を受けていた 3 アーム（`Assign`/`AugAssign`/`AnnAssign`）を
+  `Subscript` にも広げるだけ。入れ子もそのまま通る。8 ケース CPython 一致。
+- ⚠ これで `test_modules/py_calculator.py` が `import[py]` で読めるようになった。
+- ⚠ 併せて項目 2 の不具合を修正: `collect_assigned_names` が `if __name__ == "__main__":` の
+  中まで降りて巻き上げ、取り込み側と `already declared` で衝突していた。
+- 例題: `examples/interop/py_subscript.ar` + `test_modules/py_subscript.py`。
 - 編集: `statements.rs` `convert_stmt`
   - `Assign` アーム: `match target` に `py::Expr::Subscript(_) => { ... }` を追加し、`Attribute` と同じく `Stmt::AttrAssign { target: convert_expr(target)?, value }` を生成。
   - `AugAssign` アーム: `target` が `Subscript` のとき `Stmt::AttrCompoundAssign { target, op, value }` を生成。
@@ -319,7 +325,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（3・4・12・13・~~11~~・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
+1. **フェーズ1**（~~3~~・4・12・13・~~11~~・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
    （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
 2'. ~~**INF-A → 項目2**（再代入）~~ — 2026-08-28 に完了。
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。

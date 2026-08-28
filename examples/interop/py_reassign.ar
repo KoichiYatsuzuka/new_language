@@ -73,3 +73,12 @@ print(m.loop_var_collision(xs))
 #     `=` が無いので巻き上げ対象にならず、`for` の束縛がそのまま関数スコープに残る。
 print(m.loop_var_only(xs))
 # 3
+
+# ── ⑪ `if __name__ == "__main__":` の中の代入を巻き上げないこと ──────────
+#     py 側のガード内で `scratch` に代入しているが、変換器はブロックごと捨てる。
+#     巻き上げていると `mut scratch = None` がモジュールに残り、
+#     ここの `mut scratch` と衝突して `NameError: variable 'scratch' is already declared`。
+#     ⚠ 実際に `test_modules/py_calculator.py`（ガード内の `c = Calculator(...)`）で踏んだ形。
+mut scratch = 42
+print(scratch)
+# 42

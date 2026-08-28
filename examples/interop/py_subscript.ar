@@ -1,0 +1,47 @@
+# py_subscript.ar — `import[py]`（Python → Arrow 変換器）の **添字/キー代入** 対応の検査（項目 3）。
+#
+# 対象は `convert_stmt` の `Assign` / `AugAssign` / `AnnAssign` アーム（`src/python_converter/statements.rs`）。
+#
+# Arrow は添字代入を専用ノードで持たず、**属性代入と同じ `Stmt::AttrAssign`** で表す
+# （`target` に代入先の**式**＝`Expr::Subscript` を置く）。複合代入は `Stmt::AttrCompoundAssign`。
+# したがって変換は「`Attribute` を受けていたアームを `Subscript` にも広げる」だけで済む。
+# ⚠ 入れ子（`box["k"][0] = v`）も target が入れ子の `Expr::Subscript` になるだけでそのまま通る。
+#
+# ⚠⚠ **この項目が入るまで `test_modules/py_calculator.py` は `import[py]` で読めなかった**
+#   （`Container.__setitem__` の `self.data[key] = value` が `unsupported assignment target`）。
+#   モジュールは**丸ごと**変換されるので、1 箇所の未対応構文が import 全体を殺す。
+#
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_subscript as m
+
+# ── ① dict のキー代入 / 読んで書き戻し ──────────────────────────────────
+print(m.dict_set())
+# {'a': 11, 'b': 5}
+
+# ── ② list の添字代入 ───────────────────────────────────────────────────
+print(m.list_set())
+# [99, 2, 3]
+
+# ── ③ 複合代入 `+=` / `*=` / `-=` ───────────────────────────────────────
+print(m.aug_list())
+# [1, 9, 9]
+print(m.aug_dict())
+# {'n': 6}
+
+# ── ④ 入れ子の添字代入 ──────────────────────────────────────────────────
+print(m.nested())
+# {'k': [42, 10]}
+
+# ── ⑤ 属性 + 添字（`self.data[i] += 1`） ────────────────────────────────
+mut h = m.Holder()
+mut i = 1
+print(h.bump(i))
+# [0, 1]
+print(m.attr_and_index(h))
+# [7, 1]
+
+# ── ⑥ ループの中で dict を組み立てる ────────────────────────────────────
+mut n = 3
+print(m.in_loop(n))
+# {0: 0, 1: 1, 2: 4}

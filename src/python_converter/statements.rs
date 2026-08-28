@@ -80,6 +80,14 @@ pub(crate) fn collect_assigned_names(
                 }
             }
             py::Stmt::If(i) => {
+                // ⚠ `if __name__ == "__main__":` は `convert_stmt` が**丸ごと捨てる**ので、
+                //   その中の代入を巻き上げてはいけない。巻き上げると「代入されないのに
+                //   `mut name = None` だけ残る」モジュール変数が生まれ、
+                //   取り込み側と名前が衝突して `already declared` になる
+                //   （`test_modules/py_calculator.py` の `c = Calculator(...)` で実際に踏んだ）。
+                if is_main_guard(&i.test) {
+                    continue;
+                }
                 collect_assigned_names(&i.body, out, seen);
                 collect_assigned_names(&i.orelse, out, seen);
             }
@@ -240,7 +248,11 @@ pub(crate) fn convert_stmt(
                     let val = convert_expr(&a.value, filename)?;
                     Ok(Some(assign_or_declare(name, val, filename, declared)))
                 }
-                py::Expr::Attribute(_) => {
+                // 属性代入 `o.a = v` と添字代入 `a[i] = v` / `d[k] = v` は
+                // どちらも Arrow では `Stmt::AttrAssign`（target に代入先の**式**を置く形）。
+                // ⚠ `d["k"][0] = v` のような入れ子も、target が入れ子の `Expr::Subscript` に
+                //   なるだけでそのまま通る。
+                py::Expr::Attribute(_) | py::Expr::Subscript(_) => {
                     let target_expr = convert_expr(target, filename)?;
                     let val = convert_expr(&a.value, filename)?;
                     Ok(Some(Stmt::AttrAssign {
@@ -267,7 +279,8 @@ pub(crate) fn convert_stmt(
                     Ok(None)
                 }
             }
-            py::Expr::Attribute(_) => {
+            // `o.a: T = v` / `d[k]: T = v`（Python は注釈つき添字代入も許す）。注釈は捨てる。
+            py::Expr::Attribute(_) | py::Expr::Subscript(_) => {
                 if let Some(val_expr) = &a.value {
                     let target_expr = convert_expr(&a.target, filename)?;
                     let val = convert_expr(val_expr, filename)?;
@@ -298,7 +311,8 @@ pub(crate) fn convert_stmt(
                         node_id: 0, // #16: py-converter は未採番（0=注釈対象外）
                     }))
                 }
-                py::Expr::Attribute(_) => {
+                // `o.a += v` と `a[i] += v` はどちらも `Stmt::AttrCompoundAssign`。
+                py::Expr::Attribute(_) | py::Expr::Subscript(_) => {
                     let target_expr = convert_expr(&a.target, filename)?;
                     let val = convert_expr(&a.value, filename)?;
                     Ok(Some(Stmt::AttrCompoundAssign {
