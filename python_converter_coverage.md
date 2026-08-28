@@ -239,7 +239,7 @@ def f(xs):
 - 難易度: 中。
 - 懸念: パラメータ化エイリアス（`type V = list[float]`）や値としての利用は限定的。透過 vs 名目的の意味差に注意。
 
-### [ ] 11. 三項演算子 `a if cond else b`
+### [x] 11. 三項演算子 `a if cond else b`【実装済 2026-08-28】
 
 - 対象: [`expressions.rs` `convert_expr()`](src/python_converter/expressions.rs) の `py::Expr::IfExp` アーム
 - 現状: `inline 'if' expression is not supported` エラー。
@@ -247,6 +247,21 @@ def f(xs):
 - 変換方針: `IfExp { test, body, orelse }` → `Expr::IfExpr { branches: [(convert(test), [Stmt::BlockReturn(convert(body), span)])], else_body: Some([Stmt::BlockReturn(convert(orelse), span)]), return_type: None }`。
 - 難易度: 低。
 - 検証: ✔実機（`if c -> int: block_return 1 else: block_return 2` および注釈なし版の双方が動作）。
+
+**実装結果**: 計画どおり `convert_expr` の `py::Expr::IfExp` アームで Arrow の `if` 式へ写す。
+Arrow の `if` 式は分岐本体が**文の列**なので、各腕を `BlockReturn(<値>)` 1 文だけのブロックにする。
+`return_type: None`（`-> T` 注釈なし）でも式として評価できることを実機で確認済み。
+
+**確認した位置（17 ケース・すべて CPython と出力一致）**: 素朴／入れ子（括弧つき）／
+括弧なしの連鎖（右結合＝ elif 相当）／代入の右辺／呼び出し引数／リスト要素／dict の値／
+`while` の条件式の中／腕の型が違う場合。
+
+**⚠ 遅延評価が一致する**のが要点: Python の三項式は選ばれた腕しか評価しない。Arrow の `if` 式も
+同じなので、副作用のある呼び出しを腕に置いたときの**評価回数まで揃う**（例題 ⑨ で固定）。
+
+**例題**: [`examples/interop/py_ternary.ar`](examples/interop/py_ternary.ar) +
+[`test_modules/py_ternary.py`](examples/interop/test_modules/py_ternary.py)。
+新しいエラー経路が無いため `_error` 例は無し（腕の式が未対応構文ならその構文自身のエラーが出る）。
 
 ### [ ] 12. `in` / `not in`（メンバシップ）
 

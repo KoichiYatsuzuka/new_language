@@ -1,0 +1,80 @@
+# py_ternary.ar — `import[py]`（Python → Arrow 変換器）の **三項演算子** 対応の検査（項目 11）。
+#
+# 対象は `convert_expr` の `py::Expr::IfExp` アーム（`src/python_converter/expressions.rs`）。
+#
+# Python の `a if cond else b` は**式**。Arrow の `if` 式は分岐本体が**文の列**で、
+# 値は `block_return` で返す形なので、各腕を `block_return <値>` 1 文だけのブロックにして写す:
+#
+#   Expr::IfExpr {
+#       branches:  [(cond, [BlockReturn(a)])],
+#       else_body: Some([BlockReturn(b)]),
+#       return_type: None,          // ← `-> T` 注釈なしでも式として評価できる
+#   }
+#
+# ⚠ **遅延評価が一致する**こと（⑨）が要点。Python の三項式は選ばれた腕しか評価しないので、
+#   副作用のある呼び出しを腕に置いたときの回数まで揃う必要がある。Arrow の `if` 式も同じ。
+# ⚠ 腕の型が違ってもよい（⑧）。`return_type: None` なので静的検査は緩い側に倒れる。
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_ternary as m
+
+mut t = True
+mut f = False
+
+# ── ① 素朴な三項式 ──────────────────────────────────────────────────────
+mut a = 5
+print(m.sign(a))
+# pos
+mut b = -5
+print(m.sign(b))
+# nonpos
+
+# ── ② 入れ子（括弧つき） ────────────────────────────────────────────────
+mut z = 0
+print(m.nested(z))
+# zero
+print(m.nested(a))
+# pos
+print(m.nested(b))
+# neg
+
+# ── ③ 括弧なしの連鎖（右結合＝ elif 相当） ──────────────────────────────
+mut k2 = 2
+print(m.chain(k2))
+# b
+mut k9 = 9
+print(m.chain(k9))
+# z
+
+# ── ④ 代入の右辺 ────────────────────────────────────────────────────────
+print(m.in_assign(t))
+# 1
+print(m.in_assign(f))
+# 2
+
+# ── ⑤ 呼び出し引数の中 ──────────────────────────────────────────────────
+print(m.in_arg(t))
+# 3
+print(m.in_arg(f))
+# 4
+
+# ── ⑥ リスト要素 / dict の値 ────────────────────────────────────────────
+print(m.in_list(t))
+# [1, 3]
+print(m.in_dict(t))
+# {'k': 10}
+
+# ── ⑦ while の条件式の中 ────────────────────────────────────────────────
+mut n = 3
+print(m.in_cond(n))
+# 3
+
+# ── ⑧ 腕の型が違う ──────────────────────────────────────────────────────
+print(m.mixed(t))
+# 1
+print(m.mixed(f))
+# one
+
+# ── ⑨ ★遅延評価: 選ばれた腕しか評価されない（CALLS が 1 件だけ） ────────
+print(m.lazy(t))
+# T:1

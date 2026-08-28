@@ -117,7 +117,10 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   - `CmpOp::IsNot` → `Expr::UnaryOp{ Not, BinOp{RefEq} }`（`!==` は存在しない）。
 - テスト: `x is None`, `x is not None`, オブジェクト同一性。
 
-#### [11] 三項演算子 `a if cond else b`
+#### [11] 三項演算子 `a if cond else b` ✅ **実装済（2026-08-28）**
+- 計画どおり。`return_type: None` でも評価できることを実機確認。遅延評価（選ばれた腕しか
+  評価しない）が CPython と一致することも例題で固定した。17 ケース CPython 一致。
+- 例題: `examples/interop/py_ternary.ar` + `test_modules/py_ternary.py`。
 - 編集: `expressions.rs` `convert_expr`
   - `py::Expr::IfExp(_)` を `Expr::IfExpr { branches: vec![(convert(test), vec![Stmt::BlockReturn(convert(body), span)])], else_body: Some(vec![Stmt::BlockReturn(convert(orelse), span)]), return_type: None }` へ。
 - 根拠: `return_type: None` でも式評価可（実機確認済み）。
@@ -316,7 +319,7 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
 
 ## 3. 推奨着手順
 
-1. **フェーズ1**（3・4・12・13・11・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
+1. **フェーズ1**（3・4・12・13・~~11~~・18・19・22・~~20~~・21・~~1~~・~~24~~・5）— 独立・低リスク。1件ずつ通して examples を積む。
    （20 は 2026-08-27、24・1 は 2026-08-28 に完了）
 2'. ~~**INF-A → 項目2**（再代入）~~ — 2026-08-28 に完了。
 2. **INF-A → 項目2**（再代入）— 影響大・頻出。フェーズ1 と並行可。

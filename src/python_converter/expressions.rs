@@ -4,7 +4,7 @@ use crate::ast::Resolution;
 use std::rc::Rc;
 use {
     rustpython_parser::ast as py,
-    crate::ast::{BinOp, CallArg, Expr, UnaryOp},
+    crate::ast::{BinOp, CallArg, Expr, Stmt, UnaryOp},
     crate::token::Span,
 };
 use super::*;
@@ -179,9 +179,24 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
 
         py::Expr::NamedExpr(_) => Err(format!("{filename}: walrus operator ':=' is not supported")),
 
-        py::Expr::IfExp(_) => Err(format!(
-            "{filename}: inline 'if' expression is not supported"
-        )),
+        // Python の三項式 `a if cond else b` を Arrow の `if` 式へ。
+        //
+        // Arrow の `if` 式は分岐本体が**文の列**で、値は `block_return` で返す形なので、
+        // 各腕を `BlockReturn(<値>)` 1 文だけのブロックにする。
+        // ⚠ `return_type: None`（`-> T` 注釈なし）でも式として評価できる（実機確認済み）。
+        // ⚠ Python の三項式は選ばれた腕しか評価しない。Arrow の `if` 式も同じなので、
+        //   副作用の回数（`f() if c else g()`）まで一致する。
+        py::Expr::IfExp(ifexp) => {
+            let span = make_span(filename);
+            let cond = convert_expr(&ifexp.test, filename)?;
+            let then_val = convert_expr(&ifexp.body, filename)?;
+            let else_val = convert_expr(&ifexp.orelse, filename)?;
+            Ok(Expr::IfExpr {
+                branches: vec![(cond, vec![Stmt::BlockReturn(then_val, span.clone())])],
+                else_body: Some(vec![Stmt::BlockReturn(else_val, span)]),
+                return_type: None,
+            })
+        }
 
         py::Expr::Starred(_) => Err(format!(
             "{filename}: starred expression is not supported in this context"
