@@ -714,7 +714,7 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 
 `class Sub(Base):` を変換すると `Stmt::ClassDef.bases = ["Base"]` は載るが、
 **Arrow はクラス継承をサポートしていない**（ネイティブ `.ar` では
-`ParseError: class \`Sub\` cannot inherit from \`Base\` (only traits are allowed as bases)`。
+`ParseError: class Sub cannot inherit from Base (only traits are allowed as bases)`。
 Arrow の継承はトレイトのみ）。変換器はパーサを通らないのでこのエラーが出ず、
 基底クラスの**メソッドもフィールドも引き継がれない**まま実行される:
 
