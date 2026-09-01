@@ -462,9 +462,10 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
 
 (repo root)
   ar_config.json (32)
+  bug_fix.md (387)
   CLAUDE.md (130)
-  python_converter_coverage.md (927)
-  python_converter_fix_plan.md (426)
+  python_converter_coverage.md (949)
+  python_converter_fix_plan.md (431)
   README.md (317)
 ```
 _Generated 2026-09-01 by generate-codebase-map.ps1_
