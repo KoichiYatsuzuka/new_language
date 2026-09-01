@@ -478,7 +478,7 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 - 難易度: 中（複数文返却の配管）。
 - 懸念（限定的）: RHS が **mutable 値を指す変数/式**なら、Arrow の代入は参照を共有するためエイリアスは崩れない（ユーザー確認済み。実機でも `let c = a; a === c`→True）。残る差異は **`a = b = <新規リテラル>`**（例 `a = b = []`）のみ — Python は単一オブジェクトを共有するが分割 `a=[]; b=[]` は別オブジェクトになる。この稀なケースが問題なら一時変数化 `__t=[]; a=__t; b=__t` で回避可能。
 
-### [ ] 16. 連鎖比較 `a < b < c`
+### [x] 16. 連鎖比較 `a < b < c`【実装済 2026-08-28】
 
 - 対象: [`expressions.rs`](src/python_converter/expressions.rs) の `Compare` アーム（現在 `ops.len() != 1` でエラー）
 - 現状: `chained comparisons are not supported` エラー。
@@ -486,6 +486,28 @@ Arrow の `===` は str / int を**値で**比べるが、CPython の `is` は�
 - 実装: `Compare { left, ops, comparators }` を隣接ペアに展開し `Expr::BinOp{ And }` で連結。`a op1 b op2 c` → `(a op1 b) and (b op2 c)`。式のまま完結（文分割不要）。
 - 難易度: 低。
 - 懸念: `and` 展開で中間オペランド `b` が2回評価される（副作用のある中間式で差異）。→ **ユーザー方針によりこの副作用は許容**。
+
+**実装結果**: 計画どおり隣接ペアを `and` で連結した（`a < b < c` → `(a < b) and (b < c)`）。
+併せて、項目 13 で `Compare` アームに直書きしていた `is` / `is not` の特別扱いを
+`build_comparison` に切り出し、**連鎖の各ペアでも効く**ようにした。
+
+⚠ オペランドは**1 回だけ変換して clone で使い回す**。同じ式を 2 回 `convert_expr` に通すと、
+将来ノード ID を振るようになったときに別ノードになってしまう。
+
+**⚠⚠ 短絡の挙動は CPython と一致する**: Arrow の `and` も短絡するので、
+`100 < x < side_len()` で `100 < x` が偽なら `side_len()` は評価されない（例題 ⑦-a で固定）。
+
+**⚠ 残る差 1 件（実測）— 中間オペランドの二重評価**:
+`0 < mid() < 100` の `mid()` が **Arrow では 2 回**、CPython では 1 回呼ばれる（例題 ⑦-b）。
+⇒ **ユーザー方針で許容**。一時変数へ退避するには「式から囲みスコープへ文を注入する機構」
+（INF-B。項目 15・23・26 の前提）が要る。INF-B を入れたあとなら、ここも 1 回評価に直せる。
+
+**確認（12 ケース中 11 件 CPython 一致）**: 基本形／3 段の連鎖／演算子混在（`<=` と `<`、`==` の連鎖）／
+`and` との組み合わせ／連鎖でない比較（`is not` の特別扱いを壊していないこと）／条件式／短絡。
+
+**例題**: [`examples/interop/py_chained_compare.ar`](examples/interop/py_chained_compare.ar) +
+[`test_modules/py_chained_compare.py`](examples/interop/test_modules/py_chained_compare.py)。
+新しいエラー経路が無いため `_error` 例は無し。
 
 ### [x] 17. 内包表記 → `for` 式 + `loop_yield`【実装済 2026-08-28 / list・set】
 

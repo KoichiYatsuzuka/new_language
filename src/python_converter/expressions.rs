@@ -13,6 +13,46 @@ use super::*;
 // 式変換
 // ---------------------------------------------------------------------------
 
+/// 比較 1 つ分（`left <op> right`）を Arrow の式にする。
+///
+/// ★ `is` / `is not` は `convert_cmpop` に置けないのでここで組む。
+///   - Python の `is` は**識別比較**なので Arrow の `===`（`BinOp::RefEq`）に対応する。
+///     ⚠⚠ Arrow にも `is` キーワードがあるが**型ガード**（`x is int`）で**別物**。
+///   - Arrow に `!==` が無いので `is not` は `Not(RefEq)` でラップする
+///     （`convert_cmpop` は `BinOp` しか返せない）。
+fn build_comparison(
+    left: Expr,
+    op: &py::CmpOp,
+    right: Expr,
+    filename: &str,
+    span: Span,
+) -> Result<Expr, String> {
+    if matches!(op, py::CmpOp::Is | py::CmpOp::IsNot) {
+        let eq = Expr::BinOp {
+            op: BinOp::RefEq,
+            left: Box::new(left),
+            right: Box::new(right),
+            span,
+            node_id: 0, // #16: py-converter は未採番（0=注釈対象外）
+        };
+        return Ok(if matches!(op, py::CmpOp::IsNot) {
+            Expr::UnaryOp {
+                op: UnaryOp::Not,
+                operand: Box::new(eq),
+            }
+        } else {
+            eq
+        });
+    }
+    Ok(Expr::BinOp {
+        op: convert_cmpop(op, filename)?,
+        left: Box::new(left),
+        right: Box::new(right),
+        span,
+        node_id: 0, // #16: py-converter は未採番（0=注釈対象外）
+    })
+}
+
 /// 内包表記の `for ... in ... if ...` 節を [`crate::ast::ComprehensionClause`] に変換する。
 ///
 /// ⚠ タプル展開（`for k, v in d.items()`）は未対応。`Stmt::For` 側と同じ制限なので同じ形で拒否する。
@@ -136,46 +176,46 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
             Ok(result)
         }
 
+        // 比較。Python は**連鎖比較**（`a < b < c`）を書けるので、隣接ペアを `and` で連結する。
         py::Expr::Compare(c) => {
-            if c.ops.len() != 1 || c.comparators.len() != 1 {
-                return Err(format!("{filename}: chained comparisons are not supported"));
+            if c.ops.len() != c.comparators.len() || c.ops.is_empty() {
+                return Err(format!("{filename}: malformed comparison"));
             }
-            let left = convert_expr(&c.left, filename)?;
-            let right = convert_expr(&c.comparators[0], filename)?;
-            let span = make_span(filename);
+            // オペランドは `left, comparators[0], comparators[1], ...`。
+            // ⚠ **1 回だけ変換して clone で使い回す**。同じ式を 2 回変換すると
+            //   （将来ノード ID を振るようになったとき）別ノードになってしまう。
+            let mut operands: Vec<Expr> = Vec::with_capacity(c.comparators.len() + 1);
+            operands.push(convert_expr(&c.left, filename)?);
+            for cmp in &c.comparators {
+                operands.push(convert_expr(cmp, filename)?);
+            }
 
-            // ★ `is` / `is not` は `convert_cmpop` に置けない。
-            //   - Python の `is` は**識別比較**なので Arrow の `===`（`BinOp::RefEq`）に対応する。
-            //     ⚠⚠ Arrow にも `is` キーワードがあるが**型ガード**（`x is int`）で**別物**。
-            //   - Arrow に `!==` が無いので `is not` は `Not(RefEq)` でラップする
-            //     （`convert_cmpop` は `BinOp` しか返せないのでここで組む）。
-            let is_op = matches!(c.ops[0], py::CmpOp::Is | py::CmpOp::IsNot);
-            if is_op {
-                let eq = Expr::BinOp {
-                    op: BinOp::RefEq,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                    span,
-                    node_id: 0, // #16: py-converter は未採番（0=注釈対象外）
-                };
-                return Ok(if matches!(c.ops[0], py::CmpOp::IsNot) {
-                    Expr::UnaryOp {
-                        op: UnaryOp::Not,
-                        operand: Box::new(eq),
-                    }
-                } else {
-                    eq
+            let span = make_span(filename);
+            let mut result: Option<Expr> = None;
+            for (i, op) in c.ops.iter().enumerate() {
+                let pair = build_comparison(
+                    operands[i].clone(),
+                    op,
+                    operands[i + 1].clone(),
+                    filename,
+                    span.clone(),
+                )?;
+                result = Some(match result {
+                    // `a < b < c` → `(a < b) and (b < c)`。
+                    // ⚠ Arrow の `and` も短絡するので、`a < b` が偽なら `c` 側は評価されない
+                    //   （Python と同じ）。**違うのは中間オペランドを 2 回評価すること**だけ
+                    //   （`f() < g() < h()` の `g()` が 2 回走る）。ユーザー方針で許容。
+                    Some(acc) => Expr::BinOp {
+                        op: BinOp::And,
+                        left: Box::new(acc),
+                        right: Box::new(pair),
+                        span: span.clone(),
+                        node_id: 0, // #16: py-converter は未採番
+                    },
+                    None => pair,
                 });
             }
-
-            let op = convert_cmpop(&c.ops[0], filename)?;
-            Ok(Expr::BinOp {
-                op,
-                left: Box::new(left),
-                right: Box::new(right),
-                span,
-                node_id: 0, // #16: py-converter は未採番（0=注釈対象外）
-            })
+            Ok(result.expect("ops is non-empty"))
         }
 
         py::Expr::Call(c) => {

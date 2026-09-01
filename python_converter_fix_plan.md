@@ -303,7 +303,12 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   - map をどこに持つか（スレッド越しの状態 or 引数引き回し）を設計。`new_type` 出力案は名目的別型で偽陽性のため非推奨。
 - テスト: `type V = list[int]` を注釈に使用。
 
-#### [16] 連鎖比較 `a<b<c`
+#### [16] 連鎖比較 `a<b<c` ✅ **実装済（2026-08-28）**
+- 計画どおり隣接ペアを `and` 連結。項目 13 の `is`/`is not` 特別扱いを `build_comparison` に
+  切り出して連鎖の各ペアでも効くようにした。
+- ⚠ **短絡は CPython と一致**（Arrow の `and` も短絡）。差は**中間オペランドの二重評価**だけで、
+  これは INF-B（式→文の注入）が入れば 1 回評価に直せる。12 ケース中 11 件 CPython 一致。
+- 例題: `examples/interop/py_chained_compare.ar` + `test_modules/py_chained_compare.py`。
 - 編集: `expressions.rs` `Compare` アーム
   - `ops.len()>=1` を許可し、隣接ペアを `and` で連結: `a op1 b op2 c` → `(a op1 b) and (b op2 c)`。
 - 注意: 中間オペランド2回評価は**許容**（ユーザー方針）。

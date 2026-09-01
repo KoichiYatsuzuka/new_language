@@ -1,0 +1,69 @@
+# py_chained_compare.ar — `import[py]`（Python → Arrow 変換器）の **連鎖比較** 対応（項目 16）。
+#
+# 対象は `convert_expr` の `Compare` アーム（`src/python_converter/expressions.rs`）。
+#
+# Python の `a < b < c` に相当する構文は Arrow に無いので、**隣接ペアを `and` で連結**する:
+#
+#   a < b < c   →   (a < b) and (b < c)
+#
+# ⚠ オペランドは**1 回だけ変換して clone で使い回す**（同じ式を 2 回変換すると、将来
+#   ノード ID を振るようになったときに別ノードになってしまう）。
+#
+# ⚠⚠ **短絡の挙動は CPython と一致する**（⑦-a）。Arrow の `and` も短絡するので、
+#   `a < b` が偽なら右側は評価されない。
+#   **違うのは中間オペランドを 2 回評価すること**だけ（⑦-b）。`f() < g() < h()` の `g()` が
+#   2 回走る。⇒ **ユーザー方針で許容**（脱糖のために一時変数へ退避する機構＝ INF-B が要るため）。
+#
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_chained_compare as m
+
+mut x = 5
+
+# ── ① 基本形 ────────────────────────────────────────────────────────────
+print(m.simple(x))
+# True
+mut big = 50
+print(m.simple(big))
+# False
+
+# ── ② 3 段の連鎖 ────────────────────────────────────────────────────────
+mut y = 20
+print(m.triple(x, y))
+# True
+
+# ── ③ 演算子が混ざってもよい ────────────────────────────────────────────
+print(m.mixed_ops(x))
+# True
+mut a = 1
+print(m.eq_chain(a, a, a))
+# True
+mut b = 2
+print(m.eq_chain(a, a, b))
+# False
+
+# ── ④ 他の演算子との組み合わせ ──────────────────────────────────────────
+mut xs = [5]
+print(m.with_in(x, xs))
+# True
+
+# ── ⑤ 連鎖でない比較も同じ経路（`is not` の特別扱いを壊していないこと） ──
+print(m.is_chain(x))
+# True
+
+# ── ⑥ 条件式としての利用 ────────────────────────────────────────────────
+print(m.guard(x))
+# out      （1 < 5 < 5 は偽）
+mut nine = 9
+print(m.guard(nine))
+# out
+
+# ── ⑦-a ★短絡は CPython と一致する ─────────────────────────────────────
+#     `100 < 5` が偽なので右側の `side_len()` は評価されない ⇒ 呼び出し回数 0。
+print(m.short_circuit(x))
+# (False, 0)
+
+# ── ⑦-b ★中間オペランドは 2 回評価される（唯一の差） ────────────────────
+#     `0 < mid() < 100` の `mid()` が Arrow では 2 回呼ばれる。
+print(m.middle_twice())
+# (True, 2)      （CPython は (True, 1)）
