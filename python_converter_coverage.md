@@ -251,7 +251,7 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 [`test_modules/py_classvar.py`](examples/interop/test_modules/py_classvar.py)。
 新しいエラー経路が無いため `_error` 例は無し。
 
-### [ ] 6. `*args`（可変長位置引数）
+### [x] 6. `*args`（可変長位置引数）【実装済 2026-08-28】
 
 - 対象: [`classes.rs` `convert_params()`](src/python_converter/classes.rs) + 本体の識別子書き換え
 - 現状: `Param { name: "*args", variadic: false }` という不正なパラメータに化けている。
@@ -263,7 +263,7 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 - 懸念: Python の `*args` はタプル、`local::args` はリスト。添字/反復は互換だが `tuple` 固有操作は差異あり。
 - テスト: `def f(*xs): return xs[0]` を `f(10,20)` で呼び `10`。
 
-### [ ] 7. `**kwargs`（可変長キーワード引数）
+### [x] 7. `**kwargs`（可変長キーワード引数）【実装済 2026-08-28】
 
 - 対象: [`classes.rs` `convert_params()`](src/python_converter/classes.rs) + 本体の識別子書き換え
 - 現状: `**kwargs` をパラメータから除外。余剰キーワードは `kwargs` dict に自動注入される仕組みが既存（[`execution.rs:143`](src/interpreter/functions/execution.rs#L143), `bind_args_relaxed`）。既存例 [`py_additional_param.ar`](examples/archived/py_additional_param.ar) で動作実績あり。
@@ -272,6 +272,69 @@ Python の `self.count = 99` は**クラス属性を隠すインスタンス属�
 - 難易度: 中。
 - 懸念: 余剰キーワードが 1 つも渡されないと `kwargs` 変数が未定義になり、本体参照で `NameError`。**空でも空 dict を注入する**ようインタープリタ側 [`execution.rs`](src/interpreter/functions/execution.rs) の条件（`!extra_kwargs.is_empty()`）緩和が別途必要。
 - テスト: `def f(**kw): return kw` を `f(a=1,b=2)` と `f()` の両方で呼ぶ。
+
+**実装結果（項目 6・7 は同時に実施）**: 計画では「変換器 + interpreter の 1 箇所」だったが、
+実際は **3 層**に手を入れないと動かなかった。
+
+### ① 変換器（`python_converter`）
+
+| Python | 生成する `Param` | 本体の参照 |
+|---|---|---|
+| `*xs` | `{ name: "...", variadic: true, type_ann: "list[Any]" }` | `xs` → `local::args` |
+| `**opts` | `{ name: "**kwargs" }`（[`ast::PY_KWARGS_PARAM`](src/ast.rs)） | `opts` → `**kwargs` |
+
+- Arrow の可変長は**名前を持たず** `local::args` で参照する規約なので、Python 側の名前を
+  **本体で差し替える**必要がある。変換後の AST を歩く再帰ウォーカは AST が大きく割に合わないので、
+  **変換中に** `convert_expr` の `Name` アームで差し替える（[`param_rewrite.rs`](src/python_converter/param_rewrite.rs) 新設）。
+  状態はスレッドローカルのスタック（`supers.rs` と同じ方式）。入れ子 `def` は外側の差し替えを
+  引き継ぐが、同名パラメータを持つ場合はそちらが勝つ。
+- `**kwargs` は **番兵パラメータ名**を使う。Arrow の識別子に `*` は使えないので実ユーザの名前と
+  衝突しない（Arrow の可変長が `"..."` を使うのと同じ考え方）。
+  ⚠ **パラメータ名・束縛名・本体の参照をすべて同じ名前で揃える**こと。別名にすると
+  リゾルバ／VM がスロットに解決できず `NameError: 'kwargs' is not defined` になる（実際に踏んだ）。
+- ⚠ 番兵は**可変長パラメータより前**に置く（`bind_args_relaxed` は可変長を末尾として扱う）。
+
+### ② 静的型検査（`type_check`）
+
+`FnTypeParam` / `FnSig` は「個数が固定の引数列」しか表せないので、そのままだと
+`f(1, 2, 3)` が `takes 1 argument(s) but 3 were given`、`f(x=1)` が
+`has no parameter named 'x'` という**嘘のエラー**になる。
+
+- モジュールメンバ（`collect_module_types`）: 引数の個数が開いている関数は
+  **`params: None`**（呼び出し検査をしない）。
+- メソッド／関数シグネチャ（`registry/builder.rs`）: 番兵を `params`・`required_count` から外し、
+  開いているときは `variadic_type` を立てる。`call_check.rs` の個数照合 3 箇所で
+  **`variadic_type.is_some()` なら上限なし**に変更。
+
+### ③ 束縛（`bind_args_relaxed` — `import[py]` の関数だけが通る経路）
+
+- 通常パラメータを埋めきったあとの**位置引数を `local::args` に積む**
+  （Arrow のネイティブ呼び出しは `f(... = a, b)` と明示するが、Python は `f(a, b)`）。
+- 余ったキーワード引数を dict にして番兵名で束縛する。
+  ⚠ **1 個も無くても空 dict**（Python の `kw` は常に存在するので、省くと本体参照が `NameError`）。
+- `*args` が空のときも `Value::None` ではなく**空リスト**（`for` / `len` が素直に動く）。
+  ネイティブ `.ar` は別関数 `bind_args` を通るので、そちらの `None` 既定は**不変**。
+
+**確認（17 ケース中 16 件 CPython 一致）**: `*args` の基本／空／`len`／添字／反復／通常引数との併用／
+`**kwargs` の基本／空／`len`／添字／`keys()`／両方の併用／メソッドの `__init__`・通常メソッド。
+
+**⚠ 残る差 1 件**: **`*args` の中身は list**（CPython は tuple）。添字・反復・`len` は同じだが、
+そのまま表示すると括弧が違い、tuple 固有の操作もできない。Arrow の可変長引数がリストであるため。
+
+**⚠ 実装中に見つかった Arrow 本体の制限（変換器の外・未修正）**:
+**入れ子 `fn` から `*args` を参照すると VM に載らない**。
+`def outer(*xs): def inner(): return len(xs)` が
+`VmForceError: cannot compile function 'inner' to bytecode`。
+⚠ **純 Arrow でも同じ**（`local::args` を捕捉する入れ子 `fn` が VM 非適格）。
+
+**⚠ 定数の置き場所**: `PY_KWARGS_PARAM` は **`src/ast.rs`** に置く。
+`crates/arrow-frontend`（VS Code 拡張の wasm）は `src/type_check` を取り込むが
+`src/python_converter` は取り込まないので、変換器側に置くと**拡張のビルドだけが壊れる**
+（`compare_wasm_frontend.ps1` が検出した）。
+
+**例題**: [`examples/interop/py_varargs.ar`](examples/interop/py_varargs.ar) +
+[`test_modules/py_varargs.py`](examples/interop/test_modules/py_varargs.py)。
+新しいエラー経路が無いため `_error` 例は無し。
 
 ### [ ] 8. `match` 文（値/ワイルドカードパターンのサブセット）
 

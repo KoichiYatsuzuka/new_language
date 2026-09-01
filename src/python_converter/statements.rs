@@ -195,11 +195,15 @@ pub(crate) fn convert_stmt(
                 &format!("function '{}'", f.name.as_str()),
                 false,
             )?;
-            let params = convert_params(&f.args, filename)?;
+            let (params, renames) = convert_params(&f.args, filename)?;
             let return_type = f.returns.as_deref().map(convert_annotation);
             // 関数本体は**新しいスコープ**。パラメータ名を宣言済みとして渡す。
             let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
-            let body = convert_scope(&f.body, filename, &param_names)?;
+            let body = {
+                // `*args` / `**kwargs` の識別子差し替えは**この本体の変換中だけ**有効。
+                let _rename_guard = ParamRenameGuard::push(renames, &param_names);
+                convert_scope(&f.body, filename, &param_names)?
+            };
             Ok(Some(Stmt::FnDef {
                 name: f.name.to_string(),
                 template_params: vec![],

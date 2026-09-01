@@ -87,6 +87,27 @@ impl TypeChecker {
                         .as_deref()
                         .map(Self::type_ann_to_inferred)
                         .unwrap_or(InferredType::Unresolved);
+                    // ★ Python の `*args` / `**kwargs` を持つ関数は**引数リストを公開しない**。
+                    //
+                    // `FnTypeParam` は「個数が固定の引数列」しか表せないので、
+                    // `f(1, 2, 3)`（`*args` へ流れる）や `f(x=1)`（`**kwargs` へ流れる）を
+                    // **正しく検査できない**。無理に検査すると
+                    // `takes 1 argument(s) but 2 were given` / `has no parameter named 'x'` と
+                    // **嘘のエラー**になる。⇒ `params: None` にして呼び出し検査を行わない。
+                    // （`InferredType::Function { params: None, .. }` は戻り値型だけ返す既存の形。）
+                    let has_open_arity = params.iter().any(|p| {
+                        p.variadic || p.name == crate::ast::PY_KWARGS_PARAM
+                    });
+                    if has_open_arity {
+                        map.insert(
+                            name.clone(),
+                            InferredType::Function {
+                                params: None,
+                                return_type: Box::new(ret),
+                            },
+                        );
+                        continue;
+                    }
                     let fn_params: Vec<FnTypeParam> = params
                         .iter()
                         .map(|p| FnTypeParam {

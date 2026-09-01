@@ -2,7 +2,7 @@
 
 use {
     rustpython_parser::ast as py,
-    crate::ast::{FieldKind, Param, Stmt},
+    crate::ast::{FieldKind, Param, Stmt, PY_KWARGS_PARAM},
 };
 use super::*;
 
@@ -114,11 +114,15 @@ pub(crate) fn convert_class(c: &py::StmtClassDef, filename: &str) -> Result<Stmt
                     &format!("method '{}.{}'", class_name, f.name.as_str()),
                     true,
                 )?;
-                let params = convert_params(&f.args, filename)?;
+                let (params, renames) = convert_params(&f.args, filename)?;
                 let return_type = f.returns.as_deref().map(convert_annotation);
                 // メソッド本体は**新しいスコープ**。パラメータ名（`self` 含む）を宣言済みとして渡す。
                 let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
-                let body = convert_scope(&f.body, filename, &param_names)?;
+                let body = {
+                    // `*args` / `**kwargs` の識別子差し替えは**この本体の変換中だけ**有効。
+                    let _rename_guard = ParamRenameGuard::push(renames, &param_names);
+                    convert_scope(&f.body, filename, &param_names)?
+                };
                 methods.push(Stmt::FnDef {
                     name: f.name.to_string(),
                     template_params: vec![],
@@ -237,8 +241,14 @@ pub(crate) fn extract_param_types(args: &py::Arguments) -> std::collections::Has
 /// 　  共有する（有名な罠）が、Arrow は毎回新しいリストを作る。**Arrow 側が「普通に期待される」
 /// 　  挙動**で、その罠に依存したコードだけが差を踏む。
 /// 　- ⚠ 名前を参照するデフォルト（`def f(x=CONST)`）も、Arrow は呼び出し時に読み直す。
-pub(crate) fn convert_params(args: &py::Arguments, filename: &str) -> Result<Vec<Param>, String> {
+pub(crate) fn convert_params(
+    args: &py::Arguments,
+    filename: &str,
+) -> Result<(Vec<Param>, std::collections::HashMap<String, ParamRename>), String> {
     let mut params: Vec<Param> = Vec::new();
+    // 本体の識別子差し替え表（`*args` / `**kwargs` の Python 名 → Arrow 側の参照）。
+    let mut renames: std::collections::HashMap<String, ParamRename> =
+        std::collections::HashMap::new();
 
     // `/` より前（posonlyargs）と通常引数は区別せず同じ列に積む。
     for arg in args.posonlyargs.iter().chain(args.args.iter()) {
@@ -257,15 +267,6 @@ pub(crate) fn convert_params(args: &py::Arguments, filename: &str) -> Result<Vec
         });
     }
 
-    if let Some(_vararg) = &args.vararg {
-        params.push(Param {
-            name: "*args".to_string(),
-            mutable: true,
-            type_ann: Some("list[Any]".to_string()),
-            default: None,
-            variadic: false,
-        });
-    }
 
     // bare `*` / `*args` より後ろのキーワード専用引数。通常引数として平坦化する（項目 24）。
     // ⚠ 上の vararg 分岐が走った場合（`def f(a, *rest, b)`）は、`*args` が不正な
@@ -286,9 +287,38 @@ pub(crate) fn convert_params(args: &py::Arguments, filename: &str) -> Result<Vec
         });
     }
 
-    // **kwargs はパラメータリストに含めない。
-    // 呼び出し時に余分なキーワード引数が kwargs dict として自動注入される。
+    // ★ `**kwargs` の番兵パラメータ（項目 7）。
+    //   Arrow の識別子にできない名前なのでユーザのパラメータ名と衝突しない。
+    //   `bind_args_relaxed` が余ったキーワード引数を集めて **`kwargs`** という名前で束縛する
+    //   （**1 個も無くても空 dict**。Python では `kw` が常に存在するため）。
+    //   ⚠ **可変長パラメータより前**に置くこと。`bind_args_relaxed` は可変長を末尾として扱う。
+    if let Some(kwarg) = &args.kwarg {
+        params.push(Param {
+            name: PY_KWARGS_PARAM.to_string(),
+            mutable: true,
+            type_ann: Some("dict[str, Any]".to_string()),
+            default: None,
+            variadic: false,
+        });
+        // Python 側の名前（`**opts` など）を本体では `kwargs` として参照させる。
+        renames.insert(kwarg.arg.to_string(), ParamRename::Kwargs);
+    }
 
-    Ok(params)
+    // ★ `*args` の可変長パラメータ（項目 6）。
+    //   Arrow の可変長は**名前を持たず**、本体からは `local::args` で参照する規約なので、
+    //   Python 側の名前（`*xs` など）は本体で `local::args` に差し替える。
+    //   ⚠ Arrow は可変長パラメータが**最後**であることを要求するので、必ず末尾に積む。
+    if let Some(vararg) = &args.vararg {
+        params.push(Param {
+            name: "...".to_string(),
+            mutable: true,
+            type_ann: Some("list[Any]".to_string()),
+            default: None,
+            variadic: true,
+        });
+        renames.insert(vararg.arg.to_string(), ParamRename::LocalArgs);
+    }
+
+    Ok((params, renames))
 }
 

@@ -238,13 +238,27 @@ impl Interpreter {
                 (params, defaults)
             };
 
-        // 可変長パラメータを分離する
+        // ★ Python の `*args` / `**kwargs` 用の**番兵パラメータ**を分離する。
+        //
+        // 変換器（`python_converter`）は
+        //   `*args`   → `Param { name: "...", variadic: true }`（Arrow の可変長規約そのもの）
+        //   `**kwargs`→ `Param { name: "**kwargs" }`（Arrow の識別子にできない名前＝番兵）
+        // を出す。どちらも**位置引数では埋めない**ので、通常パラメータの列から外す。
+        // ⚠ 番兵名を使うのは `"..."`（Arrow 既存の可変長パラメータ名）と同じ考え方。
         let variadic_idx = params_to_bind.iter().position(|p| p.variadic);
-        let (non_variadic_params, non_variadic_defaults) = if let Some(vi) = variadic_idx {
-            (&params_to_bind[..vi], defaults_to_bind.get(..vi).unwrap_or(&[]))
-        } else {
-            (params_to_bind, defaults_to_bind)
-        };
+        let kwargs_idx = params_to_bind
+            .iter()
+            .position(|p| p.name == crate::ast::PY_KWARGS_PARAM);
+        let plain: Vec<(usize, &Param)> = params_to_bind
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != variadic_idx && Some(*i) != kwargs_idx)
+            .collect();
+        let non_variadic_params: Vec<&Param> = plain.iter().map(|(_, p)| *p).collect();
+        let non_variadic_defaults: Vec<Option<Value>> = plain
+            .iter()
+            .map(|(i, _)| defaults_to_bind.get(*i).and_then(|o| o.clone()))
+            .collect();
 
         // evaled から可変長引数エントリを分離する
         let variadic_value: Option<Value> = evaled
@@ -259,11 +273,18 @@ impl Interpreter {
         let mut slots: Vec<Option<Value>> = vec![None; non_variadic_params.len()];
         let mut slot_is_mutable: Vec<bool> = vec![true; non_variadic_params.len()];
         let mut positional_idx = 0usize;
+        // ★ 通常パラメータを埋めきったあとの位置引数は `*args` に積む（Python の意味論）。
+        //   Arrow のネイティブ呼び出しは `f(... = a, b)` と明示するが、Python 側は `f(a, b)` と書く。
+        let mut overflow_positional: Vec<Value> = Vec::new();
 
         for (key, val, is_mut) in &non_variadic_evaled {
             match key {
                 None => {
                     if positional_idx >= non_variadic_params.len() {
+                        if variadic_idx.is_some() {
+                            overflow_positional.push((*val).clone());
+                            continue;
+                        }
                         return Err(format!(
                             "TypeError: function takes {} positional argument(s), got too many",
                             non_variadic_params.len()
@@ -304,10 +325,39 @@ impl Interpreter {
             result.push((non_variadic_params[i].name.clone(), v, non_variadic_params[i].mutable, slot_is_mutable[i]));
         }
 
+        // ★ `**kwargs` のバインド（**可変長より先**に積む）:
+        //   ⚠ 束縛の並びは**パラメータの並びと同じ**にすること。変換器は
+        //     `[通常..., "**kwargs", "..."]` の順で積むので、ここも同じ順にしないと
+        //     位置で対応付ける経路（リゾルバのスロット割り当て）でずれる。 余った キーワード引数を dict にして `kwargs` という名前で束縛する。
+        //   ⚠ **1 個も無くても空 dict を束縛する**。Python では `def f(**kw)` の `kw` は常に
+        //     存在するので、束縛を省くと本体の参照が `NameError` になる。
+        if kwargs_idx.is_some() {
+            let mut d = crate::interpreter::value::DictData::new(
+                "str".to_string(),
+                "Any".to_string(),
+            );
+            for (k, v) in &extra_kwargs {
+                d.set(Value::Str(std::rc::Rc::from(k.as_str())), v.clone());
+            }
+            // ⚠ 束縛名は**パラメータ名と同じ番兵名**にする。変換器は本体の参照も同じ名前へ
+            //   差し替えているので、リゾルバ／VM は普通のローカル変数として解決できる。
+            result.push((
+                crate::ast::PY_KWARGS_PARAM.to_string(),
+                Value::Dict(Rc::new(RefCell::new(d))),
+                true,
+                true,
+            ));
+        }
+
         // 可変長パラメータのバインド
         if let Some(vi) = variadic_idx {
             let variadic_param = &params_to_bind[vi];
-            let local_args_val = variadic_value.unwrap_or(Value::None);
+            // 明示の `... = a, b` があればそれを使い、無ければ**あふれた位置引数**を集めたリスト。
+            // ⚠ Python の `*args` は 1 個も来なくても**空タプル**なので、ここも `Value::None`
+            //   ではなく**空リスト**にする（`for v in xs` / `len(xs)` が素直に動く）。
+            //   ネイティブ `.ar` は `bind_args`（別関数）を通るので、そちらの `None` 既定は不変。
+            let local_args_val = variadic_value
+                .unwrap_or_else(|| Value::List(Rc::new(RefCell::new(overflow_positional))));
             result.push(("local::args".to_string(), local_args_val, variadic_param.mutable, true));
         }
 

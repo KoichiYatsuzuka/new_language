@@ -242,7 +242,10 @@ impl TypeChecker {
                     .count();
                 let matching: Vec<_> = sigs
                     .iter()
-                    .filter(|s| call_count >= s.required_count && call_count <= s.params.len())
+                    .filter(|s| {
+                        call_count >= s.required_count
+                            && (s.variadic_type.is_some() || call_count <= s.params.len())
+                    })
                     .collect();
                 if matching.len() == 1 {
                     matching[0].return_type.clone()
@@ -283,7 +286,11 @@ impl TypeChecker {
         };
         let count_matching: Vec<FnSig> = sigs
             .iter()
-            .filter(|s| effective_count >= s.required_count && effective_count <= s.params.len())
+            // ⚠ `variadic_type` が Some なら引数の上限は無い（`*args` / `**kwargs` を持つ）。
+            .filter(|s| {
+                effective_count >= s.required_count
+                    && (s.variadic_type.is_some() || effective_count <= s.params.len())
+            })
             .cloned()
             .collect();
         if count_matching.is_empty() {
@@ -377,7 +384,10 @@ impl TypeChecker {
 
         let count_matching: Vec<FnSig> = sigs
             .iter()
-            .filter(|s| call_count >= s.required_count && call_count <= s.params.len())
+            .filter(|s| {
+                        call_count >= s.required_count
+                            && (s.variadic_type.is_some() || call_count <= s.params.len())
+                    })
             .cloned()
             .collect();
 

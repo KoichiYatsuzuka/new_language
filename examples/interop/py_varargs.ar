@@ -1,0 +1,89 @@
+# py_varargs.ar — `import[py]`（Python → Arrow 変換器）の **`*args` / `**kwargs`** 対応（項目 6・7）。
+#
+# ⚠⚠ **3 層に手を入れて初めて動く**。どれか 1 つでも欠けると別々のエラーになる:
+#
+#   ① 変換器（`python_converter`）
+#      - `*args`    → `Param { name: "...", variadic: true }`（Arrow の可変長規約）
+#      - `**kwargs` → `Param { name: "**kwargs" }`（Arrow の識別子にできない**番兵名**）
+#      - Arrow の可変長は**名前を持たず** `local::args` で参照する規約なので、
+#        本体の `xs` / `opts` といった Python 側の名前を**変換中に差し替える**
+#        （`param_rewrite.rs`。変換後の AST を歩く再帰ウォーカを避けるため）。
+#
+#   ② 静的型検査（`type_check`）
+#      `FnTypeParam` / `FnSig` は「個数が固定の引数列」しか表せないので、そのままだと
+#      `f(1, 2, 3)` が `takes 1 argument(s) but 3 were given`、`f(x=1)` が
+#      `has no parameter named 'x'` という**嘘のエラー**になる。
+#      ⇒ 引数の個数が**開いている**関数は、モジュールメンバなら `params: None`（検査しない）、
+#        メソッドなら `variadic_type` を立てて**上限なし**にする。
+#
+#   ③ 束縛（`bind_args_relaxed` — `import[py]` の関数だけが通る経路）
+#      - 通常パラメータを埋めきったあとの位置引数を `local::args` に積む
+#        （Arrow のネイティブ呼び出しは `f(... = a, b)` と明示するが、Python は `f(a, b)`）。
+#      - 余ったキーワード引数を dict にして番兵名で束縛する。
+#        ⚠ **1 個も無くても空 dict**（Python の `kw` は常に存在するので、
+#          省くと本体の参照が `NameError` になる）。
+#      - `*args` が空のときも `Value::None` ではなく**空リスト**（`for` / `len` が素直に動く）。
+#
+# ⚠ py 関数の引数は型注釈が無く Arrow からは `mut` 扱いなので、実引数も `mut` 変数で渡す。
+
+import[py] test_modules.py_varargs as m
+
+mut a = 1
+mut b = 2
+mut c = 3
+
+# ── ① `*args` の基本 ────────────────────────────────────────────────────
+print(m.va(a, b, c))
+# [1, 2, 3]
+print(m.va())
+# []
+print(m.va_len(a, b))
+# 2
+print(m.va_index(a, b))
+# 1
+print(m.va_sum(a, b, c))
+# 6
+
+# ── ② 通常引数 + `*args` ────────────────────────────────────────────────
+print(m.mixed(a, b, c))
+# 6
+print(m.mixed(a))
+# 1
+
+# ── ③ `**kwargs` の基本 ─────────────────────────────────────────────────
+print(m.kw(x=a, y=b))
+# {'x': 1, 'y': 2}
+print(m.kw())
+# {}          ← 1 個も渡さなくても空 dict が束縛される
+print(m.kw_len(x=a))
+# 1
+mut k = "x"
+print(m.kw_get(k, x=b))
+# 2
+print(m.kw_keys(x=a, y=b))
+# ['x', 'y']
+
+# ── ④ 両方いっぺんに ────────────────────────────────────────────────────
+print(m.both(a, b, c, z=a))
+# (1, 5, {'z': 1})
+
+# ── ⑤ メソッドでも同じ ──────────────────────────────────────────────────
+mut o = m.C(a, b)
+print(o.xs)
+# [1, 2]
+print(o.m(c))
+# [1, 2, 3]
+print(o.k(p=a))
+# {'p': 1}
+
+# ── ⑥ ★`*args` の中身は **list**（CPython は tuple） ────────────────────
+#     Arrow の可変長引数はリストとして渡される。添字・反復・`len` は同じに動くが、
+#     **そのまま表示すると括弧が違う**し、tuple 固有の操作もできない。
+print(m.raw(a, b))
+# [1, 2]      （CPython は (1, 2)）
+#
+# ⚠ **入れ子 `fn` から `*args` を参照すると VM に載らない**:
+#   `def outer(*xs): def inner(): return len(xs)` は
+#   `VmForceError: cannot compile function 'inner' to bytecode` になる。
+#   ⚠ これは**純 Arrow でも同じ**（`local::args` を捕捉する入れ子 `fn` が VM 非適格）で、
+#     変換器の問題ではない。ここでは踏まないようにしてある。

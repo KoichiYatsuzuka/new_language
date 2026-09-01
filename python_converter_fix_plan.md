@@ -263,14 +263,23 @@ convert_python_source(source, filename)          … src/python_converter/mod.rs
   代入時の値に戻る（`for` が自前スコープで束縛するため）。エラー化はしていない。
 - 例題: `examples/interop/py_reassign.ar` + `test_modules/py_reassign.py`（12 ケース中 11 件 CPython 一致）。
 
-#### [6] `*args`
+#### [6] `*args` ✅ **実装済（2026-08-28・項目 7 と同時）**
+- ⚠ 計画は「変換器 + interpreter」だったが、**3 層**必要だった（変換器 / 静的型検査 / 束縛）。
+  詳細は coverage 項目 7 にまとめてある。
+- 本体の識別子差し替えは**変換中に**行う（`param_rewrite.rs` 新設。AST 再帰ウォーカを避けた）。
+- ⚠ `*args` は list（CPython は tuple）。⚠ 入れ子 `fn` からの参照は VM 非適格（純 Arrow でも同じ）。
 - 編集: `classes.rs` `convert_params` ＋ 本体リライト
   - vararg を `Param { name:"...", variadic:true, mutable:true, type_ann:Some("list[Any]") }` に（現状 `name:"*args", variadic:false`）。
   - **関数本体内の vararg 名参照を `Expr::LocalVar("args")` に書き換え**る識別子リライト（`statements.rs`/`expressions.rs` に本体走査を追加、または変換後 AST を後処理）。
 - 根拠: Arrow の可変長は `local::args` 参照（`args.rs` の `bind_args`）。
 - テスト: `def f(*xs): return xs[0]` を `f(10,20)`。
 
-#### [7] `**kwargs`
+#### [7] `**kwargs` ✅ **実装済（2026-08-28・項目 6 と同時）**
+- ⚠ 計画の「余剰キーワードが `kwargs` dict に自動注入される仕組みが既存」は**古い**。
+  その仕組みは #33 で削除済みで、`extra_kwargs` は捨てられていた。今回あらためて束縛する。
+- 番兵パラメータ名 `ast::PY_KWARGS_PARAM`（`"**kwargs"`）を使う。⚠ パラメータ名・束縛名・
+  本体の参照を**同じ名前で揃える**こと（別名だとリゾルバがスロットに解決できず `NameError`）。
+- ⚠ 定数は `src/ast.rs` に置く。wasm フロントエンドは `python_converter` を取り込まないため。
 - 編集:
   - `classes.rs` `convert_params`: Python kwarg 名が `kwargs` 以外なら本体の当該 `Ident` を `Ident("kwargs")` にリライト。
   - `src/interpreter/functions/execution.rs`: 余剰キーワードが空でも `kwargs` を空 dict で注入するよう `!extra_kwargs.is_empty()` 条件を緩和（未注入時の `NameError` 回避）。← **interpreter 変更。impl_python 並行実装の有無を確認**。

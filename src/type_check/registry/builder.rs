@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Accessibility, FieldKind, Stmt};
+use crate::ast::{Accessibility, FieldKind, Param, Stmt};
 
 use super::super::types::{FnSig, InferredType, ProtocolField, ProtocolInfo, ProtocolMethod};
 use super::TypeRegistry;
@@ -137,10 +137,11 @@ impl TypeRegistryBuilder {
                     ..
                 } => {
                     let variadic_param = params.iter().find(|p| p.variadic);
+                    let open_arity = Self::has_open_arity(params);
                     let sig = FnSig {
                         params: params
                             .iter()
-                            .filter(|p| !p.variadic)
+                            .filter(|p| !p.variadic && !Self::is_py_kwargs_param(p))
                             .map(|p| {
                                 let ty = p.type_ann.as_deref()
                                     .and_then(InferredType::from_ann)
@@ -150,13 +151,18 @@ impl TypeRegistryBuilder {
                             .collect(),
                         required_count: params
                             .iter()
-                            .filter(|p| !p.variadic && p.default.is_none())
+                            .filter(|p| {
+                                !p.variadic && !Self::is_py_kwargs_param(p) && p.default.is_none()
+                            })
                             .count(),
                         return_type: return_type.as_deref()
                             .and_then(InferredType::from_ann)
                             .map(|t| self.resolve_protocol_type(t)),
+                        // ⚠ `**kwargs` しか無い場合も**上限なし**にしたいので、
+                        //   型が取れなくても `Any` を入れて `Some` にする。
                         variadic_type: variadic_param
-                            .and_then(|p| p.type_ann.as_deref().and_then(InferredType::from_ann)),
+                            .and_then(|p| p.type_ann.as_deref().and_then(InferredType::from_ann))
+                            .or(if open_arity { Some(InferredType::Any) } else { None }),
                     };
                     self.reg.fn_sigs.entry(name.clone()).or_default().push(sig);
                     self.collect(body);
@@ -246,6 +252,25 @@ impl TypeRegistryBuilder {
         }
     }
 
+    /// ★ Python の `**kwargs` 番兵パラメータかどうか。
+    ///
+    /// `import[py]` の変換器は `**kwargs` を Arrow の識別子にできない名前のパラメータとして出す。
+    /// これは「任意のキーワード引数を受ける」印であって**位置引数のスロットではない**ので、
+    /// シグネチャの引数列からも必要数からも外す。
+    fn is_py_kwargs_param(p: &Param) -> bool {
+        p.name == crate::ast::PY_KWARGS_PARAM
+    }
+
+    /// ★ 引数の個数が**開いている**シグネチャか（`*args` か `**kwargs` を持つ）。
+    ///
+    /// `FnSig` は個数固定の引数列しか表せないので、開いている場合は
+    /// `variadic_type` を立てて**上限なし**として扱わせる（`call_check.rs` の個数照合）。
+    /// これをしないと `f(1, 2, 3)` が `takes 1 argument(s) but 3 were given` という
+    /// **嘘のエラー**になる。
+    fn has_open_arity(params: &[Param]) -> bool {
+        params.iter().any(|p| p.variadic || Self::is_py_kwargs_param(p))
+    }
+
     /// クラス本体のメソッドシグネチャを収集して `class_method_sigs` に登録する。
     fn collect_class_methods(&mut self, name: &str, body: &[Stmt]) {
         let mut cls_methods: HashMap<String, Vec<FnSig>> = HashMap::new();
@@ -264,10 +289,11 @@ impl TypeRegistryBuilder {
                     mname.clone()
                 };
                 let variadic_param = params.iter().find(|p| p.variadic);
+                let open_arity = Self::has_open_arity(params);
                 let sig = FnSig {
                     params: params
                         .iter()
-                        .filter(|p| !p.variadic)
+                        .filter(|p| !p.variadic && !Self::is_py_kwargs_param(p))
                         .map(|p| {
                             (
                                 p.name.clone(),
@@ -277,14 +303,16 @@ impl TypeRegistryBuilder {
                         .collect(),
                     required_count: params
                         .iter()
-                        .filter(|p| !p.variadic && p.default.is_none())
+                        .filter(|p| {
+                            !p.variadic && !Self::is_py_kwargs_param(p) && p.default.is_none()
+                        })
                         .count(),
                     return_type: return_type
                         .as_deref()
                         .and_then(InferredType::from_ann),
-                    variadic_type: variadic_param.and_then(|p| {
-                        p.type_ann.as_deref().and_then(InferredType::from_ann)
-                    }),
+                    variadic_type: variadic_param
+                        .and_then(|p| p.type_ann.as_deref().and_then(InferredType::from_ann))
+                        .or(if open_arity { Some(InferredType::Any) } else { None }),
                 };
                 cls_methods.entry(storage_name).or_default().push(sig);
             }

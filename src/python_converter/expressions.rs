@@ -65,7 +65,13 @@ pub(crate) fn convert_expr(expr: &py::Expr, filename: &str) -> Result<Expr, Stri
     match expr {
         py::Expr::Constant(c) => convert_constant(c, filename),
 
-        py::Expr::Name(n) => Ok(Expr::Ident { name: n.id.to_string(), node_id: 0, res: Resolution::Unresolved }),
+        // ⚠ `*args` / `**kwargs` の Python 名は Arrow 側の参照（`local::args` / `kwargs`）へ
+        //   差し替える（`param_rewrite.rs`。関数本体の変換中だけ有効）。
+        py::Expr::Name(n) => Ok(renamed_ident(n.id.as_str()).unwrap_or_else(|| Expr::Ident {
+            name: n.id.to_string(),
+            node_id: 0,
+            res: Resolution::Unresolved,
+        })),
 
         py::Expr::Attribute(a) => {
             let obj = convert_expr(&a.value, filename)?;
