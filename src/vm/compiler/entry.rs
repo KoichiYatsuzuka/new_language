@@ -450,6 +450,13 @@ fn compile_fn_inner(
     }
     let n_cells = cells.len();
 
+    // セルへ昇格した**パラメータ**の (slot, cell index)。関数入口の写しに使う（B3）。
+    // ⚠ `c` を作る前に集めておく（あとで `c.emit` しながら `c.cell_by_slot` を
+    //    借りることはできない）。slot 昇順なので採番は決定的。
+    let param_cells: Vec<(u16, u16)> = (0..n_params as u16)
+        .filter_map(|s| cell_by_slot.get(&s).map(|&c| (s, c)))
+        .collect();
+
     // V-E: slot → 変数名 のデバッグ名テーブル（named slot のみ。temp は無名）。
     let mut local_names = vec![String::new(); n as usize];
     for (name, &slot) in &slots {
@@ -471,6 +478,24 @@ fn compile_fn_inner(
         cell_by_slot,
         ..Compiler::base(CompileMode::Function, annotations)
     };
+
+    // **`mut` パラメータのセル昇格に引数を流し込む**（B3）。
+    //
+    // ⚠⚠ 入れ子 `fn` に可変キャプチャされるローカルはセルへ移すが、**パラメータには
+    //    セルへ値を書く文が無い**。`bind_args` は引数を **slot** に置き、昇格後の slot は
+    //    穴なので、セルは `build_cells` が作った `Value::None` のまま残る。
+    //    ⇒ 閉包が引数を `None` として見る（実測: `fn mk(mut n: int)` で
+    //    `mk(99)(3)` の 99 が消え、本体で代入した値だけが見える）。
+    //    `mut` ローカルは `Stmt::Mut` が `StoreCellDeepCopy` を出すので埋まっていた。
+    //    ⇒ 関数の入口で slot → cell を写す。
+    //
+    // ⚠ **`StoreCellDeepCopy` ではなく `StoreCell`**。複製するかどうかは `bind_args` が
+    //    既に決めている（`let` パラメータは複製済み・`mut` パラメータは呼び出し元と同じ
+    //    実体を触るのが仕様）。ここで複製を足すと `mut` 引数の書き戻しが壊れる。
+    for (slot, cell) in param_cells {
+        c.emit(Op::LoadLocal(slot));
+        c.emit(Op::StoreCell(cell));
+    }
 
     for stmt in body {
         c.compile_stmt(stmt)?;
