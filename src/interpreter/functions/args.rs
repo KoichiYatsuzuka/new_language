@@ -337,7 +337,9 @@ impl Interpreter {
                 "Any".to_string(),
             );
             for (k, v) in &extra_kwargs {
-                d.set(Value::Str(std::rc::Rc::from(k.as_str())), v.clone());
+                // `**kwargs` のキーは常に `str` なので `reject_key` を通らない（B1-a）。
+                d.set(Value::Str(std::rc::Rc::from(k.as_str())), v.clone())
+                    .expect("kwargs の dict のキーは常に str");
             }
             // ⚠ 束縛名は**パラメータ名と同じ番兵名**にする。変換器は本体の参照も同じ名前へ
             //   差し替えているので、リゾルバ／VM は普通のローカル変数として解決できる。

@@ -266,7 +266,7 @@ impl Interpreter {
                             // 型チェック通過後にソースデータをコピーして新しい型付き辞書を構築する
                             let mut new_data = DictData::new(key_type, item_type);
                             for (k, v) in src_keys.into_iter().zip(src_vals) {
-                                new_data.set(k, v);
+                                new_data.set(k, v)?;
                             }
                             Ok(Value::Dict(Rc::new(RefCell::new(new_data))))
                         }

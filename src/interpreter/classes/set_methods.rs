@@ -33,7 +33,7 @@ impl Interpreter {
             "add" => {
                 let item = Self::one_arg_evaled(evaled, "set", "add")?;
                 let mut s_mut = s.borrow_mut();
-                if !s_mut.iter().any(|v| self.values_eq(v, &item)) {
+                if !self.contains_eq(&s_mut, &item)? {
                     s_mut.push(item);
                 }
                 Ok(Value::None)
@@ -41,7 +41,7 @@ impl Interpreter {
             "discard" => {
                 let item = Self::one_arg_evaled(evaled, "set", "discard")?;
                 let mut s_mut = s.borrow_mut();
-                if let Some(pos) = s_mut.iter().position(|v| self.values_eq(v, &item)) {
+                if let Some(pos) = self.position_eq(&s_mut, &item)? {
                     s_mut.remove(pos);
                 }
                 Ok(Value::None)
@@ -49,7 +49,7 @@ impl Interpreter {
             "remove" => {
                 let item = Self::one_arg_evaled(evaled, "set", "remove")?;
                 let mut s_mut = s.borrow_mut();
-                if let Some(pos) = s_mut.iter().position(|v| self.values_eq(v, &item)) {
+                if let Some(pos) = self.position_eq(&s_mut, &item)? {
                     s_mut.remove(pos);
                     Ok(Value::None)
                 } else {
@@ -79,7 +79,7 @@ impl Interpreter {
                 let other_items = self.set_other_items(&other, "union")?;
                 let mut result = s.borrow().clone();
                 for v in other_items {
-                    if !result.iter().any(|x| self.values_eq(x, &v)) {
+                    if !self.contains_eq(&result, &v)? {
                         result.push(v);
                     }
                 }
@@ -88,36 +88,22 @@ impl Interpreter {
             "intersection" => {
                 let other = Self::one_arg_evaled(evaled, "set", "intersection")?;
                 let other_items = self.set_other_items(&other, "intersection")?;
-                let result: Vec<Value> = s
-                    .borrow()
-                    .iter()
-                    .filter(|v| other_items.iter().any(|x| self.values_eq(x, v)))
-                    .cloned()
-                    .collect();
+                let result = self.filter_by_membership(&s.borrow(), &other_items, true)?;
                 Ok(Value::Set(Rc::new(RefCell::new(result))))
             }
             "difference" => {
                 let other = Self::one_arg_evaled(evaled, "set", "difference")?;
                 let other_items = self.set_other_items(&other, "difference")?;
-                let result: Vec<Value> = s
-                    .borrow()
-                    .iter()
-                    .filter(|v| !other_items.iter().any(|x| self.values_eq(x, v)))
-                    .cloned()
-                    .collect();
+                let result = self.filter_by_membership(&s.borrow(), &other_items, false)?;
                 Ok(Value::Set(Rc::new(RefCell::new(result))))
             }
             "symmetric_difference" => {
                 let other = Self::one_arg_evaled(evaled, "set", "symmetric_difference")?;
                 let other_items = self.set_other_items(&other, "symmetric_difference")?;
                 let s_ref = s.borrow();
-                let mut result: Vec<Value> = s_ref
-                    .iter()
-                    .filter(|v| !other_items.iter().any(|x| self.values_eq(x, v)))
-                    .cloned()
-                    .collect();
+                let mut result = self.filter_by_membership(&s_ref, &other_items, false)?;
                 for v in &other_items {
-                    if !s_ref.iter().any(|x| self.values_eq(x, v)) {
+                    if !self.contains_eq(&s_ref, v)? {
                         result.push(v.clone());
                     }
                 }
@@ -126,19 +112,13 @@ impl Interpreter {
             "issubset" => {
                 let other = Self::one_arg_evaled(evaled, "set", "issubset")?;
                 let other_items = self.set_other_items(&other, "issubset")?;
-                let result = s
-                    .borrow()
-                    .iter()
-                    .all(|v| other_items.iter().any(|x| self.values_eq(x, v)));
+                let result = self.all_contained(&s.borrow(), &other_items)?;
                 Ok(Value::Bool(result))
             }
             "issuperset" => {
                 let other = Self::one_arg_evaled(evaled, "set", "issuperset")?;
                 let other_items = self.set_other_items(&other, "issuperset")?;
-                let s_ref = s.borrow();
-                let result = other_items
-                    .iter()
-                    .all(|v| s_ref.iter().any(|x| self.values_eq(x, v)));
+                let result = self.all_contained(&other_items, &s.borrow())?;
                 Ok(Value::Bool(result))
             }
             _ => Err(format!(

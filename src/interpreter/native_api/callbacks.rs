@@ -60,7 +60,14 @@ extern "C" fn ar_make_dict(keys_ptr: *const i64, vals_ptr: *const i64, n: i32) -
         for i in 0..n as usize {
             let k = st.clone_value(unsafe { *keys_ptr.add(i) });
             let v = st.clone_value(unsafe { *vals_ptr.add(i) });
-            dict.set(k, v);
+            // ⚠ ここは `extern "C"` で `Result` を返せないので、**エラースロットへ積む**
+            // （`take_error` が呼び出し境界で拾う）。黙って捨てない（B1-a）。
+            if let Err(e) = dict.set(k, v) {
+                if st.error.is_none() {
+                    st.error = Some(e);
+                }
+                break;
+            }
         }
         st.push_value(Value::Dict(Rc::new(RefCell::new(dict))))
     })

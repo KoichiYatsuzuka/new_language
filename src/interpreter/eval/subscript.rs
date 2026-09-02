@@ -117,10 +117,17 @@ impl Interpreter {
                 }
                 Ok(vals[actual as usize].clone())
             }
-            Value::Dict(d) => d
-                .borrow()
-                .get(&key)
-                .ok_or_else(|| format!("KeyError: {}", self.display(&key))),
+            Value::Dict(d) => {
+                // ⚠ そもそもキーにできない値は `KeyError`（＝「入っていない」）ではなく
+                // **理由を返す**（B1-a）。`set` が弾く以上ここでヒットしようがなく、
+                // `KeyError` だと「書いたのに読めない」ように見えて誤診を招く。
+                if let Some(why) = crate::interpreter::DictData::reject_key(&key) {
+                    return Err(why);
+                }
+                d.borrow()
+                    .get(&key)
+                    .ok_or_else(|| format!("KeyError: {}", self.display(&key)))
+            }
             Value::Instance(_) => {
                 self.eval_method_call_evaled(obj, "__getitem__", vec![(None, key, true)])
             }
@@ -318,8 +325,7 @@ impl Interpreter {
                         self.type_name(&rhs)
                     ));
                 }
-                d.borrow_mut().set(key, rhs);
-                Ok(())
+                d.borrow_mut().set(key, rhs)
             }
             Value::Instance(_) => {
                 self.eval_method_call_evaled(obj, "__setitem__", vec![(None, key, true), (None, rhs, true)])?;

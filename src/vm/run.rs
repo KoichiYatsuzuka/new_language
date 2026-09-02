@@ -1467,12 +1467,12 @@ fn exec_op(
         Op::BuildSet(n) => {
             let split = buf.len() - *n as usize;
             let vals = buf.split_off(split);
-            buf.push(interp.vm_build_set(vals));
+            buf.push(interp.vm_build_set(vals)?);
         }
         Op::BuildDict(n) => {
             let split = buf.len() - 2 * *n as usize;
             let flat = buf.split_off(split);
-            buf.push(interp.vm_build_dict(flat));
+            buf.push(interp.vm_build_dict(flat)?);
         }
         Op::Yield => {
             let v = buf.pop().unwrap();

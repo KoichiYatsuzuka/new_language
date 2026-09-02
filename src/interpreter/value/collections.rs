@@ -103,7 +103,6 @@ pub(crate) enum DictKey {
     /// `Hash`/`Eq` は `Rc` が pointee へ委譲するので意味論は `String` 時と同一。
     Str(Rc<str>),
     Bool(bool),
-    None,
 }
 
 
@@ -122,7 +121,9 @@ impl DictKey {
             }
             Value::Str(s) => Some(DictKey::Str(s.clone())),
             Value::Bool(b) => Some(DictKey::Bool(*b)),
-            Value::None => Some(DictKey::None),
+            // ⚠ `None` は**キーとして禁止**（仕様・B1-a）。禁止したことで `DictKey::None`
+            // が構築されなくなったため、バリアントごと削除してある。
+            // ⚠ 判定は [`DictData::reject_key`] と必ず一致させること。
             _ => None,
         }
     }
@@ -145,11 +146,55 @@ impl DictData {
     }
 
     /// キーと値を追加、またはキーが既に存在する場合は値を更新する。
-    pub fn set(&mut self, key: Value, value: Value) {
-        if let Some(k) = DictKey::from_value(&key) {
-            self.map.insert(k, value);
+    ///
+    /// ⚠⚠ **キーにできない値は黙って捨てず必ずエラーにする**（B1-a）。
+    /// 以前はここが `if let Some(k) = … { … }` で、変換できないキーを**無言で無視**していた
+    /// （「unhashable key silently ignored」というコメント付きの意図的な設計だった）。
+    /// その結果 `d[(1, 2)] = v` が例外も出さずに**何も起きない**＝サイレントなデータ消失に
+    /// なっていた。⇒ 受け付けられない理由は [`DictData::reject_key`] が必ず文章で返す。
+    pub fn set(&mut self, key: Value, value: Value) -> Result<(), String> {
+        if let Some(why) = Self::reject_key(&key) {
+            return Err(why);
         }
-        // unhashable key (e.g. instance) silently ignored — same as before
+        let k = DictKey::from_value(&key)
+            .expect("reject_key が通した値は必ず DictKey に変換できる（両者は同じ判定）");
+        self.map.insert(k, value);
+        Ok(())
+    }
+
+    /// `key` を辞書のキーとして**使えない理由**を返す。使えるなら `None`。
+    ///
+    /// ⚠ 判定は [`DictKey::from_value`] と**必ず一致させること**。ずれると `set` の
+    /// `expect` が落ちる（＝ずれたことがその場で分かる）。
+    ///
+    /// 区別している 2 種類:
+    /// - **恒久的に禁止**（仕様）: `None` / `Undefined` は「存在しないことを示す値」、
+    ///   `NaN` は自分自身と等しくないのでキーにできない。
+    /// - **まだ未対応**: tuple / list / instance / uint / complex / 非整数 float など。
+    ///   `DictKey` が int / str / bool / None の 4 種しか持たないため。B1-b/B1-c で解消予定。
+    ///   それまでは**黙って捨てず**「まだ使えない」と知らせる。
+    pub fn reject_key(key: &Value) -> Option<String> {
+        match key {
+            Value::Int(_) | Value::Str(_) | Value::Bool(_) => None,
+            // 整数値の float（`1.0`）は Int キーへ正規化されるので受け付ける。
+            Value::Float(f) if f.is_finite() && f.fract() == 0.0 => None,
+            Value::Float(f) if f.is_nan() => {
+                Some("TypeError: NaN cannot be used as a dict key".to_string())
+            }
+            Value::Float(f) => Some(format!(
+                "TypeError: {f} cannot be used as a dict key yet                  (only integral floats are supported)"
+            )),
+            Value::None => {
+                Some("TypeError: None cannot be used as a dict key".to_string())
+            }
+            Value::Undefined => {
+                Some("TypeError: Undefined cannot be used as a dict key".to_string())
+            }
+            other => Some(format!(
+                "TypeError: unhashable type: '{}'",
+                crate::interpreter::ops::typecheck::runtime_type_name(other)
+            )),
+        }
     }
 
     /// すべてのキーを `Value` リストとして返す（挿入順）。
@@ -160,7 +205,6 @@ impl DictData {
                 DictKey::Int(n) => Value::Int(*n),
                 DictKey::Str(s) => Value::Str(s.clone()),
                 DictKey::Bool(b) => Value::Bool(*b),
-                DictKey::None => Value::None,
             })
             .collect()
     }

@@ -242,9 +242,10 @@ impl Value {
                         DictKey::Int(n) => Value::Int(*n),
                         DictKey::Str(s) => Value::Str(Rc::from(&**s)),
                         DictKey::Bool(b) => Value::Bool(*b),
-                        DictKey::None => Value::None,
                     };
-                    d.set(key_val, v.deep_clone());
+                    // 複製元の dict のキーは既に `reject_key` を通っている（B1-a）。
+                    d.set(key_val, v.deep_clone())
+                        .expect("複製元のキーは既に検査済み");
                 }
                 Value::Dict(Rc::new(RefCell::new(d)))
             }

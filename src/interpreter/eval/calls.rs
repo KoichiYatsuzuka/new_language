@@ -519,7 +519,7 @@ impl Interpreter {
                     };
                     let mut result: Vec<Value> = Vec::new();
                     for v in items {
-                        set_insert(&mut result, v, self);
+                        set_insert(&mut result, v, self)?;
                     }
                     Ok(Value::Set(Rc::new(RefCell::new(result))))
                 }

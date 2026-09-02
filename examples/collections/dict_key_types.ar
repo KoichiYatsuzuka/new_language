@@ -1,0 +1,33 @@
+# dict_key_types.ar — 辞書のキーとして**使える型**の確認（B1）。
+#
+# ⚠ 使えない型を渡したときの挙動は [dict_key_types_error.ar](dict_key_types_error.ar) を参照。
+#   以前はそれが**黙って無視**されていた（`d[(1,2)] = v` が例外も出さずに何も起きない
+#   ＝サイレントなデータ消失）。今は必ず `TypeError` になる。
+
+print("=== 使えるキー ===")
+mut d = {}
+d[1] = "int"
+d["s"] = "str"
+d[True] = "bool"
+d[2.0] = "integral float"        # 整数値の float は int キーへ正規化される
+print(len(d))                    # 4
+print(d)
+
+print("=== float の正規化 ===")
+mut e = {}
+e[3] = "first"
+e[3.0] = "second"                # 3 と同じキー
+print(len(e), e[3])              # 1 second
+
+print("=== bool と int は別キー ===")
+# ⚠ Python では `1` と `True` は同じキーになるが、Arrow の `values_eq` は
+#   `bool` と `int` を等値としないので**別キー**として扱う。
+mut f = {}
+f[1] = "int one"
+f[True] = "bool true"
+print(len(f), f)                 # 2
+
+print("=== 読み・包含・更新 ===")
+mut g = {"a": 1}
+g["a"] = 2
+print(g["a"], "a" in g, "b" in g, "b" not in g)

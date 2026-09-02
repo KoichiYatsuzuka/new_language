@@ -37,9 +37,9 @@ impl Interpreter {
             "__contains__" => {
                 let needle = Self::one_arg_evaled(evaled, "fixed_list", "__contains__")?;
                 let st = state.borrow();
-                let found = (0..st.len)
-                    .map(|i| layout.reconstruct_item(&st.data, i))
-                    .any(|v| self.values_eq(&v, &needle));
+                let items: Vec<Value> =
+                    (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
+                let found = self.contains_eq(&items, &needle)?;
                 Ok(Value::Bool(found))
             }
             "allocated_size" => {

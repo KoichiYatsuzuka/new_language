@@ -53,22 +53,27 @@ impl Interpreter {
     }
 
     /// VM: リテラルから Set を構築する（`Expr::Set` と同一・`set_insert` で重複排除）。
-    pub(crate) fn vm_build_set(&self, vals: Vec<Value>) -> Value {
+    ///
+    /// ⚠ `Result` を返すのは `set_insert` が `values_eq` を通るため（B2-a）。
+    pub(crate) fn vm_build_set(&self, vals: Vec<Value>) -> Result<Value, String> {
         let mut out: Vec<Value> = Vec::new();
         for v in vals {
-            set_insert(&mut out, v, self);
+            set_insert(&mut out, v, self)?;
         }
-        Value::Set(Rc::new(RefCell::new(out)))
+        Ok(Value::Set(Rc::new(RefCell::new(out))))
     }
 
     /// VM: リテラルから Dict を構築する（`Expr::Dict` と同一）。`flat` は `[k0,v0,k1,v1,..]`。
-    pub(crate) fn vm_build_dict(&self, flat: Vec<Value>) -> Value {
+    ///
+    /// ⚠ `Result` を返すのは、**キーにできない値を黙って捨てないため**（B1-a）。
+    /// ツリーウォーク側（`Expr::Dict`）と同じエラーになる必要がある。
+    pub(crate) fn vm_build_dict(&self, flat: Vec<Value>) -> Result<Value, String> {
         let mut d = DictData::new("Any".to_string(), "Any".to_string());
         let mut it = flat.into_iter();
         while let (Some(k), Some(v)) = (it.next(), it.next()) {
-            d.set(k, v);
+            d.set(k, v)?;
         }
-        Value::Dict(Rc::new(RefCell::new(d)))
+        Ok(Value::Dict(Rc::new(RefCell::new(d))))
     }
 
     /// 式（`Expr`）を評価して `Value` を返す。各バリアントを専用メソッドに委譲する薄いディスパッチャ。
@@ -131,7 +136,7 @@ impl Interpreter {
                 for (key_expr, val_expr) in pairs {
                     let k = self.eval(key_expr)?;
                     let v = self.eval(val_expr)?;
-                    d.set(k, v);
+                    d.set(k, v)?;
                 }
                 Ok(Value::Dict(Rc::new(RefCell::new(d))))
             }
@@ -139,7 +144,7 @@ impl Interpreter {
                 let mut vals: Vec<Value> = Vec::new();
                 for item in items {
                     let v = self.eval(item)?;
-                    set_insert(&mut vals, v, self);
+                    set_insert(&mut vals, v, self)?;
                 }
                 Ok(Value::Set(Rc::new(RefCell::new(vals))))
             }

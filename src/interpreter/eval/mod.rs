@@ -7,10 +7,13 @@
 use super::{Interpreter, Value};
 
 /// ヘルパー: セットに要素を重複なしで追加する。
-fn set_insert(set: &mut Vec<Value>, item: Value, interp: &Interpreter) {
-    if !set.iter().any(|v| interp.values_eq(v, &item)) {
+///
+/// ⚠ `Result` を返すのは `values_eq` が循環参照で `RecursionError` を返しうるため（B2-a）。
+fn set_insert(set: &mut Vec<Value>, item: Value, interp: &Interpreter) -> Result<(), String> {
+    if !interp.contains_eq(set, &item)? {
         set.push(item);
     }
+    Ok(())
 }
 
 /// `mustbe` 用: ガード型文字列から外側の型名（型パラメータを除いた部分）を返す。

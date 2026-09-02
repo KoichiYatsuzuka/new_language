@@ -121,10 +121,20 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
     // dict → Value::Dict（Any 型）
     if let Ok(d) = obj.downcast::<PyDict>() {
         let mut dict = DictData::new("Any".to_string(), "Any".to_string());
+        let mut all_keys_ok = true;
         for (k, v) in d.iter() {
-            dict.set(py_to_tl(py, &k), py_to_tl(py, &v));
+            // ⚠ Arrow がキーにできない型（tuple / 非整数 float / None など）を含む dict は
+            // **要素を黙って捨てない**（B1-a。以前はここで無言の欠落が起きていた）。
+            // 1 つでも弾かれたら dict への変換自体をやめ、下の `PyObject` フォールバックへ
+            // 落として**丸ごと**渡す（情報を落とさず、Python 側の索引で扱える）。
+            if dict.set(py_to_tl(py, &k), py_to_tl(py, &v)).is_err() {
+                all_keys_ok = false;
+                break;
+            }
         }
-        return Value::Dict(Rc::new(RefCell::new(dict)));
+        if all_keys_ok {
+            return Value::Dict(Rc::new(RefCell::new(dict)));
+        }
     }
     // その他 → PyObject（opaque ラップ）
     Value::PyObject(Arc::new(PyObjHandle {

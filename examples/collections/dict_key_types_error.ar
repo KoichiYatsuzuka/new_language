@@ -1,0 +1,39 @@
+# dict_key_types_error.ar — 辞書のキーにできない値を渡したときのエラー例（B1-a）。
+#
+# ⚠⚠ **以前はこれが「黙って何も起きない」だった。** `DictData::set` が
+#   「変換できないキーは無視」という**意図的な設計**になっており、
+#   `d[(1,2)] = v` が例外も出さず `len(d)` も増えない＝サイレントなデータ消失だった。
+#   エラーにならないので、既存のどのゲートにも映らなかった。
+#
+# エラーになる値は 2 種類:
+#
+#   (1) **恒久的に禁止**（仕様）
+#       - `None` / `Undefined` … 「存在しないことを示す値」はキーにしない
+#       - `NaN`                … 自分自身と等しくないのでキーにできない
+#
+#   (2) **まだ未対応**（`DictKey` が int / str / bool の 3 種しか持たないため）
+#       - tuple / list / dict / set / instance / uint / complex / 非整数 float / type …
+#       - 将来は使えるようになる予定だが、それまでは**黙って捨てず**必ず知らせる
+#
+# 以下はそれぞれ単体で実行したときのエラー。行を入れ替えて確認すること。
+#
+#   mut d = {}
+#   d[(1, 2)] = "x"     # TypeError: unhashable type: 'tuple'
+#   d[[1]]    = "x"     # TypeError: unhashable type: 'list'
+#   d[None]   = "x"     # TypeError: None cannot be used as a dict key
+#   d[3.5]    = "x"     # TypeError: 3.5 cannot be used as a dict key yet
+#                       #            (only integral floats are supported)
+#
+# ⚠ 読み取り・包含検査も同じエラーになる（`KeyError` や `False` ではない）。
+#   「書けないのに読むと『入っていない』と言われる」形にすると誤診を招くため。
+#
+#   let d = {"a": 1}
+#   print(d[(1, 2)])    # TypeError: unhashable type: 'tuple'
+#   print((1, 2) in d)  # TypeError: unhashable type: 'tuple'
+
+print("dict key error demo")
+
+mut d = {}
+d[(1, 2)] = "x"
+
+print("ここには到達しない")

@@ -153,86 +153,78 @@ impl Interpreter {
             (BinOp::BitOr, Value::Set(a), Value::Set(b)) => {
                 let mut result = a.borrow().clone();
                 for v in b.borrow().iter() {
-                    if !result.iter().any(|x| self.values_eq(x, v)) {
+                    if !self.contains_eq(&result, v)? {
                         result.push(v.clone());
                     }
                 }
                 Ok(Value::Set(Rc::new(RefCell::new(result))))
             }
             (BinOp::BitAnd, Value::Set(a), Value::Set(b)) => {
-                let b_ref = b.borrow();
-                let result: Vec<Value> = a
-                    .borrow()
-                    .iter()
-                    .filter(|v| b_ref.iter().any(|x| self.values_eq(x, v)))
-                    .cloned()
-                    .collect();
+                let result = self.filter_by_membership(&a.borrow(), &b.borrow(), true)?;
                 Ok(Value::Set(Rc::new(RefCell::new(result))))
             }
             (BinOp::Sub, Value::Set(a), Value::Set(b)) => {
-                let b_ref = b.borrow();
-                let result: Vec<Value> = a
-                    .borrow()
-                    .iter()
-                    .filter(|v| !b_ref.iter().any(|x| self.values_eq(x, v)))
-                    .cloned()
-                    .collect();
+                let result = self.filter_by_membership(&a.borrow(), &b.borrow(), false)?;
                 Ok(Value::Set(Rc::new(RefCell::new(result))))
             }
             (BinOp::BitXor, Value::Set(a), Value::Set(b)) => {
                 let a_ref = a.borrow();
                 let b_ref = b.borrow();
-                let mut result: Vec<Value> = a_ref
-                    .iter()
-                    .filter(|v| !b_ref.iter().any(|x| self.values_eq(x, v)))
-                    .cloned()
-                    .collect();
+                let mut result = self.filter_by_membership(&a_ref, &b_ref, false)?;
                 for v in b_ref.iter() {
-                    if !a_ref.iter().any(|x| self.values_eq(x, v)) {
+                    if !self.contains_eq(&a_ref, v)? {
                         result.push(v.clone());
                     }
                 }
                 Ok(Value::Set(Rc::new(RefCell::new(result))))
             }
             // 包含検査 `in` / `not in`
-            (BinOp::In, item, Value::List(lst)) => Ok(Value::Bool(
-                lst.borrow().iter().any(|v| self.values_eq(v, item)),
-            )),
+            (BinOp::In, item, Value::List(lst)) => {
+                Ok(Value::Bool(self.contains_eq(&lst.borrow(), item)?))
+            }
             (BinOp::In, item, Value::FrozenList { state, layout }) => {
                 let st = state.borrow();
-                Ok(Value::Bool(
-                    (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).any(|v| self.values_eq(&v, item)),
-                ))
+                let items: Vec<Value> =
+                    (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
+                Ok(Value::Bool(self.contains_eq(&items, item)?))
             }
-            (BinOp::In, item, Value::Set(s)) => Ok(Value::Bool(
-                s.borrow().iter().any(|v| self.values_eq(v, item)),
-            )),
+            (BinOp::In, item, Value::Set(s)) => {
+                Ok(Value::Bool(self.contains_eq(&s.borrow(), item)?))
+            }
             (BinOp::In, Value::Str(sub), Value::Str(s)) => {
                 Ok(Value::Bool(s.contains(&**sub)))
             }
-            (BinOp::In, item, Value::Dict(d)) => Ok(Value::Bool(d.borrow().get(item).is_some())),
-            (BinOp::In, item, Value::Tuple(t)) => Ok(Value::Bool(
-                t.all_values().iter().any(|v| self.values_eq(v, item)),
-            )),
-            (BinOp::NotIn, item, Value::List(lst)) => Ok(Value::Bool(
-                !lst.borrow().iter().any(|v| self.values_eq(v, item)),
-            )),
+            // ⚠ キーにできない値の包含検査は `false` ではなく**エラー**（B1-a）。
+            // Python も `[1,2] in d` で `TypeError: unhashable type: 'list'` を出す。
+            (BinOp::In, item, Value::Dict(d)) => match crate::interpreter::DictData::reject_key(item) {
+                Some(why) => Err(why),
+                None => Ok(Value::Bool(d.borrow().get(item).is_some())),
+            },
+            (BinOp::In, item, Value::Tuple(t)) => {
+                Ok(Value::Bool(self.contains_eq(t.all_values(), item)?))
+            }
+            (BinOp::NotIn, item, Value::List(lst)) => {
+                Ok(Value::Bool(!self.contains_eq(&lst.borrow(), item)?))
+            }
             (BinOp::NotIn, item, Value::FrozenList { state, layout }) => {
                 let st = state.borrow();
-                Ok(Value::Bool(
-                    !(0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).any(|v| self.values_eq(&v, item)),
-                ))
+                let items: Vec<Value> =
+                    (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
+                Ok(Value::Bool(!self.contains_eq(&items, item)?))
             }
-            (BinOp::NotIn, item, Value::Set(s)) => Ok(Value::Bool(
-                !s.borrow().iter().any(|v| self.values_eq(v, item)),
-            )),
+            (BinOp::NotIn, item, Value::Set(s)) => {
+                Ok(Value::Bool(!self.contains_eq(&s.borrow(), item)?))
+            }
             (BinOp::NotIn, Value::Str(sub), Value::Str(s)) => {
                 Ok(Value::Bool(!s.contains(&**sub)))
             }
-            (BinOp::NotIn, item, Value::Dict(d)) => Ok(Value::Bool(d.borrow().get(item).is_none())),
-            (BinOp::NotIn, item, Value::Tuple(t)) => Ok(Value::Bool(
-                !t.all_values().iter().any(|v| self.values_eq(v, item)),
-            )),
+            (BinOp::NotIn, item, Value::Dict(d)) => match crate::interpreter::DictData::reject_key(item) {
+                Some(why) => Err(why),
+                None => Ok(Value::Bool(d.borrow().get(item).is_none())),
+            },
+            (BinOp::NotIn, item, Value::Tuple(t)) => {
+                Ok(Value::Bool(!self.contains_eq(t.all_values(), item)?))
+            }
             (BinOp::In, _, rv) => Err(format!(
                 "TypeError: argument of type '{}' is not iterable",
                 self.type_name(rv)
@@ -304,9 +296,9 @@ impl Interpreter {
             (BinOp::Pow, Value::Int(a), Value::Float(b)) => Ok(Value::Float((*a as f64).powf(*b))),
             (BinOp::Pow, Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powi(*b as i32))),
             // 比較演算
-            (BinOp::Eq, _, _) => Ok(Value::Bool(self.values_eq(&lv, &rv))),
-            (BinOp::RefEq, _, _) => Ok(Value::Bool(self.values_ref_eq(&lv, &rv))),
-            (BinOp::NotEq, _, _) => Ok(Value::Bool(!self.values_eq(&lv, &rv))),
+            (BinOp::Eq, _, _) => Ok(Value::Bool(self.values_eq(&lv, &rv)?)),
+            (BinOp::RefEq, _, _) => Ok(Value::Bool(self.values_ref_eq(&lv, &rv)?)),
+            (BinOp::NotEq, _, _) => Ok(Value::Bool(!self.values_eq(&lv, &rv)?)),
             (BinOp::Lt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(*a < *b)),
             (BinOp::Lt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(*a < *b)),
             (BinOp::Lt, Value::Int(a), Value::Float(b)) => Ok(Value::Bool((*a as f64) < *b)),

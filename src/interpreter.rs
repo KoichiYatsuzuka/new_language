@@ -649,7 +649,9 @@ impl Interpreter {
     pub fn set_cli_args(&mut self, params: HashMap<String, String>) {
         let mut dict = DictData::new("str".to_string(), "str".to_string());
         for (k, v) in params {
-            dict.set(Value::str(k), Value::str(v));
+            // キーは常に `str` なので `reject_key` を通らない（B1-a）。
+            dict.set(Value::str(k), Value::str(v))
+                .expect("CLI 引数の dict のキーは常に str");
         }
         self.scopes[0].insert(
             "args".to_string(),

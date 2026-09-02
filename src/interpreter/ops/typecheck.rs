@@ -8,6 +8,52 @@ fn extract_list_elem_type(ann: &str) -> Option<&str> {
     Some(inner.trim())
 }
 
+/// 値のランタイム型名（エラーメッセージ用）。**`Interpreter` を持たない場所でも使う**ため
+/// 自由関数にしてある（`DictData::reject_key` がキーの型名を出すのに要る・B1-a）。
+/// `Interpreter::type_name` はこれに委譲するだけ。
+pub(crate) fn runtime_type_name(val: &Value) -> &'static str {
+    match val {
+        Value::Int(_) => "int",
+        Value::UInt(_) => "uint",
+        Value::Float(_) => "float",
+        Value::Complex(_, _) => "complex",
+        Value::Str(_) => "str",
+        Value::Bool(_) => "bool",
+        Value::None => "NoneType",
+        Value::Undefined => "Undefined",
+        Value::List(_) => "list",
+        Value::FrozenList { .. } => "fixed_list",
+        Value::Function(_) | Value::OverloadedFn(_) => "function",
+        Value::Class(_) | Value::Type(_) => "type",
+        Value::Trait(_) => "trait",
+        Value::Protocol(_) => "protocol",
+        Value::Instance(_) => "object",
+        Value::TemplateFn(_) | Value::TemplateClass(_) => "template",
+        Value::GeneratorFn(_) | Value::TemplateGenFn(_) => "gen_function",
+        Value::Generator(_) => "generator",
+        Value::Dict(_) => "dict",
+        Value::Tuple(_) => "tuple",
+        Value::Set(_) => "set",
+        Value::Namespace(_) => "module",
+        Value::PyObject(_) => "object",
+        Value::FileObject(_) => "FileObject",
+        Value::NativeFunction(_) => "function",
+        Value::Slice(_) => "slice",
+        Value::AsyncManager(_) => "AsyncManager",
+        Value::AsyncStatusVal(_) => "Async",
+        Value::Signal(_) => "Signal",
+        Value::EventLoop(_) => "EventLoop",
+        Value::CsObject(o) => {
+            let _ = o;
+            "cs_object"
+        }
+        Value::JsProcFn(_) => "function",
+        Value::ResultVal { ok, .. } => {
+            if *ok { "Ok" } else { "Err" }
+        }
+    }
+}
+
 impl Interpreter {
     /// 値の真偽判定を行う。
     ///
@@ -74,46 +120,7 @@ impl Interpreter {
     ///
     /// 戻り値: `"int"`, `"str"`, `"list"`, `"object"` 等の静的文字列
     pub(crate) fn type_name(&self, val: &Value) -> &'static str {
-        match val {
-            Value::Int(_) => "int",
-            Value::UInt(_) => "uint",
-            Value::Float(_) => "float",
-            Value::Complex(_, _) => "complex",
-            Value::Str(_) => "str",
-            Value::Bool(_) => "bool",
-            Value::None => "NoneType",
-            Value::Undefined => "Undefined",
-            Value::List(_) => "list",
-            Value::FrozenList { .. } => "fixed_list",
-            Value::Function(_) | Value::OverloadedFn(_) => "function",
-            Value::Class(_) | Value::Type(_) => "type",
-            Value::Trait(_) => "trait",
-            Value::Protocol(_) => "protocol",
-            Value::Instance(_) => "object",
-            Value::TemplateFn(_) | Value::TemplateClass(_) => "template",
-            Value::GeneratorFn(_) | Value::TemplateGenFn(_) => "gen_function",
-            Value::Generator(_) => "generator",
-            Value::Dict(_) => "dict",
-            Value::Tuple(_) => "tuple",
-            Value::Set(_) => "set",
-            Value::Namespace(_) => "module",
-            Value::PyObject(_) => "object",
-            Value::FileObject(_) => "FileObject",
-            Value::NativeFunction(_) => "function",
-            Value::Slice(_) => "slice",
-            Value::AsyncManager(_) => "AsyncManager",
-            Value::AsyncStatusVal(_) => "Async",
-            Value::Signal(_) => "Signal",
-            Value::EventLoop(_) => "EventLoop",
-            Value::CsObject(o) => {
-                let _ = o;
-                "cs_object"
-            }
-            Value::JsProcFn(_) => "function",
-            Value::ResultVal { ok, .. } => {
-                if *ok { "Ok" } else { "Err" }
-            }
-        }
+        runtime_type_name(val)
     }
 
     /// ランタイム値が型アノテーション文字列に一致するかを判定する（block_return/loop_yield の型チェック用）。

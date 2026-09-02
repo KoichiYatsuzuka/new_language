@@ -120,12 +120,22 @@ $knownDiff = @{
     #    パーサに入っていないので `ParseError: expected `RBRACKET`, got `FOR`` になる。
     #    ⇒ ユーザー方針により impl_python は触らない（同期時の積み残し）。**実測して確認済み**。
     'comprehension'                  = 'py: 内包表記の構文が未実装（Rust 側で 2026-08-28 に追加）'
+    # ⚠ B1-a（辞書キー）/ B2-a（list・dict の ==）で新設。**実測して確認済み**。
+    #    ユーザー方針により impl_python は触らない（同期時の積み残し）。
+    'dict_key_types'                 = 'py: dict repr で str が引用符なし、かつ整数値 float キーを int へ正規化しない（実測 `{1: int, s: str, True: bool, 2.0: integral float}`）'
     # (d) 同期以降（33ef765..）に Rust 側へ入った意味論の修正 — py が古い
     'copy_method'                    = 'py 古い: mut→let のコピー意味論（#15e で Rust を修正）'
     'mut_to_let_copy'                = 'py 古い: mut→let のコピー意味論（#15e）'
     'variable'                       = 'py 古い: static mut の扱い'
     'block_return_typecheck_error'   = 'py 古い: block_return の実行時型検査が無い（#35 で Rust に追加）'
     'global_assign_from_fn_error'    = 'py: NameError の文言・traceback 形式が違う'
+    # ⚠ B1-a: ハッシュ不可能なキーを **py はまだ黙って捨てる**（Rust は TypeError）。
+    #    実測: `d[(1,2)] = "x"` の後の行まで実行され「ここには到達しない」が出る＝まさに B1 の症状。
+    'dict_key_types_error'           = 'py 古い: unhashable なキーを黙って無視する（B1-a で Rust に TypeError を追加）'
+    # ⚠ B2-a: py の `==` には**同一性の高速パスが無い**ので、循環リストの `a == a` の時点で
+    #    再帰上限に達する（実測 1 行目で `RuntimeError: maximum recursion depth exceeded`）。
+    #    Rust は `Rc::ptr_eq` で即 True を返し、別々の循環でのみ RecursionError にする。
+    'equality_cycle_error'           = 'py 古い: == に同一性の高速パスが無く a == a でも再帰上限に達する（B2-a で Rust に追加）'
     # (e) 実行時エラーの出力形式（Rust は色付きトレースバック・py は 1 行）
     'runtime_error'                  = 'py: 実行時エラーの出力形式が違う'
     'traceback_frame_names'          = 'py: トレースバックの形式が違う'

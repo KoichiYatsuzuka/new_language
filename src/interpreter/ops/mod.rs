@@ -24,7 +24,7 @@ fn format_fn_params(params: &[Param]) -> String {
 }
 
 
-mod typecheck;
+pub(crate) mod typecheck;
 mod display;
 mod operators;
 mod equality;
