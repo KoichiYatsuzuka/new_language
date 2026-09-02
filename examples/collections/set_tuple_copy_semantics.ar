@@ -1,0 +1,50 @@
+# set_tuple_copy_semantics.ar — `Set` / `Tuple` の代入は複製される（bug_fix.md B9）。
+#
+# ⚠⚠ 以前は `deep_copy_value` / `deep_copy_unfrozen` に **`Set` と `Tuple` の腕が無く**、
+#   既定に落ちて `Rc` を clone ＝ **共有**していた。
+#   - `Tuple` には「`TupleData` は不変なので共有で問題なし」というコメントまであったが、
+#     **不変なのは容れ物だけで要素は可変**。
+#   - `Set` は容れ物そのものが可変なので、共有すると `let` の中身が変わる。
+#   どちらもエラーにならないので気付けない形だった。
+#
+# Arrow の代入の規則（この例題が固定するもの）:
+#   **参照を共有するのは `let → let` のときだけ。** それ以外は必ずディープコピーする。
+#   ⇒ 共有している 2 つの束縛は必ず両方 `let` ＝ どちらからも変更できない。
+
+print("=== set は代入で複製される ===")
+let s = {1}
+mut t = s
+t.add(9)
+print(s)                     # {1}      let の s は変わらない
+print(t)                     # {1, 9}
+
+mut u = {1}
+mut v = u
+v.add(9)
+print(u)                     # {1}      mut どうしでも複製される
+print(v)                     # {1, 9}
+
+print("=== tuple は要素まで複製される ===")
+# ⚠ タプル自体は不変だが、**要素が可変コンテナなら共有は害になる**。
+mut xs = [1]
+mut tp = (xs,)
+mut w = tp
+w[0].append(9)
+print(tp)                    # ([1],)   元のタプルは変わらない
+print(xs)                    # [1]      元のリストも変わらない
+
+print("=== let → let だけが共有する（対照）===")
+let a = {1}
+let b = a
+print(b === a)               # True     どちらも let なので共有してよい
+
+print("=== list / dict / インスタンスは元から複製していた（対照）===")
+let la = [1]
+mut lb = la
+lb.append(9)
+print(la)                    # [1]
+
+let da = {"k": 1}
+mut db = da
+db["k"] = 9
+print(da)                    # {'k': 1}

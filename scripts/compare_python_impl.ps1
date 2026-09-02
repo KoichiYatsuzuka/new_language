@@ -138,6 +138,9 @@ $knownDiff = @{
     #    py は自己呼び出し自体は正しく動く（差分は repr だけ）＝ Rust の修正が参照実装と一致した証拠。
     'module_selfcall'                = 'py: リスト内の str を引用符なしで表示する（実測 `[hi 0, hi 1, hi 2]`）。自己呼び出し自体は py も動く'
     'module_async_body'              = 'py: AsyncManager そのものが未実装（実測 NameError）'
+    # ⚠ B9（Set / Tuple の複製）で新設。**実測して確認済み**。py にも同じバグがある
+    #    （代入で set が共有され `let s = {1}; mut t = s; t.add(9)` で s が {1, 9} になる）。
+    'set_tuple_copy_semantics'       = 'py 古い: set が代入で共有される（実測 let の s が {1, 9} になる）。Rust は複製する'
     # (d) 同期以降（33ef765..）に Rust 側へ入った意味論の修正 — py が古い
     'copy_method'                    = 'py 古い: mut→let のコピー意味論（#15e で Rust を修正）'
     'mut_to_let_copy'                = 'py 古い: mut→let のコピー意味論（#15e）'

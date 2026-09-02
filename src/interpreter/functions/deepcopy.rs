@@ -47,7 +47,25 @@ impl Interpreter {
                     .map(Self::deep_copy_value)
                     .collect(),
             ))),
-            // Tuple は Rc<TupleData> だが TupleData は不変なので共有で問題なし
+            // ⚠⚠ **`Set` と `Tuple` の腕が無く、共有されていた**（bug_fix.md B9）。
+            //
+            // `Tuple` については「`TupleData` は不変なので共有で問題なし」と書かれていたが、
+            // **不変なのは容れ物だけで要素は可変**。実測で
+            // `mut t = (xs,); mut u = t; u[0].append(9)` が `t` と `xs` の両方を変えた。
+            // `Set` は容れ物そのものが可変なので、共有すると
+            // `let s = {1}; mut t = s; t.add(9)` で **`let` の `s` が変わる**（実測）。
+            // ⇒ どちらも**要素を再帰コピーして新しい実体**にする。
+            Value::Set(items) => Value::Set(Rc::new(RefCell::new(
+                items.borrow().iter().cloned().map(Self::deep_copy_value).collect(),
+            ))),
+            Value::Tuple(t) => {
+                let vals: Vec<Value> =
+                    t.all_values().iter().cloned().map(Self::deep_copy_value).collect();
+                Value::Tuple(Rc::new(crate::interpreter::TupleData::new(
+                    vals,
+                    t.all_types().to_vec(),
+                )))
+            }
             // プリミティブ・関数・クラス等はそのまま返す
             other => other,
         }
@@ -104,6 +122,20 @@ impl Interpreter {
                     .map(Self::deep_copy_unfrozen)
                     .collect(),
             ))),
+            // ⚠ `deep_copy_value` と**同じ理由**で `Set` / `Tuple` も複製する（B9）。
+            //   片方だけ直すと「`copy()` では独立するのに `let` 束縛では共有される」
+            //   という食い違いになる。
+            Value::Set(items) => Value::Set(Rc::new(RefCell::new(
+                items.borrow().iter().cloned().map(Self::deep_copy_unfrozen).collect(),
+            ))),
+            Value::Tuple(t) => {
+                let vals: Vec<Value> =
+                    t.all_values().iter().cloned().map(Self::deep_copy_unfrozen).collect();
+                Value::Tuple(Rc::new(crate::interpreter::TupleData::new(
+                    vals,
+                    t.all_types().to_vec(),
+                )))
+            }
             other => other,
         }
     }
