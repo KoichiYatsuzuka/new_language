@@ -109,15 +109,35 @@ impl Compiler {
                 // **ずれた slot の可変性を読む**と `mut` 引数の判定が別の変数のものになる。
                 let s = self.local_slot(name, *slot);
                 s.and_then(|s| self.slot_mut.get(s as usize).copied())
+                    .or_else(|| self.toplevel_mut(name))
                     .unwrap_or(true)
             }
             Expr::Ident { name, res: Resolution::Unresolved, .. } => self
                 .slots
                 .get(name)
                 .and_then(|&s| self.slot_mut.get(s as usize).copied())
+                .or_else(|| self.toplevel_mut(name))
                 .unwrap_or(true),
+            // ⚠ **ここが無かった**（C の修正）。`Resolution::Global` は `_ => true` に落ち、
+            // プログラム最上位の `let` 変数が一律「可変」と判定されていた（実測）。
+            Expr::Ident { name, res: Resolution::Global(_), .. } => {
+                self.toplevel_mut(name).unwrap_or(true)
+            }
             _ => true,
         }
+    }
+
+    /// 最上位で宣言された名前の**可変性**。`toplevel_globals` は「名前 → 可変性」
+    /// （`resolver::toplevel_declared_globals`）。判らなければ `None`。
+    ///
+    /// ⚠ **セル変数と `static` を先に引く**（`wb_store_target` / `store_target` と同じ順序）。
+    /// セル変数は入れ子 `fn` への**可変**キャプチャ、`static` は `static mut` なので
+    /// どちらも常に可変。最上位に同名の `let` があっても、覆っているのはこちら。
+    fn toplevel_mut(&self, name: &str) -> Option<bool> {
+        if self.cells.contains_key(name) || self.statics.contains_key(name) {
+            return Some(true);
+        }
+        self.toplevel_globals.get(name).copied()
     }
 
     /// native の `mut` ポインタ引数の**書き戻し先**を 1 つ解決する（#48）。

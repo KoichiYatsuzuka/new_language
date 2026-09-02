@@ -97,7 +97,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (217 files, 71859 lines)
+src/  (217 files, 71889 lines)
   ar_config.rs (244)
   ast.rs (1212)
   decl_names.rs (173)
@@ -143,7 +143,7 @@ src/  (217 files, 71859 lines)
     msvc_errors.rs (112)
     proc_bridge.rs (200)
     py_interop.rs (412)
-    resolver.rs (672)
+    resolver.rs (680)
     scope.rs (180)
     str_methods.rs (649)
     templates.rs (937)
@@ -333,12 +333,12 @@ src/  (217 files, 71859 lines)
     run.rs (1633)
     compiler/
       block_expr.rs (403)
-      calls.rs (328)
+      calls.rs (348)
       control.rs (284)
       decls.rs (378)
       diag.rs (127)
       emit.rs (671)
-      entry.rs (611)
+      entry.rs (613)
       expr.rs (488)
       mod.rs (553)
       stmt.rs (650)
@@ -416,7 +416,7 @@ examples/  (recursive .ar counts per category)
   apps/ (2 .ar)
   archived/ (72 .ar)
   async/ (6 .ar)
-  basics/ (34 .ar)
+  basics/ (37 .ar)
   bench/ (24 .ar)
   classes/ (13 .ar)
   collections/ (9 .ar)
@@ -468,5 +468,5 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
   python_converter_fix_plan.md (431)
   README.md (317)
 ```
-_Generated 2026-09-01 by generate-codebase-map.ps1_
+_Generated 2026-09-02 by generate-codebase-map.ps1_
 <!-- END AUTO-TREE -->

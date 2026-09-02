@@ -8,7 +8,7 @@
 // ここで bool を並べない。
 
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::ast::{
     Expr, Param, Stmt,
@@ -92,7 +92,7 @@ pub fn is_toplevel_compile_target(stmt: &Stmt) -> bool {
 pub fn compile_toplevel_stmt(
     stmt: &Stmt,
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
-    toplevel_globals: &HashSet<String>,
+    toplevel_globals: &HashMap<String, bool>,
 ) -> Option<Chunk> {
     compile_toplevel_or_module(stmt, annotations, toplevel_globals, CompileMode::Toplevel)
 }
@@ -107,7 +107,7 @@ pub fn compile_toplevel_stmt(
 pub fn compile_module_stmt(
     stmt: &Stmt,
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
-    module_globals: &HashSet<String>,
+    module_globals: &HashMap<String, bool>,
 ) -> Option<Chunk> {
     compile_toplevel_or_module(stmt, annotations, module_globals, CompileMode::Module)
 }
@@ -115,7 +115,7 @@ pub fn compile_module_stmt(
 fn compile_toplevel_or_module(
     stmt: &Stmt,
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
-    toplevel_globals: &HashSet<String>,
+    toplevel_globals: &HashMap<String, bool>,
     mode: CompileMode,
 ) -> Option<Chunk> {
     debug_assert!(matches!(mode, CompileMode::Toplevel | CompileMode::Module));
@@ -190,7 +190,7 @@ pub fn compile_definition_expr(
 fn compile_toplevel_stmt_inner(
     stmt: &Stmt,
     annotations: std::rc::Rc<crate::type_check::AstAnnotations>,
-    toplevel_globals: &HashSet<String>,
+    toplevel_globals: &HashMap<String, bool>,
     mode: CompileMode,
 ) -> Option<Chunk> {
     let body = std::slice::from_ref(stmt);
@@ -560,7 +560,9 @@ pub fn compile_async_body(
         chunk: Chunk { n_locals: n as usize, ..Chunk::default() },
         // ⚠ **空でないと `reads_by_name` が偽になり `LoadGlobal` へ落ちる**。名前の中身は
         // 書き込み判定にしか使わないので、捕捉名を入れておけば足りる（`CompileMode` の doc）。
-        toplevel_globals: captures.iter().cloned().collect(),
+        // ⚠ 捕捉名の可変性はここでは判らないので**保守的に可変**とする
+        // （`arg_is_mutable` の既定と同じ側。C・H 修正でも挙動を変えない）。
+        toplevel_globals: captures.iter().map(|n| (n.clone(), true)).collect(),
         shadowed_for_targets,
         // async 本体は可変キャプチャを持たない（submit 時に deep-clone される・D5）。
         ..Compiler::base(CompileMode::AsyncBody, annotations)

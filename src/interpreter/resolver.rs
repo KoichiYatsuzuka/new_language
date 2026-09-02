@@ -134,7 +134,7 @@ pub(crate) fn resolve_program(stmts: &mut [Stmt]) {
 /// 覆うのは**入れ子ブロック（if/for/while/block/match/try）の束縛と for ターゲット**だけ。
 /// これらは push されたスコープに入るので `scopes[0]` には居ない
 /// （関数側で `collection.ar` の set を for ターゲットが覆って落ちた実例がある）。
-fn resolve_toplevel(stmts: &mut [Stmt], globals: &HashSet<String>) {
+fn resolve_toplevel(stmts: &mut [Stmt], globals: &HashMap<String, bool>) {
     let visible = toplevel_visible_globals_with(stmts, globals);
     if visible.is_empty() {
         return;
@@ -157,16 +157,23 @@ fn resolve_toplevel(stmts: &mut [Stmt], globals: &HashSet<String>) {
 ///
 /// ⚠ 使う側は**必ず `slots` を先に引くこと**。順序を逆にすると本当にシャドウしている
 /// ローカルをグローバルとして読んでしまう。
-pub(crate) fn toplevel_declared_globals(stmts: &[Stmt]) -> HashSet<String> {
+pub(crate) fn toplevel_declared_globals(stmts: &[Stmt]) -> HashMap<String, bool> {
     collect_program_globals(stmts)
 }
 
 /// 最上位の**可視**グローバル集合（宣言 − 入れ子スコープのシャドウ）。`resolve_toplevel` 専用。
 /// ⚠ VM コンパイラへ渡すのは**こちらではなく** `toplevel_declared_globals`（上の doc を参照）。
-fn toplevel_visible_globals_with(stmts: &[Stmt], globals: &HashSet<String>) -> HashSet<String> {
+fn toplevel_visible_globals_with(
+    stmts: &[Stmt],
+    globals: &HashMap<String, bool>,
+) -> HashSet<String> {
     let mut shadowing: HashSet<String> = HashSet::new();
     collect_shadowing_binders(stmts, &mut shadowing);
-    globals.difference(&shadowing).cloned().collect()
+    globals
+        .keys()
+        .filter(|n| !shadowing.contains(*n))
+        .cloned()
+        .collect()
 }
 
 /// **直下宣言以外**で束縛される名前を集める（#21-b）。
@@ -209,20 +216,22 @@ fn collect_shadowing_binders(stmts: &[Stmt], out: &mut HashSet<String>) {
 /// ⚠ `enum` / `new_type` が抜けていたため `MyEnum` のような読みが `Resolution::Global` に
 /// ならず VM が bail していた（#27-c で修正）。**同じ抜けが `collect_declared_names` 側に
 /// 残って #68 の実バグになった** — その再発を止めるのが #59。
-fn collect_program_globals(stmts: &[Stmt]) -> HashSet<String> {
-    let mut out = HashSet::new();
+fn collect_program_globals(stmts: &[Stmt]) -> HashMap<String, bool> {
+    let mut out = HashMap::new();
     for stmt in stmts {
         crate::decl_names::each_declared_name(stmt, &mut |name, origin, _| {
             use crate::decl_names::DeclOrigin as D;
             // ⚠ **全バリアントを拾う**（最上位の束縛はすべてグローバル）。
             // `|_|` で済ませず match で書くのは、`DeclOrigin` が増えたとき
             // **ここでも判断を強制する**ため（#59 の仕掛け）。
-            match origin {
+            // 値は**可変性**（#27-c / C・H 修正）。`DeclOrigin` の doc がそのまま根拠:
+            // `Mut` / `Static`（= `static mut`）/ `TupleMut` だけが可変で、残りは不変。
+            // ⚠ ここも `|_|` で潰さず match のまま書く（`DeclOrigin` が増えたとき
+            // **可変性の判断を強制する**ため。#59 の仕掛けと同じ理由）。
+            let mutable = match origin {
+                D::Mut | D::Static | D::TupleMut => true,
                 D::Let
-                | D::Mut
-                | D::Static
                 | D::TupleLet
-                | D::TupleMut
                 | D::Fn
                 | D::Gen
                 | D::Class
@@ -231,10 +240,9 @@ fn collect_program_globals(stmts: &[Stmt]) -> HashSet<String> {
                 | D::Enum
                 | D::NewType
                 | D::Import
-                | D::FromImport => {
-                    out.insert(name.to_string());
-                }
-            }
+                | D::FromImport => false,
+            };
+            out.insert(name.to_string(), mutable);
         });
     }
     out
@@ -342,7 +350,7 @@ fn collect_bound_in_expr(expr: &Expr, out: &mut HashSet<String>) {
 }
 
 /// 単一関数の base スコープを解決して本体の読み取りを書き換える。
-fn resolve_function(params: &[Param], body: &mut [Stmt], globals: &HashSet<String>) {
+fn resolve_function(params: &[Param], body: &mut [Stmt], globals: &HashMap<String, bool>) {
     // 可変長パラメータがあると base の並びが `local::args` を含んで複雑になるため諦める。
     if params.iter().any(|p| p.variadic) {
         return;
@@ -388,7 +396,7 @@ fn resolve_function(params: &[Param], body: &mut [Stmt], globals: &HashSet<Strin
     }
     collect_bound_names(body, &mut bound);
     let visible_globals: HashSet<String> =
-        globals.difference(&bound).cloned().collect();
+        globals.keys().filter(|n| !bound.contains(*n)).cloned().collect();
 
     rewrite_stmts(body, &base, &visible_globals);
 }

@@ -108,7 +108,7 @@ impl Interpreter {
     pub(crate) fn try_run_module_stmt(
         &mut self,
         stmt: &crate::ast::Stmt,
-        module_globals: &std::collections::HashSet<String>,
+        module_globals: &std::collections::HashMap<String, bool>,
     ) -> Result<Option<ExecResult>, String> {
         if !crate::vm::is_toplevel_compile_target(stmt) {
             return Ok(None);

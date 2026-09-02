@@ -1,0 +1,42 @@
+# let_arg_sharing.ar — `let` 変数を `let` パラメータに渡すと**複製されず共有される**ことの確認。
+#
+# Arrow は束縛の属性で複製するかどうかを決める:
+#   let → let : 参照を共有する（両側とも不変なので、共有しても書き換えられない）
+#   それ以外  : ディープコピーする
+# `let` パラメータへの束縛もこの規則に従う。判定は引数式が「可変な変数から来ているか」で、
+# 判らないときは保守的に「可変」＝複製へ倒れる。
+#
+# ⚠ **この形の例題が 1 本も無かったため、判定の穴が全ゲートを素通りしていた**:
+#   - プログラム最上位の `let`（`Resolution::Global`）に判定のアームが無く、
+#     `_ => true` に落ちて一律「可変」と判定されていた
+#   - import されたモジュール本体（`Resolution::Unresolved`）も同様
+#   どちらも「無駄な複製が 1 回増える」だけで出力は変わらないので、
+#   `compare_outputs` でも検出できない。**`===` で同一性を見るこの形が唯一の網**。
+
+from let_arg_sharing_probe import[ar] probe
+
+# === 1. 関数ローカル ===
+print("=== function-local ===")
+
+fn from_function_local() -> None:
+    let a = [1]
+    probe("local let      :", a, a)          # True  : 共有
+    mut b = [1]
+    probe("local mut      :", b, b)          # False : 複製
+
+from_function_local()
+
+# === 2. プログラム最上位 ===
+print("=== module top-level ===")
+
+let top_let = [1]
+probe("top-level let  :", top_let, top_let)  # True  : 共有
+
+mut top_mut = [1]
+probe("top-level mut  :", top_mut, top_mut)  # False : 複製
+
+# === 3. import されたモジュール本体 ===
+# import した時点でモジュール本体が実行され、その中で同じ確認を行う。
+print("=== imported module body ===")
+
+import[ar] let_arg_sharing_module as M

@@ -142,7 +142,7 @@ struct Compiler {
     /// 「今この文でシャドウされていない名前」ではない。順序を守れば健全（その文の束縛は
     /// すべて `slots` に入るため）。`resolver::toplevel_declared_globals`（**減算なし**）が入る
     /// — 減算版を渡すと別の文の `for i in ...` のせいで `while i < N` の `i` まで落ちる（#27-c）。
-    toplevel_globals: HashSet<String>,
+    toplevel_globals: HashMap<String, bool>,
     /// 外側の同名束縛を覆う `for` ループ変数の名前（#27・`for_target_shadows`）。
     /// `Stmt::For` のコンパイル時に、この名前だけ**本体の間だけ**専用 slot へ差し替える。
     shadowed_for_targets: HashSet<String>,
@@ -318,7 +318,7 @@ impl Compiler {
             mode,
             named_locals: 0,
             temps_in_use: 0,
-            toplevel_globals: HashSet::new(),
+            toplevel_globals: HashMap::new(),
             shadowed_for_targets: HashSet::new(),
             statics: HashMap::new(),
             cells: HashMap::new(),

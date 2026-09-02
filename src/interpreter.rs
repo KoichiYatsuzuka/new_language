@@ -480,7 +480,7 @@ pub struct Interpreter {
     pub(self) vm_toplevel_chunks: HashMap<usize, Option<Rc<crate::vm::Chunk>>>,
     /// 最上位から見て `scopes[0]` を確実に指す名前の集合（#10-b, `resolver::toplevel_declared_globals`）。
     /// 最上位ループ Chunk の**書き込み先**判定に使う。空 = 最上位 VM 化を行わない。
-    pub(self) toplevel_globals: std::collections::HashSet<String>,
+    pub(self) toplevel_globals: std::collections::HashMap<String, bool>,
 }
 
 /// [`Interpreter::wire_resolution`] のグローバル集合の入れ方（#88）。
@@ -528,7 +528,7 @@ impl Interpreter {
             vm_chunks: HashMap::new(),
             vm_gen_chunks: HashMap::new(),
             vm_toplevel_chunks: HashMap::new(),
-            toplevel_globals: std::collections::HashSet::new(),
+            toplevel_globals: std::collections::HashMap::new(),
             template_fn_cache: HashMap::new(),
             template_gen_cache: HashMap::new(),
             vm_stack: Vec::new(),
@@ -616,7 +616,7 @@ impl Interpreter {
     pub(crate) fn wire_resolution(
         &mut self,
         annotations: crate::type_check::AstAnnotations,
-        globals: std::collections::HashSet<String>,
+        globals: std::collections::HashMap<String, bool>,
         mode: GlobalsMode,
     ) {
         self.set_annotations(std::rc::Rc::new(annotations));
@@ -626,7 +626,7 @@ impl Interpreter {
         }
     }
 
-    fn set_toplevel_globals(&mut self, names: std::collections::HashSet<String>) {
+    fn set_toplevel_globals(&mut self, names: std::collections::HashMap<String, bool>) {
         self.toplevel_globals = names;
     }
 
@@ -634,7 +634,7 @@ impl Interpreter {
     ///
     /// REPL はブロックを 1 つずつ実行するので、前のブロックで宣言した名前を
     /// 後のブロックからも「`scopes[0]` を指す」と判断できるように積み増す必要がある。
-    fn extend_toplevel_globals(&mut self, names: std::collections::HashSet<String>) {
+    fn extend_toplevel_globals(&mut self, names: std::collections::HashMap<String, bool>) {
         self.toplevel_globals.extend(names);
     }
 
