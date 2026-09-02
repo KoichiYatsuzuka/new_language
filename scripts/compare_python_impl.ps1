@@ -123,6 +123,11 @@ $knownDiff = @{
     # ⚠ B1-a（辞書キー）/ B2-a（list・dict の ==）で新設。**実測して確認済み**。
     #    ユーザー方針により impl_python は触らない（同期時の積み残し）。
     'dict_key_types'                 = 'py: dict repr で str が引用符なし、かつ整数値 float キーを int へ正規化しない（実測 `{1: int, s: str, True: bool, 2.0: integral float}`）'
+    # ⚠ B2-b（等値の二層化）で新設。**実測して確認済み**。
+    #    ユーザー方針により impl_python は触らない（同期時の積み残し）。
+    'equality_numeric_promotion'     = 'py 古い: uint の昇格が無く `uint(3) == 3` が False（実測 4 行目）'
+    'eq_dunder_consistency'          = 'py 古い: set の add/remove が __eq__ を見ない（実測 len が 2/3 になり remove が KeyError）'
+    'class_identity_across_threads'  = 'py: AsyncManager そのものが未実装（実測 NameError）'
     # (d) 同期以降（33ef765..）に Rust 側へ入った意味論の修正 — py が古い
     'copy_method'                    = 'py 古い: mut→let のコピー意味論（#15e で Rust を修正）'
     'mut_to_let_copy'                = 'py 古い: mut→let のコピー意味論（#15e）'

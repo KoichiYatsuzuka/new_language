@@ -91,7 +91,40 @@ impl Interpreter {
                 }
             }
         }
+        // ⚠⚠ `in` / `not in` の**左辺**が `__eq__` を持つインスタンスなら、要素ごとに
+        //    `__eq__` を呼ぶ（B2-b）。以前は `apply_binop` が `values_eq`（構造比較）を
+        //    直接呼んでいたため、**`a == b` は真なのに `a in [b]` は偽**という食い違いが
+        //    起きていた（実測）。`==` だけが `__eq__` を見ていたのが原因。
+        // ⚠ 対象は要素を列挙できるコンテナだけ。`str` の部分文字列検索と `dict`（ハッシュで
+        //    引くので `values_eq` を通らない）は `None` が返り、下の `apply_binop` に落ちる。
+        //    dict で `__eq__` が効くようになるのは B1-c（辞書コンテナの差し替え）から。
+        if matches!(op, BinOp::In | BinOp::NotIn) {
+            if let Value::Instance(ref inst_rc) = lv {
+                let has_eq = inst_rc.borrow().class.methods.contains_key("__eq__");
+                if has_eq {
+                    if let Some(items) = self.membership_items(&rv) {
+                        let found = self.contains_eq_dyn(&items, &lv)?;
+                        let yes = matches!(op, BinOp::In);
+                        return Ok(Value::Bool(found == yes));
+                    }
+                }
+            }
+        }
         self.apply_binop(op, lv, rv)
+    }
+
+    /// `in` / `not in` の右辺から**要素の並び**を取り出す。
+    /// 要素を列挙できない容れ物（`str` / `dict` / 非コンテナ）は `None`。
+    fn membership_items(&self, container: &Value) -> Option<Vec<Value>> {
+        match container {
+            Value::List(rc) | Value::Set(rc) => Some(rc.borrow().clone()),
+            Value::Tuple(t) => Some(t.all_values().to_vec()),
+            Value::FrozenList { state, layout } => {
+                let st = state.borrow();
+                Some((0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect())
+            }
+            _ => None,
+        }
     }
 
     /// `__bool__` を持つ `Value::Instance` に対してそのメソッドを呼び出し真偽値を返す。
@@ -296,9 +329,13 @@ impl Interpreter {
             (BinOp::Pow, Value::Int(a), Value::Float(b)) => Ok(Value::Float((*a as f64).powf(*b))),
             (BinOp::Pow, Value::Float(a), Value::Int(b)) => Ok(Value::Float(a.powi(*b as i32))),
             // 比較演算
-            (BinOp::Eq, _, _) => Ok(Value::Bool(self.values_eq(&lv, &rv)?)),
+            // ⚠ `==` / `!=` は**数値の昇格ラティスを先に通す**（B2-b）。`values_eq` 自体は
+            //    型厳密なので、ここで昇格しないと `1 == 1.0` が False になる。
+            //    昇格は算術・大小比較が既に `(Int, Float)` の腕で行っているのと同じ規則で、
+            //    「式としての演算子はキャストする／値の等値は厳密」という二層に分けてある。
+            (BinOp::Eq, _, _) => Ok(Value::Bool(self.values_eq_expr(&lv, &rv)?)),
             (BinOp::RefEq, _, _) => Ok(Value::Bool(self.values_ref_eq(&lv, &rv)?)),
-            (BinOp::NotEq, _, _) => Ok(Value::Bool(!self.values_eq(&lv, &rv)?)),
+            (BinOp::NotEq, _, _) => Ok(Value::Bool(!self.values_eq_expr(&lv, &rv)?)),
             (BinOp::Lt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(*a < *b)),
             (BinOp::Lt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(*a < *b)),
             (BinOp::Lt, Value::Int(a), Value::Float(b)) => Ok(Value::Bool((*a as f64) < *b)),

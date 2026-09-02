@@ -1,0 +1,30 @@
+# class_identity_across_threads.ar — クラスの同一性が**スレッドを跨いでも**保たれること（B2-b）。
+#
+# ⚠⚠ async のタスク投入は share-nothing なので、捕捉した値を**すべて `deep_clone`** する。
+#   `ClassValue::deep_clone` は新しい `Rc` を作るので、クラスの等値を `Rc::ptr_eq` で
+#   判定していると **`C == C` がスレッドの中だけ False になる**。
+#   エラーにならず答えだけが変わる（B3 と同型のサイレントなバグ）。実測で再現した:
+#
+#     同一スレッド : True
+#     async タスク : False        ← 修正前
+#
+# ⇒ `class_id`（`alloc_class_id()` が発行する一意 ID）で比べる。`deep_clone` が
+#   そのまま引き継ぐので複製を跨いで安定する。
+
+class C:
+    let x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+
+let K = C
+
+print("same thread:", C == K)          # True
+
+mut mng = AsyncManager(num_thread=1)
+
+mng <- async->bool:
+    block_return C == K
+
+mng.wait_for_finish()
+print("async task :", mng.results)     # [True]
+print("errors     :", mng.error_list)  # [None]

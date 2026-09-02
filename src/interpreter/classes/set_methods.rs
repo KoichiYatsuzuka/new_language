@@ -32,25 +32,31 @@ impl Interpreter {
             }
             "add" => {
                 let item = Self::one_arg_evaled(evaled, "set", "add")?;
-                let mut s_mut = s.borrow_mut();
-                if !self.contains_eq(&s_mut, &item)? {
-                    s_mut.push(item);
+                // ⚠ `__eq__` を尊重する（B2-b）。`x in s` と同じ規則でないと、
+                //    「`in` では既にあると言われるのに `add` すると重複する」ことになる。
+                // ⚠⚠ `borrow_mut()` を握ったまま `__eq__` を呼んではいけない。
+                //    ハンドラが同じ set に触れた瞬間に RefCell の二重借用でパニックする。
+                //    ⇒ 先に複製して探し、書き込みのときだけ借りる（discard / remove も同形）。
+                let items = s.borrow().clone();
+                if !self.contains_eq_dyn(&items, &item)? {
+                    s.borrow_mut().push(item);
                 }
                 Ok(Value::None)
             }
             "discard" => {
                 let item = Self::one_arg_evaled(evaled, "set", "discard")?;
-                let mut s_mut = s.borrow_mut();
-                if let Some(pos) = self.position_eq(&s_mut, &item)? {
-                    s_mut.remove(pos);
+                // ⚠ `__eq__` を尊重するため、借用を跨がないよう先に複製して探す。
+                let items = s.borrow().clone();
+                if let Some(pos) = self.position_eq_dyn(&items, &item)? {
+                    s.borrow_mut().remove(pos);
                 }
                 Ok(Value::None)
             }
             "remove" => {
                 let item = Self::one_arg_evaled(evaled, "set", "remove")?;
-                let mut s_mut = s.borrow_mut();
-                if let Some(pos) = self.position_eq(&s_mut, &item)? {
-                    s_mut.remove(pos);
+                let items = s.borrow().clone();
+                if let Some(pos) = self.position_eq_dyn(&items, &item)? {
+                    s.borrow_mut().remove(pos);
                     Ok(Value::None)
                 } else {
                     Err(format!("KeyError: {} is not in set", self.display(&item)))

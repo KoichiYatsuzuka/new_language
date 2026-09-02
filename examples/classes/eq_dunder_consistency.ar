@@ -1,0 +1,51 @@
+# eq_dunder_consistency.ar — ユーザー定義 `__eq__` が `==` 以外にも効くこと（B2-b）。
+#
+# ⚠⚠ 以前は `__eq__` が **`==` 演算子でしか呼ばれていなかった**。`in` / `not in` /
+#   set の包含は構造比較（`values_eq`）を直接呼んでいたため、
+#   **`a == b` は True なのに `a in [b]` は False** という食い違いが起きていた。
+#   エラーにならないので気付けない形。
+#
+# 実装は `apply_binop` / `apply_binop_dyn` と同じ二層構造:
+#   - `values_eq`      … `&self` の構造比較。FFI 経路や集合演算が使う
+#   - `values_eq_dyn`  … `__eq__` を呼ぶ（インタプリタを回すので `&mut self`）
+
+class Q:
+    let x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+    # x の偶奇だけで等しいとみなす（構造比較とは違う答えを返す）
+    fn __eq__(let self, let other: Q) -> bool:
+        return self.x % 2 == other.x % 2
+
+let a = Q(1)
+let b = Q(3)
+let c = Q(2)
+
+print("=== `==` ===")
+print(a == b)              # True    どちらも奇数
+print(a == c)              # False
+
+print("=== `in` / `not in` も同じ答えになる ===")
+print(a in [b])            # True
+print(a in [c])            # False
+print(a not in [c])        # True
+print(a in (b,))           # True
+print(a in {b})            # True
+
+print("=== set のメソッドも同じ規則 ===")
+mut s = {b}
+s.add(a)                   # __eq__ が True なので重複として弾かれる
+print(len(s))              # 1
+s.add(c)                   # 偶数なので別物
+print(len(s))              # 2
+s.remove(a)                # b が __eq__ で一致して消える
+print(len(s))              # 1
+
+print("=== 構造比較との対照（__eq__ が無いクラス）===")
+class P:
+    let x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+print(P(1) == P(1))        # True    全フィールドが等しい
+print(P(1) in [P(1)])      # True
+print(P(1) == P(2))        # False

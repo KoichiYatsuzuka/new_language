@@ -1,0 +1,44 @@
+# equality_numeric_promotion.ar — `==` / `!=` / `in` の**数値の昇格ラティス**（B2-b）。
+#
+# Arrow は等値を**二層**に分けている:
+#
+#   - **値の同一性**（型厳密）  … 辞書のキーとハッシュが使う。`Int(1)` と `Float(1.0)` は別物。
+#   - **式としての比較**        … `==` / `!=` / `in` / `not in` / set 演算。
+#                                 オペランドを**キャストしてから**比べる。
+#
+# 昇格ラティスは `uint → int → float` の一方向。⚠ **`bool` は昇格対象外**。
+#
+# ⚠ 以前は値の同一性の側が int を f64 へ昇格していたため、
+#   `9007199254740993 == 9007199254740992.0` が真になる（2^53 超で精度が落ちる）
+#   **非可逆な等値**だった。今は昇格を式の側だけに閉じ込めてある。
+
+print("=== 昇格する組み合わせ ===")
+print(1 == 1.0)             # True    int -> float
+print(1.0 == 1)             # True
+print(uint(3) == 3)         # True    uint -> int
+print(3 == uint(3))         # True
+print(1 != 1.0)             # False
+print(1 == 2.0)             # False   昇格しても値が違えば偽
+
+print("=== bool は昇格しない ===")
+# ⚠ Python では `1 == True` が True になるが、Arrow では bool を数値の
+#   ラティスに入れていないので False。
+print(1 == True)            # False
+print(True == 1)            # False
+print(0 == False)           # False
+
+print("=== `in` も同じ規則 ===")
+print(1 in [1.0])           # True
+print(1 in {1.0})           # True
+print(uint(3) in [3])       # True
+print(True in [1])          # False   bool は昇格しない
+
+print("=== 昇格はオペランドにだけ掛かる（中まで再帰しない）===")
+# ⚠ 「比較の場所でキャストする」規則の素直な帰結。`[1]` と `[1.0]` は
+#   コンテナどうしの比較なので数値の昇格の対象ではなく、要素は型厳密に比べられる。
+print([1] == [1.0])         # False
+print((1,) == (1.0,))       # False
+
+print("=== 数値でない組み合わせ ===")
+print(1 == "a")             # False
+print(1 == None)            # False

@@ -1,4 +1,4 @@
-// ops/equality.rs — 値の等価判定: values_eq / values_ref_eq。
+// ops/equality.rs — 値の等価判定: values_eq / values_eq_dyn / values_ref_eq。
 
 use {
     std::rc::Rc,
@@ -12,12 +12,16 @@ impl Interpreter {
     /// 溢れさせないための値なので小さめに取る。実用上の入れ子の深さより十分大きい。
     const EQ_MAX_DEPTH: u32 = 200;
 
-    /// 2つの値が等値かどうかを判定する（`==` / `!=` 演算子および包含検査で使用）。
+    /// 2つの値が等値かどうかを**型厳密に**判定する。
     ///
-    /// - プリミティブ型（int/float/str/bool/None）は値で比較。int と float は昇格して比較
+    /// - プリミティブ型は**同じ型どうし**のみ比較する。⚠ `Int` と `Float`、`UInt` と `Int` は
+    ///   **等値にならない**（B2-b で型厳密化）。数値の昇格は「式としての `==` / `!=`」の規則で、
+    ///   [`Interpreter::values_eq_expr`] がそれを担う（`==` / `in` などはそちらを通る）。
+    ///   ここを厳密にしておかないと、辞書のキーやハッシュと規則が食い違う。
     /// - `Instance` は参照が同一なら真、違えば同じクラス名＋全フィールドを再帰比較
-    /// - `Class` は参照の同一性（ポインタ比較）で判定
-    /// - `Tuple` / `List` / `Set` / `Dict` は要素を再帰的に比較
+    /// - `Class` は **`class_id`** で判定（下記の警告を参照）
+    /// - `Tuple` / `List` / `Set` / `Dict` / `FrozenList` は要素を再帰的に比較
+    /// - 関数・ジェネレータ・ハンドル類は**参照の同一性**で比較
     /// - 異なる型同士（例: int と str）は常に `false`
     ///
     /// ⚠⚠ **`Result` を返すのは循環参照のため**（B2-a）。`List` / `Dict` の腕を足すまでは
@@ -28,6 +32,9 @@ impl Interpreter {
     ///
     /// ⚠⚠ **深さで打ち切って `false` を返してはいけない。** 等しいものを「等しくない」と
     /// 答える＝サイレントな誤答で、B2 で消したはずのバグがそのまま戻る。打ち切りは必ずエラー。
+    ///
+    /// ⚠ ユーザー定義の `__eq__` は**ここでは効かない**。効かせたい経路は
+    /// [`Interpreter::values_eq_dyn`] を使うこと（`apply_binop` / `apply_binop_dyn` と同じ二層構造）。
     ///
     /// - `a`, `b`: 比較する2つの値
     ///
@@ -46,18 +53,21 @@ impl Interpreter {
         }
         let d = depth + 1;
         let eq = match (a, b) {
+            // ── プリミティブ（型厳密）─────────────────────────────────────────
+            // ⚠ `(Int, Float)` / `(Float, Int)` の腕は **B2-b で意図的に外した**。
+            //    以前はここで int を f64 へ昇格していたため、
+            //    `9007199254740993 == 9007199254740992.0` が真になる（2^53 超で精度が落ちる）
+            //    **非可逆な等値**だった。式としての `==` の昇格は `apply_binop` が行う。
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::UInt(a), Value::UInt(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Complex(r1, i1), Value::Complex(r2, i2)) => r1 == r2 && i1 == i2,
-            // int と float の混在比較: int を float に昇格して比較
-            (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
-            (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::None, Value::None) => true,
             (Value::Undefined, Value::Undefined) => true,
-            // インスタンスの等値判定:
+
+            // ── インスタンス ──────────────────────────────────────────────────
             // enum バリアント (class name が "enum_item_" で始まる) はフィールド値で比較する。
             // それ以外のインスタンスは参照の同一性を先に確認し、
             // 一致しない場合は同じクラスかつ全フィールドが等値であれば真とする。
@@ -99,8 +109,20 @@ impl Interpreter {
                     all
                 }
             }
+
+            // ── 型・トレイト・クラス ──────────────────────────────────────────
             (Value::Type(a), Value::Type(b)) => a == b,
-            (Value::Class(a), Value::Class(b)) => Rc::ptr_eq(a, b),
+            (Value::Trait(a), Value::Trait(b)) => a == b,
+            (Value::Protocol(a), Value::Protocol(b)) => a == b,
+            // ⚠⚠ **`Rc::ptr_eq` にしてはいけない**（B2-b）。`ClassValue::deep_clone` が
+            //    クラスを複製する経路が実在し（async は share-nothing で全値を `deep_clone`
+            //    する）、**スレッドを跨いだ瞬間に `C == C` が False になる**。実測で確認済み:
+            //    同一スレッドでは True、`mng <- async->bool: block_return C == K` では False。
+            //    `class_id` は `alloc_class_id()` が発行する一意 ID で、`deep_clone` が
+            //    そのまま引き継ぐ（`ClassValue::deep_clone` を参照）ので、複製を跨いで安定する。
+            (Value::Class(a), Value::Class(b)) => a.class_id == b.class_id,
+
+            // ── 順序ありの複合 ────────────────────────────────────────────────
             // タプルは要素数と各要素を再帰的に比較
             (Value::Tuple(a), Value::Tuple(b)) => {
                 if Rc::ptr_eq(a, b) {
@@ -130,6 +152,33 @@ impl Interpreter {
                 }
                 self.seq_eq(ar.iter().zip(br.iter()), d)?
             }
+            // `fixed_list` も**リストとして**構造比較する（`List` と規則を揃える）。
+            // 要素はフラットバイト列なので、`reconstruct_item` で復元してから比べる。
+            (
+                Value::FrozenList { state: sa, layout: la },
+                Value::FrozenList { state: sb, layout: lb },
+            ) => {
+                if Rc::ptr_eq(sa, sb) {
+                    return Ok(true);
+                }
+                let ra = sa.borrow();
+                let rb = sb.borrow();
+                if ra.len != rb.len || la.class_name != lb.class_name {
+                    return Ok(false);
+                }
+                let mut all = true;
+                for i in 0..ra.len {
+                    let x = la.reconstruct_item(&ra.data, i);
+                    let y = lb.reconstruct_item(&rb.data, i);
+                    if !self.values_eq_at(&x, &y, d)? {
+                        all = false;
+                        break;
+                    }
+                }
+                all
+            }
+
+            // ── 順序なしの複合 ────────────────────────────────────────────────
             // セットは要素数と各要素の包含関係で比較（順序無関係）
             (Value::Set(a), Value::Set(b)) => {
                 if Rc::ptr_eq(a, b) {
@@ -181,9 +230,69 @@ impl Interpreter {
                 }
                 all
             }
+
+            // ── 構造を持つその他の値 ──────────────────────────────────────────
+            (Value::AsyncStatusVal(a), Value::AsyncStatusVal(b)) => a == b,
+            (
+                Value::ResultVal { ok: oa, inner: ia },
+                Value::ResultVal { ok: ob, inner: ib },
+            ) => oa == ob && self.values_eq_at(ia, ib, d)?,
+            (Value::Slice(a), Value::Slice(b)) => {
+                if Rc::ptr_eq(a, b) {
+                    return Ok(true);
+                }
+                self.opt_eq(&a.begin, &b.begin, d)?
+                    && self.opt_eq(&a.end, &b.end, d)?
+                    && self.opt_eq(&a.step, &b.step, d)?
+            }
+            (Value::JsProcFn(a), Value::JsProcFn(b)) => {
+                a.bridge_key == b.bridge_key
+                    && a.module_name == b.module_name
+                    && a.fn_name == b.fn_name
+            }
+            // C# 側の実体は `(class_name, handle)` で一意。`Rc` の同一性ではない
+            // （同じオブジェクトへのハンドルが別々の `Rc` で来うる）。
+            (Value::CsObject(a), Value::CsObject(b)) => {
+                a.class_name == b.class_name && a.handle == b.handle
+            }
+
+            // ── 参照の同一性で比べる値 ────────────────────────────────────────
+            // ⚠ これらの腕が**丸ごと無かった**ため、`_ => false` に落ちて
+            //   **`f == f` すら False** だった（実測）。「あらゆる型を dict のキーに」の前提。
+            (Value::Function(a), Value::Function(b)) => Rc::ptr_eq(a, b),
+            (Value::OverloadedFn(a), Value::OverloadedFn(b)) => {
+                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| Rc::ptr_eq(x, y))
+            }
+            (Value::GeneratorFn(a), Value::GeneratorFn(b)) => Rc::ptr_eq(a, b),
+            (Value::Generator(a), Value::Generator(b)) => Rc::ptr_eq(a, b),
+            (Value::TemplateFn(a), Value::TemplateFn(b)) => Rc::ptr_eq(a, b),
+            (Value::TemplateClass(a), Value::TemplateClass(b)) => Rc::ptr_eq(a, b),
+            (Value::TemplateGenFn(a), Value::TemplateGenFn(b)) => Rc::ptr_eq(a, b),
+            (Value::Namespace(a), Value::Namespace(b)) => Rc::ptr_eq(a, b),
+            (Value::FileObject(a), Value::FileObject(b)) => Rc::ptr_eq(a, b),
+            (Value::AsyncManager(a), Value::AsyncManager(b)) => Rc::ptr_eq(a, b),
+            (Value::Signal(a), Value::Signal(b)) => Rc::ptr_eq(a, b),
+            (Value::EventLoop(a), Value::EventLoop(b)) => Rc::ptr_eq(a, b),
+            (Value::PyObject(a), Value::PyObject(b)) => std::sync::Arc::ptr_eq(a, b),
+            (Value::NativeFunction(a), Value::NativeFunction(b)) => std::sync::Arc::ptr_eq(a, b),
+
             _ => false,
         };
         Ok(eq)
+    }
+
+    /// `Option<Value>` どうしの等値（`Slice` の begin/end/step 用）。
+    fn opt_eq(
+        &self,
+        a: &Option<Value>,
+        b: &Option<Value>,
+        depth: u32,
+    ) -> Result<bool, String> {
+        match (a, b) {
+            (None, None) => Ok(true),
+            (Some(x), Some(y)) => self.values_eq_at(x, y, depth),
+            _ => Ok(false),
+        }
     }
 
     /// ペアの列を短絡付きで全比較する。
@@ -200,31 +309,58 @@ impl Interpreter {
         Ok(true)
     }
 
+    /// 数値の昇格ラティス（`uint → int → float`）で等値比較する。
+    /// 昇格が要らない（同種）／数値でない組は `None` を返し、通常の経路へ落とす。
+    ///
+    /// ⚠ **`bool` は昇格対象外**（`1 == True` は False）。
+    /// ⚠ `uint` と `int` は**値で**比べる（`as` で潰すと `u64::MAX` 付近が壊れる）。
+    /// ⚠⚠ これは「**式としての `==` / `!=`**」だけの規則。[`Interpreter::values_eq`] 自体は
+    ///    型厳密なので、辞書のキーや包含検査では `1` と `1.0` は別物として扱われる（B2-b）。
+    ///    `int → float` のキャストは 2^53 超で精度を落とすが、それは
+    ///    「float へキャストして比べた」結果として正しい。等値の定義を歪めているわけではない。
+    fn numeric_eq_promoted(a: &Value, b: &Value) -> Option<bool> {
+        match (a, b) {
+            (Value::Int(x), Value::Float(y)) => Some((*x as f64) == *y),
+            (Value::Float(x), Value::Int(y)) => Some(*x == (*y as f64)),
+            (Value::UInt(x), Value::Int(y)) => Some(*y >= 0 && *x == *y as u64),
+            (Value::Int(x), Value::UInt(y)) => Some(*x >= 0 && *x as u64 == *y),
+            (Value::UInt(x), Value::Float(y)) => Some((*x as f64) == *y),
+            (Value::Float(x), Value::UInt(y)) => Some(*x == (*y as f64)),
+            _ => None,
+        }
+    }
+
+    /// **式としての等値**（`==` / `!=` / `in` / `not in` / set 演算が使う）。
+    ///
+    /// 数値の昇格ラティスを通してから [`Interpreter::values_eq`] に落とす。
+    /// ⇒ ユーザーが比較を書いた場所では常に同じ規則になる。
+    ///
+    /// ⚠⚠ [`Interpreter::values_eq`] との使い分けが B2-b の要点:
+    /// - `values_eq` … **値の同一性**（型厳密）。辞書のキーとハッシュがこちらを使う。
+    ///   `d[1]` と `d[1.0]` を別キーにするための厳密さ（B1）。
+    /// - `values_eq_expr` … **式としての比較**。オペランドをキャストしてから比べる。
+    ///
+    /// ⚠ 昇格は**比較のオペランドにだけ**掛かり、コンテナの中までは再帰しない
+    ///   （「比較の場所でキャストする」規則の素直な帰結）。実測される差:
+    ///   `1 == 1.0` は True だが `[1] == [1.0]` は False。
+    pub(crate) fn values_eq_expr(&self, a: &Value, b: &Value) -> Result<bool, String> {
+        match Self::numeric_eq_promoted(a, b) {
+            Some(x) => Ok(x),
+            None => self.values_eq(a, b),
+        }
+    }
+
     /// `hay` に `needle` と等値な要素があるか。
     ///
     /// ⚠ クロージャの中では `?` が使えないので、`.any(|v| values_eq(..))` の代わりに使う
     /// （`values_eq` が `Result` を返す理由は同関数の doc・B2-a）。
     pub(crate) fn contains_eq(&self, hay: &[Value], needle: &Value) -> Result<bool, String> {
         for v in hay {
-            if self.values_eq(v, needle)? {
+            if self.values_eq_expr(v, needle)? {
                 return Ok(true);
             }
         }
         Ok(false)
-    }
-
-    /// `hay` の中で `needle` と等値な最初の要素の位置。無ければ `None`。
-    pub(crate) fn position_eq(
-        &self,
-        hay: &[Value],
-        needle: &Value,
-    ) -> Result<Option<usize>, String> {
-        for (i, v) in hay.iter().enumerate() {
-            if self.values_eq(v, needle)? {
-                return Ok(Some(i));
-            }
-        }
-        Ok(None)
     }
 
     /// `hay` の全要素が `other` に含まれるか（`issubset` / `issuperset` の共通形）。
@@ -254,6 +390,69 @@ impl Interpreter {
         Ok(out)
     }
 
+    // ── `__eq__` を尊重する動的版（B2-b）─────────────────────────────────────
+
+    /// ユーザー定義の `__eq__` を尊重する等値判定。
+    ///
+    /// ⚠ [`Interpreter::apply_binop`] / [`Interpreter::apply_binop_dyn`] と**同じ二層構造**に
+    /// してある。[`Interpreter::values_eq`] は `&self` の構造比較で、FFI 経路や
+    /// `&self` しか持たない集合演算が使う。こちらは `__eq__` の呼び出しでインタプリタを
+    /// 回すので `&mut self` が要る。⇒ **`__eq__` が効くべき経路だけ**がこちらを使う。
+    ///
+    /// ⚠⚠ 以前は `__eq__` が **`==` 演算子でしか効いていなかった**。`in` / set の包含検査は
+    /// `values_eq` を直接呼んでいたため、**`a == b` は真なのに `a in [b]` は偽**という
+    /// 食い違いが起きていた（実測）。dict の検索は `DictKey`（ハッシュ）で引くので
+    /// ここを通らず、`__eq__` は今も効かない — 解消は B1-c（辞書コンテナの差し替え）で。
+    pub(crate) fn values_eq_dyn(&mut self, a: &Value, b: &Value) -> Result<bool, String> {
+        if let Value::Instance(inst) = a {
+            let has_eq = inst.borrow().class.methods.contains_key("__eq__");
+            if has_eq {
+                let r = self.eval_method_call_evaled(
+                    a.clone(),
+                    "__eq__",
+                    vec![(None, b.clone(), true)],
+                )?;
+                return match r {
+                    Value::Bool(x) => Ok(x),
+                    other => Err(format!(
+                        "TypeError: __eq__ should return bool, not '{}'",
+                        self.type_name(&other)
+                    )),
+                };
+            }
+        }
+        self.values_eq_expr(a, b)
+    }
+
+    /// `hay` に `needle` と等値な要素があるか（`__eq__` を尊重する版）。
+    /// ⚠ `__eq__` は**左オペランド**で引くので、`needle` を左にして呼ぶこと。
+    pub(crate) fn contains_eq_dyn(
+        &mut self,
+        hay: &[Value],
+        needle: &Value,
+    ) -> Result<bool, String> {
+        for v in hay {
+            if self.values_eq_dyn(needle, v)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// `hay` の中で `needle` と等値な最初の要素の位置（`__eq__` を尊重する版）。
+    pub(crate) fn position_eq_dyn(
+        &mut self,
+        hay: &[Value],
+        needle: &Value,
+    ) -> Result<Option<usize>, String> {
+        for (i, v) in hay.iter().enumerate() {
+            if self.values_eq_dyn(needle, v)? {
+                return Ok(Some(i));
+            }
+        }
+        Ok(None)
+    }
+
     /// `===` 演算子: 参照の同一性のみで等値を判定する。
     ///
     /// - 参照型 (`Instance`, `Class`, `List`, `Dict`, `Set`) は `Rc::ptr_eq` でポインタを比較する。
@@ -265,7 +464,7 @@ impl Interpreter {
             (Value::List(a), Value::List(b)) => Rc::ptr_eq(a, b),
             (Value::Dict(a), Value::Dict(b)) => Rc::ptr_eq(a, b),
             (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
-            _ => self.values_eq(a, b)?,
+            _ => self.values_eq_expr(a, b)?,
         })
     }
 }

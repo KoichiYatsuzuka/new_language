@@ -1,0 +1,47 @@
+# identity_reference_types.ar — 関数・クラス・ジェネレータなど**参照で比べる値**の等値（B2-b）。
+#
+# ⚠⚠ 以前はこれらの腕が `values_eq` に**丸ごと無く** `_ => false` に落ちていたため、
+#   **`f == f` すら False** だった。エラーにならないので気付けない形。
+#   「あらゆる型を辞書のキーに」（B1）の前提でもある。
+
+fn f() -> int:
+    return 1
+fn g() -> int:
+    return 1
+
+gen counter() -> int:
+    yield 1
+
+class C:
+    let x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+class D:
+    let x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+
+print("=== 関数 ===")
+print(f == f)          # True    同じ関数
+print(f == g)          # False   別の関数（中身が同じでも別物）
+let h = f
+print(h == f)          # True    束縛しても同一
+
+print("=== ジェネレータ関数 ===")
+print(counter == counter)   # True
+
+print("=== 組み込み ===")
+print(len == len)      # True
+print(len == str)      # False
+
+print("=== クラス ===")
+# ⚠ クラスは `class_id`（`alloc_class_id()` の一意 ID）で比べる。
+#   `Rc::ptr_eq` にすると、async の share-nothing deep-clone で複製された瞬間に
+#   `C == C` が False になる（実測で確認済みのバグだった）。
+let K = C
+print(C == K)          # True
+print(C == D)          # False   名前もフィールドも同じだが別のクラス
+
+print("=== 型 ===")
+print(int == int)      # True
+print(int == str)      # False
