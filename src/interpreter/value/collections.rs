@@ -1,7 +1,6 @@
 // value/collections.rs — コレクション値型: SliceValue / TupleData / DictData / DictKey。
 
 use indexmap::IndexMap;
-use std::rc::Rc;
 use super::*;
 
 
@@ -80,7 +79,18 @@ impl TupleData {
 
 /// 辞書値の内部ストレージ。
 /// `IndexMap` で挿入順を保持しつつ O(1) ルックアップを提供する。
-/// アクセスには `get` / `set` メソッドを使用すること。
+///
+/// ## なぜ `IndexMap<HKey, Value>` なのか（B1-c）
+///
+/// 以前は `IndexMap<DictKey, Value>` で、`DictKey` は `Int` / `Str` / `Bool` / `None` の
+/// 4 種しか持たない **`Value` のプリミティブ射影**だった。Rust の `Hash` / `Eq` トレイトが
+/// 要求されるので `Value` をそのまま入れられず、変換できないキーは**黙って捨てられていた**。
+///
+/// ⚠⚠ **`Hash` / `Eq` トレイト経由では、ユーザー定義の `__hash__` / `__eq__` を
+/// 呼ぶことが原理的にできない**（トレイトのメソッドはインタプリタ文脈を受け取れない）。
+/// ⇒ `indexmap` の `raw_entry_v1` API を使う。ハッシュ値を自分で渡し、等値判定は
+/// **クロージャ**で渡せるので、そこが `&mut Interpreter` を掴める。
+/// この API には `K: Hash + Eq` の境界が無いので、`HKey` は素の構造体でよい。
 ///
 /// - `key_type`: 有効なキーの型名。型なし辞書は `"Any"`
 /// - `item_type`: 有効な値の型名。型なし辞書は `"Any"`
@@ -90,43 +100,22 @@ pub struct DictData {
     pub key_type: String,
     /// 有効な値の型名。型なし辞書は `"Any"`。
     pub item_type: String,
-    map: IndexMap<DictKey, Value>,
+    map: IndexMap<HKey, Value>,
 }
 
 
-/// `IndexMap` のキーとして使用するラッパー。`Value` のプリミティブ部分のみハッシュ可能。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum DictKey {
-    Int(i64),
-    /// `Value::Str` と同じ `Rc<str>`。`d["key"]` の索引でキーを作るたびに
-    /// String を確保しないようにするため（#15 / §7.4-1）。
-    /// `Hash`/`Eq` は `Rc` が pointee へ委譲するので意味論は `String` 時と同一。
-    Str(Rc<str>),
-    Bool(bool),
-}
-
-
-impl DictKey {
-    /// `Value` を `DictKey` に変換する。ハッシュ不可能な型（リスト・インスタンス等）は `None` を返す。
-    fn from_value(v: &Value) -> Option<Self> {
-        match v {
-            Value::Int(n) => Some(DictKey::Int(*n)),
-            Value::Float(f) => {
-                // 整数値の float (e.g. 1.0) は Int キーとして扱う（Python 互換）
-                if f.fract() == 0.0 && f.is_finite() {
-                    Some(DictKey::Int(*f as i64))
-                } else {
-                    None
-                }
-            }
-            Value::Str(s) => Some(DictKey::Str(s.clone())),
-            Value::Bool(b) => Some(DictKey::Bool(*b)),
-            // ⚠ `None` は**キーとして禁止**（仕様・B1-a）。禁止したことで `DictKey::None`
-            // が構築されなくなったため、バリアントごと削除してある。
-            // ⚠ 判定は [`DictData::reject_key`] と必ず一致させること。
-            _ => None,
-        }
-    }
+/// 辞書のキー。**計算済みのハッシュを一緒に持ち回る**。
+///
+/// ⚠ ハッシュを保存しておくのが要点。キーにした後で中身が変わっても、
+/// 保存済みハッシュとバケットは一致したままなので**テーブルの不変条件は壊れない**
+/// （構造的に等しいプローブで引けなくなるだけ）。さらに `set` がキーを**複製**するので、
+/// 外から書き換えられる経路そのものが無い。
+#[derive(Debug)]
+pub(crate) struct HKey {
+    /// 挿入時に計算したハッシュ。
+    pub(crate) hash: u64,
+    /// キーの値そのもの。⚠ `set` が複製したものなので、外部と共有していない。
+    pub(crate) key: Value,
 }
 
 
@@ -140,91 +129,120 @@ impl DictData {
         }
     }
 
-    /// 指定したキーに対応する値を返す。キーが存在しない場合は `None`。
-    pub fn get(&self, key: &Value) -> Option<Value> {
-        DictKey::from_value(key).and_then(|k| self.map.get(&k).cloned())
-    }
-
-    /// キーと値を追加、またはキーが既に存在する場合は値を更新する。
+    /// キー検査の再帰の深さ上限。超えたら**循環の疑い**としてエラーにする。
     ///
-    /// ⚠⚠ **キーにできない値は黙って捨てず必ずエラーにする**（B1-a）。
-    /// 以前はここが `if let Some(k) = … { … }` で、変換できないキーを**無言で無視**していた
-    /// （「unhashable key silently ignored」というコメント付きの意図的な設計だった）。
-    /// その結果 `d[(1, 2)] = v` が例外も出さずに**何も起きない**＝サイレントなデータ消失に
-    /// なっていた。⇒ 受け付けられない理由は [`DictData::reject_key`] が必ず文章で返す。
-    pub fn set(&mut self, key: Value, value: Value) -> Result<(), String> {
-        if let Some(why) = Self::reject_key(&key) {
-            return Err(why);
-        }
-        let k = DictKey::from_value(&key)
-            .expect("reject_key が通した値は必ず DictKey に変換できる（両者は同じ判定）");
-        self.map.insert(k, value);
-        Ok(())
-    }
+    /// ⚠ 深く潜りすぎるキーを通すと、この先の `deep_copy_value`（深さ制限なし）で
+    /// スタックが溢れる。ここで止めるのが最も浅い防波堤。
+    const KEY_MAX_DEPTH: u32 = 64;
 
     /// `key` を辞書のキーとして**使えない理由**を返す。使えるなら `None`。
     ///
-    /// ⚠ 判定は [`DictKey::from_value`] と**必ず一致させること**。ずれると `set` の
-    /// `expect` が落ちる（＝ずれたことがその場で分かる）。
+    /// ⚠ ここは**仕様上の禁止**だけを見る。「ハッシュできるか」は
+    /// [`Interpreter::default_hash`] が全 `Value` に答えるので、型による制限は無い
+    /// （B1-c で tuple / list / instance / 関数 / クラス等がすべてキーになった）。
     ///
-    /// 区別している 2 種類:
-    /// - **恒久的に禁止**（仕様）: `None` / `Undefined` は「存在しないことを示す値」、
-    ///   `NaN` は自分自身と等しくないのでキーにできない。
-    /// - **まだ未対応**: tuple / list / instance / uint / complex / 非整数 float など。
-    ///   `DictKey` が int / str / bool / None の 4 種しか持たないため。B1-b/B1-c で解消予定。
-    ///   それまでは**黙って捨てず**「まだ使えない」と知らせる。
+    /// 禁止しているもの:
+    /// - `None` / `Undefined` … 「存在しないことを示す値」はキーにしない（仕様）
+    /// - `NaN` … 自分自身と等値にならないので、入れても引けない
+    /// - `__eq__` を持つのに `__hash__` を持たないクラスのインスタンス（下記）
+    /// - 循環（または極端に深い）値
+    ///
+    /// ⚠ **入れ子も走査する**。`(1, NaN)` をキーにすると、等値にならない要素を含むので
+    /// 同じく引けなくなる。黙って引けないキーを作らせない。
     pub fn reject_key(key: &Value) -> Option<String> {
+        Self::reject_key_at(key, 0)
+    }
+
+    fn reject_key_at(key: &Value, depth: u32) -> Option<String> {
+        if depth > Self::KEY_MAX_DEPTH {
+            return Some(
+                "TypeError: cyclic or too deeply nested value cannot be used as a dict key"
+                    .to_string(),
+            );
+        }
+        let d = depth + 1;
         match key {
-            Value::Int(_) | Value::Str(_) | Value::Bool(_) => None,
-            // 整数値の float（`1.0`）は Int キーへ正規化されるので受け付ける。
-            Value::Float(f) if f.is_finite() && f.fract() == 0.0 => None,
-            Value::Float(f) if f.is_nan() => {
-                Some("TypeError: NaN cannot be used as a dict key".to_string())
-            }
-            Value::Float(f) => Some(format!(
-                "TypeError: {f} cannot be used as a dict key yet                  (only integral floats are supported)"
-            )),
-            Value::None => {
-                Some("TypeError: None cannot be used as a dict key".to_string())
-            }
+            Value::None => Some("TypeError: None cannot be used as a dict key".to_string()),
             Value::Undefined => {
                 Some("TypeError: Undefined cannot be used as a dict key".to_string())
             }
-            other => Some(format!(
-                "TypeError: unhashable type: '{}'",
-                crate::interpreter::ops::typecheck::runtime_type_name(other)
-            )),
+            Value::Float(f) if f.is_nan() => {
+                Some("TypeError: NaN cannot be used as a dict key".to_string())
+            }
+            Value::Complex(re, im) if re.is_nan() || im.is_nan() => {
+                Some("TypeError: NaN cannot be used as a dict key".to_string())
+            }
+            // ⚠⚠ `__eq__` を定義していて `__hash__` を定義していないクラスは、
+            //    **等値の規則とハッシュの規則が食い違う**。辞書はハッシュで束ねてから
+            //    等値で確かめるので、`__eq__` が「等しい」と言う 2 つが別バケットに落ちて
+            //    **黙って別のキーとして入る**（実測: len が 2 になり、引くと見つからない）。
+            //    Python は `__eq__` を定義したクラスの `__hash__` を `None` にして
+            //    unhashable にすることで防いでいる。Arrow は `__eq__` を `==` や
+            //    リストの `in` でも使うのでクラス定義自体は禁止せず、**辞書のキーに
+            //    した時点で**弾く。
+            Value::Instance(rc) => {
+                let inst = rc.borrow();
+                let has_eq = inst.class.methods.contains_key("__eq__");
+                let has_hash = inst.class.methods.contains_key("__hash__");
+                if has_eq && !has_hash {
+                    return Some(format!(
+                        "TypeError: class '{}' defines __eq__ without __hash__, so it cannot be a dict key",
+                        inst.class.name
+                    ));
+                }
+                // `__hash__` を持つならユーザーの規則に従うので、中身は覗かない。
+                if has_hash {
+                    return None;
+                }
+                (0..inst.field_count())
+                    .filter_map(|i| inst.field_value(i))
+                    .find_map(|v| Self::reject_key_at(&v, d))
+            }
+            Value::Tuple(t) => t.all_values().iter().find_map(|v| Self::reject_key_at(v, d)),
+            Value::List(rc) => rc.borrow().iter().find_map(|v| Self::reject_key_at(v, d)),
+            Value::Set(rc) => rc.borrow().iter().find_map(|v| Self::reject_key_at(v, d)),
+            Value::Dict(rc) => {
+                let b = rc.borrow();
+                b.all_keys()
+                    .iter()
+                    .chain(b.all_items().iter())
+                    .find_map(|v| Self::reject_key_at(v, d))
+            }
+            _ => None,
         }
+    }
+
+    /// 挿入済みのキーと値を**そのまま**追加する（ハッシュを再計算しない）。
+    ///
+    /// ⚠ 既存の辞書を複製する経路（`deep_copy_value` / `Value::deep_clone`）専用。
+    /// 複製元でキーは既に一意なので突き合わせは不要で、**保存済みハッシュをそのまま使える**。
+    /// これが成り立つのは [`Interpreter::default_hash`] が
+    /// **インスタンスを構造ハッシュにしている**から（ポインタだと複製で変わってしまう）。
+    pub(crate) fn push_prehashed(&mut self, hash: u64, key: Value, value: Value) {
+        use indexmap::map::raw_entry_v1::{RawEntryApiV1, RawEntryMut};
+        // `|_| false` なので必ず Vacant になる（複製元でキーは一意）。
+        match self.map.raw_entry_mut_v1().from_hash(hash, |_| false) {
+            RawEntryMut::Vacant(v) => {
+                v.insert_hashed_nocheck(hash, HKey { hash, key }, value);
+            }
+            RawEntryMut::Occupied(_) => unreachable!("`|_| false` は必ず Vacant を返す"),
+        }
+    }
+
+    /// キー・値のペアを挿入順で走査するイテレータ。
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&HKey, &Value)> {
+        self.map.iter()
     }
 
     /// すべてのキーを `Value` リストとして返す（挿入順）。
     pub fn all_keys(&self) -> Vec<Value> {
-        self.map
-            .keys()
-            .map(|k| match k {
-                DictKey::Int(n) => Value::Int(*n),
-                DictKey::Str(s) => Value::Str(s.clone()),
-                DictKey::Bool(b) => Value::Bool(*b),
-            })
-            .collect()
+        self.map.keys().map(|k| k.key.clone()).collect()
     }
 
     /// すべての値をクローンしてリストとして返す（挿入順）。
     pub fn all_items(&self) -> Vec<Value> {
         self.map.values().cloned().collect()
     }
-
-    /// キー・値のペアを挿入順で走査するイテレータ。
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&DictKey, &Value)> {
-        self.map.iter()
-    }
-
-    /// 指定キーを辞書から削除する。存在しない場合は何もしない。
-    // pub(super) fn remove(&mut self, key: &Value) {
-    //     if let Some(k) = DictKey::from_value(key) {
-    //         self.map.shift_remove(&k);
-    //     }
-    // }
 
     /// エントリ数を返す。
     pub fn len(&self) -> usize {
@@ -234,5 +252,73 @@ impl DictData {
     /// 辞書が空なら `true`。
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    /// ハッシュと等値判定を**外から与えて**引く。
+    ///
+    /// ⚠ 等値判定がクロージャなのがこの設計の要点。呼び出し側が `&mut Interpreter` を
+    /// 掴んだクロージャを渡せるので、ユーザー定義の `__eq__` を呼べる。
+    /// ⚠ **共有借用**で呼ぶこと（`index_of_with` の警告と同じ理由）。
+    pub(crate) fn get_with(
+        &self,
+        hash: u64,
+        mut eq: impl FnMut(&Value) -> Result<bool, String>,
+    ) -> Result<Option<Value>, String> {
+        use indexmap::map::raw_entry_v1::RawEntryApiV1;
+        // ⚠ クロージャの中で `?` が使えないので、エラーを外に持ち出して後で返す。
+        let mut err: Option<String> = None;
+        let found = self.map.raw_entry_v1().from_hash(hash, |k| match eq(&k.key) {
+            Ok(b) => b,
+            Err(e) => {
+                if err.is_none() {
+                    err = Some(e);
+                }
+                false
+            }
+        });
+        if let Some(e) = err {
+            return Err(e);
+        }
+        Ok(found.map(|(_, v)| v.clone()))
+    }
+
+    /// ハッシュと等値判定を**外から与えて**、一致するエントリの索引を返す。
+    ///
+    /// ⚠ **共有借用**で呼ぶこと。等値判定（＝ユーザーの `__eq__`）が同じ辞書を
+    /// 読み返しても共有借用どうしなら安全だが、可変借用を握っていると `RefCell` が
+    /// パニックする。⇒ 書き込みは「引く」と「書く」を分ける（`Interpreter::dict_set`）。
+    pub(crate) fn index_of_with(
+        &self,
+        hash: u64,
+        mut eq: impl FnMut(&Value) -> Result<bool, String>,
+    ) -> Result<Option<usize>, String> {
+        use indexmap::map::raw_entry_v1::RawEntryApiV1;
+        // ⚠ クロージャの中で `?` が使えないので、エラーを外へ持ち出して後で返す。
+        let mut err: Option<String> = None;
+        let idx = self.map.raw_entry_v1().index_from_hash(hash, |k| match eq(&k.key) {
+            Ok(b) => b,
+            Err(e) => {
+                if err.is_none() {
+                    err = Some(e);
+                }
+                false
+            }
+        });
+        match err {
+            Some(e) => Err(e),
+            None => Ok(idx),
+        }
+    }
+
+    /// 索引で値を読む（`index_of_with` が見つけた位置）。
+    pub(crate) fn value_at(&self, idx: usize) -> Option<&Value> {
+        self.map.get_index(idx).map(|(_, v)| v)
+    }
+
+    /// 索引で値を差し替える（`index_of_with` が見つけた位置に書く）。
+    pub(crate) fn set_at(&mut self, idx: usize, value: Value) {
+        if let Some((_, v)) = self.map.get_index_mut(idx) {
+            *v = value;
+        }
     }
 }

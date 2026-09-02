@@ -3,7 +3,7 @@
 use {
     std::cell::RefCell, std::rc::Rc,
     crate::interpreter::{
-        DictData, InstanceData,
+        InstanceData,
         Interpreter, Value,
     },
 };
@@ -36,14 +36,7 @@ impl Interpreter {
                 })))
             }
             Value::Dict(d) => {
-                let d_ref = d.borrow();
-                let mut new_dict = DictData::new(d_ref.key_type.clone(), d_ref.item_type.clone());
-                for (k, v) in d_ref.all_keys().into_iter().zip(d_ref.all_items()) {
-                    // 複製元の dict に入っている時点で `reject_key` を通っており、
-                    // キーの deep copy は種類を変えない（int/str/bool のまま）。
-                    new_dict.set(Self::deep_copy_value(k), Self::deep_copy_value(v))
-                        .expect("複製元のキーは既に検査済み");
-                }
+                let new_dict = Self::dict_copy_with(&d.borrow(), Self::deep_copy_value);
                 Value::Dict(Rc::new(RefCell::new(new_dict)))
             }
             Value::List(items) => Value::List(Rc::new(RefCell::new(
@@ -100,13 +93,7 @@ impl Interpreter {
                 Value::Instance(Rc::new(RefCell::new(new_inst)))
             }
             Value::Dict(d) => {
-                let d_ref = d.borrow();
-                let mut new_dict = DictData::new(d_ref.key_type.clone(), d_ref.item_type.clone());
-                for (k, v) in d_ref.all_keys().into_iter().zip(d_ref.all_items()) {
-                    // 同上（`deep_copy_unfrozen` 版）。
-                    new_dict.set(Self::deep_copy_unfrozen(k), Self::deep_copy_unfrozen(v))
-                        .expect("複製元のキーは既に検査済み");
-                }
+                let new_dict = Self::dict_copy_with(&d.borrow(), Self::deep_copy_unfrozen);
                 Value::Dict(Rc::new(RefCell::new(new_dict)))
             }
             Value::List(items) => Value::List(Rc::new(RefCell::new(

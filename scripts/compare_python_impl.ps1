@@ -122,12 +122,14 @@ $knownDiff = @{
     'comprehension'                  = 'py: 内包表記の構文が未実装（Rust 側で 2026-08-28 に追加）'
     # ⚠ B1-a（辞書キー）/ B2-a（list・dict の ==）で新設。**実測して確認済み**。
     #    ユーザー方針により impl_python は触らない（同期時の積み残し）。
-    'dict_key_types'                 = 'py: dict repr で str が引用符なし、かつ整数値 float キーを int へ正規化しない（実測 `{1: int, s: str, True: bool, 2.0: integral float}`）'
+    'dict_key_types'                 = 'py 古い: list をキーにすると引けない（実測 `KeyError: key not found: [3, 4]`）。B1-c で Rust は全型をキーにできる'
     # ⚠ B2-b（等値の二層化）で新設。**実測して確認済み**。
     #    ユーザー方針により impl_python は触らない（同期時の積み残し）。
     'equality_numeric_promotion'     = 'py 古い: uint の昇格が無く `uint(3) == 3` が False（実測 4 行目）'
     'eq_dunder_consistency'          = 'py 古い: set の add/remove が __eq__ を見ない（実測 len が 2/3 になり remove が KeyError）'
     'class_identity_across_threads'  = 'py: AsyncManager そのものが未実装（実測 NameError）'
+    # ⚠ B1-c（辞書の __hash__ / __eq__ ディスパッチ）で新設。**実測して確認済み**。
+    'dict_key_dunder'                = 'py 古い: 辞書が __hash__ / __eq__ を見ない（実測 len が 3 になり、続く索引が KeyError）'
     # (d) 同期以降（33ef765..）に Rust 側へ入った意味論の修正 — py が古い
     'copy_method'                    = 'py 古い: mut→let のコピー意味論（#15e で Rust を修正）'
     'mut_to_let_copy'                = 'py 古い: mut→let のコピー意味論（#15e）'
@@ -136,7 +138,7 @@ $knownDiff = @{
     'global_assign_from_fn_error'    = 'py: NameError の文言・traceback 形式が違う'
     # ⚠ B1-a: ハッシュ不可能なキーを **py はまだ黙って捨てる**（Rust は TypeError）。
     #    実測: `d[(1,2)] = "x"` の後の行まで実行され「ここには到達しない」が出る＝まさに B1 の症状。
-    'dict_key_types_error'           = 'py 古い: unhashable なキーを黙って無視する（B1-a で Rust に TypeError を追加）'
+    'dict_key_types_error'           = 'py 古い: None キーを黙って受け入れる（実測: 次の行の「ここには到達しない」が出る）。Rust は仕様で禁止'
     # ⚠ B2-a: py の `==` には**同一性の高速パスが無い**ので、循環リストの `a == a` の時点で
     #    再帰上限に達する（実測 1 行目で `RuntimeError: maximum recursion depth exceeded`）。
     #    Rust は `Rc::ptr_eq` で即 True を返し、別々の循環でのみ RecursionError にする。

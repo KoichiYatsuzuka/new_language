@@ -99,6 +99,15 @@ impl Interpreter {
         //    引くので `values_eq` を通らない）は `None` が返り、下の `apply_binop` に落ちる。
         //    dict で `__eq__` が効くようになるのは B1-c（辞書コンテナの差し替え）から。
         if matches!(op, BinOp::In | BinOp::NotIn) {
+            // ⚠ 辞書の包含検査は**常に**ここで処理する（B1-c）。`dict_get` は
+            //    ハッシュで引きつつ `__hash__` / `__eq__` を尊重するが、`&mut self` が要る。
+            //    `apply_binop`（`&self`）側にも純粋な経路が残っているが、そちらは
+            //    ディスパッチできないので、通常の実行はここを通す。
+            if let Value::Dict(ref rc) = rv {
+                let rc = rc.clone();
+                let found = self.dict_get(&rc, &lv)?.is_some();
+                return Ok(Value::Bool(found == matches!(op, BinOp::In)));
+            }
             if let Value::Instance(ref inst_rc) = lv {
                 let has_eq = inst_rc.borrow().class.methods.contains_key("__eq__");
                 if has_eq {
@@ -228,11 +237,11 @@ impl Interpreter {
                 Ok(Value::Bool(s.contains(&**sub)))
             }
             // ⚠ キーにできない値の包含検査は `false` ではなく**エラー**（B1-a）。
-            // Python も `[1,2] in d` で `TypeError: unhashable type: 'list'` を出す。
-            (BinOp::In, item, Value::Dict(d)) => match crate::interpreter::DictData::reject_key(item) {
-                Some(why) => Err(why),
-                None => Ok(Value::Bool(d.borrow().get(item).is_some())),
-            },
+            // ⚠ `apply_binop` は `&self` なので `__hash__` / `__eq__` を回せない。
+            //    ⇒ 純粋な経路で引く。ディスパッチが要る形は `apply_binop_dyn` が先に処理する。
+            (BinOp::In, item, Value::Dict(d)) => {
+                Ok(Value::Bool(Self::dict_get_pure(&d.borrow(), item)?.is_some()))
+            }
             (BinOp::In, item, Value::Tuple(t)) => {
                 Ok(Value::Bool(self.contains_eq(t.all_values(), item)?))
             }
@@ -251,10 +260,9 @@ impl Interpreter {
             (BinOp::NotIn, Value::Str(sub), Value::Str(s)) => {
                 Ok(Value::Bool(!s.contains(&**sub)))
             }
-            (BinOp::NotIn, item, Value::Dict(d)) => match crate::interpreter::DictData::reject_key(item) {
-                Some(why) => Err(why),
-                None => Ok(Value::Bool(d.borrow().get(item).is_none())),
-            },
+            (BinOp::NotIn, item, Value::Dict(d)) => {
+                Ok(Value::Bool(Self::dict_get_pure(&d.borrow(), item)?.is_none()))
+            }
             (BinOp::NotIn, item, Value::Tuple(t)) => {
                 Ok(Value::Bool(!self.contains_eq(t.all_values(), item)?))
             }

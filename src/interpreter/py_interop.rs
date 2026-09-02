@@ -127,7 +127,7 @@ pub fn py_to_tl(py: Python<'_>, obj: &Bound<'_, PyAny>) -> Value {
             // **要素を黙って捨てない**（B1-a。以前はここで無言の欠落が起きていた）。
             // 1 つでも弾かれたら dict への変換自体をやめ、下の `PyObject` フォールバックへ
             // 落として**丸ごと**渡す（情報を落とさず、Python 側の索引で扱える）。
-            if dict.set(py_to_tl(py, &k), py_to_tl(py, &v)).is_err() {
+            if crate::interpreter::Interpreter::dict_set_pure(&mut dict, py_to_tl(py, &k), py_to_tl(py, &v)).is_err() {
                 all_keys_ok = false;
                 break;
             }

@@ -40,11 +40,22 @@ impl Interpreter {
     ///
     /// 戻り値: `Ok(true)` — 等値、`Ok(false)` — 非等値、`Err` — 再帰が深すぎる
     pub(crate) fn values_eq(&self, a: &Value, b: &Value) -> Result<bool, String> {
-        self.values_eq_at(a, b, 0)
+        Self::values_eq_pure(a, b)
+    }
+
+    /// [`Interpreter::values_eq`] の**インタプリタ不要版**。
+    ///
+    /// ⚠ 構造比較は `self` を一切見ない（再帰しているだけ）ので、関連関数として公開する。
+    /// 辞書は `Value::deep_clone` や `extern "C"` コールバックからも触られる — そこから
+    /// キーの突き合わせをするのにインタプリタは持てない（B1-c）。
+    /// ⚠ ユーザー定義の `__eq__` は**効かない**。効かせたい経路は
+    /// [`Interpreter::values_eq_dyn`] を使うこと。
+    pub(crate) fn values_eq_pure(a: &Value, b: &Value) -> Result<bool, String> {
+        Self::values_eq_at(a, b, 0)
     }
 
     /// 再帰の深さを持ち回る [`Interpreter::values_eq`] の実体。
-    fn values_eq_at(&self, a: &Value, b: &Value, depth: u32) -> Result<bool, String> {
+    fn values_eq_at(a: &Value, b: &Value, depth: u32) -> Result<bool, String> {
         if depth > Self::EQ_MAX_DEPTH {
             return Err(
                 "RecursionError: maximum recursion depth exceeded while comparing values"
@@ -84,7 +95,7 @@ impl Interpreter {
                         inst.class.field_index.get("value").and_then(|&idx| inst.field_value(idx))
                     };
                     match (get_value(&a_borrow), get_value(&b_borrow)) {
-                        (Some(va), Some(vb)) => self.values_eq_at(&va, &vb, d)?,
+                        (Some(va), Some(vb)) => Self::values_eq_at(&va, &vb, d)?,
                         _ => false,
                     }
                 } else {
@@ -97,7 +108,7 @@ impl Interpreter {
                     let mut all = true;
                     for i in 0..a_borrow.field_count() {
                         let same = match (a_borrow.field_value(i), b_borrow.field_value(i)) {
-                            (Some(va), Some(vb)) => self.values_eq_at(&va, &vb, d)?,
+                            (Some(va), Some(vb)) => Self::values_eq_at(&va, &vb, d)?,
                             (None, None) => true,
                             _ => false,
                         };
@@ -133,7 +144,7 @@ impl Interpreter {
                 if av.len() != bv.len() {
                     return Ok(false);
                 }
-                self.seq_eq(av.iter().zip(bv.iter()), d)?
+                Self::seq_eq(av.iter().zip(bv.iter()), d)?
             }
             // リストは長さと各要素を**位置ごとに**再帰比較（B2）。
             //
@@ -150,7 +161,7 @@ impl Interpreter {
                 if ar.len() != br.len() {
                     return Ok(false);
                 }
-                self.seq_eq(ar.iter().zip(br.iter()), d)?
+                Self::seq_eq(ar.iter().zip(br.iter()), d)?
             }
             // `fixed_list` も**リストとして**構造比較する（`List` と規則を揃える）。
             // 要素はフラットバイト列なので、`reconstruct_item` で復元してから比べる。
@@ -170,7 +181,7 @@ impl Interpreter {
                 for i in 0..ra.len {
                     let x = la.reconstruct_item(&ra.data, i);
                     let y = lb.reconstruct_item(&rb.data, i);
-                    if !self.values_eq_at(&x, &y, d)? {
+                    if !Self::values_eq_at(&x, &y, d)? {
                         all = false;
                         break;
                     }
@@ -193,7 +204,7 @@ impl Interpreter {
                 for v in ar.iter() {
                     let mut found = false;
                     for w in br.iter() {
-                        if self.values_eq_at(v, w, d)? {
+                        if Self::values_eq_at(v, w, d)? {
                             found = true;
                             break;
                         }
@@ -218,9 +229,15 @@ impl Interpreter {
                     return Ok(false);
                 }
                 let mut all = true;
-                for (key, va) in ar.all_keys().into_iter().zip(ar.all_items()) {
-                    let same = match br.get(&key) {
-                        Some(vb) => self.values_eq_at(&va, &vb, d)?,
+                for (hk, va) in ar.iter() {
+                    // ⚠ **保存済みハッシュをそのまま使う**。取り直す必要が無いだけでなく、
+                    //    等値判定に現在の深さ `d` を渡せるので**深さ上限が効いたまま**になる
+                    //    （`dict_get_pure` 経由だと深さが 0 に戻り、循環で止まらなくなる）。
+                    let idx = br.index_of_with(hk.hash, |stored| {
+                        Self::values_eq_at(&hk.key, stored, d)
+                    })?;
+                    let same = match idx.and_then(|i| br.value_at(i)) {
+                        Some(vb) => Self::values_eq_at(va, vb, d)?,
                         None => false,
                     };
                     if !same {
@@ -236,14 +253,14 @@ impl Interpreter {
             (
                 Value::ResultVal { ok: oa, inner: ia },
                 Value::ResultVal { ok: ob, inner: ib },
-            ) => oa == ob && self.values_eq_at(ia, ib, d)?,
+            ) => oa == ob && Self::values_eq_at(ia, ib, d)?,
             (Value::Slice(a), Value::Slice(b)) => {
                 if Rc::ptr_eq(a, b) {
                     return Ok(true);
                 }
-                self.opt_eq(&a.begin, &b.begin, d)?
-                    && self.opt_eq(&a.end, &b.end, d)?
-                    && self.opt_eq(&a.step, &b.step, d)?
+                Self::opt_eq(&a.begin, &b.begin, d)?
+                    && Self::opt_eq(&a.end, &b.end, d)?
+                    && Self::opt_eq(&a.step, &b.step, d)?
             }
             (Value::JsProcFn(a), Value::JsProcFn(b)) => {
                 a.bridge_key == b.bridge_key
@@ -283,26 +300,25 @@ impl Interpreter {
 
     /// `Option<Value>` どうしの等値（`Slice` の begin/end/step 用）。
     fn opt_eq(
-        &self,
         a: &Option<Value>,
         b: &Option<Value>,
         depth: u32,
     ) -> Result<bool, String> {
         match (a, b) {
             (None, None) => Ok(true),
-            (Some(x), Some(y)) => self.values_eq_at(x, y, depth),
+            (Some(x), Some(y)) => Self::values_eq_at(x, y, depth),
             _ => Ok(false),
         }
     }
 
     /// ペアの列を短絡付きで全比較する。
     /// クロージャの中では `?` が使えないので、`all(..)` の代わりにこれを使う。
-    fn seq_eq<'v, I>(&self, pairs: I, depth: u32) -> Result<bool, String>
+    fn seq_eq<'v, I>(pairs: I, depth: u32) -> Result<bool, String>
     where
         I: Iterator<Item = (&'v Value, &'v Value)>,
     {
         for (x, y) in pairs {
-            if !self.values_eq_at(x, y, depth)? {
+            if !Self::values_eq_at(x, y, depth)? {
                 return Ok(false);
             }
         }

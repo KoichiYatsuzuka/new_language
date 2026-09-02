@@ -650,7 +650,7 @@ impl Interpreter {
         let mut dict = DictData::new("str".to_string(), "str".to_string());
         for (k, v) in params {
             // キーは常に `str` なので `reject_key` を通らない（B1-a）。
-            dict.set(Value::str(k), Value::str(v))
+            Self::dict_set_pure(&mut dict, Value::str(k), Value::str(v))
                 .expect("CLI 引数の dict のキーは常に str");
         }
         self.scopes[0].insert(

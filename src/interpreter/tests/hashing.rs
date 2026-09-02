@@ -219,3 +219,101 @@ fn test_deep_clone_preserves_hash() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// 辞書の往復（B1-c）
+// ---------------------------------------------------------------------------
+
+/// **入れたら引ける**（ハッシュと等値が噛み合っている）ことを、型を横断して確かめる。
+///
+/// ⚠ ここが破れる壊れ方は**エラーにならない**（`KeyError` になるか、黙って別キーとして
+/// 増えるか）。`default_hash` と `values_eq` の対応が崩れた瞬間にここが落ちる。
+#[test]
+fn test_dict_round_trip_for_every_key_kind() {
+    let src = concat!(
+        "class P:\n",
+        "    let x: int\n",
+        "    fn __init__(mut self, let x: int) -> None:\n",
+        "        self.x = x\n",
+        "fn f() -> int:\n",
+        "    return 1\n",
+        "mut d = {}\n",
+        "d[(1, 2)] = 1\n",
+        "d[[3, 4]] = 2\n",
+        "d[{5, 6}] = 3\n",
+        "d[P(7)] = 4\n",
+        "d[f] = 5\n",
+        "d[P] = 6\n",
+        "d[int] = 7\n",
+        "d[uint(8)] = 8\n",
+        "d[3.5] = 9\n",
+        "d[\"s\"] = 10\n",
+        "d[9] = 11\n",
+        "d[True] = 12\n",
+        "[len(d), d[(1, 2)], d[[3, 4]], d[{5, 6}], d[P(7)], d[f], d[P], d[int],\n",
+        " d[uint(8)], d[3.5], d[\"s\"], d[9], d[True]]",
+    );
+    let (list, _interp) = run_last(src);
+    let Value::List(items) = list else { panic!("not a list") };
+    let got: Vec<i64> = items
+        .borrow()
+        .iter()
+        .map(|v| match v {
+            Value::Int(n) => *n,
+            other => panic!("not an int: {other:?}"),
+        })
+        .collect();
+    assert_eq!(got, vec![12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+}
+
+/// キーの照合は**型厳密**（B2-b）。`3` と `3.0` は別のキーになる。
+/// ⚠ 式としての `3 == 3.0` は True なので、ここが揃っていないと辞書とハッシュが食い違う。
+#[test]
+fn test_dict_keys_are_type_strict() {
+    let (v, _i) = run_last("mut d = {}\nd[3] = 1\nd[3.0] = 2\nd[True] = 3\nd[1] = 4\nlen(d)");
+    assert!(matches!(v, Value::Int(4)), "3 / 3.0 / True / 1 は 4 つの別キー: {v:?}");
+}
+
+/// キーは**挿入時に複製**される。元の変数を書き換えても辞書側は変わらない。
+/// ⚠ 参照を共有したままだと、あとで中身を変えられてハッシュと食い違い、
+/// 「入れたのに引けない」辞書になる。
+#[test]
+fn test_dict_key_is_copied_on_insert() {
+    let (v, _i) = run_last("mut k = [1]\nmut d = {}\nd[k] = \"v\"\nk.append(2)\nd[[1]]");
+    assert!(matches!(&v, Value::Str(s) if &**s == "v"), "複製後のキーで引ける: {v:?}");
+}
+
+/// `__eq__` を定義して `__hash__` を定義しないクラスは**キーにできない**。
+/// ⚠ 等値の規則とハッシュの規則が食い違い、`__eq__` が「等しい」と言う 2 つが
+/// 別バケットに落ちて**黙って別のキーとして入る**ため。
+#[test]
+fn test_dict_rejects_eq_without_hash() {
+    let src = concat!(
+        "class OnlyEq:\n",
+        "    let x: int\n",
+        "    fn __init__(mut self, let x: int) -> None:\n",
+        "        self.x = x\n",
+        "    fn __eq__(let self, let other: OnlyEq) -> bool:\n",
+        "        return True\n",
+        "mut d = {}\n",
+        "d[OnlyEq(1)] = 1\n",
+    );
+    let (stmts, mut interp) = prepare(src).expect("parse/wire");
+    let err = stmts
+        .iter()
+        .try_for_each(|st| interp.exec(st).map(|_| ()))
+        .expect_err("キーにできてはいけない");
+    assert!(err.contains("__eq__ without __hash__"), "実際のエラー: {err}");
+}
+
+/// 循環した値はキーにできない（この先の複製でスタックが溢れるため深さで止める）。
+#[test]
+fn test_dict_rejects_cyclic_key() {
+    let src = "mut a = [1]\na.append(a)\nmut d = {}\nd[a] = 1\n";
+    let (stmts, mut interp) = prepare(src).expect("parse/wire");
+    let err = stmts
+        .iter()
+        .try_for_each(|st| interp.exec(st).map(|_| ()))
+        .expect_err("循環はキーにできてはいけない");
+    assert!(err.contains("cyclic"), "実際のエラー: {err}");
+}

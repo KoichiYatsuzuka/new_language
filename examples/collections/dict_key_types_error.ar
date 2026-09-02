@@ -1,39 +1,53 @@
-# dict_key_types_error.ar — 辞書のキーにできない値を渡したときのエラー例（B1-a）。
+# dict_key_types_error.ar — 辞書のキーにできない値（B1-c 時点で残っている禁止）。
 #
-# ⚠⚠ **以前はこれが「黙って何も起きない」だった。** `DictData::set` が
-#   「変換できないキーは無視」という**意図的な設計**になっており、
-#   `d[(1,2)] = v` が例外も出さず `len(d)` も増えない＝サイレントなデータ消失だった。
-#   エラーにならないので、既存のどのゲートにも映らなかった。
+# ⚠⚠ **B1-a 以前はこれらが「黙って何も起きない」だった。** `DictData::set` が
+#   「変換できないキーは無視」という意図的な設計になっており、`d[(1,2)] = v` が
+#   例外も出さず `len(d)` も増えない＝サイレントなデータ消失だった。
+#   B1-c で型の制限そのものが無くなり（[dict_key_types.ar](dict_key_types.ar)）、
+#   残る禁止は**理由のあるもの 4 種**だけになった。
 #
-# エラーになる値は 2 種類:
+#   (1) `None` / `Undefined`
+#       「存在しないことを示す値」はキーにしない（仕様）。⚠ Python では None は
+#       hashable だが、Arrow は禁止する。
 #
-#   (1) **恒久的に禁止**（仕様）
-#       - `None` / `Undefined` … 「存在しないことを示す値」はキーにしない
-#       - `NaN`                … 自分自身と等しくないのでキーにできない
+#   (2) `NaN`
+#       自分自身と等値にならないので、入れても二度と引けない。⚠ **入れ子でも弾く**
+#       （`(1, NaN)` も同じ理由で引けなくなるため）。
 #
-#   (2) **まだ未対応**（`DictKey` が int / str / bool の 3 種しか持たないため）
-#       - tuple / list / dict / set / instance / uint / complex / 非整数 float / type …
-#       - 将来は使えるようになる予定だが、それまでは**黙って捨てず**必ず知らせる
+#   (3) `__eq__` を定義していて `__hash__` を定義していないクラスのインスタンス
+#       等値の規則とハッシュの規則が食い違う。辞書はハッシュで束ねてから等値で
+#       確かめるので、`__eq__` が「等しい」と言う 2 つが別バケットに落ちて
+#       **黙って別のキーとして入る**。Python は `__eq__` を定義したクラスの
+#       `__hash__` を None にして unhashable にすることで防いでいる。Arrow は
+#       `__eq__` を `==` やリストの `in` でも使うのでクラス定義自体は禁止せず、
+#       **辞書のキーにした時点で**弾く。
 #
-# 以下はそれぞれ単体で実行したときのエラー。行を入れ替えて確認すること。
+#   (4) 循環した値・極端に深い値
+#       この先の複製処理でスタックが溢れるため、深さ上限で止める。
+#
+# それぞれ単体で実行したときのエラー:
 #
 #   mut d = {}
-#   d[(1, 2)] = "x"     # TypeError: unhashable type: 'tuple'
-#   d[[1]]    = "x"     # TypeError: unhashable type: 'list'
-#   d[None]   = "x"     # TypeError: None cannot be used as a dict key
-#   d[3.5]    = "x"     # TypeError: 3.5 cannot be used as a dict key yet
-#                       #            (only integral floats are supported)
+#   d[None]        = "x"   # TypeError: None cannot be used as a dict key
+#   d[0.0/0.0]     = "x"   # TypeError: NaN cannot be used as a dict key
+#   d[(1, 0.0/0.0)] = "x"  # TypeError: NaN cannot be used as a dict key   （入れ子）
+#
+#   class OnlyEq:
+#       fn __eq__(let self, let other: OnlyEq) -> bool: ...
+#   d[OnlyEq(1)] = "x"
+#   # TypeError: class 'OnlyEq' defines __eq__ without __hash__, so it cannot be a dict key
+#
+#   mut a = [1]
+#   a.append(a)
+#   d[a] = "x"
+#   # TypeError: cyclic or too deeply nested value cannot be used as a dict key
 #
 # ⚠ 読み取り・包含検査も同じエラーになる（`KeyError` や `False` ではない）。
 #   「書けないのに読むと『入っていない』と言われる」形にすると誤診を招くため。
-#
-#   let d = {"a": 1}
-#   print(d[(1, 2)])    # TypeError: unhashable type: 'tuple'
-#   print((1, 2) in d)  # TypeError: unhashable type: 'tuple'
 
 print("dict key error demo")
 
 mut d = {}
-d[(1, 2)] = "x"
+d[None] = "x"
 
 print("ここには到達しない")

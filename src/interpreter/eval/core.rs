@@ -67,13 +67,14 @@ impl Interpreter {
     ///
     /// ⚠ `Result` を返すのは、**キーにできない値を黙って捨てないため**（B1-a）。
     /// ツリーウォーク側（`Expr::Dict`）と同じエラーになる必要がある。
-    pub(crate) fn vm_build_dict(&self, flat: Vec<Value>) -> Result<Value, String> {
-        let mut d = DictData::new("Any".to_string(), "Any".to_string());
+    pub(crate) fn vm_build_dict(&mut self, flat: Vec<Value>) -> Result<Value, String> {
+        // ⚠ `&mut self` なのは `dict_set` が `__hash__` / `__eq__` を回すため（B1-c）。
+        let d = Rc::new(RefCell::new(DictData::new("Any".to_string(), "Any".to_string())));
         let mut it = flat.into_iter();
         while let (Some(k), Some(v)) = (it.next(), it.next()) {
-            d.set(k, v)?;
+            self.dict_set(&d, k, v)?;
         }
-        Ok(Value::Dict(Rc::new(RefCell::new(d))))
+        Ok(Value::Dict(d))
     }
 
     /// 式（`Expr`）を評価して `Value` を返す。各バリアントを専用メソッドに委譲する薄いディスパッチャ。
@@ -132,13 +133,13 @@ impl Interpreter {
                 Ok(Value::Tuple(Rc::new(TupleData::new(values, types))))
             }
             Expr::Dict(pairs) => {
-                let mut d = DictData::new("Any".to_string(), "Any".to_string());
+                let d = Rc::new(RefCell::new(DictData::new("Any".to_string(), "Any".to_string())));
                 for (key_expr, val_expr) in pairs {
                     let k = self.eval(key_expr)?;
                     let v = self.eval(val_expr)?;
-                    d.set(k, v)?;
+                    self.dict_set(&d, k, v)?;
                 }
-                Ok(Value::Dict(Rc::new(RefCell::new(d))))
+                Ok(Value::Dict(d))
             }
             Expr::Set(items) => {
                 let mut vals: Vec<Value> = Vec::new();

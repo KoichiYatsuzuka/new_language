@@ -1,0 +1,43 @@
+# dict_key_dunder.ar — 辞書のキーで `__hash__` / `__eq__` をオーバーライドする（B1-c）。
+#
+# ⚠⚠ **Rust の `Hash` / `Eq` トレイト経由では、ユーザー定義の `__hash__` / `__eq__` を
+#   呼ぶことが原理的にできない**（トレイトのメソッドはインタプリタ文脈を受け取れない）。
+#   ⇒ 辞書は `indexmap` の `raw_entry` API に載せ替えてある。ハッシュ値を自分で渡し、
+#   等値判定を**クロージャ**で渡すので、そこがインタプリタを掴める。
+#
+# ⚠ 既定（オーバーライドしない場合）は:
+#   - `__hash__` … 構造ハッシュ（クラス名 + 全フィールドを再帰）
+#   - `__eq__`   … 構造的等値（同じクラス名 + 全フィールドが等値）
+#   なので、**何も定義しなくても値として自然に振る舞う**（下の対照を参照）。
+
+# x の偶奇だけで同一視するクラス。⚠ `__eq__` と `__hash__` は**必ず対で**定義する。
+class Parity:
+    let x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+    fn __hash__(let self) -> int:
+        return self.x % 2
+    fn __eq__(let self, let other: Parity) -> bool:
+        return self.x % 2 == other.x % 2
+
+print("=== __hash__ / __eq__ が辞書で効く ===")
+mut d = {}
+d[Parity(1)] = "odd"
+d[Parity(3)] = "odd again"     # 1 と同じ扱い → 上書きされる
+d[Parity(2)] = "even"
+print(len(d))                  # 2
+
+print(d[Parity(5)])            # odd again   5 は奇数なので同じキー
+print(d[Parity(4)])            # even
+print(Parity(7) in d)          # True
+
+print("=== 対照: 何も定義しないクラスは構造で照合される ===")
+class Plain:
+    let x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+
+mut e = {}
+e[Plain(1)] = "one"
+print(e[Plain(1)])             # one    別オブジェクトでもフィールドが等しい
+print(Plain(2) in e)           # False

@@ -235,18 +235,12 @@ impl Value {
                 Value::Set(Rc::new(RefCell::new(v)))
             }
             Value::Dict(rc) => {
-                let b = rc.borrow();
-                let mut d = DictData::new(b.key_type.clone(), b.item_type.clone());
-                for (k, v) in b.iter() {
-                    let key_val = match k {
-                        DictKey::Int(n) => Value::Int(*n),
-                        DictKey::Str(s) => Value::Str(Rc::from(&**s)),
-                        DictKey::Bool(b) => Value::Bool(*b),
-                    };
-                    // 複製元の dict のキーは既に `reject_key` を通っている（B1-a）。
-                    d.set(key_val, v.deep_clone())
-                        .expect("複製元のキーは既に検査済み");
-                }
+                // ⚠ `deep_clone` は関数等の `Rc` を作り直すので**ハッシュを取り直す**必要が
+                //    ある（`dict_copy_with` の doc を参照）。
+                let d = crate::interpreter::Interpreter::dict_copy_with(
+                    &rc.borrow(),
+                    |v| v.deep_clone(),
+                );
                 Value::Dict(Rc::new(RefCell::new(d)))
             }
             Value::Tuple(rc) => {

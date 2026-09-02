@@ -30,10 +30,12 @@
 #![allow(dead_code)]
 
 use {
+    std::cell::RefCell,
     std::collections::hash_map::RandomState,
     std::hash::{BuildHasher, Hasher},
+    std::rc::Rc,
     std::sync::OnceLock,
-    crate::interpreter::{Interpreter, Value},
+    crate::interpreter::{DictData, Interpreter, Value},
 };
 
 /// ハッシュの再帰の深さ上限。超えたら**降下をやめる**（エラーにはしない。上の doc を参照）。
@@ -88,11 +90,20 @@ enum Tag {
     JsProcFn,
     CsObject,
     Pointer,
+    /// `__hash__` が返した値を混ぜた印。
+    DunderHash,
     /// 深さ上限に達して降下をやめた印。
     Truncated,
     /// `Slice` の `None` 要素など「無い」ことの印。
     Absent,
 }
+
+/// `__hash__` の呼び出し口。
+///
+/// ⚠ 純粋な経路（`Value::deep_clone` / `extern "C"` コールバック）は常に
+/// [`HashError::NeedsDispatch`] を返す実装を渡す。インタプリタを持つ経路は
+/// `__hash__` を実際に呼ぶ実装を渡す（[`Interpreter::hash_value`]）。
+type HashDispatch<'a> = &'a mut dyn FnMut(&Value) -> Result<u64, HashError>;
 
 /// `default_hash` が失敗する理由。
 #[derive(Debug)]
@@ -119,12 +130,21 @@ impl Interpreter {
     /// [`HashError::NeedsDispatch`]。
     pub(crate) fn default_hash(v: &Value) -> Result<u64, HashError> {
         let mut h = seed().build_hasher();
-        Self::hash_into(v, &mut h, 0)?;
+        // 純粋な経路では `__hash__` を呼べないので、当たったら諦める。
+        Self::hash_into(v, &mut h, 0, &mut |_| Err(HashError::NeedsDispatch))?;
         Ok(h.finish())
     }
 
     /// `v` を `h` に混ぜ込む。`depth` が上限を超えたら降下をやめる。
-    fn hash_into<H: Hasher>(v: &Value, h: &mut H, depth: u32) -> Result<(), HashError> {
+    ///
+    /// `disp` は `__hash__` を持つインスタンスに当たったときの呼び出し口。
+    /// ⚠ **入れ子でも呼ばれる**ので、「トップレベルだけ対応」のような穴を作らない。
+    fn hash_into<H: Hasher>(
+        v: &Value,
+        h: &mut H,
+        depth: u32,
+        disp: HashDispatch<'_>,
+    ) -> Result<(), HashError> {
         if depth > HASH_MAX_DEPTH {
             h.write_u8(Tag::Truncated as u8);
             return Ok(());
@@ -167,17 +187,22 @@ impl Interpreter {
             // ⚠ 構造ハッシュなので **`deep_clone` がハッシュを保存する**。これが
             //   「複製経路は保存済みハッシュをそのままコピーしてよい」根拠になる（B1-c）。
             Value::Instance(rc) => {
-                let inst = rc.borrow();
-                // ⚠ `__hash__` を持つクラスは呼び出し側に委ねる（純粋な経路では回せない）。
-                if inst.class.methods.contains_key("__hash__") {
-                    return Err(HashError::NeedsDispatch);
+                // ⚠⚠ `__hash__` の呼び出しはインタプリタを回すので、**借用を解いてから**渡す。
+                //    握ったままだと、ハンドラが自分自身を読んだ瞬間に `RefCell` が壊れる。
+                let has_dunder = rc.borrow().class.methods.contains_key("__hash__");
+                if has_dunder {
+                    let hv = disp(v)?;
+                    h.write_u8(Tag::DunderHash as u8);
+                    h.write_u64(hv);
+                    return Ok(());
                 }
+                let inst = rc.borrow();
                 if inst.class.name.starts_with("enum_item_") {
                     // enum バリアントは `values_eq` が `value` フィールドだけを見る。
                     h.write_u8(Tag::EnumItem as u8);
                     h.write(inst.class.name.as_bytes());
                     match inst.class.field_index.get("value").and_then(|&i| inst.field_value(i)) {
-                        Some(val) => Self::hash_into(&val, h, d)?,
+                        Some(val) => Self::hash_into(&val, h, d, disp)?,
                         None => h.write_u8(Tag::Absent as u8),
                     }
                 } else {
@@ -188,7 +213,7 @@ impl Interpreter {
                     //   「無い」ことを混ぜる。片方だけ見ると等値な組でハッシュがずれる。
                     for i in 0..inst.field_count() {
                         match inst.field_value(i) {
-                            Some(val) => Self::hash_into(&val, h, d)?,
+                            Some(val) => Self::hash_into(&val, h, d, disp)?,
                             None => h.write_u8(Tag::Absent as u8),
                         }
                     }
@@ -221,7 +246,7 @@ impl Interpreter {
                 let vals = t.all_values();
                 h.write_usize(vals.len());
                 for x in vals {
-                    Self::hash_into(x, h, d)?;
+                    Self::hash_into(x, h, d, disp)?;
                 }
             }
             Value::List(rc) => {
@@ -229,7 +254,7 @@ impl Interpreter {
                 let items = rc.borrow();
                 h.write_usize(items.len());
                 for x in items.iter() {
-                    Self::hash_into(x, h, d)?;
+                    Self::hash_into(x, h, d, disp)?;
                 }
             }
             Value::FrozenList { state, layout } => {
@@ -238,7 +263,7 @@ impl Interpreter {
                 let st = state.borrow();
                 h.write_usize(st.len);
                 for i in 0..st.len {
-                    Self::hash_into(&layout.reconstruct_item(&st.data, i), h, d)?;
+                    Self::hash_into(&layout.reconstruct_item(&st.data, i), h, d, disp)?;
                 }
             }
 
@@ -251,7 +276,7 @@ impl Interpreter {
                 let items = rc.borrow();
                 let mut acc: u64 = 0;
                 for x in items.iter() {
-                    acc ^= scramble(sub_hash(x, d)?);
+                    acc ^= scramble(sub_hash(x, d, disp)?);
                 }
                 h.write_usize(items.len());
                 h.write_u64(acc);
@@ -263,8 +288,8 @@ impl Interpreter {
                 for (k, val) in dict.all_keys().into_iter().zip(dict.all_items()) {
                     // キーと値をまとめて 1 要素として撹拌する（対応関係を保つため）。
                     let mut pair = seed().build_hasher();
-                    Self::hash_into(&k, &mut pair, d)?;
-                    Self::hash_into(&val, &mut pair, d)?;
+                    Self::hash_into(&k, &mut pair, d, disp)?;
+                    Self::hash_into(&val, &mut pair, d, disp)?;
                     acc ^= scramble(pair.finish());
                 }
                 h.write_usize(dict.len());
@@ -285,13 +310,13 @@ impl Interpreter {
             Value::ResultVal { ok, inner } => {
                 h.write_u8(Tag::Result as u8);
                 h.write_u8(u8::from(*ok));
-                Self::hash_into(inner, h, d)?;
+                Self::hash_into(inner, h, d, disp)?;
             }
             Value::Slice(s) => {
                 h.write_u8(Tag::Slice as u8);
                 for part in [&s.begin, &s.end, &s.step] {
                     match part {
-                        Some(x) => Self::hash_into(x, h, d)?,
+                        Some(x) => Self::hash_into(x, h, d, disp)?,
                         None => h.write_u8(Tag::Absent as u8),
                     }
                 }
@@ -338,9 +363,9 @@ impl Interpreter {
 }
 
 /// 部分ハッシュ（順序なしの畳み込みで、要素ごとに独立した値が要るとき）。
-fn sub_hash(v: &Value, depth: u32) -> Result<u64, HashError> {
+fn sub_hash(v: &Value, depth: u32, disp: HashDispatch<'_>) -> Result<u64, HashError> {
     let mut h = seed().build_hasher();
-    Interpreter::hash_into(v, &mut h, depth)?;
+    Interpreter::hash_into(v, &mut h, depth, disp)?;
     Ok(h.finish())
 }
 
@@ -371,5 +396,155 @@ fn canonical_f64_bits(f: f64) -> u64 {
         f64::NAN.to_bits()
     } else {
         f.to_bits()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 辞書アクセス（ハッシュ + 等値のペアで引く）
+// ---------------------------------------------------------------------------
+
+impl Interpreter {
+    /// `__hash__` を尊重するハッシュ（[`Interpreter::default_hash`] の動的版）。
+    ///
+    /// ⚠ `__hash__` は `int` を返す約束。`u64` へはビットをそのまま写す
+    /// （負値も一意に写る。ハッシュ値としての意味は変わらない）。
+    pub(crate) fn hash_value(&mut self, v: &Value) -> Result<u64, String> {
+        let mut h = seed().build_hasher();
+        let mut err: Option<String> = None;
+        {
+            // ⚠ クロージャの中で `?` が使えないので、エラーを外へ持ち出す。
+            let mut disp = |inst: &Value| -> Result<u64, HashError> {
+                match self.eval_method_call_evaled(inst.clone(), "__hash__", vec![]) {
+                    Ok(Value::Int(n)) => Ok(n as u64),
+                    Ok(other) => {
+                        if err.is_none() {
+                            err = Some(format!(
+                                "TypeError: __hash__ should return int, not '{}'",
+                                crate::interpreter::ops::typecheck::runtime_type_name(&other)
+                            ));
+                        }
+                        Err(HashError::NeedsDispatch)
+                    }
+                    Err(e) => {
+                        if err.is_none() {
+                            err = Some(e);
+                        }
+                        Err(HashError::NeedsDispatch)
+                    }
+                }
+            };
+            if Self::hash_into(v, &mut h, 0, &mut disp).is_err() && err.is_none() {
+                err = Some("TypeError: value is not hashable".to_string());
+            }
+        }
+        match err {
+            Some(e) => Err(e),
+            None => Ok(h.finish()),
+        }
+    }
+
+    /// 辞書から `key` に対応する値を引く。`__hash__` / `__eq__` を尊重する。
+    ///
+    /// ⚠ 借用は**共有借用のみ**。`__eq__` のハンドラが同じ辞書を読み返しても
+    /// 共有どうしなので安全（可変借用を握ると `RefCell` がパニックする）。
+    pub(crate) fn dict_get(
+        &mut self,
+        d: &Rc<RefCell<DictData>>,
+        key: &Value,
+    ) -> Result<Option<Value>, String> {
+        if let Some(why) = DictData::reject_key(key) {
+            return Err(why);
+        }
+        let hash = self.hash_value(key)?;
+        // ⚠ 借用しているのは `d` であって `self` ではないので、クロージャが
+        //    `&mut Interpreter` を掴んでよい。これが `raw_entry` を使う理由そのもの。
+        let borrowed = d.borrow();
+        let me = &mut *self;
+        borrowed.get_with(hash, |stored| me.values_eq_dyn(key, stored))
+    }
+
+    /// 辞書に `key -> value` を入れる（既にあれば更新）。`__hash__` / `__eq__` を尊重する。
+    ///
+    /// ⚠⚠ **キーは複製して持つ**。呼び出し元の変数と参照を共有したままだと、
+    /// あとで中身を書き換えられてハッシュと食い違い、「入れたのに引けない」辞書になる。
+    /// Arrow は属性の境界で複製する規則なので、ここもその一適用。
+    ///
+    /// ⚠⚠ **「引く」と「書く」を借用ごと分ける**。`__eq__` のハンドラが同じ辞書に
+    /// 触れる可能性があるので、可変借用を握ったまま等値判定を走らせてはいけない。
+    pub(crate) fn dict_set(
+        &mut self,
+        d: &Rc<RefCell<DictData>>,
+        key: Value,
+        value: Value,
+    ) -> Result<(), String> {
+        if let Some(why) = DictData::reject_key(&key) {
+            return Err(why);
+        }
+        let hash = self.hash_value(&key)?;
+        // フェーズ 1: 共有借用で位置を引く（ここで `__eq__` が走りうる）。
+        let idx = {
+            let borrowed = d.borrow();
+            let me = &mut *self;
+            borrowed.index_of_with(hash, |stored| me.values_eq_dyn(&key, stored))?
+        };
+        // フェーズ 2: 可変借用で書く（クロージャを走らせないので再入しない）。
+        match idx {
+            Some(i) => d.borrow_mut().set_at(i, value),
+            None => d.borrow_mut().push_prehashed(hash, Self::deep_copy_value(key), value),
+        }
+        Ok(())
+    }
+
+}
+
+impl Interpreter {
+    /// インタプリタを持たない経路用の挿入（`__hash__` / `__eq__` は**効かない**）。
+    ///
+    /// 使うのは `py_to_tl` と native ABI コールバックだけ。どちらも Python 側／C 側から
+    /// 来た値を積むところで、Arrow のユーザー定義メソッドは絡まない。
+    pub(crate) fn dict_set_pure(
+        d: &mut DictData,
+        key: Value,
+        value: Value,
+    ) -> Result<(), String> {
+        if let Some(why) = DictData::reject_key(&key) {
+            return Err(why);
+        }
+        let hash = Self::default_hash(&key)
+            .map_err(|_| "TypeError: __hash__ cannot be called from this context".to_string())?;
+        let idx = d.index_of_with(hash, |stored| Self::values_eq_pure(&key, stored))?;
+        match idx {
+            Some(i) => d.set_at(i, value),
+            None => d.push_prehashed(hash, key, value),
+        }
+        Ok(())
+    }
+
+    /// インタプリタを持たない経路用の検索（`__hash__` / `__eq__` は**効かない**）。
+    pub(crate) fn dict_get_pure(d: &DictData, key: &Value) -> Result<Option<Value>, String> {
+        if let Some(why) = DictData::reject_key(key) {
+            return Err(why);
+        }
+        let hash = Self::default_hash(key)
+            .map_err(|_| "TypeError: __hash__ cannot be called from this context".to_string())?;
+        d.get_with(hash, |stored| Self::values_eq_pure(key, stored))
+    }
+
+    /// 既存の辞書を、キーと値に `f` を掛けながら複製する。
+    ///
+    /// ⚠⚠ **ハッシュは取り直す。** `Value::deep_clone` は関数・ジェネレータ等の `Rc` を
+    /// 作り直すので、**ポインタでハッシュしている値はハッシュが変わる**。保存済みハッシュを
+    /// そのまま持っていくと、複製後の辞書はそのキーで引けなくなる（黙って消えたのと同じ）。
+    /// ⚠ `__hash__` を持つインスタンスがキーのときだけは取り直せない（純粋な経路では
+    /// 呼べない）ので、保存済みハッシュを引き継ぐ。`__hash__` はフィールドから計算する
+    /// ユーザーコードで、複製は構造を保つので実用上は同じ値になる。
+    pub(crate) fn dict_copy_with(src: &DictData, mut f: impl FnMut(Value) -> Value) -> DictData {
+        let mut out = DictData::new(src.key_type.clone(), src.item_type.clone());
+        for (hk, v) in src.iter() {
+            let new_key = f(hk.key.clone());
+            let hash = Self::default_hash(&new_key).unwrap_or(hk.hash);
+            out.push_prehashed(hash, new_key, f(v.clone()));
+        }
+        out
     }
 }

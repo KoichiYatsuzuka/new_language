@@ -1,33 +1,70 @@
-# dict_key_types.ar — 辞書のキーとして**使える型**の確認（B1）。
+# dict_key_types.ar — 辞書のキーとして使える型（B1-c で**ほぼすべての型**に広がった）。
 #
-# ⚠ 使えない型を渡したときの挙動は [dict_key_types_error.ar](dict_key_types_error.ar) を参照。
-#   以前はそれが**黙って無視**されていた（`d[(1,2)] = v` が例外も出さずに何も起きない
-#   ＝サイレントなデータ消失）。今は必ず `TypeError` になる。
+# 経緯:
+#   - B1-a まで … `DictKey` が int / str / bool の 3 種しか持たず、他の型は
+#                  **黙って捨てられていた**（サイレントなデータ消失）。
+#   - B1-a      … 捨てるのをやめて `TypeError` にした。
+#   - B1-c      … コンテナを `IndexMap<HKey, Value>` に差し替え、ハッシュを自分で計算して
+#                  等値判定をクロージャで渡す方式にした。⇒ 型の制限が無くなった。
+#
+# ⚠ 禁止が残っているものは [dict_key_types_error.ar](dict_key_types_error.ar) を参照。
 
-print("=== 使えるキー ===")
+class P:
+    let x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+
+fn f() -> int:
+    return 1
+
+print("=== あらゆる型がキーになる ===")
 mut d = {}
-d[1] = "int"
-d["s"] = "str"
-d[True] = "bool"
-d[2.0] = "integral float"        # 整数値の float は int キーへ正規化される
-print(len(d))                    # 4
-print(d)
+d[(1, 2)]  = "tuple"
+d[[3, 4]]  = "list"
+d[{5, 6}]  = "set"
+d[P(7)]    = "instance"
+d[f]       = "function"
+d[P]       = "class"
+d[int]     = "type"
+d[uint(8)] = "uint"
+d[3.5]     = "float"
+d[1+2j]    = "complex"
+d["s"]     = "str"
+d[9]       = "int"
+d[True]    = "bool"
+print(len(d))                # 13
 
-print("=== float の正規化 ===")
+print("=== 構造が同じなら引ける（値の同一性で照合する）===")
+print(d[(1, 2)])             # tuple
+print(d[[3, 4]])             # list
+print(d[P(7)])               # instance   別オブジェクトでも全フィールドが等しい
+let same = (1, 2)
+print(d[same])               # tuple
+
+print("=== キーの照合は型厳密（B2-b）===")
+# ⚠ 式としての `3 == 3.0` は True（数値の昇格ラティス）だが、**キーの同一性は型厳密**。
+#   辞書はハッシュで束ねるので、ここが厳密でないとハッシュと規則が食い違う。
 mut e = {}
-e[3] = "first"
-e[3.0] = "second"                # 3 と同じキー
-print(len(e), e[3])              # 1 second
+e[3]   = "int key"
+e[3.0] = "float key"
+print(len(e), e[3], e[3.0])  # 2 int key float key
 
-print("=== bool と int は別キー ===")
-# ⚠ Python では `1` と `True` は同じキーになるが、Arrow の `values_eq` は
-#   `bool` と `int` を等値としないので**別キー**として扱う。
-mut f = {}
-f[1] = "int one"
-f[True] = "bool true"
-print(len(f), f)                 # 2
+mut g = {}
+g[1]    = "int"
+g[True] = "bool"
+print(len(g))                # 2   bool は数値の昇格ラティスに入っていない
+
+print("=== キーは挿入時に複製される ===")
+# ⚠ 参照を共有したままだと、あとで中身を書き換えられてハッシュと食い違い、
+#   「入れたのに引けない」辞書になる。⇒ 属性の境界で複製する規則の一適用。
+mut k = [1]
+mut h = {}
+h[k] = "v"
+k.append(2)                  # 元の変数を変えても…
+print(len(h), h[[1]], k)     # 1 v [1, 2]   辞書側は [1] のまま
 
 print("=== 読み・包含・更新 ===")
-mut g = {"a": 1}
-g["a"] = 2
-print(g["a"], "a" in g, "b" in g, "b" not in g)
+mut m = {"a": 1}
+m["a"] = 2
+print(m["a"], "a" in m, "b" in m, "b" not in m)
+print((1, 2) in d, (9, 9) in d)

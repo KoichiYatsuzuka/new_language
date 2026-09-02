@@ -39,7 +39,9 @@ $whitelist = @(
     'force_gate','compare_vm_modes','compare_python_impl','scan_examples','debug_session',
     'repl_session','tw_stats_files','ab_bench','ab_bench_modes','dump_native_ir','prof_dist',
     'bench_field_access','fn_call','closure_call','block_expr','method_call','field_access',
-    'cb_call_fn','snake_case','stubgen','extend_','_inner','ar_init','ar_event_fire'
+    'cb_call_fn','snake_case','stubgen','extend_','_inner','ar_init','ar_event_fire',
+    # 外部クレートの API 名（indexmap の raw_entry_v1）。src に同名の識別子は無くて当然。
+    'raw_entry'
 )
 
 $files = Get-ChildItem -Path $root -Recurse -Filter *.rs -File
