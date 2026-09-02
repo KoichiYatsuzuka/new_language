@@ -14,7 +14,8 @@
 | **B1 / B2** | ✅ 修正済み。結果として**言語仕様の変更**になったので、症状の記述は削除し、各節に**決まった仕様**を残してある。⚠ 実装の詳細ではなく**規則**として読むこと |
 | **B3** | ✅ 修正済み（`ccd4be9`）。⚠ **仕様変更は無い**（純粋なバグ修正）ので、節には**原因と切り分け方**を残してある。起票時の見当は**外れていた** — 実際は「`mut` パラメータのセルに引数が入らない」で、`capture_env` は無関係だった |
 | **B5** | ✅ 修正済み。⚠ `list.extend` は**足していない**（B8 の判断待ち）|
-| **B4 / B6 / B7** | ⬜ 未着手（起票のまま）|
+| **B7** | ✅ 修正済み。⚠ **仕様変更は無い**。自由変数の定義を `fn_own_names` 1 箇所に寄せた |
+| **B4 / B6** | ⬜ 未着手（起票のまま）|
 | **B8〜B11** | ⬜ 未着手。**2026-09-02 の追加起票**（B1 / B2 の修正作業中に発見）|
 
 ---
@@ -42,7 +43,7 @@
 | **B4** | `for` のループ変数のスコープが**文脈で 3 通り**違う | 🟠 一部サイレント | ⬜ 未調査 |
 | ~~**B5**~~ | ~~`list + list` / `list * int` が未対応~~ | 🟢 明示エラー | ✅ **修正済み** |
 | **B6** | モジュール本体から**自モジュールの関数を呼べない** | 🟢 明示エラー | ⬜ 未調査 |
-| **B7** | 入れ子 `fn` から `local::args` を参照すると VM 非適格 | 🟢 明示エラー | ✅ 特定済み |
+| ~~**B7**~~ | ~~入れ子 `fn` から `local::args` を参照すると VM 非適格~~ | 🟢 明示エラー | ✅ **修正済み** |
 | **B8** | `let` のコレクションが**変更メソッドで書き換えられる** | 🔴 サイレント | ✅ 特定済み |
 | **B9** | `Set` / `Tuple` が代入で**複製されず共有される** | 🔴 サイレント | ✅ 特定済み |
 | **B10** | 循環した値の複製で**スタックオーバーフロー** | 🟠 クラッシュ | ✅ 特定済み |
@@ -388,42 +389,44 @@ print(L.MSG)
 
 ---
 
-## B7. 入れ子 `fn` から `local::args` を参照すると VM 非適格 🟢
+## B7. 入れ子 `fn` からの `local::args` ✅ 修正済み
 
-### 再現
+症状（`VmForceError: cannot compile function 'inner' to bytecode`）は解消。
+`def outer(*xs): def inner(): return len(xs)` に相当する形が使えるようになった。
 
-```
-fn outer(let ...: int) -> int:
-    fn inner() -> int:
-        return len(local::args)
-    return inner()
-print(outer(... = 1, 2, 3))
-# VmForceError: cannot compile function 'inner' to bytecode
-```
+⚠ **仕様変更は無い。** `local::args` は元から「`local::` 接頭辞が付いているだけの
+**普通のスコープ束縛**」で、インタプリタは `get_val("local::args")` でスコープ鎖を
+辿っていた。**VM だけがキャプチャできていなかった**。
 
-### 原因（特定済み）
+### 原因（2 段構え・どちらも実測で確定）
 
-[`src/vm/compiler/expr.rs`](src/vm/compiler/expr.rs) の `Expr::LocalVar` アームは
-**自分の `slots` に `local::args` が無ければ `bail_expr("localvar-unbound")`** する。
-入れ子 `fn` は可変長パラメータを持たないので slot が無く、
-外側からのキャプチャ対象にもなっていない（`nested_fn_captures` は
-`collect_referenced_names` の結果を `self.slots` で引くが、`local::args` は拾われない）。
+**① 自由変数の収集が `local::` を意図的に拾っていなかった。**
+`collect_refs_expr` は `Expr::Ident` しか集めず、`dbg::` と `local::` を
+「専用の名前空間なので拾わない」と明示的に除外していた。`dbg::`（デバッガ）はそれで
+正しいが、`local::` はスコープの束縛なので**拾わなければならない**。
 
-### 影響
+**② `mut ...` はさらにもう 1 段あった。**
+①だけ直すと `let ...` は動くが `mut ...` は `VmForceError` のまま。
+可変キャプチャされる名前は slot からセルへ昇格し **slot は穴として残る**のに、
+`Expr::LocalVar` のコンパイルが `slots` しか見ていなかった
+（`Expr::Ident` は `cells` を先に引いている）。⇒ 同じ順序に揃えた。
 
-- `def outer(*xs): def inner(): return len(xs)` の形が動かない。
-- Python→Arrow の項目 6（`*args`）で実際に踏んだ
-  （[python_converter_coverage.md](python_converter_coverage.md) 項目 7 参照）。
+### 自由変数の定義を 1 箇所に寄せた
 
-### 修正方針
+⚠⚠ 起票の留意点（「`capture_env` と `nested_fn_captures` の自由変数の定義を揃える」）
+に対する構造的な答えとして、**3 箇所が手写ししていた「自前名の算出」を
+[`fn_own_names`](src/interpreter/exec/mod.rs) 1 本に寄せた**。
 
-`nested_fn_captures` / `nested_fn_free_names` が **`local::args` もキャプチャ対象として扱う**ようにする
-（名前が `local::` 接頭辞つきである点に注意）。
+消費者は `exec::blocks::capture_env`（ツリーウォークの捕捉）/
+`vm::compiler::decls::nested_fn_free_names`（セル化の事前解析）/
+`vm::compiler::calls::nested_fn_captures`（VM の捕捉 slot）の 3 つ。
 
-### 留意点
+⚠ この関数が **可変長パラメータを `local::args` として自前名に入れる**のが要点。
+`Param::name` は番兵の `"..."` なので、素朴に集めると自前名に入らず、
+**自分の `...` を参照しているだけなのに外側からのキャプチャだと誤判定する**。
+おかげで「内側にも `...` があれば内側が優先」が正しく効く（実測で確認）。
 
-- ⚠ B3 と**同じ関数**を触る。合わせて直すなら一緒に、別々にやるなら
-  「`capture_env` と `nested_fn_captures` の自由変数の定義を揃える」ことを両方で守ること。
+例題: [varargs_nested_fn.ar](examples/basics/varargs_nested_fn.ar)
 
 ---
 
@@ -670,11 +673,8 @@ print(a)            # [1, 99]   ← let の a が書き換わる。エラーも�
 
 残り:
 
-1. **B7**（入れ子 `fn` の `local::args`）— ⚠ **B3 と同じ系統ではない**。B3 の修正後も
-   症状が変わらないことを実測済み（B3 の節を参照）。原因は
-   `nested_fn_captures` が `local::args` を拾えず諦める側で確定。
-2. **B6**（モジュール本体の自己呼び出し）— 影響は大きいが原因未調査。
-3. **B4**（`for` のスコープ）— **仕様判断が先**。実装より先に決めることがある。
+1. **B6**（モジュール本体の自己呼び出し）— 影響は大きいが原因未調査。
+2. **B4**（`for` のスコープ）— **仕様判断が先**。実装より先に決めることがある。
 
 ⚠⚠ **起票時の原因の見立ては当てにしないこと。** B1 / B2 / B3 のいずれでも、
 起票の見当より**最小形での切り分けのほうが速く正確**だった。実際、

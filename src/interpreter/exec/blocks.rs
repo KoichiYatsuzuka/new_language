@@ -25,8 +25,9 @@ impl Interpreter {
         body: &[Stmt],
         params: &[crate::ast::Param],
     ) -> HashMap<String, CapturedVar> {
-        let mut own_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
-        collect_declared_names(body, &mut own_names);
+        // ⚠ 自前名の算出は [`crate::interpreter::fn_own_names`] 1 箇所に寄せてある（B7）。
+        //   ここと VM 側の 2 つが同じ答えを出さないと、閉包変数が黙って消える。
+        let own_names = crate::interpreter::fn_own_names(params, body);
 
         let mut referenced: HashSet<String> = HashSet::new();
         collect_referenced_names(body, &mut referenced);

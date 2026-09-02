@@ -1,0 +1,69 @@
+# varargs_nested_fn.ar — 入れ子 `fn` から可変長パラメータ `local::args` を参照する（bug_fix.md B7）。
+#
+# ⚠ 以前は `VmForceError: cannot compile function 'inner' to bytecode` で動かなかった。
+#   Python の `def outer(*xs): def inner(): return len(xs)` に相当する形が丸ごと使えなかった。
+#
+# 原因（2 段構え）:
+#   ① 自由変数の収集（`collect_referenced_names`）が `local::name` を**意図的に拾って
+#      いなかった**。インタプリタ側は `get_val("local::args")` でスコープ鎖を辿るので
+#      見えていたが、VM だけがキャプチャできず落ちていた。
+#      ⇒ `local::` は「接頭辞が付いているだけの普通のスコープ束縛」なので拾うようにした。
+#      （`dbg::` はデバッガの名前空間なので引き続き拾わない。）
+#   ② `mut ...` の場合、名前が slot からセルへ昇格するのに `Expr::LocalVar` の
+#      コンパイルが `slots` しか見ていなかった（`Expr::Ident` は `cells` を先に見る）。
+#      ⇒ 同じ順序に揃えた。
+
+print("=== 入れ子 fn から外側の可変長引数を見る ===")
+
+fn outer(let ...: int) -> int:
+    fn inner() -> int:
+        return len(local::args)
+    return inner()
+
+print(outer(... = 1, 2, 3))        # 3
+
+print("=== 要素も読める ===")
+fn sum2(let ...: int) -> int:
+    fn inner() -> int:
+        return local::args[0] + local::args[1]
+    return inner()
+print(sum2(... = 10, 20))          # 30
+
+print("=== mut の可変長パラメータでも動く ===")
+# ⚠ `mut ...` は入れ子 fn に捕捉されるとセルへ昇格する。`let ...` は slot のまま。
+#   両方が同じ答えになることがこの例題の要点。
+fn outer_mut(mut ...: int) -> int:
+    fn inner() -> int:
+        return len(local::args)
+    return inner()
+print(outer_mut(... = 1, 2, 3))    # 3
+
+print("=== 閉包として返しても持ち歩ける ===")
+fn make(let ...: int) -> function:
+    fn inner() -> int:
+        return len(local::args)
+    return inner
+print(make(... = 1, 2)())          # 2
+
+print("=== 内側にも `...` があれば内側が優先（シャドウ）===")
+# ⚠ `local::args` は可変長パラメータを持つ関数が束縛する名前なので、
+#   内側が自分の `...` を持つならそちらを見る。外側の 3 個ではなく内側の 2 個。
+fn shadow(let ...: int) -> function:
+    fn inner(let ...: int) -> int:
+        return len(local::args)
+    return inner
+print(shadow(... = 1, 2, 3)(... = 7, 8))   # 2
+
+print("=== 2 段ネストでも届く ===")
+fn deep(let ...: int) -> int:
+    fn a() -> int:
+        fn b() -> int:
+            return len(local::args)
+        return b()
+    return a()
+print(deep(... = 1, 2, 3, 4))      # 4
+
+print("=== 対照: 入れ子でない従来の形 ===")
+fn plain(let ...: int) -> int:
+    return len(local::args)
+print(plain(... = 1, 2))           # 2

@@ -32,9 +32,8 @@ pub(super) fn nested_fn_free_names(body: &[Stmt]) -> HashSet<String> {
                     // `collect_referenced_names` が `Stmt::FnDef` の本体へ降りるので
                     // 下の `referenced` に含まれる）。
                     P::FnBody { params, body } => {
-                        let mut own: HashSet<String> =
-                            params.iter().map(|p| p.name.clone()).collect();
-                        crate::interpreter::collect_declared_names(body, &mut own);
+                        // ⚠ 自前名は [`crate::interpreter::fn_own_names`] 1 箇所（B7）。
+                        let own = crate::interpreter::fn_own_names(params, body);
                         let mut referenced: HashSet<String> = HashSet::new();
                         crate::interpreter::collect_referenced_names(body, &mut referenced);
                         out.extend(referenced.into_iter().filter(|n| !own.contains(n)));

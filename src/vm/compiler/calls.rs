@@ -57,8 +57,8 @@ impl Compiler {
         body: &[Stmt],
     ) -> Option<(Vec<(String, u16)>, Vec<(String, u16)>, Vec<(String, u32)>)> {
         use std::collections::HashSet;
-        let mut own: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
-        crate::interpreter::collect_declared_names(body, &mut own);
+        // ⚠ 自前名は [`crate::interpreter::fn_own_names`] 1 箇所（B7）。
+        let own = crate::interpreter::fn_own_names(params, body);
         let mut referenced: HashSet<String> = HashSet::new();
         crate::interpreter::collect_referenced_names(body, &mut referenced);
 

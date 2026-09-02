@@ -90,6 +90,29 @@ fn simple_hash(s: &str) -> u64 {
 // フリー変数分析ヘルパー（モジュールプライベート）
 // ---------------------------------------------------------------------------
 
+/// 関数が**自前で束縛する名前**（パラメータ ＋ 本体の宣言）を集める。
+///
+/// ⚠⚠ **自由変数の定義はここ 1 箇所**（B7）。消費者は 3 つ
+/// （`exec::blocks::capture_env` / `vm::compiler::decls::nested_fn_free_names` /
+/// `vm::compiler::calls::nested_fn_captures`）で、以前は 3 箇所が**同じ式を手写し**していた。
+/// 揃っていないと「片方だけ直して閉包変数が黙って消える」形になるので、必ずここを通すこと。
+///
+/// ⚠ **可変長パラメータは `local::args` という名前で束縛される。** `Param::name` は
+/// 番兵の `"..."` なので、そのまま集めると自前名に入らず、**自分の `...` を参照している
+/// だけなのに外側からのキャプチャだと誤判定する**。
+pub(crate) fn fn_own_names(
+    params: &[crate::ast::Param],
+    body: &[Stmt],
+) -> std::collections::HashSet<String> {
+    let mut own: std::collections::HashSet<String> =
+        params.iter().map(|p| p.name.clone()).collect();
+    if params.iter().any(|p| p.variadic) {
+        own.insert("local::args".to_string());
+    }
+    collect_declared_names(body, &mut own);
+    own
+}
+
 /// 本体が**自前で束縛する名前**を集める（クロージャの自由変数分析）。
 ///
 /// 消費者は 3 つ（`exec::blocks::capture_env` / `vm::compiler::decls::nested_fn_free_names` /
@@ -242,11 +265,24 @@ fn collect_referenced_names_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
 }
 
 fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
-    // 名前そのものだけがこの walker 固有の判断。⚠ `dbg::name` / `local::name` は
-    // **専用の名前空間**への参照であって外側フレームのローカルではないので拾わない
-    // （捕捉対象にすると別物を掴む）。
-    if let Expr::Ident { name, .. } = expr {
-        out.insert(name.clone());
+    // 名前そのものだけがこの walker 固有の判断。
+    //
+    // ⚠ `dbg::name`（`Expr::DebugVar`）は**デバッガの名前空間**への参照で、スコープの
+    //   束縛ではないので拾わない（捕捉対象にすると別物を掴む）。
+    // ⚠⚠ `local::name`（`Expr::LocalVar`）は**拾う**（B7）。名前に `local::` 接頭辞が
+    //   付いているだけの**普通のスコープ束縛**で、可変長パラメータを持つ関数の
+    //   `bind_args` が `local::args` という名前で束縛する。インタプリタ側は
+    //   `get_val("local::args")` でスコープ鎖を辿るので入れ子 `fn` からも見えていたが、
+    //   ここで拾っていなかったため **VM だけがキャプチャできず `VmForceError`** だった
+    //   （`def outer(*xs): def inner(): return len(xs)` の形が動かない）。
+    match expr {
+        Expr::Ident { name, .. } => {
+            out.insert(name.clone());
+        }
+        Expr::LocalVar(name) => {
+            out.insert(format!("local::{name}"));
+        }
+        _ => {}
     }
     // 部分式の構造は 1 箇所（#81）。⚠ **`_ => {}` を書かない**。
     //

@@ -136,15 +136,26 @@ impl Compiler {
             // だが、VM では `compile_fn_inner` が同名で slot を採番しているので slot 読みで足りる。
             // slot が無い＝可変長パラメータを持たない関数での参照＝ツリーウォークでも
             // `NameError` になる形なので、そちらへ委ねる。
+            // `local::name` の読み（可変長パラメータの `local::args` など）。
+            //
+            // ⚠ **`cells` を `slots` より先に引く**（`Expr::Ident` と同じ順序）。
+            //   入れ子 `fn` に可変キャプチャされる名前は slot からセルへ昇格し、
+            //   **slot は穴として残る**ので、slot だけを見ると読めない or 別物を読む。
+            //   `mut ...` の可変長パラメータがまさにこれで、`let ...` は動くのに
+            //   `mut ...` だけ `VmForceError` になっていた（B7）。
             Expr::LocalVar(name) => {
                 let key = format!("local::{name}");
-                match self.slots.get(key.as_str()) {
-                    Some(&slot) => self.emit(Op::LoadLocal(slot)),
-                    None => {
-                        bail_expr("localvar-unbound", expr);
-                        return None;
-                    }
-                };
+                if let Some(&i) = self.cells.get(key.as_str()) {
+                    self.emit(Op::LoadCell(i));
+                } else {
+                    match self.slots.get(key.as_str()) {
+                        Some(&slot) => self.emit(Op::LoadLocal(slot)),
+                        None => {
+                            bail_expr("localvar-unbound", expr);
+                            return None;
+                        }
+                    };
+                }
             }
             Expr::UnaryOp { op, operand } => {
                 // 被演算子は親と同じ深さで始まる（#34）。`-block ->int: …` が該当。
