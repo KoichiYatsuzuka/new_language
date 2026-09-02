@@ -1,0 +1,38 @@
+# mod_selfcall.ar — モジュール本体から**自モジュールの関数・クラス**を呼ぶ（bug_fix.md B6）。
+#
+# ⚠⚠ 以前はこの形が丸ごと `NameError` だった。**モジュール本体の初期化コードが全滅**する
+#   （テーブルを組む・定数を計算する等）。
+#
+# 原因: `exec_module` は本体の前に `push_scope()` するので、モジュール本体の宣言は
+#   `scopes[0]` に入らない。被呼び出し側のロードが `LoadGlobal`（`scopes[0]` 限定）に
+#   落ちていたため必ず外していた。⇒ 読み側と同じ `reads_by_name()` で切るようにした。
+#
+# ⚠ 参照（`let G = hello`）は元から通っていた。読み側は `LoadName`（スコープ鎖）だったため。
+#   **同じ名前・同じ文の位置なのに、被呼び出し位置かどうかだけで命令が違った。**
+
+fn hello(let name: str) -> str:
+    return "hi " + name
+
+class Point:
+    let x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+
+# ① 参照（元から通っていた対照）
+let G = hello
+
+# ② 直接の呼び出し
+let MSG = hello("bob")
+
+# ③ 変数経由の呼び出し
+let MSG2 = G("alice")
+
+# ④ クラスの実体化
+let P = Point(7)
+
+# ⑤ 初期化コード（テーブルを組む形）— これが動かないのが B6 の実害だった
+mut TABLE = []
+mut i = 0
+while i < 3:
+    TABLE.append(hello(str(i)))
+    i += 1

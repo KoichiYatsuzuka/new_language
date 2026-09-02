@@ -1,0 +1,18 @@
+# mod_async_body.ar — モジュール本体で `mng <- async` を使う（bug_fix.md B6 の 2 箇所目）。
+#
+# ⚠ B6 の調査で `emit_load_global` の呼び出し元を洗ったところ、`mng <- async` の
+#   マネージャ読みも同じ形で `reads_by_name()` を見ていなかった。
+#   ⇒ **モジュール本体でだけ `NameError: 'mng' is not defined`** になっていた（実測）。
+#   最上位では動いていたので、例題が無ければ気付けない形。
+
+mut mng = AsyncManager(num_thread=2)
+
+mng <- async->int:
+    block_return 21
+
+mng <- async->int:
+    block_return 21
+
+mng.wait_for_finish()
+
+let TOTAL = mng.results[0] + mng.results[1]

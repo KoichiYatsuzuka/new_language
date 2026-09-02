@@ -579,6 +579,33 @@ impl Compiler {
         self.emit(Op::LoadGlobal(ni, ci));
     }
 
+    /// **被呼び出し側（callee / 演算対象）の自由な名前**をスタックへ積む。
+    ///
+    /// ⚠⚠ **読み側（`Expr::Ident` の `Unresolved` アーム）とまったく同じ判定にすること。**
+    /// bug_fix.md の B6 は、読みが [`Compiler::reads_by_name`] で切っていたのに
+    /// 呼び出し側が `is_debug_repl()` だけを特別扱いして `LoadGlobal` に落ちていたのが原因。
+    /// ⇒ **同じ名前・同じ文の位置なのに、被呼び出し位置かどうかだけで命令が違った**
+    /// （`let G = hello` は `LOAD_NAME` で通り、`hello("bob")` は `LOAD_GLOBAL` で外す）。
+    /// モジュール本体は `exec_module` が `push_scope()` するので宣言が `scopes[0]` に無く、
+    /// `LoadGlobal` は必ず外す。最上位が動いていたのは**宣言が `scopes[0]` そのものだから**
+    /// という偶然でしかない。
+    ///
+    /// ⇒ 判定を 1 箇所に閉じ、二度と割れないようにする。
+    ///
+    /// ⚠ **`LoadName` は索引キャッシュを持たない**（`get_val` のスコープ鎖引き）。
+    /// #11 R2-c（ファイルごとのグローバル配列）が入れば、モジュール本体からの呼び出しも
+    /// 索引アクセスのままでよくなり、ここを `LoadGlobal` へ戻せる。
+    /// 経緯と実測は [FUTURE_FEATURE.md](../../../implementation_logs/FUTURE_FEATURE.md) の
+    /// 「#11 R2-c … 消費者が現れた」を参照。
+    pub(super) fn emit_callee_load(&mut self, name: &str) {
+        if self.reads_by_name() {
+            let ni = self.add_name(name);
+            self.emit(Op::LoadName(ni));
+        } else {
+            self.emit_load_global(name);
+        }
+    }
+
     /// スタック上位 2 値への二項演算を、型特化つきで emit する（#2b）。
     /// `kind` が決まらなければ動的ディスパッチの `Bin`。属性複合代入の 2 経路で共有する。
     pub(super) fn emit_bin_specialized(&mut self, kind: Option<crate::type_check::BinOperandKind>, op: &BinOp) {

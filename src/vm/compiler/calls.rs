@@ -336,11 +336,13 @@ impl Compiler {
             body: stmts.to_vec(),
             captures,
         });
-        // マネージャ値をスタックへ（ローカル slot 優先、なければグローバル名引き）。
+        // マネージャ値をスタックへ（ローカル slot 優先、なければ自由な名前として読む）。
+        // ⚠ `emit_callee_load` 経由（B6）。ここも `emit_load_global` 直呼びで、
+        //    **モジュール本体の `mng <- async` が `NameError` になっていた**（実測）。
         if let Some(&slot) = self.slots.get(target) {
             self.emit(Op::LoadLocal(slot));
         } else {
-            self.emit_load_global(target);
+            self.emit_callee_load(target);
         }
         self.emit(Op::AsyncSubmit(idx));
         Some(())

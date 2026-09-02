@@ -1,0 +1,12 @@
+# module_selfcall.ar — モジュール本体から自モジュールの関数を呼ぶ（bug_fix.md B6）。
+#
+# ⚠ 本体は [test_modules/mod_selfcall.ar](test_modules/mod_selfcall.ar)。
+#   そちらに原因と経緯を書いてある。ここは結果を印字するだけ。
+
+import[ar] test_modules.mod_selfcall as M
+
+print(M.MSG)        # hi bob      直接の呼び出し
+print(M.MSG2)       # hi alice    変数経由の呼び出し
+print(M.P.x)        # 7           クラスの実体化
+print(M.TABLE)      # ['hi 0', 'hi 1', 'hi 2']   初期化コード
+print(M.G("carol")) # hi carol    参照（元から通っていた対照）

@@ -1,0 +1,12 @@
+# module_async_body.ar — モジュール本体の `mng <- async`（bug_fix.md B6 の 2 箇所目）。
+#
+# ⚠ B6 の調査で `emit_load_global` の呼び出し元を洗ったところ、`mng <- async` の
+#   マネージャ読みも被呼び出し側と同じ形で `reads_by_name()` を見ていなかった。
+#   ⇒ **モジュール本体でだけ `NameError: 'mng' is not defined`** になっていた（実測）。
+#   最上位では動いていたので、この例題が無ければ気付けない。
+#
+# ⚠ 本体は [test_modules/mod_async_body.ar](test_modules/mod_async_body.ar)。
+
+import[ar] test_modules.mod_async_body as M
+
+print(M.TOTAL)      # 42

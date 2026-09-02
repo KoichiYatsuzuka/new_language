@@ -300,12 +300,6 @@ impl Compiler {
                                 return None;
                             }
                         }
-                    } else if self.mode.is_debug_repl() {
-                        // デバッグモード: 呼び先を名前引きで取得（局所・グローバル両対応）。
-                        let cn = self.add_name(name);
-                        self.emit(Op::LoadName(cn));
-                        let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
-                        self.emit_call(args.len(), mask, cn, site, *node_id, kw)?;
                     } else if let Some(&slot) = self.slots.get(name) {
                         // ローカル/パラメータが関数値を保持している場合は slot 読み。
                         self.emit(Op::LoadLocal(slot));
@@ -335,11 +329,11 @@ impl Compiler {
                         }
                         return None;
                     } else {
-                        // グローバル関数呼び出し（#11: 索引キャッシュ付き LoadGlobal）。
+                        // 自由な名前の呼び出し。⚠ **読み側と同じ判定**（`emit_callee_load`）。
+                        // デバッガ REPL とモジュール本体・最上位は名前引き、関数本体は
+                        // 索引キャッシュ付き `LoadGlobal`。B6 はここが割れていたのが原因。
+                        self.emit_callee_load(name);
                         let ni = self.add_name(name);
-                        let ci = self.chunk.global_caches.len() as u32;
-                        self.chunk.global_caches.push(crate::ast::SlotCache::default());
-                        self.emit(Op::LoadGlobal(ni, ci));
                         let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                         self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                     }
@@ -348,11 +342,9 @@ impl Compiler {
                     // 分類はリゾルバ済みなので builtin/slots の判定は不要。
                     // ただしデバッグモードは停止スコープの名前引きに合わせる。
                     let ni = self.add_name(name);
-                    if self.mode.is_debug_repl() {
-                        self.emit(Op::LoadName(ni));
-                    } else {
-                        self.emit_load_global(name);
-                    }
+                    // ⚠ ここもヘルパ経由（B6）。リゾルバが最上位グローバルと確定した名前なので
+                    //    本来 `LoadGlobal` で足りるが、判定を 2 種類持つと再び割れる。
+                    self.emit_callee_load(name);
                     let (mask, kw) = self.compile_call_args(args, Some(*node_id))?;
                     self.emit_call(args.len(), mask, ni, site, *node_id, kw)?;
                 } else if let Expr::Ident { name, res: Resolution::Local(slot), .. } = func.as_ref() {
