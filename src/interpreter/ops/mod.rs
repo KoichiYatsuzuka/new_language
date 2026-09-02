@@ -2,7 +2,7 @@
 //
 // `Value` に対する演算・表示・型名取得などの基本操作を実装する。頻繁に呼ばれる共通ユーティリティ群。
 // 共有の自由ヘルパー(format_fn_params)を保持し、役割別サブモジュール
-// (typecheck/display/operators/equality)を宣言する。
+// (typecheck/display/operators/equality/hash)を宣言する。
 
 use crate::ast::Param;
 
@@ -28,3 +28,4 @@ pub(crate) mod typecheck;
 mod display;
 mod operators;
 mod equality;
+pub(crate) mod hash;
