@@ -13,7 +13,8 @@
 |---|---|
 | **B1 / B2** | ✅ 修正済み。結果として**言語仕様の変更**になったので、症状の記述は削除し、各節に**決まった仕様**を残してある。⚠ 実装の詳細ではなく**規則**として読むこと |
 | **B3** | ✅ 修正済み（`ccd4be9`）。⚠ **仕様変更は無い**（純粋なバグ修正）ので、節には**原因と切り分け方**を残してある。起票時の見当は**外れていた** — 実際は「`mut` パラメータのセルに引数が入らない」で、`capture_env` は無関係だった |
-| **B4〜B7** | ⬜ 未着手（起票のまま）|
+| **B5** | ✅ 修正済み。⚠ `list.extend` は**足していない**（B8 の判断待ち）|
+| **B4 / B6 / B7** | ⬜ 未着手（起票のまま）|
 | **B8〜B11** | ⬜ 未着手。**2026-09-02 の追加起票**（B1 / B2 の修正作業中に発見）|
 
 ---
@@ -39,7 +40,7 @@
 | ~~**B2**~~ | ~~`list` / `dict` の `==` が**常に false**~~ | 🔴 サイレント | ✅ **修正済み**（仕様変更あり） |
 | ~~**B3**~~ | ~~`mut` パラメータが入れ子 `fn` に **None として捕捉される**~~ | 🔴 サイレント | ✅ **修正済み**（`ccd4be9`） |
 | **B4** | `for` のループ変数のスコープが**文脈で 3 通り**違う | 🟠 一部サイレント | ⬜ 未調査 |
-| **B5** | `list + list` / `list * int` が未対応 | 🟢 明示エラー | ✅ 特定済み |
+| ~~**B5**~~ | ~~`list + list` / `list * int` が未対応~~ | 🟢 明示エラー | ✅ **修正済み** |
 | **B6** | モジュール本体から**自モジュールの関数を呼べない** | 🟢 明示エラー | ⬜ 未調査 |
 | **B7** | 入れ子 `fn` から `local::args` を参照すると VM 非適格 | 🟢 明示エラー | ✅ 特定済み |
 | **B8** | `let` のコレクションが**変更メソッドで書き換えられる** | 🔴 サイレント | ✅ 特定済み |
@@ -313,46 +314,39 @@ print(f())
 
 ---
 
-## B5. `list + list` / `list * int` が未対応 🟢
+## B5. `list` / `tuple` の連結・繰り返し ✅ 修正済み
 
-### 再現
+症状（`[1,2] + [3]` や `[1] * 2` が `TypeError`）は解消。
 
-```
-print([1, 2] + [3])   # TypeError: unsupported operand types for `Add`: list and list
-print([1] * 2)        # TypeError: unsupported operand types for `Mul`: list and int
-print((1, 2) + (3,))  # TypeError: unsupported operand types for `Add`: tuple and tuple
+### 決まった仕様
 
-print("ab" * 2)       # abab   ← str の繰り返しは動く
-```
+| 式 | 結果 |
+|---|---|
+| `list + list` / `tuple + tuple` | 連結した**新しい**コレクション |
+| `list * int` / `int * list` | 繰り返し（左右どちらでもよい）|
+| `tuple * int` / `int * tuple` | 同上 |
+| 繰り返し回数が **0 / 負数** | **空**（`str` の `.max(0)` と同じ・Python も同じ）|
 
-`list.extend` も無い（`AttributeError: 'list' object has no method 'extend'`）ので、
-**リストの連結手段が `append` のループしかない**。
+⚠⚠ **必ず新しいコレクションを作る**（左辺を破壊しない）。`xs += ys` は複合代入で
+`xs = xs + ys` に落ちるので、破壊的に実装すると `xs` を共有している別名に波及する。
 
-### 原因（特定済み）
+⚠ **繰り返しは要素を複製しない。** `[inner] * 2` は `inner` を 2 回**共有**する
+（Python の `[[]] * 2` と同じ落とし穴）。二次元配列は要素ごとに作ること。
 
-[`src/interpreter/ops/operators.rs`](src/interpreter/ops/operators.rs) の `Add` / `Mul` に
-`Int` / `Float` / `Str` / `UInt` / `Complex` のアームはあるが、
-**`List` / `Tuple` のアームが無い**。
+⚠ **対応していない組み合わせは `str` の既存挙動にそろえてある**（実測で一致を確認済み）:
+`list * float` / `list * uint` / `list + tuple` / `list + int` はすべて `TypeError`。
+ここを勝手に広げると `str` と `list` で繰り返しの規則が食い違う。
 
-### 影響
+### 残っていること
 
-- Python コードの `xs + ys` / `xs += [v]` / `[0] * n` が**軒並み落ちる**。
-  明示エラーなので気付けるが、**実在の Python モジュールを読むときの当たり所が多い**。
+⚠ **`list.extend` は足していない。** `xs += ys` が同じ用途を満たすため。
+破壊的な `extend` を足すかどうかは、**`let` の不変性（B8）を決めてから**。
+今の状態で足すと「`let` のリストを `extend` で書き換えられる」穴が 1 つ増えるだけになる。
 
-### 修正方針
+⚠ `fixed_list` の連結・繰り返しは未対応（`Value::FrozenList` の腕は足していない）。
 
-`operators.rs` に以下を足す:
-
-- `(Add, List, List)` → 連結した新しいリスト
-- `(Add, Tuple, Tuple)` → 連結した新しいタプル
-- `(Mul, List, Int)` / `(Mul, Int, List)` → 繰り返し（`Str` の既存実装と同じ形）
-- `(Mul, Tuple, Int)` / `(Mul, Int, Tuple)` → 同上
-
-### 留意点
-
-- ⚠ **新しいリストを作る**こと（左辺を破壊しない）。`xs += ys` は複合代入で
-  `xs = xs + ys` に落ちるので、破壊的にすると別名に波及する。
-- ⚠ `Mul` の負数・0 は Python では空リスト。合わせること。
+例題: [list_concat_repeat.ar](examples/collections/list_concat_repeat.ar) /
+[list_concat_repeat_error.ar](examples/collections/list_concat_repeat_error.ar)
 
 ---
 
@@ -676,12 +670,11 @@ print(a)            # [1, 99]   ← let の a が書き換わる。エラーも�
 
 残り:
 
-1. **B5**（`list + list` 等）— `operators.rs` への追加だけ。小さく実用度が高い。
-2. **B7**（入れ子 `fn` の `local::args`）— ⚠ **B3 と同じ系統ではない**。B3 の修正後も
+1. **B7**（入れ子 `fn` の `local::args`）— ⚠ **B3 と同じ系統ではない**。B3 の修正後も
    症状が変わらないことを実測済み（B3 の節を参照）。原因は
    `nested_fn_captures` が `local::args` を拾えず諦める側で確定。
-3. **B6**（モジュール本体の自己呼び出し）— 影響は大きいが原因未調査。
-4. **B4**（`for` のスコープ）— **仕様判断が先**。実装より先に決めることがある。
+2. **B6**（モジュール本体の自己呼び出し）— 影響は大きいが原因未調査。
+3. **B4**（`for` のスコープ）— **仕様判断が先**。実装より先に決めることがある。
 
 ⚠⚠ **起票時の原因の見立ては当てにしないこと。** B1 / B2 / B3 のいずれでも、
 起票の見当より**最小形での切り分けのほうが速く正確**だった。実際、

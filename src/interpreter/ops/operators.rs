@@ -287,6 +287,45 @@ impl Interpreter {
             (BinOp::Mul, Value::Int(n), Value::Str(s)) => {
                 Ok(Value::str(s.repeat((*n).max(0) as usize)))
             }
+            // ── list / tuple の連結・繰り返し（B5）────────────────────────────
+            //
+            // ⚠⚠ **必ず新しいコレクションを作る**（左辺を破壊しない）。
+            //    `xs += ys` は複合代入で `xs = xs + ys` に落ちるので、破壊的に実装すると
+            //    `xs` を共有している別名にまで波及する。
+            // ⚠ 要素は `clone`（`Rc` の共有）で運ぶ。`str` の連結と同じで、
+            //    連結そのものは要素を複製しない。
+            (BinOp::Add, Value::List(a), Value::List(b)) => {
+                let mut out = a.borrow().clone();
+                out.extend(b.borrow().iter().cloned());
+                Ok(Value::List(Rc::new(RefCell::new(out))))
+            }
+            (BinOp::Add, Value::Tuple(a), Value::Tuple(b)) => {
+                let mut vals = a.all_values().to_vec();
+                vals.extend(b.all_values().iter().cloned());
+                Ok(self.vm_build_tuple(vals))
+            }
+            // ⚠ 繰り返し回数の**負数・0 は空**（`str` の `.max(0)` と同じ・Python も同じ）。
+            (BinOp::Mul, Value::List(l), Value::Int(n))
+            | (BinOp::Mul, Value::Int(n), Value::List(l)) => {
+                let src = l.borrow();
+                let times = (*n).max(0) as usize;
+                let mut out: Vec<Value> = Vec::with_capacity(src.len() * times);
+                for _ in 0..times {
+                    out.extend(src.iter().cloned());
+                }
+                Ok(Value::List(Rc::new(RefCell::new(out))))
+            }
+            (BinOp::Mul, Value::Tuple(t), Value::Int(n))
+            | (BinOp::Mul, Value::Int(n), Value::Tuple(t)) => {
+                let src = t.all_values();
+                let times = (*n).max(0) as usize;
+                let mut vals: Vec<Value> = Vec::with_capacity(src.len() * times);
+                for _ in 0..times {
+                    vals.extend(src.iter().cloned());
+                }
+                Ok(self.vm_build_tuple(vals))
+            }
+
             // str % args → printf-style format
             (BinOp::Mod, Value::Str(fmt), rv) => {
                 let display_fn = |v: &Value| self.display(v);

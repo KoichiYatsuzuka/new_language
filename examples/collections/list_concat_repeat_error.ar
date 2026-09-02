@@ -1,0 +1,27 @@
+# list_concat_repeat_error.ar — `list` / `tuple` の `+` / `*` で対応していない組み合わせ。
+#
+# ⚠ 対応しているのは [list_concat_repeat.ar](list_concat_repeat.ar) の 6 通りだけ:
+#   `list + list` / `tuple + tuple` / `list * int` / `int * list` / `tuple * int` / `int * tuple`
+#
+# ⚠ **`str` の既存挙動にそろえてある**（実測で一致を確認済み）。`str` が受け付けない
+#   組み合わせは list / tuple でも受け付けない。ここを勝手に広げると、
+#   `str` と `list` で繰り返しの規則が食い違う。
+#
+# それぞれ単体で実行したときのエラー:
+#
+#   print([1] * 2.0)      # TypeError: unsupported operand types for `Mul`: list and float
+#                         #   （`"ab" * 2.0` も同じエラー）
+#   print([1] * uint(2))  # TypeError: unsupported operand types for `Mul`: list and uint
+#                         #   （`"ab" * uint(2)` も同じエラー）
+#   print([1] + (2,))     # TypeError: unsupported operand types for `Add`: list and tuple
+#                         #   （list と tuple は混ぜない。Python も同じ）
+#   print([1] + 2)        # TypeError: unsupported operand types for `Add`: list and int
+#
+# ⚠ `list.extend` は**まだ無い**。`xs += ys` が同じ用途を満たすので当面はそちらを使う。
+#   破壊的な `extend` を足すかどうかは、`let` の不変性（bug_fix.md B8）を決めてから。
+
+print("list concat/repeat error demo")
+
+print([1] * 2.0)
+
+print("ここには到達しない")

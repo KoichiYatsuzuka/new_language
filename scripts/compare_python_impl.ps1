@@ -130,6 +130,10 @@ $knownDiff = @{
     'class_identity_across_threads'  = 'py: AsyncManager そのものが未実装（実測 NameError）'
     # ⚠ B1-c（辞書の __hash__ / __eq__ ディスパッチ）で新設。**実測して確認済み**。
     'dict_key_dunder'                = 'py 古い: 辞書が __hash__ / __eq__ を見ない（実測 len が 3 になり、続く索引が KeyError）'
+    # ⚠ B5（list / tuple の + と *）で新設。**実測して確認済み**。
+    #    py は list + list / list * int は対応しているが tuple + tuple が無い。
+    'list_concat_repeat'             = 'py 古い: tuple + tuple が未対応（実測 RuntimeError）。加えてリスト内の str を引用符なしで表示する'
+    'list_concat_repeat_error'       = 'py: 実行時エラーの出力形式が違う（Rust は色付きトレースバック・py は 1 行）'
     # (d) 同期以降（33ef765..）に Rust 側へ入った意味論の修正 — py が古い
     'copy_method'                    = 'py 古い: mut→let のコピー意味論（#15e で Rust を修正）'
     'mut_to_let_copy'                = 'py 古い: mut→let のコピー意味論（#15e）'

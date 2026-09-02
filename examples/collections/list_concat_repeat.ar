@@ -1,0 +1,53 @@
+# list_concat_repeat.ar — `list` / `tuple` の連結（`+`）と繰り返し（`*`）（bug_fix.md B5）。
+#
+# ⚠ 以前は `operators.rs` の `Add` / `Mul` に `Int` / `Float` / `Str` / `UInt` / `Complex` の
+#   腕しか無く、`[1,2] + [3]` も `[1] * 2` も `TypeError` だった。
+#   ⇒ **リストの連結手段が `append` のループしかなかった**。
+#   明示エラーなので気付けるが、Python コードを読むときの当たり所が非常に多い。
+
+print("=== 連結 ===")
+print([1, 2] + [3])            # [1, 2, 3]
+print([] + [])                 # []
+print([1, "a"] + [True, [2]])  # [1, 'a', True, [2]]   要素の型は混在してよい
+print((1, 2) + (3,))           # (1, 2, 3)
+
+print("=== 繰り返し（左右どちらでもよい）===")
+print([1] * 3)                 # [1, 1, 1]
+print(3 * [1, 2])              # [1, 2, 1, 2, 1, 2]
+print((1,) * 3)                # (1, 1, 1)
+print(2 * (1,))                # (1, 1)
+
+print("=== 繰り返し回数の 0 と負数は空 ===")
+# ⚠ `str` の繰り返し（`.max(0)`）と同じ規則。Python も同じ。
+print([1] * 0)                 # []
+print([1] * -2)                # []
+print((1,) * 0)                # ()
+
+print("=== 左辺を壊さない ===")
+# ⚠⚠ **必ず新しいコレクションを作る。** `xs += ys` は複合代入で `xs = xs + ys` に
+#    落ちるので、破壊的に実装すると `xs` を共有している別名にまで波及する。
+mut a = [1]
+mut b = [2]
+let c = a + b
+print(a, b, c)                 # [1] [2] [1, 2]
+
+mut xs = [1]
+xs += [2, 3]
+print(xs)                      # [1, 2, 3]
+
+print("=== ⚠ 繰り返しは要素を複製しない（Python と同じ落とし穴）===")
+# ⚠ `[inner] * 2` は inner を 2 回**共有**する（複製ではない）。
+#   Python の `[[]] * 2` と同じで、片方を変えるともう片方も変わる。
+#   二次元配列を作るときは内包表記など要素ごとに作る形を使うこと。
+mut inner = [1]
+let r = [inner] * 2
+inner.append(9)
+print(r)                       # [[1, 9], [1, 9]]
+
+print("=== 対応していない組み合わせは従来どおりエラー ===")
+# ⚠ `str` の既存挙動に合わせてある（実測で一致を確認済み）:
+#   [1] * 2.0      → TypeError: unsupported operand types for `Mul`: list and float
+#   [1] * uint(2)  → TypeError: unsupported operand types for `Mul`: list and uint
+#   [1] + (2,)     → TypeError: unsupported operand types for `Add`: list and tuple
+#   [1] + 2        → TypeError: unsupported operand types for `Add`: list and int
+print("ab" * 2)                # abab   （元から動いていた対照）
