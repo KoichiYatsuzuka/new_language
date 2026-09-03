@@ -40,16 +40,18 @@ impl Interpreter {
             }
             Some((false, _)) => value,
             None => {
-                // 識別子以外の式 (例: list[i], SomeClass()) から let へ。
-                // Instance の場合は深いコピーを作成してからフリーズする。
-                // これにより元のオブジェクト (例: リスト内のカード) の可変性が保たれる。
-                if matches!(value, Value::Instance(_)) {
-                    let copied = Self::deep_copy_value(value);
-                    self.apply_freeze_to_value(&copied, true)?;
-                    copied
-                } else {
-                    value
-                }
+                // 識別子以外の式（`xs[0]` / `o.f` / `f()` / リテラル）から let へ。
+                //
+                // ⚠⚠ **常に複製する**（L2）。以前は `Instance` のときだけ複製しており、
+                //    コレクションは共有されていた。実測での実害:
+                //      mut xs = [[1]]; let item = xs[0]; xs[0].append(9)
+                //      → **`let` の `item` が `[1, 9]` に変わる**
+                //    リテラルも同じで、`let L = [p]` は `p` を共有していた。
+                // ⚠ 式には引き継ぐべき属性が無いので `let → let` の共有には当たらない。
+                //    ⇒ 「共有するのは `let → let` のときだけ」の規則どおり複製する。
+                let copied = Self::deep_copy_value(value);
+                self.apply_freeze_to_value(&copied, true)?;
+                copied
             }
         };
         self.declare_var(name.to_string(), Var::new(value, false));

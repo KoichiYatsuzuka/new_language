@@ -344,13 +344,13 @@ impl Interpreter {
     /// 可変コレクションから取り出した `Instance` を直接フリーズすると共有 `Rc` 経由で
     /// 元まで不変化されるため、コピーが要る（`exec_let` のコメント参照）。
     fn let_freeze_instance(&mut self, value: Value) -> Result<Value, String> {
-        if matches!(value, Value::Instance(_)) {
-            let copied = Self::deep_copy_value(value);
-            self.apply_freeze_to_value(&copied, true)?;
-            Ok(copied)
-        } else {
-            Ok(value)
-        }
+        // ⚠⚠ **常に複製する**（L2）。ツリーウォークの `exec_let` の `None` 分岐と
+        //    **同じ判断**でなければならない（片方だけ直すと経路で意味が変わる）。
+        //    以前は `Instance` のときだけ複製しており、`let item = xs[0]` が
+        //    `xs[0]` と共有されて `let` の不変性が破れていた（実測）。
+        let copied = Self::deep_copy_value(value);
+        self.apply_freeze_to_value(&copied, true)?;
+        Ok(copied)
     }
 
     /// `Op::LoadSelfClass` の実体（#27）: メソッド本体の `Self` の値。

@@ -214,7 +214,7 @@ impl TypeChecker {
             let ret_ty = self.check_self_type_params(cls_name, method_name, &arg_data);
             return ret_ty.unwrap_or(InferredType::Unresolved);
         } else if let Some(ref fname) = func_name {
-            self.check_call_args(fname, &arg_data);
+            self.check_call_args(fname, &arg_data, args);
         }
 
         if let Some(ref fname) = func_name {
@@ -364,10 +364,13 @@ impl TypeChecker {
     }
 
     /// 名前付き関数呼び出しの引数個数・型・キーワード引数名を検査する。
+    /// ⚠ `args`（引数の**式**）を受け取るのは、`mut` パラメータへ `let` の値を渡していないかを
+    /// 見るため（bug_fix.md B11）。型だけでは判定できない — **可変性は束縛の属性であって型ではない**。
     pub(super) fn check_call_args(
         &mut self,
         fname: &str,
         arg_data: &[(Option<String>, InferredType)],
+        args: &[CallArg],
     ) {
         let sigs = match self.registry.fn_sigs(fname).cloned() {
             Some(s) => s,
@@ -376,9 +379,12 @@ impl TypeChecker {
 
         // 可変長引数エントリを分離
         let variadic_entry = arg_data.iter().find(|(k, _)| k.as_deref() == Some("..."));
+        // ⚠ 引数の**式**も同じ絞り込みで並べる（B11 の可変性検査に要る）。
+        //   `arg_data` と `args` は同じ並びなので、zip してから同じ条件で filter する。
         let normal_args: Vec<_> = arg_data
             .iter()
-            .filter(|(k, _)| k.as_deref() != Some("..."))
+            .zip(args.iter())
+            .filter(|((k, _), _)| k.as_deref() != Some("..."))
             .collect();
         let call_count = normal_args.len();
 
@@ -421,7 +427,7 @@ impl TypeChecker {
 
         let sig = &count_matching[0];
         let mut positional_idx = 0usize;
-        for (key, arg_ty) in &normal_args {
+        for ((key, arg_ty), call_arg) in &normal_args {
             match key {
                 Some(kwarg_name) => {
                     match sig.params.iter().position(|(n, _)| n == kwarg_name) {
@@ -433,6 +439,7 @@ impl TypeChecker {
                             span: None,
                         }),
                         Some(param_pos) => {
+                            self.check_mut_param_arg(fname, sig, param_pos, call_arg.expr());
                             if let Some(expected) = &sig.params[param_pos].1 {
                                 if !self.type_matches(arg_ty, expected) {
                                     self.report_error(StaticTypeError {
@@ -463,6 +470,7 @@ impl TypeChecker {
                             });
                         }
                     }
+                    self.check_mut_param_arg(fname, sig, positional_idx, call_arg.expr());
                     positional_idx += 1;
                 }
             }
@@ -487,7 +495,7 @@ impl TypeChecker {
 
         // Protocol 型パラメータへの引数の適合チェック
         let mut pos_idx = 0usize;
-        for (key, arg_ty) in &normal_args {
+        for ((key, arg_ty), _call_arg) in &normal_args {
             let param_ty_opt = match key {
                 Some(kwarg_name) => sig.params.iter().find(|(n, _)| n == kwarg_name).and_then(|(_, t)| t.clone()),
                 None => {
@@ -598,6 +606,40 @@ impl TypeChecker {
         } else {
             false
         }
+    }
+
+    /// `mut` パラメータへ `let` の値を渡していないか検査する（bug_fix.md B11）。
+    ///
+    /// ⚠⚠ 関数の `let` / `mut` は「**関数内で値を書き換えるか**」の宣言であって、
+    /// 変数束縛の規則（`let → let` だけ共有）とは**別のルール**。
+    /// `mut` パラメータに `mut` 変数を渡して呼び出し元まで書き変わるのは正しい仕様だが、
+    /// `let` 変数を渡すのはエラーでなければならない。以前は素通りしており、
+    /// `fn g(mut v: list)` に `let a` を渡すと **`let` の `a` が書き換わっていた**（実測）。
+    ///
+    /// ⚠ 判定は**パスの根**で行う（`o.f` / `xs[0]` も根の属性を継ぐ・規則 1）。
+    /// ⚠ 根が識別子でない式（リテラル・呼び出しの戻り値）は**一時値**で誰とも共有して
+    /// いないので通す。ここを弾くと `g([1, 2])` のような正しい呼び出しまで落ちる。
+    fn check_mut_param_arg(
+        &mut self,
+        fname: &str,
+        sig: &FnSig,
+        param_pos: usize,
+        arg_expr: &Expr,
+    ) {
+        if !sig.param_mutable.get(param_pos).copied().unwrap_or(false) {
+            return;
+        }
+        if self.path_is_mutable(arg_expr) != Some(false) {
+            return;
+        }
+        let param_name = sig.params.get(param_pos).map(|(n, _)| n.clone()).unwrap_or_default();
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::CallMutParamWithImmutableArg {
+                func_name: fname.to_string(),
+                param_name,
+            },
+            span: None,
+        });
     }
 }
 

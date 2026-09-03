@@ -158,6 +158,9 @@ $knownDiff = @{
     #    循環し、印字の時点で再帰上限に達する（実測）。
     'equality_depth_limit_error'     = 'py 古い: 格納が共有なので a.append(a) が循環し、印字で RecursionError（実測）。Rust は格納時に複製するので循環しない'
     'store_copy_semantics'           = 'py 古い: コンテナ・フィールドへの格納が共有される（実測 let の a が [1, 9] になる）。Rust は複製する'
+    # ⚠ L2 / L3 / B11（let の不変性）で新設。**実測して確認済み**。
+    'let_immutability'               = 'py 古い: 式から let への束縛が共有される（実測 let item が [1, 9] になる）。Rust は複製する'
+    'let_immutability_error'         = 'py: mut パラメータへ let を渡す静的検査が無く、素通りして 1 行目から出力が出る（Rust は StaticTypeError で停止）'
     # (e) 実行時エラーの出力形式（Rust は色付きトレースバック・py は 1 行）
     'runtime_error'                  = 'py: 実行時エラーの出力形式が違う'
     'traceback_frame_names'          = 'py: トレースバックの形式が違う'

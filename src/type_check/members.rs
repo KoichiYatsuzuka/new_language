@@ -85,6 +85,7 @@ impl TypeChecker {
                     }
                     for m in &proto.methods {
                         let sig = FnSig {
+                            param_mutable: m.params.iter().map(|(_, pmut, _)| *pmut).collect(),
                             params: m.params.iter()
                                 .map(|(pname, _pmut, pty)| (pname.clone(), Some(pty.clone())))
                                 .collect(),

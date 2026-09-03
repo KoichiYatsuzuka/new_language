@@ -127,8 +127,17 @@ impl TypeChecker {
                     (InferredType::Tuple(ts), n) if ts.len() == n => ts.clone(),
                     (_, n) => vec![InferredType::Unresolved; n],
                 };
+                // ⚠⚠ **ループ変数はコンテナの属性を引き継ぐ**（規則 1・L3）。
+                //    以前は無条件に `mutable = true` だったので、
+                //      let zs = [[1]]
+                //      for it in zs:
+                //          it.append(9)      # 通ってしまう
+                //    で **`let` の `zs` の要素が変わっていた**（実測）。
+                // ⚠ 根が識別子でない反復対象（`range(n)` / リテラル）は**一時値**なので
+                //    誰とも共有しておらず、従来どおり可変でよい。
+                let target_mut = self.path_is_mutable(iter).unwrap_or(true);
                 for (t, ty) in targets.iter().zip(target_tys) {
-                    self.declare(t.clone(), ty, true);
+                    self.declare(t.clone(), ty, target_mut);
                 }
                 self.check_stmts(body);
                 self.pop_scope();

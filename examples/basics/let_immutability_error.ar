@@ -1,0 +1,42 @@
+# let_immutability_error.ar — `let` の不変性に違反する形（bug_fix.md B8/B9/B11 系統）。
+#
+# ⚠ 正常系と規則の説明は [let_immutability.ar](let_immutability.ar) を参照。
+#
+# それぞれ単体で実行したときのエラー:
+#
+#   ① `let` 変数を `mut` パラメータへ渡す（B11）
+#      fn touch(mut v: list) -> None:
+#          v.append(9)
+#      let a = [1]
+#      touch(a)
+#      # StaticTypeError: parameter 'v' of 'touch' expects a mutable argument,
+#      #                  but got an immutable value
+#
+#      ⚠ `let` の**要素**も同じ（規則 1: 要素は根の属性を引き継ぐ）:
+#      let b = [[1]]
+#      touch(b[0])        # 同じエラー
+#      ⚠ キーワード引数でも効く: touch(v = a)
+#      ⚠ リテラルは**一時値**なので通る: touch([1])
+#
+#   ② `let` のコンテナを回すループ変数へ代入する（L3）
+#      let zs = [[1]]
+#      for it in zs:
+#          it = [9]
+#      # StaticTypeError: cannot assign to immutable variable 'it'
+#
+#      ⚠ 反復対象が `mut` なら通る。`range(n)` やリテラルは一時値なので従来どおり可変。
+#
+#   ③ `let` 変数への添字代入（元から弾かれていた対照）
+#      let a = [1]
+#      a[0] = 9
+#      # StaticTypeError: cannot assign to immutable variable 'a'
+
+print("let immutability error demo")
+
+fn touch(mut v: list) -> None:
+    v.append(9)
+
+let a = [1]
+touch(a)
+
+print("ここには到達しない")

@@ -490,6 +490,12 @@ pub(crate) struct ProtocolInfo {
 #[derive(Clone, Debug)]
 pub(crate) struct FnSig {
     pub(crate) params: Vec<(String, Option<InferredType>)>,
+    /// 各パラメータが `mut` か（`params` と同じ並び・同じ長さ）。
+    ///
+    /// ⚠ 関数の `let` / `mut` は「**関数内で書き換えるか**」の宣言であって、
+    /// 変数束縛の規則とは別。`mut` パラメータに `let` 変数を渡すのは
+    /// **静的エラー**でなければならない（bug_fix.md B11）。
+    pub(crate) param_mutable: Vec<bool>,
     pub(crate) required_count: usize,
     pub(crate) return_type: Option<InferredType>,
     /// 可変長パラメータの要素型。`None` は可変長パラメータなし。

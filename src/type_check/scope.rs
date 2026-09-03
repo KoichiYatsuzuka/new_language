@@ -64,11 +64,28 @@ impl TypeChecker {
 
     /// サブスクリプトチェーン `x[i][j]...` のルート識別子名を返す。
     pub(super) fn subscript_root_ident(expr: &Expr) -> Option<&str> {
+        Self::path_root_ident(expr)
+    }
+
+    /// アクセスパスの**根になっている識別子**を返す（`a` / `a[0][1]` / `o.f.g` → `a` / `o`）。
+    ///
+    /// ⚠ 「その値が誰のものか」を決めるのに使う。規則 1（**要素は変数の属性を再帰的に
+    /// 引き継ぐ**）を実装する土台で、`let a` の要素は `let`、`mut a` の要素は `mut`。
+    /// ⚠ 根が識別子でない式（リテラル・呼び出しの戻り値）は `None`。
+    /// **その場合は一時値なので、誰とも共有していない**＝可変性を問う意味が無い。
+    pub(super) fn path_root_ident(expr: &Expr) -> Option<&str> {
         match expr {
             Expr::Ident { name, .. } => Some(name.as_str()),
-            Expr::Subscript { object, .. } => Self::subscript_root_ident(object),
+            Expr::Subscript { object, .. } => Self::path_root_ident(object),
+            Expr::Attr { object, .. } => Self::path_root_ident(object),
             _ => None,
         }
+    }
+
+    /// アクセスパスの根の**可変性**。根が識別子でない（一時値）／未宣言なら `None`。
+    pub(super) fn path_is_mutable(&self, expr: &Expr) -> Option<bool> {
+        let name = Self::path_root_ident(expr)?;
+        self.lookup(name).map(|info| info.mutable)
     }
 
     /// `class_name` のフィールド `member_name` へのアクセスが現在のコンテキストで許可されているか検査する。

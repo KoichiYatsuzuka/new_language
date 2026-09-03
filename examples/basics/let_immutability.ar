@@ -1,0 +1,57 @@
+# let_immutability.ar — `let` の不変性が守られる 3 つの場面（bug_fix.md B8/B9/B11 系統）。
+#
+# Arrow の束縛の規則:
+#   **参照を共有するのは `let → let` のときだけ。それ以外は必ずディープコピーする。**
+#   ⇒ 共有している 2 つの束縛は必ず両方 `let` ＝ どちらからも変更できない。
+#
+# 関数の引数だけは別ルール:
+#   `let` / `mut` は「**関数内で値を書き換えるか**」の宣言。`mut` パラメータに `mut` 変数を
+#   渡して呼び出し元まで書き変わるのは**正しい仕様**だが、`let` 変数を渡すのは**エラー**。
+
+print("=== L2: 式から let へ束縛しても共有しない ===")
+# ⚠ 以前は「複製するかどうか」が**式の形**で決まっており、`let x = <変数名>` は複製するのに
+#   添字や属性を挟むと共有していた。⇒ `let` のスナップショットが後から変わった。
+mut xs = [[1]]
+let item = xs[0]
+xs[0].append(9)
+print(item)              # [1]        let の item は変わらない
+print(xs)                # [[1, 9]]
+
+class K:
+    mut f: list
+    fn __init__(mut self, let f: list) -> None:
+        self.f = f
+mut o = K([1])
+let snap = o.f
+o.f.append(9)
+print(snap)              # [1]        フィールドから取った snap も独立
+
+print("=== L3: for のループ変数はコンテナの属性を継ぐ ===")
+# ⚠ 以前はループ変数が無条件に `mut` 扱いで、`let` のコンテナの要素を書き換えられた。
+#   今は規則 1（要素は再帰的に属性を引き継ぐ）どおり、コンテナが `let` ならループ変数も `let`。
+mut ys = [[1]]
+for it in ys:
+    it.append(9)         # ys は mut なので通る
+print(ys)                # [[1, 9]]
+
+# ⚠ `let zs` に対する `for it in zs: it = ...` は
+#   StaticTypeError: cannot assign to immutable variable 'it' になる。
+#   （`range(n)` やリテラルは一時値なので従来どおり可変。）
+for i in range(3):
+    i = i               # 一時値なので通る
+print("range のループ変数は可変のまま")
+
+print("=== B11: let を mut パラメータへ渡せない ===")
+fn touch(mut v: list) -> None:
+    v.append(9)
+
+mut m = [1]
+touch(m)                 # mut なら通る（呼び出し元まで書き変わるのが仕様）
+print(m)                 # [1, 9]
+
+touch([1])               # リテラルは一時値なので通る
+print("リテラルは通る")
+
+# ⚠ `let a = [1]; touch(a)` は
+#   StaticTypeError: parameter 'v' of 'touch' expects a mutable argument, but got an immutable value
+#   ⚠ `let` の**要素**も同じ（`let b = [[1]]; touch(b[0])` も弾かれる）。規則 1 のとおり。

@@ -139,6 +139,12 @@ impl TypeRegistryBuilder {
                     let variadic_param = params.iter().find(|p| p.variadic);
                     let open_arity = Self::has_open_arity(params);
                     let sig = FnSig {
+                        // ⚠ `params` と**同じ絞り込み**で並べること（B11）。
+                        param_mutable: params
+                            .iter()
+                            .filter(|p| !p.variadic && !Self::is_py_kwargs_param(p))
+                            .map(|p| p.mutable)
+                            .collect(),
                         params: params
                             .iter()
                             .filter(|p| !p.variadic && !Self::is_py_kwargs_param(p))
@@ -291,6 +297,12 @@ impl TypeRegistryBuilder {
                 let variadic_param = params.iter().find(|p| p.variadic);
                 let open_arity = Self::has_open_arity(params);
                 let sig = FnSig {
+                    // ⚠ `params` と**同じ絞り込み**で並べること（B11）。
+                    param_mutable: params
+                        .iter()
+                        .filter(|p| !p.variadic && !Self::is_py_kwargs_param(p))
+                        .map(|p| p.mutable)
+                        .collect(),
                     params: params
                         .iter()
                         .filter(|p| !p.variadic && !Self::is_py_kwargs_param(p))
@@ -379,6 +391,8 @@ impl TypeRegistryBuilder {
                 Stmt::FnDef { name: mname, params, return_type, body: method_body, .. } => {
                     let variadic_param = params.iter().find(|p| p.variadic);
                     let sig = FnSig {
+                        // ⚠ `params` と**同じ絞り込み**で並べること（B11）。
+                        param_mutable: params.iter().filter(|p| !p.variadic).map(|p| p.mutable).collect(),
                         params: params
                             .iter()
                             .filter(|p| !p.variadic)
