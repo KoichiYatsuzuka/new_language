@@ -153,7 +153,11 @@ $knownDiff = @{
     # ⚠ B2-a: py の `==` には**同一性の高速パスが無い**ので、循環リストの `a == a` の時点で
     #    再帰上限に達する（実測 1 行目で `RuntimeError: maximum recursion depth exceeded`）。
     #    Rust は `Rc::ptr_eq` で即 True を返し、別々の循環でのみ RecursionError にする。
-    'equality_cycle_error'           = 'py 古い: == に同一性の高速パスが無く a == a でも再帰上限に達する（B2-a で Rust に追加）'
+    # ⚠ L4（格納時のディープコピー）で循環が作れなくなり、循環前提の例題を
+    #    深い入れ子の例題へ書き換えた。py は格納が共有のままなので `a.append(a)` が
+    #    循環し、印字の時点で再帰上限に達する（実測）。
+    'equality_depth_limit_error'     = 'py 古い: 格納が共有なので a.append(a) が循環し、印字で RecursionError（実測）。Rust は格納時に複製するので循環しない'
+    'store_copy_semantics'           = 'py 古い: コンテナ・フィールドへの格納が共有される（実測 let の a が [1, 9] になる）。Rust は複製する'
     # (e) 実行時エラーの出力形式（Rust は色付きトレースバック・py は 1 行）
     'runtime_error'                  = 'py: 実行時エラーの出力形式が違う'
     'traceback_frame_names'          = 'py: トレースバックの形式が違う'

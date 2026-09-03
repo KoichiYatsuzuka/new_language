@@ -200,7 +200,16 @@ impl Interpreter {
                     }
                     "append" => {
                         let item = Self::one_arg_evaled(evaled, "list", "append")?;
-                        items.borrow_mut().push(item);
+                        // ⚠⚠ **格納する値は複製する**（L4）。「共有するのは `let → let` の
+                        //    ときだけ」という規則をコンテナへの格納にも通す。共有したままだと
+                        //    `let a = [1]; mut lst = []; lst.append(a)` のあと
+                        //    `lst[0].append(9)` で **`let` の `a` が変わる**（実測）。
+                        // ⚠⚠ **複製は借用の外で行う。** `borrow_mut()` を握ったまま
+                        //    `deep_copy_value` を呼ぶと、`a.append(a)` のように自分自身を
+                        //    渡された瞬間に `RefCell already mutably borrowed` でパニックする
+                        //    （set の `add` で踏んだのと同型）。
+                        let copied = Self::deep_copy_value(item);
+                        items.borrow_mut().push(copied);
                         return Ok(Value::None);
                     }
                     "pop" => {

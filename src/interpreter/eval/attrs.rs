@@ -323,12 +323,22 @@ impl Interpreter {
 
     /// インスタンスの属性に値をセットする。
     /// ネイティブコールバック `ar_set_attr` から呼ばれる。
+    /// ⚠⚠ **格納する値は関数の入口で複製する**（L4）。「共有するのは `let → let` の
+    /// ときだけ」という規則をフィールドへの格納にも通す。共有したままだと
+    /// `mut o = N([]); o.f = src` のあと `src.append(9)` で `o.f` が変わり、
+    /// `p.f = [p]` で**循環まで作れてしまう**（どちらも実測）。
+    ///
+    /// ⚠⚠ **複製は `borrow_mut()` を取る前に済ませること。** 値が対象インスタンス自身を
+    /// 含む（`p.f = [p]`）と、複製がそのインスタンスを `borrow()` して
+    /// `RefCell already mutably borrowed` でパニックする。実際に踏んだ。
     pub(crate) fn set_attr_val(
         &mut self,
         obj: Value,
         attr: &str,
         val: Value,
     ) -> Result<(), String> {
+        // ⚠ 借用を取る前に複製する（doc の警告を参照）。
+        let val = Self::deep_copy_value(val);
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
@@ -376,12 +386,15 @@ impl Interpreter {
     /// コンパイラが「レシーバが Arrow インスタンスと確定できるときだけ `SetAttr`」と
     /// 絞ることで差を隠していたが、絞れないレシーバ（型注釈の無いグローバル等）が
     /// そのまま bail になっていた。
+    /// ⚠ 格納する値は**入口で**複製する（L4。`set_attr_val` の doc と同じ理由・同じ罠）。
     pub(crate) fn attr_assign_evaled(
         &mut self,
         obj: Value,
         attr: &str,
         rhs: Value,
     ) -> Result<(), String> {
+        // ⚠ 借用を取る前に複製する（doc の警告を参照）。
+        let rhs = Self::deep_copy_value(rhs);
         match obj {
             Value::Instance(inst_rc) => {
                 let inst_class = inst_rc.borrow().class.clone();
@@ -490,6 +503,7 @@ impl Interpreter {
     /// （`*_evaled` 版とずれた実装を作らない — #22 系列）。
     /// ⚠ `#[inline(never)]`: トレイトフィールド代入は稀なので `attr_assign` へ展開させない。
     #[inline(never)]
+    /// ⚠ 格納する値は**入口で**複製する（L4。`set_attr_val` の doc と同じ理由・同じ罠）。
     pub(crate) fn trait_assign_evaled(
         &mut self,
         obj_val: Value,
@@ -497,6 +511,8 @@ impl Interpreter {
         attr: &str,
         rhs: Value,
     ) -> Result<(), String> {
+        // ⚠ 借用を取る前に複製する（doc の警告を参照）。
+        let rhs = Self::deep_copy_value(rhs);
         match obj_val {
                 Value::Instance(inst_rc) => {
                     // Trait fields are stored with a namespaced key "TraitName::field"

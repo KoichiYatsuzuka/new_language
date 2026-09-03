@@ -20,6 +20,28 @@
 | **B9** | ✅ 修正済み。「共有は `let → let` のみ」という規則を `Set` / `Tuple` にも通した |
 | **B8 / B10 / B11** | ⬜ 未着手。**2026-09-02 の追加起票**（B1 / B2 の修正作業中に発見）|
 
+### ⚠⚠ 言語仕様の変更: 格納も複製する（2026-09-03・B8/B9/B11 系統の途中）
+
+**参照を共有するのは `let → let` のときだけ。それ以外は必ずディープコピーする。**
+この規則を**代入だけでなく「格納」にも**通した（`list.append` / `set.add` / 添字代入 /
+`dict[k] = v` / フィールド代入 / VM の `ListAppendLocal`）。
+
+⚠⚠ **帰結: 循環した構造が作れなくなった。** 自分自身を入れても「格納時点の
+スナップショット」が入る。`a.append(a)` → `[1, [1]]`、`p.f = [p]` → `p.f[0] === p` は False。
+
+- ✅ B10（複製の循環クラッシュ）は**この経路では起きなくなった**。`values_eq` の深さ上限・
+  `default_hash` の打ち切り・`reject_key` の深さ上限は**撤去していない**（素直に深い入れ子は
+  依然として作れるし、上限は安価な安全網）。
+- ⚠ **速度**: 格納する値のサイズに比例。プリミティブはほぼ無料（+5%）、
+  小インスタンス +21%、**8 要素のリストで 2.9 倍**。全体では
+  `bench_container_insert` 0.836x / `bench_collections` 0.977x / `bottleneck_bench` 0.989x。
+- ⚠ **既存例題の出力は 1 件も変わらなかった**（143 中 141 一致、差分は新規/書き換えた 2 本）。
+- ⚠⚠ **`borrow_mut()` を握ったまま複製してはいけない。** 値が対象自身を含むと
+  `RefCell already mutably borrowed` でパニックする。実装中に 3 経路で踏んだ。
+
+例題: [store_copy_semantics.ar](examples/collections/store_copy_semantics.ar) /
+[equality_depth_limit_error.ar](examples/collections/equality_depth_limit_error.ar)
+
 ---
 
 ## 0. なぜ見つかっていなかったか

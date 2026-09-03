@@ -22,8 +22,10 @@
 #       `__eq__` を `==` やリストの `in` でも使うのでクラス定義自体は禁止せず、
 #       **辞書のキーにした時点で**弾く。
 #
-#   (4) 循環した値・極端に深い値
-#       この先の複製処理でスタックが溢れるため、深さ上限で止める。
+#   (4) 極端に深い値
+#       この先の複製処理でスタックが溢れるため、深さ上限（64）で止める。
+#       ⚠ 元は「循環した値」も対象だったが、格納時にディープコピーする規則（L4）が
+#         入って**循環そのものが作れなくなった**ので、今ここに来るのは深い入れ子だけ。
 #
 # それぞれ単体で実行したときのエラー:
 #
@@ -37,10 +39,13 @@
 #   d[OnlyEq(1)] = "x"
 #   # TypeError: class 'OnlyEq' defines __eq__ without __hash__, so it cannot be a dict key
 #
-#   mut a = [1]
-#   a.append(a)
-#   d[a] = "x"
-#   # TypeError: cyclic or too deeply nested value cannot be used as a dict key
+#   mut x = [1]
+#   mut i = 0
+#   while i < 300:
+#       x = [x]
+#       i += 1
+#   d[x] = "x"
+#   # TypeError: too deeply nested value cannot be used as a dict key
 #
 # ⚠ 読み取り・包含検査も同じエラーになる（`KeyError` や `False` ではない）。
 #   「書けないのに読むと『入っていない』と言われる」形にすると誤診を招くため。

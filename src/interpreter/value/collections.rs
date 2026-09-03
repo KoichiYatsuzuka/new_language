@@ -129,10 +129,12 @@ impl DictData {
         }
     }
 
-    /// キー検査の再帰の深さ上限。超えたら**循環の疑い**としてエラーにする。
+    /// キー検査の再帰の深さ上限。超えたらエラーにする。
     ///
     /// ⚠ 深く潜りすぎるキーを通すと、この先の `deep_copy_value`（深さ制限なし）で
     /// スタックが溢れる。ここで止めるのが最も浅い防波堤。
+    /// ⚠ 元は「循環の疑い」だったが、格納時にディープコピーする規則（L4）が入って
+    /// **循環は作れなくなった**。今ここに来るのは素直に深い入れ子だけ。
     const KEY_MAX_DEPTH: u32 = 64;
 
     /// `key` を辞書のキーとして**使えない理由**を返す。使えるなら `None`。
@@ -145,7 +147,7 @@ impl DictData {
     /// - `None` / `Undefined` … 「存在しないことを示す値」はキーにしない（仕様）
     /// - `NaN` … 自分自身と等値にならないので、入れても引けない
     /// - `__eq__` を持つのに `__hash__` を持たないクラスのインスタンス（下記）
-    /// - 循環（または極端に深い）値
+    /// - 極端に深い値（⚠ 循環は L4 の格納時複製で作れなくなったので、ここには来ない）
     ///
     /// ⚠ **入れ子も走査する**。`(1, NaN)` をキーにすると、等値にならない要素を含むので
     /// 同じく引けなくなる。黙って引けないキーを作らせない。
@@ -156,7 +158,7 @@ impl DictData {
     fn reject_key_at(key: &Value, depth: u32) -> Option<String> {
         if depth > Self::KEY_MAX_DEPTH {
             return Some(
-                "TypeError: cyclic or too deeply nested value cannot be used as a dict key"
+                "TypeError: too deeply nested value cannot be used as a dict key"
                     .to_string(),
             );
         }

@@ -488,6 +488,9 @@ impl Interpreter {
             borrowed.index_of_with(hash, |stored| me.values_eq_dyn(&key, stored))?
         };
         // フェーズ 2: 可変借用で書く（クロージャを走らせないので再入しない）。
+        // ⚠ **キーだけでなく値も複製する**（L4）。共有したままだと
+        //    `let a = [1]; d["k"] = a` のあと `d["k"].append(9)` で `a` が変わる。
+        let value = Self::deep_copy_value(value);
         match idx {
             Some(i) => d.borrow_mut().set_at(i, value),
             None => d.borrow_mut().push_prehashed(hash, Self::deep_copy_value(key), value),

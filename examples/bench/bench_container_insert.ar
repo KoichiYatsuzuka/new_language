@@ -1,0 +1,81 @@
+# bench_container_insert.ar — コンテナへの格納の単価（bug_fix.md B8/B9/B11 系統・L4）。
+#
+# ⚠⚠ **このベンチは「格納時に複製する」変更の A/B 用**。単体の絶対値ではなく、
+#   変更前後の差で判断する。⇒ 使う前に必ず同一 exe 同士で負の対照を取ること。
+#
+# 何を測るか:
+#   「共有するのは `let → let` のときだけ、それ以外は複製」という規則を
+#   **コンテナへの格納にも適用する**と、`lst.append(x)` が O(size(x)) になる。
+#   その代償が要素の種類でどう変わるかを分けて測る。
+#
+#   ① int を append        … 複製はほぼ無料（プリミティブはそのまま返る）
+#   ② 小さいインスタンス   … フィールド 1 個ぶんの複製
+#   ③ 入れ子リスト         … 要素数ぶんの再帰複製（**最悪ケース**）
+#   ④ dict への格納        … 値の複製
+#
+# Run: ./scripts/ab_bench.ps1 -A <旧> -B <新> -Scripts examples/bench/bench_container_insert.ar -Reps 7
+
+import[py-int] time
+
+let N = 300_000
+
+class P:
+    mut x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+
+# ① int
+fn append_int(let n: int) -> int:
+    mut lst = []
+    mut i = 0
+    while i < n:
+        lst.append(i)
+        i += 1
+    return len(lst)
+
+# ② 小さいインスタンス
+fn append_inst(let n: int) -> int:
+    mut lst = []
+    mut i = 0
+    while i < n:
+        lst.append(P(i))
+        i += 1
+    return len(lst)
+
+# ③ 入れ子リスト（同じ実体を毎回入れる＝複製すれば毎回 8 要素ぶん働く）
+fn append_nested(let n: int) -> int:
+    mut src = [1, 2, 3, 4, 5, 6, 7, 8]
+    mut lst = []
+    mut i = 0
+    while i < n:
+        lst.append(src)
+        i += 1
+    return len(lst)
+
+# ④ dict への格納
+fn insert_dict(let n: int) -> int:
+    mut d = {}
+    mut i = 0
+    while i < n:
+        d[i] = P(i)
+        i += 1
+    return len(d)
+
+let t0 = time.time()
+let a = append_int(N)
+let t1 = time.time()
+let b = append_inst(N)
+let t2 = time.time()
+let c = append_nested(N)
+let t3 = time.time()
+let e = insert_dict(N)
+let t4 = time.time()
+
+print("append int    : " + str((t1-t0)/float(N)*1e9) + " ns/insert")
+print("append inst   : " + str((t2-t1)/float(N)*1e9) + " ns/insert")
+print("append nested : " + str((t3-t2)/float(N)*1e9) + " ns/insert")
+print("dict insert   : " + str((t4-t3)/float(N)*1e9) + " ns/insert")
+print("METRIC append_int_ns " + str((t1-t0)/float(N)*1e9))
+print("METRIC append_inst_ns " + str((t2-t1)/float(N)*1e9))
+print("METRIC append_nested_ns " + str((t3-t2)/float(N)*1e9))
+print("METRIC dict_insert_ns " + str((t4-t3)/float(N)*1e9))

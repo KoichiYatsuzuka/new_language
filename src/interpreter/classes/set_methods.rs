@@ -39,7 +39,10 @@ impl Interpreter {
                 //    ⇒ 先に複製して探し、書き込みのときだけ借りる（discard / remove も同形）。
                 let items = s.borrow().clone();
                 if !self.contains_eq_dyn(&items, &item)? {
-                    s.borrow_mut().push(item);
+                    // ⚠ 格納する値は複製する（L4。list の `append` と同じ理由）。
+                    // ⚠ 複製は借用の外で（自分自身を渡されたときのパニック回避）。
+                    let copied = Self::deep_copy_value(item);
+                    s.borrow_mut().push(copied);
                 }
                 Ok(Value::None)
             }

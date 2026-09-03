@@ -137,15 +137,25 @@ fn test_expr_equality_promotes_but_value_equality_does_not() {
 // 循環と深さ
 // ---------------------------------------------------------------------------
 
-/// 循環したリストでも**ハッシュは止まる**（深さで打ち切ってよい）。
+/// 深く入れ子になった値でも**ハッシュは止まる**（深さで打ち切ってよい）。
 /// ⚠ `values_eq` は打ち切れない（`RecursionError` を返す）。この非対称が設計の要点。
+/// ⚠ 元は循環リストで測っていたが、循環は作れなくなった（L4）。深さ上限が効く経路は
+///   「素直に深い入れ子」だけになったのでそちらで固定する。
 #[test]
-fn test_hash_terminates_on_cycles() {
-    let (cyclic, _interp) = run_last("mut a = [1]\na.append(a)\na");
+fn test_hash_terminates_on_deep_nesting() {
+    let src = concat!(
+        "mut x = [1]\n",
+        "mut i = 0\n",
+        "while i < 300:\n",
+        "    x = [x]\n",
+        "    i += 1\n",
+        "x",
+    );
+    let (deep, _interp) = run_last(src);
     // 落ちずに値が返ることが検査したいこと（深さ上限で畳まれる）。
-    let h = Interpreter::default_hash(&cyclic).expect("循環でも止まる");
+    let h = Interpreter::default_hash(&deep).expect("深くても止まる");
     // 決定的であること（同じ値なら何度取っても同じ）。
-    assert_eq!(h, Interpreter::default_hash(&cyclic).unwrap());
+    assert_eq!(h, Interpreter::default_hash(&deep).unwrap());
 }
 
 // ---------------------------------------------------------------------------
@@ -306,14 +316,43 @@ fn test_dict_rejects_eq_without_hash() {
     assert!(err.contains("__eq__ without __hash__"), "実際のエラー: {err}");
 }
 
-/// 循環した値はキーにできない（この先の複製でスタックが溢れるため深さで止める）。
+/// ⚠⚠ **循環した値はもう作れない**（bug_fix.md B8/B9/B11 系統・L4）。
+///
+/// コンテナ・フィールドへの格納がすべてディープコピーになったので、`a.append(a)` は
+/// **追加時点のスナップショット**を入れるだけで自己参照にならない。
+/// ⇒ 「循環したキーを拒否する」検査は**前提ごと消えた**ので、
+/// 代わりに「循環にならないこと」を固定する。
+///
+/// ⚠ 深さ上限（`reject_key` / `values_eq` / `default_hash`）は撤去していない。
+/// 循環は作れなくても**素直に深い入れ子**は作れるため（`test_dict_rejects_too_deep_key`）。
 #[test]
-fn test_dict_rejects_cyclic_key() {
-    let src = "mut a = [1]\na.append(a)\nmut d = {}\nd[a] = 1\n";
+fn test_self_append_does_not_create_a_cycle() {
+    let (v, _interp) = run_last("mut a = [1]\na.append(a)\na");
+    let Value::List(items) = v else { panic!("not a list") };
+    let items = items.borrow();
+    assert_eq!(items.len(), 2, "1 要素追加されている");
+    // 2 番目は「追加時点の a」＝ `[1]` のコピー。自分自身ではない。
+    let Value::List(inner) = &items[1] else { panic!("not a list") };
+    assert_eq!(inner.borrow().len(), 1, "スナップショットなので 1 要素");
+}
+
+/// 深すぎる入れ子はキーにできない（この先の複製でスタックが溢れるため深さで止める）。
+/// ⚠ 循環が作れなくなった今、深さ上限が効く経路はこちらだけ。
+#[test]
+fn test_dict_rejects_too_deep_key() {
+    let src = concat!(
+        "mut x = [1]\n",
+        "mut i = 0\n",
+        "while i < 300:\n",
+        "    x = [x]\n",
+        "    i += 1\n",
+        "mut d = {}\n",
+        "d[x] = 1\n",
+    );
     let (stmts, mut interp) = prepare(src).expect("parse/wire");
     let err = stmts
         .iter()
         .try_for_each(|st| interp.exec(st).map(|_| ()))
-        .expect_err("循環はキーにできてはいけない");
-    assert!(err.contains("cyclic"), "実際のエラー: {err}");
+        .expect_err("深すぎる値はキーにできてはいけない");
+    assert!(err.contains("deeply nested"), "実際のエラー: {err}");
 }

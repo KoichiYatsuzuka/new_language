@@ -1262,7 +1262,10 @@ fn exec_op(
         Op::ListAppendLocal(slot) => {
             let v = buf.pop().unwrap();
             if let Value::List(list) = &buf[base + *slot as usize] {
-                list.borrow_mut().push(v);
+                // ⚠ 格納する値は複製する（L4）。ツリーウォークの `append` と同じ規則で
+                //    ないと、VM 経路だけ共有が残る。
+                let copied = Interpreter::deep_copy_value(v);
+                list.borrow_mut().push(copied);
             }
         }
         Op::ListOrNone => {

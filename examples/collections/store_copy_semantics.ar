@@ -1,0 +1,70 @@
+# store_copy_semantics.ar — コンテナ・フィールドへの格納は複製される（bug_fix.md B8/B9/B11 系統・L4）。
+#
+# Arrow の束縛の規則:
+#   **参照を共有するのは `let → let` のときだけ。それ以外は必ずディープコピーする。**
+#   ⇒ 共有している 2 つの束縛は必ず両方 `let` ＝ どちらからも変更できない。
+#
+# この例題は、その規則が**代入だけでなく「格納」にも及ぶ**ことを固定する。
+#
+# ⚠⚠ 以前は格納が共有だったため、`let a` をコンテナに入れると
+#   `lst[0].append(9)` で **`let` の `a` が変わった**（実測）。
+#
+# ⚠⚠ **帰結: 循環した構造が作れなくなった。** 格納時に複製されるので、自分自身を
+#   入れても「追加時点のスナップショット」が入る。詳しくは
+#   [equality_depth_limit_error.ar](equality_depth_limit_error.ar)。
+
+class N:
+    mut f: list
+    fn __init__(mut self, let f: list) -> None:
+        self.f = f
+
+print("=== list への append ===")
+let a = [1]
+mut lst = []
+lst.append(a)
+lst[0].append(9)
+print(a)                 # [1]        let の a は変わらない
+print(lst)               # [[1, 9]]
+
+print("=== dict への格納 ===")
+let b = [1]
+mut d = {}
+d["k"] = b
+d["k"].append(9)
+print(b)                 # [1]
+print(d)                 # {'k': [1, 9]}
+
+print("=== set への add ===")
+let c = [1]
+mut s = {0}
+s.add(c)
+print(c)                 # [1]
+
+print("=== 添字代入 ===")
+let e = [1]
+mut lst2 = [0]
+lst2[0] = e
+lst2[0].append(9)
+print(e)                 # [1]
+
+print("=== フィールドへの代入 ===")
+mut src = [1]
+mut o = N([])
+o.f = src
+src.append(9)
+print(o.f)               # [1]        格納時のスナップショット
+print(src)               # [1, 9]
+
+print("=== 循環は作れない ===")
+mut z = [1]
+z.append(z)
+print(z)                 # [1, [1]]   自己参照にならない
+
+mut p = N([])
+p.f = [p]
+print(p.f[0] === p)      # False      フィールド経由でも循環しない
+
+print("=== 対照: let → let だけが共有する ===")
+let g = [1]
+let h = g
+print(h === g)           # True
