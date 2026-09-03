@@ -131,20 +131,27 @@ lambda（項目 26）・f-string（項目 19）などがその場で明示エラ
 - `x += 1`（`AugAssign`）… Python でも事前の束縛が必要なので、その `=` から拾われる。
 - 入れ子の `def` / `class` の本体 … **別スコープ**（⑧ で確認済み）。
 
-**⚠ 残る意味差（1 件・実測）**: `=` で代入した名前を **`for` のループ変数にも使い、ループ後に読む**とき。
-Arrow の `for` は自前スコープでループ変数を束縛する（＝巻き上げた外側の変数は隠れるだけ）ため、
-ループ後は代入時の値に戻る。CPython は最後の要素。
+**⚠⚠ 意味差（2 件・B4 で仕様として決着）**: Arrow の `for` のループ変数は
+**ブロック内の束縛**で、外側の同名を覆えず（規則 1）、ループを抜けると解放される（規則 2）。
+CPython は関数スコープに残すので、以下は**変換後に落ちる**。
+⚠ どちらもサイレントな値の食い違いではなく**明示エラー**になる。
 
 ```python
 def f(xs):
     i = -1
+    for i in xs: pass   # StaticTypeError: variable 'i' is already declared（規則 1）
+    return i
+
+def g(xs):
     for i in xs: pass
-    return i        # Arrow: -1 / CPython: 3
+    return i            # NameError: 'i' is not defined（規則 2）
 ```
 
-⇒ **エラー化していない**（`i` をループ後に読まない限り無害で、`i = 0` の後に `for i in …` と書く
-コードを丸ごと拒否することになるため）。必要なら「同名衝突は明示エラー」に後から倒せる。
-なお `=` が無い純粋なループ変数（⑩）は巻き上げ対象外なので **CPython と一致**する。
+⚠⚠ **`g` の形は素の CPython イディオム**なので、変換対象に普通に現れる。
+ループ内で別変数へ退避させること。
+⚠ 以前ここには「`=` が無い純粋なループ変数（⑪）は CPython と一致する」と書いていたが、
+  規則 2 で**一致しなくなった**。また「必要なら同名衝突を明示エラーに倒せる」としていた件は、
+  規則 1 で**倒した**。詳細は [bug_fix.md](bug_fix.md) の B4 の節。
 
 **例題**: [`examples/interop/py_reassign.ar`](examples/interop/py_reassign.ar) +
 [`test_modules/py_reassign.py`](examples/interop/test_modules/py_reassign.py)
