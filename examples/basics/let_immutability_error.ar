@@ -26,7 +26,22 @@
 #
 #      ⚠ 反復対象が `mut` なら通る。`range(n)` やリテラルは一時値なので従来どおり可変。
 #
-#   ③ `let` 変数への添字代入（元から弾かれていた対照）
+#   ③ `let` の中身を変更メソッドで書き換える（B8）
+#      let a = [1]
+#      a.append(9)
+#      # StaticTypeError: cannot call 'append' on 'a' — it is immutable
+#
+#      ⚠ 対象は `append` / `pop` / `add` / `clear` / `discard` / `remove`。
+#        ⚠⚠ `src/interpreter/classes/` に変更メソッドを足したら
+#           `MUTATING_COLLECTION_METHODS` にも**必ず足すこと**（忘れると穴が開く）。
+#      ⚠ 推移的にも効く（規則 1）:
+#        let o = K([1]); o.f.append(9)
+#        let w = [[1]]; w[0].append(9)
+#        let zs = [[1]]; for it in zs: it.append(9)
+#      ⚠ レシーバの型がコレクションのときだけ検査するので、`let` インスタンス自身の
+#        `remove()` のようなユーザー定義メソッドは誤検出しない。
+#
+#   ④ `let` 変数への添字代入（元から弾かれていた対照）
 #      let a = [1]
 #      a[0] = 9
 #      # StaticTypeError: cannot assign to immutable variable 'a'

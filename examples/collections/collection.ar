@@ -162,7 +162,9 @@ let chars = set("hello")
 print(len(chars))  # 4  (h, e, l, o)
 
 # add / discard / remove
-let a = {10, 20, 30}
+# ⚠ 中身を書き換えるので `mut` で束縛する。`let` だと
+#   `StaticTypeError: cannot call 'add' on 'a' — it is immutable` になる（bug_fix.md B8）。
+mut a = {10, 20, 30}
 a.add(40)
 print(a)          # {10, 20, 30, 40}
 a.discard(20)
@@ -172,10 +174,11 @@ a.remove(30)
 print(a)          # {10, 40}
 
 # pop / clear
-let b = {7, 8, 9}
+# ⚠ `pop` / `clear` も中身を書き換えるので `mut` が要る。
+mut b = {7, 8, 9}
 let popped = b.pop()
 print(len(b))     # 2
-let c = {1, 2, 3}
+mut c = {1, 2, 3}
 c.clear()
 print(c)          # set()
 

@@ -8,7 +8,10 @@
 # print(d["c"])   # KeyError: key 'c' not found
 
 # --- Error 2: KeyError — set.remove() on an absent element ---
-let s = {1, 2, 3}
+# ⚠ 中身を書き換えるので `mut` で束縛する。`let` だと**実行時の KeyError より前に**
+#   `StaticTypeError: cannot call 'remove' on 's' — it is immutable` で止まり、
+#   この節が意図したエラーを示せない（bug_fix.md B8）。
+mut s = {1, 2, 3}
 s.remove(99)   # KeyError: 99 is not in set
 
 # --- Error 3: StaticTypeError — tuple unpack missing qualifier ---

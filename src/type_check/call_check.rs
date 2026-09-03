@@ -41,6 +41,7 @@ impl TypeChecker {
         let method_call_info: Option<(String, String)> =
             if let Expr::Attr { object, attr, span, .. } = func {
                 let obj_ty = self.infer(object);
+                self.check_mutating_method_receiver(object, attr, &obj_ty, span);
 
                 // Result[T, E] の is_OK() / is_ERR() は特別扱いして bool を返す。
                 // 他のメソッドやアトリビュートアクセスは OperationOnUnion エラーを発生させる。

@@ -41,6 +41,33 @@ for i in range(3):
     i = i               # 一時値なので通る
 print("range のループ変数は可変のまま")
 
+print("=== B8: let の中身は変更メソッドでも書き換えられない ===")
+# ⚠⚠ 以前は**添字代入だけ**が弾かれ、メソッド経由は素通りだった。
+#   `let a = [1]; a[0] = 9` はエラーなのに `a.append(9)` は通る、という食い違い。
+#   今は同じ規則で弾く:
+#     let a = [1]
+#     a.append(9)   # StaticTypeError: cannot call 'append' on 'a' — it is immutable
+#
+# ⚠ **推移的にも効く**（規則 1: 要素は根の属性を引き継ぐ）:
+#     let o = K([1]); o.f.append(9)      # 根の 'o' が let なので弾かれる
+#     let w = [[1]]; w[0].append(9)      # 根の 'w' が let なので弾かれる
+#     let zs = [[1]]; for it in zs: it.append(9)   # ループ変数も let を継ぐ
+#
+# ⚠ **ユーザー定義クラスは誤検出しない。** レシーバの型がコレクションのときだけ見るので、
+#   `let` インスタンス自身の `remove()` のようなメソッドは通る（下の対照）。
+mut ok = [1]
+ok.append(9)             # mut なら通る
+print(ok)                # [1, 9]
+
+class Bag:
+    mut n: int
+    fn __init__(mut self, let n: int) -> None:
+        self.n = n
+    fn remove(let self) -> int:
+        return self.n
+let bag = Bag(5)
+print(bag.remove())      # 5   同名でもユーザー定義メソッドは通る
+
 print("=== B11: let を mut パラメータへ渡せない ===")
 fn touch(mut v: list) -> None:
     v.append(9)

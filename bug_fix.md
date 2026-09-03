@@ -19,7 +19,8 @@
 | **B4** | ⬜ 未着手（起票のまま）|
 | **B9** | ✅ 修正済み。「共有は `let → let` のみ」という規則を `Set` / `Tuple` にも通した |
 | **B11** | ✅ 修正済み。L2 / L3（束縛の漏れ）も一緒に塞いだ |
-| **B8 / B10** | ⬜ 未着手。**2026-09-02 の追加起票**（B1 / B2 の修正作業中に発見）|
+| **B8** | ✅ 修正済み。⚠ 起票の見積もり（約 200 箇所）は**外れ**、静的検査だけで済んだ |
+| **B10** | ⬜ 未着手。⚠ **L4 で循環が作れなくなり実質到達不能**。起票の見直しが要る |
 
 ### ⚠⚠ 言語仕様の変更: 格納も複製する（2026-09-03・B8/B9/B11 系統の途中）
 
@@ -69,7 +70,7 @@
 | ~~**B5**~~ | ~~`list + list` / `list * int` が未対応~~ | 🟢 明示エラー | ✅ **修正済み** |
 | ~~**B6**~~ | ~~モジュール本体から**自モジュールの関数を呼べない**~~ | 🟢 明示エラー | ✅ **修正済み** |
 | ~~**B7**~~ | ~~入れ子 `fn` から `local::args` を参照すると VM 非適格~~ | 🟢 明示エラー | ✅ **修正済み** |
-| **B8** | `let` のコレクションが**変更メソッドで書き換えられる** | 🔴 サイレント | ✅ 特定済み |
+| ~~**B8**~~ | ~~`let` のコレクションが**変更メソッドで書き換えられる**~~ | 🔴 サイレント | ✅ **修正済み** |
 | ~~**B9**~~ | ~~`Set` / `Tuple` が代入で**複製されず共有される**~~ | 🔴 サイレント | ✅ **修正済み** |
 | **B10** | 循環した値の複製で**スタックオーバーフロー** | 🟠 クラッシュ | ✅ 特定済み |
 | ~~**B11**~~ | ~~`let` 変数を `mut` パラメータに**渡せてしまう**~~ | 🔴 サイレント | ✅ **修正済み** |
@@ -470,85 +471,49 @@ print(f())
 例題: [varargs_nested_fn.ar](examples/basics/varargs_nested_fn.ar)
 
 ---
+## B8. `let` のコレクションの変更 ✅ 修正済み
 
-## B8. `let` のコレクションが変更メソッドで書き換えられる 🔴
-
-- 発見: 2026-09-02（B1 / B2 の修正作業中）
-- 検証: `ccd4be9` をリリースビルドして実測。
-
-### 再現
+症状（`let a = [1]; a.append(3)` が通る）は解消。**静的エラー**になる。
 
 ```
-let a = [1, 2]
-a.append(3)
-print(a)        # [1, 2, 3]   ← 通ってしまう
-a.pop()         # 通る
-
-let s = {1, 2}
-s.add(3)        # 通る
-s.clear()       # 通る
-
-let f: fixed_list = [1, 2]
-f.append(3)     # 通る
+let a = [1]
+a.append(9)
+# StaticTypeError: cannot call 'append' on 'a' — it is immutable
 ```
 
-**添字代入は正しく弾かれる**（対照）:
+⚠ 添字代入（`a[0] = 9`）は元から弾いていたのに、**メソッド経由だけ素通り**していた。
+同じ「書き換え」なのに入口で扱いが割れていたのが実態。
 
-```
-let a = [1, 2]
-a[0] = 9        # StaticTypeError: cannot assign to immutable variable 'a'
-```
+### 決まった規則
 
-**推移的にも効かない** — `let` インスタンスのコレクションフィールドは書き換えられる:
+- 対象は `append` / `pop` / `add` / `clear` / `discard` / `remove`
+  （`MUTATING_COLLECTION_METHODS`）。
+  ⚠⚠ **`src/interpreter/classes/` に変更メソッドを足したら必ずここにも足す。**忘れると穴が開く。
+- **推移的に効く**（規則 1: 要素は根の属性を再帰的に引き継ぐ）:
+  `let o = K([1]); o.f.append(9)` も `let w = [[1]]; w[0].append(9)` も
+  `let zs = [[1]]; for it in zs: it.append(9)` も弾く。
+- ⚠ **レシーバの型がコレクションのときだけ**検査する。ユーザー定義クラスは `mut self` の
+  実行時ガード（`INST_IMMUTABLE`）が別にあるので、メソッド名だけで弾くと
+  `let` インスタンスの `remove()` のような**正しい呼び出しまで落ちる**。
+- ⚠ 根が識別子でない式（リテラル・戻り値）は**一時値**なので通す。
+- ⚠ 型が `Unresolved` のとき（注釈が供給されない import モジュール本体など）は検査しない。
+  誤検出を出さない代わりに**そこだけ穴が残る**。
 
-```
-class K:
-    mut xs: list
-    fn __init__(mut self, let xs: list) -> None:
-        self.xs = xs
-let o = K([1])
-o.xs.append(2)  # 通る → [1, 2]
-```
+### 起票時の見積もりは外れていた
 
-### 原因（特定済み）
+⚠⚠ 起票では「値レベルの不変フラグが要る ⇒ `Value::List`/`Set` の型変更で
+**約 200 箇所 / 39 ファイル**」と見積もっていたが、**実際は型チェッカの静的検査だけで済んだ**。
 
-不変性の実装が **2 系統に分かれていて、片方しか値を守っていない**。
+理由は、先に L2 / L3 / L4 / B9 / B11 を塞いだことで
+**「参照を共有するのは `let → let` のときだけ」という不変条件が成立した**から。
+`let` の値が `mut` 経路から到達できないので、**構文上のレシーバのパスの根を見れば足りる**。
+⇒ **順序が規模を決めた**。器の変更を先にやっていたら 200 箇所を触っていた。
 
-- **インスタンス**は `INST_IMMUTABLE`（[instance.rs:11](src/interpreter/value/instance.rs#L11)）という
-  **値レベルのフラグ**を持つ。だから [method_call.rs](src/interpreter/classes/method_call.rs) で
-  `mut self` メソッドを弾け、[attrs.rs](src/interpreter/eval/attrs.rs) でフィールド代入も弾ける。
-- **List / Dict / Set / FrozenList** は `Rc<RefCell<...>>` のままで、**値レベルの不変フラグを
-  持たない**。`let`/`mut` は**変数（束縛）側**にしかないので、見張れるのは**代入文だけ**。
-  `a.append(3)` は代入文ではないので、**照合すべきフラグがそもそも存在しない**。
+例題: [let_immutability.ar](examples/basics/let_immutability.ar) /
+[let_immutability_error.ar](examples/basics/let_immutability_error.ar)
 
-⚠ `dict` は変更メソッドが未実装なので**偶然**安全なだけ。`.pop` 等を足した瞬間に同じ穴が開く。
-
-### 影響
-
-- `let` が「再束縛の禁止」しか意味していない。**不変性の保証が無い**。
-- エラーにならないので気付けない。
-
-### 修正方針
-
-`Value::List` / `Set` / `FrozenList`（`Dict` は `DictData` が struct なのでフィールド追加だけ）に
-**値レベルの不変フラグ**を持たせ、変更メソッドの入口で照合する。
-
-⚠ 変更操作の入口は数えたところ **14 箇所しかない**:
-`method_call.rs` の `append`/`pop`、`set_methods.rs` の `add`/`clear`/`discard`/`pop`/`remove`、
-`frozen_list_methods.rs` の `append`、`eval/subscript.rs` の添字代入、
-`vm/op.rs` の `ListAppendLocal`/`SetIndex`、
-`native_api/callbacks.rs` の `ar_list_append`/`ar_set_attr`/`ar_set_cell`。
-
-### 留意点
-
-- ⚠ **量は器のほう**。`Value::List(Rc<RefCell<Vec<Value>>>)` を
-  `Rc<RefCell<ListData>>` に変えると `Value::List` 134 箇所 + `Value::Set` 65 箇所
-  ＝ **約 200 箇所 / 39 ファイル**に波及する（機械的だがコンフリクトしやすい）。
-  ⚠ 代わりに「Interpreter に凍結済みポインタの側テーブルを持つ」案は、
-  **解放後のアドレス再利用で誤検出する**ので採ってはいけない。
-- ⚠ **推移的不変性をどこまで及ぼすか**の仕様判断が要る（`let` インスタンスの
-  コレクションフィールドまで凍らせるか）。既存例題の挙動が変わりうる。
-- ⚠ B11 と**同じ「不変性が守られていない」系統**。まとめて設計すること。
+⚠ 既存例題 2 本（`collection.ar` / `collection_error.ar`）が**このバグに依存していた**
+（`let` に束縛した set を変更するデモ）。`mut` に直した。
 
 ---
 

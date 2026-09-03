@@ -15,6 +15,16 @@ pub enum TypeErrorKind {
         op: &'static str,
     },
     /// 不変変数（`let` / `const`）への代入。
+    /// `let` の値に対して**中身を書き換えるメソッド**を呼んだ（bug_fix.md B8）。
+    ///
+    /// ⚠ 添字代入（`a[0] = 9`）は元から [`TypeErrorKind::AssignToImmutable`] で
+    /// 弾いていたのに、**メソッド経由（`a.append(9)`）だけ素通り**していた。
+    MutatingMethodOnImmutable {
+        /// 呼ばれたメソッド名（`append` など）。
+        method: String,
+        /// レシーバのパスの**根**になっている変数名（`a.xs[0].append()` なら `a`）。
+        root_name: String,
+    },
     AssignToImmutable {
         name: String,
     },
@@ -330,6 +340,10 @@ impl StaticTypeError {
         match &self.kind {
             TypeErrorKind::IncompatibleComparison { lhs, rhs, op } => format!(
                 "cannot compare {} and {} with {}", hl_q(lhs), hl_q(rhs), hl_bt(op)
+            ),
+            TypeErrorKind::MutatingMethodOnImmutable { method, root_name } => format!(
+                "cannot call {} on {} — it is immutable",
+                hl_q(method), hl_q(root_name)
             ),
             TypeErrorKind::AssignToImmutable { name } => format!(
                 "cannot assign to immutable variable {}", hl_q(name)
