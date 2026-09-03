@@ -194,8 +194,6 @@ fn compile_toplevel_stmt_inner(
     mode: CompileMode,
 ) -> Option<Chunk> {
     let body = std::slice::from_ref(stmt);
-    // 関数側と同じ扱い（#27）。最上位でも 1 文の中で `for` 変数が宣言を覆いうる。
-    let shadowed_for_targets = for_target_shadows(&[], body);
 
     let mut slots: HashMap<String, u16> = HashMap::new();
     let mut slot_mut: Vec<bool> = Vec::new();
@@ -236,7 +234,6 @@ fn compile_toplevel_stmt_inner(
         named_locals: n,
         chunk: Chunk { n_locals: n as usize, ..Chunk::default() },
         toplevel_globals: toplevel_globals.clone(),
-        shadowed_for_targets,
         // 最上位に `static` は無い（あれば定義文として #10-d の担当）。
         ..Compiler::base(mode, annotations)
     };
@@ -260,8 +257,6 @@ fn compile_fn_inner(
     captures: &[String],
     mut_captures: &[String],
 ) -> Option<Chunk> {
-    // 外側変数をシャドウする `for` ループ変数は、本体のコンパイル中だけ専用 slot へ差し替える（#27）。
-    let shadowed_for_targets = for_target_shadows(params, body);
     // base slot をリゾルバと同順で採番する: パラメータ → トップレベル let/mut/const。
     let mut slots: HashMap<String, u16> = HashMap::new();
     let mut slot_mut: Vec<bool> = Vec::new();
@@ -472,7 +467,6 @@ fn compile_fn_inner(
         self_slot,
         named_locals: n,
         chunk: Chunk { n_locals: n as usize, n_cells, ..Chunk::default() },
-        shadowed_for_targets,
         statics,
         cells,
         cell_by_slot,
@@ -575,7 +569,6 @@ pub fn compile_async_body(
             *entry = name.clone();
         }
     }
-    let shadowed_for_targets = for_target_shadows(&[], body);
 
     let mut c = Compiler {
         slots,
@@ -588,7 +581,6 @@ pub fn compile_async_body(
         // ⚠ 捕捉名の可変性はここでは判らないので**保守的に可変**とする
         // （`arg_is_mutable` の既定と同じ側。C・H 修正でも挙動を変えない）。
         toplevel_globals: captures.iter().map(|n| (n.clone(), true)).collect(),
-        shadowed_for_targets,
         // async 本体は可変キャプチャを持たない（submit 時に deep-clone される・D5）。
         ..Compiler::base(CompileMode::AsyncBody, annotations)
     };

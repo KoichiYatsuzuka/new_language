@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    Expr, Param, Stmt,
+    Expr, Stmt,
 };
 
 
@@ -64,95 +64,6 @@ pub(super) fn nested_fn_free_names(body: &[Stmt]) -> HashSet<String> {
     let mut out = HashSet::new();
     walk(body, &mut out);
     out
-}
-
-/// param または非 `for` 宣言と名前衝突する `for` ループ変数（式形含む）の集合（#27）。
-///
-/// Arrow の `for` 変数はブロックスコープで、ループを抜けると外側の同名変数が戻る。
-/// flat-slot モデルは名前ごとに 1 slot なので、素直に採番すると外側の値を壊す。
-/// ⇒ **ここに挙がった名前だけ、ループ本体のコンパイル中に専用 slot へ差し替える**
-/// （`compile_stmt` の `Stmt::For`）。以前はこの集合が空でなければ関数ごと諦めていた。
-pub(super) fn for_target_shadows(params: &[Param], body: &[Stmt]) -> HashSet<String> {
-    let mut for_names: HashSet<String> = HashSet::new();
-    let mut decl_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
-    scan_shadow_stmts(body, &mut for_names, &mut decl_names);
-    for_names.intersection(&decl_names).cloned().collect()
-}
-
-pub(super) fn scan_shadow_stmts(
-    stmts: &[Stmt],
-    for_names: &mut HashSet<String>,
-    decl_names: &mut HashSet<String>,
-) {
-    for s in stmts {
-        // ① この 1 文が直接束縛する名前（判断は 1 箇所・#59）。
-        crate::decl_names::each_declared_name(s, &mut |name, origin, _| {
-            use crate::decl_names::DeclOrigin as D;
-            match origin {
-                // `for` ターゲットに覆われうるのは「値を持つ束縛」だけ。
-                D::Let | D::Mut | D::Static | D::TupleLet | D::TupleMut => {
-                    decl_names.insert(name.to_string());
-                }
-                // ⚠ **定義文（`fn`/`class`…）は意図的に入れない**（#59 の doc に明記）。
-                // ここが集めるのは「`for` ターゲットとの**衝突候補**」であって
-                // 宣言名の一覧ではない。
-                D::Fn | D::Gen | D::Class | D::Trait | D::Protocol | D::Enum | D::NewType => {}
-                // 関数本体の `import` は `compile_stmt` にアームが無く bail する。
-                D::Import | D::FromImport => {}
-            }
-        });
-
-        // ② どこへ降りるか＋入れ子スコープの束縛（#84）。
-        // ⚠ **`_ => {}` を書かない** — `StmtPart` に種類が増えるとここが止まる。
-        crate::stmt_walk::each_subpart(s, &mut |part| {
-            use crate::stmt_walk::StmtPart as P;
-            match part {
-                P::Expr(e) => scan_shadow_expr(e, for_names, decl_names),
-                P::Control(b) => scan_shadow_stmts(b, for_names, decl_names),
-                // `for` ターゲットは**衝突候補**として集める（この walker 固有の判断）。
-                P::ForTarget(t) => {
-                    for_names.insert(t.to_string());
-                }
-                // `except ... as e` は入れ子スコープの束縛＝覆われうる側。
-                P::ExceptAlias(a) => {
-                    decl_names.insert(a.to_string());
-                }
-                // 別フレーム／別スコープ。`for` ターゲットの覆いは跨がない。
-                P::FnBody { .. }
-                | P::GenBody { .. }
-                | P::TypeBody(_)
-                | P::ProtocolBody(_)
-                | P::ModuleBody(_)
-                | P::AsyncBody(_) => {}
-                // ⚠ パターンへは降りない（`collect_expr_decls` と揃える・採番がずれる）。
-                P::MatchPattern(_) => {}
-                // 既存の名前への代入は**宣言ではない**ので衝突候補に入れない。
-                P::TargetName(_) => {}
-            }
-        });
-    }
-}
-
-pub(super) fn scan_shadow_expr(
-    e: &Expr,
-    for_names: &mut HashSet<String>,
-    decl_names: &mut HashSet<String>,
-) {
-    // 部分式の構造は 1 箇所（#81）。⚠ **`_ => {}` を書かない** — `SubPart` に
-    // 種類が増えるとここが止まり、「この walker ではどう扱うか」を決めさせられる。
-    crate::expr_walk::each_subpart(e, &mut |part| {
-        use crate::expr_walk::SubPart as P;
-        match part {
-            P::Plain(x) | P::Control(x) => scan_shadow_expr(x, for_names, decl_names),
-            P::Body(b) => scan_shadow_stmts(b, for_names, decl_names),
-            // `for` ターゲットは**衝突候補**として集める（この walker 固有の判断）。
-            P::ForTarget(t) => {
-                for_names.insert(t.to_string());
-            }
-            // ⚠ パターンは宣言を含まない（#81 以前も見ていない）。
-            P::MatchPattern(_) => {}
-        }
-    });
 }
 
 /// slot テーブルへ1つ宣言を追加する（既出名・`_` はスキップ）。

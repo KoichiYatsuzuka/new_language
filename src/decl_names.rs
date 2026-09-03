@@ -39,7 +39,7 @@
 // | walker | 統合しない理由 |
 // |---|---|
 // | `resolver::collect_base_decls` | 答える問いが違う（「**この文を理解できるか**」で、未知の文は `false` を返して解決を諦める）。**既定が安全側**なので取りこぼしてもバグにならない |
-// | `vm::compiler::decls::scan_shadow_stmts` | 集めるのは `for` ターゲット**との衝突候補**で、定義文（`fn`/`class`…）を意図的に入れない。上記の「順序に意味がある束縛」側 |
+// | （撤去済み）`vm::compiler::decls::scan_shadow_stmts` | `for` ターゲットとの**衝突候補**を集める walker だったが、B4 規則 1（外側を覆う `for` ターゲットは静的エラー）で**衝突自体が構成不能**になり、規則 2 で全ターゲットを一律にブロックスコープ化したので不要になった |
 // | `resolver::collect_shadowing_binders` | 自前の判断を持たず `collect_bound_names` に委譲するだけ（既に 1 本） |
 // | `exec::collect_referenced_names` | **参照**を集める walker で、宣言とは逆向きの問い |
 

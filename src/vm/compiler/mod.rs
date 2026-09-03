@@ -61,7 +61,7 @@ pub use entry::{
 };
 
 use decls::{
-    block_body_bails, collect_expr_decls, collect_nested_decls, for_target_shadows,
+    block_body_bails, collect_expr_decls, collect_nested_decls,
     nested_fn_free_names, MAX_FINALLY_NEST,
 };
 use diag::{bail, bail_expr, has_named_args, is_vm_builtin, VM_BUILTIN_KW_NAMES};
@@ -143,16 +143,13 @@ struct Compiler {
     /// すべて `slots` に入るため）。`resolver::toplevel_declared_globals`（**減算なし**）が入る
     /// — 減算版を渡すと別の文の `for i in ...` のせいで `while i < N` の `i` まで落ちる（#27-c）。
     toplevel_globals: HashMap<String, bool>,
-    /// 外側の同名束縛を覆う `for` ループ変数の名前（#27・`for_target_shadows`）。
-    /// `Stmt::For` のコンパイル時に、この名前だけ**本体の間だけ**専用 slot へ差し替える。
-    shadowed_for_targets: HashSet<String>,
     /// ループを抜けて**解放済み**になった `for` ターゲットの名前（規則 2・B4）。
     ///
     /// ⚠⚠ `slots` から外すだけでは足りない。関数本体の未解決 `Ident` は
     /// `slots` を外れると `LoadGlobal` へ落ち、グローバルに無ければ**黙って `None`**
     /// になる（実測）—— 「全宣言が先に `slots` に入るので、`slots` を外れた名前は
     /// どの束縛にも当たらない」という `Expr::Ident` アームの前提を、解放が破るため。
-    /// ♥ ここに入った名前の読みは `Op::Fail` に落とし、最上位と**同じ `NameError`**にする。
+    /// ⚠⚠ ここに入った名前の読みは `Op::Fail` に落とし、最上位と**同じ `NameError`**にする。
     released_for_targets: HashSet<String>,
     /// `static mut` の名前 → 宣言位置（#27-d）。
     ///
@@ -327,7 +324,6 @@ impl Compiler {
             named_locals: 0,
             temps_in_use: 0,
             toplevel_globals: HashMap::new(),
-            shadowed_for_targets: HashSet::new(),
             released_for_targets: HashSet::new(),
             statics: HashMap::new(),
             cells: HashMap::new(),
