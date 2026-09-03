@@ -496,7 +496,32 @@ fn run_program(
 
 
 /// プログラムのエントリーポイント。
+/// インタプリタを走らせるスレッドのスタック（bug_fix.md B10 段階 2）。
+///
+/// ⚠⚠ main スレッドの既定（Windows で 1MB）だと**深さ ~134 でスタックが満ちる**。
+/// `MAX_CALL_DEPTH` を CPython 並み（1000）へ上げるにはここを先に広げる必要がある。
+/// ⚠ 予約するだけで実メモリは触った分しか使われないので、大きめに取っても安い。
+const INTERP_STACK_SIZE: usize = 64 * 1024 * 1024;
+
+/// ⚠⚠ **本体は専用スタックのスレッドで走らせる**（bug_fix.md B10 段階 2）。
+///
+/// ⚠ GUI を開く例題（DxLib / WinForms）もこのスレッドで完結する。
+///   ウィンドウの生成とメッセージループが**同じスレッド**にいればよいので問題ないが、
+///   変更時は `force_gate` （窓を閉じて終了するまで検査する）で必ず確かめること。
 fn main() {
+    let child = std::thread::Builder::new()
+        .stack_size(INTERP_STACK_SIZE)
+        .name("arrow-main".to_string())
+        .spawn(interpreter_main)
+        .expect("failed to spawn interpreter thread");
+    if child.join().is_err() {
+        // ⚠ パニックの内容は子スレッドが既に報告している。ここは終了コードだけ。
+        //   101 は Rust のパニック時の既定終了コードに合わせてある。
+        std::process::exit(101);
+    }
+}
+
+fn interpreter_main() {
     #[cfg(feature = "prof")]
     prof::mark_start();
     match parse_args() {
