@@ -133,9 +133,13 @@ impl TypeChecker {
                 //      for it in zs:
                 //          it.append(9)      # 通ってしまう
                 //    で **`let` の `zs` の要素が変わっていた**（実測）。
-                // ⚠ 根が識別子でない反復対象（`range(n)` / リテラル）は**一時値**なので
-                //    誰とも共有しておらず、従来どおり可変でよい。
-                let target_mut = self.path_is_mutable(iter).unwrap_or(true);
+                // ⚠⚠ 根が識別子でない反復対象（`range(n)` / リテラル）は**一時値**。
+                //    その場で作られて誰とも共有していないが、**だからこそ書き換える意味が無い**
+                //    ので `let` 扱いにする（規則 3・B4）。以前は `unwrap_or(true)` だったため
+                //      for i in range(3):
+                //          i = i * 10      # 通ってしまう（B4 のケース h）
+                //    とループ変数そのものを潰せた。
+                let target_mut = self.path_is_mutable(iter).unwrap_or(false);
                 for (t, ty) in targets.iter().zip(target_tys) {
                     self.declare(t.clone(), ty, target_mut);
                 }

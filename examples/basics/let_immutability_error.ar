@@ -24,7 +24,11 @@
 #          it = [9]
 #      # StaticTypeError: cannot assign to immutable variable 'it'
 #
-#      ⚠ 反復対象が `mut` なら通る。`range(n)` やリテラルは一時値なので従来どおり可変。
+#      ⚠ 反復対象が `mut` なら通る。
+#      ⚠⚠ `range(n)` やリテラルのような**一時値**の反復対象も `let`（規則 3・B4）:
+#         for i in range(3):
+#             i = i * 10
+#         # StaticTypeError: cannot assign to immutable variable 'i'
 #
 #   ③ `let` の中身を変更メソッドで書き換える（B8）
 #      let a = [1]

@@ -36,10 +36,12 @@ print(ys)                # [[1, 9]]
 
 # ⚠ `let zs` に対する `for it in zs: it = ...` は
 #   StaticTypeError: cannot assign to immutable variable 'it' になる。
-#   （`range(n)` やリテラルは一時値なので従来どおり可変。）
+# ⚠⚠ `range(n)` やリテラルのような**一時値**の反復対象も `let`（規則 3・B4）。
+#   その場で作られて誰とも共有していないので、書き換える意味が無い:
+#     for i in range(3):
+#         i = i * 10    # StaticTypeError: cannot assign to immutable variable 'i'
 for i in range(3):
-    i = i               # 一時値なので通る
-print("range のループ変数は可変のまま")
+    print("range のループ変数も let:", i)
 
 print("=== B8: let の中身は変更メソッドでも書き換えられない ===")
 # ⚠⚠ 以前は**添字代入だけ**が弾かれ、メソッド経由は素通りだった。
