@@ -82,19 +82,22 @@ def shadow():
     return x * 100 + y
 
 
-# --- 9. ★ for のループ変数と同名の代入があると結果が変わる（下の ⑨ 参照） ---
-def loop_var_collision(xs):
-    i = -1
-    for i in xs:
-        pass
-    return i
+# --- 9. ループの最後の値を取る（外側に既定値あり）---
+#     ⚠ ループ変数そのものをループ後に読むのではなく、**別の変数へ退避**させる。
+#       CPython でも Arrow でも同じ結果になる、こちらが推奨形。
+def latest_with_default(xs):
+    latest = -1
+    for x in xs:
+        latest = x
+    return latest
 
 
-# --- 10. ループ変数だけ（代入なし）なら Python と同じくループ後も残る ---
-def loop_var_only(xs):
-    for i in xs:
-        pass
-    return i
+# --- 10. ループの最後の値を取る（既定値なし）---
+def latest_of(xs):
+    latest = None
+    for x in xs:
+        latest = x
+    return latest
 
 
 # --- 11. ★`if __name__ == "__main__":` の中の代入は巻き上げてはいけない ---

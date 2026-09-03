@@ -61,31 +61,22 @@ print(m.COUNT)
 print(m.shadow())
 # 199
 
-# ── ⑨⑩ ★ループ変数を**ループ後に読む**形は Arrow では NameError ──────────
+# ── ⑨⑩ ループの最後の値を取る（推奨形）───────────────────────
 #
-# ⚠⚠ **ここは CPython と意図的に違う**（bug_fix.md B4・規則 2）。
-#    Arrow の `for` ループ変数は**ブロック内の束縛**で、ブロックを抜けると**解放される**。
-#    CPython は関数スコープに残すので、以下の 2 つは**変換後に振る舞いが変わる**:
+# ループ変数そのものをループ後に読むのではなく、**別の変数へ退避**させる。
+# この形なら巻き上げ（項目 2）も含めて CPython と同じ結果になる。
 #
-#      def loop_var_only(xs):      # ← 素の CPython イディオム。CPython は最後の要素を返す
-#          for i in xs:
-#              pass
-#          return i               # Arrow: NameError: 'i' is not defined
-#
-# ⚠ 以前は ⑨ が -1（外側の代入値）、⑪ が 3（CPython と一致）だった。
-#   つまり「同じ名前が 2 つの別のものを指す」形を黙って許していた。今はどちらも止める。
-# ⚠⚠ **変換器を使うときの実際の落とし穴**。`for` の後でループ変数を読む Python は
-#    普通にあるので、変換後にここで落ちる。ループ内で別変数に退避させること。
+# ⚠ **ループ変数をループ後に読む形は Arrow ではエラー**（bug_fix.md B4・規則 2）。
+#   CPython とは違うが、**意図した違い**—— ループ変数はブロック内の束縛で、
+#   抜けたら解放される。そもそも避けるべき書き方なので黙って通さずに止める。
+#   エラー側の実演は
+#   [for_target_scope_error.ar](../basics/for_target_scope_error.ar)。
 
-try:
-    print(m.loop_var_collision(xs))
-except NameError as e:
-    print("⑨ caught:", e.message)
+print(m.latest_with_default(xs))
+# 3
 
-try:
-    print(m.loop_var_only(xs))
-except NameError as e:
-    print("⑩ caught:", e.message)
+print(m.latest_of(xs))
+# 3
 
 # ── ⑪ `if __name__ == "__main__":` の中の代入を巻き上げないこと ──────────
 #     py 側のガード内で `scratch` に代入しているが、変換器はブロックごと捨てる。
