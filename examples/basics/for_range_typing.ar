@@ -33,16 +33,20 @@ fn for_expr(let n: int) -> int:
 fn uses_len(let xs: list[int]) -> int:
     return len(xs) * 2
 
-# 外側変数と同名のループ変数
-fn shadow_loop_var(let n: int) -> int:
-    mut i = 100
+# 外側変数とループ変数は**別名でなければならない**（規則 1・B4）
+# ⚠⚠ 以前は `mut i = 100` を `for i in range(n)` が黙って覆い、
+#    ループ後の `return s + i` は**外側の 100** を読んでいた。
+#    同じ式内の `i` が 2 つの別のものを指すので読み違えやすい
+#        → [for_target_shadow_error.ar](for_target_shadow_error.ar)
+fn outer_var_kept(let n: int) -> int:
+    mut base = 100
     mut s = 0
     for i in range(n):
         s += i
-    return s + i
+    return s + base
 
 print(basic(5))
 print(nested(5))
 print(for_expr(4))
 print(uses_len([1, 2, 3]))
-print(shadow_loop_var(4))
+print(outer_var_kept(4))

@@ -24,19 +24,22 @@ fn helper(let a: int) -> int:
 fn uses_globals(let n: int) -> int:
     return g_int + helper(n)
 
-# (2) for ターゲットがグローバル名を覆う（型検査は許す）→ GlobalRef にしてはいけない
-fn shadow_by_for(let items: list[int]) -> int:
+# (2) for ターゲットは**グローバル名を覆えない**（規則 1・B4）ので別名にしてある
+# ⚠⚠ 以前はこれが通り、「覆われた名前を `GlobalRef` にしてはいけない」という
+#    危うい要請がリゾルバ側に残っていた。今はその形が書けない
+#        → [for_target_shadow_error.ar](for_target_shadow_error.ar)
+fn sum_by_for(let items: list[int]) -> int:
     mut acc = 0
-    for g_set in items:
-        acc += g_set
+    for e in items:
+        acc += e
     return acc
 
 # (3) 入れ子ブロック内の for でも同様
-fn shadow_nested(let items: list[int], let flag: bool) -> int:
+fn sum_nested(let items: list[int], let flag: bool) -> int:
     mut acc = 0
     if flag:
-        for g_int in items:
-            acc += g_int
+        for e in items:
+            acc += e
     return acc
 
 # (4) mut グローバルの読み書き
@@ -44,8 +47,8 @@ fn read_counter() -> int:
     return g_counter
 
 print(uses_globals(5))
-print(shadow_by_for([10, 20, 30]))
-print(shadow_nested([1, 2, 3], True))
+print(sum_by_for([10, 20, 30]))
+print(sum_nested([1, 2, 3], True))
 g_counter = 42
 print(read_counter())
 print(g_set)

@@ -51,12 +51,14 @@ if not (a == b):
 print("=== while ===")
 
 # Basic accumulation
-mut i = 1
+# ⚠ ループ変数と同名にしないこと（規則 1・B4）。`while` の制御変数は
+#   普通の変数なので、後続の `for w in ...` がこれを覆うと再束縛になる。
+mut w = 1
 mut sum_odds = 0
-while i <= 9:
-    if i % 2 != 0:
-        sum_odds += i
-    i += 1
+while w <= 9:
+    if w % 2 != 0:
+        sum_odds += w
+    w += 1
 print("sum of odd 1-9:", sum_odds)   # 25
 
 # while True with break

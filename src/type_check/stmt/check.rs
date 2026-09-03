@@ -141,6 +141,23 @@ impl TypeChecker {
                 //    とループ変数そのものを潰せた。
                 let target_mut = self.path_is_mutable(iter).unwrap_or(false);
                 for (t, ty) in targets.iter().zip(target_tys) {
+                    // ⚠⚠ ループ変数は**ブロック内の新しい束縛**（規則 1・B4）。
+                    //    外側に同名があれば**再束縛**であり、`let` / `mut` の再宣言と
+                    //    同じくエラーにする。以前は黙って覆うだけだったので
+                    //      mut i = -1
+                    //      for i in range(3): ...
+                    //      print(i)          # -1（ループの i ではない）
+                    //    という読み違えやすい形が通っていた（B4 のケース a/d/e/f）。
+                    // ⚠ 検査は `Stmt::Let` / タプル展開と**同じ形**に揃えてある
+                    //    （`_` は除外・素の `lookup` なので組み込み名も対象）。
+                    //    新しいエラー種別を作らないのは、これが新規の規則ではなく
+                    //    **既存の再宣言規則を for ターゲットにも及ぼしただけ**だから。
+                    if t != "_" && self.lookup(t).is_some() {
+                        self.report_error(StaticTypeError {
+                            kind: TypeErrorKind::VariableRedeclaration { name: t.clone() },
+                            span: None,
+                        });
+                    }
                     self.declare(t.clone(), ty, target_mut);
                 }
                 self.check_stmts(body);

@@ -247,9 +247,21 @@ impl TypeChecker {
                 // ここが抜けていたため、for **式**の本体では変数が未宣言＝`Unresolved` になり、
                 // 本体の演算に型特化が効かなかった。
                 let elem_ty = Self::for_element_type(&iter_ty);
+                // ⚠⚠ `for` **式**も `for` 文と同じ束縛を作るので、B4 の規則を**同じく適用**する。
+                //    以前は `mutable: true` 決め打ちで、内包表記の脱糖先もここを通るため
+                //    文側だけ直しても穴が残っていた（実測）。
+                let target_mut = self.path_is_mutable(iter).unwrap_or(false);
                 self.with_loop_expr(|c| {
                     c.push_scope();
-                    c.declare(target.clone(), elem_ty, true);
+                    // 規則 1: 外側に同名があれば再束縛（`Stmt::For` と同じ形）。
+                    if target != "_" && c.lookup(target).is_some() {
+                        c.report_error(StaticTypeError {
+                            kind: TypeErrorKind::VariableRedeclaration { name: target.clone() },
+                            span: None,
+                        });
+                    }
+                    // 規則 3: 反復対象の属性を継ぐ（一時値は `let`）。
+                    c.declare(target.clone(), elem_ty, target_mut);
                     c.check_stmts(body);
                     c.pop_scope();
                 });

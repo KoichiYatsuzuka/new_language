@@ -364,8 +364,8 @@ print("=== typed generics ===")
 
 fn sum_ints(items: list[int]) -> int:
     mut acc = 0
-    for x in items:
-        acc += x
+    for n in items:
+        acc += n
     return acc
 
 let typed_nums: list[int] = [1, 2, 3, 4, 5]
@@ -373,8 +373,8 @@ print("sum:", sum_ints(typed_nums))   # 15
 
 fn join_strs(items: list[str]) -> str:
     mut result = ""
-    for s in items:
-        result = result + s + " "
+    for item in items:
+        result = result + item + " "
     return result
 
 let words: list[str] = ["hello", "world"]
@@ -406,9 +406,9 @@ class Stats:
 
     fn max_val(self) -> int:
         mut m = 0
-        for v in self.values:
-            if v > m:
-                m = v
+        for val in self.values:
+            if val > m:
+                m = val
         return m
 
     fn count(self) -> int:

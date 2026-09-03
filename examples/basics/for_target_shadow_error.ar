@@ -1,0 +1,70 @@
+# for_target_shadow_error.ar — `for` のループ変数が外側の束縛を覆う形（bug_fix.md B4・規則 1）
+#
+# ⚠⚠ `for` のループ変数は**ブロック内の新しい束縛**であって、外側の変数の再利用ではない。
+#    外側（同一スコープ／関数の外側／モジュールグローバル／組み込み名）に同名があれば
+#    **再束縛としてエラー**にする。
+#
+# ⚠ これは新しい規則ではなく、**既存の再宣言規則を `for` ターゲットにも及ぼしただけ**。
+#   `let` / `mut` の再宣言は元からエラー（[redeclare_error.ar](redeclare_error.ar)）なのに
+#   **`for` ターゲットだけが素通り**していたので、
+#     mut i = -1
+#     for i in range(3):
+#         ...
+#     print(i)      # -1（ループの i ではない）
+#   のように「同じ名前が 2 つの別のものを指す」形が黙って通っていた。
+#
+# 正常系は [toplevel_global_shadow.ar](toplevel_global_shadow.ar) /
+# [global_resolution.ar](global_resolution.ar) / [for_range_typing.ar](for_range_typing.ar)。
+#
+# それぞれ単体で実行したときのエラー:
+#
+#   ① 同一スコープの変数を覆う（このファイルが実際に起こすもの）
+#      mut i = -1
+#      for i in range(3):
+#          print(i)
+#      # StaticTypeError: variable 'i' is already declared in an accessible scope
+#
+#   ② 関数の中からモジュールグローバルを覆う
+#      ⚠ スコープスタックは関数本体でも差し替わらず、グローバルの上に積むだけなので
+#        関数の中からでも外側のグローバルは見えている。
+#      let g = 7
+#      fn f(let xs: list[int]) -> int:
+#          mut acc = 0
+#          for g in xs:          # 同じエラー
+#              acc += g
+#          return acc
+#
+#   ③ 入れ子ブロックの中でも同じ（if / while / block を挟んでも外側は見える）
+#      let n = 1
+#      if True:
+#          for n in range(3):    # 同じエラー
+#              print(n)
+#
+#   ④ `for` **式**でも同じ。⚠⚠ 内包表記はこれに脱糖するので**内包表記も対象**。
+#      let v = 0
+#      let xs = for v in range(3) ->list[int]:
+#          loop_yield v
+#      # 同じエラー
+#
+#   ⑤ 型検査のグローバル表に載っている名前も対象
+#      （`range` / `begin` / `last` / `Error` などの例外クラス / `int`・`str` などの型名）
+#      for range in [1, 2]:
+#          print(range)
+#      # 同じエラー
+#
+#      ⚠⚠ `len` のような**大半の組み込み関数はこの表に載っていない**ので通る。
+#        `let len = ...` も型検査は通り、**実行時に NameError** になる（実測）。
+#        どの名前を表に載せるかは #16 段階 D の判断（`src/type_check/mod.rs` の
+#        `builtin_fns`）で、**規則 1 とは別問題**。そちらを増やせばここも自動で増える。
+#
+# ⚠ `_` は捨て変数なので例外（`for _ in range(3):` は何度でも書ける）。
+# ⚠ **逐次の `for` は衝突しない。** ループ変数はブロックを抜けたら解放されるので
+#   `for i in a:` の後に `for i in b:` と書ける（規則 2）。
+
+print("for target shadow error demo")
+
+mut i = -1
+for i in range(3):
+    print(i)
+
+print("ここには到達しない")

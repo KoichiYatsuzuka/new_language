@@ -68,12 +68,15 @@ fn shadowing(let g6: int) -> int:
 print(shadowing(3))               # 6
 print(g6)                         # 5
 
-print("=== 7. a for target shadows the global ===")
+print("=== 7. a for target must NOT shadow the global ===")
+# ⚠⚠ 以前は `for i7 in range(3)` がグローバル `i7` を黙って覆っていた。
+#    今は再束縛としてエラー（規則 1・B4）
+#        → [for_target_shadow_error.ar](for_target_shadow_error.ar)
 mut i7 = 100
 fn loops() -> int:
     mut total2 = 0
-    for i7 in range(3):
-        total2 = total2 + i7
+    for k in range(3):
+        total2 = total2 + k
     return total2
 print(loops())                    # 3
 print(i7)                         # 100
