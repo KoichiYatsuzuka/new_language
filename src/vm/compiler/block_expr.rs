@@ -283,6 +283,15 @@ impl Compiler {
         body: &[Stmt],
         ann: Option<u32>,
     ) -> Option<()> {
+        // ⚠⚠ ループ変数は**ブロック内の束縛**（規則 2・B4）。`compile_for`（文側）と同じく
+        //    本体の間だけ temp slot へ差し替え、抜けたら解放する。
+        // ⚠ ここを直さないと**内包表記だけが古い規則のまま**になる—— 実測で、関数内の
+        //   `[v * 2 for v in range(3)]` の後で `v` が読めていた（最上位だけ NameError）。
+        // ⚠ temp は LIFO なので、**一番先に割り当てて一番後に解放**する。
+        let target_temp = if target != "_" { Some(self.alloc_temp()?) } else { None };
+        if let Some(t) = target_temp {
+            self.slots.insert(target.to_string(), t);
+        }
         let target_slot = *self.slots.get(target)?;
         let yield_slot = self.alloc_temp()?;
         self.emit(Op::BuildEmptyList);
@@ -333,6 +342,13 @@ impl Compiler {
         self.free_temp(); // iter_temp
         self.free_temp(); // result_slot
         self.free_temp(); // yield_slot
+        // ループ変数を解放する（規則 2・B4）。`compile_for` と同じ理由で
+        // `slots` から外すだけだと読みが黙って `None` になるので released にも入れる。
+        if target_temp.is_some() {
+            self.slots.remove(target);
+            self.released_for_targets.insert(target.to_string());
+            self.free_temp(); // target_temp（LIFO なので最後）
+        }
         Some(())
     }
 

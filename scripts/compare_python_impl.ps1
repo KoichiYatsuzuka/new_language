@@ -163,6 +163,7 @@ $knownDiff = @{
     'let_immutability_error'         = 'py: mut パラメータへ let を渡す静的検査が無く、素通りして 1 行目から出力が出る（Rust は StaticTypeError で停止）'
     # ⚠ B4 規則 1（for ターゲットの再束縛禁止）で新設。**実測して確認済み**。
     'for_target_shadow_error'        = 'py: for ターゲットが外側の束縛を覆う静的検査が無く、素通りして 1 行目から出力が出る（Rust は StaticTypeError で停止）'
+    'for_target_scope_error'         = 'py: 両方とも NameError になるが**出力形式が違う**（実測：py は stdout へ RuntimeError: NameError: name ... を 1 行、Rust はトレースバック）'
     # (e) 実行時エラーの出力形式（Rust は色付きトレースバック・py は 1 行）
     'runtime_error'                  = 'py: 実行時エラーの出力形式が違う'
     'traceback_frame_names'          = 'py: トレースバックの形式が違う'

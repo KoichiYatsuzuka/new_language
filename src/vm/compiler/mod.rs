@@ -146,6 +146,14 @@ struct Compiler {
     /// 外側の同名束縛を覆う `for` ループ変数の名前（#27・`for_target_shadows`）。
     /// `Stmt::For` のコンパイル時に、この名前だけ**本体の間だけ**専用 slot へ差し替える。
     shadowed_for_targets: HashSet<String>,
+    /// ループを抜けて**解放済み**になった `for` ターゲットの名前（規則 2・B4）。
+    ///
+    /// ⚠⚠ `slots` から外すだけでは足りない。関数本体の未解決 `Ident` は
+    /// `slots` を外れると `LoadGlobal` へ落ち、グローバルに無ければ**黙って `None`**
+    /// になる（実測）—— 「全宣言が先に `slots` に入るので、`slots` を外れた名前は
+    /// どの束縛にも当たらない」という `Expr::Ident` アームの前提を、解放が破るため。
+    /// ♥ ここに入った名前の読みは `Op::Fail` に落とし、最上位と**同じ `NameError`**にする。
+    released_for_targets: HashSet<String>,
     /// `static mut` の名前 → 宣言位置（#27-d）。
     ///
     /// この名前は **slot を持たない**（記憶域は `Interpreter::static_cells`）ので、
@@ -320,6 +328,7 @@ impl Compiler {
             temps_in_use: 0,
             toplevel_globals: HashMap::new(),
             shadowed_for_targets: HashSet::new(),
+            released_for_targets: HashSet::new(),
             statics: HashMap::new(),
             cells: HashMap::new(),
             cell_by_slot: HashMap::new(),

@@ -1,0 +1,58 @@
+# for_target_scope.ar — `for` のループ変数はブロック内の束縛（bug_fix.md B4・規則 2）
+#
+# ⚠⚠ ループ変数は**ブロックを抜けたら解放される**。ループ後に読むと NameError
+#    → [for_target_scope_error.ar](for_target_scope_error.ar)
+#
+# ⚠ 以前は**関数の中でだけ漏れていた**。最上位では名前引きが失敗して NameError に
+#   なるのに、関数内ではフレーム slot が残って最後の値が読めてしまい、
+#   **同じコードが置き場所で振る舞いを変えていた**（B4 のケース b vs c/h）。
+#
+# 覆う形（外側に同名がある）は規則 1 で静的エラー
+# → [for_target_shadow_error.ar](for_target_shadow_error.ar)
+
+print("=== 1. 逐次の for は同じ名前を使い回せる ===")
+# 前のループの i は解放済みなので、再束縛ではなく新しい束縛になる。
+fn twice() -> int:
+    mut s = 0
+    for i in [1, 2]:
+        s += i
+    for i in [10, 20]:
+        s += i
+    return s
+print(twice())                    # 33
+
+print("=== 2. 入れ子 ===")
+fn nested() -> int:
+    mut s = 0
+    for i in range(3):
+        for j in range(3):
+            s += i * j
+    return s
+print(nested())                   # 9
+
+print("=== 3. タプル分解 ===")
+fn pairs() -> int:
+    mut s = 0
+    for k, v in [(1, 2), (3, 4)]:
+        s += k * v
+    return s
+print(pairs())                    # 14
+
+print("=== 4. 捨てターゲット `_` は何度でも使える ===")
+for _ in range(2):
+    print("a")
+for _ in range(2):
+    print("b")
+
+print("=== 5. break で抜けても本体内の値はそのまま使える ===")
+fn first_over(let xs: list[int], let lim: int) -> int:
+    for x in xs:
+        if x > lim:
+            return x
+    return -1
+print(first_over([1, 5, 9], 4))   # 5
+
+print("=== 6. 最上位でも関数内でも同じ ===")
+# ⚠ ここが B4 の要点。以前は最上位だけ NameError で関数内は最後の値が読めた。
+for i in range(3):
+    print("top-level i =", i)

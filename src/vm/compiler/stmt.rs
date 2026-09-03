@@ -413,13 +413,24 @@ impl Compiler {
         //
         // 差し替えは `slot_of`（`target_slot` / `target_slots` の算出）より**前**に
         // 行う必要がある。temp は LIFO なので、解放は iter/sink より後（＝最後）。
-        let mut shadow_saved: Vec<(String, u16)> = Vec::new();
+        // ⚠⚠ **差し替えは全ターゲットに行う**（規則 2・B4）。
+        //    以前は「外側の同名を覆う場合」だけだったので、覆わないループ変数は
+        //    関数フレームの slot をそのまま取り、**ループを抜けても読めてしまった**:
+        //      fn f() -> int:
+        //          for i in range(3): ...
+        //          return i        # 2 が返っていた
+        //    最上位では名前引きが失敗して NameError になるので、**同じコードが
+        //    関数内か最上位かで振る舞いを変えていた**（B4 のケース b vs c/h）。
+        // ⚠ 外側に同名が無ければループ後に `slots` から**外す**。以降の読みは
+        //   未定義名と同じ経路を通り、bail ではなく実行時 `NameError` になる（実測）。
+        // ⚠ 規則 1（段階 2）で外側を覆う形は静的エラーになったので、`old` が
+        //   `Some` になるのは事実上パラメータ等の残存ケースだけだが、復元経路は残す。
+        let mut shadow_saved: Vec<String> = Vec::new();
         for t in targets {
-            if t != "_" && self.shadowed_for_targets.contains(t) {
+            if t != "_" {
                 let fresh = self.alloc_temp()?;
-                if let Some(old) = self.slots.insert(t.clone(), fresh) {
-                    shadow_saved.push((t.clone(), old));
-                }
+                self.slots.insert(t.clone(), fresh);
+                shadow_saved.push(t.clone());
             }
         }
         let unpack = targets.len() > 1;
@@ -485,9 +496,20 @@ impl Compiler {
         if sink_temp.is_some() {
             self.free_temp(); // タプル分解／`_` 用の受け皿（#27-c）
         }
-        // シャドウしていたループ変数の名前を外側の slot へ戻す（#27）。
-        for (name, old) in shadow_saved.into_iter().rev() {
-            self.slots.insert(name, old);
+        // ループ変数の名前を後始末する（#27 → 規則 2・B4）。
+        // ⚠ temp は LIFO なので、この解放は iter/sink より**後**（割当てと逆順）。
+        // ⚠⚠ **無条件に解放する**。`slots` には for ターゲットのフレーム slot が
+        //    **事前に入っている**（`collect_nested_decls` が先に全宣言を入れる）ので、
+        //    「`insert` が `Some` を返した＝外側に同名の束縛がある」とは**言えない**
+        //    （実測：常に `Some` になり、戻す判断をすると一度も解放されなかった）。
+        // ⚠ 規則 1（段階 2）で**真に外側を覆う形は静的エラー**になったので、
+        //   戻すべき外側の束縛はそもそも存在しない。
+        // ⚠ `slots` から外すだけだと読みが `LoadGlobal` へ落ちて**黙って `None`** になるので、
+        //   `released_for_targets` にも登録して明示的に失敗させる。
+        // ⚠ temp は LIFO なので、この解放は iter/sink より**後**（割当てと逆順）。
+        for name in shadow_saved.into_iter().rev() {
+            self.slots.remove(&name);
+            self.released_for_targets.insert(name);
             self.free_temp();
         }
         Some(())

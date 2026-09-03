@@ -70,6 +70,23 @@ impl Compiler {
                 let si = self.add_span(&span);
                 self.emit(Op::LoadStatic(si));
             }
+            // ループを抜けて解放された `for` ターゲットの読み（規則 2・B4）。
+            //
+            // ⚠⚠ **リゾルバの注釈より優先させる**。リゾルバはループ変数に
+            //    フレーム slot を振ったままなので、ここを `Resolution::Local` アームより
+            //    後ろに置くと `LOAD_LOCAL <未書き込み slot>` が出て**黙って `None`** になる（実測）。
+            //    注釈は**ヒントであって意味論ではない** —— 発行を決めるのはこちら。
+            // ⚠ `!slots.contains_key` のガードは必須。同じ名前の**後続の** `for` の
+            //   本体内では temp slot が入っているので、普通に読まなければならない。
+            // ⚠ bail せず `Op::Fail` にするのは、bail だと `VmForceError` になり
+            //   同じコードが最上位だと `NameError` という食い違いになるため
+            //   （`Stmt::Break` が囲むループ無しのときに `Op::Fail` を使うのと同じ理由）。
+            Expr::Ident { name, .. }
+                if self.released_for_targets.contains(name) && !self.slots.contains_key(name) =>
+            {
+                let n = self.add_name(&format!("NameError: '{name}' is not defined"));
+                self.emit(Op::Fail(n));
+            }
             Expr::Ident { name, res: Resolution::Local(slot), .. } => {
                 // ⚠ 採番のずれをデバッグビルドで捕まえる（#86。`local_slot` の doc）。
                 let s = self.local_slot(name, *slot)?;
