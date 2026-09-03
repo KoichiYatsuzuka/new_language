@@ -171,7 +171,21 @@ impl Interpreter {
         bindings: Vec<(String, Value, bool, bool)>,
         self_val: &Option<Value>,
     ) -> Result<Value, String> {
-        GENERATOR_YIELDS.with(|y| *y.borrow_mut() = Some(Vec::new()));
+        // ⚠⚠ **外側の収集を退避してから新品を入れる**（bug_fix.md B12）。
+        //
+        // `GENERATOR_YIELDS` は**入れ子にならない単一のスロット**なのに、以前は
+        // 無条件に `Some(Vec::new())` を上書きしていた。ジェネレータの**本体が
+        // 別のジェネレータを作る**だけで（回さなくても）こう壊れていた:
+        //
+        //   1. 外側が `Some([])` を入れて走り出し、`yield 1` で `[1]` になる
+        //   2. 本体が内側を作る → ここが上書きして **`[1]` が消える**
+        //   3. 内側が終わる → `take()` でスロットが **`None`** になる
+        //   4. 外側の以降の `yield` は `vm_yield_push` の `if let Some` を外れて**黙って捨てられる**
+        //   5. 外側の `take()` は `None` → `unwrap_or_default()` で **空のジェネレータ**
+        //
+        // ⚠ 例外も警告も出ずに空が返るので、木の走査などで**黙って何も出ない**。
+        // ⚠ 再帰は関係ない—— 無関係な 2 つのジェネレータでも同じく壊れる。
+        let saved_yields = GENERATOR_YIELDS.with(|y| y.borrow_mut().replace(Vec::new()));
         // 共有バッファへ locals を確保し、バインディングを slot へ詰める（self は slot 0）。
         let mut buf = std::mem::take(&mut self.vm_stack);
         let base = buf.len();
@@ -191,7 +205,14 @@ impl Interpreter {
         buf.truncate(base);
         self.vm_stack = buf;
         // エラー時も含めて必ず yield 値を回収してクリーンアップする。
-        let yields = GENERATOR_YIELDS.with(|y| y.borrow_mut().take().unwrap_or_default());
+        // ⚠ この回収はエラー時も通る位置にある。**退避の戻しもここで行う**ことで、
+        //   どの経路でも外側の収集が消えないようにしている。
+        let yields = GENERATOR_YIELDS.with(|y| {
+            let mut slot = y.borrow_mut();
+            let mine = slot.take().unwrap_or_default();
+            *slot = saved_yields; // 外側の収集を必ず戻す
+            mine
+        });
         match result {
             Ok(_) => Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
                 values: yields,

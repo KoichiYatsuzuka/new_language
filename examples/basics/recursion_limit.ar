@@ -72,10 +72,11 @@ gen nest(let n: int) -> int:
             yield v
     yield n
 
-# ⚠⚠ **再帰ジェネレータ自体が壊れている**（bug_fix.md B12）。
-#    `nest(1)` は [0, 1] を出すべきところ**空**を返す（`nest(0)` だけ正しい）。
-#    `46b8d15` 以前から同じで、再帰上限の件とは**無関係**。
-#    ⇒ ここで確かめるのは「深すぎても**プロセスが落ちない**」ことだけ。
+mut total = 0
+for v in nest(10):
+    total += v
+print(total)                      # 55
+
 try:
     mut t2 = 0
     for v in nest(100000):
