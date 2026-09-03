@@ -1,0 +1,24 @@
+# recursion_limit_error.ar — 捕まえなかった `RecursionError`（bug_fix.md B10 系統）
+#
+# ⚠ 正常系と規則の説明は [recursion_limit.ar](recursion_limit.ar) を参照。
+#
+# ⚠⚠ 眼目は「**プロセスが落ちない**」こと。以前はここで
+#    `thread 'main' has overflowed its stack` となり、トレースバックも出ず
+#    exit 127 で死んでいた。今は通常のエラー報告になる。
+#
+#   fn f(let n: int) -> int:
+#       return 1 + f(n - 1)      # 止まらない再帰
+#   print(f(1))
+#   # RecursionError: maximum recursion depth exceeded (limit ...)
+#
+# ⚠ 深さを数えているのはチャンク実行（`vm::run`）なので、
+#   関数・メソッド・ジェネレータのどれで再帰しても同じエラーになる。
+
+print("recursion limit error demo")
+
+fn runaway(let n: int) -> int:
+    return 1 + runaway(n - 1)
+
+print(runaway(1))
+
+print("ここには到達しない")

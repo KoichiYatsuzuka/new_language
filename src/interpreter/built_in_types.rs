@@ -259,6 +259,9 @@ pub(super) fn register_builtin_globals(global: &mut super::ScopeMap) {
         "AssertionError",
         "ArithmeticError",
         "AccessError",
+        // ⚠ 3 つの一覧（ここ / `type_check` の `EXCEPTION_CLASS_NAMES` /
+        //   `exceptions.rs` の `CATCHABLE`）を揃えること。
+        "RecursionError",
     ];
     for class_name in exception_names {
         let cls = make_error_class(class_name);

@@ -56,6 +56,10 @@ impl Interpreter {
             "IOError",
             "OSError",
             "StopIteration",
+            // ⚠⚠ ここに無いと `Err("RecursionError: ...")` が例外に変換されず、
+            //    `except RecursionError:` で**捕まえられない**。`values_eq` は以前から
+            //    この文言を返していたのに登録が抜けていた（実測）。
+            "RecursionError",
             "Exception",
         ];
 

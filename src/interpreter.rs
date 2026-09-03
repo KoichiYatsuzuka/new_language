@@ -351,6 +351,19 @@ impl Var {
 /// - `call_stack`: 関数名のスタック（例外フレーム生成時に参照）
 /// - `current_exception`: `except` ブロック内で処理中の例外（裸の `raise` 文で再 raise するため）
 /// - `static_cells`: `static mut` 変数の共有セル。キーは (ファイル名, 行, 列)。
+/// チャンク実行の入れ子の上限（bug_fix.md B10 系統）。
+///
+/// ⚠⚠ **実測で決めた値。** 現行のスタック（main スレッドの既定）では
+/// **深さ ~134 でスタックが満ちる**。しかもこの限界は単純な再帰 /
+/// ローカル多数 / メソッド / 相互再帰の**どれでも ~134 で一定**だった
+/// （ユーザ関数の局所変数ではなく Rust 側の固定フレームが支配的なため）。
+/// ⇒ 定数で安全側に切れる。余裕を見て 120。
+///
+/// ⚠ CPython の既定は 1000。**そこまで上げるには先にスタックを広げる必要がある**
+/// （インタプリタを `stack_size` 指定のスレッドで走らせる）。この定数だけ上げると
+/// 上限に当たる前にスタックが満ちて、**防ごうとした abort に戻る**。
+pub(crate) const MAX_CALL_DEPTH: u32 = 120;
+
 pub struct Interpreter {
     pub(self) scopes: Vec<ScopeMap>,
     /// スロットキャッシュに昇格したグローバル変数のセルレジストリ（append-only、インデックス安定）。
@@ -359,6 +372,16 @@ pub struct Interpreter {
     /// スロットキャッシュの世代番号。`freeze`（SlotCell → Immutable 降格）時にインクリメントされ、
     /// 全 AST スロットキャッシュを一括無効化する。
     pub(self) slot_epoch: u32,
+    /// 実行中のチャンクの入れ子の深さ（bug_fix.md B10 系統）。
+    ///
+    /// ⚠⚠ これが無いと再帰が**プロセスごと abort** させる
+    /// （`thread 'main' has overflowed its stack`・トレースバック無し・catch 不能）。
+    ///
+    /// ⚠ 増減は [`crate::vm::run`] の**1 箇所だけ**で行う。関数呼び出し側
+    /// （`exec_fn_evaled`）ではなくチャンク実行側で数えるのは、
+    /// **ジェネレータの本体は `exec_fn_evaled` を通らない**から（実測：
+    /// 関数側だけを守ったとき、再帰するジェネレータが落ちたままだった）。
+    pub(crate) call_depth: u32,
     /// AST 型解決層の注釈（タスク #16）。型検査（`check_program`）が生成し main.rs が注入する。
     /// メインプログラムの node-id 索引で型・検査指示・CallInfo を引ける。段階(b)/(c) の消費側が参照。
     /// 既定は空（`Interpreter::new` 直後は注釈なし＝挙動不変。注入されるまで消費側はフォールバック）。
@@ -524,6 +547,7 @@ impl Interpreter {
             scopes: vec![global],
             global_slot_cells: Vec::new(),
             slot_epoch: 0,
+            call_depth: 0,
             annotations: std::rc::Rc::new(crate::type_check::AstAnnotations::default()),
             vm_chunks: HashMap::new(),
             vm_gen_chunks: HashMap::new(),

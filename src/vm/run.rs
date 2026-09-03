@@ -75,10 +75,43 @@ struct Handler {
     stack_len: usize,
 }
 
+/// チャンクを実行する。**入れ子の深さをここで数える**（bug_fix.md B10 系統）。
+///
+/// ⚠⚠ 以前は上限が**全く無かった**ので、深さ ~134 の再帰で
+/// `thread 'main' has overflowed its stack` となり**プロセスごと落ちていた**
+/// （トレースバックなし・catch 不能・exit 127）。
+///
+/// ⚠ **関数呼び出し側（`exec_fn_evaled`）ではなくここで数える**。
+/// ジェネレータの本体は `exec_fn_evaled` を通らないので、関数側だけを守っても
+/// **再帰するジェネレータが落ちたまま**だった（実測）。チャンク実行は
+/// 関数・メソッド・ジェネレータ・最上位の全てが通る唯一の絞り所。
+///
+/// ⚠ 増減を**このラッパーだけ**で行うのは、本体（`run_inner`）に早期 `return` が
+/// 多く、中で増減させると**必ずどこかで戻し忘れる**ため。
+pub fn run(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &mut Vec<Value>,
+    base: usize,
+    captured_env: Option<&std::collections::HashMap<String, crate::interpreter::CapturedVar>>,
+) -> Result<Value, String> {
+    if interp.call_depth >= crate::interpreter::MAX_CALL_DEPTH {
+        // ⚠ ここではまだ増やしていないので戻す必要も無い。
+        return Err(format!(
+            "RecursionError: maximum recursion depth exceeded (limit {})",
+            crate::interpreter::MAX_CALL_DEPTH
+        ));
+    }
+    interp.call_depth += 1;
+    let r = run_inner(interp, chunk, buf, base, captured_env);
+    interp.call_depth -= 1;
+    r
+}
+
 /// Chunk を実行して戻り値を返す。
 /// `buf` の `base..base+n_locals` にパラメータが束縛済み。実行後 `buf` は base+n_locals..（オペランド）
 /// を空にして返る（呼び出し側が `truncate(base)` する）。
-pub fn run(
+fn run_inner(
     interp: &mut Interpreter,
     chunk: &Chunk,
     buf: &mut Vec<Value>,
