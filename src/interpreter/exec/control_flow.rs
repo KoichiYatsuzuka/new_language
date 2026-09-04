@@ -18,26 +18,38 @@ impl Interpreter {
             Value::List(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState {
                 values: items.borrow().clone(),
                 index: 0,
+                producer: None,
+                running: false,
+                poisoned: false,
             }))),
             Value::FrozenList { ref state, ref layout } => {
                 let st = state.borrow();
                 let values = (0..st.len).map(|i| layout.reconstruct_item(&st.data, i)).collect();
-                Value::Generator(Rc::new(RefCell::new(GeneratorState { values, index: 0 })))
+                Value::Generator(Rc::new(RefCell::new(GeneratorState { values, index: 0, producer: None, running: false, poisoned: false })))
             }
             Value::Str(s) => {
                 let chars: Vec<Value> = s.chars().map(|c| Value::str(c.to_string())).collect();
                 Value::Generator(Rc::new(RefCell::new(GeneratorState {
                     values: chars,
                     index: 0,
+                    producer: None,
+                    running: false,
+                    poisoned: false,
                 })))
             }
             Value::Set(items) => Value::Generator(Rc::new(RefCell::new(GeneratorState {
                 values: items.borrow().clone(),
                 index: 0,
+                producer: None,
+                running: false,
+                poisoned: false,
             }))),
             Value::Tuple(td) => Value::Generator(Rc::new(RefCell::new(GeneratorState {
                 values: td.all_values().to_vec(),
                 index: 0,
+                producer: None,
+                running: false,
+                poisoned: false,
             }))),
             Value::Generator(_) => iter_val,
             Value::Instance(_) => self.eval_method_call(iter_val, "__iter__", &[], None)?,
@@ -46,6 +58,9 @@ impl Interpreter {
                 Value::Generator(Rc::new(RefCell::new(GeneratorState {
                     values: items,
                     index: 0,
+                    producer: None,
+                    running: false,
+                    poisoned: false,
                 })))
             }
             _ => return Err("TypeError: object is not iterable".to_string()),

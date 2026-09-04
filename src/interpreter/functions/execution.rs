@@ -6,7 +6,7 @@ use {
     crate::token::Span,
     crate::interpreter::{
         CapturedVar, FnValue, GeneratorFnValue, GeneratorState,
-        Interpreter, StackFrame, Value, GENERATOR_YIELDS,
+        Interpreter, StackFrame, Value,
         RAISE_SENTINEL,
     },
 };
@@ -152,81 +152,124 @@ impl Interpreter {
         }
     }
 
-    /// VM の `Yield` op 用: 値をジェネレータの yield 収集バッファ（`GENERATOR_YIELDS`）へ追加する。
-    /// ツリーウォークの `Stmt::Yield`（dispatch.rs）と同一意味論。収集が無効（`None`）なら何もしない。
-    pub(crate) fn vm_yield_push(&self, val: Value) {
-        GENERATOR_YIELDS.with(|y| {
-            if let Some(yields) = y.borrow_mut().as_mut() {
-                yields.push(val);
+    /// バインド済みのジェネレータ本体から `Value::Generator` を**作るだけ**。
+    ///
+    /// ⚠⚠ **本体は 1 行も走らせない**（bug_fix.md B13）。以前はここで最後まで実行して
+    /// 全 `yield` 値を `Vec` に集めていた（先行評価）ので、**無限ジェネレータがハング**し、
+    /// 副作用も消費前に全部起きていた。今は CPython と同じくフレームだけ作る。
+    ///
+    /// ⚠ `chunk` を `Rc` で受けるのは、中断中のジェネレータが**本体を持ち続ける**ため。
+    /// ジェネレータから次の値を 1 つ取り出す（bug_fix.md B13）。`Ok(None)` は枯渇。
+    ///
+    /// 実態は「**既に手元にある値の列** ＋ **追加を生成する関数**」:
+    /// `values` が残っていればそれを返し（`range` / `zip` / list のイテレータ等）、
+    /// 尽きたら `producer` を**次の `yield` まで 1 回だけ進める**。
+    ///
+    /// ⚠⚠ **借用を握ったまま本体を走らせないこと。**
+    /// `Op::ForIter` の高速パスは `state.borrow_mut()` を握ったまま値を取っていたので、
+    /// その中で再開すると `RefCell already mutably borrowed` で**プロセスごと落ちる**
+    /// （B10 で潰した失敗モードへの逆戻り）。この関数は `producer` を `take()` して
+    /// 借用を落としてから走らせる。回帰網は `generator_reentrancy.ar` の B。
+    ///
+    /// ⚠ 取り出した値は**保持しない**（一度限り・メモリ一定。B13 の決定 4）。
+    pub(crate) fn gen_next(
+        &mut self,
+        state: &Rc<RefCell<GeneratorState>>,
+    ) -> Result<Option<Value>, String> {
+        let mut prod = {
+            let mut s = state.borrow_mut();
+            if s.poisoned {
+                // 中断中のジェネレータを深くコピーしたもの（`async` 提出など）。
+                return Err("ValueError: cannot copy a suspended generator".to_string());
             }
-        });
+            if s.index < s.values.len() {
+                let v = s.values[s.index].clone();
+                s.index += 1;
+                return Ok(Some(v));
+            }
+            if s.running {
+                // CPython の `ValueError: generator already executing` 相当。
+                return Err("ValueError: generator is already executing".to_string());
+            }
+            match s.producer.take() {
+                Some(p) => {
+                    s.running = true;
+                    p
+                }
+                None => return Ok(None), // 枯渇（実体化済みもここ）
+            }
+        }; // ⚠ ここで借用が落ちる。以降は本体を走らせるので握っていてはいけない。
+
+        // ⚠⚠ **呼び出しスタックへ積む**（bug_fix.md B13）。
+        //    ジェネレータ本体は「呼び出し」を経ずに走るので、積まないと
+        //    デバッガの `StepOut { target }`（`call_stack.len()` が下がったら止まる）が
+        //    **本体を呼び出し元と同じ深さだと誤認**し、step out がジェネレータの中で止まる。
+        //    実際に `dbg_generator` の golden が差分を出して見つかった。
+        //    ⚠ トレースバックにもジェネレータ名が出るようになる。
+        self.push_call_name(&prod.name);
+        // ジェネレータメソッドのアクセス制御・Self 依存ディスパッチのため張り直す。
+        let prev_class = self.current_class.take();
+        self.current_class = prod.self_class.clone();
+        let chunk = prod.chunk.clone();
+        let frame = std::mem::replace(
+            &mut prod.frame,
+            crate::vm::run::Frame { ip: 0, handlers: Vec::new(), cells: Vec::new() },
+        );
+        let outcome = crate::vm::run::resume_frame(self, &chunk, &mut prod.buf, 0, frame);
+        self.current_class = prev_class;
+        self.pop_call_name();
+
+        let mut s = state.borrow_mut();
+        s.running = false;
+        match outcome {
+            Ok(crate::vm::run::RunOutcome::Suspended(v, f)) => {
+                prod.frame = f;
+                s.producer = Some(prod);
+                Ok(Some(v))
+            }
+            // 本体が最後まで走った / エラー: 以後は枯渇（`producer` を戻さない）。
+            // ⚠ この経路で `finally` が走る（本体が最後まで行くので自然に）。
+            Ok(crate::vm::run::RunOutcome::Done(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
-    /// バインド済みのジェネレータ本体を VM で実行し、eager 収集した yield 値から `Value::Generator` を作る。
-    /// yield 収集は `GENERATOR_YIELDS`（ツリーウォークと共有）を使うので意味論一致。エラーは生の `Err` を
-    /// 伝播（`exec_generator_evaled` のツリーウォーク経路と同じ・RAISE_SENTINEL は `current_exception` 設定済み）。
-    fn run_vm_generator(
+    fn make_vm_generator(
         &mut self,
-        chunk: &crate::vm::Chunk,
+        name: &str,
+        chunk: std::rc::Rc<crate::vm::Chunk>,
         bindings: Vec<(String, Value, bool, bool)>,
         self_val: &Option<Value>,
     ) -> Result<Value, String> {
-        // ⚠⚠ **外側の収集を退避してから新品を入れる**（bug_fix.md B12）。
-        //
-        // `GENERATOR_YIELDS` は**入れ子にならない単一のスロット**なのに、以前は
-        // 無条件に `Some(Vec::new())` を上書きしていた。ジェネレータの**本体が
-        // 別のジェネレータを作る**だけで（回さなくても）こう壊れていた:
-        //
-        //   1. 外側が `Some([])` を入れて走り出し、`yield 1` で `[1]` になる
-        //   2. 本体が内側を作る → ここが上書きして **`[1]` が消える**
-        //   3. 内側が終わる → `take()` でスロットが **`None`** になる
-        //   4. 外側の以降の `yield` は `vm_yield_push` の `if let Some` を外れて**黙って捨てられる**
-        //   5. 外側の `take()` は `None` → `unwrap_or_default()` で **空のジェネレータ**
-        //
-        // ⚠ 例外も警告も出ずに空が返るので、木の走査などで**黙って何も出ない**。
-        // ⚠ 再帰は関係ない—— 無関係な 2 つのジェネレータでも同じく壊れる。
-        let saved_yields = GENERATOR_YIELDS.with(|y| y.borrow_mut().replace(Vec::new()));
-        // ⚠⚠ ジェネレータは**自前のバッファ**で走らせる（bug_fix.md B13 段階 B）。
-        //
-        // 以前は共有スタック（`vm_stack`）を借りて末尾に積んでいた。本体を最後まで
-        // 走らせる今はそれで成立するが、**中断するようになると成立しない**——
-        // 中断中のジェネレータは**オペランドスタックを保持したまま**抜けるので、
-        // 共有スタックに置いたままだと**次に誰かが走った瞬間にその領域が再利用され**、
-        // 値が黙って壊れる（CPython が `gi_iframe` に記憶域を持つのと同じ理由）。
-        // ⇒ 中断を入れる前にここを先に切り離しておく（この段階では振る舞い不変）。
-        // ⚠ 回帰網は `generator_reentrancy.ar` の A / D（交互消費）。
+        // 自前のバッファにローカルを確保し、バインディングを slot へ詰める（self は slot 0）。
+        // ⚠⚠ 共有スタックは使えない。中断中もオペランドスタックを保持するので、
+        //    共有側に置くと次に誰かが走った瞬間に領域が再利用されて値が壊れる。
         let mut buf: Vec<Value> = vec![Value::None; chunk.n_locals];
-        let base = 0usize;
         for (i, (_, val, _, _)) in bindings.into_iter().enumerate() {
             if i < chunk.n_locals {
                 buf[i] = val;
             }
         }
-        // ジェネレータメソッド: アクセス制御・Self 依存ディスパッチのため current_class を張る。
-        let prev_class = self.current_class.take();
-        if let Some(Value::Instance(inst_rc)) = self_val {
-            self.current_class = Some(inst_rc.borrow().class.clone());
-        }
-        let result = crate::vm::run(self, chunk, &mut buf, base, None);
-        self.current_class = prev_class;
-        // ⚠ 共有スタックへの返却は不要（自前の `buf` はここで落ちる）。
-        drop(buf);
-        // エラー時も含めて必ず yield 値を回収してクリーンアップする。
-        // ⚠ この回収はエラー時も通る位置にある。**退避の戻しもここで行う**ことで、
-        //   どの経路でも外側の収集が消えないようにしている。
-        let yields = GENERATOR_YIELDS.with(|y| {
-            let mut slot = y.borrow_mut();
-            let mine = slot.take().unwrap_or_default();
-            *slot = saved_yields; // 外側の収集を必ず戻す
-            mine
-        });
-        match result {
-            Ok(_) => Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                values: yields,
-                index: 0,
-            })))),
-            Err(e) => Err(e),
-        }
+        // ジェネレータメソッド: 再開のたび `current_class` を張り直すために覚えておく
+        // （アクセス制御・Self 依存ディスパッチのため）。
+        let self_class = match self_val {
+            Some(Value::Instance(inst_rc)) => Some(inst_rc.borrow().class.clone()),
+            _ => None,
+        };
+        let frame = crate::vm::run::Frame::new(&chunk);
+        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+            values: Vec::new(),
+            index: 0,
+            producer: Some(Box::new(crate::interpreter::GenProducer {
+                name: name.to_string(),
+                chunk,
+                buf,
+                frame,
+                self_class,
+            })),
+            running: false,
+            poisoned: false,
+        }))))
     }
 
     /// バインド済みバッファで VM Chunk を実行し、戻り値／例外フレームを組み立てる（fast/general 共通）。
@@ -638,14 +681,14 @@ impl Interpreter {
             }
         }
 
-        // ── VM 経路（タスク #8）: 本体をバイトコードで実行し yield を eager 収集する ──
+        // ── VM 経路（タスク #8）: 本体をバイトコードへ載せ、**中断可能なフレーム**を作る ──
         // 対象: フリージェネレータ（self なし）＋ Instance レシーバのジェネレータメソッド。
         // クロージャキャプチャあり・非対応構文（`Self` 参照等）はツリーウォークへフォールバック。
         let vm_eligible = gen_fn.captured_env.is_empty()
             && matches!(self_val, None | Some(Value::Instance(_)));
         if vm_eligible {
             if let Some(chunk) = self.get_or_compile_gen_chunk(&gen_fn) {
-                return self.run_vm_generator(&chunk, bindings, &self_val);
+                return self.make_vm_generator(&gen_fn.name, chunk, bindings, &self_val);
             }
         }
         // #3/#33: フォールバックは存在しない（ジェネレータ本体もツリーウォークごと削除）。

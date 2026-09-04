@@ -305,9 +305,17 @@ impl Value {
             Value::Generator(rc) => {
                 let b = rc.borrow();
                 let vals = b.values.iter().map(|v| v.deep_clone()).collect();
+                // ⚠⚠ **中断中の本体は複製できない**（bug_fix.md B13）。実行中のフレームには
+                //    意味のある複製が無い（CPython も generator の deepcopy を拒否する）。
+                //    `deep_clone` はエラーを返せないので**印だけ付けて最初の取り出しで落とす**。
+                //    印が無いと「黙って枯渇したジェネレータ」になり 🔴 サイレントに空を返す。
+                let poisoned = b.producer.is_some();
                 Value::Generator(Rc::new(RefCell::new(GeneratorState {
                     values: vals,
                     index: b.index,
+                    producer: None,
+                    running: false,
+                    poisoned,
                 })))
             }
             Value::Class(rc) => Value::Class(Rc::new(rc.deep_clone())),

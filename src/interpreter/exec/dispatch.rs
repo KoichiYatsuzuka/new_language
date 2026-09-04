@@ -8,7 +8,6 @@ use {
     crate::interpreter::{
         debugger::DbgMode, ExecResult,
         Interpreter, Var,
-        GENERATOR_YIELDS,
     },
 };
 
@@ -128,14 +127,13 @@ impl Interpreter {
                 return_type,
                 ..
             } => self.exec_fn_def(name, template_params, params, body, decorators, return_type.as_deref()),
-            Stmt::Yield(expr) => {
-                let val = self.eval(expr)?;
-                GENERATOR_YIELDS.with(|y| {
-                    if let Some(yields) = y.borrow_mut().as_mut() {
-                        yields.push(val.clone());
-                    }
-                });
-                Ok(ExecResult::Normal)
+            // ⚠⚠ **到達不能**（bug_fix.md B13）。ジェネレータ本体は必ず VM のチャンクへ載り、
+            //    `yield` は段階 A で「`gen` 本体の直下だけ」を静的に保証してある。
+            //    以前はここが共有バッファへ積んでいた（先行評価）。
+            //    ⚠ 黙って握り潰さず明示的に落とす。素通りさせると「yield が消える」
+            //      種類のバグ（B12）を再び見えなくする。
+            Stmt::Yield(_) => {
+                Err("RuntimeError: internal: `yield` outside a generator body".to_string())
             }
             Stmt::GenDef {
                 name,

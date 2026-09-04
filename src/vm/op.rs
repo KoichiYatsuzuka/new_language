@@ -425,7 +425,7 @@ pub enum Op {
     /// リテラル辞書構築: 末尾 2N 要素（k0,v0,k1,v1,..）を pop して `Value::Dict` を push（`{k: v, ..}`）。
     BuildDict(u16),
     // ── ジェネレータ（タスク #8） ──
-    /// `yield expr`: pop した値をジェネレータの yield 収集バッファ（`GENERATOR_YIELDS`）へ追加する
+    /// `yield expr`: pop した値を産出して**本体を中断する**（bug_fix.md B13）。以前は共有バッファへ積むだけで本体は最後まで走っていた（先行評価）。
     /// （eager 収集・ツリーウォークの `Stmt::Yield` と同一意味論。値は産出するだけで制御は継続）。
     Yield,
     // ── async（タスク #9） ──

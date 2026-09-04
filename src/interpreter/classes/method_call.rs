@@ -196,6 +196,9 @@ impl Interpreter {
                         return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
                             values: items.borrow().clone(),
                             index: 0,
+                            producer: None,
+                            running: false,
+                            poisoned: false,
                         }))));
                     }
                     "append" => {
@@ -288,15 +291,13 @@ impl Interpreter {
                     ));
                 }
                 Self::expect_no_args_evaled(&evaled, "Generator", "next")?;
-                let mut s = state.borrow_mut();
-                if s.index < s.values.len() {
-                    // 次の yield 値を返してインデックスを進める
-                    let val = s.values[s.index].clone();
-                    s.index += 1;
-                    Ok(val)
-                } else {
+                // ⚠ 借用を握らず `gen_next` へ委ねる（B13）。中断中の本体を走らせるので、
+                //   ここで `borrow_mut()` を握ると再入で落ちる。
+                let st = state.clone();
+                match self.gen_next(&st)? {
+                    Some(val) => Ok(val),
                     // ジェネレータが枯渇した: for ループはこのエラーでループを終了する
-                    Err("EndOfIteration: generator is exhausted".to_string())
+                    None => Err("EndOfIteration: generator is exhausted".to_string()),
                 }
             }
             Value::Namespace(ns) => {

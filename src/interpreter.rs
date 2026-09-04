@@ -123,10 +123,6 @@ pub use value::*;
  const RAISE_SENTINEL: &str = "\x00__raise__";
 
 thread_local! {
-    /// ジェネレータ本体の一括評価中に `yield` された値を収集するスレッドローカル変数。
-    /// `None` の場合はジェネレータ実行コンテキスト外であることを意味する。
-    /// `exec_generator_evaled` が開始時に `Some(Vec::new())` をセットし、終了時に `take()` で回収する。
-    pub(self) static GENERATOR_YIELDS: RefCell<Option<Vec<Value>>> = const { RefCell::new(None) };
 }
 
 // ---------------------------------------------------------------------------

@@ -221,6 +221,9 @@ impl Interpreter {
         Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
             values: tuples,
             index: 0,
+            producer: None,
+            running: false,
+            poisoned: false,
         }))))
     }
 
@@ -235,6 +238,9 @@ impl Interpreter {
             return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
                 values: vec![],
                 index: 0,
+                producer: None,
+                running: false,
+                poisoned: false,
             }))));
         }
         let min_len = iters.iter().map(|it| it.len()).min().unwrap_or(0);
@@ -249,6 +255,9 @@ impl Interpreter {
         Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
             values: tuples,
             index: 0,
+            producer: None,
+            running: false,
+            poisoned: false,
         }))))
     }
 

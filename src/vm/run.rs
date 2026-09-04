@@ -31,6 +31,12 @@ enum Flow {
     NextAfterCall,
     /// 絶対 index へジャンプ。
     Jump(usize),
+    /// `yield` で**中断**する（bug_fix.md B13）。産出値を持つ。
+    ///
+    /// ⚠ これが出るのはジェネレータ本体のチャンクだけ。段階 A で
+    /// 「`yield` は `gen` 本体の直下だけ」を静的に保証してあるので、
+    /// **中断は `run_dispatch` を 1 回抜けるだけ**で済む。
+    Suspend(Value),
     /// 関数から値を返す。
     Return(Value),
 }
@@ -84,6 +90,14 @@ pub(crate) struct Handler {
 /// ⚠ オペランドスタックとローカルは `buf[base..]` にあり、**ここには入らない**。
 ///   中断する側（ジェネレータ）は共有スタックを使わず**自前のバッファ**を持つ
 ///   （CPython が `gi_iframe` に記憶域を持つのと同じ理由）。
+/// ディスパッチループの抜け方（bug_fix.md B13）。
+pub(crate) enum RunOutcome {
+    /// 本体が最後まで走った（戻り値）。
+    Done(Value),
+    /// `yield` で中断した。産出値と、再開に要る状態。
+    Suspended(Value, Frame),
+}
+
 pub(crate) struct Frame {
     /// 次に実行する命令の index（CPython の `f_lasti` 相当）。
     pub(crate) ip: usize,
@@ -91,6 +105,13 @@ pub(crate) struct Frame {
     pub(crate) handlers: Vec<Handler>,
     /// セル表（#27-d 段階 2b）。捕捉は既存の `Rc<RefCell<Value>>` をそのまま共有する。
     pub(crate) cells: Vec<Rc<RefCell<Value>>>,
+}
+
+impl Frame {
+    /// チャンクの先頭から始めるフレームを作る（ジェネレータ生成用）。
+    pub(crate) fn new(chunk: &Chunk) -> Self {
+        Frame { ip: 0, handlers: Vec::new(), cells: build_cells(chunk, None) }
+    }
 }
 
 /// チャンクを実行する。**入れ子の深さをここで数える**（bug_fix.md B10 系統）。
@@ -137,22 +158,42 @@ pub fn run(
         build_cells(chunk, captured_env),
     );
     interp.call_depth -= 1;
-    r
+    match r {
+        Ok(RunOutcome::Done(v)) => Ok(v),
+        // ⚠ ここには来ない。段階 A で「`yield` は `gen` 本体の直下だけ」を
+        //   静的エラーで保証しているので、非ジェネレータのチャンクに `Yield` は出ない。
+        Ok(RunOutcome::Suspended(..)) => {
+            Err("RuntimeError: internal: yield outside a generator body".to_string())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// **中断したフレームから再開**する（B13 段階 B で用意、段階 C から使う）。
 ///
 /// ⚠ 新規実行（[`run`]）と**同じディスパッチループ**を使う。違いは初期値だけ。
 /// ⚠ この段階では呼ばれない（中断が存在しないのでフレームも生まれない）。
-#[allow(dead_code)]
 pub(crate) fn resume_frame(
     interp: &mut Interpreter,
     chunk: &Chunk,
     buf: &mut Vec<Value>,
     base: usize,
     frame: Frame,
-) -> Result<Value, String> {
-    run_dispatch(interp, chunk, buf, base, frame.ip, frame.handlers, frame.cells)
+) -> Result<RunOutcome, String> {
+    // ⚠⚠ **ここでも深さを数える**（bug_fix.md B10）。
+    //    再帰するジェネレータは入れ子の分だけここを通るので、`run` だけ守っても
+    //    **スタックが満ちてプロセスごと落ちる**。B13 の実装中に実際に再発させ、
+    //    `recursion_limit.ar` §5 が捕まえた。
+    if interp.call_depth >= crate::interpreter::MAX_CALL_DEPTH {
+        return Err(format!(
+            "RecursionError: maximum recursion depth exceeded (limit {})",
+            crate::interpreter::MAX_CALL_DEPTH
+        ));
+    }
+    interp.call_depth += 1;
+    let r = run_dispatch(interp, chunk, buf, base, frame.ip, frame.handlers, frame.cells);
+    interp.call_depth -= 1;
+    r
 }
 
 /// 命令ディスパッチの本体。**新規実行と再開の両方がここを通る**。
@@ -175,7 +216,7 @@ fn run_dispatch(
     mut ip: usize,
     mut handlers: Vec<Handler>,
     cells: Vec<Rc<RefCell<Value>>>,
-) -> Result<Value, String> {
+) -> Result<RunOutcome, String> {
 
     // デバッグセッション中はステップ判定つきのループへ（#1）。
     // ⚠ **通常経路には何も足さない**のがこの分岐の目的。文境界ごとの停止判定を
@@ -192,7 +233,11 @@ fn run_dispatch(
         match exec_op(interp, chunk, buf, base, ip, &mut handlers, &cells) {
             Ok(Flow::Next) => ip += 1,
             Ok(Flow::Jump(t)) => ip = t,
-            Ok(Flow::Return(v)) => return Ok(v),
+            Ok(Flow::Return(v)) => return Ok(RunOutcome::Done(v)),
+            // ⚠ 再開は `yield` の**次**の命令から。`ip` のままだと同じ yield を無限に繰り返す。
+            Ok(Flow::Suspend(v)) => {
+                return Ok(RunOutcome::Suspended(v, Frame { ip: ip + 1, handlers, cells }))
+            }
             // 呼び出しから戻った直後にデバッグセッションが始まっていることがある
             // （ネストした `break_point`）。**この再判定が無いと、既に走っている VM フレームが
             // 停止判定を持たないまま最後まで走り抜ける**（step-out が効かない実バグだった）。
@@ -245,7 +290,7 @@ fn run_stepping(
     mut ip: usize,
     mut handlers: Vec<Handler>,
     cells: Vec<Rc<RefCell<Value>>>,
-) -> Result<Value, String> {
+) -> Result<RunOutcome, String> {
     loop {
         // 文の先頭か？（行テーブルは code と 1:1 なので O(1)）
         if let Some(&span_idx) = chunk.stmt_spans.get(ip) {
@@ -259,7 +304,10 @@ fn run_stepping(
         match exec_op(interp, chunk, buf, base, ip, &mut handlers, &cells) {
             Ok(Flow::Next) | Ok(Flow::NextAfterCall) => ip += 1,
             Ok(Flow::Jump(t)) => ip = t,
-            Ok(Flow::Return(v)) => return Ok(v),
+            Ok(Flow::Return(v)) => return Ok(RunOutcome::Done(v)),
+            Ok(Flow::Suspend(v)) => {
+                return Ok(RunOutcome::Suspended(v, Frame { ip: ip + 1, handlers, cells }))
+            }
             Err(e) => match handlers.pop() {
                 Some(h) => {
                     buf.truncate(h.stack_len);
@@ -1100,19 +1148,18 @@ fn exec_op(
             // 高速パス: Generator（range/list/str/set/tuple/gen __iter__ の実体）は
             // index を直接進める（eval_method_call のディスパッチを丸ごと回避）。
             // メソッド呼び出しの Generator "next" アームと同一意味論。
-            let next: Option<Option<Value>> =
-                if let Value::Generator(state) = &buf[iter_idx] {
-                    let mut s = state.borrow_mut();
-                    if s.index < s.values.len() {
-                        let val = s.values[s.index].clone();
-                        s.index += 1;
-                        Some(Some(val))
-                    } else {
-                        Some(None) // 枯渇
-                    }
-                } else {
-                    None // 非 Generator（カスタムイテレータ）はフォールバック
-                };
+            // ⚠⚠ **借用を握ったまま再開しない**（B13）。以前は `state.borrow_mut()` を
+            //    握ったまま値を取っていた。中断を入れた今、その中で本体を走らせると
+            //    `RefCell already mutably borrowed` で**プロセスごと落ちる**。
+            //    ⇒ `Rc` だけ複製して借用を落としてから `gen_next` へ。
+            let gen_rc = match &buf[iter_idx] {
+                Value::Generator(state) => Some(state.clone()),
+                _ => None, // 非 Generator（カスタムイテレータ）はフォールバック
+            };
+            let next: Option<Option<Value>> = match gen_rc {
+                Some(state) => Some(interp.gen_next(&state)?),
+                None => None,
+            };
             match next {
                 Some(Some(val)) => buf[base + *target_slot as usize] = val,
                 Some(None) => return Ok(Flow::Jump(*exit_ip as usize)),
@@ -1562,8 +1609,10 @@ fn exec_op(
             buf.push(interp.vm_build_dict(flat)?);
         }
         Op::Yield => {
+            // ⚠⚠ **ここでディスパッチループを抜ける**（bug_fix.md B13）。
+            //    以前は共有バッファへ積むだけで本体は最後まで走っていた（先行評価）。
             let v = buf.pop().unwrap();
-            interp.vm_yield_push(v);
+            return Ok(Flow::Suspend(v));
         }
         Op::AsyncSubmit(idx) => {
             let mgr = buf.pop().unwrap();

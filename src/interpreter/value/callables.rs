@@ -60,15 +60,60 @@ pub struct TemplateGenFnValue {
 }
 
 
-/// インスタンス化済みジェネレータオブジェクトの実行時状態。
-/// `exec_generator_evaled` によってジェネレータ本体を一括実行し、すべての `yield` 値を収集してから保持する。
+/// 中断しているジェネレータ本体（bug_fix.md B13）。
 ///
-/// - `values`: ジェネレータ本体から収集されたすべての yield 値（順序保証）
-/// - `index`: 次回 `next()` 呼び出しで返す値のインデックス。`values.len()` 以上になると枯渇
+/// ⚠⚠ **共有スタックは使えない**。中断中もオペランドスタックを保持するので、
+/// `buf` を自前で持つ（CPython が `gi_iframe` に記憶域を持つのと同じ理由）。
+pub struct GenProducer {
+    /// ジェネレータ関数名。トレースバックと**デバッガの呼び出し深さ**に使う。
+    pub(crate) name: String,
+    /// 本体のチャンク。
+    pub(crate) chunk: std::rc::Rc<crate::vm::Chunk>,
+    /// **自前の** ローカル＋オペランドスタック。
+    pub(crate) buf: Vec<Value>,
+    /// 再開位置・例外ハンドラ・セル表。
+    pub(crate) frame: crate::vm::run::Frame,
+    /// メソッドのときの所属クラス（再開のたび `current_class` を張り直す）。
+    pub(crate) self_class: Option<std::rc::Rc<super::ClassValue>>,
+}
+
+// ⚠ `Chunk` は `Debug` を実装しないので手書きする。
+impl std::fmt::Debug for GenProducer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenProducer")
+            .field("ip", &self.frame.ip)
+            .finish()
+    }
+}
+
+/// インスタンス化済みジェネレータオブジェクトの実行時状態。
+///
+/// 実態は「**既に手元にある値の列** ＋ **追加を生成する関数**」（B13）。
+///
+/// - `values` / `index`: 実体化済みの値。`range` / `zip` / list のイテレータ等はこれだけ使う。
+/// - `producer`: 中断可能な本体。`None` なら実体化済み。
+///
+/// ⚠ 取り出し済みの値は**保持しない**（一度限り・メモリ一定）。
 #[derive(Debug)]
 pub struct GeneratorState {
     pub values: Vec<Value>,
     pub index: usize,
+    /// 中断可能な本体。**枝が尽きたら `None`**（枟渇をこれで表す）。
+    pub(crate) producer: Option<Box<GenProducer>>,
+    /// 本体を実行中か。
+    ///
+    /// ⚠⚠ `producer` を `take()` してから走らせる（借用を握ったまま再開すると
+    /// `RefCell already mutably borrowed` で**プロセスごと落ちる**）ので、
+    /// 「取り出し中」と「枟渇」を `producer` だけでは区別できない。
+    /// この旗で再入を弾く（CPython の `generator already executing` 相当）。
+    pub(crate) running: bool,
+    /// **複製できなかった**中断中ジェネレータの複製か（bug_fix.md B13）。
+    ///
+    /// ⚠⚠ 実行中のフレームは複製できない（CPython も `deepcopy` を拒否する）。
+    /// `deep_clone`（`async` 提出時の深いコピー等）は `Value` を返すだけでエラーを返せないので、
+    /// **印を付けておいて最初の取り出しで落とす**。印が無いと「黙って枯渇したジェネレータ」に
+    /// なり、🔴 サイレントに空の結果を返す。
+    pub(crate) poisoned: bool,
 }
 
 

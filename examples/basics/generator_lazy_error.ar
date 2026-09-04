@@ -1,0 +1,58 @@
+# generator_lazy_error.ar — 中断中のジェネレータに対する不正な操作（bug_fix.md B13）
+#
+# ⚠ 正常系と規則の説明は [generator_lazy.ar](generator_lazy.ar) を参照。
+#
+# コルーチン化で**新しく起こりうるようになった**エラーが 2 つある。
+# どちらも先行評価のころは存在しなかった（本体が既に走り切っていたため）。
+#
+#   ① 実行中のジェネレータを自分で消費する（このファイルが実際に起こすもの）
+#      mut holder = []
+#      gen g() -> int:
+#          yield 1
+#          for v in holder[0]:     # ← 自分自身
+#              yield v * 10
+#      let it = g()
+#      holder.append(it)
+#      for x in it: ...
+#      # ValueError: generator is already executing
+#
+#      ⚠ CPython の `ValueError: generator already executing` と同じ趣旨。
+#      ⚠⚠ 実装上も**必要**な検査。`producer` を取り出して借用を落としてから走らせるので、
+#         この旗が無いと「取り出し中」と「枯渇」を区別できず、黙って空を返してしまう。
+#
+#   ② 中断中のジェネレータを深くコピーする（`async` 提出時など）
+#      gen g() -> int:
+#          yield 1
+#          yield 2
+#      let it = g()
+#      print(it.next())            # 本体が中断状態になる
+#      mgr <- async->int:
+#          for v in it: ...        # 提出時に深いコピーが起きる
+#      # ValueError: cannot copy a suspended generator
+#
+#      ⚠ 実行中のフレームには意味のある複製が無い（CPython も generator の
+#        `deepcopy` を拒否する）。`deep_clone` はエラーを返せないので、
+#        **印を付けておいて最初の取り出しで落とす**。
+#      ⚠⚠ 印が無いと「黙って枯渇したジェネレータ」になり 🔴 サイレントに空を返す。
+#
+# ⚠ **入れ子で回すのはエラーではない**（実行中ではないため）。
+#   `for v in it: for w in it: ...` は通る → [generator_reentrancy.ar](generator_reentrancy.ar) B。
+
+print("generator lazy error demo")
+
+mut holder = []
+
+gen self_consuming() -> int:
+    yield 1
+    for v in holder[0]:
+        yield v * 10
+
+let it = self_consuming()
+holder.append(it)
+
+mut out = []
+for x in it:
+    out.append(x)
+print(out)
+
+print("ここには到達しない")

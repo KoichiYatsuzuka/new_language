@@ -1,0 +1,81 @@
+# generator_lazy.ar — ジェネレータは遅延評価される（bug_fix.md B13・コルーチン化）
+#
+# ⚠⚠ **以前は先行評価だった。** 本体を最後まで走らせて全 `yield` 値を `Vec` に集めてから
+#    ジェネレータを作っていたので:
+#      - `while True: yield i` は**永久にハング**した（出力が 1 つも出ない）
+#      - 副作用が**全て消費前**に起きた（`break` しても後続の produce は走り済み）
+#      - メモリが yield の総数に比例した
+#    今は CPython と同じく「次の `yield` まで走って中断」する。
+
+print("=== 1. 生成と消費が交互になる ===")
+gen noisy(let n: int) -> int:
+    mut i = 0
+    while i < n:
+        print("  produce", i)
+        yield i
+        i += 1
+
+for v in noisy(5):
+    print("consume", v)
+    if v == 1:
+        break
+# produce 0 / consume 0 / produce 1 / consume 1
+# ⚠ produce 2..4 は**起きない**。break が本体に届く。
+
+print("=== 2. 無限ジェネレータが書ける ===")
+# ⚠⚠ これが先行評価では不可能だった形。
+gen naturals() -> int:
+    mut i = 0
+    while True:
+        yield i
+        i += 1
+
+mut taken = []
+for v in naturals():
+    taken.append(v)
+    if len(taken) == 5:
+        break
+print(taken)                      # [0, 1, 2, 3, 4]
+
+print("=== 3. 消費しなければ本体は 1 行も走らない ===")
+gen never_runs() -> int:
+    print("  この行は出ない")
+    yield 1
+
+let unused = never_runs()
+print("作っただけ")
+
+print("=== 4. 消費し切ると finally が走る ===")
+# ⚠ 以前は**生成時**に走っていた（消費より前に "cleanup" が出た）。
+gen with_cleanup() -> int:
+    try:
+        yield 1
+        yield 2
+    finally:
+        print("  cleanup")
+
+mut got = []
+for v in with_cleanup():
+    got.append(v)
+print(got)                        # cleanup のあとに [1, 2]
+
+print("=== 5. 途中で捨てたジェネレータ ===")
+# ⚠⚠ **その場では finally が走らない**（Python との既知の差）。
+#    Rust の `Drop` の中で Arrow のコードは走らせられない（インタプリタを持てず、
+#    エラーも返せず、VM が借用中に再入する危険がある）ため。
+mut partial = []
+for v in with_cleanup():
+    partial.append(v)
+    break
+print(partial)                    # [1]（cleanup はここでは出ない）
+
+print("=== 6. 交互消費 ===")
+gen count_from(let s: int) -> int:
+    mut i = s
+    while i < s + 3:
+        yield i
+        i += 1
+
+let a = count_from(0)
+let b = count_from(10)
+print(a.next(), b.next(), a.next(), b.next())   # 0 10 1 11

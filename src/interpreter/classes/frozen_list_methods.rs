@@ -32,6 +32,9 @@ impl Interpreter {
                 Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
                     values,
                     index: 0,
+                    producer: None,
+                    running: false,
+                    poisoned: false,
                 }))))
             }
             "__contains__" => {
