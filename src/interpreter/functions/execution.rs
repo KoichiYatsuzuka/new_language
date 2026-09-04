@@ -234,6 +234,89 @@ impl Interpreter {
         }
     }
 
+    /// 中断中のジェネレータを閉じる（bug_fix.md B13 段階 D）。
+    ///
+    /// 中断点へ `GeneratorExit` を投げ込むので、囲む `try` があれば **`finally` が走る**。
+    /// 既に枯渇している／実体化済みのジェネレータに対しては何もしない。
+    ///
+    /// ⚠ `close()` の途中で `yield` したら CPython と同じく `RuntimeError`。
+    /// ⚠⚠ **`Drop` からは呼ばない。** Rust の `Drop` は `&mut Interpreter` を持てず、
+    /// エラーも返せず、VM が借用中に再入する危険がある。⇒ 明示 `close()` と
+    /// プログラム終了時のスイープでだけ走らせる（B13 の決定 3）。
+    pub(crate) fn gen_close(&mut self, state: &Rc<RefCell<GeneratorState>>) -> Result<(), String> {
+        let mut prod = {
+            let mut s = state.borrow_mut();
+            if s.running {
+                return Err("ValueError: generator is already executing".to_string());
+            }
+            // 実体化済みの残りも捨てる（閉じたら枯渇）。
+            s.values.clear();
+            s.index = 0;
+            match s.producer.take() {
+                Some(p) => {
+                    s.running = true;
+                    p
+                }
+                None => return Ok(()), // 既に枯渇 / 実体化済み
+            }
+        }; // ⚠ 借用を落としてから走らせる（`gen_next` と同じ理由）
+
+        self.push_call_name(&prod.name);
+        let prev_class = self.current_class.take();
+        self.current_class = prod.self_class.clone();
+        let chunk = prod.chunk.clone();
+        let frame = std::mem::replace(
+            &mut prod.frame,
+            crate::vm::run::Frame { ip: 0, handlers: Vec::new(), cells: Vec::new() },
+        );
+        let outcome = crate::vm::run::resume_frame_throwing(
+            self,
+            &chunk,
+            &mut prod.buf,
+            0,
+            frame,
+            "GeneratorExit: generator is being closed",
+        );
+        self.current_class = prev_class;
+        self.pop_call_name();
+        state.borrow_mut().running = false;
+
+        match outcome {
+            Ok(crate::vm::run::RunOutcome::Done(_)) => Ok(()),
+            // ⚠ `finally` の中で `yield` した等。CPython の RuntimeError と同じ趣旨。
+            Ok(crate::vm::run::RunOutcome::Suspended(..)) => {
+                Err("RuntimeError: generator ignored GeneratorExit".to_string())
+            }
+            // 投げ込んだ `GeneratorExit` がそのまま抜けてくるのは**正常**なので飲む。
+            //
+            // ⚠⚠ **文字列で見てはいけない。** `try` を抱えていると `finally` のあとの
+            //    再送出は `RAISE_SENTINEL` で来て、実体は `current_exception` にある。
+            //    実際、最初は `e.starts_with("GeneratorExit")` で書いて
+            //    **`try/finally` 付きの close だけ GeneratorExit が外へ漏れた**（実測）。
+            Err(e) => {
+                let is_exit = if e == crate::interpreter::RAISE_SENTINEL {
+                    match self.take_current_exception() {
+                        Some(exc) => {
+                            let hit = matches!(
+                                &exc.exception,
+                                Value::Instance(i) if i.borrow().class.name == "GeneratorExit"
+                            );
+                            if !hit {
+                                // 別の例外はそのまま伝播させるので戻す。
+                                self.current_exception = Some(exc);
+                            }
+                            hit
+                        }
+                        None => false,
+                    }
+                } else {
+                    e.starts_with("GeneratorExit")
+                };
+                if is_exit { Ok(()) } else { Err(e) }
+            }
+        }
+    }
+
     fn make_vm_generator(
         &mut self,
         name: &str,
@@ -257,7 +340,7 @@ impl Interpreter {
             _ => None,
         };
         let frame = crate::vm::run::Frame::new(&chunk);
-        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
+        let rc = Rc::new(RefCell::new(GeneratorState {
             values: Vec::new(),
             index: 0,
             producer: Some(Box::new(crate::interpreter::GenProducer {
@@ -269,7 +352,15 @@ impl Interpreter {
             })),
             running: false,
             poisoned: false,
-        }))))
+        }));
+        // ⚠ プログラム終了時に `finally` を走らせるため登録する（B13 段階 D）。
+        //   `Weak` なので寿命は延びない。⚠ 伸長する前に死んだ参照を掃いて、
+        //   ジェネレータを大量に作るプログラムで表が無限に伸びないようにする。
+        if self.live_generators.len() == self.live_generators.capacity() {
+            self.live_generators.retain(|w| w.strong_count() > 0);
+        }
+        self.live_generators.push(Rc::downgrade(&rc));
+        Ok(Value::Generator(rc))
     }
 
     /// バインド済みバッファで VM Chunk を実行し、戻り値／例外フレームを組み立てる（fast/general 共通）。

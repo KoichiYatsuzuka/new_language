@@ -16,7 +16,7 @@ use super::TypeRegistry;
 
 /// 組み込みで登録される例外クラス名。`TypeChecker::new` がグローバルスコープの
 /// 束縛を作る際にも使うため公開している。
-pub(in crate::type_check) const EXCEPTION_CLASS_NAMES: [&str; 18] = [
+pub(in crate::type_check) const EXCEPTION_CLASS_NAMES: [&str; 19] = [
     "Exception",
     "ValueError",
     "TypeError",
@@ -38,6 +38,8 @@ pub(in crate::type_check) const EXCEPTION_CLASS_NAMES: [&str; 18] = [
     //   型検査に通すためにここへも登録する。
     //   ⚠⚠ `built_in_types.rs` の一覧と `exceptions.rs` の `CATCHABLE` と**3 つ揃える**こと。
     "RecursionError",
+    // `close()` が中断点へ投げ込む（bug_fix.md B13 段階 D）。
+    "GeneratorExit",
 ];
 
 /// 組み込みで登録される new_type（型名 → 元のプリミティブ型名）。

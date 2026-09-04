@@ -173,6 +173,28 @@ pub fn run(
 ///
 /// ⚠ 新規実行（[`run`]）と**同じディスパッチループ**を使う。違いは初期値だけ。
 /// ⚠ この段階では呼ばれない（中断が存在しないのでフレームも生まれない）。
+/// 中断中のフレームの**その位置へ例外を投げ込んで**再開する（bug_fix.md B13 段階 D）。
+///
+/// `close()` が `GeneratorExit` を投げ込むのに使う。囲む `try` があれば `finally` が走る。
+/// ⚠ ハンドラが無ければ本体はそこで終わる（`Ok(None)` 相当）。それが正常な `close`。
+pub(crate) fn resume_frame_throwing(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &mut Vec<Value>,
+    base: usize,
+    mut frame: Frame,
+    err: &str,
+) -> Result<RunOutcome, String> {
+    match unwind_to_handler(interp, buf, &mut frame.handlers, err) {
+        Some(landing) => {
+            frame.ip = landing;
+            resume_frame(interp, chunk, buf, base, frame)
+        }
+        // 囲む `try` が無い＝走らせる `finally` も無い。本体はここで終わり。
+        None => Ok(RunOutcome::Done(Value::None)),
+    }
+}
+
 pub(crate) fn resume_frame(
     interp: &mut Interpreter,
     chunk: &Chunk,
@@ -208,6 +230,25 @@ pub(crate) fn resume_frame(
 /// （`vm-pitfalls` §1: ノイズ帯は測るたび違う。負の対照を同じセッションで取る）
 /// ⚠ `Frame` は**中断したときの記録**であって、実行中の表現ではない。
 /// ⚠ 中断するとき（段階 C）はここで `Frame` を**組み立ててから**抜けること。
+/// 例外を最内ハンドラへ巻き戻し、landing pad の ip を返す（`None` = 伝播）。
+///
+/// ⚠ 通常のディスパッチと `close()`（中断点への例外注入・段階 D）で**同じ処理を使う**。
+///   分けて書くと片方だけ直したときに黙ってずれる。
+fn unwind_to_handler(
+    interp: &mut Interpreter,
+    buf: &mut Vec<Value>,
+    handlers: &mut Vec<Handler>,
+    e: &str,
+) -> Option<usize> {
+    // 最内ハンドラがあればオペランドを巻き戻して例外値を積み landing pad へ。
+    // 変換できない（active exception なし等）・ハンドラなしなら伝播。
+    let h = handlers.pop()?;
+    buf.truncate(h.stack_len);
+    let exc_val = interp.vm_take_raised(e)?;
+    buf.push(exc_val);
+    Some(h.handler_ip)
+}
+
 fn run_dispatch(
     interp: &mut Interpreter,
     chunk: &Chunk,
@@ -248,23 +289,10 @@ fn run_dispatch(
                     return run_stepping(interp, chunk, buf, base, ip, handlers, cells);
                 }
             }
-            Err(e) => {
-                // 例外: 最内ハンドラがあればオペランドを巻き戻して例外値を積み landing pad へ。
-                // 変換できない（active exception なし等）・ハンドラなしなら伝播（Err を返す）。
-                match handlers.pop() {
-                    Some(h) => {
-                        buf.truncate(h.stack_len);
-                        match interp.vm_take_raised(&e) {
-                            Some(exc_val) => {
-                                buf.push(exc_val);
-                                ip = h.handler_ip;
-                            }
-                            None => return Err(e),
-                        }
-                    }
-                    None => return Err(e),
-                }
-            }
+            Err(e) => match unwind_to_handler(interp, buf, &mut handlers, &e) {
+                Some(landing) => ip = landing,
+                None => return Err(e),
+            },
         }
     }
 }

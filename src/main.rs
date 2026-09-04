@@ -479,6 +479,13 @@ fn run_program(
             Err(e) => return Err(e),
         }
     }
+    // ⚠⚠ 残った**中断中のジェネレータを閉じて `finally` を走らせる**（bug_fix.md B13 段階 D）。
+    // ⚠ Rust の `Drop` からは Arrow のコードを呼べない（`&mut Interpreter` を持てず、
+    //   エラーも返せず、VM が借用中に再入する危険）ので、ここで明示的に行う。
+    // ⚠ **`#[cfg(feature = "prof")]` のブロックに入れないこと**。一度そこへ入れてしまい、
+    //   既定ビルドでスイープが走らなかった（実測）。
+    interp.close_all_generators();
+
     // 後始末（AST・インタープリタ・値の解放）も 1 段として計上する。
     // ⚠ 明示的に drop しないと関数末尾（＝計測の外）へ落ちる。
     #[cfg(feature = "prof")]

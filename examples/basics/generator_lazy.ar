@@ -59,17 +59,33 @@ for v in with_cleanup():
     got.append(v)
 print(got)                        # cleanup のあとに [1, 2]
 
-print("=== 5. 途中で捨てたジェネレータ ===")
-# ⚠⚠ **その場では finally が走らない**（Python との既知の差）。
-#    Rust の `Drop` の中で Arrow のコードは走らせられない（インタプリタを持てず、
-#    エラーも返せず、VM が借用中に再入する危険がある）ため。
-mut partial = []
-for v in with_cleanup():
-    partial.append(v)
-    break
-print(partial)                    # [1]（cleanup はここでは出ない）
+print("=== 5. close() で明示的に閉じる ===")
+# ⚠ 中断点へ `GeneratorExit` を投げ込むので、囲む `try` の `finally` が走る。
+let half = with_cleanup()
+print(half.next())                # 1
+print("closing")
+half.close()                      # ここで cleanup が出る
+print("closed")
 
-print("=== 6. 交互消費 ===")
+print("=== 6. finally が走る条件（まとめ）===")
+# ⚠⚠ **`Drop` から Arrow のコードは呼べない**（`&mut Interpreter` を持てず、エラーも
+#    返せず、VM が借用中に再入する危険がある）。そのため後始末の走り方は 4 通りに分かれる:
+#
+#   | 形 | `finally` |
+#   |---|---|
+#   | 消費し切った | ✅ その場で走る |
+#   | `close()` を呼んだ | ✅ その場で走る |
+#   | 変数に持ったままプログラム終了 | ✅ **終了時のスイープ**で走る |
+#   | 途中で捨てた（一時値・再代入で消えた）| ❌ **走らない** |
+#
+# ⚠ 最後の 1 つが Python との既知の差。⇒ **後始末が要るなら `close()` を呼ぶこと。**
+mut kept = []
+for v in with_cleanup():
+    kept.append(v)
+    break
+print(kept)                       # [1]（この時点では cleanup は出ない）
+
+print("=== 7. 交互消費 ===")
 gen count_from(let s: int) -> int:
     mut i = s
     while i < s + 3:

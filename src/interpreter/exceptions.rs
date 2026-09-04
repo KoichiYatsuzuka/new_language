@@ -60,6 +60,7 @@ impl Interpreter {
             //    `except RecursionError:` で**捕まえられない**。`values_eq` は以前から
             //    この文言を返していたのに登録が抜けていた（実測）。
             "RecursionError",
+            "GeneratorExit",
             "Exception",
         ];
 

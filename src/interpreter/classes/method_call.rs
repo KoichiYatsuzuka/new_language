@@ -285,6 +285,13 @@ impl Interpreter {
             }
             Value::Set(s) => self.eval_set_method(s.clone(), method_name, evaled),
             Value::Generator(state) => {
+                // `close()`: 中断点へ `GeneratorExit` を投げ込み `finally` を走らせる（B13 段階 D）。
+                if method_name == "close" {
+                    Self::expect_no_args_evaled(&evaled, "Generator", "close")?;
+                    let st = state.clone();
+                    self.gen_close(&st)?;
+                    return Ok(Value::None);
+                }
                 if method_name != "next" {
                     return Err(format!(
                         "AttributeError: Generator object has no method '{method_name}'"

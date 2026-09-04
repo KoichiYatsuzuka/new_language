@@ -430,6 +430,13 @@ pub struct Interpreter {
     pub(self) call_name_pool: Vec<String>,
     /// `except` ブロック内で処理中の例外（裸の `raise` で再 raise するために保持）。
     pub(self) current_exception: Option<RaisedError>,
+    /// 生存している**中断可能な**ジェネレータ（bug_fix.md B13 段階 D）。
+    ///
+    /// プログラム終了時に残っているものを `close()` して `finally` を走らせるために持つ。
+    /// ⚠⚠ **`Drop` からは閉じられない**（`&mut Interpreter` を持てず、エラーも返せず、
+    /// VM が借用中に再入する危険がある）ので、明示的な掃除口が要る。
+    /// ⚠ `Weak` なので、既に落ちたものは自然に無効になる。伸長のたびに死んだ参照を掃く。
+    pub(self) live_generators: Vec<std::rc::Weak<RefCell<GeneratorState>>>,
     /// モジュールキャッシュ: (lang, 解決済みパス) → ロード状態。
     /// 循環 import 検出と重複ロード防止に使用する。
     pub(self) module_cache: HashMap<(String, PathBuf), ModuleState>,
@@ -560,6 +567,7 @@ impl Interpreter {
             call_stack: Vec::new(),
             call_name_pool: Vec::new(),
             current_exception: None,
+            live_generators: Vec::new(),
             module_cache: HashMap::new(),
             in_python_module: false,
             python_search_dirs: Vec::new(),
@@ -754,6 +762,23 @@ impl Interpreter {
     /// 現在伝播中の例外をインタープリタから取り出す（トップレベルのエラーハンドリング用）。
     ///
     /// 戻り値: `Some(RaisedError)` — 例外あり、`None` — 例外なし
+    /// 残っている中断中のジェネレータを閉じる（bug_fix.md B13 段階 D）。
+    ///
+    /// プログラムが正常終了する直前に 1 回だけ呼ぶ。`finally` を走らせるのが目的。
+    /// ⚠ 新しい順に閉じる（Python の後始末順に近い）。
+    /// ⚠ 閉じる途中のエラーは**握り潰さず stderr に出して続ける**。ここで止めると
+    ///   他のジェネレータの `finally` が走らなくなる（CPython も同じ扱い）。
+    pub fn close_all_generators(&mut self) {
+        let pending: Vec<_> = std::mem::take(&mut self.live_generators);
+        for weak in pending.into_iter().rev() {
+            let Some(rc) = weak.upgrade() else { continue };
+            // 既に枯渇しているものは `gen_close` が何もしない。
+            if let Err(e) = self.gen_close(&rc) {
+                eprintln!("Warning: error while closing a generator at exit: {e}");
+            }
+        }
+    }
+
     pub fn take_current_exception(&mut self) -> Option<RaisedError> {
         self.current_exception.take()
     }
