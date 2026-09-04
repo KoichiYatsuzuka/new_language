@@ -1,0 +1,28 @@
+# dbg_generator.ar — ジェネレータを消費するループでのステッピング（bug_fix.md B13 の安全網）。
+#
+# ⚠⚠ **コルーチン化（B13）で壊れうる箇所を固定するために置いた golden。**
+#    デバッガの `StepOut { target }` は `call_stack.len()` が target まで**下がったら**止まる。
+#    中断は「`run` から抜ける」実装になるので、フレームを積んだままにしないと
+#    **深さが下がったと誤認され、最初の `yield` で step out が発火する**（囲む関数を
+#    抜けるまで走らない）。
+#
+# ⚠ 現在はジェネレータが先行評価なので、`produce` の本体は `for` に入る前に走り切っている。
+#   コルーチン化後はここが変わるため、**この golden は差分が出るのが正しい**。
+#   出た差分を「意図した変化か、リスク C の発現か」で必ず読み分けること。
+#
+# 対応する stdin は dbg_generator.in。
+
+gen produce(let n: int) -> int:
+    mut i = 0
+    while i < n:
+        yield i
+        i += 1
+
+fn main() -> int:
+    mut total = 0
+    for v in produce(3):
+        break_point
+        total = total + v
+    return total
+
+print(main())

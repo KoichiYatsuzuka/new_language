@@ -1,0 +1,60 @@
+
+[break_point] Paused at [32m<REPO>\examples\debugger\dbg_generator.ar[0m:24
+[33m  22[0m        mut total = 0
+[33m  23[0m        for v in produce(3):
+[33m  24[0m [36m>>[0m         break_point
+[33m  25[0m            total = total + v
+[33m  26[0m        return total
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\dbg_generator.ar[0m:25
+[33m  23[0m        for v in produce(3):
+[33m  24[0m            break_point
+[33m  25[0m [36m>>[0m         total = total + v
+[33m  26[0m        return total
+[33m  27[0m    
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) (dbg) 0
+(dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\dbg_generator.ar[0m:24
+[33m  22[0m        mut total = 0
+[33m  23[0m        for v in produce(3):
+[33m  24[0m [36m>>[0m         break_point
+[33m  25[0m            total = total + v
+[33m  26[0m        return total
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 0
+(dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\dbg_generator.ar[0m:24
+[33m  22[0m        mut total = 0
+[33m  23[0m        for v in produce(3):
+[33m  24[0m [36m>>[0m         break_point
+[33m  25[0m            total = total + v
+[33m  26[0m        return total
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\dbg_generator.ar[0m:25
+[33m  23[0m        for v in produce(3):
+[33m  24[0m            break_point
+[33m  25[0m [36m>>[0m         total = total + v
+[33m  26[0m        return total
+[33m  27[0m    
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 
+[break_point] Paused at [32m<REPO>\examples\debugger\dbg_generator.ar[0m:25
+[33m  23[0m        for v in produce(3):
+[33m  24[0m            break_point
+[33m  25[0m [36m>>[0m         total = total + v
+[33m  26[0m        return total
+[33m  27[0m    
+  Commands: <Enter> step | e step-into | o step-out | q resume
+  Debug vars: let dbg::x = expr  |  access: dbg::x
+(dbg) 3
+
+--stderr--
+  [dbg] Error: NameError: 'v' is not defined

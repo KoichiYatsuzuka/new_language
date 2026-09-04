@@ -1,0 +1,85 @@
+# generator_reentrancy.ar — ジェネレータの再入・交互消費（bug_fix.md B13 の回帰網）
+#
+# ⚠⚠ **この例題はコルーチン化（B13）の安全網として先に置いたもの。**
+#    現在はジェネレータが先行評価（全 yield を実体化）なので、以下は**自明に通る**。
+#    中断・再開に変えると、ここが一気に難所になる:
+#
+#    A. 中断中のジェネレータは**オペランドスタックを保持したまま**抜ける。
+#       共有スタック（`Interpreter::vm_stack`）に置いたままだと、次に誰かが走った瞬間に
+#       その領域が再利用されて**値が黙って壊れる**。⇒ ジェネレータは自前のバッファを持つこと。
+#
+#    B. 同じジェネレータ実体への再入。`Op::ForIter` の高速パスは
+#       `state.borrow_mut()` を**握ったまま**値を取り出すので、その中で再開すると
+#       `RefCell already mutably borrowed` で**プロセスごと落ちる**。
+#       ⇒ 借用を落としてから再開し、実行中フラグで弾くこと
+#         （CPython の `ValueError: generator already executing` に相当）。
+#
+# ⚠ どれも例外が出ずに値だけ変わりうる形なので、**出力を固定しておくことに意味がある**。
+
+print("=== A. 2 つのジェネレータを交互に消費する ===")
+gen a() -> int:
+    yield 1
+    yield 2
+
+gen b() -> int:
+    yield 10
+    yield 20
+
+let x = a()
+let y = b()
+print(x.next(), y.next(), x.next(), y.next())   # 1 10 2 20
+
+print("=== B. 同じジェネレータ実体を入れ子で回す ===")
+# 外側が 1 を取り、内側が残りの 2 を取る。両方尽きるので 1 組だけ。
+gen g() -> int:
+    yield 1
+    yield 2
+
+let it = g()
+mut pairs = []
+for v in it:
+    for w in it:
+        pairs.append([v, w])
+print(pairs)                                     # [[1, 2]]
+# ⚠ **CPython で実行して裏を取ってある**（同じ `[[1, 2]]`）。
+#   外側が 1 を取り、内側が残りの 2 を取り、両方尽きるので 1 組。
+#   ⚠⚠ `impl_python` は `[]` を返すが**そちらが古い**。$knownDiff に登録済み。
+#   コルーチン化後も `[[1, 2]]` を保つこと。
+
+print("=== C. ジェネレータの中から別のジェネレータを .next() で消費する ===")
+gen inner() -> int:
+    yield 1
+    yield 2
+
+gen outer() -> int:
+    let src = inner()
+    yield src.next()
+    yield src.next()
+
+mut o = []
+for v in outer():
+    o.append(v)
+print(o)                                         # [1, 2]
+
+print("=== D. 3 つを交互に、途中まで ===")
+gen p() -> int:
+    yield 1
+    yield 2
+    yield 3
+
+let g1 = p()
+let g2 = p()
+let g3 = p()
+print(g1.next(), g2.next(), g3.next())           # 1 1 1
+print(g3.next(), g2.next(), g1.next())           # 2 2 2
+
+print("=== E. 消費し切ったジェネレータは one-shot ===")
+# ⚠ 再イテレートしても空。コルーチン化後も**この挙動を保つ**こと（決定 4: 取り出し済みは捨てる）。
+let reused = a()
+mut first = []
+for v in reused:
+    first.append(v)
+mut second = []
+for v in reused:
+    second.append(v)
+print(first, second)                             # [1, 2] []

@@ -167,6 +167,8 @@ $knownDiff = @{
     # ⚠ B10 系統（再帰の深さ上限）で新設。**実測して確認済み**。
     'recursion_limit'                = 'py 古い: 再帰を Python のスタックに任せており RuntimeError になる。Rust は catchable な RecursionError なので except で受けて実行を続けられる'
     'recursion_limit_error'          = 'py 古い: 同上。py は stdout へ RuntimeError を 1 行、Rust は RecursionError のトレースバック'
+    # ⚠ B13（コルーチン化）の安全網として新設。**実測して確認済み**。
+    'generator_reentrancy'           = 'py 古い: 同じジェネレータ実体を入れ子で回すと py は [] を返すが、**CPython の正解は [[1, 2]]**（実測済み）。Rust が正しい側'
     # (e) 実行時エラーの出力形式（Rust は色付きトレースバック・py は 1 行）
     'runtime_error'                  = 'py: 実行時エラーの出力形式が違う'
     'traceback_frame_names'          = 'py: トレースバックの形式が違う'
