@@ -1,0 +1,49 @@
+# yield_placement_error.ar — `yield` が書ける場所（bug_fix.md B13・コルーチン化の前提）
+#
+# ⚠⚠ **`yield` は `gen` 本体の直下にしか書けない。**
+#    体裁の問題ではなく、**コルーチン化が成立する前提**そのもの。
+#    CPython も同じ前提に立っていて、そのおかげで「中断＝eval ループから 1 回 return」で済む。
+#    `yield` が自分のフレーム以外に現れうると、中断のたびに何段も巻き戻す必要が出る
+#    （そちらは greenlet のようなスタックコピー方式が要る）。
+#
+# ⚠ 以前は**どちらも素通り**していた（実測）:
+#   - 非 `gen` の `fn` の `yield` … 値を捨てて関数は `None` を返していた
+#   - `gen` の中の入れ子 `fn` の `yield` … 呼ばれなければ露見しなかった
+#
+# それぞれ単体で実行したときのエラー:
+#
+#   ① 非 `gen` の `fn` の中（このファイルが実際に起こすもの）
+#      fn f() -> int:
+#          yield 1
+#      # StaticTypeError: 'yield' is only allowed directly inside a 'gen' function
+#
+#   ② `gen` の中の**入れ子 `fn`** の中
+#      ⚠ 内側は別のフレームなので、`gen` の中でも許さない。
+#      gen g() -> int:
+#          fn h() -> int:
+#              yield 5      # 同じエラー
+#          yield 1
+#
+#   ③ モジュール最上位
+#      yield 1              # 同じエラー
+#
+# ⚠ 許される形（`gen` 本体と**同じフレーム**なら深くてよい）:
+#     gen g(let n: int) -> int:
+#         mut i = 0
+#         while i < n:
+#             if i % 2 == 0:
+#                 yield i      # OK: if / while は同じフレーム
+#             i += 1
+#   クラスの `gen` メソッドも OK。正常系は
+#   [generator_nesting.ar](generator_nesting.ar) / [functions.ar](functions.ar) を参照。
+#
+# ⚠ `loop_yield` は**別物**（`for`/`while` 式の値蓄積）なので、この規則の対象外。
+
+print("yield placement error demo")
+
+fn not_a_generator() -> int:
+    yield 1
+
+print(not_a_generator())
+
+print("ここには到達しない")

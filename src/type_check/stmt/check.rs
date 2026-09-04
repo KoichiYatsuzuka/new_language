@@ -235,7 +235,19 @@ impl TypeChecker {
                 }
                 self.infer(expr);
             }
-            Stmt::LoopYield(expr) | Stmt::Yield(expr) => {
+            // ⚠ `loop_yield` は `for`/`while` 式のものでジェネレータとは別物。制限しない。
+            Stmt::LoopYield(expr) => {
+                self.infer(expr);
+            }
+            Stmt::Yield(expr) => {
+                // ⚠⚠ `yield` は **`gen` 本体の直下だけ**（bug_fix.md B13）。
+                //    コルーチン化の前提（yield は自分のフレームにしか現れない）を守るため。
+                if !self.state.in_gen_body() {
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::YieldOutsideGenerator,
+                        span: None,
+                    });
+                }
                 self.infer(expr);
             }
 
@@ -689,7 +701,11 @@ impl TypeChecker {
             self.declare_param(param);
         }
         let prev_fn = self.state.enter_fn(name.to_string());
+        // ⚠⚠ **継承しない**。`gen` の中の入れ子 `fn` もここを通るので、
+        //    false へ張り替えることでそこの `yield` もエラーになる。
+        let prev_gen = self.state.enter_gen_body(false);
         self.with_barrier(|c| c.check_stmts(body));
+        self.state.exit_gen_body(prev_gen);
         self.state.exit_fn(prev_fn);
         self.pop_scope();
     }
@@ -732,7 +748,10 @@ impl TypeChecker {
                 .unwrap_or(InferredType::Unresolved);
             self.declare(param.name.clone(), ty, param.mutable);
         }
+        // `gen` 本体の直下だけが `yield` を書ける（B13）。
+        let prev_gen = self.state.enter_gen_body(true);
         self.with_barrier(|c| c.check_stmts(body));
+        self.state.exit_gen_body(prev_gen);
         self.pop_scope();
     }
 

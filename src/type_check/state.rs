@@ -17,6 +17,14 @@ pub(super) struct CheckState {
     current_fn_name: Option<String>,
     /// 現在型検査中のクラス名。`None` はクラス外を示す。
     current_class_name: Option<String>,
+    /// **`gen` 本体の直下を検査中か**（bug_fix.md B13）。
+    ///
+    /// ⚠⚠ `yield` は**自分のフレームにしか現れてはいけない**。これが崩れると
+    /// 「中断は `vm::run` を 1 回抜けるだけで済む」というコルーチン化の前提が成り立たない。
+    /// ⇒ `fn` に入るとき **false に張り替える**（継承しない）のが要点で、
+    ///   `gen` の中の入れ子 `fn` でも `yield` がエラーになる。
+    /// ⚠ ブロック式・`if`・ループは**同じフレーム**なので張り替えない。
+    in_gen_body: bool,
     /// `for`/`while` 式の入れ子深さ。1 以上のとき `block_return` は
     /// 型エラー `BlockReturnInLoopExpr` になる。
     block_return_forbidden_depth: usize,
@@ -29,6 +37,7 @@ impl CheckState {
             scope_stack: vec![global],
             current_fn_name: None,
             current_class_name: None,
+            in_gen_body: false,
             block_return_forbidden_depth: 0,
         }
     }
@@ -73,6 +82,21 @@ impl CheckState {
     }
 
     /// 関数本体の検査に入る。戻り値は退出時に `exit_fn` へ渡すこと。
+    /// `gen` / `fn` 本体へ入るときに張る。戻り値を [`Self::exit_gen_body`] へ渡す。
+    pub(super) fn enter_gen_body(&mut self, in_gen: bool) -> bool {
+        std::mem::replace(&mut self.in_gen_body, in_gen)
+    }
+
+    /// [`Self::enter_gen_body`] が返した値を渡して元に戻す。
+    pub(super) fn exit_gen_body(&mut self, prev: bool) {
+        self.in_gen_body = prev;
+    }
+
+    /// `gen` 本体の直下か。
+    pub(super) fn in_gen_body(&self) -> bool {
+        self.in_gen_body
+    }
+
     pub(super) fn enter_fn(&mut self, name: String) -> Option<String> {
         self.current_fn_name.replace(name)
     }

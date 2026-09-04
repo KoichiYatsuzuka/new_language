@@ -165,6 +165,13 @@ pub enum TypeErrorKind {
     /// `Undefined` リテラルを変数に代入しようとした。
     /// 条件判定・型アノテーション・引数としての使用は許可される。
     AssignUndefined,
+    /// `gen` 本体の直下以外で `yield` を書いた（bug_fix.md B13）。
+    ///
+    /// ⚠⚠ 体裁の問題ではなく、**コルーチン化の前提**。`yield` が自分のフレーム以外に
+    /// 現れうると、中断が「`vm::run` を 1 回抜けるだけ」で済まなくなる。
+    /// ⚠ 以前はどちらも素通りしていた —— 非 `gen` の `fn` の `yield` は値を捨てて
+    ///   `None` を返し、`gen` の中の入れ子 `fn` は呼ばれなければ露見しなかった（実測）。
+    YieldOutsideGenerator,
     /// 既にアクセス可能なスコープに同名の変数が存在する状態で再宣言しようとした。
     VariableRedeclaration {
         name: String,
@@ -447,6 +454,10 @@ impl StaticTypeError {
             TypeErrorKind::ProtocolInheritance { class_name, protocol_name } => format!(
                 "class {} cannot inherit from protocol {}; use protocol type annotations instead",
                 hl_q(class_name), hl_q(protocol_name)
+            ),
+            TypeErrorKind::YieldOutsideGenerator => format!(
+                "{} is only allowed directly inside a {} function",
+                hl_bt("yield"), hl_bt("gen")
             ),
             TypeErrorKind::AssignUndefined => format!(
                 "cannot assign {} to a variable; {} can only be used in conditions and type annotations",
