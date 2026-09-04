@@ -186,13 +186,20 @@ impl Interpreter {
         // ⚠ 例外も警告も出ずに空が返るので、木の走査などで**黙って何も出ない**。
         // ⚠ 再帰は関係ない—— 無関係な 2 つのジェネレータでも同じく壊れる。
         let saved_yields = GENERATOR_YIELDS.with(|y| y.borrow_mut().replace(Vec::new()));
-        // 共有バッファへ locals を確保し、バインディングを slot へ詰める（self は slot 0）。
-        let mut buf = std::mem::take(&mut self.vm_stack);
-        let base = buf.len();
-        buf.resize(base + chunk.n_locals, Value::None);
+        // ⚠⚠ ジェネレータは**自前のバッファ**で走らせる（bug_fix.md B13 段階 B）。
+        //
+        // 以前は共有スタック（`vm_stack`）を借りて末尾に積んでいた。本体を最後まで
+        // 走らせる今はそれで成立するが、**中断するようになると成立しない**——
+        // 中断中のジェネレータは**オペランドスタックを保持したまま**抜けるので、
+        // 共有スタックに置いたままだと**次に誰かが走った瞬間にその領域が再利用され**、
+        // 値が黙って壊れる（CPython が `gi_iframe` に記憶域を持つのと同じ理由）。
+        // ⇒ 中断を入れる前にここを先に切り離しておく（この段階では振る舞い不変）。
+        // ⚠ 回帰網は `generator_reentrancy.ar` の A / D（交互消費）。
+        let mut buf: Vec<Value> = vec![Value::None; chunk.n_locals];
+        let base = 0usize;
         for (i, (_, val, _, _)) in bindings.into_iter().enumerate() {
             if i < chunk.n_locals {
-                buf[base + i] = val;
+                buf[i] = val;
             }
         }
         // ジェネレータメソッド: アクセス制御・Self 依存ディスパッチのため current_class を張る。
@@ -202,8 +209,8 @@ impl Interpreter {
         }
         let result = crate::vm::run(self, chunk, &mut buf, base, None);
         self.current_class = prev_class;
-        buf.truncate(base);
-        self.vm_stack = buf;
+        // ⚠ 共有スタックへの返却は不要（自前の `buf` はここで落ちる）。
+        drop(buf);
         // エラー時も含めて必ず yield 値を回収してクリーンアップする。
         // ⚠ この回収はエラー時も通る位置にある。**退避の戻しもここで行う**ことで、
         //   どの経路でも外側の収集が消えないようにしている。

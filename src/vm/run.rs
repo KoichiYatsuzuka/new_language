@@ -68,11 +68,29 @@ fn build_cells(
 }
 
 /// アクティブな例外ハンドラ（try 節ごとに VM のハンドラスタックに積む）。
-struct Handler {
+pub(crate) struct Handler {
     /// 例外発生時に飛ぶ landing pad の ip。
     handler_ip: usize,
     /// try 進入時のオペランドスタック深さ（例外時にここまで巻き戻す）。
     stack_len: usize,
+}
+
+/// チャンク実行の**再開に必要な状態**（bug_fix.md B13 段階 B）。
+///
+/// 以前は 3 つとも ディスパッチループ の**ローカル変数**だったので、中断して戻ってくる
+/// ことが原理的にできなかった。CPython のフレーム（`f_lasti` + ブロック/例外表 +
+/// cell/free）と対応する。
+///
+/// ⚠ オペランドスタックとローカルは `buf[base..]` にあり、**ここには入らない**。
+///   中断する側（ジェネレータ）は共有スタックを使わず**自前のバッファ**を持つ
+///   （CPython が `gi_iframe` に記憶域を持つのと同じ理由）。
+pub(crate) struct Frame {
+    /// 次に実行する命令の index（CPython の `f_lasti` 相当）。
+    pub(crate) ip: usize,
+    /// 例外ハンドラのスタック。中断中も保持しないと `try` の中で yield できない。
+    pub(crate) handlers: Vec<Handler>,
+    /// セル表（#27-d 段階 2b）。捕捉は既存の `Rc<RefCell<Value>>` をそのまま共有する。
+    pub(crate) cells: Vec<Rc<RefCell<Value>>>,
 }
 
 /// チャンクを実行する。**入れ子の深さをここで数える**（bug_fix.md B10 系統）。
@@ -86,7 +104,7 @@ struct Handler {
 /// **再帰するジェネレータが落ちたまま**だった（実測）。チャンク実行は
 /// 関数・メソッド・ジェネレータ・最上位の全てが通る唯一の絞り所。
 ///
-/// ⚠ 増減を**このラッパーだけ**で行うのは、本体（`run_inner`）に早期 `return` が
+/// ⚠ 増減を**このラッパーだけ**で行うのは、本体（`run_frame`）に早期 `return` が
 /// 多く、中で増減させると**必ずどこかで戻し忘れる**ため。
 pub fn run(
     interp: &mut Interpreter,
@@ -103,30 +121,61 @@ pub fn run(
         ));
     }
     interp.call_depth += 1;
-    let r = run_inner(interp, chunk, buf, base, captured_env);
+    // 実行時間分布の計測（`--features prof`）: 抜けるとき呼び出し元の op へ戻す。
+    // ⚠ B13 段階 B で `run_inner` を統合したとき一度落としてしまった。
+    //   `--features prof` は既定ビルドで消えるので**コンパイラは何も言わない**——
+    //   落とすと `prof_dist.ps1` の計測が黙って壊れる。
+    #[cfg(feature = "prof")]
+    let _cur = crate::prof::CurGuard::new();
+    // ⚠ **ここで `Frame` を作らない**。`Frame` は中断の記録であって実行中の表現では無いので、
+    //   新規実行は切り出し前と同じく 3 つのローカルを作って値渡しする。
+    //   中断が生まれたときにだけ `Frame` を組み立てる（段階 C）。
+    let r = run_dispatch(
+        interp, chunk, buf, base,
+        0,
+        Vec::new(),
+        build_cells(chunk, captured_env),
+    );
     interp.call_depth -= 1;
     r
 }
 
-/// Chunk を実行して戻り値を返す。
-/// `buf` の `base..base+n_locals` にパラメータが束縛済み。実行後 `buf` は base+n_locals..（オペランド）
-/// を空にして返る（呼び出し側が `truncate(base)` する）。
-fn run_inner(
+/// **中断したフレームから再開**する（B13 段階 B で用意、段階 C から使う）。
+///
+/// ⚠ 新規実行（[`run`]）と**同じディスパッチループ**を使う。違いは初期値だけ。
+/// ⚠ この段階では呼ばれない（中断が存在しないのでフレームも生まれない）。
+#[allow(dead_code)]
+pub(crate) fn resume_frame(
     interp: &mut Interpreter,
     chunk: &Chunk,
     buf: &mut Vec<Value>,
     base: usize,
-    // クロージャの捕捉環境（#27-d 段階 2b）。可変キャプチャのセルを**共有**するために要る。
-    // 捕捉を持たない呼び出し（大多数）は `None`。
-    captured_env: Option<&std::collections::HashMap<String, crate::interpreter::CapturedVar>>,
+    frame: Frame,
 ) -> Result<Value, String> {
-    // 実行時間分布の計測（`--features prof`）: 抜けるとき呼び出し元の op へ戻す。
-    #[cfg(feature = "prof")]
-    let _cur = crate::prof::CurGuard::new();
-    let mut ip: usize = 0;
-    let mut handlers: Vec<Handler> = Vec::new();
-    // セル表（#27-d 段階 2b）。`n_cells == 0` の関数（大多数）は確保しない。
-    let cells = build_cells(chunk, captured_env);
+    run_dispatch(interp, chunk, buf, base, frame.ip, frame.handlers, frame.cells)
+}
+
+/// 命令ディスパッチの本体。**新規実行と再開の両方がここを通る**。
+///
+/// ⚠ 引数を全て**値渡し**にしてあるのは、切り出し前の `run_inner` と**同じコード形状**
+/// に保つため（既存の `run_stepping` も同じ形）。`&mut Frame` 越しに毎命令使うと
+/// Vec の ptr/len をレジスタに保てなくなる。
+///
+/// ⚠⚠ **速度の A/B は未検証**。切り出し時に測ったが、計測環境が壊れていて
+/// 信用できなかった—— Windows Defender が**新規ビルドの exe の複製をブロック**し、
+/// 負の対照（同一 exe 同士）でさえ ±5.4% 振れた。**静かな環境で取り直すこと**。
+/// （`vm-pitfalls` §1: ノイズ帯は測るたび違う。負の対照を同じセッションで取る）
+/// ⚠ `Frame` は**中断したときの記録**であって、実行中の表現ではない。
+/// ⚠ 中断するとき（段階 C）はここで `Frame` を**組み立ててから**抜けること。
+fn run_dispatch(
+    interp: &mut Interpreter,
+    chunk: &Chunk,
+    buf: &mut Vec<Value>,
+    base: usize,
+    mut ip: usize,
+    mut handlers: Vec<Handler>,
+    cells: Vec<Rc<RefCell<Value>>>,
+) -> Result<Value, String> {
 
     // デバッグセッション中はステップ判定つきのループへ（#1）。
     // ⚠ **通常経路には何も足さない**のがこの分岐の目的。文境界ごとの停止判定を
@@ -139,6 +188,7 @@ fn run_inner(
         // 実行時間分布の計測（`--features prof`）。既定ビルドでは消える。
         #[cfg(feature = "prof")]
         crate::prof::note_op(&chunk.code[ip]);
+        // ⚠ `handlers` と `cells` は**別フィールド**なので同時に借りられる。
         match exec_op(interp, chunk, buf, base, ip, &mut handlers, &cells) {
             Ok(Flow::Next) => ip += 1,
             Ok(Flow::Jump(t)) => ip = t,
@@ -191,9 +241,10 @@ fn run_stepping(
     chunk: &Chunk,
     buf: &mut Vec<Value>,
     base: usize,
+    // ⚠ B13 段階 B: 通常ループから**所有権ごと**引き継ぐ（切り出し前と同じ形）。
     mut ip: usize,
     mut handlers: Vec<Handler>,
-    cells: Vec<Rc<RefCell<Value>>>, // #27-d 段階 2b: 通常ループから引き継ぐ
+    cells: Vec<Rc<RefCell<Value>>>,
 ) -> Result<Value, String> {
     loop {
         // 文の先頭か？（行テーブルは code と 1:1 なので O(1)）
