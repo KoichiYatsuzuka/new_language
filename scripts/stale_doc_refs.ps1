@@ -41,7 +41,11 @@ $whitelist = @(
     'bench_field_access','fn_call','closure_call','block_expr','method_call','field_access',
     'cb_call_fn','snake_case','stubgen','extend_','_inner','ar_init','ar_event_fire',
     # 外部クレートの API 名（indexmap の raw_entry_v1）。src に同名の識別子は無くて当然。
-    'raw_entry'
+    'raw_entry',
+    # ベンチ・例題のファイル名（`examples/` の成果物であって Rust の識別子ではない）。
+    'bench_for','bench_arith','bench_method_call','bottleneck_bench','dbg_generator',
+    # ⚠ CPython の内部名。設計の対応関係を説明するのに要る（src に同名は無くて当然）。
+    'f_lasti','gi_iframe'
 )
 
 $files = Get-ChildItem -Path $root -Recurse -Filter *.rs -File

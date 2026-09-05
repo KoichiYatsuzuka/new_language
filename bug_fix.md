@@ -7,6 +7,10 @@
 - 検証: 2026-08-28 時点の `python_translation` HEAD（`d3744bb`）をリリースビルドして実測。
   本書の「再現」はすべてそのまま `.ar` に貼って走る最小形。
 
+⚠ **B1〜B13 は全件完了**。全体のまとめ（決まった仕様・見立てが外れた記録・
+測り方を間違えた記録）は
+[implementation_logs/BUGFIX_B1_B13.md](implementation_logs/BUGFIX_B1_B13.md)。
+
 ## 現況（2026-09-02）
 
 | # | 状態 |
