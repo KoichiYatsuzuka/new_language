@@ -1,0 +1,73 @@
+# generator_closure.ar — ジェネレータのクロージャ化（bug_fix.md B13 段階 E）
+#
+# ⚠⚠ **以前はこの形が全部 `VmForceError` で落ちていた**（実測）。
+#    関数の中で `gen` を定義すると、外側の関数ごとコンパイルを諦めていた。
+#
+# 捕捉の扱いは入れ子 `fn` と**完全に同じ機構**を使う:
+#   - 不変キャプチャ … 生成時点の値を複製して slot へ
+#   - 可変キャプチャ … セル（`Rc<RefCell<Value>>`）を**共有**する
+#   - `static mut`  … 宣言位置をキーにした共有セル
+# 違うのは作る値だけ（`FnValue` ではなく `GeneratorFnValue`）。
+
+print("=== 1. 不変キャプチャ ===")
+fn counter_from(let n: int) -> generator:
+    gen inner() -> int:
+        yield n
+        yield n * 2
+        yield n * 3
+    return inner()
+
+mut o = []
+for v in counter_from(5):
+    o.append(v)
+print(o)                          # [5, 10, 15]
+
+print("=== 2. 可変キャプチャ（セルを共有する）===")
+fn make_ticker() -> generator:
+    mut c = 0
+    gen tick() -> int:
+        c += 1
+        yield c
+        c += 1
+        yield c
+    return tick()
+
+mut t = []
+for v in make_ticker():
+    t.append(v)
+print(t)                          # [1, 2]
+
+print("=== 3. コレクションを捕捉する ===")
+fn scaled(let xs: list, let k: int) -> generator:
+    gen each() -> int:
+        for x in xs:
+            yield x * k
+    return each()
+
+mut s = []
+for v in scaled([1, 2, 3], 10):
+    s.append(v)
+print(s)                          # [10, 20, 30]
+
+print("=== 4. 実体ごとに独立している ===")
+# ⚠ 捕捉は生成時点のスナップショット。2 つの実体は互いに影響しない。
+let a = counter_from(1)
+let b = counter_from(100)
+print(a.next(), b.next(), a.next(), b.next())   # 1 100 2 200
+
+print("=== 5. 遅延のまま ===")
+# ⚠ クロージャ化しても遅延評価は変わらない（無限でも書ける）。
+fn from_step(let start: int, let step: int) -> generator:
+    gen walk() -> int:
+        mut i = start
+        while True:
+            yield i
+            i += step
+    return walk()
+
+mut taken = []
+for v in from_step(10, 5):
+    taken.append(v)
+    if len(taken) == 4:
+        break
+print(taken)                      # [10, 15, 20, 25]

@@ -172,6 +172,7 @@ $knownDiff = @{
     # ⚠ B13（コルーチン化）で新設。**実測して確認済み**。py は先行評価のまま。
     'generator_lazy'                 = 'py 古い: ジェネレータが先行評価なので無限ジェネレータ（while True: yield）で止まらない。Rust は次の yield までで中断する'
     'generator_lazy_error'           = 'py 古い: 生成時に本体が走るので holder[0] がまだ無く IndexError。Rust は消費時に走るので ValueError: generator is already executing'
+    'generator_closure'              = 'py 古い: ジェネレータのクロージャ化に未対応で、かつ先行評価なので§5 の無限ジェネレータで止まらない（B13 段階 E）'
     'yield_placement_error'          = 'py: `yield` の置き場所の静的検査が無く、素通りして 1 行目から出力が出る（Rust は StaticTypeError で停止・B13）'
     # (e) 実行時エラーの出力形式（Rust は色付きトレースバック・py は 1 行）
     'runtime_error'                  = 'py: 実行時エラーの出力形式が違う'

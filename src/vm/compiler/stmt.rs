@@ -298,6 +298,26 @@ impl Compiler {
             Stmt::AsyncAssign { target, stmts, .. } => {
                 self.compile_async_assign(target, stmts)?;
             }
+            // 入れ子 `gen`（B13 段階 E）。捕捉の扱いは入れ子 `fn` と同一なので同じ経路へ。
+            // ⚠ `GenDef` にデコレータは無い。戻り値型の位置には `yield_type` が入る。
+            Stmt::GenDef {
+                name,
+                template_params,
+                params,
+                yield_type,
+                body,
+                ..
+            } => {
+                self.compile_nested_fn_def(
+                    name,
+                    template_params,
+                    params,
+                    body,
+                    &[],
+                    yield_type,
+                    true,
+                )?;
+            }
             Stmt::FnDef {
                 name,
                 template_params,
@@ -314,6 +334,7 @@ impl Compiler {
                     body,
                     decorators,
                     return_type,
+                    false,
                 )?;
             }
             // 関数本体の `enum` 定義（#68）。組み立ては `build_enum_classes`（ツリーウォークと
@@ -585,6 +606,7 @@ impl Compiler {
         body: &[Stmt],
         decorators: &[Expr],
         return_type: &Option<String>,
+        is_generator: bool,
     ) -> Option<()> {
         if !template_params.is_empty() {
             bail("nested-fn-template", None);
@@ -609,6 +631,7 @@ impl Compiler {
             // #45: ここで 1 回だけ複製する。以降の実体は Rc を clone するだけ。
             body: std::rc::Rc::from(body),
             return_type: return_type.clone(),
+            is_generator,
             slot,
             captures,
             cell_captures,

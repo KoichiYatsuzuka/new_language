@@ -109,8 +109,14 @@ pub(crate) struct Frame {
 
 impl Frame {
     /// チャンクの先頭から始めるフレームを作る（ジェネレータ生成用）。
-    pub(crate) fn new(chunk: &Chunk) -> Self {
-        Frame { ip: 0, handlers: Vec::new(), cells: build_cells(chunk, None) }
+    ///
+    /// ⚠ `captured_env` を渡すと**可変キャプチャのセルを共有**する（#27-d 段階 2b と同じ機構）。
+    ///   ジェネレータのクロージャ化（B13 段階 E）はこれをそのまま使う。
+    pub(crate) fn new(
+        chunk: &Chunk,
+        captured_env: Option<&std::collections::HashMap<String, crate::interpreter::CapturedVar>>,
+    ) -> Self {
+        Frame { ip: 0, handlers: Vec::new(), cells: build_cells(chunk, captured_env) }
     }
 }
 
@@ -576,6 +582,12 @@ fn make_fn(
     }
     let slot = base + d.slot as usize;
     let existing = std::mem::replace(&mut buf[slot], Value::None);
+    // 入れ子 `gen`（B13 段階 E）。捕捉の集め方はここまで完全に同じで、作る値だけが違う。
+    if d.is_generator {
+        buf[slot] =
+            interp.make_nested_gen_value(&d.name, &d.params, &d.body, captured, cell_captured);
+        return;
+    }
     buf[slot] = interp.make_nested_fn_value(
         &d.name,
         &d.params,

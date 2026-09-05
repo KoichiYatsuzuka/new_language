@@ -134,12 +134,24 @@ impl Interpreter {
         match self.vm_gen_chunks.get(&key) {
             Some((weak, cached)) if weak.upgrade().is_some() => cached.clone(),
             _ => {
+                // ⚠ 捕捉を関数と**同じ形**で渡す（B13 段階 E）。以前は `&[]` 固定で、
+                //   捕捉を持つジェネレータは `VmForceError` で落ちていた（実測）。
+                //   名前の集合は `captured_env`（HashMap）の反復順に依存してはいけない
+                //   —— `compile_fn` 側が `sort()` してから採番する。
+                let mut captures: Vec<String> = Vec::new();
+                let mut mut_captures: Vec<String> = Vec::new();
+                for (n, c) in &gen_fn.captured_env {
+                    match c {
+                        CapturedVar::Immutable(_) => captures.push(n.clone()),
+                        CapturedVar::Mutable(_) => mut_captures.push(n.clone()),
+                    }
+                }
                 let compiled = crate::vm::compile_fn(
                     &gen_fn.params,
                     &gen_fn.body,
                     self.annotations.clone(),
-                    &[], // ジェネレータのクロージャ化は未対応（従来どおり）
-                    &[],
+                    &captures,
+                    &mut_captures,
                 )
                 .map(Rc::new);
                 if crate::interpreter::tw_stats::enabled() {
@@ -319,7 +331,7 @@ impl Interpreter {
 
     fn make_vm_generator(
         &mut self,
-        name: &str,
+        gen_fn: &Rc<GeneratorFnValue>,
         chunk: std::rc::Rc<crate::vm::Chunk>,
         bindings: Vec<(String, Value, bool, bool)>,
         self_val: &Option<Value>,
@@ -339,12 +351,23 @@ impl Interpreter {
             Some(Value::Instance(inst_rc)) => Some(inst_rc.borrow().class.clone()),
             _ => None,
         };
-        let frame = crate::vm::run::Frame::new(&chunk);
+        // 不変キャプチャは slot へ書き込む（`bind_captures` と同じ位置づけ・B13 段階 E）。
+        // ⚠ 値は clone するだけでよい。`Immutable` は生成時に deep_copy 済み。
+        for (cname, slot) in &chunk.captured_slots {
+            if let Some(CapturedVar::Immutable(v)) = gen_fn.captured_env.get(cname) {
+                let idx = *slot as usize;
+                if idx < buf.len() {
+                    buf[idx] = v.clone();
+                }
+            }
+        }
+        // 可変キャプチャは**セルを共有**する（外側との書き戻りが保たれる）。
+        let frame = crate::vm::run::Frame::new(&chunk, Some(&gen_fn.captured_env));
         let rc = Rc::new(RefCell::new(GeneratorState {
             values: Vec::new(),
             index: 0,
             producer: Some(Box::new(crate::interpreter::GenProducer {
-                name: name.to_string(),
+                name: gen_fn.name.clone(),
                 chunk,
                 buf,
                 frame,
@@ -775,11 +798,12 @@ impl Interpreter {
         // ── VM 経路（タスク #8）: 本体をバイトコードへ載せ、**中断可能なフレーム**を作る ──
         // 対象: フリージェネレータ（self なし）＋ Instance レシーバのジェネレータメソッド。
         // クロージャキャプチャあり・非対応構文（`Self` 参照等）はツリーウォークへフォールバック。
-        let vm_eligible = gen_fn.captured_env.is_empty()
-            && matches!(self_val, None | Some(Value::Instance(_)));
+        // ⚠ B13 段階 E で `captured_env.is_empty()` の条件を外した。捕捉は既存のセル／slot
+        //   機構でそのまま扱える（不変は slot、可変はセル共有）。
+        let vm_eligible = matches!(self_val, None | Some(Value::Instance(_)));
         if vm_eligible {
             if let Some(chunk) = self.get_or_compile_gen_chunk(&gen_fn) {
-                return self.make_vm_generator(&gen_fn.name, chunk, bindings, &self_val);
+                return self.make_vm_generator(&gen_fn, chunk, bindings, &self_val);
             }
         }
         // #3/#33: フォールバックは存在しない（ジェネレータ本体もツリーウォークごと削除）。

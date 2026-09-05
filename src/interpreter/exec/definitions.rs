@@ -1,5 +1,6 @@
 // exec/definitions.rs — 定義文の実行: 関数/ジェネレータ定義、トレイト/プロトコル/new_type/enum/クラス定義。
 
+use crate::interpreter::CapturedVar;
 use crate::ast::Resolution;
 use {
     std::cell::RefCell, std::collections::{HashMap, HashSet},
@@ -45,6 +46,35 @@ impl Interpreter {
     // 不変キャプチャ・可変キャプチャ・オーバーロード合成用の既存値）。struct に束ねると
     // 呼び出し側（`Op::MakeFn` の `#[inline(never)]` 本体）で組み立てコストが増えるだけ。
     #[allow(clippy::too_many_arguments)]
+    /// 入れ子 `gen` のジェネレータ関数値を作る（bug_fix.md B13 段階 E）。
+    ///
+    /// `Op::MakeFn` の**ジェネレータ側**。捕捉の集め方は入れ子 `fn` と完全に同じで、
+    /// 違いは作る値だけ（`FnValue` ではなく `GeneratorFnValue`）。
+    /// ⚠ `fn` 側と違いオーバーロード合成は無い（`gen` に多重定義は無い）ので `existing` は見ない。
+    pub(crate) fn make_nested_gen_value(
+        &mut self,
+        name: &str,
+        params: &[Param],
+        body: &[Stmt],
+        captured: Vec<(String, Value)>,
+        cell_captured: Vec<(String, std::rc::Rc<std::cell::RefCell<Value>>)>,
+    ) -> Value {
+        let mut env: HashMap<String, CapturedVar> = HashMap::new();
+        // 不変は生成時点の値（複製済み）、可変はセルを共有する。
+        for (n, v) in captured {
+            env.insert(n, CapturedVar::Immutable(v));
+        }
+        for (n, c) in cell_captured {
+            env.insert(n, CapturedVar::Mutable(c));
+        }
+        Value::GeneratorFn(Rc::new(GeneratorFnValue {
+            name: name.to_string(),
+            params: params.to_vec(),
+            body: body.to_vec(),
+            captured_env: env,
+        }))
+    }
+
     pub(crate) fn make_nested_fn_value(
         &mut self,
         name: &str,

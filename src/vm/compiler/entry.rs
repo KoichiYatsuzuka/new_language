@@ -315,6 +315,16 @@ fn compile_fn_inner(
             // 入れ子 `fn` の名前も base slot を占める（リゾルバの `collect_base_decls` と同順・#27）。
             // ⚠ **採番だけここで行い、載せられるかの判定は `compile_stmt` で行う**
             //    （自由変数の判定に `slots` の完成が要るため）。載せられなければそこで bail する。
+            // ⚠ `GenDef` も `FnDef` と**同じく slot を 1 つ取る**（B13 段階 E）。
+            //   以前はここで丸ごと bail していたので、入れ子 `gen` を持つ関数は
+            //   `VmForceError` になっていた（実測）。リゾルバと同順・同数が契約。
+            Stmt::GenDef { name, .. } if name != "_" && !slots.contains_key(name) => {
+                slots.insert(name.clone(), n);
+                slot_mut.push(false);
+                slot_type.push(None);
+                n = n.checked_add(1)?;
+            }
+            Stmt::GenDef { .. } => {}
             Stmt::FnDef { name, .. } if name != "_" && !slots.contains_key(name) => {
                 slots.insert(name.clone(), n);
                 slot_mut.push(false);
@@ -352,7 +362,6 @@ fn compile_fn_inner(
             }
             // slot を採番する可能性のある未対応の宣言的文があれば、番号ずれを避けて丸ごと諦める。
             Stmt::LetTuple { .. }
-            | Stmt::GenDef { .. }
             | Stmt::ClassDef { .. }
             | Stmt::TraitDef { .. }
             | Stmt::ProtocolDef { .. }

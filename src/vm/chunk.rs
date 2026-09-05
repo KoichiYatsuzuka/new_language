@@ -85,6 +85,12 @@ pub struct ChunkFnDef {
     /// ⚠ **スレッドへ送る `deep_clone` では共有しない**（参照カウントが非アトミック・#15）。
     pub body: std::rc::Rc<[Stmt]>,
     pub return_type: Option<String>,
+    /// **ジェネレータ定義か**（bug_fix.md B13 段階 E）。
+    ///
+    /// ⚠ 入れ子 `gen` は入れ子 `fn` と**捕捉の集め方が完全に同じ**（不変は slot、可変はセル、
+    /// `static mut` は span キーのセル）なので、別の表と op を作らずこの旗で分ける。
+    /// 違うのは最後の 1 行 —— `FnValue` を作るか `GeneratorFnValue` を作るか、だけ。
+    pub is_generator: bool,
     /// 生成した関数値を書き込む slot（リゾルバの base slot と同じ番号）。
     pub slot: u16,
     /// キャプチャする外側ローカル（名前, slot）。**不変な変数だけ**（#27）。

@@ -40,9 +40,18 @@ pub(super) fn nested_fn_free_names(body: &[Stmt]) -> HashSet<String> {
                     }
                     // 制御フローの中に置かれた `fn` も拾う（同じフレーム）。
                     P::Control(b) => walk(b, out),
-                    // ⚠ 入れ子 `gen` は **`decl-prepass:GenDef` で必ず bail する**ので到達しない（実測）。
-                    //   拾うようにするなら `gen` の VM 対応と同時にやること。
-                    P::GenBody { .. } => {}
+                    // 入れ子 `gen` も `fn` と**同じく拾う**（bug_fix.md B13 段階 E）。
+                    // ⚠ 以前は「`decl-prepass:GenDef` で必ず bail するので到達しない」として
+                    //   空にしてあり、「拾うなら `gen` の VM 対応と同時にやれ」と書いてあった。
+                    //   その VM 対応を入れたのでここも埋める。埋めないと**可変キャプチャを持つ
+                    //   入れ子 `gen` を含む関数が bail したまま**になる（実測）。
+                    // ⚠ `GenBody` に params は無いので自前名は本体だけから拾う。
+                    P::GenBody(body) => {
+                        let own = crate::interpreter::fn_own_names(&[], body);
+                        let mut referenced: HashSet<String> = HashSet::new();
+                        crate::interpreter::collect_referenced_names(body, &mut referenced);
+                        out.extend(referenced.into_iter().filter(|n| !own.contains(n)));
+                    }
                     // 別スコープの定義集合。クロージャのキャプチャ対象ではない。
                     P::TypeBody(_) | P::ProtocolBody(_) => {}
                     // 別モジュールの本体。
