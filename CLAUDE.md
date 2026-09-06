@@ -69,6 +69,7 @@ python -m impl_python examples/basics/control_flow.ar
 | `force_gate.ps1` | VM に載らない構文が無いか（`VmForceError` 0 件） | **毎回** |
 | `compare_python_impl.ps1` | 参照実装 `impl_python` との stdout 差分 | **毎回**（意味論を守る唯一の網） |
 | `stale_doc_refs.ps1` | コメント中の識別子が src に実在するか | **識別子を改名・削除したら必ず** |
+| `hash_eq_identity.ps1` | 同一性で扱う型の一覧がハッシュ側と等値側で一致するか | **`Value` に種別を足した / ハッシュ・等値を触ったとき**（ずれると「入れたのに引けない辞書」になる）|
 | `compare_bytecode.ps1 -A <base.exe>` | 2 バイナリのバイトコードが同一か | **VM コンパイラ**を触ったとき（「挙動不変」の主張はこれ） |
 | `compare_outputs.ps1 -A <base.exe>` | 全例題の stdout/stderr/exit が同一か | **解釈側**を触ったとき（bytecode は自明に一致してしまう） |
 | `compare_import_paths.ps1 -A <base.exe>` | import 系 13 例題の出力が同一か | **import / FFI** を触ったとき（他ゲートの対象外を埋める） |
