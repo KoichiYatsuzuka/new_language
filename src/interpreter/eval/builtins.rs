@@ -218,13 +218,7 @@ impl Interpreter {
                 )))
             })
             .collect();
-        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-            values: tuples,
-            index: 0,
-            producer: None,
-            running: false,
-            poisoned: false,
-        }))))
+        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(tuples)))))
     }
 
     /// zip のコア: 評価済みの反復対象群から、最短長ぶんのタプル列の Generator を作る。
@@ -235,13 +229,7 @@ impl Interpreter {
             iters.push(self.collect_iterable(v)?);
         }
         if iters.is_empty() {
-            return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                values: vec![],
-                index: 0,
-                producer: None,
-                running: false,
-                poisoned: false,
-            }))));
+            return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(vec![])))));
         }
         let min_len = iters.iter().map(|it| it.len()).min().unwrap_or(0);
         let tuples: Vec<Value> = (0..min_len)
@@ -252,13 +240,7 @@ impl Interpreter {
                 Value::Tuple(Rc::new(TupleData::new(vals, types)))
             })
             .collect();
-        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-            values: tuples,
-            index: 0,
-            producer: None,
-            running: false,
-            poisoned: false,
-        }))))
+        Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(tuples)))))
     }
 
     pub(crate) fn eval_builtin_ident_call(

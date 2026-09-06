@@ -29,13 +29,7 @@ impl Interpreter {
                 let values = (0..st.len)
                     .map(|i| layout.reconstruct_item(&st.data, i))
                     .collect();
-                Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                    values,
-                    index: 0,
-                    producer: None,
-                    running: false,
-                    poisoned: false,
-                }))))
+                Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(values)))))
             }
             "__contains__" => {
                 let needle = Self::one_arg_evaled(evaled, "fixed_list", "__contains__")?;

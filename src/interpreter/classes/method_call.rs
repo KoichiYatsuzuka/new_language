@@ -193,13 +193,7 @@ impl Interpreter {
                 match method_name {
                     "__iter__" => {
                         Self::expect_no_args_evaled(&evaled, "list", "__iter__")?;
-                        return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                            values: items.borrow().clone(),
-                            index: 0,
-                            producer: None,
-                            running: false,
-                            poisoned: false,
-                        }))));
+                        return Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(items.borrow().clone())))));
                     }
                     "append" => {
                         let item = Self::one_arg_evaled(evaled, "list", "append")?;

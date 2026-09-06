@@ -140,14 +140,7 @@ pub fn run(
     base: usize,
     captured_env: Option<&std::collections::HashMap<String, crate::interpreter::CapturedVar>>,
 ) -> Result<Value, String> {
-    if interp.call_depth >= crate::interpreter::MAX_CALL_DEPTH {
-        // ⚠ ここではまだ増やしていないので戻す必要も無い。
-        return Err(format!(
-            "RecursionError: maximum recursion depth exceeded (limit {})",
-            crate::interpreter::MAX_CALL_DEPTH
-        ));
-    }
-    interp.call_depth += 1;
+    enter_depth(interp)?;
     // 実行時間分布の計測（`--features prof`）: 抜けるとき呼び出し元の op へ戻す。
     // ⚠ B13 段階 B で `run_inner` を統合（`run_inner` は削除済み）したとき一度落としてしまった。
     //   `--features prof` は既定ビルドで消えるので**コンパイラは何も言わない**——
@@ -212,13 +205,7 @@ pub(crate) fn resume_frame(
     //    再帰するジェネレータは入れ子の分だけここを通るので、`run` だけ守っても
     //    **スタックが満ちてプロセスごと落ちる**。B13 の実装中に実際に再発させ、
     //    `recursion_limit.ar` §5 が捕まえた。
-    if interp.call_depth >= crate::interpreter::MAX_CALL_DEPTH {
-        return Err(format!(
-            "RecursionError: maximum recursion depth exceeded (limit {})",
-            crate::interpreter::MAX_CALL_DEPTH
-        ));
-    }
-    interp.call_depth += 1;
+    enter_depth(interp)?;
     let r = run_dispatch(interp, chunk, buf, base, frame.ip, frame.handlers, frame.cells);
     interp.call_depth -= 1;
     r
@@ -265,6 +252,23 @@ fn unwind_to_handler(
     let exc_val = interp.vm_take_raised(e)?;
     buf.push(exc_val);
     Some(h.handler_ip)
+}
+
+/// 入れ子の深さを検査して +1 する（`run` / `resume_frame` の共通部・bug_fix.md B10）。
+///
+/// ⚠ 減算は呼び出し側（`interp.call_depth -= 1`）。`Drop` ガードにすると `&mut Interpreter` を
+///   握り続けることになり、その間 VM を回せない。
+/// ⚠⚠ **上限に当たったときの文言はここ 1 箇所**。2 箇所に書くとずれる。
+fn enter_depth(interp: &mut Interpreter) -> Result<(), String> {
+    if interp.call_depth >= crate::interpreter::MAX_CALL_DEPTH {
+        // ⚠ ここではまだ増やしていないので戻す必要も無い。
+        return Err(format!(
+            "RecursionError: maximum recursion depth exceeded (limit {})",
+            crate::interpreter::MAX_CALL_DEPTH
+        ));
+    }
+    interp.call_depth += 1;
+    Ok(())
 }
 
 fn run_dispatch(

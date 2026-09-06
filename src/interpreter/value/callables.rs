@@ -116,6 +116,16 @@ pub struct GeneratorState {
     pub(crate) poisoned: bool,
 }
 
+impl GeneratorState {
+    /// **実体化済み**のイテレータを作る（`range` / `zip` / list・set・str の走査等）。
+    ///
+    /// ⚠ フィールドを直接並べる形は 14 箇所あり、B13 だけで 3 回（`producer` /
+    /// `running` / `poisoned`）全箇所を触った。**新しいフィールドはここだけ**で済ませる。
+    pub(crate) fn materialized(values: Vec<Value>) -> Self {
+        GeneratorState { values, index: 0, producer: None, running: false, poisoned: false }
+    }
+}
+
 
 /// 具体型が未確定のテンプレート関数定義（`fn f[T: Trait](...)` 構文）。
 /// 型引数付きで呼び出されたとき（`f[ConcreteType](args)`）、型変数を具体型に置換して実行される。

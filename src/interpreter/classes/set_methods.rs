@@ -25,13 +25,7 @@ impl Interpreter {
             "__iter__" => {
                 Self::expect_no_args_evaled(&evaled, "set", "__iter__")?;
                 let items = s.borrow().clone();
-                Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                    values: items,
-                    index: 0,
-                    producer: None,
-                    running: false,
-                    poisoned: false,
-                }))))
+                Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(items)))))
             }
             "add" => {
                 let item = Self::one_arg_evaled(evaled, "set", "add")?;

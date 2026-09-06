@@ -101,15 +101,25 @@ impl Interpreter {
     /// ⚠ 渡す名前の集合は `captured_env`（HashMap）の反復順に依存してはいけない。
     /// 依存しないのは `compile_fn` 側が `sort()` してから採番するため（そこが崩れると
     /// #30 の「実体間で Chunk を共有してよい」根拠も同時に崩れる）。
-    fn compile_fn_value(&mut self, fn_val: &Rc<FnValue>) -> Option<Rc<crate::vm::Chunk>> {
+    /// 捕捉環境を（不変, 可変）の名前列へ分ける。
+    ///
+    /// ⚠ `fn` と `gen` の両方が使う（B13 段階 E）。分けて書くと片方だけ直す事故になる。
+    /// ⚠ 名前の集合は `captured_env`（HashMap）の反復順に依存してはいけない
+    ///   —— 依存しないのは `compile_fn` 側が `sort()` してから採番するため。
+    fn split_captures(env: &std::collections::HashMap<String, CapturedVar>) -> (Vec<String>, Vec<String>) {
         let mut captures: Vec<String> = Vec::new();
         let mut mut_captures: Vec<String> = Vec::new();
-        for (n, c) in &fn_val.captured_env {
+        for (n, c) in env {
             match c {
                 CapturedVar::Immutable(_) => captures.push(n.clone()),
                 CapturedVar::Mutable(_) => mut_captures.push(n.clone()),
             }
         }
+        (captures, mut_captures)
+    }
+
+    fn compile_fn_value(&mut self, fn_val: &Rc<FnValue>) -> Option<Rc<crate::vm::Chunk>> {
+        let (captures, mut_captures) = Self::split_captures(&fn_val.captured_env);
         let compiled = crate::vm::compile_fn(
             &fn_val.params,
             &fn_val.body,
@@ -138,14 +148,7 @@ impl Interpreter {
                 //   捕捉を持つジェネレータは `VmForceError` で落ちていた（実測）。
                 //   名前の集合は `captured_env`（HashMap）の反復順に依存してはいけない
                 //   —— `compile_fn` 側が `sort()` してから採番する。
-                let mut captures: Vec<String> = Vec::new();
-                let mut mut_captures: Vec<String> = Vec::new();
-                for (n, c) in &gen_fn.captured_env {
-                    match c {
-                        CapturedVar::Immutable(_) => captures.push(n.clone()),
-                        CapturedVar::Mutable(_) => mut_captures.push(n.clone()),
-                    }
-                }
+                let (captures, mut_captures) = Self::split_captures(&gen_fn.captured_env);
                 let compiled = crate::vm::compile_fn(
                     &gen_fn.params,
                     &gen_fn.body,
@@ -162,6 +165,41 @@ impl Interpreter {
                 compiled
             }
         }
+    }
+
+    /// 中断中の本体を **1 回だけ進める**（`gen_next` / `gen_close` の共通部）。
+    ///
+    /// `throw` を渡すと中断点へその例外を投げ込む（`close()` 用・B13 段階 D）。
+    ///
+    /// ⚠⚠ **呼び出しスタックへの push と `current_class` の張り直しはここ 1 箇所**。
+    /// ジェネレータ本体は「呼び出し」を経ずに走るので、積まないとデバッガの
+    /// `StepOut { target }`（`call_stack.len()` が下がったら止まる）が**本体を呼び出し元と
+    /// 同じ深さだと誤認**し、step out がジェネレータの中で止まる
+    /// （`dbg_generator` の golden が差分を出して見つかった）。
+    /// ⚠ 二重に書くと片方だけ直す事故になるので、必ずここを通すこと。
+    fn resume_producer(
+        &mut self,
+        prod: &mut crate::interpreter::GenProducer,
+        throw: Option<&str>,
+    ) -> Result<crate::vm::run::RunOutcome, String> {
+        self.push_call_name(&prod.name);
+        // ジェネレータメソッドのアクセス制御・Self 依存ディスパッチのため張り直す。
+        let prev_class = self.current_class.take();
+        self.current_class = prod.self_class.clone();
+        let chunk = prod.chunk.clone();
+        let frame = std::mem::replace(
+            &mut prod.frame,
+            crate::vm::run::Frame { ip: 0, handlers: Vec::new(), cells: Vec::new() },
+        );
+        let outcome = match throw {
+            Some(e) => {
+                crate::vm::run::resume_frame_throwing(self, &chunk, &mut prod.buf, 0, frame, e)
+            }
+            None => crate::vm::run::resume_frame(self, &chunk, &mut prod.buf, 0, frame),
+        };
+        self.current_class = prev_class;
+        self.pop_call_name();
+        outcome
     }
 
     /// バインド済みのジェネレータ本体から `Value::Generator` を**作るだけ**。
@@ -218,18 +256,10 @@ impl Interpreter {
         //    **本体を呼び出し元と同じ深さだと誤認**し、step out がジェネレータの中で止まる。
         //    実際に `dbg_generator` の golden が差分を出して見つかった。
         //    ⚠ トレースバックにもジェネレータ名が出るようになる。
-        self.push_call_name(&prod.name);
-        // ジェネレータメソッドのアクセス制御・Self 依存ディスパッチのため張り直す。
-        let prev_class = self.current_class.take();
-        self.current_class = prod.self_class.clone();
-        let chunk = prod.chunk.clone();
-        let frame = std::mem::replace(
-            &mut prod.frame,
-            crate::vm::run::Frame { ip: 0, handlers: Vec::new(), cells: Vec::new() },
+        let outcome = self.resume_producer(
+            &mut prod,
+            None,
         );
-        let outcome = crate::vm::run::resume_frame(self, &chunk, &mut prod.buf, 0, frame);
-        self.current_class = prev_class;
-        self.pop_call_name();
 
         let mut s = state.borrow_mut();
         s.running = false;
@@ -273,24 +303,10 @@ impl Interpreter {
             }
         }; // ⚠ 借用を落としてから走らせる（`gen_next` と同じ理由）
 
-        self.push_call_name(&prod.name);
-        let prev_class = self.current_class.take();
-        self.current_class = prod.self_class.clone();
-        let chunk = prod.chunk.clone();
-        let frame = std::mem::replace(
-            &mut prod.frame,
-            crate::vm::run::Frame { ip: 0, handlers: Vec::new(), cells: Vec::new() },
+        let outcome = self.resume_producer(
+            &mut prod,
+            Some("GeneratorExit: generator is being closed"),
         );
-        let outcome = crate::vm::run::resume_frame_throwing(
-            self,
-            &chunk,
-            &mut prod.buf,
-            0,
-            frame,
-            "GeneratorExit: generator is being closed",
-        );
-        self.current_class = prev_class;
-        self.pop_call_name();
         state.borrow_mut().running = false;
 
         match outcome {

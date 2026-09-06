@@ -126,13 +126,7 @@ impl Interpreter {
                     return Err("TypeError: str.__iter__() takes no arguments".to_string());
                 }
                 let chars: Vec<Value> = s.chars().map(|c| Value::str(c.to_string())).collect();
-                Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState {
-                    values: chars,
-                    index: 0,
-                    producer: None,
-                    running: false,
-                    poisoned: false,
-                }))))
+                Ok(Value::Generator(Rc::new(RefCell::new(GeneratorState::materialized(chars)))))
             }
 
             // ── 大文字・小文字変換 ──────────────────────────────────────────

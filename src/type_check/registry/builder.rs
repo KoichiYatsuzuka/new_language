@@ -78,6 +78,15 @@ fn is_arrow_source_lang(lang: &str) -> bool {
 
 impl TypeRegistryBuilder {
     /// 組み込みクラス（例外クラス・`path`/`Index`/`Size`・`slice`）を登録した状態で生成する。
+    /// `FnSig` に載せる**通常パラメータ**か（可変長・`**kwargs` は除く）。
+    ///
+    /// ⚠⚠ `params` / `param_mutable` / `required_count` は**すべてこの述語で絞る**こと（B11）。
+    /// 別々に書くと並びがずれ、`mut` パラメータの検査が**別の引数を見る**。
+    /// 以前は同じクロージャを 4 箇所に書いていた。
+    fn is_normal_param(p: &Param) -> bool {
+        !p.variadic && !Self::is_py_kwargs_param(p)
+    }
+
     pub(in crate::type_check) fn with_builtins() -> Self {
         let mut known_class_names: HashSet<String> = HashSet::new();
         let mut new_type_originals: HashMap<String, String> = HashMap::new();
@@ -148,12 +157,12 @@ impl TypeRegistryBuilder {
                         // ⚠ `params` と**同じ絞り込み**で並べること（B11）。
                         param_mutable: params
                             .iter()
-                            .filter(|p| !p.variadic && !Self::is_py_kwargs_param(p))
+                            .filter(|p| Self::is_normal_param(p))
                             .map(|p| p.mutable)
                             .collect(),
                         params: params
                             .iter()
-                            .filter(|p| !p.variadic && !Self::is_py_kwargs_param(p))
+                            .filter(|p| Self::is_normal_param(p))
                             .map(|p| {
                                 let ty = p.type_ann.as_deref()
                                     .and_then(InferredType::from_ann)
@@ -164,7 +173,7 @@ impl TypeRegistryBuilder {
                         required_count: params
                             .iter()
                             .filter(|p| {
-                                !p.variadic && !Self::is_py_kwargs_param(p) && p.default.is_none()
+                                Self::is_normal_param(p) && p.default.is_none()
                             })
                             .count(),
                         return_type: return_type.as_deref()
@@ -306,12 +315,12 @@ impl TypeRegistryBuilder {
                     // ⚠ `params` と**同じ絞り込み**で並べること（B11）。
                     param_mutable: params
                         .iter()
-                        .filter(|p| !p.variadic && !Self::is_py_kwargs_param(p))
+                        .filter(|p| Self::is_normal_param(p))
                         .map(|p| p.mutable)
                         .collect(),
                     params: params
                         .iter()
-                        .filter(|p| !p.variadic && !Self::is_py_kwargs_param(p))
+                        .filter(|p| Self::is_normal_param(p))
                         .map(|p| {
                             (
                                 p.name.clone(),
@@ -322,7 +331,7 @@ impl TypeRegistryBuilder {
                     required_count: params
                         .iter()
                         .filter(|p| {
-                            !p.variadic && !Self::is_py_kwargs_param(p) && p.default.is_none()
+                            Self::is_normal_param(p) && p.default.is_none()
                         })
                         .count(),
                     return_type: return_type
