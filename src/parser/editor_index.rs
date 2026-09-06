@@ -107,6 +107,16 @@ pub struct EditorIndex {
     /// `Expr` の node-id → その式の位置。型検査器の `AstAnnotations`（node-id → 推論型）と
     /// 突き合わせると「カーソル下の式の型」が引ける。
     pub node_spans: HashMap<u32, Pos>,
+    /// **型注釈位置に現れた型名**とその位置（`let x: int` の `int`）。
+    ///
+    /// これが無いと、拡張は識別子を**名前だけ**で宣言表に引くことになり、`int` のように
+    /// 型名と組み込み関数を兼ねる 9 個の名前
+    /// （`bool` / `float` / `int` / `path` / `set` / `slice` / `str` / `type` / `uint`）が
+    /// すべて関数として着色・hover される。型位置を知っているのは
+    /// [`Parser::parse_type_expr`](crate::parser::Parser) だけなので、そこで控えるしかない。
+    pub type_refs: Vec<(Pos, String)>,
+    /// alias 展開の入れ子深さ。0 より大きいあいだは型参照を記録しない（[`Self::push_type_ref`]）。
+    alias_depth: usize,
     /// 現在のスコープ id。
     current: usize,
     /// 次に開くスコープへ入れる宣言（関数の仮引数・クラスのフィールド）。
@@ -122,6 +132,8 @@ impl EditorIndex {
             decls: Vec::new(),
             scopes: vec![Scope { parent: None, start_line: 0, end_line: usize::MAX }],
             node_spans: HashMap::new(),
+            type_refs: Vec::new(),
+            alias_depth: 0,
             current: 0,
             pending: Vec::new(),
             container: None,
@@ -157,6 +169,31 @@ impl EditorIndex {
         }
         // 本体が無かった等で流し込まれなかった pending は捨てる（漏らすと誤ったスコープに出る）。
         self.pending.clear();
+    }
+
+    /// 型注釈位置に現れた型名を控える。位置不明（`line == 0`）と重複は捨てる。
+    ///
+    /// alias 展開中（[`Self::enter_alias`]）は**何もしない**。展開中に見える位置は
+    /// alias の**定義側**トークンのものなので、そのまま記録すると使用箇所と無関係な行に
+    /// 型色が付く（import 経由の alias なら他ファイルの行番号が紛れ込む）。
+    pub fn push_type_ref(&mut self, pos: Pos, name: &str) {
+        if self.alias_depth > 0 || pos.0 == 0 {
+            return;
+        }
+        if self.type_refs.iter().any(|(p, _)| *p == pos) {
+            return;
+        }
+        self.type_refs.push((pos, name.to_string()));
+    }
+
+    /// alias 展開に入る（型参照の記録を止める）。
+    pub fn enter_alias(&mut self) {
+        self.alias_depth += 1;
+    }
+
+    /// alias 展開から抜ける。
+    pub fn leave_alias(&mut self) {
+        self.alias_depth = self.alias_depth.saturating_sub(1);
     }
 
     /// 宣言を現在のスコープに追加し、そのインデックスを返す。

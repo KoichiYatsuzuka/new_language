@@ -16,6 +16,25 @@ exports.provideDiagnostics = exports.provideDocumentSymbols = exports.provideDef
 const vscode = require("vscode");
 const fs = require("fs");
 const frontend_1 = require("./frontend");
+/**
+ * `line:col` → その位置に書かれた型名。`analysis.typeRefs` の逆引き。
+ *
+ * 解析結果はバージョン単位でキャッシュされるので、索引も同じ寿命で持てる。
+ */
+const typeRefIndexCache = new WeakMap();
+function typeRefsOf(analysis) {
+    var _a;
+    let index = typeRefIndexCache.get(analysis);
+    if (!index) {
+        index = new Map();
+        // 旧い wasm（`typeRefs` を出さない版）と組み合わさっても落ちないようにする。
+        for (const ref of (_a = analysis.typeRefs) !== null && _a !== void 0 ? _a : []) {
+            index.set(`${ref.at.line}:${ref.at.col}`, ref.name);
+        }
+        typeRefIndexCache.set(analysis, index);
+    }
+    return index;
+}
 const cache = new Map();
 // ===== 組み込み関数のプレリュード =====
 /**
@@ -231,6 +250,15 @@ function provideHover(document, position) {
     if (!w)
         return undefined;
     const sym = (_a = declarationAt(analysis, position, w.word)) !== null && _a !== void 0 ? _a : lookup(analysis, w.word, position.line);
+    // 型位置に書かれた名前で、引けた宣言が型でない（＝`int` のような型名/関数の兼用名）なら、
+    // 関数のシグネチャを見せてはいけない。ユーザー定義のクラス・トレイト等はこの分岐を
+    // 通さず下の通常経路へ流し、継承元や docstring も含めてそのまま見せる。
+    if (typeRefsOf(analysis).has(`${position.line}:${w.range.start.character}`)
+        && (!sym || !TYPE_TOKEN_OF[sym.kind])) {
+        const md = new vscode.MarkdownString();
+        md.appendCodeblock(`type ${w.word}`, 'arrow');
+        return new vscode.Hover(md, w.range);
+    }
     // 宣言に紐づく推論型を優先し、無ければカーソル位置の式の型で補う。
     const inferred = (_b = sym === null || sym === void 0 ? void 0 : sym.inferred) !== null && _b !== void 0 ? _b : exprTypeAt(analysis, position);
     if (!sym) {
@@ -299,6 +327,21 @@ const TOKEN_TYPE_OF = {
     new_type: 'type',
     alias: 'type',
 };
+/**
+ * **型位置に現れた名前**が、同名の宣言を持つときのトークン種別。
+ *
+ * `TOKEN_TYPE_OF` と分けてあるのは、型位置では「関数」「変数」といった種別を
+ * 採ってはいけないから。ここに載っていない種別（`function` など）だった場合は
+ * 汎用の `type` に落とす — それが `int` を関数色にしないための分岐そのもの。
+ */
+const TYPE_TOKEN_OF = {
+    class: 'class',
+    trait: 'interface',
+    protocol: 'interface',
+    enum: 'enum',
+    new_type: 'type',
+    alias: 'type',
+};
 /** コメントと文字列を空白に潰した行を返す（識別子走査で誤検出しないため）。 */
 function maskLine(text) {
     let out = '';
@@ -338,6 +381,7 @@ function provideDocumentSemanticTokens(document) {
     const declAt = new Map();
     for (const s of analysis.symbols)
         declAt.set(`${s.at.line}:${s.at.col}`, s);
+    const typeRefs = typeRefsOf(analysis);
     const ident = /[A-Za-z_]\w*/g;
     for (let line = 0; line < document.lineCount; line++) {
         const text = maskLine(document.lineAt(line).text);
@@ -350,7 +394,18 @@ function provideDocumentSemanticTokens(document) {
         ident.lastIndex = 0;
         let m;
         while ((m = ident.exec(text)) !== null) {
-            const decl = declAt.get(`${line}:${m.index}`);
+            const at = `${line}:${m.index}`;
+            const decl = declAt.get(at);
+            // 型位置の識別子は、**名前引きより先に**型として確定させる。
+            // ここを通さないと `let x: int` の `int` が prelude の `fn int` に当たり、
+            // 型名がキャスト関数として着色される。パーサが型位置だと言っている以上、
+            // 名前が何であれ型が正しい。
+            if (!decl && typeRefs.has(at)) {
+                const named = byName.get(m[0]);
+                const typeTok = (named && TYPE_TOKEN_OF[named.kind]) || 'type';
+                builder.push(line, m.index, m[0].length, exports.SEMANTIC_TOKENS_LEGEND.tokenTypes.indexOf(typeTok), 0);
+                continue;
+            }
             const sym = decl !== null && decl !== void 0 ? decl : byName.get(m[0]);
             if (!sym)
                 continue;

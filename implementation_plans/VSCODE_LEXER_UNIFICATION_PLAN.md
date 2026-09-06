@@ -112,8 +112,16 @@ VS Code はセマンティックトークンを TextMate より優先するた�
      - セマンティックトークンのループで、`line:col` が `typeRefs` にあれば
        **名前引きより先に** `type`（同名のクラス/トレイトが見えていれば `class` / `interface`）
        を出して `continue`。
-     - `provideHover` も同様に分岐し、`renderSignature` に型参照用の枝（`type int` 等）を足す。
-     - `provideCompletionItems` は、カーソルが型位置なら型系の宣言だけに絞る。
+     - `provideHover` も同様に分岐し、型参照位置では `type int` を出す。
+       ただしユーザー定義のクラス・トレイト等は**この分岐を通さず**通常経路へ流す
+       （継承元・docstring も含めてそのまま見せたいため）。
+     - ~~`provideCompletionItems` は、カーソルが型位置なら型系の宣言だけに絞る~~
+       → **#V2 へ移した。** 補完は入力途中に呼ばれるので構文エラー中がほとんどで、
+       そのとき `typeRefs` は `lastGood`（古いテキスト）由来になり位置が合わない。
+       いま実装するとしたら「直前が `:` か `->` か」を正規表現で見るしかなく、それは
+       `wasm_providers.ts` 冒頭が消したはずのヒューリスティックそのもの。
+       トークン列（#V2）が入れば `Colon` / `Arrow` の直後かを**現バージョンのテキストで**
+       確実に判定できるので、そこまで待つ。
 - **留意点**:
   - ⚠ **AST を 1 バイトも変えないこと。** `editor_index.rs` 冒頭が書いているとおり、
     `Stmt::Let` のようなタプルバリアントに 1 フィールド足すだけで 237 箇所以上に波及する。
@@ -228,20 +236,74 @@ VS Code はセマンティックトークンを TextMate より優先するた�
 
 | # | タスク | 状態 |
 |---|---|---|
-| #V1 | `parse_type_expr` に型参照フック | 未着手 |
+| #V1 | `parse_type_expr` に型参照フック | **完了**（§9 に結果） |
 | #V2 | トークン列公開＋TS 自前スキャナ 7 箇所撤去 | 未着手 |
 | #V3 | パーサの構造化エラー化 | 未着手 |
 
+## 9. #V1 の結果
+
+### 実装
+
+`EditorIndex.type_refs` ＋ `Parser::note_type_ref()` を追加し、`parse_type_expr` の
+識別子アーム・読み飛ばす型引数・`expect_guard_type_name`（`x is int`）の 3 箇所で呼ぶ。
+alias 展開中は `enter_alias` / `leave_alias` で記録を止める。
+`analyze_json` は `typeRefs` を出し、拡張はセマンティックトークンと hover で
+**名前引きより先に**それを見る。
+
+### 実測（`scripts/run_extension_debug.ps1`、ANSI 色コードで判定）
+
+`let v: int = int(a)` の 2 つの `int`:
+
+| | 型注釈の `int` | 呼び出しの `int(` |
+|---|---|---|
+| 修正前 | `[92m` = **function**（症状） | `[92m` = function |
+| 修正後 | `[36m` = **type** | `[92m` = function |
+
+hover:
+
+| 位置 | 結果 |
+|---|---|
+| `let a: int` の `int` | `type int` |
+| `int(a)` の `int` | `fn int(let x: any) -> int` ＋ docstring |
+| `let b: Box` の `Box` | `class Box`（ユーザー型は宣言をそのまま保持） |
+
+### ⚠ 副産物: デバッグ環境の穴を 2 つ塞いだ
+
+1. **`run_debug.js` と `stress.js` が `loadPrelude()` を呼んでいなかった。**
+   `debug_runner.ts` は `loadPrelude` を import しているのに**一度も呼んでいない**、
+   `stress.js` は import すらしていなかった。つまり両者は「組み込みの無い世界」を
+   調べており、**この不具合は原理的に再現できなかった**（`int` がどの宣言にも当たらず
+   無色になるだけ）。両方で `activate()` と同じく `builtins.ars` を読むよう修正した。
+   ⇒ これを直すまで A/B は「無色 → 型色」に見え、症状の再現になっていなかった。
+
+2. **`scripts/run_extension_debug.ps1` を新設。** PATH の node は v11 で wasm を
+   コンパイルできない。`compare_wasm_frontend.ps1` と同じく VS Code 同梱の Node
+   （`Code.exe` ＋ `ELECTRON_RUN_AS_NODE=1`、実測 v24）を探して使う。
+   ⇒ §8 の制約は解消。`skill vscode-debug-runner` の手順はこの環境ではこの scripts 経由で使う。
+
+### ゲート結果
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test`（ルート） | 772 passed / 0 failed |
+| `cd crates/arrow-frontend; cargo test` | 6 passed / 0 failed（新規 `tests/type_refs.rs`） |
+| `compare_wasm_frontend.ps1` | compared 226 / agreed 226 / INVENTED 0 / mismatch 0 |
+| `scan_examples.ps1` | FAIL 0（`bench_ab_native.ar` の TIMEOUT は既知・環境要因） |
+| `force_gate.ps1` | 0 件 |
+| `compare_python_impl.ps1` | identical 65 / unexpected diff 0 |
+| `stress.js`（全 226 例題） | threw 0 / hover misses 0 / def misses 0 |
+| `stale_doc_refs.ps1` | ⚠ **1 件 FAIL（本タスクとは無関係・既存）**。`src/python_converter/param_rewrite.rs:6` の `opts` は Python 側の引数名を説明する表の一部で、Arrow の識別子ではない＝スクリプトの誤検出。本ブランチでは触っていない。 |
+
 ---
 
-## 8. 検証環境の制約（着手時に効いてくる）
+## 8. 検証環境の制約（#V1 で解消済み）
 
-⚠ **この調査時点で `node --version` は v11.5.0** であり、
-`node vscode-extension/run_debug.js <file.ar>` は wasm のコンパイルに失敗する
-（`expected table index 0, found 128`）。skill `vscode-debug-runner` の手順を使うには
-**Node 16 以降が必要**。
+~~PATH の `node` は v11.5.0 で wasm をコンパイルできない~~
+→ **`scripts/run_extension_debug.ps1` で解消。** VS Code 同梱の Node を使う。
+デバッグランナーは以下で回す:
 
-⇒ 本書 §1 の内容は**すべてコード経路の読み取りに基づく**もので、
-実行による裏取りは取れていない。着手時はまず Node を上げ、
-`run_debug.js` の 1 節目（セマンティックトークン着色）で
-`int` が function 色になることを**先に再現**してから直すこと。
+```powershell
+./scripts/run_extension_debug.ps1 <file.ar> -Build   # -Build は .ts を触ったとき
+```
+
+⚠ `-Build` を忘れると `out_debug/` の**前の版**を調べることになる（黙って古い結果が出る）。

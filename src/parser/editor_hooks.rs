@@ -203,6 +203,35 @@ impl Parser {
         }
     }
 
+    /// 型注釈位置に現れた型名を控える（`let x: int` の `int`）。
+    ///
+    /// ⚠ 型名トークンを **`advance()` した直後**に呼ぶこと。位置は `prev_pos()` から取るので、
+    ///    型引数まで読み終えてから呼ぶと `]` を指してしまう。
+    ///
+    /// これが無いと拡張は識別子を**名前だけ**で宣言表に引き、`int` のように型名と組み込み関数を
+    /// 兼ねる名前が全部「キャスト関数」として着色・hover される。理由と一覧は
+    /// [`EditorIndex::type_refs`](crate::parser::editor_index::EditorIndex::type_refs) を見ること。
+    #[allow(unused_variables)]
+    pub(crate) fn note_type_ref(&mut self, name: &str) {
+        #[cfg(feature = "editor")]
+        {
+            let pos = self.prev_pos();
+            self.editor.push_type_ref(pos, name);
+        }
+    }
+
+    /// alias 展開の開始／終了。展開中の型参照は記録しない（理由は `push_type_ref` の doc）。
+    pub(crate) fn enter_alias_expansion(&mut self) {
+        #[cfg(feature = "editor")]
+        self.editor.enter_alias();
+    }
+
+    /// [`Self::enter_alias_expansion`] と対で呼ぶ。
+    pub(crate) fn leave_alias_expansion(&mut self) {
+        #[cfg(feature = "editor")]
+        self.editor.leave_alias();
+    }
+
     /// `next_node_id()` が採番した node-id に、その式の位置を結びつける。
     #[allow(unused_variables)]
     pub(crate) fn note_node_span(&mut self, node_id: u32) {

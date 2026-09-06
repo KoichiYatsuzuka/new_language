@@ -12,6 +12,7 @@
 //! | `symbols`     | `parser::editor_index` の宣言表 | Hover / Inlay / Go-to-def / Semantic tokens |
 //! | `scopes`      | 同上のスコープ木 | Completion（可視名の絞り込み） |
 //! | `exprTypes`   | `editor_index.node_spans` × `AstAnnotations` | Hover（式の推論型）/ Inlay |
+//! | `typeRefs`    | `editor_index.type_refs`（`parse_type_expr` が控えた型位置） | Semantic tokens / Hover（型名を関数と誤認させない） |
 //! | `members`     | AST のクラス/トレイト/列挙本体 | `.` 補完 |
 
 use serde_json::{json, Map, Value};
@@ -210,6 +211,7 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
                 "symbols": [],
                 "scopes": [],
                 "exprTypes": [],
+                "typeRefs": [],
                 "members": {},
             })
             .to_string();
@@ -304,6 +306,21 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
         }
     }
 
+    // ── 型参照 ────────────────────────────────────────────────────────────
+    // 「この識別子は型位置にある」というパーサだけが知る事実。拡張はこれを
+    // 名前引きより**先に**見る。無いと `int` のような型名/組み込み関数の兼用名が
+    // すべて関数として着色・hover される（`EditorIndex::type_refs` の doc 参照）。
+    let type_refs: Vec<Value> = index
+        .type_refs
+        .iter()
+        .map(|(pos, name)| {
+            json!({
+                "at": pos_json(pos.0, pos.1),
+                "name": name,
+            })
+        })
+        .collect();
+
     // ── メンバ表 ──────────────────────────────────────────────────────────
     let mut members = Map::new();
     collect_members(&stmts, &mut members);
@@ -315,6 +332,7 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
         "symbols": symbols,
         "scopes": scopes,
         "exprTypes": expr_types,
+        "typeRefs": type_refs,
         "members": Value::Object(members),
         "stmtCount": stmts.len(),
     })

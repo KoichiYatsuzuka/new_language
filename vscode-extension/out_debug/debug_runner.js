@@ -176,10 +176,22 @@ function main() {
     const content = fs.readFileSync(filePath, 'utf8');
     const doc = new MockTextDocument(filePath, content);
     // The extension root is one level above out_debug/.
-    if (!(0, frontend_1.loadFrontend)(path.join(__dirname, '..'))) {
+    const extensionRoot = path.join(__dirname, '..');
+    if (!(0, frontend_1.loadFrontend)(extensionRoot)) {
         console.error('failed to load arrow_frontend.wasm: ' + (0, frontend_1.frontendLoadError)());
         console.error('build it with: cd crates/arrow-frontend && cargo build --release --target wasm32-unknown-unknown');
         process.exit(1);
+    }
+    // Load the builtin stubs, exactly as activate() does.
+    //
+    // This was imported but never called, so every run exercised a prelude-less world
+    // that the real extension never sees. That is not a cosmetic gap: `int` / `str` /
+    // `float` / `bool` / `uint` / `set` / `slice` / `path` / `type` are declared as `fn`
+    // in builtins.ars, so with the prelude loaded a bare `int` resolves to a builtin
+    // FUNCTION. The "type name shown as a cast function" bug therefore could not
+    // reproduce here at all -- neither in run_debug.js nor in stress.js.
+    if (!(0, wasm_providers_1.loadPrelude)(path.join(extensionRoot, 'builtins.ars'))) {
+        console.error(c(A.red, 'WARNING: builtins.ars failed to load — builtin names will be missing'));
     }
     console.log('\n' + c(A.gray, '═'.repeat(70)));
     console.log(c(A.bold + A.bWhite, `  ARROW DEBUG:  ${path.basename(filePath)}`));

@@ -266,6 +266,9 @@ impl Parser {
         let base = match self.current().clone() {
             Token::Ident(name) => {
                 self.advance();
+                // ここが「この識別子は型位置にある」と言える唯一の場所。控えないと拡張が
+                // 名前引きで `int` を組み込み関数と誤認する（`note_type_ref` の doc 参照）。
+                self.note_type_ref(&name);
                 // 別名（alias）は型位置では保存トークンを型として再パースして展開する。
                 // 右辺が型式でない（例: `block` 式）場合はここでエラーになる。
                 if let Some(toks) = self.aliases.get(&name).map(|e| e.tokens.clone()) {
@@ -398,6 +401,12 @@ impl Parser {
                 } else if *self.current() == Token::RBracket {
                     depth -= 1;
                 }
+                // 読み飛ばす型引数も型位置。`MyClass[int]` の `int` を関数扱いさせない。
+                if let Token::Ident(arg) = self.current().clone() {
+                    self.advance();
+                    self.note_type_ref(&arg);
+                    continue;
+                }
                 self.advance();
             }
         }
@@ -427,8 +436,11 @@ impl Parser {
         let saved_tokens = std::mem::replace(&mut self.tokens, (*toks).clone());
         let saved_pos = self.pos;
         self.pos = 0;
+        // 展開中の位置は alias の**定義側**トークンを指すので型参照は記録しない。
+        self.enter_alias_expansion();
         let parsed = self.parse_type_expr();
         let leftover = !matches!(self.current(), Token::Eof);
+        self.leave_alias_expansion();
         // 元のトークンストリームへ復帰する。
         self.tokens = saved_tokens;
         self.pos = saved_pos;
@@ -604,6 +616,8 @@ impl Parser {
         match self.current().clone() {
             Token::Ident(name) => {
                 self.advance();
+                // `x is int` の `int` も型位置。式位置と同じ扱いにすると関数色になる。
+                self.note_type_ref(&name);
                 // 別名（alias）は型ガード位置でも型として展開する（式・型注釈位置と一貫）。
                 if let Some(toks) = self.aliases.get(&name).map(|e| e.tokens.clone()) {
                     return self.expand_alias_as_type(&name, toks);

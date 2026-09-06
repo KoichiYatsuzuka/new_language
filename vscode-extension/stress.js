@@ -26,6 +26,15 @@ const P=require('./out_debug/wasm_providers');
 
 if(!loadFrontend(__dirname)){ console.error('load failed:',frontendLoadError()); process.exit(1); }
 
+// 組み込みスタブも activate() と同じように読む。
+// ⚠ ここが抜けていると、この掃引は**実際の拡張が決して見ない**「組み込みの無い世界」を
+//    調べることになる。`int` / `str` / `float` / `bool` / `uint` / `set` / `slice` /
+//    `path` / `type` は builtins.ars で `fn` として宣言されているので、prelude を読んで
+//    初めて「型名が組み込み関数に当たる」経路が動く。読まないと退行を取り逃がす。
+if(!P.loadPrelude(path.join(__dirname,'builtins.ars'))){
+  console.error('WARNING: builtins.ars failed to load — builtin names will be missing');
+}
+
 class Doc{
   constructor(fp,src){ this.fileName=fp; this.version=1; this.languageId='arrow';
     const raw=src.replace(/\r\n/g,'\n'); this._l=raw.split('\n');
