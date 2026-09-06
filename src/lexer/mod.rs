@@ -10,7 +10,11 @@
 /// - `literal` — 文字列・数値リテラルの解析（f-string・raw 文字列・基数表現を含む）
 /// - `symbol`  — 演算子・区切り記号トークンの解析
 /// - `math`    — `m"..."` / `$...$` 数学文字列の LaTeX-like 表記を Unicode に変換するユーティリティ
+/// - `editor_tokens` — （`editor` feature 専用）トークンの**範囲**をエディタへ渡す層。
+///   VS Code 拡張から自前の字句解析（正規表現 + `maskLine`）を消すために存在する。
 mod chars;
+#[cfg(feature = "editor")]
+pub mod editor_tokens;
 mod keyword;
 mod literal;
 mod math;

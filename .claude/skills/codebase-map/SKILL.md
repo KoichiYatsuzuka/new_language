@@ -97,7 +97,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (219 files, 74477 lines)
+src/  (220 files, 74653 lines)
   ar_config.rs (244)
   ast.rs (1212)
   decl_names.rs (173)
@@ -242,11 +242,12 @@ src/  (219 files, 74477 lines)
       objects.rs (137)
   lexer/
     chars.rs (45)
+    editor_tokens.rs (144)
     keyword.rs (143)
     literal.rs (334)
     math.rs (328)
-    mod.rs (20)
-    scan.rs (426)
+    mod.rs (24)
+    scan.rs (454)
     symbol.rs (263)
   parser/
     classes.rs (782)
@@ -403,13 +404,13 @@ impl_python/  (49 files, 16411 lines)
     type_utils.py (78)
     types.py (335)
 
-vscode-extension/  (7 files, 2078 lines; src/ + syntaxes/ only)
+vscode-extension/  (7 files, 2231 lines; src/ + syntaxes/ only)
   src/
     debug_runner.ts (350)
     extension.ts (225)
     frontend.ts (133)
     vscode_mock.ts (289)
-    wasm_providers.ts (774)
+    wasm_providers.ts (927)
   syntaxes/
     arrow.tmLanguage.json (299)
     arrow-stub.tmLanguage.json (8)

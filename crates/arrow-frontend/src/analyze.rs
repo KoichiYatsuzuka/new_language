@@ -13,12 +13,20 @@
 //! | `scopes`      | 同上のスコープ木 | Completion（可視名の絞り込み） |
 //! | `exprTypes`   | `editor_index.node_spans` × `AstAnnotations` | Hover（式の推論型）/ Inlay |
 //! | `typeRefs`    | `editor_index.type_refs`（`parse_type_expr` が控えた型位置） | Semantic tokens / Hover（型名を関数と誤認させない） |
+//! | `tokens`      | `lexer::editor_tokens`（トークンの範囲＋コメント） | Semantic tokens / 語の特定 / 受け手判定 / 呼び出し文脈 |
 //! | `members`     | AST のクラス/トレイト/列挙本体 | `.` 補完 |
+//!
+//! ⚠ `tokens` だけは **`ok: false` のときも現在のテキストのもの**を返す。
+//!   `Lexer::tokenize()` は失敗しないので構文エラー中でも正しく、拡張が
+//!   lastGood（古いテキスト）の位置を今のバッファに当てずに済む。
+//!
+//! ⚠ 位置はすべて **0 始まり・列は UTF-16 コードユニット**（VS Code の `Position` と同じ）。
+//!   `Span` は 1 始まり・文字単位なので、変換は [`Utf16Cols`] が 1 箇所で行う。
 
 use serde_json::{json, Map, Value};
 
 use crate::ast::{Expr, Param, Stmt};
-use crate::lexer::Lexer;
+use crate::lexer::editor_tokens::tokenize_with_spans;
 use crate::parser::Parser;
 use crate::token::Span;
 use crate::type_check::TypeChecker;
@@ -54,25 +62,79 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// 1 始まりの行・列を VS Code の 0 始まりへ直す。変換はここ 1 箇所だけで行う。
-fn pos_json(line: usize, col: usize) -> Value {
-    json!({ "line": line.saturating_sub(1), "col": col.saturating_sub(1) })
+/// 行ごとの「文字インデックス → UTF-16 オフセット」変換表。
+///
+/// # なぜ要るのか
+///
+/// `Span.col` は**文字（Unicode スカラ値）単位**だが、VS Code の `Position.character` は
+/// **UTF-16 コードユニット単位**。BMP 内の文字しかない行では一致するので今まで表面化して
+/// いなかったが、絵文字などサロゲートペアが 1 つでも行にあると以降の列が 1 ずつずれる。
+///
+/// 拡張が自前の走査（TypeScript は最初から UTF-16 で動く）をやめて**この JSON の位置だけ**を
+/// 信じるようになると、ここが唯一の真実源になる。だから変換をこの 1 箇所に置く。
+struct Utf16Cols {
+    /// `lines[line][char_idx]` = その行頭からの UTF-16 オフセット。
+    /// 末尾に行全体の長さを 1 つ余分に持つので、終端位置の変換にも使える。
+    lines: Vec<Vec<usize>>,
+}
+
+impl Utf16Cols {
+    fn new(source: &str) -> Self {
+        let mut lines = Vec::new();
+        for line in source.split('\n') {
+            let mut offsets = Vec::with_capacity(line.chars().count() + 1);
+            let mut acc = 0usize;
+            for ch in line.chars() {
+                offsets.push(acc);
+                acc += ch.len_utf16();
+            }
+            offsets.push(acc);
+            lines.push(offsets);
+        }
+        Self { lines }
+    }
+
+    /// 1 始まりの (行, 文字列) を、0 始まりの (行, UTF-16 列) へ直す。
+    fn to_vscode(&self, line: usize, col: usize) -> (usize, usize) {
+        let l = line.saturating_sub(1);
+        let c = col.saturating_sub(1);
+        let utf16 = self
+            .lines
+            .get(l)
+            .and_then(|offsets| offsets.get(c).copied())
+            // 表の外（行末より後ろ）は行の全長に丸める。位置不明で落とすよりまし。
+            .or_else(|| self.lines.get(l).and_then(|o| o.last().copied()))
+            .unwrap_or(c);
+        (l, utf16)
+    }
+}
+
+/// 1 始まりの行・列を VS Code の 0 始まり・UTF-16 列へ直す。変換はここ 1 箇所だけで行う。
+fn pos_json(cols: &Utf16Cols, line: usize, col: usize) -> Value {
+    let (l, c) = cols.to_vscode(line, col);
+    json!({ "line": l, "col": c })
 }
 
 /// `Span` を JSON に落とす。`line == 0` は「位置不明」なので `null`。
-fn span_json(span: &Span) -> Value {
+fn span_json(cols: &Utf16Cols, span: &Span) -> Value {
     if span.line == 0 {
         return Value::Null;
     }
-    pos_json(span.line, span.col)
+    pos_json(cols, span.line, span.col)
 }
 
-fn diag_json(span: Option<&Span>, severity: u8, message: String, source: &str) -> Value {
+fn diag_json(
+    cols: &Utf16Cols,
+    span: Option<&Span>,
+    severity: u8,
+    message: String,
+    source: &str,
+) -> Value {
     json!({
         "severity": severity,
         "message": message,
         "source": source,
-        "at": span.map(span_json).unwrap_or(Value::Null),
+        "at": span.map(|s| span_json(cols, s)).unwrap_or(Value::Null),
     })
 }
 
@@ -198,12 +260,32 @@ fn members_of_body(body: &[Stmt], bases: &[String]) -> Value {
 /// `symbols` などは空配列になるので、拡張側は**前回成功時の結果を保持**して使う
 /// （入力途中は常に構文不正なので、そこで情報を全部消すと使い物にならない）。
 pub fn analyze_json(source: &str, filename: &str) -> String {
-    let tokens = Lexer::new(source, filename).tokenize();
+    let cols = Utf16Cols::new(source);
+
+    // 字句解析はトークン列と**その範囲**の両方を返す。範囲は拡張の着色・語の特定・
+    // 受け手判定に使う（そこから自前の正規表現走査を消すため）。
+    let (tokens, token_spans) = tokenize_with_spans(source, filename);
+    let tokens_json: Vec<Value> = token_spans
+        .iter()
+        .map(|t| {
+            let (sl, sc) = cols.to_vscode(t.start.0, t.start.1);
+            let (el, ec) = cols.to_vscode(t.end.0, t.end.1);
+            json!({
+                "kind": t.kind.as_str(),
+                "line": sl, "col": sc,
+                "endLine": el, "endCol": ec,
+            })
+        })
+        .collect();
 
     let mut parser = Parser::new(tokens, None);
     let stmts = match parser.parse_program() {
         Ok(stmts) => stmts,
         Err(e) => {
+            // ⚠ `tokens` だけは**現在のテキストのもの**を返す。`Lexer::tokenize()` は
+            //    失敗しないので、構文エラー中でも必ず正しい。ここを空にすると拡張は
+            //    lastGood（古いテキスト）の位置を今のバッファに当てることになり、
+            //    打っている最中ずっと色がずれる。
             return json!({
                 "ok": false,
                 "parseError": strip_ansi(&e),
@@ -212,6 +294,7 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
                 "scopes": [],
                 "exprTypes": [],
                 "typeRefs": [],
+                "tokens": tokens_json,
                 "members": {},
             })
             .to_string();
@@ -223,6 +306,7 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
     let mut diagnostics: Vec<Value> = Vec::with_capacity(errors.len() + warnings.len());
     for e in &errors {
         diagnostics.push(diag_json(
+            &cols,
             e.span.as_ref(),
             SEVERITY_ERROR,
             strip_ansi(&e.detail_str()),
@@ -231,6 +315,7 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
     }
     for w in &warnings {
         diagnostics.push(diag_json(
+            &cols,
             w.span.as_ref(),
             SEVERITY_WARNING,
             strip_ansi(&w.detail_str()),
@@ -257,7 +342,7 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
             json!({
                 "name": d.name,
                 "kind": d.kind.as_str(),
-                "at": pos_json(d.pos.0, d.pos.1),
+                "at": pos_json(&cols, d.pos.0, d.pos.1),
                 "mutability": d.mutability,
                 "typeAnn": d.type_ann,
                 "inferred": inferred,
@@ -300,7 +385,7 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
                 continue;
             }
             expr_types.push(json!({
-                "at": pos_json(pos.0, pos.1),
+                "at": pos_json(&cols, pos.0, pos.1),
                 "type": rendered,
             }));
         }
@@ -315,7 +400,7 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
         .iter()
         .map(|(pos, name)| {
             json!({
-                "at": pos_json(pos.0, pos.1),
+                "at": pos_json(&cols, pos.0, pos.1),
                 "name": name,
             })
         })
@@ -333,6 +418,7 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
         "scopes": scopes,
         "exprTypes": expr_types,
         "typeRefs": type_refs,
+        "tokens": tokens_json,
         "members": Value::Object(members),
         "stmtCount": stmts.len(),
     })

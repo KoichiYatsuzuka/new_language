@@ -60,6 +60,14 @@ pub struct Lexer {
     pending: Vec<Spanned>, // INDENT/DEDENT などのバッファ
     at_line_start: bool,
     pub(super) bracket_depth: usize, // (), [], {} の深さ
+    /// コメントの範囲（`editor` feature 専用・1 始まりの (行, 列)、`end` は終端の次）。
+    ///
+    /// ⚠ コメントは `skip_comment()` が読み飛ばすだけで**トークンにならない**ので、
+    ///    `tokenize()` の外からは観測できない。エディタは文字列と同じくコメントを
+    ///    マスクする必要があるため、ここで別枠に控える。
+    ///    詳細は [`super::editor_tokens`]。
+    #[cfg(feature = "editor")]
+    comment_spans: Vec<((usize, usize), (usize, usize))>,
 }
 
 impl Lexer {
@@ -87,7 +95,22 @@ impl Lexer {
             pending: Vec::new(),
             at_line_start: true, // ファイル先頭は行頭扱い
             bracket_depth: 0,
+            #[cfg(feature = "editor")]
+            comment_spans: Vec::new(),
         }
+    }
+
+    /// `chars` のインデックスに対応する 1 始まりの (行, 列)。
+    /// `editor` 用にトークンの**終端**を取るために公開している。
+    #[cfg(feature = "editor")]
+    pub(super) fn pos_of(&self, char_pos: usize) -> (usize, usize) {
+        self.positions.get(char_pos).copied().unwrap_or((1, 1))
+    }
+
+    /// 読み飛ばしたコメントの範囲（位置順）。
+    #[cfg(feature = "editor")]
+    pub(super) fn comment_spans(&self) -> &[((usize, usize), (usize, usize))] {
+        &self.comment_spans
     }
 
     /// ソーステキスト全体をトークン列に変換して返す。
@@ -419,8 +442,13 @@ impl Lexer {
     ///
     /// 改行文字自体は消費しない（`consume_newline()` に委ねる）。
     fn skip_comment(&mut self) {
+        #[cfg(feature = "editor")]
+        let start = self.pos;
         while !matches!(self.ch(), None | Some('\n') | Some('\r')) {
             self.pos += 1;
         }
+        // トークンを作らずに捨てる区間なので、エディタ用にはここでしか記録できない。
+        #[cfg(feature = "editor")]
+        self.comment_spans.push((self.pos_of(start), self.pos_of(self.pos)));
     }
 }

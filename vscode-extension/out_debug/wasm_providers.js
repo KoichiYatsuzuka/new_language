@@ -74,20 +74,28 @@ function getAnalysis(document) {
     const key = document.uri.toString();
     const entry = cache.get(key);
     if (entry && entry.version === document.version) {
-        return (_a = entry.fresh) !== null && _a !== void 0 ? _a : entry.lastGood;
+        return entry.view;
     }
     const result = (0, frontend_1.analyze)(document.getText());
-    const lastGood = (_b = entry === null || entry === void 0 ? void 0 : entry.lastGood) !== null && _b !== void 0 ? _b : null;
+    const lastGood = (_a = entry === null || entry === void 0 ? void 0 : entry.lastGood) !== null && _a !== void 0 ? _a : null;
     if (!result) {
         // wasm 自体が使えない。旧実装へのフォールバックはしない（二重実装を残さないため）。
-        cache.set(key, { fresh: null, lastGood, version: document.version });
+        cache.set(key, { fresh: null, lastGood, view: lastGood, version: document.version });
         return lastGood;
     }
     if (!result.ok) {
-        cache.set(key, { fresh: null, lastGood, version: document.version });
-        return lastGood;
+        // 構文エラー。宣言・スコープ・型は `lastGood`（**古いテキスト**）で埋めるしかないが、
+        // `tokens` だけは今のテキストのものが来ている（`Lexer::tokenize()` は失敗しない）。
+        // 差し替えないと、打っている最中ずっと**別の場所**に色が付く。
+        const view = lastGood ? { ...lastGood, tokens: (_b = result.tokens) !== null && _b !== void 0 ? _b : [] } : null;
+        cache.set(key, { fresh: null, lastGood, view, version: document.version });
+        return view;
     }
-    cache.set(key, { fresh: result, lastGood: result, version: document.version });
+    // `tokens` が無い wasm（このキーを出す前のビルド）と組み合わさっても落ちないようにする。
+    // 色が出なくなるだけで、拡張全体は動く。
+    if (!result.tokens)
+        result.tokens = [];
+    cache.set(key, { fresh: result, lastGood: result, view: result, version: document.version });
     return result;
 }
 /** ドキュメントが閉じられたらキャッシュを捨てる。 */
@@ -150,11 +158,78 @@ function visibleSymbols(analysis, line) {
     }
     return out;
 }
-/** 位置 `pos` にある単語（識別子）とその範囲。識別子でなければ null。 */
-function wordAt(document, pos) {
-    const range = document.getWordRangeAtPosition(pos, /[A-Za-z_]\w*/);
-    if (!range)
+// ===== トークン列（自前の字句解析を置き換える土台） =====
+/**
+ * `analysis.tokens` の中で `pos` を覆うトークンの添字。無ければ -1。
+ *
+ * トークンは位置順に並んでいるので二分探索でよい。1 行あたり数十トークンでも
+ * ファイル全体では数千になるため、hover のたびに線形走査はしない。
+ */
+function tokenIndexAt(analysis, pos) {
+    const toks = analysis.tokens;
+    let lo = 0, hi = toks.length - 1, found = -1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const t = toks[mid];
+        const startsAfter = t.line > pos.line || (t.line === pos.line && t.col > pos.character);
+        const endsBefore = t.endLine < pos.line
+            || (t.endLine === pos.line && t.endCol <= pos.character);
+        if (startsAfter)
+            hi = mid - 1;
+        else if (endsBefore)
+            lo = mid + 1;
+        else {
+            found = mid;
+            break;
+        }
+    }
+    return found;
+}
+/** `pos` を覆うトークン。無ければ undefined。 */
+function tokenAt(analysis, pos) {
+    const i = tokenIndexAt(analysis, pos);
+    return i < 0 ? undefined : analysis.tokens[i];
+}
+/**
+ * `pos` の**直前**（同じ位置で終わるものを含む）にあるトークンの添字。
+ *
+ * `x.` の `.` や、呼び出しの `(` を後ろ向きに探すときの起点。行をまたいで
+ * 正しく動くのが要点で、これができないと複数行にまたがる呼び出しを扱えない。
+ */
+function tokenIndexBefore(analysis, pos) {
+    const toks = analysis.tokens;
+    let lo = 0, hi = toks.length - 1, best = -1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const t = toks[mid];
+        // t の終端が pos 以下なら候補。
+        const endsAtOrBefore = t.endLine < pos.line
+            || (t.endLine === pos.line && t.endCol <= pos.character);
+        if (endsAtOrBefore) {
+            best = mid;
+            lo = mid + 1;
+        }
+        else
+            hi = mid - 1;
+    }
+    return best;
+}
+/** トークンの範囲を VS Code の Range にする。 */
+function tokenRange(t) {
+    return new vscode.Range(t.line, t.col, t.endLine, t.endCol);
+}
+/**
+ * 位置 `pos` にある識別子とその範囲。識別子トークンの上でなければ null。
+ *
+ * 旧実装は `getWordRangeAtPosition()` に識別子の正規表現を渡していたので、コメントや
+ * 文字列の中の語も拾っていた（`# int を返す` の `int` に hover が出た）。いまはトークンが
+ * `comment` / `str` かどうかを lexer が答えているので、その手の誤爆が構造的に起きない。
+ */
+function wordAt(document, analysis, pos) {
+    const t = tokenAt(analysis, pos);
+    if (!t || t.kind !== 'ident')
         return null;
+    const range = tokenRange(t);
     return { word: document.getText(range), range };
 }
 /** ちょうどその位置で宣言されているシンボル（名前トークンの上にカーソルがある場合）。 */
@@ -246,7 +321,7 @@ function provideHover(document, position) {
     const analysis = getAnalysis(document);
     if (!analysis)
         return undefined;
-    const w = wordAt(document, position);
+    const w = wordAt(document, analysis, position);
     if (!w)
         return undefined;
     const sym = (_a = declarationAt(analysis, position, w.word)) !== null && _a !== void 0 ? _a : lookup(analysis, w.word, position.line);
@@ -342,36 +417,6 @@ const TYPE_TOKEN_OF = {
     new_type: 'type',
     alias: 'type',
 };
-/** コメントと文字列を空白に潰した行を返す（識別子走査で誤検出しないため）。 */
-function maskLine(text) {
-    let out = '';
-    let quote = null;
-    for (let i = 0; i < text.length; i++) {
-        const c = text[i];
-        if (quote) {
-            out += ' ';
-            if (c === '\\') {
-                out += ' ';
-                i++;
-                continue;
-            }
-            if (c === quote)
-                quote = null;
-            continue;
-        }
-        if (c === '"' || c === "'") {
-            quote = c;
-            out += ' ';
-            continue;
-        }
-        if (c === '#') {
-            out += ' '.repeat(text.length - i);
-            break;
-        }
-        out += c;
-    }
-    return out;
-}
 function provideDocumentSemanticTokens(document) {
     const builder = new vscode.SemanticTokensBuilder(exports.SEMANTIC_TOKENS_LEGEND);
     const analysis = getAnalysis(document);
@@ -382,38 +427,45 @@ function provideDocumentSemanticTokens(document) {
     for (const s of analysis.symbols)
         declAt.set(`${s.at.line}:${s.at.col}`, s);
     const typeRefs = typeRefsOf(analysis);
-    const ident = /[A-Za-z_]\w*/g;
-    for (let line = 0; line < document.lineCount; line++) {
-        const text = maskLine(document.lineAt(line).text);
-        const visible = visibleSymbols(analysis, line);
-        const byName = new Map();
-        for (const s of visible)
-            if (!byName.has(s.name))
-                byName.set(s.name, s);
-        // メンバ名（`p.x` の `x`）も色を付けたいので、全クラスのメンバを名前で引けるようにする。
-        ident.lastIndex = 0;
-        let m;
-        while ((m = ident.exec(text)) !== null) {
-            const at = `${line}:${m.index}`;
-            const decl = declAt.get(at);
-            // 型位置の識別子は、**名前引きより先に**型として確定させる。
-            // ここを通さないと `let x: int` の `int` が prelude の `fn int` に当たり、
-            // 型名がキャスト関数として着色される。パーサが型位置だと言っている以上、
-            // 名前が何であれ型が正しい。
-            if (!decl && typeRefs.has(at)) {
-                const named = byName.get(m[0]);
-                const typeTok = (named && TYPE_TOKEN_OF[named.kind]) || 'type';
-                builder.push(line, m.index, m[0].length, exports.SEMANTIC_TOKENS_LEGEND.tokenTypes.indexOf(typeTok), 0);
-                continue;
+    // 走るのは**識別子トークンだけ**。以前は行を `/[A-Za-z_]\w*/g` で総なめし、
+    // 文字列とコメントを `maskLine()` で潰していたが、それは lexer とズレる
+    // （複数行 `"""…"""` の 2 行目以降・`m"…"` / `$…$`・`r"` のプレフィックス）。
+    // いまは「何が識別子か」を lexer が答えるので、その手の誤検出が構造的に起きない。
+    let line = -1;
+    let byName = new Map();
+    for (const t of analysis.tokens) {
+        if (t.kind !== 'ident')
+            continue;
+        // 可視シンボルは行ごとに変わる。行が変わったときだけ引き直す。
+        if (t.line !== line) {
+            line = t.line;
+            byName = new Map();
+            for (const s of visibleSymbols(analysis, line)) {
+                if (!byName.has(s.name))
+                    byName.set(s.name, s);
             }
-            const sym = decl !== null && decl !== void 0 ? decl : byName.get(m[0]);
-            if (!sym)
-                continue;
-            const type = TOKEN_TYPE_OF[sym.kind];
-            if (!type)
-                continue;
-            builder.push(line, m.index, m[0].length, exports.SEMANTIC_TOKENS_LEGEND.tokenTypes.indexOf(type), decl ? 1 : 0);
         }
+        // 識別子は 1 行に収まる（複数行に跨るのは文字列だけ）。
+        const length = t.endCol - t.col;
+        const at = `${t.line}:${t.col}`;
+        const decl = declAt.get(at);
+        // 型位置の識別子は、**名前引きより先に**型として確定させる。
+        // ここを通さないと `let x: int` の `int` が prelude の `fn int` に当たり、
+        // 型名がキャスト関数として着色される。パーサが型位置だと言っている以上、
+        // 名前が何であれ型が正しい。
+        if (!decl && typeRefs.has(at)) {
+            const named = byName.get(document.getText(tokenRange(t)));
+            const typeTok = (named && TYPE_TOKEN_OF[named.kind]) || 'type';
+            builder.push(t.line, t.col, length, exports.SEMANTIC_TOKENS_LEGEND.tokenTypes.indexOf(typeTok), 0);
+            continue;
+        }
+        const sym = decl !== null && decl !== void 0 ? decl : byName.get(document.getText(tokenRange(t)));
+        if (!sym)
+            continue;
+        const type = TOKEN_TYPE_OF[sym.kind];
+        if (!type)
+            continue;
+        builder.push(t.line, t.col, length, exports.SEMANTIC_TOKENS_LEGEND.tokenTypes.indexOf(type), decl ? 1 : 0);
     }
     return builder.build();
 }
@@ -431,24 +483,32 @@ exports.provideDocumentSemanticTokens = provideDocumentSemanticTokens;
  * スコープ内の全名前が出る」ことになり、`c.` に 54 件並んだ。
  */
 function receiverTypeAt(analysis, document, position) {
-    // コメント・文字列は潰してから見る。潰さないと `# functions.ar — …` のような
-    // 行で `functions.` を受け手だと誤認する（実際に補完が出た）。
-    const before = maskLine(document.lineAt(position.line).text).slice(0, position.character);
-    const m = /([A-Za-z_]\w*)\s*\.\s*$/.exec(before);
-    if (!m)
+    // `.` の直前にある識別子トークンを探す。
+    //
+    // 旧実装は行を `maskLine()` で潰してから `/([A-Za-z_]\w*)\s*\.\s*$/` を当てていた。
+    // トークンで見れば、コメント・文字列の中の `.` を誤認する余地が最初から無く
+    // （`# functions.ar — …` で補完が出ていた）、`.` と名前の間に改行があっても効く。
+    const dotIdx = tokenIndexBefore(analysis, position);
+    if (dotIdx < 0)
         return undefined;
-    const name = m[1];
+    const dot = analysis.tokens[dotIdx];
+    if (dot.kind !== 'op' || document.getText(tokenRange(dot)) !== '.')
+        return undefined;
+    const recv = analysis.tokens[dotIdx - 1];
+    if (!recv || recv.kind !== 'ident')
+        return { type: null };
+    const name = document.getText(tokenRange(recv));
     const known = (t) => !!t && (analysis.members[t] !== undefined || preludeMembers[t] !== undefined);
     // 受け手そのものが型名（`MyEnum.` / `MyClass.`）ならその型。
     if (known(name))
         return { type: name };
-    const sym = lookup(analysis, name, position.line);
+    const sym = lookup(analysis, name, recv.line);
     if (known(sym === null || sym === void 0 ? void 0 : sym.typeAnn))
         return { type: sym.typeAnn };
     if (known(sym === null || sym === void 0 ? void 0 : sym.inferred))
         return { type: sym.inferred };
-    // 注釈が無ければ型検査器の推論型を使う。
-    const inferred = exprTypeAt(analysis, new vscode.Position(position.line, m.index + name.length));
+    // 注釈が無ければ型検査器の推論型を使う（node の位置は式の末尾＝名前の終端）。
+    const inferred = exprTypeAt(analysis, new vscode.Position(recv.line, recv.endCol));
     if (known(inferred))
         return { type: inferred };
     return { type: null };
@@ -470,6 +530,13 @@ function membersOf(analysis, typeName, seen = new Set()) {
 function provideCompletionItems(document, position) {
     const analysis = getAnalysis(document);
     if (!analysis)
+        return [];
+    // コメント・文字列の中では何も出さない。
+    // 旧実装は `maskLine()` で受け手の誤認（`# … functions.ar …` で `functions.` の
+    // メンバが出た）だけは防いでいたが、スコープ補完はそのまま出ていた。
+    // いまは lexer が「ここはコメント/文字列」と答えるので、まとめて止められる。
+    const here = tokenAt(analysis, position);
+    if (here && (here.kind === 'comment' || here.kind === 'str'))
         return [];
     const receiver = receiverTypeAt(analysis, document, position);
     if (receiver) {
@@ -501,7 +568,11 @@ function provideCompletionItems(document, position) {
         });
     }
     // `.` の後ろでなければ、その位置から**見えている**名前だけを返す。
-    return visibleSymbols(analysis, position.line).map(sym => {
+    // ただし型注釈位置なら型だけに絞る（`let x: ` の後ろに変数や関数を出さない）。
+    const wantTypes = inTypePosition(analysis, document, position);
+    return visibleSymbols(analysis, position.line)
+        .filter(sym => !wantTypes || TYPE_TOKEN_OF[sym.kind] !== undefined)
+        .map(sym => {
         const item = new vscode.CompletionItem(sym.name, completionKindOf(sym.kind));
         item.detail = renderSignature(sym);
         if (sym.doc)
@@ -510,24 +581,64 @@ function provideCompletionItems(document, position) {
     });
 }
 exports.provideCompletionItems = provideCompletionItems;
+/**
+ * カーソルが型注釈位置にいるか。
+ *
+ * `typeRefs` は使えない — 補完は入力途中に呼ばれるので構文エラー中がほとんどで、
+ * そのとき `typeRefs` は lastGood（**古いテキスト**）由来になり位置が合わない。
+ * トークン列は現在のテキストのものが必ず来るので、そちらで判定する。
+ *
+ * 判定は「直前の意味のあるトークンが `:` か `->`」。`:` は辞書リテラルや
+ * スライスでも使うが、そこで型候補が出ても実害が小さく、逆に
+ * `let x: ` を取りこぼすほうが痛い。
+ */
+function inTypePosition(analysis, document, position) {
+    let i = tokenIndexBefore(analysis, position);
+    // 打ちかけの識別子（`let x: in|`）は読み飛ばして、その手前を見る。
+    if (i >= 0 && analysis.tokens[i].kind === 'ident')
+        i--;
+    if (i < 0)
+        return false;
+    const t = analysis.tokens[i];
+    if (t.kind !== 'op')
+        return false;
+    const text = document.getText(tokenRange(t));
+    return text === ':' || text === '->';
+}
 // ===== 5. Signature help =====
-/** カーソルが入っている呼び出しの「関数名」と「今何番目の引数か」を返す。 */
-function callContext(document, position) {
-    const text = maskLine(document.lineAt(position.line).text).slice(0, position.character);
+/**
+ * カーソルが入っている呼び出しの「関数名」と「今何番目の引数か」を返す。
+ *
+ * トークン列を後ろ向きにたどるので、**呼び出しが複数行にまたがっていても効く**。
+ * 旧実装は `document.lineAt(position.line)` で 1 行しか見ておらず、
+ * 引数を改行で並べた呼び出しではシグネチャヘルプが出ないままだった。
+ */
+function callContext(analysis, document, position) {
+    let i = tokenIndexBefore(analysis, position);
     let depth = 0;
     let argIndex = 0;
-    for (let i = text.length - 1; i >= 0; i--) {
-        const c = text[i];
-        if (c === ')')
+    for (; i >= 0; i--) {
+        const t = analysis.tokens[i];
+        if (t.kind !== 'op')
+            continue;
+        const text = document.getText(tokenRange(t));
+        if (text === ')' || text === ']' || text === '}')
             depth++;
-        else if (c === '(') {
+        else if (text === '[' || text === '{') {
+            if (depth === 0)
+                return undefined; // 呼び出しではなく添字/辞書の中
+            depth--;
+        }
+        else if (text === '(') {
             if (depth === 0) {
-                const head = /([A-Za-z_]\w*)\s*$/.exec(text.slice(0, i));
-                return head ? { name: head[1], argIndex } : undefined;
+                const head = analysis.tokens[i - 1];
+                if (!head || head.kind !== 'ident')
+                    return undefined;
+                return { name: document.getText(tokenRange(head)), argIndex };
             }
             depth--;
         }
-        else if (c === ',' && depth === 0)
+        else if (text === ',' && depth === 0)
             argIndex++;
     }
     return undefined;
@@ -537,7 +648,7 @@ function provideSignatureHelp(document, position) {
     const analysis = getAnalysis(document);
     if (!analysis)
         return undefined;
-    const ctx = callContext(document, position);
+    const ctx = callContext(analysis, document, position);
     if (!ctx)
         return undefined;
     // 関数・ジェネレータ、またはクラス名（＝自動生成コンストラクタ）。
@@ -572,14 +683,14 @@ function provideDefinition(document, position) {
     const analysis = getAnalysis(document);
     if (!analysis)
         return undefined;
-    const w = wordAt(document, position);
+    const w = wordAt(document, analysis, position);
     if (!w)
         return undefined;
     // `obj.member` の member なら、受け手の型のメンバ宣言へ飛ばす。
-    const before = document.lineAt(position.line).text.slice(0, w.range.start.character);
-    if (/\.\s*$/.test(before)) {
-        const recvPos = new vscode.Position(position.line, Math.max(before.lastIndexOf('.'), 0));
-        const recv = receiverTypeAt(analysis, document, new vscode.Position(recvPos.line, recvPos.character + 1));
+    // 直前のトークンが `.` かをトークン列で見る（行頭が `.` の継続行でも効く）。
+    const prev = analysis.tokens[tokenIndexAt(analysis, position) - 1];
+    if (prev && prev.kind === 'op' && document.getText(tokenRange(prev)) === '.') {
+        const recv = receiverTypeAt(analysis, document, new vscode.Position(prev.endLine, prev.endCol));
         if (recv === null || recv === void 0 ? void 0 : recv.type) {
             const member = analysis.symbols.find(s => s.container === recv.type && s.name === w.word);
             if (member) {
@@ -652,7 +763,7 @@ function provideDiagnostics(document) {
     const analysis = (_b = updated === null || updated === void 0 ? void 0 : updated.fresh) !== null && _b !== void 0 ? _b : entry === null || entry === void 0 ? void 0 : entry.fresh;
     if (!analysis)
         return [];
-    return analysis.diagnostics.map(d => toDiagnostic(document, d));
+    return analysis.diagnostics.map(d => toDiagnostic(document, analysis, d));
 }
 exports.provideDiagnostics = provideDiagnostics;
 /** `line 12, col 5` のような位置がメッセージに含まれていれば取り出す。 */
@@ -663,13 +774,16 @@ function parseErrorPosition(message) {
         return undefined;
     return { line: Math.max(parseInt(m[1], 10) - 1, 0), col: Math.max(parseInt((_a = m[2]) !== null && _a !== void 0 ? _a : '1', 10) - 1, 0) };
 }
-function toDiagnostic(document, d) {
+function toDiagnostic(document, analysis, d) {
     let range;
     if (d.at) {
-        const lineText = document.lineAt(Math.min(d.at.line, document.lineCount - 1)).text;
-        const wordEnd = /[A-Za-z_]\w*/.exec(lineText.slice(d.at.col));
-        const len = wordEnd && wordEnd.index === 0 ? wordEnd[0].length : 1;
-        range = new vscode.Range(d.at.line, d.at.col, d.at.line, d.at.col + len);
+        // 波線の長さは、その位置にあるトークンの実際の長さ。旧実装は
+        // `/[A-Za-z_]\w*/` を当てていたので、演算子や文字列リテラルを指す診断では
+        // 常に 1 文字になっていた。
+        const t = tokenAt(analysis, new vscode.Position(d.at.line, d.at.col));
+        range = t
+            ? tokenRange(t)
+            : new vscode.Range(d.at.line, d.at.col, d.at.line, d.at.col + 1);
     }
     else {
         // 位置が無い診断（型検査器が span を持たないケース）はファイル先頭 1 文字に置く。
