@@ -739,7 +739,7 @@ function provideDocumentSymbols(document) {
 exports.provideDocumentSymbols = provideDocumentSymbols;
 // ===== 8. Diagnostics =====
 function provideDiagnostics(document) {
-    var _a, _b;
+    var _a, _b, _c;
     if (!(0, frontend_1.isFrontendReady)())
         return [];
     const key = document.uri.toString();
@@ -752,28 +752,30 @@ function provideDiagnostics(document) {
     if (freshParseFailed(document)) {
         const raw = (0, frontend_1.analyze)(document.getText());
         const message = (_a = raw === null || raw === void 0 ? void 0 : raw.parseError) !== null && _a !== void 0 ? _a : 'parse error';
-        const at = parseErrorPosition(message);
-        const range = at
-            ? new vscode.Range(at.line, at.col, at.line, at.col + 1)
-            : document.lineAt(Math.max(document.lineCount - 1, 0)).range;
+        // 位置はパーサが控えたもの（止まったトークン）。以前はエラー文章を
+        // 正規表現で読み直していたが、あれは「メッセージの書き方」に依存する推測だった。
+        const at = (_b = raw === null || raw === void 0 ? void 0 : raw.parseErrorAt) !== null && _b !== void 0 ? _b : null;
+        let range;
+        if (at) {
+            // 波線はそのトークン 1 個分。トークン列は構文エラー中も現在のテキストのもの。
+            const t = (raw === null || raw === void 0 ? void 0 : raw.tokens)
+                ? tokenAt(raw, new vscode.Position(at.line, at.col))
+                : undefined;
+            range = t ? tokenRange(t) : new vscode.Range(at.line, at.col, at.line, at.col + 1);
+        }
+        else {
+            range = document.lineAt(Math.max(document.lineCount - 1, 0)).range;
+        }
         const d = new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Error);
         d.source = 'arrow';
         return [d];
     }
-    const analysis = (_b = updated === null || updated === void 0 ? void 0 : updated.fresh) !== null && _b !== void 0 ? _b : entry === null || entry === void 0 ? void 0 : entry.fresh;
+    const analysis = (_c = updated === null || updated === void 0 ? void 0 : updated.fresh) !== null && _c !== void 0 ? _c : entry === null || entry === void 0 ? void 0 : entry.fresh;
     if (!analysis)
         return [];
     return analysis.diagnostics.map(d => toDiagnostic(document, analysis, d));
 }
 exports.provideDiagnostics = provideDiagnostics;
-/** `line 12, col 5` のような位置がメッセージに含まれていれば取り出す。 */
-function parseErrorPosition(message) {
-    var _a;
-    const m = /line\s+(\d+)[,:]?\s*(?:col(?:umn)?\s+(\d+))?/i.exec(message);
-    if (!m)
-        return undefined;
-    return { line: Math.max(parseInt(m[1], 10) - 1, 0), col: Math.max(parseInt((_a = m[2]) !== null && _a !== void 0 ? _a : '1', 10) - 1, 0) };
-}
 function toDiagnostic(document, analysis, d) {
     let range;
     if (d.at) {

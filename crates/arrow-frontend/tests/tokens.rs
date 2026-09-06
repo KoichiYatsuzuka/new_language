@@ -172,6 +172,31 @@ fn tokens_survive_parse_error() {
     assert_eq!(covering(&toks, 1, 4).map(|t| t.kind.as_str()), Some("ident"), "2 行目の b — {toks:?}");
 }
 
+/// 構文エラーの位置は**パーサが止まったトークン**として出る。
+///
+/// 以前は拡張がエラーメッセージ本文に正規表現を当てて行・列を読み直していた。
+/// メッセージの書き方を変えると静かに壊れる依存だったので、索引から取るようにした。
+#[test]
+fn parse_error_position_comes_from_the_parser() {
+    // 2 行目の `=` の直後で式が来ずに改行 → そこで止まる。
+    let raw = analyze_json("let a = 1\nlet b: int =\n", "test.ar");
+    let v: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(v["ok"], Value::Bool(false), "この入力は構文エラーのはず");
+
+    let at = &v["parseErrorAt"];
+    assert!(!at.is_null(), "位置が出ていない: {raw}");
+    assert_eq!(at["line"].as_u64(), Some(1), "2 行目で止まるはず — {at}");
+}
+
+/// 構文が通るときは `parseErrorAt` は null。
+#[test]
+fn parse_error_position_is_null_when_ok() {
+    let raw = analyze_json("let a = 1\n", "test.ar");
+    let v: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(v["ok"], Value::Bool(true));
+    assert!(v["parseErrorAt"].is_null(), "{raw}");
+}
+
 /// レイアウトトークン（NEWLINE / INDENT / DEDENT / EOF）は出さない。
 /// 幅を持たないうえ `pending` 由来のものは位置が当てにならない。
 #[test]

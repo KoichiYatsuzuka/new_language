@@ -83,6 +83,14 @@ interface Analysis extends AnalysisResult {
     exprTypes: ExprType[];
     typeRefs: TypeRef[];
     tokens: Token[];
+    /**
+     * 構文エラーで**パーサが止まった位置**。`ok` が true のときは null。
+     *
+     * これが来る前は、拡張がエラーメッセージ本文に正規表現を当てて行・列を
+     * 読み直していた。`parse_program` が `Result<_, String>` を返す ＝ 位置を
+     * 人間向けの文章に埋めて捨てるため、それ以外に手が無かった。
+     */
+    parseErrorAt: Pos | null;
     members: Record<string, MemberTable>;
 }
 
@@ -875,12 +883,21 @@ export function provideDiagnostics(document: vscode.TextDocument): vscode.Diagno
     // 構文エラー中は型診断を出さない。壊れた AST から出るエラーは的外れになるうえ、
     // 打っている最中ずっと赤線が点滅する。構文エラー自体だけを 1 件出す。
     if (freshParseFailed(document)) {
-        const raw = analyze(document.getText());
+        const raw = analyze(document.getText()) as Analysis | null;
         const message = raw?.parseError ?? 'parse error';
-        const at = parseErrorPosition(message);
-        const range = at
-            ? new vscode.Range(at.line, at.col, at.line, at.col + 1)
-            : document.lineAt(Math.max(document.lineCount - 1, 0)).range;
+        // 位置はパーサが控えたもの（止まったトークン）。以前はエラー文章を
+        // 正規表現で読み直していたが、あれは「メッセージの書き方」に依存する推測だった。
+        const at = raw?.parseErrorAt ?? null;
+        let range: vscode.Range;
+        if (at) {
+            // 波線はそのトークン 1 個分。トークン列は構文エラー中も現在のテキストのもの。
+            const t = raw?.tokens
+                ? tokenAt(raw, new vscode.Position(at.line, at.col))
+                : undefined;
+            range = t ? tokenRange(t) : new vscode.Range(at.line, at.col, at.line, at.col + 1);
+        } else {
+            range = document.lineAt(Math.max(document.lineCount - 1, 0)).range;
+        }
         const d = new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Error);
         d.source = 'arrow';
         return [d];
@@ -889,13 +906,6 @@ export function provideDiagnostics(document: vscode.TextDocument): vscode.Diagno
     const analysis = updated?.fresh ?? entry?.fresh;
     if (!analysis) return [];
     return analysis.diagnostics.map(d => toDiagnostic(document, analysis, d));
-}
-
-/** `line 12, col 5` のような位置がメッセージに含まれていれば取り出す。 */
-function parseErrorPosition(message: string): { line: number; col: number } | undefined {
-    const m = /line\s+(\d+)[,:]?\s*(?:col(?:umn)?\s+(\d+))?/i.exec(message);
-    if (!m) return undefined;
-    return { line: Math.max(parseInt(m[1], 10) - 1, 0), col: Math.max(parseInt(m[2] ?? '1', 10) - 1, 0) };
 }
 
 function toDiagnostic(

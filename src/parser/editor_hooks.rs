@@ -220,6 +220,30 @@ impl Parser {
         }
     }
 
+    /// 構文エラーで止まった位置を控える（`parse_program` が Err を返す直前に 1 度だけ）。
+    ///
+    /// 位置は**いま見ているトークン**（`self.pos`）。`prev_pos()` ではないのは、
+    /// 失敗させたのは消費済みのトークンではなく「消費できなかったトークン」だから。
+    ///
+    /// これが無いと拡張はエラーメッセージを正規表現で読み直すしかない。理由と代償は
+    /// [`EditorIndex::parse_error_pos`](crate::parser::editor_index::EditorIndex::parse_error_pos)。
+    pub(crate) fn note_parse_error(&mut self) {
+        #[cfg(feature = "editor")]
+        {
+            let pos = self
+                .tokens
+                .get(self.pos)
+                .map(|s| (s.span.line, s.span.col))
+                .filter(|p| p.0 != 0)
+                // EOF を越えて止まった場合は直前のトークンへ寄せる。
+                .or_else(|| {
+                    let p = self.prev_pos();
+                    if p.0 == 0 { None } else { Some(p) }
+                });
+            self.editor.parse_error_pos = pos;
+        }
+    }
+
     /// alias 展開の開始／終了。展開中の型参照は記録しない（理由は `push_type_ref` の doc）。
     pub(crate) fn enter_alias_expansion(&mut self) {
         #[cfg(feature = "editor")]

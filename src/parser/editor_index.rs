@@ -117,6 +117,18 @@ pub struct EditorIndex {
     pub type_refs: Vec<(Pos, String)>,
     /// alias 展開の入れ子深さ。0 より大きいあいだは型参照を記録しない（[`Self::push_type_ref`]）。
     alias_depth: usize,
+    /// 構文エラーで停止したトークンの位置（1 始まりの (行, 列)）。
+    ///
+    /// # なぜ索引に持つのか
+    ///
+    /// `parse_program` は `Result<_, String>` を返す ＝ **位置を人間向けの文字列に埋めて捨てて**
+    /// いる。拡張はそれを正規表現で読み直して波線の位置を決めていた。
+    /// エラーの型を変えれば根治するが、66 箇所の `Err(format!(…))` と全呼び出し元、
+    /// そして端末出力（`compare_outputs.ps1` の比較対象）に波及する。
+    ///
+    /// 位置だけが要るのだから、宣言や型参照と同じく**副次テーブルに控える**のが釣り合う。
+    /// パーサが止まった時点の `self.pos` がそのまま失敗位置なので、推測は一切要らない。
+    pub parse_error_pos: Option<Pos>,
     /// 現在のスコープ id。
     current: usize,
     /// 次に開くスコープへ入れる宣言（関数の仮引数・クラスのフィールド）。
@@ -134,6 +146,7 @@ impl EditorIndex {
             node_spans: HashMap::new(),
             type_refs: Vec::new(),
             alias_depth: 0,
+            parse_error_pos: None,
             current: 0,
             pending: Vec::new(),
             container: None,

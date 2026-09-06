@@ -286,9 +286,18 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
             //    失敗しないので、構文エラー中でも必ず正しい。ここを空にすると拡張は
             //    lastGood（古いテキスト）の位置を今のバッファに当てることになり、
             //    打っている最中ずっと色がずれる。
+            // 失敗位置は**パーサが止まったトークン**。以前は拡張がエラー文字列を
+            // 正規表現で読み直して波線を置いていた（`parse_program` が位置を人間向けの
+            // 文章に埋めて捨てるため）。索引から取れば推測が消える。
+            let at = parser
+                .editor_index()
+                .parse_error_pos
+                .map(|(l, c)| pos_json(&cols, l, c))
+                .unwrap_or(Value::Null);
             return json!({
                 "ok": false,
                 "parseError": strip_ansi(&e),
+                "parseErrorAt": at,
                 "diagnostics": [],
                 "symbols": [],
                 "scopes": [],
@@ -419,6 +428,7 @@ pub fn analyze_json(source: &str, filename: &str) -> String {
         "exprTypes": expr_types,
         "typeRefs": type_refs,
         "tokens": tokens_json,
+        "parseErrorAt": Value::Null,
         "members": Value::Object(members),
         "stmtCount": stmts.len(),
     })

@@ -245,7 +245,7 @@ VS Code はセマンティックトークンを TextMate より優先するた�
 |---|---|---|
 | #V1 | `parse_type_expr` に型参照フック | **完了**（§9 に結果） |
 | #V2 | トークン列公開＋TS 自前スキャナ 7 箇所撤去 | **完了**（§10 に結果） |
-| #V3 | パーサの構造化エラー化 | 未着手 |
+| #V3 | パーサの構造化エラー化 → **失敗位置の副次テーブル化**で代替 | **完了**（§11 に結果と方針変更の理由） |
 
 ## 9. #V1 の結果
 
@@ -373,3 +373,67 @@ hover:
 4. **プローブスクリプトで `uri` を使い回さない。** providers は uri+version でキャッシュするので、
    同じ uri の別ドキュメントを続けて調べると最初の結果に汚染されて**全部空**になる。
    これで「補完が全滅した」と誤読しかけた。
+## 11. #V3 の結果
+
+### 手法を変えた（エラー型は変えていない）
+
+計画では「パーサのエラー型に `Span` を持たせる」としていたが、実装時に**採らなかった**。
+`Result<Vec<Stmt>, String>` を変えると 66 箇所の `Err(format!(…))`・全呼び出し元
+（`debugger.rs` / `main` / `frontend_tests` 多数）・そして端末出力に波及する。
+必要なのは**位置だけ**なので、宣言や型参照とまったく同じく**副次テーブルに控える**
+方式にした（`editor_index.rs` 冒頭が示している設計判断そのもの）。
+
+- `EditorIndex.parse_error_pos: Option<Pos>` を追加。
+- `parse_program` を `parse_program_inner` に包み、`Err` のときだけ
+  `note_parse_error()` で**いま見ているトークン**の位置を控える。
+  `prev_pos()` ではないのは、失敗させたのは消費済みのトークンではなく
+  「消費できなかったトークン」だから。
+- `analyze_json` は `parseErrorAt` を出し、拡張は `parseErrorPosition()` を削除。
+
+⇒ 差分は 4 ファイル・実質 30 行。`Err` の型・端末出力・呼び出し元はすべて不変。
+
+### 実測（ファイル中ほどで構文エラー）
+
+```
+let a = 1
+let b: int =      ← 実際の失敗位置
+print(1)
+print(2)
+print(3)
+```
+
+| | 波線の位置 |
+|---|---|
+| 修正前 | **L4 `print(3)` の行全体**（メッセージに `line N` が無いので末尾行に落ちていた） |
+| 修正後 | **L1:12**（`=` の直後のトークン 1 個分） |
+
+`unexpected token: ...` 系のメッセージは位置を含まないので、旧実装の正規表現は
+**ほぼ常に失敗して末尾行にフォールバック**していた。つまり構文エラーの波線は
+これまで基本的に無関係な場所に出ていた。
+
+### 撤去完了
+
+`wasm_providers.ts` から**正規表現による走査がゼロになった**（`.exec(` の出現 0 件）。
+§3 の表の 8 箇所すべてが片付いた。
+
+### ゲート結果
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test`（ルート） | 772 passed / 0 failed |
+| `cd crates/arrow-frontend; cargo test` | 18 passed / 0 failed |
+| **`compare_outputs.ps1`**（対 変更前バイナリ） | **identical 156 / 156・differing 0**（負の対照も 0） |
+| `compare_wasm_frontend.ps1` | compared 226 / agreed 226 / INVENTED 0 / mismatch 0 |
+| `scan_examples.ps1` / `force_gate.ps1` | FAIL 0 / 0 件 |
+| `compare_python_impl.ps1` | identical 65 / unexpected diff 0 |
+| `stress.js` | threw 0 / hover misses 0 / def misses 0 |
+
+---
+
+## 12. 3 タスク完了後の状態
+
+- 拡張の解析は **lexer / parser / type_check の出力だけ**で成り立っている。
+  TypeScript 側に言語仕様の判断は 1 つも残っていない。
+- 消せなかったのは §5 のとおり TextMate 文法（activate 前の下地）と
+  `language-configuration.json`（VS Code が同期的に要求）だけ。
+- `scripts/run_extension_debug.ps1` で、VS Code を起動せずに全機能を確認できる。

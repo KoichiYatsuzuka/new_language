@@ -16,7 +16,19 @@ impl Parser {
     ///
     /// # エラー
     /// いずれかの文のパースに失敗した場合にエラーを返す。
+    ///
+    /// ⚠ エラー時、`editor` feature では**失敗位置を索引に控える**
+    /// （[`Parser::note_parse_error`]）。エラーの型は `String` のままなので
+    /// 呼び出し元・66 箇所の `Err(format!(…))`・端末出力のいずれも変わらない。
     pub fn parse_program(&mut self) -> Result<Vec<Stmt>, String> {
+        let result = self.parse_program_inner();
+        if result.is_err() {
+            self.note_parse_error();
+        }
+        result
+    }
+
+    fn parse_program_inner(&mut self) -> Result<Vec<Stmt>, String> {
         let mut stmts = Vec::new();
         // 先頭の空白行やインデントをスキップ
         self.skip_newlines();
