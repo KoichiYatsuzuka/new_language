@@ -58,6 +58,7 @@ fn fmt_op(op: &Op, chunk: &Chunk) -> String {
             None => format!("CALL_METHOD_KW <bad idx {i}>"),
         },
         Op::Pop => "POP".to_string(),
+        Op::CoerceFloat => "COERCE_FLOAT".to_string(),
         Op::Bin(o) => format!("BIN {o:?}"),
         Op::BinLocalLocal(a, b, o) => format!("BIN_LL {a} {b} {o:?}"),
         Op::BinLocalConst(a, c, o) => format!("BIN_LC {a} const[{c}] {o:?}"),

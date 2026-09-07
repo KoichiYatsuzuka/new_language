@@ -1,0 +1,58 @@
+# int_float_widening.ar — `int` → `float` の暗黙拡大と束縛時の昇格（案 B・2026-09-08）
+#
+# 型注釈が `float` の束縛に `int` を渡せる。値は束縛時に `float` へ昇格するので、
+# 「注釈は float なのに中身は int」という状態は作られない。
+#
+# ⚠ 逆方向（float → int）は情報を落とすので許さない  → int_float_widening_error.ar
+# ⚠ 拡大は**最上位のみ**。要素型へは伝播しない       → int_float_widening_error.ar
+
+print("=== 宣言時の昇格 ===")
+
+let a: float = 3
+print(a)            # 3.0 — int リテラルだが float として束縛される
+
+mut b: float = 4
+print(b)            # 4.0
+
+const C: float = 5
+print(C)            # 5.0
+
+# C ABI 別名も基底型で判定する
+let w32: float32 = 6
+let w64: float64 = 7
+print(w32, w64)     # 6.0 7.0
+
+# 注釈が無い / int のときは何も起きない
+let plain = 8
+let i: int = 9
+print(plain, i)     # 8 9
+
+print("=== 関数引数 ===")
+
+fn scale(let x: float) -> float:
+    return x * 2.0
+
+print(scale(3))     # 6.0 — int を float 引数へ渡せる
+print(scale(3.5))   # 7.0
+
+print("=== フィールド ===")
+
+class Vec:
+    mut x: float
+    mut y: float
+
+mut v = Vec(1, 2)   # コンストラクタ引数も拡大の対象
+print(v.x, v.y)     # 1.0 2.0
+
+v.x = 10            # フィールド書き込みも昇格する
+print(v.x)          # 10.0
+
+print("=== 入れ子スコープ ===")
+
+fn inner() -> float:
+    let inner_v: float = 11
+    return inner_v
+
+print(inner())      # 11.0
+
+print("done")

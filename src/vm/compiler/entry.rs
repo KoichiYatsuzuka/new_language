@@ -626,8 +626,9 @@ pub fn compile_debug(stmt: &Stmt) -> Option<Chunk> {
             c.compile_expr(e)?;
             c.emit(Op::Return); // 式の値を返す（呼び出し側が表示）
         }
-        Stmt::Let(name, _, e) | Stmt::Const(name, _, e) if name != "_" => {
+        Stmt::Let(name, ty, e) | Stmt::Const(name, ty, e) if name != "_" => {
             c.compile_expr(e)?;
+            c.emit_coerce_binding(ty, e);
             let ni = c.add_name(name);
             c.emit(Op::DeclareName(ni));
             c.emit(Op::ReturnNil);

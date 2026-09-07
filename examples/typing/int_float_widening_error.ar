@@ -1,0 +1,25 @@
+# int_float_widening_error.ar — 拡大が**許されない**方向（案 B・2026-09-08）
+#
+# 対になる正常系: int_float_widening.ar
+#
+# Section 1 — StaticTypeError: `float` → `int` は縮小なので許されない
+#   Expected error (StaticTypeError):
+#     argument 0 of 'takes_int' expects 'int' but got 'float'
+
+fn takes_int(let n: int) -> int:
+    return n + 1
+
+print(takes_int(3.5))   # StaticTypeError: float を int 引数へ渡すことはできない
+
+# Section 2 — StaticTypeError: 拡大は最上位のみ。要素型へは伝播しない
+#   Expected error (StaticTypeError):
+#     argument 0 of 'takes_floats' expects 'list[float]' but got 'list[int]'
+#
+#   実行時の昇格はスカラの `float` 注釈だけが対象で、`list` の要素は `int` のまま残る。
+#   ここで受理すると「静的には float のリストなのに中身は int」になる。
+
+fn takes_floats(let xs: list[float]) -> None:
+    print(xs)
+
+let ints = [1, 2, 3]
+takes_floats(ints)      # StaticTypeError: 要素型は拡大されない

@@ -442,7 +442,8 @@ impl TypeChecker {
                         Some(param_pos) => {
                             self.check_mut_param_arg(fname, sig, param_pos, call_arg.expr());
                             if let Some(expected) = &sig.params[param_pos].1 {
-                                if !self.type_matches(arg_ty, expected) {
+                                // ⚠ `mut` 引数（write-back）は拡大を許さない（`type_matches` の doc）。
+                                if !self.param_type_matches(sig, param_pos, arg_ty, expected) {
                                     self.report_error(StaticTypeError {
                                         kind: TypeErrorKind::CallArgTypeMismatch {
                                             func_name: fname.to_string(),
@@ -459,7 +460,8 @@ impl TypeChecker {
                 }
                 None => {
                     if let Some((_, Some(expected))) = sig.params.get(positional_idx) {
-                        if !self.type_matches(arg_ty, expected) {
+                        // ⚠ `mut` 引数（write-back）は拡大を許さない（`type_matches` の doc）。
+                        if !self.param_type_matches(sig, positional_idx, arg_ty, expected) {
                             self.report_error(StaticTypeError {
                                 kind: TypeErrorKind::CallArgTypeMismatch {
                                     func_name: fname.to_string(),
@@ -512,6 +514,29 @@ impl TypeChecker {
         }
     }
 
+    /// シグネチャの `param_idx` 番目に `arg_ty` を渡せるか。
+    ///
+    /// ⚠⚠ **`mut` パラメータ（write-back）だけは `int` → `float` の暗黙拡大を許さない。**
+    /// 呼び先が呼び元の記憶域へ書き戻す引数（C ABI の `double*` など）では、拡大は
+    /// 「値の変換」ではなく**記憶域の型詐称**になる（`int` 変数へ 8 バイトの double が
+    /// 書き戻される）。詳細は [`TypeChecker::type_matches`] の doc。
+    ///
+    /// ⚠ `param_mutable` は `params` と**同じ絞り込み**で並んでいる前提（B11）。
+    /// 添字がずれると別の引数の可変性を見る。
+    fn param_type_matches(
+        &self,
+        sig: &FnSig,
+        param_idx: usize,
+        arg_ty: &InferredType,
+        expected: &InferredType,
+    ) -> bool {
+        if sig.param_mutable.get(param_idx).copied().unwrap_or(false) {
+            self.type_matches_exact(arg_ty, expected)
+        } else {
+            self.type_matches(arg_ty, expected)
+        }
+    }
+
     /// 関数型変数の呼び出し検査：引数個数・型・キーワード名・`mut` 引数の可変性を検査する。
     pub(super) fn check_fn_type_call(
         &mut self,
@@ -549,7 +574,13 @@ impl TypeChecker {
                     }),
                     Some(param_pos) => {
                         let param = &params[param_pos];
-                        if param.ty != InferredType::Any && !self.type_matches(arg_ty, &param.ty) {
+                        // ⚠ `mut` 引数（write-back）は拡大を許さない（`type_matches` の doc）。
+                        let ok = if param.mutable {
+                            self.type_matches_exact(arg_ty, &param.ty)
+                        } else {
+                            self.type_matches(arg_ty, &param.ty)
+                        };
+                        if param.ty != InferredType::Any && !ok {
                             self.report_error(StaticTypeError {
                                 kind: TypeErrorKind::CallArgTypeMismatch {
                                     func_name: func_name.to_string(),
@@ -573,7 +604,13 @@ impl TypeChecker {
                 },
                 None => {
                     if let Some(param) = params.get(positional_idx) {
-                        if param.ty != InferredType::Any && !self.type_matches(arg_ty, &param.ty) {
+                        // ⚠ `mut` 引数（write-back）は拡大を許さない（`type_matches` の doc）。
+                        let ok = if param.mutable {
+                            self.type_matches_exact(arg_ty, &param.ty)
+                        } else {
+                            self.type_matches(arg_ty, &param.ty)
+                        };
+                        if param.ty != InferredType::Any && !ok {
                             self.report_error(StaticTypeError {
                                 kind: TypeErrorKind::CallArgTypeMismatch {
                                     func_name: func_name.to_string(),

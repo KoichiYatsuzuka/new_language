@@ -168,6 +168,26 @@ impl Compiler {
         }
     }
 
+    /// 型注釈が `float` の宣言なら、スタックトップを昇格する op を出す（案 B・2026-09-08）。
+    ///
+    /// ⚠ **`compile_expr` の直後・ストア op の直前**に呼ぶこと。ツリーウォークの
+    /// [`crate::interpreter::exec::vars::coerce_binding`] と同じ位置・同じ判断にする。
+    /// 位置がずれると `let b: float = 3` の値がツリーウォークと VM で食い違う。
+    /// ⚠ 初期化子が**既に float リテラル**なら op を出さない。昇格が確実に no-op である
+    /// ことがコンパイル時に判るケースで、`bench_*` 例題にも入るため A/B 計測を濁さないよう
+    /// 落としておく。⚠ **int リテラルは落とさない** — こちらは実際に昇格が起きる。
+    pub(super) fn emit_coerce_binding(&mut self, type_ann: &Option<String>, init: &Expr) {
+        if matches!(init, Expr::Float(_)) {
+            return;
+        }
+        let Some(ann) = type_ann.as_deref() else { return };
+        // C ABI 別名（`float32` / `float64`）も基底型で判定する。
+        let ann = crate::ast::c_abi_base_type(ann).unwrap_or(ann);
+        if ann == "float" {
+            self.emit(crate::vm::op::Op::CoerceFloat);
+        }
+    }
+
     /// 局所 slot のプリミティブ型名（型注釈が int/float のときのみ）。
     pub(super) fn slot_prim(&self, slot: u16) -> Option<&'static str> {
         match self.slot_type.get(slot as usize)?.as_deref()? {

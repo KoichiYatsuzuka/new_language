@@ -879,6 +879,14 @@ fn exec_op(
         Op::Pop => {
             buf.pop();
         }
+        // 案 B（2026-09-08）: `float` 注釈の宣言でストア直前に置かれる。
+        // ツリーウォークの `coerce_binding` と同一の判断（`Int` のときだけ昇格・他は素通し）。
+        Op::CoerceFloat => {
+            if let Some(Value::Int(n)) = buf.last() {
+                let f = *n as f64;
+                *buf.last_mut().unwrap() = Value::Float(f);
+            }
+        }
         Op::Bin(op) => {
             let b = buf.pop().unwrap();
             let a = buf.pop().unwrap();

@@ -92,6 +92,7 @@ fn code_target_mut(op: &mut Op) -> Option<&mut u32> {
         | Op::StoreCell(_)
         | Op::StoreCellDeepCopy(_)
         | Op::Pop
+        | Op::CoerceFloat
         | Op::Bin(_)
         | Op::BinLocalLocal(_, _, _)
         | Op::BinLocalConst(_, _, _)

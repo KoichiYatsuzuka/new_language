@@ -75,7 +75,7 @@ p.x = "w"           p.x = "w"
 
 | # | 内容 | 状態 |
 |---|---|---|
-| 0-B | `Int → Float` 拡大の土台（`type_matches` ＋ 束縛時昇格） | 未着手 |
+| 0-B | `Int → Float` 拡大の土台（`type_matches` ＋ 束縛時昇格） | **✅ 完了**（2026-09-08） |
 | 0-2 | フィールド書き込みの型検査 | 未着手 |
 | 0-3 | `return` と宣言戻り値の照合 | 未着手 |
 | 0-4 | メソッド引数の型検査 | 未着手 |
@@ -88,18 +88,47 @@ p.x = "w"           p.x = "w"
 
 ## 3. 各フェーズの要点
 
-### 0-B — `Int → Float` 拡大の土台
+### 0-B — `Int → Float` 拡大の土台 【✅ 完了 2026-09-08】
 
-`type_matches` に `(Int, Float) => true` を足す。**緩和方向**（現在 `f(3)` に対し
-`fn f(let x: float)` は StaticTypeError になる＝実測）なので既存の受理集合は狭まらない。
+**実装したもの**
 
-⚠ 昇格を入れる箇所は**実行経路 2 本**。どちらも現在は注釈を `_` で捨てている:
-- ツリーウォーク: [dispatch.rs:56](../src/interpreter/exec/dispatch.rs#L56)
-- VM コンパイラ: [stmt.rs:173](../src/vm/compiler/stmt.rs#L173)
+| 対象 | 内容 |
+|---|---|
+| `type_matches` | 最上位でのみ `(Int, Float)` を受理。本体は `type_matches_exact` へ分離 |
+| `coerce_binding` | ツリーウォーク側の昇格（[exec/vars.rs](../src/interpreter/exec/vars.rs)） |
+| `Op::CoerceFloat` | VM 側の昇格。`compile_expr` の直後・ストア op の直前に置く |
+| `emit_coerce_binding` | 上記 op の発行（[compiler/emit.rs](../src/vm/compiler/emit.rs)） |
 
-⚠⚠ 副作用として **VM の型特化が正しくなる**。[emit.rs:171](../src/vm/compiler/emit.rs#L171) の
-`slot_prim` は `slot_type`（AST の注釈）で int/float 特化 op を選ぶが、現在
-`let b: float = 3` は `slot_type="float"` で**実値が Int** ＝ 特化 op が毎回汎用へ落ちている。
+**⚠⚠ 実装中に判明した「拡大を伝播させてはいけない 2 箇所」**
+
+1. **要素型（再帰の内側）** — 実行時の昇格はスカラの `float` 注釈だけが対象で
+   `list[float] = [1, 2]` の要素は `Int` のまま。伝播させると**静的には通るのに
+   実行時は Int** になる。⇒ `type_matches_exact` の内部再帰は自分自身を呼ぶ。
+2. **`mut` パラメータ（write-back）** — C ABI の `double*` のように呼び先が呼び元の
+   記憶域へ書き戻す引数では、拡大は値の変換ではなく**記憶域の型詐称**になる。
+   ⇒ `param_type_matches` が `param_mutable` を見て `type_matches_exact` を使う。
+   ⚠ **これは既存テスト `cpp_prim_ptr_int_arg_type_mismatch` が実際に検出した。**
+
+**⚠ 無駄な op を出さない** — 初期化子が既に float リテラルなら `CoerceFloat` を出さない。
+入れたままだと `bench_*` 例題の bytecode が変わり、後続フェーズの A/B 計測を濁す
+（実測: 差分 9 件 → **1 件**に減り、bench 系は byte-identical に戻った）。
+
+**副作用として VM の型特化が正しくなった** — `slot_prim` は `slot_type`（AST の注釈）で
+int/float 特化 op を選ぶが、昇格前は `let b: float = 3` が「注釈は float・実値は Int」
+だったため、選ばれた float 特化 op が毎回汎用へフォールバックしていた。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 65/65 identical・unexpected diff 0 |
+| `compare_outputs.ps1 -A <base>` | **156/156 identical**（既存例題に該当箇所が無かった） |
+| `compare_bytecode.ps1 -A <base>` | 差分 1 件（`other_typing.ar` の `let cast_f: float = temp=>float`。キャスト結果は既に float なので実行時 no-op） |
+
+**追加した例題**: `examples/typing/int_float_widening.ar` ／ `int_float_widening_error.ar`
 
 ### 0-2 — フィールド書き込み
 

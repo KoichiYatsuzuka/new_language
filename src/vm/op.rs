@@ -160,6 +160,15 @@ pub enum Op {
     StoreCellDeepCopy(u16),
     /// スタックトップを1つ捨てる。
     Pop,
+    /// スタックトップが `Int` なら `Float` へ昇格する（案 B・2026-09-08）。それ以外は素通し。
+    ///
+    /// 型注釈が `float`（C ABI 別名 `float32`/`float64` を含む）の `let`/`mut`/`const` 宣言で、
+    /// 値をストアする**直前**に置く。ツリーウォークの
+    /// [`crate::interpreter::exec::vars::coerce_binding`] と**同一の判断**。
+    ///
+    /// ⚠ 昇格は `int` → `float` の一方向のみ。逆は情報を落とすので行わない。
+    /// ⚠ 対象はスカラの `float` 注釈だけ（`list[float]` の要素単位の昇格は行わない）。
+    CoerceFloat,
     /// 二項演算: pop b, pop a, push apply_binop_dyn(op, a, b)。
     Bin(BinOp),
     /// 超命令（タスク #2）: `local[a] <op> local[b]` を融合。`LoadLocal(a); LoadLocal(b); Bin(op)` と

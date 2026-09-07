@@ -13,9 +13,45 @@ use {
     },
 };
 
+/// 宣言の型注釈が `float` で値が `Int` のとき `Float` へ昇格する（案 B・2026-09-08）。
+///
+/// # なぜ要るのか
+///
+/// 注釈が `float` でも値が `Int` のまま束縛されるため、**注釈が嘘をつく**状態が実在した:
+/// ```text
+/// let b: float = 3   → 3    （昇格しない）
+/// k.x = 7（x: float） → 7.0  （昇格する）
+/// ```
+/// 後者だけ昇格しているのは型検査の結果ではなく、`store_field` の raw レイアウト経路に
+/// `int → float フィールドの自動昇格` アームがあるという**メモリレイアウトの副作用**。
+/// 受理側は `type_matches` の `(Int, Float)` アームで広げたので、値の側もここで揃える。
+///
+/// ⚠⚠ **副作用として VM の型特化が正しくなる。** [`crate::vm`] の `slot_prim` は
+/// `slot_type`（AST に書かれた注釈）を見て int/float 特化 op を選ぶが、昇格前は
+/// `let b: float = 3` が「注釈は float・実値は Int」だったため、選ばれた float 特化 op が
+/// 毎回汎用へフォールバックしていた。
+///
+/// ⚠ **スカラの `float` 注釈だけを対象にする。** `list[float] = [1, 2]` のような
+/// 要素単位の昇格は行わない（要素ごとの走査になり、`let` の複製規則とも絡む）。
+/// 拡大は `int` → `float` の一方向のみで、逆（`float` → `int`）は情報を落とすので行わない。
+pub(crate) fn coerce_binding(type_ann: Option<&str>, value: Value) -> Value {
+    let Some(ann) = type_ann else { return value };
+    // C ABI 別名（`float32` / `float64`）も基底型で判定する。
+    let ann = crate::ast::c_abi_base_type(ann).unwrap_or(ann);
+    match (ann, &value) {
+        ("float", Value::Int(n)) => Value::Float(*n as f64),
+        _ => value,
+    }
+}
+
 impl Interpreter {
     /// `let` 宣言を実行する。
-    pub(crate) fn exec_let(&mut self, name: &str, expr: &Expr) -> Result<ExecResult, String> {
+    pub(crate) fn exec_let(
+        &mut self,
+        name: &str,
+        type_ann: Option<&str>,
+        expr: &Expr,
+    ) -> Result<ExecResult, String> {
         if name != "_" && self.get_var(name).is_some() {
             return Err(format!("NameError: variable '{name}' is already declared"));
         }
@@ -54,6 +90,11 @@ impl Interpreter {
                 copied
             }
         };
+        // 案 B: `float` 注釈なら昇格する（VM の `Op::CoerceFloat` と同じ位置・同じ判断）。
+        // ⚠ 複製・フリーズの**後**に置く。昇格後の `Float` はプリミティブなので順序に
+        //    意味は無いが、`coerce_binding` を「ストア直前」に固定しておくと VM 側と
+        //    位置が揃い、片方だけ動かしたときに差が出にくい。
+        let value = coerce_binding(type_ann, value);
         self.declare_var(name.to_string(), Var::new(value, false));
         Ok(ExecResult::Normal)
     }

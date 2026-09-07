@@ -129,8 +129,9 @@ impl Compiler {
             }
             // ── ローカル宣言（exec_let / exec の const・mut と同一セマンティクス） ──
             // 最上位モード（#10-c）では slot ではなくグローバルへ宣言する（`DeclareGlobal`）。
-            Stmt::Const(name, _, e) => {
+            Stmt::Const(name, ty, e) => {
                 self.compile_expr(e)?;
+                self.emit_coerce_binding(ty, e);
                 if name == "_" {
                     self.emit(Op::Pop);
                 } else if let Some(ni) = self.toplevel_decl_name(name) {
@@ -140,8 +141,9 @@ impl Compiler {
                     self.emit(Op::StoreLocal(slot)); // const は copy/freeze しない
                 }
             }
-            Stmt::Mut(name, _, e) => {
+            Stmt::Mut(name, ty, e) => {
                 self.compile_expr(e)?;
+                self.emit_coerce_binding(ty, e);
                 if name == "_" {
                     self.emit(Op::Pop);
                 } else if let Some(ni) = self.toplevel_decl_name(name) {
@@ -155,7 +157,7 @@ impl Compiler {
                     self.emit(Op::StoreLocalDeepCopy(slot)); // mut は常に deep_copy
                 }
             }
-            Stmt::Let(name, _, e) if self.toplevel_decl_name(name).is_some() && name != "_" => {
+            Stmt::Let(name, ty, e) if self.toplevel_decl_name(name).is_some() && name != "_" => {
                 // 最上位の `let`（#10-c）。ソースが識別子のときの可変性は**コンパイル時に
                 // 分からない**（`toplevel_globals` は名前の集合だけ）ので、予測せず
                 // `LetFromIdent` でソース名を渡し、`exec_let` と同じ判断を実行時に行う（#27-c）。
@@ -168,10 +170,11 @@ impl Compiler {
                 };
                 let ni = self.toplevel_decl_name(name)?;
                 self.compile_expr(e)?;
+                self.emit_coerce_binding(ty, e);
                 self.emit(Op::DeclareGlobal(ni, kind));
             }
-            Stmt::Let(name, _, e) => {
-                self.compile_let(name, e)?;
+            Stmt::Let(name, ty, e) => {
+                self.compile_let(name, ty, e)?;
             }
             // `static mut x = e`（#27-d）。記憶域は `Interpreter::static_cells`（宣言位置がキー）。
             //
@@ -540,7 +543,7 @@ impl Compiler {
     ///
     /// ⚠ **最上位の `let` は別アーム**（`toplevel_decl_name` が引ける場合・#10-c）。
     /// そちらは `DeclareGlobal` に落ちるので、この関数には来ない。
-    fn compile_let(&mut self, name: &str, e: &Expr) -> Option<()> {
+    fn compile_let(&mut self, name: &str, type_ann: &Option<String>, e: &Expr) -> Option<()> {
         if name == "_" {
             self.compile_expr(e)?;
             self.emit(Op::Pop);
@@ -589,6 +592,7 @@ impl Compiler {
                 _ => Op::StoreLocalFreezeInstance(slot),
             };
             self.compile_expr(e)?;
+            self.emit_coerce_binding(type_ann, e);
             self.emit(store);
         }
         Some(())

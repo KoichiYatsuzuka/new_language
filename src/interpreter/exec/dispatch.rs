@@ -53,20 +53,23 @@ impl Interpreter {
                 self.eval(expr)?;
                 Ok(ExecResult::Normal)
             }
-            Stmt::Let(name, _, expr) => self.exec_let(name, expr),
-            Stmt::Const(name, _, expr) => {
+            Stmt::Let(name, ty, expr) => self.exec_let(name, ty.as_deref(), expr),
+            Stmt::Const(name, ty, expr) => {
                 if name != "_" && self.get_var(name).is_some() {
                     return Err(format!("NameError: variable '{name}' is already declared"));
                 }
                 let value = self.eval(expr)?;
+                // 案 B: `float` 注釈なら昇格する（VM の `Op::CoerceFloat` と同じ位置・同じ判断）。
+                let value = crate::interpreter::exec::vars::coerce_binding(ty.as_deref(), value);
                 self.declare_var(name.clone(), Var::new(value, false));
                 Ok(ExecResult::Normal)
             }
-            Stmt::Mut(name, _, expr) => {
+            Stmt::Mut(name, ty, expr) => {
                 if name != "_" && self.get_var(name).is_some() {
                     return Err(format!("NameError: variable '{name}' is already declared"));
                 }
                 let value = Self::deep_copy_value(self.eval(expr)?);
+                let value = crate::interpreter::exec::vars::coerce_binding(ty.as_deref(), value);
                 self.declare_var(name.clone(), Var::new(value, true));
                 Ok(ExecResult::Normal)
             }

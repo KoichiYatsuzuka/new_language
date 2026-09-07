@@ -22,8 +22,54 @@ impl TypeChecker {
         }
     }
 
-    /// 引数型 `arg_ty` がパラメータの期待型 `expected` と互換性があるかを判定する。
+    /// 引数型 `arg_ty` が期待型 `expected` と互換か。**最上位でのみ** `int` → `float` の
+    /// 暗黙拡大を許す（案 B・2026-09-08）。
+    ///
+    /// # なぜ拡大を入れたか
+    ///
+    /// これを入れる前は `fn f(let x: float)` に `f(3)` が StaticTypeError だった（実測）。
+    /// 一方で**フィールド書き込みだけは昇格していた** — `store_field` の raw レイアウト経路に
+    /// `int → float フィールドの自動昇格` アームがあるため。つまり
+    /// ```text
+    /// let b: float = 3    → 3    （昇格しない）
+    /// k.x = 7（x: float）  → 7.0  （昇格する）
+    /// ```
+    /// という非対称が実在した。受理側をフィールドに合わせて広げ、束縛時の昇格も揃える
+    /// （[`crate::interpreter::exec::vars::coerce_binding`]）。
+    ///
+    /// # ⚠⚠ 拡大を**伝播させてはいけない** 2 つの場所
+    ///
+    /// 1. **要素型・メンバ型（再帰の内側）。** 実行時の昇格はスカラの `float` 注釈だけが
+    ///    対象で、`list[float] = [1, 2]` の要素は `Int` のまま。ここで拡大を許すと
+    ///    **静的には通るのに実行時は Int が入っている**状態になる。
+    ///    ⇒ 内側は [`Self::type_matches_exact`] を使い、そこから拡大へは戻らない。
+    /// 2. **`mut` パラメータ（write-back）。** C ABI の `double*` のように呼び先が
+    ///    呼び元の記憶域へ書き戻す引数では、拡大は「値の変換」ではなく**記憶域の型詐称**に
+    ///    なる（`int` 変数へ 8 バイトの double が書き戻される）。
+    ///    ⇒ 呼び出し検査側が `param_mutable` を見て [`Self::type_matches_exact`] を使う。
+    ///    ⚠ この 1 件は `cpp_prim_ptr_int_arg_type_mismatch` が実際に検出した。
+    ///
+    /// ⚠ 逆方向（`float` → `int`）は情報を落とすので許さない。
     pub(super) fn type_matches(&self, arg_ty: &InferredType, expected: &InferredType) -> bool {
+        if matches!(
+            (arg_ty, expected),
+            (InferredType::Int, InferredType::Float)
+        ) {
+            return true;
+        }
+        self.type_matches_exact(arg_ty, expected)
+    }
+
+    /// `int` → `float` の拡大を**許さない**互換判定。
+    ///
+    /// 要素型の再帰と `mut` パラメータはこちらを使う（理由は [`Self::type_matches`] の doc）。
+    /// ⚠ この関数の内部再帰は**必ず自分自身**を呼ぶこと。`type_matches` へ戻すと
+    /// 拡大が要素型へ漏れる。
+    pub(super) fn type_matches_exact(
+        &self,
+        arg_ty: &InferredType,
+        expected: &InferredType,
+    ) -> bool {
         if *arg_ty == InferredType::Unresolved {
             return true;
         }
@@ -64,11 +110,11 @@ impl TypeChecker {
             // list compatibility
             (InferredType::ListOf(_), InferredType::List) => return true,
             (InferredType::List, InferredType::ListOf(_)) => return true,
-            (InferredType::ListOf(a), InferredType::ListOf(e)) => return self.type_matches(a, e),
+            (InferredType::ListOf(a), InferredType::ListOf(e)) => return self.type_matches_exact(a, e),
             // fixed_list compatibility
             (InferredType::FixedListOf(_), InferredType::FixedList) => return true,
             (InferredType::FixedList, InferredType::FixedListOf(_)) => return true,
-            (InferredType::FixedListOf(a), InferredType::FixedListOf(e)) => return self.type_matches(a, e),
+            (InferredType::FixedListOf(a), InferredType::FixedListOf(e)) => return self.type_matches_exact(a, e),
             // list_like accepts list or fixed_list (with or without inner type)
             (a, InferredType::ListLike) if is_list_like(a) => return true,
             (a, InferredType::ListLikeOf(e)) if is_list_like(a) => {
@@ -76,28 +122,28 @@ impl TypeChecker {
                     InferredType::ListOf(i) | InferredType::FixedListOf(i) => Some(i.as_ref()),
                     _ => None,
                 };
-                return a_inner.is_none_or(|ai| self.type_matches(ai, e));
+                return a_inner.is_none_or(|ai| self.type_matches_exact(ai, e));
             }
             (InferredType::SetOf(_), InferredType::Set) => return true,
             (InferredType::Set, InferredType::SetOf(_)) => return true,
-            (InferredType::SetOf(a), InferredType::SetOf(e)) => return self.type_matches(a, e),
+            (InferredType::SetOf(a), InferredType::SetOf(e)) => return self.type_matches_exact(a, e),
             (InferredType::DictOf(_, _), InferredType::Dict) => return true,
             (InferredType::Dict, InferredType::DictOf(_, _)) => return true,
             (InferredType::DictOf(ak, av), InferredType::DictOf(ek, ev)) => {
-                return self.type_matches(ak, ek) && self.type_matches(av, ev);
+                return self.type_matches_exact(ak, ek) && self.type_matches_exact(av, ev);
             }
             _ => {}
         }
         if let InferredType::Union(union_types) = expected {
-            return union_types.iter().any(|ut| self.type_matches(arg_ty, ut));
+            return union_types.iter().any(|ut| self.type_matches_exact(arg_ty, ut));
         }
         // Intersection型: arg_ty がすべての構成型にマッチする必要がある
         if let InferredType::Intersection(isect_types) = expected {
-            return isect_types.iter().all(|it| self.type_matches(arg_ty, it));
+            return isect_types.iter().all(|it| self.type_matches_exact(arg_ty, it));
         }
         // arg_ty が Intersection の場合: arg_ty のいずれかの構成型が expected にマッチすれば可
         if let InferredType::Intersection(isect_types) = arg_ty {
-            return isect_types.iter().any(|it| self.type_matches(it, expected));
+            return isect_types.iter().any(|it| self.type_matches_exact(it, expected));
         }
         if let InferredType::NamedInstance(class_name) = arg_ty {
             let expected_name = expected.to_string();
