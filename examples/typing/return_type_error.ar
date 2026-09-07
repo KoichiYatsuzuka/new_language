@@ -1,0 +1,35 @@
+# return_type_error.ar — 宣言した戻り値型に合わない `return`（0-3）
+#
+# 対になる正常系: return_type.ar
+#
+# Section 1 — StaticTypeError: 型が違う値を返す
+#   Expected error (StaticTypeError):
+#     'bad' is declared to return 'int' but returns 'str'
+
+fn bad() -> int:
+    return "s"
+
+print(bad())
+
+# Section 2 — StaticTypeError: 縮小方向（float → int）は許されない
+#   Expected error (StaticTypeError):
+#     'narrow' is declared to return 'int' but returns 'float'
+#
+#   ⚠ `/` は int 同士でも float を返す。int を返したいなら `//` を使う。
+
+fn narrow(let a: int, let b: int) -> int:
+    return a / b
+
+print(narrow(6, 3))
+
+# Section 3 — StaticTypeError: メソッドの戻り値も検査される
+#   Expected error (StaticTypeError):
+#     'label' is declared to return 'str' but returns 'int'
+
+class Item:
+    mut n: int
+
+    fn label(self) -> str:
+        return self.n
+
+print(Item(1).label())

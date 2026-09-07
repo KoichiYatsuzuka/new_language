@@ -1,0 +1,80 @@
+# return_type.ar — `return` の値が宣言した戻り値型と照合されること（0-3）
+#
+# 誤った戻り値は return_type_error.ar
+#
+# ⚠ `/` は int 同士でも **float** を返す（`6 / 3` → `2.0`）。int を返したいなら `//`。
+#   この検査を入れたとき、既存例題 3 本が `-> int` と宣言して `a / b` を返していた
+#   （実際の誤りだったので例題側を直した）。
+
+print("=== 基本 ===")
+
+fn add(let a: int, let b: int) -> int:
+    return a + b
+
+fn label(let n: int) -> str:
+    return "n=" + str(n)
+
+print(add(2, 3))        # 5
+print(label(7))         # n=7
+
+print("=== int → float の拡大は許される ===")
+
+fn as_float(let n: int) -> float:
+    return n            # int を float 戻り値へ（受理される）
+
+# ⚠ **既知の未解決点（0-B2）**: 拡大は受理されるが、戻り値と仮引数では
+#   **値が昇格しない**。`let`/`mut`/`const` の束縛とフィールドは昇格する。
+#     let b: float = 3   → 3.0（昇格する）
+#     return n（-> float）→ 3  （昇格しない・下の出力）
+print(as_float(3))      # 3  ← 3.0 ではない
+
+print("=== 除算の戻り値型 ===")
+
+fn true_div(let a: int, let b: int) -> float:
+    return a / b        # `/` は float
+
+fn floor_div(let a: int, let b: int) -> int:
+    return a // b       # `//` は int
+
+print(true_div(6, 3))   # 2.0
+print(floor_div(6, 3))  # 2
+
+print("=== Self 型（メソッド連鎖） ===")
+
+class Builder:
+    mut value: int
+
+    fn set(self, let v: int) -> Self:
+        return Self(v)
+
+    fn doubled(self) -> Self:
+        return Self(self.value * 2)
+
+    fn get(self) -> int:
+        return self.value
+
+print(Builder(1).set(5).doubled().get())   # 10
+
+print("=== 値なし return（早期脱出）は照合しない ===")
+
+fn early(mut acc: list[int], let n: int) -> None:
+    if n < 0:
+        return
+    acc.append(n)
+
+mut xs = [0]
+early(xs, -1)
+early(xs, 9)
+print(xs)               # [0, 9]
+
+print("=== コレクション・None ===")
+
+fn make() -> list[int]:
+    return [1, 2]
+
+fn nothing() -> None:
+    return None
+
+print(make(), nothing())   # [1, 2] None
+
+print("done")

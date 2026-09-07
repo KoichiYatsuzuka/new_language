@@ -116,6 +116,12 @@ pub enum TypeErrorKind {
         field_name: String,
         class_name: String,
     },
+    /// `return` の値の型が宣言された戻り値型と食い違う（0-3）。
+    ReturnTypeMismatch {
+        func_name: String,
+        expected: InferredType,
+        got: InferredType,
+    },
     /// フィールドの宣言型と代入値の型が食い違う（`o.f = v` / `self.f = v`）。
     ///
     /// ⚠ 以前は**静的にはまったく検査されず**、実行時に捕まるかどうかは
@@ -426,6 +432,12 @@ impl StaticTypeError {
             }
             TypeErrorKind::AssignToImmutableField { field_name, class_name } => format!(
                 "cannot assign to immutable field {} of class {}", hl_q(field_name), hl_q(class_name)
+            ),
+            TypeErrorKind::ReturnTypeMismatch { func_name, expected, got } => format!(
+                "{} is declared to return {} but returns {}",
+                hl_q(func_name),
+                hl_q(&expected.to_string()),
+                hl_q(&got.to_string())
             ),
             TypeErrorKind::FieldTypeMismatch { field_name, class_name, expected, got } => format!(
                 "field {} of class {} is declared {} but got {}",

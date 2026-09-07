@@ -48,7 +48,7 @@ except NameError as e:
 
 # ── 7. Internal error propagating through a function call ────────────────────
 print("=== through function ===")
-fn risky_div(a: int, b: int) -> int:
+fn risky_div(a: int, b: int) -> float:
     return a / b
 
 try:

@@ -9,13 +9,13 @@
 #       （`compare_vm_modes.ps1` は stdout しか比較しないため、この食い違いは
 #         検出されていなかった。トレースバックは stderr に出る。）
 
-fn inner(let n: int) -> int:
+fn inner(let n: int) -> float:
     return n / 0
 
-fn middle(let n: int) -> int:
+fn middle(let n: int) -> float:
     return inner(n)          # 関数本体からの呼び出し = リゾルバ解決済み
 
-fn outer(let n: int) -> int:
+fn outer(let n: int) -> float:
     return middle(n)
 
 try:

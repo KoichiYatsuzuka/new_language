@@ -228,8 +228,11 @@ impl TypeChecker {
             // --- ジャンプ文 ---
             Stmt::Return(expr) => {
                 if let Some(e) = expr {
-                    self.infer(e);
+                    let got = self.infer(e);
+                    self.check_return_type(&got);
                 }
+                // ⚠ 値なしの `return`（早期脱出）は**照合しない**。「戻り値を返し忘れている」
+                //    という別の検査であり、既存コードの早期 return を巻き込む。
             }
             Stmt::BlockReturn(expr, span) => {
                 if self.state.block_return_forbidden() {
@@ -646,6 +649,39 @@ impl TypeChecker {
         });
     }
 
+    /// 型注釈中の `Self` を現在のクラスへ解決する（クラス外ならそのまま）。
+    fn resolve_self_type(&self, ty: InferredType) -> InferredType {
+        match (&ty, self.state.current_class()) {
+            (InferredType::SelfType, Some(cls)) => InferredType::NamedInstance(cls.to_string()),
+            _ => ty,
+        }
+    }
+
+    /// `return <値>` の型を、宣言された戻り値型と突き合わせる（0-3）。
+    ///
+    /// ⚠ 宣言が無い / 解決できない関数では何もしない。戻り値注釈そのものが無い場合は
+    /// `MissingReturnTypeAnn` が別途出るので、ここで二重に鳴らさない。
+    fn check_return_type(&mut self, got: &InferredType) {
+        let Some(expected) = self.state.current_fn_return().cloned() else {
+            return;
+        };
+        if matches!(expected, InferredType::Unresolved | InferredType::Any) {
+            return;
+        }
+        if self.type_matches(got, &expected) {
+            return;
+        }
+        let func_name = self.state.current_fn().unwrap_or("<fn>").to_string();
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::ReturnTypeMismatch {
+                func_name,
+                expected,
+                got: got.clone(),
+            },
+            span: None,
+        });
+    }
+
     /// クラス `class_name` のフィールド `field` の**宣言型**を引く。
     ///
     /// ⚠⚠ フィールドの宣言は**2 つのテーブルに分かれて**入っている:
@@ -792,7 +828,13 @@ impl TypeChecker {
         for param in params {
             self.declare_param(param);
         }
-        let prev_fn = self.state.enter_fn(name.to_string());
+        // ⚠ 戻り値型は**注釈から**取る（0-3）。`current_fn_name` でレジストリを引くと
+        //    オーバーロード・メソッド・入れ子関数で一意に定まらない。
+        //    `Self` は現在のクラスへ解決しておく（`return Self(...)` を通すため）。
+        let declared_ret = return_type
+            .and_then(InferredType::from_ann)
+            .map(|t| self.resolve_self_type(t));
+        let prev_fn = self.state.enter_fn(name.to_string(), declared_ret);
         // ⚠⚠ **継承しない**。`gen` の中の入れ子 `fn` もここを通るので、
         //    false へ張り替えることでそこの `yield` もエラーになる。
         let prev_gen = self.state.enter_gen_body(false);

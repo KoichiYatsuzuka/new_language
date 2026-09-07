@@ -1,7 +1,7 @@
-fn divide(let x: int, let y: int) -> int:
+fn divide(let x: int, let y: int) -> float:
     return x / y
 
-fn compute(let n: int) -> int:
+fn compute(let n: int) -> float:
     return divide(n, 0)
 
-let result: int = compute(10)
+let result: float = compute(10)

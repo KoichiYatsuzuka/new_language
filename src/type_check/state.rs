@@ -15,6 +15,13 @@ pub(super) struct CheckState {
     scope_stack: Vec<HashMap<String, VarInfo>>,
     /// 現在型検査中の関数名。`None` はトップレベルまたはクラス本体を示す。
     current_fn_name: Option<String>,
+    /// 現在型検査中の関数の**宣言された戻り値型**（0-3）。`return` の照合に使う。
+    ///
+    /// ⚠ **名前（`current_fn_name`）からレジストリを引いて代用してはいけない。**
+    /// オーバーロード・メソッド・入れ子関数では名前だけでシグネチャが一意に定まらない。
+    /// ⚠ `enter_fn` で**張り替える**（継承しない）。入れ子 `fn` の `return` が
+    /// 外側の関数の戻り値型と照合されると嘘の判定になる。
+    current_fn_return: Option<InferredType>,
     /// 現在型検査中のクラス名。`None` はクラス外を示す。
     current_class_name: Option<String>,
     /// **`gen` 本体の直下を検査中か**（bug_fix.md B13）。
@@ -36,6 +43,7 @@ impl CheckState {
         Self {
             scope_stack: vec![global],
             current_fn_name: None,
+            current_fn_return: None,
             current_class_name: None,
             in_gen_body: false,
             block_return_forbidden_depth: 0,
@@ -97,13 +105,27 @@ impl CheckState {
         self.in_gen_body
     }
 
-    pub(super) fn enter_fn(&mut self, name: String) -> Option<String> {
-        self.current_fn_name.replace(name)
+    #[allow(clippy::type_complexity)]
+    pub(super) fn enter_fn(
+        &mut self,
+        name: String,
+        return_type: Option<InferredType>,
+    ) -> (Option<String>, Option<InferredType>) {
+        (
+            self.current_fn_name.replace(name),
+            std::mem::replace(&mut self.current_fn_return, return_type),
+        )
     }
 
     /// `enter_fn` が返した値を渡して関数本体の検査を抜ける。
-    pub(super) fn exit_fn(&mut self, prev: Option<String>) {
-        self.current_fn_name = prev;
+    pub(super) fn exit_fn(&mut self, prev: (Option<String>, Option<InferredType>)) {
+        self.current_fn_name = prev.0;
+        self.current_fn_return = prev.1;
+    }
+
+    /// 現在型検査中の関数の宣言された戻り値型（0-3）。
+    pub(super) fn current_fn_return(&self) -> Option<&InferredType> {
+        self.current_fn_return.as_ref()
     }
 
     /// クラス本体の検査に入る。戻り値は退出時に `exit_class` へ渡すこと。

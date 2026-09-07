@@ -77,7 +77,8 @@ p.x = "w"           p.x = "w"
 |---|---|---|
 | 0-B | `Int → Float` 拡大の土台（`type_matches` ＋ 束縛時昇格） | **✅ 完了**（2026-09-08） |
 | 0-2 | フィールド書き込みの型検査 | **✅ 完了**（2026-09-08） |
-| 0-3 | `return` と宣言戻り値の照合 | 未着手 |
+| **0-B2** | **戻り値・仮引数でも float へ昇格するか**（要判断・§3.0-B2） | ⚠ **未決** |
+| 0-3 | `return` と宣言戻り値の照合 | **✅ 完了**（2026-09-08） |
 | 0-4 | メソッド引数の型検査 | 未着手 |
 | 0-5 | コンストラクタ引数の型検査 | 未着手 |
 | 0-1 | `let`/`mut`/`const` の注釈採用と照合 | 未着手 |
@@ -173,12 +174,84 @@ Section 3 だけ発火せず、エラー例題が漏れを検出した。
 
 **追加した例題**: `examples/classes/field_type.ar` ／ `field_type_error.ar`
 
-### 0-3 — `return`
+### 0-B2 — 戻り値・仮引数でも float へ昇格するか 【⚠ 未決・要判断】
 
-⚠ `CheckState` に戻り値型のフィールドが無い（`current_fn_name` のみ・
-[state.rs:17](../src/type_check/state.rs#L17)）。`enter_fn`/`exit_fn` と同じ
-save/restore で追加する。**名前引きで代用しない**（オーバーロード・メソッド・
-入れ子関数で一意に定まらない）。
+**0-B で拡大を受理した結果、昇格しない箇所が 2 つ残っている**（実測）:
+
+| 束縛点 | 受理 | 昇格 |
+|---|---|---|
+| `let`/`mut`/`const` の注釈 | ✅ | ✅（0-B） |
+| フィールド書き込み | ✅ | ✅（`store_field` の raw レイアウト経路） |
+| **`return`（`-> float` に int）** | ✅ | ❌ **`3` のまま** |
+| **仮引数（`x: float` に int）** | ✅ | ❌ **`4` のまま** |
+
+```arrow
+fn ret(let n: int) -> float:  return n
+fn param(let x: float) -> None:  print(x)
+print(ret(3))     # 3   ← 3.0 ではない
+param(4)          # 4   ← 4.0 ではない
+let b: float = 5
+print(b)          # 5.0 （こちらは昇格する）
+```
+
+⚠⚠ **これは 0-B が新しく開けた穴**である。0-B 以前は `f(3)`（`f(x: float)`）も
+`return n`（`-> float`）も**静的エラー**だったので、嘘をつく余地が無かった。
+受理だけ広げて値を揃えなかったため、D2 が解消しようとした「注釈が嘘をつく」状態が
+別の場所に移っただけになっている。
+
+**選択肢**
+
+| 案 | 内容 | 影響 |
+|---|---|---|
+| B-i | 戻り値・仮引数でも昇格する（0-B と同じ形で 2 経路に手を入れる） | D2 と一貫。ツリーウォーク／VM の引数束縛と `return` に触る |
+| B-ii | 戻り値・仮引数では拡大を**受理しない**（`type_matches_exact` を使う） | 0-B 以前の挙動へ戻す。束縛とフィールドだけ拡大可という非対称が残る |
+
+⚠ 決めるまで `examples/typing/return_type.ar` は**実際の挙動（`3`）**を出力として
+固定してある（コメントで未解決点として明示）。
+
+### 0-3 — `return` 【✅ 完了 2026-09-08】
+
+**実装したもの**
+
+| 対象 | 内容 |
+|---|---|
+| `CheckState::current_fn_return` | 新設。`enter_fn`/`exit_fn` で save/restore |
+| `TypeErrorKind::ReturnTypeMismatch` | 新設。`'bad' is declared to return 'int' but returns 'str'` |
+| `check_return_type` | `Stmt::Return(Some(e))` で照合 |
+| `resolve_self_type` | `-> Self` を現在のクラスへ解決（`return Self(...)` を通すため） |
+
+⚠ **名前引きで代用しない** — 戻り値型は注釈から取る。`current_fn_name` でレジストリを
+引くとオーバーロード・メソッド・入れ子関数で一意に定まらない。
+⚠ `enter_fn` で**張り替える**（継承しない）。入れ子 `fn` の `return` が外側の関数の
+戻り値型と照合されると嘘の判定になる。
+
+**⚠ 値なしの `return`（早期脱出）は照合しない。** 「戻り値を返し忘れている」という
+別の検査であり、既存コードの早期 return を巻き込む。
+
+**⚠⚠ 既存例題 3 本が実際に誤っていた** — `/` は int 同士でも **float** を返す
+（`6 / 3` → `2.0`）のに `-> int` と宣言していた。D1 に従い例題側を修正:
+
+| 例題 | 修正 |
+|---|---|
+| `exceptions/traceback_frame_names.ar` | `inner`/`middle`/`outer` を `-> float` へ |
+| `exceptions/try_except.ar` | `risky_div` を `-> float` へ |
+| `exceptions/runtime_error.ar` | `divide`/`compute` と `let result` を float へ |
+
+⚠ `//` に変える案は採らなかった。ゼロ除算のメッセージが
+`division by zero` → `integer division by zero` に変わり、例題の出力が動くため
+（`runtime_error.ar` と `traceback_frame_names.ar` はその出力が主題）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 68/68 identical（`return_type_error` は known diff 登録） |
+| `compare_outputs.ps1 -A <0-B>` | 160/162（差分は新規エラー例題 2 本） |
+
+**追加した例題**: `examples/typing/return_type.ar` ／ `return_type_error.ar`
 
 ### 0-4 — メソッド引数
 
