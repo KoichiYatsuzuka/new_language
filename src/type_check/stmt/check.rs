@@ -90,10 +90,15 @@ impl TypeChecker {
                     self.annotations.set_binop_kind(*node_id, k);
                 }
             }
-            // 通常・複合いずれの属性/添字代入も検査内容は同一（複合の op は型に影響しない）。
-            Stmt::AttrAssign { target, value }
-            | Stmt::AttrCompoundAssign { target, value, .. } => {
-                self.check_attr_assign(target, value);
+            // 可変性・アクセス制御の検査は通常・複合で同一。
+            // ⚠ **フィールドの型検査は通常代入だけ**に掛ける（0-2）。複合代入で格納されるのは
+            //    `v` ではなく `f <op> v` の結果で、その型は二項演算の規則で決まる。
+            //    `v` をそのままフィールド型と突き合わせると嘘の判定になる。
+            Stmt::AttrAssign { target, value } => {
+                self.check_attr_assign(target, value, true);
+            }
+            Stmt::AttrCompoundAssign { target, value, .. } => {
+                self.check_attr_assign(target, value, false);
             }
 
             // --- 式文 ---
@@ -565,7 +570,10 @@ impl TypeChecker {
 
     /// 属性/添字への代入 (`obj.attr = v` / `a[i] = v` と複合代入版) を型検査する。
     /// 添字代入のルートが不変変数ならエラー、不変フィールドへの代入もエラーにする。
-    fn check_attr_assign(&mut self, target: &Expr, value: &Expr) {
+    ///
+    /// `check_field_type` が true のとき（＝通常代入）、フィールドの**宣言型**と
+    /// 代入値の型を突き合わせる（0-2）。
+    fn check_attr_assign(&mut self, target: &Expr, value: &Expr, check_field_type: bool) {
         if matches!(target, Expr::Subscript { .. }) {
             if let Some(name) = Self::subscript_root_ident(target) {
                 if let Some(info) = self.lookup(name) {
@@ -579,8 +587,92 @@ impl TypeChecker {
             }
         }
         self.check_immutable_field_assign(target);
-        self.infer(target);
-        self.infer(value);
+        // ⚠ `infer(target)` は属性なら**フィールドの宣言型**を返す（`infer_attr` が
+        //    `class_field_details` から引く）。この戻り値をそのまま期待型に使うことで、
+        //    クラス名の解決のために**オブジェクトを二度推論しないで済む**。
+        //    二度推論すると `infer_attr` がオブジェクトに対して出す診断
+        //    （`OperationOnAny` など）が重複する。
+        let target_ty = self.infer(target);
+        let value_ty = self.infer(value);
+        if !check_field_type {
+            return;
+        }
+        let Expr::Attr { object, attr, span, .. } = target else {
+            return;
+        };
+        // レシーバのクラス名。**推論を伴わない**スコープ引きで求める（`self` も
+        // `NamedInstance(現在のクラス)` として束縛されているので同じ経路で引ける）。
+        // 識別子以外のレシーバ（`f().x = v` など）は保守的に検査しない。
+        let class_name = match object.as_ref() {
+            Expr::Ident { name, .. } => match self.lookup(name).map(|i| i.ty.clone()) {
+                Some(InferredType::NamedInstance(cls)) => cls,
+                _ => return,
+            },
+            _ => return,
+        };
+        // 期待型を決める。
+        //
+        // ⚠⚠ `infer_attr` が引く `registry.class_field_details` は**そのクラス自身が
+        //    宣言したフィールドしか持たない**。trait から継承したフィールド（`w.hp`）は
+        //    **別のテーブル `trait_field_details`** に入っているので `Unresolved` になり、
+        //    検査が素通りしていた（起票されたバグ報告が trait を挙げていたのはこの形）。
+        //    ⚠ `collect_class_field_details` も `class_field_details` しか見ないので
+        //      これだけでは足りない。基底 trait のテーブルを明示的に引く。
+        let expected = match target_ty {
+            InferredType::Unresolved | InferredType::Any => {
+                match self.declared_field_type(&class_name, attr) {
+                    Some(ty) => ty,
+                    None => return, // フィールドでない（メソッド名など）
+                }
+            }
+            t => t,
+        };
+        // 宣言型が判らないフィールド（外部言語オブジェクト・型変数）は検査しない。
+        // ⚠ ここを外すと `type_matches(値, Unresolved)` が false になり**偽陽性が出る**。
+        if matches!(expected, InferredType::Unresolved | InferredType::Any) {
+            return;
+        }
+        if self.type_matches(&value_ty, &expected) {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::FieldTypeMismatch {
+                field_name: attr.clone(),
+                class_name,
+                expected,
+                got: value_ty,
+            },
+            span: Some(span.clone()),
+        });
+    }
+
+    /// クラス `class_name` のフィールド `field` の**宣言型**を引く。
+    ///
+    /// ⚠⚠ フィールドの宣言は**2 つのテーブルに分かれて**入っている:
+    /// - 自クラスと基底クラスが宣言したもの … `class_field_details`
+    /// - **基底 trait** が宣言したもの        … `trait_field_details`
+    ///
+    /// 前者しか見ないと `class Wolf(Creature)` の `w.hp`（`hp` は `Creature` 由来）が
+    /// 引けず、型検査が素通りする。`build_field_index` が実行時に
+    /// 「trait のフィールドを先頭に、own を後ろに」と**1 つのスロット列へ畳んでいる**のと
+    /// 同じものを、静的側でも 1 つに見せるための関数。
+    fn declared_field_type(&self, class_name: &str, field: &str) -> Option<InferredType> {
+        // own（＋クラス継承）を先に見る。own の宣言が trait の宣言を上書きするため。
+        if let Some((_, ty)) = self.collect_class_field_details(class_name).get(field) {
+            return Some(ty.clone());
+        }
+        // 基底 trait を宣言順に辿る。複数 trait が同名フィールドを持つ場合は
+        // 実行時も同一スロットを共有する（`build_field_index`）ので、最初の 1 件でよい。
+        for base in self.registry.class_bases(class_name).unwrap_or(&[]) {
+            if let Some((_, ty)) = self
+                .registry
+                .trait_field_details(base)
+                .and_then(|m| m.get(field))
+            {
+                return Some(ty.clone());
+            }
+        }
+        None
     }
 
     /// タプル分割束縛 `let a, b = expr` を型検査する。

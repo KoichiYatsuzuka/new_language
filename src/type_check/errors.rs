@@ -116,6 +116,18 @@ pub enum TypeErrorKind {
         field_name: String,
         class_name: String,
     },
+    /// フィールドの宣言型と代入値の型が食い違う（`o.f = v` / `self.f = v`）。
+    ///
+    /// ⚠ 以前は**静的にはまったく検査されず**、実行時に捕まるかどうかは
+    /// クラスが raw レイアウトを持つか（＝全フィールドが int/float 系プリミティブか）
+    /// という**メモリレイアウトの都合**で決まっていた。`str` フィールドが 1 つ混ざるか
+    /// trait を 1 つ実装するだけで検査が消えていた。
+    FieldTypeMismatch {
+        field_name: String,
+        class_name: String,
+        expected: InferredType,
+        got: InferredType,
+    },
     /// `private` メンバーにクラス外からアクセスした。
     PrivateAccessError {
         member_name: String,
@@ -414,6 +426,13 @@ impl StaticTypeError {
             }
             TypeErrorKind::AssignToImmutableField { field_name, class_name } => format!(
                 "cannot assign to immutable field {} of class {}", hl_q(field_name), hl_q(class_name)
+            ),
+            TypeErrorKind::FieldTypeMismatch { field_name, class_name, expected, got } => format!(
+                "field {} of class {} is declared {} but got {}",
+                hl_q(field_name),
+                hl_q(class_name),
+                hl_q(&expected.to_string()),
+                hl_q(&got.to_string())
             ),
             TypeErrorKind::PrivateAccessError { member_name, class_name } => format!(
                 "{} is private and cannot be accessed outside {}", hl_q(member_name), hl_q(class_name)

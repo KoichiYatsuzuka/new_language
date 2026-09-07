@@ -1,0 +1,53 @@
+# field_type_error.ar — フィールドの宣言型に合わない代入（0-2）
+#
+# 対になる正常系: field_type.ar
+#
+# ⚠ ここに並べた 4 つは**どれも以前は静的に検査されなかった**。実行時に捕まるかどうかは
+#   クラスが raw レイアウトを持つか（＝全フィールドが int/float 系プリミティブか）という
+#   メモリレイアウトの都合で決まっており、`str` フィールドが 1 つ混ざるだけで
+#   `p.x = "w"` が黙って通っていた。
+#
+# Section 1 — StaticTypeError: クラス外からの誤った代入
+#   Expected error (StaticTypeError):
+#     field 'x' of class 'P' is declared 'int' but got 'str'
+
+class P:
+    mut x: int
+    mut y: str
+
+mut p = P(1, "a")
+p.x = "wrong"       # StaticTypeError: int フィールドへ str
+p.y = 999           # StaticTypeError: str フィールドへ int
+
+# Section 2 — StaticTypeError: メソッド内（self 経由）の誤った代入
+#   Expected error (StaticTypeError):
+#     field 'n' of class 'Inner' is declared 'int' but got 'str'
+
+class Inner:
+    mut n: int
+
+    fn bad(mut self) -> None:
+        self.n = "wrong"    # StaticTypeError: self 経由でも同じく弾く
+
+# Section 3 — StaticTypeError: trait 由来フィールドへの誤った代入
+#   Expected error (StaticTypeError):
+#     field 'hp' of class 'Wolf' is declared 'int' but got 'str'
+
+trait Creature:
+    mut hp: int
+
+class Wolf(Creature):
+    mut pack: int
+
+mut w = Wolf(40, 5)
+w.hp = "wrong"      # StaticTypeError: trait 由来のフィールドも検査される
+
+# Section 4 — StaticTypeError: 縮小方向（float → int）は許されない
+#   Expected error (StaticTypeError):
+#     field 'count' of class 'Narrow' is declared 'int' but got 'float'
+
+class Narrow:
+    mut count: int
+
+mut nw = Narrow(1)
+nw.count = 2.5      # StaticTypeError: 拡大は int→float の一方向のみ

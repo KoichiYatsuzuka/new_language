@@ -1,0 +1,83 @@
+# field_type.ar — フィールドの宣言型が代入時に守られること（0-2）
+#
+# ⚠ このバグの再現条件は「クラスのレイアウト」だった。
+#   `store_field` は **raw レイアウトを持つクラスでだけ**値と slot 形式を突き合わせており、
+#   raw レイアウトは「trait 継承なし・全フィールドが int/float 系プリミティブ」のときだけ付く。
+#   つまり `str` フィールドが 1 つ混ざるか trait を 1 つ実装しただけで検査が消えていた。
+#   ここでは**その両方の形**を正常系として通し、対になるエラー例で弾かれることを示す。
+#
+# 誤った代入は field_type_error.ar
+
+print("=== 全フィールドがプリミティブ（raw レイアウト） ===")
+
+class Point:
+    mut x: int
+    mut y: int
+
+mut p = Point(1, 2)
+p.x = 10
+p.y = 20
+print(p.x, p.y)         # 10 20
+
+print("=== str が混ざる（boxed レイアウト・以前は無検査だった形） ===")
+
+class Tagged:
+    mut n: int
+    mut label: str
+
+mut t = Tagged(1, "a")
+t.n = 5
+t.label = "updated"
+print(t.n, t.label)     # 5 updated
+
+print("=== trait を実装する（boxed レイアウト・以前は無検査だった形） ===")
+
+trait Creature:
+    mut hp: int
+    mut name: str
+
+class Wolf(Creature):
+    mut pack: int
+
+    fn hurt(mut self, d: int) -> None:
+        self::Creature.hp = self::Creature.hp - d
+
+    fn rename(mut self, n: str) -> None:
+        self.name = n
+
+mut w = Wolf("Grey", 40, 5)
+w.hp = 30
+w.name = "Silver"
+w.pack = 7
+w.hurt(5)
+w.rename("Ghost")
+print(w.hp, w.name, w.pack)   # 25 Ghost 7
+
+print("=== float フィールドへの int（拡大は許される） ===")
+
+class Physics:
+    mut mass: float
+
+mut ph = Physics(1.0)
+ph.mass = 3              # int → float の拡大
+print(ph.mass)           # 3.0
+
+print("=== コレクション型のフィールド ===")
+
+class Holder:
+    mut items: list[int]
+
+mut h = Holder([1])
+h.items = [2, 3]
+print(h.items)           # [2, 3]
+
+print("=== 複合代入（格納されるのは f <op> v の結果） ===")
+
+class Counter:
+    mut n: int
+
+mut c = Counter(1)
+c.n += 5
+print(c.n)               # 6
+
+print("done")

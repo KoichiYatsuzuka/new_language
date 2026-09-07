@@ -76,7 +76,7 @@ p.x = "w"           p.x = "w"
 | # | 内容 | 状態 |
 |---|---|---|
 | 0-B | `Int → Float` 拡大の土台（`type_matches` ＋ 束縛時昇格） | **✅ 完了**（2026-09-08） |
-| 0-2 | フィールド書き込みの型検査 | 未着手 |
+| 0-2 | フィールド書き込みの型検査 | **✅ 完了**（2026-09-08） |
 | 0-3 | `return` と宣言戻り値の照合 | 未着手 |
 | 0-4 | メソッド引数の型検査 | 未着手 |
 | 0-5 | コンストラクタ引数の型検査 | 未着手 |
@@ -130,11 +130,48 @@ int/float 特化 op を選ぶが、昇格前は `let b: float = 3` が「注釈�
 
 **追加した例題**: `examples/typing/int_float_widening.ar` ／ `int_float_widening_error.ar`
 
-### 0-2 — フィールド書き込み
+### 0-2 — フィールド書き込み 【✅ 完了 2026-09-08】
 
-`check_attr_assign` は `infer(target)` / `infer(value)` の結果を捨てている。
-型情報は既に揃っている（[infer.rs:377](../src/type_check/infer.rs#L377) が
-`class_field_details` から宣言型を解決済み）。
+**実装したもの**
+
+| 対象 | 内容 |
+|---|---|
+| `TypeErrorKind::FieldTypeMismatch` | 新設。`field 'x' of class 'P' is declared 'int' but got 'str'` |
+| `check_attr_assign` | 第 3 引数 `check_field_type` を追加し、宣言型と値型を突き合わせる |
+| `declared_field_type` | **2 つに分かれたフィールド表**を 1 つに見せる新しいヘルパ |
+
+**⚠⚠ フィールドの宣言は 2 つのテーブルに分かれていた**
+
+`infer_attr` が引く `class_field_details` は**そのクラス自身が宣言したフィールドしか
+持たない**。trait 由来のフィールド（`class Wolf(Creature)` の `w.hp`）は
+**別テーブル `trait_field_details`** に入っており、`Unresolved` に落ちて検査が素通りしていた。
+⚠ `collect_class_field_details`（基底を辿る既存ヘルパ）も `class_field_details` しか
+見ないので**これだけでは足りなかった**。⇒ `declared_field_type` で両方を引く。
+own の宣言が trait の宣言を上書きする順序は、実行時の `build_field_index` と揃えてある。
+
+⚠ **起票されたバグ報告が trait を挙げていたのはまさにこの形**で、最初の実装では
+Section 3 だけ発火せず、エラー例題が漏れを検出した。
+
+**⚠ 複合代入は対象外にした** — `o.f += v` で格納されるのは `v` ではなく `f <op> v` の
+結果で、その型は二項演算の規則で決まる。`v` をそのままフィールド型と突き合わせると
+嘘の判定になる。⇒ `AttrAssign` と `AttrCompoundAssign` のアームを分けた。
+
+**⚠ オブジェクトを二度推論しない** — 期待型は `infer(target)` の**戻り値**を使い、
+クラス名は推論を伴わないスコープ引き（`lookup`）で求める。二度推論すると
+`infer_attr` がオブジェクトに対して出す診断（`OperationOnAny` など）が重複する。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 67/67 identical（`field_type_error` は known diff 登録） |
+| `compare_outputs.ps1 -A <0-B>` | 159/160（差分は**新規エラー例題そのもの**。基準側に検査が無く通ってしまうため） |
+| `compare_bytecode.ps1 -A <0-B>` | 178/179（同上） |
+
+**追加した例題**: `examples/classes/field_type.ar` ／ `field_type_error.ar`
 
 ### 0-3 — `return`
 
