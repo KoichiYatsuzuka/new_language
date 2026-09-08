@@ -4,7 +4,7 @@ Arrow の型注釈が**呼び出し引数以外のどこでも強制されてい
 
 - 対象: `src/type_check/`（検査の追加）＋ 実行経路 2 本（`int`→`float` 昇格）＋ `src/interpreter/templates.rs`（実体化キャッシュ）＋ IC の多相化
 - 作成: 2026-09-08
-- 状態: **実装中**
+- 状態: **Phase 0 完了**（0-B / 0-B2 / 0-1〜0-5）。残り: Phase T・Phase R3
 - ブランチ: `bug-fix_field-type`
 
 ---
@@ -82,7 +82,7 @@ p.x = "w"           p.x = "w"
 | 0-3 | `return` と宣言戻り値の照合 | **✅ 完了**（2026-09-08） |
 | 0-4 | メソッド引数の型検査 | **✅ 完了**（2026-09-08） |
 | 0-5 | コンストラクタ引数の型検査 | **✅ 完了**（2026-09-08） |
-| 0-1 | `let`/`mut`/`const` の注釈採用と照合 | 未着手 |
+| 0-1 | `let`/`mut`/`const` の注釈採用と照合 | **✅ 完了**（2026-09-08） |
 | T | テンプレート実体化キャッシュ | 未着手 |
 | R3 | 属性アクセスの多相 IC | 未着手 |
 
@@ -341,11 +341,53 @@ C# スタブは `__init__` を**引数 0 個**で持つが、実行時の生成�
 
 **追加した例題**: `examples/classes/ctor_arg_type_error.ar`
 
-### 0-1 — `let`/`mut`/`const`
+### 0-1 — `let`/`mut`/`const` 【✅ 完了 2026-09-08】
 
-`resolve_declared_type` が `rhs_ty` を返して注釈を捨てている。照合を足すだけでなく
-**変数を注釈の型で束縛する**よう変える。⚠⚠ 束縛型が変われば下流の推論 → 注釈テーブル →
-`binop_kind` → VM の特化 op が変わり得る。`compare_bytecode.ps1` に差分が出る前提。
+`resolve_declared_type` は右辺の推論型をそのまま返しており、**注釈は照合も採用も
+されていなかった**。`let a: int = "s"` が通るだけでなく変数が **`str` として束縛**
+されていた。Protocol / Intersection / Result の 3 つだけが上で特別扱いされており、
+それ以外の注釈は存在しないのと同じだった。
+
+**照合を足すだけでなく、注釈の型で束縛する。** 注釈が右辺より情報量が多いケースが
+実在するため（参考C が挙げていた 4 ケースのうち 3 つを例題で固定した）:
+
+| ケース | 右辺の推論型 | 注釈 |
+|---|---|---|
+| 空コレクション | `List`（要素型なし） | `list[int]` |
+| Option | `None` | `Option[int]` |
+| トレイトへの拡大 | `Circle` | `Drawable` |
+
+**⚠ 実測できた効果**: `raise_span_fields.ar` の `mut lines: list[int] = []` で
+`lines[0] != lines[1]` が **`BIN NotEq` → `IBIN_SS NotEq`** に特化された
+（出力は不変）。要素型が判るようになったため。予測どおりの向きの変化。
+
+**⚠⚠ `Any` の意味が変わる（唯一の意図的な非互換）**
+
+```arrow
+let x: Any = 5
+print(x + 1)   # 以前: 6 / 現在: StaticTypeError（明示ダウンキャストが要る）
+```
+注釈が採用されるようになったので **`Any` が本当に `Any` になった**。以前は注釈が
+捨てられて `int` として束縛されていたため演算が通っていた。`Any` に明示ダウンキャストを
+要求するのは言語の既存規則どおりなので、これは規則が**やっと効くようになった**もの。
+⚠ 例題は 1 本も壊れなかった（`other_typing.ar` は既に正しくダウンキャストしていた）。
+
+**⚠ 解釈できない注釈文字列では何もしない** — `from_ann` は失敗を `None` で返すので、
+そこで `rhs_ty` に倒さないと「型が無い」が「型が違う」に化ける。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | **既存例題は 1 本も壊れなかった** |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 67/67 identical |
+| `compare_outputs.ps1 -A <0-B>` | 159/164（差分は新規例題のみ・**既存例題は不変**） |
+| `compare_bytecode.ps1 -A <0-B>` | 178/183（新規例題 4 本＋`raise_span_fields.ar` の**特化 1 件**） |
+| `compare_wasm_frontend.ps1` | **236/236 agreed**・INVENTED 0（wasm 再ビルド＋VSIX 生成済み） |
+
+**追加した例題**: `examples/typing/var_annotation.ar` ／ `var_annotation_error.ar`
 
 ### T — テンプレート実体化キャッシュ
 

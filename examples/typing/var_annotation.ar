@@ -1,0 +1,54 @@
+# var_annotation.ar — `let`/`mut`/`const` の型注釈が採用され照合されること（0-1）
+#
+# ⚠ 以前は注釈が**完全に捨てられていた**。`resolve_declared_type` が右辺の推論型を
+#   そのまま返していたので、`let a: int = "s"` が通るだけでなく変数が **`str` として
+#   束縛**されていた。Protocol / Intersection / Result の 3 つだけが特別扱いされており、
+#   それ以外の注釈は存在しないのと同じだった。
+#
+# 誤った初期化は var_annotation_error.ar
+
+print("=== 基本 ===")
+
+let a: int = 1
+mut b: str = "x"
+const C: bool = True
+print(a, b, C)
+
+print("=== 注釈が右辺より情報を持つケース ===")
+
+# 1. 空コレクション — 右辺 `[]` は要素型を持たない。注釈を採用しないと要素型が失われる。
+mut xs: list[int] = []
+xs.append(2)
+xs.append(3)
+print(xs[0] != xs[1])       # True（要素が int と判るので比較が特化される）
+
+# 2. Option — 右辺 `None` は `None` 型。「あとで int が入る」は注釈だけが持つ情報。
+mut o: Option[int] = None
+o = 7
+print(o)
+
+# 3. トレイトへの拡大 — 右辺は具体型 `Circle`。注釈は `Drawable`。
+trait Drawable:
+    fn draw(self) -> str:
+        ...
+
+class Circle(Drawable):
+    mut r: int
+
+    fn draw(self) -> str:
+        return "circle"
+
+let d: Drawable = Circle(1)
+print(d.draw())
+
+print("=== int → float の拡大 ===")
+
+let f: float = 4          # 拡大して昇格する（0-B）
+print(f)                  # 4.0
+
+print("=== 注釈なしは右辺の型のまま ===")
+
+let plain = 5
+print(plain + 1)          # 6
+
+print("done")

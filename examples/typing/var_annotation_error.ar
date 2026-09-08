@@ -1,0 +1,37 @@
+# var_annotation_error.ar — 型注釈と初期化子が食い違う（0-1）
+#
+# 対になる正常系: var_annotation.ar
+#
+# Section 1 — StaticTypeError: `let` の注釈と初期化子が違う
+#   Expected error (StaticTypeError):
+#     'a' is declared 'int' but initialized with 'str'
+
+let a: int = "s"        # StaticTypeError
+mut b: str = 1          # StaticTypeError
+const C: bool = 3       # StaticTypeError
+
+# Section 2 — StaticTypeError: 縮小方向（float → int）は許されない
+#   Expected error (StaticTypeError):
+#     'narrow' is declared 'int' but initialized with 'float'
+#
+#   ⚠ 逆（int → float）は拡大なので通る（var_annotation.ar を参照）。
+
+let narrow: int = 1.5   # StaticTypeError
+
+# Section 3 — StaticTypeError: 要素型は拡大されない
+#   Expected error (StaticTypeError):
+#     'floats' is declared 'list[float]' but initialized with 'list[int]'
+#
+#   実行時の昇格はスカラの `float` 注釈だけが対象で、リストの要素は int のまま残る。
+
+let floats: list[float] = [1, 2, 3]     # StaticTypeError
+
+# Section 4 — StaticTypeError: `Any` は明示ダウンキャストが要る
+#   Expected error (StaticTypeError):
+#     cannot apply `+` to 'Any' — explicit downcast required
+#
+#   ⚠ 注釈が採用されるようになったので `Any` が本当に `Any` になった。
+#     以前は注釈が捨てられて `int` として束縛されており、この演算が通っていた。
+
+let anyv: Any = 5
+print(anyv + 1)         # StaticTypeError

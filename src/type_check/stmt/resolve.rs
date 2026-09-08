@@ -2,6 +2,7 @@
 
 use {
     crate::ast::{Stmt, TupleTarget},
+    crate::type_check::errors::{StaticTypeError, TypeErrorKind},
     crate::type_check::types::{FnTypeParam, InferredType},
     crate::type_check::TypeChecker,
 };
@@ -208,7 +209,37 @@ impl TypeChecker {
             self.validate_result_type(&ok_ty, &err_ty, None);
             return InferredType::Result(ok_ty, err_ty);
         }
-        rhs_ty
+        // ── 通常の注釈（0-1）─────────────────────────────────────────────────
+        //
+        // ⚠⚠ ここは長らく **`rhs_ty` を返すだけ**で、注釈を照合も採用もしていなかった。
+        //    `let a: int = "s"` が通るだけでなく、変数が **`str` として束縛**されていた
+        //    （注釈は完全に捨てられていた）。Protocol / Intersection / Result の 3 つだけが
+        //    上で特別扱いされており、それ以外の注釈は存在しないのと同じだった。
+        let Some(declared) = InferredType::from_ann(ann) else {
+            // 解釈できない注釈文字列。⚠ `from_ann` は失敗を `None` で返すので、
+            //    ここで `rhs_ty` に倒さないと「型が無い」ではなく「型が違う」になる。
+            return rhs_ty;
+        };
+        if matches!(declared, InferredType::Unresolved) {
+            return rhs_ty;
+        }
+        if !self.type_matches(&rhs_ty, &declared) {
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::VarTypeMismatch {
+                    name: var_name.to_string(),
+                    expected: declared.clone(),
+                    got: rhs_ty,
+                },
+                span: None,
+            });
+        }
+        // ⚠ **注釈の型で束縛する**（照合を足すだけでは足りない）。
+        //    これが右辺の推論型より情報量が多いケースが実在する:
+        //      `mut xs: list[int] = []`      … 右辺は要素型なしの `List`
+        //      `mut o: int|None = None`      … 右辺は `None` 型
+        //      `let d: Drawable = circle`    … 右辺は具体型 `Circle`
+        //    採用しないと下流の推論・オーバーロード解決・VM の型特化が右辺依存になる。
+        declared
     }
 
 }
