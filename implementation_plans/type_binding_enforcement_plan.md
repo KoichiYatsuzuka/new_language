@@ -80,7 +80,7 @@ p.x = "w"           p.x = "w"
 | 0-2 | フィールド書き込みの型検査 | **✅ 完了**（2026-09-08） |
 | 0-B2 | 戻り値・仮引数でも float へ昇格する（案 B-i） | **✅ 完了**（2026-09-08） |
 | 0-3 | `return` と宣言戻り値の照合 | **✅ 完了**（2026-09-08） |
-| 0-4 | メソッド引数の型検査 | 未着手 |
+| 0-4 | メソッド引数の型検査 | **✅ 完了**（2026-09-08） |
 | 0-5 | コンストラクタ引数の型検査 | 未着手 |
 | 0-1 | `let`/`mut`/`const` の注釈採用と照合 | 未着手 |
 | T | テンプレート実体化キャッシュ | 未着手 |
@@ -271,11 +271,38 @@ Section 3 だけ発火せず、エラー例題が漏れを検出した。
 
 **追加した例題**: `examples/typing/return_type.ar` ／ `return_type_error.ar`
 
-### 0-4 — メソッド引数
+### 0-4 — メソッド引数 【✅ 完了 2026-09-08】
 
-`check_self_type_params` は個数・可変長・`SelfType` だけ見ている。
-`check_call_args` にある `type_matches` ループを移植する。
-`self`/`cls` の +1 は `effective_count` と同じ規約に揃える。
+`check_self_type_params` は個数・可変長・`SelfType` しか見ておらず、`type_matches` に
+掛けていたのは自由関数だけだった。⇒ **インスタンス／キーワード／`static`／
+`class_method` のすべてで引数型が素通りしていた**（実測）。
+
+**⚠ 添字の扱いが 2 つある**
+
+- `self`/`cls` の分のずれ … `implicit = usize::from(!is_static)` を arity 検査と**同じ規約**で使う。
+  ⚠ 既存の `SelfType` 検査は `arg_idx + 1` 決め打ちだったので、`static` メソッドでは
+  **別の仮引数を見ていた**。あわせて `implicit` に揃えた。
+- キーワード引数 … **名前で引き当てる**。位置で数えると別の仮引数を見る。
+
+**⚠ `Self` 型パラメータは新しい検査から除外する。** 専用の `SelfTypeMismatch` が
+見ているので、`type_matches` にも掛けると二重に鳴る。
+
+**⚠ `mut` 引数は `param_type_matches` 経由**（0-B と同じ理由で拡大を許さない）。
+
+エラーメッセージの `param_index` は**呼び出し側から見た位置**へ直して出す（`self` を数えない）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 67/67 identical |
+| `compare_outputs.ps1 -A <0-B>` | 159/163（差分は新規例題 4 本のみ・**既存例題は不変**） |
+| `compare_import_paths.ps1 -A <0-B>` | 13/13 identical |
+
+**追加した例題**: `examples/classes/method_arg_type_error.ar`
 
 ### 0-5 — コンストラクタ引数
 

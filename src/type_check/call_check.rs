@@ -343,8 +343,50 @@ impl TypeChecker {
                 });
             }
         }
+        // ── 引数の型検査（0-4）─────────────────────────────────────────────
+        // ⚠⚠ ここは長らく**個数と `SelfType` しか見ていなかった**ので、インスタンス／
+        //    クラス／`static` すべてのメソッドで引数型が素通りしていた（実測）。
+        //    検査内容は `check_call_args`（自由関数側）と揃える。
+        // ⚠ `self`/`cls` の分だけ添字がずれる。`implicit` は arity 検査と**同じ規約**。
+        let implicit = usize::from(!is_static);
+        let mut positional_idx = 0usize;
+        for (key, arg_ty) in normal_args.iter() {
+            let param_idx = match key {
+                // キーワード引数は**名前で**引く（位置で数えると別の仮引数を見る）。
+                // 未知の名前はここでは報告しない（個数検査の担当外なので黙って飛ばす）。
+                Some(kwarg_name) => match sig.params.iter().position(|(n, _)| n == kwarg_name) {
+                    Some(i) => i,
+                    None => continue,
+                },
+                None => {
+                    let i = positional_idx + implicit;
+                    positional_idx += 1;
+                    i
+                }
+            };
+            let Some((_, Some(expected))) = sig.params.get(param_idx) else {
+                continue;
+            };
+            // `Self` 型パラメータは下の専用検査（`SelfTypeMismatch`）が見る。
+            // ここで `type_matches` に掛けると二重に鳴る。
+            if matches!(expected, InferredType::SelfType) {
+                continue;
+            }
+            if !self.param_type_matches(sig, param_idx, arg_ty, expected) {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::CallArgTypeMismatch {
+                        func_name: format!("{cls_name}.{method_name}"),
+                        // 呼び出し側から見た位置に直す（`self` を数えない）。
+                        param_index: param_idx.saturating_sub(implicit),
+                        expected: expected.clone(),
+                        got: (*arg_ty).clone(),
+                    },
+                    span: None,
+                });
+            }
+        }
         for (arg_idx, (_, arg_ty)) in normal_args.iter().enumerate() {
-            let param_idx = arg_idx + 1;
+            let param_idx = arg_idx + implicit;
             if let Some((param_name, Some(InferredType::SelfType))) = sig.params.get(param_idx) {
                 if let InferredType::NamedInstance(got_cls) = arg_ty {
                     if got_cls != cls_name {

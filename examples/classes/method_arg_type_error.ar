@@ -1,0 +1,47 @@
+# method_arg_type_error.ar — メソッド引数の型が宣言と合わない（0-4）
+#
+# ⚠ ここに並べた 4 形態は**どれも以前は素通りしていた**。呼び出し検査は個数と `Self` 型
+#   パラメータしか見ておらず、`type_matches` に掛けていたのは自由関数だけだった。
+#   インスタンス／キーワード／`static`／`class_method` のいずれもチェックされていなかった。
+#
+# 正常系は class_trait.ar / polymorphism.ar など既存の例題が広く網羅している。
+#
+# Section 1 — StaticTypeError: インスタンスメソッドの位置引数
+#   Expected error (StaticTypeError):
+#     argument 0 of 'C.inst' expects 'int' but got 'str'
+
+class C:
+    mut x: int
+
+    fn inst(self, let n: int) -> None:
+        print(n)
+
+    fn kw(self, let a: int, let b: str) -> None:
+        print(a, b)
+
+    static fn stat(let n: int) -> None:
+        print(n)
+
+    class_method fn cm(cls: type[Self], let n: int) -> None:
+        print(n)
+
+let c = C(1)
+c.inst("bad")       # StaticTypeError: 位置引数
+
+# Section 2 — StaticTypeError: キーワード引数は**名前で**引き当てて検査される
+#   Expected error (StaticTypeError):
+#     argument 0 of 'C.kw' expects 'int' but got 'str'
+
+c.kw(b="ok", a="bad")   # StaticTypeError: 並び順ではなく名前で対応付ける
+
+# Section 3 — StaticTypeError: static メソッド（暗黙の self が無い）
+#   Expected error (StaticTypeError):
+#     argument 0 of 'C.stat' expects 'int' but got 'str'
+
+C.stat("bad")       # StaticTypeError: self を数えないので添字はずれない
+
+# Section 4 — StaticTypeError: class_method（暗黙の cls がある）
+#   Expected error (StaticTypeError):
+#     argument 0 of 'C.cm' expects 'int' but got 'str'
+
+C.cm("bad")         # StaticTypeError: cls の分だけ添字をずらして対応付ける
