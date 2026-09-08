@@ -1,0 +1,46 @@
+# ctor_arg_type_error.ar — コンストラクタ引数の型が宣言と合わない（0-5）
+#
+# ⚠ 以前は**まったく検査されなかった**。`C(...)` の検査は `fn_sigs` を引くが、
+#   クラス名は関数として登録されていないため必ず素通りしていた。
+#   実行時に捕まるかどうかもクラスのレイアウト次第だった（field_type_error.ar を参照）。
+#
+# ⚠ 自動生成される `__init__` の並びは
+#   `fn __init__(mut self, trait のフィールド..., クラス自身のフィールド...)`
+#   で、どちらも**宣言順**。実行時の `build_field_index` と同じ規則。
+#
+# Section 1 — StaticTypeError: 自動生成コンストラクタ（クラス自身のフィールドのみ）
+#   Expected error (StaticTypeError):
+#     argument 0 of 'Simple.__init__' expects 'int' but got 'str'
+
+class Simple:
+    mut x: int
+    mut y: str
+
+let s = Simple("wrong", "a")    # StaticTypeError: 1 番目は int
+
+# Section 2 — StaticTypeError: trait 由来のフィールドが先に並ぶ
+#   Expected error (StaticTypeError):
+#     argument 0 of 'Wolf.__init__' expects 'int' but got 'str'
+#
+#   Creature は `hp: int` → `name: str` の宣言順なので `Wolf(hp, name, pack)`。
+
+trait Creature:
+    mut hp: int
+    mut name: str
+
+class Wolf(Creature):
+    mut pack: int
+
+let w = Wolf("Grey", 40, 5)     # StaticTypeError: 並びが hp, name, pack
+
+# Section 3 — StaticTypeError: 明示 `__init__` も検査される
+#   Expected error (StaticTypeError):
+#     argument 0 of 'Explicit.__init__' expects 'int' but got 'str'
+
+class Explicit:
+    mut v: int
+
+    fn __init__(mut self, let n: int) -> None:
+        self.v = n
+
+let e = Explicit("wrong")       # StaticTypeError

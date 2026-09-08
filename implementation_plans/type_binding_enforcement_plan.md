@@ -81,7 +81,7 @@ p.x = "w"           p.x = "w"
 | 0-B2 | 戻り値・仮引数でも float へ昇格する（案 B-i） | **✅ 完了**（2026-09-08） |
 | 0-3 | `return` と宣言戻り値の照合 | **✅ 完了**（2026-09-08） |
 | 0-4 | メソッド引数の型検査 | **✅ 完了**（2026-09-08） |
-| 0-5 | コンストラクタ引数の型検査 | 未着手 |
+| 0-5 | コンストラクタ引数の型検査 | **✅ 完了**（2026-09-08） |
 | 0-1 | `let`/`mut`/`const` の注釈採用と照合 | 未着手 |
 | T | テンプレート実体化キャッシュ | 未着手 |
 | R3 | 属性アクセスの多相 IC | 未着手 |
@@ -304,14 +304,42 @@ Section 3 だけ発火せず、エラー例題が漏れを検出した。
 
 **追加した例題**: `examples/classes/method_arg_type_error.ar`
 
-### 0-5 — コンストラクタ引数
+### 0-5 — コンストラクタ引数 【✅ 完了 2026-09-08】
 
-`C(...)` は `check_call_args("C", …)` に入り `fn_sigs("C")` が `None` で即 return する。
+`C(...)` は `check_call_args("C", …)` に入るが `fn_sigs("C")` が `None` で即 return する
+（クラス名は関数として登録されていない）ため、**まったく検査されていなかった**。
 
-⚠⚠ **自動コンストラクタの仮引数列の順序は実行時の `build_field_index` と同一規則**に
-すること（[interpreter.rs:702](../src/interpreter.rs#L702)）:
-**Step 1: 継承 trait のフィールドを基底順で先頭 → Step 2: own フィールドを宣言順**。
-ずれると引数と型が 1 つずれて**別のフィールドを検査**する。
+**⚠⚠ 自前で仮引数列を組み立てる必要は無かった。**
+着手前の計画では「`build_field_index` と同じ順序で仮引数列を合成する」としていたが、
+実際には**パーサが `__init__` を自動生成している**
+（[parser/classes.rs](../src/parser/classes.rs) の `generate_auto_init_if_needed`。
+並びは `fn __init__(mut self, trait のフィールド..., クラス自身のフィールド...)`）。
+⇒ それは既に `class_method_sigs` に載っているので、**0-4 のメソッド呼び出し経路へ流すだけ**で
+並びも自動的に実行時の `build_field_index` と一致する。合成した仮引数列と実行時の
+スロット順がずれる risk（計画で最も警戒していた点）が構造的に消えた。
+
+**⚠⚠ 外部言語のクラスは対象外にする**（#27-a の `arrow_class_names`）。
+C# スタブは `__init__` を**引数 0 個**で持つが、実行時の生成は `__cs_bridge_path__` 経由の
+ブリッジ側コンストラクタが行うのでスタブの `__init__` と実引数は対応しない。
+除外しないと `cs_interop_test.ar` が
+`'Calculator.__init__' takes 0 argument(s) but 1 were given` で落ちる（**実測**）。
+
+**⚠ 0-2 で追加した例題が実際に間違っていた** — `field_type.ar` の
+`Wolf("Grey", 40, 5)` は trait `Creature` が `hp: int` → `name: str` の宣言順なので
+`Wolf(40, "Grey", 5)` が正しい。0-5 の検査が自分で書いた例題の誤りを検出した。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | `bench_ab_native.ar` のみ（下記） |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 67/67 identical |
+| `compare_outputs.ps1 -A <0-B>` | 159/164（差分は新規例題 5 本のみ・**既存例題は不変**） |
+| `compare_import_paths.ps1 -A <0-B>` | 13/13 identical |
+
+**追加した例題**: `examples/classes/ctor_arg_type_error.ar`
 
 ### 0-1 — `let`/`mut`/`const`
 
@@ -365,7 +393,9 @@ Section 3 だけ発火せず、エラー例題が漏れを検出した。
 ### ベースライン
 
 - 基準バイナリ: コミット `9986df1` からビルドしたもの
-- `scan_examples.ps1` の既知の非緑: `bench_ab_native.ar`（TIMEOUT・ベンチのため想定内）
+- `scan_examples.ps1` の既知の非緑: `bench_ab_native.ar`。実行が長いので TIMEOUT になるか、
+  完走した場合は `.arc` が stale という警告で FAIL する。⚠ **どちらも本計画とは無関係**
+  （基準バイナリでも同じ警告が出ることを実測で確認済み）。
 
 ---
 

@@ -45,7 +45,7 @@ class Wolf(Creature):
     fn rename(mut self, n: str) -> None:
         self.name = n
 
-mut w = Wolf("Grey", 40, 5)
+mut w = Wolf(40, "Grey", 5)
 w.hp = 30
 w.name = "Silver"
 w.pack = 7

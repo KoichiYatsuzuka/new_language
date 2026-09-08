@@ -229,6 +229,28 @@ impl TypeChecker {
                 return InferredType::Protocol(fname.clone());
             }
             if self.registry.is_known_class(fname.as_str()) {
+                // ── コンストラクタ引数の検査（0-5）─────────────────────────
+                // `C(...)` は上の `check_call_args` では**必ず素通りする**。
+                // あれは `fn_sigs` を引くが、クラス名は関数として登録されていないため。
+                //
+                // ⚠ 自前で仮引数列を組み立てないこと。**パーサが `__init__` を自動生成
+                //    している**（`generate_auto_init_if_needed`。並びは
+                //    `fn __init__(mut self, trait_field..., class_field...)`）ので、
+                //    それは既に `class_method_sigs` に載っている。メソッド呼び出しと
+                //    同じ経路へ流せば、並び（trait 由来が先・own が後）も自動的に
+                //    実行時の `build_field_index` と一致する。
+                // ⚠ `__init__` を持たないクラス（`new_type` ラッパ・組み込み例外）では
+                //    `check_self_type_params` が早期 `None` を返すので何も報告されない。
+                //
+                // ⚠⚠ **外部言語のクラスは対象外**（#27-a の `arrow_class_names`）。
+                //    C# スタブは `__init__` を**引数 0 個**で持つが、実行時の生成は
+                //    `__cs_bridge_path__` 経由のブリッジ側コンストラクタが行うので、
+                //    スタブの `__init__` と実引数は対応しない。除外しないと
+                //    `cs_interop_test.ar` が `'Calculator.__init__' takes 0 argument(s)
+                //    but 1 were given` で落ちる（実測）。
+                if self.registry.arrow_class_names().contains(fname.as_str()) {
+                    self.check_self_type_params(fname, "__init__", &arg_data);
+                }
                 return InferredType::NamedInstance(fname.clone());
             }
         }
