@@ -534,6 +534,9 @@ impl Interpreter {
             } else {
                 val.clone()
             };
+            // 案 B（0-B2）: `float` 注釈の仮引数へ Int が来たら昇格する。
+            // ⚠ 一般経路（`bind_args` の後のループ）と**同じ規則・同じ位置**にすること。
+            let v = crate::interpreter::exec::vars::coerce_binding(p.type_ann.as_deref(), v);
             if slot < chunk.n_locals {
                 buf[base + slot] = v;
             }
@@ -584,7 +587,29 @@ impl Interpreter {
     /// - `fn_name`: トレースバックフレーム用の関数名
     ///
     /// 戻り値: `Ok(Value)` — `return` 値または `None`。`Err(message)` — ランタイムエラーまたは例外センチネル
+    /// 関数を評価済み引数で実行する。
+    ///
+    /// ⚠⚠ **戻り値の `float` 昇格はここに 1 箇所だけ置く**（案 B・0-B2）。
+    /// ツリーウォークも VM も関数呼び出しは最終的にここへ来る
+    /// （VM の `Op::Call` → `call_value_evaled` → ここ）ので、`Stmt::Return` と
+    /// `Op::Return` の両方に手を入れるより**ずれようがない**。
     pub(crate) fn exec_fn_evaled(
+        &mut self,
+        fn_val: Rc<FnValue>,
+        evaled: &[(Option<String>, Value, bool)],
+        self_val: Option<Value>,
+        fn_name: &str,
+        call_span: Option<Span>,
+    ) -> Result<Value, String> {
+        let declared_ret = fn_val.return_type.clone();
+        let out = self.exec_fn_evaled_inner(fn_val, evaled, self_val, fn_name, call_span)?;
+        Ok(crate::interpreter::exec::vars::coerce_binding(
+            declared_ret.as_deref(),
+            out,
+        ))
+    }
+
+    fn exec_fn_evaled_inner(
         &mut self,
         fn_val: Rc<FnValue>,
         evaled: &[(Option<String>, Value, bool)],
@@ -687,6 +712,20 @@ impl Interpreter {
                 if !*param_mutable && name != "self" && *arg_is_mutable {
                     *val = self.copy_value(val.clone())?;
                 }
+            }
+        }
+
+        // 案 B（0-B2）: `float` 注釈の仮引数へ Int が来たら昇格する。
+        // ⚠ 高速経路（`try_fast_bind`）と**同じ規則**にすること。片方だけ直すと
+        //   「単純シグネチャのときだけ昇格する」という読めない差になる。
+        // ⚠ `self` は注釈を持たないので対象外（`coerce_binding` が `None` で素通しする）。
+        for (name, val, _, _) in &mut bindings {
+            if let Some(p) = fn_val.params.iter().find(|p| &p.name == name) {
+                let taken = std::mem::replace(val, Value::None);
+                *val = crate::interpreter::exec::vars::coerce_binding(
+                    p.type_ann.as_deref(),
+                    taken,
+                );
             }
         }
 

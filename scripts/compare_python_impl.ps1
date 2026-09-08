@@ -54,6 +54,7 @@ $knownDiff = @{
     'int_float_widening'             = 'py: int→float の束縛時昇格が未実装（3 を 3.0 にしない・案 B で新設）'
     'field_type_error'               = 'py: フィールド代入の静的型検査が無い（実行時 TypeError になる・0-2 で新設）'
     'return_type_error'              = 'py: return の戻り値型検査が無い（そのまま実行してしまう・0-3 で新設）'
+    'return_type'                    = 'py: 戻り値・仮引数の float 昇格が未実装（3 を 3.0 にしない・0-B2 で新設）'
     'built_in'                       = 'py: 組み込みの対応範囲が狭い（id/repr 等）'
     'math_string'                    = 'py: m"..." 数式文字列そのものが未実装（ParseError になる・#78 で新設）'
     'builtin_shadow'                 = 'py: 組み込みのシャドウ規則が未実装'

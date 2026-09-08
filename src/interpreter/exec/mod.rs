@@ -305,7 +305,7 @@ fn collect_refs_expr(expr: &Expr, out: &mut HashSet<String>) {
 }
 
 mod dispatch;
-mod vars;
+pub(crate) mod vars;
 mod control_flow;
 mod definitions;
 mod exceptions_async;
