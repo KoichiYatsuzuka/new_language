@@ -1,0 +1,72 @@
+# template_type_param.ar — 型変数を具象型と取り違えないこと ＋ 実体化クラスのメモ化
+#
+# ⚠⚠ **型変数はクラス名と字面が区別できない。**
+#   `InferredType::from_ann` は大文字始まりの未知の識別子を `NamedInstance` にするので、
+#   `T` と実在のクラス名が型の上では同じ形になる。Phase 0 で入れた検査（フィールド代入・
+#   `return`・`let` の注釈）をそのまま掛けると、
+#     class Box[T]: mut v: T   の  self.v = 0
+#     fn conv[T](let n: int) -> T:  の  return n
+#   が「`T` に `int` を入れた」という**偽のエラー**になる（実際にそうなった）。
+#   ⇒ 型変数を含む注釈は照合しない。検査したい形は実体化後の AST（型変数が具体型へ
+#     置換済み）で見る。
+#
+# 誤りの検出そのものが消えていないことは template_type_param_error.ar で確認する。
+
+print("=== テンプレートクラスの型変数 ===")
+
+class Box[T]:
+    mut v: T
+
+    fn get(self) -> T:
+        return self.v
+
+    fn set(mut self, let x: T) -> None:
+        self.v = x          # 型変数への代入（照合しない）
+
+    fn reset(mut self) -> None:
+        self.v = 0          # 具体型を入れても T とは突き合わせない
+
+mut bi = Box[int](1)
+bi.set(5)
+print(bi.get())             # 5
+bi.reset()
+print(bi.get())             # 0
+
+let bs = Box[str]("x")
+print(bs.get())             # x
+
+print("=== テンプレート関数の型変数 ===")
+
+fn ident[T](let a: T) -> T:
+    return a
+
+fn conv[T](let n: int) -> T:
+    return n                # 戻り値注釈が型変数（照合しない）
+
+print(ident[int](7))        # 7
+print(ident[str]("s"))      # s
+
+# ⚠ 実体化後は戻り値注釈も具体型へ置換されるので、int→float の昇格が効く。
+print(conv[float](3))       # 3.0
+print(ident[float](4))      # 4.0
+
+print("=== 同じ型引数の実体化は同じクラス ===")
+
+fn note() -> int:
+    print("  <class-level init>")
+    return 0
+
+class Tagged[T]:
+    mut v: T
+    const K: int = note()
+
+# クラスは (テンプレート, 型引数) でメモ化されるので、クラスレベルの初期化子は
+# **型引数の組ごとに 1 回**しか走らない（通常のクラス定義と同じ回数）。
+print("Tagged[int] x2:")
+let t1 = Tagged[int](1)
+let t2 = Tagged[int](2)
+print("Tagged[str] x1:")
+let t3 = Tagged[str]("a")
+print(t1.v, t2.v, t3.v)     # 1 2 a
+
+print("done")

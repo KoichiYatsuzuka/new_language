@@ -35,6 +35,16 @@ pub(super) struct CheckState {
     /// `for`/`while` 式の入れ子深さ。1 以上のとき `block_return` は
     /// 型エラー `BlockReturnInLoopExpr` になる。
     block_return_forbidden_depth: usize,
+    /// **いま見えているテンプレート型変数**の名前（`fn f[T]` / `class C[T]` の `T`）。
+    ///
+    /// ⚠⚠ `InferredType::from_ann` は**大文字始まりの未知の識別子をクラス名として扱う**
+    /// （`NamedInstance("T")`）。型変数と実在のクラスが区別できないため、これを持たないと
+    /// `class Box[T]: mut v: T` の `self.v = 0` や `fn conv[T](…) -> T: return n` が
+    /// **偽の型エラー**になる（実測）。
+    ///
+    /// クラス本体に入るときとテンプレート関数に入るときに積み、抜けるときに戻す
+    /// （メソッドの中からは囲みクラスの型変数も見えるので**スタック**にしてある）。
+    type_params: Vec<String>,
 }
 
 impl CheckState {
@@ -47,6 +57,7 @@ impl CheckState {
             current_class_name: None,
             in_gen_body: false,
             block_return_forbidden_depth: 0,
+            type_params: Vec::new(),
         }
     }
 
@@ -121,6 +132,23 @@ impl CheckState {
     pub(super) fn exit_fn(&mut self, prev: (Option<String>, Option<InferredType>)) {
         self.current_fn_name = prev.0;
         self.current_fn_return = prev.1;
+    }
+
+    /// テンプレート型変数を積む。戻り値を `pop_type_params` へ渡すこと。
+    pub(super) fn push_type_params(&mut self, names: impl Iterator<Item = String>) -> usize {
+        let saved = self.type_params.len();
+        self.type_params.extend(names);
+        saved
+    }
+
+    /// `push_type_params` が返した長さまで戻す。
+    pub(super) fn pop_type_params(&mut self, saved: usize) {
+        self.type_params.truncate(saved);
+    }
+
+    /// `name` がいま見えているテンプレート型変数か。
+    pub(super) fn is_type_param(&self, name: &str) -> bool {
+        self.type_params.iter().any(|t| t == name)
     }
 
     /// 現在型検査中の関数の宣言された戻り値型（0-3）。

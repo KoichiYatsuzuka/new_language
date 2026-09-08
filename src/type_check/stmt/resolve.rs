@@ -223,6 +223,12 @@ impl TypeChecker {
         if matches!(declared, InferredType::Unresolved) {
             return rhs_ty;
         }
+        // ⚠ テンプレート型変数を含む注釈（`let x: T = …`）は照合も採用もしない。
+        //    `from_ann` は大文字始まりの未知の識別子をクラス名にするので、型変数と
+        //    実在のクラスが型の上では区別できない（`mentions_type_param` の doc）。
+        if self.mentions_type_param(&declared) {
+            return rhs_ty;
+        }
         if !self.type_matches(&rhs_ty, &declared) {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::VarTypeMismatch {

@@ -181,19 +181,31 @@ impl TypeChecker {
                 return_type,
                 body,
                 decorators,
+                template_params,
                 ..
-            } => self.check_fn_def(name, params, return_type.as_deref(), body, decorators),
+            } => self.check_fn_def(
+                name,
+                params,
+                return_type.as_deref(),
+                body,
+                decorators,
+                template_params,
+            ),
 
             // --- クラス・trait 定義 ---
             Stmt::ClassDef {
                 name,
                 body,
                 decorators,
+                template_params,
                 ..
             } => {
                 for dec in decorators {
                     self.check_decorator(dec, false, name);
                 }
+                // ⚠ クラスの型変数はメソッド本体からも見える（`mut v: T` を `self.v` で書く）。
+                let saved_tp =
+                    self.state.push_type_params(template_params.iter().map(|p| p.name.clone()));
                 self.declare(
                     name.clone(),
                     InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))),
@@ -202,6 +214,7 @@ impl TypeChecker {
                 self.push_scope();
                 let prev_class = self.state.enter_class(name.clone());
                 self.check_stmts(body);
+                self.state.pop_type_params(saved_tp);
                 self.state.exit_class(prev_class);
                 self.pop_scope();
             }
@@ -635,6 +648,11 @@ impl TypeChecker {
         if matches!(expected, InferredType::Unresolved | InferredType::Any) {
             return;
         }
+        // ⚠ テンプレートクラスの `mut v: T` は具体型と突き合わせられない
+        //    （`mentions_type_param` の doc）。
+        if self.mentions_type_param(&expected) {
+            return;
+        }
         if self.type_matches(&value_ty, &expected) {
             return;
         }
@@ -647,6 +665,35 @@ impl TypeChecker {
             },
             span: Some(span.clone()),
         });
+    }
+
+    /// この型が**テンプレート型変数を含む**か（`T` / `list[T]` / `dict[str, T]` …）。
+    ///
+    /// ⚠⚠ 含むなら**検査しない**。`from_ann` は大文字始まりの未知の識別子を
+    /// `NamedInstance` にするので、型変数と実在のクラスが型の上では区別できない。
+    /// 具体型と突き合わせると `class Box[T]: mut v: T` の `self.v = 0` が
+    /// 「`T` に `int` を入れた」という**偽のエラー**になる（実測）。
+    ///
+    /// 実体化後の AST は型変数が具体型へ置換済みなので、検査したい形はそちらで見られる。
+    pub(crate) fn mentions_type_param(&self, ty: &InferredType) -> bool {
+        match ty {
+            InferredType::NamedInstance(n) => self.state.is_type_param(n),
+            InferredType::ListOf(t)
+            | InferredType::FixedListOf(t)
+            | InferredType::ListLikeOf(t)
+            | InferredType::SetOf(t)
+            | InferredType::TypeValOf(t) => self.mentions_type_param(t),
+            InferredType::DictOf(k, v) => {
+                self.mentions_type_param(k) || self.mentions_type_param(v)
+            }
+            InferredType::Result(a, b) => {
+                self.mentions_type_param(a) || self.mentions_type_param(b)
+            }
+            InferredType::Union(ts) | InferredType::Intersection(ts) | InferredType::Tuple(ts) => {
+                ts.iter().any(|t| self.mentions_type_param(t))
+            }
+            _ => false,
+        }
     }
 
     /// 型注釈中の `Self` を現在のクラスへ解決する（クラス外ならそのまま）。
@@ -666,6 +713,10 @@ impl TypeChecker {
             return;
         };
         if matches!(expected, InferredType::Unresolved | InferredType::Any) {
+            return;
+        }
+        // ⚠ テンプレート型変数を含む戻り値型は検査しない（`mentions_type_param` の doc）。
+        if self.mentions_type_param(&expected) {
             return;
         }
         if self.type_matches(got, &expected) {
@@ -775,6 +826,7 @@ impl TypeChecker {
         return_type: Option<&str>,
         body: &[Stmt],
         decorators: &[Expr],
+        template_params: &[crate::ast::TemplateParam],
     ) {
         for dec in decorators {
             self.check_decorator(dec, true, name);
@@ -825,6 +877,10 @@ impl TypeChecker {
         }
         self.declare(name.to_string(), InferredType::Unresolved, false);
         self.push_scope();
+        // ⚠ 関数自身の型変数（`fn f[T]`）を積む。囲みクラスの型変数は `ClassDef` 側が
+        //    既に積んでいるので、ここでは追加するだけでよい。
+        let saved_tp =
+            self.state.push_type_params(template_params.iter().map(|p| p.name.clone()));
         for param in params {
             self.declare_param(param);
         }
@@ -841,6 +897,7 @@ impl TypeChecker {
         self.with_barrier(|c| c.check_stmts(body));
         self.state.exit_gen_body(prev_gen);
         self.state.exit_fn(prev_fn);
+        self.state.pop_type_params(saved_tp);
         self.pop_scope();
     }
 

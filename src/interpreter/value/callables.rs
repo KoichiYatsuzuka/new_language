@@ -140,6 +140,11 @@ pub struct TemplateFnValue {
     pub template_params: Vec<crate::ast::TemplateParam>,
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
+    /// 戻り値の型注釈（型変数のまま。実体化時に `subst_type` で具体型へ置換する）。
+    ///
+    /// ⚠ これが無いと実体化後の `FnValue.return_type` が `None` になり、
+    /// **テンプレート関数の戻り値だけ `int` → `float` の昇格が効かない**（0-B2 の残件）。
+    pub return_type: Option<String>,
 }
 
 

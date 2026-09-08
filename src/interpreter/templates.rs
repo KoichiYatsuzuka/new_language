@@ -160,7 +160,12 @@ impl Interpreter {
                             body: std::rc::Rc::from(concrete_body),
                             is_python: false,
                             captured_env: std::collections::HashMap::new(),
-                            return_type: None,
+                            // 0-B2 の残件: 戻り値注釈も具体型へ置換して載せる。
+                            // 無いと `fn f[T](…) -> float` の戻り値昇格が効かない。
+                            return_type: tmpl
+                                .return_type
+                                .as_ref()
+                                .map(|t| subst_type(t, &type_map)),
                             vm_chunk: None,
                         });
                         self.template_fn_cache.insert(key, fn_val.clone());
@@ -171,16 +176,40 @@ impl Interpreter {
                 self.exec_fn_evaled(fn_val, &evaled, None, "<template_fn>", None)
             }
             Value::TemplateClass(tmpl) => {
-                // テンプレートクラス: 制約を検証し、型変数を置換してクラスを構築・インスタンス化する
+                // テンプレートクラス: 制約を検証し、型変数を置換してクラスを構築・インスタンス化する。
+                //
+                // ⚠ 制約検証は**キャッシュ引きの前に毎回**行う（関数側と同じ・エラー意味論を保つ）。
+                //
+                // ⚠⚠ **クラスは `(テンプレート, 型引数)` でメモ化する**（D3）。
+                //    以前はキャッシュが無く、実体化のたびに `alloc_class_id()` で
+                //    **新しい class_id** を発行していたため、同じ `Box[int]` を 2 回書くと
+                //    `Value::Class` の等値（class_id 比較）が **False** になっていた。
+                //    メモ化すると「同じ型引数で実体化したテンプレートは同じ型」になり、
+                //    R3 の属性 IC も効くようになる（実体化ごとに class_id が変わると
+                //    構造的に毎回ミスする）。
                 self.check_template_constraints(&tmpl.template_params, type_args)?;
-                let type_map: HashMap<String, String> = tmpl
-                    .template_params
-                    .iter()
-                    .zip(type_args.iter())
-                    .map(|(p, t)| (p.name.clone(), t.clone()))
-                    .collect();
-                let concrete_body = subst_stmts(&tmpl.body, &type_map);
-                self.instantiate_template_class(&tmpl, concrete_body, call_args)
+                let key = (Rc::as_ptr(&tmpl) as usize, type_args.to_vec());
+                let cls = match self.template_class_cache.get(&key) {
+                    Some(cached) => cached.clone(),
+                    None => {
+                        let type_map: HashMap<String, String> = tmpl
+                            .template_params
+                            .iter()
+                            .zip(type_args.iter())
+                            .map(|(p, t)| (p.name.clone(), t.clone()))
+                            .collect();
+                        // ⚠ 置換（clone-walk）も**ミス側**に置く。呼び出し元で先に置換すると
+                        //   キャッシュを足しても毎回 AST を複製することになる（関数側と同じ形）。
+                        let concrete_body = subst_stmts(&tmpl.body, &type_map);
+                        let cls = self.build_template_class(&tmpl, concrete_body)?;
+                        self.template_class_cache.insert(key, cls.clone());
+                        cls
+                    }
+                };
+                // ⚠ 引数の評価は**クラスが決まった後**（既存の順序を保つ。先に評価すると
+                //   制約検証より前に副作用が起きる）。
+                let evaled = call_args.into_evaled(self)?;
+                self.instantiate_evaled(cls, evaled)
             }
             Value::TemplateGenFn(tmpl) => {
                 // テンプレートジェネレータ関数: 型変数を置換してジェネレータとして実行する。
@@ -293,12 +322,18 @@ impl Interpreter {
     /// - `call_args`: コンストラクタ呼び出し引数リスト（AST または評価済み）
     ///
     /// 戻り値: `Ok(Value::Instance)` — 構築済みインスタンス。`Err` — 実行エラー
-    pub(super) fn instantiate_template_class(
+    /// 置換済みの本体から**クラスそのもの**を構築する（インスタンス化はしない）。
+    ///
+    /// ⚠ ここには**副作用がある** — `const` / `static mut` / フィールド既定値の初期化子を
+    /// `self.eval` する。呼び出し側が `(テンプレート, 型引数)` でメモ化するので、
+    /// この評価は**その組み合わせにつき 1 回**になる。通常のクラス定義
+    /// （`exec_class_def` は 1 回だけ走る）と同じ回数であり、以前の
+    /// 「実体化のたびに評価し直す」方が非対称だった。
+    pub(super) fn build_template_class(
         &mut self,
         tmpl: &TemplateClassValue,
         concrete_body: Vec<Stmt>,
-        call_args: TemplateArgs<'_>,
-    ) -> Result<Value, String> {
+    ) -> Result<Rc<ClassValue>, String> {
         let mut methods: HashMap<String, Vec<Rc<FnValue>>> = HashMap::new();
         let mut gen_methods: HashMap<String, Rc<GeneratorFnValue>> = HashMap::new();
         let mut field_defaults = Vec::new();
@@ -441,8 +476,7 @@ impl Interpreter {
             static_vars,
             ..ClassValue::synthetic(tmpl.name.clone(), crate::interpreter::value::alloc_class_id())
         });
-        let evaled = call_args.into_evaled(self)?;
-        self.instantiate_evaled(cls, evaled)
+        Ok(cls)
     }
 }
 

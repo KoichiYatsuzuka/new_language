@@ -405,6 +405,15 @@ pub struct Interpreter {
     pub(self) template_fn_cache: HashMap<(usize, Vec<String>), Rc<FnValue>>,
     /// テンプレートジェネレータ関数の実体化メモ（タスク #7）。`template_fn_cache` と同様。
     pub(self) template_gen_cache: HashMap<(usize, Vec<String>), Rc<GeneratorFnValue>>,
+    /// テンプレート**クラス**の実体化メモ（Phase T・D3）。キーは他の 2 本と同形の
+    /// `(テンプレートの Rc アドレス, 型引数)`。
+    ///
+    /// ⚠⚠ **これが無いと「同じ型で実体化したテンプレートが別の型になる」。**
+    /// `build_template_class` は毎回 `alloc_class_id()` で新しい class_id を発行するので、
+    /// キャッシュしないと同じ `Box[int]` を 2 回書いただけで `Value::Class` の等値
+    /// （class_id 比較）が False になる。属性アクセスの IC も class_id を鍵にするため、
+    /// 実体化ごとに変わると**構造的に毎回ミス**する。
+    pub(self) template_class_cache: HashMap<(usize, Vec<String>), Rc<ClassValue>>,
     /// VM の値スタックバッファ（per-call 確保を避けるため使い回す）。
     /// 実行中は `std::mem::take` で借り出し、復帰時に容量ごと戻す（Phase V）。
     pub(crate) vm_stack: Vec<Value>,
@@ -561,6 +570,7 @@ impl Interpreter {
             toplevel_globals: std::collections::HashMap::new(),
             template_fn_cache: HashMap::new(),
             template_gen_cache: HashMap::new(),
+            template_class_cache: HashMap::new(),
             vm_stack: Vec::new(),
             frame_floor: 1,
             source_map: HashMap::new(),

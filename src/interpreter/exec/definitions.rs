@@ -131,6 +131,7 @@ impl Interpreter {
                 template_params: template_params.to_vec(),
                 params: params.to_vec(),
                 body: body.to_vec(),
+                return_type: return_type.map(|s| s.to_string()),
             });
             self.scopes
                 .last_mut()

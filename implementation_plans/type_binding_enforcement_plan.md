@@ -4,7 +4,7 @@ Arrow の型注釈が**呼び出し引数以外のどこでも強制されてい
 
 - 対象: `src/type_check/`（検査の追加）＋ 実行経路 2 本（`int`→`float` 昇格）＋ `src/interpreter/templates.rs`（実体化キャッシュ）＋ IC の多相化
 - 作成: 2026-09-08
-- 状態: **Phase 0 完了**（0-B / 0-B2 / 0-1〜0-5）。残り: Phase T・Phase R3
+- 状態: **Phase 0 / Phase T 完了**。残り: Phase R3（多相 IC）
 - ブランチ: `bug-fix_field-type`
 
 ---
@@ -83,7 +83,7 @@ p.x = "w"           p.x = "w"
 | 0-4 | メソッド引数の型検査 | **✅ 完了**（2026-09-08） |
 | 0-5 | コンストラクタ引数の型検査 | **✅ 完了**（2026-09-08） |
 | 0-1 | `let`/`mut`/`const` の注釈採用と照合 | **✅ 完了**（2026-09-08） |
-| T | テンプレート実体化キャッシュ | 未着手 |
+| T | テンプレート実体化キャッシュ ＋ 型変数の取り違え修正 | **✅ 完了**（2026-09-08） |
 | R3 | 属性アクセスの多相 IC | 未着手 |
 
 ---
@@ -389,16 +389,86 @@ print(x + 1)   # 以前: 6 / 現在: StaticTypeError（明示ダウンキャス�
 
 **追加した例題**: `examples/typing/var_annotation.ar` ／ `var_annotation_error.ar`
 
-### T — テンプレート実体化キャッシュ
+### T — テンプレート実体化キャッシュ 【✅ 完了 2026-09-08】
 
-現状 `instantiate_template_class` は**呼び出しのたびに** `alloc_class_id()`
-（[templates.rs:442](../src/interpreter/templates.rs#L442)）を叩き、
-`template_class_cache` が**存在しない**（`template_fn_cache`/`template_gen_cache` はある）。
+**実装したもの**
 
-1. `(Rc::as_ptr(&tmpl) as usize, type_args)` キーのキャッシュを追加（既存 2 本と同形）
-2. ⚠ **`subst_stmts` をキャッシュミス側へ移す**。現在は呼び出し元が先に置換してから
-   渡しているので、キャッシュを足しても clone-walk が毎回走る
-3. ⚠ `check_template_constraints` は**キャッシュ引きの前に毎回**走らせたまま（関数側と同じ）
+| 対象 | 内容 |
+|---|---|
+| `template_class_cache` | `(テンプレートの Rc アドレス, 型引数)` キー。既存 2 本と同形 |
+| `build_template_class` | `instantiate_template_class` から**構築部だけ**を分離（`Rc<ClassValue>` を返す） |
+| `TemplateFnValue.return_type` | 新設。実体化時に `subst_type` で具体型へ置換して `FnValue` へ載せる（0-B2 の残件） |
+
+⚠ 置換（`subst_stmts` の clone-walk）も**キャッシュミス側**へ移した。呼び出し元で先に
+置換していたので、キャッシュを足すだけでは毎回 AST を複製したままになる（関数側と同じ形）。
+⚠ 制約検証（`check_template_constraints`）は**キャッシュ引きの前に毎回**のまま。
+⚠ 引数の評価はクラスが決まった後（既存の順序を保つ）。
+
+**⚠⚠ 意図した意味論の変化: クラスレベル初期化子の評価回数**
+
+`const` / `static mut` / フィールド既定値の初期化子は `build_template_class` の中で
+`self.eval` される。メモ化により、これが**型引数の組ごとに 1 回**になった（実測）:
+
+| | 基準 | Phase T 後 |
+|---|---|---|
+| `Box[int]` ×2 ＋ `Box[str]` ×1 | 3 回評価 | **2 回評価** |
+
+通常のクラス定義（`exec_class_def` は 1 回だけ走る）と同じ回数であり、
+以前の「実体化のたびに評価し直す」方が非対称だった。
+
+---
+
+### T-fix — 型変数を具象型と取り違えていた（Phase 0 の偽陽性）
+
+**Phase T の検証中に、Phase 0 で入れた検査の偽陽性が 2 件見つかった。**
+
+```arrow
+class Box[T]:
+    mut v: T
+    fn reset(mut self) -> None:
+        self.v = 0          # ❌ field 'v' of class 'Box' is declared 'T' but got 'int'
+
+fn conv[T](let n: int) -> T:
+    return n                # ❌ 'conv' is declared to return 'T' but returns 'int'
+```
+
+**原因**: `InferredType::from_ann` は**大文字始まりの未知の識別子をクラス名として扱う**
+（[types.rs:281](../src/type_check/types.rs#L281) の `NamedInstance(other)`）。
+型変数 `T` と実在のクラス名が型の上で区別できず、具体型と突き合わせると偽エラーになる。
+
+⚠ **例題が 1 本も検出しなかった** — `template_specialization.ar` は `-> T` に対して
+`a + b`（型変数同士なので `Unresolved`）を返しており、`type_matches` が
+`Unresolved` を無条件に通すため素通りしていた。**具体型を返す形の例題が無かった。**
+
+**修正**: `CheckState` に**見えている型変数のスタック**を持たせ、型変数を含む注釈は
+照合しない（`mentions_type_param`）。
+
+| 積む場所 | 理由 |
+|---|---|
+| `Stmt::ClassDef` | クラスの型変数はメソッド本体からも見える（`mut v: T` を `self.v` で書く） |
+| `check_fn_def` | 関数自身の型変数（`fn f[T]`） |
+
+適用先は 0-2（フィールド代入）・0-3（`return`）・0-1（`let` の注釈）の 3 箇所。
+⚠ 検査したい形は**実体化後の AST**（型変数が具体型へ置換済み）で見られる。
+
+⚠ 副産物: `TemplateFnValue.return_type` を足したことで、実体化後の戻り値注釈が
+具体型になり **テンプレート関数の戻り値でも `int`→`float` の昇格が効く**ようになった
+（`conv[float](3)` → `3.0`。修正前は偽エラーで実行すらできなかった）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` のみ |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 68/68 identical |
+| `compare_outputs.ps1 -A <Phase 0>` | **166/166 identical**（例題追加前）→ 166/168（追加した 2 本のみ） |
+| `compare_bytecode.ps1 -A <Phase 0>` | **185/185 identical** |
+| `compare_import_paths.ps1 -A <Phase 0>` | 13/13 identical |
+| `compare_wasm_frontend.ps1` | **238/238 agreed**・INVENTED 0（wasm 再ビルド＋VSIX 生成済み） |
+
+**追加した例題**: `examples/typing/template_type_param.ar` ／ `template_type_param_error.ar`
 
 ### R3 — 多相 IC
 

@@ -1,0 +1,35 @@
+# template_type_param_error.ar — 型変数の除外が検査そのものを緩めていないこと
+#
+# 対になる正常系: template_type_param.ar
+#
+# 型変数を含む注釈だけを照合の対象外にしている。**同じクラスの中でも具体型で宣言された
+# フィールドは検査される**し、テンプレートでない側は何も変わらない。
+#
+# Section 1 — StaticTypeError: テンプレートクラスの中の**具体型**フィールド
+#   Expected error (StaticTypeError):
+#     field 'count' of class 'Mixed' is declared 'int' but got 'str'
+
+class Mixed[T]:
+    mut v: T            # 型変数 — 照合しない
+    mut count: int      # 具体型 — 照合する
+
+    fn bump(mut self) -> None:
+        self.v = 0          # OK: T なので照合しない
+        self.count = "bad"  # StaticTypeError: int に str
+
+# Section 2 — StaticTypeError: テンプレートクラスの中の**具体型**戻り値
+#   Expected error (StaticTypeError):
+#     'label' is declared to return 'str' but returns 'int'
+
+class Labeled[T]:
+    mut v: T
+
+    fn passthrough(self) -> T:
+        return 0            # OK: T なので照合しない
+
+    fn label(self) -> str:
+        return 1            # StaticTypeError: str に int
+
+# ⚠ trait 制約（`fn render[T: Printable]`）の検査は実行時の `TemplateError` のままで、
+#   本変更では触っていない。静的エラーがあるとそこで停止して到達しないので、
+#   その確認は polymorphism_error.ar が担当する。
