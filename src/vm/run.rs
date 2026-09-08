@@ -1075,7 +1075,10 @@ fn exec_op(
             let v = 'get: {
                 if let Value::Instance(inst_rc) = &obj {
                     let class_id = inst_rc.borrow().class.class_id;
-                    if let Some((idx, access)) = cache.get(class_id) {
+                    let probe = cache.get(class_id);
+                    #[cfg(feature = "prof")]
+                    crate::prof::note_ic(probe.is_some(), cache.is_empty());
+                    if let Some((idx, access)) = probe {
                         if access == crate::ast::AttrCache::PUBLIC {
                             let inst = inst_rc.borrow();
                             debug_assert_eq!(
@@ -1101,7 +1104,10 @@ fn exec_op(
             let v = 'get: {
                 if let Value::Instance(inst_rc) = &buf[base + *slot as usize] {
                     let inst = inst_rc.borrow();
-                    if let Some((idx, access)) = cache.get(inst.class.class_id) {
+                    let probe = cache.get(inst.class.class_id);
+                    #[cfg(feature = "prof")]
+                    crate::prof::note_ic(probe.is_some(), cache.is_empty());
+                    if let Some((idx, access)) = probe {
                         if access == crate::ast::AttrCache::PUBLIC {
                             debug_assert_eq!(
                                 inst.class.field_index.get(&chunk.names[*name_idx as usize]).copied(),

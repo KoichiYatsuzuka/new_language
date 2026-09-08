@@ -336,6 +336,39 @@ fn mode() -> String {
     std::env::var("AR_PROF").unwrap_or_default()
 }
 
+// ---------------------------------------------------------------------------
+// 属性アクセス IC の当たり外れ（Phase R3 の計測）
+// ---------------------------------------------------------------------------
+//
+// ⚠ ミスを **cold**（キャッシュが空＝初回）と **polymorphic**（埋まっているが
+// class_id 違い＝呼び出し点が多相）に分ける。**多相化（N-way）で救えるのは後者だけ**で、
+// 分けずに「ミス率」だけ見ても規模の判断ができない。
+//
+// ⚠ Phase T の前に測ると意味が無い。テンプレートクラスが実体化ごとに新しい class_id を
+// 取っていたので、多相性ではなく**キャッシュ欠落**を測ってしまう。
+
+/// IC ヒット（class_id 一致）。
+pub static IC_HIT: AtomicU64 = AtomicU64::new(0);
+/// cold miss（キャッシュが空＝その呼び出し点の初回）。
+pub static IC_COLD: AtomicU64 = AtomicU64::new(0);
+/// polymorphic miss（埋まっているが class_id が違う）。**多相化で救えるのはここだけ**。
+pub static IC_POLY: AtomicU64 = AtomicU64::new(0);
+
+/// IC を引いた結果を計上する。`hit` が false のとき `was_empty` で cold/poly を分ける。
+#[inline(always)]
+pub fn note_ic(hit: bool, was_empty: bool) {
+    if !enabled() {
+        return;
+    }
+    if hit {
+        IC_HIT.fetch_add(1, Ordering::Relaxed);
+    } else if was_empty {
+        IC_COLD.fetch_add(1, Ordering::Relaxed);
+    } else {
+        IC_POLY.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// 有効かどうか（`AR_PROF` が空でなければ段の計測を出す）。
 pub fn enabled() -> bool {
     !mode().is_empty()
@@ -433,6 +466,22 @@ pub fn dump() {
                     }
                 }
             ));
+        }
+    }
+
+    // ── 属性アクセス IC（Phase R3 の計測）──
+    {
+        let hit = IC_HIT.load(Ordering::Relaxed);
+        let cold = IC_COLD.load(Ordering::Relaxed);
+        let poly = IC_POLY.load(Ordering::Relaxed);
+        let total = hit + cold + poly;
+        if total > 0 {
+            let pct = |n: u64| n as f64 * 100.0 / total as f64;
+            lines.push(String::new());
+            lines.push(format!("=== PROF attr-IC (probes = {total}) ==="));
+            lines.push(format!("  hit          {hit:>12}  ({:.2}%)", pct(hit)));
+            lines.push(format!("  cold miss    {cold:>12}  ({:.2}%)  <- 多相化では救えない", pct(cold)));
+            lines.push(format!("  poly miss    {poly:>12}  ({:.2}%)  <- 多相化で救えるのはここだけ", pct(poly)));
         }
     }
 

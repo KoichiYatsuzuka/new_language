@@ -12,7 +12,7 @@
 use super::op::Op;
 
 /// 宣言順の op 名（`op_index` の戻り値でそのまま索引できる）。
-pub const OP_NAMES: [&str; 89] = [
+pub const OP_NAMES: [&str; 90] = [
     "Const",
     "Nil",
     "LoadLocal",
@@ -102,6 +102,7 @@ pub const OP_NAMES: [&str; 89] = [
     "BuildDict",
     "Yield",
     "AsyncSubmit",
+    "CoerceFloat",
 ];
 
 /// `Op` を宣言順のインデックスへ落とす。
@@ -199,5 +200,6 @@ pub fn op_index(op: &Op) -> u8 {
         Op::BuildDict { .. } => 86,
         Op::Yield => 87,
         Op::AsyncSubmit { .. } => 88,
+        Op::CoerceFloat => 89,
     }
 }

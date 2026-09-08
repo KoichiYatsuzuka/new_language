@@ -176,6 +176,18 @@ impl AttrCache {
         self.0.set(packed);
     }
 
+    /// キャッシュがまだ一度も埋まっていないか（Phase R3 の計測用）。
+    ///
+    /// ミスを **cold**（空＝初回）と **polymorphic**（埋まっているが class_id 違い＝
+    /// 呼び出し点が多相）に分けるために要る。多相化で救えるのは後者だけなので、
+    /// 分けずに「ミス率」だけ見ても規模の判断ができない。
+    /// ⚠ 読み手は `--features prof` のときだけ（既定ビルドでは未使用になる）。
+    #[cfg_attr(not(feature = "prof"), allow(dead_code))]
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.get() == 0
+    }
+
     /// `class_id` が一致すれば `(slot, access)` を返す。
     #[inline]
     pub fn get(&self, class_id: u32) -> Option<(usize, u8)> {
