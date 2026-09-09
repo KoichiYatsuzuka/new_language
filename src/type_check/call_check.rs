@@ -194,6 +194,19 @@ impl TypeChecker {
             );
         }
 
+        // ── テンプレート実体化呼び出し（`f[int](…)` / `Box[int](…)`）────────────
+        // ⚠ `func_name` は `Expr::Ident` / `Expr::Attr` しか拾わないので、この形は
+        //    下の経路すべてを素通りする。型引数で置換したシグネチャと突き合わせる。
+        // ⚠ 戻り値型は従来どおり `Unresolved` のまま返す。`NamedInstance(base)` に
+        //    変えるとフィールド型が `T`（= 呼び出し点では未知のクラス名）として下流へ
+        //    流れ、`a.v = "s"` などが偽エラーになる（型変数の実体化は別タスク）。
+        if let Expr::TemplateInstantiate { base, type_args } = func {
+            if let Expr::Ident { name, .. } = base.as_ref() {
+                self.check_template_call_args(name, type_args, &arg_data);
+            }
+            return InferredType::Unresolved;
+        }
+
         match func_type {
             InferredType::Function {
                 params: Some(fn_params),
@@ -574,6 +587,129 @@ impl TypeChecker {
             if let Some(InferredType::Protocol(proto_name)) = param_ty_opt {
                 let context = format!("argument to `{fname}`");
                 self.check_protocol_conformance(arg_ty, &proto_name, None, &context);
+            }
+        }
+    }
+
+    /// 型の中の**テンプレート型変数を具体型へ置換**する（`T` → `int`、`list[T]` → `list[int]`）。
+    ///
+    /// 実体化呼び出し `Box[int]("s")` の引数を検査するには、シグネチャに書かれた `T` を
+    /// 呼び出し点の型引数へ写す必要がある。置換表に無い名前はそのまま残す。
+    fn subst_type_params(
+        ty: &InferredType,
+        map: &std::collections::HashMap<String, InferredType>,
+    ) -> InferredType {
+        use InferredType as T;
+        let rec = |t: &T| Box::new(Self::subst_type_params(t, map));
+        match ty {
+            T::NamedInstance(n) => map.get(n).cloned().unwrap_or_else(|| ty.clone()),
+            T::ListOf(t) => T::ListOf(rec(t)),
+            T::FixedListOf(t) => T::FixedListOf(rec(t)),
+            T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
+            T::SetOf(t) => T::SetOf(rec(t)),
+            T::TypeValOf(t) => T::TypeValOf(rec(t)),
+            T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
+            T::Result(a, b) => T::Result(rec(a), rec(b)),
+            T::Union(ts) => T::Union(ts.iter().map(|t| Self::subst_type_params(t, map)).collect()),
+            T::Intersection(ts) => {
+                T::Intersection(ts.iter().map(|t| Self::subst_type_params(t, map)).collect())
+            }
+            T::Tuple(ts) => T::Tuple(ts.iter().map(|t| Self::subst_type_params(t, map)).collect()),
+            _ => ty.clone(),
+        }
+    }
+
+    /// テンプレートの実体化呼び出し（`f[int](…)` / `Box[int](…)`）の**引数型**を検査する。
+    ///
+    /// ⚠⚠ **ここが無いと実体化呼び出しは丸ごと素通りする。** `infer_call_inner` の
+    /// `func_name` は `Expr::Ident` / `Expr::Attr` しか拾わず、`Expr::TemplateInstantiate` は
+    /// `_ => None` に落ちる。そのため `check_call_args`（自由関数）も
+    /// コンストラクタ検査も走らず、`Box[int]("s")` が静的にも実行時にも通っていた（実測）。
+    ///
+    /// 検査する型は**型引数で置換したもの**。置換しないとシグネチャ側が `T`
+    /// （`NamedInstance("T")`）のままで、具体型の実引数と必ず食い違う。
+    ///
+    /// ⚠ 個数の不一致（型引数・実引数とも）は**ここでは報告しない**。どちらも実行時に
+    /// `TemplateError` / `TypeError` で捕まるうえ、個数が合っていないと置換表が作れず
+    /// 対応付け自体が嘘になる。⇒ 合っているときだけ型を見る。
+    fn check_template_call_args(
+        &mut self,
+        base_name: &str,
+        type_args: &[String],
+        arg_data: &[(Option<String>, InferredType)],
+    ) {
+        let Some(tparams) = self.registry.template_params(base_name) else {
+            return; // テンプレートでない名前（実行時に別のエラーになる）
+        };
+        if tparams.len() != type_args.len() {
+            return; // 型引数の個数不一致 → 実行時の TemplateError に任せる
+        }
+        // 置換表。解釈できない型引数（未知の綴り）が混ざったら検査を諦める。
+        let mut map = std::collections::HashMap::new();
+        for (p, a) in tparams.iter().zip(type_args.iter()) {
+            match InferredType::from_ann(a) {
+                Some(t) if !matches!(t, InferredType::Unresolved) => {
+                    map.insert(p.clone(), t);
+                }
+                _ => return,
+            }
+        }
+        // シグネチャを引く。クラスなら自動生成された `__init__`（`self` が先頭）。
+        let (sig, implicit) = if self.registry.is_known_class(base_name) {
+            match self
+                .registry
+                .class_methods(base_name)
+                .and_then(|m| m.get("__init__"))
+            {
+                Some(sigs) if sigs.len() == 1 => (sigs[0].clone(), 1usize),
+                _ => return, // `__init__` が無い / オーバーロード → 見送る
+            }
+        } else {
+            match self.registry.fn_sigs(base_name) {
+                Some(sigs) if sigs.len() == 1 => (sigs[0].clone(), 0usize),
+                _ => return,
+            }
+        };
+        // ⚠ 実引数の個数が合わないときは対応付けが嘘になるので見送る（実行時に捕まる）。
+        let normal: Vec<_> = arg_data
+            .iter()
+            .filter(|(k, _)| k.as_deref() != Some("..."))
+            .collect();
+        if sig.variadic_type.is_some() || normal.len() + implicit != sig.params.len() {
+            return;
+        }
+        let mut positional_idx = 0usize;
+        for (key, arg_ty) in normal {
+            let param_idx = match key {
+                // キーワード引数は名前で引く（位置で数えると別の仮引数を見る）。
+                Some(kw) => match sig.params.iter().position(|(n, _)| n == kw) {
+                    Some(i) => i,
+                    None => continue,
+                },
+                None => {
+                    let i = positional_idx + implicit;
+                    positional_idx += 1;
+                    i
+                }
+            };
+            let Some((_, Some(declared))) = sig.params.get(param_idx) else {
+                continue;
+            };
+            let expected = Self::subst_type_params(declared, &map);
+            // 置換後もなお型変数が残る（入れ子テンプレート等）なら検査しない。
+            if self.mentions_type_param(&expected) {
+                continue;
+            }
+            if !self.param_type_matches(&sig, param_idx, arg_ty, &expected) {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::CallArgTypeMismatch {
+                        func_name: format!("{base_name}[{}]", type_args.join(", ")),
+                        param_index: param_idx.saturating_sub(implicit),
+                        expected,
+                        got: arg_ty.clone(),
+                    },
+                    span: None,
+                });
             }
         }
     }

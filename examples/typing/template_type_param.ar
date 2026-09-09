@@ -69,4 +69,29 @@ print("Tagged[str] x1:")
 let t3 = Tagged[str]("a")
 print(t1.v, t2.v, t3.v)     # 1 2 a
 
+print("=== 実体化呼び出しの引数は型引数で置換して検査される（0-6） ===")
+
+class Pair[K, V]:
+    mut k: K
+    mut v: V
+
+class Mixed[T]:
+    mut v: T
+    mut tag: str
+
+fn pick[T](let xs: list[T], let i: int) -> T:
+    return xs[i]
+
+let pr = Pair[int, str](1, "a")
+print(pr.k, pr.v)           # 1 a
+
+let mx = Mixed[int](3, "tag")
+print(mx.v, mx.tag)         # 3 tag
+
+print(Box[float](2).get())  # 2.0 — 置換後の float へ int を拡大
+print(pick[int]([10, 20], 1))   # 20 — list[T] も置換される
+print(pick[str](["x", "y"], 0)) # x
+
+# 誤った実引数は template_instantiate_error.ar
+
 print("done")

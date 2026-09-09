@@ -117,6 +117,7 @@ impl TypeRegistryBuilder {
                 class_member_access: HashMap::new(),
                 class_static_methods: HashMap::new(),
                 known_protocols: HashMap::new(),
+                template_params: HashMap::new(),
             },
             seen_modules: HashSet::new(),
             foreign_depth: 0,
@@ -149,6 +150,7 @@ impl TypeRegistryBuilder {
                     params,
                     return_type,
                     body,
+                    template_params,
                     ..
                 } => {
                     let variadic_param = params.iter().find(|p| p.variadic);
@@ -186,10 +188,17 @@ impl TypeRegistryBuilder {
                             .or(if open_arity { Some(InferredType::Any) } else { None }),
                     };
                     self.reg.fn_sigs.entry(name.clone()).or_default().push(sig);
+                    // 実体化呼び出しの引数検査に要る（型変数名と並び）。
+                    if !template_params.is_empty() {
+                        self.reg.template_params.insert(
+                            name.clone(),
+                            template_params.iter().map(|p| p.name.clone()).collect(),
+                        );
+                    }
                     self.collect(body);
                 }
                 Stmt::ClassDef {
-                    name, bases, body, ..
+                    name, bases, body, template_params, ..
                 } => {
                     self.reg.known_class_names.insert(name.clone());
                     // 外部言語スタブ由来でなければ「Arrow のクラス」（#27-a）。
@@ -197,6 +206,12 @@ impl TypeRegistryBuilder {
                         self.reg.arrow_class_names.insert(name.clone());
                     }
                     self.reg.class_bases.insert(name.clone(), bases.clone());
+                    if !template_params.is_empty() {
+                        self.reg.template_params.insert(
+                            name.clone(),
+                            template_params.iter().map(|p| p.name.clone()).collect(),
+                        );
+                    }
                     self.collect_class_methods(name, body);
                     self.collect_class_members(name, body);
                     // Only recurse into method bodies for nested closures;

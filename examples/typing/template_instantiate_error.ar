@@ -1,0 +1,53 @@
+# template_instantiate_error.ar — テンプレート実体化呼び出しの引数型（0-6）
+#
+# ⚠⚠ **実体化呼び出しは丸ごと未検査だった。** 呼び出し検査は呼び先の名前を
+#   `Expr::Ident` / `Expr::Attr` からしか拾わず、`Box[int](…)` の形
+#   （`Expr::TemplateInstantiate`）は `_ => None` に落ちていた。そのため
+#   自由関数の引数検査もコンストラクタ検査も走らず、**静的にも実行時にも**通っていた。
+#
+# 正常系は template_type_param.ar / template_specialization.ar
+#
+# Section 1 — StaticTypeError: テンプレートクラスの型変数フィールド
+#   Expected error (StaticTypeError):
+#     argument 0 of 'Box[int]' expects 'int' but got 'str'
+#
+#   検査するのは**型引数で置換した**型。置換しないとシグネチャ側が `T` のままで
+#   具体型の実引数と必ず食い違う。
+
+class Box[T]:
+    mut v: T
+
+let a = Box[int]("wrong")       # StaticTypeError: T = int なので int が要る
+let b = Box[str](999)           # StaticTypeError: T = str なので str が要る
+
+# Section 2 — StaticTypeError: 型変数と具体型が混在するクラス
+#   Expected error (StaticTypeError):
+#     argument 1 of 'Mixed[int]' expects 'str' but got 'int'
+
+class Mixed[T]:
+    mut v: T
+    mut tag: str
+
+let m = Mixed[int](1, 999)      # StaticTypeError: 2 番目は str
+
+# Section 3 — StaticTypeError: テンプレート関数の引数
+#   Expected error (StaticTypeError):
+#     argument 0 of 'add[int]' expects 'int' but got 'str'
+
+fn add[T](let a: T, let b: T) -> T:
+    return a + b
+
+print(add[int]("x", "y"))       # StaticTypeError
+
+# Section 4 — StaticTypeError: 型引数が複数あるクラス
+#   Expected error (StaticTypeError):
+#     argument 1 of 'Pair[int, str]' expects 'str' but got 'int'
+
+class Pair[K, V]:
+    mut k: K
+    mut v: V
+
+let p = Pair[int, str](1, 2)    # StaticTypeError: V = str なので 2 番目は str
+
+# ⚠ 個数の不一致（型引数・実引数とも）は**実行時**の TemplateError / TypeError のままで、
+#   ここでは報告しない。個数が合っていないと置換表が作れず対応付け自体が嘘になるため。

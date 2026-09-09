@@ -55,6 +55,13 @@ pub(super) struct TypeRegistry {
     /// 用途: VM コンパイラがメソッド呼び出し・属性代入のレシーバを
     /// `Value::Instance` 前提の op へ落としてよいかの判定（#26/#27-a）。
     arrow_class_names: HashSet<String>,
+    /// テンプレート宣言の**型変数名**（宣言順）。キー: クラス名 / 関数名。
+    ///
+    /// ⚠ これが無いと `Box[int]("s")` のような**実体化呼び出しの引数型を検査できない**。
+    /// 呼び出し点で `T` → `int` の置換表を作るのに、型変数の**名前と並び**が要る。
+    /// 以前は型変数名がレジストリに無く、`Expr::TemplateInstantiate` の呼び出しは
+    /// `func_name` が `None` になって検査経路に入らないまま素通りしていた。
+    template_params: HashMap<String, Vec<String>>,
 }
 
 impl TypeRegistry {
@@ -70,6 +77,11 @@ impl TypeRegistry {
     /// Arrow ソース由来クラス名の集合（注釈テーブルへ渡す・#27-a）。
     pub(super) fn arrow_class_names(&self) -> &HashSet<String> {
         &self.arrow_class_names
+    }
+
+    /// テンプレート宣言の型変数名（宣言順）。非テンプレートは `None`。
+    pub(super) fn template_params(&self, name: &str) -> Option<&[String]> {
+        self.template_params.get(name).map(|v| v.as_slice())
     }
 
     /// クラス・enum・new_type として登録済みの名前か。

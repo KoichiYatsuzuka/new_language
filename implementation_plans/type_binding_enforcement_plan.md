@@ -28,7 +28,12 @@ Arrow の型注釈が**呼び出し引数以外のどこでも強制されてい
 | コンストラクタ引数 | ❌ | 部分的※ | [call_check.rs:370](../src/type_check/call_check.rs#L370) |
 | メソッド引数（インスタンス/クラス/static） | ❌ | ❌ | [call_check.rs:264](../src/type_check/call_check.rs#L264) |
 | `return` と宣言戻り値 | ❌ | ❌ | [check.rs:224](../src/type_check/stmt/check.rs#L224) |
+| **テンプレート実体化呼び出し** `Box[int]("s")` / `add[int]("x","y")` | ❌ | ❌ | `func_name` が `Expr::Ident`/`Expr::Attr` しか拾わず `_ => None` に落ちる |
 | trait のフィールド型・メソッドシグネチャ適合 | ❌ | ❌ | protocol と違い trait 版の適合検査が無い |
+
+⚠⚠ **テンプレート実体化の行は当初の調査で見つけていたのに、この計画表から落としていた。**
+そのためフェーズが割り当てられず、Phase 0 完了後も**静的にも実行時にも素通り**していた
+（ユーザ報告で発覚・0-6 で修正）。
 
 ※ **「部分的」はメモリレイアウトの副作用であって型検査ではない。**
 `store_field`（[instance.rs:257](../src/interpreter/value/instance.rs#L257)）は
@@ -84,6 +89,7 @@ p.x = "w"           p.x = "w"
 | 0-5 | コンストラクタ引数の型検査 | **✅ 完了**（2026-09-08） |
 | 0-1 | `let`/`mut`/`const` の注釈採用と照合 | **✅ 完了**（2026-09-08） |
 | T | テンプレート実体化キャッシュ ＋ 型変数の取り違え修正 | **✅ 完了**（2026-09-08） |
+| **0-6** | **テンプレート実体化呼び出しの引数型検査**（計画表からの落とし分） | **✅ 完了**（2026-09-09） |
 | R3 | フィールドのオフセット化 | **✅ 完了として閉じた**（2026-09-08。原計画に未実行分は無かった） |
 
 ---
@@ -470,6 +476,58 @@ fn conv[T](let n: int) -> T:
 
 **追加した例題**: `examples/typing/template_type_param.ar` ／ `template_type_param_error.ar`
 
+### 0-6 — テンプレート実体化呼び出しの引数型 【✅ 完了 2026-09-09】
+
+⚠⚠ **計画表から落としていた行。** 当初の調査では見つけていたが §0 の表に書かなかったため
+フェーズが付かず、Phase 0 を完了と報告した後も素通りしていた（ユーザ報告で発覚）。
+
+**原因**: [call_check.rs](../src/type_check/call_check.rs) の `func_name` は呼び先の名前を
+`Expr::Ident` / `Expr::Attr` からしか拾わず、`Box[int](…)` の形
+（`Expr::TemplateInstantiate`）は `_ => None` に落ちる。⇒ `check_call_args`（自由関数）も
+0-5 のコンストラクタ検査も**走らない**。`infer` 側も `type_args` を捨てて `Unresolved` を返す。
+
+**素通りしていた形（実測）**
+
+| | 修正前 |
+|---|---|
+| `Box[int]("wrong")` | 静的 ❌ / 実行時 ❌ |
+| `add[int]("x", "y")` | 静的 ❌ / 実行時 ❌ |
+| `Mixed[int](1, 999)`（`tag: str`） | 静的 ❌ / 実行時 ❌ |
+
+**実装したもの**
+
+| 対象 | 内容 |
+|---|---|
+| `TypeRegistry::template_params` | 型変数名を**宣言順**で保持（クラス・関数）。置換表を作るのに名前と並びが要る |
+| `subst_type_params` | `T` → `int`、`list[T]` → `list[int]` の再帰置換 |
+| `check_template_call_args` | 置換後のシグネチャと実引数を突き合わせる |
+| `infer_call_inner` | `Expr::TemplateInstantiate` の分岐を追加 |
+
+⚠ **検査するのは型引数で置換した型。** 置換しないとシグネチャ側が `T`
+（`NamedInstance("T")`）のままで、具体型の実引数と必ず食い違う。
+
+⚠ **戻り値型は従来どおり `Unresolved` のまま**にした。`NamedInstance(base)` に変えると
+フィールド型が `T`（呼び出し点では未知のクラス名）として下流へ流れ、`a.v = "s"` などが
+偽エラーになる。型変数の実体化を型検査側でも行うのは別タスク（§7）。
+
+⚠ **個数の不一致は報告しない。** 型引数・実引数どちらも実行時に `TemplateError` /
+`TypeError` で捕まるうえ、個数が合っていないと置換表が作れず対応付け自体が嘘になる。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` のみ |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 68/68 identical |
+| `compare_outputs.ps1 -A <R3>` | **168/168 identical** |
+| `compare_bytecode.ps1 -A <R3>` | **187/187 identical** |
+| `compare_wasm_frontend.ps1` | **239/239 agreed**・INVENTED 0 |
+
+**追加した例題**: `examples/typing/template_instantiate_error.ar`（正常系は
+`template_type_param.ar` に追記）
+
 ### R3 — フィールドのオフセット化 【✅ 完了として閉じた 2026-09-08】
 
 **⚠ 着手時の前提が誤っていた。** 「計画は多相 IC・実装は単相 IC ＝ 差分が未実装」と報告したが、
@@ -575,6 +633,8 @@ probes       : 77,400,461
 | `fdd771a` | **0-1** `let`/`mut`/`const` の注釈採用と照合 |
 | `0afaea0` | **Phase T** テンプレート実体化クラスのメモ化 ＋ 型変数の取り違え修正 |
 | `1690523` | **R3** 属性 IC の計測基盤と実測 |
+| `1ebedec` | R3 を完了として閉じ、文書へ追記 |
+| （本コミット） | **0-6** テンプレート実体化呼び出しの引数型検査 |
 
 ### 型検査に足した検査
 
@@ -585,6 +645,7 @@ probes       : 77,400,461
 | `let`/`mut`/`const` | `VarTypeMismatch`（新設） | `resolve_declared_type` |
 | メソッド引数 | `CallArgTypeMismatch`（既存） | `check_self_type_params` |
 | コンストラクタ引数 | 同上 | `infer_call_inner`（`__init__` へ委譲） |
+| テンプレート実体化の引数 | 同上 | `check_template_call_args` ＋ `subst_type_params` |
 
 ### 実行時に足した昇格（`int` → `float`）
 
@@ -608,6 +669,7 @@ probes       : 77,400,461
 | 7 | **型変数を具象型と取り違えていた** — `from_ann` が大文字始まりの未知の識別子をクラス名にするため。`mentions_type_param` で除外（Phase T で発見） |
 | 8 | **テンプレートクラスにキャッシュが無かった** — 実体化ごとに新 `class_id` を発行しており、同じ `Box[int]` が別の型になっていた |
 | 9 | **R3 の「多相 IC」の読み違え** — 原計画と実装は同じ機構。呼び名が 2 つあった |
+| 10 | **テンプレート実体化の呼び出し点が丸ごと未検査だった** — 当初の調査で見つけていたのに計画表から落としており、Phase 0 完了報告後にユーザ報告で発覚（0-6） |
 
 ### 意図的な非互換
 
@@ -642,4 +704,6 @@ probes       : 77,400,461
 | 2 | **複合代入 `o.f += v` の型検査** — 格納されるのは `f <op> v` の結果なので、二項演算の結果型を求める必要がある |
 | 3 | **trait のフィールド型・メソッドシグネチャ適合** — protocol と違い trait 版の適合検査が無い |
 | 4 | **添字代入 `a[i] = v`** — 要素型と値の照合をしていない |
+| 6 | **テンプレート実体化の戻り値型** — 呼び出し点では `Unresolved` のまま。`NamedInstance(base)` に変えるにはフィールド型の型変数も置換する必要がある（型検査側での実体化）|
+| 7 | **型引数・実引数の個数検査** — 実行時の `TemplateError` / `TypeError` のみ。静的化は可能だが例題の期待が変わる |
 | 5 | **`crates/arrow-frontend/target/` の wasm 成果物が tracked のまま gitignore に載っている** — `git rm --cached` で追跡から外すかは要判断 |
