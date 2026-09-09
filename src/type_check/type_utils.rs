@@ -22,6 +22,75 @@ impl TypeChecker {
         }
     }
 
+    /// 型の中の `NamedInstance(n)` のうち **`n` が protocol 名のものを `Protocol(n)` へ寄せる**。
+    ///
+    /// # なぜ検査時に寄せるのか
+    ///
+    /// 収集パスの `resolve_protocol_type`（[registry/builder.rs]）は
+    /// **`known_protocols` が育っている途中**に走るので、protocol より前に宣言された
+    /// クラス・関数では変換が効かない。しかも適用されているのは `fn_sigs`（自由関数）だけで、
+    /// `class_method_sigs`（メソッド・自動生成 `__init__`）・戻り値注釈・フィールド型は
+    /// **`NamedInstance("Pr")` のまま**だった。
+    ///
+    /// ⚠⚠ そのままだと `type_matches` が**継承関係として**照合し（`class_implements_trait`）、
+    /// protocol は構造的適合なので基底に現れず **必ず false** になる。
+    /// ⇒ **適合しているクラスまで弾く偽陽性**が出る（`fn make() -> Pr: return Good(1)` が
+    /// `'make' is declared to return 'Pr' but returns 'Good'` になっていた・実測）。
+    ///
+    /// 検査時点ではレジストリが完成しているので、ここで寄せれば宣言順に依存しない。
+    pub(super) fn resolve_protocols(&self, ty: &InferredType) -> InferredType {
+        use InferredType as T;
+        let rec = |t: &T| Box::new(self.resolve_protocols(t));
+        match ty {
+            T::NamedInstance(n) if self.registry.is_protocol(n.as_str()) => T::Protocol(n.clone()),
+            T::ListOf(t) => T::ListOf(rec(t)),
+            T::FixedListOf(t) => T::FixedListOf(rec(t)),
+            T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
+            T::SetOf(t) => T::SetOf(rec(t)),
+            T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
+            T::Result(a, b) => T::Result(rec(a), rec(b)),
+            T::Union(ts) => T::Union(ts.iter().map(|t| self.resolve_protocols(t)).collect()),
+            T::Tuple(ts) => T::Tuple(ts.iter().map(|t| self.resolve_protocols(t)).collect()),
+            _ => ty.clone(),
+        }
+    }
+
+    /// `got` を `expected` の位置へ渡してよいか。**protocol なら適合検査へ回す。**
+    ///
+    /// 戻り値が `false` のときだけ呼び出し側がエラーを報告する。
+    /// ⚠ protocol の不適合は `check_protocol_conformance` が**自分で報告する**ので
+    /// `true` を返す（呼び出し側が重ねて報告しないため）。
+    ///
+    /// ⚠⚠ `type_matches` は `Protocol` を期待型にすると**任意の `NamedInstance` を通す**。
+    /// 適合の判定はそちらに無く、`check_protocol_conformance` が別に呼ばれる前提の作りなので、
+    /// この関数を通さずに `type_matches` だけで判定すると**不適合が素通りする**。
+    pub(super) fn check_expected(
+        &mut self,
+        got: &InferredType,
+        expected: &InferredType,
+        param_mutable: bool,
+        context: &str,
+    ) -> bool {
+        let expected = self.resolve_protocols(expected);
+        // ⚠⚠ **`got` 側も寄せる。** protocol 名で注釈された仮引数は `declare_param` が
+        //    `NamedInstance("Pr")` として束縛する（`from_ann` は protocol とクラスを
+        //    区別しない）。寄せずに適合検査へ渡すと「`Pr` という名のクラス」を探しに行き、
+        //    メンバーが 1 つも無いので **`type 'Pr' does not satisfy protocol 'Pr'`** という
+        //    自分自身に不適合という嘘のエラーになる（自動生成 `__init__` の
+        //    `self.p = p` で実際に出た）。
+        let got = self.resolve_protocols(got);
+        if let InferredType::Protocol(proto) = &expected {
+            self.check_protocol_conformance(&got, proto, None, context);
+            return true;
+        }
+        // ⚠ `mut` 引数（write-back）は `int` → `float` の拡大を許さない（`type_matches` の doc）。
+        if param_mutable {
+            self.type_matches_exact(&got, &expected)
+        } else {
+            self.type_matches(&got, &expected)
+        }
+    }
+
     /// 引数型 `arg_ty` が期待型 `expected` と互換か。**最上位でのみ** `int` → `float` の
     /// 暗黙拡大を許す（案 B・2026-09-08）。
     ///

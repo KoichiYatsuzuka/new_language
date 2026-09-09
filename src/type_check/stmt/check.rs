@@ -67,6 +67,36 @@ impl TypeChecker {
                         span: Some(span.clone()),
                     });
                 }
+                // ── 再代入の型検査（0-7）────────────────────────────────────
+                // ⚠ 0-1 で「変数を**注釈の型で束縛する**」ようにして初めて成立する。
+                //    それ以前は束縛型が右辺の推論型だったので、照合しても意味が無かった。
+                // ⚠ protocol 型の変数への再代入もここを通る（`check_expected` が
+                //    適合検査へ回す）。ここが無いと `mut x: Pr = Good(1); x = Bad(...)` が
+                //    素通りする（実測）。
+                // ⚠⚠ **注釈の有無で緩めない。** Arrow では型注釈は補助的なもので、
+                //    注釈が無い束縛にも推論型で同じ厳格さを適用する。
+                //      mut y = [1]   # y は list[int]
+                //      y = [y]       # list[list[int]] ⇒ エラー
+                //    検査を緩めて例題の失敗を避けるのではなく、例題側を直す
+                //    （`equality_depth_limit_error.ar` は `mut y: list` へ直した）。
+                let declared = self.lookup(name).map(|i| i.ty.clone());
+                if let Some(declared) = declared {
+                    if !matches!(declared, InferredType::Unresolved | InferredType::Any)
+                        && !self.mentions_type_param(&declared)
+                    {
+                        let ctx = format!("variable `{name}`");
+                        if !self.check_expected(&rhs_ty, &declared, false, &ctx) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::VarTypeMismatch {
+                                    name: name.clone(),
+                                    expected: declared,
+                                    got: rhs_ty,
+                                },
+                                span: Some(span.clone()),
+                            });
+                        }
+                    }
+                }
             }
             Stmt::CompoundAssign {
                 name,
@@ -653,7 +683,9 @@ impl TypeChecker {
         if self.mentions_type_param(&expected) {
             return;
         }
-        if self.type_matches(&value_ty, &expected) {
+        // ⚠ protocol 期待型は適合検査へ回す（`check_expected` の doc）。
+        let ctx = format!("field `{attr}` of class `{class_name}`");
+        if self.check_expected(&value_ty, &expected, false, &ctx) {
             return;
         }
         self.report_error(StaticTypeError {
@@ -719,10 +751,12 @@ impl TypeChecker {
         if self.mentions_type_param(&expected) {
             return;
         }
-        if self.type_matches(got, &expected) {
+        let func_name = self.state.current_fn().unwrap_or("<fn>").to_string();
+        // ⚠ protocol 期待型は適合検査へ回す（`check_expected` の doc）。
+        let ctx = format!("return value of `{func_name}`");
+        if self.check_expected(got, &expected, false, &ctx) {
             return;
         }
-        let func_name = self.state.current_fn().unwrap_or("<fn>").to_string();
         self.report_error(StaticTypeError {
             kind: TypeErrorKind::ReturnTypeMismatch {
                 func_name,

@@ -59,6 +59,7 @@ $knownDiff = @{
     'ctor_arg_type_error'            = 'py: コンストラクタ引数の静的型検査が無い（そのまま実行してしまう・0-5 で新設）'
     'var_annotation_error'           = 'py: let/mut の型注釈が検査されない（注釈を捨てて実行してしまう・0-1 で新設）'
     'var_annotation'                 = 'py: int→float の束縛時昇格が未実装（4 を 4.0 にしない・0-1 で新設）'
+    'protocol_sites'                 = 'py: protocol 型の束縛・メンバー解決が未実装（NameError/AttributeError になる・0-7 で新設）'
     'template_instantiate_error'      = 'py: テンプレート実体化の引数型検査が無い（そのまま実行してしまう・0-6 で新設）'
     'template_type_param'            = 'py: テンプレート実体化クラスのメモ化が無い（クラスレベル初期化子が毎回走る）＋ float 昇格が未実装（Phase T で新設）'
     'built_in'                       = 'py: 組み込みの対応範囲が狭い（id/repr 等）'

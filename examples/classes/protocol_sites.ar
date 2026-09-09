@@ -1,0 +1,88 @@
+# protocol_sites.ar — protocol 適合検査が**すべての束縛点**で効くこと（0-7）
+#
+# ⚠⚠ protocol は**構造的適合**（`class C(Pr)` のように基底に書かない）。
+#   そのため `type_matches` は protocol 期待型に対して**任意のクラスを通す**作りで、
+#   適合の判定は `check_protocol_conformance` が別に担っている。
+#   ⇒ その呼び出しが無い束縛点は**不適合が素通り**し、逆に protocol 名が
+#     `NamedInstance` のまま残っていた束縛点は**適合するクラスまで弾いて**いた。
+#
+# 誤った型は protocol_sites_error.ar
+
+protocol Drawable:
+    mut size: int
+    fn draw(self) -> str:
+        ...
+
+class Circle:
+    mut size: int
+
+    fn draw(self) -> str:
+        return "circle"
+
+class Square:
+    mut size: int
+
+    fn draw(self) -> str:
+        return "square"
+
+print("=== let / mut の注釈 ===")
+
+let d: Drawable = Circle(1)
+print(d.draw())             # circle
+
+mut m: Drawable = Circle(2)
+m = Square(3)               # 再代入も適合検査を通る
+print(m.draw())             # square
+
+print("=== 自由関数の引数 ===")
+
+fn render(let x: Drawable) -> str:
+    return x.draw()
+
+print(render(Circle(4)))    # circle
+print(render(Square(5)))    # square
+
+print("=== メソッドの引数 ===")
+
+class Canvas:
+    mut n: int
+
+    fn add(self, let x: Drawable) -> str:
+        return x.draw()
+
+print(Canvas(0).add(Circle(6)))     # circle
+
+print("=== コンストラクタの引数 / protocol 型のフィールド ===")
+
+class Slot:
+    mut item: Drawable
+
+mut s = Slot(Circle(7))
+print(s.item.draw())        # circle
+s.item = Square(8)          # フィールド書き込みも適合検査を通る
+print(s.item.draw())        # square
+
+print("=== 戻り値 ===")
+
+# ⚠ protocol を戻り値型にすると警告が出る（言語側の方針・本変更とは無関係）:
+#   Warning: function 'make' returns protocol type 'Drawable'; consider returning a concrete type
+
+fn make(let which: int) -> Drawable:
+    if which == 0:
+        return Circle(9)
+    return Square(10)
+
+print(make(0).draw())       # circle
+print(make(1).draw())       # square
+
+print("=== テンプレートの型引数 ===")
+
+class Box[T]:
+    mut v: T
+
+    fn get(self) -> T:
+        return self.v
+
+print(Box[Drawable](Circle(11)).get().draw())   # circle
+
+print("done")

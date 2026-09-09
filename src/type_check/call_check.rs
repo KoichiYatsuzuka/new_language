@@ -407,13 +407,17 @@ impl TypeChecker {
             if matches!(expected, InferredType::SelfType) {
                 continue;
             }
-            if !self.param_type_matches(sig, param_idx, arg_ty, expected) {
+            // ⚠ protocol 期待型は適合検査へ回す（`check_expected` の doc）。
+            let expected = expected.clone();
+            let mutable = sig.param_mutable.get(param_idx).copied().unwrap_or(false);
+            let ctx = format!("argument to `{cls_name}.{method_name}`");
+            if !self.check_expected(arg_ty, &expected, mutable, &ctx) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::CallArgTypeMismatch {
                         func_name: format!("{cls_name}.{method_name}"),
                         // 呼び出し側から見た位置に直す（`self` を数えない）。
                         param_index: param_idx.saturating_sub(implicit),
-                        expected: expected.clone(),
+                        expected,
                         got: (*arg_ty).clone(),
                     },
                     span: None,
@@ -700,7 +704,10 @@ impl TypeChecker {
             if self.mentions_type_param(&expected) {
                 continue;
             }
-            if !self.param_type_matches(&sig, param_idx, arg_ty, &expected) {
+            // ⚠ protocol 期待型は適合検査へ回す（`check_expected` の doc）。
+            let mutable = sig.param_mutable.get(param_idx).copied().unwrap_or(false);
+            let ctx = format!("argument to `{base_name}[{}]`", type_args.join(", "));
+            if !self.check_expected(arg_ty, &expected, mutable, &ctx) {
                 self.report_error(StaticTypeError {
                     kind: TypeErrorKind::CallArgTypeMismatch {
                         func_name: format!("{base_name}[{}]", type_args.join(", ")),

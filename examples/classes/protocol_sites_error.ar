@@ -1,0 +1,66 @@
+# protocol_sites_error.ar — protocol に適合しない型を各束縛点で弾くこと（0-7）
+#
+# 対になる正常系: protocol_sites.ar
+#
+# ⚠⚠ **同名だが型が違うメンバーを持つクラスを弾けるかが要点。** メンバー名だけ見て
+#   通してしまうと protocol の意味が無い。`Bad` は `size` と `draw` を**名前だけ**持ち、
+#   `size` の型と `draw` の戻り値型が protocol と違う。
+#
+# ⚠ これらの束縛点は以前**不適合が素通り**していた（`type_matches` が protocol 期待型に
+#   対して任意のクラスを通す作りで、適合検査が呼ばれていなかった）。
+
+protocol Drawable:
+    mut size: int
+    fn draw(self) -> str:
+        ...
+
+class Bad:
+    mut size: str           # 同名だが型が違う
+    fn draw(self) -> int:   # 同名だが戻り値型が違う
+        return 0
+
+# Section 1 — StaticTypeError: let の注釈
+#   Expected error (StaticTypeError):
+#     type 'Bad' does not satisfy protocol 'Drawable': field `size` has type `str` ...
+
+let d: Drawable = Bad("a")
+
+# Section 2 — StaticTypeError: 再代入
+class Good:
+    mut size: int
+    fn draw(self) -> str:
+        return "g"
+
+mut m: Drawable = Good(1)
+m = Bad("b")
+
+# Section 3 — StaticTypeError: 自由関数の引数
+fn render(let x: Drawable) -> str:
+    return x.draw()
+
+print(render(Bad("c")))
+
+# Section 4 — StaticTypeError: メソッドの引数
+class Canvas:
+    mut n: int
+    fn add(self, let x: Drawable) -> str:
+        return x.draw()
+
+print(Canvas(0).add(Bad("d")))
+
+# Section 5 — StaticTypeError: コンストラクタの引数とフィールド書き込み
+class Slot:
+    mut item: Drawable
+
+mut s = Slot(Bad("e"))
+s.item = Bad("f")
+
+# Section 6 — StaticTypeError: 戻り値
+fn make() -> Drawable:
+    return Bad("g")
+
+# Section 7 — StaticTypeError: テンプレートの型引数
+class Box[T]:
+    mut v: T
+
+let b = Box[Drawable](Bad("h"))
