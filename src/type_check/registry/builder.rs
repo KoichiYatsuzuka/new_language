@@ -227,7 +227,15 @@ impl TypeRegistryBuilder {
                     let item_type_name = format!("enum_item_{}", name);
                     self.reg.known_class_names.insert(item_type_name);
                 }
-                Stmt::TraitDef { name, body, .. } => {
+                Stmt::TraitDef { name, body, template_params, .. } => {
+                    // trait 自身の型変数も登録する。適合検査で `-> T` のような
+                    // 「実体化前の要求」を具体型と突き合わせないために要る。
+                    if !template_params.is_empty() {
+                        self.reg.template_params.insert(
+                            name.clone(),
+                            template_params.iter().map(|p| p.name.clone()).collect(),
+                        );
+                    }
                     self.collect_trait(name, body);
                 }
                 Stmt::ProtocolDef { name, body } => {

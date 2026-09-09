@@ -92,6 +92,7 @@ p.x = "w"           p.x = "w"
 | T | テンプレート実体化キャッシュ ＋ 型変数の取り違え修正 | **✅ 完了**（2026-09-08） |
 | **0-6** | **テンプレート実体化呼び出しの引数型検査**（計画表からの落とし分） | **✅ 完了**（2026-09-09） |
 | **0-7** | **protocol 適合検査を全束縛点へ ＋ 再代入の型検査** | **✅ 完了**（2026-09-09） |
+| **0-8** | **trait 適合検査（同名・中身違いを弾く）** | **✅ 完了**（2026-09-10） |
 | R3 | フィールドのオフセット化 | **✅ 完了として閉じた**（2026-09-08。原計画に未実行分は無かった） |
 
 ---
@@ -593,6 +594,71 @@ Arrow では型注釈は補助的なもので、**注釈が無い束縛にも推
 **追加した例題**: `examples/classes/protocol_sites.ar` ／ `protocol_sites_error.ar`
 （8 束縛点 × 2 メンバーで 16 件の適合エラーを確認）
 
+### 0-8 — trait 適合検査 【✅ 完了 2026-09-10】
+
+**protocol との役割分担**: protocol は構造的適合なので「その型が要求を満たすか」を
+**使用箇所**で見る（0-7）。trait は基底に書く名目的な継承なので、見るべきは
+**クラス宣言そのもの**。
+
+「実装し忘れ」は以前からパーサが検出していた
+（[parser/classes.rs](../src/parser/classes.rs) の `collect_trait_fields_and_check_virtuals`
+→ `class C must override virtual method m from trait T`）。ただしあれは**名前の有無しか見ない**。
+
+**⚠⚠ 素通りしていた形（実測）**
+
+| | 修正前 |
+|---|---|
+| trait フィールドを**別の型で再宣言**（`mut hp: int` → `mut hp: str`） | 静的 ❌ / 実行時 ❌ |
+| メソッドの**戻り値型**が違う（`-> str` → `-> int`） | 静的 ❌ / 実行時 ❌ |
+| メソッドの**引数型**が違う | 静的 ❌ / 実行時 ❌ |
+| メソッドの**引数個数**が違う | 静的 ❌ / 実行時 ❌ |
+| メソッドの**引数名**が違う | 静的 ❌ / 実行時 ❌ |
+
+**実装したもの**
+
+| 対象 | 内容 |
+|---|---|
+| `TypeErrorKind::TraitConformanceFailed` | 新設。`class 'W' does not satisfy trait 'Creature': …` |
+| `check_trait_conformance` | `Stmt::ClassDef` の本体検査後に基底 trait ごとに照合 |
+| `trait_sig_matches` | `FnSig` 同士の比較（`self` は除外） |
+| `template_params` に `TraitDef` を追加 | trait 自身の型変数を登録 |
+
+⚠ **クラスが再宣言していないフィールド・実装していないデフォルトメソッドは対象外**
+（trait のものを継承するだけなので照合する相手が無い）。
+
+⚠ **引数名も一致させる。** Arrow はキーワード引数を持つので、名前が変わると
+trait 越しの呼び出し（`obj.speak(volume = 1)`）が壊れる。
+
+⚠⚠ **テンプレート trait で偽陽性を踏んだ。** `trait Holder[T]: fn get(self) -> T` に対し
+`class IntBox(Holder[int])` が `-> int` で実装するのは正しいが、trait 自身の型変数を
+スコープへ積まずに照合すると `int != NamedInstance("T")` で弾いてしまう。
+⇒ `check_one_trait` の入口で trait の型変数を積む。
+⚠ 具体型引数（`Holder[int]` の `int`）は `class_bases` が**名前しか持たない**ため置換できない。
+型変数を含む要求は**照合を見送る**（判らないものを通す）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` のみ |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 71/71 identical |
+| `compare_outputs.ps1` | 差分は新規例題のみ（`trait_conformance.ar` は基準と一致） |
+| `compare_import_paths.ps1` | 13/13 identical |
+| `compare_wasm_frontend.ps1` | 243/243 agreed・INVENTED 0 |
+
+**追加した例題**: `examples/classes/trait_conformance.ar` ／ `trait_conformance_error.ar`
+
+#### ⚠⚠ 作業中に見つけた trait の**既存バグ 2 件**（本変更とは無関係・基準でも再現）
+
+| # | 内容 |
+|---|---|
+| A | **trait フィールドを同じ型で再宣言すると自動 `__init__` の引数が重複する。** `trait Creature: mut hp: int; mut name: str` を `class Bear(Creature): mut hp: int; mut name: str` が再宣言すると `Bear(50, "Bruno")` が `'Bear.__init__' takes 4 argument(s) but 2 were given` になる。`build_field_index` は同名を**同一スロットへ畳んでいる**ので、コンストラクタの引数列とフィールドのレイアウトが食い違っている |
+| B | **trait のデフォルト実装がクラスへ継承されない。** `trait Greeter: fn greet(self) -> str: return "hello"` を実装せずに `class Plain(Greeter)` とすると実行時 `AttributeError: 'Plain' has no method 'greet'`。⇒ 現状の trait は実質**抽象メソッド（`...`）だけ**が機能する |
+
+どちらも正常系の例題に置けないので、`trait_conformance.ar` にコメントで記録した。
+
 ### R3 — フィールドのオフセット化 【✅ 完了として閉じた 2026-09-08】
 
 **⚠ 着手時の前提が誤っていた。** 「計画は多相 IC・実装は単相 IC ＝ 差分が未実装」と報告したが、
@@ -734,6 +800,7 @@ probes       : 77,400,461
 | 7 | **型変数を具象型と取り違えていた** — `from_ann` が大文字始まりの未知の識別子をクラス名にするため。`mentions_type_param` で除外（Phase T で発見） |
 | 8 | **テンプレートクラスにキャッシュが無かった** — 実体化ごとに新 `class_id` を発行しており、同じ `Box[int]` が別の型になっていた |
 | 9 | **R3 の「多相 IC」の読み違え** — 原計画と実装は同じ機構。呼び名が 2 つあった |
+| 12 | **trait の同名・中身違いが素通りしていた** — パーサの検査は名前の有無しか見ていなかった（0-8）。作業中に trait の既存バグ 2 件（自動 `__init__` の引数重複・デフォルト実装が継承されない）も発見 |
 | 11 | **protocol 適合が束縛点ごとに逆方向へ壊れていた** — 適合するクラスを弾く偽陽性と、不適合が素通りする偽陰性が同居していた（0-7） |
 | 10 | **テンプレート実体化の呼び出し点が丸ごと未検査だった** — 当初の調査で見つけていたのに計画表から落としており、Phase 0 完了報告後にユーザ報告で発覚（0-6） |
 
@@ -767,7 +834,8 @@ probes       : 77,400,461
 | # | 内容 |
 |---|---|
 | 2 | **複合代入 `o.f += v` の型検査** — 格納されるのは `f <op> v` の結果なので、二項演算の結果型を求める必要がある |
-| 3 | **trait のフィールド型・メソッドシグネチャ適合** — protocol と違い trait 版の適合検査が無い。⚠ 0-7 で protocol 側は全束縛点を塞いだので、次はここ |
+| 3 | **trait フィールドの再宣言で自動 `__init__` の引数が重複する**（0-8 の §A）。`build_field_index` は畳むのに `generate_auto_init_if_needed` は畳まない |
+| 8 | **trait のデフォルト実装がクラスへ継承されない**（0-8 の §B）。現状 trait は抽象メソッドだけが機能する |
 | 4 | **添字代入 `a[i] = v`** — 要素型と値の照合をしていない |
 | 6 | **テンプレート実体化の戻り値型** — 呼び出し点では `Unresolved` のまま。`NamedInstance(base)` に変えるにはフィールド型の型変数も置換する必要がある（型検査側での実体化）|
 | 7 | **型引数・実引数の個数検査** — 実行時の `TemplateError` / `TypeError` のみ。静的化は可能だが例題の期待が変わる |

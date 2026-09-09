@@ -1,0 +1,98 @@
+# trait_conformance.ar — 基底 trait の要求をクラスが満たすこと（0-8）
+#
+# ## protocol との役割分担
+#
+# protocol は**構造的適合**（基底に書かない）ので「その型が要求を満たすか」を
+# **使用箇所**で見る（protocol_sites.ar）。trait は基底に書く名目的な継承なので、
+# 見るべきは**クラス宣言そのもの**。
+#
+# 「実装し忘れ」は以前からパーサが検出していた
+# （`class C must override virtual method m from trait T`）。
+# ⚠⚠ 一方で **同名で宣言はあるが中身が食い違う**場合は静的にも実行時にも素通りしていた。
+#   `mut hp: int` の trait に対しクラスが `mut hp: str` と書けたし、
+#   `fn speak(self, n: int) -> str` を `-> int` で実装できた。
+#
+# 誤った実装は trait_conformance_error.ar
+
+print("=== 素直な適合 ===")
+
+trait Creature:
+    mut hp: int
+    mut name: str
+
+    fn speak(self, let volume: int) -> str:
+        ...
+
+class Wolf(Creature):
+    mut pack: int
+
+    fn speak(self, let volume: int) -> str:
+        return "howl"
+
+mut w = Wolf(40, "Grey", 5)
+print(w.hp, w.name, w.pack)     # 40 Grey 5
+print(w.speak(3))               # howl
+
+print("=== 再宣言しないフィールドは継承する（検査対象外） ===")
+
+# Wolf は hp / name を再宣言していない。trait のものをそのまま使う。
+w.hp = 30
+print(w.hp)                     # 30
+
+# ⚠⚠ **既存の別バグ**（本変更とは無関係・基準バイナリでも再現）:
+#   trait のフィールドをクラスが**同じ型で再宣言**すると、自動生成される `__init__` が
+#   trait 側と own 側を**重複して数える**（`Bear(50, "Bruno")` が
+#   `'Bear.__init__' takes 4 argument(s) but 2 were given` になる）。
+#   `build_field_index` 側は同名フィールドを同一スロットへ畳んでいるので、
+#   コンストラクタの引数列とフィールドのレイアウトが食い違っている。
+#   ⇒ 再宣言の正常系はここに置けないので、型違いの検出だけを
+#     trait_conformance_error.ar で確認する。
+
+print("=== 複数 trait ===")
+
+trait Describable:
+    fn describe(self) -> str:
+        ...
+
+trait Measurable:
+    fn measure(self) -> int:
+        ...
+
+class Box(Describable, Measurable):
+    let width: int
+    let height: int
+
+    fn describe(self) -> str:
+        return "Box"
+
+    fn measure(self) -> int:
+        return self.width * self.height
+
+let b = Box(4, 6)
+print(b.describe(), b.measure())    # Box 24
+
+print("=== テンプレート trait ===")
+
+# ⚠ `trait Holder[T]` の `-> T` を `class IntBox(Holder[int])` が `-> int` で実装するのは
+#   正しい。⚠ 具体型引数（`Holder[int]` の `int`）は基底名だけでは判らないので、
+#   型変数を含む要求は**照合を見送る**（判らないものを通す）。
+trait Holder[T]:
+    mut item: T
+
+    fn get(self) -> T:
+        ...
+
+class IntBox(Holder[int]):
+    fn get(self) -> int:
+        return self.item
+
+print(IntBox(5).get())          # 5
+
+# ⚠⚠ **既存の別バグ**（本変更とは無関係・基準バイナリでも再現）:
+#   trait の**デフォルト実装**（`...` ではなく本体を書いたメソッド）は
+#   クラスへ継承されない。`trait Greeter: fn greet(self) -> str: return "hello"` を
+#   実装せずに `class Plain(Greeter)` とすると、実行時に
+#   `AttributeError: 'Plain' has no method 'greet'` になる。
+#   ⇒ 現状の trait は実質**抽象メソッド（`...`）だけ**が機能する。
+
+print("done")

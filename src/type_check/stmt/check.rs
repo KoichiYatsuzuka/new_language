@@ -244,6 +244,10 @@ impl TypeChecker {
                 self.push_scope();
                 let prev_class = self.state.enter_class(name.clone());
                 self.check_stmts(body);
+                // 基底 trait の要求（フィールド型・メソッドシグネチャ）を満たすか（0-8）。
+                // ⚠ 本体を検査した後に呼ぶ。クラスの型変数がまだ積まれている状態で
+                //    見たいので `pop_type_params` より前に置く。
+                self.check_trait_conformance(name);
                 self.state.pop_type_params(saved_tp);
                 self.state.exit_class(prev_class);
                 self.pop_scope();

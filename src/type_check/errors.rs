@@ -179,6 +179,16 @@ pub enum TypeErrorKind {
         protocol_name: String,
         reason: String,
     },
+    /// 基底 trait の要求（フィールド型・メソッドシグネチャ）をクラスが満たさない。
+    ///
+    /// ⚠ protocol（構造的適合）と違い trait は**基底に書く**ので「実装し忘れ」は
+    /// パーサが検出する（`must override virtual method`）。ここが見るのは
+    /// **同名で宣言はあるが中身が食い違う**場合。
+    TraitConformanceFailed {
+        class_name: String,
+        trait_name: String,
+        reason: String,
+    },
     /// プロトコルを継承しようとした（`class Foo(MyProtocol):` はエラー）。
     // TODO(reserved): 未発火の診断（Protocol 継承チェック未配線）。実装時に allow を外す。
     #[allow(dead_code)]
@@ -493,6 +503,10 @@ impl StaticTypeError {
             TypeErrorKind::ProtocolConformanceFailed { type_name, protocol_name, reason } => format!(
                 "type {} does not satisfy protocol {}: {}",
                 hl_q(type_name), hl_q(protocol_name), reason
+            ),
+            TypeErrorKind::TraitConformanceFailed { class_name, trait_name, reason } => format!(
+                "class {} does not satisfy trait {}: {}",
+                hl_q(class_name), hl_q(trait_name), reason
             ),
             TypeErrorKind::ProtocolInheritance { class_name, protocol_name } => format!(
                 "class {} cannot inherit from protocol {}; use protocol type annotations instead",
