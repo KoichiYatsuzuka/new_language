@@ -501,6 +501,11 @@ AST を破壊的に書き換えず、**ノードに解決結果を持たせる**
 
 - **protocol 引数・template**: 原型 AST は `templates.rs` が保持（§2.2）。解決可能な呼び出し点は固定オフセットに焼き（monomorphize 相当）、
   真に多相な protocol 引数は R3 の多相 IC に倒す（＝「できねば辞書アクセス」の実体）。
+  ⚠ ここでいう**「多相 IC」は「多相な呼び出し点でも引き直して動く IC」の意で、複数エントリ（N-way）ではない**。
+  `AttrCache` が inline cache の標準用語で「単相 IC」と呼ばれているのと**同じ機構**（呼び名が 2 つある）。
+  2026-09-08 に再測して完了を確認（hit 99.9995% / poly miss 9 件・7,740 万 probe 中）。
+  計測手順は [scripts/prof_attr_ic.ps1](../scripts/prof_attr_ic.ps1)、詳細は
+  [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md)「R3 属性 IC の再測」。
 
 ### 4.4 ネイティブ codegen 側の消費 【✅ 完了（#16 段階 c-3）】
 `llvm_codegen` の自前再導出（`locals`/`param_classes`/`field_ty`）を Phase R の解決結果に置換し、**codegen を簡素化 + 適用範囲拡大**
