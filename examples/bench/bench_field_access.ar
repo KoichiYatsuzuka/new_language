@@ -52,9 +52,8 @@ trait HasEnergy:
     mut mass: float
     mut speed: float
 
+# ⚠ `mass` / `speed` は trait `HasEnergy` が宣言しているので**再宣言しない**（再宣言は禁止）。
 class Ball(HasEnergy):
-    mut mass: float
-    mut speed: float
     fn __init__(mut self, let mass: float, let speed: float) -> None:
         self.mass = mass
         self.speed = speed

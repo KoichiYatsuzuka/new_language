@@ -1,0 +1,35 @@
+# trait_field_redeclare_error.ar — trait フィールドの再宣言は禁止（0-9）
+#
+# 対になる正常系: trait_conformance.ar
+#
+# ## なぜ禁止するか
+#
+# trait のメンバーは `obj::Trait.field` で**修飾アクセス**できるので、同名をクラス側に
+# 置く必要がない。**オーバーライドはメソッド専用の機能**であり、フィールドに同名を許すと
+# 「どちらの宣言が効くのか」が二重になる。⇒ 変数の重複は**再宣言**として扱う。
+#
+# ⚠ 弾かないと自動生成 `__init__` の引数が重複していた。`build_field_index` は同名フィールドを
+#   同一スロットへ畳むのに `generate_auto_init_if_needed` は trait 側と own 側を別々に数えるため、
+#   `Bear(50, "Bruno")` が `'Bear.__init__' takes 4 argument(s) but 2 were given` になっていた。
+#   宣言そのものを禁止すれば、畳み方の不一致に到達しない。
+#
+#   Expected error (ParseError):
+#     class `Bear` redeclares field `hp` which is already declared in trait `Creature`;
+#     field redeclaration is not allowed — access the trait's field as `self::Creature.hp`
+#     (overriding applies to methods, not fields)
+
+trait Creature:
+    mut hp: int
+    mut name: str
+
+    fn speak(self) -> str:
+        ...
+
+class Bear(Creature):
+    mut hp: int             # ParseError: trait が既に宣言している
+    mut name: str
+
+    fn speak(self) -> str:
+        return "growl"
+
+print(Bear(50, "Bruno").speak())

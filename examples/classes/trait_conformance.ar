@@ -39,14 +39,10 @@ print("=== 再宣言しないフィールドは継承する（検査対象外）
 w.hp = 30
 print(w.hp)                     # 30
 
-# ⚠⚠ **既存の別バグ**（本変更とは無関係・基準バイナリでも再現）:
-#   trait のフィールドをクラスが**同じ型で再宣言**すると、自動生成される `__init__` が
-#   trait 側と own 側を**重複して数える**（`Bear(50, "Bruno")` が
-#   `'Bear.__init__' takes 4 argument(s) but 2 were given` になる）。
-#   `build_field_index` 側は同名フィールドを同一スロットへ畳んでいるので、
-#   コンストラクタの引数列とフィールドのレイアウトが食い違っている。
-#   ⇒ 再宣言の正常系はここに置けないので、型違いの検出だけを
-#     trait_conformance_error.ar で確認する。
+# ⚠⚠ **trait フィールドの再宣言は禁止**（0-9）。trait のメンバーは `obj::Trait.field` で
+#   修飾アクセスできるので同名をクラス側に置く必要がなく、**オーバーライドはメソッド専用**。
+#   ⇒ `class Bear(Creature): mut hp: int` のような再宣言は ParseError。
+#     → trait_field_redeclare_error.ar
 
 print("=== 複数 trait ===")
 

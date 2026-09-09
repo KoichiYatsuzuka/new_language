@@ -284,6 +284,14 @@ impl Parser {
         let mut trait_required = Vec::new();
         // フィールド名 → 最初に宣言したトレイト名（複数トレイト間の名前衝突を検出するため）
         let mut seen_field_origins: HashMap<String, String> = HashMap::new();
+        // クラス本体が自分で宣言したフィールド名（trait フィールドとの衝突検出に使う）。
+        let own_field_names: Vec<&str> = body
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Field { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
         for (base, concrete_args) in bases_with_args {
             if let Some((trait_tparams, trait_fields, virtual_methods)) =
                 self.known_traits.get(base).cloned()
@@ -309,13 +317,35 @@ impl Parser {
                 // デフォルト値なしのフィールドを必須フィールドとして収集
                 // 型変数が含まれる場合は具体型に解決する
                 for (fname, _kind, ftype, has_default) in &trait_fields {
+                    // ⚠⚠ **クラスが trait のフィールドを再宣言するのは禁止**（再宣言扱い）。
+                    //
+                    // trait のメンバーは `obj::Trait.field` で修飾アクセスできるので、同名を
+                    // クラス側に置く必要がない。**オーバーライドはメソッド専用の機能**であり、
+                    // フィールドに同名を許すと「どちらの宣言が効くのか」が二重になる。
+                    //
+                    // ⚠ 弾かないと**自動生成 `__init__` の引数が重複する**。
+                    //   `build_field_index` は同名フィールドを**同一スロットへ畳む**のに
+                    //   `generate_auto_init_if_needed` は trait 側と own 側を別々に数えるため、
+                    //   `trait Creature: mut hp: int` を `class Bear(Creature): mut hp: int` が
+                    //   再宣言すると `Bear(50, "Bruno")` が
+                    //   `'Bear.__init__' takes 4 argument(s) but 2 were given` になっていた（実測）。
+                    //   ⇒ 宣言そのものを禁止すれば、畳み方の不一致に**到達しない**。
+                    if own_field_names.contains(&fname.as_str()) {
+                        return Err(format!(
+                            "StaticTypeError: class `{class_name}` redeclares field `{fname}` \
+                             which is already declared in trait `{base}`; \
+                             field redeclaration is not allowed — \
+                             access the trait's field as `self::{base}.{fname}` \
+                             (overriding applies to methods, not fields)"
+                        ));
+                    }
                     // 複数のトレイトが同名フィールドを持つ場合、無修飾アクセスが曖昧になるため静的エラー
                     if let Some(prev_trait) = seen_field_origins.get(fname) {
                         return Err(format!(
                             "StaticTypeError: class `{class_name}` inherits field `{fname}` \
                              from both `{prev_trait}` and `{base}`; \
                              unqualified access `obj.{fname}` would be ambiguous — \
-                             use explicit trait access `obj:{prev_trait}::{fname}` or `obj:{base}::{fname}`"
+                             use explicit trait access `obj::{prev_trait}.{fname}` or `obj::{base}.{fname}`"
                         ));
                     }
                     seen_field_origins.insert(fname.clone(), base.clone());

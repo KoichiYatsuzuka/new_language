@@ -27,9 +27,9 @@ class Outer:
         self.inner = inner
         self.tag = tag
 
+# ⚠ `pub_f` は trait `HasPub` が宣言しているので**クラス側で再宣言しない**（再宣言は禁止）。
+#   無修飾 `self.pub_f` / `b.pub_f` でそのまま読み書きできる。
 class Base(HasPub):
-    public:
-    mut pub_f: int
     private:
     mut priv_f: int
 
@@ -41,7 +41,6 @@ class Base(HasPub):
         return self.priv_f
 
 class Other(HasPub):
-    mut pub_f: int
     fn __init__(mut self) -> None:
         self.pub_f = 30
 
