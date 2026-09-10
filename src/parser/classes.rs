@@ -131,10 +131,24 @@ impl Parser {
                 }
             })
             .collect();
+        // **本体を持つメソッド（デフォルト実装）**を集める。クラスが同名を定義していなければ
+        // クラス本体へ注入する（`inject_trait_default_methods`）。
+        // ⚠ `exec_trait_def` は trait のメソッド本体を保持しないので、実行時に引き継ぐ先が無い。
+        //   これが無いと「trait にデフォルト実装を書けるが呼べない」状態になる（実バグ）。
+        let default_methods: Vec<Stmt> = body
+            .iter()
+            .filter(|s| matches!(s, Stmt::FnDef { is_abstract: false, .. }))
+            .cloned()
+            .collect();
         // 後続のクラス定義が参照できるよう known_traits に登録
         self.known_traits.insert(
             name.clone(),
-            (template_params.clone(), fields, virtual_methods),
+            crate::parser::TraitInfo {
+                template_params: template_params.clone(),
+                fields,
+                virtual_methods,
+                default_methods,
+            },
         );
 
         Ok(Stmt::TraitDef {
@@ -226,6 +240,11 @@ impl Parser {
         let trait_required =
             self.collect_trait_fields_and_check_virtuals(&name, &bases_with_args, &body)?;
 
+        // 基底 trait のデフォルト実装を、クラスが定義していないものだけ注入する。
+        // ⚠ `generate_auto_init_if_needed` より**前**に行う。trait が `__init__` の
+        //    デフォルト実装を持つ場合、注入後の body を見て自動生成を抑止させたい。
+        self.inject_trait_default_methods(&name, &bases_with_args, &mut body)?;
+
         // クラス自身のデフォルトなし mut/let フィールドを収集
         let class_required: Vec<(String, String)> = body
             .iter()
@@ -293,9 +312,9 @@ impl Parser {
             })
             .collect();
         for (base, concrete_args) in bases_with_args {
-            if let Some((trait_tparams, trait_fields, virtual_methods)) =
-                self.known_traits.get(base).cloned()
-            {
+            if let Some(info) = self.known_traits.get(base).cloned() {
+                let (trait_tparams, trait_fields, virtual_methods) =
+                    (info.template_params, info.fields, info.virtual_methods);
                 // テンプレートパラメータ → 具体型 の変換マップを構築
                 let type_map: HashMap<String, String> = trait_tparams
                     .iter()
@@ -360,6 +379,69 @@ impl Parser {
             }
         }
         Ok(trait_required)
+    }
+
+    /// 基底 trait の**デフォルト実装**（本体を持つメソッド）を、クラスが同名を定義して
+    /// いないものだけクラス本体へ注入する。
+    ///
+    /// # なぜパース時に注入するのか
+    ///
+    /// `exec_trait_def`（[interpreter/exec/definitions.rs]）は trait の**フィールド順と
+    /// アクセス修飾子しか保持せず、メソッド本体を捨てている**。`lookup_method_in_class` も
+    /// `class.methods` を 1 段引くだけで基底を辿らない。
+    /// ⇒ 実行時に引き継ぐ先が存在しないので、これが無いと
+    /// 「trait にデフォルト実装を書けるが呼べない」（実行時 `AttributeError`）になる。
+    ///
+    /// 注入してしまえばクラスは**全メソッドを持つ普通のクラス**になるので、メソッド解決・
+    /// VM コンパイル・属性 IC が既存のまま動く。自動 `__init__` 生成
+    /// （`generate_auto_init_if_needed`）と同じ「パース時にクラス本体へ足す」方式。
+    ///
+    /// ⚠ クラスが同名メソッドを定義していれば**そちらが勝つ**（override）。
+    /// ⚠ 複数の trait が同名のデフォルト実装を持つ場合は、どちらが効くか決められないので
+    ///   静的エラーにする（フィールドの名前衝突と同じ方針）。
+    /// ⚠ 注入するのは AST の複製なので `node_id` が trait と各実装クラスで共有される。
+    ///   注釈は最適化ヒントであって意味論の根拠ではないので正しさには影響しない
+    ///   （テンプレート実体化と同じ状況）。`SlotCache`/`AttrCache` は `Clone` が空を返すため
+    ///   クラスごとに再解決される。
+    fn inject_trait_default_methods(
+        &mut self,
+        class_name: &str,
+        bases_with_args: &[(String, Vec<String>)],
+        body: &mut Vec<Stmt>,
+    ) -> Result<(), String> {
+        // クラス自身が定義しているメソッド名（これらは override なので注入しない）。
+        let own_methods: Vec<String> = body
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::FnDef { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        // メソッド名 → 供給元の trait 名（複数 trait からの衝突検出）。
+        let mut seen: HashMap<String, String> = HashMap::new();
+        let mut to_add: Vec<Stmt> = Vec::new();
+        for (base, _args) in bases_with_args {
+            let Some(info) = self.known_traits.get(base).cloned() else {
+                continue;
+            };
+            for m in &info.default_methods {
+                let Stmt::FnDef { name: mname, .. } = m else {
+                    continue;
+                };
+                if own_methods.contains(mname) {
+                    continue; // クラス側の定義が勝つ
+                }
+                if let Some(prev) = seen.get(mname) {
+                    return Err(format!(
+                        "StaticTypeError: class `{class_name}` inherits a default                          implementation of `{mname}` from both `{prev}` and `{base}`;                          override it in `{class_name}` to resolve the ambiguity"
+                    ));
+                }
+                seen.insert(mname.clone(), base.clone());
+                to_add.push(m.clone());
+            }
+        }
+        body.extend(to_add);
+        Ok(())
     }
 
     /// 必須フィールドが存在し、かつ完全一致する `__init__` が未定義の場合に

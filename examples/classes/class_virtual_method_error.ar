@@ -1,0 +1,28 @@
+# class_virtual_method_error.ar — クラスに仮想メソッドは置けない（0-10）
+#
+# 対になる正常系: trait_conformance.ar
+#
+# ## なぜエラーにするか
+#
+# 仮想メソッド（本体が `...`）は **trait 専用の機能**で、「実装を強制する相手」が居て
+# 初めて意味を持つ。クラスに置くと強制する相手が居ないので、以前は**黙って `None` を
+# 返す no-op** になっていた — `-> int` と宣言しているのに `None` が返り、
+# 戻り値の型検査も `return` 文が無いため素通りしていた。
+#
+# ⚠ 外部言語のスタブクラス（`import[cs-dll]` 等）は `...` 本体のメソッドを持つが、
+#   あれは「本体が向こう側にある」宣言であって仮想メソッドではない。
+#   ⇒ 検査対象は **Arrow ソースで宣言されたクラス**だけ。
+#
+#   Expected error (StaticTypeError):
+#     class 'C' cannot declare virtual method 'f' (a `...` body); virtual methods
+#     belong to traits — give it a real body, or move the declaration into a trait
+#     that 'C' implements
+
+class C:
+    mut n: int
+
+    fn f(self) -> int:
+        ...
+
+let c = C(1)
+print(c.f())

@@ -84,11 +84,40 @@ class IntBox(Holder[int]):
 
 print(IntBox(5).get())          # 5
 
-# ⚠⚠ **既存の別バグ**（本変更とは無関係・基準バイナリでも再現）:
-#   trait の**デフォルト実装**（`...` ではなく本体を書いたメソッド）は
-#   クラスへ継承されない。`trait Greeter: fn greet(self) -> str: return "hello"` を
-#   実装せずに `class Plain(Greeter)` とすると、実行時に
-#   `AttributeError: 'Plain' has no method 'greet'` になる。
-#   ⇒ 現状の trait は実質**抽象メソッド（`...`）だけ**が機能する。
+print("=== 仮想メソッドとデフォルト実装 ===")
+
+# trait のメソッドは 2 種類:
+#   本体が `...`   → **仮想メソッド**。クラスは必ず override しなければならない
+#                     （しないと ParseError: must override virtual method）
+#   本体を書いたもの → **デフォルト実装**。override しなければそのまま継承される
+# ⚠ どちらも引数・戻り値の型注釈は必須（仮想でもシグネチャは確定していなければならない）。
+
+trait Greeter:
+    fn name(self) -> str:
+        ...                         # 仮想メソッド: 実装を強制する
+
+    fn greet(self) -> str:
+        return "hello"              # デフォルト実装: 継承される
+
+class Quiet(Greeter):
+    mut n: int
+
+    fn name(self) -> str:
+        return "quiet"
+
+class Loud(Greeter):
+    mut n: int
+
+    fn name(self) -> str:
+        return "loud"
+
+    fn greet(self) -> str:
+        return "HELLO"             # デフォルト実装を上書き
+
+print(Quiet(1).name(), Quiet(1).greet())   # quiet hello
+print(Loud(2).name(), Loud(2).greet())     # loud HELLO
+
+# ⚠ 仮想メソッドは **trait 専用**。クラス本体に `...` を書くとエラー
+#   → class_virtual_method_error.ar
 
 print("done")

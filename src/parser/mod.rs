@@ -57,18 +57,31 @@ pub(crate) mod cs_assembly;
 ///
 /// トークン列（`Vec<Spanned>`）を受け取り、プログラム全体の AST（`Vec<Stmt>`）を生成する。
 /// import 文の解決・モジュールキャッシュ・循環 import 検出なども担当する。
+/// `trait` 宣言のうち、**後続のクラス定義が必要とする情報**だけを抜き出したもの。
+///
+/// ⚠ 元は 3 要素タプルだったが、デフォルト実装（`default_methods`）を運ぶ必要が出たので
+/// 名前付きにした。要素が増えたときタプルの位置で覚える必要がなくなる。
+#[derive(Clone)]
+pub(crate) struct TraitInfo {
+    pub(crate) template_params: Vec<TemplateParam>,
+    /// `(name, kind, type_ann, has_default)`
+    pub(crate) fields: Vec<(String, FieldKind, String, bool)>,
+    /// **本体が `...` の仮想メソッド**名。クラスは必ず override しなければならない
+    /// （`collect_trait_fields_and_check_virtuals` が検査する）。
+    pub(crate) virtual_methods: Vec<String>,
+    /// **本体を持つメソッド（デフォルト実装）。** クラスが同名を定義していなければ
+    /// クラス本体へ注入する（`inject_trait_default_methods`）。
+    ///
+    /// ⚠ 注入は**パース時**に行う。`exec_trait_def` は trait のメソッド本体を保持しないので
+    /// 実行時に引き継ぐ先が無く、これが無いと「宣言はできるが呼べない」状態になっていた。
+    pub(crate) default_methods: Vec<Stmt>,
+}
+
 pub struct Parser {
     tokens: Vec<Spanned>,
     pos: usize,
-    /// trait name → (template_params, fields: [(name, kind, type_ann, has_default)], virtual_methods: [name])
-    known_traits: HashMap<
-        String,
-        (
-            Vec<TemplateParam>,
-            Vec<(String, FieldKind, String, bool)>,
-            Vec<String>,
-        ),
-    >,
+    /// trait 名 → その trait の宣言情報（[`TraitInfo`]）。
+    known_traits: HashMap<String, TraitInfo>,
     /// Incremented when entering a class/trait body; `Self` is only valid when this is > 0.
     class_or_trait_depth: usize,
     /// Names declared with `new_type` — any reassignment to these is a parse error.
@@ -129,19 +142,14 @@ impl Parser {
     pub fn new(tokens: Vec<Spanned>, source_dir: Option<PathBuf>) -> Self {
         // 組み込み `Error` トレイトを事前登録する。
         // フィールド: message（let・必須）、code_context/file（mut・デフォルトあり）、line/col（mut・デフォルトあり）
-        let mut known_traits: HashMap<
-            String,
-            (
-                Vec<TemplateParam>,
-                Vec<(String, FieldKind, String, bool)>,
-                Vec<String>,
-            ),
-        > = HashMap::new();
+        let mut known_traits: HashMap<String, TraitInfo> = HashMap::new();
         known_traits.insert(
             "Error".to_string(),
-            (
-                vec![],
-                vec![
+            TraitInfo {
+                template_params: vec![],
+                virtual_methods: vec![],
+                default_methods: vec![],
+                fields: vec![
                     (
                         "message".to_string(),
                         FieldKind::Let,
@@ -158,8 +166,7 @@ impl Parser {
                     ("line".to_string(), FieldKind::Mut, "int".to_string(), true),
                     ("col".to_string(), FieldKind::Mut, "int".to_string(), true),
                 ],
-                vec![],
-            ),
+            },
         );
         let resolved = source_dir.unwrap_or_else(|| PathBuf::from("."));
         Self {

@@ -243,6 +243,23 @@ impl TypeChecker {
                 );
                 self.push_scope();
                 let prev_class = self.state.enter_class(name.clone());
+                // ⚠ 仮想メソッド（`...` 本体）は **trait 専用**。クラスに置くと実装を強制する
+                //    相手が居ないので、以前は黙って `None` を返す no-op になっていた（0-10）。
+                // ⚠⚠ 外部言語のスタブクラスは `...` 本体を正当に使う（本体が向こう側にある）
+                //    ので、**Arrow ソースのクラスだけ**を対象にする（#27-a）。
+                if self.registry.arrow_class_names().contains(name) {
+                    for st in body {
+                        if let Stmt::FnDef { name: mname, is_abstract: true, .. } = st {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::VirtualMethodInClass {
+                                    class_name: name.clone(),
+                                    method_name: mname.clone(),
+                                },
+                                span: None,
+                            });
+                        }
+                    }
+                }
                 self.check_stmts(body);
                 // 基底 trait の要求（フィールド型・メソッドシグネチャ）を満たすか（0-8）。
                 // ⚠ 本体を検査した後に呼ぶ。クラスの型変数がまだ積まれている状態で

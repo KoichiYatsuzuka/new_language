@@ -179,6 +179,19 @@ pub enum TypeErrorKind {
         protocol_name: String,
         reason: String,
     },
+    /// クラス本体に**仮想メソッド**（本体が `...`）を書いた。
+    ///
+    /// ⚠ 仮想メソッドは **trait 専用の機能**。クラスに置くと「実装を強制する相手」が
+    /// 居ないので、以前は**黙って `None` を返す no-op** になっていた（`-> int` と
+    /// 宣言しているのに `None` が返る）。
+    ///
+    /// ⚠⚠ 外部言語のスタブクラス（`import[cs-dll]` 等）は `...` 本体のメソッドを持つが、
+    /// あれは「本体が向こう側にある」宣言であって仮想メソッドではない。
+    /// ⇒ 検査対象は **Arrow ソースで宣言されたクラス**だけ（`arrow_class_names`・#27-a）。
+    VirtualMethodInClass {
+        class_name: String,
+        method_name: String,
+    },
     /// 基底 trait の要求（フィールド型・メソッドシグネチャ）をクラスが満たさない。
     ///
     /// ⚠ protocol（構造的適合）と違い trait は**基底に書く**ので「実装し忘れ」は
@@ -503,6 +516,10 @@ impl StaticTypeError {
             TypeErrorKind::ProtocolConformanceFailed { type_name, protocol_name, reason } => format!(
                 "type {} does not satisfy protocol {}: {}",
                 hl_q(type_name), hl_q(protocol_name), reason
+            ),
+            TypeErrorKind::VirtualMethodInClass { class_name, method_name } => format!(
+                "class {} cannot declare virtual method {} (a `...` body);                  virtual methods belong to traits — give it a real body,                  or move the declaration into a trait that {} implements",
+                hl_q(class_name), hl_q(method_name), hl_q(class_name)
             ),
             TypeErrorKind::TraitConformanceFailed { class_name, trait_name, reason } => format!(
                 "class {} does not satisfy trait {}: {}",
