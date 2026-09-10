@@ -179,6 +179,17 @@ pub enum TypeErrorKind {
         protocol_name: String,
         reason: String,
     },
+    /// テンプレート（クラス／関数）を**型引数なしで**呼んだ。
+    ///
+    /// ⚠ Arrow に暗黙実体化は無い（`add_all(3, 4)` は通らない）。実行時は
+    /// `TemplateError: template must be called with explicit type arguments` になるが、
+    /// 静的エラーが先に出るとそちらに到達しないので、**同じことを静的に言う**。
+    /// ⚠ これが無いと、シグネチャの型変数が具体型と突き合わされて
+    /// `argument 0 of 'Box.__init__' expects 'T' but got 'int'` という
+    /// **型変数を漏らした読めないメッセージ**になっていた（実測）。
+    TemplateMissingTypeArgs {
+        name: String,
+    },
     /// クラス本体に**仮想メソッド**（本体が `...`）を書いた。
     ///
     /// ⚠ 仮想メソッドは **trait 専用の機能**。クラスに置くと「実装を強制する相手」が
@@ -516,6 +527,11 @@ impl StaticTypeError {
             TypeErrorKind::ProtocolConformanceFailed { type_name, protocol_name, reason } => format!(
                 "type {} does not satisfy protocol {}: {}",
                 hl_q(type_name), hl_q(protocol_name), reason
+            ),
+            TypeErrorKind::TemplateMissingTypeArgs { name } => format!(
+                "template {} must be called with explicit type arguments (e.g. {})",
+                hl_q(name),
+                hl_q(&format!("{name}[T](...)"))
             ),
             TypeErrorKind::VirtualMethodInClass { class_name, method_name } => format!(
                 "class {} cannot declare virtual method {} (a `...` body);                  virtual methods belong to traits — give it a real body,                  or move the declaration into a trait that {} implements",

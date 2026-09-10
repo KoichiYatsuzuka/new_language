@@ -228,6 +228,23 @@ impl TypeChecker {
             let ret_ty = self.check_self_type_params(cls_name, method_name, &arg_data);
             return ret_ty.unwrap_or(InferredType::Unresolved);
         } else if let Some(ref fname) = func_name {
+            // ⚠⚠ **テンプレートを型引数なしで呼んだ場合はここで打ち切る。**
+            //    Arrow に暗黙実体化は無く、実行時も
+            //    `TemplateError: template must be called with explicit type arguments` になる。
+            //    打ち切らないとシグネチャの型変数（`T`）が具体型と突き合わされて
+            //    `argument 0 of 'Box.__init__' expects 'T' but got 'int'` という
+            //    **型変数を漏らした読めないメッセージ**になる（実測）。
+            if self
+                .registry
+                .template_params(fname)
+                .is_some_and(|p| !p.is_empty())
+            {
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::TemplateMissingTypeArgs { name: fname.clone() },
+                    span: None,
+                });
+                return InferredType::Unresolved;
+            }
             self.check_call_args(fname, &arg_data, args);
         }
 
@@ -658,30 +675,41 @@ impl TypeChecker {
                 _ => return,
             }
         }
-        // シグネチャを引く。クラスなら自動生成された `__init__`（`self` が先頭）。
-        let (sig, implicit) = if self.registry.is_known_class(base_name) {
-            match self
-                .registry
-                .class_methods(base_name)
-                .and_then(|m| m.get("__init__"))
-            {
-                Some(sigs) if sigs.len() == 1 => (sigs[0].clone(), 1usize),
-                _ => return, // `__init__` が無い / オーバーロード → 見送る
-            }
-        } else {
-            match self.registry.fn_sigs(base_name) {
-                Some(sigs) if sigs.len() == 1 => (sigs[0].clone(), 0usize),
-                _ => return,
-            }
-        };
         // ⚠ 実引数の個数が合わないときは対応付けが嘘になるので見送る（実行時に捕まる）。
         let normal: Vec<_> = arg_data
             .iter()
             .filter(|(k, _)| k.as_deref() != Some("..."))
             .collect();
-        if sig.variadic_type.is_some() || normal.len() + implicit != sig.params.len() {
+        // シグネチャを引く。クラスなら自動生成された `__init__`（`self` が先頭）。
+        let (candidates, implicit) = if self.registry.is_known_class(base_name) {
+            match self
+                .registry
+                .class_methods(base_name)
+                .and_then(|m| m.get("__init__"))
+            {
+                Some(sigs) => (sigs.clone(), 1usize),
+                None => return, // `__init__` が無い（`new_type` ラッパ等）
+            }
+        } else {
+            match self.registry.fn_sigs(base_name) {
+                Some(sigs) => (sigs.clone(), 0usize),
+                None => return,
+            }
+        };
+        // ⚠⚠ **オーバーロードは個数で絞る**（`check_self_type_params` と同じ規約）。
+        //    以前は `sigs.len() == 1` でしか検査せず、`__init__` が 2 つあるだけで
+        //    `Box[int]("wrong")` が素通りしていた（実測）。
+        //    絞って 1 本に決まらないときだけ見送る。
+        let matching: Vec<&FnSig> = candidates
+            .iter()
+            .filter(|s| {
+                s.variadic_type.is_none() && normal.len() + implicit == s.params.len()
+            })
+            .collect();
+        if matching.len() != 1 {
             return;
         }
+        let sig = matching[0].clone();
         let mut positional_idx = 0usize;
         for (key, arg_ty) in normal {
             let param_idx = match key {

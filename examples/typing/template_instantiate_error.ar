@@ -49,5 +49,33 @@ class Pair[K, V]:
 
 let p = Pair[int, str](1, 2)    # StaticTypeError: V = str なので 2 番目は str
 
+# Section 5 — StaticTypeError: `__init__` がオーバーロードされていても検査される
+#   Expected error (StaticTypeError):
+#     argument 0 of 'Over[int]' expects 'int' but got 'str'
+#
+#   ⚠ 以前は「シグネチャが 1 本のときだけ検査」していたので、`__init__` が 2 つあるだけで
+#     素通りしていた。⇒ **個数で絞って 1 本に決まれば検査する**（メソッド呼び出しと同じ規約）。
+
+class Over[T]:
+    mut v: T
+
+    fn __init__(mut self, let x: T) -> None:
+        self.v = x
+
+    fn __init__(mut self, let x: T, let y: T) -> None:
+        self.v = x
+
+let ov = Over[int]("wrong")     # StaticTypeError
+
+# Section 6 — StaticTypeError: 型引数を省略した呼び出し
+#   Expected error (StaticTypeError):
+#     template 'Box' must be called with explicit type arguments (e.g. 'Box[T](...)')
+#
+#   ⚠ Arrow に暗黙実体化は無い。実行時も TemplateError になるが、静的エラーが先に出ると
+#     そちらへ到達しないので同じことを静的に言う。⚠ 打ち切らないとシグネチャの型変数が
+#     具体型と突き合わされ `expects 'T' but got 'int'` という読めない形になる。
+
+let bare = Box(1)               # StaticTypeError
+
 # ⚠ 個数の不一致（型引数・実引数とも）は**実行時**の TemplateError / TypeError のままで、
 #   ここでは報告しない。個数が合っていないと置換表が作れず対応付け自体が嘘になるため。
