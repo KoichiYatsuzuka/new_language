@@ -179,6 +179,17 @@ pub enum TypeErrorKind {
         protocol_name: String,
         reason: String,
     },
+    /// 仮引数の**既定値**の型が、その仮引数の宣言型と食い違う（0-12）。
+    ///
+    /// ⚠⚠ 既定値の式は**推論すらされていなかった**。`check_fn_def` は
+    /// 注釈の有無しか見ず `param.default` に触れず、`declare_param` も無視していたため、
+    /// `fn f(let n: int = "wrong")` が静的にも実行時にも通っていた（実測）。
+    ParamDefaultTypeMismatch {
+        func_name: String,
+        param_name: String,
+        expected: InferredType,
+        got: InferredType,
+    },
     /// テンプレート（クラス／関数）を**型引数なしで**呼んだ。
     ///
     /// ⚠ Arrow に暗黙実体化は無い（`add_all(3, 4)` は通らない）。実行時は
@@ -527,6 +538,13 @@ impl StaticTypeError {
             TypeErrorKind::ProtocolConformanceFailed { type_name, protocol_name, reason } => format!(
                 "type {} does not satisfy protocol {}: {}",
                 hl_q(type_name), hl_q(protocol_name), reason
+            ),
+            TypeErrorKind::ParamDefaultTypeMismatch { func_name, param_name, expected, got } => format!(
+                "default value of parameter {} of {} is declared {} but got {}",
+                hl_q(param_name),
+                hl_q(func_name),
+                hl_q(&expected.to_string()),
+                hl_q(&got.to_string())
             ),
             TypeErrorKind::TemplateMissingTypeArgs { name } => format!(
                 "template {} must be called with explicit type arguments (e.g. {})",

@@ -343,7 +343,30 @@ impl TypeChecker {
                             span: None,
                         });
                     }
-                    self.infer(expr);
+                    // ⚠ 以前は `infer` の結果を**捨てていた**ので `const K: int = "s"` が
+                    //    通っていた（0-2 のフィールド書き込みと同じ形の漏れ）。
+                    let got = self.infer(expr);
+                    let class_name = self
+                        .state
+                        .current_class()
+                        .unwrap_or("<class>")
+                        .to_string();
+                    if !matches!(ty, InferredType::Unresolved | InferredType::Any)
+                        && !self.mentions_type_param(&ty)
+                    {
+                        let ctx = format!("default value of field `{name}` of `{class_name}`");
+                        if !self.check_expected(&got, &ty, false, &ctx) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::FieldTypeMismatch {
+                                    field_name: name.clone(),
+                                    class_name,
+                                    expected: ty.clone(),
+                                    got,
+                                },
+                                span: None,
+                            });
+                        }
+                    }
                 }
                 let mutable = matches!(kind, FieldKind::Mut);
                 self.declare(name.clone(), ty, mutable);
@@ -720,6 +743,44 @@ impl TypeChecker {
         });
     }
 
+    /// 仮引数の**既定値**の型を、その仮引数の宣言型と突き合わせる（0-12）。
+    ///
+    /// ⚠⚠ 既定値の式は**推論すらされていなかった**。`check_fn_def` は注釈の有無しか見ず
+    /// `param.default` に触れず、`declare_param` も無視していたため
+    /// `fn f(let n: int = "wrong")` が静的にも実行時にも通っていた（実測）。
+    ///
+    /// ⚠ 可変長パラメータは既定値を持てない（パーサが弾く）ので対象外。
+    fn check_param_defaults(&mut self, func_name: &str, params: &[Param]) {
+        for p in params {
+            let Some(expr) = &p.default else { continue };
+            // ⚠ 推論は**必ず行う**（注釈が無くても）。注釈テーブルへ焼くため。
+            let got = self.infer(expr);
+            let Some(declared) = p.type_ann.as_deref().and_then(InferredType::from_ann) else {
+                continue; // 注釈なし／解釈できない綴り（欠落は別途 `MissingParamTypeAnn`）
+            };
+            if matches!(declared, InferredType::Unresolved | InferredType::Any)
+                || self.mentions_type_param(&declared)
+            {
+                continue;
+            }
+            let ctx = format!("default value of `{}` of `{func_name}`", p.name);
+            // ⚠ `mut` 引数でも既定値は**呼び元の記憶域ではない**ので拡大を許してよい
+            //    （write-back の相手が居ない）。
+            if self.check_expected(&got, &declared, false, &ctx) {
+                continue;
+            }
+            self.report_error(StaticTypeError {
+                kind: TypeErrorKind::ParamDefaultTypeMismatch {
+                    func_name: func_name.to_string(),
+                    param_name: p.name.clone(),
+                    expected: declared,
+                    got,
+                },
+                span: None,
+            });
+        }
+    }
+
     /// この型が**テンプレート型変数を含む**か（`T` / `list[T]` / `dict[str, T]` …）。
     ///
     /// ⚠⚠ 含むなら**検査しない**。`from_ann` は大文字始まりの未知の識別子を
@@ -936,6 +997,10 @@ impl TypeChecker {
         //    既に積んでいるので、ここでは追加するだけでよい。
         let saved_tp =
             self.state.push_type_params(template_params.iter().map(|p| p.name.clone()));
+        // ⚠ **既定値の検査は仮引数を宣言する前**に行う。既定値は他の仮引数を参照できない
+        //    （参照できてしまうと評価順に依存する）ので、まだ見えていない状態で推論する。
+        // ⚠ 型変数は既に積んであるので `mentions_type_param` が効く（`fn g[T](let n: T = …)`）。
+        self.check_param_defaults(name, params);
         for param in params {
             self.declare_param(param);
         }

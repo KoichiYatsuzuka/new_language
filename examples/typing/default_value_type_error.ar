@@ -1,0 +1,53 @@
+# default_value_type_error.ar — 既定値の型が宣言型に合わない（0-12）
+#
+# 対になる正常系: default_value_type.ar
+#
+# ⚠⚠ ここに並べた 6 形態は**どれも以前は素通りしていた**。仮引数の既定値は推論すらされず、
+#   `const` / `static mut` の既定値は `infer` の結果を捨てていた。
+#
+# Section 1 — StaticTypeError: 自由関数の仮引数の既定値
+#   Expected error (StaticTypeError):
+#     default value of parameter 'n' of 'f' is declared 'int' but got 'str'
+
+fn f(let n: int = "wrong") -> None:
+    print(n)
+
+# Section 2 — StaticTypeError: メソッドの仮引数の既定値
+#   Expected error (StaticTypeError):
+#     default value of parameter 'n' of 'm' is declared 'int' but got 'str'
+
+class C:
+    mut x: int
+
+    fn m(self, let n: int = "wrong") -> None:
+        print(n)
+
+# Section 3 — StaticTypeError: `__init__` の仮引数の既定値
+class D:
+    mut x: int
+
+    fn __init__(mut self, let n: int = "wrong") -> None:
+        self.x = 1
+
+# Section 4 — StaticTypeError: テンプレート関数の仮引数の既定値
+#   ⚠ 型変数そのものを宣言型に持つ既定値（`let a: T = …`）は照合しない
+#     （実体化前で具体型が決まらない）。ここで見るのは具体型の仮引数。
+
+fn tmpl[T](let a: T, let n: int = "wrong") -> None:
+    print(n)
+
+# Section 5 — StaticTypeError: `const` フィールドの既定値
+#   Expected error (StaticTypeError):
+#     field 'K' of class 'E' is declared 'int' but got 'str'
+
+class E:
+    mut x: int
+    const K: int = "wrong"
+
+# Section 6 — StaticTypeError: `static mut` フィールドの既定値
+class G:
+    static mut S: int = "wrong"
+
+# ⚠ 縮小方向（float → int）も当然エラー。拡大（int → float）だけが許される。
+fn narrow(let n: int = 1.5) -> None:
+    print(n)

@@ -29,6 +29,8 @@ Arrow の型注釈が**呼び出し引数以外のどこでも強制されてい
 | メソッド引数（インスタンス/クラス/static） | ❌ | ❌ | [call_check.rs:264](../src/type_check/call_check.rs#L264) |
 | `return` と宣言戻り値 | ❌ | ❌ | [check.rs:224](../src/type_check/stmt/check.rs#L224) |
 | **テンプレート実体化呼び出し** `Box[int]("s")` / `add[int]("x","y")` | ❌ | ❌ | `func_name` が `Expr::Ident`/`Expr::Attr` しか拾わず `_ => None` に落ちる |
+| **仮引数の既定値** `fn f(let n: int = "s")` | ❌ | ❌ | `check_fn_def` は `param.default` に触れず、推論すらしない |
+| **`const` / `static mut` の既定値** | ❌ | ❌ | `Stmt::Field` が `infer` の結果を捨てる |
 | trait のフィールド型・メソッドシグネチャ適合 | ❌ | ❌ | protocol と違い trait 版の適合検査が無い |
 
 ⚠⚠ **テンプレート実体化の行は当初の調査で見つけていたのに、この計画表から落としていた。**
@@ -97,6 +99,7 @@ p.x = "w"           p.x = "w"
 | **0-9** | **trait フィールドの再宣言を禁止**（既存バグ A の修正） | **✅ 完了**（2026-09-10） |
 | **0-10** | **trait のデフォルト実装**（既存バグ B の修正）＋ **クラスの仮想メソッド禁止** | **✅ 完了**（2026-09-10） |
 | **0-11** | **テンプレート実体化検査の穴 2 件**（`__init__` オーバーロード・型引数省略） | **✅ 完了**（2026-09-11） |
+| **0-12** | **既定値の型検査**（仮引数・`const`・`static mut`） | **✅ 完了**（2026-09-11） |
 | R3 | フィールドのオフセット化 | **✅ 完了として閉じた**（2026-09-08。原計画に未実行分は無かった） |
 
 ---
@@ -853,6 +856,53 @@ body の `is_abstract: true` を弾く。
 **例題**: `examples/typing/template_instantiate_error.ar` に Section 5（オーバーロード）と
 Section 6（型引数省略）を追記。
 
+### 0-12 — 既定値の型検査 【✅ 完了 2026-09-11】
+
+**素通りしていた 6 形態**（すべて静的にも実行時にも通っていた・実測）
+
+| 形 | 原因 |
+|---|---|
+| 自由関数の仮引数 `fn f(let n: int = "wrong")` | `check_fn_def` は注釈の**有無**しか見ず `param.default` に触れない。`declare_param` も無視 ⇒ **推論すらされていなかった** |
+| メソッドの仮引数 | 同上 |
+| `__init__` の仮引数 | 同上 |
+| テンプレート関数の仮引数 | 同上 |
+| `const` フィールドの既定値 | `Stmt::Field` が `self.infer(expr)` の結果を**捨てていた**（0-2 と同じ形の漏れ） |
+| `static mut` フィールドの既定値 | 同上 |
+
+**実装したもの**
+
+| 対象 | 内容 |
+|---|---|
+| `TypeErrorKind::ParamDefaultTypeMismatch` | 新設。`default value of parameter 'n' of 'f' is declared 'int' but got 'str'` |
+| `check_param_defaults` | 仮引数の既定値を推論し宣言型と突き合わせる |
+| `Stmt::Field` | `infer` の結果を `check_expected` へ通す（エラーは `FieldTypeMismatch` を再利用） |
+
+⚠ **既定値の検査は仮引数を宣言する前**に行う。既定値は他の仮引数を参照できない
+（できると評価順に依存する）ので、まだ見えていない状態で推論する。
+⚠ **型変数は積んだ後**に検査する（`fn g[T](let n: T = …)` を照合しないため）。
+⚠ `mut` 引数でも既定値は**呼び元の記憶域ではない**ので拡大を許す（write-back の相手が居ない）。
+
+**⚠ あわせて `const` / `static mut` の昇格も揃えた（0-B2 の残り）**
+
+`const F: float = 3` が **`3` を返していた**。フィールド**書き込み**は `store_field` の
+raw レイアウト経路で昇格するが、`const` はクラス変数・`static mut` は `static_cells` で
+どちらもその経路を通らない。⇒ `exec_class_def` で `coerce_binding` を通して揃えた
+（`3` → `3.0`）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` のみ |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 71/71 identical |
+| `compare_outputs.ps1` / `compare_bytecode.ps1` | 差分は 0-7〜0-11 の例題のみ（**既存例題は不変**） |
+| `compare_import_paths.ps1` | 13/13 identical |
+| `compare_wasm_frontend.ps1` | 247/247 agreed・INVENTED 0 |
+
+**追加した例題**: `examples/typing/default_value_type.ar` ／ `default_value_type_error.ar`
+
 ### R3 — フィールドのオフセット化 【✅ 完了として閉じた 2026-09-08】
 
 **⚠ 着手時の前提が誤っていた。** 「計画は多相 IC・実装は単相 IC ＝ 差分が未実装」と報告したが、
@@ -994,6 +1044,7 @@ probes       : 77,400,461
 | 7 | **型変数を具象型と取り違えていた** — `from_ann` が大文字始まりの未知の識別子をクラス名にするため。`mentions_type_param` で除外（Phase T で発見） |
 | 8 | **テンプレートクラスにキャッシュが無かった** — 実体化ごとに新 `class_id` を発行しており、同じ `Box[int]` が別の型になっていた |
 | 9 | **R3 の「多相 IC」の読み違え** — 原計画と実装は同じ機構。呼び名が 2 つあった |
+| 16 | **既定値が 6 箇所で未検査だった** — 仮引数の既定値は**推論すらされておらず**、`const`/`static mut` は `infer` の結果を捨てていた（0-12）。`const F: float = 3` が `3` を返す昇格漏れも同時に修正 |
 | 15 | **テンプレート実体化検査に穴が 2 件あった** — `__init__` のオーバーロードで素通り、型引数省略時に型変数を漏らすメッセージ（0-11） |
 | 14 | **trait のデフォルト実装が継承されなかった**（既存バグ B）。`exec_trait_def` がメソッド本体を捨てていた。パース時にクラス本体へ注入して解決（0-10）。あわせて**クラスの仮想メソッドを禁止**（以前は黙って `None` を返す no-op）。⚠ FFI スタブの `...` を誤検出しないよう `arrow_class_names` で絞った |
 | 13 | **trait フィールドの再宣言で自動 `__init__` の引数が重複していた**（既存バグ A）。畳み方を揃えるのではなく**宣言を禁止**して解決（0-9）。既存メッセージがパースできない構文を案内していたのも直した |

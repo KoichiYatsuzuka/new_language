@@ -629,6 +629,7 @@ impl Interpreter {
                 Stmt::Field {
                     name: fname,
                     kind: FieldKind::Const,
+                    type_ann,
                     default: Some(init),
                     access: facc,
                     ..
@@ -637,11 +638,16 @@ impl Interpreter {
                         field_access.insert(fname.clone(), facc.clone());
                     }
                     let val = self.eval_definition_expr(init)?;
+                    // 案 B（0-B2 と同じ規則）: `float` 注釈なら昇格する。
+                    // ⚠ `const` はクラス変数なので `store_field` の raw レイアウト昇格を
+                    //   通らない。ここで揃えないと `const F: float = 3` が `3` を返す（実測）。
+                    let val = crate::interpreter::exec::vars::coerce_binding(Some(type_ann), val);
                     class_vars.insert(fname.clone(), val);
                 }
                 Stmt::Field {
                     name: fname,
                     kind: FieldKind::StaticMut,
+                    type_ann,
                     default,
                     access: facc,
                     ..
@@ -650,7 +656,9 @@ impl Interpreter {
                         field_access.insert(fname.clone(), facc.clone());
                     }
                     let val = if let Some(init) = default {
-                        self.eval_definition_expr(init)?
+                        // `const` と同じ理由で昇格を揃える（`static_cells` も raw レイアウト外）。
+                        let v = self.eval_definition_expr(init)?;
+                        crate::interpreter::exec::vars::coerce_binding(Some(type_ann), v)
                     } else {
                         Value::None
                     };
