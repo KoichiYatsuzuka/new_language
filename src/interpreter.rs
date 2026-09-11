@@ -475,9 +475,13 @@ pub struct Interpreter {
     /// トレイト名 → (フィールド名 → アクセス可能性) のマップ（TraitDef 実行時に収集）。
     /// クラスが継承したトレイトフィールドのアクセス制御に使用する。
     pub(self) trait_field_access: HashMap<String, HashMap<String, Accessibility>>,
-    /// トレイト名 → (フィールド名, 可変フラグ) の宣言順リスト（TraitDef 実行時に収集）。
+    /// トレイト名 → (フィールド名, 可変フラグ, **型注釈**) の宣言順リスト（TraitDef 実行時に収集）。
     /// exec_class_def で field_index を構築する際に trait フィールドの順序を決定する。
-    pub(self) trait_field_order: HashMap<String, Vec<(String, bool)>>,
+    ///
+    /// ⚠ 型注釈を持つのは、`build_field_index` が `ClassValue::field_tags`
+    /// （slot 順の実行時型判定タグ）を**同じ順序で**組み立てるため。これが無いと
+    /// trait 由来のスロットだけ実行時検査が抜ける。
+    pub(self) trait_field_order: HashMap<String, Vec<(String, bool, String)>>,
     /// ★**`import[py]` 限定**: Python クラス名 → (フィールド名, 可変フラグ) の**平坦化済み**宣言順リスト。
     ///
     /// Arrow の `class` は**継承できない**（基底に置けるのはトレイトだけ。ネイティブ `.ar` では
@@ -489,7 +493,7 @@ pub struct Interpreter {
     /// 衝突してトレイト継承を壊さないようにするため。`build_field_index` は
     /// **トレイトを先に見て、無ければこちら**を見る。
     /// ⚠ 「平坦化済み」= 自分の基底のフィールドも含む。多段継承（A→B→C）でも 1 段の参照で足りる。
-    pub(self) py_class_field_order: HashMap<String, Vec<(String, bool)>>,
+    pub(self) py_class_field_order: HashMap<String, Vec<(String, bool, String)>>,
     /// プロトコル名 → 必須メンバー名リスト（ProtocolDef 実行時に収集）。
     /// `is Protocol` 実行時チェックで使用する。
     pub(self) protocol_required_members: HashMap<String, Vec<String>>,
@@ -591,11 +595,11 @@ impl Interpreter {
                 // Error trait のフィールド順序を登録: サブクラス定義時に build_field_index が参照する
                 let mut m = HashMap::new();
                 m.insert("Error".to_string(), vec![
-                    ("message".to_string(), false),
-                    ("code_context".to_string(), false),
-                    ("file".to_string(), false),
-                    ("line".to_string(), false),
-                    ("col".to_string(), false),
+                    ("message".to_string(), false, "str".to_string()),
+                    ("code_context".to_string(), false, "str".to_string()),
+                    ("file".to_string(), false, "str".to_string()),
+                    ("line".to_string(), false, "int".to_string()),
+                    ("col".to_string(), false, "int".to_string()),
                 ]);
                 m
             },
@@ -705,17 +709,24 @@ impl Interpreter {
     /// - `own_fields`: クラス本体で宣言された instance フィールドの (name, is_mutable) リスト（宣言順）
     /// - `bases`: 基底トレイト名リスト
     ///
-    /// 戻り値: `(field_index, field_mutability_vec, field_count)`
+    /// 戻り値: `(field_index, field_mutability_vec, field_tags, field_count)`
     /// - `field_index`: フィールド名 → Vec インデックス（own フィールド名 + trait 修飾名 + unqualified alias）
     /// - `field_mutability_vec`: スロットインデックス → 元の可変フラグ
+    /// - `field_tags`: スロットインデックス → **実行時型判定タグ**（`store_field` が使う）
     /// - `field_count`: スロット総数
+    ///
+    /// ⚠⚠ `field_tags` は `field_mutability_vec` と**必ず同じ順序・同じ個数**で積むこと。
+    /// ずれると `store_field` が**別のフィールドの型**で検査する（黙って誤った値を通す／
+    /// 正しい値を弾く）。だから 2 つを同じループで push している。
     pub(crate) fn build_field_index(
         &self,
-        own_fields: &[(String, bool)],
+        own_fields: &[(String, bool, String)],
         bases: &[String],
-    ) -> (HashMap<String, usize>, Vec<bool>, usize) {
+    ) -> (HashMap<String, usize>, Vec<bool>, Vec<crate::vm::op::TypeTag>, usize) {
+        use crate::vm::op::TypeTag;
         let mut field_index: HashMap<String, usize> = HashMap::new();
         let mut field_mutability_vec: Vec<bool> = Vec::new();
+        let mut field_tags: Vec<TypeTag> = Vec::new();
         let mut idx = 0usize;
 
         // C ABI 準拠レイアウト（.claude/skills/c-abi-interop/SKILL.md P0b）:
@@ -729,7 +740,7 @@ impl Interpreter {
                 .get(base)
                 .or_else(|| self.py_class_field_order.get(base));
             if let Some(trait_fields) = base_fields {
-                for (fname, is_mutable) in trait_fields {
+                for (fname, is_mutable, type_ann) in trait_fields {
                     let qualified = format!("{}::{}", base, fname);
                     if let Some(&existing_idx) = field_index.get(fname.as_str()) {
                         // 複数 trait が同名フィールドを持つ場合は同一スロットを共有する
@@ -738,6 +749,7 @@ impl Interpreter {
                         field_index.insert(qualified, idx);
                         field_index.insert(fname.clone(), idx);
                         field_mutability_vec.push(*is_mutable);
+                        field_tags.push(TypeTag::of(type_ann));
                         idx += 1;
                     }
                 }
@@ -746,17 +758,19 @@ impl Interpreter {
 
         // Step 2: own フィールドを宣言順で後続に配置する。
         // trait フィールドを再宣言した場合は既存スロットを共有し、own 宣言の可変性を優先する。
-        for (fname, is_mutable) in own_fields {
+        for (fname, is_mutable, type_ann) in own_fields {
             if let Some(&existing_idx) = field_index.get(fname.as_str()) {
                 field_mutability_vec[existing_idx] = *is_mutable;
+                field_tags[existing_idx] = TypeTag::of(type_ann);
                 continue;
             }
             field_index.insert(fname.clone(), idx);
             field_mutability_vec.push(*is_mutable);
+            field_tags.push(TypeTag::of(type_ann));
             idx += 1;
         }
 
-        (field_index, field_mutability_vec, idx)
+        (field_index, field_mutability_vec, field_tags, idx)
     }
 
     /// ソーステキストをファイル名と対応付けて登録する。

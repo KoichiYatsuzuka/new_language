@@ -1,0 +1,100 @@
+# field_type_runtime.ar — boxed レイアウトのフィールドも実行時に型を検査すること（A-3）
+#
+# ## 何が壊れていたか
+#
+# インスタンスのフィールド書き込みは `InstanceData::store_field` に集約されているが、
+# 検査していたのは **raw レイアウト経路だけ**だった。raw レイアウトが付くのは
+#
+#   - trait を継承しておらず、かつ
+#   - 全フィールドが int/float 系のプリミティブ
+#
+# のときだけなので、
+#
+#   - `str` フィールドが 1 つ混ざる
+#   - trait を 1 つ実装する
+#   - テンプレートクラスである（`build_template_class` は `raw_layout` を作らない）
+#
+# のどれか 1 つで検査が丸ごと消え、boxed 経路は受け取った値を**そのまま**入れていた。
+# 静的検査が届かない経路（`Any` 経由・添字の要素・FFI・ネイティブコールバック）から
+# **黙って不整合な型**がフィールドに居座る状態になっていた。
+#
+# ⇒ boxed 経路にも宣言型タグ（`ClassValue::field_tags`）での検査を入れ、
+#   raw 経路と同じ `int` → `float` 昇格もそろえた。
+#
+# 弾かれる例は field_type_runtime_error.ar
+
+print("=== str が混ざるクラス（raw レイアウトが付かない） ===")
+
+class Tagged:
+    mut n: int
+    mut label: str
+
+mut t = Tagged(1, "a")
+t.n = 2
+t.label = "b"
+print(t.n, t.label)             # 2 b
+
+print("=== int → float はフィールドでも昇格する ===")
+
+# `Mixed` は `str` を持つので boxed 経路。以前はここが `5`（int のまま）だった。
+class Mixed:
+    mut ratio: float
+    mut name: str
+
+mut m = Mixed(1.5, "m")
+m.ratio = 5                     # int を float フィールドへ
+print(m.ratio)                  # 5.0
+
+print("=== テンプレートクラスも検査される ===")
+
+class Box[T]:
+    mut v: T
+
+mut bs = Box[str]("x")
+bs.v = "y"
+print(bs.v)                     # y
+
+mut bf = Box[float](1.0)
+bf.v = 7                        # 昇格（テンプレートも raw を持たないので以前は `7`）
+print(bf.v)                     # 7.0
+
+print("=== trait フィールドも検査される ===")
+
+trait Named:
+    mut name: str
+
+class Person(Named):
+    mut age: int
+
+mut p = Person("ann", 30)
+p::Named.name = "bea"
+p.age = 31
+print(p::Named.name, p.age)     # bea 31
+
+print("=== uint / int は相互に許容する ===")
+
+# ⚠ `Value::UInt` が生まれるのはハンドル値と uint 同士の除算だけで、
+#   `let x: uint = 5` も `f(v: uint)` も値としては `Value::Int` を束縛する。
+#   フィールドだけ `Value::UInt` を要求すると実バグを塞がずに正常コードが落ちるので、
+#   整数族は通す（`str`/`bool` の混入は弾く）。
+class Counter:
+    mut u: uint
+    mut label: str
+
+mut c = Counter(5, "c")
+c.u = 9
+print(c.u)                      # 9
+
+print("=== Any / 型引数不明のフィールドは通す ===")
+
+# 判定できない種別（`Any`・`list[T]`・クラス名・`Union[...]`）は通す。
+# 誤検知で正しいコードを落とすより取りこぼす方へ倒す方針（`ffi_boundary` と同じ）。
+class Hold:
+    mut slot: Any
+    mut items: list[int]
+
+mut h = Hold(1, [1, 2])
+h.slot = "now a str"            # `Any` なので何でも入る
+print(h.slot)                   # now a str
+
+print("done")

@@ -294,6 +294,50 @@ impl InstanceData {
             if idx >= self.boxed_fields.len() {
                 return false;
             }
+            // ── boxed レイアウトの型検査（A-3）──────────────────────────────
+            //
+            // ⚠⚠ **以前はここが無検査だった。** raw レイアウト経路（上）は「値がスロット形式に
+            //    合うか」を見るのに、boxed 経路は受け取った値をそのまま入れていた。
+            //    raw レイアウトが付くのは「trait 継承なし・全フィールドが int/float 系」の
+            //    ときだけなので、`str` が 1 つ混ざる／trait を 1 つ実装する／
+            //    **テンプレートクラスである**だけで検査が消え、静的検査が届かない経路
+            //    （FFI・ネイティブコールバック・`Any` 経由）から**黙って不整合な型**が
+            //    入っていた。
+            //
+            // ⚠ 判定できる種別だけを見る。`TypeTag::Other`（`list[T]`・クラス名・`Union` 等）と
+            //    `Any` は通す — 誤検知で正しいコードを落とすより取りこぼす方へ倒す
+            //    （`ffi_boundary` の「保守的側」と同じ方針）。
+            let tag = self
+                .class
+                .field_tags
+                .get(idx)
+                .copied()
+                .unwrap_or(crate::vm::op::TypeTag::Other);
+            // `int` → `float` の昇格（案 B）。raw 経路が `(RawWidth::F64, Value::Int)` で
+            // 行っているのと同じ規則をここでも適用する。
+            let val = match (tag, &val) {
+                (crate::vm::op::TypeTag::Float, Value::Int(n)) => Value::Float(*n as f64),
+                _ => val,
+            };
+            // ⚠ `int` と `uint` は**相互に許容する**。`TypeTag::matches` は
+            //    `uint` に `Value::UInt` を要求するが、Arrow で `Value::UInt` が生まれるのは
+            //    ハンドル値と uint 同士の除算だけで、`let x: uint = 5` も
+            //    `f(v: uint)` も**値としては `Value::Int` を束縛する**
+            //    （変数・引数・返り値のどの束縛点も `uint` 注釈に対して `Value::Int` を通す）。
+            //    ここだけ厳格にすると実バグを 1 つも塞がずに正常なコードを落とすので、
+            //    整数族は通し、`str`/`bool` の混入だけを弾く。
+            //    ⚠ `TypeTag::matches` 自体は VM の `MustBe`/`IsType` と共有なので変えない。
+            //    （`uint` 注釈と `Value::UInt` のずれ自体は別タスク: 計画 §7）
+            let tag_ok = match (tag, &val) {
+                (crate::vm::op::TypeTag::Any | crate::vm::op::TypeTag::Other, _) => true,
+                (crate::vm::op::TypeTag::Int | crate::vm::op::TypeTag::UInt, v) => {
+                    matches!(v, Value::Int(_) | Value::UInt(_))
+                }
+                (t, v) => t.matches(v),
+            };
+            if !tag_ok {
+                return false;
+            }
             self.boxed_fields[idx] = Some((val, mutable));
             true
         }

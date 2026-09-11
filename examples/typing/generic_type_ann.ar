@@ -66,19 +66,25 @@ print("=== int → float の拡大（受理される） ===")
 
 mut bf: Box[float] = Box[float](1.0)
 bf.v = 7                        # 受理される（`float` へ int は拡大）
-# ⚠⚠ **既存の別バグ**（本変更とは無関係・基準バイナリでも再現）: ここは `7.0` ではなく
-#   `7` になる。値の昇格は `store_field` の **raw レイアウト経路**だけが行うが、
-#   `build_template_class` は `raw_layout` を設定しないため、テンプレートクラスの
-#   インスタンスは常に boxed 経路を通る。通常クラスの `mut v: float` なら `7.0` になる。
-print(bf.v)                     # 7   ← 通常クラスなら 7.0
+# ⚠ ここが `7`（int のまま）だったのが A-3 で直った。値の昇格は以前
+#   `store_field` の **raw レイアウト経路**だけが行い、`build_template_class` は
+#   `raw_layout` を設定しないのでテンプレートクラスは常に boxed 経路を通っていた。
+#   boxed 経路にも同じ昇格規則を入れたので、通常クラスと同じく `7.0` になる。
+print(bf.v)                     # 7.0
 
 print("=== ⚠ 型引数を省いた素のテンプレート名 ===")
 
-# `Box` と書くと型引数が判らないので、**型変数のメンバーは検査を見送る**
+# `Box` と書くと型引数が判らないので、**型変数のメンバーは静的検査を見送る**
 # （置換表が作れないため）。具体型のメンバーは従来どおり検査される
 # （template_type_param_error.ar の `Mixed[T].count: int` がその例）。
 mut bare: Box = Box[str]("x")
-bare.v = 123                    # 見送られる（`T` が何か判らない）
-print(bare.v)                   # 123
+bare.v = "y"                    # 静的には見送られるが、値は str なので正しい
+print(bare.v)                   # y
+
+# ⚠ 静的検査を見送っても**実行時は捕まえる**（A-3）。注釈が `Box` でも
+#   インスタンスの実体は `Box[str]` なので、`bare.v = 123` は
+#   `TypeError: value does not match declared type of field 'v'` になる。
+#   以前は黙って int が str フィールドに入っていた。
+#   → classes/field_type_runtime_error.ar
 
 print("done")

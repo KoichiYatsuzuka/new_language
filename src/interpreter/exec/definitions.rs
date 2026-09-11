@@ -226,16 +226,19 @@ impl Interpreter {
     /// `trait` 定義を実行してトレイト値をスコープに登録する。アクセス制御情報とフィールド順序も収集する。
     pub(crate) fn exec_trait_def(&mut self, name: &str, body: &[Stmt]) -> Result<ExecResult, String> {
         let mut trait_access: HashMap<String, Accessibility> = HashMap::new();
-        let mut field_order: Vec<(String, bool)> = Vec::new();
+        let mut field_order: Vec<(String, bool, String)> = Vec::new();
         for stmt in body {
             if let Stmt::Field {
                 name: fname,
                 kind,
+                type_ann,
                 access,
                 ..
             } = stmt
             {
-                field_order.push((fname.clone(), *kind == FieldKind::Mut));
+                // ⚠ 型注釈も運ぶ。`build_field_index` が slot 順の `field_tags`
+                //   （実行時型判定）を組むのに要る。
+                field_order.push((fname.clone(), *kind == FieldKind::Mut, type_ann.clone()));
                 if *access != Accessibility::Public {
                     trait_access.insert(fname.clone(), access.clone());
                 }
@@ -530,7 +533,7 @@ impl Interpreter {
         let mut field_defaults = Vec::new();
         let mut class_vars: HashMap<String, Value> = HashMap::new();
         let mut field_mutability: HashMap<String, bool> = HashMap::new();
-        let mut own_field_order: Vec<(String, bool)> = Vec::new();
+        let mut own_field_order: Vec<(String, bool, String)> = Vec::new();
         let mut own_field_types: Vec<(String, String)> = Vec::new();
         let mut field_access: HashMap<String, Accessibility> = HashMap::new();
         let mut method_access: HashMap<String, Accessibility> = HashMap::new();
@@ -676,7 +679,7 @@ impl Interpreter {
                         field_access.insert(fname.clone(), facc.clone());
                     }
                     let mutable = *kind == FieldKind::Mut;
-                    own_field_order.push((fname.clone(), mutable));
+                    own_field_order.push((fname.clone(), mutable, type_ann.clone()));
                     own_field_types.push((fname.clone(), type_ann.clone()));
                     field_mutability.insert(fname.clone(), mutable);
                     if let Some(init) = default {
@@ -753,14 +756,14 @@ impl Interpreter {
             }
         }
 
-        let (field_index, field_mutability_vec, field_count) =
+        let (field_index, field_mutability_vec, field_tags, field_count) =
             self.build_field_index(&own_field_order, bases);
 
         // ★ `import[py]` 限定: このクラスの**平坦化済み**フィールド順を登録し、
         //   さらにこれを基底とするクラス（多段継承）が 1 段の参照で解決できるようにする。
         //   並べ方は `build_field_index` の Step1（基底が先）+ Step2（own が後）と同じ。
         if self.in_python_module {
-            let mut full_order: Vec<(String, bool)> = Vec::new();
+            let mut full_order: Vec<(String, bool, String)> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for base in bases {
                 let base_fields = self
@@ -768,19 +771,20 @@ impl Interpreter {
                     .get(base)
                     .or_else(|| self.py_class_field_order.get(base));
                 if let Some(bf) = base_fields {
-                    for (fname, m) in bf {
+                    for (fname, m, t) in bf {
                         if seen.insert(fname.clone()) {
-                            full_order.push((fname.clone(), *m));
+                            full_order.push((fname.clone(), *m, t.clone()));
                         }
                     }
                 }
             }
-            for (fname, m) in &own_field_order {
+            for (fname, m, t) in &own_field_order {
                 if seen.insert(fname.clone()) {
-                    full_order.push((fname.clone(), *m));
-                } else if let Some(e) = full_order.iter_mut().find(|(n, _)| n == fname) {
-                    // own 宣言の可変性を優先する（`build_field_index` と同じ規則）。
+                    full_order.push((fname.clone(), *m, t.clone()));
+                } else if let Some(e) = full_order.iter_mut().find(|(n, _, _)| n == fname) {
+                    // own 宣言の可変性・型を優先する（`build_field_index` と同じ規則）。
                     e.1 = *m;
+                    e.2 = t.clone();
                 }
             }
             self.py_class_field_order
@@ -806,6 +810,7 @@ impl Interpreter {
             field_index,
             field_count,
             field_mutability_vec,
+            field_tags,
             field_access,
             method_access,
             static_method_names,

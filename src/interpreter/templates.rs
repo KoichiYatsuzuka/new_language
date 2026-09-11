@@ -346,7 +346,7 @@ impl Interpreter {
         let mut class_method_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let mut static_vars: HashMap<String, Rc<RefCell<Value>>> = HashMap::new();
-        let mut own_field_order: Vec<(String, bool)> = Vec::new();
+        let mut own_field_order: Vec<(String, bool, String)> = Vec::new();
         for stmt in &concrete_body {
             match stmt {
                 Stmt::FnDef {
@@ -439,6 +439,7 @@ impl Interpreter {
                 Stmt::Field {
                     name: fname,
                     kind,
+                    type_ann,
                     default,
                     access: facc,
                     ..
@@ -448,7 +449,9 @@ impl Interpreter {
                     }
                     let mutable = *kind == FieldKind::Mut;
                     field_mutability.insert(fname.clone(), mutable);
-                    own_field_order.push((fname.clone(), mutable));
+                    // ⚠ `type_ann` は `subst_stmts` が型変数を具体型へ置換済み
+                    //   （`Box[int]` なら `"int"`）。実行時型判定タグの素になる。
+                    own_field_order.push((fname.clone(), mutable, type_ann.clone()));
                     if let Some(init) = default {
                         let val = self.eval(init)?;
                         field_defaults.push((fname.clone(), val, mutable));
@@ -457,7 +460,7 @@ impl Interpreter {
                 _ => {}
             }
         }
-        let (field_index, field_mutability_vec, field_count) =
+        let (field_index, field_mutability_vec, field_tags, field_count) =
             self.build_field_index(&own_field_order, &tmpl.bases);
         let cls = Rc::new(ClassValue {
             bases: tmpl.bases.clone(),
@@ -469,6 +472,7 @@ impl Interpreter {
             field_index,
             field_count,
             field_mutability_vec,
+            field_tags,
             field_access,
             method_access,
             static_method_names,

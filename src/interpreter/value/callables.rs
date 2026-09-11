@@ -224,6 +224,18 @@ pub struct ClassValue {
     pub field_count: usize,
     /// スロットインデックス → 元の可変フラグ（クラス定義時の宣言による）。`copy()` のフリーズ解除に使用。
     pub field_mutability_vec: Vec<bool>,
+    /// スロットインデックス → **実行時型判定タグ**（`build_field_index` が組む）。
+    ///
+    /// ⚠⚠ **これが無いと boxed レイアウトのインスタンスは型を一切検査しない。**
+    /// `store_field` の raw レイアウト経路は「値がスロット形式に合うか」を見るが、
+    /// boxed 経路は受け取った値をそのまま入れていた。raw レイアウトが付くのは
+    /// 「trait 継承なし・全フィールドが int/float 系」のときだけなので、`str` が 1 つ
+    /// 混ざる／trait を 1 つ実装する／**テンプレートクラスである**だけで検査が消え、
+    /// 静的検査が届かない経路（FFI・ネイティブコールバック・`Any` 経由）から
+    /// **黙って不整合な型が入っていた**。
+    ///
+    /// ⚠ `field_mutability_vec` と**同じ順序・同じ個数**（`build_field_index` が同じループで積む）。
+    pub field_tags: Vec<crate::vm::op::TypeTag>,
     /// フィールド名 → アクセス可能性 のマップ。プライベート・保護フィールドのアクセス制御に使用する。
     pub field_access: HashMap<String, Accessibility>,
     /// メソッド名 → アクセス可能性 のマップ。プライベート・保護メソッドのアクセス制御に使用する。
@@ -278,6 +290,7 @@ impl ClassValue {
             field_index: HashMap::new(),
             field_count: 0,
             field_mutability_vec: vec![],
+            field_tags: vec![],
             field_access: HashMap::new(),
             method_access: HashMap::new(),
             static_method_names: HashSet::new(),
@@ -360,6 +373,7 @@ impl ClassValue {
             field_index: self.field_index.clone(),
             field_count: self.field_count,
             field_mutability_vec: self.field_mutability_vec.clone(),
+            field_tags: self.field_tags.clone(),
             field_access: self.field_access.clone(),
             method_access: self.method_access.clone(),
             static_method_names: self.static_method_names.clone(),

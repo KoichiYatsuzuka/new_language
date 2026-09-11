@@ -101,6 +101,7 @@ p.x = "w"           p.x = "w"
 | **0-11** | **テンプレート実体化検査の穴 2 件**（`__init__` オーバーロード・型引数省略） | **✅ 完了**（2026-09-11） |
 | **0-12** | **既定値の型検査**（仮引数・`const`・`static mut`） | **✅ 完了**（2026-09-11） |
 | **A-2** | **具体化済みジェネリクスを型注釈として扱う**（テンプレートの偽陽性修正） | **✅ 完了**（2026-09-11） |
+| **A-3** | **boxed レイアウトのフィールドを実行時に検査する**（黙って不整合な型が入る穴） | **✅ 完了**（2026-09-11） |
 | R3 | フィールドのオフセット化 | **✅ 完了として閉じた**（2026-09-08。原計画に未実行分は無かった） |
 
 ---
@@ -985,6 +986,147 @@ fn take(let b: Box) -> int:
 | **C** | `new_type` の右辺に型式を許す。現在 `exec_new_type_def` が `get_val(original)` で**名前引き**するため `new_type Ints: list[int]` が実行時 `NameError` になる |
 | **B の宣言側** | `new_type X[T]: …` / `alias X[T]: …`。どちらも `parse_template_params()` を呼んでいないので ParseError。実体化の意味論（`new_type` なら新しい型・`alias` なら置換）を決める必要がある |
 
+### A-3 — boxed レイアウトのフィールドを実行時に検査する 【✅ 完了 2026-09-11】
+
+> 「インスタンスで型を不正なまま取り扱うバグを優先して潰してください。黙って不整合な型が
+> 扱われる原因になります」
+
+#### 何が壊れていたか
+
+フィールド書き込みは `InstanceData::store_field` に**集約されている**（後述のとおり
+全経路がここを通る）。ところが型を見ていたのは **raw レイアウト経路だけ**で、
+boxed 経路は受け取った値をそのまま `boxed_fields[idx]` へ入れていた。
+
+raw レイアウトが付くのは `RawLayout::from_fields` が `Some` を返すとき、つまり
+
+- trait を継承しておらず、かつ
+- **全**フィールドが int/float 系プリミティブ（`RawWidth::from_ann` が通る）、かつ
+- フィールド数 ≤ 24
+
+のときだけ。したがって
+
+| 条件 | 結果 |
+|---|---|
+| `str` フィールドが 1 つ混ざる | 検査が**全フィールド**消える |
+| trait を 1 つ実装する | 同上 |
+| テンプレートクラス | 同上（`build_template_class` は `raw_layout` を作らない） |
+
+静的検査が要素型を追い切れない経路から、**黙って**不整合な型が居座っていた:
+
+```arrow
+class Tagged:
+    mut n: int
+    mut label: str
+mut t = Tagged(1, "a")
+mut xs: list = [1, "wrong"]   # 要素型なし ⇒ xs[1] は Unresolved
+t.n = xs[1]                   # 静的には通る
+print(t.n)                    # 基準: wrong ← int フィールドに str が入っている
+```
+
+同じ穴で **`int` → `float` の昇格も効いていなかった**（A-2 節末で「既存の別バグ」として
+記録したもの）。しかも同一フィールドで経路によって結果が食い違っていた —
+`F(3, "n")` は仮引数昇格（0-B2）のおかげで `3.0`、直後の `c.f = 4` は無検査なので `4`。
+
+#### 実装したもの
+
+| 層 | 対象 | 内容 |
+|---|---|---|
+| 型情報 | `ClassValue.field_tags: Vec<TypeTag>` | スロット順の**宣言型タグ**（新設。`synthetic()` / `deep_clone` にも追加） |
+| 構築 | `build_field_index` | 戻り値を `(field_index, field_mutability, field_tags, field_count)` へ。タグは `field_mutability` と**同じループ**で push する |
+| 宣言順 | `trait_field_order` / `py_class_field_order` | `Vec<(String, bool)>` → `Vec<(String, bool, String)>`（型注釈を運ぶ） |
+| 収集 | `exec_trait_def` / `exec_class_def` / `build_template_class` | `own_field_order` を 3 つ組へ。py_class の平坦化は**自前宣言が可変性も型も勝つ** |
+| 検査 | `store_field` の boxed 分岐 | `TypeTag` で照合し、`(Float, Int)` は昇格してから格納 |
+
+⚠ **スロット順がずれると「別のフィールドの型」で検査してしまう**（黙って誤った値を通す／
+正しい値を弾く、どちらにも転ぶ）。だから `field_tags` は `field_mutability` と同じループで
+積む — 2 箇所に分けると将来の編集でずれる。
+
+⚠ **判定できる種別だけを見る。** `TypeTag::Other`（`list[T]`・クラス名・`Union[...]`）と
+`Any` は通す。誤検知で正しいコードを落とすより取りこぼす方へ倒す（`ffi_boundary` の
+「保守的側」と同じ方針）。
+
+⚠⚠ **`int` と `uint` は相互に許容する。** `TypeTag::matches` は `uint` に `Value::UInt` を
+要求するが、Arrow で `Value::UInt` が生まれるのは**ハンドル値と uint 同士の除算だけ**で、
+`let x: uint = 5` も `f(v: uint)` も値としては `Value::Int` を束縛する（変数・引数・
+戻り値のどの束縛点も `uint` 注釈に対して `Value::Int` を通す）。ここだけ厳格にすると
+**実バグを 1 つも塞がずに正常なコードを落とす**（`Counter(5, "c")` が落ちるのを実測）。
+よって整数族は通し、`str`/`bool` の混入だけを弾く。
+⚠ `TypeTag::matches` 自体は VM の `MustBe`/`IsType` と共有なので**変えない** — `store_field`
+の中で処理する。`uint` 注釈と `Value::UInt` のずれ自体は別タスク → §7
+
+#### 全書き込み経路が `store_field` を通ることの確認
+
+| 経路 | 通り道 |
+|---|---|
+| `o.f = v`（ツリーウォーク） | `attr_assign` → `store_field`（`attrs.rs:370`） |
+| `o.f = v`（VM） | `Op::SetAttr` → `attr_assign_evaled` → `store_field`（`attrs.rs:434`） |
+| `o::Trait.f = v` | `trait_attr_assign` → `store_field`（`attrs.rs:541`） |
+| 明示 `__init__` | 本体の `self.f = arg` なので上の 3 つに帰着 |
+| **合成 `__init__`** | `inject_auto_init` が `Stmt::AttrAssign` / `TraitAccess` を生成 ⇒ 同上 |
+| 既定値 | `instantiate_evaled` → `store_field` |
+| FFI 書き戻し | `apply_shadow_raw` → `store_field`（戻り値を検査している） |
+
+`boxed_fields` へ直接書くのは `freeze`（可変性フラグのみ）と `deep_copy` / `Clone`
+（既に検査済みの値の複製）だけで、新しい値は入らない。**3 つの代入地点はいずれも
+`false` を `TypeError: value does not match declared type of field '<f>'` に変換済み**。
+
+#### 確認した範囲
+
+| 形 | 結果 |
+|---|---|
+| `str` が混ざるクラス（raw が付かない） | ✅ 検査される |
+| `int` → `float` 昇格（boxed） | ✅ `5` → `5.0` |
+| テンプレートクラス `Box[float]` | ✅ `7` → `7.0`（A-2 で記録した既存バグの解消） |
+| テンプレートクラス `Box[str]` に int | ✅ 弾く（**静的検査が見送る経路**を実行時が捕まえた） |
+| trait フィールド `p::Named.name` | ✅ 検査される |
+| `uint` フィールドに整数リテラル | ✅ 通る（退行なし） |
+| `Any` / `list[int]` フィールド | ✅ 通す（判定対象外） |
+
+#### ゲート結果
+
+⚠ 基準は **HEAD = `cbbf07f`（A-2）から作り直した**。最初は古い基準を使って 13 件の
+差分が出たが、大半は「基準バイナリが 0-7〜A-2 の検査をまだ持たない」ための見かけの差分
+だった。A-3 だけを切り分けるには直前コミットの基準が必要（CLAUDE.md の注意どおり）。
+⚠ worktree は作れない（追跡された `crates/arrow-frontend/target/` が
+`Filename too long` を起こす → §7）。変更ファイルを退避 → `git show HEAD:<path>` で
+差し替え → ビルド → md5 照合して復元した。
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` のみ |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 72/72 identical・stale 0（新規 2 例題を `$knownDiff` へ登録） |
+| `compare_outputs.ps1 -A <A-2>` | 178/181・差分 3 件はすべて**意図したもの**（下表） |
+| `compare_bytecode.ps1 -A <A-2>` | 200/200 identical（負の対照 0 / **陽性対照 4 件検出**） |
+| `compare_import_paths.ps1 -A <A-2>` | 13/13 identical |
+| `compare_wasm_frontend.ps1` | **不要**（A-3 は interpreter だけで lexer/parser/type_check に触っていない） |
+
+**意図した出力差分（3 件）**
+
+| 例題 | 基準 → 現在 | 理由 |
+|---|---|---|
+| `typing/generic_type_ann.ar` | `7` → `7.0` | テンプレートクラスでも float へ昇格する |
+| `classes/field_type_runtime.ar` | `5` → `5.0`, `7` → `7.0` | 同上（boxed 経路の昇格） |
+| `classes/field_type_runtime_error.ar` | `ここには到達しない: wrong` → `TypeError` | **塞いだ穴そのもの** |
+
+#### 副産物 — `compare_bytecode.ps1` の偽差分を直した
+
+新しいエラー例題で `compare_bytecode.ps1` が「A=41 / B=42 lines」と報告した。
+**バイトコードは完全に同一**で、原因は `AR_VM_DUMP=1` のダンプと**実行時エラーの
+traceback が同じ stderr に出る**こと。このゲートの主張は「バイトコードが同一か」であって
+stderr の一致ではない（それは `compare_outputs.ps1` の担当）。よって `Get-Dump` が
+**ダンプ行だけを残す**ようにした（chunk ヘッダと命令行のみ）。
+
+⚠ 併せて「実行時エラーで停止すると**後続 chunk がコンパイルされない**」ことも判明した
+（chunk は遅延コンパイルなので、基準だけが末尾 chunk をダンプして差分になる）。
+エラー例題は**落ちる文を最後に置く**こと — `field_type_runtime_error.ar` にコメントで残した。
+
+⚠ フィルタ追加でゲートが緩んでいないことは**陽性対照**で確認した（古い基準に対して
+実差分 4 件を検出）。負の対照（同一 exe）は 0 件。
+
+**追加した例題**: `examples/classes/field_type_runtime.ar` ／ `field_type_runtime_error.ar`
+
 ### R3 — フィールドのオフセット化 【✅ 完了として閉じた 2026-09-08】
 
 **⚠ 着手時の前提が誤っていた。** 「計画は多相 IC・実装は単相 IC ＝ 差分が未実装」と報告したが、
@@ -1091,7 +1233,15 @@ probes       : 77,400,461
 | `0afaea0` | **Phase T** テンプレート実体化クラスのメモ化 ＋ 型変数の取り違え修正 |
 | `1690523` | **R3** 属性 IC の計測基盤と実測 |
 | `1ebedec` | R3 を完了として閉じ、文書へ追記 |
-| （本コミット） | **0-6** テンプレート実体化呼び出しの引数型検査 |
+| `797f920` | **0-6** テンプレート実体化呼び出しの引数型検査 |
+| `ed8b985` | **0-7** protocol 適合検査を全束縛点へ ＋ 再代入の型検査 |
+| `06a4321` | **0-8** trait 適合検査を静的に行う |
+| `7a45d66` | **0-9** trait フィールドの再宣言を禁止（既存バグ A） |
+| `6782113` | **0-10** trait のデフォルト実装の継承 ＋ クラスの仮想メソッド禁止 |
+| `569ae5a` | **0-11** テンプレート実体化検査の穴 2 件 |
+| `efa8012` | **0-12** 既定値の型検査（仮引数・`const`・`static mut`） |
+| `cbbf07f` | **A-2** 具体化済みジェネリクスを型注釈として扱う |
+| （本コミット） | **A-3** boxed レイアウトのフィールドを実行時に検査する |
 
 ### 型検査に足した検査
 
@@ -1111,7 +1261,8 @@ probes       : 77,400,461
 | `let`/`mut`/`const` | `coerce_binding`（ツリーウォーク）／`Op::CoerceFloat`（VM） |
 | 仮引数 | `try_fast_bind`（高速）／`bind_args` 後のループ（一般） |
 | 戻り値 | `exec_fn_evaled` のラッパ **1 箇所**（両経路がここへ来る） |
-| フィールド | 既存（`store_field` の raw レイアウト経路） |
+| フィールド（raw レイアウト） | 既存（`store_field` の raw レイアウト経路） |
+| フィールド（**boxed レイアウト**） | `store_field` の boxed 分岐（**A-3 で新設** — `str` が混ざる／trait を実装する／テンプレートクラスのときは raw が付かないので、昇格も検査も無かった） |
 
 ### 実装中に見つけた・直したもの
 
@@ -1148,7 +1299,11 @@ probes       : 77,400,461
 `typing/int_float_widening{,_error}.ar` ／ `classes/field_type{,_error}.ar` ／
 `typing/return_type{,_error}.ar` ／ `classes/method_arg_type_error.ar` ／
 `classes/ctor_arg_type_error.ar` ／ `typing/var_annotation{,_error}.ar` ／
-`typing/template_type_param{,_error}.ar`
+`typing/template_type_param{,_error}.ar` ／ `typing/template_instantiate_error.ar` ／
+`classes/protocol_sites{,_error}.ar` ／ `classes/trait_conformance{,_error}.ar` ／
+`classes/trait_field_redeclare_error.ar` ／ `classes/class_virtual_method_error.ar` ／
+`typing/default_value_type{,_error}.ar` ／ `typing/generic_type_ann{,_error}.ar` ／
+`classes/field_type_runtime{,_error}.ar`
 
 ### 副産物
 
@@ -1165,7 +1320,9 @@ probes       : 77,400,461
 | # | 内容 |
 |---|---|
 | 2 | **複合代入 `o.f += v` の型検査** — 格納されるのは `f <op> v` の結果なので、二項演算の結果型を求める必要がある |
-| 9 | **テンプレートクラスのインスタンスが `int`→`float` 昇格をしない**（A-2 で発見）。`build_template_class` が `raw_layout` を設定せず boxed 経路のみを通るため |
+| ~~9~~ | ~~**テンプレートクラスのインスタンスが `int`→`float` 昇格をしない**（A-2 で発見）~~ → **A-3 で解消**（boxed 経路に昇格と検査を入れた） |
+| 10 | **`uint` 注釈と `Value::UInt` がずれている** — `let x: uint = 5` も `f(v: uint)` も束縛するのは `Value::Int` で、`Value::UInt` はハンドル値と uint 同士の除算からしか生まれない。一方 `value_matches_type_ann` / `TypeTag::matches` は `uint` に `Value::UInt` を要求するので、**注釈どおりの値が流れていない**。A-3 は `store_field` 内で整数族を相互許容して回避しているが、本筋は「`uint` 注釈の束縛点で `Value::UInt` を作る」か「`uint` を `int` の別名に落とす」かの決着 |
+| 11 | **`crates/arrow-frontend/target/` が追跡されているせいで `git worktree add` が失敗する**（`Filename too long`）。A/B の基準ビルドを worktree で作れない（#5 と同根） |
 | 8 | **自由関数の `...` 本体が no-op のまま** — `fn g() -> int: ...` が `None` を返す。⚠ `.ars` スタブの主要な形（`libm.ars` は数十個）なので、禁止するならスタブ文脈の判別が必要（自由関数には `arrow_class_names` に相当する集合が無い） |
 | 4 | **添字代入 `a[i] = v`** — 要素型と値の照合をしていない |
 | 6 | **テンプレート実体化の戻り値型** — 呼び出し点では `Unresolved` のまま。`NamedInstance(base)` に変えるにはフィールド型の型変数も置換する必要がある（型検査側での実体化）|

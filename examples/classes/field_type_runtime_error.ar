@@ -1,0 +1,31 @@
+# field_type_runtime_error.ar — 静的検査が届かない経路でも実行時にフィールド型を弾く（A-3）
+#
+# 正常系は field_type_runtime.ar
+#
+# ## なぜ実行時検査が要るのか
+#
+# 静的検査はリストの**要素型**まで追い切れない場所がある。下の `xs` は
+# `list`（要素型なし）なので `xs[1]` の型は `Unresolved` になり、
+# `t.n = xs[1]` は静的には通る。以前はここで `str` が `int` フィールドへ
+# **黙って格納**され、`print(t.n)` が `wrong` を出していた。
+#
+# boxed レイアウト（= `str` が混ざる／trait を実装する／テンプレートクラス）では
+# `store_field` が無検査だったのが原因。
+#
+# 期待されるエラー:
+#   TypeError: value does not match declared type of field 'n'
+
+class Tagged:
+    mut n: int
+    mut label: str
+
+mut t = Tagged(1, "a")
+
+mut xs: list = [1, "wrong"]
+
+print("代入前:", t.n)           # 1
+
+# ⚠ これを**最後の文**にしておくこと。後ろに文を置くと、実行時エラーで停止した時点で
+#   その文の chunk がコンパイルされず、`compare_bytecode.ps1` が
+#   「基準だけが末尾 chunk をダンプした」差分を出す（バイトコード自体は同一）。
+t.n = xs[1]                     # ⛔ str を int フィールドへ

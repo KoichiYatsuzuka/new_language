@@ -71,7 +71,20 @@ function Get-Dump([string]$exe, [string]$file) {
     }
     $null = $outTask.Result
     # バイトコードは stderr へ出る（AR_VM_DUMP=1）。行末差は正規化して比較する。
-    return ($errTask.Result -replace "`r`n", "`n")
+    #
+    # ⚠ **stderr にはダンプ以外も混ざる**。実行時エラーで落ちる例題では traceback
+    #   （`Traceback ...` / `  File "...", in ...` / `TypeError: ...`）が同じ stream に出るため、
+    #   素で比較すると「バイトコードは完全に同一なのに差分」と報告してしまう
+    #   （A-3 で `classes/field_type_runtime_error.ar` を追加した際に発覚）。
+    #   このゲートの主張は「**バイトコードが同一か**」であって stderr の一致ではない
+    #   （それは compare_outputs.ps1 の担当）。よってダンプ行だけを残す:
+    #     - chunk ヘッダ  `== chunk <name> (n_locals=N) ==`
+    #     - 命令行        `   0  CONST 0 = Some(...)`
+    #   ⚠ 命令行に実改行は入らない（const は Rust の Debug 出力なので `\n` は
+    #     エスケープされる）。この前提が崩れると行が落ちてゲートが黙って緩むので注意。
+    $lines = ($errTask.Result -replace "`r`n", "`n") -split "`n"
+    $dumpOnly = $lines | Where-Object { $_ -match '^== chunk ' -or $_ -match '^\s*\d+\s+[A-Z_]' }
+    return ($dumpOnly -join "`n")
 }
 
 $same = 0; $diff = 0; $timeouts = 0
