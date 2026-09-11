@@ -756,7 +756,7 @@ impl Interpreter {
             }
         }
 
-        let (field_index, field_mutability_vec, field_tags, field_count) =
+        let (field_index, field_mutability_vec, field_tags, field_checks, field_count) =
             self.build_field_index(&own_field_order, bases);
 
         // ★ `import[py]` 限定: このクラスの**平坦化済み**フィールド順を登録し、
@@ -811,6 +811,7 @@ impl Interpreter {
             field_count,
             field_mutability_vec,
             field_tags,
+            field_checks,
             field_access,
             method_access,
             static_method_names,

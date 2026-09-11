@@ -704,29 +704,72 @@ impl Interpreter {
         );
     }
 
+    /// フィールドの型注釈を**クラス定義時に 1 度だけ** `FieldCheck` へ分類する（A-4）。
+    ///
+    /// `TypeTag` は `int`/`float`/`str`/`bool` しか区別しないので、クラス型・trait 型・
+    /// protocol 型のフィールドは `Other` に落ちて**素通り**していた。実行時にはクラス名の
+    /// レジストリが無く、代入ごとにスコープを引くのは hot path には重いので、ここで畳む。
+    ///
+    /// ⚠ **判定できないものは必ず `None`（= 通す）にする。** 型変数（`T`）・`list[T]`・
+    /// `Union[...]`・未定義名・**このクラスより後に定義されるクラス**はここに落ちる。
+    /// 取りこぼす方へ倒す（`field_tags` と同じ方針）。
+    fn classify_field(&self, type_ann: &str) -> crate::interpreter::value::FieldCheck {
+        use crate::interpreter::value::FieldCheck;
+        // プリミティブは `field_tags` の担当。ここで触らない。
+        if !matches!(crate::vm::op::TypeTag::of(type_ann), crate::vm::op::TypeTag::Other) {
+            return FieldCheck::None;
+        }
+        // 型引数つき（`list[int]` / `Union[...]` / `Box[int]`）は対象外。要素型まで見るのは
+        // 代入ごとには重く、`Box[int]` は実体化後のクラス名が `Box[int]` とは別なので
+        // 名前一致でも判定できない。
+        if type_ann.contains('[') {
+            return FieldCheck::None;
+        }
+        if let Some(req) = self.protocol_required_members.get(type_ann) {
+            return FieldCheck::Protocol(req.clone().into());
+        }
+        if self.trait_field_order.contains_key(type_ann) {
+            return FieldCheck::Trait(type_ann.into());
+        }
+        // クラスかどうかはスコープを引いて確かめる。引けなければ（型変数・未定義名・
+        // 後から定義されるクラス）`None` に倒す。
+        match self.get_val(type_ann) {
+            Some(Value::Class(_)) => FieldCheck::Class(type_ann.into()),
+            _ => FieldCheck::None,
+        }
+    }
+
     /// クラスのフィールド宣言からオフセットインデックスを構築する。
     ///
     /// - `own_fields`: クラス本体で宣言された instance フィールドの (name, is_mutable) リスト（宣言順）
     /// - `bases`: 基底トレイト名リスト
     ///
-    /// 戻り値: `(field_index, field_mutability_vec, field_tags, field_count)`
+    /// 戻り値: `(field_index, field_mutability_vec, field_tags, field_checks, field_count)`
     /// - `field_index`: フィールド名 → Vec インデックス（own フィールド名 + trait 修飾名 + unqualified alias）
     /// - `field_mutability_vec`: スロットインデックス → 元の可変フラグ
     /// - `field_tags`: スロットインデックス → **実行時型判定タグ**（`store_field` が使う）
+    /// - `field_checks`: スロットインデックス → **`Other` タグの追加判定**（`store_field` が使う）
     /// - `field_count`: スロット総数
     ///
-    /// ⚠⚠ `field_tags` は `field_mutability_vec` と**必ず同じ順序・同じ個数**で積むこと。
-    /// ずれると `store_field` が**別のフィールドの型**で検査する（黙って誤った値を通す／
-    /// 正しい値を弾く）。だから 2 つを同じループで push している。
+    /// ⚠⚠ `field_tags` / `field_checks` は `field_mutability_vec` と**必ず同じ順序・同じ個数**で
+    /// 積むこと。ずれると `store_field` が**別のフィールドの型**で検査する（黙って誤った値を
+    /// 通す／正しい値を弾く）。だから 3 つを同じループで push している。
     pub(crate) fn build_field_index(
         &self,
         own_fields: &[(String, bool, String)],
         bases: &[String],
-    ) -> (HashMap<String, usize>, Vec<bool>, Vec<crate::vm::op::TypeTag>, usize) {
+    ) -> (
+        HashMap<String, usize>,
+        Vec<bool>,
+        Vec<crate::vm::op::TypeTag>,
+        Vec<crate::interpreter::value::FieldCheck>,
+        usize,
+    ) {
         use crate::vm::op::TypeTag;
         let mut field_index: HashMap<String, usize> = HashMap::new();
         let mut field_mutability_vec: Vec<bool> = Vec::new();
         let mut field_tags: Vec<TypeTag> = Vec::new();
+        let mut field_checks: Vec<crate::interpreter::value::FieldCheck> = Vec::new();
         let mut idx = 0usize;
 
         // C ABI 準拠レイアウト（.claude/skills/c-abi-interop/SKILL.md P0b）:
@@ -750,6 +793,7 @@ impl Interpreter {
                         field_index.insert(fname.clone(), idx);
                         field_mutability_vec.push(*is_mutable);
                         field_tags.push(TypeTag::of(type_ann));
+                        field_checks.push(self.classify_field(type_ann));
                         idx += 1;
                     }
                 }
@@ -762,15 +806,17 @@ impl Interpreter {
             if let Some(&existing_idx) = field_index.get(fname.as_str()) {
                 field_mutability_vec[existing_idx] = *is_mutable;
                 field_tags[existing_idx] = TypeTag::of(type_ann);
+                field_checks[existing_idx] = self.classify_field(type_ann);
                 continue;
             }
             field_index.insert(fname.clone(), idx);
             field_mutability_vec.push(*is_mutable);
             field_tags.push(TypeTag::of(type_ann));
+            field_checks.push(self.classify_field(type_ann));
             idx += 1;
         }
 
-        (field_index, field_mutability_vec, field_tags, idx)
+        (field_index, field_mutability_vec, field_tags, field_checks, idx)
     }
 
     /// ソーステキストをファイル名と対応付けて登録する。

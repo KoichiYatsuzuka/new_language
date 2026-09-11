@@ -191,6 +191,28 @@ pub struct FnValue {
 }
 
 
+/// `TypeTag::Other` のフィールドに対する追加の実行時判定（A-4）。
+///
+/// `ClassValue::field_checks` の要素。`store_field` はインスタンスの値を入れる前にこれを見る。
+///
+/// ⚠⚠ **Arrow はクラス継承を許していない**（`class C(Base)` の `Base` は trait だけ。
+/// 許さない旨は `parser/classes.rs` が
+/// `cannot inherit from ... (only traits are allowed as bases)` で弾く）。
+/// だから「クラス型フィールドはクラス名の**完全一致**」で判定でき、祖先を遡る必要が無い。
+/// この前提が崩れたら（クラス継承を入れたら）`Class` の判定を継承チェーン探索へ変えること。
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldCheck {
+    /// 判定しない（`int`/`float`/`str`/`bool` は `field_tags` が見る。
+    /// 型変数・未定義名・`list[T]`・`Union[...]`・後から定義されるクラスもここ）。
+    None,
+    /// クラス型。インスタンスのクラス名が**完全一致**すること（継承が無いので一致のみ）。
+    Class(std::rc::Rc<str>),
+    /// trait 型。インスタンスの `bases` にこの trait を含むこと（または自身が同名）。
+    Trait(std::rc::Rc<str>),
+    /// protocol 型。**構造的**に満たすかを見る（必須メンバーが全て在ること）。
+    Protocol(std::rc::Rc<[String]>),
+}
+
 /// クラス定義の実行時表現。インスタンス化（`instantiate`）の雛形となる。
 ///
 /// - `name`: クラス名（`new_type` では派生名に上書きされる）
@@ -236,6 +258,25 @@ pub struct ClassValue {
     ///
     /// ⚠ `field_mutability_vec` と**同じ順序・同じ個数**（`build_field_index` が同じループで積む）。
     pub field_tags: Vec<crate::vm::op::TypeTag>,
+    /// スロットインデックス → **`TypeTag::Other` のフィールドの追加判定**（`build_field_index` が組む）。
+    ///
+    /// `TypeTag` は `int`/`float`/`str`/`bool` しか区別できないので、クラス型・trait 型の
+    /// フィールドは `Other` に落ちて**素通り**していた（A-3 時点の残り穴）。結果、
+    ///
+    /// ```arrow
+    /// mut xs: list = [Cat(2), 3]   # 要素型なし ⇒ xs[0] は Unresolved
+    /// h.pet = xs[0]                # pet: Dog なのに Cat が黙って入る
+    /// ```
+    ///
+    /// ⚠ **判定は「クラス定義時に 1 度だけ」行う。** 実行時にはクラス名のレジストリが
+    /// 無く、毎回スコープを引くのは代入の hot path には重い。定義時に注釈を
+    /// protocol / trait / クラス / 判定不能へ分類して畳んでおく。
+    ///
+    /// ⚠ **判定できなければ通す**（`FieldCheck::None`）。型変数・未定義名・後から定義される
+    /// クラスはここに落ちる。取りこぼす方へ倒す（`field_tags` と同じ方針）。
+    ///
+    /// ⚠ `field_mutability_vec` / `field_tags` と**同じ順序・同じ個数**。
+    pub field_checks: Vec<FieldCheck>,
     /// フィールド名 → アクセス可能性 のマップ。プライベート・保護フィールドのアクセス制御に使用する。
     pub field_access: HashMap<String, Accessibility>,
     /// メソッド名 → アクセス可能性 のマップ。プライベート・保護メソッドのアクセス制御に使用する。
@@ -291,6 +332,7 @@ impl ClassValue {
             field_count: 0,
             field_mutability_vec: vec![],
             field_tags: vec![],
+            field_checks: vec![],
             field_access: HashMap::new(),
             method_access: HashMap::new(),
             static_method_names: HashSet::new(),
@@ -374,6 +416,7 @@ impl ClassValue {
             field_count: self.field_count,
             field_mutability_vec: self.field_mutability_vec.clone(),
             field_tags: self.field_tags.clone(),
+            field_checks: self.field_checks.clone(),
             field_access: self.field_access.clone(),
             method_access: self.method_access.clone(),
             static_method_names: self.static_method_names.clone(),

@@ -102,6 +102,7 @@ p.x = "w"           p.x = "w"
 | **0-12** | **既定値の型検査**（仮引数・`const`・`static mut`） | **✅ 完了**（2026-09-11） |
 | **A-2** | **具体化済みジェネリクスを型注釈として扱う**（テンプレートの偽陽性修正） | **✅ 完了**（2026-09-11） |
 | **A-3** | **boxed レイアウトのフィールドを実行時に検査する**（黙って不整合な型が入る穴） | **✅ 完了**（2026-09-11） |
+| **A-4** | **クラス型・trait 型・protocol 型のフィールドも検査する**（`TypeTag::Other` の素通り） | **✅ 完了**（2026-09-11） |
 | R3 | フィールドのオフセット化 | **✅ 完了として閉じた**（2026-09-08。原計画に未実行分は無かった） |
 
 ---
@@ -1127,6 +1128,115 @@ stderr の一致ではない（それは `compare_outputs.ps1` の担当）。�
 
 **追加した例題**: `examples/classes/field_type_runtime.ar` ／ `field_type_runtime_error.ar`
 
+### A-4 — クラス型・trait 型・protocol 型のフィールドも検査する 【✅ 完了 2026-09-11】
+
+#### 何が壊れていたか
+
+A-3 で boxed 経路の検査を入れたが、判定に使う `TypeTag` は
+`int` / `uint` / `float` / `str` / `bool` / `Any` しか区別しない。**クラス名・trait 名・
+protocol 名は `TypeTag::Other` に落ちて素通り**していたので、A-3 の後もまだこれが通った:
+
+```arrow
+class Dog:
+    mut n: int
+class Cat:
+    mut m: int
+class Holder:
+    mut pet: Dog
+    mut label: str
+
+mut h = Holder(Dog(1), "h")
+mut xs: list = [Cat(2), 3]   # 要素型なし ⇒ xs[0] は Unresolved（静的には通る）
+h.pet = xs[0]
+print(h.pet.m)               # 2 ← Dog に無いフィールドが読めてしまう
+```
+
+⚠ **静的検査では届かない。** `mut xs: list` は要素型を持たないので `xs[0]` は
+`Unresolved`。要素型を書けば静的に弾ける（実測: `list[Cat]` にすると
+`field 'pet' of class 'Holder' is declared 'Dog' but got 'Cat'`）が、
+注釈は補助であって前提にはできない（D ポリシー）。
+
+#### 実装したもの
+
+| 層 | 対象 | 内容 |
+|---|---|---|
+| 型情報 | `FieldCheck`（新設 enum） | `None` / `Class(name)` / `Trait(name)` / `Protocol(required)` |
+| 型情報 | `ClassValue.field_checks: Vec<FieldCheck>` | スロット順。`field_tags` と**同じループ**で積む |
+| 分類 | `Interpreter::classify_field`（新設） | 型注釈を**クラス定義時に 1 度だけ**分類する |
+| 検査 | `store_field` の boxed 分岐 | 値が `Value::Instance` のときだけ `field_checks` を見る |
+
+⚠⚠ **Arrow はクラス継承を許していない** — `class C(Base)` の `Base` は trait だけで、
+`parser/classes.rs` が `cannot inherit from ... (only traits are allowed as bases)` で弾く。
+だから**クラス型フィールドはクラス名の完全一致で判定でき、祖先を遡る必要が無い**。
+⚠ この前提が崩れたら（クラス継承を入れたら）`FieldCheck::Class` の判定を継承チェーン
+探索へ変えること。`FieldCheck` の doc にも同じ注意を置いた。
+
+⚠ **分類はクラス定義時に 1 度だけ。** 実行時にはクラス名のレジストリが無く（`ClassValue.bases`
+は名前の `Vec<String>` だけ）、代入ごとにスコープを引くのは hot path には重い。
+定義時に protocol / trait / クラス / 判定不能へ畳んでおけば `store_field` は O(1) で済む。
+
+⚠⚠ **判定できないものは必ず通す。** 型変数（`T`）・`list[T]`・`Union[...]`・型引数つきの名前・
+未定義名・**このクラスより後に定義されるクラス**は `FieldCheck::None` に落ちる。
+特に後者は「定義順に依存して検査が消える」ので、**取りこぼす方へ倒す**のが必須
+（逆に倒すと正しいコードが定義順で落ちる）。
+
+⚠ **判定するのは値が `Value::Instance` のときだけ。** `CsObject`・ネイティブハンドル・
+`None` などは判定材料が無いので通す。
+⚠ `new_type` ラッパは `new_type_base` が一致すれば受ける（`new_type M: Dog` を `Dog` へ）。
+⚠ protocol は**構造的**に見る（必須メンバーが全て在るか）。trait の名前的判定との違いを
+例題 `field_class_type.ar` に残した（`Dog` は `HasN` を宣言していないが受理される）。
+
+#### 型引数つきの名前を対象外にした理由
+
+`list[int]` / `Union[...]` / `Box[int]` は `FieldCheck::None`。要素型まで見るのは代入ごとには
+重く、さらに `Box[int]` は**実体化後のクラス名が `Box[int]` とは別**なので名前一致では
+判定できない。⚠ ただしテンプレートクラスの**フィールド**は実体化時に型引数で置換される
+ので、`Box[Dog]` の `v` は `Dog` として分類され検査される（実測で確認）。
+
+#### 確認した範囲
+
+| 形 | 結果 |
+|---|---|
+| クラス型フィールドへ同一クラス | ✅ 通る |
+| クラス型フィールドへ別クラス（`Unresolved` 経由） | ✅ 弾く ← **塞いだ穴** |
+| trait 型フィールドへ実装クラス | ✅ 通る |
+| protocol 型フィールドへ構造一致クラス（宣言なし） | ✅ 通る |
+| `Box[Dog]` の `v` へ `Dog` / `Cat` | ✅ 通る / ✅ 弾く（置換後も検査される） |
+| `Any` / `list[int]` フィールド | ✅ 通す（判定対象外） |
+
+#### ゲート結果
+
+基準は HEAD = `ef95d03`（A-3）から作成（A-3 と同じ退避 → `git show HEAD:<path>` → 復元手順）。
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` のみ |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 75/75 identical・stale 0 |
+| `compare_outputs.ps1 -A <A-3>` | 182/183・差分は新規 `field_class_type_error.ar` のみ（**既存例題は完全に不変**） |
+| `compare_bytecode.ps1 -A <A-3>` | 202/202 identical |
+| `compare_import_paths.ps1 -A <A-3>` | 13/13 identical |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **不要**（interpreter だけの変更） |
+
+⚠ `field_type_runtime_error.ar` の `$knownDiff` 登録は**外した**。到達不能行を末尾から
+削った（`compare_bytecode` の偽差分対策）結果、stdout が impl_python と一致するように
+なったため。STALE 報告で気づいた。
+
+**追加した例題**: `examples/classes/field_class_type.ar` ／ `field_class_type_error.ar`
+
+#### ⚠ 調査中に見つけた別件（型検査の穴ではない）
+
+**`Optional[T]` は Arrow の綴りとして存在しない。** キーワードは `Union` と `Option` だけで
+（`src/lexer/keyword.rs`）、`Optional` は素の識別子なので `parse_type_expr` が
+`[...]` を読み飛ばし、注釈が `"Optional"` になる。そのため
+`let a: Optional[int] = 1` が `'a' is declared 'Optional' but initialized with 'int'` という
+**分かりにくいエラー**になる（「未知の型」と言うべき）。
+⚠ 一方 `value_matches_type_ann` は `"Optional["` を `Option[` の別名として受ける分岐を
+持っており、`type_check/types.rs` の `from_ann` は持たない — **実装間で食い違っている**。
+正しいコードは壊れていない（`Optional` は元から無効）ので本計画の対象外。→ §7
+
 ### R3 — フィールドのオフセット化 【✅ 完了として閉じた 2026-09-08】
 
 **⚠ 着手時の前提が誤っていた。** 「計画は多相 IC・実装は単相 IC ＝ 差分が未実装」と報告したが、
@@ -1241,7 +1351,9 @@ probes       : 77,400,461
 | `569ae5a` | **0-11** テンプレート実体化検査の穴 2 件 |
 | `efa8012` | **0-12** 既定値の型検査（仮引数・`const`・`static mut`） |
 | `cbbf07f` | **A-2** 具体化済みジェネリクスを型注釈として扱う |
-| （本コミット） | **A-3** boxed レイアウトのフィールドを実行時に検査する |
+| `ef95d03` | **A-3** boxed レイアウトのフィールドを実行時に検査する |
+| `ca7625a` | `stale_doc_refs` の誤検知 2 件を直す（副産物） |
+| （本コミット） | **A-4** クラス型・trait 型・protocol 型のフィールドも検査する |
 
 ### 型検査に足した検査
 
@@ -1303,7 +1415,7 @@ probes       : 77,400,461
 `classes/protocol_sites{,_error}.ar` ／ `classes/trait_conformance{,_error}.ar` ／
 `classes/trait_field_redeclare_error.ar` ／ `classes/class_virtual_method_error.ar` ／
 `typing/default_value_type{,_error}.ar` ／ `typing/generic_type_ann{,_error}.ar` ／
-`classes/field_type_runtime{,_error}.ar`
+`classes/field_type_runtime{,_error}.ar` ／ `classes/field_class_type{,_error}.ar`
 
 ### 副産物
 
@@ -1322,6 +1434,7 @@ probes       : 77,400,461
 | 2 | **複合代入 `o.f += v` の型検査** — 格納されるのは `f <op> v` の結果なので、二項演算の結果型を求める必要がある |
 | ~~9~~ | ~~**テンプレートクラスのインスタンスが `int`→`float` 昇格をしない**（A-2 で発見）~~ → **A-3 で解消**（boxed 経路に昇格と検査を入れた） |
 | 10 | **`uint` 注釈と `Value::UInt` がずれている** — `let x: uint = 5` も `f(v: uint)` も束縛するのは `Value::Int` で、`Value::UInt` はハンドル値と uint 同士の除算からしか生まれない。一方 `value_matches_type_ann` / `TypeTag::matches` は `uint` に `Value::UInt` を要求するので、**注釈どおりの値が流れていない**。A-3 は `store_field` 内で整数族を相互許容して回避しているが、本筋は「`uint` 注釈の束縛点で `Value::UInt` を作る」か「`uint` を `int` の別名に落とす」かの決着 |
+| 12 | **`Optional[T]` の扱いが実装間で食い違っている** — キーワードは `Union` / `Option` だけなので `Optional` は素の識別子になり、`parse_type_expr` が `[...]` を捨てて注釈が `"Optional"` になる。`value_matches_type_ann`（実行時）は `"Optional["` を `Option[` の別名として受ける分岐を持つのに `from_ann`（静的）は持たない。`Optional` を正式な綴りにするか、`Optional` を未知の型として明確に弾くかの決着が要る（今は分かりにくい型不一致エラーになる） |
 | 11 | **`crates/arrow-frontend/target/` が追跡されているせいで `git worktree add` が失敗する**（`Filename too long`）。A/B の基準ビルドを worktree で作れない（#5 と同根） |
 | 8 | **自由関数の `...` 本体が no-op のまま** — `fn g() -> int: ...` が `None` を返す。⚠ `.ars` スタブの主要な形（`libm.ars` は数十個）なので、禁止するならスタブ文脈の判別が必要（自由関数には `arrow_class_names` に相当する集合が無い） |
 | 4 | **添字代入 `a[i] = v`** — 要素型と値の照合をしていない |

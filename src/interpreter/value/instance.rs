@@ -338,6 +338,46 @@ impl InstanceData {
             if !tag_ok {
                 return false;
             }
+            // ── `Other` タグの追加判定（A-4）──────────────────────────────
+            //
+            // `TypeTag` は `int`/`float`/`str`/`bool` しか区別しないので、**クラス型・
+            // trait 型・protocol 型のフィールドは `Other` に落ちて素通り**していた。
+            // そのため A-3 の後もまだ次が黙って通っていた:
+            //
+            //     mut xs: list = [Cat(2), 3]   # 要素型なし ⇒ xs[0] は Unresolved
+            //     h.pet = xs[0]                # pet: Dog なのに Cat が入る
+            //
+            // ⚠ **判定するのは値が `Value::Instance` のときだけ。** `CsObject`・
+            //    ネイティブハンドル・`None` などは判定材料が無いので通す（取りこぼす方へ倒す）。
+            if let Value::Instance(v_rc) = &val {
+                let ok = match self.class.field_checks.get(idx) {
+                    // ⚠ Arrow はクラス継承を許さない（trait だけが base）ので**完全一致**でよい。
+                    Some(FieldCheck::Class(expected)) => {
+                        let vb = v_rc.borrow();
+                        vb.class.name.as_str() == &**expected
+                            // new_type ラッパは基底名でも受ける（`new_type M: Dog` を Dog へ）。
+                            || vb.class.new_type_base.as_deref() == Some(&**expected)
+                    }
+                    // trait 型は実装クラスを受ける（自身が同名のこともある）。
+                    Some(FieldCheck::Trait(expected)) => {
+                        let vb = v_rc.borrow();
+                        vb.class.name.as_str() == &**expected
+                            || vb.class.bases.iter().any(|b| b.as_str() == &**expected)
+                    }
+                    // protocol は**構造的**に見る（必須メンバーが全て在るか）。
+                    Some(FieldCheck::Protocol(req)) => {
+                        let vb = v_rc.borrow();
+                        req.iter().all(|m| {
+                            vb.class.field_index.contains_key(m.as_str())
+                                || vb.class.methods.contains_key(m)
+                        })
+                    }
+                    _ => true,
+                };
+                if !ok {
+                    return false;
+                }
+            }
             self.boxed_fields[idx] = Some((val, mutable));
             true
         }

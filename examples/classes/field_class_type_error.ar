@@ -1,0 +1,35 @@
+# field_class_type_error.ar — クラス型フィールドへ別クラスを入れると実行時に弾く（A-4）
+#
+# 正常系は field_class_type.ar
+#
+# ## なぜ実行時検査が要るのか
+#
+# `xs` は `list`（要素型なし）なので `xs[0]` の型は `Unresolved` になり、静的検査は
+# `h.pet = xs[0]` を通す。A-3 でフィールドの実行時検査を入れたが、判定に使う `TypeTag` は
+# `int`/`float`/`str`/`bool` しか区別しないため、**クラス名は `TypeTag::Other` に落ちて
+# 素通り**していた。結果、`pet: Dog` のフィールドに `Cat` が黙って居座り、
+# `h.pet.m` という Dog に無いフィールドが読めてしまっていた。
+#
+# 期待されるエラー:
+#   TypeError: value does not match declared type of field 'pet'
+
+class Dog:
+    mut n: int
+
+class Cat:
+    mut m: int
+
+class Holder:
+    mut pet: Dog
+    mut label: str
+
+mut h = Holder(Dog(1), "h")
+
+mut xs: list = [Cat(2), 3]
+
+print("代入前:", h.pet.n)       # 1
+
+# ⚠ これを**最後の文**にしておくこと。後ろに文を置くと、実行時エラーで停止した時点で
+#   その文の chunk がコンパイルされず、`compare_bytecode.ps1` が
+#   「基準だけが末尾 chunk をダンプした」差分を出す（バイトコード自体は同一）。
+h.pet = xs[0]                   # ⛔ Cat を Dog フィールドへ

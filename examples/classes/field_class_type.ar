@@ -1,0 +1,91 @@
+# field_class_type.ar — クラス型・trait 型・protocol 型のフィールドも実行時に検査すること（A-4）
+#
+# ## 何が壊れていたか
+#
+# A-3 で boxed レイアウトのフィールド検査を入れたが、判定に使う `TypeTag` は
+# `int` / `uint` / `float` / `str` / `bool` / `Any` しか区別しない。**クラス名・trait 名・
+# protocol 名は `TypeTag::Other` に落ちて素通り**していたため、まだこれが黙って通っていた:
+#
+#     mut xs: list = [Cat(2), 3]   # 要素型なし ⇒ xs[0] は Unresolved（静的には通る）
+#     h.pet = xs[0]                # pet: Dog なのに Cat が入る
+#
+# ⇒ フィールドの型注釈を**クラス定義時に 1 度だけ** `FieldCheck` へ分類して
+#   `ClassValue::field_checks` に畳み、`store_field` がそれを見るようにした。
+#   実行時にクラス名のレジストリは無く、代入ごとにスコープを引くのは hot path に重いため。
+#
+# ⚠⚠ Arrow は**クラス継承を許していない**（`class C(Base)` の `Base` は trait だけ）。
+#   だからクラス型フィールドは**クラス名の完全一致**で判定でき、祖先を遡る必要が無い。
+#
+# 弾かれる例は field_class_type_error.ar
+
+print("=== クラス型フィールドは同一クラスを受ける ===")
+
+class Dog:
+    mut n: int
+
+class Holder:
+    mut pet: Dog
+    mut label: str
+
+mut h = Holder(Dog(1), "h")
+h.pet = Dog(7)
+print(h.pet.n)                  # 7
+
+print("=== trait 型フィールドは実装クラスを受ける ===")
+
+trait Named:
+    mut name: str
+
+class Person(Named):
+    mut age: int
+
+class TBox:
+    mut who: Named
+    mut label: str
+
+mut tb = TBox(Person("a", 1), "t")
+tb.who = Person("b", 2)
+print(tb.who::Named.name)       # b
+
+print("=== protocol 型フィールドは構造的に判定する ===")
+
+# protocol は**名前ではなく形**で合う。`Dog` は `HasN` を宣言していないが `n: int` を
+# 持つので受理される（trait の名前的判定との違い）。
+protocol HasN:
+    mut n: int
+
+class PBox:
+    mut p: HasN
+    mut label: str
+
+mut pb = PBox(Dog(1), "p")
+pb.p = Dog(9)
+print(pb.p.n)                   # 9
+
+print("=== 判定できないものは通す ===")
+
+# ⚠ `list[T]` / `Union[...]` / 型引数つきの名前・型変数・**このクラスより後に定義される
+#   クラス**は `FieldCheck::None` に落ちる。取りこぼす方へ倒す方針（誤検知で正しい
+#   コードを落とさない）。
+class Loose:
+    mut items: list[int]
+    mut slot: Any
+    mut label: str
+
+mut lo = Loose([1, 2], 1, "l")
+lo.slot = Dog(3)                # `Any` なので何でも入る
+lo.items = [9]
+print(lo.items)                 # [9]
+
+print("=== 型変数のフィールドは見送られる ===")
+
+# テンプレートは実体化時に型引数で置換されるので、`Box[Dog]` の `v` は `Dog` として
+# 検査される。置換できなかった型変数は `FieldCheck::None`。
+class Box[T]:
+    mut v: T
+
+mut bd = Box[Dog](Dog(4))
+bd.v = Dog(5)
+print(bd.v.n)                   # 5
+
+print("done")

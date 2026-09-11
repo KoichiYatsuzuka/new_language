@@ -460,7 +460,7 @@ impl Interpreter {
                 _ => {}
             }
         }
-        let (field_index, field_mutability_vec, field_tags, field_count) =
+        let (field_index, field_mutability_vec, field_tags, field_checks, field_count) =
             self.build_field_index(&own_field_order, &tmpl.bases);
         let cls = Rc::new(ClassValue {
             bases: tmpl.bases.clone(),
@@ -473,6 +473,7 @@ impl Interpreter {
             field_count,
             field_mutability_vec,
             field_tags,
+            field_checks,
             field_access,
             method_access,
             static_method_names,
