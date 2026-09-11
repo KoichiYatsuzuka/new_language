@@ -27,3 +27,5 @@ vscode-extension-archived
 .claude/worktrees
 crates/arrow-frontend/target/debug
 crates/arrow-frontend/target/wasm32-unknown-unknown
+crates/arrow-frontend/target
+crates/arrow-frontend/target
