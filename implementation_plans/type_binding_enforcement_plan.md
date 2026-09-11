@@ -1237,6 +1237,71 @@ print(h.pet.m)               # 2 ← Dog に無いフィールドが読めてし
 持っており、`type_check/types.rs` の `from_ann` は持たない — **実装間で食い違っている**。
 正しいコードは壊れていない（`Optional` は元から無効）ので本計画の対象外。→ §7
 
+### 監査 — `enum` バリアント値 / `match` パターン束縛 / `static` 【🔍 調査のみ 2026-09-12】
+
+A-4 完了時に「未監査」として残した 3 領域を実コードで確かめた。**実装はしていない**（判断が
+要るものが含まれる）。すべて実測で、対照（通常の変数・`match` 文 vs 式）も取った。
+
+#### 1. `match` パターン束縛 — **そもそも存在しない**
+
+`MatchPattern` は `Case(Expr)` と `IsType(String)` の 2 つだけ（`src/ast.rs`）。
+**`case v:` は「変数 `v` の値との比較」**であって捕捉ではない（`closure_capture_expr_forms.ar`
+の `case key:` が `key == 7` との比較であることがその実例）。
+⇒ **検査すべき「束縛」は無い。**「未監査」項目としては空振り。
+
+ただし隣接する 2 件が出た:
+
+| # | 症状 | 原因 |
+|---|---|---|
+| M-1 | **`is <存在しない型名>` が無検査** — `is NoSuchType:` が黙って通り、その腕は永久に死ぬ。さらに腕の中では対象変数が存在しないクラスへ絞り込まれるので**メンバーアクセスが全て無検査**になる（`d.totally_missing_field` が通った） | `type_from_guard_name`（`type_check/decorator.rs:133`）が未知の名前を検証せず `NamedInstance(other)` にする。`known_class_names` と突き合わせていない |
+| M-2 | **`is` の絞り込みが `match` 式では効かない** — `match v:`（文）では `let s: str = v.n` が正しく落ちるのに、`let r = match v ->int:`（式）では通ってしまう | `check_match`（`type_check/stmt/check.rs:512`）は `IsType` で対象を再宣言して絞り込むが、`Expr::MatchExpr`（`type_check/infer.rs:283`）は `Case` の infer と腕本体の検査しかせず**絞り込みを一切しない** |
+
+#### 2. `enum` バリアント値 — 検査は実行時にしか無い
+
+| # | 症状 | 原因 |
+|---|---|---|
+| E-1 | **呼ばれない関数の中の不正な enum が検出されない** — `fn never_called(): enum Bad: A = "x"` を持つプログラムが最後まで完走する。最上位の `enum` なら `TypeError: enum variant 'A' value must be int, got 'str'` が出る | 値検査は `build_enum_classes`（実行時）にしか無い。**定義が実行されない経路は素通り**する |
+| E-2 | **`Color.Red` と `Color.Red.value` の静的型が両方 `Unresolved`** — `let s1: str = Color.Red.value` が通って `1` を表示し、`let s2: int = Color.Red` が通って enum オブジェクトの repr を表示する | 型検査の `Stmt::EnumDef` アーム（`type_check/stmt/check.rs:394`）が `{ name, .. }` で **`variants` を丸ごと無視**している。enum 名と `enum_item_<name>` を `known_class_names` に入れるだけで、メンバーも `value` フィールドも登録しない |
+
+⚠ `.value` は `int`、`Color.Red` は `NamedInstance("enum_item_Color")` になるべき。
+⚠ **A-3/A-4 はこれをフィールド境界では捕まえる** — `c.tag = Color.Red.value`（`tag: str`）は
+`TypeError: value does not match declared type of field 'tag'` になる（実測）。
+静的型が `Unresolved` でも実行時タグが効くため。変数束縛には届かない（下の V-1）。
+
+#### 3. `static` — 2 系統あり、片方に実バグ
+
+`static` には別物が 2 つある。**混同しないこと。**
+
+| 形 | AST | 型注釈 |
+|---|---|---|
+| 関数ローカル | `Stmt::Static(name, expr, span)` | **持てない**（AST にスロットが無い） |
+| クラス本体 | `FieldKind::StaticMut`（`static mut name: Type [= default]`） | 持つ |
+
+| # | 症状 | 原因 |
+|---|---|---|
+| **S-1** | **インスタンス経由の代入が「不変フィールド」として拒否される** — `c.n = 5` が `cannot assign to immutable field 'n' of class 'C'`。⚠ `FieldKind::StaticMut` の仕様は「**インスタンス経由・クラス名経由どちらでもアクセス・代入可能**」（`src/ast.rs` の doc）で、**実行時は実装済み**（`attrs.rs:407` が `inst_class.static_vars` を更新する）。静的検査だけが塞いでいる = **層どうしの食い違い** | `registry/builder.rs:389` の `let mutable = matches!(kind, FieldKind::Mut);` が **`StaticMut` を可変として数えていない**。`stmt/check.rs:371` にも同じ式がある |
+| **S-2** | **クラス名経由の代入に型検査が一切無い** — `C.n = xs[0]` が `static mut n: int` へ `str` を黙って入れる（`C.n = bad` と表示） | 静的側に `C.n = v` を見る経路が無く、実行時側も `attrs.rs:407` / `:443` が **`*cell.borrow_mut() = rhs;` だけ**で型を見ない。`static_vars` は `Rc<RefCell<Value>>` のマップで **`boxed_fields` とは別物**なので、A-3/A-4 の `store_field` 検査が構造的に届かない |
+| S-3 | 関数ローカル `static mut` の再代入は**推論できれば静的に落ちる**（`n = "now a str"` → `'n' is declared 'int' but initialized with 'str'`。⚠ 再代入なのに「initialized with」という文言）。`Unresolved` 経由は素通り | 下の V-1 と同じ（通常変数と同じ扱い＝ static 固有ではない） |
+
+⚠ **S-1 が例題で露見しなかった理由**: `class_trait.ar` の `static mut entry_count: int` は
+`Registry.entry_count`（クラス名経由）でしか代入しておらず、**インスタンス経由の代入を
+書いた例題が 1 本も無い**。
+
+#### 4. 対照で出た別件（storage kind の差）
+
+| # | 症状 |
+|---|---|
+| **V-1** | **変数束縛には実行時の型検査が無い** — `mut n: int = 0; n = xs[0]` が黙って `"bad"` を格納する（注釈があっても同じ）。A-3/A-4 が閉じたのは**インスタンスフィールド**で、変数と `static_vars` は別の storage kind なので届かない |
+
+⇒ 実行時検査の有無は storage kind ごとに次のとおり:
+
+| storage kind | 実行時検査 |
+|---|---|
+| インスタンスフィールド（raw レイアウト） | ✅ 以前から |
+| インスタンスフィールド（boxed レイアウト） | ✅ **A-3 / A-4 で入れた** |
+| `static mut` クラス変数（`static_vars`） | ❌ 無い（S-2） |
+| 変数（`let` / `mut` / 関数ローカル `static mut`） | ❌ 無い（V-1） |
+
 ### R3 — フィールドのオフセット化 【✅ 完了として閉じた 2026-09-08】
 
 **⚠ 着手時の前提が誤っていた。** 「計画は多相 IC・実装は単相 IC ＝ 差分が未実装」と報告したが、
@@ -1434,6 +1499,13 @@ probes       : 77,400,461
 | 2 | **複合代入 `o.f += v` の型検査** — 格納されるのは `f <op> v` の結果なので、二項演算の結果型を求める必要がある |
 | ~~9~~ | ~~**テンプレートクラスのインスタンスが `int`→`float` 昇格をしない**（A-2 で発見）~~ → **A-3 で解消**（boxed 経路に昇格と検査を入れた） |
 | 10 | **`uint` 注釈と `Value::UInt` がずれている** — `let x: uint = 5` も `f(v: uint)` も束縛するのは `Value::Int` で、`Value::UInt` はハンドル値と uint 同士の除算からしか生まれない。一方 `value_matches_type_ann` / `TypeTag::matches` は `uint` に `Value::UInt` を要求するので、**注釈どおりの値が流れていない**。A-3 は `store_field` 内で整数族を相互許容して回避しているが、本筋は「`uint` 注釈の束縛点で `Value::UInt` を作る」か「`uint` を `int` の別名に落とす」かの決着 |
+| 13 | **S-1 `FieldKind::StaticMut` が可変として数えられていない** — `registry/builder.rs:389` と `stmt/check.rs:371` の `matches!(kind, FieldKind::Mut)`。インスタンス経由の `static mut` 代入が `cannot assign to immutable field` で塞がれる（実行時は実装済み＝層の食い違い）。**仕様どおりに直すだけなので判断は不要** |
+| 14 | **S-2 `static mut` クラス変数に型検査が無い**（静的・実行時とも）。`static_vars` は `boxed_fields` と別のマップなので A-3/A-4 が構造的に届かない。`store_field` と同じ `TypeTag` / `FieldCheck` を `static_vars` 側にも持たせるのが筋 |
+| 15 | **E-2 `enum` のメンバーと `.value` の静的型が `Unresolved`** — 型検査の `Stmt::EnumDef` が `variants` を無視している。`.value` を `int`、メンバーを `NamedInstance("enum_item_<name>")` として登録すれば閉じる |
+| 16 | **E-1 `enum` バリアント値の検査が実行時だけ** — 呼ばれない関数内の不正な enum が検出されない。静的化は容易（値が整数リテラル/整数式かを見る）だが、`a = g()` のような式値をどこまで静的に判定するかの線引きが要る |
+| 17 | **M-1 `is <型名>` が存在しない型名を検証しない** — 死んだ腕 ＋ 腕の中のメンバーアクセスが全て無検査になる。`known_class_names` と突き合わせて弾くべき（`type_from_guard_name`） |
+| 18 | **M-2 `is` の絞り込みが `match` 式では効かない** — `Expr::MatchExpr`（`infer.rs:283`）が `check_match` の絞り込みを持たない。**文と式で意味論が違う**のは避けたい |
+| 19 | **V-1 変数束縛に実行時の型検査が無い** — `mut n: int = 0; n = xs[0]` が黙って `str` を格納する。A-3/A-4 はインスタンスフィールドだけを閉じた。変数は storage kind が別（`Var` / スロット）で、hot path への影響が大きいので設計判断が要る |
 | 12 | **`Optional[T]` の扱いが実装間で食い違っている** — キーワードは `Union` / `Option` だけなので `Optional` は素の識別子になり、`parse_type_expr` が `[...]` を捨てて注釈が `"Optional"` になる。`value_matches_type_ann`（実行時）は `"Optional["` を `Option[` の別名として受ける分岐を持つのに `from_ann`（静的）は持たない。`Optional` を正式な綴りにするか、`Optional` を未知の型として明確に弾くかの決着が要る（今は分かりにくい型不一致エラーになる） |
 | 11 | **`crates/arrow-frontend/target/` が追跡されているせいで `git worktree add` が失敗する**（`Filename too long`）。A/B の基準ビルドを worktree で作れない（#5 と同根） |
 | 8 | **自由関数の `...` 本体が no-op のまま** — `fn g() -> int: ...` が `None` を返す。⚠ `.ars` スタブの主要な形（`libm.ars` は数十個）なので、禁止するならスタブ文脈の判別が必要（自由関数には `arrow_class_names` に相当する集合が無い） |
