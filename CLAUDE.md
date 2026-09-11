@@ -78,6 +78,7 @@ python -m impl_python examples/basics/control_flow.ar
 | `debug_session.ps1` | デバッガのステッピングの golden | **デバッガ / 行テーブル**を触ったとき |
 | `tw_stats.ps1` | ツリーウォークが定義文だけかの内訳 | **VM の適格範囲**を触ったとき |
 | `syntax_cov.ps1` | **例題が一度も書いていない構文**（`NESTED-GAP`） | **新しい構文・文脈**を扱うとき |
+| `type_obligations.ps1` | **型義務 94 件のどれで型検査が走っているか**（`STATIC`/`RUNTIME`/`NONE`）。退行すると exit 1 | **型検査を触ったとき**（`syntax_cov` が構文、こちらが型義務の網の目） |
 | `compare_wasm_frontend.ps1` | VS Code 拡張の wasm フロントエンドが `arrow.exe` と同じ診断を出すか | **lexer / parser / type_check を触ったとき**（拡張だけ解釈がずれるのを防ぐ唯一の網） |
 | `generate-codebase-map.ps1` | `codebase-map` skill のファイル木を再生成 | **ファイルを作成・移動・削除したら必ず** |
 

@@ -1,0 +1,15 @@
+# @id: F3
+# @obligation: trait フィールド代入 o::T.f = v
+# @baseline: RUNTIME
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+trait T:
+    mut n: int
+class C(T):
+    mut d: int
+mut c = C(1, 2)
+c::T.n = "s"
+print(c::T.n)

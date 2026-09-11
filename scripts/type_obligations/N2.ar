@@ -1,0 +1,13 @@
+# @id: N2
+# @obligation: enum バリアント値が非 int（未呼出関数内）
+# @baseline: NONE
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+fn f() -> int:
+    enum E:
+        A = "s"
+    return E.A.value
+print("reached")

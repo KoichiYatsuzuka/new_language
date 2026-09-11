@@ -1,0 +1,12 @@
+# @id: C16
+# @obligation: mut 引数に不変値を渡す
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+fn f(mut v: int) -> int:
+    return v
+let a: int = 1
+print(f(a))

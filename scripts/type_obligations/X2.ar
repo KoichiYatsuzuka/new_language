@@ -1,0 +1,13 @@
+# @id: X2
+# @obligation: if 式の block_return vs ->T
+# @baseline: RUNTIME
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+let r = if True ->int:
+    block_return "s"
+else:
+    block_return 1
+print(r)

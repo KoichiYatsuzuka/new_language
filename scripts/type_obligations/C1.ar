@@ -1,0 +1,11 @@
+# @id: C1
+# @obligation: 関数の実引数 vs 仮引数型
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+fn f(let v: int) -> int:
+    return v
+print(f("s"))

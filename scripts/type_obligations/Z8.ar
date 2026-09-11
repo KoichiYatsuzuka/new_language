@@ -1,0 +1,12 @@
+# @id: Z8
+# @obligation: new_type を基底型として使う
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+new_type Meters: float
+let m = Meters(1.0)
+let f2: float = m
+print(f2)

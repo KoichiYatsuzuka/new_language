@@ -1,0 +1,16 @@
+# @id: C12
+# @obligation: オーバーロード解決（該当なし）
+# @baseline: NONE
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+class C:
+    mut d: int
+    fn m(self, let v: int) -> int:
+        return v
+    fn m(self, let v: str) -> int:
+        return 0
+mut c = C(1)
+print(c.m(1.5))

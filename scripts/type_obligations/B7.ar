@@ -1,0 +1,12 @@
+# @id: B7
+# @obligation: タプル分解束縛 (LetTuple)
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+let t: tuple[int, str] = (1, "s")
+let a, let b = t
+let bad: int = b
+print(a, bad)

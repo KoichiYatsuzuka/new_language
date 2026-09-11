@@ -1,0 +1,12 @@
+# @id: C5
+# @obligation: テンプレート実体化の引数
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+class Box[T]:
+    mut v: T
+mut b = Box[int]("s")
+print(b.v)

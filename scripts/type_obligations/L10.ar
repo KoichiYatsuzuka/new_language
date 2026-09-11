@@ -1,0 +1,10 @@
+# @id: L10
+# @obligation: list[int] へ list[str] を代入（同型リテラル）
+# @baseline: STATIC
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+let xs: list[int] = ["a", "b"]
+print(xs)

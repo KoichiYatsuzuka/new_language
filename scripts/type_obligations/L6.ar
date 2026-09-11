@@ -1,0 +1,11 @@
+# @id: L6
+# @obligation: 添字の index が非 int
+# @baseline: RUNTIME
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+let xs: list[int] = [1, 2]
+let k: str = "a"
+print(xs[k])

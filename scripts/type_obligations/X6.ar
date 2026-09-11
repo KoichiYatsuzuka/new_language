@@ -1,0 +1,16 @@
+# @id: X6
+# @obligation: is に存在しない型名
+# @baseline: NONE
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+class Dog:
+    mut n: int
+let d = Dog(1)
+match d:
+    is NoSuchType:
+        print("hit")
+    is Dog:
+        print("dog")
