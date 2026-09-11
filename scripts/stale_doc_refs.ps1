@@ -45,12 +45,37 @@ $whitelist = @(
     # ベンチ・例題のファイル名（`examples/` の成果物であって Rust の識別子ではない）。
     'bench_for','bench_arith','bench_method_call','bottleneck_bench','dbg_generator',
     # ⚠ CPython の内部名。設計の対応関係を説明するのに要る（src に同名は無くて当然）。
-    'f_lasti','gi_iframe'
+    'f_lasti','gi_iframe',
+    # ⚠ **Python 側のユーザーコードの識別子**。python_converter の対応表が
+    #    「`def f(**opts)` の本体の `opts` → `kwargs`」のように Python が任意に付けられる
+    #    名前を例示するために要る（Arrow/Rust 側に同名は無くて当然）。
+    'opts'
 )
 
 $files = Get-ChildItem -Path $root -Recurse -Filter *.rs -File
+
+# ⚠ **識別子プールには兄弟クレートも入れる**（コメント収集は src/ のままにする）。
+#    src/ のコメントが `crates/arrow-frontend/` の関数を指すのは正当で、実際
+#    `src/lexer/editor_tokens.rs` は `analyze_json`（crates/arrow-frontend/src/analyze.rs）
+#    に言及している。プールが src/ だけだと**実在する識別子**を stale と報告してしまう。
+$crateFiles = @()
+$cratesRoot = Join-Path $repo 'crates'
+if (Test-Path $cratesRoot) {
+    # ⚠ target/ は除外する（ビルド成果物に識別子が埋まっていて何でも「実在」になる）。
+    $crateFiles = Get-ChildItem -Path $cratesRoot -Recurse -Filter *.rs -File |
+        Where-Object { $_.FullName -notmatch '[\\/]target[\\/]' }
+}
+
 $code = New-Object 'System.Collections.Generic.HashSet[string]'
 $comments = New-Object 'System.Collections.Generic.List[object]'
+
+foreach ($f in $crateFiles) {
+    foreach ($line in [System.IO.File]::ReadAllLines($f.FullName)) {
+        if ($line.TrimStart().StartsWith('//')) { continue }
+        $bare = [regex]::Replace($line, '//.*', '')
+        foreach ($m in [regex]::Matches($bare, '\w+')) { [void]$code.Add($m.Value) }
+    }
+}
 
 foreach ($f in $files) {
     $rel = $f.FullName.Substring($repo.Length + 1).Replace('\', '/')
