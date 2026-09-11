@@ -1,0 +1,10 @@
+# @id: K5
+# @obligation: Result 注釈 vs 右辺（let 束縛）
+# @baseline: NONE
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+let r: Result[int, str] = 1.5
+print("reached")

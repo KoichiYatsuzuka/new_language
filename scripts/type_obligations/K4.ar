@@ -1,0 +1,16 @@
+# @id: K4
+# @obligation: Intersection 注釈 vs 右辺（let 束縛）
+# @baseline: NONE
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+trait Alpha:
+    mut a: int
+trait Beta:
+    mut b: int
+class OnlyAlpha(Alpha):
+    mut d: int
+let v: Intersection[Alpha, Beta] = OnlyAlpha(1, 2)
+print("reached")

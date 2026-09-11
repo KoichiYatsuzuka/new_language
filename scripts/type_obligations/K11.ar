@@ -1,0 +1,15 @@
+# @id: K11
+# @obligation: Option[protocol] の戻り値に非適合クラス
+# @baseline: NONE
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+protocol Pr:
+    mut n: int
+class No:
+    mut m: int
+fn f() -> Option[Pr]:
+    return No(1)
+print(f())

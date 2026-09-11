@@ -1442,6 +1442,169 @@ if *first != InferredType::Unresolved && types.iter().all(|t| t == first) {
 Python 流の真偽性を採るなら `NONE` が正しい。`@baseline` には現状を焼いてあるので、
 仕様だと決めたら検体側にその旨を書くこと。
 
+### 棚卸し2 — 型の種類ごとの特例による漏れ 【🔍 調査のみ 2026-09-12】
+
+> プリミティブ、コレクション、class, trait, protocol, new_type, alias, 部分型, function,
+> type, enum などで、特例で検査が漏れるようなパターンがないか再検査してください
+
+#### 方法 — 軸を変える
+
+前回（型義務 94 件）は「**どの構文地点**で検査が走るか」を測った。今回は軸が違う:
+**プリミティブなら STATIC になる地点に別の型の種類を置き、検査が生き残るか**を見る。
+
+特例は `type_matches_exact` の**早期 return** として実装されているので、そこを全部読んで
+地のリストにした（下表）。そのうえで `InferredType` の 32 バリアントを材料に、
+**型の種類 × 検査地点（BIND / ARG / FIELD / RET）= 96 セル** ＋ 入れ子・部分型方向の
+25 件を実測した。
+
+#### 特例の地のリスト（`type_matches_exact` の早期 return）
+
+| # | 特例 | 危険度 |
+|---|---|---|
+| 1 | `arg_ty == Unresolved` → `true` | ⚠⚠ 原因①（前回記録） |
+| 2 | `expected == Any` → `true` | 設計どおり。**容器を越えては漏れない**（`list[Any]`→`list[int]` は捕まる・実測） |
+| 3 | `expected == Protocol(_)` → 任意の `NamedInstance` を受理 | ⚠⚠ 別途の適合検査が届かない経路で漏れる（下記 L-3） |
+| 4 | `expected == TypeVal` → 任意の `TypeValOf(_)` を受理 | 実害未確認 |
+| 5 | 素の容器 ↔ 型引数つき容器が**双方向**一致（`List`↔`ListOf` 等） | ⚠⚠ 原因②の実装本体 |
+| 6 | `ListLikeOf`: 要素型が取れなければ `true` | 同上 |
+| 7 | `NamedInstance` が **`__cast__[T]` を持てば T として受理** | ⚠⚠⚠ **偽受理**（下記 L-1） |
+| 8 | `class_implements_trait` による trait 部分型 | 正しい |
+
+#### 結果 — 96 セル中 79 が STATIC。漏れは 4 種類に集中
+
+| 型の種類 | BIND | ARG | FIELD | RET |
+|---|---|---|---|---|
+| `int` / `float` / `str` / `bool` | ✅ | ✅ | ✅ | ✅ |
+| `list[int]` / `set[int]` / `dict[str,int]` / `tuple[int,str]` | ✅ | ✅ | ✅ | ✅ |
+| 素の `list` / `dict` | ✅ | ✅ | ✅ | ✅ |
+| `Union` / `Option` | ✅ | ✅ | ✅ | ✅ |
+| `class` / `trait` / `protocol` / `new_type` / `alias` / `enum` / `type[T]` | ✅ | ✅ | ✅ | ✅ |
+| **`Any`** | ⛔ | ⛔ | ⛔ | ⛔ |
+| **`function[..]->T`** | ⛔ | ⛔ | ⛔ | ⛔ |
+| **`Box[T]`（テンプレート実体）** | ⛔ | ⛔ | ⛔ | ⛔ |
+| **`Result[T,E]`** | ⛔ | ✅ | ✅ | ✅ |
+| **`__cast__` を持つクラス** | ⛔ | ⛔ | RUNTIME | ⛔ |
+
+⚠ **`complex` / `None` / `Undefined` / `fixed_list` / `list_like` / `Self` / `type[trait]` は
+すべて正しく検査されている。** 部分型の方向（trait 下向き・protocol 下向き・`new_type` 両方向・
+`new_type` 同士）もすべて STATIC。`alias` の連鎖（`alias A2: A1`）も透過で正しい。
+
+#### 漏れの正体 — 3 つに分類できる（種類ごとの話ではない）
+
+##### L-1 ⚠⚠⚠ `__cast__[T]` は「変換される」と約束して**変換しない**
+
+`type_matches_exact` の末尾:
+
+```rust
+if let InferredType::NamedInstance(class_name) = arg_ty {
+    let cast_key = format!("__cast__[{}]", expected.to_string());
+    if let Some(methods) = self.registry.class_methods(class_name.as_str()) {
+        if methods.contains_key(&cast_key) { return true; }   // ← 受理するだけ
+    }
+```
+
+実測:
+
+```arrow
+class Conv:
+    mut n: int
+    fn __cast__[int](self) -> int:
+        return self.n
+let x: int = Conv(5)
+print("x =", x)      # x = <Conv object at 0x...>   ← Conv がそのまま入る
+print(x + 1)         # TypeError: unsupported operand types for `Add`: object and int
+```
+
+**静的検査は通し、変換は走らず、`int` 変数に `Conv` が居座る。** 容器経由でも漏れる
+（`let xs: list[int] = [Conv(5)]` → `[<Conv object>]`）。
+⇒ 受理するなら**暗黙変換を実際に挿入**するか、受理をやめて明示 `=> int` を要求するかの
+どちらかにしなければならない。**今は型検査が嘘をついている。**
+
+##### L-2 `Intersection` と `Result` は `let` 束縛で**右辺と照合していない**
+
+`resolve_declared_type`（`type_check/stmt/resolve.rs:184`）:
+
+```rust
+if let Some(InferredType::Intersection(types)) = InferredType::from_ann(ann) {
+    self.check_intersection_members(&types_cloned, None);   // 注釈自身の妥当性だけ
+    return InferredType::Intersection(types);               // ← rhs_ty と照合せず return
+}
+if let Some(InferredType::Result(ok_ty, err_ty)) = InferredType::from_ann(ann) {
+    self.validate_result_type(&ok_ty, &err_ty, None);        // ok != err だけ
+    return InferredType::Result(ok_ty, err_ty);             // ← 同じ
+}
+```
+
+⚠⚠ **0-1 の取り残し。** 同関数のコメントが
+「Protocol / Intersection / Result の 3 つだけが上で特別扱いされており、それ以外の注釈は
+存在しないのと同じだった」と書いている。0-1 で一般経路を直したとき、**この 3 つの
+早期 return はそのまま残った**。Protocol は `check_protocol_conformance` が照合するので
+実害が無いが、**`Intersection` と `Result` は照合が一切無い**。
+
+実測（BIND だけが漏れる ＝ 原因がこの関数であることの証拠）:
+
+| 型 | BIND | ARG | RET |
+|---|---|---|---|
+| `Intersection[Alpha, Beta]` ← 片方だけ実装 | ⛔ 通る | ✅ | ✅ |
+| `Intersection[int, str]` ← `1.5` | ⛔ 通る | ✅ | ✅ |
+| `Result[int, str]` ← `1.5` | ⛔ 通る | ✅ | ✅ |
+
+##### L-3 残りは全部「推論が型を作らない」＝ 原因①の再来
+
+`function` と `Box[T]` の漏れは**特例ではない**。比較器は正しく働く — 注釈があれば:
+
+| 式 | 推論結果 | 結果 |
+|---|---|---|
+| `let bs: Box[str] = …; let bi: Box[int] = bs` | `Box[str]` | ✅ `'bi' is declared 'Box[int]' but initialized with 'Box[str]'` |
+| `let f: function[int]->int` の `f` を `int` へ | `function{let param1:int}->int` | ✅ 捕まる |
+| **`Box[str]("s")`（実体化呼び出し）** | **`Unresolved`** | ⛔ `let x: int = Box[str]("s")` が通る |
+| **`wrong`（`fn` を名前で参照）** | **`Unresolved`** | ⛔ `let x: int = wrong` が通る |
+| `C(1)`（通常クラスの ctor・対照） | `C` | ✅ 捕まる |
+
+⇒ **`GenericInstance` / `Function` の比較を足す必要は無い。足すべきは推論規則**:
+テンプレート実体化の結果型（§7 #6）と関数値の型。`Unresolved` は万能受容体なので、
+この 2 つを埋めるだけで `Box[T]` と `function` の 8 セルが閉じ、容器経由の伝播
+（`list[Box[int]]` / `Option[Box[int]]` / `dict[str,Box[int]]` / `Union`）も同時に閉じる。
+
+#### protocol の不統一（特例 #3 の実害）
+
+protocol が**容器の内側**にあると経路によって挙動が変わる:
+
+| 形 | 結果 | 理由 |
+|---|---|---|
+| `let xs: list[Pr] = [No(1)]` | ✅ 捕まる | `resolve_protocols` が容器の内側まで届かず、`Pr` が**クラス名として**名前的に比較される（偶然正しい） |
+| `fn f() -> Option[Pr]: return No(1)` | ⛔ 通る | `Union([Protocol(Pr), None])` になり、特例 #3 が任意のクラスを受理 |
+| フィールド `mut items: list[Pr]` への代入 | ⛔ 通る | 同上 |
+
+⚠ 「偶然正しい」ものと「漏れる」ものが混ざっているので、`resolve_protocols` を容器の内側へ
+再帰させるか、特例 #3 を「適合検査を必ず呼ぶ」形に変えるかで**統一**が必要。
+
+#### その他の漏れ
+
+| ID | 内容 |
+|---|---|
+| K13 | **テンプレート型引数の個数違い** `Box[int, int]` が無検査（§7 #7） |
+| K14 | **別 enum のメンバー**を代入できる（`let v: A = B.Y`）。enum メンバーが `Unresolved`（前回 E-2） |
+| K15 | **`alias IB: Box[int]`** 経由でも `Box[str]` が通る（L-3 と同根） |
+
+#### 検体の追加
+
+`scripts/type_obligations/` に K4〜K15 の 12 件を追加した（型義務 **94 → 106 件**）。
+静的に検査されている割合は **41% → 37%** に下がった（分母が増え、漏れを足したため。
+実態が悪化したのではなく**見えていなかった漏れが可視化された**）。
+
+#### 所見 — 前回の着手順に足すもの
+
+L-1（`__cast__`）と L-2（`Intersection` / `Result`）は **原因①②とは独立で、局所的に直せる**:
+
+| 優先 | 項目 | 理由 |
+|---|---|---|
+| **最優先** | **L-2** | `resolve_declared_type` の 2 つの早期 return に照合を足すだけ。**10 行程度**で 2 種類の型が閉じる。0-1 の明確な取り残し |
+| **高** | **L-1** | 型検査が嘘をつく唯一の箇所。「暗黙変換を挿入する」か「受理をやめる」かの**仕様判断**が要る（`__cast__` の設計意図を決める必要がある） |
+| 高 | **L-3** | §7 #6（テンプレート実体化の戻り値型）＋ 関数値の型。推論規則 2 つで 8 セル＋伝播が閉じる |
+| 中 | protocol の不統一 | `resolve_protocols` を容器の内側へ再帰させる |
+| 中 | K13 / K14 | 型引数の個数検査・enum メンバーの型付け（前回 E-2 と同じ） |
+
 ### R3 — フィールドのオフセット化 【✅ 完了として閉じた 2026-09-08】
 
 **⚠ 着手時の前提が誤っていた。** 「計画は多相 IC・実装は単相 IC ＝ 差分が未実装」と報告したが、
@@ -1639,6 +1802,10 @@ probes       : 77,400,461
 | 2 | **複合代入 `o.f += v` の型検査** — 格納されるのは `f <op> v` の結果なので、二項演算の結果型を求める必要がある |
 | ~~9~~ | ~~**テンプレートクラスのインスタンスが `int`→`float` 昇格をしない**（A-2 で発見）~~ → **A-3 で解消**（boxed 経路に昇格と検査を入れた） |
 | 10 | **`uint` 注釈と `Value::UInt` がずれている** — `let x: uint = 5` も `f(v: uint)` も束縛するのは `Value::Int` で、`Value::UInt` はハンドル値と uint 同士の除算からしか生まれない。一方 `value_matches_type_ann` / `TypeTag::matches` は `uint` に `Value::UInt` を要求するので、**注釈どおりの値が流れていない**。A-3 は `store_field` 内で整数族を相互許容して回避しているが、本筋は「`uint` 注釈の束縛点で `Value::UInt` を作る」か「`uint` を `int` の別名に落とす」かの決着 |
+| 20 | **L-2 `Intersection` / `Result` 注釈が `let` 束縛で右辺と照合されない** — `resolve_declared_type`（`stmt/resolve.rs:184`）の 2 つの早期 return が注釈自身の妥当性だけ見て return する。0-1 の取り残し。**10 行程度で閉じる** |
+| 21 | **L-1 `__cast__[T]` が「変換される」と約束して変換しない** — `type_matches_exact` 末尾が `__cast__[T]` を持つクラスを T として受理するが暗黙変換を挿入しないので、`let x: int = Conv(5)` が `int` 変数に `Conv` を入れる。暗黙変換を挿入するか受理をやめるかの**仕様判断**が要る |
+| 22 | **L-3 テンプレート実体化 `Box[int](..)` と関数値 `fn` 名参照の推論型が `Unresolved`** — 比較器は正しいので**推論規則を足すだけ**で `Box[T]` / `function` の漏れと容器経由の伝播が閉じる（#6 と同根） |
+| 23 | **protocol が容器の内側にあると経路で挙動が変わる** — `list[Pr]` の BIND は偶然捕まるのに `Option[Pr]` の RET とフィールド代入は漏れる。`resolve_protocols` を容器の内側へ再帰させて統一する |
 | 13 | **S-1 `FieldKind::StaticMut` が可変として数えられていない** — `registry/builder.rs:389` と `stmt/check.rs:371` の `matches!(kind, FieldKind::Mut)`。インスタンス経由の `static mut` 代入が `cannot assign to immutable field` で塞がれる（実行時は実装済み＝層の食い違い）。**仕様どおりに直すだけなので判断は不要** |
 | 14 | **S-2 `static mut` クラス変数に型検査が無い**（静的・実行時とも）。`static_vars` は `boxed_fields` と別のマップなので A-3/A-4 が構造的に届かない。`store_field` と同じ `TypeTag` / `FieldCheck` を `static_vars` 側にも持たせるのが筋 |
 | 15 | **E-2 `enum` のメンバーと `.value` の静的型が `Unresolved`** — 型検査の `Stmt::EnumDef` が `variants` を無視している。`.value` を `int`、メンバーを `NamedInstance("enum_item_<name>")` として登録すれば閉じる |

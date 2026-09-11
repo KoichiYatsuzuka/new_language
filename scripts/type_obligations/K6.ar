@@ -1,0 +1,14 @@
+# @id: K6
+# @obligation: __cast__[T] を持つクラスが T として受理される（変換は走らない）
+# @baseline: NONE
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+class Conv:
+    mut n: int
+    fn __cast__[int](self) -> int:
+        return self.n
+let x: int = Conv(5)
+print("x =", x)

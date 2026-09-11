@@ -1,0 +1,14 @@
+# @id: K14
+# @obligation: 別 enum のメンバーを代入
+# @baseline: NONE
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+enum A:
+    X = 1
+enum B:
+    Y = 2
+let v: A = B.Y
+print("reached")

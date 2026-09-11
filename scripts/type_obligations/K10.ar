@@ -1,0 +1,13 @@
+# @id: K10
+# @obligation: Box[str] を Box[int] の引数へ
+# @baseline: RUNTIME
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+class Box[T]:
+    mut v: T
+fn take(let b: Box[int]) -> int:
+    return b.v + 1
+print(take(Box[str]("s")))

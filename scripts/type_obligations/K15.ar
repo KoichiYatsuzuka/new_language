@@ -1,0 +1,13 @@
+# @id: K15
+# @obligation: alias 経由の型引数（alias IB: Box[int]）
+# @baseline: NONE
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+class Box[T]:
+    mut v: T
+alias IB: Box[int]
+let b: IB = Box[str]("s")
+print("reached")
