@@ -1,0 +1,84 @@
+# generic_type_ann.ar — 具体化済みジェネリクスを型注釈として扱えること（A-2）
+#
+# ## 何が壊れていたか
+#
+# `parse_type_expr` の末尾は `[...]` を**消費して捨てて**いた。そのため
+# `let x: Box[int]` の注釈が `"Box"` になり、型検査はフィールド型を
+# `class_field_details("Box")` から引いて**置換前の `T`** を得ていた。
+# `T` は使用箇所では見えない型変数なので、フィールド代入・`return` の照合が
+# `field 'v' of class 'Box' is declared 'T'` という**偽陽性**を出していた。
+#
+# ⇒ 型名に `[...]` を取り込み（`Box[int]` を 1 つの型として運ぶ）、
+#   メンバーの型を**型引数で置換**してから返すようにした。
+#
+# 誤った型は generic_type_ann_error.ar
+
+class Box[T]:
+    mut v: T
+
+    fn get(self) -> T:
+        return self.v
+
+class Pair[K, V]:
+    mut k: K
+    mut v: V
+
+print("=== 型引数つき注釈がフィールド型を決める ===")
+
+mut bi: Box[int] = Box[int](1)
+bi.v = 42                       # int なので OK
+print(bi.v)                     # 42
+
+mut bs: Box[str] = Box[str]("a")
+bs.v = "ok"                     # str なので OK
+print(bs.v)                     # ok
+
+print("=== 複数の型引数 ===")
+
+mut p: Pair[int, str] = Pair[int, str](1, "a")
+p.k = 9
+p.v = "z"
+print(p.k, p.v)                 # 9 z
+
+print("=== 入れ子の型引数 ===")
+
+mut bl: Box[list[int]] = Box[list[int]]([1, 2])
+bl.v = [3, 4]
+print(bl.v)                     # [3, 4]
+
+print("=== alias も型引数を運ぶ ===")
+
+alias IB: Box[int]
+
+fn take(let b: IB) -> int:
+    return b.v                  # IB → Box[int] → v は int
+
+print(take(Box[int](9)))        # 9
+
+print("=== 仮引数の注釈 ===")
+
+fn sum_box(let a: Box[int], let b: Box[int]) -> int:
+    return a.v + b.v
+
+print(sum_box(Box[int](2), Box[int](3)))   # 5
+
+print("=== int → float の拡大（受理される） ===")
+
+mut bf: Box[float] = Box[float](1.0)
+bf.v = 7                        # 受理される（`float` へ int は拡大）
+# ⚠⚠ **既存の別バグ**（本変更とは無関係・基準バイナリでも再現）: ここは `7.0` ではなく
+#   `7` になる。値の昇格は `store_field` の **raw レイアウト経路**だけが行うが、
+#   `build_template_class` は `raw_layout` を設定しないため、テンプレートクラスの
+#   インスタンスは常に boxed 経路を通る。通常クラスの `mut v: float` なら `7.0` になる。
+print(bf.v)                     # 7   ← 通常クラスなら 7.0
+
+print("=== ⚠ 型引数を省いた素のテンプレート名 ===")
+
+# `Box` と書くと型引数が判らないので、**型変数のメンバーは検査を見送る**
+# （置換表が作れないため）。具体型のメンバーは従来どおり検査される
+# （template_type_param_error.ar の `Mixed[T].count: int` がその例）。
+mut bare: Box = Box[str]("x")
+bare.v = 123                    # 見送られる（`T` が何か判らない）
+print(bare.v)                   # 123
+
+print("done")

@@ -693,11 +693,16 @@ impl TypeChecker {
         // レシーバのクラス名。**推論を伴わない**スコープ引きで求める（`self` も
         // `NamedInstance(現在のクラス)` として束縛されているので同じ経路で引ける）。
         // 識別子以外のレシーバ（`f().x = v` など）は保守的に検査しない。
-        let class_name = match object.as_ref() {
-            Expr::Ident { name, .. } => match self.lookup(name).map(|i| i.ty.clone()) {
-                Some(InferredType::NamedInstance(cls)) => cls,
-                _ => return,
-            },
+        // ⚠ `GenericInstance{Box,[int]}` も取りこぼさないこと（A-2）。`NamedInstance` だけを
+        //    見ていると、テンプレートクラスのインスタンスに対する検査が**黙って消える**。
+        let (class_name, subst) = match object.as_ref() {
+            Expr::Ident { name, .. } => {
+                let ty = self.lookup(name).map(|i| i.ty.clone());
+                match ty.as_ref().and_then(|t| self.class_and_subst(t)) {
+                    Some(pair) => pair,
+                    None => return,
+                }
+            }
             _ => return,
         };
         // 期待型を決める。
@@ -710,7 +715,13 @@ impl TypeChecker {
         //      これだけでは足りない。基底 trait のテーブルを明示的に引く。
         let expected = match target_ty {
             InferredType::Unresolved | InferredType::Any => {
-                match self.declared_field_type(&class_name, attr) {
+                // ⚠ ここも**置換表を通す**（A-2）。`declared_field_type` はレジストリから
+                //   置換前の型を返すので、通さないと型変数（`T`）がそのまま比較されて
+                //   `declared 'T'` という偽陽性になる（実測）。
+                match self
+                    .declared_field_type(&class_name, attr)
+                    .map(|t| Self::subst_type_params(&t, &subst))
+                {
                     Some(ty) => ty,
                     None => return, // フィールドでない（メソッド名など）
                 }
@@ -792,6 +803,9 @@ impl TypeChecker {
     pub(crate) fn mentions_type_param(&self, ty: &InferredType) -> bool {
         match ty {
             InferredType::NamedInstance(n) => self.state.is_type_param(n),
+            InferredType::GenericInstance { args, .. } => {
+                args.iter().any(|a| self.mentions_type_param(a))
+            }
             InferredType::ListOf(t)
             | InferredType::FixedListOf(t)
             | InferredType::ListLikeOf(t)

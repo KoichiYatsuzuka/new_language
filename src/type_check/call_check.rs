@@ -616,7 +616,7 @@ impl TypeChecker {
     ///
     /// 実体化呼び出し `Box[int]("s")` の引数を検査するには、シグネチャに書かれた `T` を
     /// 呼び出し点の型引数へ写す必要がある。置換表に無い名前はそのまま残す。
-    fn subst_type_params(
+    pub(super) fn subst_type_params(
         ty: &InferredType,
         map: &std::collections::HashMap<String, InferredType>,
     ) -> InferredType {
@@ -624,6 +624,10 @@ impl TypeChecker {
         let rec = |t: &T| Box::new(Self::subst_type_params(t, map));
         match ty {
             T::NamedInstance(n) => map.get(n).cloned().unwrap_or_else(|| ty.clone()),
+            T::GenericInstance { name, args } => T::GenericInstance {
+                name: name.clone(),
+                args: args.iter().map(|a| Self::subst_type_params(a, map)).collect(),
+            },
             T::ListOf(t) => T::ListOf(rec(t)),
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),

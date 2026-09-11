@@ -392,6 +392,30 @@ impl Parser {
             return Ok(format!("Result[{ok_ty}, {err_ty}]"));
         }
         // Skip optional generic parameters for all other types (custom classes, etc.)
+        // ── ユーザ定義ジェネリクスの具体化を **1 つの型名**として運ぶ ──────────────
+        //
+        // ⚠⚠ **以前はこの直後の読み飛ばしループで `[...]` を捨てていた。** そのため
+        //    `let x: Box[int]` の注釈が `"Box"` になり、型検査はフィールド型を
+        //    `class_field_details("Box")` から引いて**置換前の `T`** を得ていた。
+        //    `T` は使用箇所では見えない型変数なので、0-2/0-3 の照合が
+        //    `field 'v' of class 'Box' is declared 'T'` という**偽陽性**を出していた（実測）。
+        //
+        // ⚠ **`known_templates` に載っている名前に限る。** この関数はキャスト
+        //    （`expr => Type`・[exprs.rs] の `Token::FatArrow`）からも呼ばれるので、
+        //    無条件に厳密パースすると `x => list[0]` のような**型でない中身**で
+        //    パースエラーになる。テンプレート名以外は従来どおり読み飛ばす。
+        if self.known_templates.contains(&base) && *self.current() == Token::LBracket {
+            self.advance(); // consume '['
+            let mut args = Vec::new();
+            while *self.current() != Token::RBracket && *self.current() != Token::Eof {
+                args.push(self.parse_type_expr()?);
+                if *self.current() == Token::Comma {
+                    self.advance();
+                }
+            }
+            self.eat(&Token::RBracket)?;
+            return Ok(format!("{base}[{}]", args.join(",")));
+        }
         if *self.current() == Token::LBracket {
             self.advance();
             let mut depth = 1usize;

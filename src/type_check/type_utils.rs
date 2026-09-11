@@ -22,6 +22,58 @@ impl TypeChecker {
         }
     }
 
+    /// 型から **クラス名と「型変数 → 具体型」の置換表**を取り出す。
+    ///
+    /// - `NamedInstance("C")`            → `(C, 空の表)`
+    /// - `GenericInstance{Box, [int]}`   → `(Box, {T: int})`（`T` は `Box` の宣言順の型変数）
+    ///
+    /// ⚠⚠ これが A-2 の核心。テンプレートクラスのフィールド・メソッドの型は
+    /// レジストリに**置換前**（`T`）で入っているので、`Box[int]` からメンバーを引くときは
+    /// この表で置換しないと `T` が使用箇所へ漏れる（偽陽性の原因）。
+    ///
+    /// ⚠ 型引数の個数が宣言と合わないときは `None`（＝検査を見送る）。合っていない表で
+    /// 置換すると別の型変数に別の型を当てる嘘の対応付けになる。
+    pub(super) fn class_and_subst(
+        &self,
+        ty: &InferredType,
+    ) -> Option<(String, std::collections::HashMap<String, InferredType>)> {
+        match ty {
+            InferredType::NamedInstance(c) => {
+                // ⚠⚠ **型引数を伴わないテンプレート名**（`mut x: Box` / クラス本体の `self`）。
+                //    置換表が作れないが、**解決そのものを諦めてはいけない** — 諦めると
+                //    同じクラスの**具体型フィールド**（`Mixed[T]` の `count: int`）の検査まで
+                //    消える（`template_type_param_error.ar` の検出が落ちて実測で気づいた）。
+                //    ⇒ **型変数だけを `Unresolved` へ写す**表を作る。具体型のメンバーは
+                //      そのまま検査され、型変数のメンバーは各検査の
+                //      `matches!(expected, Unresolved | Any)` ガードで見送られる。
+                let map = self
+                    .registry
+                    .template_params(c.as_str())
+                    .map(|ps| {
+                        ps.iter()
+                            .cloned()
+                            .map(|p| (p, InferredType::Unresolved))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some((c.clone(), map))
+            }
+            InferredType::GenericInstance { name, args } => {
+                let tparams = self.registry.template_params(name)?;
+                if tparams.len() != args.len() {
+                    return None;
+                }
+                let map = tparams
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .collect();
+                Some((name.clone(), map))
+            }
+            _ => None,
+        }
+    }
+
     /// 型の中の `NamedInstance(n)` のうち **`n` が protocol 名のものを `Protocol(n)` へ寄せる**。
     ///
     /// # なぜ検査時に寄せるのか
@@ -43,6 +95,10 @@ impl TypeChecker {
         let rec = |t: &T| Box::new(self.resolve_protocols(t));
         match ty {
             T::NamedInstance(n) if self.registry.is_protocol(n.as_str()) => T::Protocol(n.clone()),
+            T::GenericInstance { name, args } => T::GenericInstance {
+                name: name.clone(),
+                args: args.iter().map(|a| self.resolve_protocols(a)).collect(),
+            },
             T::ListOf(t) => T::ListOf(rec(t)),
             T::FixedListOf(t) => T::FixedListOf(rec(t)),
             T::ListLikeOf(t) => T::ListLikeOf(rec(t)),

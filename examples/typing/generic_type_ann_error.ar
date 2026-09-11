@@ -1,0 +1,47 @@
+# generic_type_ann_error.ar — 具体化済みジェネリクスの型注釈に合わない代入（A-2）
+#
+# 対になる正常系: generic_type_ann.ar
+#
+# ⚠ 以前はここが**逆向きに壊れていた** — 型引数が注釈に入らず、フィールド型が
+#   置換前の `T` のまま比較されるため、**正しいコードを弾き**（`Box[str]` に `str` を
+#   入れても `declared 'T'` でエラー）、**誤ったコードは検出できなかった**。
+#
+# Section 1 — StaticTypeError: 型引数で決まるフィールドへの誤った代入
+#   Expected error (StaticTypeError):
+#     field 'v' of class 'Box' is declared 'int' but got 'str'
+
+class Box[T]:
+    mut v: T
+
+    fn get(self) -> T:
+        return self.v
+
+mut bi: Box[int] = Box[int](1)
+bi.v = "wrong"
+
+# Section 2 — StaticTypeError: 複数の型引数の対応
+#   Expected error (StaticTypeError):
+#     field 'k' of class 'Pair' is declared 'int' but got 'str'
+
+class Pair[K, V]:
+    mut k: K
+    mut v: V
+
+mut p: Pair[int, str] = Pair[int, str](1, "a")
+p.k = "wrong"
+
+# Section 3 — StaticTypeError: 入れ子の型引数
+#   Expected error (StaticTypeError):
+#     field 'v' of class 'Box' is declared 'list[int]' but got 'str'
+
+mut bl: Box[list[int]] = Box[list[int]]([1])
+bl.v = "wrong"
+
+# Section 4 — StaticTypeError: alias 経由でも型引数が効く
+#   Expected error (StaticTypeError):
+#     'take' is declared to return 'str' but returns 'int'
+
+alias IB: Box[int]
+
+fn take(let b: IB) -> str:
+    return b.v

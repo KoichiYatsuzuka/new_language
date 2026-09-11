@@ -100,6 +100,7 @@ p.x = "w"           p.x = "w"
 | **0-10** | **trait のデフォルト実装**（既存バグ B の修正）＋ **クラスの仮想メソッド禁止** | **✅ 完了**（2026-09-10） |
 | **0-11** | **テンプレート実体化検査の穴 2 件**（`__init__` オーバーロード・型引数省略） | **✅ 完了**（2026-09-11） |
 | **0-12** | **既定値の型検査**（仮引数・`const`・`static mut`） | **✅ 完了**（2026-09-11） |
+| **A-2** | **具体化済みジェネリクスを型注釈として扱う**（テンプレートの偽陽性修正） | **✅ 完了**（2026-09-11） |
 | R3 | フィールドのオフセット化 | **✅ 完了として閉じた**（2026-09-08。原計画に未実行分は無かった） |
 
 ---
@@ -903,6 +904,87 @@ raw レイアウト経路で昇格するが、`const` はクラス変数・`stat
 
 **追加した例題**: `examples/typing/default_value_type.ar` ／ `default_value_type_error.ar`
 
+### A-2 — 具体化済みジェネリクスを型注釈として扱う 【✅ 完了 2026-09-11】
+
+#### 何が壊れていたか
+
+**`parse_type_expr` の末尾が `[...]` を消費して捨てていた。** そのため `let x: Box[int]` の
+注釈が `"Box"` になり、型検査はフィールド型を `class_field_details("Box")` から引いて
+**置換前の `T`** を得ていた。`T` は使用箇所では見えない型変数なので、0-2/0-3 の照合が
+
+```arrow
+mut x: Box = Box[str]("a")
+x.v = "ok"                 # ❌ field 'v' of class 'Box' is declared 'T' but got 'str'
+fn take(let b: Box) -> int:
+    return b.v             # ❌ 'take' is declared to return 'int' but returns 'T'
+```
+
+という**偽陽性**を出していた（`alias IB: Box[int]` 経由でも同じ。alias は型位置で
+`parse_type_expr` に再パースさせるので、同じ地点で型引数が落ちていた）。
+
+#### 実装したもの
+
+| 層 | 対象 | 内容 |
+|---|---|---|
+| 構文 | `parse_type_expr` | `known_templates` の名前に続く `[...]` を取り込み `Box[int]` を 1 つの型名にする |
+| 型表現 | `InferredType::GenericInstance { name, args }` | 具体化済みジェネリクスの構造表現（新設） |
+| 解釈 | `InferredType::from_ann` | `Name[Args]` を `GenericInstance` へ |
+| 置換 | `class_and_subst` | 型からクラス名と「型変数 → 具体型」の置換表を取り出す（新設） |
+| 消費 | `infer_attr` / `check_attr_assign` | メンバーの型を置換表で置換してから返す・比較する |
+
+⚠ **`known_templates` に載る名前に限って厳密パースする。** この関数はキャスト
+（`expr => Type`）からも呼ばれるので、無条件に厳密化すると `x => list[0]` のような
+**型でない中身**でパースエラーになる。テンプレート名以外は従来どおり読み飛ばす。
+
+⚠⚠ **素のテンプレート名（`mut x: Box`）では「型変数だけを `Unresolved` へ写す」表を作る。**
+最初は `class_and_subst` を `None`（解決を諦める）にしたが、それだと同じクラスの
+**具体型フィールド**（`Mixed[T]` の `count: int`）の検査まで消えた
+（`template_type_param_error.ar` の検出が 2 → 0 になって実測で気づいた）。
+型変数だけを `Unresolved` にすれば、具体型のメンバーは検査され、型変数のメンバーは
+各検査の `matches!(expected, Unresolved | Any)` ガードで見送られる。
+
+⚠ `declared_field_type` のフォールバック経路**にも置換表を通す**こと。`infer_attr` だけ
+直すと、そちらが `Unresolved` を返したときに置換前の型が比較されて偽陽性が戻る（実測）。
+
+#### 確認した範囲
+
+| 形 | 結果 |
+|---|---|
+| `Box[int]` / `Box[str]` のフィールド代入 | ✅ 正しい型で照合 |
+| `Pair[int, str]`（複数引数） | ✅ |
+| `Box[list[int]]`（入れ子引数） | ✅ |
+| `alias IB: Box[int]` 経由 | ✅ 型引数が届く |
+| 仮引数 `let b: Box[int]` | ✅ |
+| 素の `Box` | 型変数のメンバーは見送り・具体型のメンバーは検査 |
+
+#### ⚠ 作業中に見つけた既存バグ（本変更とは無関係・基準でも再現）
+
+**テンプレートクラスのインスタンスは `int` → `float` の昇格をしない。**
+`Box[float]` に `b.v = 7` を入れると `7` のまま（通常クラスの `mut v: float` なら `7.0`）。
+値の昇格は `store_field` の **raw レイアウト経路**だけが行うが、`build_template_class` は
+`raw_layout` を設定しないためテンプレートクラスは常に boxed 経路を通る。→ §7
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` のみ |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 72/72 identical |
+| `compare_outputs.ps1` / `compare_bytecode.ps1` | 差分は 0-7〜A-2 で追加した例題のみ（**既存例題は不変**） |
+| `compare_import_paths.ps1` | 13/13 identical |
+| `compare_wasm_frontend.ps1` | 249/249 agreed・INVENTED 0 |
+
+**追加した例題**: `examples/typing/generic_type_ann.ar` ／ `generic_type_ann_error.ar`
+
+#### 残り（B / C・未着手）
+
+| 項目 | 内容 |
+|---|---|
+| **C** | `new_type` の右辺に型式を許す。現在 `exec_new_type_def` が `get_val(original)` で**名前引き**するため `new_type Ints: list[int]` が実行時 `NameError` になる |
+| **B の宣言側** | `new_type X[T]: …` / `alias X[T]: …`。どちらも `parse_template_params()` を呼んでいないので ParseError。実体化の意味論（`new_type` なら新しい型・`alias` なら置換）を決める必要がある |
+
 ### R3 — フィールドのオフセット化 【✅ 完了として閉じた 2026-09-08】
 
 **⚠ 着手時の前提が誤っていた。** 「計画は多相 IC・実装は単相 IC ＝ 差分が未実装」と報告したが、
@@ -1044,6 +1126,7 @@ probes       : 77,400,461
 | 7 | **型変数を具象型と取り違えていた** — `from_ann` が大文字始まりの未知の識別子をクラス名にするため。`mentions_type_param` で除外（Phase T で発見） |
 | 8 | **テンプレートクラスにキャッシュが無かった** — 実体化ごとに新 `class_id` を発行しており、同じ `Box[int]` が別の型になっていた |
 | 9 | **R3 の「多相 IC」の読み違え** — 原計画と実装は同じ機構。呼び名が 2 つあった |
+| 17 | **型注釈が型引数を捨てていた** — `parse_type_expr` が `[...]` を消費して破棄しており、テンプレートのフィールド型が置換前の `T` のまま比較されて偽陽性になっていた（A-2）。素の名前で解決を諦めると逆に検査が消えることも実測で発見 |
 | 16 | **既定値が 6 箇所で未検査だった** — 仮引数の既定値は**推論すらされておらず**、`const`/`static mut` は `infer` の結果を捨てていた（0-12）。`const F: float = 3` が `3` を返す昇格漏れも同時に修正 |
 | 15 | **テンプレート実体化検査に穴が 2 件あった** — `__init__` のオーバーロードで素通り、型引数省略時に型変数を漏らすメッセージ（0-11） |
 | 14 | **trait のデフォルト実装が継承されなかった**（既存バグ B）。`exec_trait_def` がメソッド本体を捨てていた。パース時にクラス本体へ注入して解決（0-10）。あわせて**クラスの仮想メソッドを禁止**（以前は黙って `None` を返す no-op）。⚠ FFI スタブの `...` を誤検出しないよう `arrow_class_names` で絞った |
@@ -1082,6 +1165,7 @@ probes       : 77,400,461
 | # | 内容 |
 |---|---|
 | 2 | **複合代入 `o.f += v` の型検査** — 格納されるのは `f <op> v` の結果なので、二項演算の結果型を求める必要がある |
+| 9 | **テンプレートクラスのインスタンスが `int`→`float` 昇格をしない**（A-2 で発見）。`build_template_class` が `raw_layout` を設定せず boxed 経路のみを通るため |
 | 8 | **自由関数の `...` 本体が no-op のまま** — `fn g() -> int: ...` が `None` を返す。⚠ `.ars` スタブの主要な形（`libm.ars` は数十個）なので、禁止するならスタブ文脈の判別が必要（自由関数には `arrow_class_names` に相当する集合が無い） |
 | 4 | **添字代入 `a[i] = v`** — 要素型と値の照合をしていない |
 | 6 | **テンプレート実体化の戻り値型** — 呼び出し点では `Unresolved` のまま。`NamedInstance(base)` に変えるにはフィールド型の型変数も置換する必要がある（型検査側での実体化）|

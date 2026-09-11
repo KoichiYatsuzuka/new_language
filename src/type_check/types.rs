@@ -108,6 +108,21 @@ pub enum InferredType {
     SelfType,
     /// ユーザー定義クラスのインスタンス型。内部文字列はクラス名。
     NamedInstance(String),
+    /// **具体化済みのユーザ定義ジェネリクス**（`Box[int]` / `Pair[int, str]`）。
+    ///
+    /// ⚠⚠ これが無いと `let x: Box[int]` の型引数が型検査へ届かない。`NamedInstance("Box")`
+    /// に落ちると、フィールド型を `class_field_details("Box")` から引いて**置換前の `T`**
+    /// を得てしまい、`T` は使用箇所では見えない型変数なので 0-2/0-3 の照合が
+    /// `field 'v' of class 'Box' is declared 'T'` という**偽陽性**を出す（実測）。
+    ///
+    /// ⚠ 等値は**名前と引数の両方**で決まる（`Box[int]` ≠ `Box[str]`）。これは
+    /// 実体化ごとに別クラスを作る実行時の扱い（Phase T のメモ化）と整合する。
+    GenericInstance {
+        /// テンプレートの名前（`Box`）。
+        name: String,
+        /// 具体化された型引数（宣言順）。
+        args: Vec<InferredType>,
+    },
     /// プロトコル型。内部文字列はプロトコル名。静的型検査のみで使用。
     /// 変数がこの型の場合、代入時にプロトコル適合チェックが行われる。
     Protocol(String),
@@ -281,6 +296,32 @@ impl InferredType {
             other if other.chars().next().is_some_and(|c| c.is_ascii_uppercase())
                      && other.chars().all(|c| c.is_alphanumeric() || c == '_') =>
                 Some(Self::NamedInstance(other.to_string())),
+            // **具体化済みユーザ定義ジェネリクス**（`Box[int]` / `Pair[int,str]`）。
+            //
+            // ⚠ 組み込みの括弧つき型（`list[...]`・`dict[...]` 等）は上で個別に処理済みなので、
+            //   ここへ来るのはユーザ定義テンプレートだけ。`parse_type_expr` が
+            //   `known_templates` に載る名前のときだけこの形を作る。
+            other if other.ends_with(']') => {
+                let open = other.find('[')?;
+                let name = &other[..open];
+                if name.is_empty()
+                    || !name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                    || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                {
+                    return None;
+                }
+                let inner = &other[open + 1..other.len() - 1];
+                let mut args = Vec::new();
+                for part in split_top_level_commas(inner) {
+                    // ⚠ 引数が 1 つでも解釈できなければ**型全体を未解決にする**。
+                    //   一部だけ解決した型を作ると、置換で嘘の対応付けが生まれる。
+                    args.push(Self::from_ann(part.trim())?);
+                }
+                if args.is_empty() {
+                    return None;
+                }
+                Some(Self::GenericInstance { name: name.to_string(), args })
+            }
             _ => None,
         }
     }
@@ -394,6 +435,13 @@ impl std::fmt::Display for InferredType {
             Self::Undefined => write!(f, "Undefined"),
             Self::List => write!(f, "list"),
             Self::ListOf(t) => write!(f, "list[{t}]"),
+            // ⚠ 注釈として**読み直せる形**で出すこと（`Box[int]`）。エラーメッセージが
+            //   そのまま直し方の提示になる。
+            Self::GenericInstance { name, args } => write!(
+                f,
+                "{name}[{}]",
+                args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")
+            ),
             Self::FixedList => write!(f, "fixed_list"),
             Self::FixedListOf(t) => write!(f, "fixed_list[{t}]"),
             Self::ListLike => write!(f, "list_like"),

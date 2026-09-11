@@ -59,6 +59,7 @@ $knownDiff = @{
     'ctor_arg_type_error'            = 'py: コンストラクタ引数の静的型検査が無い（そのまま実行してしまう・0-5 で新設）'
     'var_annotation_error'           = 'py: let/mut の型注釈が検査されない（注釈を捨てて実行してしまう・0-1 で新設）'
     'var_annotation'                 = 'py: int→float の束縛時昇格が未実装（4 を 4.0 にしない・0-1 で新設）'
+    'generic_type_ann'               = 'py: 具体化済みジェネリクスの型注釈が未対応（テンプレート実体化の意味論ごと違う・A-2 で新設）'
     'default_value_type'             = 'py: int→float の昇格が未実装（3 を 3.0 にしない・0-12 で新設）'
     'trait_conformance'              = 'py: trait のデフォルト実装の継承が未実装（AttributeError になる・0-10 で新設）'
     'class_virtual_method_error'     = 'py: クラス本体の仮想メソッド禁止が未実装（None を返して実行してしまう・0-10 で新設）'

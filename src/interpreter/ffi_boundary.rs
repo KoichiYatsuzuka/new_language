@@ -88,6 +88,9 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
         | InferredType::TypeValOf(_)
         | InferredType::Namespace(_)
         | InferredType::PyNamespace(_)
+        // ⚠ 具体化済みジェネリクスは Arrow のインスタンス。外部言語から届く値では
+        //   ないので境界検査の対象にならない（`NamedInstance` と同じ扱い）。
+        | InferredType::GenericInstance { .. }
         | InferredType::Function { .. } => Verdict::Unverifiable,
 
         InferredType::Int => prim(matches!(value, Value::Int(_) | Value::UInt(_)), value),

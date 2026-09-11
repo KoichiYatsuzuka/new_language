@@ -333,11 +333,10 @@ impl TypeChecker {
         node_id: u32,
     ) -> InferredType {
         let obj_ty = self.infer(object);
-        let class_name_opt = if let InferredType::NamedInstance(cls) = &obj_ty {
-            Some(cls.clone())
-        } else {
-            None
-        };
+        // ⚠ `GenericInstance{Box,[int]}` も**クラスとして扱う**（A-2）。あわせて
+        //    型変数 → 具体型の置換表を取り出しておき、メンバーの型を置換してから返す。
+        let class_subst = self.class_and_subst(&obj_ty);
+        let class_name_opt = class_subst.as_ref().map(|(c, _)| c.clone());
         match &obj_ty {
             InferredType::Any => self.report_error(StaticTypeError {
                 kind: TypeErrorKind::OperationOnAny {
@@ -374,12 +373,15 @@ impl TypeChecker {
         // していたが、それだと `p.x * p.x` が `Unresolved` 同士の `BinOp` になり `binop_kind` が付かず、
         // VM の型特化 op もネイティブの型付き生成も効かなかった（#16 c-2 の結論「律速は型検査の解像度」）。
         // フィールドでない属性（メソッド名など）は registry に無いので従来どおり `fallback`。
-        let resolved = match &class_name_opt {
-            Some(class) => self
+        // ⚠⚠ **型引数で置換する**（A-2）。レジストリのフィールド型は置換前（`T`）なので、
+        //    `Box[int]` から引いたまま返すと `T` が使用箇所へ漏れ、0-2/0-3 の照合が
+        //    `declared 'T'` という偽陽性を出す（実測）。
+        let resolved = match &class_subst {
+            Some((class, map)) => self
                 .registry
                 .class_field_details(class)
                 .and_then(|m| m.get(attr))
-                .map(|(_, ty)| ty.clone())
+                .map(|(_, ty)| Self::subst_type_params(ty, map))
                 .unwrap_or(fallback),
             None => fallback,
         };
