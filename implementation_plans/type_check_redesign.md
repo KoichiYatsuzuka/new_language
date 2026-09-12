@@ -411,7 +411,7 @@ print(f("s"))                           # ⛔ int 宣言の引数へ str が渡�
 | # | 内容 | 決定 | 検体 | 規模 |
 |---|---|---|---|---|
 | ~~**1.1**~~ | ~~`resolve_declared_type` の `Intersection` / `Result` の早期 return に整合性検査を足す~~ → **✅ 完了 2026-09-12** | D-2 | `K4` `K5` → **STATIC** | 下記「1.1 の記録」 |
-| **1.2** | `FieldKind::StaticMut` を可変として数える（`registry/builder.rs:388` と `stmt/check.rs:371` の `matches!(kind, FieldKind::Mut)`） | — | — | 小。⚠ **実行時は実装済み**（`attrs.rs:407`）＝層の食い違いで、インスタンス経由の代入が `cannot assign to immutable field` で塞がれている |
+| ~~**1.2**~~ | ~~`FieldKind::StaticMut` を可変として数える~~ → **✅ 完了 2026-09-12** | — | — | 下記「1.2 の記録」 |
 | **1.3** | `protocol` を容器の内側でも一様に扱う（`resolve_protocols` を容器へ再帰させる） | — | `K11` `K12` | 中。⚠ 現在 `list[Pr]` の束縛は**偶然**捕まり、`Option[Pr]` の戻り値とフィールド代入は漏れる |
 
 #### 1.1 の記録 【✅ 完了 2026-09-12】
@@ -445,6 +445,38 @@ print(f("s"))                           # ⛔ int 宣言の引数へ str が渡�
 | `classes/intersection_error.ar` | **既存例題にエラーが 1 件増えた**。`let x: Intersection[Flyable, Swimmable] = Bird()` は例題自身が「Bird は Swimmable を実装していない」と書いているのに、以前は型ガードのエラーだけが出ていた。⚠ 例題のコメントを実態に合わせて更新した |
 
 **追加した例題**: `examples/typing/intersection_result_bind{,_error}.ar`
+
+#### 1.2 の記録 【✅ 完了 2026-09-12】
+
+`matches!(kind, FieldKind::Mut)` を `matches!(kind, FieldKind::Mut | FieldKind::StaticMut)` へ。
+**同じ式が 2 箇所**（`registry/builder.rs` と `stmt/check.rs`）にあり、片方だけ直すとずれるので
+両方を直し、互いを参照するコメントを置いた。
+
+⚠ `static mut` の仕様は「全インスタンスで共有される**可変**セル。インスタンス経由・
+クラス名経由どちらでもアクセス・**代入可能**」（`ast.rs` の `FieldKind::StaticMut` の doc）。
+**実行時は実装済み**（`attrs.rs` が `inst_class.static_vars` を更新する）で、
+静的検査だけが `cannot assign to immutable field` で塞いでいた**層の食い違い**だった。
+
+⚠ 露見しなかったのは、既存例題（`class_trait.ar` の `Registry.entry_count`）が
+**クラス名経由でしか代入しておらず**、インスタンス経由を書いた例題が 1 本も無かったため。
+
+⚠ **可変にしただけで型検査は緩んでいない。** `c.total = "s"` は
+`field 'total' of class 'Counter' is declared 'int' but got 'str'` で弾かれる
+（1.2 の前は「型が違う」ではなく「不変フィールド」という**誤った理由**のエラーも一緒に出ていた）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` / `force_gate.ps1` | 既知の `bench_ab_native.ar` のみ / 0 fall back |
+| `compare_python_impl.ps1` | 75/75 identical・stale 0（新規 2 例題を `$knownDiff` へ。py は `static mut` のインスタンス経由アクセス自体が未対応） |
+| `compare_outputs.ps1 -A <1.1 前>` | 183/187。差分 4 件は 1.1 の 2 件＋1.2 の新規 2 件のみで、**既存例題は `intersection_error.ar` 以外すべて不変** |
+| `compare_wasm_frontend.ps1` | **257/257 agreed・INVENTED 0**（wasm 再ビルド＋VSIX 再生成） |
+| `type_obligations.ps1` | 41/114（36%）・退行なし |
+
+**追加した例題**: `examples/classes/static_mut_assign{,_error}.ar`
+⚠ 正常系の例題が「インスタンス経由の代入」という**今まで例題が 1 本も無かった形**を埋めている。
 
 ### フェーズ 2 — 推論を埋める（3 分類の材料）
 

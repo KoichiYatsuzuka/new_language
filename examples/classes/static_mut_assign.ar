@@ -1,0 +1,73 @@
+# static_mut_assign.ar — `static mut` クラス変数はインスタンス経由でも代入できる（タスク 1.2）
+#
+# ## 何が壊れていたか
+#
+# `FieldKind::StaticMut` の仕様は
+#
+#   「静的可変クラス変数（`static mut name: Type [= default]`）。すべてのインスタンスで
+#     共有される可変セル。**インスタンス経由・クラス名経由どちらでもアクセス・代入可能**」
+#                                                          （`src/ast.rs` の doc）
+#
+# ところが型検査が可変性を `matches!(kind, FieldKind::Mut)` で判定していたため
+# **`StaticMut` が不変として扱われ**、インスタンス経由の代入が
+#
+#   StaticTypeError  cannot assign to immutable field 'n' of class 'C'
+#
+# で塞がれていた。⚠ **実行時は実装済み**（`attrs.rs` が `inst_class.static_vars` を更新する）
+# ＝静的検査だけが塞いでいる**層の食い違い**だった。
+#
+# ⚠ 露見しなかったのは、既存例題（`class_trait.ar` の `Registry.entry_count`）が
+#   **クラス名経由でしか代入しておらず**、インスタンス経由を書いた例題が 1 本も
+#   無かったため。⇒ この例題がその穴を埋める。
+#
+# ⚠ 同じ式が `registry/builder.rs` と `stmt/check.rs` の **2 箇所**にある。
+#   片方だけ直すとずれるので両方を直した。
+#
+# 誤った型を入れる例は static_mut_assign_error.ar
+
+print("=== クラス名経由の代入（従来から通っていた） ===")
+
+class Counter:
+    static mut total: int = 0
+    mut own: int
+
+Counter.total = 10
+print(Counter.total)                # 10
+
+print("=== インスタンス経由の代入（タスク 1.2 で通るようになった） ===")
+
+mut a = Counter(1)
+a.total = 20
+print(a.total, Counter.total)       # 20 20   ← 同じセルを共有している
+
+print("=== 全インスタンスで共有されている ===")
+
+mut b = Counter(2)
+print(b.total)                      # 20   ← b も同じセルを見る
+b.total = 30
+print(a.total, b.total, Counter.total)   # 30 30 30
+
+print("=== インスタンス変数とは独立 ===")
+
+a.own = 100
+b.own = 200
+print(a.own, b.own)                 # 100 200   ← own は共有されない
+print(a.total, b.total)             # 30 30     ← total は共有される
+
+print("=== メソッドの中からも書ける ===")
+
+class Registry2:
+    static mut count: int = 0
+    mut tag: str
+
+    fn bump(mut self) -> int:
+        self.count = self.count + 1     # インスタンス経由（self）で代入
+        return self.count
+
+mut r1 = Registry2("a")
+mut r2 = Registry2("b")
+print(r1.bump())                    # 1
+print(r2.bump())                    # 2   ← r1 と同じセル
+print(Registry2.count)              # 2
+
+print("done")

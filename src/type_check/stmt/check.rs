@@ -368,7 +368,10 @@ impl TypeChecker {
                         }
                     }
                 }
-                let mutable = matches!(kind, FieldKind::Mut);
+                // ⚠ `StaticMut` も可変（タスク 1.2）。理由は
+                //    `registry/builder.rs` の同じ式のコメントを参照。2 箇所あるので
+                //    **片方だけ直すとずれる**。
+                let mutable = matches!(kind, FieldKind::Mut | FieldKind::StaticMut);
                 self.declare(name.clone(), ty, mutable);
             }
 

@@ -1,0 +1,26 @@
+# static_mut_assign_error.ar — `static mut` への代入も宣言型で検査される（タスク 1.2）
+#
+# 正常系は static_mut_assign.ar
+#
+# タスク 1.2 で `StaticMut` を可変として数えるようにしたが、**可変にしただけで
+# 型検査が緩んだわけではない**。宣言型との照合は従来どおり働く。
+#
+# ⚠ 1.2 の前は、この行は「型が違う」ではなく
+#   `cannot assign to immutable field 'total'` という**誤った理由**で弾かれていた
+#   （`static mut` は仕様上可変なので、この文言自体が間違っていた）。
+#   今は正しい理由で弾かれる。
+#
+# 期待されるエラー:
+#   StaticTypeError  field 'total' of class 'Counter' is declared 'int' but got 'str'
+
+class Counter:
+    static mut total: int = 0
+    mut own: int
+
+mut c = Counter(1)
+
+print("代入前:", c.total)        # 0
+
+c.total = "not an int"          # ⛔ int の static mut へ str
+
+print("ここには到達しない")

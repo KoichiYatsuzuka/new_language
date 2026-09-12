@@ -385,7 +385,18 @@ impl TypeRegistryBuilder {
                     access,
                     ..
                 } => {
-                    let mutable = matches!(kind, FieldKind::Mut);
+                    // ⚠⚠ **`StaticMut` も可変**（タスク 1.2）。`static mut name: T` の仕様は
+                    //    「全インスタンスで共有される**可変**セル。インスタンス経由・
+                    //    クラス名経由どちらでもアクセス・**代入可能**」（`ast.rs` の
+                    //    `FieldKind::StaticMut` の doc）。
+                    //    ここで `Mut` だけを可変と数えていたため、インスタンス経由の代入
+                    //    `c.n = 5` が `cannot assign to immutable field 'n'` で塞がれていた。
+                    //    ⚠ **実行時は実装済み**（`attrs.rs` が `inst_class.static_vars` を
+                    //    更新する）＝静的検査だけが塞いでいる層の食い違いだった。
+                    //    露見しなかったのは、例題が `Registry.entry_count`（クラス名経由）
+                    //    でしか代入しておらず、インスタンス経由を書いた例題が 1 本も
+                    //    無かったため。
+                    let mutable = matches!(kind, FieldKind::Mut | FieldKind::StaticMut);
                     fields.insert(fname.clone(), mutable);
                     let fty = InferredType::from_ann(type_ann)
                         .unwrap_or(InferredType::Unresolved);
