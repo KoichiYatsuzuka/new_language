@@ -1,0 +1,22 @@
+# enum_member_type_error.ar — enum の `.value` は int なので str 注釈へは入らない（タスク 2.3）
+#
+# 正常系は enum_member_type.ar
+#
+# ⚠ 以前はレジストリが `enum_item_Color` の `value` フィールドを登録していなかったため
+#   `Color.Red.value` が `Unresolved` になり、`Unresolved` は `type_matches_exact` の
+#   **万能受容体**なので **`1` を `str` 変数に入れて表示していた**。
+#
+# ⚠ `.value` が `int` であることは言語規則で、実行時の `build_enum_classes` が
+#   「enum variant value must be int」で強制している。型は決まっていたのに
+#   型検査が知らなかっただけ。
+#
+# 期待されるエラー:
+#   StaticTypeError  's' is declared 'str' but initialized with 'int'
+
+enum Color:
+    Red = 1
+    Green = 2
+
+let s: str = Color.Red.value        # ⛔ int を str へ
+
+print("ここには到達しない")

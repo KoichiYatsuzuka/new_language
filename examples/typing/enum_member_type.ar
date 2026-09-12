@@ -1,0 +1,63 @@
+# enum_member_type.ar — enum のメンバーと `.value` に型が付くこと（タスク 2.3）
+#
+# ## 何が壊れていたか
+#
+# レジストリは `Color` と `enum_item_Color` を `known_class_names` に入れるだけで、
+# **メンバーも `value` フィールドも登録していなかった**。そのため
+#
+#   Color.Red        → Unresolved
+#   Color.Red.value  → Unresolved
+#
+# になり、`Unresolved` は `type_matches_exact` の**万能受容体**なので次が黙って通っていた:
+#
+#   let s: str = Color.Red.value   # 1 を表示していた
+#   let s: int = Color.Red         # enum オブジェクトの repr を表示していた
+#   let v: A = B.Y                 # 別 enum のメンバーが入っていた
+#
+# ⚠ `.value` は**言語規則として `int`**。実行時の `build_enum_classes` が
+#   「enum variant value must be int」で強制している。つまり型は決まっていたのに
+#   型検査が知らなかっただけ。
+#
+# ⚠ あわせて **クラス名経由のアクセス**（`Color.Red` / `Counter.total` / `C.K`）が
+#   クラスのメンバー表を引くようにした。`Color` の型は `TypeValOf(NamedInstance("Color"))`
+#   なので、以前は `class_and_subst` が `None` を返してメンバーが全部 `Unresolved` だった。
+#
+# 弾かれる例は enum_member_type_error.ar
+
+print("=== .value は int ===")
+
+enum Color:
+    Red = 1
+    Green = 2
+    Blue
+
+let n: int = Color.Red.value
+print(n)                            # 1
+print(Color.Green.value)            # 2
+print(Color.Blue.value)             # 3   ← 自動採番は直前の値 +1
+
+print("=== メンバーの型は enum_item_<名前> ===")
+
+let m: Color = Color.Green
+print(m.value)                      # 2
+
+print("=== .value は int として演算できる ===")
+
+let doubled: int = Color.Green.value * 2
+print(doubled)                      # 4
+
+print("=== クラス名経由のアクセスにも型が付く ===")
+
+class Counter:
+    static mut total: int = 0
+    const LIMIT: int = 100
+    mut own: int
+
+# ⚠ これらも同じ経路（クラス名経由）で型が付くようになった。
+let limit: int = Counter.LIMIT
+print(limit)                        # 100
+Counter.total = 5
+let t: int = Counter.total
+print(t)                            # 5
+
+print("done")

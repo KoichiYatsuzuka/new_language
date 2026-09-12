@@ -418,7 +418,22 @@ impl TypeChecker {
         let obj_ty = self.infer(object);
         // ⚠ `GenericInstance{Box,[int]}` も**クラスとして扱う**（A-2）。あわせて
         //    型変数 → 具体型の置換表を取り出しておき、メンバーの型を置換してから返す。
-        let class_subst = self.class_and_subst(&obj_ty);
+        let class_subst = self.class_and_subst(&obj_ty).or_else(|| {
+            // ⚠ **クラス名経由のアクセス**（`Color.Red` / `Counter.total` / `C.K`）も
+            //    クラスのメンバー表を引く（タスク 2.3）。`Color` の型は
+            //    `TypeValOf(NamedInstance("Color"))` なので `class_and_subst` では
+            //    `None` になり、メンバーが全部 `Unresolved` になっていた。
+            //    ⚠ enum のバリアント・`const` クラス変数・`static mut` が同じ経路に乗る。
+            match &obj_ty {
+                InferredType::TypeValOf(inner) => match inner.as_ref() {
+                    InferredType::NamedInstance(c) => {
+                        Some((c.clone(), std::collections::HashMap::new()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        });
         let class_name_opt = class_subst.as_ref().map(|(c, _)| c.clone());
         match &obj_ty {
             InferredType::Any => self.report_error(StaticTypeError {

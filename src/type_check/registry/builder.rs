@@ -222,10 +222,40 @@ impl TypeRegistryBuilder {
                         }
                     }
                 }
-                Stmt::EnumDef { name, .. } => {
+                Stmt::EnumDef { name, variants } => {
                     self.reg.known_class_names.insert(name.clone());
                     let item_type_name = format!("enum_item_{}", name);
-                    self.reg.known_class_names.insert(item_type_name);
+                    self.reg.known_class_names.insert(item_type_name.clone());
+                    // ⚠⚠ **メンバーと `.value` の型を登録する**（タスク 2.3）。
+                    //    以前は名前を `known_class_names` に入れるだけだったので
+                    //    `Color.Red` も `Color.Red.value` も `Unresolved` になり、
+                    //    `Unresolved` は `type_matches_exact` の万能受容体なので
+                    //      let s: str = Color.Red.value   # 1 を表示していた
+                    //      let s: int = Color.Red         # enum オブジェクトを表示していた
+                    //      let v: A = B.Y                 # 別 enum のメンバーが入っていた
+                    //    が黙って通っていた。`.value` は言語規則として `int`
+                    //    （実行時 `build_enum_classes` が「must be int」で強制している）。
+                    let mut item_fields = HashMap::new();
+                    item_fields.insert(
+                        "value".to_string(),
+                        (FieldKind::Const, InferredType::Int),
+                    );
+                    self.reg
+                        .class_field_details
+                        .insert(item_type_name.clone(), item_fields);
+                    // バリアント名 → そのバリアントの型（`enum_item_<name>`）。
+                    // これで `Color.Red` が `NamedInstance("enum_item_Color")` になる。
+                    let mut variant_fields = HashMap::new();
+                    for (vname, _) in variants.iter() {
+                        variant_fields.insert(
+                            vname.clone(),
+                            (
+                                FieldKind::Const,
+                                InferredType::NamedInstance(item_type_name.clone()),
+                            ),
+                        );
+                    }
+                    self.reg.class_field_details.insert(name.clone(), variant_fields);
                 }
                 Stmt::TraitDef { name, body, template_params, .. } => {
                     // trait 自身の型変数も登録する。適合検査で `-> T` のような

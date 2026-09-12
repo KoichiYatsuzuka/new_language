@@ -3,7 +3,7 @@
 **状態**: 設計確定（実装未着手）。決定 **D-1〜D-14** すべて確定済み。判断待ちなし
 **起票**: 2026-09-12
 **前提文書**: [type_binding_enforcement_plan.md](type_binding_enforcement_plan.md)（個別バグ修正キャンペーン 0-1〜A-4 の記録と型義務の棚卸し）
-**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **44%**）
+**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **46%**）
 
 ## 採番の規則
 
@@ -532,7 +532,7 @@ doc コメントに相互参照を置いた。
 |---|---|---|---|---|
 | ~~**2.1**~~ | ~~テンプレート実体化の結果型を `GenericInstance` にする~~ → **✅ 完了 2026-09-12** | D-4 | `K7` `K10` `K13` `K15` → **STATIC** | 下記「2.1 の記録」 |
 | ~~**2.2**~~ | ~~関数値の型を `Function` にする~~ → **✅ 完了 2026-09-13**（**4.5 を吸収**） | D-4 / **D-13** | `K8` `K9` `C14` → **STATIC** | 下記「2.2 の記録」 |
-| **2.3** | `enum_item_<name>` に `value: int` を登録し、メンバーを `NamedInstance` にする | D-4 | `N3` `N4` `K14` | |
+| ~~**2.3**~~ | ~~`enum_item_<name>` に `value: int` を登録し、メンバーを `NamedInstance` にする~~ → **✅ 完了 2026-09-13** | D-4 | `N3` `N4` `K14` → **STATIC** | 下記「2.3 の記録」 |
 | **2.4** | **組み込み関数のシグネチャ表**（戻り値型・引数型） | D-6 | `Z9`〜`Z12` | ⚠ **4.2 と同時に入れる** |
 | **2.5** | `and` / `or` の結果型を被演算子型の join にする | D-10 | `O9` `O10` | ⚠ **5.5 の前提** |
 | **2.6** | `infer_binop_result` の `Any` / `Union` → `Unresolved` の 2 源を塞ぐ | D-10 | — | 原因①の発生源 |
@@ -630,6 +630,41 @@ doc コメントに相互参照を置いた。
 | `compare_wasm_frontend.ps1` | **263/263 agreed・INVENTED 0** |
 
 **追加した例題**: `examples/typing/function_value_type{,_error}.ar`
+
+#### 2.3 の記録 【✅ 完了 2026-09-13】
+
+| 層 | 内容 |
+|---|---|
+| `registry/builder.rs` の `Stmt::EnumDef` | `class_field_details["enum_item_<name>"]` に `value: int` を、`class_field_details["<name>"]` に各バリアント → `NamedInstance("enum_item_<name>")` を登録 |
+| `infer_attr` | `class_and_subst` が `None` のとき `TypeValOf(NamedInstance(c))` → クラス `c` のメンバー表を引くフォールバックを追加。**クラス名経由のアクセス**（`Color.Red` / `Counter.total` / `C.K`）が同じ経路に乗る |
+| `type_matches_exact` | `enum_item_X` → `X` をアップキャストとして許可（メンバーはその enum に属する） |
+
+⚠ `.value` が `int` であることは**言語規則**で、実行時の `build_enum_classes` が
+「enum variant value must be int」で強制している。型は決まっていたのに型検査が
+知らなかっただけ。
+
+⚠⚠ **`enum_item_X` → `X` の規則が必要だった。** 2.3 でメンバーに型を付けると
+`let m: Color = Color.Green` という**自然な綴り**が落ちる（注釈は `NamedInstance("Color")`、
+メンバーは `NamedInstance("enum_item_Color")`）。以前は `Unresolved` ゆえに書けていたので、
+これを弾くのは**機能の退行**になる。⚠ 逆（`Color` → `enum_item_Color`）はダウンキャストなので許さない。
+
+⚠ **副産物**: クラス名経由のアクセスに型が付くようになったので、`const` クラス変数
+（`Counter.LIMIT`）と `static mut`（`Counter.total`）も `Unresolved` を卒業した。
+
+**検体**: `N3` `N4` `K14` が `NONE` → **`STATIC`**。静的検査の割合 44% → **46%**（53/114）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | FAIL 0 件 |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 77/77 identical・stale 0 |
+| `compare_outputs.ps1 -A <フェーズ1 前>` | 185/195。差分 10 件は新規例題 8 件＋既知の既存 2 件のみ |
+| `compare_wasm_frontend.ps1` | **265/265 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/enum_member_type{,_error}.ar`
 
 ### フェーズ 3 — 検査機構を作る
 
