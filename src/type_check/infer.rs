@@ -6,7 +6,35 @@ use super::types::InferredType;
 use super::TypeChecker;
 
 impl TypeChecker {
+    /// 部分木を歩いて診断を出すだけ。**この地点に型義務は無い**（タスク 3.1）。
+    ///
+    /// ⚠⚠ `infer` は「型を返す」と「部分木を歩いて診断を出す」を兼ねていたため、
+    /// `self.infer(e);` と結果を捨てる書き方が**正当な場合と義務忘れの場合で区別が
+    /// 付かなかった**。0-1〜A-4 で塞いだ 16 件の穴はすべてこの形だった。
+    /// ⇒ `infer` に `#[must_use]` を付け、捨てる意図を**この 2 つのラッパで明示**する。
+    #[inline]
+    pub(super) fn walk(&mut self, expr: &Expr) {
+        let _ = self.infer(expr);
+    }
+
+    /// 部分木を歩くが、**この地点には型義務があり未実装**（タスク 3.1）。
+    ///
+    /// `task` に実装タスク番号を書く。`walk` と分けてあるのは
+    /// **「義務が無い」と「義務を忘れている」を取り違えないため**で、
+    /// `grep walk_obligation_pending` で未実装の義務地点を数え上げられる。
+    /// ⚠ 外側の網は `scripts/type_obligations.ps1`（114 件の検体）。
+    /// こちらはコード側の記録で、2 つは独立した網。
+    #[inline]
+    pub(super) fn walk_obligation_pending(&mut self, expr: &Expr, _task: &'static str) {
+        let _ = self.infer(expr);
+    }
+
     /// 式の型を推論して [`InferredType`] を返す。副作用として型エラーを収集する場合がある。
+    ///
+    /// ⚠⚠ **`#[must_use]`**（タスク 3.1）。結果を捨てたいときは [`Self::walk`] か
+    /// [`Self::walk_obligation_pending`] を使うこと。直接 `self.infer(e);` と書くと
+    /// 警告になる ＝ 「義務を忘れた」のか「歩くだけ」なのかを宣言させる仕掛け。
+    #[must_use]
     pub(super) fn infer(&mut self, expr: &Expr) -> InferredType {
         match expr {
             // --- リテラル ---
@@ -53,7 +81,7 @@ impl TypeChecker {
                 self.infer_attr(object, attr, span, *node_id)
             }
             Expr::TraitAccess { object, .. } => {
-                self.infer(object);
+                self.walk(object);
                 InferredType::Unresolved
             }
 
@@ -143,7 +171,7 @@ impl TypeChecker {
             //    こちらは**型値**なので、素のクラス名 `C` が `TypeValOf(NamedInstance("C"))`
             //    になるのと揃えて `TypeValOf(GenericInstance{..})` を返す。
             Expr::TemplateInstantiate { base, type_args } => {
-                self.infer(base);
+                self.walk(base);
                 let Expr::Ident { name, .. } = base.as_ref() else {
                     return InferredType::Unresolved;
                 };
@@ -213,22 +241,25 @@ impl TypeChecker {
                 self.annotations.set_resolved(*node_id, result.clone());
                 result
             }
+            // ⚠ スライスの境界は `int` でなければならない（現在は実行時のみ・検体 L8）。
             Expr::Slice { begin, end, step } => {
                 if let Some(e) = begin {
-                    self.infer(e);
+                    self.walk_obligation_pending(e, "5.2 スライス境界は int");
                 }
                 if let Some(e) = end {
-                    self.infer(e);
+                    self.walk_obligation_pending(e, "5.2 スライス境界は int");
                 }
                 if let Some(e) = step {
-                    self.infer(e);
+                    self.walk_obligation_pending(e, "5.2 スライス境界は int");
                 }
                 InferredType::NamedInstance("slice".to_string())
             }
 
             // --- 型ガード式 ---
+            // ⚠ 対象式に型義務は無い（`is` は検査そのもの）。型名の存在検査は
+            //    妥当性検査の担当（タスク 3.4・検体 X6）。
             Expr::IsType { expr, node_id, .. } => {
-                self.infer(expr);
+                self.walk(expr);
                 // `is` は Bool を返す（検査自体なので指示は不要・narrowing は直後 if 分岐で反映）。
                 self.annotations.set_resolved(*node_id, InferredType::Bool);
                 InferredType::Bool
@@ -253,7 +284,8 @@ impl TypeChecker {
             } => {
                 self.with_barrier(|c| {
                     for (cond, body) in branches {
-                        c.infer(cond);
+                        // ⚠ 条件は `bool` でなければならない（D-12・検体 K1）。
+                        c.walk_obligation_pending(cond, "5.5 条件は bool");
                         c.push_scope();
                         c.check_stmts(body);
                         c.pop_scope();
@@ -302,7 +334,8 @@ impl TypeChecker {
                 body,
                 return_type,
             } => {
-                self.infer(cond);
+                // ⚠ 条件は `bool` でなければならない（D-12・検体 K2）。
+                self.walk_obligation_pending(cond, "5.5 条件は bool");
                 self.with_loop_expr(|c| {
                     c.push_scope();
                     c.check_stmts(body);
@@ -557,7 +590,8 @@ impl TypeChecker {
         span: &Span,
         node_id: u32,
     ) -> InferredType {
-        self.infer(expr);
+        // ⚠ 対象式に型義務は無い（型ガードは検査そのもの）。
+        self.walk(expr);
         let resolved = InferredType::from_ann(guard_type).unwrap_or(InferredType::Unresolved);
         // ── AST 型解決層（#16・段階(a)）──
         // `mustbe` は実行時に対象型で動的検査する（不一致で raise）。よって:

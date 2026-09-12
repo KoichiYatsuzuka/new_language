@@ -132,8 +132,9 @@ impl TypeChecker {
             }
 
             // --- 式文 ---
+            // ⚠ 結果を捨てる文なので型義務は無い。
             Stmt::Expr(expr) => {
-                self.infer(expr);
+                self.walk(expr);
             }
 
             // --- 制御構文 ---
@@ -143,7 +144,8 @@ impl TypeChecker {
             } => self.check_if(branches, else_body),
             Stmt::Match { subject, arms, .. } => self.check_match(subject, arms),
             Stmt::While { cond, body } => {
-                self.infer(cond);
+                // ⚠ 条件は `bool` でなければならない（D-12・検体 K2）。
+                self.walk_obligation_pending(cond, "5.5 条件は bool");
                 self.push_scope();
                 self.check_stmts(body);
                 self.pop_scope();
@@ -305,11 +307,15 @@ impl TypeChecker {
                         span: Some(span.clone()),
                     });
                 }
-                self.infer(expr);
+                // ⚠ 値は囲みブロック式の `->T` 注釈と照合しなければならない
+                //    （現在は実行時のみ・検体 X1/X2/X4）。
+                self.walk_obligation_pending(expr, "5.2 block_return vs ->T");
             }
             // ⚠ `loop_yield` は `for`/`while` 式のものでジェネレータとは別物。制限しない。
             Stmt::LoopYield(expr) => {
-                self.infer(expr);
+                // ⚠ 値は囲み式の `->list[T]` の要素型と照合しなければならない
+                //    （現在は実行時のみ・検体 X3）。
+                self.walk_obligation_pending(expr, "5.2 loop_yield vs ->list[T]");
             }
             Stmt::Yield(expr) => {
                 // ⚠⚠ `yield` は **`gen` 本体の直下だけ**（bug_fix.md B13）。
@@ -320,7 +326,8 @@ impl TypeChecker {
                         span: None,
                     });
                 }
-                self.infer(expr);
+                // ⚠ 値は宣言 yield 型と照合しなければならない（現在は無検査・検体 C8）。
+                self.walk_obligation_pending(expr, "5.2 yield vs 宣言 yield 型");
             }
 
             // --- クラスフィールド宣言 ---
@@ -559,7 +566,8 @@ impl TypeChecker {
             self.push_scope();
             match &arm.pattern {
                 MatchPattern::Case(expr) => {
-                    self.infer(expr);
+                    // ⚠ パターンの型は subject の型と一致しなければならない（検体 X5）。
+                    self.walk_obligation_pending(expr, "5.4 case パターン型 vs subject");
                 }
                 MatchPattern::IsType(type_name) => {
                     if let Some(ref var_name) = subject_name {
@@ -584,7 +592,8 @@ impl TypeChecker {
             let result_guard = self.detect_result_guard(cond);
             let (narrowed, error_info) = self.narrow_by_type_guard(guard_opt);
 
-            self.infer(cond);
+            // ⚠ 条件は `bool` でなければならない（D-12・検体 K1）。
+            self.walk_obligation_pending(cond, "5.5 条件は bool");
 
             if let Some((var_name, var_type, span)) = error_info {
                 self.report_error(StaticTypeError {

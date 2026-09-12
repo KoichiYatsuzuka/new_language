@@ -12,7 +12,8 @@ impl TypeChecker {
         target_is_fn: bool,
         target_name: &str,
     ) {
-        self.infer(decorator);
+        // ⚠ デコレータ式そのものに型義務は無い（適用可否は下の個別検査が見る）。
+        self.walk(decorator);
 
         let dec_name = match decorator {
             Expr::Ident { name, .. } => name.clone(),
