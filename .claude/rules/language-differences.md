@@ -6,6 +6,9 @@
 - Supports templates
 - Mutable arguments must explicitly use `mut`
 - Empty collections require explicit typing
+  - ⚠ **Not enforced yet** (`let xs = []` currently passes). The redesign decides this:
+    `[]` infers as `list[⊥]` (upcasts to any `list[T]`), and an unannotated `let xs = []`
+    defaults to `list[Any]` — see `implementation_plans/type_check_redesign.md` D-7 / U-6.
 - No `nonlocal` keyword: declare the outer variable as `mut` to allow inner functions to modify it
 - `static mut` instead of a class-level attribute for shared closure state across calls
 - `if` / `for` / `while` / `match` / `block` can be used as expressions with a `->Type` annotation
