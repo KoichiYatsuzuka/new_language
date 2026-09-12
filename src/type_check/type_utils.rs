@@ -204,15 +204,19 @@ impl TypeChecker {
         if arg_ty == expected {
             return true;
         }
-        // Protocol 型パラメータ: 適合チェックは別途実施するため、ここでは基本的に受け入れる
+        // ── protocol は**構造的に**判定する（タスク 1.3）─────────────────────
+        //
+        // ⚠⚠ **以前は「任意の `NamedInstance` を受理」していた**（「適合チェックは別途
+        //    実施するため」というコメント付き）。その「別途」は `check_expected` が
+        //    **期待型が最上位 `Protocol` のときだけ**行うので、**容器の内側では誰も
+        //    検査していなかった**。実測で漏れていた形:
+        //      fn f() -> Option[Pr]: return No(1)        # 非適合クラスが通る
+        //      h.items = [No(1)]   （items: list[Pr]）    # 同じ
+        // ⚠ 逆に `let xs: list[HasN] = [Dog(2)]` は `resolve_protocols` を通らない経路で
+        //    `HasN` が `NamedInstance` のまま**名前**比較され、**構造的に満たしているのに
+        //    弾かれていた**（偽陽性）。経路によって 2 通りに壊れていた。
         if let InferredType::Protocol(proto_name) = expected {
-            return matches!(
-                arg_ty,
-                InferredType::NamedInstance(_) | InferredType::Protocol(_) | InferredType::Any
-            ) || {
-                let _ = proto_name;
-                false
-            };
+            return self.satisfies_protocol(arg_ty, proto_name.as_str());
         }
         if *expected == InferredType::TypeVal {
             return matches!(arg_ty, InferredType::TypeValOf(_) | InferredType::TypeVal);

@@ -168,6 +168,61 @@ impl TypeChecker {
         }
     }
 
+    /// `ty` が protocol `proto_name` を**構造的に満たすか**（純粋な判定・タスク 1.3）。
+    ///
+    /// ⚠⚠ **`type_matches_exact` から呼ぶための述語版。** あちらは `&self` なので
+    /// 診断を出す [`Self::check_protocol_conformance`]（`&mut self`）を呼べない。
+    ///
+    /// ⚠⚠ **これが無いと容器の内側の protocol が経路によって 2 通りに壊れる**（実測）:
+    /// - `type_matches_exact` の `Protocol` アームは **任意の `NamedInstance` を受理**していた
+    ///   ので、`fn f() -> Option[Pr]: return No(1)` とフィールド `list[Pr]` への代入が
+    ///   **非適合クラスを通していた**（偽陰性）
+    /// - 一方 `let xs: list[HasN] = [Dog(2)]` は `Pr` が `NamedInstance` のまま**名前**で
+    ///   比較されるので、**構造的に満たしているのに弾かれていた**（偽陽性）
+    ///
+    /// ⚠ 判定規則は `check_protocol_conformance` と**同じに保つこと**。あちらは失敗理由を
+    /// 個別に報告するため一本化できていない。フェーズ 3.3（3 分類の単一定義）で畳む。
+    pub(crate) fn satisfies_protocol(&self, ty: &InferredType, proto_name: &str) -> bool {
+        let Some(proto) = self.registry.protocol(proto_name) else {
+            return true; // 未知のプロトコルは無視（報告側と同じ）
+        };
+        let class_name = match ty {
+            InferredType::Any => return true, // Any は全プロトコルを満たす
+            InferredType::NamedInstance(cls) => cls.clone(),
+            InferredType::Protocol(p) => {
+                // 別プロトコル型 — 要求フィールドを同じ種別・同じ型で持つか
+                let Some(other) = self.registry.protocol(p.as_str()) else {
+                    return true;
+                };
+                return proto.fields.iter().all(|req| {
+                    other
+                        .fields
+                        .iter()
+                        .any(|f| f.name == req.name && f.kind == req.kind && f.ty == req.ty)
+                });
+            }
+            // クラスインスタンス以外は満たさない（報告側と同じ）
+            _ => return false,
+        };
+        let field_details = self.collect_class_field_details(&class_name);
+        let method_sigs = self.collect_class_method_sigs(&class_name);
+        let fields_ok = proto.fields.iter().all(|req| match field_details.get(&req.name) {
+            None => false,
+            Some((actual_kind, actual_ty)) => {
+                *actual_kind == req.kind
+                    && (*actual_ty == req.ty || req.ty == InferredType::Unresolved)
+            }
+        });
+        if !fields_ok {
+            return false;
+        }
+        proto.methods.iter().all(|req| match method_sigs.get(&req.name) {
+            None => false,
+            // オーバーロードは 1 つでも一致すればよい（報告側と同じ）
+            Some(sigs) => sigs.iter().any(|sig| Self::method_sig_matches_protocol(sig, req)),
+        })
+    }
+
     /// クラスのフィールド詳細を継承チェーンを辿って収集する。
     pub(crate) fn collect_class_field_details(
         &self,

@@ -1,0 +1,23 @@
+# protocol_in_container_error.ar — 容器の内側の非適合クラスを弾く（タスク 1.3）
+#
+# 正常系は protocol_in_container.ar
+#
+# `No` は `m: int` しか持たないので `HasN`（`mut n: int` を要求）を満たさない。
+#
+# ⚠ 以前は **`type_matches_exact` の `Protocol` アームが任意の `NamedInstance` を受理**して
+#   いたため、容器の内側では誰も検査しておらず**黙って通っていた**。
+#   「適合チェックは別途実施するため」とコメントされていたが、その「別途」
+#   （`check_expected`）は**期待型が最上位 `Protocol` のときだけ**動いていた。
+#
+# 期待されるエラー:
+#   StaticTypeError  'xs' is declared 'list[protocol HasN]' but initialized with 'list[No]'
+
+protocol HasN:
+    mut n: int
+
+class No:
+    mut m: int
+
+let xs: list[HasN] = [No(1)]        # ⛔ No は n: int を持たない
+
+print("ここには到達しない")

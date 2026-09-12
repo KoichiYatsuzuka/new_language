@@ -1,0 +1,77 @@
+# protocol_in_container.ar — 容器の内側の protocol も構造的に判定すること（タスク 1.3）
+#
+# ## 何が壊れていたか — 経路によって 2 通りに壊れていた
+#
+# protocol が `list[Pr]` / `Option[Pr]` のように**容器の内側**にあると、通る経路によって
+# 判定が変わっていた。
+#
+# ### 偽陰性（非適合を通していた）
+#
+# `type_matches_exact` の `Protocol` アームは「適合チェックは別途実施するため」という
+# コメント付きで **任意の `NamedInstance` を受理**していた。その「別途」は
+# `check_expected` が**期待型が最上位 `Protocol` のときだけ**行うので、
+# **容器の内側では誰も検査していなかった**:
+#
+#   fn f() -> Option[Pr]: return No(1)        # 非適合クラスが通っていた
+#   h.items = [No(1)]   （items: list[Pr]）   # 同じ
+#
+# ### 偽陽性（構造的適合を弾いていた）
+#
+# 逆に `let` 束縛は `resolve_protocols` を通らないため `Pr` が `NamedInstance` のまま
+# **名前**で比較され、protocol を宣言していないが構造的に満たすクラスを弾いていた:
+#
+#   let xs: list[HasN] = [Dog(2)]             # Dog は n: int を持つのに弾かれていた
+#
+# ⇒ 純粋な判定述語 `satisfies_protocol` を作って `type_matches_exact` から呼び、
+#   `let` 束縛でも `resolve_protocols` を通すようにした。
+#
+# ⚠ protocol は**名前ではなく形**で合う（trait との最大の違い）。`Dog` は `HasN` を
+#   宣言していないが `mut n: int` を持つので満たす。
+#
+# 弾かれる例は protocol_in_container_error.ar
+
+protocol HasN:
+    mut n: int
+
+class Dog:
+    mut n: int
+
+print("=== 直接の束縛（従来から通っていた） ===")
+
+let p: HasN = Dog(1)
+print(p.n)                          # 1
+
+print("=== 容器の内側（タスク 1.3 で通るようになった） ===")
+
+let xs: list[HasN] = [Dog(2), Dog(3)]
+print(xs[0].n, xs[1].n)             # 2 3
+
+print("=== Option の内側 ===")
+
+# ⚠ 戻り値の**型が通ること**がここの主題。`Option[T]` への属性アクセスには明示的な
+#   ダウンキャストが要る（別の規則）ので、ここでは None かどうかだけ見る。
+fn maybe_hasn(let flag: bool) -> Option[HasN]:
+    if flag:
+        return Dog(4)
+    return None
+
+let m = maybe_hasn(True)
+print(m is not None)                # True
+print(maybe_hasn(False) is None)    # True
+
+print("=== フィールドの容器 ===")
+
+class Holder:
+    mut items: list[HasN]
+    mut tag: str
+
+mut h = Holder([Dog(5)], "t")
+h.items = [Dog(6), Dog(7)]
+print(h.items[0].n, h.items[1].n)   # 6 7
+
+print("=== dict の値側 ===")
+
+let d: dict[str, HasN] = {"a": Dog(8)}
+print(d["a"].n)                     # 8
+
+print("done")

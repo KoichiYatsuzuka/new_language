@@ -1,6 +1,6 @@
 # @id: K12
 # @obligation: フィールド list[protocol] に非適合クラス
-# @baseline: NONE
+# @baseline: STATIC
 #
 # ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
 #    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。

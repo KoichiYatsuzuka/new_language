@@ -241,6 +241,13 @@ impl TypeChecker {
         if self.mentions_type_param(&declared) {
             return rhs_ty;
         }
+        // ⚠ **容器の内側の protocol 名を `Protocol` へ寄せる**（タスク 1.3）。
+        //    寄せないと `list[HasN]` の `HasN` が `NamedInstance` のまま**名前**で比較され、
+        //    構造的に満たしているクラス（`HasN` を宣言していない `Dog`）が
+        //    **誤って弾かれる**（実測）。`check_expected` を通る経路では
+        //    `resolve_protocols` が既に呼ばれており、ここだけ抜けていた。
+        let declared = self.resolve_protocols(&declared);
+        let rhs_ty = self.resolve_protocols(&rhs_ty);
         if !self.type_matches(&rhs_ty, &declared) {
             self.report_error(StaticTypeError {
                 kind: TypeErrorKind::VarTypeMismatch {

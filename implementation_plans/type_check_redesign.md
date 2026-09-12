@@ -3,7 +3,7 @@
 **状態**: 設計確定（実装未着手）。決定 **D-1〜D-14** すべて確定済み。判断待ちなし
 **起票**: 2026-09-12
 **前提文書**: [type_binding_enforcement_plan.md](type_binding_enforcement_plan.md)（個別バグ修正キャンペーン 0-1〜A-4 の記録と型義務の棚卸し）
-**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **36%**）
+**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **38%**）
 
 ## 採番の規則
 
@@ -412,7 +412,7 @@ print(f("s"))                           # ⛔ int 宣言の引数へ str が渡�
 |---|---|---|---|---|
 | ~~**1.1**~~ | ~~`resolve_declared_type` の `Intersection` / `Result` の早期 return に整合性検査を足す~~ → **✅ 完了 2026-09-12** | D-2 | `K4` `K5` → **STATIC** | 下記「1.1 の記録」 |
 | ~~**1.2**~~ | ~~`FieldKind::StaticMut` を可変として数える~~ → **✅ 完了 2026-09-12** | — | — | 下記「1.2 の記録」 |
-| **1.3** | `protocol` を容器の内側でも一様に扱う（`resolve_protocols` を容器へ再帰させる） | — | `K11` `K12` | 中。⚠ 現在 `list[Pr]` の束縛は**偶然**捕まり、`Option[Pr]` の戻り値とフィールド代入は漏れる |
+| ~~**1.3**~~ | ~~`protocol` を容器の内側でも一様に扱う~~ → **✅ 完了 2026-09-12** | — | `K11` `K12` → **STATIC** | 下記「1.3 の記録」 |
 
 #### 1.1 の記録 【✅ 完了 2026-09-12】
 
@@ -477,6 +477,52 @@ print(f("s"))                           # ⛔ int 宣言の引数へ str が渡�
 
 **追加した例題**: `examples/classes/static_mut_assign{,_error}.ar`
 ⚠ 正常系の例題が「インスタンス経由の代入」という**今まで例題が 1 本も無かった形**を埋めている。
+
+#### 1.3 の記録 【✅ 完了 2026-09-12】
+
+⚠⚠ **着手前の診断（「`resolve_protocols` が容器へ再帰しない」）は誤りだった。**
+`resolve_protocols` は既に `ListOf` / `SetOf` / `DictOf` / `Union` / `Tuple` /
+`GenericInstance` / `Result` へ再帰している。実際の原因は別で、**経路によって 2 通りに
+壊れていた**（実測）:
+
+| 経路 | 症状 | 原因 |
+|---|---|---|
+| フィールド代入・戻り値（`check_expected` 経由） | **非適合クラスが通る**（偽陰性） | `type_matches_exact` の `Protocol` アームが「適合チェックは別途実施するため」というコメント付きで**任意の `NamedInstance` を受理**していた。その「別途」は `check_expected` が**期待型が最上位 `Protocol` のときだけ**行うので、容器の内側では誰も検査していなかった |
+| `let` 束縛（`resolve_declared_type` 経由） | **構造的に満たすのに弾かれる**（偽陽性） | この経路は `type_matches` を直接呼び `resolve_protocols` を通らないため、`list[HasN]` の `HasN` が `NamedInstance` のまま**名前**で比較されていた。`Dog` は `HasN` を宣言していないが `mut n: int` を持つので満たすはずだった |
+
+**実装**
+
+| 層 | 内容 |
+|---|---|
+| `satisfies_protocol`（新設・`stmt/protocol.rs`） | `ty` が protocol を**構造的に満たすか**の**純粋な述語**。`type_matches_exact` は `&self` なので、診断を出す `check_protocol_conformance`（`&mut self`）を呼べない |
+| `type_matches_exact` の `Protocol` アーム | 「任意の `NamedInstance` を受理」を `satisfies_protocol` に差し替え |
+| `resolve_declared_type` | 照合の直前で `declared` / `rhs_ty` の両方に `resolve_protocols` を適用 |
+
+⚠ 判定規則は `check_protocol_conformance` と**同じに保つこと**（あちらは失敗理由を個別に
+報告するため一本化できていない）。畳むのは**フェーズ 3.3**（3 分類の単一定義）の仕事。
+doc コメントに相互参照を置いた。
+
+**検体**: `K11` `K12` が `NONE` → **`STATIC`**。静的検査の割合 36% → **38%**（43/114）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` / `force_gate.ps1` | 既知の `bench_ab_native.ar` のみ / 0 fall back |
+| `compare_python_impl.ps1` | 75/75 identical・stale 0（新規 2 例題を `$knownDiff` へ） |
+| `compare_outputs.ps1 -A <フェーズ1 前>` | 182/189。差分 7 件は 1.1〜1.3 の新規 6 件＋下記 1 件 |
+| `compare_wasm_frontend.ps1` | **259/259 agreed・INVENTED 0** |
+
+⚠ 既存例題 `classes/protocol_sites_error.ar` にエラーが 1 件増えた
+（`argument 0 of 'render' expects 'protocol Drawable' but got 'Bad'`）。
+非適合クラスを protocol 型の仮引数へ渡す地点が、以前は**許容アームのおかげで無検査**
+だった。正しい追加診断（引数位置の要約）。
+
+⚠ **偽陽性を出していないことを全経路で確認した**（実測）: 構造的に満たすが protocol を
+宣言していないクラスが 引数 / 戻り値 / フィールド / 容器の内側 / `dict` の値側 すべてで通る。
+
+**追加した例題**: `examples/classes/protocol_in_container{,_error}.ar`
 
 ### フェーズ 2 — 推論を埋める（3 分類の材料）
 
