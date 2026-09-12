@@ -71,6 +71,7 @@ $knownDiff = @{
     'function_value_type_error'      = 'py: 関数値の型と分散規則の検査が無い（そのまま実行してしまう・タスク 2.2 で新設）'
     'enum_member_type'               = 'py: const クラス変数のクラス名経由アクセスが未対応（AttributeError になる・タスク 2.3 で新設）'
     'enum_member_type_error'         = 'py: enum .value の静的型が無い（int を str 変数へ入れて実行してしまう・タスク 2.3 で新設）'
+    'and_or_result_type_error'       = 'py: and/or の結果型検査が無い（bool 変数に int を入れて実行してしまう・タスク 2.5 で新設）'
     'default_value_type'             = 'py: int→float の昇格が未実装（3 を 3.0 にしない・0-12 で新設）'
     'trait_conformance'              = 'py: trait のデフォルト実装の継承が未実装（AttributeError になる・0-10 で新設）'
     'class_virtual_method_error'     = 'py: クラス本体の仮想メソッド禁止が未実装（None を返して実行してしまう・0-10 で新設）'

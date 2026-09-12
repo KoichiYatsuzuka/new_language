@@ -1,0 +1,63 @@
+# and_or_result_type.ar — `and` / `or` の結果型は被演算子型の join（タスク 2.5 / 決定 D-10）
+#
+# ## 何が壊れていたか
+#
+# 型検査は `and` / `or` の結果を**無条件 `Bool`** と宣言していた（`infer_binop_result`）。
+# ところが実行時は **被演算子をそのまま返す**（Python 流で `a and b` は a か b を返す）。
+# そのため静的には `Bool` と言いながら実行時には非 bool が入る **嘘**になっていた:
+#
+#   let a: int = 1
+#   let b: int = 2
+#   let r: bool = a and b    # 静的に通っていた
+#   print(r)                 # 2   ← bool 変数に int が入る
+#
+# `__cast__` に続く 2 件目の「**型検査が嘘をつく**」箇所だった。
+#
+# ⚠ **実行時の意味論は変えていない。** 結果型を正直にしただけ（案 (a)）。
+#   `x = a or default` という定番が書けなくなる案 (b) は採らなかった。
+#
+# ⚠⚠ これは **`if` / `while` の条件を `bool` 厳密にする決定（D-12）の前提**。
+#   結果型が `Bool` のままだと、条件を厳密にしても `if a and b:`（非 bool）が静的に通ってしまう。
+#
+# 弾かれる例は and_or_result_type_error.ar
+
+print("=== 同じ型同士はその型になる ===")
+
+let a: int = 1
+let b: int = 2
+let n: int = a and b
+print(n)                            # 2   ← a が真なので b を返す
+
+let s1: str = "x"
+let s2: str = "y"
+let s: str = s1 or s2
+print(s)                            # x   ← s1 が真なので s1 を返す
+
+print("=== bool 同士なら bool ===")
+
+let p: bool = True
+let q: bool = False
+let r: bool = p and q
+print(r)                            # False
+
+print("=== 短絡評価は従来どおり ===")
+
+let zero: int = 0
+print(zero or 9)                    # 9   ← zero は偽なので右辺
+print(zero and 9)                   # 0   ← zero は偽なのでそのまま返す
+
+print("=== 比較演算子の結果は bool のまま ===")
+
+let cmp: bool = (a > 0) and (b > 0)
+print(cmp)                          # True
+
+print("=== 既定値のイディオムも書ける ===")
+
+fn pick(let v: int) -> int:
+    let fallback: int = 42
+    return v or fallback
+
+print(pick(7))                      # 7
+print(pick(0))                      # 42
+
+print("done")

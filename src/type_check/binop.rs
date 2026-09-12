@@ -114,10 +114,34 @@ impl TypeChecker {
             | BinOp::Gt
             | BinOp::LtEq
             | BinOp::GtEq
-            | BinOp::And
-            | BinOp::Or
             | BinOp::In
             | BinOp::NotIn => Bool,
+            // ── `and` / `or` は**被演算子型の join**（決定 D-10・タスク 2.5）──────
+            //
+            // ⚠⚠ **以前は無条件 `Bool` と宣言していた。** しかし実行時は
+            //    **被演算子をそのまま返す**（Python 流 `a and b` は a か b を返す）ので、
+            //    静的には `Bool` と言いながら実行時には非 bool が入る **嘘**になっていた:
+            //      let a: int = 1
+            //      let b: int = 2
+            //      let r: bool = a and b    # 静的に通る
+            //      print(r)                 # 2   ← bool 変数に int が入る
+            //    `__cast__` に続く 2 件目の「型検査が嘘をつく」箇所だった。
+            //
+            // ⚠ **実行時の意味論は変えない**（案 (a)）。結果型を正直にするだけ。
+            //    `x = a or default` の定番が書けなくなる案 (b) は採らなかった。
+            // ⚠⚠ これは **D-12（`if`/`while` の条件を `bool` 厳密に）の前提**。
+            //    結果型が `Bool` のままだと、条件を厳密にしても `if a and b:`（非 bool）が
+            //    静的に通ってしまう。
+            // ⚠ `Any` / `Union` の被演算子はこの関数の冒頭で `Unresolved` に落ちている
+            //    （`check_binop` が `OperationOnAny` / `OperationOnUnion` を報告済み）ので、
+            //    ここで `Union` が入れ子になることはない。
+            BinOp::And | BinOp::Or => {
+                if lt == rt {
+                    lt.clone()
+                } else {
+                    Union(vec![lt.clone(), rt.clone()])
+                }
+            }
             BinOp::Add => match (lt, rt) {
                 (Int, Int) => Int,
                 (Float, Float) | (Int, Float) | (Float, Int) => Float,

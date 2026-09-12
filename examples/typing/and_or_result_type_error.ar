@@ -1,0 +1,20 @@
+# and_or_result_type_error.ar — `and` の結果を bool と偽らない（タスク 2.5 / 決定 D-10）
+#
+# 正常系は and_or_result_type.ar
+#
+# `a and b`（a, b は int）の実行時の値は **int**（Python 流に被演算子を返す）。
+# 以前は型検査が結果を**無条件 `Bool`** と宣言していたため、この行が静的に通り
+# **`bool` 変数に `2` が入っていた**。`__cast__` に続く 2 件目の
+# 「型検査が嘘をつく」箇所だった。
+#
+# ⚠ 実行時の意味論は変えていない。結果型を正直にしただけ。
+#
+# 期待されるエラー:
+#   StaticTypeError  'r' is declared 'bool' but initialized with 'int'
+
+let a: int = 1
+let b: int = 2
+
+let r: bool = a and b               # ⛔ 結果は int（2）なので bool ではない
+
+print("ここには到達しない")

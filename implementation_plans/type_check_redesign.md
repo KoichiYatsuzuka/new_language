@@ -3,7 +3,7 @@
 **状態**: 設計確定（実装未着手）。決定 **D-1〜D-14** すべて確定済み。判断待ちなし
 **起票**: 2026-09-12
 **前提文書**: [type_binding_enforcement_plan.md](type_binding_enforcement_plan.md)（個別バグ修正キャンペーン 0-1〜A-4 の記録と型義務の棚卸し）
-**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **46%**）
+**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **48%**）
 
 ## 採番の規則
 
@@ -46,7 +46,6 @@
 | 関数値 `wrong`（`fn` を名前で参照） | `let x: int = wrong` が通る |
 | enum メンバー・`.value` | `let s: str = E.A.value` が通る |
 | **組み込み関数の戻り値**（`float()`/`len()`/`str()`/`int()`） | `let s: str = float(n)` が通る |
-| `infer_binop_result` の `Any` / `Union` 分岐 | 二項演算の結果型が落ちる |
 | コレクションリテラルの要素型崩れ（原因②） | 下記 |
 
 ### 原因② 推論が「揃わなければ要素型を捨てる」— 捨てた形が何にでも適合する
@@ -230,7 +229,8 @@ print(r)                 # 2   ← bool 変数に int が入る
 これで `if a and b:`（非 bool）が **D-12 の条件検査で静的に落ちる**。
 ⚠⚠ **D-12 はこれが前提。** 結果型が `Bool` と宣言されている限り、条件を `bool` 厳密に
 しても `if a and b:` は静的に通ってしまう。
-⚠ 併せて `infer_binop_result` の `Any` / `Union` → `Unresolved` の 2 源も塞ぐ（原因①）。
+⚠ `Any` / `Union` の被演算子は `check_binop` が必ずエラーを報告するので、
+そこで `Unresolved` になるのは**報告済みエラーの下流**（塞ぐ対象ではない・旧 2.6 を取り下げた）。
 
 ### D-11 空のコレクションリテラルは `list[⊥]`、注釈なしの束縛は `list[Any]`
 
@@ -534,8 +534,8 @@ doc コメントに相互参照を置いた。
 | ~~**2.2**~~ | ~~関数値の型を `Function` にする~~ → **✅ 完了 2026-09-13**（**4.5 を吸収**） | D-4 / **D-13** | `K8` `K9` `C14` → **STATIC** | 下記「2.2 の記録」 |
 | ~~**2.3**~~ | ~~`enum_item_<name>` に `value: int` を登録し、メンバーを `NamedInstance` にする~~ → **✅ 完了 2026-09-13** | D-4 | `N3` `N4` `K14` → **STATIC** | 下記「2.3 の記録」 |
 | **2.4** | **組み込み関数のシグネチャ表**（戻り値型・引数型） | D-6 | `Z9`〜`Z12` | ⚠ **4.2 と同時に入れる** |
-| **2.5** | `and` / `or` の結果型を被演算子型の join にする | D-10 | `O9` `O10` | ⚠ **5.5 の前提** |
-| **2.6** | `infer_binop_result` の `Any` / `Union` → `Unresolved` の 2 源を塞ぐ | D-10 | — | 原因①の発生源 |
+| ~~**2.5**~~ | ~~`and` / `or` の結果型を被演算子型の join にする~~ → **✅ 完了 2026-09-13** | D-10 | `O9` `O10` → **STATIC** | 下記「2.5 の記録」。⚠ **5.5 の前提** |
+| ~~**2.6**~~ | ~~`infer_binop_result` の `Any` / `Union` → `Unresolved` の 2 源を塞ぐ~~ → **❌ 取り下げ**（前提が誤り） | — | — | 下記「2.6 を取り下げた理由」 |
 | **2.7** | コレクションリテラルの要素型を**合成**する（捨てない） | D-3 | `L1` `L3` `L9` `L15`〜`L19` | ⚠ D-5 で暗黙キャストが無くなるので `[1, 2.0]` は混在エラーでよい |
 | **2.8** | `except ... as name` の束縛型を付ける | D-4 | `E3` | |
 | **2.9** | `is` の絞り込みを `match` **式**でも効かせる（`infer.rs:283` が `stmt/check.rs:512` の絞り込みを持たない） | — | `X7` | ⚠ 文と式で意味論が違うのを解消 |
@@ -665,6 +665,44 @@ doc コメントに相互参照を置いた。
 | `compare_wasm_frontend.ps1` | **265/265 agreed・INVENTED 0** |
 
 **追加した例題**: `examples/typing/enum_member_type{,_error}.ar`
+
+#### 2.5 の記録 【✅ 完了 2026-09-13】
+
+`infer_binop_result` の `And` / `Or` を比較演算子のグループから分離し、
+**被演算子型の join**（同型ならその型・異なれば `Union`）を返すようにした。
+
+⚠ **実行時の意味論は変えていない**（案 (a)）。`x = a or default` の定番は書けるまま
+（例題で短絡評価・既定値イディオムの両方を実測確認した）。
+
+⚠ `Any` / `Union` の被演算子はこの関数の冒頭で `Unresolved` に落ちるので、
+join で `Union` が入れ子になることはない。
+
+**検体**: `O9` `O10` が `NONE` → **`STATIC`**。静的検査の割合 46% → **48%**（55/114）。
+⇒ **「型検査が嘘をつく」2 件のうち 1 件目が解消**（残るは `__cast__` = タスク 4.3）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` | FAIL 0 件 |
+| `force_gate.ps1` | 0 example(s) still fall back |
+| `compare_python_impl.ps1` | 78/78 identical・stale 0 |
+| `compare_outputs.ps1 -A <フェーズ1 前>` | 185/197。差分 12 件は新規例題 10 件＋既知の既存 2 件のみ |
+| `compare_wasm_frontend.ps1` | **267/267 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/and_or_result_type{,_error}.ar`
+
+#### 2.6 を取り下げた理由 【❌ 2026-09-13】
+
+⚠⚠ **前提が誤っていた。** 「`infer_binop_result` の `Any` / `Union` → `Unresolved` は
+原因①（万能受容体）の発生源」と書いたが、実コードを読むと
+**`check_binop` が同じ条件で必ずエラーを報告している**（`OperationOnAny` /
+`OperationOnUnion`・全演算子で無条件・`return` 付き）。
+
+⇒ あの `Unresolved` は「**既に報告したエラーの下流**」であって、黙って検査が消える
+silent な穴ではない。塞ぐ対象ではないので取り下げる。
+⚠ 設計文書の原因①の表から「`infer_binop_result` の `Any` / `Union` 分岐」も削除した。
 
 ### フェーズ 3 — 検査機構を作る
 
