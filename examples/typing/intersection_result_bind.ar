@@ -1,0 +1,66 @@
+# intersection_result_bind.ar — Intersection / Result 注釈も右辺と照合されること（タスク 1.1）
+#
+# ## 何が壊れていたか
+#
+# `resolve_declared_type`（`type_check/stmt/resolve.rs`）は注釈が `Intersection[...]` または
+# `Result[T, E]` のとき、**注釈自身の妥当性だけ検査して early-return** していた:
+#
+#   - `Intersection` → `check_intersection_members`（メンバーが相互に両立するか）
+#   - `Result`       → `validate_result_type`（Ok 型と Err 型が同じでないか）
+#
+# どちらも**右辺を見ていない**ので、次が黙って通っていた:
+#
+#   let v: Intersection[Alpha, Beta] = OnlyAlpha(1, 2)   # 片方しか実装していない
+#   let r: Result[int, str] = 1.5                        # float を入れている
+#
+# ⚠ 仮引数・戻り値の位置では捕まっていた（そちらは一般経路を通る）。
+#   **`let` / `mut` / `const` の束縛だけが漏れていた**ので、原因がこの関数だと特定できた。
+#
+# ## なぜ起きたか — 2 種類の検査を混同していた
+#
+# 型検査には性質の違う 2 系統がある:
+#
+#   - **妥当性検査**: 注釈自身が成り立つか（メンバーの両立・Ok≠Err・名前の存在・個数）
+#   - **整合性検査**: 右辺の型が注釈の型に適合するか
+#
+# 上の 2 つは妥当性検査をして満足し、整合性検査へ進まずに `return` していた。
+# ⇒ 早期 return を外し、妥当性検査のあと**必ず**整合性検査へ落ちるようにした。
+#
+# 弾かれる例は intersection_result_bind_error.ar
+
+print("=== Intersection: 両方の trait を実装したクラスは通る ===")
+
+trait Alpha:
+    mut a: int
+
+trait Beta:
+    mut b: int
+
+class Both(Alpha, Beta):
+    mut own: int
+
+let ok: Intersection[Alpha, Beta] = Both(1, 2, 3)
+print(ok::Alpha.a, ok::Beta.b, ok.own)        # 1 2 3
+
+print("=== Result: 正しい型は通る ===")
+
+fn divide(let a: int, let b: int) -> Result[int, str]:
+    if b == 0:
+        return Err("division by zero")
+    return Ok(a // b)
+
+let r1: Result[int, str] = divide(10, 2)
+let r2: Result[int, str] = divide(10, 0)
+
+if r1.is_OK():
+    print("ok:", r1)
+if r2.is_ERR():
+    print("err:", r2)
+
+print("=== 妥当性検査は従来どおり働く ===")
+
+# ⚠ 妥当性検査（注釈自身が成り立つか）は early-return を外しても残っている。
+#   Intersection のメンバーが相互に両立しない場合・Result の Ok と Err が同型の場合は
+#   右辺と関係なくエラーになる（intersection_result_bind_error.ar で確認）。
+
+print("done")

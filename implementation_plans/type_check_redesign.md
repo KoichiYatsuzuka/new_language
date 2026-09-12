@@ -3,7 +3,7 @@
 **状態**: 設計確定（実装未着手）。決定 **D-1〜D-14** すべて確定済み。判断待ちなし
 **起票**: 2026-09-12
 **前提文書**: [type_binding_enforcement_plan.md](type_binding_enforcement_plan.md)（個別バグ修正キャンペーン 0-1〜A-4 の記録と型義務の棚卸し）
-**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%**）
+**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **36%**）
 
 ## 採番の規則
 
@@ -410,9 +410,41 @@ print(f("s"))                           # ⛔ int 宣言の引数へ str が渡�
 
 | # | 内容 | 決定 | 検体 | 規模 |
 |---|---|---|---|---|
-| **1.1** | `resolve_declared_type` の `Intersection` / `Result` の早期 return に整合性検査を足す | D-2 | `K4` `K5` | **10 行程度**。0-1 の明確な取り残し |
+| ~~**1.1**~~ | ~~`resolve_declared_type` の `Intersection` / `Result` の早期 return に整合性検査を足す~~ → **✅ 完了 2026-09-12** | D-2 | `K4` `K5` → **STATIC** | 下記「1.1 の記録」 |
 | **1.2** | `FieldKind::StaticMut` を可変として数える（`registry/builder.rs:388` と `stmt/check.rs:371` の `matches!(kind, FieldKind::Mut)`） | — | — | 小。⚠ **実行時は実装済み**（`attrs.rs:407`）＝層の食い違いで、インスタンス経由の代入が `cannot assign to immutable field` で塞がれている |
 | **1.3** | `protocol` を容器の内側でも一様に扱う（`resolve_protocols` を容器へ再帰させる） | — | `K11` `K12` | 中。⚠ 現在 `list[Pr]` の束縛は**偶然**捕まり、`Option[Pr]` の戻り値とフィールド代入は漏れる |
+
+#### 1.1 の記録 【✅ 完了 2026-09-12】
+
+**修正の本体は早期 return を外すこと。** 妥当性検査（注釈自身が成り立つか）のあと、
+**必ず**整合性検査（右辺と適合するか）へ落ちるようにした（D-14 の 2 系統を実装で分離）。
+
+| 層 | 内容 |
+|---|---|
+| `resolve_declared_type` | `Intersection` / `Result` の早期 return を撤去。`from_ann` 後の共通経路で妥当性検査（`check_intersection_members` / `validate_result_type`）を行い、`return` せず整合性検査へ落とす |
+| | ⚠ protocol の早期 return は**残す**。`check_protocol_conformance` が右辺との照合も行うため二重にならない（その旨をコメントに明記） |
+
+**検体**: `K4` `K5` が `NONE` → **`STATIC`**。静的検査の割合 34% → **36%**（41/114）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` / `force_gate.ps1` | 既知の `bench_ab_native.ar` のみ / 0 fall back |
+| `compare_python_impl.ps1` | 75/75 identical・stale 0（新規 2 例題を `$knownDiff` へ） |
+| `compare_outputs.ps1 -A <HEAD>` | 183/185。差分 2 件はどちらも**意図したもの**（下記） |
+| `compare_bytecode.ps1 -A <HEAD>` | 203/204。差分は新規エラー例題のみ（静的エラーなので chunk が作られない） |
+| `compare_wasm_frontend.ps1` | **255/255 agreed・INVENTED 0**（`src/type_check/` を触ったので wasm 再ビルド＋VSIX 再生成） |
+
+**意図した出力差分**
+
+| 例題 | 内容 |
+|---|---|
+| `typing/intersection_result_bind_error.ar` | 新規。塞いだ穴そのもの |
+| `classes/intersection_error.ar` | **既存例題にエラーが 1 件増えた**。`let x: Intersection[Flyable, Swimmable] = Bird()` は例題自身が「Bird は Swimmable を実装していない」と書いているのに、以前は型ガードのエラーだけが出ていた。⚠ 例題のコメントを実態に合わせて更新した |
+
+**追加した例題**: `examples/typing/intersection_result_bind{,_error}.ar`
 
 ### フェーズ 2 — 推論を埋める（3 分類の材料）
 

@@ -21,6 +21,11 @@ class Bird(Flyable, Runnable):
 
 # ERROR: type guard with a type that does not satisfy all intersection constraints.
 # Bird implements Flyable and Runnable but NOT Swimmable.
+#
+# ⚠ タスク 1.1 以降は**この束縛そのものも**エラーになる（2 件出る）。
+#   以前は `resolve_declared_type` が `Intersection` 注釈の妥当性だけ検査して
+#   early-return しており、右辺と照合していなかったので下の型ガードのエラーだけが出ていた。
+#   → examples/typing/intersection_result_bind{,_error}.ar
 let x: Intersection[Flyable, Swimmable] = Bird()
 if x is Bird:
     print(x.fly())

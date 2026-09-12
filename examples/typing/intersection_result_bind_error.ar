@@ -1,0 +1,26 @@
+# intersection_result_bind_error.ar — Intersection 注釈と右辺の不一致を弾く（タスク 1.1）
+#
+# 正常系は intersection_result_bind.ar
+#
+# `OnlyAlpha` は `Alpha` しか実装していないので `Intersection[Alpha, Beta]` を満たさない。
+# 以前は `resolve_declared_type` が注釈の**妥当性**（メンバーが相互に両立するか）だけを
+# 検査して early-return しており、**右辺と一切照合していなかった**ため通っていた。
+#
+# ⚠ 仮引数・戻り値の位置では以前から捕まっていた。漏れていたのは
+#   `let` / `mut` / `const` の束縛だけ。
+#
+# 期待されるエラー:
+#   StaticTypeError  'v' is declared 'Intersection[Alpha, Beta]' but initialized with 'OnlyAlpha'
+
+trait Alpha:
+    mut a: int
+
+trait Beta:
+    mut b: int
+
+class OnlyAlpha(Alpha):
+    mut own: int
+
+let v: Intersection[Alpha, Beta] = OnlyAlpha(1, 2)   # ⛔ Beta を実装していない
+
+print("ここには到達しない")

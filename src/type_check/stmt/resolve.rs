@@ -192,22 +192,12 @@ impl TypeChecker {
             None => return rhs_ty,
             Some(a) => a,
         };
-        // アノテーションがプロトコル名かチェック
+        // ⚠ protocol 名の注釈はここで打ち切って構わない。`check_protocol_conformance` が
+        //    **右辺との照合も行う**（構造的適合検査）ため、下の整合性検査と二重にならない。
         if self.registry.is_protocol(ann) {
             let proto_name = ann.to_string();
             self.check_protocol_conformance(&rhs_ty, &proto_name, None, var_name);
             return InferredType::Protocol(proto_name);
-        }
-        // アノテーションが交差型の場合、メンバー互換性をチェック
-        if let Some(InferredType::Intersection(types)) = InferredType::from_ann(ann) {
-            let types_cloned = types.clone();
-            self.check_intersection_members(&types_cloned, None);
-            return InferredType::Intersection(types);
-        }
-        // アノテーションが Result 型の場合、Ok 型と Err 型が同じでないかチェック
-        if let Some(InferredType::Result(ok_ty, err_ty)) = InferredType::from_ann(ann) {
-            self.validate_result_type(&ok_ty, &err_ty, None);
-            return InferredType::Result(ok_ty, err_ty);
         }
         // ── 通常の注釈（0-1）─────────────────────────────────────────────────
         //
@@ -222,6 +212,28 @@ impl TypeChecker {
         };
         if matches!(declared, InferredType::Unresolved) {
             return rhs_ty;
+        }
+        // ── 妥当性検査（注釈自身が成り立つか）──────────────────────────────
+        //
+        // ⚠⚠ **ここで `return` しないこと。** 「妥当性検査（注釈が成り立つか）」と
+        //    「整合性検査（右辺と適合するか）」は**別系統**で、両方を通す必要がある
+        //    （再設計文書 D-14）。
+        //    以前は `Intersection` / `Result` がこの位置で妥当性だけ見て **return** しており、
+        //    **右辺と一切照合していなかった**:
+        //      let v: Intersection[Alpha, Beta] = OnlyAlpha(1, 2)   # 片方だけ実装でも通った
+        //      let r: Result[int, str] = 1.5                        # float でも通った
+        //    仮引数・戻り値の位置では捕まっていたので、原因がこの関数だと特定できた。
+        //    2 つのカテゴリを同じ分岐で扱うと「片方やれば済んだ気になる」ので分けてある。
+        match &declared {
+            InferredType::Intersection(types) => {
+                let types_cloned = types.clone();
+                self.check_intersection_members(&types_cloned, None);
+            }
+            InferredType::Result(ok_ty, err_ty) => {
+                let (ok_ty, err_ty) = ((**ok_ty).clone(), (**err_ty).clone());
+                self.validate_result_type(&ok_ty, &err_ty, None);
+            }
+            _ => {}
         }
         // ⚠ テンプレート型変数を含む注釈（`let x: T = …`）は照合も採用もしない。
         //    `from_ann` は大文字始まりの未知の識別子をクラス名にするので、型変数と

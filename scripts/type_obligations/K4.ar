@@ -1,6 +1,6 @@
 # @id: K4
 # @obligation: Intersection 注釈 vs 右辺（let 束縛）
-# @baseline: NONE
+# @baseline: STATIC
 #
 # ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
 #    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
