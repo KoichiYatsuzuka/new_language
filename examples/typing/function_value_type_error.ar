@@ -1,0 +1,21 @@
+# function_value_type_error.ar — 引数の共変は不健全なので弾く（タスク 2.2 / 決定 D-13）
+#
+# 正常系は function_value_type.ar
+#
+# `function[Any]->int` を期待する側は「**何を渡してもよい**」と約束している。そこへ
+# `int` しか受けない `narrow` を入れると、呼び出し側が `f("s")` と書けてしまい、
+# **`int` 宣言の引数へ `str` が渡る**。だから引数は**反変**でなければならない。
+#
+# ⚠ 以前は関数名の型が `Unresolved`（万能受容体）だったので、この不健全な代入が
+#   黙って通っていた。
+#
+# 期待されるエラー:
+#   StaticTypeError  'bad' is declared 'function{let param1:Any}->int'
+#                    but initialized with 'function{let v:int}->int'
+
+fn narrow(let v: int) -> int:
+    return v
+
+let bad: function[Any]->int = narrow   # ⛔ 引数の共変は不健全
+
+print("ここには到達しない")

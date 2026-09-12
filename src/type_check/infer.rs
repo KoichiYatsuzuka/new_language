@@ -72,6 +72,14 @@ impl TypeChecker {
                 let result = self
                     .lookup(name)
                     .map(|v| v.ty.clone())
+                    // ⚠⚠ **変数スコープに無ければ関数を探す**（タスク 2.2）。
+                    //    以前はここで `Unresolved` に倒していたため、`fn` を名前で参照した
+                    //    **関数値に型が付いていなかった**。`Unresolved` は
+                    //    `type_matches_exact` の万能受容体なので
+                    //      let x: int = wrong                       # int 変数に関数が入る
+                    //      let f: function[int]->int = takes_str    # シグネチャ違いが通る
+                    //    が黙って通っていた。引数・戻り値は `fn_sigs` に揃っている。
+                    .or_else(|| self.fn_value_type(name.as_str()))
                     .unwrap_or(InferredType::Unresolved);
                 // ── AST 型解決層（#15b）── 参照サイトごとの型を焼く。
                 // 変数単位ではなく**参照位置単位**なのが要点で、型ガード絞り込みは
@@ -343,6 +351,54 @@ impl TypeChecker {
 
     /// `->Type` 注釈があれば解決した型を、なければ `Unresolved` を返す。
     /// `block`/`if`/`for`/`while`/`match` 式の結果型計算で共通に使う。
+    /// 名前が関数を指すとき、その**関数値としての型**（タスク 2.2）。
+    ///
+    /// ⚠ `Expr::Ident` は変数スコープだけを引いていたので、`fn` を名前で参照した値の型が
+    /// `Unresolved` になっていた。情報は `fn_sigs`（引数・戻り値）に揃っている。
+    ///
+    /// ⚠ **オーバーロードは `None` に倒す。** 関数値としては型が 1 つに決まらず、
+    /// ここで 1 本を選ぶと嘘になる（呼び出し点は `check_call_args` が個数と型で解決する）。
+    /// ⚠ **テンプレート関数も `None`。** 型引数が決まらないとシグネチャが定まらない
+    /// （`f[int]` の形は `Expr::TemplateInstantiate` が扱う）。
+    pub(super) fn fn_value_type(&self, name: &str) -> Option<InferredType> {
+        if self
+            .registry
+            .template_params(name)
+            .is_some_and(|p| !p.is_empty())
+        {
+            return None;
+        }
+        let sigs = self.registry.fn_sigs(name)?;
+        if sigs.len() != 1 {
+            return None; // オーバーロード
+        }
+        let sig = &sigs[0];
+        // ⚠⚠ **可変長パラメータを持つ関数は型を作らない。** `FnTypeParam` は
+        //    「個数が固定の引数列」しか表せないので、`f(... = 1, 2, 3)` を正しく検査できず
+        //    `takes 0 argument(s) but 1 were given` という**嘘のエラー**になる（実測）。
+        //    `resolve.rs` の `has_open_arity` と同じ理由・同じ判断。
+        if sig.variadic_type.is_some() {
+            return None;
+        }
+        let params = sig
+            .params
+            .iter()
+            .zip(sig.param_mutable.iter())
+            .enumerate()
+            .map(|(i, ((pname, pty), pmut))| super::types::FnTypeParam {
+                name: pname.clone(),
+                mutable: *pmut,
+                // 注釈が無い仮引数は `Any`（`from_ann` 経路と同じ既定）。
+                ty: pty.clone().unwrap_or(InferredType::Any),
+                has_default: i >= sig.required_count,
+            })
+            .collect();
+        Some(InferredType::Function {
+            params: Some(params),
+            return_type: Box::new(sig.return_type.clone().unwrap_or(InferredType::Any)),
+        })
+    }
+
     fn ann_or_unresolved(return_type: &Option<String>) -> InferredType {
         return_type
             .as_deref()

@@ -235,6 +235,39 @@ impl TypeChecker {
             t, InferredType::List | InferredType::ListOf(_)
               | InferredType::FixedList | InferredType::FixedListOf(_)
         );
+        // ── 関数型の比較（D-13・タスク 2.2）─────────────────────────────────
+        //
+        // ⚠⚠ **引数名は比較に使わない。** `FnTypeParam` は `PartialEq` を derive しており
+        //    `name` も含むため、素の `arg_ty == expected` では
+        //    `function{let param1:int}->int`（注釈由来）と
+        //    `function{let y:int}->int`（実体由来）が**名前違いだけで不一致**になる
+        //    （実測で 5 例題が落ちた）。
+        // ⚠ **引数は反変・戻り値は共変**（D-13）。引数を共変にすると
+        //    `let f: function[Any]->int = narrow`（narrow は int を受ける）が通り、
+        //    `f("s")` で int 宣言の引数へ str が渡る（不健全）。
+        if let InferredType::Function { params: e_params, return_type: e_ret } = expected {
+            if let InferredType::Function { params: a_params, return_type: a_ret } = arg_ty {
+                // 戻り値は共変（`Any` が期待なら何でも通る）
+                if !self.type_matches_exact(a_ret, e_ret) {
+                    return false;
+                }
+                return match (a_params, e_params) {
+                    // 期待が素の `function`（シグネチャ未指定）なら引数は問わない
+                    (_, None) => true,
+                    // 実引数側のシグネチャが不明なら判定材料が無いので通す（保守的側）
+                    (None, Some(_)) => true,
+                    (Some(a), Some(e)) => {
+                        if a.len() != e.len() {
+                            return false;
+                        }
+                        // 引数は**反変**なので `expected → arg` の向きで照合する
+                        a.iter()
+                            .zip(e.iter())
+                            .all(|(ap, ep)| self.type_matches_exact(&ep.ty, &ap.ty))
+                    }
+                };
+            }
+        }
         match (arg_ty, expected) {
             // ⚠ テンプレート実体 → 素のテンプレート名は**型引数を忘れる方向**なので
             //    アップキャストとして許す（タスク 2.1）。`list[int]` → `list` と同じ扱い。

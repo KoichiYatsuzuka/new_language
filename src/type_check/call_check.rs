@@ -209,6 +209,19 @@ impl TypeChecker {
             return InferredType::Unresolved;
         }
 
+        // ⚠⚠ **直接の関数名呼び出しは `check_call_args` に残す**（タスク 2.2）。
+        //    2.2 で関数名に `Function` 型を付けたため、`f(1)` のような**直接呼び出し**が
+        //    下の `Function` アーム（= 関数**値**用の `check_fn_type_call`）へ迂回し、
+        //    可変長引数が `takes 0 argument(s)` になる／`mut` 引数の判定が変わる等で
+        //    **13 例題が壊れた**（実測）。`check_fn_type_call` は「シグネチャだけ判っている
+        //    関数値」（import したモジュールのメンバ等）用で、`check_call_args` の方が
+        //    可変長・既定値・`mut` 引数・オーバーロードを正しく扱う。
+        //    ⇒ 名前が `fn_sigs` に在るなら従来どおり下の `check_call_args` へ落とす。
+        let direct_fn_call = matches!(func, Expr::Ident { .. })
+            && func_name
+                .as_deref()
+                .is_some_and(|n| self.registry.fn_sigs(n).is_some());
+        if !direct_fn_call {
         match func_type {
             InferredType::Function {
                 params: Some(fn_params),
@@ -223,6 +236,7 @@ impl TypeChecker {
                 return *return_type;
             }
             _ => {}
+        }
         }
 
         if let Some((ref cls_name, ref method_name)) = method_call_info {

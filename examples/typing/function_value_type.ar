@@ -1,0 +1,71 @@
+# function_value_type.ar — 関数値に型が付き、分散規則で照合されること（タスク 2.2 / 決定 D-13）
+#
+# ## 何が壊れていたか
+#
+# `check_fn_def` が関数名を **`Unresolved` で宣言**していたため、`fn` を名前で参照した
+# 関数値に型が付いていなかった。`Unresolved` は `type_matches_exact` の**万能受容体**なので:
+#
+#   let x: int = wrong                       # int 変数に関数が入っていた
+#   let f: function[int]->int = takes_str    # シグネチャ違いが通っていた
+#
+# 引数・戻り値は `fn_sigs` に揃っていたので、組んで宣言するだけでよかった。
+#
+# ## 分散規則（D-13）
+#
+# **引数は反変・戻り値は共変。** `function[int]->int` を期待する側は「`int` を渡す」と
+# 約束しているので、**より広い引数を受ける関数**（`function[Any]->int`）を入れても安全。
+# 逆に引数を共変にすると不健全になる（下の error 例題）。
+#
+# ⚠ **引数名は比較に使わない。** `FnTypeParam` は `PartialEq` を derive しており `name` も
+#   含むので、素の比較では `function{let param1:int}->int`（注釈由来）と
+#   `function{let y:int}->int`（実体由来）が**名前違いだけで不一致**になる（実測で 5 例題が落ちた）。
+#
+# 弾かれる例は function_value_type_error.ar
+
+print("=== 関数値に型が付く ===")
+
+fn add_one(let v: int) -> int:
+    return v + 1
+
+let f: function[int]->int = add_one
+print(f(1))                         # 2
+
+print("=== 引数は反変（より広い引数を受ける関数を入れられる） ===")
+
+fn accepts_any(let v: Any) -> int:
+    return 0
+
+let g: function[int]->int = accepts_any
+print(g(5))                         # 0
+
+print("=== 戻り値は共変（より狭い戻り値を返す関数を入れられる） ===")
+
+fn gives_int() -> int:
+    return 7
+
+let h: function[]->Any = gives_int
+print(h())                          # 7
+
+print("=== 素の function 注釈はシグネチャを問わない ===")
+
+let any_fn: function = add_one
+print(any_fn(10))                   # 11
+
+print("=== 高階関数へ渡せる ===")
+
+fn apply_twice(let fn_arg: function[int]->int, let v: int) -> int:
+    return fn_arg(fn_arg(v))
+
+print(apply_twice(add_one, 1))      # 3
+
+print("=== 可変長引数を持つ関数は型を作らない（見送る） ===")
+
+# ⚠ `FnTypeParam` は「個数が固定の引数列」しか表せないので、可変長パラメータを持つ関数に
+#   型を付けると `f(... = 1, 2, 3)` が `takes 0 argument(s)` という**嘘のエラー**になる。
+#   ⇒ 可変長は `Unresolved` に倒して従来の呼び出し検査（`check_call_args`）へ任せる。
+fn sum_all(let ...: int) -> int:
+    return len(local::args)
+
+print(sum_all(... = 1, 2, 3))       # 3
+
+print("done")

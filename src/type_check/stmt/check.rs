@@ -1008,7 +1008,16 @@ impl TypeChecker {
                 span: None,
             });
         }
-        self.declare(name.to_string(), InferredType::Unresolved, false);
+        // ⚠⚠ **関数名は関数値としての型で宣言する**（タスク 2.2）。
+        //    以前は `Unresolved` で宣言していたため、`fn` を名前で参照した値の型が
+        //    `Unresolved` になり、`type_matches_exact` の万能受容体として
+        //      let x: int = wrong                       # int 変数に関数が入る
+        //      let f: function[int]->int = takes_str    # シグネチャ違いが通る
+        //    が黙って通っていた。引数・戻り値は `fn_sigs` に揃っている。
+        //    ⚠ `fn_value_type` が `None` を返す場合（オーバーロード・テンプレート関数）は
+        //    従来どおり `Unresolved`。関数値としての型が 1 つに決まらないため。
+        let self_ty = self.fn_value_type(name).unwrap_or(InferredType::Unresolved);
+        self.declare(name.to_string(), self_ty, false);
         self.push_scope();
         // ⚠ 関数自身の型変数（`fn f[T]`）を積む。囲みクラスの型変数は `ClassDef` 側が
         //    既に積んでいるので、ここでは追加するだけでよい。
