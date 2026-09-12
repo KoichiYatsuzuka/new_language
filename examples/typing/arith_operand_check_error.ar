@@ -1,0 +1,17 @@
+# arith_operand_check_error.ar — 算術の被演算子が合わないと静的に弾く（タスク 4.4 / Kind 3）
+#
+# 正常系は arith_operand_check.ar
+#
+# ⚠ 以前は `check_binop` が**順序比較だけ**を検査していたので、`1 + "s"` のような
+#   **最も頻出の型エラー**が実行時の `unsupported operand types` まで判らなかった。
+#
+# ⚠ 可否の判定は `infer_binop_result` が `Unresolved` を返すかで行う（D-9: 同じ表が
+#   可否と結果型の両方を答える）。
+#
+# 期待されるエラー:
+#   StaticTypeError  unsupported operand types for '+': 'int' and 'str'
+
+let a: int = 1
+let b: str = "s"
+
+print(a + b)                    # ⛔ int + str は演算できない

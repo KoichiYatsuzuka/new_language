@@ -1,0 +1,74 @@
+# arith_operand_check.ar — 算術・ビット演算の被演算子を静的に検査する（タスク 4.4 / Kind 3 / D-9）
+#
+# ## 何が壊れていたか
+#
+# `check_binop` は**順序比較（`<` `>` `<=` `>=`）だけ**を検査していた。そのため
+# `1 + "s"` のような**最も頻出の型エラー**が静的に出ず、実行時の
+# `unsupported operand types` まで判らなかった。
+#
+# ## 実装 — 可否と結果型を 1 つの表で決める（D-9）
+#
+# 判定は `infer_binop_result` が `Unresolved` を返すかどうかで行う。**2 つの表を持つと
+# ずれる**ので 1 本に寄せた。
+#
+# ⚠⚠ **そのため表の取りこぼしは偽陽性に直結する。** 実行時の挙動を 1 つずつ実測して
+# 表を作り直した。以前は:
+#   - `Add` が list / tuple の連結を知らなかった（`[1] + [2]` が Unresolved）
+#   - `Mul` が `str * int` / `list * int` を知らなかった
+#   - `Mod` が `str % 任意`（書式化）を知らなかった
+#   - `Div` が**無条件 `Float`**（`"a" / 2` を見逃す）
+#   - ビット演算が**無条件 `Int`**（`1.5 & 2` / `"a" & 1` を見逃す）
+#
+# ⚠ set 同士の演算は専用分岐で処理する。タスク 2.7 で set リテラルが `SetOf(T)` に
+#   なったため、素の `Set` だけを見ていた分岐が取りこぼして**偽エラー**になった
+#   （`collections/collection.ar` が落ちて気づいた）。
+#
+# ⚠ **クラスは素通し。** `__add__` 等のダンダーメソッドで演算を定義できるので可否を
+#   決められない（`ordered_comparable` が `NamedInstance` を常に許すのと同じ方針）。
+#
+# 弾かれる例は arith_operand_check_error.ar
+
+print("=== 数値の演算 ===")
+print(1 + 2, 1.5 * 2, 2 ** 3, 7 // 2, 7 % 2, 1 / 2)     # 3 3.0 8 3 1 0.5
+
+print("=== 文字列 ===")
+print("a" + "b")                    # ab
+print("ab" * 2)                     # abab
+print(2 * "ab")                     # abab
+print("a" % 2)                      # a      書式化（右辺の型は問わない）
+
+print("=== list / tuple の連結と繰り返し ===")
+print([1] + [2])                    # [1, 2]
+print([1] * 2)                      # [1, 1]
+print((1,) + (2,))                  # (1, 2)
+print((1,) * 2)                     # (1, 1)
+
+print("=== set 演算（要素型を保つ） ===")
+let x: set[int] = {1, 2, 3}
+let y: set[int] = {2, 3, 4}
+print(len(x | y), len(x & y), len(x - y), len(x ^ y))    # 4 2 1 2
+
+print("=== ビット演算は int 同士 ===")
+print(1 & 2, 1 | 2, 1 ^ 2, 1 << 2, 8 >> 2)              # 0 3 3 4 2
+
+print("=== クラスはダンダーメソッドで定義できるので素通し ===")
+
+class Vec:
+    mut n: int
+
+    fn __add__(self, let other: Vec) -> Vec:
+        return Vec(self.n + other.n)
+
+let v = Vec(1) + Vec(2)
+print(v.n)                          # 3
+
+print("=== 等値比較は検査しない（仕様・B2-b） ===")
+
+# ⚠⚠ `==` / `!=` / `in` の異型比較は**エラーではなく `False`**（仕様）。
+#   `examples/basics/equality_numeric_promotion.ar` が固定している。
+#   順序比較（`<`）が厳密なのとの非対称は意図された設計で、
+#   「異型に意味のある答えが無い」（順序）対「常に意味のある答えがある」（等値）の区別。
+print(1 == "a")                     # False
+print(1 in ["a"])                   # False
+
+print("done")

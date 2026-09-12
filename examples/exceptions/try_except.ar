@@ -8,10 +8,17 @@ except ValueError as e:
     print("caught:", e.message)
 
 # ── 2. Internal TypeError (type mismatch) ─────────────────────────────────────
+#
+# ⚠⚠ **タスク 4.4 以降、`"hello" + 42` と直接書くと静的エラーになる**（算術演算の
+#    被演算子の可否を静的に検査するようになった）。実行時の `TypeError` を捕まえる例題
+#    なので、**静的には型が決まらない経路**から同じ演算に到達させる。
+#    ⚠ 要素型を持たない `list` の要素は `Unresolved` になるので静的検査が見送り、
+#      実行時に `unsupported operand types` が出る。
 print("=== TypeError ===")
 mut result = ""
+mut mixed: list = ["hello", 42]
 try:
-    let x = "hello" + 42
+    let x = mixed[0] + mixed[1]
 except TypeError as e:
     result = "caught TypeError: " + e.message
 print(result)

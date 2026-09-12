@@ -267,6 +267,15 @@ pub enum TypeErrorKind {
     //
     // ⚠ 整合性検査（3 分類）とは**別系統**。「2 つの型が適合するか」ではなく
     //   「名前が在るか・個数が合うか・定義自身が成り立つか」を見る。
+    /// 算術・ビット演算の被演算子の型が演算できない組み合わせ（Kind 3・タスク 4.4）。
+    ///
+    /// ⚠ 以前は順序比較（`<` `>` `<=` `>=`）だけを検査しており、`1 + "s"` のような
+    /// **最も頻出の型エラー**が実行時まで判らなかった。
+    IncompatibleBinOp {
+        op: String,
+        left: InferredType,
+        right: InferredType,
+    },
     /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
     ///
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
@@ -604,6 +613,10 @@ impl StaticTypeError {
             TypeErrorKind::IntersectionGuardTypeFails { guard_type, intersection_type, reason } => format!(
                 "type {} used in type guard does not satisfy {}: {}",
                 hl_q(guard_type), hl_q(intersection_type), reason
+            ),
+            TypeErrorKind::IncompatibleBinOp { op, left, right } => format!(
+                "unsupported operand types for {}: {} and {}",
+                hl_q(op), hl_q(&left.to_string()), hl_q(&right.to_string())
             ),
             // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
             TypeErrorKind::UnknownGuardType { type_name } => format!(

@@ -1,6 +1,6 @@
 # @id: O1
 # @obligation: 算術 int + str
-# @baseline: RUNTIME
+# @baseline: STATIC
 #
 # ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
 #    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。

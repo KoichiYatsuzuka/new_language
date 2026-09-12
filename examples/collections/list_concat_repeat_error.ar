@@ -7,6 +7,9 @@
 #   組み合わせは list / tuple でも受け付けない。ここを勝手に広げると、
 #   `str` と `list` で繰り返しの規則が食い違う。
 #
+# ⚠ **タスク 4.4 以降は静的エラー**（以前は実行時の `TypeError`）。算術演算の被演算子の
+#   可否を静的に検査するようになった。⇒ examples/typing/arith_operand_check{,_error}.ar
+#
 # それぞれ単体で実行したときのエラー:
 #
 #   print([1] * 2.0)      # TypeError: unsupported operand types for `Mul`: list and float
