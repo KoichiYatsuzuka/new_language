@@ -1,0 +1,71 @@
+# collection_elem_synthesis.ar — コレクションの要素型を「捨てる」から「合成する」へ（タスク 2.7）
+#
+# ## 何が壊れていたか — 根本原因②
+#
+# 要素型の推論は「**全要素が同型でなければ素の `list` に落とす**」実装だった:
+#
+#   if 全部同じ型 { ListOf(その型) } else { List }   // ← 要素型を捨てる
+#
+# ところが素の `list` は `is_list_like` 規則で `list[任意]` と**適合する**。つまり
+# **捨てることが「何でも通す」になっていた**。実測:
+#
+#   let xs: list[int]   = [1, "s"]   # 通っていた
+#   let xs: list[str]   = [1, "s"]   # 通っていた
+#   let xs: list[float] = [1, "s"]   # 通っていた
+#   let d: dict[str, int] = {"a": 1, "b": "s"}   # 通っていた
+#
+# ⚠ 要素が 1 つでも `Unresolved` だと全体が崩れるのも同じ原因だった。
+#
+# ⇒ 混在は **`Union` へ合成する**。`[1, "s"]` は `list[Union[int, str]]` になり、
+#   `list[int]` とは適合しない。
+#
+# ⚠ `Unresolved` になる場合も `list[Unresolved]` という**構造を保つ**形にした。
+#   素の `list` と違い、タスク 4.1 で素の容器の双方向特例を撤去しても壊れない。
+#
+# 弾かれる例は collection_elem_synthesis_error.ar
+
+print("=== 同型のリテラルは従来どおり ===")
+
+let ints: list[int] = [1, 2, 3]
+let strs: list[str] = ["a", "b"]
+print(ints, strs)                   # [1, 2, 3] ['a', 'b']
+
+print("=== 混在は Union へ合成される ===")
+
+# ⚠ 明示的に Union を書けば通る（合成結果と一致する）。
+let mixed: list[Union[int, str]] = [1, "s", 2]
+print(mixed)                        # [1, 's', 2]
+
+print("=== 素の list 注釈は要素型を問わない ===")
+
+let loose: list = [1, "s", 2.0]
+print(loose)                        # [1, 's', 2.0]
+
+print("=== set / dict も同じ規則 ===")
+
+let si: set[int] = {1, 2}
+print(len(si))                      # 2
+
+let di: dict[str, int] = {"a": 1, "b": 2}
+print(di["a"], di["b"])             # 1 2
+
+let dm: dict[str, Union[int, str]] = {"a": 1, "b": "s"}
+print(dm["a"], dm["b"])             # 1 s
+
+print("=== 入れ子も合成される ===")
+
+let nested: list[list[int]] = [[1, 2], [3]]
+print(nested)                       # [[1, 2], [3]]
+
+print("=== tuple は位置ごとに持つので元から崩れない ===")
+
+let t: tuple[int, str] = (1, "a")
+print(t)                            # (1, 'a')
+
+print("=== 空リテラルは当面そのまま（D-11 の ⊥ はタスク 4.1） ===")
+
+mut empty: list[int] = []
+empty.append(1)
+print(empty)                        # [1]
+
+print("done")

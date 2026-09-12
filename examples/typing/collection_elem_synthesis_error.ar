@@ -1,0 +1,17 @@
+# collection_elem_synthesis_error.ar — 混在リテラルは要素型が合わないと弾く（タスク 2.7）
+#
+# 正常系は collection_elem_synthesis.ar
+#
+# `[1, "s"]` の型は `list[Union[int, str]]` なので `list[int]` とは適合しない。
+#
+# ⚠ 以前は「全要素が同型でなければ**素の `list` に落とす**」実装で、素の `list` は
+#   `is_list_like` 規則で `list[任意]` と適合したため、**捨てることが「何でも通す」に
+#   なっていた**。同じリテラルが `list[int]` にも `list[str]` にも `list[float]` にも
+#   通っていた（根本原因②）。
+#
+# 期待されるエラー:
+#   StaticTypeError  'xs' is declared 'list[int]' but initialized with 'list[Union[int, str]]'
+
+let xs: list[int] = [1, "s"]        # ⛔ 混在しているので list[int] ではない
+
+print("ここには到達しない")

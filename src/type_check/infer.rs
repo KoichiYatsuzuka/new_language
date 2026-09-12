@@ -17,17 +17,22 @@ impl TypeChecker {
             Expr::Bool(_) => InferredType::Bool,
             Expr::None => InferredType::None,
             Expr::Undefined => InferredType::Undefined,
+            // ⚠⚠ 要素型は**合成する**（タスク 2.7・原因②の修正）。以前は
+            //    「全要素が同型でなければ素の `List` に落とす」実装だったが、素の `List` は
+            //    `is_list_like` 規則で `ListOf(任意)` と適合するため、
+            //    **捨てることが「何でも通す」になっていた**:
+            //      let xs: list[int]   = [1, "s"]   # 通っていた
+            //      let xs: list[str]   = [1, "s"]   # 通っていた
+            //      let xs: list[float] = [1, "s"]   # 通っていた
+            //    ⇒ 混在は `Union` へ合成する（`join_elem_types`）。
             Expr::List(elems) => {
                 if elems.is_empty() {
+                    // ⚠ 空リテラルは D-11 で `list[⊥]` にする（タスク 4.1）。⊥ がまだ無いので
+                    //    当面は素の `List`（= 何にでも適合）のまま置く。
                     InferredType::List
                 } else {
                     let types: Vec<InferredType> = elems.iter().map(|e| self.infer(e)).collect();
-                    let first = &types[0];
-                    if *first != InferredType::Unresolved && types.iter().all(|t| t == first) {
-                        InferredType::ListOf(Box::new(first.clone()))
-                    } else {
-                        InferredType::List
-                    }
+                    InferredType::ListOf(Box::new(Self::join_elem_types(types)))
                 }
             }
             Expr::Set(elems) => {
@@ -35,12 +40,7 @@ impl TypeChecker {
                     InferredType::Set
                 } else {
                     let types: Vec<InferredType> = elems.iter().map(|e| self.infer(e)).collect();
-                    let first = &types[0];
-                    if *first != InferredType::Unresolved && types.iter().all(|t| t == first) {
-                        InferredType::SetOf(Box::new(first.clone()))
-                    } else {
-                        InferredType::Set
-                    }
+                    InferredType::SetOf(Box::new(Self::join_elem_types(types)))
                 }
             }
             Expr::Tuple(exprs) => {
@@ -179,17 +179,12 @@ impl TypeChecker {
                         pairs.iter().map(|(k, _)| self.infer(k)).collect();
                     let val_types: Vec<InferredType> =
                         pairs.iter().map(|(_, v)| self.infer(v)).collect();
-                    let first_k = &key_types[0];
-                    let first_v = &val_types[0];
-                    if *first_k != InferredType::Unresolved
-                        && *first_v != InferredType::Unresolved
-                        && key_types.iter().all(|t| t == first_k)
-                        && val_types.iter().all(|t| t == first_v)
-                    {
-                        InferredType::DictOf(Box::new(first_k.clone()), Box::new(first_v.clone()))
-                    } else {
-                        InferredType::Dict
-                    }
+                    // ⚠ キー・値それぞれを合成する（タスク 2.7）。以前はどちらかが
+                    //    揃わないだけで素の `Dict` に落ち、`dict[任意, 任意]` と適合していた。
+                    InferredType::DictOf(
+                        Box::new(Self::join_elem_types(key_types)),
+                        Box::new(Self::join_elem_types(val_types)),
+                    )
                 }
             }
             Expr::Subscript { object, index, node_id } => {
@@ -351,6 +346,35 @@ impl TypeChecker {
 
     /// `->Type` 注釈があれば解決した型を、なければ `Unresolved` を返す。
     /// `block`/`if`/`for`/`while`/`match` 式の結果型計算で共通に使う。
+    /// コレクションリテラルの要素型を**合成**する（タスク 2.7・原因②）。
+    ///
+    /// - 全要素が同型 → その型
+    /// - 混在 → `Union`（重複は畳む）
+    /// - 1 つでも `Unresolved` → `Unresolved`（要素型が決められない）
+    ///
+    /// ⚠⚠ **「捨てる」ことは中立ではない。** 以前は混在を素の `List` に落としていたが、
+    /// 素の `List` は `ListOf(任意)` と適合するので「**何でも通す**」になっていた。
+    /// 合成すれば `[1, "s"]` は `list[Union[int, str]]` になり、`list[int]` とは適合しない。
+    ///
+    /// ⚠ `Unresolved` を返す場合は `ListOf(Unresolved)` になる。素の `List` と違い
+    /// **構造は保つ**ので、タスク 4.1 で素の容器の双方向特例を撤去しても壊れない。
+    fn join_elem_types(types: Vec<InferredType>) -> InferredType {
+        if types.iter().any(|t| matches!(t, InferredType::Unresolved)) {
+            return InferredType::Unresolved;
+        }
+        let mut uniq: Vec<InferredType> = Vec::new();
+        for t in types {
+            if !uniq.contains(&t) {
+                uniq.push(t);
+            }
+        }
+        match uniq.len() {
+            0 => InferredType::Unresolved,
+            1 => uniq.remove(0),
+            _ => InferredType::Union(uniq),
+        }
+    }
+
     /// 名前が関数を指すとき、その**関数値としての型**（タスク 2.2）。
     ///
     /// ⚠ `Expr::Ident` は変数スコープだけを引いていたので、`fn` を名前で参照した値の型が
