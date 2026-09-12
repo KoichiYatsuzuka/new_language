@@ -1,0 +1,78 @@
+# except_bind_and_match_expr.ar — `except ... as` の束縛型と `match` 式の絞り込み（タスク 2.8 / 2.9）
+#
+# ## 2.8 — `except ... as e` の束縛型
+#
+# `e` は `Unresolved` で宣言されていた。`Unresolved` は `type_matches_exact` の
+# **万能受容体**なので、束縛経由の義務が全部無効化されていた:
+#
+#   except ValueError as e:
+#       let s: int = e.message     # str を int へ入れて通っていた
+#
+# 型は `exc_type`（`except <型名> as e` の型名）に書いてあった。
+# ⚠ あわせて**組み込み例外 19 種のフィールド型**（`message`/`code_context`/`file`/
+#   `line`/`col`）もレジストリへ登録した。名前だけ登録されていたので `e.message` が
+#   解決できなかった。⚠ 内容は実行時の `Error` trait の登録と**揃えること**。
+# ⚠ bare `except:` は捕捉する型が判らないので `Unresolved` のまま（取りこぼす方へ倒す）。
+#
+# ## 2.9 — `match` 式の絞り込み
+#
+# `is Type` の絞り込みは `match` **文**では効くのに **式**では効いていなかった
+# （`Expr::MatchExpr` が独自の走査を持ち、`check_match` の絞り込みを持たなかった）。
+# ⇒ 腕の処理を `check_match_arms` に集約して**文・式の両方から呼ぶ**ようにした。
+#   別々に書くと再びずれるため。
+#
+# 弾かれる例は except_bind_and_match_expr_error.ar
+
+print("=== except as の束縛に型が付く ===")
+
+try:
+    raise ValueError("boom")
+except ValueError as e:
+    let msg: str = e.message
+    let line: int = e.line
+    print(msg)                      # boom
+    print(line > 0)                 # True
+
+print("=== ユーザー定義例外でも効く ===")
+
+class MyError(Error):
+    mut detail: int
+
+try:
+    raise MyError("custom", 7)
+except MyError as e2:
+    let d: int = e2.detail
+    print(d)                        # 7
+
+print("=== bare except は型が判らないので見送る ===")
+
+try:
+    raise ValueError("x")
+except:
+    print("caught")                 # caught
+
+print("=== match 式でも is の絞り込みが効く ===")
+
+class Dog:
+    mut n: int
+    mut tag: str
+
+mut xs: list = [Dog(3, "a"), 2]
+let v = xs[0]
+
+# ⚠ `v` は `list`（要素型なし）由来なので元の型は `Unresolved`。
+#   `is Dog` の腕の中では `Dog` に絞り込まれるので `v.n` は `int` になる。
+let r = match v ->int:
+    is Dog:
+        let n: int = v.n
+        block_return n
+print(r)                            # 3
+
+print("=== match 文と同じ結果になる（意味論が揃った） ===")
+
+match v:
+    is Dog:
+        let n2: int = v.n
+        print(n2)                   # 3
+
+print("done")

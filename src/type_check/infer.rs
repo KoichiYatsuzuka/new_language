@@ -1,4 +1,4 @@
-use crate::ast::{Expr, MatchPattern, UnaryOp};
+use crate::ast::{Expr, UnaryOp};
 use crate::token::Span;
 
 use super::errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};
@@ -315,16 +315,11 @@ impl TypeChecker {
                 arms,
                 return_type,
             } => {
+                // ⚠ 腕の処理は `match` **文**と共有する（タスク 2.9）。以前はここに
+                //    独自の走査があり `is Type` の絞り込みを持っていなかったので、
+                //    **文では効く絞り込みが式では効かない**という意味論のずれがあった。
                 self.with_barrier(|c| {
-                    c.infer(subject);
-                    for arm in arms {
-                        if let MatchPattern::Case(e) = &arm.pattern {
-                            c.infer(e);
-                        }
-                        c.push_scope();
-                        c.check_stmts(&arm.body);
-                        c.pop_scope();
-                    }
+                    c.check_match_arms(subject, arms);
                 });
                 Self::ann_or_unresolved(return_type)
             }

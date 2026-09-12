@@ -97,9 +97,30 @@ impl TypeRegistryBuilder {
         known_class_names.insert("slice".to_string());
 
         let mut class_bases: HashMap<String, Vec<String>> = HashMap::new();
+        // ⚠⚠ **組み込み例外のフィールド型も登録する**（タスク 2.8）。名前だけ登録していたため
+        //    `except ValueError as e:` の `e.message` が `Unresolved` になり、
+        //    `Unresolved` が `type_matches_exact` の万能受容体であることから
+        //      let s: int = e.message    # str を int へ入れて通っていた
+        //    のように束縛経由の義務が無効化されていた。
+        // ⚠ 内容は実行時の `Error` trait の登録（`interpreter.rs` の `trait_field_order`）と
+        //    **揃えること**。片方だけ変えると静的と実行時がずれる。
+        let mut exc_fields: HashMap<String, (FieldKind, InferredType)> = HashMap::new();
+        for (fname, fty) in [
+            ("message", InferredType::Str),
+            ("code_context", InferredType::Str),
+            ("file", InferredType::Str),
+            ("line", InferredType::Int),
+            ("col", InferredType::Int),
+        ] {
+            // ⚠ 実行時は `let`（不変）で登録されている（`trait_field_order` の可変フラグが false）。
+            exc_fields.insert(fname.to_string(), (FieldKind::Let, fty));
+        }
+        let mut class_field_details: HashMap<String, HashMap<String, (FieldKind, InferredType)>> =
+            HashMap::new();
         for class_name in EXCEPTION_CLASS_NAMES {
             known_class_names.insert(class_name.to_string());
             class_bases.insert(class_name.to_string(), vec!["Error".to_string()]);
+            class_field_details.insert(class_name.to_string(), exc_fields.clone());
         }
 
         Self {
@@ -113,7 +134,7 @@ impl TypeRegistryBuilder {
                 new_type_originals,
                 class_bases,
                 class_fields: HashMap::new(),
-                class_field_details: HashMap::new(),
+                class_field_details,
                 class_member_access: HashMap::new(),
                 class_static_methods: HashMap::new(),
                 known_protocols: HashMap::new(),

@@ -3,7 +3,7 @@
 **状態**: 設計確定（実装未着手）。決定 **D-1〜D-14** すべて確定済み。判断待ちなし
 **起票**: 2026-09-12
 **前提文書**: [type_binding_enforcement_plan.md](type_binding_enforcement_plan.md)（個別バグ修正キャンペーン 0-1〜A-4 の記録と型義務の棚卸し）
-**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **54%**）
+**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **56%**）
 
 ## 採番の規則
 
@@ -537,8 +537,8 @@ doc コメントに相互参照を置いた。
 | ~~**2.5**~~ | ~~`and` / `or` の結果型を被演算子型の join にする~~ → **✅ 完了 2026-09-13** | D-10 | `O9` `O10` → **STATIC** | 下記「2.5 の記録」。⚠ **5.5 の前提** |
 | ~~**2.6**~~ | ~~`infer_binop_result` の `Any` / `Union` → `Unresolved` の 2 源を塞ぐ~~ → **❌ 取り下げ**（前提が誤り） | — | — | 下記「2.6 を取り下げた理由」 |
 | ~~**2.7**~~ | ~~コレクションリテラルの要素型を**合成**する~~ → **✅ 完了 2026-09-13** | D-3 | `L1` `L3` `L9` `L15` `L16` `L18` `L19` → **STATIC**（**7 件**） | 下記「2.7 の記録」 |
-| **2.8** | `except ... as name` の束縛型を付ける | D-4 | `E3` | |
-| **2.9** | `is` の絞り込みを `match` **式**でも効かせる（`infer.rs:283` が `stmt/check.rs:512` の絞り込みを持たない） | — | `X7` | ⚠ 文と式で意味論が違うのを解消 |
+| ~~**2.8**~~ | ~~`except ... as name` の束縛型を付ける~~ → **✅ 完了 2026-09-13** | D-4 | `E3` → **STATIC** | 下記「2.8 / 2.9 の記録」 |
+| ~~**2.9**~~ | ~~`is` の絞り込みを `match` **式**でも効かせる~~ → **✅ 完了 2026-09-13** | — | `X7` → **STATIC** | 同上 |
 
 #### 2.1 の記録 【✅ 完了 2026-09-12】
 
@@ -735,6 +735,49 @@ silent な穴ではない。塞ぐ対象ではないので取り下げる。
 | `compare_wasm_frontend.ps1` | **269/269 agreed・INVENTED 0** |
 
 **追加した例題**: `examples/typing/collection_elem_synthesis{,_error}.ar`
+
+#### 2.8 / 2.9 の記録 【✅ 完了 2026-09-13】
+
+##### 2.8 `except ... as e` の束縛型 ＋ 組み込み例外のフィールド型
+
+| 層 | 内容 |
+|---|---|
+| `Stmt::Try` の handler | 束縛を `Unresolved` ではなく `NamedInstance(exc_type)` で宣言。bare `except:` は型が判らないので `Unresolved` のまま（取りこぼす方へ） |
+| `registry/builder.rs` の `with_builtins` | **組み込み例外 19 種**に `message: str` / `code_context: str` / `file: str` / `line: int` / `col: int` を登録 |
+
+⚠⚠ **束縛型だけでは足りなかった。** 束縛に `NamedInstance("ValueError")` を付けても
+`e.message` はまだ `Unresolved` だった（実測）。組み込み例外が**名前だけ**登録されていて
+`class_field_details` が空だったため。⚠ ユーザー定義例外（`class MyError(Error)`）では
+束縛型だけで効いていた（`e.detail` が `int` と判明）ので、原因の切り分けができた。
+
+⚠ 登録内容は実行時の `Error` trait（`interpreter.rs` の `trait_field_order`）と
+**揃えること**。片方だけ変えると静的と実行時がずれる。
+
+##### 2.9 `match` 式の絞り込み
+
+`check_match_arms` を抽出し、`match` **文**（`check_match`）と **式**（`Expr::MatchExpr`）の
+両方から呼ぶようにした。以前は式側が独自の走査を持ち `IsType` の絞り込みを**していなかった**
+ため、文と式で意味論が違った（実測）。⚠ **別々に書くと再びずれる**ので 1 箇所に集約した。
+
+**検体**: `E3` `X7` が `NONE` → **`STATIC`**。静的検査の割合 54% → **56%**（64/114）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` / `force_gate.ps1` | FAIL 0 件 / 0 fall back |
+| `compare_python_impl.ps1` | 78/78 identical・stale 0 |
+| `compare_outputs.ps1 -A <フェーズ1 前>` | 187/201。差分 14 件は新規例題 12 件＋既知の既存 2 件のみ |
+| `compare_wasm_frontend.ps1` | **271/271 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/except_bind_and_match_expr{,_error}.ar`
+
+#### フェーズ 2 の残り
+
+| # | 状態 |
+|---|---|
+| **2.4**（組み込み関数のシグネチャ表） | **未着手**。⚠ **4.2 と同時に入れる**制約があるのでフェーズ 4 で扱う |
 
 ### フェーズ 3 — 検査機構を作る
 

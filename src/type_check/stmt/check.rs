@@ -428,7 +428,21 @@ impl TypeChecker {
                 for handler in handlers {
                     self.push_scope();
                     if let Some(name) = &handler.name {
-                        self.declare(name.clone(), InferredType::Unresolved, true);
+                        // ⚠⚠ **捕捉した例外の型を付ける**（タスク 2.8）。以前は
+                        //    `Unresolved` で宣言していたため、`Unresolved` が
+                        //    `type_matches_exact` の万能受容体であることから
+                        //      except ValueError as e:
+                        //          let s: int = e.message   # str を int へ入れて通っていた
+                        //    のように**束縛経由の全義務が無効化**されていた。
+                        //    型は `exc_type` に書いてある（`None` は bare `except:`）。
+                        // ⚠ bare `except:` は捕捉する型が判らないので `Unresolved` のまま
+                        //    （取りこぼす方へ倒す）。
+                        let exc_ty = handler
+                            .exc_type
+                            .as_deref()
+                            .map(|t| InferredType::NamedInstance(t.to_string()))
+                            .unwrap_or(InferredType::Unresolved);
+                        self.declare(name.clone(), exc_ty, true);
                     }
                     self.check_stmts(&handler.body);
                     self.pop_scope();
@@ -513,7 +527,29 @@ impl TypeChecker {
 
     /// `match` 文を型検査する。`is Type` パターンでは対象変数を各腕スコープ内で絞り込む。
     fn check_match(&mut self, subject: &Expr, arms: &[MatchArm]) {
-        let subject_ty = self.infer(subject);
+        self.check_match_arms(subject, arms);
+    }
+
+    /// `match` の腕を型検査する（**文と式で共有**・タスク 2.9）。
+    ///
+    /// ⚠⚠ **以前は `match` 式がこの絞り込みを持っていなかった。** `Expr::MatchExpr`
+    /// （`infer.rs`）は `Case` の infer と腕本体の検査だけで `IsType` の絞り込みを
+    /// していなかったため、**文と式で意味論が違った**（実測）:
+    ///
+    /// ```arrow
+    /// match v:                     # 文 → 絞り込まれる
+    ///     is Dog:
+    ///         let s: str = v.n     # ✅ int → str でエラー
+    ///
+    /// let r = match v ->int:       # 式 → 絞り込まれなかった
+    ///     is Dog:
+    ///         let s: str = v.n     # ⛔ 通っていた
+    /// ```
+    ///
+    /// ⇒ 腕の処理を 1 箇所に集約し、文・式の両方から呼ぶ。**別々に書くと再びずれる。**
+    pub(crate) fn check_match_arms(&mut self, subject: &Expr, arms: &[MatchArm]) {
+        let _subject_ty = self.infer(subject);
+        // 絞り込めるのは対象が**単なる識別子**のときだけ（再 `declare` で実装しているため）。
         let subject_name: Option<String> = if let Expr::Ident { name: n, .. } = subject {
             Some(n.clone())
         } else {
@@ -531,7 +567,6 @@ impl TypeChecker {
                         let is_mut = self.lookup(var_name).map(|v| v.mutable).unwrap_or(false);
                         self.declare(var_name.clone(), narrowed, is_mut);
                     }
-                    let _ = subject_ty.clone();
                 }
             }
             self.check_stmts(&arm.body);

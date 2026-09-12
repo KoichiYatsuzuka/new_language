@@ -1,0 +1,19 @@
+# except_bind_and_match_expr_error.ar — 捕捉した例外のフィールド型を検査する（タスク 2.8）
+#
+# 正常系は except_bind_and_match_expr.ar
+#
+# `e.message` は `str`（組み込み例外の `Error` trait 由来）。
+#
+# ⚠ 以前は 2 つの理由で `Unresolved` になり、`Unresolved` が `type_matches_exact` の
+#   **万能受容体**であることから **`str` を `int` 変数に入れて通っていた**:
+#     1. `except ... as e` の束縛が `Unresolved` で宣言されていた（型は `exc_type` に在った）
+#     2. 組み込み例外 19 種が**名前だけ**登録されており、フィールド型が無かった
+#
+# 期待されるエラー:
+#   StaticTypeError  's' is declared 'int' but initialized with 'str'
+
+try:
+    raise ValueError("boom")
+except ValueError as e:
+    let s: int = e.message          # ⛔ str を int へ
+    print(s)
