@@ -1,0 +1,15 @@
+# @id: B11
+# @obligation: 複合代入で __add__ が左辺と違う型を返す
+# @baseline: NONE
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+
+class Vec:
+    mut n: int
+    fn __add__(self, let other: Vec) -> str:
+        return "oops"
+mut v = Vec(1)
+v += Vec(2)
+print(v)

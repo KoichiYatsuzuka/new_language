@@ -1279,7 +1279,7 @@ A-4 完了時に「未監査」として残した 3 領域を実コードで確�
 
 | # | 症状 | 原因 |
 |---|---|---|
-| **S-1** | **インスタンス経由の代入が「不変フィールド」として拒否される** — `c.n = 5` が `cannot assign to immutable field 'n' of class 'C'`。⚠ `FieldKind::StaticMut` の仕様は「**インスタンス経由・クラス名経由どちらでもアクセス・代入可能**」（`src/ast.rs` の doc）で、**実行時は実装済み**（`attrs.rs:407` が `inst_class.static_vars` を更新する）。静的検査だけが塞いでいる = **層どうしの食い違い** | `registry/builder.rs:389` の `let mutable = matches!(kind, FieldKind::Mut);` が **`StaticMut` を可変として数えていない**。`stmt/check.rs:371` にも同じ式がある |
+| **S-1** | **インスタンス経由の代入が「不変フィールド」として拒否される** — `c.n = 5` が `cannot assign to immutable field 'n' of class 'C'`。⚠ `FieldKind::StaticMut` の仕様は「**インスタンス経由・クラス名経由どちらでもアクセス・代入可能**」（`src/ast.rs` の doc）で、**実行時は実装済み**（`attrs.rs:407` が `inst_class.static_vars` を更新する）。静的検査だけが塞いでいる = **層どうしの食い違い** | `registry/builder.rs:388` の `let mutable = matches!(kind, FieldKind::Mut);` が **`StaticMut` を可変として数えていない**。`stmt/check.rs:371` にも同じ式がある |
 | **S-2** | **クラス名経由の代入に型検査が一切無い** — `C.n = xs[0]` が `static mut n: int` へ `str` を黙って入れる（`C.n = bad` と表示） | 静的側に `C.n = v` を見る経路が無く、実行時側も `attrs.rs:407` / `:443` が **`*cell.borrow_mut() = rhs;` だけ**で型を見ない。`static_vars` は `Rc<RefCell<Value>>` のマップで **`boxed_fields` とは別物**なので、A-3/A-4 の `store_field` 検査が構造的に届かない |
 | S-3 | 関数ローカル `static mut` の再代入は**推論できれば静的に落ちる**（`n = "now a str"` → `'n' is declared 'int' but initialized with 'str'`。⚠ 再代入なのに「initialized with」という文言）。`Unresolved` 経由は素通り | 下の V-1 と同じ（通常変数と同じ扱い＝ static 固有ではない） |
 
@@ -1797,6 +1797,10 @@ probes       : 77,400,461
 
 ## 7. 残っている宿題（本計画の対象外・記録のみ）
 
+⚠ **#20〜#23 と原因①②③ は [type_check_redesign.md](type_check_redesign.md) に引き継いだ。**
+個別に塞ぐのではなく静的型検査の再設計として扱う（3 分類・義務表・型式解決後の検査）。
+本書は個別バグ修正キャンペーン 0-1〜A-4 の記録として閉じる。
+
 | # | 内容 |
 |---|---|
 | 2 | **複合代入 `o.f += v` の型検査** — 格納されるのは `f <op> v` の結果なので、二項演算の結果型を求める必要がある |
@@ -1806,7 +1810,7 @@ probes       : 77,400,461
 | 21 | **L-1 `__cast__[T]` が「変換される」と約束して変換しない** — `type_matches_exact` 末尾が `__cast__[T]` を持つクラスを T として受理するが暗黙変換を挿入しないので、`let x: int = Conv(5)` が `int` 変数に `Conv` を入れる。暗黙変換を挿入するか受理をやめるかの**仕様判断**が要る |
 | 22 | **L-3 テンプレート実体化 `Box[int](..)` と関数値 `fn` 名参照の推論型が `Unresolved`** — 比較器は正しいので**推論規則を足すだけ**で `Box[T]` / `function` の漏れと容器経由の伝播が閉じる（#6 と同根） |
 | 23 | **protocol が容器の内側にあると経路で挙動が変わる** — `list[Pr]` の BIND は偶然捕まるのに `Option[Pr]` の RET とフィールド代入は漏れる。`resolve_protocols` を容器の内側へ再帰させて統一する |
-| 13 | **S-1 `FieldKind::StaticMut` が可変として数えられていない** — `registry/builder.rs:389` と `stmt/check.rs:371` の `matches!(kind, FieldKind::Mut)`。インスタンス経由の `static mut` 代入が `cannot assign to immutable field` で塞がれる（実行時は実装済み＝層の食い違い）。**仕様どおりに直すだけなので判断は不要** |
+| 13 | **S-1 `FieldKind::StaticMut` が可変として数えられていない** — `registry/builder.rs:388` と `stmt/check.rs:371` の `matches!(kind, FieldKind::Mut)`。インスタンス経由の `static mut` 代入が `cannot assign to immutable field` で塞がれる（実行時は実装済み＝層の食い違い）。**仕様どおりに直すだけなので判断は不要** |
 | 14 | **S-2 `static mut` クラス変数に型検査が無い**（静的・実行時とも）。`static_vars` は `boxed_fields` と別のマップなので A-3/A-4 が構造的に届かない。`store_field` と同じ `TypeTag` / `FieldCheck` を `static_vars` 側にも持たせるのが筋 |
 | 15 | **E-2 `enum` のメンバーと `.value` の静的型が `Unresolved`** — 型検査の `Stmt::EnumDef` が `variants` を無視している。`.value` を `int`、メンバーを `NamedInstance("enum_item_<name>")` として登録すれば閉じる |
 | 16 | **E-1 `enum` バリアント値の検査が実行時だけ** — 呼ばれない関数内の不正な enum が検出されない。静的化は容易（値が整数リテラル/整数式かを見る）だが、`a = g()` のような式値をどこまで静的に判定するかの線引きが要る |
