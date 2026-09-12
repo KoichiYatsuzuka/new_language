@@ -1,6 +1,6 @@
 # @id: K7
 # @obligation: テンプレート実体化の結果型（Box[str] を int へ）
-# @baseline: NONE
+# @baseline: STATIC
 #
 # ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
 #    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。

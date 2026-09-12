@@ -236,6 +236,16 @@ impl TypeChecker {
               | InferredType::FixedList | InferredType::FixedListOf(_)
         );
         match (arg_ty, expected) {
+            // ⚠ テンプレート実体 → 素のテンプレート名は**型引数を忘れる方向**なので
+            //    アップキャストとして許す（タスク 2.1）。`list[int]` → `list` と同じ扱い。
+            //    例: `mut bare: Box = Box[str]("x")`
+            //    ⚠⚠ **逆は許さない**（`Box` → `Box[int]` は情報が増えるダウンキャスト）。
+            //    素の容器の双方向特例（下の `(List, ListOf(_))` 等）は D-3 / タスク 4.1 で
+            //    撤去する予定なので、ここを**双方向にしないこと**。
+            (
+                InferredType::GenericInstance { name: a, .. },
+                InferredType::NamedInstance(e),
+            ) if a == e => return true,
             // list compatibility
             (InferredType::ListOf(_), InferredType::List) => return true,
             (InferredType::List, InferredType::ListOf(_)) => return true,

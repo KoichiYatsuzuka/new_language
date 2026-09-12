@@ -130,9 +130,36 @@ impl TypeChecker {
             }
 
             // --- テンプレート実体化 ---
-            Expr::TemplateInstantiate { base, .. } => {
+            // `Box[int]` を**呼び出さずに**値として使う形（`let c = Box[int]` 等）。
+            // ⚠ 呼び出し `Box[int](..)` の結果型は `template_call_result_type`（タスク 2.1）。
+            //    こちらは**型値**なので、素のクラス名 `C` が `TypeValOf(NamedInstance("C"))`
+            //    になるのと揃えて `TypeValOf(GenericInstance{..})` を返す。
+            Expr::TemplateInstantiate { base, type_args } => {
                 self.infer(base);
-                InferredType::Unresolved
+                let Expr::Ident { name, .. } = base.as_ref() else {
+                    return InferredType::Unresolved;
+                };
+                if !self.registry.is_known_class(name.as_str()) {
+                    // テンプレート関数の型値。シグネチャの決定は呼び出し点に任せる。
+                    return InferredType::Unresolved;
+                }
+                let Some(tparams) = self.registry.template_params(name.as_str()) else {
+                    return InferredType::Unresolved;
+                };
+                if tparams.len() != type_args.len() {
+                    return InferredType::Unresolved;
+                }
+                let mut args = Vec::with_capacity(type_args.len());
+                for a in type_args {
+                    match InferredType::from_ann(a) {
+                        Some(t) if !matches!(t, InferredType::Unresolved) => args.push(t),
+                        _ => return InferredType::Unresolved,
+                    }
+                }
+                InferredType::TypeValOf(Box::new(InferredType::GenericInstance {
+                    name: name.clone(),
+                    args,
+                }))
             }
 
             // --- 辞書・サブスクリプト ---

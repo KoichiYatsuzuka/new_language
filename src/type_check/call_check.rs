@@ -203,6 +203,8 @@ impl TypeChecker {
         if let Expr::TemplateInstantiate { base, type_args } = func {
             if let Expr::Ident { name, .. } = base.as_ref() {
                 self.check_template_call_args(name, type_args, &arg_data);
+                // ⚠ タスク 2.1: 結果型を返す（以前は常に `Unresolved` を捨て返していた）。
+                return self.template_call_result_type(name, type_args);
             }
             return InferredType::Unresolved;
         }
@@ -657,6 +659,57 @@ impl TypeChecker {
     /// ⚠ 個数の不一致（型引数・実引数とも）は**ここでは報告しない**。どちらも実行時に
     /// `TemplateError` / `TypeError` で捕まるうえ、個数が合っていないと置換表が作れず
     /// 対応付け自体が嘘になる。⇒ 合っているときだけ型を見る。
+    /// テンプレート実体化呼び出し `Base[T1, T2](args)` の**結果型**（タスク 2.1）。
+    ///
+    /// ⚠⚠ **以前はここが無く、呼び出し点は常に `Unresolved` を返していた。**
+    /// `Unresolved` は `type_matches_exact` の万能受容体なので、
+    ///
+    /// ```text
+    /// let x: int = Box[str]("s")      # 通っていた（int 変数に Box が入る）
+    /// take(Box[str]("s"))             # take(let b: Box[int]) でも通っていた
+    /// ```
+    ///
+    /// のように**下流の全義務が無効化**されていた。型引数は既に手元にあり
+    /// （`check_template_call_args` が引数検査に使っている）、`GenericInstance` と
+    /// `subst_type_params` も A-2 / 0-6 で揃っていたので、組んで返すだけでよかった。
+    ///
+    /// ⚠ 解釈できない型引数・個数不一致・オーバーロードは `Unresolved` に倒す
+    /// （取りこぼす方へ。個数不一致は実行時の `TemplateError` が捕まえる）。
+    fn template_call_result_type(&self, base_name: &str, type_args: &[String]) -> InferredType {
+        let Some(tparams) = self.registry.template_params(base_name) else {
+            return InferredType::Unresolved; // テンプレートでない名前
+        };
+        if tparams.len() != type_args.len() {
+            return InferredType::Unresolved; // 個数不一致 → 実行時の TemplateError に任せる
+        }
+        let mut args = Vec::with_capacity(type_args.len());
+        let mut map = std::collections::HashMap::new();
+        for (p, a) in tparams.iter().zip(type_args.iter()) {
+            match InferredType::from_ann(a) {
+                Some(t) if !matches!(t, InferredType::Unresolved) => {
+                    map.insert(p.clone(), t.clone());
+                    args.push(t);
+                }
+                // 未知の綴りが 1 つでも混ざったら全体を諦める（嘘の型を作らない）
+                _ => return InferredType::Unresolved,
+            }
+        }
+        if self.registry.is_known_class(base_name) {
+            // テンプレートクラスの実体化 → そのクラスのインスタンス
+            InferredType::GenericInstance { name: base_name.to_string(), args }
+        } else {
+            // テンプレート関数 → 宣言戻り値型を型引数で置換する
+            match self.registry.fn_sigs(base_name) {
+                // ⚠ オーバーロードは実引数で決まるのでここでは決めない
+                Some(sigs) if sigs.len() == 1 => match &sigs[0].return_type {
+                    Some(rt) => Self::subst_type_params(rt, &map),
+                    None => InferredType::Unresolved,
+                },
+                _ => InferredType::Unresolved,
+            }
+        }
+    }
+
     fn check_template_call_args(
         &mut self,
         base_name: &str,

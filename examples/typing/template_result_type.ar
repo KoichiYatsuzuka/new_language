@@ -1,0 +1,67 @@
+# template_result_type.ar — テンプレート実体化の**結果型**が付くこと（タスク 2.1）
+#
+# ## 何が壊れていたか
+#
+# `Box[int](1)` のような実体化呼び出しは、型検査が常に `Unresolved` を返していた
+# （`call_check.rs` の `Expr::TemplateInstantiate` アームが引数だけ検査して結果型を捨てていた）。
+#
+# `Unresolved` は `type_matches_exact` の**万能受容体**（`arg_ty == Unresolved` なら無条件
+# `true`）なので、**下流の全義務が無効化**されていた:
+#
+#   let x: int = Box[str]("s")        # int 変数に Box が入っていた
+#   take(Box[str]("s"))               # take(let b: Box[int]) でも通っていた
+#   let xs: list[Box[int]] = [Box[str]("s")]   # 容器経由でも漏れていた
+#
+# ⚠ 型引数は**既に手元にあった**（`check_template_call_args` が引数検査に使っている）。
+#   `InferredType::GenericInstance` も `subst_type_params` も A-2 / 0-6 で揃っていたので、
+#   組んで返すだけでよかった。「決定できない」のではなく**決定を試みていなかった**。
+#
+# 弾かれる例は template_result_type_error.ar
+
+class Box[T]:
+    mut v: T
+
+    fn get(self) -> T:
+        return self.v
+
+print("=== 実体化の結果型が付く ===")
+
+let bi: Box[int] = Box[int](1)
+let bs: Box[str] = Box[str]("a")
+print(bi.v, bs.v)                   # 1 a
+
+print("=== 引数として渡せる ===")
+
+fn take_int_box(let b: Box[int]) -> int:
+    return b.v + 1
+
+print(take_int_box(Box[int](10)))   # 11
+
+print("=== 容器の内側でも型が通る ===")
+
+let xs: list[Box[int]] = [Box[int](2), Box[int](3)]
+print(xs[0].v, xs[1].v)             # 2 3
+
+print("=== 型引数を忘れる方向はアップキャストとして許される ===")
+
+# ⚠ `Box[str]` → `Box`（素のテンプレート名）は**型引数を忘れる**方向なので許される。
+#   `list[int]` → `list` と同じ扱い。⚠⚠ **逆は許さない**（`Box` → `Box[int]` は
+#   情報が増えるダウンキャスト）。
+mut bare: Box = Box[str]("x")
+print(bare.v)                       # x
+
+print("=== テンプレート関数の戻り値型も置換される ===")
+
+fn ident[T](let v: T) -> T:
+    return v
+
+let n: int = ident[int](5)
+let s: str = ident[str]("t")
+print(n, s)                         # 5 t
+
+print("=== 入れ子の型引数 ===")
+
+let bl: Box[list[int]] = Box[list[int]]([1, 2])
+print(bl.v)                         # [1, 2]
+
+print("done")

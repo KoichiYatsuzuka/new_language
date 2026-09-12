@@ -3,7 +3,7 @@
 **状態**: 設計確定（実装未着手）。決定 **D-1〜D-14** すべて確定済み。判断待ちなし
 **起票**: 2026-09-12
 **前提文書**: [type_binding_enforcement_plan.md](type_binding_enforcement_plan.md)（個別バグ修正キャンペーン 0-1〜A-4 の記録と型義務の棚卸し）
-**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **38%**）
+**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **41%**）
 
 ## 採番の規則
 
@@ -530,7 +530,7 @@ doc コメントに相互参照を置いた。
 
 | # | 内容 | 決定 | 検体 | 備考 |
 |---|---|---|---|---|
-| **2.1** | テンプレート実体化の結果型を `GenericInstance` にする（`call_check.rs:203` / `infer.rs:133`） | D-4 | `K7` `K10` `K15` | `type_args` は既に手元にある |
+| ~~**2.1**~~ | ~~テンプレート実体化の結果型を `GenericInstance` にする~~ → **✅ 完了 2026-09-12** | D-4 | `K7` `K10` `K13` `K15` → **STATIC** | 下記「2.1 の記録」 |
 | **2.2** | 関数値の型を `Function` にする（`infer.rs:71` で `fn_sigs` を見る） | D-4 | `K8` `K9` `C14` | `InferredType::Function` は既存 |
 | **2.3** | `enum_item_<name>` に `value: int` を登録し、メンバーを `NamedInstance` にする | D-4 | `N3` `N4` `K14` | |
 | **2.4** | **組み込み関数のシグネチャ表**（戻り値型・引数型） | D-6 | `Z9`〜`Z12` | ⚠ **4.2 と同時に入れる** |
@@ -539,6 +539,48 @@ doc コメントに相互参照を置いた。
 | **2.7** | コレクションリテラルの要素型を**合成**する（捨てない） | D-3 | `L1` `L3` `L9` `L15`〜`L19` | ⚠ D-5 で暗黙キャストが無くなるので `[1, 2.0]` は混在エラーでよい |
 | **2.8** | `except ... as name` の束縛型を付ける | D-4 | `E3` | |
 | **2.9** | `is` の絞り込みを `match` **式**でも効かせる（`infer.rs:283` が `stmt/check.rs:512` の絞り込みを持たない） | — | `X7` | ⚠ 文と式で意味論が違うのを解消 |
+
+#### 2.1 の記録 【✅ 完了 2026-09-12】
+
+| 層 | 内容 |
+|---|---|
+| `template_call_result_type`（新設・`call_check.rs`） | `Base[T1,T2](args)` の結果型。クラスなら `GenericInstance { name, args }`、テンプレート関数なら宣言戻り値型を `subst_type_params` で置換 |
+| `infer_call_inner` の `TemplateInstantiate` アーム | `Unresolved` を捨て返していたのを結果型に差し替え |
+| `infer.rs` の `Expr::TemplateInstantiate` | 呼び出さずに値として使う形（`let c = Box[int]`）に `TypeValOf(GenericInstance{..})` を付ける。素のクラス名 `C` が `TypeValOf(NamedInstance("C"))` になるのと揃えた |
+| `type_matches_exact` | `GenericInstance{name,..}` → `NamedInstance(name)` を**一方向**で許可（型引数を忘れる＝アップキャスト）。`list[int]` → `list` と同じ扱い |
+
+⚠ 解釈できない型引数・型引数の個数不一致・オーバーロードは `Unresolved` に倒す
+（嘘の型を作らない）。⚠ 個数不一致を `Unresolved` にしたことで `K13`（`Box[int,int]`）も
+**副産物で `STATIC` になった**（注釈側の `Box[int,int]` が `from_ann` で解釈できず、
+右辺の `Box[int]` と食い違うため）。
+
+⚠⚠ **`GenericInstance` → `NamedInstance` を双方向にしないこと。** 逆（`Box` → `Box[int]`）は
+情報が増えるダウンキャストで D-3 違反。素の容器の双方向特例（`(List, ListOf(_))` 等）は
+タスク 4.1 で撤去する予定なので、ここを真似てはいけない。
+
+⚠ **残した設計上の未決**: `Box[int]` → `Box[Any]` は現在**不可**（`GenericInstance` 同士は
+厳密一致）。一方 `list[int]` → `list[Any]` は**可**（容器は共変）。
+**ユーザー定義テンプレートの分散が未定義**で容器と挙動が違う。保守的側（不変）に倒してあるが、
+決めるならフェーズ 3.3（3 分類の単一定義）で扱う。
+
+**検体**: `K7` `K10` `K13` `K15` が **4 件前進**（`K10` は `RUNTIME` → `STATIC`）。
+静的検査の割合 38% → **41%**（47/114）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` / `force_gate.ps1` | 既知の `bench_ab_native.ar` のみ / 0 fall back |
+| `compare_python_impl.ps1` | 76/76 identical・stale 0（エラー例題のみ `$knownDiff` へ。正常系は py と一致した） |
+| `compare_outputs.ps1 -A <フェーズ1 前>` | 183/191。差分 8 件は新規例題 7 件＋既知の既存 2 件のみ |
+| `compare_wasm_frontend.ps1` | **261/261 agreed・INVENTED 0** |
+
+⚠ 既存例題 `typing/generic_type_ann.ar` が一度落ちた（`mut bare: Box = Box[str]("x")`）。
+結果型が付いたことで注釈 `Box` と右辺 `Box[str]` が食い違ったため。
+**型引数を忘れる方向はアップキャスト**なので `type_matches_exact` に一方向の規則を足して解消。
+
+**追加した例題**: `examples/typing/template_result_type{,_error}.ar`
 
 ### フェーズ 3 — 検査機構を作る
 

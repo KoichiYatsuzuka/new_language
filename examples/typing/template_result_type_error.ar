@@ -1,0 +1,21 @@
+# template_result_type_error.ar — 実体化の結果型が違えば弾く（タスク 2.1）
+#
+# 正常系は template_result_type.ar
+#
+# `Box[str]("s")` の型は `Box[str]` なので `Box[int]` を要求する仮引数へは渡せない。
+#
+# ⚠ 以前は実体化呼び出しの結果型が `Unresolved` で、それが `type_matches_exact` の
+#   **万能受容体**だったため黙って通り、実行時に `b.v + 1` で
+#   `TypeError: unsupported operand types for Add: str and int` になっていた
+#   （静的検査が通して実行時に爆発する形）。
+#
+# 期待されるエラー:
+#   StaticTypeError  argument 0 of 'take_int_box' expects 'Box[int]' but got 'Box[str]'
+
+class Box[T]:
+    mut v: T
+
+fn take_int_box(let b: Box[int]) -> int:
+    return b.v + 1
+
+print(take_int_box(Box[str]("s")))   # ⛔ Box[str] を Box[int] の引数へ

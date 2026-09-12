@@ -1,6 +1,6 @@
 # @id: K13
 # @obligation: テンプレート型引数の個数違い Box[int,int]
-# @baseline: NONE
+# @baseline: STATIC
 #
 # ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
 #    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
