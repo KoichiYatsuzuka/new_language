@@ -150,6 +150,14 @@ impl TypeRegistry {
         self.trait_field_details.get(name)
     }
 
+    /// トレイトとして登録済みの名前か（タスク 3.4 の妥当性検査で使う）。
+    ///
+    /// ⚠ メンバーが 0 個の trait もあるので、**フィールド表とメソッド表のどちらかに
+    /// エントリがあれば trait** と判定する。
+    pub(super) fn is_known_trait(&self, name: &str) -> bool {
+        self.trait_field_details.contains_key(name) || self.trait_method_sigs.contains_key(name)
+    }
+
     // ── protocol / new_type ───────────────────────────────────────────────────
 
     /// プロトコルとして登録済みの名前か。

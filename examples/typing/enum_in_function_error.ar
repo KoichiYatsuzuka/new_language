@@ -1,8 +1,14 @@
 # enum_in_function_error.ar — 関数本体の `enum` の値検査（#68）
 #
-# バリアントの明示値は int でなければならない。この検査は `build_enum_classes` にあり、
-# **ツリーウォーク（最上位の `enum`）と VM（`Op::EnumDef`＝関数本体の `enum`）が同じ関数を
-# 呼ぶ**ので、文言が構造的に一致する（同じ enum を最上位に書いても同じ TypeError になる）。
+# バリアントの明示値は int でなければならない。
+#
+# ⚠ **タスク 3.4 以降は静的エラー**（`StaticTypeError: enum variant 'A' of 'E' must be int`）。
+#   実行時の検査（`build_enum_classes`）も残っているが、そちらは**定義が実行される経路**しか
+#   見られないため、呼ばれない関数の中の `enum` を見逃していた（検体 N2）。
+#   ⇒ 型検査側に妥当性検査（D-14）として足した。→ examples/typing/validity_checks_enum_error.ar
+#
+# 実行時側の検査は **ツリーウォーク（最上位の `enum`）と VM（`Op::EnumDef`＝関数本体の `enum`）が
+# 同じ関数を呼ぶ**ので文言が構造的に一致する（引き続き保たれている）。
 #
 # ⚠ #68 以前は、この行に到達する前に関数ごと `VmForceError` で止まっていた
 #    ＝ **本来のエラー文言が出ないという別のバグ**にもなっていた

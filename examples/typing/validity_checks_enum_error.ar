@@ -1,0 +1,20 @@
+# validity_checks_enum_error.ar — enum のバリアント値が非 int なら静的に弾く（タスク 3.4）
+#
+# 正常系は validity_checks.ar
+#
+# ⚠⚠ **実行時の検査だけでは足りなかった。** `build_enum_classes` が
+# 「enum variant value must be int」を強制していたが、**定義が実行されない経路**では
+# 見逃していた。この例題の `never_called` は**呼ばれない**ので、以前はプログラムが
+# 最後まで完走していた（実測・検体 N2）。
+#
+# ⚠ これは整合性検査（3 分類）ではなく**妥当性検査**。「定義自身が成り立つか」を見る。
+#
+# 期待されるエラー:
+#   StaticTypeError  enum variant 'A' of 'Bad' must be int, got 'str'
+
+fn never_called() -> int:
+    enum Bad:
+        A = "x"                 # ⛔ バリアント値は int でなければならない
+    return Bad.A.value
+
+print("ここには到達しない（呼ばれない関数の中でも静的に弾かれる）")

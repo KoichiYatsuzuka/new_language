@@ -1,0 +1,28 @@
+# validity_checks_error.ar — 型ガードの型名が存在しないと弾く（タスク 3.4 / 決定 D-14）
+#
+# 正常系は validity_checks.ar
+#
+# ⚠⚠ **これを検査しないと二重に見逃す。** 以前は `is NoSuchType:` が黙って通り、
+#
+#   1. その腕は**永久に死ぬ**（どの値にもマッチしない）
+#   2. 腕の中では対象変数が**存在しないクラスへ絞り込まれる**ので、
+#      `d.totally_missing_field` のような**メンバーアクセスが全て無検査**になる（実測）
+#
+# `type_from_guard_name` が未知の名前を検証せず `NamedInstance` にしていたのが原因。
+#
+# ⚠ これは整合性検査（3 分類）ではなく**妥当性検査**。「2 つの型が適合するか」ではなく
+#   「名前が在るか」を見る別系統。
+#
+# 期待されるエラー:
+#   StaticTypeError  unknown type 'NoSuchType' in type guard; the branch can never match
+
+class Dog:
+    mut n: int
+
+let d = Dog(1)
+
+match d:
+    is NoSuchType:              # ⛔ そんな型は無い
+        print(d.totally_missing_field)
+    is Dog:
+        print("dog")

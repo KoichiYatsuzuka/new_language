@@ -3,7 +3,7 @@
 **状態**: 設計確定（実装未着手）。決定 **D-1〜D-14** すべて確定済み。判断待ちなし
 **起票**: 2026-09-12
 **前提文書**: [type_binding_enforcement_plan.md](type_binding_enforcement_plan.md)（個別バグ修正キャンペーン 0-1〜A-4 の記録と型義務の棚卸し）
-**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **56%**）
+**進捗計**: `scripts/type_obligations.ps1`（型義務 **114 件**・着手時点 **STATIC 34%** → 現在 **59%**）
 
 ## 採番の規則
 
@@ -786,7 +786,7 @@ silent な穴ではない。塞ぐ対象ではないので取り下げる。
 | ~~**3.1**~~ | ~~`walk` / `type_of` に分離~~ → **✅ 完了 2026-09-13** | — | フェーズ 2 | 下記「3.1 / 3.2 の記録」 |
 | ~~**3.2**~~ | ~~`walk` を AST バリアントに対して網羅化~~ → **✅ 完了 2026-09-13**（**一部は既に満たされていた**） | — | 3.1 | 同上 |
 | **3.3** | 3 分類（Kind 1/2/3）を**単一定義**として実装する | D-1 | 3.2 | |
-| **3.4** | 妥当性検査を 2 系統目として置く（名前の存在・個数・定義時） | D-14 | 3.2 | `X6` `K13` `N2` `M1` `M2` |
+| ~~**3.4**~~ | ~~妥当性検査を 2 系統目として置く~~ → **✅ 一部完了 2026-09-13** | D-14 | `X6` `N1` `N2` → **STATIC**／`M1` `M2` は残す | 下記「3.4 の記録」 |
 
 #### 3.1 / 3.2 の記録 【✅ 完了 2026-09-13】
 
@@ -839,6 +839,52 @@ silent な穴ではない。塞ぐ対象ではないので取り下げる。
 | `compare_outputs.ps1 -A <フェーズ1 前>` | 187/201（**2.9 時点と同一** ＝ 挙動不変の証拠） |
 | `stale_doc_refs.ps1` | OK |
 | `compare_wasm_frontend.ps1` | **271/271 agreed・INVENTED 0** |
+
+#### 3.4 の記録 【✅ 一部完了 2026-09-13】
+
+整合性検査（3 分類）と**別系統**の妥当性検査を置いた。D-14 のとおり
+「2 つの型が適合するか」ではなく「**名前が在るか・個数が合うか・定義自身が成り立つか**」を見る。
+
+| 追加 | 内容 | 検体 |
+|---|---|---|
+| `check_guard_type_exists` | 型ガード（`is T`）の型名の存在検査。クラス・protocol・trait・プリミティブを許し、**テンプレート型変数は除外**（正当なので） | `X6` |
+| `Stmt::EnumDef` の検査 | バリアント値が `int` であることを**静的に**検査 | `N1` `N2` |
+| `TypeErrorKind::UnknownGuardType` / `EnumVariantNotInt` | 妥当性検査用のエラー種別（コメントで整合性検査と別系統であることを明記） | — |
+| `TypeRegistry::is_known_trait` | trait 名の判定述語（メンバー 0 個の trait も拾うため 2 つの表を見る） | — |
+
+⚠ `X6` を検査しないと**二重に見逃す**。腕が永久に死ぬうえ、腕の中では対象が存在しない
+クラスへ絞り込まれるので**メンバーアクセスが全て無検査**になる（実測）。
+
+⚠ `N1`（最上位の `enum`）は `RUNTIME` → `STATIC` に昇格した。実行時の
+`build_enum_classes` の検査も残っているが、そちらは**定義が実行される経路**しか見られない。
+既存例題 `typing/enum_in_function_error.ar` のコメントを実態に合わせて更新した。
+
+#### 残した分（M1 / M2 — メンバーの存在検査）
+
+⚠ **`M1`（存在しないフィールドの読み）と `M2`（存在しないメソッドの呼び出し）は
+実行時のまま残した。** 静的化には次を全部正しく除外する必要があり、1 つ誤ると
+**正しいコードを落とす**:
+
+- メソッドは `class_field_details` ではなく `class_method_sigs` に在る（「フィールドに無い」≠「存在しない」）
+- `Any` / `Unresolved` / `Namespace` / `PyNamespace` / `CsObject` 等の**動的メンバー**
+- `import[py]` のモジュールメンバー（`editor` ビルドでは本体が空）
+- `new_type` ラッパ・`enum_item_*` の内部名
+
+⇒ 義務としては残し、フェーズ 5 で単独タスクとして扱う方が安全。
+
+**検体**: `X6` `N1` `N2` が前進。静的検査の割合 56% → **59%**（67/114）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 772 passed / 0 failed |
+| `scan_examples.ps1` / `force_gate.ps1` | FAIL 0 件 / 0 fall back |
+| `compare_python_impl.ps1` | 78/78 identical・stale 0 |
+| `compare_outputs.ps1 -A <フェーズ1 前>` | 187/204。差分 17 件は新規例題 15 件＋既知の既存 2 件のみ（うち `enum_in_function_error.ar` は実行時→静的の昇格） |
+| `compare_wasm_frontend.ps1` | **274/274 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/validity_checks.ar` ／ `validity_checks_error.ar` ／ `validity_checks_enum_error.ar`
 
 ### フェーズ 4 — 関係の規則を正す
 

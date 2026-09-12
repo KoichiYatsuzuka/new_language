@@ -401,7 +401,7 @@ impl TypeChecker {
             }
 
             // --- enum 定義 ---
-            Stmt::EnumDef { name, .. } => {
+            Stmt::EnumDef { name, variants } => {
                 let item_type_name = format!("enum_item_{}", name);
                 self.declare(
                     item_type_name.clone(),
@@ -413,6 +413,33 @@ impl TypeChecker {
                     InferredType::TypeValOf(Box::new(InferredType::NamedInstance(name.clone()))),
                     false,
                 );
+                // ── 妥当性検査: バリアント値は `int`（タスク 3.4・検体 N2）─────────
+                //
+                // ⚠⚠ 実行時の `build_enum_classes` も同じ検査をするが、**定義が実行されない
+                //    経路**では見逃していた。呼ばれない関数の中の
+                //      fn never_called() -> int:
+                //          enum Bad:
+                //              A = "x"
+                //    はプログラムが最後まで完走していた（実測）。
+                // ⚠ これは整合性検査（3 分類）ではなく**妥当性検査**。「2 つの型が適合するか」
+                //    ではなく「定義自身が成り立つか」を見る系統（D-14）。
+                // ⚠ 推論できない値（`Unresolved`）は見送る。`a = g()` のような式値は
+                //    呼び先の戻り値型が付くようになれば自然に検査される。
+                for (vname, value) in variants.iter() {
+                    let Some(expr) = value else { continue };
+                    let got = self.infer(expr);
+                    if matches!(got, InferredType::Unresolved | InferredType::Int) {
+                        continue;
+                    }
+                    self.report_error(StaticTypeError {
+                        kind: TypeErrorKind::EnumVariantNotInt {
+                            enum_name: name.clone(),
+                            variant: vname.clone(),
+                            got: got.to_string(),
+                        },
+                        span: None,
+                    });
+                }
             }
 
             // --- 副作用のない文 ---
@@ -537,6 +564,45 @@ impl TypeChecker {
         self.check_match_arms(subject, arms);
     }
 
+    /// 型ガードの型名が存在するかを検査する（**妥当性検査**・タスク 3.4・検体 X6）。
+    ///
+    /// ⚠⚠ これが無いと `is NoSuchType:` が**黙って通り、腕が永久に死ぬ**。さらに腕の中では
+    /// 対象変数がその存在しないクラスへ絞り込まれるので、**メンバーアクセスが全て無検査**に
+    /// なる（`d.totally_missing_field` が通っていた・実測）。
+    ///
+    /// ⚠ 整合性検査（3 分類）ではなく**妥当性検査**。「2 つの型が適合するか」ではなく
+    /// 「名前が在るか」を見る別系統（D-14）。
+    /// ⚠ **判らない名前は通さない**が、型変数（`fn f[T]` の `T`）は正当なので除く。
+    pub(crate) fn check_guard_type_exists(&mut self, type_name: &str) {
+        // プリミティブ・`Any` 等は `from_ann` が解釈できるので、それで判定する。
+        // ⚠ `from_ann` は**大文字始まりの未知の識別子をクラス名にする**ので、
+        //    `Some(..)` でも「在る」ことの証明にはならない（`NamedInstance` は要確認）。
+        match InferredType::from_ann(type_name) {
+            Some(InferredType::NamedInstance(n)) => {
+                if self.state.is_type_param(n.as_str()) {
+                    return; // テンプレート型変数は正当
+                }
+                if self.registry.is_known_class(n.as_str())
+                    || self.registry.is_protocol(n.as_str())
+                    || self.registry.is_known_trait(n.as_str())
+                {
+                    return;
+                }
+                self.report_error(StaticTypeError {
+                    kind: TypeErrorKind::UnknownGuardType { type_name: type_name.to_string() },
+                    span: None,
+                });
+            }
+            // プリミティブ・コレクション・`Union` 等は解釈できた時点で存在が確かめられている。
+            Some(_) => {}
+            // `from_ann` が解釈できない綴りは未知として扱う。
+            None => self.report_error(StaticTypeError {
+                kind: TypeErrorKind::UnknownGuardType { type_name: type_name.to_string() },
+                span: None,
+            }),
+        }
+    }
+
     /// `match` の腕を型検査する（**文と式で共有**・タスク 2.9）。
     ///
     /// ⚠⚠ **以前は `match` 式がこの絞り込みを持っていなかった。** `Expr::MatchExpr`
@@ -570,6 +636,7 @@ impl TypeChecker {
                     self.walk_obligation_pending(expr, "5.4 case パターン型 vs subject");
                 }
                 MatchPattern::IsType(type_name) => {
+                    self.check_guard_type_exists(type_name);
                     if let Some(ref var_name) = subject_name {
                         let narrowed = Self::type_from_guard_name(type_name);
                         let is_mut = self.lookup(var_name).map(|v| v.mutable).unwrap_or(false);

@@ -1,0 +1,83 @@
+# validity_checks.ar — 整合性検査とは別系統の「妥当性検査」（タスク 3.4 / 決定 D-14）
+#
+# ## 2 系統に分ける理由
+#
+# 型検査には性質の違う 2 系統がある:
+#
+#   - **整合性検査**（3 分類）… 2 つの型が適合するか（同一／アップキャスト／演算子）
+#   - **妥当性検査**          … 名前が在るか・個数が合うか・定義自身が成り立つか
+#
+# 3 分類は前者しか答えない。後者をどこにも置かないと忘れられる。
+#
+# ⚠⚠ **これは抽象的な懸念ではない。** タスク 1.1 で直した既存バグがこの混同の産物だった:
+#   `resolve_declared_type` の `Intersection`/`Result` の早期 return は**妥当性検査をして
+#   満足し、整合性検査へ進まずに return していた**。2 つを同じ分岐で扱うと「片方やれば
+#   済んだ気になる」。
+#
+# ## このタスクで入れた妥当性検査
+#
+#   1. 型ガード（`is T`）の型名が存在すること（検体 X6）
+#   2. `enum` のバリアント値が `int` であること（検体 N1 / N2）
+#
+# 弾かれる例は validity_checks_error.ar / validity_checks_enum_error.ar
+
+print("=== 型ガードの型名が在れば通る ===")
+
+class Dog:
+    mut n: int
+
+trait Walker:
+    mut steps: int
+
+protocol HasN:
+    mut n: int
+
+class Impl(Walker):
+    mut d: int
+
+let d = Dog(1)
+
+# クラス名
+match d:
+    is Dog:
+        print("class OK")
+
+# protocol 名（構造的に満たす）
+match d:
+    is HasN:
+        print("protocol OK")
+
+# trait 名
+let w = Impl(1, 2)
+match w:
+    is Walker:
+        print("trait OK")
+
+# プリミティブ名
+let v: int = 5
+match v:
+    is int:
+        print("primitive OK")
+
+print("=== テンプレート型変数は正当（存在検査の対象外） ===")
+
+# ⚠ `fn f[T]` の `T` は実在のクラス名ではないが、型変数として正当なので弾かない。
+fn pick[T](let a: T) -> int:
+    match a:
+        is T:
+            return 1
+    return 0
+
+print(pick[int](1))                 # 1
+
+print("=== enum のバリアント値が int なら通る ===")
+
+enum Code:
+    a
+    b = 5
+    c                               # 自動採番は直前 +1
+    d = 1 + 1                       # 整数式も可
+
+print(Code.a.value, Code.b.value, Code.c.value, Code.d.value)   # 0 5 6 2
+
+print("done")

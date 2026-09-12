@@ -263,6 +263,24 @@ pub enum TypeErrorKind {
         intersection_type: String,
         reason: String,
     },
+    // ── 妥当性検査（タスク 3.4）──────────────────────────────────────────────
+    //
+    // ⚠ 整合性検査（3 分類）とは**別系統**。「2 つの型が適合するか」ではなく
+    //   「名前が在るか・個数が合うか・定義自身が成り立つか」を見る。
+    /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
+    ///
+    /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
+    /// 存在しないクラスへ絞り込まれるので**メンバーアクセスが全て無検査**になる（検体 X6）。
+    UnknownGuardType { type_name: String },
+    /// `enum` のバリアント値が `int` でない。
+    ///
+    /// ⚠ 実行時の `build_enum_classes` も同じ検査をするが、**定義が実行されない経路**
+    /// （呼ばれない関数の中の `enum`）では見逃していた（検体 N2）。
+    EnumVariantNotInt {
+        enum_name: String,
+        variant: String,
+        got: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -586,6 +604,15 @@ impl StaticTypeError {
             TypeErrorKind::IntersectionGuardTypeFails { guard_type, intersection_type, reason } => format!(
                 "type {} used in type guard does not satisfy {}: {}",
                 hl_q(guard_type), hl_q(intersection_type), reason
+            ),
+            // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
+            TypeErrorKind::UnknownGuardType { type_name } => format!(
+                "unknown type {} in type guard; the branch can never match",
+                hl_q(type_name)
+            ),
+            TypeErrorKind::EnumVariantNotInt { enum_name, variant, got } => format!(
+                "enum variant {} of {} must be int, got {}",
+                hl_q(variant), hl_q(enum_name), hl_q(got)
             ),
         }
     }
