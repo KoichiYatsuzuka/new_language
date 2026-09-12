@@ -1,0 +1,17 @@
+# @id: O9
+# @obligation: and の静的結果型と実行時値の食い違い
+# @baseline: NONE
+#
+# ⚠ この検体は**意図的に型エラーを 1 つだけ**含む。type_obligations.ps1 が実行して
+#    STATIC / RUNTIME / NONE のどれになるかを測り、@baseline と比べる。
+#    baseline より弱くなったら退行。強くなったら @baseline を更新すること。
+#
+# ⚠⚠ 型検査は `And`/`Or` の結果を `Bool` と宣言する（type_check/binop.rs）のに、
+#    実行時は**被演算子をそのまま返す**（Python 流）。そのため静的検査は通り、
+#    実行時は bool 変数に int / str が入る。U-2（bool 厳密化）を機能させるには
+#    この食い違いを先に解消する必要がある（D-8）。
+
+let a: int = 1
+let b: int = 2
+let r: bool = a and b
+print(r)
