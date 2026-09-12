@@ -204,14 +204,40 @@ use super::*;
         )));
     }
 
-    /// untyped_list_matches_list_of_any_ok のテスト。
+    /// 注釈なしの空リテラルは `list[Any]` になるので `list[int]` へは渡せない（D-11 / U-6・タスク 4.1）。
+    ///
+    /// ⚠⚠ **これは仕様変更。** 以前は `let xs = []` が素の `list` になり、素の `list` が
+    /// `list[任意]` と適合する**双方向特例**で通っていた。その特例は「要素型を捨てること」を
+    /// 「何でも通す」に変えてしまう根本原因②の実装本体だったので、タスク 4.1 で
+    /// **アップキャストのみ**に締めた。`Any` は要素型の**上端**なので
+    /// `list[Any]` → `list[int]` はダウンキャストになる。
+    /// ⇒ **注釈を付ければ通る**（次のテスト）。
     #[test]
-    fn untyped_list_matches_list_of_any_ok() {
+    fn untyped_empty_list_to_list_of_int_err() {
+        assert!(err(concat!(
+            "fn f(items: list[int]) -> int:
+",
+            "    return 0
+",
+            "let xs = []
+",
+            "f(xs)
+",
+        )));
+    }
+
+    /// 注釈を付けた空リテラルは通る（`list[⊥]` はあらゆる `list[T]` へアップキャスト可）。
+    #[test]
+    fn annotated_empty_list_to_list_of_int_ok() {
         assert!(ok(concat!(
-            "fn f(items: list[int]) -> int:\n",
-            "    return 0\n",
-            "let xs = []\n",
-            "f(xs)\n",
+            "fn f(items: list[int]) -> int:
+",
+            "    return 0
+",
+            "let xs: list[int] = []
+",
+            "f(xs)
+",
         )));
     }
 

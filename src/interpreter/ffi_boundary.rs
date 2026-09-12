@@ -80,6 +80,9 @@ pub(crate) fn check_common(value: &Value, declared: &InferredType) -> Verdict {
         // 検査対象外（そもそも何でも入る宣言）。
         InferredType::Any
         | InferredType::Unresolved
+        // ⚠ `Never`（⊥）は空コレクションリテラルの要素型にしか現れない推論の内部表現で、
+        //    FFI 境界の宣言型には書けない。届いたら判定しようがないので通す（保守的側）。
+        | InferredType::Never
         | InferredType::Undefined
         | InferredType::SelfType
         | InferredType::Protocol(_)

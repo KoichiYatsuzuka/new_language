@@ -181,6 +181,28 @@ impl TypeChecker {
 
     /// 型アノテーション付き変数宣言の型を解決する。
     /// アノテーションがプロトコル名の場合、RHS 型の適合チェックを行い Protocol 型を返す。
+    /// 型の中の `Never`（⊥）を `Any` へ開く（D-11 / U-6・タスク 4.1）。
+    ///
+    /// 空コレクションリテラルの要素型は `Never` だが、**注釈が無い束縛**ではそのまま
+    /// 残すと「要素を足せない空リスト」になる。既定値として上端 `Any` へ開く。
+    /// ⚠ 注釈がある場合は注釈が勝つので開く必要はない（`Never` は何へでもアップキャスト可）。
+    fn open_never_to_any(ty: InferredType) -> InferredType {
+        use InferredType as T;
+        let rec = |t: &T| Box::new(Self::open_never_to_any(t.clone()));
+        match &ty {
+            T::Never => T::Any,
+            T::ListOf(t) => T::ListOf(rec(t)),
+            T::FixedListOf(t) => T::FixedListOf(rec(t)),
+            T::ListLikeOf(t) => T::ListLikeOf(rec(t)),
+            T::SetOf(t) => T::SetOf(rec(t)),
+            T::DictOf(k, v) => T::DictOf(rec(k), rec(v)),
+            T::Tuple(ts) => T::Tuple(
+                ts.iter().map(|t| Self::open_never_to_any(t.clone())).collect(),
+            ),
+            _ => ty,
+        }
+    }
+
     pub(crate) fn resolve_declared_type(
         &mut self,
         type_ann: Option<&str>,
@@ -189,7 +211,13 @@ impl TypeChecker {
         _stmt: &Stmt,
     ) -> InferredType {
         let ann = match type_ann {
-            None => return rhs_ty,
+            // ⚠⚠ **注釈が無いときは `Never` を `Any` へ開く**（D-11 / U-6・タスク 4.1）。
+            //    空リテラルの要素型は `Never`（⊥）だが、`Never` のまま束縛すると
+            //    「**要素を足せない空リスト**」になってしまう（`Never` は値を持たない型）。
+            //      let xs = []        # → list[Any]（何でも入れられる）
+            //      mut xs: list[int] = []   # → list[int]（注釈が勝つ。`Never` はそこへ
+            //                               #    アップキャストできるので通る）
+            None => return Self::open_never_to_any(rhs_ty),
             Some(a) => a,
         };
         // ⚠ protocol 名の注釈はここで打ち切って構わない。`check_protocol_conformance` が

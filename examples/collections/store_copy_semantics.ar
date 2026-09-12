@@ -19,8 +19,11 @@ class N:
         self.f = f
 
 print("=== list への append ===")
+# ⚠ タスク 4.1 以降、**注釈なしの空リテラルは `list[Any]`** になる（D-11 / U-6）。
+#   `lst[0]` は `Any` になり、`Any` への属性アクセスには明示ダウンキャストが要る
+#   （既存の規則）。⇒ 要素型を注釈で与えるのが素直。
 let a = [1]
-mut lst = []
+mut lst: list[list[int]] = []
 lst.append(a)
 lst[0].append(9)
 print(a)                 # [1]        let の a は変わらない
@@ -28,7 +31,7 @@ print(lst)               # [[1, 9]]
 
 print("=== dict への格納 ===")
 let b = [1]
-mut d = {}
+mut d: dict[str, list[int]] = {}
 d["k"] = b
 d["k"].append(9)
 print(b)                 # [1]

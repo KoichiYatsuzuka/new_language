@@ -1,0 +1,22 @@
+# upcast_only_error.ar — 素の容器から型引数つき容器へはダウンキャストなので弾く（タスク 4.1 / D-3）
+#
+# 正常系は upcast_only.ar
+#
+# `list` は「要素型が判らないリスト」なので、`list[int]` より**情報が少ない**。
+# そこへ代入するのは**ダウンキャスト**（情報が増える方向）で、実行時検査なしでは不健全。
+#
+# ⚠⚠ 以前は `(List, ListOf(_)) => true` という**双方向特例**があり通っていた。
+#   この特例があるために「要素型を捨てる」ことが「**何でも通す**」になっており、
+#   `[1, "s"]` が `list[int]` にも `list[str]` にも `list[float]` にも通っていた
+#   （根本原因②の実装本体）。タスク 2.7 で推論側を直し、4.1 で規則を片方向にした。
+#
+# ⚠ 逆方向（`list[int]` → `list`）は情報を落とすだけなので通る（upcast_only.ar）。
+#
+# 期待されるエラー:
+#   StaticTypeError  'narrowed' is declared 'list[int]' but initialized with 'list'
+
+let bare: list = [1, 2]
+
+let narrowed: list[int] = bare      # ⛔ list → list[int] はダウンキャスト
+
+print("ここには到達しない")

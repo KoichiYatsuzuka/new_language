@@ -198,6 +198,11 @@ impl TypeChecker {
         if *arg_ty == InferredType::Unresolved {
             return true;
         }
+        // ⚠ `Never`（⊥）はあらゆる型へアップキャストできる（D-11・タスク 4.1）。
+        //    空コレクションリテラルの要素型にしか現れない。
+        if *arg_ty == InferredType::Never {
+            return true;
+        }
         if *expected == InferredType::Any {
             return true;
         }
@@ -290,13 +295,17 @@ impl TypeChecker {
             {
                 return true
             }
-            // list compatibility
+            // ── 素の容器と型引数つき容器は**一方向だけ**（D-3・タスク 4.1）──────
+            //
+            // ⚠⚠ **以前は双方向だった**（`(List, ListOf(_)) => true` も在った）。素の `list` が
+            //    `list[任意]` と適合するため、要素型を捨てることが「**何でも通す**」になっていた
+            //    （根本原因②の実装本体）。タスク 2.7 で推論側を直し、ここで規則を片方向にした。
+            // ⚠ 許すのは「**型引数を忘れる**」方向だけ（`list[int]` → `list`）。
+            //    逆（`list` → `list[int]`）は情報が増えるダウンキャストなので許さない。
             (InferredType::ListOf(_), InferredType::List) => return true,
-            (InferredType::List, InferredType::ListOf(_)) => return true,
             (InferredType::ListOf(a), InferredType::ListOf(e)) => return self.type_matches_exact(a, e),
             // fixed_list compatibility
             (InferredType::FixedListOf(_), InferredType::FixedList) => return true,
-            (InferredType::FixedList, InferredType::FixedListOf(_)) => return true,
             (InferredType::FixedListOf(a), InferredType::FixedListOf(e)) => return self.type_matches_exact(a, e),
             // list_like accepts list or fixed_list (with or without inner type)
             (a, InferredType::ListLike) if is_list_like(a) => return true,
@@ -305,13 +314,17 @@ impl TypeChecker {
                     InferredType::ListOf(i) | InferredType::FixedListOf(i) => Some(i.as_ref()),
                     _ => None,
                 };
-                return a_inner.is_none_or(|ai| self.type_matches_exact(ai, e));
+                // ⚠ 要素型を持たない側（素の `list` / `fixed_list`）から `list_like[T]` へは
+                //    **情報が増えるダウンキャスト**なので許さない（D-3・タスク 4.1）。
+                //    以前は `is_none_or` で通していた（上の 4 つの双方向特例と同じ形）。
+                return match a_inner {
+                    Some(ai) => self.type_matches_exact(ai, e),
+                    None => false,
+                };
             }
             (InferredType::SetOf(_), InferredType::Set) => return true,
-            (InferredType::Set, InferredType::SetOf(_)) => return true,
             (InferredType::SetOf(a), InferredType::SetOf(e)) => return self.type_matches_exact(a, e),
             (InferredType::DictOf(_, _), InferredType::Dict) => return true,
-            (InferredType::Dict, InferredType::DictOf(_, _)) => return true,
             (InferredType::DictOf(ak, av), InferredType::DictOf(ek, ev)) => {
                 return self.type_matches_exact(ak, ek) && self.type_matches_exact(av, ev);
             }

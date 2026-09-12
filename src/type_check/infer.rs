@@ -55,9 +55,13 @@ impl TypeChecker {
             //    ⇒ 混在は `Union` へ合成する（`join_elem_types`）。
             Expr::List(elems) => {
                 if elems.is_empty() {
-                    // ⚠ 空リテラルは D-11 で `list[⊥]` にする（タスク 4.1）。⊥ がまだ無いので
-                    //    当面は素の `List`（= 何にでも適合）のまま置く。
-                    InferredType::List
+                    // ⚠⚠ 空リテラルの要素型は **`Never`（⊥）**（D-11・タスク 4.1）。
+                    //    `Never` はあらゆる型へアップキャストできるので
+                    //    `mut xs: list[int] = []` が通る。
+                    //    ⚠ `Any`（上端）にしてはいけない — `list[Any]` は `list[int]` の
+                    //    スーパータイプなので、D-3（アップキャストのみ）のもとでは
+                    //    `list[Any]` → `list[int]` がダウンキャストになって落ちる。
+                    InferredType::ListOf(Box::new(InferredType::Never))
                 } else {
                     let types: Vec<InferredType> = elems.iter().map(|e| self.infer(e)).collect();
                     InferredType::ListOf(Box::new(Self::join_elem_types(types)))
@@ -65,7 +69,7 @@ impl TypeChecker {
             }
             Expr::Set(elems) => {
                 if elems.is_empty() {
-                    InferredType::Set
+                    InferredType::SetOf(Box::new(InferredType::Never))
                 } else {
                     let types: Vec<InferredType> = elems.iter().map(|e| self.infer(e)).collect();
                     InferredType::SetOf(Box::new(Self::join_elem_types(types)))
@@ -201,7 +205,10 @@ impl TypeChecker {
             // --- 辞書・サブスクリプト ---
             Expr::Dict(pairs) => {
                 if pairs.is_empty() {
-                    InferredType::Dict
+                    InferredType::DictOf(
+                        Box::new(InferredType::Never),
+                        Box::new(InferredType::Never),
+                    )
                 } else {
                     let key_types: Vec<InferredType> =
                         pairs.iter().map(|(k, _)| self.infer(k)).collect();

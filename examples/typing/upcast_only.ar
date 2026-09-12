@@ -1,0 +1,77 @@
+# upcast_only.ar — 容器の適合はアップキャストのみ ＋ 空リテラルは `list[⊥]`（タスク 4.1 / D-3 / D-11）
+#
+# ## 何を締めたか
+#
+# 素の容器と型引数つき容器の適合が**双方向**だった:
+#
+#   (ListOf(_), List)  => true      # list[int] → list      （アップキャスト・正しい）
+#   (List, ListOf(_))  => true      # list      → list[int] （ダウンキャスト・⛔）
+#
+# 後者があるために「要素型を捨てる」ことが「**何でも通す**」になっていた
+# （根本原因②の実装本体）。タスク 2.7 で推論側を直し、ここで規則を**片方向**にした。
+# `fixed_list` / `set` / `dict` / `list_like` も同じ。
+#
+# ## なぜ `⊥`（Never）が必要か
+#
+# 片方向にすると `mut xs: list[int] = []` が落ちる（空リテラルが素の `list` だったため）。
+# ⇒ 空リテラルの要素型を **`Never`（⊥ / 下端）** にした。`Never` は**あらゆる型へ
+#   アップキャストできる**ので `list[int]` にも `list[str]` にも渡せる。
+#
+# ⚠⚠ **`Any`（上端）では駄目。方向が逆になる。** `list[Any]` は `list[int]` の
+#   スーパータイプなので `list[Any]` → `list[int]` はダウンキャストになり、
+#   `mut xs: list[int] = []` が落ちてしまう（実測で確認した）。
+#
+# ⚠ 注釈なしの束縛では `Never` を `Any` へ開く（D-11 / U-6）。`Never` のまま束縛すると
+#   「要素を足せない空リスト」になるため。**その代わり `list[Any]` は `list[int]` へ
+#   渡せない**（下の注意書き）。
+#
+# 弾かれる例は upcast_only_error.ar
+
+print("=== 型引数を忘れる方向は通る（アップキャスト） ===")
+
+let xs: list[int] = [1, 2]
+let bare: list = xs
+print(bare)                         # [1, 2]
+
+let si: set[int] = {1}
+let bare_s: set = si
+print(len(bare_s))                  # 1
+
+let di: dict[str, int] = {"a": 1}
+let bare_d: dict = di
+print(bare_d["a"])                  # 1
+
+print("=== 空リテラルは注釈の型になる（⊥ がアップキャスト） ===")
+
+mut a: list[int] = []
+a.append(1)
+print(a)                            # [1]
+
+mut b: list[str] = []
+b.append("s")
+print(b)                            # ['s']
+
+mut d: dict[str, int] = {}
+d["k"] = 9
+print(d["k"])                       # 9
+
+print("=== 空リテラルを引数として渡せる ===")
+
+fn take_ints(let items: list[int]) -> int:
+    return len(items)
+
+let empty: list[int] = []
+print(take_ints(empty))             # 0
+print(take_ints([]))                # 0   ← リテラルを直接渡しても通る
+
+print("=== 注釈なしの空リテラルは list[Any] ===")
+
+# ⚠⚠ `let xs = []` は `list[Any]` になるので **`list[int]` へは渡せない**
+#   （`Any` は上端なのでダウンキャストになる）。渡したいときは注釈を付ける。
+#   → upcast_only_error.ar
+mut loose = []
+loose.append(1)
+loose.append("s")                   # `Any` なので何でも入る
+print(loose)                        # [1, 's']
+
+print("done")

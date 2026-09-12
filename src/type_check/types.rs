@@ -153,6 +153,20 @@ pub enum InferredType {
     PyNamespace(HashMap<String, InferredType>),
     /// 推論に失敗した・または未解決の型（エラーの伝播抑制のため使用する）。
     Unresolved,
+    /// **下端型（⊥ / Never）**。決定 D-11・タスク 4.1。
+    ///
+    /// 「値が 1 つも無い型」で、**あらゆる型へアップキャストできる**。
+    /// 空のコレクションリテラル（`[]` / `{}` / `()`）の要素型に使う。
+    ///
+    /// ⚠⚠ **`Any`（上端）では駄目。方向が逆になる。** `Any` は要素型の上端なので
+    /// `list[Any]` は `list[int]` の**スーパータイプ**で、`list[Any]` → `list[int]` は
+    /// ダウンキャスト。D-3（アップキャストのみ）のもとでは
+    /// `mut xs: list[int] = []` が落ちてしまう（実測）。
+    ///
+    /// ⚠ **注釈としては書けない**（`from_ann` は解釈しない）。推論の内部表現専用。
+    /// ⚠ 注釈なしの束縛（`let xs = []`）は `list[Any]` を既定値にする（D-11 / U-6）。
+    /// `Never` のまま束縛すると「要素を足せない空リスト」になってしまう。
+    Never,
     /// 関数型 `function[params]->R` または `function{params}->R`。
     /// - `params`: `None` は型引数なし（シグネチャ未確定）、`Some(vec)` は型付きパラメータリスト
     /// - `return_type`: 戻り値の型
@@ -476,6 +490,9 @@ impl std::fmt::Display for InferredType {
             Self::Namespace(members) => write!(f, "<module({} members)>", members.len()),
             Self::PyNamespace(members) => write!(f, "<py-module({} members)>", members.len()),
             Self::Unresolved => write!(f, "unknown"),
+            // ⚠ 利用者が書ける綴りではない（推論の内部表現）。表示は空コレクション由来だと
+            //    判るものにする。
+            Self::Never => write!(f, "never"),
             Self::Function {
                 params,
                 return_type,
