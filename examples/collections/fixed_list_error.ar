@@ -14,4 +14,8 @@ class Bar:
 
 mut pts: list[Foo] = [Foo(1.0), Foo(2.0)]
 mut fl = pts => fixed_list[Foo]
-fl.append(Bar(3.0))   # TypeError: expected instance of 'Foo', got 'Bar'
+# ⚠⚠ タスク 5.2c で**実行時 → 静的へ昇格した**。以前は
+#   `TypeError: fixed_list.append(): expected instance of 'Foo', got 'Bar'` という
+#   実行時エラーだったが、`append` の引数を要素型と照合するようになったので
+#   **実行前に**弾かれる。実行時検査は残してある。
+fl.append(Bar(3.0))   # StaticTypeError: argument of `fixed_list[Foo].append()` expects 'Foo' 

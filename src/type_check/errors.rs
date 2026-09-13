@@ -497,10 +497,20 @@ impl StaticTypeError {
                     format!("{} takes {expected_min} to {expected_max} argument(s) but {got} were given", hl_q(func_name))
                 }
             }
-            TypeErrorKind::CallArgTypeMismatch { func_name, param_index, expected, got } => format!(
-                "argument {param_index} of {} expects {} but got {}",
-                hl_q(func_name), hl_q(expected), hl_q(got)
-            ),
+            TypeErrorKind::CallArgTypeMismatch { func_name, param_index, expected, got } => {
+                // ⚠ `param_index == usize::MAX` は**可変長引数**を表す番兵（`check_call_args`）。
+                //    そのまま出すと `argument 18446744073709551615 of ...` になる
+                //    （タスク 5.2c で可変長の検査が効くようになって初めて表に出た）。
+                let which = if *param_index == usize::MAX {
+                    "the variadic argument".to_string()
+                } else {
+                    format!("argument {param_index}")
+                };
+                format!(
+                    "{which} of {} expects {} but got {}",
+                    hl_q(func_name), hl_q(expected), hl_q(got)
+                )
+            }
             TypeErrorKind::MissingParamTypeAnn { func_name, param_name } => format!(
                 "parameter {} of function {} is missing a type annotation",
                 hl_q(param_name), hl_q(func_name)

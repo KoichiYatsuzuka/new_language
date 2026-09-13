@@ -38,8 +38,9 @@ print(b)                 # [1]
 print(d)                 # {'k': [1, 9]}
 
 print("=== set への add ===")
+# ⚠ ここも要素型を注釈で与える（`append` と同じ理由・タスク 5.2c）。
 let c = [1]
-mut s = {0}
+mut s: set[list[int]] = {[0]}
 s.add(c)
 print(c)                 # [1]
 
@@ -62,7 +63,11 @@ print(o.f)               # [1]        格納時のスナップショット
 print(src)               # [1, 9]
 
 print("=== 循環は作れない ===")
-mut z = [1]
+# ⚠ タスク 5.2c で **`append` の引数も要素型と照合される**ようになった。`mut z = [1]`
+#   は `list[int]` に推論されるので、そこへ `z`（`list[int]`）は入らない。
+#   ⇒ ここで見せたいのは「要素型を問わないリストへ自分を入れても循環しない」ことなので
+#     `list` と注釈する（`equality_depth_limit_error.ar` と同じ形）。
+mut z: list = [1]
 z.append(z)
 print(z)                 # [1, [1]]   自己参照にならない
 

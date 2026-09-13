@@ -1,0 +1,86 @@
+# collection_method_args.ar — 組み込みコレクションメソッドの引数と可変長引数の要素型
+# （タスク 5.2c）
+#
+# ## 何が壊れていたか
+#
+# | 義務 | 以前 | 検体 |
+# |---|---|---|
+# | `list[int].append(v)` の `v` | **無検査**（黙って `[1, 's']` になる） | `L14` |
+# | 可変長引数の要素型 | **型が混ざると検査が消える** | `C15` |
+#
+# ### 可変長引数の穴の形が面白い（実測）
+#
+#     fn f(let ...: int) -> int: ...
+#     f(... = "a", "s")     # ⛔ 捕まる（全部 str なので list[str] に推論される）
+#     f(... = 1, "s")       # ✅ 通っていた（型が混ざると素の list へ落ちる）
+#
+# 「全部まちがえると捕まるのに、1 つ混ぜると通る」。素の `list` は下流の可変長検査に
+# 当たらないためで、**根本原因②「要素型を捨てると何とでも適合する」がここに残っていた**。
+# ⇒ コレクションリテラルと同じ合成（`join_elem_types`・タスク 2.7）を使うようにした。
+#
+# ## 対象は「要素を 1 つ受け取るメソッド」だけ
+#
+# | レシーバ | メソッド |
+# |---|---|
+# | `list` / `fixed_list` / `list_like` | `append` |
+# | `set` | `add` ・ `discard` ・ `remove` |
+#
+# ⚠⚠ **実装側に無いメソッドを推測で足さないこと。** 実測で確かめた:
+# `insert` / `extend` / `remove` / `index` / `count`（list）・`get`（dict）は
+# **存在しない**（`AttributeError: 'list' object has no method 'insert'`）。
+#
+# 弾かれる例は collection_method_args_error.ar
+
+print("=== list.append ===")
+
+mut xs: list[int] = [1]
+xs.append(2)
+print(xs)                           # [1, 2]
+
+mut names: list[str] = ["a"]
+names.append("b")
+print(names)                        # ['a', 'b']
+
+print("=== 入れ子のリストも要素型どおりなら通る ===")
+
+mut grid: list[list[int]] = [[1]]
+grid.append([2, 3])
+print(grid)                         # [[1], [2, 3]]
+
+print("=== set.add / discard ===")
+
+mut st: set[int] = {1}
+st.add(2)
+st.discard(1)
+print(st)                           # {2}
+
+print("=== 要素型を問わない容器は素通しする ===")
+
+# `list`（要素型なし）と `list[Any]` は判定材料が無いので照合しない。
+mut anything: list = [1]
+anything.append("s")
+anything.append([1, 2])
+print(anything)                     # [1, 's', [1, 2]]
+
+print("=== 可変長引数 ===")
+
+fn count_all(let ...: int) -> int:
+    return len(local::args)
+
+print(count_all(... = 1, 2, 3))     # 3
+
+fn join_all(let ...: str) -> str:
+    mut out: str = ""
+    for s in local::args:
+        out += s
+    return out
+
+print(join_all(... = "a", "b"))     # ab
+
+print("=== 集合演算は集合そのものを受け取る（要素型と突き合わせない） ===")
+
+let a: set[int] = {1, 2}
+let b: set[int] = {2, 3}
+print(a.intersection(b))            # {2}
+
+print("done")

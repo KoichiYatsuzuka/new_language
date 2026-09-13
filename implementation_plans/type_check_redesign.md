@@ -1253,7 +1253,7 @@ print(x + 1)    # 旧: TypeError: unsupported operand types for `Add`
 | **5.2** | 未検査の地点を埋める | D-1 | 3.2 | **地点ごとに分割して進める**（下記） |
 | ~~5.2a~~ | ~~`block_return` / `loop_yield` / `yield`~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2a の記録」。`X1`〜`X4` `C8` が**全て STATIC** |
 | ~~5.2b~~ | ~~添字（代入の要素型・index の型・スライス境界）~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2b の記録」。`L5`〜`L8` が**全て STATIC** |
-| 5.2c | 組み込みメソッド引数・可変長要素 | D-1 | 3.2 | `L14` `C15` |
+| ~~5.2c~~ | ~~組み込みメソッド引数・可変長要素~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2c の記録」。`L14` `C15` が**両方 STATIC** |
 | 5.2d | trait フィールド代入の静的化 | D-1 | 3.2 | `F3` |
 | **5.3** | `static mut` クラス変数への代入を検査 | D-1 | 3.2・1.2 | `F4` |
 | **5.4** | `match` の `case` パターン型を subject と照合 | D-1 | 3.2 | `X5` |
@@ -1487,6 +1487,79 @@ list / tuple / str のどれでも受け付ける（同じ例題が `(20, 30)` �
 | `compare_wasm_frontend.ps1` | **286/286 agreed・INVENTED 0** |
 
 **追加した例題**: `examples/typing/subscript_static{,_error}.ar`
+
+#### 5.2c の記録 【✅ 完了 2026-09-14】
+
+##### ⚠⚠ 可変長引数は「**全部まちがえると捕まるのに 1 つ混ぜると通る**」形をしていた
+
+実測:
+
+```arrow
+fn f(let ...: int) -> int: ...
+f(... = "a", "s")     # ⛔ 捕まる（全部 str ＝ list[str] に推論される）
+f(... = 1, "s")       # ✅ 通っていた
+```
+
+原因は推論側だった。可変長引数の型を「**全要素が同じ型のときだけ `list[T]`、混ざったら素の
+`list`**」と決めていて、素の `list` は下流の検査（`Some((_, IT::ListOf(elem_ty)))` で受ける）に
+**当たらない**。⇒ **根本原因②「要素型を捨てると何とでも適合する」がここに残っていた。**
+コレクションリテラルと同じ合成（`join_elem_types`・タスク 2.7）に寄せて閉じた。
+
+⚠ 「実際のコードほど捕まらない」（混ざるのが普通）ので、検体の `NONE` は
+**穴の大きさを過小評価していた**。
+
+##### 組み込みメソッドは**実装側の一覧を読んでから**書いた
+
+対象は「要素を 1 つ受け取るメソッド」だけ:
+
+| レシーバ | メソッド |
+|---|---|
+| `list` / `fixed_list` / `list_like` | `append` |
+| `set` | `add` ・ `discard` ・ `remove` |
+
+⚠⚠ **推測で足すと死んだ枝になる。** 実測すると `insert` / `extend` / `remove` / `index` /
+`count`（list）・`get`（dict）は**存在しない**
+（`AttributeError: 'list' object has no method 'insert'`）。Python の知識で書くと外す。
+
+⚠ `union` / `intersection` 等は**集合そのもの**を受け取るので対象外
+（要素型と突き合わせると偽エラーになる）。
+
+⚠ 弾かなかった場合に何が起きるかは地点で違う（実測）: `list.append` と `set.add` は
+**黙って異型を入れる**（`[1, 's']` / `{1, 's'}`）、`set.discard` は黙って何もしない、
+`set.remove` は `KeyError`。どれも「要素型が守られない」ことに変わりはない。
+
+##### 番兵値がエラー文言に漏れていた
+
+可変長の検査が効くようになって初めて `argument 18446744073709551615 of 'count_all'` が
+表に出た（`param_index: usize::MAX` が可変長を表す番兵）。
+`the variadic argument of ...` に直した。⚠ **検査が動いていなかったので誰も気づけなかった**
+形のバグで、検体を STATIC にした副産物。
+
+##### 正しい検出 3 件（例題側を直した）
+
+| 例題 | 何を書いていたか | 直し方 |
+|---|---|---|
+| `store_copy_semantics.ar` | `mut z = [1]` に `z.append(z)`、`mut s = {0}` に `s.add(c)` | `list` / `set[list[int]]` と注釈 |
+| `equality_depth_limit_error.ar` | `mut a = [1]` に `a.append(a)` | `list` と注釈 |
+| `fixed_list_error.ar` | — | **実行時 → 静的へ昇格**（コメント更新） |
+
+##### 結果
+
+**検体**: `L14` `C15` が `NONE` → **`STATIC`**。静的検査の割合 76% → **78%**（89/114）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 773 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back（285 例題） |
+| `compare_python_impl.ps1` | 84/84 identical・stale 0 |
+| `compare_outputs.ps1 -A 656c335` | 216/218。差分は新規例題 1 件＋昇格した既存例題 1 件 |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **288/288 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/collection_method_args{,_error}.ar`
 
 ### フェーズ 6 — 実行時との一本化
 

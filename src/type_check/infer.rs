@@ -423,7 +423,7 @@ impl TypeChecker {
     ///
     /// ⚠ `Unresolved` を返す場合は `ListOf(Unresolved)` になる。素の `List` と違い
     /// **構造は保つ**ので、タスク 4.1 で素の容器の双方向特例を撤去しても壊れない。
-    fn join_elem_types(types: Vec<InferredType>) -> InferredType {
+    pub(super) fn join_elem_types(types: Vec<InferredType>) -> InferredType {
         if types.iter().any(|t| matches!(t, InferredType::Unresolved)) {
             return InferredType::Unresolved;
         }

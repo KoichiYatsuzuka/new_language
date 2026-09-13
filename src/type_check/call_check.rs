@@ -39,10 +39,15 @@ impl TypeChecker {
         //   - Non-Ident objects: method chains (Builder(1).set(5))
         // When method_call_info is Some, we skip self.infer(func) later to avoid
         // double-evaluating the object and duplicating error reports.
+        // 組み込みコレクションのレシーバ（型・メソッド名・位置）。`arg_data` が揃ってから使う。
+        let mut builtin_recv: Option<(InferredType, String, crate::token::Span)> = None;
         let method_call_info: Option<(String, String)> =
             if let Expr::Attr { object, attr, span, .. } = func {
                 let obj_ty = self.infer(object);
                 self.check_mutating_method_receiver(object, attr, &obj_ty, span);
+                // ⚠ 組み込みコレクションメソッドの引数型は `arg_data` が揃ってから検査する
+                //    （タスク 5.2c・検体 `L14`）。レシーバの型をここで控えておく。
+                builtin_recv = Some((obj_ty.clone(), attr.clone(), span.clone()));
 
                 // Result[T, E] の is_OK() / is_ERR() は特別扱いして bool を返す。
                 // 他のメソッドやアトリビュートアクセスは OperationOnUnion エラーを発生させる。
@@ -119,22 +124,30 @@ impl TypeChecker {
                     arg_data.push((Some(name.clone()), self.infer(value)))
                 }
                 // 可変長引数: 各要素の型を推論し、リスト型として "..." キーで登録
+                //
+                // ⚠⚠ **以前は「全要素が同じ型のときだけ `list[T]`、混ざったら素の `list`」**
+                //    だった。素の `list` は下流の可変長検査
+                //    （`Some((_, IT::ListOf(elem_ty)))` で受ける）に**当たらない**ので、
+                //    `f(... = 1, "s")` のように**型が混ざった瞬間に検査が消えて**いた
+                //    （全部 `str` なら捕まるのに 1 つ混ぜると通る・実測。検体 `C15`）。
+                //    ⇒ 根本原因②「要素型を捨てると何とでも適合する」がここに残っていた。
+                // ⚠ 合成はコレクションリテラルと同じ `join_elem_types`（タスク 2.7）を使う。
                 CallArg::Variadic(exprs) => {
                     let elem_types: Vec<InferredType> =
                         exprs.iter().map(|e| self.infer(e)).collect();
                     let list_ty = if elem_types.is_empty() {
                         InferredType::List
                     } else {
-                        let first = &elem_types[0];
-                        if elem_types.iter().all(|t| t == first) {
-                            InferredType::ListOf(Box::new(first.clone()))
-                        } else {
-                            InferredType::List
-                        }
+                        InferredType::ListOf(Box::new(Self::join_elem_types(elem_types)))
                     };
                     arg_data.push((Some("...".to_string()), list_ty));
                 }
             }
+        }
+
+        // ⚠ 組み込みコレクションメソッドの引数型（タスク 5.2c・検体 `L14`）。
+        if let Some((recv_ty, method, span)) = builtin_recv {
+            self.check_builtin_collection_method_args(&recv_ty, &method, &arg_data, &span);
         }
 
         // ── AST 型解決層（#16）── Call 構造化注釈を焼く（arg_data・func_name はここで確定済み）。
@@ -882,6 +895,66 @@ impl TypeChecker {
             Site::LetParam
         };
         self.types_compatible(arg_ty, expected, site)
+    }
+
+    /// **組み込みコレクションのメソッド引数**を要素型と照合する（タスク 5.2c・検体 `L14`）。
+    ///
+    /// ## 対象は「要素を 1 つ受け取るメソッド」だけ
+    ///
+    /// | レシーバ | メソッド | 引数 |
+    /// |---|---|---|
+    /// | `list` / `fixed_list` / `list_like` | `append` | 要素 |
+    /// | `set` | `add` ・ `discard` ・ `remove` | 要素 |
+    ///
+    /// ⚠⚠ **実装側と必ず突き合わせること。** 実在するのは
+    /// `src/interpreter/classes/method_call.rs`（list）・`set_methods.rs`（set）・
+    /// `frozen_list_methods.rs`（fixed_list）に書かれているものだけで、
+    /// `insert` / `extend` / `remove`（list）/ `index` / `count` / `get`（dict）は
+    /// **存在しない**（実測: `AttributeError: 'list' object has no method 'insert'`）。
+    /// 推測で足すと「実在しないメソッドの引数を検査する」死んだ枝になる。
+    ///
+    /// ⚠ `union` / `intersection` 等は**集合そのもの**を受け取るので対象外
+    /// （要素型と突き合わせると偽エラーになる）。
+    ///
+    /// ⚠ 弾かなかった場合に何が起きるかは地点で違う（実測）:
+    /// `list.append` と `set.add` は**黙って異型を入れる**（`[1, 's']` / `{1, 's'}`）、
+    /// `set.discard` は黙って何もしない、`set.remove` は `KeyError`。
+    /// どれも「要素型が守られない」ことに変わりはない。
+    fn check_builtin_collection_method_args(
+        &mut self,
+        recv_ty: &InferredType,
+        method: &str,
+        arg_data: &[(Option<String>, InferredType)],
+        span: &crate::token::Span,
+    ) {
+        use InferredType as T;
+        let elem = match (recv_ty, method) {
+            (T::ListOf(e), "append")
+            | (T::FixedListOf(e), "append")
+            | (T::ListLikeOf(e), "append") => e,
+            (T::SetOf(e), "add") | (T::SetOf(e), "discard") | (T::SetOf(e), "remove") => e,
+            // 要素型の判らない素の `list` / `set`、クラス、その他のメソッドは対象外。
+            _ => return,
+        };
+        // 判定材料が無い要素型（`list[Any]`・型変数）は照合しない。
+        if matches!(**elem, T::Unresolved | T::Any | T::Never) || self.mentions_type_param(elem) {
+            return;
+        }
+        // ⚠ 引数が 1 つの位置引数でなければ、実装側が個数エラーを出す形。ここでは触らない。
+        let [(None, got)] = arg_data else { return };
+        // ⚠ protocol 期待型は適合検査へ回す（`check_expected` の doc）。
+        let ctx = format!("argument of `{method}`");
+        if self.check_expected(got, elem, false, &ctx) {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::SubscriptTypeMismatch {
+                context: format!("argument of `{recv_ty}.{method}()`"),
+                expected: (**elem).clone(),
+                got: got.clone(),
+            },
+            span: Some(span.clone()),
+        });
     }
 
     /// 関数型変数の呼び出し検査：引数個数・型・キーワード名・`mut` 引数の可変性を検査する。

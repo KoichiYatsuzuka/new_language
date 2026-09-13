@@ -1,0 +1,19 @@
+# collection_method_args_error.ar — 可変長引数に型が混ざった場合も弾く（タスク 5.2c）
+#
+# 正常系は collection_method_args.ar
+#
+# ⚠⚠ **ここが 5.2c の核心。** 以前は
+#
+#     f(... = "a", "s")   ⛔ 捕まる（全部 str ＝ list[str] に推論される）
+#     f(... = 1, "s")     ✅ 通る（型が混ざると素の list へ落ちて検査が消える）
+#
+# という状態だった。「全部まちがえると捕まるのに 1 つ混ぜると通る」ので、
+# **実際のコードほど捕まらない**という最悪の形をしていた（検体 `C15`）。
+#
+# 期待されるエラー:
+#   StaticTypeError  the variadic argument of 'count_all' expects 'int' but got 'Union[int, str]'
+
+fn count_all(let ...: int) -> int:
+    return len(local::args)
+
+print(count_all(... = 1, "s"))      # ⛔ str が混ざっている
