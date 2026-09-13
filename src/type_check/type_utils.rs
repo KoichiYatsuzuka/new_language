@@ -229,12 +229,24 @@ impl TypeChecker {
     ///
     /// ⚠ 逆方向（`float` → `int`）は情報を落とすので許さない。
     pub(super) fn type_matches(&self, arg_ty: &InferredType, expected: &InferredType) -> bool {
-        if matches!(
-            (arg_ty, expected),
-            (InferredType::Int, InferredType::Float)
-        ) {
-            return true;
-        }
+        // ⚠⚠ **暗黙の `int` → `float` 拡大は廃止した**（決定 D-5・タスク 4.2）。
+        //    代わりに組み込みの変換関数 `float(n)` を使う（`Aliasing::WriteBack` の例外も
+        //    不要になった）。
+        //
+        // ## なぜ廃止したか（実測で比較した）
+        //
+        // | | 廃止 | 維持 |
+        // |---|---|---|
+        // | 移行コスト | **既存例題 1 件の 1 行**（`cpp_default_arg_native_call.ar`） | — |
+        // | 維持コスト | **0** | 変換地点 **33 箇所** × 適合判定の独立実装 **4 本**を整合させ続ける |
+        // | 許す関係を増やすたび | — | 上の積が増える |
+        // | `mut` 引数（書き戻し）の例外 | 不要になる | 永久に残る |
+        //
+        // ⇒ 廃止により「**受理したなら変換地点がある**」（D-7 の原則）が自明に保たれる。
+        //
+        // ⚠ この関数は [`Self::type_matches_exact`] と**同じ判定になった**が、名前は残す。
+        //    将来 `fixed_list → list` のような自明キャストを入れるときの置き場所で、
+        //    そのときは**変換を挿入する地点を併せて定める**こと（D-7）。
         self.type_matches_exact(arg_ty, expected)
     }
 

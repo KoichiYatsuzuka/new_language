@@ -20,13 +20,13 @@ print(label(7))         # n=7
 print("=== int → float の拡大は許される ===")
 
 fn as_float(let n: int) -> float:
-    return n            # int を float 戻り値へ
+    return float(n)            # int を float 戻り値へ
 
 fn take_float(let x: float) -> str:
     return str(x)       # 仮引数も昇格済み
 
 print(as_float(3))      # 3.0 — 戻り値も昇格する（0-B2）
-print(take_float(4))    # 4.0 — 仮引数も昇格する（0-B2）
+print(take_float(float(4)))    # 4.0 — 仮引数も昇格する（0-B2）
 
 print("=== 除算の戻り値型 ===")
 

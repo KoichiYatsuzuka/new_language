@@ -32,7 +32,11 @@ mut m: float = 0.0
 
 # デフォルト引数の式は **呼び出しのたびに** 評価される。
 # 1 回目 → call_native_function（キャッシュ充填）／2 回目以降 → dispatch_native_typed_exprs。
-fn touch(let _unused: float = norm(v345, m)) -> float:
+# ⚠ `v3_norm` の C 側の宣言は `int v3_norm(const V3* v, double* out_len)` で、
+#   **戻り値は `int`**（長さは `out_len` へ書き戻される）。以前は暗黙の `int` → `float`
+#   拡大があったので `float` と注釈しても通っていたが、タスク 4.2 で廃止したため
+#   **注釈が実際に誤っていたことが露見した**。⇒ 正しい型に直す。
+fn touch(let _unused: int = norm(v345, m)) -> float:
     return m
 
 check("defarg 1st", touch(), 5.0)

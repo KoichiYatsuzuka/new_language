@@ -59,7 +59,7 @@ class Physics:
     mut mass: float
 
 mut ph = Physics(1.0)
-ph.mass = 3              # int → float の拡大
+ph.mass = float(3)              # int → float の拡大
 print(ph.mass)           # 3.0
 
 print("=== コレクション型のフィールド ===")

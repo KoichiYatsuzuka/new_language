@@ -42,7 +42,7 @@ class Mixed:
     mut name: str
 
 mut m = Mixed(1.5, "m")
-m.ratio = 5                     # int を float フィールドへ
+m.ratio = float(5)                     # int を float フィールドへ
 print(m.ratio)                  # 5.0
 
 print("=== テンプレートクラスも検査される ===")
@@ -55,7 +55,7 @@ bs.v = "y"
 print(bs.v)                     # y
 
 mut bf = Box[float](1.0)
-bf.v = 7                        # 昇格（テンプレートも raw を持たないので以前は `7`）
+bf.v = float(7)                        # 昇格（テンプレートも raw を持たないので以前は `7`）
 print(bf.v)                     # 7.0
 
 print("=== trait フィールドも検査される ===")

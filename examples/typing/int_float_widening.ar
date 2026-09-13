@@ -1,58 +1,75 @@
-# int_float_widening.ar — `int` → `float` の暗黙拡大と束縛時の昇格（案 B・2026-09-08）
+# int_float_widening.ar — `int` → `float` は**明示変換**で行う（決定 D-5・タスク 4.2）
 #
-# 型注釈が `float` の束縛に `int` を渡せる。値は束縛時に `float` へ昇格するので、
-# 「注釈は float なのに中身は int」という状態は作られない。
+# ⚠⚠ **この例題は仕様変更で中身が入れ替わった。** 以前は「`int` → `float` の暗黙拡大」を
+# 実演していたが、タスク 4.2 で**暗黙キャストを廃止**したので、今は
+# 「**明示変換 `float(n)` を使う**」ことを実演する例題になっている。
 #
-# ⚠ 逆方向（float → int）は情報を落とすので許さない  → int_float_widening_error.ar
-# ⚠ 拡大は**最上位のみ**。要素型へは伝播しない       → int_float_widening_error.ar
+# ## なぜ廃止したか（実測で比較した）
+#
+# | | 廃止 | 維持 |
+# |---|---|---|
+# | 移行コスト | **既存例題 1 件の 1 行** | — |
+# | 維持コスト | **0** | 変換地点 **33 箇所** × 適合判定の独立実装 **4 本**を整合させ続ける |
+# | 許す関係を増やすたび | — | 上の積が増える |
+# | `mut` 引数（書き戻し）の例外 | 不要になる | 永久に残る |
+#
+# ⇒ 廃止により「**受理したなら変換地点がある**」（D-7 の原則）が自明に保たれる。
+#
+# ⚠⚠ **廃止して初めて分かったこと**: `examples/interop/cpp_default_arg_native_call.ar` の
+# `fn touch(let _unused: float = norm(v345, m))` は**注釈が誤っていた**。C 側の宣言は
+# `int v3_norm(const V3* v, double* out_len)` で戻り値は `int`（長さは書き戻し）。
+# 暗黙拡大がそれを隠していた。
+#
+# 弾かれる例は int_float_widening_error.ar
 
-print("=== 宣言時の昇格 ===")
+print("=== 明示変換で float にする ===")
 
-let a: float = 3
-print(a)            # 3.0 — int リテラルだが float として束縛される
+let a: float = float(3)
+print(a)                            # 3.0
 
-mut b: float = 4
-print(b)            # 4.0
+mut b: float = float(4)
+print(b)                            # 4.0
+b = float(5)
+print(b)                            # 5.0
 
-const C: float = 5
-print(C)            # 5.0
+print("=== 仮引数 ===")
 
-# C ABI 別名も基底型で判定する
-let w32: float32 = 6
-let w64: float64 = 7
-print(w32, w64)     # 6.0 7.0
+fn take_float(let v: float) -> float:
+    return v
 
-# 注釈が無い / int のときは何も起きない
-let plain = 8
-let i: int = 9
-print(plain, i)     # 8 9
+print(take_float(float(7)))         # 7.0
+print(take_float(7.0))              # 7.0   ← float リテラルはそのまま渡せる
 
-print("=== 関数引数 ===")
+print("=== 戻り値 ===")
 
-fn scale(let x: float) -> float:
-    return x * 2.0
+fn as_float(let n: int) -> float:
+    return float(n)
 
-print(scale(3))     # 6.0 — int を float 引数へ渡せる
-print(scale(3.5))   # 7.0
+print(as_float(3))                  # 3.0
 
 print("=== フィールド ===")
 
-class Vec:
-    mut x: float
-    mut y: float
+class Physics:
+    mut mass: float
+    mut label: str
 
-mut v = Vec(1, 2)   # コンストラクタ引数も拡大の対象
-print(v.x, v.y)     # 1.0 2.0
+mut p = Physics(float(1), "p")
+p.mass = float(2)
+print(p.mass)                       # 2.0
 
-v.x = 10            # フィールド書き込みも昇格する
-print(v.x)          # 10.0
+print("=== テンプレートの型引数 ===")
 
-print("=== 入れ子スコープ ===")
+class Box[T]:
+    mut v: T
 
-fn inner() -> float:
-    let inner_v: float = 11
-    return inner_v
+mut bf = Box[float](float(1))
+bf.v = float(7)
+print(bf.v)                         # 7.0
 
-print(inner())      # 11.0
+print("=== float 同士はそのまま ===")
+
+let c: float = 1.5
+let d: float = c
+print(d)                            # 1.5
 
 print("done")

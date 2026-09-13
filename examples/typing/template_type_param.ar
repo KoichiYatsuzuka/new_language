@@ -48,7 +48,7 @@ print(ident[str]("s"))      # s
 
 # ⚠ 実体化後は戻り値注釈も具体型へ置換されるので、int→float の昇格が効く。
 print(conv[float](3))       # 3.0
-print(ident[float](4))      # 4.0
+print(ident[float](float(4)))      # 4.0
 
 print("=== 同じ型引数の実体化は同じクラス ===")
 
@@ -88,7 +88,7 @@ print(pr.k, pr.v)           # 1 a
 let mx = Mixed[int](3, "tag")
 print(mx.v, mx.tag)         # 3 tag
 
-print(Box[float](2).get())  # 2.0 — 置換後の float へ int を拡大
+print(Box[float](float(2)).get())  # 2.0 — 置換後の float へ int を拡大
 print(pick[int]([10, 20], 1))   # 20 — list[T] も置換される
 print(pick[str](["x", "y"], 0)) # x
 

@@ -23,7 +23,7 @@ print(with_list())      # 1
 
 print("=== int → float の拡大は既定値でも効く ===")
 
-fn widen(let n: float = 3) -> float:
+fn widen(let n: float = float(3)) -> float:
     return n
 
 print(widen())          # 3.0 — 既定値も昇格する
@@ -51,7 +51,7 @@ print("=== const / static mut の既定値 ===")
 class E:
     mut x: int
     const K: int = 7
-    const F: float = 3          # 拡大して昇格する
+    const F: float = float(3)          # 拡大して昇格する
     static mut S: int = 0
 
 print(E(1).K, E(1).F, E.S)      # 7 3.0 0

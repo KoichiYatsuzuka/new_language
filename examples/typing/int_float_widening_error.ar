@@ -1,6 +1,12 @@
-# int_float_widening_error.ar — 拡大が**許されない**方向（案 B・2026-09-08）
+# int_float_widening_error.ar — 数値型の暗黙変換が**許されない**ことを示す
 #
-# 対になる正常系: int_float_widening.ar
+# 対になる正常系: int_float_widening.ar（明示変換 `float(n)` を使う形）
+#
+# ⚠⚠ **タスク 4.2 で暗黙の `int` → `float` 拡大そのものを廃止した**（決定 D-5）。
+#   以前は「拡大は許すが**この方向は許さない**」という例題だったが、今は
+#   **どちらの方向も許さない**（明示変換 `float(n)` / `int(x)` を使う）。
+#   ⚠ 下の 2 つのエラーは廃止の前後で**変わらず**出る（`float` → `int` は縮小・
+#     要素型へは伝播しない）ので、例題の検体としてはそのまま有効。
 #
 # Section 1 — StaticTypeError: `float` → `int` は縮小なので許されない
 #   Expected error (StaticTypeError):

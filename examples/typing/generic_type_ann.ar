@@ -65,7 +65,7 @@ print(sum_box(Box[int](2), Box[int](3)))   # 5
 print("=== int → float の拡大（受理される） ===")
 
 mut bf: Box[float] = Box[float](1.0)
-bf.v = 7                        # 受理される（`float` へ int は拡大）
+bf.v = float(7)                        # 受理される（`float` へ int は拡大）
 # ⚠ ここが `7`（int のまま）だったのが A-3 で直った。値の昇格は以前
 #   `store_field` の **raw レイアウト経路**だけが行い、`build_template_class` は
 #   `raw_layout` を設定しないのでテンプレートクラスは常に boxed 経路を通っていた。

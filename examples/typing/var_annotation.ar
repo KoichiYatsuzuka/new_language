@@ -43,7 +43,7 @@ print(d.draw())
 
 print("=== int → float の拡大 ===")
 
-let f: float = 4          # 拡大して昇格する（0-B）
+let f: float = float(4)          # 拡大して昇格する（0-B）
 print(f)                  # 4.0
 
 print("=== 注釈なしは右辺の型のまま ===")

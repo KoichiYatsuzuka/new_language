@@ -236,6 +236,36 @@ impl TypeChecker {
             InferredType::Function { params: None, return_type } => {
                 return *return_type;
             }
+            // ── 型値の呼び出し＝変換（タスク 2.4 / 決定 D-6）────────────────────
+            //
+            // ⚠⚠ **組み込み関数に静的な戻り値型が 1 つも無かった。**
+            //      let s: str = float(n)    # 通っていた（結果が `Unresolved` だったため）
+            //      let s: str = int("3")    # 同じ
+            //    `Unresolved` は `type_matches_exact` の万能受容体なので、変換を経由した
+            //    全ての義務が無効化されていた。これは **D-5（暗黙 `int → float` の廃止）の
+            //    前提**で、受け皿の `float(n)` が無検査だと穴が閉じずに移動するだけになる。
+            //
+            // ⚠ **名前を新しく占有しない形で解く。** 既存の `builtin_fns` 機構に
+            //    `len` 等を足す案は「グローバル名を占有して `let len = ...` が
+            //    already declared になる」ため前任者が見送っており、実際に例題が
+            //    `len` を変数名に使っている（実測 3 箇所）。
+            //    ⇒ `int` / `float` / `str` / `bool` は**既に `TypeValOf` として登録済み**なので、
+            //      「**型値を呼ぶとその型になる**」という一般規則を入れれば足りる。
+            //      クラスの `C(..)` は別経路（`NamedInstance` を返す）。
+            // ⚠ プリミティブに限る。`TypeValOf(NamedInstance(..))` はクラス・enum・protocol で、
+            //    呼び出しの意味がそれぞれ違うので触らない。
+            InferredType::TypeValOf(ref inner) => {
+                if matches!(
+                    **inner,
+                    InferredType::Int
+                        | InferredType::Float
+                        | InferredType::Str
+                        | InferredType::Bool
+                        | InferredType::Complex
+                ) {
+                    return (**inner).clone();
+                }
+            }
             _ => {}
         }
         }
