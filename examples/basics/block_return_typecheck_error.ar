@@ -1,7 +1,16 @@
 # block_return_typecheck_error.ar — block_return の値がアノテーションに合わない（#35）
 #
-# `->int` を宣言したブロック式が str を返すので、実行時に TypeError になる。
-# 静的型検査はこの形を捕まえないため、実行時検査が唯一の防波堤（`--vm=off`/`--vm=on` 共通）。
+# `->int` を宣言したブロック式が str を返す。
+#
+# ⚠⚠ **タスク 5.2 で実行時 → 静的へ昇格した。** 以前は
+# 「静的型検査はこの形を捕まえないため、実行時検査が唯一の防波堤」と書いていたが、
+# `block_return` の値を囲みブロック式の `->T` と静的に照合するようにしたので、
+# **`print("before")` に到達する前に**弾かれる。
+# ⚠ 実行時検査（`--vm=off`/`--vm=on` 共通）は**残してある**。静的に型が決まらない
+#   経路（`Any` 経由など）はそちらが受け持つ。
+#
+# 期待されるエラー:
+#   StaticTypeError  'block_return' expects 'int' but got 'str' 
 
 print("before")
 

@@ -1,0 +1,103 @@
+# block_expr_value_static.ar — `block_return` / `loop_yield` / `yield` の値を**静的に**検査する
+# （タスク 5.2）
+#
+# ## 何が壊れていたか
+#
+# 3 つとも「値を囲み構文へ渡す」同じ義務なのに、**3 地点とも別々に無検査**だった:
+#
+# | 構文 | 以前 | 検体 |
+# |---|---|---|
+# | `block_return` | 実行時のみ | `X1` `X2` `X4` |
+# | `loop_yield` | 実行時のみ | `X3` |
+# | `yield` | **無検査**（実行時も通り抜ける） | `C8` |
+#
+# ⇒ 照合先を 1 本のスタック（いちばん内側のブロック式の `->T`）にまとめ、
+#   検査も 1 本（`check_block_expr_value`）に寄せた。
+#
+# ⚠⚠ **`block_return` と `loop_yield` でスタックを分けてはいけない。** 分けると
+#   `loop_yield` が内側の注釈を貫いて外側のループ式へ届いてしまい、
+#   `block_return_typecheck.ar`（#35）が固定している「内側の注釈が効く」仕様に反する。
+#   一度そう実装して例題が**偽エラー**で落ちた（下の「内側の注釈が効く」を参照）。
+#
+# 弾かれる例は block_expr_value_static_error.ar
+
+print("=== block 式 ===")
+
+let a = block ->int:
+    block_return 42
+print(a)                            # 42
+
+print("=== if 式 ===")
+
+let b = if True ->str:
+    block_return "yes"
+else:
+    block_return "no"
+print(b)                            # yes
+
+print("=== match 式 ===")
+
+let c = match 1 ->str:
+    case 1:
+        block_return "one"
+    case _:
+        block_return "other"
+print(c)                            # one
+
+print("=== for 式の loop_yield は要素型と照合される ===")
+
+let d = for i in range(3) ->list[int]:
+    loop_yield i
+print(d)                            # [0, 1, 2]
+
+print("=== while 式 ===")
+
+mut n: int = 0
+let e = while n < 3 ->list[str]:
+    n += 1
+    loop_yield "x"
+print(e)                            # ['x', 'x', 'x']
+
+print("=== gen の yield は宣言 yield 型と照合される ===")
+
+gen counter() -> int:
+    yield 1
+    yield 2
+
+for v in counter():
+    print(v)                        # 1, 2
+
+print("=== ⚠ いちばん内側の注釈が効く ===")
+
+# 内側の `if ->int:` の注釈は `list[T]` ではないので、そこに書いた `loop_yield` は
+# **検査されない**（#35 の仕様）。外側の `loop_yield i` は `list[int]` が効く。
+let f = for i in range(2) ->list[int]:
+    let _ = if i == 1 ->int:
+        loop_yield "not checked here"
+        block_return 0
+    else:
+        0
+    loop_yield i
+print(f)                            # [0, 'not checked here', 1]
+
+print("=== 注釈なしの block: 文は素通し（外側の注釈が効く） ===")
+
+let g = block ->int:
+    block:
+        block_return 5              # 外側の `->int` と照合される
+    block_return 1
+print(g)                            # 1
+
+print("=== 入れ子の関数は外側の注釈を継がない ===")
+
+# ⚠ `with_fn_body` がスタックへ `None` を積む。継いでしまうと、内側の `fn` の
+#   `block_return` が外側のブロック式の `->str` と照合されて偽エラーになる。
+let h = block ->str:
+    fn inner() -> int:
+        let k = block ->int:
+            block_return 7
+        return k
+    block_return "n=" + str(inner())
+print(h)                            # n=7
+
+print("done")

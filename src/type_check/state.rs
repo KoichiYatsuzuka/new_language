@@ -35,6 +35,31 @@ pub(super) struct CheckState {
     /// `for`/`while` 式の入れ子深さ。1 以上のとき `block_return` は
     /// 型エラー `BlockReturnInLoopExpr` になる。
     block_return_forbidden_depth: usize,
+    /// **いちばん内側のブロック式の `->T` 注釈**（`block_return` / `loop_yield` の
+    /// 照合先・タスク 5.2）。
+    ///
+    /// ⚠⚠ **1 本のスタックでなければならない。** `examples/.../block_return_typecheck.ar`
+    /// （#35）が仕様として固定している「**内側の注釈が効く**」がこれ:
+    ///
+    /// ```arrow
+    /// let f = for i in range(4) ->list[int]:
+    ///     let _ = if i == 1 ->int:
+    ///         loop_yield "not checked here"   # 内側の注釈は `int` で list[T] ではない
+    ///         block_return 0                  # ⇒ loop_yield は検査されない
+    ///     else:
+    ///         0
+    ///     loop_yield i                        # ここは外側の `list[int]` が効く
+    /// ```
+    ///
+    /// ⇒ `block_return` と `loop_yield` で**別のスタックにしてはいけない**
+    ///   （別にすると `loop_yield` が内側の `->int` を貫いて外側へ届いてしまい、
+    ///   この例題が**偽エラー**になる。実際に一度そう実装して `scan_examples` が落ちた）。
+    ///
+    /// ⚠ **注釈が付いた式だけ**を積む。注釈なしの `block:` 文・`if` 文は積まないので
+    /// 中の `block_return` は外側の注釈と照合される（例題 7・8 がこの形）。
+    /// ⚠ **関数本体に入るときは `None` を積む**（継承しない）。入れ子 `fn` の
+    /// `block_return` が外側のブロック式の注釈と照合されると嘘の判定になる。
+    block_expr_expected: Vec<Option<InferredType>>,
     /// **いま見えているテンプレート型変数**の名前（`fn f[T]` / `class C[T]` の `T`）。
     ///
     /// ⚠⚠ `InferredType::from_ann` は**大文字始まりの未知の識別子をクラス名として扱う**
@@ -57,6 +82,7 @@ impl CheckState {
             current_class_name: None,
             in_gen_body: false,
             block_return_forbidden_depth: 0,
+            block_expr_expected: Vec::new(),
             type_params: Vec::new(),
         }
     }
@@ -187,6 +213,23 @@ impl CheckState {
     /// `enter_barrier` が返した値を渡して障壁を抜ける。
     pub(super) fn exit_barrier(&mut self, saved: usize) {
         self.block_return_forbidden_depth = saved;
+    }
+
+    // ── ブロック式の結果型（タスク 5.2）──────────────────────────────────────
+
+    /// ブロック式の照合先を積む（注釈なしは `None`＝照合しない）。
+    pub(super) fn push_block_expr_expected(&mut self, ty: Option<InferredType>) {
+        self.block_expr_expected.push(ty);
+    }
+
+    /// ブロック式の照合先を降ろす。
+    pub(super) fn pop_block_expr_expected(&mut self) {
+        self.block_expr_expected.pop();
+    }
+
+    /// いちばん内側のブロック式の `->T`。囲みが無ければ `None`。
+    pub(super) fn block_expr_expected(&self) -> Option<&InferredType> {
+        self.block_expr_expected.last().and_then(|t| t.as_ref())
     }
 
     /// `for`/`while` 式の本体に入る。

@@ -1,0 +1,15 @@
+# block_expr_value_static_error.ar — `block_return` の値が `->T` と合わない（タスク 5.2）
+#
+# 正常系は block_expr_value_static.ar
+#
+# `block ->int:` と宣言しているのに `block_return` が `str` を返している。
+#
+# ⚠ 以前は**実行時まで**判らなかった（検体 `X1` が `RUNTIME` だった）。
+#
+# 期待されるエラー:
+#   StaticTypeError  'block_return' expects 'int' but got 'str'
+
+let r = block ->int:
+    block_return "s"                # ⛔ ->int と合わない
+
+print(r)

@@ -290,6 +290,15 @@ pub enum TypeErrorKind {
         result: InferredType,
         expected: InferredType,
     },
+    /// `block_return` / `loop_yield` / `yield` の値が囲み構文の宣言型と合わない
+    /// （タスク 5.2）。
+    ///
+    /// ⚠ `keyword` はどの構文かを文言に出すため（3 つとも同じ検査を通る）。
+    BlockExprValueMismatch {
+        keyword: String,
+        expected: InferredType,
+        got: InferredType,
+    },
     /// 型ガード（`is T` / `match ... is T`）の型名が存在しない。
     ///
     /// ⚠⚠ これを検査しないと**腕が永久に死ぬ**うえ、腕の中では対象がその
@@ -636,6 +645,10 @@ impl StaticTypeError {
                 "{} on {} produces {} but {} is declared {}",
                 hl_q(op), hl_q(target), hl_q(&result.to_string()),
                 hl_q(target), hl_q(&expected.to_string())
+            ),
+            TypeErrorKind::BlockExprValueMismatch { keyword, expected, got } => format!(
+                "{} expects {} but got {}",
+                hl_q(keyword), hl_q(&expected.to_string()), hl_q(&got.to_string())
             ),
             // ── 妥当性検査（タスク 3.4）────────────────────────────────────────
             TypeErrorKind::UnknownGuardType { type_name } => format!(

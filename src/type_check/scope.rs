@@ -52,6 +52,48 @@ impl TypeChecker {
         r
     }
 
+    /// **`block:` / `if:` / `match:` 式の本体**として `f` を実行する（タスク 5.2）。
+    /// `expected` はその式の `->T` 注釈で、内側の `block_return` の照合先になる。
+    ///
+    /// ⚠ `with_barrier` と必ず**組にして**使うこと（`block_return` の可否と照合先は
+    /// 同じ 1 つの構文が決めるので、片方だけ積むと食い違う）。
+    pub(super) fn with_block_expr<R>(
+        &mut self,
+        expected: Option<InferredType>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.state.push_block_expr_expected(expected);
+        let r = self.with_barrier(f);
+        self.state.pop_block_expr_expected();
+        r
+    }
+
+    /// **`for`/`while` 式の本体**として `f` を実行する（タスク 5.2）。
+    /// `expected` はその式の `->list[T]` 注釈**そのもの**（要素を取り出すのは
+    /// `loop_yield` 側）。`block_return` の可否は `with_loop_expr` が見る。
+    pub(super) fn with_loop_expr_yielding<R>(
+        &mut self,
+        expected: Option<InferredType>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.state.push_block_expr_expected(expected);
+        let r = self.with_loop_expr(f);
+        self.state.pop_block_expr_expected();
+        r
+    }
+
+    /// **関数・`gen` の本体**として `f` を実行する（タスク 5.2）。
+    ///
+    /// ⚠⚠ **`None` を積む**（継承しない）。入れ子 `fn` の `block_return` /
+    /// `loop_yield` が外側のブロック式の注釈と照合されると嘘の判定になる
+    /// （`current_fn_return` / `in_gen_body` を張り替えているのと同じ理由）。
+    pub(super) fn with_fn_body<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        self.state.push_block_expr_expected(None);
+        let r = self.with_barrier(f);
+        self.state.pop_block_expr_expected();
+        r
+    }
+
     /// 静的型エラーをエラーリストに追加する。
     pub(super) fn report_error(&mut self, err: StaticTypeError) {
         self.diags.report_error(err);

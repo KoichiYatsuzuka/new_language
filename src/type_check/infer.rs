@@ -277,7 +277,9 @@ impl TypeChecker {
                 self.infer_mustbe(expr, guard_type, span, *node_id)
             }
             Expr::Block { stmts, return_type } => {
-                self.with_barrier(|c| {
+                // ⚠ `->T` を **`block_return` の照合先**として積む（タスク 5.2）。
+                let ann = Self::ann_or_none(return_type);
+                self.with_block_expr(ann, |c| {
                     c.push_scope();
                     c.check_stmts(stmts);
                     c.pop_scope();
@@ -289,7 +291,8 @@ impl TypeChecker {
                 else_body,
                 return_type,
             } => {
-                self.with_barrier(|c| {
+                let ann = Self::ann_or_none(return_type);
+                self.with_block_expr(ann, |c| {
                     for (cond, body) in branches {
                         // ⚠ 条件は `bool` でなければならない（D-12・検体 K1）。
                         c.walk_obligation_pending(cond, "5.5 条件は bool");
@@ -320,7 +323,10 @@ impl TypeChecker {
                 //    以前は `mutable: true` 決め打ちで、内包表記の脱糖先もここを通るため
                 //    文側だけ直しても穴が残っていた（実測）。
                 let target_mut = self.path_is_mutable(iter).unwrap_or(false);
-                self.with_loop_expr(|c| {
+                // ⚠ 積むのは `->list[T]` **そのもの**。要素を取り出すのは `loop_yield`
+                //    側で、内側の注釈が `list[T]` でなければ照合しない（タスク 5.2）。
+                let ann = Self::ann_or_none(return_type);
+                self.with_loop_expr_yielding(ann, |c| {
                     c.push_scope();
                     // 規則 1: 外側に同名があれば再束縛（`Stmt::For` と同じ形）。
                     if target != "_" && c.lookup(target).is_some() {
@@ -343,7 +349,8 @@ impl TypeChecker {
             } => {
                 // ⚠ 条件は `bool` でなければならない（D-12・検体 K2）。
                 self.walk_obligation_pending(cond, "5.5 条件は bool");
-                self.with_loop_expr(|c| {
+                let ann = Self::ann_or_none(return_type);
+                self.with_loop_expr_yielding(ann, |c| {
                     c.push_scope();
                     c.check_stmts(body);
                     c.pop_scope();
@@ -358,7 +365,8 @@ impl TypeChecker {
                 // ⚠ 腕の処理は `match` **文**と共有する（タスク 2.9）。以前はここに
                 //    独自の走査があり `is Type` の絞り込みを持っていなかったので、
                 //    **文では効く絞り込みが式では効かない**という意味論のずれがあった。
-                self.with_barrier(|c| {
+                let ann = Self::ann_or_none(return_type);
+                self.with_block_expr(ann, |c| {
                     c.check_match_arms(subject, arms);
                 });
                 Self::ann_or_unresolved(return_type)
@@ -456,6 +464,15 @@ impl TypeChecker {
             params: Some(params),
             return_type: Box::new(sig.return_type.clone().unwrap_or(InferredType::Any)),
         })
+    }
+
+    /// `->T` 注釈を**照合に使える型**として返す。注釈なし・解決できない注釈は `None`
+    /// （＝照合しない）。`Unresolved` を返してしまうと「何でも通る期待型」になる。
+    fn ann_or_none(return_type: &Option<String>) -> Option<InferredType> {
+        match return_type.as_deref().and_then(InferredType::from_ann) {
+            Some(t) if !matches!(t, InferredType::Unresolved | InferredType::Any) => Some(t),
+            _ => None,
+        }
     }
 
     fn ann_or_unresolved(return_type: &Option<String>) -> InferredType {

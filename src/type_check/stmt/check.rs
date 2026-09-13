@@ -315,15 +315,28 @@ impl TypeChecker {
                         span: Some(span.clone()),
                     });
                 }
-                // ⚠ 値は囲みブロック式の `->T` 注釈と照合しなければならない
-                //    （現在は実行時のみ・検体 X1/X2/X4）。
-                self.walk_obligation_pending(expr, "5.2 block_return vs ->T");
+                // ⚠⚠ 値は囲みブロック式の `->T` 注釈と照合する（タスク 5.2・検体 X1/X2/X4）。
+                //    以前は**実行時まで**判らなかった（`block ->int: block_return "s"` が
+                //    通っていた）。
+                let got = self.infer(expr);
+                let expected = self.state.block_expr_expected().cloned();
+                self.check_block_expr_value(&got, expected, "block_return", Some(span.clone()));
             }
             // ⚠ `loop_yield` は `for`/`while` 式のものでジェネレータとは別物。制限しない。
             Stmt::LoopYield(expr) => {
-                // ⚠ 値は囲み式の `->list[T]` の要素型と照合しなければならない
-                //    （現在は実行時のみ・検体 X3）。
-                self.walk_obligation_pending(expr, "5.2 loop_yield vs ->list[T]");
+                // ⚠ 値は囲み式の `->list[T]` の**要素型**と照合する（タスク 5.2・検体 X3）。
+                //
+                // ⚠⚠ **いちばん内側の注釈が `list[T]` のときだけ**照合する。
+                //    `block_return_typecheck.ar`（#35）が仕様として固定している:
+                //    `for ... ->list[int]:` の中の `if ... ->int:` に書いた `loop_yield` は
+                //    **検査されない**（内側の注釈が `list[T]` ではないから）。
+                //    ここを「外側のループ式まで遡る」実装にすると偽エラーになる（実測）。
+                let got = self.infer(expr);
+                let expected = match self.state.block_expr_expected() {
+                    Some(InferredType::ListOf(elem)) => Some((**elem).clone()),
+                    _ => None,
+                };
+                self.check_block_expr_value(&got, expected, "loop_yield", None);
             }
             Stmt::Yield(expr) => {
                 // ⚠⚠ `yield` は **`gen` 本体の直下だけ**（bug_fix.md B13）。
@@ -334,8 +347,15 @@ impl TypeChecker {
                         span: None,
                     });
                 }
-                // ⚠ 値は宣言 yield 型と照合しなければならない（現在は無検査・検体 C8）。
-                self.walk_obligation_pending(expr, "5.2 yield vs 宣言 yield 型");
+                // ⚠ 値は `gen` の宣言 yield 型と照合する（タスク 5.2・検体 C8）。
+                //    照合先は `check_gen_def` が `current_fn_return` へ入れた要素型。
+                let got = self.infer(expr);
+                self.check_block_expr_value(
+                    &got,
+                    self.state.current_fn_return().cloned(),
+                    "yield",
+                    None,
+                );
             }
 
             // --- クラスフィールド宣言 ---
@@ -1003,6 +1023,41 @@ impl TypeChecker {
         });
     }
 
+    /// `block_return` / `loop_yield` / `yield` の値を、囲み構文が宣言した型と照合する
+    /// （タスク 5.2・検体 `X1`〜`X4` / `C8`）。
+    ///
+    /// ⚠⚠ **3 つとも「値を囲み構文へ渡す」同じ義務**なので 1 本にした。地点ごとに
+    /// 書き分けると、`block_return` だけ直して `loop_yield` が漏れる形になる
+    /// （実際に 3 地点とも別々に無検査だった）。
+    ///
+    /// `expected` が `None` のとき（注釈なし・解決できない注釈・囲みが無い）は照合しない。
+    fn check_block_expr_value(
+        &mut self,
+        got: &InferredType,
+        expected: Option<InferredType>,
+        keyword: &'static str,
+        span: Option<Span>,
+    ) {
+        let Some(expected) = expected else { return };
+        // ⚠ テンプレート型変数を含む型は具体型と突き合わせられない（`mentions_type_param`）。
+        if self.mentions_type_param(&expected) {
+            return;
+        }
+        // ⚠ protocol 期待型は適合検査へ回す（`check_expected` の doc）。
+        let ctx = format!("value of `{keyword}`");
+        if self.check_expected(got, &expected, false, &ctx) {
+            return;
+        }
+        self.report_error(StaticTypeError {
+            kind: TypeErrorKind::BlockExprValueMismatch {
+                keyword: keyword.to_string(),
+                expected,
+                got: got.clone(),
+            },
+            span,
+        });
+    }
+
     /// クラス `class_name` のフィールド `field` の**宣言型**を引く。
     ///
     /// ⚠⚠ フィールドの宣言は**2 つのテーブルに分かれて**入っている:
@@ -1177,7 +1232,8 @@ impl TypeChecker {
         // ⚠⚠ **継承しない**。`gen` の中の入れ子 `fn` もここを通るので、
         //    false へ張り替えることでそこの `yield` もエラーになる。
         let prev_gen = self.state.enter_gen_body(false);
-        self.with_barrier(|c| c.check_stmts(body));
+        // ⚠ ブロック式の照合先も**継承しない**（`with_fn_body` の doc・タスク 5.2）。
+        self.with_fn_body(|c| c.check_stmts(body));
         self.state.exit_gen_body(prev_gen);
         self.state.exit_fn(prev_fn);
         self.state.pop_type_params(saved_tp);
@@ -1224,7 +1280,14 @@ impl TypeChecker {
         }
         // `gen` 本体の直下だけが `yield` を書ける（B13）。
         let prev_gen = self.state.enter_gen_body(true);
-        self.with_barrier(|c| c.check_stmts(body));
+        // ⚠ `gen` の `->T` は**要素型**（`yield` 1 回分の型）。`check_return_type` が
+        //    使う `current_fn_return` と同じ場所へ入れて `yield` の照合に使う（タスク 5.2）。
+        let prev_fn = self.state.enter_fn(
+            name.to_string(),
+            yield_type.and_then(InferredType::from_ann),
+        );
+        self.with_fn_body(|c| c.check_stmts(body));
+        self.state.exit_fn(prev_fn);
         self.state.exit_gen_body(prev_gen);
         self.pop_scope();
     }

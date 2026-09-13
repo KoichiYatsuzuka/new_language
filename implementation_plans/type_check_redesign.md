@@ -1250,7 +1250,11 @@ print(x + 1)    # 旧: TypeError: unsupported operand types for `Add`
 | # | 内容 | 決定 | 依存 | 検体 |
 |---|---|---|---|---|
 | ~~**5.1**~~ | ~~複合代入の二段検査~~ → **✅ 完了 2026-09-14** | D-8 / D-9 | 4.4 | 下記「5.1 の記録」。`B6` `B10` `B11` `F2` が**全て STATIC** |
-| **5.2** | 未検査の地点を埋める（添字代入・添字の型・組み込みメソッド引数・可変長要素・`yield`・`block_return`/`loop_yield`・trait フィールド代入の静的化） | D-1 | 3.2 | `L5` `L6`〜`L8` `L14` `C8` `C15` `X1`〜`X4` `F3` |
+| **5.2** | 未検査の地点を埋める | D-1 | 3.2 | **地点ごとに分割して進める**（下記） |
+| ~~5.2a~~ | ~~`block_return` / `loop_yield` / `yield`~~ → **✅ 完了 2026-09-14** | D-1 | 3.2 | 下記「5.2a の記録」。`X1`〜`X4` `C8` が**全て STATIC** |
+| 5.2b | 添字（代入の要素型・index の型・スライス境界） | D-1 | 3.2 | `L5` `L6` `L7` `L8` |
+| 5.2c | 組み込みメソッド引数・可変長要素 | D-1 | 3.2 | `L14` `C15` |
+| 5.2d | trait フィールド代入の静的化 | D-1 | 3.2 | `F3` |
 | **5.3** | `static mut` クラス変数への代入を検査 | D-1 | 3.2・1.2 | `F4` |
 | **5.4** | `match` の `case` パターン型を subject と照合 | D-1 | 3.2 | `X5` |
 | **5.5** | `if` / `while` の条件を `bool` 厳密に | D-12 | **2.5** | `K1` `K2`。移行は例題 1 箇所。⚠ `is_truthy` は**撤去しない** |
@@ -1324,6 +1328,81 @@ print(x + 1)    # 旧: TypeError: unsupported operand types for `Add`
 | `compare_wasm_frontend.ps1` | **282/282 agreed・INVENTED 0** |
 
 **追加した例題**: `examples/typing/compound_assign_two_stage{,_error}.ar`
+
+#### 5.2a の記録 【✅ 完了 2026-09-14】
+
+##### 3 つとも「値を囲み構文へ渡す」同じ義務なのに、**別々に無検査**だった
+
+| 構文 | 以前 | 検体 |
+|---|---|---|
+| `block_return` | 実行時のみ | `X1` `X2` `X4` |
+| `loop_yield` | 実行時のみ | `X3` |
+| `yield` | **無検査**（実行時も通り抜ける） | `C8` |
+
+⇒ 照合先を 1 本のスタック（`block_expr_expected`）に、検査も 1 本
+（`check_block_expr_value`）に寄せた。地点ごとに書き分けると
+「`block_return` だけ直して `loop_yield` が漏れる」形になる。
+
+##### ⚠⚠ スタックを 2 本に分けたら例題が**偽エラー**で落ちた
+
+最初は「`loop_yield` は入れ子のブロック式を貫いて外側のループ式へ届く」と考えて
+`block_return_expected` と `loop_yield_expected` を**別のスタック**にした。
+`scan_examples` が `examples/basics/block_return_typecheck.ar` で落ちて誤りが判った:
+
+```arrow
+let f = for i in range(4) ->list[int]:
+    let _ = if i == 1 ->int:
+        loop_yield "not checked here"   # 内側の注釈は `int` で list[T] ではない
+        block_return 0                  # ⇒ loop_yield は検査されない
+    else:
+        0
+    loop_yield i
+```
+
+この例題（#35）が「**いちばん内側の注釈が効く**」を仕様として固定していた。
+⇒ **1 本のスタック**にして、`loop_yield` は「内側の注釈が `list[T]` のときだけ」
+要素型と照合する形に直した。
+
+⚠ **既存例題が仕様を固定していることを、実装前に読んでいなかった。** 4.4 で
+`equality_numeric_promotion.ar` に同じ形でつまずいたのと同じ失敗。
+
+##### 積むのは「注釈が付いた式」だけ
+
+- `Stmt::Block` / `Stmt::If` など**文**は積まない ⇒ 中の `block_return` は外側の注釈と
+  照合される（例題 7・8 がこの形）。`break` が入れ子の `if`/`match`/`block:` を貫いて
+  ループへ届くのと同じ扱い。
+- **関数・`gen` の本体は `None` を積む**（`with_fn_body`）。継承すると入れ子 `fn` の
+  `block_return` が外側のブロック式の注釈と照合されて偽エラーになる
+  （`current_fn_return` / `in_gen_body` を張り替えているのと同じ理由）。
+
+##### `gen` の `->T` を `current_fn_return` へ入れた
+
+`yield` の照合先が無かったのは、`check_gen_def` が `enter_fn` を**呼んでいなかった**から。
+`gen` の `->T` は「`yield` 1 回分の型」なので、`return` が使う場所と同じ
+`current_fn_return` へ入れて共有した。
+
+##### 結果
+
+**検体**: `X1`〜`X4` が `RUNTIME` → **`STATIC`**、`C8` が `NONE` → **`STATIC`**。
+静的検査の割合 68% → **73%**（83/114）。
+
+⚠ 既存例題 `examples/basics/block_return_typecheck_error.ar` が実行時 → 静的へ昇格した
+（「静的型検査はこの形を捕まえない」というコメントを更新）。実行時検査は**残してある**
+（静的に型が決まらない経路はそちらが受け持つ）。
+
+**ゲート結果**
+
+| ゲート | 結果 |
+|---|---|
+| `cargo test --release` | 773 passed / 0 failed |
+| `scan_examples.ps1` | 既知の `bench_ab_native.ar` TIMEOUT のみ |
+| `force_gate.ps1` | 0 fall back（283 例題） |
+| `compare_python_impl.ps1` | 84/84 identical・stale 0 |
+| `compare_outputs.ps1 -A 3dabedf` | 212/214。差分 2 件は新規例題 1 件＋昇格した既存例題 1 件 |
+| `stale_doc_refs.ps1` | OK |
+| `compare_wasm_frontend.ps1` | **284/284 agreed・INVENTED 0** |
+
+**追加した例題**: `examples/typing/block_expr_value_static{,_error}.ar`
 
 ### フェーズ 6 — 実行時との一本化
 
